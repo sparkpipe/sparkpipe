@@ -347,10 +347,10 @@ class Session:
     def can_continue(self):
         return self.rounds < self.memory.max_rounds
 
-    def finished(self, plan_messages, content, reasoning, visible_calls, engine_finish):
+    def finished(self, plan_messages, content, reasoning, visible_calls, engine_finish, prompt_ids=None, token_ids=None):
         if visible_calls or engine_finish not in ("stop",) or not self.message:
             return
-        self.memory.schedule(self, plan_messages, content)
+        self.memory.schedule(self, plan_messages, content, prompt_ids or [], token_ids or [])
 
 
 class Memory:
@@ -432,12 +432,13 @@ class Memory:
                 task.cancel()
         self.tasks.clear()
 
-    def schedule(self, session, plan_messages, content):
+    def schedule(self, session, plan_messages, content, prompt_ids=(), token_ids=()):
         lines = self.store.load(session.user, session.chat)["lines"]
         missing = [i for i in range(session.layout["lined"], len(session.exchanges)) if exchange_key(session.exchanges[i]) not in lines][:self.catch_up]
         queue = self.jobs.setdefault(session.model.id, [])
         queue[:] = [job for job in queue if job["session"].chat != session.chat or job["session"].user != session.user][-7:]
-        queue.append({"session": session, "messages": plan_messages, "content": content, "missing": missing, "attempts": 0})
+        queue.append({"session": session, "messages": plan_messages, "content": content, "missing": missing, "attempts": 0,
+                      "prompt_ids": list(prompt_ids), "token_ids": list(token_ids)})
         self.kick(session.model)
 
     def kick(self, model):
@@ -472,6 +473,7 @@ class Memory:
             if queue and queue[0] is job:
                 queue.pop(0)
             await self.stem(model, session)
+            await self.prewarm(model, session, job["content"])
         if self.tasks.get(model.id) is asyncio.current_task():
             self.tasks.pop(model.id, None)
         self.kick(model)
@@ -486,8 +488,14 @@ class Memory:
         sizes = self.node_tokens(session)
         settings = model.memory
         instruction = curator_instruction(everything, {}, indices, session.layout["open"], sizes, int(settings.get("open_budget", 1500)), int(settings.get("line_tokens", 48)))
-        messages = job["messages"] + [{"role": "assistant", "content": job["content"]}, {"role": "user", "content": instruction}]
-        ids, reasoning_open = self.frontend.memory_curator_ids(model, messages, session.tools, session.kwargs, settings.get("curator_suffix"))
+        continued = None
+        if job["prompt_ids"] and job["token_ids"] and job["attempts"] == 0:
+            continued = self.frontend.memory_continuation_ids(model, job["messages"], session.tools, session.kwargs, job["prompt_ids"], job["token_ids"], instruction, settings.get("curator_suffix"))
+        if continued is not None:
+            ids, reasoning_open = continued
+        else:
+            messages = job["messages"] + [{"role": "assistant", "content": job["content"]}, {"role": "user", "content": instruction}]
+            ids, reasoning_open = self.frontend.memory_curator_ids(model, messages, session.tools, session.kwargs, settings.get("curator_suffix"))
         text = await self.frontend.memory_complete(model, ids, self.curator_tokens + 80 * len(indices), reasoning_open)
         lines, opened, complete = parse_curator(text, indices, len(everything), sizes, int(settings.get("open_budget", 1500)))
         if lines is None:
@@ -525,5 +533,16 @@ class Memory:
         system = build_layout(session.head, [], session.current, {}, [])["messages"][:len(session.head) or 1]
         messages = system + [{"role": "user", "content": ledger + SENTINEL}]
         ids = self.frontend.memory_cut_ids(model, messages, session.tools, session.kwargs, SENTINEL)
+        if ids:
+            await self.frontend.memory_complete(model, ids, 1)
+
+    async def prewarm(self, model, session, content):
+        state = self.store.load(session.user, session.chat)
+        finished = session.exchanges + [list(session.current) + [{"role": "assistant", "content": content.strip()}]]
+        layout = build_layout(session.head, finished, [{"role": "user", "content": SENTINEL}], state["lines"],
+                              list(state["open_by_message"].get(session.message, [])), 1, self.open_chars)
+        if layout["lined"] == 0:
+            return
+        ids = self.frontend.memory_cut_ids(model, layout["messages"], session.tools, session.kwargs, SENTINEL)
         if ids:
             await self.frontend.memory_complete(model, ids, 1)

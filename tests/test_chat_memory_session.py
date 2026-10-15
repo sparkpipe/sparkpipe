@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A chat-memory session is opened only for a verified Open WebUI identity on a real chat turn, and its bookkeeping holds across turns: requests without a valid token, with a task, without ids, with a client tool named expand or with Open WebUI's own summary are served raw; the first turns carry the system note and the expand tool but no ledger; after a finished answer the curator runs only once the engine is idle and is cancelled by a foreground request; its line for the current exchange binds on the next turn through the parent message id, older raw exchanges get their lines directly, and the open set follows; the ledger then covers every lined exchange but the newest; follow-ups reuse the frozen layout and replay expansions; two invalid curator replies leave fallback lines; and checkpointed models get a ledger-end stem."""
+"""A chat-memory session is opened only for a verified Open WebUI identity on a real chat turn, and its bookkeeping holds across turns: requests without a valid token, with a task, without ids, with a client tool named expand or with Open WebUI's own summary are served raw; the first turns carry the system note and the expand tool but no ledger; after a finished answer the curator runs only once the engine is idle and is cancelled by a foreground request; its line for the current exchange binds on the next turn through the parent message id, older raw exchanges get their lines directly, and the open set follows; the ledger then covers every lined exchange but the newest; follow-ups reuse the frozen layout and replay expansions; two invalid curator replies leave fallback lines; the first curator attempt continues the answer's own prompt and reply tokens; checkpointed models get a ledger-end stem; and the next turn's layout is pre-warmed up to its new question."""
 import asyncio
 import base64
 import hashlib
@@ -49,6 +49,7 @@ class Frontend:
         self.replies = []
         self.calls = []
         self.cuts = []
+        self.continued = []
         self.block = None
 
     async def memory_model_ready(self, model):
@@ -57,6 +58,10 @@ class Frontend:
     def memory_curator_ids(self, model, messages, tools, kwargs, suffix):
         self.calls.append(messages)
         return [1, 2, 3], False
+
+    def memory_continuation_ids(self, model, messages, tools, kwargs, prompt_ids, generated_ids, instruction, suffix):
+        self.continued.append((list(prompt_ids), list(generated_ids)))
+        return [1, 2, 3, 4], False
 
     def memory_cut_ids(self, model, messages, tools, kwargs, sentinel):
         self.cuts.append(messages)
@@ -127,15 +132,20 @@ async def run():
         second = await turn(memory, frontend, model, 2, "u2", "a1", "a2", '{"lines": {"e2": "The user asked question 2; the assistant gave answer 2."}, "open": ["e1"]}')
         key1 = cm.exchange_key(conversation(2)[1:3])
         assert state["lines"][key1].startswith("The user asked question 1") and second.layout["lined"] == 0
-        assert len(frontend.cuts) == 1 and frontend.cuts[0][-1]["content"] == cm.LEDGER_OPEN + "[e1] " + state["lines"][key1] + "\n" + cm.SENTINEL, frontend.cuts
+        assert len(frontend.cuts) == 2 and frontend.cuts[0][-1]["content"] == cm.LEDGER_OPEN + "[e1] " + state["lines"][key1] + "\n" + cm.SENTINEL, frontend.cuts
         assert state["open_by_message"]["a2"] == ["e1"]
+        prewarm = frontend.cuts[1]
 
         third = await turn(memory, frontend, model, 3, "u3", "a2", "a3", '{"lines": {"e3": "The user asked question 3."}, "open": []}')
         assert third.layout["lined"] == 1 and third.layout["open"] == ["e1"], third.layout
         users = [m for m in third.messages if m["role"] == "user"]
         assert users[0]["content"].startswith(cm.LEDGER_OPEN + "[e1] The user asked question 1") and users[0]["content"].endswith("question 2")
         assert users[-1]["content"].startswith(cm.REFERENCE_OPEN) and 'history id="e1"' in users[-1]["content"] and users[-1]["content"].endswith("question 3")
-        assert frontend.cuts and frontend.cuts[-1][-1]["content"].startswith(cm.LEDGER_OPEN + "[e1] ") and frontend.cuts[-1][-1]["content"].endswith(cm.SENTINEL)
+        assert prewarm[:-1] == third.messages[:-1] and prewarm[-1]["content"] == users[-1]["content"][:-len("question 3")] + cm.SENTINEL, \
+            "the pre-warm renders the next turn's layout up to its new question"
+        stem, warm = frontend.cuts[-2], frontend.cuts[-1]
+        assert stem[-1]["content"].startswith(cm.LEDGER_OPEN + "[e1] ") and stem[-1]["content"].endswith(cm.SENTINEL) and cm.REFERENCE_OPEN not in stem[-1]["content"]
+        assert warm[-1]["content"].startswith(cm.REFERENCE_OPEN) and warm[-1]["content"].endswith(cm.SENTINEL) and warm[-2] == {"role": "assistant", "content": "answer 3"}
 
         cold = memory.session(model, headers("v3", "b2", "b3", chat="chat-2"), conversation(3), [], {})
         assert cold.layout["lined"] == 0
@@ -180,6 +190,14 @@ async def run():
         assert "a5" not in state["pending"], "no background work while the fleet is switching"
 
         frontend.ready = True
+        frontend.continued.clear()
+        frontend.calls.clear()
+        session = memory.session(model, headers("u6", "a5", "a6", chat="chat-3"), conversation(1), [], {})
+        frontend.replies[:] = ["garbage", '{"lines": {"e1": "The user asked question 1."}, "open": []}']
+        session.finished(session.messages, "answer 1", "", [], "stop", [5, 6], [7, 8])
+        await settle(memory, model)
+        assert frontend.continued == [([5, 6], [7, 8])] and len(frontend.calls) == 1, "the first curator attempt continues the answer's own tokens, a retry re-renders"
+        assert memory.store.load("user-1", "chat-3")["pending"]["a6"]["source"] == "curator"
         long_chat = memory.session(model, headers("w20", None, "x20", chat="chat-long"), conversation(20), [], {})
         captured = []
         original = memory.curate
@@ -200,4 +218,4 @@ async def run():
 
 
 asyncio.run(run())
-print("PASS test_chat_memory_session: verified identity only, system note and expand from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, ledger-end stems, state that survives a restart")
+print("PASS test_chat_memory_session: verified identity only, system note and expand from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, state that survives a restart")
