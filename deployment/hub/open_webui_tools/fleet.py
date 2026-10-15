@@ -1,7 +1,7 @@
 """
 title: Fleet
 author: SparkPipe
-version: 1.0.0
+version: 1.1.0
 description: Admin only. Reads the SparkPipe fleet's state and logs, and runs commands on the hub or a spark in a read-only sandbox once the admin grants access for the chat.
 """
 
@@ -11,6 +11,35 @@ import aiohttp
 from pydantic import BaseModel, Field
 
 ADMIN_ONLY = "The Fleet tool is for the SparkPipe Chat admin only."
+
+
+def plain_value(value):
+    if isinstance(value, (dict, list)):
+        return jsonlib.dumps(value, ensure_ascii=False, separators=(", ", ": "))
+    return "" if value is None else str(value)
+
+
+def plain_text(data):
+    if isinstance(data, dict) and "output" in data and "host" in data:
+        state = "timed out" if data.get("timed_out") else f"exit {data.get('exit')}"
+        return f"{data['host']} ({data.get('as')}), {state} after {data.get('seconds')} s\n{data.get('output') or ''}"
+    if isinstance(data, dict) and "text" in data and "name" in data:
+        exit_note = f" (exit {data['exit']})" if "exit" in data else ""
+        return f"{data['name']}{exit_note}\n{data['text']}"
+    if isinstance(data, dict) and data and all(isinstance(item, dict) and "status" in item for item in data.values()):
+        return "\n\n".join(f"== {host} (exit {item.get('exit')})\n{item.get('status')}" for host, item in data.items())
+    if isinstance(data, dict):
+        lines = []
+        for key, value in data.items():
+            if isinstance(value, list):
+                lines.append(f"{key}:")
+                lines.extend(f"- {plain_value(item)}" for item in value)
+            elif isinstance(value, str) and "\n" in value:
+                lines.append(f"{key}:\n{value}")
+            else:
+                lines.append(f"{key}: {plain_value(value)}")
+        return "\n".join(lines)
+    return plain_value(data)
 
 
 class Tools:
@@ -28,7 +57,7 @@ class Tools:
         """
         if not self._admin(__user__):
             return ADMIN_ONLY
-        return await self._call("GET", "/v1/status")
+        return await self._plain("GET", "/v1/status")
 
     async def fleet_nodes(self, __user__: dict = None) -> str:
         """
@@ -36,7 +65,7 @@ class Tools:
         """
         if not self._admin(__user__):
             return ADMIN_ONLY
-        return await self._call("GET", "/v1/nodes")
+        return await self._plain("GET", "/v1/nodes")
 
     async def fleet_logs(self, name: str, lines: int = 100, node: str = "", __user__: dict = None) -> str:
         """
@@ -47,7 +76,7 @@ class Tools:
         """
         if not self._admin(__user__):
             return ADMIN_ONLY
-        return await self._call("GET", "/v1/logs", params={"name": name, "lines": str(lines), "node": node})
+        return await self._plain("GET", "/v1/logs", params={"name": name, "lines": str(lines), "node": node})
 
     async def fleet_run(self, host: str, command: str, timeout: int = 60, elevated: bool = False, __user__: dict = None, __event_call__=None, __chat_id__: str = None) -> str:
         """
@@ -74,7 +103,7 @@ class Tools:
             )
             if approved is not True:
                 return "The admin did not approve this elevated command, so it was not run."
-            return await self._call("POST", "/v1/run", json={"host": host, "command": command, "timeout": timeout, "as": "spec", "approved_by": approver})
+            return await self._plain("POST", "/v1/run", json={"host": host, "command": command, "timeout": timeout, "as": "spec", "approved_by": approver})
         if not __chat_id__ or str(__chat_id__).startswith("local:"):
             return "Fleet access is granted per saved chat, and this chat has no id; run it with elevated true to approve this one command."
         status = await self._call_json("GET", "/v1/grant", params={"chat_id": __chat_id__})
@@ -100,7 +129,15 @@ class Tools:
             granted = await self._call_json("POST", "/v1/grant", json={"chat_id": __chat_id__, "approved_by": approver})
             if granted is None or "expires_utc" not in granted:
                 return "The fleet gateway refused the grant, so nothing was run."
-        return await self._call("POST", "/v1/run", json={"host": host, "command": command, "timeout": timeout, "as": "sandbox", "chat_id": __chat_id__})
+        return await self._plain("POST", "/v1/run", json={"host": host, "command": command, "timeout": timeout, "as": "sandbox", "chat_id": __chat_id__})
+
+    async def _plain(self, method, path, params=None, json=None):
+        text = await self._call(method, path, params=params, json=json)
+        try:
+            data = jsonlib.loads(text)
+        except ValueError:
+            return text
+        return plain_text(data)
 
     async def _call_json(self, method, path, params=None, json=None):
         text = await self._call(method, path, params=params, json=json)
