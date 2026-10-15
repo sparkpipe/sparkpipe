@@ -90,6 +90,20 @@ uint64_t SparkStageRunnerRecurrentBytes(const SparkStageRunner *runner)
 	return(test_recurrent_bytes);
 }
 
+uint32_t SparkStageRunnerVerifyCapable(const SparkStageRunner *runner)
+{
+	(void)runner;
+	return(test_recurrent_bytes == 0u ? 1u : 0u);
+}
+
+SparkStatus SparkStageRunnerKeepRows(SparkStageRunner *runner, const uint32_t *kept, uint32_t sequences)
+{
+	(void)runner;
+	(void)kept;
+	(void)sequences;
+	return(test_recurrent_bytes == 0u ? SPARK_STATUS_OK : SPARK_STATUS_UNSUPPORTED);
+}
+
 SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer,
 	uint32_t slot, void *buffer, uint64_t bytes, void *stream)
 {

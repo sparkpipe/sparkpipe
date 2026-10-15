@@ -97,6 +97,9 @@ typedef struct SparkK3Dispatch
 	uint32_t kda_rank_heads;
 	SparkK3RankStateBytes state_bytes;
 	uint32_t kv_attached;
+	uint8_t *replay_pool;
+	uint64_t replay_bytes;
+	uint32_t replay_rows;
 	int device;
 } SparkK3Dispatch;
 
@@ -119,5 +122,9 @@ int32_t SparkK3DispatchShardRows(SparkK3Dispatch *d, uint32_t rows);
 int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows,
 	uint32_t context, uint32_t multiprocessors, cudaStream_t stream);
+int32_t SparkK3DispatchEnableVerify(SparkK3Dispatch *d, uint32_t rows);
+int32_t SparkK3DispatchKeep(SparkK3Dispatch *d, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_indices,
+	const uint32_t *state_index, const uint32_t *kept, uint32_t sequences, uint32_t rows, uint32_t multiprocessors,
+	cudaStream_t stream);
 
 

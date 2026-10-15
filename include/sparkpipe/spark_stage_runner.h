@@ -20,7 +20,8 @@ extern "C" {
 #define SPARK_STAGE_RUNNER_FLAG_TENSOR_PARALLEL 0x00000001u
 #define SPARK_STAGE_RUNNER_KNOWN_FLAGS (SPARK_STAGE_RUNNER_FLAG_TENSOR_PARALLEL)
 #define SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL 0x00000001u
-#define SPARK_STAGE_RUNNER_DISPATCH_KNOWN_FLAGS (SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL)
+#define SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY 0x00000002u
+#define SPARK_STAGE_RUNNER_DISPATCH_KNOWN_FLAGS (SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL | SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY)
 #define SPARK_STAGE_RUNNER_DIGEST_HEX 64u
 
 typedef struct SparkStageRunnerModelInterface SparkStageRunnerModelInterface;
@@ -153,6 +154,8 @@ void SparkStageRunnerDestroy(SparkStageRunner *runner);
 uint32_t SparkStageRunnerKvLayerCount(const SparkStageRunner *runner);
 SparkStatus SparkStageRunnerAttachKv(SparkStageRunner *runner, const SparkStageRunnerKv *kv);
 uint64_t SparkStageRunnerRecurrentBytes(const SparkStageRunner *runner);
+uint32_t SparkStageRunnerVerifyCapable(const SparkStageRunner *runner);
+SparkStatus SparkStageRunnerKeepRows(SparkStageRunner *runner, const uint32_t *kept, uint32_t sequences);
 SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream);
 SparkStatus SparkStageRunnerPackIdentity(const SparkStageRunner *runner, uint8_t *digest, uint32_t digest_bytes);
 const void *SparkStageRunnerProbeBuffers(const SparkStageRunner *runner);

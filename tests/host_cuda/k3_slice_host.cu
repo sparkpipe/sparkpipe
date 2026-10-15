@@ -258,6 +258,7 @@ int main(void)
 		state.replay_conv_q = rq; state.replay_conv_k = rk; state.replay_conv_v = rv;
 		state.replay_retention = replay_retention;
 		state.replay_write_gate = replay_write_gate;
+		state.replay_active = 1u;
 		static uint32_t two_run[2] = { 0u, 2u };
 		memcpy(hidden, hidden_saved, sizeof(hidden_saved));
 		lm_recorded_gemms.clear();
@@ -269,7 +270,7 @@ int main(void)
 			if ( kda_state[byte] != 0u ) ++mismatch;
 		printf("verify_untouched %u\n", mismatch);
 		status = K3FoldAccepted<LmHostRecorderFormat>(
-			&weights[0], &state, &b, 0u, 1u, 1u, vbegin, vcount, 2u, 1u, 0);
+			&weights[0], &state, &b, 0u, 1u, 1u, vbegin, 0, vcount, 2u, 1u, 0);
 		if ( status != LM_LAUNCH_OK ) { printf("FAIL fold %d\n", status); return 1; }
 		mismatch = 0u;
 		for (byte = 0u; byte < sizeof(kda_state); ++byte)
@@ -281,6 +282,7 @@ int main(void)
 		printf("fold_mismatch %u\n", mismatch);
 		state.replay_conv_q = 0; state.replay_conv_k = 0; state.replay_conv_v = 0;
 		state.replay_retention = 0; state.replay_write_gate = 0;
+		state.replay_active = 0u;
 		memset(kda_state, 0, sizeof(kda_state));
 		memset(q_window, 0, sizeof(q_window));
 		memset(k_window, 0, sizeof(k_window));

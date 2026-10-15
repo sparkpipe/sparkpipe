@@ -3,6 +3,7 @@
 #include <cstring>
 
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
+#include "sparkpipe/spark_k3_kv_geometry.h"
 #include "sparkpipe/spark_k3_tp_sequences.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_module.h"
 #include "sparkpipe/spark_k3_stage_model.h"
@@ -647,6 +648,12 @@ static SparkStatus K3RunnerCreateDispatch(SparkK3ModelState *state,
 			configuration->tp_degree);
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
+#if SPARK_K3_SERVING_TOPOLOGY == 16
+	if ( SparkK3DispatchEnableVerify(&state->dispatch, SPARK_K3_SERVING_VERIFY_ROWS) != SPARK_K3_DISPATCH_OK )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	fprintf(stderr, "sparkpipe_k3: verify replay rows=%u bytes=%llu\n", state->dispatch.replay_rows,
+		(unsigned long long)state->dispatch.replay_bytes);
+#endif
 	planned = state->dispatch.state_bytes.total + state->dispatch.scratch_bytes;
 	fprintf(stderr, "sparkpipe_k3: rank state planned=%llu budget=%llu"
 		" kda_state=%llu kda_windows=%llu mla_kv=%llu scratch=%llu"
@@ -1036,6 +1043,20 @@ static void K3ModelReport(void *model, uint32_t rank)
 		(unsigned long long)state->dispatch.pair_waves);
 }
 
+#if SPARK_K3_SERVING_TOPOLOGY == 16
+static SparkStatus K3ModelKeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream)
+{
+	SparkK3ModelState *state = (SparkK3ModelState *)model;
+	if ( SparkK3DispatchKeep(&state->dispatch, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index,
+		kept, step->sequences, step->rows, step->multiprocessors, (cudaStream_t)stream) != SPARK_K3_DISPATCH_OK )
+	{
+		fprintf(stderr, "sparkpipe_k3: verify keep failed rows=%u sequences=%u\n", step->rows, step->sequences);
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
+	return SPARK_STATUS_OK;
+}
+#endif
+
 static const SparkStageRunnerModelInterface spark_k3_stage_model =
 {
 	SPARK_STAGE_RUNNER_MODEL_ABI_VERSION,
@@ -1052,7 +1073,14 @@ static const SparkStageRunnerModelInterface spark_k3_stage_model =
 	K3ModelRecurrentCopy,
 	K3ModelResetSlot,
 	K3ModelProbeBuffers,
-	K3ModelReport
+	K3ModelReport,
+	0,
+	0,
+#if SPARK_K3_SERVING_TOPOLOGY == 16
+	K3ModelKeepRows
+#else
+	0
+#endif
 };
 
 const SparkStageRunnerModelInterface *SparkK3StageModel(void)

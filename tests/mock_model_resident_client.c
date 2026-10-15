@@ -106,6 +106,7 @@ static uint32_t mock_verify_submissions;
 static uint32_t mock_verify_rows;
 static uint32_t mock_verify_max_stride;
 static uint32_t mock_verify_corrupt;
+static uint32_t mock_verify_shared;
 
 static int MockTraceEnabled(void)
 {
@@ -402,6 +403,7 @@ void MockResidentClientReset(void)
 	mock_verify_rows = 0u;
 	mock_verify_max_stride = 0u;
 	mock_verify_corrupt = 0u;
+	mock_verify_shared = 0u;
 	mock_token_start = 11u;
 	mock_logprob_stride = 0u;
 	mock_logprob_corrupt = 0u;
@@ -538,6 +540,8 @@ static SparkStatus MockResidentClientEnqueue(
 		mock_verify_rows += submission->row_count;
 		if ( submission->tokens_per_sequence > mock_verify_max_stride )
 			mock_verify_max_stride = submission->tokens_per_sequence;
+		if ( submission->active_sequence_count > 1u )
+			mock_verify_shared++;
 	}
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 		client->release_submissions++;
@@ -794,6 +798,13 @@ void MockResidentClientSetScript(const uint32_t *tokens,uint32_t count)
 {
 	mock_script_count = count < MOCK_SCRIPT_TOKENS ? count : MOCK_SCRIPT_TOKENS;
 	memcpy(mock_script,tokens,(size_t)mock_script_count * sizeof(uint32_t));
+}
+
+uint32_t MockResidentClientTakeVerifyShared(void)
+{
+	uint32_t shared = mock_verify_shared;
+	mock_verify_shared = 0u;
+	return(shared);
 }
 
 uint32_t MockResidentClientTakeVerifyMaxStride(void)

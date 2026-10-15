@@ -969,11 +969,18 @@ static void TestVerifySubmission(void)
 	uint32_t lane;
 	TestBuildDescriptor(&descriptor);
 	descriptor.max_output_token_count = 16u;
+	descriptor.max_verify_row_count = 256u;
+	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_INVALID_ARGUMENT);
 	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY;
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_INVALID_ARGUMENT);
 	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION;
 	descriptor.max_speculative_token_count = 3u;
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_OK);
+	descriptor.max_verify_row_count = 257u;
+	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_INVALID_ARGUMENT);
+	descriptor.max_verify_row_count = 3u;
+	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_INVALID_ARGUMENT);
+	descriptor.max_verify_row_count = 256u;
 	descriptor.max_output_token_count = 3u;
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_OK);
 	descriptor.max_speculative_token_count = 255u;
@@ -984,6 +991,7 @@ static void TestVerifySubmission(void)
 	descriptor.max_input_row_count = 255u;
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_INVALID_ARGUMENT);
 	descriptor.max_input_row_count = 256u;
+	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_OK);
 	descriptor.max_speculative_token_count = 3u;
 	descriptor.max_output_token_count = 16u;
 	memset(lanes,0,sizeof(lanes));
@@ -1062,6 +1070,7 @@ static void TestVerifySubmission(void)
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
 	descriptor.capability_flags &= ~SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY;
+	descriptor.max_verify_row_count = 0u;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_UNSUPPORTED);
 }
 
@@ -1081,6 +1090,7 @@ static void TestLongVerifySubmission(void)
 	descriptor.max_speculative_token_count = STRIDE - 1u;
 	descriptor.max_output_token_count = 16u;
 	descriptor.max_input_row_count = ROWS;
+	descriptor.max_verify_row_count = ROWS;
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_OK);
 	assert(SparkModelServingAdapterCompletionTokenCapacity(&descriptor) == SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT);
 	memset(lanes,0,sizeof(lanes));
@@ -1142,6 +1152,9 @@ static void TestLongVerifySubmission(void)
 			row++;
 		}
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
+	descriptor.max_verify_row_count = 4u * STRIDE - 1u;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	descriptor.max_verify_row_count = ROWS;
 	submission.active_sequence_count = submission.lane_count = 1u;
 	submission.tokens_per_sequence = 64u;
 	submission.row_count = submission.token_count = submission.new_token_count = 64u;
@@ -1179,6 +1192,8 @@ static void TestLongVerifySubmission(void)
 	assert(SparkModelServingAdapterValidateCompletion(&descriptor,&completion) == SPARK_STATUS_INVALID_ARGUMENT);
 	descriptor.capability_flags &= ~SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY;
 	descriptor.max_speculative_token_count = 7u;
+	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_INVALID_ARGUMENT);
+	descriptor.max_verify_row_count = 0u;
 	completion.tokens_per_sequence = SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE + 1u;
 	completion.token_count = SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE + 1u;
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_OK);

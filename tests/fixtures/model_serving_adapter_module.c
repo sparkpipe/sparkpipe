@@ -142,7 +142,8 @@ static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
 	.boundary_sideband_bytes_per_sequence = {16u,0u,0u},
 	.minimum_efficient_submission_row_count = 16u,
 	.cache_block_token_count = TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT,
-	.cache_checkpoint_token_count = TEST_MODEL_SERVING_CACHE_CHECKPOINT_TOKEN_COUNT
+	.cache_checkpoint_token_count = TEST_MODEL_SERVING_CACHE_CHECKPOINT_TOKEN_COUNT,
+	.max_verify_row_count = (TEST_MODEL_SERVING_CAPABILITIES & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) != 0u ? 256u : 0u
 };
 
 static SparkStatus TestModelServingValidateConfiguration(

@@ -256,6 +256,10 @@ typedef struct SparkStageRunnerState
 	uint32_t vocab_slice_rows;
 	uint64_t *head_maxloc;
 	uint32_t head_last_rows;
+	uint32_t *verify_kept;
+	uint32_t verify_kept_capacity;
+	uint32_t verify_pending;
+	SparkStageRunnerStep verify_step;
 	uint16_t *hidden;
 	uint16_t *head_normed;
 	uint16_t *head_hidden;
@@ -1078,6 +1082,12 @@ static SparkStatus StageRunnerAllocateDistribution(SparkStageRunnerState *state,
 		cudaMalloc(&state->distribution_gathered, full * sizeof(float)) != cudaSuccess )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	state->distribution_capacity = (uint32_t)rows;
+	if ( state->model_interface->keep_rows != 0 )
+	{
+		if ( cudaMalloc(&state->verify_kept, (uint64_t)configuration->max_active_sequence_count * sizeof(uint32_t)) != cudaSuccess )
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		state->verify_kept_capacity = configuration->max_active_sequence_count;
+	}
 	return SPARK_STATUS_OK;
 }
 
@@ -2039,6 +2049,17 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 		fprintf(stderr, "sparkpipe_stage_runner: submit refused: unknown dispatch flags 0x%x\n", dispatch->flags);
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	}
+	state->verify_pending = 0u;
+	if ( (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY) != 0u &&
+		(steps != 1u || (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) != 0u || runner->owns_embedding == 0u ||
+		 runner->owns_final_head == 0u || state->head_weight == 0 || SparkStageRunnerVerifyCapable(runner) == 0u ||
+		 (state->model_interface->keep_rows != 0 && dispatch->active_sequence_count > state->verify_kept_capacity)) )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: verify refused: steps=%u flags=0x%x head=%u recurrent_bytes=%llu keep_rows=%u\n",
+			steps, dispatch->flags, runner->owns_final_head, (unsigned long long)state->geometry.recurrent_bytes,
+			state->model_interface->keep_rows != 0 ? 1u : 0u);
+		return SPARK_STATUS_UNSUPPORTED;
+	}
 	if ( state->geometry.kv_layer_count != 0u && state->kv_attached == 0u )
 	{
 		fprintf(stderr, "sparkpipe_stage_runner: submit refused: the KV binding pool is not attached\n");
@@ -2077,12 +2098,12 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	in.sequence_row_begin = dispatch->sequence_row_begin;
 	in.sequence_row_indices = dispatch->sequence_row_indices;
 	in.recurrent_index = dispatch->recurrent_index;
-	in.gather_context = (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) != 0u && dispatch->active_sequence_count == 1u
+	in.gather_context = (dispatch->flags & (SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL | SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY)) != 0u && dispatch->active_sequence_count == 1u
 		? dispatch->gather_context : 0u;
 	in.gather_sequence = in.gather_context != 0u ? dispatch->gather_sequence : 0u;
 	in.rows = rows;
 	in.sequences = dispatch->active_sequence_count;
-	in.commit = 1u;
+	in.commit = (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY) != 0u && state->geometry.recurrent_bytes != 0u ? 0u : 1u;
 	in.context = state->max_context;
 	in.multiprocessors = state->multiprocessors;
 	in.last_rows_only = state->head_last_rows;
@@ -2148,6 +2169,11 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 		StageRunnerPhases(state, runner->tp_rank, phase_marks);
 	if ( exchange_status != SPARK_STATUS_OK )
 		return exchange_status;
+	if ( (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY) != 0u )
+	{
+		state->verify_step = in;
+		state->verify_pending = 1u;
+	}
 	runner->stats.submitted_count++;
 	runner->stats.completed_count++;
 	if ( dispatch->completion_function != 0 )
@@ -2248,6 +2274,32 @@ uint64_t SparkStageRunnerRecurrentBytes(const SparkStageRunner *runner)
 	return ((const SparkStageRunnerState *)runner->private_state)->geometry.recurrent_bytes;
 }
 
+uint32_t SparkStageRunnerVerifyCapable(const SparkStageRunner *runner)
+{
+	const SparkStageRunnerState *state;
+	if ( runner == 0 || runner->private_state == 0 )
+		return 0u;
+	state = (const SparkStageRunnerState *)runner->private_state;
+	return state->geometry.recurrent_bytes == 0u || state->model_interface->keep_rows != 0 ? 1u : 0u;
+}
+
+SparkStatus SparkStageRunnerKeepRows(SparkStageRunner *runner, const uint32_t *kept, uint32_t sequences)
+{
+	SparkStageRunnerState *state;
+	if ( runner == 0 || runner->private_state == 0 || kept == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	state = (SparkStageRunnerState *)runner->private_state;
+	if ( state->verify_pending == 0u || sequences != state->verify_step.sequences )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	state->verify_pending = 0u;
+	if ( state->model_interface->keep_rows == 0 )
+		return state->geometry.recurrent_bytes == 0u ? SPARK_STATUS_OK : SPARK_STATUS_UNSUPPORTED;
+	if ( sequences > state->verify_kept_capacity ||
+		cudaMemcpyAsync(state->verify_kept, kept, (uint64_t)sequences * sizeof(uint32_t), cudaMemcpyHostToDevice, state->stream) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	return state->model_interface->keep_rows(state->model, &state->verify_step, state->verify_kept, state->stream);
+}
+
 SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream)
 {
 	SparkStageRunnerState *state;
@@ -2338,6 +2390,7 @@ void SparkStageRunnerDestroy(SparkStageRunner *runner)
 	cudaFree(state->distribution_normed);
 	cudaFree(state->distribution_logits);
 	cudaFree(state->distribution_gathered);
+	cudaFree(state->verify_kept);
 	delete[] state->output_token_host;
 	delete[] state->output_score_host;
 	cudaFree(state->head_certified_fp8_payload);

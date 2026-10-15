@@ -88,6 +88,7 @@ static const SparkModelServingAdapterDescriptor Glm53FullTp16ServingDescriptor =
 	.cache_block_token_count = SPARK_GLM53_FULL_TP16_STAGE_PAGE_SLOTS,
 	.parallel_group_size = 0u,
 	.cache_checkpoint_token_count = 0u,
+	.max_verify_row_count = SPARK_GLM53_FULL_TP16_MAX_ROWS,
 };
 
 #undef Q

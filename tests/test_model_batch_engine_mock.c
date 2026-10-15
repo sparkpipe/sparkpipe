@@ -2229,7 +2229,7 @@ static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeploymen
 	MockResidentClientTakeVerifyStats(&submissions,&rows);
 	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u,"lookup mixed: both requests complete");
 	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,60u) != 0u && TestScriptedOutputMatches(&state,2u,script,44u,60u) != 0u,"lookup mixed: greedy and sampled lanes both emit the model stream");
-	CHECK(submissions != 0u,"lookup mixed: the greedy lane verifies drafts");
+	CHECK(MockResidentClientTakeVerifyShared() == 0u,"lookup mixed: a verify frame never carries a co-batched lane, which would lose its chain");
 	CHECK(TestLaneInputsFollowScript(2u,script,256u) != 0u,"lookup mixed: every sampled-lane input is a committed model token");
 	SparkModelBatchEngineDestroy(engine);
 }

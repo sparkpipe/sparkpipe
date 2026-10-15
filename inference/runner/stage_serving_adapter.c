@@ -818,7 +818,7 @@ static SparkStatus StageServingChainSteps(const SparkStageServingState *state,
 	if ( (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
 	{
 		*steps_out = 1u;
-		if ( state->runner.owns_final_head == 0u || SparkStageRunnerRecurrentBytes(&state->runner) != 0u ||
+		if ( state->runner.owns_final_head == 0u || SparkStageRunnerVerifyCapable(&state->runner) == 0u ||
 			(uint64_t)active * submission->tokens_per_sequence > SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT )
 			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 		for ( index = 0u; index < frame->cache_lane_count; ++index )
@@ -885,7 +885,8 @@ static void StageServingDispatch(const SparkStageServingState *state, const Spar
 	memset(dispatch, 0, sizeof(*dispatch));
 	dispatch->abi_version = SPARK_STAGE_RUNNER_ABI_VERSION;
 	dispatch->descriptor_bytes = (uint32_t)sizeof(*dispatch);
-	dispatch->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL : 0u;
+	dispatch->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL :
+		(submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY : 0u;
 	dispatch->request_id = submission->request_id;
 	dispatch->sequence_id = submission->sequence_id;
 	dispatch->sequence_position = submission->sequence_position;
@@ -1080,7 +1081,12 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	if ( status == SPARK_STATUS_OK && state->runner.owns_final_head != 0u )
 		status = StageServingReadTokens(state, rows, steps);
 	if ( status == SPARK_STATUS_OK && verify != 0u )
+	{
 		StageServingVerifyKept(state, submission, active, kept);
+		status = SparkStageRunnerKeepRows(&state->runner, kept, active);
+		if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
+			status = SPARK_STATUS_IO_ERROR;
+	}
 	for ( uint32_t lane = 0u; status == SPARK_STATUS_OK && lane < active; ++lane )
 		next_positions[lane] = verify != 0u ? state->row_positions[lane] + kept[lane] : next_positions[lane] + steps - 1u;
 	finished = StageServingFinish(state, active, row_slots, bound, sequence_ids, next_positions, steps - 1u, status);

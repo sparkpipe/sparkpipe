@@ -91,7 +91,10 @@ static SparkStatus SparkDescriptorCheckSpeculationPairing(
 	if ( (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) != 0u &&
 		((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION) == 0u ||
 		 descriptor->max_speculative_token_count + 1u > SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE ||
-		 descriptor->max_input_row_count < descriptor->max_speculative_token_count + 1u) )
+		 descriptor->max_verify_row_count < descriptor->max_speculative_token_count + 1u ||
+		 descriptor->max_verify_row_count > descriptor->max_input_row_count) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) == 0u && descriptor->max_verify_row_count != 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
@@ -548,6 +551,8 @@ SparkStatus SparkModelServingAdapterValidateSubmission(
 	if ( verify != 0u && ((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) == 0u ||
 		submission->tokens_per_sequence > descriptor->max_speculative_token_count + 1u) )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	if ( verify != 0u && submission->row_count > descriptor->max_verify_row_count )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( submission->model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES || (submission->model_extension_bytes != 0u) != (submission->model_extension != 0) || (submission->model_extension_bytes != 0u) != (submission->model_extension_kind != 0u) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkModelServingAdapterValidateSampling(descriptor,submission);

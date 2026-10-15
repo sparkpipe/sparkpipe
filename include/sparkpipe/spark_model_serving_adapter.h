@@ -159,6 +159,7 @@ typedef struct SparkModelServingAdapterDescriptor
 	uint32_t cache_block_token_count;
 	uint32_t parallel_group_size;
 	uint32_t cache_checkpoint_token_count;
+	uint32_t max_verify_row_count;
 } SparkModelServingAdapterDescriptor;
 
 static inline uint32_t SparkModelServingAdapterCompletionTokenCapacity(

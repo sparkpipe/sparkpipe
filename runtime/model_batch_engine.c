@@ -2663,11 +2663,14 @@ static uint32_t SparkModelBatchPlanDrafts(
 	stride = 1u;
 	for (lane=0u; lane<lane_count; lane++)
 		engine->scratch_prefill_counts[lane] = 0u;
-	if ( engine->verify_capable == 0u || engine->scratch_row_capacity < lane_count || SparkModelBatchNeedsSingleStep(engine,lane_count) != 0u )
+	if ( engine->verify_capable == 0u || lane_count != 1u || engine->scratch_row_capacity < lane_count || SparkModelBatchNeedsSingleStep(engine,lane_count) != 0u )
 		return(stride);
-	rows_left = engine->scratch_row_capacity - lane_count;
+	rows_left = (engine->scratch_row_capacity < engine->adapter_descriptor->max_verify_row_count ? engine->scratch_row_capacity : engine->adapter_descriptor->max_verify_row_count);
+	if ( rows_left <= lane_count )
+		return(stride);
+	rows_left -= lane_count;
 	draft_limit = SparkModelServingAdapterCompletionTokenCapacity(engine->adapter_descriptor) / lane_count - 1u;
-	if ( (lane_count > 1u || SparkModelBatchPrefillWaiting(engine) != 0u) && draft_limit > SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - 1u )
+	if ( SparkModelBatchPrefillWaiting(engine) != 0u && draft_limit > SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - 1u )
 		draft_limit = SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - 1u;
 	if ( engine->adapter_descriptor->max_speculative_token_count < draft_limit )
 		draft_limit = engine->adapter_descriptor->max_speculative_token_count;
