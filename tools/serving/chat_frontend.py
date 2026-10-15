@@ -1209,6 +1209,9 @@ class Frontend:
             reasoning_open = False
         return ids, reasoning_open
 
+    def memory_count(self, model, text):
+        return len(model.vocabulary.encode(text, False))
+
     def memory_cut_ids(self, model, messages, tools, kwargs, sentinel):
         parts = self.memory_template_parts(model, messages, tools, kwargs, [sentinel])
         return parts[0][0] if parts else None

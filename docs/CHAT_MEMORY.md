@@ -27,7 +27,14 @@ Verified in code (review, 2026-10-14):
   (`runtime/model_batch_engine.c:1979-2033`, `:1258-1313`).
 - Generated tokens are reused when the next prompt repeats them exactly (a
   reply-end resume point). A finished answer can therefore be continued for
-  the cost of the continuation alone.
+  the cost of the continuation alone. On K3, which decodes in multi-token
+  chains, a reply that stops inside a chain resumes at the last 64-token
+  block it crossed (measured on 8 of 8 curator requests, 2026-10-15); a
+  reply whose last chain ran to its end resumes exactly.
+- The model API used to cancel a request when the engine stopped on a stop
+  token the client had also asked for, so chat replies never completed and
+  published no reply end. Since `engine/stop-token-completes` such a
+  request completes (`engine_completed` 1 in the API log).
 - A `max_tokens` 1 request commits its prompt.
 - A request that arrives while another is still writing a shared prefix
   recomputes it; pages in flight are not shared (`prefix_cache.c:223-233`).
@@ -36,8 +43,9 @@ Verified in code (review, 2026-10-14):
   must be the one meant to checkpoint it.
 - Pages are 64 tokens (DeepSeek V4.1 Flash: 256). `cached_tokens` is the
   exact number of skipped tokens, at most `P - 1`.
-- Request priority exists in the engine API; the chat layer does not set it
-  today.
+- Request priority exists in the engine API (higher runs first); the chat
+  layer sends foreground requests of memory models at 1 and its own
+  background requests at 0.
 - Unknown: how many K3 recurrent-state records the pool holds across
   conversations (about 28 MB per record per rank).
 
@@ -375,10 +383,8 @@ far). Tests: `tests/test_chat_memory_core.py`,
   priority 0 (foreground carries 1), only while the controller reports the
   model active and idle, are cancelled by any foreground request, and are
   retried; two invalid curator replies leave fallback lines.
-- Not yet: the pre-warm (the next answer prefills its raw tail and question,
-  133 to 210 tokens per turn in the live test), the reply-end curator
-  continuation (needs the engine fix for stop-token cancels), budgets and the
-  fit step, regroups, other models.
+- Stage B (2026-10-15) added the curator continuation, the pre-warm,
+  regroups and the fit step; see below. Not yet: other models (stage C).
 
 Live, K3, 2026-10-14, a separate chat-layer instance driven like Open WebUI
 (8 turns, 3 s between turns, a unique first message): the ledger grew to
@@ -386,6 +392,53 @@ cover every exchange but the newest, each line was written 5 to 8 s after its
 answer, the prompt grew from 367 to 650 tokens over 8 turns, each turn
 prefilled 133 to 210 new tokens, and both recall questions were answered
 from the lines.
+
+## Implementation (stage B, 2026-10-15)
+
+- **Curator continuation.** The curator's first attempt is the answer's
+  `prompt_token_ids`, the generated ids without a trailing stop token, the
+  template's tokens after an assistant message's content (minus any the model
+  already wrote, such as K3's response and message close tags), the
+  instruction as a user turn, the generation prompt and `curator_suffix`.
+  The template tail is cut out of one render with two sentinel messages, so
+  it is the model's own template, not a per-model table. A retry re-renders.
+- **Pre-warm.** After the curator and the stem, the chat layer builds the
+  next turn's layout (this exchange in Open WebUI's replay form: the joined
+  content, stripped) with a sentinel as the new question, cuts it there and
+  runs it for one token. The next answer resumes at its prompt checkpoint and
+  prefills its question plus at most one block.
+- **Regroups.** Each model has a ledger budget (`ledger_tokens`, default a
+  fifth of `context_tokens`). When the ledger is over it, the curator is
+  asked for one group line per run of `group_size` (default 16) of the
+  oldest entries it can see, until the ledger is about half its budget.
+  Groups are stored by their members (exchange keys or older groups), nest,
+  render as `[g3: e1-e16] line`, and `expand g3` returns their child lines.
+  A follow-up keeps the groups of its frozen layout. A curator that fails
+  twice leaves stub group lines tagged `(auto)`.
+- **Fit.** Before an answer is rendered, a prompt over the model's budget
+  (`prompt_tokens`, default `context_tokens` minus the larger of 4096 and
+  15%) is made to fit without a model call: the open set is dropped, raw
+  exchanges other than the newest get fallback lines, and the oldest half of
+  the ledger entries is folded into a stub group, until it fits. A prompt
+  that fits is never touched.
+
+Live, K3, 2026-10-15, through the production chat layer (8 turns, 30 s
+between turns, a unique first message):
+
+| Turn | Prompt | Cached | Prefilled | TTFT (s) |
+|---|---|---|---|---|
+| 1 | 366 | 320 | 46 | 0.34 |
+| 2 | 458 | 320 | 138 | 0.76 |
+| 3 | 528 | 448 | 80 | 0.87 |
+| 4 | 547 | 512 | 35 | 0.41 |
+| 5 | 551 | 512 | 39 | 0.33 |
+| 6 | 591 | 512 | 79 | 0.63 |
+| 7 | 621 | 576 | 45 | 0.36 |
+| 8 | 660 | 576 | 84 | 0.66 |
+
+From turn 3 on (the first turn with a ledger) every answer resumed at its
+pre-warm's checkpoint. Each curator resumed at the last block of the reply
+it continues. Both recall questions were answered from the lines.
 
 ## Open choices
 

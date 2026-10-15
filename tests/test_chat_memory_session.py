@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A chat-memory session is opened only for a verified Open WebUI identity on a real chat turn, and its bookkeeping holds across turns: requests without a valid token, with a task, without ids, with a client tool named expand or with Open WebUI's own summary are served raw; the first turns carry the system note and the expand tool but no ledger; after a finished answer the curator runs only once the engine is idle and is cancelled by a foreground request; its line for the current exchange binds on the next turn through the parent message id, older raw exchanges get their lines directly, and the open set follows; the ledger then covers every lined exchange but the newest; follow-ups reuse the frozen layout and replay expansions; two invalid curator replies leave fallback lines; the first curator attempt continues the answer's own prompt and reply tokens; checkpointed models get a ledger-end stem; and the next turn's layout is pre-warmed up to its new question."""
+"""A chat-memory session is opened only for a verified Open WebUI identity on a real chat turn, and its bookkeeping holds across turns: requests without a valid token, with a task, without ids, with a client tool named expand or with Open WebUI's own summary are served raw; the first turns carry the system note and the expand tool but no ledger; after a finished answer the curator runs only once the engine is idle and is cancelled by a foreground request; its line for the current exchange binds on the next turn through the parent message id, older raw exchanges get their lines directly, and the open set follows; the ledger then covers every lined exchange but the newest; follow-ups reuse the frozen layout and replay expansions; two invalid curator replies leave fallback lines; the first curator attempt continues the answer's own prompt and reply tokens; checkpointed models get a ledger-end stem; the next turn's layout is pre-warmed up to its new question; a ledger over its budget is regrouped by the curator into nested group lines that expand to their children (stub lines when the curator fails), and follow-ups keep their frozen groups; and a prompt over the model's budget is fitted synchronously by dropping the open set, lining raw exchanges and folding the oldest ledger entries, while one that fits is left alone."""
 import asyncio
 import base64
 import hashlib
@@ -62,6 +62,9 @@ class Frontend:
     def memory_continuation_ids(self, model, messages, tools, kwargs, prompt_ids, generated_ids, instruction, suffix):
         self.continued.append((list(prompt_ids), list(generated_ids)))
         return [1, 2, 3, 4], False
+
+    def memory_count(self, model, text):
+        return len(text) // 4
 
     def memory_cut_ids(self, model, messages, tools, kwargs, sentinel):
         self.cuts.append(messages)
@@ -213,9 +216,60 @@ async def run():
         memory.curate = original
         assert captured and captured[0] == [0, 1, 2, 3, 4, 5], captured
 
+        small = Model(16384)
+        small.id = "small-model"
+        small.memory = dict(small.memory, ledger_tokens=60, group_size=4)
+        lined = conversation(12)
+        _, past, _ = cm.split(lined)
+        for i, messages in enumerate(past):
+            memory.store.append("user-1", "chat-group", {"type": "line", "key": cm.exchange_key(messages), "line": f"The user asked question {i + 1}; the assistant gave answer {i + 1}.", "source": "curator"})
+        session = memory.session(small, headers("g12", "f11", "f12", chat="chat-group"), lined, [], {})
+        assert session.layout["lined"] == 10 and session.layout["groups"] == []
+        frontend.replies[:] = ['{"lines": {"e12": "The user asked question 12."}, "open": [], "groups": {"g1": "Questions 1 to 4.", "g2": "Questions 5 to 8.", "g3": "Questions 9 and 10."}}']
+        session.finished(session.messages, "answer 12", "", [], "stop")
+        await settle(memory, small)
+        groups = memory.store.load("user-1", "chat-group")["groups"]
+        assert sorted(groups) == ["g1", "g2", "g3"] and all(g["source"] == "curator" for g in groups.values()), groups
+        assert groups["g1"]["members"] == ["x:" + cm.exchange_key(m) for m in past[:4]] and groups["g3"]["members"] == ["x:" + cm.exchange_key(m) for m in past[8:10]]
+        assert frontend.cuts[-2][-1]["content"].startswith(cm.LEDGER_OPEN + "[g1: e1-e4] Questions 1 to 4.\n[g2: e5-e8] Questions 5 to 8.\n[g3: e9-e10] Questions 9 and 10.\n[e11] ")
+        grouped = memory.session(small, headers("g13", "f12", "f13", chat="chat-group"), conversation(13), [], {})
+        assert grouped.layout["groups"] == ["g1", "g2", "g3"] and grouped.messages[1]["content"].startswith(cm.LEDGER_OPEN + "[g1: e1-e4] Questions 1 to 4.\n")
+        assert grouped.expand({"function": {"name": "expand", "arguments": "{\"id\": \"g1\"}"}}).startswith("g1 (e1-e4):\n[e1] The user asked question 1;")
+        assert grouped.expand({"function": {"name": "expand", "arguments": {"id": "g9"}}}).startswith("No group")
+        memory.store.append("user-1", "chat-group", {"type": "group", "id": "g4", "members": ["g1", "g2"], "line": "Questions 1 to 8.", "source": "curator"})
+        again = memory.session(small, headers("g13", "f12", "f13", chat="chat-group"), conversation(13), [], {})
+        assert again.layout["groups"] == ["g1", "g2", "g3"], "a follow-up keeps its frozen groups"
+
+        frontend.replies[:] = ["garbage", "garbage"]
+        _, past, _ = cm.split(conversation(14))
+        for i, messages in enumerate(past):
+            memory.store.append("user-1", "chat-stub", {"type": "line", "key": cm.exchange_key(messages), "line": f"The user asked question {i + 1}; the assistant gave answer {i + 1}.", "source": "curator"})
+        session = memory.session(small, headers("s14", "t13", "t14", chat="chat-stub"), conversation(14), [], {})
+        session.finished(session.messages, "answer 14", "", [], "stop")
+        await settle(memory, small)
+        stubs = memory.store.load("user-1", "chat-stub")["groups"]
+        assert stubs and all(g["source"] == "fallback" and g["line"].startswith("(auto) ") for g in stubs.values()), stubs
+
+        tight = Model(16384)
+        tight.id = "tight-model"
+        tight.context_tokens = 32768
+        tight.memory = dict(tight.memory, prompt_tokens=700)
+        long_messages = conversation(40)
+        long_messages[3] = dict(long_messages[3], content="a long reply " * 200)
+        fitted = memory.session(tight, headers("t40", None, "y40", chat="chat-fit"), long_messages, [], {})
+        fit_state = memory.store.load("user-1", "chat-fit")
+        assert memory.prompt_size(tight, fitted.layout, []) <= 700 and fitted.layout["lined"] == 38, fitted.layout["lined"]
+        assert all(source == "fit" for source in fit_state["sources"].values()) and len(fit_state["lines"]) == 38
+        assert fit_state["groups"] and all(g["source"] == "fit" for g in fit_state["groups"].values()) and len(fitted.layout["nodes"]) < 38
+        assert fit_state["layouts"]["t40"]["groups"] == fitted.layout["groups"]
+        roomy = Model(16384)
+        roomy.id = "roomy-model"
+        roomy.context_tokens = 131072
+        assert memory.session(roomy, headers("r40", None, "z40", chat="chat-roomy"), conversation(40), [], {}).layout["lined"] == 0, "nothing is folded while the prompt fits"
+
         reopened = cm.Memory({"store": tmp + "/store", "jwt_secret_file": tmp + "/secret"}, frontend).store.load("user-1", "chat-1")
         assert reopened["lines"] == state["lines"] and reopened["pending"].keys() == state["pending"].keys()
 
 
 asyncio.run(run())
-print("PASS test_chat_memory_session: verified identity only, system note and expand from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, state that survives a restart")
+print("PASS test_chat_memory_session: verified identity only, system note and expand from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, state that survives a restart")
