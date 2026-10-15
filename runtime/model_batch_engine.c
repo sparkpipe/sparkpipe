@@ -2300,8 +2300,7 @@ static uint32_t SparkModelBatchNeedsSingleStep(
 {
 	uint32_t lane;
 	for (lane=0u; lane<selected; lane++)
-		if ( engine->requests[engine->scratch_request_slots[lane]].sampling.logprobs != 0u ||
-			SparkSamplingRuleTruncates(&engine->requests[engine->scratch_request_slots[lane]].sampling) != 0u )
+		if ( engine->requests[engine->scratch_request_slots[lane]].sampling.logprobs != 0u )
 			return(1u);
 	return(0u);
 }

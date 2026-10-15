@@ -1066,6 +1066,37 @@ static void TestScenarioAdapterContextLimit(const SparkModelResidentDeployment *
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioTruncatedChains(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelBatchSubmitRequest request = {0};
+	SparkModelBatchRequestHandle handle = 0u;
+	uint32_t prompt[2] = {11u,12u};
+	MockResidentClientReset();
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+	request.descriptor_bytes = sizeof(request);
+	request.request_id = 1u;
+	request.sequence_id = 911u;
+	request.prompt_token_ids = prompt;
+	request.prompt_token_count = 2u;
+	request.output_token_budget = 4u;
+	request.temperature = 0.7f;
+	request.seed = 9u;
+	request.top_p = 0.9f;
+	request.top_k = 5u;
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_OK,"chains: a sampled request with top-p and top-k is admitted");
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	CHECK(state.completed_events[1] == 1u && state.token_events[1] == 4u && MockResidentClientTakeMaxTokensPerSequence() > 1u,
+		"chains: a top-p and top-k lane without logprobs chains decode steps on a chaining adapter");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioLogprobs(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	TestBatchState state = {0};
@@ -1082,8 +1113,8 @@ static void TestScenarioLogprobs(const SparkModelResidentDeployment *deployment,
 	TestSubmitPrompt(engine,1u,901u,4u,prompt,2u);
 	TestDriveUntilTerminal(engine,&state,1u,400u);
 	CHECK(state.completed_events[1] == 1u && MockResidentClientTakeMaxTokensPerSequence() > 1u && state.logprob_events[1] == 0u,"logprobs: a plain request chains decode steps and carries no logprobs");
-	MockResidentClientSetLogprobs(3u,0u);
 	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+	MockResidentClientSetLogprobs(3u,0u);
 	request.descriptor_bytes = sizeof(request);
 	request.request_id = 2u;
 	request.sequence_id = 902u;
@@ -2285,6 +2316,7 @@ int main(void)
 	TestScenarioPartialCopyCapacity(&deployment,runtime_root);
 	TestScenarioSamplingValidation(&deployment,runtime_root);
 	TestScenarioLogprobs(&deployment,runtime_root);
+	TestScenarioTruncatedChains(&deployment,runtime_root);
 	TestScenarioAdapterContextLimit(&deployment,runtime_root);
 	TestScenarioChainYieldsToPrefill(&deployment,runtime_root);
 	TestScenarioMeasurements(&deployment,runtime_root);

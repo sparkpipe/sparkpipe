@@ -109,6 +109,37 @@ Conditions and limits:
 - All 16 models produced the old build's tokens on the six release prompts
   (`EXACT 6/6`), with no error lines in any rank log.
 
+### K3 sampled decode: chat sampling at greedy speed (2026-10-15)
+
+The chat layer samples at the publishers' defaults (temperature 1, top-p
+0.95). Before this change K3 decoded such requests 16% slower than greedy:
+the engine ran top-p and top-k lanes one token per submission, and the stage
+runner's distribution head (the vocabulary-slice logits recomputed for
+sampled rows) launched only 10 blocks on GB10's 48 SMs, 5.5 ms per token at
+27 GB/s (single-GB10 microbench; 128-token tiles: 0.96 ms, bit-identical
+logits). Top-p sampling itself takes 2.25 ms per token in its one-block
+kernel; that is left.
+
+One exclusive K3 TP16 hold, 2026-10-15 07:53-08:20Z, quiet fleet, arms
+A (release adapter and API), H (128-token distribution head), HC (H plus
+chaining for top-p and top-k lanes), run order A1 H1 HC1 HC2 H2 A2, each
+after a KV snapshot and prefix-index wipe; per arm the STORY prompt with
+256 tokens: greedy x4, T=1 top-p 0.95 with seeds 101-104, T=1 with seeds
+201-202. Receipts: [`qualification/k3/sampled-decode-20261015/`](qualification/k3/sampled-decode-20261015/).
+
+| Case | A tok/s | H tok/s | HC tok/s | Steps per submission A / HC |
+| --- | ---: | ---: | ---: | ---: |
+| greedy | 16.05 | 15.80 | 15.91 | 7.4 / 7.4 |
+| T=1, top-p 0.95 (chat) | 13.40 | 14.38 | 15.52 | 1.0 / 7.5 |
+| T=1 | 14.34 | 15.65 | 15.61 | 6.1 / 7.5 |
+
+- Medians, n=8 per arm and case (n=4 for T=1). Every greedy and seeded
+  sampled run of every arm produced exactly the tokens of A1: the Gumbel
+  draw is keyed by seed, position and token, so chaining changes no sample.
+- Production K3 runs HC since 08:22Z (adapter `f0fc74dc`, API `44650c56`).
+  Logprob lanes still decode one token per submission. Other models get the
+  engine change with the next fleet release.
+
 ### GLM 5.3 Full prefill: row shard and wide FP8 tiles (2026-10-15)
 
 One exclusive TP16 hold on a quiet fleet (2026-10-15 06:17-07:22Z), GLM Full
