@@ -3,7 +3,6 @@
 #include <cstring>
 
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
-#include "sparkpipe/spark_k3_kv_geometry.h"
 #include "sparkpipe/spark_k3_tp_sequences.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_module.h"
 #include "sparkpipe/spark_k3_stage_model.h"
