@@ -118,7 +118,6 @@ typedef struct SparkModelBatchSubmissionState
 	uint32_t verify;
 	uint64_t submission_id;
 	uint64_t dispatched_ns;
-	uint32_t overlapped;
 	uint32_t clean;
 	uint32_t rows;
 	uint32_t steps;
@@ -141,6 +140,12 @@ struct SparkModelBatchEngine
 	uint32_t *lookup_heads;
 	uint32_t *lookup_chain;
 	uint64_t verify_lane_count;
+	uint64_t frame_count[SPARK_SPECULATION_FRAME_ROW_BUCKETS];
+	uint64_t frame_rows[SPARK_SPECULATION_FRAME_ROW_BUCKETS];
+	uint64_t frame_kept[SPARK_SPECULATION_FRAME_ROW_BUCKETS];
+	uint64_t frame_timed[SPARK_SPECULATION_FRAME_ROW_BUCKETS];
+	uint64_t frame_ns[SPARK_SPECULATION_FRAME_ROW_BUCKETS];
+	uint64_t frame_logged;
 	uint64_t draft_token_count;
 	uint64_t accepted_draft_token_count;
 	SparkModelServingLane *scratch_lanes;
@@ -1211,6 +1216,9 @@ static SparkStatus SparkModelBatchAcceptVerifiedLane(
 	if ( draft_count != 0u )
 	{
 		engine->verify_lane_count++;
+		engine->frame_count[SparkSpeculationFrameRowBucket(draft_count + 1u)]++;
+		engine->frame_rows[SparkSpeculationFrameRowBucket(draft_count + 1u)] += draft_count + 1u;
+		engine->frame_kept[SparkSpeculationFrameRowBucket(draft_count + 1u)] += accepted + 1u;
 		engine->draft_token_count += draft_count;
 		engine->accepted_draft_token_count += accepted;
 		SparkSpeculationHazardObserve(&engine->frame_model.classes[request->draft_class],draft_count,accepted,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
@@ -1364,7 +1372,7 @@ static SparkStatus SparkModelBatchApplyCompletion(
 }
 
 static void SparkModelBatchRecordAdmission(SparkModelBatchEngine *engine,SparkModelBatchRequestState *request,uint32_t work_kind);
-static void SparkModelBatchObserveCost(SparkModelBatchEngine *engine,const SparkModelBatchSubmissionState *submission);
+static void SparkModelBatchObserveCost(SparkModelBatchEngine *engine,const SparkModelBatchSubmissionState *submission,const SparkModelServingCompletion *completion);
 
 static void SparkModelBatchRecordAdmittedLanes(SparkModelBatchEngine *engine,const SparkModelBatchSubmissionState *submission)
 {
@@ -1409,7 +1417,7 @@ static void SparkModelBatchCompletion(
 	else
 	{
 		SparkModelBatchRecordAdmittedLanes(engine,submission);
-		SparkModelBatchObserveCost(engine,submission);
+		SparkModelBatchObserveCost(engine,submission,completion);
 		status = SparkModelBatchApplyCompletion(engine,submission,completion);
 		if ( status != SPARK_STATUS_OK )
 		{
@@ -2921,38 +2929,36 @@ static void SparkModelBatchRecordAdmission(SparkModelBatchEngine *engine,SparkMo
 }
 
 static void SparkModelBatchRecordTiming(
-	SparkModelBatchEngine *engine,
 	SparkModelBatchSubmissionState *state,
 	const SparkModelServingSubmission *submission,
 	uint64_t dispatch_ns)
 {
-	uint32_t index;
 	state->dispatched_ns = dispatch_ns;
 	state->rows = submission->row_count;
 	state->steps = submission->tokens_per_sequence;
 	state->context = submission->lane_count == 1u ? submission->lanes[0].context_token_count : 0u;
 	state->clean = submission->lane_count == 1u &&
 		(submission->lanes[0].flags & (SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH)) == 0u ? 1u : 0u;
-	state->overlapped = engine->inflight_submission_count != 0u ? 1u : 0u;
-	for (index=0u; index<engine->submission_capacity; index++)
-		if ( engine->submissions[index].active != 0u && &engine->submissions[index] != state )
-			engine->submissions[index].overlapped = 1u;
 }
 
 static void SparkModelBatchObserveCost(
 	SparkModelBatchEngine *engine,
-	const SparkModelBatchSubmissionState *submission)
+	const SparkModelBatchSubmissionState *submission,
+	const SparkModelServingCompletion *completion)
 {
-	const uint64_t now = SparkModelBatchNowNs();
-	if ( engine->verify_capable == 0u || submission->overlapped != 0u || submission->lane_count != 1u ||
-		submission->dispatched_ns == 0u || now <= submission->dispatched_ns )
+	const uint64_t ns = completion->service_time_ns;
+	if ( engine->verify_capable == 0u || submission->lane_count != 1u || ns == 0u )
 		return;
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && submission->verify != 0u )
-		SparkSpeculationFrameObserveFrame(&engine->frame_model,submission->rows,submission->context,now - submission->dispatched_ns);
+	{
+		engine->frame_timed[SparkSpeculationFrameRowBucket(submission->rows)]++;
+		engine->frame_ns[SparkSpeculationFrameRowBucket(submission->rows)] += ns;
+		SparkSpeculationFrameObserveFrame(&engine->frame_model,submission->rows,submission->context,ns);
+	}
 	else if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && submission->rows == 1u )
-		SparkSpeculationFrameObserveChain(&engine->frame_model,submission->steps,submission->context,now - submission->dispatched_ns);
+		SparkSpeculationFrameObserveChain(&engine->frame_model,submission->steps,submission->context,ns);
 	else if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && submission->clean != 0u )
-		SparkSpeculationFrameObserveFrame(&engine->frame_model,submission->rows,submission->context,now - submission->dispatched_ns);
+		SparkSpeculationFrameObserveFrame(&engine->frame_model,submission->rows,submission->context,ns);
 }
 
 static void SparkModelBatchRecordSubmission(
@@ -3050,7 +3056,7 @@ static SparkStatus SparkModelBatchDispatchKind(
 		engine->circuit_open_until_ns = 0u;
 	engine->consecutive_pipeline_failures = 0u;
 	state->verify = (submission.flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? 1u : 0u;
-	SparkModelBatchRecordTiming(engine,state,&submission,dispatch_ns);
+	SparkModelBatchRecordTiming(state,&submission,dispatch_ns);
 	SparkModelBatchRecordSubmission(engine,state,lane_count);
 	*dispatched_out = 1u;
 	return(SPARK_STATUS_OK);
@@ -3279,6 +3285,24 @@ static void SparkModelBatchImportPeerPrefixes(SparkModelBatchEngine *engine)
 	}
 }
 
+static void SparkModelBatchLogFrames(SparkModelBatchEngine *engine)
+{
+	char line[1536];
+	size_t used;
+	uint32_t bucket;
+	engine->frame_logged = engine->verify_lane_count;
+	used = (size_t)snprintf(line,sizeof(line),"batch_speculation frames=%llu drafted=%llu kept_drafts=%llu chain_token_ms=%.1f single_ms=%.1f buckets",
+		(unsigned long long)engine->verify_lane_count,(unsigned long long)engine->draft_token_count,(unsigned long long)engine->accepted_draft_token_count,
+		SparkSpeculationFrameTokenCost(&engine->frame_model,2048u) / 1e6,SparkSpeculationFrameSingleCost(&engine->frame_model,2048u) / 1e6);
+	for (bucket=0u; bucket<SPARK_SPECULATION_FRAME_ROW_BUCKETS && used < sizeof(line); bucket++)
+		if ( engine->frame_count[bucket] != 0u )
+			used += (size_t)snprintf(line + used,sizeof(line) - used," r%u:n=%llu,rows=%.1f,kept=%.1f,ms=%.1f",1u << bucket,
+				(unsigned long long)engine->frame_count[bucket],(double)engine->frame_rows[bucket] / (double)engine->frame_count[bucket],
+				(double)engine->frame_kept[bucket] / (double)engine->frame_count[bucket],
+				engine->frame_timed[bucket] != 0u ? (double)engine->frame_ns[bucket] / (double)engine->frame_timed[bucket] / 1e6 : 0.0);
+	fprintf(stderr,"%s\n",line);
+}
+
 static void SparkModelBatchPeriodicWork(SparkModelBatchEngine *engine)
 {
 	uint64_t now = SparkModelBatchNowNs();
@@ -3289,6 +3313,8 @@ static void SparkModelBatchPeriodicWork(SparkModelBatchEngine *engine)
 	}
 	if ( now >= engine->next_status_ns )
 	{
+		if ( engine->verify_lane_count >= engine->frame_logged + 64u )
+			SparkModelBatchLogFrames(engine);
 		(void)SparkModelPipelineClientRequestStatus(engine->pipeline);
 		engine->next_status_ns = now + SPARK_MODEL_BATCH_STATUS_INTERVAL_NS;
 	}

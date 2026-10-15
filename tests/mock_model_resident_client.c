@@ -922,6 +922,8 @@ uint32_t MockResidentClientDeliverEvent(uint32_t stage_index, uint64_t submissio
 				completion.request_generation = saved.submission.request_generation;
 				completion.step_generation = saved.submission.step_generation;
 				completion.residency = saved.submission.residency;
+				completion.service_time_ns = (uint64_t)((saved.submission.flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u || saved.submission.tokens_per_sequence == 0u ?
+					1u : saved.submission.tokens_per_sequence) * (10000u + 200u * (uint64_t)saved.row_count);
 				if ( c->is_final_rank != 0u && mock_script_count != 0u &&
 					saved.submission.work_kind < SPARK_MODEL_SERVING_WORK_KIND_RELEASE && status == SPARK_STATUS_OK )
 					MockScriptCompletion(&saved,&completion);
