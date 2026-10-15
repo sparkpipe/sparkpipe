@@ -21,6 +21,7 @@
 
 #define STAGE_RUNNER_SAMPLE_THREADS 1024u
 #define STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS 4u
+#define STAGE_RUNNER_DISTRIBUTION_HEAD_TILE 128u
 #define STAGE_RUNNER_GRAPH_ROWS 16u
 #define STAGE_RUNNER_WIDE_ROWS 16u
 
@@ -1151,8 +1152,8 @@ static SparkStatus StageRunnerDistribution(SparkStageRunnerState *state,
 	else if ( state->geometry.head_prenormed == 0u )
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,uint16_t>), count, LM_STAGE_HEAD_THREADS, (hidden + 8u) * sizeof(float), stream,
 			state->distribution_hidden, 0, state->head_norm_weight, 0, state->distribution_normed, hidden, hidden, state->geometry.rms_epsilon);
-	LM_LAUNCH((LmHeadLogitsRowsKernel<LM_STAGE_HEAD_THREADS,LM_STAGE_HEAD_TILE,STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS>),
-		dim3((slice + LM_STAGE_HEAD_TILE - 1u) / LM_STAGE_HEAD_TILE, (count + STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS - 1u) / STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS),
+	LM_LAUNCH((LmHeadLogitsRowsKernel<LM_STAGE_HEAD_THREADS,STAGE_RUNNER_DISTRIBUTION_HEAD_TILE,STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS>),
+		dim3((slice + STAGE_RUNNER_DISTRIBUTION_HEAD_TILE - 1u) / STAGE_RUNNER_DISTRIBUTION_HEAD_TILE, (count + STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS - 1u) / STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS),
 		LM_STAGE_HEAD_THREADS, 0, stream, state->geometry.head_prenormed != 0u ? state->distribution_hidden : state->distribution_normed,
 		state->head_weight, state->distribution_logits, count, hidden, slice, slice);
 	if ( cudaPeekAtLastError() != cudaSuccess ||
