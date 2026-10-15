@@ -28,19 +28,27 @@ def first_definition(text):
     return None
 
 
+def background(root, files):
+    if not files:
+        return ""
+    parts = [f"File {relative}:\n\n{(root / relative).read_text()}" for relative in files]
+    return "Other files of the repository, for context only:\n\n" + "\n\n".join(parts) + "\n\n"
+
+
 def build(args):
     root = Path(args.root)
     tasks = []
+    context = background(root, args.background)
     for relative in args.files:
         text = (root / relative).read_text()
         name = first_definition(text)
         if name is None:
             raise SystemExit(f"{relative}: no function definition that is also used")
         for style, rule in STYLES.items():
-            prompt = (f"Here is the file {relative}:\n\n{text}\n\nRename the function {name} to {name}_v2 at its definition and at every use "
+            prompt = (f"{context}Here is the file {relative}:\n\n{text}\n\nRename the function {name} to {name}_v2 at its definition and at every use "
                       f"in this file, and change nothing else. {rule}")
             tasks.append({"name": f"{style}_{len(tasks) // 2 + 1:02d}", "file": relative, "function": name, "style": style,
-                          "messages": [{"role": "user", "content": prompt}], "file_chars": len(text)})
+                          "messages": [{"role": "user", "content": prompt}], "file_chars": len(text), "context_chars": len(context)})
     Path(args.out).write_text(json.dumps(tasks, indent=1))
     print(f"{len(tasks)} tasks from {len(args.files)} files")
 
@@ -106,6 +114,7 @@ def main():
     b = sub.add_parser("build")
     b.add_argument("--root", default=".")
     b.add_argument("--out", required=True)
+    b.add_argument("--background", nargs="*", default=[], help="files prepended to every prompt as unrelated context")
     b.add_argument("files", nargs="+")
     g = sub.add_parser("generate")
     g.add_argument("--corpus", required=True)
