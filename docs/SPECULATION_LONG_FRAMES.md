@@ -78,6 +78,14 @@ document is the contract for that path. Measured results are in
   a later state at release. A reply that ends on a block multiple inside a
   verify frame therefore keeps no reply-end resume point.
 
+## Long context (GLM)
+
+A GLM wave above 8 ordered rows used to all-gather the whole cached context's
+latent in every layer (about 3.4 ms per 1K tokens of context per wave). A wave
+that fits the 64-row scatter buffers now scatters when the query and partial
+exchange costs less than that gather (`SparkKvShardExchangeCostNs`), as K3
+already chooses. Frames above 64 rows still gather.
+
 ## Frame size
 
 `src/spark_speculation_frame.c` prices every frame; it replaces the doubling
