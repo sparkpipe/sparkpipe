@@ -19,6 +19,7 @@
 #define LM_STREAM_STAGE_BUDGET 98304u
 #define LM_STREAM_MAX_STAGES 4u
 #define LM_STREAM_MAX_DEVICES 64u
+#define LM_STREAM_WIDE_ROWS 256u
 
 typedef struct LmStreamGemmArguments
 {
@@ -221,7 +222,7 @@ static __host__ __device__ constexpr uint32_t LmStreamScaleK(void)
 		return(LM_STREAM_SCALE_K);
 }
 
-template<class Format, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K>
+template<class Format, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t WARP_ROWS = 32u>
 __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const __grid_constant__ LmStreamGemmArguments args)
 {
 	using Weight = LmStreamWeight<Format>;
@@ -232,7 +233,7 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 	constexpr uint32_t SCALE_BLOCKS = Weight::kScaled ? TILE_K / SCALE_K : 1u;
 	constexpr uint32_t A_ROW_BYTES = TILE_K * 2u;
 	constexpr uint32_t A_ROW_CHUNKS = A_ROW_BYTES / 16u;
-	constexpr uint32_t WARPS_M = TILE_M <= 32u ? 1u : TILE_M / 32u;
+	constexpr uint32_t WARPS_M = TILE_M <= WARP_ROWS ? 1u : TILE_M / WARP_ROWS;
 	constexpr uint32_t WARPS_N = LM_STREAM_WARPS / WARPS_M;
 	constexpr uint32_t WARP_M = TILE_M / WARPS_M;
 	constexpr uint32_t WARP_N = TILE_N / WARPS_N;
@@ -450,7 +451,7 @@ static int32_t LmStreamGemmValidate(const LmStreamGemmArguments *args, uint32_t 
 	return(LM_LAUNCH_OK);
 }
 
-template<class Format, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K>
+template<class Format, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t WARP_ROWS = 32u>
 static int32_t LmStreamGemmLaunchTile(const LmStreamGemmArguments *args, uint64_t tile_bound, uint32_t multiprocessors, cudaStream_t stream)
 {
 	static std::atomic<uint64_t> granted(0u);
@@ -462,9 +463,9 @@ static int32_t LmStreamGemmLaunchTile(const LmStreamGemmArguments *args, uint64_
 		return(LM_LAUNCH_ERR_ATTRIBUTE);
 	if ( (granted.load() & (UINT64_C(1) << (uint32_t)device)) == 0u )
 	{
-		if ( cudaFuncSetAttribute((const void *)LmStreamGemmKernel<Format,TILE_M,TILE_N,TILE_K>,cudaFuncAttributeMaxDynamicSharedMemorySize,(int)LM_STREAM_SHARED_LIMIT) != cudaSuccess )
+		if ( cudaFuncSetAttribute((const void *)LmStreamGemmKernel<Format,TILE_M,TILE_N,TILE_K,WARP_ROWS>,cudaFuncAttributeMaxDynamicSharedMemorySize,(int)LM_STREAM_SHARED_LIMIT) != cudaSuccess )
 			return(LM_LAUNCH_ERR_ATTRIBUTE);
-		if ( cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_multiprocessor,LmStreamGemmKernel<Format,TILE_M,TILE_N,TILE_K>,LM_STREAM_THREADS,LM_STREAM_SHARED_LIMIT) != cudaSuccess || per_multiprocessor < 1 )
+		if ( cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_multiprocessor,LmStreamGemmKernel<Format,TILE_M,TILE_N,TILE_K,WARP_ROWS>,LM_STREAM_THREADS,LM_STREAM_SHARED_LIMIT) != cudaSuccess || per_multiprocessor < 1 )
 			return(LM_LAUNCH_ERR_ATTRIBUTE);
 		resident.store(per_multiprocessor);
 		granted.fetch_or(UINT64_C(1) << (uint32_t)device);
@@ -472,7 +473,7 @@ static int32_t LmStreamGemmLaunchTile(const LmStreamGemmArguments *args, uint64_
 	blocks = (uint64_t)multiprocessors * (uint64_t)resident.load();
 	if ( tile_bound < blocks )
 		blocks = tile_bound;
-	LmStreamGemmKernel<Format,TILE_M,TILE_N,TILE_K><<<(uint32_t)blocks,LM_STREAM_THREADS,shared,stream>>>(*args);
+	LmStreamGemmKernel<Format,TILE_M,TILE_N,TILE_K,WARP_ROWS><<<(uint32_t)blocks,LM_STREAM_THREADS,shared,stream>>>(*args);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
@@ -504,6 +505,25 @@ static int32_t LmStreamGemmLaunchShape(const LmStreamGemmArguments *args, uint32
 }
 
 template<class Format>
+static int32_t LmStreamGemmLaunchWide(const LmStreamGemmArguments *args, uint32_t multiprocessors, cudaStream_t stream)
+{
+	const uint32_t groups = args->group_row_offset == 0 ? 1u : args->groups;
+	const uint32_t mean_rows = (args->rows + groups - 1u) / groups;
+	const uint64_t wide = args->output_dimension / 256u,narrow = args->output_dimension / 128u;
+	if ( args->rows < LM_STREAM_WIDE_ROWS )
+		return(LM_LAUNCH_ERR_TILE);
+	if ( mean_rows > 64u && args->output_dimension % 128u == 0u && ((uint64_t)args->rows + 127u) / 128u * narrow >= 2u * (uint64_t)multiprocessors )
+		return(LmStreamGemmLaunchTile<Format,128u,128u,128u,128u>(args,((uint64_t)args->rows / 128u + groups) * narrow,multiprocessors,stream));
+	if ( mean_rows > 32u && args->output_dimension % 256u == 0u && ((uint64_t)args->rows + 63u) / 64u * wide >= 2u * (uint64_t)multiprocessors )
+		return(LmStreamGemmLaunchTile<Format,64u,256u,128u,64u>(args,((uint64_t)args->rows / 64u + groups) * wide,multiprocessors,stream));
+	if ( mean_rows > 32u && args->output_dimension % 128u == 0u && ((uint64_t)args->rows + 63u) / 64u * narrow >= (uint64_t)multiprocessors )
+		return(LmStreamGemmLaunchTile<Format,64u,128u,128u,64u>(args,((uint64_t)args->rows / 64u + groups) * narrow,multiprocessors,stream));
+	if ( mean_rows > 16u && args->output_dimension % 256u == 0u && ((uint64_t)args->rows + 31u) / 32u * wide >= 2u * (uint64_t)multiprocessors )
+		return(LmStreamGemmLaunchTile<Format,32u,256u,128u,32u>(args,((uint64_t)args->rows / 32u + groups) * wide,multiprocessors,stream));
+	return(LM_LAUNCH_ERR_TILE);
+}
+
+template<class Format>
 static int32_t LmStreamGemmLaunch(const LmStreamGemmArguments *args, uint32_t multiprocessors, cudaStream_t stream)
 {
 	int32_t status = LmStreamGemmValidate<Format>(args,multiprocessors);
@@ -511,6 +531,12 @@ static int32_t LmStreamGemmLaunch(const LmStreamGemmArguments *args, uint32_t mu
 		return(status);
 	if constexpr ( LmStreamWeight<Format>::kScaled )
 	{
+		if constexpr ( LmStreamWeight<Format>::kElementBytes == 1u && LmStreamWeight<Format>::kScaleEncoding == LM_SCALE_ENCODING_F32 )
+		{
+			status = LmStreamGemmLaunchWide<Format>(args,multiprocessors,stream);
+			if ( status != LM_LAUNCH_ERR_TILE )
+				return(status);
+		}
 		if ( args->input_dimension % 256u == 0u )
 			return(LmStreamGemmLaunchShape<Format,64u,256u>(args,multiprocessors,stream));
 		return(LmStreamGemmLaunchShape<Format,128u,128u>(args,multiprocessors,stream));
