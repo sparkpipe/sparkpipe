@@ -124,26 +124,41 @@ def split(messages):
     return head, exchanges, current
 
 
-def exchange_text(messages):
-    parts, names = [], {}
-    for message in messages:
+def reading_parts(messages):
+    names, users, rounds = {}, [], []
+    answer_at = max((i for i, m in enumerate(messages) if m.get("role") == "assistant" and not m.get("tool_calls")), default=None)
+    for index, message in enumerate(messages):
         role = message.get("role")
-        for call in message.get("tool_calls") or [] if role == "assistant" else []:
-            names[call.get("id")] = (call.get("function") or {}).get("name")
         if role == "user":
-            parts.append("User: " + text_of(message.get("content")))
-        elif role == "assistant":
-            text = text_of(message.get("content"))
-            if text:
-                parts.append("Assistant: " + text)
+            users.append(text_of(message.get("content")))
+        elif role == "system":
+            rounds.append(("System", text_of(message.get("content"))))
+        elif role == "assistant" and index != answer_at:
+            if text_of(message.get("content")):
+                rounds.append(("Assistant", text_of(message.get("content"))))
             for call in message.get("tool_calls") or []:
                 function = call.get("function") or {}
+                names[call.get("id")] = function.get("name")
                 arguments = function.get("arguments")
-                parts.append(f"Assistant called {function.get('name')}({arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)})")
+                rounds.append(("call", function.get("name"), arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)))
         elif role == "tool":
-            parts.append(f"Tool result ({message.get('name') or names.get(message.get('tool_call_id')) or 'tool'}): " + text_of(message.get("content")))
-        elif role == "system":
-            parts.append("System: " + text_of(message.get("content")))
+            rounds.append(("result", message.get("name") or names.get(message.get("tool_call_id")) or "tool", text_of(message.get("content"))))
+    answer = text_of(messages[answer_at].get("content")) if answer_at is not None else ""
+    return "\n".join(users), answer, rounds
+
+
+def exchange_text(messages):
+    user, answer, rounds = reading_parts(messages)
+    parts = ["User: " + user]
+    if answer:
+        parts.append("Assistant: " + answer)
+    for item in rounds:
+        if item[0] == "call":
+            parts.append(f"Assistant called {item[1]}({item[2]})")
+        elif item[0] == "result":
+            parts.append(f"Tool result ({item[1]}): " + item[2])
+        else:
+            parts.append(f"{item[0]}: " + item[1])
     return "\n".join(parts)
 
 
@@ -227,12 +242,53 @@ def prefix_text(message, text):
     return entry
 
 
+MEMORY_TAGS = ("ledger", "reference", "history")
+
+
+def neutral(text):
+    for tag in MEMORY_TAGS:
+        text = text.replace("<" + tag, "< " + tag).replace("</" + tag, "</ " + tag)
+    return text
+
+
 def history_block(node, messages, limit_chars):
-    text = exchange_text(messages)
+    user, answer, rounds = reading_parts(messages)
+    text = "User (earlier): " + user + ("\nAssistant (earlier): " + answer if answer else "")
     if len(text) > limit_chars:
         text = text[:limit_chars] + f"\n[cut; expand {node} for the rest]"
-    text = text.replace("User: ", "User (earlier): ", 1).replace("\nAssistant: ", "\nAssistant (earlier): ", 1)
-    return f"<history id=\"{node}\">\n{text}\n</history>\n"
+    calls = [item for item in rounds if item[0] == "call"]
+    results = [item for item in rounds if item[0] == "result"]
+    pointers = []
+    for index, (_, name, arguments) in enumerate(calls):
+        size = f": {len(results[index][2])} characters" if index < len(results) else ""
+        pointers.append(f"[{node} used {name}({arguments[:200]}){size}; expand {node} to read it]\n")
+    return f"<history id=\"{node}\">\n" + neutral(text + "\n" + "".join(pointers)) + "</history>\n"
+
+
+def splice_expansions(current, groups):
+    result, rounds, pending = [], 0, list(groups)
+
+    def flush(upto):
+        found = [group for group in pending if group["round"] <= upto]
+        for group in found:
+            pending.remove(group)
+            result.extend(group["turns"])
+        return "".join(group["prefix"] for group in found)
+
+    for message in current:
+        if message.get("role") == "assistant":
+            prefix = flush(rounds).lstrip()
+            content = message.get("content")
+            if prefix and isinstance(content, str):
+                if content.startswith(prefix):
+                    message = dict(message, content=content[len(prefix):].lstrip())
+                else:
+                    print(json.dumps({"event": "chat_memory_prefix_mismatch", "round": rounds}), flush=True)
+            if message.get("tool_calls"):
+                rounds += 1
+        result.append(message)
+    flush(rounds)
+    return result
 
 
 def ledger_nodes(exchanges, lines, groups, lined, allowed=None):
@@ -441,7 +497,8 @@ class ChatStore:
         elif kind == "open_after" and record.get("message"):
             state["open_by_message"][record["message"]] = list(record.get("ids") or [])
         elif kind == "expansion" and record.get("message"):
-            state["expansions"].setdefault(record["message"], []).extend(record.get("turns") or [])
+            state["expansions"].setdefault((record["message"], record.get("attempt")), []).append(
+                {"round": int(record.get("round") or 0), "prefix": record.get("prefix") or "", "turns": list(record.get("turns") or [])})
         elif kind == "turn" and record.get("user_message"):
             state["turns"][record["user_message"]] = {k: record.get(k) for k in ("parent", "message", "index")}
 
@@ -529,7 +586,8 @@ class Session:
         for call in calls:
             turns.append({"role": "tool", "tool_call_id": call.get("id"), "name": (call.get("function") or {}).get("name"), "content": self.expand(call)})
         self.messages = self.messages + turns
-        self.memory.store.append(self.user, self.chat, {"type": "expansion", "message": self.user_message,
+        rounds = sum(1 for message in self.current if message.get("role") == "assistant" and message.get("tool_calls"))
+        self.memory.store.append(self.user, self.chat, {"type": "expansion", "message": self.user_message, "attempt": self.message, "round": rounds, "prefix": content,
                                                         "turns": [{k: v for k, v in turn.items() if v is not None} for turn in turns]})
         return self.messages
 
@@ -601,9 +659,9 @@ class Memory:
             layout = self.fit(model, user, chat, head, exchanges, current, layout, tools)
             self.store.append(user, chat, {"type": "layout", "message": user_message, "lined": layout["lined"], "open": layout["open"], "keys": layout["keys"],
                                            "groups": layout["groups"]})
-        replay = state["expansions"].get(user_message, [])
+        replay = state["expansions"].get((user_message, message), [])
         if replay:
-            layout["messages"] = layout["messages"][:len(layout["messages"]) - len(current) + 1] + replay + layout["messages"][len(layout["messages"]) - len(current) + 1:]
+            layout["messages"] = layout["messages"][:len(layout["messages"]) - len(current)] + splice_expansions(layout["messages"][len(layout["messages"]) - len(current):], replay)
         return Session(self, model, user, chat, user_message, parent, message, head, exchanges, current, layout,
                        list(tools or []) + list(MEMORY_TOOLS), dict(kwargs))
 
