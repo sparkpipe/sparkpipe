@@ -53,6 +53,13 @@ assert len(head) == 1 and len(exchanges) == 4 and current[0]["content"] == "ques
 head, exchanges, current = cm.split(chat(3, follow_up=True))
 assert len(exchanges) == 2 and len(current) == 3 and current[-1]["role"] == "tool"
 assert cm.split(chat(3) + [{"role": "assistant", "content": "done"}]) is None
+images = {"role": "user", "content": [{"type": "text", "text": "Here are the images from the tool results above. Please analyze them."}, {"type": "image_url", "image_url": {"url": "data:,"}}]}
+plotted = chat(2) + [{"role": "assistant", "content": "", "tool_calls": [{"id": "c9", "type": "function", "function": {"name": "execute_code", "arguments": "{}"}}]},
+                     {"role": "tool", "tool_call_id": "c9", "content": "ok"}, images]
+head_i, exchanges_i, current_i = cm.split(plotted)
+assert len(exchanges_i) == 1 and current_i[-1] is images and current_i[0]["content"] == "question 2", "images from tool results stay in their exchange"
+head_i, exchanges_i, current_i = cm.split(plotted + [{"role": "assistant", "content": "a plot"}, {"role": "user", "content": "next"}])
+assert len(exchanges_i) == 2 and exchanges_i[1][-1]["content"] == "a plot" and current_i[0]["content"] == "next"
 assert cm.split([{"role": "assistant", "content": "hi"}]) is None
 
 a = [{"role": "user", "content": "q", "id": "1"}, {"role": "assistant", "content": "a", "timestamp": 5}]

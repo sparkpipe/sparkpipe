@@ -91,6 +91,14 @@ def exchange_key(messages):
     return hashlib.sha256(blob.encode()).hexdigest()[:32]
 
 
+def tool_images(message):
+    content = message.get("content")
+    if message.get("role") != "user" or not isinstance(content, list):
+        return False
+    kinds = [part.get("type") for part in content if isinstance(part, dict)]
+    return "image_url" in kinds and set(kinds) <= {"text", "image_url"} and len(text_of(content)) <= 200
+
+
 def split(messages):
     head = []
     index = 0
@@ -99,6 +107,9 @@ def split(messages):
         index += 1
     exchanges = []
     for message in messages[index:]:
+        if exchanges and exchanges[-1][-1].get("role") == "tool" and tool_images(message):
+            exchanges[-1].append(message)
+            continue
         if message.get("role") == "user" or not exchanges:
             if message.get("role") != "user":
                 return None
