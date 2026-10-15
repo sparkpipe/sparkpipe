@@ -497,6 +497,9 @@ class Session:
         self.kwargs = kwargs
         self.rounds = 0
 
+    def trace(self):
+        return {"chat": hashlib.sha256(self.chat.encode()).hexdigest()[:12], "user_message": hashlib.sha256(self.user_message.encode()).hexdigest()[:12]}
+
     def claims(self, call):
         return (call.get("function") or {}).get("name") in MEMORY_TOOL_NAMES
 
@@ -728,7 +731,7 @@ class Memory:
         else:
             messages = job["messages"] + [{"role": "assistant", "content": job["content"]}, {"role": "user", "content": instruction}]
             ids, reasoning_open = self.frontend.memory_curator_ids(model, messages, session.tools, session.kwargs, settings.get("curator_suffix"))
-        text = await self.frontend.memory_complete(model, ids, self.curator_tokens + 80 * len(indices), reasoning_open)
+        text = await self.frontend.memory_complete(model, ids, self.curator_tokens + 80 * len(indices), reasoning_open, "curator" if continued is not None else "curator_render", session.trace())
         lines, opened, complete = parse_curator(text, indices, len(everything), sizes, int(settings.get("open_budget", 1500)))
         if lines is None:
             return False
@@ -779,7 +782,7 @@ class Memory:
         messages = system + [{"role": "user", "content": ledger + SENTINEL}]
         ids = self.frontend.memory_cut_ids(model, messages, session.tools, session.kwargs, SENTINEL)
         if ids:
-            await self.frontend.memory_complete(model, ids, 1)
+            await self.frontend.memory_complete(model, ids, 1, False, "stem", session.trace())
 
     async def prewarm(self, model, session, content):
         state = self.store.load(session.user, session.chat)
@@ -790,4 +793,4 @@ class Memory:
             return
         ids = self.frontend.memory_cut_ids(model, layout["messages"], session.tools, session.kwargs, SENTINEL)
         if ids:
-            await self.frontend.memory_complete(model, ids, 1)
+            await self.frontend.memory_complete(model, ids, 1, False, "prewarm", session.trace())

@@ -70,7 +70,8 @@ class Frontend:
         self.cuts.append(messages)
         return [9, 9]
 
-    async def memory_complete(self, model, ids, max_tokens, reasoning_open=False):
+    async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None):
+        assert kind in ("curator", "curator_render", "stem", "prewarm") and set(trace) == {"chat", "user_message"}, (kind, trace)
         if self.block is not None:
             await self.block.wait()
         if max_tokens == 1:
