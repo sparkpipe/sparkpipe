@@ -554,7 +554,8 @@ def canonical_citations(messages, wrapper):
             if ids:
                 used.update(ids)
                 label = ", ".join(f"[{n}]" for n in ids)
-                result[position] = dict(message, content=f"[This result is source {label}; cite it inline as {label}.]\n" + message["content"])
+                note = f"[This result is source {label}; cite it inline as {label}.]\n"
+                result[position] = dict(message, content=note + message["content"], citation_label=note)
                 labelled += 1
         return result, {"citation_markers": len(set(markers.values())), "citation_labelled": labelled,
                         "citation_unmatched": len(set(markers.values()) - used), "citation_files": len(files)}

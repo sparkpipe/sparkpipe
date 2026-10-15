@@ -17,13 +17,15 @@ SYSTEM_NOTE = ("The first user message starts with <ledger>: one summary line pe
                "answer only the user's newest message. When an answer depends on details of an earlier exchange that its line only "
                "summarizes, call expand with that exchange's id to read it in full. A line such as [g3: e1-e16] summarizes a run of earlier "
                "lines; expand g3 to read them. To find where something was said, call search_history; it searches every earlier exchange "
-               "in full, tool results included, and returns matching snippets with the id and part to expand.")
+               "in full, tool results included, and returns matching snippets with the id and part to expand. Tool results carry a header "
+               "such as [e5.t2 fetch_url ... · 9412 tokens]; long ones are split into sections marked [§n] and, after their turn, shrink to a "
+               "stub plus the sections kept; expand e5.t2 with part n to read from section n on.")
 EXPAND_TOOL = {"type": "function", "function": {
     "name": "expand",
     "description": "Show an earlier exchange of this conversation in full (its user message, tool results and reply), or the lines a group summarizes. Long exchanges come in parts.",
     "parameters": {"type": "object", "properties": {
-        "id": {"type": "string", "description": "the id from the ledger, such as e12 or g3"},
-        "part": {"type": "integer", "description": "which part of a long exchange, starting at 1"}},
+        "id": {"type": "string", "description": "an exchange, group or tool result id, such as e12, g3 or e12.t2"},
+        "part": {"type": "integer", "description": "which part of a long exchange, or for a tool result the section to start from, starting at 1"}},
         "required": ["id"]}}}
 SEARCH_TOOL = {"type": "function", "function": {
     "name": "search_history",
@@ -265,6 +267,125 @@ def history_block(node, messages, limit_chars):
     return f"<history id=\"{node}\">\n" + neutral(text + "\n" + "".join(pointers)) + "</history>\n"
 
 
+SECTION_TARGET_CHARS = 2000
+SECTION_MIN_CHARS = 1500
+PART_ID = re.compile(r"^e([1-9][0-9]{0,5})\.t([1-9][0-9]{0,3})$")
+FORGED_LABEL = re.compile(r"\[(?=[eg][0-9]|§)")
+
+
+def canonical_arguments(arguments):
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return arguments
+    return json.dumps(arguments, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def part_key(name, arguments, text):
+    return hashlib.sha256(json.dumps([name, canonical_arguments(arguments), text], ensure_ascii=False).encode()).hexdigest()[:32]
+
+
+def section_spans(text):
+    spans, position = [], 0
+    while position < len(text):
+        if len(text) - position <= SECTION_TARGET_CHARS:
+            spans.append((position, len(text)))
+            break
+        window = text[position + SECTION_MIN_CHARS: position + SECTION_TARGET_CHARS]
+        cut = window.rfind("\n")
+        if cut < 0:
+            cut = max(window.rfind(". "), window.rfind("? "), window.rfind("! "))
+            cut = cut + 1 if cut >= 0 else window.rfind(" ")
+        end = position + SECTION_MIN_CHARS + cut + 1 if cut >= 0 else position + SECTION_TARGET_CHARS
+        spans.append((position, end))
+        position = end
+    return spans
+
+
+def escape_tool(text):
+    return neutral(FORGED_LABEL.sub("[ ", text))
+
+
+def tool_parts(messages):
+    calls, parts = {}, []
+    for index, message in enumerate(messages):
+        for call in message.get("tool_calls") or [] if message.get("role") == "assistant" else []:
+            function = call.get("function") or {}
+            calls[call.get("id")] = (function.get("name") or "tool", function.get("arguments"))
+        if message.get("role") == "tool":
+            name, arguments = calls.get(message.get("tool_call_id"), (message.get("name") or "tool", None))
+            content = text_of(message.get("content"))
+            label = message.get("citation_label") or ""
+            raw = content[len(label):] if label and content.startswith(label) else content
+            parts.append({"index": index, "name": name, "arguments": arguments, "text": raw, "label": label if raw is not content else "",
+                          "key": part_key(name, arguments, raw)})
+    return parts
+
+
+def part_header(node, part, tokens):
+    arguments = canonical_arguments(part["arguments"]) if part["arguments"] is not None else ""
+    arguments = arguments if isinstance(arguments, str) and arguments not in ("{}", "null") else ""
+    shown = escape_tool(arguments[:200] + ("..." if len(arguments) > 200 else ""))
+    return f"[{node} {part['name']}{' ' + shown if shown else ''} · {tokens} tokens]\n" + part["label"]
+
+
+def section_text(text, spans, numbers):
+    return "".join(f"[§{number}] " + escape_tool(text[spans[number - 1][0]:spans[number - 1][1]]) for number in numbers)
+
+
+def arrival_form(node, part, small, cap, count):
+    text = part["text"]
+    tokens = count(text)
+    if tokens <= small:
+        return part_header(node, part, tokens) + escape_tool(text), list(range(1, len(section_spans(text)) + 1)), tokens
+    spans = section_spans(text)
+    sizes = [count(section_text(text, spans, [number])) for number in range(1, len(spans) + 1)]
+    if sum(sizes) <= cap:
+        return part_header(node, part, tokens) + section_text(text, spans, range(1, len(spans) + 1)), list(range(1, len(spans) + 1)), tokens
+    head, used = [], 0
+    for number, size in enumerate(sizes, start=1):
+        if used + size > cap * 3 // 4:
+            break
+        head.append(number)
+        used += size
+    tail, used = [], 0
+    for number in range(len(sizes), head[-1] if head else 0, -1):
+        if used + sizes[number - 1] > cap // 4:
+            break
+        tail.insert(0, number)
+        used += sizes[number - 1]
+    first, last = (head[-1] + 1 if head else 1), (tail[0] - 1 if tail else len(spans))
+    hidden = sum(sizes[first - 1:last])
+    gap = f"[§{first}-§{last} not shown: {hidden} tokens; expand {node} part {first}, or search_history]\n"
+    return part_header(node, part, tokens) + section_text(text, spans, head) + gap + section_text(text, spans, tail), head + tail, tokens
+
+
+def stub_form(node, part, tokens, keep):
+    spans = section_spans(part["text"])
+    kept = [number for number in keep if 1 <= number <= len(spans)]
+    note = f"[{node}: {len(spans)} sections, collapsed{'; kept ' + ', '.join(f'§{n}' for n in kept) if kept else ''}; expand {node} part <n> or search_history to read more]\n"
+    return part_header(node, part, tokens) + note + section_text(part["text"], spans, kept)
+
+
+def part_expand(node, part, start, part_chars):
+    spans = section_spans(part["text"])
+    if not spans:
+        return f"{node} is empty."
+    start = 1 if not isinstance(start, int) or start < 1 else start
+    if start > len(spans):
+        return f"{node} has {len(spans)} section(s)."
+    numbers, size = [], 0
+    for number in range(start, len(spans) + 1):
+        length = spans[number - 1][1] - spans[number - 1][0]
+        if numbers and size + length > part_chars:
+            break
+        numbers.append(number)
+        size += length
+    more = f"\n[sections §{numbers[0]}-§{numbers[-1]} of {len(spans)}; ask for part {numbers[-1] + 1} for more]" if numbers[-1] < len(spans) else ""
+    return f"{node} ({part['name']}), sections §{numbers[0]}-§{numbers[-1]} of {len(spans)}:\n" + section_text(part["text"], spans, numbers) + more
+
+
 def splice_expansions(current, groups):
     result, rounds, pending = [], 0, list(groups)
 
@@ -334,15 +455,17 @@ def lined_prefix(exchanges, lines, raw_min):
     return count
 
 
-def build_layout(head, exchanges, current, lines, open_ids, raw_min=1, open_chars=6000, groups=None, allowed=None):
+def build_layout(head, exchanges, current, lines, open_ids, raw_min=1, open_chars=6000, groups=None, allowed=None, parts=None):
     system = [dict(head[0], content=text_of(head[0].get("content")) + "\n\n" + SYSTEM_NOTE)] + list(head[1:]) if head else [{"role": "system", "content": SYSTEM_NOTE}]
     lined = lined_prefix(exchanges, lines, raw_min)
+    render = parts or (lambda number, messages, past: list(messages))
+    current = render(len(exchanges) + 1, current, False)
     if lined == 0:
-        body = [message for messages in exchanges for message in messages]
+        body = [message for number, messages in enumerate(exchanges, start=1) for message in render(number, messages, True)]
         return {"messages": system + body + list(current), "lined": 0, "open": [], "keys": [], "groups": [], "nodes": []}
     nodes = ledger_nodes(exchanges, lines, groups, lined, allowed)
     ledger = LEDGER_OPEN + ledger_text(nodes) + LEDGER_CLOSE
-    raw = [list(messages) for messages in exchanges[lined:]]
+    raw = [render(lined + offset + 1, messages, True) for offset, messages in enumerate(exchanges[lined:])]
     raw[0][0] = prefix_text(raw[0][0], ledger)
     shown = [node for node in open_ids if NODE_ID.match(node) and int(node[1:]) <= lined]
     reference = REFERENCE_OPEN + "".join(history_block(node, exchanges[int(node[1:]) - 1], open_chars) for node in shown) + REFERENCE_CLOSE
@@ -369,6 +492,40 @@ def curator_instruction(exchanges, lines, missing, open_ids, node_tokens, open_b
         runs = "; ".join(f"{group['id']} replaces " + ", ".join(group["labels"]) for group in regroup)
         text += f" The ledger is over its budget: write one group line each ({line_tokens} tokens at most) for {runs}."
     return text
+
+
+def keep_instruction(large, small, keep_tokens):
+    listing = "; ".join(f"{item['id']} {item['part']['name']} {item['tokens']} tokens, §1-§{item['sections']}"
+                        + ("" if len(item["shown"]) == item["sections"] else " (shown: " + ", ".join(f"§{n}" for n in item["shown"]) + ")") for item in large)
+    example = large[0]["id"]
+    return (f" Tool results longer than {small} tokens are shown from the next turn on only as a stub plus the sections you keep (sections are marked [§n] "
+            f"above): {listing}. Also add \"keep\": {{\"{example}\": [<section numbers>]}} for the sections later questions are likely to need, "
+            f"at most {keep_tokens} tokens in all: the sections holding facts the answer used or that later questions are likely to ask about, "
+            f"none if nothing in them is likely to be needed again; only sections shown above.")
+
+
+def parse_keep(text, large, keep_tokens, size):
+    try:
+        start, end = text.index("{"), text.rindex("}")
+        data = json.loads(text[start:end + 1])
+    except (ValueError, json.JSONDecodeError):
+        return {}
+    raw = data.get("keep") if isinstance(data, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    kept, spent = {}, 0
+    for item in large:
+        numbers = []
+        for number in raw.get(item["id"]) or [] if isinstance(raw.get(item["id"]), list) else []:
+            if isinstance(number, int) and number in item["shown"] and number not in numbers:
+                cost = size(item["part"], [number])
+                if spent + cost > keep_tokens:
+                    break
+                numbers.append(number)
+                spent += cost
+        if numbers:
+            kept[item["id"]] = numbers
+    return kept
 
 
 def clean_line(line):
@@ -466,7 +623,7 @@ class ChatStore:
         key = (user, chat)
         if key in self.memory:
             return self.memory[key]
-        state = {"lines": {}, "sources": {}, "open": {}, "layouts": {}, "pending": {}, "open_by_message": {}, "expansions": {}, "turns": {}, "groups": {}}
+        state = {"lines": {}, "sources": {}, "open": {}, "layouts": {}, "pending": {}, "open_by_message": {}, "expansions": {}, "turns": {}, "groups": {}, "forms": {}}
         path = self.path(user, chat)
         if self.persistent(chat) and path.is_file():
             for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -489,7 +646,9 @@ class ChatStore:
         elif kind == "open" and record.get("after"):
             state["open"][record["after"]] = list(record.get("ids") or [])
         elif kind == "layout" and record.get("message"):
-            state["layouts"][record["message"]] = {k: record[k] for k in ("lined", "open", "keys", "groups") if k in record}
+            state["layouts"][record["message"]] = {k: record[k] for k in ("lined", "open", "keys", "groups", "forms") if k in record}
+        elif kind == "form" and record.get("part") and record["part"] not in state["forms"]:
+            state["forms"][record["part"]] = [int(n) for n in record.get("keep") or [] if isinstance(n, int)]
         elif kind == "group" and GROUP_ID.match(record.get("id") or "") and record["id"] not in state["groups"] and isinstance(record.get("members"), list):
             state["groups"][record["id"]] = {"members": list(record["members"]), "line": record.get("line"), "source": record.get("source")}
         elif kind == "pending" and record.get("message") and record["message"] not in state["pending"]:
@@ -509,6 +668,8 @@ class ChatStore:
         if record.get("type") == "pending" and record.get("message") in state["pending"]:
             return False
         if record.get("type") == "group" and record.get("id") in state["groups"]:
+            return False
+        if record.get("type") == "form" and record.get("part") in state["forms"]:
             return False
         record = dict(record, ts=round(time.time(), 3))
         self.apply(state, record)
@@ -573,6 +734,14 @@ class Session:
             return search_text(self.exchanges, state["lines"], self.layout.get("nodes") or [], arguments.get("query"), arguments.get("match"), self.memory.part_chars)
         part = arguments.get("part", 1)
         node = str(arguments.get("id", ""))
+        found = PART_ID.match(node)
+        if found:
+            number, index = int(found.group(1)), int(found.group(2))
+            messages = self.exchanges[number - 1] if number <= len(self.exchanges) else self.current if number == len(self.exchanges) + 1 else None
+            parts = [part for part in tool_parts(messages or []) if part["name"] not in MEMORY_TOOL_NAMES]
+            if index > len(parts):
+                return f"No tool result {node!r} in this conversation."
+            return part_expand(node, parts[index - 1], part if isinstance(part, int) else 1, self.memory.part_chars)
         if GROUP_ID.match(node):
             group = group_nodes(self.layout.get("nodes") or []).get(node)
             if group is None:
@@ -617,6 +786,7 @@ class Memory:
         self.active = {}
         self.jobs = {}
         self.tasks = {}
+        self.counts = {}
 
     def session(self, model, headers, messages, tools, kwargs):
         settings = getattr(model, "memory", None)
@@ -653,17 +823,50 @@ class Memory:
         lines = state["lines"]
         if frozen and frozen.get("keys") == [exchange_key(m) for m in exchanges[:len(frozen["keys"])]]:
             limited = {key: lines[key] for key in frozen["keys"] if key in lines}
-            layout = build_layout(head, exchanges, current, limited, frozen.get("open", []), 1, self.open_chars, state["groups"], frozen.get("groups", []))
+            parts = self.part_renderer(model, frozen.get("forms") or {})
+            layout = build_layout(head, exchanges, current, limited, frozen.get("open", []), 1, self.open_chars, state["groups"], frozen.get("groups", []), parts)
         else:
-            layout = build_layout(head, exchanges, current, lines, open_ids, 1, self.open_chars, state["groups"])
+            parts = self.part_renderer(model, state["forms"])
+            layout = build_layout(head, exchanges, current, lines, open_ids, 1, self.open_chars, state["groups"], None, parts)
             layout = self.fit(model, user, chat, head, exchanges, current, layout, tools)
+            used = {part["key"]: state["forms"][part["key"]] for messages in exchanges[layout["lined"]:] for part in tool_parts(messages) if part["key"] in state["forms"]}
             self.store.append(user, chat, {"type": "layout", "message": user_message, "lined": layout["lined"], "open": layout["open"], "keys": layout["keys"],
-                                           "groups": layout["groups"]})
+                                           "groups": layout["groups"], "forms": used})
         replay = state["expansions"].get((user_message, message), [])
         if replay:
             layout["messages"] = layout["messages"][:len(layout["messages"]) - len(current)] + splice_expansions(layout["messages"][len(layout["messages"]) - len(current):], replay)
         return Session(self, model, user, chat, user_message, parent, message, head, exchanges, current, layout,
                        list(tools or []) + list(MEMORY_TOOLS), dict(kwargs))
+
+    def part_settings(self, model):
+        settings = model.memory
+        return int(settings.get("part_small_tokens", 1024)), int(settings.get("part_cap_tokens", 12288)), int(settings.get("keep_tokens", 4096))
+
+    def count(self, model, text):
+        key = (model.id, hashlib.sha256(text.encode()).hexdigest())
+        if key not in self.counts:
+            if len(self.counts) > 8192:
+                self.counts.clear()
+            self.counts[key] = self.frontend.memory_count(model, text)
+        return self.counts[key]
+
+    def part_renderer(self, model, forms):
+        small, cap, _ = self.part_settings(model)
+        count = lambda text: self.count(model, text)
+
+        def render(number, messages, past):
+            result = list(messages)
+            parts = [part for part in tool_parts(result) if part["name"] not in MEMORY_TOOL_NAMES]
+            for index, part in enumerate(parts, start=1):
+                node = f"e{number}.t{index}"
+                if past and part["key"] in forms:
+                    content = stub_form(node, part, count(part["text"]), forms[part["key"]])
+                else:
+                    content = arrival_form(node, part, small, cap, count)[0]
+                result[part["index"]] = dict(result[part["index"]], content=content)
+            return result
+
+        return render
 
     def budgets(self, model):
         settings = model.memory
@@ -691,7 +894,7 @@ class Memory:
             if not limit or self.prompt_size(model, layout, tools) <= limit:
                 return layout
             if layout["open"]:
-                layout = build_layout(head, exchanges, current, state["lines"], [], 1, self.open_chars, state["groups"])
+                layout = build_layout(head, exchanges, current, state["lines"], [], 1, self.open_chars, state["groups"], None, self.part_renderer(model, state["forms"]))
                 continue
             if layout["lined"] < len(exchanges) - 1:
                 for index in range(layout["lined"], len(exchanges) - 1):
@@ -703,7 +906,7 @@ class Memory:
                 run = nodes[:max(2, len(nodes) // 2)]
                 group = {"id": f"g{next_group(state['groups'])}", "first": run[0]["first"], "last": run[-1]["last"]}
                 self.store.append(user, chat, {"type": "group", "id": group["id"], "members": [node["ref"] for node in run], "line": stub_group_line(group), "source": "fit"})
-            layout = build_layout(head, exchanges, current, state["lines"], [], 1, self.open_chars, state["groups"])
+            layout = build_layout(head, exchanges, current, state["lines"], [], 1, self.open_chars, state["groups"], None, self.part_renderer(model, state["forms"]))
         print(json.dumps({"event": "chat_memory_fit_short", "model": model.id, "lined": layout["lined"], "nodes": len(layout["nodes"])}), flush=True)
         return layout
 
@@ -770,7 +973,21 @@ class Memory:
         self.kick(model)
 
     def node_tokens(self, session):
-        return {f"e{i + 1}": len(exchange_text(messages)) // 4 for i, messages in enumerate(session.exchanges)}
+        sizes = {}
+        for index, messages in enumerate(session.exchanges):
+            user, answer, _ = reading_parts(messages)
+            sizes[f"e{index + 1}"] = (len(user) + len(answer)) // 4 + 16
+        return sizes
+
+    def large_parts(self, model, session):
+        small, cap, _ = self.part_settings(model)
+        number, found = len(session.exchanges) + 1, []
+        parts = [part for part in tool_parts(session.current) if part["name"] not in MEMORY_TOOL_NAMES]
+        for index, part in enumerate(parts, start=1):
+            _, shown, tokens = arrival_form(f"e{number}.t{index}", part, small, cap, lambda text: self.count(model, text))
+            if tokens > small:
+                found.append({"id": f"e{number}.t{index}", "part": part, "tokens": tokens, "shown": shown, "sections": len(section_spans(part["text"]))})
+        return found
 
     async def curate(self, model, job):
         session = job["session"]
@@ -780,7 +997,11 @@ class Memory:
         settings = model.memory
         planned = self.plan_regroup(model, session)
         job["planned"] = planned
+        large = self.large_parts(model, session)
+        job["large"] = large
         instruction = curator_instruction(everything, {}, indices, session.layout["open"], sizes, int(settings.get("open_budget", 1500)), int(settings.get("line_tokens", 48)), planned)
+        if large:
+            instruction += keep_instruction(large, self.part_settings(model)[0], self.part_settings(model)[2])
         continued = None
         if job["prompt_ids"] and job["token_ids"] and job["attempts"] == 0:
             continued = self.frontend.memory_continuation_ids(model, job["messages"], session.tools, session.kwargs, job["prompt_ids"], job["token_ids"], instruction, settings.get("curator_suffix"))
@@ -800,6 +1021,9 @@ class Memory:
             if group["id"] in grouped:
                 self.store.append(session.user, session.chat, {"type": "group", "id": group["id"], "members": group["members"], "line": grouped[group["id"]], "source": "curator"})
         self.store.append(session.user, session.chat, {"type": "open_after", "message": session.message, "ids": opened})
+        kept = parse_keep(text, large, self.part_settings(model)[2], lambda part, numbers: self.count(model, section_text(part["text"], section_spans(part["text"]), numbers)))
+        for item in large:
+            self.store.append(session.user, session.chat, {"type": "form", "part": item["part"]["key"], "keep": kept.get(item["id"], []), "source": "curator"})
         return complete and len(grouped) == len(planned)
 
     def plan_regroup(self, model, session):
@@ -820,6 +1044,8 @@ class Memory:
         state = self.store.load(session.user, session.chat)
         for group in job.get("planned") or []:
             self.store.append(session.user, session.chat, {"type": "group", "id": group["id"], "members": group["members"], "line": stub_group_line(group), "source": "fallback"})
+        for item in job.get("large") or []:
+            self.store.append(session.user, session.chat, {"type": "form", "part": item["part"]["key"], "keep": [], "source": "fallback"})
         for index in job["missing"]:
             if exchange_key(session.exchanges[index]) not in state["lines"]:
                 self.write_line(session, index, fallback_line(session.exchanges[index]), "fallback")
@@ -846,9 +1072,7 @@ class Memory:
         state = self.store.load(session.user, session.chat)
         finished = session.exchanges + [list(session.current) + [{"role": "assistant", "content": content.strip()}]]
         layout = build_layout(session.head, finished, [{"role": "user", "content": SENTINEL}], state["lines"],
-                              list(state["open_by_message"].get(session.message, [])), 1, self.open_chars, state["groups"])
-        if layout["lined"] == 0:
-            return
+                              list(state["open_by_message"].get(session.message, [])), 1, self.open_chars, state["groups"], None, self.part_renderer(model, state["forms"]))
         ids = self.frontend.memory_cut_ids(model, layout["messages"], session.tools, session.kwargs, SENTINEL)
         if ids:
             await self.frontend.memory_complete(model, ids, 1, False, "prewarm", session.trace())

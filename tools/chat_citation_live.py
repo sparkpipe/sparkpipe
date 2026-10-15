@@ -43,6 +43,8 @@ def main():
     parser.add_argument("--model", default="kimi-k3")
     parser.add_argument("--salt", default="")
     parser.add_argument("--no-chat-id", action="store_true", help="send no Open WebUI ids, as a non-Open WebUI client would")
+    parser.add_argument("--follow-up", default="", help="a second question asked after the fetch turn, with the turn replayed as Open WebUI does")
+    parser.add_argument("--think", type=float, default=0.0, help="seconds between the two turns")
     args = parser.parse_args()
     head = Path(args.head_file).read_text()
     secret = Path(args.secret_file).read_text().strip() if args.secret_file else None
@@ -50,6 +52,7 @@ def main():
     messages = [{"role": "system", "content": "You are SparkPipe Chat, a helpful assistant."}, {"role": "user", "content": question}]
     chat, user_message, message = "citelive-" + uuid.uuid4().hex[:12], str(uuid.uuid4()), str(uuid.uuid4())
     fetched = []
+    final = ""
     for round_index in range(1, 6):
         headers = {"Content-Type": "application/json"}
         if not args.no_chat_id:
@@ -66,6 +69,7 @@ def main():
                           "completion_tokens": usage.get("completion_tokens"), "seconds": round(time.monotonic() - started, 2), "finish": choice["finish_reason"],
                           "calls": [json.loads(c["function"]["arguments"]).get("url") for c in calls], "answer": (choice["message"].get("content") or "")[-160:]}), flush=True)
         if not calls:
+            final = (choice["message"].get("content") or "").strip()
             break
         assistant = {"role": "assistant", "content": (choice["message"].get("content") or "").strip(),
                      "tool_calls": [{"id": c["id"], "type": "function", "function": {"name": c["function"]["name"], "arguments": json.dumps(json.loads(c["function"]["arguments"]), separators=(",", ":"))}} for c in calls]}
@@ -77,6 +81,27 @@ def main():
         markers = "\n".join(f'<source id="{i + 1}" name="{url}" resource-id="{url}"></source>' for i, url in enumerate(fetched))
         user_index = max(i for i, m in enumerate(messages) if m["role"] == "user")
         messages[user_index] = dict(messages[user_index], content=head + "<context>\n" + markers + "\n</context>\n" + "\n" + question)
+
+    if not args.follow_up:
+        return
+    time.sleep(args.think)
+    user_index = max(i for i, m in enumerate(messages) if m["role"] == "user")
+    messages[user_index] = dict(messages[user_index], content=question)
+    messages = messages + [{"role": "assistant", "content": final}, {"role": "user", "content": args.follow_up}]
+    headers = {"Content-Type": "application/json"}
+    if not args.no_chat_id:
+        headers.update({"X-OpenWebUI-Chat-Id": chat, "X-OpenWebUI-User-Message-Id": str(uuid.uuid4()), "X-OpenWebUI-Message-Id": str(uuid.uuid4()),
+                        "X-OpenWebUI-User-Message-Parent-Id": message, "X-OpenWebUI-Task": ""})
+        if secret:
+            headers["X-OpenWebUI-User-Jwt"] = jwt(secret, "citelive-user")
+    body = {"model": args.model, "messages": messages, "tools": TOOLS, "max_tokens": 1500, "temperature": 0, "reasoning_effort": "low"}
+    started = time.monotonic()
+    reply = json.load(urllib.request.urlopen(urllib.request.Request(args.url, data=json.dumps(body).encode(), headers=headers), timeout=900))
+    usage = reply.get("usage", {})
+    choice = reply["choices"][0]
+    print(json.dumps({"turn": 2, "prompt_tokens": usage.get("prompt_tokens"), "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
+                      "seconds": round(time.monotonic() - started, 2), "finish": choice["finish_reason"],
+                      "calls": [c["function"]["name"] for c in choice["message"].get("tool_calls") or []], "answer": (choice["message"].get("content") or "")[-200:]}), flush=True)
 
 
 if __name__ == "__main__":

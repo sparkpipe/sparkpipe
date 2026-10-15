@@ -128,7 +128,8 @@ async def run():
         assert memory.session(type("Plain", (), {"id": "plain", "memory": None})(), headers("u1"), conversation(1), [], {}) is None
 
         first = await turn(memory, frontend, model, 1, "u1", None, "a1", '{"lines": {"e1": "The user asked question 1; the assistant gave answer 1."}, "open": []}')
-        assert frontend.cuts == [], "no stem while the next ledger would be empty"
+        assert len(frontend.cuts) == 1 and frontend.cuts[0][-1]["content"] == cm.SENTINEL and cm.LEDGER_OPEN not in json.dumps(frontend.cuts[0]), \
+            "no stem while the next ledger would be empty, but the next turn is pre-warmed"
         assert cm.SYSTEM_NOTE in first.messages[0]["content"] and [t["function"]["name"] for t in first.tools[-2:]] == ["expand", "search_history"] and first.layout["lined"] == 0
         state = memory.store.load("user-1", "chat-1")
         assert state["pending"]["a1"]["line"].startswith("The user asked question 1"), state["pending"]
@@ -137,9 +138,9 @@ async def run():
         second = await turn(memory, frontend, model, 2, "u2", "a1", "a2", '{"lines": {"e2": "The user asked question 2; the assistant gave answer 2."}, "open": ["e1"]}')
         key1 = cm.exchange_key(conversation(2)[1:3])
         assert state["lines"][key1].startswith("The user asked question 1") and second.layout["lined"] == 0
-        assert len(frontend.cuts) == 2 and frontend.cuts[0][-1]["content"] == cm.LEDGER_OPEN + "[e1] " + state["lines"][key1] + "\n" + cm.SENTINEL, frontend.cuts
+        assert len(frontend.cuts) == 3 and frontend.cuts[1][-1]["content"] == cm.LEDGER_OPEN + "[e1] " + state["lines"][key1] + "\n" + cm.SENTINEL, frontend.cuts
         assert state["open_by_message"]["a2"] == ["e1"]
-        prewarm = frontend.cuts[1]
+        prewarm = frontend.cuts[2]
 
         third = await turn(memory, frontend, model, 3, "u3", "a2", "a3", '{"lines": {"e3": "The user asked question 3."}, "open": []}')
         assert third.layout["lined"] == 1 and third.layout["open"] == ["e1"], third.layout
@@ -178,8 +179,8 @@ async def run():
                                    {"role": "tool", "tool_call_id": "f1", "content": "page"}]
         resumed = memory.session(model, headers("r3", "a2", "r3a", chat="chat-round"), followed, [], {})
         tail = [(m["role"], m.get("content"), m.get("name")) for m in resumed.messages[-6:]]
-        assert tail[0][0] == "assistant" and tail[1] == ("tool", "web results", None) and tail[2][1] == "Let me check the notes. " and tail[3][2] == "expand" \
-            and tail[4][:2] == ("assistant", "Now I fetch it.") and tail[5][1] == "page", tail
+        assert tail[0][0] == "assistant" and tail[1][1].startswith("[e3.t1 search_web · ") and tail[1][1].endswith("]\nweb results") and tail[2][1] == "Let me check the notes. " \
+            and tail[3][2] == "expand" and tail[4][:2] == ("assistant", "Now I fetch it.") and tail[5][1].startswith("[e3.t2 fetch_url · ") and tail[5][1].endswith("page"), tail
         retried = memory.session(model, headers("r3", "a2", "r3b", chat="chat-round"), followed, [], {})
         assert not any(m.get("name") == "expand" for m in retried.messages), "a regenerate never replays another attempt's expansions"
         searching = memory.session(model, headers("u3", "a2", "a3"), conversation(3), [], {})
@@ -286,9 +287,35 @@ async def run():
         roomy.context_tokens = 131072
         assert memory.session(roomy, headers("r40", None, "z40", chat="chat-roomy"), conversation(40), [], {}).layout["lined"] == 0, "nothing is folded while the prompt fits"
 
+        page = "".join(f"Paragraph {i}: the scheduler gained {i * 3} percent after fix #{1000 + i}.\n" for i in range(400))
+        researched = [{"role": "system", "content": "Be helpful."}, {"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}, {"role": "user", "content": "Read the release notes."},
+                      {"role": "assistant", "content": "", "tool_calls": [{"id": "p1", "type": "function", "function": {"name": "fetch_url", "arguments": {"url": "https://a.example/notes"}}}]},
+                      {"role": "tool", "tool_call_id": "p1", "content": page}]
+        memory.store.append("user-1", "chat-parts", {"type": "line", "key": cm.exchange_key(researched[1:3]), "line": "The user greeted the assistant.", "source": "curator"})
+        reading = memory.session(model, headers("k1", None, "k1a", chat="chat-parts"), researched, [], {})
+        shown_page = reading.messages[-1]["content"]
+        assert shown_page.startswith("[e2.t1 fetch_url ") and "[§1] Paragraph 0:" in shown_page and "[§2] " in shown_page, shown_page[:200]
+        frontend.calls.clear()
+        frontend.replies[:] = ['{"lines": {"e2": "The user asked to read the release notes; the assistant summarized them."}, "open": [], "keep": {"e2.t1": [2, 3, 999], "e9.t9": [1]}}']
+        reading.finished(reading.messages, "The notes list 400 paragraphs.", "", [], "stop")
+        await settle(memory, model)
+        instruction = frontend.calls[-1][-1]["content"]
+        assert "e2.t1 fetch_url" in instruction and '"keep"' in instruction and "§1-§" in instruction, instruction[-400:]
+        part = cm.tool_parts(researched)[0]
+        assert memory.store.load("user-1", "chat-parts")["forms"][part["key"]] == [2, 3], "only shown sections of known parts are kept"
+        after = researched + [{"role": "assistant", "content": "The notes list 400 paragraphs."}, {"role": "user", "content": "Which fix helped most?"}]
+        later = memory.session(model, headers("k2", "k1a", "k2a", chat="chat-parts"), after, [], {})
+        collapsed = next(m["content"] for m in later.messages if m["role"] == "tool")
+        assert "collapsed; kept §2, §3" in collapsed and "[§2] " in collapsed and "[§3] " in collapsed and "Paragraph 0:" not in collapsed, collapsed[:300]
+        assert len(collapsed) < len(page) // 4, "the newest exchange's large result shrinks to a stub plus the kept sections"
+        assert frontend.cuts[-1][-3]["role"] == "tool" and frontend.cuts[-1][-3]["content"] == collapsed, "the pre-warm renders the collapsed form the next turn uses"
+        read_back = later.expand({"function": {"name": "expand", "arguments": {"id": "e2.t1", "part": 10}}})
+        assert read_back.startswith("e2.t1 (fetch_url), sections §10-") and "[§10] " in read_back, read_back[:120]
+        assert later.expand({"function": {"name": "expand", "arguments": {"id": "e2.t7"}}}).startswith("No tool result")
+
         reopened = cm.Memory({"store": tmp + "/store", "jwt_secret_file": tmp + "/secret"}, frontend).store.load("user-1", "chat-1")
         assert reopened["lines"] == state["lines"] and reopened["pending"].keys() == state["pending"].keys()
 
 
 asyncio.run(run())
-print("PASS test_chat_memory_session: verified identity only, system note, expand and search_history from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, state that survives a restart")
+print("PASS test_chat_memory_session: verified identity only, system note, expand and search_history from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, tool results with ids and sections, collapsed after their turn to the kept sections, state that survives a restart")
