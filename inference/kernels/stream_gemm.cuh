@@ -510,7 +510,7 @@ static int32_t LmStreamGemmLaunchWide(const LmStreamGemmArguments *args, uint32_
 	const uint32_t groups = args->group_row_offset == 0 ? 1u : args->groups;
 	const uint32_t mean_rows = (args->rows + groups - 1u) / groups;
 	const uint64_t wide = args->output_dimension / 256u,narrow = args->output_dimension / 128u;
-	if ( args->rows < LM_STREAM_WIDE_ROWS )
+	if ( args->rows < LM_STREAM_WIDE_ROWS || groups > 1u )
 		return(LM_LAUNCH_ERR_TILE);
 	if ( mean_rows > 64u && args->output_dimension % 128u == 0u && ((uint64_t)args->rows + 127u) / 128u * narrow >= 2u * (uint64_t)multiprocessors )
 		return(LmStreamGemmLaunchTile<Format,128u,128u,128u,128u>(args,((uint64_t)args->rows / 128u + groups) * narrow,multiprocessors,stream));
