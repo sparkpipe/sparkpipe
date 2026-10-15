@@ -199,10 +199,15 @@ after the first token.
   P frames: 109 of 193 near 241 rows keeping 138 tokens each (540 ms), 24
   near 88 rows (377 ms). Whole-file edits gain 1.9x over T and about 8.4x
   over no speculation. SEARCH/REPLACE loses 4%: on the 17 streams equal to
-  T3, short replies (45-224 tokens) run 5-14% slower, because the pooled
-  acceptance statistics of whole-file copies make frames on short copies too
-  long (39-59% of rows kept). 17 of 20 P streams equal T3; editsr_01, 05 and
-  09 diverge in both P runs.
+  T3, short replies (45-224 tokens) run 5-14% slower in both P runs while the
+  three T runs agree within 2% per task. The acceptance statistics are pooled
+  with whole-file copies, so a frame on a short copy runs far past the copy's
+  end (39-59% of rows kept). Replaying the N1 streams against these frame
+  costs reproduces it (SEARCH/REPLACE 39.2 -> 38.1 tok/s) once the replay
+  stops seeing where each reply ends. Capping a frame at a multiple of how
+  long the current copy has already matched recovers SEARCH/REPLACE (39.2-40.0)
+  but costs whole-file edits 6-20% (203-239 against 254); not adopted. 17 of
+  20 P streams equal T3; editsr_01, 05 and 09 diverge in both P runs.
 - Near-tie probe (hold 3, control build): at the first divergence of
   editsr_01, 05 and 09 the multi-row path serves the spec stream's token, by
   1.63, 0.54 and 0.31 nats over the control's token. These are not tiny
