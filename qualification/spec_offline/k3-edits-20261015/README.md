@@ -33,3 +33,32 @@ included: per-round host and draft overhead (about 2-3 ms), sampled
 traffic (chat runs at temperature 1, which needs a sampling-correct verify
 rule), and the earlier finding that prose, chat and code generation stay
 below no-speculation with these drafters (lanes/spec-offline.md, GLM Flash).
+
+## Long frames and the measured wave cost (2026-10-15)
+
+`rounds-long-*.json`: the same replay with chain depths up to 255
+(`tools/spec_offline/tree.py` now accepts depths up to 255).
+
+| k | editfull lookup / suffix | editsr lookup / suffix |
+| ---: | --- | --- |
+| 15 | 12.7 / 14.2 | 4.1 / 4.9 |
+| 31 | 21.4 / 25.1 | 4.5 / 5.6 |
+| 63 | 34.1 / 40.9 | 4.7 / 5.9 |
+| 127 | 47.7 / 59.3 | 4.8 / 5.9 |
+| 255 | 61.6 / 76.4 | 4.8 / 5.9 |
+
+`wave-cost.jsonl`: the time to the first token of a request that adds r
+random tokens to a cached 2,049-token prefix, max_tokens 1, through each
+model's current prefill path, n=5 (K3) and n=1 (GLM Full), in one exclusive
+hold each:
+
+| r | 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| K3 ms | 124 | 132 | 158 | 230 | 271 | 340 | 529 | 672 | 1021 |
+| GLM Full ms | 57 | 67 | 83 | 122 | 182 | 234 | | | |
+
+GLM Full requests of 64 and more new tokens failed in that probe (cause
+not yet known). Priced with these costs, whole-file edits commit about
+34-41 tokens per 529 ms round at k=63 and 48-59 per 672 ms at k=127 on
+K3, about 65-88 tok/s (estimate); SEARCH/REPLACE edits need frames sized
+to the match.
