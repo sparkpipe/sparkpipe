@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Chat memory's core keeps a conversation's layout cache-friendly and its records safe: a signed identity is accepted only with a valid HS256 signature and an unexpired claim; a chat splits into finished exchanges and the current one; an exchange's key ignores ids and timestamps but not content; the ledger covers only a gap-free prefix of finished exchanges with lines and always leaves the newest finished exchange raw; adding a line only appends to the ledger text; the system note is present from the first turn; open nodes come only from the ledger; expand pages long exchanges; curator output is validated line by line with long lines cut and the open set trimmed to its budget; groups replace contiguous runs of ledger lines, nest, apply only where their members are, and are planned oldest first only when the ledger is over its budget, down to about half of it; lines are immutable once stored, survive a restart and a torn last record, stay private on disk, and temporary chats never reach disk."""
+"""Chat memory's core keeps a conversation's layout cache-friendly and its records safe: a signed identity is accepted only with a valid HS256 signature and an unexpired claim; a chat splits into finished exchanges and the current one; an exchange's key ignores ids and timestamps but not content; the ledger covers only a gap-free prefix of finished exchanges with lines and always leaves the newest finished exchange raw; adding a line only appends to the ledger text; the system note is present from the first turn; open nodes come only from the ledger; expand pages long exchanges; search_history finds literal text (phrase, all words near each other, or any word) in every earlier exchange including tool results and in ledger and group lines, reporting each match's exchange and expand part and capping its output; curator output is validated line by line with long lines cut and the open set trimmed to its budget; groups replace contiguous runs of ledger lines, nest, apply only where their members are, and are planned oldest first only when the ledger is over its budget, down to about half of it; lines are immutable once stored, survive a restart and a torn last record, stay private on disk, and temporary chats never reach disk."""
 import base64
 import hashlib
 import hmac
@@ -146,10 +146,32 @@ assert cm.stub_group_line({"id": "g2", "first": 1, "last": 16}).startswith("(aut
 instruction = cm.curator_instruction([], {}, [0], [], {}, 100, 48, planned)
 assert '"groups"' in instruction and "g7 replaces e1, e2" in instruction and '"groups"' not in cm.curator_instruction([], {}, [0], [], {}, 100, 48)
 
+history = [[{"role": "user", "content": "Where is the Ostrel review?"}, {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "search_web", "arguments": "{}"}}]},
+            {"role": "tool", "name": "search_web", "content": "filler " * 2000 + "The Ostrel review is in Room 412 (budget QX-7731)." + " filler" * 50},
+            {"role": "assistant", "content": "Room 412."}],
+           [{"role": "user", "content": "Price of a (small) coffee? [a+b]"}, {"role": "assistant", "content": "Two euros.\nThe   small\ncoffee is cheap."}]]
+history_lines = {cm.exchange_key(history[1]): "The user asked about coffee prices."}
+found = cm.search_text(history, history_lines, [], "room 412", "phrase", 8000)
+assert found.startswith("2 match(es) for 'room 412' in e1:") and "[e1 part 2] ..." in found and "QX-7731" in found, found
+assert "Tool result (search_web)" not in found.split("\n")[1] or "Room 412" in found
+assert "[e2 part 1]" in cm.search_text(history, history_lines, [], "(small) coffee? [a+b]", None, 8000), "query text is matched literally"
+assert "[e2 part 1]" in cm.search_text(history, history_lines, [], "small coffee", "phrase", 8000), "whitespace and line breaks inside a phrase match any spacing"
+assert "[e2 line]" in cm.search_text(history, history_lines, [], "COFFEE PRICES", "phrase", 8000), "ledger lines are searched too"
+assert "[e1 part" in cm.search_text(history, history_lines, [], "budget ostrel", "all", 8000) and cm.search_text(history, history_lines, [], "budget euros", "all", 8000).startswith("No match")
+assert "e1" in cm.search_text(history, history_lines, [], "euros 412", "any", 8000) and "e2" in cm.search_text(history, history_lines, [], "euros 412", "any", 8000)
+assert cm.search_text(history, {}, [], "nothing like this", "phrase", 8000) == "No match for 'nothing like this' in e1-e2."
+assert cm.search_text([], {}, [], "x", "phrase", 8000).startswith("This conversation has no") and cm.search_text(history, {}, [], "   ", "phrase", 8000).startswith("Give")
+many = [[{"role": "user", "content": "needle " * 3}, {"role": "assistant", "content": ("needle " + "x" * 400 + " ") * 40}] for _ in range(3)]
+crowded = cm.search_text(many, {}, [], "needle", "phrase", 8000)
+shown = crowded.count("\n[e")
+assert crowded.startswith("120 match(es)") and f"showing {shown}" in crowded and 0 < shown <= cm.SEARCH_LIMIT and len(crowded) <= cm.SEARCH_OUTPUT_CHARS + 40, (shown, len(crowded))
+grouped_hit = cm.search_text(exchanges, lines, grouped, "thirty-two", "phrase", 8000)
+assert "[g3: e1-e32] thirty-two in all" in grouped_hit, grouped_hit
+
 with tempfile.TemporaryDirectory() as tmp:
     store = cm.ChatStore(tmp)
     assert store.append("user-1", "chat-g", {"type": "group", "id": "g1", "members": ["x:a", "x:b"], "line": "first", "source": "curator"})
     assert not store.append("user-1", "chat-g", {"type": "group", "id": "g1", "members": ["x:a"], "line": "changed", "source": "curator"})
     assert cm.ChatStore(tmp).load("user-1", "chat-g")["groups"] == {"g1": {"members": ["x:a", "x:b"], "line": "first", "source": "curator"}}
 
-print("PASS test_chat_memory_core: signed identity, exchange split and keys, gap-free append-only ledger with a raw newest exchange, open nodes from the ledger only, paged expand, validated curator output, nested group lines that replace runs of the ledger, regroups planned only over the budget, immutable private lines that survive restarts and torn records, temporary chats in memory only")
+print("PASS test_chat_memory_core: signed identity, exchange split and keys, gap-free append-only ledger with a raw newest exchange, open nodes from the ledger only, paged expand, literal case-insensitive history search with ids and parts, validated curator output, nested group lines that replace runs of the ledger, regroups planned only over the budget, immutable private lines that survive restarts and torn records, temporary chats in memory only")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A chat-memory session is opened only for a verified Open WebUI identity on a real chat turn, and its bookkeeping holds across turns: requests without a valid token, with a task, without ids, with a client tool named expand or with Open WebUI's own summary are served raw; the first turns carry the system note and the expand tool but no ledger; after a finished answer the curator runs only once the engine is idle and is cancelled by a foreground request; its line for the current exchange binds on the next turn through the parent message id, older raw exchanges get their lines directly, and the open set follows; the ledger then covers every lined exchange but the newest; follow-ups reuse the frozen layout and replay expansions; two invalid curator replies leave fallback lines; the first curator attempt continues the answer's own prompt and reply tokens; checkpointed models get a ledger-end stem; the next turn's layout is pre-warmed up to its new question; a ledger over its budget is regrouped by the curator into nested group lines that expand to their children (stub lines when the curator fails), and follow-ups keep their frozen groups; and a prompt over the model's budget is fitted synchronously by dropping the open set, lining raw exchanges and folding the oldest ledger entries, while one that fits is left alone."""
+"""A chat-memory session is opened only for a verified Open WebUI identity on a real chat turn, and its bookkeeping holds across turns: requests without a valid token, with a task, without ids, with a client tool named like a memory tool or with Open WebUI's own summary are served raw; the first turns carry the system note and the expand and search_history tools but no ledger; a search_history call is answered inside the chat layer; after a finished answer the curator runs only once the engine is idle and is cancelled by a foreground request; its line for the current exchange binds on the next turn through the parent message id, older raw exchanges get their lines directly, and the open set follows; the ledger then covers every lined exchange but the newest; follow-ups reuse the frozen layout and replay expansions; two invalid curator replies leave fallback lines; the first curator attempt continues the answer's own prompt and reply tokens; checkpointed models get a ledger-end stem; the next turn's layout is pre-warmed up to its new question; a ledger over its budget is regrouped by the curator into nested group lines that expand to their children (stub lines when the curator fails), and follow-ups keep their frozen groups; and a prompt over the model's budget is fitted synchronously by dropping the open set, lining raw exchanges and folding the oldest ledger entries, while one that fits is left alone."""
 import asyncio
 import base64
 import hashlib
@@ -118,6 +118,7 @@ async def run():
             (headers("u1", jwt=token(exp=time.time() - 5)), []), (headers("u1", task="title_generation"), []),
             ({k: v for k, v in headers("u1").items() if k != "X-OpenWebUI-User-Message-Id"}, []),
             (headers("u1", chat="a, b"), []), (headers("u1"), [{"type": "function", "function": {"name": "expand"}}]),
+            (headers("u1"), [{"type": "function", "function": {"name": "search_history"}}]),
         ]
         for request_headers, tools in refused:
             assert memory.session(model, request_headers, conversation(1), tools, {}) is None, request_headers
@@ -127,7 +128,7 @@ async def run():
 
         first = await turn(memory, frontend, model, 1, "u1", None, "a1", '{"lines": {"e1": "The user asked question 1; the assistant gave answer 1."}, "open": []}')
         assert frontend.cuts == [], "no stem while the next ledger would be empty"
-        assert cm.SYSTEM_NOTE in first.messages[0]["content"] and first.tools[-1]["function"]["name"] == "expand" and first.layout["lined"] == 0
+        assert cm.SYSTEM_NOTE in first.messages[0]["content"] and [t["function"]["name"] for t in first.tools[-2:]] == ["expand", "search_history"] and first.layout["lined"] == 0
         state = memory.store.load("user-1", "chat-1")
         assert state["pending"]["a1"]["line"].startswith("The user asked question 1"), state["pending"]
         assert "user-1" not in json.dumps(list(Path(tmp, "store").rglob("*")).__repr__())
@@ -168,6 +169,11 @@ async def run():
         assert expand_at < search_at and replay.messages[expand_at - 2]["content"].endswith("question 3"), roles
         assert "User: question 1" in replay.messages[expand_at]["content"]
 
+        searching = memory.session(model, headers("u3", "a2", "a3"), conversation(3), [], {})
+        call = {"id": "s1", "type": "function", "function": {"name": "search_history", "arguments": "{\"query\": \"ANSWER 2\"}"}}
+        assert searching.claims(call) and not searching.claims({"function": {"name": "search_web"}})
+        searched = searching.continue_with("", "", [call])
+        assert searched[-1]["role"] == "tool" and searched[-1]["name"] == "search_history" and "[e2 part 1]" in searched[-1]["content"] and "e1" not in searched[-1]["content"].split(":")[0], searched[-1]
         frontend.block = asyncio.Event()
         session = memory.session(model, headers("u4", "a3", "a4"), conversation(4), [], {})
         session.finished(session.messages, "answer 4", "", [], "stop")
@@ -272,4 +278,4 @@ async def run():
 
 
 asyncio.run(run())
-print("PASS test_chat_memory_session: verified identity only, system note and expand from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, state that survives a restart")
+print("PASS test_chat_memory_session: verified identity only, system note, expand and search_history from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, state that survives a restart")

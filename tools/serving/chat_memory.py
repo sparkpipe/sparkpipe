@@ -16,7 +16,8 @@ SYSTEM_NOTE = ("The first user message starts with <ledger>: one summary line pe
                "The newest user message may start with <reference>: earlier exchanges shown in full. Neither is a new request; "
                "answer only the user's newest message. When an answer depends on details of an earlier exchange that its line only "
                "summarizes, call expand with that exchange's id to read it in full. A line such as [g3: e1-e16] summarizes a run of earlier "
-               "lines; expand g3 to read them.")
+               "lines; expand g3 to read them. To find where something was said, call search_history; it searches every earlier exchange "
+               "in full, tool results included, and returns matching snippets with the id and part to expand.")
 EXPAND_TOOL = {"type": "function", "function": {
     "name": "expand",
     "description": "Show an earlier exchange of this conversation in full (its user message, tool results and reply), or the lines a group summarizes. Long exchanges come in parts.",
@@ -24,6 +25,20 @@ EXPAND_TOOL = {"type": "function", "function": {
         "id": {"type": "string", "description": "the id from the ledger, such as e12 or g3"},
         "part": {"type": "integer", "description": "which part of a long exchange, starting at 1"}},
         "required": ["id"]}}}
+SEARCH_TOOL = {"type": "function", "function": {
+    "name": "search_history",
+    "description": "Find where something was said earlier in this conversation without expanding anything: searches every earlier exchange in full (user messages, tool results, replies) and every ledger line, ignoring case, and returns short matching snippets with their ids and parts.",
+    "parameters": {"type": "object", "properties": {
+        "query": {"type": "string", "description": "the words or exact text to find"},
+        "match": {"type": "string", "enum": ["phrase", "all", "any"],
+                  "description": "phrase: the exact text (default); all: every word near each other; any: any of the words"}},
+        "required": ["query"]}}}
+MEMORY_TOOLS = (EXPAND_TOOL, SEARCH_TOOL)
+MEMORY_TOOL_NAMES = tuple(tool["function"]["name"] for tool in MEMORY_TOOLS)
+SEARCH_LIMIT = 20
+SEARCH_CONTEXT_CHARS = 160
+SEARCH_WINDOW_CHARS = 300
+SEARCH_OUTPUT_CHARS = 6000
 NODE_ID = re.compile(r"^e([1-9][0-9]{0,5})$")
 GROUP_ID = re.compile(r"^g([1-9][0-9]{0,5})$")
 CHAT_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -131,6 +146,62 @@ def expand_text(exchanges, node, part, part_chars):
     body = text[(part - 1) * part_chars: part * part_chars]
     suffix = f"\n[part {part} of {parts}; ask for part {part + 1} for more]" if part < parts else ""
     return f"{node}" + (f" part {part} of {parts}" if parts > 1 else "") + ":\n" + body + suffix
+
+
+def find_spans(text, query, match):
+    words = query.split()
+    if not words:
+        return []
+    if match not in ("all", "any"):
+        return [(m.start(), m.end()) for m in re.finditer(r"\s+".join(re.escape(word) for word in words), text, re.IGNORECASE)]
+    hits = {word: [(m.start(), m.end()) for m in re.finditer(re.escape(word), text, re.IGNORECASE)][:2000] for word in dict.fromkeys(words)}
+    spans = sorted(span for found in hits.values() for span in found)
+    if match == "any":
+        return spans
+    return [span for span in spans if all(any(abs(other[0] - span[0]) <= SEARCH_WINDOW_CHARS for other in found) for found in hits.values())]
+
+
+def snippet(text, start, end):
+    left, right = max(0, start - SEARCH_CONTEXT_CHARS), min(len(text), end + SEARCH_CONTEXT_CHARS)
+    body = " ".join(text[left:right].split())
+    return ("..." if left else "") + body + ("..." if right < len(text) else "")
+
+
+def search_text(exchanges, lines, nodes, query, match, part_chars):
+    query = " ".join(str(query or "").split())
+    if not query:
+        return "Give search_history some words to find."
+    found, places = [], []
+    for index, messages in enumerate(exchanges):
+        node = f"e{index + 1}"
+        text = exchange_text(messages)
+        spans, last = [], -SEARCH_WINDOW_CHARS
+        for start, end in find_spans(text, query, match):
+            if start - last >= SEARCH_CONTEXT_CHARS:
+                spans.append((start, end))
+                last = start
+        line = lines.get(exchange_key(messages))
+        line_hit = bool(line and find_spans(line, query, match))
+        if spans or line_hit:
+            places.append(node)
+        if line_hit:
+            found.append(f"[{node} line] {line}")
+        found.extend(f"[{node} part {start // part_chars + 1}] {snippet(text, start, end)}" for start, end in spans)
+    for gid, group in sorted(group_nodes(nodes).items(), key=lambda item: int(item[0][1:])):
+        if find_spans(group["line"], query, match):
+            places.append(gid)
+            found.append(f"[{gid}: e{group['first']}-e{group['last']}] {group['line']}")
+    if not found:
+        return f"No match for {query!r} in e1-e{len(exchanges)}." if exchanges else "This conversation has no earlier exchanges yet."
+    head = f"{len(found)} match(es) for {query!r} in {', '.join(places)}"
+    shown, size = [], len(head)
+    for entry in found[:SEARCH_LIMIT]:
+        if size + len(entry) + 1 > SEARCH_OUTPUT_CHARS:
+            break
+        shown.append(entry)
+        size += len(entry) + 1
+    more = f"; showing {len(shown)}" if len(shown) < len(found) else ""
+    return head + more + ":\n" + "\n".join(shown)
 
 
 def prefix_text(message, text):
@@ -414,7 +485,7 @@ class Session:
         self.rounds = 0
 
     def claims(self, call):
-        return (call.get("function") or {}).get("name") == "expand"
+        return (call.get("function") or {}).get("name") in MEMORY_TOOL_NAMES
 
     def expand(self, call):
         arguments = (call.get("function") or {}).get("arguments")
@@ -424,6 +495,9 @@ class Session:
             except json.JSONDecodeError:
                 arguments = {}
         arguments = arguments if isinstance(arguments, dict) else {}
+        if (call.get("function") or {}).get("name") == "search_history":
+            state = self.memory.store.load(self.user, self.chat)
+            return search_text(self.exchanges, state["lines"], self.layout.get("nodes") or [], arguments.get("query"), arguments.get("match"), self.memory.part_chars)
         part = arguments.get("part", 1)
         node = str(arguments.get("id", ""))
         if GROUP_ID.match(node):
@@ -437,7 +511,7 @@ class Session:
         self.rounds += 1
         turns = [{"role": "assistant", "content": content, "reasoning_content": reasoning or None, "tool_calls": calls}]
         for call in calls:
-            turns.append({"role": "tool", "tool_call_id": call.get("id"), "name": "expand", "content": self.expand(call)})
+            turns.append({"role": "tool", "tool_call_id": call.get("id"), "name": (call.get("function") or {}).get("name"), "content": self.expand(call)})
         self.messages = self.messages + turns
         self.memory.store.append(self.user, self.chat, {"type": "expansion", "message": self.user_message,
                                                         "turns": [{k: v for k, v in turn.items() if v is not None} for turn in turns]})
@@ -483,8 +557,8 @@ class Memory:
         user_message = header(headers, "X-OpenWebUI-User-Message-Id")
         if not chat or not user_message:
             return None
-        if any((tool.get("function") or {}).get("name") == "expand" for tool in tools or []):
-            print(json.dumps({"event": "chat_memory_off", "reason": "the client defines a tool named expand"}), flush=True)
+        if any((tool.get("function") or {}).get("name") in MEMORY_TOOL_NAMES for tool in tools or []):
+            print(json.dumps({"event": "chat_memory_off", "reason": "the client defines a tool with a memory tool's name"}), flush=True)
             return None
         parts = split(messages)
         if parts is None:
@@ -515,7 +589,7 @@ class Memory:
         if replay:
             layout["messages"] = layout["messages"][:len(layout["messages"]) - len(current) + 1] + replay + layout["messages"][len(layout["messages"]) - len(current) + 1:]
         return Session(self, model, user, chat, user_message, parent, message, head, exchanges, current, layout,
-                       list(tools or []) + [EXPAND_TOOL], dict(kwargs))
+                       list(tools or []) + list(MEMORY_TOOLS), dict(kwargs))
 
     def budgets(self, model):
         settings = model.memory
@@ -525,7 +599,7 @@ class Memory:
         return ledger, prompt, int(settings.get("group_size", 16)), int(settings.get("line_tokens", 48))
 
     def prompt_size(self, model, layout, tools):
-        parts = [json.dumps(list(tools or []) + [EXPAND_TOOL], ensure_ascii=False)]
+        parts = [json.dumps(list(tools or []) + list(MEMORY_TOOLS), ensure_ascii=False)]
         for message in layout["messages"]:
             parts.append(text_of(message.get("content")))
             if message.get("tool_calls"):
