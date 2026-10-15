@@ -1145,6 +1145,7 @@ class Memory:
         newest = self.part_renderer(model, dict(state["forms"], **pending))(len(session.exchanges) + 1, session.current + [{"role": "assistant", "content": content}], True)
         total = sum(sizes.values()) + self.count(model, messages_text(newest)) + (self.part_settings(model)[2] if large else 0)
         budget = self.working_budget(model)
+        print(json.dumps(dict(session.trace(), event="chat_memory_working", open_exchanges=len(sizes), tokens=total, budget=budget)), flush=True)
         if total <= budget or not sizes:
             return None
         return {"total": total, "needed": total - budget // 2, "sizes": sizes}
