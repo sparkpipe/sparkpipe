@@ -150,8 +150,10 @@ Receipts: [`qualification/k3/spec-long-frames-20261015/`](qualification/k3/spec-
   near 34 rows (258 of 390) under the eight-chained-token cap (65 ms chained
   token); KP frames run near 191 rows keeping 138 tokens (731 ms), 63 and 92
   of 131 and 194 frames. 19 of 20 KP streams equal KT1 in both runs (editsr_09
-  diverges). KT1 is below hold 2's 126.4 because pricing by node service time
-  made the cap tighter (cross-hold). Receipts under `hold5/`.
+  diverges). KT1 is below hold 2's 126.4 (cross-hold): hold 2 averaged 58
+  drafts per frame and KT1 42, consistent with the cap getting tighter once
+  frames are priced by node service time instead of wall time; not isolated.
+  Receipts under `hold5/`.
 
 ### Speculation: long verify frames on code edits, GLM Full (2026-10-15)
 
