@@ -2423,6 +2423,8 @@ static SparkStatus SparkStageKvBindingApplyCompletion(SparkStageKvBinding *bindi
 		if ( resident >= binding->resident_sequence_capacity )
 			continue;
 		atomic_store_explicit(&binding->lane_bound[resident],result == SPARK_STATUS_OK ? bound[lane] : 0u,memory_order_release);
+		if ( verify != 0u && binding->lane_staged_pages != 0 )
+			binding->lane_staged_pages[resident] = SPARK_KV_CACHE_NO_BLOCK;
 		if ( result == SPARK_STATUS_OK )
 		{
 			atomic_store_explicit(&binding->lane_sequence_ids[resident],sequence_ids[lane],memory_order_release);

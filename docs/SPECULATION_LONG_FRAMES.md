@@ -1,0 +1,86 @@
+# Long verify frames
+
+Lookup speculation for code edits: the engine drafts from the request's own
+history and verifies up to 255 drafts in one frame of up to 256 rows. This
+document is the contract for that path. Measured results are in
+`PERFORMANCE_STATUS.md` (section "Speculation: long verify frames").
+
+## What a frame is
+
+- The engine finds the longest suffix match (up to 64 tokens, 64 candidates)
+  of the request's committed tokens in its own history and drafts the tokens
+  that followed the match.
+- A verify submission carries one lane: the anchor row (the last committed
+  token at position p) and one row per draft at p+1..p+d, wave-major, with the
+  VERIFY flag. `tokens_per_sequence` is d+1 and the lane context is p+d+1.
+- Limits:
+  - `SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE` (256) per
+    lane, separate from decode chains
+    (`SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE`, 8);
+  - the descriptor's `max_speculative_token_count` (255 on GLM Full and K3
+    TP16);
+  - the descriptor's `max_verify_row_count`, the most rows one frame may
+    carry (K3 256 because of its replay buffers, GLM Full 4096);
+  - the completion carries at most 1024 tokens
+    (`SparkModelServingAdapterCompletionTokenCapacity`).
+- Drafts stop before an engine stop token, at the output budget, at the
+  context limit and two tokens before a recurrent checkpoint
+  (`cache_checkpoint_token_count`), so a stop or the budget can only be the
+  last kept token and a checkpoint is always reached by a plain decode step.
+- No frame while more than one lane is active, while a lane wants logprobs,
+  and at most 8 rows while a prefill waits: a frame costs more than a batched
+  decode step, and co-batched lanes would lose their chains.
+- Sampled lanes draft too. Each verify row of a sampled lane is sampled with
+  the lane's rule at its own position; the draw is keyed by seed, position and
+  token, so the kept tokens are the ones plain sampled decode would emit.
+
+## Kept rows
+
+- Every rank runs the head on every row and holds every row's token after the
+  argmax all-reduce. The stage adapter counts each lane's kept rows on the host
+  (`SparkModelServingVerifyKeptRows`): one plus the number of leading drafts
+  equal to the previous row's output.
+- The completion holds exactly the kept tokens; the rest of the lane's stride
+  is `SPARK_MODEL_SERVING_NO_TOKEN` (`SparkModelServingCompletionKeptRows`).
+- The pipeline client requires the verify stride back and at least one kept
+  token per lane. The engine re-derives the kept count from its own drafts and
+  fails the request (VALIDATION_FAILED) before emitting anything if the counts
+  differ.
+- The continuation lease resumes at p + kept, so CONTINUE survives every
+  verify round.
+
+## KV commit
+
+- The node commits a verify lane at exactly p + kept
+  (`SparkKvLaneTransactionsFinishVerify`, `SparkKvPageCacheCompleteVerifyLane`).
+- A verify lane carries one block identity for every block end in
+  (p, p+d+1], digested from the committed tokens and the drafts. The node seals
+  every full block below the kept length under those identities, including the
+  last one when the kept length is a block multiple, and discards the pages
+  past it. A rejected row never reaches an identity.
+- The hub then records floor((p + kept) / B) * B as published, so the reply's
+  blocks are reusable by the next prompt.
+- There is no rewind: a lane resumes only at its next position.
+
+## Recurrent state (K3)
+
+- A verify step of a model with recurrent state runs with commit off. K3 binds
+  replay buffers for the step (conv inputs, retention and write gate per row
+  and KDA layer, at the rank's 6 heads; about 136 MB per rank for 256 rows).
+- After the adapter counts kept rows, `SparkStageRunnerKeepRows` hands them to
+  the model's `keep_rows` hook on the same stream. K3 folds the kept rows into
+  the KDA state and conv windows with the forward's own conv, normalisation
+  and delta-rule kernels through the wave's row indices, so the folded state
+  equals a committed pass over the kept rows.
+- A recurrent model without `keep_rows` refuses VERIFY.
+- A verify frame drops the lane's staged checkpoint page: verify sealing does
+  not stage, so a staged page from an earlier publish would otherwise receive
+  a later state at release. A reply that ends on a block multiple inside a
+  verify frame therefore keeps no reply-end resume point.
+
+## Depth
+
+The engine keeps today's adaptive cap (`SparkSpeculationDepthCapNext`): it
+doubles after a fully accepted frame and drops to accepted + 1 after a
+rejection. A priced policy (frame cost against chaining, learned per match
+length) is the next step; see the design notes in the PR.
