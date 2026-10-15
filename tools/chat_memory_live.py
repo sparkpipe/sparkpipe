@@ -40,14 +40,16 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--think", type=float, default=0.0)
     parser.add_argument("--salt", default="")
+    parser.add_argument("--questions", help="a file with one question per line instead of the built-in conversation")
     args = parser.parse_args()
+    questions = [line.strip() for line in Path(args.questions).read_text().splitlines() if line.strip()] if args.questions else FACTS
     secret = Path(args.secret_file).read_text().strip()
     chat = "memlive-" + uuid.uuid4().hex[:12]
     own = Path(args.store) / hashlib.sha256(b"memlive-user").hexdigest()[:32] / (hashlib.sha256(chat.encode()).hexdigest()[:32] + ".jsonl")
     history = [{"role": "system", "content": "You are SparkPipe Chat, a helpful assistant."}]
     parent = None
     out = Path(args.out).open("w")
-    for turn, question in enumerate(FACTS, start=1):
+    for turn, question in enumerate(questions, start=1):
         user_message, message = str(uuid.uuid4()), str(uuid.uuid4())
         headers = {"Content-Type": "application/json", "X-OpenWebUI-User-Jwt": jwt(secret, "memlive-user"), "X-OpenWebUI-Chat-Id": chat,
                    "X-OpenWebUI-User-Message-Id": user_message, "X-OpenWebUI-Message-Id": message, "X-OpenWebUI-Task": ""}

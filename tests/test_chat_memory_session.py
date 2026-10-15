@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A chat-memory session is opened only for a verified Open WebUI identity on a real chat turn, and its bookkeeping holds across turns: requests without a valid token, with a task, without ids, with a client tool named expand or with Open WebUI's own summary are served raw; the first turns carry the system note and the expand tool but no ledger; after a finished answer the curator runs only once the engine is idle and is cancelled by a foreground request; its line for the current exchange binds on the next turn through the parent message id, older raw exchanges get their lines directly, and the open set follows; the ledger then covers every lined exchange but the newest; follow-ups reuse the frozen layout and replay expansions; two invalid curator replies leave fallback lines; the first curator attempt continues the answer's own prompt and reply tokens; checkpointed models get a ledger-end stem; the next turn's layout is pre-warmed up to its new question; a ledger over its budget is regrouped by the curator into nested group lines that expand to their children (stub lines when the curator fails), and follow-ups keep their frozen groups; and a prompt over the model's budget is fitted synchronously by dropping the open set, lining raw exchanges and folding the oldest ledger entries, while one that fits is left alone."""
+"""A chat-memory session is opened only for a verified Open WebUI identity on a real chat turn, and its bookkeeping holds across turns: requests without a valid token, with a task, without ids, with a client tool named like a memory tool or with Open WebUI's own summary are served raw; the first turns carry the system note and the expand and search_history tools but no ledger; a search_history call is answered inside the chat layer; after a finished answer the curator runs only once the engine is idle and is cancelled by a foreground request; its line for the current exchange binds on the next turn through the parent message id, older raw exchanges get their lines directly, and the open set follows; the ledger then covers every lined exchange but the newest; follow-ups reuse the frozen layout and replay each expansion at the tool round where it ran, with the text streamed before it said once, and only for the attempt that made it; two invalid curator replies leave fallback lines; the first curator attempt continues the answer's own prompt and reply tokens; checkpointed models get a ledger-end stem; the next turn's layout is pre-warmed up to its new question; a ledger over its budget is regrouped by the curator into nested group lines that expand to their children (stub lines when the curator fails), and follow-ups keep their frozen groups; and a prompt over the model's budget is fitted synchronously by dropping the open set, lining raw exchanges and folding the oldest ledger entries, while one that fits is left alone."""
 import asyncio
 import base64
 import hashlib
@@ -70,7 +70,8 @@ class Frontend:
         self.cuts.append(messages)
         return [9, 9]
 
-    async def memory_complete(self, model, ids, max_tokens, reasoning_open=False):
+    async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None):
+        assert kind in ("curator", "curator_render", "stem", "prewarm") and set(trace) == {"chat", "user_message"}, (kind, trace)
         if self.block is not None:
             await self.block.wait()
         if max_tokens == 1:
@@ -118,6 +119,7 @@ async def run():
             (headers("u1", jwt=token(exp=time.time() - 5)), []), (headers("u1", task="title_generation"), []),
             ({k: v for k, v in headers("u1").items() if k != "X-OpenWebUI-User-Message-Id"}, []),
             (headers("u1", chat="a, b"), []), (headers("u1"), [{"type": "function", "function": {"name": "expand"}}]),
+            (headers("u1"), [{"type": "function", "function": {"name": "search_history"}}]),
         ]
         for request_headers, tools in refused:
             assert memory.session(model, request_headers, conversation(1), tools, {}) is None, request_headers
@@ -126,8 +128,9 @@ async def run():
         assert memory.session(type("Plain", (), {"id": "plain", "memory": None})(), headers("u1"), conversation(1), [], {}) is None
 
         first = await turn(memory, frontend, model, 1, "u1", None, "a1", '{"lines": {"e1": "The user asked question 1; the assistant gave answer 1."}, "open": []}')
-        assert frontend.cuts == [], "no stem while the next ledger would be empty"
-        assert cm.SYSTEM_NOTE in first.messages[0]["content"] and first.tools[-1]["function"]["name"] == "expand" and first.layout["lined"] == 0
+        assert len(frontend.cuts) == 1 and frontend.cuts[0][-1]["content"] == cm.SENTINEL and cm.LEDGER_OPEN not in json.dumps(frontend.cuts[0]), \
+            "no stem while the next ledger would be empty, but the next turn is pre-warmed"
+        assert cm.SYSTEM_NOTE in first.messages[0]["content"] and [t["function"]["name"] for t in first.tools[-2:]] == ["expand", "search_history"] and first.layout["lined"] == 0
         state = memory.store.load("user-1", "chat-1")
         assert state["pending"]["a1"]["line"].startswith("The user asked question 1"), state["pending"]
         assert "user-1" not in json.dumps(list(Path(tmp, "store").rglob("*")).__repr__())
@@ -135,9 +138,9 @@ async def run():
         second = await turn(memory, frontend, model, 2, "u2", "a1", "a2", '{"lines": {"e2": "The user asked question 2; the assistant gave answer 2."}, "open": ["e1"]}')
         key1 = cm.exchange_key(conversation(2)[1:3])
         assert state["lines"][key1].startswith("The user asked question 1") and second.layout["lined"] == 0
-        assert len(frontend.cuts) == 2 and frontend.cuts[0][-1]["content"] == cm.LEDGER_OPEN + "[e1] " + state["lines"][key1] + "\n" + cm.SENTINEL, frontend.cuts
+        assert len(frontend.cuts) == 3 and frontend.cuts[1][-1]["content"] == cm.LEDGER_OPEN + "[e1] " + state["lines"][key1] + "\n" + cm.SENTINEL, frontend.cuts
         assert state["open_by_message"]["a2"] == ["e1"]
-        prewarm = frontend.cuts[1]
+        prewarm = frontend.cuts[2]
 
         third = await turn(memory, frontend, model, 3, "u3", "a2", "a3", '{"lines": {"e3": "The user asked question 3."}, "open": []}')
         assert third.layout["lined"] == 1 and third.layout["open"] == ["e1"], third.layout
@@ -168,6 +171,23 @@ async def run():
         assert expand_at < search_at and replay.messages[expand_at - 2]["content"].endswith("question 3"), roles
         assert "User: question 1" in replay.messages[expand_at]["content"]
 
+        searched_web = conversation(3) + [{"role": "assistant", "content": "", "tool_calls": [{"id": "w1", "type": "function", "function": {"name": "search_web", "arguments": "{}"}}]},
+                                          {"role": "tool", "tool_call_id": "w1", "content": "web results"}]
+        looking = memory.session(model, headers("r3", "a2", "r3a", chat="chat-round"), searched_web, [], {})
+        looking.continue_with("Let me check the notes. ", "", [{"id": "x7", "type": "function", "function": {"name": "expand", "arguments": "{\"id\": \"e1\"}"}}])
+        followed = searched_web + [{"role": "assistant", "content": "Let me check the notes. Now I fetch it.", "tool_calls": [{"id": "f1", "type": "function", "function": {"name": "fetch_url", "arguments": "{}"}}]},
+                                   {"role": "tool", "tool_call_id": "f1", "content": "page"}]
+        resumed = memory.session(model, headers("r3", "a2", "r3a", chat="chat-round"), followed, [], {})
+        tail = [(m["role"], m.get("content"), m.get("name")) for m in resumed.messages[-6:]]
+        assert tail[0][0] == "assistant" and tail[1][1].startswith("[e3.t1 search_web · ") and tail[1][1].endswith("]\nweb results") and tail[2][1] == "Let me check the notes. " \
+            and tail[3][2] == "expand" and tail[4][:2] == ("assistant", "Now I fetch it.") and tail[5][1].startswith("[e3.t2 fetch_url · ") and tail[5][1].endswith("page"), tail
+        retried = memory.session(model, headers("r3", "a2", "r3b", chat="chat-round"), followed, [], {})
+        assert not any(m.get("name") == "expand" for m in retried.messages), "a regenerate never replays another attempt's expansions"
+        searching = memory.session(model, headers("u3", "a2", "a3"), conversation(3), [], {})
+        call = {"id": "s1", "type": "function", "function": {"name": "search_history", "arguments": "{\"query\": \"ANSWER 2\"}"}}
+        assert searching.claims(call) and not searching.claims({"function": {"name": "search_web"}})
+        searched = searching.continue_with("", "", [call])
+        assert searched[-1]["role"] == "tool" and searched[-1]["name"] == "search_history" and "[e2 part 1]" in searched[-1]["content"] and "e1" not in searched[-1]["content"].split(":")[0], searched[-1]
         frontend.block = asyncio.Event()
         session = memory.session(model, headers("u4", "a3", "a4"), conversation(4), [], {})
         session.finished(session.messages, "answer 4", "", [], "stop")
@@ -267,9 +287,39 @@ async def run():
         roomy.context_tokens = 131072
         assert memory.session(roomy, headers("r40", None, "z40", chat="chat-roomy"), conversation(40), [], {}).layout["lined"] == 0, "nothing is folded while the prompt fits"
 
+        page = "".join(f"Paragraph {i}: the scheduler gained {i * 3} percent after fix #{1000 + i}.\n" for i in range(400))
+        researched = [{"role": "system", "content": "Be helpful."}, {"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}, {"role": "user", "content": "Read the release notes."},
+                      {"role": "assistant", "content": "", "tool_calls": [{"id": "p1", "type": "function", "function": {"name": "fetch_url", "arguments": {"url": "https://a.example/notes"}}}]},
+                      {"role": "tool", "tool_call_id": "p1", "content": "[This result is source [1]; cite it inline as [1].]\n" + page,
+                       "citation_label": "[This result is source [1]; cite it inline as [1].]\n"}]
+        memory.store.append("user-1", "chat-parts", {"type": "line", "key": cm.exchange_key(researched[1:3]), "line": "The user greeted the assistant.", "source": "curator"})
+        reading = memory.session(model, headers("k1", None, "k1a", chat="chat-parts"), researched, [], {})
+        shown_page = reading.messages[-1]["content"]
+        assert shown_page.startswith("[e2.t1 fetch_url ") and "[§1] Paragraph 0:" in shown_page and "[§2] " in shown_page, shown_page[:200]
+        frontend.calls.clear()
+        frontend.replies[:] = ['{"lines": {"e2": "The user asked to read the release notes; the assistant summarized them."}, "open": [], "keep": {"e2.t1": [2, 3, 999], "e9.t9": [1]}}']
+        reading.finished(reading.messages, "The notes list 400 paragraphs.", "", [], "stop")
+        await settle(memory, model)
+        instruction = frontend.calls[-1][-1]["content"]
+        assert "e2.t1 fetch_url" in instruction and '"keep"' in instruction and "§1-§" in instruction, instruction[-400:]
+        part = cm.tool_parts(researched)[0]
+        assert memory.store.load("user-1", "chat-parts")["forms"][part["key"]] == [2, 3], "only shown sections of known parts are kept"
+        assert "[This result is source [1]" in shown_page, "the citation label shows in its own turn"
+        after = researched[:-1] + [{"role": "tool", "tool_call_id": "p1", "content": page}, {"role": "assistant", "content": "The notes list 400 paragraphs."},
+                                   {"role": "user", "content": "Which fix helped most?"}]
+        later = memory.session(model, headers("k2", "k1a", "k2a", chat="chat-parts"), after, [], {})
+        collapsed = next(m["content"] for m in later.messages if m["role"] == "tool")
+        assert "collapsed; kept §2, §3" in collapsed and "[§2] " in collapsed and "[§3] " in collapsed and "Paragraph 0:" not in collapsed, collapsed[:300]
+        assert len(collapsed) < len(page) // 4, "the newest exchange's large result shrinks to a stub plus the kept sections"
+        assert frontend.cuts[-1][-3]["role"] == "tool" and frontend.cuts[-1][-3]["content"] == collapsed and "source [1]" not in collapsed, \
+            "the pre-warm renders the collapsed form the next turn uses, without the turn's citation label"
+        read_back = later.expand({"function": {"name": "expand", "arguments": {"id": "e2.t1", "part": 10}}})
+        assert read_back.startswith("e2.t1 (fetch_url), sections §10-") and "[§10] " in read_back, read_back[:120]
+        assert later.expand({"function": {"name": "expand", "arguments": {"id": "e2.t7"}}}).startswith("No tool result")
+
         reopened = cm.Memory({"store": tmp + "/store", "jwt_secret_file": tmp + "/secret"}, frontend).store.load("user-1", "chat-1")
         assert reopened["lines"] == state["lines"] and reopened["pending"].keys() == state["pending"].keys()
 
 
 asyncio.run(run())
-print("PASS test_chat_memory_session: verified identity only, system note and expand from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, state that survives a restart")
+print("PASS test_chat_memory_session: verified identity only, system note, expand and search_history from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, tool results with ids and sections, collapsed after their turn to the kept sections, state that survives a restart")

@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import codecs
+import hashlib
 import importlib.util
 import ipaddress
 import json
@@ -218,6 +219,53 @@ class TiktokenVocabulary:
 VOCABULARIES = {"tokenizers": TokenizersVocabulary, "tiktoken": TiktokenVocabulary}
 
 
+CARRIED = re.compile("\ue000([0-9]+)\ue001")
+
+
+def carry_controls(messages, tools, vocabulary):
+    specials = [token for token in vocabulary.control_strings() if token]
+    carried = []
+
+    def mark(value):
+        if isinstance(value, str):
+            if any(token in value for token in specials):
+                carried.append(value)
+                return f"\ue000{len(carried) - 1}\ue001"
+            return value
+        if isinstance(value, dict):
+            if any(isinstance(key, str) and any(token in key for token in specials) for key in value):
+                raise RequestError(400, "invalid_messages", "a request key carries a control token string")
+            return {key: mark(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [mark(item) for item in value]
+        return value
+
+    return mark(messages), mark(tools), carried
+
+
+def uncarry(pieces, carried, expected):
+    result = []
+    for text, special in pieces:
+        for index, piece in enumerate(CARRIED.split(text)):
+            if index % 2 == 0:
+                if piece:
+                    result.append((piece, special))
+            elif int(piece) < len(carried):
+                result.append((carried[int(piece)], False))
+            else:
+                raise RequestError(400, "invalid_messages", "a message carries a control token string inside text the chat template rewrites")
+    if "".join(text for text, _ in result) != expected:
+        raise RequestError(400, "invalid_messages", "a message carries a control token string inside text the chat template rewrites")
+    return result
+
+
+def encode_pieces(vocabulary, text, pieces):
+    ids = []
+    for piece, special in pieces:
+        ids.extend(vocabulary.encode(piece, special))
+    return text, ids
+
+
 class TemplateRenderer:
     def __init__(self, directory, spec, vocabulary):
         environment = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, extensions=[loopcontrols])
@@ -237,42 +285,17 @@ class TemplateRenderer:
         except Exception as error:
             raise RequestError(400, "invalid_messages", f"the chat template could not render the request: {type(error).__name__}: {error}")
 
-    def render(self, messages, tools, kwargs):
+    def pieces(self, messages, tools, kwargs):
         context = dict(self.template_tokens)
         context.update(kwargs)
         text = self.render_text(messages, tools, context)
-        specials = [token for token in self.vocabulary.control_strings() if token]
-        carried = []
-
-        def mark(value):
-            if isinstance(value, str):
-                if any(token in value for token in specials):
-                    carried.append(value)
-                    return f"\ue000{len(carried) - 1}\ue001"
-                return value
-            if isinstance(value, dict):
-                if any(isinstance(key, str) and any(token in key for token in specials) for key in value):
-                    raise RequestError(400, "invalid_messages", "a request key carries a control token string")
-                return {key: mark(item) for key, item in value.items()}
-            if isinstance(value, list):
-                return [mark(item) for item in value]
-            return value
-
-        marked_messages, marked_tools = mark(messages), mark(tools)
+        marked_messages, marked_tools, carried = carry_controls(messages, tools, self.vocabulary)
         if not carried:
-            return text, self.vocabulary.encode(text, True)
-        pieces = re.split("\ue000([0-9]+)\ue001", self.render_text(marked_messages, marked_tools, context))
-        ids, rebuilt = [], []
-        for index, piece in enumerate(pieces):
-            if index % 2 == 0:
-                rebuilt.append(piece)
-                ids.extend(self.vocabulary.encode(piece, True))
-            else:
-                rebuilt.append(carried[int(piece)])
-                ids.extend(self.vocabulary.encode(carried[int(piece)], False))
-        if "".join(rebuilt) != text:
-            raise RequestError(400, "invalid_messages", "a message carries a control token string inside text the chat template rewrites")
-        return text, ids
+            return text, [(text, True)]
+        return text, uncarry([(self.render_text(marked_messages, marked_tools, context), True)], carried, text)
+
+    def render(self, messages, tools, kwargs):
+        return encode_pieces(self.vocabulary, *self.pieces(messages, tools, kwargs))
 
 
 class SegmentRenderer:
@@ -286,15 +309,24 @@ class SegmentRenderer:
         self.function = getattr(module, spec["function"])
         self.vocabulary = vocabulary
 
-    def render(self, messages, tools, kwargs):
+    def segments(self, messages, tools, kwargs):
         try:
-            segments = self.function(messages, tools or None, add_generation_prompt=True, **kwargs)
+            return self.function(messages, tools or None, add_generation_prompt=True, **kwargs)
         except Exception as error:
             raise RequestError(400, "invalid_messages", f"the chat renderer refused the request: {type(error).__name__}: {error}")
-        ids = []
-        for segment in segments:
-            ids.extend(self.vocabulary.encode(segment.text, segment.allow_special))
-        return "".join(segment.text for segment in segments), ids
+
+    def pieces(self, messages, tools, kwargs):
+        segments = self.segments(messages, tools, kwargs)
+        text = "".join(segment.text for segment in segments)
+        marked_messages, marked_tools, carried = carry_controls(messages, tools, self.vocabulary)
+        client = {token for token in self.vocabulary.control_strings() if token and any(token in value for value in carried)}
+        if not any(segment.allow_special and any(token in segment.text for token in client) for segment in segments):
+            return text, [(segment.text, segment.allow_special) for segment in segments]
+        marked = self.segments(marked_messages, marked_tools, kwargs)
+        return text, uncarry([(segment.text, segment.allow_special) for segment in marked], carried, text)
+
+    def render(self, messages, tools, kwargs):
+        return encode_pieces(self.vocabulary, *self.pieces(messages, tools, kwargs))
 
 
 RENDERERS = {"template": TemplateRenderer, "segments": SegmentRenderer}
@@ -425,6 +457,138 @@ class Model:
         context = dict(self.template_defaults)
         context.update(kwargs)
         return self.renderer.render(messages, tools, context)
+
+
+SOURCE_TAG = re.compile(r'<source id="([0-9]+)"((?: [a-z][a-z-]*="[^"]*")*)>')
+SOURCE_ATTRIBUTE = re.compile(r' ([a-z][a-z-]*)="([^"]*)"')
+CITATION_WRAPPER_KEYS = {"head_sha256", "open", "close", "separator"}
+
+
+def parse_citations(text, wrapper):
+    opening = text.find(wrapper["open"])
+    if opening < 0 or hashlib.sha256(text[:opening].encode()).hexdigest() != wrapper["head_sha256"]:
+        return None
+    close = wrapper["close"] + wrapper["separator"]
+    position, sources = opening + len(wrapper["open"]), []
+    while True:
+        tag = SOURCE_TAG.match(text, position)
+        if tag is None:
+            return None
+        cursor = tag.end()
+        while True:
+            end = text.find("</source>", cursor)
+            if end < 0:
+                return None
+            after = end + len("</source>")
+            if text.startswith("\n<source id=", after) or text.startswith(close, after):
+                break
+            cursor = after
+        sources.append((tag.group(1), tag.group(2), text[tag.end():end]))
+        if text.startswith(close, after):
+            base = text[after + len(close):]
+            break
+        position = after + 1
+    head = text[:opening]
+    rebuilt = head + wrapper["open"] + "\n".join(f'<source id="{n}"{attributes}>{body}</source>' for n, attributes, body in sources) + close + base
+    return (head, sources, base) if rebuilt == text else None
+
+
+def call_strings(arguments):
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return set()
+    found = set()
+    stack = [arguments]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, str):
+            found.add(value)
+        elif isinstance(value, dict):
+            stack.extend(value.values())
+        elif isinstance(value, list):
+            stack.extend(value)
+    return found
+
+
+def canonical_citations(messages, wrapper):
+    users = [index for index, message in enumerate(messages) if message.get("role") == "user"][-2:]
+    for index in reversed(users):
+        content = messages[index].get("content")
+        texts = [content] if isinstance(content, str) else [part.get("text", "") for part in content or [] if isinstance(part, dict) and part.get("type") == "text"]
+        parsed = [parse_citations(text, wrapper) for text in texts]
+        if not parsed or any(item is None for item in parsed):
+            continue
+        sources = parsed[0][1]
+        files = [source for source in sources if source[2]]
+        markers = {}
+        for n, attributes, body in sources:
+            if not body:
+                values = dict(SOURCE_ATTRIBUTE.findall(attributes))
+                for key in ("resource-id", "name"):
+                    if values.get(key):
+                        markers.setdefault(values[key], n)
+
+        def canonical(item):
+            head, _, base = item
+            if not files:
+                return base
+            return head + wrapper["open"] + "\n".join(f'<source id="{n}"{attributes}>{body}</source>' for n, attributes, body in files) + wrapper["close"] + wrapper["separator"] + base
+
+        result = list(messages)
+        if isinstance(content, str):
+            result[index] = dict(messages[index], content=canonical(parsed[0]))
+        else:
+            replaced = iter(canonical(item) for item in parsed)
+            result[index] = dict(messages[index], content=[dict(part, text=next(replaced)) if isinstance(part, dict) and part.get("type") == "text" else part for part in content])
+        urls, labelled, used = {}, 0, set()
+        for message in result[index + 1:]:
+            for call in message.get("tool_calls") or []:
+                urls[call.get("id")] = call_strings((call.get("function") or {}).get("arguments"))
+        for position in range(index + 1, len(result)):
+            message = result[position]
+            if message.get("role") != "tool" or not isinstance(message.get("content"), str):
+                continue
+            ids = sorted({n for url, n in markers.items() if url in urls.get(message.get("tool_call_id"), set())}, key=int)
+            if ids:
+                used.update(ids)
+                label = ", ".join(f"[{n}]" for n in ids)
+                note = f"[This result is source {label}; cite it inline as {label}.]\n"
+                result[position] = dict(message, content=note + message["content"], citation_label=note)
+                labelled += 1
+        return result, {"citation_markers": len(set(markers.values())), "citation_labelled": labelled,
+                        "citation_unmatched": len(set(markers.values()) - used), "citation_files": len(files)}
+    return messages, {}
+
+
+def short_hash(value):
+    return hashlib.sha256(value.encode()).hexdigest()[:12] if value else None
+
+
+def request_trace(headers, messages):
+    headers = headers or {}
+    names, results, rounds = {}, [], 0
+    if len(messages) > 1 and messages[-2].get("role") == "tool" and isinstance(messages[-1].get("content"), list) and messages[-1].get("role") == "user":
+        messages = messages[:-1]
+    for message in messages:
+        for call in message.get("tool_calls") or []:
+            names[call.get("id")] = (call.get("function") or {}).get("name")
+    for message in reversed(messages):
+        role = message.get("role")
+        if role == "tool" and rounds == 0:
+            content = message.get("content")
+            results.append([message.get("name") or names.get(message.get("tool_call_id")) or "tool",
+                            len(content if isinstance(content, str) else json.dumps(content, ensure_ascii=False))])
+        elif role == "assistant" and message.get("tool_calls"):
+            rounds += 1
+        elif role == "user":
+            break
+    trace = {"chat": short_hash(headers.get("X-OpenWebUI-Chat-Id")), "user_message": short_hash(headers.get("X-OpenWebUI-User-Message-Id")),
+             "kind": "round" if results else "answer", "round": rounds}
+    if results:
+        trace["tool_chars"] = list(reversed(results))
+    return trace
 
 
 def normalize_arguments(arguments):
@@ -838,6 +1002,7 @@ class ChannelParser(OutputParser):
 
 class Frontend:
     memory = None
+    citation_wrapper = None
 
     def __init__(self, config, base):
         self.models = {}
@@ -852,6 +1017,10 @@ class Frontend:
             raise SystemExit("chat_frontend: controller_token_file is needed exactly when the config has control or an activation_url")
         self.controller_headers = {"Authorization": "Bearer " + read_token(base / config["controller_token_file"])} if controlled else {}
         self.site = (base / config["site_dir"]).resolve() if config.get("site_dir") else None
+        wrapper = (config.get("client") or {}).get("citation_wrapper")
+        if wrapper is not None and (not isinstance(wrapper, dict) or set(wrapper) != CITATION_WRAPPER_KEYS or not all(isinstance(wrapper[key], str) and wrapper[key] for key in CITATION_WRAPPER_KEYS)):
+            raise SystemExit(f"chat_frontend: client.citation_wrapper needs exactly the non-empty strings {sorted(CITATION_WRAPPER_KEYS)}")
+        self.citation_wrapper = wrapper
         self.session = None
         self.memory = None
         if config.get("chat_memory") is not None:
@@ -979,11 +1148,18 @@ class Frontend:
                 raise RequestError(400, "unsupported_parameter", f"chat_template_kwargs.{key} is not accepted; accepted: {sorted(model.template_kwargs)}")
             kwargs[key] = value
         session = None
+        trace = request_trace(headers, messages)
+        if self.citation_wrapper is not None and headers is not None and headers.get("X-OpenWebUI-Chat-Id"):
+            messages, citations = canonical_citations(messages, self.citation_wrapper)
+            trace.update(citations)
         if self.memory is not None and headers is not None:
             session = self.memory.session(model, headers, messages, tools, kwargs)
             if session is not None:
                 messages, tools = normalize_messages(session.messages), session.tools
-        return self.finish_plan(model, body, messages, tools, kwargs, session)
+                trace.update(memory_lined=session.layout["lined"], memory_open=len(session.layout["open"]))
+        plan = self.finish_plan(model, body, messages, tools, kwargs, session)
+        plan["trace"] = trace
+        return plan
 
     def finish_plan(self, model, body, messages, tools, kwargs, session):
         prompt, prompt_ids = model.render(messages, tools, kwargs)
@@ -1172,11 +1348,7 @@ class Frontend:
     def memory_template_parts(self, model, messages, tools, kwargs, markers):
         context = dict(model.template_defaults)
         context.update(kwargs)
-        messages = normalize_messages(messages)
-        if isinstance(model.renderer, SegmentRenderer):
-            pieces = [(segment.text, segment.allow_special) for segment in model.renderer.function(messages, tools or None, add_generation_prompt=True, **context)]
-        else:
-            pieces = [(model.renderer.render_text(messages, tools, dict(model.renderer.template_tokens, **context)), True)]
+        _, pieces = model.renderer.pieces(normalize_messages(messages), tools, context)
         parts, ids, texts, found = [], [], [], 0
         for text, special in pieces:
             while found < len(markers) and markers[found] in text:
@@ -1216,19 +1388,31 @@ class Frontend:
         parts = self.memory_template_parts(model, messages, tools, kwargs, [sentinel])
         return parts[0][0] if parts else None
 
-    async def memory_complete(self, model, ids, max_tokens, reasoning_open=False):
+    async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None):
         body = {"prompt_token_ids": ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids, "priority": 0, "temperature": 0.0}
         parser = OutputParser(model, None, reasoning_open, []) if model.channels is None else None
         step = model.vocabulary.decoder()
-        content = []
-        async for chunk in self.engine_events(model, body):
-            text = "".join(piece for piece in (step(token) for token in chunk.get("tokens", []) if token not in model.stop_token_ids) if piece)
-            if parser is None:
-                content.append(text)
-                continue
-            content.extend(value for kind, value in parser.feed(text) if kind == "content")
+        content, usage, generated, outcome = [], {}, 0, "error"
+        started = time.monotonic()
+        try:
+            async for chunk in self.engine_events(model, body):
+                usage = chunk.get("usage") or usage
+                generated += len(chunk.get("tokens", []))
+                text = "".join(piece for piece in (step(token) for token in chunk.get("tokens", []) if token not in model.stop_token_ids) if piece)
+                if parser is None:
+                    content.append(text)
+                    continue
+                content.extend(value for kind_, value in parser.feed(text) if kind_ == "content")
+            outcome = "done"
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        finally:
+            print(json.dumps(dict(trace or {}, event="memory_job", model=model.id, kind=kind, outcome=outcome, prompt_tokens=len(ids),
+                                  cached_tokens=(usage.get("prompt_tokens_details") or {}).get("cached_tokens"), completion_tokens=generated,
+                                  seconds=round(time.monotonic() - started, 3))), file=sys.stderr, flush=True)
         if parser is not None:
-            content.extend(value for kind, value in parser.finish() if kind == "content")
+            content.extend(value for kind_, value in parser.finish() if kind_ == "content")
         return "".join(content)
 
     def usage_block(self, usage, prompt_tokens):
@@ -1238,16 +1422,16 @@ class Frontend:
         cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
         return {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion, "prompt_tokens_details": {"cached_tokens": cached}}
 
-    def log(self, model, prompt_tokens, usage, started, first, finish):
+    def log(self, model, prompt_tokens, usage, started, first, finish, trace=None):
         now = time.monotonic()
         usage = usage or {}
         completion = usage.get("completion_tokens", 0)
         decode_seconds = now - first if first else 0.0
-        print(json.dumps({"event": "chat", "model": model.id, "prompt_tokens": prompt_tokens,
-                          "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
-                          "completion_tokens": completion, "ttft_s": round(first - started, 3) if first else None,
-                          "decode_tok_s": round((completion - 1) / decode_seconds, 2) if completion > 1 and decode_seconds > 0 else None,
-                          "finish_reason": finish}), file=sys.stderr, flush=True)
+        print(json.dumps(dict({"event": "chat", "model": model.id, "prompt_tokens": prompt_tokens,
+                               "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
+                               "completion_tokens": completion, "ttft_s": round(first - started, 3) if first else None,
+                               "decode_tok_s": round((completion - 1) / decode_seconds, 2) if completion > 1 and decode_seconds > 0 else None,
+                               "finish_reason": finish}, **(trace or {}))), file=sys.stderr, flush=True)
 
     async def chat(self, request):
         started = time.monotonic()
@@ -1295,7 +1479,7 @@ class Frontend:
             message["reasoning_content"] = "".join(reasoning)
         if calls:
             message["tool_calls"] = calls
-        self.log(model, prompt_tokens, result.get("usage"), started, first, result.get("finish_reason"))
+        self.log(model, prompt_tokens, result.get("usage"), started, first, result.get("finish_reason"), plan.get("trace"))
         choice = {"index": 0, "message": message, "logprobs": {"content": logprobs} if "logprobs" in engine_body else None, "finish_reason": result.get("finish_reason")}
         return web.json_response({"id": "chatcmpl-" + uuid.uuid4().hex, "object": "chat.completion", "created": int(time.time()),
                                   "model": model.id, "choices": [choice], "usage": self.usage_block(result.get("usage"), prompt_tokens)})
@@ -1344,7 +1528,7 @@ class Frontend:
             await response.write(b"data: [DONE]\n\n")
             return response
         except (ConnectionResetError, aiohttp.ClientConnectionResetError):
-            self.log(model, prompt_tokens, result.get("usage"), started, first, "client_gone")
+            self.log(model, prompt_tokens, result.get("usage"), started, first, "client_gone", plan.get("trace"))
             return response
         usage = self.usage_block(result.get("usage"), prompt_tokens)
         await response.write(chunk({}, result.get("finish_reason"), usage))
@@ -1352,7 +1536,7 @@ class Frontend:
             payload = {"id": identifier, "object": "chat.completion.chunk", "created": created, "model": model.id, "choices": [], "usage": usage}
             await response.write(("data: " + json.dumps(payload) + "\n\n").encode())
         await response.write(b"data: [DONE]\n\n")
-        self.log(model, prompt_tokens, result.get("usage"), started, first, result.get("finish_reason"))
+        self.log(model, prompt_tokens, result.get("usage"), started, first, result.get("finish_reason"), plan.get("trace"))
         return response
 
 

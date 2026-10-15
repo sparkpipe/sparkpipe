@@ -108,7 +108,12 @@
   },
   {
    "id": "kimi-k3",
-   "chat_memory": {"curator_suffix": "<|close|>think<|sep|><|open|>response<|sep|>", "cache_checkpoint_tokens": 16384, "open_budget": 1500, "line_tokens": 48},
+   "chat_memory": {
+    "curator_suffix": "<|close|>think<|sep|><|open|>response<|sep|>",
+    "cache_checkpoint_tokens": 16384,
+    "open_budget": 1500,
+    "line_tokens": 48
+   },
    "model_dir": "models/kimi-k3",
    "engine": "http://127.0.0.1:8459",
    "context_tokens": 131072,
@@ -900,8 +905,20 @@
  "controller_token_file": "/srv/workspace/sparkpipe/swap-controller/token",
  "control": {
   "status_url": "http://127.0.0.1:8440/status",
-  "force_url": "http://127.0.0.1:8440/force", "admin_url": "http://127.0.0.1:8090/api/v1/auths/"
+  "force_url": "http://127.0.0.1:8440/force",
+  "admin_url": "http://127.0.0.1:8090/api/v1/auths/"
  },
  "site_dir": "site",
- "chat_memory": {"store": "/srv/workspace/sparkpipe/chat-memory", "jwt_secret_file": "/home/spec/sparkpipe-chat/memory-jwt.secret"}
+ "chat_memory": {
+  "store": "/srv/workspace/sparkpipe/chat-memory",
+  "jwt_secret_file": "/home/spec/sparkpipe-chat/memory-jwt.secret"
+ },
+ "client": {
+  "citation_wrapper": {
+   "head_sha256": "8054351a96b97f5970c71f09d9b3c7b4e06539fb99d29e8b68d1b71e0d9bfa00",
+   "open": "<context>\n",
+   "close": "\n</context>\n",
+   "separator": "\n"
+  }
+ }
 }
