@@ -109,6 +109,41 @@ Conditions and limits:
 - All 16 models produced the old build's tokens on the six release prompts
   (`EXACT 6/6`), with no error lines in any rank log.
 
+### Speculation: long verify frames on code edits, K3 (2026-10-15)
+
+K3 TP16 now verifies lookup drafts too: verify steps run with commit off and
+the kept rows are folded into the KDA state with the forward's own kernels
+([`docs/SPECULATION_LONG_FRAMES.md`](docs/SPECULATION_LONG_FRAMES.md)). One
+exclusive hold, 2026-10-15 12:55-13:41Z, arms C (`36f24360e`: same build,
+verify removed from the K3 descriptor) and P (`1134081e3`: frames up to 255
+drafts that cross cache blocks, priced frame policy), order C1 P1 P2 C2, each
+after a KV snapshot and prefix-index wipe. Same 20-task code-edit corpus as
+GLM, greedy, thinking off; decode tok/s excludes the time to the first token.
+Receipts: [`qualification/k3/spec-long-frames-20261015/`](qualification/k3/spec-long-frames-20261015/).
+
+| Edit style | C tok/s | P tok/s | P per task |
+| --- | ---: | ---: | ---: |
+| whole file (15.9K tokens) | 15.3 | 126.4 (8.3x) | 77-161 |
+| SEARCH/REPLACE (2.0K tokens) | 15.0 | 28.0 (1.9x) | 13-34 |
+
+- All 20 P streams are token-identical to C: on this corpus the fold of the
+  kept rows is exact on hardware.
+- 384 verify frames, 22,200 drafts, 16,902 accepted (76%).
+- Story prompt, 256 tokens, medians of 4 (greedy, T=1 top-p 0.95) or 2 (T=1):
+
+| Case | C1 / C2 tok/s | P1 / P2 tok/s |
+| --- | ---: | ---: |
+| greedy | 16.07 / 16.18 | 18.71 / 18.84 |
+| T=1, top-p 0.95 (chat) | 15.60 / 15.64 | 15.57 / 15.61 |
+| T=1 | 15.33 / 15.59 | 16.46 / 16.45 |
+
+- Sampled verify keeps the sampled stream: 5 of 6 sampled P streams equal C1
+  token for token (one diverges at token 178 into a coherent alternative); C2
+  equals C1 10/10. Greedy story streams diverge at near-ties (tokens 81-209)
+  into coherent continuations.
+- Enabling verify switches K3 decode publication from deferred to inline; chat
+  decode speed did not move.
+
 ### Speculation: long verify frames on code edits, GLM Full (2026-10-15)
 
 Lookup speculation drafts from the request's own history and verifies up to
@@ -130,8 +165,17 @@ after the first token.
 - 882 verify frames, 21,421 drafts, 17,719 accepted (83%). S1 and S2 are
   token-identical and within 0.2% in speed; so are N1 and N2.
 - The logprob goldens (which never draft) are bit-identical on every arm.
+- Hold 2 (12:19-12:55Z, frames crossing blocks with the priced policy,
+  `1134081e3` against its control `36f24360e`): whole file 27.5 -> 120.7
+  tok/s, SEARCH/REPLACE 27.5 -> 34.7; prose (256 tokens, greedy) 28.3-28.6
+  against 28.3-28.5 with speculation on; 16 of 20 streams equal the control,
+  goldens bit-identical. Crossing blocks did not beat the in-block frames of
+  hold 1 on whole-file edits; per-frame costs are being measured
+  (receipts under `hold2/`).
 - 13 of 20 S streams equal N; 7 diverge, two at the reply's last token and
-  five early in SEARCH/REPLACE replies, all on formatting tokens. Frames above
+  five early in SEARCH/REPLACE replies, all on formatting tokens. At four of
+  them the control's own prefill path at the same position serves the spec
+  stream's token, so they are near-ties between numerics paths. Frames above
   8 rows run gather attention and wide GEMMs, so their logits differ slightly
   from chained decode; the near-tie check at each divergence is in the next
   hold. The diverged SEARCH/REPLACE replies are longer (6.2K against 3.4K
