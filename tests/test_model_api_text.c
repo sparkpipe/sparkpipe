@@ -51,6 +51,7 @@ static const char TestApiChatTemplateNonSpecialStopJson[] =
 	"\"assistant_thinking\":null,\"turn_suffix\":\"\",\"generation\":\"<|assistant|>\\n\","
 	"\"generation_thinking\":null,\"stop_markers\":[\"<think>\"]}";
 static const char *TestApiChatTemplate = TestApiChatTemplateJson;
+static uint32_t TestApiEosToken = 0u;
 
 static const char *const TestApiTransportHosts[TEST_RANK_COUNT] =
 {
@@ -222,6 +223,7 @@ static void TestApiWriteDeployment(const char *path,
 	fixture.control_port_base = control_port_base;
 	fixture.node_count = TEST_RANK_COUNT;
 	fixture.coordinator_rank_index = 0u;
+	fixture.eos_token_id = TestApiEosToken;
 	if ( tokenizer_asset_path != 0 )
 	{
 		SparkTokenizerSidecar sidecar;
@@ -1014,6 +1016,49 @@ static unsigned long long TestApiServedCount(const TestApiStack *stack)
 	return strtoull(served + strlen("\"served\":"),0,10);
 }
 
+static void TestApiEngineStopCompletes(void)
+{
+	TestApiStack stack;
+	char response[65536];
+	uint32_t tokens[64];
+	uint32_t token_count;
+	char *log_data;
+	const char *last;
+	TestApiEosToken = 4200u;
+	memset(&stack,0,sizeof(stack));
+	stack.api_port = TestApiProbeFreeTcpPort();
+	if ( stack.api_port == 0u )
+		stack.api_port = 40000u + ((uint32_t)getpid() % 20000u);
+	stack.api_stderr_path = "build/test_model_api_text_engine_stop_stderr.log";
+	unlink(stack.api_stderr_path);
+	TestApiStartStack(&stack,0);
+	TestApiStartApi(&stack);
+	TestApiHttpCall(stack.api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":8,\"stop_token_ids\":[4200]}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	token_count = TestApiScanTokenArray(TestApiResponseJsonBody(response),tokens,64u);
+	assert(token_count == 1u && tokens[0] == 4203u);
+	assert(TestApiBodyContains(TestApiResponseJsonBody(response),"\"finish_reason\":\"stop\""));
+	log_data = TestApiReadFile(stack.api_stderr_path);
+	assert(log_data != 0);
+	last = TestApiLastMeasurements(log_data);
+	assert(last != 0 && strstr(last,"\"engine_completed\":1") != 0);
+	free(log_data);
+	TestApiHttpCall(stack.api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":8,\"stop_token_ids\":[4203]}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	token_count = TestApiScanTokenArray(TestApiResponseJsonBody(response),tokens,64u);
+	assert(token_count == 0u);
+	log_data = TestApiReadFile(stack.api_stderr_path);
+	assert(log_data != 0);
+	last = TestApiLastMeasurements(log_data);
+	assert(last != 0 && strstr(last,"\"engine_completed\":0") != 0);
+	free(log_data);
+	TestApiStopStack(&stack);
+	TestApiEosToken = 0u;
+	printf("test_model_api_text: requested stop tokens OK (one the engine also stops on completes in the engine, so the reply can be resumed; one it does not still ends the reply at once)\n");
+}
+
 static void TestApiChatDeclaredStops(TestApiStack *stack)
 {
 	char response[65536];
@@ -1382,6 +1427,7 @@ int main(void)
 	TestApiStopStack(&stack);
 
 	TestApiStartsBeforeEngines();
+	TestApiEngineStopCompletes();
 	TestApiRefusedStartup("build/definitely_missing_tokenizer_asset.json","missing tokenizer asset");
 	TestApiChatTemplate = TestApiChatTemplateNonSpecialStopJson;
 	TestApiRefusedStartup("build/test_tokenizer_sidecar_api_hf.json",
