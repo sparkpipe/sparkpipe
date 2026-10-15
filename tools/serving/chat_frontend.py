@@ -1158,6 +1158,9 @@ class Frontend:
                 messages, tools = normalize_messages(session.messages), session.tools
                 trace.update(memory_lined=session.layout["lined"], memory_open=len(session.layout["open"]))
         plan = self.finish_plan(model, body, messages, tools, kwargs, session)
+        engine = plan["engine_body"]
+        trace.update(temperature=engine.get("temperature"), top_p=engine.get("top_p"), top_k=engine.get("top_k"), reasoning_effort=body.get("reasoning_effort"),
+                     tools=len(tools or []), stream=bool(body.get("stream")))
         plan["trace"] = trace
         return plan
 
