@@ -112,7 +112,12 @@
     "curator_suffix": "<|close|>think<|sep|><|open|>response<|sep|>",
     "cache_checkpoint_tokens": 16384,
     "open_budget": 1500,
-    "line_tokens": 48
+    "line_tokens": 48,
+    "working_tokens": 24576,
+    "ledger_tokens": 12288,
+    "part_small_tokens": 1024,
+    "part_cap_tokens": 12288,
+    "keep_tokens": 4096
    },
    "model_dir": "models/kimi-k3",
    "engine": "http://127.0.0.1:8459",
