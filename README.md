@@ -190,9 +190,11 @@ switching algorithm never changes a result bit. A collective carries its
 full logical batch count separately from its execution rows, so splitting a
 batch cannot select the wrong algorithm.
 
-**End state.** Kernels ring the NIC themselves (GPU-initiated RDMA), with no
-CPU relay per round. Two micro-batches alternate, so one computes while the
-other communicates. Both rails carry traffic at once: the switch for
+**End state.** Two micro-batches alternate, so one computes while the other
+communicates. A GB10 SM cannot ring the CX-7 doorbell (the 2026-10-01 probe:
+no write lands, no completion, no fault), and GPU-built work requests with a
+CPU doorbell measured within about 1 us of today's relay per round, so the
+CPU keeps ringing the NIC. Both rails carry traffic at once: the switch for
 all-to-all reach, the direct pair link for the first reduction level.
 
 ## Batching
