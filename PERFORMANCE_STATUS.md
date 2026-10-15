@@ -172,6 +172,43 @@ after the first token.
   goldens bit-identical. Crossing blocks did not beat the in-block frames of
   hold 1 on whole-file edits; per-frame costs are being measured
   (receipts under `hold2/`).
+- Hold 3 (13:42-14:11Z, tip `a397d67b0`, which prices frames by node
+  service time): whole file 121.4 and 120.6 tok/s in two runs, SEARCH/REPLACE
+  37.8 and 37.4. Frames per row bucket from the engine log: 2 rows 62 ms
+  (9 frames), 3 rows 73 ms (7), 12.6 rows 176 ms, 25 rows 238 ms, 42 rows
+  284 ms (435 of 525 frames), 68 rows 307 ms, 256 rows 529 ms; the chained
+  token costs 36 ms and a single step 48 ms. Long-context corpus (the same
+  edits behind about 40K tokens of context): control `d2e0fda7b` 24.8 tok/s
+  whole file and 24.1 SEARCH/REPLACE, tip 82.4 and 32.7, the tip without the
+  scatter choice (`0d9319a79`) 24.9 and 24.6: with gather attention a long-
+  context frame costs more than it saves, so the policy drafts almost nothing.
+- Why frames stayed near 42 rows: a cap meant for chat-memory background work
+  (frame cost at most eight chained tokens for priority 0) applied to every
+  request, because requests without a priority field carry 0. `2b2fa2a44`
+  applies it only below the highest priority the engine has served.
+- Hold 4 (14:11-14:33Z, same node build, hub API `a397d67b0` as arm T
+  against `2b2fa2a44` as arm P, order P1 T3 PL P2):
+
+  | Edit style | T3 tok/s | P1 tok/s | P2 tok/s |
+  | --- | ---: | ---: | ---: |
+  | whole file (15.8K tokens) | 120.8 | 232.9 | 223.3 |
+  | SEARCH/REPLACE | 37.4 | 35.3 | 36.2 |
+  | whole file, long context | | 103.0 | |
+  | SEARCH/REPLACE, long context | | 30.2 | |
+
+  P frames: 109 of 193 near 241 rows keeping 138 tokens each (540 ms), 24
+  near 88 rows (377 ms). Whole-file edits gain 1.9x over T and about 8.4x
+  over no speculation. SEARCH/REPLACE loses 4%: on the 17 streams equal to
+  T3, short replies (45-224 tokens) run 5-14% slower, because the pooled
+  acceptance statistics of whole-file copies make frames on short copies too
+  long (39-59% of rows kept). 17 of 20 P streams equal T3; editsr_01, 05 and
+  09 diverge in both P runs.
+- Near-tie probe (hold 3, control build): at the first divergence of
+  editsr_01, 05 and 09 the multi-row path serves the spec stream's token, by
+  1.63, 0.54 and 0.31 nats over the control's token. These are not tiny
+  ties: the single-row decode path and the multi-row path disagree by at
+  least that much at those positions. The decode path's own logprobs there
+  are the next probe.
 - 13 of 20 S streams equal N; 7 diverge, two at the reply's last token and
   five early in SEARCH/REPLACE replies, all on formatting tokens. At four of
   them the control's own prefill path at the same position serves the spec
