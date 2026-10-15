@@ -1,0 +1,22 @@
+== 2026-10-15T11:26:57Z GLM spec hold 20261015T112657Z build a161d0de7 precheck idle kimi-k3 None
+A adapter 16:09b782cf7dd2f6c5  residentd 16:9b510ce9df6bb7af 
+S adapter 16:93fb8329799b1efd  residentd 16:afd08cc066caaa19 
+N adapter 16:efea09647a0b302d  residentd 16:afd08cc066caaa19 
+== 2026-10-15T11:27:01Z run N1
+arm N: adapter 16:efea09647a0b302d  residentd 16:afd08cc066caaa19  api e886e27e2ddb1ebe 71f063d4ec70d441 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 53.9 null
+activate kimi-k3: idle kimi-k3 66.0 null
+arm S: adapter 16:93fb8329799b1efd  residentd 16:afd08cc066caaa19  api e886e27e2ddb1ebe 45d40a8507ae7721 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 54.0 null
+== 2026-10-15T11:50:12Z run S2
+activate kimi-k3: idle kimi-k3 66.5 null
+arm S: adapter 16:93fb8329799b1efd  residentd 16:afd08cc066caaa19  api e886e27e2ddb1ebe 45d40a8507ae7721 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 54.9 null
+== 2026-10-15T11:59:04Z run N2
+activate kimi-k3: idle kimi-k3 67.9 null
+arm N: adapter 16:efea09647a0b302d  residentd 16:afd08cc066caaa19  api e886e27e2ddb1ebe 71f063d4ec70d441 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 53.9 null

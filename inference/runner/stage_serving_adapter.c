@@ -63,6 +63,10 @@ typedef struct SparkStageServingState
 	uint64_t row_sequence_ids[SPARK_STAGE_SERVING_MAX_ROWS];
 	uint64_t row_positions[SPARK_STAGE_SERVING_MAX_ROWS];
 	uint32_t completion_tokens[SPARK_STAGE_SERVING_MAX_ROWS];
+	uint32_t distribution_rows[SPARK_STAGE_SERVING_MAX_ROWS];
+	uint32_t distribution_positions[SPARK_STAGE_SERVING_MAX_ROWS];
+	uint32_t distribution_lanes[SPARK_STAGE_SERVING_MAX_ROWS];
+	SparkRowSampling distribution_rules[SPARK_STAGE_SERVING_MAX_ROWS];
 } SparkStageServingState;
 
 static const SparkStageServingModel *StageServingBoundModel;
@@ -487,9 +491,7 @@ static void StageServingBuildFrame(const SparkStageServingState *state, const Sp
 	frame->new_token_count = submission->row_count;
 	frame->tokens_per_sequence = submission->tokens_per_sequence;
 	frame->priority = submission->priority;
-	frame->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL :
-		submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH ? SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH :
-		submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE ? SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE : 0u;
+	frame->flags = SparkModelServingSubmissionFrameFlags(submission);
 	frame->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
 	frame->execution_stream = stream;
 	frame->residency = submission->residency;
@@ -792,12 +794,13 @@ static void StageServingContinuityRows(SparkStageServingState *state,
 
 static SparkStatus StageServingFinish(SparkStageServingState *state, uint32_t active,
 	const uint32_t *lane_slots, uint8_t *bound, uint64_t *sequence_ids,
-	uint64_t *next_positions, uint32_t extra_tokens, SparkStatus status)
+	uint64_t *next_positions, uint32_t extra_tokens, uint32_t verify, SparkStatus status)
 {
 	SparkStageKvBindingCompletion completion;
 	memset(&completion, 0, sizeof(completion));
 	completion.lane_count = active;
 	completion.extra_tokens = status == SPARK_STATUS_OK ? extra_tokens : 0u;
+	completion.verify = verify;
 	completion.status = status;
 	completion.resident_slots = lane_slots;
 	completion.bound = bound;
@@ -813,6 +816,18 @@ static SparkStatus StageServingChainSteps(const SparkStageServingState *state,
 	const uint32_t *positions = (const uint32_t *)state->positions_host.pointer;
 	const uint32_t block = state->model->descriptor->cache_block_token_count;
 	uint32_t steps = submission->tokens_per_sequence > 1u ? submission->tokens_per_sequence : 1u, index;
+	if ( (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
+	{
+		*steps_out = 1u;
+		if ( state->runner.owns_final_head == 0u || SparkStageRunnerVerifyCapable(&state->runner) == 0u ||
+			(uint64_t)active * submission->tokens_per_sequence > SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		for ( index = 0u; index < frame->cache_lane_count; ++index )
+			if ( (frame->cache_lanes[index].flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY) == 0u ||
+				(frame->cache_lanes[index].flags & (SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH)) != 0u )
+				SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		return SPARK_STATUS_OK;
+	}
 	*steps_out = steps;
 	if ( steps == 1u )
 		return SPARK_STATUS_OK;
@@ -871,7 +886,8 @@ static void StageServingDispatch(const SparkStageServingState *state, const Spar
 	memset(dispatch, 0, sizeof(*dispatch));
 	dispatch->abi_version = SPARK_STAGE_RUNNER_ABI_VERSION;
 	dispatch->descriptor_bytes = (uint32_t)sizeof(*dispatch);
-	dispatch->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL : 0u;
+	dispatch->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL :
+		(submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY : 0u;
 	dispatch->request_id = submission->request_id;
 	dispatch->sequence_id = submission->sequence_id;
 	dispatch->sequence_position = submission->sequence_position;
@@ -903,23 +919,49 @@ static void StageServingDispatch(const SparkStageServingState *state, const Spar
 	dispatch->host_sequence_of_row = (const uint32_t *)state->state_host.pointer;
 }
 
+static SparkStatus StageServingReadTokens(SparkStageServingState *state, uint32_t rows, uint32_t steps)
+{
+	SparkMemoryBuffer tokens = SPARK_MEMORY_BUFFER_VIEW(state->completion_tokens,
+		SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)rows * steps * sizeof(state->completion_tokens[0]));
+	if ( (uint64_t)rows * steps > SPARK_STAGE_SERVING_MAX_ROWS )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( SparkMemoryBufferCopy(&tokens, &state->output_tokens, (uint64_t)rows * steps * sizeof(state->completion_tokens[0]), 0) != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	return SPARK_STATUS_OK;
+}
+
+static void StageServingVerifyKept(const SparkStageServingState *state, const SparkModelServingSubmission *submission,
+	uint32_t active, uint32_t *kept)
+{
+	const uint32_t *runs = (const uint32_t *)state->runs_host.pointer;
+	const uint32_t *order = (const uint32_t *)state->order_host.pointer;
+	for ( uint32_t s = 0u; s < active; ++s )
+		kept[s] = SparkModelServingVerifyKeptRows(runs, order, state->completion_tokens, submission->token_ids, s);
+}
+
 static SparkStatus StageServingComplete(SparkStageServingState *state, const SparkModelServingSubmission *submission,
-	uint32_t rows, uint32_t active, uint32_t steps, uint32_t distribution_count, const uint32_t *distribution_lanes,
+	uint32_t rows, uint32_t active, uint32_t steps, const uint32_t *kept, uint32_t distribution_count, const uint32_t *distribution_lanes,
 	const SparkRowSampling *distribution_rules, const SparkSamplingLogprob *distribution_logprobs, uint32_t logprob_stride)
 {
 	SparkModelServingCompletion completion;
 	StageServingCompletionHeader(submission, rows, &completion);
-	if ( state->runner.owns_final_head != 0u )
+	if ( state->runner.owns_final_head != 0u && kept != 0 )
 	{
 		const uint32_t *runs = (const uint32_t *)state->runs_host.pointer;
 		const uint32_t *order = (const uint32_t *)state->order_host.pointer;
-		uint32_t *tokens_host = state->completion_tokens;
-		SparkMemoryBuffer tokens = SPARK_MEMORY_BUFFER_VIEW(tokens_host,
-			SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)rows * steps * sizeof(*tokens_host));
-		if ( (uint64_t)rows * steps > SPARK_STAGE_SERVING_MAX_ROWS )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		if ( SparkMemoryBufferCopy(&tokens, &state->output_tokens, (uint64_t)rows * steps * sizeof(*tokens_host), 0) != SPARK_STATUS_OK )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		const uint32_t stride = submission->tokens_per_sequence;
+		completion.tokens_per_sequence = stride;
+		completion.token_count = active * stride;
+		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
+		for ( uint32_t s = 0u; s < active; ++s )
+			for ( uint32_t w = 0u; w < stride; ++w )
+				completion.token_ids[s * stride + w] = w < kept[s] ? state->completion_tokens[order[runs[s] + w]] : SPARK_MODEL_SERVING_NO_TOKEN;
+	}
+	else if ( state->runner.owns_final_head != 0u )
+	{
+		const uint32_t *runs = (const uint32_t *)state->runs_host.pointer;
+		const uint32_t *order = (const uint32_t *)state->order_host.pointer;
+		const uint32_t *tokens_host = state->completion_tokens;
 		completion.tokens_per_sequence = steps;
 		completion.token_count = active * steps;
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
@@ -947,11 +989,12 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	uint32_t *row_slots = state != 0 ? state->row_slots : 0;
 	uint8_t bound[SPARK_STAGE_SERVING_MAX_LANES];
 	uint64_t sequence_ids[SPARK_STAGE_SERVING_MAX_LANES], next_positions[SPARK_STAGE_SERVING_MAX_LANES];
-	uint32_t distribution_rows[SPARK_STAGE_SERVING_MAX_LANES], distribution_positions[SPARK_STAGE_SERVING_MAX_LANES];
-	uint32_t distribution_lanes[SPARK_STAGE_SERVING_MAX_LANES];
-	SparkRowSampling distribution_rules[SPARK_STAGE_SERVING_MAX_LANES];
+	uint32_t *distribution_rows = state != 0 ? state->distribution_rows : 0, *distribution_positions = state != 0 ? state->distribution_positions : 0;
+	uint32_t *distribution_lanes = state != 0 ? state->distribution_lanes : 0;
+	SparkRowSampling *distribution_rules = state != 0 ? state->distribution_rules : 0;
 	SparkSamplingLogprob distribution_logprobs[SPARK_STAGE_SERVING_MAX_LANES * SPARK_SAMPLING_MAX_LOGPROBS];
-	uint32_t rows, active = 0u, distribution_count = 0u, logprob_stride = 0u, steps = 1u;
+	uint32_t rows, active = 0u, distribution_count = 0u, logprob_stride = 0u, steps = 1u, kept[SPARK_STAGE_SERVING_MAX_LANES];
+	const uint32_t verify = submission != 0 && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? 1u : 0u;
 	uint64_t marks[6];
 	SparkStatus status, finished;
 	void *stream;
@@ -978,13 +1021,16 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		const uint32_t *order = (const uint32_t *)state->order_host.pointer;
 		if ( SparkSamplingRuleNeedsDistribution(&submission->lanes[lane].sampling) == 0u )
 			continue;
-		distribution_rows[distribution_count] = order[runs[lane + 1u] - 1u];
-		distribution_positions[distribution_count] = ((const uint32_t *)state->positions_host.pointer)[distribution_rows[distribution_count]];
-		distribution_rules[distribution_count] = submission->lanes[lane].sampling;
-		distribution_lanes[distribution_count] = lane;
+		for ( uint32_t cursor = verify != 0u ? runs[lane] : runs[lane + 1u] - 1u; cursor < runs[lane + 1u]; ++cursor )
+		{
+			distribution_rows[distribution_count] = order[cursor];
+			distribution_positions[distribution_count] = ((const uint32_t *)state->positions_host.pointer)[order[cursor]];
+			distribution_rules[distribution_count] = submission->lanes[lane].sampling;
+			distribution_lanes[distribution_count] = lane;
+			distribution_count++;
+		}
 		if ( submission->lanes[lane].sampling.logprobs > logprob_stride )
 			logprob_stride = submission->lanes[lane].sampling.logprobs;
-		distribution_count++;
 	}
 	if ( logprob_stride != 0u && submission->tokens_per_sequence > 1u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
@@ -1022,7 +1068,7 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		dispatch.distribution_rows = distribution_rows;
 		dispatch.distribution_positions = distribution_positions;
 		dispatch.distribution_rules = distribution_rules;
-		dispatch.distribution_logprobs = distribution_logprobs;
+		dispatch.distribution_logprobs = logprob_stride != 0u ? distribution_logprobs : 0;
 		marks[1] = StageServingNowNs();
 		status = SparkStageRunnerSubmit(&state->runner, &dispatch);
 	}
@@ -1033,9 +1079,18 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
 	marks[4] = StageServingNowNs();
+	if ( status == SPARK_STATUS_OK && state->runner.owns_final_head != 0u )
+		status = StageServingReadTokens(state, rows, steps);
+	if ( status == SPARK_STATUS_OK && verify != 0u )
+	{
+		StageServingVerifyKept(state, submission, active, kept);
+		status = SparkStageRunnerKeepRows(&state->runner, kept, active);
+		if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
+			status = SPARK_STATUS_IO_ERROR;
+	}
 	for ( uint32_t lane = 0u; status == SPARK_STATUS_OK && lane < active; ++lane )
-		next_positions[lane] += steps - 1u;
-	finished = StageServingFinish(state, active, row_slots, bound, sequence_ids, next_positions, steps - 1u, status);
+		next_positions[lane] = verify != 0u ? state->row_positions[lane] + kept[lane] : next_positions[lane] + steps - 1u;
+	finished = StageServingFinish(state, active, row_slots, bound, sequence_ids, next_positions, steps - 1u, verify, status);
 	marks[5] = StageServingNowNs();
 	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
 		StageServingWaveHost(state, marks);
@@ -1046,7 +1101,7 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		return finished;
 	if ( state->completion_function == 0 )
 		return SPARK_STATUS_OK;
-	return StageServingComplete(state, submission, rows, active, steps, distribution_count, distribution_lanes,
+	return StageServingComplete(state, submission, rows, active, steps, verify != 0u ? kept : 0, distribution_count, distribution_lanes,
 		distribution_rules, distribution_logprobs, logprob_stride);
 }
 

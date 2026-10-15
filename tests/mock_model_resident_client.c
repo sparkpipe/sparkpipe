@@ -37,6 +37,7 @@ typedef struct MockInflight
 	uint64_t lane_positions[MOCK_SCRIPT_LANES];
 	uint32_t row_lanes[MOCK_SCRIPT_ROWS];
 	uint64_t row_positions[MOCK_SCRIPT_ROWS];
+	uint32_t row_tokens[MOCK_SCRIPT_ROWS];
 	SparkModelServingSubmission submission;
 } MockInflight;
 
@@ -103,6 +104,10 @@ static uint32_t mock_script[MOCK_SCRIPT_TOKENS];
 static uint32_t mock_script_count;
 static uint32_t mock_verify_submissions;
 static uint32_t mock_verify_rows;
+static uint32_t mock_verify_max_stride;
+static uint32_t mock_verify_corrupt;
+static uint32_t mock_row_cost_ns = 200u;
+static uint32_t mock_verify_shared;
 
 static int MockTraceEnabled(void)
 {
@@ -397,6 +402,10 @@ void MockResidentClientReset(void)
 	mock_script_count = 0u;
 	mock_verify_submissions = 0u;
 	mock_verify_rows = 0u;
+	mock_verify_max_stride = 0u;
+	mock_verify_corrupt = 0u;
+	mock_row_cost_ns = 200u;
+	mock_verify_shared = 0u;
 	mock_token_start = 11u;
 	mock_logprob_stride = 0u;
 	mock_logprob_corrupt = 0u;
@@ -525,11 +534,16 @@ static SparkStatus MockResidentClientEnqueue(
 	{
 		slot->row_lanes[lane] = submission->row_lane_indices[lane];
 		slot->row_positions[lane] = submission->row_positions[lane];
+		slot->row_tokens[lane] = submission->token_ids != 0 ? submission->token_ids[lane] : 0u;
 	}
 	if ( client->stage_index == 0u && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
 	{
 		mock_verify_submissions++;
 		mock_verify_rows += submission->row_count;
+		if ( submission->tokens_per_sequence > mock_verify_max_stride )
+			mock_verify_max_stride = submission->tokens_per_sequence;
+		if ( submission->active_sequence_count > 1u )
+			mock_verify_shared++;
 	}
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 		client->release_submissions++;
@@ -751,12 +765,20 @@ static void MockScriptCompletion(const MockInflight *saved,SparkModelServingComp
 	memset(last,0,sizeof(last));
 	if ( (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
 	{
+		uint32_t kept[MOCK_SCRIPT_LANES],previous[MOCK_SCRIPT_LANES];
 		for (row=0u; row<completion->token_count; row++)
 			completion->token_ids[row] = SPARK_MODEL_SERVING_NO_TOKEN;
+		for (lane=0u; lane<MOCK_SCRIPT_LANES; lane++)
+			kept[lane] = 1u;
 		for (row=0u; row<saved->row_count; row++)
 		{
 			lane = saved->row_lanes[row];
-			completion->token_ids[lane * stride + seen[lane]++] = MockScriptToken(saved->row_positions[row] + 1u);
+			if ( seen[lane] != 0u && kept[lane] == seen[lane] && (previous[lane] == saved->row_tokens[row] || mock_verify_corrupt != 0u) )
+				kept[lane]++;
+			previous[lane] = MockScriptToken(saved->row_positions[row] + 1u);
+			if ( seen[lane] < kept[lane] )
+				completion->token_ids[lane * stride + seen[lane]] = previous[lane];
+			seen[lane]++;
 		}
 		return;
 	}
@@ -778,6 +800,30 @@ void MockResidentClientSetScript(const uint32_t *tokens,uint32_t count)
 {
 	mock_script_count = count < MOCK_SCRIPT_TOKENS ? count : MOCK_SCRIPT_TOKENS;
 	memcpy(mock_script,tokens,(size_t)mock_script_count * sizeof(uint32_t));
+}
+
+uint32_t MockResidentClientTakeVerifyShared(void)
+{
+	uint32_t shared = mock_verify_shared;
+	mock_verify_shared = 0u;
+	return(shared);
+}
+
+uint32_t MockResidentClientTakeVerifyMaxStride(void)
+{
+	uint32_t stride = mock_verify_max_stride;
+	mock_verify_max_stride = 0u;
+	return(stride);
+}
+
+void MockResidentClientSetVerifyCorrupt(uint32_t corrupt)
+{
+	mock_verify_corrupt = corrupt;
+}
+
+void MockResidentClientSetRowCost(uint32_t ns)
+{
+	mock_row_cost_ns = ns;
 }
 
 void MockResidentClientTakeVerifyStats(uint32_t *submissions,uint32_t *rows)
@@ -883,6 +929,8 @@ uint32_t MockResidentClientDeliverEvent(uint32_t stage_index, uint64_t submissio
 				completion.request_generation = saved.submission.request_generation;
 				completion.step_generation = saved.submission.step_generation;
 				completion.residency = saved.submission.residency;
+				completion.service_time_ns = (uint64_t)((saved.submission.flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u || saved.submission.tokens_per_sequence == 0u ?
+					1u : saved.submission.tokens_per_sequence) * (10000u + (uint64_t)mock_row_cost_ns * saved.row_count);
 				if ( c->is_final_rank != 0u && mock_script_count != 0u &&
 					saved.submission.work_kind < SPARK_MODEL_SERVING_WORK_KIND_RELEASE && status == SPARK_STATUS_OK )
 					MockScriptCompletion(&saved,&completion);

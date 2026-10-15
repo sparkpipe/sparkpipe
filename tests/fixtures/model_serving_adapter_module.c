@@ -40,6 +40,14 @@
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY)
 #define TEST_MODEL_SERVING_SPECULATIVE_TOKEN_COUNT 6u
 #define TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT 16u
+#elif defined(TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY)
+#define TEST_MODEL_SERVING_ADAPTER_ID "test.model.serving.adapter.speculative-long-verify.v1"
+#define TEST_MODEL_SERVING_CAPABILITIES \
+	(TEST_MODEL_SERVING_DEFAULT_CAPABILITIES | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY)
+#define TEST_MODEL_SERVING_SPECULATIVE_TOKEN_COUNT 255u
+#define TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT 64u
 #elif defined(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS)
 #define TEST_MODEL_SERVING_ADAPTER_ID "test.model.serving.adapter.recurrent-checkpoints.v1"
 #define TEST_MODEL_SERVING_CAPABILITIES \
@@ -134,7 +142,8 @@ static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
 	.boundary_sideband_bytes_per_sequence = {16u,0u,0u},
 	.minimum_efficient_submission_row_count = 16u,
 	.cache_block_token_count = TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT,
-	.cache_checkpoint_token_count = TEST_MODEL_SERVING_CACHE_CHECKPOINT_TOKEN_COUNT
+	.cache_checkpoint_token_count = TEST_MODEL_SERVING_CACHE_CHECKPOINT_TOKEN_COUNT,
+	.max_verify_row_count = (TEST_MODEL_SERVING_CAPABILITIES & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) != 0u ? 256u : 0u
 };
 
 static SparkStatus TestModelServingValidateConfiguration(
@@ -294,14 +303,22 @@ static void TestModelServingBuildCompletion(
 		submission->tokens_per_sequence;
 	if ( (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
 	{
-		uint32_t row,rows_seen[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
+		uint32_t row,output,rows_seen[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT],kept[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
+		uint32_t previous[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
 		memset(rows_seen,0,sizeof(rows_seen));
 		for (token_index=0u; token_index<completion->token_count; token_index++)
 			completion->token_ids[token_index] = SPARK_MODEL_SERVING_NO_TOKEN;
 		for (row=0u; row<submission->row_count; row++)
 		{
 			lane = submission->row_lane_indices[row];
-			completion->token_ids[lane * submission->tokens_per_sequence + rows_seen[lane]] = 4200u + lane + rows_seen[lane];
+			if ( rows_seen[lane] == 0u )
+				kept[lane] = 1u;
+			else if ( kept[lane] == rows_seen[lane] && previous[lane] == submission->token_ids[row] )
+				kept[lane]++;
+			output = 4200u + lane + rows_seen[lane];
+			if ( rows_seen[lane] < kept[lane] )
+				completion->token_ids[lane * submission->tokens_per_sequence + rows_seen[lane]] = output;
+			previous[lane] = output;
 			rows_seen[lane]++;
 		}
 		return;

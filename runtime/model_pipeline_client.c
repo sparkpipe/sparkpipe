@@ -21,6 +21,7 @@ typedef struct SparkModelPipelineTransaction
 {
 	uint32_t active;
 	uint32_t work_kind;
+	uint32_t flags;
 	uint32_t active_sequence_count;
 	uint32_t row_count;
 	uint32_t tokens_per_sequence;
@@ -133,6 +134,7 @@ static SparkModelPipelineTransaction *SparkModelPipelineClientReserve(
 			memset(transaction,0,sizeof(*transaction));
 			transaction->active = 1u;
 			transaction->work_kind = submission->work_kind;
+			transaction->flags = submission->flags;
 			transaction->active_sequence_count = submission->active_sequence_count;
 			transaction->row_count = submission->row_count;
 			transaction->tokens_per_sequence = submission->tokens_per_sequence;
@@ -293,7 +295,14 @@ static SparkStatus SparkModelPipelineClientUpdateLeases(
 		slot->request_generation = lanes[lane].request_generation;
 		slot->sequence_id = lanes[lane].sequence_id;
 		next_sequence_position = lanes[lane].context_token_count;
-		if ( transaction->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
+		if ( (transaction->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
+		{
+			status = SparkModelContinuationLeaseVerifyPosition(lanes[lane].sequence_position,
+				SparkModelServingCompletionKeptRows(&transaction->final_completion,lane),&next_sequence_position);
+			if ( status != SPARK_STATUS_OK )
+				SPARK_RETURN(status);
+		}
+		else if ( transaction->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 		{
 			uint32_t completed_tokens;
 			completed_tokens = transaction->final_completion.tokens_per_sequence;
@@ -538,7 +547,18 @@ static SparkStatus SparkModelPipelineClientValidateRankCompletion(
 	uint32_t stage_index,
 	const SparkModelServingCompletion *completion)
 {
-	return(SparkModelServingAdapterValidateStageCompletion(pipeline->adapter_descriptor,stage_index,transaction->work_kind,transaction->active_sequence_count,transaction->tokens_per_sequence,&transaction->residency,completion));
+	SparkStatus status;
+	uint32_t lane;
+	status = SparkModelServingAdapterValidateStageCompletion(pipeline->adapter_descriptor,stage_index,transaction->work_kind,transaction->active_sequence_count,transaction->tokens_per_sequence,&transaction->residency,completion);
+	if ( status != SPARK_STATUS_OK || (transaction->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) == 0u || completion->status != SPARK_STATUS_OK ||
+		(completion->completion_flags & SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS) == 0u )
+		return(status);
+	if ( completion->tokens_per_sequence != transaction->tokens_per_sequence )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	for (lane=0u; lane<transaction->active_sequence_count; lane++)
+		if ( SparkModelServingCompletionKeptRows(completion,lane) == 0u )
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkModelPipelineClientReportStageCompletion(

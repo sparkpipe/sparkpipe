@@ -28,19 +28,27 @@ def first_definition(text):
     return None
 
 
+def background(root, files):
+    if not files:
+        return ""
+    parts = [f"File {relative}:\n\n{(root / relative).read_text()}" for relative in files]
+    return "Other files of the repository, for context only:\n\n" + "\n\n".join(parts) + "\n\n"
+
+
 def build(args):
     root = Path(args.root)
     tasks = []
+    context = background(root, args.background)
     for relative in args.files:
         text = (root / relative).read_text()
         name = first_definition(text)
         if name is None:
             raise SystemExit(f"{relative}: no function definition that is also used")
         for style, rule in STYLES.items():
-            prompt = (f"Here is the file {relative}:\n\n{text}\n\nRename the function {name} to {name}_v2 at its definition and at every use "
+            prompt = (f"{context}Here is the file {relative}:\n\n{text}\n\nRename the function {name} to {name}_v2 at its definition and at every use "
                       f"in this file, and change nothing else. {rule}")
             tasks.append({"name": f"{style}_{len(tasks) // 2 + 1:02d}", "file": relative, "function": name, "style": style,
-                          "messages": [{"role": "user", "content": prompt}], "file_chars": len(text)})
+                          "messages": [{"role": "user", "content": prompt}], "file_chars": len(text), "context_chars": len(context)})
     Path(args.out).write_text(json.dumps(tasks, indent=1))
     print(f"{len(tasks)} tasks from {len(args.files)} files")
 
@@ -58,7 +66,7 @@ def stream(endpoint, body):
     connection = http.client.HTTPConnection(url.hostname, url.port, timeout=3600)
     connection.request("POST", "/v1/completions", json.dumps(dict(body, stream=True)), {"Content-Type": "application/json"})
     response = connection.getresponse()
-    tokens, buffer, finish = [], b"", None
+    tokens, buffer, finish, started, first = [], b"", None, time.monotonic(), None
     while True:
         chunk = response.read1(65536)
         if not chunk:
@@ -70,9 +78,11 @@ def stream(endpoint, body):
             if line.startswith(b"data:") and line[5:].strip() != b"[DONE]":
                 document = json.loads(line[5:])
                 tokens.extend(document.get("tokens", []))
+                if tokens and first is None:
+                    first = time.monotonic() - started
                 finish = (document.get("choices") or [{}])[0].get("finish_reason") or finish
     connection.close()
-    return tokens, finish
+    return tokens, finish, first
 
 
 def generate(args):
@@ -88,13 +98,15 @@ def generate(args):
         _, prompt_ids = model.render(frontend.normalize_messages(task["messages"]), None, kwargs)
         budget = min(args.max_tokens, int(task["file_chars"] / 2.5) + 512)
         started = time.monotonic()
-        output, finish = stream(args.engine, {"prompt_token_ids": prompt_ids, "max_tokens": budget, "temperature": 0, "stop_token_ids": model.stop_token_ids})
+        output, finish, first = stream(args.engine, {"prompt_token_ids": prompt_ids, "max_tokens": budget, "temperature": 0, "stop_token_ids": model.stop_token_ids})
         seconds = time.monotonic() - started
         output = [token for token in output if token not in model.stop_token_ids]
         tokens = list(prompt_ids) + output
         (out / f"{task['name']}.u32").write_bytes(struct.pack(f"<II{len(tokens)}I", len(prompt_ids), len(tokens), *tokens))
+        decode = seconds - (first or 0.0)
         row = {"name": task["name"], "file": task["file"], "prompt_tokens": len(prompt_ids), "output_tokens": len(output), "finish": finish,
-               "seconds": round(seconds, 1)}
+               "seconds": round(seconds, 2), "ttft": round(first or 0.0, 3),
+               "decode_tok_s": round((len(output) - 1) / decode, 2) if len(output) > 1 and decode > 0 else None}
         report.append(row)
         print(json.dumps(row), flush=True)
     (out / "generation.json").write_text(json.dumps({"model": args.model, "reasoning_effort": args.reasoning_effort, "tasks": report}, indent=1))
@@ -106,6 +118,7 @@ def main():
     b = sub.add_parser("build")
     b.add_argument("--root", default=".")
     b.add_argument("--out", required=True)
+    b.add_argument("--background", nargs="*", default=[], help="files prepended to every prompt as unrelated context")
     b.add_argument("files", nargs="+")
     g = sub.add_parser("generate")
     g.add_argument("--corpus", required=True)

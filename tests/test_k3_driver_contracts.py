@@ -104,7 +104,7 @@ def main():
     if "buffers->kda_state_bf16 = state->kda_state_bf16;" not in slice_:
         print("  FAIL the bind no longer propagates the state dtype flag")
         failures += 1
-    if "K3_KDA_STATE_SLOT_BYTES_BF16" not in slice_:
+    if not re.search(r"K3_KDA_RANK_STATE_SLOT_BYTES\(state->kda_rank_heads,\s*state->kda_state_bf16\)", slice_):
         print("  FAIL the bind does not stride the pool by the flag; a pool "
               "bound at one width and launched at another aliases sequences")
         failures += 1

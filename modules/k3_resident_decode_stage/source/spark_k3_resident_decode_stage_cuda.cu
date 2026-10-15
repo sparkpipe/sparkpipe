@@ -15,6 +15,10 @@ extern "C" int32_t K3StageSlice(const void *layer_weights, const void *slice_sta
 	uint32_t multiprocessors, void *stream);
 #define K3_DISPATCH_PAIR_IDENTITY 16u
 
+extern "C" int32_t K3StageFold(const void *layer_weights, const void *slice_state, void *layer_buffers,
+	uint32_t first_layer, uint32_t layer_count, uint32_t sequences, const uint32_t *verify_row_begin,
+	const uint32_t *verify_row_indices, const uint32_t *accepted, uint32_t slab_rows, uint32_t multiprocessors, void *stream);
+
 extern "C" int32_t K3StageSlicePair(const void *layer_weights, const void *slice_state,
 	void *buffers_a, void *buffers_b, uint32_t first_layer, uint32_t layer_count, uint32_t rows_a,
 	uint32_t rows_b, uint32_t commit, uint32_t multiprocessors, void *stream);
@@ -463,6 +467,7 @@ void SparkK3DispatchDestroy(SparkK3Dispatch *d)
 	cudaFree(d->scratch);
 	cudaFree(d->gather_plan);
 	cudaFree(d->pair_arrays);
+	cudaFree(d->replay_pool);
 	delete d->pair_buffers;
 	delete[] d->mla_cache;
 	delete[] d->weights;
@@ -747,6 +752,8 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 		else
 			d->mla_scatter_waves++;
 	}
+	if ( commit == 0u && (d->replay_rows == 0u || rows > d->replay_rows || in->pair_rows != 0u) )
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
 	if ( b->shard_gather != 0u && in->pair_rows != 0u && sequences == 1u && d->pair_buffers != 0 &&
 		d->pair_arrays != 0 && d->widths.latent == K3_ROUTED_EXPERT_HIDDEN && in->pair_rows < rows )
 	{
@@ -780,7 +787,57 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 			return status;
 		}
 	}
-	return(K3StageSlice(d->weights, d->slice_state, d->buffers, d->first_layer,
+	d->slice_state->replay_active = commit == 0u ? 1u : 0u;
+	const int32_t status = K3StageSlice(d->weights, d->slice_state, d->buffers, d->first_layer,
 		d->layer_count, rows, sequences, commit, packed_rows, context,
-		multiprocessors, (void *)stream));
+		multiprocessors, (void *)stream);
+	d->slice_state->replay_active = 0u;
+	return status;
+}
+
+int32_t SparkK3DispatchEnableVerify(SparkK3Dispatch *d, uint32_t rows)
+{
+	if ( d == 0 || d->slice_state == 0 || rows == 0u || rows > d->max_rows || d->replay_pool != 0 )
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
+	const uint64_t heads = d->kda_rank_heads, layers_rows = (uint64_t)d->kda_count * rows;
+	const uint64_t qk = layers_rows * heads * K3_KDA_KEY_DIM, v = layers_rows * heads * K3_KDA_VALUE_DIM;
+	const uint64_t bytes = 2u * qk * sizeof(uint16_t) + v * sizeof(uint16_t) + qk * sizeof(float) + layers_rows * heads * sizeof(float);
+	cudaSetDevice(d->device);
+	if ( cudaMalloc(&d->replay_pool, bytes) != cudaSuccess )
+	{
+		d->replay_pool = 0;
+		fprintf(stderr, "sparkpipe_k3: verify replay buffers (%llu bytes for %u rows) do not fit\n", (unsigned long long)bytes, rows);
+		return SPARK_K3_DISPATCH_ERR_CUDA;
+	}
+	K3SliceState *st = d->slice_state;
+	uint8_t *cursor = d->replay_pool;
+	st->replay_conv_q = (uint16_t *)cursor; cursor += qk * sizeof(uint16_t);
+	st->replay_conv_k = (uint16_t *)cursor; cursor += qk * sizeof(uint16_t);
+	st->replay_conv_v = (uint16_t *)cursor; cursor += v * sizeof(uint16_t);
+	st->replay_retention = (float *)cursor; cursor += qk * sizeof(float);
+	st->replay_write_gate = (float *)cursor;
+	st->verify_rows = rows;
+	st->replay_active = 0u;
+	d->replay_bytes = bytes;
+	d->replay_rows = rows;
+	return SPARK_K3_DISPATCH_OK;
+}
+
+int32_t SparkK3DispatchKeep(SparkK3Dispatch *d, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_indices,
+	const uint32_t *state_index, const uint32_t *kept, uint32_t sequences, uint32_t rows, uint32_t multiprocessors,
+	cudaStream_t stream)
+{
+	if ( d == 0 || d->replay_rows == 0u || rows == 0u || rows > d->replay_rows || sequences == 0u || sequences > d->sequences ||
+		sequence_row_begin == 0 || state_index == 0 || kept == 0 )
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
+	cudaSetDevice(d->device);
+	K3LayerBuffers *b = d->buffers_host;
+	b->sequence_row_begin = sequence_row_begin;
+	b->sequence_row_indices = sequence_row_indices;
+	b->kda_state_index = state_index;
+	d->slice_state->replay_active = 1u;
+	const int32_t status = K3StageFold(d->weights, d->slice_state, d->buffers, d->first_layer, d->layer_count, sequences,
+		sequence_row_begin, sequence_row_indices, kept, rows, multiprocessors, (void *)stream);
+	d->slice_state->replay_active = 0u;
+	return status == LM_LAUNCH_OK && cudaPeekAtLastError() == cudaSuccess ? SPARK_K3_DISPATCH_OK : SPARK_K3_DISPATCH_ERR_CUDA;
 }
