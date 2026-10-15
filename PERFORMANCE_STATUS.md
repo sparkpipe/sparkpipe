@@ -143,6 +143,15 @@ Receipts: [`qualification/k3/spec-long-frames-20261015/`](qualification/k3/spec-
   into coherent continuations.
 - Enabling verify switches K3 decode publication from deferred to inline; chat
   decode speed did not move.
+- Hold 5 (14:34-14:57Z, node adapter and residentd of `a397d67b0`, hub API
+  `a397d67b0` as KT against `2b2fa2a44`, the background-only frame cap, as
+  KP; order KP1 KT1 KP2): whole file 101.0 (KT1) against 140.6 and 137.3
+  tok/s (1.38x), SEARCH/REPLACE 25.1 against 24.4 and 24.7. KT1 frames sat
+  near 34 rows (258 of 390) under the eight-chained-token cap (65 ms chained
+  token); KP frames run near 191 rows keeping 138 tokens (731 ms), 63 and 92
+  of 131 and 194 frames. 19 of 20 KP streams equal KT1 in both runs (editsr_09
+  diverges). KT1 is below hold 2's 126.4 because pricing by node service time
+  made the cap tighter (cross-hold). Receipts under `hold5/`.
 
 ### Speculation: long verify frames on code edits, GLM Full (2026-10-15)
 
