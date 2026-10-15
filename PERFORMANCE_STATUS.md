@@ -178,7 +178,7 @@ after the first token.
   (9 frames), 3 rows 73 ms (7), 12.6 rows 176 ms, 25 rows 238 ms, 42 rows
   284 ms (435 of 525 frames), 68 rows 307 ms, 256 rows 529 ms; the chained
   token costs 36 ms and a single step 48 ms. Long-context corpus (the same
-  edits behind about 40K tokens of context): control `d2e0fda7b` 24.8 tok/s
+  edits behind about 46K tokens of prompt, six tasks): control `d2e0fda7b` 24.8 tok/s
   whole file and 24.1 SEARCH/REPLACE, tip 82.4 and 32.7, the tip without the
   scatter choice (`0d9319a79`) 24.9 and 24.6: with gather attention a long-
   context frame costs more than it saves, so the policy drafts almost nothing.
