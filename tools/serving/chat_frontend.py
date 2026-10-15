@@ -218,6 +218,53 @@ class TiktokenVocabulary:
 VOCABULARIES = {"tokenizers": TokenizersVocabulary, "tiktoken": TiktokenVocabulary}
 
 
+CARRIED = re.compile("\ue000([0-9]+)\ue001")
+
+
+def carry_controls(messages, tools, vocabulary):
+    specials = [token for token in vocabulary.control_strings() if token]
+    carried = []
+
+    def mark(value):
+        if isinstance(value, str):
+            if any(token in value for token in specials):
+                carried.append(value)
+                return f"\ue000{len(carried) - 1}\ue001"
+            return value
+        if isinstance(value, dict):
+            if any(isinstance(key, str) and any(token in key for token in specials) for key in value):
+                raise RequestError(400, "invalid_messages", "a request key carries a control token string")
+            return {key: mark(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [mark(item) for item in value]
+        return value
+
+    return mark(messages), mark(tools), carried
+
+
+def uncarry(pieces, carried, expected):
+    result = []
+    for text, special in pieces:
+        for index, piece in enumerate(CARRIED.split(text)):
+            if index % 2 == 0:
+                if piece:
+                    result.append((piece, special))
+            elif int(piece) < len(carried):
+                result.append((carried[int(piece)], False))
+            else:
+                raise RequestError(400, "invalid_messages", "a message carries a control token string inside text the chat template rewrites")
+    if "".join(text for text, _ in result) != expected:
+        raise RequestError(400, "invalid_messages", "a message carries a control token string inside text the chat template rewrites")
+    return result
+
+
+def encode_pieces(vocabulary, text, pieces):
+    ids = []
+    for piece, special in pieces:
+        ids.extend(vocabulary.encode(piece, special))
+    return text, ids
+
+
 class TemplateRenderer:
     def __init__(self, directory, spec, vocabulary):
         environment = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, extensions=[loopcontrols])
@@ -237,42 +284,17 @@ class TemplateRenderer:
         except Exception as error:
             raise RequestError(400, "invalid_messages", f"the chat template could not render the request: {type(error).__name__}: {error}")
 
-    def render(self, messages, tools, kwargs):
+    def pieces(self, messages, tools, kwargs):
         context = dict(self.template_tokens)
         context.update(kwargs)
         text = self.render_text(messages, tools, context)
-        specials = [token for token in self.vocabulary.control_strings() if token]
-        carried = []
-
-        def mark(value):
-            if isinstance(value, str):
-                if any(token in value for token in specials):
-                    carried.append(value)
-                    return f"\ue000{len(carried) - 1}\ue001"
-                return value
-            if isinstance(value, dict):
-                if any(isinstance(key, str) and any(token in key for token in specials) for key in value):
-                    raise RequestError(400, "invalid_messages", "a request key carries a control token string")
-                return {key: mark(item) for key, item in value.items()}
-            if isinstance(value, list):
-                return [mark(item) for item in value]
-            return value
-
-        marked_messages, marked_tools = mark(messages), mark(tools)
+        marked_messages, marked_tools, carried = carry_controls(messages, tools, self.vocabulary)
         if not carried:
-            return text, self.vocabulary.encode(text, True)
-        pieces = re.split("\ue000([0-9]+)\ue001", self.render_text(marked_messages, marked_tools, context))
-        ids, rebuilt = [], []
-        for index, piece in enumerate(pieces):
-            if index % 2 == 0:
-                rebuilt.append(piece)
-                ids.extend(self.vocabulary.encode(piece, True))
-            else:
-                rebuilt.append(carried[int(piece)])
-                ids.extend(self.vocabulary.encode(carried[int(piece)], False))
-        if "".join(rebuilt) != text:
-            raise RequestError(400, "invalid_messages", "a message carries a control token string inside text the chat template rewrites")
-        return text, ids
+            return text, [(text, True)]
+        return text, uncarry([(self.render_text(marked_messages, marked_tools, context), True)], carried, text)
+
+    def render(self, messages, tools, kwargs):
+        return encode_pieces(self.vocabulary, *self.pieces(messages, tools, kwargs))
 
 
 class SegmentRenderer:
@@ -286,15 +308,24 @@ class SegmentRenderer:
         self.function = getattr(module, spec["function"])
         self.vocabulary = vocabulary
 
-    def render(self, messages, tools, kwargs):
+    def segments(self, messages, tools, kwargs):
         try:
-            segments = self.function(messages, tools or None, add_generation_prompt=True, **kwargs)
+            return self.function(messages, tools or None, add_generation_prompt=True, **kwargs)
         except Exception as error:
             raise RequestError(400, "invalid_messages", f"the chat renderer refused the request: {type(error).__name__}: {error}")
-        ids = []
-        for segment in segments:
-            ids.extend(self.vocabulary.encode(segment.text, segment.allow_special))
-        return "".join(segment.text for segment in segments), ids
+
+    def pieces(self, messages, tools, kwargs):
+        segments = self.segments(messages, tools, kwargs)
+        text = "".join(segment.text for segment in segments)
+        marked_messages, marked_tools, carried = carry_controls(messages, tools, self.vocabulary)
+        client = {token for token in self.vocabulary.control_strings() if token and any(token in value for value in carried)}
+        if not any(segment.allow_special and any(token in segment.text for token in client) for segment in segments):
+            return text, [(segment.text, segment.allow_special) for segment in segments]
+        marked = self.segments(marked_messages, marked_tools, kwargs)
+        return text, uncarry([(segment.text, segment.allow_special) for segment in marked], carried, text)
+
+    def render(self, messages, tools, kwargs):
+        return encode_pieces(self.vocabulary, *self.pieces(messages, tools, kwargs))
 
 
 RENDERERS = {"template": TemplateRenderer, "segments": SegmentRenderer}
@@ -1172,11 +1203,7 @@ class Frontend:
     def memory_template_parts(self, model, messages, tools, kwargs, markers):
         context = dict(model.template_defaults)
         context.update(kwargs)
-        messages = normalize_messages(messages)
-        if isinstance(model.renderer, SegmentRenderer):
-            pieces = [(segment.text, segment.allow_special) for segment in model.renderer.function(messages, tools or None, add_generation_prompt=True, **context)]
-        else:
-            pieces = [(model.renderer.render_text(messages, tools, dict(model.renderer.template_tokens, **context)), True)]
+        _, pieces = model.renderer.pieces(normalize_messages(messages), tools, context)
         parts, ids, texts, found = [], [], [], 0
         for text, special in pieces:
             while found < len(markers) and markers[found] in text:

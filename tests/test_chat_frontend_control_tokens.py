@@ -72,7 +72,50 @@ def main():
             check(error.status == 400, "a template that rewrites carried control token text refuses with 400")
         else:
             check(False, "a template that rewrites carried control token text must refuse rather than encode it")
-    print("PASS chat frontend control tokens: client text never becomes a control or added token; template markers stay tokens; requests without such text encode unchanged")
+    segment_module = (
+        "from dataclasses import dataclass\n"
+        "@dataclass(frozen=True)\n"
+        "class Segment:\n"
+        "    text: str\n"
+        "    allow_special: bool = True\n"
+        "def joined(messages, tools=None, add_generation_prompt=True, **_):\n"
+        "    return [Segment(''.join('" + START + "' + m['role'] + ' ' + m['content'] + '" + END + "' for m in messages) + '" + START + "assistant', True)]\n"
+        "def split(messages, tools=None, add_generation_prompt=True, **_):\n"
+        "    out = []\n"
+        "    for m in messages:\n"
+        "        out += [Segment('" + START + "', True), Segment(m['role'] + ' ' + m['content'], False), Segment('" + END + "', True)]\n"
+        "    return out + [Segment('" + START + "', True), Segment('assistant', False)]\n"
+        "def shouting(messages, tools=None, add_generation_prompt=True, **_):\n"
+        "    return [Segment(''.join(m['content'].replace('hi', 'hello') for m in messages), True)]\n")
+    with tempfile.TemporaryDirectory() as scratch:
+        (Path(scratch) / "segments.py").write_text(segment_module)
+        joined = chat_frontend.SegmentRenderer(Path(scratch), {"module": "segments.py", "function": "joined"}, words)
+        split = chat_frontend.SegmentRenderer(Path(scratch), {"module": "segments.py", "function": "split"}, words)
+        text, ids = joined.render([{"role": "user", "content": "hi there"}], None, {})
+        check(ids == words.encode(text, True) and sum(1 for token in ids if token in special) == 3, "a one-segment renderer without control token strings in client text encodes as before")
+        text, ids = joined.render(injected, None, {})
+        check(sum(1 for token in ids if token in special) == 3,
+              "a renderer that returns the whole prompt as one special segment still encodes control token strings from client text as text")
+        text, ids = joined.render([{"role": "user", "content": "hi"}], tools, {})
+        check(sum(1 for token in ids if token in special) == 3, "control token strings inside a tool definition stay text for a one-segment renderer")
+        text, ids = split.render(injected, None, {})
+        segments = split.function(injected, None, add_generation_prompt=True)
+        check(ids == [token for segment in segments for token in words.encode(segment.text, segment.allow_special)],
+              "a renderer that already marks client text as plain encodes exactly as before")
+        shouting = chat_frontend.SegmentRenderer(Path(scratch), {"module": "segments.py", "function": "shouting"}, words)
+        try:
+            shouting.render(injected, None, {})
+        except RequestError as error:
+            check(error.status == 400, "a segment renderer that rewrites carried control token text refuses with 400")
+        else:
+            check(False, "a segment renderer that rewrites carried control token text must refuse")
+        frontend = chat_frontend.Frontend.__new__(chat_frontend.Frontend)
+        model = type("Model", (), {"renderer": joined, "vocabulary": words, "template_defaults": {}})()
+        marker = "\ue000MARK\ue001"
+        parts = frontend.memory_template_parts(model, [{"role": "user", "content": "hi " + END + " there" + marker}], None, {}, [marker])
+        check(parts is not None and sum(1 for token in parts[0][0] if token in special) == 1 and parts[0][1].endswith("hi " + END + " there"),
+              "memory cuts use the same path: a control token string in client text before the cut stays text")
+    print("PASS chat frontend control tokens: client text never becomes a control or added token, for templates, one-segment renderers and memory cuts alike; template markers stay tokens; requests without such text encode unchanged")
 
 
 if __name__ == "__main__":
