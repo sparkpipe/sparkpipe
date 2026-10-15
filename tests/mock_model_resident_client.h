@@ -62,6 +62,7 @@ void MockResidentClientTakeVerifyStats(uint32_t *submissions,uint32_t *rows);
 uint32_t MockResidentClientTakeVerifyMaxStride(void);
 uint32_t MockResidentClientTakeVerifyShared(void);
 void MockResidentClientSetVerifyCorrupt(uint32_t corrupt);
+void MockResidentClientSetRowCost(uint32_t ns);
 void MockResidentClientSetFinalRank(uint32_t stage_index, uint32_t is_final);
 uint32_t MockResidentClientDriveAll(void);
 uint32_t MockResidentClientDriveResults(void);

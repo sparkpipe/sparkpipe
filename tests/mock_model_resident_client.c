@@ -106,6 +106,7 @@ static uint32_t mock_verify_submissions;
 static uint32_t mock_verify_rows;
 static uint32_t mock_verify_max_stride;
 static uint32_t mock_verify_corrupt;
+static uint32_t mock_row_cost_ns = 200u;
 static uint32_t mock_verify_shared;
 
 static int MockTraceEnabled(void)
@@ -403,6 +404,7 @@ void MockResidentClientReset(void)
 	mock_verify_rows = 0u;
 	mock_verify_max_stride = 0u;
 	mock_verify_corrupt = 0u;
+	mock_row_cost_ns = 200u;
 	mock_verify_shared = 0u;
 	mock_token_start = 11u;
 	mock_logprob_stride = 0u;
@@ -819,6 +821,11 @@ void MockResidentClientSetVerifyCorrupt(uint32_t corrupt)
 	mock_verify_corrupt = corrupt;
 }
 
+void MockResidentClientSetRowCost(uint32_t ns)
+{
+	mock_row_cost_ns = ns;
+}
+
 void MockResidentClientTakeVerifyStats(uint32_t *submissions,uint32_t *rows)
 {
 	*submissions = mock_verify_submissions;
@@ -923,7 +930,7 @@ uint32_t MockResidentClientDeliverEvent(uint32_t stage_index, uint64_t submissio
 				completion.step_generation = saved.submission.step_generation;
 				completion.residency = saved.submission.residency;
 				completion.service_time_ns = (uint64_t)((saved.submission.flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u || saved.submission.tokens_per_sequence == 0u ?
-					1u : saved.submission.tokens_per_sequence) * (10000u + 200u * (uint64_t)saved.row_count);
+					1u : saved.submission.tokens_per_sequence) * (10000u + (uint64_t)mock_row_cost_ns * saved.row_count);
 				if ( c->is_final_rank != 0u && mock_script_count != 0u &&
 					saved.submission.work_kind < SPARK_MODEL_SERVING_WORK_KIND_RELEASE && status == SPARK_STATUS_OK )
 					MockScriptCompletion(&saved,&completion);

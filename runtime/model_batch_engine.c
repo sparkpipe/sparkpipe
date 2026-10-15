@@ -167,6 +167,7 @@ struct SparkModelBatchEngine
 	uint32_t *prefix_binding_sequence_hash_heads;
 	SparkPrefixCache prefix_cache;
 	SparkSpeculationFrameModel frame_model;
+	uint32_t served_priority;
 	uint32_t request_capacity;
 	uint32_t resident_sequence_capacity;
 	uint32_t max_context_tokens;
@@ -1887,6 +1888,8 @@ SparkStatus SparkModelBatchEngineSubmit(
 		state->generation = 1u;
 	state->state = SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL;
 	state->priority = request->priority;
+	if ( request->priority > engine->served_priority )
+		engine->served_priority = request->priority;
 	state->deadline_ns = request->deadline_ns;
 	state->sampling = SparkSamplingRuleWith(request->temperature,request->seed,request->top_p,request->top_k,request->logprobs);
 	state->prompt_token_count = request->prompt_token_count;
@@ -2727,7 +2730,7 @@ static uint32_t SparkModelBatchPlanDraft(
 	frame.match_length = match.match_length;
 	frame.sampled = request->sampling.inverse_temperature != 0.0f ? 1u : 0u;
 	frame.cost_cap_ns = cost_cap_ns;
-	if ( request->priority == 0u )
+	if ( request->priority < engine->served_priority )
 	{
 		const float chain = 8.0f * SparkSpeculationFrameTokenCost(&engine->frame_model,frame.context);
 		if ( chain != 0.0f && (frame.cost_cap_ns == 0.0f || chain < frame.cost_cap_ns) )

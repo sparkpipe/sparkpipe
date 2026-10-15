@@ -10,6 +10,7 @@
 
 #include "fixtures/model_resident_deployment_fixture.h"
 #include "mock_model_resident_client.h"
+#include "sparkpipe/spark_speculation_frame.h"
 #include "sparkpipe/spark_model_batch_engine.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
@@ -2316,6 +2317,45 @@ static void TestScenarioLongVerify(const SparkModelResidentDeployment *deploymen
 		CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,124u,120u) != 0u && view.speculative_accepted_token_count >= 90u,
 			"long verify: a sampled request drafts from its history and emits exactly the model's sampled stream");
 		SparkModelBatchEngineDestroy(engine);
+	}
+	{
+		uint32_t pass,strides[2];
+		for (pass=0u; pass<2u; pass++)
+		{
+			SparkModelBatchSubmitRequest request;
+			SparkModelBatchRequestHandle handle = 0u;
+			SparkModelBatchEngine *engine;
+			MockResidentClientReset();
+			memset(&state,0,sizeof(state));
+			engine = TestConnectFlags(deployment,&state,runtime_root,256u,8u,0u);
+			if ( engine == 0 )
+				return;
+			MockResidentClientSetScript(script,512u);
+			MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+			MockResidentClientSetRowCost(10000u);
+			if ( pass == 1u )
+			{
+				memset(&request,0,sizeof(request));
+				request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+				request.descriptor_bytes = sizeof(request);
+				request.request_id = 2u;
+				request.sequence_id = 924u;
+				request.prompt_token_ids = script;
+				request.prompt_token_count = 124u;
+				request.output_token_budget = 1u;
+				request.top_p = 1.0f;
+				request.priority = 1u;
+				CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_OK,"long verify: a foreground request is admitted");
+				TestDriveUntilTerminal(engine,&state,1u,4000u);
+			}
+			TestSubmitPrompt(engine,1u,923u,120u,script,124u);
+			TestDriveUntilTerminal(engine,&state,1u + pass,4000u);
+			CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,124u,120u) != 0u,"long verify: a copy at either priority emits exactly the greedy stream");
+			strides[pass] = MockResidentClientTakeVerifyMaxStride();
+			SparkModelBatchEngineDestroy(engine);
+		}
+		CHECK(strides[0] > 32u,"long verify: a request at the default priority verifies frames longer than eight chained tokens cost");
+		CHECK(strides[1] != 0u && strides[1] <= SPARK_SPECULATION_FRAME_PROBE_DRAFTS + 1u,"long verify: a request below a served foreground priority keeps its frames priced within eight chained tokens");
 	}
 	script[124u + 40u] = 6100u;
 	MockResidentClientReset();

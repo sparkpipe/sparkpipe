@@ -107,5 +107,10 @@ cap.
 - Decision: among 1-16, 20, 24, ..., 255 and the feasible maximum, the frame
   with the most expected tokens per nanosecond, only if it beats the chain by
   5%. A class with no evidence gets one probe frame of up to 16 drafts.
-- Caps: a waiting prefill caps a frame at two single steps, a priority-0 lane
-  at eight chained tokens.
+- Caps: a waiting prefill caps a frame at two single steps. A lane below the
+  highest priority the engine has served (chat-memory background work at 0
+  while foreground carries 1) is capped at eight chained tokens, so a
+  foreground arrival waits at most that long. Requests at the default priority
+  are not capped: the cap held every hold-3 frame near 42 rows (8 x 35 ms).
+  Replayed against the measured GLM costs, the uncapped policy picks frames
+  near 200 rows.
