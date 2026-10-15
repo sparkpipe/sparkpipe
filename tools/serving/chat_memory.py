@@ -859,6 +859,8 @@ class Memory:
             parts = [part for part in tool_parts(result) if part["name"] not in MEMORY_TOOL_NAMES]
             for index, part in enumerate(parts, start=1):
                 node = f"e{number}.t{index}"
+                if past:
+                    part = dict(part, label="")
                 if past and part["key"] in forms:
                     content = stub_form(node, part, count(part["text"]), forms[part["key"]])
                 else:

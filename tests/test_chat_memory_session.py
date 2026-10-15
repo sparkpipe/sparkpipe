@@ -290,7 +290,8 @@ async def run():
         page = "".join(f"Paragraph {i}: the scheduler gained {i * 3} percent after fix #{1000 + i}.\n" for i in range(400))
         researched = [{"role": "system", "content": "Be helpful."}, {"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}, {"role": "user", "content": "Read the release notes."},
                       {"role": "assistant", "content": "", "tool_calls": [{"id": "p1", "type": "function", "function": {"name": "fetch_url", "arguments": {"url": "https://a.example/notes"}}}]},
-                      {"role": "tool", "tool_call_id": "p1", "content": page}]
+                      {"role": "tool", "tool_call_id": "p1", "content": "[This result is source [1]; cite it inline as [1].]\n" + page,
+                       "citation_label": "[This result is source [1]; cite it inline as [1].]\n"}]
         memory.store.append("user-1", "chat-parts", {"type": "line", "key": cm.exchange_key(researched[1:3]), "line": "The user greeted the assistant.", "source": "curator"})
         reading = memory.session(model, headers("k1", None, "k1a", chat="chat-parts"), researched, [], {})
         shown_page = reading.messages[-1]["content"]
@@ -303,12 +304,15 @@ async def run():
         assert "e2.t1 fetch_url" in instruction and '"keep"' in instruction and "§1-§" in instruction, instruction[-400:]
         part = cm.tool_parts(researched)[0]
         assert memory.store.load("user-1", "chat-parts")["forms"][part["key"]] == [2, 3], "only shown sections of known parts are kept"
-        after = researched + [{"role": "assistant", "content": "The notes list 400 paragraphs."}, {"role": "user", "content": "Which fix helped most?"}]
+        assert "[This result is source [1]" in shown_page, "the citation label shows in its own turn"
+        after = researched[:-1] + [{"role": "tool", "tool_call_id": "p1", "content": page}, {"role": "assistant", "content": "The notes list 400 paragraphs."},
+                                   {"role": "user", "content": "Which fix helped most?"}]
         later = memory.session(model, headers("k2", "k1a", "k2a", chat="chat-parts"), after, [], {})
         collapsed = next(m["content"] for m in later.messages if m["role"] == "tool")
         assert "collapsed; kept §2, §3" in collapsed and "[§2] " in collapsed and "[§3] " in collapsed and "Paragraph 0:" not in collapsed, collapsed[:300]
         assert len(collapsed) < len(page) // 4, "the newest exchange's large result shrinks to a stub plus the kept sections"
-        assert frontend.cuts[-1][-3]["role"] == "tool" and frontend.cuts[-1][-3]["content"] == collapsed, "the pre-warm renders the collapsed form the next turn uses"
+        assert frontend.cuts[-1][-3]["role"] == "tool" and frontend.cuts[-1][-3]["content"] == collapsed and "source [1]" not in collapsed, \
+            "the pre-warm renders the collapsed form the next turn uses, without the turn's citation label"
         read_back = later.expand({"function": {"name": "expand", "arguments": {"id": "e2.t1", "part": 10}}})
         assert read_back.startswith("e2.t1 (fetch_url), sections §10-") and "[§10] " in read_back, read_back[:120]
         assert later.expand({"function": {"name": "expand", "arguments": {"id": "e2.t7"}}}).startswith("No tool result")
