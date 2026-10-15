@@ -1926,6 +1926,16 @@ struct GlmModel
 		return status;
 	}
 
+	static uint32_t GatherCheaper(const State *state, const GlmWave *wave)
+	{
+		uint32_t query_units, indexing_units, partial_units;
+		uint64_t candidate_offset;
+		const uint64_t peers = state->tp_degree > 1u ? state->tp_degree - 1u : 0u;
+		ScatterSizes(state, wave->rows, &query_units, &indexing_units, &partial_units, &candidate_offset);
+		return SparkKvShardExchangeCostNs(wave->latent.chunks, peers * wave->latent.keys * GLM_SLOT_BYTES) <=
+			SparkKvShardExchangeCostNs(2u, peers * ((uint64_t)indexing_units + partial_units) * GLM_UNIT_BYTES) ? 1u : 0u;
+	}
+
 	static void Measure(const State *state, GlmWave *wave, const uint32_t *host_positions)
 	{
 		uint32_t row;
@@ -1948,7 +1958,9 @@ struct GlmModel
 			wave->select_keep = GlmShardKeep(state->shard, wave->context);
 			wave->select_slice = (wave->rows + state->tp_degree - 1u) / state->tp_degree;
 			wave->select_rows = wave->select_slice * state->tp_degree;
-			return;
+			if ( wave->rows > state->scatter_rows || GatherCheaper(state, wave) != 0u )
+				return;
+			wave->gather = 0u;
 		}
 		ScatterSizes(state, wave->rows, &wave->query_units, &wave->indexing_units, &wave->partial_units, &wave->candidate_offset);
 	}
