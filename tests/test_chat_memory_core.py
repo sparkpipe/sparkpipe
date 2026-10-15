@@ -153,7 +153,9 @@ history = [[{"role": "user", "content": "Where is the Ostrel review?"}, {"role":
 history_lines = {cm.exchange_key(history[1]): "The user asked about coffee prices."}
 found = cm.search_text(history, history_lines, [], "room 412", "phrase", 8000)
 assert found.startswith("2 match(es) for 'room 412' in e1:") and "[e1 part 2] ..." in found and "QX-7731" in found, found
-assert "Tool result (search_web)" not in found.split("\n")[1] or "Room 412" in found
+unnamed = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "", "tool_calls": [{"id": "call_7", "type": "function", "function": {"name": "fetch_url", "arguments": "{}"}}]},
+           {"role": "tool", "tool_call_id": "call_7", "content": "page"}, {"role": "assistant", "content": "a"}]
+assert "Tool result (fetch_url): page" in cm.exchange_text(unnamed), "a tool message without a name takes its call's name"
 assert "[e2 part 1]" in cm.search_text(history, history_lines, [], "(small) coffee? [a+b]", None, 8000), "query text is matched literally"
 assert "[e2 part 1]" in cm.search_text(history, history_lines, [], "small coffee", "phrase", 8000), "whitespace and line breaks inside a phrase match any spacing"
 assert "[e2 line]" in cm.search_text(history, history_lines, [], "COFFEE PRICES", "phrase", 8000), "ledger lines are searched too"

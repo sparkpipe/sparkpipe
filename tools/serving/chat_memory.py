@@ -114,9 +114,11 @@ def split(messages):
 
 
 def exchange_text(messages):
-    parts = []
+    parts, names = [], {}
     for message in messages:
         role = message.get("role")
+        for call in message.get("tool_calls") or [] if role == "assistant" else []:
+            names[call.get("id")] = (call.get("function") or {}).get("name")
         if role == "user":
             parts.append("User: " + text_of(message.get("content")))
         elif role == "assistant":
@@ -128,7 +130,7 @@ def exchange_text(messages):
                 arguments = function.get("arguments")
                 parts.append(f"Assistant called {function.get('name')}({arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)})")
         elif role == "tool":
-            parts.append(f"Tool result ({message.get('name') or 'tool'}): " + text_of(message.get("content")))
+            parts.append(f"Tool result ({message.get('name') or names.get(message.get('tool_call_id')) or 'tool'}): " + text_of(message.get("content")))
         elif role == "system":
             parts.append("System: " + text_of(message.get("content")))
     return "\n".join(parts)
