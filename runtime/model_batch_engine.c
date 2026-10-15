@@ -2628,7 +2628,7 @@ static uint32_t SparkModelBatchPlanDraft(
 	uint32_t position,limit,block_remaining;
 	request->draft_count = 0u;
 	request->draft_source = 0u;
-	if ( engine->verify_capable == 0u || request->sampling.inverse_temperature != 0.0f || request->sampling.logprobs != 0u || request->draft_cap == 0u || draft_limit == 0u )
+	if ( engine->verify_capable == 0u || request->sampling.logprobs != 0u || request->draft_cap == 0u || draft_limit == 0u )
 		return(0u);
 	position = request->prompt_token_count + request->generated_token_count - 1u;
 	limit = request->draft_cap < draft_limit ? request->draft_cap : draft_limit;

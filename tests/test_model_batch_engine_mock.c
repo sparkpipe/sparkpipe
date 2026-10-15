@@ -2287,6 +2287,36 @@ static void TestScenarioLongVerify(const SparkModelResidentDeployment *deploymen
 	CHECK(submissions != 0u && continues >= submissions,"long verify: the lease holds after a rejecting verify");
 	CHECK(TestLaneInputsFollowScript(1u,script,512u) != 0u,"long verify: a rejected draft never becomes a lane's input");
 	TestLongVerifyScript(script,512u,120u,124u);
+	MockResidentClientReset();
+	{
+		SparkModelBatchSubmitRequest request;
+		SparkModelBatchRequestHandle handle = 0u;
+		SparkModelBatchEngine *engine;
+		memset(&state,0,sizeof(state));
+		engine = TestConnectFlags(deployment,&state,runtime_root,256u,8u,0u);
+		if ( engine == 0 )
+			return;
+		MockResidentClientSetScript(script,512u);
+		MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+		memset(&request,0,sizeof(request));
+		request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+		request.descriptor_bytes = sizeof(request);
+		request.request_id = 1u;
+		request.sequence_id = 922u;
+		request.prompt_token_ids = script;
+		request.prompt_token_count = 124u;
+		request.output_token_budget = 120u;
+		request.temperature = 1.0f;
+		request.top_p = 0.95f;
+		request.seed = 7u;
+		CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_OK,"long verify: a sampled request is admitted");
+		TestDriveUntilTerminal(engine,&state,1u,4000u);
+		memset(&view,0,sizeof(view));
+		CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK,"long verify: engine view");
+		CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,124u,120u) != 0u && view.speculative_accepted_token_count >= 90u,
+			"long verify: a sampled request drafts from its history and emits exactly the model's sampled stream");
+		SparkModelBatchEngineDestroy(engine);
+	}
 	script[124u + 40u] = 6100u;
 	MockResidentClientReset();
 	{

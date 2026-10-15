@@ -63,6 +63,10 @@ typedef struct SparkStageServingState
 	uint64_t row_sequence_ids[SPARK_STAGE_SERVING_MAX_ROWS];
 	uint64_t row_positions[SPARK_STAGE_SERVING_MAX_ROWS];
 	uint32_t completion_tokens[SPARK_STAGE_SERVING_MAX_ROWS];
+	uint32_t distribution_rows[SPARK_STAGE_SERVING_MAX_ROWS];
+	uint32_t distribution_positions[SPARK_STAGE_SERVING_MAX_ROWS];
+	uint32_t distribution_lanes[SPARK_STAGE_SERVING_MAX_ROWS];
+	SparkRowSampling distribution_rules[SPARK_STAGE_SERVING_MAX_ROWS];
 } SparkStageServingState;
 
 static const SparkStageServingModel *StageServingBoundModel;
@@ -983,9 +987,9 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	uint32_t *row_slots = state != 0 ? state->row_slots : 0;
 	uint8_t bound[SPARK_STAGE_SERVING_MAX_LANES];
 	uint64_t sequence_ids[SPARK_STAGE_SERVING_MAX_LANES], next_positions[SPARK_STAGE_SERVING_MAX_LANES];
-	uint32_t distribution_rows[SPARK_STAGE_SERVING_MAX_LANES], distribution_positions[SPARK_STAGE_SERVING_MAX_LANES];
-	uint32_t distribution_lanes[SPARK_STAGE_SERVING_MAX_LANES];
-	SparkRowSampling distribution_rules[SPARK_STAGE_SERVING_MAX_LANES];
+	uint32_t *distribution_rows = state != 0 ? state->distribution_rows : 0, *distribution_positions = state != 0 ? state->distribution_positions : 0;
+	uint32_t *distribution_lanes = state != 0 ? state->distribution_lanes : 0;
+	SparkRowSampling *distribution_rules = state != 0 ? state->distribution_rules : 0;
 	SparkSamplingLogprob distribution_logprobs[SPARK_STAGE_SERVING_MAX_LANES * SPARK_SAMPLING_MAX_LOGPROBS];
 	uint32_t rows, active = 0u, distribution_count = 0u, logprob_stride = 0u, steps = 1u, kept[SPARK_STAGE_SERVING_MAX_LANES];
 	const uint32_t verify = submission != 0 && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? 1u : 0u;
@@ -1015,19 +1019,19 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		const uint32_t *order = (const uint32_t *)state->order_host.pointer;
 		if ( SparkSamplingRuleNeedsDistribution(&submission->lanes[lane].sampling) == 0u )
 			continue;
-		distribution_rows[distribution_count] = order[runs[lane + 1u] - 1u];
-		distribution_positions[distribution_count] = ((const uint32_t *)state->positions_host.pointer)[distribution_rows[distribution_count]];
-		distribution_rules[distribution_count] = submission->lanes[lane].sampling;
-		distribution_lanes[distribution_count] = lane;
+		for ( uint32_t cursor = verify != 0u ? runs[lane] : runs[lane + 1u] - 1u; cursor < runs[lane + 1u]; ++cursor )
+		{
+			distribution_rows[distribution_count] = order[cursor];
+			distribution_positions[distribution_count] = ((const uint32_t *)state->positions_host.pointer)[order[cursor]];
+			distribution_rules[distribution_count] = submission->lanes[lane].sampling;
+			distribution_lanes[distribution_count] = lane;
+			distribution_count++;
+		}
 		if ( submission->lanes[lane].sampling.logprobs > logprob_stride )
 			logprob_stride = submission->lanes[lane].sampling.logprobs;
-		distribution_count++;
 	}
 	if ( logprob_stride != 0u && submission->tokens_per_sequence > 1u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	for ( uint32_t entry = 0u; verify != 0u && entry < distribution_count; ++entry )
-		if ( ((const uint32_t *)state->runs_host.pointer)[distribution_lanes[entry] + 1u] - ((const uint32_t *)state->runs_host.pointer)[distribution_lanes[entry]] != 1u )
-			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	continuity.state = state;
 	continuity.rows = rows;
 	continuity.active = active;
@@ -1062,7 +1066,7 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		dispatch.distribution_rows = distribution_rows;
 		dispatch.distribution_positions = distribution_positions;
 		dispatch.distribution_rules = distribution_rules;
-		dispatch.distribution_logprobs = distribution_logprobs;
+		dispatch.distribution_logprobs = logprob_stride != 0u ? distribution_logprobs : 0;
 		marks[1] = StageServingNowNs();
 		status = SparkStageRunnerSubmit(&state->runner, &dispatch);
 	}

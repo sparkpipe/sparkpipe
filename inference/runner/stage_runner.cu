@@ -1088,7 +1088,7 @@ static SparkStatus StageRunnerValidateDistribution(const SparkStageRunnerState *
 	if ( dispatch->distribution_count == 0u )
 		return SPARK_STATUS_OK;
 	if ( runner->owns_final_head == 0u || state->distribution_capacity == 0u ||
-		dispatch->distribution_count > dispatch->active_sequence_count ||
+		dispatch->distribution_count > dispatch->row_count || dispatch->distribution_count > state->distribution_capacity ||
 		dispatch->distribution_rows == 0 || dispatch->distribution_positions == 0 || dispatch->distribution_rules == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	for ( entry = 0u; entry < dispatch->distribution_count; ++entry )
