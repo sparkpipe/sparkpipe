@@ -272,7 +272,7 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 					is_request_stop = 1;
 					break;
 				}
-			if ( is_request_stop )
+			if ( is_request_stop && (ev->flags & SPARK_MODEL_BATCH_EVENT_FLAG_STOP_TOKEN) == 0u )
 			{
 				pthread_mutex_lock(&r->mutex);
 				r->done = 1;
@@ -296,7 +296,7 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 					}
 				}
 			}
-			else if (r->tokens_json_len + API_TOKEN_TEXT_BYTES < r->tokens_json_capacity &&
+			else if (is_request_stop == 0 && r->tokens_json_len + API_TOKEN_TEXT_BYTES < r->tokens_json_capacity &&
 				r->output_token_count < r->max_tokens)
 			{
 				r->tokens_json_len += (uint32_t)snprintf(

@@ -43,6 +43,7 @@ def main():
     args = parser.parse_args()
     secret = Path(args.secret_file).read_text().strip()
     chat = "memlive-" + uuid.uuid4().hex[:12]
+    own = Path(args.store) / hashlib.sha256(b"memlive-user").hexdigest()[:32] / (hashlib.sha256(chat.encode()).hexdigest()[:32] + ".jsonl")
     history = [{"role": "system", "content": "You are SparkPipe Chat, a helpful assistant."}]
     parent = None
     out = Path(args.out).open("w")
@@ -64,7 +65,7 @@ def main():
         parent = message
         waited = 0.0
         while waited < 90:
-            records = [json.loads(line) for p in Path(args.store).rglob("*.jsonl") for line in p.read_text().splitlines() if line.strip()]
+            records = [json.loads(line) for line in own.read_text().splitlines() if line.strip()] if own.is_file() else []
             if any(r.get("type") == "pending" and r.get("message") == message for r in records):
                 break
             time.sleep(1)
@@ -75,7 +76,7 @@ def main():
         out.write(json.dumps(row) + "\n")
         out.flush()
         print(json.dumps(row), flush=True)
-    state = [json.loads(line) for p in Path(args.store).rglob("*.jsonl") for line in p.read_text().splitlines() if line.strip()]
+    state = [json.loads(line) for line in own.read_text().splitlines() if line.strip()]
     print(json.dumps({"lines": [r["line"] for r in state if r.get("type") == "line"], "pending": len([r for r in state if r.get("type") == "pending"]),
                       "expansions": len([r for r in state if r.get("type") == "expansion"]), "layouts": [r.get("lined") for r in state if r.get("type") == "layout"]}, indent=1))
 

@@ -1144,7 +1144,8 @@ class Frontend:
                 continue
             if usage:
                 usage["completion_tokens"] = completion
-            session.finished(plan["messages"], "".join(content), "".join(reasoning), visible, result.get("engine_finish"))
+            session.finished(plan["messages"], "".join(content), "".join(reasoning), visible, result.get("engine_finish"),
+                             plan["engine_body"]["prompt_token_ids"], result.get("token_ids") or [])
             reason = "tool_calls" if visible else ("length" if result.get("engine_finish") == "length" else "stop")
             yield "finish", dict(result, usage=usage or result.get("usage"), finish_reason=reason)
             return
@@ -1168,21 +1169,52 @@ class Frontend:
             reasoning_open = False
         return ids, reasoning_open
 
-    def memory_cut_ids(self, model, messages, tools, kwargs, sentinel):
+    def memory_template_parts(self, model, messages, tools, kwargs, markers):
         context = dict(model.template_defaults)
         context.update(kwargs)
         messages = normalize_messages(messages)
         if isinstance(model.renderer, SegmentRenderer):
-            ids = []
-            for segment in model.renderer.function(messages, tools or None, add_generation_prompt=True, **context):
-                if sentinel in segment.text:
-                    return ids + model.vocabulary.encode(segment.text[:segment.text.index(sentinel)], segment.allow_special)
-                ids.extend(model.vocabulary.encode(segment.text, segment.allow_special))
+            pieces = [(segment.text, segment.allow_special) for segment in model.renderer.function(messages, tools or None, add_generation_prompt=True, **context)]
+        else:
+            pieces = [(model.renderer.render_text(messages, tools, dict(model.renderer.template_tokens, **context)), True)]
+        parts, ids, texts, found = [], [], [], 0
+        for text, special in pieces:
+            while found < len(markers) and markers[found] in text:
+                cut = text.index(markers[found])
+                ids.extend(model.vocabulary.encode(text[:cut], special))
+                texts.append(text[:cut])
+                parts.append((ids, "".join(texts)))
+                ids, texts = [], []
+                text = text[cut + len(markers[found]):]
+                found += 1
+            ids.extend(model.vocabulary.encode(text, special))
+            texts.append(text)
+        parts.append((ids, "".join(texts)))
+        return parts if found == len(markers) else None
+
+    def memory_continuation_ids(self, model, messages, tools, kwargs, prompt_ids, generated_ids, instruction, suffix):
+        reply, ask = "\ue000SPARKPIPE-REPLY\ue001", "\ue000SPARKPIPE-ASK\ue001"
+        parts = self.memory_template_parts(model, list(messages) + [{"role": "assistant", "content": reply}, {"role": "user", "content": ask}], tools, kwargs, [reply, ask])
+        if parts is None:
             return None
-        text = model.renderer.render_text(messages, tools, dict(model.renderer.template_tokens, **context))
-        if sentinel not in text:
-            return None
-        return model.vocabulary.encode(text[:text.index(sentinel)], True)
+        generated = list(generated_ids)
+        while generated and generated[-1] in model.stop_token_ids:
+            generated.pop()
+        between, after = parts[1][0], parts[2][0]
+        overlap = next((size for size in range(min(len(between), len(generated)), 0, -1) if generated[-size:] == between[:size]), 0)
+        reasoning_open = model.reasoning is not None and parts[2][1].rstrip().endswith(model.reasoning["start"].rstrip())
+        ids = list(prompt_ids) + generated + between[overlap:] + model.vocabulary.encode(instruction, False) + after
+        if suffix and reasoning_open:
+            ids += model.vocabulary.encode(suffix, True)
+            reasoning_open = False
+        return ids, reasoning_open
+
+    def memory_count(self, model, text):
+        return len(model.vocabulary.encode(text, False))
+
+    def memory_cut_ids(self, model, messages, tools, kwargs, sentinel):
+        parts = self.memory_template_parts(model, messages, tools, kwargs, [sentinel])
+        return parts[0][0] if parts else None
 
     async def memory_complete(self, model, ids, max_tokens, reasoning_open=False):
         body = {"prompt_token_ids": ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids, "priority": 0, "temperature": 0.0}

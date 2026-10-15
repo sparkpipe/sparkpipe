@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Chat memory's core keeps a conversation's layout cache-friendly and its records safe: a signed identity is accepted only with a valid HS256 signature and an unexpired claim; a chat splits into finished exchanges and the current one; an exchange's key ignores ids and timestamps but not content; the ledger covers only a gap-free prefix of finished exchanges with lines and always leaves the newest finished exchange raw; adding a line only appends to the ledger text; the system note is present from the first turn; open nodes come only from the ledger; expand pages long exchanges; curator output is validated line by line with long lines cut and the open set trimmed to its budget; lines are immutable once stored, survive a restart and a torn last record, stay private on disk, and temporary chats never reach disk."""
+"""Chat memory's core keeps a conversation's layout cache-friendly and its records safe: a signed identity is accepted only with a valid HS256 signature and an unexpired claim; a chat splits into finished exchanges and the current one; an exchange's key ignores ids and timestamps but not content; the ledger covers only a gap-free prefix of finished exchanges with lines and always leaves the newest finished exchange raw; adding a line only appends to the ledger text; the system note is present from the first turn; open nodes come only from the ledger; expand pages long exchanges; curator output is validated line by line with long lines cut and the open set trimmed to its budget; groups replace contiguous runs of ledger lines, nest, apply only where their members are, and are planned oldest first only when the ledger is over its budget, down to about half of it; lines are immutable once stored, survive a restart and a torn last record, stay private on disk, and temporary chats never reach disk."""
 import base64
 import hashlib
 import hmac
@@ -114,4 +114,42 @@ with tempfile.TemporaryDirectory() as tmp:
     assert not store.path("user-1", "local:temp").exists() and cm.ChatStore(tmp).load("user-1", "local:temp")["lines"] == {}
     assert "user-1" not in str(path) and "chat-abc" not in str(path)
 
-print("PASS test_chat_memory_core: signed identity, exchange split and keys, gap-free append-only ledger with a raw newest exchange, open nodes from the ledger only, paged expand, validated curator output, immutable private lines that survive restarts and torn records, temporary chats in memory only")
+head, exchanges, current = cm.split(chat(41))
+keys = [cm.exchange_key(m) for m in exchanges]
+lines = {key: f"line {i + 1}" for i, key in enumerate(keys)}
+nodes = cm.ledger_nodes(exchanges, lines, {}, 40)
+groups = {"g1": {"members": ["x:" + k for k in keys[:16]], "line": "the first sixteen"},
+          "g2": {"members": ["x:" + k for k in keys[16:32]], "line": "the next sixteen"},
+          "g3": {"members": ["g1", "g2"], "line": "thirty-two in all"},
+          "g4": {"members": ["x:" + keys[5], "x:" + keys[6]], "line": "inside g1 already"},
+          "g5": {"members": ["x:missing", "x:" + keys[33]], "line": "not on this branch"}}
+grouped = cm.ledger_nodes(exchanges, lines, groups, 40)
+assert [n["id"] for n in grouped] == ["g3"] + [f"e{i}" for i in range(33, 41)], [n["id"] for n in grouped]
+text = cm.ledger_text(grouped)
+assert text.startswith("[g3: e1-e32] thirty-two in all\n[e33] line 33\n") and text.endswith("[e40] line 40\n"), text
+assert set(cm.group_nodes(grouped)) == {"g1", "g2", "g3"} and cm.ledger_text(cm.group_nodes(grouped)["g3"]["children"]) == "[g1: e1-e16] the first sixteen\n[g2: e17-e32] the next sixteen\n"
+assert [n["id"] for n in cm.ledger_nodes(exchanges, lines, groups, 40, ["g1"])][:2] == ["g1", "e17"], "a frozen layout applies only its own groups"
+laid = cm.build_layout(head, exchanges, current, lines, ["e2", "e40"], 1, 6000, groups)
+assert laid["lined"] == 39 and laid["groups"] == ["g1", "g2", "g3"] and laid["open"] == ["e2"]
+assert laid["messages"][1]["content"].startswith(cm.LEDGER_OPEN + "[g3: e1-e32] thirty-two in all\n") and "[e39] line 39\n" + cm.LEDGER_CLOSE in laid["messages"][1]["content"]
+count = lambda text: len(text.split())
+assert cm.plan_groups(nodes, 40, 10 ** 6, 16, 1, 48, count) == [], "no regroup under the ledger budget"
+total = sum(count(f"[e{i}] line {i}\n") for i in range(1, 41))
+planned = cm.plan_groups(nodes, 30, total - 1, 8, 7, 4, count)
+assert [(g["id"], g["first"], g["last"]) for g in planned] == [("g7", 1, 8), ("g8", 9, 16), ("g9", 17, 24), ("g10", 25, 30)], "only nodes the curator can see are folded"
+assert planned[0]["members"] == ["x:" + k for k in keys[:8]] and planned[0]["labels"][0] == "e1"
+planned = cm.plan_groups(nodes, 40, 399, 8, 7, 2, lambda text: 10)
+assert [(g["id"], g["first"], g["last"]) for g in planned] == [("g7", 1, 8), ("g8", 9, 16), ("g9", 17, 24)], "a regroup stops once the ledger is about half its budget"
+assert cm.next_group(groups) == 6 and cm.next_group({}) == 1
+assert cm.parse_groups('{"lines": {}, "groups": {"g7": "  many   lines  ", "g8": ""}}', ["g7", "g8"]) == {"g7": "many lines"}
+assert cm.stub_group_line({"id": "g2", "first": 1, "last": 16}).startswith("(auto) ") and "expand g2" in cm.stub_group_line({"id": "g2", "first": 1, "last": 16})
+instruction = cm.curator_instruction([], {}, [0], [], {}, 100, 48, planned)
+assert '"groups"' in instruction and "g7 replaces e1, e2" in instruction and '"groups"' not in cm.curator_instruction([], {}, [0], [], {}, 100, 48)
+
+with tempfile.TemporaryDirectory() as tmp:
+    store = cm.ChatStore(tmp)
+    assert store.append("user-1", "chat-g", {"type": "group", "id": "g1", "members": ["x:a", "x:b"], "line": "first", "source": "curator"})
+    assert not store.append("user-1", "chat-g", {"type": "group", "id": "g1", "members": ["x:a"], "line": "changed", "source": "curator"})
+    assert cm.ChatStore(tmp).load("user-1", "chat-g")["groups"] == {"g1": {"members": ["x:a", "x:b"], "line": "first", "source": "curator"}}
+
+print("PASS test_chat_memory_core: signed identity, exchange split and keys, gap-free append-only ledger with a raw newest exchange, open nodes from the ledger only, paged expand, validated curator output, nested group lines that replace runs of the ledger, regroups planned only over the budget, immutable private lines that survive restarts and torn records, temporary chats in memory only")

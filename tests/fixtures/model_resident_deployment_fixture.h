@@ -32,6 +32,7 @@ typedef struct TestModelResidentDeploymentFixture
 	uint32_t control_port_base;
 	uint32_t node_count;
 	uint32_t coordinator_rank_index;
+	uint32_t eos_token_id;
 } TestModelResidentDeploymentFixture;
 
 int32_t TestModelResidentDeploymentWrite(

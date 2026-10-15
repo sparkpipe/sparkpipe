@@ -596,7 +596,7 @@ printf 'Authorization: Bearer %s\n' "$(cat /srv/workspace/sparkpipe/swap-control
 ### Chat memory (K3, 2026-10-14)
 
 SparkPipe Chat's K3 conversations use the model-curated ledger described in
-`docs/CHAT_MEMORY.md` (stage A). The chat layer loads `chat_memory.py` because
+`docs/CHAT_MEMORY.md` (stages A and B). The chat layer loads `chat_memory.py` because
 its config has a `chat_memory` block (store `/srv/workspace/sparkpipe/chat-memory`,
 one private directory per hashed user id; JWT secret
 `~/sparkpipe-chat/memory-jwt.secret`, 600). Open WebUI sends the signed
@@ -612,6 +612,15 @@ doors) are served raw. Rotating the secret means updating both files and
 recreating the container and the chat layer. Deployed 2026-10-14 with backups
 stamped 20261014T232328Z (Open WebUI database and secrets) and the chat-layer
 backups of the same night under `/srv/workspace/sparkpipe/backups`.
+
+Stage B (curator continuation, pre-warm, regroups, fit) went live on
+2026-10-15 at 00:15Z by copying `chat_frontend.py` and `chat_memory.py` into
+`~/sparkpipe-chat` and restarting `sparkpipe-chat` while K3 was idle; the
+previous files are `/srv/workspace/sparkpipe/backups/*.prev-20261015T001524Z`.
+The K3 model API runs the stop-token fix (`engine/stop-token-completes`, built
+from 1d89e0377 with only that patch; previous binary
+`~/k3-kv-api/bin/sparkpipe_model_api.prev-20261015T000602Z`) until the next
+fleet release carries it.
 
 ### Web search (SearXNG)
 
