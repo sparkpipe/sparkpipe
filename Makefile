@@ -572,6 +572,7 @@ PYTHON_TESTS := \
 	tests/test_chat_memory_session.py \
 	tests/test_chat_memory_frontend.py \
 	tests/test_chat_frontend_trace.py \
+	tests/test_chat_frontend_citations.py \
 	tests/test_chat_frontend_warm_queue.py \
 	tests/test_chat_frontend_tagged_calls.py \
 	tests/test_chat_frontend_function_xml_calls.py \

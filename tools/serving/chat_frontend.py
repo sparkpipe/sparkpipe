@@ -459,6 +459,108 @@ class Model:
         return self.renderer.render(messages, tools, context)
 
 
+SOURCE_TAG = re.compile(r'<source id="([0-9]+)"((?: [a-z][a-z-]*="[^"]*")*)>')
+SOURCE_ATTRIBUTE = re.compile(r' ([a-z][a-z-]*)="([^"]*)"')
+CITATION_WRAPPER_KEYS = {"head_sha256", "open", "close", "separator"}
+
+
+def parse_citations(text, wrapper):
+    opening = text.find(wrapper["open"])
+    if opening < 0 or hashlib.sha256(text[:opening].encode()).hexdigest() != wrapper["head_sha256"]:
+        return None
+    close = wrapper["close"] + wrapper["separator"]
+    position, sources = opening + len(wrapper["open"]), []
+    while True:
+        tag = SOURCE_TAG.match(text, position)
+        if tag is None:
+            return None
+        cursor = tag.end()
+        while True:
+            end = text.find("</source>", cursor)
+            if end < 0:
+                return None
+            after = end + len("</source>")
+            if text.startswith("\n<source id=", after) or text.startswith(close, after):
+                break
+            cursor = after
+        sources.append((tag.group(1), tag.group(2), text[tag.end():end]))
+        if text.startswith(close, after):
+            base = text[after + len(close):]
+            break
+        position = after + 1
+    head = text[:opening]
+    rebuilt = head + wrapper["open"] + "\n".join(f'<source id="{n}"{attributes}>{body}</source>' for n, attributes, body in sources) + close + base
+    return (head, sources, base) if rebuilt == text else None
+
+
+def call_strings(arguments):
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return set()
+    found = set()
+    stack = [arguments]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, str):
+            found.add(value)
+        elif isinstance(value, dict):
+            stack.extend(value.values())
+        elif isinstance(value, list):
+            stack.extend(value)
+    return found
+
+
+def canonical_citations(messages, wrapper):
+    users = [index for index, message in enumerate(messages) if message.get("role") == "user"][-2:]
+    for index in reversed(users):
+        content = messages[index].get("content")
+        texts = [content] if isinstance(content, str) else [part.get("text", "") for part in content or [] if isinstance(part, dict) and part.get("type") == "text"]
+        parsed = [parse_citations(text, wrapper) for text in texts]
+        if not parsed or any(item is None for item in parsed):
+            continue
+        sources = parsed[0][1]
+        files = [source for source in sources if source[2]]
+        markers = {}
+        for n, attributes, body in sources:
+            if not body:
+                values = dict(SOURCE_ATTRIBUTE.findall(attributes))
+                for key in ("resource-id", "name"):
+                    if values.get(key):
+                        markers.setdefault(values[key], n)
+
+        def canonical(item):
+            head, _, base = item
+            if not files:
+                return base
+            return head + wrapper["open"] + "\n".join(f'<source id="{n}"{attributes}>{body}</source>' for n, attributes, body in files) + wrapper["close"] + wrapper["separator"] + base
+
+        result = list(messages)
+        if isinstance(content, str):
+            result[index] = dict(messages[index], content=canonical(parsed[0]))
+        else:
+            replaced = iter(canonical(item) for item in parsed)
+            result[index] = dict(messages[index], content=[dict(part, text=next(replaced)) if isinstance(part, dict) and part.get("type") == "text" else part for part in content])
+        urls, labelled, used = {}, 0, set()
+        for message in result[index + 1:]:
+            for call in message.get("tool_calls") or []:
+                urls[call.get("id")] = call_strings((call.get("function") or {}).get("arguments"))
+        for position in range(index + 1, len(result)):
+            message = result[position]
+            if message.get("role") != "tool" or not isinstance(message.get("content"), str):
+                continue
+            ids = sorted({n for url, n in markers.items() if url in urls.get(message.get("tool_call_id"), set())}, key=int)
+            if ids:
+                used.update(ids)
+                label = ", ".join(f"[{n}]" for n in ids)
+                result[position] = dict(message, content=f"[This result is source {label}; cite it inline as {label}.]\n" + message["content"])
+                labelled += 1
+        return result, {"citation_markers": len(set(markers.values())), "citation_labelled": labelled,
+                        "citation_unmatched": len(set(markers.values()) - used), "citation_files": len(files)}
+    return messages, {}
+
+
 def short_hash(value):
     return hashlib.sha256(value.encode()).hexdigest()[:12] if value else None
 
@@ -899,6 +1001,7 @@ class ChannelParser(OutputParser):
 
 class Frontend:
     memory = None
+    citation_wrapper = None
 
     def __init__(self, config, base):
         self.models = {}
@@ -913,6 +1016,10 @@ class Frontend:
             raise SystemExit("chat_frontend: controller_token_file is needed exactly when the config has control or an activation_url")
         self.controller_headers = {"Authorization": "Bearer " + read_token(base / config["controller_token_file"])} if controlled else {}
         self.site = (base / config["site_dir"]).resolve() if config.get("site_dir") else None
+        wrapper = (config.get("client") or {}).get("citation_wrapper")
+        if wrapper is not None and (not isinstance(wrapper, dict) or set(wrapper) != CITATION_WRAPPER_KEYS or not all(isinstance(wrapper[key], str) and wrapper[key] for key in CITATION_WRAPPER_KEYS)):
+            raise SystemExit(f"chat_frontend: client.citation_wrapper needs exactly the non-empty strings {sorted(CITATION_WRAPPER_KEYS)}")
+        self.citation_wrapper = wrapper
         self.session = None
         self.memory = None
         if config.get("chat_memory") is not None:
@@ -1041,6 +1148,9 @@ class Frontend:
             kwargs[key] = value
         session = None
         trace = request_trace(headers, messages)
+        if self.citation_wrapper is not None and headers is not None and headers.get("X-OpenWebUI-Chat-Id"):
+            messages, citations = canonical_citations(messages, self.citation_wrapper)
+            trace.update(citations)
         if self.memory is not None and headers is not None:
             session = self.memory.session(model, headers, messages, tools, kwargs)
             if session is not None:
