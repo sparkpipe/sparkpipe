@@ -78,9 +78,26 @@ document is the contract for that path. Measured results are in
   a later state at release. A reply that ends on a block multiple inside a
   verify frame therefore keeps no reply-end resume point.
 
-## Depth
+## Frame size
 
-The engine keeps today's adaptive cap (`SparkSpeculationDepthCapNext`): it
-doubles after a fully accepted frame and drops to accepted + 1 after a
-rejection. A priced policy (frame cost against chaining, learned per match
-length) is the next step; see the design notes in the PR.
+`src/spark_speculation_frame.c` prices every frame; it replaces the doubling
+cap.
+
+- Acceptance: per match-length class (3-7, 8-15, 16-31, 32-63, 64 tokens of
+  suffix match, greedy or sampled) and draft-index bucket (1, 2, 3-4, ...,
+  129-255) the engine keeps decayed counts of drafts at risk and first
+  rejections. The hazard of a bucket is (events + previous bucket's hazard) /
+  (risk + 1), starting from a prior of 0.2, so an unseen long bucket inherits
+  the shorter one's hazard and one long accept lets frames grow. Each request
+  keeps its own table, blended with the engine's at weight 8. The expected
+  tokens of d drafts are 1 plus the sum of survival products.
+- Cost: the wall time of every submission that ran alone (one lane, nothing
+  else in flight) feeds a table of frame cost per row bucket and context
+  bucket (verify frames, and clean single-lane prefill waves as a prior), and
+  the chain's per-token and single-step cost per context bucket. Missing cells
+  interpolate in rows and borrow the nearest context bucket.
+- Decision: among 1-16, 20, 24, ..., 255 and the feasible maximum, the frame
+  with the most expected tokens per nanosecond, only if it beats the chain by
+  5%. A class with no evidence gets one probe frame of up to 16 drafts.
+- Caps: a waiting prefill caps a frame at two single steps, a priority-0 lane
+  at eight chained tokens.
