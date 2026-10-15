@@ -2,8 +2,6 @@
 
 #include <stdint.h>
 
-#define SPARK_K3_SERVING_VERIFY_ROWS 256u
-
 #if defined(__cplusplus)
 #define SPARK_K3_ASSERT_STATIC(condition, message) \
 	static_assert(condition, message)
