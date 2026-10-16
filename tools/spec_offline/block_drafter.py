@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+"""Offline acceptance of a block drafter (DFlash backbone, optional DSpark heads)
+fed target taps recorded by a stage adapter (tools/spec_offline/tapstream.py).
+
+For every anchor position a of a request's reply, the drafter sees the
+context features of positions < a only, drafts a block from the anchor
+token and is scored against the tokens the target committed. Arms:
+  --delta        tap layer offset added to the drafter's target layer ids;
+  --convention   shift: query slot j predicts position a+1+j (block drafts);
+                 inplace: slot j >= 1 predicts position a+j (block-1 drafts).
+The target head on norm(final) must reproduce the committed next token
+(check printed as final_head_agreement).
+"""
+import argparse
+import json
+import math
+import struct
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
+import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tapstream import frames  # noqa: E402
+
+DTYPES = {"BF16": (np.uint16, torch.bfloat16), "F32": (np.float32, torch.float32)}
+
+
+class SafeTensors:
+    def __init__(self, path):
+        self.path = Path(path)
+        with open(self.path, "rb") as handle:
+            size = struct.unpack("<Q", handle.read(8))[0]
+            self.header = json.loads(handle.read(size))
+        self.base = 8 + size
+
+    def load(self, name, device):
+        entry = self.header[name]
+        numpy_type, torch_type = DTYPES[entry["dtype"]]
+        begin, end = entry["data_offsets"]
+        array = np.memmap(self.path, dtype=numpy_type, mode="r", offset=self.base + begin, shape=((end - begin) // np.dtype(numpy_type).itemsize,))
+        tensor = torch.from_numpy(np.array(array))
+        if torch_type == torch.bfloat16:
+            tensor = tensor.view(torch.bfloat16)
+        return tensor.reshape(entry["shape"]).to(device)
+
+
+def rms(x, weight, eps):
+    x32 = x.float()
+    return (x32 * torch.rsqrt(x32.pow(2).mean(-1, keepdim=True) + eps)) * weight.float()
+
+
+def yarn_frequencies(config, device):
+    rope = config.get("rope_parameters") or config.get("rope_scaling") or {}
+    dim = config["head_dim"]
+    base = rope.get("rope_theta", config.get("rope_theta", 10000.0))
+    pos = base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim)
+    if rope.get("rope_type") != "yarn":
+        return (1.0 / pos).to(device), 1.0
+    factor = rope["factor"]
+    original = rope["original_max_position_embeddings"]
+    fast, slow = rope.get("beta_fast") or 32, rope.get("beta_slow") or 1
+
+    def correction(rotations):
+        return (dim * math.log(original / (rotations * 2 * math.pi))) / (2 * math.log(base))
+    low, high = max(math.floor(correction(fast)), 0), min(math.ceil(correction(slow)), dim - 1)
+    if low == high:
+        high += 0.001
+    ramp = torch.clamp((torch.arange(dim // 2, dtype=torch.float32) - low) / (high - low), 0, 1)
+    extrapolation = 1 - ramp
+    inv = (1.0 / (factor * pos)) * (1 - extrapolation) + (1.0 / pos) * extrapolation
+    attention = rope.get("attention_factor") or (0.1 * math.log(factor) + 1.0 if factor > 1 else 1.0)
+    return inv.to(device), attention
+
+
+def rotate(x, positions, inv, scale):
+    angles = positions.float()[:, None] * inv[None, :]
+    cos = torch.cat([angles.cos(), angles.cos()], -1) * scale
+    sin = torch.cat([angles.sin(), angles.sin()], -1) * scale
+    half = x.shape[-1] // 2
+    rotated = torch.cat([-x[..., half:], x[..., :half]], -1)
+    return x * cos[:, None, :] + rotated * sin[:, None, :]
+
+
+class BlockDrafter:
+    def __init__(self, directory, shard, names, device):
+        self.device = device
+        self.config = json.load(open(Path(directory) / "config.json"))
+        c = self.config
+        weights = SafeTensors(Path(directory) / "model.safetensors")
+        target = SafeTensors(shard)
+        self.eps = c["rms_norm_eps"]
+        self.heads, self.kv_heads, self.head_dim = c["num_attention_heads"], c["num_key_value_heads"], c["head_dim"]
+        self.block = c["block_size"]
+        dflash = c.get("dflash_config", {})
+        self.layer_ids = dflash.get("target_layer_ids") or c.get("aux_hidden_state_layer_ids")
+        self.mask = dflash.get("mask_token_id", c.get("mask_token_id"))
+        self.fc = weights.load("fc.weight", device)
+        self.hidden_norm = weights.load("hidden_norm.weight", device)
+        self.norm = weights.load("norm.weight", device)
+        self.layers = []
+        for index in range(c["num_hidden_layers"]):
+            prefix = f"layers.{index}."
+            self.layers.append({name: weights.load(prefix + name + ".weight", device) for name in (
+                "input_layernorm", "post_attention_layernorm", "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj",
+                "self_attn.o_proj", "self_attn.q_norm", "self_attn.k_norm", "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj")})
+        has = weights.header.keys()
+        self.markov_w1 = weights.load("markov_head.markov_w1.weight", device) if "markov_head.markov_w1.weight" in has else None
+        self.markov_w2 = weights.load("markov_head.markov_w2.weight", device) if "markov_head.markov_w2.weight" in has else None
+        self.confidence = (weights.load("confidence_head.proj.weight", device), weights.load("confidence_head.proj.bias", device)) \
+            if "confidence_head.proj.weight" in has else None
+        self.embed = target.load(names["embed"], device)
+        self.head = target.load(names["head"], device)
+        self.target_norm = target.load(names["norm"], device)
+        self.inv, self.attention = yarn_frequencies(c, device)
+
+    def context(self, taps, positions):
+        features = rms(taps.float() @ self.fc.float().t(), self.hidden_norm, self.eps).to(torch.bfloat16)
+        keys, values = [], []
+        for layer in self.layers:
+            k = (features @ layer["self_attn.k_proj"].t()).view(-1, self.kv_heads, self.head_dim)
+            k = rotate(rms(k, layer["self_attn.k_norm"], self.eps), positions, self.inv, self.attention).to(torch.bfloat16)
+            v = (features @ layer["self_attn.v_proj"].t()).view(-1, self.kv_heads, self.head_dim)
+            keys.append(k)
+            values.append(v)
+        return keys, values
+
+    def draft(self, anchor_token, anchor_position, keys, values, count):
+        tokens = torch.full((self.block,), self.mask, dtype=torch.long, device=self.device)
+        tokens[0] = anchor_token
+        h = self.embed[tokens].float()
+        positions = torch.arange(anchor_position, anchor_position + self.block, device=self.device)
+        group = self.heads // self.kv_heads
+        for index, layer in enumerate(self.layers):
+            x = rms(h, layer["input_layernorm"], self.eps).to(torch.bfloat16)
+            q = (x @ layer["self_attn.q_proj"].t()).view(self.block, self.heads, self.head_dim)
+            q = rotate(rms(q, layer["self_attn.q_norm"], self.eps), positions, self.inv, self.attention)
+            kb = (x @ layer["self_attn.k_proj"].t()).view(self.block, self.kv_heads, self.head_dim)
+            kb = rotate(rms(kb, layer["self_attn.k_norm"], self.eps), positions, self.inv, self.attention)
+            vb = (x @ layer["self_attn.v_proj"].t()).view(self.block, self.kv_heads, self.head_dim).float()
+            k = torch.cat([keys[index][:count].float(), kb], 0)
+            v = torch.cat([values[index][:count].float(), vb], 0)
+            k = k.repeat_interleave(group, dim=1).transpose(0, 1)
+            v = v.repeat_interleave(group, dim=1).transpose(0, 1)
+            scores = torch.matmul(q.transpose(0, 1), k.transpose(1, 2)) / math.sqrt(self.head_dim)
+            attended = torch.matmul(torch.softmax(scores, -1), v).transpose(0, 1).reshape(self.block, -1)
+            h = h + (attended.to(torch.bfloat16) @ layer["self_attn.o_proj"].t()).float()
+            x = rms(h, layer["post_attention_layernorm"], self.eps).to(torch.bfloat16)
+            gate = x @ layer["mlp.gate_proj"].t()
+            up = x @ layer["mlp.up_proj"].t()
+            h = h + ((torch.nn.functional.silu(gate.float()) * up.float()).to(torch.bfloat16) @ layer["mlp.down_proj"].t()).float()
+        y = rms(h, self.norm, self.eps).to(torch.bfloat16)
+        base = (y @ self.head.t()).float()
+        return y, base
+
+    def sequential(self, y, base, anchor_token, slots):
+        drafts, confidence = [], []
+        previous = int(anchor_token)
+        for slot in slots:
+            logits = base[slot]
+            latent = None
+            if self.markov_w1 is not None:
+                latent = self.markov_w1[previous].float()
+                logits = logits + (self.markov_w2.float() @ latent)
+            token = int(torch.argmax(logits))
+            if self.confidence is not None:
+                feature = torch.cat([y[slot].float(), latent]) if latent is not None else y[slot].float()
+                confidence.append(float(torch.sigmoid(self.confidence[0].float() @ feature + self.confidence[1].float())))
+            drafts.append(token)
+            previous = token
+        return drafts, confidence
+
+
+def requests(paths, entry_names):
+    streams = defaultdict(lambda: {"positions": {}, "tail": {}})
+    hello = None
+    for path in paths:
+        for hello, frame in frames(path):
+            key = (frame["control_generation"], frame["request_id"], frame["sequence_id"])
+            item = streams[key]
+            for k in range(frame["rows"]):
+                item["positions"][frame["first_position"] + k] = (path, frame["offset"] + k * frame["row_bytes"], frame["tokens"][k], frame["flags"])
+            item["tail"][frame["first_position"] + frame["rows"]] = frame["tail_token"]
+    return hello, streams
+
+
+def load_rows(hello, records, columns):
+    hidden = hello["hidden"]
+    count = len(hello["entries"])
+    out = np.empty((len(records), len(columns), hidden), dtype=np.uint16)
+    handles = {}
+    for index, (path, offset, _, _) in enumerate(records):
+        if path not in handles:
+            handles[path] = np.memmap(path, dtype=np.uint16, mode="r")
+        row = handles[path][offset // 2: offset // 2 + count * hidden].reshape(count, hidden)
+        out[index] = row[columns]
+    return torch.from_numpy(out).view(torch.bfloat16)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--drafter", required=True)
+    parser.add_argument("--target-shard", required=True)
+    parser.add_argument("--embed", default="language_model.model.embed_tokens.weight")
+    parser.add_argument("--head", default="language_model.lm_head.weight")
+    parser.add_argument("--norm", default="language_model.model.norm.weight")
+    parser.add_argument("--taps", nargs="+", required=True)
+    parser.add_argument("--delta", type=int, default=0)
+    parser.add_argument("--convention", choices=("shift", "inplace"), default="shift")
+    parser.add_argument("--max-anchors", type=int, default=400, help="per request, spread over the reply")
+    parser.add_argument("--out", required=True)
+    args = parser.parse_args()
+    device = "cuda"
+    drafter = BlockDrafter(args.drafter, args.target_shard, {"embed": args.embed, "head": args.head, "norm": args.norm}, device)
+    hello, streams = requests(args.taps, None)
+    wanted = [f"o{layer + args.delta}" for layer in drafter.layer_ids]
+    missing = [name for name in wanted + ["final"] if name not in hello["entries"]]
+    if missing:
+        raise SystemExit(f"tap stream lacks {missing}; it has {hello['entries']}")
+    columns = [hello["entries"].index(name) for name in wanted]
+    final_column = hello["entries"].index("final")
+    slots = list(range(drafter.block)) if args.convention == "shift" else list(range(1, drafter.block))
+    report = {"arm": {"delta": args.delta, "convention": args.convention, "layers": wanted}, "requests": []}
+    totals = defaultdict(int)
+    slot_hits = [0] * len(slots)
+    slot_tries = [0] * len(slots)
+    calibration = defaultdict(lambda: [0, 0])
+    head_agree = head_total = 0
+    for key, item in sorted(streams.items()):
+        end = max(item["positions"]) + 1
+        start = end - 1
+        while start - 1 in item["positions"]:
+            start -= 1
+        records = [item["positions"][p] for p in range(start, end)]
+        tokens = torch.tensor([record[2] for record in records], device=device)
+        flags = [record[3] for record in records]
+        reply = [index for index, flag in enumerate(flags) if flag & 0x6]
+        if not reply:
+            continue
+        taps = load_rows(hello, records, columns).to(device)
+        final = load_rows(hello, records, [final_column]).to(device)[:, 0]
+        pos = torch.arange(start, end, device=device)
+        keys, values = drafter.context(taps.reshape(len(records), -1), pos)
+        with torch.no_grad():
+            predicted = torch.argmax((rms(final, drafter.target_norm, drafter.eps).to(torch.bfloat16) @ drafter.head.t()).float(), -1)
+        agree = (predicted[:-1] == tokens[1:]).sum().item()
+        head_agree += agree
+        head_total += len(records) - 1
+        first = reply[0]
+        anchors = list(range(first, len(records)))
+        if len(anchors) > args.max_anchors:
+            step = len(anchors) / args.max_anchors
+            anchors = [anchors[int(i * step)] for i in range(args.max_anchors)]
+        lengths = []
+        for anchor in anchors:
+            y, base = drafter.draft(int(tokens[anchor]), start + anchor, keys, values, anchor)
+            drafts, confidence = drafter.sequential(y, base, int(tokens[anchor]), slots)
+            truth = tokens[anchor + 1: anchor + 1 + len(drafts)].tolist()
+            accepted = 0
+            for index, token in enumerate(drafts):
+                if index >= len(truth):
+                    break
+                slot_tries[index] += 1
+                hit = token == truth[index]
+                if confidence:
+                    calibration[min(9, int(confidence[index] * 10))][0] += 1
+                    calibration[min(9, int(confidence[index] * 10))][1] += int(hit)
+                if not hit:
+                    break
+                slot_hits[index] += 1
+                accepted += 1
+            lengths.append(accepted)
+        totals["anchors"] += len(lengths)
+        totals["accepted"] += sum(lengths)
+        report["requests"].append({"request_id": key[1], "positions": len(records), "reply": len(records) - first, "anchors": len(lengths),
+                                   "tokens_per_round": 1 + sum(lengths) / max(1, len(lengths)),
+                                   "histogram": np.bincount(lengths, minlength=len(slots) + 1).tolist(), "final_head_agreement": agree / max(1, len(records) - 1)})
+        print(f"request {key[1]} positions {len(records)} anchors {len(lengths)} tokens/round {1 + sum(lengths) / max(1, len(lengths)):.2f} head {agree / max(1, len(records) - 1):.4f}", flush=True)
+    report["tokens_per_round"] = 1 + totals["accepted"] / max(1, totals["anchors"])
+    report["slot_conditional"] = [hits / tries if tries else None for hits, tries in zip(slot_hits, slot_tries)]
+    report["final_head_agreement"] = head_agree / max(1, head_total)
+    report["confidence_bins"] = {str(b): {"n": v[0], "accepted": v[1] / v[0] if v[0] else None} for b, v in sorted(calibration.items())}
+    Path(args.out).write_text(json.dumps(report, indent=1))
+    print(json.dumps({k: report[k] for k in ("arm", "tokens_per_round", "slot_conditional", "final_head_agreement")}))
+
+
+if __name__ == "__main__":
+    main()
