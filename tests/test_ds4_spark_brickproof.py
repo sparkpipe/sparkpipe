@@ -350,6 +350,42 @@ Boot0002* ubuntu HD(1,GPT,def)
         self.assertIn('["systemctl","--failed","--no-legend","--plain"]',source)
         self.assertIn('["logrotate","--debug","/etc/logrotate.conf"]',source)
 
+    def test_direct_pair_links_follow_the_cabled_rank_partners(self) -> None:
+        self.assertEqual([MODULE.direct_pair_linked(rank) for rank in range(16)],[True] * 14 + [False] * 2)
+        for link_map in ("0-2:200","1-0:200","0-1","0-1:200,14-15"):
+            with self.subTest(link_map=link_map),mock.patch.object(MODULE,"MESH_LINK_MAP",link_map):
+                with self.assertRaises(MODULE.BrickproofError):
+                    MODULE.direct_pair_linked(0)
+
+    def test_every_mesh_link_map_copy_agrees(self) -> None:
+        agent = (ROOT / "tools" / "fleet_node_agent.sh").read_text()
+        apply = (ROOT / "tools" / "devcycle" / "fleet" / "ds4_direct_pair_fabric_apply.sh").read_text()
+        expected = f'MESH_LINK_MAP="{MODULE.MESH_LINK_MAP}"'
+        self.assertEqual([line for line in agent.splitlines() if line.startswith("MESH_LINK_MAP=")],[expected])
+        self.assertEqual([line for line in apply.splitlines() if line.startswith("MESH_LINK_MAP=")],[expected])
+
+    def test_policy_services_enable_the_pair_timer_only_on_linked_ranks(self) -> None:
+        for rank,verb in ((0,"enable"),(13,"enable"),(14,"disable"),(15,"disable")):
+            with self.subTest(rank=rank),mock.patch.object(MODULE,"run") as run,mock.patch.object(MODULE,"disable_persistent_unit"):
+                MODULE.enable_policy_services(rank)
+                pair = [call.args[0] for call in run.call_args_list if call.args and "ds4-direct-pair-fabric.timer" in call.args[0]]
+                self.assertEqual(pair,[["systemctl",verb,"--now","ds4-direct-pair-fabric.timer"]])
+
+    def test_pair_fabric_apply_leaves_an_unlinked_rank_untouched(self) -> None:
+        script = (ROOT / "tools" / "devcycle" / "fleet" / "ds4_direct_pair_fabric_apply.sh").read_text()
+        functions = script.split("\nif [ \"$(id -u)\" -ne 0 ]; then",1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            for rank,linked in ((0,True),(13,True),(14,False),(15,False)):
+                with self.subTest(rank=rank):
+                    harness = (functions.replace("/etc/ds4-node-rank",f"{directory}/rank").replace('"/sys/class/net/${DIRECT_DEVICE}"',f'"{directory}"')
+                               + '\nip() { echo "IP $*"; }\nethtool() { echo "ETHTOOL $*"; }\nsysctl() { echo "SYSCTL $*"; }\n'
+                               + f'printf "{rank}\\n" > "{directory}/rank"\nDIRECT_DEVICE=lo\nconfigure_direct_pair\n')
+                    result = MODULE.subprocess.run(["bash","-c",harness],capture_output=True,text=True)
+                    self.assertEqual(result.returncode,0,result.stderr)
+                    self.assertEqual("IP -4 addr flush dev lo scope global" in result.stdout,linked,result.stdout)
+                    if not linked:
+                        self.assertEqual(result.stdout,f"direct_pair_fabric rank={rank} has no direct pair link; lo left untouched\n")
+
     def test_fleet_audit_pins_physical_interfaces(self) -> None:
         self.assertEqual(MODULE.SWITCHED_INTERFACE,"enp1s0f1np1")
         self.assertEqual(MODULE.SWITCHED_SPEED_MBIT,"100000")
