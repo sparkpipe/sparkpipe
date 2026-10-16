@@ -306,6 +306,7 @@ TEST_NAMES := \
     test_speculation_relay_link \
     test_speculation_depth \
     test_speculation_frame \
+    test_topk_exact_plan \
     test_driver_compiler \
     test_orchestrator \
     test_tensor_map_geometry \
@@ -1563,6 +1564,9 @@ build/test_speculation_ngram_draft: tests/test_speculation_ngram_draft.c include
 
 build/test_speculation_drafter_mix: tests/test_speculation_drafter_mix.c include/sparkpipe/spark_speculation_drafter_mix.h include/sparkpipe/spark_speculation_lookup_draft.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_drafter_mix.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_topk_exact_plan: tests/test_topk_exact_plan.c inference/kernels/topk_exact_plan.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_topk_exact_plan.c $(LDFLAGS) -o $@
 
 build/test_speculation_frame: tests/test_speculation_frame.c include/sparkpipe/spark_speculation_frame.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_frame.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lm -o $@

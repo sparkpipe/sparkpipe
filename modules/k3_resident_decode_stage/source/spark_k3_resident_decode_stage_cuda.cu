@@ -265,9 +265,7 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	if ( d == 0 || sizing == 0 || widths == 0 || sequences == 0u || max_rows == 0u ||
 		sizing->layer_count == 0u ||
 		SparkK3KdaRankLayoutFor(tp_degree, &layout) == 0u ||
-		SparkK3RankStateBytesFor(sizing->kda_layer_count,
-			sizing->mla_layer_count, sequences, tp_degree,
-			kv_pages_per_view, kv_page_bytes, &state_plan) == 0u )
+		SparkK3RankStateBytesFor(sizing->kda_layer_count, sequences, tp_degree, &state_plan) == 0u )
 		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
 	if ( tp_degree > 1u && (tp_rank >= tp_degree || SparkK3KvShardFits(tp_degree, max_rows) == 0u) )
 	{

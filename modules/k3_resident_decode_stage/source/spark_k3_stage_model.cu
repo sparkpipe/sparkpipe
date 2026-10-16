@@ -615,13 +615,11 @@ static SparkStatus K3RunnerCreateDispatch(SparkK3ModelState *state,
 	if ( budget == 0u )
 	{
 		fprintf(stderr, "sparkpipe_k3: the rank state budget is required"
-			" (per-rank KDA state + windows + MLA KV + dispatch scratch)\n");
+			" (per-rank KDA state + windows + dispatch scratch; MLA KV lives in the weightd KV pool)\n");
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	if ( SparkK3RankStateBytesFor(state->module.sizing.kda_layer_count,
-			state->module.sizing.mla_layer_count,
 			configuration->max_active_sequence_count, configuration->tp_degree,
-			configuration->kv_pages_per_sequence, state->kv_page_bytes,
 			&state_plan) == 0u || state_plan.total > budget )
 	{
 		fprintf(stderr, "sparkpipe_k3: rank state %llu exceeds"
@@ -655,12 +653,11 @@ static SparkStatus K3RunnerCreateDispatch(SparkK3ModelState *state,
 #endif
 	planned = state->dispatch.state_bytes.total + state->dispatch.scratch_bytes;
 	fprintf(stderr, "sparkpipe_k3: rank state planned=%llu budget=%llu"
-		" kda_state=%llu kda_windows=%llu mla_kv=%llu scratch=%llu"
+		" kda_state=%llu kda_windows=%llu scratch=%llu"
 		" sequences=%u kda_heads_per_rank=%u\n",
 		(unsigned long long)planned, (unsigned long long)budget,
 		(unsigned long long)state->dispatch.state_bytes.kda_state,
 		(unsigned long long)state->dispatch.state_bytes.kda_windows,
-		(unsigned long long)state->dispatch.state_bytes.mla_kv,
 		(unsigned long long)state->dispatch.scratch_bytes,
 		configuration->max_active_sequence_count,
 		state->dispatch.kda_rank_heads);

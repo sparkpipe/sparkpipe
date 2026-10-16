@@ -1352,7 +1352,7 @@ struct GlmModel
 		status = PackRead(state, configuration->rank_pack_path);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		state->selection_rows = LmTopkExactSelectionRows(state->max_rows, state->max_positions);
+		state->selection_rows = LmTopkExactGatherSelectionRows(state->max_rows, state->max_positions, state->tp_degree);
 		state->topk_entries = LmTopkExactScratchEntries(state->selection_rows, state->max_positions, GLM_SELECTED);
 		state->union_entries = state->max_positions > GLM_SELECTED ?
 			(uint64_t)GLM_PREFILL_TABLE_BLOCKS(state->max_rows) * GLM_PREFILL_BLOCK_ROWS * GLM_SELECTED : 0u;
@@ -1799,6 +1799,12 @@ struct GlmModel
 		SparkStatus status = SPARK_STATUS_OK;
 		if ( GlmShardIndexing(layer, wave->context) != 0u )
 		{
+			if ( wave->select_slice > state->selection_rows || wave->context > state->max_positions )
+			{
+				fprintf(stderr, "%s: gather wave scores %u rows of %u positions but the selection buffer holds %u rows of %u (refused)\n",
+					G::Tag(), wave->select_slice, wave->context, state->selection_rows, state->max_positions);
+				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+			}
 			status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, 2u * wave->select_slice, 2u * wave->select_keep,
 				state->select_candidates, state->select_received);
 			if ( status != SPARK_STATUS_OK )

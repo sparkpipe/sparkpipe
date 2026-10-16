@@ -27,9 +27,9 @@
 #include "sparkpipe/spark_tokenizer_sidecar.h"
 #include "sparkpipe/spark_sampling.h"
 
-#define API_MAX_BODY		(8u * 1024u * 1024u)
+#define API_MAX_BODY		(16u * 1024u * 1024u)
 #define API_MAX_HEADER		(64u * 1024u)
-#define API_MAX_PROMPT_TOKENS	(260000u)
+#define API_MAX_PROMPT_TOKENS	(1048576u)
 #define API_MAX_STOP_TOKENS 16
 #define API_MAX_OUTPUT_TOKENS	(131072u)
 #define API_TOKEN_TEXT_BYTES	12u
