@@ -375,7 +375,7 @@ Boot0002* ubuntu HD(1,GPT,def)
         script = (ROOT / "tools" / "devcycle" / "fleet" / "ds4_direct_pair_fabric_apply.sh").read_text()
         functions = script.split("\nif [ \"$(id -u)\" -ne 0 ]; then",1)[0]
         with tempfile.TemporaryDirectory() as directory:
-            for rank,linked in ((0,True),(13,True),(14,False),(15,False)):
+            for rank,linked in ((0,True),("07",True),(13,True),(14,False),(15,False)):
                 with self.subTest(rank=rank):
                     harness = (functions.replace("/etc/ds4-node-rank",f"{directory}/rank").replace('"/sys/class/net/${DIRECT_DEVICE}"',f'"{directory}"')
                                + '\nip() { echo "IP $*"; }\nethtool() { echo "ETHTOOL $*"; }\nsysctl() { echo "SYSCTL $*"; }\n'
@@ -385,6 +385,8 @@ Boot0002* ubuntu HD(1,GPT,def)
                     self.assertEqual("IP -4 addr flush dev lo scope global" in result.stdout,linked,result.stdout)
                     if not linked:
                         self.assertEqual(result.stdout,f"direct_pair_fabric rank={rank} has no direct pair link; lo left untouched\n")
+                    else:
+                        self.assertIn(f"IP address replace 10.10.200.{int(rank)}/31 dev lo",result.stdout)
 
     def test_fleet_audit_pins_physical_interfaces(self) -> None:
         self.assertEqual(MODULE.SWITCHED_INTERFACE,"enp1s0f1np1")

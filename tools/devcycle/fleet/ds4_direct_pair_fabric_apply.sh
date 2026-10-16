@@ -45,6 +45,7 @@ configure_direct_pair()
         printf 'unable to resolve direct-pair rank\n' >&2
         return 2
     fi
+    rank=$((10#${rank}))
     if ! direct_pair_linked "${rank}"; then
         printf 'direct_pair_fabric rank=%s has no direct pair link; %s left untouched\n' "${rank}" "${DIRECT_DEVICE}"
         return 0
