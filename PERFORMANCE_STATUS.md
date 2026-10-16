@@ -219,6 +219,25 @@ after the first token.
   long the current copy has already matched recovers SEARCH/REPLACE (39.2-40.0)
   but costs whole-file edits 6-20% (203-239 against 254); not adopted. 17 of
   20 P streams equal T3; editsr_01, 05 and 09 diverge in both P runs.
+- Holds 6-7 (2026-10-16, `2c60eceb0`: verify frames of up to 256 rows may
+  scatter; the hub engine logs one `batch_step` line per submission). New
+  corpus: the same edits behind about 198K tokens of shared repository files
+  (`qualification/spec_offline/xl-context-20261016/`), the owner's agent
+  context regime (ZCode step context median 270K).
+  - 198K context, scatter arm: whole file 86.2 tok/s, SEARCH/REPLACE 32.3.
+    Per submission: chain token 40 ms; frames 17 rows 207 ms, 81 rows 577 ms,
+    129 rows 830 ms, 256 rows 1,336 ms (about 4.7 ms per added row against
+    1.5 ms at 2K: DSA selection per row grows with context); prefill of the
+    197K shared prefix about 680 tok/s. The 64-row arm (`a397d67b0`, frames
+    above 64 rows gather the whole context) lost spark9 to a CX-7 PCIe error
+    3 minutes in (DMA guard reboot, 00:19:24Z); no comparison at 198K.
+  - 46K context: scatter 105.2 and 105.8 tok/s whole file against 99.8 for
+    the 64-row build (+5%); SEARCH/REPLACE 28.7 and 29.1 against 29.6. Frames
+    near 97 rows cost 693 ms against 796 ms for 81 rows; frames above about
+    200 rows gather on both builds.
+  - Short context: 232.8 against 238.7 whole file, 39.1 against 35.3
+    SEARCH/REPLACE (different token counts): no difference beyond run noise.
+  - Receipts and traces under `hold6/` and `hold7/`.
 - Near-tie probe (hold 3, control build): at the first divergence of
   editsr_01, 05 and 09 the multi-row path serves the spec stream's token, by
   1.63, 0.54 and 0.31 nats over the control's token. These are not tiny
