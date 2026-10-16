@@ -19,7 +19,8 @@ static volatile sig_atomic_t TestChildGuardCount;
 static pid_t TestChildGuardPids[TEST_CHILD_GUARD_CAPACITY];
 static const int32_t TestChildGuardSignals[] =
 {
-	SIGABRT,SIGSEGV,SIGBUS,SIGILL,SIGFPE,SIGTERM,SIGINT,SIGHUP,SIGQUIT,SIGALRM,SIGXCPU,SIGUSR1,SIGUSR2
+	SIGABRT,SIGSEGV,SIGBUS,SIGILL,SIGFPE,SIGTRAP,SIGSYS,SIGTERM,SIGINT,SIGHUP,SIGQUIT,SIGPIPE,
+	SIGALRM,SIGVTALRM,SIGPROF,SIGXCPU,SIGXFSZ,SIGUSR1,SIGUSR2
 };
 
 static void TestChildGuardSleepMs(uint32_t milliseconds)
@@ -123,6 +124,25 @@ static unsigned long long TestChildGuardStartTicks(void)
 #endif
 }
 
+static int32_t TestChildGuardFollowRunner(void)
+{
+#if defined(__linux__)
+	pid_t runner;
+	int current;
+	current = 0;
+	if ( prctl(PR_GET_PDEATHSIG,&current) != 0 )
+		return(-1);
+	if ( current != 0 )
+		return(0);
+	runner = getppid();
+	if ( prctl(PR_SET_PDEATHSIG,SIGTERM) != 0 )
+		return(-1);
+	if ( getppid() != runner )
+		(void)raise(SIGTERM);
+#endif
+	return(0);
+}
+
 static int32_t TestChildGuardArm(void)
 {
 	char owner[64];
@@ -143,7 +163,7 @@ static int32_t TestChildGuardArm(void)
 		TestChildGuardAtexitArmed = 1u;
 	}
 	TestChildGuardInstallSignals();
-	return(0);
+	return(TestChildGuardFollowRunner());
 }
 
 static void TestChildGuardForgetReaped(void)

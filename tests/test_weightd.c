@@ -17,6 +17,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "fixtures/test_child_guard.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_receipt.h"
@@ -977,7 +978,7 @@ static void SparkTestDaemonProcessTermPath(void)
     SparkTestMakeRequest(&request, &identity, pack_path);
 
     assert(close(latch_socket) == 0);
-    daemon_pid = fork();
+    daemon_pid = TestChildGuardFork();
     assert(daemon_pid >= 0);
     if (daemon_pid == 0)
     {
