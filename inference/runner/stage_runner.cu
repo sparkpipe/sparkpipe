@@ -189,6 +189,14 @@ static SparkStatus StageRunnerCombineTp4Bf16(void *combine_context,
 	return cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
+__global__ static void StageRunnerTapCopyKernel(const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t dimension,
+	uint64_t destination_stride)
+{
+	const uint32_t row = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( row < rows && element < dimension )
+		destination[(uint64_t)row * destination_stride + element] = source[(uint64_t)row * dimension + element];
+}
+
 __global__ static void StageRunnerCombineU64MaxKernel(const uint64_t *source,
 	uint64_t *destination,uint32_t elements)
 {
@@ -2046,14 +2054,6 @@ static SparkStatus StageRunnerStepOutputs(SparkStageRunnerState *state, const Sp
 }
 
 #define STAGE_RUNNER_CHAIN_LANES 16u
-
-__global__ static void StageRunnerTapCopyKernel(const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t dimension,
-	uint64_t destination_stride)
-{
-	const uint32_t row = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( row < rows && element < dimension )
-		destination[(uint64_t)row * destination_stride + element] = source[(uint64_t)row * dimension + element];
-}
 
 __global__ static void StageRunnerChainAdvanceKernel(uint32_t *token_ids, const uint32_t *tokens, uint32_t *positions,
 	uint32_t *context_length, const uint32_t *sequence_of_row, uint32_t rows)
