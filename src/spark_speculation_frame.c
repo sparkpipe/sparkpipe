@@ -36,8 +36,18 @@ uint32_t SparkSpeculationFrameDepthBucket(uint32_t draft_index)
 
 uint32_t SparkSpeculationFrameRowBucket(uint32_t rows)
 {
-	uint32_t bucket = SparkSpeculationFrameLog2Ceil(rows);
+	uint32_t bucket;
+	if ( rows <= SPARK_SPECULATION_FRAME_SINGLE_ROW_BUCKETS )
+		return(rows != 0u ? rows - 1u : 0u);
+	bucket = SPARK_SPECULATION_FRAME_SINGLE_ROW_BUCKETS - 5u + SparkSpeculationFrameLog2Ceil(rows);
 	return(bucket < SPARK_SPECULATION_FRAME_ROW_BUCKETS ? bucket : SPARK_SPECULATION_FRAME_ROW_BUCKETS - 1u);
+}
+
+uint32_t SparkSpeculationFrameRowBucketLimit(uint32_t bucket)
+{
+	if ( bucket < SPARK_SPECULATION_FRAME_SINGLE_ROW_BUCKETS )
+		return(bucket + 1u);
+	return(SPARK_SPECULATION_FRAME_SINGLE_ROW_BUCKETS << (bucket - SPARK_SPECULATION_FRAME_SINGLE_ROW_BUCKETS + 1u));
 }
 
 uint32_t SparkSpeculationFrameContextBucket(uint32_t context)

@@ -3346,7 +3346,7 @@ static void SparkModelBatchLogFrames(SparkModelBatchEngine *engine)
 		SparkSpeculationFrameTokenCost(&engine->frame_model,2048u) / 1e6,SparkSpeculationFrameSingleCost(&engine->frame_model,2048u) / 1e6);
 	for (bucket=0u; bucket<SPARK_SPECULATION_FRAME_ROW_BUCKETS && used < sizeof(line); bucket++)
 		if ( engine->frame_count[bucket] != 0u )
-			used += (size_t)snprintf(line + used,sizeof(line) - used," r%u:n=%llu,rows=%.1f,kept=%.1f,ms=%.1f",1u << bucket,
+			used += (size_t)snprintf(line + used,sizeof(line) - used," r%u:n=%llu,rows=%.1f,kept=%.1f,ms=%.1f",SparkSpeculationFrameRowBucketLimit(bucket),
 				(unsigned long long)engine->frame_count[bucket],(double)engine->frame_rows[bucket] / (double)engine->frame_count[bucket],
 				(double)engine->frame_kept[bucket] / (double)engine->frame_count[bucket],
 				engine->frame_timed[bucket] != 0u ? (double)engine->frame_ns[bucket] / (double)engine->frame_timed[bucket] / 1e6 : 0.0);

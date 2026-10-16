@@ -2064,7 +2064,7 @@ struct GlmModel
 		State *state = (State *)model;
 		cudaStream_t stream = (cudaStream_t)stream_void;
 		const uint32_t rows = step->rows;
-		const uint32_t ordered = step->last_rows_only != 0u || (rows != step->sequences && FrameShape(step) == 0u) ? 1u : 0u;
+		const uint32_t ordered = step->last_rows_only != 0u || (rows != step->sequences && (FrameShape(step) == 0u || step->graph_key != 2u)) ? 1u : 0u;
 		GlmRegime regime;
 		GlmWave wave;
 		SparkStatus status = SPARK_STATUS_OK;

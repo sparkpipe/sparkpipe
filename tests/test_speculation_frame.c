@@ -14,7 +14,9 @@ static void TestBuckets(void)
 	assert(SparkSpeculationFrameDepthBucket(1u) == 0u && SparkSpeculationFrameDepthBucket(2u) == 1u);
 	assert(SparkSpeculationFrameDepthBucket(3u) == 2u && SparkSpeculationFrameDepthBucket(4u) == 2u && SparkSpeculationFrameDepthBucket(5u) == 3u);
 	assert(SparkSpeculationFrameDepthBucket(128u) == 7u && SparkSpeculationFrameDepthBucket(129u) == 8u && SparkSpeculationFrameDepthBucket(255u) == 8u);
-	assert(SparkSpeculationFrameRowBucket(1u) == 0u && SparkSpeculationFrameRowBucket(256u) == 8u && SparkSpeculationFrameRowBucket(1024u) == 10u);
+	assert(SparkSpeculationFrameRowBucket(1u) == 0u && SparkSpeculationFrameRowBucket(8u) == 7u && SparkSpeculationFrameRowBucket(9u) == 8u && SparkSpeculationFrameRowBucket(16u) == 15u);
+	assert(SparkSpeculationFrameRowBucket(17u) == 16u && SparkSpeculationFrameRowBucket(32u) == 16u && SparkSpeculationFrameRowBucket(256u) == 19u && SparkSpeculationFrameRowBucket(1024u) == 21u);
+	assert(SparkSpeculationFrameRowBucketLimit(7u) == 8u && SparkSpeculationFrameRowBucketLimit(16u) == 32u && SparkSpeculationFrameRowBucketLimit(19u) == 256u && SparkSpeculationFrameRowBucketLimit(21u) == 1024u);
 	assert(SparkSpeculationFrameContextBucket(1u) == 0u && SparkSpeculationFrameContextBucket(2048u) == 0u && SparkSpeculationFrameContextBucket(4096u) == 1u);
 	assert(SparkSpeculationFrameContextBucket(1u << 30) == SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS - 1u);
 }

@@ -1960,6 +1960,12 @@ static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStag
 		if ( state->graph_exec[slot] != 0 )
 			return StageRunnerGraphLaunch(state, state->graph_exec[slot], stream);
 	}
+	if ( in->graph_key > 1u )
+	{
+		SparkStageRunnerStep eager = *in;
+		eager.graph_key = 0u;
+		return StageRunnerStepBody(state, runner, &eager, stream);
+	}
 	return StageRunnerStepBody(state, runner, in, stream);
 }
 
@@ -2049,6 +2055,7 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	if ( runner == 0 || dispatch == 0 || runner->private_state == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	state = (SparkStageRunnerState *)runner->private_state;
+	state->capture_ns = 0u;
 	rows = dispatch->row_count;
 	steps = dispatch->chain_steps > 1u ? dispatch->chain_steps : 1u;
 	if ( steps > 1u && (runner->owns_embedding == 0u || runner->owns_final_head == 0u || state->head_weight == 0 ||
