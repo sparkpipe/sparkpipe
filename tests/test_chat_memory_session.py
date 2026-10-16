@@ -40,7 +40,8 @@ def headers(user_message, parent=None, message=None, chat="chat-1", task="", jwt
 class Model:
     def __init__(self, checkpoint):
         self.id = "fake-model"
-        self.memory = {"curator_suffix": "</think>", "cache_checkpoint_tokens": checkpoint, "open_budget": 1500, "line_tokens": 48}
+        self.memory = {"curator_suffix": "</think>", "cache_checkpoint_tokens": checkpoint, "open_budget": 1500, "line_tokens": 48,
+                       "part_small_tokens": 1024, "part_cap_tokens": 12288, "keep_tokens": 4096}
 
 
 class Frontend:

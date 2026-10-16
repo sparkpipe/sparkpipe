@@ -211,6 +211,7 @@ def main():
     parser.add_argument("--convention", choices=("shift", "inplace"), default="shift")
     parser.add_argument("--max-anchors", type=int, default=400, help="per request, spread over the reply")
     parser.add_argument("--out", required=True)
+    parser.add_argument("--anchors-out", help="JSON lines, one per anchor: request, position, accepted, drafts, confidence")
     args = parser.parse_args()
     device = "cuda"
     drafter = BlockDrafter(args.drafter, args.target_shard, {"embed": args.embed, "head": args.head, "norm": args.norm}, device)
@@ -228,6 +229,8 @@ def main():
     slot_tries = [0] * len(slots)
     calibration = defaultdict(lambda: [0, 0])
     head_agree = head_total = 0
+    reply_agree = reply_total = 0
+    anchor_log = open(args.anchors_out, "w") if args.anchors_out else None
     for key, item in sorted(streams.items()):
         end = max(item["positions"]) + 1
         start = end - 1
@@ -249,6 +252,10 @@ def main():
         head_agree += agree
         head_total += len(records) - 1
         first = reply[0]
+        reply_hits = (predicted[first - 1:-1] == tokens[first:]).sum().item() if first > 0 else 0
+        reply_count = len(records) - first if first > 0 else 0
+        reply_agree += reply_hits
+        reply_total += reply_count
         anchors = list(range(first, len(records)))
         if len(anchors) > args.max_anchors:
             step = len(anchors) / args.max_anchors
@@ -272,18 +279,26 @@ def main():
                 slot_hits[index] += 1
                 accepted += 1
             lengths.append(accepted)
+            if anchor_log:
+                anchor_log.write(json.dumps({"request": key[1], "position": start + anchor, "reply": anchor >= first, "accepted": accepted,
+                                             "drafts": drafts, "confidence": [round(c, 4) for c in confidence]}) + "\n")
         totals["anchors"] += len(lengths)
         totals["accepted"] += sum(lengths)
         report["requests"].append({"request_id": key[1], "positions": len(records), "reply": len(records) - first, "anchors": len(lengths),
                                    "tokens_per_round": 1 + sum(lengths) / max(1, len(lengths)),
-                                   "histogram": np.bincount(lengths, minlength=len(slots) + 1).tolist(), "final_head_agreement": agree / max(1, len(records) - 1)})
-        print(f"request {key[1]} positions {len(records)} anchors {len(lengths)} tokens/round {1 + sum(lengths) / max(1, len(lengths)):.2f} head {agree / max(1, len(records) - 1):.4f}", flush=True)
+                                   "histogram": np.bincount(lengths, minlength=len(slots) + 1).tolist(), "final_head_agreement": agree / max(1, len(records) - 1),
+                                   "reply_head_agreement": reply_hits / max(1, reply_count)})
+        print(f"request {key[1]} positions {len(records)} reply {reply_count} anchors {len(lengths)} tokens/round {1 + sum(lengths) / max(1, len(lengths)):.2f}"
+              f" head {agree / max(1, len(records) - 1):.4f} reply-head {reply_hits / max(1, reply_count):.4f}", flush=True)
     report["tokens_per_round"] = 1 + totals["accepted"] / max(1, totals["anchors"])
     report["slot_conditional"] = [hits / tries if tries else None for hits, tries in zip(slot_hits, slot_tries)]
     report["final_head_agreement"] = head_agree / max(1, head_total)
+    report["reply_head_agreement"] = reply_agree / max(1, reply_total)
+    if anchor_log:
+        anchor_log.close()
     report["confidence_bins"] = {str(b): {"n": v[0], "accepted": v[1] / v[0] if v[0] else None} for b, v in sorted(calibration.items())}
     Path(args.out).write_text(json.dumps(report, indent=1))
-    print(json.dumps({k: report[k] for k in ("arm", "tokens_per_round", "slot_conditional", "final_head_agreement")}))
+    print(json.dumps({k: report[k] for k in ("arm", "tokens_per_round", "slot_conditional", "final_head_agreement", "reply_head_agreement")}))
 
 
 if __name__ == "__main__":

@@ -224,6 +224,7 @@ static SparkStatus StageServingLoadDeviceCollective(SparkStageServingState *stat
 
 static SparkStatus StageServingParseTaps(SparkStageServingState *state, SparkJsonDocument *doc, int32_t taps)
 {
+	static const char tap_final[] = "final";
 	char *entries = 0, *cursor, *end;
 	int32_t token = SparkJsonFindObjectMember(doc, taps, "entries");
 	if ( token < 0 || SparkJsonCopyString(doc, token, &entries) != SPARK_STATUS_OK ||
@@ -247,11 +248,11 @@ static SparkStatus StageServingParseTaps(SparkStageServingState *state, SparkJso
 		unsigned long layer;
 		if ( state->tap_count >= SPARK_STAGE_RUNNER_TAP_MAX_ENTRIES )
 			break;
-		if ( strncmp(cursor, "final", 5u) == 0 && (cursor[5] == ',' || cursor[5] == '\0') )
+		if ( strncmp(cursor, tap_final, sizeof(tap_final) - 1u) == 0 && (cursor[sizeof(tap_final) - 1u] == ',' || cursor[sizeof(tap_final) - 1u] == '\0') )
 		{
 			entry->form = SPARK_STAGE_RUNNER_TAP_FORM_FINAL;
 			entry->layer = 0u;
-			end = cursor + 5;
+			end = cursor + sizeof(tap_final) - 1u;
 		}
 		else if ( cursor[0] == 'o' && cursor[1] >= '0' && cursor[1] <= '9' )
 		{

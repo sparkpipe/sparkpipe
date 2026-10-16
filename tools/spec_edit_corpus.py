@@ -126,7 +126,7 @@ def main():
     g.add_argument("--model", required=True)
     g.add_argument("--engine", required=True)
     g.add_argument("--reasoning-effort", default="minimal")
-    g.add_argument("--max-tokens", type=int, default=6144)
+    g.add_argument("--max-tokens", type=int, required=True)
     g.add_argument("--out", required=True)
     args = parser.parse_args()
     build(args) if args.command == "build" else generate(args)
