@@ -503,6 +503,7 @@ PYTHON_TESTS := \
 	tests/test_k3_tp_context_cuda.py \
 	tests/test_runner_capture_flags_cuda.py \
 	tests/test_glm_attach_kv_cuda.py \
+	tests/test_glm_row_shard_host.py \
 	tests/test_topk_exact_cuda.py \
 	tests/test_hyper_inject_cuda.py \
 	tests/test_layer_norm_cuda.py \

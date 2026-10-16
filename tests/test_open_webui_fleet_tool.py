@@ -7,7 +7,7 @@ from pathlib import Path
 from aiohttp import web
 
 ROOT = Path(__file__).resolve().parent.parent
-SPEC = importlib.util.spec_from_file_location("fleet_tool", ROOT / "deployment" / "hub" / "open_webui_tools" / "fleet.py")
+SPEC = importlib.util.spec_from_file_location("fleet_tool", ROOT / "tools" / "serving" / "open_webui" / "tools" / "fleet.py")
 fleet_tool = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(fleet_tool)
 
