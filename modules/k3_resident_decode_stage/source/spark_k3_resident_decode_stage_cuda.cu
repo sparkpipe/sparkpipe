@@ -14,6 +14,11 @@ extern "C" int32_t K3StageSlice(const void *layer_weights, const void *slice_sta
 	uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context,
 	uint32_t multiprocessors, void *stream);
 #define K3_DISPATCH_PAIR_IDENTITY 16u
+#define K3_DISPATCH_GATHER_WINDOW_GRAIN 224u
+
+static_assert(K3_DISPATCH_GATHER_WINDOW_GRAIN % LM_PREFILL_ATTN_TILE == 0u, "a gather window starts on an attention key tile");
+static_assert((K3_DISPATCH_GATHER_WINDOW_GRAIN * K3_MLA_KV_A_DIM * sizeof(uint16_t)) % (K3_HIDDEN * sizeof(uint16_t)) == 0u,
+	"a gather window fills whole exchange units");
 
 extern "C" int32_t K3StageFold(const void *layer_weights, const void *slice_state, void *layer_buffers,
 	uint32_t first_layer, uint32_t layer_count, uint32_t sequences, const uint32_t *verify_row_begin,
@@ -663,6 +668,8 @@ static void K3DispatchPairView(const SparkK3Dispatch *d, const K3LayerBuffers *a
 	b->attnres_score_f32 += r * K3_ATTNRES_MAX_SOURCES;
 	b->latent_full_bf16 += r * K3_ROUTED_EXPERT_HIDDEN;
 	b->shared_mid_bf16 += r * w->shared_mid;
+	if ( b->shard_gather_running != 0 )
+		b->shard_gather_running += r * SparkK3KvShardHeads(a->kv_shard.degree) * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK);
 	b->positions = a->positions + r;
 	b->sequence_of_row = a->sequence_of_row + r;
 	b->sequence_row_begin = d->pair_arrays + 2u;
@@ -683,16 +690,41 @@ static int32_t K3DispatchGatherPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint3
 {
 	const uint32_t degree = b->kv_shard.degree;
 	const uint64_t unit = (uint64_t)K3_HIDDEN * sizeof(uint16_t);
+	const uint64_t key_bytes = (uint64_t)K3_MLA_KV_A_DIM * sizeof(uint16_t);
 	const uint32_t most = SparkKvShardGatherKeys(b->kv_shard, context);
-	const uint64_t units = ((uint64_t)most * K3_MLA_KV_A_DIM * sizeof(uint16_t) + unit - 1u) / unit;
+	const uint64_t units = ((uint64_t)most * key_bytes + unit - 1u) / unit;
+	const uint64_t landing_units = SparkK3KvShardQueryStride(d->max_rows, degree) / K3_HIDDEN;
+	const uint64_t send_bytes = (uint64_t)degree * SparkK3KvShardPartialStride(d->max_rows, degree) * sizeof(float);
+	const uint64_t running_bytes = (uint64_t)d->max_rows * SparkK3KvShardHeads(degree) * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK) * sizeof(float);
+	const uint64_t window_keys = (landing_units / 2u * unit / key_bytes) / K3_DISPATCH_GATHER_WINDOW_GRAIN * K3_DISPATCH_GATHER_WINDOW_GRAIN;
 	const uint64_t query_units = SparkK3KvShardQuerySequences(rows, degree);
 	const uint64_t partial_units = SparkK3KvShardPartialSequences(rows, degree);
-	uint64_t gather_rounds, scatter_rounds;
+	uint64_t gather_rounds, scatter_rounds, running_offset;
 	b->shard_gather = 0u;
-	if ( d->gather_plan == 0 || sequence >= d->sequences || most == 0u ||
-		units * K3_HIDDEN > SparkK3KvShardQueryStride(d->max_rows, degree) ||
-		units * unit > (uint64_t)degree * SparkK3KvShardPartialStride(d->max_rows, degree) * sizeof(float) )
+	if ( d->gather_plan == 0 || sequence >= d->sequences || most == 0u )
 		return 0;
+	if ( units <= landing_units )
+	{
+		if ( units * unit > send_bytes )
+			return 0;
+		b->shard_gather_windows = 1u;
+		b->shard_gather_window_keys = 0u;
+		b->shard_gather_buffer_bytes = 0u;
+		b->shard_gather_running = 0;
+		b->shard_gather_stride = units * unit;
+	}
+	else
+	{
+		running_offset = send_bytes > running_bytes ? (send_bytes - running_bytes) / 256u * 256u : 0u;
+		if ( window_keys == 0u || (window_keys * key_bytes) % unit != 0u || (uint64_t)most * key_bytes > running_offset )
+			return 0;
+		b->shard_gather_windows = (uint32_t)(((uint64_t)most + window_keys - 1u) / window_keys);
+		b->shard_gather_window_keys = (uint32_t)window_keys;
+		b->shard_gather_buffer_bytes = (uint64_t)degree * (landing_units / 2u) * unit;
+		b->shard_gather_running = (float *)(b->shard_gather_send + running_offset);
+		b->shard_gather_stride = window_keys * key_bytes;
+	}
+	b->shard_gather_window = 0u;
 	scatter_rounds = SparkTpMeshDirectChunks(query_units * K3_HIDDEN * degree, degree, SPARK_TP_MESH_OPERATION_ALL_GATHER, SPARK_WEIGHTD_MESH_SLOT_BYTES) +
 		SparkTpMeshAllToAllChunks(partial_units * K3_HIDDEN, degree, SPARK_WEIGHTD_MESH_SLOT_BYTES);
 	gather_rounds = SparkTpMeshDirectChunks(units * K3_HIDDEN * degree, degree, SPARK_TP_MESH_OPERATION_ALL_GATHER, SPARK_WEIGHTD_MESH_SLOT_BYTES);
@@ -707,7 +739,6 @@ static int32_t K3DispatchGatherPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint3
 	b->shard_gather_list = d->gather_plan;
 	b->shard_gather_offset = d->gather_plan + d->sequences;
 	b->shard_gather_context = d->gather_plan + 2u * d->sequences;
-	b->shard_gather_stride = units * unit;
 	return 1;
 }
 

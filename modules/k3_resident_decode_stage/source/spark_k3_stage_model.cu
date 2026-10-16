@@ -313,13 +313,16 @@ static void K3RunnerShardExchange(SparkK3ModelState *state, K3LayerBuffers *b,
 	}
 	if ( (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_KEYS )
 	{
-		if ( b->shard_gather == 0u || b->shard_gather_stride % ((uint64_t)K3_HIDDEN * sizeof(uint16_t)) != 0u )
+		const uint64_t stride = K3LayerMlaWindowStride(b, b->shard_gather_window);
+		if ( b->shard_gather == 0u || stride == 0u || stride % ((uint64_t)K3_HIDDEN * sizeof(uint16_t)) != 0u ||
+			b->shard_gather_window >= (b->shard_gather_windows > 1u ? b->shard_gather_windows : 1u) )
 		{
 			K3ModelFail(state);
 			return;
 		}
-		K3RunnerRound(state, stream, (uint32_t)(b->shard_gather_stride / ((uint64_t)K3_HIDDEN * sizeof(uint16_t))),
-			b->shard_gather_send, (void *)b->shard_gather_keys, 0u, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,
+		K3RunnerRound(state, stream, (uint32_t)(stride / ((uint64_t)K3_HIDDEN * sizeof(uint16_t))),
+			K3LayerMlaWindowSend(b, b->shard_gather_window), (void *)K3LayerMlaWindowLanding(b, b->shard_gather_window), 0u,
+			SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,
 			(phase & K3_COLLECTIVE_FINISH) != 0u ? K3_RUNNER_STAGE_FINISH : K3_RUNNER_STAGE_BEGIN);
 		return;
 	}

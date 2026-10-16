@@ -59,6 +59,8 @@ static inline cudaError_t LmLatentGatherPrefillLaunch(
 	uint32_t rows,
 	cudaStream_t stream)
 {
+	if (LmKvKeyWindowBegin(cache) != 0u || LmKvKeyWindowEnd(cache) != LM_KV_SHARD_KEYS_ALL)
+		return cudaErrorNotSupported;
 	return LmLatentShardPartialOwnHeadsLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, heads_per_rank,
 		sequence_of_row, context_length, row_position, 0, 0u, 0u, qk_scale, partials, rows, stream);
 }

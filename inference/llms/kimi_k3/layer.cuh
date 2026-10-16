@@ -205,6 +205,11 @@ struct K3LayerBuffers
 	uint8_t *shard_gather_send;
 	const uint8_t *shard_gather_keys;
 	uint64_t shard_gather_stride;
+	uint32_t shard_gather_windows;
+	uint32_t shard_gather_window_keys;
+	uint32_t shard_gather_window;
+	uint64_t shard_gather_buffer_bytes;
+	float *shard_gather_running;
 	const uint32_t *sequence_of_row;
 	const uint32_t *context_length;
 	const uint32_t *positions;
@@ -622,12 +627,47 @@ static int32_t K3LayerMlaShardPartials(const K3LayerBuffers *b, uint32_t rows, c
 		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
+static uint32_t K3LayerMlaWindowKeys(const K3LayerBuffers *b, uint32_t window)
+{
+	const uint32_t begin = window * b->shard_gather_window_keys;
+	if ( b->shard_gather_windows <= 1u )
+		return(b->shard_gather_most_keys);
+	if ( begin >= b->shard_gather_most_keys )
+		return(0u);
+	return(b->shard_gather_most_keys - begin < b->shard_gather_window_keys ? b->shard_gather_most_keys - begin : b->shard_gather_window_keys);
+}
+
+static uint64_t K3LayerMlaWindowStride(const K3LayerBuffers *b, uint32_t window)
+{
+	const uint64_t unit = (uint64_t)K3_HIDDEN * sizeof(uint16_t);
+	if ( b->shard_gather_windows <= 1u )
+		return(b->shard_gather_stride);
+	return(((uint64_t)K3LayerMlaWindowKeys(b,window) * K3_MLA_KV_A_DIM * sizeof(uint16_t) + unit - 1u) / unit * unit);
+}
+
+static const uint8_t *K3LayerMlaWindowLanding(const K3LayerBuffers *b, uint32_t window)
+{
+	return(b->shard_gather_keys + (b->shard_gather_windows <= 1u ? 0u : (uint64_t)(window & 1u) * b->shard_gather_buffer_bytes));
+}
+
+static const uint8_t *K3LayerMlaWindowSend(const K3LayerBuffers *b, uint32_t window)
+{
+	return(b->shard_gather_send + (b->shard_gather_windows <= 1u ? 0u :
+		(uint64_t)window * b->shard_gather_window_keys * K3_MLA_KV_A_DIM * sizeof(uint16_t)));
+}
+
 static uint32_t K3LayerMlaGatherReady(const K3LayerBuffers *b, uint32_t rows)
 {
+	const uint64_t key_bytes = (uint64_t)K3_MLA_KV_A_DIM * sizeof(uint16_t);
 	return(K3LayerMlaShardReady(b,rows) != 0u && b->shard_gather != 0u && rows > LM_SKINNY_ROWS_WIDE &&
 		b->shard_gather_list != 0 && b->shard_gather_offset != 0 && b->shard_gather_context != 0 &&
 		b->shard_gather_send != 0 && b->shard_gather_keys != 0 && b->shard_gather_most_keys != 0u &&
-		b->shard_gather_stride >= (uint64_t)b->shard_gather_most_keys * K3_MLA_KV_A_DIM * sizeof(uint16_t) ? 1u : 0u);
+		(b->shard_gather_windows <= 1u
+			? b->shard_gather_stride >= (uint64_t)b->shard_gather_most_keys * key_bytes
+			: b->shard_gather_window_keys != 0u && b->shard_gather_running != 0 && b->shard_gather_buffer_bytes != 0u &&
+				b->shard_gather_stride >= (uint64_t)b->shard_gather_window_keys * key_bytes &&
+				(uint64_t)(b->shard_gather_windows - 1u) * b->shard_gather_window_keys < b->shard_gather_most_keys &&
+				(uint64_t)b->shard_gather_windows * b->shard_gather_window_keys >= b->shard_gather_most_keys) ? 1u : 0u);
 }
 
 template<class Geometry>
@@ -640,19 +680,23 @@ static int32_t K3LayerMlaGatherPack(const K3LayerBuffers *b, uint32_t rows, cuda
 }
 
 template<class Geometry>
-static int32_t K3LayerMlaGatherPartials(const K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)
+static int32_t K3LayerMlaGatherPartials(const K3LayerBuffers *b, uint32_t rows, uint32_t window, cudaStream_t stream)
 {
 	LmKvShardGatherView view;
 	SparkKvShard source;
+	const uint8_t *landing = K3LayerMlaWindowLanding(b,window);
+	const uint64_t stride = K3LayerMlaWindowStride(b,window);
+	const uint32_t begin = window * b->shard_gather_window_keys, keys = K3LayerMlaWindowKeys(b,window);
 	uint32_t rank;
-	if ( K3LayerMlaGatherReady(b,rows) == 0u )
+	if ( K3LayerMlaGatherReady(b,rows) == 0u || window >= (b->shard_gather_windows > 1u ? b->shard_gather_windows : 1u) || keys == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	for ( rank = 0u; rank < b->kv_shard.degree; rank++ )
 	{
 		source = b->kv_shard;
 		source.rank = rank;
-		if ( LmKvShardGatherViewInitialize<Geometry>(&view,b->cache_shard.pages,source,b->shard_gather_keys + (uint64_t)rank * b->shard_gather_stride,
-				b->shard_gather_offset,b->shard_gather_context) != 0 )
+		if ( LmKvShardGatherViewInitialize<Geometry>(&view,b->cache_shard.pages,source,landing + (uint64_t)rank * stride,
+				b->shard_gather_offset,b->shard_gather_context) != 0 ||
+			(b->shard_gather_windows > 1u && LmKvShardGatherViewWindow(&view,begin,begin + keys) != 0) )
 			return(LM_LAUNCH_ERR_SHAPE);
 		if ( LmLatentGatherPrefillLaunch<Geometry,LmKvShardGatherView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>(view,b->query_bf16,
 				K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions,K3_MLA_QK_SCALE,
@@ -669,6 +713,24 @@ static int32_t K3LayerMlaShardMerge(const K3LayerBuffers *b, uint32_t rows, cuda
 	return(LmLatentShardMergeLaunch<K3_KV_LORA_RANK>(b->shard_partials_received_f32,b->shard_partial_rank_stride,
 		b->kv_shard.degree,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->attention_out_bf16,rows,stream) == cudaSuccess
 		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+static int32_t K3LayerMlaShardFold(const K3LayerBuffers *b, uint32_t rows, uint32_t window, cudaStream_t stream)
+{
+	if ( K3LayerMlaGatherReady(b,rows) == 0u || b->shard_gather_windows <= 1u || window >= b->shard_gather_windows )
+		return(LM_LAUNCH_ERR_SHAPE);
+	return(LmLatentShardFoldLaunch<K3_KV_LORA_RANK>(b->shard_partials_received_f32,b->shard_partial_rank_stride,
+		b->kv_shard.degree,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->shard_gather_running,rows,window == 0u ? 1u : 0u,stream) == cudaSuccess
+		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+static int32_t K3LayerMlaShardFinish(const K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)
+{
+	const uint32_t heads = K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS);
+	if ( K3LayerMlaGatherReady(b,rows) == 0u || b->shard_gather_windows <= 1u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	return(LmLatentShardMergeLaunch<K3_KV_LORA_RANK>(b->shard_gather_running,(uint64_t)rows * heads * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK),
+		1u,heads,b->attention_out_bf16,rows,stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 static int32_t K3LayerMoeSelect(const K3LayerBuffers *b, uint32_t rows,

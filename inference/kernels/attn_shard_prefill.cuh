@@ -70,7 +70,7 @@ void LmLatentShardPrefillKernel(
 	const uint32_t qk_tile = warp >> 2u, qk_half = (warp >> 1u) & 1u, qk_pair = warp & 1u;
 	uint32_t query_frag[HALF_STEPS][4];
 	float output[2][COLUMN_FRAGS][4];
-	uint32_t sequence, dense, count, tiles, tile, tile_first, tile_end, index, chunk, step, frag, q, head, query_row, m, shift, warp_count[WARP_QUERIES];
+	uint32_t sequence, dense, count, window_begin, limit, tiles, tile_low, span, tile, tile_first, tile_end, index, chunk, step, frag, q, head, query_row, m, shift, warp_count[WARP_QUERIES];
 	uint64_t base;
 
 	partials += (uint64_t)blockIdx.z * split_stride;
@@ -94,9 +94,14 @@ void LmLatentShardPrefillKernel(
 		dense = SparkKvShardLocalKeys(cache.shard, dense);
 		count = dense > count ? dense : count;
 	}
-	tiles = (count + TILE - 1u) / TILE;
-	tile_first = (tiles + split_count - 1u) / split_count * blockIdx.z;
-	tile_end = tile_first + (tiles + split_count - 1u) / split_count;
+	window_begin = LmKvKeyWindowBegin(cache);
+	limit = LmKvKeyWindowEnd(cache);
+	limit = count < limit ? count : limit;
+	tile_low = window_begin / TILE;
+	tiles = limit > window_begin ? (limit + TILE - 1u) / TILE : tile_low;
+	span = tiles - tile_low;
+	tile_first = tile_low + (span + split_count - 1u) / split_count * blockIdx.z;
+	tile_end = tile_first + (span + split_count - 1u) / split_count;
 	tile_first = tile_first < tiles ? tile_first : tiles;
 	tile_end = tile_end < tiles ? tile_end : tiles;
 #pragma unroll
@@ -112,7 +117,7 @@ void LmLatentShardPrefillKernel(
 	auto lookup = [&](uint32_t which) -> const uint8_t *
 	{
 		const uint32_t local = which * TILE + threadIdx.x;
-		return local < count ? LmKvShardSlotRequired<Geometry>(cache, sequence, SparkKvShardLocalPosition(cache.shard, local), row, LM_KV_ACCESS_READ) : 0;
+		return local < limit && local >= window_begin ? LmKvShardSlotRequired<Geometry>(cache, sequence, SparkKvShardLocalPosition(cache.shard, local), row, LM_KV_ACCESS_READ) : 0;
 	};
 	auto copy = [&](uint32_t which)
 	{
@@ -217,7 +222,7 @@ void LmLatentShardPrefillKernel(
 			{
 				q = warp * WARP_QUERIES + index;
 				value[index] = (score_parts[q * LM_PREFILL_ATTN_SCORE_STRIDE + lane] + score_parts[(QUERIES + q) * LM_PREFILL_ATTN_SCORE_STRIDE + lane]) * qk_scale;
-				value[index] = local < warp_count[index] ? value[index] : -INFINITY;
+				value[index] = local < warp_count[index] && local < limit && local >= window_begin ? value[index] : -INFINITY;
 				peak[index] = value[index];
 			}
 #pragma unroll
