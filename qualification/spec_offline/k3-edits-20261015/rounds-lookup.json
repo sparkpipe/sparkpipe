@@ -1,0 +1,87 @@
+{
+ "model": "k3",
+ "source": {
+  "model": "k3",
+  "format": "u32-directory"
+ },
+ "shapes": {
+  "chain-k1": {
+   "drafter": "lookup",
+   "classes": {
+    "editfull": {
+     "rounds": 8132,
+     "committed": 15892,
+     "rows_per_round": 1.985,
+     "tokens_per_round": 1.9543,
+     "stream_exact": true
+    },
+    "all": {
+     "rounds": 9302,
+     "committed": 17885,
+     "rows_per_round": 1.957,
+     "tokens_per_round": 1.9227,
+     "stream_exact": true
+    },
+    "editsr": {
+     "rounds": 1170,
+     "committed": 1993,
+     "rows_per_round": 1.76,
+     "tokens_per_round": 1.7034,
+     "stream_exact": true
+    }
+   }
+  },
+  "chain-k3": {
+   "drafter": "lookup",
+   "classes": {
+    "editfull": {
+     "rounds": 4232,
+     "committed": 15892,
+     "rows_per_round": 3.913,
+     "tokens_per_round": 3.7552,
+     "stream_exact": true
+    },
+    "all": {
+     "rounds": 5009,
+     "committed": 17885,
+     "rows_per_round": 3.758,
+     "tokens_per_round": 3.5706,
+     "stream_exact": true
+    },
+    "editsr": {
+     "rounds": 777,
+     "committed": 1993,
+     "rows_per_round": 2.915,
+     "tokens_per_round": 2.565,
+     "stream_exact": true
+    }
+   }
+  },
+  "chain-k7": {
+   "drafter": "lookup",
+   "classes": {
+    "editfull": {
+     "rounds": 2266,
+     "committed": 15892,
+     "rows_per_round": 7.619,
+     "tokens_per_round": 7.0132,
+     "stream_exact": true
+    },
+    "all": {
+     "rounds": 2846,
+     "committed": 17885,
+     "rows_per_round": 7.004,
+     "tokens_per_round": 6.2843,
+     "stream_exact": true
+    },
+    "editsr": {
+     "rounds": 580,
+     "committed": 1993,
+     "rows_per_round": 4.598,
+     "tokens_per_round": 3.4362,
+     "stream_exact": true
+    }
+   }
+  }
+ }
+}

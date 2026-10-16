@@ -82,8 +82,11 @@ struct K3SliceState
 	float *replay_retention;
 	float *replay_write_gate;
 	uint32_t verify_rows;
-	uint16_t *dspark_aux;
-	uint32_t aux_rows;
+	uint32_t replay_active;
+	uint16_t *tap_slab;
+	uint64_t tap_row_stride;
+	uint32_t tap_active;
+	int16_t tap_output[K3_LAYERS];
 	uint32_t sequences;
 	uint32_t kda_rank_heads;
 	uint32_t kda_state_bf16;
@@ -181,16 +184,17 @@ static void K3BindLayerState(const K3SliceState *state, uint32_t layer, K3LayerB
 		+ ((uint64_t)kda_index * sequences * heads * K3_KDA_KEY_DIM * K3_KDA_CONV_KERNEL);
 	buffers->kda_v_window = state->kda_v_window
 		+ ((uint64_t)kda_index * sequences * heads * K3_KDA_VALUE_DIM * K3_KDA_CONV_KERNEL);
-	buffers->replay_conv_q = state->replay_conv_q == 0 ? 0 : state->replay_conv_q
-		+ ((uint64_t)kda_index * sequences * state->verify_rows * K3_KDA_QK_DIM);
-	buffers->replay_conv_k = state->replay_conv_k == 0 ? 0 : state->replay_conv_k
-		+ ((uint64_t)kda_index * sequences * state->verify_rows * K3_KDA_QK_DIM);
-	buffers->replay_conv_v = state->replay_conv_v == 0 ? 0 : state->replay_conv_v
-		+ ((uint64_t)kda_index * sequences * state->verify_rows * K3_KDA_V_DIM);
-	buffers->replay_retention = state->replay_retention == 0 ? 0 : state->replay_retention
-		+ ((uint64_t)kda_index * sequences * state->verify_rows * K3_KDA_QK_DIM);
-	buffers->replay_write_gate = state->replay_write_gate == 0 ? 0 : state->replay_write_gate
-		+ ((uint64_t)kda_index * sequences * state->verify_rows * K3_KDA_HEADS);
+	const uint64_t replay_rows = state->replay_active != 0u ? state->verify_rows : 0u;
+	buffers->replay_conv_q = state->replay_conv_q == 0 || replay_rows == 0u ? 0 : state->replay_conv_q
+		+ ((uint64_t)kda_index * replay_rows * heads * K3_KDA_KEY_DIM);
+	buffers->replay_conv_k = state->replay_conv_k == 0 || replay_rows == 0u ? 0 : state->replay_conv_k
+		+ ((uint64_t)kda_index * replay_rows * heads * K3_KDA_KEY_DIM);
+	buffers->replay_conv_v = state->replay_conv_v == 0 || replay_rows == 0u ? 0 : state->replay_conv_v
+		+ ((uint64_t)kda_index * replay_rows * heads * K3_KDA_VALUE_DIM);
+	buffers->replay_retention = state->replay_retention == 0 || replay_rows == 0u ? 0 : state->replay_retention
+		+ ((uint64_t)kda_index * replay_rows * heads * K3_KDA_KEY_DIM);
+	buffers->replay_write_gate = state->replay_write_gate == 0 || replay_rows == 0u ? 0 : state->replay_write_gate
+		+ ((uint64_t)kda_index * replay_rows * heads);
 	if ( K3_LAYER_KIND(layer) == LM_LAYER_LATENT )
 	{
 		buffers->cache = state->mla_cache[mla_index];
@@ -467,15 +471,9 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		}
 		if ( state->lazy_release != 0 )
 			state->lazy_release(state->lazy_context,layer);
-		if ( state->dspark_aux != 0 )
-		{
-			static const uint32_t aux_ids[K3_DSPARK_AUX_LAYER_COUNT] = K3_DSPARK_AUX_LAYER_IDS_INITIALIZER;
-			uint32_t aux;
-			for (aux = 0u; aux < K3_DSPARK_AUX_LAYER_COUNT; ++aux)
-				if ( aux_ids[aux] == layer )
-					LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
-						buffers->attnres_partial_bf16,state->dspark_aux + ((uint64_t)aux * state->aux_rows * K3_HIDDEN),rows,K3_HIDDEN);
-		}
+		if ( state->tap_slab != 0 && state->tap_output[layer] >= 0 )
+			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+				buffers->attnres_partial_bf16,state->tap_slab + ((uint64_t)state->tap_output[layer] * K3_HIDDEN),rows,K3_HIDDEN,state->tap_row_stride);
 	}
 	if ( first_layer + layer_count == K3_LAYERS )
 	{
@@ -505,7 +503,7 @@ static void K3PairPre(K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, ui
 
 static uint32_t K3PairReady(const K3SliceState *state, const K3LayerBuffers *a, const K3LayerBuffers *b, uint32_t rows_a, uint32_t rows_b)
 {
-	return(state->layer_collective != 0 && state->collective_pair_context != 0 && state->dspark_aux == 0 &&
+	return(state->layer_collective != 0 && state->collective_pair_context != 0 && state->tap_active == 0u &&
 		state->pair_stream_a != 0 && state->pair_stream_b != 0 && state->pair_fence != 0 &&
 		a->tp_sharded != 0u && b->tp_sharded != 0u && K3_EXPERT_CELLS(a) && a->kv_shard.degree > 1u &&
 		K3LayerMlaGatherReady(a,rows_a) != 0u && K3LayerMlaGatherReady(b,rows_b) != 0u ? 1u : 0u);
@@ -709,26 +707,22 @@ static int32_t K3LaunchSliceHalf(const K3LayerWeights *weights, const K3SliceSta
 }
 
 template<class Format>
-static int32_t K3FoldAccepted(const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t sequences, const uint32_t *verify_row_begin, const uint32_t *accepted, uint32_t slab_rows, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3FoldAccepted(const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t sequences, const uint32_t *verify_row_begin, const uint32_t *verify_row_indices, const uint32_t *accepted, uint32_t slab_rows, uint32_t multiprocessors, cudaStream_t stream)
 {
 	uint32_t layer;
-	uint64_t replay_capacity;
 	(void)multiprocessors;
 	if ( weights == 0 || state == 0 || buffers == 0
 		|| verify_row_begin == 0 || accepted == 0
 		|| first_layer > K3_LAYERS || layer_count > K3_LAYERS - first_layer
 		|| sequences == 0u || sequences > state->sequences
-		|| state->verify_rows == 0u
+		|| state->verify_rows == 0u || state->replay_active == 0u
 		|| state->replay_conv_q == 0 || state->replay_conv_k == 0
 		|| state->replay_conv_v == 0 || state->replay_retention == 0
 		|| state->replay_write_gate == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
-	replay_capacity = (uint64_t)sequences * state->verify_rows;
-	if ( slab_rows == 0u || (uint64_t)slab_rows > replay_capacity )
+	if ( slab_rows == 0u || slab_rows > state->verify_rows )
 		return(LM_LAUNCH_ERR_SHAPE);
 	if ( state->kda_state_bf16 != 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
-	if ( state->kda_rank_heads != K3_KDA_HEADS )
 		return(LM_LAUNCH_ERR_SHAPE);
 	for (layer = first_layer; layer < first_layer + layer_count; ++layer)
 	{
@@ -736,16 +730,27 @@ static int32_t K3FoldAccepted(const K3LayerWeights *weights, const K3SliceState 
 			continue;
 		K3BindLayer(&weights[layer - first_layer],buffers);
 		K3BindLayerState(state,layer,buffers);
-		LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>), dim3(sequences,(K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
-			buffers->kda_q_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_q,buffers->kda_q_conv_weight,buffers->query_bf16,K3_KDA_QK_DIM,sequences,1u);
-		LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>), dim3(sequences,(K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
-			buffers->kda_k_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_k,buffers->kda_k_conv_weight,buffers->key_bf16,K3_KDA_QK_DIM,sequences,1u);
-		LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>), dim3(sequences,(K3_KDA_V_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
-			buffers->kda_v_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_v,buffers->kda_v_conv_weight,buffers->value_bf16,K3_KDA_V_DIM,sequences,1u);
-		LM_LAUNCH((LmL2NormalisePerHeadKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(slab_rows,K3_KDA_HEADS), K3_LAYER_THREADS, 0, stream,
-			buffers->key_bf16,K3_KDA_HEADS,slab_rows,K3_RMS_EPSILON);
-		LM_LAUNCH((LmDeltaRuleKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM,float,K3_KDA_DELTA_COLUMNS>), dim3(sequences,K3_KDA_HEADS,K3_KDA_VALUE_DIM / K3_KDA_DELTA_COLUMNS), K3_LAYER_THREADS, (uint32_t)(K3_KDA_KEY_DIM * K3_KDA_DELTA_COLUMNS * sizeof(float)), stream,
-			buffers->kda_state_pool,state->kda_state_bf16 != 0u ? K3_KDA_STATE_SLOT_BYTES_BF16 : K3_KDA_STATE_SLOT_BYTES,buffers->kda_state_index,verify_row_begin,accepted,buffers->query_bf16,buffers->key_bf16, buffers->value_bf16,buffers->replay_retention,buffers->replay_write_gate,buffers->attention_out_bf16, K3_KDA_HEADS,1u,sequences,1u);
+		const uint32_t rank_heads = K3_RANK_DIM(buffers,kda_heads_rank,K3_KDA_HEADS);
+		const uint32_t rank_qk = rank_heads * K3_KDA_KEY_DIM, rank_v = rank_heads * K3_KDA_VALUE_DIM;
+		const uint32_t slot_bytes = (uint32_t)K3_KDA_RANK_STATE_SLOT_BYTES(rank_heads, 0u);
+		if ( buffers->tp_rank * rank_heads + rank_heads > K3_KDA_HEADS || rank_heads != state->kda_rank_heads )
+			return(LM_LAUNCH_ERR_SHAPE);
+		LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>), dim3(sequences,(rank_qk + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
+			buffers->kda_q_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_q,buffers->kda_q_conv_weight,buffers->query_bf16,rank_qk,sequences,1u,verify_row_indices);
+		LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>), dim3(sequences,(rank_qk + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
+			buffers->kda_k_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_k,buffers->kda_k_conv_weight,buffers->key_bf16,rank_qk,sequences,1u,verify_row_indices);
+		LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>), dim3(sequences,(rank_v + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
+			buffers->kda_v_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_v,buffers->kda_v_conv_weight,buffers->value_bf16,rank_v,sequences,1u,verify_row_indices);
+		LM_LAUNCH((LmL2NormalisePerHeadKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(slab_rows,rank_heads), K3_LAYER_THREADS, 0, stream,
+			buffers->query_bf16,rank_heads,slab_rows,K3_RMS_EPSILON);
+		LM_LAUNCH((LmL2NormalisePerHeadKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(slab_rows,rank_heads), K3_LAYER_THREADS, 0, stream,
+			buffers->key_bf16,rank_heads,slab_rows,K3_RMS_EPSILON);
+		if constexpr ( LM_WARP_LANES == 32u )
+			LM_LAUNCH((LmDeltaRuleColumnKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM,float>), dim3(sequences,rank_heads,K3_KDA_VALUE_DIM / LM_WARP_LANES), LM_DELTA_COLUMN_THREADS, 0, stream,
+				buffers->kda_state_pool,slot_bytes,buffers->kda_state_index,verify_row_begin,accepted,buffers->query_bf16,buffers->key_bf16,buffers->value_bf16,buffers->replay_retention,buffers->replay_write_gate,buffers->attention_out_bf16,rank_heads,1u,sequences,1u,verify_row_indices);
+		else
+			LM_LAUNCH((LmDeltaRuleKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM,float,K3_KDA_DELTA_COLUMNS>), dim3(sequences,rank_heads,K3_KDA_VALUE_DIM / K3_KDA_DELTA_COLUMNS), K3_LAYER_THREADS, (uint32_t)(K3_KDA_KEY_DIM * K3_KDA_DELTA_COLUMNS * sizeof(float)), stream,
+				buffers->kda_state_pool,slot_bytes,buffers->kda_state_index,verify_row_begin,accepted,buffers->query_bf16,buffers->key_bf16,buffers->value_bf16,buffers->replay_retention,buffers->replay_write_gate,buffers->attention_out_bf16,rank_heads,1u,sequences,1u,verify_row_indices);
 	}
 	return(LM_LAUNCH_OK);
 }

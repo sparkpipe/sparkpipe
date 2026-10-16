@@ -1,0 +1,158 @@
+S8 A errors 0 agg_tok_s 69.54
+LOG A1 16 rs=0 pieces=0 bad=0
+CMP I1 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I1 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I1 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I1 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I1 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I1 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I1 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I1 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I1 exact 8/8
+CMP I1 NOLP-EXACT 4/4
+S8 I errors 0 agg_tok_s 68.83
+LOG I1 16 rs=0 pieces=0 bad=0
+CMP R1 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R1 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R1 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R1 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R1 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R1 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R1 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R1 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R1 exact 8/8
+CMP R1 NOLP-EXACT 4/4
+S8 R errors 0 agg_tok_s 69.35
+LOG R1 16 rs=1 pieces=0 bad=0
+CMP C1 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C1 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C1 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C1 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C1 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C1 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C1 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C1 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C1 exact 8/8
+CMP C1 NOLP-EXACT 4/4
+S8 C errors 0 agg_tok_s 71.32
+LOG C1 16 rs=0 pieces=1 bad=0
+CMP F1 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F1 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F1 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F1 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F1 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F1 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F1 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F1 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F1 exact 8/8
+CMP F1 NOLP-EXACT 4/4
+S8 F errors 0 agg_tok_s 69.82
+LOG F1 16 rs=0 pieces=0 bad=0
+CMP RF1 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF1 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF1 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF1 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF1 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF1 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF1 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF1 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF1 exact 8/8
+CMP RF1 NOLP-EXACT 4/4
+S8 RF errors 0 agg_tok_s 70.85
+LOG RF1 16 rs=1 pieces=0 bad=0
+CMP CF1 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF1 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF1 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF1 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF1 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF1 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF1 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF1 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF1 exact 8/8
+CMP CF1 NOLP-EXACT 4/4
+S8 CF errors 0 agg_tok_s 68.8
+LOG CF1 16 rs=0 pieces=1 bad=0
+CMP CF2 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF2 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF2 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF2 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF2 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF2 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF2 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF2 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF2 exact 8/8
+CMP CF2 NOLP-EXACT 4/4
+LOG CF2 16 rs=0 pieces=1 bad=0
+CMP RF2 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF2 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF2 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF2 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF2 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF2 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF2 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF2 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF2 exact 8/8
+CMP RF2 NOLP-EXACT 4/4
+LOG RF2 16 rs=1 pieces=0 bad=0
+CMP F2 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F2 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F2 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F2 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F2 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F2 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F2 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F2 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F2 exact 8/8
+CMP F2 NOLP-EXACT 4/4
+LOG F2 16 rs=0 pieces=0 bad=0
+CMP C2 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C2 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C2 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C2 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C2 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C2 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C2 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C2 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C2 exact 8/8
+CMP C2 NOLP-EXACT 4/4
+LOG C2 16 rs=0 pieces=1 bad=0
+CMP R2 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R2 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R2 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R2 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R2 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R2 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R2 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R2 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R2 exact 8/8
+CMP R2 NOLP-EXACT 4/4
+LOG R2 16 rs=1 pieces=0 bad=0
+CMP I2 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I2 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I2 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I2 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I2 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I2 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I2 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I2 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I2 exact 8/8
+CMP I2 NOLP-EXACT 4/4
+LOG I2 16 rs=0 pieces=0 bad=0
+CMP A2 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP A2 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP A2 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP A2 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP A2 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP A2 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP A2 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP A2 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP A2 exact 8/8
+CMP A2 NOLP-EXACT 4/4
+LOG A2 16 rs=0 pieces=0 bad=0
+LANE SELF EXACT
+GATE I: PASS
+GATE R: PASS
+GATE C: PASS
+GATE F: PASS
+GATE RF: PASS
+GATE CF: PASS

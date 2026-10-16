@@ -7,7 +7,7 @@ through this stack on the rtx5090 hub:
 | --- | --- | --- |
 | 4000 | LiteLLM proxy (`config/litellm-config.yaml`, user unit `sparkpipe-litellm`) | OpenAI `/v1/chat/completions` and Anthropic `/v1/messages`; any model name routes to `glm-5.3` |
 | 4001 | external LiteLLM (`~/sparkpipe-chat/litellm-external.yaml`, user unit `sparkpipe-litellm-external`, 127.0.0.1 only) | the 4000 door without Qwen models or the `*` route, behind a master key; the sparkpipe.ai tunnel (`sparkpipe-ai-door`) forwards here |
-| 8433 | chat layer (`tools/serving/chat_frontend.py`, user unit `sparkpipe-chat`) | OpenAI `/v1/chat/completions`, `/v1/models`, `/health`; the tunnel forwards `/v1/sparkpipe/status` here |
+| 8433 | chat layer (`tools/serving/chat_frontend.py`, user unit `sparkpipe-chat`, 127.0.0.1 only) | OpenAI `/v1/chat/completions`, `/v1/models`, `/health`; the tunnel forwards `/v1/sparkpipe/status` here |
 | 8446 | `sparkpipe_model_api` (user unit `glmfull-api6`) | the engine endpoint: `prompt_token_ids` in, token ids, usage and `cached_tokens` out |
 
 Smoke receipts (2026-10-02, build de944ae): chat answered "Paris" with the
@@ -70,8 +70,8 @@ another model waits while the fleet swaps.
 
 | Piece | Where | What |
 | --- | --- | --- |
-| Swap controller | `tools/serving/model_swap.py`, config `deployment/hub/model_swap.json`, hub unit `sparkpipe-swap` on 127.0.0.1:8440 | `GET /status`, `POST /activate {"model": id}` |
-| Chat layer | `tools/serving/chat_frontend.py`, config `deployment/hub/chat_frontend.json`, hub unit `sparkpipe-chat` on 8433 | every model's `warm_queue.activation_url` is the controller; `GET /v1/sparkpipe/status` and `POST /v1/sparkpipe/activate` pass through to it; `/` serves the playground |
+| Swap controller | `tools/serving/model_swap.py`, config `deployment/hub/model_swap.json`, hub unit `sparkpipe-swap` on 127.0.0.1:8440 | `GET /status`, `POST /activate {"model": id}`, `POST /force`; every call needs the controller token (see Control-plane access) |
+| Chat layer | `tools/serving/chat_frontend.py`, config `deployment/hub/chat_frontend.json`, hub unit `sparkpipe-chat` on 127.0.0.1:8433 | every model's `warm_queue.activation_url` is the controller; `GET /v1/sparkpipe/status` passes through to it; `/` serves the playground |
 | LiteLLM | `config/litellm-config.yaml`, hub unit `sparkpipe-litellm` on 4000 | the three names, and `*` routes to `glm-5.3` |
 
 A swap to model T, in order:
@@ -358,6 +358,366 @@ systemd-run --user --unit=sparkpipe-litellm-external \
 
 Like the other hub user units, it is transient: start it again after a hub
 reboot.
+
+## SparkPipe Chat (Open WebUI, sparkpipe.ai:8443)
+
+`https://sparkpipe.ai:8443` is the chat app for invited people: Open WebUI
+v0.12.0, pinned by digest, with its own accounts. Owner decisions
+(2026-10-14): no sub-domain, so it gets its own port on the main domain;
+Open WebUI's branding stays visible; anyone may sign up but an account stays
+pending until the admin approves it; web search will use a self-hosted
+SearXNG (not enabled yet).
+
+| Piece | Where | What |
+| --- | --- | --- |
+| Open WebUI | hub Docker container `sparkpipe-chatui`, `127.0.0.1:8090` -> 8080, data `/srv/workspace/open-webui/data` | settings `deployment/hub/open_webui.env`, secrets `/srv/workspace/open-webui/secrets.env` (root, 600: `WEBUI_SECRET_KEY`, `OPENAI_API_KEYS`) |
+| Chat LiteLLM | hub user unit `sparkpipe-litellm-chatui` on `172.17.0.1:4002` (Docker bridge only), `~/sparkpipe-chat/litellm-chatui.yaml` (copy of `deployment/hub/litellm-chatui.yaml`), key in `~/sparkpipe-chat/chatui.env` | serves every fleet model; K3 is the default (owner 2026-10-14) |
+| Tunnel | hub `sparkpipe-ai-door`, `-R 127.0.0.1:18082:127.0.0.1:8090` | the VPS key may listen on 18082 |
+| Apache | VPS `/etc/apache2/sites-available/sparkpipe-chat-8443.conf` | TLS with the sparkpipe.ai certificate, websocket upgrade, no Basic auth |
+
+Requests run browser -> Apache 8443 -> tunnel -> Open WebUI -> chat LiteLLM ->
+chat layer -> engine. The chat layer gives requests without sampling fields
+the model's published defaults and caps the reply budget at the model's
+output limit, so Open WebUI sends neither. Attachments go into the prompt
+whole (`BYPASS_EMBEDDING_AND_RETRIEVAL`), which uses the long context windows
+and the prefix cache instead of retrieval chunks. Users cannot change
+sampling, see other models, share chats publicly, create API keys or add
+tools.
+
+Start or replace the container with `sudo sh /srv/workspace/open-webui/run.sh`,
+a copy of `deployment/hub/open_webui_run.sh`. It pins v0.12.0 by digest,
+mounts the data directory and mounts the SparkPipe icons from
+`/srv/workspace/open-webui/branding` (a copy of
+`deployment/hub/open_webui_branding`) over Open WebUI's own.
+
+`open_webui.env` is copied from `deployment/hub/open_webui.env`. v0.12.0
+writes every persistent setting into the `config` table (`key`, JSON `value`)
+at its first start and reads it from there afterwards, so an env change only
+reaches the settings it reads at every start (`env.py`, for example
+`BYPASS_MODEL_ACCESS_CONTROL`). Change the others in the admin panel, or with
+the container stopped and the data directory backed up, update the row in
+`webui.db` and recreate the container; keep `open_webui.env` matching so a
+fresh data directory starts the same. That is how `ui.default_models`
+(`kimi-k3`), `ui.enable_signup` and `openai.api_keys` were changed on
+2026-10-14.
+
+The first account created becomes the admin: it was created through
+`ssh -N -L 8090:127.0.0.1:8090 rtx5090` and http://localhost:8090 before port
+8443 was opened. Creating it turns sign-up off by itself (`ui.enable_signup`
+false); it was turned back on because the owner chose open sign-up with
+approval. New accounts arrive with the `pending` role and see only a waiting
+screen; the admin approves one in Admin Panel -> Users by changing its role to
+`user`, or deletes it.
+
+Users see only models that have an access grant, and models from a connection
+have none until someone configures them in the admin panel, so a `user` would
+see an empty model list. `BYPASS_MODEL_ACCESS_CONTROL=true` shows every model
+of the chat LiteLLM to every approved user, which is the intent while it
+serves one model.
+
+The chat LiteLLM key is shared by `chatui.env` (`LITELLM_MASTER_KEY`),
+`secrets.env` (`OPENAI_API_KEYS`) and the `openai.api_keys` row. It was
+replaced on 2026-10-14 after a config dump printed it; the old one is refused.
+
+K3 takes about 70 s to swap in from GLM Full (69.9 s on 2026-10-14). The LAN
+and sparkpipe.ai doors still serve every model, so a request for another
+model there swaps the fleet away, and the next chat waits for K3 again.
+
+### All models, Qwen for the admin, and model switches (2026-10-14)
+
+The chat LiteLLM serves all 16 fleet models (`deployment/hub/litellm-chatui.yaml`,
+generated from `deployment/hub/open_webui_models.json`, contexts checked
+against the chat layer). Each has an Open WebUI model entry from that file,
+applied inside the container with `tools/serving/open_webui/open_webui_models.py`: name,
+description (context window and switch time), text-only input, web search
+and the code interpreter on by default, the GitHub tool, the trimmed
+built-in tools, and a `compact_token_threshold` for context compaction.
+
+The 13 public models carry a public read grant. The three Qwen models carry
+none, so only the admin sees them (admins bypass grants): their license
+keeps them internal, and the owner's own use is internal.
+`BYPASS_MODEL_ACCESS_CONTROL` is off again; a model with no entry or no grant
+stays hidden from users.
+
+Only one model is resident on the fleet. Picking another model makes the
+chat layer queue the request and ask the swap controller to switch. The
+controller waits for the current model's replies to finish: it stops the old
+engine only after it has had no live request for `drain_quiet_seconds` (15),
+up to `drain_seconds` (600, the owner did not want a stuck engine to hold a
+switch for long). The quiet window covers the short gaps between the
+requests of one tool-calling reply (search, fetch, answer), which a plain
+"no live request" check would cut (`tests/test_model_swap_drain_quiet.py`).
+Queued requests wait up to `warm_queue.wait_seconds` (3900 s). New requests
+for the old model that arrive during the drain are still served and extend
+it; the fair queue (oldest waiter first, minimum residency) is the next step.
+
+**Switch now.** `https://sparkpipe.ai:8443/fleet` (`site/fleet.html`, served
+inside the Open WebUI container on the chat origin, so its `/` and
+`/static/favicon.*` links are Open WebUI's own paths; `tests/test_site.py`
+lists exactly those as the page's chat-app links) shows what is loaded, a switch in progress with its drain
+(live replies, time waited, quiet time) and recent switches, refreshed every
+2 s. For the admin it adds a red **Switch now** button, which ends the drain
+at once and cuts any reply still running on the old model, and **Load now**
+for any model. The page reads the browser's SparkPipe Chat login (same
+origin); the chat layer's `POST /v1/sparkpipe/switch-now` asks Open WebUI
+(`control.admin_url`, `/api/v1/auths/`) who the login belongs to and forwards
+to the controller's `POST /force` only for the admin
+(`tests/test_chat_frontend_switch_now.py`, `tests/test_model_swap_force.py`).
+Forced switches are marked `forced` in the controller's history. The VPS
+8443 site proxies only `/fleet`, `/fleet/status` and `/fleet/switch-now` to
+the chat layer.
+
+### Fleet access for the admin (2026-10-14)
+
+Owner decisions: in the admin's own chats the model may read the fleet and
+run commands; regular users get none of it. First version: every command
+approved. Owner, later the same day: approving every command made it
+useless, so the admin grants access once per chat and commands then run
+without asking, bounded by what their identity can do.
+
+- **Gateway.** `tools/serving/fleet_gateway.py` runs on the hub as `spec`
+  (user unit `sparkpipe-fleet-gateway`, `172.17.0.1:8441`; config
+  `deployment/hub/fleet_gateway.json` in `~/sparkpipe-fleet/`). It holds the
+  SSH access, so Open WebUI never does. Every call needs the token in
+  `/srv/workspace/sparkpipe/fleet-gateway/token` (spec, 600). The token and
+  the network are the real boundary: the approver and grant fields are audit
+  records, and any holder of the token can use every endpoint. It serves the
+  swap controller's state, each machine's uptime, load, memory, disk, GPU and
+  busiest processes, the configured logs, per-chat grants and `POST /v1/run`.
+- **Sandboxed commands (the default).** Inside a chat whose grant is live
+  (`POST /v1/grant` with a saved chat's id and the approver; 8 hours; at most
+  64 live grants; `DELETE /v1/grant` revokes; a gateway restart ends them),
+  each command runs as a transient systemd service through `sudo -n
+  systemd-run` on the hub, or through ssh and the same on a spark: a dynamic
+  user with the machine owner's group, `ProtectSystem=strict`,
+  `ProtectHome=read-only`, a private `/tmp`, no devices (no GPU, no RDMA
+  verbs), `NoNewPrivileges` (no sudo), only `AF_UNIX` and `AF_NETLINK`
+  sockets plus `IPAddressDeny=any` (no TCP or UDP, so none of the fleet's
+  services: the swap controller, the chat layer, LiteLLM, the engine APIs),
+  the owner's `.ssh`, `.env`, `.config`, the known secret files and both
+  token directories hidden, `CPUQuota=200%`, `MemoryMax=4G`, `TasksMax=128` and
+  `RuntimeMaxSec` of the timeout plus 5 s. It can read the machine and the
+  SparkPipe trees, logs and configs, list processes and read interface and
+  RDMA counters; it cannot change anything. Checked live on the hub and
+  spark3 on 2026-10-14. Nothing is created on the hosts; there is no account
+  to set up.
+- **Elevated commands.** With `elevated` the command runs as `spec` (on a
+  spark under `timeout -k 5`) after the admin approves that exact command.
+  This is the path for anything that changes state or needs the network or
+  the GPU.
+- **Both paths** pass the refusal rules in the config first (a global
+  `sync`, killing flychess, power-off, deleting a root, home, workspace or
+  mount directory, raw disk writes, secret files; on sparks also anything
+  that adds to the boot path). These are a best-effort backstop against
+  mistakes, not a security boundary. Runs are written before and after to
+  `/srv/workspace/sparkpipe/logs/fleet-gateway-audit.jsonl` (600) with the
+  chat. Output is masked for secrets and cut at 20,000 characters. A timeout
+  kills the command's whole process group, and a drain of the output is
+  bounded. `tests/test_fleet_gateway.py`.
+- **Tool.** `tools/serving/open_webui/tools/fleet.py`, the Open WebUI tool
+  `fleet` with no access grant, so only the admin (its owner) can use it; it
+  also checks the caller's role. `fleet_status`, `fleet_nodes` and
+  `fleet_logs` run directly; `fleet_run` asks once per chat ("Give Kimi
+  fleet access for this chat?", showing the first command), then runs in the
+  sandbox without asking; with `elevated` it asks for each command.
+  `tests/test_open_webui_fleet_tool.py`. The tool is attached to no model;
+  the admin switches it on per chat from the tools menu.
+- **Review.** An adversarial review (2026-10-14) found that a permanent
+  restricted account would still reach the fleet's unauthenticated control
+  services, GPUs and RDMA devices, which led to the sandbox. The exposures it
+  listed outside this tool are in Control-plane access below.
+- **Not done.** Two-factor login stays off (owner, 2026-10-14).
+
+### Control-plane access (2026-10-14)
+
+The adversarial review of the fleet tool listed exposures that LAN users and
+local accounts could still reach. Verified on the hub before the fix:
+
+| Exposure | State |
+| --- | --- |
+| The swap controller (127.0.0.1:8440) switched or stopped the fleet for any local caller | fixed: every route needs the controller token |
+| The chat layer listened on 0.0.0.0:8433, and its `POST /v1/sparkpipe/activate` started a switch for anyone | fixed: the route is gone and the layer serves loopback only |
+| LiteLLM 4000 (`config/litellm-config.yaml`) serves the LAN and the tailnet without a master key | open, owner decision: a key breaks ZCode until ZCode carries it |
+| Six root `sparkpipe_model_api` test processes from 2026-09-27 (`--runtime-root /tmp/chatfix`) and one spec test instance from 2026-09-28 answer on 0.0.0.0 | open, owner step: stop them |
+| `glm-5.3-fp8` (145 files) and `glm-5.3-bf16` (11 files) on `/mnt/model-warm` are 0666, and five directories there are 2777 | open, owner step: remove the world write bit |
+| `/etc/exports.d/qpn.exports` exports `/srv/qpn` rw with `no_root_squash` to 10.10.0.0/16 and 192.168.50.0/24; no client mounts it and it holds two empty probe files | open, owner step: drop the export or squash root |
+
+**The controller token.** `model_swap.py` refuses to start without
+`--token-file`, or when the file can be read by its group or others or holds
+fewer than 32 characters, and answers 401 to any call without
+`Authorization: Bearer <token>`, `/status` included
+(`tests/test_model_swap_token.py`). The token lives in
+`/srv/workspace/sparkpipe/swap-controller/token` (spec, 600, in a 2700
+directory). Its callers:
+
+- the chat layer reads the file named by `controller_token_file` in its
+  config and presents it on warm-queue activations, status and Switch now,
+  and nowhere else: not to the engines and not to SparkPipe Chat's login
+  check (`tests/test_chat_frontend_warm_queue.py`,
+  `tests/test_chat_frontend_switch_now.py`). It refuses a config whose
+  `control` block or activation URLs have no token file;
+- the fleet gateway reads `controller_token_file` from its config for the
+  status and engine-log routes; a refusal from the controller is a 503, never
+  an empty status (`tests/test_fleet_gateway.py`). The sandbox cannot see
+  either token directory;
+- the release scripts call `swap` in `scripts/rollover_lib.sh`, which reads
+  the token on the hub and gives curl the header on stdin, so the token never
+  appears in a process list (`tests/test_swap_token_shell.py`);
+  `tools/ds4_eval92_session.py` and `tools/chat_memory_phase1.py` read the
+  file the chat layer's config names.
+
+A request for a model that is not loaded still swaps the fleet through the
+warm queue: whoever can reach the chat layer can switch models. Only the hub
+reaches it now: `chat_frontend.py` refuses a `--host` that is not a loopback
+address. Its clients are LiteLLM 4000, 4001 and 4002 and the sparkpipe.ai
+tunnel (`-R 127.0.0.1:18081:127.0.0.1:8433`), all on the hub. The playground
+no longer pre-loads the model picked in the list; the first request loads it,
+and the admin's Load now on `/fleet` remains. Opening the playground from
+`http://rtx5090:8433/` on the LAN no longer works; use sparkpipe.ai or an
+ssh tunnel.
+
+Start or restart the two units (hub, as spec):
+
+```sh
+install -d -m 2700 /srv/workspace/sparkpipe/swap-controller
+( umask 077; [ -s /srv/workspace/sparkpipe/swap-controller/token ] || \
+  openssl rand -hex 32 > /srv/workspace/sparkpipe/swap-controller/token )
+systemd-run --user --unit=sparkpipe-swap -p WorkingDirectory=/home/spec/sparkpipe-swap \
+  /usr/bin/bash -c 'exec python3 model_swap.py --config model_swap.json --token-file /srv/workspace/sparkpipe/swap-controller/token --host 127.0.0.1 --port 8440 >> swap.log 2>&1'
+systemd-run --user --unit=sparkpipe-chat -p WorkingDirectory=/home/spec/sparkpipe-chat \
+  /usr/bin/bash -c 'exec python3 chat_frontend.py --config config.json --host 127.0.0.1 --port 8433 >> chat.log 2>&1'
+```
+
+Read the controller from a hub shell without putting the token on a command
+line:
+
+```sh
+printf 'Authorization: Bearer %s\n' "$(cat /srv/workspace/sparkpipe/swap-controller/token)" | curl -s -H @- localhost:8440/status
+```
+
+### Chat memory (K3, 2026-10-14)
+
+SparkPipe Chat's K3 conversations use the model-curated ledger described in
+`docs/CHAT_MEMORY.md` (stages A and B). The chat layer loads `chat_memory.py` because
+its config has a `chat_memory` block (store `/srv/workspace/sparkpipe/chat-memory`,
+one private directory per hashed user id; JWT secret
+`~/sparkpipe-chat/memory-jwt.secret`, 600). Open WebUI sends the signed
+`X-OpenWebUI-User-Jwt` (`ENABLE_FORWARD_USER_INFO_HEADERS=true`, the same secret
+as `FORWARD_USER_INFO_HEADER_JWT_SECRET` in `secrets.env`) and the chat and
+message id headers from the connection's header templates (`openai.api_configs`
+row, mirrored as `OPENAI_API_CONFIGS` in `open_webui.env`); its memory feature
+no longer writes into the system message (`memories.system_context.enable`
+false). The chat LiteLLM forwards `x-` headers
+(`forward_client_headers_to_llm_api: true`) and drops the client's
+Authorization header. Requests without a valid token (ZCode, API clients, other
+doors) are served raw. Rotating the secret means updating both files and
+recreating the container and the chat layer. Deployed 2026-10-14 with backups
+stamped 20261014T232328Z (Open WebUI database and secrets) and the chat-layer
+backups of the same night under `/srv/workspace/sparkpipe/backups`.
+
+Stage B (curator continuation, pre-warm, regroups, fit) went live on
+2026-10-15 at 00:15Z by copying `chat_frontend.py` and `chat_memory.py` into
+`~/sparkpipe-chat` and restarting `sparkpipe-chat` while K3 was idle; the
+previous files are `/srv/workspace/sparkpipe/backups/*.prev-20261015T001524Z`.
+The K3 model API runs the stop-token fix (`engine/stop-token-completes`, built
+from 1d89e0377 with only that patch; previous binary
+`~/k3-kv-api/bin/sparkpipe_model_api.prev-20261015T000602Z`) until the next
+fleet release carries it.
+
+### Web search (SearXNG)
+
+Since 2026-10-14 K3 has Open WebUI's `search_web` and `fetch_url` tools. The
+search engine is a self-hosted SearXNG (owner decision 2026-10-14): hub
+Docker container `sparkpipe-searxng` (2026.10.13-22c64b8d3, pinned by digest)
+on `172.17.0.1:8888` only, settings `deployment/hub/searxng_settings.yml`
+copied to `/srv/workspace/searxng/settings.yml` (JSON output on, limiter off
+because only Open WebUI calls it, moderate safe search), `SEARXNG_SECRET` in
+`/srv/workspace/searxng/secrets.env` (root, 600). It queries the upstream
+engines from the hub's address; on the first day Brave and DuckDuckGo
+rate-limited it and Google and the others answered.
+
+Open WebUI offers the two tools only when web search is on globally, the user
+has the `web_search` permission, the model has the `web_search` capability
+and the chat's Web Search toggle is on. The `kimi-k3` model entry (Admin
+Panel -> Settings -> Models) turns the toggle on by default
+(`defaultFeatureIds`), so K3 itself decides when to search or read a page;
+the entry also marks K3 as text-only, so image uploads are not offered.
+`fetch_url` refuses private and loopback addresses
+(`ENABLE_RAG_LOCAL_WEB_FETCH=false`, checked against the swap controller,
+the hub, the LAN and 10/8), so a user cannot make the hub read internal
+services, and it cuts a page at 40,000 characters.
+
+```sh
+sudo docker run -d --name sparkpipe-searxng --restart unless-stopped \
+  -p 172.17.0.1:8888:8080 \
+  -v /srv/workspace/searxng/settings.yml:/etc/searxng/settings.yml:ro \
+  -v /srv/workspace/searxng/cache:/var/cache/searxng \
+  --env-file /srv/workspace/searxng/secrets.env \
+  searxng/searxng@sha256:9b61996edcc679fb6665290f95fda15389a14eda6060e41a25c63ab2758f2436
+```
+
+### Other tools (2026-10-14)
+
+The owner asked for these four after K3 told a user it could not browse:
+
+- **Code interpreter.** `execute_code` runs Python with Pyodide in the
+  user's browser (numpy, pandas and matplotlib ship in the image), so no code
+  runs on the hub. `code_interpreter.enable`, the `code_interpreter` user
+  permission and the K3 capability are on, and K3's entry turns the toggle on
+  by default.
+- **Scanned documents.** Attachments go through Docling instead of plain text
+  extraction, so scanned PDFs are read with OCR and tables come out as
+  Markdown tables. Hub Docker container `sparkpipe-docling` on
+  `172.17.0.1:5001` only (`docling-serve-cpu`, pinned by digest, 7.5 GB image,
+  limited to 8 CPUs and 16 GB), `rag.content_extraction_engine` `docling`.
+  A generated one-page scan with a table converted in 6 s. Plain text files
+  still bypass Docling.
+
+  ```sh
+  sudo docker run -d --name sparkpipe-docling --restart unless-stopped \
+    -p 172.17.0.1:5001:5001 --cpus 8 --memory 16g \
+    -e DOCLING_SERVE_ENABLE_UI=false -e DOCLING_SERVE_MAX_SYNC_WAIT=600 \
+    ghcr.io/docling-project/docling-serve-cpu@sha256:5a8367f3f657c26755605c3b2255546674833209a18afc2011598f4c045c6db3
+  ```
+- **GitHub.** `tools/serving/open_webui/tools/github.py`, installed as the
+  Open WebUI tool `github` with public read access and attached to K3
+  (`toolIds`): `github_search` (repositories, code, issues), `github_read`
+  (files and directories, the README with the top level), `github_list`
+  (issues, pulls, commits, releases) and `github_item` (one issue or pull
+  request with its comments and changed files). It only sends GET requests to
+  the configured API and refuses malformed repositories and paths before any
+  request (`tests/test_open_webui_github_tool.py`). Without a token it uses
+  GitHub's unauthenticated limit of 60 requests an hour for the hub's address
+  and cannot search code. To lift that, the owner creates a fine-grained
+  token with read-only access to public repositories and enters it in
+  Workspace -> Tools -> GitHub -> Valves; never use the SparkPipe PAT there.
+  To change the tool, edit the file, run the test and paste it into the same
+  editor.
+- **Fewer built-in tools.** K3's entry turns off the built-in tool groups
+  nobody here uses: notes, calendar, chat search, skills, tasks, automations,
+  ask-user and knowledge bases (`meta.builtinTools`). They took about 4,300
+  of the 5,600 tokens every new chat sent before its first message; time,
+  memory, web search and the code interpreter stay.
+
+Install or update the K3 model entry and the GitHub tool with Open WebUI's
+own code inside the container (`Models.update_model_by_id`,
+`Tools.insert_new_tool` after `load_tool_module_by_id`), or through the admin
+panel. To upgrade, pull the new release, check its
+release notes and security advisories, replace the digest here, recreate the
+container with the same data directory, and run a chat, an attachment and a
+login. Back up `/srv/workspace/open-webui/data` before an upgrade.
+
+Open WebUI's license (BSD-3 with a branding clause, from v0.6.6; clause 4
+of the v0.12.0 LICENSE) forbids altering or replacing its branding unless the
+deployment has at most 50 end users in any rolling 30-day period, or holds
+written permission or an enterprise license. The owner expects about six
+users (2026-10-14), so the icons, splash, logo and web manifest are the
+SparkPipe bolt from `site/favicon.svg`, rendered with `rsvg-convert`. Keep the
+user count (Admin Panel -> Users) at 50 or below; if it could pass that,
+drop the branding mounts from `run.sh` first. The name is set to "SparkPipe
+Chat", which v0.12.0 shows as "SparkPipe Chat (Open WebUI)" because it adds
+the suffix in code. The repository holds only configuration and the icons, no
+Open WebUI code.
 
 ## Browser clients (the sparkpipe.ai playground)
 

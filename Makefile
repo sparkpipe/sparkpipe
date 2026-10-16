@@ -305,6 +305,7 @@ TEST_NAMES := \
     test_speculation_tap \
     test_speculation_relay_link \
     test_speculation_depth \
+    test_speculation_frame \
     test_driver_compiler \
     test_orchestrator \
     test_tensor_map_geometry \
@@ -365,7 +366,6 @@ PYTHON_TESTS := \
 	tests/test_unicode_nfc.py \
 	tests/test_tokenizer_unicode_split.py \
 	tests/test_fleet_registrar.py \
-	tests/test_fleet_release_kit.py \
 	tests/test_expert_grouping.py \
 	tests/test_ds4_parallel_pxe_rescue.py \
 	tests/test_sparkpipe_fsck_health_automount.py \
@@ -503,6 +503,7 @@ PYTHON_TESTS := \
 	tests/test_k3_tp_context_cuda.py \
 	tests/test_runner_capture_flags_cuda.py \
 	tests/test_glm_attach_kv_cuda.py \
+	tests/test_glm_row_shard_host.py \
 	tests/test_topk_exact_cuda.py \
 	tests/test_hyper_inject_cuda.py \
 	tests/test_layer_norm_cuda.py \
@@ -559,6 +560,21 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_control_tokens.py \
 	tests/test_chat_frontend_engine_stream.py \
 	tests/test_chat_frontend_request_fields.py \
+	tests/test_chat_frontend_output_cap.py \
+	tests/test_chat_frontend_sampling_defaults.py \
+	tests/test_open_webui_github_tool.py \
+	tests/test_model_swap_drain_quiet.py \
+	tests/test_model_swap_force.py \
+	tests/test_model_swap_token.py \
+	tests/test_swap_token_shell.py \
+	tests/test_chat_frontend_switch_now.py \
+	tests/test_fleet_gateway.py \
+	tests/test_open_webui_fleet_tool.py \
+	tests/test_chat_memory_core.py \
+	tests/test_chat_memory_session.py \
+	tests/test_chat_memory_frontend.py \
+	tests/test_chat_frontend_trace.py \
+	tests/test_chat_frontend_citations.py \
 	tests/test_chat_frontend_warm_queue.py \
 	tests/test_chat_frontend_tagged_calls.py \
 	tests/test_chat_frontend_function_xml_calls.py \
@@ -640,6 +656,8 @@ TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE := \
     build/test_modules/libmodel_serving_adapter_speculative_deferred_module.$(SHARED_LIBRARY_EXT)
 TEST_MODEL_SERVING_SPECULATIVE_VERIFY_MODULE := \
     build/test_modules/libmodel_serving_adapter_speculative_verify_module.$(SHARED_LIBRARY_EXT)
+TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_MODULE := \
+    build/test_modules/libmodel_serving_adapter_speculative_long_verify_module.$(SHARED_LIBRARY_EXT)
 TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE := \
     build/test_modules/libmodel_serving_adapter_recurrent_checkpoints_module.$(SHARED_LIBRARY_EXT)
 TEST_MODEL_SERVING_ADAPTER_VARIANT_MODULES := \
@@ -647,6 +665,7 @@ TEST_MODEL_SERVING_ADAPTER_VARIANT_MODULES := \
     $(TEST_MODEL_SERVING_SPECULATIVE_INLINE_MODULE) \
     $(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE) \
     $(TEST_MODEL_SERVING_SPECULATIVE_VERIFY_MODULE) \
+    $(TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_MODULE) \
     $(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE)
 TEST_MODEL_RESIDENT_TRANSPORT_MODULE := \
     build/test_modules/libmodel_resident_transport_module.$(SHARED_LIBRARY_EXT)
@@ -1129,6 +1148,9 @@ $(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE): tests/fixtures/model_serving_
 $(TEST_MODEL_SERVING_SPECULATIVE_VERIFY_MODULE): tests/fixtures/model_serving_adapter_module.c include/sparkpipe/spark_model_serving_adapter.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build/test_modules
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_SPECULATIVE_VERIFY $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+$(TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_MODULE): tests/fixtures/model_serving_adapter_module.c include/sparkpipe/spark_model_serving_adapter.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build/test_modules
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 $(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE): tests/fixtures/model_serving_adapter_module.c include/sparkpipe/spark_model_serving_adapter.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build/test_modules
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_RECURRENT_CHECKPOINTS $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -1190,10 +1212,10 @@ build/test_model_pipeline_client: tests/test_model_pipeline_client.c tests/fixtu
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_BATCH_PATH=\"build/sparkpipe_model_batch\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_pipeline_client.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_model_batch_engine_mock: tests/test_model_batch_engine_mock.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_SERVING_ADAPTER_VARIANT_MODULES) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_PATH=\"$(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_INLINE_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_INLINE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_VERIFY_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_VERIFY_MODULE)\" -DTEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH=\"$(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_batch_engine_mock.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_PATH=\"$(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_INLINE_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_INLINE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_VERIFY_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_VERIFY_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_MODULE)\" -DTEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH=\"$(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_batch_engine_mock.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_model_batch_engine_mock_debug: tests/test_model_batch_engine_mock.c runtime/model_batch_engine.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_SERVING_ADAPTER_VARIANT_MODULES) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_PATH=\"$(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_INLINE_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_INLINE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_VERIFY_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_VERIFY_MODULE)\" -DTEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH=\"$(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) -DDEBUG tests/test_model_batch_engine_mock.c runtime/model_batch_engine.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_PATH=\"$(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_INLINE_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_INLINE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_VERIFY_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_VERIFY_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_MODULE)\" -DTEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH=\"$(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) -DDEBUG tests/test_model_batch_engine_mock.c runtime/model_batch_engine.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_tp_chain_graph: tests/test_tp_chain_graph.c include/sparkpipe/spark_tp_chain_graph.h | build
 	$(CC) $(CPPFLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_tp_chain_graph.c $(LDFLAGS) -o $@
@@ -1267,7 +1289,7 @@ $(MIMO26_PRO_TP16_SERVING_ADAPTER): $(MIMO26_PRO_TP16_SOURCES) $(MIMO26_PRO_TP16
 $(HY4_TP16_SERVING_ADAPTER): $(HY4_TP16_SOURCES) $(HY4_TP16_CONTRACT) modules/hy4_tp16_resident_decode_stage/include/sparkpipe/spark_hy4_tp16_stage_model.h model-families/hy4/source/hy4_stage.cuh include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(wildcard inference/kernels/*.cuh inference/kernels/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DHY4_TP16_CONTRACT_SHA256=\"$(HY4_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/hy4_tp16_resident_decode_stage/include -Imodel-families/hy4/source -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(HY4_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
-$(GLM53_FULL_TP16_SERVING_ADAPTER): $(GLM53_FULL_TP16_SOURCES) model_contracts/glm52.json tools/glm52_model_contract.py modules/glm53_full_tp16_resident_decode_stage/include/sparkpipe/spark_glm53_full_tp16_stage_model.h model-families/glm52/source/glm52_stage.cuh model-families/glm52/include/sparkpipe/spark_glm52_stagepack.h model-families/glm52/include/sparkpipe/spark_glm52_model.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(wildcard inference/kernels/*.cuh inference/kernels/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+$(GLM53_FULL_TP16_SERVING_ADAPTER): $(GLM53_FULL_TP16_SOURCES) model_contracts/glm52.json tools/glm52_model_contract.py modules/glm53_full_tp16_resident_decode_stage/include/sparkpipe/spark_glm53_full_tp16_stage_model.h model-families/glm52/source/glm52_stage.cuh model-families/glm52/source/glm52_row_shard.cuh model-families/glm52/include/sparkpipe/spark_glm52_stagepack.h model-families/glm52/include/sparkpipe/spark_glm52_model.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(wildcard inference/kernels/*.cuh inference/kernels/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	@test -n "$(GLM53_FULL_TP16_CONTRACT_SHA256)" || { echo "glm53_full: tools/glm52_model_contract.py gave no fp8 build identity" >&2; exit 1; }
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DGLM53_FULL_CONTRACT_SHA256=\"$(GLM53_FULL_TP16_CONTRACT_SHA256)\" -DGLM53_FULL_MODEL_REVISION=\"$(GLM53_FULL_TP16_REVISION)\" -I. -Iinclude -Isrc -Imodules/glm53_full_tp16_resident_decode_stage/include -Imodel-families/glm52/source -Imodel-families/glm52/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(GLM53_FULL_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
@@ -1541,6 +1563,9 @@ build/test_speculation_ngram_draft: tests/test_speculation_ngram_draft.c include
 
 build/test_speculation_drafter_mix: tests/test_speculation_drafter_mix.c include/sparkpipe/spark_speculation_drafter_mix.h include/sparkpipe/spark_speculation_lookup_draft.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_drafter_mix.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_frame: tests/test_speculation_frame.c include/sparkpipe/spark_speculation_frame.h $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_frame.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lm -o $@
 
 build/test_speculation_depth: tests/test_speculation_depth.c include/sparkpipe/spark_speculation_depth.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_depth.c $(LDFLAGS) $(LDLIBS) -o $@

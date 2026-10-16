@@ -16,6 +16,7 @@
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_stage_runner.h"
 #include "sparkpipe/spark_stage_serving_adapter.h"
+#include "sparkpipe/spark_tap_stream.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_attach.h"
 
@@ -63,6 +64,20 @@ typedef struct SparkStageServingState
 	uint64_t row_sequence_ids[SPARK_STAGE_SERVING_MAX_ROWS];
 	uint64_t row_positions[SPARK_STAGE_SERVING_MAX_ROWS];
 	uint32_t completion_tokens[SPARK_STAGE_SERVING_MAX_ROWS];
+	uint32_t distribution_rows[SPARK_STAGE_SERVING_MAX_ROWS];
+	uint32_t distribution_positions[SPARK_STAGE_SERVING_MAX_ROWS];
+	uint32_t distribution_lanes[SPARK_STAGE_SERVING_MAX_ROWS];
+	SparkRowSampling distribution_rules[SPARK_STAGE_SERVING_MAX_ROWS];
+	SparkStageRunnerTapEntry tap_entries[SPARK_STAGE_RUNNER_TAP_MAX_ENTRIES];
+	uint32_t tap_count;
+	uint32_t tap_rank;
+	char *tap_file;
+	uint64_t tap_file_max_bytes;
+	FILE *tap_out;
+	uint64_t tap_written;
+	uint64_t tap_serial;
+	uint64_t tap_fingerprint;
+	uint32_t tap_full;
 } SparkStageServingState;
 
 static const SparkStageServingModel *StageServingBoundModel;
@@ -207,6 +222,173 @@ static SparkStatus StageServingLoadDeviceCollective(SparkStageServingState *stat
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus StageServingParseTaps(SparkStageServingState *state, SparkJsonDocument *doc, int32_t taps)
+{
+	static const char tap_final[] = "final";
+	char *entries = 0, *cursor, *end;
+	int32_t token = SparkJsonFindObjectMember(doc, taps, "entries");
+	if ( token < 0 || SparkJsonCopyString(doc, token, &entries) != SPARK_STATUS_OK ||
+		StageServingCopyMember(doc, taps, "file", &state->tap_file) != SPARK_STATUS_OK || state->tap_file == 0 )
+	{
+		free(entries);
+		fprintf(stderr, "%s adapter: taps need \"entries\" and \"file\"\n", state->model->module_tag);
+		return SPARK_STATUS_SCHEMA_ERROR;
+	}
+	state->tap_rank = StageServingJsonU32(doc, taps, "rank", 0u);
+	token = SparkJsonFindObjectMember(doc, taps, "file_max_bytes");
+	if ( token < 0 || SparkJsonGetUInt64(doc, token, &state->tap_file_max_bytes) != SPARK_STATUS_OK || state->tap_file_max_bytes == 0u )
+	{
+		free(entries);
+		fprintf(stderr, "%s adapter: taps need a positive \"file_max_bytes\"\n", state->model->module_tag);
+		return SPARK_STATUS_SCHEMA_ERROR;
+	}
+	for ( cursor = entries; *cursor != '\0'; cursor = *end == ',' ? end + 1 : end )
+	{
+		SparkStageRunnerTapEntry *entry = &state->tap_entries[state->tap_count];
+		unsigned long layer;
+		if ( state->tap_count >= SPARK_STAGE_RUNNER_TAP_MAX_ENTRIES )
+			break;
+		if ( strncmp(cursor, tap_final, sizeof(tap_final) - 1u) == 0 && (cursor[sizeof(tap_final) - 1u] == ',' || cursor[sizeof(tap_final) - 1u] == '\0') )
+		{
+			entry->form = SPARK_STAGE_RUNNER_TAP_FORM_FINAL;
+			entry->layer = 0u;
+			end = cursor + sizeof(tap_final) - 1u;
+		}
+		else if ( cursor[0] == 'o' && cursor[1] >= '0' && cursor[1] <= '9' )
+		{
+			errno = 0;
+			layer = strtoul(cursor + 1, &end, 10);
+			if ( errno != 0 || layer > UINT16_MAX || (*end != ',' && *end != '\0') )
+				break;
+			entry->form = SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT;
+			entry->layer = (uint16_t)layer;
+		}
+		else
+			break;
+		state->tap_count++;
+	}
+	if ( *cursor != '\0' || state->tap_count == 0u )
+	{
+		fprintf(stderr, "%s adapter: taps entries \"%s\" are not a list of o<layer> and final\n", state->model->module_tag, entries);
+		free(entries);
+		return SPARK_STATUS_SCHEMA_ERROR;
+	}
+	free(entries);
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus StageServingOpenTaps(SparkStageServingState *state)
+{
+	SparkTapStreamHello hello;
+	const uint32_t capture = state->runner_config.tp_rank == state->tap_rank ? 1u : 0u;
+	SparkStatus status;
+	if ( state->tap_count == 0u )
+		return SPARK_STATUS_OK;
+	status = SparkStageRunnerSetTaps(&state->runner, state->tap_entries, state->tap_count, capture);
+	if ( status != SPARK_STATUS_OK || capture == 0u )
+		return status;
+	memset(&hello, 0, sizeof(hello));
+	hello.magic = SPARK_TAP_STREAM_MAGIC;
+	hello.version = SPARK_TAP_STREAM_VERSION;
+	hello.kind = SPARK_TAP_STREAM_KIND_HELLO;
+	hello.header_bytes = (uint32_t)sizeof(hello);
+	strncpy(hello.model_tag, state->model->module_tag, sizeof(hello.model_tag) - 1u);
+	if ( SparkStageRunnerPackIdentity(&state->runner, hello.pack_identity, sizeof(hello.pack_identity)) != SPARK_STATUS_OK )
+		memset(hello.pack_identity, 0, sizeof(hello.pack_identity));
+	if ( SparkStageRunnerTapShape(&state->runner, &hello.hidden, &hello.total_layers) != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	hello.dtype = SPARK_TAP_STREAM_DTYPE_BF16;
+	hello.entry_count = state->tap_count;
+	hello.tap_rank = state->tap_rank;
+	hello.tp_degree = state->runner_config.tp_degree;
+	for ( uint32_t index = 0u; index < state->tap_count; ++index )
+	{
+		hello.entries[index].form = state->tap_entries[index].form;
+		hello.entries[index].layer = state->tap_entries[index].layer;
+	}
+	hello.fingerprint = SparkTapStreamFingerprint(&hello);
+	state->tap_fingerprint = hello.fingerprint;
+	state->tap_out = fopen(state->tap_file, "wb");
+	if ( state->tap_out == 0 || setvbuf(state->tap_out, 0, _IOFBF, 16u << 20) != 0 || fwrite(&hello, sizeof(hello), 1u, state->tap_out) != 1u )
+	{
+		fprintf(stderr, "%s adapter: tap file %s cannot be written: %s\n", state->model->module_tag, state->tap_file, strerror(errno));
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
+	state->tap_written = sizeof(hello);
+	fprintf(stderr, "%s adapter: taps entries=%u rank=%u file=%s max_bytes=%llu fingerprint=%016llx\n", state->model->module_tag, state->tap_count,
+		state->tap_rank, state->tap_file, (unsigned long long)state->tap_file_max_bytes, (unsigned long long)state->tap_fingerprint);
+	return SPARK_STATUS_OK;
+}
+
+static void StageServingTapEmit(SparkStageServingState *state, const SparkModelServingSubmission *submission, uint32_t rows, uint32_t active,
+	uint32_t steps, const uint32_t *kept)
+{
+	const uint32_t *runs = (const uint32_t *)state->runs_host.pointer;
+	const uint32_t *order = (const uint32_t *)state->order_host.pointer;
+	const uint32_t *positions = (const uint32_t *)state->positions_host.pointer;
+	uint32_t tokens[SPARK_STAGE_SERVING_MAX_ROWS];
+	for ( uint32_t s = 0u; s < active && state->tap_out != 0; ++s )
+	{
+		SparkTapStreamFrame frame;
+		uint64_t stride = 0u, row_bytes, bytes;
+		const uint32_t chain = steps > 1u ? 1u : 0u;
+		const uint32_t count = chain != 0u ? steps : kept != 0 ? kept[s] : runs[s + 1u] - runs[s];
+		const uint32_t first_row = order[runs[s]];
+		const uint16_t *base = SparkStageRunnerTapRows(&state->runner, 0u, rows, &stride);
+		if ( base == 0 || count == 0u )
+			continue;
+		row_bytes = stride * sizeof(uint16_t);
+		bytes = sizeof(frame) + (uint64_t)count * (sizeof(uint32_t) + row_bytes);
+		if ( state->tap_written + bytes > state->tap_file_max_bytes )
+		{
+			if ( state->tap_full == 0u )
+				fprintf(stderr, "%s adapter: tap file %s reached %llu bytes; later frames are not written\n", state->model->module_tag, state->tap_file,
+					(unsigned long long)state->tap_written);
+			state->tap_full = 1u;
+			return;
+		}
+		for ( uint32_t k = 0u; k < count; ++k )
+			tokens[k] = chain != 0u ? (k == 0u ? submission->token_ids[first_row] : state->completion_tokens[(k - 1u) * rows + first_row]) :
+				submission->token_ids[order[runs[s] + k]];
+		memset(&frame, 0, sizeof(frame));
+		frame.magic = SPARK_TAP_STREAM_MAGIC;
+		frame.version = SPARK_TAP_STREAM_VERSION;
+		frame.kind = SPARK_TAP_STREAM_KIND_FRAME;
+		frame.header_bytes = (uint32_t)sizeof(frame);
+		frame.fingerprint = state->tap_fingerprint;
+		frame.control_generation = submission->control_generation;
+		frame.request_id = submission->lanes[s].request_id;
+		frame.request_generation = submission->lanes[s].request_generation;
+		frame.sequence_id = submission->lanes[s].sequence_id;
+		frame.first_position = positions[first_row];
+		frame.serial = state->tap_serial++;
+		frame.row_count = count;
+		frame.flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_TAP_STREAM_FLAG_PREFILL :
+			kept != 0 ? SPARK_TAP_STREAM_FLAG_VERIFY : chain != 0u ? SPARK_TAP_STREAM_FLAG_DECODE | SPARK_TAP_STREAM_FLAG_CHAIN : SPARK_TAP_STREAM_FLAG_DECODE;
+		frame.tail_token = state->runner.owns_final_head == 0u ? SPARK_TAP_STREAM_NO_TOKEN :
+			chain != 0u ? state->completion_tokens[(steps - 1u) * rows + first_row] : state->completion_tokens[order[runs[s] + count - 1u]];
+		frame.entry_count = state->tap_count;
+		frame.payload_bytes = bytes - sizeof(frame);
+		if ( fwrite(&frame, sizeof(frame), 1u, state->tap_out) != 1u || fwrite(tokens, sizeof(uint32_t), count, state->tap_out) != count )
+			state->tap_full = 1u;
+		for ( uint32_t k = 0u; k < count && state->tap_full == 0u; ++k )
+		{
+			const uint16_t *row = chain != 0u ? SparkStageRunnerTapRows(&state->runner, k, rows, &stride) + (uint64_t)first_row * stride :
+				base + (uint64_t)order[runs[s] + k] * stride;
+			if ( fwrite(row, 1u, row_bytes, state->tap_out) != row_bytes )
+				state->tap_full = 1u;
+		}
+		if ( state->tap_full != 0u )
+		{
+			fprintf(stderr, "%s adapter: tap file %s write failed: %s\n", state->model->module_tag, state->tap_file, strerror(errno));
+			(void)fclose(state->tap_out);
+			state->tap_out = 0;
+			return;
+		}
+		state->tap_written += bytes;
+	}
+}
+
 static SparkStatus StageServingParse(SparkStageServingState *state, const SparkModelServingAdapterConfiguration *configuration,
 	SparkJsonDocument *doc, int32_t root)
 {
@@ -243,6 +425,9 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 		configuration->runtime_limits.resident_sequence_capacity);
 	config->kv_pages_per_sequence = StageServingJsonU32(doc, root, "kv_pages", 2u);
 	config->kv_page_bytes = 0u;
+	token = SparkJsonFindObjectMember(doc, root, "taps");
+	if ( token >= 0 && StageServingParseTaps(state, doc, token) != SPARK_STATUS_OK )
+		return SPARK_STATUS_SCHEMA_ERROR;
 	token = SparkJsonFindObjectMember(doc, root, "device_collective");
 	if ( token >= 0 )
 		return StageServingLoadDeviceCollective(state, doc, token);
@@ -487,9 +672,7 @@ static void StageServingBuildFrame(const SparkStageServingState *state, const Sp
 	frame->new_token_count = submission->row_count;
 	frame->tokens_per_sequence = submission->tokens_per_sequence;
 	frame->priority = submission->priority;
-	frame->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL :
-		submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH ? SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH :
-		submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE ? SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE : 0u;
+	frame->flags = SparkModelServingSubmissionFrameFlags(submission);
 	frame->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
 	frame->execution_stream = stream;
 	frame->residency = submission->residency;
@@ -573,6 +756,8 @@ static SparkStatus StageServingInitialize(const SparkModelServingAdapterConfigur
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageRunnerInitialize(&state->runner, &state->runner_config, model->runner_model());
 	if ( status == SPARK_STATUS_OK )
+		status = StageServingOpenTaps(state);
+	if ( status == SPARK_STATUS_OK )
 		status = StageServingBindKv(state, configuration);
 	if ( status != SPARK_STATUS_OK )
 		{ StageServingDestroy(state); return status; }
@@ -594,6 +779,11 @@ static void StageServingDestroy(void *adapter_state)
 		return;
 	SparkStageKvBindingDestroy(&state->kv);
 	SparkStageModuleLedgerRelease(&state->ledger);
+	if ( state->tap_out != 0 )
+		(void)fclose(state->tap_out);
+	state->tap_out = 0;
+	free(state->tap_file);
+	state->tap_file = 0;
 	SparkStageRunnerDestroy(&state->runner);
 	if ( state->lane_client != 0 )
 	{
@@ -792,12 +982,13 @@ static void StageServingContinuityRows(SparkStageServingState *state,
 
 static SparkStatus StageServingFinish(SparkStageServingState *state, uint32_t active,
 	const uint32_t *lane_slots, uint8_t *bound, uint64_t *sequence_ids,
-	uint64_t *next_positions, uint32_t extra_tokens, SparkStatus status)
+	uint64_t *next_positions, uint32_t extra_tokens, uint32_t verify, SparkStatus status)
 {
 	SparkStageKvBindingCompletion completion;
 	memset(&completion, 0, sizeof(completion));
 	completion.lane_count = active;
 	completion.extra_tokens = status == SPARK_STATUS_OK ? extra_tokens : 0u;
+	completion.verify = verify;
 	completion.status = status;
 	completion.resident_slots = lane_slots;
 	completion.bound = bound;
@@ -813,6 +1004,18 @@ static SparkStatus StageServingChainSteps(const SparkStageServingState *state,
 	const uint32_t *positions = (const uint32_t *)state->positions_host.pointer;
 	const uint32_t block = state->model->descriptor->cache_block_token_count;
 	uint32_t steps = submission->tokens_per_sequence > 1u ? submission->tokens_per_sequence : 1u, index;
+	if ( (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
+	{
+		*steps_out = 1u;
+		if ( state->runner.owns_final_head == 0u || SparkStageRunnerVerifyCapable(&state->runner) == 0u ||
+			(uint64_t)active * submission->tokens_per_sequence > SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		for ( index = 0u; index < frame->cache_lane_count; ++index )
+			if ( (frame->cache_lanes[index].flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY) == 0u ||
+				(frame->cache_lanes[index].flags & (SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH)) != 0u )
+				SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		return SPARK_STATUS_OK;
+	}
 	*steps_out = steps;
 	if ( steps == 1u )
 		return SPARK_STATUS_OK;
@@ -871,7 +1074,8 @@ static void StageServingDispatch(const SparkStageServingState *state, const Spar
 	memset(dispatch, 0, sizeof(*dispatch));
 	dispatch->abi_version = SPARK_STAGE_RUNNER_ABI_VERSION;
 	dispatch->descriptor_bytes = (uint32_t)sizeof(*dispatch);
-	dispatch->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL : 0u;
+	dispatch->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL :
+		(submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY : 0u;
 	dispatch->request_id = submission->request_id;
 	dispatch->sequence_id = submission->sequence_id;
 	dispatch->sequence_position = submission->sequence_position;
@@ -903,23 +1107,52 @@ static void StageServingDispatch(const SparkStageServingState *state, const Spar
 	dispatch->host_sequence_of_row = (const uint32_t *)state->state_host.pointer;
 }
 
+static SparkStatus StageServingReadTokens(SparkStageServingState *state, uint32_t rows, uint32_t steps)
+{
+	SparkMemoryBuffer tokens = SPARK_MEMORY_BUFFER_VIEW(state->completion_tokens,
+		SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)rows * steps * sizeof(state->completion_tokens[0]));
+	if ( (uint64_t)rows * steps > SPARK_STAGE_SERVING_MAX_ROWS )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( SparkMemoryBufferCopy(&tokens, &state->output_tokens, (uint64_t)rows * steps * sizeof(state->completion_tokens[0]), 0) != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	return SPARK_STATUS_OK;
+}
+
+static void StageServingVerifyKept(const SparkStageServingState *state, const SparkModelServingSubmission *submission,
+	uint32_t active, uint32_t *kept)
+{
+	const uint32_t *runs = (const uint32_t *)state->runs_host.pointer;
+	const uint32_t *order = (const uint32_t *)state->order_host.pointer;
+	for ( uint32_t s = 0u; s < active; ++s )
+		kept[s] = SparkModelServingVerifyKeptRows(runs, order, state->completion_tokens, submission->token_ids, s);
+}
+
 static SparkStatus StageServingComplete(SparkStageServingState *state, const SparkModelServingSubmission *submission,
-	uint32_t rows, uint32_t active, uint32_t steps, uint32_t distribution_count, const uint32_t *distribution_lanes,
-	const SparkRowSampling *distribution_rules, const SparkSamplingLogprob *distribution_logprobs, uint32_t logprob_stride)
+	uint32_t rows, uint32_t active, uint32_t steps, const uint32_t *kept, uint32_t distribution_count, const uint32_t *distribution_lanes,
+	const SparkRowSampling *distribution_rules, const SparkSamplingLogprob *distribution_logprobs, uint32_t logprob_stride, uint64_t started_ns)
 {
 	SparkModelServingCompletion completion;
+	const uint64_t capture_ns = SparkStageRunnerTakeCaptureNs(&state->runner), elapsed_ns = StageServingNowNs() - started_ns;
 	StageServingCompletionHeader(submission, rows, &completion);
-	if ( state->runner.owns_final_head != 0u )
+	if ( capture_ns != 0u )
+		completion.service_time_ns = elapsed_ns > capture_ns ? elapsed_ns - capture_ns : 1u;
+	if ( state->runner.owns_final_head != 0u && kept != 0 )
 	{
 		const uint32_t *runs = (const uint32_t *)state->runs_host.pointer;
 		const uint32_t *order = (const uint32_t *)state->order_host.pointer;
-		uint32_t *tokens_host = state->completion_tokens;
-		SparkMemoryBuffer tokens = SPARK_MEMORY_BUFFER_VIEW(tokens_host,
-			SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)rows * steps * sizeof(*tokens_host));
-		if ( (uint64_t)rows * steps > SPARK_STAGE_SERVING_MAX_ROWS )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		if ( SparkMemoryBufferCopy(&tokens, &state->output_tokens, (uint64_t)rows * steps * sizeof(*tokens_host), 0) != SPARK_STATUS_OK )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		const uint32_t stride = submission->tokens_per_sequence;
+		completion.tokens_per_sequence = stride;
+		completion.token_count = active * stride;
+		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
+		for ( uint32_t s = 0u; s < active; ++s )
+			for ( uint32_t w = 0u; w < stride; ++w )
+				completion.token_ids[s * stride + w] = w < kept[s] ? state->completion_tokens[order[runs[s] + w]] : SPARK_MODEL_SERVING_NO_TOKEN;
+	}
+	else if ( state->runner.owns_final_head != 0u )
+	{
+		const uint32_t *runs = (const uint32_t *)state->runs_host.pointer;
+		const uint32_t *order = (const uint32_t *)state->order_host.pointer;
+		const uint32_t *tokens_host = state->completion_tokens;
 		completion.tokens_per_sequence = steps;
 		completion.token_count = active * steps;
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
@@ -947,11 +1180,12 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	uint32_t *row_slots = state != 0 ? state->row_slots : 0;
 	uint8_t bound[SPARK_STAGE_SERVING_MAX_LANES];
 	uint64_t sequence_ids[SPARK_STAGE_SERVING_MAX_LANES], next_positions[SPARK_STAGE_SERVING_MAX_LANES];
-	uint32_t distribution_rows[SPARK_STAGE_SERVING_MAX_LANES], distribution_positions[SPARK_STAGE_SERVING_MAX_LANES];
-	uint32_t distribution_lanes[SPARK_STAGE_SERVING_MAX_LANES];
-	SparkRowSampling distribution_rules[SPARK_STAGE_SERVING_MAX_LANES];
+	uint32_t *distribution_rows = state != 0 ? state->distribution_rows : 0, *distribution_positions = state != 0 ? state->distribution_positions : 0;
+	uint32_t *distribution_lanes = state != 0 ? state->distribution_lanes : 0;
+	SparkRowSampling *distribution_rules = state != 0 ? state->distribution_rules : 0;
 	SparkSamplingLogprob distribution_logprobs[SPARK_STAGE_SERVING_MAX_LANES * SPARK_SAMPLING_MAX_LOGPROBS];
-	uint32_t rows, active = 0u, distribution_count = 0u, logprob_stride = 0u, steps = 1u;
+	uint32_t rows, active = 0u, distribution_count = 0u, logprob_stride = 0u, steps = 1u, kept[SPARK_STAGE_SERVING_MAX_LANES];
+	const uint32_t verify = submission != 0 && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? 1u : 0u;
 	uint64_t marks[6];
 	SparkStatus status, finished;
 	void *stream;
@@ -978,13 +1212,16 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		const uint32_t *order = (const uint32_t *)state->order_host.pointer;
 		if ( SparkSamplingRuleNeedsDistribution(&submission->lanes[lane].sampling) == 0u )
 			continue;
-		distribution_rows[distribution_count] = order[runs[lane + 1u] - 1u];
-		distribution_positions[distribution_count] = ((const uint32_t *)state->positions_host.pointer)[distribution_rows[distribution_count]];
-		distribution_rules[distribution_count] = submission->lanes[lane].sampling;
-		distribution_lanes[distribution_count] = lane;
+		for ( uint32_t cursor = verify != 0u ? runs[lane] : runs[lane + 1u] - 1u; cursor < runs[lane + 1u]; ++cursor )
+		{
+			distribution_rows[distribution_count] = order[cursor];
+			distribution_positions[distribution_count] = ((const uint32_t *)state->positions_host.pointer)[order[cursor]];
+			distribution_rules[distribution_count] = submission->lanes[lane].sampling;
+			distribution_lanes[distribution_count] = lane;
+			distribution_count++;
+		}
 		if ( submission->lanes[lane].sampling.logprobs > logprob_stride )
 			logprob_stride = submission->lanes[lane].sampling.logprobs;
-		distribution_count++;
 	}
 	if ( logprob_stride != 0u && submission->tokens_per_sequence > 1u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
@@ -1022,7 +1259,7 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		dispatch.distribution_rows = distribution_rows;
 		dispatch.distribution_positions = distribution_positions;
 		dispatch.distribution_rules = distribution_rules;
-		dispatch.distribution_logprobs = distribution_logprobs;
+		dispatch.distribution_logprobs = logprob_stride != 0u ? distribution_logprobs : 0;
 		marks[1] = StageServingNowNs();
 		status = SparkStageRunnerSubmit(&state->runner, &dispatch);
 	}
@@ -1033,9 +1270,20 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
 	marks[4] = StageServingNowNs();
+	if ( status == SPARK_STATUS_OK && state->runner.owns_final_head != 0u )
+		status = StageServingReadTokens(state, rows, steps);
+	if ( status == SPARK_STATUS_OK && verify != 0u )
+	{
+		StageServingVerifyKept(state, submission, active, kept);
+		status = SparkStageRunnerKeepRows(&state->runner, kept, active);
+		if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
+			status = SPARK_STATUS_IO_ERROR;
+	}
 	for ( uint32_t lane = 0u; status == SPARK_STATUS_OK && lane < active; ++lane )
-		next_positions[lane] += steps - 1u;
-	finished = StageServingFinish(state, active, row_slots, bound, sequence_ids, next_positions, steps - 1u, status);
+		next_positions[lane] = verify != 0u ? state->row_positions[lane] + kept[lane] : next_positions[lane] + steps - 1u;
+	if ( status == SPARK_STATUS_OK && state->tap_out != 0 && state->tap_full == 0u )
+		StageServingTapEmit(state, submission, rows, active, steps, verify != 0u ? kept : 0);
+	finished = StageServingFinish(state, active, row_slots, bound, sequence_ids, next_positions, steps - 1u, verify, status);
 	marks[5] = StageServingNowNs();
 	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
 		StageServingWaveHost(state, marks);
@@ -1046,8 +1294,8 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		return finished;
 	if ( state->completion_function == 0 )
 		return SPARK_STATUS_OK;
-	return StageServingComplete(state, submission, rows, active, steps, distribution_count, distribution_lanes,
-		distribution_rules, distribution_logprobs, logprob_stride);
+	return StageServingComplete(state, submission, rows, active, steps, verify != 0u ? kept : 0, distribution_count, distribution_lanes,
+		distribution_rules, distribution_logprobs, logprob_stride, marks[0]);
 }
 
 static SparkStatus StageServingPrefetch(void *adapter_state,

@@ -13,6 +13,7 @@ SPEC = importlib.util.spec_from_file_location("chat_frontend", ROOT / "tools" / 
 chat_frontend = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(chat_frontend)
 RequestError = chat_frontend.RequestError
+CONTROLLER = {"Authorization": "Bearer " + "k" * 40}
 
 
 class FakeEngine:
@@ -20,15 +21,19 @@ class FakeEngine:
         self.ready_at = None
         self.failed = False
         self.activations = 0
+        self.refused = 0
         self.completions = 0
+        self.engine_authorizations = []
 
     def ready(self):
         return self.ready_at is not None and time.monotonic() >= self.ready_at
 
     async def health(self, request):
+        self.engine_authorizations.append(request.headers.get("Authorization"))
         return web.json_response({"status": "ok"} if self.ready() else {"status": "starting"}, status=200 if self.ready() else 503)
 
     async def completions_handler(self, request):
+        self.engine_authorizations.append(request.headers.get("Authorization"))
         if self.failed:
             return web.json_response({"error": {"message": "latched", "code": "engine_failed"}}, status=503)
         if not self.ready():
@@ -41,6 +46,9 @@ class FakeEngine:
         return response
 
     async def activate(self, request):
+        if request.headers.get("Authorization") != CONTROLLER["Authorization"]:
+            self.refused += 1
+            return web.json_response({"error": "unauthorized"}, status=401)
         self.activations += 1
         if self.ready_at is None:
             self.ready_at = time.monotonic() + 0.6
@@ -87,12 +95,14 @@ async def run(failures):
     base = f"http://127.0.0.1:{port}"
     frontend = object.__new__(chat_frontend.Frontend)
     frontend.session = aiohttp.ClientSession()
+    frontend.controller_headers = CONTROLLER
     try:
         model = FakeModel(base, {"depth": 4, "wait_seconds": 10, "activation_url": base + "/activate"})
         results = await asyncio.gather(*(outcome(frontend, model) for _ in range(3)))
         check(all(isinstance(result, list) and result and result[0]["tokens"] == [5] for result in results),
               "requests that arrive during bringup complete once the engine is ready")
-        check(engine.activations == 1, "the cold engine is activated exactly once for concurrent waiters")
+        check(engine.activations == 1 and engine.refused == 0, "the cold engine is activated exactly once for concurrent waiters, with the controller token")
+        check(engine.engine_authorizations and not any(engine.engine_authorizations), "the controller token never reaches the engine")
         check(model.gate.released == 3 and model.gate.waiting == 0 and engine.completions == 3, "every waiter is released and served")
         result = await outcome(frontend, model)
         check(isinstance(result, list) and engine.activations == 1, "a ready engine is served without waiting or activating")
@@ -115,6 +125,14 @@ async def run(failures):
               "a latched engine failure is returned at once, not queued")
         engine.failed = False
 
+        engine.ready_at = None
+        frontend.controller_headers = {}
+        unsigned = FakeModel(base, {"depth": 2, "wait_seconds": 0.5, "activation_url": base + "/activate"})
+        result = await outcome(frontend, unsigned)
+        check(engine.refused == 1 and engine.activations == 1 and isinstance(result, RequestError) and result.code == "warm_queue_expired",
+              "an activation without the controller token is refused by the controller and switches nothing")
+        frontend.controller_headers = CONTROLLER
+
         for bad in (None, {"depth": 0, "wait_seconds": 1, "activation_url": None}, {"depth": 1, "wait_seconds": 1}, {"depth": 1, "wait_seconds": 1, "activation_url": None, "extra": 1}):
             try:
                 chat_frontend.WarmGate("bad", base, bad)
@@ -133,7 +151,7 @@ def main():
         print("FAIL", failure)
     if failures:
         raise SystemExit(1)
-    print("PASS chat frontend warm queue: bringup waiters drain after readiness with one activation; overflow and expiry answer 503; latched failures are not queued")
+    print("PASS chat frontend warm queue: bringup waiters drain after readiness with one activation that carries the controller token, which never reaches the engine; overflow and expiry answer 503; latched failures are not queued")
 
 
 if __name__ == "__main__":

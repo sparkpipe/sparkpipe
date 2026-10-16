@@ -24,6 +24,8 @@ class FakeModel(chat_frontend.Model):
     def __init__(self):
         self.id = "fake"
         self.context_tokens = 4096
+        self.max_output_tokens = 4096
+        self.sampling_defaults = {}
         self.vocabulary = chat_frontend.TokenizersVocabulary.from_tokenizer(fake_tokenizer())
         self.reasoning_effort = {}
         self.template_kwargs = set()
@@ -41,7 +43,7 @@ class FakeModel(chat_frontend.Model):
 
 def refused(body, status=400):
     try:
-        chat_frontend.sampling_fields(body)
+        chat_frontend.sampling_fields(body, {})
     except RequestError as error:
         return error.status == status
     return False
@@ -54,7 +56,7 @@ def main():
         if not condition:
             failures.append(name)
 
-    fields = chat_frontend.sampling_fields
+    fields = lambda body: chat_frontend.sampling_fields(body, {})
     check(fields({}) == {}, "a request without sampling fields decodes greedily and forwards nothing")
     check(fields({"temperature": 0.7, "top_p": 0.9, "top_k": 40, "seed": 3}) == {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "seed": 3},
           "temperature, top_p, top_k and seed are forwarded")

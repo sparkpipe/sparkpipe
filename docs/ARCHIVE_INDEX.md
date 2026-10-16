@@ -172,6 +172,12 @@ reason below. Two more were deleted instead of archived (end of this file).
   contract moved to SERVING_FUZZ_COVERAGE.md and its timing fields to
   GLM5_NEXT_ROOFLINE.md.
 - LITELLM_INTEGRATION.md (2026-09-28) — merged into LITELLM_FRONTEND.md.
+- LING_LANE.md (2026-10-14) — the direct ling development lane and its
+  2026-09-28 serving numbers. The tools it documents (tools/ling_lane.sh,
+  tools/ling_lane.py, tools/ling_multidev_lane.py,
+  tools/ling_multidev_build.sh) are gone; Ling now serves from stage-lanes
+  through the swap controller and is released by scripts/release_rollout.sh.
+  Its hub API step (LING_API_*), which built in the hub home, was dropped.
 
 ## Deleted, not archived (2026-09-28)
 - STATUS.md (root) — README.md's Documentation section now does its job.

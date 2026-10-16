@@ -8,6 +8,7 @@ extern "C" {
 #endif
 
 #define SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW (9u * 7168u * 2u)
+#define SPARK_K3_SERVING_VERIFY_ROWS 256u
 
 const SparkStageRunnerModelInterface *SparkK3StageModel(void);
 

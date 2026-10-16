@@ -1,0 +1,30 @@
+== 2026-10-16T00:09:51Z spec hold 6 20261016T000951Z tip a397d67b0 scatter 2c60eceb0 precheck idle kimi-k3 None
+glm-A 16:0602f407d18eb6eb 
+glm-T 16:0602f407d18eb6eb 
+glm-S 16:d8f9a77562325548 
+rd-A 16:9495056e60414286  rd-T 16:9495056e60414286 
+559c44f656bcb469 559c44f656bcb469 a686dda7a34f398f 69bef0813817f676 02c1e45d06fd9fa8 81739828c40ea828 02c1e45d06fd9fa8 f2a4438bd3878148 02c1e45d06fd9fa8 
+== 2026-10-16T00:10:00Z run SX arm S corpus edit_corpus_xl.json
+arm S: adapter 16:d8f9a77562325548  residentd 16:9495056e60414286  hub a686dda7a34f398f f2a4438bd3878148 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 54.1 null
+gen SX rc=0
+FRAMES SX 163
+SPEED SX editfull tokens=2764 decode_s=32.1 tok_s=86.18 editsr tokens=489 decode_s=15.2 tok_s=32.25
+== 2026-10-16T00:16:40Z run TX arm T corpus edit_corpus_xl.json
+activate kimi-k3: idle kimi-k3 66.5 null
+arm T: adapter 16:0602f407d18eb6eb  residentd 16:9495056e60414286  hub a686dda7a34f398f 02c1e45d06fd9fa8 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 53.9 null
+gen TX rc=15
+FRAMES TX 8
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+    r = json.load(open('streams-TX/generation.json'))['tasks']; agg = collections.defaultdict(lambda: [0, 0.0])
+                  ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'streams-TX/generation.json'
+NODE REBOOTED: abort
+activate kimi-k3: timeout
+activate kimi-k3: idle kimi-k3 652.5 null
+arm A: adapter 16:0602f407d18eb6eb  residentd 16:9495056e60414286  hub 559c44f656bcb469 02c1e45d06fd9fa8 
+== 2026-10-16T01:22:12Z spec hold 6 end (idle kimi-k3 None)

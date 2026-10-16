@@ -580,30 +580,47 @@ static void StepRun(TestStep *step)
 	assert(atomic_load(&finished.count) == 1u && finished.status == SPARK_STATUS_OK);
 }
 
-static void TestVerifyRewind(void)
+static void TestVerifyCommitsKept(void)
 {
+	TestFinished finished = {0};
+	SparkStageKvBindingCompletion completion;
 	TestStep step;
+	uint64_t kept;
 	Open();
 	StepInit(&step,7u,0u,0u,1u);
 	StepRun(&step);
-	assert(atomic_load(&BINDING.lane_next_positions[0]) == 1u && atomic_load(&BINDING.lane_rewind_ceilings[0]) == 0u);
+	assert(atomic_load(&BINDING.lane_next_positions[0]) == 1u);
 	StepInit(&step,7u,0u,1u,3u);
 	step.lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY;
 	step.request.new_token_count = 2u;
 	step.request.frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
 	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_INVALID_ARGUMENT);
 	step.request.frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL | SPARK_MODEL_DRIVER_FRAME_FLAG_VERIFY;
-	StepRun(&step);
-	assert(atomic_load(&BINDING.lane_next_positions[0]) == 3u && atomic_load(&BINDING.lane_rewind_floors[0]) == 2u && atomic_load(&BINDING.lane_rewind_ceilings[0]) == 3u);
+	StepStart(&step);
+	kept = 2u;
+	memset(&completion,0,sizeof(completion));
+	completion.lane_count = 1u;
+	completion.status = SPARK_STATUS_OK;
+	completion.verify = 1u;
+	completion.resident_slots = &step.slot;
+	completion.bound = &step.bound;
+	completion.sequence_ids = &step.sequence;
+	completion.next_positions = &kept;
+	completion.finished_function = Finished;
+	completion.finished_context = &finished;
+	assert(SparkStageKvBindingFinishAsync(&BINDING,step.decision.driver_dispatch_slot,&completion) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
+	assert(atomic_load(&finished.count) == 1u && finished.status == SPARK_STATUS_OK);
+	assert(atomic_load(&BINDING.lane_next_positions[0]) == 2u);
+	StepInit(&step,7u,0u,3u,4u);
+	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_INVALID_ARGUMENT);
 	StepInit(&step,7u,0u,1u,2u);
 	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_INVALID_ARGUMENT);
 	StepInit(&step,7u,0u,2u,3u);
 	StepRun(&step);
-	assert(atomic_load(&BINDING.lane_next_positions[0]) == 3u && atomic_load(&BINDING.lane_rewind_ceilings[0]) == 0u);
-	StepInit(&step,7u,0u,2u,3u);
-	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(atomic_load(&BINDING.lane_next_positions[0]) == 3u);
 	Close();
-	printf("verify rewind: a verified lane resumes anywhere in its accepted window, nowhere else: ok\n");
+	printf("verify commits kept: a verified lane resumes exactly at its kept length, nowhere else: ok\n");
 }
 
 static void TestParkCopiesAreAsync(void)
@@ -1610,7 +1627,7 @@ int main(void)
 	TestCopyOnWriteIsOneDeviceCopyPerRegionLayer();
 	TestCopyOnWriteDuringAPark();
 	TestFinishAndReleaseOnlyMark();
-	TestVerifyRewind();
+	TestVerifyCommitsKept();
 	TestParkCopiesAreAsync();
 	TestLockSitesMeasured();
 	TestQuiesceOrderStop();

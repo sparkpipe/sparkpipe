@@ -36,8 +36,11 @@ finished ones rewritten to say what is left.
   (`SparkWeightdMeshDoorbellSweep`, `node/weightd_mesh.c`) posts the RDMA
   writes through its own mlx5dv send queues. Since `af0cc3f8d` the GPU waits
   on the peer tails itself for direct and RSAG rounds
-  (`SparkTpMeshHardwareArrivalKernel`). Replace the sweep with GPU-initiated
-  RDMA so kernels post work requests and ring the NIC doorbell themselves.
+  (`SparkTpMeshHardwareArrivalKernel`). GPU-initiated RDMA is not pursued
+  (owner, 2026-10-15): a GB10 SM cannot ring the CX-7 doorbell, and
+  GPU-built work requests with a CPU doorbell measured within about 1 us of
+  the relay per round, under 1% of a token. The remaining per-round costs
+  are the engine's kernels around the wire (publish, arrival, combine).
   Measured on 16 ranks on 2026-10-08: a 132-element all-gather takes 16.1 us,
   and a 7,168-element all-reduce takes about 38 us direct or 33.1 us as
   reduce-scatter plus all-gather.
@@ -179,8 +182,8 @@ finished ones rewritten to say what is left.
 - Awaiting fleet proof (lane `mesh/contracts`): every collective logs
   `MESH-PATH` (operation, path, phases, elements, rows, capture) on each
   regime change and again for each capture (`SparkTpDeviceCollectiveLogPath`,
-  `ring/transport/tp_device_collective.c`). `tools/glm53full_lane.sh`,
-  `k3_lane.sh`, `stage_lane.sh` and `fleet_serve.sh` keep one rank log per run
+  `ring/transport/tp_device_collective.c`). `tools/k3_lane.sh`,
+  `stage_lane.sh` and `fleet_serve.sh` keep one rank log per run
   through `tools/lane_run_log.sh`. Each run writes `logs/residentd-<run
   id>.log` and refuses to overwrite it; the helper moves an older launcher's
   `residentd.log` aside, and `archive` collects and removes the logs.
@@ -843,6 +846,17 @@ Related common-code debt:
 
 ## Runtime completion
 
+- A submission that fails residentd's cache validation is retried until its
+  deadline, and every attempt resets the session on all ranks: on 2026-10-14
+  two GLM-5.3 Full requests with a 60 s and a 3 s deadline (failing on the
+  deadline mismatch fixed in `cache/kv_page_cache.c`) caused about 2,950
+  session resets on spark0, roughly 50 a second, until their deadlines ran out
+  (`model_residentd session_reset ... abort=validation_failed`,
+  `runtime/model_batch_engine.c`). A request without a deadline would retry
+  for the engine's in-flight budget. Fail the request after a small number of
+  validation failures of the same route, report the cause to the client, and
+  prove it on one Spark with an injected validation failure: the request fails
+  with its cause and the rank resets once.
 - A client that hangs up mid-reply is cancelled and drained in the host tests
   (`test_model_api_text` client disconnect: four abandoned streams reach zero
   live requests within 10 s and the engine keeps serving); a release that a

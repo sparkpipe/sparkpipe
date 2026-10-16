@@ -93,7 +93,7 @@ current authority.
   speculation seam, source mask, draft bridge, per-family state and
   direction.
 - [`RTX5090_SPECULATION_NODE.md`](RTX5090_SPECULATION_NODE.md): rtx5090 host
-  (fleet hub, GLM API, draft farm, drafter store).
+  (fleet hub, model APIs, draft farm, drafter store).
 - [`SPECULATION_PLAN.md`](SPECULATION_PLAN.md): speculation architecture,
   drafters per model, and the PR sequence.
 
@@ -103,8 +103,8 @@ current authority.
   of the standalone C and CUDA tools (hy4 host references and GPU tests,
   mesh registration repros, NVFP4 smokes).
 - [`FLEET_RELEASE_RUNBOOK.md`](FLEET_RELEASE_RUNBOOK.md): the single
-  production fleet guide (hub, fleet-agent, releases, g53-api, bootstrap,
-  triage). This is the release and operations procedure.
+  production fleet guide (hub, fleet-agent, releases, the hub serving
+  stack, bootstrap, triage). This is the release and operations procedure.
 - [`MULTIDEV_QUICKSTART.md`](MULTIDEV_QUICKSTART.md): parallel development
   guide: lanes, tiers, queue, performance-evidence rule, model work rules.
 - [`PARALLEL_DRIVER_DEBUG.md`](PARALLEL_DRIVER_DEBUG.md): queue v2 contract

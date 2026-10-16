@@ -97,11 +97,239 @@ Conditions and limits:
 - A CPU tenant kept about 16 cores busy on every node, and no other GPU work
   ran. On a quiet fleet on 2026-10-08 (older build) K3 decoded 16.3 tok/s at
   B1, against 10.0 here.
+- The same build on the quiet fleet, 2026-10-14 12:45Z after the tenant
+  stopped (exclusive tp16 hold, `b1_o256` x 9): K3 median 16.17 tok/s; seven
+  runs read 16.10 to 16.25, and the first two (10.74, 11.93) overlapped chat
+  requests. The release's 10.0 was the CPU load slowing every collective
+  round, not a regression
+  (`qualification/releases/1d89e0377/kimi-k3.quiet-20261014.perf.jsonl`).
 - Each number is one run. Cross-hold B1 swings of 5 to 10% are normal; the
   previous release, `e05394f94`, measured the same day, read for example 9.2
   tok/s for Qwen 3.8 Max and 11.4 for K3.
 - All 16 models produced the old build's tokens on the six release prompts
   (`EXACT 6/6`), with no error lines in any rank log.
+
+### Speculation: long verify frames on code edits, K3 (2026-10-15)
+
+K3 TP16 now verifies lookup drafts too: verify steps run with commit off and
+the kept rows are folded into the KDA state with the forward's own kernels
+([`docs/SPECULATION_LONG_FRAMES.md`](docs/SPECULATION_LONG_FRAMES.md)). One
+exclusive hold, 2026-10-15 12:55-13:41Z, arms C (`36f24360e`: same build,
+verify removed from the K3 descriptor) and P (`1134081e3`: frames up to 255
+drafts that cross cache blocks, priced frame policy), order C1 P1 P2 C2, each
+after a KV snapshot and prefix-index wipe. Same 20-task code-edit corpus as
+GLM, greedy, thinking off; decode tok/s excludes the time to the first token.
+Receipts: [`qualification/k3/spec-long-frames-20261015/`](qualification/k3/spec-long-frames-20261015/).
+
+| Edit style | C tok/s | P tok/s | P per task |
+| --- | ---: | ---: | ---: |
+| whole file (15.9K tokens) | 15.3 | 126.4 (8.3x) | 77-161 |
+| SEARCH/REPLACE (2.0K tokens) | 15.0 | 28.0 (1.9x) | 13-34 |
+
+- All 20 P streams are token-identical to C: on this corpus the fold of the
+  kept rows is exact on hardware.
+- 384 verify frames, 22,200 drafts, 16,902 accepted (76%).
+- Story prompt, 256 tokens, medians of 4 (greedy, T=1 top-p 0.95) or 2 (T=1):
+
+| Case | C1 / C2 tok/s | P1 / P2 tok/s |
+| --- | ---: | ---: |
+| greedy | 16.07 / 16.18 | 18.71 / 18.84 |
+| T=1, top-p 0.95 (chat) | 15.60 / 15.64 | 15.57 / 15.61 |
+| T=1 | 15.33 / 15.59 | 16.46 / 16.45 |
+
+- Sampled verify keeps the sampled stream: 5 of 6 sampled P streams equal C1
+  token for token (one diverges at token 178 into a coherent alternative); C2
+  equals C1 10/10. Greedy story streams diverge at near-ties (tokens 81-209)
+  into coherent continuations.
+- Enabling verify switches K3 decode publication from deferred to inline; chat
+  decode speed did not move.
+- Hold 5 (14:34-14:57Z, node adapter and residentd of `a397d67b0`, hub API
+  `a397d67b0` as KT against `2b2fa2a44`, the background-only frame cap, as
+  KP; order KP1 KT1 KP2): whole file 101.0 (KT1) against 140.6 and 137.3
+  tok/s (1.38x), SEARCH/REPLACE 25.1 against 24.4 and 24.7. KT1 frames sat
+  near 34 rows (258 of 390) under the eight-chained-token cap (65 ms chained
+  token); KP frames run near 191 rows keeping 138 tokens (731 ms), 63 and 92
+  of 131 and 194 frames. 19 of 20 KP streams equal KT1 in both runs (editsr_09
+  diverges). KT1 is below hold 2's 126.4 (cross-hold): hold 2 averaged 58
+  drafts per frame and KT1 42, consistent with the cap getting tighter once
+  frames are priced by node service time instead of wall time; not isolated.
+  Receipts under `hold5/`.
+
+### Speculation: long verify frames on code edits, GLM Full (2026-10-15)
+
+Lookup speculation drafts from the request's own history and verifies up to
+62 drafts per frame (frames still inside one 64-token cache block); mechanism
+in [`docs/SPECULATION_LONG_FRAMES.md`](docs/SPECULATION_LONG_FRAMES.md). One
+exclusive GLM Full TP16 hold, 2026-10-15 11:27-12:15Z, arms N (same build,
+verify removed from the GLM descriptor) and S (`a161d0de7`), order N1 S1 S2
+N2, each after a KV snapshot and prefix-index wipe. Workload: the 20-task
+code-edit corpus (ten repository files, one function rename each, replied as
+the whole file or as SEARCH/REPLACE blocks; `tools/spec_edit_corpus.py`),
+greedy, reasoning effort low. Decode tok/s is output tokens over the time
+after the first token.
+
+| Edit style | N tok/s | S tok/s | S per-task range |
+| --- | ---: | ---: | ---: |
+| whole file (15.8K tokens) | 27.6 | 124.2 (4.5x) | 94-132 |
+| SEARCH/REPLACE | 27.5 | 36.0 (1.3x) | 23-41 |
+
+- 882 verify frames, 21,421 drafts, 17,719 accepted (83%). S1 and S2 are
+  token-identical and within 0.2% in speed; so are N1 and N2.
+- The logprob goldens (which never draft) are bit-identical on every arm.
+- Hold 2 (12:19-12:55Z, frames crossing blocks with the priced policy,
+  `1134081e3` against its control `36f24360e`): whole file 27.5 -> 120.7
+  tok/s, SEARCH/REPLACE 27.5 -> 34.7; prose (256 tokens, greedy) 28.3-28.6
+  against 28.3-28.5 with speculation on; 16 of 20 streams equal the control,
+  goldens bit-identical. Crossing blocks did not beat the in-block frames of
+  hold 1 on whole-file edits; per-frame costs are being measured
+  (receipts under `hold2/`).
+- Hold 3 (13:42-14:11Z, tip `a397d67b0`, which prices frames by node
+  service time): whole file 121.4 and 120.6 tok/s in two runs, SEARCH/REPLACE
+  37.8 and 37.4. Frames per row bucket from the engine log: 2 rows 62 ms
+  (9 frames), 3 rows 73 ms (7), 12.6 rows 176 ms, 25 rows 238 ms, 42 rows
+  284 ms (435 of 525 frames), 68 rows 307 ms, 256 rows 529 ms; the chained
+  token costs 36 ms and a single step 48 ms. Long-context corpus (the same
+  edits behind about 46K tokens of prompt, six tasks): control `d2e0fda7b` 24.8 tok/s
+  whole file and 24.1 SEARCH/REPLACE, tip 82.4 and 32.7, the tip without the
+  scatter choice (`0d9319a79`) 24.9 and 24.6: with gather attention a long-
+  context frame costs more than it saves, so the policy drafts almost nothing.
+- Why frames stayed near 42 rows: a cap meant for chat-memory background work
+  (frame cost at most eight chained tokens for priority 0) applied to every
+  request, because requests without a priority field carry 0. `2b2fa2a44`
+  applies it only below the highest priority the engine has served.
+- Hold 4 (14:11-14:33Z, same node build, hub API `a397d67b0` as arm T
+  against `2b2fa2a44` as arm P, order P1 T3 PL P2):
+
+  | Edit style | T3 tok/s | P1 tok/s | P2 tok/s |
+  | --- | ---: | ---: | ---: |
+  | whole file (15.8K tokens) | 120.8 | 232.9 | 223.3 |
+  | SEARCH/REPLACE | 37.4 | 35.3 | 36.2 |
+  | whole file, long context | | 103.0 | |
+  | SEARCH/REPLACE, long context | | 30.2 | |
+
+  P frames: 109 of 193 near 241 rows keeping 138 tokens each (540 ms), 24
+  near 88 rows (377 ms). Whole-file edits gain 1.9x over T and about 8.4x
+  over no speculation. SEARCH/REPLACE loses 4%: on the 17 streams equal to
+  T3, short replies (45-224 tokens) run 5-14% slower in both P runs while the
+  three T runs agree within 2% per task. The acceptance statistics are pooled
+  with whole-file copies, so a frame on a short copy runs far past the copy's
+  end (39-59% of rows kept). Replaying the N1 streams against these frame
+  costs reproduces it (SEARCH/REPLACE 39.2 -> 38.1 tok/s) once the replay
+  stops seeing where each reply ends. Capping a frame at a multiple of how
+  long the current copy has already matched recovers SEARCH/REPLACE (39.2-40.0)
+  but costs whole-file edits 6-20% (203-239 against 254); not adopted. 17 of
+  20 P streams equal T3; editsr_01, 05 and 09 diverge in both P runs.
+- Holds 6-7 (2026-10-16, `2c60eceb0`: verify frames of up to 256 rows may
+  scatter; the hub engine logs one `batch_step` line per submission). New
+  corpus: the same edits behind about 198K tokens of shared repository files
+  (`qualification/spec_offline/xl-context-20261016/`), the owner's agent
+  context regime (ZCode step context median 270K).
+  - 198K context, scatter arm: whole file 86.2 tok/s, SEARCH/REPLACE 32.3.
+    Per submission: chain token 40 ms; frames 17 rows 207 ms, 81 rows 577 ms,
+    129 rows 830 ms, 256 rows 1,336 ms (about 4.7 ms per added row against
+    1.5 ms at 2K: DSA selection per row grows with context); prefill of the
+    197K shared prefix about 680 tok/s. The 64-row arm (`a397d67b0`, frames
+    above 64 rows gather the whole context) lost spark9 to a CX-7 PCIe error
+    3 minutes in (DMA guard reboot, 00:19:24Z); no comparison at 198K.
+  - 46K context: scatter 105.2 and 105.8 tok/s whole file against 99.8 for
+    the 64-row build (+5%); SEARCH/REPLACE 28.7 and 29.1 against 29.6. Frames
+    near 97 rows cost 693 ms against 796 ms for 81 rows; frames above about
+    200 rows gather on both builds.
+  - Short context: 232.8 against 238.7 whole file, 39.1 against 35.3
+    SEARCH/REPLACE (different token counts): no difference beyond run noise.
+  - Receipts and traces under `hold6/` and `hold7/`.
+- Hold 8 (2026-10-16 01:50-02:22Z, `c45b29d40`: one-sequence verify frames
+  of 2-8 rows run as CUDA graphs under a model-specific graph key, against
+  `2c60eceb0`; order G1 S1 G2 S2 GL SL). Whole file 237.2/232.2 against
+  236.3/234.4 tok/s, SEARCH/REPLACE 37.6/35.8 against 36.8/38.0, 46K context
+  105.5 against 106.1, prose (256 tokens greedy) 29.4-29.6 on both: no change
+  beyond noise. Graphed frames cost 56.5 ms at 2 rows (45 frames) and 67.1 ms
+  at 3 rows (7) against eager 3 rows 70.1 ms (37) and 2 rows about 62 ms
+  (holds 3-4): the graph saves 3-6 ms. A graphed step costs 35.7 / 56.5 /
+  67.1 ms at 1 / 2 / 3 rows, so each added row still costs 11-21 ms with no
+  eager overhead left; the per-row cost sits in the multi-row compute and
+  exchange path, which is the next profiling target (it decides whether a
+  GLM model drafter can pay). Receipts under `hold8/`.
+- Near-tie probe (hold 3, control build): at the first divergence of
+  editsr_01, 05 and 09 the multi-row path serves the spec stream's token, by
+  1.63, 0.54 and 0.31 nats over the control's token. These are not tiny
+  ties: the single-row decode path and the multi-row path disagree by at
+  least that much at those positions. The decode path's own logprobs there
+  are the next probe.
+- 13 of 20 S streams equal N; 7 diverge, two at the reply's last token and
+  five early in SEARCH/REPLACE replies, all on formatting tokens. At four of
+  them the control's own prefill path at the same position serves the spec
+  stream's token, so they are near-ties between numerics paths. Frames above
+  8 rows run gather attention and wide GEMMs, so their logits differ slightly
+  from chained decode; the near-tie check at each divergence is in the next
+  hold. The diverged SEARCH/REPLACE replies are longer (6.2K against 3.4K
+  tokens), so that row compares partly different text.
+
+### K3 sampled decode: chat sampling at greedy speed (2026-10-15)
+
+The chat layer samples at the publishers' defaults (temperature 1, top-p
+0.95). Before this change K3 decoded such requests 16% slower than greedy:
+the engine ran top-p and top-k lanes one token per submission, and the stage
+runner's distribution head (the vocabulary-slice logits recomputed for
+sampled rows) launched only 10 blocks on GB10's 48 SMs, 5.5 ms per token at
+27 GB/s (single-GB10 microbench; 128-token tiles: 0.96 ms, bit-identical
+logits). Top-p sampling itself takes 2.25 ms per token in its one-block
+kernel; that is left.
+
+One exclusive K3 TP16 hold, 2026-10-15 07:53-08:20Z, quiet fleet, arms
+A (release adapter and API), H (128-token distribution head), HC (H plus
+chaining for top-p and top-k lanes), run order A1 H1 HC1 HC2 H2 A2, each
+after a KV snapshot and prefix-index wipe; per arm the STORY prompt with
+256 tokens: greedy x4, T=1 top-p 0.95 with seeds 101-104, T=1 with seeds
+201-202. Receipts: [`qualification/k3/sampled-decode-20261015/`](qualification/k3/sampled-decode-20261015/).
+
+| Case | A tok/s | H tok/s | HC tok/s | Steps per submission A / HC |
+| --- | ---: | ---: | ---: | ---: |
+| greedy | 16.05 | 15.80 | 15.91 | 7.4 / 7.4 |
+| T=1, top-p 0.95 (chat) | 13.40 | 14.38 | 15.52 | 1.0 / 7.5 |
+| T=1 | 14.34 | 15.65 | 15.61 | 6.1 / 7.5 |
+
+- Medians, n=8 per arm and case (n=4 for T=1). Every greedy and seeded
+  sampled run of every arm produced exactly the tokens of A1: the Gumbel
+  draw is keyed by seed, position and token, so chaining changes no sample.
+- Production K3 runs HC since 08:22Z (adapter `f0fc74dc`, API `44650c56`).
+  Logprob lanes still decode one token per submission. Other models get the
+  engine change with the next fleet release.
+
+### GLM 5.3 Full prefill: row shard and wide FP8 tiles (2026-10-15)
+
+One exclusive TP16 hold on a quiet fleet (2026-10-15 06:17-07:22Z), GLM Full
+lane 6, adapters built from release `1d89e0377` plus each lever, run order A1
+I1 R1 C1 F1 RF1 CF1 CF2 RF2 F2 C2 R2 I2 A2. Each run wiped the KV snapshot
+tier and the hub prefix index, then ran the 8 golden prompts (128 tokens,
+4 logprobs) against A1, the chained no-logprobs check, streams8, `b1_o256`
+x5 and `ttft1650` and `ttft6500` x2, so n=10 for B1 and n=4 for each TTFT.
+Receipts: [`qualification/glm53_full/prefill-rf-20261015/`](qualification/glm53_full/prefill-rf-20261015/)
+(`speed.txt`, `cmp.txt`, `hold.log`, `perf.jsonl`, and the GB10 kernel
+check `fp8gemm-gb10-summary.txt`).
+
+| Arm | Change | B1 tok/s | 2K TTFT ms | 8K TTFT ms |
+| --- | --- | ---: | ---: | ---: |
+| A | release lane adapter | 28.40 | 1974 | 7361 |
+| I | release rebuilt by the arm build path | 28.35 | 1959 | 7332 |
+| R | row shard: RS, own-row norm, AG for 256+ row waves | 28.44 | 1889 | 7067 |
+| C | lane comm schedule: long all-reduces in pieces | 28.34 | 1953 | 6921 |
+| F | wide FP8 warp tiles, ungrouped GEMMs | 28.30 | 1897 | 7295 |
+| RF | R + F | 28.46 | 1814 | 6895 |
+| CF | C + F | 28.39 | 1901 | 6886 |
+
+- Every arm's goldens were bit-identical to A1 (8/8, chained 4/4) in both
+  rounds, A2 equalled A1, streams8 had no errors, and no rank logged a mesh
+  failure.
+- RF and CF tie at 8K (-6.3% and -6.5%, n=4); RF is ahead at 2K (-8.1%
+  against -3.7%) and leaves the shared stage runner unchanged, so lane 6 runs
+  RF (adapter `09b782cf`) and RF is merged. R and C do not stack: R removes
+  the all-reduces that C splits.
+- On one GB10 the wide FP8 tiles run the dense GLM linears 1.9-2.2x faster
+  with equal output hashes on all 21 shapes; the grouped expert GEMMs keep
+  their tiles.
+- B1 is unchanged; 28.4 tok/s is the quiet-fleet GLM Full number (the
+  release table's 24.3 was measured under the CPU tenant).
 
 ### GLM 5.3 Flash TP16 B1 (2026-09-28)
 

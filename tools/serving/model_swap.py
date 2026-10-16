@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 import argparse
 import asyncio
+import hmac
 import json
+import os
 import sys
 import time
+from pathlib import Path
 
 import aiohttp
 from aiohttp import web
@@ -17,6 +20,16 @@ def substitute(template, values):
     for key, value in values.items():
         template = template.replace("{" + key + "}", str(value))
     return template
+
+
+def read_token(path):
+    mode = os.stat(path).st_mode & 0o777
+    if mode & 0o077:
+        raise SystemExit(f"model_swap: {path} has mode {mode:o}; the token file must be readable by its owner only")
+    token = Path(path).read_text().strip()
+    if len(token) < 32:
+        raise SystemExit(f"model_swap: the token in {path} must be at least 32 characters")
+    return token
 
 
 def require(spec, keys, where):
@@ -36,6 +49,7 @@ class Swapper:
         self.ready_seconds = float(config.get("ready_seconds", 300))
         self.api_seconds = float(config.get("api_seconds", 120))
         self.drain_seconds = float(config.get("drain_seconds", 30))
+        self.drain_quiet_seconds = float(config.get("drain_quiet_seconds", 0))
         self.node_seconds = float(config.get("node_seconds", 240))
         self.release_seconds = float(config.get("release_seconds", 60))
         self.models = {}
@@ -54,6 +68,9 @@ class Swapper:
         self.memory = None
         self.task = None
         self.session = None
+        self.force_requested = False
+        self.forced = False
+        self.draining = None
 
     def status(self):
         now = time.time()
@@ -61,7 +78,7 @@ class Swapper:
                 "swap_elapsed_s": round(now - self.swap_started, 1) if self.state == "swapping" and self.swap_started else None,
                 "phase_elapsed_s": round(now - self.phase_started, 1) if self.state == "swapping" and self.phase_started else None,
                 "error": self.error, "memory": self.memory, "models": [{"id": model_id, "active": model_id == self.active} for model_id in self.models],
-                "history": self.history[-10:]}
+                "draining": self.draining, "force_requested": self.force_requested, "history": self.history[-10:]}
 
     def enter(self, phase):
         self.phase = phase
@@ -149,13 +166,34 @@ class Swapper:
         return status == 200 and payload.get("connected_ranks") == len(self.nodes)
 
     async def drain(self, model):
-        deadline = time.time() + self.drain_seconds
-        while time.time() < deadline:
-            status, payload = await self.health(model)
-            if status == 0 or not payload.get("live_requests"):
-                return
-            await asyncio.sleep(1)
-        print(json.dumps({"event": "swap_drain_expired", "model": model["id"], "drain_seconds": self.drain_seconds}), file=sys.stderr, flush=True)
+        started = time.time()
+        deadline = started + self.drain_seconds
+        quiet_since = None
+        try:
+            while time.time() < deadline:
+                if self.force_requested:
+                    self.forced = True
+                    print(json.dumps({"event": "swap_forced", "model": model["id"], "waited_s": round(time.time() - started, 1)}), file=sys.stderr, flush=True)
+                    return
+                status, payload = await self.health(model)
+                if status == 0:
+                    return
+                live = payload.get("live_requests") or 0
+                if live:
+                    quiet_since = None
+                else:
+                    quiet_since = quiet_since or time.time()
+                    if time.time() - quiet_since >= self.drain_quiet_seconds:
+                        if time.time() - started >= 1:
+                            print(json.dumps({"event": "swap_drained", "model": model["id"], "waited_s": round(time.time() - started, 1)}), file=sys.stderr, flush=True)
+                        return
+                self.draining = {"model": model["id"], "live_requests": live, "waited_s": round(time.time() - started, 1),
+                                 "quiet_s": round(time.time() - quiet_since, 1) if quiet_since else 0.0,
+                                 "quiet_needed_s": self.drain_quiet_seconds, "limit_s": self.drain_seconds}
+                await asyncio.sleep(1)
+            print(json.dumps({"event": "swap_drain_expired", "model": model["id"], "drain_seconds": self.drain_seconds}), file=sys.stderr, flush=True)
+        finally:
+            self.draining = None
 
     async def stop(self, model):
         await self.drain(model)
@@ -236,7 +274,9 @@ class Swapper:
             print(json.dumps({"event": "swap_exception", "target": target, "phase": self.phase, "error": self.error}), file=sys.stderr, flush=True)
         elapsed = round(time.time() - self.swap_started, 1)
         record = {"from": previous, "to": target, "ok": self.state == "idle", "seconds": elapsed, "error": self.error, "memory": measured,
-                  "finished": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+                  "forced": self.forced, "finished": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        self.force_requested = False
+        self.forced = False
         self.history.append(record)
         print(json.dumps(dict(record, event="swap_done")), file=sys.stderr, flush=True)
         self.phase = None
@@ -251,6 +291,29 @@ class Swapper:
                 break
         if self.wanted == self.active:
             self.wanted = None
+        self.force_requested = False
+
+    async def force(self, request):
+        body = {}
+        if request.can_read_body:
+            try:
+                body = await request.json()
+            except json.JSONDecodeError:
+                return web.json_response({"error": "body must be JSON"}, status=400)
+        model_id = body.get("model") if isinstance(body, dict) else None
+        if model_id is not None:
+            if model_id not in self.models:
+                return web.json_response({"error": f"model {model_id!r} is not configured; configured: {sorted(self.models)}"}, status=404)
+            if model_id == self.active and self.state != "swapping":
+                return web.json_response(self.status(), status=200)
+            self.wanted = model_id
+        elif self.state != "swapping" and self.wanted in (None, self.active):
+            return web.json_response({"error": "no switch is waiting"}, status=409)
+        self.force_requested = True
+        print(json.dumps({"event": "swap_force_requested", "model": self.wanted, "draining": self.draining}), file=sys.stderr, flush=True)
+        if self.task is None or self.task.done():
+            self.task = asyncio.ensure_future(self.drive())
+        return web.json_response(self.status(), status=202)
 
     async def activate(self, request):
         try:
@@ -284,20 +347,35 @@ class Swapper:
         await self.session.close()
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Swap the fleet between configured models on demand.")
-    parser.add_argument("--config", required=True)
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8440)
-    arguments = parser.parse_args()
-    with open(arguments.config) as handle:
-        swapper = Swapper(json.load(handle))
-    app = web.Application()
+def build(swapper, token):
+    expected = f"Bearer {token}".encode()
+
+    @web.middleware
+    async def authorize(request, handler):
+        if not hmac.compare_digest(request.headers.get("Authorization", "").encode(), expected):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        return await handler(request)
+
+    app = web.Application(middlewares=[authorize])
     app.on_startup.append(swapper.startup)
     app.on_cleanup.append(swapper.cleanup)
     app.router.add_get("/status", swapper.get_status)
     app.router.add_post("/activate", swapper.activate)
-    web.run_app(app, host=arguments.host, port=arguments.port, print=None)
+    app.router.add_post("/force", swapper.force)
+    return app
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Swap the fleet between configured models on demand.")
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--token-file", required=True)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8440)
+    arguments = parser.parse_args()
+    token = read_token(arguments.token_file)
+    with open(arguments.config) as handle:
+        swapper = Swapper(json.load(handle))
+    web.run_app(build(swapper, token), host=arguments.host, port=arguments.port, print=None)
 
 
 if __name__ == "__main__":

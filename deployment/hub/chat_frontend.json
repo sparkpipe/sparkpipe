@@ -5,9 +5,15 @@
    "model_dir": "models/glm-5.3",
    "engine": "http://127.0.0.1:8475",
    "context_tokens": 262144,
+   "max_output_tokens": 131072,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95
+   },
+   "sampling_source": "/mnt/cold-raid6/models/glm-5.3-bf16/generation_config.json",
    "warm_queue": {
     "depth": 64,
-    "wait_seconds": 600,
+    "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
    "stop_tokens": [
@@ -52,9 +58,15 @@
    "model_dir": "models/glm-5.3-flash",
    "engine": "http://127.0.0.1:8476",
    "context_tokens": 131072,
+   "max_output_tokens": 131072,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95
+   },
+   "sampling_source": "/mnt/cold-raid6/models/glm-5.3-flash-bf16-official/generation_config.json",
    "warm_queue": {
     "depth": 64,
-    "wait_seconds": 600,
+    "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
    "stop_tokens": [
@@ -96,12 +108,29 @@
   },
   {
    "id": "kimi-k3",
+   "chat_memory": {
+    "curator_suffix": "<|close|>think<|sep|><|open|>response<|sep|>",
+    "cache_checkpoint_tokens": 16384,
+    "open_budget": 1500,
+    "line_tokens": 48,
+    "working_tokens": 24576,
+    "ledger_tokens": 12288,
+    "part_small_tokens": 1024,
+    "part_cap_tokens": 12288,
+    "keep_tokens": 4096
+   },
    "model_dir": "models/kimi-k3",
    "engine": "http://127.0.0.1:8459",
    "context_tokens": 131072,
+   "max_output_tokens": 131072,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95
+   },
+   "sampling_source": "/mnt/cold-raid6/models/kimi-k3/README.md (single-step tasks: temperature 1.0, top-p 0.95)",
    "warm_queue": {
     "depth": 64,
-    "wait_seconds": 600,
+    "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
    "tokenizer": {
@@ -169,9 +198,16 @@
    "model_dir": "models/qwen3.8-27b",
    "engine": "http://127.0.0.1:8461",
    "context_tokens": 262144,
+   "max_output_tokens": 131072,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20
+   },
+   "sampling_source": "/mnt/cold-raid6/models/qwen3.8-27b/generation_config.json",
    "warm_queue": {
     "depth": 64,
-    "wait_seconds": 600,
+    "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
    "stop_tokens": [
@@ -218,9 +254,15 @@
    "model_dir": "models/deepseek-v4.1-flash",
    "engine": "http://127.0.0.1:8463",
    "context_tokens": 16384,
+   "max_output_tokens": 16384,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95
+   },
+   "sampling_source": "/mnt/cold-raid6/models/deepseek-v4.1-flash/README.md (evaluations use temperature 1.0, top_p 0.95)",
    "warm_queue": {
     "depth": 64,
-    "wait_seconds": 600,
+    "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
    "renderer": {
@@ -278,9 +320,16 @@
    "model_dir": "models/qwen3.8-max",
    "engine": "http://127.0.0.1:8464",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20
+   },
+   "sampling_source": "/mnt/cold-raid6/models/qwen3.8-2.4t-a95b-fp8/generation_config.json",
    "warm_queue": {
     "depth": 64,
-    "wait_seconds": 600,
+    "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
    "stop_tokens": [
@@ -314,9 +363,16 @@
    "model_dir": "models/qwen3.8-flash",
    "engine": "http://127.0.0.1:8465",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20
+   },
+   "sampling_source": "/mnt/cold-raid6/models/qwen3.8-flash-next/generation_config.json",
    "warm_queue": {
     "depth": 64,
-    "wait_seconds": 600,
+    "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
    "stop_tokens": [
@@ -363,9 +419,16 @@
    "model_dir": "models/gemma-4-31b",
    "engine": "http://127.0.0.1:8466",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 64
+   },
+   "sampling_source": "/mnt/cold-raid6/models/gemma-4-31b-it/generation_config.json",
    "warm_queue": {
     "depth": 64,
-    "wait_seconds": 600,
+    "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
    "stop_tokens": [
@@ -408,9 +471,16 @@
    "model_dir": "models/gemma-4-26b-a4b",
    "engine": "http://127.0.0.1:8467",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 64
+   },
+   "sampling_source": "/mnt/cold-raid6/models/gemma-4-26b-a4b-it/generation_config.json",
    "warm_queue": {
     "depth": 64,
-    "wait_seconds": 600,
+    "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
    "stop_tokens": [
@@ -453,9 +523,15 @@
    "model_dir": "models/hy4-preview",
    "engine": "http://127.0.0.1:8470",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
+   "sampling_defaults": {
+    "temperature": 0.9,
+    "top_p": 1.0
+   },
+   "sampling_source": "/mnt/cold-raid6/models/hy4-preview-fp8-official/generation_config.json (top_k -1: off)",
    "warm_queue": {
     "depth": 64,
-    "wait_seconds": 600,
+    "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
    "stop_tokens": [
@@ -502,9 +578,16 @@
    "model_dir": "models/ling-3.0-flash",
    "engine": "http://127.0.0.1:8468",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
+   "sampling_defaults": {
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20
+   },
+   "sampling_source": "/mnt/cold-raid6/models/ling-3.0-flash/README.md (default parameters)",
    "warm_queue": {
     "depth": 64,
-    "wait_seconds": 600,
+    "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
    "stop_tokens": [
@@ -548,9 +631,16 @@
    "model_dir": "models/muse-glimmer-30b",
    "engine": "http://127.0.0.1:8471",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 64
+   },
+   "sampling_source": "/mnt/cold-raid6/models/muse-glimmer-30b/generation_config.json",
    "warm_queue": {
     "depth": 64,
-    "wait_seconds": 600,
+    "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
    "stop_tokens": [
@@ -603,9 +693,16 @@
    "model_dir": "models/ling-3.0-flash-fin",
    "engine": "http://127.0.0.1:8469",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20
+   },
+   "sampling_source": "/mnt/cold-raid6/models/ling-3.0-flash-fin/README.md (recommended for general inference)",
    "warm_queue": {
     "depth": 64,
-    "wait_seconds": 600,
+    "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
    "stop_tokens": [
@@ -649,9 +746,16 @@
    "model_dir": "models/laguna-s-2.1",
    "engine": "http://127.0.0.1:8472",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "top_k": 20
+   },
+   "sampling_source": "/mnt/cold-raid6/models/laguna-s-2.1/generation_config.json",
    "warm_queue": {
     "depth": 64,
-    "wait_seconds": 600,
+    "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
    "stop_tokens": [
@@ -695,9 +799,15 @@
    "model_dir": "models/mimo-v2.6-flash",
    "engine": "http://127.0.0.1:8473",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95
+   },
+   "sampling_source": "/mnt/cold-raid6/models/mimo-v2.6-flash-rl/README.md (recommended sampling)",
    "warm_queue": {
     "depth": 64,
-    "wait_seconds": 600,
+    "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
    "stop_tokens": [
@@ -745,9 +855,15 @@
    "model_dir": "models/mimo-v2.6-pro",
    "engine": "http://127.0.0.1:8474",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95
+   },
+   "sampling_source": "/mnt/cold-raid6/models/mimo-v2.6-pro-rl/README.md (recommended sampling)",
    "warm_queue": {
     "depth": 64,
-    "wait_seconds": 600,
+    "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
    "stop_tokens": [
@@ -791,9 +907,23 @@
    }
   }
  ],
+ "controller_token_file": "/srv/workspace/sparkpipe/swap-controller/token",
  "control": {
   "status_url": "http://127.0.0.1:8440/status",
-  "activate_url": "http://127.0.0.1:8440/activate"
+  "force_url": "http://127.0.0.1:8440/force",
+  "admin_url": "http://127.0.0.1:8090/api/v1/auths/"
  },
- "site_dir": "site"
+ "site_dir": "site",
+ "chat_memory": {
+  "store": "/srv/workspace/sparkpipe/chat-memory",
+  "jwt_secret_file": "/home/spec/sparkpipe-chat/memory-jwt.secret"
+ },
+ "client": {
+  "citation_wrapper": {
+   "head_sha256": "8054351a96b97f5970c71f09d9b3c7b4e06539fb99d29e8b68d1b71e0d9bfa00",
+   "open": "<context>\n",
+   "close": "\n</context>\n",
+   "separator": "\n"
+  }
+ }
 }

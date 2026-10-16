@@ -267,7 +267,8 @@ considered for anything. Five of the glm52 firmware descriptions (fp8,
 int6, int7, int8, mxfp4) name GLM 5.3 revision `935644c0`. The packer
 still passes GLM 5.2 revision `b4734de4`
 (`tools/glm52_resident_stagepack.py`) and has to move to GLM 5.3; the old
-TP8 deployment generators are gone in favour of `tools/glm53full_lane.py`.
+TP8 deployment generators are gone; GLM Full's TP16 lane is rendered by
+`tools/stage_lane.py` (`glm53_full`).
 
 ## SPECULATOR PORTFOLIO (operator)
 

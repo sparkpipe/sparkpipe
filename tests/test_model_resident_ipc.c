@@ -282,6 +282,13 @@ static void TestContinuationLease(void)
 		&next_sequence_position) == SPARK_STATUS_INVALID_ARGUMENT);
 	assert(SparkModelContinuationLeaseDecodePosition(UINT64_MAX,2u,
 		&next_sequence_position) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(SparkModelContinuationLeaseVerifyPosition(40u,3u,
+		&next_sequence_position) == SPARK_STATUS_OK);
+	assert(next_sequence_position == 43u);
+	assert(SparkModelContinuationLeaseVerifyPosition(40u,0u,
+		&next_sequence_position) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkModelContinuationLeaseVerifyPosition(UINT64_MAX,1u,
+		&next_sequence_position) == SPARK_STATUS_CAPACITY_EXCEEDED);
 	assert(SparkModelContinuationLeaseIsActive(&leases[0]) == 0u);
 	assert(SparkModelContinuationLeaseEstablish(&leases[0],7u,3u,41u,11u) ==
 		SPARK_STATUS_OK);

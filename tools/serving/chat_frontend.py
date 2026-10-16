@@ -1,8 +1,11 @@
 import argparse
 import asyncio
 import codecs
+import hashlib
 import importlib.util
+import ipaddress
 import json
+import os
 import re
 import sys
 import time
@@ -23,6 +26,16 @@ UNSUPPORTED_FIELDS = ("n", "logit_bias", "best_of", "echo", "suffix")
 NEUTRAL_FIELDS = {"frequency_penalty": 0, "presence_penalty": 0, "repetition_penalty": 1, "min_p": 0}
 MAX_TOP_LOGPROBS = 20
 MAX_TOP_K = 1048576
+
+
+def read_token(path):
+    mode = os.stat(path).st_mode & 0o777
+    if mode & 0o077:
+        raise SystemExit(f"chat_frontend: {path} has mode {mode:o}; the token file must be readable by its owner only")
+    token = Path(path).read_text().strip()
+    if len(token) < 32:
+        raise SystemExit(f"chat_frontend: the token in {path} must be at least 32 characters")
+    return token
 
 
 class RequestError(Exception):
@@ -206,6 +219,53 @@ class TiktokenVocabulary:
 VOCABULARIES = {"tokenizers": TokenizersVocabulary, "tiktoken": TiktokenVocabulary}
 
 
+CARRIED = re.compile("\ue000([0-9]+)\ue001")
+
+
+def carry_controls(messages, tools, vocabulary):
+    specials = [token for token in vocabulary.control_strings() if token]
+    carried = []
+
+    def mark(value):
+        if isinstance(value, str):
+            if any(token in value for token in specials):
+                carried.append(value)
+                return f"\ue000{len(carried) - 1}\ue001"
+            return value
+        if isinstance(value, dict):
+            if any(isinstance(key, str) and any(token in key for token in specials) for key in value):
+                raise RequestError(400, "invalid_messages", "a request key carries a control token string")
+            return {key: mark(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [mark(item) for item in value]
+        return value
+
+    return mark(messages), mark(tools), carried
+
+
+def uncarry(pieces, carried, expected):
+    result = []
+    for text, special in pieces:
+        for index, piece in enumerate(CARRIED.split(text)):
+            if index % 2 == 0:
+                if piece:
+                    result.append((piece, special))
+            elif int(piece) < len(carried):
+                result.append((carried[int(piece)], False))
+            else:
+                raise RequestError(400, "invalid_messages", "a message carries a control token string inside text the chat template rewrites")
+    if "".join(text for text, _ in result) != expected:
+        raise RequestError(400, "invalid_messages", "a message carries a control token string inside text the chat template rewrites")
+    return result
+
+
+def encode_pieces(vocabulary, text, pieces):
+    ids = []
+    for piece, special in pieces:
+        ids.extend(vocabulary.encode(piece, special))
+    return text, ids
+
+
 class TemplateRenderer:
     def __init__(self, directory, spec, vocabulary):
         environment = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, extensions=[loopcontrols])
@@ -225,42 +285,17 @@ class TemplateRenderer:
         except Exception as error:
             raise RequestError(400, "invalid_messages", f"the chat template could not render the request: {type(error).__name__}: {error}")
 
-    def render(self, messages, tools, kwargs):
+    def pieces(self, messages, tools, kwargs):
         context = dict(self.template_tokens)
         context.update(kwargs)
         text = self.render_text(messages, tools, context)
-        specials = [token for token in self.vocabulary.control_strings() if token]
-        carried = []
-
-        def mark(value):
-            if isinstance(value, str):
-                if any(token in value for token in specials):
-                    carried.append(value)
-                    return f"\ue000{len(carried) - 1}\ue001"
-                return value
-            if isinstance(value, dict):
-                if any(isinstance(key, str) and any(token in key for token in specials) for key in value):
-                    raise RequestError(400, "invalid_messages", "a request key carries a control token string")
-                return {key: mark(item) for key, item in value.items()}
-            if isinstance(value, list):
-                return [mark(item) for item in value]
-            return value
-
-        marked_messages, marked_tools = mark(messages), mark(tools)
+        marked_messages, marked_tools, carried = carry_controls(messages, tools, self.vocabulary)
         if not carried:
-            return text, self.vocabulary.encode(text, True)
-        pieces = re.split("\ue000([0-9]+)\ue001", self.render_text(marked_messages, marked_tools, context))
-        ids, rebuilt = [], []
-        for index, piece in enumerate(pieces):
-            if index % 2 == 0:
-                rebuilt.append(piece)
-                ids.extend(self.vocabulary.encode(piece, True))
-            else:
-                rebuilt.append(carried[int(piece)])
-                ids.extend(self.vocabulary.encode(carried[int(piece)], False))
-        if "".join(rebuilt) != text:
-            raise RequestError(400, "invalid_messages", "a message carries a control token string inside text the chat template rewrites")
-        return text, ids
+            return text, [(text, True)]
+        return text, uncarry([(self.render_text(marked_messages, marked_tools, context), True)], carried, text)
+
+    def render(self, messages, tools, kwargs):
+        return encode_pieces(self.vocabulary, *self.pieces(messages, tools, kwargs))
 
 
 class SegmentRenderer:
@@ -274,15 +309,24 @@ class SegmentRenderer:
         self.function = getattr(module, spec["function"])
         self.vocabulary = vocabulary
 
-    def render(self, messages, tools, kwargs):
+    def segments(self, messages, tools, kwargs):
         try:
-            segments = self.function(messages, tools or None, add_generation_prompt=True, **kwargs)
+            return self.function(messages, tools or None, add_generation_prompt=True, **kwargs)
         except Exception as error:
             raise RequestError(400, "invalid_messages", f"the chat renderer refused the request: {type(error).__name__}: {error}")
-        ids = []
-        for segment in segments:
-            ids.extend(self.vocabulary.encode(segment.text, segment.allow_special))
-        return "".join(segment.text for segment in segments), ids
+
+    def pieces(self, messages, tools, kwargs):
+        segments = self.segments(messages, tools, kwargs)
+        text = "".join(segment.text for segment in segments)
+        marked_messages, marked_tools, carried = carry_controls(messages, tools, self.vocabulary)
+        client = {token for token in self.vocabulary.control_strings() if token and any(token in value for value in carried)}
+        if not any(segment.allow_special and any(token in segment.text for token in client) for segment in segments):
+            return text, [(segment.text, segment.allow_special) for segment in segments]
+        marked = self.segments(marked_messages, marked_tools, kwargs)
+        return text, uncarry([(segment.text, segment.allow_special) for segment in marked], carried, text)
+
+    def render(self, messages, tools, kwargs):
+        return encode_pieces(self.vocabulary, *self.pieces(messages, tools, kwargs))
 
 
 RENDERERS = {"template": TemplateRenderer, "segments": SegmentRenderer}
@@ -313,12 +357,14 @@ class WarmGate:
         return {"waiting": self.waiting, "depth": self.depth, "wait_seconds": self.wait_seconds, "activations": self.activations,
                 "released": self.released, "overflowed": self.overflowed, "expired": self.expired}
 
-    async def poll(self, session):
+    async def poll(self, session, headers):
         if self.activation_url is not None:
             self.activations += 1
             try:
-                async with session.post(self.activation_url, json={"model": self.model_id}, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                async with session.post(self.activation_url, json={"model": self.model_id}, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                     await response.read()
+                    if response.status >= 400:
+                        print(json.dumps({"event": "warm_activation_refused", "model": self.model_id, "status": response.status}), file=sys.stderr, flush=True)
             except (aiohttp.ClientError, asyncio.TimeoutError) as error:
                 print(json.dumps({"event": "warm_activation_failed", "model": self.model_id, "error": str(error)}), file=sys.stderr, flush=True)
         while True:
@@ -331,7 +377,7 @@ class WarmGate:
                 pass
             await asyncio.sleep(self.POLL_SECONDS)
 
-    async def wait_ready(self, session, timeout):
+    async def wait_ready(self, session, timeout, headers):
         if timeout <= 0:
             self.expired += 1
             raise RequestError(503, "warm_queue_expired", f"the {self.model_id} engine did not become ready within {self.wait_seconds:g} s")
@@ -340,7 +386,7 @@ class WarmGate:
             raise RequestError(503, "warm_queue_full", f"the {self.model_id} engine is not ready and {self.waiting} requests already wait for it")
         if self.poller is None or self.poller.done():
             self.event.clear()
-            self.poller = asyncio.ensure_future(self.poll(session))
+            self.poller = asyncio.ensure_future(self.poll(session, headers))
         self.waiting += 1
         try:
             await asyncio.wait_for(asyncio.shield(self.event.wait()), timeout)
@@ -357,6 +403,16 @@ class Model:
         directory = (base / spec["model_dir"]).resolve()
         self.id = spec["id"]
         self.context_tokens = int(spec["context_tokens"])
+        self.max_output_tokens = int(spec["max_output_tokens"])
+        self.sampling_defaults = dict(spec["sampling_defaults"])
+        if set(self.sampling_defaults) - set(SAMPLING_DEFAULT_KEYS) or not str(spec.get("sampling_source", "")).strip():
+            raise SystemExit(f"chat_frontend: {self.id} sampling_defaults takes only {', '.join(SAMPLING_DEFAULT_KEYS)} and needs a sampling_source")
+        try:
+            sampling_fields({}, self.sampling_defaults)
+        except RequestError as error:
+            raise SystemExit(f"chat_frontend: {self.id} sampling_defaults: {error.message}")
+        if self.max_output_tokens <= 0:
+            raise SystemExit(f"chat_frontend: {self.id} max_output_tokens must be positive")
         self.engine = spec["engine"].rstrip("/")
         vocabulary = dict(spec.get("tokenizer", {"kind": "tokenizers"}))
         renderer = dict(spec.get("renderer", {"kind": "template"}))
@@ -383,6 +439,9 @@ class Model:
         self.end_markers = list(spec.get("end_markers", []))
         self.stop_token_ids = [self.token_id(text) for text in spec["stop_tokens"]]
         self.gate = WarmGate(self.id, self.engine, spec.get("warm_queue"))
+        self.memory = spec.get("chat_memory")
+        if self.memory is not None and not isinstance(self.memory, dict):
+            raise SystemExit(f"chat_frontend: {self.id} chat_memory must be an object")
 
     def logprob(self, pair):
         text = self.vocabulary.piece(pair[0])
@@ -398,6 +457,138 @@ class Model:
         context = dict(self.template_defaults)
         context.update(kwargs)
         return self.renderer.render(messages, tools, context)
+
+
+SOURCE_TAG = re.compile(r'<source id="([0-9]+)"((?: [a-z][a-z-]*="[^"]*")*)>')
+SOURCE_ATTRIBUTE = re.compile(r' ([a-z][a-z-]*)="([^"]*)"')
+CITATION_WRAPPER_KEYS = {"head_sha256", "open", "close", "separator"}
+
+
+def parse_citations(text, wrapper):
+    opening = text.find(wrapper["open"])
+    if opening < 0 or hashlib.sha256(text[:opening].encode()).hexdigest() != wrapper["head_sha256"]:
+        return None
+    close = wrapper["close"] + wrapper["separator"]
+    position, sources = opening + len(wrapper["open"]), []
+    while True:
+        tag = SOURCE_TAG.match(text, position)
+        if tag is None:
+            return None
+        cursor = tag.end()
+        while True:
+            end = text.find("</source>", cursor)
+            if end < 0:
+                return None
+            after = end + len("</source>")
+            if text.startswith("\n<source id=", after) or text.startswith(close, after):
+                break
+            cursor = after
+        sources.append((tag.group(1), tag.group(2), text[tag.end():end]))
+        if text.startswith(close, after):
+            base = text[after + len(close):]
+            break
+        position = after + 1
+    head = text[:opening]
+    rebuilt = head + wrapper["open"] + "\n".join(f'<source id="{n}"{attributes}>{body}</source>' for n, attributes, body in sources) + close + base
+    return (head, sources, base) if rebuilt == text else None
+
+
+def call_strings(arguments):
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return set()
+    found = set()
+    stack = [arguments]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, str):
+            found.add(value)
+        elif isinstance(value, dict):
+            stack.extend(value.values())
+        elif isinstance(value, list):
+            stack.extend(value)
+    return found
+
+
+def canonical_citations(messages, wrapper):
+    users = [index for index, message in enumerate(messages) if message.get("role") == "user"][-2:]
+    for index in reversed(users):
+        content = messages[index].get("content")
+        texts = [content] if isinstance(content, str) else [part.get("text", "") for part in content or [] if isinstance(part, dict) and part.get("type") == "text"]
+        parsed = [parse_citations(text, wrapper) for text in texts]
+        if not parsed or any(item is None for item in parsed):
+            continue
+        sources = parsed[0][1]
+        files = [source for source in sources if source[2]]
+        markers = {}
+        for n, attributes, body in sources:
+            if not body:
+                values = dict(SOURCE_ATTRIBUTE.findall(attributes))
+                for key in ("resource-id", "name"):
+                    if values.get(key):
+                        markers.setdefault(values[key], n)
+
+        def canonical(item):
+            head, _, base = item
+            if not files:
+                return base
+            return head + wrapper["open"] + "\n".join(f'<source id="{n}"{attributes}>{body}</source>' for n, attributes, body in files) + wrapper["close"] + wrapper["separator"] + base
+
+        result = list(messages)
+        if isinstance(content, str):
+            result[index] = dict(messages[index], content=canonical(parsed[0]))
+        else:
+            replaced = iter(canonical(item) for item in parsed)
+            result[index] = dict(messages[index], content=[dict(part, text=next(replaced)) if isinstance(part, dict) and part.get("type") == "text" else part for part in content])
+        urls, labelled, used = {}, 0, set()
+        for message in result[index + 1:]:
+            for call in message.get("tool_calls") or []:
+                urls[call.get("id")] = call_strings((call.get("function") or {}).get("arguments"))
+        for position in range(index + 1, len(result)):
+            message = result[position]
+            if message.get("role") != "tool" or not isinstance(message.get("content"), str):
+                continue
+            ids = sorted({n for url, n in markers.items() if url in urls.get(message.get("tool_call_id"), set())}, key=int)
+            if ids:
+                used.update(ids)
+                label = ", ".join(f"[{n}]" for n in ids)
+                note = f"[This result is source {label}; cite it inline as {label}.]\n"
+                result[position] = dict(message, content=note + message["content"], citation_label=note)
+                labelled += 1
+        return result, {"citation_markers": len(set(markers.values())), "citation_labelled": labelled,
+                        "citation_unmatched": len(set(markers.values()) - used), "citation_files": len(files)}
+    return messages, {}
+
+
+def short_hash(value):
+    return hashlib.sha256(value.encode()).hexdigest()[:12] if value else None
+
+
+def request_trace(headers, messages):
+    headers = headers or {}
+    names, results, rounds = {}, [], 0
+    if len(messages) > 1 and messages[-2].get("role") == "tool" and isinstance(messages[-1].get("content"), list) and messages[-1].get("role") == "user":
+        messages = messages[:-1]
+    for message in messages:
+        for call in message.get("tool_calls") or []:
+            names[call.get("id")] = (call.get("function") or {}).get("name")
+    for message in reversed(messages):
+        role = message.get("role")
+        if role == "tool" and rounds == 0:
+            content = message.get("content")
+            results.append([message.get("name") or names.get(message.get("tool_call_id")) or "tool",
+                            len(content if isinstance(content, str) else json.dumps(content, ensure_ascii=False))])
+        elif role == "assistant" and message.get("tool_calls"):
+            rounds += 1
+        elif role == "user":
+            break
+    trace = {"chat": short_hash(headers.get("X-OpenWebUI-Chat-Id")), "user_message": short_hash(headers.get("X-OpenWebUI-User-Message-Id")),
+             "kind": "round" if results else "answer", "round": rounds}
+    if results:
+        trace["tool_chars"] = list(reversed(results))
+    return trace
 
 
 def normalize_arguments(arguments):
@@ -449,15 +640,20 @@ def number(body, name, low, high, integer=False):
     return value
 
 
-def sampling_fields(body):
+SAMPLING_DEFAULT_KEYS = ("temperature", "top_p", "top_k")
+
+
+def sampling_fields(body, defaults):
     fields = {}
-    temperature = number(body, "temperature", 0, 2)
+    chosen = dict(defaults)
+    chosen.update({key: body[key] for key in SAMPLING_DEFAULT_KEYS if body.get(key) is not None})
+    temperature = number(chosen, "temperature", 0, 2)
     if temperature is not None and temperature != 0 and temperature < 0.0001:
         raise RequestError(400, "invalid_request", "temperature must be 0 or between 0.0001 and 2")
-    top_p = number(body, "top_p", 0, 1)
+    top_p = number(chosen, "top_p", 0, 1)
     if top_p is not None and top_p <= 0:
         raise RequestError(400, "invalid_request", "top_p must be above 0 and at most 1")
-    top_k = number(body, "top_k", -1, MAX_TOP_K, integer=True)
+    top_k = number(chosen, "top_k", -1, MAX_TOP_K, integer=True)
     seed = number(body, "seed", 0, 2 ** 64 - 1, integer=True)
     if temperature:
         fields["temperature"] = temperature
@@ -805,16 +1001,33 @@ class ChannelParser(OutputParser):
 
 
 class Frontend:
+    memory = None
+    citation_wrapper = None
+
     def __init__(self, config, base):
         self.models = {}
         for spec in config["models"]:
             model = Model(spec, base)
             self.models[model.id] = model
         self.control = config.get("control")
-        if self.control is not None and set(self.control) != {"status_url", "activate_url"}:
-            raise SystemExit("chat_frontend: control needs exactly status_url and activate_url")
+        if self.control is not None and set(self.control) not in ({"status_url"}, {"status_url", "force_url", "admin_url"}):
+            raise SystemExit("chat_frontend: control needs status_url, and optionally both force_url and admin_url")
+        controlled = self.control is not None or any(model.gate.activation_url is not None for model in self.models.values())
+        if controlled != ("controller_token_file" in config):
+            raise SystemExit("chat_frontend: controller_token_file is needed exactly when the config has control or an activation_url")
+        self.controller_headers = {"Authorization": "Bearer " + read_token(base / config["controller_token_file"])} if controlled else {}
         self.site = (base / config["site_dir"]).resolve() if config.get("site_dir") else None
+        wrapper = (config.get("client") or {}).get("citation_wrapper")
+        if wrapper is not None and (not isinstance(wrapper, dict) or set(wrapper) != CITATION_WRAPPER_KEYS or not all(isinstance(wrapper[key], str) and wrapper[key] for key in CITATION_WRAPPER_KEYS)):
+            raise SystemExit(f"chat_frontend: client.citation_wrapper needs exactly the non-empty strings {sorted(CITATION_WRAPPER_KEYS)}")
+        self.citation_wrapper = wrapper
         self.session = None
+        self.memory = None
+        if config.get("chat_memory") is not None:
+            loader = importlib.util.spec_from_file_location("sparkpipe_chat_memory", Path(__file__).with_name("chat_memory.py"))
+            module = importlib.util.module_from_spec(loader)
+            loader.loader.exec_module(module)
+            self.memory = module.Memory(config["chat_memory"], self)
 
     async def start(self, app):
         self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=10))
@@ -849,23 +1062,38 @@ class Frontend:
         if self.control is None:
             return web.json_response(error_body("not_found", "this front end has no model control"), status=404)
         try:
-            async with self.session.get(self.control["status_url"], timeout=aiohttp.ClientTimeout(total=5)) as response:
-                return web.json_response(await response.json(content_type=None), status=response.status)
+            async with self.session.get(self.control["status_url"], headers=self.controller_headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                payload = await response.json(content_type=None)
+                if isinstance(payload, dict):
+                    payload["waiting"] = {model.id: model.gate.state()["waiting"] for model in self.models.values() if model.gate.state()["waiting"]}
+                return web.json_response(payload, status=response.status)
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
             return web.json_response(error_body("control_unavailable", str(error)), status=503)
 
-    async def control_activate(self, request):
-        if self.control is None:
-            return web.json_response(error_body("not_found", "this front end has no model control"), status=404)
+    async def control_switch_now(self, request):
+        if self.control is None or "force_url" not in self.control:
+            return web.json_response(error_body("not_found", "this front end has no Switch now"), status=404)
+        authorization = request.headers.get("Authorization", "")
+        if not authorization.startswith("Bearer ") or not authorization[len("Bearer "):].strip():
+            return web.json_response(error_body("unauthorized", "Switch now needs the admin's SparkPipe Chat login"), status=401)
         try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            return web.json_response(error_body("invalid_json", "the request body is not JSON"), status=400)
+            async with self.session.get(self.control["admin_url"], headers={"Authorization": authorization}, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                user = await response.json(content_type=None) if response.status == 200 else None
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
+            return web.json_response(error_body("control_unavailable", f"could not check the login: {error}"), status=503)
+        if not isinstance(user, dict) or user.get("role") != "admin":
+            return web.json_response(error_body("forbidden", "only the admin can use Switch now"), status=403)
+        body = {}
+        if request.can_read_body:
+            try:
+                body = await request.json()
+            except json.JSONDecodeError:
+                return web.json_response(error_body("invalid_json", "the request body is not JSON"), status=400)
         model = body.get("model") if isinstance(body, dict) else None
-        if model not in self.models:
+        if model is not None and model not in self.models:
             return web.json_response(error_body("model_not_found", f"model {model!r} is not served here; served: {sorted(self.models)}"), status=404)
         try:
-            async with self.session.post(self.control["activate_url"], json={"model": model}, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            async with self.session.post(self.control["force_url"], json={"model": model} if model else {}, headers=self.controller_headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 return web.json_response(await response.json(content_type=None), status=response.status)
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
             return web.json_response(error_body("control_unavailable", str(error)), status=503)
@@ -880,6 +1108,10 @@ class Frontend:
             for model in self.models.values()]})
 
     def prepare(self, model, body):
+        plan = self.plan(model, body, None)
+        return plan["engine_body"], plan["parser"], plan["prompt_tokens"]
+
+    def plan(self, model, body, headers):
         for field in UNSUPPORTED_FIELDS:
             if field in body and body[field] not in (None, False, 1):
                 raise RequestError(400, "unsupported_parameter", f"{field} is not supported by this server")
@@ -915,14 +1147,34 @@ class Frontend:
             if key not in model.template_kwargs:
                 raise RequestError(400, "unsupported_parameter", f"chat_template_kwargs.{key} is not accepted; accepted: {sorted(model.template_kwargs)}")
             kwargs[key] = value
+        session = None
+        trace = request_trace(headers, messages)
+        if self.citation_wrapper is not None and headers is not None and headers.get("X-OpenWebUI-Chat-Id"):
+            messages, citations = canonical_citations(messages, self.citation_wrapper)
+            trace.update(citations)
+        if self.memory is not None and headers is not None:
+            session = self.memory.session(model, headers, messages, tools, kwargs)
+            if session is not None:
+                messages, tools = normalize_messages(session.messages), session.tools
+                trace.update(memory_lined=session.layout["lined"], memory_open=len(session.layout["open"]))
+        plan = self.finish_plan(model, body, messages, tools, kwargs, session)
+        engine = plan["engine_body"]
+        trace.update(temperature=engine.get("temperature"), top_p=engine.get("top_p"), top_k=engine.get("top_k"), reasoning_effort=body.get("reasoning_effort"),
+                     tools=len(tools or []), stream=bool(body.get("stream")))
+        plan["trace"] = trace
+        return plan
+
+    def finish_plan(self, model, body, messages, tools, kwargs, session):
         prompt, prompt_ids = model.render(messages, tools, kwargs)
         if len(prompt_ids) >= model.context_tokens:
             raise RequestError(400, "context_length_exceeded", f"the prompt has {len(prompt_ids)} tokens and {model.id} serves {model.context_tokens}")
         limit = number(body, "max_completion_tokens", 1, 2 ** 31, integer=True)
         if limit is None:
             limit = number(body, "max_tokens", 1, 2 ** 31, integer=True)
+        if limit is not None and limit > model.max_output_tokens:
+            raise RequestError(400, "invalid_request", f"max_tokens {limit} is above {model.id}'s output limit of {model.max_output_tokens} tokens")
         room = model.context_tokens - len(prompt_ids)
-        max_tokens = room if limit is None else min(limit, room)
+        max_tokens = min(model.max_output_tokens if limit is None else limit, room)
         if max_tokens <= 0:
             raise RequestError(400, "invalid_request", "max_tokens must be positive")
         stops = body.get("stop") or []
@@ -935,8 +1187,11 @@ class Frontend:
         else:
             parser = OutputParser(model, tools, prompt.rstrip().endswith(model.reasoning["start"].rstrip()), stops)
         engine_body = {"prompt_token_ids": prompt_ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids}
-        engine_body.update(sampling_fields(body))
-        return engine_body, parser, len(prompt_ids)
+        engine_body.update(sampling_fields(body, model.sampling_defaults))
+        if self.memory is not None:
+            engine_body["priority"] = 1
+        return {"body": body, "engine_body": engine_body, "parser": parser, "prompt_tokens": len(prompt_ids), "messages": messages,
+                "tools": tools, "kwargs": kwargs, "session": session}
 
     async def engine_events(self, model, engine_body):
         try:
@@ -980,7 +1235,9 @@ class Frontend:
                     raise
             now = asyncio.get_running_loop().time()
             deadline = deadline if deadline is not None else now + model.gate.wait_seconds
-            await model.gate.wait_ready(self.session, deadline - now)
+            if self.memory is not None:
+                self.memory.cancel_all()
+            await model.gate.wait_ready(self.session, deadline - now, self.controller_headers)
 
     def logprob_entries(self, model, chunk, expected):
         tokens = chunk.get("tokens", [])
@@ -1002,6 +1259,8 @@ class Frontend:
         step = model.vocabulary.decoder()
         finish = None
         usage = None
+        token_ids = []
+        stop_string = False
         logprobs = engine_body.get("logprobs")
         async for chunk in self.engine_stream(model, engine_body):
             if "error" in chunk:
@@ -1012,6 +1271,7 @@ class Frontend:
                     yield ("logprobs", entries)
             text = []
             for token in chunk.get("tokens", []):
+                token_ids.append(token)
                 if token in model.stop_token_ids:
                     continue
                 piece = step(token)
@@ -1024,10 +1284,139 @@ class Frontend:
                 yield event
             if parser.stopped and not parser.ended:
                 finish = "stop"
+                stop_string = True
                 break
         for event in parser.finish():
             yield event
-        yield ("finish", {"finish_reason": "tool_calls" if parser.calls else (finish or "stop"), "usage": usage})
+        yield ("finish", {"finish_reason": "tool_calls" if parser.calls else (finish or "stop"), "usage": usage,
+                          "engine_finish": "stop_string" if stop_string else (finish or "stop"), "token_ids": token_ids})
+
+    async def respond(self, model, plan):
+        session = plan["session"]
+        if session is None:
+            async for event in self.generate(model, plan["engine_body"], plan["parser"]):
+                yield event
+            return
+        completion = 0
+        while True:
+            internal, visible, content, reasoning = [], [], [], []
+            result = {}
+            async for kind, value in self.generate(model, plan["engine_body"], plan["parser"]):
+                if kind == "tool_call" and session.claims(value):
+                    internal.append(value)
+                    continue
+                if kind == "finish":
+                    result = value
+                    continue
+                if kind == "tool_call":
+                    visible.append(value)
+                elif kind == "content":
+                    content.append(value)
+                elif kind == "reasoning":
+                    reasoning.append(value)
+                yield kind, value
+            usage = dict(result.get("usage") or {})
+            completion += usage.get("completion_tokens", 0)
+            if internal and not visible and session.can_continue():
+                messages = session.continue_with("".join(content), "".join(reasoning), internal)
+                plan = self.finish_plan(model, plan["body"], normalize_messages(messages), plan["tools"], plan["kwargs"], session)
+                continue
+            if usage:
+                usage["completion_tokens"] = completion
+            session.finished(plan["messages"], "".join(content), "".join(reasoning), visible, result.get("engine_finish"),
+                             plan["engine_body"]["prompt_token_ids"], result.get("token_ids") or [])
+            reason = "tool_calls" if visible else ("length" if result.get("engine_finish") == "length" else "stop")
+            yield "finish", dict(result, usage=usage or result.get("usage"), finish_reason=reason)
+            return
+
+    async def memory_model_ready(self, model):
+        if self.control is None:
+            return True
+        try:
+            async with self.session.get(self.control["status_url"], headers=self.controller_headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                status = await response.json(content_type=None)
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError):
+            return False
+        return (isinstance(status, dict) and status.get("active") == model.id and status.get("state") == "idle"
+                and not status.get("draining") and status.get("wanted") in (None, model.id))
+
+    def memory_curator_ids(self, model, messages, tools, kwargs, suffix):
+        prompt, ids = model.render(normalize_messages(messages), tools, kwargs)
+        reasoning_open = model.reasoning is not None and prompt.rstrip().endswith(model.reasoning["start"].rstrip())
+        if suffix and reasoning_open:
+            ids = ids + model.vocabulary.encode(suffix, True)
+            reasoning_open = False
+        return ids, reasoning_open
+
+    def memory_template_parts(self, model, messages, tools, kwargs, markers):
+        context = dict(model.template_defaults)
+        context.update(kwargs)
+        _, pieces = model.renderer.pieces(normalize_messages(messages), tools, context)
+        parts, ids, texts, found = [], [], [], 0
+        for text, special in pieces:
+            while found < len(markers) and markers[found] in text:
+                cut = text.index(markers[found])
+                ids.extend(model.vocabulary.encode(text[:cut], special))
+                texts.append(text[:cut])
+                parts.append((ids, "".join(texts)))
+                ids, texts = [], []
+                text = text[cut + len(markers[found]):]
+                found += 1
+            ids.extend(model.vocabulary.encode(text, special))
+            texts.append(text)
+        parts.append((ids, "".join(texts)))
+        return parts if found == len(markers) else None
+
+    def memory_continuation_ids(self, model, messages, tools, kwargs, prompt_ids, generated_ids, instruction, suffix):
+        reply, ask = "\ue000SPARKPIPE-REPLY\ue001", "\ue000SPARKPIPE-ASK\ue001"
+        parts = self.memory_template_parts(model, list(messages) + [{"role": "assistant", "content": reply}, {"role": "user", "content": ask}], tools, kwargs, [reply, ask])
+        if parts is None:
+            return None
+        generated = list(generated_ids)
+        while generated and generated[-1] in model.stop_token_ids:
+            generated.pop()
+        between, after = parts[1][0], parts[2][0]
+        overlap = next((size for size in range(min(len(between), len(generated)), 0, -1) if generated[-size:] == between[:size]), 0)
+        reasoning_open = model.reasoning is not None and parts[2][1].rstrip().endswith(model.reasoning["start"].rstrip())
+        ids = list(prompt_ids) + generated + between[overlap:] + model.vocabulary.encode(instruction, False) + after
+        if suffix and reasoning_open:
+            ids += model.vocabulary.encode(suffix, True)
+            reasoning_open = False
+        return ids, reasoning_open
+
+    def memory_count(self, model, text):
+        return len(model.vocabulary.encode(text, False))
+
+    def memory_cut_ids(self, model, messages, tools, kwargs, sentinel):
+        parts = self.memory_template_parts(model, messages, tools, kwargs, [sentinel])
+        return parts[0][0] if parts else None
+
+    async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None):
+        body = {"prompt_token_ids": ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids, "priority": 0, "temperature": 0.0}
+        parser = OutputParser(model, None, reasoning_open, []) if model.channels is None else None
+        step = model.vocabulary.decoder()
+        content, usage, generated, outcome = [], {}, 0, "error"
+        started = time.monotonic()
+        try:
+            async for chunk in self.engine_events(model, body):
+                usage = chunk.get("usage") or usage
+                generated += len(chunk.get("tokens", []))
+                text = "".join(piece for piece in (step(token) for token in chunk.get("tokens", []) if token not in model.stop_token_ids) if piece)
+                if parser is None:
+                    content.append(text)
+                    continue
+                content.extend(value for kind_, value in parser.feed(text) if kind_ == "content")
+            outcome = "done"
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        finally:
+            print(json.dumps(dict(trace or {}, event="memory_job", model=model.id, kind=kind, outcome=outcome, prompt_tokens=len(ids),
+                                  cached_tokens=(usage.get("prompt_tokens_details") or {}).get("cached_tokens"), completion_tokens=generated,
+                                  seconds=round(time.monotonic() - started, 3))), file=sys.stderr, flush=True)
+        if parser is not None:
+            content.extend(value for kind_, value in parser.finish() if kind_ == "content")
+        return "".join(content)
 
     def usage_block(self, usage, prompt_tokens):
         usage = usage or {}
@@ -1036,16 +1425,16 @@ class Frontend:
         cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
         return {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion, "prompt_tokens_details": {"cached_tokens": cached}}
 
-    def log(self, model, prompt_tokens, usage, started, first, finish):
+    def log(self, model, prompt_tokens, usage, started, first, finish, trace=None):
         now = time.monotonic()
         usage = usage or {}
         completion = usage.get("completion_tokens", 0)
         decode_seconds = now - first if first else 0.0
-        print(json.dumps({"event": "chat", "model": model.id, "prompt_tokens": prompt_tokens,
-                          "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
-                          "completion_tokens": completion, "ttft_s": round(first - started, 3) if first else None,
-                          "decode_tok_s": round((completion - 1) / decode_seconds, 2) if completion > 1 and decode_seconds > 0 else None,
-                          "finish_reason": finish}), file=sys.stderr, flush=True)
+        print(json.dumps(dict({"event": "chat", "model": model.id, "prompt_tokens": prompt_tokens,
+                               "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
+                               "completion_tokens": completion, "ttft_s": round(first - started, 3) if first else None,
+                               "decode_tok_s": round((completion - 1) / decode_seconds, 2) if completion > 1 and decode_seconds > 0 else None,
+                               "finish_reason": finish}, **(trace or {}))), file=sys.stderr, flush=True)
 
     async def chat(self, request):
         started = time.monotonic()
@@ -1055,13 +1444,26 @@ class Frontend:
             return web.json_response(error_body("invalid_json", "the request body is not JSON"), status=400)
         try:
             model = self.model_for(body)
-            engine_body, parser, prompt_tokens = self.prepare(model, body)
+            plan = self.plan(model, body, request.headers)
+        except RequestError as error:
+            return error_response(error)
+        if self.memory is not None:
+            self.memory.enter(model)
+        try:
+            return await self.answer(request, model, body, plan, started)
+        finally:
+            if self.memory is not None:
+                self.memory.leave(model)
+
+    async def answer(self, request, model, body, plan, started):
+        engine_body, prompt_tokens = plan["engine_body"], plan["prompt_tokens"]
+        try:
             if body.get("stream"):
-                return await self.chat_stream(request, model, body, engine_body, parser, prompt_tokens, started)
+                return await self.chat_stream(request, model, body, plan, started)
             content, reasoning, calls, logprobs = [], [], [], []
             result = {}
             first = None
-            async for kind, value in self.generate(model, engine_body, parser):
+            async for kind, value in self.respond(model, plan):
                 first = first or time.monotonic()
                 if kind == "logprobs":
                     logprobs.extend(value)
@@ -1080,12 +1482,13 @@ class Frontend:
             message["reasoning_content"] = "".join(reasoning)
         if calls:
             message["tool_calls"] = calls
-        self.log(model, prompt_tokens, result.get("usage"), started, first, result.get("finish_reason"))
+        self.log(model, prompt_tokens, result.get("usage"), started, first, result.get("finish_reason"), plan.get("trace"))
         choice = {"index": 0, "message": message, "logprobs": {"content": logprobs} if "logprobs" in engine_body else None, "finish_reason": result.get("finish_reason")}
         return web.json_response({"id": "chatcmpl-" + uuid.uuid4().hex, "object": "chat.completion", "created": int(time.time()),
                                   "model": model.id, "choices": [choice], "usage": self.usage_block(result.get("usage"), prompt_tokens)})
 
-    async def chat_stream(self, request, model, body, engine_body, parser, prompt_tokens, started):
+    async def chat_stream(self, request, model, body, plan, started):
+        prompt_tokens = plan["prompt_tokens"]
         identifier = "chatcmpl-" + uuid.uuid4().hex
         created = int(time.time())
         include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
@@ -1104,7 +1507,7 @@ class Frontend:
             return ("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode()
 
         try:
-            async for kind, value in self.generate(model, engine_body, parser):
+            async for kind, value in self.respond(model, plan):
                 if response is None:
                     response = web.StreamResponse(headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"})
                     await response.prepare(request)
@@ -1128,7 +1531,7 @@ class Frontend:
             await response.write(b"data: [DONE]\n\n")
             return response
         except (ConnectionResetError, aiohttp.ClientConnectionResetError):
-            self.log(model, prompt_tokens, result.get("usage"), started, first, "client_gone")
+            self.log(model, prompt_tokens, result.get("usage"), started, first, "client_gone", plan.get("trace"))
             return response
         usage = self.usage_block(result.get("usage"), prompt_tokens)
         await response.write(chunk({}, result.get("finish_reason"), usage))
@@ -1136,18 +1539,11 @@ class Frontend:
             payload = {"id": identifier, "object": "chat.completion.chunk", "created": created, "model": model.id, "choices": [], "usage": usage}
             await response.write(("data: " + json.dumps(payload) + "\n\n").encode())
         await response.write(b"data: [DONE]\n\n")
-        self.log(model, prompt_tokens, result.get("usage"), started, first, result.get("finish_reason"))
+        self.log(model, prompt_tokens, result.get("usage"), started, first, result.get("finish_reason"), plan.get("trace"))
         return response
 
 
-def main():
-    parser = argparse.ArgumentParser(description="OpenAI chat front end for SparkPipe engines")
-    parser.add_argument("--config", required=True)
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, required=True)
-    arguments = parser.parse_args()
-    config_path = Path(arguments.config).resolve()
-    frontend = Frontend(json.loads(config_path.read_text()), config_path.parent)
+def build(frontend):
     app = web.Application(client_max_size=256 * 1024 * 1024)
     app.on_startup.append(frontend.start)
     app.on_cleanup.append(frontend.stop)
@@ -1156,11 +1552,28 @@ def main():
     app.router.add_get("/v1/models", frontend.list_models)
     app.router.add_post("/v1/chat/completions", frontend.chat)
     app.router.add_get("/v1/sparkpipe/status", frontend.control_status)
-    app.router.add_post("/v1/sparkpipe/activate", frontend.control_activate)
+    app.router.add_post("/v1/sparkpipe/switch-now", frontend.control_switch_now)
     if frontend.site is not None:
         app.router.add_get("/", frontend.site_root)
         app.router.add_static("/site/", frontend.site)
-    web.run_app(app, host=arguments.host, port=arguments.port, access_log=None)
+    return app
+
+
+def main():
+    parser = argparse.ArgumentParser(description="OpenAI chat front end for SparkPipe engines")
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, required=True)
+    arguments = parser.parse_args()
+    try:
+        loopback = ipaddress.ip_address(arguments.host).is_loopback
+    except ValueError:
+        loopback = False
+    if not loopback:
+        raise SystemExit(f"chat_frontend: --host {arguments.host} is not a loopback address; the chat layer checks no API key, so it serves this host only and LiteLLM is the door")
+    config_path = Path(arguments.config).resolve()
+    frontend = Frontend(json.loads(config_path.read_text()), config_path.parent)
+    web.run_app(build(frontend), host=arguments.host, port=arguments.port, access_log=None)
 
 
 if __name__ == "__main__":

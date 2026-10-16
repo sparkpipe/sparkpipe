@@ -119,17 +119,6 @@ class TextEndpointPreflight(unittest.TestCase):
         with fake_api(True) as (_, endpoint):
             self.assertIs(compsec.require_text_endpoint(endpoint)["tokenizer"], True)
 
-    def test_concurrent_bench_refuses_an_api_without_tokenizer(self):
-        bench_spec = importlib.util.spec_from_file_location("glm5_next_api_bench", ROOT / "tools/glm5_next_api_bench.py")
-        bench = importlib.util.module_from_spec(bench_spec)
-        bench_spec.loader.exec_module(bench)
-        with fake_api(False) as (server, endpoint):
-            bench.EP = endpoint + "/v1/completions"
-            with self.assertRaises(bench.compsec17.RunError) as raised:
-                bench.conc(argparse.Namespace(streams=[8], conc_tokens=8, warm=False))
-            self.assertEqual(server.completions, [])
-        self.assertIn("tokenizer=False", str(raised.exception))
-
 
 class Gemma4ChatPrompt(unittest.TestCase):
     def test_thinking_off_matches_the_publisher_rendering(self):

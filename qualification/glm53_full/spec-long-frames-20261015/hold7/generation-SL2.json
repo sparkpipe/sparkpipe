@@ -1,0 +1,66 @@
+{
+ "model": "glm-5.3",
+ "reasoning_effort": "minimal",
+ "tasks": [
+  {
+   "name": "editfull_01",
+   "file": "tools/chat_memory_live.py",
+   "prompt_tokens": 46070,
+   "output_tokens": 1211,
+   "finish": "stop",
+   "seconds": 59.82,
+   "ttft": 48.344,
+   "decode_tok_s": 105.43
+  },
+  {
+   "name": "editsr_01",
+   "file": "tools/chat_memory_live.py",
+   "prompt_tokens": 46105,
+   "output_tokens": 224,
+   "finish": "stop",
+   "seconds": 6.63,
+   "ttft": 0.609,
+   "decode_tok_s": 37.02
+  },
+  {
+   "name": "editfull_02",
+   "file": "include/sparkpipe/spark_sampling.h",
+   "prompt_tokens": 45666,
+   "output_tokens": 793,
+   "finish": "stop",
+   "seconds": 9.18,
+   "ttft": 1.61,
+   "decode_tok_s": 104.66
+  },
+  {
+   "name": "editsr_02",
+   "file": "include/sparkpipe/spark_sampling.h",
+   "prompt_tokens": 45701,
+   "output_tokens": 168,
+   "finish": "stop",
+   "seconds": 6.54,
+   "ttft": 0.5,
+   "decode_tok_s": 27.65
+  },
+  {
+   "name": "editfull_03",
+   "file": "tools/spec_recorded_drafts.py",
+   "prompt_tokens": 45592,
+   "output_tokens": 727,
+   "finish": "stop",
+   "seconds": 8.3,
+   "ttft": 1.544,
+   "decode_tok_s": 107.41
+  },
+  {
+   "name": "editsr_03",
+   "file": "tools/spec_recorded_drafts.py",
+   "prompt_tokens": 45627,
+   "output_tokens": 43,
+   "finish": "stop",
+   "seconds": 3.33,
+   "ttft": 0.448,
+   "decode_tok_s": 14.59
+  }
+ ]
+}

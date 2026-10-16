@@ -61,6 +61,8 @@ def build(fleet, wd_bytes):
         (hub / api / "bin").mkdir(parents=True, exist_ok=True)
         (hub / api / "bin" / "api").write_text("new")
     work = fleet / "srv-workspace"
+    (work / "swap-controller").mkdir(parents=True)
+    (work / "swap-controller" / "token").write_text("s" * 40 + "\n")
     for _, api in model_lanes:
         (work / "backups" / f"{api}.prev-{STAMP}" / "bin").mkdir(parents=True, exist_ok=True)
         (work / "backups" / f"{api}.prev-{STAMP}" / "bin" / "api").write_text("old")

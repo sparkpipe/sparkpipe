@@ -7,6 +7,7 @@ from pathlib import Path
 SITE = Path(__file__).resolve().parents[1] / "site"
 EXTERNAL = ("https://", "http://", "mailto:")
 ALLOWED_STYLES = ("https://fonts.googleapis.com/",)
+CHAT_APP_PAGES = {"fleet.html": {"/", "/static/favicon.svg", "/static/favicon.png"}}
 
 
 class Page(HTMLParser):
@@ -62,6 +63,8 @@ def main():
     for name, page in pages.items():
         for link in page.links:
             target, _, fragment = link.partition("#")
+            if target in CHAT_APP_PAGES.get(name, set()):
+                continue
             if target and not (SITE / target.lstrip("/")).is_file():
                 failures.append(f"{name}: {link} names no file in site/")
             elif fragment and fragment not in pages.get(target or name, page).ids:

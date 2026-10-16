@@ -11,6 +11,7 @@ int main(void)
 	memset(state, 0, sizeof(*state));
 	memset(&runner, 0, sizeof(runner));
 	memset(&in, 0, sizeof(in));
+	in.graph_key = 1u;
 	in.rows = 1u;
 	state->copy_failed = 1u;
 	state->tp_collective_failed = 1u;

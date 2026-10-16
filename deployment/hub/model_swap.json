@@ -27,7 +27,7 @@
  "drop_kv": "$HOME/sparkdata/swap/weightd_warm /tmp/spark_weightd.sock --drop-kv {label}",
  "ready_seconds": 300,
  "api_seconds": 120,
- "drain_seconds": 30,
+ "drain_seconds": 600, "drain_quiet_seconds": 15,
  "node_seconds": 240,
  "memory_probe": "awk '/MemAvailable/ {print $2 * 1024}' /proc/meminfo",
  "memory_margin_bytes": 6442450944,

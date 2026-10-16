@@ -190,9 +190,11 @@ switching algorithm never changes a result bit. A collective carries its
 full logical batch count separately from its execution rows, so splitting a
 batch cannot select the wrong algorithm.
 
-**End state.** Kernels ring the NIC themselves (GPU-initiated RDMA), with no
-CPU relay per round. Two micro-batches alternate, so one computes while the
-other communicates. Both rails carry traffic at once: the switch for
+**End state.** Two micro-batches alternate, so one computes while the other
+communicates. A GB10 SM cannot ring the CX-7 doorbell (the 2026-10-01 probe:
+no write lands, no completion, no fault), and GPU-built work requests with a
+CPU doorbell measured within about 1 us of today's relay per round, so the
+CPU keeps ringing the NIC. Both rails carry traffic at once: the switch for
 all-to-all reach, the direct pair link for the first reduction level.
 
 ## Batching
@@ -490,8 +492,10 @@ Sparks at TP16, by the release qualification
 - **Context** is the window the chat layer serves
   (`deployment/hub/chat_frontend.json`).
 - A CPU tenant kept about 16 cores busy on every node during these runs, so
-  treat the numbers as lower bounds. On a quiet fleet on 2026-10-08 K3
-  decoded 16.3 tok/s at B1, against 10.0 here.
+  treat the numbers as lower bounds. The same build on the quiet fleet
+  (2026-10-14 12:45Z, after the tenant stopped) decoded K3 at 16.2 tok/s at
+  B1, against 10.0 here: the load, not the build, caused the drop
+  (`qualification/releases/1d89e0377/kimi-k3.quiet-20261014.perf.jsonl`).
 - On the six fixed release prompts every model produced the same tokens as
   the build it replaced. GLM 5.3 Full's logprob golden moved slightly: 706 of
   708 top-1 tokens agree, and the one flip is a near tie.

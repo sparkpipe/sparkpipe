@@ -1,0 +1,10 @@
+FRAMES KP1 batch_speculation frames=131 drafted=16031 kept_drafts=10783 chain_token_ms=64.5 single_ms=72.4 buckets r4:n=2,rows=3.5,kept=3.0,ms=117.6 r16:n=2,rows=14.5,kept=9.0,ms=211.2 r32:n=19,rows=24.1,kept=14.1,ms=248.3 r64:n=12,rows=45.7,kept=20.7,ms=329.3 r128:n=33,rows=90.3,kept=52.7,ms=472.8 r256:n=63,rows=192.7,kept=137.1,ms=728.1
+SPEED KP1 editfull tokens=15902 decode_s=113.1 tok_s=140.59 editsr tokens=2031 decode_s=83.2 tok_s=24.41
+FRAMES KT1 batch_speculation frames=390 drafted=16320 kept_drafts=12860 chain_token_ms=65.4 single_ms=74.4 buckets r4:n=8,rows=3.2,kept=2.6,ms=113.3 r8:n=7,rows=6.1,kept=2.9,ms=137.2 r16:n=4,rows=12.2,kept=1.8,ms=196.1 r32:n=32,rows=23.9,kept=14.7,ms=250.0 r64:n=258,rows=33.9,kept=31.2,ms=305.6 r128:n=81,rows=87.5,kept=57.7,ms=478.3
+SPEED KT1 editfull tokens=15902 decode_s=157.4 tok_s=101.02 editsr tokens=2003 decode_s=80.0 tok_s=25.05
+FRAMES KP2 batch_speculation frames=194 drafted=23056 kept_drafts=16394 chain_token_ms=65.5 single_ms=72.2 buckets r8:n=1,rows=5.0,kept=2.0,ms=130.2 r16:n=2,rows=14.5,kept=9.0,ms=207.2 r32:n=23,rows=23.7,kept=15.7,ms=252.8 r64:n=29,rows=46.5,kept=25.0,ms=342.8 r128:n=47,rows=81.2,kept=58.2,ms=460.8 r256:n=92,rows=190.3,kept=138.5,ms=734.1
+SPEED KP2 editfull tokens=15902 decode_s=115.9 tok_s=137.25 editsr tokens=2031 decode_s=82.1 tok_s=24.74
+STREAMS KP1 identical 19/20 vs KT1
+STREAMS KP2 identical 19/20 vs KT1
+DIFF KP1 editsr_09
+DIFF KP2 editsr_09
