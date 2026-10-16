@@ -492,6 +492,7 @@ PYTHON_TESTS := \
 	tests/test_gqa_shard_cuda.py \
 	tests/test_head_certified_cuda.py \
 	tests/test_latent_gather_prefill_cuda.py \
+	tests/test_latent_shard_decode_cuda.py \
 	tests/test_delta_rule_column_cuda.py \
 	tests/test_index_shard_cuda.py \
 	tests/test_latent_rope_heads_cuda.py \

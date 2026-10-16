@@ -194,6 +194,7 @@ struct K3LayerBuffers
 	uint16_t *shard_query_gathered_bf16;
 	float *shard_partials_f32;
 	float *shard_partials_received_f32;
+	uint64_t shard_received_floats;
 	uint64_t shard_query_rank_stride;
 	uint64_t shard_partial_rank_stride;
 	uint32_t shard_gather;
@@ -613,10 +614,11 @@ static int32_t K3LayerMlaShardPartials(const K3LayerBuffers *b, uint32_t rows, c
 			K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions,
 			K3_MLA_QK_SCALE,b->shard_partials_f32,b->shard_partial_rank_stride,rows,stream) == cudaSuccess
 			? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
-	return(LmLatentShardPartialLaunch<Geometry,LmKvShardView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>(
+	return(LmLatentShardDecodeLaunch<Geometry,LmKvShardView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>(
 		b->cache_shard,b->shard_query_gathered_bf16,b->shard_query_rank_stride,
 		K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions,
-		0,0u,0u,K3_MLA_QK_SCALE,b->shard_partials_f32,b->shard_partial_rank_stride,rows,stream) == cudaSuccess
+		K3_MLA_QK_SCALE,b->shard_partials_received_f32,b->shard_received_floats,
+		b->shard_partials_f32,b->shard_partial_rank_stride,rows,stream) == cudaSuccess
 		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 

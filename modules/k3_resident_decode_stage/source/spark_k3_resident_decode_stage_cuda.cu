@@ -400,6 +400,7 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 			(size_t)tp_degree * SparkK3KvShardPartialStride(max_rows, tp_degree) * sizeof(float));
 		b->shard_partials_received_f32 = (float *)k3_carve(d, &off,
 			(size_t)tp_degree * SparkK3KvShardPartialStride(max_rows, tp_degree) * sizeof(float));
+		b->shard_received_floats = (uint64_t)tp_degree * SparkK3KvShardPartialStride(max_rows, tp_degree);
 		b->shard_gather_send = (uint8_t *)b->shard_partials_f32;
 		b->shard_gather_keys = (const uint8_t *)b->shard_query_gathered_bf16;
 		if ( cudaMalloc(&d->gather_plan, (size_t)3u * sequences * sizeof(uint32_t)) != cudaSuccess )
