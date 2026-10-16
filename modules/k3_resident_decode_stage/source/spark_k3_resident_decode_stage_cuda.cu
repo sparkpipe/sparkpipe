@@ -19,6 +19,22 @@ extern "C" int32_t K3StageSlice(const void *layer_weights, const void *slice_sta
 static_assert(K3_DISPATCH_GATHER_WINDOW_GRAIN % LM_PREFILL_ATTN_TILE == 0u, "a gather window starts on an attention key tile");
 static_assert((K3_DISPATCH_GATHER_WINDOW_GRAIN * K3_MLA_KV_A_DIM * sizeof(uint16_t)) % (K3_HIDDEN * sizeof(uint16_t)) == 0u,
 	"a gather window fills whole exchange units");
+static_assert(K3_DISPATCH_GATHER_WINDOW_GRAIN % LM_EXPANDED_PREFILL_TILE == 0u, "an expanded value pass starts on an expanded key tile");
+
+#define K3_DISPATCH_EXPANDED_MIN_ROWS 256u
+
+static uint64_t K3DispatchGatherWindowKeys(uint32_t max_rows, uint32_t degree)
+{
+	const uint64_t unit = (uint64_t)K3_HIDDEN * sizeof(uint16_t);
+	const uint64_t key_bytes = (uint64_t)K3_MLA_KV_A_DIM * sizeof(uint16_t);
+	const uint64_t landing_units = SparkK3KvShardQueryStride(max_rows, degree) / K3_HIDDEN;
+	return((landing_units / 2u * unit / key_bytes) / K3_DISPATCH_GATHER_WINDOW_GRAIN * K3_DISPATCH_GATHER_WINDOW_GRAIN);
+}
+
+static uint64_t K3DispatchExpandedValueBytes(uint32_t max_rows, uint32_t degree)
+{
+	return((uint64_t)degree * K3DispatchGatherWindowKeys(max_rows, degree) * SparkK3KvShardHeads(degree) * K3_V_HEAD_DIM * sizeof(uint16_t));
+}
 
 extern "C" int32_t K3StageFold(const void *layer_weights, const void *slice_state, void *layer_buffers,
 	uint32_t first_layer, uint32_t layer_count, uint32_t sequences, const uint32_t *verify_row_begin,
@@ -363,7 +379,8 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	for ( size_t item = 0u; item < count; ++item )
 		d->scratch_bytes += (sizes[item] + 15u) & ~(size_t)15u;
 	if ( tp_degree > 1u )
-		d->scratch_bytes += (size_t)SparkK3KvShardScratchBytes(max_rows, tp_degree) + 48u;
+		d->scratch_bytes += (size_t)SparkK3KvShardScratchBytes(max_rows, tp_degree) + 48u +
+			(size_t)K3DispatchExpandedValueBytes(max_rows, tp_degree) + 16u;
 	d->scratch_bytes += 256u;
 	if ( cudaMalloc(&d->scratch, d->scratch_bytes) != cudaSuccess )
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
@@ -408,6 +425,8 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 		b->shard_received_floats = (uint64_t)tp_degree * SparkK3KvShardPartialStride(max_rows, tp_degree);
 		b->shard_gather_send = (uint8_t *)b->shard_partials_f32;
 		b->shard_gather_keys = (const uint8_t *)b->shard_query_gathered_bf16;
+		b->shard_gather_values_bytes = K3DispatchExpandedValueBytes(max_rows, tp_degree);
+		b->shard_gather_values = b->shard_gather_values_bytes != 0u ? k3_carve(d, &off, (size_t)b->shard_gather_values_bytes) : 0;
 		if ( cudaMalloc(&d->gather_plan, (size_t)3u * sequences * sizeof(uint32_t)) != cudaSuccess )
 			{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
 		cudaMemset(d->gather_plan, 0, (size_t)3u * sequences * sizeof(uint32_t));
@@ -696,11 +715,14 @@ static int32_t K3DispatchGatherPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint3
 	const uint64_t landing_units = SparkK3KvShardQueryStride(d->max_rows, degree) / K3_HIDDEN;
 	const uint64_t send_bytes = (uint64_t)degree * SparkK3KvShardPartialStride(d->max_rows, degree) * sizeof(float);
 	const uint64_t running_bytes = (uint64_t)d->max_rows * SparkK3KvShardHeads(degree) * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK) * sizeof(float);
-	const uint64_t window_keys = (landing_units / 2u * unit / key_bytes) / K3_DISPATCH_GATHER_WINDOW_GRAIN * K3_DISPATCH_GATHER_WINDOW_GRAIN;
+	const uint64_t window_keys = K3DispatchGatherWindowKeys(d->max_rows, degree);
 	const uint64_t query_units = SparkK3KvShardQuerySequences(rows, degree);
 	const uint64_t partial_units = SparkK3KvShardPartialSequences(rows, degree);
 	uint64_t gather_rounds, scatter_rounds, running_offset;
 	b->shard_gather = 0u;
+	b->shard_gather_expanded = 0u;
+	b->shard_gather_passes = 0u;
+	b->shard_gather_value_keys = 0u;
 	if ( d->gather_plan == 0 || sequence >= d->sequences || most == 0u )
 		return 0;
 	if ( units <= landing_units )
@@ -725,6 +747,21 @@ static int32_t K3DispatchGatherPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint3
 		b->shard_gather_stride = window_keys * key_bytes;
 	}
 	b->shard_gather_window = 0u;
+	if ( b->shard_gather_values != 0 && rows >= K3_DISPATCH_EXPANDED_MIN_ROWS && window_keys != 0u &&
+		SparkK3KvShardHeads(degree) % LM_EXPANDED_PREFILL_HEADS == 0u &&
+		b->shard_gather_values_bytes >= (uint64_t)degree * window_keys * SparkK3KvShardHeads(degree) * K3_V_HEAD_DIM * sizeof(uint16_t) )
+	{
+		const uint64_t passes = ((uint64_t)most + window_keys - 1u) / window_keys;
+		running_offset = send_bytes > running_bytes ? (send_bytes - running_bytes) / 256u * 256u : 0u;
+		if ( passes == 1u || b->shard_gather_windows > 1u || units * unit <= running_offset )
+		{
+			if ( passes > 1u && b->shard_gather_windows <= 1u )
+				b->shard_gather_running = (float *)(b->shard_gather_send + running_offset);
+			b->shard_gather_expanded = 1u;
+			b->shard_gather_passes = (uint32_t)passes;
+			b->shard_gather_value_keys = (uint32_t)window_keys;
+		}
+	}
 	scatter_rounds = SparkTpMeshDirectChunks(query_units * K3_HIDDEN * degree, degree, SPARK_TP_MESH_OPERATION_ALL_GATHER, SPARK_WEIGHTD_MESH_SLOT_BYTES) +
 		SparkTpMeshAllToAllChunks(partial_units * K3_HIDDEN, degree, SPARK_WEIGHTD_MESH_SLOT_BYTES);
 	gather_rounds = SparkTpMeshDirectChunks(units * K3_HIDDEN * degree, degree, SPARK_TP_MESH_OPERATION_ALL_GATHER, SPARK_WEIGHTD_MESH_SLOT_BYTES);
@@ -773,6 +810,7 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	b->output_token = in->output_token;
 	b->output_score = in->output_score;
 	b->shard_gather = 0u;
+	b->shard_gather_expanded = 0u;
 	if ( b->kv_shard.degree > 1u && rows > LM_SKINNY_ROWS_WIDE )
 	{
 		const int32_t gather = in->gather_context != 0u && sequences == 1u
