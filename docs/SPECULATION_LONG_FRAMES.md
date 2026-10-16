@@ -82,9 +82,14 @@ document is the contract for that path. Measured results are in
 
 A GLM wave above 8 ordered rows used to all-gather the whole cached context's
 latent in every layer (about 3.4 ms per 1K tokens of context per wave). A wave
-that fits the 64-row scatter buffers now scatters when the query and partial
-exchange costs less than that gather (`SparkKvShardExchangeCostNs`), as K3
-already chooses. Frames above 64 rows still gather.
+of up to 256 rows (`GLM_SCATTER_ROWS`, the longest verify frame) now scatters
+when the query, candidate and partial exchange costs less than that gather
+(`SparkKvShardExchangeCostNs`), as K3 already chooses. Per peer and row the
+scatter moves about 29 KB (4.6 KB of queries, the rank's 2,048 DSA candidates
+at 8 bytes, 8.2 KB of partials) against about 72 bytes per context token for
+the gather, so it wins above roughly 400 context tokens per row: about 26K
+tokens for a 64-row frame, 100K for 256 rows. The scatter buffers for 256
+rows take about 130 MB more per lane and rank than for 64.
 
 ## Frame size
 
