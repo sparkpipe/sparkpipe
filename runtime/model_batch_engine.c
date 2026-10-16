@@ -85,13 +85,13 @@ typedef struct SparkModelBatchRequestState
 	uint32_t restore_hint_sent;
 	SparkModelServingCacheIdentity cache_published_identity;
 	SparkSha256Context cache_published_digest_context;
-	uint32_t draft_source;
 	uint32_t draft_count;
 	uint32_t draft_class;
 	uint32_t draft_match;
 	float draft_expected;
 	float draft_frame_ns;
 	SparkSpeculationHazard draft_hazards[SPARK_SPECULATION_FRAME_CLASSES];
+	uint32_t draft_tokens[SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE];
 	SparkSpeculationLookupIndex lookup;
 	SparkRowSampling sampling;
 	SparkModelBatchRequestHandle handle;
@@ -1204,19 +1204,17 @@ static SparkStatus SparkModelBatchAcceptVerifiedLane(
 	uint32_t lane,
 	uint32_t draft_count)
 {
-	const uint32_t *tokens;
 	uint32_t base,row,accepted,kept;
 	SparkStatus status;
 	if ( completion->tokens_per_sequence < draft_count + 1u || draft_count != request->draft_count )
 		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	base = lane * completion->tokens_per_sequence;
 	kept = SparkModelServingCompletionKeptRows(completion,lane);
-	tokens = SparkModelBatchRequestTokens(engine,(uint32_t)(request - engine->requests));
 	accepted = 0u;
-	while ( accepted < draft_count && accepted + 1u < kept && tokens[request->draft_source + accepted] == completion->token_ids[base + accepted] )
+	while ( accepted < draft_count && accepted + 1u < kept && request->draft_tokens[accepted] == completion->token_ids[base + accepted] )
 		accepted++;
 	if ( kept == 0u || kept > draft_count + 1u || accepted + 1u != kept ||
-		(kept <= draft_count && tokens[request->draft_source + kept - 1u] == completion->token_ids[base + kept - 1u]) )
+		(kept <= draft_count && request->draft_tokens[kept - 1u] == completion->token_ids[base + kept - 1u]) )
 		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	status = SparkModelBatchAcceptToken(engine,request,completion,base);
 	for (row=1u; status == SPARK_STATUS_OK && row<kept && request->state == SPARK_MODEL_BATCH_REQUEST_READY_DECODE; row++)
@@ -1911,7 +1909,6 @@ SparkStatus SparkModelBatchEngineSubmit(
 	state->accepted_ns = SparkModelBatchNowNs();
 	memcpy(SparkModelBatchRequestTokens(engine,slot),request->prompt_token_ids,(size_t)request->prompt_token_count * sizeof(uint32_t));
 	state->draft_count = 0u;
-	state->draft_source = 0u;
 	state->draft_class = 0u;
 	memset(state->draft_hazards,0,sizeof(state->draft_hazards));
 	if ( engine->verify_capable != 0u )
@@ -2553,7 +2550,7 @@ static void SparkModelBatchInitializeSubmission(
 		SPARK_MODEL_SERVING_WORK_KIND_RELEASE ? 0u : 1u;
 }
 
-static void SparkModelBatchDigestFrame(SparkSha256Context *context,const uint32_t *tokens,uint32_t position,uint32_t draft_source,uint32_t first,uint32_t end)
+static void SparkModelBatchDigestFrame(SparkSha256Context *context,const uint32_t *tokens,uint32_t position,const uint32_t *drafts,uint32_t first,uint32_t end)
 {
 	if ( first <= position && first < end )
 	{
@@ -2562,7 +2559,7 @@ static void SparkModelBatchDigestFrame(SparkSha256Context *context,const uint32_
 		first = committed_end;
 	}
 	if ( first < end )
-		SparkModelBatchDigestTokens(context,&tokens[draft_source + (first - position - 1u)],end - first);
+		SparkModelBatchDigestTokens(context,&drafts[first - position - 1u],end - first);
 }
 
 static void SparkModelBatchVerifyIdentities(
@@ -2579,7 +2576,7 @@ static void SparkModelBatchVerifyIdentities(
 	{
 		if ( boundary > digested )
 		{
-			SparkModelBatchDigestFrame(&context,tokens,position,request->draft_source,digested,boundary);
+			SparkModelBatchDigestFrame(&context,tokens,position,request->draft_tokens,digested,boundary);
 			digested = boundary;
 		}
 		SparkModelBatchFinalizeIdentity(&context,&engine->scratch_block_identities[engine->scratch_block_identity_count++]);
@@ -2707,7 +2704,6 @@ static uint32_t SparkModelBatchPlanDraft(
 	uint32_t position,limit,checkpoint_remaining,index;
 	const uint32_t *tokens = SparkModelBatchRequestTokens(engine,slot);
 	request->draft_count = 0u;
-	request->draft_source = 0u;
 	if ( engine->verify_capable == 0u || request->sampling.logprobs != 0u || draft_limit == 0u )
 		return(0u);
 	position = request->prompt_token_count + request->generated_token_count - 1u;
@@ -2751,7 +2747,7 @@ static uint32_t SparkModelBatchPlanDraft(
 	SparkSpeculationFrameChoose(&engine->frame_model,&request->draft_hazards[request->draft_class],&frame,&choice);
 	if ( choice.drafts == 0u )
 		return(0u);
-	request->draft_source = match.source_end + 1u;
+	memcpy(request->draft_tokens,&tokens[match.source_end + 1u],(size_t)choice.drafts * sizeof(request->draft_tokens[0]));
 	request->draft_count = choice.drafts;
 	request->draft_match = match.match_length;
 	request->draft_expected = choice.expected_tokens;
@@ -2851,7 +2847,7 @@ static void SparkModelBatchBuildDecodeRows(
 			request = &engine->requests[slot];
 			tokens = SparkModelBatchRequestTokens(engine,slot);
 			position = request->prompt_token_count + request->generated_token_count - 1u;
-			engine->scratch_token_ids[row] = wave == 0u ? tokens[position] : tokens[request->draft_source + wave - 1u];
+			engine->scratch_token_ids[row] = wave == 0u ? tokens[position] : request->draft_tokens[wave - 1u];
 			engine->scratch_row_lane_indices[row] = lane;
 			engine->scratch_row_positions[row] = position + wave;
 			engine->scratch_row_sequence_ids[row] = request->sequence_id;
