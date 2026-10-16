@@ -88,6 +88,9 @@ typedef struct SparkModelBatchRequestState
 	uint32_t draft_source;
 	uint32_t draft_count;
 	uint32_t draft_class;
+	uint32_t draft_match;
+	float draft_expected;
+	float draft_frame_ns;
 	SparkSpeculationHazard draft_hazards[SPARK_SPECULATION_FRAME_CLASSES];
 	SparkSpeculationLookupIndex lookup;
 	SparkRowSampling sampling;
@@ -122,6 +125,12 @@ typedef struct SparkModelBatchSubmissionState
 	uint32_t rows;
 	uint32_t steps;
 	uint32_t context;
+	uint64_t trace_request_id;
+	uint32_t trace_drafts;
+	uint32_t trace_class;
+	uint32_t trace_match;
+	float trace_expected;
+	float trace_frame_ns;
 } SparkModelBatchSubmissionState;
 
 struct SparkModelBatchEngine
@@ -1374,6 +1383,7 @@ static SparkStatus SparkModelBatchApplyCompletion(
 
 static void SparkModelBatchRecordAdmission(SparkModelBatchEngine *engine,SparkModelBatchRequestState *request,uint32_t work_kind);
 static void SparkModelBatchObserveCost(SparkModelBatchEngine *engine,const SparkModelBatchSubmissionState *submission,const SparkModelServingCompletion *completion);
+static void SparkModelBatchTraceStep(SparkModelBatchEngine *engine,const SparkModelBatchSubmissionState *submission,const SparkModelServingCompletion *completion);
 
 static void SparkModelBatchRecordAdmittedLanes(SparkModelBatchEngine *engine,const SparkModelBatchSubmissionState *submission)
 {
@@ -1419,6 +1429,7 @@ static void SparkModelBatchCompletion(
 	{
 		SparkModelBatchRecordAdmittedLanes(engine,submission);
 		SparkModelBatchObserveCost(engine,submission,completion);
+		SparkModelBatchTraceStep(engine,submission,completion);
 		status = SparkModelBatchApplyCompletion(engine,submission,completion);
 		if ( status != SPARK_STATUS_OK )
 		{
@@ -2742,6 +2753,9 @@ static uint32_t SparkModelBatchPlanDraft(
 		return(0u);
 	request->draft_source = match.source_end + 1u;
 	request->draft_count = choice.drafts;
+	request->draft_match = match.match_length;
+	request->draft_expected = choice.expected_tokens;
+	request->draft_frame_ns = choice.frame_ns;
 	return(choice.drafts);
 }
 
@@ -2964,6 +2978,37 @@ static void SparkModelBatchObserveCost(
 		SparkSpeculationFrameObserveFrame(&engine->frame_model,submission->rows,submission->context,ns);
 }
 
+static void SparkModelBatchTraceStep(
+	SparkModelBatchEngine *engine,
+	const SparkModelBatchSubmissionState *submission,
+	const SparkModelServingCompletion *completion)
+{
+	const char *kind;
+	uint32_t kept;
+	if ( engine->verify_capable == 0u || submission->lane_count != 1u ||
+		(submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_DECODE && submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL) )
+		return;
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
+	{
+		kind = "prefill";
+		kept = submission->rows;
+	}
+	else if ( submission->verify != 0u )
+	{
+		kind = "verify";
+		kept = SparkModelServingCompletionKeptRows(completion,0u);
+	}
+	else
+	{
+		kind = submission->steps > 1u ? "chain" : "single";
+		kept = submission->steps;
+	}
+	fprintf(stderr,"batch_step kind=%s request=%llu rows=%u steps=%u drafts=%u kept=%u match=%u class=%u expect=%.2f predict_ms=%.2f service_ms=%.2f wall_ms=%.2f context=%u\n",
+		kind,(unsigned long long)submission->trace_request_id,submission->rows,submission->steps,submission->trace_drafts,kept,submission->trace_match,submission->trace_class,
+		(double)submission->trace_expected,(double)submission->trace_frame_ns / 1e6,(double)completion->service_time_ns / 1e6,
+		(double)(SparkModelBatchNowNs() - submission->dispatched_ns) / 1e6,submission->context);
+}
+
 static void SparkModelBatchRecordSubmission(
 	SparkModelBatchEngine *engine,
 	SparkModelBatchSubmissionState *state,
@@ -2976,6 +3021,12 @@ static void SparkModelBatchRecordSubmission(
 	prefill_counts = SparkModelBatchSubmissionPrefillCounts(engine,state);
 	state->lane_count = lane_count;
 	state->submission_id = engine->next_submission_id;
+	state->trace_request_id = engine->requests[engine->scratch_request_slots[0]].request_id;
+	state->trace_drafts = state->verify != 0u ? engine->scratch_prefill_counts[0] : 0u;
+	state->trace_class = state->verify != 0u ? engine->requests[engine->scratch_request_slots[0]].draft_class : 0u;
+	state->trace_match = state->verify != 0u ? engine->requests[engine->scratch_request_slots[0]].draft_match : 0u;
+	state->trace_expected = state->verify != 0u ? engine->requests[engine->scratch_request_slots[0]].draft_expected : 0.0f;
+	state->trace_frame_ns = state->verify != 0u ? engine->requests[engine->scratch_request_slots[0]].draft_frame_ns : 0.0f;
 	inflight_state = SparkModelBatchInflightStateForWork(state->work_kind);
 	for (lane=0u; lane<lane_count; lane++)
 	{
