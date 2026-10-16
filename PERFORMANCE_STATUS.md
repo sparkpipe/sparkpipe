@@ -238,6 +238,18 @@ after the first token.
   - Short context: 232.8 against 238.7 whole file, 39.1 against 35.3
     SEARCH/REPLACE (different token counts): no difference beyond run noise.
   - Receipts and traces under `hold6/` and `hold7/`.
+- Hold 8 (2026-10-16 01:50-02:22Z, `c45b29d40`: one-sequence verify frames
+  of 2-8 rows run as CUDA graphs under a model-specific graph key, against
+  `2c60eceb0`; order G1 S1 G2 S2 GL SL). Whole file 237.2/232.2 against
+  236.3/234.4 tok/s, SEARCH/REPLACE 37.6/35.8 against 36.8/38.0, 46K context
+  105.5 against 106.1, prose (256 tokens greedy) 29.4-29.6 on both: no change
+  beyond noise. Graphed frames cost 56.5 ms at 2 rows (45 frames) and 67.1 ms
+  at 3 rows (7) against eager 3 rows 70.1 ms (37) and 2 rows about 62 ms
+  (holds 3-4): the graph saves 3-6 ms. A graphed step costs 35.7 / 56.5 /
+  67.1 ms at 1 / 2 / 3 rows, so each added row still costs 11-21 ms with no
+  eager overhead left; the per-row cost sits in the multi-row compute and
+  exchange path, which is the next profiling target (it decides whether a
+  GLM model drafter can pay). Receipts under `hold8/`.
 - Near-tie probe (hold 3, control build): at the first divergence of
   editsr_01, 05 and 09 the multi-row path serves the spec stream's token, by
   1.63, 0.54 and 0.31 nats over the control's token. These are not tiny
