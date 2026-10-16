@@ -251,7 +251,7 @@ static void ExpandCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 		}
 	{
 		const double expanded_worst = ExpandWorst(expanded,reference,rows,heads_per_rank),absorbed_worst = ExpandWorst(absorbed,reference,rows,heads_per_rank);
-		ExpandCheck(windows >= 2u || window_keys == 0u || most <= window_keys,"the case spans the windows it claims",label);
+		ExpandCheck(window_keys == 0u || windows >= 2u,"a windowed case runs more than one pass, so the fold and finish are exercised",label);
 		ExpandCheck(expanded_worst <= 1.0 / 64.0,"expanded attention matches the double-precision attention and value projection within 1/64 of each head's peak",label);
 		ExpandCheck(expanded_worst <= 2.0 * absorbed_worst + 1.0 / 256.0,"expanded attention is no less accurate than the absorbed path it replaces",label);
 		printf("%s %s: worst error against double precision %.5f (absorbed path %.5f)\n",expanded_worst <= 1.0 / 64.0 ? "ok  " : "FAIL",label,expanded_worst,absorbed_worst);
@@ -302,6 +302,10 @@ static void ExpandCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 		view.key_end = most > 8u ? most : 9u;
 		ExpandCheck(LmExpandedGatherPrefillLaunch<ExpandKv,EXPAND_LATENT,EXPAND_ROPE,EXPAND_VALUE>(view,values_device,query_device,heads_per_rank,sequences_device,contexts_device,
 			positions_device,scale,value_partials,rows,0) == cudaErrorInvalidValue,"a key window that does not start on a key tile is refused",label);
+		view.key_begin = 0u;
+		view.key_end = LM_KV_SHARD_KEYS_ALL;
+		ExpandCheck(LmExpandedGatherPrefillLaunch<ExpandKv,EXPAND_LATENT,EXPAND_ROPE,EXPAND_VALUE>(view,values_device,query_device,heads_per_rank,sequences_device,contexts_device,
+			positions_device,scale,value_partials,rows,0) == cudaSuccess,"the same view with an aligned window and an even head count launches",label);
 		ExpandCheck(LmExpandedGatherPrefillLaunch<ExpandKv,EXPAND_LATENT,EXPAND_ROPE,EXPAND_VALUE>(view,values_device,query_device,heads_per_rank | 1u,sequences_device,contexts_device,
 			positions_device,scale,value_partials,rows,0) == cudaErrorInvalidValue,"an odd head count per rank is refused",label);
 	}

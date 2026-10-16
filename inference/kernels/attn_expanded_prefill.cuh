@@ -1,13 +1,15 @@
 #pragma once
 
 #include "inference/kernels/attn_shard_prefill.cuh"
+#include "inference/kernels/tma.cuh"
 
-#define LM_EXPANDED_PREFILL_THREADS 256u
-#define LM_EXPANDED_PREFILL_WARPS 8u
+#define LM_EXPANDED_PREFILL_COMPUTE_WARPS 8u
+#define LM_EXPANDED_PREFILL_PRODUCER_WARPS 4u
+#define LM_EXPANDED_PREFILL_THREADS ((LM_EXPANDED_PREFILL_COMPUTE_WARPS + LM_EXPANDED_PREFILL_PRODUCER_WARPS) * 32u)
 #define LM_EXPANDED_PREFILL_ROWS 32u
 #define LM_EXPANDED_PREFILL_HEADS 2u
 #define LM_EXPANDED_PREFILL_TILE 16u
-#define LM_EXPANDED_PREFILL_STAGES 3u
+#define LM_EXPANDED_PREFILL_RING 3u
 #define LM_EXPANDED_PREFILL_EXCHANGE_FLOATS 8u
 
 #define LM_LATENT_EXPAND_THREADS 256u
@@ -18,17 +20,12 @@
 #define LM_EXPANDED_PREFILL_PAD 16u
 
 template<uint32_t DIM, uint32_t VALUE>
-static __host__ __device__ constexpr uint32_t LmExpandedPrefillStageBytes(void)
-{
-	return(LM_EXPANDED_PREFILL_TILE * (DIM * 2u + LM_EXPANDED_PREFILL_PAD)
-		+ LM_EXPANDED_PREFILL_HEADS * LM_EXPANDED_PREFILL_TILE * (VALUE * 2u + LM_EXPANDED_PREFILL_PAD));
-}
-
-template<uint32_t DIM, uint32_t VALUE>
 static __host__ __device__ constexpr uint32_t LmExpandedPrefillSharedBytes(void)
 {
-	return(LM_EXPANDED_PREFILL_STAGES * LmExpandedPrefillStageBytes<DIM, VALUE>()
-		+ 2u * LM_EXPANDED_PREFILL_WARPS * 32u * LM_EXPANDED_PREFILL_EXCHANGE_FLOATS * 4u);
+	return(LM_EXPANDED_PREFILL_RING * LM_EXPANDED_PREFILL_TILE * (DIM * 2u + LM_EXPANDED_PREFILL_PAD)
+		+ LM_EXPANDED_PREFILL_RING * LM_EXPANDED_PREFILL_HEADS * LM_EXPANDED_PREFILL_TILE * (VALUE * 2u + LM_EXPANDED_PREFILL_PAD)
+		+ 2u * LM_EXPANDED_PREFILL_COMPUTE_WARPS * 32u * LM_EXPANDED_PREFILL_EXCHANGE_FLOATS * 4u
+		+ 4u * LM_EXPANDED_PREFILL_RING * 8u);
 }
 
 template<uint32_t VALUE>
@@ -45,6 +42,16 @@ static __device__ __forceinline__ uint32_t LmExpandedPackBf16(uint16_t low, uint
 static __device__ __forceinline__ void LmExpandedNamedBarrier(uint32_t name, uint32_t threads)
 {
 	asm volatile("bar.sync %0, %1;\n" :: "r"(name), "r"(threads) : "memory");
+}
+
+static __device__ __forceinline__ void LmExpandedNamedArrive(uint32_t name, uint32_t threads)
+{
+	asm volatile("bar.arrive %0, %1;\n" :: "r"(name), "r"(threads) : "memory");
+}
+
+static __device__ __forceinline__ void LmExpandedCopyArrive(uint64_t *barrier)
+{
+	asm volatile("cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%0];\n" :: "r"(LmTmaSharedAddress(barrier)) : "memory");
 }
 
 template<uint32_t LATENT, uint32_t ROW_DIM, uint32_t VALUE>
@@ -204,7 +211,6 @@ void LmExpandedGatherPrefillKernel(
 	constexpr uint32_t CHUNKS = DIM / 8u;
 	constexpr uint32_t VALUE_CHUNKS = VALUE / 8u;
 	constexpr uint32_t TILE = LM_EXPANDED_PREFILL_TILE;
-	constexpr uint32_t STAGES = LM_EXPANDED_PREFILL_STAGES;
 	constexpr uint32_t QUERIES = LM_EXPANDED_PREFILL_ROWS * LM_EXPANDED_PREFILL_HEADS;
 	constexpr uint32_t K_STEPS = DIM / 16u;
 	constexpr uint32_t HALF_STEPS = K_STEPS / 2u;
@@ -212,36 +218,31 @@ void LmExpandedGatherPrefillKernel(
 	constexpr uint32_t FRAGS = HALF_COLUMNS / 8u;
 	constexpr uint32_t KEY_PITCH = ROW_BYTES + LM_EXPANDED_PREFILL_PAD;
 	constexpr uint32_t VALUE_PITCH = VALUE_BYTES + LM_EXPANDED_PREFILL_PAD;
-	constexpr uint32_t KEY_BYTES = TILE * KEY_PITCH;
-	constexpr uint32_t STAGE_BYTES = LmExpandedPrefillStageBytes<DIM, VALUE>();
+	constexpr uint32_t KEY_SLOT = TILE * KEY_PITCH;
+	constexpr uint32_t VALUE_SLOT = LM_EXPANDED_PREFILL_HEADS * TILE * VALUE_PITCH;
 	constexpr uint32_t KEY_ITEMS = TILE * CHUNKS;
-	constexpr uint32_t STAGE_ITEMS = KEY_ITEMS + LM_EXPANDED_PREFILL_HEADS * TILE * VALUE_CHUNKS;
-	constexpr uint32_t ROUNDS = (STAGE_ITEMS + LM_EXPANDED_PREFILL_THREADS - 1u) / LM_EXPANDED_PREFILL_THREADS;
+	constexpr uint32_t VALUE_ITEMS = LM_EXPANDED_PREFILL_HEADS * TILE * VALUE_CHUNKS;
+	constexpr uint32_t EXCHANGE_BYTES = 2u * LM_EXPANDED_PREFILL_COMPUTE_WARPS * 32u * LM_EXPANDED_PREFILL_EXCHANGE_FLOATS * 4u;
 	constexpr uint32_t RECORD = LM_LATENT_SHARD_RECORD_FLOATS(VALUE);
-	static_assert(LM_EXPANDED_PREFILL_WARPS * 32u == LM_EXPANDED_PREFILL_THREADS && LM_EXPANDED_PREFILL_WARPS == 2u * QUERIES / 16u,
-		"each sixteen-query tile is shared by two warps, one per half of the query-key width");
-	static_assert(TILE == 16u && LM_EXPANDED_PREFILL_ROWS == 32u && LM_EXPANDED_PREFILL_HEADS == 2u, "a tile is one 16-key fragment pair; a block holds two heads of 32 rows");
-	static_assert(DIM % 32u == 0u && K_STEPS % 2u == 0u && CHUNKS % 8u == 0u, "the query-key width splits into two halves of 16-wide steps");
-	static_assert(VALUE % 32u == 0u && FRAGS % 2u == 0u && VALUE_CHUNKS % 8u == 0u, "each warp owns whole 16-column value slices");
-	static_assert((KEY_PITCH / 4u) % 32u == 4u && (VALUE_PITCH / 4u) % 32u == 4u, "padded rows put eight consecutive rows on distinct banks");
-	static_assert(ROUNDS <= HALF_STEPS, "the next tile's copies spread over the query-key steps");
-	static_assert(Geometry::kSlotBytes >= ROW_BYTES, "the slot holds the latent and its rope part");
-	static_assert(QUERIES * ROW_BYTES <= STAGES * STAGE_BYTES, "the queries stage through the key buffers before the pipeline starts");
-	static_assert(LmExpandedPrefillSharedBytes<DIM, VALUE>() <= LM_PREFILL_ATTN_SHARED_LIMIT, "the tiles exceed the shared memory an SM has");
+	static_assert(KEY_ITEMS % (32u * LM_EXPANDED_PREFILL_PRODUCER_WARPS) == 0u && VALUE_ITEMS % (32u * LM_EXPANDED_PREFILL_PRODUCER_WARPS) == 0u, "the producer warps copy whole rounds of a tile");
+	static_assert(QUERIES * ROW_BYTES <= LM_EXPANDED_PREFILL_RING * (KEY_SLOT + VALUE_SLOT), "the queries stage through the rings before the pipeline starts");
+	static_assert(LmExpandedPrefillSharedBytes<DIM, VALUE>() <= LM_PREFILL_ATTN_SHARED_LIMIT, "the rings exceed the shared memory an SM has");
 	extern __shared__ __align__(128) uint8_t lm_expanded_shared[];
-	float *exchange = (float *)(lm_expanded_shared + STAGES * STAGE_BYTES);
+	uint8_t *key_ring = lm_expanded_shared;
+	uint8_t *value_ring = lm_expanded_shared + LM_EXPANDED_PREFILL_RING * KEY_SLOT;
+	float *exchange = (float *)(value_ring + LM_EXPANDED_PREFILL_RING * VALUE_SLOT);
+	uint64_t *key_full = (uint64_t *)((uint8_t *)exchange + EXCHANGE_BYTES);
+	uint64_t *key_empty = key_full + LM_EXPANDED_PREFILL_RING, *value_full = key_empty + LM_EXPANDED_PREFILL_RING, *value_empty = value_full + LM_EXPANDED_PREFILL_RING;
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t matrix = lane >> 3u, within = lane & 7u;
-	const uint32_t tile_id = warp >> 1u, half = warp & 1u, local_head = tile_id >> 1u;
+	const uint32_t tile_id = (warp & 7u) >> 1u, half = warp & 1u, local_head = tile_id >> 1u, group = (warp >> 2u) & 1u;
 	const uint32_t row = blockIdx.x * LM_EXPANDED_PREFILL_ROWS, head = blockIdx.y * LM_EXPANDED_PREFILL_HEADS;
 	const uint32_t last_row = (row + LM_EXPANDED_PREFILL_ROWS < rows ? row + LM_EXPANDED_PREFILL_ROWS : rows) - 1u;
 	const uint32_t base = (uint32_t)__cvta_generic_to_shared(lm_expanded_shared);
+	const uint32_t key_base = base, value_base = base + LM_EXPANDED_PREFILL_RING * KEY_SLOT;
 	const uint32_t row_low = row + (tile_id & 1u) * 16u + (lane >> 2u), row_high = row_low + 8u;
 	const uint64_t value_row_bytes = (uint64_t)heads_per_rank * VALUE_BYTES;
-	uint32_t query_frag[HALF_STEPS][4];
-	float output[FRAGS][4];
-	float max_low = -INFINITY, max_high = -INFINITY, sum_low = 0.0f, sum_high = 0.0f;
-	uint32_t sequence, dense, count, count_low, count_high, window_begin, limit, available, tile_first, tile_end, tile, index, chunk, step, frag, q, query_row;
+	uint32_t sequence, dense, count, count_low, count_high, window_begin, limit, available, tile_first, tile_end, tiles, index, chunk, step, frag, q, query_row;
 	uint64_t key_origin;
 
 	sequence = sequence_of_row[row];
@@ -269,7 +270,7 @@ void LmExpandedGatherPrefillKernel(
 	window_begin = cache.key_begin;
 	limit = count < cache.key_end ? count : cache.key_end;
 	available = SparkKvShardLocalKeys(cache.shard, cache.key_context[sequence]);
-	if (limit > window_begin && limit > available)
+	if (count > available)
 	{
 		if (threadIdx.x == 0u)
 			LmKvReportRequiredAccessFailure(cache.pages, LM_KV_ACCESS_ERROR_PAGE_TABLE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence,
@@ -279,32 +280,7 @@ void LmExpandedGatherPrefillKernel(
 	key_origin = (uint64_t)cache.key_offset[sequence] - window_begin;
 	tile_first = window_begin / TILE;
 	tile_end = limit > window_begin ? (limit + TILE - 1u) / TILE : tile_first;
-
-	auto copy = [&](uint32_t which, uint32_t item)
-	{
-		const uint32_t stage = base + ((which - tile_first) % STAGES) * STAGE_BYTES;
-		uint32_t key, piece, local, which_head;
-		if (item >= STAGE_ITEMS)
-			return;
-		if (item < KEY_ITEMS)
-		{
-			key = item / CHUNKS;
-			piece = item % CHUNKS;
-			local = which * TILE + key;
-			const bool valid = local >= window_begin && local < limit;
-			LmPrefillCopy(stage + key * KEY_PITCH + piece * 16u,
-				valid ? (const void *)(cache.keys + (key_origin + local) * Geometry::kSlotBytes + piece * 16u) : (const void *)cache.keys, valid ? 16u : 0u);
-			return;
-		}
-		item -= KEY_ITEMS;
-		which_head = item / (TILE * VALUE_CHUNKS);
-		key = item / VALUE_CHUNKS % TILE;
-		piece = item % VALUE_CHUNKS;
-		local = which * TILE + key;
-		const bool valid = local >= window_begin && local < limit;
-		LmPrefillCopy(stage + KEY_BYTES + (which_head * TILE + key) * VALUE_PITCH + piece * 16u,
-			valid ? (const void *)(values + (key_origin + local) * value_row_bytes + (uint64_t)(head + which_head) * VALUE_BYTES + piece * 16u) : (const void *)values, valid ? 16u : 0u);
-	};
+	tiles = tile_end - tile_first;
 
 	for (index = threadIdx.x; index < QUERIES * CHUNKS; index += LM_EXPANDED_PREFILL_THREADS)
 	{
@@ -316,59 +292,139 @@ void LmExpandedGatherPrefillKernel(
 			query_bf16 + ((uint64_t)query_row * heads_per_rank + head + (q >> 5u)) * DIM + chunk * 8u, 16u);
 	}
 	asm volatile("cp.async.commit_group;\n" ::: "memory");
+	if (threadIdx.x < LM_EXPANDED_PREFILL_RING)
+	{
+		LmMbarrierInit(&key_full[threadIdx.x], 32u * LM_EXPANDED_PREFILL_PRODUCER_WARPS);
+		LmMbarrierInit(&key_empty[threadIdx.x], LM_EXPANDED_PREFILL_COMPUTE_WARPS);
+		LmMbarrierInit(&value_full[threadIdx.x], 32u * LM_EXPANDED_PREFILL_PRODUCER_WARPS);
+		LmMbarrierInit(&value_empty[threadIdx.x], LM_EXPANDED_PREFILL_COMPUTE_WARPS);
+	}
 	asm volatile("cp.async.wait_group 0;\n" ::: "memory");
 	__syncthreads();
+	uint32_t query_frag[HALF_STEPS][4];
+	if (warp < LM_EXPANDED_PREFILL_COMPUTE_WARPS)
 	{
 		const uint32_t a_row = tile_id * 16u + (matrix & 1u) * 8u + within;
 #pragma unroll
 		for (step = 0u; step < HALF_STEPS; step++)
 			LmPrefillLoadX4(base + a_row * ROW_BYTES + LmPrefillSwizzle(a_row,(half * HALF_STEPS + step) * 2u + (matrix >> 1u)) * 16u, query_frag[step]);
 	}
+	__syncthreads();
+	if (warp >= LM_EXPANDED_PREFILL_COMPUTE_WARPS)
+	{
+		constexpr uint32_t KEY_COPIES = KEY_ITEMS / (32u * LM_EXPANDED_PREFILL_PRODUCER_WARPS);
+		constexpr uint32_t VALUE_COPIES = VALUE_ITEMS / (32u * LM_EXPANDED_PREFILL_PRODUCER_WARPS);
+		const uint32_t producer = (warp - LM_EXPANDED_PREFILL_COMPUTE_WARPS) * 32u + lane;
+		uint32_t key_target[KEY_COPIES], key_source[KEY_COPIES], key_of[KEY_COPIES];
+		uint32_t value_target[VALUE_COPIES], value_key[VALUE_COPIES];
+		uint64_t value_source[VALUE_COPIES];
+		uint32_t used, copy;
+#pragma unroll
+		for (copy = 0u; copy < KEY_COPIES; copy++)
+		{
+			const uint32_t item = producer + copy * 32u * LM_EXPANDED_PREFILL_PRODUCER_WARPS, key = item / CHUNKS, piece = item % CHUNKS;
+			key_of[copy] = key;
+			key_target[copy] = key * KEY_PITCH + piece * 16u;
+			key_source[copy] = key * Geometry::kSlotBytes + piece * 16u;
+		}
+#pragma unroll
+		for (copy = 0u; copy < VALUE_COPIES; copy++)
+		{
+			const uint32_t item = producer + copy * 32u * LM_EXPANDED_PREFILL_PRODUCER_WARPS, which_head = item / (TILE * VALUE_CHUNKS);
+			const uint32_t key = item / VALUE_CHUNKS % TILE, piece = item % VALUE_CHUNKS;
+			value_key[copy] = key;
+			value_target[copy] = (which_head * TILE + key) * VALUE_PITCH + piece * 16u;
+			value_source[copy] = (uint64_t)key * value_row_bytes + which_head * VALUE_BYTES + piece * 16u;
+		}
+		for (used = 0u; used < tiles; used++)
+		{
+			const uint32_t which = tile_first + used, slot = used % LM_EXPANDED_PREFILL_RING, round = used / LM_EXPANDED_PREFILL_RING, first_key = which * TILE;
+			const uint32_t low = window_begin > first_key ? window_begin - first_key : 0u;
+			const uint32_t high = limit < first_key + TILE ? limit - first_key : TILE;
+			const uint8_t *key_tile = cache.keys + (key_origin + first_key) * Geometry::kSlotBytes;
+			const uint8_t *value_tile = values + (key_origin + first_key) * value_row_bytes + (uint64_t)head * VALUE_BYTES;
+			const uint32_t key_slot = key_base + slot * KEY_SLOT, value_slot = value_base + slot * VALUE_SLOT;
+			if (round > 0u)
+				LmMbarrierWait(&key_empty[slot], (round - 1u) & 1u);
+#pragma unroll
+			for (copy = 0u; copy < KEY_COPIES; copy++)
+			{
+				const bool valid = key_of[copy] >= low && key_of[copy] < high;
+				LmPrefillCopy(key_slot + key_target[copy], valid ? (const void *)(key_tile + key_source[copy]) : (const void *)cache.keys, valid ? 16u : 0u);
+			}
+			LmExpandedCopyArrive(&key_full[slot]);
+			if (round > 0u)
+				LmMbarrierWait(&value_empty[slot], (round - 1u) & 1u);
+#pragma unroll
+			for (copy = 0u; copy < VALUE_COPIES; copy++)
+			{
+				const bool valid = value_key[copy] >= low && value_key[copy] < high;
+				LmPrefillCopy(value_slot + value_target[copy], valid ? (const void *)(value_tile + value_source[copy]) : (const void *)values, valid ? 16u : 0u);
+			}
+			LmExpandedCopyArrive(&value_full[slot]);
+		}
+		asm volatile("cp.async.wait_all;\n" ::: "memory");
+		return;
+	}
+	float output[FRAGS][4];
+	float score[2][4];
+	float max_low = -INFINITY, max_high = -INFINITY, sum_low = 0.0f, sum_high = 0.0f;
 #pragma unroll
 	for (frag = 0u; frag < FRAGS; frag++)
 		output[frag][0] = output[frag][1] = output[frag][2] = output[frag][3] = 0.0f;
-	__syncthreads();
-	for (index = 0u; index + 1u < STAGES; index++)
+	auto scores = [&](uint32_t used, float part[2][4])
 	{
-		if (tile_first + index < tile_end)
-			for (chunk = 0u; chunk < ROUNDS; chunk++)
-				copy(tile_first + index, threadIdx.x + chunk * LM_EXPANDED_PREFILL_THREADS);
-		asm volatile("cp.async.commit_group;\n" ::: "memory");
-	}
-	for (tile = tile_first; tile < tile_end; tile++)
-	{
-		const bool refill = tile + STAGES - 1u < tile_end;
-		asm volatile("cp.async.wait_group %0;\n" :: "n"(STAGES - 2u) : "memory");
-		__syncthreads();
-		const uint32_t stage = base + ((tile - tile_first) % STAGES) * STAGE_BYTES;
-		float score[2][4] = { { 0.0f, 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
-		{
-			uint32_t b[4], first[2], second[2];
-			const uint32_t b_row = (matrix >> 1u) * 8u + within;
+		const uint32_t slot_base = key_base + (used % LM_EXPANDED_PREFILL_RING) * KEY_SLOT;
+		const uint32_t b_row = (matrix >> 1u) * 8u + within;
+		uint32_t b[4], first[2], second[2];
 #pragma unroll
-			for (step = 0u; step < HALF_STEPS; step++)
-			{
-				if (refill && (step * ROUNDS) % HALF_STEPS < ROUNDS)
-					copy(tile + STAGES - 1u, threadIdx.x + (step * ROUNDS / HALF_STEPS) * LM_EXPANDED_PREFILL_THREADS);
-				LmPrefillLoadX4(stage + b_row * KEY_PITCH + ((half * HALF_STEPS + step) * 2u + (matrix & 1u)) * 16u, b);
-				first[0] = b[0]; first[1] = b[1];
-				second[0] = b[2]; second[1] = b[3];
-				LmMmaBf16(score[0], query_frag[step], first);
-				LmMmaBf16(score[1], query_frag[step], second);
-			}
-			asm volatile("cp.async.commit_group;\n" ::: "memory");
-		}
+		for (uint32_t i = 0u; i < 2u; i++)
+			part[i][0] = part[i][1] = part[i][2] = part[i][3] = 0.0f;
+#pragma unroll
+		for (uint32_t s = 0u; s < HALF_STEPS; s++)
 		{
-			float *mine = exchange + (((tile & 1u) * LM_EXPANDED_PREFILL_WARPS + warp) * 32u + lane) * LM_EXPANDED_PREFILL_EXCHANGE_FLOATS;
-			const float *theirs = exchange + (((tile & 1u) * LM_EXPANDED_PREFILL_WARPS + (warp ^ 1u)) * 32u + lane) * LM_EXPANDED_PREFILL_EXCHANGE_FLOATS;
-			*(float4 *)mine = make_float4(score[0][0], score[0][1], score[0][2], score[0][3]);
-			*(float4 *)(mine + 4u) = make_float4(score[1][0], score[1][1], score[1][2], score[1][3]);
-			LmExpandedNamedBarrier(1u + tile_id, 64u);
-			const float4 other_low = *(const float4 *)theirs, other_high = *(const float4 *)(theirs + 4u);
-			score[0][0] += other_low.x; score[0][1] += other_low.y; score[0][2] += other_low.z; score[0][3] += other_low.w;
-			score[1][0] += other_high.x; score[1][1] += other_high.y; score[1][2] += other_high.z; score[1][3] += other_high.w;
+			LmPrefillLoadX4(slot_base + b_row * KEY_PITCH + ((half * HALF_STEPS + s) * 2u + (matrix & 1u)) * 16u, b);
+			first[0] = b[0]; first[1] = b[1];
+			second[0] = b[2]; second[1] = b[3];
+			LmMmaBf16(part[0], query_frag[s], first);
+			LmMmaBf16(part[1], query_frag[s], second);
 		}
+	};
+	auto trade = [&](uint32_t used, float part[2][4])
+	{
+		float *mine = exchange + (((used & 1u) * LM_EXPANDED_PREFILL_COMPUTE_WARPS + warp) * 32u + lane) * LM_EXPANDED_PREFILL_EXCHANGE_FLOATS;
+		const float *theirs = exchange + (((used & 1u) * LM_EXPANDED_PREFILL_COMPUTE_WARPS + (warp ^ 1u)) * 32u + lane) * LM_EXPANDED_PREFILL_EXCHANGE_FLOATS;
+		*(float4 *)mine = make_float4(part[0][0], part[0][1], part[0][2], part[0][3]);
+		*(float4 *)(mine + 4u) = make_float4(part[1][0], part[1][1], part[1][2], part[1][3]);
+		LmExpandedNamedBarrier(1u + tile_id, 64u);
+		const float4 other_low = *(const float4 *)theirs, other_high = *(const float4 *)(theirs + 4u);
+		score[0][0] = part[0][0] + other_low.x; score[0][1] = part[0][1] + other_low.y; score[0][2] = part[0][2] + other_low.z; score[0][3] = part[0][3] + other_low.w;
+		score[1][0] = part[1][0] + other_high.x; score[1][1] = part[1][1] + other_high.y; score[1][2] = part[1][2] + other_high.z; score[1][3] = part[1][3] + other_high.w;
+	};
+	if (tiles > 0u)
+	{
+		float part[2][4];
+		LmMbarrierWait(&key_full[0], 0u);
+		if (group != 0u)
+			LmExpandedNamedBarrier(6u, 256u);
+		scores(0u, part);
+		LmExpandedNamedArrive(group == 0u ? 6u : 5u, 256u);
+		__syncwarp();
+		if (lane == 0u)
+			LmMbarrierArrive(&key_empty[0]);
+		trade(0u, part);
+	}
+	for (uint32_t used = 0u; used < tiles; used++)
+	{
+		const bool more = used + 1u < tiles;
+		const uint32_t tile = tile_first + used;
+		float part[2][4];
 		uint32_t weight_high[4], weight_low[4];
+		if (more)
+			LmMbarrierWait(&key_full[(used + 1u) % LM_EXPANDED_PREFILL_RING], ((used + 1u) / LM_EXPANDED_PREFILL_RING) & 1u);
+		LmExpandedNamedBarrier(group == 0u ? 5u : 6u, 256u);
+		scores(used + 1u, part);
+		LmExpandedNamedArrive(group == 0u ? 6u : 5u, 256u);
 		{
 			float peak_low = -INFINITY, peak_high = -INFINITY, next_low, next_high, scale_low, scale_high, total_low = 0.0f, total_high = 0.0f, value;
 			uint16_t high[2][4], low[2][4];
@@ -434,14 +490,15 @@ void LmExpandedGatherPrefillKernel(
 			weight_low[2] = LmExpandedPackBf16(low[1][0], low[1][1]);
 			weight_low[3] = LmExpandedPackBf16(low[1][2], low[1][3]);
 		}
+		LmMbarrierWait(&value_full[used % LM_EXPANDED_PREFILL_RING], (used / LM_EXPANDED_PREFILL_RING) & 1u);
 		{
-			const uint32_t value_base = stage + KEY_BYTES + local_head * TILE * VALUE_PITCH;
+			const uint32_t slot_base = value_base + (used % LM_EXPANDED_PREFILL_RING) * VALUE_SLOT + local_head * TILE * VALUE_PITCH;
 			const uint32_t b_row = (matrix & 1u) * 8u + within;
 			uint32_t b[4], first[2], second[2];
 #pragma unroll
 			for (frag = 0u; frag < FRAGS; frag += 2u)
 			{
-				LmPrefillLoadX4Trans(value_base + b_row * VALUE_PITCH + ((half * HALF_COLUMNS + frag * 8u) / 8u + (matrix >> 1u)) * 16u, b);
+				LmPrefillLoadX4Trans(slot_base + b_row * VALUE_PITCH + ((half * HALF_COLUMNS + frag * 8u) / 8u + (matrix >> 1u)) * 16u, b);
 				first[0] = b[0]; first[1] = b[1];
 				second[0] = b[2]; second[1] = b[3];
 				LmMmaBf16(output[frag], weight_high, first);
@@ -450,7 +507,18 @@ void LmExpandedGatherPrefillKernel(
 				LmMmaBf16(output[frag + 1u], weight_low, second);
 			}
 		}
+		__syncwarp();
+		if (lane == 0u)
+		{
+			LmMbarrierArrive(&value_empty[used % LM_EXPANDED_PREFILL_RING]);
+			if (more)
+				LmMbarrierArrive(&key_empty[(used + 1u) % LM_EXPANDED_PREFILL_RING]);
+		}
+		if (more)
+			trade(used + 1u, part);
 	}
+	if (tiles > 0u && group == 0u)
+		LmExpandedNamedBarrier(5u, 256u);
 	{
 		const uint32_t column = half * HALF_COLUMNS + (lane & 3u) * 2u;
 		float *record_low = partials + ((uint64_t)row_low * heads_per_rank + head + local_head) * RECORD;

@@ -87,6 +87,12 @@ __global__ void LmExpandedGatherPrefillKernel(
 	if (row_position[row] < dense)
 		dense = row_position[row] + 1u;
 	count = SparkKvShardLocalKeys(cache.shard, dense);
+	if (count > SparkKvShardLocalKeys(cache.shard, cache.key_context[sequence]))
+	{
+		LmKvReportRequiredAccessFailure(cache.pages, LM_KV_ACCESS_ERROR_PAGE_TABLE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence,
+			SparkKvShardLocalPosition(cache.shard, count - 1u), Geometry::PageOf(SparkKvShardLocalPosition(cache.shard, count - 1u)));
+		return;
+	}
 	limit = count < cache.key_end ? count : cache.key_end;
 	for (element = 0u; element < VALUE; element++)
 		output[element] = 0.0f;
