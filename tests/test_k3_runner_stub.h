@@ -90,6 +90,12 @@ uint64_t SparkStageRunnerRecurrentBytes(const SparkStageRunner *runner)
 	return(test_recurrent_bytes);
 }
 
+uint64_t SparkStageRunnerTakeCaptureNs(SparkStageRunner *runner)
+{
+	(void)runner;
+	return 0u;
+}
+
 uint32_t SparkStageRunnerVerifyCapable(const SparkStageRunner *runner)
 {
 	(void)runner;

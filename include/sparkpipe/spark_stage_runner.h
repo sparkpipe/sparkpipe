@@ -155,6 +155,7 @@ uint32_t SparkStageRunnerKvLayerCount(const SparkStageRunner *runner);
 SparkStatus SparkStageRunnerAttachKv(SparkStageRunner *runner, const SparkStageRunnerKv *kv);
 uint64_t SparkStageRunnerRecurrentBytes(const SparkStageRunner *runner);
 uint32_t SparkStageRunnerVerifyCapable(const SparkStageRunner *runner);
+uint64_t SparkStageRunnerTakeCaptureNs(SparkStageRunner *runner);
 SparkStatus SparkStageRunnerKeepRows(SparkStageRunner *runner, const uint32_t *kept, uint32_t sequences);
 SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream);
 SparkStatus SparkStageRunnerPackIdentity(const SparkStageRunner *runner, uint8_t *digest, uint32_t digest_bytes);

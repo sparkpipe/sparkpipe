@@ -941,10 +941,13 @@ static void StageServingVerifyKept(const SparkStageServingState *state, const Sp
 
 static SparkStatus StageServingComplete(SparkStageServingState *state, const SparkModelServingSubmission *submission,
 	uint32_t rows, uint32_t active, uint32_t steps, const uint32_t *kept, uint32_t distribution_count, const uint32_t *distribution_lanes,
-	const SparkRowSampling *distribution_rules, const SparkSamplingLogprob *distribution_logprobs, uint32_t logprob_stride)
+	const SparkRowSampling *distribution_rules, const SparkSamplingLogprob *distribution_logprobs, uint32_t logprob_stride, uint64_t started_ns)
 {
 	SparkModelServingCompletion completion;
+	const uint64_t capture_ns = SparkStageRunnerTakeCaptureNs(&state->runner), elapsed_ns = StageServingNowNs() - started_ns;
 	StageServingCompletionHeader(submission, rows, &completion);
+	if ( capture_ns != 0u )
+		completion.service_time_ns = elapsed_ns > capture_ns ? elapsed_ns - capture_ns : 1u;
 	if ( state->runner.owns_final_head != 0u && kept != 0 )
 	{
 		const uint32_t *runs = (const uint32_t *)state->runs_host.pointer;
@@ -1102,7 +1105,7 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	if ( state->completion_function == 0 )
 		return SPARK_STATUS_OK;
 	return StageServingComplete(state, submission, rows, active, steps, verify != 0u ? kept : 0, distribution_count, distribution_lanes,
-		distribution_rules, distribution_logprobs, logprob_stride);
+		distribution_rules, distribution_logprobs, logprob_stride, marks[0]);
 }
 
 static SparkStatus StageServingPrefetch(void *adapter_state,
