@@ -90,6 +90,9 @@ typedef struct SparkModelBatchRequestState
 	uint32_t draft_match;
 	float draft_expected;
 	float draft_frame_ns;
+	uint32_t draft_source_end;
+	uint32_t draft_run_drafts;
+	uint32_t draft_run_source;
 	SparkSpeculationHazard draft_hazards[SPARK_SPECULATION_FRAME_CLASSES];
 	uint32_t draft_tokens[SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE];
 	SparkSpeculationLookupIndex lookup;
@@ -1231,6 +1234,8 @@ static SparkStatus SparkModelBatchAcceptVerifiedLane(
 		engine->accepted_draft_token_count += accepted;
 		SparkSpeculationHazardObserve(&engine->frame_model.classes[request->draft_class],draft_count,accepted,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
 		SparkSpeculationHazardObserve(&request->draft_hazards[request->draft_class],draft_count,accepted,SPARK_SPECULATION_FRAME_REQUEST_DECAY);
+		request->draft_run_drafts = accepted == draft_count ? draft_count : 0u;
+		request->draft_run_source = request->draft_source_end + kept;
 	}
 	request->draft_count = 0u;
 	return(SPARK_STATUS_OK);
@@ -1910,6 +1915,7 @@ SparkStatus SparkModelBatchEngineSubmit(
 	memcpy(SparkModelBatchRequestTokens(engine,slot),request->prompt_token_ids,(size_t)request->prompt_token_count * sizeof(uint32_t));
 	state->draft_count = 0u;
 	state->draft_class = 0u;
+	state->draft_run_drafts = 0u;
 	memset(state->draft_hazards,0,sizeof(state->draft_hazards));
 	if ( engine->verify_capable != 0u )
 	{
@@ -2733,6 +2739,8 @@ static uint32_t SparkModelBatchPlanDraft(
 		return(0u);
 	memset(&frame,0,sizeof(frame));
 	frame.feasible = limit;
+	if ( request->draft_run_drafts != 0u && match.source_end == request->draft_run_source )
+		frame.minimum = 2u * request->draft_run_drafts < limit ? 2u * request->draft_run_drafts : limit;
 	frame.context = position + 1u;
 	frame.match_length = match.match_length;
 	frame.sampled = request->sampling.inverse_temperature != 0.0f ? 1u : 0u;
@@ -2749,6 +2757,7 @@ static uint32_t SparkModelBatchPlanDraft(
 		return(0u);
 	memcpy(request->draft_tokens,&tokens[match.source_end + 1u],(size_t)choice.drafts * sizeof(request->draft_tokens[0]));
 	request->draft_count = choice.drafts;
+	request->draft_source_end = match.source_end;
 	request->draft_match = match.match_length;
 	request->draft_expected = choice.expected_tokens;
 	request->draft_frame_ns = choice.frame_ns;

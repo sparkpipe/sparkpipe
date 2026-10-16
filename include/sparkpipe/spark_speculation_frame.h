@@ -46,6 +46,7 @@ typedef struct SparkSpeculationFrameModel
 typedef struct SparkSpeculationFrameRequest
 {
 	uint32_t feasible;
+	uint32_t minimum;
 	uint32_t context;
 	uint32_t match_length;
 	uint32_t sampled;

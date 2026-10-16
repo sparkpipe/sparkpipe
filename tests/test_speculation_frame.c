@@ -142,12 +142,48 @@ static void TestChoose(void)
 	assert(choice.probe == 1u);
 }
 
+static void TestMinimum(void)
+{
+	SparkSpeculationFrameModel model;
+	SparkSpeculationFrameRequest request;
+	SparkSpeculationFrameChoice plain,floored,capped,edge;
+	uint32_t index;
+	memset(&model,0,sizeof(model));
+	memset(&request,0,sizeof(request));
+	request.feasible = 255u;
+	request.context = 2048u;
+	request.match_length = 64u;
+	SparkSpeculationFrameObserveChain(&model,8u,2048u,8u * 62000000ull);
+	SparkSpeculationFrameObserveChain(&model,1u,2048u,71000000ull);
+	SparkSpeculationFrameObserveFrame(&model,4u,2048u,116000000ull);
+	SparkSpeculationFrameObserveFrame(&model,33u,2048u,260000000ull);
+	SparkSpeculationFrameObserveFrame(&model,65u,2048u,345000000ull);
+	SparkSpeculationFrameObserveFrame(&model,129u,2048u,520000000ull);
+	SparkSpeculationFrameObserveFrame(&model,256u,2048u,780000000ull);
+	for (index=0u; index<40u; index++)
+		SparkSpeculationHazardObserve(&model.classes[SparkSpeculationFrameClass(64u,0u)],64u,32u,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
+	SparkSpeculationFrameChoose(&model,0,&request,&plain);
+	assert(plain.drafts != 0u && plain.drafts <= 32u);
+	request.minimum = 64u;
+	SparkSpeculationFrameChoose(&model,0,&request,&floored);
+	assert(floored.drafts >= 64u && floored.expected_tokens >= plain.expected_tokens);
+	request.cost_cap_ns = 300000000.0f;
+	SparkSpeculationFrameChoose(&model,0,&request,&capped);
+	assert(capped.drafts != 0u && capped.drafts < 64u && capped.frame_ns <= 300000000.0f);
+	request.cost_cap_ns = 0.0f;
+	request.feasible = 40u;
+	request.minimum = 40u;
+	SparkSpeculationFrameChoose(&model,0,&request,&edge);
+	assert(edge.drafts == 40u);
+}
+
 int main(void)
 {
 	TestBuckets();
 	TestHazard();
 	TestRequestBlend();
 	TestCost();
+	TestMinimum();
 	TestChoose();
 	printf("speculation frame: hazards per match class, interpolated frame costs and the chain price decide every frame: ok\n");
 	return(0);
