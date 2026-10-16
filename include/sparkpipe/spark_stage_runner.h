@@ -23,8 +23,28 @@ extern "C" {
 #define SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY 0x00000002u
 #define SPARK_STAGE_RUNNER_DISPATCH_KNOWN_FLAGS (SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL | SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY)
 #define SPARK_STAGE_RUNNER_DIGEST_HEX 64u
+#define SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT 1u
+#define SPARK_STAGE_RUNNER_TAP_FORM_FINAL 3u
+#define SPARK_STAGE_RUNNER_TAP_MAX_ENTRIES 128u
+#define SPARK_STAGE_RUNNER_TAP_CHAIN_STEPS 8u
 
 typedef struct SparkStageRunnerModelInterface SparkStageRunnerModelInterface;
+
+typedef struct SparkStageRunnerTapEntry
+{
+	uint16_t form;
+	uint16_t layer;
+} SparkStageRunnerTapEntry;
+
+typedef struct SparkStageRunnerTapPlan
+{
+	uint32_t entry_count;
+	SparkStageRunnerTapEntry entries[SPARK_STAGE_RUNNER_TAP_MAX_ENTRIES];
+	uint32_t capture;
+	uint32_t row_capacity;
+	uint16_t *slab;
+	uint64_t row_stride_elements;
+} SparkStageRunnerTapPlan;
 
 typedef struct SparkStageRunnerWeights
 {
@@ -157,6 +177,9 @@ uint64_t SparkStageRunnerRecurrentBytes(const SparkStageRunner *runner);
 uint32_t SparkStageRunnerVerifyCapable(const SparkStageRunner *runner);
 uint64_t SparkStageRunnerTakeCaptureNs(SparkStageRunner *runner);
 SparkStatus SparkStageRunnerKeepRows(SparkStageRunner *runner, const uint32_t *kept, uint32_t sequences);
+SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRunnerTapEntry *entries, uint32_t entry_count, uint32_t capture);
+SparkStatus SparkStageRunnerTapShape(const SparkStageRunner *runner, uint32_t *hidden, uint32_t *total_layers);
+const uint16_t *SparkStageRunnerTapRows(const SparkStageRunner *runner, uint32_t step, uint32_t rows, uint64_t *row_stride_elements);
 SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream);
 SparkStatus SparkStageRunnerPackIdentity(const SparkStageRunner *runner, uint8_t *digest, uint32_t digest_bytes);
 const void *SparkStageRunnerProbeBuffers(const SparkStageRunner *runner);

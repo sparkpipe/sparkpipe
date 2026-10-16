@@ -1054,6 +1054,36 @@ static SparkStatus K3ModelKeepRows(void *model, const SparkStageRunnerStep *step
 	}
 	return SPARK_STATUS_OK;
 }
+
+static SparkStatus K3ModelTapPlan(void *model, const SparkStageRunnerTapPlan *plan)
+{
+	SparkK3ModelState *state = (SparkK3ModelState *)model;
+	K3SliceState *slice = state->dispatch.slice_state;
+	int16_t outputs[K3_LAYERS];
+	uint32_t index, active = 0u;
+	if ( slice == 0 || state->module.pack.config.first_layer != 0u || state->module.pack.config.layers != K3_LAYERS )
+	{
+		fprintf(stderr, "sparkpipe_k3: taps need the whole layer stack on every rank\n");
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	for ( index = 0u; index < K3_LAYERS; ++index )
+		outputs[index] = -1;
+	for ( index = 0u; index < plan->entry_count; ++index )
+	{
+		if ( plan->entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL )
+			continue;
+		if ( plan->entries[index].form != SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT || plan->entries[index].layer >= K3_LAYERS )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		outputs[plan->entries[index].layer] = (int16_t)index;
+		active = 1u;
+	}
+	memcpy(slice->tap_output, outputs, sizeof(outputs));
+	slice->tap_slab = plan->capture != 0u ? plan->slab : 0;
+	slice->tap_row_stride = plan->row_stride_elements;
+	slice->tap_active = active;
+	fprintf(stderr, "sparkpipe_k3: taps entries=%u capture=%u paired prefill %s\n", plan->entry_count, plan->capture, active != 0u ? "off" : "on");
+	return SPARK_STATUS_OK;
+}
 #endif
 
 static const SparkStageRunnerModelInterface spark_k3_stage_model =
@@ -1076,8 +1106,10 @@ static const SparkStageRunnerModelInterface spark_k3_stage_model =
 	0,
 	0,
 #if SPARK_K3_SERVING_TOPOLOGY == 16
-	K3ModelKeepRows
+	K3ModelKeepRows,
+	K3ModelTapPlan
 #else
+	0,
 	0
 #endif
 };

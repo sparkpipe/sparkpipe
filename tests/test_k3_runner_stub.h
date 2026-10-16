@@ -90,6 +90,32 @@ uint64_t SparkStageRunnerRecurrentBytes(const SparkStageRunner *runner)
 	return(test_recurrent_bytes);
 }
 
+SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRunnerTapEntry *entries, uint32_t entry_count, uint32_t capture)
+{
+	(void)runner;
+	(void)entries;
+	(void)entry_count;
+	(void)capture;
+	return(SPARK_STATUS_UNSUPPORTED);
+}
+
+SparkStatus SparkStageRunnerTapShape(const SparkStageRunner *runner, uint32_t *hidden, uint32_t *total_layers)
+{
+	(void)runner;
+	(void)hidden;
+	(void)total_layers;
+	return(SPARK_STATUS_UNSUPPORTED);
+}
+
+const uint16_t *SparkStageRunnerTapRows(const SparkStageRunner *runner, uint32_t step, uint32_t rows, uint64_t *row_stride_elements)
+{
+	(void)runner;
+	(void)step;
+	(void)rows;
+	(void)row_stride_elements;
+	return(0);
+}
+
 uint64_t SparkStageRunnerTakeCaptureNs(SparkStageRunner *runner)
 {
 	(void)runner;

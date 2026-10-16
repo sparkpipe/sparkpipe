@@ -8,8 +8,6 @@
 
 #define K3_DSPARK_BLOCK_SIZE 7u
 #define K3_DSPARK_DRAFT_LAYER_COUNT 5u
-#define K3_DSPARK_AUX_LAYER_COUNT 5u
-#define K3_DSPARK_AUX_LAYER_IDS_INITIALIZER { 7u, 23u, 51u, 67u, 83u }
 
 #define K3_DSPARK_DRAFT_ATTENTION_HEAD_COUNT 64u
 #define K3_DSPARK_DRAFT_KV_HEAD_COUNT 16u
@@ -32,8 +30,6 @@
 
 #define K3_DSPARK_CONFIDENCE_MILLI_ONE 1000u
 
-static_assert(K3_DSPARK_AUX_LAYER_COUNT <= K3_LAYERS,
-	"a tap cannot name a layer the target does not have");
 static_assert(K3_DSPARK_MASK_TOKEN_ID < K3_VOCAB,
 	"the mask token is a real vocabulary id");
 

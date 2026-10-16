@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 2u
+#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 3u
 #define SPARK_STAGE_RUNNER_ROUND_ALL 0u
 #define SPARK_STAGE_RUNNER_ROUND_BEGIN 1u
 #define SPARK_STAGE_RUNNER_ROUND_FINISH 2u
@@ -123,6 +123,7 @@ struct SparkStageRunnerModelInterface
 	uint32_t (*graph_key)(void *model, const SparkStageRunnerStep *step);
 	SparkStatus (*lane)(void *model, uint32_t lane, const SparkStageRunnerStep *step, const SparkStageRunnerServices *services, void **lane_model);
 	SparkStatus (*keep_rows)(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream);
+	SparkStatus (*tap_plan)(void *model, const SparkStageRunnerTapPlan *plan);
 };
 
 #ifdef __cplusplus

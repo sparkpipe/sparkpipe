@@ -59,7 +59,7 @@ static uint16_t fused_qkvb[ROWS * K3_KDA_QKVB_FUSED_ROWS];
 static uint16_t fused_decay_gate[ROWS * K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS];
 static uint16_t gate_latent[ROWS * K3_KDA_KEY_DIM];
 static uint16_t qkvb_weight[K3_HIDDEN], decay_gate_weight[K3_HIDDEN];
-static uint16_t aux_slab[K3_DSPARK_AUX_LAYER_COUNT * ROWS * K3_HIDDEN];
+static uint16_t aux_slab[2u * ROWS * K3_HIDDEN];
 static uint16_t aux_reference[ROWS * K3_HIDDEN];
 static uint16_t kv_slot[ROWS * K3_MLA_KV_A_DIM];
 static uint16_t gate_up[ROUTES * K3_SHARED_INTERMEDIATE * 2u];
@@ -242,7 +242,9 @@ int main(void)
 		memcpy(hidden_saved, hidden, sizeof(hidden_saved));
 		lm_recorded_gemms.clear();
 		state.verify_rows = 2u;
-		state.dspark_aux = aux_slab; state.aux_rows = ROWS;
+		for (index = 0u; index < K3_LAYERS; ++index) state.tap_output[index] = -1;
+		state.tap_output[7] = 1; state.tap_output[23] = 0;
+		state.tap_slab = aux_slab; state.tap_row_stride = 2u * K3_HIDDEN; state.tap_active = 1u;
 		b.sequence_row_begin = 0;
 		status = K3LaunchSlice<LmHostRecorderFormat,K3GlobalKv>(
 			&weights[0], &state, &b, 0u, 1u, 1u, 1u, 1u, ROUTES, 1u, 1u, 0);
@@ -325,7 +327,7 @@ int main(void)
 	{
 		uint32_t mismatch = 0u; uint64_t byte;
 		for (byte = 0u; byte < (uint64_t)ROWS * K3_HIDDEN; ++byte)
-			if ( aux_slab[byte] != aux_reference[byte] )
+			if ( aux_slab[(byte / K3_HIDDEN) * 2u * K3_HIDDEN + K3_HIDDEN + byte % K3_HIDDEN] != aux_reference[byte] )
 				++mismatch;
 		printf("aux_mismatch %u\n", mismatch);
 	}

@@ -322,6 +322,8 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	memset(d->weights, 0, (size_t)d->layer_count * sizeof(K3LayerWeights));
 	d->slice_state = new K3SliceState;
 	memset(d->slice_state, 0, sizeof(*d->slice_state));
+	for (uint32_t layer = 0u; layer < K3_LAYERS; ++layer)
+		d->slice_state->tap_output[layer] = -1;
 	d->buffers = new K3LayerBuffers;
 	d->buffers_host = d->buffers;
 	memset(d->buffers_host, 0, sizeof(*d->buffers_host));

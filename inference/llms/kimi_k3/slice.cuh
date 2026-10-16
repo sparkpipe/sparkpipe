@@ -83,8 +83,10 @@ struct K3SliceState
 	float *replay_write_gate;
 	uint32_t verify_rows;
 	uint32_t replay_active;
-	uint16_t *dspark_aux;
-	uint32_t aux_rows;
+	uint16_t *tap_slab;
+	uint64_t tap_row_stride;
+	uint32_t tap_active;
+	int16_t tap_output[K3_LAYERS];
 	uint32_t sequences;
 	uint32_t kda_rank_heads;
 	uint32_t kda_state_bf16;
@@ -469,15 +471,9 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		}
 		if ( state->lazy_release != 0 )
 			state->lazy_release(state->lazy_context,layer);
-		if ( state->dspark_aux != 0 )
-		{
-			static const uint32_t aux_ids[K3_DSPARK_AUX_LAYER_COUNT] = K3_DSPARK_AUX_LAYER_IDS_INITIALIZER;
-			uint32_t aux;
-			for (aux = 0u; aux < K3_DSPARK_AUX_LAYER_COUNT; ++aux)
-				if ( aux_ids[aux] == layer )
-					LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
-						buffers->attnres_partial_bf16,state->dspark_aux + ((uint64_t)aux * state->aux_rows * K3_HIDDEN),rows,K3_HIDDEN);
-		}
+		if ( state->tap_slab != 0 && state->tap_output[layer] >= 0 )
+			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+				buffers->attnres_partial_bf16,state->tap_slab + ((uint64_t)state->tap_output[layer] * K3_HIDDEN),rows,K3_HIDDEN,state->tap_row_stride);
 	}
 	if ( first_layer + layer_count == K3_LAYERS )
 	{
@@ -507,7 +503,7 @@ static void K3PairPre(K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, ui
 
 static uint32_t K3PairReady(const K3SliceState *state, const K3LayerBuffers *a, const K3LayerBuffers *b, uint32_t rows_a, uint32_t rows_b)
 {
-	return(state->layer_collective != 0 && state->collective_pair_context != 0 && state->dspark_aux == 0 &&
+	return(state->layer_collective != 0 && state->collective_pair_context != 0 && state->tap_active == 0u &&
 		state->pair_stream_a != 0 && state->pair_stream_b != 0 && state->pair_fence != 0 &&
 		a->tp_sharded != 0u && b->tp_sharded != 0u && K3_EXPERT_CELLS(a) && a->kv_shard.degree > 1u &&
 		K3LayerMlaGatherReady(a,rows_a) != 0u && K3LayerMlaGatherReady(b,rows_b) != 0u ? 1u : 0u);
