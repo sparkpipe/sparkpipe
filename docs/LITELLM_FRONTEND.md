@@ -452,7 +452,9 @@ for the old model that arrive during the drain are still served and extend
 it; the fair queue (oldest waiter first, minimum residency) is the next step.
 
 **Switch now.** `https://sparkpipe.ai:8443/fleet` (`site/fleet.html`, served
-by the chat layer) shows what is loaded, a switch in progress with its drain
+inside the Open WebUI container on the chat origin, so its `/` and
+`/static/favicon.*` links are Open WebUI's own paths; `tests/test_site.py`
+lists exactly those as the page's chat-app links) shows what is loaded, a switch in progress with its drain
 (live replies, time waited, quiet time) and recent switches, refreshed every
 2 s. For the admin it adds a red **Switch now** button, which ends the drain
 at once and cuts any reply still running on the old model, and **Load now**
