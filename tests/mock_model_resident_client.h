@@ -59,6 +59,7 @@ uint32_t MockResidentClientTakeMaxTokensPerSequence(void);
 void MockResidentClientSetTokenStart(uint32_t first_token_id);
 void MockResidentClientSetScript(const uint32_t *tokens,uint32_t count);
 void MockResidentClientSetStepDelay(uint32_t microseconds);
+void MockResidentClientSetVerifyRowCost(uint32_t sevenths);
 void MockResidentClientTakeVerifyStats(uint32_t *submissions,uint32_t *rows);
 uint32_t MockResidentClientTakeVerifyMaxStride(void);
 uint32_t MockResidentClientTakeVerifyShared(void);
