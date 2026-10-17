@@ -1928,7 +1928,7 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 		(unsigned long long)nodes, (double)(StageRunnerNowNs() - started) / 1e6, prefetch->groups, prefetch->dropped);
 }
 
-static SparkStatus StageRunnerGraphLaunch(SparkStageRunnerState *state, cudaGraphExec_t exec, cudaStream_t stream, uint32_t settle)
+static SparkStatus StageRunnerGraphLaunch(SparkStageRunnerState *state, cudaGraphExec_t exec, cudaStream_t stream)
 {
 	uint64_t collective_error = 0ull;
 	SparkStatus status = SparkTpDeviceCollectiveGraphPreLaunch(&state->device_collective, stream);
@@ -1937,7 +1937,7 @@ static SparkStatus StageRunnerGraphLaunch(SparkStageRunnerState *state, cudaGrap
 	const uint64_t started = StageRunnerNowNs();
 	if ( status == SPARK_STATUS_OK && cudaGraphLaunch(exec, stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
-	if ( status == SPARK_STATUS_OK && settle != 0u )
+	if ( status == SPARK_STATUS_OK )
 		status = SparkTpDeviceCollectiveGraphSettle(&state->device_collective, stream, &collective_error);
 	state->timing_graph_ns += StageRunnerNowNs() - started;
 	state->timing_graph_steps++;
@@ -2011,7 +2011,7 @@ static void StageRunnerTiming(SparkStageRunnerState *state, uint32_t rank, uint6
 }
 
 static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStageRunner *runner,
-	const SparkStageRunnerStep *in, cudaStream_t stream, uint32_t settle)
+	const SparkStageRunnerStep *in, cudaStream_t stream)
 {
 	const uint32_t rows = in->rows;
 	SparkStageRunnerStep identity;
@@ -2027,7 +2027,7 @@ static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStag
 		if ( state->graph_exec[slot] == 0 )
 			StageRunnerGraphCapture(state, runner, in, stream);
 		if ( state->graph_exec[slot] != 0 )
-			return StageRunnerGraphLaunch(state, state->graph_exec[slot], stream, settle);
+			return StageRunnerGraphLaunch(state, state->graph_exec[slot], stream);
 	}
 	if ( in->graph_key > 1u )
 	{
@@ -2039,7 +2039,7 @@ static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStag
 }
 
 static SparkStatus StageRunnerStepOutputs(SparkStageRunnerState *state, const SparkStageRunner *runner,
-	const SparkStageRunnerDispatch *current, cudaStream_t stream, uint32_t rows, uint32_t settle)
+	const SparkStageRunnerDispatch *current, cudaStream_t stream, uint32_t rows)
 {
 	SparkStatus exchange_status;
 	if ( runner->owns_final_head != 0u && state->head_weight != 0 )
@@ -2049,13 +2049,6 @@ static SparkStatus StageRunnerStepOutputs(SparkStageRunnerState *state, const Sp
 			exchange_status = StageRunnerVerifyCollectives(state, stream);
 			if ( exchange_status != SPARK_STATUS_OK )
 				return exchange_status;
-			if ( settle == 0u )
-			{
-				if ( (current->output_token_ids != 0 && cudaMemcpyAsync(current->output_token_ids, state->output_token, (uint64_t)rows * sizeof(uint32_t), cudaMemcpyDefault, stream) != cudaSuccess) ||
-					(current->output_scores != 0 && cudaMemcpyAsync(current->output_scores, state->output_score, (uint64_t)rows * sizeof(float), cudaMemcpyDefault, stream) != cudaSuccess) )
-					state->copy_failed = 1u;
-				return SPARK_STATUS_OK;
-			}
 			if ( StageRunnerCopy(state->output_token_host, state->output_token, (uint64_t)rows * sizeof(uint32_t), stream) != cudaSuccess ||
 				StageRunnerCopy(state->output_score_host, state->output_score, (uint64_t)rows * sizeof(float), stream) != cudaSuccess ||
 				(current->output_token_ids != 0 && StageRunnerCopy(current->output_token_ids, state->output_token, (uint64_t)rows * sizeof(uint32_t), stream) != cudaSuccess) ||
@@ -2266,15 +2259,14 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 			if ( dispatch->distribution_count != 0u )
 				current.distribution_positions = chain_positions;
 		}
-		const uint32_t settle = step + 1u == steps || dispatch->distribution_count != 0u ? 1u : 0u;
-		exchange_status = StageRunnerStep(state, runner, &in, stream, settle);
+		exchange_status = StageRunnerStep(state, runner, &in, stream);
 		if ( exchange_status == SPARK_STATUS_OK && state->tap_slab_device != 0 && steps > 1u &&
 			cudaMemcpyAsync(state->tap_chain_device + (uint64_t)step * rows * state->tap_plan.row_stride_elements, state->tap_slab_device,
 				(uint64_t)rows * state->tap_plan.row_stride_elements * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream) != cudaSuccess )
 			exchange_status = SPARK_STATUS_IO_ERROR;
 		phase_marks[2] = StageRunnerNowNs();
 		if ( exchange_status == SPARK_STATUS_OK )
-			exchange_status = StageRunnerStepOutputs(state, runner, &current, stream, rows, settle);
+			exchange_status = StageRunnerStepOutputs(state, runner, &current, stream, rows);
 		phase_marks[3] = StageRunnerNowNs();
 		if ( state->layer_marks != 0u && exchange_status == SPARK_STATUS_OK )
 			StageRunnerLayerMarksEnd(state, runner->tp_rank);
