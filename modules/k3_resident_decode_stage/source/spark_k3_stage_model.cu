@@ -358,8 +358,27 @@ static void K3RunnerGatherLatent(SparkK3ModelState *state, K3LayerBuffers *b, cu
 			gathered, b->latent_full_bf16, rows, slice, ranks);
 }
 
+static void K3RunnerRowShardTap(SparkK3ModelState *state, K3LayerBuffers *b, cudaStream_t stream,
+	uint32_t rows, uint32_t layer, uint32_t row_offset, uint32_t share, uint32_t first, uint32_t count)
+{
+	const K3SliceState *slice = state->dispatch.slice_state;
+	if ( slice == 0 || slice->tap_active == 0u || layer >= K3_LAYERS || slice->tap_output[layer] < 0 )
+		return;
+	if ( count != 0u )
+		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,count), K3_LAYER_THREADS, 0, stream,
+			b->attnres_partial_bf16 + (uint64_t)first * K3_HIDDEN,state->row_share_device,count,K3_HIDDEN);
+	K3RunnerRound(state, stream, share, state->row_share_device, state->fused_device, 0u,
+		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
+	if ( slice->tap_slab != 0 )
+		LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+			state->fused_device,slice->tap_slab + (uint64_t)row_offset * slice->tap_row_stride + (uint64_t)slice->tap_output[layer] * K3_HIDDEN,
+			rows,K3_HIDDEN,slice->tap_row_stride);
+	if ( cudaPeekAtLastError() != cudaSuccess )
+		K3ModelFail(state);
+}
+
 static void K3RunnerRowShard(SparkK3ModelState *state, K3LayerBuffers *b, cudaStream_t stream,
-	uint32_t rows, uint32_t layer, uint32_t base)
+	uint32_t rows, uint32_t layer, uint32_t base, uint32_t row_offset)
 {
 	const uint32_t degree = state->tp_degree;
 	const uint32_t share = (rows + degree - 1u) / degree;
@@ -384,6 +403,8 @@ static void K3RunnerRowShard(SparkK3ModelState *state, K3LayerBuffers *b, cudaSt
 	if ( landing != b->hidden_bf16 && cudaMemcpyAsync(b->hidden_bf16, landing, (size_t)rows * K3_HIDDEN * sizeof(uint16_t),
 		cudaMemcpyDeviceToDevice, stream) != cudaSuccess )
 		K3ModelFail(state);
+	if ( base == 1u )
+		K3RunnerRowShardTap(state, b, stream, rows, layer, row_offset, share, first, count);
 }
 
 static void K3RunnerLayerCollective(void *context, void *stream_void,
@@ -496,7 +517,8 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		state->fused_device,rows,base,segments,0u);
 	if ( (phase & K3_COLLECTIVE_ROWS) != 0u )
 	{
-		K3RunnerRowShard(state, b, stream, rows, layer, base);
+		K3RunnerRowShard(state, b, stream, rows, layer, base,
+			state->dispatch.pair_active != 0u && lane->index != 0u ? state->dispatch.pair_rows[0] : 0u);
 		return;
 	}
 	{
@@ -1103,12 +1125,6 @@ static SparkStatus K3ModelTapPlan(void *model, const SparkStageRunnerTapPlan *pl
 		fprintf(stderr, "sparkpipe_k3: taps need the whole layer stack on every rank\n");
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	}
-	if ( state->dispatch.attention_rows < state->dispatch.max_rows && plan->entry_count != 0u )
-	{
-		fprintf(stderr, "sparkpipe_k3: taps turn the paired prefill off, so they need a lane of at most %u rows (this lane has %u)\n",
-			state->dispatch.attention_rows, state->dispatch.max_rows);
-		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	}
 	for ( index = 0u; index < K3_LAYERS; ++index )
 		outputs[index] = -1;
 	for ( index = 0u; index < plan->entry_count; ++index )
@@ -1124,7 +1140,7 @@ static SparkStatus K3ModelTapPlan(void *model, const SparkStageRunnerTapPlan *pl
 	slice->tap_slab = plan->capture != 0u ? plan->slab : 0;
 	slice->tap_row_stride = plan->row_stride_elements;
 	slice->tap_active = active;
-	fprintf(stderr, "sparkpipe_k3: taps entries=%u capture=%u paired prefill %s\n", plan->entry_count, plan->capture, active != 0u ? "off" : "on");
+	fprintf(stderr, "sparkpipe_k3: taps entries=%u capture=%u\n", plan->entry_count, plan->capture);
 	return SPARK_STATUS_OK;
 }
 #endif

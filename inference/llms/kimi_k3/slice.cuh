@@ -530,7 +530,7 @@ static void K3PairPre(K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, ui
 
 static uint32_t K3PairReady(const K3SliceState *state, const K3LayerBuffers *a, const K3LayerBuffers *b, uint32_t rows_a, uint32_t rows_b)
 {
-	return(state->layer_collective != 0 && state->collective_pair_context != 0 && state->tap_active == 0u &&
+	return(state->layer_collective != 0 && state->collective_pair_context != 0 &&
 		state->pair_stream_a != 0 && state->pair_stream_b != 0 && state->pair_fence != 0 &&
 		a->tp_sharded != 0u && b->tp_sharded != 0u && K3_EXPERT_CELLS(a) && a->kv_shard.degree > 1u &&
 		K3LayerMlaGatherReady(a,rows_a) != 0u && K3LayerMlaGatherReady(b,rows_b) != 0u ? 1u : 0u);
@@ -734,6 +734,13 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 		}
 		if ( state->lazy_release != 0 )
 			state->lazy_release(state->lazy_context,layer);
+		if ( row_shard == 0u && state->tap_slab != 0 && state->tap_output[layer] >= 0 )
+		{
+			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows_a), K3_LAYER_THREADS, 0, sa,
+				a->attnres_partial_bf16,state->tap_slab + ((uint64_t)state->tap_output[layer] * K3_HIDDEN),rows_a,K3_HIDDEN,state->tap_row_stride);
+			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows_b), K3_LAYER_THREADS, 0, sb,
+				b->attnres_partial_bf16,state->tap_slab + (uint64_t)rows_a * state->tap_row_stride + ((uint64_t)state->tap_output[layer] * K3_HIDDEN),rows_b,K3_HIDDEN,state->tap_row_stride);
+		}
 	}
 	if ( status != LM_LAUNCH_OK )
 		return(K3SliceFailure(layer,"pair",status));
