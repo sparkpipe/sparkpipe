@@ -1072,6 +1072,13 @@ static void K3ModelReport(void *model, uint32_t rank)
 		(unsigned long long)state->dispatch.pair_waves);
 }
 
+static uint32_t K3ModelGraphKey(void *model, const SparkStageRunnerStep *step)
+{
+	(void)model;
+	return step->last_rows_only == 0u && step->commit == 0u && step->sequences == 1u && step->rows > 1u &&
+		step->rows <= LM_SKINNY_ROWS_WIDE ? 2u : 1u;
+}
+
 #if SPARK_K3_SERVING_TOPOLOGY == 16
 static SparkStatus K3ModelKeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream)
 {
@@ -1139,7 +1146,7 @@ static const SparkStageRunnerModelInterface spark_k3_stage_model =
 	K3ModelResetSlot,
 	K3ModelProbeBuffers,
 	K3ModelReport,
-	0,
+	K3ModelGraphKey,
 	0,
 #if SPARK_K3_SERVING_TOPOLOGY == 16
 	K3ModelKeepRows,
