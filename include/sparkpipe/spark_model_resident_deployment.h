@@ -9,7 +9,10 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_RESIDENT_DEPLOYMENT_ABI_VERSION 3u
+#define SPARK_MODEL_RESIDENT_DEPLOYMENT_ABI_VERSION 4u
+#define SPARK_MODEL_RESIDENT_DRAFT_TARGET_BYTES 32u
+#define SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH 8u
+#define SPARK_MODEL_RESIDENT_DRAFT_MAX_WAIT_MS 1000u
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_EOS_TOKEN_COUNT 16u
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_TEXT_PROMPT_PREFIX_COUNT 4u
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_SCHEMA_VERSION 2u
@@ -61,6 +64,16 @@ typedef struct SparkModelResidentDeploymentNode
 	SparkModelResidentEndpoint control_endpoint;
 } SparkModelResidentDeploymentNode;
 
+typedef struct SparkModelResidentDraftServer
+{
+	char *host;
+	uint32_t port;
+	uint32_t depth;
+	uint32_t wait_ms;
+	float min_confidence;
+	char target_model[SPARK_MODEL_RESIDENT_DRAFT_TARGET_BYTES];
+} SparkModelResidentDraftServer;
+
 typedef struct SparkModelResidentDeployment
 {
 	uint32_t abi_version;
@@ -82,6 +95,7 @@ typedef struct SparkModelResidentDeployment
 	uint32_t tokenizer_text_prompt_prefix_count;
 	uint32_t tokenizer_text_prompt_prefix_ids[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_TEXT_PROMPT_PREFIX_COUNT];
 	char *weightd_socket_path;
+	SparkModelResidentDraftServer draft_server;
 	uint32_t eos_token_count;
 	uint32_t eos_token_ids[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_EOS_TOKEN_COUNT];
 	uint32_t max_sequence_positions;

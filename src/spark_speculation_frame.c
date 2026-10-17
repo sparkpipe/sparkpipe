@@ -28,6 +28,14 @@ uint32_t SparkSpeculationFrameClass(uint32_t match_length, uint32_t sampled)
 	return(match_class + (sampled != 0u ? SPARK_SPECULATION_FRAME_MATCH_CLASSES : 0u));
 }
 
+uint32_t SparkSpeculationFrameModelClass(uint32_t sampled)
+{
+	return(2u * SPARK_SPECULATION_FRAME_MATCH_CLASSES + (sampled != 0u ? 1u : 0u));
+}
+uint32_t SparkSpeculationFrameClassIsModel(uint32_t frame_class)
+{
+	return(frame_class >= 2u * SPARK_SPECULATION_FRAME_MATCH_CLASSES && frame_class < SPARK_SPECULATION_FRAME_CLASSES ? 1u : 0u);
+}
 uint32_t SparkSpeculationFrameDepthBucket(uint32_t draft_index)
 {
 	uint32_t bucket = SparkSpeculationFrameLog2Ceil(draft_index);
