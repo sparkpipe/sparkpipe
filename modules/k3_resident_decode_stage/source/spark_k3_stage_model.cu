@@ -24,7 +24,6 @@ typedef struct SparkK3RunnerLane
 	uint32_t index;
 } SparkK3RunnerLane;
 
-#define K3_RUNNER_PAIR_MIN_ROWS 256u
 
 __global__ static void K3RunnerDenseOffsetsKernel(uint32_t *offsets, uint32_t rows)
 {
@@ -608,13 +607,34 @@ static SparkStatus SparkK3ManifestCheck(const SparkWeightdManifest *manifest,
 }
 
 
+static uint32_t K3RunnerAttentionRows(const SparkStageRunnerConfiguration *configuration)
+{
+	const uint32_t max_rows = configuration->max_input_row_count;
+	const uint32_t degree = configuration->tp_degree > 1u ? configuration->tp_degree : 1u;
+	const uint32_t unpaired = 2u * K3_RUNNER_PAIR_MIN_ROWS - 1u;
+	uint32_t rows = configuration->max_shared_row_count != 0u ? configuration->max_shared_row_count : max_rows;
+	const uint32_t half = ((max_rows + 1u) / 2u + degree - 1u) / degree * degree;
+	rows = rows > half ? rows : half;
+	rows = rows > unpaired ? rows : unpaired;
+	return rows < max_rows ? rows : max_rows;
+}
+
 static SparkStatus K3RunnerCreateDispatch(SparkK3ModelState *state,
 	const SparkStageRunnerConfiguration *configuration)
 {
 	uint64_t budget = configuration->state_budget_bytes, planned;
 	SparkK3RankStateBytes state_plan;
 	SparkK3ScratchWidths widths;
+	const uint32_t attention_rows = K3RunnerAttentionRows(configuration);
 	memset(&state_plan, 0, sizeof(state_plan));
+	if ( attention_rows < configuration->max_input_row_count &&
+		(configuration->tp_degree < 2u || state->has_collective == 0u || state->deferred == 0u ||
+		 state->layer_collective_override != 0) )
+	{
+		fprintf(stderr, "sparkpipe_k3: %u-row waves need the paired prefill (tp_degree %u, hardware-wait collective, no collective override); "
+			"this lane can run at most %u rows\n", configuration->max_input_row_count, configuration->tp_degree, attention_rows);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
 	if ( budget == 0u )
 	{
 		fprintf(stderr, "sparkpipe_k3: the rank state budget is required"
@@ -640,7 +660,7 @@ static SparkStatus K3RunnerCreateDispatch(SparkK3ModelState *state,
 	}
 	if ( SparkK3DispatchCreate(&state->dispatch, &state->module.sizing,
 		configuration->max_active_sequence_count,
-		configuration->max_input_row_count,
+		configuration->max_input_row_count, attention_rows,
 		configuration->kv_pages_per_sequence,
 		state->kv_page_bytes, configuration->tp_degree, configuration->tp_rank, &widths, 0) != SPARK_K3_DISPATCH_OK )
 	{
@@ -895,9 +915,9 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 	}
 	if ( state->has_collective != 0u )
 	{
-		const uint64_t fused_bytes = (uint64_t)SparkK3TpSequences((uint64_t)max_rows * state->dispatch.widths.fused) *
-			K3_HIDDEN * sizeof(uint16_t);
-		state->fused_rows = max_rows;
+		const uint64_t fused_bytes = (uint64_t)SparkK3TpSequences((uint64_t)((state->dispatch.attention_rows + state->tp_degree - 1u) /
+			state->tp_degree * state->tp_degree) * state->dispatch.widths.fused) * K3_HIDDEN * sizeof(uint16_t);
+		state->fused_rows = (state->dispatch.attention_rows + state->tp_degree - 1u) / state->tp_degree * state->tp_degree;
 		const uint64_t share_bytes = (uint64_t)((max_rows + state->tp_degree - 1u) / state->tp_degree) * K3_HIDDEN * sizeof(uint16_t);
 		if ( cudaMalloc(&state->fused_device, fused_bytes) != cudaSuccess ||
 			cudaMemset(state->fused_device, 0, fused_bytes) != cudaSuccess )
@@ -960,6 +980,8 @@ static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, vo
 		state->has_collective != 0u && state->deferred != 0u ? step->rows / 2u : 0u;
 	status = SparkK3DispatchStep(&state->dispatch, &in, step->rows, step->sequences, step->commit,
 		step->rows * K3_TOP_K, step->context, step->multiprocessors, stream);
+	if ( status == SPARK_K3_DISPATCH_ERR_CAPACITY )
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status != SPARK_K3_DISPATCH_OK )
 	{
 		fprintf(stderr, "sparkpipe_k3: slice dispatch failed %d\n", status);
@@ -1072,6 +1094,12 @@ static SparkStatus K3ModelTapPlan(void *model, const SparkStageRunnerTapPlan *pl
 	if ( slice == 0 || state->module.pack.config.first_layer != 0u || state->module.pack.config.layers != K3_LAYERS )
 	{
 		fprintf(stderr, "sparkpipe_k3: taps need the whole layer stack on every rank\n");
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	if ( state->dispatch.attention_rows < state->dispatch.max_rows && plan->entry_count != 0u )
+	{
+		fprintf(stderr, "sparkpipe_k3: taps turn the paired prefill off, so they need a lane of at most %u rows (this lane has %u)\n",
+			state->dispatch.attention_rows, state->dispatch.max_rows);
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	}
 	for ( index = 0u; index < K3_LAYERS; ++index )

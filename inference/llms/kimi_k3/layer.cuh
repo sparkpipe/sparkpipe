@@ -126,8 +126,6 @@ struct K3LayerBuffers
 	uint16_t *hidden_bf16;
 	uint16_t *normed_bf16;
 	uint16_t *fused_qkvb_bf16;
-	uint16_t *fused_decay_gate_bf16;
-	uint16_t *gate_latent_bf16;
 	uint16_t *query_bf16;
 	uint16_t *key_bf16;
 	uint16_t *value_bf16;

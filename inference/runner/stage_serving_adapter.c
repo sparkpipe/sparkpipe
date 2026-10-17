@@ -32,6 +32,7 @@ typedef struct SparkStageServingState
 	char *device_backend_path;
 	char *device_local_host;
 	uint32_t max_rows;
+	uint32_t max_shared_rows;
 	SparkTpDeviceCollectiveConfig device_config;
 	SparkWeightdClient *lane_client;
 	SparkTpDeviceCollectiveTopology device_topology;
@@ -421,6 +422,7 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 	config->max_active_sequence_count = StageServingJsonU32(doc, root, "max_sequences",
 		configuration->runtime_limits.max_active_sequence_count);
 	config->max_input_row_count = StageServingJsonU32(doc, root, "max_rows", configuration->runtime_limits.max_input_row_count);
+	config->max_shared_row_count = StageServingJsonU32(doc, root, "max_shared_rows", config->max_input_row_count);
 	config->resident_sequence_capacity = StageServingJsonU32(doc, root, "resident_capacity",
 		configuration->runtime_limits.resident_sequence_capacity);
 	config->kv_pages_per_sequence = StageServingJsonU32(doc, root, "kv_pages", 2u);
@@ -748,6 +750,23 @@ static SparkStatus StageServingInitialize(const SparkModelServingAdapterConfigur
 		state->runner_config.max_active_sequence_count == 0u ||
 		state->runner_config.max_active_sequence_count > model->descriptor->max_active_sequence_count )
 		{ StageServingDestroy(state); SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED); }
+	state->max_shared_rows = state->runner_config.max_shared_row_count;
+	if ( state->max_shared_rows == 0u || state->max_shared_rows > state->max_rows ||
+		state->max_shared_rows < state->runner_config.max_active_sequence_count ||
+		state->max_shared_rows < (model->descriptor->max_verify_row_count < state->max_rows ? model->descriptor->max_verify_row_count : state->max_rows) )
+	{
+		fprintf(stderr, "%s adapter: max_shared_rows %u must cover the sequences (%u) and verify rows (%u) and stay within max_rows %u\n",
+			model->module_tag, state->max_shared_rows, state->runner_config.max_active_sequence_count,
+			model->descriptor->max_verify_row_count, state->max_rows);
+		StageServingDestroy(state);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	state->runner_config.head_row_capacity = state->runner_config.max_active_sequence_count > model->descriptor->max_verify_row_count ?
+		state->runner_config.max_active_sequence_count : model->descriptor->max_verify_row_count;
+	if ( state->runner_config.head_row_capacity > state->max_rows )
+		state->runner_config.head_row_capacity = state->max_rows;
+	fprintf(stderr, "%s adapter: rows=%u shared_rows=%u head_rows=%u\n", model->module_tag, state->max_rows,
+		state->max_shared_rows, state->runner_config.head_row_capacity);
 	state->completion_function = configuration->completion_function;
 	state->completion_context = configuration->completion_context;
 	status = StageServingAllocate(state);
@@ -841,6 +860,13 @@ static SparkStatus StageServingValidateSubmission(void *adapter_state,
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( submission->row_sequence_ids == 0 || submission->lanes == 0 || submission->lane_count < submission->active_sequence_count )
 		return SPARK_STATUS_VALIDATION_FAILED;
+	if ( submission->row_count > state->max_shared_rows &&
+		(submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL || submission->active_sequence_count != 1u) )
+	{
+		fprintf(stderr, "%s adapter: refused a %u-row wave of %u sequences (kind %u): only a single-sequence prefill may exceed %u rows\n",
+			state->model->module_tag, submission->row_count, submission->active_sequence_count, submission->work_kind, state->max_shared_rows);
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
 	return SPARK_STATUS_OK;
 }
 

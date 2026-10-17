@@ -152,6 +152,48 @@ static int32_t TestK3ReleaseValidation(void)
 	return(failures);
 }
 
+static int32_t TestK3SharedRows(void)
+{
+	static const uint64_t sequences[8] = { 7u, 7u, 7u, 9u, 9u, 9u, 11u, 11u };
+	SparkStageServingState state;
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[8];
+	int32_t failures = 0;
+	memset(&state, 0, sizeof(state));
+	state.model = &K3StageServing;
+	state.max_rows = 8u;
+	state.max_shared_rows = 4u;
+	state.runner_config.max_active_sequence_count = 8u;
+	memset(&submission, 0, sizeof(submission));
+	memset(lanes, 0, sizeof(lanes));
+	submission.lanes = lanes;
+	submission.lane_count = 2u;
+	submission.row_sequence_ids = sequences;
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	submission.active_sequence_count = 2u;
+	submission.row_count = 6u;
+	failures += TestK3Check(StageServingValidateSubmission(&state, &submission) == SPARK_STATUS_CAPACITY_EXCEEDED,
+		"a prefill wave of two sequences above the shared rows is refused before any work");
+	submission.row_count = 4u;
+	failures += TestK3Check(StageServingValidateSubmission(&state, &submission) == SPARK_STATUS_OK,
+		"a prefill wave of two sequences within the shared rows is accepted");
+	submission.lane_count = 1u;
+	submission.active_sequence_count = 1u;
+	submission.row_count = 8u;
+	failures += TestK3Check(StageServingValidateSubmission(&state, &submission) == SPARK_STATUS_OK,
+		"a single-sequence prefill may use every row");
+	submission.row_count = 9u;
+	failures += TestK3Check(StageServingValidateSubmission(&state, &submission) == SPARK_STATUS_CAPACITY_EXCEEDED,
+		"no wave exceeds max_rows");
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	submission.lane_count = 6u;
+	submission.active_sequence_count = 6u;
+	submission.row_count = 6u;
+	failures += TestK3Check(StageServingValidateSubmission(&state, &submission) == SPARK_STATUS_CAPACITY_EXCEEDED,
+		"a non-prefill wave above the shared rows is refused");
+	return(failures);
+}
+
 static const uint32_t *TestK3Host(const SparkMemoryBuffer *buffer)
 {
 	return((const uint32_t *)buffer->pointer);
@@ -261,6 +303,7 @@ int main(int argc, char **argv)
 {
 	int32_t failures = TestK3Descriptor();
 	failures += TestK3ReleaseValidation();
+	failures += TestK3SharedRows();
 	failures += TestK3Grouping();
 	int index;
 	if ( argc == 1 )

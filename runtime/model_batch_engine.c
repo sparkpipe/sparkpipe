@@ -186,6 +186,7 @@ struct SparkModelBatchEngine
 	uint32_t context_tokens;
 	uint64_t inflight_budget_ns;
 	uint32_t max_prefill_rows;
+	uint32_t max_shared_prefill_rows;
 	uint32_t max_active_sequence_count;
 	uint32_t scratch_row_capacity;
 	uint32_t submission_capacity;
@@ -1714,6 +1715,9 @@ static SparkStatus SparkModelBatchInitialize(
 	engine->context_tokens = engine->max_context_tokens;
 	engine->inflight_budget_ns = configuration->inflight_budget_ns;
 	engine->max_prefill_rows = configuration->max_prefill_rows_per_submission;
+	engine->max_shared_prefill_rows = configuration->deployment->max_shared_input_row_count != 0u &&
+		configuration->deployment->max_shared_input_row_count < engine->max_prefill_rows ?
+		configuration->deployment->max_shared_input_row_count : engine->max_prefill_rows;
 	engine->max_active_sequence_count = limits->max_active_sequence_count;
 	engine->scratch_row_capacity = engine->max_prefill_rows > engine->max_active_sequence_count ? engine->max_prefill_rows : engine->max_active_sequence_count;
 	engine->submission_capacity = limits->max_inflight_submission_count;
@@ -2382,6 +2386,9 @@ static uint32_t SparkModelBatchSelectRequestPass(
 		if ( selected != 0u && SparkModelBatchRequestIsIsolated(request,work_kind) != 0u )
 			continue;
 		if ( prefill_span_budget != 0 && SparkModelBatchCanonicalPrefillSpan(engine,request) > *prefill_span_budget )
+			continue;
+		if ( prefill_span_budget != 0 && selected != 0u &&
+			engine->max_prefill_rows - *prefill_span_budget + SparkModelBatchCanonicalPrefillSpan(engine,request) > engine->max_shared_prefill_rows )
 			continue;
 		if ( (uint64_t)(selected + 1u) * (request->sampling.logprobs > stride ? request->sampling.logprobs : stride) > SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES )
 			continue;

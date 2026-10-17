@@ -56,8 +56,6 @@ static uint16_t value[ROWS * K3_KDA_V_DIM], gate[ROWS * K3_KDA_V_DIM];
 static uint16_t decay_logit[ROWS * K3_KDA_QK_DIM];
 static uint16_t latent[ROUTES * K3_ROUTED_EXPERT_HIDDEN];
 static uint16_t fused_qkvb[ROWS * K3_KDA_QKVB_FUSED_ROWS];
-static uint16_t fused_decay_gate[ROWS * K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS];
-static uint16_t gate_latent[ROWS * K3_KDA_KEY_DIM];
 static uint16_t qkvb_weight[K3_HIDDEN], decay_gate_weight[K3_HIDDEN];
 static uint16_t aux_slab[2u * ROWS * K3_HIDDEN];
 static uint16_t aux_reference[ROWS * K3_HIDDEN];
@@ -114,7 +112,6 @@ static const char *GemmName(const void *output)
 		: output == (void *)attention_out ? "attention_out"
 		: output == (void *)latent ? "latent"
 		: output == (void *)fused_qkvb ? "fused_qkvb"
-		: output == (void *)fused_decay_gate ? "fused_decay_gate"
 		: output == (void *)query ? "query"
 		: output == (void *)key ? "key"
 		: output == (void *)value ? "value"
@@ -199,8 +196,7 @@ int main(void)
 	}
 	b.hidden_bf16 = hidden; b.normed_bf16 = normed;
 	b.attention_out_bf16 = attention_out; b.shared_out_bf16 = shared_out;
-	b.fused_qkvb_bf16 = fused_qkvb; b.fused_decay_gate_bf16 = fused_decay_gate;
-	b.gate_latent_bf16 = gate_latent;
+	b.fused_qkvb_bf16 = fused_qkvb;
 	b.query_bf16 = query; b.key_bf16 = key; b.value_bf16 = value;
 	b.gate_bf16 = gate; b.decay_logit_bf16 = decay_logit;
 	b.latent_bf16 = latent; b.kv_slot_bf16 = kv_slot;

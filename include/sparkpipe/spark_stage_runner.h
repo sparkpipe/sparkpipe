@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-#define SPARK_STAGE_RUNNER_ABI_VERSION 1u
+#define SPARK_STAGE_RUNNER_ABI_VERSION 2u
 #define SPARK_STAGE_RUNNER_CONFIGURATION_BYTES ((uint32_t)sizeof(SparkStageRunnerConfiguration))
 #define SPARK_STAGE_RUNNER_DISPATCH_BYTES ((uint32_t)sizeof(SparkStageRunnerDispatch))
 #define SPARK_STAGE_RUNNER_BYTES ((uint32_t)sizeof(SparkStageRunner))
@@ -78,6 +78,8 @@ typedef struct SparkStageRunnerConfiguration
 	void (*layer_collective_override)(void *context, void *stream, uint32_t layer, uint32_t phase);
 	void *layer_collective_context;
 	uint32_t linear_weight_codec;
+	uint32_t max_shared_row_count;
+	uint32_t head_row_capacity;
 } SparkStageRunnerConfiguration;
 
 typedef struct SparkStageRunnerDispatch

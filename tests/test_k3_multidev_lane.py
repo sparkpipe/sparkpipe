@@ -325,6 +325,21 @@ def main() -> int:
               ["runtime_limits"]["kv_logical_page_capacity"] == 256, failures,
               "the logical pages default to the sequences' pages when the physical pages hold fewer")
 
+        for rows, shared in ((2048, 1024), (1024, None)):
+            wide_dir = Path(temporary) / f"rows{rows}"
+            wide = subprocess.run(
+                [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
+                 "--runtime-root", runtime_root,
+                 "--weightd-socket", socket_path,
+                 "--rows", str(rows),
+                 "--kv-backing-bytes", str(40 * 10 ** 9),
+                 "--output-dir", str(wide_dir)],
+                capture_output=True, text=True)
+            wide_limits = json.loads((wide_dir / "deployment.json").read_text())["runtime_limits"] if wide.returncode == 0 else {}
+            wide_adapter = json.loads((wide_dir / "adapter.spark0.json").read_text()) if wide.returncode == 0 else {}
+            check(wide.returncode == 0 and wide_limits.get("max_input_rows") == rows and
+                  wide_limits.get("max_shared_input_rows") == shared and wide_adapter.get("max_shared_rows") == shared,
+                  failures, f"a {rows}-row lane renders a shared-wave limit of {shared} on the hub and every rank")
         check_run = subprocess.run(
             [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
              "--runtime-root", runtime_root,

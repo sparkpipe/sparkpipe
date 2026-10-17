@@ -47,7 +47,7 @@ static const char *const SparkModelResidentDeploymentRuntimeMembers[] =
 {
 	"max_inflight_submissions","max_active_sequences","max_input_rows",
 	"resident_sequence_capacity","kv_logical_page_capacity",
-	"kv_physical_page_capacity","max_sequence_positions"
+	"kv_physical_page_capacity","max_sequence_positions","max_shared_input_rows"
 };
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_RUNTIME_REQUIRED_MEMBER_COUNT 6u
 static const char *const SparkModelResidentDeploymentNodeMembers[] =
@@ -329,10 +329,15 @@ static SparkStatus SparkModelResidentDeploymentParseRuntime(
 	limits->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	limits->descriptor_bytes = SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES;
 	deployment->max_sequence_positions = 0u;
+	deployment->max_shared_input_row_count = 0u;
 	status = SparkModelResidentDeploymentValidateMembers(document,object,SparkModelResidentDeploymentRuntimeMembers,sizeof(SparkModelResidentDeploymentRuntimeMembers) / sizeof(SparkModelResidentDeploymentRuntimeMembers[0]),SPARK_MODEL_RESIDENT_DEPLOYMENT_RUNTIME_REQUIRED_MEMBER_COUNT);
 	if ( status == SPARK_STATUS_OK && SparkJsonFindObjectMember(document,object,"max_sequence_positions") >= 0 )
 		status = SparkModelResidentDeploymentUnsigned(document,object,"max_sequence_positions",&deployment->max_sequence_positions);
 	if ( status == SPARK_STATUS_OK && SparkJsonFindObjectMember(document,object,"max_sequence_positions") >= 0 && deployment->max_sequence_positions < 2u )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK && SparkJsonFindObjectMember(document,object,"max_shared_input_rows") >= 0 )
+		status = SparkModelResidentDeploymentUnsigned(document,object,"max_shared_input_rows",&deployment->max_shared_input_row_count);
+	if ( status == SPARK_STATUS_OK && SparkJsonFindObjectMember(document,object,"max_shared_input_rows") >= 0 && deployment->max_shared_input_row_count == 0u )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentUnsigned(document,object,"max_inflight_submissions",&limits->max_inflight_submission_count);
@@ -722,6 +727,8 @@ static SparkStatus SparkModelResidentDeploymentValidateStructure(
 	memset(stages,0,sizeof(stages));
 	if ( deployment->runtime_limits.max_inflight_submission_count == 0u || deployment->runtime_limits.max_inflight_submission_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INFLIGHT_SUBMISSION_COUNT || deployment->runtime_limits.max_active_sequence_count == 0u || deployment->runtime_limits.max_active_sequence_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT || deployment->runtime_limits.max_input_row_count < deployment->runtime_limits.max_active_sequence_count || deployment->runtime_limits.max_input_row_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT || deployment->runtime_limits.resident_sequence_capacity < deployment->runtime_limits.max_active_sequence_count || deployment->runtime_limits.resident_sequence_capacity > SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( deployment->max_shared_input_row_count > deployment->runtime_limits.max_input_row_count )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( (deployment->runtime_limits.kv_logical_page_capacity == 0u) !=
 		(deployment->runtime_limits.kv_physical_page_capacity == 0u) ||
 		(deployment->runtime_limits.kv_physical_page_capacity != 0u &&

@@ -68,7 +68,7 @@ typedef struct SparkModelResidentDeployment
 	uint32_t schema_version;
 	uint32_t node_count;
 	uint32_t coordinator_rank_index;
-	uint32_t reserved0;
+	uint32_t max_shared_input_row_count;
 	SparkModelServingRuntimeLimits runtime_limits;
 	char *adapter_shared_object_path;
 	char *driver_shared_object_path;

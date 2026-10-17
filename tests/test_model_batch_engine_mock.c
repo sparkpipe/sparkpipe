@@ -918,6 +918,37 @@ static void TestScenarioCanonicalPrefillChunks(const SparkModelResidentDeploymen
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioSharedPrefillRows(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	SparkModelResidentDeployment limited = *deployment;
+	uint32_t longer[3] = {31u,32u,33u};
+	uint32_t first[1] = {41u},second[3] = {51u,52u,53u};
+	uint32_t pass,submissions[2] = {0u,0u},rows[2] = {0u,0u};
+	for (pass=0u; pass<2u; pass++)
+	{
+		TestBatchState state = {0};
+		SparkModelBatchEngine *engine;
+		uint32_t base = 660u + 10u * pass;
+		limited.max_shared_input_row_count = pass == 0u ? 0u : 4u;
+		MockResidentClientReset();
+		engine = TestConnectRows(&limited,&state,runtime_root,8u);
+		if ( engine == 0 )
+			return;
+		MockResidentClientSetAutoTokens(1u);
+		MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+		TestSubmitPrompt(engine,1u,base,1u,longer,3u);
+		TestSubmitPrompt(engine,2u,base + 1u,1u,first,1u);
+		TestSubmitPrompt(engine,3u,base + 2u,1u,second,3u);
+		TestDriveUntilTerminal(engine,&state,3u,800u);
+		CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u && state.completed_events[3] == 1u,
+			"shared rows: every prompt completes with and without a shared-wave limit");
+		MockResidentClientTakePrefillShared(&submissions[pass],&rows[pass]);
+		SparkModelBatchEngineDestroy(engine);
+	}
+	CHECK(submissions[0] != 0u && rows[0] > 4u,"shared rows: without a limit, one prefill wave carries several prompts past the shared size");
+	CHECK(submissions[1] != 0u && rows[1] <= 4u,"shared rows: a wave carrying several prompts stays within the shared limit, while one prompt alone may use the full budget");
+}
+
 static uint32_t TestCoordinatorFrames(void)
 {
 	return(MockResidentClientCalls(0u,MOCK_CALL_SUBMIT) + MockResidentClientCalls(0u,MOCK_CALL_PREPARE) + MockResidentClientCalls(0u,MOCK_CALL_CONTINUE));
@@ -2468,6 +2499,7 @@ int main(void)
 	TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,1u);
 	TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,3u);
 	TestScenarioCanonicalPrefillChunks(&deployment,runtime_root);
+	TestScenarioSharedPrefillRows(&deployment,runtime_root);
 	TestScenarioDecodeAfterPrefill(&deployment,runtime_root);
 	TestScenarioPartialCopyCapacity(&deployment,runtime_root);
 	TestScenarioSamplingValidation(&deployment,runtime_root);

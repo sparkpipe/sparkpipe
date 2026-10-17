@@ -223,6 +223,11 @@ def group_hosts(rank: int) -> list[str]:
 
 
 DEFAULT_STATE_BUDGET_BYTES = 5 << 30
+SHARED_ROWS = 1024
+
+
+def shared_rows(rows: int | None) -> dict:
+    return {} if rows is None or rows <= SHARED_ROWS else {"max_shared_rows": SHARED_ROWS}
 
 
 def adapter_config(rank: int, kv_pages: int = KV_PAGES_PER_SEQUENCE,
@@ -236,6 +241,7 @@ def adapter_config(rank: int, kv_pages: int = KV_PAGES_PER_SEQUENCE,
         "world_size": WORLD,
         "max_sequences": sequences,
         "max_rows": rows if rows is not None else sequences,
+        **shared_rows(rows),
         "resident_capacity": sequences,
         "kv_pages": kv_pages,
         "state_budget_bytes": state_budget_bytes,
@@ -331,6 +337,7 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
             "max_inflight_submissions": sequences,
             "max_active_sequences": sequences,
             "max_input_rows": rows if rows is not None else sequences,
+            **({"max_shared_input_rows": SHARED_ROWS} if rows is not None and rows > SHARED_ROWS else {}),
             "resident_sequence_capacity": sequences,
             "kv_logical_page_capacity": logical_pages if logical_pages is not None else sequences * kv_pages,
             "kv_physical_page_capacity": physical_pages if physical_pages is not None else sequences * kv_pages,

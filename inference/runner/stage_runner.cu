@@ -260,6 +260,7 @@ typedef struct SparkStageRunnerState
 	float *head_certified_fp8_scale_f32;
 	float *head_certified_fp8_norm_f32;
 	void *head_certified_scratch;
+	uint32_t head_capacity;
 	uint32_t *head_certified_candidates;
 	uint32_t *head_screened_count;
 	uint32_t vocab;
@@ -830,9 +831,9 @@ static SparkStatus StageRunnerCreateHead(SparkStageRunnerState *state, const Spa
 	if ( cudaMalloc(&state->head_certified_fp8_payload, shard_rows * dim) != cudaSuccess ||
 		cudaMalloc(&state->head_certified_fp8_scale_f32, shard_rows * (dim / 32u) * sizeof(float)) != cudaSuccess ||
 		cudaMalloc(&state->head_certified_fp8_norm_f32, shard_rows * (dim / 32u) * sizeof(float)) != cudaSuccess ||
-		cudaMalloc(&state->head_certified_scratch, SparkHeadCertifiedFp8ScratchBytes(shard_rows,dim) * state->max_rows) != cudaSuccess ||
-		cudaMalloc(&state->head_certified_candidates, SparkHeadCertifiedFp8CandidateBytes(shard_rows) * state->max_rows) != cudaSuccess ||
-		cudaMalloc(&state->head_screened_count, sizeof(uint32_t) * state->max_rows) != cudaSuccess )
+		cudaMalloc(&state->head_certified_scratch, SparkHeadCertifiedFp8ScratchBytes(shard_rows,dim) * state->head_capacity) != cudaSuccess ||
+		cudaMalloc(&state->head_certified_candidates, SparkHeadCertifiedFp8CandidateBytes(shard_rows) * state->head_capacity) != cudaSuccess ||
+		cudaMalloc(&state->head_screened_count, sizeof(uint32_t) * state->head_capacity) != cudaSuccess )
 	{
 		fprintf(stderr, "sparkpipe_stage_runner: certified head buffers for %llu rows do not fit\n", (unsigned long long)shard_rows);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -850,19 +851,19 @@ static SparkStatus StageRunnerCreateHead(SparkStageRunnerState *state, const Spa
 static SparkStatus StageRunnerCreateBuffers(SparkStageRunnerState *state, const SparkStageRunner *runner,
 	const SparkStageRunnerConfiguration *configuration)
 {
-	const uint64_t rows = configuration->max_input_row_count, hidden = state->geometry.hidden;
+	const uint64_t rows = configuration->max_input_row_count, hidden = state->geometry.hidden, head_rows = state->head_capacity;
 	SparkStatus status;
 	state->head_tiles = (state->vocab_slice_rows + LM_STAGE_HEAD_TILE - 1u) / LM_STAGE_HEAD_TILE;
 	if ( cudaMalloc(&state->hidden, rows * hidden * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMalloc(&state->head_normed, rows * hidden * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMalloc(&state->head_maxloc, rows * sizeof(uint64_t)) != cudaSuccess ||
-		cudaMalloc(&state->head_candidate_token, rows * state->head_tiles * sizeof(*state->head_candidate_token)) != cudaSuccess ||
-		cudaMalloc(&state->head_candidate_score, rows * state->head_tiles * sizeof(*state->head_candidate_score)) != cudaSuccess ||
+		cudaMalloc(&state->head_normed, head_rows * hidden * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMalloc(&state->head_maxloc, head_rows * sizeof(uint64_t)) != cudaSuccess ||
+		cudaMalloc(&state->head_candidate_token, head_rows * state->head_tiles * sizeof(*state->head_candidate_token)) != cudaSuccess ||
+		cudaMalloc(&state->head_candidate_score, head_rows * state->head_tiles * sizeof(*state->head_candidate_score)) != cudaSuccess ||
 		cudaMalloc(&state->output_token, rows * sizeof(*state->output_token)) != cudaSuccess ||
 		cudaMalloc(&state->output_score, rows * sizeof(*state->output_score)) != cudaSuccess ||
-		cudaMalloc(&state->head_hidden, rows * hidden * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMalloc(&state->head_token, rows * sizeof(*state->head_token)) != cudaSuccess ||
-		cudaMalloc(&state->head_score, rows * sizeof(*state->head_score)) != cudaSuccess ||
+		cudaMalloc(&state->head_hidden, head_rows * hidden * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMalloc(&state->head_token, head_rows * sizeof(*state->head_token)) != cudaSuccess ||
+		cudaMalloc(&state->head_score, head_rows * sizeof(*state->head_score)) != cudaSuccess ||
 		cudaMalloc(&state->positions, sizeof(*state->positions)) != cudaSuccess ||
 		cudaMalloc(&state->token_ids_device, rows * sizeof(*state->token_ids_device)) != cudaSuccess ||
 		cudaMalloc(&state->context_length, sizeof(*state->context_length)) != cudaSuccess ||
@@ -980,6 +981,8 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	state->tp_degree = configuration->tp_degree;
 	state->stream = (cudaStream_t)configuration->execution_stream;
 	state->max_rows = configuration->max_input_row_count;
+	state->head_capacity = configuration->head_row_capacity != 0u && configuration->head_row_capacity < state->max_rows ?
+		configuration->head_row_capacity : state->max_rows;
 	state->max_context = configuration->resident_sequence_capacity;
 	state->multiprocessors = configuration->multiprocessors;
 	state->sequence_capacity = configuration->max_active_sequence_count;
@@ -1063,7 +1066,8 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 static SparkStatus StageRunnerAllocateDistribution(SparkStageRunnerState *state,
 	const SparkStageRunner *runner, const SparkStageRunnerConfiguration *configuration)
 {
-	const uint64_t rows = configuration->max_input_row_count, slice = state->vocab_slice_rows, hidden = state->geometry.hidden;
+	const uint64_t rows = state->head_capacity, slice = state->vocab_slice_rows, hidden = state->geometry.hidden;
+	const uint64_t gather_rows = configuration->max_input_row_count;
 	uint64_t full;
 	uint32_t elements, sub_rows;
 	state->distribution_capacity = 0u;
@@ -1083,7 +1087,7 @@ static SparkStatus StageRunnerAllocateDistribution(SparkStageRunnerState *state,
 		for ( sub_rows = 1u; sub_rows <= elements && (elements % sub_rows != 0u || elements / sub_rows > hidden); ++sub_rows )
 			;
 		state->distribution_sub_rows = sub_rows;
-		state->distribution_chunk_rows = sub_rows <= elements ? (uint32_t)rows / sub_rows : 0u;
+		state->distribution_chunk_rows = sub_rows <= elements ? (uint32_t)(gather_rows / sub_rows < rows ? gather_rows / sub_rows : rows) : 0u;
 		if ( state->distribution_chunk_rows == 0u )
 		{
 			fprintf(stderr, "sparkpipe_stage_runner: distribution refused: a %llu-token logit row needs %u collective rows and %llu are configured\n",
@@ -2116,6 +2120,15 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	if ( rows == 0u || rows > state->max_rows || dispatch->active_sequence_count == 0u || dispatch->active_sequence_count > rows ||
 		(runner->owns_embedding != 0u && dispatch->token_ids == 0) )
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ( runner->owns_final_head != 0u &&
+		((dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) != 0u && dispatch->active_sequence_count < rows ?
+			dispatch->active_sequence_count : rows) > state->head_capacity )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: submit refused: the final head would run on %u rows and holds %u\n",
+			(dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) != 0u && dispatch->active_sequence_count < rows ?
+				dispatch->active_sequence_count : rows, state->head_capacity);
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
 	if ( (dispatch->flags & ~SPARK_STAGE_RUNNER_DISPATCH_KNOWN_FLAGS) != 0u )
 	{
 		fprintf(stderr, "sparkpipe_stage_runner: submit refused: unknown dispatch flags 0x%x\n", dispatch->flags);

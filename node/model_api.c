@@ -1971,7 +1971,7 @@ int main(int argc, char **argv)
 	S.context_limit = cfg.max_context_tokens;
 	api_logf("api_context_limit max_context_tokens=%u deployment_max_sequence_positions=%u", cfg.max_context_tokens, dep.max_sequence_positions);
 	cfg.max_prefill_rows_per_submission = dep.runtime_limits.max_input_row_count;
-	api_logf("api_prefill_rows max_prefill_rows_per_submission=%u deployment_max_input_row_count=%u", cfg.max_prefill_rows_per_submission, dep.runtime_limits.max_input_row_count);
+	api_logf("api_prefill_rows max_prefill_rows_per_submission=%u deployment_max_input_row_count=%u max_shared_input_row_count=%u", cfg.max_prefill_rows_per_submission, dep.runtime_limits.max_input_row_count, dep.max_shared_input_row_count != 0u ? dep.max_shared_input_row_count : dep.runtime_limits.max_input_row_count);
 	cfg.connect_timeout_ms = 30000;
 	cfg.maximum_messages_per_rank_per_progress = 8;
 	cfg.inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_DEFAULT_INFLIGHT_BUDGET_NS;

@@ -93,7 +93,7 @@ static void TestPrefixReuseKey(const char *members,SparkStatus expected)
 	assert(unlink(path) == 0);
 }
 
-static void TestRuntimeMember(const char *member,SparkStatus expected,uint32_t positions)
+static void TestRuntimeMemberShared(const char *member,SparkStatus expected,uint32_t positions,uint32_t shared)
 {
 	SparkModelResidentDeployment deployment;
 	char buffer[8192],path[256];
@@ -119,9 +119,24 @@ static void TestRuntimeMember(const char *member,SparkStatus expected,uint32_t p
 	SparkModelResidentDeploymentReset(&deployment);
 	assert(SparkModelResidentDeploymentLoad(path,&deployment) == expected);
 	if ( expected == SPARK_STATUS_OK )
-		assert(deployment.max_sequence_positions == positions);
+		assert(deployment.max_sequence_positions == positions && deployment.max_shared_input_row_count == shared);
 	SparkModelResidentDeploymentDestroy(&deployment);
 	assert(unlink(path) == 0);
+}
+
+static void TestRuntimeMember(const char *member,SparkStatus expected,uint32_t positions)
+{
+	TestRuntimeMemberShared(member,expected,positions,0u);
+}
+
+static void TestSharedInputRows(void)
+{
+	TestRuntimeMemberShared("\"max_shared_input_rows\": 2",SPARK_STATUS_OK,0u,2u);
+	TestRuntimeMemberShared("\"max_shared_input_rows\": 4",SPARK_STATUS_OK,0u,4u);
+	TestRuntimeMemberShared("\"max_shared_input_rows\": 5",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
+	TestRuntimeMemberShared("\"max_shared_input_rows\": 0",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
+	TestRuntimeMemberShared("\"max_shared_input_row\": 2",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
+	puts("test_model_resident_deployment: a shared-wave row limit within max_input_rows loads; zero, larger or misspelled is refused");
 }
 
 static void TestSequencePositions(void)
@@ -610,6 +625,7 @@ int main(int argc,char **argv)
 	TestPrefixReuseKey("\"prefix_reuse\":true,",SPARK_STATUS_SCHEMA_ERROR);
 	TestPrefixReuseKey("\"prefix_reuse\":false,",SPARK_STATUS_SCHEMA_ERROR);
 	TestSequencePositions();
+	TestSharedInputRows();
 	TestGlm5NextDeploymentServesText();
 	SparkModelResidentDeploymentReset(&deployment);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment.json",&deployment) == SPARK_STATUS_OK);
