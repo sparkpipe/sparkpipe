@@ -2394,8 +2394,10 @@ static void TestRunModelDrafts(const SparkModelResidentDeployment *deployment,co
 	strcpy(drafted.draft_server.target_model,"test-target");
 	drafted.draft_server.depth = 4u;
 	drafted.draft_server.wait_ms = 50u;
-	drafted.draft_server.min_confidence = 0.35f;
+	drafted.draft_server.min_confidence = 0.05f;
+	MockResidentClientSetStepDelay(2000u);
 	TestRunScript(&drafted,runtime_root,script,256u,44u,budget,state,view,verify_submissions,verify_rows);
+	MockResidentClientSetStepDelay(0u);
 	TestDraftStop(server);
 }
 
@@ -2417,6 +2419,7 @@ static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployme
 	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_WRONG,script,40u,&state,&view,&submissions,&rows,&server);
 	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,40u) != 0u && submissions != 0u && view.speculative_accepted_token_count == 0u,
 		"model drafts: wrong drafts are rejected and the stream stays exact");
+	CHECK(submissions * 4u < server.requests,"model drafts: confident drafts that keep failing stop being verified once their acceptance is learned");
 	CHECK(TestLaneInputsFollowScript(1u,script,256u) != 0u,"model drafts: a rejected model draft never becomes a lane's input");
 	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_UNAVAILABLE,script,40u,&state,&view,&submissions,&rows,&server);
 	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,40u) != 0u && submissions == 0u && server.requests > 4u,
