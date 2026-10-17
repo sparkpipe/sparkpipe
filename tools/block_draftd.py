@@ -41,8 +41,9 @@ ROOT_PARENT = 0xFFFFFFFF
 
 
 class Context:
-    def __init__(self, drafter, capacity):
+    def __init__(self, drafter, capacity, limit):
         self.drafter = drafter
+        self.limit = limit
         self.capacity = 0
         self.keys = []
         self.values = []
@@ -54,7 +55,7 @@ class Context:
     def grow(self, needed):
         if needed <= self.capacity:
             return
-        capacity = max(needed, 2 * self.capacity, 4096)
+        capacity = max(needed, min(2 * self.capacity, self.limit), 4096)
         d = self.drafter
         keys = [torch.zeros((d.kv_heads, capacity, d.head_dim), dtype=torch.bfloat16, device=d.device) for _ in d.layers]
         values = [torch.zeros((d.kv_heads, capacity, d.head_dim), dtype=torch.bfloat16, device=d.device) for _ in d.layers]
@@ -103,7 +104,10 @@ class Server:
         self.frames = queue.Queue()
         self.lock = threading.Condition()
         self.contexts = OrderedDict()
-        self.stats = {"frames": 0, "rows": 0, "requests": 0, "drafted": 0, "unavailable": 0, "donor_fills": 0, "gaps": 0, "draft_us": 0}
+        self.stats = {"frames": 0, "rows": 0, "requests": 0, "drafted": 0, "unavailable": 0, "donor_fills": 0, "gaps": 0, "too_long": 0, "draft_us": 0}
+        self.position_bytes = 2 * len(self.drafter.layers) * self.drafter.kv_heads * self.drafter.head_dim * 2
+        self.max_positions = args.context_bytes // self.position_bytes
+        self.too_long = set()
 
     def tap_loop(self):
         listener = socket.create_server((self.args.tap_host, self.args.tap_port), reuse_port=False)
@@ -152,9 +156,17 @@ class Server:
         hidden, count = self.hello["hidden"], len(self.hello["entries"])
         rows = torch.from_numpy(np.frombuffer(data, dtype=np.uint16).reshape(len(tokens), count, hidden).copy()).view(torch.bfloat16)
         taps = rows[:, self.columns].to(self.drafter.device).reshape(len(tokens), -1)
+        if first + len(tokens) + self.drafter.block > self.max_positions:
+            if sequence not in self.too_long:
+                print(f"CONTEXT-TOO-LONG sequence {sequence} needs {first + len(tokens)} positions, the budget holds {self.max_positions}", flush=True)
+                self.too_long.add(sequence)
+                self.stats["too_long"] += 1
+            self.contexts.pop(sequence, None)
+            return
         context = self.contexts.get(sequence)
         if context is None or first == 0:
-            context = Context(self.drafter, first + len(tokens))
+            self.too_long.discard(sequence)
+            context = Context(self.drafter, first + len(tokens), self.max_positions)
             self.contexts[sequence] = context
         self.contexts.move_to_end(sequence)
         context.write(first, tokens, taps)
