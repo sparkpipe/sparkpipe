@@ -182,6 +182,36 @@ class BlockDrafter:
         y = rms(h, self.norm, self.eps).to(torch.bfloat16)
         return y, (y @ self.head.t()).float()
 
+    def draft_cached(self, anchor_token, anchor_position, keys, values, begin, end):
+        block, heads, kv_heads, dim = self.block, self.heads, self.kv_heads, self.head_dim
+        tokens = torch.full((block,), self.mask, dtype=torch.long, device=self.device)
+        tokens[0] = anchor_token
+        h = self.embed[tokens].float()
+        positions = torch.arange(anchor_position, anchor_position + block, device=self.device)
+        for index, layer in enumerate(self.layers):
+            x = rms(h, layer["input_layernorm"], self.eps).to(torch.bfloat16)
+            q = (x @ layer["self_attn.q_proj"].t()).view(block, heads, dim)
+            q = rotate(rms(q, layer["self_attn.q_norm"], self.eps), positions, self.inv, self.attention).to(torch.bfloat16)
+            kb = (x @ layer["self_attn.k_proj"].t()).view(block, kv_heads, dim)
+            kb = rotate(rms(kb, layer["self_attn.k_norm"], self.eps), positions, self.inv, self.attention).to(torch.bfloat16)
+            vb = (x @ layer["self_attn.v_proj"].t()).view(block, kv_heads, dim)
+            saved_k = keys[index][:, end:end + block].clone()
+            saved_v = values[index][:, end:end + block].clone()
+            keys[index][:, end:end + block] = kb.transpose(0, 1)
+            values[index][:, end:end + block] = vb.transpose(0, 1)
+            attended = torch.nn.functional.scaled_dot_product_attention(q.transpose(0, 1)[None], keys[index][None, :, begin:end + block],
+                                                                        values[index][None, :, begin:end + block], enable_gqa=True)
+            keys[index][:, end:end + block] = saved_k
+            values[index][:, end:end + block] = saved_v
+            attended = attended[0].transpose(0, 1).reshape(block, -1)
+            h = h + (attended @ layer["self_attn.o_proj"].t()).float()
+            x = rms(h, layer["post_attention_layernorm"], self.eps).to(torch.bfloat16)
+            gate = x @ layer["mlp.gate_proj"].t()
+            up = x @ layer["mlp.up_proj"].t()
+            h = h + ((torch.nn.functional.silu(gate.float()) * up.float()).to(torch.bfloat16) @ layer["mlp.down_proj"].t()).float()
+        y = rms(h, self.norm, self.eps).to(torch.bfloat16)
+        return y, (y @ self.head.t()).float()
+
     def heads32(self):
         if not hasattr(self, "_heads32"):
             self._heads32 = (self.markov_w2.float() if self.markov_w2 is not None else None,

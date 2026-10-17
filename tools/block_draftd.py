@@ -56,11 +56,11 @@ class Context:
             return
         capacity = max(needed, 2 * self.capacity, 4096)
         d = self.drafter
-        keys = [torch.zeros((capacity, d.kv_heads, d.head_dim), dtype=torch.bfloat16, device=d.device) for _ in d.layers]
-        values = [torch.zeros((capacity, d.kv_heads, d.head_dim), dtype=torch.bfloat16, device=d.device) for _ in d.layers]
+        keys = [torch.zeros((d.kv_heads, capacity, d.head_dim), dtype=torch.bfloat16, device=d.device) for _ in d.layers]
+        values = [torch.zeros((d.kv_heads, capacity, d.head_dim), dtype=torch.bfloat16, device=d.device) for _ in d.layers]
         for index in range(len(self.keys)):
-            keys[index][:self.capacity] = self.keys[index]
-            values[index][:self.capacity] = self.values[index]
+            keys[index][:, :self.capacity] = self.keys[index]
+            values[index][:, :self.capacity] = self.values[index]
         tokens = np.zeros(capacity, dtype=np.uint32)
         filled = np.zeros(capacity, dtype=bool)
         tokens[:self.capacity] = self.tokens
@@ -74,8 +74,8 @@ class Context:
         with torch.no_grad():
             keys, values = self.drafter.context(taps, positions)
         for index in range(len(self.keys)):
-            self.keys[index][first:first + count] = keys[index]
-            self.values[index][first:first + count] = values[index]
+            self.keys[index][:, first:first + count] = keys[index].transpose(0, 1)
+            self.values[index][:, first:first + count] = values[index].transpose(0, 1)
         self.tokens[first:first + count] = tokens
         self.filled[first:first + count] = True
         self.filled[first + count:] = False
@@ -84,8 +84,8 @@ class Context:
     def copy_from(self, donor, count):
         self.grow(count)
         for index in range(len(self.keys)):
-            self.keys[index][:count] = donor.keys[index][:count]
-            self.values[index][:count] = donor.values[index][:count]
+            self.keys[index][:, :count] = donor.keys[index][:, :count]
+            self.values[index][:, :count] = donor.values[index][:, :count]
         self.tokens[:count] = donor.tokens[:count]
         self.filled[:count] = True
 
@@ -212,9 +212,10 @@ class Server:
             self.stats["unavailable"] += 1
             print(f"TOKEN-MISMATCH sequence {sequence} position {position}", flush=True)
             return None
+        context.grow(position + self.drafter.block)
         started = time.monotonic()
         with torch.no_grad():
-            y, base = self.drafter.draft_range(int(anchor), position, context.keys, context.values, begin, position)
+            y, base = self.drafter.draft_cached(int(anchor), position, context.keys, context.values, begin, position)
             drafts, confidence = self.drafter.sequential_device(y, base, int(anchor), min(depth, self.drafter.block))
         torch.cuda.synchronize()
         elapsed = int((time.monotonic() - started) * 1e6)
