@@ -44,6 +44,7 @@
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_IO_SLACK_MS 100u
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_RETRY_NS UINT64_C(5000000000)
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_CALIBRATION_DECAY 0.98f
+#define SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_GAIN 0.3f
 
 _Static_assert(SPARK_STATUS_EVICT_DENIED < SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT,"every status must have its own rejection counter");
 
@@ -2820,7 +2821,7 @@ static uint32_t SparkModelBatchPlanModelDraft(
 		const float token_ns = SparkSpeculationFrameTokenCost(&engine->frame_model,context);
 		const float wait_ns = (float)engine->model_draft_wait_us * 1000.0f / (float)engine->model_draft_rounds;
 		const float calibration = engine->model_draft_predicted > 1.0f ? engine->model_draft_observed / engine->model_draft_predicted : 1.0f;
-		float best_rate = 1.0f / token_ns, drafted = 0.0f;
+		float best_rate = 0.0f, best_gain = 0.0f, drafted = 0.0f;
 		for (index=1u; index<count && index<=depth; index++)
 		{
 			float cost,rate;
@@ -2836,10 +2837,13 @@ static uint32_t SparkModelBatchPlanModelDraft(
 			if ( rate > best_rate )
 			{
 				best_rate = rate;
+				best_gain = calibration * drafted;
 				drafts = index;
 				expected = 1.0f + drafted;
 			}
 		}
+		if ( best_gain < SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_GAIN )
+			drafts = 0u;
 	}
 	if ( drafts == 0u )
 	{
