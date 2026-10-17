@@ -93,8 +93,8 @@ class BlockDrafter:
         target = SafeTensors(shard)
         self.eps = c["rms_norm_eps"]
         self.heads, self.kv_heads, self.head_dim = c["num_attention_heads"], c["num_key_value_heads"], c["head_dim"]
-        self.block = c["block_size"]
         dflash = c.get("dflash_config", {})
+        self.block = c.get("block_size") or dflash["block_size"]
         self.layer_ids = dflash.get("target_layer_ids") or c.get("aux_hidden_state_layer_ids")
         self.mask = dflash.get("mask_token_id", c.get("mask_token_id"))
         self.fc = weights.load("fc.weight", device)
