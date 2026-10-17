@@ -144,3 +144,40 @@ static inline cudaError_t LmExpandedGatherPrefillLaunch(
 		sequence_of_row, context_length, row_position, qk_scale, partials, rows)));
 	return cudaSuccess;
 }
+
+template<class Geometry, uint32_t LATENT, uint32_t ROPE, uint32_t VALUE>
+static inline cudaError_t LmExpandedGatherPrefillSourcesLaunch(
+	LmKvShardGatherView cache,
+	uint32_t sources,
+	uint64_t key_source_stride,
+	const uint8_t *values,
+	uint64_t value_source_stride,
+	const uint16_t *query_bf16,
+	uint32_t heads_per_rank,
+	const uint32_t *sequence_of_row,
+	const uint32_t *context_length,
+	const uint32_t *row_position,
+	float qk_scale,
+	float *partials,
+	uint64_t partial_source_stride,
+	uint32_t rows,
+	cudaStream_t stream)
+{
+	uint32_t source;
+	cudaError_t status;
+	if (sources == 0u || (uint64_t)cache.shard.rank + sources > cache.shard.degree ||
+		(sources > 1u && (key_source_stride == 0u || value_source_stride == 0u ||
+			partial_source_stride < (uint64_t)rows * heads_per_rank * LM_LATENT_SHARD_RECORD_FLOATS(VALUE))))
+		return cudaErrorInvalidValue;
+	for (source = 0u; source < sources; source++)
+	{
+		LmKvShardGatherView view = cache;
+		view.shard.rank = cache.shard.rank + source;
+		view.keys = cache.keys + (uint64_t)source * key_source_stride;
+		status = LmExpandedGatherPrefillLaunch<Geometry, LATENT, ROPE, VALUE>(view, values + (uint64_t)source * value_source_stride, query_bf16,
+			heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials + (uint64_t)source * partial_source_stride, rows, stream);
+		if (status != cudaSuccess)
+			return status;
+	}
+	return cudaSuccess;
+}

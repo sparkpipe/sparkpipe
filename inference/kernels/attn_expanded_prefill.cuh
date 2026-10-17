@@ -51,6 +51,13 @@ static __device__ __forceinline__ void LmExpandedNamedArrive(uint32_t name, uint
 	asm volatile("bar.arrive %0, %1;\n" :: "r"(name), "r"(threads) : "memory");
 }
 
+static __device__ __forceinline__ uint32_t LmExpandedSource(void)
+{
+	uint32_t source;
+	asm volatile("mov.u32 %0, %%ctaid.z;\n" : "=r"(source));
+	return(source);
+}
+
 static __device__ __forceinline__ void LmExpandedCopyArrive(uint64_t *barrier)
 {
 	asm volatile("cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%0];\n" :: "r"(LmTmaSharedAddress(barrier)) : "memory");
@@ -205,7 +212,10 @@ void LmExpandedGatherPrefillKernel(
 	const uint32_t *__restrict__ row_position,
 	float qk_scale,
 	float *__restrict__ partials,
-	uint32_t rows)
+	uint32_t rows,
+	uint64_t key_source_stride,
+	uint64_t value_source_stride,
+	uint64_t partial_source_stride)
 {
 	constexpr uint32_t DIM = LATENT + ROPE;
 	constexpr uint32_t ROW_BYTES = DIM * 2u;
@@ -248,6 +258,8 @@ void LmExpandedGatherPrefillKernel(
 	uint32_t sequence, dense, count, count_low, count_high, window_begin, limit, available, tile_first, tile_end, tiles, index, chunk, step, frag, q, query_row;
 	uint64_t key_origin;
 
+	SparkKvShard shard = cache.shard;
+	shard.rank += blockIdx.z;
 	sequence = sequence_of_row[row];
 	for (query_row = row + 1u; query_row <= last_row; query_row++)
 		if (sequence_of_row[query_row] != sequence)
@@ -264,20 +276,20 @@ void LmExpandedGatherPrefillKernel(
 		dense = context_length[sequence];
 		if (row_position[query_row] < dense)
 			dense = row_position[query_row] + 1u;
-		dense = SparkKvShardLocalKeys(cache.shard, dense);
+		dense = SparkKvShardLocalKeys(shard, dense);
 		count = dense > count ? dense : count;
 	}
 	dense = context_length[sequence];
-	count_low = row_low <= last_row ? SparkKvShardLocalKeys(cache.shard, row_position[row_low] < dense ? row_position[row_low] + 1u : dense) : 0u;
-	count_high = row_high <= last_row ? SparkKvShardLocalKeys(cache.shard, row_position[row_high] < dense ? row_position[row_high] + 1u : dense) : 0u;
+	count_low = row_low <= last_row ? SparkKvShardLocalKeys(shard, row_position[row_low] < dense ? row_position[row_low] + 1u : dense) : 0u;
+	count_high = row_high <= last_row ? SparkKvShardLocalKeys(shard, row_position[row_high] < dense ? row_position[row_high] + 1u : dense) : 0u;
 	window_begin = cache.key_begin;
 	limit = count < cache.key_end ? count : cache.key_end;
-	available = SparkKvShardLocalKeys(cache.shard, cache.key_context[sequence]);
+	available = SparkKvShardLocalKeys(shard, cache.key_context[sequence]);
 	if (count > available)
 	{
 		if (threadIdx.x == 0u)
 			LmKvReportRequiredAccessFailure(cache.pages, LM_KV_ACCESS_ERROR_PAGE_TABLE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence,
-				SparkKvShardLocalPosition(cache.shard, available), Geometry::PageOf(SparkKvShardLocalPosition(cache.shard, available)));
+				SparkKvShardLocalPosition(shard, available), Geometry::PageOf(SparkKvShardLocalPosition(shard, available)));
 		return;
 	}
 	key_origin = (uint64_t)cache.key_offset[sequence] - window_begin;
@@ -317,17 +329,18 @@ void LmExpandedGatherPrefillKernel(
 	{
 		constexpr uint32_t KEY_COPIES = KEY_ITEMS / (32u * LM_EXPANDED_PREFILL_PRODUCER_WARPS);
 		constexpr uint32_t VALUE_COPIES = VALUE_ITEMS / (32u * LM_EXPANDED_PREFILL_PRODUCER_WARPS);
+		static_assert(KEY_SLOT < (1u << 24u) && VALUE_SLOT < (1u << 24u) && TILE <= 256u, "a copy's slot offset and key index share one word");
 		const uint32_t producer = (warp - LM_EXPANDED_PREFILL_COMPUTE_WARPS) * 32u + lane;
-		uint32_t key_target[KEY_COPIES], key_source[KEY_COPIES], key_of[KEY_COPIES];
-		uint32_t value_target[VALUE_COPIES], value_key[VALUE_COPIES];
+		const uint8_t *source_keys = cache.keys + (uint64_t)LmExpandedSource() * key_source_stride;
+		const uint8_t *source_values = values + (uint64_t)LmExpandedSource() * value_source_stride;
+		uint32_t key_target[KEY_COPIES], key_source[KEY_COPIES], value_target[VALUE_COPIES];
 		uint64_t value_source[VALUE_COPIES];
 		uint32_t used, copy;
 #pragma unroll
 		for (copy = 0u; copy < KEY_COPIES; copy++)
 		{
 			const uint32_t item = producer + copy * 32u * LM_EXPANDED_PREFILL_PRODUCER_WARPS, key = item / CHUNKS, piece = item % CHUNKS;
-			key_of[copy] = key;
-			key_target[copy] = key * KEY_PITCH + piece * 16u;
+			key_target[copy] = (key << 24u) | (key * KEY_PITCH + piece * 16u);
 			key_source[copy] = key * Geometry::kSlotBytes + piece * 16u;
 		}
 #pragma unroll
@@ -335,8 +348,7 @@ void LmExpandedGatherPrefillKernel(
 		{
 			const uint32_t item = producer + copy * 32u * LM_EXPANDED_PREFILL_PRODUCER_WARPS, which_head = item / (TILE * VALUE_CHUNKS);
 			const uint32_t key = item / VALUE_CHUNKS % TILE, piece = item % VALUE_CHUNKS;
-			value_key[copy] = key;
-			value_target[copy] = (which_head * TILE + key) * VALUE_PITCH + piece * 16u;
+			value_target[copy] = (key << 24u) | ((which_head * TILE + key) * VALUE_PITCH + piece * 16u);
 			value_source[copy] = (uint64_t)key * value_row_bytes + which_head * VALUE_BYTES + piece * 16u;
 		}
 		for (used = 0u; used < tiles; used++)
@@ -344,16 +356,17 @@ void LmExpandedGatherPrefillKernel(
 			const uint32_t which = tile_first + used, slot = used % LM_EXPANDED_PREFILL_RING, round = used / LM_EXPANDED_PREFILL_RING, first_key = which * TILE;
 			const uint32_t low = window_begin > first_key ? window_begin - first_key : 0u;
 			const uint32_t high = limit < first_key + TILE ? limit - first_key : TILE;
-			const uint8_t *key_tile = cache.keys + (key_origin + first_key) * Geometry::kSlotBytes;
-			const uint8_t *value_tile = values + (key_origin + first_key) * value_row_bytes + (uint64_t)head * VALUE_BYTES;
+			const uint8_t *key_tile = source_keys + (key_origin + first_key) * Geometry::kSlotBytes;
+			const uint8_t *value_tile = source_values + (key_origin + first_key) * value_row_bytes + (uint64_t)head * VALUE_BYTES;
 			const uint32_t key_slot = key_base + slot * KEY_SLOT, value_slot = value_base + slot * VALUE_SLOT;
 			if (round > 0u)
 				LmMbarrierWait(&key_empty[slot], (round - 1u) & 1u);
 #pragma unroll
 			for (copy = 0u; copy < KEY_COPIES; copy++)
 			{
-				const bool valid = key_of[copy] >= low && key_of[copy] < high;
-				LmPrefillCopy(key_slot + key_target[copy], valid ? (const void *)(key_tile + key_source[copy]) : (const void *)cache.keys, valid ? 16u : 0u);
+				const uint32_t key = key_target[copy] >> 24u;
+				const bool valid = key >= low && key < high;
+				LmPrefillCopy(key_slot + (key_target[copy] & 0xffffffu), valid ? (const void *)(key_tile + key_source[copy]) : (const void *)source_keys, valid ? 16u : 0u);
 			}
 			LmExpandedCopyArrive(&key_full[slot]);
 			if (round > 0u)
@@ -361,8 +374,9 @@ void LmExpandedGatherPrefillKernel(
 #pragma unroll
 			for (copy = 0u; copy < VALUE_COPIES; copy++)
 			{
-				const bool valid = value_key[copy] >= low && value_key[copy] < high;
-				LmPrefillCopy(value_slot + value_target[copy], valid ? (const void *)(value_tile + value_source[copy]) : (const void *)values, valid ? 16u : 0u);
+				const uint32_t key = value_target[copy] >> 24u;
+				const bool valid = key >= low && key < high;
+				LmPrefillCopy(value_slot + (value_target[copy] & 0xffffffu), valid ? (const void *)(value_tile + value_source[copy]) : (const void *)source_values, valid ? 16u : 0u);
 			}
 			LmExpandedCopyArrive(&value_full[slot]);
 		}
@@ -524,8 +538,9 @@ void LmExpandedGatherPrefillKernel(
 		LmExpandedNamedBarrier(5u, 256u);
 	{
 		const uint32_t column = half * HALF_COLUMNS + (lane & 3u) * 2u;
-		float *record_low = partials + ((uint64_t)row_low * heads_per_rank + head + local_head) * RECORD;
-		float *record_high = partials + ((uint64_t)row_high * heads_per_rank + head + local_head) * RECORD;
+		float *source_partials = partials + (uint64_t)LmExpandedSource() * partial_source_stride;
+		float *record_low = source_partials + ((uint64_t)row_low * heads_per_rank + head + local_head) * RECORD;
+		float *record_high = source_partials + ((uint64_t)row_high * heads_per_rank + head + local_head) * RECORD;
 #pragma unroll
 		for (frag = 0u; frag < FRAGS; frag++)
 		{
@@ -551,6 +566,47 @@ void LmExpandedGatherPrefillKernel(
 }
 
 template<class Geometry, uint32_t LATENT, uint32_t ROPE, uint32_t VALUE>
+static inline cudaError_t LmExpandedGatherPrefillSourcesLaunch(
+	LmKvShardGatherView cache,
+	uint32_t sources,
+	uint64_t key_source_stride,
+	const uint8_t *values,
+	uint64_t value_source_stride,
+	const uint16_t *query_bf16,
+	uint32_t heads_per_rank,
+	const uint32_t *sequence_of_row,
+	const uint32_t *context_length,
+	const uint32_t *row_position,
+	float qk_scale,
+	float *partials,
+	uint64_t partial_source_stride,
+	uint32_t rows,
+	cudaStream_t stream)
+{
+	constexpr uint32_t shared = LmExpandedPrefillSharedBytes<LATENT + ROPE, VALUE>();
+	static bool granted = false;
+	if (rows == 0u || heads_per_rank == 0u || (heads_per_rank % LM_EXPANDED_PREFILL_HEADS) != 0u || values == 0 || query_bf16 == 0 ||
+		partials == 0 || row_position == 0 || cache.keys == 0 || cache.key_offset == 0 || cache.key_context == 0 ||
+		SparkKvShardValid(cache.shard, Geometry::kPageSlots) == 0u || (cache.key_begin % LM_EXPANDED_PREFILL_TILE) != 0u ||
+		sources == 0u || sources > 65535u || (uint64_t)cache.shard.rank + sources > cache.shard.degree ||
+		(sources > 1u && (key_source_stride == 0u || value_source_stride == 0u ||
+			partial_source_stride < (uint64_t)rows * heads_per_rank * LM_LATENT_SHARD_RECORD_FLOATS(VALUE))) ||
+		(key_source_stride % 16u) != 0u || (value_source_stride % 16u) != 0u || (partial_source_stride % 2u) != 0u)
+		return cudaErrorInvalidValue;
+	if (!granted)
+	{
+		cudaError_t error = cudaFuncSetAttribute((const void *)LmExpandedGatherPrefillKernel<Geometry, LATENT, ROPE, VALUE>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
+		if (error != cudaSuccess)
+			return error;
+		granted = true;
+	}
+	LmExpandedGatherPrefillKernel<Geometry, LATENT, ROPE, VALUE><<<dim3((rows + LM_EXPANDED_PREFILL_ROWS - 1u) / LM_EXPANDED_PREFILL_ROWS, heads_per_rank / LM_EXPANDED_PREFILL_HEADS, sources), LM_EXPANDED_PREFILL_THREADS, shared, stream>>>(
+		cache, values, query_bf16, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, rows,
+		key_source_stride, value_source_stride, partial_source_stride);
+	return cudaPeekAtLastError();
+}
+
+template<class Geometry, uint32_t LATENT, uint32_t ROPE, uint32_t VALUE>
 static inline cudaError_t LmExpandedGatherPrefillLaunch(
 	LmKvShardGatherView cache,
 	const uint8_t *values,
@@ -564,20 +620,6 @@ static inline cudaError_t LmExpandedGatherPrefillLaunch(
 	uint32_t rows,
 	cudaStream_t stream)
 {
-	constexpr uint32_t shared = LmExpandedPrefillSharedBytes<LATENT + ROPE, VALUE>();
-	static bool granted = false;
-	if (rows == 0u || heads_per_rank == 0u || (heads_per_rank % LM_EXPANDED_PREFILL_HEADS) != 0u || values == 0 || query_bf16 == 0 ||
-		partials == 0 || row_position == 0 || cache.keys == 0 || cache.key_offset == 0 || cache.key_context == 0 ||
-		SparkKvShardValid(cache.shard, Geometry::kPageSlots) == 0u || (cache.key_begin % LM_EXPANDED_PREFILL_TILE) != 0u)
-		return cudaErrorInvalidValue;
-	if (!granted)
-	{
-		cudaError_t error = cudaFuncSetAttribute((const void *)LmExpandedGatherPrefillKernel<Geometry, LATENT, ROPE, VALUE>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
-		if (error != cudaSuccess)
-			return error;
-		granted = true;
-	}
-	LmExpandedGatherPrefillKernel<Geometry, LATENT, ROPE, VALUE><<<dim3((rows + LM_EXPANDED_PREFILL_ROWS - 1u) / LM_EXPANDED_PREFILL_ROWS, heads_per_rank / LM_EXPANDED_PREFILL_HEADS, 1u), LM_EXPANDED_PREFILL_THREADS, shared, stream>>>(
-		cache, values, query_bf16, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, rows);
-	return cudaPeekAtLastError();
+	return LmExpandedGatherPrefillSourcesLaunch<Geometry, LATENT, ROPE, VALUE>(cache, 1u, 0u, values, 0u, query_bf16, heads_per_rank,
+		sequence_of_row, context_length, row_position, qk_scale, partials, 0u, rows, stream);
 }

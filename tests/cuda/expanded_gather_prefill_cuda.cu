@@ -214,13 +214,29 @@ static void ExpandCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 		const uint32_t begin = window * pass_keys,keys = most - begin < pass_keys ? most - begin : pass_keys;
 		ExpandCheck(LmLatentValueExpandLaunch<EXPAND_LATENT,EXPAND_WIDTH,EXPAND_VALUE>(keys_device + (uint64_t)begin * ExpandKv::kSlotBytes,key_stride,degree,keys,
 			weight_device,heads_per_rank,values_device,value_stride,0) == cudaSuccess,"value expansion launch",label);
-		for (rank = 0u; rank < degree; rank++)
 		{
 			LmKvShardGatherView view;
-			ExpandCheck(view_of(rank,begin,keys,&view) == 0,"expanded view",label);
-			ExpandCheck(LmExpandedGatherPrefillLaunch<ExpandKv,EXPAND_LATENT,EXPAND_ROPE,EXPAND_VALUE>(view,values_device + (uint64_t)rank * value_stride,query_device,
-				heads_per_rank,sequences_device,contexts_device,positions_device,scale,value_partials + (uint64_t)rank * value_stride_records,rows,0) == cudaSuccess,
-				"expanded launch",label);
+			std::vector<float> fused((uint64_t)degree * value_stride_records),single(fused.size());
+			ExpandCheck(view_of(0u,begin,keys,&view) == 0,"expanded base view",label);
+			ExpandCheck(LmExpandedGatherPrefillSourcesLaunch<ExpandKv,EXPAND_LATENT,EXPAND_ROPE,EXPAND_VALUE>(view,degree,key_stride,values_device,value_stride,query_device,
+				heads_per_rank,sequences_device,contexts_device,positions_device,scale,value_partials,value_stride_records,rows,0) == cudaSuccess,
+				"expanded launch over every source",label);
+			ExpandCheck(LmExpandedGatherPrefillSourcesLaunch<ExpandKv,EXPAND_LATENT,EXPAND_ROPE,EXPAND_VALUE>(view,degree + 1u,key_stride,values_device,value_stride,query_device,
+				heads_per_rank,sequences_device,contexts_device,positions_device,scale,value_partials,value_stride_records,rows,0) == cudaErrorInvalidValue,
+				"a launch over more sources than the shard degree is refused",label);
+			EXPAND_CUDA(cudaDeviceSynchronize());
+			EXPAND_CUDA(cudaMemcpy(fused.data(),value_partials,fused.size() * sizeof(float),cudaMemcpyDeviceToHost));
+			for (rank = 0u; rank < degree; rank++)
+			{
+				LmKvShardGatherView one;
+				ExpandCheck(view_of(rank,begin,keys,&one) == 0,"expanded view",label);
+				ExpandCheck(LmExpandedGatherPrefillLaunch<ExpandKv,EXPAND_LATENT,EXPAND_ROPE,EXPAND_VALUE>(one,values_device + (uint64_t)rank * value_stride,query_device,
+					heads_per_rank,sequences_device,contexts_device,positions_device,scale,value_partials + (uint64_t)rank * value_stride_records,rows,0) == cudaSuccess,
+					"expanded launch",label);
+			}
+			EXPAND_CUDA(cudaDeviceSynchronize());
+			EXPAND_CUDA(cudaMemcpy(single.data(),value_partials,single.size() * sizeof(float),cudaMemcpyDeviceToHost));
+			ExpandCheck(memcmp(fused.data(),single.data(),fused.size() * sizeof(float)) == 0,"one launch over every source equals one launch per source bit for bit",label);
 		}
 		if ( windows > 1u )
 			ExpandCheck(LmLatentShardFoldLaunch<EXPAND_VALUE>(value_partials,value_stride_records,degree,heads_per_rank,running_device,rows,window == 0u ? 1u : 0u,0) == cudaSuccess,

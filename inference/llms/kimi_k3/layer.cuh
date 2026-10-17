@@ -778,6 +778,18 @@ static int32_t K3LayerMlaGatherPartials(const K3LayerBuffers *b, uint32_t rows, 
 	if ( K3LayerMlaGatherReady(b,rows) == 0u || window >= K3LayerMlaPasses(b) || keys == 0u ||
 		(expanded != 0u && K3LayerMlaExpandedReady(b,rows) == 0u) )
 		return(LM_LAUNCH_ERR_SHAPE);
+	if ( expanded != 0u )
+	{
+		source = b->kv_shard;
+		source.rank = 0u;
+		if ( LmKvShardGatherViewInitialize<Geometry>(&view,b->cache_shard.pages,source,landing,b->shard_gather_offset,b->shard_gather_context) != 0 ||
+			(K3LayerMlaPasses(b) > 1u && LmKvShardGatherViewWindow(&view,begin,begin + keys) != 0) )
+			return(LM_LAUNCH_ERR_SHAPE);
+		return(LmExpandedGatherPrefillSourcesLaunch<Geometry,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM,K3_V_HEAD_DIM>(view,b->kv_shard.degree,stride,
+			b->shard_gather_values,K3LayerMlaValueStride(b),b->query_bf16,heads,b->sequence_of_row,b->context_length,b->positions,
+			K3_MLA_QK_SCALE,b->shard_partials_received_f32,b->shard_partial_rank_stride,rows,stream) == cudaSuccess
+			? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	}
 	for ( rank = 0u; rank < b->kv_shard.degree; rank++ )
 	{
 		source = b->kv_shard;
@@ -786,15 +798,7 @@ static int32_t K3LayerMlaGatherPartials(const K3LayerBuffers *b, uint32_t rows, 
 				b->shard_gather_offset,b->shard_gather_context) != 0 ||
 			(K3LayerMlaPasses(b) > 1u && LmKvShardGatherViewWindow(&view,begin,begin + keys) != 0) )
 			return(LM_LAUNCH_ERR_SHAPE);
-		if ( expanded != 0u )
-		{
-			if ( LmExpandedGatherPrefillLaunch<Geometry,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM,K3_V_HEAD_DIM>(view,
-					b->shard_gather_values + (uint64_t)rank * K3LayerMlaValueStride(b),b->query_bf16,heads,b->sequence_of_row,
-					b->context_length,b->positions,K3_MLA_QK_SCALE,b->shard_partials_received_f32 + (uint64_t)rank * b->shard_partial_rank_stride,
-					rows,stream) != cudaSuccess )
-				return(LM_LAUNCH_ERR_LAUNCH);
-		}
-		else if ( LmLatentGatherPrefillLaunch<Geometry,LmKvShardGatherView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>(view,b->query_bf16,
+		if ( LmLatentGatherPrefillLaunch<Geometry,LmKvShardGatherView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>(view,b->query_bf16,
 				heads,b->sequence_of_row,b->context_length,b->positions,K3_MLA_QK_SCALE,
 				b->shard_partials_received_f32 + (uint64_t)rank * b->shard_partial_rank_stride,rows,stream) != cudaSuccess )
 			return(LM_LAUNCH_ERR_LAUNCH);
