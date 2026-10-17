@@ -215,7 +215,7 @@ class Server:
         started = time.monotonic()
         with torch.no_grad():
             y, base = self.drafter.draft_range(int(anchor), position, context.keys, context.values, begin, position)
-            drafts, confidence = self.drafter.sequential(y, base, int(anchor), list(range(min(depth, self.drafter.block))))
+            drafts, confidence = self.drafter.sequential_device(y, base, int(anchor), min(depth, self.drafter.block))
         torch.cuda.synchronize()
         elapsed = int((time.monotonic() - started) * 1e6)
         self.stats["drafted"] += 1

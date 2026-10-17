@@ -182,22 +182,47 @@ class BlockDrafter:
         y = rms(h, self.norm, self.eps).to(torch.bfloat16)
         return y, (y @ self.head.t()).float()
 
+    def heads32(self):
+        if not hasattr(self, "_heads32"):
+            self._heads32 = (self.markov_w2.float() if self.markov_w2 is not None else None,
+                             (self.confidence[0].float(), self.confidence[1].float()) if self.confidence is not None else None)
+        return self._heads32
+
     def sequential(self, y, base, anchor_token, slots):
         drafts, confidence = [], []
+        markov_w2, confidence_head = self.heads32()
         previous = int(anchor_token)
         for slot in slots:
             logits = base[slot]
             latent = None
             if self.markov_w1 is not None:
                 latent = self.markov_w1[previous].float()
-                logits = logits + (self.markov_w2.float() @ latent)
+                logits = logits + (markov_w2 @ latent)
             token = int(torch.argmax(logits))
-            if self.confidence is not None:
+            if confidence_head is not None:
                 feature = torch.cat([y[slot].float(), latent]) if latent is not None else y[slot].float()
-                confidence.append(float(torch.sigmoid(self.confidence[0].float() @ feature + self.confidence[1].float())))
+                confidence.append(float(torch.sigmoid(confidence_head[0] @ feature + confidence_head[1])))
             drafts.append(token)
             previous = token
         return drafts, confidence
+
+    def sequential_device(self, y, base, anchor_token, count):
+        markov_w2, confidence_head = self.heads32()
+        previous = torch.tensor(int(anchor_token), device=self.device)
+        tokens, scores = [], []
+        for slot in range(count):
+            logits = base[slot]
+            latent = None
+            if self.markov_w1 is not None:
+                latent = self.markov_w1[previous].float()
+                logits = logits + (markov_w2 @ latent)
+            token = torch.argmax(logits)
+            if confidence_head is not None:
+                feature = torch.cat([y[slot].float(), latent]) if latent is not None else y[slot].float()
+                scores.append(torch.sigmoid(confidence_head[0] @ feature + confidence_head[1]))
+            tokens.append(token)
+            previous = token
+        return torch.stack(tokens).tolist(), (torch.stack(scores).reshape(-1).tolist() if scores else [])
 
 
 def requests(paths, entry_names):
