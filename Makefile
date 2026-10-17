@@ -306,6 +306,7 @@ TEST_NAMES := \
     test_speculation_relay_link \
     test_speculation_depth \
     test_speculation_frame \
+    test_topk_exact_plan \
     test_driver_compiler \
     test_orchestrator \
     test_tensor_map_geometry \
@@ -491,6 +492,8 @@ PYTHON_TESTS := \
 	tests/test_gqa_shard_cuda.py \
 	tests/test_head_certified_cuda.py \
 	tests/test_latent_gather_prefill_cuda.py \
+	tests/test_expanded_gather_prefill_cuda.py \
+	tests/test_latent_shard_decode_cuda.py \
 	tests/test_delta_rule_column_cuda.py \
 	tests/test_index_shard_cuda.py \
 	tests/test_latent_rope_heads_cuda.py \
@@ -505,6 +508,7 @@ PYTHON_TESTS := \
 	tests/test_glm_attach_kv_cuda.py \
 	tests/test_glm_row_shard_host.py \
 	tests/test_topk_exact_cuda.py \
+	tests/test_sample_threads_cuda.py \
 	tests/test_hyper_inject_cuda.py \
 	tests/test_layer_norm_cuda.py \
 	tests/test_hidden_transport_host_rdma_load.py \
@@ -561,6 +565,7 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_engine_stream.py \
 	tests/test_chat_frontend_request_fields.py \
 	tests/test_chat_frontend_output_cap.py \
+	tests/test_chat_frontend_prefix_ledger.py \
 	tests/test_chat_frontend_sampling_defaults.py \
 	tests/test_open_webui_github_tool.py \
 	tests/test_model_swap_drain_quiet.py \
@@ -1563,6 +1568,9 @@ build/test_speculation_ngram_draft: tests/test_speculation_ngram_draft.c include
 
 build/test_speculation_drafter_mix: tests/test_speculation_drafter_mix.c include/sparkpipe/spark_speculation_drafter_mix.h include/sparkpipe/spark_speculation_lookup_draft.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_drafter_mix.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_topk_exact_plan: tests/test_topk_exact_plan.c inference/kernels/topk_exact_plan.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_topk_exact_plan.c $(LDFLAGS) -o $@
 
 build/test_speculation_frame: tests/test_speculation_frame.c include/sparkpipe/spark_speculation_frame.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_frame.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lm -o $@

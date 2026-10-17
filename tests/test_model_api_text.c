@@ -1182,7 +1182,7 @@ static void TestApiHttpBounds(TestApiStack *stack)
 	length = (size_t)snprintf(head,sizeof(head),"POST /v1/completions HTTP/1.1\r\nX-Pad: ");
 	memset(head + length,'b',60000u);
 	length += 60000u;
-	length += (size_t)snprintf(head + length,sizeof(head) - length,"\r\nContent-Length: 8388608\r\n\r\n");
+	length += (size_t)snprintf(head + length,sizeof(head) - length,"\r\nContent-Length: 16777216\r\n\r\n");
 	assert(TestApiRawStatus(stack->api_port,head,length) == 400);
 	length = (size_t)snprintf(head,sizeof(head),"POST /v1/completions HTTP/1.1\r\nContent-Length: 12abc\r\n\r\n");
 	assert(TestApiRawStatus(stack->api_port,head,length) == 400);

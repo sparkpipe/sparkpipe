@@ -1,10 +1,18 @@
+#include <arpa/inet.h>
 #include <cuda_runtime.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <poll.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_error_site.h"
@@ -20,6 +28,19 @@
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_attach.h"
 
+#ifdef MSG_NOSIGNAL
+#define STAGE_SERVING_TAP_SEND_FLAGS MSG_NOSIGNAL
+#else
+#define STAGE_SERVING_TAP_SEND_FLAGS 0
+#endif
+#define STAGE_SERVING_TAP_BUFFER_BYTES (8u << 20)
+#define STAGE_SERVING_TAP_CONNECT_MS 3000
+#define STAGE_SERVING_TAP_RECONNECT_MS 50
+#define STAGE_SERVING_TAP_RETRY_NS 5000000000ull
+#define STAGE_SERVING_TAP_SEND_TIMEOUT_MS 200
+#define STAGE_SERVING_TAP_SEND_BUFFER_BYTES (64 << 20)
+#define STAGE_SERVING_VERIFY_BUCKETS 4u
+
 typedef struct SparkStageServingState
 {
 	const SparkStageServingModel *model;
@@ -32,6 +53,7 @@ typedef struct SparkStageServingState
 	char *device_backend_path;
 	char *device_local_host;
 	uint32_t max_rows;
+	uint32_t max_shared_rows;
 	SparkTpDeviceCollectiveConfig device_config;
 	SparkWeightdClient *lane_client;
 	SparkTpDeviceCollectiveTopology device_topology;
@@ -41,6 +63,9 @@ typedef struct SparkStageServingState
 	SparkMemoryBuffer state_host;
 	uint64_t wave_host_ns[5];
 	uint32_t wave_host_count;
+	uint64_t verify_host_ns[STAGE_SERVING_VERIFY_BUCKETS][6];
+	uint64_t verify_host_rows[STAGE_SERVING_VERIFY_BUCKETS];
+	uint32_t verify_host_count[STAGE_SERVING_VERIFY_BUCKETS];
 	SparkMemoryBuffer positions_device;
 	SparkMemoryBuffer context_device;
 	SparkMemoryBuffer state_device;
@@ -72,8 +97,15 @@ typedef struct SparkStageServingState
 	uint32_t tap_count;
 	uint32_t tap_rank;
 	char *tap_file;
+	char *tap_stream;
 	uint64_t tap_file_max_bytes;
 	FILE *tap_out;
+	int tap_socket;
+	uint8_t *tap_buffer;
+	size_t tap_buffered;
+	SparkTapStreamHello tap_hello;
+	uint64_t tap_retry_ns;
+	uint32_t tap_stream_down;
 	uint64_t tap_written;
 	uint64_t tap_serial;
 	uint64_t tap_fingerprint;
@@ -227,19 +259,27 @@ static SparkStatus StageServingParseTaps(SparkStageServingState *state, SparkJso
 	static const char tap_final[] = "final";
 	char *entries = 0, *cursor, *end;
 	int32_t token = SparkJsonFindObjectMember(doc, taps, "entries");
-	if ( token < 0 || SparkJsonCopyString(doc, token, &entries) != SPARK_STATUS_OK ||
-		StageServingCopyMember(doc, taps, "file", &state->tap_file) != SPARK_STATUS_OK || state->tap_file == 0 )
+	const int32_t file = SparkJsonFindObjectMember(doc, taps, "file"), stream = SparkJsonFindObjectMember(doc, taps, "stream");
+	if ( token < 0 || SparkJsonCopyString(doc, token, &entries) != SPARK_STATUS_OK || (file >= 0) == (stream >= 0) ||
+		(file >= 0 && (StageServingCopyMember(doc, taps, "file", &state->tap_file) != SPARK_STATUS_OK || state->tap_file == 0)) ||
+		(stream >= 0 && (StageServingCopyMember(doc, taps, "stream", &state->tap_stream) != SPARK_STATUS_OK || state->tap_stream == 0)) )
 	{
 		free(entries);
-		fprintf(stderr, "%s adapter: taps need \"entries\" and \"file\"\n", state->model->module_tag);
+		fprintf(stderr, "%s adapter: taps need \"entries\" and exactly one of \"file\" and \"stream\"\n", state->model->module_tag);
 		return SPARK_STATUS_SCHEMA_ERROR;
 	}
 	state->tap_rank = StageServingJsonU32(doc, taps, "rank", 0u);
 	token = SparkJsonFindObjectMember(doc, taps, "file_max_bytes");
-	if ( token < 0 || SparkJsonGetUInt64(doc, token, &state->tap_file_max_bytes) != SPARK_STATUS_OK || state->tap_file_max_bytes == 0u )
+	if ( file >= 0 && (token < 0 || SparkJsonGetUInt64(doc, token, &state->tap_file_max_bytes) != SPARK_STATUS_OK || state->tap_file_max_bytes == 0u) )
 	{
 		free(entries);
-		fprintf(stderr, "%s adapter: taps need a positive \"file_max_bytes\"\n", state->model->module_tag);
+		fprintf(stderr, "%s adapter: a tap file needs a positive \"file_max_bytes\"\n", state->model->module_tag);
+		return SPARK_STATUS_SCHEMA_ERROR;
+	}
+	if ( stream >= 0 && token >= 0 )
+	{
+		free(entries);
+		fprintf(stderr, "%s adapter: a tap stream has no \"file_max_bytes\"\n", state->model->module_tag);
 		return SPARK_STATUS_SCHEMA_ERROR;
 	}
 	for ( cursor = entries; *cursor != '\0'; cursor = *end == ',' ? end + 1 : end )
@@ -277,6 +317,158 @@ static SparkStatus StageServingParseTaps(SparkStageServingState *state, SparkJso
 	return SPARK_STATUS_OK;
 }
 
+static int StageServingTapConnect(const char *endpoint, int timeout_ms)
+{
+	char host[64];
+	const char *colon = strrchr(endpoint, ':');
+	struct sockaddr_in address;
+	struct pollfd descriptor;
+	struct timeval timeout;
+	unsigned long port;
+	char *end = 0;
+	int fd, flags, ready, error = 0, enabled = 1, buffer = STAGE_SERVING_TAP_SEND_BUFFER_BYTES;
+	socklen_t error_bytes = (socklen_t)sizeof(error);
+	if ( colon == 0 || colon == endpoint || (size_t)(colon - endpoint) >= sizeof(host) )
+		return -1;
+	memcpy(host, endpoint, (size_t)(colon - endpoint));
+	host[colon - endpoint] = '\0';
+	errno = 0;
+	port = strtoul(colon + 1, &end, 10);
+	memset(&address, 0, sizeof(address));
+	address.sin_family = AF_INET;
+	address.sin_port = htons((uint16_t)port);
+	if ( errno != 0 || end == colon + 1 || *end != '\0' || port == 0u || port > 65535u || inet_pton(AF_INET, host, &address.sin_addr) != 1 )
+		return -1;
+	fd = socket(AF_INET, SOCK_STREAM, 0);
+	if ( fd < 0 )
+		return -1;
+	flags = fcntl(fd, F_GETFL, 0);
+	if ( flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0 )
+	{
+		(void)close(fd);
+		return -1;
+	}
+	if ( connect(fd, (const struct sockaddr *)&address, (socklen_t)sizeof(address)) != 0 )
+	{
+		if ( errno != EINPROGRESS )
+		{
+			(void)close(fd);
+			return -1;
+		}
+		memset(&descriptor, 0, sizeof(descriptor));
+		descriptor.fd = fd;
+		descriptor.events = POLLOUT;
+		do
+			ready = poll(&descriptor, 1u, timeout_ms);
+		while ( ready < 0 && errno == EINTR );
+		if ( ready != 1 || getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &error_bytes) != 0 || error != 0 )
+		{
+			(void)close(fd);
+			return -1;
+		}
+	}
+	timeout.tv_sec = STAGE_SERVING_TAP_SEND_TIMEOUT_MS / 1000;
+	timeout.tv_usec = (STAGE_SERVING_TAP_SEND_TIMEOUT_MS % 1000) * 1000;
+	if ( fcntl(fd, F_SETFL, flags) != 0 || setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enabled, (socklen_t)sizeof(enabled)) != 0 ||
+		setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, (socklen_t)sizeof(timeout)) != 0 ||
+		setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buffer, (socklen_t)sizeof(buffer)) != 0 )
+	{
+		(void)close(fd);
+		return -1;
+	}
+#ifdef SO_NOSIGPIPE
+	if ( setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, (socklen_t)sizeof(enabled)) != 0 )
+	{
+		(void)close(fd);
+		return -1;
+	}
+#endif
+	return fd;
+}
+
+static int StageServingTapSend(int fd, const uint8_t *data, size_t bytes)
+{
+	while ( bytes != 0u )
+	{
+		const ssize_t sent = send(fd, data, bytes, STAGE_SERVING_TAP_SEND_FLAGS);
+		if ( sent < 0 && errno == EINTR )
+			continue;
+		if ( sent <= 0 )
+			return -1;
+		data += sent;
+		bytes -= (size_t)sent;
+	}
+	return 0;
+}
+
+static int StageServingTapFlush(SparkStageServingState *state)
+{
+	int result = 0;
+	if ( state->tap_socket >= 0 && state->tap_buffered != 0u )
+		result = StageServingTapSend(state->tap_socket, state->tap_buffer, state->tap_buffered);
+	state->tap_buffered = 0u;
+	return result;
+}
+
+static int StageServingTapWrite(SparkStageServingState *state, const void *data, size_t bytes)
+{
+	if ( state->tap_socket < 0 )
+		return fwrite(data, 1u, bytes, state->tap_out) == bytes ? 0 : -1;
+	if ( state->tap_buffered + bytes > STAGE_SERVING_TAP_BUFFER_BYTES && StageServingTapFlush(state) != 0 )
+		return -1;
+	if ( bytes > STAGE_SERVING_TAP_BUFFER_BYTES )
+		return StageServingTapSend(state->tap_socket, (const uint8_t *)data, bytes);
+	memcpy(state->tap_buffer + state->tap_buffered, data, bytes);
+	state->tap_buffered += bytes;
+	return 0;
+}
+
+static uint32_t StageServingTapOpen(const SparkStageServingState *state)
+{
+	return state->tap_out != 0 || state->tap_socket >= 0 ? 1u : 0u;
+}
+
+static const char *StageServingTapName(const SparkStageServingState *state)
+{
+	return state->tap_file != 0 ? state->tap_file : state->tap_stream != 0 ? state->tap_stream : "";
+}
+
+static void StageServingTapClose(SparkStageServingState *state)
+{
+	if ( state->tap_out != 0 )
+		(void)fclose(state->tap_out);
+	if ( state->tap_socket >= 0 )
+		(void)close(state->tap_socket);
+	state->tap_out = 0;
+	state->tap_socket = -1;
+	state->tap_buffered = 0u;
+}
+
+static uint64_t StageServingNowNs(void);
+
+static uint32_t StageServingTapStreamConnect(SparkStageServingState *state, int timeout_ms)
+{
+	state->tap_socket = StageServingTapConnect(state->tap_stream, timeout_ms);
+	if ( state->tap_socket >= 0 && state->tap_buffer == 0 )
+		state->tap_buffer = (uint8_t *)malloc(STAGE_SERVING_TAP_BUFFER_BYTES);
+	state->tap_buffered = 0u;
+	if ( state->tap_socket < 0 || state->tap_buffer == 0 || StageServingTapWrite(state, &state->tap_hello, sizeof(state->tap_hello)) != 0 ||
+		StageServingTapFlush(state) != 0 )
+	{
+		if ( state->tap_stream_down == 0u )
+			fprintf(stderr, "%s adapter: tap stream %s is unreachable (%s); serving continues without taps and retries every %llu s\n", state->model->module_tag,
+				state->tap_stream, strerror(errno), (unsigned long long)(STAGE_SERVING_TAP_RETRY_NS / 1000000000ull));
+		StageServingTapClose(state);
+		state->tap_stream_down = 1u;
+		state->tap_retry_ns = StageServingNowNs() + STAGE_SERVING_TAP_RETRY_NS;
+		return 0u;
+	}
+	if ( state->tap_stream_down != 0u )
+		fprintf(stderr, "%s adapter: tap stream %s connected again\n", state->model->module_tag, state->tap_stream);
+	state->tap_stream_down = 0u;
+	return 1u;
+}
+
 static SparkStatus StageServingOpenTaps(SparkStageServingState *state)
 {
 	SparkTapStreamHello hello;
@@ -308,15 +500,23 @@ static SparkStatus StageServingOpenTaps(SparkStageServingState *state)
 	}
 	hello.fingerprint = SparkTapStreamFingerprint(&hello);
 	state->tap_fingerprint = hello.fingerprint;
-	state->tap_out = fopen(state->tap_file, "wb");
-	if ( state->tap_out == 0 || setvbuf(state->tap_out, 0, _IOFBF, 16u << 20) != 0 || fwrite(&hello, sizeof(hello), 1u, state->tap_out) != 1u )
+	state->tap_hello = hello;
+	if ( state->tap_stream != 0 )
+		(void)StageServingTapStreamConnect(state, STAGE_SERVING_TAP_CONNECT_MS);
+	else
 	{
-		fprintf(stderr, "%s adapter: tap file %s cannot be written: %s\n", state->model->module_tag, state->tap_file, strerror(errno));
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		state->tap_out = fopen(state->tap_file, "wb");
+		if ( state->tap_out == 0 || setvbuf(state->tap_out, 0, _IOFBF, 16u << 20) != 0 || fwrite(&hello, sizeof(hello), 1u, state->tap_out) != 1u )
+		{
+			fprintf(stderr, "%s adapter: tap file %s cannot be written: %s\n", state->model->module_tag, state->tap_file, strerror(errno));
+			StageServingTapClose(state);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		}
 	}
 	state->tap_written = sizeof(hello);
-	fprintf(stderr, "%s adapter: taps entries=%u rank=%u file=%s max_bytes=%llu fingerprint=%016llx\n", state->model->module_tag, state->tap_count,
-		state->tap_rank, state->tap_file, (unsigned long long)state->tap_file_max_bytes, (unsigned long long)state->tap_fingerprint);
+	fprintf(stderr, "%s adapter: taps entries=%u rank=%u %s=%s max_bytes=%llu fingerprint=%016llx\n", state->model->module_tag, state->tap_count,
+		state->tap_rank, state->tap_stream != 0 ? "stream" : "file", StageServingTapName(state), (unsigned long long)state->tap_file_max_bytes,
+		(unsigned long long)state->tap_fingerprint);
 	return SPARK_STATUS_OK;
 }
 
@@ -327,7 +527,7 @@ static void StageServingTapEmit(SparkStageServingState *state, const SparkModelS
 	const uint32_t *order = (const uint32_t *)state->order_host.pointer;
 	const uint32_t *positions = (const uint32_t *)state->positions_host.pointer;
 	uint32_t tokens[SPARK_STAGE_SERVING_MAX_ROWS];
-	for ( uint32_t s = 0u; s < active && state->tap_out != 0; ++s )
+	for ( uint32_t s = 0u; s < active && StageServingTapOpen(state) != 0u; ++s )
 	{
 		SparkTapStreamFrame frame;
 		uint64_t stride = 0u, row_bytes, bytes;
@@ -339,7 +539,7 @@ static void StageServingTapEmit(SparkStageServingState *state, const SparkModelS
 			continue;
 		row_bytes = stride * sizeof(uint16_t);
 		bytes = sizeof(frame) + (uint64_t)count * (sizeof(uint32_t) + row_bytes);
-		if ( state->tap_written + bytes > state->tap_file_max_bytes )
+		if ( state->tap_socket < 0 && state->tap_written + bytes > state->tap_file_max_bytes )
 		{
 			if ( state->tap_full == 0u )
 				fprintf(stderr, "%s adapter: tap file %s reached %llu bytes; later frames are not written\n", state->model->module_tag, state->tap_file,
@@ -369,23 +569,36 @@ static void StageServingTapEmit(SparkStageServingState *state, const SparkModelS
 			chain != 0u ? state->completion_tokens[(steps - 1u) * rows + first_row] : state->completion_tokens[order[runs[s] + count - 1u]];
 		frame.entry_count = state->tap_count;
 		frame.payload_bytes = bytes - sizeof(frame);
-		if ( fwrite(&frame, sizeof(frame), 1u, state->tap_out) != 1u || fwrite(tokens, sizeof(uint32_t), count, state->tap_out) != count )
+		if ( StageServingTapWrite(state, &frame, sizeof(frame)) != 0 || StageServingTapWrite(state, tokens, (size_t)count * sizeof(uint32_t)) != 0 )
 			state->tap_full = 1u;
 		for ( uint32_t k = 0u; k < count && state->tap_full == 0u; ++k )
 		{
 			const uint16_t *row = chain != 0u ? SparkStageRunnerTapRows(&state->runner, k, rows, &stride) + (uint64_t)first_row * stride :
 				base + (uint64_t)order[runs[s] + k] * stride;
-			if ( fwrite(row, 1u, row_bytes, state->tap_out) != row_bytes )
+			if ( StageServingTapWrite(state, row, (size_t)row_bytes) != 0 )
 				state->tap_full = 1u;
 		}
 		if ( state->tap_full != 0u )
 		{
-			fprintf(stderr, "%s adapter: tap file %s write failed: %s\n", state->model->module_tag, state->tap_file, strerror(errno));
-			(void)fclose(state->tap_out);
-			state->tap_out = 0;
+			fprintf(stderr, "%s adapter: tap %s write failed: %s\n", state->model->module_tag, StageServingTapName(state), strerror(errno));
+			StageServingTapClose(state);
+			if ( state->tap_stream != 0 )
+			{
+				state->tap_full = 0u;
+				state->tap_stream_down = 1u;
+				state->tap_retry_ns = StageServingNowNs() + STAGE_SERVING_TAP_RETRY_NS;
+			}
 			return;
 		}
 		state->tap_written += bytes;
+	}
+	if ( state->tap_socket >= 0 && StageServingTapFlush(state) != 0 )
+	{
+		fprintf(stderr, "%s adapter: tap stream %s send failed after %llu bytes: %s; taps pause and the stream reconnects\n", state->model->module_tag,
+			state->tap_stream, (unsigned long long)state->tap_written, strerror(errno));
+		StageServingTapClose(state);
+		state->tap_stream_down = 1u;
+		state->tap_retry_ns = StageServingNowNs() + STAGE_SERVING_TAP_RETRY_NS;
 	}
 }
 
@@ -421,6 +634,7 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 	config->max_active_sequence_count = StageServingJsonU32(doc, root, "max_sequences",
 		configuration->runtime_limits.max_active_sequence_count);
 	config->max_input_row_count = StageServingJsonU32(doc, root, "max_rows", configuration->runtime_limits.max_input_row_count);
+	config->max_shared_row_count = StageServingJsonU32(doc, root, "max_shared_rows", config->max_input_row_count);
 	config->resident_sequence_capacity = StageServingJsonU32(doc, root, "resident_capacity",
 		configuration->runtime_limits.resident_sequence_capacity);
 	config->kv_pages_per_sequence = StageServingJsonU32(doc, root, "kv_pages", 2u);
@@ -738,6 +952,7 @@ static SparkStatus StageServingInitialize(const SparkModelServingAdapterConfigur
 	if ( state == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->model = model;
+	state->tap_socket = -1;
 	SparkStageModuleAtomicStateArrayInitialize(state->lane_states, SPARK_STAGE_SERVING_MAX_LANES);
 	atomic_init(&state->reset_generation, 0u);
 	status = StageServingLoadConfiguration(state, configuration);
@@ -748,6 +963,23 @@ static SparkStatus StageServingInitialize(const SparkModelServingAdapterConfigur
 		state->runner_config.max_active_sequence_count == 0u ||
 		state->runner_config.max_active_sequence_count > model->descriptor->max_active_sequence_count )
 		{ StageServingDestroy(state); SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED); }
+	state->max_shared_rows = state->runner_config.max_shared_row_count;
+	if ( state->max_shared_rows == 0u || state->max_shared_rows > state->max_rows ||
+		state->max_shared_rows < state->runner_config.max_active_sequence_count ||
+		state->max_shared_rows < (model->descriptor->max_verify_row_count < state->max_rows ? model->descriptor->max_verify_row_count : state->max_rows) )
+	{
+		fprintf(stderr, "%s adapter: max_shared_rows %u must cover the sequences (%u) and verify rows (%u) and stay within max_rows %u\n",
+			model->module_tag, state->max_shared_rows, state->runner_config.max_active_sequence_count,
+			model->descriptor->max_verify_row_count, state->max_rows);
+		StageServingDestroy(state);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	state->runner_config.head_row_capacity = state->runner_config.max_active_sequence_count > model->descriptor->max_verify_row_count ?
+		state->runner_config.max_active_sequence_count : model->descriptor->max_verify_row_count;
+	if ( state->runner_config.head_row_capacity > state->max_rows )
+		state->runner_config.head_row_capacity = state->max_rows;
+	fprintf(stderr, "%s adapter: rows=%u shared_rows=%u head_rows=%u\n", model->module_tag, state->max_rows,
+		state->max_shared_rows, state->runner_config.head_row_capacity);
 	state->completion_function = configuration->completion_function;
 	state->completion_context = configuration->completion_context;
 	status = StageServingAllocate(state);
@@ -779,11 +1011,13 @@ static void StageServingDestroy(void *adapter_state)
 		return;
 	SparkStageKvBindingDestroy(&state->kv);
 	SparkStageModuleLedgerRelease(&state->ledger);
-	if ( state->tap_out != 0 )
-		(void)fclose(state->tap_out);
-	state->tap_out = 0;
+	StageServingTapClose(state);
+	free(state->tap_buffer);
+	state->tap_buffer = 0;
 	free(state->tap_file);
 	state->tap_file = 0;
+	free(state->tap_stream);
+	state->tap_stream = 0;
 	SparkStageRunnerDestroy(&state->runner);
 	if ( state->lane_client != 0 )
 	{
@@ -841,6 +1075,13 @@ static SparkStatus StageServingValidateSubmission(void *adapter_state,
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( submission->row_sequence_ids == 0 || submission->lanes == 0 || submission->lane_count < submission->active_sequence_count )
 		return SPARK_STATUS_VALIDATION_FAILED;
+	if ( submission->row_count > state->max_shared_rows &&
+		(submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL || submission->active_sequence_count != 1u) )
+	{
+		fprintf(stderr, "%s adapter: refused a %u-row wave of %u sequences (kind %u): only a single-sequence prefill may exceed %u rows\n",
+			state->model->module_tag, submission->row_count, submission->active_sequence_count, submission->work_kind, state->max_shared_rows);
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
 	return SPARK_STATUS_OK;
 }
 
@@ -1054,6 +1295,30 @@ static void StageServingWaveHost(SparkStageServingState *state, const uint64_t *
 	state->wave_host_count = 0u;
 }
 
+static void StageServingVerifyHost(SparkStageServingState *state, const uint64_t *marks, uint64_t keep_ns, uint32_t rows)
+{
+	static const char *const names[STAGE_SERVING_VERIFY_BUCKETS] = { "2-4", "5-8", "9-16", "17+" };
+	const uint32_t bucket = rows <= 4u ? 0u : rows <= 8u ? 1u : rows <= 16u ? 2u : 3u;
+	uint64_t *ns = state->verify_host_ns[bucket];
+	uint32_t phase;
+	for ( phase = 0u; phase < 4u; ++phase )
+		ns[phase] += marks[phase + 1u] - marks[phase];
+	ns[4] += keep_ns;
+	ns[5] += marks[5] - marks[4] - keep_ns;
+	state->verify_host_rows[bucket] += rows;
+	if ( ++state->verify_host_count[bucket] < 16u )
+		return;
+	fprintf(stderr, "STAGE-VERIFY-HOST tag=%s rank=%u rows=%s frames=%u mean_rows=%.1f admit_ms=%.2f submit_ms=%.2f capture_ms=%.2f sync_ms=%.2f keep_ms=%.2f finish_ms=%.2f\n",
+		state->model->module_tag, state->runner_config.tp_rank, names[bucket], state->verify_host_count[bucket],
+		(double)state->verify_host_rows[bucket] / state->verify_host_count[bucket],
+		(double)ns[0] / state->verify_host_count[bucket] / 1e6, (double)ns[1] / state->verify_host_count[bucket] / 1e6,
+		(double)ns[2] / state->verify_host_count[bucket] / 1e6, (double)ns[3] / state->verify_host_count[bucket] / 1e6,
+		(double)ns[4] / state->verify_host_count[bucket] / 1e6, (double)ns[5] / state->verify_host_count[bucket] / 1e6);
+	memset(ns, 0, sizeof(state->verify_host_ns[bucket]));
+	state->verify_host_rows[bucket] = 0u;
+	state->verify_host_count[bucket] = 0u;
+}
+
 static SparkStatus StageServingCopyInputs(SparkStageServingState *state, uint32_t rows, uint32_t active)
 {
 	void *stream = state->runner_config.execution_stream;
@@ -1186,7 +1451,7 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	SparkSamplingLogprob distribution_logprobs[SPARK_STAGE_SERVING_MAX_LANES * SPARK_SAMPLING_MAX_LOGPROBS];
 	uint32_t rows, active = 0u, distribution_count = 0u, logprob_stride = 0u, steps = 1u, kept[SPARK_STAGE_SERVING_MAX_LANES];
 	const uint32_t verify = submission != 0 && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? 1u : 0u;
-	uint64_t marks[6];
+	uint64_t marks[6], keep_ns = 0u;
 	SparkStatus status, finished;
 	void *stream;
 	marks[0] = StageServingNowNs();
@@ -1274,19 +1539,26 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		status = StageServingReadTokens(state, rows, steps);
 	if ( status == SPARK_STATUS_OK && verify != 0u )
 	{
+		const uint64_t keep_started = StageServingNowNs();
 		StageServingVerifyKept(state, submission, active, kept);
 		status = SparkStageRunnerKeepRows(&state->runner, kept, active);
 		if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
 			status = SPARK_STATUS_IO_ERROR;
+		keep_ns = StageServingNowNs() - keep_started;
 	}
 	for ( uint32_t lane = 0u; status == SPARK_STATUS_OK && lane < active; ++lane )
 		next_positions[lane] = verify != 0u ? state->row_positions[lane] + kept[lane] : next_positions[lane] + steps - 1u;
-	if ( status == SPARK_STATUS_OK && state->tap_out != 0 && state->tap_full == 0u )
+	if ( status == SPARK_STATUS_OK && state->tap_stream != 0 && state->tap_socket < 0 && state->tap_count != 0u &&
+		state->runner_config.tp_rank == state->tap_rank && StageServingNowNs() >= state->tap_retry_ns )
+		(void)StageServingTapStreamConnect(state, STAGE_SERVING_TAP_RECONNECT_MS);
+	if ( status == SPARK_STATUS_OK && StageServingTapOpen(state) != 0u && state->tap_full == 0u )
 		StageServingTapEmit(state, submission, rows, active, steps, verify != 0u ? kept : 0);
 	finished = StageServingFinish(state, active, row_slots, bound, sequence_ids, next_positions, steps - 1u, verify, status);
 	marks[5] = StageServingNowNs();
 	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
 		StageServingWaveHost(state, marks);
+	else if ( status == SPARK_STATUS_OK && verify != 0u )
+		StageServingVerifyHost(state, marks, keep_ns, rows);
 	SparkStageModuleIndexSetRelease(state->lane_states, SPARK_STAGE_SERVING_MAX_LANES, row_slots, active);
 	if ( status != SPARK_STATUS_OK )
 		return status;

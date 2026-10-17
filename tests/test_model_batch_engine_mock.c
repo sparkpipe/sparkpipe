@@ -1,8 +1,12 @@
+#include <arpa/inet.h>
 #include <assert.h>
+#include <netinet/in.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -916,6 +920,37 @@ static void TestScenarioCanonicalPrefillChunks(const SparkModelResidentDeploymen
 	CHECK(TestPrefillChunksAreCanonical(1u,4u,8u) == 2u,"canonical chunks: a prompt sharing the row budget still prefills whole blocks");
 	CHECK(TestPrefillChunksAreCanonical(2u,4u,3u) == 1u,"canonical chunks: a short prompt prefills in one chunk");
 	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioSharedPrefillRows(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	SparkModelResidentDeployment limited = *deployment;
+	uint32_t longer[3] = {31u,32u,33u};
+	uint32_t first[1] = {41u},second[3] = {51u,52u,53u};
+	uint32_t pass,submissions[2] = {0u,0u},rows[2] = {0u,0u};
+	for (pass=0u; pass<2u; pass++)
+	{
+		TestBatchState state = {0};
+		SparkModelBatchEngine *engine;
+		uint32_t base = 660u + 10u * pass;
+		limited.max_shared_input_row_count = pass == 0u ? 0u : 4u;
+		MockResidentClientReset();
+		engine = TestConnectRows(&limited,&state,runtime_root,8u);
+		if ( engine == 0 )
+			return;
+		MockResidentClientSetAutoTokens(1u);
+		MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+		TestSubmitPrompt(engine,1u,base,1u,longer,3u);
+		TestSubmitPrompt(engine,2u,base + 1u,1u,first,1u);
+		TestSubmitPrompt(engine,3u,base + 2u,1u,second,3u);
+		TestDriveUntilTerminal(engine,&state,3u,800u);
+		CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u && state.completed_events[3] == 1u,
+			"shared rows: every prompt completes with and without a shared-wave limit");
+		MockResidentClientTakePrefillShared(&submissions[pass],&rows[pass]);
+		SparkModelBatchEngineDestroy(engine);
+	}
+	CHECK(submissions[0] != 0u && rows[0] > 4u,"shared rows: without a limit, one prefill wave carries several prompts past the shared size");
+	CHECK(submissions[1] != 0u && rows[1] <= 4u,"shared rows: a wave carrying several prompts stays within the shared limit, while one prompt alone may use the full budget");
 }
 
 static uint32_t TestCoordinatorFrames(void)
@@ -2055,6 +2090,7 @@ static void TestScenarioReplyCheckpoint(const SparkModelResidentDeployment *depl
 
 static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deployment,const SparkModelResidentDeployment *plain_deployment,const char *runtime_root);
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root);
+static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioLongVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 
 static void TestScenarioAdapterCacheModes(const char *runtime_root)
@@ -2084,6 +2120,7 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 		TestLoadVariantDeployment(runtime_root,"plain-decode",TEST_MODEL_SERVING_ADAPTER_PATH,plain_path,sizeof(plain_path),&plain);
 		TestScenarioLookupVerify(&deployment,&plain,runtime_root);
 		TestScenarioLookupVerifyMixedLanes(&deployment,runtime_root);
+		TestScenarioModelDrafts(&deployment,runtime_root);
 		SparkModelResidentDeploymentReset(&plain);
 		(void)unlink(plain_path);
 		SparkModelResidentDeploymentReset(&deployment);
@@ -2190,6 +2227,218 @@ static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deploym
 	script[44u + 30u] = 154820u;
 	TestRunScript(deployment,runtime_root,script,256u,44u,80u,&state,&view,&submissions,&rows);
 	CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,44u,31u) != 0u,"lookup: a stop token inside accepted drafts ends the request there");
+}
+
+#define TEST_DRAFT_CORRECT 0u
+#define TEST_DRAFT_LOW 1u
+#define TEST_DRAFT_WRONG 2u
+#define TEST_DRAFT_UNAVAILABLE 3u
+#define TEST_DRAFT_CLOSE 4u
+#define TEST_DRAFT_FIRST 5u
+
+typedef struct TestDraftServer
+{
+	int listener;
+	uint32_t port;
+	uint32_t mode;
+	const uint32_t *script;
+	uint32_t script_count;
+	uint32_t requests;
+	uint32_t bad_requests;
+	uint32_t connections;
+	uint32_t stop;
+	pthread_t thread;
+} TestDraftServer;
+
+static uint32_t TestDraftRead(int fd,uint8_t *data,size_t bytes)
+{
+	size_t got = 0u;
+	while ( got < bytes )
+	{
+		const ssize_t part = recv(fd,data + got,bytes - got,0);
+		if ( part <= 0 )
+			return(0u);
+		got += (size_t)part;
+	}
+	return(1u);
+}
+
+static uint32_t TestDraftU32(const uint8_t *data)
+{
+	return((uint32_t)data[0] | ((uint32_t)data[1] << 8u) | ((uint32_t)data[2] << 16u) | ((uint32_t)data[3] << 24u));
+}
+
+static uint64_t TestDraftU64(const uint8_t *data)
+{
+	return((uint64_t)TestDraftU32(data) | ((uint64_t)TestDraftU32(data + 4u) << 32u));
+}
+
+static void TestDraftPut32(uint8_t **cursor,uint32_t value)
+{
+	memcpy(*cursor,&value,sizeof(value));
+	*cursor += sizeof(value);
+}
+
+static void TestDraftServe(TestDraftServer *server,int fd)
+{
+	static uint8_t committed[4u * 4096u];
+	uint8_t header[96],reply[28u + 9u * 20u + 48u],*cursor;
+	for (;;)
+	{
+		uint64_t sequence,generation,position;
+		uint32_t anchor,count,depth,nodes = 0u,status = 0u,index;
+		if ( TestDraftRead(fd,header,sizeof(header)) == 0u )
+			return;
+		sequence = TestDraftU64(header + 44u);
+		generation = TestDraftU64(header + 52u);
+		position = TestDraftU64(header + 60u);
+		anchor = TestDraftU32(header + 68u);
+		count = TestDraftU32(header + 72u);
+		depth = TestDraftU32(header + 80u);
+		if ( count > sizeof(committed) / 4u || TestDraftRead(fd,committed,(size_t)count * 4u) == 0u )
+			return;
+		server->requests++;
+		if ( memcmp(header,"DFT3",4u) != 0 || TestDraftU32(header + 4u) != 1u || (TestDraftU32(header + 8u) & 2u) == 0u ||
+			strncmp((const char *)header + 12u,"test-target",32u) != 0 || count != position + 1u || position >= server->script_count ||
+			anchor != server->script[position] || TestDraftU32(header + 76u) != 0u || depth == 0u || depth > 7u )
+			server->bad_requests++;
+		for (index=0u; index<count && index<server->script_count; index++)
+			if ( TestDraftU32(committed + 4u * index) != server->script[index] )
+			{
+				server->bad_requests++;
+				break;
+			}
+		if ( server->mode == TEST_DRAFT_CLOSE )
+			return;
+		cursor = reply;
+		memcpy(cursor,"DFT3",4u);
+		cursor += 4u;
+		if ( server->mode == TEST_DRAFT_UNAVAILABLE )
+			status = 4u;
+		else
+			nodes = 1u + depth;
+		TestDraftPut32(&cursor,status);
+		TestDraftPut32(&cursor,nodes);
+		memcpy(cursor,&sequence,8u);
+		cursor += 8u;
+		memcpy(cursor,&generation,8u);
+		cursor += 8u;
+		for (index=0u; index<nodes; index++)
+		{
+			const uint64_t at = position + index;
+			const uint32_t wrong = server->mode == TEST_DRAFT_WRONG || (server->mode == TEST_DRAFT_FIRST && index >= 2u) ? 1u : 0u;
+			const uint32_t token = index == 0u ? anchor : at < server->script_count ? server->script[at] + wrong : 7u;
+			const float score = index == 0u ? 1.0f : server->mode == TEST_DRAFT_LOW ? 0.1f : 0.9f;
+			TestDraftPut32(&cursor,token);
+			TestDraftPut32(&cursor,index == 0u ? UINT32_MAX : index - 1u);
+			TestDraftPut32(&cursor,index);
+			TestDraftPut32(&cursor,2u);
+			memcpy(cursor,&score,4u);
+			cursor += 4u;
+		}
+		memset(cursor,0,48u);
+		cursor += 48u;
+		if ( send(fd,reply,(size_t)(cursor - reply),0) != (ssize_t)(cursor - reply) )
+			return;
+	}
+}
+
+static void *TestDraftThread(void *argument)
+{
+	TestDraftServer *server = (TestDraftServer *)argument;
+	while ( server->stop == 0u )
+	{
+		const int fd = accept(server->listener,0,0);
+		if ( fd < 0 )
+			break;
+		server->connections++;
+		TestDraftServe(server,fd);
+		(void)close(fd);
+	}
+	return(0);
+}
+
+static uint32_t TestDraftStart(TestDraftServer *server,uint32_t mode,const uint32_t *script,uint32_t script_count)
+{
+	struct sockaddr_in address;
+	socklen_t bytes = (socklen_t)sizeof(address);
+	memset(server,0,sizeof(*server));
+	server->mode = mode;
+	server->script = script;
+	server->script_count = script_count;
+	server->listener = socket(AF_INET,SOCK_STREAM,0);
+	memset(&address,0,sizeof(address));
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if ( server->listener < 0 || bind(server->listener,(const struct sockaddr *)&address,bytes) != 0 || listen(server->listener,4) != 0 ||
+		getsockname(server->listener,(struct sockaddr *)&address,&bytes) != 0 )
+		return(0u);
+	server->port = ntohs(address.sin_port);
+	return(pthread_create(&server->thread,0,TestDraftThread,server) == 0 ? 1u : 0u);
+}
+
+static void TestDraftStop(TestDraftServer *server)
+{
+	server->stop = 1u;
+	(void)shutdown(server->listener,SHUT_RDWR);
+	(void)close(server->listener);
+	(void)pthread_join(server->thread,0);
+}
+
+static void TestRunModelDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root,uint32_t mode,const uint32_t *script,uint32_t budget,
+	TestBatchState *state,SparkModelBatchEngineView *view,uint32_t *verify_submissions,uint32_t *verify_rows,TestDraftServer *server)
+{
+	SparkModelResidentDeployment drafted = *deployment;
+	static char host[] = "127.0.0.1";
+	CHECK(TestDraftStart(server,mode,script,256u) != 0u,"model drafts: a stub draft server listens");
+	drafted.draft_server.host = host;
+	drafted.draft_server.port = server->port;
+	strcpy(drafted.draft_server.target_model,"test-target");
+	drafted.draft_server.depth = 4u;
+	drafted.draft_server.wait_ms = 50u;
+	drafted.draft_server.min_confidence = 0.05f;
+	MockResidentClientSetStepDelay(2000u);
+	TestRunScript(&drafted,runtime_root,script,256u,44u,budget,state,view,verify_submissions,verify_rows);
+	MockResidentClientSetStepDelay(0u);
+	TestDraftStop(server);
+}
+
+static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	uint32_t script[256],index,submissions,rows;
+	SparkModelBatchEngineView view;
+	TestBatchState state;
+	TestDraftServer server;
+	for (index=0u; index<256u; index++)
+		script[index] = 3000u + (index * 37u + index * index * 11u) % 4093u;
+	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_CORRECT,script,80u,&state,&view,&submissions,&rows,&server);
+	CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u,"model drafts: a stream with no repeats emits exactly the model's greedy stream");
+	CHECK(submissions != 0u && rows > submissions && view.speculative_accepted_token_count >= 40u,"model drafts: confident drafts are verified in multi-row frames and accepted");
+	CHECK(server.requests != 0u && server.bad_requests == 0u,"model drafts: each request names the target, the anchor and every committed token");
+	CHECK(TestLaneInputsFollowScript(1u,script,256u) != 0u,"model drafts: every decode lane's input token is a committed model token");
+	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_LOW,script,40u,&state,&view,&submissions,&rows,&server);
+	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,40u) != 0u && submissions == 0u && server.requests != 0u,"model drafts: drafts below the confidence cut are never verified");
+	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_WRONG,script,40u,&state,&view,&submissions,&rows,&server);
+	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,40u) != 0u && submissions != 0u && view.speculative_accepted_token_count == 0u,
+		"model drafts: wrong drafts are rejected and the stream stays exact");
+	CHECK(submissions <= 3u && server.requests >= submissions + 3u,"model drafts: confident drafts that keep failing stop being verified once their acceptance is learned");
+	CHECK(TestLaneInputsFollowScript(1u,script,256u) != 0u,"model drafts: a rejected model draft never becomes a lane's input");
+	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_FIRST,script,80u,&state,&view,&submissions,&rows,&server);
+	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u && submissions >= 20u && view.speculative_accepted_token_count * 2u + 8u >= submissions * 2u,
+		"model drafts: a draft whose first token is right keeps that token in every frame");
+	CHECK(rows <= 2u * submissions + 12u,
+		"model drafts: confident deep drafts that fail stop being verified while the first draft that holds keeps its row");
+	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_UNAVAILABLE,script,40u,&state,&view,&submissions,&rows,&server);
+	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,40u) != 0u && submissions == 0u && server.requests > 4u,
+		"model drafts: an unavailable answer declines one round and the engine keeps asking");
+	MockResidentClientSetVerifyRowCost(21u);
+	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_CORRECT,script,80u,&state,&view,&submissions,&rows,&server);
+	MockResidentClientSetVerifyRowCost(1u);
+	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u && submissions != 0u && submissions <= 10u && server.requests == submissions,
+		"model drafts: frames that turn out slower than chains back the request off to chains, with no draft requests during the backoff");
+	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_CLOSE,script,40u,&state,&view,&submissions,&rows,&server);
+	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,40u) != 0u && submissions == 0u && server.requests == 1u,
+		"model drafts: a broken draft server pauses model drafts and decoding continues");
 }
 
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root)
@@ -2468,6 +2717,7 @@ int main(void)
 	TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,1u);
 	TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,3u);
 	TestScenarioCanonicalPrefillChunks(&deployment,runtime_root);
+	TestScenarioSharedPrefillRows(&deployment,runtime_root);
 	TestScenarioDecodeAfterPrefill(&deployment,runtime_root);
 	TestScenarioPartialCopyCapacity(&deployment,runtime_root);
 	TestScenarioSamplingValidation(&deployment,runtime_root);

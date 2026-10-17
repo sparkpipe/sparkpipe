@@ -14,6 +14,7 @@ struct SparkWeightdLazyPack;
 #define SPARK_K3_DISPATCH_ERR_ARGUMENT -1
 #define SPARK_K3_DISPATCH_ERR_CUDA -2
 #define SPARK_K3_DISPATCH_ERR_BIND -3
+#define SPARK_K3_DISPATCH_ERR_CAPACITY -4
 
 typedef struct SparkK3StepInput
 {
@@ -39,6 +40,7 @@ typedef struct SparkK3StepInput
 	float *output_score;
 	uint32_t gather_sequence;
 	uint32_t gather_context;
+	uint32_t gather_first;
 	uint32_t pair_rows;
 } SparkK3StepInput;
 
@@ -67,6 +69,7 @@ typedef struct SparkK3Dispatch
 	uint32_t mla_count;
 	uint32_t sequences;
 	uint32_t max_rows;
+	uint32_t attention_rows;
 	uint32_t routes_capacity;
 	uint32_t kv_pages_per_view;
 	uint64_t kv_page_bytes;
@@ -104,7 +107,7 @@ typedef struct SparkK3Dispatch
 } SparkK3Dispatch;
 
 int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizing,
-	uint32_t sequences, uint32_t max_rows, uint32_t kv_pages_per_view,
+	uint32_t sequences, uint32_t max_rows, uint32_t attention_rows, uint32_t kv_pages_per_view,
 	uint64_t kv_page_bytes, uint32_t tp_degree, uint32_t tp_rank, const SparkK3ScratchWidths *widths, int device);
 int32_t SparkK3DispatchScratchWidths(SparkK3Pack *pack, uint32_t first_layer, uint32_t layer_count,
 	uint32_t tp_degree, SparkK3ScratchWidths *widths);
