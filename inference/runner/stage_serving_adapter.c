@@ -35,6 +35,8 @@
 #endif
 #define STAGE_SERVING_TAP_BUFFER_BYTES (8u << 20)
 #define STAGE_SERVING_TAP_CONNECT_MS 3000
+#define STAGE_SERVING_TAP_RECONNECT_MS 50
+#define STAGE_SERVING_TAP_RETRY_NS 5000000000ull
 #define STAGE_SERVING_TAP_SEND_TIMEOUT_MS 200
 #define STAGE_SERVING_TAP_SEND_BUFFER_BYTES (64 << 20)
 #define STAGE_SERVING_VERIFY_BUCKETS 4u
@@ -101,6 +103,9 @@ typedef struct SparkStageServingState
 	int tap_socket;
 	uint8_t *tap_buffer;
 	size_t tap_buffered;
+	SparkTapStreamHello tap_hello;
+	uint64_t tap_retry_ns;
+	uint32_t tap_stream_down;
 	uint64_t tap_written;
 	uint64_t tap_serial;
 	uint64_t tap_fingerprint;
@@ -312,7 +317,7 @@ static SparkStatus StageServingParseTaps(SparkStageServingState *state, SparkJso
 	return SPARK_STATUS_OK;
 }
 
-static int StageServingTapConnect(const char *endpoint)
+static int StageServingTapConnect(const char *endpoint, int timeout_ms)
 {
 	char host[64];
 	const char *colon = strrchr(endpoint, ':');
@@ -354,7 +359,7 @@ static int StageServingTapConnect(const char *endpoint)
 		descriptor.fd = fd;
 		descriptor.events = POLLOUT;
 		do
-			ready = poll(&descriptor, 1u, STAGE_SERVING_TAP_CONNECT_MS);
+			ready = poll(&descriptor, 1u, timeout_ms);
 		while ( ready < 0 && errno == EINTR );
 		if ( ready != 1 || getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &error_bytes) != 0 || error != 0 )
 		{
@@ -439,6 +444,31 @@ static void StageServingTapClose(SparkStageServingState *state)
 	state->tap_buffered = 0u;
 }
 
+static uint64_t StageServingNowNs(void);
+
+static uint32_t StageServingTapStreamConnect(SparkStageServingState *state, int timeout_ms)
+{
+	state->tap_socket = StageServingTapConnect(state->tap_stream, timeout_ms);
+	if ( state->tap_socket >= 0 && state->tap_buffer == 0 )
+		state->tap_buffer = (uint8_t *)malloc(STAGE_SERVING_TAP_BUFFER_BYTES);
+	state->tap_buffered = 0u;
+	if ( state->tap_socket < 0 || state->tap_buffer == 0 || StageServingTapWrite(state, &state->tap_hello, sizeof(state->tap_hello)) != 0 ||
+		StageServingTapFlush(state) != 0 )
+	{
+		if ( state->tap_stream_down == 0u )
+			fprintf(stderr, "%s adapter: tap stream %s is unreachable (%s); serving continues without taps and retries every %llu s\n", state->model->module_tag,
+				state->tap_stream, strerror(errno), (unsigned long long)(STAGE_SERVING_TAP_RETRY_NS / 1000000000ull));
+		StageServingTapClose(state);
+		state->tap_stream_down = 1u;
+		state->tap_retry_ns = StageServingNowNs() + STAGE_SERVING_TAP_RETRY_NS;
+		return 0u;
+	}
+	if ( state->tap_stream_down != 0u )
+		fprintf(stderr, "%s adapter: tap stream %s connected again\n", state->model->module_tag, state->tap_stream);
+	state->tap_stream_down = 0u;
+	return 1u;
+}
+
 static SparkStatus StageServingOpenTaps(SparkStageServingState *state)
 {
 	SparkTapStreamHello hello;
@@ -470,17 +500,9 @@ static SparkStatus StageServingOpenTaps(SparkStageServingState *state)
 	}
 	hello.fingerprint = SparkTapStreamFingerprint(&hello);
 	state->tap_fingerprint = hello.fingerprint;
+	state->tap_hello = hello;
 	if ( state->tap_stream != 0 )
-	{
-		state->tap_socket = StageServingTapConnect(state->tap_stream);
-		state->tap_buffer = state->tap_socket >= 0 ? (uint8_t *)malloc(STAGE_SERVING_TAP_BUFFER_BYTES) : 0;
-		if ( state->tap_buffer == 0 || StageServingTapWrite(state, &hello, sizeof(hello)) != 0 || StageServingTapFlush(state) != 0 )
-		{
-			fprintf(stderr, "%s adapter: tap stream %s cannot be reached: %s\n", state->model->module_tag, state->tap_stream, strerror(errno));
-			StageServingTapClose(state);
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		}
-	}
+		(void)StageServingTapStreamConnect(state, STAGE_SERVING_TAP_CONNECT_MS);
 	else
 	{
 		state->tap_out = fopen(state->tap_file, "wb");
@@ -560,16 +582,23 @@ static void StageServingTapEmit(SparkStageServingState *state, const SparkModelS
 		{
 			fprintf(stderr, "%s adapter: tap %s write failed: %s\n", state->model->module_tag, StageServingTapName(state), strerror(errno));
 			StageServingTapClose(state);
+			if ( state->tap_stream != 0 )
+			{
+				state->tap_full = 0u;
+				state->tap_stream_down = 1u;
+				state->tap_retry_ns = StageServingNowNs() + STAGE_SERVING_TAP_RETRY_NS;
+			}
 			return;
 		}
 		state->tap_written += bytes;
 	}
 	if ( state->tap_socket >= 0 && StageServingTapFlush(state) != 0 )
 	{
-		fprintf(stderr, "%s adapter: tap stream %s send failed after %llu bytes: %s; taps stop\n", state->model->module_tag, state->tap_stream,
-			(unsigned long long)state->tap_written, strerror(errno));
-		state->tap_full = 1u;
+		fprintf(stderr, "%s adapter: tap stream %s send failed after %llu bytes: %s; taps pause and the stream reconnects\n", state->model->module_tag,
+			state->tap_stream, (unsigned long long)state->tap_written, strerror(errno));
 		StageServingTapClose(state);
+		state->tap_stream_down = 1u;
+		state->tap_retry_ns = StageServingNowNs() + STAGE_SERVING_TAP_RETRY_NS;
 	}
 }
 
@@ -1519,6 +1548,9 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	}
 	for ( uint32_t lane = 0u; status == SPARK_STATUS_OK && lane < active; ++lane )
 		next_positions[lane] = verify != 0u ? state->row_positions[lane] + kept[lane] : next_positions[lane] + steps - 1u;
+	if ( status == SPARK_STATUS_OK && state->tap_stream != 0 && state->tap_socket < 0 && state->tap_count != 0u &&
+		state->runner_config.tp_rank == state->tap_rank && StageServingNowNs() >= state->tap_retry_ns )
+		(void)StageServingTapStreamConnect(state, STAGE_SERVING_TAP_RECONNECT_MS);
 	if ( status == SPARK_STATUS_OK && StageServingTapOpen(state) != 0u && state->tap_full == 0u )
 		StageServingTapEmit(state, submission, rows, active, steps, verify != 0u ? kept : 0);
 	finished = StageServingFinish(state, active, row_slots, bound, sequence_ids, next_positions, steps - 1u, verify, status);

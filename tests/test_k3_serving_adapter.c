@@ -396,7 +396,7 @@ static int32_t TestK3TapStream(void)
 	(void)snprintf(endpoint, sizeof(endpoint), "127.0.0.1:%u", port);
 	memset(&state, 0, sizeof(state));
 	state.model = &K3StageServing;
-	state.tap_socket = StageServingTapConnect(endpoint);
+	state.tap_socket = StageServingTapConnect(endpoint, STAGE_SERVING_TAP_CONNECT_MS);
 	state.tap_buffer = (uint8_t *)malloc(STAGE_SERVING_TAP_BUFFER_BYTES);
 	peer = accept(listener, 0, 0);
 	sent = (uint8_t *)malloc(bytes);
@@ -427,9 +427,38 @@ static int32_t TestK3TapStream(void)
 		(void)close(peer);
 	(void)close(listener);
 	TestK3ReleaseTaps(&state);
-	failures += TestK3Check(StageServingTapConnect(endpoint) < 0, "an endpoint with no listener is refused");
-	failures += TestK3Check(StageServingTapConnect("127.0.0.1") < 0 && StageServingTapConnect("host:12") < 0 && StageServingTapConnect("127.0.0.1:0") < 0,
+	failures += TestK3Check(StageServingTapConnect(endpoint, STAGE_SERVING_TAP_RECONNECT_MS) < 0, "an endpoint with no listener is refused");
+	failures += TestK3Check(StageServingTapConnect("127.0.0.1", 50) < 0 && StageServingTapConnect("host:12", 50) < 0 && StageServingTapConnect("127.0.0.1:0", 50) < 0,
 		"malformed endpoints are refused");
+	memset(&state, 0, sizeof(state));
+	state.model = &K3StageServing;
+	state.tap_socket = -1;
+	state.tap_stream = strdup(endpoint);
+	memset(&state.tap_hello, 0x5c, sizeof(state.tap_hello));
+	failures += TestK3Check(StageServingTapStreamConnect(&state, STAGE_SERVING_TAP_RECONNECT_MS) == 0u && state.tap_stream_down != 0u && state.tap_socket < 0 &&
+		state.tap_retry_ns > StageServingNowNs(), "an unreachable tap stream pauses the taps with a retry time instead of failing");
+	listener = TestK3Listen(&port);
+	if ( listener >= 0 )
+	{
+		uint8_t hello[sizeof(state.tap_hello)];
+		free(state.tap_stream);
+		(void)snprintf(endpoint, sizeof(endpoint), "127.0.0.1:%u", port);
+		state.tap_stream = strdup(endpoint);
+		failures += TestK3Check(StageServingTapStreamConnect(&state, STAGE_SERVING_TAP_RECONNECT_MS) != 0u && state.tap_stream_down == 0u && state.tap_socket >= 0,
+			"the tap stream connects again once its endpoint listens");
+		peer = accept(listener, 0, 0);
+		reader.fd = peer;
+		reader.data = hello;
+		reader.bytes = sizeof(hello);
+		reader.got = 0u;
+		(void)TestK3Receive(&reader);
+		failures += TestK3Check(peer >= 0 && reader.got == sizeof(hello) && memcmp(hello, &state.tap_hello, sizeof(hello)) == 0,
+			"a reconnected stream starts with the stream hello");
+		if ( peer >= 0 )
+			(void)close(peer);
+		(void)close(listener);
+	}
+	TestK3ReleaseTaps(&state);
 	free(sent);
 	free(received);
 	return(failures);
