@@ -71,6 +71,20 @@ class Context:
     def held(self, positions):
         return self.positions[positions % self.window] == positions
 
+    def span(self, positions):
+        window, block = self.window, self.drafter.block
+        if len(positions) == window:
+            return 0, window, None
+        first = int(positions[0]) % window if len(positions) != 0 else 0
+        end = first + len(positions)
+        if end <= window and not (self.positions[end:min(window, end + block)] > positions[-1]).any():
+            self.positions[end:min(window, end + block)] = -1
+            return first, end, None
+        valid = np.zeros(window + block, dtype=bool)
+        valid[positions % window] = True
+        valid[window:] = True
+        return 0, window, valid
+
     def copy_from(self, donor, positions):
         slots = positions % self.window
         index = torch.from_numpy(slots).to(self.drafter.device)
@@ -266,13 +280,9 @@ class Server:
             self.stats["unavailable"] += 1
             print(f"TOKEN-MISMATCH sequence {sequence} position {position}", flush=True)
             return None
-        valid = None
-        if len(positions) < context.window:
-            valid = np.zeros(context.window + self.drafter.block, dtype=bool)
-            valid[positions % context.window] = True
-            valid[context.window:] = True
+        start, block_at, valid = context.span(positions)
         started = time.monotonic()
-        drafts, confidence = self.graph.draft(int(anchor), position, context.keys, context.values, valid, min(depth, self.drafter.block))
+        drafts, confidence = self.graph.draft(int(anchor), position, context.keys, context.values, start, block_at, valid, min(depth, self.drafter.block))
         elapsed = int((time.monotonic() - started) * 1e6)
         self.timing["compute"] += elapsed / 1e6
         self.timing["context"] += position

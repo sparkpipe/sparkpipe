@@ -200,14 +200,15 @@ class BlockDrafter:
         up = x @ layer["mlp.up_proj"].t()
         return h + ((torch.nn.functional.silu(gate.float()) * up.float()).to(torch.bfloat16) @ layer["mlp.down_proj"].t()).float()
 
-    def attend_window(self, index, q, kb, vb, keys, values, mask):
-        window = keys[index].shape[1] - self.block
-        keys[index][:, window:] = kb
-        values[index][:, window:] = vb
-        attended = torch.nn.functional.scaled_dot_product_attention(q[None], keys[index][None], values[index][None], attn_mask=mask, enable_gqa=True)
+    def attend_window(self, index, q, kb, vb, keys, values, start, block_at, mask):
+        stop = block_at + self.block
+        keys[index][:, block_at:stop] = kb
+        values[index][:, block_at:stop] = vb
+        attended = torch.nn.functional.scaled_dot_product_attention(q[None], keys[index][None, :, start:stop], values[index][None, :, start:stop],
+                                                                    attn_mask=mask, enable_gqa=True)
         return attended[0].transpose(0, 1).reshape(self.block, -1)
 
-    def draft_window(self, anchor_token, anchor_position, keys, values, mask):
+    def draft_window(self, anchor_token, anchor_position, keys, values, start, block_at, mask):
         block = self.block
         tokens = torch.full((block,), self.mask, dtype=torch.long, device=self.device)
         tokens[0] = anchor_token
@@ -215,7 +216,7 @@ class BlockDrafter:
         positions = torch.arange(anchor_position, anchor_position + block, device=self.device)
         for index, layer in enumerate(self.layers):
             q, kb, vb = self.pre_attention(layer, h, positions)
-            h = self.post_attention(layer, h, self.attend_window(index, q, kb, vb, keys, values, mask))
+            h = self.post_attention(layer, h, self.attend_window(index, q, kb, vb, keys, values, start, block_at, mask))
         y = rms(h, self.norm, self.eps).to(torch.bfloat16)
         return y, (y @ self.head.t()).float()
 
@@ -311,7 +312,7 @@ class DraftGraph:
         if capturing:
             self.graphs, self.staged = graphs, staged
 
-    def draft(self, anchor_token, anchor_position, keys, values, valid, count):
+    def draft(self, anchor_token, anchor_position, keys, values, start, block_at, valid, count):
         d = self.drafter
         self.host[0], self.host[1] = int(anchor_token), int(anchor_position)
         self.inputs.copy_(self.host, non_blocking=True)
@@ -320,7 +321,7 @@ class DraftGraph:
             for index in range(len(d.layers)):
                 self.graphs[index].replay()
                 q, kb, vb = self.staged[index]
-                self.attended[index].copy_(d.attend_window(index, q, kb, vb, keys, values, mask))
+                self.attended[index].copy_(d.attend_window(index, q, kb, vb, keys, values, start, block_at, mask))
             self.graphs[-1].replay()
             tokens, scores = self.staged[-1]
             tokens = tokens[:count].tolist()
