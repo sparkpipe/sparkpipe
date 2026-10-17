@@ -216,6 +216,8 @@ struct K3LayerBuffers
 	uint32_t shard_gather_expanded;
 	uint32_t shard_gather_passes;
 	uint32_t shard_gather_value_keys;
+	uint32_t shard_gather_history;
+	uint32_t shard_gather_prefetched;
 	const uint32_t *sequence_of_row;
 	const uint32_t *context_length;
 	const uint32_t *positions;
@@ -729,8 +731,27 @@ static int32_t K3LayerMlaGatherPack(const K3LayerBuffers *b, uint32_t rows, cuda
 	static_assert(Geometry::kSlotBytes == K3_MLA_KV_A_DIM * sizeof(uint16_t), "gathered keys are packed at the latent row width the value expansion reads");
 	if ( K3LayerMlaGatherReady(b,rows) == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
+	if ( b->shard_gather_prefetched != 0u )
+		return((uint64_t)b->shard_gather_prefetched * b->shard_gather_window_keys < b->shard_gather_most_keys &&
+			LmKvShardGatherPackRangeLaunch<Geometry,K3_LAYER_THREADS>(b->cache_shard,b->shard_gather_list,b->shard_gather_offset,
+				b->shard_gather_context,1u,b->shard_gather_prefetched * b->shard_gather_window_keys,b->shard_gather_most_keys,
+				b->shard_gather_send,stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 	return(LmKvShardGatherPackLaunch<Geometry,K3_LAYER_THREADS>(b->cache_shard,b->shard_gather_list,b->shard_gather_offset,
 		b->shard_gather_context,1u,b->shard_gather_most_keys,b->shard_gather_send,stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+template<class Geometry>
+static int32_t K3LayerMlaPrefetchPack(const K3LayerBuffers *b, uint32_t rows, const LmKvView &pages, uint32_t windows, cudaStream_t stream)
+{
+	LmKvShardView view;
+	if ( K3LayerMlaGatherReady(b,rows) == 0u || b->shard_gather_windows <= 1u || windows == 0u || windows > b->shard_gather_history ||
+		!LmKvViewIsConfigured(pages) )
+		return(LM_LAUNCH_ERR_SHAPE);
+	view.pages = pages;
+	view.shard = b->kv_shard;
+	return(LmKvShardGatherPackRangeLaunch<Geometry,K3_LAYER_THREADS>(view,b->shard_gather_list,b->shard_gather_offset,
+		b->shard_gather_context,1u,0u,windows * b->shard_gather_window_keys,b->shard_gather_send,stream) == cudaSuccess
+		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 static int32_t K3LayerMlaExpandValues(const K3LayerBuffers *b, uint32_t rows, uint32_t pass, cudaStream_t stream)

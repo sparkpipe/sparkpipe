@@ -644,7 +644,11 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 			K3_PAIR_DO((K3LayerMlaQuery<Format,Geometry>(b,rows_b,multiprocessors,sb)));
 			K3_PAIR_DO(K3LayerMlaGatherPack<Geometry>(a,rows_a,sb));
 			a->shard_gather_window = 0u;
-			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sb,0,layer,K3_COLLECTIVE_MLA_KEYS,1u));
+			if ( a->shard_gather_prefetched != 0u )
+				K3_PAIR_DO(K3PairFence(state,stream,sb));
+			else
+				K3_PAIR_DO(K3PairRound(state,lane_a,stream,sb,0,layer,K3_COLLECTIVE_MLA_KEYS,1u));
+			a->shard_gather_prefetched = 0u;
 			K3_PAIR_DO(K3LayerMlaGate(a,rows_a,multiprocessors,sa));
 			K3_PAIR_DO(K3PairFence(state,sa,stream));
 			K3_PAIR_DO(K3LayerMlaGate(b,rows_b,multiprocessors,sb));
@@ -704,6 +708,15 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 			K3_PAIR_DO(K3LayerSharedUp<Format>(b,rows_b,b->shared_mid_bf16,multiprocessors,sb));
 			K3_PAIR_DO(K3PairFence(state,sa,stream));
 			K3_PAIR_DO(K3PairFence(state,sa,sb));
+			if ( status == LM_LAUNCH_OK && offset + 1u < layer_count && K3_LAYER_KIND(layer + 1u) == LM_LAYER_LATENT &&
+				a->shard_gather != 0u && a->shard_gather_windows > 1u && a->shard_gather_history != 0u )
+			{
+				K3_PAIR_DO(K3LayerMlaPrefetchPack<Geometry>(a,rows_a,state->mla_cache[((layer + 1u) / 4u) - state->first_mla_index],1u,sb));
+				a->shard_gather_window = 0u;
+				K3_PAIR_DO(K3PairRound(state,lane_a,stream,sb,0,layer + 1u,K3_COLLECTIVE_MLA_KEYS,1u));
+				if ( status == LM_LAUNCH_OK )
+					a->shard_gather_prefetched = 1u;
+			}
 			K3_PAIR_DO(K3LayerMoeSelect(a,total,total * K3_TOP_K,sa));
 			if ( status == LM_LAUNCH_OK && state->lazy_acquire != 0 )
 				status = state->lazy_acquire(state->lazy_context,layer,(void *)a);

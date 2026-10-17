@@ -39,6 +39,7 @@ typedef struct SparkK3StepInput
 	float *output_score;
 	uint32_t gather_sequence;
 	uint32_t gather_context;
+	uint32_t gather_first;
 	uint32_t pair_rows;
 } SparkK3StepInput;
 

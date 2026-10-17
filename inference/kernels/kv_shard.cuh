@@ -223,14 +223,15 @@ void LmKvShardStoreKernel(LmKvShardView view, const uint16_t *__restrict__ rows_
 
 template<class Geometry, uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
-void LmKvShardGatherPackKernel(LmKvShardView view, const uint32_t *__restrict__ sequences, const uint32_t *__restrict__ key_offset, const uint32_t *__restrict__ key_context, uint8_t *__restrict__ keys)
+void LmKvShardGatherPackKernel(LmKvShardView view, const uint32_t *__restrict__ sequences, const uint32_t *__restrict__ key_offset, const uint32_t *__restrict__ key_context, uint32_t key_begin, uint32_t key_end, uint8_t *__restrict__ keys)
 {
 	static_assert(Geometry::kSlotBytes % 16u == 0u, "a gathered key moves as whole 16-byte words");
 	uint32_t entry = blockIdx.y, sequence = sequences[entry], context = key_context[sequence], count, local, position, index;
 	const uint8_t *slot;
 	uint4 *target, zero = {0u, 0u, 0u, 0u};
 	count = SparkKvShardGatherKeys(view.shard, context);
-	for (local = blockIdx.x; local < count; local += gridDim.x)
+	count = count < key_end ? count : key_end;
+	for (local = key_begin + blockIdx.x; local < count; local += gridDim.x)
 	{
 		position = SparkKvShardLocalPosition(view.shard, local);
 		slot = position < context ? LmKvShardSlotRequired<Geometry>(view, sequence, position, entry, LM_KV_ACCESS_READ) : 0;
@@ -371,7 +372,26 @@ static inline cudaError_t LmKvShardGatherPackLaunch(
 	if ( sequences == 0 || key_offset == 0 || key_context == 0 || keys == 0 || sequence_count == 0u || most_keys == 0u ||
 		SparkKvShardValid(view.shard,Geometry::kPageSlots) == 0u || !LmKvViewIsConfigured(view.pages) )
 		return(cudaErrorInvalidValue);
-	LM_LAUNCH((LmKvShardGatherPackKernel<Geometry, THREADS>), dim3(most_keys, sequence_count), THREADS, 0, stream, view, sequences, key_offset, key_context, keys);
+	LM_LAUNCH((LmKvShardGatherPackKernel<Geometry, THREADS>), dim3(most_keys, sequence_count), THREADS, 0, stream, view, sequences, key_offset, key_context, 0u, LM_KV_SHARD_KEYS_ALL, keys);
+	return(cudaPeekAtLastError());
+}
+
+template<class Geometry, uint32_t THREADS>
+static inline cudaError_t LmKvShardGatherPackRangeLaunch(
+	LmKvShardView view,
+	const uint32_t *sequences,
+	const uint32_t *key_offset,
+	const uint32_t *key_context,
+	uint32_t sequence_count,
+	uint32_t key_begin,
+	uint32_t key_end,
+	uint8_t *keys,
+	cudaStream_t stream)
+{
+	if ( sequences == 0 || key_offset == 0 || key_context == 0 || keys == 0 || sequence_count == 0u || key_end <= key_begin ||
+		SparkKvShardValid(view.shard,Geometry::kPageSlots) == 0u || !LmKvViewIsConfigured(view.pages) )
+		return(cudaErrorInvalidValue);
+	LM_LAUNCH((LmKvShardGatherPackKernel<Geometry, THREADS>), dim3(key_end - key_begin, sequence_count), THREADS, 0, stream, view, sequences, key_offset, key_context, key_begin, key_end, keys);
 	return(cudaPeekAtLastError());
 }
 #endif

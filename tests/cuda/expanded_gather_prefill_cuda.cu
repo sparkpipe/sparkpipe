@@ -168,6 +168,23 @@ static void ExpandCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 		EXPAND_CUDA(cudaGetLastError());
 		ExpandCheck(LmKvShardGatherPackLaunch<ExpandKv,256u>(local,plan_device,plan_device + 1u,plan_device + 2u,1u,most,
 			keys_device + (uint64_t)rank * key_stride,0) == cudaSuccess,"gather pack launch",label);
+		if ( window_keys != 0u && rank == degree - 1u )
+		{
+			uint8_t *split_device;
+			std::vector<uint8_t> whole((uint64_t)most * ExpandKv::kSlotBytes),split(whole.size());
+			EXPAND_CUDA(cudaMalloc((void **)&split_device,whole.size()));
+			EXPAND_CUDA(cudaMemset(split_device,0xa5,whole.size()));
+			ExpandCheck(LmKvShardGatherPackRangeLaunch<ExpandKv,256u>(local,plan_device,plan_device + 1u,plan_device + 2u,1u,0u,window_keys,split_device,0) == cudaSuccess &&
+				LmKvShardGatherPackRangeLaunch<ExpandKv,256u>(local,plan_device,plan_device + 1u,plan_device + 2u,1u,window_keys,most,split_device,0) == cudaSuccess,
+				"range pack launches",label);
+			ExpandCheck(LmKvShardGatherPackRangeLaunch<ExpandKv,256u>(local,plan_device,plan_device + 1u,plan_device + 2u,1u,window_keys,window_keys,split_device,0) == cudaErrorInvalidValue,
+				"an empty key range is refused",label);
+			EXPAND_CUDA(cudaDeviceSynchronize());
+			EXPAND_CUDA(cudaMemcpy(whole.data(),keys_device + (uint64_t)rank * key_stride,whole.size(),cudaMemcpyDeviceToHost));
+			EXPAND_CUDA(cudaMemcpy(split.data(),split_device,split.size(),cudaMemcpyDeviceToHost));
+			ExpandCheck(memcmp(whole.data(),split.data(),whole.size()) == 0,"a pack split at a window boundary equals the whole pack byte for byte",label);
+			cudaFree(split_device);
+		}
 	}
 	auto view_of = [&](uint32_t source,uint32_t begin,uint32_t keys,LmKvShardGatherView *view) -> int
 	{

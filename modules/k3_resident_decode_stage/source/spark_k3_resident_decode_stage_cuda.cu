@@ -704,8 +704,18 @@ __global__ static void K3DispatchGatherPlanKernel(uint32_t *plan, uint32_t capac
 	plan[2u * capacity + sequence] = context;
 }
 
+static uint32_t K3DispatchGatherHistory(SparkKvShard shard, uint32_t windows, uint32_t window_keys, uint32_t first)
+{
+	SparkKvShard last = shard;
+	uint32_t history = 0u;
+	last.rank = shard.degree - 1u;
+	while ( history + 1u < windows && SparkKvShardLocalPosition(last, (history + 1u) * window_keys - 1u) < first )
+		history++;
+	return(history);
+}
+
 static int32_t K3DispatchGatherPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint32_t rows, uint32_t sequence,
-	uint32_t context, cudaStream_t stream)
+	uint32_t context, uint32_t first, cudaStream_t stream)
 {
 	const uint32_t degree = b->kv_shard.degree;
 	const uint64_t unit = (uint64_t)K3_HIDDEN * sizeof(uint16_t);
@@ -723,6 +733,8 @@ static int32_t K3DispatchGatherPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint3
 	b->shard_gather_expanded = 0u;
 	b->shard_gather_passes = 0u;
 	b->shard_gather_value_keys = 0u;
+	b->shard_gather_history = 0u;
+	b->shard_gather_prefetched = 0u;
 	if ( d->gather_plan == 0 || sequence >= d->sequences || most == 0u )
 		return 0;
 	if ( units <= landing_units )
@@ -773,6 +785,8 @@ static int32_t K3DispatchGatherPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint3
 		return -1;
 	b->shard_gather = 1u;
 	b->shard_gather_most_keys = most;
+	b->shard_gather_history = b->shard_gather_windows > 1u && first < context
+		? K3DispatchGatherHistory(b->kv_shard, b->shard_gather_windows, b->shard_gather_window_keys, first) : 0u;
 	b->shard_gather_list = d->gather_plan;
 	b->shard_gather_offset = d->gather_plan + d->sequences;
 	b->shard_gather_context = d->gather_plan + 2u * d->sequences;
@@ -811,10 +825,12 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	b->output_score = in->output_score;
 	b->shard_gather = 0u;
 	b->shard_gather_expanded = 0u;
+	b->shard_gather_history = 0u;
+	b->shard_gather_prefetched = 0u;
 	if ( b->kv_shard.degree > 1u && rows > LM_SKINNY_ROWS_WIDE )
 	{
 		const int32_t gather = in->gather_context != 0u && sequences == 1u
-			? K3DispatchGatherPlan(d, b, rows, in->gather_sequence, in->gather_context, stream) : 0;
+			? K3DispatchGatherPlan(d, b, rows, in->gather_sequence, in->gather_context, in->gather_first, stream) : 0;
 		if ( gather < 0 )
 			return SPARK_K3_DISPATCH_ERR_CUDA;
 		if ( gather > 0 )

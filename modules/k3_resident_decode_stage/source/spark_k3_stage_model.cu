@@ -936,6 +936,14 @@ static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, vo
 	in.kda_state_index = step->recurrent_index;
 	in.gather_sequence = step->gather_sequence;
 	in.gather_context = step->gather_context;
+	in.gather_first = 0u;
+	if ( step->gather_context != 0u && step->host_positions != 0 && step->rows != 0u )
+	{
+		uint32_t row, first = step->host_positions[0];
+		for ( row = 1u; row < step->rows; row++ )
+			first = step->host_positions[row] < first ? step->host_positions[row] : first;
+		in.gather_first = first;
+	}
 	in.route_expert = state->route_expert;
 	in.route_packed_row = state->route_packed_row;
 	in.route_source_token = state->route_source_token;
