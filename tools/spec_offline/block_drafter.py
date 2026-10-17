@@ -155,6 +155,33 @@ class BlockDrafter:
         base = (y @ self.head.t()).float()
         return y, base
 
+    def draft_range(self, anchor_token, anchor_position, keys, values, begin, end):
+        block, heads, kv_heads, dim = self.block, self.heads, self.kv_heads, self.head_dim
+        group = heads // kv_heads
+        tokens = torch.full((block,), self.mask, dtype=torch.long, device=self.device)
+        tokens[0] = anchor_token
+        h = self.embed[tokens].float()
+        positions = torch.arange(anchor_position, anchor_position + block, device=self.device)
+        for index, layer in enumerate(self.layers):
+            x = rms(h, layer["input_layernorm"], self.eps).to(torch.bfloat16)
+            q = (x @ layer["self_attn.q_proj"].t()).view(block, heads, dim)
+            q = rotate(rms(q, layer["self_attn.q_norm"], self.eps), positions, self.inv, self.attention)
+            kb = (x @ layer["self_attn.k_proj"].t()).view(block, kv_heads, dim)
+            kb = rotate(rms(kb, layer["self_attn.k_norm"], self.eps), positions, self.inv, self.attention)
+            vb = (x @ layer["self_attn.v_proj"].t()).view(block, kv_heads, dim).float()
+            k = torch.cat([keys[index][begin:end].float(), kb], 0).permute(1, 2, 0)
+            v = torch.cat([values[index][begin:end].float(), vb], 0).transpose(0, 1)
+            grouped = q.view(block, kv_heads, group, dim).permute(1, 2, 0, 3).reshape(kv_heads, group * block, dim)
+            scores = torch.bmm(grouped, k) / math.sqrt(dim)
+            attended = torch.bmm(torch.softmax(scores, -1), v).view(kv_heads, group, block, dim).permute(2, 0, 1, 3).reshape(block, -1)
+            h = h + (attended.to(torch.bfloat16) @ layer["self_attn.o_proj"].t()).float()
+            x = rms(h, layer["post_attention_layernorm"], self.eps).to(torch.bfloat16)
+            gate = x @ layer["mlp.gate_proj"].t()
+            up = x @ layer["mlp.up_proj"].t()
+            h = h + ((torch.nn.functional.silu(gate.float()) * up.float()).to(torch.bfloat16) @ layer["mlp.down_proj"].t()).float()
+        y = rms(h, self.norm, self.eps).to(torch.bfloat16)
+        return y, (y @ self.head.t()).float()
+
     def sequential(self, y, base, anchor_token, slots):
         drafts, confidence = [], []
         previous = int(anchor_token)
