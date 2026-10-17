@@ -108,6 +108,7 @@ class Server:
         self.position_bytes = 2 * len(self.drafter.layers) * self.drafter.kv_heads * self.drafter.head_dim * 2
         self.max_positions = args.context_bytes // self.position_bytes
         self.too_long = set()
+        self.timing = {"requests": 0, "wait": 0.0, "compute": 0.0, "total": 0.0, "context": 0, "frames": 0, "lag": 0.0}
 
     def tap_loop(self):
         listener = socket.create_server((self.args.tap_host, self.args.tap_port), reuse_port=False)
@@ -138,7 +139,7 @@ class Server:
                     data = handle.read(rows * row_bytes)
                     if len(data) != rows * row_bytes:
                         break
-                    self.frames.put(("frame", (sequence, request, first, flags, tokens, data)))
+                    self.frames.put(("frame", (sequence, request, first, flags, tokens, data, time.monotonic())))
             except (OSError, ValueError) as error:
                 print(f"TAP-ERROR {peer}: {error}", flush=True)
             connection.close()
@@ -150,7 +151,7 @@ class Server:
             self.hello = body
             self.columns = [body["entries"].index(name) for name in self.layers]
             return
-        sequence, _request, first, _flags, tokens, data = body
+        sequence, _request, first, _flags, tokens, data, arrived = body
         if self.hello is None:
             return
         hidden, count = self.hello["hidden"], len(self.hello["entries"])
@@ -170,6 +171,8 @@ class Server:
             self.contexts[sequence] = context
         self.contexts.move_to_end(sequence)
         context.write(first, tokens, taps)
+        self.timing["frames"] += 1
+        self.timing["lag"] += time.monotonic() - arrived
         self.stats["frames"] += 1
         self.stats["rows"] += len(tokens)
         self.evict()
@@ -208,7 +211,9 @@ class Server:
     def draft(self, request):
         sequence, anchor, position, committed, depth = request
         window = self.args.window
+        waited = time.monotonic()
         self.lock.wait_for(lambda: self.covered(sequence, position), timeout=self.args.wait_ms / 1000.0)
+        self.timing["wait"] += time.monotonic() - waited
         context = self.contexts.get(sequence)
         if not self.covered(sequence, position):
             self.stats["unavailable"] += 1
@@ -231,6 +236,8 @@ class Server:
             drafts, confidence = self.drafter.sequential_device(y, base, int(anchor), min(depth, self.drafter.block))
         torch.cuda.synchronize()
         elapsed = int((time.monotonic() - started) * 1e6)
+        self.timing["compute"] += elapsed / 1e6
+        self.timing["context"] += position
         self.stats["drafted"] += 1
         self.stats["draft_us"] += elapsed
         return drafts, confidence, elapsed
@@ -269,6 +276,14 @@ class Server:
             footer = [0] * 8
             footer[1] = draft_us
             elapsed = int((time.monotonic() - started) * 1e6)
+            self.timing["requests"] += 1
+            self.timing["total"] += elapsed / 1e6
+            if self.timing["requests"] >= 32:
+                t = self.timing
+                print(f"DRAFTD-TIMING requests={t['requests']} wait_ms={t['wait'] * 1e3 / t['requests']:.2f} compute_ms={t['compute'] * 1e3 / t['requests']:.2f} "
+                      f"total_ms={t['total'] * 1e3 / t['requests']:.2f} context={t['context'] // t['requests']} frames={t['frames']} "
+                      f"frame_lag_ms={t['lag'] * 1e3 / max(1, t['frames']):.2f}", flush=True)
+                self.timing = {"requests": 0, "wait": 0.0, "compute": 0.0, "total": 0.0, "context": 0, "frames": 0, "lag": 0.0}
             reply = DFT3_RESPONSE.pack(DFT3_MAGIC, status, len(nodes), sequence, generation) + b"".join(DFT3_NODE.pack(*n) for n in nodes) + \
                 DFT3_FOOTER.pack(*footer, 0, 0, elapsed, 0)
             connection.sendall(reply)

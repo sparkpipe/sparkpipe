@@ -49,6 +49,7 @@
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_FRAMES 6.0f
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_FLOOR 0.97f
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS 64u
+#define SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_MAX_TOKENS 1024u
 
 _Static_assert(SPARK_STATUS_EVICT_DENIED < SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT,"every status must have its own rejection counter");
 
@@ -112,6 +113,7 @@ typedef struct SparkModelBatchRequestState
 	float model_rate_frames;
 	float model_wait_ns;
 	uint32_t model_backoff_until;
+	uint32_t model_backoff_tokens;
 	SparkSpeculationLookupIndex lookup;
 	SparkRowSampling sampling;
 	SparkModelBatchRequestHandle handle;
@@ -1246,10 +1248,18 @@ static void SparkModelBatchObserveModelRate(
 	request->model_rate_tokens = request->model_rate_tokens * SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_DECAY + (float)kept;
 	request->model_rate_ns = request->model_rate_ns * SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_DECAY + (float)service_ns + request->model_wait_ns;
 	request->model_rate_frames = request->model_rate_frames * SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_DECAY + 1.0f;
-	if ( request->model_rate_frames < SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_FRAMES ||
-		request->model_rate_tokens * token_ns >= SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_FLOOR * request->model_rate_ns )
+	if ( request->model_rate_frames < SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_FRAMES )
 		return;
-	request->model_backoff_until = request->generated_token_count + SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS;
+	if ( request->model_rate_tokens * token_ns >= SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_FLOOR * request->model_rate_ns )
+	{
+		request->model_backoff_tokens = SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS;
+		return;
+	}
+	if ( request->model_backoff_tokens < SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS )
+		request->model_backoff_tokens = SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS;
+	request->model_backoff_until = request->generated_token_count + request->model_backoff_tokens;
+	if ( request->model_backoff_tokens < SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_MAX_TOKENS )
+		request->model_backoff_tokens *= 2u;
 	request->model_rate_tokens *= 0.5f;
 	request->model_rate_ns *= 0.5f;
 	request->model_rate_frames *= 0.5f;
@@ -2036,6 +2046,7 @@ SparkStatus SparkModelBatchEngineSubmit(
 	state->model_rate_frames = 0.0f;
 	state->model_wait_ns = 0.0f;
 	state->model_backoff_until = 0u;
+	state->model_backoff_tokens = SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS;
 	memset(state->draft_hazards,0,sizeof(state->draft_hazards));
 	if ( engine->verify_capable != 0u )
 	{
