@@ -98,6 +98,7 @@ class BlockDrafter:
         self.layer_ids = dflash.get("target_layer_ids") or c.get("aux_hidden_state_layer_ids")
         self.mask = dflash.get("mask_token_id", c.get("mask_token_id"))
         self.fc = weights.load("fc.weight", device)
+        self.fc32 = self.fc.float().t().contiguous()
         self.hidden_norm = weights.load("hidden_norm.weight", device)
         self.norm = weights.load("norm.weight", device)
         self.layers = []
@@ -117,7 +118,7 @@ class BlockDrafter:
         self.inv, self.attention = yarn_frequencies(c, device)
 
     def context(self, taps, positions):
-        features = rms(taps.float() @ self.fc.float().t(), self.hidden_norm, self.eps).to(torch.bfloat16)
+        features = rms(taps.float() @ self.fc32, self.hidden_norm, self.eps).to(torch.bfloat16)
         keys, values = [], []
         for layer in self.layers:
             k = (features @ layer["self_attn.k_proj"].t()).view(-1, self.kv_heads, self.head_dim)
@@ -182,33 +183,46 @@ class BlockDrafter:
         y = rms(h, self.norm, self.eps).to(torch.bfloat16)
         return y, (y @ self.head.t()).float()
 
-    def draft_cached(self, anchor_token, anchor_position, keys, values, begin, end):
+    def pre_attention(self, layer, h, positions):
         block, heads, kv_heads, dim = self.block, self.heads, self.kv_heads, self.head_dim
+        x = rms(h, layer["input_layernorm"], self.eps).to(torch.bfloat16)
+        q = (x @ layer["self_attn.q_proj"].t()).view(block, heads, dim)
+        q = rotate(rms(q, layer["self_attn.q_norm"], self.eps), positions, self.inv, self.attention).to(torch.bfloat16)
+        kb = (x @ layer["self_attn.k_proj"].t()).view(block, kv_heads, dim)
+        kb = rotate(rms(kb, layer["self_attn.k_norm"], self.eps), positions, self.inv, self.attention).to(torch.bfloat16)
+        vb = (x @ layer["self_attn.v_proj"].t()).view(block, kv_heads, dim)
+        return q.transpose(0, 1), kb.transpose(0, 1), vb.transpose(0, 1)
+
+    def post_attention(self, layer, h, attended):
+        h = h + (attended @ layer["self_attn.o_proj"].t()).float()
+        x = rms(h, layer["post_attention_layernorm"], self.eps).to(torch.bfloat16)
+        gate = x @ layer["mlp.gate_proj"].t()
+        up = x @ layer["mlp.up_proj"].t()
+        return h + ((torch.nn.functional.silu(gate.float()) * up.float()).to(torch.bfloat16) @ layer["mlp.down_proj"].t()).float()
+
+    def attend(self, index, q, kb, vb, keys, values, begin, end, restore):
+        block = self.block
+        if restore:
+            saved_k = keys[index][:, end:end + block].clone()
+            saved_v = values[index][:, end:end + block].clone()
+        keys[index][:, end:end + block] = kb
+        values[index][:, end:end + block] = vb
+        attended = torch.nn.functional.scaled_dot_product_attention(q[None], keys[index][None, :, begin:end + block],
+                                                                    values[index][None, :, begin:end + block], enable_gqa=True)
+        if restore:
+            keys[index][:, end:end + block] = saved_k
+            values[index][:, end:end + block] = saved_v
+        return attended[0].transpose(0, 1).reshape(block, -1)
+
+    def draft_cached(self, anchor_token, anchor_position, keys, values, begin, end, restore=True):
+        block = self.block
         tokens = torch.full((block,), self.mask, dtype=torch.long, device=self.device)
         tokens[0] = anchor_token
         h = self.embed[tokens].float()
         positions = torch.arange(anchor_position, anchor_position + block, device=self.device)
         for index, layer in enumerate(self.layers):
-            x = rms(h, layer["input_layernorm"], self.eps).to(torch.bfloat16)
-            q = (x @ layer["self_attn.q_proj"].t()).view(block, heads, dim)
-            q = rotate(rms(q, layer["self_attn.q_norm"], self.eps), positions, self.inv, self.attention).to(torch.bfloat16)
-            kb = (x @ layer["self_attn.k_proj"].t()).view(block, kv_heads, dim)
-            kb = rotate(rms(kb, layer["self_attn.k_norm"], self.eps), positions, self.inv, self.attention).to(torch.bfloat16)
-            vb = (x @ layer["self_attn.v_proj"].t()).view(block, kv_heads, dim)
-            saved_k = keys[index][:, end:end + block].clone()
-            saved_v = values[index][:, end:end + block].clone()
-            keys[index][:, end:end + block] = kb.transpose(0, 1)
-            values[index][:, end:end + block] = vb.transpose(0, 1)
-            attended = torch.nn.functional.scaled_dot_product_attention(q.transpose(0, 1)[None], keys[index][None, :, begin:end + block],
-                                                                        values[index][None, :, begin:end + block], enable_gqa=True)
-            keys[index][:, end:end + block] = saved_k
-            values[index][:, end:end + block] = saved_v
-            attended = attended[0].transpose(0, 1).reshape(block, -1)
-            h = h + (attended @ layer["self_attn.o_proj"].t()).float()
-            x = rms(h, layer["post_attention_layernorm"], self.eps).to(torch.bfloat16)
-            gate = x @ layer["mlp.gate_proj"].t()
-            up = x @ layer["mlp.up_proj"].t()
-            h = h + ((torch.nn.functional.silu(gate.float()) * up.float()).to(torch.bfloat16) @ layer["mlp.down_proj"].t()).float()
+            q, kb, vb = self.pre_attention(layer, h, positions)
+            h = self.post_attention(layer, h, self.attend(index, q, kb, vb, keys, values, begin, end, restore))
         y = rms(h, self.norm, self.eps).to(torch.bfloat16)
         return y, (y @ self.head.t()).float()
 
@@ -236,23 +250,87 @@ class BlockDrafter:
             previous = token
         return drafts, confidence
 
-    def sequential_device(self, y, base, anchor_token, count):
+    def walk(self, y, base, previous, count):
         markov_w2, confidence_head = self.heads32()
-        previous = torch.tensor(int(anchor_token), device=self.device)
         tokens, scores = [], []
         for slot in range(count):
             logits = base[slot]
             latent = None
             if self.markov_w1 is not None:
-                latent = self.markov_w1[previous].float()
+                latent = torch.index_select(self.markov_w1, 0, previous.view(1))[0].float()
                 logits = logits + (markov_w2 @ latent)
             token = torch.argmax(logits)
             if confidence_head is not None:
                 feature = torch.cat([y[slot].float(), latent]) if latent is not None else y[slot].float()
-                scores.append(torch.sigmoid(confidence_head[0] @ feature + confidence_head[1]))
-            tokens.append(token)
+                scores.append(torch.sigmoid(confidence_head[0] @ feature + confidence_head[1]).reshape(1))
+            tokens.append(token.reshape(1))
             previous = token
-        return torch.stack(tokens).tolist(), (torch.stack(scores).reshape(-1).tolist() if scores else [])
+        return torch.cat(tokens), (torch.cat(scores) if scores else None)
+
+    def sequential_device(self, y, base, anchor_token, count):
+        tokens, scores = self.walk(y, base, torch.tensor(int(anchor_token), device=self.device), count)
+        return tokens.tolist(), (scores.tolist() if scores is not None else [])
+
+
+class DraftGraph:
+    def __init__(self, drafter):
+        d = self.drafter = drafter
+        self.host = torch.zeros(2, dtype=torch.long, pin_memory=True)
+        self.inputs = torch.zeros(2, dtype=torch.long, device=d.device)
+        self.slots = torch.arange(d.block, device=d.device)
+        self.attended = [torch.zeros((d.block, d.heads * d.head_dim), dtype=torch.bfloat16, device=d.device) for _ in d.layers]
+        self.pool = torch.cuda.graph_pool_handle()
+        self.graphs = []
+        self.staged = []
+        self.outputs = None
+        for capturing in (False, True):
+            self.build(capturing)
+
+    def segment(self, index):
+        d = self.drafter
+        if index == 0:
+            tokens = torch.where(self.slots == 0, self.inputs[0], d.mask)
+            self.positions = self.inputs[1] + self.slots
+            h = d.embed[tokens].float()
+        else:
+            h = d.post_attention(d.layers[index - 1], self.hidden, self.attended[index - 1])
+        self.hidden = h
+        if index < len(d.layers):
+            return d.pre_attention(d.layers[index], h, self.positions)
+        y = rms(h, d.norm, d.eps).to(torch.bfloat16)
+        return d.walk(y, (y @ d.head.t()).float(), self.inputs[0], d.block)
+
+    def build(self, capturing):
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        graphs, staged = [], []
+        with torch.cuda.stream(stream), torch.no_grad():
+            for index in range(len(self.drafter.layers) + 1):
+                if capturing:
+                    graph = torch.cuda.CUDAGraph()
+                    with torch.cuda.graph(graph, pool=self.pool, stream=stream):
+                        staged.append(self.segment(index))
+                    graphs.append(graph)
+                else:
+                    staged.append(self.segment(index))
+        torch.cuda.current_stream().wait_stream(stream)
+        torch.cuda.synchronize()
+        if capturing:
+            self.graphs, self.staged = graphs, staged
+
+    def draft(self, anchor_token, anchor_position, keys, values, begin, end, count, restore):
+        d = self.drafter
+        self.host[0], self.host[1] = int(anchor_token), int(anchor_position)
+        self.inputs.copy_(self.host, non_blocking=True)
+        with torch.no_grad():
+            for index in range(len(d.layers)):
+                self.graphs[index].replay()
+                q, kb, vb = self.staged[index]
+                self.attended[index].copy_(d.attend(index, q, kb, vb, keys, values, begin, end, restore))
+            self.graphs[-1].replay()
+            tokens, scores = self.staged[-1]
+            tokens = tokens[:count].tolist()
+        return tokens, (scores[:count].tolist() if scores is not None else [])
 
 
 def requests(paths, entry_names):

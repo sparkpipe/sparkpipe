@@ -26,8 +26,8 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from spec_offline.block_drafter import BlockDrafter  # noqa: E402
-from spec_offline.tapstream import FRAME, MAGIC, read_hello  # noqa: E402
+from spec_offline.block_drafter import BlockDrafter, DraftGraph
+from spec_offline.tapstream import FRAME, MAGIC, read_hello
 
 DFT3_MAGIC = b"DFT3"
 DFT3_VERSION = 1
@@ -99,16 +99,16 @@ class Server:
         self.args = args
         self.drafter = BlockDrafter(args.drafter, args.target_shard, {"embed": args.embed, "head": args.head, "norm": args.norm}, "cuda")
         self.layers = [f"o{layer}" for layer in self.drafter.layer_ids]
+        self.graph = DraftGraph(self.drafter)
         self.columns = None
         self.hello = None
-        self.frames = queue.Queue()
-        self.lock = threading.Condition()
+        self.work = queue.Queue()
         self.contexts = OrderedDict()
         self.stats = {"frames": 0, "rows": 0, "requests": 0, "drafted": 0, "unavailable": 0, "donor_fills": 0, "gaps": 0, "too_long": 0, "draft_us": 0}
         self.position_bytes = 2 * len(self.drafter.layers) * self.drafter.kv_heads * self.drafter.head_dim * 2
         self.max_positions = args.context_bytes // self.position_bytes
         self.too_long = set()
-        self.timing = {"requests": 0, "wait": 0.0, "compute": 0.0, "total": 0.0, "context": 0, "frames": 0, "lag": 0.0}
+        self.timing = {"requests": 0, "queue": 0.0, "wait": 0.0, "compute": 0.0, "wake": 0.0, "total": 0.0, "context": 0, "frames": 0, "lag": 0.0, "apply": 0.0}
 
     def tap_loop(self):
         listener = socket.create_server((self.args.tap_host, self.args.tap_port), reuse_port=False)
@@ -123,7 +123,7 @@ class Server:
                     print(f"TAP-REFUSED {peer}: stream lacks {missing}; it has {hello['entries']}", flush=True)
                     connection.close()
                     continue
-                self.frames.put(("hello", hello))
+                self.work.put(("hello", hello))
                 print(f"TAP-CONNECTED {peer} model {hello['model']} entries {hello['entries']} hidden {hello['hidden']}", flush=True)
                 row_bytes = len(hello["entries"]) * hello["hidden"] * 2
                 while True:
@@ -139,7 +139,7 @@ class Server:
                     data = handle.read(rows * row_bytes)
                     if len(data) != rows * row_bytes:
                         break
-                    self.frames.put(("frame", (sequence, request, first, flags, tokens, data, time.monotonic())))
+                    self.work.put(("frame", (sequence, request, first, flags, tokens, data, time.monotonic())))
             except (OSError, ValueError) as error:
                 print(f"TAP-ERROR {peer}: {error}", flush=True)
             connection.close()
@@ -154,9 +154,10 @@ class Server:
         sequence, _request, first, _flags, tokens, data, arrived = body
         if self.hello is None:
             return
+        applying = time.monotonic()
         hidden, count = self.hello["hidden"], len(self.hello["entries"])
         rows = torch.from_numpy(np.frombuffer(data, dtype=np.uint16).reshape(len(tokens), count, hidden).copy()).view(torch.bfloat16)
-        taps = rows[:, self.columns].to(self.drafter.device).reshape(len(tokens), -1)
+        taps = rows.to(self.drafter.device)[:, self.columns].reshape(len(tokens), -1)
         if first + len(tokens) + self.drafter.block > self.max_positions:
             if sequence not in self.too_long:
                 print(f"CONTEXT-TOO-LONG sequence {sequence} needs {first + len(tokens)} positions, the budget holds {self.max_positions}", flush=True)
@@ -171,28 +172,70 @@ class Server:
             self.contexts[sequence] = context
         self.contexts.move_to_end(sequence)
         context.write(first, tokens, taps)
+        torch.cuda.synchronize()
         self.timing["frames"] += 1
         self.timing["lag"] += time.monotonic() - arrived
+        self.timing["apply"] += time.monotonic() - applying
         self.stats["frames"] += 1
         self.stats["rows"] += len(tokens)
         self.evict()
 
     def evict(self):
         budget = self.args.context_bytes
+        evicted = False
         while len(self.contexts) > 1 and sum(c.bytes() for c in self.contexts.values()) > budget:
             sequence, _ = self.contexts.popitem(last=False)
             print(f"CONTEXT-EVICTED sequence {sequence}", flush=True)
-        torch.cuda.empty_cache()
+            evicted = True
+        if evicted:
+            torch.cuda.empty_cache()
 
-    def frame_loop(self):
+    def gpu_loop(self):
+        pending = None
         while True:
-            item = self.frames.get()
-            with self.lock:
+            item = None
+            try:
+                if pending is None:
+                    item = self.work.get()
+                else:
+                    item = self.work.get(timeout=max(0.0, pending[2] - time.monotonic()))
+            except queue.Empty:
+                item = None
+            if item is not None and item[0] in ("hello", "frame"):
                 try:
                     self.apply(item)
                 except RuntimeError as error:
                     print(f"TAP-APPLY-ERROR: {error}", flush=True)
-                self.lock.notify_all()
+            elif item is not None and item[0] == "draft":
+                if pending is not None:
+                    self.finish(pending, None, False)
+                request, slot = item[1]
+                self.timing["queue"] += time.monotonic() - slot["enqueued"]
+                pending = (request, slot, time.monotonic() + self.args.wait_ms / 1000.0, time.monotonic())
+            if pending is None:
+                continue
+            request, slot, deadline, queued = pending
+            if self.covered(request[0], request[2]):
+                self.timing["wait"] += time.monotonic() - queued
+                try:
+                    self.finish(pending, self.draft(request), False)
+                except RuntimeError as error:
+                    print(f"DRAFT-ERROR sequence {request[0]} position {request[2]}: {error}", flush=True)
+                    self.finish(pending, None, True)
+                pending = None
+            elif time.monotonic() >= deadline:
+                self.timing["wait"] += time.monotonic() - queued
+                self.stats["unavailable"] += 1
+                self.finish(pending, None, False)
+                pending = None
+
+    @staticmethod
+    def finish(pending, result, failed):
+        slot = pending[1]
+        slot["result"] = result
+        slot["failed"] = failed
+        slot["done"] = time.monotonic()
+        slot["event"].set()
 
     def fill_prefix(self, context, sequence, committed, first):
         for other_sequence, other in reversed(self.contexts.items()):
@@ -211,13 +254,7 @@ class Server:
     def draft(self, request):
         sequence, anchor, position, committed, depth = request
         window = self.args.window
-        waited = time.monotonic()
-        self.lock.wait_for(lambda: self.covered(sequence, position), timeout=self.args.wait_ms / 1000.0)
-        self.timing["wait"] += time.monotonic() - waited
         context = self.contexts.get(sequence)
-        if not self.covered(sequence, position):
-            self.stats["unavailable"] += 1
-            return None
         begin = 0 if window == 0 else max(0, position - window)
         missing = np.flatnonzero(~context.filled[begin:position])
         if len(missing) != 0:
@@ -229,12 +266,11 @@ class Server:
             self.stats["unavailable"] += 1
             print(f"TOKEN-MISMATCH sequence {sequence} position {position}", flush=True)
             return None
-        context.grow(position + self.drafter.block)
+        block = self.drafter.block
+        context.grow(position + block)
+        restore = bool(context.filled[position:position + block].any())
         started = time.monotonic()
-        with torch.no_grad():
-            y, base = self.drafter.draft_cached(int(anchor), position, context.keys, context.values, begin, position)
-            drafts, confidence = self.drafter.sequential_device(y, base, int(anchor), min(depth, self.drafter.block))
-        torch.cuda.synchronize()
+        drafts, confidence = self.graph.draft(int(anchor), position, context.keys, context.values, begin, position, min(depth, block), restore)
         elapsed = int((time.monotonic() - started) * 1e6)
         self.timing["compute"] += elapsed / 1e6
         self.timing["context"] += position
@@ -260,12 +296,13 @@ class Server:
                 status = STATUS_BAD_REQUEST
             else:
                 self.stats["requests"] += 1
-                try:
-                    with self.lock:
-                        result = self.draft((sequence, anchor, position, committed, min(depth, max_depth)))
-                except RuntimeError as error:
-                    print(f"DRAFT-ERROR sequence {sequence} position {position}: {error}", flush=True)
-                    result, status = None, STATUS_INTERNAL
+                slot = {"event": threading.Event(), "result": None, "failed": False, "enqueued": time.monotonic(), "done": None}
+                self.work.put(("draft", ((sequence, anchor, position, committed, min(depth, max_depth)), slot)))
+                if not slot["event"].wait(self.args.wait_ms / 1000.0 + 5.0) or slot["failed"]:
+                    status = STATUS_INTERNAL
+                if slot["done"] is not None:
+                    self.timing["wake"] += time.monotonic() - slot["done"]
+                result = slot["result"]
                 if result is None and status == STATUS_OK:
                     status = STATUS_UNAVAILABLE
                 elif result is not None:
@@ -280,10 +317,11 @@ class Server:
             self.timing["total"] += elapsed / 1e6
             if self.timing["requests"] >= 32:
                 t = self.timing
-                print(f"DRAFTD-TIMING requests={t['requests']} wait_ms={t['wait'] * 1e3 / t['requests']:.2f} compute_ms={t['compute'] * 1e3 / t['requests']:.2f} "
-                      f"total_ms={t['total'] * 1e3 / t['requests']:.2f} context={t['context'] // t['requests']} frames={t['frames']} "
-                      f"frame_lag_ms={t['lag'] * 1e3 / max(1, t['frames']):.2f}", flush=True)
-                self.timing = {"requests": 0, "wait": 0.0, "compute": 0.0, "total": 0.0, "context": 0, "frames": 0, "lag": 0.0}
+                per = 1e3 / t['requests']
+                print(f"DRAFTD-TIMING requests={t['requests']} queue_ms={t['queue'] * per:.2f} wait_ms={t['wait'] * per:.2f} compute_ms={t['compute'] * per:.2f} "
+                      f"wake_ms={t['wake'] * per:.2f} total_ms={t['total'] * per:.2f} context={t['context'] // t['requests']} frames={t['frames']} "
+                      f"apply_ms={t['apply'] * 1e3 / max(1, t['frames']):.2f} frame_lag_ms={t['lag'] * 1e3 / max(1, t['frames']):.2f}", flush=True)
+                self.timing = {"requests": 0, "queue": 0.0, "wait": 0.0, "compute": 0.0, "wake": 0.0, "total": 0.0, "context": 0, "frames": 0, "lag": 0.0, "apply": 0.0}
             reply = DFT3_RESPONSE.pack(DFT3_MAGIC, status, len(nodes), sequence, generation) + b"".join(DFT3_NODE.pack(*n) for n in nodes) + \
                 DFT3_FOOTER.pack(*footer, 0, 0, elapsed, 0)
             connection.sendall(reply)
@@ -302,8 +340,10 @@ class Server:
         return b"".join(chunks)
 
     def run(self):
+        sys.setswitchinterval(self.args.switch_interval)
+        torch.set_num_threads(1)
         threading.Thread(target=self.tap_loop, daemon=True).start()
-        threading.Thread(target=self.frame_loop, daemon=True).start()
+        threading.Thread(target=self.gpu_loop, daemon=True).start()
         listener = socket.create_server((self.args.draft_host, self.args.draft_port))
         print(f"DRAFTD-READY taps {self.args.tap_host}:{self.args.tap_port} drafts {self.args.draft_host}:{self.args.draft_port} "
               f"layers {self.layers} window {self.args.window}", flush=True)
@@ -332,6 +372,7 @@ def main():
     parser.add_argument("--window", type=int, default=0, help="context positions the draft attends to; 0 = all")
     parser.add_argument("--wait-ms", type=float, default=30.0, help="how long a request waits for the taps it needs")
     parser.add_argument("--context-bytes", type=int, default=12 << 30)
+    parser.add_argument("--switch-interval", type=float, default=0.0005, help="interpreter thread switch interval, seconds")
     Server(parser.parse_args()).run()
 
 
