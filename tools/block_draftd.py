@@ -13,6 +13,7 @@ target) takes the missing context from another sequence that shares those
 tokens. Without a donor the draft attends only to the positions it has.
 """
 import argparse
+import io
 import queue
 import socket
 import struct
@@ -27,7 +28,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spec_offline.block_drafter import BlockDrafter, DraftGraph
-from spec_offline.tapstream import FRAME, MAGIC, read_hello
+from spec_offline.tapstream import FRAME, HELLO, MAGIC, read_hello
 
 DFT3_MAGIC = b"DFT3"
 DFT3_VERSION = 1
@@ -116,14 +117,17 @@ class Server:
             connection, peer = listener.accept()
             connection.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 64 << 20)
             handle = connection.makefile("rb", buffering=16 << 20)
+            record = None
             try:
-                hello = read_hello(handle)
+                hello_raw = handle.read(HELLO.size)
+                hello = read_hello(io.BytesIO(hello_raw))
                 missing = [name for name in self.layers if name not in hello["entries"]]
                 if missing:
                     print(f"TAP-REFUSED {peer}: stream lacks {missing}; it has {hello['entries']}", flush=True)
                     connection.close()
                     continue
                 self.work.put(("hello", hello))
+                record = self.open_record(peer, hello_raw)
                 print(f"TAP-CONNECTED {peer} model {hello['model']} entries {hello['entries']} hidden {hello['hidden']}", flush=True)
                 row_bytes = len(hello["entries"]) * hello["hidden"] * 2
                 while True:
@@ -135,15 +139,31 @@ class Server:
                     if magic != MAGIC or kind != 2 or fingerprint != hello["fingerprint"] or payload != rows * (4 + row_bytes):
                         print(f"TAP-BAD-FRAME from {peer}: magic {magic:#x} kind {kind} rows {rows} payload {payload}", flush=True)
                         break
-                    tokens = np.frombuffer(handle.read(4 * rows), dtype=np.uint32).copy()
+                    token_raw = handle.read(4 * rows)
+                    tokens = np.frombuffer(token_raw, dtype=np.uint32).copy()
                     data = handle.read(rows * row_bytes)
                     if len(data) != rows * row_bytes:
                         break
+                    if record is not None:
+                        record.write(raw)
+                        record.write(token_raw)
+                        record.write(data)
                     self.work.put(("frame", (sequence, request, first, flags, tokens, data, time.monotonic())))
             except (OSError, ValueError) as error:
                 print(f"TAP-ERROR {peer}: {error}", flush=True)
+            if record is not None:
+                record.close()
             connection.close()
             print(f"TAP-DISCONNECTED {peer}", flush=True)
+
+    def open_record(self, peer, hello_raw):
+        if not self.args.record_dir:
+            return None
+        path = Path(self.args.record_dir) / time.strftime("taps-%Y%m%dT%H%M%SZ.spt2", time.gmtime())
+        handle = open(path, "wb", buffering=16 << 20)
+        handle.write(hello_raw)
+        print(f"TAP-RECORDING {peer} to {path}", flush=True)
+        return handle
 
     def apply(self, item):
         kind, body = item
@@ -373,6 +393,7 @@ def main():
     parser.add_argument("--wait-ms", type=float, default=30.0, help="how long a request waits for the taps it needs")
     parser.add_argument("--context-bytes", type=int, default=12 << 30)
     parser.add_argument("--switch-interval", type=float, default=0.0005, help="interpreter thread switch interval, seconds")
+    parser.add_argument("--record-dir", default="", help="directory that receives a copy of every tap stream, one file per connection")
     Server(parser.parse_args()).run()
 
 
