@@ -2,7 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SPARK_TP_MESH_ROUND_CONTROL_WORDS 39u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORDS 40u
 #define SPARK_TP_MESH_ROUND_CONTROL_BYTES \
     (SPARK_TP_MESH_ROUND_CONTROL_WORDS * sizeof(uint64_t))
 
@@ -31,6 +31,8 @@
 #define SPARK_TP_MESH_ROUND_CONTROL_WORD_FIRST_ARRIVAL_NS 22u
 #define SPARK_TP_MESH_ROUND_CONTROL_WORD_PEER_ARRIVAL_NS 23u
 #define SPARK_TP_MESH_ROUND_CONTROL_PEERS 16u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORD_ROUND_SEQ_PRIOR \
+    (SPARK_TP_MESH_ROUND_CONTROL_WORD_PEER_ARRIVAL_NS + SPARK_TP_MESH_ROUND_CONTROL_PEERS)
 
 typedef struct SparkTpMeshRoundControl
 {
@@ -58,6 +60,7 @@ typedef struct SparkTpMeshRoundControl
     uint64_t cancel_cell;
     uint64_t first_arrival_ns;
     uint64_t peer_arrival_ns[SPARK_TP_MESH_ROUND_CONTROL_PEERS];
+    uint64_t round_seq_prior;
 } SparkTpMeshRoundControl;
 
 #define SPARK_TP_MESH_ROUND_LOOP_DECISION_GO 0u
@@ -96,6 +99,24 @@ __host__ __device__
 static inline uint64_t SparkTpMeshDirectChunks(uint64_t elements,uint32_t degree,uint32_t operation,uint64_t slot_bytes)
 {
     return (SparkTpMeshDirectLocalElements(elements,degree,operation) - 1u) / SparkTpMeshDirectCapacity(slot_bytes,operation) + 1u;
+}
+
+#if defined(__CUDACC__)
+__host__ __device__
+#endif
+static inline uint32_t SparkTpMeshDirectPipelined(uint64_t elements,uint32_t degree,uint32_t operation,uint64_t slot_bytes)
+{
+    return operation == 0u && degree != 0u &&
+        SparkTpMeshDirectLocalElements(elements,degree,operation) > SparkTpMeshDirectCapacity(slot_bytes,operation) ? 1u : 0u;
+}
+
+#if defined(__CUDACC__)
+__host__ __device__
+#endif
+static inline uint64_t SparkTpMeshPipelineChunks(uint64_t local_elements,uint64_t half_payload_bytes)
+{
+    uint64_t chunk = half_payload_bytes / 2u;
+    return chunk == 0u || local_elements == 0u ? 0u : (local_elements - 1u) / chunk + 1u;
 }
 
 #define SPARK_TP_MESH_RSAG_MIN_ELEMENTS 49152u

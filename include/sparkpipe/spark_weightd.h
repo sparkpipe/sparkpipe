@@ -174,12 +174,37 @@ typedef struct SparkWeightdMeshWaitRequest
 
 #define SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES 1u
 #define SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES 2u
+#define SPARK_WEIGHTD_MESH_CAPABILITY_HALF_SLOTS 4u
 #define SPARK_WEIGHTD_MESH_CAPABILITIES \
-    (SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES | SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES)
+    (SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES | SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES | \
+     SPARK_WEIGHTD_MESH_CAPABILITY_HALF_SLOTS)
 #define SPARK_WEIGHTD_MESH_ROUTE_FULL 0u
 #define SPARK_WEIGHTD_MESH_ROUTE_SCATTER 1u
 #define SPARK_WEIGHTD_MESH_ROUTE_GATHER 2u
 #define SPARK_WEIGHTD_MESH_ROUTE_PEER 3u
+#define SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE 0u
+#define SPARK_WEIGHTD_MESH_ROUTE_HALF_LOWER 1u
+#define SPARK_WEIGHTD_MESH_ROUTE_HALF_UPPER 2u
+#define SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES \
+    ((SPARK_WEIGHTD_MESH_SLOT_BYTES - SPARK_WEIGHTD_MESH_SLOT_TRAILER_BYTES) / 2u)
+#define SPARK_WEIGHTD_MESH_HALF_OFFSET(half) \
+    ((half) == SPARK_WEIGHTD_MESH_ROUTE_HALF_UPPER ? (uint64_t)SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES : UINT64_C(0))
+#define SPARK_WEIGHTD_MESH_TAIL_OFFSET(half) \
+    ((half) == SPARK_WEIGHTD_MESH_ROUTE_HALF_LOWER ? (uint64_t)SPARK_WEIGHTD_MESH_SLOT_BYTES - 16u : \
+     (uint64_t)SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u)
+#define SPARK_WEIGHTD_MESH_SEQUENCE_HALF(sequence) \
+    (SPARK_WEIGHTD_MESH_ROUTE_HALF_LOWER + (uint32_t)((((sequence) - 1u) >> 1u) & 1u))
+#define SPARK_WEIGHTD_MESH_DOORBELL_ALT_OFFSET \
+    (SPARK_WEIGHTD_MESH_WAIT_OFFSET + \
+     (uint64_t)SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS * SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES)
+#define SPARK_WEIGHTD_MESH_DOORBELL_ALT_ENTRY(band,rank) \
+    (SPARK_WEIGHTD_MESH_DOORBELL_ALT_OFFSET + \
+     ((uint64_t)(band) * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + (rank)) * \
+        SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES)
+#define SPARK_WEIGHTD_MESH_DOORBELL_ALT_WORDS \
+    ((SPARK_WEIGHTD_MESH_DOORBELL_ALT_OFFSET - SPARK_WEIGHTD_MESH_DOORBELL_OFFSET) / 8u)
+#define SPARK_WEIGHTD_MESH_DOORBELL_CELL_WORDS(sequence) \
+    (((sequence) & 1u) != 0u ? SPARK_WEIGHTD_MESH_DOORBELL_ALT_WORDS : UINT64_C(0))
 
 #define SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES \
     ((uint64_t)SPARK_WEIGHTD_MESH_SLOT_ROWS * SPARK_WEIGHTD_MESH_ROW_BYTES_MAX)
@@ -196,7 +221,8 @@ typedef struct SparkWeightdMeshRouteFields
     uint64_t peer_mask:32;
     uint64_t slice_bytes:24;
     uint64_t mode:2;
-    uint64_t reserved:6;
+    uint64_t half:2;
+    uint64_t reserved:4;
 } SparkWeightdMeshRouteFields;
 
 typedef union SparkWeightdMeshRoute
@@ -207,17 +233,29 @@ typedef union SparkWeightdMeshRoute
 
 static inline uint32_t SparkWeightdMeshRouteValid(SparkWeightdMeshRoute route)
 {
+    if ( route.fields.half != SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE )
+        return route.fields.reserved == 0u && route.fields.half <= SPARK_WEIGHTD_MESH_ROUTE_HALF_UPPER &&
+            route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_FULL && route.fields.slice_bytes == 0u;
     return route.fields.reserved == 0u && (route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_FULL ? route.fields.slice_bytes == 0u : route.fields.slice_bytes != 0u && (route.fields.slice_bytes & 7u) == 0u && (route.fields.mode != SPARK_WEIGHTD_MESH_ROUTE_PEER || route.fields.slice_bytes <= SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES));
 }
 
 static inline uint32_t SparkWeightdMeshRouteFits(SparkWeightdMeshRoute route,uint64_t bytes)
 {
-    return SparkWeightdMeshRouteValid(route) != 0u && bytes != 0u && (route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER ? bytes == route.fields.slice_bytes : bytes <= SPARK_WEIGHTD_MESH_SLOT_BYTES - 16u);
+    if ( SparkWeightdMeshRouteValid(route) == 0u || bytes == 0u )
+        return 0u;
+    if ( route.fields.half != SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE )
+        return bytes <= SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES ? 1u : 0u;
+    return route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER ? bytes == route.fields.slice_bytes : bytes <= SPARK_WEIGHTD_MESH_SLOT_BYTES - 16u;
 }
 
 static inline uint64_t SparkWeightdMeshRouteSpan(SparkWeightdMeshRoute route,uint32_t peer,uint32_t local,uint64_t bytes,uint64_t *length)
 {
     uint64_t begin;
+    if ( route.fields.half != SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE )
+    {
+        *length = bytes;
+        return(SPARK_WEIGHTD_MESH_HALF_OFFSET(route.fields.half));
+    }
     if ( route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER )
     {
         *length = bytes < route.fields.slice_bytes ? bytes : route.fields.slice_bytes;
@@ -253,6 +291,13 @@ _Static_assert((SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS + 2u * \
         SPARK_WEIGHTD_MESH_SHIPPED_CELL_BYTES <= \
     SPARK_WEIGHTD_MESH_DOORBELL_BYTES,
     "shipped cells must fit the doorbell page");
+_Static_assert(SPARK_WEIGHTD_MESH_DOORBELL_ALT_OFFSET - SPARK_WEIGHTD_MESH_DOORBELL_OFFSET +
+    (uint64_t)SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES <=
+    SPARK_WEIGHTD_MESH_DOORBELL_BYTES && SPARK_WEIGHTD_MESH_DOORBELL_ALT_OFFSET % 8u == 0u,
+    "alternate doorbell cells fit the doorbell page");
+_Static_assert(SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES % 16u == 0u &&
+    2u * SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES <= SPARK_WEIGHTD_MESH_SLOT_BYTES - 16u,
+    "half-slot payloads end below both half tails");
 #endif
 
 static inline uint32_t SparkWeightdMeshRewireNeeded(uint64_t record_boot_ns,

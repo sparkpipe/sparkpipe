@@ -75,6 +75,8 @@ _Static_assert(offsetof(SparkTpMeshRoundControl,shipped_cell) ==
 _Static_assert(offsetof(SparkTpMeshRoundControl,cancel_cell) ==
     SPARK_TP_MESH_ROUND_CONTROL_WORD_CANCEL_CELL * sizeof(uint64_t),
     "cancel cell word");
+_Static_assert(offsetof(SparkTpMeshRoundControl,round_seq_prior) ==
+    SPARK_TP_MESH_ROUND_CONTROL_WORD_ROUND_SEQ_PRIOR * sizeof(uint64_t),"prior round tag word");
 _Static_assert(offsetof(SparkTpMeshRoundControl,first_arrival_ns) ==
     SPARK_TP_MESH_ROUND_CONTROL_WORD_FIRST_ARRIVAL_NS * sizeof(uint64_t),
     "first arrival word");
@@ -871,6 +873,9 @@ static SparkStatus SparkTpDeviceCollectivePhases(const SparkTpDeviceCollectiveIm
     {
         chunks = SparkTpMeshDirectChunks(elements,implementation->tp_degree,operation,implementation->slot_bytes);
         phases = SparkTpMeshDirectPhasesPerChunk(elements,implementation->tp_degree,operation,slice_routes);
+        if ( SparkTpMeshDirectPipelined(elements,implementation->tp_degree,operation,implementation->slot_bytes) != 0u )
+            chunks = SparkTpMeshPipelineChunks(SparkTpMeshDirectLocalElements(elements,implementation->tp_degree,operation),
+                SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES);
         if ( phases == 2u && (slice_routes & SPARK_TP_MESH_ROUTES_PEER) != 0u )
             chunks = (SparkTpMeshDirectLocalElements(elements,implementation->tp_degree,operation) - 1u) /
                 SparkTpMeshDirectPeerCapacity(implementation->tp_degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) + 1u;
@@ -905,7 +910,7 @@ static uint32_t SparkTpDeviceCollectiveRowElements(
 }
 
 static const char *const SparkTpDeviceCollectivePathNames[] = {
-    "none","host-round","tree","direct","rsag-slice","rsag-peer","all-to-all-scatter","all-to-all-peer","reduce-scatter-peer"};
+    "none","host-round","tree","direct","rsag-slice","rsag-peer","all-to-all-scatter","all-to-all-peer","reduce-scatter-peer","direct-pipelined"};
 
 static void SparkTpDeviceCollectiveLogPath(SparkTpDeviceCollectiveImplementation *implementation,
     uint32_t operation,uint32_t path,uint64_t phases,uint64_t elements,uint32_t rows)
@@ -932,6 +937,8 @@ static uint32_t SparkTpDeviceCollectiveDevicePath(const SparkTpDeviceCollectiveI
         return 6u + peer;
     if ( SparkTpMeshDirectPhasesPerChunk(elements,implementation->tp_degree,operation,slice_routes) == 2u )
         return 4u + peer;
+    if ( SparkTpMeshDirectPipelined(elements,implementation->tp_degree,operation,implementation->slot_bytes) != 0u )
+        return 9u;
     return 3u;
 }
 
@@ -2106,9 +2113,12 @@ SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
                 SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band_index,peer_rank));
             if ( peer_entry[0] > implementation->round_seq )
                 implementation->round_seq = peer_entry[0];
+            if ( peer_entry[SPARK_WEIGHTD_MESH_DOORBELL_ALT_WORDS] > implementation->round_seq )
+                implementation->round_seq = peer_entry[SPARK_WEIGHTD_MESH_DOORBELL_ALT_WORDS];
         }
         __sync_synchronize();
-        implementation->publish_ack_prev = entry[0];
+        implementation->publish_ack_prev = entry[0] > entry[SPARK_WEIGHTD_MESH_DOORBELL_ALT_WORDS] ?
+            entry[0] : entry[SPARK_WEIGHTD_MESH_DOORBELL_ALT_WORDS];
         implementation->base_seen = *(volatile uint64_t *)(implementation->mesh_buffer +
             SparkTpDeviceCollectiveBaseCellOffset(band_index));
         implementation->consumed_cell = implementation->base_seen;
@@ -2509,8 +2519,8 @@ uint64_t SparkTpDeviceCollectiveGraphStuckDump(
             ((uint64_t)peer *
                 SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + parity) *
             SPARK_WEIGHTD_MESH_SLOT_BYTES +
-            SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u);
-        fprintf(stderr," %u:%llu",peer,(unsigned long long)*end_word);
+            SPARK_WEIGHTD_MESH_SLOT_BYTES - 16u);
+        fprintf(stderr," %u:%llu/%llu",peer,(unsigned long long)end_word[0],(unsigned long long)end_word[1]);
     }
     fprintf(stderr,"\n");
     return(sequence);
