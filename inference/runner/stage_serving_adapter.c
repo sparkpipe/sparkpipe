@@ -37,6 +37,7 @@
 #define STAGE_SERVING_TAP_CONNECT_MS 3000
 #define STAGE_SERVING_TAP_SEND_TIMEOUT_MS 200
 #define STAGE_SERVING_TAP_SEND_BUFFER_BYTES (64 << 20)
+#define STAGE_SERVING_VERIFY_BUCKETS 4u
 
 typedef struct SparkStageServingState
 {
@@ -60,6 +61,9 @@ typedef struct SparkStageServingState
 	SparkMemoryBuffer state_host;
 	uint64_t wave_host_ns[5];
 	uint32_t wave_host_count;
+	uint64_t verify_host_ns[STAGE_SERVING_VERIFY_BUCKETS][6];
+	uint64_t verify_host_rows[STAGE_SERVING_VERIFY_BUCKETS];
+	uint32_t verify_host_count[STAGE_SERVING_VERIFY_BUCKETS];
 	SparkMemoryBuffer positions_device;
 	SparkMemoryBuffer context_device;
 	SparkMemoryBuffer state_device;
@@ -1262,6 +1266,30 @@ static void StageServingWaveHost(SparkStageServingState *state, const uint64_t *
 	state->wave_host_count = 0u;
 }
 
+static void StageServingVerifyHost(SparkStageServingState *state, const uint64_t *marks, uint64_t keep_ns, uint32_t rows)
+{
+	static const char *const names[STAGE_SERVING_VERIFY_BUCKETS] = { "2-4", "5-8", "9-16", "17+" };
+	const uint32_t bucket = rows <= 4u ? 0u : rows <= 8u ? 1u : rows <= 16u ? 2u : 3u;
+	uint64_t *ns = state->verify_host_ns[bucket];
+	uint32_t phase;
+	for ( phase = 0u; phase < 4u; ++phase )
+		ns[phase] += marks[phase + 1u] - marks[phase];
+	ns[4] += keep_ns;
+	ns[5] += marks[5] - marks[4] - keep_ns;
+	state->verify_host_rows[bucket] += rows;
+	if ( ++state->verify_host_count[bucket] < 16u )
+		return;
+	fprintf(stderr, "STAGE-VERIFY-HOST tag=%s rank=%u rows=%s frames=%u mean_rows=%.1f admit_ms=%.2f submit_ms=%.2f capture_ms=%.2f sync_ms=%.2f keep_ms=%.2f finish_ms=%.2f\n",
+		state->model->module_tag, state->runner_config.tp_rank, names[bucket], state->verify_host_count[bucket],
+		(double)state->verify_host_rows[bucket] / state->verify_host_count[bucket],
+		(double)ns[0] / state->verify_host_count[bucket] / 1e6, (double)ns[1] / state->verify_host_count[bucket] / 1e6,
+		(double)ns[2] / state->verify_host_count[bucket] / 1e6, (double)ns[3] / state->verify_host_count[bucket] / 1e6,
+		(double)ns[4] / state->verify_host_count[bucket] / 1e6, (double)ns[5] / state->verify_host_count[bucket] / 1e6);
+	memset(ns, 0, sizeof(state->verify_host_ns[bucket]));
+	state->verify_host_rows[bucket] = 0u;
+	state->verify_host_count[bucket] = 0u;
+}
+
 static SparkStatus StageServingCopyInputs(SparkStageServingState *state, uint32_t rows, uint32_t active)
 {
 	void *stream = state->runner_config.execution_stream;
@@ -1394,7 +1422,7 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	SparkSamplingLogprob distribution_logprobs[SPARK_STAGE_SERVING_MAX_LANES * SPARK_SAMPLING_MAX_LOGPROBS];
 	uint32_t rows, active = 0u, distribution_count = 0u, logprob_stride = 0u, steps = 1u, kept[SPARK_STAGE_SERVING_MAX_LANES];
 	const uint32_t verify = submission != 0 && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? 1u : 0u;
-	uint64_t marks[6];
+	uint64_t marks[6], keep_ns = 0u;
 	SparkStatus status, finished;
 	void *stream;
 	marks[0] = StageServingNowNs();
@@ -1482,10 +1510,12 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		status = StageServingReadTokens(state, rows, steps);
 	if ( status == SPARK_STATUS_OK && verify != 0u )
 	{
+		const uint64_t keep_started = StageServingNowNs();
 		StageServingVerifyKept(state, submission, active, kept);
 		status = SparkStageRunnerKeepRows(&state->runner, kept, active);
 		if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
 			status = SPARK_STATUS_IO_ERROR;
+		keep_ns = StageServingNowNs() - keep_started;
 	}
 	for ( uint32_t lane = 0u; status == SPARK_STATUS_OK && lane < active; ++lane )
 		next_positions[lane] = verify != 0u ? state->row_positions[lane] + kept[lane] : next_positions[lane] + steps - 1u;
@@ -1495,6 +1525,8 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	marks[5] = StageServingNowNs();
 	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
 		StageServingWaveHost(state, marks);
+	else if ( status == SPARK_STATUS_OK && verify != 0u )
+		StageServingVerifyHost(state, marks, keep_ns, rows);
 	SparkStageModuleIndexSetRelease(state->lane_states, SPARK_STAGE_SERVING_MAX_LANES, row_slots, active);
 	if ( status != SPARK_STATUS_OK )
 		return status;
