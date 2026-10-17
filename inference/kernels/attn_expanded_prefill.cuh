@@ -4,7 +4,9 @@
 #include "inference/kernels/tma.cuh"
 
 #define LM_EXPANDED_PREFILL_COMPUTE_WARPS 8u
-#define LM_EXPANDED_PREFILL_PRODUCER_WARPS 4u
+#define LM_EXPANDED_PREFILL_PRODUCER_WARPS 2u
+#define LM_EXPANDED_PREFILL_REGISTERS 168
+#define LM_EXPANDED_PREFILL_SPARE_REGISTERS 8192u
 #define LM_EXPANDED_PREFILL_THREADS ((LM_EXPANDED_PREFILL_COMPUTE_WARPS + LM_EXPANDED_PREFILL_PRODUCER_WARPS) * 32u)
 #define LM_EXPANDED_PREFILL_ROWS 32u
 #define LM_EXPANDED_PREFILL_HEADS 2u
@@ -192,7 +194,7 @@ static inline cudaError_t LmLatentValueExpandLaunch(
 }
 
 template<class Geometry, uint32_t LATENT, uint32_t ROPE, uint32_t VALUE>
-__global__ __launch_bounds__(LM_EXPANDED_PREFILL_THREADS, 1)
+__global__ __maxnreg__(LM_EXPANDED_PREFILL_REGISTERS)
 void LmExpandedGatherPrefillKernel(
 	LmKvShardGatherView cache,
 	const uint8_t *__restrict__ values,
@@ -225,6 +227,7 @@ void LmExpandedGatherPrefillKernel(
 	constexpr uint32_t EXCHANGE_BYTES = 2u * LM_EXPANDED_PREFILL_COMPUTE_WARPS * 32u * LM_EXPANDED_PREFILL_EXCHANGE_FLOATS * 4u;
 	constexpr uint32_t RECORD = LM_LATENT_SHARD_RECORD_FLOATS(VALUE);
 	static_assert(KEY_ITEMS % (32u * LM_EXPANDED_PREFILL_PRODUCER_WARPS) == 0u && VALUE_ITEMS % (32u * LM_EXPANDED_PREFILL_PRODUCER_WARPS) == 0u, "the producer warps copy whole rounds of a tile");
+	static_assert(LM_EXPANDED_PREFILL_THREADS * LM_EXPANDED_PREFILL_REGISTERS + LM_EXPANDED_PREFILL_SPARE_REGISTERS <= 65536u, "a block leaves registers for the collective kernels that run beside it");
 	static_assert(QUERIES * ROW_BYTES <= LM_EXPANDED_PREFILL_RING * (KEY_SLOT + VALUE_SLOT), "the queries stage through the rings before the pipeline starts");
 	static_assert(LmExpandedPrefillSharedBytes<DIM, VALUE>() <= LM_PREFILL_ATTN_SHARED_LIMIT, "the rings exceed the shared memory an SM has");
 	extern __shared__ __align__(128) uint8_t lm_expanded_shared[];
