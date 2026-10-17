@@ -45,6 +45,7 @@
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_RETRY_NS UINT64_C(5000000000)
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_CALIBRATION_DECAY 0.98f
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_GAIN 0.3f
+#define SPARK_MODEL_BATCH_MODEL_DRAFT_PRIOR 0.3f
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_DECAY 0.9f
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_FRAMES 6.0f
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_FLOOR 0.97f
@@ -103,6 +104,7 @@ typedef struct SparkModelBatchRequestState
 	uint32_t draft_match;
 	float draft_expected;
 	float draft_frame_ns;
+	float draft_path[SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH];
 	uint32_t draft_source_end;
 	uint32_t draft_run_drafts;
 	uint32_t draft_run_source;
@@ -193,8 +195,8 @@ struct SparkModelBatchEngine
 	uint64_t model_draft_unavailable;
 	uint64_t model_draft_backoffs;
 	uint64_t model_draft_retry_ns;
-	float model_draft_predicted;
-	float model_draft_observed;
+	float model_depth_predicted[SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH];
+	float model_depth_observed[SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH];
 	SparkModelServingLane *scratch_lanes;
 	uint32_t *scratch_token_ids;
 	uint32_t *scratch_row_lane_indices;
@@ -1305,8 +1307,11 @@ static SparkStatus SparkModelBatchAcceptVerifiedLane(
 			engine->model_draft_frames++;
 			engine->model_draft_tokens += draft_count;
 			engine->model_draft_accepted += accepted;
-			engine->model_draft_predicted = engine->model_draft_predicted * SPARK_MODEL_BATCH_MODEL_DRAFT_CALIBRATION_DECAY + (request->draft_expected - 1.0f);
-			engine->model_draft_observed = engine->model_draft_observed * SPARK_MODEL_BATCH_MODEL_DRAFT_CALIBRATION_DECAY + (float)accepted;
+			for (row=0u; row<SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH; row++)
+			{
+				engine->model_depth_predicted[row] = engine->model_depth_predicted[row] * SPARK_MODEL_BATCH_MODEL_DRAFT_CALIBRATION_DECAY + (row < draft_count ? request->draft_path[row] : 0.0f);
+				engine->model_depth_observed[row] = engine->model_depth_observed[row] * SPARK_MODEL_BATCH_MODEL_DRAFT_CALIBRATION_DECAY + (row < draft_count && accepted > row ? 1.0f : 0.0f);
+			}
 			request->draft_run_drafts = 0u;
 			SparkModelBatchObserveModelRate(engine,request,kept,completion->service_time_ns);
 		}
@@ -2871,24 +2876,28 @@ static uint32_t SparkModelBatchPlanModelDraft(
 		const uint32_t context = position + 1u;
 		const float token_ns = SparkSpeculationFrameTokenCost(&engine->frame_model,context);
 		const float wait_ns = (float)engine->model_draft_wait_us * 1000.0f / (float)engine->model_draft_rounds;
-		const float calibration = engine->model_draft_predicted > 1.0f ? engine->model_draft_observed / engine->model_draft_predicted : 1.0f;
-		float best_rate = 0.0f, best_gain = 0.0f, drafted = 0.0f;
+		float best_rate = 0.0f, best_gain = 0.0f, drafted = 0.0f, calibration = 1.0f;
 		for (index=1u; index<count && index<=depth; index++)
 		{
+			const float ratio = (engine->model_depth_observed[index - 1u] + SPARK_MODEL_BATCH_MODEL_DRAFT_PRIOR) /
+				(engine->model_depth_predicted[index - 1u] + SPARK_MODEL_BATCH_MODEL_DRAFT_PRIOR);
 			float cost,rate;
 			if ( nodes[index].parent_index != index - 1u || nodes[index].depth != index || !(nodes[index].score >= engine->draft_min_confidence) ||
 				SparkModelBatchTokenIsStop(engine,nodes[index].token_id) != 0u )
 				break;
+			if ( ratio < calibration )
+				calibration = ratio;
 			path *= nodes[index].score < 1.0f ? nodes[index].score : 1.0f;
-			drafted += path;
+			request->draft_path[index - 1u] = path;
+			drafted += calibration * path;
 			request->draft_tokens[index - 1u] = nodes[index].token_id;
 			cost = SparkSpeculationFrameCost(&engine->frame_model,index + 1u,context);
 			cost = (cost > token_ns ? cost : token_ns) + wait_ns;
-			rate = cost > 0.0f ? (1.0f + calibration * drafted) / cost : 0.0f;
+			rate = cost > 0.0f ? (1.0f + drafted) / cost : 0.0f;
 			if ( rate > best_rate )
 			{
 				best_rate = rate;
-				best_gain = calibration * drafted;
+				best_gain = drafted;
 				drafts = index;
 				expected = 1.0f + drafted;
 			}
@@ -2898,6 +2907,11 @@ static uint32_t SparkModelBatchPlanModelDraft(
 	}
 	if ( drafts == 0u )
 	{
+		for (index=0u; index<SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH; index++)
+		{
+			engine->model_depth_predicted[index] *= SPARK_MODEL_BATCH_MODEL_DRAFT_CALIBRATION_DECAY;
+			engine->model_depth_observed[index] *= SPARK_MODEL_BATCH_MODEL_DRAFT_CALIBRATION_DECAY;
+		}
 		engine->model_draft_declined++;
 		return(0u);
 	}

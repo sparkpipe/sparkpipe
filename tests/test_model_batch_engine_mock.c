@@ -2234,6 +2234,7 @@ static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deploym
 #define TEST_DRAFT_WRONG 2u
 #define TEST_DRAFT_UNAVAILABLE 3u
 #define TEST_DRAFT_CLOSE 4u
+#define TEST_DRAFT_FIRST 5u
 
 typedef struct TestDraftServer
 {
@@ -2325,7 +2326,8 @@ static void TestDraftServe(TestDraftServer *server,int fd)
 		for (index=0u; index<nodes; index++)
 		{
 			const uint64_t at = position + index;
-			const uint32_t token = index == 0u ? anchor : at < server->script_count ? server->script[at] + (server->mode == TEST_DRAFT_WRONG ? 1u : 0u) : 7u;
+			const uint32_t wrong = server->mode == TEST_DRAFT_WRONG || (server->mode == TEST_DRAFT_FIRST && index >= 2u) ? 1u : 0u;
+			const uint32_t token = index == 0u ? anchor : at < server->script_count ? server->script[at] + wrong : 7u;
 			const float score = index == 0u ? 1.0f : server->mode == TEST_DRAFT_LOW ? 0.1f : 0.9f;
 			TestDraftPut32(&cursor,token);
 			TestDraftPut32(&cursor,index == 0u ? UINT32_MAX : index - 1u);
@@ -2419,8 +2421,13 @@ static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployme
 	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_WRONG,script,40u,&state,&view,&submissions,&rows,&server);
 	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,40u) != 0u && submissions != 0u && view.speculative_accepted_token_count == 0u,
 		"model drafts: wrong drafts are rejected and the stream stays exact");
-	CHECK(submissions * 4u < server.requests,"model drafts: confident drafts that keep failing stop being verified once their acceptance is learned");
+	CHECK(submissions <= 3u && server.requests >= submissions + 3u,"model drafts: confident drafts that keep failing stop being verified once their acceptance is learned");
 	CHECK(TestLaneInputsFollowScript(1u,script,256u) != 0u,"model drafts: a rejected model draft never becomes a lane's input");
+	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_FIRST,script,80u,&state,&view,&submissions,&rows,&server);
+	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u && submissions >= 20u && view.speculative_accepted_token_count * 2u + 8u >= submissions * 2u,
+		"model drafts: a draft whose first token is right keeps that token in every frame");
+	CHECK(rows <= 2u * submissions + 12u,
+		"model drafts: confident deep drafts that fail stop being verified while the first draft that holds keeps its row");
 	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_UNAVAILABLE,script,40u,&state,&view,&submissions,&rows,&server);
 	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,40u) != 0u && submissions == 0u && server.requests > 4u,
 		"model drafts: an unavailable answer declines one round and the engine keeps asking");
