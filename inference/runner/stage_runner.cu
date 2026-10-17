@@ -343,6 +343,8 @@ typedef struct SparkStageRunnerState
 	uint32_t layer_waves;
 	uint64_t timing_graph_ns;
 	SparkTpDeviceCollectiveHardwareTiming timing_wait;
+	SparkTpDeviceCollectiveHardwareTiming timing_arrival_mark;
+	uint32_t timing_arrival_marked;
 	uint32_t sequence_capacity;
 	StageRunnerLanes lanes;
 } SparkStageRunnerState;
@@ -1963,10 +1965,31 @@ static void StageRunnerTiming(SparkStageRunnerState *state, uint32_t rank, uint6
 		state->timing_wait.peer_wait_ns += step.peer_wait_ns;
 		state->timing_wait.copy_ns += step.copy_ns;
 		state->timing_wait.combine_ns += step.combine_ns;
+		if ( state->timing_arrival_marked == 0u )
+		{
+			state->timing_arrival_mark = step;
+			state->timing_arrival_marked = 1u;
+		}
+		state->timing_wait.first_arrival_ns = step.first_arrival_ns;
+		memcpy(state->timing_wait.peer_arrival_ns, step.peer_arrival_ns, sizeof(step.peer_arrival_ns));
 	}
 	if ( state->timing_steps < 64u )
 		return;
 	steps = state->timing_steps;
+	if ( state->timing_arrival_marked != 0u )
+	{
+		char arrivals[16u * 12u];
+		size_t used = 0u;
+		uint32_t peer;
+		arrivals[0] = '\0';
+		for ( peer = 0u; peer < 16u && used < sizeof(arrivals); ++peer )
+			used += (size_t)snprintf(arrivals + used, sizeof(arrivals) - used, "%s%llu", peer != 0u ? "," : "",
+				(unsigned long long)((state->timing_wait.peer_arrival_ns[peer] - state->timing_arrival_mark.peer_arrival_ns[peer]) / steps / 1000u));
+		fprintf(stderr, "STAGE-STEP-ARRIVAL rank=%u steps=%llu first_us=%llu peer_us=%s\n", rank, (unsigned long long)steps,
+			(unsigned long long)((state->timing_wait.first_arrival_ns - state->timing_arrival_mark.first_arrival_ns) / steps / 1000u), arrivals);
+		state->timing_arrival_mark.first_arrival_ns = state->timing_wait.first_arrival_ns;
+		memcpy(state->timing_arrival_mark.peer_arrival_ns, state->timing_wait.peer_arrival_ns, sizeof(state->timing_wait.peer_arrival_ns));
+	}
 	fprintf(stderr, "STAGE-STEP-TIMING rank=%u steps=%llu graph_steps=%llu submit_us=%llu graph_us=%llu source_wait_us=%llu peer_wait_us=%llu copy_us=%llu combine_us=%llu\n",
 		rank, (unsigned long long)steps, (unsigned long long)state->timing_graph_steps,
 		(unsigned long long)(state->timing_submit_ns / steps / 1000u),
@@ -1981,7 +2004,10 @@ static void StageRunnerTiming(SparkStageRunnerState *state, uint32_t rank, uint6
 	state->timing_graph_steps = 0u;
 	state->timing_submit_ns = 0u;
 	state->timing_graph_ns = 0u;
-	memset(&state->timing_wait, 0, sizeof(state->timing_wait));
+	state->timing_wait.source_wait_ns = 0u;
+	state->timing_wait.peer_wait_ns = 0u;
+	state->timing_wait.copy_ns = 0u;
+	state->timing_wait.combine_ns = 0u;
 }
 
 static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStageRunner *runner,
