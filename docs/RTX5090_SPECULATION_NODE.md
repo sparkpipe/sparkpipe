@@ -85,10 +85,12 @@ K3 serves model drafts from the RadixArk DSpark block drafter on the 5090.
 - **Log:** `/srv/workspace/sparkpipe/logs/draftd.log`. It prints
   `DRAFTD-TIMING` every 32 requests (queue, wait, compute, apply and total
   ms) and `DRAFTD-STATS` every 256 requests.
-- **GPU:** about 11.5 GB at short context, plus 20 KB per context position.
-  `--context-bytes` (default 12 GiB) caps a sequence's keys and values; a
-  longer one answers unavailable (`CONTEXT-TOO-LONG`). The GPU is shared
-  with the chess tenant (about 5 GB).
+- **GPU:** about 10.6 GB at start, plus 20 KB per context position.
+  `tools/hub_draftd.sh` passes `--context-bytes` 8 GiB (`DRAFTD_CONTEXT_BYTES`).
+  It caps all held contexts together (least recently used goes first) and
+  a single sequence; a longer one answers unavailable (`CONTEXT-TOO-LONG`).
+  The GPU is shared with the chess tenant (about 5.2 GB): keep the drafter
+  under about 20 GB.
 - **Latency:** 8-15 ms per request; the draft itself is 6-7 ms at short
   context and 11-13 ms at 137K.
 - **Recording:** `--record-dir DIR` writes every tap connection to an
