@@ -200,21 +200,14 @@ class BlockDrafter:
         up = x @ layer["mlp.up_proj"].t()
         return h + ((torch.nn.functional.silu(gate.float()) * up.float()).to(torch.bfloat16) @ layer["mlp.down_proj"].t()).float()
 
-    def attend(self, index, q, kb, vb, keys, values, begin, end, restore):
-        block = self.block
-        if restore:
-            saved_k = keys[index][:, end:end + block].clone()
-            saved_v = values[index][:, end:end + block].clone()
-        keys[index][:, end:end + block] = kb
-        values[index][:, end:end + block] = vb
-        attended = torch.nn.functional.scaled_dot_product_attention(q[None], keys[index][None, :, begin:end + block],
-                                                                    values[index][None, :, begin:end + block], enable_gqa=True)
-        if restore:
-            keys[index][:, end:end + block] = saved_k
-            values[index][:, end:end + block] = saved_v
-        return attended[0].transpose(0, 1).reshape(block, -1)
+    def attend_window(self, index, q, kb, vb, keys, values, mask):
+        window = keys[index].shape[1] - self.block
+        keys[index][:, window:] = kb
+        values[index][:, window:] = vb
+        attended = torch.nn.functional.scaled_dot_product_attention(q[None], keys[index][None], values[index][None], attn_mask=mask, enable_gqa=True)
+        return attended[0].transpose(0, 1).reshape(self.block, -1)
 
-    def draft_cached(self, anchor_token, anchor_position, keys, values, begin, end, restore=True):
+    def draft_window(self, anchor_token, anchor_position, keys, values, mask):
         block = self.block
         tokens = torch.full((block,), self.mask, dtype=torch.long, device=self.device)
         tokens[0] = anchor_token
@@ -222,7 +215,7 @@ class BlockDrafter:
         positions = torch.arange(anchor_position, anchor_position + block, device=self.device)
         for index, layer in enumerate(self.layers):
             q, kb, vb = self.pre_attention(layer, h, positions)
-            h = self.post_attention(layer, h, self.attend(index, q, kb, vb, keys, values, begin, end, restore))
+            h = self.post_attention(layer, h, self.attend_window(index, q, kb, vb, keys, values, mask))
         y = rms(h, self.norm, self.eps).to(torch.bfloat16)
         return y, (y @ self.head.t()).float()
 
@@ -318,15 +311,16 @@ class DraftGraph:
         if capturing:
             self.graphs, self.staged = graphs, staged
 
-    def draft(self, anchor_token, anchor_position, keys, values, begin, end, count, restore):
+    def draft(self, anchor_token, anchor_position, keys, values, valid, count):
         d = self.drafter
         self.host[0], self.host[1] = int(anchor_token), int(anchor_position)
         self.inputs.copy_(self.host, non_blocking=True)
+        mask = None if valid is None else torch.from_numpy(valid).to(d.device).view(1, 1, 1, -1)
         with torch.no_grad():
             for index in range(len(d.layers)):
                 self.graphs[index].replay()
                 q, kb, vb = self.staged[index]
-                self.attended[index].copy_(d.attend(index, q, kb, vb, keys, values, begin, end, restore))
+                self.attended[index].copy_(d.attend_window(index, q, kb, vb, keys, values, mask))
             self.graphs[-1].replay()
             tokens, scores = self.staged[-1]
             tokens = tokens[:count].tolist()

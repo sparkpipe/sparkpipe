@@ -85,14 +85,20 @@ K3 serves model drafts from the RadixArk DSpark block drafter on the 5090.
 - **Log:** `/srv/workspace/sparkpipe/logs/draftd.log`. It prints
   `DRAFTD-TIMING` every 32 requests (queue, wait, compute, apply and total
   ms) and `DRAFTD-STATS` every 256 requests.
-- **GPU:** about 10.6 GB at start, plus 20 KB per context position.
-  `tools/hub_draftd.sh` passes `--context-bytes` 8 GiB (`DRAFTD_CONTEXT_BYTES`).
-  It caps all held contexts together (least recently used goes first) and
-  a single sequence; a longer one answers unavailable (`CONTEXT-TOO-LONG`).
-  The GPU is shared with the chess tenant (about 5.2 GB): keep the drafter
-  under about 20 GB.
-- **Latency:** 8-15 ms per request; the draft itself is 6-7 ms at short
-  context and 11-13 ms at 137K.
+- **Context:** each sequence keeps the last `--window` positions (4096 by
+  default, `DRAFTD_WINDOW`) in a ring of 82 MB, whatever the context
+  length, and a draft attends to that window. On a recorded 137K prose reply
+  the 4K window keeps 2.17 tokens per round against 2.05 with the whole
+  context (paced replay, 400 rounds). The windows offline (`long_drafter.py`)
+  score 2.24 (4K), 2.20 (16K), 2.15 (64K) and 2.12 (all) on prose at 137K,
+  and 4.97, 5.05 and 4.82 on a code edit at 73K. A follow-up turn copies the
+  window's positions from the previous turn's ring when the tokens match.
+- **GPU:** about 10.6 GB plus 82 MB per held sequence. `--context-bytes`
+  (8 GiB, `DRAFTD_CONTEXT_BYTES`) caps the held sequences; the least
+  recently used goes first. The GPU is shared with the chess tenant (about
+  5.2 GB): never start a second drafter beside the production one (a
+  full-context test drafter ran the card out of memory on 2026-10-17).
+- **Latency:** 9-12 ms per request; the draft itself is 6-7 ms.
 - **Recording:** `--record-dir DIR` writes every tap connection to an
   `.spt2` file for offline scoring (`tools/spec_offline`). Use it on hold
   corpora only, never on users' traffic.

@@ -42,54 +42,43 @@ ROOT_PARENT = 0xFFFFFFFF
 
 
 class Context:
-    def __init__(self, drafter, capacity, limit):
-        self.drafter = drafter
-        self.limit = limit
-        self.capacity = 0
-        self.keys = []
-        self.values = []
-        self.tokens = np.zeros(0, dtype=np.uint32)
-        self.filled = np.zeros(0, dtype=bool)
+    def __init__(self, drafter, window):
+        d = self.drafter = drafter
+        self.window = window
+        self.keys = [torch.zeros((d.kv_heads, window + d.block, d.head_dim), dtype=torch.bfloat16, device=d.device) for _ in d.layers]
+        self.values = [torch.zeros((d.kv_heads, window + d.block, d.head_dim), dtype=torch.bfloat16, device=d.device) for _ in d.layers]
+        self.positions = np.full(window, -1, dtype=np.int64)
+        self.tokens = np.zeros(window, dtype=np.uint32)
         self.used = time.monotonic()
-        self.grow(capacity)
-
-    def grow(self, needed):
-        if needed <= self.capacity:
-            return
-        capacity = max(needed, min(2 * self.capacity, self.limit), 4096)
-        d = self.drafter
-        keys = [torch.zeros((d.kv_heads, capacity, d.head_dim), dtype=torch.bfloat16, device=d.device) for _ in d.layers]
-        values = [torch.zeros((d.kv_heads, capacity, d.head_dim), dtype=torch.bfloat16, device=d.device) for _ in d.layers]
-        for index in range(len(self.keys)):
-            keys[index][:, :self.capacity] = self.keys[index]
-            values[index][:, :self.capacity] = self.values[index]
-        tokens = np.zeros(capacity, dtype=np.uint32)
-        filled = np.zeros(capacity, dtype=bool)
-        tokens[:self.capacity] = self.tokens
-        filled[:self.capacity] = self.filled
-        self.keys, self.values, self.tokens, self.filled, self.capacity = keys, values, tokens, filled, capacity
 
     def write(self, first, tokens, taps):
-        count = len(tokens)
-        self.grow(first + count)
-        positions = torch.arange(first, first + count, device=self.drafter.device)
+        skip = max(0, len(tokens) - self.window)
+        first, tokens, taps = first + skip, tokens[skip:], taps[skip:]
+        positions = np.arange(first, first + len(tokens))
+        slots = positions % self.window
+        device = self.drafter.device
         with torch.no_grad():
-            keys, values = self.drafter.context(taps, positions)
-        for index in range(len(self.keys)):
-            self.keys[index][:, first:first + count] = keys[index].transpose(0, 1)
-            self.values[index][:, first:first + count] = values[index].transpose(0, 1)
-        self.tokens[first:first + count] = tokens
-        self.filled[first:first + count] = True
-        self.filled[first + count:] = False
+            keys, values = self.drafter.context(taps, torch.from_numpy(positions).to(device))
+        index = torch.from_numpy(slots).to(device)
+        for layer in range(len(self.keys)):
+            self.keys[layer].index_copy_(1, index, keys[layer].transpose(0, 1))
+            self.values[layer].index_copy_(1, index, values[layer].transpose(0, 1))
+        self.positions[self.positions >= first] = -1
+        self.positions[slots] = positions
+        self.tokens[slots] = tokens
         self.used = time.monotonic()
 
-    def copy_from(self, donor, count):
-        self.grow(count)
-        for index in range(len(self.keys)):
-            self.keys[index][:, :count] = donor.keys[index][:, :count]
-            self.values[index][:, :count] = donor.values[index][:, :count]
-        self.tokens[:count] = donor.tokens[:count]
-        self.filled[:count] = True
+    def held(self, positions):
+        return self.positions[positions % self.window] == positions
+
+    def copy_from(self, donor, positions):
+        slots = positions % self.window
+        index = torch.from_numpy(slots).to(self.drafter.device)
+        for layer in range(len(self.keys)):
+            self.keys[layer].index_copy_(1, index, donor.keys[layer].index_select(1, index))
+            self.values[layer].index_copy_(1, index, donor.values[layer].index_select(1, index))
+        self.positions[slots] = positions
+        self.tokens[slots] = donor.tokens[slots]
 
     def bytes(self):
         return sum(t.numel() * t.element_size() for t in self.keys + self.values)
@@ -105,10 +94,7 @@ class Server:
         self.hello = None
         self.work = queue.Queue()
         self.contexts = OrderedDict()
-        self.stats = {"frames": 0, "rows": 0, "requests": 0, "drafted": 0, "unavailable": 0, "donor_fills": 0, "gaps": 0, "too_long": 0, "draft_us": 0}
-        self.position_bytes = 2 * len(self.drafter.layers) * self.drafter.kv_heads * self.drafter.head_dim * 2
-        self.max_positions = args.context_bytes // self.position_bytes
-        self.too_long = set()
+        self.stats = {"frames": 0, "rows": 0, "requests": 0, "drafted": 0, "unavailable": 0, "donor_fills": 0, "gaps": 0, "draft_us": 0}
         self.timing = {"requests": 0, "queue": 0.0, "wait": 0.0, "compute": 0.0, "wake": 0.0, "total": 0.0, "context": 0, "frames": 0, "lag": 0.0, "apply": 0.0}
 
     def tap_loop(self):
@@ -178,17 +164,9 @@ class Server:
         hidden, count = self.hello["hidden"], len(self.hello["entries"])
         rows = torch.from_numpy(np.frombuffer(data, dtype=np.uint16).reshape(len(tokens), count, hidden).copy()).view(torch.bfloat16)
         taps = rows.to(self.drafter.device)[:, self.columns].reshape(len(tokens), -1)
-        if first + len(tokens) + self.drafter.block > self.max_positions:
-            if sequence not in self.too_long:
-                print(f"CONTEXT-TOO-LONG sequence {sequence} needs {first + len(tokens)} positions, the budget holds {self.max_positions}", flush=True)
-                self.too_long.add(sequence)
-                self.stats["too_long"] += 1
-            self.contexts.pop(sequence, None)
-            return
         context = self.contexts.get(sequence)
         if context is None or first == 0:
-            self.too_long.discard(sequence)
-            context = Context(self.drafter, first + len(tokens), self.max_positions)
+            context = Context(self.drafter, self.args.window)
             self.contexts[sequence] = context
         self.contexts.move_to_end(sequence)
         context.write(first, tokens, taps)
@@ -257,40 +235,44 @@ class Server:
         slot["done"] = time.monotonic()
         slot["event"].set()
 
-    def fill_prefix(self, context, sequence, committed, first):
+    def fill_window(self, context, sequence, committed, positions):
         for other_sequence, other in reversed(self.contexts.items()):
-            if other_sequence == sequence or other.capacity < first or not other.filled[:first].all():
+            if other_sequence == sequence:
                 continue
-            if np.array_equal(other.tokens[:first], committed[:first]):
-                context.copy_from(other, first)
+            missing = positions[~context.held(positions)]
+            if len(missing) == 0:
+                return
+            usable = missing[other.held(missing) & (other.tokens[missing % other.window] == committed[missing])]
+            if len(usable) != 0:
+                context.copy_from(other, usable)
                 self.stats["donor_fills"] += 1
-                return True
-        return False
 
     def covered(self, sequence, position):
         context = self.contexts.get(sequence)
-        return context is not None and context.capacity >= position and (position == 0 or bool(context.filled[position - 1]))
+        return context is not None and (position == 0 or bool(context.held(np.array([position - 1]))[0]))
 
     def draft(self, request):
         sequence, anchor, position, committed, depth = request
-        window = self.args.window
         context = self.contexts.get(sequence)
-        begin = 0 if window == 0 else max(0, position - window)
-        missing = np.flatnonzero(~context.filled[begin:position])
-        if len(missing) != 0:
-            first = begin + int(missing[-1]) + 1
-            if not self.fill_prefix(context, sequence, committed, first):
-                self.stats["gaps"] += 1
-                begin = first
-        if not np.array_equal(context.tokens[begin:position], committed[begin:position]):
+        positions = np.arange(max(0, position - self.args.window), position)
+        held = context.held(positions)
+        if not held.all():
+            self.fill_window(context, sequence, committed, positions)
+            held = context.held(positions)
+        if not held.all():
+            self.stats["gaps"] += 1
+            positions = positions[int(np.flatnonzero(~held)[-1]) + 1:]
+        if not np.array_equal(context.tokens[positions % context.window], committed[positions]):
             self.stats["unavailable"] += 1
             print(f"TOKEN-MISMATCH sequence {sequence} position {position}", flush=True)
             return None
-        block = self.drafter.block
-        context.grow(position + block)
-        restore = bool(context.filled[position:position + block].any())
+        valid = None
+        if len(positions) < context.window:
+            valid = np.zeros(context.window + self.drafter.block, dtype=bool)
+            valid[positions % context.window] = True
+            valid[context.window:] = True
         started = time.monotonic()
-        drafts, confidence = self.graph.draft(int(anchor), position, context.keys, context.values, begin, position, min(depth, block), restore)
+        drafts, confidence = self.graph.draft(int(anchor), position, context.keys, context.values, valid, min(depth, self.drafter.block))
         elapsed = int((time.monotonic() - started) * 1e6)
         self.timing["compute"] += elapsed / 1e6
         self.timing["context"] += position
@@ -389,12 +371,15 @@ def main():
     parser.add_argument("--tap-port", type=int, required=True)
     parser.add_argument("--draft-host", default="127.0.0.1")
     parser.add_argument("--draft-port", type=int, required=True)
-    parser.add_argument("--window", type=int, default=0, help="context positions the draft attends to; 0 = all")
+    parser.add_argument("--window", type=int, default=4096, help="context positions each sequence keeps and a draft attends to")
     parser.add_argument("--wait-ms", type=float, default=30.0, help="how long a request waits for the taps it needs")
-    parser.add_argument("--context-bytes", type=int, default=12 << 30)
+    parser.add_argument("--context-bytes", type=int, default=8 << 30, help="keys and values held for all sequences; the least recently used goes first")
     parser.add_argument("--switch-interval", type=float, default=0.0005, help="interpreter thread switch interval, seconds")
     parser.add_argument("--record-dir", default="", help="directory that receives a copy of every tap stream, one file per connection")
-    Server(parser.parse_args()).run()
+    args = parser.parse_args()
+    if args.window <= 0:
+        parser.error("--window must be positive")
+    Server(args).run()
 
 
 if __name__ == "__main__":

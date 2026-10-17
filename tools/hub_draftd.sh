@@ -8,6 +8,7 @@ TAP_HOST=${DRAFTD_TAP_HOST:-10.10.210.3}
 TAP_PORT=${DRAFTD_TAP_PORT:-7701}
 DRAFT_PORT=${DRAFTD_DRAFT_PORT:-7702}
 CONTEXT_BYTES=${DRAFTD_CONTEXT_BYTES:-8589934592}
+WINDOW=${DRAFTD_WINDOW:-4096}
 listening() { ss -ltn | grep -c "$TAP_HOST:$TAP_PORT \|127.0.0.1:$DRAFT_PORT " || true; }
 case "${1:-}" in
 start)
@@ -18,7 +19,7 @@ start)
 	mkdir -p "$(dirname "$LOG")"
 	systemctl --user reset-failed "$UNIT" 2>/dev/null || true
 	systemd-run --user --unit="$UNIT" -p Restart=on-failure -p RestartSec=10 --working-directory="$SOURCE" bash -c \
-		"exec nice -n 5 python3 block_draftd.py --drafter '$DRAFTER' --target-shard '$SHARD' --tap-host $TAP_HOST --tap-port $TAP_PORT --draft-port $DRAFT_PORT --window 0 --context-bytes $CONTEXT_BYTES >> '$LOG' 2>&1"
+		"exec nice -n 5 python3 block_draftd.py --drafter '$DRAFTER' --target-shard '$SHARD' --tap-host $TAP_HOST --tap-port $TAP_PORT --draft-port $DRAFT_PORT --window $WINDOW --context-bytes $CONTEXT_BYTES >> '$LOG' 2>&1"
 	for _ in $(seq 1 90); do [ "$(listening)" = 2 ] && break; sleep 2; done
 	if [ "$(listening)" != 2 ]; then echo "hub_draftd: $UNIT did not open both ports; see $LOG" >&2; tail -5 "$LOG" >&2; exit 1; fi
 	grep -a 'DRAFTD-READY' "$LOG" | tail -1
