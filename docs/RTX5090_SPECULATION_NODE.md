@@ -11,8 +11,8 @@ Hub operations (publishing roots, heartbeats) are governed by
 ## Rules
 
 - SparkPipe owns only its units (`fleet-release`, `sparkpipe-swap`,
-  `sparkpipe-chat`, `sparkpipe-litellm`, `spark-dma-guard-listen` and the
-  transient `kv-<model>-api` units) and paths (`~/release`,
+  `sparkpipe-chat`, `sparkpipe-litellm`, `spark-dma-guard-listen`,
+  `sparkpipe-draftd` and the transient `kv-<model>-api` units) and paths (`~/release`,
   `~/release-staging`, `~/current`, `~/<model>-kv-api`, `~/sparkpipe-chat`,
   `~/sparkpipe-swap`, `/srv/workspace/sparkpipe`, `~/draft_service`,
   `/srv/workspace/drafters`). Never kill or restart anything else: the host runs
@@ -64,6 +64,36 @@ FLEET_RELEASE_RUNBOOK.md §1). Only traffic addressed to 10.10.250.2 takes the
 Measured round trip (lead-dev, 2026-09-28): busy-polled 64 B UDP between
 sparkf and rtx5090 is 22.6 us p50 / 25.2 us p99; forwarded from other Sparks
 it is about 300 us p50.
+
+## K3 block drafter (production since 2026-10-17)
+
+K3 serves model drafts from the RadixArk DSpark block drafter on the 5090.
+- **Unit:** the transient user unit `sparkpipe-draftd`, started by
+  `tools/hub_draftd.sh start /srv/workspace/sparkpipe/draftd-<sha>`. The
+  directory holds `block_draftd.py` and `spec_offline/` from that commit.
+  `tools/hub_draftd.sh status` shows the unit, its two ports and the last
+  timing and tap lines; `stop` stops it.
+- **Restart after a hub reboot:** like every hub unit, it does not survive a
+  reboot. Start it again with `tools/hub_draftd.sh start`. Until then, K3
+  serves without model drafts: the tap rank retries every 5 s, and each draft
+  request answers unavailable.
+- **Inputs:** the K3 tap rank (sparkf, rank 15) streams the drafter's five
+  target layers (`taps` in the K3 lane's `config/adapter.json`) to
+  `10.10.210.3:7701`, the hub's 100G link to sparkf (`enp4s0f1np1`).
+- **Clients:** the K3 API (`~/k3-kv-api`, `draft_server` in its
+  `model_resident.json`) asks `127.0.0.1:7702` over DFT3.
+- **Log:** `/srv/workspace/sparkpipe/logs/draftd.log`. It prints
+  `DRAFTD-TIMING` every 32 requests (queue, wait, compute, apply and total
+  ms) and `DRAFTD-STATS` every 256 requests.
+- **GPU:** about 11.5 GB at short context, plus 20 KB per context position.
+  `--context-bytes` (default 12 GiB) caps a sequence's keys and values; a
+  longer one answers unavailable (`CONTEXT-TOO-LONG`). The GPU is shared
+  with the chess tenant (about 5 GB).
+- **Latency:** 8-15 ms per request; the draft itself is 6-7 ms at short
+  context and 11-13 ms at 137K.
+- **Recording:** `--record-dir DIR` writes every tap connection to an
+  `.spt2` file for offline scoring (`tools/spec_offline`). Use it on hold
+  corpora only, never on users' traffic.
 
 ## Draft farm
 
