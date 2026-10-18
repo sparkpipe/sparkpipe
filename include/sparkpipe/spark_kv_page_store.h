@@ -162,6 +162,12 @@ SparkStatus SparkKvPageStoreInvalidate(
 	SparkKvPageStore *store,
 	uint32_t logical_page_index,
 	uint64_t generation);
+SparkStatus SparkKvPageStoreRekey(
+	SparkKvPageStore *store,
+	uint32_t from_page,
+	uint64_t from_generation,
+	uint32_t to_page,
+	uint64_t to_generation);
 SparkStatus SparkKvPageStoreInvalidatePair(
 	SparkKvPageStore *first,
 	SparkKvPageStore *second,

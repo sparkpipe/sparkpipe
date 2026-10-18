@@ -841,12 +841,18 @@ static SparkStatus SparkStageKvBindingAttachStates(SparkStageKvBinding *binding,
 	store.backing_path = configuration->backing_directory;
 	store.staging_address = binding->state_staging;
 	store.staging_bytes = binding->recurrent.lane_bytes;
+	if ( configuration->recurrent.checkpoint_token_count == 0u || configuration->recurrent.checkpoint_token_count % binding->block_token_count != 0u )
+	{
+		fprintf(stderr,"%s kv binding refused: recurrent checkpoints need a checkpoint stride that is a whole number of %u-token pages, got %u, so long conversations would keep no resume point older than the newest %u\n",
+			binding->module_tag,binding->block_token_count,configuration->recurrent.checkpoint_token_count,SPARK_KV_PAGE_CACHE_RECENT_STATES);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	status = SparkKvPageStoreInitialize(&binding->state_store,&store);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkKvPageCacheAttachStateStore(&binding->page_cache,&binding->state_store);
-	fprintf(stderr,"%s kv binding recurrent lane_bytes=%llu state_slots=%u state_backing_bytes=%llu page_store_backing_bytes=%llu status=%s\n",binding->module_tag,
+		status = SparkKvPageCacheAttachStateStore(&binding->page_cache,&binding->state_store,configuration->recurrent.checkpoint_token_count);
+	fprintf(stderr,"%s kv binding recurrent lane_bytes=%llu state_slots=%u state_backing_bytes=%llu page_store_backing_bytes=%llu kept_states=newest %u plus every %u tokens status=%s\n",binding->module_tag,
 		(unsigned long long)binding->recurrent.lane_bytes,binding->state_slot_count,(unsigned long long)store.maximum_backing_bytes,
-		(unsigned long long)binding->page_store_backing_bytes,SparkStatusToString(status));
+		(unsigned long long)binding->page_store_backing_bytes,SPARK_KV_PAGE_CACHE_RECENT_STATES,configuration->recurrent.checkpoint_token_count,SparkStatusToString(status));
 	SPARK_RETURN(status);
 }
 
@@ -1480,6 +1486,12 @@ static void SparkStageKvBindingLogCounters(const SparkStageKvBinding *binding)
 	fprintf(stderr,"%s kv binding restore worker jobs=%llu hints=%llu hinted_jobs=%llu pending_answers=%llu imported_pages=%llu\n",binding->module_tag,
 		(unsigned long long)binding->restore_jobs,(unsigned long long)binding->restore_hints,(unsigned long long)binding->restore_hinted_jobs,
 		(unsigned long long)binding->restore_pending_answers,(unsigned long long)binding->restore_imported_pages);
+	if ( binding->recurrent.lane_bytes != 0u )
+		fprintf(stderr,"%s kv binding states records=%u slots=%u superseded=%llu pressure_demoted=%llu rekeyed=%llu pinned_skips=%llu dedup_lost=%llu promoted=%llu staged_drops=%llu\n",binding->module_tag,
+			binding->state_store.backing_page_count,binding->state_slot_count,(unsigned long long)binding->page_cache.state_superseded_count,
+			(unsigned long long)binding->page_cache.state_pressure_demoted_count,(unsigned long long)binding->page_cache.state_rekeyed_count,
+			(unsigned long long)binding->page_cache.state_pinned_skip_count,(unsigned long long)binding->page_cache.stateful_dedup_lost_count,
+			(unsigned long long)binding->page_cache.state_promoted_count,(unsigned long long)atomic_load(&binding->recurrent_staged_drops));
 }
 
 static void SparkStageKvBindingSaveAtDestroy(SparkStageKvBinding *binding)
@@ -2102,22 +2114,21 @@ static SparkStatus SparkStageKvCollectWrites(SparkStageKvBinding *binding,const 
 
 static SparkStatus SparkStageKvWriteJob(SparkStageKvBinding *binding,const SparkStageKvStateJob *job,uint32_t site,uint64_t *held)
 {
-	SparkStatus status,evicted;
-	uint32_t evictions = 0u;
+	SparkStatus status,demoted;
+	uint32_t demotions = 0u;
 	status = SparkStageKvStateWrite(binding,job);
 	while ( status == SPARK_STATUS_CAPACITY_EXCEEDED )
 	{
 		(void)SparkStageKvBindingLock(binding,held);
-		evicted = SparkKvPageCacheDemoteState(&binding->page_cache);
-		if ( evicted == SPARK_STATUS_CAPACITY_EXCEEDED )
-			evicted = SparkKvPageCacheEvictUnused(&binding->page_cache);
+		demoted = SparkKvPageCacheDemoteState(&binding->page_cache,0,0u);
 		SparkStageKvBindingUnlock(binding,site,*held);
-		if ( evicted != SPARK_STATUS_OK )
+		if ( demoted != SPARK_STATUS_OK )
 		{
-			fprintf(stderr,"%s kv binding state store full: page %u has no record slot after evicting %u unused prefixes\n",binding->module_tag,job->page,evictions);
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+			fprintf(stderr,"%s kv binding state store full: page %u has no record slot after %u demotions, every other record is in use by a lane or a save status=%s\n",
+				binding->module_tag,job->page,demotions,SparkStatusToString(demoted));
+			SPARK_RETURN(demoted);
 		}
-		evictions++;
+		demotions++;
 		status = SparkStageKvStateWrite(binding,job);
 	}
 	if ( status != SPARK_STATUS_OK )

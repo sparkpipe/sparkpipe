@@ -1122,6 +1122,39 @@ SparkStatus SparkKvPageStoreInvalidate(SparkKvPageStore *store,uint32_t logical_
 	SPARK_RETURN(status);
 }
 
+SparkStatus SparkKvPageStoreRekey(SparkKvPageStore *store,uint32_t from_page,uint64_t from_generation,uint32_t to_page,uint64_t to_generation)
+{
+	SparkKvPageStoreWorker *worker;
+	SparkStatus status = SPARK_STATUS_NOT_FOUND;
+	uint32_t index,slot;
+	if ( SparkKvPageStoreIsValid(store) == 0u || from_generation == 0u || to_generation == 0u || from_page == to_page ||
+		from_page >= store->logical_page_capacity || to_page >= store->logical_page_capacity )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	worker = (SparkKvPageStoreWorker *)store->worker_state;
+	if ( pthread_mutex_lock(&worker->mutex) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	for (index=0u; index<store->transfer_capacity; index++)
+		if ( worker->jobs[index].state != SPARK_KV_PAGE_STORE_JOB_FREE &&
+			(worker->jobs[index].logical_page_index == from_page || worker->jobs[index].logical_page_index == to_page) )
+			status = SPARK_STATUS_BUSY;
+	slot = worker->backing_slots_by_logical_page[from_page];
+	if ( status == SPARK_STATUS_NOT_FOUND && store->valid_pages[from_page] == SPARK_KV_PAGE_STORE_PAGE_VALID && store->generations[from_page] == from_generation &&
+		slot < worker->backing_slot_capacity && worker->logical_pages_by_backing_slot[slot] == from_page &&
+		store->valid_pages[to_page] == SPARK_KV_PAGE_STORE_PAGE_INVALID && worker->backing_slots_by_logical_page[to_page] == SPARK_KV_CACHE_NO_BLOCK )
+	{
+		worker->backing_slots_by_logical_page[to_page] = slot;
+		worker->logical_pages_by_backing_slot[slot] = to_page;
+		worker->backing_slots_by_logical_page[from_page] = SPARK_KV_CACHE_NO_BLOCK;
+		store->valid_pages[to_page] = SPARK_KV_PAGE_STORE_PAGE_VALID;
+		store->generations[to_page] = to_generation;
+		store->valid_pages[from_page] = SPARK_KV_PAGE_STORE_PAGE_INVALID;
+		store->generations[from_page] = 0u;
+		status = SPARK_STATUS_OK;
+	}
+	(void)pthread_mutex_unlock(&worker->mutex);
+	SPARK_RETURN(status);
+}
+
 SparkStatus SparkKvPageStoreInvalidatePair(SparkKvPageStore *first,SparkKvPageStore *second,uint32_t logical_page_index,uint64_t generation)
 {
 	SparkKvPageStoreWorker *left,*right;

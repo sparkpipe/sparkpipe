@@ -2398,7 +2398,7 @@ static int32_t SparkTestKvPairedEviction(SparkKvPageStore *stores,uint8_t *sourc
 	transactions.physical_pages = physical_pages;
 	transactions.page_capacity = 4u;
 	fixture.cache.page_store = &stores[0];
-	if ( SparkKvPageCacheAttachStateStore(&fixture.cache,&stores[1]) != SPARK_STATUS_OK )
+	if ( SparkKvPageCacheAttachStateStore(&fixture.cache,&stores[1],4u * SPARK_TEST_BLOCK_TOKENS) != SPARK_STATUS_OK )
 		return(-67);
 	SparkTestKvPageLane(&lane,1u,0u,0u,4u);
 	SparkTestKvPagePublish(&lane,4u,41u);

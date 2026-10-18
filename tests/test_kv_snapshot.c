@@ -296,7 +296,7 @@ static int32_t SnapFixtureOpen(SnapFixture *fixture,SparkKvSnapshotStore *store,
 	config.sequences = fixture->sequences;
 	config.hash_bucket_heads = fixture->heads;
 	config.entry_indices_by_logical_page = fixture->by_page;
-	if ( SparkKvPageCacheInitialize(&fixture->cache,&config) != SPARK_STATUS_OK || SparkKvPageCacheAttachStateStore(&fixture->cache,&fixture->stores[1]) != SPARK_STATUS_OK )
+	if ( SparkKvPageCacheInitialize(&fixture->cache,&config) != SPARK_STATUS_OK || SparkKvPageCacheAttachStateStore(&fixture->cache,&fixture->stores[1],4u * SNAP_BLOCK_TOKENS) != SPARK_STATUS_OK )
 		return(-3);
 	SparkTestKvAttachDeviceCopy(&fixture->cache,&fixture->device_copy,&fixture->arena);
 	fixture->snapshot.store = store;

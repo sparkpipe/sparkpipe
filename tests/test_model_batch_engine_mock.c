@@ -2058,6 +2058,36 @@ static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment 
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioRecurrentStaleResume(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	SparkModelServingLane lane = {0};
+	uint32_t prompt[18],index;
+	for (index=0u; index<18u; index++)
+		prompt[index] = 500u + index;
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,10u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,695u,1u,prompt,18u);
+	TestDriveUntilTerminal(engine,&state,1u,800u);
+	MockResidentClientScriptPrefixResult(1u,SPARK_STATUS_NOT_FOUND,1u);
+	TestSubmitPrompt(engine,2u,696u,1u,prompt,18u);
+	TestDriveUntilTerminal(engine,&state,2u,800u);
+	MockResidentClientScriptPrefixResult(1u,SPARK_STATUS_OK,0u);
+	CHECK(state.completed_events[2] == 1u && state.error_events[2] == 0u && state.stale_recomputes[2] == 1u,"recurrent stale resume: a resume point the ranks no longer hold costs one retry and the request completes");
+	CHECK(TestFindLane(2u,16u,16u,&lane) != 0u && TestFindLane(2u,12u,12u,&lane) != 0u && TestFindLane(2u,0u,0u,&lane) == 0u,"recurrent stale resume: the retry resumes at the previous checkpoint instead of recomputing the prompt");
+	TestSubmitPrompt(engine,3u,697u,1u,prompt,18u);
+	CHECK(TestWaitFirstRequestLane(engine,3u,&lane) != 0u && lane.cache_prefix_token_count == 16u,"recurrent stale resume: the recomputed checkpoint is a resume point again, so no block of the chain was cut");
+	TestDriveUntilTerminal(engine,&state,3u,800u);
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.stale_prefix_recompute_count == 1u && state.error_events[3] == 0u,"recurrent stale resume: one stale resume point is one recompute");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioReplyCheckpoint(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	TestBatchState state = {0};
@@ -2132,6 +2162,7 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 	(void)unlink(path);
 	TestLoadVariantDeployment(runtime_root,"recurrent-checkpoints",TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH,path,sizeof(path),&deployment);
 	TestScenarioRecurrentCheckpoints(&deployment,runtime_root);
+	TestScenarioRecurrentStaleResume(&deployment,runtime_root);
 	TestScenarioReplyCheckpoint(&deployment,runtime_root);
 	SparkModelResidentDeploymentReset(&deployment);
 	(void)unlink(path);

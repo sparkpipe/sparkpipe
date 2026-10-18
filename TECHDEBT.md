@@ -486,6 +486,18 @@ finished ones rewritten to say what is left.
   lane rejoins, so a lane is parked and restored page by page rather than as
   one contiguous transfer. Close it with a fleet backpressure run at 2x device
   pages where parked lanes restore bit-exact at B1 and B16.
+- The KV snapshot tier does not hold long conversations. Every 64-token page
+  file repeats the whole chain of links to the root (20*N^2 bytes per rank:
+  356 MB at 270K, 2.65 GB at 737K), eviction removes the globally oldest file,
+  which is a chain root and breaks every descendant (7,820 evictions and 0
+  restores on 2026-10-16), the index is a linear scan, the writer is LIFO so
+  children reach disk before their parents, and SAVED is set at enqueue, not
+  on disk. Close it with immutable page files that name only their parent,
+  separate state files keyed by the same prefix and evicted on their own,
+  leaf-first eviction from an intrusive leaf list, a FIFO writer that
+  protects the parent of the file being committed, SAVED reconciled against
+  the index, and a hash index; proven on the fleet by a K3 -> GLM -> K3 swap
+  that restores a 270K conversation in under 15 s.
 - Crash recovery of the KV snapshot store has not run on the fleet. The store
   writes each file to a `.kvs-writing-` temporary, fsyncs, renames and fsyncs
   the directory, and its open deletes leftover temporaries; the binding opens

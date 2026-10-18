@@ -1290,6 +1290,7 @@ static void ConfigureRecurrent(SparkStageKvConfiguration *configuration)
 {
 	Configure(configuration);
 	configuration->recurrent.lane_bytes = TEST_RECURRENT_BYTES;
+	configuration->recurrent.checkpoint_token_count = 4u * TEST_BLOCK;
 	configuration->recurrent.copy = TestRecurrentCopy;
 	configuration->recurrent.context = &RECURRENT;
 	configuration->backing_maximum_bytes += (uint64_t)TEST_LOGICAL * TEST_RECURRENT_BYTES;
@@ -1432,7 +1433,8 @@ static void TestRecurrentCheckpoints(void)
 {
 	SparkStageKvConfiguration configuration;
 	const uint32_t slots = 2u * TEST_LANES + 2u;
-	uint32_t index;
+	uint32_t index,saved,unsaved,ineligible;
+	uint64_t restores;
 	MakeDirectories();
 	ConfigureRecurrent(&configuration);
 	configuration.backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 2u) * TEST_PAGE_BYTES + (uint64_t)slots * TEST_RECURRENT_BYTES;
@@ -1440,14 +1442,18 @@ static void TestRecurrentCheckpoints(void)
 	PublishCheckpoint(1u,0x30u,1u);
 	assert(BINDING.page_cache.published_page_count == 1u);
 	assert(ResumeCheckpoint(2u,0x30u) != SPARK_STATUS_OK);
-	for (index=0u; index<=slots; index++)
+	for (index=0u; index<slots; index++)
 		PublishCheckpoint(10u + index,(uint8_t)(0x40u + index),0u);
-	assert(BINDING.page_cache.state_demoted_count == 1u);
-	assert(ResumeCheckpoint(3u,0x40u) != SPARK_STATUS_OK);
+	assert(SparkStageKvBindingSaveAll(&BINDING,NowNs() + 5000000000ull,&saved,&unsaved,&ineligible) == SPARK_STATUS_OK && unsaved == 0u);
+	PublishCheckpoint(10u + slots,(uint8_t)(0x40u + slots),0u);
+	assert(BINDING.page_cache.state_demoted_count == 1u && BINDING.page_cache.state_pressure_demoted_count == 1u && BINDING.state_store.backing_page_count == slots);
 	assert(ResumeCheckpoint(4u,(uint8_t)(0x40u + slots)) == SPARK_STATUS_OK);
-	assert(ResumeCheckpoint(5u,0x41u) == SPARK_STATUS_OK);
+	restores = BINDING.snapshot.restore_count;
+	assert(ResumeCheckpoint(3u,0x40u) == SPARK_STATUS_OK && BINDING.snapshot.restore_count == restores + 1u);
+	assert(BINDING.page_cache.state_pressure_demoted_count == 2u && BINDING.state_store.backing_page_count == slots);
+	assert(ResumeCheckpoint(5u,0x42u) == SPARK_STATUS_OK && BINDING.snapshot.restore_count == restores + 1u);
 	Close();
-	printf("A11 recurrent checkpoints: a stateless publish captures nothing and is never a resume point, a full state store demotes the oldest checkpoint to stateless KV and keeps the newer ones resumable: ok\n");
+	printf("A11 recurrent checkpoints: a stateless publish captures nothing and is never a resume point, a full state store demotes the oldest checkpoint and keeps the newer ones resumable, and a demoted checkpoint saved with its state restores from the snapshot tier by demoting the next oldest: ok\n");
 }
 
 static void PublishRecurrentStep(uint64_t sequence,uint32_t position,uint32_t context,uint8_t identity,uint8_t seed,uint32_t stateless,uint8_t *bytes)

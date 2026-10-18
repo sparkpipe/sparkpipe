@@ -145,7 +145,7 @@ static int32_t CudaEngineOpen(CudaEngine *engine,SparkKvSnapshotStore *store)
 	config.sequences = engine->sequences;
 	config.hash_bucket_heads = engine->heads;
 	config.entry_indices_by_logical_page = engine->by_page;
-	if ( SparkKvPageCacheInitialize(&engine->cache,&config) != SPARK_STATUS_OK || SparkKvPageCacheAttachStateStore(&engine->cache,&engine->stores[1]) != SPARK_STATUS_OK )
+	if ( SparkKvPageCacheInitialize(&engine->cache,&config) != SPARK_STATUS_OK || SparkKvPageCacheAttachStateStore(&engine->cache,&engine->stores[1],4u * CUDA_BLOCK_TOKENS) != SPARK_STATUS_OK )
 		return(-6);
 	engine->snapshot.store = store;
 	memset(engine->snapshot.layout_sha256,0x5a,sizeof(engine->snapshot.layout_sha256));

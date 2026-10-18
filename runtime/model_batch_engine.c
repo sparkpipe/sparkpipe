@@ -969,9 +969,16 @@ static uint32_t SparkModelBatchWaveCarriesStalePrefix(SparkModelBatchEngine *eng
 static SparkStatus SparkModelBatchRecomputeStalePrefix(SparkModelBatchEngine *engine,SparkModelBatchRequestState *request)
 {
 	SparkStatus status;
+	const uint32_t *tokens = SparkModelBatchRequestTokens(engine,(uint32_t)(request - engine->requests));
 	status = SparkPrefixCacheReleaseSequence(&engine->prefix_cache,request->sequence_id);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkPrefixCacheTombstonePrompt(&engine->prefix_cache,SparkModelBatchRequestTokens(engine,(uint32_t)(request - engine->requests)),request->cache_prefix_token_count);
+	if ( status == SPARK_STATUS_OK && engine->adapter_descriptor->cache_checkpoint_token_count != 0u )
+	{
+		status = SparkPrefixCacheClearResume(&engine->prefix_cache,tokens,request->cache_prefix_token_count);
+		fprintf(stderr,"batch_resume_cleared request=%llu tokens=%u status=%s: the ranks no longer hold this resume point, so the request resumes at an earlier one\n",
+			(unsigned long long)request->request_id,request->cache_prefix_token_count,SparkStatusToString(status));
+	}
+	else if ( status == SPARK_STATUS_OK )
+		status = SparkPrefixCacheTombstonePrompt(&engine->prefix_cache,tokens,request->cache_prefix_token_count);
 	if ( status == SPARK_STATUS_OK )
 		engine->prefix_index_dirty = 1u;
 	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND )

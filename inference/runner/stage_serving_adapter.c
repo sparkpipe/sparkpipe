@@ -807,6 +807,7 @@ static SparkStatus StageServingBindKv(SparkStageServingState *state,
 	{
 		kv.recurrent.copy = StageServingRecurrentCopy;
 		kv.recurrent.context = state;
+		kv.recurrent.checkpoint_token_count = descriptor->cache_checkpoint_token_count;
 	}
 	status = SparkStageKvBindingInitialize(&state->kv, &kv);
 	if ( status != SPARK_STATUS_OK )
