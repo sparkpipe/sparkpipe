@@ -130,6 +130,8 @@ def adapter_gates(config, rank, failures, per_host_ports):
 
     check(config["state_budget_bytes"] == lane.DEFAULT_STATE_BUDGET_BYTES, failures,
           f"{host}: the adapter carries the rank state budget")
+    check(config["state_memory_bytes"] >= (2 * config["resident_capacity"] + 2) * lane.recurrent_page_bytes(lane.TOPOLOGY), failures,
+          f"{host}: the adapter gives KDA state records memory for two per sequence plus two")
     check("tp_collective" not in config, failures, f"{host}: the host TCP collective is gone")
     per_host_ports.setdefault(host, []).append(lane.CONTROL_BASE + rank)
     check(config["device_collective"]["wait_mode"] == "hardware", failures, f"{host}: device collective wait mode")
@@ -279,13 +281,12 @@ def main() -> int:
         record = lane.recurrent_page_bytes("tp4pp4")
         check(record == 29638656 and lane.recurrent_page_bytes("tp16") == 28403712, failures,
               "the KDA record per logical page is the KV binding's recurrent lane bytes")
-        minimum = lane.kv_backing_minimum("tp4pp4", limits["resident_sequence_capacity"],
-                                          limits["kv_physical_page_capacity"], limits["kv_logical_page_capacity"])
+        minimum = lane.kv_backing_minimum("tp4pp4", limits["kv_physical_page_capacity"], limits["kv_logical_page_capacity"])
         check(lane.kv_page_bytes("tp16") == 24 * 64 * 576 * 2 // 16, failures,
               "a TP16 rank holds one sixteenth of every MLA layer's page")
-        check(all(node["kv_backing_maximum_bytes"] >= minimum >= (2 * limits["resident_sequence_capacity"] + 2) * record
+        check(all(node["kv_backing_maximum_bytes"] >= minimum >= (limits["kv_logical_page_capacity"] - limits["kv_physical_page_capacity"] + 2) * lane.kv_page_bytes("tp4pp4")
                   for node in deployment["nodes"]), failures,
-              "the default KV backing holds the spilled pages and two KDA checkpoints per sequence plus two")
+              "the default KV backing holds the spilled pages")
         short = subprocess.run(
             [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
              "--runtime-root", runtime_root,
@@ -293,8 +294,19 @@ def main() -> int:
              "--kv-backing-bytes", str(minimum - 1),
              "--output-dir", str(Path(temporary) / "short")],
             capture_output=True, text=True)
-        check(short.returncode != 0 and "KDA checkpoints" in short.stderr, failures,
-              "a KV backing below the spilled pages and the KDA checkpoints is refused")
+        check(short.returncode != 0 and "spilled" in short.stderr, failures,
+              "a KV backing below the spilled pages is refused")
+        states = lane.state_memory_minimum("tp4pp4", limits["resident_sequence_capacity"])
+        tight = subprocess.run(
+            [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
+             "--runtime-root", runtime_root,
+             "--weightd-socket", socket_path,
+             "--sequences", str(limits["resident_sequence_capacity"]),
+             "--state-memory-bytes", str(states - 1),
+             "--output-dir", str(Path(temporary) / "tight")],
+            capture_output=True, text=True)
+        check(tight.returncode != 0 and "KDA checkpoints" in tight.stderr, failures,
+              "state memory below two KDA checkpoints per sequence plus two is refused")
 
         for arguments, message, refusal in (
                 (["--sequences", "4", "--rows", str(lane.MAX_ROWS + 1)], f"within sequences..{lane.MAX_ROWS}",
