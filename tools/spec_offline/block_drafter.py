@@ -158,17 +158,19 @@ class BlockDrafter:
         self.head = target.load(names["head"], device)
         self.target_norm = target.load(names["norm"], device)
         self.inv, self.attention = yarn_frequencies(c, device)
+        self.window = None
 
-    def context(self, taps, positions):
-        features = rms(taps.float() @ self.fc32, self.hidden_norm, self.eps).to(torch.bfloat16)
-        keys, values = [], []
-        for layer in self.layers:
-            k = (features @ layer["self_attn.k_proj"].t()).view(-1, self.kv_heads, self.head_dim)
-            k = rotate(rms(k, layer["self_attn.k_norm"], self.eps), positions, self.inv, self.attention).to(torch.bfloat16)
-            v = (features @ layer["self_attn.v_proj"].t()).view(-1, self.kv_heads, self.head_dim)
-            keys.append(k)
-            values.append(v)
-        return keys, values
+    def context(self, taps, positions, chunk=4096):
+        keys, values = [[] for _ in self.layers], [[] for _ in self.layers]
+        for begin in range(0, taps.shape[0], chunk):
+            part = taps[begin:begin + chunk].to(self.device)
+            where = positions[begin:begin + chunk].to(self.device)
+            features = rms(part.float() @ self.fc32, self.hidden_norm, self.eps).to(torch.bfloat16)
+            for index, layer in enumerate(self.layers):
+                k = (features @ layer["self_attn.k_proj"].t()).view(-1, self.kv_heads, self.head_dim)
+                keys[index].append(rotate(rms(k, layer["self_attn.k_norm"], self.eps), where, self.inv, self.attention).to(torch.bfloat16))
+                values[index].append((features @ layer["self_attn.v_proj"].t()).view(-1, self.kv_heads, self.head_dim))
+        return [torch.cat(parts, 0) for parts in keys], [torch.cat(parts, 0) for parts in values]
 
     def draft(self, anchor_token, anchor_position, keys, values, count):
         tokens = torch.full((self.block,), self.mask, dtype=torch.long, device=self.device)
@@ -183,8 +185,9 @@ class BlockDrafter:
             kb = (x @ layer["self_attn.k_proj"].t()).view(self.block, self.kv_heads, self.head_dim)
             kb = rotate(rms(kb, layer["self_attn.k_norm"], self.eps), positions, self.inv, self.attention)
             vb = (x @ layer["self_attn.v_proj"].t()).view(self.block, self.kv_heads, self.head_dim).float()
-            k = torch.cat([keys[index][:count].float(), kb], 0)
-            v = torch.cat([values[index][:count].float(), vb], 0)
+            first = 0 if self.window is None else max(0, count - self.window)
+            k = torch.cat([keys[index][first:count].float(), kb], 0)
+            v = torch.cat([values[index][first:count].float(), vb], 0)
             k = k.repeat_interleave(group, dim=1).transpose(0, 1)
             v = v.repeat_interleave(group, dim=1).transpose(0, 1)
             scores = torch.matmul(q.transpose(0, 1), k.transpose(1, 2)) / math.sqrt(self.head_dim)
@@ -428,6 +431,7 @@ def main():
     parser.add_argument("--taps", nargs="+", required=True)
     parser.add_argument("--delta", type=int, default=0)
     parser.add_argument("--convention", choices=("shift", "inplace"), help="defaults to the drafter's own")
+    parser.add_argument("--window", type=int, default=4096, help="context positions a block drafter attends to, as draftd keeps them; latent drafters use their own layer windows")
     parser.add_argument("--max-anchors", type=int, default=400, help="per request, spread over the reply")
     parser.add_argument("--out", required=True)
     parser.add_argument("--anchors-out", help="JSON lines, one per anchor: request, position, accepted, drafts, confidence")
@@ -439,6 +443,8 @@ def main():
     device = "cuda"
     drafter = open_drafter(args.drafter, args.target_shard, {"embed": args.embed, "head": args.head, "norm": args.norm}, device)
     args.convention = args.convention or drafter.convention
+    if hasattr(drafter, "window"):
+        drafter.window = args.window
     hello, streams = requests(args.taps, None)
     wanted = [f"o{layer + args.delta}" for layer in drafter.layer_ids]
     missing = [name for name in wanted + ["final"] if name not in hello["entries"]]
@@ -447,7 +453,7 @@ def main():
     columns = [hello["entries"].index(name) for name in wanted]
     final_column = hello["entries"].index("final")
     slots = list(range(drafter.block)) if args.convention == "shift" else list(range(1, drafter.block))
-    report = {"arm": {"delta": args.delta, "convention": args.convention, "layers": wanted, "temperature": args.temperature, "top_p": args.top_p, "top_k": args.top_k, "seed": args.seed}, "requests": []}
+    report = {"arm": {"delta": args.delta, "convention": args.convention, "layers": wanted, "window": getattr(drafter, "window", None), "temperature": args.temperature, "top_p": args.top_p, "top_k": args.top_k, "seed": args.seed}, "requests": []}
     rule = None
     if args.temperature > 0.0:
         seed = args.seed - (1 << 64) if args.seed >= (1 << 63) else args.seed
@@ -472,12 +478,14 @@ def main():
         reply = [index for index, flag in enumerate(flags) if flag & 0x6]
         if not reply:
             continue
-        taps = load_rows(hello, records, columns).to(device)
-        final = load_rows(hello, records, [final_column]).to(device)[:, 0]
+        taps = load_rows(hello, records, columns)
+        final = load_rows(hello, records, [final_column])[:, 0]
         pos = torch.arange(start, end, device=device)
-        keys, values = drafter.context(taps.reshape(len(records), -1), pos)
         with torch.no_grad():
-            predicted = torch.argmax((rms(final, drafter.target_norm, drafter.eps).to(torch.bfloat16) @ drafter.head.t()).float(), -1)
+            keys, values = drafter.context(taps.reshape(len(records), -1), pos)
+            predicted = torch.cat([torch.argmax((rms(final[begin:begin + 2048].to(device), drafter.target_norm, drafter.eps).to(torch.bfloat16) @ drafter.head.t()).float(), -1)
+                                   for begin in range(0, len(records), 2048)])
+        del taps, final
         agree = (predicted[:-1] == tokens[1:]).sum().item()
         head_agree += agree
         head_total += len(records) - 1

@@ -592,6 +592,7 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_object_and_channel_calls.py \
 	tests/test_draftd_kernels.py \
 	tests/test_latent_block_drafter.py \
+	tests/test_block_drafter_context.py \
 	tests/test_keyed_draft_capture.py \
 	tests/test_draftd_mtp_kv.py \
 	tests/test_k3_reshard_cells.py \
