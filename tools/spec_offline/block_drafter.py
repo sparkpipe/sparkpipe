@@ -408,6 +408,19 @@ def requests(paths, entry_names):
     return hello, streams
 
 
+def prefix_donor(key, item, start, donors):
+    prompt = [(position, record[2]) for position, record in sorted(item["positions"].items()) if position >= start and not record[3] & 0x6]
+    if not prompt:
+        return None
+    for other_key, other in sorted(donors.items(), key=lambda entry: entry[0][1], reverse=True):
+        if other_key == key or other_key[1] >= key[1]:
+            continue
+        held = other["positions"]
+        if all(position in held for position in range(start)) and all(position in held and held[position][2] == token for position, token in prompt):
+            return other
+    return None
+
+
 def load_rows(hello, records, columns):
     hidden = hello["hidden"]
     count = len(hello["entries"])
@@ -432,6 +445,7 @@ def main():
     parser.add_argument("--delta", type=int, default=0)
     parser.add_argument("--convention", choices=("shift", "inplace"), help="defaults to the drafter's own")
     parser.add_argument("--window", type=int, default=4096, help="context positions a block drafter attends to, as draftd keeps them; latent drafters use their own layer windows")
+    parser.add_argument("--donor-taps", nargs="*", default=[], help="recordings that only lend context: a request recorded from position s > 0 takes positions below s from the latest earlier request that holds them all and matches its recorded prompt rows")
     parser.add_argument("--max-anchors", type=int, default=400, help="per request, spread over the reply")
     parser.add_argument("--out", required=True)
     parser.add_argument("--anchors-out", help="JSON lines, one per anchor: request, position, accepted, drafts, confidence")
@@ -446,6 +460,13 @@ def main():
     if hasattr(drafter, "window"):
         drafter.window = args.window
     hello, streams = requests(args.taps, None)
+    donors = dict(streams)
+    if args.donor_taps:
+        donor_hello, donor_streams = requests(args.donor_taps, None)
+        if donor_hello["entries"] != hello["entries"] or donor_hello["hidden"] != hello["hidden"]:
+            raise SystemExit(f"donor recordings carry {donor_hello['entries']}, the scored ones {hello['entries']}")
+        for key, item in donor_streams.items():
+            donors.setdefault(key, item)
     wanted = [f"o{layer + args.delta}" for layer in drafter.layer_ids]
     missing = [name for name in wanted + ["final"] if name not in hello["entries"]]
     if missing:
@@ -473,8 +494,14 @@ def main():
         while start - 1 in item["positions"]:
             start -= 1
         records = [item["positions"][p] for p in range(start, end)]
+        recorded_from = start
+        donor = prefix_donor(key, item, start, donors) if start > 0 else None
+        if donor is not None:
+            records = [donor["positions"][p] for p in range(start)] + records
+            start = 0
+        own = recorded_from - start
         tokens = torch.tensor([record[2] for record in records], device=device)
-        flags = [record[3] for record in records]
+        flags = [0] * own + [record[3] for record in records[own:]]
         reply = [index for index, flag in enumerate(flags) if flag & 0x6]
         if not reply:
             continue
@@ -486,9 +513,9 @@ def main():
             predicted = torch.cat([torch.argmax((rms(final[begin:begin + 2048].to(device), drafter.target_norm, drafter.eps).to(torch.bfloat16) @ drafter.head.t()).float(), -1)
                                    for begin in range(0, len(records), 2048)])
         del taps, final
-        agree = (predicted[:-1] == tokens[1:]).sum().item()
+        agree = (predicted[own:-1] == tokens[own + 1:]).sum().item()
         head_agree += agree
-        head_total += len(records) - 1
+        head_total += len(records) - own - 1
         first = reply[0]
         reply_hits = (predicted[first - 1:-1] == tokens[first:]).sum().item() if first > 0 else 0
         reply_count = len(records) - first if first > 0 else 0
@@ -531,12 +558,12 @@ def main():
                                              "drafts": drafts, "confidence": [round(c, 4) for c in confidence]}) + "\n")
         totals["anchors"] += len(lengths)
         totals["accepted"] += sum(lengths)
-        report["requests"].append({"request_id": key[1], "positions": len(records), "reply": len(records) - first, "anchors": len(lengths),
+        report["requests"].append({"request_id": key[1], "positions": len(records), "recorded_from": recorded_from, "context_from": start, "reply": len(records) - first, "anchors": len(lengths),
                                    "tokens_per_round": 1 + sum(lengths) / max(1, len(lengths)),
-                                   "histogram": np.bincount(lengths, minlength=len(slots) + 1).tolist(), "final_head_agreement": agree / max(1, len(records) - 1),
+                                   "histogram": np.bincount(lengths, minlength=len(slots) + 1).tolist(), "final_head_agreement": agree / max(1, len(records) - own - 1),
                                    "reply_head_agreement": reply_hits / max(1, reply_count)})
-        print(f"request {key[1]} positions {len(records)} reply {reply_count} anchors {len(lengths)} tokens/round {1 + sum(lengths) / max(1, len(lengths)):.2f}"
-              f" head {agree / max(1, len(records) - 1):.4f} reply-head {reply_hits / max(1, reply_count):.4f}", flush=True)
+        print(f"request {key[1]} positions {len(records)} recorded_from {recorded_from} context_from {start} reply {reply_count} anchors {len(lengths)}"
+              f" tokens/round {1 + sum(lengths) / max(1, len(lengths)):.2f} head {agree / max(1, len(records) - own - 1):.4f} reply-head {reply_hits / max(1, reply_count):.4f}", flush=True)
     report["tokens_per_round"] = 1 + totals["accepted"] / max(1, totals["anchors"])
     report["coupled_tokens_per_round"] = 1 + coupled_accepted / max(1, totals["anchors"]) if rule is not None else None
     report["slot_conditional"] = [hits / tries if tries else None for hits, tries in zip(slot_hits, slot_tries)]

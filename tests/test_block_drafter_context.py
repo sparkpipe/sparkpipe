@@ -112,5 +112,44 @@ class BlockDrafterContextTest(unittest.TestCase):
             self.assertTrue(torch.equal(a, b))
 
 
+def stream(tokens, first=0, reply_from=None):
+    positions = {}
+    for index, token in enumerate(tokens):
+        position = first + index
+        positions[position] = ("file", 0, token, 0x2 if reply_from is not None and position >= reply_from else 0x1)
+    return {"positions": positions, "tail": {}}
+
+
+@unittest.skipUnless(HAVE_TORCH, "torch is not installed")
+class PrefixDonorTest(unittest.TestCase):
+    def setUp(self):
+        from block_drafter import prefix_donor
+        self.prefix_donor = prefix_donor
+        self.prompt = list(range(100, 140))
+
+    def test_takes_the_latest_earlier_request_that_matches_the_recorded_prompt_rows(self):
+        right = stream(self.prompt + [7, 7, 7], reply_from=40)
+        other = stream(list(range(300, 345)), reply_from=40)
+        later = stream(self.prompt + [9], reply_from=40)
+        scored = stream(self.prompt[32:] + [5, 6], first=32, reply_from=40)
+        donors = {(1, 10, 0): right, (1, 11, 0): other, (1, 13, 0): later}
+        self.assertIs(self.prefix_donor((1, 12, 0), scored, 32, donors), right)
+
+    def test_refuses_a_donor_that_lacks_a_position_below_the_recording(self):
+        gappy = stream(self.prompt, reply_from=40)
+        del gappy["positions"][3]
+        scored = stream(self.prompt[32:] + [5], first=32, reply_from=40)
+        self.assertIsNone(self.prefix_donor((1, 12, 0), scored, 32, {(1, 10, 0): gappy}))
+
+    def test_refuses_when_the_recording_holds_no_prompt_rows_to_check(self):
+        scored = stream([5, 6, 7], first=40, reply_from=40)
+        self.assertIsNone(self.prefix_donor((1, 12, 0), scored, 40, {(1, 10, 0): stream(self.prompt + [5, 6, 7], reply_from=40)}))
+
+    def test_refuses_a_donor_whose_tokens_differ_on_the_recorded_prompt_rows(self):
+        donor = stream(self.prompt[:35] + [1, 2, 3, 4, 5], reply_from=40)
+        scored = stream(self.prompt[32:] + [5], first=32, reply_from=40)
+        self.assertIsNone(self.prefix_donor((1, 12, 0), scored, 32, {(1, 10, 0): donor}))
+
+
 if __name__ == "__main__":
     unittest.main()
