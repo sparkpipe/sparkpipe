@@ -35,6 +35,10 @@
 #define SPARK_TEST_DRAFT_BRIDGE_MAX_DEPTH 8u
 #define SPARK_TEST_DRAFT_BRIDGE_TARGET_MODEL "glm5.3-test-drafter"
 #define SPARK_TEST_DRAFT_BRIDGE_SPECULATOR_MASK 0x5u
+#define SPARK_TEST_DRAFT_BRIDGE_SEED 0x1122334455667788ull
+#define SPARK_TEST_DRAFT_BRIDGE_INVERSE_TEMPERATURE 0.5f
+#define SPARK_TEST_DRAFT_BRIDGE_NUCLEUS 0.875f
+#define SPARK_TEST_DRAFT_BRIDGE_TOP_K 40u
 #define SPARK_TEST_DRAFT_BRIDGE_HEADER_OFF_COMMITTED_COUNT 72u
 #define SPARK_TEST_DRAFT_BRIDGE_HEADER_OFF_TAP_COUNT 76u
 #define SPARK_TEST_DRAFT_BRIDGE_EXPECTED_REQUEST_BYTES \
@@ -537,6 +541,11 @@ static SparkStatus TestDraftBridgeProposeStandard(
 {
     static const uint32_t committed[SPARK_TEST_DRAFT_BRIDGE_COMMITTED_COUNT] =
         { 11u, 22u, 33u };
+    static const SparkRowSampling sampling = {
+        .seed = SPARK_TEST_DRAFT_BRIDGE_SEED,
+        .inverse_temperature = SPARK_TEST_DRAFT_BRIDGE_INVERSE_TEMPERATURE,
+        .nucleus = SPARK_TEST_DRAFT_BRIDGE_NUCLEUS,
+        .top_k = SPARK_TEST_DRAFT_BRIDGE_TOP_K };
     uint8_t tap_rows[SPARK_TEST_DRAFT_BRIDGE_TAP_ROW_BYTES];
     uint32_t byte_index;
 
@@ -558,7 +567,7 @@ static SparkStatus TestDraftBridgeProposeStandard(
         SPARK_TEST_DRAFT_BRIDGE_DEPTH,
         SPARK_TEST_DRAFT_BRIDGE_TIME_BUDGET_MS,
         SPARK_TEST_DRAFT_BRIDGE_MAX_DEPTH,
-        0,
+        &sampling,
         nodes,
         node_capacity,
         node_count_out,
@@ -715,6 +724,23 @@ static uint32_t TestDraftBridgeWireFormat(void)
     cursor += sizeof(uint32_t);
     TestDraftBridgePutU32Le(cursor, SPARK_TEST_DRAFT_BRIDGE_NODE_CAPACITY);
     cursor += sizeof(uint32_t);
+    {
+        const float inverse_temperature = SPARK_TEST_DRAFT_BRIDGE_INVERSE_TEMPERATURE;
+        const float nucleus = SPARK_TEST_DRAFT_BRIDGE_NUCLEUS;
+        uint32_t bits;
+        TestDraftBridgePutU64Le(cursor, SPARK_TEST_DRAFT_BRIDGE_SEED);
+        cursor += sizeof(uint64_t);
+        memcpy(&bits, &inverse_temperature, sizeof(bits));
+        TestDraftBridgePutU32Le(cursor, bits);
+        cursor += sizeof(uint32_t);
+        memcpy(&bits, &nucleus, sizeof(bits));
+        TestDraftBridgePutU32Le(cursor, bits);
+        cursor += sizeof(uint32_t);
+        TestDraftBridgePutU32Le(cursor, SPARK_TEST_DRAFT_BRIDGE_TOP_K);
+        cursor += sizeof(uint32_t);
+        TestDraftBridgePutU32Le(cursor, 0u);
+        cursor += sizeof(uint32_t);
+    }
     for (byte_index = 0u;
          byte_index < SPARK_TEST_DRAFT_BRIDGE_COMMITTED_COUNT;
          ++byte_index)
