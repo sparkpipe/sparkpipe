@@ -105,12 +105,12 @@ K3 layers, when lookup has no match of at least 8 tokens (K3).
 | Short edits, model drafts added to lookup | 1.39× per token sampled, 1.6× greedy | not ported |
 | Reasoning prose at 137.7K, model drafts added | 1.07× | not ported |
 | Prose, lookup only | 1.16× greedy, 1.0× sampled | about 1.0× |
-| Greedy story prompt | 26.4 tok/s with both sources, 21.2 with lookup alone | no drafts found |
 | Whole-file rewrite, long prompt | 76.8 tok/s at 73K, 41.8 at 337K | 105 tok/s at 46K, 86.2 at 198K |
 
-Ratios are against no speculation in the same hold, except the greedy story
-prompt (baseline 16.2 tok/s, 2026-10-14) and GLM 5.3 Full's 232.9 (baseline
-from an earlier hold). Receipts:
+Ratios are against no speculation in the same hold, except GLM 5.3 Full's
+232.9 (baseline from an earlier hold). Speculation gains depend on the
+content: a greedy story that happens to repeat itself gains, one that does
+not runs at the plain rate. Receipts:
 [`qualification/k3/spec-long-frames-20261015/`](qualification/k3/spec-long-frames-20261015/),
 the GLM 5.3 Full speculation section of the
 [history](docs/archive/PERFORMANCE_HISTORY_2026-10.md), and
@@ -184,7 +184,8 @@ Ideal floors, from the active parameters each rank reads per token (K3:
   ([`qualification/ab/flash-w1/REPORT.md`](qualification/ab/flash-w1/REPORT.md)).
   K3 attention with a single bf16 probability matrix: KL 0.0042 against
   floors of 0.0013-0.0037 and NLL change −0.0009 [−0.0046, +0.0038] nats over
-  1,713 positions up to 137K context: no measurable loss.
+  1,713 positions up to 137K context: no measurable loss. In production
+  since 2026-10-18.
 
 ## KV cache and long context
 
