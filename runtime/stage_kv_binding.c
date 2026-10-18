@@ -708,8 +708,7 @@ static SparkStatus SparkStageKvBindingLayout(SparkStageKvBinding *binding,const 
 	}
 	SparkSha256DigestToHex(binding->layout_sha256,binding->layout_hex);
 	binding->snapshot_page_file_bytes = SparkStageKvAlign(sizeof(SparkKvSnapshotFileHeader)) +
-		SparkStageKvAlign((uint64_t)binding->pages_per_sequence * sizeof(SparkKvPageCacheSnapshotLink)) +
-		SparkStageKvAlign(binding->page_bytes) + (identity.state_page_bytes != 0u ? SparkStageKvAlign(identity.state_page_bytes) : 0u);
+		(identity.state_page_bytes > binding->page_bytes ? SparkStageKvAlign(identity.state_page_bytes) : SparkStageKvAlign(binding->page_bytes));
 	return(SPARK_STATUS_OK);
 }
 
@@ -772,11 +771,12 @@ static SparkStatus SparkStageKvBindingAttachSnapshot(SparkStageKvBinding *bindin
 		SPARK_RETURN(status);
 	}
 	(void)SparkKvSnapshotCountLayout(&binding->snapshot_store,binding->layout_sha256,&matching,&foreign);
-	fprintf(stderr,"%s kv snapshot store directory=%s maximum_bytes=%llu queue_bytes=%llu page_file_bytes=%llu used_bytes=%llu files=%llu matching_files=%llu foreign_layout_files=%llu evicted_at_open=%llu removed_temporaries=%llu driver=%s identity_us=%llu layout=%s\n",
+	fprintf(stderr,"%s kv snapshot store directory=%s maximum_bytes=%llu queue_bytes=%llu file_bytes=%llu used_bytes=%llu files=%llu matching_files=%llu foreign_layout_files=%llu orphans=%llu evicted_at_open=%llu removed_temporaries=%llu removed_legacy=%llu driver=%s identity_us=%llu layout=%s\n",
 		binding->module_tag,configuration->snapshot_directory,(unsigned long long)binding->snapshot_store.maximum_bytes,(unsigned long long)binding->snapshot_store.queue_maximum_bytes,
 		(unsigned long long)binding->snapshot_page_file_bytes,(unsigned long long)binding->snapshot_store.used_bytes,(unsigned long long)binding->snapshot_store.file_count,
-		(unsigned long long)matching,(unsigned long long)foreign,(unsigned long long)binding->snapshot_store.eviction_count,
-		(unsigned long long)binding->snapshot_store.removed_temporary_count,binding->driver_path,(unsigned long long)((SparkStageKvNowNs() - start_ns) / 1000u),binding->layout_hex);
+		(unsigned long long)matching,(unsigned long long)foreign,(unsigned long long)binding->snapshot_store.orphan_count,(unsigned long long)binding->snapshot_store.eviction_count,
+		(unsigned long long)binding->snapshot_store.removed_temporary_count,(unsigned long long)binding->snapshot_store.removed_legacy_count,binding->driver_path,
+		(unsigned long long)((SparkStageKvNowNs() - start_ns) / 1000u),binding->layout_hex);
 	return(SPARK_STATUS_OK);
 }
 
