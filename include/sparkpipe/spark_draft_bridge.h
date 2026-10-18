@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+#include "sparkpipe/spark_sampling.h"
 #include "sparkpipe/spark_status.h"
 
 #ifdef __cplusplus
@@ -16,10 +17,10 @@ extern "C" {
 #define SPARK_DRAFT_BRIDGE_PROPOSAL_INFO_BYTES \
     ((uint32_t)sizeof(SparkDraftBridgeProposalInfo))
 
-#define SPARK_DRAFT_BRIDGE_PROTOCOL_VERSION 1u
+#define SPARK_DRAFT_BRIDGE_PROTOCOL_VERSION 2u
 #define SPARK_DRAFT_BRIDGE_TARGET_MODEL_BYTES 32u
 #define SPARK_DRAFT_BRIDGE_DRAFTER_STAGE_COUNT 8u
-#define SPARK_DRAFT_BRIDGE_REQUEST_HEADER_BYTES 96u
+#define SPARK_DRAFT_BRIDGE_REQUEST_HEADER_BYTES 120u
 #define SPARK_DRAFT_BRIDGE_RESPONSE_HEADER_BYTES 28u
 #define SPARK_DRAFT_BRIDGE_NODE_RECORD_BYTES 20u
 #define SPARK_DRAFT_BRIDGE_RESPONSE_FOOTER_BYTES 48u
@@ -92,6 +93,7 @@ SparkStatus SparkDraftBridgeProposeTree(
     uint32_t depth,
     uint32_t time_budget_ms,
     uint32_t max_depth,
+    const SparkRowSampling *sampling,
     SparkDraftBridgeNode *nodes_out,
     uint32_t node_capacity,
     uint32_t *node_count_out,

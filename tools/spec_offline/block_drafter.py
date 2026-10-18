@@ -28,6 +28,46 @@ from tapstream import frames  # noqa: E402
 DTYPES = {"BF16": (np.uint16, torch.bfloat16), "F32": (np.float32, torch.float32)}
 
 
+SPLITMIX_INCREMENT = 0x9e3779b97f4a7c15 - (1 << 64)
+SPLITMIX_A = 0xbf58476d1ce4e5b9 - (1 << 64)
+SPLITMIX_B = 0x94d049bb133111eb - (1 << 64)
+GUMBEL_UNIFORM_BITS = 24
+COUPLED_CANDIDATES = 64
+
+
+def shift_right(x, bits):
+    return (x >> bits) & ((1 << (64 - bits)) - 1)
+
+
+def splitmix64(x):
+    x = x + SPLITMIX_INCREMENT
+    x = (x ^ shift_right(x, 30)) * SPLITMIX_A
+    x = (x ^ shift_right(x, 27)) * SPLITMIX_B
+    return x ^ shift_right(x, 31)
+
+
+def keyed_gumbel(seed, position, tokens):
+    """The verifier's sampling noise (inference/kernels/head.cuh LmGumbelNoise) for int64 tensors."""
+    bits = splitmix64(seed ^ splitmix64((position << 32) | tokens))
+    uniform = (shift_right(bits, 64 - GUMBEL_UNIFORM_BITS).to(torch.float32) + 0.5) / float(1 << GUMBEL_UNIFORM_BITS)
+    return -torch.log(-torch.log(uniform))
+
+
+def coupled_choice(logits, sampling, position):
+    """Draft the token the verifier would sample if the drafter's distribution were the target's: the same keyed
+    Gumbel noise over the drafter's own nucleus and top-k candidates."""
+    seed, inverse_temperature, nucleus, top_k = sampling
+    scaled = logits * inverse_temperature
+    values, candidates = torch.topk(scaled, COUPLED_CANDIDATES)
+    probabilities = torch.softmax(scaled, -1)[candidates]
+    before = torch.cumsum(probabilities, 0) - probabilities
+    rank = torch.arange(COUPLED_CANDIDATES, device=logits.device)
+    keep = ((nucleus <= 0.0) | (before < nucleus)) & ((top_k <= 0) | (rank < top_k))
+    keep = keep | (rank == 0)
+    score = torch.where(keep, values + keyed_gumbel(seed, position, candidates), torch.full_like(values, float("-inf")))
+    return candidates[torch.argmax(score)]
+
+
 class SafeTensors:
     def __init__(self, path):
         self.path = Path(path)
@@ -244,7 +284,7 @@ class BlockDrafter:
             previous = token
         return drafts, confidence
 
-    def walk(self, y, base, previous, count):
+    def walk(self, y, base, previous, count, sampling=None, position=None, sampled=None):
         markov_w2, confidence_head = self.heads32()
         tokens, scores = [], []
         for slot in range(count):
@@ -254,6 +294,8 @@ class BlockDrafter:
                 latent = torch.index_select(self.markov_w1, 0, previous.view(1))[0].float()
                 logits = logits + (markov_w2 @ latent)
             token = torch.argmax(logits)
+            if sampling is not None:
+                token = torch.where(sampled, coupled_choice(logits, sampling, position + slot), token)
             if confidence_head is not None:
                 feature = torch.cat([y[slot].float(), latent]) if latent is not None else y[slot].float()
                 scores.append(torch.sigmoid(confidence_head[0] @ feature + confidence_head[1]).reshape(1))
@@ -269,8 +311,10 @@ class BlockDrafter:
 class DraftGraph:
     def __init__(self, drafter):
         d = self.drafter = drafter
-        self.host = torch.zeros(2, dtype=torch.long, pin_memory=True)
-        self.inputs = torch.zeros(2, dtype=torch.long, device=d.device)
+        self.host = torch.zeros(5, dtype=torch.long, pin_memory=True)
+        self.inputs = torch.zeros(5, dtype=torch.long, device=d.device)
+        self.host_rates = torch.zeros(2, dtype=torch.float32, pin_memory=True)
+        self.rates = torch.zeros(2, dtype=torch.float32, device=d.device)
         self.slots = torch.arange(d.block, device=d.device)
         self.attended = [torch.zeros((d.block, d.heads * d.head_dim), dtype=torch.bfloat16, device=d.device) for _ in d.layers]
         self.pool = torch.cuda.graph_pool_handle()
@@ -292,7 +336,8 @@ class DraftGraph:
         if index < len(d.layers):
             return d.pre_attention(d.layers[index], h, self.positions)
         y = rms(h, d.norm, d.eps).to(torch.bfloat16)
-        return d.walk(y, (y @ d.head.t()).float(), self.inputs[0], d.block)
+        sampling = (self.inputs[2], self.rates[0], self.rates[1], self.inputs[3])
+        return d.walk(y, (y @ d.head.t()).float(), self.inputs[0], d.block, sampling, self.inputs[1], self.inputs[4] != 0)
 
     def build(self, capturing):
         stream = torch.cuda.Stream()
@@ -312,10 +357,15 @@ class DraftGraph:
         if capturing:
             self.graphs, self.staged = graphs, staged
 
-    def draft(self, anchor_token, anchor_position, keys, values, start, block_at, valid, count):
+    def draft(self, anchor_token, anchor_position, keys, values, start, block_at, valid, count, sampling=None):
         d = self.drafter
+        seed, inverse_temperature, nucleus, top_k = sampling if sampling is not None else (0, 0.0, 0.0, 0)
         self.host[0], self.host[1] = int(anchor_token), int(anchor_position)
+        self.host[2] = seed - (1 << 64) if seed >= (1 << 63) else seed
+        self.host[3], self.host[4] = int(top_k), 1 if inverse_temperature > 0.0 else 0
+        self.host_rates[0], self.host_rates[1] = float(inverse_temperature), float(nucleus)
         self.inputs.copy_(self.host, non_blocking=True)
+        self.rates.copy_(self.host_rates, non_blocking=True)
         mask = None if valid is None else torch.from_numpy(valid).to(d.device).view(1, 1, 1, -1)
         with torch.no_grad():
             for index in range(len(d.layers)):

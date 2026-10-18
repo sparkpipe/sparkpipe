@@ -31,8 +31,8 @@ from spec_offline.block_drafter import BlockDrafter, DraftGraph
 from spec_offline.tapstream import FRAME, HELLO, MAGIC, read_hello
 
 DFT3_MAGIC = b"DFT3"
-DFT3_VERSION = 1
-DFT3_REQUEST = struct.Struct("<4sII32sQQQIIIIIII")
+DFT3_VERSION = 2
+DFT3_REQUEST = struct.Struct("<4sII32sQQQIIIIIIIQffII")
 DFT3_RESPONSE = struct.Struct("<4sIIQQ")
 DFT3_NODE = struct.Struct("<IIIIf")
 DFT3_FOOTER = struct.Struct("<8I4I")
@@ -266,7 +266,7 @@ class Server:
         return context is not None and (position == 0 or bool(context.held(np.array([position - 1]))[0]))
 
     def draft(self, request):
-        sequence, anchor, position, committed, depth = request
+        sequence, anchor, position, committed, depth, sampling = request
         context = self.contexts.get(sequence)
         positions = np.arange(max(0, position - self.args.window), position)
         held = context.held(positions)
@@ -282,7 +282,7 @@ class Server:
             return None
         start, block_at, valid = context.span(positions)
         started = time.monotonic()
-        drafts, confidence = self.graph.draft(int(anchor), position, context.keys, context.values, start, block_at, valid, min(depth, self.drafter.block))
+        drafts, confidence = self.graph.draft(int(anchor), position, context.keys, context.values, start, block_at, valid, min(depth, self.drafter.block), sampling)
         elapsed = int((time.monotonic() - started) * 1e6)
         self.timing["compute"] += elapsed / 1e6
         self.timing["context"] += position
@@ -296,7 +296,7 @@ class Server:
             if header is None:
                 return
             (magic, version, mask, _target, sequence, generation, position, anchor, committed_count, tap_rows, depth, _budget, max_depth,
-             max_nodes) = DFT3_REQUEST.unpack(header)
+             max_nodes, seed, inverse_temperature, nucleus, top_k, _reserved) = DFT3_REQUEST.unpack(header)
             body = self.read_exact(connection, 4 * committed_count)
             if body is None:
                 return
@@ -309,7 +309,7 @@ class Server:
             else:
                 self.stats["requests"] += 1
                 slot = {"event": threading.Event(), "result": None, "failed": False, "enqueued": time.monotonic(), "done": None}
-                self.work.put(("draft", ((sequence, anchor, position, committed, min(depth, max_depth)), slot)))
+                self.work.put(("draft", ((sequence, anchor, position, committed, min(depth, max_depth), (seed, inverse_temperature, nucleus, top_k)), slot)))
                 if not slot["event"].wait(self.args.wait_ms / 1000.0 + 5.0) or slot["failed"]:
                     status = STATUS_INTERNAL
                 if slot["done"] is not None:

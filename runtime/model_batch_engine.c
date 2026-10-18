@@ -2857,7 +2857,8 @@ static uint32_t SparkModelBatchPlanModelDraft(
 	engine->model_draft_rounds++;
 	memset(&info,0,sizeof(info));
 	status = SparkDraftBridgeProposeTree(engine->draft_bridge,SPARK_MODEL_BATCH_MODEL_DRAFT_SPECULATOR,request->sequence_id,request->generation,position,
-		tokens[position],tokens,position + 1u,0,0u,depth,engine->draft_wait_ms,depth,nodes,depth + 1u,&count,&info);
+		tokens[position],tokens,position + 1u,0,0u,depth,engine->draft_wait_ms,depth,
+		request->sampling.inverse_temperature != 0.0f ? &request->sampling : 0,nodes,depth + 1u,&count,&info);
 	engine->model_draft_wait_us += (SparkModelBatchNowNs() - started) / 1000u;
 	request->model_wait_ns = (float)(SparkModelBatchNowNs() - started);
 	if ( status != SPARK_STATUS_OK && info.server_status == SPARK_DRAFT_BRIDGE_SERVER_STATUS_UNAVAILABLE )

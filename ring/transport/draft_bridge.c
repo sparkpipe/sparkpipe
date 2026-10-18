@@ -500,6 +500,7 @@ SparkStatus SparkDraftBridgeProposeTree(
     uint32_t depth,
     uint32_t time_budget_ms,
     uint32_t max_depth,
+    const SparkRowSampling *sampling,
     SparkDraftBridgeNode *nodes_out,
     uint32_t node_capacity,
     uint32_t *node_count_out,
@@ -560,6 +561,10 @@ SparkStatus SparkDraftBridgeProposeTree(
     {
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
+    if (sampling != 0 && SparkSamplingRuleValid(sampling) == 0u)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
 
     *node_count_out = 0u;
     memset(info_out, 0, sizeof(*info_out));
@@ -608,6 +613,24 @@ SparkStatus SparkDraftBridgeProposeTree(
     cursor += sizeof(uint32_t);
     SparkDraftBridgePutU32Le(cursor, node_capacity);
     cursor += sizeof(uint32_t);
+    {
+        const uint64_t seed = sampling != 0 ? sampling->seed : 0u;
+        const float inverse_temperature = sampling != 0 ? sampling->inverse_temperature : 0.0f;
+        const float nucleus = sampling != 0 ? sampling->nucleus : 0.0f;
+        uint32_t bits;
+        SparkDraftBridgePutU64Le(cursor, seed);
+        cursor += sizeof(uint64_t);
+        memcpy(&bits, &inverse_temperature, sizeof(bits));
+        SparkDraftBridgePutU32Le(cursor, bits);
+        cursor += sizeof(uint32_t);
+        memcpy(&bits, &nucleus, sizeof(bits));
+        SparkDraftBridgePutU32Le(cursor, bits);
+        cursor += sizeof(uint32_t);
+        SparkDraftBridgePutU32Le(cursor, sampling != 0 ? sampling->top_k : 0u);
+        cursor += sizeof(uint32_t);
+        SparkDraftBridgePutU32Le(cursor, 0u);
+        cursor += sizeof(uint32_t);
+    }
     for (node_index = 0u; node_index < committed_token_count; ++node_index)
     {
         SparkDraftBridgePutU32Le(cursor, committed_token_ids[node_index]);

@@ -2282,7 +2282,7 @@ static void TestDraftPut32(uint8_t **cursor,uint32_t value)
 static void TestDraftServe(TestDraftServer *server,int fd)
 {
 	static uint8_t committed[4u * 4096u];
-	uint8_t header[96],reply[28u + 9u * 20u + 48u],*cursor;
+	uint8_t header[120],reply[28u + 9u * 20u + 48u],*cursor;
 	for (;;)
 	{
 		uint64_t sequence,generation,position;
@@ -2298,7 +2298,7 @@ static void TestDraftServe(TestDraftServer *server,int fd)
 		if ( count > sizeof(committed) / 4u || TestDraftRead(fd,committed,(size_t)count * 4u) == 0u )
 			return;
 		server->requests++;
-		if ( memcmp(header,"DFT3",4u) != 0 || TestDraftU32(header + 4u) != 1u || (TestDraftU32(header + 8u) & 2u) == 0u ||
+		if ( memcmp(header,"DFT3",4u) != 0 || TestDraftU32(header + 4u) != 2u || (TestDraftU32(header + 8u) & 2u) == 0u ||
 			strncmp((const char *)header + 12u,"test-target",32u) != 0 || count != position + 1u || position >= server->script_count ||
 			anchor != server->script[position] || TestDraftU32(header + 76u) != 0u || depth == 0u || depth > 7u )
 			server->bad_requests++;
