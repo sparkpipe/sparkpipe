@@ -103,6 +103,50 @@ K3 serves model drafts from the RadixArk DSpark block drafter on the 5090.
   `.spt2` file for offline scoring (`tools/spec_offline`). Use it on hold
   corpora only, never on users' traffic.
 
+## Latent block drafter (lightseek DFlash2, offline)
+
+`tools/spec_offline/latent_block_drafter.py` runs checkpoints whose
+`dflash_config.attention_mode` is `mla`: lightseekorg/kimi-k3-dflash2 at
+e77935fb (5 layers, 3.69B parameters, received 2026-10-18 into
+`/mnt/cold-raid6/models/kimi-k3-dflash2-lightseek-e77935fb`, sha256
+1f2a5376...52c2, receipt beside it). `open_drafter` in `block_drafter.py`
+picks it by that field, so `block_drafter.py` and `long_drafter.py` score it
+like the RadixArk drafter. It is not yet served by draftd.
+
+- **Inputs:** the K3 OUTPUT taps o19, o37, o66, o78 and o90 (the AttnRes
+  partial after each layer, which is TokenSpeed's default `prefix` stream).
+  Production taps (o7, o23, o51, o67, o83) are the RadixArk drafter's, so
+  scoring it needs a dump recorded with the union of both sets on all 16
+  ranks.
+- **Context:** `c = rms(fc taps)`. Each layer keeps one 576-wide row per
+  position, `[rms(kv_a c)[:512] | rope(kv_a c)[512:]]`, with no input norm
+  and no convolution. Layers 0-3 see the 4,088 positions before the block
+  (a 4,096 window measured from the block end); layer 4 sees all of them.
+- **Block:** 8 rows `[t_P, mask x 7]` at positions P..P+7, non-causal. Each
+  layer: `x = rms(h)`, coefficients `d = kernel_projection x` split into
+  side, tap and 448 groups of 16 channels; `x' = conv(x, base[0], d[:, 0])`
+  with `conv(z)[i, c] = (b0[c] + d0[i, c/16]) z[i, c] + [i >= 1] (b1[c] +
+  d1[i, c/16]) z[i-1, c]`, so row 0 never reads an earlier block;
+  absorbed MLA on `x'` over the context rows plus the block's own; `h +=
+  conv(attention, base[1], d[:, 1])`; the same pair wraps the gated MLP on
+  `rms(h)`. RoPE is DeepSeek YaRN on interleaved pairs (64 dims, theta
+  50,000, factor 32, original 32,768) with a cos/sin gain of 1; the squared
+  YaRN mscale goes into the softmax scale (0.130861).
+- **Drafts:** rows 1..7 of `rms(h)` through the target head, the top 16 per
+  row, and edge scores `unary[c] + sum_r A[previous, r] g[r] B[c, r]` with
+  `g = hidden_projection y`. Drafts walk the lattice greedily from the
+  anchor; a sampled stream takes the keyed-noise choice over the same row.
+  The score of each draft is the lattice probability of its candidate, with
+  the non-candidate tail of the full head in the normalizer.
+- **Refused:** any other architecture or attention mode, a non-prefix tap
+  stream, `fc_norm`, an output gate, embedding or output scales other than
+  1, logit softcapping, a causal block, and layer types that do not cover
+  every layer.
+- **Checks:** `tests/test_latent_block_drafter.py` holds the block to a
+  float64 reference with expanded (non-absorbed) attention and half-split
+  RoPE, and checks the convolution, the window edge, chunked attention, the
+  walk and the keyed sample on a tiny random checkpoint.
+
 ## Draft farm
 
 Only qwen38_27b consumes remote drafts, with the tap-free sources NGRAM,

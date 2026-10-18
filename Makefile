@@ -591,6 +591,7 @@ PYTHON_TESTS := \
 	tests/test_stage_lane_stop.py \
 	tests/test_chat_frontend_object_and_channel_calls.py \
 	tests/test_draftd_kernels.py \
+	tests/test_latent_block_drafter.py \
 	tests/test_draftd_mtp_kv.py \
 	tests/test_k3_reshard_cells.py \
 	tests/test_laguna_reference_torch.py \

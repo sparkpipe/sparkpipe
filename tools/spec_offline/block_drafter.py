@@ -125,6 +125,8 @@ def rotate(x, positions, inv, scale):
 
 
 class BlockDrafter:
+    convention = "shift"
+
     def __init__(self, directory, shard, names, device):
         self.device = device
         self.config = json.load(open(Path(directory) / "config.json"))
@@ -308,6 +310,11 @@ class BlockDrafter:
         return tokens.tolist(), (scores.tolist() if scores is not None else [])
 
 
+def open_drafter(directory, shard, names, device):
+    from latent_block_drafter import LatentBlockDrafter, is_latent_checkpoint
+    return (LatentBlockDrafter if is_latent_checkpoint(directory) else BlockDrafter)(directory, shard, names, device)
+
+
 class DraftGraph:
     def __init__(self, drafter):
         d = self.drafter = drafter
@@ -413,13 +420,14 @@ def main():
     parser.add_argument("--norm", default="language_model.model.norm.weight")
     parser.add_argument("--taps", nargs="+", required=True)
     parser.add_argument("--delta", type=int, default=0)
-    parser.add_argument("--convention", choices=("shift", "inplace"), default="shift")
+    parser.add_argument("--convention", choices=("shift", "inplace"), help="defaults to the drafter's own")
     parser.add_argument("--max-anchors", type=int, default=400, help="per request, spread over the reply")
     parser.add_argument("--out", required=True)
     parser.add_argument("--anchors-out", help="JSON lines, one per anchor: request, position, accepted, drafts, confidence")
     args = parser.parse_args()
     device = "cuda"
-    drafter = BlockDrafter(args.drafter, args.target_shard, {"embed": args.embed, "head": args.head, "norm": args.norm}, device)
+    drafter = open_drafter(args.drafter, args.target_shard, {"embed": args.embed, "head": args.head, "norm": args.norm}, device)
+    args.convention = args.convention or drafter.convention
     hello, streams = requests(args.taps, None)
     wanted = [f"o{layer + args.delta}" for layer in drafter.layer_ids]
     missing = [name for name in wanted + ["final"] if name not in hello["entries"]]
