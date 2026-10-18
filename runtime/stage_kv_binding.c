@@ -155,14 +155,14 @@ static SparkStatus SparkStageKvBindingStateBudget(SparkStageKvBinding *binding,c
 	if ( kv_cap < binding->page_bytes )
 		kv_cap = binding->page_bytes;
 	minimum = 2u * (uint64_t)configuration->resident_sequence_capacity + 2u;
-	slots = configuration->backing_maximum_bytes > kv_cap ? (configuration->backing_maximum_bytes - kv_cap) / lane_bytes : 0u;
+	slots = configuration->recurrent.memory_bytes / lane_bytes;
 	if ( slots > configuration->logical_page_count )
 		slots = configuration->logical_page_count;
 	if ( slots < minimum )
 	{
-		fprintf(stderr,"%s kv binding refused: recurrent checkpoints of %llu bytes need %llu slots (two per resident lane and two in flight) beyond %llu page-store bytes, %llu backing bytes configured hold %llu\n",
-			configuration->module_tag,(unsigned long long)lane_bytes,(unsigned long long)minimum,(unsigned long long)kv_cap,
-			(unsigned long long)configuration->backing_maximum_bytes,(unsigned long long)slots);
+		fprintf(stderr,"%s kv binding refused: recurrent checkpoints of %llu bytes live in memory and need %llu slots (two per resident lane and two in flight); state_memory_bytes %llu holds %llu\n",
+			configuration->module_tag,(unsigned long long)lane_bytes,(unsigned long long)minimum,
+			(unsigned long long)configuration->recurrent.memory_bytes,(unsigned long long)slots);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	binding->page_store_backing_bytes = kv_cap;
@@ -833,12 +833,12 @@ static SparkStatus SparkStageKvBindingAttachStates(SparkStageKvBinding *binding,
 	memset(&store,0,sizeof(store));
 	store.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
 	store.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
-	store.flags = SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS;
+	store.flags = SPARK_KV_PAGE_STORE_FLAG_MEMORY;
 	store.logical_page_capacity = binding->logical_page_count;
 	store.transfer_capacity = 1u;
 	store.page_bytes = binding->recurrent.lane_bytes;
 	store.maximum_backing_bytes = (uint64_t)binding->state_slot_count * binding->recurrent.lane_bytes;
-	store.backing_path = configuration->backing_directory;
+	store.backing_path = "sparkpipe-kv-recurrent-state";
 	store.staging_address = binding->state_staging;
 	store.staging_bytes = binding->recurrent.lane_bytes;
 	if ( configuration->recurrent.checkpoint_token_count == 0u || configuration->recurrent.checkpoint_token_count % binding->block_token_count != 0u )
@@ -850,7 +850,7 @@ static SparkStatus SparkStageKvBindingAttachStates(SparkStageKvBinding *binding,
 	status = SparkKvPageStoreInitialize(&binding->state_store,&store);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkKvPageCacheAttachStateStore(&binding->page_cache,&binding->state_store,configuration->recurrent.checkpoint_token_count);
-	fprintf(stderr,"%s kv binding recurrent lane_bytes=%llu state_slots=%u state_backing_bytes=%llu page_store_backing_bytes=%llu kept_states=newest %u plus every %u tokens status=%s\n",binding->module_tag,
+	fprintf(stderr,"%s kv binding recurrent lane_bytes=%llu state_slots=%u state_memory_bytes=%llu page_store_backing_bytes=%llu kept_states=newest %u plus every %u tokens status=%s\n",binding->module_tag,
 		(unsigned long long)binding->recurrent.lane_bytes,binding->state_slot_count,(unsigned long long)store.maximum_backing_bytes,
 		(unsigned long long)binding->page_store_backing_bytes,SPARK_KV_PAGE_CACHE_RECENT_STATES,configuration->recurrent.checkpoint_token_count,SparkStatusToString(status));
 	SPARK_RETURN(status);

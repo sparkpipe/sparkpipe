@@ -50,6 +50,7 @@ typedef struct SparkStageServingState
 	void *completion_context;
 	char *pack_path;
 	char *stray_working_set_path;
+	uint64_t state_memory_bytes;
 	char *device_backend_path;
 	char *device_local_host;
 	uint32_t max_rows;
@@ -621,6 +622,12 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 		fprintf(stderr, "%s adapter: state_budget_bytes must name the rank's state budget\n", state->model->module_tag);
 		return SPARK_STATUS_SCHEMA_ERROR;
 	}
+	token = SparkJsonFindObjectMember(doc, root, "state_memory_bytes");
+	if ( token >= 0 && (SparkJsonGetUInt64(doc, token, &state->state_memory_bytes) != SPARK_STATUS_OK || state->state_memory_bytes == 0u) )
+	{
+		fprintf(stderr, "%s adapter: state_memory_bytes must be a positive byte count\n", state->model->module_tag);
+		return SPARK_STATUS_SCHEMA_ERROR;
+	}
 	if ( StageServingJsonU32(doc, root, "hidden", descriptor->boundary_element_count) != descriptor->boundary_element_count )
 		return SPARK_STATUS_SCHEMA_ERROR;
 	config->tp_degree = StageServingJsonU32(doc, root, "tp_degree", 1u);
@@ -808,6 +815,7 @@ static SparkStatus StageServingBindKv(SparkStageServingState *state,
 		kv.recurrent.copy = StageServingRecurrentCopy;
 		kv.recurrent.context = state;
 		kv.recurrent.checkpoint_token_count = descriptor->cache_checkpoint_token_count;
+		kv.recurrent.memory_bytes = state->state_memory_bytes;
 	}
 	status = SparkStageKvBindingInitialize(&state->kv, &kv);
 	if ( status != SPARK_STATUS_OK )

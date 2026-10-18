@@ -16,6 +16,9 @@
 #include <time.h>
 #include <sys/types.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
 
 #define SPARK_KV_PAGE_STORE_JOB_FREE 0u
 #define SPARK_KV_PAGE_STORE_JOB_QUEUED 1u
@@ -75,14 +78,18 @@ static uint32_t SparkKvPageStoreConfigurationIsValid(
 	uint32_t creation_flags;
 	creation_flags = configuration != 0 ? configuration->flags &
 		(SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE |
-		 SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS) : 0u;
+		 SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS |
+		 SPARK_KV_PAGE_STORE_FLAG_MEMORY) : 0u;
 	if ( configuration == 0 ||
 		configuration->abi_version != SPARK_KV_PAGE_STORE_ABI_VERSION ||
 		configuration->descriptor_bytes !=
 			SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES ||
 		(configuration->flags & ~SPARK_KV_PAGE_STORE_KNOWN_FLAGS) != 0u ||
 		(creation_flags != SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE &&
-		 creation_flags != SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS) ||
+		 creation_flags != SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS &&
+		 creation_flags != SPARK_KV_PAGE_STORE_FLAG_MEMORY) ||
+		(creation_flags == SPARK_KV_PAGE_STORE_FLAG_MEMORY &&
+		 (configuration->flags & SPARK_KV_PAGE_STORE_FLAG_DIRECT_IO) != 0u) ||
 		configuration->logical_page_capacity == 0u ||
 		configuration->transfer_capacity == 0u ||
 		configuration->transfer_capacity > configuration->logical_page_capacity ||
@@ -151,11 +158,33 @@ static SparkStatus SparkKvPageStoreReserve(
 	SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 }
 
+static SparkStatus SparkKvPageStoreOpenMemory(
+	SparkKvPageStore *store,
+	const SparkKvPageStoreConfiguration *configuration)
+{
+#if defined(__linux__)
+	store->file_descriptor = memfd_create(configuration->backing_path,MFD_CLOEXEC);
+#else
+	char path[] = "/tmp/sparkpipe-kv-memory-XXXXXX";
+	store->file_descriptor = mkstemp(path);
+	if ( store->file_descriptor >= 0 )
+		(void)unlink(path);
+#endif
+	if ( store->file_descriptor < 0 )
+	{
+		fprintf(stderr,"kv page store: memory backing %s cannot be created: %s\n",configuration->backing_path,strerror(errno));
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	return(SparkKvPageStoreReserve(store,configuration->backing_path));
+}
+
 static SparkStatus SparkKvPageStoreOpen(
 	SparkKvPageStore *store,
 	const SparkKvPageStoreConfiguration *configuration)
 {
 	int32_t flags;
+	if ( (configuration->flags & SPARK_KV_PAGE_STORE_FLAG_MEMORY) != 0u )
+		return(SparkKvPageStoreOpenMemory(store,configuration));
 	flags = O_RDWR;
 #ifdef O_CLOEXEC
 	flags |= O_CLOEXEC;

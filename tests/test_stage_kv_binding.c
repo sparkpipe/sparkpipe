@@ -1295,7 +1295,7 @@ static void ConfigureRecurrent(SparkStageKvConfiguration *configuration)
 	configuration->recurrent.checkpoint_token_count = 4u * TEST_BLOCK;
 	configuration->recurrent.copy = TestRecurrentCopy;
 	configuration->recurrent.context = &RECURRENT;
-	configuration->backing_maximum_bytes += (uint64_t)TEST_LOGICAL * TEST_RECURRENT_BYTES;
+	configuration->recurrent.memory_bytes = (uint64_t)TEST_LOGICAL * TEST_RECURRENT_BYTES;
 	memset(&RECURRENT,0,sizeof(RECURRENT));
 }
 
@@ -1377,14 +1377,16 @@ static void TestRecurrentRefusals(void)
 	configuration.recurrent.lane_bytes = 0u;
 	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
 	ConfigureRecurrent(&configuration);
-	configuration.backing_maximum_bytes = (uint64_t)TEST_LOGICAL * TEST_RECURRENT_BYTES;
+	configuration.recurrent.memory_bytes = 0u;
 	ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
-	Configure(&configuration);
 	ConfigureRecurrent(&configuration);
-	configuration.backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 2u) * TEST_PAGE_BYTES + (2u * TEST_LANES + 1u) * TEST_RECURRENT_BYTES;
+	configuration.recurrent.memory_bytes = (2u * TEST_LANES + 1u) * TEST_RECURRENT_BYTES;
+	ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
+	ConfigureRecurrent(&configuration);
+	configuration.backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 1u) * TEST_PAGE_BYTES;
 	ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
 	RemoveDirectories();
-	printf("A11 recurrent refusals: a lane size without a copy hook, a hook without a lane size and a backing budget short of two checkpoints per resident lane plus two refuse: ok\n");
+	printf("A11 recurrent refusals: a lane size without a copy hook, a hook without a lane size, no state memory, state memory short of two checkpoints per resident lane plus two, and backing short of the page spill refuse: ok\n");
 }
 
 static void PublishCheckpoint(uint64_t sequence,uint8_t seed,uint32_t stateless)
@@ -1439,7 +1441,7 @@ static void TestRecurrentCheckpoints(void)
 	uint64_t restores;
 	MakeDirectories();
 	ConfigureRecurrent(&configuration);
-	configuration.backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 2u) * TEST_PAGE_BYTES + (uint64_t)slots * TEST_RECURRENT_BYTES;
+	configuration.recurrent.memory_bytes = (uint64_t)slots * TEST_RECURRENT_BYTES;
 	assert(OpenWith(&configuration) == SPARK_STATUS_OK && BINDING.state_slot_count == slots);
 	PublishCheckpoint(1u,0x30u,1u);
 	assert(BINDING.page_cache.published_page_count == 1u);

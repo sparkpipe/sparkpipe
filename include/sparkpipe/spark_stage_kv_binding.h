@@ -137,6 +137,7 @@ typedef struct SparkStageKvRecurrent
 	void *context;
 	uint32_t checkpoint_token_count;
 	uint32_t reserved0;
+	uint64_t memory_bytes;
 } SparkStageKvRecurrent;
 
 typedef struct SparkStageKvRecurrentCounters
