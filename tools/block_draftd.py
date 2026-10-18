@@ -26,10 +26,10 @@ from pathlib import Path
 import numpy as np
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from spec_offline.block_drafter import DraftGraph, open_drafter
-from spec_offline.latent_block_drafter import LatentBlockDrafter, LatentContext, LatentDraftGraph
-from spec_offline.tapstream import FRAME, HELLO, MAGIC, read_hello
+sys.path.insert(0, str(Path(__file__).resolve().parent / "spec_offline"))
+from block_drafter import DraftGraph, open_drafter
+from latent_block_drafter import LatentBlockDrafter, LatentContext, LatentDraftGraph
+from tapstream import FRAME, HELLO, MAGIC, read_hello
 
 DFT3_MAGIC = b"DFT3"
 DFT3_VERSION = 2
