@@ -25,7 +25,7 @@ The first SparkPipe K3 fleet numbers are the 2026-10-07 rows above. The 29 tok/s
 @ciprianveg on 2026-09-19 (published C1 29.81) comes from his gb10-vllm stack
 (vLLM, TP16+DCP8, DSpark nst6 speculation), not from SparkPipe. It is listed
 with the other external numbers in K3_VS_GB10_VLLM.md.
-[PERFORMANCE_STATUS.md](../PERFORMANCE_STATUS.md#earlier-points-carried-over-from-the-performance-ledger)
+[the performance history](archive/PERFORMANCE_HISTORY_2026-10.md#earlier-points-carried-over-from-the-performance-ledger)
 carries the 55.5 ms stage step among the points taken over from the archived
 performance ledger, and gb10-vllm's point in its public-comparables table.
 The ledger's claim that 29 tok/s superseded SparkPipe's 18.0 was wrong: 18.0

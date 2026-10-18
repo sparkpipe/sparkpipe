@@ -109,12 +109,17 @@ def run_streams(endpoint, streams, max_tokens):
         thread.join()
     wall = time.monotonic() - started
     total = sum(len(r["token_times"]) for r in results)
-    first = [r["started"] + r["token_times"][0] for r in results if r["token_times"]]
-    last = [r["started"] + r["token_times"][-1] for r in results if r["token_times"]]
-    steady = (total - len(first)) / (max(last) - max(first)) if first and max(last) > max(first) else None
+    decoding = [r for r in results if r["token_times"]]
+    window_begin = max(r["started"] + r["token_times"][0] for r in decoding) if len(decoding) == streams else None
+    window_end = min(r["started"] + r["token_times"][-1] for r in decoding) if len(decoding) == streams else None
+    together = None
+    if window_begin is not None and window_end > window_begin:
+        inside = sum(1 for r in decoding for t in r["token_times"] if window_begin < r["started"] + t <= window_end)
+        together = inside / (window_end - window_begin)
     return {"case": "streams%d_o%d" % (streams, max_tokens), "wall_s": round(wall, 3), "total_tokens": total,
             "aggregate_tok_s": round(total / wall, 2),
-            "aggregate_after_last_first_token_tok_s": round(steady, 2) if steady else None,
+            "all_streams_decoding_s": round(window_end - window_begin, 3) if together else None,
+            "aggregate_all_streams_decoding_tok_s": round(together, 2) if together else None,
             "errors": [r["error"] for r in results if r["error"]],
             "per_stream": [summarize(r) for r in results]}
 
