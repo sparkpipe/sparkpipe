@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 import re
+import resource
 import sys
 import time
 import uuid
@@ -1066,7 +1067,7 @@ class Frontend:
             self.memory = module.Memory(config["chat_memory"], self)
 
     async def start(self, app):
-        self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=10))
+        self.session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=0), timeout=aiohttp.ClientTimeout(total=None, sock_connect=10))
 
     async def stop(self, app):
         await self.session.close()
@@ -1503,12 +1504,12 @@ class Frontend:
 
     async def answer(self, request, model, body, plan, started):
         engine_body, prompt_tokens = plan["engine_body"], plan["prompt_tokens"]
+        if body.get("stream"):
+            return await self.chat_stream(request, model, body, plan, started)
+        content, reasoning, calls, logprobs = [], [], [], []
+        result = {}
+        first = None
         try:
-            if body.get("stream"):
-                return await self.chat_stream(request, model, body, plan, started)
-            content, reasoning, calls, logprobs = [], [], [], []
-            result = {}
-            first = None
             async for kind, value in self.respond(model, plan):
                 first = first or time.monotonic()
                 if kind == "logprobs":
@@ -1523,6 +1524,9 @@ class Frontend:
                     result = value
         except RequestError as error:
             return error_response(error)
+        except asyncio.CancelledError:
+            self.log(model, prompt_tokens, result.get("usage"), started, first, "client_gone", plan.get("trace"))
+            raise
         message = {"role": "assistant", "content": "".join(content) or None}
         if reasoning:
             message["reasoning_content"] = "".join(reasoning)
@@ -1579,6 +1583,9 @@ class Frontend:
         except (ConnectionResetError, aiohttp.ClientConnectionResetError):
             self.log(model, prompt_tokens, result.get("usage"), started, first, "client_gone", plan.get("trace"))
             return response
+        except asyncio.CancelledError:
+            self.log(model, prompt_tokens, result.get("usage"), started, first, "client_gone", plan.get("trace"))
+            raise
         usage = self.usage_block(result.get("usage"), prompt_tokens)
         await response.write(chunk({}, result.get("finish_reason"), usage))
         if include_usage:
@@ -1587,6 +1594,21 @@ class Frontend:
         await response.write(b"data: [DONE]\n\n")
         self.log(model, prompt_tokens, result.get("usage"), started, first, result.get("finish_reason"), plan.get("trace"))
         return response
+
+
+SERVER_OPTIONS = {"handler_cancellation": True}
+
+
+def raise_open_files():
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    target = hard if hard != resource.RLIM_INFINITY else 1 << 20
+    while target > soft:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+            break
+        except (ValueError, OSError):
+            target //= 2
+    return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
 
 
 def build(frontend):
@@ -1619,7 +1641,8 @@ def main():
         raise SystemExit(f"chat_frontend: --host {arguments.host} is not a loopback address; the chat layer checks no API key, so it serves this host only and LiteLLM is the door")
     config_path = Path(arguments.config).resolve()
     frontend = Frontend(json.loads(config_path.read_text()), config_path.parent)
-    web.run_app(build(frontend), host=arguments.host, port=arguments.port, access_log=None)
+    print(f"chat_frontend: open files limit {raise_open_files()}", file=sys.stderr, flush=True)
+    web.run_app(build(frontend), host=arguments.host, port=arguments.port, access_log=None, **SERVER_OPTIONS)
 
 
 if __name__ == "__main__":
