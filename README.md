@@ -30,7 +30,11 @@ get the performance work: Kimi K3, GLM 5.3 Full and GLM 5.3 Flash. Every
 number here was measured on the fleet. Dates, builds and receipts are in
 [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md#status-snapshot-2026-10-18).
 B is the number of requests decoding together, and a batch figure is the
-tokens per second of all of them together.
+tokens per second of all of them together. K3's 737,280-token window, its
+model drafts and its newest kernels serve from the branch
+`ctx/long-context`
+([sparkpipe/sparkpipe#1496](https://github.com/sparkpipe/sparkpipe/pull/1496)),
+which is not merged yet.
 
 ### Core models without speculation
 
@@ -631,7 +635,8 @@ no speculation:
   It includes stopping the previous model. The slowest single swap was K3's,
   at 79 s.
 - **Context** is the window the chat layer serves
-  (`deployment/hub/chat_frontend.json`). K3's is 737,280 tokens.
+  (`deployment/hub/chat_frontend.json`). K3's 737,280 tokens come from
+  `ctx/long-context`; main still configures 131,072.
 - ‡ MiMo was measured only in the release qualification of 2026-10-14,
   while a CPU tenant kept about 16 cores busy on every node, so its numbers
   are lower bounds. The same load cut K3 from 16.2 to 10.0 tok/s.
