@@ -196,16 +196,26 @@ class LatentBlockDrafter:
         window = self.windows[index]
         return 0 if window is None else max(0, count - (window - self.block))
 
-    def attend(self, layer, x, positions, context):
-        query = (rms((x @ layer["self_attn.q_a_proj"].t()).float(), layer["self_attn.q_a_layernorm"], self.eps).to(torch.bfloat16) @ layer["self_attn.q_b_proj"].t())
-        query = query.view(x.shape[0], self.heads, self.nope + self.rope_dim)
+    def pre_attention(self, layer, residual, positions):
+        x = rms(residual, layer["input_layernorm"], self.eps).to(torch.bfloat16)
+        prepared, finish = self.conv_pair(layer, "attention_conv", x)
+        query = (rms((prepared @ layer["self_attn.q_a_proj"].t()).float(), layer["self_attn.q_a_layernorm"], self.eps).to(torch.bfloat16) @ layer["self_attn.q_b_proj"].t())
+        query = query.view(prepared.shape[0], self.heads, self.nope + self.rope_dim)
         absorbed = torch.einsum("ihn,hnr->ihr", query[..., :self.nope].float(), layer["absorb_key"])
         query_rope = rotate_pairs(query[..., self.nope:], positions, self.inverse, self.rotary_gain)
-        block_rows = self.latent_rows(layer, x, positions)
+        return absorbed, query_rope, self.latent_rows(layer, prepared, positions), finish
+
+    def attend(self, absorbed, query_rope, block_rows, context):
         rows = list(context) + [block_rows] if isinstance(context, (list, tuple)) else torch.cat((context, block_rows), 0)
-        latent = latent_attention(absorbed, query_rope, rows, self.kv_rank, self.scale)
-        values = torch.einsum("ihr,hvr->ihv", latent, layer["absorb_value"]).reshape(x.shape[0], -1)
-        return (values.to(torch.bfloat16) @ layer["self_attn.o_proj"].t()).float()
+        return latent_attention(absorbed, query_rope, rows, self.kv_rank, self.scale)
+
+    def post_attention(self, layer, residual, latent, finish):
+        values = torch.einsum("ihr,hvr->ihv", latent, layer["absorb_value"]).reshape(latent.shape[0], -1)
+        attended = (values.to(torch.bfloat16) @ layer["self_attn.o_proj"].t()).float()
+        residual = residual + block_conv(attended, layer["attention_conv.base_kernel"][1], finish, self.group)
+        x = rms(residual, layer["post_attention_layernorm"], self.eps).to(torch.bfloat16)
+        prepared, finish = self.conv_pair(layer, "mlp_conv", x)
+        return residual + block_conv(self.mlp(layer, prepared), layer["mlp_conv.base_kernel"][1], finish, self.group)
 
     def mlp(self, layer, x):
         gate = (x @ layer["mlp.gate_proj"].t()).float()
@@ -222,13 +232,8 @@ class LatentBlockDrafter:
         positions = torch.arange(int(anchor_position), int(anchor_position) + self.block, device=self.device)
         residual = self.embed[tokens].float()
         for layer, context in zip(self.layers, contexts):
-            x = rms(residual, layer["input_layernorm"], self.eps).to(torch.bfloat16)
-            prepared, finish = self.conv_pair(layer, "attention_conv", x)
-            attended = self.attend(layer, prepared, positions, context)
-            residual = residual + block_conv(attended, layer["attention_conv.base_kernel"][1], finish, self.group)
-            x = rms(residual, layer["post_attention_layernorm"], self.eps).to(torch.bfloat16)
-            prepared, finish = self.conv_pair(layer, "mlp_conv", x)
-            residual = residual + block_conv(self.mlp(layer, prepared), layer["mlp_conv.base_kernel"][1], finish, self.group)
+            absorbed, query_rope, block_rows, finish = self.pre_attention(layer, residual, positions)
+            residual = self.post_attention(layer, residual, self.attend(absorbed, query_rope, block_rows, context), finish)
         return rms(residual, self.norm, self.eps).to(torch.bfloat16)
 
     def draft(self, anchor_token, anchor_position, keys, values, count):
@@ -276,6 +281,72 @@ def is_latent_checkpoint(directory):
     with open(Path(directory) / "config.json") as handle:
         config = json.load(handle)
     return str((config.get("dflash_config") or {}).get("attention_mode", "")).lower() == "mla"
+
+
+class LatentDraftGraph:
+    def __init__(self, drafter):
+        d = self.drafter = drafter
+        self.host = torch.zeros(5, dtype=torch.long, pin_memory=True)
+        self.inputs = torch.zeros(5, dtype=torch.long, device=d.device)
+        self.host_rates = torch.zeros(2, dtype=torch.float32, pin_memory=True)
+        self.rates = torch.zeros(2, dtype=torch.float32, device=d.device)
+        self.slots = torch.arange(d.block, device=d.device)
+        self.latent = [torch.zeros((d.block, d.heads, d.kv_rank), dtype=torch.float32, device=d.device) for _ in d.layers]
+        self.pool = torch.cuda.graph_pool_handle()
+        self.graphs, self.staged = [], []
+        for capturing in (False, True):
+            self.build(capturing)
+
+    def segment(self, index):
+        d = self.drafter
+        if index == 0:
+            tokens = torch.where(self.slots == 0, self.inputs[0], d.mask)
+            self.positions = self.inputs[1] + self.slots
+            residual = d.embed[tokens].float()
+        else:
+            residual = d.post_attention(d.layers[index - 1], self.residual, self.latent[index - 1], self.finish)
+        self.residual = residual
+        if index < len(d.layers):
+            absorbed, query_rope, block_rows, self.finish = d.pre_attention(d.layers[index], residual, self.positions)
+            return absorbed, query_rope, block_rows
+        y = rms(residual, d.norm, d.eps).to(torch.bfloat16)
+        return d.propose(y, self.inputs[0], (self.inputs[2], self.rates[0], self.rates[1], self.inputs[3]), self.inputs[1], self.inputs[4] != 0)
+
+    def build(self, capturing):
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        graphs, staged = [], []
+        with torch.cuda.stream(stream), torch.no_grad():
+            for index in range(len(self.drafter.layers) + 1):
+                if capturing:
+                    graph = torch.cuda.CUDAGraph()
+                    with torch.cuda.graph(graph, pool=self.pool, stream=stream):
+                        staged.append(self.segment(index))
+                    graphs.append(graph)
+                else:
+                    staged.append(self.segment(index))
+        torch.cuda.current_stream().wait_stream(stream)
+        torch.cuda.synchronize()
+        if capturing:
+            self.graphs, self.staged = graphs, staged
+
+    def draft(self, anchor_token, anchor_position, contexts, count, sampling=None):
+        d = self.drafter
+        seed, inverse_temperature, nucleus, top_k = sampling if sampling is not None else (0, 0.0, 0.0, 0)
+        self.host[0], self.host[1] = int(anchor_token), int(anchor_position)
+        self.host[2] = seed - (1 << 64) if seed >= (1 << 63) else seed
+        self.host[3], self.host[4] = int(top_k), 1 if inverse_temperature > 0.0 else 0
+        self.host_rates[0], self.host_rates[1] = float(inverse_temperature), float(nucleus)
+        self.inputs.copy_(self.host, non_blocking=True)
+        self.rates.copy_(self.host_rates, non_blocking=True)
+        with torch.no_grad():
+            for index in range(len(d.layers)):
+                self.graphs[index].replay()
+                absorbed, query_rope, block_rows = self.staged[index]
+                self.latent[index].copy_(d.attend(absorbed, query_rope, block_rows, contexts[index]))
+            self.graphs[-1].replay()
+            tokens, scores = self.staged[-1]
+            return tokens[:count].tolist(), scores[:count].tolist()
 
 
 class LatentContext:

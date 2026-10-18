@@ -28,7 +28,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spec_offline.block_drafter import DraftGraph, open_drafter
-from spec_offline.latent_block_drafter import LatentBlockDrafter, LatentContext
+from spec_offline.latent_block_drafter import LatentBlockDrafter, LatentContext, LatentDraftGraph
 from spec_offline.tapstream import FRAME, HELLO, MAGIC, read_hello
 
 DFT3_MAGIC = b"DFT3"
@@ -105,7 +105,7 @@ class Server:
         self.drafter = open_drafter(args.drafter, args.target_shard, {"embed": args.embed, "head": args.head, "norm": args.norm}, "cuda")
         self.latent = isinstance(self.drafter, LatentBlockDrafter)
         self.layers = [f"o{layer}" for layer in self.drafter.layer_ids]
-        self.graph = None if self.latent else DraftGraph(self.drafter)
+        self.graph = LatentDraftGraph(self.drafter) if self.latent else DraftGraph(self.drafter)
         self.max_drafts = self.drafter.max_drafts if self.latent else self.drafter.block
         self.columns = None
         self.hello = None
@@ -284,20 +284,11 @@ class Server:
             print(f"TOKEN-MISMATCH sequence {sequence} position {position}", flush=True)
             return None
         started = time.monotonic()
-        device = self.drafter.device
         with torch.no_grad():
             contexts, complete = context.contexts(position)
             if not complete:
                 self.stats["gaps"] += 1
-            y = self.drafter.forward_block(int(anchor), position, contexts)
-            seed, inverse_temperature, nucleus, top_k = sampling
-            rule = None
-            if inverse_temperature > 0.0:
-                rule = (torch.tensor(seed - (1 << 64) if seed >= (1 << 63) else seed, dtype=torch.long, device=device), torch.tensor(float(inverse_temperature), device=device),
-                        torch.tensor(float(nucleus), device=device), torch.tensor(int(top_k), dtype=torch.long, device=device))
-            tokens, scores = self.drafter.propose(y, int(anchor), rule, torch.tensor(position, dtype=torch.long, device=device), torch.tensor(rule is not None, device=device))
-            count = min(depth, self.max_drafts)
-            drafts, confidence = tokens[:count].tolist(), scores[:count].tolist()
+            drafts, confidence = self.graph.draft(int(anchor), position, contexts, min(depth, self.max_drafts), sampling)
         elapsed = int((time.monotonic() - started) * 1e6)
         self.timing["compute"] += elapsed / 1e6
         self.timing["context"] += position

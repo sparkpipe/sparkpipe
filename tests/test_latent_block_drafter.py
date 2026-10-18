@@ -308,5 +308,37 @@ class LatentContextTest(unittest.TestCase):
         self.assertTrue(context.matches(self.tokens, 33))
 
 
+@unittest.skipUnless(HAVE_TORCH and torch.cuda.is_available(), "needs a CUDA device")
+class LatentDraftGraphTest(unittest.TestCase):
+    def test_graph_drafts_equal_eager_drafts_greedy_and_sampled(self):
+        from latent_block_drafter import LatentBlockDrafter, LatentContext, LatentDraftGraph
+        directory = tempfile.mkdtemp(prefix="sparkpipe-latent-graph-")
+        tiny_checkpoint(directory)
+        drafter = LatentBlockDrafter(directory, os.path.join(directory, "target.safetensors"), {"embed": "embed", "head": "head", "norm": "norm"}, "cuda")
+        graph = LatentDraftGraph(drafter)
+        generator = torch.Generator().manual_seed(23)
+        taps = (torch.randn(40, HIDDEN * len(TARGET_LAYERS), generator=generator) * 0.5).to(torch.bfloat16)
+        tokens = torch.randint(0, VOCAB - 1, (40,), generator=generator).numpy().astype("uint32")
+        context = LatentContext(drafter)
+        context.page_positions = 8
+        first = 0
+        for last in (5, 14, 30, 37):
+            context.write(first, tokens[first:last], taps[first:last])
+            first = last
+            rows, complete = context.contexts(last)
+            self.assertTrue(complete)
+            for sampling in (None, (4242 + last, 0.8, 0.9, 0), ((1 << 63) + last, 1.0, 0.0, 3)):
+                eager_y = drafter.forward_block(int(tokens[last]), last, rows)
+                rule = None
+                if sampling is not None:
+                    seed = sampling[0] - (1 << 64) if sampling[0] >= (1 << 63) else sampling[0]
+                    rule = (torch.tensor(seed, device="cuda"), torch.tensor(sampling[1], device="cuda"), torch.tensor(sampling[2], device="cuda"), torch.tensor(sampling[3], device="cuda"))
+                eager_tokens, eager_scores = drafter.propose(eager_y, int(tokens[last]), rule, torch.tensor(last, device="cuda"), torch.tensor(rule is not None, device="cuda"))
+                graph_tokens, graph_scores = graph.draft(int(tokens[last]), last, rows, BLOCK - 1, sampling)
+                self.assertEqual(graph_tokens, eager_tokens.tolist(), f"position {last} sampling {sampling}")
+                for a, b in zip(graph_scores, eager_scores.tolist()):
+                    self.assertAlmostEqual(a, b, places=4)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
