@@ -395,7 +395,7 @@ class Server:
         threading.Thread(target=self.gpu_loop, daemon=True).start()
         listener = socket.create_server((self.args.draft_host, self.args.draft_port))
         print(f"DRAFTD-READY taps {self.args.tap_host}:{self.args.tap_port} drafts {self.args.draft_host}:{self.args.draft_port} "
-              f"layers {self.layers} drafter {'latent' if self.latent else 'block'} max_drafts {self.max_drafts} "
+              f"layers {self.layers} drafter {'latent attention ' + self.drafter.attention if self.latent else 'block'} max_drafts {self.max_drafts} "
               f"window {self.drafter.windows if self.latent else self.args.window}", flush=True)
         while True:
             connection, peer = listener.accept()

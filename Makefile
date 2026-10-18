@@ -498,6 +498,7 @@ PYTHON_TESTS := \
 	tests/test_delta_rule_column_cuda.py \
 	tests/test_index_shard_cuda.py \
 	tests/test_latent_rope_heads_cuda.py \
+	tests/test_latent_attention_kernel_cuda.py \
 	tests/test_project_chain_cuda.py \
 	tests/test_topk_warp_cuda.py \
 	tests/test_rms_norm_cuda.py \
