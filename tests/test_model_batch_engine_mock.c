@@ -1223,6 +1223,101 @@ static void TestScenarioPartialCopyCapacity(const SparkModelResidentDeployment *
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestSubmitPriority(SparkModelBatchEngine *engine,uint64_t request_id,uint64_t sequence_id,uint32_t budget,const uint32_t *prompt,uint32_t prompt_count,uint32_t priority)
+{
+	SparkModelBatchSubmitRequest request;
+	SparkModelBatchRequestHandle handle = 0u;
+	memset(&request,0,sizeof(request));
+	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+	request.descriptor_bytes = sizeof(request);
+	request.top_p = 1.0f;
+	request.request_id = request_id;
+	request.sequence_id = sequence_id;
+	request.prompt_token_ids = prompt;
+	request.prompt_token_count = prompt_count;
+	request.output_token_budget = budget;
+	request.priority = priority;
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_OK,"submit request with priority");
+}
+
+static uint32_t TestStreamFollowsScript(const TestBatchState *state,uint32_t id,const uint32_t *script,uint32_t first_position,uint32_t count)
+{
+	uint32_t index;
+	if ( state->token_events[id] != count )
+		return(0u);
+	for (index=0u; index<count; index++)
+		if ( state->token_ids[id][index] != script[first_position + index] )
+			return(0u);
+	return(1u);
+}
+
+static void TestScenarioIncrementalPages(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	SparkModelResidentDeployment bounded = *deployment;
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	uint32_t script[256],first[8],second[8],third[8],index;
+	for (index=0u; index<256u; index++)
+		script[index] = 3000u + index;
+	for (index=0u; index<8u; index++)
+	{
+		first[index] = script[index];
+		second[index] = 5000u + index;
+		third[index] = 6000u + index;
+	}
+	MockResidentClientReset();
+	bounded.runtime_limits.kv_physical_page_capacity = 40u;
+	engine = TestConnect(&bounded,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetScript(script,256u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,811u,120u,first,8u);
+	TestSubmitPrompt(engine,2u,812u,120u,second,8u);
+	TestDriveUntilTerminal(engine,&state,2u,6000u);
+	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u && state.error_events[1] == 0u && state.error_events[2] == 0u,
+		"incremental pages: two requests whose full budgets (32 pages each) do not fit a 40-page pool together both complete");
+	CHECK(TestStreamFollowsScript(&state,1u,script,8u,120u) != 0u && TestStreamFollowsScript(&state,2u,script,8u,120u) != 0u,
+		"incremental pages: each stream is every position's token once, in order, so the preempted request resumes with no gap and no repeat");
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.reservation_growth_count != 0u && view.preemption_count != 0u &&
+		view.preempted_resume_count == view.preemption_count && view.first_token_count == 2u,
+		"incremental pages: reservations grow as replies grow, the younger request is preempted when the older cannot grow, it resumes at its own checkpoint, and each request records one first token");
+	CHECK(state.second_token_order[2] < state.second_token_order[1] || state.first_token_order[1] < state.first_token_order[2],
+		"incremental pages: both requests decode concurrently before the pool runs short");
+	SparkModelBatchEngineDestroy(engine);
+
+	memset(&state,0,sizeof(state));
+	MockResidentClientReset();
+	engine = TestConnect(&bounded,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetScript(script,256u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPriority(engine,1u,821u,120u,first,8u,0u);
+	TestSubmitPriority(engine,2u,822u,120u,second,8u,0u);
+	for (index=0u; index<200u && state.token_events[2] < 70u; index++)
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		(void)MockResidentClientDriveAll();
+		usleep(1000);
+	}
+	TestSubmitPriority(engine,3u,823u,4u,third,8u,1u);
+	for (index=0u; index<2000u && state.completed_events[3] == 0u; index++)
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		(void)MockResidentClientDriveAll();
+		usleep(1000);
+	}
+	CHECK(state.completed_events[3] == 1u && state.completed_events[2] == 0u,
+		"incremental pages: an interactive request that finds the pool held by bulk work preempts the youngest bulk request and finishes first");
+	TestDriveUntilTerminal(engine,&state,3u,6000u);
+	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u && TestStreamFollowsScript(&state,1u,script,8u,120u) != 0u &&
+		TestStreamFollowsScript(&state,2u,script,8u,120u) != 0u && TestStreamFollowsScript(&state,3u,script,8u,4u) != 0u,
+		"incremental pages: the preempted bulk request resumes after the interactive one and every stream stays exact");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioMeasurements(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	static const uint32_t prompt[8] = {11u,12u,13u,14u,15u,16u,17u,18u};
@@ -2787,6 +2882,7 @@ int main(void)
 	TestScenarioSharedPrefillRows(&deployment,runtime_root);
 	TestScenarioDecodeAfterPrefill(&deployment,runtime_root);
 	TestScenarioPartialCopyCapacity(&deployment,runtime_root);
+	TestScenarioIncrementalPages(&deployment,runtime_root);
 	TestScenarioSamplingValidation(&deployment,runtime_root);
 	TestScenarioLogprobs(&deployment,runtime_root);
 	TestScenarioTruncatedChains(&deployment,runtime_root);

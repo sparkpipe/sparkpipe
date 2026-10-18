@@ -149,6 +149,9 @@ typedef struct SparkModelBatchEngineView
 	uint64_t speculative_accepted_token_count;
 	uint64_t peer_prefix_import_count;
 	uint64_t peer_prefix_imported_record_count;
+	uint64_t reservation_growth_count;
+	uint64_t preemption_count;
+	uint64_t preempted_resume_count;
 	SparkModelPipelineClientView pipeline;
 } SparkModelBatchEngineView;
 
