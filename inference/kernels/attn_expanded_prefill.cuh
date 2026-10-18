@@ -436,7 +436,7 @@ void LmExpandedGatherPrefillKernel(
 		const bool more = used + 1u < tiles;
 		const uint32_t tile = tile_first + used;
 		float part[2][4];
-		uint32_t weight_high[4], weight_low[4];
+		uint32_t weight_high[4];
 		if (more)
 			LmMbarrierWait(&key_full[(used + 1u) % LM_EXPANDED_PREFILL_RING], ((used + 1u) / LM_EXPANDED_PREFILL_RING) & 1u);
 		LmExpandedNamedBarrier(group == 0u ? 5u : 6u, 256u);
@@ -444,7 +444,7 @@ void LmExpandedGatherPrefillKernel(
 		LmExpandedNamedArrive(group == 0u ? 6u : 5u, 256u);
 		{
 			float peak_low = -INFINITY, peak_high = -INFINITY, next_low, next_high, scale_low, scale_high, total_low = 0.0f, total_high = 0.0f, value;
-			uint16_t high[2][4], low[2][4];
+			uint16_t high[2][4];
 			uint32_t local;
 #pragma unroll
 			for (frag = 0u; frag < 2u; frag++)
@@ -476,7 +476,6 @@ void LmExpandedGatherPrefillKernel(
 					const float next = index < 2u ? next_low : next_high;
 					value = next == -INFINITY || score[frag][index] == -INFINITY ? 0.0f : __expf(score[frag][index] - next);
 					high[frag][index] = LmFloatToBf16(value);
-					low[frag][index] = LmFloatToBf16(value - LmBf16ToFloat(high[frag][index]));
 					if (index < 2u)
 						total_low += value;
 					else
@@ -502,10 +501,6 @@ void LmExpandedGatherPrefillKernel(
 			weight_high[1] = LmExpandedPackBf16(high[0][2], high[0][3]);
 			weight_high[2] = LmExpandedPackBf16(high[1][0], high[1][1]);
 			weight_high[3] = LmExpandedPackBf16(high[1][2], high[1][3]);
-			weight_low[0] = LmExpandedPackBf16(low[0][0], low[0][1]);
-			weight_low[1] = LmExpandedPackBf16(low[0][2], low[0][3]);
-			weight_low[2] = LmExpandedPackBf16(low[1][0], low[1][1]);
-			weight_low[3] = LmExpandedPackBf16(low[1][2], low[1][3]);
 		}
 		LmMbarrierWait(&value_full[used % LM_EXPANDED_PREFILL_RING], (used / LM_EXPANDED_PREFILL_RING) & 1u);
 		{
@@ -519,9 +514,7 @@ void LmExpandedGatherPrefillKernel(
 				first[0] = b[0]; first[1] = b[1];
 				second[0] = b[2]; second[1] = b[3];
 				LmMmaBf16(output[frag], weight_high, first);
-				LmMmaBf16(output[frag], weight_low, first);
 				LmMmaBf16(output[frag + 1u], weight_high, second);
-				LmMmaBf16(output[frag + 1u], weight_low, second);
 			}
 		}
 		__syncwarp();

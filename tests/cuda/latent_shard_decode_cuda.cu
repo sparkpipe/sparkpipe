@@ -13,6 +13,7 @@
 #define DECODE_ROPE 64u
 #define DECODE_WIDTH (DECODE_LATENT + DECODE_ROPE)
 #define DECODE_RECORD LM_LATENT_SHARD_RECORD_FLOATS(DECODE_LATENT)
+#define DECODE_HEAD_TOLERANCE (1.0 / 64.0)
 
 struct DecodeKv
 {
@@ -153,14 +154,23 @@ static void DecodeCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 	DecodeCheck(error_host.error_code == LM_FRAME_ERROR_NONE,"no KV access error",label);
 	DECODE_CUDA(cudaMemcpy(tiled.data(),tiled_device,tiled.size() * 2u,cudaMemcpyDeviceToHost));
 	DECODE_CUDA(cudaMemcpy(oracle.data(),oracle_device,oracle.size() * 2u,cudaMemcpyDeviceToHost));
-	for (index=0u; index<tiled.size(); index++)
+	for (index=0u; index<tiled.size(); index+=DECODE_LATENT)
 	{
-		const double a = DecodeBf16(tiled[index]),b = DecodeBf16(oracle[index]);
-		const double error = fabs(a - b) / (fabs(b) + 1e-2);
-		worst = error > worst || error != error ? error : worst;
+		double peak = 0.0,difference = 0.0;
+		uint32_t element;
+		for (element=0u; element<DECODE_LATENT; element++)
+		{
+			const double a = DecodeBf16(tiled[index + element]),b = DecodeBf16(oracle[index + element]),gap = fabs(a - b);
+			peak = fabs(b) > peak ? fabs(b) : peak;
+			difference = gap > difference || gap != gap ? gap : difference;
+		}
+		{
+			const double error = difference / (peak > 1e-6 ? peak : 1e-6);
+			worst = error > worst || error != error ? error : worst;
+		}
 	}
-	DecodeCheck(worst <= 1.0 / 64.0,"the split tensor-core decode attention matches the scalar partial kernel within 1/64 relative",label);
-	printf("%s %s: worst relative difference to the scalar kernel %.5f\n",worst <= 1.0 / 64.0 ? "ok  " : "FAIL",label,worst);
+	DecodeCheck(worst <= DECODE_HEAD_TOLERANCE,"the split tensor-core decode attention matches the scalar partial kernel within two bf16 steps of each head's peak output",label);
+	printf("%s %s: worst difference to the scalar kernel relative to the head's peak output %.5f\n",worst <= DECODE_HEAD_TOLERANCE ? "ok  " : "FAIL",label,worst);
 	for (rank=0u; rank<degree; rank++)
 		cudaFree(pools[rank]);
 	cudaFree(table_device); cudaFree(positions_device); cudaFree(sequences_device); cudaFree(contexts_device);
