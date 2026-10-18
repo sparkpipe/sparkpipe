@@ -22,6 +22,135 @@ This file describes the system SparkPipe is built to be.
 [`TECHDEBT.md`](TECHDEBT.md) lists where the code does not match it yet, and
 [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md) holds the measurements.
 
+## Status, 2026-10-18
+
+Sixteen models serve on the reference fleet: sixteen DGX Spark nodes at
+TP16, with GPU clocks capped at 2200 MHz since 2026-10-12. Three core models
+get the performance work: Kimi K3, GLM 5.3 Full and GLM 5.3 Flash. Every
+number here was measured on the fleet. Dates, builds and receipts are in
+[`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md#status-snapshot-2026-10-18).
+B is the number of requests decoding together, and a batch figure is the
+tokens per second of all of them together.
+
+### Core models without speculation
+
+| | Kimi K3 | GLM 5.3 Full | GLM 5.3 Flash |
+| --- | ---: | ---: | ---: |
+| Decode, B1 | 16.2 tok/s | 28.9 tok/s | 55.0 tok/s |
+| Decode, B1, long prompt | 15.1 tok/s at 73K | 24.1 tok/s at 197K | 46 tok/s at 71K |
+| Decode, B8 | 64 tok/s | 73-74 tok/s | 174-176 tok/s |
+| Decode, B16 | not served | not served | 226-227 tok/s |
+| Largest batch ever measured | B8 | B16, 109-116 tok/s | B128, 347 tok/s |
+| B1 against the ideal memory floor | 35% of 46 tok/s | 27% of 109 tok/s | 23% of 243 tok/s |
+| B1 against the floor for the bytes it reads | 58% | about 50% | 59% |
+| Prefill, 8K prompt | 590 tok/s | 1,162 tok/s | 876 tok/s |
+| Prefill, long prompt | 137.7K in 299 s | 197K at about 680 tok/s | 71K at 736 tok/s |
+| Context window | 737,280 tokens | 262,144 tokens | 131,072 tokens |
+
+- **The ideal memory floor** assumes each rank reads 1/16 of the model's
+  active weights once per token at the GB10's 273 GB/s. **The floor for the
+  bytes it reads** counts what the current build reads per rank, replicated
+  tensors and cache included, at the measured streaming ceiling of
+  243-247 GB/s. The gap between the two floors is mostly replicated
+  tensors, which the design has yet to remove, plus cache reads.
+- B8 and B16 are the throughput while every stream is decoding, from one
+  hold on 2026-10-18. K3's lookup stayed on and supplied at most 3.1% of
+  its tokens; GLM proposed no drafts.
+- Serving caps the batch at 8 sequences for K3 and GLM 5.3 Full and at 16
+  for GLM 5.3 Flash. The larger batches were measured on earlier builds:
+  GLM 5.3 Full at B16 by step time on 2026-10-03, on the module the common
+  runner replaced (which also ran B8 at 85 tok/s), and GLM 5.3 Flash from B1
+  to B128 on 2026-09-30 (B32 230, B64 290, B128 347 tok/s; the 64 streams
+  were token-identical across runs).
+- Prefill runs at no more than 5% of the compute floor on any model. At
+  TP16 the network floor is the higher of the two: GLM 5.3 Full's 8K
+  prefill takes 6.9 s against a 2.9 s network floor, which is 42%.
+
+### Speculation
+
+Two draft sources run in production, and the target model verifies every
+draft:
+
+- **Lookup** copies drafts from the request's own context by suffix match
+  and verifies up to 255 of them in one frame. On K3 and GLM 5.3 Full since
+  2026-10-15.
+- **Model drafts**, on K3 since 2026-10-17: a DSpark block drafter on the
+  hub's RTX 5090 drafts from hidden states that five K3 layers stream to
+  it, whenever lookup has no match of at least 8 tokens.
+
+| Workload, B1 | Kimi K3 | GLM 5.3 Full |
+| --- | --- | --- |
+| Whole-file code rewrite, lookup | 15.3 → 126.4 tok/s (8.3×) | 27.6 → 124.2 tok/s (4.5×); 232.9 tok/s after the frame-cap fix |
+| SEARCH/REPLACE edits, lookup | 15.0 → 28.0 tok/s (1.9×) | 27.5 → 36.0 tok/s (1.3×) |
+| Short edits, model drafts on top of lookup | 1.39× per token sampled, 1.6× greedy | not ported yet |
+| Reasoning prose at 137.7K, model drafts on top of lookup | 1.07× | not ported yet |
+| Plain prose, lookup alone | 1.16× greedy, 1.0× sampled | about 1.0× |
+| Greedy story, production speculation (2026-10-18) | 16.2 → 26.4 tok/s (1.6×); 21.2 tok/s with lookup alone | 28.9 tok/s; lookup found no drafts |
+| Whole-file rewrite behind a long prompt | 76.8 tok/s at 73K, 41.8 tok/s at 337K | 105 tok/s at 46K, 86.2 tok/s at 198K |
+
+Speedups range from 1.0× on sampled prose to 8.3× on whole-file rewrites,
+each measured against no speculation in the same hold, except the greedy
+story row, whose 16.2 tok/s baseline is from 2026-10-14. At B8, K3's model
+drafts made no measurable difference (62.5-64.8 against 63.7-63.9 tok/s
+without them). GLM 5.3 Full's 232.9 tok/s is 8.4× its no-speculation rate
+from an earlier hold. The fastest single runs are 140.6 tok/s on K3 and
+238.7 tok/s on GLM 5.3 Full. The other 14 models do not speculate yet.
+
+### Accuracy
+
+- **Release gate.** On 2026-10-14, all 16 models produced the same tokens on
+  six fixed prompts as the builds they replaced.
+- **COMPSEC-17** (release of 2026-10-12): K3 17/17, GLM 5.3 Full 15/17,
+  GLM 5.3 Flash 13/17. The other models are in the [table](#models).
+- **ds4_eval, 92 questions** (GPQA Diamond, SuperGPQA, AIME 2025 and
+  COMPSEC). Served by SparkPipe: Qwen 3.8 Max 82/92 and Qwen 3.8 Flash
+  79/92 (2026-10-10/11, greedy, 16,000-token budget). For reference, Kimi
+  K3 on Kimi's own API scored 81/92 (2026-07-28, sampled). K3 and the GLM
+  models have not yet run the 92 on SparkPipe. Those runs wait until their
+  prefill and decode reach 50% of their rooflines.
+- **Number formats** change only after a teacher-forced A/B that is judged
+  against a same-precision floor: two runs that differ only in summation
+  order. GLM 5.3 Flash FP8 experts against BF16 gave KL 0.0087 and 96.8%
+  top-1 agreement, with no NLL change, and were accepted. NVIDIA NVFP4
+  experts gave KL 0.035 and lost 3.5 points of top-1, and were rejected.
+  On 2026-10-18, K3 attention with a single bf16 probability matrix
+  (flash-attention style) moved KL by 0.0042 against floors of
+  0.0013-0.0037, and NLL by −0.0009 nats [−0.0046, +0.0038], over 1,713
+  positions up to 137K context. That is no measurable loss. It is not
+  shipped yet.
+
+### KV cache and long context
+
+- **Sharded.** Each node stores 1/16 of every K3 sequence's MLA latent,
+  split by context, and the partial attention results merge exactly. K3's
+  737,280-token window takes a 1.36 GB KV pool per node.
+- **Pages just in time.** Lanes share one physical page pool, and pages
+  beyond it park on NVMe. On 2026-10-02, GLM 5.3 Full ran two lanes of
+  262,144 positions on a 32 GiB pool: two concurrent 125K-token prompts
+  both found their pass key. On 2026-10-07, K3 resumed 80 documents at 9×
+  its resident capacity, each with identical output.
+- **Prefix reuse** makes a long agent turn a short one. A K3 follow-up turn
+  on a cached prefix starts in 4.7-5.1 s at 137.7K (299-316 s cold), and in
+  8.0 s for 1,872 new tokens at 337K (982 s cold). Prefixes survive model
+  swaps: back on K3 after a round trip to GLM, a 137,600-token prefix
+  restored in 2.7 s. Short chat turns answer in 0.3-0.9 s, against 6.6 s
+  cold.
+- **Known limits.** K3's recurrent-state store fills after about 977
+  checkpointed requests in one conversation (hit at 127K context), and the
+  next request fails. Snapshot-store chain links grow with the square of
+  the chain length; on 2026-10-16 the production K3 store was full and had
+  served no restores. No production prefix-hit rate has been measured yet.
+
+### Not done yet
+
+- Batches above 8 (K3, GLM 5.3 Full) and 16 (GLM 5.3 Flash) are not served.
+- Prefill is the weakest phase on every model.
+- GLM has no model drafts yet, and 14 of the 16 models do not speculate.
+  The speculation regime moves to the other drivers after the next stable
+  release.
+- Some nodes' ConnectX-7 NICs fault under sustained load. A DMA guard then
+  reboots the node, which aborts the run in progress.
+
 ## The constraint everything follows from
 
 Decoding one token is bound by memory bandwidth: a step takes about as long
@@ -457,45 +586,55 @@ if another model is loaded, the request waits while the swap controller
 (`tools/serving/model_swap.py`) swaps the named one in, and that model's
 cached prefixes come back from the KV snapshot store.
 
-| Served name | Model | Family | Context | Swap in | Decode, B1 | Prefill, 7K prompt |
-| --- | --- | --- | ---: | ---: | ---: | ---: |
-| `glm-5.3` | GLM 5.3 Full | `glm52` | 256K | 38 s | 24.3 tok/s | 984 tok/s |
-| `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K | 24 s | 42.1 tok/s | 804 tok/s |
-| `kimi-k3` | Kimi K3 | `k3` | 128K | 46 s | 10.0 tok/s | 469 tok/s |
-| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 16K | 24 s | 25.1 tok/s | 167 tok/s |
-| `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K | 24 s | 19.0 tok/s | 55 tok/s |
-| `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K | 19 s | 40.9 tok/s | 157 tok/s |
-| `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K | 28 s | 12.0 tok/s | 50 tok/s |
-| `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K | 17 s | 27.9 tok/s | 734 tok/s |
-| `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 32K | 16 s | 75.2 tok/s | 1,705 tok/s |
-| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 32K | 20 s | 67.6 tok/s | 1,361 tok/s |
-| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 32K | 20 s | 80.0 tok/s | 1,524 tok/s |
-| `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K | 20 s | 42.1 tok/s | 700 tok/s |
-| `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 32K | 16 s | 32.1 tok/s | 1,152 tok/s |
-| `qwen3.8-max` | Qwen 3.8 Max (internal) | `qwen38` | 32K | 35 s | 8.2 tok/s | 34 tok/s |
-| `qwen3.8-27b` | Qwen 3.8 27B (internal) | `qwen38` | 256K | 19 s | 48.3 tok/s | 1,721 tok/s |
-| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 32K | 20 s | 38.0 tok/s | 344 tok/s |
+| Served name | Model | Family | Context | Swap in | Decode, B1 | Of ideal floor | Prefill, 7-8K prompt | COMPSEC-17 |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `glm-5.3` | GLM 5.3 Full | `glm52` | 256K | 38 s | 28.9 tok/s | 27% | 1,162 tok/s | 15 |
+| `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K | 24 s | 55.0 tok/s | 23% | 876 tok/s | 13 |
+| `kimi-k3` | Kimi K3 | `k3` | 720K | 46 s | 16.2 tok/s | 35% | 590 tok/s | 17 |
+| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 16K | 24 s | 29.5 tok/s | 6% | 178 tok/s | 16 |
+| `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K | 24 s | 19.0 tok/s ‡ | – | 55 tok/s ‡ | 17 |
+| `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K | 19 s | 40.9 tok/s ‡ | – | 157 tok/s ‡ | 16 |
+| `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K | 28 s | 14.2 tok/s | 16% | 53 tok/s | 17 |
+| `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K | 17 s | 34.4 tok/s | 48% | 834 tok/s | 16 |
+| `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 32K | 16 s | 89.5 tok/s | 16% | 1,848 tok/s | 16 |
+| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 32K | 20 s | 80.4 tok/s | 19% | 1,514 tok/s | 13 |
+| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 32K | 20 s | 79.2 tok/s | 18% | 1,550 tok/s | 13 |
+| `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K | 20 s | 51.0 tok/s | – | 773 tok/s | 13 |
+| `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 32K | 16 s | 37.9 tok/s | 51% | 1,186 tok/s | 17 |
+| `qwen3.8-max` | Qwen 3.8 Max (internal) | `qwen38` | 32K | 35 s | 10.4 tok/s | 29% | 35 tok/s | 5 † |
+| `qwen3.8-27b` | Qwen 3.8 27B (internal) | `qwen38` | 256K | 19 s | 57.4 tok/s | 35% | 1,852 tok/s | 14 |
+| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 32K | 20 s | 45.0 tok/s | 8% | 358 tok/s | 15 |
 
-Measured on 2026-10-14 on release `1d89e0377` (weightd `9e9618df`), sixteen
-Sparks at TP16, by the release qualification
-(`scripts/release_rollout.sh qualify`):
+All on sixteen Sparks at TP16, with the GPU clocks capped at 2200 MHz and
+no speculation:
 
+- **Decode, B1** is one request, greedy, generating 256 tokens (case
+  `b1_o256` of `tools/api_serving_perf.py`), on a quiet fleet. Most rows
+  come from the qualification of release `91c0e6be3` on 2026-10-12, with
+  old and new builds measured in one hold. Newer runs replace four rows:
+  K3 on 2026-10-14 (release `1d89e0377`), the two GLM models on
+  2026-10-18, and DeepSeek V4.1 Flash on 2026-10-13 after its decode fix.
+- **Of ideal floor** compares B1 with the ideal memory floor: each rank
+  reads 1/16 of the active weights once per token at 273 GB/s. MiMo and
+  Laguna have no floor computed yet. The arithmetic is in
+  [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md#status-snapshot-2026-10-18).
+- **Prefill** is one cold prompt of about 7,400 tokens (case `ttft6000`;
+  the count depends on the tokenizer): prompt tokens over the time to the
+  first token. K3 and GLM 5.3 Full were measured at 8K, on 2026-10-13 and
+  2026-10-15.
+- **COMPSEC-17** is the 17-question security set of the release
+  qualification, from release `91c0e6be3`; MiMo at its bring-up on
+  2026-10-13. † Qwen 3.8 Max always thinks; it ran with a 2,048-token
+  budget.
 - **Swap in** is the median time from a swap request until the model
   serves, over the swaps the controller logged on 2026-10-13 and 2026-10-14.
   It includes stopping the previous model. The slowest single swap was K3's,
   at 79 s.
-- **Decode, B1** is one request, greedy, without speculation, generating 256
-  tokens (case `b1_o256` of `api_serving_perf.py`).
-- **Prefill** is one cold prompt of about 7,400 tokens (case `ttft6000`; the
-  count depends on the tokenizer): prompt tokens over the time to the first
-  token.
 - **Context** is the window the chat layer serves
-  (`deployment/hub/chat_frontend.json`).
-- A CPU tenant kept about 16 cores busy on every node during these runs, so
-  treat the numbers as lower bounds. The same build on the quiet fleet
-  (2026-10-14 12:45Z, after the tenant stopped) decoded K3 at 16.2 tok/s at
-  B1, against 10.0 here: the load, not the build, caused the drop
-  (`qualification/releases/1d89e0377/kimi-k3.quiet-20261014.perf.jsonl`).
+  (`deployment/hub/chat_frontend.json`). K3's is 737,280 tokens.
+- ‡ MiMo was measured only in the release qualification of 2026-10-14,
+  while a CPU tenant kept about 16 cores busy on every node, so its numbers
+  are lower bounds. The same load cut K3 from 16.2 to 10.0 tok/s.
 - On the six fixed release prompts every model produced the same tokens as
   the build it replaced. GLM 5.3 Full's logprob golden moved slightly: 706 of
   708 top-1 tokens agree, and the one flip is a near tie.
