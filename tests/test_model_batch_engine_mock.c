@@ -2017,7 +2017,7 @@ static uint32_t TestPrefillPublishes(uint64_t request_id,uint32_t prompt_count,u
 
 static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
-	static const uint32_t expected_spans[4] = {8u,4u,4u,2u},expected_ends[4] = {8u,12u,16u,18u},expected_stateful[4] = {0u,1u,1u,0u};
+	static const uint32_t expected_spans[4] = {8u,4u,5u,1u},expected_ends[4] = {8u,12u,17u,18u},expected_stateful[4] = {0u,1u,1u,0u};
 	TestBatchState state = {0};
 	SparkModelBatchEngine *engine;
 	SparkModelServingLane lane = {0};
@@ -2036,11 +2036,11 @@ static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment 
 	TestDriveUntilTerminal(engine,&state,1u,800u);
 	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && state.token_events[1] == 6u,"recurrent checkpoints: a deferred-publication decode across a block boundary completes");
 	count = TestPrefillSpans(1u,18u,spans,8u);
-	CHECK(state.completed_events[1] == 1u && count == 4u && memcmp(spans,expected_spans,sizeof(expected_spans)) == 0,"recurrent checkpoints: prefill spans stop at the checkpoint stride and at the last block boundary before the prompt end");
+	CHECK(state.completed_events[1] == 1u && count == 4u && memcmp(spans,expected_spans,sizeof(expected_spans)) == 0,"recurrent checkpoints: prefill spans stop at the checkpoint stride and one token before the prompt end, so the last wave is one row");
 	count = TestPrefillPublishes(1u,18u,ends,stateful,8u);
-	CHECK(count == 4u && memcmp(ends,expected_ends,sizeof(expected_ends)) == 0 && memcmp(stateful,expected_stateful,sizeof(expected_stateful)) == 0,"recurrent checkpoints: every block is published but only the stride and the prompt's last boundary keep state");
+	CHECK(count == 4u && memcmp(ends,expected_ends,sizeof(expected_ends)) == 0 && memcmp(stateful,expected_stateful,sizeof(expected_stateful)) == 0,"recurrent checkpoints: every wave end is published but only the stride and the token before the prompt end keep state");
 	TestSubmitPrompt(engine,2u,691u,1u,prompt,18u);
-	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 16u,"recurrent checkpoints: a repeated prompt resumes at its last-boundary checkpoint");
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 17u,"recurrent checkpoints: a repeated prompt resumes one token before its end");
 	TestDriveUntilTerminal(engine,&state,2u,800u);
 	TestSubmitPrompt(engine,3u,692u,1u,diverge_late,18u);
 	CHECK(TestWaitFirstRequestLane(engine,3u,&lane) != 0u && lane.cache_prefix_token_count == 12u,"recurrent checkpoints: a prompt that diverges after the stride resumes at the stride checkpoint");
@@ -2049,12 +2049,25 @@ static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment 
 		extended[18u + index] = 600u + index;
 	memcpy(extended,prompt,sizeof(prompt));
 	TestSubmitPrompt(engine,5u,694u,1u,extended,26u);
-	CHECK(TestWaitFirstRequestLane(engine,5u,&lane) != 0u && lane.cache_prefix_token_count == 16u,"recurrent checkpoints: a prompt that extends a published one past its partial block resumes exactly at the last checkpoint, not a block earlier");
+	CHECK(TestWaitFirstRequestLane(engine,5u,&lane) != 0u && lane.cache_prefix_token_count == 17u,"recurrent checkpoints: a prompt that extends a published one resumes exactly at its last checkpoint, inside the partial block");
 	TestDriveUntilTerminal(engine,&state,4u,800u);
 	TestSubmitPrompt(engine,4u,693u,1u,diverge_early,18u);
 	CHECK(TestWaitFirstRequestLane(engine,4u,&lane) != 0u && lane.cache_prefix_token_count == 0u && (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) == 0u,"recurrent checkpoints: shared blocks without a checkpoint are recomputed instead of resumed");
 	TestDriveUntilTerminal(engine,&state,5u,800u);
 	CHECK(state.error_events[1] == 0u && state.error_events[2] == 0u && state.error_events[3] == 0u && state.error_events[4] == 0u && state.error_events[5] == 0u,"recurrent checkpoints: no request fails, including the stateless publishes at each request end");
+	{
+		uint32_t aligned[20],aligned_extended[24];
+		for (index=0u; index<20u; index++)
+			aligned[index] = aligned_extended[index] = 700u + index;
+		for (index=20u; index<24u; index++)
+			aligned_extended[index] = 900u + index;
+		TestSubmitPrompt(engine,6u,695u,3u,aligned,20u);
+		TestDriveUntilTerminal(engine,&state,6u,800u);
+		TestSubmitPrompt(engine,7u,696u,1u,aligned_extended,24u);
+		CHECK(TestWaitFirstRequestLane(engine,7u,&lane) != 0u && lane.cache_prefix_token_count == 19u,"recurrent checkpoints: a prompt that extends a block-aligned published prompt resumes one token before that prompt's end, inside its last full block");
+		TestDriveUntilTerminal(engine,&state,7u,800u);
+		CHECK(state.error_events[6] == 0u && state.error_events[7] == 0u && state.completed_events[7] == 1u,"recurrent checkpoints: the block-aligned prompt and its extension complete");
+	}
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -2080,9 +2093,9 @@ static void TestScenarioRecurrentStaleResume(const SparkModelResidentDeployment 
 	TestDriveUntilTerminal(engine,&state,2u,800u);
 	MockResidentClientScriptPrefixResult(1u,SPARK_STATUS_OK,0u);
 	CHECK(state.completed_events[2] == 1u && state.error_events[2] == 0u && state.stale_recomputes[2] == 1u,"recurrent stale resume: a resume point the ranks no longer hold costs one retry and the request completes");
-	CHECK(TestFindLane(2u,16u,16u,&lane) != 0u && TestFindLane(2u,12u,12u,&lane) != 0u && TestFindLane(2u,0u,0u,&lane) == 0u,"recurrent stale resume: the retry resumes at the previous checkpoint instead of recomputing the prompt");
+	CHECK(TestFindLane(2u,17u,17u,&lane) != 0u && TestFindLane(2u,12u,12u,&lane) != 0u && TestFindLane(2u,0u,0u,&lane) == 0u,"recurrent stale resume: the retry resumes at the previous checkpoint instead of recomputing the prompt");
 	TestSubmitPrompt(engine,3u,697u,1u,prompt,18u);
-	CHECK(TestWaitFirstRequestLane(engine,3u,&lane) != 0u && lane.cache_prefix_token_count == 16u,"recurrent stale resume: the recomputed checkpoint is a resume point again, so no block of the chain was cut");
+	CHECK(TestWaitFirstRequestLane(engine,3u,&lane) != 0u && lane.cache_prefix_token_count == 17u,"recurrent stale resume: the recomputed checkpoint is a resume point again, so no block of the chain was cut");
 	TestDriveUntilTerminal(engine,&state,3u,800u);
 	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.stale_prefix_recompute_count == 1u && state.error_events[3] == 0u,"recurrent stale resume: one stale resume point is one recompute");
 	SparkModelBatchEngineDestroy(engine);
