@@ -43,21 +43,27 @@ def read_hello(handle):
 
 
 def frames(path):
+    size = Path(path).stat().st_size
     with open(path, "rb") as handle:
         hello = read_hello(handle)
         row_bytes = len(hello["entries"]) * hello["hidden"] * 2
         while True:
+            start = handle.tell()
             raw = handle.read(FRAME.size)
             if not raw:
                 return
             if len(raw) != FRAME.size:
-                raise ValueError("truncated frame header")
+                print(f"{path}: ends in a truncated frame header at byte {start}; the rest is ignored", file=sys.stderr)
+                return
             (magic, version, kind, header_bytes, fingerprint, control, request, request_generation, sequence, first, serial,
              rows, flags, tail, entries, payload) = FRAME.unpack(raw)
             if magic != MAGIC or kind != 2 or fingerprint != hello["fingerprint"] or entries != len(hello["entries"]):
                 raise ValueError(f"bad frame at serial {serial}")
             if payload != rows * (4 + row_bytes):
                 raise ValueError(f"frame {serial}: payload {payload} for {rows} rows")
+            if handle.tell() + payload > size:
+                print(f"{path}: frame {serial} at byte {start} is cut short ({size - handle.tell()} of {payload} payload bytes); the rest is ignored", file=sys.stderr)
+                return
             tokens = struct.unpack(f"<{rows}I", handle.read(4 * rows))
             offset = handle.tell()
             handle.seek(rows * row_bytes, 1)

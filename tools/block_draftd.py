@@ -151,6 +151,7 @@ class Server:
                         record.write(raw)
                         record.write(token_raw)
                         record.write(data)
+                        record.flush()
                     self.work.put(("frame", (sequence, request, first, flags, tokens, data, time.monotonic())))
             except (OSError, ValueError) as error:
                 print(f"TAP-ERROR {peer}: {error}", flush=True)
