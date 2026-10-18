@@ -62,6 +62,111 @@ would use this link.
 
 ## Measured model performance
 
+### Status snapshot (2026-10-18)
+
+The figures in the README's status section, with their sources. Everything
+is TP16 on sixteen Sparks with GPU clocks capped at 2200 MHz, greedy, unless
+a line says otherwise.
+
+**Batch sweep, hold BW (2026-10-18).** `api_serving_perf.py` at `9e5d21d60`,
+whose stream cases now report the throughput of the window in which every
+stream is between its first and last token. The earlier "after the last
+first token" figure divided all tokens by that window's length alone, so
+tokens decoded while later streams were still being admitted counted
+without their time. That figure gave K3 513 tok/s at 64 streams for 8,192
+tokens that took 162 s, and GLM 5.3 Full 144-159 tok/s at 16 streams. It
+also ran past the serving caps: K3 and GLM 5.3 Full serve 8 sequences at a
+time, so those 16- and 64-stream cases queued. Neither number is a
+measurement of B16 or B64. Receipts:
+[`qualification/batch-sweep-20261018/`](qualification/batch-sweep-20261018/).
+
+| Model | Arm | B1, `o256` × 3, median | B8, 8 × 512 tokens, two runs | B16, 16 × 512 tokens, two runs | Drafts proposed / accepted in the arm |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `kimi-k3` | production: lookup and model drafts (hold BW, 03:10Z) | 26.41 tok/s | 62.50, 64.79 tok/s | not served | 744 / 500 |
+| `kimi-k3` | `draft_server` removed, lookup on (hold BW2, 03:23Z) | 21.15 tok/s | 63.70, 63.93 tok/s | not served | 387 / 252 |
+| `glm-5.3` | production, lookup on (hold BW, 03:14Z) | 28.94 tok/s | 73.18, 74.21 tok/s | not served | 0 / 0 |
+| `glm-5.3-flash` | production, no speculation (hold BW, 03:16Z) | 55.02 tok/s | 173.67, 176.07 tok/s | 227.12, 225.83 tok/s | 0 / 0 |
+
+- The batch columns are `aggregate_all_streams_decoding_tok_s`. Total over
+  wall time, admission included, read 60.5-63.5 (K3), 72.2-73.6 (GLM 5.3
+  Full), 167.6-171.1 at B8 and 215.8-217.5 at B16 (GLM 5.3 Flash).
+- Draft counters are the engine's `engine_measurements` totals over the
+  arm's 20 requests (warm-up, three B1 runs, sixteen stream requests;
+  52 for Flash). K3's lookup-only arm accepted 252 drafts in 8,992 tokens,
+  so at most 3.1% of its B8 tokens came from drafts.
+- K3 B1 rises from 16.17 tok/s without speculation (2026-10-14) to 21.15
+  with lookup alone and 26.41 with lookup and model drafts on this greedy
+  story prompt. The baseline is from another hold, so read the ratios to
+  within the 5-10% that B1 moves between holds.
+- Production builds of 2026-10-17: K3 nodes `2c66ba145`, hub API
+  `a60bede83`; GLM 5.3 Full on the s27 release `331b1f495`; GLM 5.3 Flash
+  on its lane 0 build. Swaps between arms; the KV snapshot tier was not
+  wiped, since the story prompts only measure decode. No AER or CX-7 errors
+  during either hold.
+
+**Core models, B1 and prefill.**
+
+| Figure | Value | Source |
+| --- | --- | --- |
+| K3 B1 | 16.17 tok/s median of 9 runs; the 7 without chat traffic read 16.10-16.25 | 2026-10-14 12:45Z, release `1d89e0377`, quiet fleet (`qualification/releases/1d89e0377/kimi-k3.quiet-20261014.perf.jsonl`) |
+| GLM 5.3 Full B1 | 28.94 tok/s; 28.40-28.46 on 2026-10-15 | hold BW above; 2026-10-15, n=10 ([prefill section](#glm-53-full-prefill-row-shard-and-wide-fp8-tiles-2026-10-15)) |
+| GLM 5.3 Flash B1 | 55.02 tok/s; 52.49 on 2026-10-13 | hold BW above; 2026-10-13 lane rollout, build `e5b18ffdc` |
+| K3 B1 at 73K | 15.1 tok/s (65-67 ms per chain step) | 2026-10-16 hold 12, build `179319e0f`, plain decode |
+| GLM 5.3 Full B1 at 197K | 24.1 tok/s | 2026-10-16 survey, build `79b9ada12` |
+| GLM 5.3 Flash B1 at 71K | 46 tok/s | 2026-10-08 prefill campaign, before the common-runner port |
+| K3 prefill, 8K | about 590 tok/s (13.9 s) | 2026-10-13 snapshot, build `d89d4e0bf` |
+| K3 prefill, 137.7K cold | 299.0 s | 2026-10-17 hold 29, 1,024-row waves |
+| GLM 5.3 Full prefill, 8K | 1,162 tok/s (8,009 tokens in 6,895 ms) | 2026-10-15 |
+| GLM 5.3 Full prefill, 197K | about 680 tok/s | 2026-10-16 holds 6-7, build `2c60eceb0` |
+| GLM 5.3 Flash prefill, 8K | 876 tok/s | `91c0e6be3` qualification, 2026-10-12 |
+| GLM 5.3 Flash prefill, 71K | 736 tok/s | 2026-10-08, before the port |
+| GLM 5.3 Full B16 | 137.6-147 ms per step, 109-116 tok/s | 2026-10-03 capacity model inputs, glm52 legacy module, replicated KV |
+| GLM 5.3 Flash B1-B128 | B8 130, B16 170, B32 230, B64 290, B128 347 tok/s with all streams decoding; B64 64/64 streams identical across runs | 2026-09-30, firmware `d37568d` on a dev root, 372-token prompts, 512 tokens per stream |
+
+**Floors.** The ideal memory floor is 273 GB/s over the bytes each rank
+reads per token if the active weights are split evenly across 16 ranks and
+read once. It leaves out replication, cache and state. Inputs are from the
+model cards and the deployed formats.
+
+| Model | Formats | Non-expert params | Active expert params | GB per rank per token | Ideal floor | B1 | Of floor |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `glm-5.3` | FP8 | 17.5B × 1 B | 22.7B × 1 B | 2.51 | 109 tok/s | 28.9 tok/s | 27% |
+| `glm-5.3-flash` | FP8 | 7B × 1 B | 11B × 1 B | 1.12 | 243 tok/s | 55.0 tok/s | 23% |
+| `kimi-k3` | BF16 spine, MXFP4 experts | 27.5B × 2 B | 76.5B × 0.53 B | 5.97 | 46 tok/s | 16.2 tok/s | 35% |
+| `deepseek-v4.1-flash` | FP8 spine, MXFP4 experts | 4.5B × 1 B | 8.5B × 0.53 B | 0.56 | 485 tok/s | 29.5 tok/s | 6% |
+| `hy4-preview` | MXFP8 | 24B × 1.03 B | 25B × 1.03 B | 3.15 | 87 tok/s | 14.2 tok/s | 16% |
+| `gemma-4-31b` | BF16, dense | 30.7B × 2 B | – | 3.84 | 71 tok/s | 34.4 tok/s | 48% |
+| `gemma-4-26b-a4b` | BF16 | 1.9B × 2 B | 1.9B × 2 B | 0.47 | 575 tok/s | 89.5 tok/s | 16% |
+| `ling-3.0-flash` | BF16 | 2.6B × 2 B | 2.5B × 2 B | 0.64 | 428 tok/s | 80.4 tok/s | 19% |
+| `ling-3.0-flash-fin` | BF16 | 2.6B × 2 B | 2.5B × 2 B | 0.64 | 428 tok/s | 79.2 tok/s | 18% |
+| `muse-glimmer-30b` | BF16, dense | 29.2B × 2 B | – | 3.65 | 75 tok/s | 37.9 tok/s | 51% |
+| `qwen3.8-max` | BF16 spine, NVFP4 experts | 48.7B × 2 B | 46.3B × 0.5625 B | 7.72 | 35 tok/s | 10.4 tok/s | 29% |
+| `qwen3.8-27b` | FP8, dense | 27B × 1 B | – | 1.69 | 162 tok/s | 57.4 tok/s | 35% |
+| `qwen3.8-flash` | BF16 spine, NVFP4 experts | 3.3B × 2 B | 2.6B × 0.5625 B | 0.50 | 542 tok/s | 45.0 tok/s | 8% |
+
+B1 for the non-core models is the `91c0e6be3` qualification of 2026-10-12
+([`qualification/releases/91c0e6be3/`](qualification/releases/91c0e6be3/),
+one jsonl per model: `b1_o256` median, `ttft6000` prefill). DeepSeek V4.1
+Flash is 29.5 tok/s from 2026-10-13, after its shared-expert split (8.7 in
+that qualification).
+
+The floor for the bytes a build reads uses kernel shapes of the deployed
+pack and the measured streaming ceiling:
+
+- K3: 8.9 GB per rank per token (spine 7.3 GB, experts 1.61 GB), 36 ms at
+  247 GB/s; 16.2 tok/s is 58% (2026-10-12 CUPTI on `2c5d5b843`).
+- GLM 5.3 Full: 4.7-4.8 GB per rank per token gave a 50-51 tok/s ceiling on
+  the replicated-KV build of 2026-09-29; the context split lowered the
+  bytes to an estimated 4.1 GB. 28.9 tok/s is about 50% of the ceiling.
+- GLM 5.3 Flash: 2.58 GB per rank per step at 243 GB/s, 94 tok/s; 55.0 is
+  59%.
+
+Prefill against floors: the compute floor is 16 nodes × peak (FP8 210 or
+BF16 90 TFLOPS per node) over 2 × active parameters per token: K3 16,154,
+GLM 5.3 Full 41,791 and GLM 5.3 Flash 93,333 tok/s. Measured prefill is
+0.1-5% of it on every model. GLM 5.3 Full's 8K prefill network floor is
+about 2.9 s (2026-10-12, `d89d4e0bf`): 6.9 s is 42% of it.
+
 ### Release qualification, all 16 models (2026-10-14)
 
 Release `1d89e0377` (weightd `9e9618df`) on sixteen Sparks at TP16, measured

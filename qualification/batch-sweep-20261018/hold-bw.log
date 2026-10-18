@@ -1,0 +1,28 @@
+== 2026-10-18T03:09:45Z batch sweep hold BW 20261018T030945Z (B1 o256 x3, 8 streams x512 x2, GLM Flash also 16 streams x512 x2; all-streams-decoding window metric 9e5d21d60; K3 without draft_server, lookup on; GLM production) precheck idle kimi-k3 None
+4a86bec4eb333abe
+draft_server removed for the hold
+activate kimi-k3: idle kimi-k3 66.5 null
+COUNTERS-BEFORE kimi-k3 "completed":3478 "verify_lanes":0 "draft_tokens":0 "accepted_draft_tokens":0 
+B1 kimi-k3 {"case": "b1_o256", "prompt": "story", "median_decode_tok_s": 26.41, "label": "bw", "utc": "2026-10-18T03:10:22Z"}
+streams8x512 kimi-k3 {"case": "streams8_o512", "wall_s": 67.687, "total_tokens": 4096, "aggregate_tok_s": 60.51, "all_streams_decoding_s": 60.411, "aggregate_all_streams_decoding_tok_s": 62.5, "errors": [], "label": "bw", "utc": "2026-10-18T03:11:29Z"}
+streams8x512 kimi-k3 {"case": "streams8_o512", "wall_s": 64.549, "total_tokens": 4096, "aggregate_tok_s": 63.46, "all_streams_decoding_s": 62.875, "aggregate_all_streams_decoding_tok_s": 64.79, "errors": [], "label": "bw", "utc": "2026-10-18T03:12:34Z"}
+COUNTERS-AFTER kimi-k3 "completed":20 "verify_lanes":270 "draft_tokens":744 "accepted_draft_tokens":500 
+activate glm-5.3: idle glm-5.3 55.7 null
+COUNTERS-BEFORE glm-5.3 "completed":2 "verify_lanes":6 "draft_tokens":511 "accepted_draft_tokens":341 
+B1 glm-5.3 {"case": "b1_o256", "prompt": "story", "median_decode_tok_s": 28.94, "label": "bw", "utc": "2026-10-18T03:14:00Z"}
+streams8x512 glm-5.3 {"case": "streams8_o512", "wall_s": 56.715, "total_tokens": 4096, "aggregate_tok_s": 72.22, "all_streams_decoding_s": 51.833, "aggregate_all_streams_decoding_tok_s": 73.18, "errors": [], "label": "bw", "utc": "2026-10-18T03:14:57Z"}
+streams8x512 glm-5.3 {"case": "streams8_o512", "wall_s": 55.639, "total_tokens": 4096, "aggregate_tok_s": 73.62, "all_streams_decoding_s": 54.803, "aggregate_all_streams_decoding_tok_s": 74.21, "errors": [], "label": "bw", "utc": "2026-10-18T03:15:52Z"}
+COUNTERS-AFTER glm-5.3 "completed":20 "verify_lanes":0 "draft_tokens":0 "accepted_draft_tokens":0 
+activate glm-5.3-flash: idle glm-5.3-flash 37.8 null
+COUNTERS-BEFORE glm-5.3-flash "completed":8 "verify_lanes":0 "draft_tokens":0 "accepted_draft_tokens":0 
+B1 glm-5.3-flash {"case": "b1_o256", "prompt": "story", "median_decode_tok_s": 55.02, "label": "bw", "utc": "2026-10-18T03:16:49Z"}
+streams8x512 glm-5.3-flash {"case": "streams8_o512", "wall_s": 24.446, "total_tokens": 4096, "aggregate_tok_s": 167.55, "all_streams_decoding_s": 21.604, "aggregate_all_streams_decoding_tok_s": 173.67, "errors": [], "label": "bw", "utc": "2026-10-18T03:17:14Z"}
+streams16x512 glm-5.3-flash {"case": "streams16_o512", "wall_s": 37.657, "total_tokens": 8192, "aggregate_tok_s": 217.54, "all_streams_decoding_s": 33.969, "aggregate_all_streams_decoding_tok_s": 227.12, "errors": [], "label": "bw", "utc": "2026-10-18T03:17:51Z"}
+streams8x512 glm-5.3-flash {"case": "streams8_o512", "wall_s": 23.934, "total_tokens": 4096, "aggregate_tok_s": 171.14, "all_streams_decoding_s": 21.577, "aggregate_all_streams_decoding_tok_s": 176.07, "errors": [], "label": "bw", "utc": "2026-10-18T03:18:15Z"}
+streams16x512 glm-5.3-flash {"case": "streams16_o512", "wall_s": 37.965, "total_tokens": 8192, "aggregate_tok_s": 215.78, "all_streams_decoding_s": 32.674, "aggregate_all_streams_decoding_tok_s": 225.83, "errors": [], "label": "bw", "utc": "2026-10-18T03:18:54Z"}
+COUNTERS-AFTER glm-5.3-flash "completed":52 "verify_lanes":0 "draft_tokens":0 "accepted_draft_tokens":0 
+AER 
+1
+activate glm-5.3: idle glm-5.3 57.4 null
+activate kimi-k3: idle kimi-k3 69.2 null
+== 2026-10-18T03:21:08Z batch sweep hold BW end (idle kimi-k3 None) -> /private/tmp/claude-502/-Users-mac-sparkpipe/df54bdc1-84bf-4584-9653-5211cf17258e/scratchpad/batchsweep/holdbw-20261018T030945Z
