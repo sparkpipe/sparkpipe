@@ -992,6 +992,44 @@ static uint32_t SnapEntryAt(const SnapFixture *fixture,uint32_t tokens)
 	return(SPARK_KV_PAGE_CACHE_NO_INDEX);
 }
 
+static void SnapTestSpareRetention(const char *directory)
+{
+	SparkKvSnapshotStore store;
+	SparkKvSnapshotWriteTicket tickets[8];
+	SparkKvSnapshotKey key;
+	uint32_t kinds[1] = {1u},index,serial = 0u;
+	uint64_t big[1] = {200000u},small[1] = {1000u},big_file = 0u;
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,UINT64_C(1) << 26,UINT64_C(1) << 21) == SPARK_STATUS_OK);
+	CHECK(store.spare_maximum_bytes == store.queue_maximum_bytes / 4u && store.spare_bytes == 0u);
+	for (index=0u; index<8u; index++)
+	{
+		SnapKey(&key,0x5au,(uint8_t)(index + 1u),4u * (index + 1u));
+		CHECK(SparkKvSnapshotWriteBegin(&store,&key,0,kinds,big,1u,&tickets[index]) == SPARK_STATUS_OK);
+		big_file = tickets[index].file_bytes;
+		memset(tickets[index].segments[0].data,(int)index,(size_t)big[0]);
+	}
+	for (index=0u; index<8u; index++)
+		CHECK(SparkKvSnapshotWriteCommit(&store,&tickets[index]) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK && store.write_count == 8u);
+	CHECK(store.spare_bytes != 0u && store.spare_bytes <= store.spare_maximum_bytes && store.spare_maximum_bytes < 8u * big_file);
+	SparkKvSnapshotStoreClose(&store);
+
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,UINT64_C(1) << 26,UINT64_C(1) << 21) == SPARK_STATUS_OK);
+	SnapKey(&key,0x5bu,(uint8_t)++serial,4u);
+	CHECK(SparkKvSnapshotWriteBegin(&store,&key,0,kinds,small,1u,&tickets[0]) == SPARK_STATUS_OK && SparkKvSnapshotWriteCommit(&store,&tickets[0]) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK);
+	SnapKey(&key,0x5bu,(uint8_t)++serial,8u);
+	CHECK(SparkKvSnapshotWriteBegin(&store,&key,0,kinds,big,1u,&tickets[0]) == SPARK_STATUS_OK && SparkKvSnapshotWriteCommit(&store,&tickets[0]) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK);
+	CHECK(store.spare_bytes == big[0] + small[0]);
+	SnapKey(&key,0x5bu,(uint8_t)++serial,12u);
+	CHECK(SparkKvSnapshotWriteBegin(&store,&key,0,kinds,small,1u,&tickets[1]) == SPARK_STATUS_OK);
+	CHECK(store.spare_bytes == big[0]);
+	CHECK(SparkKvSnapshotWriteCommit(&store,&tickets[1]) == SPARK_STATUS_OK && SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK);
+	SparkKvSnapshotStoreClose(&store);
+	printf("kv snapshot: a burst of large writes keeps at most a quarter of the queue as spare buffers, and a small write reuses the smallest spare that fits, not a large one\n");
+}
+
 static void SnapTestStatesSpillBeforeDemotion(const char *directory)
 {
 	static const uint32_t ends[4] = {4u,8u,12u,16u};
@@ -1170,6 +1208,7 @@ int main(void)
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);
 	SnapTestMarkAllOrder(directory);
+	SnapTestSpareRetention(directory);
 	SnapTestStatesSpillBeforeDemotion(directory);
 	SnapRemoveTree(directory);
 	printf("test_kv_snapshot: %u checks, %u failures\n",snap_checks,snap_failures);

@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_KV_SNAPSHOT_ABI_VERSION 3u
+#define SPARK_KV_SNAPSHOT_ABI_VERSION 4u
 #define SPARK_KV_SNAPSHOT_FORMAT_VERSION 2u
 #define SPARK_KV_SNAPSHOT_MAGIC UINT64_C(0x31504e534b565053)
 #define SPARK_KV_SNAPSHOT_MAX_SEGMENTS 4u
@@ -77,6 +77,8 @@ typedef struct SparkKvSnapshotStore
 	uint64_t queued_count;
 	uint64_t queued_bytes;
 	uint64_t queue_full_count;
+	uint64_t spare_bytes;
+	uint64_t spare_maximum_bytes;
 	uint64_t duplicate_count;
 	uint64_t eviction_count;
 	uint64_t evicted_bytes;
