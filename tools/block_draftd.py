@@ -27,7 +27,8 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from spec_offline.block_drafter import BlockDrafter, DraftGraph
+from spec_offline.block_drafter import DraftGraph, open_drafter
+from spec_offline.latent_block_drafter import LatentBlockDrafter, LatentContext
 from spec_offline.tapstream import FRAME, HELLO, MAGIC, read_hello
 
 DFT3_MAGIC = b"DFT3"
@@ -101,9 +102,11 @@ class Context:
 class Server:
     def __init__(self, args):
         self.args = args
-        self.drafter = BlockDrafter(args.drafter, args.target_shard, {"embed": args.embed, "head": args.head, "norm": args.norm}, "cuda")
+        self.drafter = open_drafter(args.drafter, args.target_shard, {"embed": args.embed, "head": args.head, "norm": args.norm}, "cuda")
+        self.latent = isinstance(self.drafter, LatentBlockDrafter)
         self.layers = [f"o{layer}" for layer in self.drafter.layer_ids]
-        self.graph = DraftGraph(self.drafter)
+        self.graph = None if self.latent else DraftGraph(self.drafter)
+        self.max_drafts = self.drafter.max_drafts if self.latent else self.drafter.block
         self.columns = None
         self.hello = None
         self.work = queue.Queue()
@@ -180,7 +183,7 @@ class Server:
         taps = rows.to(self.drafter.device)[:, self.columns].reshape(len(tokens), -1)
         context = self.contexts.get(sequence)
         if context is None or first == 0:
-            context = Context(self.drafter, self.args.window)
+            context = LatentContext(self.drafter) if self.latent else Context(self.drafter, self.args.window)
             self.contexts[sequence] = context
         self.contexts.move_to_end(sequence)
         context.write(first, tokens, taps)
@@ -263,9 +266,48 @@ class Server:
 
     def covered(self, sequence, position):
         context = self.contexts.get(sequence)
+        if context is not None and self.latent:
+            return context.covers(position)
         return context is not None and (position == 0 or bool(context.held(np.array([position - 1]))[0]))
 
+    def draft_latent(self, request):
+        sequence, anchor, position, committed, depth, sampling = request
+        context = self.contexts.get(sequence)
+        if not context.complete(position):
+            for other_sequence, other in reversed(self.contexts.items()):
+                if other_sequence != sequence and context.copy_prefix(other, committed, position) != 0:
+                    self.stats["donor_fills"] += 1
+                if context.complete(position):
+                    break
+        if not context.matches(committed, position):
+            self.stats["unavailable"] += 1
+            print(f"TOKEN-MISMATCH sequence {sequence} position {position}", flush=True)
+            return None
+        started = time.monotonic()
+        device = self.drafter.device
+        with torch.no_grad():
+            contexts, complete = context.contexts(position)
+            if not complete:
+                self.stats["gaps"] += 1
+            y = self.drafter.forward_block(int(anchor), position, contexts)
+            seed, inverse_temperature, nucleus, top_k = sampling
+            rule = None
+            if inverse_temperature > 0.0:
+                rule = (torch.tensor(seed - (1 << 64) if seed >= (1 << 63) else seed, dtype=torch.long, device=device), torch.tensor(float(inverse_temperature), device=device),
+                        torch.tensor(float(nucleus), device=device), torch.tensor(int(top_k), dtype=torch.long, device=device))
+            tokens, scores = self.drafter.propose(y, int(anchor), rule, torch.tensor(position, dtype=torch.long, device=device), torch.tensor(rule is not None, device=device))
+            count = min(depth, self.max_drafts)
+            drafts, confidence = tokens[:count].tolist(), scores[:count].tolist()
+        elapsed = int((time.monotonic() - started) * 1e6)
+        self.timing["compute"] += elapsed / 1e6
+        self.timing["context"] += position
+        self.stats["drafted"] += 1
+        self.stats["draft_us"] += elapsed
+        return drafts, confidence, elapsed
+
     def draft(self, request):
+        if self.latent:
+            return self.draft_latent(request)
         sequence, anchor, position, committed, depth, sampling = request
         context = self.contexts.get(sequence)
         positions = np.arange(max(0, position - self.args.window), position)
@@ -358,7 +400,8 @@ class Server:
         threading.Thread(target=self.gpu_loop, daemon=True).start()
         listener = socket.create_server((self.args.draft_host, self.args.draft_port))
         print(f"DRAFTD-READY taps {self.args.tap_host}:{self.args.tap_port} drafts {self.args.draft_host}:{self.args.draft_port} "
-              f"layers {self.layers} window {self.args.window}", flush=True)
+              f"layers {self.layers} drafter {'latent' if self.latent else 'block'} max_drafts {self.max_drafts} "
+              f"window {self.drafter.windows if self.latent else self.args.window}", flush=True)
         while True:
             connection, peer = listener.accept()
             connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)

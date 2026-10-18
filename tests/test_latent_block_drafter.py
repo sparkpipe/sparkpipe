@@ -250,5 +250,63 @@ class LatentBlockDrafterTest(unittest.TestCase):
                 refuse_unsupported(tiny_config(**overrides))
 
 
+@unittest.skipUnless(HAVE_TORCH, "needs torch")
+class LatentContextTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from latent_block_drafter import LatentBlockDrafter, LatentContext
+        cls.directory = tempfile.mkdtemp(prefix="sparkpipe-latent-context-")
+        tiny_checkpoint(cls.directory)
+        cls.drafter = LatentBlockDrafter(cls.directory, os.path.join(cls.directory, "target.safetensors"), {"embed": "embed", "head": "head", "norm": "norm"}, "cpu")
+        cls.Context = LatentContext
+        generator = torch.Generator().manual_seed(17)
+        cls.taps = (torch.randn(40, HIDDEN * len(TARGET_LAYERS), generator=generator) * 0.5).to(torch.bfloat16)
+        cls.tokens = torch.randint(0, VOCAB - 1, (40,), generator=generator).numpy().astype("uint32")
+
+    def context(self, frames, page_positions=8):
+        context = self.Context(self.drafter)
+        context.page_positions = page_positions
+        for first, last in frames:
+            context.write(first, self.tokens[first:last], self.taps[first:last])
+        return context
+
+    def dense(self, position):
+        keys, _ = self.drafter.context(self.taps[:position], torch.arange(0, position))
+        y, _ = self.drafter.draft(int(self.tokens[position]), position, keys, None, position)
+        return y
+
+    def test_ring_and_pages_draft_like_dense_context_at_each_frame_end(self):
+        context = self.context([])
+        for first, last in ((0, 3), (3, 13), (13, 29), (29, 31), (31, 37)):
+            context.write(first, self.tokens[first:last], self.taps[first:last])
+            contexts, complete = context.contexts(last)
+            self.assertTrue(complete)
+            y = self.drafter.forward_block(int(self.tokens[last]), last, contexts)
+            self.assertLess(float((y.double() - self.dense(last).double()).abs().max()), 2e-2, f"position {last}")
+
+    def test_a_later_stream_fills_from_a_donor_that_shares_its_prefix(self):
+        donor = self.context([(0, 37)])
+        late = self.context([(20, 30)])
+        self.assertFalse(late.complete(30))
+        self.assertGreater(late.copy_prefix(donor, self.tokens, 30), 0)
+        self.assertTrue(late.complete(30) and late.matches(self.tokens, 30))
+        y = self.drafter.forward_block(int(self.tokens[30]), 30, late.contexts(30)[0])
+        self.assertLess(float((y.double() - self.dense(30).double()).abs().max()), 2e-2)
+        other = self.tokens.copy()
+        other[5] = (other[5] + 1) % (VOCAB - 1)
+        stranger = self.context([(20, 30)])
+        self.assertEqual(stranger.copy_prefix(donor, other, 30), 5)
+        self.assertFalse(stranger.complete(30))
+
+    def test_a_committed_token_the_context_does_not_hold_is_refused(self):
+        context = self.context([(0, 37)])
+        committed = self.tokens.copy()
+        self.assertTrue(context.matches(committed, 25))
+        committed[30] = (committed[30] + 1) % (VOCAB - 1)
+        self.assertFalse(context.matches(committed, 33))
+        context.write(28, self.tokens[28:37], self.taps[28:37])
+        self.assertTrue(context.matches(self.tokens, 33))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

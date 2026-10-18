@@ -111,7 +111,15 @@ e77935fb (5 layers, 3.69B parameters, received 2026-10-18 into
 `/mnt/cold-raid6/models/kimi-k3-dflash2-lightseek-e77935fb`, sha256
 1f2a5376...52c2, receipt beside it). `open_drafter` in `block_drafter.py`
 picks it by that field, so `block_drafter.py` and `long_drafter.py` score it
-like the RadixArk drafter. It is not yet served by draftd.
+like the RadixArk drafter, and `block_draftd.py` serves it (DRAFTD-READY says
+`drafter latent`); it has not run against live taps yet.
+- **draftd context:** per sequence, one 4,096-row ring shared by the sliding
+  layers and 65,536-position pages for the full layer (75.5 MB each, 1,152 B
+  per position), allocated as the sequence grows. A stream that starts after
+  position 0 copies the longest prefix whose tokens match another sequence's;
+  token checks only cover positions past a verified watermark. A draft
+  attends to what is held and counts a gap otherwise. It is eager (no CUDA
+  graph yet) and caps depth at the drafter's 7 drafts.
 
 - **Inputs:** the K3 OUTPUT taps o19, o37, o66, o78 and o90 (the AttnRes
   partial after each layer, which is TokenSpeed's default `prefix` stream).

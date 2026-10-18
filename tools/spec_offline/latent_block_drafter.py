@@ -6,8 +6,10 @@ from __future__ import annotations
 import json
 import math
 import sys
+import time
 from pathlib import Path
 
+import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -86,10 +88,16 @@ def block_conv(z, base, delta, group):
     return out
 
 
+def latent_chunks(rows, chunk):
+    for part in (rows if isinstance(rows, (list, tuple)) else [rows]):
+        for begin in range(0, part.shape[0], chunk):
+            yield part[begin:begin + chunk]
+
+
 def latent_attention(absorbed, query_rope, rows, kv_rank, scale, chunk=LATENT_ATTENTION_CHUNK):
     best = total = accumulated = None
-    for begin in range(0, rows.shape[0], chunk):
-        part = rows[begin:begin + chunk].float()
+    for part in latent_chunks(rows, chunk):
+        part = part.float()
         scores = (torch.einsum("ihr,pr->ihp", absorbed, part[:, :kv_rank]) + torch.einsum("ihd,pd->ihp", query_rope, part[:, kv_rank:])) * scale
         peak = scores.amax(-1, keepdim=True)
         if best is None:
@@ -193,7 +201,8 @@ class LatentBlockDrafter:
         query = query.view(x.shape[0], self.heads, self.nope + self.rope_dim)
         absorbed = torch.einsum("ihn,hnr->ihr", query[..., :self.nope].float(), layer["absorb_key"])
         query_rope = rotate_pairs(query[..., self.nope:], positions, self.inverse, self.rotary_gain)
-        rows = torch.cat((context, self.latent_rows(layer, x, positions)), 0)
+        block_rows = self.latent_rows(layer, x, positions)
+        rows = list(context) + [block_rows] if isinstance(context, (list, tuple)) else torch.cat((context, block_rows), 0)
         latent = latent_attention(absorbed, query_rope, rows, self.kv_rank, self.scale)
         values = torch.einsum("ihr,hvr->ihv", latent, layer["absorb_value"]).reshape(x.shape[0], -1)
         return (values.to(torch.bfloat16) @ layer["self_attn.o_proj"].t()).float()
@@ -267,3 +276,135 @@ def is_latent_checkpoint(directory):
     with open(Path(directory) / "config.json") as handle:
         config = json.load(handle)
     return str((config.get("dflash_config") or {}).get("attention_mode", "")).lower() == "mla"
+
+
+class LatentContext:
+    page_positions = 65536
+
+    def __init__(self, drafter, window=None):
+        d = self.drafter = drafter
+        self.width = d.kv_rank + d.rope_dim
+        windows = {w for w in d.windows if w is not None}
+        if len(windows) > 1:
+            raise DrafterContractError("latent draftd context needs one sliding window for all sliding layers")
+        self.window = windows.pop() if windows else None
+        self.sliding = [index for index, w in enumerate(d.windows) if w is not None]
+        self.full = [index for index, w in enumerate(d.windows) if w is None]
+        self.rings = {index: torch.zeros((self.window, self.width), dtype=torch.bfloat16, device=d.device) for index in self.sliding}
+        self.ring_positions = np.full(self.window or 1, -1, dtype=np.int64)
+        self.pages = {index: [] for index in self.full}
+        self.held = np.zeros(0, dtype=bool)
+        self.tokens = np.zeros(0, dtype=np.uint32)
+        self.verified = 0
+        self.used = time.monotonic()
+
+    def grow(self, end):
+        if end <= self.held.shape[0]:
+            return
+        size = -(-end // self.page_positions) * self.page_positions
+        self.held = np.concatenate((self.held, np.zeros(size - self.held.shape[0], dtype=bool)))
+        self.tokens = np.concatenate((self.tokens, np.zeros(size - self.tokens.shape[0], dtype=np.uint32)))
+        for pages in self.pages.values():
+            while len(pages) * self.page_positions < size:
+                pages.append(torch.zeros((self.page_positions, self.width), dtype=torch.bfloat16, device=self.drafter.device))
+
+    def write(self, first, tokens, taps):
+        end = first + len(tokens)
+        positions = np.arange(first, end)
+        with torch.no_grad():
+            rows, _ = self.drafter.context(taps, torch.from_numpy(positions).to(self.drafter.device))
+        self.grow(end)
+        self.held[first:] = False
+        self.verified = min(self.verified, first)
+        if self.window is not None:
+            self.ring_positions[self.ring_positions >= first] = -1
+            keep = positions[-self.window:]
+            slots = torch.from_numpy(keep % self.window).to(self.drafter.device)
+            for index in self.sliding:
+                self.rings[index].index_copy_(0, slots, rows[index][-len(keep):])
+            self.ring_positions[keep % self.window] = keep
+        for index in self.full:
+            for page in range(first // self.page_positions, (end - 1) // self.page_positions + 1):
+                lo, hi = max(first, page * self.page_positions), min(end, (page + 1) * self.page_positions)
+                self.pages[index][page][lo - page * self.page_positions:hi - page * self.page_positions] = rows[index][lo - first:hi - first]
+        self.held[first:end] = True
+        self.tokens[first:end] = tokens
+        self.used = time.monotonic()
+
+    def ring_rows(self, position):
+        begin = max(0, position - (self.window - self.drafter.block))
+        positions = np.arange(begin, position)
+        held = self.ring_positions[positions % self.window] == positions
+        index = torch.from_numpy((positions[held] % self.window).astype(np.int64)).to(self.drafter.device)
+        return index, bool(held.all())
+
+    def full_rows(self, index, position):
+        if self.held[:position].all():
+            pages = self.pages[index]
+            return [pages[page][:min(self.page_positions, position - page * self.page_positions)] for page in range(-(-position // self.page_positions))], True
+        held = np.flatnonzero(self.held[:position])
+        rows = [self.pages[index][page][torch.from_numpy(held[(held >= page * self.page_positions) & (held < (page + 1) * self.page_positions)] - page * self.page_positions).to(self.drafter.device)]
+                for page in range(-(-position // self.page_positions))]
+        return [part for part in rows if part.shape[0] != 0], False
+
+    def contexts(self, position):
+        complete = True
+        out = [None] * len(self.drafter.layers)
+        if self.window is not None:
+            ring_index, ring_complete = self.ring_rows(position)
+            complete &= ring_complete
+            for index in self.sliding:
+                out[index] = self.rings[index].index_select(0, ring_index)
+        for index in self.full:
+            out[index], full_complete = self.full_rows(index, position)
+            complete &= full_complete
+        return out, complete
+
+    def matches(self, committed, position):
+        if position <= self.verified:
+            return True
+        if position > self.tokens.shape[0]:
+            return False
+        held = self.held[self.verified:position]
+        if not np.array_equal(self.tokens[self.verified:position][held], committed[self.verified:position][held]):
+            return False
+        if held.all():
+            self.verified = position
+        return True
+
+    def complete(self, position):
+        return position <= self.held.shape[0] and bool(self.held[:position].all())
+
+    def covers(self, position):
+        return position == 0 or (position - 1 < self.held.shape[0] and bool(self.held[position - 1]))
+
+    def copy_prefix(self, donor, committed, position):
+        shared = min(position, donor.held.shape[0])
+        same = np.flatnonzero(donor.tokens[:shared] != committed[:shared])
+        prefix = int(same[0]) if same.size else shared
+        if prefix == 0:
+            return 0
+        self.grow(prefix)
+        usable = np.flatnonzero(donor.held[:prefix] & ~self.held[:prefix])
+        if usable.size == 0:
+            return 0
+        for index in self.full:
+            for page in range(-(-prefix // self.page_positions)):
+                lo, hi = page * self.page_positions, min(prefix, (page + 1) * self.page_positions)
+                self.pages[index][page][:hi - lo].copy_(donor.pages[index][page][:hi - lo])
+        if self.window is not None:
+            ring = usable[usable >= max(0, prefix - self.window)]
+            slots = ring % self.window
+            donor_held = donor.ring_positions[slots] == ring
+            slots, ring = slots[donor_held], ring[donor_held]
+            index = torch.from_numpy(slots.astype(np.int64)).to(self.drafter.device)
+            for layer in self.sliding:
+                self.rings[layer].index_copy_(0, index, donor.rings[layer].index_select(0, index))
+            self.ring_positions[slots] = ring
+        self.held[usable] = donor.held[usable]
+        self.tokens[:prefix] = donor.tokens[:prefix]
+        return int(usable.size)
+
+    def bytes(self):
+        return sum(t.numel() * t.element_size() for t in self.rings.values()) + sum(p.numel() * p.element_size() for pages in self.pages.values() for p in pages)
+
