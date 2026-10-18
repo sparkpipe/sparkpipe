@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import codecs
+import functools
 import hashlib
 import importlib.util
 import ipaddress
@@ -223,20 +224,69 @@ VOCABULARIES = {"tokenizers": TokenizersVocabulary, "tiktoken": TiktokenVocabula
 
 
 CARRIED = re.compile("\ue000([0-9]+)\ue001")
+PIECE_CACHE_BYTES = 512 << 20
+
+
+@functools.lru_cache(maxsize=None)
+def literal_pattern(strings):
+    trie = {}
+    for string in strings:
+        node = trie
+        for char in string:
+            node = node.setdefault(char, {})
+        node[None] = None
+
+    def emit(node):
+        if None in node:
+            return ""
+        branches = [re.escape(char) + emit(child) for char, child in sorted(node.items())]
+        return branches[0] if len(branches) == 1 else "(?:" + "|".join(branches) + ")"
+
+    return re.compile(emit(trie)) if trie else None
+
+
+def control_pattern(vocabulary):
+    return literal_pattern(tuple(sorted({token for token in vocabulary.control_strings() if token})))
+
+
+class PieceCache:
+    def __init__(self, vocabulary, budget):
+        self.vocabulary = vocabulary
+        self.budget = budget
+        self.entries = OrderedDict()
+        self.bytes = 0
+
+    def encode(self, piece, special):
+        key = (piece, special)
+        entry = self.entries.get(key)
+        if entry is not None:
+            self.entries.move_to_end(key)
+            return entry[0]
+        ids = array("I", self.vocabulary.encode(piece, special))
+        size = sys.getsizeof(piece) + ids.itemsize * len(ids) + 128
+        if size <= self.budget:
+            self.entries[key] = (ids, size)
+            self.bytes += size
+            while self.bytes > self.budget:
+                self.bytes -= self.entries.popitem(last=False)[1][1]
+        return ids
 
 
 def carry_controls(messages, tools, vocabulary):
-    specials = [token for token in vocabulary.control_strings() if token]
+    pattern = control_pattern(vocabulary)
     carried = []
+
+    def holds_control(text):
+        return pattern is not None and pattern.search(text) is not None
 
     def mark(value):
         if isinstance(value, str):
-            if any(token in value for token in specials):
+            if holds_control(value):
                 carried.append(value)
                 return f"\ue000{len(carried) - 1}\ue001"
             return value
         if isinstance(value, dict):
-            if any(isinstance(key, str) and any(token in key for token in specials) for key in value):
+            if any(isinstance(key, str) and holds_control(key) for key in value):
                 raise RequestError(400, "invalid_messages", "a request key carries a control token string")
             return {key: mark(item) for key, item in value.items()}
         if isinstance(value, list):
@@ -262,10 +312,10 @@ def uncarry(pieces, carried, expected):
     return result
 
 
-def encode_pieces(vocabulary, text, pieces):
+def encode_pieces(cache, text, pieces):
     ids = []
     for piece, special in pieces:
-        ids.extend(vocabulary.encode(piece, special))
+        ids.extend(cache.encode(piece, special))
     return text, ids
 
 
@@ -279,6 +329,7 @@ class TemplateRenderer:
         tokenizer_config = json.loads((directory / spec.get("tokenizer_config", "tokenizer_config.json")).read_text())
         self.template_tokens = {name: tokenizer_config[name] for name in ("bos_token", "eos_token", "pad_token", "unk_token") if isinstance(tokenizer_config.get(name), str)}
         self.vocabulary = vocabulary
+        self.cache = PieceCache(vocabulary, PIECE_CACHE_BYTES)
 
     def render_text(self, messages, tools, context):
         try:
@@ -298,7 +349,7 @@ class TemplateRenderer:
         return text, uncarry([(self.render_text(marked_messages, marked_tools, context), True)], carried, text)
 
     def render(self, messages, tools, kwargs):
-        return encode_pieces(self.vocabulary, *self.pieces(messages, tools, kwargs))
+        return encode_pieces(self.cache, *self.pieces(messages, tools, kwargs))
 
 
 class SegmentRenderer:
@@ -311,6 +362,7 @@ class SegmentRenderer:
         loader.loader.exec_module(module)
         self.function = getattr(module, spec["function"])
         self.vocabulary = vocabulary
+        self.cache = PieceCache(vocabulary, PIECE_CACHE_BYTES)
 
     def segments(self, messages, tools, kwargs):
         try:
@@ -329,7 +381,7 @@ class SegmentRenderer:
         return text, uncarry([(segment.text, segment.allow_special) for segment in marked], carried, text)
 
     def render(self, messages, tools, kwargs):
-        return encode_pieces(self.vocabulary, *self.pieces(messages, tools, kwargs))
+        return encode_pieces(self.cache, *self.pieces(messages, tools, kwargs))
 
 
 RENDERERS = {"template": TemplateRenderer, "segments": SegmentRenderer}
