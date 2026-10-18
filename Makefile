@@ -576,6 +576,7 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_switch_now.py \
 	tests/test_chat_frontend_disconnect.py \
 	tests/test_chat_frontend_piece_cache.py \
+	tests/test_chat_frontend_classes.py \
 	tests/test_litellm_queue_settings.py \
 	tests/test_fleet_gateway.py \
 	tests/test_open_webui_fleet_tool.py \

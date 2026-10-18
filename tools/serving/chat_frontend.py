@@ -225,6 +225,14 @@ VOCABULARIES = {"tokenizers": TokenizersVocabulary, "tiktoken": TiktokenVocabula
 
 CARRIED = re.compile("\ue000([0-9]+)\ue001")
 PIECE_CACHE_BYTES = 512 << 20
+INTERACTIVE_PRIORITY = 2
+BULK_PRIORITY = 1
+BACKGROUND_PRIORITY = 0
+BULK_SUFFIX = "-bulk"
+
+
+def request_priority(model, body):
+    return BULK_PRIORITY if body.get("model") == model.id + BULK_SUFFIX else INTERACTIVE_PRIORITY
 
 
 @functools.lru_cache(maxsize=None)
@@ -1128,6 +1136,8 @@ class Frontend:
         name = body.get("model")
         if name in self.models:
             return self.models[name]
+        if isinstance(name, str) and name.endswith(BULK_SUFFIX) and name[:-len(BULK_SUFFIX)] in self.models:
+            return self.models[name[:-len(BULK_SUFFIX)]]
         if len(self.models) == 1 and name is None:
             return next(iter(self.models.values()))
         raise RequestError(404, "model_not_found", f"model {name!r} is not served here; served: {sorted(self.models)}")
@@ -1193,8 +1203,8 @@ class Frontend:
     async def list_models(self, request):
         created = int(time.time())
         return web.json_response({"object": "list", "data": [
-            {"id": model.id, "object": "model", "created": created, "owned_by": "sparkpipe", "max_model_len": model.context_tokens}
-            for model in self.models.values()]})
+            {"id": name, "object": "model", "created": created, "owned_by": "sparkpipe", "max_model_len": model.context_tokens}
+            for model in self.models.values() for name in (model.id, model.id + BULK_SUFFIX)]})
 
     def prefix_ledger(self, model):
         if self.prefixes is None:
@@ -1284,8 +1294,7 @@ class Frontend:
             parser = OutputParser(model, tools, prompt.rstrip().endswith(model.reasoning["start"].rstrip()), stops)
         engine_body = {"prompt_token_ids": prompt_ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids}
         engine_body.update(sampling_fields(body, model.sampling_defaults))
-        if self.memory is not None:
-            engine_body["priority"] = 1
+        engine_body["priority"] = request_priority(model, body)
         return {"body": body, "engine_body": engine_body, "parser": parser, "prompt_tokens": len(prompt_ids), "messages": messages,
                 "tools": tools, "kwargs": kwargs, "session": session}
 
@@ -1489,7 +1498,7 @@ class Frontend:
         return parts[0][0] if parts else None
 
     async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None):
-        body = {"prompt_token_ids": ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids, "priority": 0, "temperature": 0.0}
+        body = {"prompt_token_ids": ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids, "priority": BACKGROUND_PRIORITY, "temperature": 0.0}
         parser = OutputParser(model, None, reasoning_open, []) if model.channels is None else None
         step = model.vocabulary.decoder()
         content, usage, generated, outcome, tokens = [], {}, 0, "error", []

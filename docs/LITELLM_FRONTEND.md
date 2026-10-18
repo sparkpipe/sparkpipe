@@ -85,9 +85,12 @@ streaming:
   its units start with `-p LimitNOFILE=524288`. When `model_api` still runs
   out of descriptors, `accept` waits 50 ms between retries and logs once.
 
-The engine orders queued work by priority and then by deadline; the chat
-layer sends priority 1 for chat requests when chat memory is on and 0 for
-the memory curator. The warm queue in front of a starting engine is
+The engine orders queued work by priority and then by deadline. The chat
+layer sends priority 2 for interactive requests, 1 for a request to
+`<model>-bulk` (every model has that second name at both LiteLLM doors
+and in `/v1/models`) and 0 for the memory curator. Bulk work fills idle
+capacity and is preempted, by checkpoint and requeue, when interactive
+work needs its pages (PR #1500). The warm queue in front of a starting engine is
 separate: it still answers 503 when full or after `wait_seconds`.
 
 ## Three models and on-demand swaps (2026-10-08)
