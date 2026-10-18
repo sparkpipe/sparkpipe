@@ -1242,13 +1242,13 @@ static void SparkModelBatchObserveModelRate(
 	SparkModelBatchEngine *engine,
 	SparkModelBatchRequestState *request,
 	uint32_t kept,
-	uint64_t service_ns)
+	float spent_ns)
 {
 	const float token_ns = SparkSpeculationFrameTokenCost(&engine->frame_model,request->prompt_token_count + request->generated_token_count);
-	if ( service_ns == 0u || !(token_ns > 0.0f) )
+	if ( !(spent_ns > 0.0f) || !(token_ns > 0.0f) )
 		return;
 	request->model_rate_tokens = request->model_rate_tokens * SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_DECAY + (float)kept;
-	request->model_rate_ns = request->model_rate_ns * SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_DECAY + (float)service_ns + request->model_wait_ns;
+	request->model_rate_ns = request->model_rate_ns * SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_DECAY + spent_ns;
 	request->model_rate_frames = request->model_rate_frames * SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_DECAY + 1.0f;
 	if ( request->model_rate_frames < SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_FRAMES )
 		return;
@@ -1313,7 +1313,8 @@ static SparkStatus SparkModelBatchAcceptVerifiedLane(
 				engine->model_depth_observed[row] = engine->model_depth_observed[row] * SPARK_MODEL_BATCH_MODEL_DRAFT_CALIBRATION_DECAY + (row < draft_count && accepted > row ? 1.0f : 0.0f);
 			}
 			request->draft_run_drafts = 0u;
-			SparkModelBatchObserveModelRate(engine,request,kept,completion->service_time_ns);
+			if ( completion->service_time_ns != 0u )
+				SparkModelBatchObserveModelRate(engine,request,kept,(float)completion->service_time_ns + request->model_wait_ns);
 		}
 		else
 		{
@@ -2862,6 +2863,7 @@ static uint32_t SparkModelBatchPlanModelDraft(
 	if ( status != SPARK_STATUS_OK && info.server_status == SPARK_DRAFT_BRIDGE_SERVER_STATUS_UNAVAILABLE )
 	{
 		engine->model_draft_unavailable++;
+		SparkModelBatchObserveModelRate(engine,request,0u,request->model_wait_ns);
 		return(0u);
 	}
 	if ( status != SPARK_STATUS_OK )
@@ -2875,7 +2877,6 @@ static uint32_t SparkModelBatchPlanModelDraft(
 	{
 		const uint32_t context = position + 1u;
 		const float token_ns = SparkSpeculationFrameTokenCost(&engine->frame_model,context);
-		const float wait_ns = (float)engine->model_draft_wait_us * 1000.0f / (float)engine->model_draft_rounds;
 		float best_rate = 0.0f, best_gain = 0.0f, drafted = 0.0f, calibration = 1.0f;
 		for (index=1u; index<count && index<=depth; index++)
 		{
@@ -2892,7 +2893,7 @@ static uint32_t SparkModelBatchPlanModelDraft(
 			drafted += calibration * path;
 			request->draft_tokens[index - 1u] = nodes[index].token_id;
 			cost = SparkSpeculationFrameCost(&engine->frame_model,index + 1u,context);
-			cost = (cost > token_ns ? cost : token_ns) + wait_ns;
+			cost = cost > token_ns ? cost : token_ns;
 			rate = cost > 0.0f ? (1.0f + drafted) / cost : 0.0f;
 			if ( rate > best_rate )
 			{
@@ -2913,6 +2914,7 @@ static uint32_t SparkModelBatchPlanModelDraft(
 			engine->model_depth_observed[index] *= SPARK_MODEL_BATCH_MODEL_DRAFT_CALIBRATION_DECAY;
 		}
 		engine->model_draft_declined++;
+		SparkModelBatchObserveModelRate(engine,request,0u,request->model_wait_ns);
 		return(0u);
 	}
 	request->draft_count = drafts;
