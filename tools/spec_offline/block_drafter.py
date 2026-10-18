@@ -65,7 +65,7 @@ def coupled_choice(logits, sampling, position):
     keep = ((nucleus <= 0.0) | (before < nucleus)) & ((top_k <= 0) | (rank < top_k))
     keep = keep | (rank == 0)
     score = torch.where(keep, values + keyed_gumbel(seed, position, candidates), torch.full_like(values, float("-inf")))
-    return candidates[torch.argmax(score)]
+    return torch.index_select(candidates, 0, torch.argmax(score).view(1)).view(())
 
 
 class SafeTensors:

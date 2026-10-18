@@ -115,7 +115,7 @@ def coupled_candidates(scores, tokens, sampling, position):
     keep = ((nucleus <= 0.0) | (before < nucleus)) & ((top_k <= 0) | (rank < top_k)) | (rank == 0)
     candidate_tokens = tokens[order]
     keyed = torch.where(keep, values + keyed_gumbel(seed, position, candidate_tokens), torch.full_like(values, float("-inf")))
-    return order[torch.argmax(keyed)]
+    return torch.index_select(order, 0, torch.argmax(keyed).view(1)).view(())
 
 
 class LatentBlockDrafter:
@@ -247,8 +247,9 @@ class LatentBlockDrafter:
             if sampling is not None:
                 choice = torch.where(sampled, coupled_candidates(row, candidates[step], sampling, position + step), choice)
             normalizer = torch.logaddexp(torch.logsumexp(row, -1), tail[step])
-            scores.append(torch.exp(row[choice] - normalizer).reshape(1))
-            tokens.append(candidates[step, choice].reshape(1))
+            picked = choice.view(1)
+            scores.append(torch.exp(torch.index_select(row, 0, picked) - normalizer))
+            tokens.append(torch.index_select(candidates[step], 0, picked))
             previous = choice
         return torch.cat(tokens), torch.cat(scores)
 
