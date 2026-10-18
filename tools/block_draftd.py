@@ -289,6 +289,9 @@ class Server:
             contexts, complete = context.contexts(position)
             if not complete:
                 self.stats["gaps"] += 1
+                missing = np.flatnonzero(~context.held[:position]) if position <= context.held.shape[0] else np.arange(context.held.shape[0], position)
+                print(f"DRAFT-GAP sequence {sequence} position {position} missing {missing.size} first {int(missing[0]) if missing.size else -1} "
+                      f"last {int(missing[-1]) if missing.size else -1} ring_window {context.window}", flush=True)
             drafts, confidence = self.graph.draft(int(anchor), position, contexts, min(depth, self.max_drafts), sampling)
         elapsed = int((time.monotonic() - started) * 1e6)
         self.timing["compute"] += elapsed / 1e6
