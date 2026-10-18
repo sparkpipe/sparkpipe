@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SYNTHESIZE = ROOT / "build" / "dsv41_flash_pack_synthesize"
 MANIFEST = ROOT / "build" / "dsv41_flash_experts_manifest"
 VALIDATOR = ROOT / "build" / "test_dsv41_flash_pack_contract"
-REVISION = "dba1be0a40aa45a94ad051997016db3960a90277"
+REVISION = "1bae0e1088993b9b82de08f59de5be5a34e42170"
 ZERO_DIGEST = "0" * 64
 MANIFEST_HEADER_BYTES = 16
 

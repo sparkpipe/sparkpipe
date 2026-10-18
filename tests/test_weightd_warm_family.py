@@ -58,7 +58,7 @@ SparkStatus SparkWeightdClientKvPoolDrop(SparkWeightdClient *c,
 SparkStatus SparkWeightdPackDigestRead(const char *p,char h[65])
     { (void)p;(void)h; return SPARK_STATUS_UNSUPPORTED; }
 """
-REVISION = "dba1be0a40aa45a94ad051997016db3960a90277"
+REVISION = "1bae0e1088993b9b82de08f59de5be5a34e42170"
 DIGEST = "0123456789abcdef" * 4
 PACK_BYTES = 4096
 
