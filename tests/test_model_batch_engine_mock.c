@@ -2470,6 +2470,29 @@ static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployme
 	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_CLOSE,script,40u,&state,&view,&submissions,&rows,&server);
 	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,40u) != 0u && submissions == 0u && server.requests == 1u,
 		"model drafts: a broken draft server pauses model drafts and decoding continues");
+	{
+		SparkModelResidentDeployment drafted = *deployment;
+		static char host[] = "127.0.0.1";
+		struct sockaddr_in address;
+		socklen_t bytes = (socklen_t)sizeof(address);
+		int closed = socket(AF_INET,SOCK_STREAM,0);
+		memset(&address,0,sizeof(address));
+		address.sin_family = AF_INET;
+		address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		CHECK(closed >= 0 && bind(closed,(const struct sockaddr *)&address,bytes) == 0 && getsockname(closed,(struct sockaddr *)&address,&bytes) == 0,
+			"model drafts: a bound port with no listener stands in for a draft server that is down");
+		drafted.draft_server.host = host;
+		drafted.draft_server.port = ntohs(address.sin_port);
+		strcpy(drafted.draft_server.target_model,"test-target");
+		drafted.draft_server.depth = 4u;
+		drafted.draft_server.wait_ms = 50u;
+		drafted.draft_server.min_confidence = 0.05f;
+		memset(&state,0,sizeof(state));
+		TestRunScript(&drafted,runtime_root,script,256u,44u,40u,&state,&view,&submissions,&rows);
+		CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,44u,40u) != 0u && submissions == 0u,
+			"model drafts: an engine whose draft server is down at start still starts and emits exactly the model's greedy stream");
+		(void)close(closed);
+	}
 }
 
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root)

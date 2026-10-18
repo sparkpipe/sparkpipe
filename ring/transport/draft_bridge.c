@@ -463,12 +463,6 @@ SparkStatus SparkDraftBridgeInitialize(
     }
     bridge->request_buffer_bytes = request_bytes;
     bridge->response_buffer_bytes = response_bytes;
-    status = SparkDraftBridgeConnect(bridge);
-    if (status != SPARK_STATUS_OK)
-    {
-        SparkDraftBridgeDestroy(bridge);
-        return status;
-    }
     *bridge_out = bridge;
     return SPARK_STATUS_OK;
 }
