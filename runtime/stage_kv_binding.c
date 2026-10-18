@@ -1517,9 +1517,10 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	}
 	if ( binding->state_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 	{
-		fprintf(stderr,"%s kv binding states records=%u slots=%u superseded=%llu pressure_demoted=%llu rekeyed=%llu pinned_skips=%llu dedup_lost=%llu promoted=%llu staged_drops=%llu\n",binding->module_tag,
+		fprintf(stderr,"%s kv binding states records=%u slots=%u superseded=%llu pressure_demoted=%llu spill_queued=%llu dropped_unsaved=%llu rekeyed=%llu pinned_skips=%llu dedup_lost=%llu promoted=%llu staged_drops=%llu\n",binding->module_tag,
 			binding->state_store.backing_page_count,binding->state_slot_count,(unsigned long long)binding->page_cache.state_superseded_count,
-			(unsigned long long)binding->page_cache.state_pressure_demoted_count,(unsigned long long)binding->page_cache.state_rekeyed_count,
+			(unsigned long long)binding->page_cache.state_pressure_demoted_count,(unsigned long long)binding->page_cache.state_spill_queued_count,
+			(unsigned long long)binding->page_cache.state_dropped_unsaved_count,(unsigned long long)binding->page_cache.state_rekeyed_count,
 			(unsigned long long)binding->page_cache.state_pinned_skip_count,(unsigned long long)binding->page_cache.stateful_dedup_lost_count,
 			(unsigned long long)binding->page_cache.state_promoted_count,(unsigned long long)atomic_load(&binding->recurrent_staged_drops));
 		SparkKvPageStoreDestroy(&binding->state_store);
@@ -2134,6 +2135,12 @@ static SparkStatus SparkStageKvWriteJob(SparkStageKvBinding *binding,const Spark
 	}
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"%s kv binding state record write failed page=%u status=%u\n",binding->module_tag,job->page,(unsigned)status);
+	else
+	{
+		(void)SparkStageKvBindingLock(binding,held);
+		SparkKvPageCacheSpillStates(&binding->page_cache);
+		SparkStageKvBindingUnlock(binding,site,*held);
+	}
 	SPARK_RETURN(status);
 }
 
@@ -2958,6 +2965,7 @@ SparkStatus SparkStageKvBindingSaveAll(SparkStageKvBinding *binding,uint64_t dea
 	if ( binding == 0 || binding->mutex_initialized == 0u || binding->page_cache.snapshot == 0 || saved_out == 0 || unsaved_out == 0 || ineligible_out == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	(void)pthread_mutex_lock(&binding->mutex);
+	SparkKvPageCachePersistAllStates(&binding->page_cache);
 	status = SparkKvPageCacheCountUnsaved(&binding->page_cache,&unsaved_start,&ineligible);
 	(void)pthread_mutex_unlock(&binding->mutex);
 	unsaved = unsaved_start;

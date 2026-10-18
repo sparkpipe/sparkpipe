@@ -1505,19 +1505,20 @@ static void TestSnapshotStatelessChain(void)
 	WaitSavesIdle();
 	assert(SparkKvSnapshotFlush(&BINDING.snapshot_store) == SPARK_STATUS_OK);
 	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
-	assert(counters.save_failure_count == 0u && counters.store_file_count == 3u);
+	assert(counters.save_failure_count == 0u && counters.store_file_count == 2u);
 	assert(SnapshotHolds(0x70u,4u,SPARK_KV_SNAPSHOT_FILE_PAGES) == 1u && SnapshotHolds(0x70u,4u,SPARK_KV_SNAPSHOT_FILE_STATE) == 0u);
-	assert(SnapshotHolds(0x71u,8u,SPARK_KV_SNAPSHOT_FILE_PAGES) == 1u && SnapshotHolds(0x71u,8u,SPARK_KV_SNAPSHOT_FILE_STATE) == 1u);
+	assert(SnapshotHolds(0x71u,8u,SPARK_KV_SNAPSHOT_FILE_PAGES) == 1u && SnapshotHolds(0x71u,8u,SPARK_KV_SNAPSHOT_FILE_STATE) == 0u);
 	Unload();
 	TestKvServerFinish();
 	TestKvServerStart(64ull << 20);
 	assert(OpenWith(&configuration) == SPARK_STATUS_OK);
 	assert(BINDING.kv_pool.reattached == 0u && BINDING.kv_pool_adopted_pages == 0u);
+	assert(SnapshotHolds(0x71u,8u,SPARK_KV_SNAPSHOT_FILE_STATE) == 1u);
 	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_OK);
 	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
 	assert(counters.restore_page_count == 2u && counters.restore_failure_count == 0u);
 	Close();
-	printf("snapshot of a sparse checkpoint chain: a stateless page saves as a page file with no state file, the checkpoint above it saves its page and its state file, and the chain restores after a restart with a fresh pool: ok\n");
+	printf("snapshot of a sparse checkpoint chain: pages save as they publish, a checkpoint state off the anchor stride stays in memory until the binding closes, closing saves it, and the chain restores after a restart with a fresh pool: ok\n");
 }
 
 static void TestStatelessBoundaryProbeKeepsChain(void)
