@@ -270,6 +270,12 @@ class LatentBlockDrafter:
     def propose(self, y, anchor_token, sampling=None, position=None, sampled=None):
         return self.walk(*self.lattice(y[1:], anchor_token), sampling, position, sampled)
 
+    def sequential_sampled(self, y, base, anchor_token, slots, sampling, position):
+        rows = y[torch.as_tensor(list(slots), device=y.device)]
+        with torch.no_grad():
+            tokens, _ = self.walk(*self.lattice(rows, int(anchor_token)), sampling, torch.tensor(int(position), device=self.device), torch.tensor(True, device=self.device))
+        return tokens.tolist()
+
     def sequential(self, y, base, anchor_token, slots):
         rows = y[torch.as_tensor(list(slots), device=y.device)]
         with torch.no_grad():

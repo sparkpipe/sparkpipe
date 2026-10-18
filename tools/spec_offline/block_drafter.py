@@ -305,6 +305,13 @@ class BlockDrafter:
             previous = token
         return torch.cat(tokens), (torch.cat(scores) if scores else None)
 
+    def sequential_sampled(self, y, base, anchor_token, slots, sampling, position):
+        slots = list(slots)
+        rows = torch.as_tensor(slots, device=y.device)
+        tokens, _ = self.walk(y[rows], base[rows], torch.tensor(int(anchor_token), device=self.device), len(slots), sampling, torch.tensor(int(position), device=self.device),
+                              torch.tensor(True, device=self.device))
+        return tokens.tolist()
+
     def sequential_device(self, y, base, anchor_token, count):
         tokens, scores = self.walk(y, base, torch.tensor(int(anchor_token), device=self.device), count)
         return tokens.tolist(), (scores.tolist() if scores is not None else [])
@@ -424,6 +431,10 @@ def main():
     parser.add_argument("--max-anchors", type=int, default=400, help="per request, spread over the reply")
     parser.add_argument("--out", required=True)
     parser.add_argument("--anchors-out", help="JSON lines, one per anchor: request, position, accepted, drafts, confidence")
+    parser.add_argument("--temperature", type=float, default=0.0, help="the recorded streams' sampling; above 0 also scores drafts made with the verifier's keyed noise")
+    parser.add_argument("--top-p", type=float, default=1.0)
+    parser.add_argument("--top-k", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
     device = "cuda"
     drafter = open_drafter(args.drafter, args.target_shard, {"embed": args.embed, "head": args.head, "norm": args.norm}, device)
@@ -436,7 +447,13 @@ def main():
     columns = [hello["entries"].index(name) for name in wanted]
     final_column = hello["entries"].index("final")
     slots = list(range(drafter.block)) if args.convention == "shift" else list(range(1, drafter.block))
-    report = {"arm": {"delta": args.delta, "convention": args.convention, "layers": wanted}, "requests": []}
+    report = {"arm": {"delta": args.delta, "convention": args.convention, "layers": wanted, "temperature": args.temperature, "top_p": args.top_p, "top_k": args.top_k, "seed": args.seed}, "requests": []}
+    rule = None
+    if args.temperature > 0.0:
+        seed = args.seed - (1 << 64) if args.seed >= (1 << 63) else args.seed
+        rule = (torch.tensor(seed, device=device), torch.tensor(1.0 / args.temperature, device=device), torch.tensor(args.top_p if args.top_p < 1.0 else 0.0, device=device),
+                torch.tensor(args.top_k, device=device))
+    coupled_accepted = 0
     totals = defaultdict(int)
     slot_hits = [0] * len(slots)
     slot_tries = [0] * len(slots)
@@ -492,8 +509,17 @@ def main():
                 slot_hits[index] += 1
                 accepted += 1
             lengths.append(accepted)
+            coupled = None
+            if rule is not None:
+                drafts_coupled = drafter.sequential_sampled(y, base, int(tokens[anchor]), slots, rule, start + anchor)
+                coupled = 0
+                for index, token in enumerate(drafts_coupled):
+                    if index >= len(truth) or token != truth[index]:
+                        break
+                    coupled += 1
+                coupled_accepted += coupled
             if anchor_log:
-                anchor_log.write(json.dumps({"request": key[1], "position": start + anchor, "reply": anchor >= first, "accepted": accepted,
+                anchor_log.write(json.dumps({"request": key[1], "position": start + anchor, "reply": anchor >= first, "accepted": accepted, "coupled_accepted": coupled,
                                              "drafts": drafts, "confidence": [round(c, 4) for c in confidence]}) + "\n")
         totals["anchors"] += len(lengths)
         totals["accepted"] += sum(lengths)
@@ -504,6 +530,7 @@ def main():
         print(f"request {key[1]} positions {len(records)} reply {reply_count} anchors {len(lengths)} tokens/round {1 + sum(lengths) / max(1, len(lengths)):.2f}"
               f" head {agree / max(1, len(records) - 1):.4f} reply-head {reply_hits / max(1, reply_count):.4f}", flush=True)
     report["tokens_per_round"] = 1 + totals["accepted"] / max(1, totals["anchors"])
+    report["coupled_tokens_per_round"] = 1 + coupled_accepted / max(1, totals["anchors"]) if rule is not None else None
     report["slot_conditional"] = [hits / tries if tries else None for hits, tries in zip(slot_hits, slot_tries)]
     report["final_head_agreement"] = head_agree / max(1, head_total)
     report["reply_head_agreement"] = reply_agree / max(1, reply_total)
@@ -511,7 +538,7 @@ def main():
         anchor_log.close()
     report["confidence_bins"] = {str(b): {"n": v[0], "accepted": v[1] / v[0] if v[0] else None} for b, v in sorted(calibration.items())}
     Path(args.out).write_text(json.dumps(report, indent=1))
-    print(json.dumps({k: report[k] for k in ("arm", "tokens_per_round", "slot_conditional", "final_head_agreement", "reply_head_agreement")}))
+    print(json.dumps({k: report[k] for k in ("arm", "tokens_per_round", "coupled_tokens_per_round", "slot_conditional", "final_head_agreement", "reply_head_agreement")}))
 
 
 if __name__ == "__main__":
