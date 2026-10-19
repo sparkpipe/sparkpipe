@@ -21,22 +21,40 @@
 
 #define SPARK_KV_SNAPSHOT_NO_ENTRY UINT32_MAX
 #define SPARK_KV_SNAPSHOT_SPARE_SHARE 4u
+#define SPARK_KV_SNAPSHOT_CHUNK_SHIFT 14u
+#define SPARK_KV_SNAPSHOT_CHUNK_ENTRIES (UINT32_C(1) << SPARK_KV_SNAPSHOT_CHUNK_SHIFT)
+#define SPARK_KV_SNAPSHOT_MAX_ENTRIES (UINT32_MAX - SPARK_KV_SNAPSHOT_CHUNK_ENTRIES)
+#define SPARK_KV_SNAPSHOT_FIRST_BUCKETS 1024u
+#define SPARK_KV_SNAPSHOT_MAX_BUCKETS (UINT32_C(1) << 31u)
+#define SPARK_KV_SNAPSHOT_MAX_LAYOUTS 65536u
+#define SPARK_KV_SNAPSHOT_ENTRY_LIVE 1u
+#define SPARK_KV_SNAPSHOT_ENTRY_PHANTOM 2u
+#define SPARK_KV_SNAPSHOT_ENTRY_STATE 4u
+#define SPARK_KV_SNAPSHOT_ENTRY_IN_LRU 8u
+#define SPARK_KV_SNAPSHOT_ENTRY_KIND (SPARK_KV_SNAPSHOT_ENTRY_LIVE | SPARK_KV_SNAPSHOT_ENTRY_PHANTOM | SPARK_KV_SNAPSHOT_ENTRY_STATE)
 
 typedef struct SparkKvSnapshotIndexEntry
 {
-	SparkKvSnapshotKey key;
-	SparkKvSnapshotKey parent_key;
-	uint64_t bytes;
-	uint64_t recency;
+	uint8_t identity_sha256[SPARK_SHA256_DIGEST_BYTES];
+	uint32_t token_count;
 	uint32_t parent;
-	uint32_t children;
+	uint32_t first_child;
+	uint32_t next_sibling;
 	uint32_t hash_next;
 	uint32_t lru_prev;
 	uint32_t lru_next;
-	uint32_t pins;
-	uint32_t live;
-	uint32_t in_lru;
+	uint32_t units;
+	uint16_t layout;
+	uint16_t pins;
+	uint32_t flags;
 } SparkKvSnapshotIndexEntry;
+
+typedef struct SparkKvSnapshotLayout
+{
+	uint8_t layout_sha256[SPARK_SHA256_DIGEST_BYTES];
+	uint64_t file_count;
+	uint64_t references;
+} SparkKvSnapshotLayout;
 
 typedef struct SparkKvSnapshotJob
 {
@@ -59,16 +77,20 @@ typedef struct SparkKvSnapshotRuntime
 	uint32_t stopping;
 	uint32_t writing;
 	int lock_descriptor;
-	uint64_t recency;
 	uint64_t sequence;
-	SparkKvSnapshotIndexEntry *entries;
+	SparkKvSnapshotIndexEntry **chunks;
+	uint32_t chunk_count;
+	uint32_t chunk_capacity;
 	uint32_t entry_count;
-	uint32_t entry_capacity;
+	uint32_t entry_high;
 	uint32_t free_head;
 	uint32_t *buckets;
 	uint32_t bucket_count;
 	uint32_t lru_head;
 	uint32_t lru_tail;
+	SparkKvSnapshotLayout *layouts;
+	uint32_t layout_count;
+	uint32_t layout_capacity;
 	SparkKvSnapshotJob *jobs;
 	SparkKvSnapshotJob *spare_jobs;
 	uint64_t spare_bytes;
@@ -187,56 +209,140 @@ static uint32_t SparkKvSnapshotIsLegacyName(const char *name)
 		memchr(name + 2u * hex + 2u,'-',length - suffix - 2u * hex - 2u) == 0 ? 1u : 0u);
 }
 
-static uint32_t SparkKvSnapshotHashKey(const SparkKvSnapshotKey *key,uint32_t bucket_count)
+static SparkKvSnapshotIndexEntry *SparkKvSnapshotEntryAt(const SparkKvSnapshotRuntime *runtime,uint32_t index)
+{
+	return(&runtime->chunks[index >> SPARK_KV_SNAPSHOT_CHUNK_SHIFT][index & (SPARK_KV_SNAPSHOT_CHUNK_ENTRIES - 1u)]);
+}
+
+static uint32_t SparkKvSnapshotHashEntry(const uint8_t identity_sha256[SPARK_SHA256_DIGEST_BYTES],uint32_t token_count,uint32_t layout,uint32_t state,uint32_t bucket_count)
 {
 	uint64_t hash = UINT64_C(1469598103934665603);
 	uint32_t index;
 	for (index=0u; index<8u; index++)
-		hash = (hash ^ key->identity_sha256[index]) * UINT64_C(1099511628211);
-	for (index=0u; index<4u; index++)
-		hash = (hash ^ key->layout_sha256[index]) * UINT64_C(1099511628211);
-	hash = (hash ^ key->token_count) * UINT64_C(1099511628211);
-	hash = (hash ^ key->file_kind) * UINT64_C(1099511628211);
+		hash = (hash ^ identity_sha256[index]) * UINT64_C(1099511628211);
+	hash = (hash ^ layout) * UINT64_C(1099511628211);
+	hash = (hash ^ token_count) * UINT64_C(1099511628211);
+	hash = (hash ^ state) * UINT64_C(1099511628211);
 	return((uint32_t)(hash ^ (hash >> 32u)) & (bucket_count - 1u));
 }
 
-static uint32_t SparkKvSnapshotIndexFind(const SparkKvSnapshotRuntime *runtime,const SparkKvSnapshotKey *key)
+static uint32_t SparkKvSnapshotEntryBucket(const SparkKvSnapshotIndexEntry *entry,uint32_t bucket_count)
+{
+	return(SparkKvSnapshotHashEntry(entry->identity_sha256,entry->token_count,entry->layout,entry->flags & SPARK_KV_SNAPSHOT_ENTRY_STATE,bucket_count));
+}
+
+static uint32_t SparkKvSnapshotKeyFlags(const SparkKvSnapshotKey *key)
+{
+	return(key->file_kind == SPARK_KV_SNAPSHOT_FILE_STATE ? SPARK_KV_SNAPSHOT_ENTRY_LIVE | SPARK_KV_SNAPSHOT_ENTRY_STATE : SPARK_KV_SNAPSHOT_ENTRY_LIVE);
+}
+
+static uint32_t SparkKvSnapshotLayoutFind(const SparkKvSnapshotRuntime *runtime,const uint8_t layout_sha256[SPARK_SHA256_DIGEST_BYTES])
 {
 	uint32_t index;
-	if ( runtime->bucket_count == 0u )
-		return(SPARK_KV_SNAPSHOT_NO_ENTRY);
-	for (index=runtime->buckets[SparkKvSnapshotHashKey(key,runtime->bucket_count)]; index != SPARK_KV_SNAPSHOT_NO_ENTRY; index=runtime->entries[index].hash_next)
-		if ( memcmp(&runtime->entries[index].key,key,sizeof(*key)) == 0 )
+	for (index=0u; index<runtime->layout_count; index++)
+		if ( runtime->layouts[index].references != 0u && memcmp(runtime->layouts[index].layout_sha256,layout_sha256,SPARK_SHA256_DIGEST_BYTES) == 0 )
 			return(index);
 	return(SPARK_KV_SNAPSHOT_NO_ENTRY);
 }
 
+static SparkStatus SparkKvSnapshotLayoutAcquire(SparkKvSnapshotRuntime *runtime,const uint8_t layout_sha256[SPARK_SHA256_DIGEST_BYTES],uint16_t *layout_out)
+{
+	SparkKvSnapshotLayout *grown;
+	uint32_t index = SparkKvSnapshotLayoutFind(runtime,layout_sha256),capacity;
+	if ( index == SPARK_KV_SNAPSHOT_NO_ENTRY )
+	{
+		for (index=0u; index<runtime->layout_count && runtime->layouts[index].references != 0u; index++)
+			;
+		if ( index == runtime->layout_capacity )
+		{
+			if ( index == SPARK_KV_SNAPSHOT_MAX_LAYOUTS )
+				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+			capacity = index != 0u ? index * 2u : 8u;
+			if ( capacity > SPARK_KV_SNAPSHOT_MAX_LAYOUTS )
+				capacity = SPARK_KV_SNAPSHOT_MAX_LAYOUTS;
+			grown = (SparkKvSnapshotLayout *)realloc(runtime->layouts,(size_t)capacity * sizeof(*grown));
+			if ( grown == 0 )
+				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+			runtime->layouts = grown;
+			runtime->layout_capacity = capacity;
+		}
+		if ( index == runtime->layout_count )
+			runtime->layout_count++;
+		memset(&runtime->layouts[index],0,sizeof(runtime->layouts[index]));
+		memcpy(runtime->layouts[index].layout_sha256,layout_sha256,SPARK_SHA256_DIGEST_BYTES);
+	}
+	runtime->layouts[index].references++;
+	*layout_out = (uint16_t)index;
+	return(SPARK_STATUS_OK);
+}
+
+static uint32_t SparkKvSnapshotIndexLookup(const SparkKvSnapshotRuntime *runtime,const uint8_t identity_sha256[SPARK_SHA256_DIGEST_BYTES],uint32_t token_count,uint32_t layout,uint32_t flags)
+{
+	const SparkKvSnapshotIndexEntry *entry;
+	uint32_t index;
+	for (index=runtime->buckets[SparkKvSnapshotHashEntry(identity_sha256,token_count,layout,flags & SPARK_KV_SNAPSHOT_ENTRY_STATE,runtime->bucket_count)]; index != SPARK_KV_SNAPSHOT_NO_ENTRY; index=entry->hash_next)
+	{
+		entry = SparkKvSnapshotEntryAt(runtime,index);
+		if ( entry->token_count == token_count && entry->layout == layout && (entry->flags & SPARK_KV_SNAPSHOT_ENTRY_KIND) == flags && memcmp(entry->identity_sha256,identity_sha256,SPARK_SHA256_DIGEST_BYTES) == 0 )
+			return(index);
+	}
+	return(SPARK_KV_SNAPSHOT_NO_ENTRY);
+}
+
+static uint32_t SparkKvSnapshotIndexFind(const SparkKvSnapshotRuntime *runtime,const SparkKvSnapshotKey *key)
+{
+	uint32_t layout;
+	if ( key->file_kind != SPARK_KV_SNAPSHOT_FILE_PAGES && key->file_kind != SPARK_KV_SNAPSHOT_FILE_STATE )
+		return(SPARK_KV_SNAPSHOT_NO_ENTRY);
+	layout = SparkKvSnapshotLayoutFind(runtime,key->layout_sha256);
+	if ( layout == SPARK_KV_SNAPSHOT_NO_ENTRY )
+		return(SPARK_KV_SNAPSHOT_NO_ENTRY);
+	return(SparkKvSnapshotIndexLookup(runtime,key->identity_sha256,key->token_count,layout,SparkKvSnapshotKeyFlags(key)));
+}
+
+static void SparkKvSnapshotEntryKey(const SparkKvSnapshotRuntime *runtime,uint32_t index,SparkKvSnapshotKey *key)
+{
+	const SparkKvSnapshotIndexEntry *entry = SparkKvSnapshotEntryAt(runtime,index);
+	memcpy(key->layout_sha256,runtime->layouts[entry->layout].layout_sha256,SPARK_SHA256_DIGEST_BYTES);
+	memcpy(key->identity_sha256,entry->identity_sha256,SPARK_SHA256_DIGEST_BYTES);
+	key->token_count = entry->token_count;
+	key->file_kind = (entry->flags & SPARK_KV_SNAPSHOT_ENTRY_STATE) != 0u ? SPARK_KV_SNAPSHOT_FILE_STATE : SPARK_KV_SNAPSHOT_FILE_PAGES;
+}
+
+static void SparkKvSnapshotEntryParentKey(const SparkKvSnapshotRuntime *runtime,uint32_t index,SparkKvSnapshotKey *parent)
+{
+	uint32_t owner = SparkKvSnapshotEntryAt(runtime,index)->parent;
+	memset(parent,0,sizeof(*parent));
+	if ( owner != SPARK_KV_SNAPSHOT_NO_ENTRY )
+		SparkKvSnapshotEntryKey(runtime,owner,parent);
+}
+
 static void SparkKvSnapshotLruUnlink(SparkKvSnapshotRuntime *runtime,uint32_t index)
 {
-	SparkKvSnapshotIndexEntry *entry = &runtime->entries[index];
-	if ( entry->in_lru == 0u )
+	SparkKvSnapshotIndexEntry *entry = SparkKvSnapshotEntryAt(runtime,index);
+	if ( (entry->flags & SPARK_KV_SNAPSHOT_ENTRY_IN_LRU) == 0u )
 		return;
 	if ( entry->lru_prev != SPARK_KV_SNAPSHOT_NO_ENTRY )
-		runtime->entries[entry->lru_prev].lru_next = entry->lru_next;
+		SparkKvSnapshotEntryAt(runtime,entry->lru_prev)->lru_next = entry->lru_next;
 	else
 		runtime->lru_head = entry->lru_next;
 	if ( entry->lru_next != SPARK_KV_SNAPSHOT_NO_ENTRY )
-		runtime->entries[entry->lru_next].lru_prev = entry->lru_prev;
+		SparkKvSnapshotEntryAt(runtime,entry->lru_next)->lru_prev = entry->lru_prev;
 	else
 		runtime->lru_tail = entry->lru_prev;
 	entry->lru_prev = entry->lru_next = SPARK_KV_SNAPSHOT_NO_ENTRY;
-	entry->in_lru = 0u;
+	entry->flags &= ~SPARK_KV_SNAPSHOT_ENTRY_IN_LRU;
 }
 
 static void SparkKvSnapshotLruPush(SparkKvSnapshotRuntime *runtime,uint32_t index,uint32_t at_head)
 {
-	SparkKvSnapshotIndexEntry *entry = &runtime->entries[index];
+	SparkKvSnapshotIndexEntry *entry = SparkKvSnapshotEntryAt(runtime,index);
 	SparkKvSnapshotLruUnlink(runtime,index);
 	if ( at_head != 0u )
 	{
 		entry->lru_next = runtime->lru_head;
 		if ( runtime->lru_head != SPARK_KV_SNAPSHOT_NO_ENTRY )
-			runtime->entries[runtime->lru_head].lru_prev = index;
+			SparkKvSnapshotEntryAt(runtime,runtime->lru_head)->lru_prev = index;
 		else
 			runtime->lru_tail = index;
 		runtime->lru_head = index;
@@ -245,146 +351,252 @@ static void SparkKvSnapshotLruPush(SparkKvSnapshotRuntime *runtime,uint32_t inde
 	{
 		entry->lru_prev = runtime->lru_tail;
 		if ( runtime->lru_tail != SPARK_KV_SNAPSHOT_NO_ENTRY )
-			runtime->entries[runtime->lru_tail].lru_next = index;
+			SparkKvSnapshotEntryAt(runtime,runtime->lru_tail)->lru_next = index;
 		else
 			runtime->lru_head = index;
 		runtime->lru_tail = index;
 	}
-	entry->in_lru = 1u;
+	entry->flags |= SPARK_KV_SNAPSHOT_ENTRY_IN_LRU;
 }
 
-static uint32_t SparkKvSnapshotIsOrphan(const SparkKvSnapshotIndexEntry *entry)
+static uint32_t SparkKvSnapshotIsOrphan(const SparkKvSnapshotRuntime *runtime,uint32_t index)
 {
-	return(entry->key.file_kind == SPARK_KV_SNAPSHOT_FILE_PAGES && entry->parent_key.token_count != 0u && entry->parent == SPARK_KV_SNAPSHOT_NO_ENTRY ? 1u : 0u);
+	uint32_t owner = SparkKvSnapshotEntryAt(runtime,index)->parent;
+	return(owner != SPARK_KV_SNAPSHOT_NO_ENTRY && (SparkKvSnapshotEntryAt(runtime,owner)->flags & SPARK_KV_SNAPSHOT_ENTRY_PHANTOM) != 0u ? 1u : 0u);
 }
 
-static SparkStatus SparkKvSnapshotIndexGrow(SparkKvSnapshotRuntime *runtime)
+static SparkStatus SparkKvSnapshotBucketsFit(SparkKvSnapshotRuntime *runtime,uint32_t entries)
 {
-	SparkKvSnapshotIndexEntry *grown;
-	uint32_t capacity = runtime->entry_capacity == 0u ? 1024u : runtime->entry_capacity * 2u,buckets = capacity * 2u,*heads,index,bucket;
-	if ( capacity <= runtime->entry_capacity )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	grown = (SparkKvSnapshotIndexEntry *)realloc(runtime->entries,(size_t)capacity * sizeof(*grown));
-	if ( grown == 0 )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	runtime->entries = grown;
-	heads = (uint32_t *)malloc((size_t)buckets * sizeof(*heads));
+	SparkKvSnapshotIndexEntry *entry;
+	uint32_t count = runtime->bucket_count != 0u ? runtime->bucket_count : SPARK_KV_SNAPSHOT_FIRST_BUCKETS,*heads,index,bucket;
+	while ( count < entries && count < SPARK_KV_SNAPSHOT_MAX_BUCKETS )
+		count *= 2u;
+	if ( count == runtime->bucket_count )
+		return(SPARK_STATUS_OK);
+	heads = (uint32_t *)malloc((size_t)count * sizeof(*heads));
 	if ( heads == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	for (index=0u; index<buckets; index++)
+	for (index=0u; index<count; index++)
 		heads[index] = SPARK_KV_SNAPSHOT_NO_ENTRY;
-	for (index=runtime->entry_capacity; index<capacity; index++)
+	for (index=0u; index<runtime->entry_high; index++)
 	{
-		memset(&grown[index],0,sizeof(grown[index]));
-		grown[index].hash_next = index + 1u < capacity ? index + 1u : runtime->free_head;
+		entry = SparkKvSnapshotEntryAt(runtime,index);
+		if ( (entry->flags & (SPARK_KV_SNAPSHOT_ENTRY_LIVE | SPARK_KV_SNAPSHOT_ENTRY_PHANTOM)) == 0u )
+			continue;
+		bucket = SparkKvSnapshotEntryBucket(entry,count);
+		entry->hash_next = heads[bucket];
+		heads[bucket] = index;
 	}
-	if ( runtime->entry_capacity < capacity )
-		runtime->free_head = runtime->entry_capacity;
-	for (index=0u; index<runtime->entry_capacity; index++)
-		if ( grown[index].live != 0u )
-		{
-			bucket = SparkKvSnapshotHashKey(&grown[index].key,buckets);
-			grown[index].hash_next = heads[bucket];
-			heads[bucket] = index;
-		}
 	free(runtime->buckets);
 	runtime->buckets = heads;
-	runtime->bucket_count = buckets;
-	runtime->entry_capacity = capacity;
+	runtime->bucket_count = count;
 	return(SPARK_STATUS_OK);
 }
 
-static void SparkKvSnapshotLinkParent(SparkKvSnapshotStore *store,uint32_t index)
+static SparkStatus SparkKvSnapshotSlotTake(SparkKvSnapshotRuntime *runtime,uint32_t *index_out)
 {
-	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
-	SparkKvSnapshotIndexEntry *entry = &runtime->entries[index];
-	uint32_t parent;
-	if ( entry->key.file_kind != SPARK_KV_SNAPSHOT_FILE_PAGES || entry->parent_key.token_count == 0u || entry->parent != SPARK_KV_SNAPSHOT_NO_ENTRY )
-		return;
-	parent = SparkKvSnapshotIndexFind(runtime,&entry->parent_key);
-	if ( parent == SPARK_KV_SNAPSHOT_NO_ENTRY )
-		return;
-	entry->parent = parent;
-	runtime->entries[parent].children++;
-	SparkKvSnapshotLruUnlink(runtime,parent);
-	store->orphan_count--;
+	SparkKvSnapshotIndexEntry **grown;
+	uint32_t capacity;
+	if ( runtime->free_head != SPARK_KV_SNAPSHOT_NO_ENTRY )
+	{
+		*index_out = runtime->free_head;
+		runtime->free_head = SparkKvSnapshotEntryAt(runtime,runtime->free_head)->hash_next;
+		return(SPARK_STATUS_OK);
+	}
+	if ( runtime->entry_high >= SPARK_KV_SNAPSHOT_MAX_ENTRIES )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( (runtime->entry_high >> SPARK_KV_SNAPSHOT_CHUNK_SHIFT) == runtime->chunk_count )
+	{
+		if ( runtime->chunk_count == runtime->chunk_capacity )
+		{
+			capacity = runtime->chunk_capacity != 0u ? runtime->chunk_capacity * 2u : 16u;
+			grown = (SparkKvSnapshotIndexEntry **)realloc(runtime->chunks,(size_t)capacity * sizeof(*grown));
+			if ( grown == 0 )
+				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+			runtime->chunks = grown;
+			runtime->chunk_capacity = capacity;
+		}
+		runtime->chunks[runtime->chunk_count] = (SparkKvSnapshotIndexEntry *)calloc(SPARK_KV_SNAPSHOT_CHUNK_ENTRIES,sizeof(SparkKvSnapshotIndexEntry));
+		if ( runtime->chunks[runtime->chunk_count] == 0 )
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		runtime->chunk_count++;
+	}
+	*index_out = runtime->entry_high++;
+	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkKvSnapshotIndexInsert(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const SparkKvSnapshotKey *parent,uint64_t bytes,uint64_t recency,uint32_t link)
+static void SparkKvSnapshotSlotRelease(SparkKvSnapshotRuntime *runtime,uint32_t index)
 {
-	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
-	SparkKvSnapshotIndexEntry *entry;
-	uint32_t index,bucket,other;
-	SparkStatus status;
-	if ( runtime->free_head == SPARK_KV_SNAPSHOT_NO_ENTRY || runtime->free_head >= runtime->entry_capacity )
-	{
-		status = SparkKvSnapshotIndexGrow(runtime);
-		if ( status != SPARK_STATUS_OK )
-			SPARK_RETURN(status);
-	}
-	index = runtime->free_head;
-	entry = &runtime->entries[index];
-	runtime->free_head = entry->hash_next;
+	SparkKvSnapshotIndexEntry *entry = SparkKvSnapshotEntryAt(runtime,index);
 	memset(entry,0,sizeof(*entry));
-	entry->key = *key;
-	if ( SparkKvSnapshotHasParent(key,parent) != 0u )
-		entry->parent_key = *parent;
-	entry->bytes = bytes;
-	entry->recency = recency;
-	entry->parent = SPARK_KV_SNAPSHOT_NO_ENTRY;
+	entry->hash_next = runtime->free_head;
+	runtime->free_head = index;
+}
+
+static void SparkKvSnapshotEntryInit(SparkKvSnapshotRuntime *runtime,uint32_t index,const uint8_t identity_sha256[SPARK_SHA256_DIGEST_BYTES],uint32_t token_count,uint16_t layout,uint32_t flags)
+{
+	SparkKvSnapshotIndexEntry *entry = SparkKvSnapshotEntryAt(runtime,index);
+	uint32_t bucket;
+	memset(entry,0,sizeof(*entry));
+	memcpy(entry->identity_sha256,identity_sha256,SPARK_SHA256_DIGEST_BYTES);
+	entry->token_count = token_count;
+	entry->layout = layout;
+	entry->flags = flags;
+	entry->parent = entry->first_child = entry->next_sibling = SPARK_KV_SNAPSHOT_NO_ENTRY;
 	entry->lru_prev = entry->lru_next = SPARK_KV_SNAPSHOT_NO_ENTRY;
-	entry->live = 1u;
-	bucket = SparkKvSnapshotHashKey(key,runtime->bucket_count);
+	bucket = SparkKvSnapshotEntryBucket(entry,runtime->bucket_count);
 	entry->hash_next = runtime->buckets[bucket];
 	runtime->buckets[bucket] = index;
 	runtime->entry_count++;
-	store->used_bytes += bytes;
+}
+
+static void SparkKvSnapshotEntryFree(SparkKvSnapshotRuntime *runtime,uint32_t index)
+{
+	SparkKvSnapshotIndexEntry *entry = SparkKvSnapshotEntryAt(runtime,index);
+	uint32_t *link;
+	for (link=&runtime->buckets[SparkKvSnapshotEntryBucket(entry,runtime->bucket_count)]; *link != SPARK_KV_SNAPSHOT_NO_ENTRY; link=&SparkKvSnapshotEntryAt(runtime,*link)->hash_next)
+		if ( *link == index )
+		{
+			*link = entry->hash_next;
+			break;
+		}
+	runtime->layouts[entry->layout].references--;
+	runtime->entry_count--;
+	SparkKvSnapshotSlotRelease(runtime,index);
+}
+
+static void SparkKvSnapshotChildAttach(SparkKvSnapshotRuntime *runtime,uint32_t owner,uint32_t child)
+{
+	SparkKvSnapshotIndexEntry *entry = SparkKvSnapshotEntryAt(runtime,child),*parent = SparkKvSnapshotEntryAt(runtime,owner);
+	entry->parent = owner;
+	entry->next_sibling = parent->first_child;
+	parent->first_child = child;
+}
+
+static void SparkKvSnapshotChildDetach(SparkKvSnapshotRuntime *runtime,uint32_t child)
+{
+	SparkKvSnapshotIndexEntry *entry = SparkKvSnapshotEntryAt(runtime,child);
+	uint32_t *link;
+	for (link=&SparkKvSnapshotEntryAt(runtime,entry->parent)->first_child; *link != SPARK_KV_SNAPSHOT_NO_ENTRY; link=&SparkKvSnapshotEntryAt(runtime,*link)->next_sibling)
+		if ( *link == child )
+		{
+			*link = entry->next_sibling;
+			break;
+		}
+	entry->parent = entry->next_sibling = SPARK_KV_SNAPSHOT_NO_ENTRY;
+}
+
+static SparkStatus SparkKvSnapshotIndexInsert(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const SparkKvSnapshotKey *parent,uint64_t bytes,uint32_t push,uint32_t *index_out)
+{
+	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
+	SparkKvSnapshotIndexEntry *entry;
+	uint64_t units = bytes / SPARK_KV_SNAPSHOT_ALIGNMENT + (bytes % SPARK_KV_SNAPSHOT_ALIGNMENT != 0u ? 1u : 0u);
+	uint32_t parented = SparkKvSnapshotHasParent(key,parent),flags = SparkKvSnapshotKeyFlags(key),index = SPARK_KV_SNAPSHOT_NO_ENTRY,owner = SPARK_KV_SNAPSHOT_NO_ENTRY,fresh = 0u,child;
+	uint16_t layout;
+	SparkStatus status;
+	if ( units > UINT32_MAX || (key->file_kind != SPARK_KV_SNAPSHOT_FILE_PAGES && key->file_kind != SPARK_KV_SNAPSHOT_FILE_STATE) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( runtime->entry_count > SPARK_KV_SNAPSHOT_MAX_ENTRIES - 2u )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	status = SparkKvSnapshotBucketsFit(runtime,runtime->entry_count + 2u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvSnapshotLayoutAcquire(runtime,key->layout_sha256,&layout);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( flags == SPARK_KV_SNAPSHOT_ENTRY_LIVE )
+		index = SparkKvSnapshotIndexLookup(runtime,key->identity_sha256,key->token_count,layout,SPARK_KV_SNAPSHOT_ENTRY_PHANTOM);
+	if ( parented != 0u )
+	{
+		owner = SparkKvSnapshotIndexLookup(runtime,parent->identity_sha256,parent->token_count,layout,SPARK_KV_SNAPSHOT_ENTRY_LIVE);
+		if ( owner == SPARK_KV_SNAPSHOT_NO_ENTRY )
+			owner = SparkKvSnapshotIndexLookup(runtime,parent->identity_sha256,parent->token_count,layout,SPARK_KV_SNAPSHOT_ENTRY_PHANTOM);
+		if ( owner == SPARK_KV_SNAPSHOT_NO_ENTRY )
+		{
+			status = SparkKvSnapshotSlotTake(runtime,&owner);
+			fresh = status == SPARK_STATUS_OK ? 1u : 0u;
+		}
+	}
+	if ( status == SPARK_STATUS_OK && index == SPARK_KV_SNAPSHOT_NO_ENTRY )
+	{
+		status = SparkKvSnapshotSlotTake(runtime,&index);
+		if ( status != SPARK_STATUS_OK && fresh != 0u )
+			SparkKvSnapshotSlotRelease(runtime,owner);
+		if ( status == SPARK_STATUS_OK )
+			SparkKvSnapshotEntryInit(runtime,index,key->identity_sha256,key->token_count,layout,flags);
+	}
+	else if ( status == SPARK_STATUS_OK )
+	{
+		entry = SparkKvSnapshotEntryAt(runtime,index);
+		entry->flags = SPARK_KV_SNAPSHOT_ENTRY_LIVE;
+		runtime->layouts[layout].references--;
+		for (child=entry->first_child; child != SPARK_KV_SNAPSHOT_NO_ENTRY; child=SparkKvSnapshotEntryAt(runtime,child)->next_sibling)
+			store->orphan_count--;
+	}
+	if ( status != SPARK_STATUS_OK )
+	{
+		runtime->layouts[layout].references--;
+		SPARK_RETURN(status);
+	}
+	if ( fresh != 0u )
+	{
+		SparkKvSnapshotEntryInit(runtime,owner,parent->identity_sha256,parent->token_count,layout,SPARK_KV_SNAPSHOT_ENTRY_PHANTOM);
+		runtime->layouts[layout].references++;
+	}
+	entry = SparkKvSnapshotEntryAt(runtime,index);
+	entry->units = (uint32_t)units;
+	runtime->layouts[layout].file_count++;
+	store->used_bytes += units * SPARK_KV_SNAPSHOT_ALIGNMENT;
 	store->file_count++;
-	if ( SparkKvSnapshotIsOrphan(entry) != 0u )
-		store->orphan_count++;
-	if ( link == 0u )
-		return(SPARK_STATUS_OK);
-	SparkKvSnapshotLinkParent(store,index);
-	if ( key->file_kind == SPARK_KV_SNAPSHOT_FILE_PAGES && store->orphan_count != 0u )
-		for (other=0u; other<runtime->entry_capacity; other++)
-			if ( runtime->entries[other].live != 0u && SparkKvSnapshotIsOrphan(&runtime->entries[other]) != 0u && memcmp(&runtime->entries[other].parent_key,key,sizeof(*key)) == 0 )
-				SparkKvSnapshotLinkParent(store,other);
-	if ( key->file_kind == SPARK_KV_SNAPSHOT_FILE_STATE || entry->children == 0u )
-		SparkKvSnapshotLruPush(runtime,index,SparkKvSnapshotIsOrphan(entry));
+	if ( owner != SPARK_KV_SNAPSHOT_NO_ENTRY )
+	{
+		SparkKvSnapshotChildAttach(runtime,owner,index);
+		if ( (SparkKvSnapshotEntryAt(runtime,owner)->flags & SPARK_KV_SNAPSHOT_ENTRY_PHANTOM) != 0u )
+			store->orphan_count++;
+		else
+			SparkKvSnapshotLruUnlink(runtime,owner);
+	}
+	if ( push != 0u && ((flags & SPARK_KV_SNAPSHOT_ENTRY_STATE) != 0u || entry->first_child == SPARK_KV_SNAPSHOT_NO_ENTRY) )
+		SparkKvSnapshotLruPush(runtime,index,SparkKvSnapshotIsOrphan(runtime,index));
+	if ( index_out != 0 )
+		*index_out = index;
 	return(SPARK_STATUS_OK);
 }
 
 static void SparkKvSnapshotIndexRemoveAt(SparkKvSnapshotStore *store,uint32_t index)
 {
 	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
-	SparkKvSnapshotIndexEntry *entry = &runtime->entries[index];
-	uint32_t *link,other,parent = entry->parent;
-	if ( SparkKvSnapshotIsOrphan(entry) != 0u )
-		store->orphan_count--;
-	if ( parent != SPARK_KV_SNAPSHOT_NO_ENTRY && --runtime->entries[parent].children == 0u )
-		SparkKvSnapshotLruPush(runtime,parent,1u);
-	if ( entry->children != 0u )
-		for (other=0u; other<runtime->entry_capacity; other++)
-			if ( runtime->entries[other].live != 0u && runtime->entries[other].parent == index )
-			{
-				runtime->entries[other].parent = SPARK_KV_SNAPSHOT_NO_ENTRY;
-				store->orphan_count++;
-				if ( runtime->entries[other].children == 0u )
-					SparkKvSnapshotLruPush(runtime,other,1u);
-			}
-	SparkKvSnapshotLruUnlink(runtime,index);
-	for (link=&runtime->buckets[SparkKvSnapshotHashKey(&entry->key,runtime->bucket_count)]; *link != SPARK_KV_SNAPSHOT_NO_ENTRY; link=&runtime->entries[*link].hash_next)
-		if ( *link == index )
+	SparkKvSnapshotIndexEntry *entry = SparkKvSnapshotEntryAt(runtime,index);
+	uint32_t owner = entry->parent,child;
+	if ( owner != SPARK_KV_SNAPSHOT_NO_ENTRY )
+	{
+		SparkKvSnapshotChildDetach(runtime,index);
+		if ( (SparkKvSnapshotEntryAt(runtime,owner)->flags & SPARK_KV_SNAPSHOT_ENTRY_PHANTOM) != 0u )
 		{
-			*link = entry->hash_next;
-			break;
+			store->orphan_count--;
+			if ( SparkKvSnapshotEntryAt(runtime,owner)->first_child == SPARK_KV_SNAPSHOT_NO_ENTRY )
+				SparkKvSnapshotEntryFree(runtime,owner);
 		}
-	store->used_bytes -= entry->bytes;
+		else if ( SparkKvSnapshotEntryAt(runtime,owner)->first_child == SPARK_KV_SNAPSHOT_NO_ENTRY )
+			SparkKvSnapshotLruPush(runtime,owner,1u);
+	}
+	SparkKvSnapshotLruUnlink(runtime,index);
+	store->used_bytes -= (uint64_t)entry->units * SPARK_KV_SNAPSHOT_ALIGNMENT;
 	store->file_count--;
-	runtime->entry_count--;
-	memset(entry,0,sizeof(*entry));
-	entry->hash_next = runtime->free_head;
-	runtime->free_head = index;
+	runtime->layouts[entry->layout].file_count--;
+	if ( entry->first_child == SPARK_KV_SNAPSHOT_NO_ENTRY )
+	{
+		SparkKvSnapshotEntryFree(runtime,index);
+		return;
+	}
+	entry->flags = SPARK_KV_SNAPSHOT_ENTRY_PHANTOM;
+	entry->units = 0u;
+	entry->pins = 0u;
+	for (child=entry->first_child; child != SPARK_KV_SNAPSHOT_NO_ENTRY; child=SparkKvSnapshotEntryAt(runtime,child)->next_sibling)
+	{
+		store->orphan_count++;
+		if ( SparkKvSnapshotEntryAt(runtime,child)->first_child == SPARK_KV_SNAPSHOT_NO_ENTRY )
+			SparkKvSnapshotLruPush(runtime,child,1u);
+	}
 }
 
 static void SparkKvSnapshotIndexForget(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key)
@@ -398,17 +610,14 @@ static void SparkKvSnapshotIndexTouch(SparkKvSnapshotStore *store,const SparkKvS
 {
 	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
 	uint32_t index = SparkKvSnapshotIndexFind(runtime,key);
-	if ( index == SPARK_KV_SNAPSHOT_NO_ENTRY )
-		return;
-	runtime->entries[index].recency = ++runtime->recency;
-	if ( runtime->entries[index].in_lru != 0u && SparkKvSnapshotIsOrphan(&runtime->entries[index]) == 0u )
+	if ( index != SPARK_KV_SNAPSHOT_NO_ENTRY && (SparkKvSnapshotEntryAt(runtime,index)->flags & SPARK_KV_SNAPSHOT_ENTRY_IN_LRU) != 0u && SparkKvSnapshotIsOrphan(runtime,index) == 0u )
 		SparkKvSnapshotLruPush(runtime,index,0u);
 }
 
-static int SparkKvSnapshotCompareRecency(const void *left,const void *right)
+static int SparkKvSnapshotCompareOrder(const void *left,const void *right)
 {
-	const SparkKvSnapshotIndexEntry *a = *(const SparkKvSnapshotIndexEntry * const *)left,*b = *(const SparkKvSnapshotIndexEntry * const *)right;
-	return(a->recency < b->recency ? -1 : (a->recency > b->recency ? 1 : 0));
+	uint64_t a = *(const uint64_t *)left,b = *(const uint64_t *)right;
+	return(a < b ? -1 : (a > b ? 1 : 0));
 }
 
 SparkStatus SparkKvSnapshotPath(const SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const SparkKvSnapshotKey *parent,char *path,uint32_t path_capacity)
@@ -438,15 +647,19 @@ SparkStatus SparkKvSnapshotPath(const SparkKvSnapshotStore *store,const SparkKvS
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkKvSnapshotEntryPath(const SparkKvSnapshotStore *store,const SparkKvSnapshotIndexEntry *entry,char *path,uint32_t path_capacity)
+static SparkStatus SparkKvSnapshotEntryPath(const SparkKvSnapshotStore *store,uint32_t index,char *path,uint32_t path_capacity)
 {
-	return(SparkKvSnapshotPath(store,&entry->key,&entry->parent_key,path,path_capacity));
+	const SparkKvSnapshotRuntime *runtime = (const SparkKvSnapshotRuntime *)store->runtime;
+	SparkKvSnapshotKey key,parent;
+	SparkKvSnapshotEntryKey(runtime,index,&key);
+	SparkKvSnapshotEntryParentKey(runtime,index,&parent);
+	return(SparkKvSnapshotPath(store,&key,&parent,path,path_capacity));
 }
 
 static void SparkKvSnapshotUnlinkEntryLocked(SparkKvSnapshotStore *store,uint32_t index)
 {
 	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
-	if ( SparkKvSnapshotEntryPath(store,&SparkKvSnapshotRuntimeOf(store)->entries[index],path,sizeof(path)) == SPARK_STATUS_OK )
+	if ( SparkKvSnapshotEntryPath(store,index,path,sizeof(path)) == SPARK_STATUS_OK )
 		(void)unlink(path);
 	SparkKvSnapshotIndexRemoveAt(store,index);
 }
@@ -457,12 +670,12 @@ static SparkStatus SparkKvSnapshotEvictLocked(SparkKvSnapshotStore *store,uint64
 	uint32_t victim;
 	while ( store->used_bytes > store->maximum_bytes - incoming_bytes )
 	{
-		for (victim=runtime->lru_head; victim != SPARK_KV_SNAPSHOT_NO_ENTRY && runtime->entries[victim].pins != 0u; victim=runtime->entries[victim].lru_next)
+		for (victim=runtime->lru_head; victim != SPARK_KV_SNAPSHOT_NO_ENTRY && SparkKvSnapshotEntryAt(runtime,victim)->pins != 0u; victim=SparkKvSnapshotEntryAt(runtime,victim)->lru_next)
 			;
 		if ( victim == SPARK_KV_SNAPSHOT_NO_ENTRY )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		store->eviction_count++;
-		store->evicted_bytes += runtime->entries[victim].bytes;
+		store->evicted_bytes += (uint64_t)SparkKvSnapshotEntryAt(runtime,victim)->units * SPARK_KV_SNAPSHOT_ALIGNMENT;
 		SparkKvSnapshotUnlinkEntryLocked(store,victim);
 	}
 	return(SPARK_STATUS_OK);
@@ -603,8 +816,12 @@ static SparkStatus SparkKvSnapshotFailureGateLocked(const SparkKvSnapshotStore *
 static void SparkKvSnapshotPinLocked(SparkKvSnapshotRuntime *runtime,const SparkKvSnapshotKey *key,int delta)
 {
 	uint32_t index = SparkKvSnapshotIndexFind(runtime,key);
-	if ( index != SPARK_KV_SNAPSHOT_NO_ENTRY && (delta > 0 || runtime->entries[index].pins != 0u) )
-		runtime->entries[index].pins += (uint32_t)delta;
+	SparkKvSnapshotIndexEntry *entry;
+	if ( index == SPARK_KV_SNAPSHOT_NO_ENTRY )
+		return;
+	entry = SparkKvSnapshotEntryAt(runtime,index);
+	if ( delta > 0 || entry->pins != 0u )
+		entry->pins = (uint16_t)(entry->pins + delta);
 }
 
 static SparkStatus SparkKvSnapshotCommitFile(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const SparkKvSnapshotKey *parent,const SparkKvSnapshotSegment *segments,uint32_t segment_count)
@@ -638,7 +855,7 @@ static SparkStatus SparkKvSnapshotCommitFile(SparkKvSnapshotStore *store,const S
 	if ( parented != 0u )
 		SparkKvSnapshotPinLocked(runtime,parent,-1);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkKvSnapshotIndexInsert(store,key,parent,header.file_bytes,++runtime->recency,1u);
+		status = SparkKvSnapshotIndexInsert(store,key,parent,header.file_bytes,1u,0);
 	if ( status == SPARK_STATUS_OK )
 	{
 		store->write_count++;
@@ -755,11 +972,13 @@ static SparkStatus SparkKvSnapshotScan(SparkKvSnapshotStore *store)
 	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
 	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
 	SparkKvSnapshotKey key,parent;
-	SparkKvSnapshotIndexEntry **order;
+	SparkKvSnapshotIndexEntry *entry;
 	struct dirent *item;
 	struct stat info;
 	SparkStatus status = SPARK_STATUS_OK;
-	uint32_t index,count = 0u;
+	uint64_t *order = 0,*grown,seconds;
+	size_t count = 0u,capacity = 0u,cursor;
+	uint32_t index;
 	DIR *listing = opendir(store->directory);
 	if ( listing == 0 )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
@@ -781,42 +1000,57 @@ static SparkStatus SparkKvSnapshotScan(SparkKvSnapshotStore *store)
 		}
 		if ( stat(path,&info) != 0 || !S_ISREG(info.st_mode) )
 			continue;
-		status = SparkKvSnapshotIndexInsert(store,&key,&parent,(uint64_t)info.st_size,(uint64_t)info.st_mtime,0u);
+		if ( count == capacity )
+		{
+			capacity = capacity != 0u ? capacity * 2u : 1024u;
+			grown = (uint64_t *)realloc(order,capacity * sizeof(*order));
+			if ( grown == 0 )
+			{
+				status = SPARK_STATUS_CAPACITY_EXCEEDED;
+				break;
+			}
+			order = grown;
+		}
+		status = SparkKvSnapshotIndexInsert(store,&key,&parent,(uint64_t)info.st_size,0u,&index);
+		seconds = info.st_mtime > 0 ? (uint64_t)info.st_mtime : 0u;
+		if ( status == SPARK_STATUS_OK )
+			order[count++] = (seconds < UINT32_MAX ? seconds : UINT32_MAX) << 32u | index;
 	}
 	(void)closedir(listing);
 	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	for (index=0u; index<runtime->entry_capacity; index++)
-		if ( runtime->entries[index].live != 0u )
-			SparkKvSnapshotLinkParent(store,index);
-	order = (SparkKvSnapshotIndexEntry **)malloc((size_t)(runtime->entry_count != 0u ? runtime->entry_count : 1u) * sizeof(*order));
-	if ( order == 0 )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	for (index=0u; index<runtime->entry_capacity; index++)
-		if ( runtime->entries[index].live != 0u )
-			order[count++] = &runtime->entries[index];
-	qsort(order,count,sizeof(order[0]),SparkKvSnapshotCompareRecency);
-	for (index=0u; index<count; index++)
 	{
-		uint32_t slot = (uint32_t)(order[index] - runtime->entries);
-		order[index]->recency = index + 1u;
-		if ( order[index]->key.file_kind == SPARK_KV_SNAPSHOT_FILE_STATE || order[index]->children == 0u )
-			SparkKvSnapshotLruPush(runtime,slot,0u);
+		free(order);
+		SPARK_RETURN(status);
 	}
-	for (index=0u; index<count; index++)
-		if ( SparkKvSnapshotIsOrphan(order[index]) != 0u && order[index]->in_lru != 0u )
-			SparkKvSnapshotLruPush(runtime,(uint32_t)(order[index] - runtime->entries),1u);
+	if ( count != 0u )
+		qsort(order,count,sizeof(order[0]),SparkKvSnapshotCompareOrder);
+	for (cursor=0u; cursor<count; cursor++)
+	{
+		index = (uint32_t)order[cursor];
+		entry = SparkKvSnapshotEntryAt(runtime,index);
+		if ( (entry->flags & SPARK_KV_SNAPSHOT_ENTRY_STATE) != 0u || entry->first_child == SPARK_KV_SNAPSHOT_NO_ENTRY )
+			SparkKvSnapshotLruPush(runtime,index,0u);
+	}
+	for (cursor=0u; cursor<count; cursor++)
+	{
+		index = (uint32_t)order[cursor];
+		if ( SparkKvSnapshotIsOrphan(runtime,index) != 0u && (SparkKvSnapshotEntryAt(runtime,index)->flags & SPARK_KV_SNAPSHOT_ENTRY_IN_LRU) != 0u )
+			SparkKvSnapshotLruPush(runtime,index,1u);
+	}
 	free(order);
-	runtime->recency = count;
 	return(SparkKvSnapshotEvictLocked(store,0u));
 }
 
 static void SparkKvSnapshotRuntimeFree(SparkKvSnapshotRuntime *runtime)
 {
+	uint32_t index;
 	if ( runtime->lock_descriptor >= 0 )
 		(void)close(runtime->lock_descriptor);
-	free(runtime->entries);
+	for (index=0u; index<runtime->chunk_count; index++)
+		free(runtime->chunks[index]);
+	free(runtime->chunks);
 	free(runtime->buckets);
+	free(runtime->layouts);
 	free(runtime);
 }
 
@@ -856,7 +1090,9 @@ SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *dir
 	store->failure_retry_ns = SPARK_KV_SNAPSHOT_FAILURE_RETRY_NS;
 	memcpy(store->directory,directory,strlen(directory) + 1u);
 	store->runtime = runtime;
-	status = SparkKvSnapshotScan(store);
+	status = SparkKvSnapshotBucketsFit(runtime,1u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvSnapshotScan(store);
 	if ( status == SPARK_STATUS_OK && (pthread_mutex_init(&runtime->mutex,0) != 0 || pthread_cond_init(&runtime->wake,0) != 0 || pthread_cond_init(&runtime->idle,0) != 0 || pthread_create(&runtime->writer,0,SparkKvSnapshotWriterMain,store) != 0) )
 		status = SPARK_STATUS_INTERNAL_ERROR;
 	if ( status != SPARK_STATUS_OK )
@@ -913,18 +1149,20 @@ SparkStatus SparkKvSnapshotStoreSample(SparkKvSnapshotStore *store,SparkKvSnapsh
 SparkStatus SparkKvSnapshotPrune(SparkKvSnapshotStore *store,const uint8_t layout_sha256[SPARK_SHA256_DIGEST_BYTES])
 {
 	SparkKvSnapshotRuntime *runtime;
-	uint32_t index;
+	uint32_t index,layout;
 	if ( SparkKvSnapshotStoreIsValid(store) == 0u || layout_sha256 == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	runtime = SparkKvSnapshotRuntimeOf(store);
 	pthread_mutex_lock(&runtime->mutex);
-	for (index=0u; index<runtime->entry_capacity; index++)
-	{
-		if ( runtime->entries[index].live == 0u || memcmp(runtime->entries[index].key.layout_sha256,layout_sha256,SPARK_SHA256_DIGEST_BYTES) == 0 )
-			continue;
-		store->pruned_count++;
-		SparkKvSnapshotUnlinkEntryLocked(store,index);
-	}
+	layout = SparkKvSnapshotLayoutFind(runtime,layout_sha256);
+	if ( store->file_count != (layout != SPARK_KV_SNAPSHOT_NO_ENTRY ? runtime->layouts[layout].file_count : 0u) )
+		for (index=0u; index<runtime->entry_high; index++)
+		{
+			if ( (SparkKvSnapshotEntryAt(runtime,index)->flags & SPARK_KV_SNAPSHOT_ENTRY_LIVE) == 0u || SparkKvSnapshotEntryAt(runtime,index)->layout == layout )
+				continue;
+			store->pruned_count++;
+			SparkKvSnapshotUnlinkEntryLocked(store,index);
+		}
 	pthread_mutex_unlock(&runtime->mutex);
 	return(SPARK_STATUS_OK);
 }
@@ -932,24 +1170,17 @@ SparkStatus SparkKvSnapshotPrune(SparkKvSnapshotStore *store,const uint8_t layou
 SparkStatus SparkKvSnapshotCountLayout(SparkKvSnapshotStore *store,const uint8_t layout_sha256[SPARK_SHA256_DIGEST_BYTES],uint64_t *matching_files,uint64_t *foreign_files)
 {
 	SparkKvSnapshotRuntime *runtime;
-	uint64_t matching = 0u,foreign = 0u;
-	uint32_t index;
+	uint64_t matching;
+	uint32_t layout;
 	if ( SparkKvSnapshotStoreIsValid(store) == 0u || layout_sha256 == 0 || matching_files == 0 || foreign_files == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	runtime = SparkKvSnapshotRuntimeOf(store);
 	pthread_mutex_lock(&runtime->mutex);
-	for (index=0u; index<runtime->entry_capacity; index++)
-	{
-		if ( runtime->entries[index].live == 0u )
-			continue;
-		if ( memcmp(runtime->entries[index].key.layout_sha256,layout_sha256,SPARK_SHA256_DIGEST_BYTES) == 0 )
-			matching++;
-		else
-			foreign++;
-	}
-	pthread_mutex_unlock(&runtime->mutex);
+	layout = SparkKvSnapshotLayoutFind(runtime,layout_sha256);
+	matching = layout != SPARK_KV_SNAPSHOT_NO_ENTRY ? runtime->layouts[layout].file_count : 0u;
 	*matching_files = matching;
-	*foreign_files = foreign;
+	*foreign_files = store->file_count - matching;
+	pthread_mutex_unlock(&runtime->mutex);
 	return(SPARK_STATUS_OK);
 }
 
@@ -1034,9 +1265,9 @@ static SparkStatus SparkKvSnapshotOpenValidated(SparkKvSnapshotStore *store,cons
 	runtime = SparkKvSnapshotRuntimeOf(store);
 	pthread_mutex_lock(&runtime->mutex);
 	index = SparkKvSnapshotIndexFind(runtime,key);
-	status = index == SPARK_KV_SNAPSHOT_NO_ENTRY ? SPARK_STATUS_NOT_FOUND : SparkKvSnapshotEntryPath(store,&runtime->entries[index],path,sizeof(path));
+	status = index == SPARK_KV_SNAPSHOT_NO_ENTRY ? SPARK_STATUS_NOT_FOUND : SparkKvSnapshotEntryPath(store,index,path,sizeof(path));
 	if ( index != SPARK_KV_SNAPSHOT_NO_ENTRY )
-		parent = runtime->entries[index].parent_key;
+		SparkKvSnapshotEntryParentKey(runtime,index,&parent);
 	else
 		store->miss_count += record_miss;
 	pthread_mutex_unlock(&runtime->mutex);
@@ -1108,7 +1339,7 @@ SparkStatus SparkKvSnapshotParent(SparkKvSnapshotStore *store,const SparkKvSnaps
 	pthread_mutex_lock(&runtime->mutex);
 	index = SparkKvSnapshotIndexFind(runtime,key);
 	if ( index != SPARK_KV_SNAPSHOT_NO_ENTRY )
-		*parent_out = runtime->entries[index].parent_key;
+		SparkKvSnapshotEntryParentKey(runtime,index,parent_out);
 	pthread_mutex_unlock(&runtime->mutex);
 	return(index != SPARK_KV_SNAPSHOT_NO_ENTRY ? SPARK_STATUS_OK : SPARK_STATUS_NOT_FOUND);
 }
