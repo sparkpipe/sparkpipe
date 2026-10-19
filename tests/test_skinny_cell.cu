@@ -5,6 +5,8 @@
 #include <cstring>
 #include <vector>
 #include "inference/kernels/skinny.cuh"
+#include "inference/kernels/cell_mma.cuh"
+#include "tests/cuda/cell_mma_v1_reference.cuh"
 
 #define CUDA(call) do { cudaError_t e=(call); if(e!=cudaSuccess) { fprintf(stderr,"FAIL line=%d cuda=%s call=%s\n",__LINE__,cudaGetErrorString(e),#call); exit(1); } } while(0)
 #define REQUIRE(test) do { if(!(test)) { fprintf(stderr,"FAIL line=%d test=%s\n",__LINE__,#test); exit(1); } } while(0)
@@ -57,9 +59,11 @@ template<class T> static std::vector<T> Download(const T *device,size_t count)
 
 struct Experts
 {
-	uint32_t groups,output,input;
-	std::vector<uint8_t> payload,scale,cells;
+	uint32_t groups,output,input,scale_base;
+	std::vector<uint8_t> payload,scale,cells,paired;
 };
+
+enum Kernel { SKINNY_V1, SKINNY_PAIRED, MMA_V1, MMA_PAIRED };
 
 static Experts MakeExperts(uint32_t groups,uint32_t output,uint32_t input)
 {
@@ -85,6 +89,25 @@ static Experts MakeExperts(uint32_t groups,uint32_t output,uint32_t input)
 					row[16u * 16u + r] = experts.scale[((size_t)e * output + neuron) * tiles + t];
 				}
 			}
+	experts.scale_base = 120u;
+	if ((tiles % 2u) == 0u)
+	{
+		experts.paired.assign((size_t)groups * (tiles / 2u) * cells * 33u * 16u,0u);
+		for (uint32_t e = 0u; e < groups; e++)
+			for (uint32_t p = 0u; p < tiles / 2u; p++)
+				for (uint32_t c = 0u; c < cells; c++)
+				{
+					uint8_t *row = experts.paired.data() + (((size_t)e * (tiles / 2u) * cells + (size_t)p * cells + c) * 33u) * 16u;
+					for (uint32_t r = 0u; r < 16u; r++)
+					{
+						const uint32_t neuron = c * 16u + r;
+						const uint8_t *scale = experts.scale.data() + ((size_t)e * output + neuron) * tiles + 2u * p;
+						memcpy(row + r * 16u,experts.payload.data() + ((size_t)e * output + neuron) * (input / 2u) + 2u * p * 16u,16u);
+						memcpy(row + (16u + r) * 16u,experts.payload.data() + ((size_t)e * output + neuron) * (input / 2u) + (2u * p + 1u) * 16u,16u);
+						row[32u * 16u + r] = (uint8_t)((scale[0] - experts.scale_base) | ((scale[1] - experts.scale_base) << 4u));
+					}
+				}
+	}
 	return experts;
 }
 
@@ -129,15 +152,22 @@ static Routing MakeRouting(const std::vector<uint32_t> &group_of_row,const std::
 	return routing;
 }
 
-static std::vector<uint16_t> Run(const Experts &experts,const uint8_t *weight,const std::vector<uint16_t> &activation,const Routing &routing,uint32_t activation_packed,uint32_t group_rows_max,cudaStream_t stream)
+static std::vector<uint16_t> Run(const Experts &experts,const uint8_t *weight,const std::vector<uint16_t> &activation,const Routing &routing,uint32_t activation_packed,uint32_t group_rows_max,cudaStream_t stream,Kernel kernel = SKINNY_V1)
 {
 	const uint32_t packed = (uint32_t)routing.source.size();
 	uint16_t *activation_device = Upload(activation), *output;
 	uint32_t *offset = Upload(routing.offset), *source = Upload(routing.source);
 	CUDA(cudaMalloc(&output,(size_t)packed * experts.output * sizeof(uint16_t)));
 	CUDA(cudaMemset(output,0xff,(size_t)packed * experts.output * sizeof(uint16_t)));
-	REQUIRE(LmSkinnyCellExperts(weight,activation_device,output,offset,activation_packed != 0u ? (const uint32_t *)0 : source,
-		experts.groups,packed,group_rows_max,activation_packed,experts.input,experts.output,32u,stream) == LM_LAUNCH_OK);
+	const uint32_t *rows = activation_packed != 0u ? (const uint32_t *)0 : source;
+	if (kernel == SKINNY_V1)
+		REQUIRE(LmSkinnyCellExperts(weight,activation_device,output,offset,rows,experts.groups,packed,group_rows_max,activation_packed,experts.input,experts.output,32u,stream) == LM_LAUNCH_OK);
+	else if (kernel == SKINNY_PAIRED)
+		REQUIRE(LmSkinnyPairedCellExperts(weight,activation_device,output,offset,rows,experts.groups,packed,group_rows_max,activation_packed,experts.input,experts.output,32u,experts.scale_base,stream) == LM_LAUNCH_OK);
+	else if (kernel == MMA_V1)
+		REQUIRE(LmCellMmaV1Experts(weight,activation_device,output,offset,rows,experts.groups,packed,activation_packed,experts.input,experts.output,32u,stream) == LM_LAUNCH_OK);
+	else
+		REQUIRE(LmCellMmaExperts(weight,activation_device,output,offset,rows,experts.groups,packed,activation_packed,experts.input,experts.output,32u,experts.scale_base,stream) == LM_LAUNCH_OK);
 	CUDA(cudaStreamSynchronize(stream));
 	std::vector<uint16_t> result = Download(output,(size_t)packed * experts.output);
 	CUDA(cudaFree(output));
@@ -217,6 +247,22 @@ static void Case(uint32_t groups,uint32_t output,uint32_t input,uint32_t tokens,
 			}
 		printf("  token 0 alone equals token 0 inside the %u-token batch, bit for bit\n",tokens);
 	}
+	if (!experts.paired.empty())
+	{
+		uint8_t *paired = Upload(experts.paired);
+		std::vector<uint16_t> skinny_paired = Run(experts,paired,activation,routing,activation_packed,routing.group_rows_max,stream,SKINNY_PAIRED);
+		REQUIRE(memcmp(skinny_paired.data(),batched.data(),batched.size() * sizeof(uint16_t)) == 0);
+		printf("  paired 4-bit scale cells equal the 17-row cells bit for bit (skinny, %zu outputs)\n",batched.size());
+		if ((output % 32u) == 0u)
+		{
+			std::vector<uint16_t> mma_v1 = Run(experts,weight,activation,routing,activation_packed,routing.group_rows_max,stream,MMA_V1);
+			std::vector<uint16_t> mma_paired = Run(experts,paired,activation,routing,activation_packed,routing.group_rows_max,stream,MMA_PAIRED);
+			REQUIRE(memcmp(mma_v1.data(),mma_paired.data(),mma_v1.size() * sizeof(uint16_t)) == 0);
+			CheckAgainstReference(experts,mma_paired,activation,routing,activation_packed);
+			printf("  paired tensor-core cells equal the 17-row tensor-core cells bit for bit\n");
+		}
+		CUDA(cudaFree(paired));
+	}
 	CUDA(cudaFree(weight));
 }
 
@@ -234,6 +280,11 @@ int main(int argc,char **argv)
 	Case(64u,384u,224u,24u,16u,0u,stream);
 	Case(64u,224u,3072u,24u,16u,1u,stream);
 	Case(8u,64u,96u,5u,3u,0u,stream);
+	Case(16u,384u,7168u,1u,8u,0u,stream);
+	Case(16u,7168u,192u,1u,8u,1u,stream);
+	Case(16u,384u,7168u,64u,8u,0u,stream);
+	Case(16u,7168u,192u,64u,8u,1u,stream);
+	Case(4u,64u,128u,200u,2u,0u,stream);
 	{
 		const std::vector<uint16_t> activation(64u,0u);
 		std::vector<uint8_t> weight(64u * 64u);
@@ -242,6 +293,11 @@ int main(int argc,char **argv)
 		REQUIRE(LmSkinnyCellExperts(weight.data(),activation.data(),(uint16_t *)activation.data(),offset,offset,1u,1u,1u,1u,64u,24u,32u,stream) == LM_LAUNCH_ERR_SHAPE);
 		REQUIRE(LmSkinnyCellExperts(weight.data(),activation.data(),(uint16_t *)activation.data(),offset,offset,1u,1u,1u,1u,128u,32u,128u,stream) == LM_LAUNCH_ERR_SHAPE);
 		printf("  K not a whole tile, output not whole cells and tile_k 128 are refused\n");
+		REQUIRE(LmSkinnyPairedCellExperts(weight.data(),activation.data(),(uint16_t *)activation.data(),offset,offset,1u,1u,1u,1u,96u,32u,32u,120u,stream) == LM_LAUNCH_ERR_SHAPE);
+		REQUIRE(LmSkinnyPairedCellExperts(weight.data(),activation.data(),(uint16_t *)activation.data(),offset,offset,1u,1u,1u,1u,64u,32u,32u,0u,stream) == LM_LAUNCH_ERR_SHAPE);
+		REQUIRE(LmSkinnyPairedCellExperts(weight.data(),activation.data(),(uint16_t *)activation.data(),offset,offset,1u,1u,1u,1u,64u,32u,32u,240u,stream) == LM_LAUNCH_ERR_SHAPE);
+		REQUIRE(LmCellMmaExperts(weight.data(),activation.data(),(uint16_t *)activation.data(),offset,offset,1u,1u,1u,64u,16u,32u,120u,stream) == LM_LAUNCH_ERR_SHAPE);
+		printf("  paired cells refuse an odd tile count, scale base 0 and a base whose window passes 254\n");
 	}
 	printf("test_skinny_cell PASS\n");
 	return 0;

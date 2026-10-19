@@ -54,14 +54,17 @@ static __device__ __forceinline__ uint32_t LmCellMmaPackExact(float low, float h
 	return(packed);
 }
 
-static __device__ __forceinline__ void LmCellMmaLoad(const uint8_t *tile, uint32_t lane, uint32_t g, uint32_t words[LM_CELL_MMA_FRAGS], uint32_t scales[LM_CELL_MMA_FRAGS])
+static __device__ __forceinline__ void LmCellMmaLoad(const uint8_t *cells, uint64_t pair_stride, uint32_t tile, uint32_t scale_bits, uint32_t lane, uint32_t g, uint32_t words[LM_CELL_MMA_FRAGS], uint32_t scales[LM_CELL_MMA_FRAGS])
 {
+	const uint8_t *pair = cells + (uint64_t)(tile / 2u) * pair_stride;
+	const uint32_t position = tile % 2u;
 	#pragma unroll
 	for ( uint32_t f = 0u; f < LM_CELL_MMA_FRAGS; f++ )
 	{
-		const uint8_t *cell = tile + (f / 2u) * LM_SKINNY_CELL_ROWS * LM_SKINNY_CHUNK_BYTES;
-		words[f] = __ldcs((const uint32_t *)(cell + (f % 2u) * 8u * LM_SKINNY_CHUNK_BYTES) + lane);
-		scales[f] = __ldg(cell + LM_SKINNY_CELL_NEURONS * LM_SKINNY_CHUNK_BYTES + (f % 2u) * 8u + g);
+		const uint8_t *cell = pair + (f / 2u) * LM_SKINNY_CELL_PAIR_ROWS * LM_SKINNY_CHUNK_BYTES;
+		const uint32_t code = ((uint32_t)__ldg(cell + 2u * LM_SKINNY_CELL_NEURONS * LM_SKINNY_CHUNK_BYTES + (f % 2u) * 8u + g) >> (4u * position)) & 0xfu;
+		words[f] = __ldcs((const uint32_t *)(cell + (position * LM_SKINNY_CELL_NEURONS + (f % 2u) * 8u) * LM_SKINNY_CHUNK_BYTES) + lane);
+		scales[f] = scale_bits + (code << 23u);
 	}
 }
 
@@ -71,7 +74,7 @@ static __device__ __forceinline__ void LmCellMmaRows(const LmSkinnyCellArguments
 	const uint32_t lane = threadIdx.x % LM_WARP_LANES, g = lane / 4u, c = lane % 4u;
 	const uint32_t vector = threadIdx.x % LM_CELL_MMA_STAGE_VECTORS, row = threadIdx.x / LM_CELL_MMA_STAGE_VECTORS;
 	const uint32_t stages = (args.k_tiles + LM_CELL_MMA_STAGE_TILES - 1u) / LM_CELL_MMA_STAGE_TILES;
-	const uint8_t *cells = base + (uint64_t)cell_first * LM_SKINNY_CELL_ROWS * LM_SKINNY_CHUNK_BYTES;
+	const uint8_t *cells = base + (uint64_t)cell_first * LM_SKINNY_CELL_PAIR_ROWS * LM_SKINNY_CHUNK_BYTES;
 	float acc[CHUNKS][LM_CELL_MMA_FRAGS][4];
 	const uint16_t *source[CHUNKS];
 	uint32_t words[LM_CELL_MMA_FRAGS], scales[LM_CELL_MMA_FRAGS];
@@ -86,7 +89,7 @@ static __device__ __forceinline__ void LmCellMmaRows(const LmSkinnyCellArguments
 		source[m] = packed < end ? args.activation + (uint64_t)(args.activation_packed != 0u ? packed : args.route_source_token[packed]) * args.input_dimension + vector * 8u : (const uint16_t *)0;
 	}
 	if ( active != 0u )
-		LmCellMmaLoad(cells, lane, g, words, scales);
+		LmCellMmaLoad(cells, tile_stride, 0u, args.scale_bits, lane, g, words, scales);
 	LmCellMmaStage<CHUNKS>(stage, source, args.activation, 0u, (args.k_tiles < LM_CELL_MMA_STAGE_TILES ? args.k_tiles : LM_CELL_MMA_STAGE_TILES) * 4u, row, vector);
 	LmCellMmaCommit();
 	for ( s = 0u; s < stages; s++ )
@@ -120,11 +123,11 @@ static __device__ __forceinline__ void LmCellMmaRows(const LmSkinnyCellArguments
 					scale_bits[f] = scales[f];
 				}
 				if ( t + 1u < args.k_tiles )
-					LmCellMmaLoad(cells + (uint64_t)(t + 1u) * tile_stride, lane, g, words, scales);
+					LmCellMmaLoad(cells, tile_stride, t + 1u, args.scale_bits, lane, g, words, scales);
 				#pragma unroll
 				for ( f = 0u; f < LM_CELL_MMA_FRAGS; f++ )
 				{
-					const float scale = LmUe8m0ToFloat((uint8_t)scale_bits[f]);
+					const float scale = __uint_as_float(scale_bits[f]);
 					#pragma unroll
 					for ( j = 0u; j < 4u; j++ )
 					{
@@ -181,7 +184,7 @@ static __global__ __launch_bounds__(LM_CELL_MMA_THREADS) void LmCellMmaKernel(co
 	const uint32_t pair = (blockIdx.x % blocks) * LM_CELL_MMA_WARPS + threadIdx.x / LM_WARP_LANES;
 	const uint32_t active = pair < pairs ? 1u : 0u;
 	const uint32_t cell_first = (active != 0u ? pair : 0u) * LM_CELL_MMA_CELLS;
-	const uint64_t tile_stride = (uint64_t)args.cells * LM_SKINNY_CELL_ROWS * LM_SKINNY_CHUNK_BYTES;
+	const uint64_t tile_stride = (uint64_t)args.cells * LM_SKINNY_CELL_PAIR_ROWS * LM_SKINNY_CHUNK_BYTES;
 	uint32_t first, end, count;
 	const uint8_t *base;
 	LmDependentWait();
@@ -207,30 +210,18 @@ static __global__ __launch_bounds__(LM_CELL_MMA_THREADS) void LmCellMmaKernel(co
 	}
 }
 
-static int32_t LmCellMmaExperts(const void *weight, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t tile_k, cudaStream_t stream)
+static int32_t LmCellMmaExperts(const void *weight, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t tile_k, uint32_t scale_base, cudaStream_t stream)
 {
 	LmSkinnyCellArguments args;
 	uint64_t blocks;
-	if ( tile_k != LM_SKINNY_CELL_TILE_K || weight == 0 || activation == 0 || output_bf16 == 0 || group_row_offset == 0 ||
-		(activation_packed == 0u && route_source_token == 0) || groups == 0u || packed_rows == 0u ||
-		input_dimension == 0u || (input_dimension % LM_SKINNY_CELL_TILE_K) != 0u ||
-		output_dimension == 0u || (output_dimension % (LM_SKINNY_CELL_NEURONS * LM_CELL_MMA_CELLS)) != 0u ||
-		LmSkinnyAligned(weight) == 0u || LmSkinnyAligned(activation) == 0u )
+	int32_t status;
+	if ( LmSkinnyCellScaleBaseValid(scale_base) == 0u || (output_dimension % (LM_SKINNY_CELL_NEURONS * LM_CELL_MMA_CELLS)) != 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
-	memset(&args,0,sizeof(args));
-	args.weight = (const uint8_t *)weight;
-	args.activation = activation;
-	args.output_bf16 = output_bf16;
-	args.group_row_offset = group_row_offset;
-	args.route_source_token = route_source_token;
-	args.groups = groups;
-	args.packed_rows = packed_rows;
-	args.activation_packed = activation_packed;
-	args.input_dimension = input_dimension;
-	args.output_dimension = output_dimension;
-	args.k_tiles = input_dimension / LM_SKINNY_CELL_TILE_K;
-	args.cells = output_dimension / LM_SKINNY_CELL_NEURONS;
-	args.group_bytes = (uint64_t)args.k_tiles * args.cells * LM_SKINNY_CELL_ROWS * LM_SKINNY_CHUNK_BYTES;
+	status = LmSkinnyCellPrepare(&args,weight,activation,output_bf16,group_row_offset,route_source_token,groups,packed_rows,
+		activation_packed,input_dimension,output_dimension,tile_k,LM_SKINNY_CELL_PAIR_ROWS);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	args.scale_bits = scale_base << 23u;
 	blocks = (uint64_t)groups * ((args.cells / LM_CELL_MMA_CELLS + LM_CELL_MMA_WARPS - 1u) / LM_CELL_MMA_WARPS);
 	LM_LAUNCH_DEPENDENT((LmCellMmaKernel),(uint32_t)blocks,LM_CELL_MMA_THREADS,0u,stream,args);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);

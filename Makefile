@@ -810,7 +810,7 @@ build/test_route_build_scan: tests/test_route_build_scan.cu inference/kernels/ro
 test-route-build-scan: build/test_route_build_scan
 	./build/test_route_build_scan --run
 
-build/test_skinny_cell: tests/test_skinny_cell.cu inference/kernels/skinny.cuh | build
+build/test_skinny_cell: tests/test_skinny_cell.cu inference/kernels/skinny.cuh inference/kernels/cell_mma.cuh tests/cuda/cell_mma_v1_reference.cuh | build
 	$(KERNEL_TEST_NVCC) $< $(KERNEL_TEST_CUDA_LINK) -o $@
 
 .PHONY: test-skinny-cell
