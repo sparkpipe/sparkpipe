@@ -114,6 +114,8 @@ struct K3LayerBuffers
 	const void *expert_w2_weight;
 	uint32_t expert_interleave;
 	uint32_t expert_tile_k;
+	uint32_t expert_w1_scale_base;
+	uint32_t expert_w2_scale_base;
 	const void *shared_w1_weight;
 	const void *shared_w1_scale;
 	const void *shared_w2_weight;
@@ -163,10 +165,13 @@ struct K3LayerBuffers
 	uint32_t kda_decay_up_rows;
 	uint32_t kda_out_input;
 	uint32_t mla_q_up_rows;
+	uint32_t mla_q_down_rows;
+	uint32_t mla_kv_a_rows;
 	uint32_t mla_kv_b_value_rows;
 	uint32_t mla_gate_rows;
 	uint32_t mla_out_input;
 	uint32_t routed_down_rows;
+	uint32_t router_rows;
 	uint32_t routed_up_input;
 	uint32_t expert_w1_output;
 	uint32_t expert_w2_input;
@@ -500,29 +505,36 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 		rows,K3_RANK_DIM(b,kda_out_input,K3_KDA_V_DIM),K3_HIDDEN,multiprocessors,stream));
 }
 
-#define K3_MLA_DOWN_SLICED(b, rows) \
-	((b)->tp_sharded != 0u && (b)->kv_shard.degree > 1u && (rows) <= LM_SKINNY_ROWS_WIDE && \
-	(b)->mla_q_down_scale == 0 && (b)->mla_kv_a_scale == 0 && \
-	(K3_Q_LORA_RANK % (b)->kv_shard.degree) == 0u && (K3_MLA_KV_A_DIM % (b)->kv_shard.degree) == 0u)
+#define K3_MLA_DOWN_SLICED(b) \
+	((b)->tp_sharded != 0u && (b)->kv_shard.degree > 1u && \
+	(b)->mla_q_down_rows == K3_Q_LORA_RANK / (b)->kv_shard.degree && (b)->mla_kv_a_rows == K3_MLA_KV_A_DIM / (b)->kv_shard.degree && \
+	(b)->mla_q_down_scale == 0 && (b)->mla_kv_a_scale == 0)
 
-static int32_t K3LayerMlaDownSlice(const K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)
+static int32_t K3LayerMlaDownRows(const void *weight, const K3LayerBuffers *b, uint32_t rows, uint32_t outputs, uint32_t stride, uint32_t column, uint32_t multiprocessors, cudaStream_t stream)
 {
-	const uint32_t degree = b->kv_shard.degree, query = K3_Q_LORA_RANK / degree, key = K3_MLA_KV_A_DIM / degree;
+	if ( rows <= LM_SKINNY_ROWS_WIDE )
+		return(LmSkinnyDense<LmBf16Format>(weight,b->normed_bf16,b->latent_bf16,(float *)0,rows,K3_HIDDEN,outputs,stride,column,stream));
+	return(LmStreamGemmDense<LmBf16Format>(weight,LmScaleTensorNone(),b->normed_bf16,b->latent_bf16,(float *)0,rows,K3_HIDDEN,outputs,stride,column,multiprocessors,stream));
+}
+
+static int32_t K3LayerMlaDownSlice(const K3LayerBuffers *b, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
+{
+	const uint32_t query = b->mla_q_down_rows, key = b->mla_kv_a_rows;
 	int32_t status;
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16,0,(const uint16_t *)b->attn_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
-	status = LmSkinnyDense<LmBf16Format>((const uint8_t *)b->mla_q_down_weight + (uint64_t)b->tp_rank * query * K3_HIDDEN * sizeof(uint16_t),
-		b->normed_bf16,b->latent_bf16,(float *)0,rows,K3_HIDDEN,query,query + key,0u,stream);
+	status = K3LayerMlaDownRows(b->mla_q_down_weight,b,rows,query,query + key,0u,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	return(LmSkinnyDense<LmBf16Format>((const uint8_t *)b->mla_kv_a_weight + (uint64_t)b->tp_rank * key * K3_HIDDEN * sizeof(uint16_t),
-		b->normed_bf16,b->latent_bf16,(float *)0,rows,K3_HIDDEN,key,query + key,query,stream));
+	return(K3LayerMlaDownRows(b->mla_kv_a_weight,b,rows,key,query + key,query,multiprocessors,stream));
 }
 
 template<class Format>
 static int32_t K3LayerMlaDown(const K3LayerBuffers *b, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
 {
 	int32_t status;
+	if ( (b->mla_q_down_rows != 0u && b->mla_q_down_rows != K3_Q_LORA_RANK) || (b->mla_kv_a_rows != 0u && b->mla_kv_a_rows != K3_MLA_KV_A_DIM) )
+		return(LM_LAUNCH_ERR_SHAPE);
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16,0,(const uint16_t *)b->attn_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_q_down_weight,b->mla_q_down_scale,
@@ -877,7 +889,9 @@ static int32_t K3LayerMoeRoute(const K3LayerBuffers *b, uint32_t rows,
 	if ( K3_EXPERT_CELLS(b) )
 	{
 		const uint32_t experts = K3_EXPERTS / (K3_ROUTED_EXPERT_HIDDEN / moe_in);
-		const uint8_t *slice = (const uint8_t *)b->router_weight + (uint64_t)b->tp_rank * experts * K3_HIDDEN * sizeof(uint16_t);
+		const uint8_t *slice = (const uint8_t *)b->router_weight;
+		if ( b->router_rows != experts )
+			return(LM_LAUNCH_ERR_SHAPE);
 		if ( rows <= LM_SKINNY_ROWS_WIDE )
 			return(K3SkinnyRows(slice,b->normed_bf16,(uint16_t *)0,K3_ROUTER_SLICE(b,rows),rows,K3_HIDDEN,experts,stream));
 		status = LmStreamGemmDense<LmBf16Format>(slice,LmScaleTensorNone(),b->normed_bf16,(uint16_t *)0,K3_ROUTER_SLICE(b,rows),rows,K3_HIDDEN,experts,0u,0u,multiprocessors,stream);
@@ -893,6 +907,8 @@ static int32_t K3LayerMoeRoute(const K3LayerBuffers *b, uint32_t rows,
 			&gemm,b->normed_bf16,slice,rows,rows,1u,1u,
 			K3_HIDDEN,experts,multiprocessors,false,stream));
 	}
+	if ( b->router_rows != 0u && b->router_rows != K3_EXPERTS )
+		return(LM_LAUNCH_ERR_SHAPE);
 	memset(&gemm,0,sizeof(gemm));
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
@@ -966,10 +982,10 @@ static int32_t K3LayerMoeCells(const K3LayerBuffers *b, uint32_t rows,
 	status = rows > LM_SKINNY_ROWS_WIDE ?
 		LmCellMmaExperts(b->expert_w1_weight,b->latent_full_bf16,b->gate_up_bf16,
 			b->group_row_offset,b->route_source_token,K3_EXPERTS,packed_rows,0u,
-			K3_ROUTED_EXPERT_HIDDEN,b->expert_w1_output,b->expert_tile_k,stream) :
-		LmSkinnyCellExperts(b->expert_w1_weight,b->latent_full_bf16,b->gate_up_bf16,
+			K3_ROUTED_EXPERT_HIDDEN,b->expert_w1_output,b->expert_tile_k,b->expert_w1_scale_base,stream) :
+		LmSkinnyPairedCellExperts(b->expert_w1_weight,b->latent_full_bf16,b->gate_up_bf16,
 			b->group_row_offset,b->route_source_token,K3_EXPERTS,packed_rows,rows,0u,
-			K3_ROUTED_EXPERT_HIDDEN,b->expert_w1_output,b->expert_tile_k,stream);
+			K3_ROUTED_EXPERT_HIDDEN,b->expert_w1_output,b->expert_tile_k,b->expert_w1_scale_base,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), packed_rows, K3_LAYER_THREADS, 0, stream,
@@ -977,10 +993,10 @@ static int32_t K3LayerMoeCells(const K3LayerBuffers *b, uint32_t rows,
 	status = rows > LM_SKINNY_ROWS_WIDE ?
 		LmCellMmaExperts(b->expert_w2_weight,b->intermediate_bf16,b->gate_up_bf16,
 			b->group_row_offset,0,K3_EXPERTS,packed_rows,1u,channels,
-			K3_ROUTED_EXPERT_HIDDEN,b->expert_tile_k,stream) :
-		LmSkinnyCellExperts(b->expert_w2_weight,b->intermediate_bf16,b->gate_up_bf16,
+			K3_ROUTED_EXPERT_HIDDEN,b->expert_tile_k,b->expert_w2_scale_base,stream) :
+		LmSkinnyPairedCellExperts(b->expert_w2_weight,b->intermediate_bf16,b->gate_up_bf16,
 			b->group_row_offset,0,K3_EXPERTS,packed_rows,rows,1u,channels,
-			K3_ROUTED_EXPERT_HIDDEN,b->expert_tile_k,stream);
+			K3_ROUTED_EXPERT_HIDDEN,b->expert_tile_k,b->expert_w2_scale_base,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	LM_LAUNCH((LmMoeFinalizeKernel<K3_LAYER_THREADS>), dim3((K3_ROUTED_EXPERT_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,

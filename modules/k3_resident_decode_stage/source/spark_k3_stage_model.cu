@@ -152,6 +152,7 @@ struct SparkK3ModelState
 	uint64_t layer_w1_offset[K3_LAYERS];
 	uint64_t layer_w2_offset[K3_LAYERS];
 	uint16_t *fused_device;
+	uint16_t *mla_down_device;
 	uint16_t *row_share_device;
 	uint32_t fused_rows;
 	SparkK3RunnerTpContext *tp_context_free_head;
@@ -434,10 +435,15 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	if ( base == K3_COLLECTIVE_MLA_DOWN )
 	{
 		const uint32_t degree = b->kv_shard.degree;
-		K3RunnerRound(state, stream, rows, b->latent_bf16, state->fused_device,
+		if ( state->mla_down_device == 0 )
+		{
+			K3ModelFail(state);
+			return;
+		}
+		K3RunnerRound(state, stream, rows, b->latent_bf16, state->mla_down_device,
 			(K3_Q_LORA_RANK + K3_MLA_KV_A_DIM) / degree, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
 		K3RunnerMlaDownRowsKernel<<<dim3((K3_Q_LORA_RANK + K3_MLA_KV_A_DIM + 255u) / 256u, rows), 256u, 0, stream>>>(
-			state->fused_device, b->latent_bf16, b->kv_slot_bf16, rows, K3_Q_LORA_RANK / degree, K3_MLA_KV_A_DIM / degree);
+			state->mla_down_device, b->latent_bf16, b->kv_slot_bf16, rows, K3_Q_LORA_RANK / degree, K3_MLA_KV_A_DIM / degree);
 		if ( cudaPeekAtLastError() != cudaSuccess )
 			K3ModelFail(state);
 		return;
@@ -788,6 +794,7 @@ static void K3ModelClose(void *model)
 	if ( state == 0 )
 		return;
 	cudaFree(state->fused_device);
+	cudaFree(state->mla_down_device);
 	cudaFree(state->row_share_device);
 	if ( state->load_join != 0 )
 		(void)cudaEventDestroy(state->load_join);
@@ -888,6 +895,18 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 	if ( SparkK3DispatchBindWeights(&state->dispatch, &state->module.pack, state->module.bound, state->module.bound_count,
 		lazy_pack) != SPARK_K3_DISPATCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( state->module.pack.version == SPARK_K3_PACK_FORMAT_VERSION_CELLS )
+	{
+		uint32_t pack_rank = UINT32_MAX, pack_degree = 0u;
+		if ( SparkK3PackConfigValue(&state->module.pack, "tp_rank", &pack_rank) != SPARK_STATUS_OK ||
+			SparkK3PackConfigValue(&state->module.pack, "tp_degree", &pack_degree) != SPARK_STATUS_OK ||
+			pack_rank != state->tp_rank || pack_degree != state->tp_degree )
+		{
+			fprintf(stderr, "sparkpipe_k3: the format %u pack holds rank %u of %u, this stage is rank %u of %u\n",
+				state->module.pack.version, pack_rank, pack_degree, state->tp_rank, state->tp_degree);
+			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+		}
+	}
 	if ( K3ModelExpertOffsets(state) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	if ( state->owns_embedding != 0u &&
@@ -947,6 +966,13 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 		if ( cudaMalloc(&state->row_share_device, share_bytes) != cudaSuccess ||
 			cudaMemset(state->row_share_device, 0, share_bytes) != cudaSuccess )
 			{ state->row_share_device = 0; SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED); }
+		if ( state->dispatch.buffers->mla_q_down_rows != 0u && state->dispatch.buffers->mla_q_down_rows < K3_Q_LORA_RANK )
+		{
+			const uint32_t down_rows = max_rows > state->dispatch.attention_rows ? max_rows : state->dispatch.attention_rows;
+			const uint64_t down_bytes = (uint64_t)down_rows * (K3_Q_LORA_RANK + K3_MLA_KV_A_DIM) * sizeof(uint16_t);
+			if ( cudaMalloc(&state->mla_down_device, down_bytes) != cudaSuccess )
+				{ state->mla_down_device = 0; SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED); }
+		}
 	}
 	if ( cudaMalloc(&state->route_expert, routes * sizeof(*state->route_expert)) != cudaSuccess ||
 		cudaMalloc(&state->route_packed_row, routes * sizeof(*state->route_packed_row)) != cudaSuccess ||

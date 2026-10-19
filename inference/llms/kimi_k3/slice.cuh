@@ -47,6 +47,8 @@ struct K3LayerWeights
 	const void *expert_w2_weight;
 	uint32_t expert_interleave;
 	uint32_t expert_tile_k;
+	uint32_t expert_w1_scale_base;
+	uint32_t expert_w2_scale_base;
 	const void *shared_w1_weight;
 	const void *shared_w1_scale;
 	const void *shared_w2_weight;
@@ -155,6 +157,8 @@ static void K3BindLayer(const K3LayerWeights *weights, K3LayerBuffers *buffers)
 	buffers->expert_w2_weight = weights->expert_w2_weight;
 	buffers->expert_interleave = weights->expert_interleave;
 	buffers->expert_tile_k = weights->expert_tile_k;
+	buffers->expert_w1_scale_base = weights->expert_w1_scale_base;
+	buffers->expert_w2_scale_base = weights->expert_w2_scale_base;
 	buffers->shared_w1_weight = weights->shared_w1_weight;
 	buffers->shared_w1_scale = weights->shared_w1_scale;
 	buffers->shared_w2_weight = weights->shared_w2_weight;
@@ -204,10 +208,23 @@ static void K3BindLayerState(const K3SliceState *state, uint32_t layer, K3LayerB
 }
 
 template<class Format, class Geometry>
+static int32_t K3LaunchMlaQuery(const K3SliceState *state, void *lane, K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
+{
+	int32_t status;
+	if ( K3_MLA_DOWN_SLICED(buffers) == 0 )
+		return(K3LayerMlaQuery<Format,Geometry>(buffers,rows,multiprocessors,stream));
+	status = K3LayerMlaDownSlice(buffers,rows,multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	state->layer_collective(lane,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_DOWN);
+	return(K3LayerMlaUp<Format,Geometry>(buffers,rows,multiprocessors,stream));
+}
+
+template<class Format, class Geometry>
 static int32_t K3LaunchMlaGather(const K3SliceState *state, K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
 {
 	uint32_t window;
-	int32_t status = K3LayerMlaQuery<Format,Geometry>(buffers,rows,multiprocessors,stream);
+	int32_t status = K3LaunchMlaQuery<Format,Geometry>(state,state->collective_context,buffers,layer,rows,multiprocessors,stream);
 	if ( status == LM_LAUNCH_OK )
 		status = K3LayerMlaGatherPack<Geometry>(buffers,rows,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -258,18 +275,7 @@ static int32_t K3LaunchMlaShard(const K3SliceState *state, K3LayerBuffers *buffe
 		return(LM_LAUNCH_ERR_SHAPE);
 	if ( buffers->shard_gather != 0u )
 		return(K3LaunchMlaGather<Format,Geometry>(state,buffers,layer,rows,partial_accumulate,multiprocessors,stream));
-	if ( K3_MLA_DOWN_SLICED(buffers,rows) )
-	{
-		status = K3LayerMlaDownSlice(buffers,rows,stream);
-		if ( status != LM_LAUNCH_OK )
-			return(status);
-		state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_DOWN);
-	}
-	else
-		status = K3LayerMlaDown<Format>(buffers,rows,multiprocessors,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	status = K3LayerMlaUp<Format,Geometry>(buffers,rows,multiprocessors,stream);
+	status = K3LaunchMlaQuery<Format,Geometry>(state,state->collective_context,buffers,layer,rows,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_QUERY);
@@ -322,7 +328,7 @@ static void K3L2PlanMoe(const K3LayerBuffers *b, uint32_t layer, LmL2LoadPlan *p
 		LmL2LoadAdd(plan,b->dense_gate_up_weight,(uint64_t)K3_RANK_DIM(b,dense_gate_up_rows,K3_DENSE_INTERMEDIATE * 2u) * row);
 		return;
 	}
-	LmL2LoadAdd(plan,(const uint8_t *)b->router_weight + (K3_EXPERT_CELLS(b) ? (uint64_t)b->tp_rank * experts * row : 0u),(uint64_t)experts * row);
+	LmL2LoadAdd(plan,b->router_weight,(uint64_t)experts * row);
 	LmL2LoadAdd(plan,b->routed_down_weight,(uint64_t)moe_in * row);
 	LmL2LoadAdd(plan,b->shared_w1_weight,(uint64_t)K3_RANK_DIM(b,shared_w1_rows,K3_SHARED_INTERMEDIATE * 2u) * row);
 }
@@ -334,6 +340,11 @@ static void K3L2PlanAttention(const K3LayerBuffers *b, uint32_t layer, LmL2LoadP
 	LmL2LoadAdd(plan,b->attn_norm_weight,row);
 	if ( K3_LAYER_KIND(layer) == LM_LAYER_RECURRENT )
 		LmL2LoadAdd(plan,b->kda_qkv_beta_weight,(uint64_t)K3_RANK_DIM(b,kda_qkvb_rows,K3_KDA_QKVB_FUSED_ROWS) * row);
+	else if ( K3_MLA_DOWN_SLICED(b) )
+	{
+		LmL2LoadAdd(plan,b->mla_q_down_weight,(uint64_t)b->mla_q_down_rows * row);
+		LmL2LoadAdd(plan,b->mla_kv_a_weight,(uint64_t)b->mla_kv_a_rows * row);
+	}
 	else
 		LmL2LoadAdd(plan,b->mla_q_down_weight,(uint64_t)K3_Q_LORA_RANK * row);
 }
@@ -554,6 +565,20 @@ static int32_t K3PairRound(const K3SliceState *state, void *lane, cudaStream_t m
 	return(consumer != 0 ? K3PairFence(state,consumer,main) : LM_LAUNCH_OK);
 }
 
+template<class Format, class Geometry>
+static int32_t K3PairMlaQuery(const K3SliceState *state, void *lane, K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t multiprocessors, cudaStream_t main, cudaStream_t lane_stream)
+{
+	int32_t status;
+	if ( K3_MLA_DOWN_SLICED(buffers) == 0 )
+		return(K3LayerMlaQuery<Format,Geometry>(buffers,rows,multiprocessors,lane_stream));
+	status = K3LayerMlaDownSlice(buffers,rows,multiprocessors,lane_stream);
+	if ( status == LM_LAUNCH_OK )
+		status = K3PairRound(state,lane,main,lane_stream,lane_stream,layer,K3_COLLECTIVE_MLA_DOWN,0u);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	return(K3LayerMlaUp<Format,Geometry>(buffers,rows,multiprocessors,lane_stream));
+}
+
 template<class Geometry>
 static int32_t K3PairMlaWindows(const K3SliceState *state, void *lane_a, K3LayerBuffers *a, K3LayerBuffers *b, uint32_t layer, uint32_t rows_a, uint32_t rows_b, cudaStream_t stream, cudaStream_t sa, cudaStream_t sb)
 {
@@ -630,7 +655,7 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 		if ( K3_LAYER_KIND(layer) == LM_LAYER_RECURRENT )
 			K3_PAIR_DO(K3LayerKda<Format>(a,rows_a,1u,commit,(uint16_t *)0,multiprocessors,sa));
 		else
-			K3_PAIR_DO((K3LayerMlaQuery<Format,Geometry>(a,rows_a,multiprocessors,sa)));
+			K3_PAIR_DO((K3PairMlaQuery<Format,Geometry>(state,lane_a,a,layer,rows_a,multiprocessors,stream,sa)));
 		K3_PAIR_DO(K3PairFence(state,sb,sa));
 		if ( K3_LAYER_KIND(layer) == LM_LAYER_RECURRENT )
 		{
@@ -641,7 +666,7 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 		else
 		{
 			K3PairPre(b,layer,rows_b,row_shard,sb);
-			K3_PAIR_DO((K3LayerMlaQuery<Format,Geometry>(b,rows_b,multiprocessors,sb)));
+			K3_PAIR_DO((K3PairMlaQuery<Format,Geometry>(state,lane_b,b,layer,rows_b,multiprocessors,stream,sb)));
 			K3_PAIR_DO(K3LayerMlaGatherPack<Geometry>(a,rows_a,sb));
 			a->shard_gather_window = 0u;
 			if ( a->shard_gather_prefetched != 0u )
