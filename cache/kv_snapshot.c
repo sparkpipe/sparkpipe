@@ -32,6 +32,12 @@
 #define SPARK_KV_SNAPSHOT_ENTRY_STATE 4u
 #define SPARK_KV_SNAPSHOT_ENTRY_IN_LRU 8u
 #define SPARK_KV_SNAPSHOT_ENTRY_KIND (SPARK_KV_SNAPSHOT_ENTRY_LIVE | SPARK_KV_SNAPSHOT_ENTRY_PHANTOM | SPARK_KV_SNAPSHOT_ENTRY_STATE)
+#define SPARK_KV_SNAPSHOT_MAX_UNITS ((UINT64_C(1) << 24u) - 1u)
+#define SPARK_KV_SNAPSHOT_MAX_SEQUENCE ((UINT64_C(1) << 36u) - 1u)
+#define SPARK_KV_SNAPSHOT_NAME_BYTES 256u
+#define SPARK_KV_SNAPSHOT_LEAVES 256u
+#define SPARK_KV_SNAPSHOT_SCAN_THREADS 8u
+#define SPARK_KV_SNAPSHOT_SCAN_BATCH 256u
 
 typedef struct SparkKvSnapshotIndexEntry
 {
@@ -43,10 +49,11 @@ typedef struct SparkKvSnapshotIndexEntry
 	uint32_t hash_next;
 	uint32_t lru_prev;
 	uint32_t lru_next;
-	uint32_t units;
 	uint16_t layout;
 	uint16_t pins;
-	uint32_t flags;
+	uint64_t sequence : 36;
+	uint64_t units : 24;
+	uint64_t flags : 4;
 } SparkKvSnapshotIndexEntry;
 
 typedef struct SparkKvSnapshotLayout
@@ -78,6 +85,7 @@ typedef struct SparkKvSnapshotRuntime
 	uint32_t writing;
 	int lock_descriptor;
 	uint64_t sequence;
+	uint64_t next_sequence;
 	SparkKvSnapshotIndexEntry **chunks;
 	uint32_t chunk_count;
 	uint32_t chunk_capacity;
@@ -486,7 +494,7 @@ static void SparkKvSnapshotChildDetach(SparkKvSnapshotRuntime *runtime,uint32_t 
 	entry->parent = entry->next_sibling = SPARK_KV_SNAPSHOT_NO_ENTRY;
 }
 
-static SparkStatus SparkKvSnapshotIndexInsert(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const SparkKvSnapshotKey *parent,uint64_t bytes,uint32_t push,uint32_t *index_out)
+static SparkStatus SparkKvSnapshotIndexInsert(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const SparkKvSnapshotKey *parent,uint64_t bytes,uint64_t sequence,uint32_t push,uint32_t *index_out)
 {
 	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
 	SparkKvSnapshotIndexEntry *entry;
@@ -494,7 +502,7 @@ static SparkStatus SparkKvSnapshotIndexInsert(SparkKvSnapshotStore *store,const 
 	uint32_t parented = SparkKvSnapshotHasParent(key,parent),flags = SparkKvSnapshotKeyFlags(key),index = SPARK_KV_SNAPSHOT_NO_ENTRY,owner = SPARK_KV_SNAPSHOT_NO_ENTRY,fresh = 0u,child;
 	uint16_t layout;
 	SparkStatus status;
-	if ( units > UINT32_MAX || (key->file_kind != SPARK_KV_SNAPSHOT_FILE_PAGES && key->file_kind != SPARK_KV_SNAPSHOT_FILE_STATE) )
+	if ( units > SPARK_KV_SNAPSHOT_MAX_UNITS || sequence > SPARK_KV_SNAPSHOT_MAX_SEQUENCE || (key->file_kind != SPARK_KV_SNAPSHOT_FILE_PAGES && key->file_kind != SPARK_KV_SNAPSHOT_FILE_STATE) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( runtime->entry_count > SPARK_KV_SNAPSHOT_MAX_ENTRIES - 2u )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -543,7 +551,8 @@ static SparkStatus SparkKvSnapshotIndexInsert(SparkKvSnapshotStore *store,const 
 		runtime->layouts[layout].references++;
 	}
 	entry = SparkKvSnapshotEntryAt(runtime,index);
-	entry->units = (uint32_t)units;
+	entry->units = units;
+	entry->sequence = sequence;
 	runtime->layouts[layout].file_count++;
 	store->used_bytes += units * SPARK_KV_SNAPSHOT_ALIGNMENT;
 	store->file_count++;
@@ -599,13 +608,6 @@ static void SparkKvSnapshotIndexRemoveAt(SparkKvSnapshotStore *store,uint32_t in
 	}
 }
 
-static void SparkKvSnapshotIndexForget(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key)
-{
-	uint32_t index = SparkKvSnapshotIndexFind(SparkKvSnapshotRuntimeOf(store),key);
-	if ( index != SPARK_KV_SNAPSHOT_NO_ENTRY )
-		SparkKvSnapshotIndexRemoveAt(store,index);
-}
-
 static void SparkKvSnapshotIndexTouch(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key)
 {
 	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
@@ -614,34 +616,106 @@ static void SparkKvSnapshotIndexTouch(SparkKvSnapshotStore *store,const SparkKvS
 		SparkKvSnapshotLruPush(runtime,index,0u);
 }
 
-static int SparkKvSnapshotCompareOrder(const void *left,const void *right)
+static uint32_t SparkKvSnapshotIsFlatName(const char *name)
 {
-	uint64_t a = *(const uint64_t *)left,b = *(const uint64_t *)right;
-	return(a < b ? -1 : (a > b ? 1 : 0));
+	SparkKvSnapshotKey key,parent;
+	return(SparkKvSnapshotParseName(name,&key,&parent) != 0u || SparkKvSnapshotIsLegacyName(name) != 0u ? 1u : 0u);
 }
 
-SparkStatus SparkKvSnapshotPath(const SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const SparkKvSnapshotKey *parent,char *path,uint32_t path_capacity)
+static uint32_t SparkKvSnapshotParseHex(const char *text,uint32_t digits,uint64_t *value)
 {
-	char layout[SPARK_SHA256_HEX_BYTES],identity[SPARK_SHA256_HEX_BYTES],parent_identity[SPARK_SHA256_HEX_BYTES];
+	uint64_t result = 0u;
+	uint32_t index;
+	for (index=0u; index<digits; index++)
+	{
+		if ( text[index] >= '0' && text[index] <= '9' )
+			result = result << 4u | (uint64_t)(text[index] - '0');
+		else if ( text[index] >= 'a' && text[index] <= 'f' )
+			result = result << 4u | (uint64_t)(text[index] - 'a' + 10);
+		else
+			return(0u);
+	}
+	*value = result;
+	return(1u);
+}
+
+static SparkStatus SparkKvSnapshotValidateKeys(const SparkKvSnapshotKey *key,const SparkKvSnapshotKey *parent)
+{
+	if ( key == 0 || key->token_count == 0u || (key->file_kind != SPARK_KV_SNAPSHOT_FILE_PAGES && key->file_kind != SPARK_KV_SNAPSHOT_FILE_STATE) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( SparkKvSnapshotHasParent(key,parent) != 0u && (parent->token_count >= key->token_count || parent->file_kind != SPARK_KV_SNAPSHOT_FILE_PAGES || memcmp(parent->layout_sha256,key->layout_sha256,sizeof(parent->layout_sha256)) != 0) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkKvSnapshotBuildName(const SparkKvSnapshotKey *key,const SparkKvSnapshotKey *parent,uint64_t sequence,uint64_t units,char *name,uint32_t capacity)
+{
+	char identity[SPARK_SHA256_HEX_BYTES],parent_identity[SPARK_SHA256_HEX_BYTES];
 	SparkKvSnapshotKey root;
 	int written;
-	if ( store == 0 || store->directory[0] == '\0' || key == 0 || path == 0 || key->token_count == 0u ||
-		(key->file_kind != SPARK_KV_SNAPSHOT_FILE_PAGES && key->file_kind != SPARK_KV_SNAPSHOT_FILE_STATE) )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	SparkSha256DigestToHex(key->layout_sha256,layout);
+	if ( sequence > SPARK_KV_SNAPSHOT_MAX_SEQUENCE || units > SPARK_KV_SNAPSHOT_MAX_UNITS )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	SparkSha256DigestToHex(key->identity_sha256,identity);
 	if ( key->file_kind == SPARK_KV_SNAPSHOT_FILE_STATE )
-		written = snprintf(path,path_capacity,"%s/%s-%s-%u%s",store->directory,layout,identity,key->token_count,SPARK_KV_SNAPSHOT_STATE_SUFFIX);
+		written = snprintf(name,capacity,"%09llx-%06llx-%s-%08x%s",(unsigned long long)sequence,(unsigned long long)units,identity,key->token_count,SPARK_KV_SNAPSHOT_STATE_SUFFIX);
 	else
 	{
 		memset(&root,0,sizeof(root));
 		if ( SparkKvSnapshotHasParent(key,parent) == 0u )
 			parent = &root;
-		else if ( parent->token_count >= key->token_count || parent->file_kind != SPARK_KV_SNAPSHOT_FILE_PAGES || memcmp(parent->layout_sha256,key->layout_sha256,sizeof(parent->layout_sha256)) != 0 )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		SparkSha256DigestToHex(parent->identity_sha256,parent_identity);
-		written = snprintf(path,path_capacity,"%s/%s-%s-%u-%s-%u%s",store->directory,layout,identity,key->token_count,parent_identity,parent->token_count,SPARK_KV_SNAPSHOT_SUFFIX);
+		written = snprintf(name,capacity,"%09llx-%06llx-%s-%08x-%s-%08x%s",(unsigned long long)sequence,(unsigned long long)units,identity,key->token_count,parent_identity,parent->token_count,SPARK_KV_SNAPSHOT_SUFFIX);
 	}
+	if ( written < 0 || (uint32_t)written >= capacity )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	return(SPARK_STATUS_OK);
+}
+
+static uint32_t SparkKvSnapshotParseEntryName(const char *name,const uint8_t layout_sha256[SPARK_SHA256_DIGEST_BYTES],SparkKvSnapshotKey *key,SparkKvSnapshotKey *parent,uint64_t *sequence,uint64_t *units)
+{
+	const size_t hex = 2u * SPARK_SHA256_DIGEST_BYTES,head = 9u + 1u + 6u + 1u;
+	char canonical[SPARK_KV_SNAPSHOT_NAME_BYTES];
+	size_t length = strlen(name);
+	uint64_t value;
+	memset(key,0,sizeof(*key));
+	memset(parent,0,sizeof(*parent));
+	if ( length == head + hex + 1u + 8u + strlen(SPARK_KV_SNAPSHOT_STATE_SUFFIX) )
+		key->file_kind = SPARK_KV_SNAPSHOT_FILE_STATE;
+	else if ( length == head + hex + 1u + 8u + 1u + hex + 1u + 8u + strlen(SPARK_KV_SNAPSHOT_SUFFIX) )
+		key->file_kind = SPARK_KV_SNAPSHOT_FILE_PAGES;
+	else
+		return(0u);
+	if ( SparkKvSnapshotParseHex(name,9u,sequence) == 0u || SparkKvSnapshotParseHex(name + 10u,6u,units) == 0u ||
+		SparkSha256HexToDigest(name + head,key->identity_sha256) != SPARK_STATUS_OK || SparkKvSnapshotParseHex(name + head + hex + 1u,8u,&value) == 0u )
+		return(0u);
+	key->token_count = (uint32_t)value;
+	memcpy(key->layout_sha256,layout_sha256,SPARK_SHA256_DIGEST_BYTES);
+	if ( key->file_kind == SPARK_KV_SNAPSHOT_FILE_PAGES )
+	{
+		if ( SparkSha256HexToDigest(name + head + hex + 10u,parent->identity_sha256) != SPARK_STATUS_OK || SparkKvSnapshotParseHex(name + head + 2u * hex + 11u,8u,&value) == 0u )
+			return(0u);
+		parent->token_count = (uint32_t)value;
+		memcpy(parent->layout_sha256,layout_sha256,SPARK_SHA256_DIGEST_BYTES);
+		parent->file_kind = SPARK_KV_SNAPSHOT_FILE_PAGES;
+		if ( parent->token_count == 0u )
+			memset(parent,0,sizeof(*parent));
+	}
+	if ( SparkKvSnapshotValidateKeys(key,parent) != SPARK_STATUS_OK || SparkKvSnapshotBuildName(key,parent,*sequence,*units,canonical,sizeof(canonical)) != SPARK_STATUS_OK )
+		return(0u);
+	return(strcmp(canonical,name) == 0 ? 1u : 0u);
+}
+
+static SparkStatus SparkKvSnapshotBuildPath(const SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const SparkKvSnapshotKey *parent,uint64_t sequence,uint64_t units,char *path,uint32_t path_capacity)
+{
+	char layout[SPARK_SHA256_HEX_BYTES],name[SPARK_KV_SNAPSHOT_NAME_BYTES];
+	SparkStatus status = SparkKvSnapshotValidateKeys(key,parent);
+	int written;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvSnapshotBuildName(key,parent,sequence,units,name,sizeof(name));
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	SparkSha256DigestToHex(key->layout_sha256,layout);
+	written = snprintf(path,path_capacity,"%s/%s/%02x/%s",store->directory,layout,key->identity_sha256[0],name);
 	if ( written < 0 || (uint32_t)written >= path_capacity )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	return(SPARK_STATUS_OK);
@@ -650,10 +724,28 @@ SparkStatus SparkKvSnapshotPath(const SparkKvSnapshotStore *store,const SparkKvS
 static SparkStatus SparkKvSnapshotEntryPath(const SparkKvSnapshotStore *store,uint32_t index,char *path,uint32_t path_capacity)
 {
 	const SparkKvSnapshotRuntime *runtime = (const SparkKvSnapshotRuntime *)store->runtime;
+	const SparkKvSnapshotIndexEntry *entry = SparkKvSnapshotEntryAt(runtime,index);
 	SparkKvSnapshotKey key,parent;
 	SparkKvSnapshotEntryKey(runtime,index,&key);
 	SparkKvSnapshotEntryParentKey(runtime,index,&parent);
-	return(SparkKvSnapshotPath(store,&key,&parent,path,path_capacity));
+	return(SparkKvSnapshotBuildPath(store,&key,&parent,entry->sequence,entry->units,path,path_capacity));
+}
+
+SparkStatus SparkKvSnapshotFilePath(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,char *path,uint32_t path_capacity)
+{
+	SparkKvSnapshotRuntime *runtime;
+	SparkStatus status;
+	uint32_t index;
+	if ( SparkKvSnapshotStoreIsValid(store) == 0u || key == 0 || path == 0 || path_capacity == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	runtime = SparkKvSnapshotRuntimeOf(store);
+	pthread_mutex_lock(&runtime->mutex);
+	index = SparkKvSnapshotIndexFind(runtime,key);
+	status = index == SPARK_KV_SNAPSHOT_NO_ENTRY ? SPARK_STATUS_NOT_FOUND : SparkKvSnapshotEntryPath(store,index,path,path_capacity);
+	pthread_mutex_unlock(&runtime->mutex);
+	if ( status == SPARK_STATUS_NOT_FOUND )
+		return(status);
+	SPARK_RETURN(status);
 }
 
 static void SparkKvSnapshotUnlinkEntryLocked(SparkKvSnapshotStore *store,uint32_t index)
@@ -721,15 +813,47 @@ static SparkStatus SparkKvSnapshotReadExact(int descriptor,void *data,uint64_t b
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkKvSnapshotSyncDirectory(const SparkKvSnapshotStore *store)
+static SparkStatus SparkKvSnapshotSyncDirectory(const char *directory)
 {
-	int descriptor = open(store->directory,O_RDONLY | O_CLOEXEC);
+	int descriptor = open(directory,O_RDONLY | O_CLOEXEC);
 	SparkStatus status = SPARK_STATUS_OK;
 	if ( descriptor < 0 )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	if ( fsync(descriptor) != 0 )
 		status = SPARK_STATUS_IO_ERROR;
 	(void)close(descriptor);
+	SPARK_RETURN(status);
+}
+
+static SparkStatus SparkKvSnapshotMakeDirectory(const char *directory,const char *parent)
+{
+	if ( mkdir(directory,0700) == 0 )
+		return(SparkKvSnapshotSyncDirectory(parent));
+	if ( errno == EEXIST )
+		return(SPARK_STATUS_OK);
+	SPARK_FAIL(errno == ENOSPC ? SPARK_STATUS_CAPACITY_EXCEEDED : SPARK_STATUS_IO_ERROR);
+}
+
+static SparkStatus SparkKvSnapshotMakeLeaf(const SparkKvSnapshotStore *store,const char *path,char *leaf,uint32_t leaf_capacity)
+{
+	char layout[SPARK_KV_SNAPSHOT_PATH_BYTES];
+	char *slash;
+	SparkStatus status;
+	if ( strlen(path) >= leaf_capacity || strlen(path) >= sizeof(layout) )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	memcpy(leaf,path,strlen(path) + 1u);
+	slash = strrchr(leaf,'/');
+	if ( slash == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	*slash = '\0';
+	memcpy(layout,leaf,strlen(leaf) + 1u);
+	slash = strrchr(layout,'/');
+	if ( slash == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	*slash = '\0';
+	status = SparkKvSnapshotMakeDirectory(layout,store->directory);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvSnapshotMakeDirectory(leaf,layout);
 	SPARK_RETURN(status);
 }
 
@@ -775,13 +899,13 @@ static SparkStatus SparkKvSnapshotBuildHeader(const SparkKvSnapshotKey *key,cons
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkKvSnapshotWriteFile(SparkKvSnapshotStore *store,const char *path,const SparkKvSnapshotFileHeader *header,const SparkKvSnapshotSegment *segments,uint32_t segment_count)
+static SparkStatus SparkKvSnapshotWriteFile(SparkKvSnapshotStore *store,const char *path,const char *leaf,const SparkKvSnapshotFileHeader *header,const SparkKvSnapshotSegment *segments,uint32_t segment_count)
 {
 	char temporary[SPARK_KV_SNAPSHOT_PATH_BYTES];
 	SparkStatus status = SPARK_STATUS_OK;
 	uint32_t index;
 	int descriptor;
-	if ( (size_t)snprintf(temporary,sizeof(temporary),"%s/%s%ld-%llu",store->directory,SPARK_KV_SNAPSHOT_TEMPORARY_PREFIX,(long)getpid(),(unsigned long long)__atomic_add_fetch(&SparkKvSnapshotRuntimeOf(store)->sequence,1u,__ATOMIC_RELAXED)) >= sizeof(temporary) )
+	if ( (size_t)snprintf(temporary,sizeof(temporary),"%s/%s/%ld-%llu",store->directory,SPARK_KV_SNAPSHOT_TEMPORARY_DIRECTORY,(long)getpid(),(unsigned long long)__atomic_add_fetch(&SparkKvSnapshotRuntimeOf(store)->sequence,1u,__ATOMIC_RELAXED)) >= sizeof(temporary) )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	descriptor = open(temporary,O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,0600);
 	if ( descriptor < 0 )
@@ -803,7 +927,7 @@ static SparkStatus SparkKvSnapshotWriteFile(SparkKvSnapshotStore *store,const ch
 		(void)unlink(temporary);
 		SPARK_RETURN(status);
 	}
-	return(SparkKvSnapshotSyncDirectory(store));
+	return(SparkKvSnapshotSyncDirectory(leaf));
 }
 
 static SparkStatus SparkKvSnapshotFailureGateLocked(const SparkKvSnapshotStore *store)
@@ -828,34 +952,54 @@ static SparkStatus SparkKvSnapshotCommitFile(SparkKvSnapshotStore *store,const S
 {
 	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
 	SparkKvSnapshotFileHeader header;
-	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
-	uint64_t start_ns = SparkKvSnapshotNowNs();
-	uint32_t parented = SparkKvSnapshotHasParent(key,parent);
+	char path[SPARK_KV_SNAPSHOT_PATH_BYTES],leaf[SPARK_KV_SNAPSHOT_PATH_BYTES],replaced[SPARK_KV_SNAPSHOT_PATH_BYTES];
+	uint64_t start_ns = SparkKvSnapshotNowNs(),sequence = 0u;
+	uint32_t parented = SparkKvSnapshotHasParent(key,parent),index,stale = 0u,written = 0u;
 	SparkStatus status;
-	status = SparkKvSnapshotPath(store,key,parent,path,sizeof(path));
+	status = SparkKvSnapshotValidateKeys(key,parent);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkKvSnapshotBuildHeader(key,parent,segments,segment_count,&header);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	pthread_mutex_lock(&runtime->mutex);
-	SparkKvSnapshotIndexForget(store,key);
+	index = SparkKvSnapshotIndexFind(runtime,key);
+	if ( index != SPARK_KV_SNAPSHOT_NO_ENTRY )
+	{
+		stale = SparkKvSnapshotEntryPath(store,index,replaced,sizeof(replaced)) == SPARK_STATUS_OK ? 1u : 0u;
+		SparkKvSnapshotIndexRemoveAt(store,index);
+	}
 	if ( parented != 0u )
 		SparkKvSnapshotPinLocked(runtime,parent,1);
 	status = SparkKvSnapshotEvictLocked(store,header.file_bytes);
 	if ( status == SPARK_STATUS_OK )
+	{
+		sequence = runtime->next_sequence;
+		status = SparkKvSnapshotBuildPath(store,key,parent,sequence,header.file_bytes / SPARK_KV_SNAPSHOT_ALIGNMENT,path,sizeof(path));
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		runtime->next_sequence++;
 		store->used_bytes += header.file_bytes;
+	}
 	else if ( parented != 0u )
 		SparkKvSnapshotPinLocked(runtime,parent,-1);
 	pthread_mutex_unlock(&runtime->mutex);
+	if ( stale != 0u )
+		(void)unlink(replaced);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	status = SparkKvSnapshotWriteFile(store,path,&header,segments,segment_count);
+	status = SparkKvSnapshotMakeLeaf(store,path,leaf,sizeof(leaf));
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvSnapshotWriteFile(store,path,leaf,&header,segments,segment_count);
+	written = status == SPARK_STATUS_OK ? 1u : 0u;
 	pthread_mutex_lock(&runtime->mutex);
 	store->used_bytes -= header.file_bytes;
 	if ( parented != 0u )
 		SparkKvSnapshotPinLocked(runtime,parent,-1);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkKvSnapshotIndexInsert(store,key,parent,header.file_bytes,1u,0);
+		status = SparkKvSnapshotIndexInsert(store,key,parent,header.file_bytes,sequence,1u,0);
+	if ( status != SPARK_STATUS_OK && written != 0u )
+		(void)unlink(path);
 	if ( status == SPARK_STATUS_OK )
 	{
 		store->write_count++;
@@ -967,23 +1111,189 @@ static void *SparkKvSnapshotWriterMain(void *context)
 	return(0);
 }
 
+typedef struct SparkKvSnapshotScanOrder
+{
+	uint64_t sequence;
+	uint64_t index;
+} SparkKvSnapshotScanOrder;
+
+typedef struct SparkKvSnapshotScanRecord
+{
+	SparkKvSnapshotKey key;
+	SparkKvSnapshotKey parent;
+	uint64_t sequence;
+	uint64_t units;
+} SparkKvSnapshotScanRecord;
+
+typedef struct SparkKvSnapshotScanWork
+{
+	SparkKvSnapshotStore *store;
+	pthread_mutex_t mutex;
+	uint8_t (*layouts)[SPARK_SHA256_DIGEST_BYTES];
+	int *descriptors;
+	uint32_t layout_count;
+	uint32_t next_item;
+	SparkKvSnapshotScanOrder *order;
+	size_t count;
+	size_t capacity;
+	uint64_t next_sequence;
+	SparkStatus status;
+} SparkKvSnapshotScanWork;
+
+static int SparkKvSnapshotCompareOrder(const void *left,const void *right)
+{
+	const SparkKvSnapshotScanOrder *a = (const SparkKvSnapshotScanOrder *)left,*b = (const SparkKvSnapshotScanOrder *)right;
+	return(a->sequence < b->sequence ? -1 : (a->sequence > b->sequence ? 1 : 0));
+}
+
+static void SparkKvSnapshotScanFlush(SparkKvSnapshotScanWork *work,const SparkKvSnapshotScanRecord *records,uint32_t count)
+{
+	SparkKvSnapshotScanOrder *grown;
+	SparkStatus status = SPARK_STATUS_OK;
+	uint32_t record,index;
+	size_t capacity;
+	pthread_mutex_lock(&work->mutex);
+	for (record=0u; work->status == SPARK_STATUS_OK && record<count; record++)
+	{
+		if ( work->count == work->capacity )
+		{
+			capacity = work->capacity != 0u ? work->capacity * 2u : 4096u;
+			grown = (SparkKvSnapshotScanOrder *)realloc(work->order,capacity * sizeof(*grown));
+			if ( grown == 0 )
+			{
+				work->status = SPARK_STATUS_CAPACITY_EXCEEDED;
+				break;
+			}
+			work->order = grown;
+			work->capacity = capacity;
+		}
+		status = SparkKvSnapshotIndexInsert(work->store,&records[record].key,&records[record].parent,records[record].units * SPARK_KV_SNAPSHOT_ALIGNMENT,records[record].sequence,0u,&index);
+		if ( status != SPARK_STATUS_OK )
+		{
+			work->status = status;
+			break;
+		}
+		work->order[work->count].sequence = records[record].sequence;
+		work->order[work->count].index = index;
+		work->count++;
+		if ( records[record].sequence >= work->next_sequence )
+			work->next_sequence = records[record].sequence + 1u;
+	}
+	pthread_mutex_unlock(&work->mutex);
+}
+
+static void SparkKvSnapshotScanFail(SparkKvSnapshotScanWork *work,SparkStatus status)
+{
+	pthread_mutex_lock(&work->mutex);
+	if ( work->status == SPARK_STATUS_OK )
+		work->status = status;
+	pthread_mutex_unlock(&work->mutex);
+}
+
+static void *SparkKvSnapshotScanMain(void *context)
+{
+	SparkKvSnapshotScanWork *work = (SparkKvSnapshotScanWork *)context;
+	SparkKvSnapshotScanRecord *records = (SparkKvSnapshotScanRecord *)malloc(SPARK_KV_SNAPSHOT_SCAN_BATCH * sizeof(*records));
+	struct dirent *item;
+	struct stat info;
+	char leaf[4];
+	uint32_t next,count = 0u,layout,branch;
+	int descriptor;
+	DIR *listing;
+	if ( records == 0 )
+	{
+		SparkKvSnapshotScanFail(work,SPARK_STATUS_CAPACITY_EXCEEDED);
+		return(0);
+	}
+	while ( (next = __atomic_fetch_add(&work->next_item,1u,__ATOMIC_RELAXED)) < work->layout_count * SPARK_KV_SNAPSHOT_LEAVES )
+	{
+		layout = next / SPARK_KV_SNAPSHOT_LEAVES;
+		branch = next % SPARK_KV_SNAPSHOT_LEAVES;
+		(void)snprintf(leaf,sizeof(leaf),"%02x",branch);
+		descriptor = openat(work->descriptors[layout],leaf,O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+		if ( descriptor < 0 )
+		{
+			if ( errno != ENOENT )
+				SparkKvSnapshotScanFail(work,SPARK_STATUS_IO_ERROR);
+			continue;
+		}
+		listing = fdopendir(descriptor);
+		if ( listing == 0 )
+		{
+			(void)close(descriptor);
+			SparkKvSnapshotScanFail(work,SPARK_STATUS_IO_ERROR);
+			continue;
+		}
+		while ( (item = readdir(listing)) != 0 )
+		{
+			if ( item->d_name[0] == '.' || (item->d_type != DT_REG && item->d_type != DT_UNKNOWN) )
+				continue;
+			if ( item->d_type == DT_UNKNOWN && (fstatat(dirfd(listing),item->d_name,&info,AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(info.st_mode)) )
+				continue;
+			if ( SparkKvSnapshotParseEntryName(item->d_name,work->layouts[layout],&records[count].key,&records[count].parent,&records[count].sequence,&records[count].units) == 0u ||
+				records[count].key.identity_sha256[0] != branch )
+				continue;
+			if ( ++count == SPARK_KV_SNAPSHOT_SCAN_BATCH )
+			{
+				SparkKvSnapshotScanFlush(work,records,count);
+				count = 0u;
+			}
+		}
+		(void)closedir(listing);
+	}
+	if ( count != 0u )
+		SparkKvSnapshotScanFlush(work,records,count);
+	free(records);
+	return(0);
+}
+
+static SparkStatus SparkKvSnapshotClearTemporaries(SparkKvSnapshotStore *store)
+{
+	char directory[SPARK_KV_SNAPSHOT_PATH_BYTES],path[SPARK_KV_SNAPSHOT_PATH_BYTES];
+	struct dirent *item;
+	DIR *listing;
+	SparkStatus status;
+	if ( (size_t)snprintf(directory,sizeof(directory),"%s/%s",store->directory,SPARK_KV_SNAPSHOT_TEMPORARY_DIRECTORY) >= sizeof(directory) )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	status = SparkKvSnapshotMakeDirectory(directory,store->directory);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	listing = opendir(directory);
+	if ( listing == 0 )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	while ( (item = readdir(listing)) != 0 )
+		if ( item->d_name[0] != '.' && (size_t)snprintf(path,sizeof(path),"%s/%s",directory,item->d_name) < sizeof(path) && unlink(path) == 0 )
+			store->removed_temporary_count++;
+	(void)closedir(listing);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkKvSnapshotScan(SparkKvSnapshotStore *store)
 {
 	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
-	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
-	SparkKvSnapshotKey key,parent;
+	SparkKvSnapshotScanWork work;
 	SparkKvSnapshotIndexEntry *entry;
+	pthread_t threads[SPARK_KV_SNAPSHOT_SCAN_THREADS];
+	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
 	struct dirent *item;
-	struct stat info;
-	SparkStatus status = SPARK_STATUS_OK;
-	uint64_t *order = 0,*grown,seconds;
-	size_t count = 0u,capacity = 0u,cursor;
-	uint32_t index;
-	DIR *listing = opendir(store->directory);
+	uint8_t digest[SPARK_SHA256_DIGEST_BYTES],(*grown_layouts)[SPARK_SHA256_DIGEST_BYTES];
+	SparkStatus status = SparkKvSnapshotClearTemporaries(store);
+	uint32_t thread,started = 0u,wanted,layout_capacity = 0u,index;
+	size_t cursor;
+	int descriptor,*grown_descriptors;
+	DIR *listing;
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	memset(&work,0,sizeof(work));
+	work.store = store;
+	work.next_sequence = 1u;
+	listing = opendir(store->directory);
 	if ( listing == 0 )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	while ( status == SPARK_STATUS_OK && (item = readdir(listing)) != 0 )
 	{
+		if ( item->d_name[0] == '.' && strncmp(item->d_name,SPARK_KV_SNAPSHOT_TEMPORARY_PREFIX,strlen(SPARK_KV_SNAPSHOT_TEMPORARY_PREFIX)) != 0 )
+			continue;
 		if ( (size_t)snprintf(path,sizeof(path),"%s/%s",store->directory,item->d_name) >= sizeof(path) )
 			continue;
 		if ( strncmp(item->d_name,SPARK_KV_SNAPSHOT_TEMPORARY_PREFIX,strlen(SPARK_KV_SNAPSHOT_TEMPORARY_PREFIX)) == 0 )
@@ -992,52 +1302,79 @@ static SparkStatus SparkKvSnapshotScan(SparkKvSnapshotStore *store)
 				store->removed_temporary_count++;
 			continue;
 		}
-		if ( SparkKvSnapshotParseName(item->d_name,&key,&parent) == 0u )
+		if ( SparkKvSnapshotIsFlatName(item->d_name) != 0u )
 		{
-			if ( SparkKvSnapshotIsLegacyName(item->d_name) != 0u && unlink(path) == 0 )
+			if ( unlink(path) == 0 )
 				store->removed_legacy_count++;
 			continue;
 		}
-		if ( stat(path,&info) != 0 || !S_ISREG(info.st_mode) )
+		if ( strlen(item->d_name) != 2u * SPARK_SHA256_DIGEST_BYTES || SparkSha256HexToDigest(item->d_name,digest) != SPARK_STATUS_OK )
 			continue;
-		if ( count == capacity )
+		descriptor = open(path,O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+		if ( descriptor < 0 )
+			continue;
+		if ( work.layout_count == layout_capacity )
 		{
-			capacity = capacity != 0u ? capacity * 2u : 1024u;
-			grown = (uint64_t *)realloc(order,capacity * sizeof(*order));
-			if ( grown == 0 )
+			layout_capacity = layout_capacity != 0u ? layout_capacity * 2u : 8u;
+			grown_layouts = realloc(work.layouts,(size_t)layout_capacity * sizeof(*grown_layouts));
+			if ( grown_layouts != 0 )
+				work.layouts = grown_layouts;
+			grown_descriptors = (int *)realloc(work.descriptors,(size_t)layout_capacity * sizeof(*grown_descriptors));
+			if ( grown_descriptors != 0 )
+				work.descriptors = grown_descriptors;
+			if ( grown_layouts == 0 || grown_descriptors == 0 || work.layout_count >= SPARK_KV_SNAPSHOT_MAX_LAYOUTS )
 			{
+				(void)close(descriptor);
 				status = SPARK_STATUS_CAPACITY_EXCEEDED;
 				break;
 			}
-			order = grown;
 		}
-		status = SparkKvSnapshotIndexInsert(store,&key,&parent,(uint64_t)info.st_size,0u,&index);
-		seconds = info.st_mtime > 0 ? (uint64_t)info.st_mtime : 0u;
-		if ( status == SPARK_STATUS_OK )
-			order[count++] = (seconds < UINT32_MAX ? seconds : UINT32_MAX) << 32u | index;
+		memcpy(work.layouts[work.layout_count],digest,sizeof(digest));
+		work.descriptors[work.layout_count++] = descriptor;
 	}
 	(void)closedir(listing);
+	if ( status == SPARK_STATUS_OK && pthread_mutex_init(&work.mutex,0) != 0 )
+		status = SPARK_STATUS_INTERNAL_ERROR;
+	if ( status == SPARK_STATUS_OK )
+	{
+		wanted = work.layout_count * SPARK_KV_SNAPSHOT_LEAVES < SPARK_KV_SNAPSHOT_SCAN_THREADS ? work.layout_count * SPARK_KV_SNAPSHOT_LEAVES : SPARK_KV_SNAPSHOT_SCAN_THREADS;
+		for (thread=0u; thread<wanted && pthread_create(&threads[thread],0,SparkKvSnapshotScanMain,&work) == 0; thread++)
+			started++;
+		if ( wanted != 0u && started == 0u )
+			(void)SparkKvSnapshotScanMain(&work);
+		for (thread=0u; thread<started; thread++)
+			(void)pthread_join(threads[thread],0);
+		pthread_mutex_destroy(&work.mutex);
+		status = work.status;
+		store->layout_directory_count = work.layout_count;
+		store->scan_thread_count = started != 0u ? started : (wanted != 0u ? 1u : 0u);
+	}
+	for (index=0u; index<work.layout_count; index++)
+		(void)close(work.descriptors[index]);
+	free(work.layouts);
+	free(work.descriptors);
 	if ( status != SPARK_STATUS_OK )
 	{
-		free(order);
+		free(work.order);
 		SPARK_RETURN(status);
 	}
-	if ( count != 0u )
-		qsort(order,count,sizeof(order[0]),SparkKvSnapshotCompareOrder);
-	for (cursor=0u; cursor<count; cursor++)
+	if ( work.count != 0u )
+		qsort(work.order,work.count,sizeof(work.order[0]),SparkKvSnapshotCompareOrder);
+	for (cursor=0u; cursor<work.count; cursor++)
 	{
-		index = (uint32_t)order[cursor];
+		index = (uint32_t)work.order[cursor].index;
 		entry = SparkKvSnapshotEntryAt(runtime,index);
 		if ( (entry->flags & SPARK_KV_SNAPSHOT_ENTRY_STATE) != 0u || entry->first_child == SPARK_KV_SNAPSHOT_NO_ENTRY )
 			SparkKvSnapshotLruPush(runtime,index,0u);
 	}
-	for (cursor=0u; cursor<count; cursor++)
+	for (cursor=0u; cursor<work.count; cursor++)
 	{
-		index = (uint32_t)order[cursor];
+		index = (uint32_t)work.order[cursor].index;
 		if ( SparkKvSnapshotIsOrphan(runtime,index) != 0u && (SparkKvSnapshotEntryAt(runtime,index)->flags & SPARK_KV_SNAPSHOT_ENTRY_IN_LRU) != 0u )
 			SparkKvSnapshotLruPush(runtime,index,1u);
 	}
-	free(order);
+	free(work.order);
+	runtime->next_sequence = work.next_sequence;
 	return(SparkKvSnapshotEvictLocked(store,0u));
 }
 
@@ -1059,6 +1396,7 @@ SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *dir
 	SparkKvSnapshotRuntime *runtime;
 	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
 	struct stat info;
+	uint64_t start_ns = SparkKvSnapshotNowNs();
 	SparkStatus status;
 	if ( store == 0 || directory == 0 || directory[0] != '/' || maximum_bytes == 0u || queue_maximum_bytes == 0u || strlen(directory) >= SPARK_KV_SNAPSHOT_PATH_BYTES / 2u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1093,6 +1431,7 @@ SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *dir
 	status = SparkKvSnapshotBucketsFit(runtime,1u);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkKvSnapshotScan(store);
+	store->open_ns = SparkKvSnapshotNowNs() - start_ns;
 	if ( status == SPARK_STATUS_OK && (pthread_mutex_init(&runtime->mutex,0) != 0 || pthread_cond_init(&runtime->wake,0) != 0 || pthread_cond_init(&runtime->idle,0) != 0 || pthread_create(&runtime->writer,0,SparkKvSnapshotWriterMain,store) != 0) )
 		status = SPARK_STATUS_INTERNAL_ERROR;
 	if ( status != SPARK_STATUS_OK )
@@ -1205,19 +1544,16 @@ SparkStatus SparkKvSnapshotBinaryDigest(const void *symbol,uint8_t digest[SPARK_
 	return(SparkSha256HexToDigest(hex,digest));
 }
 
-static void SparkKvSnapshotDiscard(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key)
+static void SparkKvSnapshotDiscard(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,uint64_t sequence)
 {
 	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
-	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
 	uint64_t failures;
 	uint32_t index;
 	pthread_mutex_lock(&runtime->mutex);
 	failures = ++store->checksum_failure_count;
 	index = SparkKvSnapshotIndexFind(runtime,key);
-	if ( index != SPARK_KV_SNAPSHOT_NO_ENTRY )
+	if ( index != SPARK_KV_SNAPSHOT_NO_ENTRY && SparkKvSnapshotEntryAt(runtime,index)->sequence == sequence )
 		SparkKvSnapshotUnlinkEntryLocked(store,index);
-	else if ( key->file_kind == SPARK_KV_SNAPSHOT_FILE_STATE && SparkKvSnapshotPath(store,key,0,path,sizeof(path)) == SPARK_STATUS_OK )
-		(void)unlink(path);
 	pthread_mutex_unlock(&runtime->mutex);
 	fprintf(stderr,"KV-SNAPSHOT discarded corrupt file tokens=%u checksum_failures=%llu\n",key->token_count,(unsigned long long)failures);
 }
@@ -1249,17 +1585,19 @@ static SparkStatus SparkKvSnapshotValidateHeader(const SparkKvSnapshotFileHeader
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkKvSnapshotOpenValidated(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,SparkKvSnapshotFileHeader *header,int *descriptor_out,uint32_t record_miss)
+static SparkStatus SparkKvSnapshotOpenValidated(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,SparkKvSnapshotFileHeader *header,int *descriptor_out,uint64_t *sequence_out,uint32_t record_miss)
 {
 	SparkKvSnapshotRuntime *runtime;
 	SparkKvSnapshotKey parent;
 	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
 	struct stat info;
 	SparkStatus status;
+	uint64_t sequence = 0u,file_bytes = 0u;
 	uint32_t index;
 	int descriptor;
 	memset(&parent,0,sizeof(parent));
 	*descriptor_out = -1;
+	*sequence_out = 0u;
 	if ( SparkKvSnapshotStoreIsValid(store) == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	runtime = SparkKvSnapshotRuntimeOf(store);
@@ -1267,7 +1605,11 @@ static SparkStatus SparkKvSnapshotOpenValidated(SparkKvSnapshotStore *store,cons
 	index = SparkKvSnapshotIndexFind(runtime,key);
 	status = index == SPARK_KV_SNAPSHOT_NO_ENTRY ? SPARK_STATUS_NOT_FOUND : SparkKvSnapshotEntryPath(store,index,path,sizeof(path));
 	if ( index != SPARK_KV_SNAPSHOT_NO_ENTRY )
+	{
 		SparkKvSnapshotEntryParentKey(runtime,index,&parent);
+		sequence = SparkKvSnapshotEntryAt(runtime,index)->sequence;
+		file_bytes = (uint64_t)SparkKvSnapshotEntryAt(runtime,index)->units * SPARK_KV_SNAPSHOT_ALIGNMENT;
+	}
 	else
 		store->miss_count += record_miss;
 	pthread_mutex_unlock(&runtime->mutex);
@@ -1282,14 +1624,16 @@ static SparkStatus SparkKvSnapshotOpenValidated(SparkKvSnapshotStore *store,cons
 		{
 			pthread_mutex_lock(&runtime->mutex);
 			store->miss_count += record_miss;
-			SparkKvSnapshotIndexForget(store,key);
+			index = SparkKvSnapshotIndexFind(runtime,key);
+			if ( index != SPARK_KV_SNAPSHOT_NO_ENTRY && SparkKvSnapshotEntryAt(runtime,index)->sequence == sequence )
+				SparkKvSnapshotIndexRemoveAt(store,index);
 			pthread_mutex_unlock(&runtime->mutex);
 			return(SPARK_STATUS_NOT_FOUND);
 		}
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 	status = fstat(descriptor,&info) == 0 ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
-	if ( status == SPARK_STATUS_OK && (uint64_t)info.st_size < sizeof(*header) )
+	if ( status == SPARK_STATUS_OK && ((uint64_t)info.st_size < sizeof(*header) || (uint64_t)info.st_size != file_bytes) )
 		status = SPARK_STATUS_HASH_MISMATCH;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkKvSnapshotReadExact(descriptor,header,sizeof(*header),0u);
@@ -1299,10 +1643,11 @@ static SparkStatus SparkKvSnapshotOpenValidated(SparkKvSnapshotStore *store,cons
 	{
 		(void)close(descriptor);
 		if ( status == SPARK_STATUS_HASH_MISMATCH )
-			SparkKvSnapshotDiscard(store,key);
+			SparkKvSnapshotDiscard(store,key,sequence);
 		return(status);
 	}
 	*descriptor_out = descriptor;
+	*sequence_out = sequence;
 	return(SPARK_STATUS_OK);
 }
 
@@ -1320,10 +1665,11 @@ static void SparkKvSnapshotRecordRead(SparkKvSnapshotStore *store,const SparkKvS
 SparkStatus SparkKvSnapshotStat(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,SparkKvSnapshotFileHeader *header)
 {
 	SparkStatus status;
+	uint64_t sequence;
 	int descriptor;
 	if ( header == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkKvSnapshotOpenValidated(store,key,header,&descriptor,1u);
+	status = SparkKvSnapshotOpenValidated(store,key,header,&descriptor,&sequence,1u);
 	if ( status == SPARK_STATUS_OK )
 		(void)close(descriptor);
 	return(status);
@@ -1382,15 +1728,16 @@ SparkStatus SparkKvSnapshotWrite(SparkKvSnapshotStore *store,const SparkKvSnapsh
 	uint64_t bytes[SPARK_KV_SNAPSHOT_MAX_SEGMENTS],file_bytes;
 	SparkStatus status;
 	uint32_t index;
-	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
 	if ( SparkKvSnapshotStoreIsValid(store) == 0u || segments == 0 || segment_count == 0u || segment_count > SPARK_KV_SNAPSHOT_MAX_SEGMENTS )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkKvSnapshotPath(store,key,parent,path,sizeof(path));
+	status = SparkKvSnapshotValidateKeys(key,parent);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	for (index=0u; index<segment_count; index++)
 		bytes[index] = segments[index].bytes;
 	status = SparkKvSnapshotFileBytes(bytes,segment_count,&file_bytes);
+	if ( status == SPARK_STATUS_OK && file_bytes / SPARK_KV_SNAPSHOT_ALIGNMENT > SPARK_KV_SNAPSHOT_MAX_UNITS )
+		status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	runtime = SparkKvSnapshotRuntimeOf(store);
@@ -1427,14 +1774,15 @@ SparkStatus SparkKvSnapshotWriteBegin(SparkKvSnapshotStore *store,const SparkKvS
 	uint8_t *cursor;
 	SparkStatus status;
 	uint32_t index;
-	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
 	if ( ticket != 0 )
 		memset(ticket,0,sizeof(*ticket));
 	if ( SparkKvSnapshotStoreIsValid(store) == 0u || ticket == 0 || kinds == 0 || bytes == 0 || segment_count == 0u || segment_count > SPARK_KV_SNAPSHOT_MAX_SEGMENTS )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkKvSnapshotPath(store,key,parent,path,sizeof(path));
+	status = SparkKvSnapshotValidateKeys(key,parent);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkKvSnapshotFileBytes(bytes,segment_count,&file_bytes);
+	if ( status == SPARK_STATUS_OK && file_bytes / SPARK_KV_SNAPSHOT_ALIGNMENT > SPARK_KV_SNAPSHOT_MAX_UNITS )
+		status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	for (index=0u; status == SPARK_STATUS_OK && index<segment_count; index++)
 	{
 		if ( kinds[index] == 0u )
@@ -1550,13 +1898,13 @@ SparkStatus SparkKvSnapshotRead(SparkKvSnapshotStore *store,const SparkKvSnapsho
 {
 	SparkKvSnapshotFileHeader header;
 	uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
-	uint64_t start_ns = SparkKvSnapshotNowNs(),bytes = 0u;
+	uint64_t start_ns = SparkKvSnapshotNowNs(),bytes = 0u,sequence;
 	SparkStatus status;
 	uint32_t index;
 	int descriptor;
 	if ( segments == 0 || segment_count == 0u || segment_count > SPARK_KV_SNAPSHOT_MAX_SEGMENTS )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkKvSnapshotOpenValidated(store,key,&header,&descriptor,1u);
+	status = SparkKvSnapshotOpenValidated(store,key,&header,&descriptor,&sequence,1u);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( header.segment_count != segment_count )
@@ -1582,7 +1930,7 @@ SparkStatus SparkKvSnapshotRead(SparkKvSnapshotStore *store,const SparkKvSnapsho
 	}
 	(void)close(descriptor);
 	if ( status == SPARK_STATUS_HASH_MISMATCH )
-		SparkKvSnapshotDiscard(store,key);
+		SparkKvSnapshotDiscard(store,key,sequence);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	SparkKvSnapshotRecordRead(store,key,bytes,start_ns);
@@ -1593,13 +1941,13 @@ SparkStatus SparkKvSnapshotReadSegment(SparkKvSnapshotStore *store,const SparkKv
 {
 	SparkKvSnapshotFileHeader header;
 	uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
-	uint64_t start_ns = SparkKvSnapshotNowNs();
+	uint64_t start_ns = SparkKvSnapshotNowNs(),sequence;
 	SparkStatus status;
 	int descriptor;
 	if ( bytes_out == 0 || segment_index >= SPARK_KV_SNAPSHOT_MAX_SEGMENTS )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*bytes_out = 0u;
-	status = SparkKvSnapshotOpenValidated(store,key,&header,&descriptor,1u);
+	status = SparkKvSnapshotOpenValidated(store,key,&header,&descriptor,&sequence,1u);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( segment_index >= header.segment_count )
@@ -1618,7 +1966,7 @@ SparkStatus SparkKvSnapshotReadSegment(SparkKvSnapshotStore *store,const SparkKv
 			status = SPARK_STATUS_HASH_MISMATCH;
 	}
 	if ( status == SPARK_STATUS_HASH_MISMATCH )
-		SparkKvSnapshotDiscard(store,key);
+		SparkKvSnapshotDiscard(store,key,sequence);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	*bytes_out = header.segments[segment_index].bytes;

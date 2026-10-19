@@ -56,7 +56,7 @@ static SparkStatus IndexInsert(SparkKvSnapshotStore *store,const SparkKvSnapshot
 	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
 	SparkStatus status;
 	pthread_mutex_lock(&runtime->mutex);
-	status = SparkKvSnapshotIndexInsert(store,key,parent,INDEX_FILE_BYTES,1u,0);
+	status = SparkKvSnapshotIndexInsert(store,key,parent,INDEX_FILE_BYTES,++runtime->next_sequence,1u,0);
 	pthread_mutex_unlock(&runtime->mutex);
 	return(status);
 }
@@ -64,8 +64,11 @@ static SparkStatus IndexInsert(SparkKvSnapshotStore *store,const SparkKvSnapshot
 static void IndexForget(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key)
 {
 	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
+	uint32_t index;
 	pthread_mutex_lock(&runtime->mutex);
-	SparkKvSnapshotIndexForget(store,key);
+	index = SparkKvSnapshotIndexFind(runtime,key);
+	if ( index != SPARK_KV_SNAPSHOT_NO_ENTRY )
+		SparkKvSnapshotIndexRemoveAt(store,index);
 	pthread_mutex_unlock(&runtime->mutex);
 }
 
@@ -209,8 +212,8 @@ static void IndexTestParentKeys(void)
 	IndexForget(&store,&middle);
 	CHECK(store.orphan_count == 1u && SparkKvSnapshotParent(&store,&leaf,&found) == SPARK_STATUS_OK && memcmp(&found,&middle,sizeof(found)) == 0);
 	CHECK((IndexFlags(&store,&root) & SPARK_KV_SNAPSHOT_ENTRY_IN_LRU) != 0u && SparkKvSnapshotRuntimeOf(&store)->lru_head == SparkKvSnapshotIndexFind(SparkKvSnapshotRuntimeOf(&store),&leaf));
-	CHECK(SparkKvSnapshotPath(&store,&leaf,&middle,expected,sizeof(expected)) == SPARK_STATUS_OK &&
-		SparkKvSnapshotEntryPath(&store,SparkKvSnapshotIndexFind(SparkKvSnapshotRuntimeOf(&store),&leaf),actual,sizeof(actual)) == SPARK_STATUS_OK && strcmp(expected,actual) == 0);
+	CHECK(SparkKvSnapshotBuildPath(&store,&leaf,&middle,SparkKvSnapshotEntryAt(SparkKvSnapshotRuntimeOf(&store),SparkKvSnapshotIndexFind(SparkKvSnapshotRuntimeOf(&store),&leaf))->sequence,INDEX_FILE_BYTES / SPARK_KV_SNAPSHOT_ALIGNMENT,expected,sizeof(expected)) == SPARK_STATUS_OK &&
+		SparkKvSnapshotFilePath(&store,&leaf,actual,sizeof(actual)) == SPARK_STATUS_OK && strcmp(expected,actual) == 0);
 	IndexForget(&store,&root);
 	CHECK(SparkKvSnapshotRuntimeOf(&store)->entry_count == 2u && store.file_count == 1u);
 	CHECK(IndexInsert(&store,&middle,&root) == SPARK_STATUS_OK && store.orphan_count == 1u && store.file_count == 2u && SparkKvSnapshotRuntimeOf(&store)->entry_count == 3u);
