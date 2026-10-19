@@ -55,7 +55,8 @@
 #define D41_BETA_FAST 32.0
 #define D41_BETA_SLOW 1.0
 #define D41_CANDIDATE_SOURCE 20u
-#define D41_CANDIDATE_ROWS (2048u * 8u)
+#define D41_CANDIDATE_BLOCKS 2048u
+#define D41_CANDIDATE_ROWS (D41_CANDIDATE_BLOCKS * D41_GRAIN)
 #define D41_ENGRAM_HEAD_DIM 256u
 #define D41_ENGRAM_COLUMNS 24u
 #define D41_ENGRAM_MULTIPLIERS 4u
@@ -70,6 +71,7 @@
 #define D41_SLOT_BYTES SPARK_DSV41_FLASH_STAGE_SLOT_BYTES
 #define D41_PAGE_TOKENS SPARK_DSV41_FLASH_STAGE_PAGE_TOKENS
 #define D41_GRAIN SPARK_DSV41_FLASH_STAGE_SHARD_GRAIN
+static_assert(D41_GRAIN == 8u, "a DSV4.1 candidate block is one context shard grain, so each block lives on one rank");
 #define D41_A2A_HEADS SPARK_DSV41_FLASH_STAGE_A2A_HEADS
 #define D41_LOCAL_HEADS (D41_HEADS / D41_TP)
 #define D41_LOCAL_INDEX_HEADS (D41_INDEX_HEADS / D41_TP)
@@ -135,6 +137,7 @@ typedef struct D41ModelState
 	uint64_t arena_bytes;
 	uint64_t record_chunk_floats, a2a_units;
 	uint32_t local_score_stride, global_score_stride;
+	uint32_t candidate_blocks, local_block_stride, global_block_stride, local_block_keep, global_block_keep, block_round_parts;
 	uint16_t *streams, *residual, *x, *xq, *q_latent, *qr, *qrq, *q_local, *q_gathered, *kv, *window_kv;
 	float *mixes, *pre_attn, *post_attn, *comb_attn, *pre_ffn, *post_ffn, *comb_ffn, *pre_head;
 	float *c_kv, *c_score;
@@ -144,6 +147,10 @@ typedef struct D41ModelState
 	uint32_t *local_selected, *selected, *topk_positions;
 	uint64_t topk_entries;
 	uint2 *candidates, *candidates_gathered;
+	float *block_scores, *block_full;
+	uint32_t *block_local_selected, *block_selected;
+	uint2 *block_candidates, *block_gathered;
+	uint8_t *block_mask;
 	float *records_send, *records_received;
 	uint16_t *attn_merged, *attn_gathered, *group_input, *wo_a_out, *partial;
 	float *pre_init;
@@ -353,6 +360,38 @@ static SparkStatus D41Compress(D41ModelState *state, const D41Layer *layer, uint
 	return D41Launched();
 }
 
+static SparkStatus D41CandidateBlocks(D41ModelState *state, const SparkStageRunnerStep *step, const uint32_t *bound,
+	const uint32_t *length, cudaStream_t stream)
+{
+	const uint32_t rows = step->rows, keep = state->local_block_keep;
+	const SparkKvShard blocks = { D41_TP, state->shard.rank, 1u };
+	SparkStatus status;
+	if ( SparkDsv41FlashLaunchShardBlockMax(stream, state->local_scores, state->local_score_stride, state->shard, step->sequence_of_row,
+			length, bound, state->block_scores, state->local_block_stride, rows) != cudaSuccess ||
+		LmTopkExactLaunch<D41_THREADS>(state->block_scores, rows, state->local_block_stride, keep, LM_TOPK_EXACT_CHUNK,
+			LM_TOPK_EXACT_CHUNKED_ROWS, state->topk_values, state->topk_positions, state->topk_entries, state->block_local_selected, stream) != cudaSuccess ||
+		LmIndexShardCandidatePackLaunch<D41_THREADS>(blocks, state->block_scores, state->local_block_stride, state->block_local_selected,
+			keep, rows, state->block_candidates, stream) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	for ( uint32_t first = 0u; first < rows; first += D41_SELECTION_CHUNK )
+	{
+		const uint32_t count = rows - first < D41_SELECTION_CHUNK ? rows - first : D41_SELECTION_CHUNK;
+		status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, count * state->block_round_parts,
+			keep * (uint32_t)(sizeof(uint2) / sizeof(uint16_t)) / state->block_round_parts, state->block_candidates + (uint64_t)first * keep,
+			state->block_gathered);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		if ( LmIndexShardCandidateScatterLaunch<D41_THREADS>(state->block_gathered, (uint64_t)count * keep, D41_TP, keep, count,
+				state->global_block_stride, state->block_full, stream) != cudaSuccess ||
+			LmTopkExactLaunch<D41_THREADS>(state->block_full, count, state->global_block_stride, state->global_block_keep, LM_TOPK_EXACT_CHUNK,
+				LM_TOPK_EXACT_CHUNKED_ROWS, state->topk_values, state->topk_positions, state->topk_entries, state->block_selected, stream) != cudaSuccess ||
+			SparkDsv41FlashLaunchShardBlockMask(stream, state->block_full, state->global_block_stride, state->block_selected, state->global_block_keep,
+				blocks, state->block_mask + (uint64_t)first * state->local_block_stride, state->local_block_stride, count) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
+	return D41Launched();
+}
+
 template<class Geometry>
 static SparkStatus D41Select(D41ModelState *state, const D41Layer *layer, uint32_t index, const SparkStageRunnerStep *step,
 	const uint32_t *bound, const uint32_t *length, cudaStream_t stream)
@@ -360,12 +399,8 @@ static SparkStatus D41Select(D41ModelState *state, const D41Layer *layer, uint32
 	const uint32_t rows = step->rows, cache = D41CacheIndex(index), sms = step->multiprocessors;
 	const uint32_t local_width = D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM;
 	SparkStatus status;
-	if ( index > D41_CANDIDATE_SOURCE && state->max_positions / D41Ratio(index) > D41_CANDIDATE_ROWS )
-	{
-		fprintf(stderr, "sparkpipe_dsv41_flash: contexts past %u compressed rows need the candidate-block mask, which is not built yet\n",
-			D41_CANDIDATE_ROWS);
+	if ( state->candidate_blocks != 0u && index >= D41_CANDIDATE_SOURCE && D41Ratio(index) != 1u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	}
 	if ( D41Project(layer->idx_q_b, state->qrq, state->idx_pack_local, 0, rows, D41_QLORA, local_width, sms, stream) != LM_LAUNCH_OK ||
 		D41Project(layer->idx_wp, state->x, state->idx_w_full, 0, rows, D41_HIDDEN, D41_LOCAL_INDEX_HEADS, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -396,8 +431,19 @@ static SparkStatus D41Select(D41ModelState *state, const D41Layer *layer, uint32
 	}
 	if ( LmWeightedSparseScoreLaunch<Geometry,D41_INDEX_HEADS,D41_INDEX_DIM,LmKvShardView,true>(state->idx_query, state->idx_w_full,
 		state->index_views[cache], step->sequence_of_row, length, bound, rows, state->local_score_stride, 1.0f, state->local_scores,
-		stream) != cudaSuccess ||
-		LmTopkExactLaunch<D41_THREADS>(state->local_scores, rows, state->local_score_stride, D41_INDEX_TOPK, LM_TOPK_EXACT_CHUNK,
+		stream) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( state->candidate_blocks != 0u && index == D41_CANDIDATE_SOURCE )
+	{
+		status = D41CandidateBlocks(state, step, bound, length, stream);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+	}
+	else if ( state->candidate_blocks != 0u && index > D41_CANDIDATE_SOURCE &&
+		SparkDsv41FlashLaunchShardBlockApply(stream, state->local_scores, state->local_score_stride, D41_GRAIN, state->block_mask,
+			state->local_block_stride, rows) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( LmTopkExactLaunch<D41_THREADS>(state->local_scores, rows, state->local_score_stride, D41_INDEX_TOPK, LM_TOPK_EXACT_CHUNK,
 			LM_TOPK_EXACT_CHUNKED_ROWS, state->topk_values, state->topk_positions, state->topk_entries, state->local_selected, stream) != cudaSuccess ||
 		LmIndexShardCandidatePackLaunch<D41_THREADS>(state->index_views[cache].shard, state->local_scores, state->local_score_stride,
 			state->local_selected, D41_INDEX_TOPK, rows, state->candidates, stream) != cudaSuccess )
@@ -851,6 +897,13 @@ static SparkStatus D41PlanArena(D41ModelState *state, uint64_t *bytes, uint8_t *
 		{ (void **)&state->topk_values, state->topk_entries * 4u }, { (void **)&state->topk_positions, state->topk_entries * 4u },
 		{ (void **)&state->local_selected, r * D41_INDEX_TOPK * 4u }, { (void **)&state->selected, r * D41_INDEX_TOPK * 4u },
 		{ (void **)&state->candidates, r * D41_INDEX_TOPK * 8u }, { (void **)&state->candidates_gathered, D41_TP * r * D41_INDEX_TOPK * 8u },
+		{ (void **)&state->block_scores, r * state->local_block_stride * 4u },
+		{ (void **)&state->block_local_selected, r * state->local_block_keep * 4u },
+		{ (void **)&state->block_candidates, r * state->local_block_keep * 8u },
+		{ (void **)&state->block_gathered, (uint64_t)D41_TP * D41_SELECTION_CHUNK * state->local_block_keep * 8u },
+		{ (void **)&state->block_full, (uint64_t)D41_SELECTION_CHUNK * state->global_block_stride * 4u },
+		{ (void **)&state->block_selected, (uint64_t)D41_SELECTION_CHUNK * state->global_block_keep * 4u },
+		{ (void **)&state->block_mask, r * state->local_block_stride },
 		{ (void **)&state->records_send, D41_TP * destination }, { (void **)&state->records_received, D41_TP * destination },
 		{ (void **)&state->attn_merged, r * D41_LOCAL_HEADS * D41_HEAD_DIM * 2u },
 		{ (void **)&state->attn_gathered, D41_TP * r * D41_LOCAL_HEADS * D41_HEAD_DIM * 2u },
@@ -1086,10 +1139,28 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 	state->shard.grain = D41_GRAIN;
 	state->local_score_stride = ((SparkKvShardGatherKeys(state->shard, state->max_positions) + 63u) / 64u) * 64u;
 	state->global_score_stride = ((state->max_positions + 63u) / 64u) * 64u;
+	state->candidate_blocks = state->max_positions > D41_CANDIDATE_ROWS ? 1u : 0u;
+	if ( state->candidate_blocks != 0u )
+	{
+		state->local_block_stride = ((state->local_score_stride / D41_GRAIN + 63u) / 64u) * 64u;
+		state->global_block_stride = (((state->max_positions + D41_GRAIN - 1u) / D41_GRAIN + 63u) / 64u) * 64u;
+		state->local_block_keep = state->local_block_stride < D41_CANDIDATE_BLOCKS ? state->local_block_stride : D41_CANDIDATE_BLOCKS;
+		state->global_block_keep = state->global_block_stride < D41_CANDIDATE_BLOCKS ? state->global_block_stride : D41_CANDIDATE_BLOCKS;
+		state->block_round_parts = 1u;
+		while ( state->local_block_keep * (uint32_t)(sizeof(uint2) / sizeof(uint16_t)) / state->block_round_parts > D41_HIDDEN )
+			state->block_round_parts *= 2u;
+	}
 	{
 		const uint64_t local = (uint64_t)state->max_rows * LmTopkExactCandidateEntries(state->local_score_stride, D41_INDEX_TOPK, LM_TOPK_EXACT_CHUNK);
 		const uint64_t global = (uint64_t)D41_SELECTION_CHUNK * LmTopkExactCandidateEntries(state->global_score_stride, D41_INDEX_TOPK, LM_TOPK_EXACT_CHUNK);
-		state->topk_entries = 2u * (local > global ? local : global);
+		const uint64_t local_blocks = state->candidate_blocks != 0u ?
+			(uint64_t)state->max_rows * LmTopkExactCandidateEntries(state->local_block_stride, state->local_block_keep, LM_TOPK_EXACT_CHUNK) : 0u;
+		const uint64_t global_blocks = state->candidate_blocks != 0u ?
+			(uint64_t)D41_SELECTION_CHUNK * LmTopkExactCandidateEntries(state->global_block_stride, state->global_block_keep, LM_TOPK_EXACT_CHUNK) : 0u;
+		uint64_t widest = local > global ? local : global;
+		widest = widest > local_blocks ? widest : local_blocks;
+		widest = widest > global_blocks ? widest : global_blocks;
+		state->topk_entries = 2u * widest;
 	}
 	state->ring_bytes = (uint64_t)D41_LAYERS * D41_RING_ROWS * D41_HEAD_DIM * sizeof(uint16_t);
 	state->compressor_bytes = 3u * 2u * D41_HEAD_DIM * sizeof(float);
