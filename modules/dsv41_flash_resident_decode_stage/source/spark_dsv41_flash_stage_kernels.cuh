@@ -207,13 +207,14 @@ static __global__ void D41CompressorRowsKernel(const float *__restrict__ kv, con
 static __global__ void D41CompressorSaveKernel(const float *__restrict__ kv, const float *__restrict__ score, float *__restrict__ state,
 	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal,
 	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ recurrent_slot, uint32_t rows, uint32_t ratio,
-	uint32_t state_stride_floats, uint32_t width, uint32_t commit)
+	uint32_t state_stride_floats, uint32_t width, uint32_t commit, const uint32_t *__restrict__ lane_count)
 {
 	const uint32_t row = blockIdx.x;
 	if ( commit == 0u || row >= rows || (positions[row] + 1u) % ratio == 0u )
 		return;
 	const uint32_t lane = row_lane[row];
-	if ( row_ordinal[row] + 1u != sequence_row_begin[lane + 1u] - sequence_row_begin[lane] )
+	const uint32_t count = lane_count != 0 ? lane_count[lane] : sequence_row_begin[lane + 1u] - sequence_row_begin[lane];
+	if ( row_ordinal[row] + 1u != count )
 		return;
 	float *slot_state = state + (uint64_t)recurrent_slot[lane] * state_stride_floats;
 	for ( uint32_t c = threadIdx.x; c < width; c += blockDim.x )
@@ -327,13 +328,14 @@ static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t
 static __global__ void D41WindowRingStoreKernel(const uint16_t *__restrict__ wave_kv, uint16_t *__restrict__ ring,
 	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal,
 	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t ring_rows,
-	uint32_t window, uint32_t degree, uint32_t rank, uint32_t rows, uint32_t commit)
+	uint32_t window, uint32_t degree, uint32_t rank, uint32_t rows, uint32_t commit, const uint32_t *__restrict__ lane_count)
 {
 	const uint32_t row = blockIdx.x;
 	if ( commit == 0u || row >= rows || positions[row] % degree != rank )
 		return;
 	const uint32_t lane = row_lane[row];
-	if ( row_ordinal[row] + window < sequence_row_begin[lane + 1u] - sequence_row_begin[lane] )
+	const uint32_t count = lane_count != 0 ? lane_count[lane] : sequence_row_begin[lane + 1u] - sequence_row_begin[lane];
+	if ( row_ordinal[row] >= count || row_ordinal[row] + window < count )
 		return;
 	uint16_t *target = ring + (uint64_t)recurrent_slot[lane] * ring_slot_stride +
 		(uint64_t)((positions[row] / degree) % ring_rows) * D41K_LATENT;

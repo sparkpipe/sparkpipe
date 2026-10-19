@@ -78,6 +78,8 @@ static_assert(D41_GRAIN == 8u, "a DSV4.1 candidate block is one context shard gr
 #define D41_LOCAL_EXPERTS (D41_EXPERTS / D41_TP)
 #define D41_WO_A_ROWS (D41_OGROUPS * D41_OLORA / D41_TP)
 #define D41_RING_ROWS (D41_WINDOW / D41_TP)
+#define D41_VERIFY_ROWS SPARK_DSV41_FLASH_STAGE_VERIFY_ROWS
+#define D41_PAIR_CACHES 3u
 #define D41_SELECTION_CHUNK 64u
 #define D41_INDEX_PACK 264u
 #define D41_ENGRAM_TABLES_MAGIC 0x45313444u
@@ -151,6 +153,8 @@ typedef struct D41ModelState
 	uint32_t *block_local_selected, *block_selected;
 	uint2 *block_candidates, *block_gathered;
 	uint8_t *block_mask;
+	uint16_t *verify_window;
+	float *verify_c_kv, *verify_c_score;
 	float *records_send, *records_received;
 	uint16_t *attn_merged, *attn_gathered, *group_input, *wo_a_out, *partial;
 	float *pre_init;
@@ -337,10 +341,19 @@ static SparkStatus D41Compress(D41ModelState *state, const D41Layer *layer, uint
 	D41CompressorRowsKernel<<<rows, D41_THREADS, 0, stream>>>(state->c_kv, state->c_score, state->c_latent, state->emit_row,
 		compressor_state, step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices,
 		step->recurrent_index, ratio, state_stride, D41_HEAD_DIM);
+	if ( ratio > 1u && step->commit == 0u )
+	{
+		if ( rows > D41_VERIFY_ROWS || cache >= D41_PAIR_CACHES )
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		cudaMemcpyAsync(state->verify_c_kv + (uint64_t)cache * D41_VERIFY_ROWS * D41_HEAD_DIM, state->c_kv,
+			(uint64_t)rows * D41_HEAD_DIM * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+		cudaMemcpyAsync(state->verify_c_score + (uint64_t)cache * D41_VERIFY_ROWS * D41_HEAD_DIM, state->c_score,
+			(uint64_t)rows * D41_HEAD_DIM * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+	}
 	if ( ratio > 1u )
 		D41CompressorSaveKernel<<<rows, D41_THREADS, 0, stream>>>(state->c_kv, state->c_score, compressor_state, step->positions,
 			state->row_lane, state->row_ordinal, step->sequence_row_begin, step->recurrent_index, rows, ratio, state_stride, D41_HEAD_DIM,
-			step->commit);
+			step->commit, (const uint32_t *)0);
 	D41RmsNorm(state->c_latent, layer->c_norm, state->c_latent, rows, D41_HEAD_DIM, stream);
 	if ( D41Project(layer->idx_wk, state->c_latent, state->idx_key, 0, rows, D41_HEAD_DIM, D41_INDEX_DIM, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -543,9 +556,16 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 	status = D41Launched();
 	if ( status != SPARK_STATUS_OK )
 		return status;
+	if ( step->commit == 0u )
+	{
+		if ( rows > D41_VERIFY_ROWS )
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		cudaMemcpyAsync(state->verify_window + (uint64_t)index * D41_VERIFY_ROWS * D41_HEAD_DIM, state->window_kv,
+			(uint64_t)rows * D41_HEAD_DIM * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream);
+	}
 	D41WindowRingStoreKernel<<<rows, D41_THREADS, 0, stream>>>(state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
 		step->sequence_row_begin, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, D41_TP,
-		state->tp_rank, rows, step->commit);
+		state->tp_rank, rows, step->commit, (const uint32_t *)0);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
 		status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, D41A2aUnits(rows), 0u, state->records_send,
@@ -833,7 +853,31 @@ static SparkStatus D41Step(void *model, const SparkStageRunnerStep *step, void *
 	LmNgramHistoryKernel<<<(step->sequences + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, state->token_map, step->sequence_row_begin,
 		step->sequence_row_indices, step->recurrent_index,
 		(int32_t *)(state->recurrent + state->ring_bytes + state->compressor_bytes), (uint32_t)(state->recurrent_bytes / sizeof(int32_t)),
-		step->sequences, D41_ENGRAM_ORDERS, step->commit);
+		step->sequences, D41_ENGRAM_ORDERS, step->commit, (const uint32_t *)0);
+	return D41Launched();
+}
+
+static SparkStatus D41KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream_pointer)
+{
+	D41ModelState *state = (D41ModelState *)model;
+	cudaStream_t stream = (cudaStream_t)stream_pointer;
+	const uint32_t rows = step->rows, state_stride = (uint32_t)(state->recurrent_bytes / sizeof(float));
+	if ( state == 0 || kept == 0 || rows > D41_VERIFY_ROWS )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for ( uint32_t index = 0u; index < D41_LAYERS; ++index )
+		D41WindowRingStoreKernel<<<rows, D41_THREADS, 0, stream>>>(state->verify_window + (uint64_t)index * D41_VERIFY_ROWS * D41_HEAD_DIM,
+			(uint16_t *)state->recurrent + (uint64_t)index * D41_RING_ROWS * D41_HEAD_DIM, step->positions, state->row_lane, state->row_ordinal,
+			step->sequence_row_begin, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, D41_TP,
+			state->tp_rank, rows, 1u, kept);
+	for ( uint32_t cache = 0u; cache < D41_PAIR_CACHES; ++cache )
+		D41CompressorSaveKernel<<<rows, D41_THREADS, 0, stream>>>(state->verify_c_kv + (uint64_t)cache * D41_VERIFY_ROWS * D41_HEAD_DIM,
+			state->verify_c_score + (uint64_t)cache * D41_VERIFY_ROWS * D41_HEAD_DIM,
+			(float *)(state->recurrent + state->ring_bytes) + (uint64_t)cache * 2u * D41_HEAD_DIM, step->positions, state->row_lane,
+			state->row_ordinal, step->sequence_row_begin, step->recurrent_index, rows, 2u, state_stride, D41_HEAD_DIM, 1u, kept);
+	LmNgramHistoryKernel<<<(step->sequences + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, state->token_map, step->sequence_row_begin,
+		step->sequence_row_indices, step->recurrent_index,
+		(int32_t *)(state->recurrent + state->ring_bytes + state->compressor_bytes), (uint32_t)(state->recurrent_bytes / sizeof(int32_t)),
+		step->sequences, D41_ENGRAM_ORDERS, 1u, kept);
 	return D41Launched();
 }
 
@@ -904,6 +948,9 @@ static SparkStatus D41PlanArena(D41ModelState *state, uint64_t *bytes, uint8_t *
 		{ (void **)&state->block_full, (uint64_t)D41_SELECTION_CHUNK * state->global_block_stride * 4u },
 		{ (void **)&state->block_selected, (uint64_t)D41_SELECTION_CHUNK * state->global_block_keep * 4u },
 		{ (void **)&state->block_mask, r * state->local_block_stride },
+		{ (void **)&state->verify_window, (uint64_t)D41_LAYERS * D41_VERIFY_ROWS * D41_HEAD_DIM * 2u },
+		{ (void **)&state->verify_c_kv, (uint64_t)D41_PAIR_CACHES * D41_VERIFY_ROWS * D41_HEAD_DIM * 4u },
+		{ (void **)&state->verify_c_score, (uint64_t)D41_PAIR_CACHES * D41_VERIFY_ROWS * D41_HEAD_DIM * 4u },
 		{ (void **)&state->records_send, D41_TP * destination }, { (void **)&state->records_received, D41_TP * destination },
 		{ (void **)&state->attn_merged, r * D41_LOCAL_HEADS * D41_HEAD_DIM * 2u },
 		{ (void **)&state->attn_gathered, D41_TP * r * D41_LOCAL_HEADS * D41_HEAD_DIM * 2u },
@@ -1539,7 +1586,11 @@ static const SparkStageRunnerModelInterface spark_dsv41_flash_stage_model =
 	D41RecurrentCopy,
 	D41ResetSlot,
 	D41ProbeBuffers,
-	D41Report
+	D41Report,
+	0,
+	0,
+	D41KeepRows,
+	0
 };
 
 const SparkStageRunnerModelInterface *SparkDsv41FlashStageModel(void)
