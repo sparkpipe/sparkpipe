@@ -52,6 +52,7 @@ typedef struct SparkStageRunnerStep
 	uint32_t context;
 	uint32_t multiprocessors;
 	uint32_t last_rows_only;
+	uint32_t every_row_hidden;
 	const uint32_t *token_ids;
 	const uint32_t *host_positions;
 	const uint32_t *host_sequence_of_row;

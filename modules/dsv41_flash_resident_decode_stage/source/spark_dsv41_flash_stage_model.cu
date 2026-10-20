@@ -88,6 +88,7 @@ static_assert(D41_GRAIN == 8u, "a DSV4.1 candidate block is one context shard gr
 #define D41_ENGRAM_TABLES_MAGIC 0x45313444u
 #define D41_GEMM_TILE_N 128u
 #define D41_SKINNY_EXPERT_ROWS 16u
+#define D41_TAIL_MIN_ROWS (LM_SKINNY_ROWS_WIDE > D41_SKINNY_EXPERT_ROWS ? LM_SKINNY_ROWS_WIDE : D41_SKINNY_EXPERT_ROWS)
 
 static_assert(D41_ENGRAM_KV_ROWS % (D41_TP * D41_FP8_BLOCK) == 0u, "the engram key/value rows split into whole fp8 blocks per rank");
 static_assert(D41_MOE_INTER % D41_SHARED_GRANULE == 0u && D41_SHARED_GRANULE % D41_FP8_BLOCK == 0u,
@@ -797,14 +798,12 @@ static SparkStatus D41DumpStep(D41ModelState *state, const SparkStageRunnerStep 
 	return error == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
 }
 
-static SparkStatus D41StepReach(D41ModelState *state, const SparkStageRunnerStep *step, cudaStream_t stream)
+static SparkStatus D41StepReach(D41ModelState *state, const SparkStageRunnerStep *step)
 {
-	cudaStreamCaptureStatus capturing = cudaStreamCaptureStatusNone;
+	const uint32_t uncaptured = step->commit != 0u && step->rows > step->sequences && step->host_positions != 0 ? 1u : 0u;
 	uint32_t reach = state->max_positions, row, contiguous = 1u;
-	if ( cudaStreamIsCapturing(stream, &capturing) != cudaSuccess )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	state->tail_target = 0u;
-	if ( step->rows > 1u && step->host_positions != 0 && capturing == cudaStreamCaptureStatusNone )
+	if ( uncaptured != 0u )
 		for ( row = 0u, reach = 0u; row < step->rows; ++row )
 		{
 			reach = step->host_positions[row] + 1u > reach ? step->host_positions[row] + 1u : reach;
@@ -815,9 +814,8 @@ static SparkStatus D41StepReach(D41ModelState *state, const SparkStageRunnerStep
 	state->step_score_stride = ((SparkKvShardGatherKeys(state->shard, reach) + 63u) / 64u) * 64u;
 	state->step_score_stride = state->step_score_stride < state->local_score_stride ? state->step_score_stride : state->local_score_stride;
 	state->step_blocks = state->candidate_blocks != 0u && reach > D41_CANDIDATE_ROWS ? 1u : 0u;
-	if ( step->rows > 1u && step->host_positions != 0 && capturing == cudaStreamCaptureStatusNone && contiguous != 0u &&
-		step->commit != 0u && step->sequences == 1u && step->last_rows_only != 0u && step->host_state_target != 0 && state->dump == 0 &&
-		step->host_state_target[0] >= reach )
+	if ( uncaptured != 0u && contiguous != 0u && step->sequences == 1u && step->rows > D41_TAIL_MIN_ROWS && step->last_rows_only != 0u &&
+		step->every_row_hidden == 0u && step->host_state_target != 0 && step->host_state_target[0] >= reach )
 	{
 		state->tail_target = step->host_state_target[0];
 		state->tail_first_position = step->host_positions[0];
@@ -829,9 +827,11 @@ static uint32_t D41TailFirstRow(const D41ModelState *state, uint32_t index, uint
 {
 	const uint32_t reach = D41_WINDOW + (D41_LAYERS - 1u - index) * (D41_WINDOW - 1u);
 	const uint32_t first = state->tail_target > reach ? state->tail_target - reach : 0u;
+	uint32_t skipped;
 	if ( state->tail_target == 0u || index < D41_CANDIDATE_SOURCE || first <= state->tail_first_position )
 		return 0u;
-	return first - state->tail_first_position < rows ? first - state->tail_first_position : rows;
+	skipped = first - state->tail_first_position < rows ? first - state->tail_first_position : rows;
+	return skipped == rows || rows - skipped > D41_TAIL_MIN_ROWS ? skipped : rows - D41_TAIL_MIN_ROWS - 1u;
 }
 
 static void D41TailRebase(D41ModelState *state, uint32_t rows)
@@ -889,7 +889,7 @@ static SparkStatus D41Step(void *model, const SparkStageRunnerStep *step, void *
 		if ( status != SPARK_STATUS_OK )
 			return status;
 	}
-	status = D41StepReach(state, step, stream);
+	status = D41StepReach(state, step);
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	D41CompressedEmitPositionKernel<<<(rows + 255u) / 256u, 256u, 0, stream>>>(step->positions, state->bound_ratio2, rows, 2u);
