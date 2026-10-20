@@ -62,6 +62,37 @@ Known limits:
 - A 60K-token prompt takes about 90 s to prefill the first time; later turns
   that share its prefix reuse it.
 
+### Queueing and cancel (2026-10-18)
+
+The door queues every request and rejects none for load (owner,
+2026-10-18). A caller manages its own backlog and cancels a request by
+closing its connection, whether the request is still queued or already
+streaming:
+
+- LiteLLM runs with `general_settings.cancel_on_disconnect: true`, so a
+  client that goes away cancels LiteLLM's upstream call; mid-stream LiteLLM
+  closes the upstream stream itself. `request_timeout` is 604,800 s (7
+  days): it is the read timeout of LiteLLM's upstream call, and a request
+  that waits in the queue sends no byte until its first token.
+- The chat layer serves with `handler_cancellation`, so a closed client
+  connection cancels its handler and closes the engine request; it logs
+  `"finish_reason": "client_gone"`. Its engine session has no connection
+  cap (aiohttp's default capped it at 100 requests in flight).
+- `model_api` polls each waiting connection every 250 ms and cancels the
+  engine request of a client that has gone (`api_await`).
+- `model_api` and the chat layer raise their open-files soft limit to the
+  hard limit at start and log it (`open files limit`). LiteLLM cannot, so
+  its units start with `-p LimitNOFILE=524288`. When `model_api` still runs
+  out of descriptors, `accept` waits 50 ms between retries and logs once.
+
+The engine orders queued work by priority and then by deadline. The chat
+layer sends priority 2 for interactive requests, 1 for a request to
+`<model>-bulk` (every model has that second name at both LiteLLM doors
+and in `/v1/models`) and 0 for the memory curator. Bulk work fills idle
+capacity and is preempted, by checkpoint and requeue, when interactive
+work needs its pages (PR #1500). The warm queue in front of a starting engine is
+separate: it still answers 503 when full or after `wait_seconds`.
+
 ## Three models and on-demand swaps (2026-10-08)
 
 The door serves `glm-5.3` (GLM-5.3 Full), `glm-5.3-flash` (GLM-5.3 Flash) and
@@ -347,12 +378,13 @@ source = yaml.safe_load(pathlib.Path("litellm.yaml").read_text())
 kept = [entry for entry in source["model_list"]
         if entry["model_name"] != "*" and not entry["model_name"].startswith("qwen")]
 external = {"model_list": kept, "litellm_settings": source["litellm_settings"],
-            "general_settings": {"master_key": "os.environ/LITELLM_MASTER_KEY"}}
+            "general_settings": {"master_key": "os.environ/LITELLM_MASTER_KEY", "cancel_on_disconnect": True}}
 pathlib.Path("litellm-external.yaml").write_text(yaml.safe_dump(external, sort_keys=False))
 PY
 systemd-run --user --unit=sparkpipe-litellm-external \
   -p WorkingDirectory=/home/spec/sparkpipe-chat \
   -p EnvironmentFile=/home/spec/sparkpipe-chat/external.env \
+  -p LimitNOFILE=524288 \
   /usr/bin/bash -c 'exec $HOME/litellm-venv/bin/litellm --config litellm-external.yaml --host 127.0.0.1 --port 4001 >> litellm-external.log 2>&1'
 ```
 

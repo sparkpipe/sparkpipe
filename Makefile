@@ -580,6 +580,10 @@ PYTHON_TESTS := \
 	tests/test_model_swap_token.py \
 	tests/test_swap_token_shell.py \
 	tests/test_chat_frontend_switch_now.py \
+	tests/test_chat_frontend_disconnect.py \
+	tests/test_chat_frontend_piece_cache.py \
+	tests/test_chat_frontend_classes.py \
+	tests/test_litellm_queue_settings.py \
 	tests/test_fleet_gateway.py \
 	tests/test_open_webui_fleet_tool.py \
 	tests/test_chat_memory_core.py \
@@ -618,6 +622,7 @@ PYTHON_TESTS := \
 	tests/test_mimo26_stagepack.py \
 	tests/test_mimo26_stagepack_windows.py \
 	tests/test_model_api_queue_lifetime.py \
+	tests/test_model_api_accept.py \
 	tests/test_no_python_in_production.py \
 	tests/test_rtx5090_spec_node.py \
 	tests/test_safetensors_subset.py \

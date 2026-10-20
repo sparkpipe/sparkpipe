@@ -1,12 +1,14 @@
 import argparse
 import asyncio
 import codecs
+import functools
 import hashlib
 import importlib.util
 import ipaddress
 import json
 import os
 import re
+import resource
 import sys
 import time
 import uuid
@@ -222,20 +224,77 @@ VOCABULARIES = {"tokenizers": TokenizersVocabulary, "tiktoken": TiktokenVocabula
 
 
 CARRIED = re.compile("\ue000([0-9]+)\ue001")
+PIECE_CACHE_BYTES = 512 << 20
+INTERACTIVE_PRIORITY = 2
+BULK_PRIORITY = 1
+BACKGROUND_PRIORITY = 0
+BULK_SUFFIX = "-bulk"
+
+
+def request_priority(model, body):
+    return BULK_PRIORITY if body.get("model") == model.id + BULK_SUFFIX else INTERACTIVE_PRIORITY
+
+
+@functools.lru_cache(maxsize=None)
+def literal_pattern(strings):
+    trie = {}
+    for string in strings:
+        node = trie
+        for char in string:
+            node = node.setdefault(char, {})
+        node[None] = None
+
+    def emit(node):
+        if None in node:
+            return ""
+        branches = [re.escape(char) + emit(child) for char, child in sorted(node.items())]
+        return branches[0] if len(branches) == 1 else "(?:" + "|".join(branches) + ")"
+
+    return re.compile(emit(trie)) if trie else None
+
+
+def control_pattern(vocabulary):
+    return literal_pattern(tuple(sorted({token for token in vocabulary.control_strings() if token})))
+
+
+class PieceCache:
+    def __init__(self, vocabulary, budget):
+        self.vocabulary = vocabulary
+        self.budget = budget
+        self.entries = OrderedDict()
+        self.bytes = 0
+
+    def encode(self, piece, special):
+        key = (piece, special)
+        entry = self.entries.get(key)
+        if entry is not None:
+            self.entries.move_to_end(key)
+            return entry[0]
+        ids = array("I", self.vocabulary.encode(piece, special))
+        size = sys.getsizeof(piece) + ids.itemsize * len(ids) + 128
+        if size <= self.budget:
+            self.entries[key] = (ids, size)
+            self.bytes += size
+            while self.bytes > self.budget:
+                self.bytes -= self.entries.popitem(last=False)[1][1]
+        return ids
 
 
 def carry_controls(messages, tools, vocabulary):
-    specials = [token for token in vocabulary.control_strings() if token]
+    pattern = control_pattern(vocabulary)
     carried = []
+
+    def holds_control(text):
+        return pattern is not None and pattern.search(text) is not None
 
     def mark(value):
         if isinstance(value, str):
-            if any(token in value for token in specials):
+            if holds_control(value):
                 carried.append(value)
                 return f"\ue000{len(carried) - 1}\ue001"
             return value
         if isinstance(value, dict):
-            if any(isinstance(key, str) and any(token in key for token in specials) for key in value):
+            if any(isinstance(key, str) and holds_control(key) for key in value):
                 raise RequestError(400, "invalid_messages", "a request key carries a control token string")
             return {key: mark(item) for key, item in value.items()}
         if isinstance(value, list):
@@ -261,10 +320,10 @@ def uncarry(pieces, carried, expected):
     return result
 
 
-def encode_pieces(vocabulary, text, pieces):
+def encode_pieces(cache, text, pieces):
     ids = []
     for piece, special in pieces:
-        ids.extend(vocabulary.encode(piece, special))
+        ids.extend(cache.encode(piece, special))
     return text, ids
 
 
@@ -278,6 +337,7 @@ class TemplateRenderer:
         tokenizer_config = json.loads((directory / spec.get("tokenizer_config", "tokenizer_config.json")).read_text())
         self.template_tokens = {name: tokenizer_config[name] for name in ("bos_token", "eos_token", "pad_token", "unk_token") if isinstance(tokenizer_config.get(name), str)}
         self.vocabulary = vocabulary
+        self.cache = PieceCache(vocabulary, PIECE_CACHE_BYTES)
 
     def render_text(self, messages, tools, context):
         try:
@@ -297,7 +357,7 @@ class TemplateRenderer:
         return text, uncarry([(self.render_text(marked_messages, marked_tools, context), True)], carried, text)
 
     def render(self, messages, tools, kwargs):
-        return encode_pieces(self.vocabulary, *self.pieces(messages, tools, kwargs))
+        return encode_pieces(self.cache, *self.pieces(messages, tools, kwargs))
 
 
 class SegmentRenderer:
@@ -310,6 +370,7 @@ class SegmentRenderer:
         loader.loader.exec_module(module)
         self.function = getattr(module, spec["function"])
         self.vocabulary = vocabulary
+        self.cache = PieceCache(vocabulary, PIECE_CACHE_BYTES)
 
     def segments(self, messages, tools, kwargs):
         try:
@@ -328,7 +389,7 @@ class SegmentRenderer:
         return text, uncarry([(segment.text, segment.allow_special) for segment in marked], carried, text)
 
     def render(self, messages, tools, kwargs):
-        return encode_pieces(self.vocabulary, *self.pieces(messages, tools, kwargs))
+        return encode_pieces(self.cache, *self.pieces(messages, tools, kwargs))
 
 
 RENDERERS = {"template": TemplateRenderer, "segments": SegmentRenderer}
@@ -1066,7 +1127,7 @@ class Frontend:
             self.memory = module.Memory(config["chat_memory"], self)
 
     async def start(self, app):
-        self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=10))
+        self.session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=0), timeout=aiohttp.ClientTimeout(total=None, sock_connect=10))
 
     async def stop(self, app):
         await self.session.close()
@@ -1075,6 +1136,8 @@ class Frontend:
         name = body.get("model")
         if name in self.models:
             return self.models[name]
+        if isinstance(name, str) and name.endswith(BULK_SUFFIX) and name[:-len(BULK_SUFFIX)] in self.models:
+            return self.models[name[:-len(BULK_SUFFIX)]]
         if len(self.models) == 1 and name is None:
             return next(iter(self.models.values()))
         raise RequestError(404, "model_not_found", f"model {name!r} is not served here; served: {sorted(self.models)}")
@@ -1140,8 +1203,8 @@ class Frontend:
     async def list_models(self, request):
         created = int(time.time())
         return web.json_response({"object": "list", "data": [
-            {"id": model.id, "object": "model", "created": created, "owned_by": "sparkpipe", "max_model_len": model.context_tokens}
-            for model in self.models.values()]})
+            {"id": name, "object": "model", "created": created, "owned_by": "sparkpipe", "max_model_len": model.context_tokens}
+            for model in self.models.values() for name in (model.id, model.id + BULK_SUFFIX)]})
 
     def prefix_ledger(self, model):
         if self.prefixes is None:
@@ -1231,8 +1294,7 @@ class Frontend:
             parser = OutputParser(model, tools, prompt.rstrip().endswith(model.reasoning["start"].rstrip()), stops)
         engine_body = {"prompt_token_ids": prompt_ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids}
         engine_body.update(sampling_fields(body, model.sampling_defaults))
-        if self.memory is not None:
-            engine_body["priority"] = 1
+        engine_body["priority"] = request_priority(model, body)
         return {"body": body, "engine_body": engine_body, "parser": parser, "prompt_tokens": len(prompt_ids), "messages": messages,
                 "tools": tools, "kwargs": kwargs, "session": session}
 
@@ -1436,7 +1498,7 @@ class Frontend:
         return parts[0][0] if parts else None
 
     async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None):
-        body = {"prompt_token_ids": ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids, "priority": 0, "temperature": 0.0}
+        body = {"prompt_token_ids": ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids, "priority": BACKGROUND_PRIORITY, "temperature": 0.0}
         parser = OutputParser(model, None, reasoning_open, []) if model.channels is None else None
         step = model.vocabulary.decoder()
         content, usage, generated, outcome, tokens = [], {}, 0, "error", []
@@ -1503,12 +1565,12 @@ class Frontend:
 
     async def answer(self, request, model, body, plan, started):
         engine_body, prompt_tokens = plan["engine_body"], plan["prompt_tokens"]
+        if body.get("stream"):
+            return await self.chat_stream(request, model, body, plan, started)
+        content, reasoning, calls, logprobs = [], [], [], []
+        result = {}
+        first = None
         try:
-            if body.get("stream"):
-                return await self.chat_stream(request, model, body, plan, started)
-            content, reasoning, calls, logprobs = [], [], [], []
-            result = {}
-            first = None
             async for kind, value in self.respond(model, plan):
                 first = first or time.monotonic()
                 if kind == "logprobs":
@@ -1523,6 +1585,9 @@ class Frontend:
                     result = value
         except RequestError as error:
             return error_response(error)
+        except asyncio.CancelledError:
+            self.log(model, prompt_tokens, result.get("usage"), started, first, "client_gone", plan.get("trace"))
+            raise
         message = {"role": "assistant", "content": "".join(content) or None}
         if reasoning:
             message["reasoning_content"] = "".join(reasoning)
@@ -1579,6 +1644,9 @@ class Frontend:
         except (ConnectionResetError, aiohttp.ClientConnectionResetError):
             self.log(model, prompt_tokens, result.get("usage"), started, first, "client_gone", plan.get("trace"))
             return response
+        except asyncio.CancelledError:
+            self.log(model, prompt_tokens, result.get("usage"), started, first, "client_gone", plan.get("trace"))
+            raise
         usage = self.usage_block(result.get("usage"), prompt_tokens)
         await response.write(chunk({}, result.get("finish_reason"), usage))
         if include_usage:
@@ -1587,6 +1655,21 @@ class Frontend:
         await response.write(b"data: [DONE]\n\n")
         self.log(model, prompt_tokens, result.get("usage"), started, first, result.get("finish_reason"), plan.get("trace"))
         return response
+
+
+SERVER_OPTIONS = {"handler_cancellation": True}
+
+
+def raise_open_files():
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    target = hard if hard != resource.RLIM_INFINITY else 1 << 20
+    while target > soft:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+            break
+        except (ValueError, OSError):
+            target //= 2
+    return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
 
 
 def build(frontend):
@@ -1619,7 +1702,8 @@ def main():
         raise SystemExit(f"chat_frontend: --host {arguments.host} is not a loopback address; the chat layer checks no API key, so it serves this host only and LiteLLM is the door")
     config_path = Path(arguments.config).resolve()
     frontend = Frontend(json.loads(config_path.read_text()), config_path.parent)
-    web.run_app(build(frontend), host=arguments.host, port=arguments.port, access_log=None)
+    print(f"chat_frontend: open files limit {raise_open_files()}", file=sys.stderr, flush=True)
+    web.run_app(build(frontend), host=arguments.host, port=arguments.port, access_log=None, **SERVER_OPTIONS)
 
 
 if __name__ == "__main__":
