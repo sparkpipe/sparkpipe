@@ -96,6 +96,59 @@ static void HostMergeCase(uint32_t context,uint32_t degree,uint32_t levels)
 	printf("%s merge %s: keep %u of stride %u\n",host_failures == 0 ? "PASS" : "FAIL",label,keep,stride);
 }
 
+template<uint32_t CAPACITY>
+static void HostCandidateTopkCase(uint32_t degree,uint32_t keep,uint32_t k,uint32_t positions,uint32_t rows,uint32_t valid,uint32_t levels,uint32_t fill)
+{
+	const uint32_t slots = degree * keep,span = positions + positions / 8u + 1u;
+	std::vector<uint2> gathered((uint64_t)slots * rows);
+	std::vector<float> dense((uint64_t)rows * positions);
+	std::vector<uint32_t> reference,result((uint64_t)rows * k,0u),pool(span),order(slots);
+	uint32_t row,index,pick,swap,matched = 1u;
+	char label[128];
+	snprintf(label,sizeof(label),"degree%u keep%u k%u positions%u rows%u valid%u levels%u fill%u",degree,keep,k,positions,rows,valid,levels,fill);
+	for (row=0u; row<rows; row++)
+	{
+		for (index=0u; index<span; index++)
+			pool[index] = index;
+		for (index=0u; index<slots; index++)
+			order[index] = index;
+		for (index=0u; index<slots; index++)
+			gathered[(uint64_t)(index / keep) * rows * keep + (uint64_t)row * keep + index % keep] = make_uint2(__float_as_uint(-INFINITY),LM_INDEX_SHARD_NO_POSITION);
+		for (index=0u; index<valid; index++)
+		{
+			const uint32_t position_pick = index + HostNext() % (span - index),slot_pick = index + HostNext() % (slots - index);
+			float value = levels != 0u ? (float)(HostNext() % levels) : (float)(int32_t)(HostNext() >> 8u) / 8388608.0f;
+			uint32_t slot;
+			swap = pool[index]; pool[index] = pool[position_pick]; pool[position_pick] = swap;
+			swap = order[index]; order[index] = order[slot_pick]; order[slot_pick] = swap;
+			slot = order[index];
+			if ( index == 0u && row == 1u )
+				value = INFINITY;
+			gathered[(uint64_t)(slot / keep) * rows * keep + (uint64_t)row * keep + slot % keep] = make_uint2(__float_as_uint(value),pool[index]);
+		}
+	}
+	HostCheck(LmIndexShardCandidateScatterLaunch<HOST_THREADS>(gathered.data(),(uint64_t)rows * keep,degree,keep,rows,positions,dense.data(),0) == cudaSuccess,"dense candidate scatter launch");
+	HostTopk(dense,rows,positions,k,reference);
+	HostCheck(LmIndexShardCandidateTopkLaunch<HOST_THREADS,CAPACITY>(gathered.data(),(uint64_t)rows * keep,degree,keep,rows,positions,k,fill,result.data(),0) == cudaSuccess,"candidate top-k launch");
+	for (row=0u; row<rows; row++)
+	{
+		std::vector<uint32_t> expected,got;
+		for (index=0u; index<k; index++)
+		{
+			const uint32_t want = reference[(uint64_t)row * k + index];
+			if ( fill != 0u || (want < positions && dense[(uint64_t)row * positions + want] > -INFINITY) )
+				expected.push_back(want);
+			if ( fill != 0u || result[(uint64_t)row * k + index] != LM_INDEX_SHARD_NO_POSITION )
+				got.push_back(result[(uint64_t)row * k + index]);
+		}
+		matched &= expected == got ? 1u : 0u;
+	}
+	for (pick=0u; pick<(uint32_t)result.size() && fill == 0u; pick++)
+		matched &= (pick % k == 0u || result[pick] == LM_INDEX_SHARD_NO_POSITION || result[pick - 1u] < result[pick]) ? 1u : 0u;
+	HostCheck(matched != 0u,"the compact candidate top-k selects exactly what the dense scatter and exact top-k select");
+	printf("%s candidate top-k %s\n",matched != 0u ? "PASS" : "FAIL",label);
+}
+
 template<uint32_t WIDTH>
 static void HostGatherCase(uint32_t degree,const std::vector<uint32_t> &contexts,uint32_t chunk_slots,uint64_t section)
 {
@@ -368,6 +421,18 @@ int main(void)
 	HostMergeCase(36000u,16u,0u);
 	HostMergeCase(36000u,16u,3u);
 	HostMergeCase(36000u,4u,7u);
+	HostCandidateTopkCase<512u>(16u,512u,512u,65536u,3u,8192u,64u,1u);
+	HostCandidateTopkCase<512u>(16u,512u,512u,65536u,3u,8192u,0u,1u);
+	HostCandidateTopkCase<512u>(16u,512u,512u,65536u,2u,300u,0u,1u);
+	HostCandidateTopkCase<512u>(16u,512u,512u,4096u,3u,900u,5u,1u);
+	HostCandidateTopkCase<512u>(16u,512u,512u,65536u,3u,511u,3u,1u);
+	HostCandidateTopkCase<512u>(16u,512u,512u,65536u,3u,512u,3u,1u);
+	HostCandidateTopkCase<512u>(16u,512u,512u,65536u,3u,513u,3u,1u);
+	HostCandidateTopkCase<512u>(16u,512u,512u,300u,2u,200u,0u,1u);
+	HostCandidateTopkCase<512u>(4u,512u,512u,40000u,3u,2048u,2u,1u);
+	HostCandidateTopkCase<2048u>(16u,2048u,2048u,32768u,2u,32768u,16u,0u);
+	HostCandidateTopkCase<2048u>(16u,2048u,2048u,32768u,2u,1000u,0u,0u);
+	HostCandidateTopkCase<2048u>(16u,2048u,2048u,32768u,2u,20000u,0u,0u);
 	HostGatherCase<576u>(16u,std::vector<uint32_t>{777u,3000u},0u,0u);
 	HostGatherCase<128u>(16u,std::vector<uint32_t>{5000u,64u,1u},0u,0u);
 	HostGatherCase<576u>(4u,std::vector<uint32_t>{130u},0u,0u);

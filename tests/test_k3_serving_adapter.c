@@ -211,7 +211,7 @@ static int32_t TestK3Grouping(void)
 	SparkModelServingLane lanes[2];
 	SparkStatus status = SPARK_STATUS_OK;
 	SparkMemoryBuffer *host[] = { &state.positions_host, &state.context_host,
-		&state.state_host, &state.runs_host, &state.seqslot_host, &state.order_host };
+		&state.state_host, &state.runs_host, &state.seqslot_host, &state.order_host, &state.target_host };
 	uint32_t row_slots[8], index, active = 0u;
 	uint64_t row_sequences[8], row_positions[8];
 	int32_t failures = 0;
@@ -226,6 +226,8 @@ static int32_t TestK3Grouping(void)
 	memset(lanes, 0, sizeof(lanes));
 	lanes[0].resident_sequence_slot = 2u;
 	lanes[1].resident_sequence_slot = 0u;
+	lanes[0].state_target_token_count = 16384u;
+	lanes[1].state_target_token_count = 2u;
 	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
 	submission.lanes = lanes;
 	submission.lane_count = 2u;
@@ -242,6 +244,8 @@ static int32_t TestK3Grouping(void)
 		"the recurrent state walks each sequence's rows in order: row runs 0, 3, 5");
 	failures += TestK3Check(TestK3Host(&state.seqslot_host)[0] == 2u && TestK3Host(&state.seqslot_host)[1] == 0u,
 		"the recurrent state is indexed per sequence: slots 2 then 0");
+	failures += TestK3Check(TestK3Host(&state.target_host)[0] == 16384u && TestK3Host(&state.target_host)[1] == 2u,
+		"each sequence carries its lane's next kept-state position to the runner");
 	failures += TestK3Check(TestK3Host(&state.state_host)[0] == 2u && TestK3Host(&state.state_host)[2] == 2u &&
 		TestK3Host(&state.state_host)[3] == 0u && TestK3Host(&state.state_host)[4] == 0u,
 		"attention KV stays indexed per row");

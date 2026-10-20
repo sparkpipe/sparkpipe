@@ -108,8 +108,8 @@ static __global__ void D41HcPreRowsKernel(const uint16_t *__restrict__ streams, 
 	}
 }
 
-static __global__ void D41HcPostRowsKernel(const uint16_t *__restrict__ sublayer, const uint16_t *__restrict__ residual,
-	const float *__restrict__ post, const float *__restrict__ comb, uint16_t *__restrict__ streams, uint32_t width)
+static __global__ void D41HcPostRowsKernel(const uint16_t *__restrict__ sublayer, const float *__restrict__ post,
+	const float *__restrict__ comb, uint16_t *streams, uint32_t width)
 {
 	const uint32_t row = blockIdx.y;
 	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < width; element += gridDim.x * blockDim.x )
@@ -117,7 +117,7 @@ static __global__ void D41HcPostRowsKernel(const uint16_t *__restrict__ sublayer
 		const float x = LmBf16ToFloat(sublayer[(uint64_t)row * width + element]);
 		float source[D41K_HC];
 		for ( uint32_t copy = 0u; copy < D41K_HC; ++copy )
-			source[copy] = LmBf16ToFloat(residual[((uint64_t)row * D41K_HC + copy) * width + element]);
+			source[copy] = LmBf16ToFloat(streams[((uint64_t)row * D41K_HC + copy) * width + element]);
 		for ( uint32_t copy = 0u; copy < D41K_HC; ++copy )
 		{
 			float total = 0.0f;
@@ -234,6 +234,12 @@ static __global__ void D41CompressedEmitPositionKernel(const uint32_t *__restric
 		return;
 	const uint32_t visible = (positions[row] + 1u) / ratio;
 	bound_position[row] = visible == 0u ? D41K_NO_ROW : visible - 1u;
+}
+
+static __global__ void D41RowBeginKernel(uint32_t *__restrict__ row_begin, uint32_t rows)
+{
+	row_begin[0] = 0u;
+	row_begin[1] = rows;
 }
 
 static __global__ void D41CompressedLengthKernel(const uint32_t *__restrict__ context_length, uint32_t *__restrict__ compressed_length,
@@ -423,6 +429,27 @@ static __global__ void D41NaiveLinearKernel(const uint16_t *__restrict__ weight,
 		output[(uint64_t)row * output_dimension + neuron] = LmFloatToBf16(total);
 	if ( output_f32 != 0 )
 		output_f32[(uint64_t)row * output_dimension + neuron] = total;
+}
+
+static __global__ void D41IndexPackKernel(const uint16_t *__restrict__ query, const uint16_t *__restrict__ weight, uint16_t *__restrict__ packed,
+	uint32_t query_width, uint32_t weight_width, uint32_t pack_width)
+{
+	const uint32_t row = blockIdx.x;
+	for ( uint32_t element = threadIdx.x; element < pack_width; element += blockDim.x )
+		packed[(uint64_t)row * pack_width + element] = element < query_width ? query[(uint64_t)row * query_width + element] :
+			element < query_width + weight_width ? weight[(uint64_t)row * weight_width + element - query_width] : (uint16_t)0u;
+}
+
+static __global__ void D41IndexUnpackKernel(const uint16_t *__restrict__ packed, uint16_t *__restrict__ query, uint16_t *__restrict__ weight,
+	uint32_t rows, uint32_t query_width, uint32_t weight_width, uint32_t pack_width)
+{
+	const uint32_t row = blockIdx.x, rank = blockIdx.y, ranks = gridDim.y;
+	const uint16_t *source = packed + ((uint64_t)rank * rows + row) * pack_width;
+	for ( uint32_t element = threadIdx.x; element < query_width + weight_width; element += blockDim.x )
+		if ( element < query_width )
+			query[((uint64_t)row * ranks + rank) * query_width + element] = source[element];
+		else
+			weight[((uint64_t)row * ranks + rank) * weight_width + element - query_width] = source[element];
 }
 
 static __global__ void D41ScaleRowsKernel(uint16_t *__restrict__ data, uint64_t elements, float factor)

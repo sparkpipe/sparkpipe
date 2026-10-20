@@ -2218,9 +2218,11 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	in.context = state->max_context;
 	in.multiprocessors = state->multiprocessors;
 	in.last_rows_only = state->head_last_rows;
+	in.every_row_hidden = runner->owns_final_head == 0u || (state->tap_slab_device != 0 && state->tap_final_entry != UINT32_MAX) ? 1u : 0u;
 	in.token_ids = state->token_ids_device;
 	in.host_positions = dispatch->host_positions;
 	in.host_sequence_of_row = dispatch->host_sequence_of_row;
+	in.host_state_target = dispatch->host_state_target;
 	in.graph_key = state->model_interface->graph_key != 0 ? state->model_interface->graph_key(state->model, &in) : 1u;
 	if ( steps > 1u && in.graph_key == 0u )
 	{

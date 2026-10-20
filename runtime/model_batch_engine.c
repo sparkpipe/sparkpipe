@@ -2739,6 +2739,26 @@ static void SparkModelBatchVerifyIdentities(
 	}
 }
 
+static uint32_t SparkModelBatchStateTarget(
+	const SparkModelBatchEngine *engine,
+	const SparkModelBatchRequestState *request,
+	uint32_t context_token_count,
+	uint32_t work_kind)
+{
+	uint32_t checkpoint = engine->adapter_descriptor->cache_checkpoint_token_count,target = request->prompt_token_count,next,prompt;
+	if ( work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL || context_token_count >= target )
+		return(context_token_count);
+	if ( checkpoint != 0u )
+	{
+		next = (context_token_count + checkpoint - 1u) / checkpoint * checkpoint;
+		target = next < target ? next : target;
+	}
+	prompt = SparkModelBatchPromptCheckpoint(engine,request);
+	if ( prompt >= context_token_count && prompt < target )
+		target = prompt;
+	return(target);
+}
+
 static void SparkModelBatchInitializeLane(
 	SparkModelBatchEngine *engine,
 	SparkModelServingLane *lane,
@@ -2762,6 +2782,7 @@ static void SparkModelBatchInitializeLane(
 	lane->sequence_position = sequence_position;
 	lane->resident_sequence_slot = request->resident_sequence_slot;
 	lane->context_token_count = context_token_count;
+	lane->state_target_token_count = SparkModelBatchStateTarget(engine,request,context_token_count,work_kind);
 	lane->input_token_id = input_token_id;
 	lane->flags = flags;
 	lane->cache_block_identity_first = engine->scratch_block_identity_count;

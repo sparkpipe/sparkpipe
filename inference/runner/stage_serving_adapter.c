@@ -73,6 +73,7 @@ typedef struct SparkStageServingState
 	SparkMemoryBuffer runs_host;
 	SparkMemoryBuffer runs_device;
 	SparkMemoryBuffer seqslot_host;
+	SparkMemoryBuffer target_host;
 	SparkMemoryBuffer seqslot_device;
 	SparkMemoryBuffer order_host;
 	SparkMemoryBuffer order_device;
@@ -938,6 +939,7 @@ static SparkStatus StageServingAllocate(SparkStageServingState *state)
 		{ &state->runs_host, SPARK_MEMORY_SPACE_HOST_COHERENT, (rows + 1u) * sizeof(uint32_t) },
 		{ &state->runs_device, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (rows + 1u) * sizeof(uint32_t) },
 		{ &state->seqslot_host, SPARK_MEMORY_SPACE_HOST_COHERENT, rows * sizeof(uint32_t) },
+		{ &state->target_host, SPARK_MEMORY_SPACE_HOST_COHERENT, rows * sizeof(uint32_t) },
 		{ &state->seqslot_device, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
 		{ &state->order_host, SPARK_MEMORY_SPACE_HOST_COHERENT, rows * sizeof(uint32_t) },
 		{ &state->order_device, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
@@ -1014,7 +1016,7 @@ static void StageServingDestroy(void *adapter_state)
 		&state->positions_host, &state->context_host, &state->state_host, &state->positions_device,
 		&state->context_device, &state->state_device, &state->runs_host, &state->runs_device,
 		&state->seqslot_host, &state->seqslot_device, &state->order_host, &state->order_device,
-		&state->output_tokens, &state->output_scores,
+		&state->output_tokens, &state->output_scores, &state->target_host,
 	};
 	if ( state == 0 )
 		return;
@@ -1123,6 +1125,7 @@ static SparkStatus StageServingGroupRows(SparkStageServingState *state,
 	uint32_t *begin = (uint32_t *)state->runs_host.pointer;
 	uint32_t *order = (uint32_t *)state->order_host.pointer;
 	uint32_t *slots = (uint32_t *)state->seqslot_host.pointer;
+	uint32_t *target = (uint32_t *)state->target_host.pointer;
 	uint32_t cursor[SPARK_STAGE_SERVING_MAX_LANES];
 	uint32_t capacity = state->runner_config.max_active_sequence_count;
 	uint32_t lanes = submission->lanes != 0 ? submission->active_sequence_count : rows;
@@ -1137,6 +1140,7 @@ static SparkStatus StageServingGroupRows(SparkStageServingState *state,
 	for ( lane = 0u; lane < lanes; ++lane )
 	{
 		slots[lane] = submission->lanes != 0 ? submission->lanes[lane].resident_sequence_slot : lane;
+		target[lane] = submission->lanes != 0 ? submission->lanes[lane].state_target_token_count : 0u;
 		if ( slots[lane] >= capacity )
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		for ( i = 0u; i < lane; ++i )
@@ -1379,6 +1383,7 @@ static void StageServingDispatch(const SparkStageServingState *state, const Spar
 	dispatch->chain_steps = steps;
 	dispatch->host_positions = (const uint32_t *)state->positions_host.pointer;
 	dispatch->host_sequence_of_row = (const uint32_t *)state->state_host.pointer;
+	dispatch->host_state_target = (const uint32_t *)state->target_host.pointer;
 }
 
 static SparkStatus StageServingReadTokens(SparkStageServingState *state, uint32_t rows, uint32_t steps)
