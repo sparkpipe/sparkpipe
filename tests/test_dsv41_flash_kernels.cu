@@ -147,9 +147,7 @@ static int RunShardCandidates(char **argv)
     const uint32_t global_blocks = (((positions + grain - 1u) / grain + 63u) / 64u) * 64u;
     const uint32_t keep = local_blocks < topk_blocks ? local_blocks : topk_blocks;
     const uint32_t global_keep = global_blocks < topk_blocks ? global_blocks : topk_blocks;
-    const uint64_t local_entries = (uint64_t)rows * LmTopkExactCandidateEntries(local_blocks, keep, LM_TOPK_EXACT_CHUNK);
-    const uint64_t global_entries = (uint64_t)rows * LmTopkExactCandidateEntries(global_blocks, global_keep, LM_TOPK_EXACT_CHUNK);
-    const uint64_t entries = 2u * (local_entries > global_entries ? local_entries : global_entries) + 2u;
+    const uint64_t entries = 2u * (uint64_t)rows * LmTopkExactCandidateEntries(local_blocks, keep, LM_TOPK_EXACT_CHUNK) + 2u;
     std::vector<uint32_t> reach(rows), row_position(rows), sequence(rows, 0u), length(1, positions);
     std::vector<float> scores((size_t)rows * positions), output((size_t)rows * positions, -INFINITY), local((size_t)rows * local_stride);
     FILE *file = fopen(argv[2], "rb");
@@ -162,12 +160,11 @@ static int RunShardCandidates(char **argv)
     fclose(file);
     for (uint32_t row = 0u; row < rows; ++row)
         row_position[row] = reach[row] != 0u ? reach[row] - 1u : UINT32_MAX;
-    float *local_device[16], *block_scores = 0, *full = 0, *values = 0;
+    float *local_device[16], *block_scores = 0, *values = 0;
     uint8_t *mask_device[16];
     uint32_t *local_selected = 0, *selected = 0, *scratch_positions = 0, *sequence_device = 0, *length_device = 0, *row_position_device = 0;
     uint2 *gathered = 0;
     CUDA(cudaMalloc(&block_scores, (size_t)rows * local_blocks * sizeof(float)));
-    CUDA(cudaMalloc(&full, (size_t)rows * global_blocks * sizeof(float)));
     CUDA(cudaMalloc(&values, entries * sizeof(float)));
     CUDA(cudaMalloc(&scratch_positions, entries * sizeof(uint32_t)));
     CUDA(cudaMalloc(&local_selected, (size_t)rows * keep * sizeof(uint32_t)));
@@ -200,14 +197,12 @@ static int RunShardCandidates(char **argv)
         CUDA(LmIndexShardCandidatePackLaunch<256u>(blocks, block_scores, local_blocks, local_selected, keep, rows,
             gathered + (size_t)rank * rows * keep, 0));
     }
-    CUDA(LmIndexShardCandidateScatterLaunch<256u>(gathered, (uint64_t)rows * keep, degree, keep, rows, global_blocks, full, 0));
-    CUDA(LmTopkExactLaunch<256u>(full, rows, global_blocks, global_keep, LM_TOPK_EXACT_CHUNK, LM_TOPK_EXACT_CHUNKED_ROWS, values,
-        scratch_positions, entries, selected, 0));
+    CUDA((LmIndexShardCandidateTopkLaunch<256u,2048u>(gathered, (uint64_t)rows * keep, degree, keep, rows, global_blocks, global_keep, 0u, selected, 0)));
     for (uint32_t rank = 0u; rank < degree; ++rank)
     {
         const SparkKvShard shard = { degree, rank, grain }, blocks = { degree, rank, 1u };
         const uint32_t owned = SparkKvShardLocalKeys(shard, positions);
-        CUDA(SparkDsv41FlashLaunchShardBlockMask(0, full, global_blocks, selected, global_keep, blocks, mask_device[rank], local_blocks, rows));
+        CUDA(SparkDsv41FlashLaunchShardBlockMask(0, global_blocks, selected, global_keep, blocks, mask_device[rank], local_blocks, rows));
         CUDA(SparkDsv41FlashLaunchShardBlockApply(0, local_device[rank], local_stride, grain, mask_device[rank], local_blocks, rows));
         CUDA(cudaMemcpy(local.data(), local_device[rank], local.size() * sizeof(float), cudaMemcpyDeviceToHost));
         for (uint32_t row = 0u; row < rows; ++row)
@@ -225,7 +220,6 @@ static int RunShardCandidates(char **argv)
     }
     fclose(file);
     CUDA(cudaFree(block_scores));
-    CUDA(cudaFree(full));
     CUDA(cudaFree(values));
     CUDA(cudaFree(scratch_positions));
     CUDA(cudaFree(local_selected));

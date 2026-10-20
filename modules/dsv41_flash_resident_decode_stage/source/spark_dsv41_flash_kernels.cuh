@@ -280,7 +280,6 @@ static __global__ void SparkDsv41FlashShardBlockMaxKernel(
 }
 
 static __global__ void SparkDsv41FlashShardBlockMaskKernel(
-	const float *global_scores_f32,
 	uint32_t global_stride,
 	const uint32_t *selected,
 	uint32_t keep,
@@ -296,8 +295,7 @@ static __global__ void SparkDsv41FlashShardBlockMaskKernel(
 	for (entry = threadIdx.x; entry < keep; entry += blockDim.x)
 	{
 		block = selected[(uint64_t)row * keep + entry];
-		if ( block < global_stride && block % blocks.degree == blocks.rank && block / blocks.degree < block_stride &&
-			global_scores_f32[(uint64_t)row * global_stride + block] > -INFINITY )
+		if ( block < global_stride && block % blocks.degree == blocks.rank && block / blocks.degree < block_stride )
 			line[block / blocks.degree] = 1u;
 	}
 }
@@ -339,7 +337,6 @@ static inline cudaError_t SparkDsv41FlashLaunchShardBlockMax(
 
 static inline cudaError_t SparkDsv41FlashLaunchShardBlockMask(
 	cudaStream_t stream,
-	const float *global_scores_f32,
 	uint32_t global_stride,
 	const uint32_t *selected,
 	uint32_t keep,
@@ -348,10 +345,10 @@ static inline cudaError_t SparkDsv41FlashLaunchShardBlockMask(
 	uint32_t block_stride,
 	uint32_t row_count)
 {
-	if ( global_scores_f32 == 0 || selected == 0 || mask == 0 || row_count == 0u || keep == 0u || blocks.degree == 0u || blocks.rank >= blocks.degree )
+	if ( selected == 0 || mask == 0 || row_count == 0u || keep == 0u || blocks.degree == 0u || blocks.rank >= blocks.degree )
 		return(cudaErrorInvalidValue);
 	SparkDsv41FlashShardBlockMaskKernel<<<row_count,SPARK_DSV41_FLASH_CANDIDATE_THREADS,0,stream>>>(
-		global_scores_f32,global_stride,selected,keep,blocks,mask,block_stride);
+		global_stride,selected,keep,blocks,mask,block_stride);
 	return(cudaGetLastError());
 }
 
@@ -523,7 +520,7 @@ static inline cudaError_t SparkDsv41FlashLaunchRope(cudaStream_t stream, uint16_
 	return(cudaGetLastError());
 }
 
-static __global__ void SparkDsv41FlashFp8QdqKernel(uint16_t *data_bf16, uint32_t group_count)
+static __global__ void SparkDsv41FlashFp8QdqKernel(const uint16_t *source_bf16, uint16_t *data_bf16, uint32_t group_count)
 {
 	const uint32_t group = blockIdx.x * (blockDim.x / SPARK_DSV41_FLASH_FP8_BLOCK) + threadIdx.x / SPARK_DSV41_FLASH_FP8_BLOCK;
 	const uint32_t element = threadIdx.x % SPARK_DSV41_FLASH_FP8_BLOCK;
@@ -532,7 +529,7 @@ static __global__ void SparkDsv41FlashFp8QdqKernel(uint16_t *data_bf16, uint32_t
 	if ( group >= group_count )
 		return;
 	uint16_t *cell = data_bf16 + (uint64_t)group * SPARK_DSV41_FLASH_FP8_BLOCK + element;
-	value = LmBf16ToFloat(*cell);
+	value = LmBf16ToFloat(source_bf16[(uint64_t)group * SPARK_DSV41_FLASH_FP8_BLOCK + element]);
 	amax = fabsf(value);
 	for (offset = SPARK_DSV41_FLASH_FP8_BLOCK / 2u; offset != 0u; offset >>= 1u)
 		amax = fmaxf(amax,__shfl_xor_sync(0xffffffffu,amax,offset));
@@ -542,14 +539,19 @@ static __global__ void SparkDsv41FlashFp8QdqKernel(uint16_t *data_bf16, uint32_t
 	*cell = LmFloatToBf16(LmE4m3ToFloat(LmFloatToE4m3(value)) * scale);
 }
 
-static inline cudaError_t SparkDsv41FlashLaunchFp8Qdq(cudaStream_t stream, uint16_t *data_bf16, uint64_t element_count)
+static inline cudaError_t SparkDsv41FlashLaunchFp8QdqCopy(cudaStream_t stream, const uint16_t *source_bf16, uint16_t *data_bf16, uint64_t element_count)
 {
 	uint32_t groups;
-	if ( data_bf16 == 0 || element_count == 0u || element_count % SPARK_DSV41_FLASH_FP8_BLOCK != 0u )
+	if ( source_bf16 == 0 || data_bf16 == 0 || element_count == 0u || element_count % SPARK_DSV41_FLASH_FP8_BLOCK != 0u )
 		return(cudaErrorInvalidValue);
 	groups = (uint32_t)(element_count / SPARK_DSV41_FLASH_FP8_BLOCK);
-	SparkDsv41FlashFp8QdqKernel<<<(groups + 7u) / 8u,8u * SPARK_DSV41_FLASH_FP8_BLOCK,0,stream>>>(data_bf16,groups);
+	SparkDsv41FlashFp8QdqKernel<<<(groups + 7u) / 8u,8u * SPARK_DSV41_FLASH_FP8_BLOCK,0,stream>>>(source_bf16,data_bf16,groups);
 	return(cudaGetLastError());
+}
+
+static inline cudaError_t SparkDsv41FlashLaunchFp8Qdq(cudaStream_t stream, uint16_t *data_bf16, uint64_t element_count)
+{
+	return(SparkDsv41FlashLaunchFp8QdqCopy(stream, data_bf16, data_bf16, element_count));
 }
 
 static __global__ void SparkDsv41FlashSinkAttentionKernel(

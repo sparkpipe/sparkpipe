@@ -425,6 +425,27 @@ static __global__ void D41NaiveLinearKernel(const uint16_t *__restrict__ weight,
 		output_f32[(uint64_t)row * output_dimension + neuron] = total;
 }
 
+static __global__ void D41IndexPackKernel(const uint16_t *__restrict__ query, const uint16_t *__restrict__ weight, uint16_t *__restrict__ packed,
+	uint32_t query_width, uint32_t weight_width, uint32_t pack_width)
+{
+	const uint32_t row = blockIdx.x;
+	for ( uint32_t element = threadIdx.x; element < pack_width; element += blockDim.x )
+		packed[(uint64_t)row * pack_width + element] = element < query_width ? query[(uint64_t)row * query_width + element] :
+			element < query_width + weight_width ? weight[(uint64_t)row * weight_width + element - query_width] : (uint16_t)0u;
+}
+
+static __global__ void D41IndexUnpackKernel(const uint16_t *__restrict__ packed, uint16_t *__restrict__ query, uint16_t *__restrict__ weight,
+	uint32_t rows, uint32_t query_width, uint32_t weight_width, uint32_t pack_width)
+{
+	const uint32_t row = blockIdx.x, rank = blockIdx.y, ranks = gridDim.y;
+	const uint16_t *source = packed + ((uint64_t)rank * rows + row) * pack_width;
+	for ( uint32_t element = threadIdx.x; element < query_width + weight_width; element += blockDim.x )
+		if ( element < query_width )
+			query[((uint64_t)row * ranks + rank) * query_width + element] = source[element];
+		else
+			weight[((uint64_t)row * ranks + rank) * weight_width + element - query_width] = source[element];
+}
+
 static __global__ void D41ScaleRowsKernel(uint16_t *__restrict__ data, uint64_t elements, float factor)
 {
 	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < elements; index += (uint64_t)gridDim.x * blockDim.x )
