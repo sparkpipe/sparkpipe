@@ -108,8 +108,8 @@ static __global__ void D41HcPreRowsKernel(const uint16_t *__restrict__ streams, 
 	}
 }
 
-static __global__ void D41HcPostRowsKernel(const uint16_t *__restrict__ sublayer, const uint16_t *__restrict__ residual,
-	const float *__restrict__ post, const float *__restrict__ comb, uint16_t *__restrict__ streams, uint32_t width)
+static __global__ void D41HcPostRowsKernel(const uint16_t *__restrict__ sublayer, const float *__restrict__ post,
+	const float *__restrict__ comb, uint16_t *streams, uint32_t width)
 {
 	const uint32_t row = blockIdx.y;
 	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < width; element += gridDim.x * blockDim.x )
@@ -117,7 +117,7 @@ static __global__ void D41HcPostRowsKernel(const uint16_t *__restrict__ sublayer
 		const float x = LmBf16ToFloat(sublayer[(uint64_t)row * width + element]);
 		float source[D41K_HC];
 		for ( uint32_t copy = 0u; copy < D41K_HC; ++copy )
-			source[copy] = LmBf16ToFloat(residual[((uint64_t)row * D41K_HC + copy) * width + element]);
+			source[copy] = LmBf16ToFloat(streams[((uint64_t)row * D41K_HC + copy) * width + element]);
 		for ( uint32_t copy = 0u; copy < D41K_HC; ++copy )
 		{
 			float total = 0.0f;

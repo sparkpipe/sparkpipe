@@ -152,7 +152,7 @@ typedef struct D41ModelState
 	uint64_t record_chunk_floats, a2a_units;
 	uint32_t local_score_stride, global_score_stride, step_score_stride, step_blocks;
 	uint32_t candidate_blocks, local_block_stride, global_block_stride, local_block_keep, global_block_keep, block_round_parts;
-	uint16_t *streams, *residual, *x, *xq, *q_latent, *qr, *qrq, *q_local, *q_gathered, *kv, *window_kv;
+	uint16_t *streams, *x, *xq, *q_latent, *qr, *qrq, *q_local, *q_gathered, *kv, *window_kv;
 	float *mixes, *pre_attn, *post_attn, *comb_attn, *pre_ffn, *post_ffn, *comb_ffn, *pre_head;
 	float *c_kv, *c_score;
 	uint16_t *c_latent, *c_latent_store, *idx_key, *idx_pack_local, *idx_pack_gathered, *idx_q_full, *idx_query, *idx_w_full;
@@ -727,8 +727,7 @@ static SparkStatus D41LayerStep(D41ModelState *state, uint32_t index, const Spar
 		status = D41DumpRows(state, index, 1u, state->partial, rows, D41_HIDDEN, stream);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	cudaMemcpyAsync(state->residual, state->streams, stream_bytes, cudaMemcpyDeviceToDevice, stream);
-	D41HcPostRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->partial, state->residual, state->post_attn,
+	D41HcPostRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->partial, state->post_attn,
 		state->comb_attn, state->streams, D41_HIDDEN);
 	status = D41HcMixes(state, state->streams, layer->hc_ffn_fn, layer->hc_ffn_base, layer->hc_ffn_scale, state->pre_ffn,
 		state->post_ffn, state->comb_ffn, rows, stream);
@@ -749,8 +748,7 @@ static SparkStatus D41LayerStep(D41ModelState *state, uint32_t index, const Spar
 		status = D41DumpRows(state, index, 2u, state->partial, rows, D41_HIDDEN, stream);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	cudaMemcpyAsync(state->residual, state->streams, stream_bytes, cudaMemcpyDeviceToDevice, stream);
-	D41HcPostRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->partial, state->residual, state->post_ffn,
+	D41HcPostRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->partial, state->post_ffn,
 		state->comb_ffn, state->streams, D41_HIDDEN);
 	cudaMemcpyAsync(state->pre_head, state->pre_ffn, (uint64_t)rows * D41K_HC * sizeof(float), cudaMemcpyDeviceToDevice, stream);
 	if ( state->dump != 0 )
@@ -1012,7 +1010,7 @@ static SparkStatus D41PlanArena(D41ModelState *state, uint64_t *bytes, uint8_t *
 	const uint64_t engram_rows = (r * D41_ENGRAM_EMBED + D41_HIDDEN - 1u) / D41_HIDDEN;
 	struct { void **target; uint64_t bytes; } plan[] =
 	{
-		{ (void **)&state->streams, r * D41K_HC * D41_HIDDEN * 2u }, { (void **)&state->residual, r * D41K_HC * D41_HIDDEN * 2u },
+		{ (void **)&state->streams, r * D41K_HC * D41_HIDDEN * 2u },
 		{ (void **)&state->x, r * D41_HIDDEN * 2u }, { (void **)&state->xq, r * D41_HIDDEN * 2u },
 		{ (void **)&state->q_latent, r * D41_QLORA * 2u }, { (void **)&state->qr, r * D41_QLORA * 2u }, { (void **)&state->qrq, r * D41_QLORA * 2u },
 		{ (void **)&state->q_local, r * D41_LOCAL_HEADS * D41_HEAD_DIM * 2u },
