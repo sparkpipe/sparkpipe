@@ -253,8 +253,8 @@
    "id": "deepseek-v4.1-flash",
    "model_dir": "models/deepseek-v4.1-flash",
    "engine": "http://127.0.0.1:8463",
-   "context_tokens": 16384,
-   "max_output_tokens": 16384,
+   "context_tokens": 1048576,
+   "max_output_tokens": 131072,
    "sampling_defaults": {
     "temperature": 1.0,
     "top_p": 0.95

@@ -217,3 +217,20 @@ SparkStatus SparkWeightdLazyPackSlice(const SparkWeightdLazyPack *pack,uint64_t 
 		*pointer = ((uint8_t *)pack->spine + (pack->spine_allocation != 0 ? compact : offset));
 	SPARK_RETURN(status);
 }
+
+SparkStatus SparkWeightdLazyPackPrivateSlice(SparkWeightdLazyPack *pack,uint64_t offset,uint64_t bytes,void **pointer)
+{
+	const void *slice = 0;
+	SparkStatus status;
+	if ( pointer == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	*pointer = 0;
+	if ( pack == 0 || pack->ready == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( pack->spine_allocation == 0 )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	status = SparkWeightdLazyPackSlice(pack,offset,bytes,&slice);
+	if ( status == SPARK_STATUS_OK )
+		*pointer = (void *)slice;
+	SPARK_RETURN(status);
+}

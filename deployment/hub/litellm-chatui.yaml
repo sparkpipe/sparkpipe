@@ -29,7 +29,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 16384
+    max_input_tokens: 1048576
     max_output_tokens: 16384
 - model_name: mimo-v2.6-pro
   litellm_params:

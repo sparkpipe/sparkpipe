@@ -24,6 +24,7 @@ typedef struct SparkWeightdLazyPack
 
 SparkStatus SparkWeightdLazyPackCreate(const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t spine_budget,uint64_t timeout,SparkWeightdLazyPack **out);
 SparkStatus SparkWeightdLazyPackSlice(const SparkWeightdLazyPack *pack,uint64_t offset,uint64_t bytes,const void **pointer);
+SparkStatus SparkWeightdLazyPackPrivateSlice(SparkWeightdLazyPack *pack,uint64_t offset,uint64_t bytes,void **pointer);
 typedef SparkStatus (*SparkWeightdManifestCheck)(const SparkWeightdManifest *manifest,void *context);
 SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t spine_budget,uint64_t timeout,SparkWeightdManifestCheck check,void *context,SparkWeightdLazyPack **out);
 SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack);

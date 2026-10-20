@@ -72,7 +72,9 @@ static const SparkModelServingAdapterDescriptor Dsv41FlashServingDescriptor =
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS,
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY,
 	.stage_count = SPARK_DSV41_FLASH_STAGE_TP_DEGREE,
 	.layer_count = SPARK_DSV41_FLASH_TP16_LAYERS,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -86,12 +88,13 @@ static const SparkModelServingAdapterDescriptor Dsv41FlashServingDescriptor =
 	.max_input_row_count = SPARK_DSV41_FLASH_TP16_MAX_ROWS,
 	.max_resident_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
 	.max_output_token_count = SPARK_DSV41_FLASH_TP16_CHAIN_TOKENS,
-	.max_speculative_token_count = 0u,
+	.max_speculative_token_count = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
 	.stage_layer_counts = { L, L, L, L, L, L, L, L, L, L, L, L, L, L, L, L },
 	.minimum_efficient_submission_row_count = 1u,
 	.cache_block_token_count = SPARK_DSV41_FLASH_STAGE_PAGE_TOKENS,
 	.parallel_group_size = 0u,
 	.cache_checkpoint_token_count = SPARK_DSV41_FLASH_TP16_CHECKPOINT_TOKENS,
+	.max_verify_row_count = SPARK_DSV41_FLASH_STAGE_VERIFY_ROWS,
 };
 
 #undef L
