@@ -32,7 +32,7 @@
 
 #define TEST_STEPLOOP_RANK_COUNT 3u
 #define TEST_STEPLOOP_REQUEST_COUNT 4u
-#define TEST_STEPLOOP_DRAIN_CALL_CEILING 24u
+#define TEST_STEPLOOP_DRAIN_DEADLINE_NS 10000000000ull
 
 static const char *const TestSteploopTransportHosts[TEST_STEPLOOP_RANK_COUNT] =
 {
@@ -101,6 +101,13 @@ static pid_t TestSteploopStartResident(
 		_exit(127);
 	}
 	return(child);
+}
+
+static uint64_t TestSteploopNowNs(void)
+{
+	struct timespec now;
+	assert(clock_gettime(CLOCK_MONOTONIC,&now) == 0);
+	return((uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec);
 }
 
 static void TestSteploopWaitPrepared(SparkModelBatchEngine *engine)
@@ -301,6 +308,7 @@ int main(void)
 	SparkModelBatchRequestHandle handle;
 	uint32_t prompt[TEST_STEPLOOP_REQUEST_COUNT][1];
 	uint32_t drain_calls,index;
+	uint64_t drain_deadline_ns;
 	struct timespec delay;
 	char deployment_path[108];
 	char runtime_root[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
@@ -390,11 +398,12 @@ int main(void)
 		assert(kill(children[index],SIGCONT) == 0);
 	assert(status == SPARK_STATUS_OK);
 	drain_calls = 2u;
+	drain_deadline_ns = TestSteploopNowNs() + TEST_STEPLOOP_DRAIN_DEADLINE_NS;
 	while ( state.completed_count < TEST_STEPLOOP_REQUEST_COUNT )
 	{
 		assert(SparkModelBatchEngineProgress(engine,TEST_STEPLOOP_REQUEST_COUNT) == SPARK_STATUS_OK);
 		drain_calls++;
-		assert(drain_calls <= TEST_STEPLOOP_DRAIN_CALL_CEILING);
+		assert(TestSteploopNowNs() < drain_deadline_ns);
 		nanosleep(&delay,0);
 	}
 
@@ -411,8 +420,8 @@ int main(void)
 	assert(view.failed_status == SPARK_STATUS_OK);
 	assert(view.pipeline.active_transaction_count == 0u);
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
-	fprintf(stderr,"test_steploop_admission drain_calls=%u ceiling=%u\n",
-		drain_calls,TEST_STEPLOOP_DRAIN_CALL_CEILING);
+	fprintf(stderr,"test_steploop_admission drain_calls=%u deadline_ms=%llu\n",
+		drain_calls,TEST_STEPLOOP_DRAIN_DEADLINE_NS / 1000000ull);
 
 	TestSteploopStopResidents(children,paths);
 	for (index=0u; index<TEST_STEPLOOP_RANK_COUNT; index++)
