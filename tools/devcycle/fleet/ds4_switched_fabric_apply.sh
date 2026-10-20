@@ -7,6 +7,9 @@ FABRIC_MTU="${DS4_SWITCHED_FABRIC_MTU:-9000}"
 CX7_HOTPLUG_MARKER="${DS4_CX7_HOTPLUG_MARKER:-/etc/nvidia/cx7-hotplug-enabled}"
 CX7_HOTPLUG_HANDLER="${DS4_CX7_HOTPLUG_HANDLER:-/opt/nvidia/dgx-spark-mlnx-hotplug/mtk-hotplug-handler.sh}"
 FLEET_SYSCTL_PATH="${DS4_FLEET_SYSCTL_PATH:-/etc/sysctl.d/99-ds4-fleet.conf}"
+MANAGEMENT_DEVICE="${DS4_MANAGEMENT_DEVICE:-enP7s7}"
+CEPH_MDS_FABRIC_ADDRESS="${DS4_CEPH_MDS_FABRIC_ADDRESS:-10.10.100.2}"
+CEPH_MDS_MANAGEMENT_ADDRESS="${DS4_CEPH_MDS_MANAGEMENT_ADDRESS:-10.20.0.2}"
 
 fabric_devices()
 {
@@ -190,6 +193,18 @@ configure_fabric_link()
     ip link set dev "${FABRIC_DEVICE}" mtu "${FABRIC_MTU}"
 }
 
+configure_ceph_mds_route()
+{
+    if ! ip -4 -o route get "${CEPH_MDS_MANAGEMENT_ADDRESS}" 2>/dev/null | grep -Eq "^${CEPH_MDS_MANAGEMENT_ADDRESS//./\\.} dev ${MANAGEMENT_DEVICE} "; then
+        printf 'skipped'
+        return 0
+    fi
+    ip route replace "${CEPH_MDS_FABRIC_ADDRESS}/32" \
+        via "${CEPH_MDS_MANAGEMENT_ADDRESS}" \
+        dev "${MANAGEMENT_DEVICE}" || return
+    printf '%s_via_%s' "${CEPH_MDS_FABRIC_ADDRESS}" "${CEPH_MDS_MANAGEMENT_ADDRESS}"
+}
+
 configure_management_link()
 {
     local rank management_ip lan_ip
@@ -277,11 +292,22 @@ remove_legacy_addresses()
 
 configure_unmanaged_fabric()
 {
-    local device
+    local device path
     mkdir -p /etc/NetworkManager/conf.d
+    for path in \
+        /etc/NetworkManager/conf.d/99-ds4-200g-unmanaged.conf \
+        /etc/NetworkManager/conf.d/99-ds4-ring-unmanaged.conf \
+        /etc/NetworkManager/conf.d/ds4-200g-unmanaged.conf; do
+        backup_and_remove "${path}"
+    done
     cat > /etc/NetworkManager/conf.d/90-ds4-switched-fabric-unmanaged.conf <<'EOF'
 [keyfile]
 unmanaged-devices=interface-name:enp1s0f0np0;interface-name:enp1s0f1np1;interface-name:enP2p1s0f0np0;interface-name:enP2p1s0f1np1;interface-name:enP2p1;interface-name:enP2p2
+EOF
+    cat > /etc/NetworkManager/conf.d/95-ds4-uplink-no-assume.conf <<EOF
+[device-ds4-uplink-wired]
+match-device=interface-name:${MANAGEMENT_DEVICE}
+keep-configuration=no
 EOF
     command -v nmcli >/dev/null 2>&1 || return 0
     while read -r device; do
@@ -303,7 +329,7 @@ remove_legacy_profiles()
 
 apply_switched_fabric()
 {
-    local rank address
+    local rank address mds_route
     disable_cx7_hotplug_power_saving
     rank="$(node_rank)"
     if [ -z "${rank}" ] || ! [[ "${rank}" =~ ^[0-9]+$ ]] || [ "${rank}" -gt 15 ]; then
@@ -315,12 +341,19 @@ apply_switched_fabric()
     ip link set dev "${FABRIC_DEVICE}" up
     configure_fabric_link
     ip address replace "${address}" dev "${FABRIC_DEVICE}"
-    printf 'switched_fabric node=%s rank=%s device=%s address=%s mtu=%s cx7_hotplug=disabled\n' \
-        "${DS4_NODE_ID:-$(node_name)}" "${rank}" "${FABRIC_DEVICE}" "${address}" "${FABRIC_MTU}"
+    mds_route="$(configure_ceph_mds_route)"
+    printf 'switched_fabric node=%s rank=%s device=%s address=%s mtu=%s cx7_hotplug=disabled ceph_mds_route=%s\n' \
+        "${DS4_NODE_ID:-$(node_name)}" "${rank}" "${FABRIC_DEVICE}" "${address}" "${FABRIC_MTU}" \
+        "${mds_route}"
 }
 
 if [ "$(id -u)" -ne 0 ]; then
     exec sudo -- "$0" "$@"
+fi
+
+if [ "${1:-}" = "--network-manager" ]; then
+    configure_unmanaged_fabric
+    exit 0
 fi
 
 if [ "${1:-}" = "--install" ]; then

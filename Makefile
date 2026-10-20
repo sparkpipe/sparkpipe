@@ -548,6 +548,8 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_wset_from_trace.py \
 	tests/test_acc_parity_oracle.py \
 	tests/test_ds4_spark_brickproof.py \
+	tests/test_node_baseline_contract.py \
+	tests/test_fleet_post_reboot.py \
 	tests/test_dsv41_flash_geometry.py \
 	tests/test_dsv41_flash_kernels.py \
 	tests/test_dsv41_official_harness.py \

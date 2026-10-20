@@ -1,0 +1,13 @@
+[Unit]
+Description=SparkPipe route to the rtx5090 hub (10.10.250.0/30) through sparkf on the switched fabric
+After=ds4-switched-fabric.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/ip route replace 10.10.250.0/30 via 10.10.100.25 dev enp1s0f1np1
+ExecStop=/usr/sbin/ip route del 10.10.250.0/30 via 10.10.100.25 dev enp1s0f1np1
+
+[Install]
+WantedBy=multi-user.target

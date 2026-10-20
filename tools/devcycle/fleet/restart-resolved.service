@@ -1,0 +1,12 @@
+[Unit]
+Description=Restart systemd-resolved before networking
+After=dbus.socket
+Before=network.target
+Wants=dbus.socket
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart systemd-resolved.service
+
+[Install]
+WantedBy=network.target

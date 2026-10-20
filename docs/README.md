@@ -113,6 +113,8 @@ current authority.
   cycle.
 - [`INCIDENT_RECOVERY_PLAYBOOK.md`](INCIDENT_RECOVERY_PLAYBOOK.md): Spark boot
   and OOM recovery (PXE, then the brickproof controller).
+- [`NODE_BASELINE.md`](NODE_BASELINE.md): the OS policy every node runs, why
+  each item exists, and the procedure for replacing or adding a node.
 - [`CX7_DMA_INVESTIGATION_2026-10.md`](CX7_DMA_INVESTIGATION_2026-10.md):
   the Lenovo ConnectX-7 completion-timeout and SMMU0 stall investigation
   (dated record: incidents, every crash run, mitigations, implications, open

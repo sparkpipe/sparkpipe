@@ -41,11 +41,34 @@ for host in "${REBOOTED[@]}"; do
   sb=$($SSH "$host" 'd=$(findmnt -n -o SOURCE /); c=$(sudo -n dd if=$d bs=1024 skip=1 count=1 2>/dev/null | dd bs=1 skip=56 count=2 2>/dev/null | od -An -tx1 | tr -d " \n"); o=$(sudo -n dd if=$d bs=4096 count=1 iflag=direct 2>/dev/null | dd bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d " \n"); echo "$c $o"')
   if [ "$sb" = "53ef 53ef" ]; then pass "$host" superblock "ext4 magic in cache and on disk"; else fail "$host" superblock "root superblock magic cache/disk = '$sb', want '53ef 53ef'"; fi
 
-  errors=$($SSH "$host" 'sudo -n dmesg 2>/dev/null | grep -i -E "EXT4-fs (error|warning)|arm-smmu.*event|smmu.*(fault|CMD_SYNC)|iommu.*\bfault|nvme.*(timeout|reset)|mlx5.*(syndrome|fatal)|AER:.*(Uncorrect|Fatal)" | tail -3')
+  errors=$($SSH "$host" 'sudo -n dmesg 2>/dev/null | grep -i -E "EXT4-fs (error|warning)|arm-smmu.*event|smmu.*(fault|CMD_SYNC)|iommu.*\bfault|nvme.*(timeout|reset)|mlx5.*(syndrome|fatal)|mlx5_pci_err_detected|CmpltTO|AER:.*(Uncorrect|Fatal)" | tail -3')
   if [ -z "$errors" ]; then pass "$host" kernel "no ext4, SMMU, NVMe, mlx5 or AER error lines since boot"; else fail "$host" kernel "$(echo "$errors" | tr '\n' '|' | cut -c1-240)"; fi
 
-  guard=$($SSH "$host" 'systemctl is-active spark-dma-guard.service 2>/dev/null')
-  if [ "$guard" = active ]; then pass "$host" dma-guard "spark-dma-guard active"; else fail "$host" dma-guard "spark-dma-guard is '$guard'"; fi
+  guard=$($SSH "$host" 'echo "$(systemctl is-active spark-dma-guard.service 2>/dev/null) $(sudo -n journalctl -b -u spark-dma-guard.service -o cat --no-pager 2>/dev/null | grep -o "event=start mode=[a-z-]*" | tail -1 | cut -d= -f3)"')
+  if [ "$guard" = "active armed" ]; then pass "$host" dma-guard "spark-dma-guard active and armed"; else fail "$host" dma-guard "spark-dma-guard is '$guard' (want 'active armed'; watch-only means three unclean boots within six hours)"; fi
+
+  target=$($SSH "$host" 'echo "$(systemctl get-default) $(systemctl is-system-running 2>/dev/null)"')
+  case "$target" in
+    "multi-user.target running"|"multi-user.target degraded") pass "$host" boot-target "$target" ;;
+    *) fail "$host" boot-target "'$target' (want multi-user.target reached; a graphical target with a waiting splash never starts the DMA guard)" ;;
+  esac
+
+  rank=$($SSH "$host" 'tr -cd 0-9 < /etc/ds4-node-rank')
+  if [ "$rank" = 15 ]; then
+    pass "$host" uplink "rank 15 reaches the hub over its direct link"
+  else
+    uplink=$($SSH "$host" 'nmcli -t -f NAME,DEVICE connection show --active | grep -c "^ds4-uplink-wired:enP7s7$"; ip -4 route show default | grep -c "^default via 192.168.50.1 dev enP7s7 .*metric 10"' | tr '\n' ' ')
+    if [ "$uplink" = "1 1 " ]; then pass "$host" uplink "ds4-uplink-wired active, default route metric 10"; else fail "$host" uplink "profile/route counts '$uplink' (want '1 1'; NetworkManager adopted the initramfs ip= profile, see docs/NODE_BASELINE.md)"; fi
+  fi
+
+  emergency=$($SSH "$host" 'ss -ltn | grep -c ":2222 "')
+  if [ "$emergency" -ge 1 ] 2>/dev/null; then pass "$host" emergency-ssh "port 2222 listening"; else fail "$host" emergency-ssh "nothing listens on 2222"; fi
+
+  earlyoom=$($SSH "$host" 'ps -o args= -C earlyoom | head -1')
+  case "$earlyoom" in
+    *"-m 3 -s 100 -r 5 --avoid sshd|systemd|init") pass "$host" earlyoom "$earlyoom" ;;
+    *) fail "$host" earlyoom "'$earlyoom' (want -m 3 -s 100 -r 5)" ;;
+  esac
 
   linger=$($SSH "$host" 'loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null')
   if [ "$linger" = yes ]; then pass "$host" linger "user services start without a login"; else fail "$host" linger "Linger=$linger"; fi
@@ -57,6 +80,12 @@ for host in "${REBOOTED[@]}"; do
   done
   agent=$($SSH "$host" 'systemctl --user is-active fleet-agent 2>/dev/null')
   owner=$($SSH "$host" "$owner_query")
+  safe=$($SSH "$host" 'journalctl --user -u fleet-agent -b -o cat --no-pager 2>/dev/null | grep -E "^agent: (rank=|SAFE MODE)" | tail -1 | grep -c "SAFE MODE"')
+  if [ "${safe:-0}" = 0 ]; then pass "$host" agent-mode "fleet-agent not in safe mode"; else fail "$host" agent-mode "fleet-agent SAFE MODE after short boots; clear with: cat /proc/sys/kernel/random/boot_id > ~/.fleet_agent_safe_clear, then systemctl --user restart fleet-agent"; fi
+
+  clocks=$($SSH "$host" 'echo "$(nvidia-smi --query-gpu=clocks.gr --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d " ") $(cut -d. -f1 /proc/uptime)"')
+  set -- $clocks
+  if [ "${1:-9999}" -le 2200 ] 2>/dev/null; then pass "$host" gpu-clock "${1} MHz (cap 2200)"; elif [ "${2:-0}" -lt 900 ]; then pass "$host" gpu-clock "${1:-?} MHz, uptime ${2}s: the hub fleet-clockcap timer re-caps it within 5 min"; else fail "$host" gpu-clock "${1:-?} MHz above the 2200 MHz cap (sudo nvidia-smi -lgc 0,2200)"; fi
   if [ "$agent" != active ] || [ -z "$owner" ]; then
     fail "$host" units "fleet-agent=$agent weightd owner='${owner:-none}'"
   elif [ "${owner#* }" = sparkpipe-weightd.service ]; then

@@ -1,0 +1,18 @@
+[Unit]
+Description=Mount DS4 Ceph warm model storage
+After=network-online.target ssh.service
+Wants=network-online.target ssh.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ds4-ceph-warm mount
+ExecStop=/usr/local/sbin/ds4-ceph-warm unmount
+TimeoutStartSec=45
+TimeoutStopSec=45
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
