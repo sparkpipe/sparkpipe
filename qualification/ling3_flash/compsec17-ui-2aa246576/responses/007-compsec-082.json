@@ -1,0 +1,62 @@
+{
+ "id": "compsec-082",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "ling-3.0-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe decoder writes a cstring value into a slice selected by a descriptor. xdr_bytes_available() is accurate.\n\nCode:\n```c\n 1: static bool xdr_datum(struct Xdr *xdr, const struct SliceDesc *desc, char *base)\n 2: {\n 3:     uint32_t n = xdr_get_u32(xdr);       // declared cstring length\n 4:     char *dst = base + desc->offset;\n 5: \n 6:     if (n > xdr_bytes_available(xdr))\n 7:         return false;\n 8: \n 9:     xdr_read_bytes(xdr, dst, n);\n10:     dst[n] = '\\0';\n11:     return true;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "19f3ad7c3b62a76b0cf31668045d9c0529eb891293c21788de430ff6a7af1227"
+ },
+ "response": {
+  "id": "chatcmpl-bbc2782554d649639227d4a9236b4257",
+  "created": 1791704868,
+  "model": "ling-3.0-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 2,
+   "prompt_tokens": 310,
+   "total_tokens": 312,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "10",
+ "grade": {
+  "index": 7,
+  "id": "compsec-082",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 404.9,
+  "output_sha256": "4a44dc15364204a80fe80e9039455cc1608281820fe2b24f1e5233ade6af1dd5",
+  "prompt_token_count": 310,
+  "generated_token_count": 2,
+  "reasoning_chars": 0,
+  "content_chars": 2,
+  "status": "stop"
+ }
+}

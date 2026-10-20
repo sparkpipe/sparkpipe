@@ -1,0 +1,12 @@
+[Unit]
+Description=DS4 Spark system and GPU telemetry monitor
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/bin/spark_node_telemetry_monitor.py --node %u --interval 5
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

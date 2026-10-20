@@ -3,12 +3,14 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_model_pipeline_client.h"
+#include "sparkpipe/spark_sampling.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 8u
+#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 14u
+#define SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX 8u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE 0u
 #define SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT 32u
@@ -49,11 +51,10 @@ typedef struct SparkModelBatchEvent
 	uint64_t request_id;
 	uint64_t sequence_id;
 	SparkModelBatchRequestHandle request_handle;
-	uint32_t model_extension_kind;
-	uint32_t first_draft_miss_count;
-	uint32_t first_draft_policy;
 	uint32_t stale_prefix_recompute_count;
 	uint64_t first_dispatch_ns;
+	uint32_t logprob_count;
+	SparkSamplingLogprob logprobs[SPARK_SAMPLING_MAX_LOGPROBS];
 } SparkModelBatchEvent;
 
 typedef void (*SparkModelBatchEventFunction)(
@@ -75,6 +76,10 @@ typedef struct SparkModelBatchEngineConfiguration
 	uint64_t inflight_budget_ns;
 	const SparkModelResidentDeployment *deployment;
 	const char *runtime_root;
+	const char *prefix_index_path;
+	const char *const *peer_prefix_index_paths;
+	uint32_t peer_prefix_index_count;
+	uint32_t reserved0;
 	SparkModelBatchEventFunction event_function;
 	void *event_context;
 	SparkModelPipelineStageCompletionFunction stage_completion_function;
@@ -93,6 +98,10 @@ typedef struct SparkModelBatchSubmitRequest
 	uint32_t prompt_token_count;
 	float temperature;
 	uint64_t seed;
+	float top_p;
+	uint32_t top_k;
+	uint32_t logprobs;
+	uint64_t deadline_ns;
 } SparkModelBatchSubmitRequest;
 
 typedef struct SparkModelBatchEngineView
@@ -110,6 +119,7 @@ typedef struct SparkModelBatchEngineView
 	uint32_t kv_physical_page_capacity;
 	uint32_t kv_logical_page_capacity;
 	uint32_t failed_status;
+	uint32_t context_limit;
 	uint64_t submitted_request_count;
 	uint64_t completed_request_count;
 	uint64_t cancelled_request_count;
@@ -126,6 +136,19 @@ typedef struct SparkModelBatchEngineView
 	uint64_t prefill_ns_total;
 	uint64_t ttft_ns_total;
 	uint64_t ttft_ns_maximum;
+	uint64_t prefix_index_save_count;
+	uint64_t prefix_index_save_failure_count;
+	uint64_t prefix_index_write_ns_total;
+	uint64_t prefix_index_write_ns_maximum;
+	uint64_t prefix_index_export_ns_maximum;
+	uint64_t prefix_index_loaded_record_count;
+	uint64_t prefix_index_refused_count;
+	uint64_t prefix_index_reimported_record_count;
+	uint64_t speculative_verify_lane_count;
+	uint64_t speculative_draft_token_count;
+	uint64_t speculative_accepted_token_count;
+	uint64_t peer_prefix_import_count;
+	uint64_t peer_prefix_imported_record_count;
 	SparkModelPipelineClientView pipeline;
 } SparkModelBatchEngineView;
 
@@ -171,6 +194,10 @@ SparkStatus SparkModelBatchEngineGetPollDescriptors(
 SparkStatus SparkModelBatchEngineGetView(
 	const SparkModelBatchEngine *engine,
 	SparkModelBatchEngineView *view);
+SparkStatus SparkModelBatchEngineGetRankStatus(
+	const SparkModelBatchEngine *engine,
+	uint32_t rank_index,
+	SparkModelResidentStatusReport *report);
 const SparkModelServingAdapterDescriptor *SparkModelBatchEngineGetAdapterDescriptor(
 	const SparkModelBatchEngine *engine);
 void SparkModelBatchEngineSeedSubmissionId(

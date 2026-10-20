@@ -1,0 +1,154 @@
+release2 Ling Fin identity 2026-10-11T11:37:22Z, firmware fw-2c5d5b843, hub API ~/api-build-2c5d5b843/build, lane 2 run fin-r2-fin2 (no swap entry yet; brief section 8 procedure)
+api_pid 1462814
+615cf6d74841f2c11  /proc/1462814/exe
+615cf6d74841f2c11  /home/spec/api-build-2c5d5b843/build/sparkpipe_model_api
+137514616a6ead1c9  /home/spec/ling3_fin-kv-api/runtime/lib/libling3_fin_tp16_serving_adapter.so
+137514616a6ead1c9  /home/spec/api-build-2c5d5b843/build/libling3_fin_tp16_serving_adapter.so
+2b9bbfb072e09cc46  /home/spec/ling3_fin-kv-api/runtime/tokenizer/tokenizer.compiled
+{"status":"ok","served":0,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+spark0 36bdc2e66422665f 36e04cf780f4
+spark1 36bdc2e66422665f c8674e4eedc0
+spark2 36bdc2e66422665f 22dc6a8449b9
+spark3 36bdc2e66422665f 3130696aa7b4
+spark4 36bdc2e66422665f 25b66c5aea0a
+spark5 36bdc2e66422665f 99fc06d3529d
+spark6 36bdc2e66422665f bb1a49819982
+spark7 36bdc2e66422665f bcf0ec669b74
+spark8 36bdc2e66422665f be6f4830f054
+spark9 36bdc2e66422665f 6ed1cbbfef98
+sparka 36bdc2e66422665f 1846c534c917
+sparkb 36bdc2e66422665f 5eff114c8959
+sparkc 36bdc2e66422665f 28db740a7a69
+sparkd 36bdc2e66422665f 4d109b998468
+sparke 36bdc2e66422665f aa898dd9bd5b
+sparkf 36bdc2e66422665f a5f1136c2549
+fw 36bdc2e66422665f
+{"status":"ok","served":86,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+
+## lane run (brief section 8: qwen3.8-flash -> setup -> lane.sh start/ready -> API 8469 -> capture + batch check -> stop + reclaim -> qwen3.8-max)
+== 2026-10-11T11:36:49Z precheck
+controller: idle qwen3.8-max None
+== 2026-10-11T11:36:50Z activate qwen3.8-flash
+11:37:10 idle qwen3.8-flash None 17.7
+== 2026-10-11T11:37:10Z setup
+rtx5090:ling3_fin-kv-api ready (tokenizer 2b9bbfb072e09cc4e4ae7e92711e661878e2b705c7d325acf7a0d7d51ed3a996); swap controller entry in ./ling3_fin.swap_entry.json
+== 2026-10-11T11:37:14Z start fin-r2-fin2
+ready 16/16 after 10s
+node adapter sha:   16 36bdc2e66422665f
+"connected_ranks":16
+== 2026-10-11T11:37:22Z capture
+capital 8 cached 0 'The capital of France is Paris.<|role_end|>'
+arith 64 cached 0 '**37 × 43 = 1,591**\n\n**Steps (using the difference of squares trick):**\n\n1. Notice that 37 and 
+code 64 cached 0 'Certainly! Below is a Python function that returns the n-th Fibonacci number using an iterative app
+story 64 cached 0 'The salt had long since ceased to be a mere irritant and had become a part of him, crusting in the 
+sky 53 cached 0 "The sky appears blue because molecules in the Earth's atmosphere scatter sunlight in all directions
+translate 35 cached 0 "The weather is nice today and we are going to the park.\n\nTranslation: **Le temps est agréable auj
+list 64 cached 0 'Based on common household and practical applications, here are five frequent uses of baking soda (s
+zh 19 cached 0 '长城是中国古代修建的宏伟军事防御工程，全长超过两万公里，被誉为世界文化遗产。<|role_end|>'
+count 64 cached 0 '1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1'
+long 64 cached 0 'Marrow Bay grew from a small fishing settlement around a single pier into a thriving community afte
+capital_turn2 65 prompt 10 cached 40 'Die Hauptstadt von Frankreich ist Paris.<|role_end|>'
+sky_turn2 108 prompt 64 cached 83 'Der Himmel erscheint blau, weil Moleküle in der Erdatmosphäre das Sonnenlicht in alle Richtungen st
+translate_turn2 97 prompt 33 cached 72 'The weather is nice today and we are going to the park.\n\nTranslation: **Das Wetter ist heute schö
+zh_turn2 69 prompt 64 cached 44 'Die Great Wall ist ein prächtiges militärisches Verteidigungswerk, das in der Antike in China erbau
+== 2026-10-11T11:37:40Z batch check
+B1 vs B1again: identical 18/18 
+B1 vs B4: identical 16/18 {'sky': {'at': 18, 'B1_top2_margin': 0.12863}, 'synth260': {'at': 29, 'B1_top2_margin': 0.40659}}
+B1 vs B18: identical 15/18 {'code': {'at': 14, 'B1_top2_margin': 0.22797}, 'story': {'at': 24, 'B1_top2_margin': 0.43666}, 'sky': {'at': 18, 'B1_top2_margin': 0.12863}}
+cached {'B1': 1, 'B1again': 7, 'B4': 7, 'B18': 7}
+"connected_ranks":16
+rank log lines with error|fail|fault|abort|mismatch|AER: 16
+== 2026-10-11T11:38:19Z stop + reclaim
+  16 DROP-KV label=ling3_stage released=1 bytes=N busy=0
+  16 RECLAIM-PACK freed=N arenas=1 busy=0 resident=_ remaining_arenas=2
+== 2026-10-11T11:38:20Z restore qwen3.8-max
+11:38:55 idle qwen3.8-max None 32.9
+== 2026-10-11T11:38:56Z done
+
+## rank logs
+spark0 logs/residentd-fin-r2-fin2.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark1 logs/residentd-fin-r2-fin2.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark2 logs/residentd-fin-r2-fin2.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark3 logs/residentd-fin-r2-fin2.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark4 logs/residentd-fin-r2-fin2.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark5 logs/residentd-fin-r2-fin2.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark6 logs/residentd-fin-r2-fin2.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark7 logs/residentd-fin-r2-fin2.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark8 logs/residentd-fin-r2-fin2.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark9 logs/residentd-fin-r2-fin2.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparka logs/residentd-fin-r2-fin2.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkb logs/residentd-fin-r2-fin2.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkc logs/residentd-fin-r2-fin2.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkd logs/residentd-fin-r2-fin2.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparke logs/residentd-fin-r2-fin2.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkf logs/residentd-fin-r2-fin2.log
+dmesg: read kernel buffer failed: Operation not permitted
+
+## swap-controller run (temporary swap + UI entries, smokes, COMPSEC, failed restore, kimi-k3 check)
+== 2026-10-11T11:39:28Z precheck
+controller: idle qwen3.8-max None
+swap entry vs Flash entry (renamed ling3_flash->ling3_fin, 8468->8469): SAME SHAPE
+swap models: 13 chat models: 13
+- model_name: ling-3.0-flash-fin
+  litellm_params:
+    model: hosted_vllm/ling-3.0-flash-fin
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 32768
+    max_output_tokens: 32768
+2e2f382c127bceaf models/ling-3.0-flash-fin/chat_template.jinja
+2456b0372956cd3e models/ling-3.0-flash-fin/tokenizer_config.json
+40fb9d7d7795b8bd models/ling-3.0-flash-fin/tokenizer.json
+backup suffix .prev-20261011T113928Z
+controller after restart: idle qwen3.8-max None 13 True
+chat config 13 models; swap 13; in chat not swap []
+chat :8433: 13 listed; missing []; extra []
+litellm :4000: 13 listed; missing []; extra []
+active active active 
+controller: idle qwen3.8-max None
+== 2026-10-11T11:39:45Z activate ling-3.0-flash-fin
+11:40:11 idle ling-3.0-flash-fin None 23.1
+sing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+== 2026-10-11T11:40:11Z smokes
+chat          PASS  | finish='stop' 2.72s content='The capital of France is Paris.' reasoning=579 chars
+stream        PASS  | finish='stop' 2.66s content='The capital of France is Paris.' reasoning=579 chars
+tool          PASS  | finish='tool_calls' 1.12s content='' reasoning=112 chars
+tool_result   PASS  | finish='stop' 1.23s content='The current weather in Paris is **sunny** with a temperature of **18°C**. Enjoy the lovely' reasoning=212 chars
+reasoning_off PASS  | finish='stop' 0.2s content='391' reasoning=0 chars
+reasoning_on  PASS  | finish='stop' 0.71s content='391' reasoning=44 chars
+UI-SMOKE ling-3.0-flash-fin: 6/6
+== 2026-10-11T11:40:20Z compsec17
+[ 2/17] compsec-077 GNU Inetutils telnetd    FAIL expected='18-20' got='14' (7.5s, 474 tok, stop)
+[ 4/17] compsec-079 Botan                    FAIL expected='18-19' got='3' (7.6s, 512 tok, length)
+[ 5/17] compsec-080 Botan                    FAIL expected='5-6' got='8' (4.1s, 268 tok, stop)
+[ 6/17] compsec-081 uds-c                    FAIL expected='10-15' got='8' (5.7s, 352 tok, stop)
+"connected_ranks":16
+== 2026-10-11T11:41:55Z restore qwen3.8-max
+12:01:10 idle qwen3.8-max None 38.7
+== 2026-10-11T12:01:10Z reclaim check
+  16 DROP-KV label=ling3_stage released=0 bytes=0 busy=0
+  16 RECLAIM-PACK freed=0 arenas=0 busy=0 resident=_ remaining_arenas=2
+== 2026-10-11T12:01:10Z kimi-k3 activation check
+12:02:01 idle kimi-k3 None 50.6
+kimi-k3 chat: stop 'The capital of France is Paris.' usage 13
+k3 swap: [{"from": "qwen3.8-max", "to": "kimi-k3", "ok": true, "seconds": 50.6, "error": null, "memory": {"model": "kimi-k3", "projected_gib": 97.5, "used_gib_max": 98.0, "used_gib_min": 97.7, "available_gib_min": 7.6, "tightest": "spark4"}, "finished": "2026-10-11T12:01:59Z"}]
+== 2026-10-11T12:02:03Z restore qwen3.8-max
+12:02:54 idle qwen3.8-max None 47.4
+final: idle qwen3.8-max None {"model": "qwen3.8-max", "projected_gib": 88.0, "used_gib_max": 90.2, "used_gib_min": 90.1, "available_gib_min": 15.6, "tightest": "spark4"}
+== 2026-10-11T12:02:54Z done

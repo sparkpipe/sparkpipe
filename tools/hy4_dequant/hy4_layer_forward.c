@@ -1,10 +1,3 @@
-/* hy4 lane: full single-layer forward (CPU, fp32) on real rank bytes.
- * Block 1 (full indexer, sparse MoE) of the deployed rank-02 shard, run
- * sequentially over T=4 tokens exactly as the model executes: each token's
- * hc mixing consumes the stream state at its step, attention attends over
- * the cached kv of positions 0..t, and the MoE routes per token. At T=4 the
- * DSA top-k (2048) covers all positions, so the indexer mask is a no-op.
- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,7 +17,7 @@
 #define N_FF 2048
 #define N_EXPERT 256
 #define N_USED 8
-#define OWN_LO 32   /* rank-02 owns experts 32..47 */
+#define OWN_LO 32
 #define SCALE 2.827f
 
 static float silu(float v) { return v / (1.0f + expf(-v)); }
@@ -77,10 +70,8 @@ static void rms_norm(const float *x, const float *w, float *y, long n, float eps
     for (long i = 0; i < n; ++i) y[i] = x[i] * inv * w[i];
 }
 
-/* hc mixing: fn per stream, summed; pre/post gates from scale/base halves */
 static void hc_mix(const float *fn, const float *streams, const float *scale,
                    const float *base, float *pre, float *post) {
-    /* fn consumes the FLATTENED hc-stream vector: [HC*N_EMBD] -> [2*HC] */
     float mixed[HC * 2];
     matvec(fn, streams, mixed, HC * 2, HC * N_EMBD);
     for (int i = 0; i < HC; ++i)
@@ -163,16 +154,13 @@ int main(int argc, char **argv) {
     LOAD("blk.1.exp_probs_b.bias", ebias);
     fprintf(stderr, "layer weights loaded\n");
 
-    /* kv cache across tokens */
     static float klat[T][KV_LORA], kpe[T][ROT];
 
-    /* hc streams: deterministic init */
     float *streams = malloc((size_t)HC * N_EMBD * 4);
     for (int s = 0; s < HC; ++s)
         for (int i = 0; i < N_EMBD; ++i)
             streams[s * N_EMBD + i] = sinf((float)(i + 17)) * 0.1f;
 
-    /* shared MoE weights (dequant once) */
     float *shg = malloc((size_t)N_FF * N_EMBD * 4);
     float *shu = malloc((size_t)N_FF * N_EMBD * 4);
     float *shd = malloc((size_t)N_EMBD * N_FF * 4);
@@ -184,7 +172,6 @@ int main(int argc, char **argv) {
     float *dw = malloc((size_t)N_EMBD * N_FF * 4);
 
     for (int t = 0; t < T; ++t) {
-        /* ---- attention branch ---- */
         float pre[HC], post[HC];
         hc_mix(hc_attn_fn, streams, hc_attn_scale, hc_attn_base, pre, post);
         float cur[N_EMBD];
@@ -244,7 +231,6 @@ int main(int argc, char **argv) {
         hc_distribute(streams, abranch, post);
         free(abranch);
 
-        /* ---- ffn branch ---- */
         float fpre[HC], fpost[HC];
         hc_mix(hc_ffn_fn, streams, hc_ffn_scale, hc_ffn_base, fpre, fpost);
         float fcur[N_EMBD];

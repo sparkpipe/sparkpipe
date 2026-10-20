@@ -59,6 +59,36 @@ in the env files.
 A release that changes `agent.env`, `config/env_*.env` or
 `config/rank_index_*` restarts the root.
 
+## Node KV reserve
+
+weightd owns the KV device memory of every engine that uses the common KV
+binding (GLM Full, GLM Flash, K3): each engine maps one weightd KV pool, and
+weightd admits pools only inside `SPARK_WEIGHTD_KV_RESERVE_BYTES`, carved out
+of `SPARK_WEIGHTD_DEVICE_BYTES_MAX` (weight arenas get the rest). The agent
+passes every `SPARK_WEIGHTD_*` variable in its own environment to weightd, so
+set the reserve in the agent unit's environment on every node. Pools resize
+inside the reserve by chunk: an engine attaches with its full size when the
+reserve is free and with at least its minimum (one full-length sequence)
+otherwise, waiting while idle engines give chunks back. An engine whose pool
+evicts or refuses for capacity grows it (`kv pool grew`), and weightd records
+the chunks it could not grant; an engine without that pressure for four 50 ms
+ticks sees those wanted chunks, vacates its top pages (discarding saved prefix
+pages, parking the rest) and shrinks (`kv pool shrank`). Each engine logs
+`chunks=granted/total minimum_chunks=` and `pages=limit/physical` on its
+`kv pool weightd` line; size the reserve to at least the sum of the minimums
+for the engines a node runs, and to the sum of the totals for them to run
+unshared. Without a reserve those engines refuse to load. KV writes to NVMe
+are never limited or refused: each engine counts every spill, recurrent-state
+and snapshot write (`kv write meter` line at load), `kv_store_report` shows
+`write_bytes`, `write_bytes_this_hour`, `write_bytes_previous_hour`,
+`write_alerts` and `write_alerting`, and an engine that writes more than
+20 GiB within an hour (about 0.5 TB/day, a quarter of a 4 TB Spark drive's
+five-year endurance pace) logs one `KV-WRITE-ALERT` line per hour and is named
+in the API's `/health` as `kv_write_alert_rank`. A pool
+stays in weightd when its engine stops; a clean engine restart reattaches it
+and adopts the sealed resident prefix pages, and detached pools are evicted
+only when a new pool needs the room.
+
 ## Start gates
 
 Before a dev root starts (at boot, after a crash, after a release) the agent

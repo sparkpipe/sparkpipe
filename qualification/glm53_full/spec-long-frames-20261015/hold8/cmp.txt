@@ -1,0 +1,24 @@
+CAPTURES G1 key2=2 failed=0
+PROSE G1 [29.4, 29.45, 29.55]
+FRAMES G1 708
+FRAMES G1 batch_speculation frames=195 drafted=25480 kept_drafts=13914 chain_token_ms=35.1 single_ms=46.0 buckets r2:n=23,rows=2.0,kept=1.7,ms=57.9 r3:n=3,rows=3.0,kept=2.0,ms=68.5 r14:n=1,rows=14.0,kept=14.0,ms=211.1 r15:n=1,rows=15.0,kept=1.0,ms=179.2 r16:n=1,rows=16.0,kept=3.0,ms=144.1 r32:n=24,rows=23.5,kept=14.0,ms=201.7 r64:n=21,rows=49.8,kept=29.2,ms=298.5 r128:n=24,rows=87.4,kept=38.3,ms=372.7 r256:n=97,rows=225.4,kept=125.5,ms=534.8
+SPEED G1 editfull tokens=15825 decode_s=66.7 tok_s=237.19 editsr tokens=4547 decode_s=120.9 tok_s=37.62
+CAPTURES S1 key2=0 failed=0
+PROSE S1 [29.5, 29.44, 29.53]
+FRAMES S1 657
+FRAMES S1 batch_speculation frames=194 drafted=24659 kept_drafts=13919 chain_token_ms=35.8 single_ms=45.8 buckets r4:n=17,rows=3.3,kept=2.2,ms=74.9 r8:n=1,rows=6.0,kept=2.0,ms=91.8 r16:n=2,rows=15.5,kept=2.0,ms=162.0 r32:n=26,rows=23.3,kept=14.3,ms=206.6 r64:n=35,rows=46.7,kept=19.6,ms=299.5 r128:n=24,rows=85.0,kept=40.5,ms=363.4 r256:n=89,rows=230.1,kept=135.3,ms=538.0
+SPEED S1 editfull tokens=15825 decode_s=67.0 tok_s=236.31 editsr tokens=3937 decode_s=106.9 tok_s=36.84
+CAPTURES G2 key2=2 failed=0
+FRAMES G2 722
+FRAMES G2 batch_speculation frames=192 drafted=25834 kept_drafts=14039 chain_token_ms=35.5 single_ms=46.3 buckets r2:n=9,rows=2.0,kept=1.7,ms=58.3 r3:n=4,rows=3.0,kept=1.8,ms=70.5 r15:n=1,rows=15.0,kept=1.0,ms=178.3 r16:n=1,rows=16.0,kept=3.0,ms=149.2 r32:n=23,rows=22.6,kept=15.4,ms=201.6 r64:n=32,rows=49.0,kept=16.5,ms=308.3 r128:n=29,rows=85.1,kept=37.6,ms=369.0 r256:n=93,rows=230.2,kept=131.6,ms=536.5
+SPEED G2 editfull tokens=15825 decode_s=68.2 tok_s=232.20 editsr tokens=5618 decode_s=157.0 tok_s=35.77
+CAPTURES S2 key2=0 failed=0
+FRAMES S2 722
+FRAMES S2 batch_speculation frames=194 drafted=25849 kept_drafts=14074 chain_token_ms=35.6 single_ms=47.1 buckets r4:n=20,rows=3.1,kept=2.1,ms=68.2 r16:n=2,rows=15.5,kept=2.0,ms=162.8 r32:n=24,rows=22.5,kept=15.6,ms=201.8 r64:n=24,rows=51.4,kept=22.0,ms=308.8 r128:n=30,rows=85.9,kept=36.9,ms=370.9 r256:n=94,rows=229.8,kept=129.9,ms=535.9
+SPEED S2 editfull tokens=15825 decode_s=67.5 tok_s=234.38 editsr tokens=6127 decode_s=161.2 tok_s=38.01
+CAPTURES GL key2=0 failed=0
+FRAMES GL 105
+SPEED GL editfull tokens=2731 decode_s=25.9 tok_s=105.48 editsr tokens=435 decode_s=14.9 tok_s=29.11
+CAPTURES SL key2=0 failed=0
+FRAMES SL 106
+SPEED SL editfull tokens=2731 decode_s=25.7 tok_s=106.09 editsr tokens=435 decode_s=13.8 tok_s=31.47

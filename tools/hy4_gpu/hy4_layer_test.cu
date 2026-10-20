@@ -1,10 +1,3 @@
-// hy4 lane: FULL-LAYER GPU assembly — token 802 through layers 0 and 1
-// (all 64 heads across the 16 rank-bundle head slices, dense layer-0 FFN,
-// the 256-expert routed MoE + shared expert in layer 1, both hc stages),
-// then float-compared against the CPU forward's dumped layer-1 stream
-// state (hy4_generate dump arg, l1state.t0: 4 x 6144 floats).
-//
-// Usage: hy4_layer_test <allranks_dir> <cpu_dump.t0>
 #include <cstdio>
 #include <cstring>
 #include <cstdint>

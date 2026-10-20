@@ -29,4 +29,15 @@ static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8B1WithScore(
   (void)output_token_id; (void)output_score; (void)candidate_offset;
   (void)row_count; (void)vocabulary_count; (void)hidden_dimension;
   return cudaSuccess; }
+static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8RowsWithScore(
+    dim3 stream, const void *hidden_bf16, const void *head_weight_bf16,
+    const uint8_t *shadow_payload, const float *shadow_scale_f32,
+    const float *cert_norm_f32, void *scratch, uint32_t *candidate_ids,
+    uint32_t *candidate_count, uint32_t *output_token_id,
+    float *output_score, uint32_t candidate_offset, uint32_t row_count,
+    uint32_t vocabulary_count, uint32_t hidden_dimension)
+{ return SparkLmHostLaunchHeadCertifiedFp8B1WithScore(stream, hidden_bf16,
+    head_weight_bf16, shadow_payload, shadow_scale_f32, cert_norm_f32, scratch,
+    candidate_ids, candidate_count, output_token_id, output_score,
+    candidate_offset, row_count, vocabulary_count, hidden_dimension); }
 #endif

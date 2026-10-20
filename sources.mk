@@ -1,18 +1,5 @@
 include $(dir $(lastword $(MAKEFILE_LIST)))runtime/weightd_sources.mk
 
-# Every host source, by the library it lands in, at the path it actually lives.
-#
-# This replaced four per-directory sources.mk files. They encoded the directory
-# twice - once in the file's own location and once in the paths inside it - and
-# the reorganisation moved twelve sources without updating either. The Makefile
-# then mapped source to object with $(patsubst src/%.c,...), which returns a
-# non-matching entry UNCHANGED rather than failing, so seven .c paths ended up
-# in *_OBJECTS and one of them was fed to -include as a makefile:
-#
-#   runtime/filesystem.c:19: *** missing separator.  Stop.
-#
-# One list and one path-preserving object map means a source can move to any
-# directory and only this file changes.
 
 SPARKPIPE_CORE_SOURCES := \
     src/spark_status.c \
@@ -25,11 +12,13 @@ SPARKPIPE_CORE_SOURCES := \
     src/spark_speculation_reference_draft.c \
     src/spark_speculation_recorded_draft.c \
     src/spark_speculation_lookup_draft.c \
+    src/spark_speculation_frame.c \
     src/spark_speculation_ngram_draft.c \
     src/spark_speculation_drafter_mix.c \
     src/spark_speculation_relay_draft.c \
     src/spark_speculation_relay_link.c \
     src/spark_speculation_tap.c \
+    src/spark_tap_stream.c \
     ring/transport/draft_bridge.c \
     runtime/filesystem.c \
     runtime/json.c
@@ -43,6 +32,7 @@ SPARKPIPE_RUNTIME_SOURCES := \
     src/spark_driver_loader.c \
     src/spark_orchestrator.c \
     runtime/stagepack_format.c \
+    runtime/named_pack.c \
     runtime/spark_expert_working_set.c \
     runtime/runtime_completion.c \
     runtime/model_runtime.c \
@@ -56,17 +46,13 @@ SPARKPIPE_RUNTIME_SOURCES := \
 	runtime/model_pipeline_client.c \
 	$(SPARKPIPE_WEIGHTD_SOURCES) \
 	runtime/model_batch_engine.c \
+	runtime/prefix_index_file.c \
 	runtime/pipeline_runtime.c
 
-# Transport, memory link, collectives, tokenizer, KV store, stage module ABI.
-# Formerly model-families/common/src, which is the directory the handoff records
-# as deleted twice with every gate green, because it was named for who shared it
-# rather than what it is.
 SPARKPIPE_TRANSPORT_SOURCES := \
     ring/transport/hidden_transport.c \
     ring/transport/fabric_topology.c \
     ring/transport/memlink.c \
-    ring/transport/tp_collective.c \
     ring/transport/tp_device_collective.c
 
 SPARKPIPE_CACHE_SOURCES := \
@@ -88,25 +74,13 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
     text/tokenizer_sidecar.c \
     runtime/stage_module_common.c \
     runtime/stage_kv_binding.c \
+    runtime/kv_device_copy.c \
     runtime/serving_adapter_template.c \
     runtime/memory_buffer.c \
-    runtime/speculation_provider.c \
     runtime/work_transaction.c
 
 SPARKPIPE_GLM52_SOURCES := \
-	model-families/glm52/src/spark_glm52_chat_template.c \
-	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c
-
-SPARKPIPE_QWEN38_27B_SOURCES := \
-    model-families/qwen38_27b/src/spark_qwen38_27b_work_control.c
-
-SPARKPIPE_QWEN38_SOURCES := \
-    model-families/qwen38_max/src/spark_qwen38_max_work_control.c
-
-SPARKPIPE_DSV4_SOURCES := \
-    model-families/dsv4/src/spark_dsv4_parallel_shape.c \
-    model-families/dsv4/src/spark_dsv4_cache_plan.c \
-    model-families/dsv4/src/spark_dsv4_cache_arena.c
+	model-families/glm52/src/spark_glm52_chat_template.c
 
 SPARKPIPE_K3_SOURCES := \
     modules/k3_resident_decode_stage/source/spark_k3_pack_load.c \

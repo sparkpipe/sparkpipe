@@ -1,0 +1,62 @@
+{
+ "id": "compsec-087",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-27b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper parses an IPv6 address used in X.509 name constraints. It records where :: compression occurred, then shifts already parsed bytes.\n\nCode:\n```c\n 1: static int parse_ipv6_reduced(const char *src, uint8_t dst[16])\n 2: {\n 3:     uint8_t tmp[16];\n 4:     uint8_t *tp = tmp;\n 5:     uint8_t *colonp = NULL;\n 6: \n 7:     if (src[0] == ':' && src[1] == ':') {\n 8:         colonp = --tp;          // remember compression point at the beginning\n 9:         src += 2;\n10:     }\n11: \n12:     while (*src != '\\0') {\n13:         unsigned v = parse_hextet(&src);\n14:         *tp++ = (uint8_t)(v >> 8);\n15:         *tp++ = (uint8_t)v;\n16:         if (*src == ':') src++;\n17:     }\n18: \n19:     if (colonp != NULL) {\n20:         size_t n = (size_t)(tp - colonp);\n21:         memmove(colonp + (16 - (tp - tmp)), colonp, n);\n22:         memset(colonp, 0, 16 - (tp - tmp));\n23:     }\n24: \n25:     memcpy(dst, tmp, 16);\n26:     return 0;\n27: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "a5ba2b00736dfe1407028baa546428fcdf6877900cb5383fb74745f285305609"
+ },
+ "response": {
+  "id": "chatcmpl-c1e171aa4c0f4097bd74077ac86c1368",
+  "created": 1791721254,
+  "model": "qwen3.8-27b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "length",
+    "index": 0,
+    "message": {
+     "content": "Looking at the code, I need to analyze the logic for parsing an IPv6 address with `::` compression.\n\n1.  **Lines 7-10**: If the string starts with `::`, `colonp` is set to `--tp`. Since `tp` initially points to `tmp[0]`, `--tp` makes `tp` point to `tmp[-1]` (out of bounds) and `colonp` points to that same location. This is a buffer underflow/overflow issue right at the start. `tmp` is a local array of size 16. `tp` starts at `&tmp[0]`. `--tp` decrements the pointer before it is used. So `colonp` points to memory before `tmp`.\n\n2.  **Lines 12-17**: The loop parses hextets. `tp` is incremented for each byte written. If `colonp` was set to `tmp[-1]`, then `tp` starts at `tmp[-1]`. The first write `*tp++` writes to `tmp[-1]` and moves `tp` to `tmp[0]`. This is writing out of bounds.\n\n3.  **Lines 19-23**: The compression logic.\n    *   `n = (size_t)(tp - colonp)`. If `colonp` is `tmp[-1]` and `tp` is somewhere in `tmp`, this calculates the number of bytes parsed.\n    *   `memmove(colonp + (16 - (tp - tmp)), colonp, n)`.\n        *   `tp - tmp` is the number of bytes written into `tmp` (assuming `tp` started at `tmp[0]`). But here `tp` started at `tmp[-1]`. So `tp - tmp` is effectively `1 + (bytes written)`.\n        *   Let's trace a simple case: `::1`.\n            *   `src = \"::1\"`.\n            *   `colonp = --tp`. `tp` was `&tmp[0]`, now `tp = &tmp[-1]`, `colonp = &tmp[-1]`.\n            *   Loop: `parse_hextet` parses `1`. `v = 1`.\n            *   `*tp++ = 0` (writes to `tmp",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 512,
+   "prompt_tokens": 492,
+   "total_tokens": 1004,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Looking at the code, I need to analyze the logic for parsing an IPv6 address with `::` compression.\n\n1.  **Lines 7-10**: If the string starts with `::`, `colonp` is set to `--tp`. Since `tp` initially points to `tmp[0]`, `--tp` makes `tp` point to `tmp[-1]` (out of bounds) and `colonp` points to that same location. This is a buffer underflow/overflow issue right at the start. `tmp` is a local array of size 16. `tp` starts at `&tmp[0]`. `--tp` decrements the pointer before it is used. So `colonp` points to memory before `tmp`.\n\n2.  **Lines 12-17**: The loop parses hextets. `tp` is incremented for each byte written. If `colonp` was set to `tmp[-1]`, then `tp` starts at `tmp[-1]`. The first write `*tp++` writes to `tmp[-1]` and moves `tp` to `tmp[0]`. This is writing out of bounds.\n\n3.  **Lines 19-23**: The compression logic.\n    *   `n = (size_t)(tp - colonp)`. If `colonp` is `tmp[-1]` and `tp` is somewhere in `tmp`, this calculates the number of bytes parsed.\n    *   `memmove(colonp + (16 - (tp - tmp)), colonp, n)`.\n        *   `tp - tmp` is the number of bytes written into `tmp` (assuming `tp` started at `tmp[0]`). But here `tp` started at `tmp[-1]`. So `tp - tmp` is effectively `1 + (bytes written)`.\n        *   Let's trace a simple case: `::1`.\n            *   `src = \"::1\"`.\n            *   `colonp = --tp`. `tp` was `&tmp[0]`, now `tp = &tmp[-1]`, `colonp = &tmp[-1]`.\n            *   Loop: `parse_hextet` parses `1`. `v = 1`.\n            *   `*tp++ = 0` (writes to `tmp",
+ "grade": {
+  "index": 12,
+  "id": "compsec-087",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "8,20-22",
+  "extracted": "0",
+  "passed": false,
+  "elapsed_ms": 9632.5,
+  "output_sha256": "e8b8d6d07c7d089124ad13bc1aee7103231f62b9292efdbaa4a5f3abc55dde2b",
+  "prompt_token_count": 492,
+  "generated_token_count": 512,
+  "reasoning_chars": 0,
+  "content_chars": 1494,
+  "status": "length"
+ }
+}

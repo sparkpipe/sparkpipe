@@ -1,0 +1,62 @@
+{
+ "id": "compsec-076",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function validates a per-request authentication blob before passing it to the GSS layer.\n\nCode:\n```c\n 1: #define AUTH_STACK_MAX 256\n 2: \n 3: static bool check_rpcsec_packet(const uint8_t *wire, size_t wire_left)\n 4: {\n 5:     if (wire_left < 4)\n 6:         return false;\n 7: \n 8:     uint32_t body_len = get_be32(wire);      // attacker-controlled length field\n 9:     const uint8_t *body = wire + 4;\n10:     uint8_t scratch[AUTH_STACK_MAX];\n11: \n12:     /* XDR opaque values are padded to 4-byte alignment on the wire. */\n13:     uint32_t pad = (4 - (body_len & 3)) & 3;\n14:     uint32_t encoded_len = body_len + pad;\n15: \n16:     /* This check only proves the source bytes exist in the packet. */\n17:     if (encoded_len > wire_left - 4)\n18:         return false;\n19: \n20:     memcpy(scratch, body, encoded_len);\n21:     return gss_verify_mic(scratch, body_len);\n22: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "5dc096cac79b3e8e9e793830cdaf8c24d05c5f34e319e715de6afb886f796d7b"
+ },
+ "response": {
+  "id": "chatcmpl-722d1d320893461a9ffd6ba1751daff3",
+  "created": 1791721601,
+  "model": "qwen3.8-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "length",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability is a stack-based buffer overflow.\n\n1.  **Line 10**: A fixed-size stack buffer `scratch` of size `AUTH_STACK_MAX` (256 bytes) is declared.\n2.  **Line 8**: `body_len` is read from the wire and is attacker-controlled.\n3.  **Line 14**: `encoded_len` is calculated based on `body_len`.\n4.  **Line 17**: The code checks if `encoded_len` fits within the remaining wire data (`wire_left - 4`). It does **not** check if `encoded_len` fits within the size of the `scratch` buffer.\n5.  **Line 20**: `memcpy` copies `encoded_len` bytes into `scratch`. If `encoded_len` > 256, this overflows the stack buffer.\n\nThe primary bug is the lack of a bounds check against `AUTH_STACK_MAX` before the `memcpy`. The `memcpy` itself is the operation that causes the overflow, but the logical error is the missing check. However, usually, the line where the unsafe operation occurs or the line where the check is missing is cited. In this specific pattern, the `memcpy` on line 20 is the direct cause of the memory corruption. The check on line 17 is insufficient.\n\nOften, in these types of questions, the line containing the unsafe copy is considered the location of the bug introduction if the check is logically flawed or missing. Alternatively, one might argue the bug is \"introduced\" by the lack of check, but we must point to a line. Line 20 is where the overflow happens.\n\nLet's re-evaluate if there's an integer overflow.\n`body_len` is `uint32_t`.\n`pad` is calculated correctly.\n`encoded_len = body_len + pad`. If `body_len` is close to `UINT32_MAX`, `encoded_len` could wrap around.\nIf `body_len` is `0xFFFFFFFF`, `pad` is 0. `encoded_len` is `0xFFFFFFFF`.\nCheck on line 17: `if (encoded_len > wire_left - 4)`.\nIf `wire_left` is small (e.g., 10), `wire_left - 4` is 6. `0xFFFFFFFF > 6` is true, so it returns false.\nHowever, if `body_len`",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 512,
+   "prompt_tokens": 424,
+   "total_tokens": 936,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability is a stack-based buffer overflow.\n\n1.  **Line 10**: A fixed-size stack buffer `scratch` of size `AUTH_STACK_MAX` (256 bytes) is declared.\n2.  **Line 8**: `body_len` is read from the wire and is attacker-controlled.\n3.  **Line 14**: `encoded_len` is calculated based on `body_len`.\n4.  **Line 17**: The code checks if `encoded_len` fits within the remaining wire data (`wire_left - 4`). It does **not** check if `encoded_len` fits within the size of the `scratch` buffer.\n5.  **Line 20**: `memcpy` copies `encoded_len` bytes into `scratch`. If `encoded_len` > 256, this overflows the stack buffer.\n\nThe primary bug is the lack of a bounds check against `AUTH_STACK_MAX` before the `memcpy`. The `memcpy` itself is the operation that causes the overflow, but the logical error is the missing check. However, usually, the line where the unsafe operation occurs or the line where the check is missing is cited. In this specific pattern, the `memcpy` on line 20 is the direct cause of the memory corruption. The check on line 17 is insufficient.\n\nOften, in these types of questions, the line containing the unsafe copy is considered the location of the bug introduction if the check is logically flawed or missing. Alternatively, one might argue the bug is \"introduced\" by the lack of check, but we must point to a line. Line 20 is where the overflow happens.\n\nLet's re-evaluate if there's an integer overflow.\n`body_len` is `uint32_t`.\n`pad` is calculated correctly.\n`encoded_len = body_len + pad`. If `body_len` is close to `UINT32_MAX`, `encoded_len` could wrap around.\nIf `body_len` is `0xFFFFFFFF`, `pad` is 0. `encoded_len` is `0xFFFFFFFF`.\nCheck on line 17: `if (encoded_len > wire_left - 4)`.\nIf `wire_left` is small (e.g., 10), `wire_left - 4` is 6. `0xFFFFFFFF > 6` is true, so it returns false.\nHowever, if `body_len`",
+ "grade": {
+  "index": 1,
+  "id": "compsec-076",
+  "source": "COMPSEC",
+  "domain": "FreeBSD / librpcsec_gss",
+  "expected": "17-20",
+  "extracted": "6",
+  "passed": false,
+  "elapsed_ms": 13086.8,
+  "output_sha256": "953dade31d58523f1a81b9dff0afb1f058d46ca8bacb404f1a6b9b79a2587d0d",
+  "prompt_token_count": 424,
+  "generated_token_count": 512,
+  "reasoning_chars": 0,
+  "content_chars": 1841,
+  "status": "length"
+ }
+}

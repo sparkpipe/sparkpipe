@@ -1,0 +1,62 @@
+{
+ "id": "compsec-082",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "mimo-v2.6-pro",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe decoder writes a cstring value into a slice selected by a descriptor. xdr_bytes_available() is accurate.\n\nCode:\n```c\n 1: static bool xdr_datum(struct Xdr *xdr, const struct SliceDesc *desc, char *base)\n 2: {\n 3:     uint32_t n = xdr_get_u32(xdr);       // declared cstring length\n 4:     char *dst = base + desc->offset;\n 5: \n 6:     if (n > xdr_bytes_available(xdr))\n 7:         return false;\n 8: \n 9:     xdr_read_bytes(xdr, dst, n);\n10:     dst[n] = '\\0';\n11:     return true;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "9b94b96146c5e380ce41482951e7fef1245dde1bd37c6190d4a3e5f9cc7f4a0a"
+ },
+ "response": {
+  "id": "chatcmpl-08960a37c2d145279305bf3b9b196183",
+  "created": 1791868680,
+  "model": "mimo-v2.6-pro",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function reads `n` bytes into `dst` and then writes `dst[n] = '\\0'`. The check `n > xdr_bytes_available(xdr)` ensures `n` doesn't exceed available input, but there's no check that `n` fits within the destination slice's capacity. However, the problem states \"The decoder writes a cstring value into a slice selected by a descriptor\" \u2014 the slice has a fixed size defined by the descriptor.\n\nThe bug is that `n` is never validated against the slice's size/capacity. The null terminator at `dst[n]` can write out of bounds if `n` equals or exceeds the slice size. But looking more carefully at the specific line where the bug manifests:\n\nLine 10 writes `dst[n] = '\\0'` \u2014 this writes at index `n`, meaning the buffer must hold `n+1` bytes. Even if `n` were checked against slice size, the null terminator needs `n+1` space. But the primary issue is the missing bounds check against the destination slice size.\n\nThe bug is introduced at line 9-10 where data is written without validating `n` against the slice capacity. The smallest set of lines where the bug is clear is line 10 (the off-by-one null terminator write) combined with the missing check. But the primary bug is the missing validation of `n` against the slice size before writing.\n\nSince the bug is the absence of a check (which would go between lines 7 and 9), and the actual out-of-bounds write occurs at line 10 (writing `dst[n]` requires `n+1` bytes even if `n` were bounded by slice size), the clearest single line is 10.\n\nAnswer: 10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 372,
+   "prompt_tokens": 279,
+   "total_tokens": 651,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function reads `n` bytes into `dst` and then writes `dst[n] = '\\0'`. The check `n > xdr_bytes_available(xdr)` ensures `n` doesn't exceed available input, but there's no check that `n` fits within the destination slice's capacity. However, the problem states \"The decoder writes a cstring value into a slice selected by a descriptor\" \u2014 the slice has a fixed size defined by the descriptor.\n\nThe bug is that `n` is never validated against the slice's size/capacity. The null terminator at `dst[n]` can write out of bounds if `n` equals or exceeds the slice size. But looking more carefully at the specific line where the bug manifests:\n\nLine 10 writes `dst[n] = '\\0'` \u2014 this writes at index `n`, meaning the buffer must hold `n+1` bytes. Even if `n` were checked against slice size, the null terminator needs `n+1` space. But the primary issue is the missing bounds check against the destination slice size.\n\nThe bug is introduced at line 9-10 where data is written without validating `n` against the slice capacity. The smallest set of lines where the bug is clear is line 10 (the off-by-one null terminator write) combined with the missing check. But the primary bug is the missing validation of `n` against the slice size before writing.\n\nSince the bug is the absence of a check (which would go between lines 7 and 9), and the actual out-of-bounds write occurs at line 10 (writing `dst[n]` requires `n+1` bytes even if `n` were bounded by slice size), the clearest single line is 10.\n\nAnswer: 10",
+ "grade": {
+  "index": 7,
+  "id": "compsec-082",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 23990.9,
+  "output_sha256": "d4c41d53880692a2db2fea89313dcbd88e301012220630b0e766b524eeb363a5",
+  "prompt_token_count": 279,
+  "generated_token_count": 372,
+  "reasoning_chars": 0,
+  "content_chars": 1500,
+  "status": "stop"
+ }
+}

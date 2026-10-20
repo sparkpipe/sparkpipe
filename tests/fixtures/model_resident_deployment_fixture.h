@@ -15,10 +15,13 @@ typedef struct TestModelResidentDeploymentFixture
 	const char *node_target;
 	const char *adapter_configuration_path;
 	const char *kv_backing_directory;
+	const char *kv_partition;
 	uint64_t kv_backing_maximum_bytes;
 	const char *tokenizer_asset_path;
 	uint32_t tokenizer_vocabulary_size;
 	const char *tokenizer_asset_sha256;
+	const uint32_t *tokenizer_text_prompt_prefix_ids;
+	uint32_t tokenizer_text_prompt_prefix_count;
 	const char *chat_template_json;
 	const char *const *runtime_roots;
 	const char *const *transport_hosts;
@@ -29,6 +32,7 @@ typedef struct TestModelResidentDeploymentFixture
 	uint32_t control_port_base;
 	uint32_t node_count;
 	uint32_t coordinator_rank_index;
+	uint32_t eos_token_id;
 } TestModelResidentDeploymentFixture;
 
 int32_t TestModelResidentDeploymentWrite(

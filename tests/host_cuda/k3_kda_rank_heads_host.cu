@@ -23,8 +23,10 @@ std::vector<LmRecordedGemm> lm_recorded_gemms;
 
 #define __CUDACC__ 1
 #include "inference/kernels/kv.cuh"
+#include "inference/kernels/kv_shard.cuh"
 #undef __CUDACC__
 
+#include "tests/host_cuda/lm_host_skinny_recorder.cuh"
 #include "inference/llms/kimi_k3/layer.cuh"
 
 #define TP_DEGREE 4u

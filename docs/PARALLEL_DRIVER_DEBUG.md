@@ -199,12 +199,10 @@ These are transport component measurements, not GLM serving throughput.
 
 ## GLM firmware build for development and PR testing
 
-This section covers development and PR builds. Release builds for the hub
-follow [FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md#41-build-aarch64)
-on the build host sparkf (`~/g5n-rd-build`). Its build step uses the same
-five-argument `tools/module_build_release.sh`, which requires
-`SPARK_QUEUE_ID` and never publishes; staging into the hub is a separate
-runbook step.
+This section covers development and PR builds. Release builds do not use
+it: `scripts/release_build.sh` builds a source archive with `make` on the
+build host and on the hub
+([FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md#41-build)).
 
 Run `tools/glm5_next_build_release.sh` with no arguments through a GPU-owned
 queue job in the clean checkout returned by `spark_queue.py sync`. Use

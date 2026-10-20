@@ -1,0 +1,2 @@
++1579
+KV binding async: device copy-on-write copier (copy stream, per-copy events, pins held until the event, deferred destination free, execution fence), completion thread and save worker in the KV binding with lock-site counters, pending-save queue in the page cache, park rule (a failed park keeps the page, last-resort retry, supersede before dirty, backing relief), glm5_next copier wiring.

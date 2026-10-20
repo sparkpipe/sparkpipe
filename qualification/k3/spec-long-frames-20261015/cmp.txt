@@ -1,0 +1,58 @@
+PROSE C1 [28.34, 28.45, 28.62]
+MEAS C1 "completed":35 "rejected_lanes":0 "verify_lanes":0 "draft_tokens":0 "accepted_draft_tokens":0 PROSE P1 [28.38, 28.37, 28.54]
+MEAS P1 "completed":35 "rejected_lanes":0 "verify_lanes":511 "draft_tokens":20379 "accepted_draft_tokens":16767 CMP glm P1 exact 8/8
+CMP glm P1 NOLP-DIFF 3/4
+PROSE P2 [28.41, 28.49, 28.32]
+MEAS P2 "completed":35 "rejected_lanes":0 "verify_lanes":515 "draft_tokens":20197 "accepted_draft_tokens":16752 CMP glm P2 exact 8/8
+CMP glm P2 NOLP-DIFF 3/4
+TIE glm {"name": "editsr_01", "index": 35, "reference_token": 66351, "other_token": 271, "served": [271], "top": {}}
+TIE glm {"name": "editsr_02", "index": 224, "reference_token": 198, "other_token": null, "served": [198], "top": {}}
+TIE glm {"name": "editsr_05", "index": 34, "reference_token": 2619, "other_token": 14646, "served": [14646], "top": {}}
+TIE glm {"name": "editsr_09", "index": 33, "reference_token": 14646, "other_token": 19889, "served": [19889], "top": {}}
+PROSE C2 [28.56, 28.09, 28.45]
+MEAS C2 "completed":20 "rejected_lanes":0 "verify_lanes":0 "draft_tokens":0 "accepted_draft_tokens":0 CMP glm C2 exact 8/8
+CMP glm C2 NOLP-EXACT 4/4
+K3S C1 k3-C1 greedy None 16.14 256 None
+K3S C1 k3-C1 greedy None 16.14 256 7.36
+K3S C1 k3-C1 greedy None 15.99 256 None
+K3S C1 k3-C1 greedy None 15.74 256 7.47
+K3S C1 k3-C1 t1p95 101 15.61 256 None
+K3S C1 k3-C1 t1p95 102 15.59 256 7.47
+K3S C1 k3-C1 t1p95 103 15.56 256 None
+K3S C1 k3-C1 t1p95 104 15.71 256 7.47
+K3S C1 k3-C1 t1 201 15.77 256 None
+K3S C1 k3-C1 t1 202 14.89 127 7.47
+MEAS k3-C1 "completed":31 "rejected_lanes":0 "verify_lanes":0 "draft_tokens":0 "accepted_draft_tokens":0 K3S P1 k3-P1 greedy None 21.56 256 None
+K3S P1 k3-P1 greedy None 17.65 256 3.36
+K3S P1 k3-P1 greedy None 18.43 256 4.7
+K3S P1 k3-P1 greedy None 19.0 256 None
+K3S P1 k3-P1 t1p95 101 15.54 256 5.06
+K3S P1 k3-P1 t1p95 102 15.61 256 None
+K3S P1 k3-P1 t1p95 103 15.69 256 7.47
+K3S P1 k3-P1 t1p95 104 15.49 256 None
+K3S P1 k3-P1 t1 201 15.78 256 7.33
+K3S P1 k3-P1 t1 202 17.15 127 None
+MEAS k3-P1 "completed":31 "rejected_lanes":0 "verify_lanes":384 "draft_tokens":22200 "accepted_draft_tokens":16902 K3S P2 k3-P2 greedy None 21.49 256 None
+K3S P2 k3-P2 greedy None 18.14 256 3.34
+K3S P2 k3-P2 greedy None 18.81 256 4.7
+K3S P2 k3-P2 greedy None 18.88 256 None
+K3S P2 k3-P2 t1p95 101 15.64 256 4.69
+K3S P2 k3-P2 t1p95 102 15.58 256 None
+K3S P2 k3-P2 t1p95 103 15.66 256 7.47
+K3S P2 k3-P2 t1p95 104 15.53 256 None
+K3S P2 k3-P2 t1 201 15.8 256 7.44
+K3S P2 k3-P2 t1 202 17.1 127 None
+MEAS k3-P2 "completed":11 "rejected_lanes":0 "verify_lanes":79 "draft_tokens":474 "accepted_draft_tokens":260 K3S C2 k3-C2 greedy None 16.16 256 None
+K3S C2 k3-C2 greedy None 16.18 256 7.36
+K3S C2 k3-C2 greedy None 16.18 256 None
+K3S C2 k3-C2 greedy None 16.19 256 7.47
+K3S C2 k3-C2 t1p95 101 15.64 256 None
+K3S C2 k3-C2 t1p95 102 15.65 256 7.47
+K3S C2 k3-C2 t1p95 103 15.64 256 None
+K3S C2 k3-C2 t1p95 104 15.67 256 7.47
+K3S C2 k3-C2 t1 201 15.84 256 None
+K3S C2 k3-C2 t1 202 15.35 127 7.47
+MEAS k3-C2 "completed":11 "rejected_lanes":0 "verify_lanes":0 "draft_tokens":0 "accepted_draft_tokens":0 STREAMS glm-C1 glm-P1 identical 16/20 editsr_01@35/61 editsr_02@224/225 editsr_05@34/1228 editsr_09@33/1261
+STREAMS glm-C1 glm-P2 identical 16/20 editsr_01@35/61 editsr_02@224/225 editsr_05@34/1228 editsr_09@33/1261
+STREAMS glm-P1 glm-P2 identical 18/20 editsr_05@831/1565 editsr_09@757/2411
+STREAMS k3-C1 k3-P1 identical 20/20 

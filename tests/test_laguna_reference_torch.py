@@ -10,9 +10,11 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
-import torch
-
-import laguna_reference_torch as ref
+try:
+    import torch
+    import laguna_reference_torch as ref
+except ImportError:
+    torch = None
 
 HIDDEN = 64
 HEAD_DIM = 16
@@ -204,6 +206,9 @@ def check_unsupported_config_fails(failures):
 
 
 def main():
+    if torch is None:
+        print("SKIP test_laguna_reference_torch (torch unavailable on this host)")
+        return 0
     failures = []
     check_incremental_matches_recompute(failures)
     check_correction_bias_is_read(failures)

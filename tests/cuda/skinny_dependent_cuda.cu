@@ -113,6 +113,10 @@ static void ProbeExpertsCase(uint32_t rows,cudaStream_t stream)
 	std::vector<uint16_t> out[2];
 	uint32_t *device_route,*offset,*packed,*source,*prefix_up,*prefix_down,token,k,path;
 	uint16_t *activation,*output,*weight;
+	const uint64_t scale_count = (uint64_t)PROBE_EXPERTS * PROBE_EXPERT_OUTPUT * (PROBE_EXPERT_INPUT / LmFp8::kScaleGroup);
+	std::vector<float> unit_scale(scale_count,1.0f);
+	float *device_scale;
+	LmScaleTensor scale;
 	int failed = probe_failures;
 	for (token=0u; token<rows; token++)
 		for (k=0u; k<PROBE_TOP_K; k++)
@@ -126,18 +130,21 @@ static void ProbeExpertsCase(uint32_t rows,cudaStream_t stream)
 	PROBE_CUDA(cudaMalloc((void **)&activation,(uint64_t)rows * PROBE_EXPERT_INPUT * 2u));
 	PROBE_CUDA(cudaMalloc((void **)&output,(uint64_t)pairs * PROBE_EXPERT_OUTPUT * 2u));
 	PROBE_CUDA(cudaMalloc((void **)&weight,(uint64_t)PROBE_EXPERTS * PROBE_EXPERT_OUTPUT * PROBE_EXPERT_INPUT));
+	PROBE_CUDA(cudaMalloc((void **)&device_scale,scale_count * sizeof(float)));
+	PROBE_CUDA(cudaMemcpy(device_scale,unit_scale.data(),scale_count * sizeof(float),cudaMemcpyHostToDevice));
+	scale = LmScaleTensorBuild(device_scale,LM_SCALE_ENCODING_F32,PROBE_EXPERTS,PROBE_EXPERT_OUTPUT,PROBE_EXPERT_INPUT,1u,LmFp8::kScaleGroup);
 	PROBE_CUDA(cudaMemcpy(device_route,route.data(),pairs * 4u,cudaMemcpyHostToDevice));
 	ProbeFillKernel<<<256,256>>>(weight,(uint64_t)PROBE_EXPERTS * PROBE_EXPERT_OUTPUT * PROBE_EXPERT_INPUT,11u,1u);
 	ProbeFillKernel<<<64,256>>>(activation,(uint64_t)rows * PROBE_EXPERT_INPUT,5u,0u);
 	PROBE_CUDA(cudaDeviceSynchronize());
+	PROBE_OK((LmRouteBuild<256u,PROBE_EXPERTS>(device_route,rows,pairs,PROBE_TOP_K,offset,packed,source,PROBE_EXPERT_OUTPUT,PROBE_EXPERT_INPUT,64u,64u,prefix_up,prefix_down,stream)));
 	for (path=0u; path<2u; path++)
 	{
-		PROBE_CUDA(cudaMemset(output,0,(uint64_t)pairs * PROBE_EXPERT_OUTPUT * 2u));
-		PROBE_OK((LmRouteBuild<256u,PROBE_EXPERTS>(device_route,rows,pairs,PROBE_TOP_K,offset,packed,source,PROBE_EXPERT_OUTPUT,PROBE_EXPERT_INPUT,64u,64u,prefix_up,prefix_down,stream)));
+		PROBE_CUDA(cudaMemsetAsync(output,0,(uint64_t)pairs * PROBE_EXPERT_OUTPUT * 2u,stream));
 		if ( path == 0u )
-			PROBE_OK(LmSkinnyExperts<LmFp8>(weight,LmScaleTensorNone(),activation,output,device_route,packed,pairs,PROBE_TOP_K,0u,PROBE_EXPERT_INPUT,PROBE_EXPERT_OUTPUT,stream));
+			PROBE_OK(LmSkinnyExperts<LmFp8>(weight,scale,activation,output,device_route,packed,pairs,PROBE_TOP_K,0u,PROBE_EXPERT_INPUT,PROBE_EXPERT_OUTPUT,stream));
 		else
-			PROBE_OK(LmSkinnyGroupedExperts<LmFp8>(weight,LmScaleTensorNone(),activation,output,offset,source,PROBE_EXPERTS,pairs,0u,PROBE_EXPERT_INPUT,PROBE_EXPERT_OUTPUT,stream));
+			PROBE_OK(LmSkinnyGroupedExperts<LmFp8>(weight,scale,activation,output,offset,source,PROBE_EXPERTS,pairs,0u,PROBE_EXPERT_INPUT,PROBE_EXPERT_OUTPUT,stream));
 		PROBE_CUDA(cudaStreamSynchronize(stream));
 		out[path].resize((uint64_t)pairs * PROBE_EXPERT_OUTPUT);
 		PROBE_CUDA(cudaMemcpy(out[path].data(),output,(uint64_t)pairs * PROBE_EXPERT_OUTPUT * 2u,cudaMemcpyDeviceToHost));
@@ -149,7 +156,7 @@ static void ProbeExpertsCase(uint32_t rows,cudaStream_t stream)
 	}
 	printf("%s rows%u: grouped FP8 gate/up experts (each expert read once for its rows) equal the per-pair kernel bit for bit\n",failed == probe_failures ? "PASS" : "FAIL",rows);
 	cudaFree(device_route); cudaFree(offset); cudaFree(packed); cudaFree(source); cudaFree(prefix_up); cudaFree(prefix_down);
-	cudaFree(activation); cudaFree(output); cudaFree(weight);
+	cudaFree(activation); cudaFree(output); cudaFree(weight); cudaFree(device_scale);
 }
 
 int main(void)

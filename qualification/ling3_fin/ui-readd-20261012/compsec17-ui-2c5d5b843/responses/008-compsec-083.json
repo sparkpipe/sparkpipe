@@ -1,0 +1,62 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "ling-3.0-flash-fin",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "b8a2ba6be8904c25e4912d5fcce438e071ca1b95d20891eab7ec04786921d3c5"
+ },
+ "response": {
+  "id": "chatcmpl-f82f40ac276e4666a5a74953d2979f76",
+  "created": 1791768156,
+  "model": "ling-3.0-flash-fin",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function processes authentication segments that may arrive out of order. Let me trace through the logic:\n\n1. `last` starts at -1\n2. For each segment, `missing = segno - last - 1` calculates how many segments are \"missing\"\n3. `a->segments.grow(a->segments.size() + missing)` grows the container\n4. `a->segments[segno] = packet_read_bytes(p, len)` assigns to index `segno`\n\nThe critical issue: when segments arrive **out of order**, the `grow` operation uses `a->segments.size()` which reflects the **current** container size, not the target size. \n\n**Example with out-of-order input:**\n- Segment 5 arrives first: `missing = 5-(-1)-1 = 5`, grow by 5, `segments[5] = data` \u2192 size becomes 6\n- Segment 2 arrives next: `missing = 2-5-1 = -4`, grow by -4 (underflow!), `segments[2] = data` \u2192 **out-of-bounds access**\n\nThe `grow` call on line 10 is fundamentally flawed because it assumes segments arrive in ascending order. When a later segment (with higher number) is processed first, `last` gets set to that high number, and when a lower-numbered segment arrives, `missing` becomes negative, causing integer underflow in the grow operation and subsequent out-of-bounds memory access.\n\nThe primary bug is on line 10, where the grow calculation is incorrect for out-of-order segments.\n\nAnswer: 10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 348,
+   "prompt_tokens": 338,
+   "total_tokens": 686,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function processes authentication segments that may arrive out of order. Let me trace through the logic:\n\n1. `last` starts at -1\n2. For each segment, `missing = segno - last - 1` calculates how many segments are \"missing\"\n3. `a->segments.grow(a->segments.size() + missing)` grows the container\n4. `a->segments[segno] = packet_read_bytes(p, len)` assigns to index `segno`\n\nThe critical issue: when segments arrive **out of order**, the `grow` operation uses `a->segments.size()` which reflects the **current** container size, not the target size. \n\n**Example with out-of-order input:**\n- Segment 5 arrives first: `missing = 5-(-1)-1 = 5`, grow by 5, `segments[5] = data` \u2192 size becomes 6\n- Segment 2 arrives next: `missing = 2-5-1 = -4`, grow by -4 (underflow!), `segments[2] = data` \u2192 **out-of-bounds access**\n\nThe `grow` call on line 10 is fundamentally flawed because it assumes segments arrive in ascending order. When a later segment (with higher number) is processed first, `last` gets set to that high number, and when a lower-numbered segment arrives, `missing` becomes negative, causing integer underflow in the grow operation and subsequent out-of-bounds memory access.\n\nThe primary bug is on line 10, where the grow calculation is incorrect for out-of-order segments.\n\nAnswer: 10",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 4913.6,
+  "output_sha256": "d73d6d6a51523561355d3d159251d13a71ecddc487825b6d7c8222abd8fb5ec4",
+  "prompt_token_count": 338,
+  "generated_token_count": 348,
+  "reasoning_chars": 0,
+  "content_chars": 1293,
+  "status": "stop"
+ }
+}

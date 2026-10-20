@@ -1,0 +1,62 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "1a465c4f8ddeb73e9639d2ed2c275bf4dd16b4ea3da5b0da693e7ca394493ea0"
+ },
+ "response": {
+  "id": "chatcmpl-9d9f77410876471189931fa445643dbc",
+  "created": 1791721952,
+  "model": "qwen3.8-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "length",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability lies in the logic used to resize the `segments` container before accessing it.\n\n1.  **Line 3**: `last` is initialized to `-1`.\n2.  **Line 6**: `segno` is read from the packet.\n3.  **Line 9**: `missing` is calculated as `segno - last - 1`.\n    *   If segments arrive in order (e.g., 0, 1, 2), this works.\n    *   If segments arrive out of order (e.g., 5, then 2), let's trace:\n        *   First iteration: `segno = 5`, `last = -1`. `missing = 5 - (-1) - 1 = 5`. `grow` ensures size is at least 6 (indices 0-5). `a->segments[5]` is valid. `last` becomes 5.\n        *   Second iteration: `segno = 2`, `last = 5`. `missing = 2 - 5 - 1 = -4`.\n4.  **Line 10**: `a->segments.grow(a->segments.size() + missing)`.\n    *   Here, `missing` is negative.\n    *   `a->segments.size()` is likely 6 (from previous step).\n    *   The argument to `grow` becomes `6 + (-4) = 2`.\n    *   If `grow` shrinks the container to size 2, or if `grow` is implemented such that it doesn't handle negative deltas correctly (or if `size()` returns `size_t` and the addition wraps around, though `missing` is `int`), the container might become smaller than `segno`.\n    *   Even if `grow` only expands (ignoring negative values), the logic is flawed because it assumes `segno > last`. If `grow` shrinks the vector, `a->segments[segno]` on Line 11 will access an out-of-bounds index (index 2 in a vector of size 2 is valid, but if the next segment was 10, and we shrank to 2, accessing 10 is OOB).\n    *   More critically, if `missing` is negative, `a->segments.size() + missing` could result in a size smaller than",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 512,
+   "prompt_tokens": 319,
+   "total_tokens": 831,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability lies in the logic used to resize the `segments` container before accessing it.\n\n1.  **Line 3**: `last` is initialized to `-1`.\n2.  **Line 6**: `segno` is read from the packet.\n3.  **Line 9**: `missing` is calculated as `segno - last - 1`.\n    *   If segments arrive in order (e.g., 0, 1, 2), this works.\n    *   If segments arrive out of order (e.g., 5, then 2), let's trace:\n        *   First iteration: `segno = 5`, `last = -1`. `missing = 5 - (-1) - 1 = 5`. `grow` ensures size is at least 6 (indices 0-5). `a->segments[5]` is valid. `last` becomes 5.\n        *   Second iteration: `segno = 2`, `last = 5`. `missing = 2 - 5 - 1 = -4`.\n4.  **Line 10**: `a->segments.grow(a->segments.size() + missing)`.\n    *   Here, `missing` is negative.\n    *   `a->segments.size()` is likely 6 (from previous step).\n    *   The argument to `grow` becomes `6 + (-4) = 2`.\n    *   If `grow` shrinks the container to size 2, or if `grow` is implemented such that it doesn't handle negative deltas correctly (or if `size()` returns `size_t` and the addition wraps around, though `missing` is `int`), the container might become smaller than `segno`.\n    *   Even if `grow` only expands (ignoring negative values), the logic is flawed because it assumes `segno > last`. If `grow` shrinks the vector, `a->segments[segno]` on Line 11 will access an out-of-bounds index (index 2 in a vector of size 2 is valid, but if the next segment was 10, and we shrank to 2, accessing 10 is OOB).\n    *   More critically, if `missing` is negative, `a->segments.size() + missing` could result in a size smaller than",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 13041.5,
+  "output_sha256": "806d71e76e9c21a3caca05d6a6a3b56d93264e265f67beda2c7070701b00e8bc",
+  "prompt_token_count": 319,
+  "generated_token_count": 512,
+  "reasoning_chars": 0,
+  "content_chars": 1600,
+  "status": "length"
+ }
+}

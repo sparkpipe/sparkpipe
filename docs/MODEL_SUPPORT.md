@@ -14,8 +14,6 @@ tree contains. A family is identified by its exact checkpoint contract in
 | Family | Checkpoint (`model_id`) | Contract |
 | --- | --- | --- |
 | DeepSeek V4.1 Flash | deepseek-ai/DeepSeek-V4.1-Flash | `dsv41_flash_authoritative.json` |
-| DeepSeek V4 Flash | deepseek-ai/DeepSeek-V4-Flash-0731 | `dsv4_flash_authoritative.json` |
-| DeepSeek V4 Pro | deepseek-ai/DeepSeek-V4-Pro-0813 | `dsv4_pro_authoritative.json` |
 | GLM 5.3 Flash | zai-org/GLM-5.3-Flash | `glm53_flash_authoritative.json` |
 | GLM 5.3 Full (glm52 module) | RadixArk/GLM-5.3-NVFP4 | `glm53_full_authoritative.json` |
 | Kimi K3 | moonshotai/Kimi-K3-MXFP4 | `k3_authoritative.json` |
@@ -31,16 +29,20 @@ tree contains. A family is identified by its exact checkpoint contract in
 | Muse Glimmer 30B | meta-models/Muse-Glimmer-30B | `muse_glimmer_authoritative.json` |
 | MiniMax H3 (text) | no contract; revision `minimax-h3-text-bf16-...` in `deployment/minimax_text_tp4` | none |
 
-`glm52_authoritative.json` (zai-org/GLM-5.2) and `qwen36_authoritative.json`
-(Qwen/Qwen3.6-27B) remain in the tree but are not product targets.
+`glm52_authoritative.json` (zai-org/GLM-5.2) remains in the tree but is not a
+product target.
+
+Owner direction (2026-10-10): DeepSeek V4 Pro is deprecated, since DeepSeek
+V4.1 Flash beats it. Its module, packs and contracts have left the tree, along
+with the DeepSeek V4 Flash 0731 path. Qwen 3.8 27B and Qwen 3.8 Max serve
+on the common stage runner (`model-families/qwen38/source/qwen38_hybrid_stage.cuh`),
+and the old resident-decode modules for both are gone.
 
 Owner direction (2026-09-28):
 
 - GLM 5.2 weights are deprecated; the glm52 module serves GLM 5.3 Full.
 - MiMo 2.6 is the MiMo target.
-- DeepSeek V4.1 Flash leads the DeepSeek line. V4 Pro 0813 stays, last in
-  the driver order, as the base for V4.1 Pro, which will be supported when
-  released.
+- DeepSeek V4.1 Flash leads the DeepSeek line.
 - Kimi K3 moves up into the driver-order slot DSV4 Pro 0813 held
   ([GOALS.md](GOALS.md), model direction).
 - Ling 3.0 Flash and its finance fine-tune are the Ling targets; Ling 2.x is

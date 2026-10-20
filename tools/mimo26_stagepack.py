@@ -14,23 +14,7 @@ vision/audio towers, speech embeddings and the dflash draft tree are never
 referenced - they are documented with byte ranges in the census, not stripped
 from the checkpoint.
 
-Sharding (per the M1 topology decision; tools/mimo26_param_budget.py):
-  pro   TP8: q row-sliced by head groups (16 of 128 heads), kv REPLICATED
-             (192/128-row kv sections cannot cut the fp8 grid at head
-             boundaries; whole-section replication costs ~16 MB/layer and
-             keeps every scale grid whole), o_proj col-sliced by head-group
-             v-dims, embed/lm_head vocab-row-sliced, router + norms +
-             sink-slice replicated or head-sliced, 48 of 384 experts per
-             layer per rank.
-  flash TP4: 16 of 64 q heads, kv replicated, 64 of 256 experts, vocab/4.
-  Expert slabs are per (layer, kind), local experts concatenated expert-major
-  so one expert's rows are a base + e*extent window (a lazy-expert manifest
-  can address single experts inside the slab).
-
-The fused qkv_proj source tensor is emitted as THREE entries (q, k, v) whose
-payload rows and scale rows come from the fused tensor's sections; the source
-grid's tail padding rows (pro 212->216) are not data, and verify proves every
-byte range by re-deriving it from the checkpoint.
+Sharding and the TP-interleaved qkv layout: model-families/mimo26/FACTS.md.
 
 Emission is staged and resumable past queue TTLs: `--emit` writes one payload/
 scale file per directory entry into the stage dir (skipping files already
@@ -62,7 +46,7 @@ from spark_pack_common import (  # noqa: E402
 )
 
 MAGIC = 0x5036324D  # 'M26P' little endian
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 HEADER_BYTES = 120
 ENTRY_BYTES = 56
 PAYLOAD_ALIGNMENT = 256
@@ -94,10 +78,12 @@ SPAN_MX = "mx"              # one expert's packed payload or its scale plane
 # collide with the shared GDN/attention block or another family's extension.
 (KIND_EMBEDDING, KIND_FINAL_NORM, KIND_LM_HEAD, KIND_ATTENTION_NORM,
  KIND_MLP_NORM, KIND_MOE_GATE) = range(6)
-(KIND_SINK_BIAS, KIND_MOE_GATE_BIAS,
- KIND_Q, KIND_K, KIND_V, KIND_O_PROJ,
- KIND_DENSE_MLP_GATE, KIND_DENSE_MLP_UP, KIND_DENSE_MLP_DOWN,
- KIND_EXPERT_GATE, KIND_EXPERT_UP, KIND_EXPERT_DOWN) = range(22, 34)
+KIND_SINK_BIAS = 22
+KIND_MOE_GATE_BIAS = 23
+KIND_QKV = 24
+KIND_O_PROJ = 27
+(KIND_DENSE_MLP_GATE, KIND_DENSE_MLP_UP, KIND_DENSE_MLP_DOWN,
+ KIND_EXPERT_GATE, KIND_EXPERT_UP, KIND_EXPERT_DOWN) = range(28, 34)
 
 
 @dataclass
@@ -135,13 +121,13 @@ ARMS = {
         hidden=6144, layers=70, heads=128, head_dim=192, v_head_dim=128,
         kv_full=8, kv_swa=8, vocab=152576, dense_inter=16384,
         experts=384, experts_per_token=8, expert_inter=2048,
-        swa_window=128, default_tp=8,
+        swa_window=128, default_tp=8, qkv_interleave=8,
     ),
     "flash": dict(
         hidden=4096, layers=48, heads=64, head_dim=192, v_head_dim=128,
         kv_full=4, kv_swa=8, vocab=152576, dense_inter=16384,
         experts=256, experts_per_token=8, expert_inter=2048,
-        swa_window=128, default_tp=4,
+        swa_window=128, default_tp=4, qkv_interleave=4,
     ),
 }
 
@@ -172,10 +158,10 @@ def quant_bytes(rows: int, columns: int, weight_format: int) -> tuple:
     if weight_format == WEIGHT_F32:
         return rows * columns * F32_BYTES, 0
     if weight_format == WEIGHT_FP8_E4M3_F32B128:
-        if rows % FP8_BLOCK or columns % FP8_BLOCK:
+        if columns % FP8_BLOCK:
             raise PackFailure(
-                f"fp8 slice [{rows}, {columns}] is not whole [128,128] blocks")
-        return rows * columns, (rows // FP8_BLOCK) * (columns // FP8_BLOCK) * F32_BYTES
+                f"fp8 slice [{rows}, {columns}] is not whole 128-column blocks")
+        return rows * columns, -(-rows // FP8_BLOCK) * (columns // FP8_BLOCK) * F32_BYTES
     if weight_format == WEIGHT_MXFP4_E2M1_E8M0G32:
         if rows % MXFP4_GROUP or columns % MXFP4_GROUP:
             raise PackFailure(
@@ -201,18 +187,22 @@ def fused_scale_name(fused_weight_name: str) -> str:
     return fused_weight_name[:-len(".weight")] + ".weight_scale_inv"
 
 
-def qkv_sections(arm: str, config: dict, layer: int) -> dict:
+def qkv_segment(arm: str, config: dict, layer: int) -> dict:
     g = arm_geometry(arm)
     kind = layer_kind(config, layer)
     kv = g["kv_full"] if kind == "full" else g["kv_swa"]
-    q0 = 0
-    q_rows = g["heads"] * g["head_dim"]
-    k0 = q0 + q_rows
-    k_rows = kv * g["head_dim"]
-    v0 = k0 + k_rows
-    v_rows = kv * g["v_head_dim"]
-    return dict(kind=kind, q0=q0, q_rows=q_rows, k0=k0, k_rows=k_rows,
-                v0=v0, v_rows=v_rows, total=v0 + v_rows)
+    ranks = g["qkv_interleave"]
+    if g["heads"] % ranks or kv % ranks:
+        raise PackFailure(f"qkv interleave {ranks} does not divide heads "
+                          f"{g['heads']} / kv {kv}")
+    q_rows = g["heads"] // ranks * g["head_dim"]
+    k_rows = kv // ranks * g["head_dim"]
+    v_rows = kv // ranks * g["v_head_dim"]
+    per = q_rows + k_rows + v_rows
+    blocks = -(-per // FP8_BLOCK)
+    return dict(kind=kind, ranks=ranks, q_rows=q_rows, k_rows=k_rows,
+                v_rows=v_rows, per=per, blocks=blocks, total=per * ranks,
+                grid_rows=blocks * ranks)
 
 
 def check_source(arm: str, source: SafetensorsSource) -> dict:
@@ -253,16 +243,15 @@ def check_shapes(arm: str, source: SafetensorsSource) -> None:
     source.check_shape("lm_head.weight", g["vocab"], g["hidden"])
     grid_columns = g["hidden"] // FP8_BLOCK
     for layer in range(g["layers"]):
-        sec = qkv_sections(arm, source.config, layer)
+        sec = qkv_segment(arm, source.config, layer)
         fused = f"model.layers.{layer}.self_attn.qkv_proj.weight"
         source.check_shape(fused, sec["total"], g["hidden"], dtype="F8_E4M3")
         _, smeta, _ = source.resolve(fused_scale_name(fused))
-        if smeta["dtype"] != "F32" or smeta["shape"][1] != grid_columns \
-                or smeta["shape"][0] < sec["total"] // FP8_BLOCK:
+        if smeta["dtype"] != "F32" or smeta["shape"] != [sec["grid_rows"], grid_columns]:
             raise PackFailure(
                 f"{fused}.weight_scale_inv: {smeta['dtype']} {smeta['shape']}, "
-                f"expected F32 grid >= [{sec['total'] // FP8_BLOCK}, {grid_columns}] "
-                "(upstream row padding is allowed; it is not data)")
+                f"expected F32 [{sec['grid_rows']}, {grid_columns}] "
+                f"({sec['ranks']} rank segments of {sec['blocks']} blocks)")
         source.check_shape(f"model.layers.{layer}.self_attn.o_proj.weight",
                            g["hidden"], g["heads"] * g["v_head_dim"])
         source.check_shape(f"model.layers.{layer}.input_layernorm.weight", 1, g["hidden"])
@@ -312,9 +301,10 @@ def build_plan(arm: str, config: dict, tp_degree: int, tp_rank: int,
                             ("hidden", g["hidden"])):
         if dimension % tp_degree:
             raise PackFailure(f"{name} {dimension} not divisible by tp {tp_degree}")
-    q_rows_rank = (g["heads"] // tp_degree) * g["head_dim"]
-    if q_rows_rank % FP8_BLOCK:
-        raise PackFailure("per-rank q rows are not whole fp8 blocks")
+    if tp_degree != g["qkv_interleave"]:
+        raise PackFailure(f"tp {tp_degree} differs from the checkpoint's qkv "
+                          f"interleave {g['qkv_interleave']}; the rank segments "
+                          "would cut fp8 blocks (requantization is not allowed)")
     records: list = []
 
     def add(kind, layer, fmt, rows, columns, name, spans):
@@ -350,28 +340,14 @@ def build_plan(arm: str, config: dict, tp_degree: int, tp_rank: int,
     else:
         layers = range(g["layers"])
     for layer in layers:
-        sec = qkv_sections(arm, config, layer)
+        sec = qkv_segment(arm, config, layer)
         fused = f"model.layers.{layer}.self_attn.qkv_proj.weight"
-        fused_scale = fused_scale_name(fused)
-        grid_columns = g["hidden"] // FP8_BLOCK
-        # q: this rank's head-group rows inside the fused q section
-        q_row0 = sec["q0"] + tp_rank * q_heads * g["head_dim"]
-        s0, sc = block_window(q_row0, q_rows_rank)
-        add(KIND_Q, layer, WEIGHT_FP8_E4M3_F32B128, q_rows_rank, g["hidden"],
-            fused + "#q",
-            [Span(SPAN_DENSE, fused, "F8_E4M3", q_row0, q_rows_rank, g["hidden"],
-                  scale_name=fused_scale, scale_row0=s0, scale_rows=sc,
-                  scale_columns=grid_columns)])
-        # k/v: whole sections replicated (kv-head granules cannot cut the grid)
-        for kind_code, sec0, sec_rows, tag in (
-                (KIND_K, sec["k0"], sec["k_rows"], "k"),
-                (KIND_V, sec["v0"], sec["v_rows"], "v")):
-            gs0, gsc = block_window(sec0, sec_rows)
-            add(kind_code, layer, WEIGHT_FP8_E4M3_F32B128, sec_rows, g["hidden"],
-                fused + "#" + tag,
-                [Span(SPAN_DENSE, fused, "F8_E4M3", sec0, sec_rows, g["hidden"],
-                      scale_name=fused_scale, scale_row0=gs0, scale_rows=gsc,
-                      scale_columns=grid_columns)])
+        add(KIND_QKV, layer, WEIGHT_FP8_E4M3_F32B128, sec["per"], g["hidden"],
+            fused + f"#rank{tp_rank}",
+            [Span(SPAN_DENSE, fused, "F8_E4M3", tp_rank * sec["per"], sec["per"],
+                  g["hidden"], scale_name=fused_scale_name(fused),
+                  scale_row0=tp_rank * sec["blocks"], scale_rows=sec["blocks"],
+                  scale_columns=g["hidden"] // FP8_BLOCK)])
         o_name = f"model.layers.{layer}.self_attn.o_proj.weight"
         add(KIND_O_PROJ, layer, WEIGHT_BF16, g["hidden"], o_cols, o_name,
             [Span(SPAN_RECT, o_name, "BF16", 0, g["hidden"],
@@ -468,24 +444,27 @@ class SourceReader:
             out.write(chunk)
             remaining -= step
 
+    def copy_window(self, file, base: int, row_bytes: int, row0: int, rows: int,
+                    left: int, width: int, label: str, out) -> None:
+        step_rows = max(1, CHUNK_BYTES // row_bytes)
+        row = 0
+        while row < rows:
+            block = min(step_rows, rows - row)
+            file.seek(base + (row0 + row) * row_bytes)
+            data = file.read(block * row_bytes)
+            if len(data) != block * row_bytes:
+                raise PackFailure(f"{label}: short window read")
+            view = memoryview(data)
+            for index in range(block):
+                start = index * row_bytes + left
+                out.write(view[start:start + width])
+            row += block
+
     def copy_rect(self, span: Span, out) -> None:
         file, base, _ = self._resolve_base(span.name)
         element = element_bytes(span.dtype)
-        row_bytes = span.full_columns * element
-        step_rows = max(1, CHUNK_BYTES // max(1, span.columns * element))
-        row = 0
-        while row < span.rows:
-            block = min(step_rows, span.rows - row)
-            file.seek(base + (span.row0 + row) * row_bytes + span.col_base * element)
-            remaining = block * span.columns * element
-            while remaining > 0:
-                step = min(remaining, CHUNK_BYTES)
-                chunk = file.read(step)
-                if len(chunk) != step:
-                    raise PackFailure(f"{span.name}: short rect read")
-                out.write(chunk)
-                remaining -= step
-            row += block
+        self.copy_window(file, base, span.full_columns * element, span.row0, span.rows,
+                         span.col_base * element, span.columns * element, span.name, out)
 
     def copy_scale(self, span: Span, out) -> None:
         if span.scale_name not in self.source.weight_map:
@@ -494,22 +473,10 @@ class SourceReader:
         grid_columns = meta["shape"][1]
         columns = span.scale_columns or grid_columns
         element = element_bytes("F32")
-        row_bytes = grid_columns * element
-        step_rows = max(1, CHUNK_BYTES // max(1, columns * element))
-        row = 0
-        while row < span.scale_rows:
-            block = min(step_rows, span.scale_rows - row)
-            file.seek(base + (span.scale_row0 + row) * row_bytes
-                      + span.scale_col_base * element)
-            remaining = block * columns * element
-            while remaining > 0:
-                step = min(remaining, CHUNK_BYTES)
-                chunk = file.read(step)
-                if len(chunk) != step:
-                    raise PackFailure(f"{span.scale_name}: short scale read")
-                out.write(chunk)
-                remaining -= step
-            row += block
+        if span.scale_col_base + columns > grid_columns:
+            raise PackFailure(f"{span.scale_name}: scale window exceeds the grid")
+        self.copy_window(file, base, grid_columns * element, span.scale_row0, span.scale_rows,
+                         span.scale_col_base * element, columns * element, span.scale_name, out)
 
     def produce(self, span: Span, record: Record, out, payload: bool) -> None:
         if span.mode == SPAN_MX:
@@ -919,6 +886,64 @@ def do_verify(args) -> int:
         return 0
 
 
+def do_repair_windows(args) -> int:
+    source = SafetensorsSource(Path(args.checkpoint))
+    check_source(args.arm, source)
+    check_shapes(args.arm, source)
+    records = build_plan(args.arm, source.config, args.tp, args.rank)
+    reader = SourceReader(source)
+    pack_path = Path(args.out)
+    layout, file_bytes = plan_layout(records)
+    if pack_path.stat().st_size != file_bytes:
+        raise PackFailure(f"{pack_path} is {pack_path.stat().st_size} bytes, plan {file_bytes}")
+    repaired = 0
+    with open(pack_path, "r+b") as pack:
+        pack.seek(HEADER_BYTES)
+        entries = [ENTRY_STRUCT.unpack(pack.read(ENTRY_BYTES)) for _ in records]
+        for record, entry, (payload_offset, scale_offset) in zip(records, entries, layout):
+            if (entry[6], entry[8]) != (payload_offset, scale_offset):
+                raise PackFailure(f"{record.name}: directory offsets differ from the plan")
+            if not any(span.mode == SPAN_RECT for span in record.spans):
+                continue
+            pack.seek(payload_offset)
+            for span in record.spans:
+                reader.produce(span, record, pack, payload=True)
+            if pack.tell() != payload_offset + record.payload_bytes:
+                raise PackFailure(f"{record.name}: repaired payload length differs")
+            if record.scale_bytes:
+                pack.seek(scale_offset)
+                for span in record.spans:
+                    reader.produce(span, record, pack, payload=False)
+                if pack.tell() != scale_offset + record.scale_bytes:
+                    raise PackFailure(f"{record.name}: repaired scale length differs")
+            repaired += 1
+        pack.flush()
+        os.fsync(pack.fileno())
+        for record, (payload_offset, scale_offset) in zip(records, layout):
+            if not any(span.mode == SPAN_RECT for span in record.spans):
+                continue
+            pack.seek(payload_offset)
+            sink = _CompareSink(pack, f"{record.name} payload")
+            for span in record.spans:
+                reader.produce(span, record, sink, payload=True)
+            if record.scale_bytes:
+                pack.seek(scale_offset)
+                sink = _CompareSink(pack, f"{record.name} scale")
+                for span in record.spans:
+                    reader.produce(span, record, sink, payload=False)
+    digest = sha256_file(pack_path)
+    pack_path.with_name(pack_path.name + ".sha256").write_text(
+        f"{digest}  {pack_path.name}\n", encoding="utf-8")
+    receipt_path = pack_path.with_name(pack_path.name + ".receipt.json")
+    if receipt_path.exists():
+        receipt = json.loads(receipt_path.read_text())
+        receipt["sha256"] = digest
+        receipt["repaired_window_records"] = repaired
+        receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
+    print(f"repair: {pack_path} rewrote {repaired} column-window records, sha256 {digest}")
+    return 0
+
+
 class _CompareSink:
     """Streaming verifier sink: every produced chunk is compared in place
     against the pack file's current position (no plane is ever buffered)."""
@@ -960,6 +985,8 @@ def main() -> int:
     sub.add_argument("--emit", action="store_true")
     sub.add_argument("--assemble", action="store_true")
     sub.add_argument("--verify", action="store_true")
+    sub.add_argument("--repair-windows", action="store_true",
+                     help="rewrite in place every record cut from a column window")
     args = ap.parse_args()
     if args.rank < 0 or args.rank >= args.tp:
         raise PackFailure(f"rank {args.rank} out of range for tp {args.tp}")
@@ -967,6 +994,8 @@ def main() -> int:
         return do_emit(args)
     if args.assemble:
         return do_assemble(args)
+    if args.repair_windows:
+        return do_repair_windows(args)
     return do_verify(args)
 
 

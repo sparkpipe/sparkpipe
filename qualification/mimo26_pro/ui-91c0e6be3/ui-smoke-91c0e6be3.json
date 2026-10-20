@@ -1,0 +1,368 @@
+{
+ "format": "sparkpipe-ui-smoke-v1",
+ "generated_at": "2026-10-13T05:15:45+0000",
+ "endpoint": "http://127.0.0.1:4000",
+ "model": "mimo-v2.6-pro",
+ "passed": 6,
+ "total": 6,
+ "results": [
+  {
+   "check": "chat",
+   "request": {
+    "model": "mimo-v2.6-pro",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-7b0e1133c87447709c328ece2953a519",
+     "created": 1791868528,
+     "model": "mimo-v2.6-pro",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The capital of France is Paris.",
+        "role": "assistant",
+        "reasoning_content": "The capital of France is Paris."
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 16,
+      "prompt_tokens": 19,
+      "total_tokens": 35,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "The capital of France is Paris.",
+    "reasoning": "The capital of France is Paris.",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 1.08
+   },
+   "problems": []
+  },
+  {
+   "check": "stream",
+   "request": {
+    "model": "mimo-v2.6-pro",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "content": "The capital of France is Paris.",
+    "reasoning": "The capital of France is Paris.",
+    "tool_calls": [],
+    "finish": "stop",
+    "chunks": 4,
+    "elapsed_s": 1.02
+   },
+   "problems": []
+  },
+  {
+   "check": "tool",
+   "request": {
+    "model": "mimo-v2.6-pro",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-a518fbf8ca5d43369ae5edad345daf86",
+     "created": 1791868538,
+     "model": "mimo-v2.6-pro",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "tool_calls",
+       "index": 0,
+       "message": {
+        "role": "assistant",
+        "tool_calls": [
+         {
+          "function": {
+           "arguments": "{\"location\": \"Paris\"}",
+           "name": "get_weather"
+          },
+          "id": "call_628a30ea339f4b91ae232194",
+          "type": "function"
+         }
+        ],
+        "reasoning_content": "The user wants weather in Paris.",
+        "content": null
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 26,
+      "prompt_tokens": 123,
+      "total_tokens": 149,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "",
+    "reasoning": "The user wants weather in Paris.",
+    "tool_calls": [
+     {
+      "function": {
+       "arguments": "{\"location\": \"Paris\"}",
+       "name": "get_weather"
+      },
+      "id": "call_628a30ea339f4b91ae232194",
+      "type": "function"
+     }
+    ],
+    "finish": "tool_calls",
+    "elapsed_s": 8.92
+   },
+   "problems": []
+  },
+  {
+   "check": "tool_result",
+   "request": {
+    "model": "mimo-v2.6-pro",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     },
+     {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+       {
+        "function": {
+         "arguments": "{\"location\": \"Paris\"}",
+         "name": "get_weather"
+        },
+        "id": "call_628a30ea339f4b91ae232194",
+        "type": "function"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_628a30ea339f4b91ae232194",
+      "content": "{\"location\": \"Paris\", \"temperature_c\": 18, \"condition\": \"sunny\"}"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-557020d2c4064de9854d642028a03f60",
+     "created": 1791868544,
+     "model": "mimo-v2.6-pro",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The weather in Paris right now is **sunny** with a temperature of **18\u00b0C**.",
+        "role": "assistant",
+        "reasoning_content": "Just report the weather."
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 28,
+      "prompt_tokens": 171,
+      "total_tokens": 199,
+      "prompt_tokens_details": {
+       "cached_tokens": 64
+      }
+     }
+    },
+    "content": "The weather in Paris right now is **sunny** with a temperature of **18\u00b0C**.",
+    "reasoning": "Just report the weather.",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 5.71
+   },
+   "problems": []
+  },
+  {
+   "check": "reasoning_off",
+   "request": {
+    "model": "mimo-v2.6-pro",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "minimal"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-ee58deaf634d4b35a4babcdc2019b2f6",
+     "created": 1791868544,
+     "model": "mimo-v2.6-pro",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "391",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 3,
+      "prompt_tokens": 25,
+      "total_tokens": 28,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "391",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 0.71
+   },
+   "problems": []
+  },
+  {
+   "check": "reasoning_on",
+   "request": {
+    "model": "mimo-v2.6-pro",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "high"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-32870aaaf27b4cdd855799c28fb7ce5f",
+     "created": 1791868545,
+     "model": "mimo-v2.6-pro",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "391",
+        "role": "assistant",
+        "reasoning_content": "17 * 23 = 391"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 16,
+      "prompt_tokens": 23,
+      "total_tokens": 39,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "391",
+    "reasoning": "17 * 23 = 391",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 1.06
+   },
+   "problems": []
+  }
+ ]
+}

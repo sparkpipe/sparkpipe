@@ -4,9 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 UNLINKED = {
-    "cache/kv_pager.c": {"jit_kv_slice", "jit_kv_wire", "jit_kv_c3c4", "jit_kv_c5w2"},
     "scheduler/topology_switch.c": {"topology_switch"},
-    "modules/dsv4_resident_decode_stage/source/spark_dsv4_jit_kv.c": {"jit_kv_wire"},
 }
 UNLINKED_GROUP = "unlinked_components"
 RULE = re.compile(r"^(?![\t#])([^\s:=][^:=]*?):(?!=)", re.MULTILINE)

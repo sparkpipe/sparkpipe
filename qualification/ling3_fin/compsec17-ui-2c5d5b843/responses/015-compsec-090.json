@@ -1,0 +1,62 @@
+{
+ "id": "compsec-090",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "ling-3.0-flash-fin",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe extension type is the low byte of a 16-bit protocol field. The mandatory-extension table has handlers for values 0 through 254.\n\nCode:\n```c\n 1: typedef int (*ule_handler)(struct skb *, const uint8_t *, size_t);\n 2: static ule_handler mandatory_handlers[255];\n 3: \n 4: static int handle_ule_ext(struct skb *skb, uint16_t type,\n 5:                           const uint8_t *p, size_t len)\n 6: {\n 7:     uint8_t htype = (uint8_t)(type & 0x00ff);\n 8: \n 9:     if (htype < 0x80)\n10:         return handle_optional_ext(skb, htype, p, len);\n11: \n12:     if (mandatory_handlers[htype] != NULL)\n13:         return mandatory_handlers[htype](skb, p, len);\n14: \n15:     return -EINVAL;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "177a6dcb3b5c59314715d6fb8128fe466649f51c0ed844332be4ca64b8c29334"
+ },
+ "response": {
+  "id": "chatcmpl-42049a2e45fe4572b69a1330f6f62c49",
+  "created": 1791718905,
+  "model": "ling-3.0-flash-fin",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Let me analyze this code carefully.\n\nThe function `handle_ule_ext` extracts the low byte of a 16-bit `type` field into `htype`, then:\n1. If `htype < 0x80`, it routes to `handle_optional_ext`\n2. Otherwise, it looks up `mandatory_handlers[htype]`\n\nThe problem statement states:\n- The mandatory-extension table has handlers for values 0 through 254\n- The array `mandatory_handlers` is declared with size 255 (indices 0-254)\n\nNow let me trace the logic:\n- `htype` is a `uint8_t`, so it ranges from 0 to 255\n- If `htype >= 0x80` (128-255), we enter the mandatory handler lookup\n- The array `mandatory_handlers[255]` has valid indices 0-254\n\nThe vulnerability: When `htype` equals 255, the code accesses `mandatory_handlers[255]`, which is out of bounds (array only has indices 0-254). This is a classic array out-of-bounds access.\n\nThe check on line 12 (`if (mandatory_handlers[htype] != NULL)`) doesn't protect against this because it directly indexes into the array without first checking if `htype` is within the valid range (0-254).\n\nThe bug is introduced at line 12, where `mandatory_handlers[htype]` is accessed without bounds checking. If `htype` is 255, this reads/writes outside the array bounds.\n\nAnswer: 12",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 383,
+   "prompt_tokens": 381,
+   "total_tokens": 764,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Let me analyze this code carefully.\n\nThe function `handle_ule_ext` extracts the low byte of a 16-bit `type` field into `htype`, then:\n1. If `htype < 0x80`, it routes to `handle_optional_ext`\n2. Otherwise, it looks up `mandatory_handlers[htype]`\n\nThe problem statement states:\n- The mandatory-extension table has handlers for values 0 through 254\n- The array `mandatory_handlers` is declared with size 255 (indices 0-254)\n\nNow let me trace the logic:\n- `htype` is a `uint8_t`, so it ranges from 0 to 255\n- If `htype >= 0x80` (128-255), we enter the mandatory handler lookup\n- The array `mandatory_handlers[255]` has valid indices 0-254\n\nThe vulnerability: When `htype` equals 255, the code accesses `mandatory_handlers[255]`, which is out of bounds (array only has indices 0-254). This is a classic array out-of-bounds access.\n\nThe check on line 12 (`if (mandatory_handlers[htype] != NULL)`) doesn't protect against this because it directly indexes into the array without first checking if `htype` is within the valid range (0-254).\n\nThe bug is introduced at line 12, where `mandatory_handlers[htype]` is accessed without bounds checking. If `htype` is 255, this reads/writes outside the array bounds.\n\nAnswer: 12",
+ "grade": {
+  "index": 15,
+  "id": "compsec-090",
+  "source": "COMPSEC",
+  "domain": "Linux kernel",
+  "expected": "12-13",
+  "extracted": "12",
+  "passed": true,
+  "elapsed_ms": 5880.9,
+  "output_sha256": "263bbfea32e38299849bf22ca3a6d0a2645735b70eeb5175a5aec12cbb637e54",
+  "prompt_token_count": 381,
+  "generated_token_count": 383,
+  "reasoning_chars": 0,
+  "content_chars": 1212,
+  "status": "stop"
+ }
+}

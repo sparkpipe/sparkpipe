@@ -1,0 +1,62 @@
+{
+ "id": "compsec-076",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "kimi-k3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function validates a per-request authentication blob before passing it to the GSS layer.\n\nCode:\n```c\n 1: #define AUTH_STACK_MAX 256\n 2: \n 3: static bool check_rpcsec_packet(const uint8_t *wire, size_t wire_left)\n 4: {\n 5:     if (wire_left < 4)\n 6:         return false;\n 7: \n 8:     uint32_t body_len = get_be32(wire);      // attacker-controlled length field\n 9:     const uint8_t *body = wire + 4;\n10:     uint8_t scratch[AUTH_STACK_MAX];\n11: \n12:     /* XDR opaque values are padded to 4-byte alignment on the wire. */\n13:     uint32_t pad = (4 - (body_len & 3)) & 3;\n14:     uint32_t encoded_len = body_len + pad;\n15: \n16:     /* This check only proves the source bytes exist in the packet. */\n17:     if (encoded_len > wire_left - 4)\n18:         return false;\n19: \n20:     memcpy(scratch, body, encoded_len);\n21:     return gss_verify_mic(scratch, body_len);\n22: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "5791645715d2670dde0f84d4c97331b51e0a5ba27fabb157704431c053849608"
+ },
+ "response": {
+  "id": "chatcmpl-f7393918e735421a8b5ae795e475af74",
+  "created": 1791730281,
+  "model": "kimi-k3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Answer: 20",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 10,
+   "prompt_tokens": 388,
+   "total_tokens": 398,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Answer: 20",
+ "grade": {
+  "index": 1,
+  "id": "compsec-076",
+  "source": "COMPSEC",
+  "domain": "FreeBSD / librpcsec_gss",
+  "expected": "17-20",
+  "extracted": "20",
+  "passed": true,
+  "elapsed_ms": 2446.3,
+  "output_sha256": "563c8458eb9fb04548643b3328e1def3259e86d4e7555aaa17198fda9446697a",
+  "prompt_token_count": 388,
+  "generated_token_count": 10,
+  "reasoning_chars": 0,
+  "content_chars": 10,
+  "status": "stop"
+ }
+}

@@ -1,0 +1,266 @@
+{
+ "format": "sparkpipe-ui-smoke-v1",
+ "generated_at": "2026-10-11T08:23:29+0000",
+ "endpoint": "http://127.0.0.1:4000",
+ "model": "gemma-4-31b",
+ "passed": 3,
+ "total": 6,
+ "results": [
+  {
+   "check": "chat",
+   "request": {
+    "model": "gemma-4-31b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-32df5d9b433a45debcdeb773f13edc89",
+     "created": 1791707005,
+     "model": "gemma-4-31b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The capital of France is Paris.",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 7,
+      "prompt_tokens": 25,
+      "total_tokens": 32,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "The capital of France is Paris.",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 0.37
+   },
+   "problems": []
+  },
+  {
+   "check": "stream",
+   "request": {
+    "model": "gemma-4-31b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "content": "The capital of France is Paris.",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "chunks": 4,
+    "elapsed_s": 0.33
+   },
+   "problems": []
+  },
+  {
+   "check": "tool",
+   "request": {
+    "model": "gemma-4-31b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-bb7b4b37f8654422b43312d57ca5f2f1",
+     "created": 1791707006,
+     "model": "gemma-4-31b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "<|tool_call>call:get_weather{location:<|\"|>Paris<|\"|>}<tool_call|>",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 14,
+      "prompt_tokens": 104,
+      "total_tokens": 118,
+      "prompt_tokens_details": {
+       "cached_tokens": 64
+      }
+     }
+    },
+    "content": "<|tool_call>call:get_weather{location:<|\"|>Paris<|\"|>}<tool_call|>",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 0.62
+   },
+   "problems": [
+    "raw markers in content: ['<|', '|>', '<tool_call']",
+    "finish_reason 'stop'",
+    "no tool call parsed"
+   ]
+  },
+  {
+   "check": "tool_result",
+   "request": null,
+   "reply": null,
+   "problems": [
+    "skipped: no tool call to answer"
+   ]
+  },
+  {
+   "check": "reasoning_off",
+   "request": {
+    "model": "gemma-4-31b",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "minimal"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-8511401c2f6a40e6afb51989c250e577",
+     "created": 1791707006,
+     "model": "gemma-4-31b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "391",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 3,
+      "prompt_tokens": 29,
+      "total_tokens": 32,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "391",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 0.34
+   },
+   "problems": []
+  },
+  {
+   "check": "reasoning_on",
+   "request": {
+    "model": "gemma-4-31b",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "high"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-d1b36b5911f0425ebf072d3665524a0c",
+     "created": 1791707009,
+     "model": "gemma-4-31b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "<|channel>thought\nThe user wants the result of 17 multiplied by 23.\n17 * 23 = 17 * (20 + 3) = (17 * 20) + (17 * 3) = 340 + 51 = 391.\nThe user requested \"just the number\".<channel|>391",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 82,
+      "prompt_tokens": 32,
+      "total_tokens": 114,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "<|channel>thought\nThe user wants the result of 17 multiplied by 23.\n17 * 23 = 17 * (20 + 3) = (17 * 20) + (17 * 3) = 340 + 51 = 391.\nThe user requested \"just the number\".<channel|>391",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 2.81
+   },
+   "problems": [
+    "raw markers in content: ['<|', '|>']",
+    "no reasoning_content with reasoning on"
+   ]
+  }
+ ]
+}

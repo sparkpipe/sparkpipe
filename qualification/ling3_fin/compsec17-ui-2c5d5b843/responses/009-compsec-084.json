@@ -1,0 +1,62 @@
+{
+ "id": "compsec-084",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "ling-3.0-flash-fin",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nOn this target, plain char is signed, and the ctype implementation indexes a table for values other than EOF.\n\nCode:\n```c\n 1: static size_t decode_component(char *s, size_t len)\n 2: {\n 3:     size_t r = 0, w = 0;\n 4: \n 5:     while (r < len) {\n 6:         if (s[r] == '%' && r + 2 < len &&\n 7:             isxdigit(s[r + 1]) && isxdigit(s[r + 2])) {\n 8:             s[w++] = hexpair(s[r + 1], s[r + 2]);\n 9:             r += 3;\n10:         } else {\n11:             s[w++] = s[r++];\n12:         }\n13:     }\n14:     return w;\n15: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "d23c1b806ef08b6bcea5f33f71e56f64a09eb3669db58a2cd24f6952810bcb0f"
+ },
+ "response": {
+  "id": "chatcmpl-3ee53eab50f34cabbba3cc147d7c0559",
+  "created": 1791718873,
+  "model": "ling-3.0-flash-fin",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Let me analyze this function carefully.\n\nThe function `decode_component` appears to be a URL percent-decoding function that:\n1. Reads from `s[r]` and writes to `s[w]`\n2. When it encounters `%` followed by two hex digits, it decodes them\n3. Otherwise, it copies the character as-is\n\nLet me check for vulnerabilities:\n\n**Buffer overflow analysis:**\n- The function reads from `s[r]` and writes to `s[w]`\n- `r` starts at 0 and `w` starts at 0\n- In the percent-decoding case: `r += 3`, `w++` (w advances by 1)\n- In the copy case: `r++`, `w++` (both advance by 1)\n- Since `w <= r` always holds, and we're writing within the same buffer, this seems safe\n\n**The critical issue - signed char and ctype functions:**\n\nThe problem states: \"plain char is signed, and the ctype implementation indexes a table for values other than EOF\"\n\nLooking at line 6: `if (s[r] == '%' && r + 2 < len &&`\n\nThe issue is with `isxdigit(s[r + 1])` and `isxdigit(s[r + 2])` on lines 7.\n\nThe `isxdigit` function expects an `int` argument that is either `EOF` or representable as an `unsigned char`. \n\nWhen `s[r+1]` or `s[r+2]` contains a negative value (since `char` is signed), passing it directly to `isxdigit` results in undefined behavior because:\n1. The value is not `EOF`\n2. The value is not representable as `unsigned char` (it's negative)\n3. The ctype implementation indexes a table, and negative indices cause out-of-bounds access\n\nThe fix would be to cast to `unsigned char`: `isxdigit((unsigned char)s[r + 1])`\n\nThis vulnerability is introduced on line 7 where `isxdigit` is called with potentially negative `char` values.\n\nAnswer: 7",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 474,
+   "prompt_tokens": 342,
+   "total_tokens": 816,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Let me analyze this function carefully.\n\nThe function `decode_component` appears to be a URL percent-decoding function that:\n1. Reads from `s[r]` and writes to `s[w]`\n2. When it encounters `%` followed by two hex digits, it decodes them\n3. Otherwise, it copies the character as-is\n\nLet me check for vulnerabilities:\n\n**Buffer overflow analysis:**\n- The function reads from `s[r]` and writes to `s[w]`\n- `r` starts at 0 and `w` starts at 0\n- In the percent-decoding case: `r += 3`, `w++` (w advances by 1)\n- In the copy case: `r++`, `w++` (both advance by 1)\n- Since `w <= r` always holds, and we're writing within the same buffer, this seems safe\n\n**The critical issue - signed char and ctype functions:**\n\nThe problem states: \"plain char is signed, and the ctype implementation indexes a table for values other than EOF\"\n\nLooking at line 6: `if (s[r] == '%' && r + 2 < len &&`\n\nThe issue is with `isxdigit(s[r + 1])` and `isxdigit(s[r + 2])` on lines 7.\n\nThe `isxdigit` function expects an `int` argument that is either `EOF` or representable as an `unsigned char`. \n\nWhen `s[r+1]` or `s[r+2]` contains a negative value (since `char` is signed), passing it directly to `isxdigit` results in undefined behavior because:\n1. The value is not `EOF`\n2. The value is not representable as `unsigned char` (it's negative)\n3. The ctype implementation indexes a table, and negative indices cause out-of-bounds access\n\nThe fix would be to cast to `unsigned char`: `isxdigit((unsigned char)s[r + 1])`\n\nThis vulnerability is introduced on line 7 where `isxdigit` is called with potentially negative `char` values.\n\nAnswer: 7",
+ "grade": {
+  "index": 9,
+  "id": "compsec-084",
+  "source": "COMPSEC",
+  "domain": "PHP",
+  "expected": "6-7",
+  "extracted": "7",
+  "passed": true,
+  "elapsed_ms": 6834.7,
+  "output_sha256": "71fe3db8ebf326bab888591d1927378423358e551eeaadd0aa31a1216bfb213e",
+  "prompt_token_count": 342,
+  "generated_token_count": 474,
+  "reasoning_chars": 0,
+  "content_chars": 1612,
+  "status": "stop"
+ }
+}

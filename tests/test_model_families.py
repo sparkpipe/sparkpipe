@@ -9,15 +9,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 FAMILIES = {
 	"glm52": {
-		"config": "common/common_glm_cuda_tree/spark_glm_cuda_config.h",
+		"config": "model_contracts/glm53_full_authoritative.json",
 		"host": "model-families/glm52/include/sparkpipe/spark_glm52_model.h",
-		"module": "modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c",
+		"module": None,
 		"pairs": [],
 	},
 	"glm5_next": {
 		"config": "model_contracts/glm53_flash_authoritative.json",
 		"host": "model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h",
-		"module": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
+		"module": None,
 		"pairs": [],
 	},
 	"k3": {
@@ -56,46 +56,21 @@ FAMILIES = {
 			("K3_MXFP4_GROUP", "SPARK_K3_MODEL_MXFP4_GROUP_SIZE"),
 		],
 	},
-	"mimo25": {
-		"config": "inference/llms/mimo_2_5/config.h",
-		"host": "model-families/mimo25/include/sparkpipe/spark_mimo25_model.h",
-		"module": None,
-		"pairs": [],
-	},
-	"qwen38_27b": {
-		"config": "inference/llms/qwen_3_6/config.h",
-		"host": "model-families/qwen38_27b/include/sparkpipe/spark_qwen38_27b_model.h",
-		"module": None,
-		"pairs": [
-			("QWEN38_27B_HIDDEN", "SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION"),
-			("QWEN38_27B_LAYERS", "SPARK_QWEN38_27B_MODEL_LAYER_COUNT"),
-			("QWEN38_27B_VOCAB", "SPARK_QWEN38_27B_MODEL_VOCAB_COUNT"),
-			("QWEN38_27B_HEAD_DIM", "SPARK_QWEN38_27B_MODEL_HEAD_DIMENSION"),
-			("QWEN38_27B_ATTN_HEADS", "SPARK_QWEN38_27B_MODEL_ATTENTION_HEAD_COUNT"),
-			("QWEN38_27B_KV_HEADS", "SPARK_QWEN38_27B_MODEL_KV_HEAD_COUNT"),
-			("QWEN38_27B_ROPE_DIM", "SPARK_QWEN38_27B_MODEL_ATTN_ROPE_DIMENSION"),
-			("QWEN38_27B_FFN_INTERMEDIATE", "SPARK_QWEN38_27B_MODEL_FFN_INTERMEDIATE_DIMENSION"),
-			("QWEN38_27B_MTP_LAYERS", "SPARK_QWEN38_27B_MODEL_MTP_LAYER_COUNT"),
-			("QWEN38_27B_ATTENTION_PERIOD", "SPARK_QWEN38_27B_MODEL_ATTENTION_PERIOD"),
-			("QWEN38_27B_FULL_PHASE", "SPARK_QWEN38_27B_MODEL_FULL_ATTENTION_PHASE"),
-			("QWEN38_27B_GDN_KEY_HEADS", "SPARK_QWEN38_27B_MODEL_GDN_KEY_HEAD_COUNT"),
-			("QWEN38_27B_GDN_VALUE_HEADS", "SPARK_QWEN38_27B_MODEL_GDN_VALUE_HEAD_COUNT"),
-			("QWEN38_27B_GDN_KEY_DIM", "SPARK_QWEN38_27B_MODEL_GDN_HEAD_KEY_DIMENSION"),
-			("QWEN38_27B_GDN_VALUE_DIM", "SPARK_QWEN38_27B_MODEL_GDN_HEAD_VALUE_DIMENSION"),
-			("QWEN38_27B_GDN_CONV_KERNEL", "SPARK_QWEN38_27B_MODEL_GDN_CONV_KERNEL"),
-		],
-	},
-	"dsv4": {
-		"config": "model_contracts/dsv4_flash_authoritative.json",
-		"host": "model-families/dsv4/include/sparkpipe/spark_dsv4_model.h",
-		"module": "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c",
-		"pairs": [],
-	},
 }
 
 
 def defines(path: Path) -> dict[str, str]:
-	return dict(re.findall(r"#define (\w+) (\d+)u", path.read_text(errors="surrogateescape")))
+	texts = [path.read_text(errors="surrogateescape")]
+	if (path.parent / "llm_defines.h").is_file():
+		texts.append((path.parent / "llm_defines.h").read_text(errors="surrogateescape"))
+	values = {}
+	for text in texts:
+		values.update(re.findall(r"#define (\w+) (\d+)u", text))
+	for text in texts:
+		for name, alias in re.findall(r"#define (\w+) (SPARK_LLM_\w+)\s*$", text, re.M):
+			if alias in values:
+				values[name] = values[alias]
+	return values
 
 
 def main() -> int:

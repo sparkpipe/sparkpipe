@@ -52,6 +52,7 @@ extern LmHostDim3 blockDim;
 extern LmHostDim3 gridDim;
 
 #define __shared__
+#define __align__(bytes) alignas(bytes)
 #define LM_HOST_SHARED_BYTES 65536u
 
 #define LM_HOST_WARP_LANES 1u
@@ -86,16 +87,23 @@ static inline int __ffs(int value) { return __builtin_ffs(value); }
 struct float2 { float x, y; };
 struct float4 { float x, y, z, w; };
 struct uint2 { unsigned x, y; };
+static inline uint2 make_uint2(unsigned x, unsigned y) { uint2 value = {x, y}; return value; }
 struct uint4 { unsigned x, y, z, w; };
 static inline uint4 make_uint4(unsigned x, unsigned y, unsigned z, unsigned w) { uint4 v; v.x = x; v.y = y; v.z = z; v.w = w; return v; }
 static inline float2 make_float2(float a, float b) { float2 v; v.x = a; v.y = b; return v; }
 static inline __half __ushort_as_half(unsigned short bits) { __half h; h.raw = bits; return h; }
 static inline unsigned short __half_as_ushort(__half h) { return h.raw; }
 static inline float __shfl_down_sync(unsigned, float, unsigned, int = 32) { return 0.0f; }
+static inline float __fmul_rn(float a, float b) { return a * b; }
+static inline float __fmaf_rn(float a, float b, float c) { return fmaf(a, b, c); }
+static inline float __fadd_rn(float a, float b) { return a + b; }
 static inline float __shfl_sync(unsigned, float value, int, int = 32) { return value; }
 static inline float __shfl_xor_sync(unsigned, float value, int, int = 32) { return value; }
 static inline unsigned __ballot_sync(unsigned, int predicate) { return predicate != 0 ? 1u : 0u; }
 static inline int __popc(unsigned value) { return __builtin_popcount(value); }
+static inline unsigned __reduce_max_sync(unsigned, unsigned value) { return value; }
+static inline unsigned __reduce_min_sync(unsigned, unsigned value) { return value; }
+static inline unsigned __reduce_add_sync(unsigned, unsigned value) { return value; }
 static inline void __threadfence_block(void) {}
 
 static inline unsigned long long __cvta_generic_to_shared(const void *p) { return (unsigned long long)p; }
@@ -117,9 +125,14 @@ static inline unsigned atomicMax(unsigned *address, unsigned value)
 {
 	unsigned old = *address; if (value > old) *address = value; return old;
 }
+static inline unsigned long long atomicAdd(unsigned long long *address, unsigned long long value)
+{
+	return __atomic_fetch_add(address, value, __ATOMIC_SEQ_CST);
+}
 
 template <typename T> static inline T __ldg(const T *pointer) { return *pointer; }
 template <typename T> static inline T __ldcs(const T *pointer) { return *pointer; }
+template <typename T> static inline T __ldcg(const T *pointer) { return *pointer; }
 static inline __half2 __floats2half2_rn(float low, float high)
 {
 	__half2 out;
@@ -143,6 +156,11 @@ typedef int cudaError_t;
 static inline cudaError_t cudaPeekAtLastError(void) { return cudaSuccess; }
 static inline cudaError_t cudaGetLastError(void) { return cudaSuccess; }
 static inline cudaError_t cudaMemsetAsync(void *, int, unsigned long long, dim3) { return cudaSuccess; }
+enum cudaMemcpyKind { cudaMemcpyHostToHost = 0, cudaMemcpyHostToDevice = 1, cudaMemcpyDeviceToHost = 2, cudaMemcpyDeviceToDevice = 3, cudaMemcpyDefault = 4 };
+static inline cudaError_t cudaMemcpy(void *destination, const void *source, size_t bytes, cudaMemcpyKind) { memcpy(destination, source, bytes); return cudaSuccess; }
+typedef void *cudaEvent_t;
+static inline cudaError_t cudaEventRecord(cudaEvent_t, cudaStream_t) { return cudaSuccess; }
+static inline cudaError_t cudaStreamWaitEvent(cudaStream_t, cudaEvent_t, unsigned) { return cudaSuccess; }
 
 #define LM_UNPAREN(...) __VA_ARGS__
 #define LM_LAUNCH(kernel, grid, block, shared, stream, ...)                   \
@@ -160,6 +178,8 @@ static inline cudaError_t cudaMemsetAsync(void *, int, unsigned long long, dim3)
 					LM_UNPAREN kernel(__VA_ARGS__);                           \
 				}                                                             \
 	} while (0)
+
+#define LM_LAUNCH_DEPENDENT(kernel, grid, block, shared, stream, ...) LM_LAUNCH(kernel, grid, block, shared, stream, __VA_ARGS__)
 
 #define LM_HOST_LAUNCH(grid, kernel_call)                                     \
 	do {                                                                      \

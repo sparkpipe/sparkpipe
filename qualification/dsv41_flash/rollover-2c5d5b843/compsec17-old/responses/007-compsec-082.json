@@ -1,0 +1,62 @@
+{
+ "id": "compsec-082",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "deepseek-v4.1-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe decoder writes a cstring value into a slice selected by a descriptor. xdr_bytes_available() is accurate.\n\nCode:\n```c\n 1: static bool xdr_datum(struct Xdr *xdr, const struct SliceDesc *desc, char *base)\n 2: {\n 3:     uint32_t n = xdr_get_u32(xdr);       // declared cstring length\n 4:     char *dst = base + desc->offset;\n 5: \n 6:     if (n > xdr_bytes_available(xdr))\n 7:         return false;\n 8: \n 9:     xdr_read_bytes(xdr, dst, n);\n10:     dst[n] = '\\0';\n11:     return true;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "07df71b58306f70806c714b9f6481d82e375f03cea9af324d4fa0503e015ed48"
+ },
+ "response": {
+  "id": "chatcmpl-1efbe0f6129f40789e7a016e7b6e61de",
+  "created": 1791725597,
+  "model": "deepseek-v4.1-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "length",
+    "index": 0,
+    "message": {
+     "content": "The function reads a length `n` from the input, checks that `n` does not exceed the number of bytes available in the XDR buffer, then copies `n` bytes into `dst` and writes a null terminator at `dst[n]`.\n\nThe problem is that the check on line 6 only ensures the *input* has enough bytes, but it does not verify that the *destination* slice (`base + desc->offset`) has enough space for `n + 1` bytes (including the null terminator). If `n` is larger than the destination slice size, this causes a buffer overflow on line 10 when writing the null terminator (and potentially on line 9 as well).\n\nThe primary bug is introduced at the point where the length is used without validating it against the destination size \u2014 that is the missing bounds check, but the actual overflow occurs at line 10. However, the question asks for where the bug is *introduced*. The bug is introduced by the lack of a destination size check before line 9/10, but since we must pick from existing lines, the most direct culprit is line 10 (the out-of-bounds write) or line 6 (the insufficient check).  \n\nGiven the phrasing, the primary bug is the missing check against destination capacity, which is most clearly manifested at line 10 where the out-of-bounds write happens. But the bug is *introduced* by the inadequate check on line 6 (it checks the wrong thing).  \n\nThe smallest set of lines that captures the bug: line 6 (wrong check) and line 10 (overflow). But since the question says \"primary bug is introduced\", and the check on line 6 is the flawed logic that allows the overflow, I'd say line 6 is where the bug is introduced (insufficient validation). However, many would argue the actual vulnerability is the write at line 10.  \n\nGiven typical analysis, the missing bounds check against the destination is the root cause, and that check should have been before line 9. Since it's absent, the bug is \"introduced\" at the point where the length is used without validation \u2014 that's effectively line 6 (the only check present, which is insufficient).  \n\nBut to be precise: the bug is that `n` is not validated against the destination slice size. That validation is missing entirely, so the bug is introduced when `n` is used to write without that check \u2014 line 10 is the direct overflow",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 512,
+   "prompt_tokens": 275,
+   "total_tokens": 787,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function reads a length `n` from the input, checks that `n` does not exceed the number of bytes available in the XDR buffer, then copies `n` bytes into `dst` and writes a null terminator at `dst[n]`.\n\nThe problem is that the check on line 6 only ensures the *input* has enough bytes, but it does not verify that the *destination* slice (`base + desc->offset`) has enough space for `n + 1` bytes (including the null terminator). If `n` is larger than the destination slice size, this causes a buffer overflow on line 10 when writing the null terminator (and potentially on line 9 as well).\n\nThe primary bug is introduced at the point where the length is used without validating it against the destination size \u2014 that is the missing bounds check, but the actual overflow occurs at line 10. However, the question asks for where the bug is *introduced*. The bug is introduced by the lack of a destination size check before line 9/10, but since we must pick from existing lines, the most direct culprit is line 10 (the out-of-bounds write) or line 6 (the insufficient check).  \n\nGiven the phrasing, the primary bug is the missing check against destination capacity, which is most clearly manifested at line 10 where the out-of-bounds write happens. But the bug is *introduced* by the inadequate check on line 6 (it checks the wrong thing).  \n\nThe smallest set of lines that captures the bug: line 6 (wrong check) and line 10 (overflow). But since the question says \"primary bug is introduced\", and the check on line 6 is the flawed logic that allows the overflow, I'd say line 6 is where the bug is introduced (insufficient validation). However, many would argue the actual vulnerability is the write at line 10.  \n\nGiven typical analysis, the missing bounds check against the destination is the root cause, and that check should have been before line 9. Since it's absent, the bug is \"introduced\" at the point where the length is used without validation \u2014 that's effectively line 6 (the only check present, which is insufficient).  \n\nBut to be precise: the bug is that `n` is not validated against the destination slice size. That validation is missing entirely, so the bug is introduced when `n` is used to write without that check \u2014 line 10 is the direct overflow",
+ "grade": {
+  "index": 7,
+  "id": "compsec-082",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 59624.4,
+  "output_sha256": "5bc7b78381d49c863920e4d2cc110ee609ff053fcd6e6c05f2963dc45ab52455",
+  "prompt_token_count": 275,
+  "generated_token_count": 512,
+  "reasoning_chars": 0,
+  "content_chars": 2265,
+  "status": "length"
+ }
+}

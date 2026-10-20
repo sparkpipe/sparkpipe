@@ -1,7 +1,11 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #define _FILE_OFFSET_BITS 64
 
 #include "sparkpipe/spark_kv_page_store.h"
 #include "sparkpipe/spark_error_site.h"
+#include "sparkpipe/spark_sha256.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -9,8 +13,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/types.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
 
 #define SPARK_KV_PAGE_STORE_JOB_FREE 0u
 #define SPARK_KV_PAGE_STORE_JOB_QUEUED 1u
@@ -38,7 +46,10 @@ typedef struct SparkKvPageStoreJob
 	SparkStatus terminal_status;
 	uint32_t reserves_backing_page;
 	uint32_t backing_slot_index;
+	uint32_t superseded;
 	SparkKvCachePrefetchBlock prefetch_block;
+	uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
+	uint32_t storage_failed;
 }
 SparkKvPageStoreJob;
 
@@ -55,50 +66,11 @@ typedef struct SparkKvPageStoreWorker
 	uint32_t stop;
 	uint32_t next_job_index;
 	uint32_t backing_slot_capacity;
+	uint8_t *slot_digests;
 	uint32_t *backing_slots_by_logical_page;
 	uint32_t *logical_pages_by_backing_slot;
 }
 SparkKvPageStoreWorker;
-
-static uint64_t SparkKvPageStoreHashText(uint64_t hash,const char *text)
-{
-	while ( text != 0 && text[0] != '\0' )
-	{
-		hash ^= (uint8_t)text[0];
-		hash *= UINT64_C(1099511628211);
-		text++;
-	}
-	hash ^= UINT8_C(0xff);
-	return(hash * UINT64_C(1099511628211));
-}
-
-SparkStatus SparkKvPageStoreBuildPath(
-	char *path,
-	uint32_t path_capacity,
-	const char *backing_directory,
-	const char *model_id,
-	const char *model_revision,
-	const char *node_id,
-	uint32_t stage_index)
-{
-	uint64_t hash;
-	int32_t written;
-	if ( path == 0 || path_capacity == 0u || backing_directory == 0 ||
-		backing_directory[0] == '\0' || model_id == 0 || model_id[0] == '\0' ||
-		model_revision == 0 || model_revision[0] == '\0' ||
-		node_id == 0 || node_id[0] == '\0' )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	hash = UINT64_C(1469598103934665603);
-	hash = SparkKvPageStoreHashText(hash,model_id);
-	hash = SparkKvPageStoreHashText(hash,model_revision);
-	hash = SparkKvPageStoreHashText(hash,node_id);
-	hash ^= stage_index;
-	hash *= UINT64_C(1099511628211);
-	written = snprintf(path,path_capacity,"%s/sparkpipe-kv-%016llx.bin",
-		backing_directory,(unsigned long long)hash);
-	return(written < 0 || (uint32_t)written >= path_capacity ?
-		SPARK_STATUS_CAPACITY_EXCEEDED : SPARK_STATUS_OK);
-}
 
 static uint32_t SparkKvPageStoreConfigurationIsValid(
 	const SparkKvPageStoreConfiguration *configuration)
@@ -106,14 +78,18 @@ static uint32_t SparkKvPageStoreConfigurationIsValid(
 	uint32_t creation_flags;
 	creation_flags = configuration != 0 ? configuration->flags &
 		(SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE |
-		 SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS) : 0u;
+		 SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS |
+		 SPARK_KV_PAGE_STORE_FLAG_MEMORY) : 0u;
 	if ( configuration == 0 ||
 		configuration->abi_version != SPARK_KV_PAGE_STORE_ABI_VERSION ||
 		configuration->descriptor_bytes !=
 			SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES ||
 		(configuration->flags & ~SPARK_KV_PAGE_STORE_KNOWN_FLAGS) != 0u ||
 		(creation_flags != SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE &&
-		 creation_flags != SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS) ||
+		 creation_flags != SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS &&
+		 creation_flags != SPARK_KV_PAGE_STORE_FLAG_MEMORY) ||
+		(creation_flags == SPARK_KV_PAGE_STORE_FLAG_MEMORY &&
+		 (configuration->flags & SPARK_KV_PAGE_STORE_FLAG_DIRECT_IO) != 0u) ||
 		configuration->logical_page_capacity == 0u ||
 		configuration->transfer_capacity == 0u ||
 		configuration->transfer_capacity > configuration->logical_page_capacity ||
@@ -151,11 +127,64 @@ static uint32_t SparkKvPageStoreIsValid(const SparkKvPageStore *store)
 		store->generations != 0 && store->valid_pages != 0 ? 1u : 0u);
 }
 
+static SparkStatus SparkKvPageStoreReserve(
+	SparkKvPageStore *store,
+	const char *backing_path)
+{
+	uint64_t bytes;
+	int32_t error;
+	bytes = (store->maximum_backing_bytes / store->page_bytes) * store->page_bytes;
+#if defined(__linux__)
+	error = fallocate(store->file_descriptor,0,0,(off_t)bytes) == 0 ? 0 : errno;
+#elif defined(__APPLE__)
+	{
+		fstore_t request;
+		memset(&request,0,sizeof(request));
+		request.fst_flags = F_ALLOCATEALL;
+		request.fst_posmode = F_PEOFPOSMODE;
+		request.fst_length = (off_t)bytes;
+		error = fcntl(store->file_descriptor,F_PREALLOCATE,&request) == -1 ? errno : 0;
+		if ( error == 0 && ftruncate(store->file_descriptor,(off_t)bytes) != 0 )
+			error = errno;
+	}
+#else
+	error = ENOTSUP;
+#endif
+	if ( error == 0 )
+		return(SPARK_STATUS_OK);
+	fprintf(stderr,"kv page store: backing %s cannot reserve %llu bytes: %s\n",backing_path,(unsigned long long)bytes,strerror(error));
+	if ( error == ENOSPC || error == EFBIG )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+}
+
+static SparkStatus SparkKvPageStoreOpenMemory(
+	SparkKvPageStore *store,
+	const SparkKvPageStoreConfiguration *configuration)
+{
+#if defined(__linux__)
+	store->file_descriptor = memfd_create(configuration->backing_path,MFD_CLOEXEC);
+#else
+	char path[] = "/tmp/sparkpipe-kv-memory-XXXXXX";
+	store->file_descriptor = mkstemp(path);
+	if ( store->file_descriptor >= 0 )
+		(void)unlink(path);
+#endif
+	if ( store->file_descriptor < 0 )
+	{
+		fprintf(stderr,"kv page store: memory backing %s cannot be created: %s\n",configuration->backing_path,strerror(errno));
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	return(SparkKvPageStoreReserve(store,configuration->backing_path));
+}
+
 static SparkStatus SparkKvPageStoreOpen(
 	SparkKvPageStore *store,
 	const SparkKvPageStoreConfiguration *configuration)
 {
 	int32_t flags;
+	if ( (configuration->flags & SPARK_KV_PAGE_STORE_FLAG_MEMORY) != 0u )
+		return(SparkKvPageStoreOpenMemory(store,configuration));
 	flags = O_RDWR;
 #ifdef O_CLOEXEC
 	flags |= O_CLOEXEC;
@@ -184,7 +213,7 @@ static SparkStatus SparkKvPageStoreOpen(
 	}
 	store->file_descriptor = open(configuration->backing_path,flags,0600);
 	if ( store->file_descriptor >= 0 )
-		return(SPARK_STATUS_OK);
+		return(SparkKvPageStoreReserve(store,configuration->backing_path));
 	if ( (configuration->flags & SPARK_KV_PAGE_STORE_FLAG_DIRECT_IO) != 0u &&
 		(errno == EINVAL
 #ifdef EOPNOTSUPP
@@ -309,9 +338,17 @@ static SparkStatus SparkKvPageStoreReadExact(
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkKvPageStoreDigest(const SparkKvPageStore *store,const uint8_t *page,uint8_t digest[SPARK_SHA256_DIGEST_BYTES])
+{
+	SparkSha256Context context;
+	SparkSha256Initialize(&context);
+	SparkSha256Update(&context,page,(size_t)store->page_bytes);
+	SparkSha256Finalize(&context,digest);
+}
+
 static SparkStatus SparkKvPageStoreExecuteWrite(
 	SparkKvPageStore *store,
-	const SparkKvPageStoreJob *job)
+	SparkKvPageStoreJob *job)
 {
 	uint8_t *staging;
 	uint64_t offset;
@@ -324,6 +361,8 @@ static SparkStatus SparkKvPageStoreExecuteWrite(
 			job->value_device_address,staging + job->key_bytes,job->value_bytes);
 	offset = (uint64_t)job->backing_slot_index * store->page_bytes;
 	if ( status == SPARK_STATUS_OK )
+		SparkKvPageStoreDigest(store,staging,job->digest);
+	if ( status == SPARK_STATUS_OK )
 		status = SparkKvPageStoreWriteExact(store,offset,
 			staging,store->page_bytes);
 	SPARK_RETURN(status);
@@ -331,7 +370,7 @@ static SparkStatus SparkKvPageStoreExecuteWrite(
 
 static SparkStatus SparkKvPageStoreExecuteRead(
 	SparkKvPageStore *store,
-	const SparkKvPageStoreJob *job)
+	SparkKvPageStoreJob *job)
 {
 	uint8_t *staging;
 	uint64_t offset;
@@ -340,6 +379,25 @@ static SparkStatus SparkKvPageStoreExecuteRead(
 	offset = (uint64_t)job->backing_slot_index * store->page_bytes;
 	status = SparkKvPageStoreReadExact(store,offset,staging,
 		store->page_bytes);
+	if ( status != SPARK_STATUS_OK )
+	{
+		job->storage_failed = 1u;
+		SPARK_RETURN(status);
+	}
+	{
+		uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
+		SparkKvPageStoreDigest(store,staging,digest);
+		if ( memcmp(digest,job->digest,sizeof(digest)) != 0 )
+		{
+			job->storage_failed = 1u;
+			SPARK_FAIL(SPARK_STATUS_HASH_MISMATCH);
+		}
+	}
+	if ( status == SPARK_STATUS_OK && job->read_kind == SPARK_KV_PAGE_STORE_READ_BUFFER )
+	{
+		memcpy((void *)job->key_device_address,staging,store->page_bytes);
+		return(SPARK_STATUS_OK);
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkKvPageStoreCopy(store,job->direction,
 			job->key_device_address,staging,job->key_bytes);
@@ -351,7 +409,7 @@ static SparkStatus SparkKvPageStoreExecuteRead(
 
 static SparkStatus SparkKvPageStoreExecuteJob(
 	SparkKvPageStore *store,
-	const SparkKvPageStoreJob *job)
+	SparkKvPageStoreJob *job)
 {
 	if ( job->direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST )
 		return(SparkKvPageStoreExecuteWrite(store,job));
@@ -429,9 +487,18 @@ static void SparkKvPageStoreRecordJob(
 	SparkKvPageStore *store;
 	store = worker->store;
 	job->terminal_status = status;
-	if ( status == SPARK_STATUS_OK &&
+	if ( job->superseded != 0u &&
 		job->direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST )
 	{
+		if ( job->reserves_backing_page != 0u )
+			(void)SparkKvPageStoreReleaseBackingSlotLocked(worker,
+				job->logical_page_index,job->backing_slot_index);
+		job->terminal_status = SPARK_STATUS_NOT_FOUND;
+	}
+	else if ( status == SPARK_STATUS_OK &&
+		job->direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST )
+	{
+		memcpy(worker->slot_digests + (uint64_t)job->backing_slot_index * SPARK_SHA256_DIGEST_BYTES,job->digest,SPARK_SHA256_DIGEST_BYTES);
 		store->generations[job->logical_page_index] = job->generation;
 		store->valid_pages[job->logical_page_index] =
 			SPARK_KV_PAGE_STORE_PAGE_VALID;
@@ -451,6 +518,19 @@ static void SparkKvPageStoreRecordJob(
 	{
 		store->read_count++;
 		store->read_bytes += store->page_bytes;
+	}
+	else if ( job->storage_failed != 0u )
+	{
+		if ( status == SPARK_STATUS_HASH_MISMATCH )
+			store->read_digest_mismatch_count++;
+		else
+			store->read_error_count++;
+		fprintf(stderr,"kv page store: logical page %u slot %u %s; the page is dropped and its prefix recomputed\n",
+			job->logical_page_index,job->backing_slot_index,status == SPARK_STATUS_HASH_MISMATCH ? "failed its digest" : "could not be read");
+		if ( job->logical_page_index < store->logical_page_capacity &&
+			worker->backing_slots_by_logical_page[job->logical_page_index] == job->backing_slot_index )
+			(void)SparkKvPageStoreReleaseBackingSlotLocked(worker,job->logical_page_index,job->backing_slot_index);
+		job->terminal_status = SPARK_STATUS_NOT_FOUND;
 	}
 	job->state = SPARK_KV_PAGE_STORE_JOB_COMPLETE;
 }
@@ -509,6 +589,7 @@ static void SparkKvPageStoreWorkerDestroy(SparkKvPageStore *store)
 	if ( worker->mutex_initialized != 0u )
 		(void)pthread_mutex_destroy(&worker->mutex);
 	free(worker->jobs);
+	free(worker->slot_digests);
 	free(worker->logical_pages_by_backing_slot);
 	free(worker->backing_slots_by_logical_page);
 	free(worker);
@@ -534,8 +615,9 @@ static SparkStatus SparkKvPageStoreWorkerInitialize(SparkKvPageStore *store)
 		(uint64_t)store->logical_page_capacity * sizeof(uint32_t));
 	worker->logical_pages_by_backing_slot = (uint32_t *)malloc(
 		(uint64_t)worker->backing_slot_capacity * sizeof(uint32_t));
+	worker->slot_digests = (uint8_t *)calloc(worker->backing_slot_capacity,SPARK_SHA256_DIGEST_BYTES);
 	if ( worker->jobs == 0 || worker->backing_slots_by_logical_page == 0 ||
-		worker->logical_pages_by_backing_slot == 0 ||
+		worker->logical_pages_by_backing_slot == 0 || worker->slot_digests == 0 ||
 		pthread_mutex_init(&worker->mutex,0) != 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	memset(worker->backing_slots_by_logical_page,0xff,
@@ -626,42 +708,6 @@ SparkStatus SparkKvPageStoreWaitForTransfers(SparkKvPageStore *store)
 	SPARK_RETURN(status);
 }
 
-SparkStatus SparkKvPageStoreCopyResidentPage(
-	SparkKvPageStore *store,
-	const SparkKvCacheBlockView *source,
-	const SparkKvCacheBlockView *destination)
-{
-	SparkKvPageStoreWorker *worker;
-	SparkStatus status = SPARK_STATUS_OK;
-	uint32_t index;
-	uint8_t *staging;
-	if ( SparkKvPageStoreIsValid(store) == 0u || source == 0 || destination == 0 ||
-		(source->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u ||
-		(destination->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u ||
-		source->key_block_stride_bytes > store->page_bytes ||
-		source->value_block_stride_bytes != store->page_bytes - source->key_block_stride_bytes ||
-		destination->key_block_stride_bytes != source->key_block_stride_bytes ||
-		destination->value_block_stride_bytes != source->value_block_stride_bytes )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	worker = (SparkKvPageStoreWorker *)store->worker_state;
-	if ( pthread_mutex_lock(&worker->mutex) != 0 )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	for (index=0u; index<store->transfer_capacity; index++)
-		if ( worker->jobs[index].state == SPARK_KV_PAGE_STORE_JOB_QUEUED || worker->jobs[index].state == SPARK_KV_PAGE_STORE_JOB_ACTIVE )
-			status = SPARK_STATUS_BUSY;
-	staging = (uint8_t *)store->staging_address;
-	if ( status == SPARK_STATUS_OK )
-		status = SparkKvPageStoreCopy(store,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,source->key_device_address,staging,source->key_block_stride_bytes);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkKvPageStoreCopy(store,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,source->value_device_address,staging + source->key_block_stride_bytes,source->value_block_stride_bytes);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkKvPageStoreCopy(store,SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE,destination->key_device_address,staging,destination->key_block_stride_bytes);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkKvPageStoreCopy(store,SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE,destination->value_device_address,staging + source->key_block_stride_bytes,destination->value_block_stride_bytes);
-	(void)pthread_mutex_unlock(&worker->mutex);
-	SPARK_RETURN(status);
-}
-
 static SparkKvPageStoreJob *SparkKvPageStoreFindJob(
 	SparkKvPageStoreWorker *worker,
 	uint32_t direction,
@@ -726,6 +772,12 @@ SparkStatus SparkKvPageStoreWriteback(
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	job = SparkKvPageStoreFindJob(worker,
 		SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,logical_page_index,generation);
+	if ( job != 0 && job->superseded != 0u &&
+		job->state == SPARK_KV_PAGE_STORE_JOB_COMPLETE )
+	{
+		memset(job,0,sizeof(*job));
+		job = 0;
+	}
 	if ( job != 0 )
 	{
 		status = job->state == SPARK_KV_PAGE_STORE_JOB_COMPLETE ?
@@ -800,6 +852,12 @@ SparkStatus SparkKvPageStoreWriteback(
 			SPARK_KV_PAGE_STORE_PAGE_RESERVED;
 		store->backing_page_count++;
 	}
+	if ( store->write_meter != 0 )
+	{
+		struct timespec now;
+		(void)clock_gettime(CLOCK_MONOTONIC,&now);
+		SparkKvWriteMeterRecord(store->write_meter,store->page_bytes,(uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec);
+	}
 	SparkKvPageStoreQueueJob(worker,job);
 	(void)pthread_mutex_unlock(&worker->mutex);
 	SPARK_FAIL(SPARK_STATUS_BUSY);
@@ -831,6 +889,7 @@ static SparkStatus SparkKvPageStoreReadbackLocked(SparkKvPageStoreWorker *worker
 	job->key_device_address = destination;
 	job->key_bytes = store->page_bytes;
 	job->backing_slot_index = worker->backing_slots_by_logical_page[logical_page_index];
+	memcpy(job->digest,worker->slot_digests + (uint64_t)job->backing_slot_index * SPARK_SHA256_DIGEST_BYTES,SPARK_SHA256_DIGEST_BYTES);
 	SparkKvPageStoreQueueJob(worker,job);
 	SPARK_FAIL(SPARK_STATUS_BUSY);
 }
@@ -939,6 +998,7 @@ static SparkStatus SparkKvPageStoreStartPrefetch(
 		job->value_bytes = arena->value_block_stride_bytes;
 		job->backing_slot_index =
 			worker->backing_slots_by_logical_page[logical_page_index];
+		memcpy(job->digest,worker->slot_digests + (uint64_t)job->backing_slot_index * SPARK_SHA256_DIGEST_BYTES,SPARK_SHA256_DIGEST_BYTES);
 		job->prefetch_block = plan.blocks[0u];
 		SparkKvPageStoreQueueJob(worker,job);
 	}
@@ -995,7 +1055,8 @@ SparkStatus SparkKvPageStoreProgress(
 			if ( status != SPARK_STATUS_OK )
 				(void)SparkKvCacheArenaCancelPrefetchPlan(arena,&plan);
 		}
-		if ( result == SPARK_STATUS_OK && status != SPARK_STATUS_OK )
+		if ( result == SPARK_STATUS_OK && status != SPARK_STATUS_OK &&
+			completed.direction == SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE )
 			result = status;
 	}
 	return(result);
@@ -1010,7 +1071,9 @@ static SparkStatus SparkKvPageStoreCanInvalidateLocked(SparkKvPageStoreWorker *w
 	{
 		job = &worker->jobs[index];
 		if ( job->state != SPARK_KV_PAGE_STORE_JOB_FREE &&
-			job->logical_page_index == logical_page_index )
+			job->logical_page_index == logical_page_index &&
+			!(job->state == SPARK_KV_PAGE_STORE_JOB_COMPLETE &&
+			  job->direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST) )
 			SPARK_FAIL(SPARK_STATUS_BUSY);
 	}
 	if ( store->valid_pages[logical_page_index] ==
@@ -1031,8 +1094,23 @@ static SparkStatus SparkKvPageStoreCanInvalidateLocked(SparkKvPageStoreWorker *w
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkKvPageStoreFreeCompletedWritesLocked(SparkKvPageStoreWorker *worker,uint32_t logical_page_index)
+{
+	SparkKvPageStoreJob *job;
+	uint32_t index;
+	for (index=0u; index<worker->store->transfer_capacity; index++)
+	{
+		job = &worker->jobs[index];
+		if ( job->state == SPARK_KV_PAGE_STORE_JOB_COMPLETE &&
+			job->direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST &&
+			job->logical_page_index == logical_page_index )
+			memset(job,0,sizeof(*job));
+	}
+}
+
 static SparkStatus SparkKvPageStoreInvalidateLocked(SparkKvPageStoreWorker *worker,uint32_t logical_page_index)
 {
+	SparkKvPageStoreFreeCompletedWritesLocked(worker,logical_page_index);
 	SparkKvPageStoreForgetWriteFailureLocked(worker->store,logical_page_index);
 	if ( worker->store->valid_pages[logical_page_index] == SPARK_KV_PAGE_STORE_PAGE_INVALID )
 		return(SPARK_STATUS_OK);
@@ -1069,6 +1147,39 @@ SparkStatus SparkKvPageStoreInvalidate(SparkKvPageStore *store,uint32_t logical_
 	status = SparkKvPageStoreCanInvalidateLocked(worker,logical_page_index,generation);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkKvPageStoreInvalidateLocked(worker,logical_page_index);
+	(void)pthread_mutex_unlock(&worker->mutex);
+	SPARK_RETURN(status);
+}
+
+SparkStatus SparkKvPageStoreRekey(SparkKvPageStore *store,uint32_t from_page,uint64_t from_generation,uint32_t to_page,uint64_t to_generation)
+{
+	SparkKvPageStoreWorker *worker;
+	SparkStatus status = SPARK_STATUS_NOT_FOUND;
+	uint32_t index,slot;
+	if ( SparkKvPageStoreIsValid(store) == 0u || from_generation == 0u || to_generation == 0u || from_page == to_page ||
+		from_page >= store->logical_page_capacity || to_page >= store->logical_page_capacity )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	worker = (SparkKvPageStoreWorker *)store->worker_state;
+	if ( pthread_mutex_lock(&worker->mutex) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	for (index=0u; index<store->transfer_capacity; index++)
+		if ( worker->jobs[index].state != SPARK_KV_PAGE_STORE_JOB_FREE &&
+			(worker->jobs[index].logical_page_index == from_page || worker->jobs[index].logical_page_index == to_page) )
+			status = SPARK_STATUS_BUSY;
+	slot = worker->backing_slots_by_logical_page[from_page];
+	if ( status == SPARK_STATUS_NOT_FOUND && store->valid_pages[from_page] == SPARK_KV_PAGE_STORE_PAGE_VALID && store->generations[from_page] == from_generation &&
+		slot < worker->backing_slot_capacity && worker->logical_pages_by_backing_slot[slot] == from_page &&
+		store->valid_pages[to_page] == SPARK_KV_PAGE_STORE_PAGE_INVALID && worker->backing_slots_by_logical_page[to_page] == SPARK_KV_CACHE_NO_BLOCK )
+	{
+		worker->backing_slots_by_logical_page[to_page] = slot;
+		worker->logical_pages_by_backing_slot[slot] = to_page;
+		worker->backing_slots_by_logical_page[from_page] = SPARK_KV_CACHE_NO_BLOCK;
+		store->valid_pages[to_page] = SPARK_KV_PAGE_STORE_PAGE_VALID;
+		store->generations[to_page] = to_generation;
+		store->valid_pages[from_page] = SPARK_KV_PAGE_STORE_PAGE_INVALID;
+		store->generations[from_page] = 0u;
+		status = SPARK_STATUS_OK;
+	}
 	(void)pthread_mutex_unlock(&worker->mutex);
 	SPARK_RETURN(status);
 }
@@ -1143,4 +1254,67 @@ SparkStatus SparkKvPageStorePrefetch(
 		return(SparkKvPageStoreFinishPrefetch(store,arena,logical_page_index,
 			view.generation));
 	return(SparkKvPageStoreStartPrefetch(store,arena,logical_page_index));
+}
+
+SparkStatus SparkKvPageStoreSupersede(SparkKvPageStore *store,uint32_t logical_page_index,uint64_t generation)
+{
+	SparkKvPageStoreWorker *worker;
+	SparkKvPageStoreJob *job;
+	SparkStatus status;
+	uint32_t active;
+	if ( SparkKvPageStoreIsValid(store) == 0u || generation == 0u || logical_page_index >= store->logical_page_capacity )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	worker = (SparkKvPageStoreWorker *)store->worker_state;
+	if ( pthread_mutex_lock(&worker->mutex) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	status = SPARK_STATUS_OK;
+	job = SparkKvPageStoreFindJob(worker,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,logical_page_index,generation);
+	active = 0u;
+	if ( job != 0 && job->state == SPARK_KV_PAGE_STORE_JOB_QUEUED )
+	{
+		if ( job->reserves_backing_page != 0u )
+			status = SparkKvPageStoreReleaseBackingSlotLocked(worker,logical_page_index,job->backing_slot_index);
+		memset(job,0,sizeof(*job));
+	}
+	else if ( job != 0 && job->state == SPARK_KV_PAGE_STORE_JOB_ACTIVE )
+	{
+		job->superseded = 1u;
+		active = 1u;
+	}
+	else if ( job != 0 )
+		memset(job,0,sizeof(*job));
+	if ( status == SPARK_STATUS_OK && active == 0u &&
+		store->valid_pages[logical_page_index] == SPARK_KV_PAGE_STORE_PAGE_VALID &&
+		store->generations[logical_page_index] == generation &&
+		worker->backing_slots_by_logical_page[logical_page_index] != SPARK_KV_CACHE_NO_BLOCK )
+		status = SparkKvPageStoreReleaseBackingSlotLocked(worker,logical_page_index,worker->backing_slots_by_logical_page[logical_page_index]);
+	else if ( status == SPARK_STATUS_OK && active == 0u &&
+		store->generations[logical_page_index] == generation )
+		SparkKvPageStoreForgetWriteFailureLocked(store,logical_page_index);
+	(void)pthread_mutex_unlock(&worker->mutex);
+	SPARK_RETURN(status);
+}
+
+SparkStatus SparkKvPageStoreReleaseIdle(SparkKvPageStore *store,uint32_t logical_page_index,uint64_t generation)
+{
+	SparkKvPageStoreWorker *worker;
+	SparkStatus status;
+	uint32_t index;
+	if ( SparkKvPageStoreIsValid(store) == 0u || generation == 0u || logical_page_index >= store->logical_page_capacity )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	worker = (SparkKvPageStoreWorker *)store->worker_state;
+	if ( pthread_mutex_lock(&worker->mutex) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	status = SPARK_STATUS_NOT_FOUND;
+	for (index=0u; index<store->transfer_capacity; index++)
+		if ( worker->jobs[index].state != SPARK_KV_PAGE_STORE_JOB_FREE &&
+			worker->jobs[index].logical_page_index == logical_page_index )
+			status = SPARK_STATUS_BUSY;
+	if ( status == SPARK_STATUS_NOT_FOUND &&
+		store->valid_pages[logical_page_index] == SPARK_KV_PAGE_STORE_PAGE_VALID &&
+		store->generations[logical_page_index] == generation &&
+		worker->backing_slots_by_logical_page[logical_page_index] != SPARK_KV_CACHE_NO_BLOCK )
+		status = SparkKvPageStoreReleaseBackingSlotLocked(worker,logical_page_index,worker->backing_slots_by_logical_page[logical_page_index]);
+	(void)pthread_mutex_unlock(&worker->mutex);
+	return(status);
 }

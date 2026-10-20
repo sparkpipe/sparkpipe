@@ -9,7 +9,9 @@
 extern "C" {
 #endif
 
-#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 15u
+#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 16u
+#define SPARK_TP_DEVICE_COLLECTIVE_WAIT_SPIN 0u
+#define SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE 1u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_PHASE_COUNT 30u
@@ -28,7 +30,7 @@ extern "C" {
 #define SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES 64u
 #define SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES 8u
 
-#define SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION 2u
+#define SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION 3u
 #define SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_DEVICE 0u
 #define SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST 1u
 #define SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT 0u
@@ -37,6 +39,7 @@ extern "C" {
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 1u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 2u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL 3u
+#define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 4u
 #define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING 0x00000001u
 #define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING \
     0x00000002u
@@ -140,21 +143,6 @@ typedef SparkStatus (*SparkTpDeviceCollectiveCombineBf16Function)(
     uint32_t hidden_dimension,
     void *cuda_stream);
 
-typedef SparkStatus (*SparkTpDeviceCollectiveCombineF32SeedFunction)(
-    void *combine_context,
-    void *destination_f32_device,
-    const void *source_a_bf16_device,
-    const void *source_b_bf16_device,
-    uint32_t element_count,
-    void *cuda_stream);
-
-typedef SparkStatus (*SparkTpDeviceCollectiveCombineF32AddFunction)(
-    void *combine_context,
-    void *destination_f32_device,
-    const void *source_bf16_device,
-    uint32_t element_count,
-    void *cuda_stream);
-
 typedef SparkStatus (*SparkTpDeviceCollectiveCombineFusedBf16Function)(
     void *combine_context,
     void *destination_device,
@@ -167,12 +155,6 @@ typedef SparkStatus (*SparkTpDeviceCollectiveCombineFusedBf16Function)(
 typedef SparkTpDeviceCollectiveCombineFusedBf16Function
     SparkTpDeviceCollectiveCombineGatherBf16Function;
 
-typedef SparkStatus (*SparkTpDeviceCollectiveRoundF32Function)(
-    void *combine_context,
-    void *destination_bf16_device,
-    const void *source_f32_device,
-    uint32_t element_count,
-    void *cuda_stream);
 
 typedef SparkStatus (*SparkTpDeviceCollectiveCombineRelayBf16Function)(
     void *combine_context,
@@ -218,7 +200,7 @@ typedef struct SparkTpDeviceCollectiveTopology
     uint32_t direct_all_to_all_max_payload_bytes;
     uint32_t split_ring_min_payload_bytes;
     uint32_t step_rail_indices[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
-    uint32_t reserved0;
+    uint32_t wait_mode;
     uint16_t session_ports[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
         [SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
     char rank_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
@@ -259,6 +241,7 @@ typedef struct SparkTpDeviceCollectiveConfig
     uint64_t collective_identifier;
     struct SparkWeightdClient *mesh_lane_client;
     uint32_t mesh_band_index;
+    uint32_t wait_mode;
 	const char *backend_module_path;
     const char *local_host;
     const char *rank_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
@@ -273,9 +256,6 @@ typedef struct SparkTpDeviceCollectiveConfig
     SparkTpDeviceCollectiveCombineTp4Bf16Function
         combine_tp4_bf16_function;
     SparkTpDeviceCollectiveCombineU64MaxFunction combine_u64_max_function;
-    SparkTpDeviceCollectiveCombineF32SeedFunction combine_f32_seed_function;
-    SparkTpDeviceCollectiveCombineF32AddFunction combine_f32_add_function;
-    SparkTpDeviceCollectiveRoundF32Function round_f32_function;
     SparkTpDeviceCollectiveCombineFusedBf16Function combine_fused_bf16_function;
     SparkTpDeviceCollectiveCombineGatherBf16Function
         combine_gather_bf16_function;
@@ -304,6 +284,50 @@ typedef struct SparkTpDeviceCollective
     void *implementation;
 } SparkTpDeviceCollective;
 
+#define SPARK_TP_MESH_LAUNCHERS_ABI_VERSION 2u
+
+typedef int (*SparkTpMeshCopyDownFunction)(void *stream,volatile void *destination,const void *source,uint64_t bytes,
+    const volatile void *shipped,void *round_control,const volatile void *cancel,uint64_t timeout_ns);
+typedef int (*SparkTpMeshPublishFunction)(void *stream,volatile void *entry,void *seq_cell,const void *epoch_cell,
+    void *round_seq,uint64_t bytes,uint64_t slot_index,uint64_t slots_per_rank,volatile void *slot_tail,
+    void *error_word,uint32_t peer_mask);
+typedef int (*SparkTpMeshTreeFunction)(void *stream,void *band,uint64_t slot_bytes,uint64_t slots_per_rank,volatile void *entry,
+    const volatile void *shipped,const volatile void *cancel,void *round_control,uint32_t rank,uint32_t degree,const void *local,
+    void *output,void *scratch,uint64_t elements,uint32_t operation,uint32_t rounds,uint64_t timeout_ns);
+typedef int (*SparkTpMeshHardwarePrepareFunction)(void *host,void **device);
+#define SPARK_TP_MESH_STAGE_ALL 0u
+#define SPARK_TP_MESH_STAGE_PUBLISH 1u
+#define SPARK_TP_MESH_STAGE_COMPLETE 2u
+
+typedef int (*SparkTpMeshHardwareFunction)(void *stream,void *band,uint64_t slot_bytes,uint64_t slots_per_rank,volatile void *entry,
+    void *gate,void *round_control,uint32_t rank,uint32_t degree,const void *local,void *output,void *scratch,uint64_t elements,
+    uint32_t operation,uint32_t rounds,uint32_t logical_rows,uint32_t slice_routes,void *staging,uint64_t timeout_ns,uint32_t stage);
+typedef int (*SparkTpMeshSeqPadFunction)(void *stream,void *seq_cell);
+typedef int (*SparkTpMeshGuardFunction)(void *stream,volatile void *error_word,void *output);
+typedef int (*SparkTpMeshWaitFunction)(void *stream,volatile void *band_base,uint64_t slot_bytes,const void *round_seq,
+    uint64_t slots_per_rank,uint32_t rank,uint32_t degree,void *error_word,unsigned long long deadline_ns,void *diag_word,
+    volatile void *cancel_cell,const void *cancel_expected,void *arrival_ring);
+typedef int (*SparkTpMeshRoundLoopFunction)(void *stream,volatile void *band_base,uint64_t slot_bytes,uint64_t slots_per_rank,
+    volatile void *entry,void *shipped_cell,volatile void *cancel_cell,void *round_control,uint32_t rank,uint32_t degree,
+    const void *local_device,void *full_device,uint64_t bytes);
+
+typedef struct SparkTpMeshLaunchers
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    SparkTpMeshCopyDownFunction copy_down;
+    SparkTpMeshPublishFunction publish;
+    SparkTpMeshTreeFunction tree;
+    SparkTpMeshHardwarePrepareFunction hardware_prepare;
+    SparkTpMeshHardwareFunction hardware;
+    SparkTpMeshSeqPadFunction seq_pad;
+    SparkTpMeshGuardFunction guard;
+    SparkTpMeshWaitFunction wait;
+    SparkTpMeshRoundLoopFunction round_loop;
+} SparkTpMeshLaunchers;
+
+void SparkTpDeviceCollectiveRegisterLaunchers(const SparkTpMeshLaunchers *launchers);
+
 SparkStatus SparkTpDeviceCollectiveCreate(
     const SparkTpDeviceCollectiveConfig *config,
     SparkTpDeviceCollective *collective_out);
@@ -315,11 +339,6 @@ SparkStatus SparkTpDeviceCollectiveProbeMemoryMode(
 
 void SparkTpDeviceCollectiveDumpOperations(
     const SparkTpDeviceCollective *collective);
-
-SparkStatus SparkTpDeviceCollectiveCreditStepCount(
-	uint32_t backend_kind,
-	uint32_t tp_degree,
-	uint32_t *step_count_out);
 
 SparkStatus SparkTpDeviceCollectiveCreditBindingRouteCount(
     const SparkTpDeviceCollectiveConfig *config,
@@ -339,10 +358,20 @@ SparkStatus SparkTpDeviceCollectiveSubmitBf16(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission);
 
-// Host-thread API. OK transfers submission ownership until completion, including
-// when a credit is temporarily occupied. One pending submission per slot_index;
-// buffers and callback context must remain alive. Pending work shares the
-// collective timeout/failure lifecycle. Never call from a CUDA host callback.
+SparkStatus SparkTpDeviceCollectiveBegin(
+    SparkTpDeviceCollective *collective,
+    const SparkTpDeviceCollectiveSubmission *submission,
+    uint32_t operation_kind);
+
+SparkStatus SparkTpDeviceCollectiveFinish(
+    SparkTpDeviceCollective *collective);
+
+uint32_t SparkTpDeviceCollectiveSupportsReduceScatter(
+    const SparkTpDeviceCollective *collective);
+
+uint32_t SparkTpDeviceCollectivePublished(
+    const SparkTpDeviceCollective *collective);
+
 SparkStatus SparkTpDeviceCollectiveEnqueue(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission,
@@ -356,16 +385,14 @@ SparkStatus SparkTpDeviceCollectiveEnqueueRounds(
 uint64_t SparkTpDeviceCollectiveDeviceRoundsDone(
     SparkTpDeviceCollective *collective);
 
-SparkStatus SparkTpDeviceCollectiveWaitAllRoutes(
-    SparkTpDeviceCollective *collective,
-    uint32_t timeout_milli);
-
 typedef struct SparkTpDeviceCollectiveHardwareTiming
 {
     uint64_t source_wait_ns;
     uint64_t peer_wait_ns;
     uint64_t copy_ns;
     uint64_t combine_ns;
+    uint64_t first_arrival_ns;
+    uint64_t peer_arrival_ns[16];
 } SparkTpDeviceCollectiveHardwareTiming;
 
 SparkStatus SparkTpDeviceCollectiveHardwareStats(
@@ -424,8 +451,6 @@ void SparkTpDeviceCollectiveBroadcastCancel(
 #define SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK \
     ((1ull << SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS) - 1ull)
 
-SparkStatus SparkTpDeviceCollectiveChainRetire(
-    SparkTpDeviceCollective *collective);
 SparkStatus SparkTpDeviceCollectiveChainKey(
     SparkTpDeviceCollective *collective,
     uint64_t request_id);
@@ -448,21 +473,6 @@ SparkStatus SparkTpDeviceCollectiveOpWaitHandles(
     uint64_t ordinal,
     void **flag_device,
     uint64_t *wait_value);
-
-SparkStatus SparkTpDeviceCollectiveRequestFailure(
-    SparkTpDeviceCollective *collective,
-    SparkStatus failure_status);
-
-SparkStatus SparkTpDeviceCollectiveRequestOperationFailure(
-    SparkTpDeviceCollective *collective,
-    uint64_t ordinal,
-    SparkStatus failure_status);
-
-SparkStatus SparkTpDeviceCollectiveOperationPhase(
-    const SparkTpDeviceCollective *collective,
-    uint64_t ordinal,
-    uint32_t *phase_out,
-    uint32_t *failure_requested_out);
 
 SparkStatus SparkTpDeviceCollectiveExchangeBf16(
     SparkTpDeviceCollective *collective,

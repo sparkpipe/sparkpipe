@@ -62,7 +62,10 @@ def stage_config(rank):
             "step_rail_indices": [0] + [1] * (TP - 1),
             "session_ports": session_table(group, SESSION_BASE),
             "session_ports_hc": session_table(group, SESSION_HC_BASE),
+            "wait_mode": "hardware",
         },
+        "graph_path": 1,
+        "pin_experts": 1,
     }
 
 
@@ -78,6 +81,7 @@ def resident_deployment():
             "transport_host": host,
             "adapter_configuration_path": "config/stage.json",
             "kv_backing_directory": f"/home/{host}/kvcache/{ARM}",
+            "kv_partition": "/",
             "kv_backing_maximum_bytes": 0,  # Derive KV + recurrent backing from configured cache geometry.
             "control_endpoint": {
                 "kind": "tcp",

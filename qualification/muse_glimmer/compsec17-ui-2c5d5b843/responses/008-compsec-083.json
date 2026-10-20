@@ -1,0 +1,63 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "muse-glimmer-30b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "9b9a9a8a56ee3d37eae5541d3b79b4f0c4cf494d795b01eecc9af75a7e5a5717"
+ },
+ "response": {
+  "id": "chatcmpl-cbdd360ccbe845b581593baea87df792",
+  "created": 1791716964,
+  "model": "muse-glimmer-30b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Answer: 10",
+     "role": "assistant",
+     "reasoning_content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode:\nwhile packet_has_segment...\nsegno = ...\nlen = ...\nmissing = segno - last -1;\na->segments.grow(a->segments.size() + missing);\na->segments[segno] = ...\n\nBug: segments not in order. If segno < last, missing negative -> grow with negative? Also segno index out of bounds? grow size + missing may shrink? Also segno may be > size.\n\nPrimary bug is using last = segno without max, and missing calculation assumes increasing. Also grow uses size+missing not segno+1.\n\nIf segno decreases, missing negative -> grow with smaller size? Could underflow. Also a->segments[segno] out of bounds if segno > size.\n\nProbably line 10 grow is wrong, or line 11 access.\n\nPrimary bug introduced at line 9 missing calculation assuming monotonic increase. Or line 10 grow.\n\nSmallest set? Maybe 9,10,11.\n\nBug is out-of-bounds write at line 11 due to incorrect grow at line 10.\n\nI think primary bug line 10.\n\nAnswer: 10\n\nIf need set 9,10,11.\n\nI'll give 10.\n\n"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 278,
+   "prompt_tokens": 335,
+   "total_tokens": 613,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode:\nwhile packet_has_segment...\nsegno = ...\nlen = ...\nmissing = segno - last -1;\na->segments.grow(a->segments.size() + missing);\na->segments[segno] = ...\n\nBug: segments not in order. If segno < last, missing negative -> grow with negative? Also segno index out of bounds? grow size + missing may shrink? Also segno may be > size.\n\nPrimary bug is using last = segno without max, and missing calculation assumes increasing. Also grow uses size+missing not segno+1.\n\nIf segno decreases, missing negative -> grow with smaller size? Could underflow. Also a->segments[segno] out of bounds if segno > size.\n\nProbably line 10 grow is wrong, or line 11 access.\n\nPrimary bug introduced at line 9 missing calculation assuming monotonic increase. Or line 10 grow.\n\nSmallest set? Maybe 9,10,11.\n\nBug is out-of-bounds write at line 11 due to incorrect grow at line 10.\n\nI think primary bug line 10.\n\nAnswer: 10\n\nIf need set 9,10,11.\n\nI'll give 10.\n\n</think>Answer: 10",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 8102.6,
+  "output_sha256": "7402386365bc1af4ef468efab09dfe5a29a41ce1fc2deead81135dbbcd3feb14",
+  "prompt_token_count": 335,
+  "generated_token_count": 278,
+  "reasoning_chars": 1086,
+  "content_chars": 10,
+  "status": "stop"
+ }
+}

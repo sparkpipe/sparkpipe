@@ -1,0 +1,63 @@
+{
+ "id": "compsec-091",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe SCSI command expresses transfer length in logical blocks. blkbits is the log2 block size.\n\nCode:\n```c\n 1: static int accept_transfer(struct lun *lun, uint32_t blocks, unsigned blkbits)\n 2: {\n 3:     uint32_t bytes = blocks << blkbits;\n 4: \n 5:     if (bytes > lun->backing_size)\n 6:         return -EINVAL;\n 7: \n 8:     lun->data_size_from_cmnd = bytes;\n 9:     return 0;\n10: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "82ffd5ec810be2fd0728d2c04b6a647c2cf2b4d2894347060be88b467c9a6785"
+ },
+ "response": {
+  "id": "chatcmpl-799280503eff4ac68a8cb5f9dfdd201f",
+  "created": 1791730569,
+  "model": "glm-5.3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability is an integer overflow at line 3. `blocks << blkbits` is computed in 32-bit arithmetic; if `blocks` is large (e.g., 0x80000000 with blkbits=1, or any blocks value where the shifted result exceeds 2^32), the result wraps around to a small value. The wrapped `bytes` then passes the check at line 5, and an undersized `data_size_from_cmnd` is set, while the SCSI command actually transfers `blocks` blocks \u2014 leading to a buffer overflow / out-of-bounds access relative to the intended transfer size. The correct fix would compute in 64-bit (e.g., `(uint64_t)blocks << blkbits`) or check `blocks > lun->backing_size >> blkbits` before shifting.\n\nAnswer: 3",
+     "role": "assistant",
+     "reasoning_content": "Shift overflow: blocks << blkbits can overflow uint32_t. Line 3."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 189,
+   "prompt_tokens": 235,
+   "total_tokens": 424,
+   "prompt_tokens_details": {
+    "cached_tokens": 64
+   }
+  }
+ },
+ "graded_text": "<think>Shift overflow: blocks << blkbits can overflow uint32_t. Line 3.</think>The vulnerability is an integer overflow at line 3. `blocks << blkbits` is computed in 32-bit arithmetic; if `blocks` is large (e.g., 0x80000000 with blkbits=1, or any blocks value where the shifted result exceeds 2^32), the result wraps around to a small value. The wrapped `bytes` then passes the check at line 5, and an undersized `data_size_from_cmnd` is set, while the SCSI command actually transfers `blocks` blocks \u2014 leading to a buffer overflow / out-of-bounds access relative to the intended transfer size. The correct fix would compute in 64-bit (e.g., `(uint64_t)blocks << blkbits`) or check `blocks > lun->backing_size >> blkbits` before shifting.\n\nAnswer: 3",
+ "grade": {
+  "index": 16,
+  "id": "compsec-091",
+  "source": "COMPSEC",
+  "domain": "Linux kernel USB gadget storage",
+  "expected": "3",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 8428.8,
+  "output_sha256": "056c65ae6f4716705a00253fee1d96fda3c013745e1be7f83e28fac2fd6e6c27",
+  "prompt_token_count": 235,
+  "generated_token_count": 189,
+  "reasoning_chars": 64,
+  "content_chars": 670,
+  "status": "stop"
+ }
+}

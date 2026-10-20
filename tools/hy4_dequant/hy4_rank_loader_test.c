@@ -1,4 +1,3 @@
-/* hy4 lane: rank-loader unit test against a real deployed rank bundle. */
 #include <stdio.h>
 #include <string.h>
 #include "hy4_rank_loader.h"
@@ -12,9 +11,6 @@ int main(int argc, char **argv) {
     printf("open OK: %d tensors, file %.2f GB\n",
            rank->tensor_count, rank->file_bytes / 1e9);
     int failures = 0;
-    /* expectations: rank-02 (third rank) of the deployed TP16 bundle,
-     * verified against the shard plan + dequant runs 2026-09-02 */
-    /* kind encoding: 0 = replicate, dim+1 = split on that dim */
     struct { const char *name; int type; int n_dims; long d0, d1, d2; int kind; long nbytes; } cases[] = {
         {"token_embd.weight", 12, 2, 6144, 7552, 0, 2, 26099712},
         {"blk.0.attn_kv_a_mqa.weight", 8, 2, 6144, 576, 0, 0, 3760128},
@@ -37,7 +33,6 @@ int main(int argc, char **argv) {
                tv->slice_start, tv->nbytes, ok ? "OK" : "MISMATCH");
         if (!ok) failures++;
     }
-    /* read + digest one replicated tensor end-to-end */
     const hy4_tensor_view *tv = hy4_tensor_lookup(rank, "blk.0.attn_norm.weight");
     if (tv && tv->nbytes == 24576) {
         static unsigned char buf[24576];

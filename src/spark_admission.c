@@ -29,13 +29,7 @@ SparkStatus SparkAdmissionRequestFromSubmission(
     request->active_slot_count = submission->active_sequence_count;
     request->new_token_count = submission->new_token_count;
     request->priority = submission->priority;
-    request->frame_flags =
-        submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL
-            ? SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL
-            : submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE
-                ? SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE
-                : submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH
-                    ? SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH : 0u;
+    request->frame_flags = SparkModelServingSubmissionFrameFlags(submission);
     request->admission_flags = admission_flags;
     request->cache_lane_count =
         cache_lanes != 0 ? submission->active_sequence_count : 0u;

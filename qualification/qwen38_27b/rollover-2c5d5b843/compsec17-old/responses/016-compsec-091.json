@@ -1,0 +1,62 @@
+{
+ "id": "compsec-091",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-27b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe SCSI command expresses transfer length in logical blocks. blkbits is the log2 block size.\n\nCode:\n```c\n 1: static int accept_transfer(struct lun *lun, uint32_t blocks, unsigned blkbits)\n 2: {\n 3:     uint32_t bytes = blocks << blkbits;\n 4: \n 5:     if (bytes > lun->backing_size)\n 6:         return -EINVAL;\n 7: \n 8:     lun->data_size_from_cmnd = bytes;\n 9:     return 0;\n10: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "03f67e7f15f2d8e75f8489433cc5c4622ea4d3d6bb99b50dbdb9016a9279414e"
+ },
+ "response": {
+  "id": "chatcmpl-0a6daf5faf254ef2b9edb521f3ffce0b",
+  "created": 1791721286,
+  "model": "qwen3.8-27b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function calculates the total transfer size in bytes by shifting the number of blocks left by `blkbits` (which represents $\\log_2$ of the block size).\n\n```c\n 3:     uint32_t bytes = blocks << blkbits;\n```\n\nThe variable `blocks` is of type `uint32_t`. The variable `blkbits` is an `unsigned int`. In C, the shift operator `<<` promotes its operands to `int` if they fit, or keeps them as `unsigned int` if they don't. However, the result of the shift is assigned to `uint32_t bytes`.\n\nThe primary vulnerability here is **integer overflow**. If `blocks` is large enough and `blkbits` is non-zero, the value `blocks << blkbits` can exceed the maximum value representable by a 32-bit unsigned integer ($2^{32}-1$). When this happens, the value wraps around modulo $2^{32}$.\n\nFor example, if `blocks` is $2^{31}$ and `blkbits` is 1, the mathematical result is $2^{32}$, which wraps to 0 in a 32-bit unsigned integer. The subsequent check `if (bytes > lun->backing_size)` would then compare 0 against the backing size, likely passing the check (assuming `backing_size` is positive), and the function would return success with `lun->data_size_from_cmnd` set to 0. This could lead to a denial of service or, more critically, if the caller uses the original `blocks` count for memory allocation or buffer sizing while the kernel uses the truncated `bytes` value for bounds checking or actual data transfer, it could lead to a buffer overflow or out-of-bounds access.\n\nEven if the shift doesn't wrap to a small number, it could wrap to a number that is smaller than the actual required size but still larger than 0, potentially allowing a partial transfer that violates the intended limits or causing inconsistencies. The standard way to handle this in kernel code is to use `check_mul_overflow` or similar safe arithmetic functions, or to perform the multiplication in a wider type (e.g., `uint64_t`) before checking against the limit.\n\nTherefore, the bug is introduced on line 3 where the unsafe shift operation occurs.\n\nAnswer: 3",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 495,
+   "prompt_tokens": 252,
+   "total_tokens": 747,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function calculates the total transfer size in bytes by shifting the number of blocks left by `blkbits` (which represents $\\log_2$ of the block size).\n\n```c\n 3:     uint32_t bytes = blocks << blkbits;\n```\n\nThe variable `blocks` is of type `uint32_t`. The variable `blkbits` is an `unsigned int`. In C, the shift operator `<<` promotes its operands to `int` if they fit, or keeps them as `unsigned int` if they don't. However, the result of the shift is assigned to `uint32_t bytes`.\n\nThe primary vulnerability here is **integer overflow**. If `blocks` is large enough and `blkbits` is non-zero, the value `blocks << blkbits` can exceed the maximum value representable by a 32-bit unsigned integer ($2^{32}-1$). When this happens, the value wraps around modulo $2^{32}$.\n\nFor example, if `blocks` is $2^{31}$ and `blkbits` is 1, the mathematical result is $2^{32}$, which wraps to 0 in a 32-bit unsigned integer. The subsequent check `if (bytes > lun->backing_size)` would then compare 0 against the backing size, likely passing the check (assuming `backing_size` is positive), and the function would return success with `lun->data_size_from_cmnd` set to 0. This could lead to a denial of service or, more critically, if the caller uses the original `blocks` count for memory allocation or buffer sizing while the kernel uses the truncated `bytes` value for bounds checking or actual data transfer, it could lead to a buffer overflow or out-of-bounds access.\n\nEven if the shift doesn't wrap to a small number, it could wrap to a number that is smaller than the actual required size but still larger than 0, potentially allowing a partial transfer that violates the intended limits or causing inconsistencies. The standard way to handle this in kernel code is to use `check_mul_overflow` or similar safe arithmetic functions, or to perform the multiplication in a wider type (e.g., `uint64_t`) before checking against the limit.\n\nTherefore, the bug is introduced on line 3 where the unsafe shift operation occurs.\n\nAnswer: 3",
+ "grade": {
+  "index": 16,
+  "id": "compsec-091",
+  "source": "COMPSEC",
+  "domain": "Linux kernel USB gadget storage",
+  "expected": "3",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 9212.2,
+  "output_sha256": "63397c12a4c92b6b079b7314049de5d299a46f5c731b058ec03e1241ac6cf503",
+  "prompt_token_count": 252,
+  "generated_token_count": 495,
+  "reasoning_chars": 0,
+  "content_chars": 2026,
+  "status": "stop"
+ }
+}

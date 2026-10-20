@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Validate a GLM52 stage pack against the C module policy (1:1 mirror).
 
-Mirrors modules/glm52_resident_decode_stage/source/spark_glm52_stagepack_format.h
+Mirrors model-families/glm52/include/sparkpipe/spark_glm52_stagepack.h
 SparkGlm52StagePackExpectedShape + ExpectedPayloadBytes/ExpectedScaleBytes and
 the geometry checks in SparkGlm52PackValidateEntryGeometry, plus the inventory
 masks (SparkGlm52ExpectedLayerMask / ExpectedGlobalMask).
@@ -88,7 +88,11 @@ def shape_bf16(rows, cols, groups=1):
     return (PAYLOAD_BF16, BF16, SCALE_NONE, groups, rows, cols)
 
 
-def expected_shape(kind, layer, tp, expert_codec=FP8):
+LINEAR_KINDS = {K_Q_A, K_Q_B, K_KV_A, K_ATTN_OUTPUT, K_INDEX_Q, K_INDEX_K, K_DENSE_GATE_UP, K_DENSE_DOWN,
+                K_SHARED_GATE_UP, K_SHARED_DOWN}
+
+
+def expected_shape(kind, layer, tp, expert_codec=FP8, linear_codec=BF16):
     if kind >= KIND_COUNT or tp == 0:
         return None, "kind range"
     g = kind_is_global(kind)
@@ -132,6 +136,10 @@ def expected_shape(kind, layer, tp, expert_codec=FP8):
         K_SHARED_DOWN: shape_bf16(HIDDEN, MOE_INT),
     }
     s = list(table[kind])
+    if kind in LINEAR_KINDS and linear_codec != BF16:
+        if linear_codec != FP8:
+            return None, "linear codec"
+        s[0], s[1], s[2] = PAYLOAD_PACKED, FP8, SCALE_F32
     if kind in TP_SHARDS_ROWS:
         if s[4] == 0 or s[4] % tp != 0:
             return None, "rows not divisible by tp"
@@ -224,7 +232,7 @@ def main():
         e = struct.unpack_from("<8I4Q", raw, i * 64)
         kind, layer, pt, wc, se, g, rows, cols = e[0:8]
         poff, pbytes, soff, sbytes = e[8:12]
-        es, err = expected_shape(kind, layer, tp_degree, expc)
+        es, err = expected_shape(kind, layer, tp_degree, expc, lin)
         if es is None:
             print("entry %d kind %s layer %s: EXPECTED SHAPE ERROR: %s" % (i, KIND_NAME.get(kind, kind), layer, err))
             errors += 1
@@ -270,7 +278,7 @@ def main():
     for layer in range(span_min, span_max):
         exp = 0
         for kind in range(3, KIND_COUNT):
-            es, _err = expected_shape(kind, layer, tp_degree, expc)
+            es, _err = expected_shape(kind, layer, tp_degree, expc, lin)
             if es is not None:
                 exp |= 1 << kind
         got = seen_layer.get(layer, 0)

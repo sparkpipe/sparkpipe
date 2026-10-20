@@ -71,7 +71,9 @@ static void SparkWeightdUsage(const char *program)
         "  --mesh-sgid-index <n>    source GID index 0..255\n"
         "  --mesh-pair-interface <name> --mesh-pair-sgid-index <n>  verbs device and GID of the point-to-point link to partner rank (rank ^ 1); traffic to the partner uses it\n"
         "  --mesh-traffic-class <n> RoCE traffic class 0..255 of every mesh QP (DSCP << 2 plus ECN bits); selects the switch and NIC priority\n"
-        "  --mesh-dir <path>        record exchange dir (env SPARK_WEIGHTD_MESH_DIR, default /tmp/weightd-mesh; use a per-deployment dir when two weightd-line daemons share the host)\n",
+        "  --mesh-dir <path>        record exchange dir (env SPARK_WEIGHTD_MESH_DIR, default /tmp/weightd-mesh; use a per-deployment dir when two weightd-line daemons share the host)\n"
+        "  --load-pace-bytes-per-second <n>  pack, spine and expert load rate while another lane is serving (env SPARK_WEIGHTD_LOAD_PACE_BYTES_PER_SECOND); without it such a load is refused\n"
+        "  --kv-shared-window-bytes <n>  device bytes, carved from the kv reserve, for each KV layout's cross-engine shared prefix window (env SPARK_WEIGHTD_KV_SHARED_WINDOW_BYTES); without it engines keep every prefix private\n",
         program,
         (unsigned long long)SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT,
         (unsigned)SPARK_WEIGHTD_MESH_RANKS - 1u);
@@ -120,6 +122,29 @@ static int SparkWeightdLatchAcquire(uint16_t port)
     return(1);
 }
 
+static SparkStatus SparkWeightdLatchFromEnvironment(void)
+{
+    uint16_t latch_port = SPARK_WEIGHTD_LATCH_PORT_DEFAULT;
+    const char *latch_env = getenv("SPARK_WEIGHTD_LATCH_PORT");
+    if ( latch_env != 0 )
+    {
+        char *end;
+        unsigned long value;
+        errno = 0;
+        value = strtoul(latch_env,&end,10);
+        if ( errno != 0 || end == latch_env || *end != '\0' ||
+             latch_env[0] == '-' || value == 0ul || value > UINT16_MAX )
+        {
+            fprintf(stderr,"weightd: invalid SPARK_WEIGHTD_LATCH_PORT\n");
+            return(SPARK_STATUS_INVALID_ARGUMENT);
+        }
+        latch_port = (uint16_t)value;
+    }
+    if ( SparkWeightdLatchAcquire(latch_port) < 0 )
+        return(SPARK_STATUS_IO_ERROR);
+    return(SPARK_STATUS_OK);
+}
+
 static int SparkWeightdParseByte(const char *program, const char *flag,
     const char *text, uint32_t *value)
 {
@@ -135,11 +160,61 @@ static int SparkWeightdParseByte(const char *program, const char *flag,
     return 1;
 }
 
+static int SparkWeightdParseCount(const char *text,uint64_t *value)
+{
+    char *parse_end = 0;
+    unsigned long long parsed;
+    if (text == 0 || text[0] < '0' || text[0] > '9')
+        return 0;
+    errno = 0;
+    parsed = strtoull(text, &parse_end, 10);
+    if (errno != 0 || parse_end == text || *parse_end != '\0')
+        return 0;
+    *value = (uint64_t)parsed;
+    return 1;
+}
+
+static int SparkWeightdKvByteCount(const char *text,const char *name,uint64_t *value)
+{
+    if (text == 0 || text[0] == '\0')
+        return 0;
+    if (SparkWeightdParseCount(text, value) == 0)
+    {
+        fprintf(stderr, "weightd: bad %s '%s'\n", name, text);
+        return 2;
+    }
+    return 0;
+}
+
+static int SparkWeightdKvSettings(int argument_count,char **arguments,uint64_t *reserve,uint64_t *load_pace,uint64_t *shared_window)
+{
+    int index;
+    for (index = 1; index + 1 < argument_count; index++)
+    {
+        if (strcmp(arguments[index], "--load-pace-bytes-per-second") == 0 &&
+            SparkWeightdKvByteCount(arguments[index + 1], "--load-pace-bytes-per-second", load_pace) != 0)
+            return 2;
+        if (strcmp(arguments[index], "--kv-reserve-bytes") == 0 &&
+            SparkWeightdKvByteCount(arguments[index + 1], "--kv-reserve-bytes", reserve) != 0)
+            return 2;
+        if (strcmp(arguments[index], "--kv-shared-window-bytes") == 0 &&
+            SparkWeightdKvByteCount(arguments[index + 1], "--kv-shared-window-bytes", shared_window) != 0)
+            return 2;
+    }
+    if (SparkWeightdKvByteCount(getenv("SPARK_WEIGHTD_KV_RESERVE_BYTES"), "SPARK_WEIGHTD_KV_RESERVE_BYTES", reserve) != 0 ||
+        SparkWeightdKvByteCount(getenv("SPARK_WEIGHTD_LOAD_PACE_BYTES_PER_SECOND"), "SPARK_WEIGHTD_LOAD_PACE_BYTES_PER_SECOND", load_pace) != 0 ||
+        SparkWeightdKvByteCount(getenv("SPARK_WEIGHTD_KV_SHARED_WINDOW_BYTES"), "SPARK_WEIGHTD_KV_SHARED_WINDOW_BYTES", shared_window) != 0)
+        return 2;
+    return 0;
+}
+
 int main(int argument_count, char **arguments)
 {
     const char *socket_path = "/tmp/spark_weightd.sock";
     uint64_t device_bytes_max = SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT;
     uint64_t kv_reserve_bytes = 0ull;
+    uint64_t load_pace_bytes_per_second = 0ull;
+    uint64_t kv_shared_window_bytes = 0ull;
     uint32_t mesh_fields = 0u;
     int ceiling_set_by_flag = 0;
     SparkWeightdServerConfig config;
@@ -159,9 +234,7 @@ int main(int argument_count, char **arguments)
         else if (strcmp(arguments[index], "--device-bytes-max") == 0 &&
             index + 1 < argument_count)
         {
-            char *parse_end = 0;
-            device_bytes_max = strtoull(arguments[index + 1], &parse_end, 10);
-            if (parse_end == arguments[index + 1] || *parse_end != '\0' ||
+            if (SparkWeightdParseCount(arguments[index + 1], &device_bytes_max) == 0 ||
                 device_bytes_max == 0ull)
             {
                 fprintf(stderr, "weightd: bad --device-bytes-max '%s'\n",
@@ -172,18 +245,11 @@ int main(int argument_count, char **arguments)
             ceiling_set_by_flag = 1;
             index++;
         }
-        else if (strcmp(arguments[index], "--kv-reserve-bytes") == 0 &&
+        else if ((strcmp(arguments[index], "--kv-reserve-bytes") == 0 ||
+                strcmp(arguments[index], "--load-pace-bytes-per-second") == 0 ||
+                strcmp(arguments[index], "--kv-shared-window-bytes") == 0) &&
             index + 1 < argument_count)
         {
-            char *parse_end = 0;
-            kv_reserve_bytes = strtoull(arguments[index + 1], &parse_end, 10);
-            if (parse_end == arguments[index + 1] || *parse_end != '\0')
-            {
-                fprintf(stderr, "weightd: bad --kv-reserve-bytes '%s'\n",
-                    arguments[index + 1]);
-                SparkWeightdUsage(arguments[0]);
-                return 2;
-            }
             index++;
         }
         else if (strcmp(arguments[index], "--mesh-rank") == 0 &&
@@ -301,7 +367,6 @@ int main(int argument_count, char **arguments)
     {
         const char *env_socket = getenv("SPARK_WEIGHTD_SOCKET");
         const char *env_ceiling = getenv("SPARK_WEIGHTD_DEVICE_BYTES_MAX");
-        const char *env_reserve = getenv("SPARK_WEIGHTD_KV_RESERVE_BYTES");
         const char *env_mesh_dir = getenv("SPARK_WEIGHTD_MESH_DIR");
         const char *env_doorbell_cpu = getenv("SPARK_WEIGHTD_MESH_DOORBELL_CPU");
         weightd_mesh_launch.doorbell_cpu = -1;
@@ -328,9 +393,8 @@ int main(int argument_count, char **arguments)
         }
         if (env_ceiling != 0 && env_ceiling[0] != '\0')
         {
-            char *parse_end = 0;
-            uint64_t parsed = strtoull(env_ceiling, &parse_end, 10);
-            if (parse_end == env_ceiling || *parse_end != '\0' ||
+            uint64_t parsed = 0ull;
+            if (SparkWeightdParseCount(env_ceiling, &parsed) == 0 ||
                 parsed == 0ull)
             {
                 fprintf(stderr, "weightd: bad SPARK_WEIGHTD_DEVICE_BYTES_MAX '%s'\n",
@@ -342,20 +406,18 @@ int main(int argument_count, char **arguments)
                 device_bytes_max = parsed;
             }
         }
-        if (env_reserve != 0 && env_reserve[0] != '\0')
-        {
-            char *parse_end = 0;
-            uint64_t parsed = strtoull(env_reserve, &parse_end, 10);
-            if (parse_end == env_reserve || *parse_end != '\0')
-            {
-                fprintf(stderr, "weightd: bad SPARK_WEIGHTD_KV_RESERVE_BYTES '%s'\n",
-                    env_reserve);
-                return 2;
-            }
-            kv_reserve_bytes = parsed;
-        }
     }
 
+    if (SparkWeightdKvSettings(argument_count,arguments,&kv_reserve_bytes,&load_pace_bytes_per_second,&kv_shared_window_bytes) != 0)
+        return 2;
+    if (kv_shared_window_bytes > kv_reserve_bytes)
+    {
+        fprintf(stderr,
+            "weightd: kv shared window %llu exceeds the kv reserve %llu it is carved from\n",
+            (unsigned long long)kv_shared_window_bytes,
+            (unsigned long long)kv_reserve_bytes);
+        return 2;
+    }
     if (kv_reserve_bytes >= device_bytes_max)
     {
         fprintf(stderr,
@@ -365,44 +427,6 @@ int main(int argument_count, char **arguments)
         return 2;
     }
 
-    memset(&config, 0, sizeof(config));
-    config.socket_path = socket_path;
-    config.device_bytes_max = device_bytes_max;
-    config.kv_reserve_bytes = kv_reserve_bytes;
-
-    signal(SIGINT, SparkWeightdSignal);
-    signal(SIGTERM, SparkWeightdSignal);
-
-    {
-        uint16_t latch_port = SPARK_WEIGHTD_LATCH_PORT_DEFAULT;
-        const char *latch_env = getenv("SPARK_WEIGHTD_LATCH_PORT");
-        int latch;
-        if ( latch_env != 0 )
-        {
-            char *end;
-            unsigned long value;
-            errno = 0;
-            value = strtoul(latch_env,&end,10);
-            if ( errno != 0 || end == latch_env || *end != '\0' ||
-                 latch_env[0] == '-' || value == 0ul || value > UINT16_MAX )
-            {
-                fprintf(stderr,"weightd: invalid SPARK_WEIGHTD_LATCH_PORT\n");
-                return 2;
-            }
-            latch_port = (uint16_t)value;
-        }
-        latch = SparkWeightdLatchAcquire(latch_port);
-        if ( latch < 0 )
-            return 1;
-    }
-
-    status = SparkWeightdServerCreate(&config, &server);
-    if (status != SPARK_STATUS_OK)
-    {
-        fprintf(stderr, "weightd create=%s socket=%s\n",
-            SparkStatusToString(status), socket_path);
-        return 1;
-    }
     if (weightd_mesh_launch.pair_fields != 0u &&
         (weightd_mesh_launch.pair_fields != 3u || mesh_fields != 15u))
     {
@@ -416,9 +440,29 @@ int main(int argument_count, char **arguments)
         SparkWeightdUsage(arguments[0]);
         return 2;
     }
+    memset(&config, 0, sizeof(config));
+    config.socket_path = socket_path;
+    config.device_bytes_max = device_bytes_max;
+    config.kv_reserve_bytes = kv_reserve_bytes;
+    config.load_pace_bytes_per_second = load_pace_bytes_per_second;
+    config.kv_shared_window_bytes = kv_shared_window_bytes;
+
+    signal(SIGINT, SparkWeightdSignal);
+    signal(SIGTERM, SparkWeightdSignal);
+
+    status = SparkWeightdLatchFromEnvironment();
+    if ( status != SPARK_STATUS_OK )
+        return(status == SPARK_STATUS_INVALID_ARGUMENT ? 2 : 1);
+
+    status = SparkWeightdServerCreateUnbound(&config, &server);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "weightd create=%s socket=%s\n",
+            SparkStatusToString(status), socket_path);
+        return 1;
+    }
     if (mesh_fields == 15u)
     {
-        static pthread_t mesh_thread;
         status = SparkWeightdMeshInit(weightd_mesh_launch.rank,
             weightd_mesh_launch.interface_name,weightd_mesh_launch.sgid_index,
             weightd_mesh_launch.mesh_dir,weightd_mesh_launch.rank_mask,
@@ -430,24 +474,43 @@ int main(int argument_count, char **arguments)
             SparkWeightdServerDestroy(server);
             return 1;
         }
-        if (pthread_create(&mesh_thread,0,SparkWeightdMeshThread,0) != 0)
-        {
-            fprintf(stderr,"weightd-mesh: thread create failed; startup failed\n");
-            SparkWeightdServerDestroy(server);
-            return 1;
-        }
     }
     else
     {
         fprintf(stderr,
             "weightd-mesh: identity not stated; mesh disabled\n");
     }
+    status = SparkWeightdServerListen(server);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "weightd listen=%s socket=%s\n",
+            SparkStatusToString(status), socket_path);
+        SparkWeightdMeshStop();
+        SparkWeightdServerDestroy(server);
+        return 1;
+    }
+    if (mesh_fields == 15u)
+    {
+        static pthread_t mesh_thread;
+        if (pthread_create(&mesh_thread,0,SparkWeightdMeshThread,0) != 0)
+        {
+            fprintf(stderr,"weightd-mesh: thread create failed; startup failed\n");
+            SparkWeightdMeshStop();
+            SparkWeightdServerDestroy(server);
+            return 1;
+        }
+    }
 
-    printf("spark_weightd ready unix=%s ceiling=%llu\n",
-        socket_path, (unsigned long long)device_bytes_max);
+    printf("spark_weightd ready unix=%s ceiling=%llu kv_reserve=%llu arena_ceiling=%llu load_pace_per_second=%llu kv_shared_window=%llu\n",
+        socket_path, (unsigned long long)device_bytes_max,
+        (unsigned long long)kv_reserve_bytes,
+        (unsigned long long)(device_bytes_max - kv_reserve_bytes),
+        (unsigned long long)load_pace_bytes_per_second,
+        (unsigned long long)kv_shared_window_bytes);
     fflush(stdout);
 
     status = SparkWeightdServerRun(server, &SparkWeightdStop);
+    SparkWeightdMeshStop();
 
     arena_count = SparkWeightdServerArenaCount(server);
     resident_bytes = SparkWeightdServerResidentBytes(server);

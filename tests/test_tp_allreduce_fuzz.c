@@ -91,6 +91,7 @@ extern uint32_t cuda_stub_host_register_calls;
 extern uint32_t cuda_stub_host_register_flags;
 extern uint32_t cuda_stub_host_unregister_calls;
 extern int cuda_stub_host_register_result;
+extern int cuda_stub_pageable_coherent;
 extern int cuda_stub_host_unregister_result;
 extern uint32_t spark_stub_cuda_host_registered(void *address);
 extern int cudaHostRegister(void *address,size_t bytes,unsigned int flags);
@@ -1313,6 +1314,11 @@ static void FuzzRegistrationOwnership(void)
             if ( fresh != MAP_FAILED )
             {
                 cuda_stub_host_register_result = 1;
+                cuda_stub_pageable_coherent = 0;
+                CHECK(SparkTpDeviceCollectivePrepareReceiveBf16(&skip_owner,fresh,1u,
+                    FUZZ_HIDDEN,0u,0) == SPARK_STATUS_IO_ERROR,
+                    "a refused registration on a device without coherent pageable access fails attach");
+                cuda_stub_pageable_coherent = 1;
                 skip_calls = cuda_stub_host_register_calls;
                 CHECK(SparkTpDeviceCollectivePrepareReceiveBf16(&skip_owner,fresh,1u,
                     FUZZ_HIDDEN,0u,0) == SPARK_STATUS_OK,
@@ -1324,7 +1330,12 @@ static void FuzzRegistrationOwnership(void)
                     FUZZ_HIDDEN,0u,0) == SPARK_STATUS_OK &&
                     cuda_stub_host_register_calls == skip_calls + 1u,
                     "skipped registration does not retry on reprepare");
-                SparkTpDeviceCollectiveDestroy(&skip_owner);
+                {
+                    uint32_t unregister_before = cuda_stub_host_unregister_calls;
+                    SparkTpDeviceCollectiveDestroy(&skip_owner);
+                    CHECK(skip_owner.implementation == 0 && cuda_stub_host_unregister_calls == unregister_before,
+                        "teardown of a skipped registration releases the owner without unregistering");
+                }
                 cuda_stub_host_register_result = 0;
                 munmap(fresh,(size_t)SPARK_WEIGHTD_MESH_REGION_BYTES);
             }
@@ -2196,14 +2207,14 @@ static void FuzzCellInitialization(void)
     config.max_active_sequence_count = 1u;
     config.operation_timeout_milli = FUZZ_ROUND_TIMEOUT_MS;
     g_connect_rank_hint = 0u;
-    for ( trial = 1u; trial <= 11u; trial++ )
+    for ( trial = 1u; trial <= 13u; trial++ )
     {
         SparkTpDeviceCollective collective = {0};
         SparkTpDeviceCollectiveImplementation *implementation;
         SparkTpMeshRoundControl expected;
         uint32_t baseline = spark_stub_cuda_outstanding_allocs();
-        FuzzCase(trial <= 8u ? "cell-initialization-rollback-and-retry" :
-            trial <= 10u ? "cell-cleanup-failure-retains-retryable-allocation" :
+        FuzzCase(trial <= 10u ? "cell-initialization-rollback-and-retry" :
+            trial <= 12u ? "cell-cleanup-failure-retains-retryable-allocation" :
             "capture-scratch-allocation-fails-before-arming");
         g_round = trial;
         CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK,
@@ -2214,11 +2225,11 @@ static void FuzzCellInitialization(void)
             FUZZ_HIDDEN,0u,0) == SPARK_STATUS_OK,"initialization fixture prepares mapping");
         implementation->round_seq = 0x1234u;
         implementation->publish_ack_prev = (UINT64_C(37) << 32u) | 19u;
-        g_init_fail_at = trial <= 8u ? trial : trial <= 10u ? 5u : UINT32_MAX;
+        g_init_fail_at = trial <= 10u ? trial : trial <= 12u ? 5u : UINT32_MAX;
         g_init_calls = 0u;
         g_init_free_calls = 0u;
-        g_init_free_mask = trial == 9u ? 1u : trial == 10u ? 2u : 0u;
-        if ( trial <= 10u )
+        g_init_free_mask = trial == 11u ? 1u : trial == 12u ? 2u : 0u;
+        if ( trial <= 12u )
         {
             CHECK(SparkTpDeviceCollectiveEnsureCells(implementation) == SPARK_STATUS_IO_ERROR &&
                 g_init_calls == g_init_fail_at,"each CUDA initialization failure rejects at its exact phase");
@@ -2226,11 +2237,11 @@ static void FuzzCellInitialization(void)
                 implementation->epoch_cell == 0 && implementation->round_seq_device == 0 &&
                 implementation->cancel_expected == 0 && implementation->error_word == 0 &&
                 implementation->diag_word == 0,"failed initialization never publishes ready aliases");
-            CHECK(spark_stub_cuda_outstanding_allocs() == baseline + (trial > 8u ? 1u : 0u),
+            CHECK(spark_stub_cuda_outstanding_allocs() == baseline + (trial > 10u ? 1u : 0u),
                 "rollback frees all allocations except an explicitly failed free");
-            if ( trial > 8u )
+            if ( trial > 10u )
             {
-                void *retained = trial == 9u ? implementation->round_control : implementation->arrival_ring;
+                void *retained = trial == 11u ? implementation->round_control : implementation->arrival_ring;
                 CHECK(retained != 0,"failed free retains its exact allocation for retry");
                 g_init_free_mask = 1u;
                 g_init_free_calls = 0u;
@@ -2239,7 +2250,7 @@ static void FuzzCellInitialization(void)
                 CHECK(SparkTpDeviceCollectiveEnsureCells(implementation) == SPARK_STATUS_IO_ERROR &&
                     g_init_calls == 0u && spark_stub_cuda_outstanding_allocs() == baseline + 1u,
                     "repeated cleanup failure cannot allocate replacements or report ready");
-                CHECK(retained == (trial == 9u ? implementation->round_control : implementation->arrival_ring),
+                CHECK(retained == (trial == 11u ? implementation->round_control : implementation->arrival_ring),
                     "cleanup retry cannot lose the retained allocation identity");
             }
         }
@@ -2247,7 +2258,7 @@ static void FuzzCellInitialization(void)
         g_init_calls = 0u;
         g_init_fail_at = UINT32_MAX;
         CHECK(SparkTpDeviceCollectiveEnsureCells(implementation) == SPARK_STATUS_OK &&
-            g_init_calls == 8u && spark_stub_cuda_outstanding_allocs() == baseline + 3u,
+            g_init_calls == 10u && spark_stub_cuda_outstanding_allocs() == baseline + 3u,
             "successful retry completes all initialization operations with exactly three allocations");
         memset(&expected,0,sizeof(expected));
         expected.seq = 0x1234u;
@@ -2259,9 +2270,9 @@ static void FuzzCellInitialization(void)
             implementation->cell_mirror == expected.seq,
             "retry initializes poisoned allocations to complete control and arrival values");
         CHECK(SparkTpDeviceCollectiveEnsureCells(implementation) == SPARK_STATUS_OK &&
-            g_init_calls == 8u && spark_stub_cuda_outstanding_allocs() == baseline + 3u,
+            g_init_calls == 10u && spark_stub_cuda_outstanding_allocs() == baseline + 3u,
             "fully initialized cells are reused without new CUDA operations");
-        if ( trial == 11u )
+        if ( trial == 13u )
         {
             g_init_calls = 0u;
             g_init_fail_at = 3u;
@@ -2299,35 +2310,35 @@ static void FuzzSourceLifetime(void)
     memset(destination,0xa5,sizeof(destination));
     control.epoch = 8u;
     control.round_seq = (UINT64_C(8) << 32u) | 1u;
-    CHECK(SparkTpLaunchMeshCopyDown(0,destination,source,sizeof(source),
+    CHECK(SparkTpMeshLaunchersRegistered->copy_down(0,destination,source,sizeof(source),
         &shipped,&control,&cancel,1000000u) == 0,
         "source gate records asynchronous timeout in control");
     CHECK(control.error_word == control.round_seq && destination[0] == 0xa5u,
         "same low sequence from stale epoch cannot overwrite a live source");
-    CHECK(SparkTpLaunchMeshPublish(0,entry,&control.seq,&control.epoch,
+    CHECK(SparkTpMeshLaunchersRegistered->publish(0,entry,&control.seq,&control.epoch,
         &control.round_seq,sizeof(source),0u,2u,&tail,&control.error_word,2u) == 0 &&
         control.seq == 0u && entry[0] == 0u && tail == 0u,
         "failed source gate cannot publish a payload or advance sequence");
     {
         uint64_t guarded[2] = {17u,29u};
-        CHECK(SparkTpLaunchMeshGuard(0,&control.error_word,guarded) == 0 &&
+        CHECK(SparkTpMeshLaunchersRegistered->guard(0,&control.error_word,guarded) == 0 &&
             guarded[0] == UINT64_MAX && guarded[1] == 29u,
             "failed mesh guard poisons only the output word");
         control.error_word = 0u;
         guarded[0] = 17u;
-        CHECK(SparkTpLaunchMeshGuard(0,&control.error_word,guarded) == 0 &&
+        CHECK(SparkTpMeshLaunchersRegistered->guard(0,&control.error_word,guarded) == 0 &&
             guarded[0] == 17u && guarded[1] == 29u,
             "successful mesh guard preserves output");
     }
     shipped = control.round_seq;
-    CHECK(SparkTpLaunchMeshCopyDown(0,destination,source,sizeof(source),
+    CHECK(SparkTpMeshLaunchersRegistered->copy_down(0,destination,source,sizeof(source),
         &shipped,&control,&cancel,1000000u) == 0 &&
         memcmp(destination,source,sizeof(source)) == 0 &&
         destination[7] == 0xa5u && destination[8] == 0xa5u,
         "full tag release copies exact odd byte extent without changing guards");
     cancel = 1u;
     memset(destination,0xa5,sizeof(destination));
-    CHECK(SparkTpLaunchMeshCopyDown(0,destination,source,sizeof(source),
+    CHECK(SparkTpMeshLaunchersRegistered->copy_down(0,destination,source,sizeof(source),
         &shipped,&control,&cancel,1000000u) == 0 && destination[0] == 0xa5u &&
         control.error_word != 0u,
         "cancellation prevents source overwrite and subsequent publication after shipment");

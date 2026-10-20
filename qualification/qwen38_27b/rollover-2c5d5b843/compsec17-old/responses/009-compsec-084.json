@@ -1,0 +1,62 @@
+{
+ "id": "compsec-084",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-27b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nOn this target, plain char is signed, and the ctype implementation indexes a table for values other than EOF.\n\nCode:\n```c\n 1: static size_t decode_component(char *s, size_t len)\n 2: {\n 3:     size_t r = 0, w = 0;\n 4: \n 5:     while (r < len) {\n 6:         if (s[r] == '%' && r + 2 < len &&\n 7:             isxdigit(s[r + 1]) && isxdigit(s[r + 2])) {\n 8:             s[w++] = hexpair(s[r + 1], s[r + 2]);\n 9:             r += 3;\n10:         } else {\n11:             s[w++] = s[r++];\n12:         }\n13:     }\n14:     return w;\n15: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "facfc60f956fcf986bd130607f421aec59e81faf7423b3c96e7cbedd816e27bd"
+ },
+ "response": {
+  "id": "chatcmpl-59fe294451b64e71be568d4e8d52e933",
+  "created": 1791721228,
+  "model": "qwen3.8-27b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function `decode_component` performs URL decoding in-place. The critical vulnerability lies in how the input characters are passed to the `isxdigit` function.\n\n1.  **Context**: The problem statement explicitly states: \"On this target, plain char is signed, and the ctype implementation indexes a table for values other than EOF.\"\n2.  **The Bug**: In C, the `ctype.h` functions like `isxdigit` expect an argument of type `int` that is either `EOF` or a value representable as an `unsigned char`. If a `char` is signed (as stated), and the input string `s` contains bytes with the high bit set (values 128-255), these values are interpreted as negative integers (e.g., -128 to -1).\n3.  **Consequence**: When `s[r + 1]` or `s[r + 2]` is passed to `isxdigit` on line 7, if the character is non-ASCII (negative value), it is used as an index into the internal lookup table. Since the index is negative, it results in an out-of-bounds memory access (buffer over-read), leading to undefined behavior, potential crashes, or information leaks.\n4.  **Location**: The call to `isxdigit` occurs on line 7. Specifically, `isxdigit(s[r + 1])` and `isxdigit(s[r + 2])` are the unsafe calls.\n\nTherefore, the primary bug is introduced on line 7.\n\nAnswer: 7",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 335,
+   "prompt_tokens": 329,
+   "total_tokens": 664,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `decode_component` performs URL decoding in-place. The critical vulnerability lies in how the input characters are passed to the `isxdigit` function.\n\n1.  **Context**: The problem statement explicitly states: \"On this target, plain char is signed, and the ctype implementation indexes a table for values other than EOF.\"\n2.  **The Bug**: In C, the `ctype.h` functions like `isxdigit` expect an argument of type `int` that is either `EOF` or a value representable as an `unsigned char`. If a `char` is signed (as stated), and the input string `s` contains bytes with the high bit set (values 128-255), these values are interpreted as negative integers (e.g., -128 to -1).\n3.  **Consequence**: When `s[r + 1]` or `s[r + 2]` is passed to `isxdigit` on line 7, if the character is non-ASCII (negative value), it is used as an index into the internal lookup table. Since the index is negative, it results in an out-of-bounds memory access (buffer over-read), leading to undefined behavior, potential crashes, or information leaks.\n4.  **Location**: The call to `isxdigit` occurs on line 7. Specifically, `isxdigit(s[r + 1])` and `isxdigit(s[r + 2])` are the unsafe calls.\n\nTherefore, the primary bug is introduced on line 7.\n\nAnswer: 7",
+ "grade": {
+  "index": 9,
+  "id": "compsec-084",
+  "source": "COMPSEC",
+  "domain": "PHP",
+  "expected": "6-7",
+  "extracted": "7",
+  "passed": true,
+  "elapsed_ms": 6128.0,
+  "output_sha256": "42d746534511df73bfc0f7b43062d59c6db7cb3901db9d2ee0a1969ec1a1fd3b",
+  "prompt_token_count": 329,
+  "generated_token_count": 335,
+  "reasoning_chars": 0,
+  "content_chars": 1243,
+  "status": "stop"
+ }
+}

@@ -1,0 +1,62 @@
+{
+ "id": "compsec-082",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "laguna-s-2.1",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe decoder writes a cstring value into a slice selected by a descriptor. xdr_bytes_available() is accurate.\n\nCode:\n```c\n 1: static bool xdr_datum(struct Xdr *xdr, const struct SliceDesc *desc, char *base)\n 2: {\n 3:     uint32_t n = xdr_get_u32(xdr);       // declared cstring length\n 4:     char *dst = base + desc->offset;\n 5: \n 6:     if (n > xdr_bytes_available(xdr))\n 7:         return false;\n 8: \n 9:     xdr_read_bytes(xdr, dst, n);\n10:     dst[n] = '\\0';\n11:     return true;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "08459bf340f33eeae2abc5e1bdfee8fa02c69ff58e9d575422fdd14976d88902"
+ },
+ "response": {
+  "id": "chatcmpl-cd1ce5c3bdeb4cefa575ad963cb6a920",
+  "created": 1791770621,
+  "model": "laguna-s-2.1",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function reads a declared length `n` from the XDR stream and checks it against available bytes, but it never validates `n` against the actual capacity of the destination slice described by `desc`. The `dst` pointer is computed as `base + desc->offset`, and `n` bytes are written followed by a null terminator at `dst[n]`. If `n` exceeds the slice's allocated size (which is not checked), this results in a buffer overflow. The missing bounds check on `n` relative to the slice capacity is the primary bug.\n\nAnswer: 6",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 119,
+   "prompt_tokens": 333,
+   "total_tokens": 452,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function reads a declared length `n` from the XDR stream and checks it against available bytes, but it never validates `n` against the actual capacity of the destination slice described by `desc`. The `dst` pointer is computed as `base + desc->offset`, and `n` bytes are written followed by a null terminator at `dst[n]`. If `n` exceeds the slice's allocated size (which is not checked), this results in a buffer overflow. The missing bounds check on `n` relative to the slice capacity is the primary bug.\n\nAnswer: 6",
+ "grade": {
+  "index": 7,
+  "id": "compsec-082",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-10",
+  "extracted": "6",
+  "passed": false,
+  "elapsed_ms": 3169.6,
+  "output_sha256": "663ce602d20e833d2a4424752fd3e1b97b057b0953cf668788ab3b84227ef9fc",
+  "prompt_token_count": 333,
+  "generated_token_count": 119,
+  "reasoning_chars": 0,
+  "content_chars": 520,
+  "status": "stop"
+ }
+}

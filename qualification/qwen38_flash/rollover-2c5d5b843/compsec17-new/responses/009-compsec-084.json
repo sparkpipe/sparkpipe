@@ -1,0 +1,62 @@
+{
+ "id": "compsec-084",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nOn this target, plain char is signed, and the ctype implementation indexes a table for values other than EOF.\n\nCode:\n```c\n 1: static size_t decode_component(char *s, size_t len)\n 2: {\n 3:     size_t r = 0, w = 0;\n 4: \n 5:     while (r < len) {\n 6:         if (s[r] == '%' && r + 2 < len &&\n 7:             isxdigit(s[r + 1]) && isxdigit(s[r + 2])) {\n 8:             s[w++] = hexpair(s[r + 1], s[r + 2]);\n 9:             r += 3;\n10:         } else {\n11:             s[w++] = s[r++];\n12:         }\n13:     }\n14:     return w;\n15: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "4ffbd92a5d12ea4050f5ec1e36266aca446dd5de397802917a2b8a0ec5a8469f"
+ },
+ "response": {
+  "id": "chatcmpl-ed56ec0470f64443a693b9ec2afe6306",
+  "created": 1791721962,
+  "model": "qwen3.8-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability lies in the use of `isxdigit` (and potentially other ctype functions) with a `char` argument.\n\n1.  **Signedness Issue**: The problem statement specifies that `plain char` is signed. In C, `char` can hold negative values (e.g., -128 to -1).\n2.  **Undefined Behavior**: The standard `ctype` functions (like `isxdigit`, `isdigit`, `isalpha`, etc.) expect an argument that is either representable as an `unsigned char` or equal to `EOF`. If a negative `char` value (other than `EOF`) is passed, the behavior is undefined.\n3.  **Implementation Specifics**: The problem states that the `ctype` implementation indexes a table for values other than `EOF`. Typically, these tables are indexed by the integer value of the character. If a negative value is passed, it will be used as an index into the table. Since array indices are usually non-negative, a negative index results in an out-of-bounds read (or write, depending on implementation, but usually read for lookup). This can lead to crashes or information leaks.\n4.  **Location**: The call to `isxdigit` occurs on line 7. The arguments `s[r + 1]` and `s[r + 2]` are of type `char`. If these characters have the high bit set (e.g., 0x80-0xFF), they will be interpreted as negative integers when passed to `isxdigit`.\n\nTherefore, the bug is introduced at the point where the potentially negative `char` values are passed to `isxdigit`.\n\nAnswer: 7",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 355,
+   "prompt_tokens": 329,
+   "total_tokens": 684,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability lies in the use of `isxdigit` (and potentially other ctype functions) with a `char` argument.\n\n1.  **Signedness Issue**: The problem statement specifies that `plain char` is signed. In C, `char` can hold negative values (e.g., -128 to -1).\n2.  **Undefined Behavior**: The standard `ctype` functions (like `isxdigit`, `isdigit`, `isalpha`, etc.) expect an argument that is either representable as an `unsigned char` or equal to `EOF`. If a negative `char` value (other than `EOF`) is passed, the behavior is undefined.\n3.  **Implementation Specifics**: The problem states that the `ctype` implementation indexes a table for values other than `EOF`. Typically, these tables are indexed by the integer value of the character. If a negative value is passed, it will be used as an index into the table. Since array indices are usually non-negative, a negative index results in an out-of-bounds read (or write, depending on implementation, but usually read for lookup). This can lead to crashes or information leaks.\n4.  **Location**: The call to `isxdigit` occurs on line 7. The arguments `s[r + 1]` and `s[r + 2]` are of type `char`. If these characters have the high bit set (e.g., 0x80-0xFF), they will be interpreted as negative integers when passed to `isxdigit`.\n\nTherefore, the bug is introduced at the point where the potentially negative `char` values are passed to `isxdigit`.\n\nAnswer: 7",
+ "grade": {
+  "index": 9,
+  "id": "compsec-084",
+  "source": "COMPSEC",
+  "domain": "PHP",
+  "expected": "6-7",
+  "extracted": "7",
+  "passed": true,
+  "elapsed_ms": 9609.0,
+  "output_sha256": "8013b69baf1ec03b791250754902a27da5a599c3f90f5fb98e5d9adc27eed590",
+  "prompt_token_count": 329,
+  "generated_token_count": 355,
+  "reasoning_chars": 0,
+  "content_chars": 1410,
+  "status": "stop"
+ }
+}

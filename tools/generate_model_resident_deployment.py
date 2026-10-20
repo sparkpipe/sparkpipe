@@ -282,19 +282,15 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
     adapter_template = text_value(
         topology["adapter_configuration_path_template"],
         "topology.adapter_configuration_path_template")
-    backing_dataset = topology["kv_backing_dataset"]
-    if backing_dataset is not None:
-        backing_dataset = cache_dataset_name(
-            backing_dataset,"topology.kv_backing_dataset")
+    if topology["kv_backing_dataset"] is None:
+        raise DeploymentError(
+            "topology.kv_backing_dataset is required: KV backing lives on the "
+            "KV partition")
+    backing_dataset = cache_dataset_name(
+        topology["kv_backing_dataset"],"topology.kv_backing_dataset")
     backing_maximum_bytes = integer_value(
         topology["kv_backing_maximum_bytes"],
-        "topology.kv_backing_maximum_bytes",0,9223372036854775807)
-    if backing_dataset is None and backing_maximum_bytes != 0:
-        raise DeploymentError(
-            "topology KV backing bytes require a cache dataset")
-    if backing_dataset is not None and backing_maximum_bytes == 0:
-        raise DeploymentError(
-            "topology KV cache dataset requires a finite byte limit")
+        "topology.kv_backing_maximum_bytes",1,9223372036854775807)
     node_target = text_value(topology["node_target"], "topology.node_target")
     endpoint_value = topology["control_endpoint"]
     if not isinstance(endpoint_value, dict):
@@ -313,8 +309,7 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
             adapter_template, host, rank, stage,
             "topology.adapter_configuration_path_template"), False,
             "rendered adapter configuration path")
-        backing_path = None if backing_dataset is None else posixpath.join(
-            roots["kvcache"],backing_dataset)
+        backing_path = posixpath.join(roots["kvcache"],backing_dataset)
         nodes.append({
             "rank_index": rank,
             "stage_index": stage,
@@ -323,6 +318,7 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
             "transport_host": transport_hosts[rank],
             "adapter_configuration_path": adapter_path,
             "kv_backing_directory": backing_path,
+            "kv_partition": roots["kvcache"],
             "kv_backing_maximum_bytes": backing_maximum_bytes,
             "control_endpoint": build_endpoint(
                 endpoint_template, host, rank, stage),
@@ -362,9 +358,20 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
 
 
 def chat_template_value(value: Any) -> dict[str, Any]:
-    keys = CHAT_TEMPLATE_KEYS | ({key for key in ("assistant_suffix", "control_markers") if key in value}
-                                 if isinstance(value, dict) else set())
+    optional = ("assistant_suffix", "control_markers", "plain_prefix", "system_suffix", "system_suffix_thinking",
+                "user_suffix", "system_turn_suffix", "observation_suffix")
+    keys = CHAT_TEMPLATE_KEYS | ({key for key in optional if key in value} if isinstance(value, dict) else set())
     template = exact_object(value, keys, "chat_template")
+    for key in ("plain_prefix", "system_suffix", "system_suffix_thinking", "user_suffix", "system_turn_suffix", "observation_suffix"):
+        if key in template and not isinstance(template[key], str):
+            raise DeploymentError(f"chat_template.{key} must be a string")
+    if ("system_suffix" in template or "system_suffix_thinking" in template or "system_turn_suffix" in template) and \
+            template.get("system") is None:
+        raise DeploymentError("chat_template.system_suffix and system_turn_suffix need a system header")
+    if "observation_suffix" in template and template.get("observation") is None:
+        raise DeploymentError("chat_template.observation_suffix needs an observation header")
+    if "system_suffix_thinking" in template and template.get("generation_thinking") is None:
+        raise DeploymentError("chat_template.system_suffix_thinking needs generation_thinking")
     if "assistant_suffix" in template and not isinstance(template["assistant_suffix"], str):
         raise DeploymentError("chat_template.assistant_suffix must be a string")
     if "control_markers" in template:

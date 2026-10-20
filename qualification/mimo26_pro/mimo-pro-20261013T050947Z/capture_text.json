@@ -1,0 +1,6 @@
+{
+ "capital": "The capital of France is Paris.<|im_end|>",
+ "arith": "Of course!\n\n**37 * 43 = 1591**\n\nHere are two ways to think about it:\n\n### Method 1: The \"Difference of Squares\" Trick (Fastest)\n\nThis method is a shortcut that works because 37 and 43 are equally distant from 4",
+ "code": "Here is a Python function that calculates the n-th Fibonacci number iteratively.\n\n```python\ndef fibonacci_iterative(n):\n    \"\"\"\n    Returns the n-th Fibonacci number iteratively.\n    Sequence: 0, 1, 1, 2, 3, 5, 8, ...\n    \"\"\"\n   ",
+ "story": "The wind had teeth tonight, gnawing at the granite bones of the lighthouse and howling a mournful dirge through the lantern room glass. Elias had long since stopped listening to the storm’s complaints; after thirty years on the rock, the gale was just a noisy roommate he couldn't evict."
+}

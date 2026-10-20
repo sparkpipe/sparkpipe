@@ -1,0 +1,63 @@
+{
+ "id": "compsec-086",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe parser grows a reusable tag buffer before copying the current element name and closing delimiters. Sizes are attacker-influenced through XML input.\n\nCode:\n```c\n 1: static bool ensure_tag_buffer(struct Parser *p, size_t prefix_len, size_t name_len)\n 2: {\n 3:     unsigned int need = (unsigned int)(prefix_len + name_len + 3);\n 4: \n 5:     if (need > p->tag_cap) {\n 6:         char *q = realloc(p->tag_buf, need);\n 7:         if (q == NULL)\n 8:             return false;\n 9:         p->tag_buf = q;\n10:         p->tag_cap = need;\n11:     }\n12: \n13:     memcpy(p->tag_buf, p->prefix, prefix_len);\n14:     memcpy(p->tag_buf + prefix_len, p->name, name_len);\n15:     memcpy(p->tag_buf + prefix_len + name_len, \"/>\\0\", 3);\n16:     return true;\n17: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "97494f8272159e2ded6c6c32066d752ce0083e2a893d6abd2cf947d27b76a1db"
+ },
+ "response": {
+  "id": "chatcmpl-de80056343bb464b92488148cba218d6",
+  "created": 1791730848,
+  "model": "glm-5.3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "**Analysis:**\n\nThe vulnerability is on **line 3**. The expression `prefix_len + name_len + 3` is computed in `size_t` and then cast to `unsigned int`, which truncates values above `UINT_MAX`. Additionally, since both lengths are attacker-influenced, their sum plus 3 can overflow even in `size_t` before the cast.\n\nIf the true required size exceeds `UINT_MAX` (or wraps), `need` becomes a small value. The check `need > p->tag_cap` then passes with an undersized (or un-grown) buffer, and the `memcpy` calls on lines 13\u201315 write `prefix_len + name_len + 3` actual bytes into a buffer allocated for the truncated `need` bytes \u2014 a heap buffer overflow.\n\nThe bug is introduced at the point where the size is computed and truncated (line 3); the memcpy lines merely trigger the overflow that line 3 set up.\n\nAnswer: 3",
+     "role": "assistant",
+     "reasoning_content": "Integer overflow at line 3: prefix_len + name_len + 3 can overflow size_t, cast to unsigned int truncates. Primary bug line 3."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 237,
+   "prompt_tokens": 342,
+   "total_tokens": 579,
+   "prompt_tokens_details": {
+    "cached_tokens": 64
+   }
+  }
+ },
+ "graded_text": "<think>Integer overflow at line 3: prefix_len + name_len + 3 can overflow size_t, cast to unsigned int truncates. Primary bug line 3.</think>**Analysis:**\n\nThe vulnerability is on **line 3**. The expression `prefix_len + name_len + 3` is computed in `size_t` and then cast to `unsigned int`, which truncates values above `UINT_MAX`. Additionally, since both lengths are attacker-influenced, their sum plus 3 can overflow even in `size_t` before the cast.\n\nIf the true required size exceeds `UINT_MAX` (or wraps), `need` becomes a small value. The check `need > p->tag_cap` then passes with an undersized (or un-grown) buffer, and the `memcpy` calls on lines 13\u201315 write `prefix_len + name_len + 3` actual bytes into a buffer allocated for the truncated `need` bytes \u2014 a heap buffer overflow.\n\nThe bug is introduced at the point where the size is computed and truncated (line 3); the memcpy lines merely trigger the overflow that line 3 set up.\n\nAnswer: 3",
+ "grade": {
+  "index": 11,
+  "id": "compsec-086",
+  "source": "COMPSEC",
+  "domain": "libexpat",
+  "expected": "3,13-15",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 11239.9,
+  "output_sha256": "869f7ee318535635866ac10ba1812b9fa5826ec11820b8ecb8884ab0d623bd61",
+  "prompt_token_count": 342,
+  "generated_token_count": 237,
+  "reasoning_chars": 126,
+  "content_chars": 813,
+  "status": "stop"
+ }
+}

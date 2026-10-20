@@ -1,0 +1,62 @@
+{
+ "id": "compsec-079",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "mimo-v2.6-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe server is configured to require TLS 1.3 client authentication. Inspect the reduced record handler.\n\nCode:\n```c\n 1: enum State { NeedClientCert, NeedCertVerify, NeedFinished, Established };\n 2: \n 3: static void handle_tls13_record(struct Conn *c, const Record& r)\n 4: {\n 5:     if (r.type == Alert)\n 6:         return close_conn(c);\n 7: \n 8:     if (r.type == Handshake) {\n 9:         if (r.msg == Certificate && c->state == NeedClientCert)\n10:             c->state = NeedCertVerify;\n11:         else if (r.msg == CertificateVerify && c->state == NeedCertVerify)\n12:             c->state = NeedFinished;\n13:         else if (r.msg == Finished && c->state == NeedFinished)\n14:             c->state = Established;\n15:         return;\n16:     }\n17: \n18:     if (r.type == ApplicationData) {\n19:         decrypt_and_dispatch_application_data(c, r);\n20:         return;\n21:     }\n22: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "46780a74d4b3110d521304c40032e32fdf12755e24493ec478dbb94822786cf5"
+ },
+ "response": {
+  "id": "chatcmpl-40597566ebb0464b9cb163a274c6cc68",
+  "created": 1791857527,
+  "model": "mimo-v2.6-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The primary bug is that application data is accepted before the handshake completes (before `c->state == Established`). The `ApplicationData` branch at line 18 does not check the connection state, so a client could send application data before completing client authentication (Certificate/CertificateVerify/Finished), bypassing the required TLS 1.3 client authentication.\n\nAnswer: 18",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 76,
+   "prompt_tokens": 371,
+   "total_tokens": 447,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The primary bug is that application data is accepted before the handshake completes (before `c->state == Established`). The `ApplicationData` branch at line 18 does not check the connection state, so a client could send application data before completing client authentication (Certificate/CertificateVerify/Finished), bypassing the required TLS 1.3 client authentication.\n\nAnswer: 18",
+ "grade": {
+  "index": 4,
+  "id": "compsec-079",
+  "source": "COMPSEC",
+  "domain": "Botan",
+  "expected": "18-19",
+  "extracted": "18",
+  "passed": true,
+  "elapsed_ms": 6287.1,
+  "output_sha256": "cfa181c036784b272de64a14c83c03f9a31f612cb489c201f4900a51070cf55e",
+  "prompt_token_count": 371,
+  "generated_token_count": 76,
+  "reasoning_chars": 0,
+  "content_chars": 384,
+  "status": "stop"
+ }
+}

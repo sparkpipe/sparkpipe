@@ -1,0 +1,62 @@
+{
+ "id": "compsec-092",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "mimo-v2.6-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe verifier checks a serialized DFA. Some states are encoded as differences from another state default table.\n\nCode:\n```c\n 1: static int verify_dfa_reduced(const struct dfa *d)\n 2: {\n 3:     for (uint32_t state = 0; state < d->state_count; state++) {\n 4:         uint32_t j = state;\n 5: \n 6:         if (d->default_table[j] >= d->state_count)\n 7:             return -EINVAL;\n 8: \n 9:         while (d->is_differential[j]) {\n10:             uint32_t parent = d->default_table[j];\n11:             j = parent;                    // parent not rechecked here\n12:         }\n13: \n14:         validate_accept_table(d->accept[j]);\n15:     }\n16:     return 0;\n17: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "75114489498c1930048a940e7c09917623c3978f7912ad9f7c2bfb5eb6d0d734"
+ },
+ "response": {
+  "id": "chatcmpl-38ab5c8c4cee467b80a9b2415a110406",
+  "created": 1791857603,
+  "model": "mimo-v2.6-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The bug is that after following a differential parent pointer (line 11), the new `j` is not revalidated against `d->state_count` before being used as an index (line 14). The check on line 6 only validates the initial `j`, not subsequent parents. A parent could point out of bounds, causing `d->accept[j]` to read out of bounds.\n\nThe primary introduction of the bug is line 11, where `j` is reassigned without rechecking bounds.\n\nAnswer: 11",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 112,
+   "prompt_tokens": 313,
+   "total_tokens": 425,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The bug is that after following a differential parent pointer (line 11), the new `j` is not revalidated against `d->state_count` before being used as an index (line 14). The check on line 6 only validates the initial `j`, not subsequent parents. A parent could point out of bounds, causing `d->accept[j]` to read out of bounds.\n\nThe primary introduction of the bug is line 11, where `j` is reassigned without rechecking bounds.\n\nAnswer: 11",
+ "grade": {
+  "index": 17,
+  "id": "compsec-092",
+  "source": "COMPSEC",
+  "domain": "Linux kernel AppArmor",
+  "expected": "10-14",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 5846.6,
+  "output_sha256": "a3431a7d181bcfac0bb32b195d767fcda89fd27dfdddb4e11ac464922607b038",
+  "prompt_token_count": 313,
+  "generated_token_count": 112,
+  "reasoning_chars": 0,
+  "content_chars": 439,
+  "status": "stop"
+ }
+}

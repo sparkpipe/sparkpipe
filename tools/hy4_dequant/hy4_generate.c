@@ -1,18 +1,3 @@
-/* hy4 lane: all-rank simulated-TP16 generation (CPU, fp32) on one node.
- *
- * Runs the full 78-layer stack over a prompt + generated tokens with the
- * TP16 partial sums simulated in-process: attention heads split 4/rank,
- * o_proj head-sliced partials summed, MoE owned-expert partials summed,
- * lm_head scored per rank-vocab slice with a global argmax. Replicated
- * tensors (q_a/kv_a/norms/router/shared-expert/hc fns) are computed once
- * from rank 0's copy; head-sliced and expert tensors come from each rank's
- * own bundle. Exactness chain: same vendor dequant + router already
- * verified; the collective simulation is exact fp32 summation in rank
- * order (a real all-reduce may reorder -- noted in the report).
- *
- * Usage: hy4_generate <allranks_dir> [gen_tokens]
- * Requires all 16 rank bundles under <dir>/rank-XX/.
- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -98,8 +83,6 @@ static void rms_norm(const float *x, const float *w, float *y, long n, float eps
 static void hc_mix(const float *fn, const float *streams, const float *scale,
                    const float *base, float *pre, float *post) {
     float mixed[HC * 2];
-    /* the flattened stream vector is RMS-NORMED (no weight, model eps)
-     * before the hc_fn matvec — vendor builds RMS_NORM(hc_init) first */
     float flat_norm[HC * N_EMBD];
     float ss = 0;
     for (int i = 0; i < HC * N_EMBD; ++i) ss += streams[i] * streams[i];
@@ -211,7 +194,6 @@ static int ckpt_load(const char *path, int *t, int *il_next, int *tokens,
 
 static float *load0(const char *name) { return loadt(R[0], name); }
 
-/* embedding row for token id: owned by rank id/VOC_PER_RANK */
 static int embed_token(int id, float *out) {
     int owner = id / VOC_PER_RANK;
     int row = id % VOC_PER_RANK;
@@ -230,8 +212,6 @@ int main(int argc, char **argv) {
     int gen = argc > 2 ? atoi(argv[2]) : GEN;
     const char *dump_path = argc > 4 ? argv[4] : NULL;
 
-    /* prompt ids come from the verified GGUF tokenizer (hy4_tokenize.py
-     * encode, BOS prepended); the C side stays arithmetic-only */
     int tokens_fixed[TOTAL_TOK];
     int n_prompt = 0;
     if (argc > 3) {
@@ -260,9 +240,7 @@ int main(int argc, char **argv) {
         tokens[i] = i < n_prompt ? tokens_fixed[i] : 0;
     int generated = -1;
 
-    /* per-token hc streams, cached per token for autoregressive carry */
     static float streams[TOTAL_TOK][HC][N_EMBD];
-    /* kv cache per layer per token (replicated across ranks) */
     static float klat[LAYERS][TOTAL_TOK][KV_LORA];
     static float kpe[LAYERS][TOTAL_TOK][ROT];
 
@@ -298,7 +276,6 @@ int main(int argc, char **argv) {
 
             char nm[160];
             float pre[HC], post[HC];
-            /* hc fns are replicated: rank 0's copy */
             float *hc_attn_fn = load0((snprintf(nm, 160, "blk.%d.hc_attn_fn.weight", il), nm));
             float *hc_sc = load0((snprintf(nm, 160, "blk.%d.hc_attn_scale.weight", il), nm));
             float *hc_ba = load0((snprintf(nm, 160, "blk.%d.hc_attn_base.weight", il), nm));
@@ -313,7 +290,6 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "MY_ATTIN first3: %.6f %.6f %.6f\n",
                         cur[0], cur[1], cur[2]);
 
-            /* kv from replicated kv_a (rank 0) */
             float *wkv_a = load0((snprintf(nm, 160, "blk.%d.attn_kv_a_mqa.weight", il), nm));
             float *kvan = load0((snprintf(nm, 160, "blk.%d.attn_kv_a_norm.weight", il), nm));
             float kvc[KV_LORA + ROT];
@@ -333,7 +309,6 @@ int main(int argc, char **argv) {
             }
             free(wkv_a); free(kvan);
 
-            /* attention: per-rank head slices, partial o_proj summed */
             float *qan = load0((snprintf(nm, 160, "blk.%d.attn_q_a_norm.weight", il), nm));
             float *wq_a = load0((snprintf(nm, 160, "blk.%d.attn_q_a.weight", il), nm));
             float qr_buf[2048];
@@ -423,7 +398,6 @@ int main(int argc, char **argv) {
                         il, fsum(streams, (long)HC * N_EMBD),
                         has_nan(streams, (long)HC * N_EMBD));
 
-            /* ---- ffn branch ---- */
             float fpre[HC], fpost[HC];
             float *hc_ffn_fn = load0((snprintf(nm, 160, "blk.%d.hc_ffn_fn.weight", il), nm));
             float *hc_fsc = load0((snprintf(nm, 160, "blk.%d.hc_ffn_scale.weight", il), nm));
@@ -435,7 +409,6 @@ int main(int argc, char **argv) {
             rms_norm(fcur, ln2, fcur, N_EMBD, 1e-5f);
 
             if (il == 0) {
-                /* dense layer: no routing, replicated dense FFN from rank 0 */
                 float *dg = load0((snprintf(nm, 160, "blk.0.ffn_gate.weight"), nm));
                 float *du = load0((snprintf(nm, 160, "blk.0.ffn_up.weight"), nm));
                 float *dd = load0((snprintf(nm, 160, "blk.0.ffn_down.weight"), nm));
@@ -522,7 +495,6 @@ int main(int argc, char **argv) {
                 }
             }
             free(gw); free(uw); free(dw2);
-            /* shared expert: replicated, compute once (rank 0) */
             {
                 float *shg = load0((snprintf(nm, 160, "blk.%d.ffn_gate_shexp.weight", il), nm));
                 float *shu = load0((snprintf(nm, 160, "blk.%d.ffn_up_shexp.weight", il), nm));
@@ -539,7 +511,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "MY_FFN_L%d t0 first3 %.6f %.6f %.6f\n",
                         il, ffn[0], ffn[1], ffn[2]);
             hc_distribute(streams[t], ffn, fpost);
-            } /* end sparse-MoE branch */
+            }
             if (dump_path) {
                 char dname[1200];
                 snprintf(dname, sizeof(dname), "%s_L%d_t%d", dump_path, il, t);
@@ -569,10 +541,6 @@ int main(int argc, char **argv) {
             free(hc_ffn_fn); free(hc_fsc); free(hc_fba); free(ln2);
         }
 
-        /* lm_head: hc_head collapse of the 4 streams first (vendor
-         * build_hc_head: rms over the flattened hc*embd vector, fn mixes,
-         * pre = sigmoid(mixes*scale+base)+eps, weighted reduce), then
-         * output_norm, then the rank-local vocab matvec */
         float *hfn = load0("output_hc_fn.weight");
         float *hsc = load0("output_hc_scale.weight");
         float *hba = load0("output_hc_base.weight");

@@ -33,8 +33,14 @@ current authority.
 
 ## Implementation contracts
 
+- [`INTERFACE_CONTRACTS.md`](INTERFACE_CONTRACTS.md): caller-visible
+  contracts of the shared headers (hidden transport, KV cache, page cache
+  and page store, serving adapter, stagepack formats, TP chain ordinals,
+  device collective) and of the host RDMA capability set and the batch
+  engine failure circuit.
 - [`WEIGHTD_DESIGN.md`](WEIGHTD_DESIGN.md): weightd daemon, production
-  ownership, lanes, expert residency. Its
+  ownership, lanes, expert residency, client API contracts, daemon
+  internals and operator tools. Its
   [Mesh substrate and rendezvous](WEIGHTD_DESIGN.md#mesh-substrate-and-rendezvous)
   section is the TP transport contract.
 - [`WEIGHTD_SUPERVISED_STARTUP.md`](WEIGHTD_SUPERVISED_STARTUP.md):
@@ -46,8 +52,6 @@ current authority.
   and polling in the collective and the API worker.
 - [`DRIVER_ACCEPTANCE.md`](DRIVER_ACCEPTANCE.md): driver contract, including
   page and position budgets, the known exception and per-driver gaps.
-- [`COMMON_MODULE_ARCHITECTURE.md`](COMMON_MODULE_ARCHITECTURE.md): common
-  modules and `llm_defines.h`.
 - [`FAMILY_TEMPLATES.md`](FAMILY_TEMPLATES.md): code shared across forked
   model families, and the rule for sharing it.
 - [`KERNEL_PLAYBOOK.md`](KERNEL_PLAYBOOK.md): shared-kernel techniques and
@@ -89,15 +93,18 @@ current authority.
   speculation seam, source mask, draft bridge, per-family state and
   direction.
 - [`RTX5090_SPECULATION_NODE.md`](RTX5090_SPECULATION_NODE.md): rtx5090 host
-  (fleet hub, GLM API, draft farm, drafter store).
+  (fleet hub, model APIs, draft farm, drafter store).
 - [`SPECULATION_PLAN.md`](SPECULATION_PLAN.md): speculation architecture,
   drafters per model, and the PR sequence.
 
 ## Operations and development
 
+- [`TOOL_REFERENCE.md`](TOOL_REFERENCE.md): purpose, usage and exit codes
+  of the standalone C and CUDA tools (hy4 host references and GPU tests,
+  mesh registration repros, NVFP4 smokes).
 - [`FLEET_RELEASE_RUNBOOK.md`](FLEET_RELEASE_RUNBOOK.md): the single
-  production fleet guide (hub, fleet-agent, releases, g53-api, bootstrap,
-  triage). This is the release and operations procedure.
+  production fleet guide (hub, fleet-agent, releases, the hub serving
+  stack, bootstrap, triage). This is the release and operations procedure.
 - [`MULTIDEV_QUICKSTART.md`](MULTIDEV_QUICKSTART.md): parallel development
   guide: lanes, tiers, queue, performance-evidence rule, model work rules.
 - [`PARALLEL_DRIVER_DEBUG.md`](PARALLEL_DRIVER_DEBUG.md): queue v2 contract
@@ -140,10 +147,10 @@ current authority.
 ## Evidence and research material
 
 - [`receipts/`](receipts/): JSON receipts cited by the documents above.
-- [`research-dflash2/`](research-dflash2/) and
-  [`research-dspark/`](research-dspark/): copies of external papers, posts
-  and code used by the speculation work; reference material, not SparkPipe
-  authority.
+- [`research-dspark/DSPARK_VERIFY_LOOP_REPORT.md`](research-dspark/DSPARK_VERIFY_LOOP_REPORT.md):
+  notes on the DSpark verify loop. The papers and code it draws on are cited
+  by link, for example the DSpark paper (arXiv 2607.05147); copies are not
+  kept in the tree.
 
 ## History
 

@@ -1,0 +1,62 @@
+{
+ "id": "compsec-087",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "laguna-s-2.1",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper parses an IPv6 address used in X.509 name constraints. It records where :: compression occurred, then shifts already parsed bytes.\n\nCode:\n```c\n 1: static int parse_ipv6_reduced(const char *src, uint8_t dst[16])\n 2: {\n 3:     uint8_t tmp[16];\n 4:     uint8_t *tp = tmp;\n 5:     uint8_t *colonp = NULL;\n 6: \n 7:     if (src[0] == ':' && src[1] == ':') {\n 8:         colonp = --tp;          // remember compression point at the beginning\n 9:         src += 2;\n10:     }\n11: \n12:     while (*src != '\\0') {\n13:         unsigned v = parse_hextet(&src);\n14:         *tp++ = (uint8_t)(v >> 8);\n15:         *tp++ = (uint8_t)v;\n16:         if (*src == ':') src++;\n17:     }\n18: \n19:     if (colonp != NULL) {\n20:         size_t n = (size_t)(tp - colonp);\n21:         memmove(colonp + (16 - (tp - tmp)), colonp, n);\n22:         memset(colonp, 0, 16 - (tp - tmp));\n23:     }\n24: \n25:     memcpy(dst, tmp, 16);\n26:     return 0;\n27: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "e656d259d10b0777bafdcba43f6a8c604ddeafb33cefc2bec6e728e381cbad31"
+ },
+ "response": {
+  "id": "chatcmpl-066af89c343a482280844b97b1c51318",
+  "created": 1791770653,
+  "model": "laguna-s-2.1",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Looking at this code, I need to analyze the IPv6 address parsing logic, particularly the `::` compression handling.\n\nThe key issue is in the compression handling logic. When `::` compression occurs, the code needs to shift the already-parsed bytes to make room for the zero-filled gap.\n\nLet me trace through the logic:\n\n1. `colonp` points to where the compression occurred\n2. `tp` points to the current write position (end of parsed data)\n3. `n = tp - colonp` is the number of bytes already parsed after the compression point\n4. The code wants to shift these `n` bytes to the end of the 16-byte buffer\n\nThe problem is in line 21:\n```c\nmemmove(colonp + (16 - (tp - tmp)), colonp, n);\n```\n\nThe destination should be `colonp + (16 - n)` to place the bytes at the end, but instead it's using `16 - (tp - tmp)`. \n\nWhen `colonp` is at the beginning (line 8 case), `tp - tmp` equals `n` (since `colonp = --tp` initially, then `tp` advances). But when compression occurs in the middle, `tp - tmp` is larger than `n`, making the shift amount incorrect.\n\nThe correct calculation should use `n` (the number of bytes to shift) rather than `tp - tmp` (total bytes parsed). The destination offset should be `16 - n`, not `16 - (tp - tmp)`.\n\nLine 21 is where the primary bug is introduced.\n\nAnswer: 21",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 353,
+   "prompt_tokens": 563,
+   "total_tokens": 916,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Looking at this code, I need to analyze the IPv6 address parsing logic, particularly the `::` compression handling.\n\nThe key issue is in the compression handling logic. When `::` compression occurs, the code needs to shift the already-parsed bytes to make room for the zero-filled gap.\n\nLet me trace through the logic:\n\n1. `colonp` points to where the compression occurred\n2. `tp` points to the current write position (end of parsed data)\n3. `n = tp - colonp` is the number of bytes already parsed after the compression point\n4. The code wants to shift these `n` bytes to the end of the 16-byte buffer\n\nThe problem is in line 21:\n```c\nmemmove(colonp + (16 - (tp - tmp)), colonp, n);\n```\n\nThe destination should be `colonp + (16 - n)` to place the bytes at the end, but instead it's using `16 - (tp - tmp)`. \n\nWhen `colonp` is at the beginning (line 8 case), `tp - tmp` equals `n` (since `colonp = --tp` initially, then `tp` advances). But when compression occurs in the middle, `tp - tmp` is larger than `n`, making the shift amount incorrect.\n\nThe correct calculation should use `n` (the number of bytes to shift) rather than `tp - tmp` (total bytes parsed). The destination offset should be `16 - n`, not `16 - (tp - tmp)`.\n\nLine 21 is where the primary bug is introduced.\n\nAnswer: 21",
+ "grade": {
+  "index": 12,
+  "id": "compsec-087",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "8,20-22",
+  "extracted": "21",
+  "passed": true,
+  "elapsed_ms": 8396.5,
+  "output_sha256": "ed67f046e7d4ebf5eb57b43840dc5bb587fc8bfb3150db05cc950e3f4dfbaf8f",
+  "prompt_token_count": 563,
+  "generated_token_count": 353,
+  "reasoning_chars": 0,
+  "content_chars": 1286,
+  "status": "stop"
+ }
+}

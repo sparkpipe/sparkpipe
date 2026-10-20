@@ -1,0 +1,127 @@
+release2 identity 2026-10-11T11:22:37Z, firmware fw-2c5d5b843, hub API ~/api-build-2c5d5b843/build, swap id ling-3.0-flash
+swap entry vs generated: IDENTICAL
+api_pid 1310658
+615cf6d74841f2c11  /proc/1310658/exe
+615cf6d74841f2c11  /home/spec/api-build-2c5d5b843/build/sparkpipe_model_api
+e6c69b0503476d8ab  /home/spec/ling3_flash-kv-api/runtime/lib/libling3_flash_tp16_serving_adapter.so
+e6c69b0503476d8ab  /home/spec/api-build-2c5d5b843/build/libling3_flash_tp16_serving_adapter.so
+{"status":"ok","served":0,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+spark0 11078eca0a5fbe66 11078eca0a5fbe66
+spark1 11078eca0a5fbe66 11078eca0a5fbe66
+spark2 11078eca0a5fbe66 11078eca0a5fbe66
+spark3 11078eca0a5fbe66 11078eca0a5fbe66
+spark4 11078eca0a5fbe66 11078eca0a5fbe66
+spark5 11078eca0a5fbe66 11078eca0a5fbe66
+spark6 11078eca0a5fbe66 11078eca0a5fbe66
+spark7 11078eca0a5fbe66 11078eca0a5fbe66
+spark8 11078eca0a5fbe66 11078eca0a5fbe66
+spark9 11078eca0a5fbe66 11078eca0a5fbe66
+sparka 11078eca0a5fbe66 11078eca0a5fbe66
+sparkb 11078eca0a5fbe66 11078eca0a5fbe66
+sparkc 11078eca0a5fbe66 11078eca0a5fbe66
+sparkd 11078eca0a5fbe66 11078eca0a5fbe66
+sparke 11078eca0a5fbe66 11078eca0a5fbe66
+sparkf 11078eca0a5fbe66 11078eca0a5fbe66
+fw 11078eca0a5fbe66
+{"status":"ok","served":14,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+
+## run log (setup, swap entry, activation, capture comparisons, smokes, COMPSEC, reclaim check)
+== 2026-10-11T11:22:12Z ling-3.0-flash precheck
+controller: idle qwen3.8-max None
+== 2026-10-11T11:22:13Z setup
+rtx5090:ling3_flash-kv-api ready (tokenizer 2b9bbfb072e09cc4e4ae7e92711e661878e2b705c7d325acf7a0d7d51ed3a996); swap controller entry in ./ling3_flash.swap_entry.json
+swap entry vs generated: IDENTICAL
+== 2026-10-11T11:22:17Z activate ling-3.0-flash
+11:22:37 idle ling-3.0-flash None 17.6
+node adapter sha:   16 11078eca0a5fbe66
+"connected_ranks":16
+== 2026-10-11T11:22:38Z capture
+translate_turn2 76 prompt 15 cached 51 'Das Wetter ist heute schön und wir gehen in den Park.<|role_end|>'
+zh_turn2 67 prompt 47 cached 42 'Die Große Mauer ist ein großes Verteidigungswerk, das im alten China erbaut wurde, erstreckt sich ü
+-- vs capture-2aa246576 (truncating mesh SUM):
+   capital: IDENTICAL 8 tokens, logprobs differ
+   arith: DIFFERS at token 25 (agent 64 tokens, release 64 tokens; agent [54289, 11, 84464] release [810, 3781, 268])
+   code: DIFFERS at token 32 (agent 64 tokens, release 64 tokens; agent [698, 289, 65178] release [341, 259, 8908])
+   story: DIFFERS at token 13 (agent 64 tokens, release 64 tokens; agent [301, 63277, 601] release [1501, 268, 28754])
+   sky: IDENTICAL 55 tokens, logprobs differ
+   translate: IDENTICAL 14 tokens, logprobs differ
+   list: DIFFERS at token 24 (agent 64 tokens, release 64 tokens; agent [6667, 950, 403] release [950, 403, 74669])
+   zh: DIFFERS at token 10 (agent 17 tokens, release 17 tokens; agent [1782, 22904, 94725] release [44680, 9137, 94725])
+   count: IDENTICAL 64 tokens, logprobs differ
+   long: DIFFERS at token 20 (agent 64 tokens, release 64 tokens; agent [259, 74262, 11] release [12965, 1029, 259])
+   capital_turn2: IDENTICAL 10 tokens, logprobs differ
+   sky_turn2: IDENTICAL 64 tokens, logprobs differ
+   translate_turn2: IDENTICAL 15 tokens, logprobs differ
+   zh_turn2: DIFFERS at token 30 (agent 45 tokens, release 47 tokens; agent [33203, 104155, 4574] release [257, 3530, 35730])
+   IDENTITY 7/14 identical
+-- vs numerics RNE capture ling3_flash-capture-8546591f7.json:
+   capital: IDENTICAL 8 tokens, logprobs identical
+   arith: IDENTICAL 64 tokens, logprobs identical
+   code: IDENTICAL 64 tokens, logprobs identical
+   story: IDENTICAL 64 tokens, logprobs identical
+   sky: IDENTICAL 55 tokens, logprobs identical
+   translate: IDENTICAL 14 tokens, logprobs identical
+   list: IDENTICAL 64 tokens, logprobs identical
+   zh: IDENTICAL 17 tokens, logprobs identical
+   count: IDENTICAL 64 tokens, logprobs identical
+   long: IDENTICAL 64 tokens, logprobs identical
+   capital_turn2: IDENTICAL 10 tokens, logprobs identical
+   sky_turn2: IDENTICAL 64 tokens, logprobs identical
+   translate_turn2: IDENTICAL 15 tokens, logprobs identical
+   zh_turn2: IDENTICAL 47 tokens, logprobs identical
+   IDENTITY 14/14 identical
+== 2026-10-11T11:22:56Z smokes
+chat          PASS  | finish='stop' 0.62s content='The capital of France is Paris.' reasoning=133 chars
+stream        PASS  | finish='stop' 0.61s content='The capital of France is Paris.' reasoning=133 chars
+tool          PASS  | finish='tool_calls' 0.92s content='' reasoning=112 chars
+tool_result   PASS  | finish='stop' 0.99s content='The current weather in Paris is **sunny** with a temperature of **18°C**.' reasoning=205 chars
+reasoning_off PASS  | finish='stop' 0.19s content='391' reasoning=0 chars
+reasoning_on  PASS  | finish='stop' 0.65s content='391' reasoning=44 chars
+UI-SMOKE ling-3.0-flash: 6/6
+== 2026-10-11T11:23:00Z compsec17
+[ 2/17] compsec-077 GNU Inetutils telnetd    FAIL expected='18-20' got='14' (0.5s, 2 tok, stop)
+[ 5/17] compsec-080 Botan                    FAIL expected='5-6' got='12' (0.4s, 5 tok, stop)
+[ 9/17] compsec-084 PHP                      FAIL expected='6-7' got='11' (0.5s, 5 tok, stop)
+[13/17] compsec-088 Mbed TLS                 FAIL expected='11' got='7,11' (0.5s, 7 tok, stop)
+"connected_ranks":16
+rank log lines with error|fail|fault|abort|AER: 16
+== 2026-10-11T11:23:09Z restore qwen3.8-max
+11:23:45 idle qwen3.8-max None 33.2
+== 2026-10-11T11:23:45Z reclaim check
+  16 DROP-KV label=ling3_stage released=0 bytes=0 busy=0
+  16 RECLAIM-PACK freed=268435456 arenas=1 busy=0 resident=_ remaining_arenas=1
+== 2026-10-11T11:23:45Z done ling-3.0-flash
+
+## rank logs (error|fail|fault|abort grep; dmesg is not readable for the user on the sparks)
+spark0 logs/residentd-20261011T112226Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark1 logs/residentd-20261011T112226Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark2 logs/residentd-20261011T112226Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark3 logs/residentd-20261011T112226Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark4 logs/residentd-20261011T112226Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark5 logs/residentd-20261011T112226Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark6 logs/residentd-20261011T112226Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark7 logs/residentd-20261011T112226Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark8 logs/residentd-20261011T112226Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark9 logs/residentd-20261011T112226Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparka logs/residentd-20261011T112226Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkb logs/residentd-20261011T112226Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkc logs/residentd-20261011T112226Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkd logs/residentd-20261011T112226Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparke logs/residentd-20261011T112226Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkf logs/residentd-20261011T112226Z.log
+dmesg: read kernel buffer failed: Operation not permitted

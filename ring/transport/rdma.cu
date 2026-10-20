@@ -120,6 +120,15 @@ static SparkStatus SparkHiddenSparkHostRdmaPostReceive(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkHiddenSparkHostRdmaCancel(
+    void *transport_state,
+    const SparkHiddenTransportPacket *packet)
+{
+    if ( transport_state == 0 || packet == 0 )
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkHiddenSparkHostRdmaSetFixedLocal(
     void *transport_state,
     void *buffer,
@@ -269,17 +278,6 @@ extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface
         SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS |
         SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS;
 #else
-        /* REQUIRED_SPARK_HOST_RDMA_CAPS is what this backend implements
-         * — synchronous singles plus batch loops over them. Poll
-         * descriptors, multi-lane and the remote-completion doorbell
-         * are NOT implemented here; declaring them to satisfy a
-         * mis-wired required mask would be a lie. The mask bug is fixed
-         * at the contract site instead (node/model_residentd.c). */
-        /* + POLL_DESCRIPTORS: the module implements get_poll_descriptors
-         * (zero descriptors — a pure-RDMA-mesh session), and residentd's
-         * serve loop requires the transport session to support the poll
-         * descriptor query (SessionCanUsePollDescriptors -> NOT_FOUND ->
-         * clean exit, find #12). Claiming an implemented capability. */
         SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS |
         SPARK_HIDDEN_TRANSPORT_CAP_POLL_DESCRIPTORS |
         SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS;
@@ -298,11 +296,8 @@ extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface
         SparkHiddenSparkHostRdmaGetPollDescriptors;
     spark_hidden_spark_host_rdma_interface.post_receive =
         SparkHiddenSparkHostRdmaPostReceive;
-    /* batch forms: per-packet loops over the singles. The RECOMMENDED
-     * (== residentd's required) host-rdma cap set includes
-     * BATCHED_SUBMISSION, and the loader's RequiresBatchFunctions check
-     * fires on EITHER side declaring it — the module must provide them
-     * even to decline the cap. */
+    spark_hidden_spark_host_rdma_interface.cancel =
+        SparkHiddenSparkHostRdmaCancel;
     spark_hidden_spark_host_rdma_interface.post_receive_batch =
         SparkHiddenSparkHostRdmaPostReceiveBatch;
     spark_hidden_spark_host_rdma_interface.send_batch =

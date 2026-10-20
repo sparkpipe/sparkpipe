@@ -1,0 +1,95 @@
+release2 identity 2026-10-11T11:07:51Z, firmware fw-2c5d5b843, hub API ~/api-build-2c5d5b843/build, swap id muse-glimmer-30b
+swap entry vs generated: IDENTICAL
+api_pid 1154375
+615cf6d74841f2c11  /proc/1154375/exe
+615cf6d74841f2c11  /home/spec/api-build-2c5d5b843/build/sparkpipe_model_api
+87683ebdc4c972763  /home/spec/muse_glimmer-kv-api/runtime/lib/libmuse_glimmer_tp16_serving_adapter.so
+87683ebdc4c972763  /home/spec/api-build-2c5d5b843/build/libmuse_glimmer_tp16_serving_adapter.so
+{"status":"ok","served":0,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+spark0 0d30eac9e32af20c 0d30eac9e32af20c
+spark1 0d30eac9e32af20c 0d30eac9e32af20c
+spark2 0d30eac9e32af20c 0d30eac9e32af20c
+spark3 0d30eac9e32af20c 0d30eac9e32af20c
+spark4 0d30eac9e32af20c 0d30eac9e32af20c
+spark5 0d30eac9e32af20c 0d30eac9e32af20c
+spark6 0d30eac9e32af20c 0d30eac9e32af20c
+spark7 0d30eac9e32af20c 0d30eac9e32af20c
+spark8 0d30eac9e32af20c 0d30eac9e32af20c
+spark9 0d30eac9e32af20c 0d30eac9e32af20c
+sparka 0d30eac9e32af20c 0d30eac9e32af20c
+sparkb 0d30eac9e32af20c 0d30eac9e32af20c
+sparkc 0d30eac9e32af20c 0d30eac9e32af20c
+sparkd 0d30eac9e32af20c 0d30eac9e32af20c
+sparke 0d30eac9e32af20c 0d30eac9e32af20c
+sparkf 0d30eac9e32af20c 0d30eac9e32af20c
+fw 0d30eac9e32af20c
+{"status":"ok","served":4,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+
+## run log (setup, swap entry, activation, capture comparisons, smokes, COMPSEC, reclaim check)
+== 2026-10-11T11:07:27Z muse-glimmer-30b precheck
+controller: idle qwen3.8-max None
+== 2026-10-11T11:07:27Z setup
+rtx5090:muse_glimmer-kv-api ready (tokenizer 56c2ca763f0e60b4d8895e1a1122bc0aed8a039e1ca45dca7c7e739cb8bc14b4); swap controller entry in ./muse_glimmer.swap_entry.json
+swap entry vs generated: IDENTICAL
+== 2026-10-11T11:07:31Z activate muse-glimmer-30b
+11:07:51 idle muse-glimmer-30b None 15.3
+node adapter sha:   16 0d30eac9e32af20c
+"connected_ranks":16
+== 2026-10-11T11:07:52Z capture
+code 40 
+story 40 
+-- vs capture-2aa246576 (truncating mesh SUM):
+   capital: IDENTICAL 40 tokens, logprobs differ
+   arith: IDENTICAL 40 tokens, logprobs differ
+   code: IDENTICAL 40 tokens, logprobs differ
+   story: IDENTICAL 40 tokens, logprobs differ
+   IDENTITY 4/4 identical
+== 2026-10-11T11:07:59Z smokes
+chat          PASS  | finish='stop' 3.25s content='The capital of France is Paris.' reasoning=457 chars
+stream        PASS  | finish='stop' 3.15s content='The capital of France is Paris.' reasoning=457 chars
+tool          PASS  | finish='tool_calls' 4.74s content='' reasoning=433 chars
+tool_result   PASS  | finish='stop' 2.91s content='The current weather in Paris is **18°C and sunny**.\n' reasoning=344 chars
+UI-SMOKE muse-glimmer-30b: 4/4
+== 2026-10-11T11:08:14Z compsec17
+"connected_ranks":16
+rank log lines with error|fail|fault|abort|AER: 16
+== 2026-10-11T11:10:43Z restore qwen3.8-max
+11:11:19 idle qwen3.8-max None 33.1
+== 2026-10-11T11:11:19Z reclaim check
+  16 DROP-KV label=muse_glimmer_stage released=0 bytes=0 busy=0
+  16 RECLAIM-PACK freed=268435456 arenas=1 busy=0 resident=_ remaining_arenas=2
+== 2026-10-11T11:11:19Z done muse-glimmer-30b
+
+## rank logs (error|fail|fault|abort grep; dmesg is not readable for the user on the sparks)
+spark0 logs/residentd-20261011T110739Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark1 logs/residentd-20261011T110739Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark2 logs/residentd-20261011T110739Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark3 logs/residentd-20261011T110739Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark4 logs/residentd-20261011T110739Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark5 logs/residentd-20261011T110739Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark6 logs/residentd-20261011T110739Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark7 logs/residentd-20261011T110739Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark8 logs/residentd-20261011T110739Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark9 logs/residentd-20261011T110739Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparka logs/residentd-20261011T110739Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkb logs/residentd-20261011T110739Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkc logs/residentd-20261011T110739Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkd logs/residentd-20261011T110739Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparke logs/residentd-20261011T110739Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkf logs/residentd-20261011T110739Z.log
+dmesg: read kernel buffer failed: Operation not permitted

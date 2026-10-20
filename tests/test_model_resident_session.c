@@ -13,9 +13,19 @@ static cudaError_t TestCreateStream(cudaStream_t *stream,unsigned int flags)
 	return(cudaStreamCreateWithFlags(stream,flags));
 }
 
+static cudaError_t TestCreatePriorityStream(cudaStream_t *stream,unsigned int flags,int priority)
+{
+	TestStreamCalls++;
+	if ( TestStreamCalls == TestStreamFailure )
+		return(cudaErrorMemoryAllocation);
+	return(cudaStreamCreateWithPriority(stream,flags,priority));
+}
+
 #define main SparkModelResidentdProgramMain
 #define cudaStreamCreateWithFlags TestCreateStream
+#define cudaStreamCreateWithPriority TestCreatePriorityStream
 #include "../node/model_residentd.c"
+#undef cudaStreamCreateWithPriority
 #undef cudaStreamCreateWithFlags
 #undef main
 
@@ -71,6 +81,7 @@ static void TestInitialize(TestSession *test)
 	runtime->runtime_limits.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	runtime->runtime_limits.descriptor_bytes = SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES;
 	runtime->runtime_limits.max_inflight_submission_count = 1u;
+	runtime->adapter_max_sequence_positions = 4096u;
 	runtime->runtime_limits.max_active_sequence_count = 1u;
 	runtime->runtime_limits.max_input_row_count = 1u;
 	runtime->runtime_limits.resident_sequence_capacity = 1u;
@@ -327,12 +338,48 @@ static void TestCudaStartupFailureNamesStream(void)
 	TestStreamFailure = 0u;
 }
 
+static void TestFailedRouteSettlesRanSlots(void)
+{
+	static const uint32_t kinds[3] = { SPARK_MODEL_SERVING_WORK_KIND_PREFILL, SPARK_MODEL_SERVING_WORK_KIND_PREFILL, SPARK_MODEL_SERVING_WORK_KIND_RELEASE };
+	static const uint32_t ran[3] = { 1u, 0u, 1u },bound_before[3] = { 0u, 0u, 1u },bound_after[3] = { 1u, 0u, 0u };
+	TestSession test;
+	uint32_t index;
+	for (index=0u; index<3u; index++)
+	{
+		TestInitialize(&test);
+		test.runtime.routes = &test.route;
+		test.runtime.route_capacity = 1u;
+		test.route.active = 1u;
+		test.route.state = SPARK_MODEL_RESIDENTD_ROUTE_FAILED;
+		test.route.failure_status = SPARK_STATUS_IO_ERROR;
+		test.route.resident_slots_claimed = 1u;
+		test.route.driver_completed = ran[index];
+		test.route.submission.work_kind = kinds[index];
+		test.route.submission.active_sequence_count = 1u;
+		test.route.submission.lanes = &test.lane;
+		test.lane.request_id = 20u;
+		test.lane.request_generation = 1u;
+		test.lane.sequence_id = 30u;
+		test.slot.active_owner = 1u;
+		test.slot.bound = bound_before[index];
+		test.slot.request_id = bound_before[index] != 0u ? 20u : 0u;
+		test.slot.request_generation = bound_before[index];
+		test.slot.sequence_id = bound_before[index] != 0u ? 30u : 0u;
+		assert(SparkModelResidentdCloseFailedRouteLocked(&test.runtime,&test.route,SPARK_STATUS_OK) == SPARK_STATUS_OK);
+		assert(test.route.active == 0u && test.slot.active_owner == 0u && test.route.resident_slots_claimed == 0u);
+		assert(test.slot.bound == bound_after[index]);
+		assert(test.slot.request_id == (bound_after[index] != 0u ? 20u : 0u) && test.slot.sequence_id == (bound_after[index] != 0u ? 30u : 0u));
+		assert(pthread_mutex_destroy(&test.runtime.mutex) == 0);
+	}
+}
+
 int main(void)
 {
 	TestCudaStartupFailureNamesStream();
 	TestCompetingClientPreservesOwner();
 	TestPartialReplyIsNotReplayed();
 	TestResetWaitsForOwnedRoute();
+	TestFailedRouteSettlesRanSlots();
 	TestFatalProgressExits();
 	TestTcpOptions();
 	TestDisconnectDoesNotRaiseSigpipe();

@@ -139,6 +139,6 @@ What this says:
 - **Logits-side determinism** is the hard half, and the bar rises with sampling: temp>0 amplifies near-ties that argmax absorbs.
 - **Batch invariance is not there yet.** Batched decode and prefill are not bitwise equal to B1 (`TECHDEBT.md`, dynamic batching). Until they are, exact replay covers only requests whose batch composition is reproduced, and logprob tolerance covers the rest.
 
-**Provider-contract consequences**: temp=0 traffic is where token comparison is sharpest. Providers must honor and log per-request seeds, and may not force temp>0 or refuse seed logging, since that is the obvious loophole around replay audits. Logprob audits do not depend on temperature and are the primary signal for temp>0 traffic; logprobs themselves do not exist yet (`TECHDEBT.md`, serving API).
+**Provider-contract consequences**: temp=0 traffic is where token comparison is sharpest. Providers must honor and log per-request seeds, and may not force temp>0 or refuse seed logging, since that is the obvious loophole around replay audits. Logprob audits do not depend on temperature and are the primary signal for temp>0 traffic; the API returns them for GLM Full, GLM Flash and K3 only (`TECHDEBT.md`, serving API).
 
 *Pricing data in §2 as of 2026-08 and in §5a as of 2026-09-26; re-verify before external use.*

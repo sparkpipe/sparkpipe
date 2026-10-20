@@ -9,7 +9,7 @@ extern "C" {
 #endif
 
 
-#define SPARK_CONTINUOUS_BATCH_ABI_VERSION 1u
+#define SPARK_CONTINUOUS_BATCH_ABI_VERSION 2u
 
 #define SPARK_CONTINUOUS_BATCH_ADMITTED 1u
 #define SPARK_CONTINUOUS_BATCH_QUEUED 2u
@@ -27,13 +27,9 @@ extern "C" {
 	((uint32_t)sizeof(SparkContinuousBatchRequest))
 #define SPARK_CONTINUOUS_BATCH_DECISION_BYTES \
 	((uint32_t)sizeof(SparkContinuousBatchDecision))
-#define SPARK_CONTINUOUS_BATCH_STEP_REPORT_BYTES \
-	((uint32_t)sizeof(SparkContinuousBatchStepReport))
 
 #define SPARK_CONTINUOUS_BATCH_LANE_FREE 0u
-#define SPARK_CONTINUOUS_BATCH_LANE_PREFILL 1u
-#define SPARK_CONTINUOUS_BATCH_LANE_DECODE 2u
-#define SPARK_CONTINUOUS_BATCH_LANE_FINISHED 3u
+#define SPARK_CONTINUOUS_BATCH_LANE_RESIDENT 1u
 
 typedef struct SparkContinuousBatchConfiguration
 {
@@ -69,32 +65,12 @@ typedef struct SparkContinuousBatchDecision
 }
 SparkContinuousBatchDecision;
 
-typedef struct SparkContinuousBatchStepEvent
-{
-	uint64_t request_id;
-	uint32_t slot;
-	uint32_t token_index;
-}
-SparkContinuousBatchStepEvent;
-
-typedef struct SparkContinuousBatchStepReport
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t event_count;
-	uint32_t rows_spent;
-	uint32_t finished_count;
-}
-SparkContinuousBatchStepReport;
-
 typedef struct SparkContinuousBatchLaneView
 {
 	uint64_t request_id;
 	uint32_t slot;
 	uint32_t phase;
-	uint32_t remaining_rows;
-	uint32_t remaining_budget;
-	uint32_t generated_count;
+	uint32_t prompt_row_count;
 	uint64_t enqueue_boundary;
 	uint8_t retired;
 	uint8_t admitted_via_aging;
@@ -145,12 +121,6 @@ SparkStatus SparkContinuousBatchWithdraw(
 SparkStatus SparkContinuousBatchRetire(
 	SparkContinuousBatch *controller,
 	uint64_t request_id);
-
-SparkStatus SparkContinuousBatchStep(
-	SparkContinuousBatch *controller,
-	SparkContinuousBatchStepEvent *events,
-	uint32_t events_capacity,
-	SparkContinuousBatchStepReport *report_out);
 
 SparkStatus SparkContinuousBatchBoundary(
 	SparkContinuousBatch *controller,

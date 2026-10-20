@@ -1,0 +1,62 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "1a465c4f8ddeb73e9639d2ed2c275bf4dd16b4ea3da5b0da693e7ca394493ea0"
+ },
+ "response": {
+  "id": "chatcmpl-67364fd5085940ddbb02dfe955ef9eb9",
+  "created": 1791721683,
+  "model": "qwen3.8-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "length",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability lies in the calculation of the number of missing segments and the subsequent array access.\n\n1.  **Line 9**: `int missing = segno - last - 1;`\n    *   If the segments arrive out of order (e.g., segment 5 arrives before segment 3), `segno` (5) will be less than `last` (which might be 10 from a previous iteration, or just generally not tracking the max seen so far correctly if `last` is just the previous processed segment).\n    *   More critically, if `segno` is smaller than `last`, `missing` becomes negative.\n    *   Even if `segno > last`, if the gap is large, `missing` is large.\n    *   The primary issue is that `last` is updated to `segno` on Line 13. If inputs are not in ascending order, `last` does not represent the highest segment number seen so far. It represents the *previous* segment number processed.\n    *   Example: Process segment 10. `last` becomes 10. Next, process segment 2. `segno` is 2. `missing` = 2 - 10 - 1 = -9.\n    *   Line 10: `a->segments.grow(a->segments.size() + missing);`\n        *   `a->segments.size()` is likely an unsigned type (`size_t`). Adding a negative integer `missing` to an unsigned size can result in a huge positive number (wrap-around) or a negative number depending on the implementation of `grow`. If `grow` expects a size, passing a wrapped-around huge number could cause memory exhaustion or crash. If it handles negative by doing nothing or asserting, it might be safe from overflow but logically broken.\n        *   However, the more direct bug is often associated with the index access if the logic assumes `segno` is always valid relative to the current size.\n    *   Let's look at Line 11: `a->segments[segno] = ...`\n        *   If `missing` calculation is flawed due to out-of-order arrival, the `grow` call might not allocate enough space for `segno`.\n        *   Specifically, if `segno` is smaller than `last`, `missing` is negative. `size() + missing` might underflow if `size",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 512,
+   "prompt_tokens": 319,
+   "total_tokens": 831,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability lies in the calculation of the number of missing segments and the subsequent array access.\n\n1.  **Line 9**: `int missing = segno - last - 1;`\n    *   If the segments arrive out of order (e.g., segment 5 arrives before segment 3), `segno` (5) will be less than `last` (which might be 10 from a previous iteration, or just generally not tracking the max seen so far correctly if `last` is just the previous processed segment).\n    *   More critically, if `segno` is smaller than `last`, `missing` becomes negative.\n    *   Even if `segno > last`, if the gap is large, `missing` is large.\n    *   The primary issue is that `last` is updated to `segno` on Line 13. If inputs are not in ascending order, `last` does not represent the highest segment number seen so far. It represents the *previous* segment number processed.\n    *   Example: Process segment 10. `last` becomes 10. Next, process segment 2. `segno` is 2. `missing` = 2 - 10 - 1 = -9.\n    *   Line 10: `a->segments.grow(a->segments.size() + missing);`\n        *   `a->segments.size()` is likely an unsigned type (`size_t`). Adding a negative integer `missing` to an unsigned size can result in a huge positive number (wrap-around) or a negative number depending on the implementation of `grow`. If `grow` expects a size, passing a wrapped-around huge number could cause memory exhaustion or crash. If it handles negative by doing nothing or asserting, it might be safe from overflow but logically broken.\n        *   However, the more direct bug is often associated with the index access if the logic assumes `segno` is always valid relative to the current size.\n    *   Let's look at Line 11: `a->segments[segno] = ...`\n        *   If `missing` calculation is flawed due to out-of-order arrival, the `grow` call might not allocate enough space for `segno`.\n        *   Specifically, if `segno` is smaller than `last`, `missing` is negative. `size() + missing` might underflow if `size",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 12938.1,
+  "output_sha256": "43ccc69130d2f4c814d4ef1fec1b6e97afa3d3fbc68acba6ceb88e09bbbb42f5",
+  "prompt_token_count": 319,
+  "generated_token_count": 512,
+  "reasoning_chars": 0,
+  "content_chars": 1962,
+  "status": "length"
+ }
+}

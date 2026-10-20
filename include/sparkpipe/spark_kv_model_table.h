@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_KV_MODEL_TABLE_ABI_VERSION 1u
+#define SPARK_KV_MODEL_TABLE_ABI_VERSION 2u
 #define SPARK_KV_MODEL_TABLE_BYTES ((uint32_t)sizeof(SparkKvModelTable))
 
 typedef struct SparkKvModelTable
@@ -28,9 +28,6 @@ typedef struct SparkKvModelTable
     SparkKvPageCacheSequence *sequences;
     uint32_t *hash_bucket_heads;
     uint32_t *entry_indices_by_logical_page;
-    const char *model_id;
-    const char *model_revision;
-    const char *cache_layout_fingerprint;
 } SparkKvModelTable;
 
 SparkStatus SparkKvModelTableValidate(const SparkKvModelTable *table);

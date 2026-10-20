@@ -1,0 +1,62 @@
+{
+ "id": "compsec-078",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "ling-3.0-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function checks the SM2 C3 hash in a decoded ciphertext. Assume parse_sm2_ciphertext() may return a c3 field of any length.\n\nCode:\n```c\n 1: #define SM3_DIGEST_LEN 32\n 2: \n 3: static bool check_sm2_c3(const uint8_t *msg, size_t msg_len,\n 4:                          const struct sm2_ctext *ct)\n 5: {\n 6:     uint8_t expected[SM3_DIGEST_LEN];\n 7: \n 8:     sm3_c3_hash(expected, ct->x2, ct->x2_len, msg, msg_len, ct->y2, ct->y2_len);\n 9: \n10:     /* Constant-time comparison: returns 0 only if all bytes match. */\n11:     if (ct_memcmp(expected, ct->c3.data, SM3_DIGEST_LEN) != 0)\n12:         return false;\n13: \n14:     return true;\n15: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "d148b16bb444795b26afc76500185edfac1a47d41b5bbc7c1c43425bc3ecd928"
+ },
+ "response": {
+  "id": "chatcmpl-291cc844e6f34d4cb90d057400bdfeb8",
+  "created": 1791704866,
+  "model": "ling-3.0-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "11",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 2,
+   "prompt_tokens": 369,
+   "total_tokens": 371,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "11",
+ "grade": {
+  "index": 3,
+  "id": "compsec-078",
+  "source": "COMPSEC",
+  "domain": "Botan",
+  "expected": "11",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 472.2,
+  "output_sha256": "4fc82b26aecb47d2868c4efbe3581732a3e7cbcc6c2efb32062c08170a05eeb8",
+  "prompt_token_count": 369,
+  "generated_token_count": 2,
+  "reasoning_chars": 0,
+  "content_chars": 2,
+  "status": "stop"
+ }
+}

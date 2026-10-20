@@ -93,36 +93,6 @@ def strip_comments_and_literals(text: str) -> str:
     return "".join(output)
 
 
-def split_ifdef(text: str, macro: str) -> tuple[str, str]:
-    outside: list[str] = []
-    inside: list[str] = []
-    stack: list[tuple[bool, bool]] = []
-    for line in text.split("\n"):
-        directive = line.strip()
-        gated_line = False
-        if re.match(r"#\s*if", directive):
-            if re.fullmatch(rf"#\s*ifdef\s+{macro}", directive):
-                stack.append((True, True))
-                gated_line = True
-            elif re.fullmatch(rf"#\s*ifndef\s+{macro}", directive):
-                stack.append((True, False))
-                gated_line = True
-            elif re.search(rf"\b{macro}\b", directive):
-                raise AssertionError(f"unsupported {macro} directive {directive!r}")
-            else:
-                stack.append((False, False))
-        elif re.match(r"#\s*(else|elif)", directive) and stack and stack[-1][0]:
-            if re.match(r"#\s*elif", directive):
-                raise AssertionError(f"unsupported {macro} directive {directive!r}")
-            stack[-1] = (True, not stack[-1][1])
-            gated_line = True
-        elif re.match(r"#\s*endif", directive) and stack:
-            gated_line = stack.pop()[0]
-        if not gated_line:
-            (inside if any(active for _, active in stack) else outside).append(line)
-    return "\n".join(outside), "\n".join(inside)
-
-
 def validate_balanced_delimiters(path: Path) -> None:
     source = strip_comments_and_literals(path.read_text(encoding="utf-8"))
     opening = {"(": ")", "[": "]", "{": "}"}
@@ -244,55 +214,13 @@ def validate_quantizer_writes() -> None:
 
 
 def validate_model_precision_contracts() -> None:
-    glm = read(
-        "common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh"
-    )
-    glm_unity = read(
-        "common/common_glm_cuda_tree/spark_glm_cuda_unity.cu"
-    )
-    glm_codec = read("inference/kernels/weight_codec.cuh")
-    glm_module = read(
-        "modules/glm52_resident_decode_stage/source/"
-        "spark_glm52_resident_decode_stage_module.c"
-    )
+    codec = read("inference/kernels/weight_codec.cuh")
     k3 = read("inference/llms/kimi_k3/layer.cuh")
-    qwen_bind = read("inference/llms/qwen_3_6/bind.cu")
-    dsv4 = read(
-        "modules/dsv4_resident_decode_stage/source/"
-        "spark_dsv4_resident_decode_stage_module.c"
-    )
-    dsv4_cuda = read(
-        "modules/dsv4_resident_decode_stage/source/"
-        "spark_dsv4_resident_decode_stage_cuda.cu"
-    )
-    dsv4_model = read(
-        "model-families/dsv4/include/sparkpipe/spark_dsv4_model.h"
-    )
-    dsv4_common = read(
+    common = read(
         "model-families/common/include/sparkpipe/spark_lm_kernels.cuh"
     )
 
-    require(
-        glm,
-        "LmGemmWeightOnlyIndirectLaunch<\n        ExpertFormat,",
-        "GLM package-selected expert weights",
-    )
-    require(
-        glm,
-        "typename LmWeightCodec<ExpertCodec>::Format",
-        "GLM compile-time expert codec",
-    )
-    require(
-        glm_unity,
-        '#error "GLM_EXPERT_WEIGHT_CODEC must name the exact package expert codec"',
-        "GLM explicit codec build gate",
-    )
-    require(
-        glm_module,
-        "context->expert_weight_codec != GLM_EXPERT_WEIGHT_CODEC",
-        "GLM package/module codec equality",
-    )
-    for codec in (
+    for name in (
         "INT6",
         "INT7",
         "INT8",
@@ -301,47 +229,20 @@ def validate_model_precision_contracts() -> None:
         "MXFP4_E2M1",
     ):
         require(
-            glm_codec,
-            f"LM_WEIGHT_CODEC(SPARK_WEIGHT_CODEC_{codec},",
-            f"generic {codec} weight codec",
+            codec,
+            f"LM_WEIGHT_CODEC(SPARK_WEIGHT_CODEC_{name},",
+            f"generic {name} weight codec",
         )
-    require(glm, "LmStreamGemmDense<LmBf16Format>(", "GLM BF16 non-expert execution")
-    forbid(glm, "LmQuantiseRowsKernel", "GLM BF16 activation path")
-    forbid(glm, "LmGatherRowsKernel", "GLM materialized expert activation gather")
-    glm_cuda = read(
-        "modules/glm52_resident_decode_stage/source/"
-        "spark_glm52_resident_decode_stage_cuda.cu"
-    )
-    forbid(glm_cuda, "expert_weight_codec", "GLM CUDA runtime codec selection")
 
     require(k3, "LmGemmWeightOnlyLaunch<", "K3 BF16-activation/MXFP4-weight experts")
-    # Pack V2 co-tiles the expert E8M0 scales with the payload
-    # (mxfp4_ws_interleaved_v1), so no far-plane LmScaleTensor can address
-    # them: the descriptor is None and the layer refuses the interleaved
-    # stream until the grouped GEMM learns the 17-row cell.
     require(k3, "b->expert_interleave != 0u",
             "K3 interleaved expert stream fails closed")
     forbid(strip_comments_and_literals(k3), "LmScaleTensorBlockUe8m0(",
            "K3 far-plane scale descriptor over an interleaved stream")
-    require(qwen_bind, "Qwen38_27bLaunchSlice<LmBf16Format>", "Qwen 3.6 BF16 entry point")
 
-    require(dsv4_model, "SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_FP8_E4M3", "DSV4 FP8 linear codec")
-    require(dsv4_model, "SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_MXFP4_E2M1", "DSV4 MXFP4 expert codec")
-    require(dsv4_model, "SPARK_DSV4_MODEL_KV_CACHE_CODEC SPARK_WEIGHT_CODEC_BF16", "DSV4 BF16 KV codec")
-    require(dsv4, "SparkDsv4LaunchFusedExpertW13Act", "DSV4 fused grouped W13 execution")
-    forbid(dsv4, "SparkDsv4LaunchExpertUp(", "DSV4 split routed W1/W3 execution")
-    require(dsv4_cuda, "LmWeightCodec<SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC>::Format", "DSV4 package-selected expert codec")
-    require(dsv4_cuda, "SparkLmHostLaunchSm121FusedExpertW13", "DSV4 native fused routed W13")
-    require(dsv4_cuda, "SparkLmHostLaunchSm121ExpertW2", "DSV4 native packed routed W2")
-    require(dsv4_common, "LmMmaMxf8Mxf4(gate_total", "DSV4 native routed W1 atom")
-    require(dsv4_common, "LmMmaMxf8Mxf4(up_total", "DSV4 native routed W3 atom")
-    require(dsv4_common, "LmMmaMxf8Mxf4(total", "DSV4 native routed W2 atom")
-    forbid(dsv4_cuda, "LmGemmWeightOnlyIndirectLaunch<SparkDsv4ExpertWeightFormat", "DSV4 old indirect up success path")
-    forbid(dsv4_cuda, "LmGemmWeightOnlyLaunch<SparkDsv4ExpertWeightFormat", "DSV4 old BF16-dequant down success path")
-    forbid(dsv4_cuda, "SparkLmExpertTileAllKernel", "DSV4 runtime-format expert kernel")
-    require(dsv4_cuda, "SparkDsv4LaunchQuantSim", "DSV4 checkpoint activation quantization")
-    forbid(dsv4, "inference/llms/deepseek_v4", "DSV4 legacy driver dependency")
-
+    require(common, "LmMmaMxf8Mxf4(gate_total", "native routed MXF8xMXF4 W1 atom")
+    require(common, "LmMmaMxf8Mxf4(up_total", "native routed MXF8xMXF4 W3 atom")
+    require(common, "LmMmaMxf8Mxf4(total", "native routed MXF8xMXF4 W2 atom")
 
 
 def validate_k3_exact_replay() -> None:
@@ -354,7 +255,9 @@ def validate_k3_exact_replay() -> None:
     require(layer, "? b->replay_retention : b->kda_retention", "K3 direct retention capture")
     require(layer, "? b->replay_write_gate : b->kda_write_gate_out", "K3 direct gate capture")
     require(slice_source, "buffers->replay_retention,buffers->replay_write_gate", "K3 exact fold inputs")
-    require(slice_source, "K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * sizeof(float)", "K3 fold shared-state allocation")
+    require(slice_source, "K3_KDA_KEY_DIM * K3_KDA_DELTA_COLUMNS * sizeof(float)", "K3 fold shared state-slice allocation")
+    require(slice_source, "K3_KDA_VALUE_DIM / K3_KDA_DELTA_COLUMNS), K3_LAYER_THREADS, (uint32_t)(K3_KDA_KEY_DIM * K3_KDA_DELTA_COLUMNS",
+            "K3 fold column slices covering the whole state")
     fold_begin = slice_source.index("static int32_t K3FoldAccepted")
     fold_source = strip_comments_and_literals(slice_source[fold_begin:])
     forbid(fold_source, "LmBoundedDecayKernel", "K3 accepted-prefix gate recomputation")
@@ -366,23 +269,14 @@ def validate_grouped_moe_contract() -> None:
     route = read("inference/kernels/route.cuh")
     gemm = read("inference/kernels/gemm.cuh")
     runtime = read("runtime/gemm.cuh")
-    glm = read(
-        "common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh"
-    )
 
     require(route, "packed_rows != expected_packed_rows", "route cardinality validation")
     require(route, "LmLaunchGroupedTileM(rows,top_k,EXPERTS)", "token-priced grouped tile")
-    # The gather double-touch is retired by reading A rows through
-    # route_source_token; the consumer contract and the named mapping are
-    # what the gather4 GEMM wave builds against.
-    require(route, "ROUTE ROW INDIRECTION CONSUMER CONTRACT", "route row indirection contract")
     require(route, "LmRouteSourceRow", "named route indirection mapping")
     require(gemm, "const uint32_t *source_row_map;", "GEMM source-row map")
     require(gemm, "LmPipelineProduceManualA<FormatA", "GEMM indexed/codec activation stage")
     require(runtime, "LmGemmWeightOnlyIndirectLaunch(", "weight-only indirect launcher")
     require(runtime, "if constexpr ( !INDIRECT_A && ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_NONE )", "manual-A GEMM skips unused activation map")
-    require(glm, "gemm.source_row_map = buffers->route_source_token;", "GLM route-to-GEMM binding")
-    forbid(glm, "LmGatherRowsKernel", "GLM gathered activation buffer")
 
 
 def validate_fragment_swizzle_contract() -> None:
@@ -397,143 +291,6 @@ def validate_fragment_swizzle_contract() -> None:
         source = read(f"inference/kernels/formats/{name}.cuh")
         require(source, f"LmSwizzledOffset(row,{byte_offset},", f"{name} fragment byte swizzle")
         forbid(source, "LmSwizzledOffset(row,0u,", f"{name} row-base-only swizzle")
-
-
-def dsv4_sync_inventory(module_text: str):
-    """(enclosing function, DSpark-scoped?) for every stream sync.
-
-    DSpark-scoped means the function's name mentions DSpark or the text
-    from the function's start through the sync references dspark - the
-    opt-in speculation stage's host fences are legal, everything else on
-    a successful wave is not.
-    """
-    lines = module_text.split("\n")
-    function_starts = [
-        index for index, line in enumerate(lines)
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_ \t\*]*\(", line)
-    ]
-    inventory = []
-    for index, line in enumerate(lines):
-        if "cudaStreamSynchronize(" not in line:
-            continue
-        start = max((f for f in function_starts if f <= index), default=0)
-        match = re.match(r"^[A-Za-z0-9_ \t\*]*\(", lines[start])
-        name = match.group(0)[:-1].split()[-1] if match else "<unknown>"
-        scoped = "dspark" in "\n".join(lines[start:index + 1]).lower()
-        inventory.append((name, scoped))
-    return inventory
-
-
-def validate_stream_ordered_dispatch() -> None:
-    module = read(
-        "modules/glm52_resident_decode_stage/source/"
-        "spark_glm52_resident_decode_stage_module.c"
-    )
-    cuda = read(
-        "modules/glm52_resident_decode_stage/source/"
-        "spark_glm52_resident_decode_stage_cuda.cu"
-    )
-    adapter = read(
-        "modules/glm52_resident_decode_stage/source/"
-        "spark_glm52_serving_adapter.c"
-    )
-
-    common_stage = read(
-        "common/common_glm_stage_module/spark_glm_stage_module.h"
-    )
-
-    require(module, "cudaHostAlloc(", "persistent pinned request metadata")
-    # Commit d00cb0e hoisted the completion enqueue into the shared GLM
-    # stage header: the module includes it and binds its callback through
-    # SPARK_GLM_STAGE_COMPLETE_ASYNC, so the stream-ordered
-    # cudaLaunchHostFunc lives in common_stage and the call site stays in
-    # the module under the contract marker.
-    require(
-        module,
-        "common/common_glm_stage_module/spark_glm_stage_module.h",
-        "glm52 adopts the shared GLM stage enqueue",
-    )
-    require(
-        module,
-        "SPARK_GLM_STAGE_COMPLETE_ASYNC SparkGlm52CompleteAsync",
-        "glm52 binds its callback into the shared enqueue",
-    )
-    require(common_stage, "cudaLaunchHostFunc(", "stream-ordered stage completion")
-    require(module, "SparkStageModuleSlotRelease", "callback-owned slot release")
-    require(module, "host_callback_completion_count", "callback completion telemetry")
-    require(
-        adapter,
-        "SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION",
-        "external completion adapter contract",
-    )
-    forbid(cuda, "cudaStreamSynchronize(", "successful CUDA wave synchronization")
-    # Six sanctioned sites: the async TP chain's fail branch (added with
-    # the TP8 continuation chunk chain, commit 42505e2), the submit error
-    # branch, Destroy's quiesce, the lazy expert-lease completion record
-    # fence (278013e, narrowed to a single retirement fence by 1e08ebb),
-    # and the two serving-gated T1 reference-tap fences (f5fe7fa). All are
-    # failure/teardown, lease-retirement, or opt-in tap paths.
-    production_module, score_module = split_ifdef(module, "SPARK_SCORE_DUMP")
-    if production_module.count("cudaStreamSynchronize(") != 6:
-        raise AssertionError(
-            "GLM host module synchronization must be limited to failed-enqueue "
-            "cleanup (including the TP chain fail branch), teardown, the lazy "
-            "expert-lease record fence, and the opt-in T1 taps"
-        )
-    if score_module.count("cudaStreamSynchronize(") != 1 or [
-        name for name, _ in dsv4_sync_inventory(score_module)
-    ] != ["SparkGlm52ScoreWaveLocked"]:
-        raise AssertionError(
-            "the glm52 SCORE_DUMP build may add exactly one stream fence, in "
-            "SparkGlm52ScoreWaveLocked, and production builds none"
-        )
-
-    dsv4_module = read(
-        "modules/dsv4_resident_decode_stage/source/"
-        "spark_dsv4_resident_decode_stage_module.c"
-    )
-    dsv4_adapter = read(
-        "modules/dsv4_resident_decode_stage/source/"
-        "spark_dsv4_serving_adapter.c"
-    )
-    require(dsv4_module, "cudaHostAlloc(", "DSV4 pinned output staging")
-    require(dsv4_module, "cudaLaunchHostFunc(", "DSV4 stream-ordered completion")
-    require(dsv4_module, "SparkStageModuleSlotRelease", "DSV4 callback slot release")
-    require(dsv4_module, "host_callback_completion_count", "DSV4 callback telemetry")
-    require(dsv4_module, "SparkDsv4LaunchBuildAttentionIndices", "DSV4 device index assembly")
-    require(dsv4_module, "SparkDsv4LaunchCacheScatter", "DSV4 batched cache scatter")
-    forbid(dsv4_module, "host_topk_indices", "DSV4 host top-k matrix")
-    require(
-        dsv4_adapter,
-        "SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION",
-        "DSV4 external completion adapter contract",
-    )
-    # The no-speculation B1 path keeps the original four fences: three
-    # initialization gates (freq upload, hash-table validation, head shadow)
-    # and the failed-slot cleanup. The DSpark speculation stage added
-    # opt-in host fences (acc6783 bring-up, gated behind
-    # SPARK_DSV4_DSPARK by 8d1856c) - the module itself documents that
-    # host syncs are legal on the DSpark submission path. Every sync
-    # outside the four gates must therefore be DSpark-scoped.
-    dsv4_init_and_cleanup_sync_functions = {
-        "SparkDsv4ModuleUploadFreqs",
-        "SparkDsv4ModuleValidateHashTables",
-        "SparkDsv4ModuleBuildHeadShadow",
-        "SparkDsv4ModuleSynchronizeFailedSlot",
-    }
-    base_syncs, unscoped_syncs = 0, []
-    for name, dspark_scoped in dsv4_sync_inventory(dsv4_module):
-        if name in dsv4_init_and_cleanup_sync_functions:
-            base_syncs += 1
-        elif not dspark_scoped:
-            unscoped_syncs.append(name)
-    if base_syncs != 4 or unscoped_syncs:
-        raise AssertionError(
-            "DSV4 synchronization must be limited to three initialization "
-            "gates, failed-enqueue cleanup, and the opt-in DSpark "
-            f"speculation path (base fences: {base_syncs}, unscoped extras "
-            f"in {sorted(set(unscoped_syncs))})"
-        )
 
 
 def validate_head_selection_contract() -> None:
@@ -562,7 +319,6 @@ def main() -> int:
     validate_model_precision_contracts()
     validate_grouped_moe_contract()
     validate_fragment_swizzle_contract()
-    validate_stream_ordered_dispatch()
     validate_head_selection_contract()
     print(
         f"PASS CUDA performance source contracts: {len(files)} owned CUDA files"

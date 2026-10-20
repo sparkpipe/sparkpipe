@@ -71,7 +71,7 @@ EXEMPT = {
                                "before the output projection. Three layers in "
                                "four do not reach this path; the fourth is wrong "
                                "until a gate kernel exists",
-    "GLM52_MTP_DRAFT_TOKENS": "speculation is wired in kernels/speculate.cuh but no model drives it yet",
+    "GLM52_MTP_DRAFT_TOKENS": "no GLM Full kernel drives MTP drafting yet",
     "GLM52_MTP_LAYER_INDEX": "same",
     "GLM52_WEIGHT_LAYERS": "used by the host packer, not by kernels",
     "QWEN38_27B_VOCAB": "same",
@@ -81,7 +81,7 @@ EXEMPT = {
     "DSV4_KV_HEADS": "one KV head is what makes the cache a latent; the geometry "
                      "carries it, not the sequence",
     "DSV4_SHARED_EXPERTS": "derived into DSV4_SHARED_INTERMEDIATE, which is used",
-    "DSV4_QUERY_LORA_RANK": "the rank the host puts in LmLowRankWeights",
+    "DSV4_QUERY_LORA_RANK": "the low-rank width is the host's; layer.cuh reads the packed shapes",
     "DSV4_KV_QUANT_BLOCK": "the KV cache is stored BF16; quantising it at block "
                            "64 on the nope dimensions is not implemented, and "
                            "would halve the cache read that dominates decode",
@@ -94,9 +94,9 @@ EXEMPT = {
     "GLM52_LAYERS": "the layer loop is the host's; layer.cuh is one layer",
     "GLM52_ROUTED_LAYERS": "derived, used by the host packer",
     "GLM52_W1_COMPONENTS": "layer.cuh writes the factor of two directly",
-    "GLM52_QK_NOPE_DIM": "raw-path width, set into LmLowRankWeights by the host",
+    "GLM52_QK_NOPE_DIM": "raw-path width, set by the host",
     "GLM52_VALUE_DIM": "same",
-    "GLM52_QUERY_A_DIM": "same - the rank the host puts in LmLowRankWeights",
+    "GLM52_QUERY_A_DIM": "same - the rank is set by the host",
     "GLM52_DSA_INDEX_EPSILON": "the index-path norm is not implemented; the "
                                "scoring kernel takes raw index queries",
     "GLM52_ROUTED_SCALE": "the host pre-scales route_weight; see the comment in "

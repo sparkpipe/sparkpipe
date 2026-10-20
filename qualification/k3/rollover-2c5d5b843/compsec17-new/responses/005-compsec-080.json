@@ -1,0 +1,62 @@
+{
+ "id": "compsec-080",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "kimi-k3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe validator is walking a certificate chain. trust_store.contains_subject(x) returns true if any configured trust anchor has subject DN x.\n\nCode:\n```c\n 1: static ValidationResult validate_path_step(const Certificate& cert,\n 2:                                            const TrustStore& trust_store)\n 3: {\n 4:     /* Optimization: stop once we have reached a known trust anchor subject. */\n 5:     if (trust_store.contains_subject(cert.subject_dn()))\n 6:         return ValidationResult::Valid;\n 7: \n 8:     Certificate issuer = find_issuer_for(cert);\n 9:     if (!cert.verify_signature_with(issuer.public_key()))\n10:         return ValidationResult::BadSignature;\n11: \n12:     return validate_path_step(issuer, trust_store);\n13: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "a30a4659f38ab21bdd6616ba2671cba41a6322aa332e00bc3d4536be0a874b2a"
+ },
+ "response": {
+  "id": "chatcmpl-1e41341835e5433aa6803011a16b43a0",
+  "created": 1791730291,
+  "model": "kimi-k3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Answer: 5,6",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 12,
+   "prompt_tokens": 287,
+   "total_tokens": 299,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Answer: 5,6",
+ "grade": {
+  "index": 5,
+  "id": "compsec-080",
+  "source": "COMPSEC",
+  "domain": "Botan",
+  "expected": "5-6",
+  "extracted": "5,6",
+  "passed": true,
+  "elapsed_ms": 2637.5,
+  "output_sha256": "2bd2a4db6ce9a9662f4097f5b90d1a2ae99ecc274c4c7984d9c38e8e492e46aa",
+  "prompt_token_count": 287,
+  "generated_token_count": 12,
+  "reasoning_chars": 0,
+  "content_chars": 11,
+  "status": "stop"
+ }
+}

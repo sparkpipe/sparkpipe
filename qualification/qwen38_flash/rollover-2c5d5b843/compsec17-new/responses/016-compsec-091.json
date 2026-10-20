@@ -1,0 +1,62 @@
+{
+ "id": "compsec-091",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe SCSI command expresses transfer length in logical blocks. blkbits is the log2 block size.\n\nCode:\n```c\n 1: static int accept_transfer(struct lun *lun, uint32_t blocks, unsigned blkbits)\n 2: {\n 3:     uint32_t bytes = blocks << blkbits;\n 4: \n 5:     if (bytes > lun->backing_size)\n 6:         return -EINVAL;\n 7: \n 8:     lun->data_size_from_cmnd = bytes;\n 9:     return 0;\n10: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "cd879dfa316b255e2647b0cc45da2a40fc9489b725160635d3b82f06cec13300"
+ },
+ "response": {
+  "id": "chatcmpl-072d098463d14a9d9e755a9e58314c53",
+  "created": 1791722043,
+  "model": "qwen3.8-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability is an integer overflow in the calculation of `bytes`.\n\n1.  **Line 3**: `uint32_t bytes = blocks << blkbits;`\n    *   `blocks` is a `uint32_t`.\n    *   `blkbits` is the log2 of the block size (e.g., 9 for 512 bytes, 12 for 4096 bytes).\n    *   The expression `blocks << blkbits` is evaluated using integer promotion rules. If `blkbits` is large enough, or if `blocks` is large enough, the result can exceed the maximum value of a `uint32_t` ($2^{32} - 1$).\n    *   In C, shifting a `uint32_t` left by `blkbits` bits where the result exceeds 32 bits causes the high-order bits to be discarded (truncation), resulting in a wrapped-around small value.\n    *   For example, if `blocks` is $2^{20}$ and `blkbits` is 12 (4KB blocks), the true byte count is $2^{32}$, which wraps to 0 in a `uint32_t`.\n\n2.  **Line 5**: `if (bytes > lun->backing_size)`\n    *   Because `bytes` has wrapped around to a small value (or 0), this check passes even though the actual requested transfer size is huge.\n\n3.  **Line 8**: `lun->data_size_from_cmnd = bytes;`\n    *   The small, wrapped value is stored. Later, if this value is used to allocate buffers or copy data based on the *original* intent (or if the logic assumes `bytes` represents the true size), it can lead to buffer overflows or other memory corruption issues when the actual data transfer occurs (which might be driven by the original `blocks` count or a separate calculation that doesn't suffer from the same truncation, or simply because the system expects to handle `blocks` worth of data but only allocated `bytes` worth).\n\nThe primary bug is introduced at the point where the overflow occurs, which is line 3.\n\nAnswer: 3",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 473,
+   "prompt_tokens": 252,
+   "total_tokens": 725,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability is an integer overflow in the calculation of `bytes`.\n\n1.  **Line 3**: `uint32_t bytes = blocks << blkbits;`\n    *   `blocks` is a `uint32_t`.\n    *   `blkbits` is the log2 of the block size (e.g., 9 for 512 bytes, 12 for 4096 bytes).\n    *   The expression `blocks << blkbits` is evaluated using integer promotion rules. If `blkbits` is large enough, or if `blocks` is large enough, the result can exceed the maximum value of a `uint32_t` ($2^{32} - 1$).\n    *   In C, shifting a `uint32_t` left by `blkbits` bits where the result exceeds 32 bits causes the high-order bits to be discarded (truncation), resulting in a wrapped-around small value.\n    *   For example, if `blocks` is $2^{20}$ and `blkbits` is 12 (4KB blocks), the true byte count is $2^{32}$, which wraps to 0 in a `uint32_t`.\n\n2.  **Line 5**: `if (bytes > lun->backing_size)`\n    *   Because `bytes` has wrapped around to a small value (or 0), this check passes even though the actual requested transfer size is huge.\n\n3.  **Line 8**: `lun->data_size_from_cmnd = bytes;`\n    *   The small, wrapped value is stored. Later, if this value is used to allocate buffers or copy data based on the *original* intent (or if the logic assumes `bytes` represents the true size), it can lead to buffer overflows or other memory corruption issues when the actual data transfer occurs (which might be driven by the original `blocks` count or a separate calculation that doesn't suffer from the same truncation, or simply because the system expects to handle `blocks` worth of data but only allocated `bytes` worth).\n\nThe primary bug is introduced at the point where the overflow occurs, which is line 3.\n\nAnswer: 3",
+ "grade": {
+  "index": 16,
+  "id": "compsec-091",
+  "source": "COMPSEC",
+  "domain": "Linux kernel USB gadget storage",
+  "expected": "3",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 12164.6,
+  "output_sha256": "78c5d9f0b26437d496a660d451b4c1f928535bd0d2a82ce00cee7b6527bf7fdc",
+  "prompt_token_count": 252,
+  "generated_token_count": 473,
+  "reasoning_chars": 0,
+  "content_chars": 1686,
+  "status": "stop"
+ }
+}

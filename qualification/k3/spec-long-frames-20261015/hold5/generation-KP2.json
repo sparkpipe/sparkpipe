@@ -1,0 +1,206 @@
+{
+ "model": "kimi-k3",
+ "reasoning_effort": "minimal",
+ "tasks": [
+  {
+   "name": "editfull_01",
+   "file": "tools/spec_roofline.py",
+   "prompt_tokens": 1689,
+   "output_tokens": 1624,
+   "finish": "stop",
+   "seconds": 14.01,
+   "ttft": 3.88,
+   "decode_tok_s": 160.28
+  },
+  {
+   "name": "editsr_01",
+   "file": "tools/spec_roofline.py",
+   "prompt_tokens": 1725,
+   "output_tokens": 87,
+   "finish": "stop",
+   "seconds": 9.07,
+   "ttft": 3.406,
+   "decode_tok_s": 15.18
+  },
+  {
+   "name": "editfull_02",
+   "file": "tools/chat_memory_live.py",
+   "prompt_tokens": 1284,
+   "output_tokens": 1224,
+   "finish": "stop",
+   "seconds": 14.16,
+   "ttft": 2.611,
+   "decode_tok_s": 105.93
+  },
+  {
+   "name": "editsr_02",
+   "file": "tools/chat_memory_live.py",
+   "prompt_tokens": 1320,
+   "output_tokens": 283,
+   "finish": "stop",
+   "seconds": 13.98,
+   "ttft": 2.786,
+   "decode_tok_s": 25.19
+  },
+  {
+   "name": "editfull_03",
+   "file": "tools/spec_offline/cost.py",
+   "prompt_tokens": 1428,
+   "output_tokens": 1360,
+   "finish": "stop",
+   "seconds": 12.28,
+   "ttft": 2.998,
+   "decode_tok_s": 146.45
+  },
+  {
+   "name": "editsr_03",
+   "file": "tools/spec_offline/cost.py",
+   "prompt_tokens": 1464,
+   "output_tokens": 77,
+   "finish": "stop",
+   "seconds": 9.49,
+   "ttft": 3.158,
+   "decode_tok_s": 11.99
+  },
+  {
+   "name": "editfull_04",
+   "file": "tools/spec_offline/streams.py",
+   "prompt_tokens": 453,
+   "output_tokens": 385,
+   "finish": "stop",
+   "seconds": 5.93,
+   "ttft": 1.575,
+   "decode_tok_s": 88.23
+  },
+  {
+   "name": "editsr_04",
+   "file": "tools/spec_offline/streams.py",
+   "prompt_tokens": 489,
+   "output_tokens": 70,
+   "finish": "stop",
+   "seconds": 5.97,
+   "ttft": 1.516,
+   "decode_tok_s": 15.5
+  },
+  {
+   "name": "editfull_05",
+   "file": "inference/kernels/rows_tile.cuh",
+   "prompt_tokens": 1285,
+   "output_tokens": 1214,
+   "finish": "stop",
+   "seconds": 15.53,
+   "ttft": 2.659,
+   "decode_tok_s": 94.22
+  },
+  {
+   "name": "editsr_05",
+   "file": "inference/kernels/rows_tile.cuh",
+   "prompt_tokens": 1321,
+   "output_tokens": 334,
+   "finish": "stop",
+   "seconds": 15.37,
+   "ttft": 2.883,
+   "decode_tok_s": 26.67
+  },
+  {
+   "name": "editfull_06",
+   "file": "include/sparkpipe/spark_sampling.h",
+   "prompt_tokens": 884,
+   "output_tokens": 810,
+   "finish": "stop",
+   "seconds": 8.86,
+   "ttft": 1.82,
+   "decode_tok_s": 114.94
+  },
+  {
+   "name": "editsr_06",
+   "file": "include/sparkpipe/spark_sampling.h",
+   "prompt_tokens": 920,
+   "output_tokens": 227,
+   "finish": "stop",
+   "seconds": 9.53,
+   "ttft": 0.635,
+   "decode_tok_s": 25.4
+  },
+  {
+   "name": "editfull_07",
+   "file": "tools/spec_recorded_drafts.py",
+   "prompt_tokens": 809,
+   "output_tokens": 743,
+   "finish": "stop",
+   "seconds": 8.36,
+   "ttft": 1.723,
+   "decode_tok_s": 111.87
+  },
+  {
+   "name": "editsr_07",
+   "file": "tools/spec_recorded_drafts.py",
+   "prompt_tokens": 845,
+   "output_tokens": 53,
+   "finish": "stop",
+   "seconds": 4.84,
+   "ttft": 0.571,
+   "decode_tok_s": 12.18
+  },
+  {
+   "name": "editfull_08",
+   "file": "deployment/hub/open_webui_tools/fleet.py",
+   "prompt_tokens": 2263,
+   "output_tokens": 2197,
+   "finish": "stop",
+   "seconds": 19.51,
+   "ttft": 4.501,
+   "decode_tok_s": 146.27
+  },
+  {
+   "name": "editsr_08",
+   "file": "deployment/hub/open_webui_tools/fleet.py",
+   "prompt_tokens": 2299,
+   "output_tokens": 291,
+   "finish": "stop",
+   "seconds": 14.61,
+   "ttft": 5.035,
+   "decode_tok_s": 30.27
+  },
+  {
+   "name": "editfull_09",
+   "file": "inference/kernels/stage_head.cuh",
+   "prompt_tokens": 3269,
+   "output_tokens": 3198,
+   "finish": "stop",
+   "seconds": 25.4,
+   "ttft": 6.078,
+   "decode_tok_s": 165.46
+  },
+  {
+   "name": "editsr_09",
+   "file": "inference/kernels/stage_head.cuh",
+   "prompt_tokens": 3305,
+   "output_tokens": 372,
+   "finish": "stop",
+   "seconds": 18.67,
+   "ttft": 6.92,
+   "decode_tok_s": 31.57
+  },
+  {
+   "name": "editfull_10",
+   "file": "tools/glm5_next_spec_estimate.py",
+   "prompt_tokens": 3214,
+   "output_tokens": 3147,
+   "finish": "stop",
+   "seconds": 25.64,
+   "ttft": 5.973,
+   "decode_tok_s": 159.95
+  },
+  {
+   "name": "editsr_10",
+   "file": "tools/glm5_next_spec_estimate.py",
+   "prompt_tokens": 3250,
+   "output_tokens": 237,
+   "finish": "stop",
+   "seconds": 13.68,
+   "ttft": 6.199,
+   "decode_tok_s": 31.54
+  }
+ ]
+}

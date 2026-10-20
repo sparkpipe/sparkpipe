@@ -28,6 +28,26 @@ static cudaError_t LmLaunchDependentKernel(void (*kernel)(Parameters...), dim3 g
 
 #define LM_LAUNCH_DEPENDENT(kernel, grid, block, shared, stream, ...) \
 	LmLaunchDependentKernel(LM_UNPAREN kernel, dim3(grid), dim3(block), (size_t)(shared), (stream), __VA_ARGS__)
+
+template<typename... Parameters, typename... Arguments>
+static cudaError_t LmLaunchClusterKernel(void (*kernel)(Parameters...), dim3 grid, dim3 block, size_t shared, cudaStream_t stream, uint32_t cluster, uint32_t dependent, Arguments &&... arguments)
+{
+	cudaLaunchConfig_t config;
+	cudaLaunchAttribute attributes[2];
+	attributes[0].id = cudaLaunchAttributeClusterDimension;
+	attributes[0].val.clusterDim.x = cluster;
+	attributes[0].val.clusterDim.y = 1u;
+	attributes[0].val.clusterDim.z = 1u;
+	attributes[1].id = cudaLaunchAttributeProgrammaticStreamSerialization;
+	attributes[1].val.programmaticStreamSerializationAllowed = 1;
+	config.gridDim = grid;
+	config.blockDim = block;
+	config.dynamicSmemBytes = shared;
+	config.stream = stream;
+	config.attrs = attributes;
+	config.numAttrs = dependent != 0u ? 2u : 1u;
+	return(cudaLaunchKernelEx(&config,kernel,std::forward<Arguments>(arguments)...));
+}
 #endif
 
 #define LM_LAUNCH_OK 0

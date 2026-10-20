@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_DRIVER_ABI_VERSION 13u
+#define SPARK_MODEL_DRIVER_ABI_VERSION 20u
 #define SPARK_MODEL_DRIVER_INTERFACE_SYMBOL "SparkModelDriverGetInterface"
 #define SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY 8u
 #define SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY 8u
@@ -43,22 +43,31 @@ extern "C" {
 #define SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL 0x00000002u
 #define SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE 0x00000004u
 #define SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH 0x00000008u
+#define SPARK_MODEL_DRIVER_FRAME_FLAG_VERIFY 0x00000010u
 #define SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE 0x00000001u
 #define SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT 0x00000002u
 #define SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT 0x00000004u
 #define SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET 0x00000008u
+#define SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_HINT 0x00000010u
 #define SPARK_MODEL_DRIVER_ADMISSION_KNOWN_FLAGS \
     (SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE | \
      SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT | \
      SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT | \
-     SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET)
+     SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET | \
+     SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_HINT)
 #define SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX 0x00000001u
 #define SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH 0x00000002u
 #define SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE 0x00000004u
+#define SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY 0x00000008u
+#define SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS 0x00000010u
+#define SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED 0x00000020u
 #define SPARK_MODEL_DRIVER_CACHE_LANE_KNOWN_FLAGS \
     (SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX | \
      SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH | \
-     SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE)
+     SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE | \
+     SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY | \
+     SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS | \
+     SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED)
 #define SPARK_MODEL_DRIVER_SCALAR_COUNT 8u
 #define SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT UINT32_MAX
 
@@ -232,6 +241,55 @@ typedef struct SparkModelDriverAdmissionDecision
     uint64_t driver_dispatch_cookie1;
 } SparkModelDriverAdmissionDecision;
 
+typedef struct SparkModelDriverKvStoreCounters
+{
+    uint32_t attached;
+    uint32_t store_failed_status;
+    uint64_t save_count;
+    uint64_t save_page_count;
+    uint64_t save_ns;
+    uint64_t save_failure_count;
+    uint64_t save_deferred_count;
+    uint64_t restore_count;
+    uint64_t restore_page_count;
+    uint64_t restore_ns;
+    uint64_t restore_miss_count;
+    uint64_t restore_corrupt_count;
+    uint64_t restore_read_error_count;
+    uint64_t restore_failure_count;
+    uint64_t store_used_bytes;
+    uint64_t store_maximum_bytes;
+    uint64_t store_file_count;
+    uint64_t store_foreign_layout_file_count;
+    uint64_t store_checksum_failure_count;
+    uint64_t store_removed_temporary_count;
+    uint64_t store_eviction_count;
+    uint64_t store_write_failure_count;
+    uint64_t store_queue_full_count;
+    uint64_t store_queued_count;
+    uint64_t pool_resident_pages;
+    uint64_t pool_physical_pages;
+    uint64_t pool_logical_pages;
+    uint64_t pool_retained_pages;
+    uint64_t pool_evicted_entries;
+    uint64_t pool_resident_evictions;
+    uint64_t spill_write_bytes;
+    uint64_t spill_read_bytes;
+    uint64_t spill_digest_mismatches;
+    uint64_t spill_read_errors;
+    uint64_t pool_device_bytes;
+    uint64_t pool_generation;
+    uint64_t pool_reattached;
+    uint64_t pool_adopted_pages;
+    uint64_t write_bytes;
+    uint64_t write_bytes_this_hour;
+    uint64_t write_bytes_previous_hour;
+    uint64_t write_alerts;
+    uint64_t write_alerting;
+} SparkModelDriverKvStoreCounters;
+
+#define SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH 0x00000001u
+
 typedef struct SparkModelDriverRuntimeSnapshot
 {
     uint32_t descriptor_bytes;
@@ -251,7 +309,8 @@ typedef struct SparkModelDriverRuntimeSnapshot
     uint64_t host_callback_completion_count;
     uint64_t stale_admission_count;
     uint32_t private_queue_pressure;
-    uint32_t reserved;
+    uint32_t degraded_flags;
+    SparkModelDriverKvStoreCounters kv_store;
 } SparkModelDriverRuntimeSnapshot;
 
 typedef struct SparkModelDriverCreateRequest
@@ -267,6 +326,8 @@ typedef struct SparkModelDriverCreateRequest
     uint32_t kv_physical_page_capacity;
     const char *kv_backing_directory;
     uint64_t kv_backing_maximum_bytes;
+    const char *kv_snapshot_directory;
+    uint64_t kv_snapshot_maximum_bytes;
     void *execution_stream;
     SparkModelDriverCompletionFunction completion_function;
     void *completion_context;

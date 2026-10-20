@@ -1,13 +1,3 @@
-// hy4 lane: GPU hyper-connection cell — hc_pre (rms over the flattened
-// 24576 stream vector + hc_fn gemv + sigmoid gates + weighted reduce),
-// hc_post (distribute branch*post into streams), and hc_head (collapse
-// gates before output_norm), layer 0 / final, validated against an
-// in-harness float64 reference on real rank-00 weights with the real
-// hc_init (replicated embedding row 802). llama.cpp eval-callback golden
-// for hc_mixes-0: [112.76, 76.82, 74.49, 95.14, ?, -282.97, -332.24,
-// -281.27].
-//
-// Usage: hy4_hc_test <rank00.gguf>
 #include <cstdio>
 #include <cstring>
 #include <cstdint>

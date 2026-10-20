@@ -17,6 +17,7 @@ set -u
 declare -A DOCTOR_SINCE DOCTOR_NEXT
 MESH_INTERFACE=rocep1s0f1
 MESH_PAIR_INTERFACE=rocep1s0f0
+MESH_PAIRED=1
 AGENT_STARTED=0
 NOW=0
 date() { if [ "$1" = +%s ]; then echo "$NOW"; else echo 00:00:00; fi; }
@@ -42,10 +43,12 @@ done
 '''
 
 
-def run(times, pair_state="PORT_DOWN", pair_flags="NO-CARRIER,BROADCAST,MULTICAST,UP", pair_carrier="0", switch_state="PORT_ACTIVE", started=0):
+def run(times, pair_state="PORT_DOWN", pair_flags="NO-CARRIER,BROADCAST,MULTICAST,UP", pair_carrier="0", switch_state="PORT_ACTIVE", started=0, paired=True):
     env = {"TIMES": " ".join(str(t) for t in times), "PAIR_STATE": pair_state, "PAIR_FLAGS": pair_flags,
            "PAIR_CARRIER": pair_carrier, "SWITCH_STATE": switch_state, "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
     script = HARNESS.replace("AGENT_STARTED=0", f"AGENT_STARTED={started}")
+    if not paired:
+        script = script.replace("MESH_PAIRED=1\n", "MESH_PAIRED=\n")
     result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     flaps, now = {}, None
@@ -74,6 +77,9 @@ class FleetAgentDoctor(unittest.TestCase):
     def test_no_flap_in_the_first_five_minutes_of_the_agent(self):
         self.assertEqual(run([1000, 1100, 1200], started=1000), {})
         self.assertEqual(sorted(run([1000, 1100, 1300], started=1000)), [1300])
+
+    def test_a_rank_without_a_pair_link_never_flaps_its_pair_port(self):
+        self.assertEqual(run([1000, 1061, 1362, 1700, 2100], paired=False), {})
 
     def test_a_port_that_recovers_resets_the_hold_down(self):
         script_times = [1000, 1030]

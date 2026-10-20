@@ -1,0 +1,68 @@
+#### qmax lock wait 2026-10-11T13:54:02Z
+== 2026-10-11T13:54:02Z qwen3.8-max precheck
+== 2026-10-11T13:54:03Z park on qwen3.8-flash, backup root.prev-20261011T135402Z
+activate qwen3.8-flash: idle qwen3.8-flash 19.6 null
+hub backup ok
+== 2026-10-11T13:54:23Z setup + api-setup
+swap entry vs generated: IDENTICAL
+== 2026-10-11T13:54:27Z new build
+activate qwen3.8-max: idle qwen3.8-max 33.9 null
+identity new: "connected_ranks":16 node variants: 16 3127ec7be006dd2e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_max.tp16.rankN.pack qwen38_max.tp16.rankN.pack.experts;
+fw: adapter 3127ec7be006dd2e residentd cd8edbd8e1b3c9d7 weightd_warm f2b7388c715494c3 transport f40cafa57e6df035; hub build: 615cf6d74841f2c1 981f5a4fb068898a 
+capital: differs agree 8/8 len 8->8 served_max_delta 0.001101 topk_max_delta 1.831387
+arith: differs agree 28/28 len 28->28 served_max_delta 0.008314 topk_max_delta 0.59573
+code: differs agree 32/32 len 32->32 served_max_delta 0.003077 topk_max_delta 1.097352
+TOTAL top-1 agreement 68/68 served_max_delta 0.008314 topk_max_delta 1.831387 large 0
+== 2026-10-11T13:55:13Z smokes
+chat          PASS  | finish='stop' 10.28s content='\n\nThe capital of France is Paris.' reasoning=140 chars
+stream        PASS  | finish='stop' 10.25s content='\n\nThe capital of France is Paris.' reasoning=140 chars
+tool          PASS  | finish='tool_calls' 27.45s content='\n\n' reasoning=267 chars
+tool_result   PASS  | finish='stop' 10.46s content='\n\nThe current weather in Paris is **sunny** with a temperature of **18°C**.' reasoning=88 chars
+reasoning_off FAIL HTTP 400: {"error":{"message":"litellm.BadRequestError: Hosted_vllmException - {\"error\": {\"message\": \"reasoning_effort must be one of ['high', 'low', 'medium']\", \"type\": \"i
+reasoning_on  PASS  | finish='stop' 12.07s content='\n\n391' reasoning=100 chars
+UI-SMOKE qwen3.8-max: 5/6
+compsec new rc=1: RESULT: 5/17 fails: compsec-076 compsec-077 compsec-079 compsec-081 compsec-082 compsec-083 compsec-084 compsec-085 compsec-087 compsec-088 compsec-090 compsec-092 
+identity after: "connected_ranks":16 node variants: 16 3127ec7be006dd2e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_max.tp16.rankN.pack qwen38_max.tp16.rankN.pack.experts;
+rank log error lines: 0
+activate qwen3.8-max: idle qwen3.8-max 33.9 null
+== 2026-10-11T14:49:08Z done qwen3.8-max (idle qwen3.8-max None)
+#### qmax rc=0 2026-10-11T14:49:08Z
+#### k3 lock wait 2026-10-11T14:49:08Z
+== 2026-10-11T14:49:08Z kimi-k3 precheck
+hygiene pre-old:   16 dropkv=0 reclaim=0; min avail 15.0 GiB (+ qwen3.8-max ~90.2 when it stops)
+== 2026-10-11T14:49:08Z park on qwen3.8-max, backup root.prev-20261011T144908Z
+activate qwen3.8-max: idle qwen3.8-max 33.9 null
+hub backup ok
+== 2026-10-11T14:49:14Z setup + api
+api deployment unchanged
+hygiene pre-new:   16 dropkv=0 reclaim=0; min avail 15.0 GiB (+ qwen3.8-max ~90.2 when it stops)
+== 2026-10-11T14:49:17Z new build
+activate kimi-k3: idle kimi-k3 46.5 null
+identity new: "connected_ranks":16 node variants: 16 a87e8aba3533f26e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 k3.stage0.rankN.pack k3.stage0.rankN.pack.experts pack.sha256 184;
+fw: adapter a87e8aba3533f26e residentd cd8edbd8e1b3c9d7 weightd_warm f2b7388c715494c3 transport f40cafa57e6df035; hub build: 615cf6d74841f2c1 68ce5d9354ce687a 
+short prompt 38 cached 0 'Binary search is an efficient algorithm for finding an item '
+p600 prompt 664 cached 0 'The main topic is the **configuration and isolation requirem'
+p3k prompt 3412 cached 0 'Here are three facts stated in the text:\n\n1. **Memory window'
+p9k prompt 8831 cached 0 'The text is a collection of documentation excerpts from a so'
+short: differs agree 48/48 len 48->48 served_max_delta 0.124096 topk_max_delta 0.538992
+p600: differs agree 25/26 len 48->48 served_max_delta 0.159101 topk_max_delta 0.592216 flip@25 margin 0.0864 rank 2
+p3k: differs agree 13/14 len 48->48 served_max_delta 0.097988 topk_max_delta 1.01123 flip@13 margin 0.5989 rank 3
+p9k: differs agree 18/19 len 48->48 served_max_delta 0.104237 topk_max_delta 0.491539 flip@18 margin 0.2621 rank 2
+TOTAL top-1 agreement 104/107 served_max_delta 0.159101 topk_max_delta 1.01123 large 1
+LARGE p3k: flip at 13 with old top-1/top-2 margin 0.5989
+GOLDEN rc=2: flips reported above; quality gate decides (COMPSEC >= 16/17 and smokes 6/6)
+== 2026-10-11T14:50:53Z smokes
+chat          PASS  | finish='stop' 4.37s content='The capital of France is Paris.' reasoning=222 chars
+stream        PASS  | finish='stop' 4.43s content='The capital of France is Paris.' reasoning=222 chars
+tool          PASS  | finish='tool_calls' 8.84s content="I'll check the current weather in Paris for you." reasoning=239 chars
+tool_result   PASS  | finish='stop' 3.56s content='The weather in Paris right now is **sunny** with a temperature of **18°C**. A lovely day! ' reasoning=0 chars
+reasoning_off PASS  | finish='stop' 0.82s content='391' reasoning=0 chars
+reasoning_on  PASS  | finish='stop' 3.38s content='391' reasoning=44 chars
+UI-SMOKE kimi-k3: 6/6
+compsec new rc=0: RESULT: 17/17 fails: 
+QUALITY-GATE-PASSED (COMPSEC 17, UI-SMOKE kimi-k3: 6/6)
+identity after: "connected_ranks":16 node variants: 16 a87e8aba3533f26e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 k3.stage0.rankN.pack k3.stage0.rankN.pack.experts pack.sha256 184;
+rank log error lines: 0
+activate qwen3.8-max: idle qwen3.8-max 41.6 null
+== 2026-10-11T14:52:48Z done kimi-k3 (idle qwen3.8-max None)
+#### k3 rc=0 2026-10-11T14:52:48Z

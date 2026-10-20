@@ -1,21 +1,13 @@
-/* hy4 lane: rank-manifest loader implementation. See hy4_rank_loader.h.
- *
- * The manifest (hy4-tp16-shard-v1) is machine-generated with a fixed
- * schema, so the JSON handling is a targeted scanner, not a general
- * parser: regenerate with tools/hy4_tp16_shard.py if the schema moves.
- * GGUF header parsing mirrors the sharder (alignment 32, v3 layout).
- */
 #include "hy4_rank_loader.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* --- name table from the GGUF header (the offset authority) --------------- */
 
 typedef struct {
     char name[160];
-    long offset;   /* data-section-relative, from the infos */
+    long offset;
     int type;
 } gguf_info;
 
@@ -96,14 +88,12 @@ static int gguf_parse_infos(FILE *f, long *data_offset, gguf_info **out,
         if (gguf_read_u64(f, (uint64_t *)&infos[i].offset)) { fprintf(stderr, "info %llu: off\n", (unsigned long long)i); free(infos); return -1; }
         infos[i].type = (int)gt;
     }
-    /* the data section starts AFTER the tensor-info table */
     *data_offset = ((ftell(f) + alignment - 1) / alignment) * alignment;
     *out = infos;
     *count = (long)tensor_count;
     return 0;
 }
 
-/* --- manifest scanner (fixed schema) --------------------------------------- */
 
 static int mget_long(const char *blob, const char *key, long *out) {
     char pat[64];
@@ -114,7 +104,6 @@ static int mget_long(const char *blob, const char *key, long *out) {
     return 0;
 }
 
-/* helpers scoped to one manifest object */
 static int jget_string_scoped(const char *obj, const char *obj_end,
                               const char *key, char *out, size_t cap) {
     char pat[64];
@@ -136,7 +125,6 @@ static int jget_string_manifest(const char *blob, const char *key,
     return jget_string_scoped(blob, blob + strlen(blob), key, out, cap);
 }
 
-/* --- loader ---------------------------------------------------------------- */
 
 static char *read_whole(const char *path, long *out_bytes) {
     FILE *f = fopen(path, "rb");
@@ -156,7 +144,7 @@ static char *read_whole(const char *path, long *out_bytes) {
 
 int hy4_rank_open(const char *pack_dir, int tolerate_sha_mismatch,
                   hy4_rank **out) {
-    (void)tolerate_sha_mismatch; /* sidecar check lives in the test harness */
+    (void)tolerate_sha_mismatch;
     hy4_rank *rank = calloc(1, sizeof(*rank));
     snprintf(rank->path, sizeof(rank->path), "%s", pack_dir);
 
@@ -182,7 +170,6 @@ int hy4_rank_open(const char *pack_dir, int tolerate_sha_mismatch,
         fclose(rank->file); free(manifest); free(rank); return 4;
     }
 
-    /* walk manifest tensor objects and join with infos by name */
     hy4_tensor_view *views = calloc((size_t)info_count, sizeof(hy4_tensor_view));
     const char *p = strstr(manifest, "\"tensors\":");
     if (!p) { free(infos); free(views); free(manifest); fclose(rank->file); free(rank); return 5; }
@@ -220,16 +207,13 @@ int hy4_rank_open(const char *pack_dir, int tolerate_sha_mismatch,
                 const char *brace = strchr(sat, '{');
                 if (brace && brace < obj_end) {
                     long dim = 0, start = 0;
-                    /* encode split-on-dim as dim+1 so split0 (dim 0) never
-                     * collides with the replicate marker 0 */
                     if (!mget_long(brace, "dim", &dim)) tv->slice_kind = (int)dim + 1;
                     if (!mget_long(brace, "start", &start)) tv->slice_start = start;
                 } else {
-                    tv->slice_kind = 0; /* string "replicate" */
+                    tv->slice_kind = 0;
                 }
             }
         }
-        /* join: linear scan over infos (2,134 x 2,134 worst case, one-time) */
         for (long i = 0; i < info_count; ++i) {
             if (strcmp(infos[i].name, tv->name) == 0) {
                 tv->type = infos[i].type;

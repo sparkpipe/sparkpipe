@@ -1,18 +1,3 @@
-/* hy4 lane: DSA lightning-indexer forward (CPU) on real rank bytes.
- *
- * Per vendor hyv4_reference.cpp (build_indexer_top_k):
- *   qr  = rms_norm(wq_a . cur, q_a_norm)         [q_lora_rank]
- *   iq  = indexer_attn_q_b . qr                   [32 heads x 128]
- *         (NEOX rope on last 64 dims of each head)
- *   ik  = LayerNorm(indexer_attn_k . cur, k_norm w/b, eps=rms_eps)
- *         (NEOX rope on last 64 dims)
- *   iw  = indexer_proj . cur                      [32]
- *         scaled by 1/sqrt(128 * 32) before the score product
- *   score[q,k] = sum_h relu(ik[k] . iq[q,h]) * iw[q,h]
- *   top-k (2048) of score over kv positions = the DSA token index
- * Full-indexer layers own the tensors (every 4th; shared layers reuse the
- * last full layer's index). This receipt runs layer 1 (full; full layers are 0,1,5,9,...,77).
- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,7 +38,6 @@ static int dequant_view(const hy4_rank *rank, const hy4_tensor_view *tv,
     return 0;
 }
 
-/* NEOX rope in place on dims [rot/2 | rot/2] of one vector */
 static void rope_neox(float *v, int rot, int pos, float theta) {
     for (int d = 0; d < rot / 2; ++d) {
         float freq = powf(theta, -2.0f * d / rot);
@@ -66,7 +50,7 @@ static void rope_neox(float *v, int rot, int pos, float theta) {
 }
 
 static void matvec(const float *w, const float *x, float *y, long rows,
-                   long cols) { /* w row-major [rows][cols] */
+                   long cols) {
     for (long r = 0; r < rows; ++r) {
         float acc = 0;
         const float *row = w + r * cols;
@@ -80,17 +64,15 @@ int main(int argc, char **argv) {
     hy4_rank *rank = NULL;
     if (hy4_rank_open(argv[1], 0, &rank)) { fprintf(stderr, "open failed\n"); return 1; }
 
-    /* deterministic 4-token input */
     float *cur = malloc((size_t)TOKENS * N_EMBD * 4);
     for (int t = 0; t < TOKENS; ++t)
         for (int i = 0; i < N_EMBD; ++i)
             cur[t * N_EMBD + i] = sinf((float)(i + 17 * t)) * 0.1f;
 
-    /* qr = rms_norm(wq_a . cur) per token */
     float *wq_a = malloc((size_t)Q_LORA * N_EMBD * 4);
     const hy4_tensor_view *tv = hy4_tensor_lookup(rank, "blk.1.attn_q_a.weight");
     if (!tv || dequant_view(rank, tv, wq_a)) { fprintf(stderr, "wq_a\n"); return 1; }
-    { /* q5_K isolation probe */
+    {
         const hy4_tensor_view *tvp = hy4_tensor_lookup(rank, "blk.1.attn_q_a.weight");
         fprintf(stderr, "wq_a: type=%d nbytes=%ld\n", tvp->type, tvp->nbytes);
         uint8_t *raw = malloc((size_t)tvp->nbytes);
@@ -118,7 +100,6 @@ int main(int argc, char **argv) {
 
     { float a = 0; for (int i = 0; i < Q_LORA; ++i) a = fabsf(qr[i]) > a ? fabsf(qr[i]) : a;
       fprintf(stderr, "qr[0] amax=%.6f\n", a); }
-    /* iq = indexer_attn_q_b . qr, rope on last 64 of each head's 128 */
     float *iqb = malloc((size_t)IDX_HEADS * IDX_DIM * Q_LORA * 4);
     tv = hy4_tensor_lookup(rank, "blk.1.indexer.attn_q_b.weight");
     if (!tv || dequant_view(rank, tv, iqb)) { fprintf(stderr, "iqb\n"); return 1; }
@@ -130,7 +111,6 @@ int main(int argc, char **argv) {
             rope_neox(iq + ((size_t)t * IDX_HEADS + h) * IDX_DIM, IDX_ROT, t, 1e7f);
         }
 
-    /* ik = LayerNorm(indexer_attn_k . cur), rope on last 64 */
     float *wkk = malloc((size_t)IDX_DIM * N_EMBD * 4);
     tv = hy4_tensor_lookup(rank, "blk.1.indexer.attn_k.weight");
     if (!tv || dequant_view(rank, tv, wkk)) { fprintf(stderr, "wk\n"); return 1; }
@@ -153,13 +133,11 @@ int main(int argc, char **argv) {
         rope_neox(v, IDX_ROT, t, 1e7f);
     }
 
-    /* iw = indexer_proj . cur, scaled 1/sqrt(128*32) */
     const hy4_tensor_view *tvp = hy4_tensor_lookup(rank, "blk.1.indexer.proj.weight");
     float *iwp = malloc((size_t)tvp->nbytes);
     if (dequant_view(rank, tvp, iwp)) return 1;
     float wscale = 1.0f / sqrtf((float)(IDX_DIM * IDX_HEADS));
 
-    /* score[t_q][t_k] = sum_h relu(ik[t_k] . iq[t_q,h]) * iw[t_q,h] */
     float *iw = malloc((size_t)TOKENS * IDX_HEADS * 4);
     for (int t = 0; t < TOKENS; ++t)
         matvec(iwp, cur + t * N_EMBD, iw + t * IDX_HEADS, IDX_HEADS, N_EMBD);
@@ -185,10 +163,9 @@ int main(int argc, char **argv) {
             s *= wscale;
             printf("  q=%d k=%d score=%.6f\n", tq, tk, s);
         }
-        /* top-k indices for this query */
         int idx[TOP_K];
         float sc[TOKENS];
-        for (int tk = 0; tk < TOKENS; ++tk) sc[tk] = 0; /* recompute compactly */
+        for (int tk = 0; tk < TOKENS; ++tk) sc[tk] = 0;
         (void)sc; (void)idx;
     }
     printf("INDEXER FORWARD DONE\n");

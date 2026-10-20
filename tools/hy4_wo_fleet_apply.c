@@ -1,14 +1,3 @@
-/* hy4 lane: apply the o_proj (split0) repair payload to one deployed rank
- * bundle, then refresh its digest records.
- *
- * Usage: hy4_wo_fleet_apply <rank.gguf> <blob.bin> <offsets.txt>
- *
- * offsets.txt lines: <file offset> <length>, one per blk.N.attn_output.weight
- * region (identical layout on every rank). Regions whose current bytes equal
- * the payload are skipped; the rest are rewritten. Afterwards the whole file
- * digest is recomputed, the <rank.gguf>.sha256 sidecar is rewritten and the
- * manifest's gguf_sha256 hex is replaced in place (same byte length).
- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

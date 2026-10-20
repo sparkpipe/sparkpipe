@@ -1,0 +1,62 @@
+{
+ "id": "compsec-086",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "hy4-preview",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe parser grows a reusable tag buffer before copying the current element name and closing delimiters. Sizes are attacker-influenced through XML input.\n\nCode:\n```c\n 1: static bool ensure_tag_buffer(struct Parser *p, size_t prefix_len, size_t name_len)\n 2: {\n 3:     unsigned int need = (unsigned int)(prefix_len + name_len + 3);\n 4: \n 5:     if (need > p->tag_cap) {\n 6:         char *q = realloc(p->tag_buf, need);\n 7:         if (q == NULL)\n 8:             return false;\n 9:         p->tag_buf = q;\n10:         p->tag_cap = need;\n11:     }\n12: \n13:     memcpy(p->tag_buf, p->prefix, prefix_len);\n14:     memcpy(p->tag_buf + prefix_len, p->name, name_len);\n15:     memcpy(p->tag_buf + prefix_len + name_len, \"/>\\0\", 3);\n16:     return true;\n17: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "03029a512ae4ab73efb64990560f93f69a7ebbbbb2e681ff858be1a8a20602c2"
+ },
+ "response": {
+  "id": "chatcmpl-6b69d70edfc04662bddcb96b8ed9b93f",
+  "created": 1791704655,
+  "model": "hy4-preview",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Looking at this function, I need to trace through the buffer size calculation and allocation logic.\n\n**Line 3:** `unsigned int need = (unsigned int)(prefix_len + name_len + 3);`\n\nThe issue here is the cast to `unsigned int`. The parameters `prefix_len` and `name_len` are `size_t` (typically 64-bit on modern systems), but they're being cast to `unsigned int` (typically 32-bit). \n\nIf `prefix_len + name_len + 3` exceeds `UINT_MAX` (4,294,967,295), the value will wrap around/truncate to a small number. This means:\n\n1. The check on line 5 (`need > p->tag_cap`) would pass with a small `need` value\n2. `realloc` on line 6 would allocate a small buffer\n3. The `memcpy` operations on lines 13-15 would then write far more data than allocated, causing a heap buffer overflow\n\nThis is a classic integer truncation vulnerability. The sizes are attacker-influenced through XML input as stated, so an attacker could provide a very long element name to trigger the overflow.\n\nThe bug is introduced at line 3 where the truncation occurs.\n\nAnswer: 3",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 263,
+   "prompt_tokens": 357,
+   "total_tokens": 620,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Looking at this function, I need to trace through the buffer size calculation and allocation logic.\n\n**Line 3:** `unsigned int need = (unsigned int)(prefix_len + name_len + 3);`\n\nThe issue here is the cast to `unsigned int`. The parameters `prefix_len` and `name_len` are `size_t` (typically 64-bit on modern systems), but they're being cast to `unsigned int` (typically 32-bit). \n\nIf `prefix_len + name_len + 3` exceeds `UINT_MAX` (4,294,967,295), the value will wrap around/truncate to a small number. This means:\n\n1. The check on line 5 (`need > p->tag_cap`) would pass with a small `need` value\n2. `realloc` on line 6 would allocate a small buffer\n3. The `memcpy` operations on lines 13-15 would then write far more data than allocated, causing a heap buffer overflow\n\nThis is a classic integer truncation vulnerability. The sizes are attacker-influenced through XML input as stated, so an attacker could provide a very long element name to trigger the overflow.\n\nThe bug is introduced at line 3 where the truncation occurs.\n\nAnswer: 3",
+ "grade": {
+  "index": 11,
+  "id": "compsec-086",
+  "source": "COMPSEC",
+  "domain": "libexpat",
+  "expected": "3,13-15",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 33081.6,
+  "output_sha256": "706ff1c1ae272e3b9a3d2b5dd1a1af0a77b9c5b639598f67f811606ff635cb5e",
+  "prompt_token_count": 357,
+  "generated_token_count": 263,
+  "reasoning_chars": 0,
+  "content_chars": 1039,
+  "status": "stop"
+ }
+}

@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -894,6 +895,7 @@ static SparkModelBatchEngine *TestModelBatchConnectCapacity(
 	SparkModelBatchEngineConfiguration configuration;
 	SparkModelBatchEngine *engine;
 	char runtime_root[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
+	static char index_path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES + 64u];
 	assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
@@ -908,6 +910,9 @@ static SparkModelBatchEngine *TestModelBatchConnectCapacity(
 	configuration.stop_token_ids[0] = stop_token_id;
 	configuration.deployment = deployment;
 	configuration.runtime_root = runtime_root;
+	(void)snprintf(index_path,sizeof(index_path),"%s/build/pipeline-client-%d.spi",runtime_root,(int)getpid());
+	(void)unlink(index_path);
+	configuration.prefix_index_path = index_path;
 	configuration.event_function = TestModelBatchEvent;
 	configuration.event_context = state;
 	configuration.stage_completion_function = TestModelBatchStageCompletion;
@@ -929,21 +934,24 @@ static SparkModelBatchEngine *TestModelBatchConnect(
 	return(TestModelBatchConnectCapacity(deployment,state,stop_token_count,stop_token_id,max_prefill_rows,3u));
 }
 
-static SparkModelBatchRequestHandle TestModelBatchSubmitPriority(
+static SparkModelBatchRequestHandle TestModelBatchSubmitDeadline(
 	SparkModelBatchEngine *engine,
 	uint64_t request_id,
 	uint64_t sequence_id,
 	const uint32_t *tokens,
 	uint32_t token_count,
 	uint32_t output_budget,
-	uint32_t priority)
+	uint32_t priority,
+	uint64_t deadline_ns)
 {
 	SparkModelBatchSubmitRequest request;
 	SparkModelBatchRequestHandle handle;
 	memset(&request,0,sizeof(request));
 	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
 	request.descriptor_bytes = SPARK_MODEL_BATCH_SUBMIT_REQUEST_BYTES;
+	request.top_p = 1.0f;
 	request.priority = priority;
+	request.deadline_ns = deadline_ns;
 	request.output_token_budget = output_budget;
 	request.request_id = request_id;
 	request.sequence_id = sequence_id;
@@ -953,6 +961,18 @@ static SparkModelBatchRequestHandle TestModelBatchSubmitPriority(
 	assert(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_OK);
 	assert(handle != SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE);
 	return(handle);
+}
+
+static SparkModelBatchRequestHandle TestModelBatchSubmitPriority(
+	SparkModelBatchEngine *engine,
+	uint64_t request_id,
+	uint64_t sequence_id,
+	const uint32_t *tokens,
+	uint32_t token_count,
+	uint32_t output_budget,
+	uint32_t priority)
+{
+	return(TestModelBatchSubmitDeadline(engine,request_id,sequence_id,tokens,token_count,output_budget,priority,0u));
 }
 
 static SparkModelBatchRequestHandle TestModelBatchSubmit(
@@ -1182,6 +1202,36 @@ static void TestModelBatchEnginePriority(
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
 }
 
+static void TestModelBatchEngineDeadlineOrder(
+	const SparkModelResidentDeployment *deployment)
+{
+	SparkModelBatchRequestHandle urgent,relaxed;
+	SparkModelBatchEngine *engine;
+	TestModelBatchState state;
+	struct timespec now;
+	uint64_t now_ns;
+	uint32_t index,prompt[1] = {43u};
+	assert(clock_gettime(CLOCK_MONOTONIC,&now) == 0);
+	now_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
+	memset(&state,0,sizeof(state));
+	engine = TestModelBatchConnectCapacity(deployment,&state,0u,0u,32u,18u);
+	relaxed = TestModelBatchSubmitDeadline(engine,1401u,2401u,prompt,1u,1u,10u,now_ns + UINT64_C(600000000000));
+	for (index=0u; index<15u; index++)
+		(void)TestModelBatchSubmitPriority(engine,1402u + index,2402u + index,prompt,1u,1u,10u);
+	urgent = TestModelBatchSubmitDeadline(engine,1499u,2499u,prompt,1u,1u,10u,now_ns + UINT64_C(60000000000));
+	(void)TestModelBatchSubmitPriority(engine,1498u,2498u,prompt,1u,1u,10u);
+	assert(SparkModelBatchEngineProgress(engine,1u) == SPARK_STATUS_OK);
+	assert(SparkModelBatchEngineCancel(engine,urgent) == SPARK_STATUS_PENDING);
+	assert(SparkModelBatchEngineCancel(engine,relaxed) == SPARK_STATUS_PENDING);
+	assert(SparkModelBatchEngineCloseAdmission(engine) == SPARK_STATUS_OK);
+	TestModelBatchWaitIdle(engine,16u);
+	assert(state.accepted_count == 18u);
+	assert(state.first_prefill_lane_count == 16u);
+	assert(state.cancelled_count == 2u && state.completed_count == 16u);
+	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
+	printf("test_model_pipeline_client: within one priority the earliest deadlines dispatch first (both deadline requests ride the first 16-lane wave ahead of a request submitted before the urgent one)\n");
+}
+
 static void TestModelBatchEngineAggregatePrefill(
 	const SparkModelResidentDeployment *deployment)
 {
@@ -1366,8 +1416,8 @@ static void TestModelBatchEngineContinuous(
 			nanosleep(&span,0);
 		}
 	}
-	assert(state.first_prefill_row_count == 12u);
-	assert(state.first_prefill_lane_count == 3u);
+	assert(state.first_prefill_row_count == 30u);
+	assert(state.first_prefill_lane_count == 2u);
 	TestModelBatchWaitIdle(engine,3u);
 	assert(state.accepted_count == 3u);
 	assert(state.token_count == 3u);
@@ -1379,11 +1429,11 @@ static void TestModelBatchEngineContinuous(
 		{
 			if ( state.submission_work_kinds[index] != SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
 				continue;
-			assert(state.submission_row_counts[index] == 12u ||
-				state.submission_row_counts[index] == 9u);
+			assert(state.submission_row_counts[index] == 30u ||
+				state.submission_row_counts[index] == 15u);
 			prefill_submissions++;
 		}
-		assert(prefill_submissions == 4u);
+		assert(prefill_submissions == 2u);
 	}
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
 	memset(&state,0,sizeof(state));
@@ -1686,6 +1736,96 @@ static void TestModelPipelineFailedCommitRecovers(const SparkModelResidentDeploy
 	memset(state,0,sizeof(*state));
 }
 
+static void TestModelPipelineFailedAbortResetsSession(const SparkModelResidentDeployment *deployment,TestModelPipelineState *state)
+{
+	SparkModelPipelineClient *pipeline;
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[2];
+	uint32_t tokens[4],row_lanes[4];
+	uint64_t positions[4],sequences[4];
+	uint32_t attempt;
+	uint8_t failure;
+	SparkStatus status;
+	failure = 1u;
+	memset(state,0,sizeof(*state));
+	pipeline = TestModelPipelineConnect(deployment,state);
+	state->pipeline = pipeline;
+	TestModelPipelineBuildPrefill(&submission,lanes,tokens,row_lanes,positions,sequences,651u);
+	submission.model_extension_kind = 89u;
+	submission.model_extension_bytes = sizeof(failure);
+	submission.model_extension = &failure;
+	assert(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK);
+	assert(TestModelPipelineWaitForFailure(pipeline) != SPARK_STATUS_OK);
+	SparkModelPipelineClientDestroy(pipeline);
+	status = SPARK_STATUS_IO_ERROR;
+	for (attempt=0u; attempt<50u && status != SPARK_STATUS_OK; attempt++)
+	{
+		memset(state,0,sizeof(*state));
+		pipeline = TestModelPipelineConnect(deployment,state);
+		state->pipeline = pipeline;
+		TestModelPipelineBuildPrefill(&submission,lanes,tokens,row_lanes,positions,sequences,652u + attempt);
+		status = SparkModelPipelineClientSubmit(pipeline,&submission);
+		if ( status == SPARK_STATUS_OK )
+		{
+			TestModelPipelineWaitForCompletion(pipeline,state,1u);
+			status = (SparkStatus)state->completions[0].status;
+		}
+		SparkModelPipelineClientDestroy(pipeline);
+	}
+	assert(status == SPARK_STATUS_OK);
+	memset(state,0,sizeof(*state));
+	printf("test_model_pipeline_client: a failed cache abort resets the rank's session (client dropped, every lane reset) and the next client is served without restarting residentd\n");
+}
+
+static void TestModelPipelinePeerTransportCancel(const SparkModelResidentDeployment *deployment,const char *deployment_path,char paths[][108],pid_t children[TEST_MODEL_PIPELINE_RANK_COUNT])
+{
+	TestModelPipelineState state;
+	SparkModelPipelineClient *pipeline;
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[2];
+	uint32_t tokens[4],row_lanes[4],rank,attempt;
+	uint64_t positions[4],sequences[4];
+	uint8_t failure = 1u;
+	char directory[] = "/tmp/sparkpipe-peer-transport-XXXXXX";
+	SparkStatus status;
+	assert(mkdtemp(directory) != 0);
+	assert(setenv("SPARK_TEST_TRANSPORT_PEER_DIRECTORY",directory,1) == 0);
+	for (rank=0u; rank<TEST_MODEL_PIPELINE_RANK_COUNT; rank++)
+		children[rank] = TestModelPipelineStartResident(deployment_path,rank);
+	TestModelPipelineWaitForSockets(paths);
+	memset(&state,0,sizeof(state));
+	pipeline = TestModelPipelineConnect(deployment,&state);
+	state.pipeline = pipeline;
+	TestModelPipelineBuildPrefill(&submission,lanes,tokens,row_lanes,positions,sequences,951u);
+	submission.model_extension_kind = 87u;
+	submission.model_extension_bytes = sizeof(failure);
+	submission.model_extension = &failure;
+	assert(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK);
+	(void)TestModelPipelineWaitForFailure(pipeline);
+	assert(state.completion_count == 0u || state.completions[0].status != SPARK_STATUS_OK);
+	SparkModelPipelineClientDestroy(pipeline);
+	status = SPARK_STATUS_IO_ERROR;
+	for (attempt=0u; attempt<50u && status != SPARK_STATUS_OK; attempt++)
+	{
+		memset(&state,0,sizeof(state));
+		pipeline = TestModelPipelineConnect(deployment,&state);
+		state.pipeline = pipeline;
+		TestModelPipelineBuildPrefill(&submission,lanes,tokens,row_lanes,positions,sequences,953u + attempt);
+		status = SparkModelPipelineClientSubmit(pipeline,&submission);
+		if ( status == SPARK_STATUS_OK )
+		{
+			TestModelPipelineWaitForCompletion(pipeline,&state,1u);
+			status = (SparkStatus)state.completions[0].status;
+		}
+		SparkModelPipelineClientDestroy(pipeline);
+	}
+	assert(status == SPARK_STATUS_OK);
+	TestModelPipelineStopResidents(children,paths,0u);
+	assert(unsetenv("SPARK_TEST_TRANSPORT_PEER_DIRECTORY") == 0);
+	(void)rmdir(directory);
+	printf("test_model_pipeline_client: with a transport that needs its peer, a later stage waiting for input from a failed stage is cancelled when the client goes away, so the reconnect resets and serves\n");
+}
+
 static void TestModelPipelineAssertExecutionOrder(const TestModelPipelineState *state,uint64_t first,uint64_t second)
 {
 	const SparkModelPipelineStageCompletion *early,*late;
@@ -1859,6 +1999,7 @@ int main(void)
 	TestModelPipelineFailedPrefillFreesSlot(pipeline,&state);
 	SparkModelPipelineClientDestroy(pipeline);
 	TestModelPipelineFailedCommitRecovers(&deployment,&state);
+	TestModelPipelineFailedAbortResetsSession(&deployment,&state);
 	memset(&state,0,sizeof(state));
 	pipeline = TestModelPipelineConnect(&deployment,&state);
 	state.pipeline = pipeline;
@@ -2002,6 +2143,7 @@ int main(void)
 		assert(kill(children[rank],0) == 0);
 	TestModelBatchEngineRun(&deployment);
 	TestModelBatchEnginePriority(&deployment);
+	TestModelBatchEngineDeadlineOrder(&deployment);
 	TestModelBatchEngineAggregatePrefill(&deployment);
 	TestModelBatchEngineResidentQueue(&deployment);
 	TestModelBatchEngineDeepQueue(&deployment);
@@ -2016,6 +2158,7 @@ int main(void)
 	TestModelBatchProcess(deployment_path,3u);
 	TestModelBatchProcessOverCapacity(deployment_path);
 	TestModelPipelineStopResidents(children,paths,0u);
+	TestModelPipelinePeerTransportCancel(&deployment,deployment_path,paths,children);
 	SparkModelResidentDeploymentDestroy(&deployment);
 	unlink(deployment_path);
 	return(0);

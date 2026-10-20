@@ -1,0 +1,12 @@
+{
+  "id": "mimo-v2.6-pro",
+  "kv_label": "mimo26_pro_tp16_stage",
+  "node_memory_bytes": 46406873088,
+  "node_reclaim": "$HOME/stage-lanes/mimo26_pro/lane1/root/lane.sh reclaim",
+  "node_start": "$HOME/stage-lanes/mimo26_pro/lane1/root/lane.sh start {run_id}",
+  "node_ready": "$HOME/stage-lanes/mimo26_pro/lane1/root/lane.sh ready {run_id}",
+  "node_stop": "$HOME/stage-lanes/mimo26_pro/lane1/root/lane.sh stop",
+  "api_start": "systemctl --user reset-failed kv-mimo26-pro-api 2>/dev/null; systemctl --user is-active -q kv-mimo26-pro-api || systemd-run --user --unit=kv-mimo26-pro-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/mimo26_pro-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/mimo26_pro-kv-api/runtime --port 8474 >> api.log 2>&1' >/dev/null",
+  "api_stop": "systemctl --user stop kv-mimo26-pro-api 2>/dev/null; systemctl --user reset-failed kv-mimo26-pro-api 2>/dev/null; true",
+  "health": "http://127.0.0.1:8474/health"
+}

@@ -1,0 +1,62 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "mimo-v2.6-pro",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "8d52f9b601dc9be69cb4d45f50eb93048bc16f6cae21c5caf1eccb6d4d77f401"
+ },
+ "response": {
+  "id": "chatcmpl-db86f2b5226f453db846e38b365ae702",
+  "created": 1791868705,
+  "model": "mimo-v2.6-pro",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function assumes segments arrive in ascending order (`last = segno` and `missing = segno - last - 1`), but the problem states inputs are not guaranteed to arrive in ascending segment order.\n\nIf segments arrive out of order (e.g., segno=5 first, then segno=2), then:\n- First iteration: last=-1, segno=5, missing=5, grow to size 5, then `a->segments[5] = ...` \u2014 this is an out-of-bounds write since we grew to size 5 (indices 0-4) but write to index 5.\n- Also `last = segno` sets last=5, then next segno=2 gives missing = 2-5-1 = -4, which as size_t becomes huge, causing massive allocation or wraparound.\n\nThe primary bug is the out-of-bounds write at line 11 due to growing by `missing` (which equals `segno - last - 1`) but then indexing at `segno` instead of `last + 1 + missing` or similar. The grow size is `segno - last - 1` but the write index is `segno`, which is `last + 1 + missing` \u2014 off by `last + 1` positions. Actually, grow(size + missing) where missing = segno - last - 1, so new size = old_size + segno - last - 1. If old_size == last + 1 (contiguous from 0), new size = segno, and writing to index segno is out of bounds (valid indices 0..segno-1).\n\nThe bug is introduced at line 10 (incorrect grow calculation) combined with line 11 (write at segno). The smallest set is 10,11.\n\nAnswer: 10,11",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 394,
+   "prompt_tokens": 300,
+   "total_tokens": 694,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function assumes segments arrive in ascending order (`last = segno` and `missing = segno - last - 1`), but the problem states inputs are not guaranteed to arrive in ascending segment order.\n\nIf segments arrive out of order (e.g., segno=5 first, then segno=2), then:\n- First iteration: last=-1, segno=5, missing=5, grow to size 5, then `a->segments[5] = ...` \u2014 this is an out-of-bounds write since we grew to size 5 (indices 0-4) but write to index 5.\n- Also `last = segno` sets last=5, then next segno=2 gives missing = 2-5-1 = -4, which as size_t becomes huge, causing massive allocation or wraparound.\n\nThe primary bug is the out-of-bounds write at line 11 due to growing by `missing` (which equals `segno - last - 1`) but then indexing at `segno` instead of `last + 1 + missing` or similar. The grow size is `segno - last - 1` but the write index is `segno`, which is `last + 1 + missing` \u2014 off by `last + 1` positions. Actually, grow(size + missing) where missing = segno - last - 1, so new size = old_size + segno - last - 1. If old_size == last + 1 (contiguous from 0), new size = segno, and writing to index segno is out of bounds (valid indices 0..segno-1).\n\nThe bug is introduced at line 10 (incorrect grow calculation) combined with line 11 (write at segno). The smallest set is 10,11.\n\nAnswer: 10,11",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "10,11",
+  "passed": true,
+  "elapsed_ms": 24905.7,
+  "output_sha256": "3e0da77eac10fbbc6d2cb4835a39da09517884b74b51b6790486dd4376dabc49",
+  "prompt_token_count": 300,
+  "generated_token_count": 394,
+  "reasoning_chars": 0,
+  "content_chars": 1314,
+  "status": "stop"
+ }
+}

@@ -685,7 +685,7 @@ and spec-on results are reported separately, per content class.
    import json, importlib.util
    from tokenizers import Tokenizer
    spec = importlib.util.spec_from_file_location("b", "tools/spec_verify_bench.py"); b = importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
-   t = Tokenizer.from_file("/home/spec/g53-api-channel/runtime/tokenizer/tokenizer.json")
+   t = Tokenizer.from_file("qualification/ds4_eval/tokenizer/glm-5.3-flash-tokenizer.json")
    json.dump(t.encode(b.GLM_PREFIX + b.PROMPTS["code"][0] + b.GLM_ASSISTANT, add_special_tokens=False).ids, open("spec_p.json", "w"))
    PY
    ```
@@ -695,7 +695,8 @@ and spec-on results are reported separately, per content class.
 Every arm: write `$R/agent.env` (spec-off lines of 10.1 step 4 plus the arm's
 lines), rewrite the MANIFEST as in 10.1 step 4, wait for 16 × `model_residentd
 ready`, then run the arm inside one perf window from the hub build checkout.
-`OUT=~/spec-ab-<sha7>`.
+`OUT=/srv/workspace/sparkpipe/spec-ab-<sha7>` (bulky hub output stays off the
+root filesystem).
 
 | Arm | Extra `agent.env` lines | Run in the window | Pass condition |
 | --- | --- | --- | --- |

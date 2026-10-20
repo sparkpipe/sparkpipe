@@ -1,0 +1,63 @@
+{
+ "id": "compsec-087",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper parses an IPv6 address used in X.509 name constraints. It records where :: compression occurred, then shifts already parsed bytes.\n\nCode:\n```c\n 1: static int parse_ipv6_reduced(const char *src, uint8_t dst[16])\n 2: {\n 3:     uint8_t tmp[16];\n 4:     uint8_t *tp = tmp;\n 5:     uint8_t *colonp = NULL;\n 6: \n 7:     if (src[0] == ':' && src[1] == ':') {\n 8:         colonp = --tp;          // remember compression point at the beginning\n 9:         src += 2;\n10:     }\n11: \n12:     while (*src != '\\0') {\n13:         unsigned v = parse_hextet(&src);\n14:         *tp++ = (uint8_t)(v >> 8);\n15:         *tp++ = (uint8_t)v;\n16:         if (*src == ':') src++;\n17:     }\n18: \n19:     if (colonp != NULL) {\n20:         size_t n = (size_t)(tp - colonp);\n21:         memmove(colonp + (16 - (tp - tmp)), colonp, n);\n22:         memset(colonp, 0, 16 - (tp - tmp));\n23:     }\n24: \n25:     memcpy(dst, tmp, 16);\n26:     return 0;\n27: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "3769529ec0bf14be257147e44ef5f495c95e2308291fb9bb50c88aca37f04399"
+ },
+ "response": {
+  "id": "chatcmpl-348e43c8149c4868abb5899bf9f88b18",
+  "created": 1791730539,
+  "model": "glm-5.3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "**Analysis:**\n\nThe bug is on line 8: `colonp = --tp;`\n\nThis decrements `tp` to `tmp - 1` (before the start of the buffer) and stores that in `colonp`. Two problems result:\n\n1. **Buffer underflow on write:** After line 8, `tp` points one byte *before* `tmp`. The first iteration of the loop (lines 14\u201315) writes `*tp++` at `tmp[-1]`, which is out of bounds.\n\n2. **Corrupted compression logic:** In the standard idiom (as in OpenSSL's `a2i_ipadd`/BIND's `inet_pton`), the compression point should be recorded *without* moving `tp` back before the buffer (typically `colonp = tp` after the writes, or `tp` stays at `tmp`). With `colonp = tmp - 1`, the count `n = tp - colonp` on line 20 is off by one, and the `memmove`/`memset` on lines 21\u201322 operate on a region starting one byte before the array, reading/writing out of bounds and producing a misaligned, incorrect result.\n\nThe intended behavior was likely `colonp = tp;` (or decrementing only conceptually), so the primary bug is introduced at line 8.\n\nAnswer: 8",
+     "role": "assistant",
+     "reasoning_content": "Line 8: colonp = --tp makes tp point before tmp, and colonp = tmp-1. Then tp - colonp counts wrong; also tp starts at tmp-1, writes at tmp... Actually tp = tmp-1, then *tp++ writes at tmp-1 (out of bounds) \u2014 wait, first write happens after parse_hextet, tp is tmp-1, so writes at tmp-1, buffer underflow. Bug at line 8."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 389,
+   "prompt_tokens": 440,
+   "total_tokens": 829,
+   "prompt_tokens_details": {
+    "cached_tokens": 64
+   }
+  }
+ },
+ "graded_text": "<think>Line 8: colonp = --tp makes tp point before tmp, and colonp = tmp-1. Then tp - colonp counts wrong; also tp starts at tmp-1, writes at tmp... Actually tp = tmp-1, then *tp++ writes at tmp-1 (out of bounds) \u2014 wait, first write happens after parse_hextet, tp is tmp-1, so writes at tmp-1, buffer underflow. Bug at line 8.</think>**Analysis:**\n\nThe bug is on line 8: `colonp = --tp;`\n\nThis decrements `tp` to `tmp - 1` (before the start of the buffer) and stores that in `colonp`. Two problems result:\n\n1. **Buffer underflow on write:** After line 8, `tp` points one byte *before* `tmp`. The first iteration of the loop (lines 14\u201315) writes `*tp++` at `tmp[-1]`, which is out of bounds.\n\n2. **Corrupted compression logic:** In the standard idiom (as in OpenSSL's `a2i_ipadd`/BIND's `inet_pton`), the compression point should be recorded *without* moving `tp` back before the buffer (typically `colonp = tp` after the writes, or `tp` stays at `tmp`). With `colonp = tmp - 1`, the count `n = tp - colonp` on line 20 is off by one, and the `memmove`/`memset` on lines 21\u201322 operate on a region starting one byte before the array, reading/writing out of bounds and producing a misaligned, incorrect result.\n\nThe intended behavior was likely `colonp = tp;` (or decrementing only conceptually), so the primary bug is introduced at line 8.\n\nAnswer: 8",
+ "grade": {
+  "index": 12,
+  "id": "compsec-087",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "8,20-22",
+  "extracted": "8",
+  "passed": true,
+  "elapsed_ms": 17413.8,
+  "output_sha256": "7412d8fc4d734f99150f27e05925c317f348c7439521153d19b351ab08e8c199",
+  "prompt_token_count": 440,
+  "generated_token_count": 389,
+  "reasoning_chars": 319,
+  "content_chars": 1013,
+  "status": "stop"
+ }
+}

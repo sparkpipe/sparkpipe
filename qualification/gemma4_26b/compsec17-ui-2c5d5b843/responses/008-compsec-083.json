@@ -1,0 +1,62 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "gemma-4-26b-a4b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "d8ddc910ee6e9e2fd0024ec3fe98c88f65f40a8e68c45cd4bdd1ab584ca63dce"
+ },
+ "response": {
+  "id": "chatcmpl-872739fccbb545cea66e5653e38988ec",
+  "created": 1791716778,
+  "model": "gemma-4-26b-a4b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function processes segments that are not guaranteed to arrive in ascending order. \n\nOn line 9, the variable `missing` is calculated as `segno - last - 1`. If a segment arrives with a number smaller than the previous one (e.g., `segno = 2` and `last = 5`), `missing` will be a negative integer. \n\nOn line 10, `a->segments.grow(a->segments.size() + missing)` is called. Since `missing` is a signed integer, if it is negative, the expression `a->segments.size() + missing` will result in a value smaller than the current size. While `grow` might handle this, the critical vulnerability occurs on line 11: `a->segments[segno] = ...`. If `segno` is less than the current size but the logic intended to expand the vector based on the highest seen index, the logic fails. More importantly, if `segno` is significantly larger than the current size but `missing` is calculated incorrectly due to the non-ascending order, or if `segno` is used as an index without ensuring the vector is actually large enough to accommodate it (because `grow` was called with a potentially smaller value due to the negative `missing`), an out-of-bounds access occurs.\n\nSpecifically, if `segno < last`, `missing` becomes negative. If `a->segments.size() + missing` is less than `segno`, the vector is not grown enough to accommodate `segno`, leading to an out-of-bounds write on line 11.\n\nAnswer: 10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 348,
+   "prompt_tokens": 346,
+   "total_tokens": 694,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function processes segments that are not guaranteed to arrive in ascending order. \n\nOn line 9, the variable `missing` is calculated as `segno - last - 1`. If a segment arrives with a number smaller than the previous one (e.g., `segno = 2` and `last = 5`), `missing` will be a negative integer. \n\nOn line 10, `a->segments.grow(a->segments.size() + missing)` is called. Since `missing` is a signed integer, if it is negative, the expression `a->segments.size() + missing` will result in a value smaller than the current size. While `grow` might handle this, the critical vulnerability occurs on line 11: `a->segments[segno] = ...`. If `segno` is less than the current size but the logic intended to expand the vector based on the highest seen index, the logic fails. More importantly, if `segno` is significantly larger than the current size but `missing` is calculated incorrectly due to the non-ascending order, or if `segno` is used as an index without ensuring the vector is actually large enough to accommodate it (because `grow` was called with a potentially smaller value due to the negative `missing`), an out-of-bounds access occurs.\n\nSpecifically, if `segno < last`, `missing` becomes negative. If `a->segments.size() + missing` is less than `segno`, the vector is not grown enough to accommodate `segno`, leading to an out-of-bounds write on line 11.\n\nAnswer: 10",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 4334.4,
+  "output_sha256": "1d4559eb56a560adb0c136633e0fc2b8af3d8a9faa981c78b5eea2434f78ca97",
+  "prompt_token_count": 346,
+  "generated_token_count": 348,
+  "reasoning_chars": 0,
+  "content_chars": 1375,
+  "status": "stop"
+ }
+}

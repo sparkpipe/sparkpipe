@@ -1,10 +1,3 @@
-// hy4 lane: GPU absorbed-MLA attention cell — layer 0 head 0, causal over
-// the 4-token prompt "The quick brown fox", validated per stage against an
-// in-harness float64 reference and against llama.cpp eval-callback goldens
-// (attn_kqv-0 head 0: t0 [0.0047, 0.0020, -0.0051], t3 [0.0308, 0.0514,
-// -0.0408]).
-//
-// Usage: hy4_attn_test <rank00.gguf>
 #include <cstdio>
 #include <cstring>
 #include <cstdint>

@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <string.h>
+#include <time.h>
 
 #include "runtime/model_continuation_lease.h"
 #include "sparkpipe/spark_model_resident_ipc.h"
@@ -61,8 +62,12 @@ static void TestHello(void)
 	assert(SparkModelResidentIpcValidateHello(&hello,sizeof(hello),1u,1u,&descriptor) == SPARK_STATUS_TARGET_MISMATCH);
 	hello.session_epoch = 0x1234u;
 	assert(SparkModelResidentIpcInitializeHelloAck(&ack,7u,SPARK_STATUS_OK,1u,
-		1u,13u,0x1234u,&descriptor,&limits) == SPARK_STATUS_OK);
+		1u,13u,0x1234u,&descriptor,&limits,0u) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcValidateHelloAck(&ack,sizeof(ack),7u,1u,1u,0x1234u,&descriptor,&limits) == SPARK_STATUS_TARGET_MISMATCH);
+	assert(SparkModelResidentIpcInitializeHelloAck(&ack,7u,SPARK_STATUS_OK,1u,
+		1u,13u,0x1234u,&descriptor,&limits,8192u) == SPARK_STATUS_OK);
 	assert(SparkModelResidentIpcValidateHelloAck(&ack,sizeof(ack),7u,1u,1u,0x1234u,&descriptor,&limits) == SPARK_STATUS_OK);
+	assert(ack.max_sequence_positions == 8192u);
 	assert(ack.header.kind == SPARK_MODEL_RESIDENT_IPC_KIND_HELLO_ACK);
 	assert(ack.client_generation == 13u);
 	assert(ack.max_inflight_submission_count == 2u);
@@ -187,6 +192,26 @@ static void TestSubmissionRoundTrip(void)
 	assert(((const uint8_t *)decoded.model_extension)[2] == 6u);
 	assert(memcmp(&decoded.residency,&submission.residency,
 		sizeof(decoded.residency)) == 0);
+	assert(decoded.deadline_time_ns == 0u && ((SparkModelResidentIpcSubmit *)buffer)->deadline_remaining_ns == 0u);
+	{
+		struct timespec now;
+		uint64_t before,after;
+		assert(clock_gettime(CLOCK_MONOTONIC,&now) == 0);
+		before = (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
+		submission.deadline_time_ns = before + UINT64_C(5000000000);
+		assert(SparkModelResidentIpcEncodeSubmission(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
+		assert(((SparkModelResidentIpcSubmit *)buffer)->deadline_remaining_ns != 0u && ((SparkModelResidentIpcSubmit *)buffer)->deadline_remaining_ns <= UINT64_C(5000000000));
+		((SparkModelResidentIpcSubmit *)buffer)->deadline_remaining_ns = UINT64_C(2000000000);
+		assert(SparkModelResidentIpcDecodeSubmission(buffer,message_bytes,&decoded) == SPARK_STATUS_OK);
+		assert(clock_gettime(CLOCK_MONOTONIC,&now) == 0);
+		after = (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
+		assert(decoded.deadline_time_ns >= before + UINT64_C(2000000000) && decoded.deadline_time_ns <= after + UINT64_C(2000000000));
+		submission.deadline_time_ns = before - 1u;
+		assert(SparkModelResidentIpcEncodeSubmission(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
+		assert(((SparkModelResidentIpcSubmit *)buffer)->deadline_remaining_ns == 1u);
+		submission.deadline_time_ns = 0u;
+		assert(SparkModelResidentIpcEncodeSubmission(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
+	}
 	wire = (SparkModelResidentIpcSubmit *)buffer;
 	wire->header.abi_version--;
 	assert(SparkModelResidentIpcDecodeSubmission(buffer,message_bytes,&decoded) == SPARK_STATUS_ABI_MISMATCH);
@@ -256,6 +281,13 @@ static void TestContinuationLease(void)
 	assert(SparkModelContinuationLeaseDecodePosition(41u,0u,
 		&next_sequence_position) == SPARK_STATUS_INVALID_ARGUMENT);
 	assert(SparkModelContinuationLeaseDecodePosition(UINT64_MAX,2u,
+		&next_sequence_position) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(SparkModelContinuationLeaseVerifyPosition(40u,3u,
+		&next_sequence_position) == SPARK_STATUS_OK);
+	assert(next_sequence_position == 43u);
+	assert(SparkModelContinuationLeaseVerifyPosition(40u,0u,
+		&next_sequence_position) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkModelContinuationLeaseVerifyPosition(UINT64_MAX,1u,
 		&next_sequence_position) == SPARK_STATUS_CAPACITY_EXCEEDED);
 	assert(SparkModelContinuationLeaseIsActive(&leases[0]) == 0u);
 	assert(SparkModelContinuationLeaseEstablish(&leases[0],7u,3u,41u,11u) ==

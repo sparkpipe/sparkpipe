@@ -221,6 +221,118 @@ static void TestFireAllRanksCompletion(uint64_t submission_id, SparkStatus statu
 	}
 }
 
+static void TestLeaseSubmission(SparkModelServingSubmission *submission, SparkModelServingLane *lanes, uint64_t submission_id, uint64_t position, uint64_t step_generation)
+{
+	static uint32_t token_ids[2] = {11u,12u};
+	static uint32_t row_lane_indices[2] = {0u,1u};
+	static uint64_t row_positions[2];
+	static uint64_t row_sequence_ids[2] = {700u,701u};
+	uint32_t lane;
+	memset(lanes,0,2u * sizeof(lanes[0]));
+	for (lane=0u; lane<2u; lane++)
+	{
+		lanes[lane].request_id = 7000u + lane;
+		lanes[lane].request_generation = 1u;
+		lanes[lane].step_generation = step_generation;
+		lanes[lane].sequence_id = 700u + lane;
+		lanes[lane].resident_sequence_slot = 20u + lane;
+		lanes[lane].sequence_position = position;
+		lanes[lane].context_token_count = position + 1u;
+		lanes[lane].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+		row_positions[lane] = position;
+	}
+	memset(submission,0,sizeof(*submission));
+	submission->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	submission->descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
+	submission->work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	submission->tokens_per_sequence = 1u;
+	submission->submission_id = submission_id;
+	submission->request_id = 7000u;
+	submission->sequence_id = 700u;
+	submission->sequence_position = position;
+	submission->control_generation = 1u;
+	submission->transaction_id = submission_id + 1000u;
+	submission->dispatch_generation = 1u;
+	submission->request_generation = 1u;
+	submission->step_generation = step_generation;
+	submission->residency.word0 = submission_id;
+	submission->residency.word1 = submission_id + 100u;
+	submission->residency.generation = submission_id + 200u;
+	submission->residency.owner = 1u;
+	submission->active_sequence_count = 2u;
+	submission->new_token_count = 2u;
+	submission->lane_count = 2u;
+	submission->row_count = 2u;
+	submission->token_count = 2u;
+	submission->lanes = lanes;
+	submission->token_ids = token_ids;
+	submission->row_lane_indices = row_lane_indices;
+	submission->row_positions = row_positions;
+	submission->row_sequence_ids = row_sequence_ids;
+}
+
+static void TestLeaseCompletion(const SparkModelServingSubmission *submission, SparkStatus status)
+{
+	SparkModelServingCompletion completion;
+	uint32_t rank;
+	memset(&completion,0,sizeof(completion));
+	completion.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	completion.descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
+	completion.status = (uint32_t)status;
+	completion.submission_id = submission->submission_id;
+	completion.request_id = submission->request_id;
+	completion.sequence_id = submission->sequence_id;
+	completion.sequence_position = submission->sequence_position;
+	completion.control_generation = submission->control_generation;
+	completion.transaction_id = submission->transaction_id;
+	completion.dispatch_generation = submission->dispatch_generation;
+	completion.request_generation = submission->request_generation;
+	completion.step_generation = submission->step_generation;
+	completion.residency = submission->residency;
+	for (rank=0u; rank<TEST_RANKS; rank++)
+	{
+		if ( rank == TEST_RANKS - 1u && status == SPARK_STATUS_OK )
+		{
+			completion.token_count = 2u;
+			completion.tokens_per_sequence = 1u;
+			completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
+		}
+		MockResidentClientFireCompletion(rank, &completion);
+	}
+}
+
+static void TestFailedStepDropsLeases(SparkModelPipelineClient *pipeline, const TestCallbackState *cb)
+{
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[2];
+	uint32_t prepares,continues,completions;
+	TestLeaseSubmission(&submission,lanes,50u,5u,6000u);
+	prepares = MockResidentClientCalls(0u,MOCK_CALL_PREPARE);
+	CHECK(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK &&
+		MockResidentClientCalls(0u,MOCK_CALL_PREPARE) == prepares + 1u,"leases: the first step prepares");
+	TestFireAllRanksResult(50u,SPARK_STATUS_OK);
+	TestFireAllRanksDecision(50u,SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT);
+	completions = cb->completion_count;
+	TestLeaseCompletion(&submission,SPARK_STATUS_OK);
+	CHECK(cb->completion_count == completions + 1u && cb->last_completion_status == SPARK_STATUS_OK,"leases: the first step completes and leases its lanes");
+	TestLeaseSubmission(&submission,lanes,51u,6u,6001u);
+	continues = MockResidentClientCalls(0u,MOCK_CALL_CONTINUE);
+	CHECK(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK &&
+		MockResidentClientCalls(0u,MOCK_CALL_CONTINUE) == continues + 1u,"leases: the next step continues on the lease");
+	TestFireAllRanksResult(51u,SPARK_STATUS_OK);
+	completions = cb->completion_count;
+	TestLeaseCompletion(&submission,SPARK_STATUS_IO_ERROR);
+	CHECK(cb->completion_count == completions + 1u && cb->last_completion_status == SPARK_STATUS_IO_ERROR,"leases: the continued step fails");
+	TestLeaseSubmission(&submission,lanes,52u,6u,6002u);
+	prepares = MockResidentClientCalls(0u,MOCK_CALL_PREPARE);
+	continues = MockResidentClientCalls(0u,MOCK_CALL_CONTINUE);
+	CHECK(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK,"leases: the retry is accepted");
+	CHECK(MockResidentClientCalls(0u,MOCK_CALL_CONTINUE) == continues && MockResidentClientCalls(0u,MOCK_CALL_PREPARE) == prepares + 1u,
+		"leases: the retry of a failed step prepares instead of continuing on state the failure may have changed");
+	TestFireAllRanksResult(52u,SPARK_STATUS_OK);
+	TestFireAllRanksDecision(52u,SPARK_MODEL_RESIDENT_IPC_DECISION_ABORT);
+}
+
 int main(void)
 {
 	SparkModelResidentDeployment deployment;
@@ -382,6 +494,7 @@ int main(void)
 		SparkModelPipelineClientAllRanksReady(pipeline) != 0u,
 		"complete new session publishes one fingerprint");
 
+	TestFailedStepDropsLeases(pipeline,&cb);
 	SparkModelPipelineClientDestroy(pipeline);
 	MockResidentClientReset();
 

@@ -13,6 +13,11 @@ audit and the production-code findings of the 2026-10-01 test-honesty audit,
 each verified against branch `kv/sequence-shard` at `b41ed891f`; their line
 citations refer to that commit.
 
+On 2026-10-14 every item was checked against the code on `sprint/integration`
+(`059e7eaab`), and each claim that an item was finished or obsolete was
+checked a second time. Finished and obsolete items were removed and partly
+finished ones rewritten to say what is left.
+
 ## Dual-fabric topology contract
 
 - Replace the legacy ring/single-switch/dual-switch topology modes with one
@@ -26,25 +31,26 @@ citations refer to that commit.
 
 ## Mesh collectives
 
-- Every hardware-wait round crosses weightd's CPU relay twice: the local
-  doorbell sweep posts the RDMA writes and the remote sweep completes the
-  waiter. Replace it with GPU-initiated RDMA so kernels post work requests
-  and ring the NIC doorbell themselves; a 16-rank 8 KiB all-reduce should
-  then cost tens of microseconds rather than the measured 167 us p50.
-- Two collective substrates coexist: the residentd-owned hidden transport
-  (`ring/transport/tp_collective.c`, recursive doubling and split rings),
-  which only k3's runner still creates (`SparkTpCollectiveCreate` in
-  `spark_k3_resident_decode_stage_runner.cu`), and the weightd mesh through
-  `ring/transport/tp_device_collective.c`, which every other TP module
-  opens. Move k3 onto the mesh and delete the hidden transport; its own
-  control-plane debt (per-collective host callbacks, credit-return sends,
-  per-direction sessions) goes with it.
+- Every hardware-wait round still crosses weightd's CPU relay once: the GPU
+  publishes its payload and doorbell cell, and weightd's doorbell sweep
+  (`SparkWeightdMeshDoorbellSweep`, `node/weightd_mesh.c`) posts the RDMA
+  writes through its own mlx5dv send queues. Since `af0cc3f8d` the GPU waits
+  on the peer tails itself for direct and RSAG rounds
+  (`SparkTpMeshHardwareArrivalKernel`). GPU-initiated RDMA is not pursued
+  (owner, 2026-10-15): a GB10 SM cannot ring the CX-7 doorbell, and
+  GPU-built work requests with a CPU doorbell measured within about 1 us of
+  the relay per round, under 1% of a token. The remaining per-round costs
+  are the engine's kernels around the wire (publish, arrival, combine).
+  Measured on 16 ranks on 2026-10-08: a 132-element all-gather takes 16.1 us,
+  and a 7,168-element all-reduce takes about 38 us direct or 33.1 us as
+  reduce-scatter plus all-gather.
 - Left out on purpose (2026-10-02): The wait mode picks the algorithm, against
   I36. With `SPARK_TP_WAIT_MODE=hardware`
   (`ring/transport/tp_device_collective.c:1491`) every payload runs chunked
   direct rounds through `SparkTpLaunchMeshHardware`, always called with one
   logical row (`:972-983`), and BF16 sums of at least
-  `SPARK_TP_MESH_RSAG_MIN_ELEMENTS` (49,152) elements at degree 4 or more run
+  `SPARK_TP_MESH_RSAG_MIN_ELEMENTS_WIDE` (18,432) elements at degree 16 or
+  more, or `SPARK_TP_MESH_RSAG_MIN_ELEMENTS` (49,152) at degree 4 to 15, run
   reduce-scatter plus all-gather (`SparkTpDeviceCollectivePhases`,
   `:897-911`). With spin wait the capability read returns 0 (`:882-883`). A
   single-sequence payload that fits one slot then takes the host round
@@ -58,15 +64,21 @@ citations refer to that commit.
 - The reduce-scatter crossover is a constant, not a measured profile per
   degree, operation and datatype. Measure it on the mesh, retain the profile
   as a release artifact, and select from it.
-- The mesh reads only degree, rank, width, rows, the operation timeout, the
-  band, the lane and the host combines from `SparkTpDeviceCollectiveConfig`.
-  The rest of that struct (hosts, ports, identifiers, credits and bindings,
-  rails, algorithm masks and thresholds), the stub calls around it
-  (`ApplyTopology` copies the degree, `ProbeMemoryMode`,
-  `CreditBindingRouteCount`) and the adapters' `tp_collective` stage-config
-  section that feeds them predate the mesh. Remove them together with a
-  fleet stage-config migration. k3's relay and TP4 combine callbacks serve
-  the same pre-mesh algorithms.
+- The mesh reads only the backend kind, degree, rank, width, rows, the
+  operation timeout, the band, the lane, the wait mode and the combine
+  callbacks from `SparkTpDeviceCollectiveConfig`. Several pieces predate the
+  mesh: the rest of that struct (hosts, ports, identifiers, credits and
+  bindings, rails, algorithm masks and thresholds); the stub calls around it
+  (`ApplyTopology` copies the degree and wait mode, `ProbeMemoryMode`,
+  `CreditBindingRouteCount`, `DumpOperations`); the `device_collective`
+  stage-config members that feed them (`StageServingLoadDeviceCollective`,
+  `inference/runner/stage_serving_adapter.c`); and the `tp_collective` parser,
+  which no production code calls
+  (`SparkServingAdapterTemplateLoadTpCollective`,
+  `runtime/serving_adapter_template.c`). Remove them together with a fleet
+  stage-config migration. The collective never reads the relay and TP4 combine
+  callback fields, though the stage runner still sets the TP4 one
+  (`StageRunnerCombineTp4Bf16`, `inference/runner/stage_runner.cu`).
 - Left out on purpose (2026-10-02): the TP all-reduce does not use the
   pairwise links for bandwidth. weightd wires a pair QP to `rank XOR 1` since
   #1404, but the production collective sends every exchange over the one
@@ -87,38 +99,31 @@ citations refer to that commit.
   by a 16-rank fleet ladder and GLM-5.3 Full T1, accuracy gate, B16, B256+ and
   TTFT A/B against the switch-only collective with root-filesystem checksums
   unchanged on every node.
-- Left out on purpose (2026-10-02): communication is never overlapped with
-  compute. Every decode step and prefill wave is one serial chain (compute,
-  all-reduce, compute), so every collective wait is exposed: at B1 a GLM-5.3
-  Full token takes 36.7 ms, of which 12.8 ms (35%) are peer waits over 236
-  exchanges (p50 52 us, p99 262 us) and 25.5 ms kernels against a 19.4 ms
-  memory floor; at B16 the waits are 21% of the step; at large batch the 3 ms
-  bandwidth-bound all-reduces sit on the critical path. Every all-reduce is
-  also a barrier, so one rank's hiccup stalls all sixteen. The design keeps
-  two micro-batches in flight per engine, one computing while the other's
-  collectives run on the NIC. Close it by splitting each wave into two
-  micro-batches whose chains interleave on separate streams, proven by B1, B16
-  and B256 fleet A/B with peer-wait time on the critical path reported per
-  step, tokens identical, and the extra weight reads of the split measured
-  against the hidden wait.
-- Left out on purpose (2026-10-02): weightd has 16 mesh lanes (`4f0e339`).
-  Since `5814bf2` (PR #1135), when `cudaHostRegister` refuses the weightd mesh
-  region with `cudaErrorInvalidValue`,
-  `SparkTpDeviceCollectivePrepareReceiveBf16`
-  (`ring/transport/tp_device_collective.c:2018-2037`) logs
-  `MESH-REGISTER-SKIP` and attaches the unregistered mapping.
-  `SparkTpMeshHardwarePrepare`
-  (`model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh:1290-1302`)
-  passes the host address as the device alias whenever
-  `cudaHostGetDevicePointer` fails. Neither fallback queries a device
-  coherence attribute, so attach succeeds on a device that cannot coherently
-  address pageable host memory (I03). Both rest on block comments asserting
-  that GB10 is coherent, against I48. The commit reproduced the refusal on a
-  shared weightd, and the 2026-09-28 fleet check found neither log line
-  (`docs/TP_STREAM_MEMOP_QUALIFICATION.md`, Production status). The fix: find
-  out why CUDA refuses those pages, require the coherence attributes before
-  either fallback and fail attach without them, move the rationale into docs,
-  and measure the unregistered path against a registered one on a Spark.
+- Left out on purpose (2026-10-02): decode communication is not overlapped
+  with compute. Single-sequence prefill waves of 512 rows or more run as two
+  half-wave lanes on their own streams, whose collectives overlap the other
+  half's compute: `StageRunnerLanesSplit` (`inference/runner/stage_runner.cu`)
+  for GLM Full, GLM Flash and the Qwen 3.8 hybrid, and `K3LaunchSlicePair`
+  (`inference/llms/kimi_k3/slice.cuh`) for K3. K3 also splits some rounds into
+  Begin and Finish. Every other decode step and multi-sequence wave is still
+  one serial chain (compute, all-reduce, compute), so every collective wait is
+  exposed. At B1 on 2026-10-02 a GLM-5.3 Full token took 36.7 ms. Of that,
+  12.8 ms (35%) were peer waits over 236 exchanges (p50 52 us, p99 262 us) and
+  25.5 ms were kernels, against a 19.4 ms memory floor. At B16 the waits were
+  21% of the step, and at large batch the 3 ms bandwidth-bound all-reduces sit
+  on the critical path. Every all-reduce is also a barrier, so one rank's
+  hiccup stalls all sixteen. Close it by splitting each decode wave into two
+  micro-batches whose chains interleave on separate streams. Prove it with B1,
+  B16 and B256 fleet A/B runs that report the peer-wait time on the critical
+  path per step, keep tokens identical, and measure the split's extra weight
+  reads against the hidden wait.
+- Left out on purpose (2026-10-02): the mesh region can attach unregistered
+  (`MESH-REGISTER-SKIP`, `MESH-DEVICE-ALIAS-IDENTITY`). Both paths now require
+  the device to report coherent pageable access through host page tables, and
+  fail attach otherwise (lane `mesh/contracts`). Still open: why CUDA refuses
+  to host-register a shared weightd's RDMA-registered pages, and a Spark
+  measurement of the unregistered path against a registered one
+  ([`docs/TP_STREAM_MEMOP_QUALIFICATION.md`](docs/TP_STREAM_MEMOP_QUALIFICATION.md)).
 - Hardware waits were deployed fleet-wide without distributed fault
   qualification. The real daemon/NIC path has no receipt for rank skew, a
   missing peer, timeout, cancellation, a failed Begin/End or source-slot
@@ -129,148 +134,62 @@ citations refer to that commit.
   Production status). Qualify GPU cancellation, drain and event-driven mesh
   activity on that path too, so that rearming a wait cannot cancel unrelated
   work on the rank.
-- Teardown after a register skip is broken by code reading:
-  `SparkTpDeviceCollectiveReleaseRegion`
-  (`ring/transport/tp_device_collective.c`) still calls `cudaHostUnregister`
-  on a mapping whose registration was skipped, which ends in
-  `MESH-UNREGISTER-FAIL` with a retained cleanup-only owner. Record the skip
-  per mapping.
 - NCCL leftovers after `b31761e`, which deleted the NCCL backend:
-  `SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL`, the `nccl` parsers in
-  `runtime/serving_adapter_template.c` and
-  `modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c`, the
-  NCCL branches in the glm5_next and laguna modules, and
-  `tools/qwen38_tp4_nccl_bench.c`.
-- Left out on purpose (2026-10-02):
-  `runtime/serving_adapter_template.c:433-437` accepts `collective_identifier`
-  0 whenever the adapter's policy sets `allow_zero_collective_identifier`. The
-  glm5_next
-  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c:310`),
-  glm52
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_serving_adapter.c:253`),
-  laguna
-  (`modules/laguna_resident_decode_stage/source/spark_laguna_serving_adapter.c:193`),
-  ling
-  (`modules/ling_resident_decode_stage/source/spark_ling_serving_adapter.c:179`)
-  and qwen38_27b
-  (`modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c:375`)
-  adapters set it at every TP degree. The glm52, glm5_next, laguna and ling
-  modules turn identifier 0 into `tp_collective_disabled` (glm52 module
-  `:331`, glm5_next `:465`, laguna `:199`, ling `:434`) and open no collective
-  (`include/sparkpipe/family/module/spark_module_tp_open_node_context.h:13`,
-  glm5_next `:2234`). Every reduce then returns OK without communicating and
-  with no log line (glm52 `:1002` and `:1885`, glm5_next `:2435` and `:2578`,
-  laguna `:1131` and `:1174`, ling `:1230` and `:1264`), so a TP>1 lane with
-  identifier 0 computes tokens from each rank's partial sums and reports
-  success. glm5_next refuses it only at TP16 through its KV-shard check
-  (`:488-492`), and glm52 only with `SPARK_GLM52_PROJECTION_SPLIT=1`
-  (`:2141-2145`). The lane generators render nonzero identifiers today, while
-  `tools/glm52_prefix_probe.c:102` relies on the waiver to run one TP16 rank
-  with collectives off. The fix: delete the policy field and refuse identifier
-  0 in the template and in every module whenever `tp_degree > 1`, keeping a
-  single-rank collectives-off probe build under `#ifdef DEBUG` (I22). The
-  fleet proof is a GLM Full TP16 load whose stage config carries identifier 0
-  failing on every rank, with the same build passing T1 and the accuracy gate.
-- Left out on purpose (2026-10-02): Six TP modules read
-  `SPARK_<FAMILY>_TP_STANDALONE` in every build and accept 1 at any degree
-  above 1:
-  `modules/gemma4_resident_decode_stage/source/spark_gemma4_resident_decode_stage_module.c:181`,
-  `modules/minimax_resident_decode_stage/source/spark_minimax_resident_decode_stage_module.c:170`,
-  `modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c:245`,
-  `modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c:221`,
-  `modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_resident_decode_stage_module.c:151`
-  and
-  `modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_tp.c:149`.
-  With it set,
-  `include/sparkpipe/family/module/spark_module_tp_open_environment.h:11-15`
-  and `spark_qwen38_27b_tp.c:152-156` log a skip and create no collective.
-  Every reduce then returns OK:
-  `include/sparkpipe/family/module/spark_module_tp_all_reduce_hidden.h:5`,
-  `spark_module_tp_submit_ordered.h:9` and `:50`,
-  `spark_module_admission_cost.h:5`, minimax `:552`, qwen38_max `:615`,
-  muse_glimmer `:391` and `:433`, and `spark_qwen38_27b_tp.c:185` and `:201`.
-  Initialize succeeds, and each rank computes tokens from its own partial sums
-  (I03, I22). `tools/qwen38_27b_lane_build_release.sh:98` and
-  `tools/qwen38max_multidev_build_artifacts.sh:170` validate the TP4
-  qwen38_27b module this way before it publishes, so that release validation
-  has no cross-rank result. The fix: put the standalone path under `#ifdef
-  DEBUG`, and make a release Configure return `INVALID_ARGUMENT` for
-  standalone at degree above 1, with the status checked. Prove it on a Spark:
-  a release module started with the variable set fails initialize, and the
-  published build passes its multi-rank T1 gate.
-- Left out on purpose (2026-10-02):
-  `ring/transport/tp_device_collective.c:879-895` reads the route capabilities
-  the local weightd advertises (`node/weightd_mesh.c:445-452`) on every
-  submission. `SparkTpMeshDirectPhasesPerChunk`
-  (`model-families/common/include/sparkpipe/spark_tp_mesh_round_control.h:97-100`)
-  runs a BF16 sum as reduce-scatter plus all-gather only when
-  `SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES` is set, and the PEER staging
-  routes follow the same bits (`tp_device_collective.c:893-894`). With
-  capabilities 0, for example from a weightd that predates the bits, the same
-  TP16 submission runs one-phase direct rounds and nothing is logged; only the
-  all-to-all refuses a missing capability (`:1603-1609`). The weightd build
-  therefore picks the algorithm (I36), and two ranks whose weightd builds
-  differ run different phase sequences for the same collective (I37). The fix:
-  attach fails with a named error when the local weightd lacks a route
-  capability the regime needs, and every rank agrees on the capability set
-  before the first collective. Prove it on the fleet: with one rank on a
-  weightd without the bits, attach fails on every rank, and the matched fleet
-  passes the hardware collective probe and GLM Full T1.
-- Left out on purpose (2026-10-02): `ring/transport/tp_device_collective.c`
-  exports operations that report success without effect:
-  `SparkTpDeviceCollectiveWaitAllRoutes` ignores its timeout (`:1872-1880`),
-  `RequestFailure` and `RequestOperationFailure` do nothing (`:1882-1897`),
-  `OperationPhase` always reports phase 3 with no failure requested
-  (`:1899-1912`), and `CreditStepCount` always reports 1 (`:300-310`) (I01).
-  None of the five has a caller in the tree, so a future caller would be told
-  a failure was requested or a wait completed when nothing happened. Delete
-  them from `include/sparkpipe/spark_tp_device_collective.h` and the
-  transport, and prove the deletion with `tools/cuda13_sm121a_compile_gate.sh`
-  building every module and tool.
-- Left out on purpose (2026-10-02): weightd does not range-check the
-  client-supplied `source_offset`, `length`, `remote_offset` or `lkey` of
-  `MESH_WRITE` and `MESH_BROADCAST` requests (`runtime/spark_weightd.c`, the
-  `SPARK_WEIGHTD_IPC_KIND_MESH_WRITE` and `MESH_BROADCAST` handlers;
-  `node/weightd_mesh.c` post paths). A client bug or a stale request can
-  overwrite another lane's cells inside a peer's registered mesh region,
-  silently corrupting another engine's collective. Found by the spark8
-  incident investigation (2026-10-02); it cannot reach memory outside the
-  registration. Close it by validating every offset and length against the
-  requesting lane's band and the registered region and refusing the request
-  with a named error, proven by a weightd fault-injection run on two Sparks
-  whose out-of-range requests are refused while in-range rounds stay
-  bit-exact.
-- Left out on purpose (2026-10-02): weightd's QP repair moves an error-state
-  queue pair through RESET to RTS with PSN 0 (`node/weightd_mesh.c`, the
-  repair path around `IBV_QPS_RESET`), which can drop pending sends without
-  completions, and a sticky `transfers[].failed` then blocks `LaneConfigure`;
-  spark9 logged endless WD-STUCK after the 2026-10-01 incident. Close it by
-  draining or failing every outstanding transfer with a completion before
-  repair, resynchronizing PSNs with the peer, and clearing per-transfer
-  failure state on a successful rewire, proven by killing one rank's weightd
-  mid-collective on the fleet and seeing every peer complete or fail its
-  rounds and rewire without a restart.
-- Recorded incident (2026-10-02; owner: treat as a one-off and act only if it
-  recurs): on spark8 at 2026-10-01 16:00:49Z a PCIe completion timeout on CX-7
-  function 0000:01:00.1 was followed within about 85 ms by a stalled SMMU0
-  command queue (`CMD_SYNC timeout`). The kernel kept running, recycled IOVAs
-  while lazy (DMA-FQ) translations were stale, and the NVMe wrote other
-  processes' pages over the root superblock and GDT blocks before a hung-task
-  panic. It was recovered via PXE rescue and e2fsck from the backup
-  superblock. No other node shows AER, SMMU, NVMe or ext4 errors. If it
-  recurs, the prepared responses are a runtime kmsg guard that panics on the
-  first SMMU `CMD_SYNC timeout` or uncorrectable CX-7 AER, `iommu.strict` for
-  the NVMe and CX-7 groups (a boot-path change for the owner), the guarded
-  pair reproduction, and a report to NVIDIA and Canonical (investigation
-  workflow wf_2545220b-a65).
-- Left out on purpose (2026-10-02): no log records which collective path a
-  chain ran (single-band, pipelined, pair-first, host round, tree), and each
-  lane run overwrites `~/glmfull-dev/<lane>/residentd.log` on every rank,
-  which destroyed the incident run's rank logs on 2026-10-02. Close it by
-  logging the selected path and phase count per chain capture and per regime
-  change, and by keeping one rank log per run (named by run id) until the run
-  is archived, proven by a fleet run whose rank logs name the path of every
-  chain and survive a second run on the same lane.
+  `SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL`
+  (`include/sparkpipe/spark_tp_device_collective.h`), the `nccl` parsers in
+  `inference/runner/stage_serving_adapter.c` and
+  `runtime/serving_adapter_template.c`, the `nccl` branch of
+  `tools/dsv41_flash_gen_deployment.py`, `tools/qwen38_tp4_nccl_bench.c`, and
+  the tests that feed them `nccl` configs (`tests/test_serving_tp_config.c`,
+  `tests/test_tp_allreduce_fuzz.c`).
+- Awaiting fleet proof (lane `mesh/contracts`): attach now fails with
+  `MESH-CAPABILITY-MISSING` when the local weightd lacks a route the regimes
+  use, and the routes are fixed at attach, so no later read of the wait cell
+  can change the algorithm. Proof: with one rank on a weightd without the
+  bits, attach fails on every rank; the matched fleet passes the hardware
+  collective probe and GLM Full T1.
+- weightd refuses a `MESH_WRITE` or `MESH_BROADCAST` whose source, destination
+  or sequence word lies outside the registered mesh region, with a named log
+  line (`SparkWeightdMeshRangeAllowed`, `runtime/spark_weightd.c`). For a
+  connection that declared its lane (mesh activity or a lane acquisition), it
+  also refuses ranges outside that lane's two bands; a connection that has
+  declared no lane gets only the region check. Not yet fleet-proven: a weightd
+  fault-injection run on two Sparks whose out-of-range requests are refused
+  while in-range rounds stay bit-exact.
+- weightd's QP repair resynchronizes PSNs with the peer: a repaired queue pair
+  bumps the node's `wire_generation` in its mesh record, the peer re-transitions
+  its own queue pairs to PSN 0 and echoes the generation, and the mesh stays
+  unready until the echo arrives (`WD-QP-REPAIR`, `WD-QP-RESYNC`,
+  `WD-QP-RESYNC-DONE`; record magic MESH0007). Outstanding transfers to the
+  peer are failed with `PEER_RESET` before the rewire, and a lane reset clears
+  them. Not yet fleet-proven: kill one rank's weightd mid-collective and see
+  every peer complete or fail its rounds and rewire without a restart.
+- Recorded incident (2026-10-01 and 2026-10-02): on spark8, a PCIe completion
+  timeout on a CX-7 function was followed by a stalled SMMU0 command queue
+  (`CMD_SYNC timeout`). The NVMe then wrote other processes' pages over the
+  root superblock and group descriptors on 10-01, and over four
+  group-descriptor blocks on 10-02. Both incidents happened during
+  two-collective (two-band) tests, and each was recovered via PXE rescue and
+  e2fsck from the backup superblock. Mitigations in force: the DMA guard
+  resets a node on the first event on all 16 nodes
+  (`tools/devcycle/spark_dma_guard.py`, hub listener
+  `spark-dma-guard-listen.service`), each engine runs one collective in
+  flight, and the Lenovo nodes run IOMMU identity mode. The owner rejected
+  `iommu.strict` (2026-10-02). Still open: the root cause, a report to NVIDIA
+  and Canonical, and the untested case of several fast engines prefilling on
+  one Lenovo node
+  ([`docs/CX7_DMA_INVESTIGATION_2026-10.md`](docs/CX7_DMA_INVESTIGATION_2026-10.md)).
+- Awaiting fleet proof (lane `mesh/contracts`): every collective logs
+  `MESH-PATH` (operation, path, phases, elements, rows, capture) on each
+  regime change and again for each capture (`SparkTpDeviceCollectiveLogPath`,
+  `ring/transport/tp_device_collective.c`). `tools/k3_lane.sh`,
+  `stage_lane.sh` and `fleet_serve.sh` keep one rank log per run
+  through `tools/lane_run_log.sh`. Each run writes `logs/residentd-<run
+  id>.log` and refuses to overwrite it; the helper moves an older launcher's
+  `residentd.log` aside, and `archive` collects and removes the logs.
+  `fleet_node_agent.sh` moves a non-empty `residentd.log` aside with a
+  timestamp before each start. Proof: a fleet run whose rank logs name the
+  path of every chain and survive a second run on the same lane.
 
 ## Steady-state decode hot path
 
@@ -279,98 +198,77 @@ citations refer to that commit.
   candidates until the preceding candidate beats the current GLM 5.3 Flash
   TP16 B1 receipt in [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md)
   (36 tok/s on 2026-09-28).
-- glm5_next: the graph path waits for the whole graph on residentd's thread
-  (`SparkGlm5NextGraphStep` through `SparkStageModuleCudaWaitFor`) before it
-  finishes the chain, and the completion worker then waits on the same stream
-  again. Move the stuck-graph timeout and the error checks into the completion
-  path so residentd keeps serving its socket during the replay.
-- glm5_next: prefill chunks never run as a graph, and a decode wave that
-  arrives behind a chunk waits for the chunk's whole GPU time
-  (`decode_wait_ms` in `G5N-WAVE-TIMING`). Capture prefill graphs per chunk
-  shape, or order decode waves ahead of queued prefill chunks.
-- glm5_next: the chain state machine still synchronizes the stream after
-  every collective round and twice more per routed layer (expert lease, then
-  release). It runs only where a linear chain cannot: experts not pinned,
-  MTP, speculative verify, the T1 trace, `SPARK_GLM5_NEXT_GRAPH_RECORD_OPS`,
-  or a collective without hardware-wait rounds. Working-set graphs (Model
+- The stage runner waits for each wave on residentd's thread.
+  `StageRunnerGraphLaunch` synchronizes the stream after every graph replay
+  (`SparkTpDeviceCollectiveGraphSettle`,
+  `ring/transport/tp_device_collective.c`). `SparkStageRunnerSubmit`
+  (`inference/runner/stage_runner.cu`) then synchronizes again to verify the
+  deferred rounds and copy the step's tokens before it returns to residentd's
+  progress loop (`SparkModelResidentdSubmitAdapter`,
+  `node/model_residentd.c`). Move the round checks and token copies into a
+  completion path so residentd keeps serving its socket during the replay.
+- Prefill waves never run as a graph: the stage runner captures only waves
+  with one row per sequence and at most 16 rows (`StageRunnerGraphEligible`,
+  `inference/runner/stage_runner.cu`). A decode wave queued behind a prefill
+  wave waits for that wave's whole GPU time, because residentd submits one
+  wave at a time and the runner returns only when the wave has finished.
+  Capture prefill graphs per wave shape, or order decode waves ahead of queued
+  prefill waves.
+- When the routed experts are not all resident in one fixed pool, the stage
+  runner synchronizes the stream on every routed layer to copy the routed
+  group offsets to the host before it leases that layer's experts
+  (`StageRunnerExpertWeightsService`, `inference/runner/stage_runner.cu`).
+  Such a step runs neither as a graph nor as two prefill lanes. In spin wait
+  mode every collective round also synchronizes the stream
+  (`SparkTpDeviceCollectiveReadControl`,
+  `ring/transport/tp_device_collective.c`). Working-set graphs (Model
   residency and storage) remove the unpinned case without pinning every
-  expert; move MTP and speculative verify onto the linear walk.
-- glm5_next: between two waves every rank ends and restarts mesh activity
-  (two weightd round trips each way), rank 0 broadcasts a new chain epoch that
-  the other ranks spin on, and two host callbacks run. Resident decode chains
-  pay this once per K decode steps instead of once per step; prefill chunks,
-  publish frames and single-step waves still pay it every time. Keep the
-  activity and the epoch across the waves of a session.
-- glm5_next: a resident decode chain feeds each step's tokens back through the
-  host. Between steps it synchronizes the stream, copies the sampled tokens
-  into the pinned input arrays and advances the positions. On the linear path
-  that wait runs on residentd's thread, which a single-step linear chain never
-  blocks. Feed the next step on the device (copy the head's tokens into the
-  input rows and advance the positions in a kernel) so K steps are one enqueue
-  or one graph.
-- glm5_next: the engine ends a chain at the nearest block end of any lane in
-  the batch, so chains shorten as the batch grows: a mean of about 5.4 steps
-  at 8 lanes against 8 at one lane, by simulation of random lane offsets. Each
-  lane's block end is also still a separate publish frame. Publishing block
-  checkpoints from inside a chain would keep chains at 8 steps and remove
-  those frames.
-- glm5_next: a decode chain holds the rank for all of its steps, so a prefill
-  chunk that arrives mid-chain waits up to 8 decode steps. The engine picks K
-  without looking at queued prefill; shorten chains while prefill waits if
-  time to first token suffers.
+  expert.
+- Between two waves every rank ends and restarts mesh activity, with one
+  weightd mesh-activity round trip each way
+  (`SparkTpDeviceCollectiveEndChain`, `SparkTpDeviceCollectiveChainKey`,
+  `ring/transport/tp_device_collective.c`). Rank 0 also broadcasts a new chain
+  epoch that the other ranks spin on (`StageRunnerChainBegin`,
+  `inference/runner/stage_runner.cu`). Resident decode chains pay this once
+  per chain of K steps; prefill waves and single-step waves still pay it every
+  time. Keep the activity and the epoch across the waves of a session.
+- A resident decode chain feeds each step's tokens to the next step on the
+  device (`StageRunnerChainAdvanceKernel`,
+  `inference/runner/stage_runner.cu`). But after every step the runner still
+  synchronizes the stream to verify the deferred collective rounds and to copy
+  that step's tokens and scores to the host (`StageRunnerStepOutputs`), and
+  each step is a separate graph launch. Move those checks and copies to the
+  end of the chain so K steps are one enqueue or one graph.
+- The batch engine ends a decode chain at the nearest block end of any lane in
+  the batch (`SparkModelBatchBuildDecodeRows`,
+  `runtime/model_batch_engine.c`), so chains shorten as the batch grows. A
+  chain never carries a publish or prefix lane (`StageServingChainSteps`,
+  `inference/runner/stage_serving_adapter.c`), so each lane's block end is a
+  separate publish frame. Publishing block checkpoints from inside a chain
+  would keep chains at full length and remove those frames.
 - Validation and admission fanout run on the per-frame path (perf-program
   rock R5, from the archived `PERF_PROGRAM2.md`): 12 + 9 `Validate` call
   sites remain on the client paths, and the engine SHA-probes inside
   `Progress`. Move them off the per-frame path.
-- qwen38_27b: `SparkQwen38_27bServingUploadBlockTable`
-  (`modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c`)
-  copies the full `max_active_sequence_count` x `blocks_per_lane`
-  block-index table plus the counts on every submission (rock R7). Add dirty
-  tracking.
-- dsv4: island chaining, RA joins and an event diet (rock R6). Do this only
-  while DSV4 stays in the driver order.
-- The exact DSA top-k selects rows of waves of 64 rows or fewer through
-  16,384-score chunks (`LmTopkExactLaunch`): at 1M context a B1 step takes
-  10.7 ms of top-k for 78 layers on one GB10 (was 147 ms). Prefill waves keep
-  one CTA per row, which fills the GPU; their selection is 0.48 s of a
-  1,024-row wave at 64K for 78 layers.
-- The DSA indexer runs on every TP rank over the whole replicated index
-  cache. B16 decode at 16K context reads 5.2 GB of bf16 index keys per step.
-  With the context split, each rank scores its own 1/tp of the context and
-  the ranks merge their top-k candidates.
-- KV pages are just in time: physical pages must hold one full lane and
-  logical pages every lane, so lanes share one resident pool and pages past
-  it park in the backing store. Fleet record (2026-10-02, 0b5371e, TP16, 2 x
-  262,144 positions on a 32 GiB pool = 5,637 pages, 20 GiB backing): two
-  concurrent 124,997-token prompts each retrieved their pass key (TTFT
-  450 s for both); pass keys retrieved at 8K to 60K; B1 30.3 tok/s. Parking
-  copies synchronously under the binding mutex (see the JIT KV plan, G6),
-  but the engine reserves each request's full prompt and output pages when
-  it binds a lane, so active lanes never overcommit the pool; a request that
-  does not fit waits in the queue.
-- Left out on purpose (2026-10-02): glm52 graph regimes key long contexts on
-  4,096-token buckets to 16K and four buckets per octave above, in the fixed
-  72-regime table (`spark_glm52_graph_regime.h`): a 1,048,576-position
-  deployment uses 60. Captured graphs are never evicted: a long prompt
-  captures one graph per (context bucket, row bucket) it crosses.
-  Relocatable graphs (lane R) close it. Fleet record (2026-10-02, 04256ca,
-  TP16, 2 x 131,072 positions, replicated KV): T1 exact; B1 30.9 tok/s;
-  TTFT 1.06 s at 994 tokens, 24.3 s at 16,308; pass keys retrieved at 8K,
-  16K, 32K, 60K, 100K and 130K (key at position 110,464 of 129,991, TTFT
-  243 s); B1 decode at those contexts about 20 tok/s. Graph and linear
-  chains differ after the first two tokens of a 16K prompt because prefill
-  waves padded to a row bucket run different GEMM shapes, so long-context
-  output is judged by the accuracy gate, not token equality.
-- Prefill waves past the 2,048 DSA selected-token count attend through the
-  tensor-core prefill kernel over the union of each 4-row block's selected
-  positions with a per-row membership mask (`LmPrefillSparseUnionKernel`):
-  on one GB10 a 1,024-row layer at 16K takes 1.45 ms (was 5.96 ms through
-  the per-row decode kernel), with outputs equal to bf16 rounding. Waves of
-  64 rows or fewer stay on the per-row kernel, where the two are equal.
-- A 1,024-row TP16 prefill wave spends about 440 ms of its ~1.0 s waiting in
-  collective rounds (`SparkTpMeshHardwareGuardKernel`) and about 400 ms in
-  compute, serially (rank-15 profile, 2026-10-02). Split waves into halves
-  whose collectives overlap the other half's compute.
+- A prepare waiting on its snapshot restore answers `PENDING` and the engine
+  polls it every 2 ms within the in-flight budget, but there is still no
+  completion signal, and a prepare that waits on a park or a full slot table
+  answers `BUSY` with the 10 to 200 ms backoff. Close it with a
+  restore-complete and park-complete notification from residentd to the
+  engine, so a lane is dispatched as soon as its pages are in place.
+- The shared runner splits a single-sequence prefill wave into two lanes whose
+  collectives overlap the other lane's compute (`StageRunnerLanesStep`,
+  `inference/runner/stage_runner.cu`), and K3 pairs its half-waves
+  (`K3LaunchSlicePair`, `inference/llms/kimi_k3/slice.cuh`). The
+  mixture-of-experts families refuse a lane below 1,024 rows (`GLM_LANE_ROWS`,
+  `G5N_LANE_ROWS`, `QH_MOE_LANE_ROWS`) because each lane reads every expert
+  weight again, which cancelled the overlap on GLM Full (8K prompt: 9,140 ms
+  whole, 9,088 ms in two 512-row lanes). GLM Full and GLM Flash deploy with a
+  1,024-row execution capacity, so their prefill waves never split and still
+  wait about 440 ms of a ~1.0 s wave in collective rounds
+  (`SparkTpMeshHardwareGuardKernel`, rank-15 profile, 2026-10-02) serially
+  with about 400 ms of compute. Overlap the collectives of a 1,024-row MoE
+  wave without reading the expert weights twice.
 
 ## Placement beyond TP16
 
@@ -379,16 +277,24 @@ citations refer to that commit.
   and choose placement from those numbers (README, Placement). The items
   below are the TP4 x PP4 work; PP16 needs the same stage-local layer spans
   and boundary forwarding.
-- GLM 5.3 Flash source audit at main `371ae9e`: the TP4xPP4 JSON generator
-  exists, but the shipped serving adapter hard-codes TP16, rejects other TP
-  degrees, requires `tp_rank == stage_index`, and declares parallel fanout.
-  Its node context starts at layer zero and the firmware defaults to all 45
-  layers. Complete the hybrid runtime topology, stage-local layer spans and
-  ownership, boundary forwarding, and grouped collectives before calling the
-  generated TP4xPP4 deployment runnable. Reuse the shared
-  `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP` path in
-  `runtime/model_serving_adapter.c`; changing the collective degree alone is
-  insufficient. Prove token parity through all four pipeline stages.
+- GLM 5.3 Flash runs only as one TP16 stage on the common runner.
+  `Glm5NextStage::Open`
+  (`model-families/glm5_next/source/glm5_next_stage_model.cuh`) refuses a
+  stage count other than one or a TP degree other than 16, and its `Sideband`
+  refuses a pipeline boundary. The common adapter refuses a `tp_degree` other
+  than the model's (`inference/runner/stage_serving_adapter.c`). The GLM Flash
+  adapter
+  (`modules/glm53_flash_tp16_resident_decode_stage/source/spark_glm53_flash_tp16_stage_serving.c`)
+  declares parallel fanout without
+  `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP`.
+  `tools/glm5_next_gen_tp4pp4_deployment.py` still writes TP4xPP4 configs for
+  the deleted glm5_next module target. The runner already gives the embedding
+  to the first stage and the head to the last (`owns_embedding`,
+  `owns_final_head` in `inference/runner/stage_runner.cu`). Complete
+  stage-local layer spans and ownership, boundary forwarding and grouped
+  collectives in the runner before calling a TP4xPP4 deployment runnable;
+  changing the collective degree alone is insufficient. Prove token parity
+  through all four pipeline stages.
 - Generate the sixteen-rank TP4 x PP4 deployment directly from the final
   hardware and model contracts.
 - Keep stage-local weights, KV, communicators, graphs, and workspaces stable
@@ -397,730 +303,286 @@ citations refer to that commit.
   and starvation bounds.
 - Complete throughput scheduling that forms dense stage-local microbatches from
   a larger dynamic agent population without request-wide lockstep.
-- Add bounded gang scheduling for a co-resident TP16 dense model without
-  communicator ordering hazards or network contention.
 
 ## Model residency and storage
 
-- Relocatable expert graphs (saved graphs) are designed but not built. `8adebc6`
-  proposed capturing a graph once, recording which kernel arguments are
-  expert pointers and patching them on load, as a dynamic linker does, and
-  `360c0ee` and `1a674be` deleted the union-lease workaround on that
-  assumption. No code patches or updates an instantiated graph's kernel
-  arguments, and nothing stores a captured graph for reuse, so every engine
-  captures its graphs again and the captured pointers must never move.
-- Working-set graphs. Because the pointers cannot move, a whole-chain GLM
-  graph refuses to run unless all 12096 routed experts are leased
-  (`SparkGlm5NextGraphClaimExperts`, since `78c2c21`), and production pins
-  every expert (`G5_PIN_EXPERTS=1`). Without the pin only eager chains run;
-  the fleet's eager, spin-wait configuration measured 5.9 tok/s B1 earlier
-  on 2026-09-28 (lead-dev measurement). Full pinning breaks I29's bounded
-  residency, and the memory it holds is unavailable to co-resident drivers.
-  On top of relocation, capture over a leased working set and send a miss
-  to an explicit, reported refill.
-  - The pin takes 12096 keys in 24 leases per rank; the daemon held
-    20,874 MiB of device memory on spark6 on 2026-09-28
-    ([`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#glm-graph-residency-today)).
-  - With fewer experts leased, `SparkGlm5NextGraphClaimExperts` returns
-    `UNSUPPORTED` and the wave runs eager instead. That is logged, but it is
-    still a mode fallback.
-  - This is the known exception in
-    [`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md) and the first
-    item of ROADMAP M6. Exit: GLM graph decode on a bounded expert working
-    set, with the same greedy tokens as the pinned build
-    ([`docs/GLM_LAZY_DRIVER_INTEGRATION.md`](docs/GLM_LAZY_DRIVER_INTEGRATION.md),
-    [`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#open-relocatable-graphs)).
-- Partial residency (S3) and queue warm hints with pin-on-dispatch (S4) from
-  the archived `WEIGHTD_RESIDENT_CACHE_DESIGN.md` are not implemented; S2 is
-  partial.
-- Implement one catalog that keeps every configured frontier model addressable
-  while tracking resident, warm, promotable, and unavailable states.
-- Partition and mount each 4 TB internal NVMe as 2.5 TB hot KV, 1 TB active
-  model shards, and 0.5 TB system/runtime space with startup validation.
+- Store the replicated spine losslessly compressed (DFloat11 idea, Zhang et
+  al. 2025, `LeanModels/DFloat11`): BF16 sign and mantissa stay raw and the
+  8-bit exponent is Huffman-coded, so the spine shrinks to about 70% while
+  every decoded weight stays bit-identical. The spine is replicated on all 16
+  ranks, so each GB saved per rank frees 16 GB of fleet memory for KV and
+  expert residency. Write our own encoder (pack time) and GPU decoder (a
+  lookup-table decode into the layer's BF16 working buffer just before its
+  GEMM/GEMV, overlapped with the previous layer), reading only the paper;
+  no code from the repository. Gate: weights decode bit-exact against the
+  BF16 pack, logits identical, and B1/B16 decode tok/s within noise of the
+  uncompressed spine. An unfused decode adds a write and read of each layer's
+  BF16 weights per step, which can cost more than the bytes saved on
+  memory-bound decode. If the gate fails, try decoding inside the GEMV.
+- Relocatable expert graphs are built but not wired.
+  `runtime/spark_graph_reloc.c` and `runtime/spark_graph_reloc_cuda.c`
+  register regions, walk a captured graph, validate two captures against each
+  other and patch an instantiated graph's pointer arguments in place
+  ([`docs/RELOCATABLE_GRAPHS.md`](docs/RELOCATABLE_GRAPHS.md)), but no driver
+  calls them. The common runner (`StageRunnerGraphCapture` in
+  `inference/runner/stage_runner.cu`) captures its graphs again in every
+  engine, nothing stores a captured graph for reuse, and the captured pointers
+  must never move.
+- Working-set graphs. Because no runner graph relocates, the common runner
+  captures decode graphs only after weightd reports every expert group present
+  in a fixed pool (`StageRunnerCheckResident`, `STAGE-RESIDENT`,
+  `StageRunnerGraphEligible` in `inference/runner/stage_runner.cu`). With a
+  bounded expert pool it runs eager waves that lease each layer's routed
+  experts. Full residency breaks I29's bounded residency, and the memory it
+  holds is unavailable to co-resident drivers. On top of relocation, capture
+  over a leased working set and send a miss to an explicit, reported refill.
+  Exit: graph decode on a bounded expert working set for GLM-5.3 Flash,
+  GLM-5.3 Full and K3, with the same greedy tokens as the fully resident build
+  ([`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#open-relocatable-graphs)).
+- The swap controller (`tools/serving/model_swap.py`) and the chat layer
+  (`tools/serving/chat_frontend.py`) keep every configured model addressable.
+  `/v1/models` lists them all, `/v1/sparkpipe/status` reports the active model
+  and the swap state, and a request for an inactive model waits in its warm
+  queue while the controller swaps it in. Neither reports, before a swap is
+  attempted, whether an inactive model can be swapped in (its packs present on
+  all 16 nodes and its projected memory free). A swap to a model that cannot
+  load fails only at that point.
+- Enforce the internal NVMe tiers as validated directories with byte budgets
+  on the existing root filesystem (owner 2026-10-03: no repartitioning). KV
+  has its tier: each deployment node names its `kv_partition`, residentd
+  refuses KV directories off it, and `kv_backing_maximum_bytes` and
+  `kv_snapshot_maximum_bytes` bound its stores (`node/model_residentd.c`,
+  `runtime/model_resident_deployment.c`). The active model shard tier (1 TB)
+  has no named directory, byte budget or startup check, and nothing reserves
+  the 0.5 TB of system and runtime space against KV and shard growth.
 - Reserve at least 1 TB of every external NVMe for direct rank-local model
   access and combine the remaining capacity into the selected striped,
   failure-aware model-data pool.
 - Measure and close at least 20 Gb/s useful reads from the pooled model store
   for complete rank-shard promotion workloads.
-- Implement atomic model promotion, prewarm, and publication in at most 60
-  seconds without disrupting unrelated resident requests.
-- Preserve resumable KV and request ownership across model eviction and
-  reactivation, subject to explicit capacity and retention policy.
-- Left out on purpose (2026-10-02): KV does not survive model eviction and
-  reactivation, which `README.md:157-158` requires. Unloading GLM-5.3 Full
-  destroys the binding
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c:2490`),
-  and the binding destroys its anonymous `O_TMPFILE` spill store
-  (`runtime/stage_kv_binding.c:176`, `:266`; `cache/kv_page_store.c:179-185`)
-  without saving anything, so every resident and spilled prefix is gone when
-  the model returns. Close it by saving every published, unsaved chain to the
-  snapshot store before the binding is destroyed and restoring through the
-  store after reactivation. Fleet proof: publish a prompt, evict GLM-5.3 Full,
-  reactivate it, resend the prompt, and see `cached_tokens > 0` with tokens
-  identical to the first run.
-- Left out on purpose (2026-10-02): Nothing validates the KV backing directory
-  at startup beyond a non-empty string (`runtime/stage_kv_binding.c:209-213`)
-  and a successful `O_TMPFILE` open (`cache/kv_page_store.c:174-185`). No code
-  checks that the directory is on the hot-KV NVMe partition or that the
-  partition has `kv_backing_maximum_bytes` free, and the page store reserves
-  no space, so a misplaced or full directory shows up later as write-back
-  failures that drop pages. Close it with a startup check (mount point,
-  filesystem, free bytes against every resident driver's backing quota) that
-  fails the load with a named error, proven on one Spark by loading against a
-  directory off the partition and against a quota larger than the free space,
-  both refused.
-- Left out on purpose (2026-10-02): weightd accepts a KV reserve and never
-  applies it. `--kv-reserve-bytes` and `SPARK_WEIGHTD_KV_RESERVE_BYTES` are
-  parsed (`node/weightd.c:175-186`, `:344-356`), checked only against the
-  ceiling (`:359-366`) and copied into
-  `SparkWeightdServerConfig.kv_reserve_bytes` (`:371`).
-  `runtime/spark_weightd.c` never reads that field: arena and expert-pool
-  admission compares against `device_bytes_max` alone
-  (`runtime/spark_weightd.c:996-997`, `:1449-1450`, `:1834-1835`). An operator
-  who sets a reserve expects device memory to be held back for KV, but weightd
-  can lease all of it to weights, and the engine's KV `cudaMalloc` then fails
-  or crowds out co-resident drivers. Close it by subtracting the reserve from
-  the admission ceiling, or by removing the flag until weightd owns KV pools.
-  The node proof is a weightd started with a reserve that refuses arena growth
-  past `device_bytes_max - kv_reserve_bytes` while the engine's KV allocation
-  succeeds.
-- Left out on purpose (2026-10-02): `SparkWeightdAttachRequested`
-  (`runtime/spark_weightd_attach.c:37-48`) answers `BUSY` when
-  `SPARK_WEIGHTD_SOCKET` is unset and `SPARK_WEIGHTD_ATTACH` is not `1`: a
-  retryable status for a missing configuration, with no operation outstanding
-  (I17). k3 returns it from `SparkK3StageRunnerInitialize`
-  (`modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu:1153-1164`)
-  and adapter initialize (`spark_k3_serving_adapter.c:605-607`), and
-  `tests/test_k3_attach_contract.c:159-162` asserts `BUSY`. Other modules read
-  the same `BUSY` as 'attach not requested' and load directly (next entry).
-  Return a non-retryable configuration status from
-  `SparkWeightdAttachRequested`, update every caller, and prove it with a
-  residentd start on a Spark from a deployment without weightd that fails with
-  that status.
-- Left out on purpose (2026-10-02): A deployment may omit the `weightd` member
-  (`runtime/model_resident_deployment.c:563-568`); residentd then skips
-  weightd (`node/model_residentd.c:3238-3248`) and
-  `SparkWeightdAttachRequested` answers `BUSY`. The shared `LazyOpen`
-  (`include/sparkpipe/family/module/spark_module_lazy_open.h:10-12`, used by
-  glm52 and laguna), qwen38_max
-  (`spark_qwen38_max_resident_decode_stage_module.c:450-452`), qwen4_flash
-  (`spark_qwen4_flash_resident_decode_stage_module.c:455-457`) and dsv4
-  (`spark_dsv4_resident_decode_stage_module.c:1055-1056`) treat that as
-  success, and their pack loaders copy the whole stage pack to device
-  (`spark_glm52_resident_decode_stage_module.c:529-545`,
-  `model-families/common/include/sparkpipe/spark_pack_load_common.h:196-202`).
-  `c67be235e` made attach mandatory because direct full-pack loads by several
-  drivers kill Sparks, but only glm5_next refuses this case (`:731-733`); the
-  GLM-5.3 Full lane renders `weightd` (`tools/glm53full_lane.py:127`), so it
-  is latent there. Make the `weightd` member required, make every module fail
-  initialization when attach is not configured, and prove it with a GLM-5.3
-  Full residentd start from a deployment without `weightd` that fails before
-  any device allocation.
+- The swap controller (`tools/serving/model_swap.py`) promotes one model on
+  demand. It stops the other models, releases their KV pools, starts the
+  target's engines and waits for every rank. It warms weights where the model
+  has a warm step and serves the model only once its API connects every rank.
+  On the current build every catalog model swaps in: the medians of the swaps
+  logged on 2026-10-13 and 2026-10-14 run from 16 s (Gemma 4, Muse Glimmer) to
+  38 s for GLM-5.3 Full and 46 s for K3 (`~/sparkpipe-swap/swap.log` on the
+  hub; README, Models). Still open: thirteen catalog models in
+  `deployment/hub/model_swap.json` have no warm step. Nothing holds a swap to
+  60 seconds (the rank wait alone allows 300 s), and K3 took up to 79 s on
+  2026-10-14 with a CPU tenant loading every node. A failed swap leaves no
+  model serving because the previous one is already stopped. Close it with a
+  bound that fails a swap past 60 seconds and a failed start that leaves the
+  previous model serving.
+- A model swap waits at most `drain_seconds` (30 s by default) for the stopped
+  model's live requests (`drain` in `tools/serving/model_swap.py`) and then
+  stops its engines, so a reply still running at that point fails instead of
+  resuming when the model returns. The KV side is the next item. Close it by
+  holding such requests, with their resumable KV and positions, across the
+  swap, proven by a fleet run that swaps away mid-reply and back and completes
+  the reply with tokens equal to an uninterrupted run.
+- KV survives model eviction and reactivation in code. Destroying the binding
+  first saves every published, unsaved chain to the snapshot store
+  (`SparkStageKvBindingSaveAtDestroy`, bounded by
+  `SPARK_STAGE_KV_DESTROY_SAVE_TIMEOUT_NS`), and parked prefix pages queue
+  their saves when they spill. The swap controller drops a stopped model's
+  weightd KV pool (`KV_POOL_DROP`), so a reactivated model restores its
+  prefixes from the snapshot store. The 2026-10-08 swap cycle restored 4,224
+  cached tokens of a 4.2K document on every return
+  ([`docs/LITELLM_FRONTEND.md`](docs/LITELLM_FRONTEND.md)). Only the return to
+  K3 compared output, and GLM-5.3 Full ran its pre-runner build. Close it on
+  the common-runner GLM-5.3 Full: publish a prompt, swap away and back, resend
+  it, and see `cached_tokens > 0` with tokens identical to the first run.
+- The KV page store reserves its whole backing quota at open (`fallocate`),
+  so a full partition or a quota larger than the free space fails the load
+  with `CAPACITY_EXCEEDED`, and each deployment node names its `kv_partition`:
+  residentd refuses a backing or snapshot directory on another filesystem, or
+  a partition on tmpfs, ramfs, NFS, Ceph, FUSE, CIFS/SMB or 9p. The Sparks
+  keep KV on the root NVMe (`/`), so the check does not separate KV from the
+  OS. Close it on one Spark by loading a deployment whose backing directory is
+  on `/mnt/model-warm` (Ceph) and seeing the refusal.
+- Left out on purpose (2026-10-02): GLM-5.3 Flash splits its latent KV and
+  indexer keys by context at the adapter's TP degree (`context_shard` in
+  `modules/glm53_flash_tp16_resident_decode_stage/source/spark_glm53_flash_tp16_stage_serving.c`).
+  `SparkKvShardValid` (`include/sparkpipe/spark_kv_shard.h`) accepts degrees 2
+  and 4, but the stage runs only at TP16, so the split has never run at degree
+  4 and a TP4xPP4 deployment cannot hold 1/16 of the KV per node. Close it
+  with the TP4xPP4 runtime above, proven by a TP4xPP4 fleet run with T1 parity
+  in which each rank holds 1/4 of its group's latent KV and indexer keys.
+- KV pools resize by chunk inside the node reserve with resident demand
+  (`runtime/stage_kv_binding.c` pool policy, weightd `KV_POOL_RESIZE`/
+  `KV_POOL_STATUS`), and `tests/test_stage_kv_pool_resize.c` moves chunks
+  between two bindings in one process under the CUDA stub. Not yet proven on
+  the fleet: close it with two co-resident engines on one Spark (two GLM Flash
+  lanes on a shared reserve) whose `kv pool grew` and `kv pool shrank` lines
+  follow the load, with identical outputs to unshared runs and no
+  `KV-PARK-FAILED`.
+- Left out on purpose (2026-10-03): GLM-5.3 Full splits every sequence's
+  latent KV and DSA index keys across the 16 ranks by context, where the owner
+  of position p is p % tp (`context_shard` in
+  `modules/glm53_full_tp16_resident_decode_stage/source/spark_glm53_full_tp16_stage_serving.c`,
+  `GlmModel::Open` in `model-families/glm52/source/glm52_stage.cuh`). The
+  stage runs only as one TP16 stage with 4 heads per rank and a row capacity
+  that is a multiple of 16. The split is not yet fleet-proven on the common
+  runner. It closes with a TP16 fleet run that shows, on every rank,
+  `context_shard=<rank>/16` in the binding line and the stage's sizing line
+  (`scatter_units`, `gather_latent`, `select_rows`), passes T1 and the
+  accuracy A/B against the bf16 floor, and measures B1, B16, 16K and 128K TTFT
+  against 0b5371e. Known costs that stay after the proof: decode waves
+  (scatter mode) add a query all-gather and a partial all-to-all per layer,
+  with the index candidates riding the gather on the full-indexer layers.
+  Folding the query into the projection gather and sending bf16 partials are
+  the planned cuts. Decode attention is not bit-exact against the replicated
+  split kernel, because the summation order differs; the host and device
+  oracles compare against the replica-view shard math
+  (`tests/cuda/index_shard_cuda.cu`, `tests/host_cuda/index_shard_host.cu`).
+  Prefill waves (gather mode) carry one sequence and exchange the latent keys
+  of the whole earlier context. A row digest folded into a MAX all-reduce per
+  wave fails the request loudly if any rank's local rows differ. Still open:
+  fetching only the selected union's latents, once its size is measured on the
+  fleet. Scatter waves are capped at 64 rows (`GLM_SCATTER_ROWS`).
+- Cross-engine shared prefix pages are in code
+  ([`docs/KV_SHARED_PREFIX.md`](docs/KV_SHARED_PREFIX.md)):
+  - weightd's `--kv-shared-window-bytes` gives each KV layout a window
+    that every binding of that layout maps after its private pages;
+  - new pages come from the window, and published prefixes are found
+    through a shared index in weightd's memfd;
+  - engines read their peers' prefix indexes
+    (`model_api --peer-runtime-root`).
 
-## KV sharding
-
-- Left out on purpose (2026-10-02): GLM-5.3 Flash (glm5_next) refuses TP16
-  without `kv_shard`
-  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:482-487`).
-  With it, each rank stores 1/tp of the latent KV and indexer keys through the
-  shared context split (`include/sparkpipe/spark_kv_shard.h`,
-  `inference/kernels/attn_shard.cuh`). Below TP16, `kv_shard` is optional, and
-  `tools/glm5_next_gen_tp4pp4_deployment.py` sets neither `kv_shard` nor
-  `dsa_index_context_parallel`, so a TP4xPP4 glm5_next deployment stores the
-  full latent KV and indexer keys on every rank of each TP group, against
-  README:268-274. It closes when `kv_shard` is required at every TP degree the
-  shard check accepts
-  (`model-families/glm5_next/include/sparkpipe/spark_glm5_next_kv_shard.h:103-110`),
-  proven by a TP4xPP4 fleet run with T1 parity. GLM-5.3 Full replicates at
-  every degree; see the glm52 entries below.
-- Left out on purpose (2026-10-02): `dsa_index_context_parallel` is required
-  whenever `kv_shard` is set
-  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:493-497`),
-  and `tools/glm5_next_gen_deployment.py:136-138` sets both at TP16. Below
-  TP16 it is optional, and the TP4xPP4 generator leaves it off.
-- Replace per-driver KV and index pools with one node-level pool shared by
-  all resident drivers, admitted against resident demand.
-- Left out on purpose (2026-10-02): GLM-5.3 Full (glm52) stores the whole
-  latent KV and DSA index cache of every lane on every TP rank.
-  `SparkGlm52AllocateCaches` zeroes the binding configuration and never sets
-  `owner_rank` or `owner_count`
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c:729-758`),
-  so `SparkStageKvBindingOwns` is true for every slot
-  (`include/sparkpipe/spark_stage_kv_binding.h:108-111`), the owner filter
-  from b45e6f603 never engages, and each rank allocates the full pool
-  (`runtime/stage_kv_binding.c:230-231`). At TP16 every 64-token page costs
-  6,094,848 bytes on all sixteen ranks (`tools/glm53full_lane.py:24`), against
-  README:268-274; glm5_next refuses TP16 without `kv_shard`
-  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:482-487`),
-  but glm52 loads the replicated layout without a refusal. The binding assigns
-  whole lanes to owners (`slot % owner_count`), while README:271-273 splits
-  shared latent and indexer state by context, which shared code already does
-  for glm5_next (`include/sparkpipe/spark_kv_shard.h`,
-  `inference/kernels/attn_shard.cuh`); the owner has not chosen between the
-  two. It closes when glm52 configures each rank's share, adds `owner_rank`
-  and `owner_count` to the layout fingerprint (a constant today,
-  `spark_glm52_resident_decode_stage_module.c:749`), and refuses a replicated
-  TP16 load. The proof is a TP16 fleet run whose binding log shows 1/16 of
-  today's physical pages per rank, with T1 bit-exact against the replicated
-  build and B1, B16, TTFT and d1024 measured.
-- Left out on purpose (2026-10-02): GLM-5.3 Full attention has no owner split.
-  `GlmLayerAttentionCore`
-  (`common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh:543`) attends every
-  row's lane on the calling rank, and glm52 launches it for all wave rows
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_cuda.cu:340-346`).
-  Neither the eager chain
-  (`spark_glm52_resident_decode_stage_module.c:1662-1780`) nor the shared walk
-  used by the linear and graph chains (`:1894-1935`) has a query or output
-  exchange around it. The lane-owner pack and unpack kernels from ab55d7691
-  (`model-families/common/include/sparkpipe/spark_lane_owner.cuh`) are not
-  included anywhere. Non-owner page-table entries stay 0xffffffff
-  (`runtime/stage_kv_binding.c:233-237`, `:558-559`) and the kernel view
-  rejects them (`inference/kernels/kv.cuh:198-202`), so if `owner_count` is
-  set before this split, every wave that touches a lane the rank does not own
-  fails. It closes when the attention core is split into Pre, Owner and Post
-  phases with a query exchange to the owner and an output exchange back, wired
-  into the eager, linear and graph chains, and refused when the TP collective
-  is disabled (`spark_glm52_resident_decode_stage_module.c:331`); the proof is
-  a TP16 fleet run with T1 bit-exact against the replicated build at B1 and
-  B16.
-- Left out on purpose (2026-10-02): The batch engine binds a request to
-  whatever resident slot heads its free list
-  (`runtime/model_batch_engine.c:573-588`), the prefix index records no owner
-  per entry (`include/sparkpipe/spark_prefix_cache.h:45-67`), and the runtime
-  limits carry no owner count
-  (`include/sparkpipe/spark_model_serving_adapter.h:141-152`). The binding
-  maps a slot to its owner as `slot % owner_count`, and only the owner runs
-  lane transactions and publishes pages into its own page cache
-  (`include/sparkpipe/spark_stage_kv_binding.h:108-111`,
-  `runtime/stage_kv_binding.c:316-322`). Once owners are set, a returning
-  prefix bound to another owner's slot misses on that owner's PREPARE, and the
-  engine recomputes the whole prefix (`runtime/model_batch_engine.c:869-873`).
-  Nothing balances new lanes across owners. It closes when the engine learns
-  `owner_count` from the runtime limits, each prefix entry stores the owner
-  that published it, slot choice puts a prefix lane on a free slot of that
-  owner and spreads new lanes across owners, and behaviour is unchanged at
-  `owner_count` 1. The proof is the I27 suite unchanged at `owner_count` 1,
-  plus a TP16 fleet run whose engine log shows owner placement and whose
-  repeated prompts report `cached_tokens` > 0.
-- Left out on purpose (2026-10-02): The engine budgets KV pages against one
-  global count. `SparkModelBatchMaximumLaneCount`,
-  `SparkModelBatchCacheDemandTryAdd`, the submit-time fit and the
-  prefix-lookup fit all compare demand with
-  `engine->kv_physical_page_capacity`
-  (`runtime/model_batch_engine.c:1773-1786`, `:1880-1884`, `:1466-1469`,
-  `:1578-1579`). Under owner sharding each owner's pool holds only its own
-  lanes, so the engine admits waves that one owner's pool cannot hold. That
-  owner's page cache answers `CAPACITY_EXCEEDED`
-  (`cache/kv_page_cache.c:890-897`, `:926-933`), and the engine fails those
-  requests (`runtime/model_batch_engine.c:895-902`) where it should queue
-  them. It closes when the engine tracks in-flight pages per owner against
-  each owner's capacity, with identical behaviour at `owner_count` 1. The
-  proof is a TP16 fleet run that oversubscribes one owner and shows the engine
-  queueing that owner's lanes while the other owners keep running.
-- Left out on purpose (2026-10-02): Under owner sharding, a non-owner rank
-  accepts a lane that resumes mid-sequence on a fresh slot whenever the frame
-  marks it PREFIX with a matching sequence id and position
-  (`runtime/stage_kv_binding.c:426-437`, `:452-461`). It never checks that the
-  owner restored or committed that prefix, while the owner checks its own
-  committed lane transaction (`:462-468`). The path is unreachable today
-  because glm52 sets no owner. Once owners are set, a frame with a stale or
-  wrong PREFIX flag passes continuity on every non-owner rank, and only the
-  owner catches it. It closes when non-owners validate the lane against
-  metadata the owner publishes (its committed sequence id, position and prefix
-  identity) instead of the frame flag. The proof is a TP16 fleet I27 case that
-  restores a prefix onto a fresh slot, plus a case with a forged PREFIX flag
-  that fails on every rank.
-- Left out on purpose (2026-10-02): `kv_physical_page_capacity` is one
-  deployment-wide number (`runtime/model_resident_deployment.c:44-49`,
-  `:317`). It feeds both the engine's page budget
-  (`runtime/model_batch_engine.c:1330`) and every rank's binding pool
-  (`node/model_residentd.c:372-373`,
-  `runtime/serving_adapter_template.c:557-558`,
-  `modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c:330`,
-  `:754`); the node entries carry no page count
-  (`runtime/model_resident_deployment.c:51-56`), and the hello ack requires
-  every rank to report identical limits (`runtime/model_resident_ipc.c:242`).
-  Setting the number to one owner's share (owned lanes x pages per sequence)
-  cuts the engine's budget to one owner's pages. Leaving it global makes every
-  rank allocate the full pool, although the binding needs only the owned share
-  (`runtime/stage_kv_binding.c:109-116`, `:230-231`). It closes when the
-  deployment carries a per-rank physical page count that residentd passes to
-  the binding, the engine derives its budget from the per-owner counts,
-  `tools/glm53full_lane.py:130-134` writes owned lanes x pages per sequence,
-  and the binding log (`runtime/stage_kv_binding.c:256-257`) prints
-  `owner_rank` and `owner_count`. The proof is a TP16 fleet run in which each
-  rank's binding holds 1/16 of today's pages while the engine still admits all
-  lanes.
-- Left out on purpose (2026-10-02): KV memory is owned by each engine, not by
-  the node. `SparkStageKvBindingInitialize` allocates the KV regions and the
-  page table with `cudaMalloc` through the module's own ledger
-  (`runtime/stage_kv_binding.c:231`, `:234`;
-  `runtime/stage_module_common.c:744-786`). The backing directory reaches the
-  binding through the driver's adapter and module
-  (`spark_glm52_serving_adapter.c:666-667`,
-  `spark_glm52_resident_decode_stage_module.c:327-328`). weightd has no KV
-  pool, lease or prefix-share code (`runtime/spark_weightd.c`,
-  `node/weightd*.c`). The pools die with residentd, so a restart loses every
-  resident prefix, co-resident drivers cannot share KV memory, and no
-  node-wide KV budget is enforced across engines. Close it by having weightd
-  own KV pools, leases, refcounted prefix shares, copy-on-write forks and
-  per-node budgets, with the binding as its client. The fleet proof is a
-  residentd restart that reattaches the device pages and serves a prefix hit
-  with no NVMe reads, with the per-engine private KV bytes reported as zero.
+  Still open:
+  - Bindings with recurrent state (GLM Flash, K3) keep their prefixes
+    private, because their prefix state lives in a per-engine state store.
+    Close it by keeping the state record in the window too.
+  - Window pages are never spilled. A reclaimed slot's prefix survives
+    only through its owners' snapshot saves.
+  - The window size is one node-wide byte count per layout.
+  - Fleet proof: two GLM Full lanes on one node, where the second lane's
+    prompt hits the first lane's prefix with no extra device pages and
+    identical tokens.
 
 ## KV tiers
 
-- Left out on purpose (2026-10-02): JIT-KV W3
-  (`docs/archive/JIT_KV_RESPONSE.md:47-49`) is open. The tree holds five KV
-  stores and two unwired residency layers: the anonymous page store
-  `cache/kv_page_store.c`, the slot file `runtime/spark_kv_backing.c`, the
-  digest-checked slot index `cache/nvme_tier.c` (no file I/O of its own,
-  `include/sparkpipe/spark_nvme_tier.h:57-64`), the prefix snapshot files
-  `cache/kv_snapshot.c`, the external provider client `cache/store/kv_store.c`
-  with `cache/store/stage_kv_client.c`, plus the pager `cache/kv_pager.c` and
-  the header-only `LmCache` in `cache/cache.h` that only `tests/test_cache.c`
-  includes. `kv_snapshot.c` is linked but `SparkKvPageCacheAttachSnapshot`
-  (`cache/kv_page_cache.c:1480`) has no production caller, and the provider
-  store stays off unless `SPARK_<FAMILY>_STAGE_KV_STORE` names one
-  (`include/sparkpipe/family/module/spark_module_open_kv_tier.h:27-31`), so
-  production spills only to the page store, the one with no persistence and no
-  integrity check. Close it by building one store on the `kv_snapshot.c`
-  format behind the pager and the binding and deleting the rest, proven on the
-  fleet by a spill, residentd restart and restore run that hits through that
-  store alone.
-- Left out on purpose (2026-10-02): The pager and its stores have no
-  production caller. `cache/kv_pager.c` is in no library (`sources.mk:72-81`)
-  and is built only into the `test_jit_kv_*` targets (`Makefile:1646-1667`);
-  `cache/nvme_tier.c` is linked into the model common library
-  (`sources.mk:81`) but is called only by `kv_pager.c` and
-  `scheduler/topology_switch.c`, which only `test_topology_switch` builds
-  (`Makefile:1671-1672`); `runtime/spark_kv_backing.c` is built only into
-  `tools/spark_kv_backing_test.c` (`Makefile:1267-1268`); and
-  `modules/dsv4_resident_decode_stage/source/spark_dsv4_jit_kv.c` is not a
-  dsv4 module source (`modules/dsv4_resident_decode_stage/Makefile:15-31`).
-  Whole-lane park and restore, the park budget and restore-bandwidth admission
-  run only in host tests, so no served model can park a lane. Close it by
-  wiring one pager into the common KV binding (`runtime/stage_kv_binding.c`)
-  and deleting the unwired copies, proven by a fleet backpressure run at 2x
-  device pages where parked lanes restore bit-exact at B1 and B16.
-- Left out on purpose (2026-10-02): No production code attaches a KV snapshot
-  store, so GLM-5.3 Full keeps no prefix across a residentd restart or a model
-  unload (req 15). `SparkKvPageCacheAttachSnapshot`
-  (`cache/kv_page_cache.c:1480`) and `SparkKvSnapshotStoreOpen`
-  (`cache/kv_snapshot.c:530`) are called only from `tests/test_kv_snapshot.c`
-  and `tests/test_kv_snapshot_cuda.c`, and `SparkStageKvBindingInitialize`
-  (`runtime/stage_kv_binding.c:198-259`) opens only the anonymous `O_TMPFILE`
-  spill store (`runtime/stage_kv_binding.c:176`,
-  `cache/kv_page_store.c:179-185`), which disappears with the process. The
-  PREPARE restore (`cache/kv_page_cache.c:2006-2014`) and the saves at
-  completion and release (`cache/kv_page_cache.c:2184`, `:2072`) are gated on
-  `cache->snapshot` and never run. Close it by opening the store and attaching
-  it in `SparkStageKvBindingInitialize` from a required deployment field whose
-  absence fails the load, after saves move off the CUDA host callback and the
-  engine can find stored prefixes after a restart (both below). Fleet proof:
-  send a 4K prompt, restart residentd on all 16 ranks, resend it, and see
-  `cached_tokens > 0`, `restore_count > 0`, `restore_failure_count == 0` and
-  tokens identical to the first run.
-- Left out on purpose (2026-10-02): The KV snapshot key carries no model,
-  pack, codec or shard identity for GLM-5.3 Full. The binding's
-  `layout_fingerprint` is the constant string
-  `latent-bf16-page-major-index-bf16-layer-major-v1`
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c:749`),
-  and nothing reads it: `SparkStageKvBindingFillTable` copies it with
-  `model_id` and `model_revision` into `SparkKvModelTable`
-  (`runtime/stage_kv_binding.c:193-195`), and `SparkKvBackendInitialize`
-  (`cache/kv_model_table.c:40-90`) ignores all three. The snapshot key is
-  `layout_sha256` plus a SHA-256 of the prompt tokens alone
-  (`cache/kv_page_cache.c:1557-1563`, `runtime/model_batch_engine.c:447-452`),
-  and `layout_sha256` is whatever the attacher writes into
-  `SparkKvPageCacheSnapshot` (`include/sparkpipe/spark_kv_page_cache.h:77`),
-  so once a store is attached, files written under a different pack, contract,
-  expert or KV codec, driver binary, TP rank or owner count restore as hits
-  with wrong KV. Close it by computing `layout_sha256` in the common binding
-  from model id and revision, pack SHA-256, contract SHA-256
-  (`GLM_CONTRACT_SHA256`), expert and KV codecs, driver binary SHA-256,
-  `owner_rank`, `owner_count`, block size and page geometry, and deleting the
-  unused string fields. Fleet proof: save a prefix, restart with a different
-  expert codec or rank-to-node assignment and see the resent prompt miss the
-  store (`restore_miss_count` rises, tokens exact by recompute), then restart
-  on the original build and see it hit.
-- Left out on purpose (2026-10-02): Attaching a snapshot store to the GLM-5.3
-  Full binding would run synchronous CUDA copies inside a CUDA host function.
-  `SparkGlmStageEnqueueAsyncCompletion` queues `SparkGlm52CompleteAsync` with
-  `cudaLaunchHostFunc`
-  (`common/common_glm_stage_module/spark_glm_stage_module.h:161`, called from
-  `modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c:1821`);
-  the callback calls `SparkStageKvBindingFinish`
-  (`spark_glm52_resident_decode_stage_module.c:1849`), which for a PUBLISH
-  lane reaches `SparkKvPageCacheSaveSequence` (`cache/kv_page_cache.c:2184`),
-  `SaveChain` (`:1658`), `SaveEntry` (`:1635`), `SnapshotPage` (`:1609`) and
-  the binding's `cudaMemcpy` (`runtime/stage_kv_binding.c:17-19`). CUDA does
-  not permit CUDA API calls in a host function, so the first save after
-  attachment breaks the execution stream's completion path. The release-path
-  save (`cache/kv_page_cache.c:2072`) also copies device to host synchronously
-  on the admission thread while holding the binding mutex
-  (`runtime/stage_kv_binding.c:315`), which every completion needs. Close it
-  by having the callback and the release path only mark the terminal entry for
-  saving, and a common binding worker copy it with an event and
-  `cudaMemcpyAsync` into the snapshot ticket outside the callback and the
-  mutex. Fleet proof: with the store attached, a B16 run of published prompts
-  ends with `save_count > 0` and `save_failure_count == 0`, and B1 decode step
-  time stays within run-to-run noise of the build before the change.
-- Left out on purpose (2026-10-02): PR #1278 (`5815cf10f`, merge base
-  `30cccaaf7`, 2026-09-28) holds the only snapshot wiring and prefetch-join
-  code, is not in this tree, and cannot be merged as is. It puts the store
-  open, the layout digest and the snapshot directory in glm5_next driver code
-  (`SparkGlm5NextSnapshotLayout` and `SparkGlm5NextSnapshotInitialize` in the
-  module, `kv_snapshot_directory` and `kv_snapshot_maximum_bytes` in the
-  adapter), against central KV ownership. Its adapter treats both keys as
-  optional and serves with `kv_snapshot=off` when they are absent, which is an
-  opt-out of required persistence. Its PENDING retry
-  (`SparkModelBatchRequeuePrefetchWave`) doubles a 10 ms backoff up to 200 ms
-  for at most 10,000 tries instead of waiting on a restore deadline. Close it
-  by porting only `cache/kv_snapshot.c`, the `cache/kv_page_cache.c` prefetch
-  and join, and the engine PENDING path onto `runtime/stage_kv_binding.c` and
-  `runtime/model_batch_engine.c`, with a required snapshot field, a
-  deadline-bounded wait and no driver snapshot code. Fleet proof: GLM-5.3 Full
-  restores a saved prefix with no glm52 snapshot code, and the engine log
-  shows each PENDING wait ending at the restore's completion or its deadline.
-- Left out on purpose (2026-10-02): No report shows whether a snapshot restore
-  or save happened or what it cost. `SparkKvPageCacheSnapshot` keeps save,
-  restore, miss, corrupt and failure counts and nanosecond totals
-  (`include/sparkpipe/spark_kv_page_cache.h:83-93`, updated at
-  `cache/kv_page_cache.c:1644-1645` and `:1865-1881`), but nothing in
-  `runtime/`, `node/` or the glm52 module reads them; the one reporter,
-  `55a9241a6`, prints them from the glm5_next module and is not in this tree.
-  A restart benchmark therefore has no `restore_count` or save time to check.
-  Close it by exporting the snapshot counters through the common binding into
-  the driver runtime snapshot and the engine measurement view that
-  `node/model_api.c` reports. Fleet proof: the restart run's report shows
-  `restore_count > 0`, `restore_failure_count == 0`, and save and restore time
-  per page on every rank.
-- Left out on purpose (2026-10-02): Crash recovery of the KV snapshot store
-  has never run in production. The store writes each file to a `.kvs-writing-`
-  temporary opened with `O_EXCL` and mode 0600, fsyncs it, renames it and
-  fsyncs the directory (`cache/kv_snapshot.c:331-358`), and
-  `SparkKvSnapshotStoreOpen` deletes leftover temporaries before indexing the
-  store (`cache/kv_snapshot.c:501-505`, `:563`). Nothing outside the tests
-  opens the store, so this path is unreachable on the fleet and no
-  kill-during-write case has run. Close it with the production store
-  attachment, then run the crash case on the fleet: kill -9 residentd on one
-  rank while saves are queued, restart it, and check that no `.kvs-writing-`
-  file remains, `removed_temporary_count` equals the leftovers, and the resent
-  prompt restores with tokens identical to an uninterrupted run.
-- Left out on purpose (2026-10-02): GLM-5.3 Full takes its KV backing
-  directory through a driver-private path. The adapter copies
-  `kv_backing_directory` and `kv_backing_maximum_bytes` into the glm52 node
-  context
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_serving_adapter.c:666-667`,
-  fields at
-  `modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h:83-84`)
-  and the module reads them from there
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c:327-328`),
-  although the common host services already carry both values
-  (`include/sparkpipe/spark_module_abi.h:43-44`, filled by
-  `runtime/pack/driver_compiler.c:591-592` from
-  `runtime/serving_adapter_template.c:559-562`). No snapshot directory field
-  exists in the deployment, the host services or the binding configuration, so
-  KV storage policy stays in the driver and a persistence store has no common
-  source. Close it by reading the backing and snapshot directories only from
-  host services inside `SparkStageKvBindingInitialize`, adding a required
-  `kv_snapshot_directory` and byte budget to the deployment node and host
-  services, and deleting the glm52 node-context fields. Fleet proof: GLM-5.3
-  Full loads with the glm52 fields removed, and the binding log on every rank
-  names the host-service backing and snapshot directories.
-- Left out on purpose (2026-10-02): `tools/glm52_gen_deployment.py:112-113`
-  renders `kv_logical_page_capacity` equal to `kv_physical_page_capacity` (16
-  x 512 pages), so a GLM Full deployment rendered by it has zero spill pages
-  (`runtime/stage_kv_binding.c:138`) and every eviction under device pressure
-  discards cached KV. The lane renderer already adds `kv_backing_bytes //
-  KV_PAGE_BYTES` spill pages (`tools/glm53full_lane.py:133-134`, c7edad09e)
-  and refuses a non-positive backing size (`:164-165`); the TP8 generator was
-  never updated. Close it by rendering logical > physical in
-  `glm52_gen_deployment.py` the same way, or by deleting it in favour of the
-  lane renderer, proven by the binding load line
-  (`runtime/stage_kv_binding.c:256-257`) showing logical_pages >
-  physical_pages on every rank of the rendered deployment.
-- Left out on purpose (2026-10-02): Evicting a prefix-cache entry destroys it
-  in every tier: `SparkKvPageCacheEvictEntry`
-  (`cache/kv_page_cache.c:395-432`) calls `SparkKvPageCacheDiscardLogicalPage`
-  (`:326-352`), which invalidates the page-store copy (`:334-345`) and frees
-  the logical page. It runs when logical pages or entries run out (`:434-441`,
-  `:443-460`) and when a page cannot be made resident (`:899-910`); the only
-  demotion is the arena's per-page write-back into the process-lifetime page
-  store (`cache/kv_cache.c:1186-1229`). Once logical pages are exhausted an
-  evicted prefix is gone and its next request recomputes it. Required:
-  eviction demotes an entry to the next tier and discards only from the last
-  one. Close it by moving entry eviction onto the tier chain, proven on the
-  fleet by a run at 2x device pages where a prompt evicted from the device and
-  logical pools is restored from the lower tier with `cached_tokens` covering
-  it and tokens equal to an uninterrupted run.
-- Left out on purpose (2026-10-02): There is no host-memory KV tier. The
-  binding's only host KV memory is one pinned staging page
-  (`runtime/stage_kv_binding.c:87-91`, `:182-183`), and a page leaving the
-  device pool goes straight to the page-store file (`:172-176`), while
-  `README.md:261-263` says pages move between GPU memory, host memory, NVMe
-  and an external store. Pages that fit in host DRAM go to disk or are
-  discarded, and README describes a tier that does not exist. Close it with a
-  bounded host DRAM tier between the device pool and the NVMe store, sized by
-  a deployment field whose absence fails the load, proven on the fleet by a
-  spill run whose demoted pages are restored from host memory with the
-  page-store read count unchanged and tokens equal to an uninterrupted run.
-- Left out on purpose (2026-10-02): The arena has one evict hook and two
-  owners: the common binding installs the page store's
-  `SparkKvPageStoreWriteback` (`runtime/stage_kv_binding.c:172-173`), and
-  `SparkKvPagerInitialize` refuses with `BUSY` when any other hook is set
-  (`cache/kv_pager.c:340-344`) before installing its own (`:371-372`). The
-  pager therefore cannot attach to any binding arena, and wiring it means
-  choosing one owner of eviction. Close it by making the pager the only evict
-  hook with the surviving store as its backing, proven on the fleet by a spill
-  run whose write-backs are counted by the pager's statistics, not the page
-  store's.
-- Left out on purpose (2026-10-02): A deployment node with no
-  `kv_backing_directory` still spills KV under `/tmp` in three drivers:
-  glm5_next
-  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:1677-1685`),
-  laguna
-  (`modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c:790-798`)
-  and ling
-  (`modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c:648-656`).
-  71c2a7692 made the common binding refuse the load
-  (`runtime/stage_kv_binding.c:209-213`), but the deployment loader still
-  accepts a missing directory (`runtime/model_resident_deployment.c:204-206`,
-  `:656`), so these drivers silently put KV outside the KV partition. Close it
-  by making `kv_backing_directory` required in the deployment loader and
-  deleting the three fallbacks, proven by a residentd load on a Spark with the
-  field removed that fails with a named error for every driver. glm5_next and
-  laguna also size that backing to `page_count * payload_bytes` and ignore
-  `kv_backing_maximum_bytes`
-  (`spark_glm5_next_resident_decode_stage_module.c:1686`,
-  `spark_laguna_resident_decode_stage_module.c:799`), so spilled pages land
-  outside the deployment's declared storage path and budget.
-- Left out on purpose (2026-10-02): Every production page store is anonymous:
-  the common binding (`runtime/stage_kv_binding.c:176`) and the glm5_next
-  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:1581`,
-  `:1673`), laguna
-  (`modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c:786`),
-  ling
-  (`modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c:644`)
-  and dsv4
-  (`modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c:1326`)
-  modules set `SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS`, and the store then opens
-  an unnamed `O_TMPFILE` (`cache/kv_page_store.c:174-185`). Spilled KV dies
-  with the process, so a residentd restart or crash loses every spilled prefix
-  and the next request recomputes it. The named-path helper
-  `SparkKvPageStoreBuildPath` (`cache/kv_page_store.c:75-101`) has no caller.
-  Close it by spilling into the persistent store, proven on the fleet by a
-  prompt spilled before a residentd restart that hits after it with tokens
-  equal to an uninterrupted run.
-- Left out on purpose (2026-10-02): The page store verifies nothing it reads
-  back: a page counts as valid when its flag and generation match
-  (`cache/kv_page_store.c:1131-1136`), and the write path records only the
-  generation (`:424-440`), with no per-page digest. A torn write, bad sector
-  or stray write to the backing file restores wrong KV that attention consumes
-  without error. `cache/kv_snapshot.c` already hashes each segment with
-  SHA-256 on write (`:323`) and checks it on read (`:945-946`, `:985-986`),
-  and `cache/nvme_tier.c:1272-1291` checks a SHA-256 on landing. Close it by
-  storing a SHA-256 per spilled page and answering NOT_FOUND on mismatch,
-  proven on one Spark by corrupting a spilled page and observing a counted
-  digest mismatch followed by a recompute with correct tokens.
-- Left out on purpose (2026-10-02): Eviction ignores request priority and
-  deadline. Victims are the least recently used entry
-  (`cache/kv_page_cache.c:354-361`), the oldest resident entry (`:363-393`),
-  or in the arena the block with the lowest reference count and then reuse
-  value or recency (`cache/kv_cache.c:1094-1116`); the frame priority is
-  copied into the admission request (`cache/kv_page_cache.c:2137`) only to be
-  compared on retry (`:1904`). Pages pinned by a running transaction are
-  protected (`:317-324`, `cache/kv_cache.c:1147-1151`), but a high-priority
-  request's cached state is evicted as readily as a low-priority one's,
-  against `docs/archive/JIT_KV_DESIGN.md:81-86`. Close it by ranking victims
-  by owning-request priority and deadline before reuse value, proven on the
-  fleet by an oversubscribed run with two priority classes where the higher
-  class keeps its hits and its TTFT stays flat.
-- Left out on purpose (2026-10-02): A full backing store neither tightens
-  admission nor logs. When the page store has no free slot it returns
-  `CAPACITY_EXCEEDED` (`cache/kv_page_store.c:786-793`); the arena then drops
-  an unreferenced block's contents and bumps `write_back_degraded_block_count`
-  (`cache/kv_cache.c:1201-1210`), or the page cache discards its least
-  recently used entry and retries (`cache/kv_page_cache.c:899-910`). No
-  production code reads or prints that counter or `evicted_entry_count`
-  (`:430`), so a full store silently turns cached prefixes into recomputes.
-  Required (`docs/archive/JIT_KV_DESIGN.md:114-115`): a full store queues new
-  work and logs the transition. Close it by feeding store occupancy into
-  engine admission with a logged backing-full transition, proven on the fleet
-  by a run with a small `kv_backing_maximum_bytes` that logs the transition,
-  queues requests and completes every request without wedging.
-- Left out on purpose (2026-10-02): No code budgets or reports NVMe write
-  endurance. The page store and snapshot store count written bytes
-  (`cache/kv_page_store.c:439`, `cache/kv_snapshot.c:390`), but nothing reads
-  those counters and no limit stops spill writes once they pass the
-  drive-writes-per-day budget (`docs/archive/JIT_KV_RESPONSE.md:26-28` sets
-  0.1-0.3 DWPD). A thrashing workload wears out the KV NVMe with no signal.
-  Close it with a per-drive write budget in the deployment, enforced by
-  refusing further spill writes (recompute instead) once the rolling budget is
-  spent and reported in the wave timeline, proven on one Spark by a run with a
-  small budget that reports the write rate, stops spilling at the limit and
-  keeps serving.
-- Left out on purpose (2026-10-02): Copy-on-write of a partial prefix page and
-  snapshot restore run synchronously on the residentd submission thread while
-  the KV binding lock is held. `SparkStageKvBindingAdmit` holds
-  `binding->mutex` (`runtime/stage_kv_binding.c:315-328`) around the lane
-  prepare, which clones the page through `SparkKvPageCacheCloneMutable`
-  (`cache/kv_page_cache.c:972-1010`, called at `:1063`) into
-  `SparkKvPageStoreCopyResidentPage` (`cache/kv_page_store.c:629-663`):
-  blocking `cudaMemcpy` calls (`runtime/stage_kv_binding.c:17-19`) move the
-  whole page device to host to device through the store's one staging page
-  under the store mutex, and the copy answers `BUSY` while any spill transfer
-  is queued (`kv_page_store.c:649-651`). `SparkKvPageCacheRestorePrefix` is
-  called inline in the same prepare (`cache/kv_page_cache.c:2006-2014`); it
-  does not run today only because no production code attaches a snapshot
-  (`SparkKvPageCacheAttachSnapshot`, `:1480`, has test callers only). Nothing
-  answers `PENDING`; the engine polls `BUSY` with a 10 to 200 ms backoff
-  (Dynamic batching, JIT KV admission does not prefetch). Close it by making
-  copy-on-write a device-to-device copy ordered on the execution stream and by
-  reading restores outside the lock, with prepare answering `PENDING` until
-  the pages are in place; the fleet proof is a B16 decode run that admits
-  copy-on-write and restored prefixes mid-run with unchanged per-step decode
-  time and tokens identical to an uninterrupted run.
-- Left out on purpose (2026-10-02): The glm52 completion host function waits
-  on the same lock as admission. `SparkGlm52CompleteAsync` runs as a
-  `cudaLaunchHostFunc` host function
-  (`common/common_glm_stage_module/spark_glm_stage_module.h:161`) and calls
-  `SparkStageKvBindingFinish`
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c:1849`),
-  which locks `binding->mutex` (`runtime/stage_kv_binding.c:578`); the submit
-  path takes the same lock (`:512`, `:533`). While an admission holds it for a
-  copy-on-write copy, or for a restore once a snapshot is attached, every
-  finishing wave's host function blocks, and its stream runs nothing enqueued
-  after it until it returns. The stall has not been measured for GLM Full.
-  Close it by keeping restore and copy work out from under the lock the
-  completion path takes; the fleet proof is B16 per-step decode time with
-  prefix admissions arriving during decode, equal to the same run without
-  admissions.
-- Left out on purpose (2026-10-02): a block whose spill write-back fails is
-  degraded (`cache/kv_cache.c`, `SparkKvCacheArenaEvictResidentBlock`): its
-  contents are dropped, its backing is marked invalid, and a later restore of
-  it answers NOT_FOUND so the engine recomputes, never a wedge. The page-cache
-  entry that owns the block stays VALID, so every later request whose chain
-  matches it reaches the same missing page and recomputes again, and a
-  persistent disk error turns every spill into a recompute with no signal
-  beyond `write_back_degraded_block_count`, which nothing reports. (From
-  2026-10-01 to 2026-10-02 the degrade was limited to unreferenced blocks,
-  which made a failed write-back fail the request instead; that broke the B1
-  drop-and-recompute contract tested by `tests/test_jit_kv_wire.c` scenario 5
-  and was reverted.) Close it by evicting the owning page-cache entry and its
-  descendants when a write-back fails, and reporting the degraded count,
-  proven by a fleet run with injected write errors in which the first affected
-  request recomputes, later requests miss cleanly without touching the bad
-  page, and tokens match an uninterrupted run.
-- Left out on purpose (2026-10-02): The rule for a missing, corrupt or
-  unreadable KV page is not written down (JIT KV plan owner decision 5), and
-  the spill store GLM Full uses cannot detect corruption. A missing prefix
-  answers `NOT_FOUND`, and the engine tombstones the prompt and recomputes it
-  (`runtime/model_batch_engine.c:772-835`); the snapshot path turns a SHA-256
-  mismatch into `NOT_FOUND` (`cache/kv_page_cache.c:1863-1867`), but no
-  production code attaches a snapshot. The page store keeps no digest:
-  `SparkKvPageStoreExecuteRead` (`cache/kv_page_store.c:332-350`) copies
-  whatever `pread` returns into the KV pool, so a corrupt spill page is
-  attended as valid KV. A spill read error returns `IO_ERROR`, the engine
-  fails the request while every rank is connected (`model_batch_engine.c:882`,
-  `:901-902`), and the page keeps its backing record
-  (`kv_page_store.c:424-456`), so every later request whose chain matches it
-  reads the same page and fails again. Close it once the owner confirms the
-  rule: a per-page digest in the spill store whose mismatch evicts the entry
-  and its descendants and answers `NOT_FOUND`, plus the confirmed treatment of
-  read errors applied to the entry; the fleet proof injects a corrupt page and
-  a read error and shows recompute or failure exactly as the rule says, with
-  no later request reusing the bad page.
-- Left out on purpose (2026-10-02):
-  `include/sparkpipe/family/module/spark_module_open_kv_tier.h:27-31` treats
-  an unset `SPARK_<FAMILY>_STAGE_KV_STORE` as provider `none`: it opens a
-  disabled store client (`cache/store/stage_kv_client.c:15-16`) and returns OK
-  with the tier off. qwen38_max, qwen4_flash and muse_glimmer, the three
-  modules that include it
-  (`spark_qwen38_max_resident_decode_stage_module.c:596`,
-  `spark_qwen4_flash_resident_decode_stage_module.c:685`,
-  `spark_muse_glimmer_resident_decode_stage_module.c:372`), therefore load
-  with no JIT KV tier unless an operator sets the variable, and with the tier
-  off `spark_module_kv_prepare_frame.h:8-9` returns OK without resolving,
-  evicting or restoring a block. An environment default waives required JIT
-  behaviour (I03, I23). Close it by deleting the `none` provider so a missing
-  store fails module open with an error naming the variable, and before any of
-  these drivers loads again prove on the fleet that a pool smaller than the
-  working set evicts and restores blocks with tokens equal to an uninterrupted
-  run.
-- Left out on purpose (2026-10-02): The serving adapters overwrite the store
-  variable with `none` before loading the module:
-  `model-families/common/include/sparkpipe/spark_qwen38_pp_serving_adapter_common.h:111-115`
-  (called at `:737`) does it for gemma4, minimax, muse_glimmer, qwen38_max and
-  qwen4_flash, and
-  `modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c:682-686`
-  does it for qwen38_27b, whose module then opens a disabled client
-  (`spark_qwen38_27b_resident_decode_stage_module.c:1919-1923`). Because
-  `setenv` overwrites, no deployment can turn the JIT KV tier on for these six
-  drivers through the serving path, and minimax's module reads no store
-  variable at all. All six are refused at load today because none declares
-  PREFIX_REUSE (`runtime/model_serving_adapter.c:195-198`), so the waiver is
-  latent. Close it by deleting the `STAGE_KV_*` assignments in both adapters,
-  and before a driver loads again prove on the fleet that its log shows
-  `kv_tier_enabled` (`cache/store/stage_kv_client.c:46`) with a real provider.
-- Left out on purpose (2026-10-02):
-  `modules/gemma4_resident_decode_stage/source/spark_gemma4_resident_decode_stage_module.c:405-421`
-  has no JIT KV tier: an unset `SPARK_GEMMA4_STAGE_KV_STORE` becomes `none`
-  and returns OK, and any real provider fails with `kv_provider_unsupported`.
-  gemma4 serves only from the blocks the shared adapter allocator gives each
-  lane and can never evict or restore a block (I23, I25). Close it by moving
-  gemma4 onto the common KV frame or the common binding
-  (`runtime/stage_kv_binding.c`) with no `none` path, and before it loads
-  again prove on the fleet that evicted blocks restore with tokens equal to an
-  uninterrupted run.
-- Left out on purpose (2026-10-02): The common KV frame names each stored
-  block `kv/<model_fp>/<layout_fp>/r<rank>/s<sequence_id>/b<block>`
-  (`cache/store/stage_kv_client.c:50-56`). `model_fp` is a 64-bit FNV-1a hash
-  (`runtime/stage_module_common.c:2098-2107`) of the expected stage-pack
-  header
-  (`include/sparkpipe/family/module/spark_module_open_kv_tier.h:41-42`), and
-  the qwen38_max, muse_glimmer and qwen4_flash headers hold shapes only, with
-  no weight revision or content digest
-  (`spark_qwen38_max_stagepack_format.h:64-94`,
-  `spark_muse_glimmer_stagepack_format.h:38-68`,
-  `include/sparkpipe/spark_stagepack_format.h:83-113`). Two model revisions
-  with the same shapes write under the same key prefix, and the key names the
-  request's sequence id rather than its token prefix, so one request can never
-  restore a block another request stored. Close it by keying blocks on the
-  model revision and contract digest plus the engine's prefix identity, with a
-  cryptographic digest in place of FNV, and prove it on the fleet with two
-  revisions sharing one store without cross-hits and a second request
-  restoring the first request's prefix.
-- Left out on purpose (2026-10-02):
-  `include/sparkpipe/family/module/spark_module_kv_prepare_frame.h:8-9`
-  returns OK and leaves the frame untouched when the tier is off, and with the
-  tier on `:10-11` refuses any frame without a decode batch. qwen4_flash's
-  prefill path calls it with a prefill context
-  (`spark_qwen4_flash_resident_decode_stage_module.c:1993`), and a prefill
-  frame carries no decode batch (c9649ff02), so turning the tier on fails
-  every qwen4_flash prefill with `INVALID_ARGUMENT` and the tier-off early
-  return is the only working path. Close it by preparing prefill rows from the
-  prefill view in the template and deleting the tier-off return once the tier
-  is mandatory, then prove on the fleet that qwen4_flash prefills and decodes
-  with the tier on and a pool smaller than the working set, with tokens equal
+- Left out on purpose (2026-10-04): JIT-KV W3
+  (`docs/archive/JIT_KV_RESPONSE.md:47-49`) is partly done. The slot file, the
+  lane pager and the header-only `LmCache` are deleted, and every driver
+  serves through the binding's two stores: the per-engine spill page store
+  (`cache/kv_page_store.c`, digest-checked, quota reserved at open) and the
+  persistent snapshot store (`cache/kv_snapshot.c`). A parked prefix page
+  whose entry is not yet saved queues its snapshot save when the arena parks
+  it (`SparkStageKvBindingPark`, `SparkKvPageCacheSaveParked`), and the save
+  reads the spill copy. Still left: the spill store is an `O_TMPFILE` file, so
+  pages of running sequences cannot be reused after a restart.
+  `cache/nvme_tier.c` remains only for the unwired topology switch
+  (`scheduler/topology_switch.c`). The external provider client
+  (`cache/store/kv_store.c`, `cache/store/stage_kv_client.c`) is still built
+  into the common library although no driver calls it. Close it by making the
+  spill store write the snapshot format and deleting the provider client,
+  proven on the fleet by a spill, a residentd restart and a restore that hits
+  through the snapshot store alone.
+- Oversubscription is fleet-unproven. The engine admits lanes up to the
+  physical pages, and the arena parks the pages of lanes outside the running
+  wave one at a time through the page store and brings them back when the
+  lane rejoins, so a lane is parked and restored page by page rather than as
+  one contiguous transfer. Close it with a fleet backpressure run at 2x device
+  pages where parked lanes restore bit-exact at B1 and B16.
+- The format-2 KV snapshot tier (page files naming their parent, separate
+  state files, leaf-first eviction, ordered writes) is host-tested only.
+  Prove it on the fleet: a K3 -> GLM -> K3 swap that restores a 270K
+  conversation in under 15 s, a store of 8 GiB per rank that keeps the newest
+  conversations whole while older ones go tip-first, and an open that removes
+  the format-1 files of the previous release once.
+- Crash recovery of the KV snapshot store has not run on the fleet. The store
+  writes each file to a `.kvs-writing-` temporary, fsyncs, renames and fsyncs
+  the directory, and its open deletes leftover temporaries; the binding opens
+  it in production, but no kill-during-write case has run. Close it on the
+  fleet: kill -9 residentd on one rank while saves are queued, restart it, and
+  check that no `.kvs-writing-` file remains, `removed_temporary_count`
+  equals the leftovers, and the resent prompt restores with tokens identical
   to an uninterrupted run.
-- Left out on purpose (2026-10-02): With the tier on, the GDN record size is
-  the constant `MODULE_KV_GDN_RECORD_PLACEHOLDER_BYTES` (4096 in
-  `spark_qwen38_max_resident_decode_stage_module.c:41`,
-  `spark_muse_glimmer_resident_decode_stage_module.c:34`,
-  `spark_qwen4_flash_resident_decode_stage_module.c:51`), which sizes the plan
-  and the staging buffer
-  (`include/sparkpipe/family/module/spark_module_open_kv_tier.h:58`, `:73`).
-  The only eviction call passes `include_gdn_state` 0
-  (`common/common_kv_frame.h:168`) and every queued restore sets
-  `gdn_nonresident` 0 (`:316`), so no GDN recurrent or convolution state is
-  ever stored or restored. A hybrid sequence can be paged only while its
-  recurrent state stays in its slot; it cannot be moved, restored after
-  release or shared as a prefix (I24). Close it by sizing the record from the
-  real per-sequence GDN state and storing it with the sequence's blocks, and
-  prove on the fleet that a hybrid sequence evicted whole and restored
-  mid-decode matches the uninterrupted run token for token.
+- Eviction now prefers entries the snapshot store already holds (or cannot
+  hold), and queues a save for the older unsaved entries it passes over
+  (`SparkKvPageCacheSelectVictim`, `cache/kv_page_cache.c`), so a saved prefix
+  evicted from the device and logical pools restores from the snapshot store.
+  When no safe entry is in the scan window the oldest unsaved entry is still
+  discarded (counted as `evicted_unsaved` in the store close line) rather than
+  stalling admission on the save thread. Close it on the fleet with a run at
+  2x device pages where `evicted_unsaved` stays zero and an evicted prompt
+  restores with `cached_tokens` covering it and tokens equal to an
+  uninterrupted run.
+- Spilled prefixes on the common binding reach the snapshot store: a parked
+  page of an unsaved prefix entry queues its save from the spill copy, and
+  released sequences already queue theirs. Every driver now serves through the
+  binding (`inference/runner/stage_serving_adapter.c`). Not yet fleet-proven:
+  close it with a prompt spilled before a kill -9 of residentd that hits after
+  the restart with tokens equal to an uninterrupted run.
+- KV eviction follows request priority and deadline.
+  - Prefix-cache entries rank by the highest priority of the requests that
+    published or reused them, then by whether the snapshot store holds
+    them, then by age (`SparkKvPageCacheSelectVictim`,
+    `SparkKvPageCacheResidentVictim`).
+  - Each admission stamps its lanes' pages with the wave's priority and
+    deadline, and a sequence's release clears them.
+  - The arena parks the lowest priority first, then the latest deadline,
+    then by reuse value and recency
+    (`SparkKvCacheBlockIsBetterEvictionVictim`).
+
+  Two limits remain: a page shared across waves keeps the stamp of the
+  last admission that used it, and the deadline is the wave's latest.
+  Not yet fleet-proven: close it with an oversubscribed run with two
+  priority classes, where the higher class keeps its hits and its TTFT
+  stays flat.
+- A full backing store queues new work instead of failing it. The page
+  cache first relieves backing: it releases an idle restored page's record
+  or evicts an unused entry. If the store is still full (`KV-BACKING-FULL`)
+  for an admission whose lanes are all new sequences, and a live sequence
+  outside the wave could free backing, the lane transactions answer `BUSY`
+  (`SparkKvLaneTransactionsPrepare`, `cache/kv_page_cache.c`). The engine
+  then retries with backoff inside the in-flight budget; the binding's
+  arena line counts these as `backing_full_queued`. Two cases still answer
+  `CAPACITY_EXCEEDED`: nothing outside the wave is live, or a running lane
+  needs backing for its growth or restore. Waiting there could leave waves
+  stalled on each other for the whole budget. Not yet fleet-proven: close
+  it with a one-Spark run on a small backing quota where new requests wait
+  and complete as running ones finish, and no running request fails.
+- KV NVMe writes are metered, not limited. Every engine on the common binding
+  counts every spill, recurrent-state and snapshot write and raises one
+  `KV-WRITE-ALERT` per hour above 20 GiB/hour
+  (`include/sparkpipe/spark_kv_write_meter.h`). The alert shows in
+  `kv_store_report` and as `kv_write_alert_rank` on `/health`, but nothing
+  forwards it beyond the API's `/health` yet. Close it with a Spark run that
+  writes past the threshold and shows the alert line, the report fields and
+  the health rank.
+- Recurrent state is checkpointed sparsely (`cache_checkpoint_token_count` in
+  the adapter descriptor; K3 every 16384 tokens, GLM Flash every 4096). The
+  engine publishes every block as KV but keeps state only at stride multiples,
+  at the last block boundary of a prompt and at a finished reply's last
+  computed token, and it resumes only at those points. The binding sizes the
+  state store from the backing budget (`SparkStageKvBindingStateBudget`). A
+  stateful publish that deduplicates onto an existing stateless entry keeps
+  the stateless entry, so that checkpoint is lost and the next resume
+  recomputes (`stateful_dedup_lost_count`); the store has no record move
+  between logical pages. Follow-up turns resumed after the previous reply on
+  K3 and GLM Flash on the fleet on 2026-10-07 (b3d47b07f, before the common
+  runner). Close it with a record move in `SparkKvPageStore` and a repeat of
+  the follow-up-turn fleet run on the common-runner builds.
+- A store whose parks fail degrades to recompute-only prefix reuse.
+  - The first last-resort park failure (`KV-PARK-STALLED`) logs
+    `KV-STORE-DEGRADED` (`cache/kv_cache.c`).
+  - From then on, the page cache discards unused prefix pages instead of
+    spilling them (`SparkKvPageCacheDiscardInsteadOfSpill`), so they are
+    recomputed on their next use.
+  - New work whose admission still stalls waits for running sequences
+    (`BUSY`).
+  - The next successful park logs `KV-STORE-RECOVERED`.
+  - The binding's arena line reports `degraded`, `degraded_entries`,
+    `degraded_discards` and `park_stall_queued`.
+
+  A running lane that needs a park still fails with `IO_ERROR`, and
+  snapshot saves to the same disk fail on their own. Not yet
+  fleet-proven: close it on one Spark by remounting the backing directory
+  read-only mid-run; requests should keep completing through recompute,
+  and the log should show the degrade and the recovery.
 
 ## Prefix reuse (I23)
 
@@ -1128,60 +590,24 @@ Prefix reuse is required and non-compliant adapters are refused at load
 ([`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md), Prefix reuse is
 required).
 
-Left out on purpose (2026-10-02): the GLM-5.3 Full builds that have run on the
-fleet recompute every prompt from position 0. The deployed lanes predate the
-restore code: they ran with the `prefix_reuse` opt-out until 2026-10-01, and
-the glm52 restore (real page tables, index keys in the payload, prefix-aware
-continuity, the kernel view bound by the physical pool, the
-final-partial-block publish) exists only on the unmerged branches
-`fix/prefix-reuse-required` (#1416) and `kv/sequence-shard`. Every repeated
-system prompt and every follow-up turn is prefilled in full. Close it by
-passing the TP16 fleet I27 gate on those branches (below), merging them and
-deploying that build, proven by `usage.prompt_tokens_details.cached_tokens` >
-0 on repeated prompts in production logs with T1 exact. From 2026-09-28 to 2026-10-01 two opt-outs (the
-`SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE` skip in the batch engine
-and the deployment `prefix_reuse` field) let these adapters serve while
-silently recomputing every prompt; GLM-5.3 Full ran that way. The load
-check reads only the `PREFIX_REUSE` descriptor bit
-(`runtime/model_serving_adapter.c:195-199`) and asks for no I27 proof. Each
-adapter below lacks real restore, an I27 proof, or both:
+The load check reads only the `PREFIX_REUSE` descriptor bit
+(`runtime/model_serving_adapter.c`,
+`SparkDescriptorCheckRequiredCacheOperations`) and asks for no I27 proof.
+Production replies report prefix hits (`cached_tokens` above zero in the hub
+chat log, 2026-10-14), but no adapter on the stage runner has passed a fleet
+I27 session. GLM Full is listed under the common-code debt below; these
+adapters also need one:
 
-- Left out on purpose (2026-10-02): glm52 (GLM-5.3 Full) has restored prefixes
-  through the common binding since `c7edad09e` (branch `kv/sequence-shard`).
-  Lanes get real page tables (`SparkStageKvBindingClaim` and
-  `SparkStageKvBindingUploadPageTables` at
-  `spark_glm52_resident_decode_stage_module.c:2274` and `:2283`, read by the
-  wave at `:861`), and the DSA index keys are page payload region 1
-  (`:737-739`). A lane restored mid-sequence on a fresh slot passes continuity
-  (`runtime/stage_kv_binding.c:462-469`). The adapter declares `PREFIX_REUSE`
-  (`spark_glm52_serving_adapter.c:185`), so it loads without the I27 proof
-  this section requires. The only proof is `tools/glm52_prefix_probe.c`, a
-  single-GPU rank-0 run with collectives off that prints `rank-local
-  computation only` (`:345`). Until a TP16 fleet I27 run passes, restored
-  GLM-5.3 Full prefixes are unproven on the real lane. That run needs cold vs
-  warm token parity at B1 and B16, a copy-on-write mid-block prefix, abort,
-  reset, and an evicted prefix that comes back NOT_FOUND and is recomputed.
-- qwen38_27b has a GDN snapshot borrow for prompt checkpoints
-  (`SparkQwen38_27bServingPrefixBorrow`), but a borrow miss logs `recomputing`
-  and prefills over unrestored KV blocks and GDN state; decode-lane
-  checkpoints are never snapshotted; a publish that finds no free entry or
-  more than 64 blocks returns OK without storing; the eight snapshot entries
-  evict independently of the engine's index; a borrowed partial last block is
-  shared without copy-on-write.
-- dsv4 restores paged KV, index and compressor state but speculates without
-  the cache-publish work kind, so generated blocks after a multi-token step
-  were never published.
-- ling attends through an identity page table and keeps no KDA state per
-  cached prefix.
-- laguna has a real page table and transactions but no I27 proof, no state
-  capture hook and logical = physical page capacity.
-- Left out on purpose (2026-10-02): gemma4, minimax, muse_glimmer, qwen38_max
-  and qwen4_flash share the lane block allocator in
-  `model-families/common/include/sparkpipe/spark_qwen38_pp_serving_adapter_common.h:218-249`,
-  which gives each lane private blocks from a pool sized to resident capacity
-  x blocks per lane (`:731-732`, logical = physical); they have no borrow
-  path, and the same header forces the JIT KV tier off (`:111-115`). k3 has no
-  borrow path either.
+- ling3 (`modules/ling3_resident_decode_stage`) attends through the common
+  binding's page tables and stores its KDA state and convolution window per
+  cached prefix through the recurrent-state hook (`RecurrentCopy`,
+  `model-families/ling/source/ling_stage.cuh`), but has no fleet I27 proof.
+- laguna (`modules/laguna_tp16_resident_decode_stage`) restores prefixes
+  through the common stage binding
+  (`inference/runner/stage_serving_adapter.c`, `runtime/stage_kv_binding.c`)
+  with real page tables and separate logical and physical page capacity, but
+  has no fleet I27 proof: cold vs warm token parity at B1 and B16 on its TP16
+  lane.
 
 Related common-code debt:
 
@@ -1190,227 +616,84 @@ Related common-code debt:
   publish their tail. A completed request with an unpublished tail queues
   `CACHE_PUBLISH` before its release when its last step's tokens were all
   accepted (`runtime/model_batch_engine.c`,
-  `SparkModelBatchHandleDecodeCompletion`), the common binding serves the
-  publish-only frame (`SparkStageKvBindingPublishFrame`,
-  `runtime/stage_kv_binding.c`), glm52 declares `CACHE_PUBLISH`, and every
-  adapter must declare it (`runtime/model_serving_adapter.c`,
-  `SparkDescriptorCheckRequiredCacheOperations`). When a multi-token chain
-  (glm5_next) stops on EOS mid-chain, the lane has already advanced past the
-  tail and its KDA recurrent state belongs to that later position, so
-  publishing the tail would store mismatched state; the tail stays unpublished
-  and a follow-up turn recomputes it. Close the chain case by capturing or
-  rolling back recurrent state to the tail through the common recurrent-state
-  hook (I-05), and prove both cases with fleet I27 sessions whose second turn
-  extends a reply that ended on EOS mid-block, with `cached_tokens` covering
-  the whole first reply and tokens identical to an uncached run.
+  `SparkModelBatchHandleDecodeCompletion`). The stage serving adapter serves
+  the publish-only frame through `SparkStageKvBindingPublishFrame`
+  (`inference/runner/stage_serving_adapter.c`, `runtime/stage_kv_binding.c`),
+  and every adapter declares `CACHE_PUBLISH`
+  (`runtime/model_serving_adapter.c`,
+  `SparkDescriptorCheckRequiredCacheOperations`). When a decode chain of a
+  model with recurrent state (GLM Flash, K3, Ling, the Qwen 3.8 hybrids) stops
+  on EOS mid-chain, the stage runner has already run the remaining chain steps
+  (`inference/runner/stage_runner.cu`). The lane's recurrent state then
+  belongs to a later position, so the tail stays unpublished and a follow-up
+  turn recomputes it. Close the chain case by capturing or rolling back
+  recurrent state to the tail through the binding's recurrent-state hook
+  (`SparkStageKvBindingRecurrentCapture`). Prove both cases with fleet I27
+  sessions whose second turn extends a reply that ended on EOS mid-block, with
+  `cached_tokens` covering the whole first reply and tokens identical to an
+  uncached run.
 - Left out on purpose (2026-10-02): residentd's slot claim checks slot
   ownership and the lane's request id, generation and sequence id
-  (`node/model_residentd.c:714-783`), not position continuity. Continuity is
-  checked only inside adapters: the common `SparkStageKvBindingContinuity`
-  (`runtime/stage_kv_binding.c:507`) has one caller, glm52
-  (`spark_glm52_resident_decode_stage_module.c:2223`). An adapter that skips
-  the call accepts a submission whose position jumps ahead in a resident
-  sequence (I02). The fix: run the continuity check in residentd or the engine
-  for every adapter. It is closed by a fleet run in which a skipped-position
-  submission to a GLM Full lane gets an explicit continuity error.
-- Left out on purpose (2026-10-02):
-  `include/sparkpipe/family/module/spark_module_glm5_next_laguna.h` is a
-  family template named after the two drivers that include it
-  (`spark_glm5_next_resident_decode_stage_module.c:702`,
-  `spark_laguna_resident_decode_stage_module.c:270`). Besides pack-range and
-  manifest checks, it carries a second copy of KV code that
-  `runtime/stage_kv_binding.c` now owns: `PrefixRestorePending` (`:96-99`, the
-  predicate at `stage_kv_binding.c:421-424`) and `UploadPageTables`
-  (`:135-152`, the upload at `stage_kv_binding.c:546-570`). Its T1 trace
-  prints `G5N-T1` for laguna too (`:108`). `tests/test_dry_law.py:40-44`
-  checks family templates only for glm52, kimi, k3, qwen, dsv4, deepseek and
-  mimo25 tokens, so the file passes. Close it with the glm5_next and laguna
-  move onto the binding: delete the two duplicated functions, rename what
-  remains after its behaviour, and add `glm5_next`, `laguna` and `G5N` to
-  `FAMILY_TEMPLATE_TOKEN`. The proof is the dry-law test failing on the old
-  file and passing on the renamed one.
-- `build/libdsv4_pro_tp4_pp4_serving_adapter*` do not compile
-  (`SPARK_DSV4_MODEL_DSPARK_SPEC_STEP` undeclared), and
-  `build/libdsv4_tp4_pp4_serving_adapter.so` cannot be opened on GPU hosts
-  (undefined `SparkTpLaunchMeshHardware`).
-- Left out on purpose (2026-10-02): GLM Full declares prefix reuse on this
-  branch
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_serving_adapter.c:185`)
-  but has no fleet I27 proof. Its only restore evidence is
-  `tools/glm52_prefix_probe.c`. The probe runs the rank-0 pack on one GPU with
-  collectives disabled (`:98-114`), uses two lanes, and sets logical pages
-  equal to physical so nothing spills (`:109-110`). It prints "rank-local
-  computation only" (`:345`), prints its swapped-prefix sensitivity control
-  without failing when no lane changes (`:300-309`), and no Makefile target or
-  gate builds or runs it. The tree has no I27 session, scorecard or
-  `sessions/` file, so nothing compares restored with uninterrupted execution
-  at TP16 for B1 and B16, spill eviction and readback, a failed write-back,
-  abort mid-prefill, reset or residentd restart. Close it with a fleet I27
-  session on the 16-node lane that runs each case against an uninterrupted
-  control and requires identical tokens, `cached_tokens` above zero on every
-  expected hit, and exact T1.
-- Left out on purpose (2026-10-02): A reconnect or restart of residentd throws
-  away the engine's prefix index, and nothing rebuilds it from a durable
-  store. residentd gives each client connection a new generation
-  (`node/model_residentd.c:1232`), the pipeline folds it into the session
-  fingerprint (`runtime/model_pipeline_client.c:716-728`), and the engine
-  resets its prefix index when the fingerprint changes
-  (`runtime/model_batch_engine.c:2485-2499`, `SparkPrefixCacheReset` at
-  `:2471`); a restarted engine also starts empty (`:1256`), and
-  `cache/prefix_cache.c` has no load or rebuild path. The engine marks a lane
-  PREFIX only from its own index lookup
-  (`runtime/model_batch_engine.c:767-770`, `:2046-2051`), and PREPARE restores
-  only PREFIX lanes (`cache/kv_page_cache.c:2009`), so after a restart no
-  request reaches the snapshot store and every prompt is recomputed. Close it
-  by rebuilding the engine index from the ranks' snapshot store keys after a
-  reconnect, or by letting an index miss probe the store with the same
-  token-chain identity. Fleet proof: publish a 4K prompt, restart residentd on
-  all ranks, resend it, and see `cached_tokens` equal to the published prefix
-  with tokens identical to the first run.
-- Left out on purpose (2026-10-02): `SparkQwen38_27bServingPrefixPublish`
-  (`modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c:901-958`)
-  returns OK without storing when the prefix spans no block, more than 64
-  blocks or more blocks than the lane holds (`:906-907`), and when all eight
-  entries (`spark_qwen38_27b_resident_decode_stage_firmware.h:22`) are
-  referenced (`:927-928`). The caller treats OK as stored (`:1223-1232`): when
-  the lane borrowed an entry earlier in the request (`:978`), it points
-  `GDN_PREFIX_SNAPSHOT_OUT` at that entry, and the module writes the longer
-  prompt's GDN state into it
-  (`spark_qwen38_27b_resident_decode_stage_module.c:2727-2728`) while the
-  entry keeps the shorter prefix's identity and token count. A later hit on
-  that prefix restores the wrong recurrent state. The adapter is refused at
-  load (no PREFIX_REUSE, `spark_qwen38_27b_serving_adapter.c:343-345`), so
-  this is latent. Close it by returning an explicit status when nothing is
-  stored, never aiming a snapshot at a borrowed entry, and moving the entries
-  under the engine's prefix index, and prove it with a fleet I27 run whose
-  second request extends a borrowed prefix and whose third request hits the
-  original prefix with tokens equal to a cold run.
-- Left out on purpose (2026-10-02): On a borrow miss
-  `SparkQwen38_27bServingCoverSubmission` logs `qwen38_27b_prefix miss ... -
-  recomputing`, disarms the restore and continues
-  (`modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c:1001-1006`).
-  Nothing recomputes: the engine sends a prefix lane's rows from the cached
-  position (`runtime/model_batch_engine.c:767-770`), and
-  `SparkQwen38_27bServingCoverLane` (`:1027`) gives the lane fresh blocks for
-  the prefix positions, so the suffix attends over unwritten KV blocks and an
-  unrestored GDN state. The miss happens because the eight snapshot entries
-  evict on their own LRU (`:913-925`), not with the engine's prefix index.
-  Close it by failing the submission with `NOT_FOUND`, which the engine
-  already turns into a full prefill (`runtime/model_batch_engine.c:772-800`),
-  and prove it with a fleet I27 run that evicts a snapshot entry the engine
-  still indexes and checks tokens against a cold run.
-- Left out on purpose (2026-10-02): `tools/glm5_next_bench_wrap.py --api-log`
-  computes `all_requests_have_prefix_hits`
-  (`tools/glm5_next_bench_wrap.py:164`) but never uses it: `valid` comes from
-  the stream checks (`:58`, `:132-174`) and the exit code follows `valid`
-  (`:191`). A run in which every request missed the prefix cache
-  (`cached_prompt_tokens` 0) reports valid and exits 0, so a warm-cache
-  measurement silently becomes a cold one, against I23 (a benchmark requiring
-  a hit fails on a miss). Close it with a required-hit mode that sets `valid`
-  false and names every request with `cached_prompt_tokens == 0`, used by
-  every warm-cache session, and prove it with a fleet warm session against a
-  freshly restarted engine that fails and names the missed requests.
-- Left out on purpose (2026-10-02): Score-dump row keys are not forgotten when
-  a lane is restored. `SparkScoreDumpKeysAdvance`
-  (`src/spark_score_dump.c:67-87`) keeps one key chain per resident slot and
-  continues it for any position up to the slot's known length. No function
-  resets a slot (`include/sparkpipe/spark_score_dump.h:103-144`), and neither
-  caller tells it that a restored prefix now owns the slot
-  (`spark_glm52_resident_decode_stage_module.c:1540`,
-  `spark_glm5_next_resident_decode_stage_module.c:4390`). A restored lane
-  whose first row is at position P can land on a slot that last held a
-  different sequence of at least P tokens. That row gets a key chained from
-  the other sequence and the KEY_VALID flag, although
-  `docs/SCORE_DUMP.md:31-33` says it is written keyless. The end record then
-  undercounts keyless rows, and the probe lookup uses a wrong key; A/B runs
-  are safe only because the corpus rule prevents hits and
-  `tools/ab_receipt.py:129-133` refuses cached tokens. Close it by keying the
-  chain on the sequence id as well as the slot, or by forgetting the slot when
-  a lane binds a new sequence at a non-zero position. The proof is a fleet
-  score-dump run that restores a prefix onto a slot last used by a different
-  sequence, with the end record counting those rows as keyless.
-- Left out on purpose (2026-10-02): glm5_next and laguna were not moved onto
-  `runtime/stage_kv_binding.c`, so each keeps a private copy of the KV
-  plumbing. That copy covers model table, arena and page store setup
-  (`spark_glm5_next_resident_decode_stage_module.c:1596-1724`,
-  `spark_laguna_resident_decode_stage_module.c:726-829`), page-table builds
-  (`:1418-1440`, `:656-677`), lane transactions (glm5_next `:1873`, `:5861`,
-  `:6515`, `:6623`; laguna `:860`, `:1467`, `:1652`) and the upload in the
-  driver-named family header. Fixes made in the binding do not reach these
-  copies. Both drivers still fall back silently to
-  `/tmp/sparkpipe_<model>_kv_<revision>` when the deployment leaves
-  `kv_backing_directory` null (glm5_next `:1677-1685`, laguna `:790-798`; ling
-  the same at `spark_ling_resident_decode_stage_module.c:648-656`), which
-  `runtime/model_resident_deployment.c:205-206` allows. The glm5_next module
-  also sizes its backing quota from its page count (`:1686`) instead of the
-  stored deployment `kv_backing_maximum_bytes` (`:464`). The binding has no
-  hook for per-prefix recurrent state
-  (`include/sparkpipe/spark_stage_kv_binding.h:20-46`), and glm5_next's KDA
-  layers need one before it can move. Close it by adding that hook, moving
-  both drivers onto the binding and deleting the private copies; the proof is
-  each driver refusing a deployment with no `kv_backing_directory` and passing
-  its TP fleet I27 run (cold vs warm token parity at B1 and B16).
-- Left out on purpose (2026-10-02): `SPEC.md:223` says the orchestrator does
-  not understand KV layout or JIT-KV policy and that both belong inside model
-  firmware. `SPEC.md:157-159` lets a module own resident KV pages, and
-  `SPEC.md:252` forbids forcing KV internals into the orchestrator.
-  `sparkpipe_invariants.md` gives cache transactions and ownership to common
-  code (I02, `:23-26`) and makes JIT and prefix reuse common behaviour (I23,
-  `:120-122`), and the tree implements them in `runtime/stage_kv_binding.c`
-  and `cache/`. The two contracts that AGENTS.md and this file point to
-  therefore disagree on who owns KV. The fix: rewrite SPEC.md section 6 and
-  the module ABI paragraphs so that KV pages, cache transactions and JIT-KV
-  policy belong to common code, as the invariants say.
+  (`node/model_residentd.c`), not position continuity. Every adapter now
+  checks continuity through the common `SparkStageKvBindingContinuity`
+  (`inference/runner/stage_serving_adapter.c`), but no fleet run has shown it.
+  It is closed by a fleet run in which a skipped-position submission to a GLM
+  Full lane gets an explicit continuity error.
+- Left out on purpose (2026-10-02): GLM Full declares prefix reuse
+  (`modules/glm53_full_tp16_resident_decode_stage/source/spark_glm53_full_tp16_stage_serving.c`,
+  `PREFIX_REUSE`) and restores prefixes through the common binding
+  (`inference/runner/stage_serving_adapter.c`, `runtime/stage_kv_binding.c`),
+  but no fleet I27 session has passed at TP16. Run `tools/i27_session.py`
+  against the GLM Full TP16 API with `--restart-command` and
+  `--writeback-fault-command` hooks and pin its PASS receipt. It covers B1 and
+  B16 cold/warm parity, a copy-on-write mid-block prefix, abort mid-prefill,
+  eviction and recompute, residentd restart and a failed write-back. Each case
+  runs against an uninterrupted control with identical tokens and
+  `cached_tokens` above zero on every expected hit, plus exact T1.
+- Left out on purpose (2026-10-02): the engine keeps its prefix index across
+  rank-session changes and reloads it from `prefix_index_path` at start, but
+  no fleet run has shown a restored prefix after a residentd restart. Fleet
+  proof: publish a 4K prompt, restart residentd on all ranks, resend it, and
+  see `cached_tokens` equal to the published prefix with tokens identical to
+  the first run.
 
 ## Dynamic batching
 
 - GLM Flash's shared batch scheduler already selects arbitrary counts up to
   its configured limit; a power-of-two kernel bucket is not an admission rule.
-  Both GLM deployment generators currently set active/resident capacity to 16.
-  Qualify explicit larger capacities with arrivals/completions and memory gates.
-  The current module reserves every sequence's full context in its internal KV
-  and index pools. At 32K context its allocation formulas reserve 10.685 GiB
-  for 16 sequences or 66.779 GiB for 100, per full-model rank, including KDA
-  state/windows but excluding weights, workspaces, transport and metadata.
-  These are code-derived sizes, not live memory measurements. See
-  `SparkGlm5NextBuildPageTable` and the cache allocation code in
-  `spark_glm5_next_resident_decode_stage_module.c`. Reuse the shared paged-cache
-  contracts to admit against resident demand; do not merely raise the limit.
-- The KV page cache keeps every published block until an allocation finds the
-  logical pool full, then evicts the least recently used unreferenced entry
-  from the head of its LRU list. Making a page resident when the resident pool
-  is full still scans every resident slot for a victim. Nothing reports how
-  full the pool is; add used pages, retained entries and evictions to the wave
-  timeline.
-- Publish one logical resident model driver with prewarmed B1-B1024
-  specializations rather than batch-specific resident identities.
-- Batch weight amortization (perf-program rock R4): take the WS/native path
-  from two rows up, with k-tile pipelining, so a batch reads each weight
-  once.
-- `SparkContinuousBatchStep` (`scheduler/continuous_batch.c`) has no caller
-  outside `tests/test_continuous_batch.c`. Delete it or wire it.
-- Select the smallest validated specialization for effective rows, including
-  speculative verification rows, while preserving sequence and KV identity.
+  The GLM deployments set active and resident capacity to 16 or less
+  (`deployment/glm5_next_tp16/model_resident.json`,
+  `deployment/glm53full_tp16_lane6/model_resident.json`), while the stage
+  serving adapter allows up to `SPARK_STAGE_SERVING_MAX_LANES` (128). KV is
+  paged from the weightd pool through `runtime/stage_kv_binding.c`, so a
+  sequence no longer reserves its full context. Qualify explicit larger
+  capacities with arrivals/completions and memory gates before raising the
+  limit.
+- Making a page resident when the resident pool is full still scans every
+  resident slot for a victim instead of taking the least recently used
+  unreferenced entry; pool fullness, retained pages, evictions and spill
+  traffic are now reported in the API's `kv_store_report`.
+- Prewarm the decode graphs a deployment admits at load. The stage runner
+  captures a graph per row count the first time that count runs, and only up
+  to 16 rows with one row per sequence (`STAGE_RUNNER_GRAPH_ROWS`,
+  `StageRunnerGraphEligible`, `StageRunnerStep` in
+  `inference/runner/stage_runner.cu`). The first wave at each count pays the
+  capture, and wider waves run eager.
 - Qualify mixed arrivals, priorities, prompt lengths, shared prefixes, cache
   pressure, cancellation, and starvation bounds.
-- Make priority and deadline enforcement span admission, prefill, decode,
-  speculation, gang scheduling, model promotion, and storage I/O.
-- Dense projections above eight rows leave the skinny kernel for
-  tensor-core GEMM with a different accumulation order, and batched latent
-  attention sums in a different order from the per-head kernel, so prefill
-  and batched-decode logits are not bitwise equal to B1. Extend the
-  row-blocked kernels that keep the skinny order wherever they match the
-  tensor-core throughput.
-- Provider-network replay verification needs batched rows to be bitwise
-  equal to B1: a verifier replays a request alone and must reproduce what a
-  provider served at B8 or B256. TensorFold (MIT, `ashhart/TensorFold`) shows
-  the rules: the reduction split is fixed by the weight's shape and never by
-  the row count, attention tiles are fixed by absolute key position with an
-  fp32 online softmax merged in key order, router ties break by token id, and
-  cross-GPU partial sums are added in rank order. It also compares multi-row
-  with one-row output at load and turns drafting off when they differ. Adopt
-  the same rules, and make that load-time comparison the gate for verified
-  serving.
+- Priority and deadline reach admission, prefill and decode scheduling (the
+  batch engine selects by priority, then earliest `deadline_ms`, and a prefill
+  or decode submission carries its latest lane deadline to residentd as
+  remaining time), and KV eviction ranks by request priority. Still open:
+  speculation, gang scheduling and KV snapshot I/O ignore both; the binding's
+  restore worker and saver run in queue order (`runtime/stage_kv_binding.c`).
+- Dense projections above sixteen rows (`LM_SKINNY_ROWS_WIDE`,
+  `inference/kernels/skinny.cuh`) leave the skinny kernel for tensor-core GEMM
+  with a different accumulation order. The tensor-core latent attention for
+  wide waves (`inference/kernels/attn_shard_prefill.cuh`) also sums in a
+  different order from the per-row decode kernel. Prefill and batched-decode
+  logits are therefore not bitwise equal to B1. Extend the row-blocked kernels
+  that keep the skinny order wherever they match the tensor-core throughput.
 - No gate checks batch invariance. The COMPSEC-17 run of 2026-09-28
   (`qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff/REPORT.md`)
   sent the same 17 prompts concurrently four times: each run differed from
@@ -1418,587 +701,260 @@ Related common-code debt:
   each other. Add a gate that replays a fixed prompt set sequentially and
   concurrently and requires byte-identical completions, and run it with
   every serving release until the batch kernels pass it.
-- JIT KV admission does not prefetch. The serving `prefetch` hook runs
-  cache-prepare admission only when residentd receives a submission
-  (`SparkModelServingAdapterPrepareSubmission` in `node/model_residentd.c`),
-  so a restore starts at dispatch, not when the engine queues the request.
-  A submission that cannot be prepared answers `BUSY`, and the batch engine
-  retries it with a 10 to 200 ms backoff, up to 10,000 times
-  (`runtime/model_batch_engine.c`). The deadline-ordered restore in
-  `cache/kv_pager.c` (`SparkNvmeTierRequestDemandDeadline`, called at `:691`)
-  has no production consumer: `modules/dsv4_resident_decode_stage/source/spark_dsv4_jit_kv.c`
-  is built only into `tests/test_jit_kv_wire.c` (`Makefile:1652-1653`), not
-  into the dsv4 module, and calls no pager function; glm5_next and the common
-  binding do not use the pager. Issue restore demand from enqueue, admit
-  against restore bandwidth, and dispatch a lane only after its restore
-  completes.
+- Restore hints are fleet-unproven. When the engine first finds a cached
+  prefix for a queued request, it sends every rank a `CACHE_HINT` (resident
+  IPC kind `CACHE_HINT`). residentd hands it to the adapter's `cache_hint`,
+  and the stage serving adapter (`StageServingCacheHint`,
+  `inference/runner/stage_serving_adapter.c`) passes it to the binding as a
+  `CACHE_HINT` admission. The admission queues the restore so it runs while
+  the request waits for dispatch. Close it on the fleet: a queued request
+  whose prefix was evicted to the snapshot store shows a TTFT that drops by
+  the restore time against a run with hints dropped.
 - A prefix-cache hit reuses KV and KDA state computed however the source
   request ran: one-row prefill for prompt tokens, batched decode rows for
   generated ones. Until batched rows equal B1, a warm and a cold run of the
   same prompt can differ (#1230). Make them equal, or keep checkpoints of
   generated tokens out of reuse for verified requests.
-- glm5_next: a row's attention still depends on the other rows in its wave.
-  The wave's longest row decides split-KV for every row, and a row at or
-  below 2,048 tokens, in a wave whose longest row is past 2,048, attends
-  through the 2,051-slot selected list (all its complete pools, then its
-  tail) instead of densely. Either way its partitions and summation order
-  differ from a one-row wave's. Graph and eager waves now agree with each
-  other, but not with the row run alone. Attention tiles fixed by absolute
-  key position (the TensorFold rule above) remove this.
-- glm5_next: no GPU test compares a replayed decode graph's logits with an
-  eager wave's at the same context. Host tests cover the choices (split-KV,
-  DSA selection, pool expansion) and run the selection kernels. Add the
-  logits comparison to the CUDA validation at contexts 63, 64, 2,048, 2,049
-  and 4,099.
-- Left out on purpose (2026-10-02): Admission does not account for restore
-  bandwidth. The engine bounds lanes by physical pages and in-flight page
-  demand only (`runtime/model_batch_engine.c:1758-1786`); the rule that admits
-  work only while queued restore bytes over measured drive bandwidth fit the
-  slack (`docs/archive/JIT_KV_RESPONSE.md:21-24`) exists only in the unwired
-  pager (`cache/kv_pager.c:474-493`, bandwidth estimate at `:78-94`), where a
-  zero `restore_slack_microseconds` also switches it off. Nothing bounds how
-  many restore bytes are admitted at once. Close it by measuring the backing
-  drive's sustained read rate at startup and admitting against it in the
-  common engine with no off switch, proven on the fleet by a burst of
-  spilled-prefix requests whose admitted restore bytes per second stay at or
-  under the measured rate while the decode step time of running lanes is
-  unchanged.
-- Left out on purpose (2026-10-02): `SparkModelBatchRefreshQueuedPrefix`
-  (`runtime/model_batch_engine.c:1578-1583`) fails a request with
-  `CAPACITY_EXCEEDED` when its cached prefix ends mid-block and the matched
-  pages, plus a copy page and a new page, exceed `kv_physical_page_capacity`.
-  It does not fall back to the block-aligned part of the match, or to
-  recomputation, so a request that fits the pool when computed is lost (I20,
-  I23). `tests/test_model_batch_engine_mock.c:760-791` asserts this failure as
-  expected. The fix: when the copy page does not fit, truncate the match to
-  whole blocks (or to zero), recompute the tail and report the smaller
-  `cached_tokens`. It is closed by a fleet run on a lane with a minimal
-  physical page pool in which every repeated partial-block prompt completes.
-- Left out on purpose (2026-10-02): When a rank rejects a submission with
-  `CAPACITY_EXCEEDED`, the batch engine fails every request in it
-  (`runtime/model_batch_engine.c:882-899`). Only `BUSY`, or `IO_ERROR` while
-  ranks are disconnected, is retried. The engine sizes prefill spans from the
-  block boundary and the `MULTI_BLOCK_PREFILL` bit alone
-  (`SparkModelBatchPrefillSpan`, `:1591-1602`). It never shrinks a refused
-  span or requeues it after an eviction, so a request that fits in smaller
-  spans is lost (I20). The fix: requeue a capacity-refused prefill with a
-  smaller span, and fail only a one-block span that cannot fit an empty pool.
-  It is closed by a fleet run with long prompts on a small physical pool in
-  which every request completes.
-- Left out on purpose (2026-10-02): `SparkModelBatchPrefillSpan`
-  (`runtime/model_batch_engine.c:1600-1602`) lets a descriptor bit choose
-  common chunking policy. With
-  `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_MULTI_BLOCK_PREFILL`, a span grows
-  to `max_prefill_rows`. Without it, every prefill span stops at the next
-  cache block boundary. Only glm52 declares the bit
-  (`spark_glm52_serving_adapter.c:184`), so glm5_next prefills one block per
-  span whatever the deployment's prefill row bound (I02, I20). The fix: remove
-  the bit, size spans from `max_prefill_rows` and page demand for every
-  adapter, and require every adapter to execute multi-block spans. It is
-  closed by a glm5_next fleet run with output tokens identical to the
-  one-block baseline and TTFT recorded for both.
+- GLM Flash: no GPU test compares a replayed stage-runner decode graph's
+  logits (`StageRunnerStep`, `inference/runner/stage_runner.cu`) with an eager
+  wave's at the same context. `tests/test_glm5_next_graph_regime.py` checks
+  only `spark_glm5_next_graph_regime.h`, which no production code includes.
+  Add the logits comparison to the CUDA validation at contexts 63, 64, 2,048,
+  2,049 and 4,099.
+- Restore bandwidth is bounded only by construction: one binding worker reads
+  restores one job at a time, so restore reads never exceed one sequential
+  stream per engine, but nothing measures the drive or admits against it.
+  Close it on the fleet with a burst of spilled-prefix requests whose restore
+  bytes per second stay at or under the drive's measured rate while the decode
+  step time of running lanes is unchanged.
 
 ## Model contracts
 
 - Add an exact checkpoint-derived contract for MiniMax H3; `model_contracts/`
   has none.
-- Remove legacy model names from generated release inventories and operator
-  surfaces when their replacement contracts land.
-- `tools/generate_recipe.py` (`MODELS`, via `glm52.json`) and
-  `examples/recipes` still generate GLM 5.2 (`zai-org/GLM-5.2`) recipes,
-  although the owner said on 2026-09-28 that GLM 5.2 weights are deprecated.
+- Remove legacy model names from operator surfaces: `site/index.html` still
+  lists DeepSeek V4 Pro, Qwen4 Flash and MiniMax H3, whose drivers are gone,
+  and `deployment/minimax_text_tp4` remains.
+- `model_contracts/glm53_full_authoritative.json` carries no rope theta or
+  interleave flags, so `tools/generate_recipe.py` reads them for the GLM Full
+  recipes from `spark_glm52_model.h`. Add them to the contract's geometry at
+  its next re-freeze (a contract edit changes the `CONTRACT_SHA256` every GLM
+  Full build pins) and read them from there.
 - Retain independent numerical, transport, memory, and performance gates for
   every model and precision route.
-- Complete and qualify the K3 BF16-activation/MXFP4-weight asymmetric GEMM,
-  route gather, in-load E8M0 decode, and full expert-path comparison.
-- Bind GLM 5.2 dense gate, up, down, and router-logit tensor-core linear plans
-  at startup before required-stage validation.
+- K3's BF16-activation/MXFP4-weight expert paths run in production. Decode
+  uses the skinny experts. Wide waves use `LmCellMmaExperts`
+  (`inference/kernels/cell_mma.cuh`) and `LmGemmKernel<LmBf16Format, LmMxfp4>`
+  (`inference/llms/kimi_k3/unity.cu`), with UE8M0 scales decoded in the load
+  and the route build in `inference/kernels/route.cuh`. Only the skinny path
+  has a device test against an f64 reference
+  (`tests/cuda/skinny_mxfp4_cuda.cu`); the host tests stand a shim in for
+  `LmCellMmaExperts`. Qualify the tensor-core expert paths and the full expert
+  path (route, gate/up, down, combine) against a dequantised reference at
+  prefill widths.
 
 ## Speculation
 
-- The GLM 5.3 Flash MTP draft layer keeps a one-page KV per execution slot
-  and attends only within its current draft chain, not the sequence
-  history. Give it per-sequence draft KV and measure the acceptance change.
 - Tree verification is not wired. The policy engine resolves trees
   (`SparkSpeculationPolicyResolveVerifierTree`), but no caller passes one.
   Sequence state stores chains, the seam collapses DFT3 trees to one chain
   (`SparkSpeculationSeamExtractChain`), and no verify frame applies a
   tree-attention mask. `spark_speculation_tree.h` has no production includer.
 - Build multi-drafter composition over the seam, after the single-drafter
-  agreement matrix is measured: verify the DFT3 tree instead of collapsing
-  it, allow local plus remote sources together (qwen38_27b rejects the mix),
-  and attribute acceptance per `source_bit`.
-- `SPARK_QWEN38_27B_SPECULATORS=0x4` (local DFlash2) fails initialization
-  with `SCHEMA_ERROR`, with or without a bridge, because the seam classes
-  DFLASH2 as a remote tap source.
-- qwen38_27b remote drafting is synchronous: a decode frame, then a blocking
-  20 ms `DraftRemoteChain`, then verify. Pipeline it one round ahead.
-- glm5_next accepts `draft_bridge_host`/`draft_bridge_port` and the tap-free
-  remote sources but has no `DraftRemoteChain` call site.
-- `inference/kernels/speculate.cuh` is included by four unity files and
-  launched nowhere.
-- `Makefile:791` passes a vestigial `-DSPARK_DSPARK_TARGET_GLM52=1` to
-  `spark_speculation_policy.o`, which no longer includes the header that
-  reads it.
-- The qwen38_max provider-slot shim is the only user of
-  `spark_speculation_provider.h`; move it onto the seam and delete the slot.
-- `tests/test_speculation_tree_resolve.c`,
-  `tests/test_speculation_headers_coexist.c` and
-  `tests/test_qwen38_27b_remote_spec.c` are not built by the Makefile.
-- `tools/fleet_serve.sh` defaults `SPARK_GLM5_NEXT_MTP=1` (`:66`, `:96`),
-  which fails glm5_next initialization at TP > 1.
-- glm5_next resident decode chains run no MTP draft: a frame of more than
-  one step skips `SparkGlm5NextMtpDriveDraft`, and the engine asks for chains
-  whenever the adapter offers them, so with MTP enabled drafts only run on
-  single-step frames. Choose between MTP and chains per batch in the engine,
-  or verify drafts inside a chain.
-- glm5_next has no DFlash2 source. Its hidden-tap capture (#931, `e60f690b`:
-  HC-mean of the post-MLP residual at global layers 5/14/24/33/42 into a
-  per-lane host ring) left the module with the whole-step graph engine
-  (`096f45ed`). The ring, its gate and the adapter's DFlash2 offer outlived
-  it; they are gone too, so a DFlash2 request is refused as unavailable.
-  Restore the capture inside the graph engine, with the ring and gate from
-  `e60f690b`, when a GLM 5.3 Flash DFlash2 drafter is to be qualified.
-- Left out on purpose (2026-10-02): there is no context-lookup drafter, so a
-  reply that re-emits text already in the request pays full decode cost for
-  every token. Prompt-lookup (n-gram) speculation is a proven technique. Its
-  target case is code and document edits, where the reply repeats most of the
-  input with small changes and drafts are accepted for long stretches. A
-  common, model-neutral draft source in the engine
-  (`runtime/model_batch_engine.c`) matches the longest suffix of the request's
-  own token history (prompt plus generated) and proposes the tokens that
-  followed it last time, with no drafter model and no GPU cost. The draft
-  length adapts: it grows while drafts are accepted and drops to none after a
-  miss. All k drafted tokens are verified in one multi-row wave, not serially.
-  The wave commits the longest prefix whose greedy tokens equal the draft,
-  plus the model's own token at the first mismatch, and rejected positions are
-  rolled back (free for attention KV; KDA and GDN state need the common
-  recurrent-state hook, I-05). It is built for the core drivers first (glm52,
-  glm5_next, k3) and shares the common speculation seam and the multi-row
-  verify head with the built-in MTP drafters. The verify math on closed PR
-  #1398 (k+1 certified rows, accepted-prefix commit) is the starting point.
-  Multi-row verify numerics differ from a 1-row decode step by the reordering
-  floor, so speculative output is judged against the floor like batched
-  output. Close it with a fleet session on GLM-5.3 Full of edit-style requests
-  (a long file re-emitted with small changes), reporting the acceptance-length
-  distribution, verify-wave cost and tok/s against plain decode, the accuracy
-  gate as excess over the floor, and plain prompts with no matches showing no
-  slowdown beyond noise.
+  agreement matrix is measured: verify the DFT3 tree instead of collapsing it,
+  allow local plus remote sources together, and attribute acceptance per
+  `source_bit`. `SparkSpeculationDrafterMix`
+  (`src/spark_speculation_drafter_mix.c`) only switches between a primary and
+  a fallback source and has no production caller.
+- Context-lookup speculation has its engine half, but no model serves it. The
+  engine (`runtime/model_batch_engine.c`) keeps a 3-gram chain index over each
+  request's prompt and generated tokens (`SparkSpeculationLookupIndex`) and
+  drafts up to 8 tokens with the adaptive depth of
+  `spark_speculation_depth.h`. It sends a wave with drafts as one decode
+  submission flagged `SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY` and commits
+  the longest matching prefix plus the model's token at the first mismatch. It
+  counts verify lanes, drafted and accepted tokens in the API's
+  `engine_measurements` line. The page cache and stage binding keep the verify
+  rewind window (`cache/kv_page_cache.c`, `runtime/stage_kv_binding.c`). The
+  engine drafts only for an adapter that declares `SPECULATIVE_VERIFY`, and
+  none does. The glm52 adapter that ran verify frames with the certified head
+  on every row was deleted with the per-family modules. The stage serving
+  adapter (`inference/runner/stage_serving_adapter.c`) maps no verify frame.
+  Still to do:
+  - a verify wave on the stage runner with the certified head on every row,
+    declared by GLM Full, GLM Flash and K3, plus restoring recurrent state to
+    the accepted row for GLM Flash and K3 through the binding's
+    recurrent-state hook;
+  - verify waves on the graph path: the runner captures graphs only for one
+    row per sequence;
+  - multi-row verify numerics differ from a 1-row decode by the reordering
+    floor, so speculative output is judged against the floor like batched
+    output. Close it with a fleet session on GLM-5.3 Full of edit-style
+    requests (a long file re-emitted with small changes). Report the
+    acceptance-length distribution, verify-wave cost and tok/s against plain
+    decode, and the accuracy gate as excess over the floor. Plain prompts with
+    no matches must show no slowdown beyond noise.
 
 ## Packaging and provenance
 
+- License follow-ups (2026-10-18; the code is Apache-2.0 and NOTICE covers
+  every third-party file kept in the tree):
+  - The HY4 reference tools and module were first written against
+    AngelSlim's hyv4 patch, which states no license. NOTICE now credits the
+    MIT implementation llama.cpp merged at 49c0dc82 (src/models/hy-v4.cpp);
+    a line-by-line check of the tools and module against it is open.
+  - The serving obligations of each model license (K3's display and revenue
+    conditions, the Qwen 3.8 licenses, OpenMDW for Laguna, the NVIDIA Open
+    Model Agreement for NVIDIA checkpoints) are not yet written down in one
+    place.
+  - The ds4-eval fixtures keep GPQA questions in plain text, which GPQA's
+    dataset card asks users not to publish; a decision on keeping only ids
+    is open.
 - Add the upstream implementation commit to stage-pack provenance at the next
   pack format revision.
 - Publish one synchronized pack-environment manifest for Python, CUDA, and
   model conversion dependencies.
-- Generate compact deployment specifications for every released model package.
-- Replace the 33 per-family `tools/*stagepack*.py` packers with the
-  universal packer ([`docs/DRY_PACKBUILDER_PROPOSAL.md`](docs/DRY_PACKBUILDER_PROPOSAL.md)): one CLI, one codec table,
-  per-family byte-compatible emitters, each gated on byte identity with its
-  existing packs.
-- The GPU validator digest (`SPARK_<FAMILY>_CUDA_VALIDATOR_SHA256`, computed
-  in each module Makefile, validate script and publish wrapper) hashes only
-  the validator's `.cu`. The validators include templates from
-  `include/sparkpipe/family/validation/`, so a template edit changes what
-  validates a pack without changing the digest its receipt records. Hash the
-  `.cu` together with the templates it includes, in one helper every pin
-  calls.
-- Left out on purpose (2026-10-02): No GLM-5.3 Full TP16 deployment is checked
-  in. The fleet lane renders its tree at run time from
-  `tools/glm53full_lane.py` (TP16 at `:8`; pages derived from
-  `--max-sequence-positions` at `:104`; logical = physical + backing spill at
-  `:133-134`). The renderer is driven by `tools/glm53full_lane.sh`, which
-  requires `GLMFULL_POSITIONS`, `GLMFULL_ROWS`, `GLMFULL_SEQUENCES` and
-  `GLMFULL_INFLIGHT` from the environment (`:10-13`), so the deployed context
-  limit is recorded nowhere in the repository. Two older generators remain:
-  `tools/glm52_gen_deployment.py` (TP8 band by default at `:15-18`, `tp8` pack
-  and backing names at `:57` and `:81` whatever the TP) and
-  `tools/glm53full_gen_deployment.py`. Both write `max_sequence_positions`
-  4096 (`:58`, `:98`) but size the pool for 32768 positions with logical =
-  physical (`:112-113`, `:152-153`). That is eight times the pages 4096
-  positions can address, with no spill headroom.
-  `tests/test_deployment_config_drift.py:205-213` covers only the TP8
-  generator. Close it by deleting the two older generators (or deriving their
-  pages from positions), checking in the TP16 lane deployment and pinning it
-  in the drift test. The proof is the drift test passing on the checked-in
-  tree and a fleet load of that tree logging the expected `kv binding
-  logical_pages= physical_pages=` line.
+- Replace the per-family packers (the stage runner's `tools/*_tp16_pack.py`
+  and `tools/k3_pack.py`, and the remaining `tools/*stagepack*.py`) with the
+  universal packer
+  ([`docs/DRY_PACKBUILDER_PROPOSAL.md`](docs/DRY_PACKBUILDER_PROPOSAL.md)):
+  one CLI, one codec table, per-family byte-compatible emitters, each gated on
+  byte identity with its existing packs.
 
 ## Driver consolidation
 
-- Move the model-lineage code still filed under shared paths into its family
-  and rename driver-named family templates after what they do. The files are
-  the `PENDING` list in `tests/test_dry_law.py`: `common/common_glm_cuda_tree`,
-  `common/common_glm_stage_module`, `common/common_kv_geometry.h`,
-  `common/glm_resident_stage_wrapper.mk`, and the dspark drafter and qwen38
-  serving-adapter headers in `model-families/common`. Family templates under
-  `include/sparkpipe/family/` named after drivers (for example
-  `spark_module_glm5_next_laguna.h`) take the name of their behaviour.
-- Adopt the common parameterized modules in
-  `docs/COMMON_MODULE_ARCHITECTURE.md` and delete the near-copy code they
-  replace (estimated by the 2026-09-13 SEAM surveys at about 26,000 lines
-  across the families), each migration proved by byte or behaviour identity.
-- Two copies of each model's constants: make `spark_<family>_model.h` a shim
-  that includes `llm_defines.h` for dsv41_flash, glm52, glm5_next,
-  muse_glimmer and qwen38_27b, or tie the copies together with
-  `_Static_assert`. glm5_next, for example, states hidden 4096 and 288
-  experts in both files. k3's model header includes
-  `spark_k3_llm_defines.h`, and nothing consumes k3's generic
-  `llm_defines.h`.
-- glm5_next assigns its combine wrappers field by field instead of calling
-  `SPARK_FAMILY(ModuleRegisterCombines)`, and its `internal.h` re-declares
-  the `SparkTpLaunch*` prototypes from `spark_tp_mesh_register.h`.
-- k3 has no TP16 adapter descriptor: `K3ServingDescriptor` is `k3-tp4pp4`
-  only, so a TP16 PP1 deployment cannot load
-  ([`docs/K3_PERF.md`](docs/K3_PERF.md)).
-- Left out on purpose (2026-10-02): `K3ServingReset`
-  (`modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c:921-926`)
-  returns OK without touching the stage runner, and `K3ServingPrefetch`,
-  `K3ServingResolvePrefetch`, `K3ServingProgress` and `K3ServingQuiesce`
-  (`:872-902`) are also success-returning no-ops (I01). On a client reset
-  residentd calls `reset`, takes OK as done, zeroes its own slot table and
-  sets `reset_done` (`node/model_residentd.c:2998-3014`), while nothing clears
-  the K3 runner's slots, so their KDA and KV state from the previous client
-  stays in place (I16). k3 is refused at load today (no PREFIX_REUSE,
-  `:26-30`, `:49-51`). Close it by having reset release every runner slot
-  through `SparkK3StageRunnerResetSlots` (used today only for RELEASE at
-  `:780`) and refuse stale-generation submissions, and by making each other
-  hook do its work or return `UNSUPPORTED` naming itself; prove it on the
-  fleet with a client reconnect after a completed request, after which a
-  request on the same slot matches a fresh-process run token for token.
-- The `capture_graphs` keys that `tools/k3_gen_adapter_configs.sh`,
-  `tools/k3_multidev_lane.py` and
-  `modules/k3_resident_decode_stage/configs/*.json` emit have been read by
-  nothing since `a29ea53`.
-- qwen4_flash: `ServingSeamInterface` in
-  `spark_qwen4_flash_serving_adapter.c` sets no `prefetch`,
-  `resolve_prefetch` or `reset`, so
-  `SparkModelServingAdapterValidateInterface` rejects the adapter.
-- Publish one driver per model with prewarmed row-count specializations
-  instead of one module ID per `SPARK_BATCH_BUCKET`.
-- Every decode module now builds for sm_121a and links as a driver in
-  `tools/cuda13_sm121a_compile_gate.sh`, and every TP module opens the
-  weightd mesh in `tests/test_tp_collective_open.py`. Most of them have
-  changed since they last ran on hardware. Requalify each of them:
-  - qwen4_flash now runs the common GDN decay kernel with its sharded-pack
-    layout (`SPARK_LLM_GDN_DECAY_REPLICATED 0`), and the common expert
-    launchers, which now also take NVFP4;
-  - hy4 links the stage-module lifecycle it calls, and did not link before;
-  - dsv4, muse_glimmer and qwen4_flash compile the common mesh kernels that
-    `tp_device_collective.c` calls, and did not link before;
-  - dsv4 could not open its TP collective at all (a local-host check the
-    mesh rewrite left unsatisfiable), and dsv4 and muse_glimmer never
-    attached the mesh, so every TP round would have been refused;
-  - glm52, laguna, qwen38_max and qwen4_flash attached the mesh only with a
-    lazy pack, and now map it themselves without one;
-  - dsv4, minimax, muse_glimmer, qwen38_max, qwen4_flash and qwen38_27b now
-    reduce through the common combines, which sum all ranks in FP32 and
-    round once, where their private kernels summed rank by rank in BF16.
-    Record a precision receipt with each requalification.
-  - qwen4_flash refused every prefill frame from 2026-09-19 to 2026-09-28:
-    its KV frame wrapper demanded a decode batch before asking whether the
-    KV tier was on. The same check refused qwen38_max decode frames that
-    carry no frame context (single-stage runs, unqualified execution, the
-    T1 harness);
-  - muse_glimmer's JIT KV tier (`SPARK_MUSE_GLIMMER_STAGE_KV_STORE`) now
-    runs the common KV frame;
-  - with the JIT KV tier on, qwen38_max, qwen4_flash and muse_glimmer could
-    restore two blocks into one slot in a frame that evicted twice. Claimed
-    slots are now pinned and the eviction cursor advances; exercise the
-    tier with a pool smaller than the working set;
-  - qwen38_max's FP8 grouped-expert launcher refuses views whose rows per
-    expert or input width are off the 128 block again;
-  - dsv4, gemma4, glm52, laguna, ling, minimax, muse_glimmer, qwen38_27b,
-    qwen38_max and qwen4_flash now report a failed TP combine launch as
-    `INTERNAL_ERROR` or `CAPACITY_EXCEEDED` with a log line, as glm5_next
-    does, instead of a silent `IO_ERROR` the engine treated as transport
-    trouble;
-  - qwen4_flash, muse_glimmer and the gemma4 26B could not load a driver
-    compiled from their firmware description: adapter initialize failed
-    with `TARGET_MISMATCH`. qwen4_flash's and muse_glimmer's adapters sent
-    the package contract hash as the description hash. qwen4_flash's
-    description named another model id and revision, and the 26B's
-    revision was a geometry string. muse_glimmer's description was an
-    unported copy of qwen38_max's: model, revision, target, module and
-    metadata. Its adapter also named a target no module builds, which
-    `tools/muse_gen_deployment.py` does not deploy. Each description now
-    carries what its adapter sends, and qwen4_flash's module Makefile builds
-    its adapter where `tools/module_build_release.sh` looks for it. The
-    muse description says `NOT_MEASURED` where the copy said
-    `GPU_VALIDATED`; record a GPU receipt before changing it back;
-  - every adapter that loads a driver now reports a weightd lease failure
-    (`NO_LANE`, `EVICT_DENIED`) as `CAPACITY_EXCEEDED`, which fails the
-    request. Before, residentd rejected such a completion and failed the
-    route as `INVALID_ARGUMENT`. The qwen38 template returned the raw status
-    from submit, and residentd's IPC cannot encode a status above
-    `UNSUPPORTED` in a submit result either.
-  - the glm52, glm5_next, laguna and ling GPU validators now compile at the
-    batch bucket of the archive they validate (`SPARK_MODULE_BATCH_BUCKET`).
-    Before, they compiled at the header default of 1024, so
-    `publish_variants` validated every tighter variant with a b1024
-    validator.
-- `SPARK_DSV4_MODEL_DSPARK_SPEC_STEP` is the last build setting a production
-  header still defaults with `#ifndef` (7, from the dsv4 contract). The dsv4
-  module Makefile passes it only for a k-sweep build (`DSPARK_SPEC_STEP`),
-  and nothing passes it to the dsv4 adapters, tests or tools, so
-  `tools/devcycle/build_remote.sh` compiles a k-sweep module at the
-  requested step and its adapter at 7. Pass the step from every dsv4 build
-  and delete the default. `tests/test_no_build_defaults.py` lists it as the
-  one pending exception. Every other build setting is now named by the
-  build that compiles it: the batch bucket (each family Makefile names 1024
-  for the default archive, and the GPU validators compile at the bucket of
-  the archive they link), qwen38_27b's serving TP degree, the
-  pack-synthesizer and pack-load template hooks, the legacy
-  `inference/llms` layer thread counts and the dsv41_flash attach probe's
-  TP degree. Platform shims (`_POSIX_C_SOURCE`, `MSG_NOSIGNAL` and the like)
-  and test-harness paths are not build settings.
-- `tools/module_build_release.sh` runs `make archive adapter` in the
-  module directory and compiles
-  `examples/model_descriptions/<module>_<codec>_firmware.json` unless
-  `FIRMWARE_JSON` names another description:
-  - such a description exists only for gemma4 31B (bf16), glm52 (seven
-    codecs), glm5_next (fp8), laguna (bf16) and minimax (bf16); ling,
-    qwen38_max, qwen4_flash and glm5_next's other codecs need
-    `FIRMWARE_JSON`. laguna's module Makefile refuses `make adapter` for a
-    codec without a description. Its fp8 and nvfp4 descriptions wait for
-    per-layer expert codecs: poolside's FP8 and NVFP4 releases keep the
-    routed experts of layers 44-47 and 40-47 in BF16, and the module
-    takes one expert codec for every layer;
-  - dsv4, muse_glimmer and qwen38_27b build their adapters in the root
-    Makefile or a family release script, and dsv41_flash and hy4 have no
-    serving adapter. None of their module Makefiles names an
-    `ADAPTER_SOURCE`, nor does the gemma4 26B's `Makefile.moe`, so
-    `make adapter` refuses and the script cannot release them.
-- glm5_next compares four driver descriptor fields in its own load
-  function and skips `model_description_sha256`, which
-  `serving_adapter_template.c` checks for the other adapters. Moving it
-  onto the template needs its build to pass its description hash, as the
-  ling module does through `MODEL_DESCRIPTION` and the laguna module through
-  `LAGUNA_MODEL_DESCRIPTION_SHA256`; the tree holds a glm5_next description
-  for fp8 only.
-- `tools/module_build_release.sh` defaults the ling firmware description to
-  `examples/model_descriptions/ling_resident_decode_stage_<codec>_firmware.json`,
-  which does not exist; a ling release must pass `FIRMWARE_JSON` (the
-  script refuses without it). Commit the per-codec ling descriptions or
-  point the default at `ling_resident_decode_stage_firmware.json`.
-- glm5_next still carries host code its driver never reaches: the per-layer
-  attention graph wrapper `Glm5NextLayerAttentionBf16Graphed`, the
-  `LayerAttentionBf16` entry in
-  `family/glm/spark_glm_unity_glm5_next_ling.cuh` (ling carries it too) and
-  `SparkGlm5NextLaunchEpochSample` with its kernel. Deleting them leaves
-  every other kernel's SASS identical but changes GCC's inlining in four
-  live host launch functions, so it waits for a measured glm5_next
-  deployment.
-- dsv4's `.cu` carries launchers that no dsv4 driver build calls. `QuantSim`,
-  `Hadamard`, `HeadArgmax` and `HeadScreenedArgmax` are the GPU validator's
-  unfused reference paths for fused kernels the driver runs: move them into
-  the validator's translation unit. `QueryHeadRmsRope` is the query fusion
-  the B1 stack rejected, still validated; `ExpertUp`, `HcSplitSinkhorn`,
-  `MoePairReduceStrided`, `SwigluClamp` and `HeadScreenedArgmaxSharded` are
-  kept only by source tests. Delete those with their checks.
-- Pack synthesizers for dsv41_flash, gemma4 and muse_glimmer do not use
-  `spark_pack_synthesize_common.h`, and the dsv4 and k3 batch-tuning headers
-  keep their own bucket ladders. `tests/test_template_adoption.py` lists
-  them. dsv4's ladder adds buckets 6, 9 and 11. k3's is the common ladder,
-  but `spark_batch_variant_tuning_common.h` can be instantiated once per
-  translation unit and `tests/test_batch_variants.py` compiles the glm52,
-  k3 and dsv4 headers together; no k3 build includes k3's header.
-- Left out on purpose (2026-10-02):
-  `modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c:241-242`
-  and
-  `modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c:260-261`
-  read `SPARK_<FAMILY>_STAGE_DEBUG_SKIP_GDN` and `_SKIP_MOE` in every build.
-  Any value skips the whole token-mixer step, full attention as well as GDN
-  (qwen38_max `:1131-1132`, qwen4_flash `:1464-1465`), or the MoE block
-  (qwen38_max `:1133-1134`, qwen4_flash `:1476-1477`), with no log line, and
-  the step still returns OK.
-  `spark_qwen4_flash_resident_decode_stage_module.c:277-283` reads
-  `SPARK_QWEN4_FLASH_STAGE_ALLOW_MISSING_PLE` in every build and drops the PLE
-  tensors from the required pack geometry (`:327`, `:669-670`). A pack without
-  them then loads, and the PLE layer runs without the n-gram injection
-  (`:1457`). A stray variable in a serving environment produces wrong tokens
-  with a successful status (I03, I22). The fix: put all three under `#ifdef
-  DEBUG` or delete them, and make a release pack without PLE tensors fail to
-  load. Prove it on a Spark: release qwen4_flash and qwen38_max loads refuse
-  the variables and pass their T1 gates.
-- Left out on purpose (2026-10-02): About 50 C, C++ and CUDA sources outside
-  `tests/` still carry comments, against I48 and AGENTS.md. Examples:
-  `runtime/spark_weightd.c` (54 comment lines),
-  `include/sparkpipe/spark_kv_page_store.h`, `spark_kv_page_cache.h`,
-  `ring/transport/tp_device_collective.c:2020-2032` (the host-register skip
-  rationale), `node/model_residentd.c:400` and
-  `runtime/model_batch_engine.c:2316`. `inference/kernels/route.cuh:11` is a
-  marker comment that `tests/test_cuda_performance_contracts.py:378` requires
-  word for word, so the test keeps a comment alive. The fix: move each
-  rationale into documentation, delete the comments and the wording assertion,
-  and add a source lint that fails on any comment in a C, C++ or CUDA file
-  outside tests. It is closed when that lint passes on the whole tree.
+- Every stage-runner model, K3 included, resets every runner slot and the KV
+  binding on a client reset and refuses stale-generation submissions
+  (`StageServingReset` and the `reset_generation` check in
+  `inference/runner/stage_serving_adapter.c`), but no fleet run has proved it:
+  run a client reconnect after a completed request, after which a request on
+  the same slot matches a fresh-process run token for token.
+- The stage runner is one driver per model and takes any row count up to its
+  `max_input_row_count`, but it captures its per-row-count decode graphs (1 to
+  16 rows, `STAGE_RUNNER_GRAPH_ROWS` in `inference/runner/stage_runner.cu`) on
+  the first step of each row count, so the first request at a new batch width
+  pays the capture. Prewarm them at load. The root `Makefile` still passes
+  `-DSPARK_BATCH_BUCKET=1024u` (`DEFAULT_BATCH_FLAGS`), which no source reads;
+  drop it.
 
 ## Runtime completion
 
-- Add bounded cancellation and drain for terminal client I/O failures so every
-  resident sequence slot is released.
-- `node/model_api.c` calls `SparkModelBatchEngineReopenAdmission` before
-  every submit. After a latched collective failure it keeps feeding the dead
-  collective instead of failing loudly.
-- A failed residentd route whose driver cache abort also fails stops the
-  residentd so its unit restarts, because the driver's transaction state for
-  those slots is unknown. Give the driver a per-slot reset so one slot can be
-  recovered without restarting the unit.
-- Adapters map a weightd lease failure (`NO_LANE`, `EVICT_DENIED`) to
-  `CAPACITY_EXCEEDED` through `SparkModelServingCompletionStatus`, which
-  fails the request. A family whose lease failure provably comes before any
-  recurrent state advances could return `BUSY` instead, so the engine
-  retries the step.
-- Pipeline-parallel stages still wedge after a failure on another rank. When
-  one rank fails a submission's COMMIT or frame, the next stage's route has
-  already posted its hidden-transport receive and waits in WAIT_INPUT for data
-  that never comes. Only a deadline moves it, and the engine sets none, so the
-  route keeps its slot claim and blocks the reset the reconnect needs. The
-  in-tree test transport completes receives without a peer, so no test sees
-  this. On client-generation change, cancel abandoned WAIT_INPUT/WAIT_OUTPUT
-  routes through the transport before releasing their boundary buffers, and
-  add a test transport that needs a real peer. Tensor-parallel deployments
-  (glm5_next TP16) post no inter-stage receives and are not affected.
-- A failed route that the driver had already run (for example a PP output
-  send that failed) releases its slot claims but leaves residentd's `bound`
-  flag as it was, so the driver and residentd can disagree about the slot
-  until the next session reset. Settle the slot the way an error completion
-  does.
-- Produce one immutable qualification bundle containing merged commit, release
-  generation, package and driver hashes, all-rank identities, token stream,
-  accuracy, performance, route counters, and drained queue state.
-- Left out on purpose (2026-10-02): When a glm5_next graph replay is stuck or
-  its wait times out, the module clears `graph_path_enabled`
-  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:4686`,
-  `:4734`), fails that frame, and runs every later wave eager until the
-  process restarts. The degraded state appears only as `graph_path=2` in the
-  `G5N-WAVE-TIMING` log line (`:2848-2853`, `:5928`); `degrade_graph_stuck` is
-  never read and readiness is unchanged, so the rank keeps serving on the slow
-  path while reporting ready (I22). Report the degraded path in the snapshot
-  and readiness, fail benchmark verdicts taken on a degraded rank, and prove
-  it by forcing a graph wait timeout on a Spark and seeing the rank leave the
-  ready set.
-- Left out on purpose (2026-10-02): While any rank is disconnected, the batch
-  engine retries an `IO_ERROR` rejection up to 10,000 times, with a backoff
-  capped at 200 ms, about 33 minutes (`runtime/model_batch_engine.c:874-892`).
-  The engine never sets a submission deadline, so nothing fails a request held
-  by a dead rank sooner. `GET /health` answers `{"status":"ok"}` from the
-  served count and tokenizer state alone (`node/model_api.c:1431-1437`), so
-  readiness never shows the missing rank (I17). The fix: report connected
-  ranks and request progress in `/health`, mark the engine not ready while a
-  rank is missing, and fail a held request at its deadline with an error
-  naming the rank. It is closed by a fleet run that stops one rank's residentd
-  mid-run: `/health` turns not-ready, held requests fail at their deadline,
-  and new requests complete once the rank returns.
+- A submission that fails residentd's cache validation is retried until its
+  deadline, and every attempt resets the session on all ranks: on 2026-10-14
+  two GLM-5.3 Full requests with a 60 s and a 3 s deadline (failing on the
+  deadline mismatch fixed in `cache/kv_page_cache.c`) caused about 2,950
+  session resets on spark0, roughly 50 a second, until their deadlines ran out
+  (`model_residentd session_reset ... abort=validation_failed`,
+  `runtime/model_batch_engine.c`). A request without a deadline would retry
+  for the engine's in-flight budget. Fail the request after a small number of
+  validation failures of the same route, report the cause to the client, and
+  prove it on one Spark with an injected validation failure: the request fails
+  with its cause and the rank resets once.
+- A client that hangs up mid-reply is cancelled and drained in the host tests
+  (`test_model_api_text` client disconnect: four abandoned streams reach zero
+  live requests within 10 s and the engine keeps serving); a release that a
+  missing rank cannot take is bounded by the engine's in-flight budget, and
+  that rank's slots are cleared by the session reset on its reconnect. Not yet
+  fleet-proven: drop clients mid-stream under load on a GLM Full lane and see
+  `live_requests` return to zero with every resident slot free.
+- A failed residentd route whose driver cache abort also fails resets the
+  rank's session: residentd drops the client and resets every lane before the
+  next hello, and only a failed reset stops it so its unit restarts. An abort
+  that finds the lanes already empty succeeds, and an abort answered BUSY is
+  retried for 5 s. Still open: a per-slot driver reset, so one slot recovers
+  without dropping the other live sequences on that rank.
+- The stage runner returns a weightd lease failure (`NO_LANE`, `EVICT_DENIED`)
+  from a non-resident expert lease (`StageRunnerExpertWeightsService` in
+  `inference/runner/stage_runner.cu`) unmapped, and `StageServingSubmit` in
+  `inference/runner/stage_serving_adapter.c` returns it as the submit status,
+  which residentd's IPC cannot encode (`runtime/model_resident_ipc.c` refuses
+  statuses above `UNSUPPORTED`). `SparkModelServingCompletionStatus` and
+  `SparkModelServingCompletionStatusStateless` in
+  `include/sparkpipe/spark_model_serving_adapter.h` are called only by tests.
+  Recurrent lane state (KDA, GDN) advances layer by layer and is restored only
+  after a prefix attach (`SparkStageKvBindingRecurrentRestore` in
+  `runtime/stage_kv_binding.c`), so a retried frame would run on half-updated
+  state. Map the failure in the adapter to `CAPACITY_EXCEEDED` for models with
+  recurrent state, restore the lanes' recurrent state before a retried frame,
+  then map it to `BUSY` for every model.
+- Pipeline-parallel stages no longer wedge after a failure on another rank in
+  the host tests: the hidden transport has a `cancel` operation (ABI 6;
+  `host_staged_tcp` drops the posted receive and any queued frame), and
+  residentd cancels a route's transfer when the route is abandoned, its client
+  generation changed or its deadline expired. A route cancelled while waiting
+  for input fails through the failed-route path, which aborts its committed
+  cache transaction, so the session reset can run. The in-tree test transport
+  has a peer mode (`SPARK_TEST_TRANSPORT_PEER_DIRECTORY`) in which a receive
+  completes only after the peer sent, and `test_model_pipeline_client` proves
+  the reconnect with it. Not yet fleet-proven: fail one stage of a K3
+  TP4xPP4 lane mid-run and see the next stage log `ROUTE-TRANSPORT-CANCEL`
+  and the lane serve again after the engine reconnects.
+- Produce one immutable qualification bundle for a release candidate with
+  `tools/qualification_bundle.py`: merged commit, release generation, package
+  and driver hashes, all-rank identities, token stream, accuracy, performance,
+  route counters and drained queue state. No release has one yet.
+- The stage runner runs a row count eagerly when its graph capture fails
+  (`STAGE-GRAPH-CAPTURE-FAILED` in `inference/runner/stage_runner.cu`) but its
+  snapshot never sets `SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH`, so `/health`
+  (`node/model_api.c`: 503 with `degraded_rank` and `"degraded_path":"eager"`)
+  never names the rank and `tools/compsec17.py` gives a verdict on a degraded
+  run. Set the flag in the runner snapshot, then force a graph capture failure
+  on a Spark and see the rank named in `/health` and the qualification bundle
+  refused.
+- Rank loss is reported but not fleet-proven: `/health` answers 503
+  `degraded` with `connected_ranks` and `missing_rank` while a rank is gone or
+  a failure is latched, a held request retries only within the engine's
+  in-flight budget and fails naming the missing rank, and a latched failure
+  stays until the rank session changes. Close it with a fleet run that stops
+  one rank's residentd mid-run: `/health` turns degraded, held requests fail
+  at their deadline, and new requests complete once the rank returns.
 
 ## Serving API
 
-- The API applies the GLM chat template in shared code (`node/model_api.c`:
-  `[gMASK]<sop>` and GLM role markers for every model). The chat template
-  belongs to the model: carry it in the deployment's tokenizer or model
-  description and let the API render whatever the model declares, then drop
-  `node/model_api.c` from the `PENDING` list in `tests/test_dry_law.py`.
-- Ling TP16 prefill runs one row per sequence per wave (the round-major
-  wave rule), so a prompt costs one full 86-collective chain per token:
-  298 prompt tokens take 5.1-8.2 s to the first token. Chunked KDA
-  prefill (many rows of one sequence per wave) is the fix.
-- `SparkLingRoundMajorWaveRows` clamps every wave to one row, so a
-  decode step of 8 sequences runs 8 full chains (8-stream aggregate
-  equals B1, about 52 tok/s). Removing the clamp gives waves of several
-  sequences, and those produce wrong tokens after the first decode step;
-  the Q-projection stride and the KDA state index were two of the
-  multi-row defects and are fixed, at least one remains. Find it with a
-  T1 route comparison of a multi-row wave against the same prompts solo,
-  then drop the clamp.
-- The ling TP chain advances from host callbacks and keys the single
-  device collective per chain, so a ling lane runs one submission in
-  flight (`tools/ling_lane.py` renders `max_inflight_submissions` 1).
-- Ling keeps no KDA state per cached prefix, so it is refused at load
-  until it captures KDA state at block boundaries (Prefix reuse (I23)).
-- laguna's TP chain has the shape ling had before 2026-09-28: it keeps the
-  adapter's stack-allocated batch view and frame context across
-  asynchronous collectives and takes no collective chain key, so a TP>1
-  laguna lane should expect a dead-stack read on multi-wave prefill and
-  CAPACITY_EXCEEDED after 1024 collectives. Port the ling fixes
-  (chain-owned views, `SparkTpDeviceCollectiveChainKey` per execute).
-- The ling T1 stream dump prints hidden plus the reduced MLP delta, which
-  does not equal the fixture's residual stream at early layers (layer 0
-  norm 1.1 against 226); `tools/t1_ling_log_assembly.py` also expects a
-  prefix field that raw residentd logs do not carry. Route ids and head
-  tokens compare; streams need the dump brought back to the fixture's
-  definition.
-- `text/tokenizer.c` knows split regexes only by exact string. It knows
-  the GLM digit-run pattern, the Qwen letter-and-mark pattern, the
-  DeepSeek digit/ideograph sequence (V4, V4.1 Flash, Hy4), and two
-  letter-class patterns (MiMo, Qwen3.8-27b nvfp4, Ling, the last with
-  possessive quantifiers). Every other `Split` is skipped without an
-  error, and the text is BPE-encoded whole. A 2026-09-28 survey of
-  `/mnt/model-warm/*/tokenizer.json` found these unhandled:
-  - laguna, whose newline split precedes the letter pattern;
-  - muse-glimmer's case-aware letters;
-  - gemma4's `Replace` plus `Split " "`.
-
-  Implement them, then make an unknown `Split` a load error.
-- The four known letter-class splits classify code points by Unicode
-  class (`text/unicode_class_tables.h`, generated from Python
-  `unicodedata` 16.0 and checked range for range against the Oniguruma
-  classes of HF tokenizers 0.23.2 by
-  `tests/test_tokenizer_unicode_split.py`). The legacy GPT-2 `ByteLevel`
-  regex path (`use_regex: true` with no `Split`) still classifies by byte
-  and treats every byte >= 0x80 as a letter. Port it to the same
-  classifier before a model that uses it serves non-ASCII text.
-- The tokenizer applies an `NFC` normalizer (Ling, Qwen3.8, MiMo). It
-  skips any other normalizer without an error: gemma4's `Replace`, and
-  `Sequence`, `NFKC` and `Lowercase` if a model declares them. Implement
-  those, then make an unknown normalizer a load error. A tokenizer with
-  NFC cannot be saved in the compiled format, which has no field for it.
-- Sampling is temperature-only and only glm5_next implements it; other
-  adapters answer `400 sampling_unsupported`. Add top-k/top-p and logprobs,
-  which need a cross-rank log-sum-exp, and port the sampled head
-  (`LmHeadSampledCandidate*Kernel`) to the other families.
-- Sampled rows take the full-vocab BF16 head instead of the certified FP8
-  B1 head, run eagerly instead of replaying a CUDA graph, and get no MTP
-  drafts: the certified screen prunes with un-noised bounds, graphs freeze
-  the head choice, and drafts are keyed by relative positions. Noise the
-  screen bounds, key drafts by absolute position, and capture sampled
-  graphs to lift all three.
-- Draw sampled tokens as the argmax of logit/T plus Gumbel noise keyed by
-  (seed, absolute position, token id), as TensorFold's exact sampler does, so
-  a seeded sampled stream replays exactly and a draft is accepted exactly
-  when it equals the serial draw.
-- Carry `deadline_ms` into the batch engine and the serving submission
-  (`deadline_time_ns` exists but is not populated) so the scheduler, not
-  only the API, orders work by deadline.
-- The engine's position limit comes from the deployment's optional
-  `runtime_limits.max_sequence_positions`, while each adapter enforces its
-  own stage config's `max_sequence_positions`. Nothing compares them, so a
-  deployment without the member, or with a larger value, still fails
-  mid-decode instead of at admission. Report the adapter's limit in the
-  residentd hello and let the engine take the smallest across ranks.
-- Positions are sized for every resident sequence at full length
-  (`tools/spark_serving_profile.py`: B8 is 8 × 512 positions in 1,024
-  pages). A request cannot use the pages its neighbours leave idle. Size
-  positions for one long sequence and let paged admission share the pool.
-- Left out on purpose (2026-10-02): `node/model_api.c:1529-1537` lowers the
-  engine's `max_prefill_rows_per_submission` below the deployment's validated
-  `runtime_limits.max_input_row_count` (`:1528`) whenever
-  `SPARK_MODEL_API_MAX_PREFILL_ROWS` is set. This happens in every build,
-  writes no log line, and silently ignores a non-numeric value. A production
-  API run with the variable set prefills in smaller submissions than the
-  deployment declares, so prefill and TTFT receipts measure a shape the
-  deployment does not describe (I22, I04). The 2026-09-28 hub unit set it to 8
-  (`docs/FLEET_RELEASE_RUNBOOK.md:582`) to avoid a spin-mode host-round
-  failure that #1255 fixed (`docs/GLM5_NEXT_ROOFLINE.md:610-617`). The fix:
-  delete the env read so the bound comes only from the deployment, and log the
-  bound the engine receives. Close it with a GLM Full TP16 API run whose unit
-  carries no such variable, whose log shows the deployment's
-  `max_input_row_count`, and which passes the T1 and TTFT gates.
+- `text/tokenizer.c` knows split regexes only by exact string: the GLM
+  digit-run pattern, the Qwen letter-and-mark pattern, the DeepSeek
+  digit/ideograph sequence (V4.1 Flash, Hy4), the letter-class patterns (MiMo,
+  Qwen3.8-27b nvfp4, Ling, the last with possessive quantifiers), laguna's
+  leading newline-run split and muse-glimmer's cased letters. Any other
+  pre-tokenizer fails the load with an error naming the file. gemma4's
+  `Replace` plus `Split " "` loads: the split is a no-op once the normalizer
+  has replaced every space, but this has not been checked against gemma4's own
+  file.
+- The tokenizer implements the `NFC` normalizer (Ling, Qwen3.8, MiMo) and
+  the metaspace `Replace`. Any other normalizer (`Sequence`, `NFKC`,
+  `Lowercase`, another `Replace`) fails the load with an error. Implement
+  one when a model declares it.
+- Sampled rows take a second, eager head pass after the step: the full-vocab
+  BF16 head (`StageRunnerDistribution` in `inference/runner/stage_runner.cu`)
+  instead of the certified FP8 head greedy rows use (`StageRunnerHeadRows`),
+  outside the step's CUDA graph, because the certified screen prunes with
+  un-noised bounds. Noise the screen bounds and capture the sampling pass in
+  the step graph to lift both.
+- The chat layer silently turns a request for no reasoning into the lowest
+  effort for models whose template has no off switch. GLM-5.3 Full and Flash
+  map `minimal` to `reasoning_effort: low` and Muse Glimmer to
+  `reasoning_strength: low` (`deployment/hub/chat_frontend.json`). GLM Flash
+  and Muse Glimmer still reasoned with reasoning off, so `tools/ui_smoke.py
+  --reasoning both` fails that case for them; GLM Full happened to pass it.
+  Qwen 3.8 Max maps no `minimal` at all and answers it with a 400, and Laguna
+  returned no reasoning with reasoning on (release qualifications of
+  `e05394f94` and `1d89e0377`, 2026-10-14). Answer reasoning off with a clear
+  error, or a documented per-model capability in `/v1/models`, where the
+  template cannot turn it off, and find out why Laguna does not reason when
+  asked.
+- Every stage-runner lane, GLM Flash included, is sized for every resident
+  sequence at full length by default: `tools/stage_lane.py` sets
+  `kv_physical_pages` to `sequences * kv_pages` (each sequence's
+  `max_sequence_positions` is `kv_pages` pages) unless `--kv-physical-pages`
+  (`STAGE_KV_PHYSICAL_PAGES` in `tools/stage_lane.sh`) names a smaller pool,
+  and it takes that pool as a page count. Size the physical pool from a byte
+  budget the lanes share and let paged admission share it.
 
 ## Provider network
 
 Of the provider network in `README.md`, the tree has only the LiteLLM front
-door and the static pages and playground in `site/`.
+door, the static pages in `site/` and the login-gated sparkpipe.ai playground
+(`docs/LITELLM_FRONTEND.md`, sparkpipe.ai).
 
 - **Tailnet.** No tailnet exists yet. It needs a control server that scales
   to hundreds of providers at a sane cost (Tailscale or a self-hosted
@@ -2016,26 +972,20 @@ door and the static pages and playground in `site/`.
   router set when it placed it, or resumes on another provider. Resuming
   mid-request needs KV transfer between installations; until then, a
   preempted network request restarts elsewhere.
-- **Router on LiteLLM.** Each offer becomes a LiteLLM deployment at the
-  provider's tailnet address, with the provider's price as its per-token
-  cost. Missing:
-  - adding and removing deployments as offers change, without a restart;
-  - a routing strategy by price, latency, load and verification record;
-  - prefix affinity, so requests that share a prompt prefix reach the
-    provider holding that KV cache;
-  - pinning to one driver build and hardware type for buyers who need
-    seeded replays to match bit for bit;
-  - virtual keys and spend logs, which need LiteLLM's Postgres database;
-  - a logging callback that feeds the audit sampler.
-
-  Limits of the door as it stands, found with LiteLLM 1.74 and a mock
-  upstream (`docs/LITELLM_FRONTEND.md`, browser clients):
-  - LiteLLM consumes a request's `priority` for its own scheduler and does
-    not forward it, so the batch engine's priorities do not cross the door.
+- **LiteLLM door limits.** Found with LiteLLM 1.74 and a mock upstream
+  (`docs/LITELLM_FRONTEND.md`, browser clients):
+  - LiteLLM consumes a request's `priority` for its own scheduler and does not
+    forward it, so the batch engine's priorities do not cross the door.
     `seed`, `temperature` and `deadline_ms` do.
-  - `tools/generate_litellm_config.py` emits `num_retries: 1`, which retries
-    a failed upstream call once and can duplicate a generation on the fleet;
-    the old hand-written config used 0.
+  - `tools/generate_litellm_config.py` emits `num_retries: 1`, which retries a
+    failed upstream call once and can duplicate a generation on the fleet; the
+    hub's hand-written `config/litellm-config.yaml` uses 0.
+  - The LAN door has no accounts: `config/litellm-config.yaml` sets no
+    `master_key` or `database_url`, so anyone on the LAN who reaches port
+    4000 can use the fleet. sparkpipe.ai puts one Apache login file in
+    front of an external LiteLLM with a master key, but has no per-user
+    keys, quotas or spend logs. Those need LiteLLM's Postgres database
+    (`tools/generate_litellm_config.py --database-url --master-key`).
 - **Metering, billing, payouts and bonds.** Bill buyers from signed receipts
   at the serving provider's price, pay providers 85% after the challenge
   window, and hold and forfeit bonds.
@@ -2052,231 +1002,44 @@ door and the static pages and playground in `site/`.
   bitwise equal to B1 (see Dynamic batching). Until the batch kernels agree
   bitwise, replays of batched requests can only compare logprobs within a
   tolerance, which is weaker against mild quantization.
-- **Logprobs do not exist yet** (see Serving API), so sampled traffic cannot
-  be audited.
 - **Every driver update splits audit cohorts.** Replays compare only against
   the same driver hash, so the router must track each provider's build, and
   releases need per-model cohort changeovers.
-- **sparkpipe.ai is static.** `site/` has the landing page, the provider page
-  and the playground. The catalog, the buyer console and the provider
-  dashboard need the router and the ledger behind them.
+- **sparkpipe.ai has no marketplace pages.** The VPS serves the landing page,
+  the provider page and the playground from `site/`. The playground and `/v1`
+  need a login, and the hub tunnel forwards `/v1` to an external LiteLLM
+  without the Qwen models and `/v1/sparkpipe/status` to the chat layer
+  (`docs/LITELLM_FRONTEND.md`, sparkpipe.ai). The catalog, the buyer console
+  and the provider dashboard need the router and the ledger behind them.
 - **Payments.** Provider identity checks, tax reporting and payout rails
   (fiat, crypto or both) are undecided.
 
 ## Production qualification
 
+- `tools/sparkpipe_weightd_vmm_verify.sh` prints `SKIP` and exits 0 when CUDA
+  or a GPU is missing, so a receipt run on the wrong host reads as a pass.
+  Make both cases exit nonzero with the named reason.
 - Repeat accepted transport and model measurements from clean merged `main`,
   rebuild the exact release on Spark hardware, and retain all receipts.
 - Close exact-checkpoint numerical parity and end-to-end service gates for each
   model before reporting it production-ready.
-- Left out on purpose (2026-10-02): `tools/glm5_next_driver_compare.py` cannot
-  produce a receipt. Its probe gives the driver a TP16 context with collective
-  identifier 0 and no `KV_SHARD` flag (`tools/glm5_next_driver_probe.c:95`,
-  `:100`), which the module has refused at configure since `43ddc3ee4`
-  (`spark_glm5_next_resident_decode_stage_module.c:482-491`) in resident and
-  lazy mode alike; resident mode would fail anyway because weightd attach is
-  mandatory (`:731-733`). The compare tool also requires the literal
-  `full-vocabulary-logits=unavailable` (`:45`), so it rejects any probe that
-  compares full-vocabulary logits and can never record I27 logit parity. Give
-  the probe a node context the real module accepts, compare full-vocabulary
-  logits and require `exact`, and prove it with a RESULT.json from a Spark run
-  on the GLM-5.3 Flash rank-0 pack.
-- Four Python tests stay outside `make test` because they drive the fleet
-  over ssh: `test_expert_io_perf`, `test_jit_kv_page_fault`,
-  `test_lossless_doorbell` and `test_transport_stability`. Give them a
-  runner and register them.
-- `test_hy4_driver_acceptance` has a build rule but stays out of
-  `TEST_NAMES`: it holds the behaviour a complete hy4 driver must show and
-  fails on the current stub module. Register it with the hy4 driver.
-- Four K3 test sources have no build rule and no runner:
-  `test_k3_serving_adapter_smoke.c` needs an adapter configuration argument,
-  and `test_k3_interleave_gemm.cu`, `test_k3_layer_probe.cu` and
-  `test_k3_swizzle_probe.cu` are sm_121a probes. Each needs an nvcc-gated
-  rule and a Spark runner, or deletion.
-- Eleven C tests are neither registered nor run anywhere. Ten should be
-  deleted: `test_cache`, `test_sideband`, `test_group_gemm_workspace` and
-  `test_state_pool` test headers no product includes (`cache/cache.h`,
-  `ring/sideband.h` and `runtime/workspace.h` go with them;
-  `spark_state_pool.h` is still used by `test_k3_kv_cache`);
-  `test_continuous_batch_decode`, `test_multi_row_prefill`, `test_pack`,
-  `test_dequant` and `test_reference` (with `tests/reference.h`) test local
-  reimplementations; `test_graph_replay_kernel_abi` checks a mesh-kernel
-  marker the module build already verifies. `test_graph_replay_correctness`
-  is a GPU rig with private kernel prototypes and no build rule; it needs an
-  nvcc-gated rule on the shared kernel headers and a Spark runner.
-- `make test` fails on a host with a CUDA toolkit. There the model-common
-  library carries no CUDA stub, but `ring/transport/tp_device_collective.c`
-  calls the mesh launchers (`SparkTpLaunchMesh*`), which only a module's
-  CUDA object (`spark_tp_mesh_kernels.cuh`) or the stub defines. An adapter
-  that pulls the transport from the library is left with them undefined: on
-  the x86 hub at main `bbf5432`, `build/libdsv4_tp4_pp4_serving_adapter.so`
-  fails `dlopen` with `undefined symbol: SparkTpLaunchMeshHardware`, and
-  `make test` stops at `test_dsv4_tp4_pp4_serving_adapter`. Move the
-  launcher calls behind the module boundary, or give host links one object
-  that defines them, rather than linking the stub case by case (#1258 did
-  that for two tests).
-- The production serving configuration is not in the repository. GLM 5.3
-  Flash at 36 tok/s B1 needs `G5_GRAPH_PATH=1`, `G5_PIN_EXPERTS=1`,
-  `SPARK_TP_WAIT_MODE=hardware` and `G5_WARMUP=0`, set only in each node's
-  untracked drop-in
-  `~/.config/systemd/user/fleet-agent.service.d/20-serving.conf`;
-  `tools/fleet-agent.service` sets none of them. Without the drop-in,
-  residentd refuses to start (`SPARK_GLM5_NEXT_GRAPH_PATH` unset) and warmup
-  runs; with only `G5_GRAPH_PATH=0`, the node falls to eager chains, spin
-  wait and unpinned experts. Move these settings into the deployment contract as validated
-  fields (I04) and record their hash in every receipt (I33).
-- Left out on purpose (2026-10-02):
-  `include/sparkpipe/family/module/spark_module_initialize_gate.h:3-10`
-  qualifies the gemma4, minimax, muse_glimmer, qwen4_flash, qwen38_max and
-  qwen38_27b modules by one environment variable,
-  `SPARK_<FAMILY>_ALLOW_UNQUALIFIED_EXECUTION=1`, with no validation receipt
-  behind it. Every serving adapter for those modules sets the variable
-  unconditionally before it loads the driver:
-  `modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c:641`
-  (called at `:2209`) and
-  `model-families/common/include/sparkpipe/spark_qwen38_pp_serving_adapter_common.h:99`
-  (called at `:737`) for gemma4, minimax, muse_glimmer, qwen4_flash and
-  qwen38_max. The gate therefore never returns `MODULE_NOT_VALIDATED` in
-  serving, and a module build that never passed validation loads and serves
-  (I03, I39). The GPU validators also demand the bypass:
-  `modules/qwen38_27b_resident_decode_stage/validation/validate_qwen38_27b_resident_decode_stage_cuda.sh:45`,
-  `modules/qwen38_max_resident_decode_stage/validation/validate_qwen38_max_resident_decode_stage_cuda.sh:38`,
-  `modules/muse_glimmer_resident_decode_stage/validation/validate_muse_glimmer_resident_decode_stage_cuda.sh:49`
-  and
-  `modules/qwen4_flash_resident_decode_stage/validation/validate_qwen4_flash_resident_decode_stage_cuda.sh:41`.
-  The fix: bind the gate to a pinned validation receipt for the module hash,
-  and delete both `setenv` calls together with the Makefile and validator
-  plumbing. Prove it on a Spark: initializing a module without a receipt
-  returns `MODULE_NOT_VALIDATED`, and the receipted build loads and passes its
-  T1 gate.
-- Left out on purpose (2026-10-02): The gemma4 GPU validator skips
-  `SparkGemma4ValCheckChainSliding`, its only chained-layer check, when
-  `SPARK_GEMMA4_VALIDATION_CHAIN=0`
-  (`modules/gemma4_resident_decode_stage/validation/spark_gemma4_resident_decode_stage_cuda_validation.cu:1960-1964`),
-  and still prints PASS and exits 0 (`:1965-1967`). `make publish`
-  (`modules/resident_decode_stage_rules.mk:203-222`) treats exit 0 as
-  validation (`runtime/pack/module_library.c:938-954`), so a gemma4 module can
-  be published with a validation receipt for a layer chain that never ran.
-  Delete the switch so the chain check always runs, and prove it with a gemma4
-  publish on a Spark whose validator log shows the chain check.
-- Left out on purpose (2026-10-02): The muse_glimmer GPU validator runs its
-  module tier (`SparkMuseGlimmerValCheckModule`, the only check that executes
-  driver decode) only when `SPARK_MUSE_GLIMMER_VALIDATION_MODULE_TIER` is set
-  (`modules/muse_glimmer_resident_decode_stage/validation/spark_muse_glimmer_resident_decode_stage_cuda_validation.cu:529-534`),
-  and nothing in the tree sets it. The validator then prints PASS after the
-  kernel-level norm, window and gate checks alone (`:540`), so every
-  muse_glimmer publish is accepted without one decoded token. Make the module
-  tier unconditional and fail when weightd attach is unavailable, and prove it
-  with a Spark validator run that attaches through weightd and prints the
-  `module_decode` check.
-- Left out on purpose (2026-10-02): The qwen4_flash GPU validator turns a
-  decode-versus-prefill token mismatch into a log line and continues when
-  `SPARK_QWEN4_FLASH_VALIDATION_TOKEN_PARITY=warn`
-  (`modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu:154-160`),
-  then prints PASS (`:718-719`). A qwen4_flash module whose decode disagrees
-  with its own prefill passes validation and can be published (I03, I40).
-  Delete the warn mode so a mismatch always fails, and prove it with a Spark
-  validator run on a qwen4_flash rank pack that reports `bit_exact=1`.
-- Left out on purpose (2026-10-02): The dsv4 GPU validator compares against
-  reference outputs only for stage 0 with the three-layer slice starting at
-  layer 0
-  (`modules/dsv4_resident_decode_stage/validation/spark_dsv4_resident_decode_stage_cuda_validation.cu:1488-1518`).
-  Every other stage passes when any hidden output element is nonzero
-  (`:1456-1457`), and the final stage passes when its token ids are below the
-  vocabulary size (`:1458-1461`), so repeatable wrong output is published as
-  validated (I40). Compare every stage's boundary hidden state and the final
-  tokens with pinned reference outputs within a qualified tolerance, and prove
-  it with a per-stage validator run on a DSV4 pack before DSV4 serves again.
-- Left out on purpose (2026-10-02):
-  `modules/glm52_resident_decode_stage/validation/glm52_prefill_rows_parity.cu:590-596`
-  labels every `regime_split=0` wave and every wave wider than
-  `SparkGlm52ExactWaveRows()` (8 rows) DIFFER-EXPECTED and prints `max_abs`
-  without bounding it, and `:520-523` does the same for head tokens. The
-  exact-row limit comes from the module under test
-  (`spark_glm52_resident_decode_stage_cuda.cu:18-21`), so GLM-5.3 Full prefill
-  waves above 8 rows, which the module accepts up to its execution row
-  capacity (`spark_glm52_resident_decode_stage_module.c:2160-2172`), pass the
-  rig with any error. The rig can also be downgraded by argument: `argv[2]` of
-  0 drops the exact checks and a negative value returns 0 after the reference
-  run (`:548`, `:582-583`). Pin a qualified per-width max_abs and token
-  tolerance in the rig, fail any wave above it, remove the argument downgrade,
-  and prove it with `run_glm52_prefill_rows_parity.sh` on a Spark covering the
-  widest wave GLM-5.3 Full serves.
-- Left out on purpose (2026-10-02): The glm5_next GPU validator checks DSA
-  attention only for run-to-run determinism
-  (`modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_cuda_validation.cu:1668-1670`),
-  states at `:1672` that distributed, routed-MLP and multi-row numerical
-  checks are still required, and prints PASS at `:1673-1675` anyway. A GLM-5.3
-  Flash module whose attention or routed experts compute wrong values
-  repeatably is published as validated (I40). Add DSA attention, routed-MLP
-  and multi-row tiers compared with a pinned reference within qualified
-  tolerances, fail the validator until they exist, and prove it with a
-  validator run on a Spark against the GLM-5.3 Flash TP16 rank pack.
-- Left out on purpose (2026-10-02): `tools/glm5_next_driver_probe.c:95` and
-  `:100` configure the glm5_next driver at TP16 with collective identifier 0
-  and no `KV_SHARD` flag, a context the real module refuses
-  (`spark_glm5_next_resident_decode_stage_module.c:482-491`), so the probe
-  computes nothing on a real driver. `tests/test_glm5_next_driver_probe.c:25`
-  asserts that same context against `fake_create`, and
-  `tools/cuda13_sm121a_compile_gate.sh:171-174` runs it in CI, so CI stays
-  green while the probe is dead; the CLI also accepts only 1, 3 or 5 rows
-  (`:547-549`). Configure the probe with a context the real module accepts,
-  accept any row count up to the execution capacity, make the test assert the
-  real module's acceptance rules, and prove it with a probe receipt from a
-  Spark run.
-- Left out on purpose (2026-10-02): `tools/qwen38max_tp16_rank_verify.py`
-  accepts the placed tp4pp4 legacy form, whose directory repeats the last
-  inventory tensor's shape (`:183-184`, `:241-255`), and prints `verdict=PASS`
-  (`:359`) after a structure check; the content pass refuses that form
-  (`:276-280`) but runs only with `--checkpoint`, which
-  `tools/qwen38max_multidev_pack_emit.sh:126-128` never passes. A `--receipt`
-  path that does not exist is skipped (`:339`) and absent receipt fields are
-  not compared (`:353`), so a defective pack verifies (I05, I28). Refuse the
-  stale-shape form and repack, require the receipt file and every receipt
-  field when `--receipt` is given, and prove it with the verifier rejecting a
-  placed legacy rank pack and passing a repacked one with `--checkpoint`.
-- Left out on purpose (2026-10-02): The qwen38_27b GPU validator's module tier
-  compares decode only with its own prefill
-  (`modules/qwen38_27b_resident_decode_stage/validation/spark_qwen38_27b_resident_decode_stage_cuda_validation.cu:124-145`)
-  and a fresh instance with itself (`:155-184`), skips the MTP draft check
-  when `SPARK_QWEN38_27B_STAGE_MTP` starts with `0` (`:148-152`), and prints
-  PASS (`:213-214`). A module that is consistently wrong passes and can be
-  published (I40). Add a pinned external reference (tokens and boundary hidden
-  state from the checkpoint) to the module tier, run the MTP check whenever
-  the pack carries an MTP layer, and prove it with a Spark validator run on
-  the qwen38_27b rank pack.
-- Left out on purpose (2026-10-02): The hy4 module's Prepare logs `ready ...
-  execute=UNSUPPORTED` and returns OK
-  (`modules/hy4_resident_decode_stage/source/spark_hy4_resident_decode_stage_module.c:95-111`),
-  Admit accepts every request (`:121-132`), and Execute returns `UNSUPPORTED`
-  (`:113-119`). A host that loads hy4 sees a ready driver that accepts work
-  and computes nothing (I01). Make Initialize return `UNSUPPORTED` until
-  Execute runs the model, register `test_hy4_driver_acceptance` with the real
-  driver, and prove it with an hy4 rank-pack run that produces reference
-  tokens.
-- Left out on purpose (2026-10-02): The qwen38_max GPU validator runs its GDN
-  step, gated-norm and chunk checks only at `tp_degree` 1
-  (`modules/qwen38_max_resident_decode_stage/validation/spark_qwen38_max_resident_decode_stage_cuda_validation.cu:315`,
-  `:389`, `:606`) and prints PASS (`:1168-1169`). `59b082ded` deleted the TP4
-  rank-local GDN check because it could not fail, and nothing replaced it, so
-  the head-sharded GDN launches qwen38_max serves with have no numerical gate
-  (I40). Add a rank-local GDN tier at the serving TP degree compared with a
-  sharded host reference, and prove it with a validator run on a Spark.
-- Left out on purpose (2026-10-02): At TP16, GLM-5.3 Full packs several
-  sequences into one prefill wave (`SparkGlm52PackedPrefill`,
-  `modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c:794-797`,
-  with the table set at `:850`). No GPU validator or CUDA test sets
-  `prefill_block_table`: `tests/cuda/attn_prefill_cuda.cu:142,151,221` pass a
-  null table, and nothing under
-  `modules/glm52_resident_decode_stage/validation/` references it. The graph
-  parity rig builds only one-row waves (`glm52_chain_graph_parity.cu:40-66`),
-  so padded graph-bucket replays have no numerical check either. A packed wave
-  in which one sequence attends to another's keys, or a padded row that writes
-  wrong KV, therefore passes every gate (I18, I40). The fix: add a validator
-  case that compares a packed wave of K sequences, and a padded bucket replay,
-  against K single-sequence linear waves, bit for bit on tokens and written
-  KV. It is closed when that validator passes on a Spark and its receipt is
-  pinned.
+- `tools/glm5_next_driver_compare.py` and
+  `tests/test_glm5_next_driver_probe.c` outlived the glm5_next module and
+  probe that `82e63a909` deleted: the compare tool launches a probe binary
+  nothing builds, and the test `#include`s the deleted
+  `tools/glm5_next_driver_probe.c`, so neither can run. Delete both, with
+  `docs/GLM_REAL_DRIVER_PROBE.md`, the probe paragraph of
+  `docs/DRIVER_ACCEPTANCE.md` and the `glm5_next_driver_probe` entry in
+  `tools/test_serving_reliability_host.py`.
+- Hy4 runs on the common runner (`modules/hy4_tp16_resident_decode_stage`,
+  `model-families/hy4/source/hy4_stage.cuh`) and serves as `hy4-preview`, but
+  it is not checked against a reference. The one teacher-forced run of
+  `tools/hy4_reference.py` (2026-10-11, before the epsilon fix `c723234a3` and
+  the round-to-nearest-even mesh sum) agreed on 426 of 433 served tokens, with
+  six hard disagreements beyond near ties (story, translate, science,
+  long_recall), and its report is not in the tree. Rerun the reference on the
+  current build, explain or fix every hard disagreement, and pin the passing
+  report under `qualification/hy4/`.
 
 ## Fleet and queue tooling
 
@@ -2284,51 +1047,18 @@ Found while verifying [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBO
 and the multidev docs on 2026-09-28. Line numbers are in
 `tools/fleet_node_agent.sh` unless another file is named.
 
-- `restart_scope` (`:311-316`) matches `config/model_resident.json`, but a
-  root's deployment file is the top-level `model_resident.json`, so a
-  deployment-only change never restarts the root.
-- An installed but unrecycled weightd makes `ensure_weightd` return 1 on
-  every pass while an engine runs (`:440-444`, `:565-569`), which stops all
-  root convergence.
-- `apply_manifest` never re-verifies on-disk files while the `MANIFEST` is
-  unchanged (`:279`), so an agent copied in by `fleet_sync.sh start`
-  persists.
-- Heartbeats are sent only on change (`:105-118`), so the epoch is not
-  liveness. Add a periodic report.
-- `fleet-agent.service` runs with the default `KillMode=control-group`, so
-  any agent stop, restart or exit kills weightd and the engine. Set
-  `KillMode=process` in the drop-in or record why not.
-- `fleet-agent.service` has no finite `MemoryMax`; give it one and track it
-  with `spark_queue.py track --scope user`.
-- `tools/publish_core.sh:4` ignores `SPARKPIPE_BUILD_TREE`, and
-  `tools/publish_local.sh:32` takes `model_driver.so` from `~/sparkdata/out`,
-  which the current build never writes. Fix or retire both.
-- The janitor's log message (`:410`) is inverted relative to what it kills.
-- The `install_core` and `tools/weightsd_announce.sh` messages still say
-  weightsd owns the restart.
-- `tools/fleet_release_hygiene.sh:16` defaults `HUB` to sparkf; the hub is
-  the rtx5090.
-- `tools/fleet_ready_poll.sh` reads heartbeats from sparkf instead of the
-  rtx5090 hub, waits on an `UPDATE` sentinel the agent no longer uses, and
-  miscounts ready nodes when it greps several files.
-- Neither the `20-serving.conf` drop-in (Production qualification) nor
-  `sparkpipe-hub-route.service` is in the repository or shipped by
-  `fleet_sync.sh`. Production GLM should also pin its lane with
-  `SPARK_WEIGHTD_LANE=0` in that drop-in.
-- The queue ledger holds 32 stale persistent owners
-  (`sparkpipe-weightd-shared.service`,
-  `sparkpipe-glm-serving-dd3526b2.service`) that block `gpu-shared`
-  admission. Untrack them.
-- Bump `SPARK_WEIGHTD_IPC_ABI_VERSION` whenever the mesh layout changes.
-- The family wrappers default to `/run/sparkpipe-weightd-shared/weightd.sock`,
-  which no Spark provides.
+- The lane pin reaches residentd only as the environment variable
+  `SPARK_WEIGHTD_LANE`, which the `lane.sh` rendered by `tools/stage_lane.sh`
+  sets and `inference/runner/stage_serving_adapter.c` and
+  `ring/transport/tp_device_collective.c` read with `getenv`. Move it into the
+  deployment contract beside `wait_mode`. `sparkpipe-hub-route.service` stays
+  a runtime step, but only `docs/FLEET_RELEASE_RUNBOOK.md` (section 1)
+  describes it: `docs/INCIDENT_RECOVERY_PLAYBOOK.md` does not list it and
+  `tools/fleet_post_reboot.sh` does not check the route.
 - `tools/devcycle/lane_assignments.json` and `lane_budget_calc.py` still
-  assume 8 lanes, and `lane_assignments.json` gives lane 0, which production
-  GLM should hold, to a GLM development lane. `tools/inference_smoke.py` accepts lanes
-  0-7 only.
-- A stale, idle `sparkpipe_weightsd` still runs on spark6.
-- Operations: linger is missing for the fleet user on spark8, spark9,
-  sparka to sparkd and sparkf. Run `sudo loginctl enable-linger` there.
+  assume 8 lanes, and `lane_assignments.json` gives lane 0 to a GLM development
+  lane while production GLM runs on lane 6. Replace both with the lane
+  allocator of lane B04 (TD287/TD288).
 
 ## Hardware independence
 
@@ -2342,19 +1072,21 @@ and the multidev docs on 2026-09-28. Line numbers are in
   decomposition from the link matrix instead of a configured backend.
 - Qualify the Metal backend on the Mac Studios and keep the host backend as
   a CI oracle for common policy, not only for kernels.
-- Left out on purpose (2026-10-02): KV and weights use separate residency
-  mechanisms. KV pages move through the arena
-  (`SparkKvCacheArenaMarkBlockResident`, `cache/kv_cache.c:1361`) and its
-  evict hook, weights through weightd leases, and the device layer offers only
-  allocate, free and copy (`include/sparkpipe/spark_memory_buffer.h:31-40`),
-  while `docs/INFERENCE_OS_DESIGN.md:72-76` requires one
-  `make_resident`/`evict` for both. The only coordination is a static
-  `--kv-reserve-bytes` carve-out in weightd (`node/weightd.c:175-186`,
-  `:359-371`), so KV pressure cannot reclaim idle weight memory and the
-  reverse. Close it by building `make_resident`/`evict` in the device layer
-  and moving the KV pager and weightd lease eviction onto it, proven on the
-  fleet by a run where KV growth and expert demand both resolve through that
-  one operation against one logged node budget.
+- Left out on purpose (2026-10-02): KV and weights share weightd but not one
+  budget. weightd maps KV device memory as KV pools that grow and shrink in
+  chunks (`runtime/spark_weightd_kv_pool.c`, driven from
+  `runtime/stage_kv_binding.c`) and weights through leases. The weight budget
+  is `device_bytes_max` minus the static `--kv-reserve-bytes` carve-out
+  (`node/weightd.c`, `runtime/spark_weightd.c`), so KV pressure cannot reclaim
+  idle weight memory and the reverse. KV pages still enter the arena through
+  `SparkKvCacheArenaMarkBlockResident` (`cache/kv_cache.c`), and the device
+  layer offers only allocate, free and copy
+  (`include/sparkpipe/spark_memory_buffer.h`), while
+  `docs/INFERENCE_OS_DESIGN.md` requires one `make_resident`/`evict` for both.
+  Close it by building `make_resident`/`evict` in the device layer and moving
+  KV pool sizing and weightd lease eviction onto it, proven on the fleet by a
+  run where KV growth and expert demand both resolve through that one
+  operation against one logged node budget.
 
 ## Mac Studio deployment
 
@@ -2397,8 +1129,8 @@ The design is in
 
 ## Multi-model serving (parallel inference on shared Sparks)
 
-Assessed 2026-09-13 against the lane/mesh/weightd architecture (PRs
-#959-#973). Handled today: per-model lanes (weightd-assigned, fail-closed),
+Assessed 2026-09-13 against the lane/mesh/weightd architecture
+(PRs #959-#973). Handled today: per-model lanes (weightd-assigned, fail-closed),
 weight arenas shared by content identity (same model never loads twice),
 per-connection collectives (two engines of one model get distinct mesh
 pathways), swap-in loads that run daemon-side (a serving model does not
@@ -2406,72 +1138,56 @@ stop while another loads), and per-engine continuous batching at
 MAXBATCHSIZE=128 with per-request completion. The gaps below are required
 for seamless production multi-model.
 
-- Lane-priority over-subscription policy: eviction is LRU plus epoch with
-  no lane awareness. Required rule: lane X may swap in only by evicting
-  weights whose owning lane is greater than X; when the evictable set
+- Lane-priority over-subscription policy: the explicit `EVICT` request
+  enforces lane order (`SparkWeightdServerOnEvict` in
+  `runtime/spark_weightd.c` denies a requester lane that is not below the
+  target lane), but only `tools/multi_dev_smoke.c` sends it. The eviction an
+  acquire triggers (`SparkWeightdServerReclaimCold`,
+  `SparkWeightdServerEvictColdGroups`) takes the least recently used arena and
+  group with no lane awareness. Required rule: lane X may swap in only by
+  evicting weights whose owning lane is greater than X; when the evictable set
   belongs to a lane currently executing, wait for its batch boundary, then
-  evict; when nothing greater than X is resident, the acquire errors
-  rather than thrashes.
-- Request queueing behind not-yet-live models: lane exhaustion fails the
-  residentd load closed and requests for that model see connection
-  refused at the router. Required: warm request queue that drains when the
-  model finishes loading (swap starts, requester waits, serving model
-  continues).
-- Load bandwidth fairness: swap-in reads run at full readahead with no
-  QoS; the serving model's page-cache and mesh traffic compete
-  unbounded. Required: a fair-share cap on loader throughput while any
-  lane is serving.
+  evict; when nothing greater than X is resident, the acquire errors rather
+  than thrashes.
+- Load bandwidth fairness is enforced but not yet configured or measured.
+  weightd paces pack streams, spine preloads and expert lease loads with one
+  token bucket (`runtime/spark_weightd_pacer.c`) while a connection of
+  another process has had its lane active within the last second (an engine's
+  own transport connection never paces its own expert loads), at
+  `--load-pace-bytes-per-second` (`SPARK_WEIGHTD_LOAD_PACE_BYTES_PER_SECOND`).
+  Without the setting such a load is refused, so the fleet agent's
+  environment must carry the value before a second model loads beside a
+  serving one. Close it with a fleet run that loads a pack beside a serving
+  GLM Full lane and shows the serving lane's B1 step time unchanged and the
+  load's bytes per second at the cap.
+- weightd serves one queued request at a time on its worker. Mesh activity,
+  writes and status run on the main loop, so a pinned serving engine keeps
+  running while another engine's pack loads; but expert lease acquires and
+  releases and KV pool status and resize calls of every other engine wait
+  behind the whole load (and the pacer lengthens that wait). Required: loads
+  run off the request path, with the arena table locked against them, so
+  lease and KV pool requests are answered during a load. Prove it with a host
+  test where a lease acquire on one arena completes while another connection's
+  attach is still streaming.
 - Output chunking for GPU fairness: decode chains hold the GPU for whole
   tokens and cross-model sharing relies on driver time-slicing (no MPS).
   Required: bounded output quanta analogous to prefill chunks so a lane
   cannot lock the GPU for many tokens.
 - Pause and resume of output batches: token-boundary resume is structural
-  (sequence positions, prefix cache) but there is no pause/resume API, the
-  NVMe KV tier is disabled (kv_backing_maximum_bytes=0), and active-KV
-  protection is transaction-scoped rather than batch-scoped. Required:
-  resume without recomputation, with boundary-flushed KV protected from
-  eviction until the batch completes.
-- Same-model multi-engine has never been exercised end-to-end: two
-  residentds on one model (shared arena via identity match, distinct
-  lanes per connection) needs a live verification run, including the
-  MTP-debug use case.
-- Fleet tooling is single-model: the agent accepts multiple runtime roots
-  but release sync, health, and measurement lanes are per-root; no
-  multi-model deploy or update has been tested.
-- `tools/fleet_swap.sh` still drives the system unit
-  `sparkpipe_model_residentd` through sudo (`start_model`, `stop_model`),
-  not the `fleet-agent` user unit that serves. Running it writes `/etc`
-  drop-ins and starts a system-level residentd outside the fleet-agent
-  cgroup: a fleet-scope swap would start a second residentd beside the
-  agent's on all 16 nodes, which the agent's janitor does not reap because
-  it only matches its own roots. The registry it reads
-  (`tools/devcycle/fleet_registry.json`) has no GLM 5.3 Flash entry and
-  marks both DSV4 models removed. The fleet_swap procedure is obsolete:
-  delete the script and the registry, together with their remaining
-  callers `tools/devcycle/deploy_pro.sh` and
-  `tools/devcycle/first_decode_pro.sh`, or rebuild model swaps on the
-  agent's release roots.
+  (sequence positions, prefix cache, the NVMe snapshot tier in
+  `cache/kv_snapshot.c`, reply checkpoints marked by
+  `SparkPrefixCacheMarkResume` in `runtime/model_batch_engine.c`), but there
+  is no pause/resume API. A paused request must be sent again and reuses only
+  what the prefix cache kept, and active-KV protection is transaction-scoped
+  (`SparkKvPageCacheBeginPinnedLaneTransaction`, `cache/kv_page_cache.c`)
+  rather than batch-scoped. Required: resume without recomputation, with
+  boundary-flushed KV protected from eviction until the batch completes.
+- Same-model multi-engine ran end-to-end once, on the deleted glm5_next
+  module: on 2026-10-03 eight GLM-5.3 Flash TP16 engines on lanes 1-5 and 7-9
+  shared one pinned-expert arena per node and gave token-identical outputs. It
+  has not run on the common stage runner (`inference/runner/stage_runner.cu`),
+  and the MTP-debug use case has never been exercised.
 - Device allocation budgets are incomplete. GB10 `MemoryMax` does not
   contain every CUDA allocation, and the driver ledger omits some direct
   allocations and graph and context overhead. Enforce complete budgets
   before co-resident drivers rely on them.
-
-## Topology-aware lane sub-allocation
-
-- LANE_ACQUIRE today hands one whole lane (two mesh bands, sixteen rank
-  slots) to one engine. Extend the acquire to carry topology and rank
-  range: a residentd states TP degree plus the contiguous rank range it
-  occupies, and the allocator packs sub-ranges into bands (4xTP4, 2xTP8,
-  TP8+2xTP4 per lane), constraining TP8 ranges to start at rank 0 or 8.
-- Doorbell entries, mesh slots, and per-round ring positions are already
-  rank-indexed within a band, so sub-range packing is an allocator change
-  plus collective band/rank wiring; four TP4 drivers in one band must not
-  share sequence spaces (derive chain keys per sub-range owner).
-## MPS evaluation on GB10
-
-- The CUDA MPS control and server binaries are present on the sparks.
-  Run a live evaluation: start the control daemon, run two CUDA
-  processes concurrently, confirm overlapping kernel execution and
-  per-process contexts. If GB10 supports MPS, cross-driver GPU
-  concurrency replaces driver time-slicing and the output-chunking
-  requirement shrinks to memory-bandwidth fairness.

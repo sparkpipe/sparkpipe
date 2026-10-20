@@ -1,13 +1,3 @@
-/* weightd_expert_segments — generate a lazy-expert manifest for any pack
- * without format knowledge: fixed 64 MiB segments, one ck128 each,
- * streamed through an 8 MiB pread buffer (the node memory law: bounded
- * RSS, no whole-file buffers). Layer is 0 and the expert id is the
- * segment index; a real packer emits true per-expert records later and
- * the server protocol is identical.
- *
- *   weightd_expert_segments <pack> [segment_bytes]
- * writes <pack>.experts
- */
 #define _POSIX_C_SOURCE 200809L
 #include "sparkpipe/spark_ck128.h"
 #include "sparkpipe/spark_weightd.h"

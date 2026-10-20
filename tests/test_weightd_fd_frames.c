@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include "sparkpipe/spark_weightd.h"
@@ -160,6 +161,57 @@ static void check_mesh_mapping(uint32_t raw_offset,uint32_t failure,uint64_t adv
     }
     assert(fd_count() == before);
     assert(close(source) == 0 && close(pool) == 0 && close(sockets[0]) == 0 && close(sockets[1]) == 0);
+}
+
+static void check_mesh_range_needs_one_lane(void)
+{
+    SparkWeightdConnection connection = {0};
+    const uint64_t band_bytes = (uint64_t)SPARK_WEIGHTD_MESH_SLOT_BYTES * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND;
+    assert(SparkWeightdMeshRangeAllowed(&connection,"test",0u,64u) == SPARK_STATUS_INVALID_ARGUMENT);
+    connection.lane_mask = 3u;
+    assert(SparkWeightdMeshRangeAllowed(&connection,"test",0u,64u) == SPARK_STATUS_INVALID_ARGUMENT);
+    connection.lane_mask = 0u;
+    connection.mesh_active = 1u;
+    connection.mesh_lane = 0u;
+    assert(SparkWeightdMeshRangeAllowed(&connection,"test",0u,64u) == SPARK_STATUS_OK);
+    assert(SparkWeightdMeshRangeAllowed(&connection,"test",band_bytes,64u) == SPARK_STATUS_OK);
+    assert(SparkWeightdMeshRangeAllowed(&connection,"test",2u * band_bytes,64u) == SPARK_STATUS_INVALID_ARGUMENT);
+    connection.mesh_active = 0u;
+    connection.lane_mask = 1u << 3u;
+    assert(SparkWeightdMeshRangeAllowed(&connection,"test",6u * band_bytes,64u) == SPARK_STATUS_OK);
+    assert(SparkWeightdMeshRangeAllowed(&connection,"test",0u,64u) == SPARK_STATUS_INVALID_ARGUMENT);
+}
+
+static void check_lane_close_waits_for_dispatch(void)
+{
+    SparkWeightdServer *server = calloc(1u,sizeof(*server));
+    SparkWeightdConnection *closing;
+    assert(server != 0);
+    closing = &server->connections[5];
+    closing->state = SPARK_WEIGHTD_CONNECTION_CLOSED;
+    closing->fd = 7;
+    closing->mesh_active = 1u;
+    closing->mesh_lane = 3u;
+    atomic_store_explicit(&server->dispatch_state,1u,memory_order_release);
+    server->dispatch_connection = 2u;
+    assert(SparkWeightdServerClosable(server,5u) == 0u);
+    closing->mesh_active = 0u;
+    assert(SparkWeightdServerClosable(server,5u) == 1u);
+    closing->mesh_active = 1u;
+    closing->lane_mask = 0u;
+    atomic_store_explicit(&server->dispatch_state,0u,memory_order_release);
+    assert(SparkWeightdServerClosable(server,5u) == 1u);
+    atomic_store_explicit(&server->dispatch_state,1u,memory_order_release);
+    closing->mesh_active = 0u;
+    closing->lane_mask = 1u;
+    assert(SparkWeightdServerClosable(server,5u) == 0u);
+    closing->lane_mask = 0u;
+    server->dispatch_connection = 5u;
+    assert(SparkWeightdServerClosable(server,5u) == 0u);
+    closing->fd = -1;
+    atomic_store_explicit(&server->dispatch_state,0u,memory_order_release);
+    assert(SparkWeightdServerClosable(server,5u) == 0u);
+    free(server);
 }
 
 static void check_mesh_only_dispatch(void)
@@ -375,17 +427,44 @@ static void check_short_range_reads(void)
 	read_limit = 19u;
 	{
 		const SparkWeightdRange *order[2] = {&ranges[1],&ranges[0]};
-		assert(SparkWeightdLoadRanges(&arena,fd,0u,order,2u) == SPARK_STATUS_OK);
+		SparkWeightdServer *idle = calloc(1u,sizeof(*idle));
+		assert(idle != 0 && SparkWeightdPacerInitialize(&idle->pacer,0u,SparkWeightdPacerNow,SparkWeightdPacerSleepNs,0) == SPARK_STATUS_OK);
+		assert(SparkWeightdLoadRanges(idle,&arena,fd,0u,order,2u) == SPARK_STATUS_OK);
 		assert(memcmp(source,destination,sizeof(source)) == 0);
 		ranges[1].digest[0] ^= 1u;
 		order[0] = &ranges[1];
 		order[1] = &ranges[0];
-		assert(SparkWeightdLoadRanges(&arena,fd,0u,order,2u) == SPARK_STATUS_HASH_MISMATCH);
+		assert(SparkWeightdLoadRanges(idle,&arena,fd,0u,order,2u) == SPARK_STATUS_HASH_MISMATCH);
+		free(idle);
 	}
 	read_limit = 0u;
 	SparkWeightdDirectDestroy(arena.direct);
 	free(arena.staging);
 	assert(close(fd) == 0 && unlink(path) == 0);
+}
+
+static void check_pacer_counts_other_processes(void)
+{
+	int sockets[2];
+	SparkWeightdServer *server = calloc(1u,sizeof(*server));
+	assert(server != 0 && SparkWeightdPacerInitialize(&server->pacer,0u,SparkWeightdPacerNow,SparkWeightdPacerSleepNs,0) == SPARK_STATUS_OK);
+	assert(socketpair(AF_UNIX,SOCK_STREAM,0,sockets) == 0);
+	assert(SparkWeightdConnectionPeerPid(sockets[0]) == (uint64_t)getpid());
+	assert(close(sockets[0]) == 0 && close(sockets[1]) == 0);
+	server->dispatch_connection = 0u;
+	server->connections[0].peer_pid = 100u;
+	server->connections[1].peer_pid = 100u;
+	atomic_store(&server->connections[1].serving_until_ns,UINT64_MAX);
+	assert(SparkWeightdServerServingOther(server) == 0u);
+	assert(SparkWeightdServerPace(server,UINT64_C(4194304)) == SPARK_STATUS_OK && server->pacer.refused_count == 0u);
+	server->connections[2].peer_pid = 200u;
+	atomic_store(&server->connections[2].serving_until_ns,UINT64_MAX);
+	assert(SparkWeightdServerServingOther(server) == 1u);
+	assert(SparkWeightdServerPace(server,UINT64_C(4194304)) == SPARK_STATUS_CAPACITY_EXCEEDED && server->pacer.refused_count == 1u);
+	atomic_store(&server->connections[2].serving_until_ns,0u);
+	server->connections[0].peer_pid = 0u;
+	assert(SparkWeightdServerServingOther(server) == 1u);
+	free(server);
 }
 
 static void check_exchange_timeout_poison(void)
@@ -542,8 +621,8 @@ static void check_cold_control_progress(void)
 	wait_for_read();
 	assert(SparkWeightdClientConnect(socket_path,&probe,&next_hello) == SPARK_STATUS_OK);
 	assert(next_hello.daemon_generation == first_hello.daemon_generation);
-	assert(SparkWeightdClientMeshWrite(probe,0u,0u,0u,8u,UINT64_C(100000000)) == SPARK_STATUS_UNSUPPORTED);
-	assert(SparkWeightdClientMeshBroadcast(probe,1u,0u,0u,8u,1u,0u,UINT64_C(100000000)) == SPARK_STATUS_BUSY);
+	assert(SparkWeightdClientMeshWrite(probe,0u,0u,0u,8u,UINT64_C(100000000)) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkWeightdClientMeshBroadcast(probe,1u,0u,0u,8u,1u,0u,UINT64_C(100000000)) == SPARK_STATUS_INVALID_ARGUMENT);
 	assert(SparkWeightdClientAlive(probe) != 0u);
 	assert(read_blocked != 0u);
 	SparkWeightdClientClose(probe);
@@ -605,8 +684,37 @@ static void check_cold_control_progress(void)
 	assert(unlink(path) == 0 && unlink(manifest_path) == 0 && unlink(wset_path) == 0 && rmdir(root) == 0);
 }
 
+static void check_pipelined_request_closes(uint32_t requests)
+{
+    SparkWeightdServer *server = calloc(1u,sizeof(*server));
+    SparkWeightdConnection *connection;
+    uint8_t frames[2u * SPARK_WEIGHTD_IPC_HEADER_BYTES];
+    int32_t pair[2];
+    assert(server != 0);
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,pair) == 0);
+    assert(fcntl(pair[0],F_SETFL,fcntl(pair[0],F_GETFL) | O_NONBLOCK) == 0);
+    connection = &server->connections[0];
+    connection->fd = pair[0];
+    connection->state = SPARK_WEIGHTD_CONNECTION_OPEN;
+    SparkWeightdBuildHeader(frames,SPARK_WEIGHTD_IPC_KIND_HELLO,1u);
+    SparkWeightdBuildHeader(frames + SPARK_WEIGHTD_IPC_HEADER_BYTES,SPARK_WEIGHTD_IPC_KIND_HELLO,2u);
+    assert(write(pair[1],frames,(size_t)requests * SPARK_WEIGHTD_IPC_HEADER_BYTES) == (ssize_t)(requests * SPARK_WEIGHTD_IPC_HEADER_BYTES));
+    SparkWeightdServerHandleReadable(server,connection);
+    if ( requests == 1u )
+        assert(connection->state == SPARK_WEIGHTD_CONNECTION_OPEN && connection->response_bytes != 0u);
+    else
+        assert(connection->state == SPARK_WEIGHTD_CONNECTION_CLOSED && connection->response_bytes == 0u);
+    (void)close(pair[0]);
+    (void)close(pair[1]);
+    free(server);
+}
+
 int main(void)
 {
+    check_lane_close_waits_for_dispatch();
+    check_pipelined_request_closes(1u);
+    check_pipelined_request_closes(2u);
+    check_mesh_range_needs_one_lane();
     check_mesh_only_dispatch();
     check_mesh_only_map(1u,SPARK_STATUS_OK,0u);
     check_mesh_only_map(0u,SPARK_STATUS_BUSY,0u);
@@ -622,8 +730,9 @@ int main(void)
 	check_reported_truncation();
 	check_lease_frame_shape();
 	check_short_range_reads();
+	check_pacer_counts_other_processes();
 	check_exchange_timeout_poison();
 	check_cold_control_progress();
-	puts("PASS FD frames and cold progress: short reads, failed exchange isolation, concurrent HELLO and orphan cleanup");
+	puts("PASS FD frames and cold progress: a connection with an active mesh lane is closed only while no dispatch runs, short reads, failed exchange isolation, concurrent HELLO, orphan cleanup, and loads paced only beside another process");
 	return(0);
 }

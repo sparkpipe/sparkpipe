@@ -1,0 +1,63 @@
+{
+ "id": "compsec-084",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "muse-glimmer-30b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nOn this target, plain char is signed, and the ctype implementation indexes a table for values other than EOF.\n\nCode:\n```c\n 1: static size_t decode_component(char *s, size_t len)\n 2: {\n 3:     size_t r = 0, w = 0;\n 4: \n 5:     while (r < len) {\n 6:         if (s[r] == '%' && r + 2 < len &&\n 7:             isxdigit(s[r + 1]) && isxdigit(s[r + 2])) {\n 8:             s[w++] = hexpair(s[r + 1], s[r + 2]);\n 9:             r += 3;\n10:         } else {\n11:             s[w++] = s[r++];\n12:         }\n13:     }\n14:     return w;\n15: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "b2fb33c0beaf592ff2ff09d7b38deee609f1bc0d37f918b7b824917bc8b1b7de"
+ },
+ "response": {
+  "id": "chatcmpl-892056a2946b4ef1be50990ae1e26388",
+  "created": 1791705117,
+  "model": "muse-glimmer-30b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Answer: 7",
+     "role": "assistant",
+     "reasoning_content": " to=self<|message|>Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nPlain char is signed, and ctype implementation indexes a table for values other than EOF.\n\nCode:\nwhile r < len\nif s[r]=='%' && r+2 < len && isxdigit(s[r+1]) && isxdigit(s[r+2])\n...\ns[w++] = s[r++];\n\nBug: s is char*, but isxdigit expects unsigned char or EOF. With signed char, negative values cause out-of-bounds table index. So isxdigit(s[r+1]) uses signed char negative -> UB.\n\nAlso s[w++] writes in place, w may exceed? r increments, w increments same? For % case, w increments 1, r increments 3, so w <= r? Might be okay but in-place decode shrinks, so w <= r always. So no overflow.\n\nPrimary bug is isxdigit with signed char. Line 7 uses isxdigit(s[r+1]) and isxdigit(s[r+2]). Also line 6 uses s[r]=='%' fine.\n\nBug introduced at line 7? Or line 6? The call is at 7. Might be both 7? The condition includes two calls. Smallest set: 7? Actually line 7 contains both calls. Could be line 7.\n\nAlso s[r] used in isxdigit? No.\n\nSo answer line 7.\n\nIf need both calls separate? It's same line.\n\nReturn Answer: 7\n\n<|eom|><|start|>assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 337,
+   "prompt_tokens": 344,
+   "total_tokens": 681,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think> to=self<|message|>Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nPlain char is signed, and ctype implementation indexes a table for values other than EOF.\n\nCode:\nwhile r < len\nif s[r]=='%' && r+2 < len && isxdigit(s[r+1]) && isxdigit(s[r+2])\n...\ns[w++] = s[r++];\n\nBug: s is char*, but isxdigit expects unsigned char or EOF. With signed char, negative values cause out-of-bounds table index. So isxdigit(s[r+1]) uses signed char negative -> UB.\n\nAlso s[w++] writes in place, w may exceed? r increments, w increments same? For % case, w increments 1, r increments 3, so w <= r? Might be okay but in-place decode shrinks, so w <= r always. So no overflow.\n\nPrimary bug is isxdigit with signed char. Line 7 uses isxdigit(s[r+1]) and isxdigit(s[r+2]). Also line 6 uses s[r]=='%' fine.\n\nBug introduced at line 7? Or line 6? The call is at 7. Might be both 7? The condition includes two calls. Smallest set: 7? Actually line 7 contains both calls. Could be line 7.\n\nAlso s[r] used in isxdigit? No.\n\nSo answer line 7.\n\nIf need both calls separate? It's same line.\n\nReturn Answer: 7\n\n<|eom|><|start|>assistant</think>Answer: 7",
+ "grade": {
+  "index": 9,
+  "id": "compsec-084",
+  "source": "COMPSEC",
+  "domain": "PHP",
+  "expected": "6-7",
+  "extracted": "7",
+  "passed": true,
+  "elapsed_ms": 10404.0,
+  "output_sha256": "5d2bd34ba405bc231f82441a124536e583ccff1b0d3e8d883807f82693125db0",
+  "prompt_token_count": 344,
+  "generated_token_count": 337,
+  "reasoning_chars": 1203,
+  "content_chars": 9,
+  "status": "stop"
+ }
+}

@@ -1,0 +1,289 @@
+== 2026-10-15T06:16:53Z GLM prefill hold 20261015T061653Z arms A I R C F RF CF precheck idle qwen3.8-max None
+A = lane adapter 16:d79173237a9ea204  (backup root.prev-20261015T061653Z)
+staged I: 16:c370647836db3511  want c370647836db3511
+staged R: 16:5d28598037cf3a77  want 5d28598037cf3a77
+staged C: 16:790bfdb861a137b6  want 790bfdb861a137b6
+staged F: 16:6323312ccf377c70  want 6323312ccf377c70
+staged RF: 16:09b782cf7dd2f6c5  want 09b782cf7dd2f6c5
+staged CF: 16:0a4e5a9d29348105  want 0a4e5a9d29348105
+NOTE 05/06 GLM prefill hold 20261015T061653Z started, arms A I R C F RF CF; rollback = lib/libglm53_full_tp16_serving_adapter.so from root.prev-20261015T061653Z
+== 2026-10-15T06:17:06Z run A1
+arm A: 16:d79173237a9ea204 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 48.0 null
+golden A1 rc=0
+nolp A1 rc=0
+S8 A errors 0 agg_tok_s 69.54
+perf A-r1 rc=0
+LOG A1 16 rs=0 pieces=0 bad=0
+== 2026-10-15T06:21:00Z run I1
+activate qwen3.8-max: idle qwen3.8-max 58.4 null
+arm I: 16:c370647836db3511 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 49.1 null
+golden I1 rc=0
+nolp I1 rc=0
+CMP I1 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I1 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I1 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I1 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I1 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I1 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I1 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I1 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I1 exact 8/8
+CMP I1 NOLP-EXACT 4/4
+S8 I errors 0 agg_tok_s 68.83
+perf I-r1 rc=0
+LOG I1 16 rs=0 pieces=0 bad=0
+== 2026-10-15T06:25:56Z run R1
+activate qwen3.8-max: idle qwen3.8-max 57.5 null
+arm R: 16:5d28598037cf3a77 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 47.8 null
+golden R1 rc=0
+nolp R1 rc=0
+CMP R1 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R1 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R1 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R1 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R1 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R1 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R1 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R1 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R1 exact 8/8
+CMP R1 NOLP-EXACT 4/4
+S8 R errors 0 agg_tok_s 69.35
+perf R-r1 rc=0
+LOG R1 16 rs=1 pieces=0 bad=0
+== 2026-10-15T06:30:50Z run C1
+activate qwen3.8-max: idle qwen3.8-max 55.7 null
+arm C: 16:790bfdb861a137b6 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 47.8 null
+golden C1 rc=0
+nolp C1 rc=0
+CMP C1 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C1 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C1 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C1 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C1 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C1 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C1 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C1 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C1 exact 8/8
+CMP C1 NOLP-EXACT 4/4
+S8 C errors 0 agg_tok_s 71.32
+perf C-r1 rc=0
+LOG C1 16 rs=0 pieces=1 bad=0
+== 2026-10-15T06:35:39Z run F1
+activate qwen3.8-max: idle qwen3.8-max 55.8 null
+arm F: 16:6323312ccf377c70 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 47.8 null
+golden F1 rc=0
+nolp F1 rc=0
+CMP F1 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F1 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F1 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F1 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F1 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F1 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F1 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F1 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F1 exact 8/8
+CMP F1 NOLP-EXACT 4/4
+S8 F errors 0 agg_tok_s 69.82
+perf F-r1 rc=0
+LOG F1 16 rs=0 pieces=0 bad=0
+== 2026-10-15T06:40:29Z run RF1
+activate qwen3.8-max: idle qwen3.8-max 56.6 null
+arm RF: 16:09b782cf7dd2f6c5 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 48.1 null
+golden RF1 rc=0
+nolp RF1 rc=0
+CMP RF1 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF1 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF1 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF1 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF1 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF1 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF1 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF1 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF1 exact 8/8
+CMP RF1 NOLP-EXACT 4/4
+S8 RF errors 0 agg_tok_s 70.85
+perf RF-r1 rc=0
+LOG RF1 16 rs=1 pieces=0 bad=0
+== 2026-10-15T06:45:22Z run CF1
+activate qwen3.8-max: idle qwen3.8-max 55.8 null
+arm CF: 16:0a4e5a9d29348105 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 48.0 null
+golden CF1 rc=0
+nolp CF1 rc=0
+CMP CF1 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF1 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF1 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF1 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF1 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF1 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF1 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF1 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF1 exact 8/8
+CMP CF1 NOLP-EXACT 4/4
+S8 CF errors 0 agg_tok_s 68.8
+perf CF-r1 rc=0
+LOG CF1 16 rs=0 pieces=1 bad=0
+== 2026-10-15T06:50:12Z run CF2
+activate qwen3.8-max: idle qwen3.8-max 55.5 null
+arm CF: 16:0a4e5a9d29348105 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 48.6 null
+golden CF2 rc=0
+nolp CF2 rc=0
+CMP CF2 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF2 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF2 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF2 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF2 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF2 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF2 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF2 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP CF2 exact 8/8
+CMP CF2 NOLP-EXACT 4/4
+perf CF-r2 rc=0
+LOG CF2 16 rs=0 pieces=1 bad=0
+== 2026-10-15T06:54:31Z run RF2
+activate qwen3.8-max: idle qwen3.8-max 55.7 null
+arm RF: 16:09b782cf7dd2f6c5 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 48.0 null
+golden RF2 rc=0
+nolp RF2 rc=0
+CMP RF2 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF2 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF2 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF2 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF2 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF2 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF2 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF2 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP RF2 exact 8/8
+CMP RF2 NOLP-EXACT 4/4
+perf RF-r2 rc=0
+LOG RF2 16 rs=1 pieces=0 bad=0
+== 2026-10-15T06:58:50Z run F2
+activate qwen3.8-max: idle qwen3.8-max 56.9 null
+arm F: 16:6323312ccf377c70 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 48.4 null
+golden F2 rc=0
+nolp F2 rc=0
+CMP F2 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F2 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F2 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F2 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F2 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F2 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F2 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F2 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP F2 exact 8/8
+CMP F2 NOLP-EXACT 4/4
+perf F-r2 rc=0
+LOG F2 16 rs=0 pieces=0 bad=0
+== 2026-10-15T07:03:16Z run C2
+activate qwen3.8-max: idle qwen3.8-max 56.0 null
+arm C: 16:790bfdb861a137b6 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 47.9 null
+golden C2 rc=0
+nolp C2 rc=0
+CMP C2 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C2 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C2 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C2 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C2 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C2 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C2 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C2 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP C2 exact 8/8
+CMP C2 NOLP-EXACT 4/4
+perf C-r2 rc=0
+LOG C2 16 rs=0 pieces=1 bad=0
+== 2026-10-15T07:07:41Z run R2
+activate qwen3.8-max: idle qwen3.8-max 55.8 null
+arm R: 16:5d28598037cf3a77 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 47.8 null
+golden R2 rc=0
+nolp R2 rc=0
+CMP R2 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R2 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R2 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R2 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R2 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R2 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R2 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R2 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP R2 exact 8/8
+CMP R2 NOLP-EXACT 4/4
+perf R-r2 rc=0
+LOG R2 16 rs=1 pieces=0 bad=0
+== 2026-10-15T07:12:05Z run I2
+activate qwen3.8-max: idle qwen3.8-max 55.6 null
+arm I: 16:c370647836db3511 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 47.9 null
+golden I2 rc=0
+nolp I2 rc=0
+CMP I2 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I2 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I2 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I2 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I2 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I2 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I2 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I2 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP I2 exact 8/8
+CMP I2 NOLP-EXACT 4/4
+perf I-r2 rc=0
+LOG I2 16 rs=0 pieces=0 bad=0
+== 2026-10-15T07:16:25Z run A2
+activate qwen3.8-max: idle qwen3.8-max 55.9 null
+arm A: 16:d79173237a9ea204 
+wipe stage-lanes/glm53_full/lane6:  16 snap=0 dropkv=0 | hub idx_left=0
+activate glm-5.3: idle glm-5.3 48.0 null
+golden A2 rc=0
+nolp A2 rc=0
+CMP A2 capital tokens=equal n=8/8 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP A2 arith tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP A2 code tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP A2 story tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP A2 reason tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP A2 translate tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP A2 long_2k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP A2 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP A2 exact 8/8
+CMP A2 NOLP-EXACT 4/4
+perf A-r2 rc=0
+LOG A2 16 rs=0 pieces=0 bad=0
+LANE SELF EXACT
+activate qwen3.8-max: idle qwen3.8-max 56.8 null
+ARM A b1_n 10 b1_median 28.40 b1_mean 28.37 ttft2k 1974 ttft8k 7361
+ARM C b1_n 10 b1_median 28.34 b1_mean 28.34 ttft2k 1953 ttft8k 6921
+ARM CF b1_n 10 b1_median 28.39 b1_mean 28.30 ttft2k 1901 ttft8k 6886
+ARM F b1_n 10 b1_median 28.30 b1_mean 28.23 ttft2k 1897 ttft8k 7295
+ARM I b1_n 10 b1_median 28.35 b1_mean 28.39 ttft2k 1959 ttft8k 7332
+ARM R b1_n 10 b1_median 28.44 b1_mean 28.41 ttft2k 1889 ttft8k 7067
+ARM RF b1_n 10 b1_median 28.46 b1_mean 28.43 ttft2k 1814 ttft8k 6895
+GATE I: PASS
+GATE R: PASS
+GATE C: PASS
+GATE F: PASS
+GATE RF: PASS
+GATE CF: PASS
+arm CF: 16:0a4e5a9d29348105 
+NOTE 05/06 GLM prefill: KEEP arm CF (/Users/mac/sparkpipe-coord/lanes/driver-sprint/post-reset/fw-93de18559) on lane 6; ARM A b1_n 10 b1_median 28.40 b1_mean 28.37 ttft2k 1974 ttft8k 7361;ARM C b1_n 10 b1_median 28.34 b1_mean 28.34 ttft2k 1953 ttft8k 6921;ARM CF b1_n 10 b1_median 28.39 b1_mean 28.30 ttft2k 1901 ttft8k 6886;ARM F b1_n 10 b1_median 28.30 b1_mean 28.23 ttft2k 1897 ttft8k 7295;ARM I b1_n 10 b1_median 28.35 b1_mean 28.39 ttft2k 1959 ttft8k 7332;ARM R b1_n 10 b1_median 28.44 b1_mean 28.41 ttft2k 1889 ttft8k 7067;ARM RF b1_n 10 b1_median 28.46 b1_mean 28.43 ttft2k 1814 ttft8k 6895; GATE I: PASS;GATE R: PASS;GATE C: PASS;GATE F: PASS;GATE RF: PASS;GATE CF: PASS; rollback root.prev-20261015T061653Z
+== 2026-10-15T07:21:54Z GLM hold end (idle qwen3.8-max None); lane 16:0a4e5a9d29348105 

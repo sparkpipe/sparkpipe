@@ -1,12 +1,3 @@
-// hy4 lane: GPU MoE expert-gather cell — routed-expert FFN of layer 1 as
-// CUDA kernels (router logits gemv + host selection, per-expert gate/up
-// gemvs, HYV4 swiglu clamp, down gemv, weighted accumulate, shared expert),
-// validated against an in-harness float64 reference. The MoE input vector
-// is a deterministic seeded pattern (normalizes like a real fcur); the hc
-// kernels feeding it are a separate cell. Expert slabs are host-dequanted
-// from their OWNER rank bundles via the vendor header.
-//
-// Usage: hy4_moe_test <rank00.gguf>
 #include <cstdio>
 #include <cstring>
 #include <cstdint>

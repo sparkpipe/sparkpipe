@@ -1,0 +1,62 @@
+{
+ "id": "compsec-085",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "deepseek-v4.1-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe database driver receives a language string token as (ptr,len), where len may include embedded NUL bytes. The function reconstructs a quoted SQL token.\n\nCode:\n```c\n1: static void append_quoted_token(char *sql, size_t sql_cap,\n2:                                 const char *tok, size_t tok_len)\n3: {\n4:     strlcat(sql, \"'\", sql_cap);\n5:     strncat(sql, tok, tok_len);\n6:     strlcat(sql, \"'\", sql_cap);\n7: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "a595297792e1f7b33f3bb2471d5c09c23a574543398b96d8e658d12ed4ca0424"
+ },
+ "response": {
+  "id": "chatcmpl-a348a765a3734580b4b175d0e799657d",
+  "created": 1791725652,
+  "model": "deepseek-v4.1-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability is in line 5: `strncat(sql, tok, tok_len);`\n\n`strncat` stops at the first NUL byte in `tok`, so if `tok` contains embedded NUL bytes (which the problem states is possible), the function will not copy the full token. This can lead to incorrect SQL reconstruction and potentially allow SQL injection or data truncation issues.\n\nAnswer: 5",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 85,
+   "prompt_tokens": 226,
+   "total_tokens": 311,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability is in line 5: `strncat(sql, tok, tok_len);`\n\n`strncat` stops at the first NUL byte in `tok`, so if `tok` contains embedded NUL bytes (which the problem states is possible), the function will not copy the full token. This can lead to incorrect SQL reconstruction and potentially allow SQL injection or data truncation issues.\n\nAnswer: 5",
+ "grade": {
+  "index": 10,
+  "id": "compsec-085",
+  "source": "COMPSEC",
+  "domain": "PHP PDO Firebird",
+  "expected": "5",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 12247.3,
+  "output_sha256": "87cc028fde408012ed18c978bacd81e5132e71593df3a400fe579a6ed9db7417",
+  "prompt_token_count": 226,
+  "generated_token_count": 85,
+  "reasoning_chars": 0,
+  "content_chars": 353,
+  "status": "stop"
+ }
+}

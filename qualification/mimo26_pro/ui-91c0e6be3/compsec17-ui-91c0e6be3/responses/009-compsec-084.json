@@ -1,0 +1,62 @@
+{
+ "id": "compsec-084",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "mimo-v2.6-pro",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nOn this target, plain char is signed, and the ctype implementation indexes a table for values other than EOF.\n\nCode:\n```c\n 1: static size_t decode_component(char *s, size_t len)\n 2: {\n 3:     size_t r = 0, w = 0;\n 4: \n 5:     while (r < len) {\n 6:         if (s[r] == '%' && r + 2 < len &&\n 7:             isxdigit(s[r + 1]) && isxdigit(s[r + 2])) {\n 8:             s[w++] = hexpair(s[r + 1], s[r + 2]);\n 9:             r += 3;\n10:         } else {\n11:             s[w++] = s[r++];\n12:         }\n13:     }\n14:     return w;\n15: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "d670fcb3b549708e5698f0ba5252866468604feb512d3544fb655850a06f0071"
+ },
+ "response": {
+  "id": "chatcmpl-be0deb30d06e48a4b8451fd191b5ec1b",
+  "created": 1791868718,
+  "model": "mimo-v2.6-pro",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The bug is passing `char` values (which are signed) to `isxdigit`, which expects `int` values representable as `unsigned char` or EOF. When `s[r+1]` or `s[r+2]` has a negative value (high bit set), it's passed as a negative int to `isxdigit`, causing out-of-bounds table indexing.\n\nAnswer: 7",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 85,
+   "prompt_tokens": 305,
+   "total_tokens": 390,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The bug is passing `char` values (which are signed) to `isxdigit`, which expects `int` values representable as `unsigned char` or EOF. When `s[r+1]` or `s[r+2]` has a negative value (high bit set), it's passed as a negative int to `isxdigit`, causing out-of-bounds table indexing.\n\nAnswer: 7",
+ "grade": {
+  "index": 9,
+  "id": "compsec-084",
+  "source": "COMPSEC",
+  "domain": "PHP",
+  "expected": "6-7",
+  "extracted": "7",
+  "passed": true,
+  "elapsed_ms": 13637.2,
+  "output_sha256": "c54d8ab877f526609f2b978478a58465f8755c9e294e536d3139c5e245b94eac",
+  "prompt_token_count": 305,
+  "generated_token_count": 85,
+  "reasoning_chars": 0,
+  "content_chars": 291,
+  "status": "stop"
+ }
+}

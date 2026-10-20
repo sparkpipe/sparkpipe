@@ -163,6 +163,17 @@ static void SparkTestInitializePacket(
     packet->cuda_stream = (void *)0x1;
 }
 
+static SparkStatus TestHiddenTransportCancel(
+    void *transport_state,
+    const SparkHiddenTransportPacket *packet)
+{
+    if (transport_state == 0 || packet == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return SPARK_STATUS_OK;
+}
+
 static void SparkTestInitializeTransportInterface(
     SparkHiddenTransportInterface *transport_interface,
     uint32_t capability_flags)
@@ -177,6 +188,7 @@ static void SparkTestInitializeTransportInterface(
     transport_interface->post_receive = TestHiddenTransportPostReceive;
     transport_interface->send = TestHiddenTransportSend;
     transport_interface->poll = TestHiddenTransportPoll;
+    transport_interface->cancel = TestHiddenTransportCancel;
     if ((capability_flags &
             SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION) != 0u)
     {

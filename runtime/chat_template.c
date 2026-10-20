@@ -59,10 +59,27 @@ static const char *SparkChatTemplateRoleSuffix(
 	const SparkJsonDocument *document,
 	int32_t role)
 {
-	if ( chat_template->assistant_suffix != 0 && role >= 0 &&
-		SparkJsonStringEquals(document,role,"assistant") )
-		return(chat_template->assistant_suffix);
-	return("");
+	const char *suffix = 0;
+	if ( role < 0 )
+		return("");
+	if ( SparkJsonStringEquals(document,role,"assistant") )
+		suffix = chat_template->assistant_suffix;
+	else if ( SparkJsonStringEquals(document,role,"user") )
+		suffix = chat_template->user_suffix;
+	else if ( SparkJsonStringEquals(document,role,"system") )
+		suffix = chat_template->system_turn_suffix;
+	else if ( SparkJsonStringEquals(document,role,"observation") )
+		suffix = chat_template->observation_suffix;
+	return(suffix != 0 ? suffix : "");
+}
+
+static const char *SparkChatTemplateSystemSuffix(
+	const SparkModelResidentChatTemplate *chat_template,
+	bool thinking,
+	bool leading_system)
+{
+	const char *suffix = thinking ? chat_template->system_suffix_thinking : chat_template->system_suffix;
+	return(leading_system && suffix != 0 ? suffix : "");
 }
 
 SparkChatTemplateOutcome SparkChatTemplateRender(
@@ -111,6 +128,8 @@ SparkChatTemplateOutcome SparkChatTemplateRender(
 	}
 	if ( thinking && leading_system == 0u && !SparkChatTemplateAppend(&rendered,chat_template->thinking_prefix) )
 		outcome = SPARK_CHAT_TEMPLATE_OUT_OF_MEMORY;
+	if ( !thinking && leading_system == 0u && chat_template->plain_prefix != 0 && !SparkChatTemplateAppend(&rendered,chat_template->plain_prefix) )
+		outcome = SPARK_CHAT_TEMPLATE_OUT_OF_MEMORY;
 	for ( message_index = 0u; outcome == SPARK_CHAT_TEMPLATE_RENDERED && message_index < message_count; message_index++ )
 	{
 		int32_t entry = SparkJsonGetArrayElement(document,messages,message_index);
@@ -135,6 +154,7 @@ SparkChatTemplateOutcome SparkChatTemplateRender(
 			break;
 		}
 		if ( !SparkChatTemplateAppend(&rendered,header) || !SparkChatTemplateAppend(&rendered,piece) ||
+			!SparkChatTemplateAppend(&rendered,SparkChatTemplateSystemSuffix(chat_template,thinking,message_index == 0u && leading_system != 0u)) ||
 			!SparkChatTemplateAppend(&rendered,SparkChatTemplateRoleSuffix(chat_template,document,
 				SparkJsonFindObjectMember(document,entry,"role"))) ||
 			!SparkChatTemplateAppend(&rendered,chat_template->turn_suffix) )

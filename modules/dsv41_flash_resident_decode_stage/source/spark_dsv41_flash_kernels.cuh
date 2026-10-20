@@ -403,20 +403,21 @@ static inline cudaError_t SparkDsv41FlashLaunchRope(cudaStream_t stream, uint16_
 
 static __global__ void SparkDsv41FlashFp8QdqKernel(uint16_t *data_bf16, uint32_t group_count)
 {
-	uint32_t group = blockIdx.x * blockDim.x + threadIdx.x,element;
-	uint64_t base;
-	float amax = 0.0f,scale,value;
+	const uint32_t group = blockIdx.x * (blockDim.x / SPARK_DSV41_FLASH_FP8_BLOCK) + threadIdx.x / SPARK_DSV41_FLASH_FP8_BLOCK;
+	const uint32_t element = threadIdx.x % SPARK_DSV41_FLASH_FP8_BLOCK;
+	uint32_t offset;
+	float amax,scale,value;
 	if ( group >= group_count )
 		return;
-	base = (uint64_t)group * SPARK_DSV41_FLASH_FP8_BLOCK;
-	for (element = 0u; element < SPARK_DSV41_FLASH_FP8_BLOCK; element++)
-		amax = fmaxf(amax,fabsf(LmBf16ToFloat(data_bf16[base + element])));
+	uint16_t *cell = data_bf16 + (uint64_t)group * SPARK_DSV41_FLASH_FP8_BLOCK + element;
+	value = LmBf16ToFloat(*cell);
+	amax = fabsf(value);
+	for (offset = SPARK_DSV41_FLASH_FP8_BLOCK / 2u; offset != 0u; offset >>= 1u)
+		amax = fmaxf(amax,__shfl_xor_sync(0xffffffffu,amax,offset));
+	amax = fmaxf(0.0f,amax);
 	scale = SparkDsv41FlashPow2CeilScale(fmaxf(amax,SPARK_DSV41_FLASH_FP8_AMAX_FLOOR),1.0f / LM_E4M3_MAX);
-	for (element = 0u; element < SPARK_DSV41_FLASH_FP8_BLOCK; element++)
-	{
-		value = fminf(fmaxf(LmBf16ToFloat(data_bf16[base + element]) / scale,-LM_E4M3_MAX),LM_E4M3_MAX);
-		data_bf16[base + element] = LmFloatToBf16(LmE4m3ToFloat(LmFloatToE4m3(value)) * scale);
-	}
+	value = fminf(fmaxf(value / scale,-LM_E4M3_MAX),LM_E4M3_MAX);
+	*cell = LmFloatToBf16(LmE4m3ToFloat(LmFloatToE4m3(value)) * scale);
 }
 
 static inline cudaError_t SparkDsv41FlashLaunchFp8Qdq(cudaStream_t stream, uint16_t *data_bf16, uint64_t element_count)
@@ -425,7 +426,7 @@ static inline cudaError_t SparkDsv41FlashLaunchFp8Qdq(cudaStream_t stream, uint1
 	if ( data_bf16 == 0 || element_count == 0u || element_count % SPARK_DSV41_FLASH_FP8_BLOCK != 0u )
 		return(cudaErrorInvalidValue);
 	groups = (uint32_t)(element_count / SPARK_DSV41_FLASH_FP8_BLOCK);
-	SparkDsv41FlashFp8QdqKernel<<<(groups + 255u) / 256u,256u,0,stream>>>(data_bf16,groups);
+	SparkDsv41FlashFp8QdqKernel<<<(groups + 7u) / 8u,8u * SPARK_DSV41_FLASH_FP8_BLOCK,0,stream>>>(data_bf16,groups);
 	return(cudaGetLastError());
 }
 

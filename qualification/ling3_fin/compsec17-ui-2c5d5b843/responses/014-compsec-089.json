@@ -1,0 +1,62 @@
+{
+ "id": "compsec-089",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "ling-3.0-flash-fin",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe public multipart CCM API lets the caller request a tag length.\n\nCode:\n```c\n 1: static int ccm_finish_reduced(struct CcmCtx *ctx, uint8_t *tag, size_t tag_len)\n 2: {\n 3:     uint8_t full_tag[16];\n 4: \n 5:     ccm_compute_full_tag(ctx, full_tag);\n 6: \n 7:     if (tag == NULL)\n 8:         return -1;\n 9: \n10:     memcpy(tag, full_tag, tag_len);\n11:     return 0;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "a392d948643403d13917623de3f44137cf26ed7d76f130d9ecc7f53d76faf248"
+ },
+ "response": {
+  "id": "chatcmpl-a178bee169e14aa4a203c3f6e3dce6e1",
+  "created": 1791718899,
+  "model": "ling-3.0-flash-fin",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Let me analyze this function for vulnerabilities:\n\n1. The function creates a 16-byte `full_tag` buffer\n2. It computes the full tag into this buffer\n3. It checks if `tag` is NULL\n4. It copies `tag_len` bytes from `full_tag` to `tag`\n\nThe vulnerability here is on line 10: `memcpy(tag, full_tag, tag_len);`\n\nThe problem is that `tag_len` is not validated against the size of `full_tag` (which is 16 bytes). If the caller passes a `tag_len` greater than 16, `memcpy` will read beyond the bounds of `full_tag`, causing a buffer overflow.\n\nAdditionally, the NULL check on line 7 happens AFTER the `ccm_compute_full_tag` call on line 5, but more importantly, there's no check to ensure `tag_len` doesn't exceed 16 bytes.\n\nThe primary bug is the lack of bounds checking on `tag_len` before the memcpy operation on line 10.\n\nAnswer: 10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 235,
+   "prompt_tokens": 278,
+   "total_tokens": 513,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Let me analyze this function for vulnerabilities:\n\n1. The function creates a 16-byte `full_tag` buffer\n2. It computes the full tag into this buffer\n3. It checks if `tag` is NULL\n4. It copies `tag_len` bytes from `full_tag` to `tag`\n\nThe vulnerability here is on line 10: `memcpy(tag, full_tag, tag_len);`\n\nThe problem is that `tag_len` is not validated against the size of `full_tag` (which is 16 bytes). If the caller passes a `tag_len` greater than 16, `memcpy` will read beyond the bounds of `full_tag`, causing a buffer overflow.\n\nAdditionally, the NULL check on line 7 happens AFTER the `ccm_compute_full_tag` call on line 5, but more importantly, there's no check to ensure `tag_len` doesn't exceed 16 bytes.\n\nThe primary bug is the lack of bounds checking on `tag_len` before the memcpy operation on line 10.\n\nAnswer: 10",
+ "grade": {
+  "index": 14,
+  "id": "compsec-089",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 3581.3,
+  "output_sha256": "ed565fb50c02335fc15d2a980621746f0ccc72fb075699fba0ae2197cad8944c",
+  "prompt_token_count": 278,
+  "generated_token_count": 235,
+  "reasoning_chars": 0,
+  "content_chars": 827,
+  "status": "stop"
+ }
+}

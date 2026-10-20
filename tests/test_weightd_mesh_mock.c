@@ -9,20 +9,37 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 
 #include <infiniband/verbs.h>
 
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_ck128.h"
+#include "sparkpipe/spark_sha256.h"
 
 #include "../node/weightd_mesh.c"
+
+uint64_t spark_stub_mlx5_wr_id(uint32_t qpn,uint32_t index)
+{
+    uint32_t peer;
+    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
+        if ( weightd_mesh.send_qps[peer] != 0 && weightd_mesh.send_queues[peer].qpn == qpn )
+            return weightd_mesh.send_queues[peer].wr_id[index & weightd_mesh.send_queues[peer].mask];
+    return UINT64_MAX;
+}
+
+int spark_stub_mlx5_cq_live(const struct ibv_cq *cq)
+{
+    return cq != 0 && (cq == weightd_mesh.cq || cq == weightd_mesh.pair_cq) ? 1 : 0;
+}
 
 #ifndef SPARK_WEIGHTD_MESH_DIR
 #error "SPARK_WEIGHTD_MESH_DIR must name the mock mesh record directory"
 #endif
 
 #define TEST_MESH_PEERS (SPARK_WEIGHTD_MESH_RANKS_PER_BAND - 1u)
-#define TEST_MESH_MAGIC UINT64_C(0x4d45534830303036)
+#define TEST_MESH_MAGIC UINT64_C(0x4d45534830303037)
 #define TEST_MESH_LIVE_DIR "/tmp/weightd-mesh"
 
 typedef struct TestMeshRecord
@@ -40,6 +57,8 @@ typedef struct TestMeshRecord
     uint32_t pair_rkey;
     uint16_t pair_lid;
     uint8_t pair_gid[16];
+    uint64_t wire_generation;
+    uint64_t seen_generation[TEST_MESH_PEERS];
 } TestMeshRecord;
 
 static uint32_t test_rank_mask = 0xffffu;
@@ -407,27 +426,30 @@ static void test_slot_lifetimes(uint32_t local_rank)
     {
         SparkStubIbvPostedWork work;
         CHECK(spark_stub_ibv_posted(i,&work) == 0,"B1 WR captured");
-        CHECK((work.flags & IBV_SEND_SIGNALED) != 0u,"every owned WR has terminal evidence");
         if ( (work.wr_id & 3u) == 3u )
-            CHECK(spark_stub_ibv_complete(work.wr_id,IBV_WC_SUCCESS) == 0,"tail completion delivered before payload");
+            CHECK((work.flags & IBV_SEND_SIGNALED) != 0u && (work.flags & IBV_SEND_INLINE) != 0u &&
+                work.length == 8u && work.inline_word == seq,
+                "every tail is signaled and carries the slot tag inline");
         else
         {
+            SparkStubIbvPostedWork tail;
+            CHECK((work.flags & IBV_SEND_SIGNALED) == 0u && spark_stub_ibv_posted(i + 1u,&tail) == 0 &&
+                tail.qp_number == work.qp_number && tail.wqe_index == work.wqe_index + 1u && (tail.wr_id & 3u) == 3u,
+                "every payload is chained directly before its signaled tail on the same queue");
             CHECK(work.source == (uint64_t)(uintptr_t)payload && work.length == 64u,
                 "B1 source and payload extent remain unchanged");
             CHECK(*(const uint8_t *)(uintptr_t)work.source == 0x5au,"NIC source retains original contribution until completion");
         }
     }
-    SparkWeightdMeshDrainCq();
-    CHECK(test_shipped(0u,local_rank) == 0u,"tails alone cannot release outstanding payload reads");
-    CHECK(spark_stub_ibv_posted(first + 1u,&stale) == 0,"capture duplicate tail identity");
+    test_complete_range(first,last - 2u);
+    CHECK(test_shipped(0u,local_rank) == 0u,"the last outstanding peer retains ownership");
+    CHECK(spark_stub_ibv_posted(first + 1u,&stale) == 0 && (stale.wr_id & 3u) == 3u,"capture duplicate tail identity");
     CHECK(spark_stub_ibv_complete(stale.wr_id,IBV_WC_SUCCESS) == 0,"duplicate tail injected");
     SparkWeightdMeshDoorbellPoll();
     CHECK(test_shipped(0u,local_rank) == 0u,"duplicate completion does not consume another WR");
     CHECK(spark_stub_ibv_posted_count() == last,"pending doorbell is not posted a second time");
-    test_complete_range(first,last - 2u);
-    CHECK(test_shipped(0u,local_rank) == 0u,"last outstanding peer retains ownership");
     test_complete_range(last - 2u,last);
-    CHECK(test_shipped(0u,local_rank) == seq,"all terminal WRs release the source generation");
+    CHECK(test_shipped(0u,local_rank) == seq,"the last tail completion releases the source generation");
     first = spark_stub_ibv_posted_count();
     CHECK(test_post_slot(0u,local_rank,seq + 1u,all_peers) == SPARK_STATUS_OK,
         "completed source slot admits its next generation");
@@ -449,18 +471,18 @@ static void test_slot_lifetimes(uint32_t local_rank)
     entry[0] = 0u;
 
     first = spark_stub_ibv_posted_count();
-    spark_stub_ibv_fail_post_call(spark_stub_ibv_post_send_calls() + 2u);
-    CHECK(test_post_slot(1u,local_rank,seq,all_peers) == SPARK_STATUS_IO_ERROR,
-        "partial post failure reports explicit failure");
+    CHECK(test_post_slot(1u,local_rank,seq,all_peers) == SPARK_STATUS_OK,"tail failure scenario posts");
     last = spark_stub_ibv_posted_count();
-    spark_stub_ibv_fail_post_call(0u);
-    CHECK(last > first && test_shipped(1u,local_rank) == 0u,
-        "partial failure retains successfully posted work without false ACK");
+    CHECK(spark_stub_ibv_posted(first + 1u,&stale) == 0 && (stale.wr_id & 3u) == 3u &&
+        spark_stub_ibv_complete(stale.wr_id,IBV_WC_RETRY_EXC_ERR) == 0,"one tail fails on the wire");
+    SparkWeightdMeshDrainCq();
+    CHECK(test_shipped(1u,local_rank) == 0u,
+        "a failed tail retains the remaining posted work without false ACK");
     CHECK(test_post_slot(1u,local_rank,seq + 1u,all_peers) == SPARK_STATUS_IO_ERROR,
-        "partial failure fences new source ownership while draining");
-    test_complete_range(first,last);
+        "a failed transfer fences new source ownership while draining");
+    test_complete_range(first + 2u,last);
     CHECK(test_shipped(1u,local_rank) == 0u &&
-        weightd_mesh.transfers[SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank].pending == 0u,
+        weightd_mesh.transfers[SPARK_WEIGHTD_MESH_RECORD_OF(SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank,seq)].pending == 0u,
         "failed generation drains all accepted work but does not advertise success");
 
     first = spark_stub_ibv_posted_count();
@@ -471,7 +493,7 @@ static void test_slot_lifetimes(uint32_t local_rank)
     SparkWeightdMeshDrainCq();
     test_complete_range(first + 1u,last);
     CHECK(test_shipped(2u,local_rank) == 0u &&
-        weightd_mesh.transfers[2u * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank].failed != 0u,
+        weightd_mesh.transfers[SPARK_WEIGHTD_MESH_RECORD_OF(2u * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank,seq)].failed != 0u,
         "CQ error cannot be converted into a successful shipment");
 
     first = spark_stub_ibv_posted_count();
@@ -510,10 +532,13 @@ static void test_slot_lifetimes(uint32_t local_rank)
     CHECK(test_post_slot(7u,local_rank,seq + 4u,all_peers) == SPARK_STATUS_BUSY,
         "capacity pressure rejects before any partial posting");
     CHECK(spark_stub_ibv_posted_count() == last,"BUSY leaves publication and completion ledgers unchanged");
-    test_complete_range(first,first + TEST_MESH_PEERS * 2u);
+    for ( i = 0u; i < TEST_MESH_PEERS; i++ )
+        test_complete_range(first + i * SPARK_WEIGHTD_MESH_SEND_CAPACITY,first + i * SPARK_WEIGHTD_MESH_SEND_CAPACITY + 2u);
     CHECK(test_post_slot(7u,local_rank,seq + 4u,all_peers) == SPARK_STATUS_OK,
-        "completed work makes capacity retry useful");
-    test_complete_range(first + TEST_MESH_PEERS * 2u,spark_stub_ibv_posted_count());
+        "two completed sends on every peer make capacity retry useful");
+    for ( i = 0u; i < TEST_MESH_PEERS; i++ )
+        test_complete_range(first + i * SPARK_WEIGHTD_MESH_SEND_CAPACITY + 2u,first + (i + 1u) * SPARK_WEIGHTD_MESH_SEND_CAPACITY);
+    test_complete_range(last,spark_stub_ibv_posted_count());
     for ( i = 0u; i < TEST_MESH_PEERS; i++ )
         CHECK(weightd_mesh.send_pending[i] == 0u,"all accepted SQ ownership returns after terminal completions");
 }
@@ -534,7 +559,8 @@ static void test_expect_route(uint32_t first, uint32_t last, uint64_t slot_base,
         if ( (work.wr_id & 3u) == 3u )
         {
             tails++;
-            CHECK(work.source == slot_base + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u && work.length == 8u,label);
+            CHECK((work.flags & IBV_SEND_INLINE) != 0u && work.length == 8u &&
+                work.inline_word == *(const uint64_t *)(uintptr_t)(slot_base + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u),label);
             continue;
         }
         data++;
@@ -544,6 +570,202 @@ static void test_expect_route(uint32_t first, uint32_t last, uint64_t slot_base,
     }
     CHECK(tails == TEST_MESH_PEERS,label);
     CHECK(data <= TEST_MESH_PEERS,label);
+}
+
+static SparkWeightdMeshWaitRequest *test_wait_request(uint32_t band,uint32_t rank);
+static uint64_t test_wait_publish(SparkWeightdMeshWaitRequest *request,
+    uint64_t kind,uint64_t tag,uint64_t mask,uint64_t cancel);
+
+static uint64_t test_half_slot_base(uint32_t band, uint32_t rank, uint64_t seq)
+{
+    return ((uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + (uint64_t)rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+        ((seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u))) * SPARK_WEIGHTD_MESH_SLOT_BYTES;
+}
+
+static void test_half_slot_publish(uint32_t band, uint32_t rank, uint64_t seq, uint64_t bytes, uint32_t peers)
+{
+    uint32_t half = SPARK_WEIGHTD_MESH_SEQUENCE_HALF(seq);
+    uint8_t *slot = (uint8_t *)weightd_mesh.recv_buffer + test_half_slot_base(band,rank,seq);
+    volatile uint64_t *entry = (volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer +
+        SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band,rank)) + SPARK_WEIGHTD_MESH_DOORBELL_CELL_WORDS(seq);
+    SparkWeightdMeshRoute route = {0};
+    route.fields.peer_mask = peers;
+    route.fields.half = half;
+    memset(slot + SPARK_WEIGHTD_MESH_HALF_OFFSET(half),(int)(seq & 0xffu),bytes);
+    *(volatile uint64_t *)(slot + SPARK_WEIGHTD_MESH_TAIL_OFFSET(half)) = seq;
+    entry[1] = bytes;
+    entry[2] = (uint64_t)rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + ((seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+    entry[3] = route.word;
+    __sync_synchronize();
+    entry[0] = seq;
+    __sync_synchronize();
+}
+
+static void test_expect_half_chunks(uint32_t first, uint32_t last, uint32_t band, uint32_t local_rank,
+    uint64_t lowest, uint32_t chunks, const char *label)
+{
+    uint32_t i, peer, tails[2] = {0u,0u}, data[2] = {0u,0u}, newest_seen[TEST_MESH_PEERS];
+    memset(newest_seen,0,sizeof(newest_seen));
+    CHECK(last - first == chunks * 2u * TEST_MESH_PEERS,label);
+    for ( i = first; i < last; i++ )
+    {
+        SparkStubIbvPostedWork work;
+        uint32_t chunk, half;
+        uint64_t seq, slot_base;
+        CHECK(spark_stub_ibv_posted(i,&work) == 0,label);
+        for ( peer = 0u; peer < TEST_MESH_PEERS; peer++ )
+            if ( weightd_mesh.send_qps[peer]->qp_num == work.qp_number ) break;
+        CHECK(peer < TEST_MESH_PEERS,label);
+        if ( peer >= TEST_MESH_PEERS ) continue;
+        chunk = (uint32_t)(((work.wr_id >> 6u) & 1u) ^ (lowest & 1u));
+        CHECK(chunk < chunks && (uint32_t)((work.wr_id >> 7u) & 511u) == band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank,label);
+        CHECK(chunk >= newest_seen[peer],label);
+        newest_seen[peer] = chunk;
+        seq = lowest + chunk;
+        half = SPARK_WEIGHTD_MESH_SEQUENCE_HALF(seq);
+        slot_base = test_half_slot_base(band,local_rank,seq);
+        if ( (work.wr_id & 3u) == 3u )
+        {
+            tails[chunk]++;
+            CHECK((work.flags & IBV_SEND_INLINE) != 0u && work.length == 8u && work.inline_word == seq &&
+                work.remote - weightd_mesh.qp_info[peer].remote_addr == slot_base + SPARK_WEIGHTD_MESH_TAIL_OFFSET(half),label);
+            continue;
+        }
+        data[chunk]++;
+        CHECK(work.length == 4096u &&
+            work.source == (uint64_t)(uintptr_t)weightd_mesh.recv_buffer + slot_base + SPARK_WEIGHTD_MESH_HALF_OFFSET(half) &&
+            work.remote - weightd_mesh.qp_info[peer].remote_addr == slot_base + SPARK_WEIGHTD_MESH_HALF_OFFSET(half) &&
+            *(const uint8_t *)(uintptr_t)work.source == (uint8_t)(seq & 0xffu),label);
+    }
+    for ( i = 0u; i < chunks; i++ )
+        CHECK(tails[i] == TEST_MESH_PEERS && data[i] == TEST_MESH_PEERS,label);
+}
+
+static uint32_t test_chunk_range(uint32_t first, uint32_t last, uint64_t seq, uint32_t *selected)
+{
+    uint32_t i, count = 0u;
+    for ( i = first; i < last; i++ )
+    {
+        SparkStubIbvPostedWork work;
+        assert(spark_stub_ibv_posted(i,&work) == 0);
+        if ( ((work.wr_id >> 6u) & 1u) == (seq & 1u) )
+            selected[count++] = i;
+    }
+    return count;
+}
+
+static void test_complete_selected(const uint32_t *selected, uint32_t count, uint32_t failed_first)
+{
+    uint32_t i;
+    for ( i = 0u; i < count; i++ )
+    {
+        SparkStubIbvPostedWork work;
+        assert(spark_stub_ibv_posted(selected[i],&work) == 0);
+        assert(spark_stub_ibv_complete(work.wr_id,failed_first != 0u && i == 0u ? IBV_WC_RETRY_EXC_ERR : IBV_WC_SUCCESS) == 0);
+        if ( (i + 1u) % 64u == 0u ) SparkWeightdMeshDrainCq();
+    }
+    SparkWeightdMeshDrainCq();
+}
+
+static void test_half_slots(uint32_t local_rank)
+{
+    const uint32_t band = 10u, index = band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank;
+    uint32_t all_peers = ((1u << SPARK_WEIGHTD_MESH_RANKS_PER_BAND) - 1u) & ~(1u << local_rank);
+    uint64_t seq = (UINT64_C(11) << 32u) | 1u, bytes = 4096u;
+    uint32_t first, middle, last, count, selected[4u * TEST_MESH_PEERS];
+    SparkWeightdMeshRoute route = {0};
+    CHECK((SPARK_WEIGHTD_MESH_CAPABILITIES & SPARK_WEIGHTD_MESH_CAPABILITY_HALF_SLOTS) != 0u,
+        "weightd advertises half-slot routes");
+    CHECK(SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES == 131072u &&
+        SPARK_WEIGHTD_MESH_HALF_OFFSET(SPARK_WEIGHTD_MESH_ROUTE_HALF_UPPER) == 131072u &&
+        SPARK_WEIGHTD_MESH_HALF_OFFSET(SPARK_WEIGHTD_MESH_ROUTE_HALF_LOWER) == 0u &&
+        SPARK_WEIGHTD_MESH_TAIL_OFFSET(SPARK_WEIGHTD_MESH_ROUTE_HALF_LOWER) == SPARK_WEIGHTD_MESH_SLOT_BYTES - 16u &&
+        SPARK_WEIGHTD_MESH_TAIL_OFFSET(SPARK_WEIGHTD_MESH_ROUTE_HALF_UPPER) == SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u &&
+        SPARK_WEIGHTD_MESH_TAIL_OFFSET(SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE) == SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u,
+        "both halves and their tails share one receive slot without overlapping a whole-slot payload");
+    CHECK(SPARK_WEIGHTD_MESH_SEQUENCE_HALF(seq) == SPARK_WEIGHTD_MESH_ROUTE_HALF_LOWER &&
+        SPARK_WEIGHTD_MESH_SEQUENCE_HALF(seq + 1u) == SPARK_WEIGHTD_MESH_ROUTE_HALF_LOWER &&
+        SPARK_WEIGHTD_MESH_SEQUENCE_HALF(seq + 2u) == SPARK_WEIGHTD_MESH_ROUTE_HALF_UPPER &&
+        SPARK_WEIGHTD_MESH_SEQUENCE_HALF(seq + 3u) == SPARK_WEIGHTD_MESH_ROUTE_HALF_UPPER &&
+        SPARK_WEIGHTD_MESH_SEQUENCE_HALF(seq + 4u) == SPARK_WEIGHTD_MESH_ROUTE_HALF_LOWER,
+        "four consecutive half chunks take four distinct positions");
+    route.fields.peer_mask = all_peers;
+    route.fields.half = SPARK_WEIGHTD_MESH_ROUTE_HALF_LOWER;
+    CHECK(route.word == ((uint64_t)all_peers | (UINT64_C(1) << 58u)),"the half code sits above the route mode bits");
+    CHECK(test_post_route(band,local_rank,seq,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES + 8u,route) == SPARK_STATUS_INVALID_ARGUMENT,
+        "a half route carries at most one half payload");
+    route.fields.half = 3u;
+    CHECK(test_post_route(band,local_rank,seq,bytes,route) == SPARK_STATUS_INVALID_ARGUMENT,
+        "the fourth half code is rejected");
+    route.fields.half = SPARK_WEIGHTD_MESH_ROUTE_HALF_UPPER;
+    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_GATHER;
+    route.fields.slice_bytes = 64u;
+    CHECK(test_post_route(band,local_rank,seq,bytes,route) == SPARK_STATUS_INVALID_ARGUMENT,
+        "a half route is a whole-payload copy, never a slice route");
+
+    test_complete_range(0u,spark_stub_ibv_posted_count());
+    first = spark_stub_ibv_posted_count();
+    test_half_slot_publish(band,local_rank,seq,bytes,all_peers);
+    test_half_slot_publish(band,local_rank,seq + 1u,bytes,all_peers);
+    SparkWeightdMeshDoorbellPoll();
+    last = spark_stub_ibv_posted_count();
+    test_expect_half_chunks(first,last,band,local_rank,seq,2u,
+        "two half chunks in the two doorbell cells are in flight together, older first on every queue");
+    CHECK(weightd_mesh.issued[index] == seq + 1u && test_shipped(band,local_rank) == 0u,
+        "posting both half chunks releases neither source");
+    CHECK(SparkWeightdMeshHasDoorbellWork() == 0u,"posted cells are not doorbell work");
+    count = test_chunk_range(first,last,seq + 1u,selected);
+    test_complete_selected(selected,count,0u);
+    CHECK(test_shipped(band,local_rank) == 0u && weightd_mesh.doorbell_posted[index] == 0u,
+        "a newer chunk that drains first never advances the shipped word past an older pending chunk");
+    test_half_slot_publish(band,local_rank,seq + 2u,bytes,all_peers);
+    SparkWeightdMeshDoorbellPoll();
+    CHECK(spark_stub_ibv_posted_count() == last,"a third chunk waits while its record still carries a pending chunk");
+    count = test_chunk_range(first,last,seq,selected);
+    test_complete_selected(selected,count,0u);
+    CHECK(test_shipped(band,local_rank) == seq + 1u && weightd_mesh.doorbell_posted[index] == seq + 1u,
+        "the older chunk's completion advances the shipped word over both chunks at once");
+    SparkWeightdMeshDoorbellPoll();
+    middle = spark_stub_ibv_posted_count();
+    test_expect_half_chunks(last,middle,band,local_rank,seq + 2u,1u,"the third chunk posts once its record is free, into the upper half");
+    test_complete_range(last,middle);
+    CHECK(test_shipped(band,local_rank) == seq + 2u,"in-order completion advances the shipped word one chunk at a time");
+    CHECK(SparkWeightdMeshHasDoorbellWork() == 0u && SparkWeightdMeshDoorbellShippable(index) == 0u,
+        "an older chunk left in the alternate cell is neither work nor shippable");
+
+    first = spark_stub_ibv_posted_count();
+    test_half_slot_publish(band,local_rank,seq + 4u,bytes,all_peers);
+    test_half_slot_publish(band,local_rank,seq + 3u,bytes,all_peers);
+    CHECK(SparkWeightdMeshHasDoorbellWork() == 1u && SparkWeightdMeshDoorbellShippable(index) == 1u,
+        "unposted chunks in either cell are doorbell work");
+    SparkWeightdMeshDoorbellPoll();
+    last = spark_stub_ibv_posted_count();
+    test_expect_half_chunks(first,last,band,local_rank,seq + 3u,2u,"the lower sequence posts first whichever cell holds it");
+    count = test_chunk_range(first,last,seq + 4u,selected);
+    test_complete_selected(selected,count,1u);
+    count = test_chunk_range(first,last,seq + 3u,selected);
+    test_complete_selected(selected,count,0u);
+    CHECK(test_shipped(band,local_rank) == seq + 3u,"the older chunk ships although the newer one failed");
+    {
+        SparkWeightdMeshWaitRequest *request = test_wait_request(band,local_rank);
+        uint64_t cancel = *(const uint64_t *)((const uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_DOORBELL_OFFSET +
+            (uint64_t)(SPARK_WEIGHTD_MESH_DOORBELL_CELL_CANCEL + 2u * band) * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES);
+        CHECK(SparkWeightdMeshSetActivity(5u,1u) == SPARK_STATUS_OK,"half-slot lane producer begins");
+        (void)test_wait_publish(request,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,seq + 4u,0u,cancel);
+        SparkWeightdMeshWaitRequestsPoll(SparkWeightdMeshMonotonicNs());
+        CHECK(request->ready == 1u && request->error == UINT64_MAX,"a shipped wait on the failed chunk reports the failure");
+        CHECK(SparkWeightdMeshSetActivity(5u,0u) == SPARK_STATUS_OK,"half-slot lane producer ends");
+    }
+    test_half_slot_publish(band,local_rank,seq + 5u,bytes,all_peers);
+    SparkWeightdMeshDoorbellPoll();
+    CHECK(spark_stub_ibv_posted_count() == last,"a failed record fences every later chunk of its cell");
+    {
+        SparkWeightdMeshTopology topology = test_identity_topology(16u,local_rank);
+        CHECK(SparkWeightdMeshLaneConfigure(5u,&topology) == SPARK_STATUS_OK &&
+            SparkWeightdMeshCellFailed(index) == 0u && weightd_mesh.issued[index] == 0u &&
+            SparkWeightdMeshDoorbellAt(index,0u)[0] == 0u && SparkWeightdMeshDoorbellAt(index,1u)[0] == 0u,
+            "re-configuring the idle lane clears both cells, both records and the issue mark");
+    }
 }
 
 static void test_slice_routes(uint32_t local_rank)
@@ -602,7 +824,7 @@ static uint64_t test_peer_route_bytes(uint32_t rows)
 
 static void test_peer_routes(uint32_t local_rank)
 {
-    static const uint32_t rows[] = {1u,8u,128u,129u,512u,1024u};
+    static const uint32_t rows[] = {1u,8u,128u,129u,512u,1024u,2048u,4096u};
     uint32_t all_peers = ((1u << SPARK_WEIGHTD_MESH_RANKS_PER_BAND) - 1u) & ~(1u << local_rank);
     uint64_t seq = (UINT64_C(10) << 32u) | 1u, slot_base, staging = (uint64_t)(uintptr_t)weightd_mesh.staging_buffer;
     uint32_t case_index, first, last, i, peer, peer_rank, data, tails;
@@ -631,7 +853,7 @@ static void test_peer_routes(uint32_t local_rank)
     for ( case_index = 0u; case_index < sizeof(rows) / sizeof(rows[0]); case_index++ )
     {
         uint64_t bytes = test_peer_route_bytes(rows[case_index]);
-        CHECK(rows[case_index] <= SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS,"the mesh row cap admits every tested exchange height up to 1024 rows");
+        CHECK(rows[case_index] <= SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS,"the mesh row cap admits every tested exchange height up to 4096 rows");
         uint64_t slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
             ((seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
         slot_base = (8u * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES;
@@ -653,9 +875,9 @@ static void test_peer_routes(uint32_t local_rank)
             if ( (work.wr_id & 3u) == 3u )
             {
                 tails++;
-                CHECK(work.lkey == weightd_mesh.recv_mr->lkey && work.length == 8u &&
-                    work.source == (uint64_t)(uintptr_t)weightd_mesh.recv_buffer + slot_base + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u,
-                    "the tail still ships from the sender's own slot");
+                CHECK((work.flags & IBV_SEND_INLINE) != 0u && work.length == 8u &&
+                    work.inline_word == *(const uint64_t *)((const uint8_t *)weightd_mesh.recv_buffer + slot_base + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u),
+                    "the tail carries the tag of the sender's own slot inline");
                 continue;
             }
             data++;
@@ -764,10 +986,11 @@ static uint64_t test_wait_publish(SparkWeightdMeshWaitRequest *request,
 
 static void test_all_transfer_identities(void)
 {
-    uint32_t index;
-    for (index=0u; index<SPARK_WEIGHTD_MESH_BANDS * SPARK_WEIGHTD_MESH_RANKS_PER_BAND; index++)
+    uint32_t record;
+    for (record=0u; record<SPARK_WEIGHTD_MESH_RECORDS; record++)
     {
-        SparkWeightdMeshTransfer saved = weightd_mesh.transfers[index];
+        SparkWeightdMeshTransfer saved = weightd_mesh.transfers[record];
+        uint32_t index = record / 2u;
         uint32_t band = index / SPARK_WEIGHTD_MESH_RANKS_PER_BAND;
         uint32_t rank = index % SPARK_WEIGHTD_MESH_RANKS_PER_BAND;
         uint64_t previous = weightd_mesh.doorbell_posted[index];
@@ -775,21 +998,26 @@ static void test_all_transfer_identities(void)
         uint32_t first = spark_stub_ibv_posted_count();
         uint32_t pending = weightd_mesh.send_pending[0];
         assert(saved.pending == 0u);
-        memset(&weightd_mesh.transfers[index],0,sizeof(saved));
-        weightd_mesh.transfers[index].generation = ++SparkWeightdMeshNextTransferGeneration;
-        weightd_mesh.transfers[index].seq = previous + 1u;
-        CHECK(SparkWeightdMeshPostTransfer(index,0u,2u,0u,64u) == SPARK_STATUS_OK,
-            "every lane, band and rank posts a distinct completion identity");
-        CHECK(SparkWeightdMeshPostTransfer(index,0u,3u,64u,8u) == SPARK_STATUS_OK,
-            "every completion identity owns its tail write");
+        memset(&weightd_mesh.transfers[record],0,sizeof(saved));
+        weightd_mesh.transfers[record].generation = ++SparkWeightdMeshNextTransferGeneration;
+        weightd_mesh.transfers[record].seq = previous + 1u;
+        {
+            SparkWeightdMeshRoute route = {0};
+            uint8_t logical[SPARK_WEIGHTD_MESH_RANKS_PER_BAND] = {0};
+            uint64_t tag = previous + 1u;
+            SparkWeightdMeshPostPeer(record,band,0u,0u,0u,64u,route,logical,&tag);
+            SparkWeightdMeshSqRing(1u);
+        }
+        CHECK(spark_stub_ibv_posted_count() - first == 2u,
+            "every lane, band and rank posts its payload chained to an inline tail with a distinct completion identity");
         test_complete_range(first,spark_stub_ibv_posted_count());
-        CHECK(weightd_mesh.transfers[index].pending == 0u &&
+        CHECK(weightd_mesh.transfers[record].pending == 0u &&
             weightd_mesh.doorbell_posted[index] == previous + 1u &&
             test_shipped(band,rank) == previous + 1u,
-            "terminal completions acknowledge the exact lane, band and rank");
+            "terminal completions acknowledge the exact lane, band, rank and record");
         CHECK(weightd_mesh.send_pending[0] == pending,
             "every completion identity returns exactly its own send credits");
-        weightd_mesh.transfers[index] = saved;
+        weightd_mesh.transfers[record] = saved;
         weightd_mesh.doorbell_posted[index] = previous;
         *(volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer +
             SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(band,rank)) = shipped;
@@ -811,12 +1039,18 @@ static void test_mesh_hardware_wait(void)
     uint64_t *peer2 = test_peer_tail(band,2u,tag);
     uint64_t id,old_error,old_diag;
     uint32_t first,last,invalid;
-    CHECK(SPARK_WEIGHTD_IPC_ABI_VERSION == 9u && SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN == 8u &&
+    _Static_assert(SPARK_WEIGHTD_IPC_ABI_VERSION != 14u || (SPARK_WEIGHTD_MESH_REGION_BYTES == UINT64_C(268632064) &&
+        SPARK_WEIGHTD_MESH_DOORBELL_OFFSET == UINT64_C(268500992) && SPARK_WEIGHTD_MESH_SHIPPED_OFFSET == UINT64_C(268519424) &&
+        SPARK_WEIGHTD_MESH_WAIT_OFFSET == UINT64_C(268523520) && SPARK_WEIGHTD_MESH_SLOT_BYTES == 262208u &&
+        SPARK_WEIGHTD_MESH_STAGING_BYTES == UINT64_C(134217728) && SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES == 128u &&
+        SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES == 32u && sizeof(SparkWeightdMeshWaitRequest) == 128u),
+        "the mesh layout changed under IPC ABI 14: bump SPARK_WEIGHTD_IPC_ABI_VERSION and pin the new layout here");
+    CHECK(SPARK_WEIGHTD_IPC_ABI_VERSION == 14u &&
         SPARK_WEIGHTD_MESH_WAIT_OFFSET - SPARK_WEIGHTD_MESH_DOORBELL_OFFSET == 22528u &&
         (uint8_t *)test_wait_request(SPARK_WEIGHTD_MESH_BANDS - 1u,SPARK_WEIGHTD_MESH_RANKS_PER_BAND - 1u) + sizeof(*request) <=
             (uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_REGION_BYTES &&
         sizeof(*request) == 128u && offsetof(SparkWeightdMeshWaitRequest,ready) == 64u,
-        "the ABI 8 gate geometry served under ABI 9 has separate producer and terminal cache lines within the registered region");
+        "the ABI 8 gate geometry served under ABI 14 has separate producer and terminal cache lines within the registered region");
     CHECK(SparkWeightdMeshSetActivity(band / 2u,1u) == SPARK_STATUS_OK,
         "hardware wait producer begins before publishing any GPU request");
     id = test_wait_publish(request,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,0u);
@@ -918,11 +1152,15 @@ static void test_mesh_hardware_wait(void)
     {
         SparkWeightdMeshWaitRequest *failed = test_wait_request(3u,rank);
         first = spark_stub_ibv_posted_count();
-        spark_stub_ibv_fail_post_call(spark_stub_ibv_post_send_calls() + 2u);
-        CHECK(test_post_slot(3u,rank,tag,0x6u) == SPARK_STATUS_IO_ERROR,
-            "hardware gate sees actual partial transport post failure");
-        spark_stub_ibv_fail_post_call(0u);
+        CHECK(test_post_slot(3u,rank,tag,0x6u) == SPARK_STATUS_OK,"hardware gate transfer posts to two peers");
         last = spark_stub_ibv_posted_count();
+        {
+            SparkStubIbvPostedWork work;
+            CHECK(spark_stub_ibv_posted(first + 1u,&work) == 0 && (work.wr_id & 3u) == 3u &&
+                spark_stub_ibv_complete(work.wr_id,IBV_WC_RETRY_EXC_ERR) == 0,"hardware gate sees one tail fail on the wire");
+            SparkWeightdMeshDrainCq();
+            first += 2u;
+        }
         test_wait_publish(failed,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,tag,0u,0u);
         SparkWeightdMeshWaitRequestsPoll(7100u);
         CHECK(failed->ready == 1u && failed->error == UINT64_MAX &&
@@ -1125,17 +1363,19 @@ static void test_mesh_topology(void)
         assert(spark_stub_ibv_posted(i,&work) == 0);
         if (i != first) offset += SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u;
         CHECK(work.qp_number == weightd_mesh.send_qps[5u]->qp_num &&
-            work.source == (uint64_t)(uintptr_t)weightd_mesh.recv_buffer + offset &&
+            (i != first ? work.inline_word == *(const uint64_t *)((const uint8_t *)weightd_mesh.recv_buffer + offset) :
+                work.source == (uint64_t)(uintptr_t)weightd_mesh.recv_buffer + offset) &&
             work.remote == weightd_mesh.qp_info[5u].remote_addr + offset,
-            "physical QP translation preserves the logical payload and remote offsets");
+            "physical QP translation preserves the logical payload, tail tag and remote offsets");
     }
     test_complete_range(first,last - 1u);
     CHECK(SparkWeightdMeshLaneConfigure(7u,&subset) == SPARK_STATUS_BUSY,
         "partial completion cannot release lane configuration");
     test_complete_range(last - 1u,last);
-    CHECK(test_shipped(band,local) == tag &&
-        SparkWeightdMeshLaneConfigure(7u,&subset) == SPARK_STATUS_OK && entry[0] == tag,
-        "exact same topology reuses drained lane without resetting tags");
+    CHECK(test_shipped(band,local) == tag,"the drained round shipped before re-configuration");
+    CHECK(SparkWeightdMeshLaneConfigure(7u,&subset) == SPARK_STATUS_OK && entry[0] == 0u &&
+        test_shipped(band,local) == 0u && weightd_mesh.doorbell_posted[band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local] == 0u,
+        "re-acquired idle lane starts from zero cells (WD-LANE-RESET)");
     bad = subset;bad.physical_ranks[0] = 0u;
     CHECK(SparkWeightdMeshLaneConfigure(7u,&bad) == SPARK_STATUS_UNSUPPORTED,
         "even drained lane rejects a changed topology until daemon restart");
@@ -1167,9 +1407,13 @@ static void test_mesh_topology(void)
     }
     SparkWeightdMeshDrainCq();
     test_complete_range(first + 1u,last);
-    CHECK(SparkWeightdMeshLaneConfigure(6u,&permuted) == SPARK_STATUS_IO_ERROR &&
+    CHECK(SparkWeightdMeshCellFailed(12u * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + 4u) != 0u &&
+        test_post_slot(12u,4u,tag + 1u,1u << 0u) == SPARK_STATUS_IO_ERROR,
+        "a failed cell fences the next publication while its lane stays configured");
+    CHECK(SparkWeightdMeshLaneConfigure(6u,&permuted) == SPARK_STATUS_OK &&
+        SparkWeightdMeshCellFailed(12u * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + 4u) == 0u &&
         SparkWeightdMeshLaneConfigure(7u,&subset) == SPARK_STATUS_OK,
-        "failed source generation remains fenced without poisoning a different lane");
+        "re-configuring the idle lane resets its failed cell without poisoning a different lane");
     first = spark_stub_ibv_posted_count();
     CHECK(SparkWeightdMeshBroadcast(1u << 0u,0u,64u,0u,0u,0u) == 1u &&
         SparkWeightdMeshLaneConfigure(7u,&subset) == SPARK_STATUS_BUSY,
@@ -1209,6 +1453,18 @@ static void test_mesh_lane_protocol(void)
             "unreserved client cannot lend a mesh band");
         CHECK(SparkWeightdClientLaneAcquire(owner,7u,&topology,&out,timeout) == SPARK_STATUS_OK,
             "owner reserves explicit topology before lending bands");
+        {
+            uint64_t band_bytes = (uint64_t)SPARK_WEIGHTD_MESH_SLOT_BYTES * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND;
+            CHECK(SparkWeightdClientMeshBroadcast(owner,2u,0u,0u,64u,0u,0u,timeout) == SPARK_STATUS_INVALID_ARGUMENT &&
+                SparkWeightdClientMeshWrite(owner,1u,band_bytes * 3u,band_bytes * 3u,64u,timeout) == SPARK_STATUS_INVALID_ARGUMENT,
+                "a lane owner cannot write another lane's band");
+            CHECK(SparkWeightdClientMeshBroadcast(owner,2u,SPARK_WEIGHTD_MESH_REGION_BYTES - 32u,SPARK_WEIGHTD_MESH_REGION_BYTES - 32u,64u,0u,0u,timeout) == SPARK_STATUS_INVALID_ARGUMENT &&
+                SparkWeightdClientMeshBroadcast(owner,2u,band_bytes * 14u,band_bytes * 14u,0u,0u,0u,timeout) == SPARK_STATUS_INVALID_ARGUMENT &&
+                SparkWeightdClientMeshBroadcast(owner,2u,band_bytes * 14u,band_bytes * 14u,64u,1u,SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(3u,0u),timeout) == SPARK_STATUS_INVALID_ARGUMENT,
+                "a write past the registered region, an empty write and a sequence word outside the lane fail closed");
+            CHECK(SparkWeightdClientMeshBroadcast(owner,0u,band_bytes * 14u,band_bytes * 15u + 64u,64u,1u,SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(15u,1u),timeout) == SPARK_STATUS_BUSY,
+                "a write inside the owner's two bands passes the range check (an empty peer mask then posts nothing)");
+        }
         {
             SparkWeightdMeshTopology wrong = topology;
             wrong.local_rank = 1u;
@@ -1338,6 +1594,78 @@ static void test_mesh_lane_protocol(void)
     }
 }
 
+static void test_mesh_peer_reset(uint32_t local_rank)
+{
+    SparkWeightdMeshTopology topology = test_identity_topology(16u,local_rank);
+    const uint32_t lane = 5u,band = 10u,peer = 7u;
+    const uint32_t physical = test_peer_rank(peer,local_rank);
+    const uint32_t index = band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank;
+    SparkWeightdMeshWaitRequest *request = test_wait_request(band,local_rank);
+    uint64_t *base = (uint64_t *)((uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_DOORBELL_OFFSET +
+        (uint64_t)(SPARK_WEIGHTD_MESH_DOORBELL_CELL_BASE + 2u * band) * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES);
+    uint64_t *cancel = (uint64_t *)((uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_DOORBELL_OFFSET +
+        (uint64_t)(SPARK_WEIGHTD_MESH_DOORBELL_CELL_CANCEL + 2u * band) * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES);
+    uint64_t *tail = test_peer_tail(band,physical,9u);
+    const uint64_t tag = 41u,base_value = UINT64_C(0x1234),cancel_value = UINT64_C(0x77),tail_value = UINT64_C(0x5151);
+    uint32_t first,last,i;
+    char log_path[256];
+    SparkStatus status;
+    test_complete_range(0u,spark_stub_ibv_posted_count());
+    CHECK(SparkWeightdMeshLaneConfigure(lane,&topology) == SPARK_STATUS_OK,"peer reset lane starts configured");
+    *base = base_value;
+    *cancel = cancel_value;
+    *tail = tail_value;
+    CHECK(SparkWeightdMeshSetActivity(lane,1u) == SPARK_STATUS_OK,"peer reset producer begins");
+    first = spark_stub_ibv_posted_count();
+    CHECK(test_post_slot(band,local_rank,tag,1u << physical) == SPARK_STATUS_OK &&
+        weightd_mesh.transfers[SPARK_WEIGHTD_MESH_RECORD_OF(index,tag)].pending != 0u,"payload and tail to one peer are in flight");
+    last = spark_stub_ibv_posted_count();
+    CHECK(SparkWeightdMeshBroadcast(1u << physical,0u,64u,0u,0u,0u) == 1u &&
+        weightd_mesh.rpc_pending[peer] == 1u && weightd_mesh.send_pending[peer] == 3u,
+        "an rpc write to the same peer is in flight beside the round");
+    CHECK(test_write_record(physical,31u) == 0,"the peer restarts and publishes a new record");
+    (void)snprintf(log_path,sizeof(log_path),"%s/capture-peer-reset.log",SPARK_WEIGHTD_MESH_DIR);
+    test_capture_begin(log_path);
+    SparkWeightdMeshTryWire();
+    test_capture_end();
+    CHECK(test_file_contains(log_path,"WD-PEER-RESET") && test_file_contains(log_path,"reason=record") &&
+        test_file_contains(log_path,"cells=1 bits=1 send_pending=3 rpc_pending=1"),
+        "the restarted peer's in-flight work is reset before re-wiring");
+    CHECK(weightd_mesh.transfers[SPARK_WEIGHTD_MESH_RECORD_OF(index,tag)].pending == 0u &&
+        weightd_mesh.transfers[SPARK_WEIGHTD_MESH_RECORD_OF(index,tag)].failed == SPARK_WEIGHTD_MESH_TRANSFER_PEER_RESET &&
+        weightd_mesh.transfers[SPARK_WEIGHTD_MESH_RECORD_OF(index,tag)].reset_peer == physical,"the lost round fails and names the peer");
+    CHECK(weightd_mesh.send_pending[peer] == 0u && weightd_mesh.rpc_pending[peer] == 0u &&
+        SparkWeightdMeshReady() == 1u,"the peer's counters restart from zero on a ready mesh");
+    (void)test_wait_publish(request,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,tag,0u,cancel_value);
+    SparkWeightdMeshWaitRequestsPoll(200u);
+    CHECK(request->ready == 1u && request->error == (SPARK_WEIGHTD_MESH_WAIT_ERROR_PEER_RESET | physical),
+        "the shipped wait of the lost round reports the reset peer");
+    for (i=first; i<=last; i++)
+    {
+        SparkStubIbvPostedWork work;
+        assert(spark_stub_ibv_posted(i,&work) == 0);
+        assert(spark_stub_ibv_complete(work.wr_id,IBV_WC_SUCCESS) == 0);
+    }
+    SparkWeightdMeshDrainCq();
+    CHECK(weightd_mesh.send_pending[peer] == 0u && weightd_mesh.rpc_pending[peer] == 0u &&
+        test_shipped(band,local_rank) != tag,"late completions from before the reset change nothing");
+    CHECK(SparkWeightdMeshSetActivity(lane,0u) == SPARK_STATUS_OK,"the producer of the lost round ends");
+    (void)snprintf(log_path,sizeof(log_path),"%s/capture-lane-reset.log",SPARK_WEIGHTD_MESH_DIR);
+    test_capture_begin(log_path);
+    status = SparkWeightdMeshLaneConfigure(lane,&topology);
+    test_capture_end();
+    CHECK(status == SPARK_STATUS_OK && test_file_contains(log_path,"WD-LANE-RESET") &&
+        test_file_contains(log_path,"failed_cells=1"),"re-acquiring the idle lane resets its cells instead of refusing");
+    CHECK(SparkWeightdMeshCellFailed(index) == 0u && weightd_mesh.doorbell_posted[index] == 0u && weightd_mesh.issued[index] == 0u &&
+        test_shipped(band,local_rank) == 0u && request->request_id == 0u &&
+        request->capabilities == SPARK_WEIGHTD_MESH_CAPABILITIES,"the lane's cells equal a fresh daemon's");
+    CHECK(*base == base_value && *cancel == cancel_value && *tail == tail_value,
+        "BASE, CANCEL and peer slot tails survive the lane reset");
+    CHECK(test_post_slot(band,local_rank,tag + 1u,1u << physical) == SPARK_STATUS_OK,
+        "the reset lane posts its next round to the restarted peer");
+    test_complete_range(spark_stub_ibv_posted_count() - 2u,spark_stub_ibv_posted_count());
+}
+
 static void test_mesh_activity_protocol(uint32_t pending_first)
 {
     SparkWeightdServerConfig config;
@@ -1405,7 +1733,7 @@ static void test_mesh_activity_protocol(uint32_t pending_first)
     CHECK(atomic_load(&waiter.returned) == 1u,"queued GPU publication keeps progress awake without active producers");
     pthread_mutex_lock(&SparkWeightdMeshWireLock);
     post_last = spark_stub_ibv_posted_count();
-    CHECK(post_last - post_first == 6u && test_shipped(0u,0u) == 1u,
+    CHECK(post_last - post_first == 6u && test_shipped(0u,0u) == 0u,
         "final queued publication posts payload and tail while retaining its source");
     pthread_mutex_unlock(&SparkWeightdMeshWireLock);
     memset(&waiter,0,sizeof(waiter));
@@ -1424,8 +1752,9 @@ static void test_mesh_activity_protocol(uint32_t pending_first)
     CHECK(test_shipped(0u,0u) == 2u,"terminal NIC completions release the source before idle");
     memset(&waiter,0,sizeof(waiter));
     assert(pthread_create(&wait_thread,0,test_mesh_wait,&waiter) == 0);
-    CHECK(SparkWeightdClientMeshWrite(second,1u,0u,0u,64u,timeout) == SPARK_STATUS_OK,
-        "explicit mesh RPC wakes idle progress without a GPU interval");
+    CHECK(SparkWeightdClientMeshWrite(second,1u,4u * SPARK_WEIGHTD_MESH_SLOT_BYTES * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND,
+        4u * SPARK_WEIGHTD_MESH_SLOT_BYTES * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND,64u,timeout) == SPARK_STATUS_OK,
+        "explicit mesh RPC inside the client's lane wakes idle progress without a GPU interval");
     test_mesh_join_waiter(wait_thread,&waiter);
     pthread_mutex_lock(&SparkWeightdMeshWireLock);
     {
@@ -1480,6 +1809,182 @@ static void test_mesh_activity_protocol(uint32_t pending_first)
     SparkWeightdServerDestroy(server.server);
 }
 
+#define TEST_PACE_CHUNK (2u * 1024u * 1024u)
+
+static uint64_t test_pace_now_ns(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC,&now);
+    return((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec);
+}
+
+static void test_pace_write_pack(const char *path,const char *manifest_path,uint32_t salt)
+{
+    FILE *pack = fopen(path,"wb"),*manifest = fopen(manifest_path,"wb");
+    uint32_t header[4] = {SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC,2u,2u,0u},i;
+    uint8_t *data = malloc(TEST_PACE_CHUNK);
+    assert(pack != 0 && manifest != 0 && data != 0);
+    assert(fwrite(header,1u,sizeof(header),manifest) == sizeof(header));
+    for (i=0u; i<2u; i++)
+    {
+        uint8_t record[48] = {0},digest[16];
+        uint64_t offset = (uint64_t)i * TEST_PACE_CHUNK,bytes = TEST_PACE_CHUNK;
+        SparkCk128Context ck;
+        memset(data,(int)(0x40u + salt * 4u + i),TEST_PACE_CHUNK);
+        SparkCk128Initialize(&ck);
+        SparkCk128Update(&ck,data,TEST_PACE_CHUNK);
+        SparkCk128Finalize(&ck,digest);
+        memcpy(record + 4u,&i,4u);
+        memcpy(record + 16u,&offset,8u);
+        memcpy(record + 24u,&bytes,8u);
+        memcpy(record + 32u,digest,16u);
+        assert(fwrite(record,1u,sizeof(record),manifest) == sizeof(record));
+        assert(fwrite(data,1u,TEST_PACE_CHUNK,pack) == TEST_PACE_CHUNK);
+    }
+    free(data);
+    assert(fclose(pack) == 0 && fclose(manifest) == 0);
+}
+
+static SparkStatus test_pace_attach(SparkWeightdClient *client,const char *path,uint64_t *generation)
+{
+    SparkWeightdLazyAttachRequest request = {0};
+    SparkWeightdLazyAttachResult result;
+    SparkStatus status;
+    request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+    request.identity.arena_bytes = 2u * TEST_PACE_CHUNK;
+    memcpy(request.identity.model,"pace-test",10u);
+    assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
+    assert(SparkWeightdIdentityPrepare(&request.identity) == SPARK_STATUS_OK);
+    snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
+    request.expert_pool_bytes = 2u * TEST_PACE_CHUNK;
+    status = SparkWeightdClientAttachLazy(client,&request,&result,UINT64_C(10000000000));
+    *generation = result.arena_generation;
+    return(status != SPARK_STATUS_OK ? status : (SparkStatus)result.status);
+}
+
+static pid_t test_pace_serving_process(const char *path,const int commands[2],const int replies[2])
+{
+    pid_t pid = fork();
+    int command_fd = commands[0],reply_fd = replies[1];
+    if ( pid != 0 )
+    {
+        (void)close(commands[0]);
+        (void)close(replies[1]);
+        return(pid);
+    }
+    (void)close(commands[1]);
+    (void)close(replies[0]);
+    {
+        SparkWeightdClient *serving = 0;
+        SparkWeightdMeshTopology topology = test_identity_topology(4u,0u);
+        const uint64_t timeout = UINT64_C(1000000000);
+        uint32_t lane = 0u;
+        uint8_t status,command;
+        status = SparkWeightdClientConnect(path,&serving,0) == SPARK_STATUS_OK &&
+            SparkWeightdClientLaneAcquire(serving,0u,&topology,&lane,timeout) == SPARK_STATUS_OK && lane == 0u &&
+            SparkWeightdClientMeshActivity(serving,1u,1u,timeout) == SPARK_STATUS_OK ? 1u : 0u;
+        if ( write(reply_fd,&status,1u) != 1 )
+            _exit(2);
+        while ( read(command_fd,&command,1u) == 1 && command == 'i' )
+        {
+            status = SparkWeightdClientMeshActivity(serving,1u,0u,timeout) == SPARK_STATUS_OK ? 1u : 0u;
+            if ( write(reply_fd,&status,1u) != 1 )
+                _exit(2);
+        }
+        SparkWeightdClientClose(serving);
+        _exit(0);
+    }
+}
+
+static uint8_t test_pace_command(int command_fd,int reply_fd,uint8_t command)
+{
+    uint8_t reply = 0u;
+    if ( command != 0u && write(command_fd,&command,1u) != 1 )
+        return(0u);
+    return(read(reply_fd,&reply,1u) == 1 ? reply : 0u);
+}
+
+static void test_load_pace_while_serving(uint64_t pace)
+{
+    SparkWeightdServerConfig config;
+    SparkWeightdClient *own = 0,*loading = 0;
+    SparkWeightdDetachResult detached;
+    TestMeshActivityThread server = {0};
+    pthread_t server_thread;
+    char path[128],pack[128],manifest[144],receipt[160],other[128],other_manifest[144],other_receipt[160];
+    int commands[2],replies[2],wait_status = 0;
+    pid_t child;
+    uint32_t lane;
+    uint64_t generation = 0u,other_generation = 0u;
+    SparkWeightdMeshTopology topology = test_identity_topology(4u,0u);
+    const uint64_t timeout = UINT64_C(1000000000);
+    memset(&config,0,sizeof(config));
+    (void)snprintf(path,sizeof(path),"/tmp/spark-mesh-pace-%ld.sock",(long)getpid());
+    (void)snprintf(pack,sizeof(pack),"/tmp/spark-mesh-pace-%ld.pack",(long)getpid());
+    (void)snprintf(manifest,sizeof(manifest),"%s.experts",pack);
+    (void)snprintf(receipt,sizeof(receipt),"%s.verified",pack);
+    (void)snprintf(other,sizeof(other),"/tmp/spark-mesh-pace-%ld.other",(long)getpid());
+    (void)snprintf(other_manifest,sizeof(other_manifest),"%s.experts",other);
+    (void)snprintf(other_receipt,sizeof(other_receipt),"%s.verified",other);
+    test_pace_write_pack(pack,manifest,0u);
+    test_pace_write_pack(other,other_manifest,1u);
+    config.socket_path = path;
+    config.device_bytes_max = UINT64_C(1073741824);
+    config.load_pace_bytes_per_second = pace;
+    assert(SparkWeightdServerCreate(&config,&server.server) == SPARK_STATUS_OK);
+    assert(pthread_create(&server_thread,0,test_mesh_server_run,&server) == 0);
+    assert(SparkWeightdClientConnect(path,&own,0) == SPARK_STATUS_OK);
+    assert(SparkWeightdClientConnect(path,&loading,0) == SPARK_STATUS_OK);
+    if ( pace == 0u )
+    {
+        CHECK(SparkWeightdClientLaneAcquire(own,1u,&topology,&lane,timeout) == SPARK_STATUS_OK && lane == 1u &&
+            SparkWeightdClientMeshActivity(own,1u,1u,timeout) == SPARK_STATUS_OK,"pace: this process serves a lane on one connection");
+        CHECK(test_pace_attach(loading,other,&other_generation) == SPARK_STATUS_OK,
+            "pace: a process's own serving lane never paces its own loads on another connection");
+        (void)SparkWeightdClientDetach(loading,other_generation,&detached,timeout);
+        CHECK(SparkWeightdClientMeshActivity(own,1u,0u,timeout) == SPARK_STATUS_OK,"pace: this process's lane goes idle");
+    }
+    assert(pipe(commands) == 0 && pipe(replies) == 0);
+    child = test_pace_serving_process(path,commands,replies);
+    assert(child > 0);
+    CHECK(test_pace_command(commands[1],replies[0],0u) == 1u,"pace: another process owns an active serving lane");
+    if ( pace == 0u )
+    {
+        CHECK(test_pace_attach(loading,pack,&generation) == SPARK_STATUS_CAPACITY_EXCEEDED,
+            "pace: a load while another process's lane serves is refused when weightd has no load cap");
+        CHECK(test_pace_command(commands[1],replies[0],'i') == 1u,"pace: the serving process goes idle");
+        test_sleep_ns(UINT64_C(1200000000));
+        CHECK(test_pace_attach(loading,pack,&generation) == SPARK_STATUS_OK,
+            "pace: once no lane has served for the linger, the same load runs unpaced");
+    }
+    else
+    {
+        uint64_t start = test_pace_now_ns();
+        CHECK(test_pace_attach(loading,pack,&generation) == SPARK_STATUS_OK &&
+            test_pace_attach(loading,other,&other_generation) == SPARK_STATUS_OK,"pace: capped loads run while another process's lane serves");
+        CHECK((unsigned __int128)(test_pace_now_ns() - start) * pace >= (unsigned __int128)2u * TEST_PACE_CHUNK * UINT64_C(1000000000),
+            "pace: the second load waits until the first one's bytes have drained at the cap");
+        (void)SparkWeightdClientDetach(loading,other_generation,&detached,timeout);
+        CHECK(test_pace_command(commands[1],replies[0],'i') == 1u,"pace: the serving process goes idle");
+    }
+    (void)close(commands[1]);
+    CHECK(waitpid(child,&wait_status,0) == child && WIFEXITED(wait_status) && WEXITSTATUS(wait_status) == 0,
+        "pace: the serving process exits cleanly");
+    (void)close(replies[0]);
+    (void)SparkWeightdClientDetach(loading,generation,&detached,timeout);
+    SparkWeightdClientClose(loading);
+    SparkWeightdClientClose(own);
+    __atomic_store_n(&server.stop,1,__ATOMIC_SEQ_CST);
+    assert(pthread_join(server_thread,0) == 0);
+    SparkWeightdServerDestroy(server.server);
+    (void)unlink(receipt);
+    (void)unlink(manifest);
+    (void)unlink(pack);
+    (void)unlink(other_receipt);
+    (void)unlink(other_manifest);
+    (void)unlink(other);
+}
+
 static void test_mesh_pair_link(uint32_t local_rank)
 {
     TestMeshRecord own_record,partner_record,other_record;
@@ -1524,6 +2029,200 @@ static void test_mesh_pair_link(uint32_t local_rank)
         "a write to any other peer posts with the switch registration");
     test_clean_dir();
     (void)rmdir(SPARK_WEIGHTD_MESH_DIR);
+}
+
+static void test_status(SparkWeightdIpcMeshStatusResult *status)
+{
+    memset(status,0,sizeof(*status));
+    CHECK(SparkWeightdMeshStatusFill(status) == SPARK_STATUS_OK,"mesh status fill answers");
+}
+
+static int test_ready_text(char *text,size_t bytes)
+{
+    char path[512];
+    ssize_t got;
+    int fd;
+    test_ready_path(path,sizeof(path));
+    fd = open(path,O_RDONLY);
+    if ( fd < 0 )
+        return -1;
+    got = read(fd,text,bytes - 1u);
+    (void)close(fd);
+    if ( got < 0 )
+        return -1;
+    text[got] = '\0';
+    return 0;
+}
+
+static void test_mesh_status_surface(uint32_t local_rank)
+{
+    SparkWeightdIpcMeshStatusResult status;
+    SparkWeightdMeshTopology topology = test_identity_topology(16u,local_rank);
+    TestMeshRecord record,own;
+    struct stat st;
+    char path[512],text[256],expected[256];
+    const uint32_t gap = test_peer_rank(2u,local_rank),noisy_peer = 4u,noisy = test_peer_rank(noisy_peer,local_rank);
+    const uint32_t lane = 1u,cell = 2u * lane * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank;
+    uint64_t generation,ready_since;
+    uint32_t rank,first;
+    SparkStubIbvPostedWork work;
+    test_clean_dir();
+    for (rank=0u; rank<SPARK_WEIGHTD_MESH_RANKS_PER_BAND; rank++)
+        if ( rank != local_rank && rank != gap )
+            CHECK(test_write_record(rank,40u) == 0,"status: peer records published except one");
+    CHECK(SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,0,0u,0u) ==
+        SPARK_STATUS_BUSY,"status: init publishes");
+    CHECK(test_read_record(local_rank,&own) == 0,"status: own record readable");
+    test_status(&status);
+    CHECK(status.mesh_state == SPARK_WEIGHTD_MESH_STATE_WIRING && status.mesh_generation == 1u &&
+        status.boot_ns == own.boot_ns && status.local_rank == local_rank && status.rank_mask == test_rank_mask &&
+        status.pair_rank == UINT32_MAX && status.wired_mask == (1u << local_rank),"status: a fresh mesh reports wiring at generation 1");
+    CHECK(status.peers[local_rank].state == SPARK_WEIGHTD_MESH_PEER_SELF &&
+        status.peers[gap].state == SPARK_WEIGHTD_MESH_PEER_NO_RECORD && status.peers[gap].record_status == SPARK_STATUS_BUSY,
+        "status: peers start without a record");
+    SparkWeightdMeshTryWire();
+    test_status(&status);
+    test_ready_path(path,sizeof(path));
+    CHECK(status.mesh_state == SPARK_WEIGHTD_MESH_STATE_WIRING && status.wired_mask == (0xffffu & ~(1u << gap)) &&
+        status.peers[gap].state == SPARK_WEIGHTD_MESH_PEER_NO_RECORD && stat(path,&st) != 0,
+        "status: a missing record keeps the mesh wiring, names the peer, and leaves no marker");
+    CHECK(status.peers[noisy].state == SPARK_WEIGHTD_MESH_PEER_WIRED &&
+        status.peers[noisy].qp_flags == (SPARK_WEIGHTD_MESH_PEER_QP_SEND_RTS | SPARK_WEIGHTD_MESH_PEER_QP_RECV_RTS) &&
+        status.peers[noisy].wired_boot_ns == status.peers[noisy].record_boot_ns && status.peers[noisy].since_mono_ns != 0u,
+        "status: a wired peer reports both queue pairs in RTS and its record identity");
+    generation = status.mesh_generation;
+    CHECK(generation > 1u,"status: wiring peers advances the generation");
+    CHECK(test_write_record(gap,40u) == 0,"status: the missing record appears");
+    SparkWeightdMeshTryWire();
+    test_status(&status);
+    CHECK(status.mesh_state == SPARK_WEIGHTD_MESH_STATE_READY && status.wired_mask == 0xffffu &&
+        status.ready_since_mono_ns != 0u && status.mesh_generation > generation,"status: the last record makes the mesh ready");
+    (void)snprintf(expected,sizeof(expected),"weightd-ready v1 pid=%ld boot_ns=%llu rank=%u rank_mask=0x%04x\n",
+        (long)getpid(),(unsigned long long)own.boot_ns,local_rank,test_rank_mask);
+    CHECK(test_ready_text(text,sizeof(text)) == 0 && strcmp(text,expected) == 0,"status: .ready holds the v1 line with pid and boot_ns");
+    (void)snprintf(path,sizeof(path),"%s/.ready.tmp",SPARK_WEIGHTD_MESH_DIR);
+    CHECK(stat(path,&st) != 0,"status: no temporary marker remains");
+    generation = status.mesh_generation;
+    ready_since = status.ready_since_mono_ns;
+    SparkWeightdMeshTryWire();
+    test_status(&status);
+    CHECK(status.mesh_generation == generation && status.ready_since_mono_ns == ready_since,"status: a pass with no change keeps the generation");
+    CHECK(status.counters[0] == weightd_mesh.stat_trywire && status.counters[1] == weightd_mesh.stat_record_failures &&
+        status.counters[2] == weightd_mesh.stat_record_invalid && status.counters[3] == weightd_mesh.stat_wire_failures &&
+        status.counters[4] == weightd_mesh.stat_rewires && status.counters[5] == weightd_mesh.stat_unready &&
+        status.counters[6] == weightd_mesh.stat_repairs && status.counters[7] == weightd_mesh.send_ok &&
+        status.counters[8] == weightd_mesh.send_err && status.counters[9] == weightd_mesh.stat_peer_resets &&
+        status.counters[10] == weightd_mesh.stat_peer_reset_bits && status.counters[11] == weightd_mesh.stat_lane_resets,
+        "status: counters are the daemon's own statistics");
+    test_fill_record(&record,gap,41u);
+    record.magic = UINT64_C(0x4d45534830303031);
+    CHECK(test_write_record_raw(&record) == 0,"status: an old-format record is published");
+    SparkWeightdMeshTryWire();
+    test_status(&status);
+    test_ready_path(path,sizeof(path));
+    CHECK(status.peers[gap].state == SPARK_WEIGHTD_MESH_PEER_RECORD_REJECTED && status.peers[gap].record_status == SPARK_STATUS_ABI_MISMATCH &&
+        status.mesh_state == SPARK_WEIGHTD_MESH_STATE_WIRING && status.ready_since_mono_ns == 0u && stat(path,&st) != 0 &&
+        status.mesh_generation > generation,"status: an incompatible record is rejected by name and drops readiness and the marker");
+    test_fill_record(&record,gap,41u);
+    record.rank_mask = 0xffu;
+    CHECK(test_write_record_raw(&record) == 0,"status: a record from another group is published");
+    SparkWeightdMeshTryWire();
+    test_status(&status);
+    CHECK(status.peers[gap].state == SPARK_WEIGHTD_MESH_PEER_RECORD_REJECTED && status.peers[gap].record_status == SPARK_STATUS_INVALID_ARGUMENT,
+        "status: a group mismatch is rejected with its own status");
+    test_fill_record(&record,gap,41u);
+    memset(record.gid,0,sizeof(record.gid));
+    CHECK(test_write_record_raw(&record) == 0,"status: a record without an IPv4 address is published");
+    SparkWeightdMeshTryWire();
+    test_status(&status);
+    CHECK(status.peers[gap].state == SPARK_WEIGHTD_MESH_PEER_RECORD_INVALID && status.peers[gap].record_status == SPARK_STATUS_OK &&
+        status.peers[gap].record_boot_ns == record.boot_ns,"status: an unusable record is reported as invalid with its boot");
+    test_fill_record(&record,gap,42u);
+    spark_stub_ibv_fail_modify_qp_for_qpn(record.recv_qpn[test_my_index(gap,local_rank)]);
+    CHECK(test_write_record(gap,42u) == 0,"status: a record with a dead queue pair is published");
+    SparkWeightdMeshTryWire();
+    spark_stub_ibv_fail_modify_qp_for_qpn(0u);
+    test_status(&status);
+    CHECK(status.peers[gap].state == SPARK_WEIGHTD_MESH_PEER_WIRE_FAILED && status.peers[gap].record_status == SPARK_STATUS_DRIVER_LOAD_ERROR &&
+        status.peers[gap].record_boot_ns == record.boot_ns && (status.peers[gap].qp_flags & 3u) == 0u,
+        "status: a failed wire names the record it failed on");
+    SparkWeightdMeshTryWire();
+    test_status(&status);
+    CHECK(status.peers[gap].state == SPARK_WEIGHTD_MESH_PEER_WIRED && status.peers[gap].wired_boot_ns == record.boot_ns &&
+        status.mesh_state == SPARK_WEIGHTD_MESH_STATE_READY,"status: the retry wires the peer and the mesh is ready again");
+    test_complete_range(0u,spark_stub_ibv_posted_count());
+    generation = status.mesh_generation;
+    CHECK(SparkWeightdMeshLaneConfigure(lane,&topology) == SPARK_STATUS_OK,"status: lane configured");
+    test_status(&status);
+    CHECK((status.lanes[lane].flags & SPARK_WEIGHTD_MESH_LANE_CONFIGURED) != 0u && status.lanes[lane].rank_count == 16u &&
+        status.lanes[lane].local_rank == local_rank && status.lanes[lane].physical_mask == 0xffffu &&
+        status.lanes[lane].packed_ranks == UINT64_C(0xfedcba9876543210) && status.lanes[lane].configure_status == SPARK_STATUS_OK &&
+        status.mesh_generation > generation,"status: a configured lane reports its topology and an open gate");
+    generation = status.mesh_generation;
+    CHECK(SparkWeightdMeshSetActivity(lane,1u) == SPARK_STATUS_OK,"status: lane becomes active");
+    test_status(&status);
+    CHECK(status.lanes[lane].activity == 1u && status.lanes[lane].configure_status == SPARK_STATUS_BUSY &&
+        status.lanes[lane].busy_reason == SPARK_WEIGHTD_MESH_LANE_BUSY_ACTIVITY &&
+        SparkWeightdMeshLaneConfigure(lane,&topology) == SPARK_STATUS_BUSY,"status: an active lane reports the same refusal configure gives");
+    CHECK(SparkWeightdMeshSetActivity(lane,0u) == SPARK_STATUS_OK,"status: lane goes idle");
+    test_status(&status);
+    CHECK(status.mesh_generation == generation && status.lanes[lane].activity == 0u,"status: activity toggles do not move the generation");
+    weightd_mesh.transfers[2u * cell + 1u].pending = 1u;
+    test_status(&status);
+    CHECK(status.lanes[lane].pending_cells == 1u && status.lanes[lane].busy_reason == SPARK_WEIGHTD_MESH_LANE_BUSY_PENDING &&
+        status.lanes[lane].busy_index == cell && SparkWeightdMeshLaneConfigure(lane,&topology) == SPARK_STATUS_BUSY,
+        "status: a pending cell is reported where configure refuses");
+    weightd_mesh.transfers[2u * cell + 1u].pending = 0u;
+    weightd_mesh.transfers[2u * cell].failed = SPARK_WEIGHTD_MESH_TRANSFER_FAILED;
+    test_status(&status);
+    CHECK(status.lanes[lane].failed_cells == 1u && status.lanes[lane].configure_status == SPARK_STATUS_OK,
+        "status: a failed cell is visible and does not block a reconfigure");
+    CHECK(SparkWeightdMeshLaneConfigure(lane,&topology) == SPARK_STATUS_OK,"status: reconfigure resets the failed cell");
+    test_status(&status);
+    CHECK(status.lanes[lane].failed_cells == 0u,"status: the reset cell is no longer failed");
+    first = spark_stub_ibv_posted_count();
+    CHECK(SparkWeightdMeshBroadcast(1u << noisy,0u,64u,0u,0u,0u) == 1u &&
+        spark_stub_ibv_posted(first,&work) == 0,"status: one write to a peer is posted");
+    CHECK(spark_stub_ibv_complete(work.wr_id,IBV_WC_RETRY_EXC_ERR) == 0,"status: the write fails on the wire");
+    SparkWeightdMeshDrainCq();
+    test_status(&status);
+    CHECK(status.peers[noisy].cq_err_since_ok == 1u && status.peers[noisy].last_err_mono_ns != 0u,
+        "status: a completion error is charged to its peer");
+    {
+        int32_t reset_peer = SparkWeightdMeshPeerIndexFromRank(noisy);
+        uint64_t saved_boot = weightd_mesh.wired_boot_ns[reset_peer];
+        uint64_t calls_before = spark_stub_ibv_post_send_calls();
+        weightd_mesh.wired_boot_ns[reset_peer] = 0u;
+        CHECK(SparkWeightdMeshBroadcast(1u << noisy,0u,64u,0u,0u,0u) == 0u && spark_stub_ibv_post_send_calls() == calls_before,
+            "status: a broadcast to a peer whose wiring was reset posts nothing and reports busy, as a single write does");
+        weightd_mesh.wired_boot_ns[reset_peer] = saved_boot;
+    }
+    first = spark_stub_ibv_posted_count();
+    CHECK(SparkWeightdMeshBroadcast(1u << noisy,0u,64u,0u,0u,0u) == 1u &&
+        spark_stub_ibv_posted(first,&work) == 0 && spark_stub_ibv_complete(work.wr_id,IBV_WC_SUCCESS) == 0,
+        "status: a second write completes");
+    SparkWeightdMeshDrainCq();
+    test_status(&status);
+    CHECK(status.peers[noisy].cq_err_since_ok == 0u && status.peers[noisy].last_ok_mono_ns >= status.peers[noisy].last_err_mono_ns,
+        "status: a success clears the peer's error run");
+    (void)noisy_peer;
+    test_ready_path(path,sizeof(path));
+    SparkWeightdMeshTryWire();
+    CHECK(stat(path,&st) == 0,"status: the marker exists before stop");
+    SparkWeightdMeshStop();
+    CHECK(stat(path,&st) != 0 && SparkWeightdMeshReady() == 1u,"status: stop removes the daemon's own marker and leaves readiness alone");
+    {
+        int fd = open(path,O_WRONLY | O_CREAT | O_TRUNC,0644);
+        const char *foreign = "weightd-ready v1 pid=1 boot_ns=1 rank=0 rank_mask=0xffff\n";
+        CHECK(fd >= 0 && test_write_fully(fd,foreign,strlen(foreign)) == 0,"status: a foreign marker is planted");
+        if ( fd >= 0 )
+            (void)close(fd);
+    }
+    SparkWeightdMeshStop();
+    CHECK(stat(path,&st) == 0,"status: stop leaves a marker it did not write");
+    weightd_mesh.artifact_check_ns = 0u;
+    SparkWeightdMeshPoll();
+    CHECK(test_ready_text(text,sizeof(text)) == 0 && strcmp(text,expected) == 0,"status: the self-heal replaces a foreign marker with its own");
 }
 
 static void test_mesh_record_addresses(uint32_t local_rank)
@@ -1588,6 +2287,42 @@ static void test_mesh_record_addresses(uint32_t local_rank)
     spark_stub_ibv_fail_modify_qp_for_qpn(0u);
     SparkWeightdMeshTryWire();
     CHECK(SparkWeightdMeshReady() == 1u,"the same generation wires once the driver accepts it");
+    {
+        TestMeshRecord own,peer_record;
+        uint64_t generation;
+        CHECK(test_read_record(local_rank,&own) == 0,"the local record is readable before a repair");
+        generation = own.wire_generation;
+        spark_stub_ibv_set_qp_state(weightd_mesh.send_qps[0]->qp_num,IBV_QPS_ERR);
+        (void)snprintf(log_path,sizeof(log_path),"%s/capture-resync.log",SPARK_WEIGHTD_MESH_DIR);
+        test_capture_begin(log_path);
+        SparkWeightdMeshTryWire();
+        SparkWeightdMeshTryWire();
+        test_capture_end();
+        CHECK(spark_stub_ibv_qp_state(weightd_mesh.send_qps[0]->qp_num) == IBV_QPS_RTS,"the repaired queue pair is back in RTS");
+        CHECK(test_read_record(local_rank,&own) == 0 && own.wire_generation == generation + 1u,
+            "the repair bumps the wire generation and publishes it");
+        CHECK(SparkWeightdMeshReady() == 0u,"the mesh stays unready until the peer re-transitions to PSN 0 too");
+        CHECK(test_file_count(log_path,"WD-QP-REPAIR") == 1u && test_file_count(log_path,"WD-QP-RESYNC-DONE") == 0u,
+            "the repair is reported once and the resync is still open");
+        test_fill_record(&peer_record,rank,23u);
+        peer_record.seen_generation[my_index] = generation + 1u;
+        CHECK(test_write_record_raw(&peer_record) == 0,"the peer acknowledges the generation in its record");
+        test_capture_begin(log_path);
+        SparkWeightdMeshTryWire();
+        test_capture_end();
+        CHECK(SparkWeightdMeshReady() == 1u && test_file_count(log_path,"WD-QP-RESYNC-DONE") == 1u,
+            "the peer's acknowledgement completes the resync and the mesh is ready again");
+        peer_record.wire_generation = 5u;
+        CHECK(test_write_record_raw(&peer_record) == 0,"the peer repairs its own queue pairs");
+        modify_before = spark_stub_ibv_modify_qp_calls();
+        test_capture_begin(log_path);
+        SparkWeightdMeshTryWire();
+        test_capture_end();
+        CHECK(spark_stub_ibv_modify_qp_calls() > modify_before && SparkWeightdMeshReady() == 1u &&
+            test_file_count(log_path,"WD-QP-RESYNC rank=") == 1u,"a peer's repair re-transitions this side without a local repair");
+        CHECK(test_read_record(local_rank,&own) == 0 && own.seen_generation[0] == 5u && own.wire_generation == generation + 1u,
+            "this side echoes the peer's generation and keeps its own");
+    }
 
     (void)snprintf(log_path,sizeof(log_path),"%s/capture-address-wait.log",SPARK_WEIGHTD_MESH_DIR);
     spark_stub_ibv_empty_gids(3u);
@@ -1809,8 +2544,10 @@ int main(void)
     test_all_transfer_identities();
     test_slot_lifetimes(local_rank);
     test_slice_routes(local_rank);
+    test_half_slots(local_rank);
     test_peer_routes(local_rank);
     test_mesh_topology();
+    test_mesh_peer_reset(local_rank);
 
     /* case 6: a second daemon instance with its own record dir must not
      * touch ours — the two-daemons-one-host separation (the fleet's
@@ -1839,6 +2576,7 @@ int main(void)
     }
 
     test_mesh_record_addresses(local_rank);
+    test_mesh_status_surface(local_rank);
 
     test_clean_dir();
     test_rank_mask = 0xfu;
@@ -1882,10 +2620,12 @@ int main(void)
         entry[0] = 1u;
         SparkWeightdMeshDoorbellPoll();
     }
-    CHECK(spark_stub_ibv_post_send_calls() - post_before == 6u,
-        "TP4 B1 posts payload and tail to three peers only");
+    CHECK(spark_stub_ibv_post_send_calls() - post_before == 3u,
+        "TP4 B1 rings the queues of three peers only");
     test_mesh_lane_protocol();
     test_mesh_activity_protocol(protocol_post_first);
+    test_load_pace_while_serving(0u);
+    test_load_pace_while_serving(UINT64_C(8388608));
     test_rank_mask = 0xffu;
     CHECK(test_write_record(1u,9u) == 0,"peer with inconsistent group published");
     SparkWeightdMeshTryWire();

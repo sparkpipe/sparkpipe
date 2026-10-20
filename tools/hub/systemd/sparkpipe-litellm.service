@@ -1,0 +1,16 @@
+[Unit]
+Description=LiteLLM front door for SparkPipe (OpenAI and Anthropic APIs)
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/sparkpipe-chat
+ExecStart=%h/litellm-venv/bin/litellm --config litellm.yaml --host 0.0.0.0 --port 4000
+StandardOutput=append:%h/sparkpipe-chat/litellm.log
+StandardError=append:%h/sparkpipe-chat/litellm.log
+Restart=always
+RestartSec=2
+MemoryMax=4G
+
+[Install]
+WantedBy=default.target

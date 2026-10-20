@@ -1,0 +1,12 @@
+FRAMES SL 105
+SPEED SL editfull tokens=2731 decode_s=26.0 tok_s=105.21 editsr tokens=435 decode_s=15.2 tok_s=28.71
+FRAMES TL 120
+SPEED TL editfull tokens=2731 decode_s=27.4 tok_s=99.81 editsr tokens=489 decode_s=16.5 tok_s=29.61
+FRAMES SS 619
+FRAMES SS batch_speculation frames=194 drafted=25139 kept_drafts=14185 chain_token_ms=35.3 single_ms=44.9 buckets r2:n=2,rows=2.0,kept=2.0,ms=64.8 r4:n=20,rows=3.3,kept=2.2,ms=74.5 r8:n=2,rows=5.5,kept=2.0,ms=94.8 r16:n=1,rows=16.0,kept=3.0,ms=143.1 r32:n=26,rows=23.7,kept=15.0,ms=209.0 r64:n=23,rows=46.0,kept=20.8,ms=294.9 r128:n=27,rows=85.9,kept=50.6,ms=367.7 r256:n=93,rows=228.4,kept=130.0,ms=535.6
+SPEED SS editfull tokens=15825 decode_s=68.0 tok_s=232.79 editsr tokens=4911 decode_s=125.8 tok_s=39.05
+FRAMES TS 613
+FRAMES TS batch_speculation frames=257 drafted=27973 kept_drafts=17033 chain_token_ms=35.3 single_ms=45.5 buckets r2:n=1,rows=2.0,kept=2.0,ms=77.5 r4:n=39,rows=3.1,kept=2.2,ms=73.0 r8:n=35,rows=5.1,kept=4.9,ms=92.3 r16:n=9,rows=11.0,kept=5.0,ms=180.9 r32:n=33,rows=23.7,kept=16.2,ms=218.3 r64:n=10,rows=42.8,kept=19.7,ms=260.7 r128:n=27,rows=87.6,kept=39.7,ms=380.1 r256:n=103,rows=235.5,kept=147.4,ms=539.7
+SPEED TS editfull tokens=15825 decode_s=66.3 tok_s=238.68 editsr tokens=3942 decode_s=111.8 tok_s=35.25
+FRAMES SL2 105
+SPEED SL2 editfull tokens=2731 decode_s=25.8 tok_s=105.84 editsr tokens=435 decode_s=14.9 tok_s=29.11

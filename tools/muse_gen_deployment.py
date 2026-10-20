@@ -70,6 +70,7 @@ def resident_deployment() -> dict:
             "transport_host": host,
             "adapter_configuration_path": "config/muse_stage.json",
             "kv_backing_directory": "/home/%s/kvcache/muse.tp16" % host,
+            "kv_partition": "/",
             "kv_backing_maximum_bytes": 8589934592,
             "control_endpoint": {
                 "kind": "tcp",

@@ -24,7 +24,7 @@ static uint64_t Load(const uint64_t *word) { return __atomic_load_n(word,__ATOMI
 static void Store(uint64_t *word,uint64_t value) { __atomic_store_n(word,value,__ATOMIC_RELEASE); }
 static uint16_t Bf16(float value)
 {
-    uint32_t bits;std::memcpy(&bits,&value,sizeof(bits));return static_cast<uint16_t>(bits>>16u);
+    uint32_t bits;std::memcpy(&bits,&value,sizeof(bits));bits+=0x7fffu+((bits>>16u)&1u);return static_cast<uint16_t>(bits>>16u);
 }
 static float Float(uint16_t value)
 {
@@ -44,13 +44,13 @@ struct Rank
 struct Probe
 {
     static constexpr uint64_t band_bytes=SPARK_WEIGHTD_MESH_SLOT_BYTES*SPARK_WEIGHTD_MESH_SLOTS_PER_BAND;
-    static constexpr size_t tensor_bytes=20u*SPARK_WEIGHTD_MESH_SLOT_BYTES;
+    static constexpr size_t tensor_bytes=48u*SPARK_WEIGHTD_MESH_SLOT_BYTES;
     static constexpr uint64_t staging_bytes=SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES*SPARK_WEIGHTD_MESH_RANKS_PER_BAND;
     uint8_t *host=nullptr,*device=nullptr,*staging_host=nullptr,*staging_device=nullptr;
     Rank ranks[SPARK_WEIGHTD_MESH_RANKS_PER_BAND];
     uint32_t degree=0u,operation=0u,rows=0u,rounds=0u,routes=1u;
     uint64_t elements=0u,launch_count=0u,epoch=100u,cancel=0u,timeout=UINT64_C(2000000000);
-    uint64_t shipped[16]={},pending[16]={},pending_at[16]={},enqueue_ns[16]={};
+    uint64_t shipped[16]={},pending[16][2]={},pending_at[16][2]={},enqueue_ns[16]={},seq_base[16]={};
     std::atomic<bool> stop{false},hold{false};
     std::atomic<uint64_t> transfers{0u},delay_ns{0u};
     std::thread worker;
@@ -118,33 +118,39 @@ struct Probe
                 uint64_t now=Now();
                 for (uint32_t rank=0u;rank<degree;rank++)
                 {
-                    uint64_t *entry=Entry(rank),tag=Load(entry);
-                    if (tag==0u || tag==shipped[rank]) continue;
-                    if (pending[rank]==0u) { pending[rank]=tag;pending_at[rank]=now; }
-                    REQUIRE(pending[rank]==tag);
-                    if (hold.load() || now-pending_at[rank]<delay_ns.load()) continue;
-                    uint64_t bytes=Load(entry+1),slot=Load(entry+2),mask,offset,length;
-                    SparkWeightdMeshRoute route;route.word=Load(entry+3);mask=route.fields.peer_mask;
-                    REQUIRE(SparkWeightdMeshRouteFits(route,bytes));
-                    REQUIRE(routes!=0u || route.fields.mode==SPARK_WEIGHTD_MESH_ROUTE_FULL);
-                    REQUIRE((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u || route.fields.mode!=SPARK_WEIGHTD_MESH_ROUTE_PEER);
-                    REQUIRE(slot/SPARK_WEIGHTD_MESH_SLOTS_PER_RANK==rank && (mask&(UINT64_C(1)<<rank))==0u);
-                    REQUIRE(mask!=0u && (mask&~((UINT64_C(1)<<degree)-1u))==0u);
-                    uint8_t *source=host+rank*band_bytes+slot*SPARK_WEIGHTD_MESH_SLOT_BYTES;
-                    REQUIRE(Load(reinterpret_cast<uint64_t *>(source+SPARK_WEIGHTD_MESH_SLOT_BYTES-8u))==tag);
-                    for (uint32_t peer=0u;peer<degree;peer++)
+                    uint64_t *cells[2]={Entry(rank),Entry(rank)+SPARK_WEIGHTD_MESH_DOORBELL_ALT_WORDS},tags[2]={Load(cells[0]),Load(cells[1])};
+                    uint32_t order[2]={tags[0]<=tags[1] ? 0u : 1u,tags[0]<=tags[1] ? 1u : 0u};
+                    for (uint32_t pick=0u;pick<2u;pick++)
                     {
-                        if ((mask&(UINT64_C(1)<<peer))==0u) continue;
-                        uint8_t *target=host+peer*band_bytes+slot*SPARK_WEIGHTD_MESH_SLOT_BYTES;
-                        offset=SparkWeightdMeshRouteSpan(route,peer,rank,bytes,&length);
-                        if (route.fields.mode==SPARK_WEIGHTD_MESH_ROUTE_PEER)
-                            std::memcpy(target,staging_host+rank*SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES+peer*SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES,length);
-                        else
-                            std::memcpy(target+offset,source+offset,length);
-                        Store(reinterpret_cast<uint64_t *>(target+SPARK_WEIGHTD_MESH_SLOT_BYTES-8u),tag);
+                        uint64_t *entry=cells[order[pick]],tag=tags[order[pick]];
+                        if (tag==0u || tag<=shipped[rank]) continue;
+                        if (pending[rank][tag&1u]!=tag) { pending[rank][tag&1u]=tag;pending_at[rank][tag&1u]=now; }
+                        if (hold.load() || now-pending_at[rank][tag&1u]<delay_ns.load()) break;
+                        uint64_t bytes=Load(entry+1),slot=Load(entry+2),mask,offset,length;
+                        SparkWeightdMeshRoute route;route.word=Load(entry+3);mask=route.fields.peer_mask;
+                        REQUIRE(SparkWeightdMeshRouteFits(route,bytes));
+                        REQUIRE(routes!=0u || route.fields.mode==SPARK_WEIGHTD_MESH_ROUTE_FULL);
+                        REQUIRE((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u || route.fields.mode!=SPARK_WEIGHTD_MESH_ROUTE_PEER);
+                        REQUIRE(slot/SPARK_WEIGHTD_MESH_SLOTS_PER_RANK==rank && (mask&(UINT64_C(1)<<rank))==0u);
+                        REQUIRE(mask!=0u && (mask&~((UINT64_C(1)<<degree)-1u))==0u);
+                        REQUIRE(route.fields.half==SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE || route.fields.half==SPARK_WEIGHTD_MESH_SEQUENCE_HALF(tag));
+                        REQUIRE(route.fields.half==SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE || order[pick]==(tag&1u));
+                        uint8_t *source=host+rank*band_bytes+slot*SPARK_WEIGHTD_MESH_SLOT_BYTES;
+                        REQUIRE(Load(reinterpret_cast<uint64_t *>(source+SPARK_WEIGHTD_MESH_TAIL_OFFSET(route.fields.half)))==tag);
+                        for (uint32_t peer=0u;peer<degree;peer++)
+                        {
+                            if ((mask&(UINT64_C(1)<<peer))==0u) continue;
+                            uint8_t *target=host+peer*band_bytes+slot*SPARK_WEIGHTD_MESH_SLOT_BYTES;
+                            offset=SparkWeightdMeshRouteSpan(route,peer,rank,bytes,&length);
+                            if (route.fields.mode==SPARK_WEIGHTD_MESH_ROUTE_PEER)
+                                std::memcpy(target,staging_host+rank*SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES+peer*SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES,length);
+                            else
+                                std::memcpy(target+offset,source+offset,length);
+                            Store(reinterpret_cast<uint64_t *>(target+SPARK_WEIGHTD_MESH_TAIL_OFFSET(route.fields.half)),tag);
+                        }
+                        Store(reinterpret_cast<uint64_t *>(host+SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(rank,rank)),tag);
+                        shipped[rank]=tag;transfers.fetch_add(1u);
                     }
-                    Store(reinterpret_cast<uint64_t *>(host+SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(rank,rank)),tag);
-                    shipped[rank]=tag;pending[rank]=0u;transfers.fetch_add(1u);
                 }
                 SparkTestMeshWaitPoll(now);
                 std::this_thread::yield();
@@ -154,7 +160,7 @@ struct Probe
     void Setup(uint32_t next_degree,uint32_t next_operation,uint32_t next_rows,uint64_t next_elements,uint32_t next_rounds,bool preserve_graph=false)
     {
         EndWorker();degree=next_degree;operation=next_operation;rows=next_rows;elements=next_elements;rounds=next_rounds;epoch++;launch_count=0u;
-        std::memset(host,0,SPARK_WEIGHTD_MESH_REGION_BYTES);std::memset(shipped,0,sizeof(shipped));std::memset(pending,0,sizeof(pending));
+        std::memset(host,0,SPARK_WEIGHTD_MESH_REGION_BYTES);std::memset(shipped,0,sizeof(shipped));std::memset(pending,0,sizeof(pending));std::memset(seq_base,0,sizeof(seq_base));
         hold.store(false);delay_ns.store(0u);transfers.store(0u);
         SparkTestMeshWaitInitialize(host,degree);
         for (uint32_t rank=0u;rank<degree;rank++)
@@ -170,13 +176,25 @@ struct Probe
             Store(Cancel(rank),cancel);
         }
     }
+    void Continue(uint32_t next_operation,uint32_t next_rows,uint64_t next_elements,uint32_t next_rounds)
+    {
+        EndWorker();operation=next_operation;rows=next_rows;elements=next_elements;rounds=next_rounds;launch_count=0u;
+        for (uint32_t rank=0u;rank<degree;rank++)
+        {
+            SparkTpMeshRoundControl control={};
+            CUDA(cudaStreamSynchronize(ranks[rank].stream));
+            CUDA(cudaMemcpy(&control,ranks[rank].control,sizeof(control),cudaMemcpyDeviceToHost));
+            seq_base[rank]=control.seq;
+        }
+    }
     void Data(uint32_t salt)
     {
         uint64_t local_elements=operation==0u ? elements/degree : operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? elements*degree : elements;
         uint32_t width=operation==2u ? 8u : 2u;
         REQUIRE(elements*width<=tensor_bytes && local_elements*width<=tensor_bytes);
-        inputs.assign(degree,std::vector<uint8_t>(local_elements*width));expected.assign((operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? local_elements : elements)*width,0u);
-        expected_rank.assign(degree,std::vector<uint8_t>(operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? local_elements*width : 0u));
+        const bool scatter=operation==SPARK_TP_MESH_OPERATION_REDUCE_SCATTER;
+        inputs.assign(degree,std::vector<uint8_t>(local_elements*width));expected.assign((operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? local_elements : scatter ? elements/degree : elements)*width,0u);
+        expected_rank.assign(degree,std::vector<uint8_t>(operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? local_elements*width : scatter ? elements/degree*width : 0u));
         if (operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL)
             for (uint32_t rank=0u;rank<degree;rank++)
                 for (uint64_t i=0u;i<local_elements;i++)
@@ -212,6 +230,14 @@ struct Probe
             CUDA(cudaMemsetAsync(ranks[rank].output,0xcdu,expected.size(),ranks[rank].stream));
             CUDA(cudaMemsetAsync(reinterpret_cast<uint8_t *>(ranks[rank].control)+offsetof(SparkTpMeshRoundControl,rounds_done),0,sizeof(uint64_t),ranks[rank].stream));
         }
+        if (scatter)
+            for (uint32_t owner=0u;owner<degree;owner++)
+                for (uint64_t i=0u;i<elements/degree;i++)
+                {
+                    double sum=0.0;
+                    for (uint32_t rank=0u;rank<degree;rank++) { uint16_t bits;std::memcpy(&bits,inputs[rank].data()+(owner*(elements/degree)+i)*2u,2u);sum+=Float(bits); }
+                    uint16_t bits=Bf16(static_cast<float>(sum));std::memcpy(expected_rank[owner].data()+i*2u,&bits,2u);
+                }
         if (operation==1u)
             for (uint64_t i=0u;i<elements;i++)
             {
@@ -226,7 +252,7 @@ struct Probe
             SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
             device+SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(rank,rank),device+SPARK_WEIGHTD_MESH_WAIT_ENTRY(rank,rank),
             ranks[rank].control,rank,degree,ranks[rank].input,ranks[rank].output,ranks[rank].scratch,
-            elements,operation,rounds,rows,routes,(routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? staging_device+rank*SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES : nullptr,timeout));
+            elements,operation,rounds,rows,routes,(routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? staging_device+rank*SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES : nullptr,timeout,SPARK_TP_MESH_STAGE_ALL));
     }
     double Capture()
     {
@@ -273,7 +299,7 @@ struct Probe
     {
         for (uint32_t rank=0u;rank<degree;rank++)
         {
-            const std::vector<uint8_t> &want=operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? expected_rank[rank] : expected;
+            const std::vector<uint8_t> &want=operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL || operation==SPARK_TP_MESH_OPERATION_REDUCE_SCATTER ? expected_rank[rank] : expected;
             SparkTpMeshRoundControl control={};std::vector<uint8_t> output(want.size());
             CUDA(cudaMemcpy(&control,ranks[rank].control,sizeof(control),cudaMemcpyDeviceToHost));
             CUDA(cudaMemcpy(output.data(),ranks[rank].output,output.size(),cudaMemcpyDeviceToHost));
@@ -302,8 +328,10 @@ struct Probe
             {
                 uint32_t width=operation==2u ? 8u : operation==1u ? 4u : 2u;
                 uint64_t chunks=(elements-1u)/((SPARK_WEIGHTD_MESH_SLOT_BYTES-16u)/width)+1u;
-                uint64_t advances=operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? SparkTpMeshAllToAllPeerChunks(elements,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) : SparkTpMeshAllToAllChunks(elements,degree,SPARK_WEIGHTD_MESH_SLOT_BYTES)) : rows==1u ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u && SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)==2u ? ((SparkTpMeshDirectLocalElements(elements,degree,operation)-1u)/SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+1u)*2u : SparkTpMeshDirectChunks(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)*SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)) : chunks*2u*SparkTpMeshTreeLevels(degree);
-                REQUIRE(control.seq==launch_count*rounds*advances);
+                uint64_t advances=rows==1u && SparkTpMeshDirectPipelined(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)!=0u ?
+                    SparkTpMeshPipelineChunks(SparkTpMeshDirectLocalElements(elements,degree,operation),SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) :
+                    operation==SPARK_TP_MESH_OPERATION_REDUCE_SCATTER ? SparkTpMeshScatterChunks(elements,degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) : operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? SparkTpMeshAllToAllPeerChunks(elements,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) : SparkTpMeshAllToAllChunks(elements,degree,SPARK_WEIGHTD_MESH_SLOT_BYTES)) : rows==1u ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u && SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)==2u ? ((SparkTpMeshDirectLocalElements(elements,degree,operation)-1u)/SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+1u)*2u : SparkTpMeshDirectChunks(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)*SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)) : chunks*2u*SparkTpMeshTreeLevels(degree);
+                REQUIRE(control.seq-seq_base[rank]==launch_count*rounds*advances);
             }
             if (failed) REQUIRE(std::all_of(output.begin(),output.end(),[](uint8_t byte){return byte==0xcdu;}));
             else if (output!=want)
@@ -329,12 +357,28 @@ struct Probe
                 }
         routes=saved;
     }
+    void ReduceScatter()
+    {
+        const uint64_t capacity=SparkTpMeshScatterCapacity(SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES);
+        uint32_t saved=routes;
+        routes=SPARK_TP_MESH_ROUTES_SLICE|SPARK_TP_MESH_ROUTES_PEER;
+        for (uint32_t n:{2u,4u,5u,16u})
+            for (uint64_t per:{UINT64_C(4),UINT64_C(1028),capacity,capacity+148u,UINT64_C(7168)*2u})
+            {
+                uint64_t count=per*n;
+                if (count*2u>tensor_bytes) continue;
+                Case(n,SPARK_TP_MESH_OPERATION_REDUCE_SCATTER,1u,count,false);Case(n,SPARK_TP_MESH_OPERATION_REDUCE_SCATTER,1u,count,true);
+                std::printf("REDUCE-SCATTER degree=%u segment=%llu chunks=%llu PASS\n",n,(unsigned long long)per,
+                    (unsigned long long)SparkTpMeshScatterChunks(count,n,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES));
+            }
+        routes=saved;
+    }
     void PeerReduce()
     {
         uint32_t saved=routes;
         for (uint32_t route_set:{SPARK_TP_MESH_ROUTES_SLICE,SPARK_TP_MESH_ROUTES_SLICE|SPARK_TP_MESH_ROUTES_PEER})
             for (uint32_t n:{4u,5u,16u})
-                for (uint64_t count:{UINT64_C(49152),SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u)+4099u,UINT64_C(524288),SparkTpMeshDirectPeerCapacity(16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+4099u})
+                for (uint64_t count:{UINT64_C(18432),UINT64_C(49152),SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u)+4099u,UINT64_C(524288),SparkTpMeshDirectPeerCapacity(16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+4099u})
                 {
                     if (count*2u>tensor_bytes) continue;
                     routes=route_set;
@@ -352,6 +396,36 @@ struct Probe
             for (uint32_t replay=0u;replay<2u;replay++) { Data(replay+2u);begin=Now();Launch(true);elapsed=Wait(begin);Verify(); }
         EndWorker();completed_cases++;
         std::printf("PASS numerical tp=%u rows=%u operation=%u elements=%llu graph=%u rsag=%u construct_ms=%.3f last_ms=%.3f transfers=%llu\n",n,b,op,static_cast<unsigned long long>(count),graph,b==1u && SparkTpMeshDirectPhasesPerChunk(count,n,op,routes)==2u,construction,elapsed,static_cast<unsigned long long>(transfers.load()));
+    }
+    void Pipelined()
+    {
+        const uint64_t half=SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES/2u;
+        for (uint32_t n:{3u,4u,16u})
+            for (uint64_t local:{SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,0u)+1u,3u*half,3u*half+4u,5u*half+77u,11u*half+16u})
+                for (uint64_t delay:{UINT64_C(0),UINT64_C(150000)})
+                {
+                    if (local*n*2u>tensor_bytes) continue;
+                    for (bool graph:{false,true})
+                    {
+                        Setup(n,0u,1u,local*n,3u);delay_ns.store(delay);Data(5u);double construction=graph ? Capture() : 0.0;
+                        StartWorker();uint64_t begin=Now();Launch(graph);double elapsed=Wait(begin);Verify();
+                        if (graph)
+                            for (uint32_t replay=0u;replay<2u;replay++) { Data(replay+6u);begin=Now();Launch(true);elapsed=Wait(begin);Verify(); }
+                        EndWorker();completed_cases++;
+                        std::printf("PASS pipelined all-gather tp=%u local=%llu chunks=%llu delay_us=%llu graph=%u construct_ms=%.3f last_ms=%.3f transfers=%llu\n",n,(unsigned long long)local,
+                            (unsigned long long)SparkTpMeshPipelineChunks(local,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES),(unsigned long long)(delay/1000u),graph,construction,elapsed,(unsigned long long)transfers.load());
+                    }
+                }
+        for (uint64_t delay:{UINT64_C(0),UINT64_C(150000)})
+        {
+            Setup(4u,0u,1u,(5u*half+77u)*4u,2u);delay_ns.store(delay);Data(30u);StartWorker();uint64_t begin=Now();Launch(false);Wait(begin);Verify();
+            Continue(1u,1u,513u,2u);delay_ns.store(delay);Data(31u);StartWorker();begin=Now();Launch(false);Wait(begin);Verify();
+            Continue(0u,1u,4u*257u,2u);delay_ns.store(delay);Data(32u);StartWorker();begin=Now();Launch(false);Wait(begin);Verify();
+            Continue(0u,1u,(3u*half+4u)*4u,3u);delay_ns.store(delay);Data(33u);StartWorker();begin=Now();Launch(false);Wait(begin);Verify();
+            Continue(1u,1u,SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u)+4099u,1u);delay_ns.store(delay);Data(34u);StartWorker();begin=Now();Launch(false);Wait(begin);Verify();
+            EndWorker();completed_cases++;
+            std::printf("PASS pipelined rounds interleave with whole-slot rounds delay_us=%llu\n",(unsigned long long)(delay/1000u));
+        }
     }
     void Faults()
     {
@@ -415,9 +489,9 @@ struct Probe
 
 int main(int argc,char **argv)
 {
-    if (argc!=2 || (std::strcmp(argv[1],"--run")!=0 && std::strcmp(argv[1],"--all-to-all")!=0 && std::strcmp(argv[1],"--peer-reduce")!=0))
+    if (argc!=2 || (std::strcmp(argv[1],"--run")!=0 && std::strcmp(argv[1],"--all-to-all")!=0 && std::strcmp(argv[1],"--peer-reduce")!=0 && std::strcmp(argv[1],"--reduce-scatter")!=0 && std::strcmp(argv[1],"--pipelined")!=0))
     {
-        std::fprintf(stderr,"usage: %s --run | --all-to-all | --peer-reduce\n",argv[0]);return 2;
+        std::fprintf(stderr,"usage: %s --run | --all-to-all | --peer-reduce | --reduce-scatter | --pipelined\n",argv[0]);return 2;
     }
     REQUIRE(std::setvbuf(stdout,nullptr,_IOLBF,0)==0);
     CUDA(cudaSetDeviceFlags(cudaDeviceMapHost));CUDA(cudaSetDevice(0));
@@ -432,10 +506,22 @@ int main(int argc,char **argv)
         return 2;
     }
     Probe probe;
+    if (std::strcmp(argv[1],"--pipelined")==0)
+    {
+        probe.Pipelined();
+        std::printf("PASS tp_mesh_hardware_probe pipelined cases=%u\n",probe.completed_cases);
+        return 0;
+    }
     if (std::strcmp(argv[1],"--peer-reduce")==0)
     {
         probe.PeerReduce();
         std::printf("PASS tp_mesh_hardware_probe peer-reduce cases=%u\n",probe.completed_cases);
+        return 0;
+    }
+    if (std::strcmp(argv[1],"--reduce-scatter")==0)
+    {
+        probe.ReduceScatter();
+        std::printf("PASS tp_mesh_hardware_probe reduce-scatter cases=%u\n",probe.completed_cases);
         return 0;
     }
     if (std::strcmp(argv[1],"--all-to-all")==0)
@@ -460,12 +546,14 @@ int main(int argc,char **argv)
         probe.Case(16u,operation,2u,elements,false);probe.Case(16u,operation,2u,elements,true);
     }
     for (uint32_t degree:{3u,4u,5u,16u})
-        for (uint64_t elements:{UINT64_C(49152),SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u)+4099u})
+        for (uint64_t elements:{UINT64_C(18432),UINT64_C(49152),SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u)+4099u})
         {
             probe.Case(degree,1u,1u,elements,false);probe.Case(degree,1u,1u,elements,true);
         }
     probe.AllToAll();
     probe.PeerReduce();
+    probe.ReduceScatter();
+    probe.Pipelined();
     probe.routes=0u;probe.Case(16u,1u,1u,65536u,true);probe.routes=1u;
     probe.Faults();probe.Timings();
     std::printf("PASS tp_mesh_hardware_probe cases=%u GPU_math=actual GPU_wait=actual daemon_gate=actual transport=cpu-copy\n",probe.completed_cases);

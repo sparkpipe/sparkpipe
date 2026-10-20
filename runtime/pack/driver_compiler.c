@@ -501,9 +501,11 @@ static void SparkWriteGeneratedConfigurations(
             file,
             ",\n    .configuration_json = SparkGeneratedConfigurationJson_%u,\n"
             "    .configuration_json_bytes = %uu,\n"
-            "    .reserved1 = 0u\n};\n\n",
+            "    .reserved1 = 0u,\n"
+            "    .validated_artifact_sha256 = \"%s\"\n};\n\n",
             operation_index,
-            resolved_operation->operation->configuration_json_bytes);
+            resolved_operation->operation->configuration_json_bytes,
+            resolved_operation->artifact.artifact_sha256);
     }
 }
 
@@ -590,6 +592,8 @@ static void SparkWriteGeneratedCreate(FILE *file, const SparkDriverBuildImage *d
     fputs("    instance->host_services.kv_physical_page_capacity = request->kv_physical_page_capacity;\n", file);
     fputs("    instance->host_services.kv_backing_directory = request->kv_backing_directory;\n", file);
     fputs("    instance->host_services.kv_backing_maximum_bytes = request->kv_backing_maximum_bytes;\n", file);
+    fputs("    instance->host_services.kv_snapshot_directory = request->kv_snapshot_directory;\n", file);
+    fputs("    instance->host_services.kv_snapshot_maximum_bytes = request->kv_snapshot_maximum_bytes;\n", file);
     fputs("    instance->host_services.execution_stream = request->execution_stream;\n", file);
     fputs("    status = SPARK_STATUS_OK;\n", file);
 
@@ -766,9 +770,35 @@ static void SparkWriteGeneratedAdmissionHelpers(FILE *file)
     fputs("}\n\n", file);
 
     fputs("static int SparkGeneratedRuntimeSnapshotIsValid(const SparkModelDriverRuntimeSnapshot *snapshot, uint32_t program_id)\n{\n", file);
-    fputs("    return snapshot->descriptor_bytes >= sizeof(*snapshot) && snapshot->program_id == program_id && snapshot->reserved == 0u;\n", file);
+    fputs("    return snapshot->descriptor_bytes >= sizeof(*snapshot) && snapshot->program_id == program_id && (snapshot->degraded_flags & ~SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH) == 0u;\n", file);
     fputs("}\n\n", file);
 
+    fputs("static void SparkGeneratedMergeKvStoreCounters(SparkModelDriverKvStoreCounters *destination, const SparkModelDriverKvStoreCounters *source)\n{\n", file);
+    fputs("    destination->attached |= source->attached;\n", file);
+    fputs("    if (destination->store_failed_status == 0u)\n    {\n        destination->store_failed_status = source->store_failed_status;\n    }\n", file);
+    fputs("    destination->save_count = SparkGeneratedSaturatingAddU64(destination->save_count, source->save_count);\n", file);
+    fputs("    destination->save_page_count = SparkGeneratedSaturatingAddU64(destination->save_page_count, source->save_page_count);\n", file);
+    fputs("    destination->save_ns = SparkGeneratedSaturatingAddU64(destination->save_ns, source->save_ns);\n", file);
+    fputs("    destination->save_failure_count = SparkGeneratedSaturatingAddU64(destination->save_failure_count, source->save_failure_count);\n", file);
+    fputs("    destination->save_deferred_count = SparkGeneratedSaturatingAddU64(destination->save_deferred_count, source->save_deferred_count);\n", file);
+    fputs("    destination->restore_count = SparkGeneratedSaturatingAddU64(destination->restore_count, source->restore_count);\n", file);
+    fputs("    destination->restore_page_count = SparkGeneratedSaturatingAddU64(destination->restore_page_count, source->restore_page_count);\n", file);
+    fputs("    destination->restore_ns = SparkGeneratedSaturatingAddU64(destination->restore_ns, source->restore_ns);\n", file);
+    fputs("    destination->restore_miss_count = SparkGeneratedSaturatingAddU64(destination->restore_miss_count, source->restore_miss_count);\n", file);
+    fputs("    destination->restore_corrupt_count = SparkGeneratedSaturatingAddU64(destination->restore_corrupt_count, source->restore_corrupt_count);\n", file);
+    fputs("    destination->restore_read_error_count = SparkGeneratedSaturatingAddU64(destination->restore_read_error_count, source->restore_read_error_count);\n", file);
+    fputs("    destination->restore_failure_count = SparkGeneratedSaturatingAddU64(destination->restore_failure_count, source->restore_failure_count);\n", file);
+    fputs("    destination->store_used_bytes = SparkGeneratedSaturatingAddU64(destination->store_used_bytes, source->store_used_bytes);\n", file);
+    fputs("    destination->store_maximum_bytes = SparkGeneratedSaturatingAddU64(destination->store_maximum_bytes, source->store_maximum_bytes);\n", file);
+    fputs("    destination->store_file_count = SparkGeneratedSaturatingAddU64(destination->store_file_count, source->store_file_count);\n", file);
+    fputs("    destination->store_foreign_layout_file_count = SparkGeneratedSaturatingAddU64(destination->store_foreign_layout_file_count, source->store_foreign_layout_file_count);\n", file);
+    fputs("    destination->store_checksum_failure_count = SparkGeneratedSaturatingAddU64(destination->store_checksum_failure_count, source->store_checksum_failure_count);\n", file);
+    fputs("    destination->store_removed_temporary_count = SparkGeneratedSaturatingAddU64(destination->store_removed_temporary_count, source->store_removed_temporary_count);\n", file);
+    fputs("    destination->store_eviction_count = SparkGeneratedSaturatingAddU64(destination->store_eviction_count, source->store_eviction_count);\n", file);
+    fputs("    destination->store_write_failure_count = SparkGeneratedSaturatingAddU64(destination->store_write_failure_count, source->store_write_failure_count);\n", file);
+    fputs("    destination->store_queue_full_count = SparkGeneratedSaturatingAddU64(destination->store_queue_full_count, source->store_queue_full_count);\n", file);
+    fputs("    destination->store_queued_count = SparkGeneratedSaturatingAddU64(destination->store_queued_count, source->store_queued_count);\n", file);
+    fputs("}\n\n", file);
     fputs("static void SparkGeneratedMergeRuntimeSnapshot(SparkModelDriverRuntimeSnapshot *destination, const SparkModelDriverRuntimeSnapshot *source)\n{\n", file);
     fputs("    if (source->active_submission_count > destination->active_submission_count)\n    {\n        destination->active_submission_count = source->active_submission_count;\n    }\n", file);
     fputs("    if (source->available_dispatch_slot_count < destination->available_dispatch_slot_count)\n    {\n        destination->available_dispatch_slot_count = source->available_dispatch_slot_count;\n    }\n", file);
@@ -786,6 +816,8 @@ static void SparkWriteGeneratedAdmissionHelpers(FILE *file)
     fputs("    if (source->stale_admission_count > destination->stale_admission_count)\n    {\n        destination->stale_admission_count = source->stale_admission_count;\n    }\n", file);
     fputs("    if (source->private_queue_pressure > destination->private_queue_pressure)\n    {\n", file);
     fputs("        destination->private_queue_pressure = source->private_queue_pressure;\n    }\n", file);
+    fputs("    destination->degraded_flags |= source->degraded_flags;\n", file);
+    fputs("    SparkGeneratedMergeKvStoreCounters(&destination->kv_store, &source->kv_store);\n", file);
     fputs("}\n\n", file);
 }
 

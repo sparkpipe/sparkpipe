@@ -1,0 +1,48 @@
+== 2026-10-13T02:10:57Z ui_apply mimo-v2.6-flash
+controller: idle qwen3.8-max None
+swap models 15 chat models 15 styles (1, '\n') (1, '\n')
+chat entry: {"id": "mimo-v2.6-flash", "model_dir": "models/mimo-v2.6-flash", "engine": "http://127.0.0.1:8473", "context_tokens": 32768, "warm_queue": {"depth": 64, "wait_seconds": 600, "activation_url": "http://127.0.0.1:8440/activate"}, "stop_tokens": ["<|im_end|>", "<|endoftext|>", "<|mimo_audio_eod|>"], "template_defaults": {"enable_thinking": true}, "template_kwargs": ["enable_thinking"], "reasoning_effort": {"minimal": {"enable_thinking": false}, "low": {"enable_thinking": true}, "medium": {"enable_thinking": true}, "high": {"enable_thinking": true}}, "reasoning": {"start": "<think>", "end": "</think>"}, "tool_calls": {"format": "function_xml", "start": "<tool_call>", "end": "</tool_call>", "attribute_end": ">", "function_start": "<function=", "function_end": "</function>", "parameter_start": "<parameter=", "parameter_end": "</parameter>"}}
+- model_name: mimo-v2.6-flash
+  litellm_params:
+    model: hosted_vllm/mimo-v2.6-flash
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 32768
+    max_output_tokens: 32768
+backup suffix .prev-20261013T021057Z
+controller after restart: idle qwen3.8-max None 15 True
+chat :8433: 15 listed; missing []; extra []
+litellm :4000: 15 listed; missing []; extra []
+active active active 
+controller: idle qwen3.8-max None
+== 2026-10-13T02:11:14Z ui_apply mimo-v2.6-flash done
+== 2026-10-13T02:11:14Z activate mimo-v2.6-flash
+{"active": "qwen3.8-max", "state": "idle", "target": null, "wanted": "mimo-v2.6-flash", "phase": null, "swap_elapsed_s": null, "phase_elapsed_s": null, "error": null, "memory": null, "models": [{"id": "glm-5.3", "active": false}, {"id": "glm-5.3-flash", "active": false}, {"id": "kimi-k3", "active": false}, {"id": "qwen3.8-27b", "active": false}, {"id": "deepseek-v4.1-flash", "active": false}, {"id": "qwen3.8-max", "active": true}, {"id": "qwen3.8-flash", "active": false}, {"id": "gemma-4-31b", "active": false}, {"id": "gemma-4-26b-a4b", "active": false}, {"id": "ling-3.0-flash", "active": false}, {"id": "hy4-preview", "active": false}, {"id": "muse-glimmer-30b", "active": false}, {"id": "ling-3.0-flash-fin", "active": false}, {"id": "laguna-s-2.1", "active": false}, {"id": "mimo-v2.6-flash", "active": false}], "history": []}
+02:11:35 idle mimo-v2.6-flash None 18.5
+swap qwen3.8-max -> mimo-v2.6-flash ok True 18.5 s error None memory {"model": "mimo-v2.6-flash", "projected_gib": 19.8, "used_gib_max": 18.1, "used_gib_min": 17.9, "available_gib_min": 87.3, "tightest": "spark4"}
+368d7f85ce8d1e1f
+"connected_ranks":16
+== 2026-10-13T02:11:35Z smokes mimo-v2.6-flash
+chat          PASS  | finish='stop' 1.16s content='The capital of France is Paris.' reasoning=56 chars
+stream        PASS  | finish='stop' 0.65s content='The capital of France is Paris.' reasoning=56 chars
+tool          PASS  | finish='tool_calls' 3.36s content='' reasoning=44 chars
+tool_result   PASS  | finish='stop' 3.15s content='The weather in Paris right now is **sunny** with a temperature of **18°C**.' reasoning=19 chars
+reasoning_off PASS  | finish='stop' 0.33s content='391' reasoning=0 chars
+reasoning_on  PASS  | finish='stop' 0.47s content='391' reasoning=13 chars
+UI-SMOKE mimo-v2.6-flash: 6/6
+== 2026-10-13T02:11:44Z compsec17 mimo-v2.6-flash
+[ 6/17] compsec-081 uds-c                    FAIL expected='10-15' got='8,10' (6.9s, 159 tok, stop)
+"connected_ranks":16
+== 2026-10-13T02:13:25Z ui_qual mimo-v2.6-flash done
+chat check: stop 'Of course! Here is the computation and a brief explanation.\n\n**Answer:**\n37 * 43 = **1591**\n\n---\n\n### Explanation of Steps\n\nThe easiest way to do this is by breaking the numbers down using the distributive property.\n\n1.  **Break down the numbers:** Think of 43 as (40 + 3).\n2.  **Multiply by each par' usage 166
+rank log error-ish lines (UI run):   16 0
+== 2026-10-13T02:13:29Z activate qwen3.8-max
+{"active": "mimo-v2.6-flash", "state": "idle", "target": null, "wanted": "qwen3.8-max", "phase": null, "swap_elapsed_s": null, "phase_elapsed_s": null, "error": null, "memory": {"model": "mimo-v2.6-flash", "projected_gib": 19.8, "used_gib_max": 18.1, "used_gib_min": 17.9, "available_gib_min": 87.3, "tightest": "spark4"}, "models": [{"id": "glm-5.3", "active": false}, {"id": "glm-5.3-flash", "active": false}, {"id": "kimi-k3", "active": false}, {"id": "qwen3.8-27b", "active": false}, {"id": "deepseek-v4.1-flash", "active": false}, {"id": "qwen3.8-max", "active": false}, {"id": "qwen3.8-flash", "active": false}, {"id": "gemma-4-31b", "active": false}, {"id": "gemma-4-26b-a4b", "active": false}, {"id": "ling-3.0-flash", "active": false}, {"id": "hy4-preview", "active": false}, {"id": "muse-glimmer-30b", "active": false}, {"id": "ling-3.0-flash-fin", "active": false}, {"id": "laguna-s-2.1", "active": false}, {"id": "mimo-v2.6-flash", "active": true}], "history": [{"from": "qwen3.8-max", "to": "mimo-v2.6-flash", "ok": true, "seconds": 18.5, "error": null, "memory": {"model": "mimo-v2.6-flash", "projected_gib": 19.8, "used_gib_max": 18.1, "used_gib_min": 17.9, "available_gib_min": 87.3, "tightest": "spark4"}, "finished": "2026-10-13T02:11:31Z"}]}
+02:14:05 idle qwen3.8-max None 34.0
+swap mimo-v2.6-flash -> qwen3.8-max ok True 34.0 s error None memory {"model": "qwen3.8-max", "projected_gib": 88.0, "used_gib_max": 90.4, "used_gib_min": 90.3, "available_gib_min": 14.6, "tightest": "spark4"}
+== 2026-10-13T02:14:05Z reclaim check mimo lane
+  16 DROP-KV label=mimo26_flash_tp16_stage released=0 bytes=0 busy=0
+  16 RECLAIM-PACK freed=268435456 arenas=1 busy=0 resident=_ remaining_arenas=4
+final: idle qwen3.8-max None 15
+== 2026-10-13T02:14:05Z mimo_ui_run done

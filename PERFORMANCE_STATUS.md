@@ -1,209 +1,219 @@
 # SparkPipe Performance Status
 
-This file is the only current performance ledger. Measurements include exact
-scope and identity. Projections are kept in a separate section and never count
-as achieved results. A number without a committed receipt names its source.
+This file is the only current performance ledger. It states what the served
+builds measure today, how each figure is measured, and where its receipt is.
+Projections are kept in a separate section and never count as achieved
+results. A number without a committed receipt names its source. The dated
+holds behind these numbers are in
+[`docs/archive/PERFORMANCE_HISTORY_2026-10.md`](docs/archive/PERFORMANCE_HISTORY_2026-10.md)
+and [`docs/archive/PERFORMANCE_HISTORY_2026-08.md`](docs/archive/PERFORMANCE_HISTORY_2026-08.md).
 
-Measurements of deprecated models and of the residentd transport crossovers
-(DeepSeek V4 Flash TP4, GLM 5.2 TP8, 2026-08-13 to 2026-08-16) are archived in
-[`docs/archive/PERFORMANCE_HISTORY_2026-08.md`](docs/archive/PERFORMANCE_HISTORY_2026-08.md).
+All figures: sixteen DGX Spark nodes at TP16, GPU clocks capped at
+2200 MHz, current as of 2026-10-18.
 
-## Measured fabric
+## The fleet
 
-### Eight pairwise direct links
-
-On 2026-08-13 all eight direct pairs ran simultaneous traffic in both
-directions. Every pair passed the 80 Gb/s-per-direction gate.
-
-| Metric | Result |
-| --- | ---: |
-| Slowest observed direction | 91.669 Gb/s |
-| Fastest observed direction | 105.907 Gb/s |
-| Combined sixteen-direction throughput | 1.643 Tb/s |
-
-These useful rates explain why the nominal 200 Gb/s direct links behave like
-approximately 100 Gb/s links after the GB10 PCIe limit. A 100 Gb/s switched
-port therefore does not reduce practical per-port throughput.
-
-### Combined direct and switched rails
-
-The isolated TP4 two-port characterization measured:
-
-| Metric | Result |
-| --- | ---: |
-| Simultaneous two-port aggregate ceiling | 213.687 Gb/s |
-| Best sustained 14 MiB split ring | 193.018 Gb/s |
-| Ceiling utilization | 90.328% |
-
-The sustained result used two counter-rotating rings, four streams, four
-credits, and one verbs QP per route, on the residentd transport that only
-k3's runner still creates. It is an isolated transport measurement, not model
-decode throughput.
-
-### Weightd mesh all-reduce
-
-On the fleet after PR #1208 (2026-09-25), an 8 KiB 16-rank all-reduce on the
-weightd mesh took 167 µs p50, 472 µs p90, 3 ms p99 and 12 ms at most
-([`docs/GLM5_NEXT_ROOFLINE.md`](docs/GLM5_NEXT_ROOFLINE.md)). Every
-hardware-wait round crosses weightd's CPU relay twice
-([`TECHDEBT.md`](TECHDEBT.md), Mesh collectives). At the 92 all-reduces per
-GLM 5.3 Flash step used in the planning table below, the p50 alone is about
-15.4 ms per token when nothing overlaps (arithmetic). No other single cost in
-the GLM B1 step is that large.
-
-### Hub link
-
-On 2026-09-28 a busy-polled 64-byte UDP round trip between `sparkf`
-(`enP7s7`, 10.10.250.1) and the rtx5090 hub (`eno1`, 10.10.250.2) over the
-direct 10 GbE link took 22.6 µs p50 and 25.2 µs p99. From another Spark,
-routed through `sparkf`, the p50 was about 300 µs. Source: lead-dev
-measurement; no receipt is committed. A draft model hosted on the rtx5090
-would use this link.
-
-## Measured model performance
-
-### GLM 5.3 Flash TP16 B1 (2026-09-28)
-
-One request on sixteen Sparks (`spark0` to `sparkf`, TP16), greedy, no
-speculation: 128 generated tokens in 3.53 s end to end, reported as 36 tok/s
-(arithmetic: 128 / 3.53 s = 36.3). Decode ran as resident graph chains of 8
-steps at 23 to 24.5 ms per token. The TP16 memory floor for this model is
-8.0 ms per token, 125 tok/s
-([`docs/GLM5_NEXT_ROOFLINE.md`](docs/GLM5_NEXT_ROOFLINE.md)), so a step takes
-2.9 to 3.1 times the floor (arithmetic: 23 / 8.0 and 24.5 / 8.0).
-
-In context (all arithmetic):
-
-- End to end works out to 27.6 ms per token (3.53 s / 128), which also counts
-  the time spent outside the chain steps.
-- 36 tok/s is 29% of the 125 tok/s ceiling.
-- The best public 4-Spark B1 result for GLM 5.3 Flash FP8 without speculation
-  is 23.2 tok/s (lead-dev survey, 2026-09-28). 36 tok/s is 1.55 times that.
-  The TP16 target of 3 to 3.5 times it is 70-81 tok/s.
-- The 167 µs mesh all-reduce above, times 92 per step, is about 15.4 ms of a
-  23-24.5 ms step.
-
-Source: lead-dev measurement. The raw client stream is not committed; the
-next run should retain one, with three unprofiled runs.
-
-| Field | Configuration |
+| | |
 | --- | --- |
-| Model | `zai-org/GLM-5.3-Flash`, revision `84c6a6aa9497188e15a635ba793b0f95a79b1033` |
-| Runtime root | `glm53flash.fp8.tp16` |
-| Engine source | main at PR #1243 (`dd3526b`), before the i21-i30 bundles |
-| Serving environment | fleet-agent drop-in `20-serving.conf`: `G5_GRAPH_PATH=1`, `G5_PIN_EXPERTS=1` (all 12096 routed experts pinned), `SPARK_TP_WAIT_MODE=hardware`, `G5_API_DISABLED=1`, `G5_WARMUP=0` |
-| API | `g53-api` on the rtx5090 hub, port 8433, an x86 build of `dd3526b` |
+| Nodes | 16 NVIDIA DGX Spark (GB10), 128 GB unified memory each: 2 TB in all |
+| Memory bandwidth | 273 GB/s per node by specification; 243-247 GB/s measured streaming read |
+| Compute | about 210 TFLOPS FP8 and 90 TFLOPS BF16 per node (measured cuBLASLt peaks) |
+| Network | per node, one 100 Gb/s switch port and one direct link to a pair partner (7 pairs); 98-109 Gb/s useful per link |
+| Collective latency | 16-rank all-gather 16 µs; 7 KB all-reduce 33-38 µs |
+| Hub | one x86 host with an RTX 5090: API, tokenizer and the draft model |
 
-The deployment's binaries, as recorded for the COMPSEC-17 run below on the
-same day:
+The collective figures are from `mesh_round_bench` on PR #1490 (`af0cc3f8d`,
+2026-10-08); no receipt is committed.
 
-| Component | SHA-256 |
+## Core models
+
+Kimi K3, GLM 5.3 Full and GLM 5.3 Flash get the performance work.
+
+### Decode without speculation
+
+| | Kimi K3 | GLM 5.3 Full | GLM 5.3 Flash |
+| --- | ---: | ---: | ---: |
+| B1 | 16.2 tok/s | 28.9 tok/s | 55.0 tok/s |
+| B1 at long context | 15.1 tok/s at 73K | 24.1 tok/s at 197K | 46 tok/s at 71K |
+| B8, all streams | 63.7-63.9 tok/s | 73.2-74.2 tok/s | 173.7-176.1 tok/s |
+| B16, all streams | not served | not served | 225.8-227.1 tok/s |
+| Serving cap | 8 sequences | 8 sequences | 16 sequences |
+
+- B1 is one request, greedy, 256 tokens (`b1_o256`). K3 is the median of 9
+  runs on 2026-10-14
+  ([`kimi-k3.quiet-20261014.perf.jsonl`](qualification/releases/1d89e0377/kimi-k3.quiet-20261014.perf.jsonl));
+  the GLM models are medians of 3 in hold BW.
+- B8 and B16 are the aggregate rate over the window in which every stream is
+  between its first and last token (8 or 16 streams of 512 tokens, two runs
+  each; receipts in
+  [`qualification/batch-sweep-20261018/`](qualification/batch-sweep-20261018/)).
+  K3 ran with lookup on and its model drafts off: accepted drafts were at
+  most 3.1% of its tokens. The GLM models proposed no drafts.
+- Long context: K3 at 72.9K, plain decode (65-67 ms per chained step); GLM
+  5.3 Full at 197K; GLM 5.3 Flash at 71K.
+- Earlier builds ran larger batches: GLM 5.3 Flash B32 230, B64 290 and
+  B128 347 tok/s (with B64 token-identical across runs), and GLM 5.3 Full
+  B16 109-116 tok/s by step time, on the modules the common runner replaced.
+
+### Prefill
+
+| | Kimi K3 | GLM 5.3 Full | GLM 5.3 Flash |
+| --- | ---: | ---: | ---: |
+| 8K prompt | 590 tok/s | 1,162 tok/s | 876 tok/s |
+| Long prompt | 137.7K in 299 s (460 tok/s) | 197K at about 680 tok/s | 71K at 736 tok/s |
+| Of the compute floor | 3.7% | 2.8% | 0.9% |
+
+GLM 5.3 Full's 8K prefill takes 6.9 s against a network floor of about 2.9 s:
+42% of the floor that binds first at TP16.
+
+### Floors
+
+Two floors bound decode:
+
+- **The ideal memory floor:** each rank reads 1/16 of the model's active
+  weights once per token at 273 GB/s. It leaves out replication, cache and
+  state.
+- **The floor for the bytes a build reads:** the bytes per rank per token of
+  the deployed pack, counted from its kernel shapes, at the measured 243-247
+  GB/s.
+
+| | Kimi K3 | GLM 5.3 Full | GLM 5.3 Flash |
+| --- | ---: | ---: | ---: |
+| Ideal floor | 32 tok/s (8.56 GB per rank) | 109 tok/s (2.51 GB) | 243 tok/s (1.12 GB) |
+| B1 of the ideal floor | 51% | 27% | 23% |
+| Floor for the bytes read | 27.7 tok/s (8.9 GB at 247 GB/s) | about 59 tok/s (about 4.1 GB) | 94 tok/s (2.58 GB at 243 GB/s) |
+| B1 of that floor | 58% | about 50% | 59% |
+
+K3 reads within 4% of its ideal bytes. GLM 5.3 Full and Flash read 1.6-2.3
+times theirs; the difference is tensors every rank still replicates, plus
+cache and state reads. The compute floor for prefill is 16
+nodes at the format's peak over 2 FLOPs per active parameter per token:
+16,123 tok/s for K3, 41,791 for GLM 5.3 Full and 93,333 for GLM 5.3 Flash.
+
+### Speculation
+
+Two draft sources serve, and the target model verifies every draft. Lookup
+copies drafts from the request's own context by suffix match and verifies up
+to 255 of them in one frame (K3 and GLM 5.3 Full). Model drafts come from a
+DSpark block drafter on the hub's RTX 5090, fed by hidden states from five
+K3 layers, when lookup has no match of at least 8 tokens (K3).
+
+| Workload, B1 | Kimi K3 | GLM 5.3 Full |
+| --- | --- | --- |
+| Whole-file code rewrite | 15.3 → 126.4 tok/s (8.3×); best 140.6 | 27.6 → 124.2 tok/s (4.5×); 232.9 with uncapped frames, best 238.7 |
+| SEARCH/REPLACE edit | 15.0 → 28.0 tok/s (1.9×) | 27.5 → 36.0 tok/s (1.3×) |
+| Short edits, model drafts added to lookup | 1.39× per token sampled, 1.6× greedy | not ported |
+| Reasoning prose at 137.7K, model drafts added | 1.07× | not ported |
+| Prose, lookup only | 1.16× greedy, 1.0× sampled | about 1.0× |
+| Whole-file rewrite, long prompt | 76.8 tok/s at 73K, 41.8 at 337K | 105 tok/s at 46K, 86.2 at 198K |
+
+Ratios are against no speculation in the same hold, except GLM 5.3 Full's
+232.9 (baseline from an earlier hold). Speculation gains depend on the
+content: a greedy story that happens to repeat itself gains, one that does
+not runs at the plain rate. Receipts:
+[`qualification/k3/spec-long-frames-20261015/`](qualification/k3/spec-long-frames-20261015/),
+the GLM 5.3 Full speculation section of the
+[history](docs/archive/PERFORMANCE_HISTORY_2026-10.md), and
+[`qualification/batch-sweep-20261018/`](qualification/batch-sweep-20261018/).
+At B8, K3's model drafts change nothing measurable (62.5-64.8 against
+63.7-63.9 tok/s).
+
+## All served models
+
+| Served name | Context | Decode, B1 | Of ideal floor | Prefill, 7-8K prompt | COMPSEC-17 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `glm-5.3` | 256K | 28.9 tok/s | 27% | 1,162 tok/s | 15 |
+| `glm-5.3-flash` | 128K | 55.0 tok/s | 23% | 876 tok/s | 13 |
+| `kimi-k3` | 720K | 16.2 tok/s | 51% | 590 tok/s | 17 |
+| `deepseek-v4.1-flash` | 16K | 29.5 tok/s | – | 182 tok/s | 16 |
+| `mimo-v2.6-pro` | 32K | 19.0 tok/s † | – | 55 tok/s † | 17 |
+| `mimo-v2.6-flash` | 32K | 40.9 tok/s † | – | 157 tok/s † | 16 |
+| `hy4-preview` | 32K | 14.2 tok/s | 16% | 53 tok/s | 17 |
+| `gemma-4-31b` | 32K | 34.4 tok/s | 48% | 834 tok/s | 16 |
+| `gemma-4-26b-a4b` | 32K | 89.5 tok/s | 16% | 1,848 tok/s | 16 |
+| `ling-3.0-flash` | 32K | 80.4 tok/s | 19% | 1,514 tok/s | 13 |
+| `ling-3.0-flash-fin` | 32K | 79.2 tok/s | 18% | 1,550 tok/s | 13 |
+| `laguna-s-2.1` | 32K | 51.0 tok/s | – | 773 tok/s | 13 |
+| `muse-glimmer-30b` | 32K | 37.9 tok/s | 51% | 1,186 tok/s | 17 |
+| `qwen3.8-max` | 32K | 10.4 tok/s | – | 35 tok/s | 5 |
+| `qwen3.8-27b` | 256K | 57.4 tok/s | 35% | 1,852 tok/s | 14 |
+| `qwen3.8-flash` | 32K | 45.0 tok/s | – | 358 tok/s | 15 |
+
+- Non-core rows are the release `91c0e6be3` qualification on a quiet fleet
+  ([`qualification/releases/91c0e6be3/`](qualification/releases/91c0e6be3/)),
+  except DeepSeek V4.1 Flash: 29.5 tok/s and 182 tok/s prefill after its
+  shared-expert split on 2026-10-13.
+- † MiMo was measured only under a CPU tenant that kept 16 cores busy per
+  node ([`qualification/releases/1d89e0377/`](qualification/releases/1d89e0377/)),
+  so its numbers are lower bounds; that load cut K3 from 16.2 to 10.0 tok/s.
+- COMPSEC-17 is the release qualification's 17-question security set. Qwen
+  3.8 Max always thinks and ran with a 2,048-token budget.
+- No floor is shown where the split of active parameters between formats is
+  not verified (DeepSeek V4.1 Flash, the Qwen 3.8 MoE models) or not
+  computed (MiMo, Laguna). The Qwen models are internal only, by their
+  license.
+
+Ideal floors, from the active parameters each rank reads per token (K3:
+104.2B active, of which 48.6B are routed experts, per its model contract):
+
+| Model | Formats | Non-expert params | Active expert params | GB per rank per token | Ideal floor |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `glm-5.3` | FP8 | 17.5B × 1 B | 22.7B × 1 B | 2.51 | 109 tok/s |
+| `glm-5.3-flash` | FP8 | 7B × 1 B | 11B × 1 B | 1.12 | 243 tok/s |
+| `kimi-k3` | BF16 spine, MXFP4 experts | 55.6B × 2 B | 48.6B × 0.53 B | 8.56 | 32 tok/s |
+| `hy4-preview` | MXFP8 | 24B × 1.03 B | 25B × 1.03 B | 3.15 | 87 tok/s |
+| `gemma-4-31b` | BF16, dense | 30.7B × 2 B | – | 3.84 | 71 tok/s |
+| `gemma-4-26b-a4b` | BF16 | 1.9B × 2 B | 1.9B × 2 B | 0.47 | 575 tok/s |
+| `ling-3.0-flash` | BF16 | 2.6B × 2 B | 2.5B × 2 B | 0.64 | 428 tok/s |
+| `muse-glimmer-30b` | BF16, dense | 29.2B × 2 B | – | 3.65 | 75 tok/s |
+| `qwen3.8-27b` | FP8, dense | 27B × 1 B | – | 1.69 | 162 tok/s |
+
+## Accuracy
+
+- **Release gate:** every release reproduces the previous build's tokens on
+  six fixed prompts for all 16 models (last: `1d89e0377`).
+- **ds4_eval, 92 questions** (GPQA Diamond, SuperGPQA, AIME 2025, COMPSEC),
+  served by SparkPipe: Qwen 3.8 Max 82/92 and Qwen 3.8 Flash 79/92 (greedy,
+  16,000-token budget;
+  [`qualification/ds4_eval/runs/`](qualification/ds4_eval/runs/)). The core
+  models run the 92 once their prefill and decode reach 50% of roofline. For
+  reference, Kimi K3 on Kimi's own API scores 81/92 (sampled).
+- **Number formats** are accepted only by a teacher-forced A/B against a
+  same-precision floor. GLM 5.3 Flash FP8 experts against BF16: KL 0.0087,
+  96.8% top-1 agreement, no NLL change: accepted
+  ([`qualification/ab/flash-w1/REPORT.md`](qualification/ab/flash-w1/REPORT.md)).
+  K3 attention with a single bf16 probability matrix: KL 0.0042 against
+  floors of 0.0013-0.0037 and NLL change −0.0009 [−0.0046, +0.0038] nats over
+  1,713 positions up to 137K context: no measurable loss. In production
+  since 2026-10-18.
+
+## KV cache and long context
+
+| | |
 | --- | --- |
-| residentd | `0afa3721f377e980b431d394ad544f198a839f18257ef9101d0e232f01feebaa` |
-| `model_driver.so` | `0e15456abc55f1f8b0ec7f71995909f473cecf1a6d93841f470d6070da2f14f2` |
-| serving adapter (ranks) | `90209fb4c8ba439ff6f7724e45b0d15647794bacaa9c6f795c1fbf760ca60125` |
-| `hidden_transport.so` | `538aa5b1aed7a4270427425a25020a710ecc29d46fc9b11f24842f7367cef8f5` |
-| weightd (prefix, `core/WEIGHTSD_BIN`) | `3da98597a88b60b5` |
-| fleet agent (prefix) | `a05e207588da2cef` |
-| API (x86) | `2acff5135b69411aa5eb20e4f4e50c0a29717203b4a39026d6ea751abbb598b4` |
-| API serving adapter (x86) | `e0dac318cb8bef804f41766c738906e3378bdc064c39108463dd468bf11abbdc` |
-| `tokenizer.json` | `19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d` |
-| rank 0 pack | `318dd18ad18dc748181f22687be2a482c53f76d13c23c3056895128fa550ac80` |
-| `20-serving.conf` (prefix) | `8324336487eecc38` |
+| Sharding | each node holds 1/16 of a sequence's MLA latent, split by context |
+| K3 window | 737,280 tokens on a 1.36 GB KV pool per node; measured end to end to 337K |
+| Pages | lanes share one physical page pool; pages beyond it park on NVMe |
+| K3 follow-up turn, cached prefix | 4.7-5.1 s at 137.7K (299-316 s cold); 8.0 s for 1,872 new tokens at 337K (982 s cold) |
+| Prefix restored after a model swap | 137,600 tokens in 2.7 s |
+| Short chat turn, cached | 0.3-0.9 s (6.6 s cold) |
 
-Known-bad configuration: earlier the same day the fleet ran eager chains with
-spin wait and unpinned experts at 5.9 tok/s B1 (lead-dev measurement). The
-configuration lives only in the untracked drop-in
-([`TECHDEBT.md`](TECHDEBT.md), Production qualification). The previous B1
-figure, 27.6 to 29.8 tok/s after PR #1208 (2026-09-25), is in
-[`docs/GLM5_NEXT_ROOFLINE.md`](docs/GLM5_NEXT_ROOFLINE.md).
+Limits today: K3's recurrent-state store fills after about 977 checkpointed
+requests in one conversation, after which the request fails, and the
+snapshot store's chain links grow with the square of the chain length.
 
-### GLM 5.3 Flash TP16 COMPSEC-17 (2026-09-28)
+## How the numbers are measured
 
-The functional receipt for the deployment above: 14 of 17, the pass
-threshold. The harness is `tools/glm5_next_compsec17.py --thinking off`: GLM
-chat template with an empty think block, temperature 0, 512 tokens, one
-request at a time, graded by `qualification/ds4_eval/compare_runs.py` on the
-last `Answer:` line. compsec-079, compsec-080 and compsec-090 were wrong. The
-completions were byte-identical to an eager, spin-wait run earlier the same
-day. Earlier harness runs without the chat template scored 0/17 on the same
-model; they measured the harness, not the model.
-
-Sent concurrently four times (`--concurrency 17`), the runs scored 13 or 14
-and each differed from the sequential completions in one or two cases:
-batched serving is not batch-invariant ([`TECHDEBT.md`](TECHDEBT.md),
-Dynamic batching).
-
-| Receipt | SHA-256 |
-| --- | --- |
-| [`REPORT.md`](qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff/REPORT.md) | protocol, identities and the concurrent runs |
-| [`summary.json`](qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff/summary.json) | `4f575d33afa48aca860b5bc6d9566985a63df7b4f8878d21072883cccc168485` |
-| response stream ([`INTEGRITY.json`](qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff/INTEGRITY.json)) | `e60c1a6a68abd18bf1ca8e6f5dbd116a2c4f3a8c07f3fe20af4814493f4ed512` |
-
-### GLM 5.3 Flash TP16 B8 8-stream aggregate (2026-09-26 / 2026-09-27)
-
-Scope: sixteen Spark nodes (spark0-f, MESH0005) serving the i17 stack
-(`glm-serving-b108de0c` driver, station core c0d54638, B8 profile, 128-row
-prefill); API host rtx5090. Load: 8 concurrent streams, reference prompt,
-512 output tokens per stream, greedy, four consecutive whole-station sweeps
-per session.
-
-| Session | Sweep tok/s | Best |
-| --- | --- | ---: |
-| 2026-09-26, #1228 qualification | 114.8 / 126.3 / 125.6 / 129.9 | 129.9 |
-| 2026-09-27, after full-station restart | 120.7 / 125.8 / 120.3 / 125.3 | 125.8 |
-
-The 2026-09-26 session is receipted in the #1228 thread (summarized outputs;
-identical load and stack). The 2026-09-27 session re-ran the same load after a
-full station restart and is committed below. Its rank-0 window shows zero
-`LINEAR-CHAIN-FAILED`, `MESH-DEFERRED-ROUNDS-FAILED` or `GRAPH-FAILED`; one
-interval recorded transient `busy[CHAIN]` retries (235) during ramp that
-self-recovered within the window — the persistent-freeze wedge under
-investigation on #1229 is a separate issue and did not occur here.
-
-| Receipt | SHA-256 |
-| --- | --- |
-| [client-8stream-sweeps.txt](qualification/glm5next/performance/tp16_b8_20260927/client-8stream-sweeps.txt) | 8f78436bc4734dd1f3f6d49ea67dd9c9283d7e75acbfd3c8b7b23b050bb223bd |
-| [rank0-wave-window.log](qualification/glm5next/performance/tp16_b8_20260927/rank0-wave-window.log) | dcb332ecc624198ffc52f202c6521fa4466192230f9d67e346addf4a0d2b76f3 |
-
-### Earlier points carried over from the performance ledger
-
-These rows were folded in from
-[`docs/archive/PERFORMANCE_LEDGER.md`](docs/archive/PERFORMANCE_LEDGER.md)
-when it was archived on 2026-09-28. Only rows with a measurement identity
-are kept. Its projections, status notes and the retracted Qwen 3.8 27B batch
-curve are left out.
-
-| Model | Cell | Result | Identity | Date |
-| --- | --- | ---: | --- | --- |
-| Qwen 3.8 27B FP8 | TP1 B1, DFlash2 k=8, 512 output tokens | 24.5 tok/s wall | merged main; stream `d7f798801a6e43a6`, 77 rounds, E≈5.66 | 2026-08-28 |
-| Qwen 3.8 27B FP8 | TP1 B1, no speculation, 512 output tokens | 7.7 tok/s | merged main; stream `5d6ee525deb999f5` | 2026-08-28 |
-| Qwen 3.8 27B | TP1 B1, no speculation, high-water mark | 8.03 tok/s | mixed/FP8 29.9 GB pack; dashboard reading | 2026-08-28 |
-| Qwen 3.8 Max FP8 | TP4 x PP4, B1 per request | 1.29 tok/s | measured anchors | 2026-08 |
-| K3 MXFP4 | warm B1 step of stage 0 (24 layers) of a TP4 rank pack, one Spark | 55.5 ms per stage step | [`docs/K3_PERF.md`](docs/K3_PERF.md) | 2026-08-16 |
-| DSV4 Flash FP8 | TP4 B1, 128 output tokens, main plus PR #731 | 40.46 / 40.35 / 40.19 tok/s | exact token hash `211462f2…` | 2026-08-28 |
-| DSV4 Flash FP8 | TP4 B1, exact 32K cell, lean branch | 29.37 tok/s | ledger scoreboard only | 2026-08-28 |
-
-No Qwen 3.8 27B point has a frozen qualification bundle; the ledger kept
-only the stream hashes. The DSV4 rows exist only as ledger scoreboard
-entries, with no committed receipt. K3's only measured point is that one
-stage step, not a fleet run. The 18.0 tok/s TP4xPP4 pipelined rate and about
-4.5 tok/s for one sequence through four stages are arithmetic from it, and the
-20.6 tok/s roofline is calculated ([`docs/K3_PERF.md`](docs/K3_PERF.md)).
-
-Public comparables are other stacks' numbers, graded as their authors
-announced them. None of them is a SparkPipe measurement:
-
-| Stack | Point | Speculation | Grading |
-| --- | ---: | --- | --- |
-| gb10-vllm v5-prd, K3, 16 Sparks, TP16+DCP8 | C1 29.81 tok/s | DSpark nst6 | announced |
-| gb10-vllm v5-prd, K3, llama tg2048 | 23.59 t/s at depth 4000 | none | announced |
-| Best public GLM 5.3 Flash FP8, 4 Sparks, B1 | 23.2 tok/s | none | lead-dev survey, 2026-09-28 |
-
-The ledger's K3 row of 29.0 tok/s, which claimed to supersede SparkPipe's
-18.0, was the gb10-vllm author's speculative result
-([`docs/K3_VS_GB10_VLLM.md`](docs/K3_VS_GB10_VLLM.md)). It is not a SparkPipe
-number.
+- Tool: [`tools/api_serving_perf.py`](tools/api_serving_perf.py) against each
+  model's engine endpoint. `b1_o256`: one greedy request, 256 tokens,
+  decode rate after the first token. `ttft6000`: one cold prompt of about
+  7,400 tokens, prompt tokens over time to first token. `streamsNxM`: N
+  concurrent requests of M tokens, aggregate over the window in which every
+  stream is decoding.
+- Holds: one exclusive fleet lock per measurement, quiet fleet, arms
+  interleaved, the KV snapshot tier wiped between arms of an A/B. B1 varies
+  5-10% between holds, so ratios come from one hold.
+- Speculation is always reported separately from plain decode, per workload.
 
 ## Planning projections
 
@@ -234,21 +244,15 @@ all-reduces, plus 0.5 ms of host work:
 
 | Streams | Bytes per rank | Kernels | All-reduces | Step | Projected tok/s | Per stream | Ceiling | Measured |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 2.18 GB | 10.7 ms | 3.2 ms | 14.4 ms | 70 | 70 | 125 | 36 |
-| 8 | 5.6 GB | 27.4 ms | 5.4 ms | 33.3 ms | 240 | 30 | 390 | 129.9 |
+| 1 | 2.18 GB | 10.7 ms | 3.2 ms | 14.4 ms | 70 | 70 | 125 | 55.0 |
+| 8 | 5.6 GB | 27.4 ms | 5.4 ms | 33.3 ms | 240 | 30 | 390 | 174-176 |
 | 64 | 18.6 GB | 90.8 ms | 11.4 ms | 102.7 ms | 623 | 9.7 | 940 | - |
 | 128 | 22.3 GB | 108.9 ms | 18.1 ms | 127.5 ms | 1,004 | 7.8 | 1,560 | - |
 | 256 | 25.1 GB | 122.6 ms | 31.6 ms | 154.7 ms | 1,655 | 6.5 | 2,780 | - |
 
 The bytes and the ceiling are from the batch roofline in
-`docs/GLM5_NEXT_ROOFLINE.md`. The measured B1 value is the 2026-09-28 run
-above: `dd3526b` engines with `G5_GRAPH_PATH=1`, `G5_PIN_EXPERTS=1` and
-`SPARK_TP_WAIT_MODE=hardware`, 36 tok/s at 23 to 24.5 ms per step of 8-step
-graph chains. Before that the fleet measured 27.6-29.8 tok/s after PR #1208
-(2026-09-25). The measured B8 value is the 8-stream load reported with #1228
-(2026-09-26), receipted only in the PR thread; the committed re-run's best is
-125.8 tok/s. The current breakdown is "Where it stands" in
-[`docs/GLM5_NEXT_ROOFLINE.md`](docs/GLM5_NEXT_ROOFLINE.md).
+`docs/GLM5_NEXT_ROOFLINE.md`. The measured column is the current build
+(hold BW, 2026-10-18, below); B16 measures 226-227 tok/s.
 
 At 70% or 80% of bandwidth the projections move by about 5% either way: 66 to
 73 tok/s at B1, and 1,570 to 1,740 at B256. The M1 and M2 exit criteria in

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # R3 flash-decode exact-cell, glm52 TP8 fleet (lane-r3flashdecode). Runs ON
 # spark8; drives the eight glm52.tp8.fp8 ranks on spark8..sparkf (the fleet
-# band, ranks 0..7 per tools/glm52_gen_deployment.py). Self-contained and
+# band, ranks 0..7). Self-contained and
 # idempotent: distributes the lane's published b1 driver + serving adapter,
 # re-stages the per-rank runtime roots (packs stay in place - each rank
 # reads its own sparkdata packs dir through a symlink), runs the O128 decode

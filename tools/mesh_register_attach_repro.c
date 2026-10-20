@@ -1,21 +1,3 @@
-/* Attach-then-register reproduction for the a7 MESH-REGISTER-FAIL EINVAL.
- *
- * Replicates the resident's exact sequence against the SHARED weightd:
- *   1. SparkWeightdClientConnect + SparkWeightdClientAttachLazy (the same
- *      call weightd_warm makes; the daemon stages the mesh memfd and the
- *      client maps it at an aligned fixed window),
- *   2. cudaHostRegister(mesh_send_buffer_addr, SPARK_WEIGHTD_MESH_REGION_BYTES,
- *      cudaHostRegisterPortable | cudaHostRegisterMapped) - the exact call
- *      ring/transport/tp_device_collective.c:2061 makes in
- *      SparkTpDeviceCollectivePrepareReceiveBf16.
- *
- * A fresh-memfd control (tools/mesh_register_repro.c) registers cleanly under
- * the same queue cgroup, so an EINVAL here isolates the trigger to the
- * attach-provided mapping itself.
- *
- * usage: mesh_register_attach_repro SOCKET PACK SHA256 REVISION TOPOLOGY
- * env:   SPARK_WEIGHTD_EXPERT_POOL_BYTES (finite), SPARK_WEIGHTD_SPINE_BUDGET_BYTES
- */
 #define _POSIX_C_SOURCE 200809L
 #include "sparkpipe/spark_ck128.h"
 #include "sparkpipe/spark_weightd.h"

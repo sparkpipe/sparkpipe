@@ -26,6 +26,10 @@ SparkStatus SparkModelContinuationLeaseDecodePosition(
 	uint64_t context_token_count,
 	uint32_t tokens_per_sequence,
 	uint64_t *next_sequence_position);
+SparkStatus SparkModelContinuationLeaseVerifyPosition(
+	uint64_t sequence_position,
+	uint32_t kept_token_count,
+	uint64_t *next_sequence_position);
 SparkStatus SparkModelContinuationLeaseValidate(
 	const SparkModelContinuationLease *lease,
 	uint64_t client_generation,

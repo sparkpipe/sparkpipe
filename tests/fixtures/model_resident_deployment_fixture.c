@@ -82,9 +82,13 @@ static int32_t TestModelResidentWriteNode(
 	if ( status == 0 && fputs(",\"kv_backing_directory\":",stream) == EOF )
 		status = -5;
 	if ( status == 0 )
-		status = fixture->kv_backing_directory != 0 ?
-			TestModelResidentWriteText(stream,fixture->kv_backing_directory) :
-			(fputs("null",stream) == EOF ? -6 : 0);
+		status = TestModelResidentWriteText(stream,fixture->kv_backing_directory != 0 ?
+			fixture->kv_backing_directory : fixture->runtime_roots[rank]);
+	if ( status == 0 && fputs(",\"kv_partition\":",stream) == EOF )
+		status = -6;
+	if ( status == 0 )
+		status = TestModelResidentWriteText(stream,fixture->kv_partition != 0 ? fixture->kv_partition :
+			fixture->kv_backing_directory != 0 ? fixture->kv_backing_directory : fixture->runtime_roots[rank]);
 	if ( status == 0 && fprintf(stream,
 		",\"kv_backing_maximum_bytes\":%llu,\"control_endpoint\":",
 		(unsigned long long)fixture->kv_backing_maximum_bytes) < 0 )
@@ -102,7 +106,7 @@ static int32_t TestModelResidentWriteBody(
 {
 	int32_t status;
 	uint32_t rank;
-	status = fprintf(stream,"{\"schema_version\":2,\"eos_token_ids\":[0],\"coordinator_rank_index\":%u,\"adapter\":{\"shared_object_path\":",fixture->coordinator_rank_index) < 0 ? -1 : 0;
+	status = fprintf(stream,"{\"schema_version\":2,\"eos_token_ids\":[%u],\"coordinator_rank_index\":%u,\"adapter\":{\"shared_object_path\":",fixture->eos_token_id,fixture->coordinator_rank_index) < 0 ? -1 : 0;
 	if ( status == 0 )
 		status = TestModelResidentWriteText(stream,fixture->adapter_shared_object_path);
 	if ( status == 0 && fputs("},\"driver\":{\"shared_object_path\":",stream) == EOF )
@@ -141,6 +145,17 @@ static int32_t TestModelResidentWriteBody(
 			status = -9;
 		if ( status == 0 )
 			status = TestModelResidentWriteText(stream,fixture->tokenizer_asset_sha256);
+		if ( status == 0 && fixture->tokenizer_text_prompt_prefix_count != 0u )
+		{
+			uint32_t index;
+			if ( fputs(",\"text_prompt_prefix_token_ids\":[",stream) == EOF )
+				status = -9;
+			for ( index = 0u; status == 0 && index < fixture->tokenizer_text_prompt_prefix_count; index++ )
+				if ( fprintf(stream,"%s%u",index != 0u ? "," : "",fixture->tokenizer_text_prompt_prefix_ids[index]) < 0 )
+					status = -9;
+			if ( status == 0 && fputc(']',stream) == EOF )
+				status = -9;
+		}
 		if ( status == 0 && fputc('}',stream) == EOF )
 			status = -10;
 	}

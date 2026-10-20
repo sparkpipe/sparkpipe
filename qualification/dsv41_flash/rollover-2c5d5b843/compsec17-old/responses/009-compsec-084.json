@@ -1,0 +1,62 @@
+{
+ "id": "compsec-084",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "deepseek-v4.1-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nOn this target, plain char is signed, and the ctype implementation indexes a table for values other than EOF.\n\nCode:\n```c\n 1: static size_t decode_component(char *s, size_t len)\n 2: {\n 3:     size_t r = 0, w = 0;\n 4: \n 5:     while (r < len) {\n 6:         if (s[r] == '%' && r + 2 < len &&\n 7:             isxdigit(s[r + 1]) && isxdigit(s[r + 2])) {\n 8:             s[w++] = hexpair(s[r + 1], s[r + 2]);\n 9:             r += 3;\n10:         } else {\n11:             s[w++] = s[r++];\n12:         }\n13:     }\n14:     return w;\n15: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "448ea3cfbd026aa8368aa48adc0a4fb7cdab94d64ef3a6b0bcde1c4e18b7db5e"
+ },
+ "response": {
+  "id": "chatcmpl-476593f46fba4062be0b9263d460401f",
+  "created": 1791725640,
+  "model": "deepseek-v4.1-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability here is due to the use of `isxdigit` with a `char` argument that may be negative (since plain `char` is signed on this target). The ctype functions expect an `int` that is either `EOF` or representable as `unsigned char`. Passing a negative value (other than `EOF`) is undefined behavior and can cause out-of-bounds table access.\n\nThe problematic lines are:\n\n- Line 6: `s[r] == '%'` \u2014 not the issue directly.\n- Line 7: `isxdigit(s[r + 1]) && isxdigit(s[r + 2])` \u2014 this is where the signed char is passed to `isxdigit`.\n\nThe bug is introduced at **line 7**, because that's where the unsafe ctype call happens.\n\nAnswer: 7",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 172,
+   "prompt_tokens": 300,
+   "total_tokens": 472,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability here is due to the use of `isxdigit` with a `char` argument that may be negative (since plain `char` is signed on this target). The ctype functions expect an `int` that is either `EOF` or representable as `unsigned char`. Passing a negative value (other than `EOF`) is undefined behavior and can cause out-of-bounds table access.\n\nThe problematic lines are:\n\n- Line 6: `s[r] == '%'` \u2014 not the issue directly.\n- Line 7: `isxdigit(s[r + 1]) && isxdigit(s[r + 2])` \u2014 this is where the signed char is passed to `isxdigit`.\n\nThe bug is introduced at **line 7**, because that's where the unsafe ctype call happens.\n\nAnswer: 7",
+ "grade": {
+  "index": 9,
+  "id": "compsec-084",
+  "source": "COMPSEC",
+  "domain": "PHP",
+  "expected": "6-7",
+  "extracted": "7",
+  "passed": true,
+  "elapsed_ms": 22561.2,
+  "output_sha256": "6e5601c92646c4d2d8da3b187b55b000e328859cff2b21e4a9b9a77e1cd8799c",
+  "prompt_token_count": 300,
+  "generated_token_count": 172,
+  "reasoning_chars": 0,
+  "content_chars": 637,
+  "status": "stop"
+ }
+}

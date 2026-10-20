@@ -1,0 +1,12 @@
+[Unit]
+Description=Hub listener for the sparks' CX-7 DMA guard events
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/spark-dma-guard/spark_dma_guard.py listen --port 5514 --log %h/spark-dma-guard/events.log
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

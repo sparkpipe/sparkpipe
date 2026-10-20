@@ -1,0 +1,12 @@
+{
+  "id": "glm-5.3-flash-tp16",
+  "kv_label": "glm53_flash_stage",
+  "node_memory_bytes": 34359738368,
+  "node_reclaim": "$HOME/stage-lanes/glm53_flash/lane0/root/lane.sh reclaim",
+  "node_start": "$HOME/stage-lanes/glm53_flash/lane0/root/lane.sh start {run_id}",
+  "node_ready": "$HOME/stage-lanes/glm53_flash/lane0/root/lane.sh ready {run_id}",
+  "node_stop": "$HOME/stage-lanes/glm53_flash/lane0/root/lane.sh stop",
+  "api_start": "systemctl --user reset-failed kv-glm53-flash-api 2>/dev/null; systemctl --user is-active -q kv-glm53-flash-api || systemd-run --user --unit=kv-glm53-flash-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/glm53_flash-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/glm53_flash-kv-api/runtime --port 8476 >> api.log 2>&1' >/dev/null",
+  "api_stop": "systemctl --user stop kv-glm53-flash-api 2>/dev/null; systemctl --user reset-failed kv-glm53-flash-api 2>/dev/null; true",
+  "health": "http://127.0.0.1:8476/health"
+}

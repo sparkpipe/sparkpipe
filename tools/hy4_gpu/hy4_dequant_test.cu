@@ -1,11 +1,3 @@
-// hy4 lane: GPU dequant bitwise verification for the remaining weight
-// classes (Q4_K/Q5_K/Q6_K/IQ4_XS/IQ1_M/IQ2_XXS/IQ3_XXS) against the CPU
-// vendor header on real blocks from a node-local rank pack.
-//
-// Usage: hy4_dequant_test <rank.gguf>
-// Prints one PASS/FAIL line per class found in the pack and a final
-// DEQUANT_ALL verdict. Exactness policy: GPU floats must be BITWISE equal
-// to the CPU vendor dequant (no reductions -> deterministic; -fmad=false).
 #include <cstdio>
 #include <cstring>
 #include <cstdint>

@@ -1,0 +1,368 @@
+{
+ "format": "sparkpipe-ui-smoke-v1",
+ "generated_at": "2026-10-11T08:22:38+0000",
+ "endpoint": "http://127.0.0.1:4000",
+ "model": "deepseek-v4.1-flash",
+ "passed": 6,
+ "total": 6,
+ "results": [
+  {
+   "check": "chat",
+   "request": {
+    "model": "deepseek-v4.1-flash",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-006bfd8fd2734ffa8187737f30906aa9",
+     "created": 1791706925,
+     "model": "deepseek-v4.1-flash",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The capital of France is Paris.",
+        "role": "assistant",
+        "reasoning_content": "We need answer one sentence. Capital of France is Paris. Need comply."
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 23,
+      "prompt_tokens": 42,
+      "total_tokens": 65,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "The capital of France is Paris.",
+    "reasoning": "We need answer one sentence. Capital of France is Paris. Need comply.",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 3.02
+   },
+   "problems": []
+  },
+  {
+   "check": "stream",
+   "request": {
+    "model": "deepseek-v4.1-flash",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "content": "The capital of France is Paris.",
+    "reasoning": "We need answer one sentence. Capital of France is Paris. Need comply.",
+    "tool_calls": [],
+    "finish": "stop",
+    "chunks": 7,
+    "elapsed_s": 3.0
+   },
+   "problems": []
+  },
+  {
+   "check": "tool",
+   "request": {
+    "model": "deepseek-v4.1-flash",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-7c5d0186b8a14e9da98ed2735bfe75fd",
+     "created": 1791706946,
+     "model": "deepseek-v4.1-flash",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "tool_calls",
+       "index": 0,
+       "message": {
+        "content": "I'll check that for you.\n\n",
+        "role": "assistant",
+        "tool_calls": [
+         {
+          "function": {
+           "arguments": "{\"location\": \"Paris\", \"unit\": \"celsius\"}",
+           "name": "get_weather"
+          },
+          "id": "call_602a92f655054dc78a1956c7",
+          "type": "function"
+         }
+        ],
+        "reasoning_content": "The user wants the weather in Paris. I should call get_weather. Unit isn't specified \u2014 I'll pick celsius (or maybe fahrenheit). Let me just call with celsius.\n\nActually, should I ask about units? The user didn't specify. I'll just default to celsius and mention it."
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 123,
+      "prompt_tokens": 331,
+      "total_tokens": 454,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "I'll check that for you.\n\n",
+    "reasoning": "The user wants the weather in Paris. I should call get_weather. Unit isn't specified \u2014 I'll pick celsius (or maybe fahrenheit). Let me just call with celsius.\n\nActually, should I ask about units? The user didn't specify. I'll just default to celsius and mention it.",
+    "tool_calls": [
+     {
+      "function": {
+       "arguments": "{\"location\": \"Paris\", \"unit\": \"celsius\"}",
+       "name": "get_weather"
+      },
+      "id": "call_602a92f655054dc78a1956c7",
+      "type": "function"
+     }
+    ],
+    "finish": "tool_calls",
+    "elapsed_s": 18.56
+   },
+   "problems": []
+  },
+  {
+   "check": "tool_result",
+   "request": {
+    "model": "deepseek-v4.1-flash",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     },
+     {
+      "role": "assistant",
+      "content": "I'll check that for you.\n\n",
+      "tool_calls": [
+       {
+        "function": {
+         "arguments": "{\"location\": \"Paris\", \"unit\": \"celsius\"}",
+         "name": "get_weather"
+        },
+        "id": "call_602a92f655054dc78a1956c7",
+        "type": "function"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_602a92f655054dc78a1956c7",
+      "content": "{\"location\": \"Paris\", \"temperature_c\": 18, \"condition\": \"sunny\"}"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-0cbdce1cd7be44fd8e106ed54d530b5e",
+     "created": 1791706954,
+     "model": "deepseek-v4.1-flash",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "Right now in Paris it's **18\u00b0C and sunny** \u2600\ufe0f\n\nLet me know if you'd like the temperature in Fahrenheit or the weather for another city.",
+        "role": "assistant",
+        "reasoning_content": "The tool returned the weather. Report it."
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 45,
+      "prompt_tokens": 425,
+      "total_tokens": 470,
+      "prompt_tokens_details": {
+       "cached_tokens": 256
+      }
+     }
+    },
+    "content": "Right now in Paris it's **18\u00b0C and sunny** \u2600\ufe0f\n\nLet me know if you'd like the temperature in Fahrenheit or the weather for another city.",
+    "reasoning": "The tool returned the weather. Report it.",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 7.68
+   },
+   "problems": []
+  },
+  {
+   "check": "reasoning_off",
+   "request": {
+    "model": "deepseek-v4.1-flash",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "minimal"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-c12e7bf6cae543ac896ff07ba0da09d2",
+     "created": 1791706955,
+     "model": "deepseek-v4.1-flash",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "391",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 1,
+      "prompt_tokens": 18,
+      "total_tokens": 19,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "391",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 1.11
+   },
+   "problems": []
+  },
+  {
+   "check": "reasoning_on",
+   "request": {
+    "model": "deepseek-v4.1-flash",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "high"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-0cc7346529a1444bbfd5c29cd87cf32c",
+     "created": 1791706958,
+     "model": "deepseek-v4.1-flash",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "391",
+        "role": "assistant",
+        "reasoning_content": "We need answer just number. 17*23=391. Must only number."
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 19,
+      "prompt_tokens": 44,
+      "total_tokens": 63,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "391",
+    "reasoning": "We need answer just number. 17*23=391. Must only number.",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 2.98
+   },
+   "problems": []
+  }
+ ]
+}

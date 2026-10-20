@@ -1,0 +1,2 @@
++51
+Mesh contracts: a shared release/DEBUG refusal for a zero collective identifier and for TP_STANDALONE at TP>1 (with the module build putting standalone builds under -DDEBUG and refusing to publish them), the coherence-attribute requirement and per-mapping registration record for the unregistered mesh path, an attach-time route-capability requirement with routes fixed at attach, MESH-PATH logging per regime and capture, and per-run rank logs with an archive step in the GLM Full lane tool; minus five no-op exports.

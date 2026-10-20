@@ -1,0 +1,62 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "laguna-s-2.1",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "fe05d510c465ad4aab5a19a53d9e698159e8c58d98346f84c717911dab2c7bea"
+ },
+ "response": {
+  "id": "chatcmpl-034435fad85742eea277ed51357dd319",
+  "created": 1791770630,
+  "model": "laguna-s-2.1",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function attempts to handle out-of-order segments by tracking the last processed segment number (`last`) and growing the `segments` array to accommodate gaps. However, the logic for computing `missing` and growing the array is flawed when segments arrive out of order.\n\n**Key issue:**  \nOn line 9, `missing = segno - last - 1` assumes segments arrive in ascending order. If a segment with a lower number arrives after a higher-numbered segment (e.g., `segno=2` after `last=5`), `missing` becomes negative. On line 10, `a->segments.grow(a->segments.size() + missing)` then attempts to shrink the array (since `missing` is negative), which is undefined behavior or ignored depending on the `grow` implementation. This leaves the array size unchanged, but line 11 (`a->segments[segno] = ...`) writes to an index that may exceed the array's current size, causing a buffer overflow.\n\n**Example scenario:**  \n1. First segment: `segno=5`, `last=-1`. `missing = 5 - (-1) - 1 = 5`. Array grows to size 6. `a->segments[5]` is valid. `last=5`.\n2. Second segment: `segno=2`, `last=5`. `missing = 2 - 5 - 1 = -4`. `grow(size + (-4))` shrinks the array (or does nothing). `a->segments[2]` is now out of bounds if the array was shrunk below size 3.\n\nThe primary bug is introduced on **line 10**, where the array is improperly resized based on a potentially negative `missing` value, leading to an out-of-bounds write on line 11.\n\nAnswer: 10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 385,
+   "prompt_tokens": 376,
+   "total_tokens": 761,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function attempts to handle out-of-order segments by tracking the last processed segment number (`last`) and growing the `segments` array to accommodate gaps. However, the logic for computing `missing` and growing the array is flawed when segments arrive out of order.\n\n**Key issue:**  \nOn line 9, `missing = segno - last - 1` assumes segments arrive in ascending order. If a segment with a lower number arrives after a higher-numbered segment (e.g., `segno=2` after `last=5`), `missing` becomes negative. On line 10, `a->segments.grow(a->segments.size() + missing)` then attempts to shrink the array (since `missing` is negative), which is undefined behavior or ignored depending on the `grow` implementation. This leaves the array size unchanged, but line 11 (`a->segments[segno] = ...`) writes to an index that may exceed the array's current size, causing a buffer overflow.\n\n**Example scenario:**  \n1. First segment: `segno=5`, `last=-1`. `missing = 5 - (-1) - 1 = 5`. Array grows to size 6. `a->segments[5]` is valid. `last=5`.\n2. Second segment: `segno=2`, `last=5`. `missing = 2 - 5 - 1 = -4`. `grow(size + (-4))` shrinks the array (or does nothing). `a->segments[2]` is now out of bounds if the array was shrunk below size 3.\n\nThe primary bug is introduced on **line 10**, where the array is improperly resized based on a potentially negative `missing` value, leading to an out-of-bounds write on line 11.\n\nAnswer: 10",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 8927.5,
+  "output_sha256": "76e35850bc27422b823f61439cc79b4ecd90d78276e8a6e38b9baf6603be7388",
+  "prompt_token_count": 376,
+  "generated_token_count": 385,
+  "reasoning_chars": 0,
+  "content_chars": 1429,
+  "status": "stop"
+ }
+}

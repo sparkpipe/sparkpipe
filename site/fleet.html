@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SparkPipe Fleet</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<style>
+:root {
+  --bg: #f6f5f2; --card: #ffffff; --ink: #1b1a17; --muted: #6b6860; --line: #e2dfd8;
+  --accent: #ff5b1f; --danger: #d6261c; --danger-ink: #ffffff; --ok: #1f8a4c; --wait: #b8760b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0d0c; --card: #171715; --ink: #ecebe6; --muted: #9a978e; --line: #2a2926;
+    --accent: #ff6a33; --danger: #e5372c; --danger-ink: #ffffff; --ok: #3fbf74; --wait: #e0a33a;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d0d0c; --card: #171715; --ink: #ecebe6; --muted: #9a978e; --line: #2a2926;
+  --accent: #ff6a33; --danger: #e5372c; --danger-ink: #ffffff; --ok: #3fbf74; --wait: #e0a33a;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+h1 { font-size: 20px; margin: 0; display: flex; align-items: center; gap: 10px; }
+h1 img { width: 28px; height: 28px; border-radius: 7px; }
+a { color: var(--accent); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+.label { color: var(--muted); font-size: 13px; margin-bottom: 4px; }
+.big { font-size: 22px; font-weight: 600; }
+.state { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); }
+.dot.wait { background: var(--wait); animation: pulse 1.2s ease-in-out infinite; }
+.dot.bad { background: var(--danger); }
+@keyframes pulse { 50% { opacity: .35; } }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+.meter { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 8px; }
+.meter > div { height: 100%; background: var(--wait); width: 0; transition: width .5s; }
+button.danger { background: var(--danger); color: var(--danger-ink); border: 0; border-radius: 10px; padding: 12px 18px; font-size: 16px; font-weight: 700; cursor: pointer; }
+button.danger:disabled { opacity: .35; cursor: not-allowed; }
+select { font: inherit; padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); max-width: 100%; }
+.note { color: var(--muted); font-size: 13px; margin-top: 8px; }
+.msg { margin-top: 10px; font-size: 14px; min-height: 1.5em; }
+ul { margin: 0; padding-left: 18px; }
+li { margin: 2px 0; }
+.mono { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1><img src="/static/favicon.png" alt="">SparkPipe fleet</h1>
+    <a href="/">Back to chat</a>
+  </header>
+
+  <section class="card">
+    <div class="label">Loaded on the fleet</div>
+    <div class="big" id="active">…</div>
+    <div class="row"><span class="state"><span class="dot" id="dot"></span><span id="state">Checking</span></span></div>
+    <div id="drain" hidden>
+      <div class="note" id="drainText"></div>
+      <div class="meter"><div id="drainBar"></div></div>
+    </div>
+    <div class="note" id="waiting"></div>
+  </section>
+
+  <section class="card" id="admin" hidden>
+    <div class="label">Admin</div>
+    <div class="row">
+      <button class="danger" id="switchNow" disabled>Switch now</button>
+    </div>
+    <div class="note">Stops waiting for the current reply and switches at once. A reply still running on the old model is cut off.</div>
+    <div class="row">
+      <select id="pick" aria-label="Model to load"></select>
+      <button class="danger" id="loadNow">Load now</button>
+    </div>
+    <div class="msg" id="msg" role="status"></div>
+  </section>
+
+  <section class="card" id="login" hidden>
+    <div class="note">Log in to SparkPipe Chat as the admin to switch models from here.</div>
+  </section>
+
+  <section class="card">
+    <div class="label">Recent switches</div>
+    <ul id="history"><li class="note">None yet</li></ul>
+  </section>
+</main>
+<script>
+const token = (() => { try { return localStorage.getItem("token"); } catch (e) { return null; } })();
+const auth = token ? { Authorization: "Bearer " + token } : {};
+let names = {};
+let status = null;
+
+const $ = id => document.getElementById(id);
+const name = id => (id && names[id]) || id || "nothing";
+
+async function loadIdentity() {
+  if (!token) { $("login").hidden = false; return; }
+  try {
+    const me = await fetch("/api/v1/auths/", { headers: auth }).then(r => r.ok ? r.json() : null);
+    const models = await fetch("/api/models", { headers: auth }).then(r => r.ok ? r.json() : { data: [] });
+    for (const m of models.data || []) names[m.id] = m.name || m.id;
+    if (me && me.role === "admin") {
+      $("admin").hidden = false;
+      const pick = $("pick");
+      pick.innerHTML = "";
+      for (const m of models.data || []) {
+        const option = document.createElement("option");
+        option.value = m.id;
+        option.textContent = m.name || m.id;
+        pick.appendChild(option);
+      }
+    } else {
+      $("login").hidden = false;
+    }
+  } catch (e) {
+    $("login").hidden = false;
+  }
+}
+
+function render() {
+  if (!status) return;
+  $("active").textContent = name(status.active);
+  const dot = $("dot");
+  const draining = status.draining;
+  let text = "Ready";
+  dot.className = "dot";
+  if (status.state === "swapping") {
+    dot.className = "dot wait";
+    text = draining
+      ? "Switching to " + name(status.target) + " after the current reply"
+      : "Loading " + name(status.target) + " (" + (status.phase || "starting") + ", " + Math.round(status.swap_elapsed_s || 0) + " s)";
+  } else if (status.state === "failed") {
+    dot.className = "dot bad";
+    text = "Last switch failed: " + (status.error || "unknown error");
+  }
+  $("state").textContent = text;
+  $("drain").hidden = !draining;
+  if (draining) {
+    const live = draining.live_requests;
+    $("drainText").textContent = (live ? live + (live === 1 ? " reply" : " replies") + " still running on " + name(draining.model) : name(draining.model) + " is idle, confirming") +
+      ". Waited " + Math.round(draining.waited_s) + " s of at most " + Math.round(draining.limit_s / 60) + " min; switches after " +
+      Math.round(draining.quiet_needed_s) + " s with nothing running (" + Math.round(draining.quiet_s) + " s so far).";
+    $("drainBar").style.width = Math.min(100, 100 * draining.waited_s / draining.limit_s) + "%";
+  }
+  const waiting = Object.entries(status.waiting || {});
+  $("waiting").textContent = waiting.length ? "Waiting: " + waiting.map(([id, n]) => n + " for " + name(id)).join(", ") : "";
+  $("switchNow").disabled = !(status.state === "swapping" && draining);
+  const history = (status.history || []).slice(-5).reverse();
+  $("history").innerHTML = "";
+  if (!history.length) $("history").innerHTML = '<li class="note">None yet</li>';
+  for (const h of history) {
+    const li = document.createElement("li");
+    li.className = "mono";
+    li.textContent = (h.finished || "").replace("T", " ").replace("Z", " UTC") + ": " + name(h.from) + " to " + name(h.to) + ", " +
+      Math.round(h.seconds) + " s" + (h.forced ? ", forced" : "") + (h.ok ? "" : ", failed: " + (h.error || ""));
+    $("history").appendChild(li);
+  }
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/fleet/status", { cache: "no-store" });
+    if (r.ok) { status = await r.json(); render(); }
+    else $("state").textContent = "Fleet status unavailable (" + r.status + ")";
+  } catch (e) {
+    $("state").textContent = "Fleet status unavailable";
+  }
+}
+
+async function force(body, label) {
+  $("msg").textContent = label + "…";
+  try {
+    const r = await fetch("/fleet/switch-now", { method: "POST", headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const reply = await r.json().catch(() => ({}));
+    $("msg").textContent = r.ok ? label + ": done, the fleet is switching." : label + " refused: " + ((reply.error && reply.error.message) || reply.error || r.status);
+  } catch (e) {
+    $("msg").textContent = label + " failed: " + e;
+  }
+  poll();
+}
+
+$("switchNow").addEventListener("click", () => {
+  if (confirm("Switch now? A reply still running on " + name(status && status.draining && status.draining.model) + " will be cut off.")) force({}, "Switch now");
+});
+$("loadNow").addEventListener("click", () => {
+  const id = $("pick").value;
+  if (id && confirm("Load " + name(id) + " now? Any reply still running on " + name(status && status.active) + " will be cut off.")) force({ model: id }, "Load " + name(id));
+});
+
+loadIdentity().then(poll);
+setInterval(poll, 2000);
+</script>
+</body>
+</html>

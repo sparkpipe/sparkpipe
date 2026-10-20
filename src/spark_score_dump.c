@@ -45,7 +45,8 @@ SparkStatus SparkScoreDumpKeysInitialize(SparkScoreDumpKeys *keys, uint32_t slot
 	memset(keys, 0, sizeof(*keys));
 	keys->keys = (uint64_t *)calloc((size_t)slot_count * position_count, sizeof(uint64_t));
 	keys->known = (uint32_t *)calloc(slot_count, sizeof(uint32_t));
-	if ( keys->keys == 0 || keys->known == 0 )
+	keys->sequences = (uint64_t *)calloc(slot_count, sizeof(uint64_t));
+	if ( keys->keys == 0 || keys->known == 0 || keys->sequences == 0 )
 	{
 		SparkScoreDumpKeysDestroy(keys);
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -61,10 +62,11 @@ void SparkScoreDumpKeysDestroy(SparkScoreDumpKeys *keys)
 		return;
 	free(keys->keys);
 	free(keys->known);
+	free(keys->sequences);
 	memset(keys, 0, sizeof(*keys));
 }
 
-uint32_t SparkScoreDumpKeysAdvance(SparkScoreDumpKeys *keys, uint32_t slot, uint32_t position, uint32_t token, uint64_t *key)
+uint32_t SparkScoreDumpKeysAdvance(SparkScoreDumpKeys *keys, uint32_t slot, uint64_t sequence_id, uint32_t position, uint32_t token, uint64_t *key)
 {
 	uint64_t previous;
 	uint64_t *row;
@@ -73,15 +75,17 @@ uint32_t SparkScoreDumpKeysAdvance(SparkScoreDumpKeys *keys, uint32_t slot, uint
 	row = keys->keys + (uint64_t)slot * keys->position_count;
 	if ( position == 0u )
 		previous = SPARK_SCORE_DUMP_KEY_SEED;
-	else if ( position <= keys->known[slot] )
+	else if ( position <= keys->known[slot] && keys->sequences[slot] == sequence_id )
 		previous = row[position - 1u];
 	else
 	{
 		keys->known[slot] = 0u;
+		keys->sequences[slot] = sequence_id;
 		return(0u);
 	}
 	row[position] = SparkScoreDumpKeyNext(previous, token);
 	keys->known[slot] = position + 1u;
+	keys->sequences[slot] = sequence_id;
 	*key = row[position];
 	return(1u);
 }

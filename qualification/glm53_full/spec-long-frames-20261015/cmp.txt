@@ -1,0 +1,16 @@
+CMP S1 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP S1 exact 8/8
+CMP S1 NOLP-DIFF 2/4
+CMP S2 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP S2 exact 8/8
+CMP S2 NOLP-DIFF 2/4
+CMP N2 long_8k tokens=equal n=128/128 logprobs_bit_identical=True served_dlp_median=0 max=0
+CMP N2 exact 8/8
+CMP N2 NOLP-EXACT 4/4
+STREAMS S1 identical 13/20 editfull_06@793/793 editfull_09@3203/3204 editsr_01@35/61 editsr_02@224/225 editsr_05@34/1228 editsr_08@19/107 editsr_09@12/1261
+STREAMS S2 identical 13/20 editfull_06@793/793 editfull_09@3203/3204 editsr_01@35/61 editsr_02@224/225 editsr_05@34/1228 editsr_08@19/107 editsr_09@12/1261
+STREAMS N2 identical 20/20 
+SPEED N1 editfull tokens=15825 decode_s=573.9 tok_s=27.57 ttft_s=16.2 editsr tokens=3378 decode_s=122.6 tok_s=27.54 ttft_s=3.3
+SPEED S1 editfull tokens=15826 decode_s=127.4 tok_s=124.21 ttft_s=16.2 editsr tokens=6183 decode_s=171.8 tok_s=35.98 ttft_s=3.3
+SPEED S2 editfull tokens=15826 decode_s=127.6 tok_s=123.99 ttft_s=16.2 editsr tokens=6183 decode_s=172.0 tok_s=35.96 ttft_s=3.3
+SPEED N2 editfull tokens=15825 decode_s=574.7 tok_s=27.53 ttft_s=16.2 editsr tokens=3378 decode_s=122.8 tok_s=27.50 ttft_s=3.3

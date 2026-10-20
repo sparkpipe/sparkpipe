@@ -1,0 +1,62 @@
+{
+ "id": "compsec-085",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "mimo-v2.6-pro",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe database driver receives a language string token as (ptr,len), where len may include embedded NUL bytes. The function reconstructs a quoted SQL token.\n\nCode:\n```c\n1: static void append_quoted_token(char *sql, size_t sql_cap,\n2:                                 const char *tok, size_t tok_len)\n3: {\n4:     strlcat(sql, \"'\", sql_cap);\n5:     strncat(sql, tok, tok_len);\n6:     strlcat(sql, \"'\", sql_cap);\n7: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "77967a952fb6ed0856f239c74bcb18c0047992dd3061cb5a01725efd8c5a94a4"
+ },
+ "response": {
+  "id": "chatcmpl-3837c6df6d544616a23579d9ab62b227",
+  "created": 1791868736,
+  "model": "mimo-v2.6-pro",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Looking at this function:\n\n1. **Line 5** uses `strncat(sql, tok, tok_len)`. `strncat`'s third argument is the maximum number of bytes to copy from the source, but `strncat` **stops at the first NUL byte** in the source. Since `tok_len` may include embedded NUL bytes (as stated in the assumptions), `strncat` will truncate the token at the first embedded NUL, producing an incorrect (shortened) SQL token. This is a correctness/security bug (SQL injection risk via truncation, or malformed query).\n\n2. Additionally, `strncat` does not respect `sql_cap` as a total buffer size \u2014 it appends up to `tok_len` bytes regardless of remaining space in `sql`, causing a potential buffer overflow. `strncat`'s size parameter limits source bytes copied, not destination capacity. This is a classic misuse of `strncat` leading to a heap/stack buffer overflow.\n\nBoth issues stem from line 5's use of `strncat` with `tok_len` as the limit and no bound on `sql_cap` remaining space.\n\nAnswer: 5",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 249,
+   "prompt_tokens": 222,
+   "total_tokens": 471,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Looking at this function:\n\n1. **Line 5** uses `strncat(sql, tok, tok_len)`. `strncat`'s third argument is the maximum number of bytes to copy from the source, but `strncat` **stops at the first NUL byte** in the source. Since `tok_len` may include embedded NUL bytes (as stated in the assumptions), `strncat` will truncate the token at the first embedded NUL, producing an incorrect (shortened) SQL token. This is a correctness/security bug (SQL injection risk via truncation, or malformed query).\n\n2. Additionally, `strncat` does not respect `sql_cap` as a total buffer size \u2014 it appends up to `tok_len` bytes regardless of remaining space in `sql`, causing a potential buffer overflow. `strncat`'s size parameter limits source bytes copied, not destination capacity. This is a classic misuse of `strncat` leading to a heap/stack buffer overflow.\n\nBoth issues stem from line 5's use of `strncat` with `tok_len` as the limit and no bound on `sql_cap` remaining space.\n\nAnswer: 5",
+ "grade": {
+  "index": 10,
+  "id": "compsec-085",
+  "source": "COMPSEC",
+  "domain": "PHP PDO Firebird",
+  "expected": "5",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 17747.0,
+  "output_sha256": "255a505cd27918c0eeb9cd76f0e315c339230f384171ee7751f50aa6f14605f5",
+  "prompt_token_count": 222,
+  "generated_token_count": 249,
+  "reasoning_chars": 0,
+  "content_chars": 978,
+  "status": "stop"
+ }
+}

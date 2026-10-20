@@ -1,0 +1,2 @@
+690d63a12c4f70ea6c8e85118cb11531b10d5a83c03b4b2728add630711e8ac4
+{"status":"ok","served":0,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}

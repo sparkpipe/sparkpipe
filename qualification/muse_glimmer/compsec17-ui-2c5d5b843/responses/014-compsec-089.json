@@ -1,0 +1,63 @@
+{
+ "id": "compsec-089",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "muse-glimmer-30b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe public multipart CCM API lets the caller request a tag length.\n\nCode:\n```c\n 1: static int ccm_finish_reduced(struct CcmCtx *ctx, uint8_t *tag, size_t tag_len)\n 2: {\n 3:     uint8_t full_tag[16];\n 4: \n 5:     ccm_compute_full_tag(ctx, full_tag);\n 6: \n 7:     if (tag == NULL)\n 8:         return -1;\n 9: \n10:     memcpy(tag, full_tag, tag_len);\n11:     return 0;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "d8c8f6749e919a82319c89d477a626541ffd53c5d5380eed0aa5c7ae23d6d4e4"
+ },
+ "response": {
+  "id": "chatcmpl-35c888ed4f5940c2b88ed43060887a66",
+  "created": 1791717019,
+  "model": "muse-glimmer-30b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Answer: 10",
+     "role": "assistant",
+     "reasoning_content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode:\n1 static int...\n...\n10 memcpy(tag, full_tag, tag_len);\n\nBug? tag_len can be >16? memcpy from full_tag of size 16 with tag_len maybe larger -> read out of bounds. Also tag may be too small. No check tag_len <=16. Also tag_len could be zero? memcpy ok.\n\nPrimary bug introduced at line 10? Or at function signature? The bug is missing validation of tag_len. The line where bug manifests is memcpy. Could be line 10.\n\nAlso if tag is NULL checked after compute? But fine.\n\nReturn 0 if safe. Not safe.\n\nAnswer: 10\n\nIf small group adjacent lines: maybe 7-10? But primary bug is memcpy without bounds check. Line 10.\n\nReturn Answer: 10"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 203,
+   "prompt_tokens": 286,
+   "total_tokens": 489,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode:\n1 static int...\n...\n10 memcpy(tag, full_tag, tag_len);\n\nBug? tag_len can be >16? memcpy from full_tag of size 16 with tag_len maybe larger -> read out of bounds. Also tag may be too small. No check tag_len <=16. Also tag_len could be zero? memcpy ok.\n\nPrimary bug introduced at line 10? Or at function signature? The bug is missing validation of tag_len. The line where bug manifests is memcpy. Could be line 10.\n\nAlso if tag is NULL checked after compute? But fine.\n\nReturn 0 if safe. Not safe.\n\nAnswer: 10\n\nIf small group adjacent lines: maybe 7-10? But primary bug is memcpy without bounds check. Line 10.\n\nReturn Answer: 10</think>Answer: 10",
+ "grade": {
+  "index": 14,
+  "id": "compsec-089",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 6062.1,
+  "output_sha256": "2ddb2c10215cc5b6677ecadebf26bc6df4c55a6fd178bd4693bdacd9c33cc83b",
+  "prompt_token_count": 286,
+  "generated_token_count": 203,
+  "reasoning_chars": 782,
+  "content_chars": 10,
+  "status": "stop"
+ }
+}

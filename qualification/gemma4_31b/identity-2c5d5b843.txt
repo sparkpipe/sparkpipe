@@ -1,0 +1,104 @@
+release2 identity 2026-10-11T11:02:47Z, firmware fw-2c5d5b843, hub API ~/api-build-2c5d5b843/build, swap id gemma-4-31b
+swap entry vs generated: IDENTICAL
+api_pid 1087116
+615cf6d74841f2c11  /proc/1087116/exe
+615cf6d74841f2c11  /home/spec/api-build-2c5d5b843/build/sparkpipe_model_api
+c3f4641b8bcae4e65  /home/spec/gemma4_31b-kv-api/runtime/lib/libgemma4_31b_tp16_serving_adapter.so
+c3f4641b8bcae4e65  /home/spec/api-build-2c5d5b843/build/libgemma4_31b_tp16_serving_adapter.so
+{"status":"ok","served":0,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+spark0 9dbda0c6c01d9c17 9dbda0c6c01d9c17
+spark1 9dbda0c6c01d9c17 9dbda0c6c01d9c17
+spark2 9dbda0c6c01d9c17 9dbda0c6c01d9c17
+spark3 9dbda0c6c01d9c17 9dbda0c6c01d9c17
+spark4 9dbda0c6c01d9c17 9dbda0c6c01d9c17
+spark5 9dbda0c6c01d9c17 9dbda0c6c01d9c17
+spark6 9dbda0c6c01d9c17 9dbda0c6c01d9c17
+spark7 9dbda0c6c01d9c17 9dbda0c6c01d9c17
+spark8 9dbda0c6c01d9c17 9dbda0c6c01d9c17
+spark9 9dbda0c6c01d9c17 9dbda0c6c01d9c17
+sparka 9dbda0c6c01d9c17 9dbda0c6c01d9c17
+sparkb 9dbda0c6c01d9c17 9dbda0c6c01d9c17
+sparkc 9dbda0c6c01d9c17 9dbda0c6c01d9c17
+sparkd 9dbda0c6c01d9c17 9dbda0c6c01d9c17
+sparke 9dbda0c6c01d9c17 9dbda0c6c01d9c17
+sparkf 9dbda0c6c01d9c17 9dbda0c6c01d9c17
+fw 9dbda0c6c01d9c17
+{"status":"ok","served":4,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+
+## run log (setup, swap entry, activation, capture comparisons, smokes, COMPSEC, reclaim check)
+== 2026-10-11T11:02:27Z gemma-4-31b precheck
+controller: idle qwen3.8-max None
+== 2026-10-11T11:02:28Z setup
+rtx5090:gemma4_31b-kv-api ready (tokenizer b5a7b6b3508a56324312737509f38f001ef8f54f728aaf54e054e9de0d022914); swap controller entry in ./gemma4_31b.swap_entry.json
+swap entry vs generated: IDENTICAL
+== 2026-10-11T11:02:32Z activate gemma-4-31b
+11:02:47 idle gemma-4-31b None 14.1
+node adapter sha:   16 9dbda0c6c01d9c17
+"connected_ranks":16
+== 2026-10-11T11:02:48Z capture
+code 40 
+story 40 
+-- vs capture-2aa246576 (truncating mesh SUM):
+   capital: IDENTICAL 8 tokens, logprobs differ
+   arith: IDENTICAL 40 tokens, logprobs differ
+   code: IDENTICAL 40 tokens, logprobs differ
+   story: IDENTICAL 40 tokens, logprobs differ
+   IDENTITY 4/4 identical
+-- vs numerics RNE capture gemma4_31b-capture-8546591f7.json:
+   capital: IDENTICAL 8 tokens, logprobs identical
+   arith: IDENTICAL 40 tokens, logprobs identical
+   code: IDENTICAL 40 tokens, logprobs identical
+   story: IDENTICAL 40 tokens, logprobs identical
+   IDENTITY 4/4 identical
+== 2026-10-11T11:02:54Z smokes
+chat          PASS  | finish='stop' 0.34s content='The capital of France is Paris.' reasoning=0 chars
+stream        PASS  | finish='stop' 0.32s content='The capital of France is Paris.' reasoning=0 chars
+tool          PASS  | finish='tool_calls' 0.67s content='' reasoning=0 chars
+tool_result   PASS  | finish='stop' 0.92s content='The weather in Paris is currently sunny with a temperature of 18°C.' reasoning=0 chars
+reasoning_off PASS  | finish='stop' 0.31s content='391' reasoning=0 chars
+reasoning_on  PASS  | finish='stop' 2.71s content='391' reasoning=152 chars
+UI-SMOKE gemma-4-31b: 6/6
+== 2026-10-11T11:03:00Z compsec17
+[17/17] compsec-092 Linux kernel AppArmor    FAIL expected='10-14' got='9-12' (6.4s, 178 tok, stop)
+"connected_ranks":16
+rank log lines with error|fail|fault|abort|AER: 16
+== 2026-10-11T11:04:50Z restore qwen3.8-max
+11:05:25 idle qwen3.8-max None 32.3
+== 2026-10-11T11:05:25Z reclaim check
+  16 DROP-KV label=gemma4_31b_stage released=0 bytes=0 busy=0
+  16 RECLAIM-PACK freed=268435456 arenas=1 busy=0 resident=_ remaining_arenas=2
+== 2026-10-11T11:05:26Z done gemma-4-31b
+
+## rank logs (error|fail|fault|abort grep; dmesg is not readable for the user on the sparks)
+spark0 logs/residentd-20261011T110240Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark1 logs/residentd-20261011T110240Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark2 logs/residentd-20261011T110240Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark3 logs/residentd-20261011T110240Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark4 logs/residentd-20261011T110240Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark5 logs/residentd-20261011T110240Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark6 logs/residentd-20261011T110240Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark7 logs/residentd-20261011T110240Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark8 logs/residentd-20261011T110240Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark9 logs/residentd-20261011T110240Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparka logs/residentd-20261011T110240Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkb logs/residentd-20261011T110240Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkc logs/residentd-20261011T110240Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkd logs/residentd-20261011T110240Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparke logs/residentd-20261011T110240Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkf logs/residentd-20261011T110240Z.log
+dmesg: read kernel buffer failed: Operation not permitted

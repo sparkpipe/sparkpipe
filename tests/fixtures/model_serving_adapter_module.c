@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_serving_adapter.h"
@@ -15,7 +16,9 @@
 	(TEST_MODEL_SERVING_TRANSPORT_CAPABILITIES | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN | \
-	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE)
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS)
 #if defined(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE)
 #define TEST_MODEL_SERVING_ADAPTER_ID "test.model.serving.adapter.without-prefix-reuse.v1"
 #define TEST_MODEL_SERVING_CAPABILITIES \
@@ -29,22 +32,45 @@
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE)
 #define TEST_MODEL_SERVING_SPECULATIVE_TOKEN_COUNT 2u
+#elif defined(TEST_MODEL_SERVING_SPECULATIVE_VERIFY)
+#define TEST_MODEL_SERVING_ADAPTER_ID "test.model.serving.adapter.speculative-verify.v1"
+#define TEST_MODEL_SERVING_CAPABILITIES \
+	(TEST_MODEL_SERVING_DEFAULT_CAPABILITIES | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY)
+#define TEST_MODEL_SERVING_SPECULATIVE_TOKEN_COUNT 6u
+#define TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT 16u
+#elif defined(TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY)
+#define TEST_MODEL_SERVING_ADAPTER_ID "test.model.serving.adapter.speculative-long-verify.v1"
+#define TEST_MODEL_SERVING_CAPABILITIES \
+	(TEST_MODEL_SERVING_DEFAULT_CAPABILITIES | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY)
+#define TEST_MODEL_SERVING_SPECULATIVE_TOKEN_COUNT 255u
+#define TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT 64u
+#elif defined(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS)
+#define TEST_MODEL_SERVING_ADAPTER_ID "test.model.serving.adapter.recurrent-checkpoints.v1"
+#define TEST_MODEL_SERVING_CAPABILITIES \
+	(TEST_MODEL_SERVING_DEFAULT_CAPABILITIES | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION)
+#define TEST_MODEL_SERVING_SPECULATIVE_TOKEN_COUNT 2u
+#define TEST_MODEL_SERVING_CACHE_CHECKPOINT_TOKEN_COUNT 12u
 #elif defined(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_CHECKPOINTS)
 #define TEST_MODEL_SERVING_ADAPTER_ID "test.model.serving.adapter.speculative-deferred.v1"
 #define TEST_MODEL_SERVING_CAPABILITIES \
 	(TEST_MODEL_SERVING_DEFAULT_CAPABILITIES | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION)
 #define TEST_MODEL_SERVING_SPECULATIVE_TOKEN_COUNT 2u
-#elif defined(TEST_MODEL_SERVING_MULTI_BLOCK_PREFILL)
-#define TEST_MODEL_SERVING_ADAPTER_ID "test.model.serving.adapter.multi-block-prefill.v1"
-#define TEST_MODEL_SERVING_CAPABILITIES \
-	(TEST_MODEL_SERVING_DEFAULT_CAPABILITIES | \
-	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_MULTI_BLOCK_PREFILL)
-#define TEST_MODEL_SERVING_SPECULATIVE_TOKEN_COUNT 0u
 #else
 #define TEST_MODEL_SERVING_ADAPTER_ID "test.model.serving.adapter.v1"
 #define TEST_MODEL_SERVING_CAPABILITIES TEST_MODEL_SERVING_DEFAULT_CAPABILITIES
 #define TEST_MODEL_SERVING_SPECULATIVE_TOKEN_COUNT 0u
+#endif
+#ifndef TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT
+#define TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT 4u
+#endif
+#ifndef TEST_MODEL_SERVING_CACHE_CHECKPOINT_TOKEN_COUNT
+#define TEST_MODEL_SERVING_CACHE_CHECKPOINT_TOKEN_COUNT 0u
 #endif
 
 typedef struct TestModelServingPrepared
@@ -115,7 +141,9 @@ static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
 	.boundary_sideband_kinds = {1u,0u,0u},
 	.boundary_sideband_bytes_per_sequence = {16u,0u,0u},
 	.minimum_efficient_submission_row_count = 16u,
-	.cache_block_token_count = 4u
+	.cache_block_token_count = TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT,
+	.cache_checkpoint_token_count = TEST_MODEL_SERVING_CACHE_CHECKPOINT_TOKEN_COUNT,
+	.max_verify_row_count = (TEST_MODEL_SERVING_CAPABILITIES & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) != 0u ? 256u : 0u
 };
 
 static SparkStatus TestModelServingValidateConfiguration(
@@ -232,7 +260,7 @@ static SparkStatus TestModelServingValidateSubmission(
 		return(SPARK_STATUS_OK);
 	if ( submission->model_extension_kind == 98u && submission->model_extension_bytes == 1u )
 		return(SPARK_STATUS_OK);
-	if ( (submission->model_extension_kind == 93u || submission->model_extension_kind == 94u || submission->model_extension_kind == 95u || submission->model_extension_kind == 96u) && submission->model_extension_bytes == 1u )
+	if ( (submission->model_extension_kind == 87u || submission->model_extension_kind == 89u || submission->model_extension_kind == 93u || submission->model_extension_kind == 94u || submission->model_extension_kind == 95u || submission->model_extension_kind == 96u) && submission->model_extension_bytes == 1u )
 		return(SPARK_STATUS_OK);
 	if ( submission->model_extension_bytes != 0u || submission->model_extension_kind != 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
@@ -263,7 +291,7 @@ static void TestModelServingBuildCompletion(
 	completion->service_time_ns = (uint64_t)(state->stage_index + 1u) * 10u;
 	completion->device_memcpy_bytes = (uint64_t)(state->stage_index + 1u) * 100u;
 	completion->host_staging_bytes = (uint64_t)(state->stage_index + 1u) * 1000u;
-	if ( submission->model_extension_kind == 96u )
+	if ( submission->model_extension_kind == 96u || (submission->model_extension_kind == 87u && state->stage_index == 0u) )
 		completion->status = SPARK_STATUS_IO_ERROR;
 	if ( submission->model_extension_kind == 94u || submission->model_extension_kind == 95u )
 		completion->host_staging_bytes = state->submitted_count;
@@ -273,6 +301,28 @@ static void TestModelServingBuildCompletion(
 	completion->tokens_per_sequence = submission->tokens_per_sequence;
 	completion->token_count = submission->active_sequence_count *
 		submission->tokens_per_sequence;
+	if ( (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
+	{
+		uint32_t row,output,rows_seen[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT],kept[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
+		uint32_t previous[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
+		memset(rows_seen,0,sizeof(rows_seen));
+		for (token_index=0u; token_index<completion->token_count; token_index++)
+			completion->token_ids[token_index] = SPARK_MODEL_SERVING_NO_TOKEN;
+		for (row=0u; row<submission->row_count; row++)
+		{
+			lane = submission->row_lane_indices[row];
+			if ( rows_seen[lane] == 0u )
+				kept[lane] = 1u;
+			else if ( kept[lane] == rows_seen[lane] && previous[lane] == submission->token_ids[row] )
+				kept[lane]++;
+			output = 4200u + lane + rows_seen[lane];
+			if ( rows_seen[lane] < kept[lane] )
+				completion->token_ids[lane * submission->tokens_per_sequence + rows_seen[lane]] = output;
+			previous[lane] = output;
+			rows_seen[lane]++;
+		}
+		return;
+	}
 	for (lane=0u; lane<submission->active_sequence_count; lane++)
 		for (step=0u; step<submission->tokens_per_sequence; step++)
 		{
@@ -283,6 +333,16 @@ static void TestModelServingBuildCompletion(
 				(submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ?
 				 4203u : 4200u) + lane + step + (submission->lanes[lane].sampling.inverse_temperature != 0.0f ? (uint32_t)((submission->lanes[lane].sampling.seed + submission->lanes[lane].sequence_position + step) % 3u) : 0u) : 0u;
 		}
+	for (lane=0u; lane<submission->active_sequence_count; lane++)
+		if ( submission->lanes[lane].sampling.logprobs > completion->logprob_stride )
+			completion->logprob_stride = submission->lanes[lane].sampling.logprobs;
+	completion->logprob_entry_count = completion->token_count * completion->logprob_stride;
+	for (token_index=0u; token_index<completion->logprob_entry_count; token_index++)
+	{
+		step = token_index % completion->logprob_stride;
+		completion->logprobs[token_index].token = step == 0u ? completion->token_ids[token_index / completion->logprob_stride] : 1000u + step;
+		completion->logprobs[token_index].logprob = -0.25f * (float)(step + 1u);
+	}
 }
 
 static uint32_t TestModelServingPreparedIdentityMatches(
@@ -444,12 +504,17 @@ static SparkStatus TestModelServingResolvePrefetch(
 			state->prepared[index].submission_id == submission->submission_id )
 			break;
 	if ( index == sizeof(state->prepared) / sizeof(state->prepared[0]) ||
-		state->prepared[index].committed != 0u ||
+		(state->prepared[index].committed != 0u && resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) ||
 		TestModelServingPreparedIdentityMatches(&state->prepared[index],
 			submission) == 0u )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	if ( resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT && submission->model_extension_kind == 93u && state->stage_index == 1u )
+	if ( resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT && (submission->model_extension_kind == 93u || submission->model_extension_kind == 89u) && state->stage_index == 1u )
 		return(SPARK_STATUS_IO_ERROR);
+	if ( resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT && submission->model_extension_kind == 89u && state->stage_index == 1u )
+	{
+		memset(&state->prepared[index],0,sizeof(state->prepared[index]));
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	}
 	if ( resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT )
 		state->prepared[index].committed = 1u;
 	else
@@ -523,6 +588,9 @@ static SparkStatus TestModelServingSnapshot(
 	snapshot->submitted_count = state->submitted_count;
 	snapshot->completed_count = state->completed_count;
 	snapshot->rejected_count = state->rejected_count;
+	snapshot->max_sequence_positions = UINT32_C(1) << 20;
+	if ( getenv("SPARK_TEST_ADAPTER_DEGRADED_FILE") != 0 && access(getenv("SPARK_TEST_ADAPTER_DEGRADED_FILE"),F_OK) == 0 )
+		snapshot->degraded_flags = SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH;
 	return(SPARK_STATUS_OK);
 }
 

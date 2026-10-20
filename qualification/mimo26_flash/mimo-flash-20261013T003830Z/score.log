@@ -1,0 +1,54 @@
+layer 0 full done in 6.3s
+layer 1 swa done in 98.3s
+layer 2 swa done in 103.8s
+layer 3 swa done in 119.3s
+layer 4 swa done in 105.8s
+layer 5 full done in 116.2s
+layer 6 swa done in 117.1s
+layer 7 swa done in 109.6s
+layer 8 swa done in 102.7s
+layer 9 swa done in 97.7s
+layer 10 swa done in 102.4s
+layer 11 full done in 89.4s
+layer 12 swa done in 89.9s
+layer 13 swa done in 89.7s
+layer 14 swa done in 88.5s
+layer 15 swa done in 99.5s
+layer 16 swa done in 98.2s
+layer 17 full done in 98.0s
+layer 18 swa done in 104.1s
+layer 19 swa done in 96.9s
+layer 20 swa done in 89.5s
+layer 21 swa done in 90.3s
+layer 22 swa done in 94.3s
+layer 23 full done in 84.5s
+layer 24 swa done in 88.9s
+layer 25 swa done in 86.6s
+layer 26 swa done in 78.6s
+layer 27 swa done in 85.6s
+layer 28 swa done in 79.2s
+layer 29 full done in 94.5s
+layer 30 swa done in 92.6s
+layer 31 swa done in 96.5s
+layer 32 swa done in 82.1s
+layer 33 swa done in 86.7s
+layer 34 swa done in 83.9s
+layer 35 full done in 85.9s
+layer 36 swa done in 89.8s
+layer 37 swa done in 98.9s
+layer 38 swa done in 85.7s
+layer 39 swa done in 94.0s
+layer 40 swa done in 87.5s
+layer 41 full done in 86.7s
+layer 42 swa done in 87.1s
+layer 43 swa done in 77.2s
+/home/spec/mimo-agent/tools/mimo26_reference.py:223: RuntimeWarning: overflow encountered in exp
+  return bf16(bf16(gate / (np.float32(1.0) + np.exp(-gate))) * up)
+layer 44 swa done in 91.7s
+layer 45 swa done in 86.7s
+layer 46 swa done in 85.5s
+layer 47 full done in 88.5s
+capital: 8/8 top-1 agree, 0 mismatches outside ties (margin < 0.5), served logprob delta median None max None
+arith: 64/64 top-1 agree, 0 mismatches outside ties (margin < 0.5), served logprob delta median None max None
+code: 63/64 top-1 agree, 0 mismatches outside ties (margin < 0.5), served logprob delta median None max None
+story: 61/64 top-1 agree, 0 mismatches outside ties (margin < 0.5), served logprob delta median None max None

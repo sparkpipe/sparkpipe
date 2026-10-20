@@ -1,0 +1,63 @@
+{
+ "id": "compsec-089",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe public multipart CCM API lets the caller request a tag length.\n\nCode:\n```c\n 1: static int ccm_finish_reduced(struct CcmCtx *ctx, uint8_t *tag, size_t tag_len)\n 2: {\n 3:     uint8_t full_tag[16];\n 4: \n 5:     ccm_compute_full_tag(ctx, full_tag);\n 6: \n 7:     if (tag == NULL)\n 8:         return -1;\n 9: \n10:     memcpy(tag, full_tag, tag_len);\n11:     return 0;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "8fa1475d507d43c77626436c9196199227d5ca6a8b5518d866f1fd2babad4969"
+ },
+ "response": {
+  "id": "chatcmpl-061bdc01550243f5a4405ec7b98bb004",
+  "created": 1791731018,
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The bug: `tag_len` is never validated against the 16-byte `full_tag` buffer. A caller requesting a tag length larger than 16 causes `memcpy` to read past `full_tag` and write past `tag` (buffer overflow). The NULL check on `tag` is present, but no bound check on `tag_len` exists before the copy.\n\nAnswer: 10",
+     "role": "assistant",
+     "reasoning_content": "tag_len unvalidated \u2192 overflow."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 88,
+   "prompt_tokens": 245,
+   "total_tokens": 333,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>tag_len unvalidated \u2192 overflow.</think>The bug: `tag_len` is never validated against the 16-byte `full_tag` buffer. A caller requesting a tag length larger than 16 causes `memcpy` to read past `full_tag` and write past `tag` (buffer overflow). The NULL check on `tag` is present, but no bound check on `tag_len` exists before the copy.\n\nAnswer: 10",
+ "grade": {
+  "index": 14,
+  "id": "compsec-089",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 2283.8,
+  "output_sha256": "393833bb30eb759cdf7e3714f07f9ade92c8752028a82f9fb50c90daf4ccf012",
+  "prompt_token_count": 245,
+  "generated_token_count": 88,
+  "reasoning_chars": 31,
+  "content_chars": 308,
+  "status": "stop"
+ }
+}

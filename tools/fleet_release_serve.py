@@ -11,6 +11,10 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT, **kwargs)
 
+    def setup(self):
+        super().setup()
+        self.request.settimeout(30)
+
     def end_headers(self):
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
@@ -19,9 +23,9 @@ class Handler(SimpleHTTPRequestHandler):
         pass
 
 
-class Server(socketserver.ThreadingTCPServer):
+class Server(socketserver.ForkingTCPServer):
     allow_reuse_address = True
-    daemon_threads = True
+    max_children = 64
 
 
 if __name__ == "__main__":

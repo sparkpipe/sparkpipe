@@ -154,16 +154,14 @@ static SparkStatus load_manifest(const char *path,FILE *file,uint64_t pack_bytes
 	if ( read32(header) != SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC || read32(header + 4u) != SPARK_WEIGHTD_RANGE_MANIFEST_VERSION || read32(header + 12u) != 0u )
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	out->range_count = read32(header + 8u);
-	if ( out->range_count == 0u )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( out->range_count > SPARK_WEIGHTD_RANGE_COUNT_MAX )
 	{
 		fprintf(stderr,"weightd manifest refused: %s has %u ranges, above SPARK_WEIGHTD_RANGE_COUNT_MAX %u (%llu table bytes per range, %llu-byte manifest table budget)\n",
 		    path,out->range_count,SPARK_WEIGHTD_RANGE_COUNT_MAX,(unsigned long long)SPARK_WEIGHTD_MANIFEST_RANGE_TABLE_BYTES,(unsigned long long)SPARK_WEIGHTD_MANIFEST_TABLE_BYTES_MAX);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
-	out->ranges = calloc(out->range_count,sizeof(*out->ranges));
-	out->groups = calloc(out->range_count,sizeof(*out->groups));
+	out->ranges = calloc(out->range_count + 1u,sizeof(*out->ranges));
+	out->groups = calloc(out->range_count + 1u,sizeof(*out->groups));
 	if ( out->ranges == 0 || out->groups == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = read_ranges(file,pack_bytes,out);

@@ -1,0 +1,5 @@
+capital 8/8 mismatches (pos, margin, served, ref) [] lp delta median 0.0 max 0.0047
+arith 64/64 mismatches (pos, margin, served, ref) [] lp delta median 0.0008 max 0.1263
+code 64/64 mismatches (pos, margin, served, ref) [] lp delta median 0.0 max 0.0564
+story 63/64 mismatches (pos, margin, served, ref) [(53, 0.187, ' the', ' script')] lp delta median 0.0065 max 0.2791
+TOTAL 199/200 top-1; max mismatch margin 0.187 nat; PASS

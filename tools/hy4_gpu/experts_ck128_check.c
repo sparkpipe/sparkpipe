@@ -1,10 +1,3 @@
-// hy4 lane: verify the placed FP8 rank pack against its .experts sidecar
-// (WEPX v1, 40-byte records: reserved u32, chunk ordinal u32, offset u64,
-// bytes u64, ck128 16B). Recomputes SparkCk128 over every chunk range and
-// prints one line per mismatch plus a final verdict. Exit 0 only when all
-// chunks match.
-//
-// Usage: experts_ck128_check <pack.safetensors> <pack.safetensors.experts>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
