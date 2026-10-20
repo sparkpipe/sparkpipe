@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import importlib.util
 import subprocess
 import sys
 import tempfile
@@ -63,7 +64,20 @@ def check(condition, message, output):
         sys.exit(1)
 
 
+def check_operand_normalization():
+    spec = importlib.util.spec_from_file_location("host_codegen_diff", TOOL)
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    shift_one = tool.normalize("add\tw2, w0, w0, lsl #1", 0, {})
+    shift_two = tool.normalize("add\tw2, w0, w0, lsl #2", 0, {})
+    check(shift_one != shift_two, "aarch64 immediates stay part of the instruction", "%s %s" % (shift_one, shift_two))
+    check(tool.normalize("mov\tw1, #0x0                   \t// #0", 0, {}) == ["mov w1, #0x0"], "aarch64 comments are dropped", "")
+    check(tool.normalize("lea    0x0(%rip),%rax        # b <name_of+0xb>", 0, {}) == ["lea 0x0(%rip),%rax"], "x86 comments are dropped", "")
+    check(tool.symbol(".rodata.str1.8+0x28", {".rodata.str1.8+0x28": "STR(6c61726765)"}, "R_AARCH64_ADD_ABS_LO12_NC") == "STR(6c61726765)", "aarch64 section-relative string references resolve to the string", "")
+
+
 def main():
+    check_operand_normalization()
     sections = ("-O2", "-ffunction-sections", "-fdata-sections")
     with tempfile.TemporaryDirectory() as temporary:
         directory = Path(temporary)
@@ -94,7 +108,7 @@ def main():
         empty = compile_object(directory, "empty", "typedef int nothing;\n", *sections)
         code, output = run(base, empty)
         check(code == 1 and "no functions parsed from %s" % empty in output, "an object without functions fails instead of comparing nothing", output)
-    print("PASS host codegen diff: local constants, local statics and branch targets normalize, data tables compare by content and relocations, changes and additions outside ALLOW fail, empty objects fail")
+    print("PASS host codegen diff: aarch64 immediates are kept, local constants, local statics and branch targets normalize, data tables compare by content and relocations, changes and additions outside ALLOW fail, empty objects fail")
     return 0
 
 

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ds4.spark-telemetry-collector</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>@DEST@/spark_telemetry_collect.py</string>
+    <string>--out-dir</string>
+    <string>/tmp/ds4_telemetry/mac</string>
+    <string>--tail-lines</string>
+    <string>720</string>
+    <string>--ssh-config</string>
+    <string>@DEST@/ssh_config</string>
+    <string>--ssh-timeout</string>
+    <string>8</string>
+    <string>--loop-interval</string>
+    <string>5</string>
+    <string>--ssh-control-dir</string>
+    <string>/tmp/ds4mux</string>
+    <string>--ssh-control-persist</string>
+    <string>600</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>@DEST@</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/ds4_telemetry/mac/telemetry-collector.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/ds4_telemetry/mac/telemetry-collector.err.log</string>
+</dict>
+</plist>

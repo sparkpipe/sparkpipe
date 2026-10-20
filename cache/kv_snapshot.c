@@ -20,6 +20,7 @@
 #include <unistd.h>
 
 #define SPARK_KV_SNAPSHOT_NO_ENTRY UINT32_MAX
+#define SPARK_KV_SNAPSHOT_SPARE_SHARE 4u
 
 typedef struct SparkKvSnapshotIndexEntry
 {
@@ -691,7 +692,7 @@ static void SparkKvSnapshotUnlinkJob(SparkKvSnapshotStore *store,SparkKvSnapshot
 static void SparkKvSnapshotRecycleJob(SparkKvSnapshotStore *store,SparkKvSnapshotJob *job)
 {
 	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
-	if ( runtime->spare_bytes > store->queue_maximum_bytes || job->capacity > store->queue_maximum_bytes - runtime->spare_bytes )
+	if ( runtime->spare_bytes > store->spare_maximum_bytes || job->capacity > store->spare_maximum_bytes - runtime->spare_bytes )
 	{
 		free(job);
 		return;
@@ -699,20 +700,22 @@ static void SparkKvSnapshotRecycleJob(SparkKvSnapshotStore *store,SparkKvSnapsho
 	job->next = runtime->spare_jobs;
 	runtime->spare_jobs = job;
 	runtime->spare_bytes += job->capacity;
+	store->spare_bytes = runtime->spare_bytes;
 }
 
-static SparkKvSnapshotJob *SparkKvSnapshotTakeSpareJob(SparkKvSnapshotRuntime *runtime,uint64_t payload)
+static SparkKvSnapshotJob *SparkKvSnapshotTakeSpareJob(SparkKvSnapshotStore *store,SparkKvSnapshotRuntime *runtime,uint64_t payload)
 {
-	SparkKvSnapshotJob **link,*job;
+	SparkKvSnapshotJob **link,**best = 0,*job;
 	for (link=&runtime->spare_jobs; *link != 0; link=&(*link)->next)
-		if ( (*link)->capacity >= payload )
-		{
-			job = *link;
-			*link = job->next;
-			runtime->spare_bytes -= job->capacity;
-			return(job);
-		}
-	return(0);
+		if ( (*link)->capacity >= payload && (best == 0 || (*link)->capacity < (*best)->capacity) )
+			best = link;
+	if ( best == 0 )
+		return(0);
+	job = *best;
+	*best = job->next;
+	runtime->spare_bytes -= job->capacity;
+	store->spare_bytes = runtime->spare_bytes;
+	return(job);
 }
 
 static void *SparkKvSnapshotWriterMain(void *context)
@@ -849,6 +852,7 @@ SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *dir
 	store->descriptor_bytes = SPARK_KV_SNAPSHOT_STORE_BYTES;
 	store->maximum_bytes = maximum_bytes;
 	store->queue_maximum_bytes = queue_maximum_bytes;
+	store->spare_maximum_bytes = queue_maximum_bytes / SPARK_KV_SNAPSHOT_SPARE_SHARE;
 	store->failure_retry_ns = SPARK_KV_SNAPSHOT_FAILURE_RETRY_NS;
 	memcpy(store->directory,directory,strlen(directory) + 1u);
 	store->runtime = runtime;
@@ -1230,7 +1234,7 @@ SparkStatus SparkKvSnapshotWriteBegin(SparkKvSnapshotStore *store,const SparkKvS
 		status = SPARK_STATUS_BUSY;
 	}
 	job = 0;
-	if ( status == SPARK_STATUS_OK && (job = SparkKvSnapshotTakeSpareJob(runtime,payload)) == 0 && (job = (SparkKvSnapshotJob *)malloc(sizeof(*job) + (size_t)payload)) != 0 )
+	if ( status == SPARK_STATUS_OK && (job = SparkKvSnapshotTakeSpareJob(store,runtime,payload)) == 0 && (job = (SparkKvSnapshotJob *)malloc(sizeof(*job) + (size_t)payload)) != 0 )
 		job->capacity = payload;
 	if ( status == SPARK_STATUS_OK && job == 0 )
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;

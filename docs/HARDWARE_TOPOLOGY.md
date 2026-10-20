@@ -2,15 +2,17 @@
 
 SparkPipe supports four-, eight-, and sixteen-Spark deployment profiles, and
 is designed to support pools of one to eight Mac Studios on their own or
-alongside Sparks. Every profile is generated from one hardware contract; Spark
-profiles contain complete direct pairs.
+alongside Sparks. Every profile is generated from one hardware contract. The
+four- and eight-Spark profiles contain complete direct pairs; the sixteen-Spark
+fleet has seven.
 
 ## Spark node contract
 
 Each Spark contributes:
 
 - one 100 Gb/s port on the CRS804 switched all-to-all fabric;
-- one nominal 200 Gb/s port connected directly to `rank XOR 1`;
+- one nominal 200 Gb/s port connected directly to `rank XOR 1`, except ranks
+  14 and 15 (below);
 - 128 GB unified memory;
 - one 4 TB internal NVMe; and
 - at least one 4 TB external NVMe.
@@ -25,10 +27,20 @@ treated as equal-rate useful data paths.
 | ---: | --- | --- |
 | 4 | `0-3` | `0<->1`, `2<->3` |
 | 8 | `0-7` | `0<->1`, `2<->3`, `4<->5`, `6<->7` |
-| 16 | `0-F` | `0<->1`, `2<->3`, `4<->5`, `6<->7`, `8<->9`, `A<->B`, `C<->D`, `E<->F` |
+| 16 | `0-F` | `0<->1`, `2<->3`, `4<->5`, `6<->7`, `8<->9`, `A<->B`, `C<->D` |
 
 Every node remains on the switched fabric. Direct pairing adds a second path;
 it does not partition the switched topology.
+
+Since 2026-10-16 sparke (rank 14) and sparkf (rank 15) have no direct link:
+sparkf's direct port is cabled to the hub, rtx5090, at 100 Gb/s, and traffic
+between ranks 14 and 15 crosses the switch. `MESH_LINK_MAP` lists the cabled
+pairs. It appears in `tools/fleet_node_agent.sh`, which passes the weightd
+pair-link flags only to listed ranks, in `tools/devcycle/ds4_spark_brickproof.py`,
+which enables `ds4-direct-pair-fabric.timer` only on listed ranks, and in
+`tools/devcycle/fleet/ds4_direct_pair_fabric_apply.sh`, which leaves the port of
+an unlisted rank untouched. `tests/test_ds4_spark_brickproof.py` keeps the three
+copies equal.
 
 ## Route contract
 

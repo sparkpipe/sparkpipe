@@ -3163,8 +3163,8 @@ uint32_t SparkPrefixCacheResumeTokenCount(
     uint32_t matched_token_count)
 {
     SparkPrefixCacheEntry *entry;
-    uint64_t parent_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH,block_hash;
-    uint32_t token_offset,block_tokens,resume = 0u;
+    uint64_t parent_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH,block_hash,last_parent = 0u;
+    uint32_t token_offset,block_tokens,resume = 0u,last_offset = 0u,last_tokens = 0u;
 
     if (SparkPrefixCacheValidate(cache) != SPARK_STATUS_OK || token_ids == 0)
         return 0u;
@@ -3176,7 +3176,17 @@ uint32_t SparkPrefixCacheResumeTokenCount(
             break;
         if ((entry->flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME) != 0u)
             resume = token_offset + block_tokens;
+        last_parent = parent_hash;
+        last_offset = token_offset;
+        last_tokens = block_tokens;
         parent_hash = block_hash;
+    }
+    for (block_tokens = last_tokens; resume < last_offset + last_tokens && block_tokens > 1u; )
+    {
+        block_tokens--;
+        entry = SparkPrefixCacheFindPromptBlock(cache, token_ids, last_offset, block_tokens, last_parent, &block_hash);
+        if (entry != 0 && (entry->flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME) != 0u)
+            resume = last_offset + block_tokens;
     }
     return resume;
 }

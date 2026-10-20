@@ -27,7 +27,9 @@ marketplace tenant-scribble protection for free).
 On every Spark the fleet agent (`tools/fleet_node_agent.sh`, systemd user unit
 `fleet-agent`) owns one weightd. `ensure_weightd` starts
 `~/sparkdata/weightd/sparkpipe_weightd --socket /tmp/spark_weightd.sock
---mesh-rank R --mesh-rank-mask 0xffff --mesh-interface … --mesh-sgid-index …`.
+--mesh-rank R --mesh-rank-mask 0xffff --mesh-interface … --mesh-sgid-index …`,
+plus `--mesh-pair-interface … --mesh-pair-sgid-index …` on ranks that
+`MESH_LINK_MAP` lists (see [HARDWARE_TOPOLOGY.md](HARDWARE_TOPOLOGY.md)).
 It passes no `--device-bytes-max`, so the budget is
 `SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT` (110 GiB) unless the unit environment
 sets `SPARK_WEIGHTD_DEVICE_BYTES_MAX`. It passes no `--mesh-dir`, so records live
@@ -37,6 +39,10 @@ directory. The production GLM residentds attach to this socket. The agent starts
 weightd as its own transient user unit, `sparkpipe-weightd`, and each root as its
 own unit, so restarting the agent does not restart them. Restart weightd with
 `systemctl --user restart sparkpipe-weightd` only when no residentd runs.
+`restart` re-runs the recorded arguments. When the agent would pass different
+arguments, for example after a rank leaves `MESH_LINK_MAP`, run
+`systemctl --user stop sparkpipe-weightd` instead; the agent then starts weightd
+with the new arguments.
 
 These rules follow from that code:
 

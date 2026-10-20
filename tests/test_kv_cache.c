@@ -1318,6 +1318,34 @@ static void SparkTestPrefixCacheResumePoints(void)
 	printf("prefix cache resume points: only marked publication ends resume, a lookup truncates to the last one, and the marks survive export and import: ok\n");
 }
 
+static void SparkTestPrefixCacheResumeInsideLastBlock(void)
+{
+	SparkTestKvFixture fixture;
+	SparkPrefixCache cache;
+	SparkPrefixCacheEntry entries[8u];
+	SparkPrefixCacheSequenceBinding bindings[16u];
+	SparkPrefixCacheLookup lookup;
+	uint32_t tokens[12u],extended[12u],index,shape;
+	for (shape=0u; shape<2u; shape++)
+	{
+		uint32_t prompt = shape == 0u ? SPARK_TEST_BLOCK_TOKENS + 2u : 2u * SPARK_TEST_BLOCK_TOKENS;
+		SparkTestPrefixCacheResumeOpen(&fixture,&cache,entries,bindings);
+		for (index=0u; index<12u; index++)
+			tokens[index] = extended[index] = 3000u + index;
+		for (index=prompt; index<12u; index++)
+			extended[index] = 9000u + index;
+		assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,prompt - 1u,&lookup) == SPARK_STATUS_OK);
+		assert(SparkPrefixCacheMarkResume(&cache,tokens,prompt - 1u) == SPARK_STATUS_OK);
+		assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,prompt,&lookup) == SPARK_STATUS_OK);
+		assert(SparkPrefixCacheResumeTokenCount(&cache,extended,prompt) == prompt - 1u);
+		assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,prompt - 1u) == prompt - 1u);
+		assert(SparkPrefixCacheResumeTokenCount(&cache,extended,SPARK_TEST_BLOCK_TOKENS) == 0u);
+		assert(SparkPrefixCacheMarkResume(&cache,tokens,prompt) == SPARK_STATUS_OK);
+		assert(SparkPrefixCacheResumeTokenCount(&cache,extended,prompt) == prompt);
+	}
+	printf("prefix cache resume points: a resumable point inside the last matched block is found under a longer stateless publication, partial or full, and a resumable longest match still wins: ok\n");
+}
+
 static void SparkTestPrefixCachePartialPublication(void)
 {
 	for (uint32_t hashed=0u; hashed<2u; hashed++)
@@ -3285,6 +3313,7 @@ int main(void)
 	SparkTestKvPageStoreFailedPrefetchCancelsReservation();
 	SparkTestPrefixCacheReusesCommittedLogicalBlocks();
 	SparkTestPrefixCacheResumePoints();
+	SparkTestPrefixCacheResumeInsideLastBlock();
 	SparkTestPrefixCachePartialPublication();
 	SparkTestPrefixCacheTombstone(0u);
 	SparkTestPrefixCacheTombstone(1u);

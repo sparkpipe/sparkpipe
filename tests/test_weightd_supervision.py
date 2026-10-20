@@ -265,10 +265,11 @@ int main(void) {
 
     def agent(self, changed=False, ready=False, owner="owned", binary=True, restart=True, qos="active", trust="dscp",
               address="10.10.100.10 10.10.200.0", published="", engines="running", kill="forbidden",
-              unit_status="0", extra_env=None, age="10"):
+              unit_status="0", extra_env=None, age="10", paired=True):
         script = r'''
 set -u
 RANK=0 MESH_INTERFACE=test MESH_SGID_INDEX=3 MESH_PAIR_INTERFACE=test-pair MESH_PAIR_SGID_INDEX=3 MESH_TRAFFIC_CLASS=106
+MESH_PAIRED=$TEST_PAIRED
 WEIGHTD_UNIT=sparkpipe-weightd WEIGHTD_LEGACY_NOTED=
 BACKOFF=(1)
 ps() { [ "$*" = "-o etimes= -p 4242" ] && echo "   $TEST_AGE"; }
@@ -297,7 +298,8 @@ mlnx_qos() { [ "$*" = "-i test-netdev" ] && echo "Priority trust state: $TEST_TR
                    TEST_BINARY_STATUS="0" if binary else "1",
                    TEST_RESTART_STATUS="0" if restart else "1", TEST_QOS=qos, TEST_TRUST=trust,
                    TEST_ADDRESS=address, TEST_PUBLISHED=published, TEST_ENGINES=engines, TEST_KILL=kill,
-                   TEST_AGENT_HOME=str(self.directory), TEST_MESH_DIR=str(self.mesh), TEST_UNIT_STATUS=unit_status, TEST_AGE=age)
+                   TEST_AGENT_HOME=str(self.directory), TEST_MESH_DIR=str(self.mesh), TEST_UNIT_STATUS=unit_status, TEST_AGE=age,
+                   TEST_PAIRED="1" if paired else "")
         env.update(extra_env or {})
         (self.directory / "units").unlink(missing_ok=True)
         return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
@@ -402,6 +404,29 @@ mlnx_qos() { [ "$*" = "-i test-netdev" ] && echo "Priority trust state: $TEST_TR
                          " --mesh-rank-mask 0xffff --mesh-interface test --mesh-sgid-index 3 --mesh-pair-interface test-pair"
                          " --mesh-pair-sgid-index 3 --mesh-traffic-class 106\n" % ((home,) * 4))
 
+    def test_a_rank_without_a_pair_link_starts_weightd_on_the_switch_only(self):
+        result = self.agent(owner="shell", paired=False, address="10.10.100.24")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertRegex(result.stdout.splitlines()[1], r"^\d\d:\d\d:\d\d weightd: starting on 10\.10\.100\.24 \(backoff 1s\)$")
+        home = str(self.directory)
+        self.assertEqual(self.units(), "UNIT --user --quiet --collect --unit=sparkpipe-weightd --working-directory=%s/sparkdata/weightd"
+                         " -p LimitCORE=infinity -p StandardOutput=append:%s/weightd.log -p StandardError=append:%s/weightd.log"
+                         " %s/sparkdata/weightd/sparkpipe_weightd --socket /tmp/spark_weightd.sock --mesh-rank 0"
+                         " --mesh-rank-mask 0xffff --mesh-interface test --mesh-sgid-index 3 --mesh-traffic-class 106\n" % ((home,) * 4))
+
+    def test_mesh_addresses_need_the_pair_port_only_on_linked_ranks(self):
+        source = (ROOT / "tools/fleet_node_agent.sh").read_text()
+        addresses = "mesh_addresses() {" + source.split("\nmesh_addresses() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        harness = ("set -u\nMESH_INTERFACE=switch MESH_SGID_INDEX=3 MESH_PAIR_INTERFACE=pair MESH_PAIR_SGID_INDEX=3\n"
+                   'mesh_address() { [ "$1" = pair ] && [ "$TEST_PAIR" = missing ] && { echo "pair gid 3 is missing" >&2; return 1; }; echo "$1-ip"; }\n'
+                   + addresses + 'MESH_PAIRED=$TEST_PAIRED\nmesh_addresses\n')
+        for paired, pair, expected in (("1", "present", (0, "switch-ip pair-ip\n")), ("1", "missing", (1, "")),
+                                       ("", "present", (0, "switch-ip\n")), ("", "missing", (0, "switch-ip\n"))):
+            with self.subTest(paired=paired, pair=pair):
+                result = subprocess.run(["bash", "-c", harness], env=dict(os.environ, TEST_PAIRED=paired, TEST_PAIR=pair),
+                                        capture_output=True, text=True)
+                self.assertEqual((result.returncode, result.stdout), expected, result.stderr)
+
     def test_weightd_runs_in_its_own_unit_with_its_environment(self):
         result = self.agent(owner="shell", extra_env={"SPARK_WEIGHTD_DEVICE_BYTES_MAX": "123", "G5_WARMUP": "0"})
         self.assertEqual(result.returncode, 1, result.stderr)
@@ -483,12 +508,24 @@ curl() { echo FORBIDDEN_CURL >&3; }
         hosts = ["spark%x" % rank for rank in range(16)]
         for host in hosts + ["spark10", "sparkg", "rtx5090", ""]:
             with self.subTest(host=host):
-                result = subprocess.run(["bash", "-c", "set -uo pipefail\n" + self.identity + '\necho "RANK=$RANK"\n'],
+                result = subprocess.run(["bash", "-c", "set -uo pipefail\n" + self.identity + '\necho "RANK=$RANK PAIRED=$MESH_PAIRED"\n'],
                                         env=dict(os.environ, HOST=host), capture_output=True, text=True)
                 if host in hosts:
-                    self.assertEqual((result.returncode, result.stdout), (0, "RANK=%d\n" % hosts.index(host)))
+                    rank = hosts.index(host)
+                    self.assertEqual((result.returncode, result.stdout), (0, "RANK=%d PAIRED=%s\n" % (rank, "1" if rank < 14 else "")))
                 else:
                     self.assertEqual((result.returncode, result.stdout), (2, ""))
+
+    def test_the_mesh_link_map_joins_only_cabled_rank_partners(self):
+        line = next(line for line in self.identity.splitlines() if line.startswith("MESH_LINK_MAP="))
+        self.assertEqual(line, 'MESH_LINK_MAP="0-1:200,2-3:200,4-5:200,6-7:200,8-9:200,10-11:200,12-13:200"')
+        for link_map in ("0-2:200", "1-0:200", "0-1", "0-1:", "-1:200", "0-1:2x0", "0-1:200,14-15", "0-1:200,15-14:200"):
+            with self.subTest(link_map=link_map):
+                identity = self.identity.replace(line, 'MESH_LINK_MAP="%s"' % link_map)
+                result = subprocess.run(["bash", "-c", "set -uo pipefail\n" + identity + '\necho started\n'],
+                                        env=dict(os.environ, HOST="spark0"), capture_output=True, text=True)
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn("mesh link", result.stderr)
 
 
 if __name__ == "__main__":

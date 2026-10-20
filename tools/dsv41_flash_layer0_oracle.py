@@ -1161,7 +1161,7 @@ class Block:
         oa_vals = FP8_LUT[t[K_OA][0].reshape(LOCAL_OA_ROWS, OA_FULL_COLS)]
         oa_scales = e8m0_f32(t[K_OA][1].reshape(LOCAL_OA_ROWS // 32, OA_FULL_COLS // 32))
         oa = bf16_f32(bf16_u16(oa_vals * oa_scales.repeat(32, 0).repeat(32, 1))).astype(np.float32)
-        partial = (oa @ bf16_f32(act_dequant(bf16_u16(o.reshape(-1)))).astype(np.float32)).astype(np.float32)
+        partial = (oa @ bf16_f32(act_dequant(o.reshape(-1))).astype(np.float32)).astype(np.float32)
         attn_out = fp8_gemm_vector(bf16_u16(partial), t[K_OB][0], t[K_OB][1], HIDDEN)
         if tag:
             raw.add(f"{tag}.wo_b_out", bf16_f32(attn_out), 2e-2 * self.tol_amp,

@@ -327,6 +327,10 @@ SHELL_TESTS := \
 	tests/fuzz_system_loopback.sh \
 	tests/test_deploy_restart_scope.sh
 PYTHON_TESTS := \
+	tests/test_telemetry_auxiliary.py \
+	tests/test_telemetry_stop.py \
+	tests/test_telemetry_fleet.py \
+	tests/test_telemetry_dashboard.py \
 	tests/test_stray_fixture_processes.py \
 	tests/test_kv_binding_async_source.py \
 	tests/test_kv_snapshot_law.py \
@@ -498,6 +502,7 @@ PYTHON_TESTS := \
 	tests/test_delta_rule_column_cuda.py \
 	tests/test_index_shard_cuda.py \
 	tests/test_latent_rope_heads_cuda.py \
+	tests/test_latent_attention_kernel_cuda.py \
 	tests/test_project_chain_cuda.py \
 	tests/test_topk_warp_cuda.py \
 	tests/test_rms_norm_cuda.py \
@@ -599,6 +604,7 @@ PYTHON_TESTS := \
 	tests/test_latent_block_drafter.py \
 	tests/test_block_drafter_context.py \
 	tests/test_tapstream_truncated.py \
+	tests/test_block_draftd_latent.py \
 	tests/test_keyed_draft_capture.py \
 	tests/test_draftd_mtp_kv.py \
 	tests/test_k3_reshard_cells.py \

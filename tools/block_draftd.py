@@ -26,10 +26,10 @@ from pathlib import Path
 import numpy as np
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from spec_offline.block_drafter import DraftGraph, open_drafter
-from spec_offline.latent_block_drafter import LatentBlockDrafter, LatentContext, LatentDraftGraph
-from spec_offline.tapstream import FRAME, HELLO, MAGIC, read_hello
+sys.path.insert(0, str(Path(__file__).resolve().parent / "spec_offline"))
+from block_drafter import DraftGraph, open_drafter
+from latent_block_drafter import LatentBlockDrafter, LatentContext, LatentDraftGraph
+from tapstream import FRAME, HELLO, MAGIC, read_hello
 
 DFT3_MAGIC = b"DFT3"
 DFT3_VERSION = 2
@@ -289,6 +289,9 @@ class Server:
             contexts, complete = context.contexts(position)
             if not complete:
                 self.stats["gaps"] += 1
+                missing = np.flatnonzero(~context.held[:position]) if position <= context.held.shape[0] else np.arange(context.held.shape[0], position)
+                print(f"DRAFT-GAP sequence {sequence} position {position} missing {missing.size} first {int(missing[0]) if missing.size else -1} "
+                      f"last {int(missing[-1]) if missing.size else -1} ring_window {context.window}", flush=True)
             drafts, confidence = self.graph.draft(int(anchor), position, contexts, min(depth, self.max_drafts), sampling)
         elapsed = int((time.monotonic() - started) * 1e6)
         self.timing["compute"] += elapsed / 1e6
@@ -392,7 +395,7 @@ class Server:
         threading.Thread(target=self.gpu_loop, daemon=True).start()
         listener = socket.create_server((self.args.draft_host, self.args.draft_port))
         print(f"DRAFTD-READY taps {self.args.tap_host}:{self.args.tap_port} drafts {self.args.draft_host}:{self.args.draft_port} "
-              f"layers {self.layers} drafter {'latent' if self.latent else 'block'} max_drafts {self.max_drafts} "
+              f"layers {self.layers} drafter {'latent attention ' + self.drafter.attention if self.latent else 'block'} max_drafts {self.max_drafts} "
               f"window {self.drafter.windows if self.latent else self.args.window}", flush=True)
         while True:
             connection, peer = listener.accept()

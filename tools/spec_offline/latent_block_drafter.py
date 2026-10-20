@@ -88,6 +88,10 @@ def block_conv(z, base, delta, group):
     return out
 
 
+def power_of_two(value):
+    return value > 0 and value & (value - 1) == 0
+
+
 def latent_chunks(rows, chunk):
     for part in (rows if isinstance(rows, (list, tuple)) else [rows]):
         for begin in range(0, part.shape[0], chunk):
@@ -172,6 +176,10 @@ class LatentBlockDrafter:
         self.target_norm = target.load(names["norm"], device)
         self.inverse, self.rotary_gain, softmax_gain = rope_tables(c, self.rope_dim, device)
         self.scale = softmax_gain / math.sqrt(self.nope + self.rope_dim)
+        self.attention, self.fused = "reference", None
+        if str(device).startswith("cuda") and min(self.kv_rank, self.rope_dim) >= 16 and power_of_two(self.kv_rank) and power_of_two(self.rope_dim):
+            from latent_attention_kernel import fused_latent_attention
+            self.attention, self.fused = "fused", fused_latent_attention
 
     def cache_layout(self):
         return [((self.kv_rank + self.rope_dim,), window) for window in self.windows]
@@ -206,7 +214,9 @@ class LatentBlockDrafter:
         return absorbed, query_rope, self.latent_rows(layer, prepared, positions), finish
 
     def attend(self, absorbed, query_rope, block_rows, context):
-        rows = list(context) + [block_rows] if isinstance(context, (list, tuple)) else torch.cat((context, block_rows), 0)
+        rows = list(context) + [block_rows] if isinstance(context, (list, tuple)) else [context, block_rows]
+        if self.fused is not None:
+            return self.fused(absorbed, query_rope, rows, self.kv_rank, self.scale)
         return latent_attention(absorbed, query_rope, rows, self.kv_rank, self.scale)
 
     def post_attention(self, layer, residual, latent, finish):

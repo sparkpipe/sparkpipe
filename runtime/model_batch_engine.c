@@ -2192,9 +2192,10 @@ static uint32_t SparkModelBatchPromptCheckpoint(
 	const SparkModelBatchEngine *engine,
 	const SparkModelBatchRequestState *request)
 {
-	if ( engine->adapter_descriptor->cache_checkpoint_token_count == 0u || request->prompt_token_count < 2u )
+	if ( engine->adapter_descriptor->cache_checkpoint_token_count == 0u || request->prompt_token_count < 2u ||
+		request->prompt_token_count - 1u < engine->cache_block_token_count )
 		return(0u);
-	return((request->prompt_token_count - 1u) / engine->cache_block_token_count * engine->cache_block_token_count);
+	return(request->prompt_token_count - 1u);
 }
 
 static uint32_t SparkModelBatchPublishKeepsState(
@@ -2778,7 +2779,8 @@ static void SparkModelBatchInitializeLane(
 		return;
 	}
 	if ( work_kind != SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH && context_token_count % engine->cache_block_token_count != 0u &&
-		!(work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && context_token_count == request->prompt_token_count) &&
+		!(work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && (context_token_count == request->prompt_token_count ||
+			context_token_count == SparkModelBatchPromptCheckpoint(engine,request))) &&
 		!(work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && request->generated_token_count + 1u == request->output_token_budget) )
 		return;
 	publish_token_count = context_token_count;
