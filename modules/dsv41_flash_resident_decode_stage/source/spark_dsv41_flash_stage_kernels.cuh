@@ -95,17 +95,21 @@ static __global__ void D41HcSinkhornRowsKernel(const float *__restrict__ partial
 		comb_out[(uint64_t)row * D41K_HC * D41K_HC + lane] = comb;
 }
 
+static __device__ __forceinline__ uint16_t D41HcCollapse(const uint16_t *__restrict__ streams, const float *__restrict__ pre, uint32_t row,
+	uint32_t width, uint32_t element)
+{
+	float total = 0.0f;
+	for ( uint32_t copy = 0u; copy < D41K_HC; ++copy )
+		total += pre[(uint64_t)row * D41K_HC + copy] * LmBf16ToFloat(streams[((uint64_t)row * D41K_HC + copy) * width + element]);
+	return LmFloatToBf16(total);
+}
+
 static __global__ void D41HcPreRowsKernel(const uint16_t *__restrict__ streams, const float *__restrict__ pre, uint16_t *__restrict__ output,
 	uint32_t width)
 {
 	const uint32_t row = blockIdx.y;
 	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < width; element += gridDim.x * blockDim.x )
-	{
-		float total = 0.0f;
-		for ( uint32_t copy = 0u; copy < D41K_HC; ++copy )
-			total += pre[(uint64_t)row * D41K_HC + copy] * LmBf16ToFloat(streams[((uint64_t)row * D41K_HC + copy) * width + element]);
-		output[(uint64_t)row * width + element] = LmFloatToBf16(total);
-	}
+		output[(uint64_t)row * width + element] = D41HcCollapse(streams, pre, row, width, element);
 }
 
 static __global__ void D41HcPostRowsKernel(const uint16_t *__restrict__ sublayer, const float *__restrict__ post,

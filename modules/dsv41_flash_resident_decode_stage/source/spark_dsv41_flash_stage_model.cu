@@ -344,8 +344,8 @@ static void D41RmsNorm(const uint16_t *input, const uint16_t *weight, uint16_t *
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
-void D41RmsNormQdqKernel(const uint16_t *input, const uint16_t *__restrict__ weight, uint16_t *output, uint16_t *__restrict__ quantized,
-	uint32_t dimension, float epsilon)
+void D41RmsNormQdqKernel(const uint16_t *input, const uint16_t *__restrict__ streams, const float *__restrict__ pre,
+	const uint16_t *__restrict__ weight, uint16_t *output, uint16_t *__restrict__ quantized, uint32_t dimension, float epsilon)
 {
 	extern __shared__ float d41_norm_shared[];
 	float *row = d41_norm_shared;
@@ -355,7 +355,7 @@ void D41RmsNormQdqKernel(const uint16_t *input, const uint16_t *__restrict__ wei
 	float total = 0.0f, scale;
 	for ( index = threadIdx.x; index < dimension; index += THREADS )
 	{
-		float value = LmBf16ToFloat(input[base + index]);
+		float value = LmBf16ToFloat(streams != 0 ? D41HcCollapse(streams, pre, blockIdx.x, dimension, index) : input[base + index]);
 		row[index] = value;
 		total += value * value;
 	}
@@ -423,7 +423,16 @@ static void D41RmsNormQdq(const uint16_t *input, const uint16_t *weight, uint16_
 		D41Fp8QdqCopy(output != 0 ? output : quantized, quantized, (uint64_t)rows * width, stream);
 		return;
 	}
-	D41RmsNormQdqKernel<D41_THREADS><<<rows, D41_THREADS, (width + 8u) * sizeof(float), stream>>>(input, weight, output, quantized, width, D41_EPS);
+	D41RmsNormQdqKernel<D41_THREADS><<<rows, D41_THREADS, (width + 8u) * sizeof(float), stream>>>(input, 0, 0, weight, output, quantized, width,
+		D41_EPS);
+}
+
+static void D41CollapseNormQdq(const uint16_t *streams, const float *pre, const uint16_t *weight, uint16_t *output, uint16_t *quantized,
+	uint32_t rows, cudaStream_t stream)
+{
+	static_assert(D41_HIDDEN % D41_THREADS == 0u, "the hidden row splits evenly over the norm block");
+	D41RmsNormQdqKernel<D41_THREADS><<<rows, D41_THREADS, (D41_HIDDEN + 8u) * sizeof(float), stream>>>(0, streams, pre, weight, output, quantized,
+		D41_HIDDEN, D41_EPS);
 }
 
 static void D41Rope(uint16_t *data, uint32_t rows, uint32_t heads, uint32_t head_stride, uint32_t rope_offset,
@@ -834,8 +843,7 @@ static SparkStatus D41LayerStep(D41ModelState *state, uint32_t index, const Spar
 			state->post_attn, state->comb_attn, rows, stream);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	D41HcPreRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->streams, pre_previous, state->x, D41_HIDDEN);
-	D41RmsNormQdq(state->x, layer->attn_norm, state->x, state->xq, rows, D41_HIDDEN, stream);
+	D41CollapseNormQdq(state->streams, pre_previous, layer->attn_norm, state->x, state->xq, rows, stream);
 	if ( index < 2u && (status = D41DumpRows(state, index, 3u, state->x, rows, D41_HIDDEN, stream)) != SPARK_STATUS_OK )
 		return status;
 	status = D41Attention(state, layer, index, step, stream);
@@ -851,8 +859,7 @@ static SparkStatus D41LayerStep(D41ModelState *state, uint32_t index, const Spar
 		state->post_ffn, state->comb_ffn, rows, stream);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	D41HcPreRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->streams, state->pre_attn, state->x, D41_HIDDEN);
-	D41RmsNormQdq(state->x, layer->ffn_norm, state->x, state->xq, rows, D41_HIDDEN, stream);
+	D41CollapseNormQdq(state->streams, state->pre_attn, layer->ffn_norm, state->x, state->xq, rows, stream);
 	if ( index < 2u && (status = D41DumpRows(state, index, 4u, state->x, rows, D41_HIDDEN, stream)) != SPARK_STATUS_OK )
 		return status;
 	status = D41Moe(state, layer, step, stream);
