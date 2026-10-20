@@ -2221,6 +2221,7 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	in.token_ids = state->token_ids_device;
 	in.host_positions = dispatch->host_positions;
 	in.host_sequence_of_row = dispatch->host_sequence_of_row;
+	in.host_state_target = dispatch->host_state_target;
 	in.graph_key = state->model_interface->graph_key != 0 ? state->model_interface->graph_key(state->model, &in) : 1u;
 	if ( steps > 1u && in.graph_key == 0u )
 	{

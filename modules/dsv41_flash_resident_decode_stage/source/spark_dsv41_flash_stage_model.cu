@@ -156,7 +156,8 @@ typedef struct D41ModelState
 	float *mixes, *pre_attn, *post_attn, *comb_attn, *pre_ffn, *post_ffn, *comb_ffn, *pre_head;
 	float *c_kv, *c_score;
 	uint16_t *c_latent, *c_latent_store, *idx_key, *idx_pack_local, *idx_pack_gathered, *idx_q_full, *idx_query, *idx_w_full;
-	uint32_t *emit_row, *bound_ratio2, *bound_ratio1, *length_ratio2, *length_ratio1, *row_lane, *row_ordinal;
+	uint32_t *emit_row, *bound_ratio2, *bound_ratio1, *length_ratio2, *length_ratio1, *row_lane, *row_ordinal, *tail_row_begin;
+	uint32_t tail_target, tail_first_position, compress_done;
 	float *local_scores, *topk_values;
 	uint32_t *local_selected, *selected, *topk_positions;
 	uint64_t topk_entries;
@@ -547,7 +548,7 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 	D41Rope(state->kv, rows, 1u, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 0u, 0, stream);
 	D41Fp8QdqCopy(state->kv, state->window_kv, (uint64_t)rows * D41_HEAD_DIM, stream);
 	status = D41Launched();
-	if ( status == SPARK_STATUS_OK && D41KvSource(index) )
+	if ( status == SPARK_STATUS_OK && D41KvSource(index) && state->compress_done == 0u )
 		status = D41Compress(state, layer, index, step, stream);
 	if ( status == SPARK_STATUS_OK )
 		status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, local_width, state->q_local, state->q_gathered);
@@ -801,18 +802,76 @@ static SparkStatus D41DumpStep(D41ModelState *state, const SparkStageRunnerStep 
 static SparkStatus D41StepReach(D41ModelState *state, const SparkStageRunnerStep *step, cudaStream_t stream)
 {
 	cudaStreamCaptureStatus capturing = cudaStreamCaptureStatusNone;
-	uint32_t reach = state->max_positions, row;
+	uint32_t reach = state->max_positions, row, contiguous = 1u;
 	if ( cudaStreamIsCapturing(stream, &capturing) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	state->tail_target = 0u;
 	if ( step->rows > 1u && step->host_positions != 0 && capturing == cudaStreamCaptureStatusNone )
 		for ( row = 0u, reach = 0u; row < step->rows; ++row )
+		{
 			reach = step->host_positions[row] + 1u > reach ? step->host_positions[row] + 1u : reach;
+			contiguous &= step->host_positions[row] == step->host_positions[0] + row ? 1u : 0u;
+		}
 	if ( reach > state->max_positions )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->step_score_stride = ((SparkKvShardGatherKeys(state->shard, reach) + 63u) / 64u) * 64u;
 	state->step_score_stride = state->step_score_stride < state->local_score_stride ? state->step_score_stride : state->local_score_stride;
 	state->step_blocks = state->candidate_blocks != 0u && reach > D41_CANDIDATE_ROWS ? 1u : 0u;
+	if ( step->rows > 1u && step->host_positions != 0 && capturing == cudaStreamCaptureStatusNone && contiguous != 0u &&
+		step->commit != 0u && step->sequences == 1u && step->last_rows_only != 0u && step->host_state_target != 0 && state->dump == 0 &&
+		step->host_state_target[0] >= reach )
+	{
+		state->tail_target = step->host_state_target[0];
+		state->tail_first_position = step->host_positions[0];
+	}
 	return SPARK_STATUS_OK;
+}
+
+static uint32_t D41TailFirstRow(const D41ModelState *state, uint32_t index, uint32_t rows)
+{
+	const uint32_t reach = D41_WINDOW + (D41_LAYERS - 1u - index) * (D41_WINDOW - 1u);
+	const uint32_t first = state->tail_target > reach ? state->tail_target - reach : 0u;
+	if ( state->tail_target == 0u || index < D41_CANDIDATE_SOURCE || first <= state->tail_first_position )
+		return 0u;
+	return first - state->tail_first_position < rows ? first - state->tail_first_position : rows;
+}
+
+static void D41TailRebase(D41ModelState *state, uint32_t rows)
+{
+	state->streams += (uint64_t)rows * D41K_HC * D41_HIDDEN;
+	state->pre_head += (uint64_t)rows * D41K_HC;
+	state->selected += (uint64_t)rows * D41_INDEX_TOPK;
+	if ( state->block_mask != 0 )
+		state->block_mask += (uint64_t)rows * state->local_block_stride;
+}
+
+static SparkStatus D41TailStep(D41ModelState *state, const SparkStageRunnerStep *step, uint32_t first, SparkStageRunnerStep *tail,
+	cudaStream_t stream)
+{
+	*tail = *step;
+	tail->rows = step->rows - first;
+	tail->hidden_bf16 = step->hidden_bf16 + (uint64_t)first * D41_HIDDEN;
+	tail->positions = step->positions + first;
+	tail->sequence_of_row = step->sequence_of_row + first;
+	tail->sequence_row_begin = state->tail_row_begin;
+	tail->token_ids = step->token_ids + first;
+	tail->host_positions = step->host_positions + first;
+	tail->host_sequence_of_row = step->host_sequence_of_row != 0 ? step->host_sequence_of_row + first : 0;
+	if ( tail->rows == 0u )
+		return SPARK_STATUS_OK;
+	D41RowBeginKernel<<<1u, 1u, 0, stream>>>(state->tail_row_begin, tail->rows);
+	D41CompressedEmitPositionKernel<<<(tail->rows + 255u) / 256u, 256u, 0, stream>>>(tail->positions, state->bound_ratio2, tail->rows, 2u);
+	D41CompressedEmitPositionKernel<<<(tail->rows + 255u) / 256u, 256u, 0, stream>>>(tail->positions, state->bound_ratio1, tail->rows, 1u);
+	LmRowLanesKernel<<<1u, 256u, 0, stream>>>(tail->sequence_row_begin, tail->sequence_row_indices, state->row_lane, state->row_ordinal);
+	return D41Launched();
+}
+
+static SparkStatus D41TailCompress(D41ModelState *state, const SparkStageRunnerStep *step, cudaStream_t stream)
+{
+	const D41Layer *layer = &state->layers[D41_CANDIDATE_SOURCE];
+	D41HcPreRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), step->rows), D41_THREADS, 0, stream>>>(state->streams, state->pre_head, state->x, D41_HIDDEN);
+	D41RmsNorm(state->x, layer->attn_norm, state->x, step->rows, D41_HIDDEN, stream);
+	return D41Compress(state, layer, D41_CANDIDATE_SOURCE, step, stream);
 }
 
 static SparkStatus D41Step(void *model, const SparkStageRunnerStep *step, void *stream_void)
@@ -844,18 +903,48 @@ static SparkStatus D41Step(void *model, const SparkStageRunnerStep *step, void *
 	D41CompressedLengthKernel<<<(state->context_slots + 255u) / 256u, 256u, 0, stream>>>(step->context_length, state->length_ratio1,
 		state->context_slots, 1u);
 	D41ReplicateStreamsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(step->hidden_bf16, state->streams, D41_HIDDEN);
-	for ( uint32_t index = 0u; index < D41_LAYERS; ++index )
 	{
-		status = D41LayerStep(state, index, step, index == 0u ? state->pre_init : state->pre_head, stream);
-		if ( status != SPARK_STATUS_OK )
+		uint16_t *const streams = state->streams;
+		float *const pre_head = state->pre_head;
+		uint32_t *const selected = state->selected;
+		uint8_t *const block_mask = state->block_mask;
+		SparkStageRunnerStep tail = *step;
+		const SparkStageRunnerStep *current = step;
+		uint32_t shifted = 0u, first;
+		for ( uint32_t index = 0u; index < D41_LAYERS && status == SPARK_STATUS_OK; ++index )
 		{
-			fprintf(stderr, "sparkpipe_dsv41_flash: layer %u failed status=%d rows=%u sequences=%u\n", index, (int)status, rows, step->sequences);
-			return status;
+			first = D41TailFirstRow(state, index, rows);
+			if ( index == D41_CANDIDATE_SOURCE && first != 0u )
+			{
+				status = D41TailCompress(state, step, stream);
+				state->compress_done = 1u;
+			}
+			if ( status == SPARK_STATUS_OK && first != shifted )
+			{
+				D41TailRebase(state, first - shifted);
+				shifted = first;
+				status = D41TailStep(state, step, first, &tail, stream);
+				current = &tail;
+			}
+			if ( status == SPARK_STATUS_OK && current->rows != 0u )
+				status = D41LayerStep(state, index, current, index == 0u ? state->pre_init : state->pre_head, stream);
+			state->compress_done = 0u;
+			if ( status != SPARK_STATUS_OK )
+				fprintf(stderr, "sparkpipe_dsv41_flash: layer %u failed status=%d rows=%u sequences=%u tail_rows=%u\n", index, (int)status, rows,
+					step->sequences, current->rows);
+			else if ( state->services->layer_done != 0 )
+				state->services->layer_done(state->services->context, index);
 		}
-		if ( state->services->layer_done != 0 )
-			state->services->layer_done(state->services->context, index);
+		if ( status == SPARK_STATUS_OK && current->rows != 0u )
+			D41HcPreRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), current->rows), D41_THREADS, 0, stream>>>(state->streams, state->pre_head,
+				current->hidden_bf16, D41_HIDDEN);
+		state->streams = streams;
+		state->pre_head = pre_head;
+		state->selected = selected;
+		state->block_mask = block_mask;
+		if ( status != SPARK_STATUS_OK )
+			return status;
 	}
-	D41HcPreRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->streams, state->pre_head, step->hidden_bf16, D41_HIDDEN);
 	LmNgramHistoryKernel<<<(step->sequences + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, state->token_map, step->sequence_row_begin,
 		step->sequence_row_indices, step->recurrent_index,
 		(int32_t *)(state->recurrent + state->ring_bytes + state->compressor_bytes), (uint32_t)(state->recurrent_bytes / sizeof(int32_t)),
@@ -941,7 +1030,7 @@ static SparkStatus D41PlanArena(D41ModelState *state, uint64_t *bytes, uint8_t *
 		{ (void **)&state->idx_query, r * D41_INDEX_HEADS * D41_INDEX_DIM * 2u }, { (void **)&state->idx_w_full, r * D41_INDEX_HEADS * 2u },
 		{ (void **)&state->emit_row, r * 4u }, { (void **)&state->bound_ratio2, r * 4u }, { (void **)&state->bound_ratio1, r * 4u },
 		{ (void **)&state->length_ratio2, s * 4u }, { (void **)&state->length_ratio1, s * 4u },
-		{ (void **)&state->row_lane, r * 4u }, { (void **)&state->row_ordinal, r * 4u },
+		{ (void **)&state->row_lane, r * 4u }, { (void **)&state->row_ordinal, r * 4u }, { (void **)&state->tail_row_begin, 2u * 4u },
 		{ (void **)&state->local_scores, r * state->local_score_stride * 4u },
 		{ (void **)&state->topk_values, state->topk_entries * 4u }, { (void **)&state->topk_positions, state->topk_entries * 4u },
 		{ (void **)&state->local_selected, r * D41_INDEX_TOPK * 4u }, { (void **)&state->selected, r * D41_INDEX_TOPK * 4u },

@@ -122,6 +122,7 @@ typedef struct SparkStageRunnerDispatch
 	void *completion_context;
 	const uint32_t *host_positions;
 	const uint32_t *host_sequence_of_row;
+	const uint32_t *host_state_target;
 } SparkStageRunnerDispatch;
 
 typedef struct SparkStageRunnerKv

@@ -55,6 +55,7 @@ typedef struct SparkStageRunnerStep
 	const uint32_t *token_ids;
 	const uint32_t *host_positions;
 	const uint32_t *host_sequence_of_row;
+	const uint32_t *host_state_target;
 	uint32_t graph_key;
 } SparkStageRunnerStep;
 

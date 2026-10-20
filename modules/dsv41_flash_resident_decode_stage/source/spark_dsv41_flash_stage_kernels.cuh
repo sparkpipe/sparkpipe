@@ -236,6 +236,12 @@ static __global__ void D41CompressedEmitPositionKernel(const uint32_t *__restric
 	bound_position[row] = visible == 0u ? D41K_NO_ROW : visible - 1u;
 }
 
+static __global__ void D41RowBeginKernel(uint32_t *__restrict__ row_begin, uint32_t rows)
+{
+	row_begin[0] = 0u;
+	row_begin[1] = rows;
+}
+
 static __global__ void D41CompressedLengthKernel(const uint32_t *__restrict__ context_length, uint32_t *__restrict__ compressed_length,
 	uint32_t sequences, uint32_t ratio)
 {
