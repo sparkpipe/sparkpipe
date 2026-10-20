@@ -325,6 +325,10 @@ SHELL_TESTS := \
 	tests/fuzz_system_loopback.sh \
 	tests/test_deploy_restart_scope.sh
 PYTHON_TESTS := \
+	tests/test_telemetry_auxiliary.py \
+	tests/test_telemetry_stop.py \
+	tests/test_telemetry_fleet.py \
+	tests/test_telemetry_dashboard.py \
 	tests/test_stray_fixture_processes.py \
 	tests/test_kv_binding_async_source.py \
 	tests/test_kv_snapshot_law.py \
