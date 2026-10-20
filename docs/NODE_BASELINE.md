@@ -36,10 +36,11 @@ it on one node, reboot that node, and audit it before the others.
 | `ds4-switched-fabric` and `ds4-direct-pair-fabric` scripts and timers | apply (assets) | The boot run sets only the switched-fabric address and the Ceph MDS host route. The route is added only when `10.20.0.2` is on-link on `enP7s7`. On sparkf it is not, and the old script failed every 30 s for 16 days. The pair map skips ranks 14 and 15. |
 | `sparkpipe-hub-route.service` | apply (`LINKED_RANK_ASSET_SOURCES`, ranks 0-14) | Route to the hub through sparkf. Rank 15 is the hub gateway and has no unit. |
 | DMA guard installed and armed | apply (`spark-dma-guard install --notify 192.168.50.4:5514`) | sysrq-b on the first CX-7 uncorrectable error or SMMU failure line. Audit requires `event=start mode=armed` in the current boot. The 7.0 kernel prints the same formats; a dry-run injection on spark7 on 2026-10-20 matched both the AER and the CMD_SYNC lines. |
-| Hardware watchdog | apply (`/etc/systemd/system.conf.d/90-ds4-recovery.conf`) | `RuntimeWatchdogSec=10min`, `RebootWatchdogSec=5min`. Without it the SBSA watchdog stays off and a hard hang never reboots. |
-| Emergency SSH on 2222, recovery key in root and Dropbear, GRUB recovery `ip=`, IPv4 PXE first | apply | The out-of-band and PXE rescue paths ([INCIDENT_RECOVERY_PLAYBOOK.md](INCIDENT_RECOVERY_PLAYBOOK.md)). The emergency sshd admits `root` and the `sparkemerg` account. The owner creates that account. |
+| Hardware watchdog, recovery sysctls | apply (`/etc/systemd/system.conf.d/90-ds4-recovery.conf`, sysctl files), audited | `RuntimeWatchdogSec=10min`, `RebootWatchdogSec=5min`; `kernel.panic=60`, soft-lockup and hung-task panics, `vm.swappiness=10`. Without the watchdog the SBSA watchdog stays off and a hard hang never reboots. |
+| Emergency SSH on 2222, recovery key in root and Dropbear, GRUB recovery `ip=`, IPv4 PXE first | apply | The out-of-band and PXE rescue paths ([INCIDENT_RECOVERY_PLAYBOOK.md](INCIDENT_RECOVERY_PLAYBOOK.md)). The emergency sshd admits `root` and the `sparkemerg` account. The owner creates that account. The controller probes the port on the node name, then on `sparkN.local`. |
+| Host firewall unit, RoCE QoS unit and script | apply (assets) | The firewall ruleset is private; apply refuses without it and the audit requires the unit enabled and active. fleet-agent refuses to start weightd unless `sparkpipe-roce-qos` is active (DSCP trust, PFC priority 3). |
 | earlyoom `-m 3 -s 100 -r 5 --avoid sshd\|systemd\|init`, `user-1000.slice` limits, sysctls, `sch_fq_codel` | apply | Owner setting since 2026-10-07; `-m 7` killed K3 twice. |
-| Ceph: cephadm daemons run; host package units masked; `/var/log/ceph/<fsid>` owned 167:167; mon/mgr/osd units enabled; units without a daemon directory disabled | apply (`install_ceph_policy`) | cephadm will not start a daemon without its log directory. A copied state tree once enabled a `crash` unit with no daemon. Stopped MDS or crash daemons may stay disabled. |
+| Ceph: cephadm daemons run; host package units masked; `/var/log/ceph/<fsid>` owned 167:167; mon/mgr/osd units enabled; enabled units (enablement links) without a daemon directory disabled; start-after-ssh drop-ins | apply (`install_ceph_policy`, assets) | cephadm will not start a daemon without its log directory. A copied state tree once enabled a `crash` unit with no daemon. Stopped MDS or crash daemons may stay disabled. A directory without a cluster target or daemons (a leftover cluster) is ignored. The drop-ins order the cluster after ssh with 180-second timeouts, so Ceph can never block ssh. |
 | `spark-osd-guard` (udev event and 2-minute scan), `95-ceph-osd-lvm.rules`, `ds4-ceph-warm` and its mount unit | apply (assets) | Repairs stale device-mapper tables after a USB enclosure re-enumerates. Gives the OSD logical volumes the container's ceph UID 167. Mounts the CephFS warm store. `ceph-osd-retry.service` is retired: its `ExecStart` named a file that did not exist on any node, and the OSD guard covers its job. |
 | timesyncd to the hub, `restart-resolved`, fsck health timer, fstrim, persistent serial getty, `ssh.service` | apply | Fleet services every node already runs. |
 | Tool and build packages (`iperf3`, `fio`, `ninja-build`, `gh`, `exfatprogs`, `python3.12-dev`, `libnng-dev`, `libmbedtls-dev`, `libexpat1-dev`) | apply (`FLEET_TOOL_PACKAGES`) | Present on the older nodes; missing on the factory image. |
@@ -78,11 +79,16 @@ The repository is public. These files stay in the private coordination store
    powered-on predecessor otherwise answers as `sparkN.local` and reports guard
    events under the old name.
 4. **Private files and secrets:** place the firewall ruleset, the uplink failover
-   set and the Wi-Fi profiles from the coordination store, and the owner's
-   secrets.
-5. **Baseline:** run `apply` on the node alone, reboot, then run `audit` and
+   set, the Wi-Fi profiles and `ds4-extnvme-link` with its unit from the
+   coordination store, and the owner's secrets. Apply refuses to run without
+   `/etc/spark-firewall.nft`. Create `/home/sparkN/extnvme` (mounted from the
+   external NVMe where the slot has one).
+5. **Fleet agent:** install the fleet agent and weightd as in
+   [FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md#7-bootstrap-and-fleet_syncsh).
+   Apply enables linger for the node user so its user units start at boot.
+6. **Baseline:** run `apply` on the node alone, reboot, then run `audit` and
    `tools/fleet_post_reboot.sh sparkN`. Both must pass before the node serves.
-6. **Ceph:** hold `ceph osd set noout` from spark0 around the swap. If the OSD
+7. **Ceph:** hold `ceph osd set noout` from spark0 around the swap. If the OSD
    does not start, run `ceph cephadm osd activate sparkN`.
 
 If the fleet agent logs `SAFE MODE` after several short boots, clear it with
@@ -103,4 +109,5 @@ If the fleet agent logs `SAFE MODE` after several short boots, clear it with
 - **Ceph MDS route:** `10.10.100.2` via `10.20.0.2` points at an offline MDS
   host. The active MDS runs on the hub. Remove the route with that host.
 - **sparkf emergency path:** the workstation reaches sparkf over Tailscale, where
-  port 2222 is not reachable, so the audit's emergency login fails there.
+  port 2222 is not reachable; the controller's emergency probe falls back to
+  `sparkN.local` on the LAN.

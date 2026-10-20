@@ -169,17 +169,16 @@ Boot0002* ubuntu HD(1,GPT,def)
             systemd = root / "systemd"
             state = root / "state"
             logs = root / "log"
-            systemd.mkdir()
+            wants = systemd / f"ceph-{fsid}.target.wants"
+            wants.mkdir(parents=True)
+            (systemd / f"ceph-{fsid}.target").write_text("[Unit]\n")
             for daemon in ("osd.8","mgr.spark8.abc","mds.ds4warm.spark8.x","crash"):
                 (state / fsid / daemon).mkdir(parents=True)
+            (state / "79e60319-97d7-11f1-b71f-48210b969ab9").mkdir(parents=True)
+            for instance in ("osd.8","crash"):
+                (wants / f"ceph-{fsid}@{instance}.service").symlink_to(systemd / f"ceph-{fsid}@.service")
             retired = systemd / "ceph-osd-retry.service"
             retired.write_text("[Service]\n")
-            states = {
-                "ceph.target":"enabled",
-                f"ceph-{fsid}@osd.8.service":"enabled",
-                f"ceph-{fsid}@crash.service":"enabled",
-                f"ceph-{fsid}@mds.ds4warm.spark8.x.service":"disabled",
-            }
             commands = []
             disabled = []
 
@@ -189,7 +188,6 @@ Boot0002* ubuntu HD(1,GPT,def)
 
             with mock.patch.object(MODULE,"run",side_effect=record), \
                     mock.patch.object(MODULE,"disable_persistent_unit",side_effect=disabled.append), \
-                    mock.patch.object(MODULE,"ceph_unit_file_states",return_value=states), \
                     mock.patch.object(MODULE,"retired_paths",return_value=[retired]), \
                     mock.patch.object(MODULE.os,"chown") as chown:
                 changes = MODULE.install_ceph_policy(systemd,state,logs,root / "marker",root / "backup")
@@ -197,7 +195,9 @@ Boot0002* ubuntu HD(1,GPT,def)
             self.assertNotIn(f"ceph-{fsid}@osd.8.service",disabled)
             enable = [argv for argv in commands if argv[:2] == ["systemctl","enable"]]
             self.assertEqual(enable,[["systemctl","enable","ceph.target",f"ceph-{fsid}.target",f"ceph-{fsid}@mgr.spark8.abc.service",f"ceph-{fsid}@osd.8.service"]])
+            self.assertIn(["systemctl","reset-failed","ceph-osd-retry.service",*MODULE.OBSOLETE_CEPH_STARTUP_UNITS],commands)
             self.assertEqual((logs / fsid).stat().st_mode & 0o777,0o770)
+            self.assertFalse((logs / "79e60319-97d7-11f1-b71f-48210b969ab9").exists())
             chown.assert_called_once_with(logs / fsid,MODULE.CEPH_UID,MODULE.CEPH_UID)
             for unit in MODULE.CEPH_MASK_UNITS:
                 self.assertEqual((systemd / unit).readlink(),Path("/dev/null"))
@@ -205,15 +205,33 @@ Boot0002* ubuntu HD(1,GPT,def)
             self.assertTrue((root / "backup" / retired.relative_to("/")).exists())
             self.assertIn(f"disabled stray ceph-{fsid}@crash.service",changes)
 
-    def test_ceph_stray_units_ignore_disabled_and_foreign_clusters(self) -> None:
+    def test_ceph_clusters_are_directories_with_a_target_or_daemons(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            systemd = root / "systemd"
+            state = root / "state"
+            systemd.mkdir()
+            (state / "79e60319-97d7-11f1-b71f-48210b969ab9").mkdir(parents=True)
+            (state / "cd8715a1-47b9-4e4a-8d3c-2cddb02077d1" / "osd.3").mkdir(parents=True)
+            (state / "541e9482-0000-0000-0000-000000000000").mkdir()
+            (systemd / "ceph-541e9482-0000-0000-0000-000000000000.target").write_text("[Unit]\n")
+            (state / "bootstrap-osd").mkdir()
+            self.assertEqual(MODULE.ceph_fsids(state,systemd),["541e9482-0000-0000-0000-000000000000","cd8715a1-47b9-4e4a-8d3c-2cddb02077d1"])
+
+    def test_ceph_stray_units_come_from_enablement_links(self) -> None:
         fsid = "cd8715a1-47b9-4e4a-8d3c-2cddb02077d1"
-        states = {
-            f"ceph-{fsid}@osd.3.service":"enabled",
-            f"ceph-{fsid}@crash.service":"enabled",
-            f"ceph-{fsid}@mon.old.service":"disabled",
-            "ceph-541e9482-0000-0000-0000-000000000000@osd.1.service":"enabled",
-        }
-        self.assertEqual(MODULE.ceph_stray_units(fsid,["osd.3"],states),[f"ceph-{fsid}@crash.service"])
+        with tempfile.TemporaryDirectory() as directory:
+            systemd = Path(directory)
+            wants = systemd / f"ceph-{fsid}.target.wants"
+            wants.mkdir()
+            for instance in ("osd.3","crash"):
+                (wants / f"ceph-{fsid}@{instance}.service").symlink_to(systemd / f"ceph-{fsid}@.service")
+            other = systemd / "ceph-541e9482-0000-0000-0000-000000000000.target.wants"
+            other.mkdir()
+            (other / "ceph-541e9482-0000-0000-0000-000000000000@osd.1.service").symlink_to(systemd / "x")
+            enabled = MODULE.ceph_enabled_instances(fsid,systemd)
+            self.assertEqual(enabled,["crash","osd.3"])
+            self.assertEqual(MODULE.ceph_stray_units(fsid,["osd.3"],enabled),[f"ceph-{fsid}@crash.service"])
 
     def test_ceph_unit_mask_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -166,10 +166,14 @@ class NodeBaselineContractTest(unittest.TestCase):
                 )
                 patches = [mock.patch.object(MODULE,name,side_effect=lambda *args,_name=name,**_kwargs: calls.append((_name,args)) or []) for name in names]
                 patches.append(mock.patch.object(MODULE,"install_assets",side_effect=lambda assets: calls.append(("install_assets",tuple(assets)))))
-                patches.append(mock.patch.object(MODULE,"enable_policy_services",side_effect=lambda value: calls.append(("enable_policy_services",(value,)))))
+                patches.append(mock.patch.object(MODULE,"enable_policy_services",side_effect=lambda value,node_id: calls.append(("enable_policy_services",(value,node_id)))))
                 patches.append(mock.patch.object(MODULE,"run",side_effect=lambda argv,**_kwargs: calls.append(("run",tuple(argv)))))
                 patches.append(mock.patch.object(MODULE,"command",return_value="0"))
                 patches.append(mock.patch.object(MODULE.os,"geteuid",return_value=0))
+                ruleset = Path(directory) / "spark-firewall.nft"
+                ruleset.write_text("table inet spark_guard {}\n")
+                patches.append(mock.patch.object(MODULE,"FIREWALL_RULESET",ruleset))
+                patches.append(mock.patch.object(MODULE,"reset_vanished_failed_units",return_value=[]))
                 for patch in patches:
                     patch.start()
                 try:
@@ -185,7 +189,7 @@ class NodeBaselineContractTest(unittest.TestCase):
                 guard = order.index(f"{MODULE.DMA_GUARD_RUNTIME} install --notify {MODULE.HUB_NOTIFY}")
                 self.assertLess(order.index("enable_policy_services"),guard)
                 self.assertLess(order.index("install_ceph_policy"),order.index("enable_policy_services"))
-                self.assertIn(("enable_policy_services",(rank,)),calls)
+                self.assertIn(("enable_policy_services",(rank,node)),calls)
 
     def test_switched_fabric_network_manager_mode_writes_the_fleet_policy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

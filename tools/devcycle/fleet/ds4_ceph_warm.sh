@@ -28,6 +28,7 @@ install_startup_policy()
         '[Unit]' \
         'After=network-online.target local-fs.target time-sync.target docker.service ssh.service' \
         'Wants=network-online.target local-fs.target time-sync.target docker.service ssh.service' \
+        '' \
         '[Service]' \
         'TimeoutStartSec=180' \
         'TimeoutStopSec=180' >"$template_tmp"
