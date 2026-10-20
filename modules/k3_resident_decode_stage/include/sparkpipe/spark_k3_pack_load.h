@@ -11,12 +11,14 @@ extern "C" {
 
 #define SPARK_K3_PACK_MAGIC 0x4B33504Bu
 #define SPARK_K3_PACK_FORMAT_VERSION 2u
+#define SPARK_K3_PACK_FORMAT_VERSION_CELLS 3u
 #define SPARK_K3_PACK_ALIGNMENT 128u
 #define SPARK_K3_PACK_MAX_NAME_BYTES 96u
 
 #define SPARK_K3_PACK_KIND_BF16 0u
 #define SPARK_K3_PACK_KIND_F32 1u
 #define SPARK_K3_PACK_KIND_MXFP4_WS_INTERLEAVED_V1 2u
+#define SPARK_K3_PACK_KIND_MXFP4_WS_PAIRED_V1 3u
 
 typedef struct SparkK3PackEntry
 {
@@ -66,6 +68,10 @@ SparkStatus SparkK3PackLoadEntry(SparkK3Pack *pack, const char *name,
 	SparkK3PackEntry *entry);
 SparkStatus SparkK3PackLoadInterleaveTileK(SparkK3Pack *pack, const char *name,
 	uint32_t *tile_k);
+SparkStatus SparkK3PackLoadScaleBase(SparkK3Pack *pack, const char *name,
+	uint32_t *scale_base);
+SparkStatus SparkK3PackConfigValue(SparkK3Pack *pack, const char *key,
+	uint32_t *value);
 
 #ifdef __cplusplus
 }

@@ -20,6 +20,7 @@ typedef struct TestK3PackSpec
 	uint32_t truncate_payload;
 	uint32_t omit_layer;
 	const char *omit_tensor;
+	const char *expert_kind;
 } TestK3PackSpec;
 
 static const char *const TestK3Every[] =
@@ -90,9 +91,9 @@ static uint32_t TestK3AppendGroup(char *manifest, uint32_t used, uint32_t *count
 	for (index = 0u; index < name_count && used < TEST_K3_MANIFEST_BYTES; index++)
 	{
 		const char *kind = strncmp(names[index], "expert_", 7u) == 0 ?
-			"mxfp4_ws_interleaved_v1" : "bf16";
+			(spec->expert_kind != 0 ? spec->expert_kind : "mxfp4_ws_interleaved_v1") : "bf16";
 		const char *interleave = strcmp(names[index], "expert_w1_weight") == 0 ?
-			",\"interleave\":{\"tile_k\":32}" : "";
+			",\"interleave\":{\"tile_k\":32,\"scale_base\":120}" : "";
 		if ( spec->omit_tensor != 0 && layer == spec->omit_layer &&
 			strcmp(names[index], spec->omit_tensor) == 0 )
 			continue;
@@ -120,7 +121,7 @@ static int32_t TestK3WritePack(const char *path, const TestK3PackSpec *spec)
 		"\"total_layers\":%u,\"experts\":%u,\"top_k\":%u,\"latent\":%u,"
 		"\"intermediate\":%u,\"group\":32,\"vocab\":%u,\"kda_heads\":%u,"
 		"\"kda_head\":%u,\"heads\":%u,\"kv_lora\":%u,\"rope\":%u,\"v_head\":%u,"
-		"\"nope\":%u,\"shared\":%u,\"q_lora\":%u},\"tensors\":{",
+		"\"nope\":%u,\"shared\":%u,\"q_lora\":%u,\"tp_degree\":16,\"tp_rank\":5},\"tensors\":{",
 		SPARK_K3_MODEL_HIDDEN_DIMENSION, spec->layers, spec->first_layer,
 		spec->total_layers, SPARK_K3_MODEL_MOE_EXPERT_COUNT,
 		SPARK_K3_MODEL_MOE_TOP_K,
@@ -292,6 +293,54 @@ static int32_t TestK3RefusedPacks(const char *path)
 	return(failures);
 }
 
+static int32_t TestK3FormatThree(const char *path)
+{
+	TestK3PackSpec spec;
+	SparkK3Pack pack;
+	SparkK3PackEntry entry;
+	uint32_t value = 0u;
+	int32_t failures = 0;
+	spec = TestK3Spec(0u, 4u);
+	spec.version = SPARK_K3_PACK_FORMAT_VERSION_CELLS;
+	spec.expert_kind = "mxfp4_ws_paired_v1";
+	failures += TestK3Check(TestK3WritePack(path, &spec) &&
+		SparkK3PackOpen(path, &pack) == SPARK_STATUS_OK && pack.version == SPARK_K3_PACK_FORMAT_VERSION_CELLS,
+		"a format 3 pack opens");
+	if ( pack.private_state != 0 )
+	{
+		failures += TestK3Check(SparkK3PackLoadEntry(&pack, "model.layers.1.expert_w1_weight", &entry) == SPARK_STATUS_OK &&
+			entry.kind == SPARK_K3_PACK_KIND_MXFP4_WS_PAIRED_V1, "format 3 carries paired expert cells");
+		failures += TestK3Check(SparkK3PackLoadScaleBase(&pack, "model.layers.1.expert_w1_weight", &value) == SPARK_STATUS_OK &&
+			value == 120u, "the per-tensor scale base is read from the interleave block");
+		failures += TestK3Check(SparkK3PackConfigValue(&pack, "tp_rank", &value) == SPARK_STATUS_OK && value == 5u,
+			"the pack's own tp_rank is read from its config");
+		SparkK3PackClose(&pack);
+	}
+	spec.expert_kind = 0;
+	failures += TestK3Check(TestK3WritePack(path, &spec) && SparkK3PackOpen(path, &pack) == SPARK_STATUS_OK, "a format 3 pack with 17-row cells opens");
+	if ( pack.private_state != 0 )
+	{
+		failures += TestK3Check(SparkK3PackLoadEntry(&pack, "model.layers.1.expert_w1_weight", &entry) == SPARK_STATUS_VALIDATION_FAILED,
+			"format 3 refuses 17-row expert cells");
+		SparkK3PackClose(&pack);
+	}
+	spec = TestK3Spec(0u, 4u);
+	spec.expert_kind = "mxfp4_ws_paired_v1";
+	failures += TestK3Check(TestK3WritePack(path, &spec) && SparkK3PackOpen(path, &pack) == SPARK_STATUS_OK, "a format 2 pack with paired cells opens");
+	if ( pack.private_state != 0 )
+	{
+		failures += TestK3Check(SparkK3PackLoadEntry(&pack, "model.layers.1.expert_w1_weight", &entry) == SPARK_STATUS_VALIDATION_FAILED,
+			"format 2 refuses paired expert cells");
+		SparkK3PackClose(&pack);
+	}
+	spec = TestK3Spec(0u, 4u);
+	spec.version = SPARK_K3_PACK_FORMAT_VERSION_CELLS + 1u;
+	failures += TestK3Check(TestK3WritePack(path, &spec) && SparkK3PackOpen(path, &pack) == SPARK_STATUS_VALIDATION_FAILED &&
+		pack.private_state == 0, "a format past 3 is refused at open");
+	remove(path);
+	return(failures);
+}
+
 static int32_t TestK3ModuleSlices(const char *path)
 {
 	static SparkK3ModuleState state;
@@ -385,6 +434,7 @@ int main(int argc, char **argv)
 	snprintf(path, sizeof(path), "/tmp/test_k3_pack_bind-%d.pack", (int)getpid());
 	failures = TestK3PackAndBind(path);
 	failures += TestK3RefusedPacks(path);
+	failures += TestK3FormatThree(path);
 	failures += TestK3ModuleSlices(path);
 	if ( argc == 2 )
 		failures += TestK3RealPack(argv[1]);

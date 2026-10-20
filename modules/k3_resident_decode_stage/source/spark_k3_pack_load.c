@@ -2,9 +2,11 @@
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_named_pack.h"
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static SparkStatus SparkK3PackReadConfig(const SparkNamedPack *named, SparkK3PackConfig *config)
 {
@@ -47,16 +49,44 @@ struct SparkK3PackPrivate
 	SparkNamedPack named;
 };
 
+static SparkStatus SparkK3PackHeaderVersion(const char *path, uint32_t *version)
+{
+	uint8_t header[8];
+	uint32_t magic;
+	const int fd = open(path, O_RDONLY);
+	if ( fd < 0 )
+		return(SPARK_STATUS_IO_ERROR);
+	if ( pread(fd, header, sizeof(header), 0) != (ssize_t)sizeof(header) )
+	{
+		(void)close(fd);
+		return(SPARK_STATUS_IO_ERROR);
+	}
+	(void)close(fd);
+	magic = (uint32_t)header[0] | ((uint32_t)header[1] << 8u) | ((uint32_t)header[2] << 16u) | ((uint32_t)header[3] << 24u);
+	*version = (uint32_t)header[4] | ((uint32_t)header[5] << 8u) | ((uint32_t)header[6] << 16u) | ((uint32_t)header[7] << 24u);
+	return(magic == SPARK_K3_PACK_MAGIC ? SPARK_STATUS_OK : SPARK_STATUS_VALIDATION_FAILED);
+}
+
 SparkStatus SparkK3PackOpen(const char *path, SparkK3Pack *pack)
 {
 	SparkStatus status;
+	uint32_t version = 0u;
 	if ( pack == 0 || path == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(pack, 0, sizeof(*pack));
+	status = SparkK3PackHeaderVersion(path, &version);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( version != SPARK_K3_PACK_FORMAT_VERSION && version != SPARK_K3_PACK_FORMAT_VERSION_CELLS )
+	{
+		fprintf(stderr, "sparkpipe_k3: %s is K3 pack format %u; this driver binds format %u (whole router) and format %u (cell split); convert a cell pack with tools/k3_repack.py convert\n",
+			path, version, SPARK_K3_PACK_FORMAT_VERSION, SPARK_K3_PACK_FORMAT_VERSION_CELLS);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+	}
 	pack->private_state = (struct SparkK3PackPrivate *)calloc(1u, sizeof(*pack->private_state));
 	if ( pack->private_state == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	status = SparkNamedPackOpen(path, SPARK_K3_PACK_MAGIC, SPARK_K3_PACK_FORMAT_VERSION, SPARK_K3_PACK_ALIGNMENT,
+	status = SparkNamedPackOpen(path, SPARK_K3_PACK_MAGIC, version, SPARK_K3_PACK_ALIGNMENT,
 		&pack->private_state->named);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkK3PackReadConfig(&pack->private_state->named, &pack->config);
@@ -95,10 +125,15 @@ SparkStatus SparkK3PackLoadEntry(SparkK3Pack *pack, const char *name, SparkK3Pac
 		entry->kind = SPARK_K3_PACK_KIND_BF16;
 	else if ( strcmp(named.kind, "f32") == 0 )
 		entry->kind = SPARK_K3_PACK_KIND_F32;
-	else if ( strcmp(named.kind, "mxfp4_ws_interleaved_v1") == 0 )
+	else if ( strcmp(named.kind, "mxfp4_ws_interleaved_v1") == 0 && pack->version == SPARK_K3_PACK_FORMAT_VERSION )
 		entry->kind = SPARK_K3_PACK_KIND_MXFP4_WS_INTERLEAVED_V1;
+	else if ( strcmp(named.kind, "mxfp4_ws_paired_v1") == 0 && pack->version == SPARK_K3_PACK_FORMAT_VERSION_CELLS )
+		entry->kind = SPARK_K3_PACK_KIND_MXFP4_WS_PAIRED_V1;
 	else
+	{
+		fprintf(stderr, "sparkpipe_k3: %s has kind %s, which K3 pack format %u does not carry\n", name, named.kind, pack->version);
 		return(SPARK_STATUS_VALIDATION_FAILED);
+	}
 	entry->payload_offset = named.payload_offset;
 	entry->bytes = named.bytes;
 	entry->shape_count = named.shape_count;
@@ -111,4 +146,18 @@ SparkStatus SparkK3PackLoadInterleaveTileK(SparkK3Pack *pack, const char *name, 
 	if ( pack == 0 || pack->private_state == 0 || name == 0 || tile_k == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SparkNamedPackTensorFieldU32(&pack->private_state->named, name, "interleave", "tile_k", tile_k));
+}
+
+SparkStatus SparkK3PackLoadScaleBase(SparkK3Pack *pack, const char *name, uint32_t *scale_base)
+{
+	if ( pack == 0 || pack->private_state == 0 || name == 0 || scale_base == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SparkNamedPackTensorFieldU32(&pack->private_state->named, name, "interleave", "scale_base", scale_base));
+}
+
+SparkStatus SparkK3PackConfigValue(SparkK3Pack *pack, const char *key, uint32_t *value)
+{
+	if ( pack == 0 || pack->private_state == 0 || key == 0 || value == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SparkNamedPackConfigU32(&pack->private_state->named, key, value));
 }

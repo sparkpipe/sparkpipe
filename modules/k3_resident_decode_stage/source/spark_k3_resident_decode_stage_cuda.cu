@@ -240,9 +240,12 @@ static int32_t K3PackRankDims(SparkK3Pack *pack, uint32_t first_layer, uint32_t 
 	K3_FILL_RANK(kinds.kda, "kda_decay_up_weight", &b->kda_decay_up_rows, 0u, 2u);
 	K3_FILL_RANK(kinds.kda, "kda_out_weight", &b->kda_out_input, 1u, 2u);
 	K3_FILL_RANK(kinds.mla, "mla_q_up_weight", &b->mla_q_up_rows, 0u, 2u);
+	K3_FILL_RANK(kinds.mla, "mla_q_down_weight", &b->mla_q_down_rows, 0u, 2u);
+	K3_FILL_RANK(kinds.mla, "mla_kv_a_weight", &b->mla_kv_a_rows, 0u, 2u);
 	K3_FILL_RANK(kinds.mla, "mla_gate_weight", &b->mla_gate_rows, 0u, 2u);
 	K3_FILL_RANK(kinds.mla, "mla_out_weight", &b->mla_out_input, 1u, 2u);
 	K3_FILL_RANK(kinds.routed, "routed_down_weight", &b->routed_down_rows, 0u, 2u);
+	K3_FILL_RANK(kinds.routed, "router_weight", &b->router_rows, 0u, 2u);
 	K3_FILL_RANK(kinds.routed, "routed_up_weight", &b->routed_up_input, 1u, 2u);
 	K3_FILL_RANK(kinds.routed, "expert_w1_weight", &b->expert_w1_output, 1u, 2u);
 	K3_FILL_RANK(kinds.routed, "shared_w1_weight", &b->shared_w1_rows, 0u, 2u);
@@ -258,6 +261,38 @@ static int32_t K3PackRankDims(SparkK3Pack *pack, uint32_t first_layer, uint32_t 
 		b->mla_heads_rank = b->mla_gate_rows / K3_V_HEAD_DIM;
 #undef K3_FILL_RANK
 	return status;
+}
+
+static int32_t K3PackFormatFits(const SparkK3Pack *pack, const K3LayerBuffers *b, uint32_t degree)
+{
+	const uint32_t ranks = K3_ROUTED_EXPERT_HIDDEN / K3_RANK_DIM(b, routed_down_rows, K3_ROUTED_EXPERT_HIDDEN);
+	if ( pack->version == SPARK_K3_PACK_FORMAT_VERSION_CELLS )
+	{
+		if ( K3_EXPERT_CELLS(b) == 0 || degree < 2u ||
+			(b->router_rows != 0u && b->router_rows * ranks != K3_EXPERTS) ||
+			(b->mla_q_down_rows != 0u && (b->mla_q_down_rows * degree != K3_Q_LORA_RANK || b->mla_kv_a_rows * degree != K3_MLA_KV_A_DIM)) )
+		{
+			fprintf(stderr, "sparkpipe_k3: format %u pack needs cell experts with this rank's router rows and MLA down rows at tp_degree %u "
+				"(router %u rows, q_down %u rows, kv_a %u rows)\n", pack->version, degree, b->router_rows, b->mla_q_down_rows, b->mla_kv_a_rows);
+			return SPARK_K3_DISPATCH_ERR_BIND;
+		}
+		return SPARK_K3_DISPATCH_OK;
+	}
+	if ( K3_EXPERT_CELLS(b) )
+	{
+		fprintf(stderr, "sparkpipe_k3: this cell-split pack is format %u; convert it to format %u with tools/k3_repack.py convert\n",
+			pack->version, SPARK_K3_PACK_FORMAT_VERSION_CELLS);
+		return SPARK_K3_DISPATCH_ERR_BIND;
+	}
+	if ( (b->router_rows != 0u && b->router_rows != K3_EXPERTS) ||
+		(b->mla_q_down_rows != 0u && b->mla_q_down_rows != K3_Q_LORA_RANK) ||
+		(b->mla_kv_a_rows != 0u && b->mla_kv_a_rows != K3_MLA_KV_A_DIM) )
+	{
+		fprintf(stderr, "sparkpipe_k3: format %u pack must hold the whole router and MLA down tensors (router %u rows, q_down %u rows, kv_a %u rows)\n",
+			pack->version, b->router_rows, b->mla_q_down_rows, b->mla_kv_a_rows);
+		return SPARK_K3_DISPATCH_ERR_BIND;
+	}
+	return SPARK_K3_DISPATCH_OK;
 }
 
 int32_t SparkK3DispatchScratchWidths(SparkK3Pack *pack, uint32_t first_layer, uint32_t layer_count,
@@ -554,6 +589,23 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 			if ( SparkK3PackLoadInterleaveTileK(pack, w1_name, &tile_k) == SPARK_STATUS_OK &&
 				(tile_k == 128u || tile_k == 32u) )
 				w->expert_tile_k = tile_k;
+			if ( pack->version == SPARK_K3_PACK_FORMAT_VERSION_CELLS )
+			{
+				char w2_name[128];
+				snprintf(w2_name, sizeof(w2_name), "model.layers.%u.expert_w2_weight",
+					d->first_layer + off);
+				if ( w->expert_tile_k != LM_SKINNY_CELL_TILE_K ||
+					SparkK3PackLoadScaleBase(pack, w1_name, &w->expert_w1_scale_base) != SPARK_STATUS_OK ||
+					SparkK3PackLoadScaleBase(pack, w2_name, &w->expert_w2_scale_base) != SPARK_STATUS_OK ||
+					LmSkinnyCellScaleBaseValid(w->expert_w1_scale_base) == 0u ||
+					LmSkinnyCellScaleBaseValid(w->expert_w2_scale_base) == 0u )
+				{
+					fprintf(stderr, "sparkpipe_k3: %s needs tile_k %u and a scale base in 1..%u on both expert tensors\n",
+						w1_name, LM_SKINNY_CELL_TILE_K, 255u - LM_SKINNY_CELL_SCALE_SPAN);
+					status = SPARK_K3_DISPATCH_ERR_BIND;
+					break;
+				}
+			}
 		}
 		status = k3_require(bound, k3_required_every,
 			(uint32_t)(sizeof(k3_required_every) / sizeof(k3_required_every[0])));
@@ -592,6 +644,8 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 	{
 		SparkK3ScratchWidths needs;
 		status = K3PackRankDims(pack, d->first_layer, layer_count, d->buffers);
+		if ( status == SPARK_K3_DISPATCH_OK )
+			status = K3PackFormatFits(pack, d->buffers, d->tp_degree);
 		if ( status != SPARK_K3_DISPATCH_OK )
 		{
 			delete[] host;

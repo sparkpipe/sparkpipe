@@ -600,6 +600,7 @@ PYTHON_TESTS := \
 	tests/test_keyed_draft_capture.py \
 	tests/test_draftd_mtp_kv.py \
 	tests/test_k3_reshard_cells.py \
+	tests/test_k3_repack.py \
 	tests/test_laguna_reference_torch.py \
 	tests/test_python_tests_registered.py \
 	tests/test_spark_pack_common_extents.py \
@@ -810,7 +811,7 @@ build/test_route_build_scan: tests/test_route_build_scan.cu inference/kernels/ro
 test-route-build-scan: build/test_route_build_scan
 	./build/test_route_build_scan --run
 
-build/test_skinny_cell: tests/test_skinny_cell.cu inference/kernels/skinny.cuh | build
+build/test_skinny_cell: tests/test_skinny_cell.cu inference/kernels/skinny.cuh inference/kernels/cell_mma.cuh tests/cuda/cell_mma_v1_reference.cuh | build
 	$(KERNEL_TEST_NVCC) $< $(KERNEL_TEST_CUDA_LINK) -o $@
 
 .PHONY: test-skinny-cell
