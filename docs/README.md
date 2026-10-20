@@ -147,10 +147,10 @@ current authority.
 ## Evidence and research material
 
 - [`receipts/`](receipts/): JSON receipts cited by the documents above.
-- [`research-dflash2/`](research-dflash2/) and
-  [`research-dspark/`](research-dspark/): copies of external papers, posts
-  and code used by the speculation work; reference material, not SparkPipe
-  authority.
+- [`research-dspark/DSPARK_VERIFY_LOOP_REPORT.md`](research-dspark/DSPARK_VERIFY_LOOP_REPORT.md):
+  notes on the DSpark verify loop. The papers and code it draws on are cited
+  by link, for example the DSpark paper (arXiv 2607.05147); copies are not
+  kept in the tree.
 
 ## History
 

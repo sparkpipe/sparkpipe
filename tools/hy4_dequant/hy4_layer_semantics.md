@@ -1,10 +1,10 @@
-# hy4 layer forward semantics (from AngelSlim's llama.cpp implementation)
+# hy4 layer forward semantics (llama.cpp hy-v4 implementation)
 
-Ground truth: `src/models/hyv4.cpp` as added by
-`AngelSlim/Hy4-preview-GGUF@779242edccdedc2109a0b36b164263a88f015bfa`
-`hy4-preview-patch/0001-hyv4-architecture.patch`, a patch against llama.cpp
-`0cea36222fe9bac5ebfc45716c9eef11f37046c4`; it is not vendored because the
-upstream repository states no license. Config pins: hc=4, eps=1e-6,
+Ground truth: `src/models/hy-v4.cpp` of llama.cpp at
+`49c0dc82b849344f945b14ab997386bd793369ae` (MIT, see NOTICE), the upstream
+merge of the Hy4 architecture support that AngelSlim first published as
+`hy4-preview-patch/0001-hyv4-architecture.patch` in
+`AngelSlim/Hy4-preview-GGUF@779242edccdedc2109a0b36b164263a88f015bfa`. Config pins: hc=4, eps=1e-6,
 magnitude=2.0, sigmoid routing + e_score_correction_bias, experts 8/256 + 1
 shared, scale 2.827, weights_norm=true, swiglu clamp 10.0 on ROUTED experts
 only (shared/dense unclamped), MLA qk 256 / v 256, DSA indexer full-every-4th,

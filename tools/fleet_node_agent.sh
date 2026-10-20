@@ -10,6 +10,7 @@ MESH_INTERFACE="${SPARK_MESH_INTERFACE:-rocep1s0f1}"
 MESH_SGID_INDEX="${SPARK_MESH_SGID_INDEX:-3}"
 MESH_PAIR_INTERFACE="${SPARK_MESH_PAIR_INTERFACE:-rocep1s0f0}"
 MESH_PAIR_SGID_INDEX="${SPARK_MESH_PAIR_SGID_INDEX:-3}"
+MESH_LINK_MAP="0-1:200,2-3:200,4-5:200,6-7:200,8-9:200,10-11:200,12-13:200"
 MESH_TRAFFIC_CLASS=106
 MESH_FABRIC_PREFIX="${SPARK_MESH_FABRIC_PREFIX:-10.10.}"
 WEIGHTD_ADDRESSES=""
@@ -32,6 +33,32 @@ done
     echo "fleet agent: host '$HOST' is not in FLEET_HOSTS; refusing to start with a guessed rank" >&2
     exit 2
 }
+
+mesh_link_paired() {
+    local rank="$1" link low high speed paired=1
+    for link in ${MESH_LINK_MAP//,/ }; do
+        low=${link%%-*}
+        high=${link#*-}
+        speed=${high#*:}
+        high=${high%%:*}
+        case "$low:$high:$speed" in
+            *[!0-9:]*|:*|*::*|*:) echo "fleet agent: mesh link '$link' is not LOW-HIGH:GBPS" >&2; return 2 ;;
+        esac
+        [ "$link" = "$low-$high:$speed" ] && [ $(( low ^ 1 )) -eq "$high" ] && [ "$low" -lt "$high" ] || {
+            echo "fleet agent: mesh link '$link' does not join a rank with its rank^1 partner" >&2
+            return 2
+        }
+        { [ "$rank" -eq "$low" ] || [ "$rank" -eq "$high" ]; } && paired=0
+    done
+    return "$paired"
+}
+
+mesh_link_paired "$RANK"
+case $? in
+    0) MESH_PAIRED=1 ;;
+    1) MESH_PAIRED="" ;;
+    *) exit 2 ;;
+esac
 PID_FILE="$HOME/.fleet_agent.pid"
 VIEW="$HOME/current"
 ROOTS_FILE="${FLEET_AGENT_ROOTS_FILE:-$HOME/.fleet_agent_roots}"
@@ -771,7 +798,7 @@ doctor_port() {
 node_doctor() {
     safe_mode_active && return 0
     doctor_port "$MESH_INTERFACE"
-    doctor_port "$MESH_PAIR_INTERFACE"
+    [ -z "$MESH_PAIRED" ] || doctor_port "$MESH_PAIR_INTERFACE"
 }
 
 janitor() {
@@ -822,6 +849,7 @@ mesh_address() {
 mesh_addresses() {
     local switch pair
     switch=$(mesh_address "$MESH_INTERFACE" "$MESH_SGID_INDEX") || return 1
+    [ -n "$MESH_PAIRED" ] || { echo "$switch"; return 0; }
     pair=$(mesh_address "$MESH_PAIR_INTERFACE" "$MESH_PAIR_SGID_INDEX") || return 1
     echo "$switch $pair"
 }
@@ -916,9 +944,9 @@ ensure_weightd() {
     done
     command+=("$home/sparkpipe_weightd" --socket /tmp/spark_weightd.sock
         --mesh-rank "$RANK" --mesh-rank-mask 0xffff --mesh-interface "$MESH_INTERFACE"
-        --mesh-sgid-index "$MESH_SGID_INDEX"
-        --mesh-pair-interface "$MESH_PAIR_INTERFACE" --mesh-pair-sgid-index "$MESH_PAIR_SGID_INDEX"
-        --mesh-traffic-class "$MESH_TRAFFIC_CLASS")
+        --mesh-sgid-index "$MESH_SGID_INDEX")
+    [ -z "$MESH_PAIRED" ] || command+=(--mesh-pair-interface "$MESH_PAIR_INTERFACE" --mesh-pair-sgid-index "$MESH_PAIR_SGID_INDEX")
+    command+=(--mesh-traffic-class "$MESH_TRAFFIC_CLASS")
     systemctl --user reset-failed "$WEIGHTD_UNIT" >/dev/null 2>&1
     reason=$("${command[@]}" 2>&1) || {
         echo "weightd: systemd-run $WEIGHTD_UNIT failed: $reason; dependent startup blocked" >&2

@@ -737,3 +737,13 @@ qualification). GPU tests and harnesses have their own targets, for example
 Hardware qualification requires CUDA, transport, numerical and service
 receipts from an exact committed revision. Host or simulator results cannot
 stand in for them.
+
+## License
+
+SparkPipe is licensed under the [Apache License, Version 2.0](LICENSE).
+Copyright 2026 HYOR AI Tech Ltd. Third-party files kept in the tree and their
+licenses are listed in [`NOTICE`](NOTICE).
+
+Model weights, tokenizers and the stage packs built from them are not covered
+by the Apache License. They keep their publishers' licenses, some of which
+add conditions for large commercial deployments.
