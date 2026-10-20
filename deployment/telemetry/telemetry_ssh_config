@@ -1,6 +1,9 @@
 Host lenovo7
   HostName 192.168.50.66
   User spark7
+  HostKeyAlias lenovo7
+  StrictHostKeyChecking accept-new
+  UserKnownHostsFile ~/.ssh/ds4_lenovo_known_hosts
 
 Host lenovo8
   HostName 192.168.50.11
@@ -15,5 +18,9 @@ Host lenovo8
 Host lenovo9
   HostName 192.168.50.3
   User spark9
+  HostKeyAlias lenovo9
+  StrictHostKeyChecking accept-new
+  UserKnownHostsFile ~/.ssh/ds4_lenovo_known_hosts
 
-Include ~/.ssh/config
+Match all
+  Include ~/.ssh/config
