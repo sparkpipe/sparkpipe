@@ -292,7 +292,7 @@ remove_legacy_addresses()
 
 configure_unmanaged_fabric()
 {
-    local device path
+    local disconnect="${1:-disconnect}" device path
     mkdir -p /etc/NetworkManager/conf.d
     for path in \
         /etc/NetworkManager/conf.d/99-ds4-200g-unmanaged.conf \
@@ -311,7 +311,9 @@ keep-configuration=no
 EOF
     command -v nmcli >/dev/null 2>&1 || return 0
     while read -r device; do
-        nmcli device disconnect "${device}" >/dev/null 2>&1 || true
+        if [ "${disconnect}" = disconnect ]; then
+            nmcli device disconnect "${device}" >/dev/null 2>&1 || true
+        fi
         nmcli device set "${device}" managed no >/dev/null 2>&1 || true
     done < <(fabric_devices)
     nmcli general reload >/dev/null 2>&1 || true
@@ -352,7 +354,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 if [ "${1:-}" = "--network-manager" ]; then
-    configure_unmanaged_fabric
+    configure_unmanaged_fabric keep-addresses
     exit 0
 fi
 

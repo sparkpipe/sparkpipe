@@ -195,7 +195,7 @@ class NodeBaselineContractTest(unittest.TestCase):
             (conf / "ds4-200g-unmanaged.conf").write_text("[keyfile]\nunmanaged-devices=interface-name:enP2p1s0f0np0;interface-name:enP2p1s0f1np1\n")
             (conf / "99-ds4-ring-unmanaged.conf").write_text("[keyfile]\nunmanaged-devices=interface-name:enp1s0f0np0\n")
             harness = (fabric_functions().replace("/etc/NetworkManager/conf.d",str(conf)).replace("/var/backups/ds4-fleet",str(backups))
-                       + f'\nnmcli() {{ echo "NMCLI $*" >> "{directory}/nmcli.log"; }}\nfabric_devices() {{ printf "%s\\n" enp1s0f0np0; }}\nconfigure_unmanaged_fabric\n')
+                       + f'\nnmcli() {{ echo "NMCLI $*" >> "{directory}/nmcli.log"; }}\nfabric_devices() {{ printf "%s\\n" enp1s0f0np0; }}\nconfigure_unmanaged_fabric keep-addresses\n')
             result = subprocess.run(["bash","-c",harness],capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertEqual(sorted(path.name for path in conf.iterdir()),["90-ds4-switched-fabric-unmanaged.conf","95-ds4-uplink-no-assume.conf"])
@@ -203,10 +203,14 @@ class NodeBaselineContractTest(unittest.TestCase):
             self.assertEqual(set(MODULE.FABRIC_INTERFACES) - MODULE.unmanaged_interfaces(merged),set())
             self.assertTrue(MODULE.uplink_assume_disabled(merged))
             self.assertEqual(len(list(backups.rglob("ds4-200g-unmanaged.conf"))),1)
-            self.assertIn("NMCLI device set enp1s0f0np0 managed no",(Path(directory) / "nmcli.log").read_text())
+            calls = (Path(directory) / "nmcli.log").read_text()
+            self.assertIn("NMCLI device set enp1s0f0np0 managed no",calls)
+            self.assertNotIn("disconnect",calls)
         script = FABRIC.read_text()
         mode = script.split('if [ "${1:-}" = "--network-manager" ]; then',1)[1].split("\nfi\n",1)[0]
-        self.assertEqual([line.strip() for line in mode.strip().splitlines()],["configure_unmanaged_fabric","exit 0"])
+        self.assertEqual([line.strip() for line in mode.strip().splitlines()],["configure_unmanaged_fabric keep-addresses","exit 0"])
+        install = script.split('if [ "${1:-}" = "--install" ]; then',1)[1].split("\nfi\n",1)[0]
+        self.assertIn("    configure_unmanaged_fabric\n",install)
 
     def test_switched_fabric_routes_the_ceph_mds_only_through_an_on_link_gateway(self) -> None:
         cases = (
