@@ -362,6 +362,10 @@ SparkStatus SparkPrefixCacheMarkResume(
     const uint32_t *token_ids,
     uint32_t token_count);
 
+SparkStatus SparkPrefixCacheClearResume(
+    SparkPrefixCache *cache,
+    const uint32_t *token_ids,
+    uint32_t token_count);
 uint32_t SparkPrefixCacheResumeTokenCount(
     SparkPrefixCache *cache,
     const uint32_t *token_ids,

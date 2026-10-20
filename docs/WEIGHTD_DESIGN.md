@@ -27,7 +27,9 @@ marketplace tenant-scribble protection for free).
 On every Spark the fleet agent (`tools/fleet_node_agent.sh`, systemd user unit
 `fleet-agent`) owns one weightd. `ensure_weightd` starts
 `~/sparkdata/weightd/sparkpipe_weightd --socket /tmp/spark_weightd.sock
---mesh-rank R --mesh-rank-mask 0xffff --mesh-interface … --mesh-sgid-index …`.
+--mesh-rank R --mesh-rank-mask 0xffff --mesh-interface … --mesh-sgid-index …`,
+plus `--mesh-pair-interface … --mesh-pair-sgid-index …` on ranks that
+`MESH_LINK_MAP` lists (see [HARDWARE_TOPOLOGY.md](HARDWARE_TOPOLOGY.md)).
 It passes no `--device-bytes-max`, so the budget is
 `SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT` (110 GiB) unless the unit environment
 sets `SPARK_WEIGHTD_DEVICE_BYTES_MAX`. It passes no `--mesh-dir`, so records live
@@ -37,6 +39,10 @@ directory. The production GLM residentds attach to this socket. The agent starts
 weightd as its own transient user unit, `sparkpipe-weightd`, and each root as its
 own unit, so restarting the agent does not restart them. Restart weightd with
 `systemctl --user restart sparkpipe-weightd` only when no residentd runs.
+`restart` re-runs the recorded arguments. When the agent would pass different
+arguments, for example after a rank leaves `MESH_LINK_MAP`, run
+`systemctl --user stop sparkpipe-weightd` instead; the agent then starts weightd
+with the new arguments.
 
 These rules follow from that code:
 
@@ -409,6 +415,110 @@ Daemons of both ABIs therefore wire to each other during a per-node roll.
     bytes.
   - A driver that needs PEER routes must refuse to start when the capability
     is absent. It must not fall back to SCATTER.
+
+**Half-slot routes and two transfers in flight.** A large all-gather sends two
+chunks at once per band and rank, so that one chunk's publish, gate and combine
+overlap the other chunk on the wire.
+
+- Layout:
+  - Each 262,208-byte slot holds two halves of
+    `SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES` = (262,208 - 64) / 2 = 131,072
+    bytes: the lower half at offset 0 and the upper half at offset 131,072.
+  - The lower half's tail is at `SLOT_BYTES - 16`. The upper half's tail is
+    `SLOT_BYTES - 8`, which is also the whole-slot tail.
+  - A whole-slot payload ends at `SLOT_BYTES - 16`, so it never touches either
+    half tail.
+  - A half chunk with sequence `s` uses ring `(s - 1) mod 2` and half
+    `1 + ((s - 1) >> 1) mod 2` (`SPARK_WEIGHTD_MESH_SEQUENCE_HALF`). Four
+    consecutive chunks therefore take four distinct positions.
+- Route: `half` (bits 58-59 of the route word) is 1 for the lower half and 2
+  for the upper half. A half route is a FULL route with `slice_bytes` 0 and at
+  most 131,072 bytes; weightd sends the payload from and to the half's offset
+  and the inline tail to the half's tail word.
+- Doorbells:
+  - Each band and rank has an alternate doorbell cell at
+    `SPARK_WEIGHTD_MESH_DOORBELL_ALT_ENTRY(band,rank)`. The cells start at
+    doorbell-page offset 88,064 and end at 104,448, inside the 128 KiB page.
+  - A half-route publish writes the cell its sequence parity picks: odd
+    sequences take the alternate cell. Every other publish writes the primary
+    cell.
+- weightd:
+  - Each cell has two transfer records, picked by sequence parity, and an
+    `issued` mark: the highest sequence posted.
+  - On each sweep it snapshots both cells twice and accepts the snapshot only
+    when both passes agree. It then posts every cell whose sequence is above
+    `issued`, lowest first, and stops at the first one it cannot post. Posting
+    order therefore equals publish order on every queue pair.
+  - The shipped word only moves forward. A completed record advances it only
+    when the other record holds no lower sequence that is still pending or has
+    failed. When the lower record completes later, the shipped word jumps
+    over both.
+  - A failed record fences both records of the cell until the lane is
+    reconfigured. A shipped wait on the cell reports the failure.
+  - A cell sequence at or below `issued` is never doorbell work, so an older
+    sequence left in the other cell does not keep weightd awake.
+- Discovery: the lane's wait cells advertise
+  `SPARK_WEIGHTD_MESH_CAPABILITY_HALF_SLOTS` (bit 2). A runner built with half
+  slots refuses an older weightd with `MESH-CAPABILITY-MISSING`; an older
+  runner works unchanged with this weightd, because it writes only primary
+  cells and one transfer at a time. Ship weightd fleet-wide before the
+  runner. The launcher ABI is 2, so a core library and a kernel library from
+  different revisions refuse to register.
+
+**Pipelined all-gather.** The hardware-wait collective runs an all-gather
+whose local part exceeds one whole slot (`SparkTpMeshDirectCapacity`, 131,096
+elements) as `n = ceil(local / 65,536)` half chunks (`SparkTpMeshPipelineChunks`).
+`MESH-PATH` names it `direct-pipelined` with `phases=n`. Every other operation,
+and every all-gather that fits one slot, keeps its old schedule. The stream
+order on each rank is:
+
+- Pub(0), Arr(0), Pub(1), DW(0), then Pub(2) when 2 <= n - 2;
+- for each later chunk i: Arr(i), DW(i), then Pub(i + 2) while i + 2 <= n - 2;
+- Pub(n - 1) right after DW(n - 2).
+
+Pub is the half-route publish, Arr the one-warp arrival wait on the peers' half
+tails, DW the combine copy out of the half. Arrival and combine read the chunk
+one sequence behind the newest publish when a later chunk has already been
+published (the lag view); the lag is always 0 or 1.
+
+Why it is safe:
+- Remote reuse: rank r publishes chunk i only after Arr(i - 2), and every peer
+  published chunk i - 2 only after its own DW(i - 4). So every peer has read
+  the position chunk i overwrites. Pub(1) and Pub(2) follow Arr(0) and DW(0),
+  which covers the whole-slot data the previous operation left.
+- Local reuse: Pub(0) waits for the strict shipped gate (the previous
+  operation's last sequence). Pub(i) for i >= 1 waits until the shipped word
+  equals the previous or the newest published sequence, so chunk i - 2 has
+  shipped before its doorbell cell, record and source position are rewritten.
+  On a miss the gate polls the shipped word for up to 4 ms, then falls back to
+  the strict weightd wait on the newest sequence, which reports transfer
+  failures and always ends.
+- End of round: the last publish follows DW(n - 2), so when the round ends
+  every peer has consumed every chunk up to the second last. That is the same
+  guarantee the whole-slot schedule gives, so the operations before and after
+  a pipelined round need nothing new. This holds within one chain epoch; the
+  first publish of a new epoch has the same exposure as before.
+- A failed transfer is reported later than in the whole-slot schedule. If
+  chunk i + 1 fails while chunk i ships, Pub(i + 2) still passes its gate,
+  weightd refuses to post it, and the error surfaces at the next strict gate or
+  at the peers' arrival timeouts. It is loud, never silent.
+
+The arrival statistics of a pipelined round (`peer_wait_ns`,
+`first_arrival_ns`, `peer_arrival_ns`) measure each arrival kernel from its own
+start, because a later publish has already reset the round's wait start.
+
+Fleet bench (16 ranks, experimental weightd beside production, results
+verified on every rank, 2026-10-17), per round, whole-slot schedule against
+pipelined:
+
+| local elements | whole-slot ms | pipelined ms |
+|---|---|---|
+| 1,677,312 (K3 key window, 2,912 keys x 576) | 5.61, 5.59 | 5.15, 4.99 |
+| 458,752 (64 rows x 7,168) | 1.52 | 1.43 |
+| 344,064 (1,024 rows x 336) | 1.14 | 1.09 |
+| 135,168 (1,024 rows x 132) | 0.51 | 0.46 |
+
+The key window's floor is 53.7 MB over one 100G port, about 4.1 ms.
 
 **Row cap.** `SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS` is 1,024 (was 128). The cap
 is compile-time in the engine, so it applies only to engines built against

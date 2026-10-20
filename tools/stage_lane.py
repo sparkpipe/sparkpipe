@@ -362,6 +362,7 @@ def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
         "resident_capacity": args.sequences,
         "kv_pages": args.kv_pages,
         "state_budget_bytes": args.state_budget_bytes,
+        **({"state_memory_bytes": args.state_memory_bytes} if model["recurrent_bytes"] else {}),
         "hidden": model["hidden"],
         "device_collective": {
             "backend": "hidden_transport",
@@ -470,6 +471,8 @@ def main() -> int:
     parser.add_argument("--kv-backing-bytes", type=int, default=8 << 30)
     parser.add_argument("--kv-snapshot-bytes", type=int, default=DEFAULT_KV_SNAPSHOT_BYTES)
     parser.add_argument("--state-budget-bytes", type=int, default=DEFAULT_STATE_BUDGET_BYTES)
+    parser.add_argument("--state-memory-bytes", type=int, default=None,
+                        help="per-rank memory for recurrent-state records; default twice the two per sequence plus two the KV binding needs")
     parser.add_argument("--tokenizer-sha256", default=None)
     parser.add_argument("--tokenizer-dir", type=Path, default=None,
                         help="local copy of the publisher tokenizer.json and tokenizer_config.json")
@@ -484,10 +487,14 @@ def main() -> int:
     args.kv_logical_pages = args.kv_logical_pages or args.kv_physical_pages
     if args.kv_physical_pages < args.kv_pages or args.kv_logical_pages < args.kv_physical_pages:
         raise SystemExit("physical pages must hold one sequence and logical pages must cover the physical pages")
-    minimum = (args.kv_logical_pages - args.kv_physical_pages + 2) * model["kv_page_bytes"] + \
-        (2 * args.sequences + 2) * model["recurrent_bytes"]
+    minimum = (args.kv_logical_pages - args.kv_physical_pages + 2) * model["kv_page_bytes"]
     if args.kv_backing_bytes < minimum:
-        raise SystemExit(f"kv-backing-bytes {args.kv_backing_bytes} cannot hold the spilled pages and recurrent checkpoints; it needs {minimum}")
+        raise SystemExit(f"kv-backing-bytes {args.kv_backing_bytes} cannot hold the spilled pages; it needs {minimum}")
+    states = (2 * args.sequences + 2) * model["recurrent_bytes"]
+    if args.state_memory_bytes is None:
+        args.state_memory_bytes = 2 * states
+    if model["recurrent_bytes"] and args.state_memory_bytes < states:
+        raise SystemExit(f"state-memory-bytes {args.state_memory_bytes} cannot hold two recurrent checkpoints per sequence plus two; it needs {states}")
     if args.state_budget_bytes <= 0:
         raise SystemExit("state-budget-bytes must be positive")
     args.output_dir.mkdir(parents=True, exist_ok=True)

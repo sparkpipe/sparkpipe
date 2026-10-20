@@ -327,6 +327,7 @@ static SparkStatus SparkSpeculationSeamDraftCallback(
         depth,
         seam->draft_time_budget_ms,
         seam->draft_max_depth,
+        0,
         seam->nodes,
         seam->draft_max_node_count,
         &node_count,

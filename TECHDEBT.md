@@ -486,6 +486,12 @@ finished ones rewritten to say what is left.
   lane rejoins, so a lane is parked and restored page by page rather than as
   one contiguous transfer. Close it with a fleet backpressure run at 2x device
   pages where parked lanes restore bit-exact at B1 and B16.
+- The format-2 KV snapshot tier (page files naming their parent, separate
+  state files, leaf-first eviction, ordered writes) is host-tested only.
+  Prove it on the fleet: a K3 -> GLM -> K3 swap that restores a 270K
+  conversation in under 15 s, a store of 8 GiB per rank that keeps the newest
+  conversations whole while older ones go tip-first, and an open that removes
+  the format-1 files of the previous release once.
 - Crash recovery of the KV snapshot store has not run on the fleet. The store
   writes each file to a `.kvs-writing-` temporary, fsyncs, renames and fsyncs
   the directory, and its open deletes leftover temporaries; the binding opens
@@ -791,32 +797,19 @@ Related common-code debt:
 
 ## Packaging and provenance
 
-- Third-party material that NOTICE does not yet cover (2026-10-03; lane L01,
-  scheduled after A01). The repository is public and has no license of its
-  own, so every copy is redistributed. NOTICE covers exllamav3 and llama.cpp
-  only. Not covered:
-  - vLLM copies: `docs/research-dspark/vllm-*.py` (12 of 14 carry
-    `SPDX-License-Identifier: Apache-2.0`) and `pr46995.diff`. Apache-2.0
-    requires a copy of the license and the retained notices.
-  - Text with no license recorded: `docs/research-dspark/model.py`,
-    `generate.py`, `joe-*`, `tony-*`, `ds4-issue468-comments.md`,
-    `DSpark_paper.pdf`, `paper-html.txt`, `zhong-review.*`, and the copied
-    posts, READMEs and release pages in `docs/research-dflash2/`.
-  - HF modeling references in `model_contracts/references/` keep their
-    Apache-2.0 headers but have no NOTICE entry; `README.md` there gives no
-    commit for `modeling_qwen4_exp.py` and no entry for
-    `modeling_muse_glimmer.py`.
-  - `text/unicode_nfc_tables.h` and `text/unicode_class_tables.h` are
-    generated from Unicode 16.0.0 data (`tools/gen_unicode_nfc_tables.py`);
-    the Unicode License v3 requires its notice.
-  - `tools/hy4_dequant/hy4_tokenize.py` ports the hyv4 pre-tokenizer of the
-    AngelSlim patch, whose license is unknown.
-  - Chat templates and tokenizer files copied from model repositories, and
-    the serving obligations of the model licenses.
-  Close it with NOTICE entries (upstream, full commit, license text) for
-  everything kept, deletion or links for everything without a redistribution
-  right, and the `tests/test_third_party_notices.py` markers extended to
-  these paths. The repository-wide audit ledger feeds the lane.
+- License follow-ups (2026-10-18; the code is Apache-2.0 and NOTICE covers
+  every third-party file kept in the tree):
+  - The HY4 reference tools and module were first written against
+    AngelSlim's hyv4 patch, which states no license. NOTICE now credits the
+    MIT implementation llama.cpp merged at 49c0dc82 (src/models/hy-v4.cpp);
+    a line-by-line check of the tools and module against it is open.
+  - The serving obligations of each model license (K3's display and revenue
+    conditions, the Qwen 3.8 licenses, OpenMDW for Laguna, the NVIDIA Open
+    Model Agreement for NVIDIA checkpoints) are not yet written down in one
+    place.
+  - The ds4-eval fixtures keep GPQA questions in plain text, which GPQA's
+    dataset card asks users not to publish; a decision on keeping only ids
+    is open.
 - Add the upstream implementation commit to stage-pack provenance at the next
   pack format revision.
 - Publish one synchronized pack-environment manifest for Python, CUDA, and

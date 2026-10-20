@@ -24,7 +24,6 @@ typedef struct SparkK3RunnerLane
 	uint32_t index;
 } SparkK3RunnerLane;
 
-#define K3_RUNNER_PAIR_MIN_ROWS 256u
 
 __global__ static void K3RunnerDenseOffsetsKernel(uint32_t *offsets, uint32_t rows)
 {
@@ -313,13 +312,16 @@ static void K3RunnerShardExchange(SparkK3ModelState *state, K3LayerBuffers *b,
 	}
 	if ( (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_KEYS )
 	{
-		if ( b->shard_gather == 0u || b->shard_gather_stride % ((uint64_t)K3_HIDDEN * sizeof(uint16_t)) != 0u )
+		const uint64_t stride = K3LayerMlaWindowStride(b, b->shard_gather_window);
+		if ( b->shard_gather == 0u || stride == 0u || stride % ((uint64_t)K3_HIDDEN * sizeof(uint16_t)) != 0u ||
+			b->shard_gather_window >= (b->shard_gather_windows > 1u ? b->shard_gather_windows : 1u) )
 		{
 			K3ModelFail(state);
 			return;
 		}
-		K3RunnerRound(state, stream, (uint32_t)(b->shard_gather_stride / ((uint64_t)K3_HIDDEN * sizeof(uint16_t))),
-			b->shard_gather_send, (void *)b->shard_gather_keys, 0u, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,
+		K3RunnerRound(state, stream, (uint32_t)(stride / ((uint64_t)K3_HIDDEN * sizeof(uint16_t))),
+			K3LayerMlaWindowSend(b, b->shard_gather_window), (void *)K3LayerMlaWindowLanding(b, b->shard_gather_window), 0u,
+			SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,
 			(phase & K3_COLLECTIVE_FINISH) != 0u ? K3_RUNNER_STAGE_FINISH : K3_RUNNER_STAGE_BEGIN);
 		return;
 	}
@@ -356,8 +358,27 @@ static void K3RunnerGatherLatent(SparkK3ModelState *state, K3LayerBuffers *b, cu
 			gathered, b->latent_full_bf16, rows, slice, ranks);
 }
 
+static void K3RunnerRowShardTap(SparkK3ModelState *state, K3LayerBuffers *b, cudaStream_t stream,
+	uint32_t rows, uint32_t layer, uint32_t row_offset, uint32_t share, uint32_t first, uint32_t count)
+{
+	const K3SliceState *slice = state->dispatch.slice_state;
+	if ( slice == 0 || slice->tap_active == 0u || layer >= K3_LAYERS || slice->tap_output[layer] < 0 )
+		return;
+	if ( count != 0u )
+		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,count), K3_LAYER_THREADS, 0, stream,
+			b->attnres_partial_bf16 + (uint64_t)first * K3_HIDDEN,state->row_share_device,count,K3_HIDDEN);
+	K3RunnerRound(state, stream, share, state->row_share_device, state->fused_device, 0u,
+		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
+	if ( slice->tap_slab != 0 )
+		LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+			state->fused_device,slice->tap_slab + (uint64_t)row_offset * slice->tap_row_stride + (uint64_t)slice->tap_output[layer] * K3_HIDDEN,
+			rows,K3_HIDDEN,slice->tap_row_stride);
+	if ( cudaPeekAtLastError() != cudaSuccess )
+		K3ModelFail(state);
+}
+
 static void K3RunnerRowShard(SparkK3ModelState *state, K3LayerBuffers *b, cudaStream_t stream,
-	uint32_t rows, uint32_t layer, uint32_t base)
+	uint32_t rows, uint32_t layer, uint32_t base, uint32_t row_offset)
 {
 	const uint32_t degree = state->tp_degree;
 	const uint32_t share = (rows + degree - 1u) / degree;
@@ -382,6 +403,8 @@ static void K3RunnerRowShard(SparkK3ModelState *state, K3LayerBuffers *b, cudaSt
 	if ( landing != b->hidden_bf16 && cudaMemcpyAsync(b->hidden_bf16, landing, (size_t)rows * K3_HIDDEN * sizeof(uint16_t),
 		cudaMemcpyDeviceToDevice, stream) != cudaSuccess )
 		K3ModelFail(state);
+	if ( base == 1u )
+		K3RunnerRowShardTap(state, b, stream, rows, layer, row_offset, share, first, count);
 }
 
 static void K3RunnerLayerCollective(void *context, void *stream_void,
@@ -494,7 +517,8 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		state->fused_device,rows,base,segments,0u);
 	if ( (phase & K3_COLLECTIVE_ROWS) != 0u )
 	{
-		K3RunnerRowShard(state, b, stream, rows, layer, base);
+		K3RunnerRowShard(state, b, stream, rows, layer, base,
+			state->dispatch.pair_active != 0u && lane->index != 0u ? state->dispatch.pair_rows[0] : 0u);
 		return;
 	}
 	{
@@ -605,23 +629,42 @@ static SparkStatus SparkK3ManifestCheck(const SparkWeightdManifest *manifest,
 }
 
 
+static uint32_t K3RunnerAttentionRows(const SparkStageRunnerConfiguration *configuration)
+{
+	const uint32_t max_rows = configuration->max_input_row_count;
+	const uint32_t degree = configuration->tp_degree > 1u ? configuration->tp_degree : 1u;
+	const uint32_t unpaired = 2u * K3_RUNNER_PAIR_MIN_ROWS - 1u;
+	uint32_t rows = configuration->max_shared_row_count != 0u ? configuration->max_shared_row_count : max_rows;
+	const uint32_t half = ((max_rows + 1u) / 2u + degree - 1u) / degree * degree;
+	rows = rows > half ? rows : half;
+	rows = rows > unpaired ? rows : unpaired;
+	return rows < max_rows ? rows : max_rows;
+}
+
 static SparkStatus K3RunnerCreateDispatch(SparkK3ModelState *state,
 	const SparkStageRunnerConfiguration *configuration)
 {
 	uint64_t budget = configuration->state_budget_bytes, planned;
 	SparkK3RankStateBytes state_plan;
 	SparkK3ScratchWidths widths;
+	const uint32_t attention_rows = K3RunnerAttentionRows(configuration);
 	memset(&state_plan, 0, sizeof(state_plan));
+	if ( attention_rows < configuration->max_input_row_count &&
+		(configuration->tp_degree < 2u || state->has_collective == 0u || state->deferred == 0u ||
+		 state->layer_collective_override != 0) )
+	{
+		fprintf(stderr, "sparkpipe_k3: %u-row waves need the paired prefill (tp_degree %u, hardware-wait collective, no collective override); "
+			"this lane can run at most %u rows\n", configuration->max_input_row_count, configuration->tp_degree, attention_rows);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
 	if ( budget == 0u )
 	{
 		fprintf(stderr, "sparkpipe_k3: the rank state budget is required"
-			" (per-rank KDA state + windows + MLA KV + dispatch scratch)\n");
+			" (per-rank KDA state + windows + dispatch scratch; MLA KV lives in the weightd KV pool)\n");
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	if ( SparkK3RankStateBytesFor(state->module.sizing.kda_layer_count,
-			state->module.sizing.mla_layer_count,
 			configuration->max_active_sequence_count, configuration->tp_degree,
-			configuration->kv_pages_per_sequence, state->kv_page_bytes,
 			&state_plan) == 0u || state_plan.total > budget )
 	{
 		fprintf(stderr, "sparkpipe_k3: rank state %llu exceeds"
@@ -639,7 +682,7 @@ static SparkStatus K3RunnerCreateDispatch(SparkK3ModelState *state,
 	}
 	if ( SparkK3DispatchCreate(&state->dispatch, &state->module.sizing,
 		configuration->max_active_sequence_count,
-		configuration->max_input_row_count,
+		configuration->max_input_row_count, attention_rows,
 		configuration->kv_pages_per_sequence,
 		state->kv_page_bytes, configuration->tp_degree, configuration->tp_rank, &widths, 0) != SPARK_K3_DISPATCH_OK )
 	{
@@ -655,12 +698,11 @@ static SparkStatus K3RunnerCreateDispatch(SparkK3ModelState *state,
 #endif
 	planned = state->dispatch.state_bytes.total + state->dispatch.scratch_bytes;
 	fprintf(stderr, "sparkpipe_k3: rank state planned=%llu budget=%llu"
-		" kda_state=%llu kda_windows=%llu mla_kv=%llu scratch=%llu"
+		" kda_state=%llu kda_windows=%llu scratch=%llu"
 		" sequences=%u kda_heads_per_rank=%u\n",
 		(unsigned long long)planned, (unsigned long long)budget,
 		(unsigned long long)state->dispatch.state_bytes.kda_state,
 		(unsigned long long)state->dispatch.state_bytes.kda_windows,
-		(unsigned long long)state->dispatch.state_bytes.mla_kv,
 		(unsigned long long)state->dispatch.scratch_bytes,
 		configuration->max_active_sequence_count,
 		state->dispatch.kda_rank_heads);
@@ -895,9 +937,9 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 	}
 	if ( state->has_collective != 0u )
 	{
-		const uint64_t fused_bytes = (uint64_t)SparkK3TpSequences((uint64_t)max_rows * state->dispatch.widths.fused) *
-			K3_HIDDEN * sizeof(uint16_t);
-		state->fused_rows = max_rows;
+		const uint64_t fused_bytes = (uint64_t)SparkK3TpSequences((uint64_t)((state->dispatch.attention_rows + state->tp_degree - 1u) /
+			state->tp_degree * state->tp_degree) * state->dispatch.widths.fused) * K3_HIDDEN * sizeof(uint16_t);
+		state->fused_rows = (state->dispatch.attention_rows + state->tp_degree - 1u) / state->tp_degree * state->tp_degree;
 		const uint64_t share_bytes = (uint64_t)((max_rows + state->tp_degree - 1u) / state->tp_degree) * K3_HIDDEN * sizeof(uint16_t);
 		if ( cudaMalloc(&state->fused_device, fused_bytes) != cudaSuccess ||
 			cudaMemset(state->fused_device, 0, fused_bytes) != cudaSuccess )
@@ -936,6 +978,14 @@ static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, vo
 	in.kda_state_index = step->recurrent_index;
 	in.gather_sequence = step->gather_sequence;
 	in.gather_context = step->gather_context;
+	in.gather_first = 0u;
+	if ( step->gather_context != 0u && step->host_positions != 0 && step->rows != 0u )
+	{
+		uint32_t row, first = step->host_positions[0];
+		for ( row = 1u; row < step->rows; row++ )
+			first = step->host_positions[row] < first ? step->host_positions[row] : first;
+		in.gather_first = first;
+	}
 	in.route_expert = state->route_expert;
 	in.route_packed_row = state->route_packed_row;
 	in.route_source_token = state->route_source_token;
@@ -952,6 +1002,8 @@ static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, vo
 		state->has_collective != 0u && state->deferred != 0u ? step->rows / 2u : 0u;
 	status = SparkK3DispatchStep(&state->dispatch, &in, step->rows, step->sequences, step->commit,
 		step->rows * K3_TOP_K, step->context, step->multiprocessors, stream);
+	if ( status == SPARK_K3_DISPATCH_ERR_CAPACITY )
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status != SPARK_K3_DISPATCH_OK )
 	{
 		fprintf(stderr, "sparkpipe_k3: slice dispatch failed %d\n", status);
@@ -1042,6 +1094,13 @@ static void K3ModelReport(void *model, uint32_t rank)
 		(unsigned long long)state->dispatch.pair_waves);
 }
 
+static uint32_t K3ModelGraphKey(void *model, const SparkStageRunnerStep *step)
+{
+	(void)model;
+	return step->last_rows_only == 0u && step->commit == 0u && step->sequences == 1u && step->rows > 1u &&
+		step->rows <= LM_SKINNY_ROWS_WIDE ? 2u : 1u;
+}
+
 #if SPARK_K3_SERVING_TOPOLOGY == 16
 static SparkStatus K3ModelKeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream)
 {
@@ -1052,6 +1111,36 @@ static SparkStatus K3ModelKeepRows(void *model, const SparkStageRunnerStep *step
 		fprintf(stderr, "sparkpipe_k3: verify keep failed rows=%u sequences=%u\n", step->rows, step->sequences);
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus K3ModelTapPlan(void *model, const SparkStageRunnerTapPlan *plan)
+{
+	SparkK3ModelState *state = (SparkK3ModelState *)model;
+	K3SliceState *slice = state->dispatch.slice_state;
+	int16_t outputs[K3_LAYERS];
+	uint32_t index, active = 0u;
+	if ( slice == 0 || state->module.pack.config.first_layer != 0u || state->module.pack.config.layers != K3_LAYERS )
+	{
+		fprintf(stderr, "sparkpipe_k3: taps need the whole layer stack on every rank\n");
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	for ( index = 0u; index < K3_LAYERS; ++index )
+		outputs[index] = -1;
+	for ( index = 0u; index < plan->entry_count; ++index )
+	{
+		if ( plan->entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL )
+			continue;
+		if ( plan->entries[index].form != SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT || plan->entries[index].layer >= K3_LAYERS )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		outputs[plan->entries[index].layer] = (int16_t)index;
+		active = 1u;
+	}
+	memcpy(slice->tap_output, outputs, sizeof(outputs));
+	slice->tap_slab = plan->capture != 0u ? plan->slab : 0;
+	slice->tap_row_stride = plan->row_stride_elements;
+	slice->tap_active = active;
+	fprintf(stderr, "sparkpipe_k3: taps entries=%u capture=%u\n", plan->entry_count, plan->capture);
 	return SPARK_STATUS_OK;
 }
 #endif
@@ -1073,11 +1162,13 @@ static const SparkStageRunnerModelInterface spark_k3_stage_model =
 	K3ModelResetSlot,
 	K3ModelProbeBuffers,
 	K3ModelReport,
-	0,
+	K3ModelGraphKey,
 	0,
 #if SPARK_K3_SERVING_TOPOLOGY == 16
-	K3ModelKeepRows
+	K3ModelKeepRows,
+	K3ModelTapPlan
 #else
+	0,
 	0
 #endif
 };

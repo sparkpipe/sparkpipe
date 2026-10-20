@@ -102,8 +102,8 @@
     {
       "id": "dsv41_flash_native_mixed_precision",
       "model_family": "dsv41_flash",
-      "model_id": "deepseek-ai/DeepSeek-V4.1-Flash",
-      "model_revision": "dba1be0a40aa45a94ad051997016db3960a90277",
+      "model_id": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+      "model_revision": "1bae0e1088993b9b82de08f59de5be5a34e42170",
       "contract": "model_contracts/dsv41_flash_authoritative.json",
       "routed_expert_weight_codec": "mxfp4_e2m1",
       "routed_expert_activation_format": "fp8_e4m3_dynamic",

@@ -13,7 +13,7 @@
              reference top-1/top-2 logit margin
 
 The checkpoint ships no modeling code. The semantics follow config.json and
-Tencent AngelSlim's llama.cpp hyv4 graph, which states it mirrors the vLLM
+the hy-v4 graph llama.cpp merged at 49c0dc82 (MIT, see NOTICE), which mirrors the vLLM
 hunyuan_v4 deployment. MXFP8 weights are E4M3 values times 2^(e8m0 - 127) per
 32 input columns. Activations stay bf16 between operations, as in a bf16
 deployment; accumulations are f32.

@@ -13,7 +13,7 @@ static const char *const SparkModelResidentDeploymentRootMembers[] =
 {
 	"schema_version","coordinator_rank_index","adapter","driver","transport",
 	"runtime_limits","nodes","tokenizer","weightd","eos_token_ids",
-	"chat_template"
+	"chat_template","draft_server"
 };
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_ROOT_REQUIRED_MEMBER_COUNT 7u
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_OBJECT_MEMBER_COUNT 16u
@@ -47,7 +47,7 @@ static const char *const SparkModelResidentDeploymentRuntimeMembers[] =
 {
 	"max_inflight_submissions","max_active_sequences","max_input_rows",
 	"resident_sequence_capacity","kv_logical_page_capacity",
-	"kv_physical_page_capacity","max_sequence_positions"
+	"kv_physical_page_capacity","max_sequence_positions","max_shared_input_rows"
 };
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_RUNTIME_REQUIRED_MEMBER_COUNT 6u
 static const char *const SparkModelResidentDeploymentNodeMembers[] =
@@ -329,10 +329,15 @@ static SparkStatus SparkModelResidentDeploymentParseRuntime(
 	limits->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	limits->descriptor_bytes = SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES;
 	deployment->max_sequence_positions = 0u;
+	deployment->max_shared_input_row_count = 0u;
 	status = SparkModelResidentDeploymentValidateMembers(document,object,SparkModelResidentDeploymentRuntimeMembers,sizeof(SparkModelResidentDeploymentRuntimeMembers) / sizeof(SparkModelResidentDeploymentRuntimeMembers[0]),SPARK_MODEL_RESIDENT_DEPLOYMENT_RUNTIME_REQUIRED_MEMBER_COUNT);
 	if ( status == SPARK_STATUS_OK && SparkJsonFindObjectMember(document,object,"max_sequence_positions") >= 0 )
 		status = SparkModelResidentDeploymentUnsigned(document,object,"max_sequence_positions",&deployment->max_sequence_positions);
 	if ( status == SPARK_STATUS_OK && SparkJsonFindObjectMember(document,object,"max_sequence_positions") >= 0 && deployment->max_sequence_positions < 2u )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK && SparkJsonFindObjectMember(document,object,"max_shared_input_rows") >= 0 )
+		status = SparkModelResidentDeploymentUnsigned(document,object,"max_shared_input_rows",&deployment->max_shared_input_row_count);
+	if ( status == SPARK_STATUS_OK && SparkJsonFindObjectMember(document,object,"max_shared_input_rows") >= 0 && deployment->max_shared_input_row_count == 0u )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentUnsigned(document,object,"max_inflight_submissions",&limits->max_inflight_submission_count);
@@ -660,6 +665,46 @@ static SparkStatus SparkModelResidentDeploymentParseWeightd(
 	return(status == SPARK_STATUS_OK ? SparkModelResidentDeploymentString(document,object,"socket_path",&deployment->weightd_socket_path) : status);
 }
 
+static SparkStatus SparkModelResidentDeploymentParseDraftServer(
+	const SparkJsonDocument *document,
+	int32_t root,
+	SparkModelResidentDeployment *deployment)
+{
+	static const char *const members[] = { "host","port","target_model","depth","wait_ms","min_confidence" };
+	SparkModelResidentDraftServer *server = &deployment->draft_server;
+	char *target = 0;
+	int32_t object,token;
+	SparkStatus status;
+	object = SparkModelResidentDeploymentMember(document,root,"draft_server");
+	if ( object < 0 )
+		return(SPARK_STATUS_OK);
+	if ( !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	status = SparkJsonValidateObjectMembersExact(document,object,members,sizeof(members) / sizeof(members[0]));
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentString(document,object,"host",&server->host);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentUnsigned(document,object,"port",&server->port);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentString(document,object,"target_model",&target);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentUnsigned(document,object,"depth",&server->depth);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentUnsigned(document,object,"wait_ms",&server->wait_ms);
+	token = status == SPARK_STATUS_OK ? SparkModelResidentDeploymentMember(document,object,"min_confidence") : -1;
+	if ( status == SPARK_STATUS_OK && (token < 0 || SparkJsonGetFloat(document,token,&server->min_confidence) != SPARK_STATUS_OK) )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK && (server->host[0] == '\0' || server->port == 0u || server->port > 65535u || target[0] == '\0' ||
+		strlen(target) >= sizeof(server->target_model) || server->depth == 0u || server->depth > SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH ||
+		server->wait_ms == 0u || server->wait_ms > SPARK_MODEL_RESIDENT_DRAFT_MAX_WAIT_MS ||
+		!(server->min_confidence >= 0.0f && server->min_confidence < 1.0f)) )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		memcpy(server->target_model,target,strlen(target) + 1u);
+	free(target);
+	SPARK_RETURN(status);
+}
+
 static SparkStatus SparkModelResidentDeploymentParseNodes(
 	const SparkJsonDocument *document,
 	int32_t root,
@@ -722,6 +767,8 @@ static SparkStatus SparkModelResidentDeploymentValidateStructure(
 	memset(stages,0,sizeof(stages));
 	if ( deployment->runtime_limits.max_inflight_submission_count == 0u || deployment->runtime_limits.max_inflight_submission_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INFLIGHT_SUBMISSION_COUNT || deployment->runtime_limits.max_active_sequence_count == 0u || deployment->runtime_limits.max_active_sequence_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT || deployment->runtime_limits.max_input_row_count < deployment->runtime_limits.max_active_sequence_count || deployment->runtime_limits.max_input_row_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT || deployment->runtime_limits.resident_sequence_capacity < deployment->runtime_limits.max_active_sequence_count || deployment->runtime_limits.resident_sequence_capacity > SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( deployment->max_shared_input_row_count > deployment->runtime_limits.max_input_row_count )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( (deployment->runtime_limits.kv_logical_page_capacity == 0u) !=
 		(deployment->runtime_limits.kv_physical_page_capacity == 0u) ||
 		(deployment->runtime_limits.kv_physical_page_capacity != 0u &&
@@ -783,6 +830,7 @@ void SparkModelResidentDeploymentDestroy(
 	free(deployment->tokenizer_asset_path);
 	free(deployment->tokenizer_asset_sha256);
 	free(deployment->weightd_socket_path);
+	free(deployment->draft_server.host);
 	free(deployment->chat_template.prefix);
 	free(deployment->chat_template.thinking_prefix);
 	free(deployment->chat_template.plain_prefix);
@@ -855,6 +903,8 @@ SparkStatus SparkModelResidentDeploymentLoad(
 		status = SparkModelResidentDeploymentParseEos(&document,root,deployment);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentParseWeightd(&document,root,deployment);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentParseDraftServer(&document,root,deployment);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentParseChatTemplate(&document,root,deployment);
 	if ( status == SPARK_STATUS_OK )

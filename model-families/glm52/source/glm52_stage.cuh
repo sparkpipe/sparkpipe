@@ -84,7 +84,7 @@
 #define GLM_CANDIDATE_BYTES 8u
 #define GLM_PARTIAL_FLOATS (GLM_LATENT + 2u)
 #define GLM_SLOT_ALIGN 3u
-#define GLM_SCATTER_ROWS 64u
+#define GLM_SCATTER_ROWS 256u
 #define GLM_SPLIT_PARTITIONS 16u
 #define GLM_PREFILL_BLOCK_ROWS 4u
 #define GLM_PREFILL_SPANS 8u
@@ -1352,7 +1352,7 @@ struct GlmModel
 		status = PackRead(state, configuration->rank_pack_path);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		state->selection_rows = LmTopkExactSelectionRows(state->max_rows, state->max_positions);
+		state->selection_rows = LmTopkExactGatherSelectionRows(state->max_rows, state->max_positions, state->tp_degree);
 		state->topk_entries = LmTopkExactScratchEntries(state->selection_rows, state->max_positions, GLM_SELECTED);
 		state->union_entries = state->max_positions > GLM_SELECTED ?
 			(uint64_t)GLM_PREFILL_TABLE_BLOCKS(state->max_rows) * GLM_PREFILL_BLOCK_ROWS * GLM_SELECTED : 0u;
@@ -1799,6 +1799,12 @@ struct GlmModel
 		SparkStatus status = SPARK_STATUS_OK;
 		if ( GlmShardIndexing(layer, wave->context) != 0u )
 		{
+			if ( wave->select_slice > state->selection_rows || wave->context > state->max_positions )
+			{
+				fprintf(stderr, "%s: gather wave scores %u rows of %u positions but the selection buffer holds %u rows of %u (refused)\n",
+					G::Tag(), wave->select_slice, wave->context, state->selection_rows, state->max_positions);
+				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+			}
 			status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, 2u * wave->select_slice, 2u * wave->select_keep,
 				state->select_candidates, state->select_received);
 			if ( status != SPARK_STATUS_OK )
@@ -2064,7 +2070,7 @@ struct GlmModel
 		State *state = (State *)model;
 		cudaStream_t stream = (cudaStream_t)stream_void;
 		const uint32_t rows = step->rows;
-		const uint32_t ordered = step->last_rows_only != 0u || rows != step->sequences ? 1u : 0u;
+		const uint32_t ordered = step->last_rows_only != 0u || (rows != step->sequences && (FrameShape(step) == 0u || step->graph_key != 2u)) ? 1u : 0u;
 		GlmRegime regime;
 		GlmWave wave;
 		SparkStatus status = SPARK_STATUS_OK;
@@ -2129,10 +2135,17 @@ struct GlmModel
 		return SPARK_STATUS_OK;
 	}
 
+	static uint32_t FrameShape(const SparkStageRunnerStep *step)
+	{
+		return step->last_rows_only == 0u && step->sequences == 1u && step->rows > 1u && step->rows <= LM_SKINNY_ROWS ? 1u : 0u;
+	}
+
 	static uint32_t GraphKey(void *model, const SparkStageRunnerStep *step)
 	{
 		(void)model;
-		return step->last_rows_only == 0u && step->rows == step->sequences ? 1u : 0u;
+		if ( step->last_rows_only == 0u && step->rows == step->sequences )
+			return 1u;
+		return FrameShape(step) != 0u ? 2u : 0u;
 	}
 
 	static SparkStatus RecurrentCopy(void *model, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream)

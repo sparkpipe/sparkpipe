@@ -155,14 +155,14 @@ static SparkStatus SparkStageKvBindingStateBudget(SparkStageKvBinding *binding,c
 	if ( kv_cap < binding->page_bytes )
 		kv_cap = binding->page_bytes;
 	minimum = 2u * (uint64_t)configuration->resident_sequence_capacity + 2u;
-	slots = configuration->backing_maximum_bytes > kv_cap ? (configuration->backing_maximum_bytes - kv_cap) / lane_bytes : 0u;
+	slots = configuration->recurrent.memory_bytes / lane_bytes;
 	if ( slots > configuration->logical_page_count )
 		slots = configuration->logical_page_count;
 	if ( slots < minimum )
 	{
-		fprintf(stderr,"%s kv binding refused: recurrent checkpoints of %llu bytes need %llu slots (two per resident lane and two in flight) beyond %llu page-store bytes, %llu backing bytes configured hold %llu\n",
-			configuration->module_tag,(unsigned long long)lane_bytes,(unsigned long long)minimum,(unsigned long long)kv_cap,
-			(unsigned long long)configuration->backing_maximum_bytes,(unsigned long long)slots);
+		fprintf(stderr,"%s kv binding refused: recurrent checkpoints of %llu bytes live in memory and need %llu slots (two per resident lane and two in flight); state_memory_bytes %llu holds %llu\n",
+			configuration->module_tag,(unsigned long long)lane_bytes,(unsigned long long)minimum,
+			(unsigned long long)configuration->recurrent.memory_bytes,(unsigned long long)slots);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	binding->page_store_backing_bytes = kv_cap;
@@ -708,8 +708,7 @@ static SparkStatus SparkStageKvBindingLayout(SparkStageKvBinding *binding,const 
 	}
 	SparkSha256DigestToHex(binding->layout_sha256,binding->layout_hex);
 	binding->snapshot_page_file_bytes = SparkStageKvAlign(sizeof(SparkKvSnapshotFileHeader)) +
-		SparkStageKvAlign((uint64_t)binding->pages_per_sequence * sizeof(SparkKvPageCacheSnapshotLink)) +
-		SparkStageKvAlign(binding->page_bytes) + (identity.state_page_bytes != 0u ? SparkStageKvAlign(identity.state_page_bytes) : 0u);
+		(identity.state_page_bytes > binding->page_bytes ? SparkStageKvAlign(identity.state_page_bytes) : SparkStageKvAlign(binding->page_bytes));
 	return(SPARK_STATUS_OK);
 }
 
@@ -772,11 +771,12 @@ static SparkStatus SparkStageKvBindingAttachSnapshot(SparkStageKvBinding *bindin
 		SPARK_RETURN(status);
 	}
 	(void)SparkKvSnapshotCountLayout(&binding->snapshot_store,binding->layout_sha256,&matching,&foreign);
-	fprintf(stderr,"%s kv snapshot store directory=%s maximum_bytes=%llu queue_bytes=%llu page_file_bytes=%llu used_bytes=%llu files=%llu matching_files=%llu foreign_layout_files=%llu evicted_at_open=%llu removed_temporaries=%llu driver=%s identity_us=%llu layout=%s\n",
+	fprintf(stderr,"%s kv snapshot store directory=%s maximum_bytes=%llu queue_bytes=%llu file_bytes=%llu used_bytes=%llu files=%llu matching_files=%llu foreign_layout_files=%llu orphans=%llu evicted_at_open=%llu removed_temporaries=%llu removed_legacy=%llu driver=%s identity_us=%llu layout=%s\n",
 		binding->module_tag,configuration->snapshot_directory,(unsigned long long)binding->snapshot_store.maximum_bytes,(unsigned long long)binding->snapshot_store.queue_maximum_bytes,
 		(unsigned long long)binding->snapshot_page_file_bytes,(unsigned long long)binding->snapshot_store.used_bytes,(unsigned long long)binding->snapshot_store.file_count,
-		(unsigned long long)matching,(unsigned long long)foreign,(unsigned long long)binding->snapshot_store.eviction_count,
-		(unsigned long long)binding->snapshot_store.removed_temporary_count,binding->driver_path,(unsigned long long)((SparkStageKvNowNs() - start_ns) / 1000u),binding->layout_hex);
+		(unsigned long long)matching,(unsigned long long)foreign,(unsigned long long)binding->snapshot_store.orphan_count,(unsigned long long)binding->snapshot_store.eviction_count,
+		(unsigned long long)binding->snapshot_store.removed_temporary_count,(unsigned long long)binding->snapshot_store.removed_legacy_count,binding->driver_path,
+		(unsigned long long)((SparkStageKvNowNs() - start_ns) / 1000u),binding->layout_hex);
 	return(SPARK_STATUS_OK);
 }
 
@@ -833,20 +833,26 @@ static SparkStatus SparkStageKvBindingAttachStates(SparkStageKvBinding *binding,
 	memset(&store,0,sizeof(store));
 	store.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
 	store.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
-	store.flags = SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS;
+	store.flags = SPARK_KV_PAGE_STORE_FLAG_MEMORY;
 	store.logical_page_capacity = binding->logical_page_count;
 	store.transfer_capacity = 1u;
 	store.page_bytes = binding->recurrent.lane_bytes;
 	store.maximum_backing_bytes = (uint64_t)binding->state_slot_count * binding->recurrent.lane_bytes;
-	store.backing_path = configuration->backing_directory;
+	store.backing_path = "sparkpipe-kv-recurrent-state";
 	store.staging_address = binding->state_staging;
 	store.staging_bytes = binding->recurrent.lane_bytes;
+	if ( configuration->recurrent.checkpoint_token_count == 0u || configuration->recurrent.checkpoint_token_count % binding->block_token_count != 0u )
+	{
+		fprintf(stderr,"%s kv binding refused: recurrent checkpoints need a checkpoint stride that is a whole number of %u-token pages, got %u, so long conversations would keep no resume point older than the newest %u\n",
+			binding->module_tag,binding->block_token_count,configuration->recurrent.checkpoint_token_count,SPARK_KV_PAGE_CACHE_RECENT_STATES);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	status = SparkKvPageStoreInitialize(&binding->state_store,&store);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkKvPageCacheAttachStateStore(&binding->page_cache,&binding->state_store);
-	fprintf(stderr,"%s kv binding recurrent lane_bytes=%llu state_slots=%u state_backing_bytes=%llu page_store_backing_bytes=%llu status=%s\n",binding->module_tag,
+		status = SparkKvPageCacheAttachStateStore(&binding->page_cache,&binding->state_store,configuration->recurrent.checkpoint_token_count);
+	fprintf(stderr,"%s kv binding recurrent lane_bytes=%llu state_slots=%u state_memory_bytes=%llu page_store_backing_bytes=%llu kept_states=newest %u plus every %u tokens status=%s\n",binding->module_tag,
 		(unsigned long long)binding->recurrent.lane_bytes,binding->state_slot_count,(unsigned long long)store.maximum_backing_bytes,
-		(unsigned long long)binding->page_store_backing_bytes,SparkStatusToString(status));
+		(unsigned long long)binding->page_store_backing_bytes,SPARK_KV_PAGE_CACHE_RECENT_STATES,configuration->recurrent.checkpoint_token_count,SparkStatusToString(status));
 	SPARK_RETURN(status);
 }
 
@@ -1510,7 +1516,15 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 			fprintf(stderr,"KV-SNAPSHOT pending saves cancelled count=%llu\n",(unsigned long long)(binding->page_cache.snapshot->save_cancelled_count - before));
 	}
 	if ( binding->state_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
+	{
+		fprintf(stderr,"%s kv binding states records=%u slots=%u superseded=%llu pressure_demoted=%llu spill_queued=%llu dropped_unsaved=%llu rekeyed=%llu pinned_skips=%llu dedup_lost=%llu promoted=%llu staged_drops=%llu\n",binding->module_tag,
+			binding->state_store.backing_page_count,binding->state_slot_count,(unsigned long long)binding->page_cache.state_superseded_count,
+			(unsigned long long)binding->page_cache.state_pressure_demoted_count,(unsigned long long)binding->page_cache.state_spill_queued_count,
+			(unsigned long long)binding->page_cache.state_dropped_unsaved_count,(unsigned long long)binding->page_cache.state_rekeyed_count,
+			(unsigned long long)binding->page_cache.state_pinned_skip_count,(unsigned long long)binding->page_cache.stateful_dedup_lost_count,
+			(unsigned long long)binding->page_cache.state_promoted_count,(unsigned long long)atomic_load(&binding->recurrent_staged_drops));
 		SparkKvPageStoreDestroy(&binding->state_store);
+	}
 	if ( binding->page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 		SparkKvPageStoreDestroy(&binding->page_store);
 	if ( binding->copier_initialized != 0u )
@@ -2102,26 +2116,31 @@ static SparkStatus SparkStageKvCollectWrites(SparkStageKvBinding *binding,const 
 
 static SparkStatus SparkStageKvWriteJob(SparkStageKvBinding *binding,const SparkStageKvStateJob *job,uint32_t site,uint64_t *held)
 {
-	SparkStatus status,evicted;
-	uint32_t evictions = 0u;
+	SparkStatus status,demoted;
+	uint32_t demotions = 0u;
 	status = SparkStageKvStateWrite(binding,job);
 	while ( status == SPARK_STATUS_CAPACITY_EXCEEDED )
 	{
 		(void)SparkStageKvBindingLock(binding,held);
-		evicted = SparkKvPageCacheDemoteState(&binding->page_cache);
-		if ( evicted == SPARK_STATUS_CAPACITY_EXCEEDED )
-			evicted = SparkKvPageCacheEvictUnused(&binding->page_cache);
+		demoted = SparkKvPageCacheDemoteState(&binding->page_cache,0,0u);
 		SparkStageKvBindingUnlock(binding,site,*held);
-		if ( evicted != SPARK_STATUS_OK )
+		if ( demoted != SPARK_STATUS_OK )
 		{
-			fprintf(stderr,"%s kv binding state store full: page %u has no record slot after evicting %u unused prefixes\n",binding->module_tag,job->page,evictions);
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+			fprintf(stderr,"%s kv binding state store full: page %u has no record slot after %u demotions, every other record is in use by a lane or a save status=%s\n",
+				binding->module_tag,job->page,demotions,SparkStatusToString(demoted));
+			SPARK_RETURN(demoted);
 		}
-		evictions++;
+		demotions++;
 		status = SparkStageKvStateWrite(binding,job);
 	}
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"%s kv binding state record write failed page=%u status=%u\n",binding->module_tag,job->page,(unsigned)status);
+	else
+	{
+		(void)SparkStageKvBindingLock(binding,held);
+		SparkKvPageCacheSpillStates(&binding->page_cache);
+		SparkStageKvBindingUnlock(binding,site,*held);
+	}
 	SPARK_RETURN(status);
 }
 
@@ -2946,6 +2965,7 @@ SparkStatus SparkStageKvBindingSaveAll(SparkStageKvBinding *binding,uint64_t dea
 	if ( binding == 0 || binding->mutex_initialized == 0u || binding->page_cache.snapshot == 0 || saved_out == 0 || unsaved_out == 0 || ineligible_out == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	(void)pthread_mutex_lock(&binding->mutex);
+	SparkKvPageCachePersistAllStates(&binding->page_cache);
 	status = SparkKvPageCacheCountUnsaved(&binding->page_cache,&unsaved_start,&ineligible);
 	(void)pthread_mutex_unlock(&binding->mutex);
 	unsaved = unsaved_start;

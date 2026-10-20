@@ -78,13 +78,15 @@ typedef struct SparkWeightdMeshRecord
 _Static_assert(SPARK_WEIGHTD_MESH_PEERS * 4u <= 64u,"mesh completion bitmap capacity");
 _Static_assert(SPARK_WEIGHTD_MESH_PEERS * SPARK_WEIGHTD_MESH_SEND_CAPACITY <
     SPARK_WEIGHTD_MESH_CQ_ENTRIES,"mesh send completions fit CQ");
-_Static_assert(SPARK_WEIGHTD_MESH_BANDS * SPARK_WEIGHTD_MESH_RANKS_PER_BAND <=
-    512u,"mesh completion identity capacity");
+_Static_assert(2u * SPARK_WEIGHTD_MESH_BANDS * SPARK_WEIGHTD_MESH_RANKS_PER_BAND <=
+    1024u,"mesh completion identity capacity");
 
 #define SPARK_WEIGHTD_MESH_TRANSFER_FAILED 1u
 #define SPARK_WEIGHTD_MESH_TRANSFER_PEER_RESET 2u
 #define SPARK_WEIGHTD_MESH_RPC_EPOCH_SHIFT 8u
 #define SPARK_WEIGHTD_MESH_CELLS (SPARK_WEIGHTD_MESH_BANDS * SPARK_WEIGHTD_MESH_RANKS_PER_BAND)
+#define SPARK_WEIGHTD_MESH_RECORDS (2u * SPARK_WEIGHTD_MESH_CELLS)
+#define SPARK_WEIGHTD_MESH_RECORD_OF(index,seq) (2u * (index) + (uint32_t)((seq) & 1u))
 
 typedef struct SparkWeightdMeshTransfer
 {
@@ -188,14 +190,14 @@ typedef struct SparkWeightdMesh
     uint64_t ship_log_count;
     uint64_t ship_log_key;
     uint32_t ship_log_key_budget;
-    SparkWeightdMeshTransfer transfers[SPARK_WEIGHTD_MESH_BANDS *
-        SPARK_WEIGHTD_MESH_RANKS_PER_BAND];
+    SparkWeightdMeshTransfer transfers[SPARK_WEIGHTD_MESH_RECORDS];
+    uint64_t issued[SPARK_WEIGHTD_MESH_CELLS];
     uint64_t wait_seen[SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS];
     uint64_t wait_terminal[SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS];
     uint64_t wait_started[SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS];
-    uint64_t publish_seq[SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS];
-    uint64_t publish_ns[SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS];
-    uint64_t post_ns[SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS];
+    uint64_t publish_seq[SPARK_WEIGHTD_MESH_RECORDS];
+    uint64_t publish_ns[SPARK_WEIGHTD_MESH_RECORDS];
+    uint64_t post_ns[SPARK_WEIGHTD_MESH_RECORDS];
     uint64_t arrived[SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS];
     uint64_t arrival_ns[SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS];
     uint64_t previous_arrival_ns[SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS];
@@ -251,6 +253,31 @@ typedef struct SparkWeightdMesh
 
 static SparkWeightdMesh weightd_mesh;
 static uint64_t SparkWeightdMeshNextTransferGeneration;
+
+static volatile uint64_t *SparkWeightdMeshDoorbellAt(uint32_t index,uint32_t alternate)
+{
+    return (volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer +
+        (alternate != 0u ? SPARK_WEIGHTD_MESH_DOORBELL_ALT_OFFSET : SPARK_WEIGHTD_MESH_DOORBELL_OFFSET) +
+        (uint64_t)index * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES);
+}
+
+static uint32_t SparkWeightdMeshCellFailed(uint32_t index)
+{
+    return weightd_mesh.transfers[2u * index].failed != 0u || weightd_mesh.transfers[2u * index + 1u].failed != 0u ? 1u : 0u;
+}
+
+static uint32_t SparkWeightdMeshCellPending(uint32_t index)
+{
+    return weightd_mesh.transfers[2u * index].pending != 0u || weightd_mesh.transfers[2u * index + 1u].pending != 0u ? 1u : 0u;
+}
+
+static const SparkWeightdMeshTransfer *SparkWeightdMeshCellFailure(uint32_t index)
+{
+    const SparkWeightdMeshTransfer *first = &weightd_mesh.transfers[2u * index],*second = first + 1u;
+    if ( first->failed != 0u && (second->failed == 0u || first->seq <= second->seq) )
+        return first;
+    return second->failed != 0u ? second : 0;
+}
 
 static uint32_t SparkWeightdMeshIsPairPeer(uint32_t peer)
 {
@@ -845,31 +872,34 @@ static void SparkWeightdMeshLaneResetLocked(uint32_t lane)
     for (index=2u * lane * SPARK_WEIGHTD_MESH_RANKS_PER_BAND;
          index<2u * (lane + 1u) * SPARK_WEIGHTD_MESH_RANKS_PER_BAND; index++)
     {
-        uint32_t band = index / SPARK_WEIGHTD_MESH_RANKS_PER_BAND,rank = index % SPARK_WEIGHTD_MESH_RANKS_PER_BAND;
-        uint64_t *entry = (uint64_t *)((uint8_t *)weightd_mesh.recv_buffer +
-            SPARK_WEIGHTD_MESH_DOORBELL_OFFSET + index * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES);
+        uint32_t band = index / SPARK_WEIGHTD_MESH_RANKS_PER_BAND,rank = index % SPARK_WEIGHTD_MESH_RANKS_PER_BAND,alternate;
         SparkWeightdMeshWaitRequest *request = (SparkWeightdMeshWaitRequest *)(
             (uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_WAIT_OFFSET +
             index * SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES);
-        if ( weightd_mesh.transfers[index].failed != 0u )
+        if ( SparkWeightdMeshCellFailed(index) != 0u )
             failed++;
-        if ( __atomic_load_n(&entry[0],__ATOMIC_ACQUIRE) != 0u && entry[0] != weightd_mesh.doorbell_posted[index] )
-            stale++;
-        __atomic_store_n(&entry[0],0u,__ATOMIC_RELEASE);
-        entry[1] = 0u;
-        entry[2] = 0u;
-        entry[3] = 0u;
+        for (alternate=0u; alternate<2u; alternate++)
+        {
+            volatile uint64_t *entry = SparkWeightdMeshDoorbellAt(index,alternate);
+            if ( __atomic_load_n(&entry[0],__ATOMIC_ACQUIRE) > weightd_mesh.issued[index] )
+                stale++;
+            __atomic_store_n(&entry[0],0u,__ATOMIC_RELEASE);
+            entry[1] = 0u;
+            entry[2] = 0u;
+            entry[3] = 0u;
+        }
         __atomic_store_n((uint64_t *)((uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(band,rank)),0u,__ATOMIC_RELEASE);
         memset(request,0,SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES);
-        memset(&weightd_mesh.transfers[index],0,sizeof(weightd_mesh.transfers[index]));
+        memset(&weightd_mesh.transfers[2u * index],0,2u * sizeof(weightd_mesh.transfers[0]));
+        weightd_mesh.issued[index] = 0u;
         weightd_mesh.doorbell_posted[index] = 0u;
         weightd_mesh.doorbell_stuck[index] = 0u;
         weightd_mesh.wait_seen[index] = 0u;
         weightd_mesh.wait_terminal[index] = 0u;
         weightd_mesh.wait_started[index] = 0u;
-        weightd_mesh.publish_seq[index] = 0u;
-        weightd_mesh.publish_ns[index] = 0u;
-        weightd_mesh.post_ns[index] = 0u;
+        memset(&weightd_mesh.publish_seq[2u * index],0,2u * sizeof(weightd_mesh.publish_seq[0]));
+        memset(&weightd_mesh.publish_ns[2u * index],0,2u * sizeof(weightd_mesh.publish_ns[0]));
+        memset(&weightd_mesh.post_ns[2u * index],0,2u * sizeof(weightd_mesh.post_ns[0]));
         weightd_mesh.arrived[index] = 0u;
         weightd_mesh.arrival_ns[index] = 0u;
         weightd_mesh.previous_arrival_ns[index] = 0u;
@@ -898,7 +928,7 @@ static uint32_t SparkWeightdMeshLaneCheckLocked(uint32_t lane,uint32_t *where)
             (const uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_WAIT_OFFSET +
             index * SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES);
         *where = index;
-        if ( weightd_mesh.transfers[index].pending != 0u )
+        if ( SparkWeightdMeshCellPending(index) != 0u )
             reason = SPARK_WEIGHTD_MESH_LANE_BUSY_PENDING;
         else if ( __atomic_load_n(&request->request_id,__ATOMIC_ACQUIRE) > weightd_mesh.wait_terminal[index] )
             reason = SPARK_WEIGHTD_MESH_LANE_BUSY_WAIT;
@@ -991,17 +1021,14 @@ static uint32_t SparkWeightdMeshHasPending(void)
 
 static uint32_t SparkWeightdMeshHasDoorbellWork(void)
 {
-    const volatile uint64_t *entries = (const volatile uint64_t *)(
-        (const uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_DOORBELL_OFFSET);
-    uint32_t index;
-    for (index=0u; index<SPARK_WEIGHTD_MESH_BANDS * SPARK_WEIGHTD_MESH_RANKS_PER_BAND; index++)
-    {
-        const volatile uint64_t *entry = entries + index *
-            (SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES / 8u);
-        if ( entry[0] != 0u && entry[1] != 0u &&
-             entry[0] != weightd_mesh.doorbell_posted[index] )
-            return 1u;
-    }
+    uint32_t index,alternate;
+    for (index=0u; index<SPARK_WEIGHTD_MESH_CELLS; index++)
+        for (alternate=0u; alternate<2u; alternate++)
+        {
+            const volatile uint64_t *entry = SparkWeightdMeshDoorbellAt(index,alternate);
+            if ( entry[0] > weightd_mesh.issued[index] && entry[1] != 0u )
+                return 1u;
+        }
     return 0u;
 }
 
@@ -1056,7 +1083,8 @@ static uint32_t SparkWeightdMeshPeersArrived(uint32_t index,uint32_t band,const 
     const SparkWeightdMeshTopology *topology = &weightd_mesh.lane_topology[band / 2u];
     uint64_t ring = (request->tag - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u),slot,tail,start;
     uint32_t peer,physical,complete = 1u;
-    start = weightd_mesh.publish_seq[index] == request->tag ? weightd_mesh.publish_ns[index] : weightd_mesh.wait_started[index];
+    start = weightd_mesh.publish_seq[SPARK_WEIGHTD_MESH_RECORD_OF(index,request->tag)] == request->tag ?
+        weightd_mesh.publish_ns[SPARK_WEIGHTD_MESH_RECORD_OF(index,request->tag)] : weightd_mesh.wait_started[index];
     for (peer=0u; peer<SPARK_WEIGHTD_MESH_RANKS_PER_BAND; peer++)
     {
         if ( (request->peer_mask & (UINT64_C(1) << peer)) == 0u )
@@ -1144,9 +1172,12 @@ static uint32_t SparkWeightdMeshWaitRequestsPollRange(uint64_t now_ns,uint32_t f
             diag = __atomic_load_n((uint64_t *)((uint8_t *)weightd_mesh.recv_buffer +
                 SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(band,rank)),__ATOMIC_ACQUIRE);
             complete = request->tag == 0u || diag == request->tag;
-            if ( complete == 0u && weightd_mesh.transfers[index].failed != 0u )
-                error = weightd_mesh.transfers[index].failed == SPARK_WEIGHTD_MESH_TRANSFER_PEER_RESET ?
-                    (SPARK_WEIGHTD_MESH_WAIT_ERROR_PEER_RESET | weightd_mesh.transfers[index].reset_peer) : UINT64_MAX;
+            if ( complete == 0u && SparkWeightdMeshCellFailure(index) != 0 )
+            {
+                const SparkWeightdMeshTransfer *failure = SparkWeightdMeshCellFailure(index);
+                error = failure->failed == SPARK_WEIGHTD_MESH_TRANSFER_PEER_RESET ?
+                    (SPARK_WEIGHTD_MESH_WAIT_ERROR_PEER_RESET | failure->reset_peer) : UINT64_MAX;
+            }
             if ( complete != 0u )
                 SparkLatencyAdd(&weightd_mesh.timing.credit,weightd_mesh.wait_started[index],now_ns);
         }
@@ -1403,7 +1434,7 @@ static void SparkWeightdMeshPeerResetLocked(uint32_t peer,const char *reason,uin
     uint64_t mask = UINT64_C(0xF) << (4u * peer),lost;
     uint32_t index,cells = 0u,bits = 0u,physical = peer < weightd_mesh.local_rank ? peer : peer + 1u;
     uint32_t send = weightd_mesh.send_pending[peer],rpc = weightd_mesh.rpc_pending[peer];
-    for (index=0u; index<SPARK_WEIGHTD_MESH_CELLS; index++)
+    for (index=0u; index<SPARK_WEIGHTD_MESH_RECORDS; index++)
     {
         lost = weightd_mesh.transfers[index].pending & mask;
         if ( lost == 0u )
@@ -1939,8 +1970,8 @@ SparkStatus SparkWeightdMeshStatusFill(SparkWeightdIpcMeshStatusResult *result)
         status->activity = weightd_mesh.lane_activity[lane];
         for (index=2u * lane * SPARK_WEIGHTD_MESH_RANKS_PER_BAND; index<2u * (lane + 1u) * SPARK_WEIGHTD_MESH_RANKS_PER_BAND; index++)
         {
-            status->failed_cells += weightd_mesh.transfers[index].failed != 0u ? 1u : 0u;
-            status->pending_cells += weightd_mesh.transfers[index].pending != 0u ? 1u : 0u;
+            status->failed_cells += SparkWeightdMeshCellFailed(index);
+            status->pending_cells += SparkWeightdMeshCellPending(index);
         }
         status->busy_reason = SparkWeightdMeshLaneCheckLocked(lane,&where);
         status->busy_index = where;
@@ -1959,9 +1990,31 @@ void SparkWeightdMeshStop(void)
     fprintf(stderr,"WD-MESH-STOP rank=%u ready_marker_removed=%u\n",weightd_mesh.local_rank,removed);
 }
 
+static void SparkWeightdMeshShipAdvance(uint32_t record,uint64_t now_ns)
+{
+    uint32_t index = record / 2u,band = index / SPARK_WEIGHTD_MESH_RANKS_PER_BAND,rank = index % SPARK_WEIGHTD_MESH_RANKS_PER_BAND;
+    const SparkWeightdMeshTransfer *transfer = &weightd_mesh.transfers[record],*other = &weightd_mesh.transfers[record ^ 1u];
+    uint64_t shipped = transfer->seq;
+    SparkLatencyAdd(&weightd_mesh.timing.ship,weightd_mesh.post_ns[record],now_ns);
+    if ( other->seq < transfer->seq && other->seq > weightd_mesh.doorbell_posted[index] &&
+         (other->pending != 0u || other->failed != 0u) )
+        return;
+    if ( other->seq > shipped && other->seq <= weightd_mesh.issued[index] && other->pending == 0u && other->failed == 0u )
+        shipped = other->seq;
+    if ( shipped <= weightd_mesh.doorbell_posted[index] )
+        return;
+    weightd_mesh.doorbell_posted[index] = shipped;
+    weightd_mesh.doorbell_stuck[index] = 0u;
+    __sync_synchronize();
+    *(volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer +
+        SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(band,rank)) = shipped;
+    __sync_synchronize();
+    weightd_mesh.ship_log_count++;
+}
+
 static void SparkWeightdMeshCompleteTransfer(uint64_t work_id, int success, uint64_t now_ns)
 {
-    uint32_t index;
+    uint32_t record;
     uint32_t bit;
     SparkWeightdMeshTransfer *transfer;
     if ( (work_id & SPARK_WEIGHTD_MESH_TRANSFER_ID) == 0u )
@@ -1976,9 +2029,11 @@ static void SparkWeightdMeshCompleteTransfer(uint64_t work_id, int success, uint
         }
         return;
     }
-    index = (uint32_t)((work_id >> 6u) & 511u);
+    record = (uint32_t)((work_id >> 6u) & 1023u);
     bit = (uint32_t)(work_id & 63u);
-    transfer = &weightd_mesh.transfers[index];
+    if ( record >= SPARK_WEIGHTD_MESH_RECORDS )
+        return;
+    transfer = &weightd_mesh.transfers[record];
     if ( transfer->generation != ((work_id & ~SPARK_WEIGHTD_MESH_TRANSFER_ID) >> 16u) )
         return;
     if ( (transfer->pending & (UINT64_C(1) << bit)) == 0u )
@@ -2003,18 +2058,7 @@ static void SparkWeightdMeshCompleteTransfer(uint64_t work_id, int success, uint
         SparkWeightdMeshChanged();
     }
     if ( transfer->pending == 0u && transfer->failed == 0u )
-    {
-        uint32_t band = index / SPARK_WEIGHTD_MESH_RANKS_PER_BAND;
-        uint32_t rank = index % SPARK_WEIGHTD_MESH_RANKS_PER_BAND;
-        weightd_mesh.doorbell_posted[index] = transfer->seq;
-        weightd_mesh.doorbell_stuck[index] = 0u;
-        SparkLatencyAdd(&weightd_mesh.timing.ship,weightd_mesh.post_ns[index],now_ns);
-        __sync_synchronize();
-        *(volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer +
-            SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(band,rank)) = transfer->seq;
-        __sync_synchronize();
-        weightd_mesh.ship_log_count++;
-    }
+        SparkWeightdMeshShipAdvance(record,now_ns);
 }
 
 static uint32_t SparkWeightdMeshPhysicalMask(const SparkWeightdMeshTopology *topology,uint32_t peer_rank_mask,uint8_t *logical)
@@ -2041,12 +2085,12 @@ static uint32_t SparkWeightdMeshSendRoom(uint32_t physical_mask)
     return(1u);
 }
 
-static void SparkWeightdMeshPostPeer(uint32_t index,uint32_t band,uint32_t peer,uint64_t slot_base,uint64_t offset,uint64_t length,
+static void SparkWeightdMeshPostPeer(uint32_t record,uint32_t band,uint32_t peer,uint64_t slot_base,uint64_t offset,uint64_t length,
     SparkWeightdMeshRoute route,const uint8_t *logical,const uint64_t *tag)
 {
-    SparkWeightdMeshTransfer *transfer = &weightd_mesh.transfers[index];
+    SparkWeightdMeshTransfer *transfer = &weightd_mesh.transfers[record];
     uint32_t peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u;
-    uint64_t base = SPARK_WEIGHTD_MESH_TRANSFER_ID | (transfer->generation << 16u) | ((uint64_t)index << 6u) | (uint64_t)(peer * 4u);
+    uint64_t base = SPARK_WEIGHTD_MESH_TRANSFER_ID | (transfer->generation << 16u) | ((uint64_t)record << 6u) | (uint64_t)(peer * 4u);
     if ( length != 0u && route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER )
         SparkWeightdMeshSqWrite(peer,base | 2u,0u,(uint64_t)(uintptr_t)weightd_mesh.staging_buffer + SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,logical[peer_rank]),
             SparkWeightdMeshPeerMr(peer,weightd_mesh.staging_mr,weightd_mesh.pair_staging_mr)->lkey,(uint32_t)length,slot_base,0);
@@ -2058,23 +2102,23 @@ static void SparkWeightdMeshPostPeer(uint32_t index,uint32_t band,uint32_t peer,
         transfer->chained |= 1u << peer;
         weightd_mesh.send_pending[peer]++;
     }
-    SparkWeightdMeshSqWrite(peer,base | 3u,1u,0u,0u,0u,slot_base + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u,tag);
+    SparkWeightdMeshSqWrite(peer,base | 3u,1u,0u,0u,0u,slot_base + SPARK_WEIGHTD_MESH_TAIL_OFFSET(route.fields.half),tag);
     transfer->pending |= UINT64_C(1) << (peer * 4u + 3u);
     weightd_mesh.send_pending[peer]++;
 }
 
-static void SparkWeightdMeshPostRoute(uint32_t index,uint32_t band,uint64_t slot_base,uint64_t bytes,SparkWeightdMeshRoute route,uint32_t physical_mask,const uint8_t *logical,uint32_t local)
+static void SparkWeightdMeshPostRoute(uint32_t record,uint32_t band,uint64_t slot_base,uint64_t bytes,SparkWeightdMeshRoute route,uint32_t physical_mask,const uint8_t *logical,uint32_t local)
 {
     uint64_t offset,length,tag;
     uint32_t peer,peer_rank,rung = 0u;
-    tag = *(volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer + slot_base + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u);
+    tag = *(volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer + slot_base + SPARK_WEIGHTD_MESH_TAIL_OFFSET(route.fields.half));
     for (peer=0u; peer<SPARK_WEIGHTD_MESH_PEERS; peer++)
     {
         peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u;
         if ( (physical_mask & (1u << peer_rank)) == 0u )
             continue;
         offset = SparkWeightdMeshRouteSpan(route,logical[peer_rank],local,bytes,&length);
-        SparkWeightdMeshPostPeer(index,band,peer,slot_base,offset,length,route,logical,&tag);
+        SparkWeightdMeshPostPeer(record,band,peer,slot_base,offset,length,route,logical,&tag);
         rung |= 1u << peer;
     }
     SparkWeightdMeshSqRing(rung);
@@ -2097,20 +2141,27 @@ static SparkStatus SparkWeightdMeshSlotPostable(uint32_t band,uint32_t rank,uint
 
 static uint32_t SparkWeightdMeshDoorbellShippable(uint32_t index)
 {
-    const uint64_t *entry = (const uint64_t *)((const uint8_t *)weightd_mesh.recv_buffer +
-        SPARK_WEIGHTD_MESH_DOORBELL_OFFSET + index * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES);
-    uint64_t seq = __atomic_load_n(&entry[0],__ATOMIC_ACQUIRE);
-    SparkWeightdMeshRoute route;
-    route.word = entry[3];
-    return(seq != 0u && entry[1] != 0u && seq > weightd_mesh.doorbell_posted[index] &&
-        weightd_mesh.transfers[index].failed == 0u &&
-        SparkWeightdMeshSlotPostable(index / SPARK_WEIGHTD_MESH_RANKS_PER_BAND,index % SPARK_WEIGHTD_MESH_RANKS_PER_BAND,
-            seq,entry[2],entry[1],route) == SPARK_STATUS_OK ? 1u : 0u);
+    uint32_t alternate;
+    if ( SparkWeightdMeshCellFailed(index) != 0u )
+        return 0u;
+    for (alternate=0u; alternate<2u; alternate++)
+    {
+        volatile uint64_t *entry = SparkWeightdMeshDoorbellAt(index,alternate);
+        uint64_t seq = __atomic_load_n(&entry[0],__ATOMIC_ACQUIRE);
+        SparkWeightdMeshRoute route;
+        route.word = entry[3];
+        if ( seq > weightd_mesh.issued[index] && entry[1] != 0u &&
+             SparkWeightdMeshSlotPostable(index / SPARK_WEIGHTD_MESH_RANKS_PER_BAND,index % SPARK_WEIGHTD_MESH_RANKS_PER_BAND,
+                 seq,entry[2],entry[1],route) == SPARK_STATUS_OK )
+            return 1u;
+    }
+    return 0u;
 }
 
 static SparkStatus SparkWeightdMeshPostSlot(uint32_t band,uint32_t rank,uint64_t seq,uint64_t slot,uint64_t bytes,SparkWeightdMeshRoute route,uint64_t now_ns)
 {
     uint32_t index = band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + rank,physical_mask,peer_rank_mask = (uint32_t)route.fields.peer_mask;
+    uint32_t record = SPARK_WEIGHTD_MESH_RECORD_OF(index,seq);
     SparkWeightdMeshTransfer *transfer;
     uint8_t logical[SPARK_WEIGHTD_MESH_RANKS_PER_BAND];
     SparkStatus status = SparkWeightdMeshSlotPostable(band,rank,seq,slot,bytes,route);
@@ -2118,11 +2169,13 @@ static SparkStatus SparkWeightdMeshPostSlot(uint32_t band,uint32_t rank,uint64_t
         return status;
     physical_mask = SparkWeightdMeshPhysicalMask(&weightd_mesh.lane_topology[band / 2u],peer_rank_mask,logical);
     if ( weightd_mesh.mesh_ready == 0u ) return SPARK_STATUS_BUSY;
-    transfer = &weightd_mesh.transfers[index];
-    if ( transfer->pending != 0u || transfer->failed != 0u )
-        return transfer->failed != 0u ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_BUSY;
-    if ( seq <= weightd_mesh.doorbell_posted[index] )
-        return seq == weightd_mesh.doorbell_posted[index] ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT;
+    if ( SparkWeightdMeshCellFailed(index) != 0u )
+        return SPARK_STATUS_IO_ERROR;
+    if ( seq <= weightd_mesh.issued[index] )
+        return SPARK_STATUS_OK;
+    transfer = &weightd_mesh.transfers[record];
+    if ( transfer->pending != 0u )
+        return SPARK_STATUS_BUSY;
     if ( SparkWeightdMeshNextTransferGeneration == (SPARK_WEIGHTD_MESH_TRANSFER_ID >> 16u) - 1u )
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     if ( SparkWeightdMeshSendRoom(physical_mask) == 0u )
@@ -2130,16 +2183,17 @@ static SparkStatus SparkWeightdMeshPostSlot(uint32_t band,uint32_t rank,uint64_t
     memset(transfer,0,sizeof(*transfer));
     transfer->seq = seq;
     transfer->generation = ++SparkWeightdMeshNextTransferGeneration;
-    SparkWeightdMeshPostRoute(index,band,((uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES,bytes,route,physical_mask,logical,rank);
+    weightd_mesh.issued[index] = seq;
+    SparkWeightdMeshPostRoute(record,band,((uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES,bytes,route,physical_mask,logical,rank);
     {
         uint64_t spent = SparkWeightdMeshMonotonicNs() - now_ns;
         weightd_mesh.timing.route_count++;
         weightd_mesh.timing.route_ns += spent;
         weightd_mesh.timing.route_max_ns = spent > weightd_mesh.timing.route_max_ns ? spent : weightd_mesh.timing.route_max_ns;
     }
-    weightd_mesh.post_ns[index] = now_ns;
-    if ( weightd_mesh.publish_seq[index] == seq )
-        SparkLatencyAdd(&weightd_mesh.timing.post,weightd_mesh.publish_ns[index],now_ns);
+    weightd_mesh.post_ns[record] = now_ns;
+    if ( weightd_mesh.publish_seq[record] == seq )
+        SparkLatencyAdd(&weightd_mesh.timing.post,weightd_mesh.publish_ns[record],now_ns);
     return transfer->failed != 0u ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK;
 }
 
@@ -2369,17 +2423,22 @@ int SparkWeightdMeshStagingFd(void)
 
 
 
-static uint32_t SparkWeightdMeshDoorbellStable(volatile uint64_t *entry,uint64_t *seq,uint64_t *bytes,uint64_t *slot,uint64_t *destinations)
+static uint32_t SparkWeightdMeshDoorbellStable(uint32_t index,uint64_t snapshot[2][4])
 {
-    uint32_t tries;
+    volatile uint64_t *cells[2] = {SparkWeightdMeshDoorbellAt(index,0u),SparkWeightdMeshDoorbellAt(index,1u)};
+    uint32_t tries,alternate,word,agree;
     for ( tries = 0u; tries < 64u; tries++ )
     {
-        *seq = entry[0];
-        *bytes = entry[1];
-        *slot = entry[2];
-        *destinations = entry[3];
+        for (alternate=0u; alternate<2u; alternate++)
+            for (word=0u; word<4u; word++)
+                snapshot[alternate][word] = cells[alternate][word];
         __sync_synchronize();
-        if ( *seq == entry[0] && *bytes == entry[1] && *slot == entry[2] && *destinations == entry[3] )
+        agree = 1u;
+        for (alternate=0u; alternate<2u; alternate++)
+            for (word=0u; word<4u; word++)
+                agree &= snapshot[alternate][word] == cells[alternate][word] ? 1u : 0u;
+        __sync_synchronize();
+        if ( agree != 0u )
             return(1u);
     }
     return(0u);
@@ -2394,37 +2453,55 @@ static void SparkWeightdMeshDoorbellStuck(uint64_t index,const char *phase,uint6
 
 static uint32_t SparkWeightdMeshDoorbellCell(uint32_t band,uint32_t rank,uint64_t now_ns)
 {
-    uint64_t index = (uint64_t)band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + rank;
-    volatile uint64_t *entry = (volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band,rank));
-    uint64_t seq = entry[0], bytes, slot, destinations;
-    SparkWeightdMeshRoute route;
-    if ( seq == 0ull || seq == weightd_mesh.doorbell_posted[index] )
+    uint32_t index = band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + rank,alternate,candidate,count = 0u,order[2];
+    uint64_t snapshot[2][4],newest = 0u,posted = weightd_mesh.doorbell_posted[index];
+    if ( SparkWeightdMeshDoorbellAt(index,0u)[0] <= posted && SparkWeightdMeshDoorbellAt(index,1u)[0] <= posted )
     {
         weightd_mesh.doorbell_stuck[index] = 0u;
         return(0u);
     }
-    if ( SparkWeightdMeshDoorbellStable(entry,&seq,&bytes,&slot,&destinations) == 0u )
+    if ( SparkWeightdMeshDoorbellStable(index,snapshot) == 0u )
     {
         SparkWeightdMeshDoorbellStuck(index,"unstable",0u,0u,0u);
         return(weightd_mesh.doorbell_stuck[index] < SPARK_WEIGHTD_MESH_STUCK_LIVE_SWEEPS ? 1u : 0u);
     }
-    if ( seq == 0ull || bytes == 0ull || seq == weightd_mesh.doorbell_posted[index] )
+    for (alternate=0u; alternate<2u; alternate++)
+        if ( snapshot[alternate][0] > posted && snapshot[alternate][1] != 0u )
+        {
+            newest = snapshot[alternate][0] > newest ? snapshot[alternate][0] : newest;
+            if ( snapshot[alternate][0] > weightd_mesh.issued[index] )
+                order[count++] = alternate;
+        }
+    if ( newest == 0u )
         return(0u);
+    if ( count == 2u && snapshot[order[0]][0] > snapshot[order[1]][0] )
+    {
+        candidate = order[0];
+        order[0] = order[1];
+        order[1] = candidate;
+    }
     if ( weightd_mesh.doorbell_stuck[index] != 0u && (weightd_mesh.doorbell_stuck[index] % 200u) == 0u )
-        fprintf(stderr,"WD-SEEN idx=%llu seq=%llu posted=%llu bytes=%llu slot=%llu\n",(unsigned long long)index,(unsigned long long)seq,(unsigned long long)weightd_mesh.doorbell_posted[index],(unsigned long long)bytes,(unsigned long long)slot);
-    route.word = destinations;
-    if ( slot >= SPARK_WEIGHTD_MESH_SLOTS_PER_BAND || SparkWeightdMeshRouteFits(route,bytes) == 0u )
+        fprintf(stderr,"WD-SEEN idx=%u seq=%llu posted=%llu issued=%llu\n",index,(unsigned long long)newest,(unsigned long long)posted,(unsigned long long)weightd_mesh.issued[index]);
+    SparkWeightdMeshDoorbellStuck(index,"pending",newest,0u,0u);
+    for (candidate=0u; candidate<count; candidate++)
     {
-        SparkWeightdMeshDoorbellStuck(index,"invalid",seq,bytes,slot);
-        return(0u);
+        const uint64_t *cell = snapshot[order[candidate]];
+        uint32_t record = SPARK_WEIGHTD_MESH_RECORD_OF(index,cell[0]);
+        SparkWeightdMeshRoute route;
+        route.word = cell[3];
+        if ( cell[2] >= SPARK_WEIGHTD_MESH_SLOTS_PER_BAND || SparkWeightdMeshRouteFits(route,cell[1]) == 0u )
+        {
+            SparkWeightdMeshDoorbellStuck(index,"invalid",cell[0],cell[1],cell[2]);
+            break;
+        }
+        if ( weightd_mesh.publish_seq[record] != cell[0] )
+        {
+            weightd_mesh.publish_seq[record] = cell[0];
+            weightd_mesh.publish_ns[record] = now_ns;
+        }
+        if ( SparkWeightdMeshPostSlot(band,rank,cell[0],cell[2],cell[1],route,now_ns) != SPARK_STATUS_OK )
+            break;
     }
-    SparkWeightdMeshDoorbellStuck(index,"pending",seq,bytes,slot);
-    if ( weightd_mesh.publish_seq[index] != seq )
-    {
-        weightd_mesh.publish_seq[index] = seq;
-        weightd_mesh.publish_ns[index] = now_ns;
-    }
-    (void)SparkWeightdMeshPostSlot(band,rank,seq,slot,bytes,route,now_ns);
     return(weightd_mesh.doorbell_stuck[index] < SPARK_WEIGHTD_MESH_STUCK_LIVE_SWEEPS ? 1u : 0u);
 }
 

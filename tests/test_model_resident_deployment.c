@@ -93,7 +93,7 @@ static void TestPrefixReuseKey(const char *members,SparkStatus expected)
 	assert(unlink(path) == 0);
 }
 
-static void TestRuntimeMember(const char *member,SparkStatus expected,uint32_t positions)
+static void TestRuntimeMemberShared(const char *member,SparkStatus expected,uint32_t positions,uint32_t shared)
 {
 	SparkModelResidentDeployment deployment;
 	char buffer[8192],path[256];
@@ -119,9 +119,90 @@ static void TestRuntimeMember(const char *member,SparkStatus expected,uint32_t p
 	SparkModelResidentDeploymentReset(&deployment);
 	assert(SparkModelResidentDeploymentLoad(path,&deployment) == expected);
 	if ( expected == SPARK_STATUS_OK )
-		assert(deployment.max_sequence_positions == positions);
+		assert(deployment.max_sequence_positions == positions && deployment.max_shared_input_row_count == shared);
 	SparkModelResidentDeploymentDestroy(&deployment);
 	assert(unlink(path) == 0);
+}
+
+static void TestRuntimeMember(const char *member,SparkStatus expected,uint32_t positions)
+{
+	TestRuntimeMemberShared(member,expected,positions,0u);
+}
+
+static void TestSharedInputRows(void)
+{
+	TestRuntimeMemberShared("\"max_shared_input_rows\": 2",SPARK_STATUS_OK,0u,2u);
+	TestRuntimeMemberShared("\"max_shared_input_rows\": 4",SPARK_STATUS_OK,0u,4u);
+	TestRuntimeMemberShared("\"max_shared_input_rows\": 5",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
+	TestRuntimeMemberShared("\"max_shared_input_rows\": 0",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
+	TestRuntimeMemberShared("\"max_shared_input_row\": 2",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
+	puts("test_model_resident_deployment: a shared-wave row limit within max_input_rows loads; zero, larger or misspelled is refused");
+}
+
+static void TestDraftServerMember(const char *member,SparkStatus expected,SparkModelResidentDeployment *deployment)
+{
+	char buffer[8192],path[256];
+	const char *anchor;
+	FILE *file;
+	uint32_t count,prefix;
+	file = fopen("tests/fixtures/model_resident_deployment.json","rb");
+	assert(file != 0);
+	count = (uint32_t)fread(buffer,1,sizeof(buffer) - 1u,file);
+	assert(feof(file) != 0 && count > 1u);
+	assert(fclose(file) == 0);
+	buffer[count] = '\0';
+	anchor = strchr(buffer,'{');
+	assert(anchor != 0);
+	prefix = (uint32_t)(anchor - buffer) + 1u;
+	assert(snprintf(path,sizeof(path),"/tmp/sparkpipe-draft-%ld.json",(long)getpid()) > 0);
+	file = fopen(path,"wb");
+	assert(file != 0);
+	assert(fwrite(buffer,1,prefix,file) == prefix);
+	assert(fprintf(file,"\"draft_server\": %s,",member) > 0);
+	assert(fwrite(buffer + prefix,1,count - prefix,file) == count - prefix);
+	assert(fclose(file) == 0);
+	SparkModelResidentDeploymentReset(deployment);
+	assert(SparkModelResidentDeploymentLoad(path,deployment) == expected);
+	assert(unlink(path) == 0);
+}
+
+static void TestDraftServer(void)
+{
+	static const char *const refused[] =
+	{
+		"{\"host\":\"\",\"port\":7702,\"target_model\":\"kimi-k3\",\"depth\":7,\"wait_ms\":30,\"min_confidence\":0.35}",
+		"{\"host\":\"127.0.0.1\",\"port\":0,\"target_model\":\"kimi-k3\",\"depth\":7,\"wait_ms\":30,\"min_confidence\":0.35}",
+		"{\"host\":\"127.0.0.1\",\"port\":70000,\"target_model\":\"kimi-k3\",\"depth\":7,\"wait_ms\":30,\"min_confidence\":0.35}",
+		"{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"\",\"depth\":7,\"wait_ms\":30,\"min_confidence\":0.35}",
+		"{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"a-target-model-name-of-thirty-two\",\"depth\":7,\"wait_ms\":30,\"min_confidence\":0.35}",
+		"{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"kimi-k3\",\"depth\":0,\"wait_ms\":30,\"min_confidence\":0.35}",
+		"{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"kimi-k3\",\"depth\":9,\"wait_ms\":30,\"min_confidence\":0.35}",
+		"{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"kimi-k3\",\"depth\":7,\"wait_ms\":0,\"min_confidence\":0.35}",
+		"{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"kimi-k3\",\"depth\":7,\"wait_ms\":1001,\"min_confidence\":0.35}",
+		"{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"kimi-k3\",\"depth\":7,\"wait_ms\":30,\"min_confidence\":1.0}",
+		"{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"kimi-k3\",\"depth\":7,\"wait_ms\":30,\"min_confidence\":-0.1}",
+		"{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"kimi-k3\",\"depth\":7,\"wait_ms\":30}",
+		"{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"kimi-k3\",\"depth\":7,\"wait_ms\":30,\"min_confidence\":0.35,\"window\":8}",
+		"[]"
+	};
+	SparkModelResidentDeployment deployment;
+	uint32_t index;
+	TestDraftServerMember("{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"kimi-k3\",\"depth\":7,\"wait_ms\":30,\"min_confidence\":0.35}",
+		SPARK_STATUS_OK,&deployment);
+	assert(deployment.draft_server.host != 0 && strcmp(deployment.draft_server.host,"127.0.0.1") == 0 && deployment.draft_server.port == 7702u);
+	assert(strcmp(deployment.draft_server.target_model,"kimi-k3") == 0 && deployment.draft_server.depth == 7u && deployment.draft_server.wait_ms == 30u);
+	assert(deployment.draft_server.min_confidence > 0.349f && deployment.draft_server.min_confidence < 0.351f);
+	SparkModelResidentDeploymentDestroy(&deployment);
+	for (index=0u; index<sizeof(refused) / sizeof(refused[0]); index++)
+	{
+		TestDraftServerMember(refused[index],SPARK_STATUS_SCHEMA_ERROR,&deployment);
+		SparkModelResidentDeploymentDestroy(&deployment);
+	}
+	SparkModelResidentDeploymentReset(&deployment);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment.json",&deployment) == SPARK_STATUS_OK);
+	assert(deployment.draft_server.host == 0);
+	SparkModelResidentDeploymentDestroy(&deployment);
+	puts("test_model_resident_deployment: a draft server section loads its endpoint, target, depth, wait and confidence cut; empty, out-of-range, missing or unknown members are refused; no section means no draft server");
 }
 
 static void TestSequencePositions(void)
@@ -610,6 +691,8 @@ int main(int argc,char **argv)
 	TestPrefixReuseKey("\"prefix_reuse\":true,",SPARK_STATUS_SCHEMA_ERROR);
 	TestPrefixReuseKey("\"prefix_reuse\":false,",SPARK_STATUS_SCHEMA_ERROR);
 	TestSequencePositions();
+	TestSharedInputRows();
+	TestDraftServer();
 	TestGlm5NextDeploymentServesText();
 	SparkModelResidentDeploymentReset(&deployment);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment.json",&deployment) == SPARK_STATUS_OK);

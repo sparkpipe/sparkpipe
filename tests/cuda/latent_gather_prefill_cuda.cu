@@ -10,6 +10,7 @@
 
 #define GATHER_PAGE 64u
 #define GATHER_LATENT 512u
+#define GATHER_HEAD_TOLERANCE (1.0 / 64.0)
 #define GATHER_ROPE 64u
 #define GATHER_WIDTH (GATHER_LATENT + GATHER_ROPE)
 #define GATHER_RECORD LM_LATENT_SHARD_RECORD_FLOATS(GATHER_LATENT)
@@ -28,6 +29,34 @@ struct GatherKv
 static int gather_failures;
 
 #define GATHER_CUDA(call) do { cudaError_t gather_error = (call); if ( gather_error != cudaSuccess ) { printf("FAIL cuda %s: %s\n",#call,cudaGetErrorString(gather_error)); exit(1); } } while (0)
+
+static double GatherHeadWorst(const std::vector<uint16_t> &value,const std::vector<uint16_t> &reference,uint32_t width)
+{
+	double worst = 0.0;
+	size_t base;
+	for (base=0u; base<reference.size(); base+=width)
+	{
+		double peak = 0.0,difference = 0.0;
+		uint32_t element;
+		for (element=0u; element<width; element++)
+		{
+			uint32_t a = (uint32_t)value[base + element] << 16u,b = (uint32_t)reference[base + element] << 16u;
+			float fa,fb;
+			memcpy(&fa,&a,4u);
+			memcpy(&fb,&b,4u);
+			{
+				const double gap = fabs((double)fa - (double)fb);
+				peak = fabs((double)fb) > peak ? fabs((double)fb) : peak;
+				difference = gap > difference || gap != gap ? gap : difference;
+			}
+		}
+		{
+			const double error = difference / (peak > 1e-6 ? peak : 1e-6);
+			worst = error > worst || error != error ? error : worst;
+		}
+	}
+	return worst;
+}
 
 static void GatherCheck(int condition,const char *what,const char *label)
 {
@@ -179,17 +208,51 @@ static void GatherCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 		GATHER_CUDA(cudaDeviceSynchronize());
 		GATHER_CUDA(cudaMemcpy(tiled.data(),tiled_device,tiled.size() * 2u,cudaMemcpyDeviceToHost));
 		GATHER_CUDA(cudaMemcpy(oracle.data(),oracle_device,oracle.size() * 2u,cudaMemcpyDeviceToHost));
-		for (index=0u; index<tiled.size(); index++)
+		worst = GatherHeadWorst(tiled,oracle,GATHER_LATENT);
+		GatherCheck(worst <= GATHER_HEAD_TOLERANCE,"the tiled gather attention matches the per-row partial kernel within two bf16 steps of each head's peak output",label);
+		printf("%s %s: worst difference to the per-row kernel relative to the head's peak output %.5f\n",worst <= GATHER_HEAD_TOLERANCE ? "ok  " : "FAIL",label,worst);
 		{
-			uint32_t a = (uint32_t)tiled[index] << 16u,b = (uint32_t)oracle[index] << 16u;
-			float fa,fb;
-			memcpy(&fa,&a,4u);
-			memcpy(&fb,&b,4u);
-			double error = fabs((double)fa - (double)fb) / (fabs((double)fb) + 1e-2);
-			worst = error > worst ? error : worst;
+			const uint32_t window_keys = 96u,windows = (most + window_keys - 1u) / window_keys;
+			std::vector<uint16_t> windowed(tiled.size());
+			uint16_t *windowed_device;
+			float *window_device,*running_device;
+			double window_worst = 0.0;
+			uint32_t window;
+			GATHER_CUDA(cudaMalloc((void **)&windowed_device,windowed.size() * 2u));
+			GATHER_CUDA(cudaMalloc((void **)&window_device,(uint64_t)degree * rank_stride * sizeof(float)));
+			GATHER_CUDA(cudaMalloc((void **)&running_device,rank_stride * sizeof(float)));
+			for (target=0u; target<degree; target++)
+			{
+				for (window=0u; window<windows; window++)
+				{
+					const uint32_t begin = window * window_keys,keys = most - begin < window_keys ? most - begin : window_keys;
+					for (source=0u; source<degree; source++)
+					{
+						SparkKvShard shard = {degree,source,1u};
+						LmKvShardView pages_view;
+						LmKvShardGatherView view;
+						GatherCheck(LmKvShardViewInitialize<GatherKv>(&pages_view,pools[source],table_device,pages,1u,pages,error_device,shard) == 0,"window source pages",label);
+						GatherCheck(LmKvShardGatherViewInitialize<GatherKv>(&view,pages_view.pages,shard,keys_device + (uint64_t)source * key_stride + (uint64_t)begin * GatherKv::kSlotBytes,
+							plan_device + 1u,plan_device + 2u) == 0 && LmKvShardGatherViewWindow(&view,begin,begin + keys) == 0,"window gather view",label);
+						GatherCheck(LmLatentGatherPrefillLaunch<GatherKv,LmKvShardGatherView,GATHER_LATENT,GATHER_ROPE>(view,query_device + (uint64_t)target * query_stride,heads_per_rank,
+							sequences_device,contexts_device,positions_device,scale,window_device + (uint64_t)source * rank_stride,rows,0) == cudaSuccess,"window prefill launch",label);
+					}
+					GatherCheck(LmLatentShardFoldLaunch<GATHER_LATENT>(window_device,rank_stride,degree,heads_per_rank,running_device,rows,window == 0u ? 1u : 0u,0) == cudaSuccess,
+						"window fold",label);
+				}
+				GatherCheck(LmLatentShardMergeLaunch<GATHER_LATENT>(running_device,rank_stride,1u,heads_per_rank,windowed_device + (uint64_t)target * out_stride,rows,0) == cudaSuccess,
+					"window finish",label);
+			}
+			GATHER_CUDA(cudaDeviceSynchronize());
+			GATHER_CUDA(cudaMemcpy(&error_host,error_device,sizeof(error_host),cudaMemcpyDeviceToHost));
+			GatherCheck(error_host.error_code == LM_FRAME_ERROR_NONE,"windowed views read only keys inside their windows",label);
+			GATHER_CUDA(cudaMemcpy(windowed.data(),windowed_device,windowed.size() * 2u,cudaMemcpyDeviceToHost));
+			window_worst = GatherHeadWorst(windowed,tiled,GATHER_LATENT);
+			GatherCheck(windows >= 2u || most <= window_keys,"the case spans the windows it claims",label);
+			GatherCheck(window_worst <= GATHER_HEAD_TOLERANCE,"attention folded over key windows matches the single gather within two bf16 steps of each head's peak output",label);
+			printf("%s %s: %u key windows of %u, worst difference to the single gather relative to the head's peak output %.5f\n",window_worst <= GATHER_HEAD_TOLERANCE ? "ok  " : "FAIL",label,windows,window_keys,window_worst);
+			cudaFree(windowed_device); cudaFree(window_device); cudaFree(running_device);
 		}
-		GatherCheck(worst <= 1.0 / 64.0,"the tiled gather attention matches the per-row partial kernel within 1/64 relative",label);
-		printf("%s %s: worst relative difference to the per-row kernel %.5f\n",worst <= 1.0 / 64.0 ? "ok  " : "FAIL",label,worst);
 		cudaFree(tiled_device); cudaFree(oracle_device); cudaFree(row_device); cudaFree(receive_device);
 	}
 	printf("%s %s: %llu of %u source/target partial blocks differ (heads %u)\n",mismatches == 0u ? "ok  " : "FAIL",label,(unsigned long long)mismatches,degree * degree,heads);

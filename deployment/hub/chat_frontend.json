@@ -121,7 +121,7 @@
    },
    "model_dir": "models/kimi-k3",
    "engine": "http://127.0.0.1:8459",
-   "context_tokens": 131072,
+   "context_tokens": 737280,
    "max_output_tokens": 131072,
    "sampling_defaults": {
     "temperature": 1.0,

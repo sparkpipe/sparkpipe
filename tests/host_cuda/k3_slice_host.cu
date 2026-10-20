@@ -56,10 +56,8 @@ static uint16_t value[ROWS * K3_KDA_V_DIM], gate[ROWS * K3_KDA_V_DIM];
 static uint16_t decay_logit[ROWS * K3_KDA_QK_DIM];
 static uint16_t latent[ROUTES * K3_ROUTED_EXPERT_HIDDEN];
 static uint16_t fused_qkvb[ROWS * K3_KDA_QKVB_FUSED_ROWS];
-static uint16_t fused_decay_gate[ROWS * K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS];
-static uint16_t gate_latent[ROWS * K3_KDA_KEY_DIM];
 static uint16_t qkvb_weight[K3_HIDDEN], decay_gate_weight[K3_HIDDEN];
-static uint16_t aux_slab[K3_DSPARK_AUX_LAYER_COUNT * ROWS * K3_HIDDEN];
+static uint16_t aux_slab[2u * ROWS * K3_HIDDEN];
 static uint16_t aux_reference[ROWS * K3_HIDDEN];
 static uint16_t kv_slot[ROWS * K3_MLA_KV_A_DIM];
 static uint16_t gate_up[ROUTES * K3_SHARED_INTERMEDIATE * 2u];
@@ -114,7 +112,6 @@ static const char *GemmName(const void *output)
 		: output == (void *)attention_out ? "attention_out"
 		: output == (void *)latent ? "latent"
 		: output == (void *)fused_qkvb ? "fused_qkvb"
-		: output == (void *)fused_decay_gate ? "fused_decay_gate"
 		: output == (void *)query ? "query"
 		: output == (void *)key ? "key"
 		: output == (void *)value ? "value"
@@ -199,8 +196,7 @@ int main(void)
 	}
 	b.hidden_bf16 = hidden; b.normed_bf16 = normed;
 	b.attention_out_bf16 = attention_out; b.shared_out_bf16 = shared_out;
-	b.fused_qkvb_bf16 = fused_qkvb; b.fused_decay_gate_bf16 = fused_decay_gate;
-	b.gate_latent_bf16 = gate_latent;
+	b.fused_qkvb_bf16 = fused_qkvb;
 	b.query_bf16 = query; b.key_bf16 = key; b.value_bf16 = value;
 	b.gate_bf16 = gate; b.decay_logit_bf16 = decay_logit;
 	b.latent_bf16 = latent; b.kv_slot_bf16 = kv_slot;
@@ -242,7 +238,9 @@ int main(void)
 		memcpy(hidden_saved, hidden, sizeof(hidden_saved));
 		lm_recorded_gemms.clear();
 		state.verify_rows = 2u;
-		state.dspark_aux = aux_slab; state.aux_rows = ROWS;
+		for (index = 0u; index < K3_LAYERS; ++index) state.tap_output[index] = -1;
+		state.tap_output[7] = 1; state.tap_output[23] = 0;
+		state.tap_slab = aux_slab; state.tap_row_stride = 2u * K3_HIDDEN; state.tap_active = 1u;
 		b.sequence_row_begin = 0;
 		status = K3LaunchSlice<LmHostRecorderFormat,K3GlobalKv>(
 			&weights[0], &state, &b, 0u, 1u, 1u, 1u, 1u, ROUTES, 1u, 1u, 0);
@@ -325,7 +323,7 @@ int main(void)
 	{
 		uint32_t mismatch = 0u; uint64_t byte;
 		for (byte = 0u; byte < (uint64_t)ROWS * K3_HIDDEN; ++byte)
-			if ( aux_slab[byte] != aux_reference[byte] )
+			if ( aux_slab[(byte / K3_HIDDEN) * 2u * K3_HIDDEN + K3_HIDDEN + byte % K3_HIDDEN] != aux_reference[byte] )
 				++mismatch;
 		printf("aux_mismatch %u\n", mismatch);
 	}

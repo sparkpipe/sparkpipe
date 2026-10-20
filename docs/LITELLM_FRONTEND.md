@@ -122,7 +122,7 @@ ZCode reaches the door as a custom provider in `~/.zcode/v2/provider_config.json
 
 - `"providerId": "custom:sparkpipe"`;
 - `"api": {"type": "anthropic-messages", "baseUrl": "http://rtx5090:4000"}`;
-- all 16 served model ids, with each context window in `modelConfigRules` taken from the chat layer's `context_tokens` (2026-10-14: `glm-5.3` and `qwen3.8-27b` 262144, `glm-5.3-flash` and `kimi-k3` 131072, `deepseek-v4.1-flash` 16384, the rest 32768).
+- all 16 served model ids, with each context window in `modelConfigRules` taken from the chat layer's `context_tokens` (2026-10-16: `kimi-k3` 737280, `glm-5.3` and `qwen3.8-27b` 262144, `glm-5.3-flash` 131072, `deepseek-v4.1-flash` 16384, the rest 32768).
 
 LiteLLM runs without a master key, so the provider's API key is a placeholder. Picking a model in ZCode swaps the fleet on its first request.
 
@@ -428,7 +428,7 @@ model there swaps the fleet away, and the next chat waits for K3 again.
 The chat LiteLLM serves all 16 fleet models (`deployment/hub/litellm-chatui.yaml`,
 generated from `deployment/hub/open_webui_models.json`, contexts checked
 against the chat layer). Each has an Open WebUI model entry from that file,
-applied inside the container with `deployment/hub/open_webui_models.py`: name,
+applied inside the container with `tools/serving/open_webui/open_webui_models.py`: name,
 description (context window and switch time), text-only input, web search
 and the code interpreter on by default, the GitHub tool, the trimmed
 built-in tools, and a `compact_token_threshold` for context compaction.
@@ -452,7 +452,9 @@ for the old model that arrive during the drain are still served and extend
 it; the fair queue (oldest waiter first, minimum residency) is the next step.
 
 **Switch now.** `https://sparkpipe.ai:8443/fleet` (`site/fleet.html`, served
-by the chat layer) shows what is loaded, a switch in progress with its drain
+inside the Open WebUI container on the chat origin, so its `/` and
+`/static/favicon.*` links are Open WebUI's own paths; `tests/test_site.py`
+lists exactly those as the page's chat-app links) shows what is loaded, a switch in progress with its drain
 (live replies, time waited, quiet time) and recent switches, refreshed every
 2 s. For the admin it adds a red **Switch now** button, which ends the drain
 at once and cuts any reply still running on the old model, and **Load now**
@@ -512,7 +514,7 @@ without asking, bounded by what their identity can do.
   chat. Output is masked for secrets and cut at 20,000 characters. A timeout
   kills the command's whole process group, and a drain of the output is
   bounded. `tests/test_fleet_gateway.py`.
-- **Tool.** `deployment/hub/open_webui_tools/fleet.py`, the Open WebUI tool
+- **Tool.** `tools/serving/open_webui/tools/fleet.py`, the Open WebUI tool
   `fleet` with no access grant, so only the admin (its owner) can use it; it
   also checks the caller's role. `fleet_status`, `fleet_nodes` and
   `fleet_logs` run directly; `fleet_run` asks once per chat ("Give Kimi
@@ -677,7 +679,7 @@ The owner asked for these four after K3 told a user it could not browse:
     -e DOCLING_SERVE_ENABLE_UI=false -e DOCLING_SERVE_MAX_SYNC_WAIT=600 \
     ghcr.io/docling-project/docling-serve-cpu@sha256:5a8367f3f657c26755605c3b2255546674833209a18afc2011598f4c045c6db3
   ```
-- **GitHub.** `deployment/hub/open_webui_tools/github.py`, installed as the
+- **GitHub.** `tools/serving/open_webui/tools/github.py`, installed as the
   Open WebUI tool `github` with public read access and attached to K3
   (`toolIds`): `github_search` (repositories, code, issues), `github_read`
   (files and directories, the README with the top level), `github_list`

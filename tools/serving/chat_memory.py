@@ -930,7 +930,10 @@ class Memory:
 
     def part_settings(self, model):
         settings = model.memory
-        return int(settings.get("part_small_tokens", 1024)), int(settings.get("part_cap_tokens", 12288)), int(settings.get("keep_tokens", 4096))
+        missing = [key for key in ("part_small_tokens", "part_cap_tokens", "keep_tokens") if key not in settings]
+        if missing:
+            raise KeyError(f"chat_memory for {model.id} lacks {', '.join(missing)}")
+        return int(settings["part_small_tokens"]), int(settings["part_cap_tokens"]), int(settings["keep_tokens"])
 
     def count(self, model, text):
         key = (model.id, hashlib.sha256(text.encode()).hexdigest())

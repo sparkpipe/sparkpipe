@@ -7,9 +7,11 @@ extern "C" {
 #endif
 
 #define SPARK_SPECULATION_FRAME_MATCH_CLASSES 5u
-#define SPARK_SPECULATION_FRAME_CLASSES (2u * SPARK_SPECULATION_FRAME_MATCH_CLASSES)
+#define SPARK_SPECULATION_FRAME_MODEL_CLASSES 2u
+#define SPARK_SPECULATION_FRAME_CLASSES (2u * SPARK_SPECULATION_FRAME_MATCH_CLASSES + SPARK_SPECULATION_FRAME_MODEL_CLASSES)
 #define SPARK_SPECULATION_FRAME_DEPTH_BUCKETS 9u
-#define SPARK_SPECULATION_FRAME_ROW_BUCKETS 11u
+#define SPARK_SPECULATION_FRAME_SINGLE_ROW_BUCKETS 16u
+#define SPARK_SPECULATION_FRAME_ROW_BUCKETS 22u
 #define SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS 9u
 #define SPARK_SPECULATION_FRAME_MAX_DRAFTS 255u
 #define SPARK_SPECULATION_FRAME_PROBE_DRAFTS 16u
@@ -45,6 +47,7 @@ typedef struct SparkSpeculationFrameModel
 typedef struct SparkSpeculationFrameRequest
 {
 	uint32_t feasible;
+	uint32_t minimum;
 	uint32_t context;
 	uint32_t match_length;
 	uint32_t sampled;
@@ -61,8 +64,11 @@ typedef struct SparkSpeculationFrameChoice
 } SparkSpeculationFrameChoice;
 
 uint32_t SparkSpeculationFrameClass(uint32_t match_length, uint32_t sampled);
+uint32_t SparkSpeculationFrameModelClass(uint32_t sampled);
+uint32_t SparkSpeculationFrameClassIsModel(uint32_t frame_class);
 uint32_t SparkSpeculationFrameDepthBucket(uint32_t draft_index);
 uint32_t SparkSpeculationFrameRowBucket(uint32_t rows);
+uint32_t SparkSpeculationFrameRowBucketLimit(uint32_t bucket);
 uint32_t SparkSpeculationFrameContextBucket(uint32_t context);
 void SparkSpeculationHazardObserve(SparkSpeculationHazard *hazard, uint32_t drafts, uint32_t accepted, float decay);
 float SparkSpeculationHazardAt(const SparkSpeculationHazard *engine, const SparkSpeculationHazard *request, uint32_t bucket);

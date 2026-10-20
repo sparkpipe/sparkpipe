@@ -151,10 +151,13 @@ def kv_page_bytes(topology: str) -> int:
     return max(mla) * k3_constant("KV_PAGE_SLOTS") * slot // tp
 
 
-def kv_backing_minimum(topology: str, sequences: int, physical_pages: int, logical_pages: int) -> int:
+def kv_backing_minimum(topology: str, physical_pages: int, logical_pages: int) -> int:
     spill = logical_pages - physical_pages + 2
-    checkpoints = 2 * sequences + 2
-    return spill * kv_page_bytes(topology) + checkpoints * recurrent_page_bytes(topology) + KV_IN_FLIGHT_MARGIN_BYTES
+    return spill * kv_page_bytes(topology) + KV_IN_FLIGHT_MARGIN_BYTES
+
+
+def state_memory_minimum(topology: str, sequences: int) -> int:
+    return (2 * sequences + 2) * recurrent_page_bytes(topology)
 DEFAULT_KV_SNAPSHOT_BYTES = 8 * 1024 * 1024 * 1024
 KV_PAGES_PER_SEQUENCE = 64   # adapter_config default; x SPARK_K3_KV_PAGE_SLOTS (64) tokens
 MAX_ROWS = 2048
@@ -223,11 +226,17 @@ def group_hosts(rank: int) -> list[str]:
 
 
 DEFAULT_STATE_BUDGET_BYTES = 5 << 30
+SHARED_ROWS = 1024
+
+
+def shared_rows(rows: int | None) -> dict:
+    return {} if rows is None or rows <= SHARED_ROWS else {"max_shared_rows": SHARED_ROWS}
 
 
 def adapter_config(rank: int, kv_pages: int = KV_PAGES_PER_SEQUENCE,
                    sequences: int = 16, rows: int | None = None,
-                   state_budget_bytes: int = DEFAULT_STATE_BUDGET_BYTES) -> dict:
+                   state_budget_bytes: int = DEFAULT_STATE_BUDGET_BYTES,
+                   state_memory_bytes: int | None = None) -> dict:
     tp = tp_rank_of(rank)
     config = {
         "stage_pack_path": deployed_pack(rank),
@@ -236,9 +245,11 @@ def adapter_config(rank: int, kv_pages: int = KV_PAGES_PER_SEQUENCE,
         "world_size": WORLD,
         "max_sequences": sequences,
         "max_rows": rows if rows is not None else sequences,
+        **shared_rows(rows),
         "resident_capacity": sequences,
         "kv_pages": kv_pages,
         "state_budget_bytes": state_budget_bytes,
+        "state_memory_bytes": state_memory_bytes if state_memory_bytes is not None else 2 * state_memory_minimum(TOPOLOGY, sequences),
         "hidden": 7168,
         "device_collective": {
             "backend": "hidden_transport",
@@ -331,6 +342,7 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
             "max_inflight_submissions": sequences,
             "max_active_sequences": sequences,
             "max_input_rows": rows if rows is not None else sequences,
+            **({"max_shared_input_rows": SHARED_ROWS} if rows is not None and rows > SHARED_ROWS else {}),
             "resident_sequence_capacity": sequences,
             "kv_logical_page_capacity": logical_pages if logical_pages is not None else sequences * kv_pages,
             "kv_physical_page_capacity": physical_pages if physical_pages is not None else sequences * kv_pages,
@@ -423,6 +435,10 @@ def main() -> int:
                         help="per-rank budget for KDA state, windows, MLA KV "
                              "and scratch; the stage runner refuses a plan "
                              "over it (default %(default)d)")
+    parser.add_argument("--state-memory-bytes", type=int, default=None,
+                        help="per-rank memory for KDA state records; default "
+                             "twice the two per sequence plus two the KV "
+                             "binding needs")
     parser.add_argument("--check", action="store_true",
                         help="verify the outputs are current instead of "
                              "writing them")
@@ -443,15 +459,20 @@ def main() -> int:
     if arguments.rows is not None and not arguments.sequences <= arguments.rows <= MAX_ROWS:
         raise SystemExit(f"rows must be within sequences..{MAX_ROWS}: a decode wave carries one row per sequence "
                          f"and the K3 adapter takes at most {MAX_ROWS} rows")
-    minimum = kv_backing_minimum(arguments.topology, arguments.sequences, arguments.kv_physical_pages, arguments.kv_logical_pages)
+    minimum = kv_backing_minimum(arguments.topology, arguments.kv_physical_pages, arguments.kv_logical_pages)
     if arguments.kv_backing_bytes is None:
         arguments.kv_backing_bytes = minimum
     if arguments.kv_backing_bytes < minimum:
         raise SystemExit(f"kv-backing-bytes {arguments.kv_backing_bytes} cannot hold "
                          f"{arguments.kv_logical_pages - arguments.kv_physical_pages + 2} spilled "
-                         f"{kv_page_bytes(arguments.topology)}-byte KV pages and "
+                         f"{kv_page_bytes(arguments.topology)}-byte KV pages; it needs {minimum}")
+    states = state_memory_minimum(arguments.topology, arguments.sequences)
+    if arguments.state_memory_bytes is None:
+        arguments.state_memory_bytes = 2 * states
+    if arguments.state_memory_bytes < states:
+        raise SystemExit(f"state-memory-bytes {arguments.state_memory_bytes} cannot hold "
                          f"{2 * arguments.sequences + 2} {recurrent_page_bytes(arguments.topology)}-byte "
-                         f"KDA checkpoints; it needs {minimum}")
+                         f"KDA checkpoints; it needs {states}")
     if arguments.kv_snapshot_bytes <= 0:
         raise SystemExit("kv-snapshot-bytes must be positive and finite")
     if not 1 <= arguments.sequences <= 16:
@@ -477,7 +498,8 @@ def main() -> int:
     for rank in ranks:
         text = render(adapter_config(rank, arguments.kv_pages,
                                      arguments.sequences, arguments.rows,
-                                     arguments.state_budget_bytes))
+                                     arguments.state_budget_bytes,
+                                     arguments.state_memory_bytes))
         name = f"adapter.{host_of(rank)}.json" if arguments.rank is None \
             else "adapter.json"
         wrote = write_or_check(output / name, text, arguments.check) or wrote

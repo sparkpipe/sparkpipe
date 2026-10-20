@@ -28,6 +28,14 @@ uint32_t SparkSpeculationFrameClass(uint32_t match_length, uint32_t sampled)
 	return(match_class + (sampled != 0u ? SPARK_SPECULATION_FRAME_MATCH_CLASSES : 0u));
 }
 
+uint32_t SparkSpeculationFrameModelClass(uint32_t sampled)
+{
+	return(2u * SPARK_SPECULATION_FRAME_MATCH_CLASSES + (sampled != 0u ? 1u : 0u));
+}
+uint32_t SparkSpeculationFrameClassIsModel(uint32_t frame_class)
+{
+	return(frame_class >= 2u * SPARK_SPECULATION_FRAME_MATCH_CLASSES && frame_class < SPARK_SPECULATION_FRAME_CLASSES ? 1u : 0u);
+}
 uint32_t SparkSpeculationFrameDepthBucket(uint32_t draft_index)
 {
 	uint32_t bucket = SparkSpeculationFrameLog2Ceil(draft_index);
@@ -36,8 +44,18 @@ uint32_t SparkSpeculationFrameDepthBucket(uint32_t draft_index)
 
 uint32_t SparkSpeculationFrameRowBucket(uint32_t rows)
 {
-	uint32_t bucket = SparkSpeculationFrameLog2Ceil(rows);
+	uint32_t bucket;
+	if ( rows <= SPARK_SPECULATION_FRAME_SINGLE_ROW_BUCKETS )
+		return(rows != 0u ? rows - 1u : 0u);
+	bucket = SPARK_SPECULATION_FRAME_SINGLE_ROW_BUCKETS - 5u + SparkSpeculationFrameLog2Ceil(rows);
 	return(bucket < SPARK_SPECULATION_FRAME_ROW_BUCKETS ? bucket : SPARK_SPECULATION_FRAME_ROW_BUCKETS - 1u);
+}
+
+uint32_t SparkSpeculationFrameRowBucketLimit(uint32_t bucket)
+{
+	if ( bucket < SPARK_SPECULATION_FRAME_SINGLE_ROW_BUCKETS )
+		return(bucket + 1u);
+	return(SPARK_SPECULATION_FRAME_SINGLE_ROW_BUCKETS << (bucket - SPARK_SPECULATION_FRAME_SINGLE_ROW_BUCKETS + 1u));
 }
 
 uint32_t SparkSpeculationFrameContextBucket(uint32_t context)
@@ -224,7 +242,7 @@ void SparkSpeculationFrameChoose(const SparkSpeculationFrameModel *model, const 
 {
 	const SparkSpeculationHazard *engine_hazard;
 	float best_rate = 0.0f,expected,cost;
-	uint32_t index,drafts,feasible;
+	uint32_t index,drafts,feasible,pass;
 	memset(choice,0,sizeof(*choice));
 	if ( model == 0 || request == 0 || request->feasible == 0u )
 		return;
@@ -245,23 +263,24 @@ void SparkSpeculationFrameChoose(const SparkSpeculationFrameModel *model, const 
 		choice->frame_ns = cost;
 		return;
 	}
-	for (index=0u; index<=sizeof(SparkSpeculationFrameCandidates) / sizeof(SparkSpeculationFrameCandidates[0]); index++)
-	{
-		drafts = index < sizeof(SparkSpeculationFrameCandidates) / sizeof(SparkSpeculationFrameCandidates[0]) ? SparkSpeculationFrameCandidates[index] : feasible;
-		if ( drafts > feasible )
-			continue;
-		cost = SparkSpeculationFrameCost(model,drafts + 1u,request->context);
-		if ( cost == 0.0f || (request->cost_cap_ns != 0.0f && cost > request->cost_cap_ns) )
-			continue;
-		expected = SparkSpeculationFrameExpected(engine_hazard,request_hazard,drafts);
-		if ( expected / cost > best_rate )
+	for (pass=request->minimum != 0u ? 0u : 1u; pass<2u && choice->drafts == 0u; pass++)
+		for (index=0u; index<=sizeof(SparkSpeculationFrameCandidates) / sizeof(SparkSpeculationFrameCandidates[0]); index++)
 		{
-			best_rate = expected / cost;
-			choice->drafts = drafts;
-			choice->expected_tokens = expected;
-			choice->frame_ns = cost;
+			drafts = index < sizeof(SparkSpeculationFrameCandidates) / sizeof(SparkSpeculationFrameCandidates[0]) ? SparkSpeculationFrameCandidates[index] : feasible;
+			if ( drafts > feasible || (pass == 0u && drafts < request->minimum) )
+				continue;
+			cost = SparkSpeculationFrameCost(model,drafts + 1u,request->context);
+			if ( cost == 0.0f || (request->cost_cap_ns != 0.0f && cost > request->cost_cap_ns) )
+				continue;
+			expected = SparkSpeculationFrameExpected(engine_hazard,request_hazard,drafts);
+			if ( expected / cost > best_rate )
+			{
+				best_rate = expected / cost;
+				choice->drafts = drafts;
+				choice->expected_tokens = expected;
+				choice->frame_ns = cost;
+			}
 		}
-	}
 	if ( best_rate * choice->chain_token_ns < SPARK_SPECULATION_FRAME_MARGIN )
 	{
 		choice->drafts = 0u;

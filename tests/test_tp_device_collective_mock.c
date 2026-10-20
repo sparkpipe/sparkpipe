@@ -505,6 +505,40 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     CHECK(SparkTpMeshRsagSlice(131068u,16u) == 8192u && SparkTpMeshRsagSlice(513u,16u) == 36u &&
         SparkTpMeshRsagSlice(49152u,3u) == 16384u && SparkTpMeshRsagSlice(49153u,4u) % 4u == 0u,
         "slices are whole 8-byte words and cover the chunk");
+    CHECK(SparkTpMeshDirectPipelined(16u * 131096u,16u,0u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u &&
+        SparkTpMeshDirectPipelined(16u * 131100u,16u,0u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 1u &&
+        SparkTpMeshDirectPipelined(16u * 131100u,16u,1u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u &&
+        SparkTpMeshDirectPipelined(16u * 131100u,16u,2u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u &&
+        SparkTpMeshPipelineChunks(131097u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 3u &&
+        SparkTpMeshPipelineChunks(196608u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 3u &&
+        SparkTpMeshPipelineChunks(196609u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 4u &&
+        SparkTpMeshPipelineChunks(26u * 65536u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 26u,
+        "only all-gathers whose local part exceeds one whole slot pipeline, in 65536-element half chunks");
+    {
+        char path_log[] = "/tmp/spark-tp-pipe-XXXXXX";
+        int fd = mkstemp(path_log),saved = dup(2);
+        char line[512];
+        uint32_t pipelined = 0u;
+        SparkStatus status;
+        FILE *file;
+        submission.logical_sequence_count = 1u;
+        submission.active_sequence_count = 4096u;
+        CHECK(fd >= 0 && saved >= 0 && dup2(fd,2) == 2,"pipelined path log capture opens");
+        status = SparkTpDeviceCollectiveEnqueue(&collective,&submission,0u);
+        fflush(stderr);
+        (void)dup2(saved,2);
+        (void)close(saved);
+        (void)close(fd);
+        file = fopen(path_log,"r");
+        while ( file != 0 && fgets(line,sizeof(line),file) != 0 )
+            pipelined += strstr(line,"MESH-PATH ") != 0 && strstr(line,"operation=0 path=direct-pipelined phases=4 elements=524288 ") != 0 ? 1u : 0u;
+        if ( file != 0 )
+            (void)fclose(file);
+        (void)unlink(path_log);
+        CHECK(status == SPARK_STATUS_OK && pipelined == 1u && cuda_stub_mesh_hardware_operation == 0u &&
+            cuda_stub_mesh_hardware_elements == 524288u && cuda_stub_mesh_hardware_logical_rows == 1u,
+            "an all-gather of 262144 local elements runs pipelined as four half-slot chunks and says so");
+    }
     {
         uint32_t calls_before = cuda_stub_mesh_hardware_calls;
         submission.active_sequence_count = 2u;
@@ -553,7 +587,7 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         SparkTpMeshAllToAllChunks(0u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u,
         "all-to-all slices are 16-byte aligned 1/degree shares of a slot; partials of 1/8/64 rows take 1/5/33 rounds");
     submission.active_sequence_count = 2u;
-    CHECK(cuda_stub_mesh_hardware_calls == 15u && cuda_stub_mesh_publish_calls == old_publish,
+    CHECK(cuda_stub_mesh_hardware_calls == 16u && cuda_stub_mesh_publish_calls == old_publish,
         "hardware capture never dispatches spinning publish or wait path");
     CHECK(SparkTpDeviceCollectiveDisarmCapture(&collective) == SPARK_STATUS_OK,"hardware disarm capture");
     cuda_stub_mesh_hardware_launch_result = cudaErrorUnknown;

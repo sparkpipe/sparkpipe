@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ds4.spark-telemetry-dashboard</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>@DEST@/spark_telemetry_dashboard.py</string>
+    <string>--summary-json</string>
+    <string>/tmp/ds4_telemetry/mac/cluster_summary.json</string>
+    <string>--host</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>8765</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>@DEST@</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/ds4_telemetry/mac/telemetry-dashboard.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/ds4_telemetry/mac/telemetry-dashboard.err.log</string>
+</dict>
+</plist>

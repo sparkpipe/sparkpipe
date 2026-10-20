@@ -10,6 +10,8 @@ import re
 import sys
 import time
 import uuid
+from array import array
+from collections import OrderedDict
 from pathlib import Path
 
 import aiohttp
@@ -1000,9 +1002,43 @@ class ChannelParser(OutputParser):
         return events
 
 
+class PrefixLedger:
+    def __init__(self, block_tokens=64, capacity_blocks=1 << 21):
+        self.block_tokens = block_tokens
+        self.capacity_blocks = capacity_blocks
+        self.blocks = OrderedDict()
+
+    def chain(self, token_ids):
+        data = array("I", token_ids).tobytes()
+        width = 4 * self.block_tokens
+        digest = b""
+        for start in range(0, len(data) - width + 1, width):
+            digest = hashlib.blake2b(digest + data[start:start + width], digest_size=16).digest()
+            yield digest
+
+    def seen(self, token_ids):
+        matched, longest = 0, 0
+        for digest in self.chain(token_ids):
+            length = self.blocks.get(digest)
+            if length is None:
+                break
+            matched += self.block_tokens
+            longest = length
+        return matched, longest
+
+    def record(self, token_ids):
+        total = len(token_ids)
+        for digest in self.chain(token_ids):
+            self.blocks[digest] = max(self.blocks.get(digest, 0), total)
+            self.blocks.move_to_end(digest)
+        while len(self.blocks) > self.capacity_blocks:
+            self.blocks.popitem(last=False)
+
+
 class Frontend:
     memory = None
     citation_wrapper = None
+    prefixes = None
 
     def __init__(self, config, base):
         self.models = {}
@@ -1107,6 +1143,11 @@ class Frontend:
             {"id": model.id, "object": "model", "created": created, "owned_by": "sparkpipe", "max_model_len": model.context_tokens}
             for model in self.models.values()]})
 
+    def prefix_ledger(self, model):
+        if self.prefixes is None:
+            self.prefixes = {}
+        return self.prefixes.setdefault(model.id, PrefixLedger())
+
     def prepare(self, model, body):
         plan = self.plan(model, body, None)
         return plan["engine_body"], plan["parser"], plan["prompt_tokens"]
@@ -1159,6 +1200,8 @@ class Frontend:
                 trace.update(memory_lined=session.layout["lined"], memory_open=len(session.layout["open"]))
         plan = self.finish_plan(model, body, messages, tools, kwargs, session)
         engine = plan["engine_body"]
+        seen, seen_of = self.prefix_ledger(model).seen(engine["prompt_token_ids"])
+        trace.update(seen_tokens=seen, seen_of=seen_of)
         trace.update(temperature=engine.get("temperature"), top_p=engine.get("top_p"), top_k=engine.get("top_k"), reasoning_effort=body.get("reasoning_effort"),
                      tools=len(tools or []), stream=bool(body.get("stream")))
         plan["trace"] = trace
@@ -1288,6 +1331,7 @@ class Frontend:
                 break
         for event in parser.finish():
             yield event
+        self.prefix_ledger(model).record(list(engine_body["prompt_token_ids"]) + token_ids)
         yield ("finish", {"finish_reason": "tool_calls" if parser.calls else (finish or "stop"), "usage": usage,
                           "engine_finish": "stop_string" if stop_string else (finish or "stop"), "token_ids": token_ids})
 
@@ -1395,18 +1439,20 @@ class Frontend:
         body = {"prompt_token_ids": ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids, "priority": 0, "temperature": 0.0}
         parser = OutputParser(model, None, reasoning_open, []) if model.channels is None else None
         step = model.vocabulary.decoder()
-        content, usage, generated, outcome = [], {}, 0, "error"
+        content, usage, generated, outcome, tokens = [], {}, 0, "error", []
         started = time.monotonic()
         try:
             async for chunk in self.engine_events(model, body):
                 usage = chunk.get("usage") or usage
                 generated += len(chunk.get("tokens", []))
+                tokens.extend(chunk.get("tokens", []))
                 text = "".join(piece for piece in (step(token) for token in chunk.get("tokens", []) if token not in model.stop_token_ids) if piece)
                 if parser is None:
                     content.append(text)
                     continue
                 content.extend(value for kind_, value in parser.feed(text) if kind_ == "content")
             outcome = "done"
+            self.prefix_ledger(model).record(list(ids) + tokens)
         except asyncio.CancelledError:
             outcome = "cancelled"
             raise

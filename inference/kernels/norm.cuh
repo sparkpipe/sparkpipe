@@ -508,6 +508,17 @@ void LmCopyRowsKernel(const uint16_t *__restrict__ source_bf16, uint16_t *__rest
 	destination_bf16[index] = source_bf16[index];
 }
 
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmCopyRowsStridedKernel(const uint16_t *__restrict__ source_bf16, uint16_t *__restrict__ destination_bf16, uint32_t rows, uint32_t dimension,
+	uint64_t destination_stride)
+{
+	uint32_t row = blockIdx.y,element = (blockIdx.x * THREADS) + threadIdx.x;
+	if ( row >= rows || element >= dimension )
+		return;
+	destination_bf16[((uint64_t)row * destination_stride) + element] = source_bf16[((uint64_t)row * dimension) + element];
+}
+
 template<uint32_t THREADS, uint32_t MAX_SOURCES>
 __global__ __launch_bounds__(THREADS, 1)
 void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__restrict__ partial_bf16, const uint16_t *__restrict__ score_weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t sources, uint32_t rows, uint32_t dimension, float epsilon)

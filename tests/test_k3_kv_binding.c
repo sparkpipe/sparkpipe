@@ -69,11 +69,13 @@ static SparkStageServingState *Open(void)
 	for ( index = 0u; index < 8u; index++ )
 		assert(SparkMemoryBufferAllocate(device[index], SPARK_MEMORY_SPACE_DEVICE_PRIVATE, 9u * sizeof(uint32_t)) == SPARK_STATUS_OK);
 	state->max_rows = 8u;
+	state->max_shared_rows = 8u;
 	state->runner_config.max_input_row_count = 8u;
 	state->runner_config.max_active_sequence_count = 4u;
 	state->runner_config.resident_sequence_capacity = 4u;
 	state->runner_config.kv_pages_per_sequence = 2u;
 	state->runner_config.execution_stream = (void *)(uintptr_t)7u;
+	state->state_memory_bytes = UINT64_C(1) << 26;
 	state->completion_function = Completion;
 	SparkStageModuleAtomicStateArrayInitialize(state->lane_states, SPARK_STAGE_SERVING_MAX_LANES);
 	strcpy(DIRECTORY, "/tmp/sparkpipe-k3-kv-XXXXXX");
@@ -307,6 +309,7 @@ static void TestK3Refusals(void)
 	assert(state != 0);
 	state->model = &K3StageServing;
 	state->max_rows = 8u;
+	state->max_shared_rows = 8u;
 	state->runner_config.resident_sequence_capacity = 4u;
 	state->runner_config.kv_pages_per_sequence = 2u;
 	strcpy(DIRECTORY, "/tmp/sparkpipe-k3-kv-XXXXXX");
@@ -333,12 +336,14 @@ static void TestK3ContextShard(void)
 	assert(state != 0);
 	state->model = &K3StageServing;
 	state->max_rows = 8u;
+	state->max_shared_rows = 8u;
 	state->runner_config.max_input_row_count = 8u;
 	state->runner_config.max_active_sequence_count = 4u;
 	state->runner_config.resident_sequence_capacity = 4u;
 	state->runner_config.kv_pages_per_sequence = 2u;
 	state->runner_config.tp_degree = 16u;
 	state->runner_config.tp_rank = 5u;
+	state->state_memory_bytes = UINT64_C(1) << 26;
 	strcpy(DIRECTORY, "/tmp/sparkpipe-k3-kv-XXXXXX");
 	assert(mkdtemp(DIRECTORY) != 0);
 	strcpy(SNAPSHOT_DIRECTORY, "/tmp/sparkpipe-k3-snapshot-XXXXXX");

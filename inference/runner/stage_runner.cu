@@ -23,6 +23,8 @@
 #define STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS 4u
 #define STAGE_RUNNER_DISTRIBUTION_HEAD_TILE 128u
 #define STAGE_RUNNER_GRAPH_ROWS 16u
+#define STAGE_RUNNER_GRAPH_KEYS 2u
+#define STAGE_RUNNER_GRAPH_SLOTS (STAGE_RUNNER_GRAPH_KEYS * STAGE_RUNNER_GRAPH_ROWS)
 #define STAGE_RUNNER_WIDE_ROWS 16u
 
 typedef struct SparkStageRunnerState SparkStageRunnerState;
@@ -187,6 +189,14 @@ static SparkStatus StageRunnerCombineTp4Bf16(void *combine_context,
 	return cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
+__global__ static void StageRunnerTapCopyKernel(const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t dimension,
+	uint64_t destination_stride)
+{
+	const uint32_t row = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( row < rows && element < dimension )
+		destination[(uint64_t)row * destination_stride + element] = source[(uint64_t)row * dimension + element];
+}
+
 __global__ static void StageRunnerCombineU64MaxKernel(const uint64_t *source,
 	uint64_t *destination,uint32_t elements)
 {
@@ -250,6 +260,7 @@ typedef struct SparkStageRunnerState
 	float *head_certified_fp8_scale_f32;
 	float *head_certified_fp8_norm_f32;
 	void *head_certified_scratch;
+	uint32_t head_capacity;
 	uint32_t *head_certified_candidates;
 	uint32_t *head_screened_count;
 	uint32_t vocab;
@@ -299,10 +310,19 @@ typedef struct SparkStageRunnerState
 	uint16_t *distribution_normed;
 	float *distribution_logits;
 	float *distribution_gathered;
-	cudaGraphExec_t graph_exec[STAGE_RUNNER_GRAPH_ROWS];
-	SparkStageRunnerStep graph_input[STAGE_RUNNER_GRAPH_ROWS];
-	uint8_t graph_refused[STAGE_RUNNER_GRAPH_ROWS];
-	LmWeightPrefetchPlan graph_prefetch[STAGE_RUNNER_GRAPH_ROWS];
+	cudaGraphExec_t graph_exec[STAGE_RUNNER_GRAPH_SLOTS];
+	SparkStageRunnerStep graph_input[STAGE_RUNNER_GRAPH_SLOTS];
+	uint8_t graph_refused[STAGE_RUNNER_GRAPH_SLOTS];
+	LmWeightPrefetchPlan graph_prefetch[STAGE_RUNNER_GRAPH_SLOTS];
+	uint64_t capture_ns;
+	SparkStageRunnerTapPlan tap_plan;
+	uint32_t tap_final_entry;
+	uint32_t tap_last_steps;
+	uint32_t tap_last_rows;
+	uint16_t *tap_slab_host;
+	uint16_t *tap_slab_device;
+	uint16_t *tap_chain_host;
+	uint16_t *tap_chain_device;
 	uint64_t graph_launches;
 	uint64_t timing_steps;
 	uint64_t timing_graph_steps;
@@ -323,6 +343,8 @@ typedef struct SparkStageRunnerState
 	uint32_t layer_waves;
 	uint64_t timing_graph_ns;
 	SparkTpDeviceCollectiveHardwareTiming timing_wait;
+	SparkTpDeviceCollectiveHardwareTiming timing_arrival_mark;
+	uint32_t timing_arrival_marked;
 	uint32_t sequence_capacity;
 	StageRunnerLanes lanes;
 } SparkStageRunnerState;
@@ -811,9 +833,9 @@ static SparkStatus StageRunnerCreateHead(SparkStageRunnerState *state, const Spa
 	if ( cudaMalloc(&state->head_certified_fp8_payload, shard_rows * dim) != cudaSuccess ||
 		cudaMalloc(&state->head_certified_fp8_scale_f32, shard_rows * (dim / 32u) * sizeof(float)) != cudaSuccess ||
 		cudaMalloc(&state->head_certified_fp8_norm_f32, shard_rows * (dim / 32u) * sizeof(float)) != cudaSuccess ||
-		cudaMalloc(&state->head_certified_scratch, SparkHeadCertifiedFp8ScratchBytes(shard_rows,dim) * state->max_rows) != cudaSuccess ||
-		cudaMalloc(&state->head_certified_candidates, SparkHeadCertifiedFp8CandidateBytes(shard_rows) * state->max_rows) != cudaSuccess ||
-		cudaMalloc(&state->head_screened_count, sizeof(uint32_t) * state->max_rows) != cudaSuccess )
+		cudaMalloc(&state->head_certified_scratch, SparkHeadCertifiedFp8ScratchBytes(shard_rows,dim) * state->head_capacity) != cudaSuccess ||
+		cudaMalloc(&state->head_certified_candidates, SparkHeadCertifiedFp8CandidateBytes(shard_rows) * state->head_capacity) != cudaSuccess ||
+		cudaMalloc(&state->head_screened_count, sizeof(uint32_t) * state->head_capacity) != cudaSuccess )
 	{
 		fprintf(stderr, "sparkpipe_stage_runner: certified head buffers for %llu rows do not fit\n", (unsigned long long)shard_rows);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -831,19 +853,19 @@ static SparkStatus StageRunnerCreateHead(SparkStageRunnerState *state, const Spa
 static SparkStatus StageRunnerCreateBuffers(SparkStageRunnerState *state, const SparkStageRunner *runner,
 	const SparkStageRunnerConfiguration *configuration)
 {
-	const uint64_t rows = configuration->max_input_row_count, hidden = state->geometry.hidden;
+	const uint64_t rows = configuration->max_input_row_count, hidden = state->geometry.hidden, head_rows = state->head_capacity;
 	SparkStatus status;
 	state->head_tiles = (state->vocab_slice_rows + LM_STAGE_HEAD_TILE - 1u) / LM_STAGE_HEAD_TILE;
 	if ( cudaMalloc(&state->hidden, rows * hidden * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMalloc(&state->head_normed, rows * hidden * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMalloc(&state->head_maxloc, rows * sizeof(uint64_t)) != cudaSuccess ||
-		cudaMalloc(&state->head_candidate_token, rows * state->head_tiles * sizeof(*state->head_candidate_token)) != cudaSuccess ||
-		cudaMalloc(&state->head_candidate_score, rows * state->head_tiles * sizeof(*state->head_candidate_score)) != cudaSuccess ||
+		cudaMalloc(&state->head_normed, head_rows * hidden * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMalloc(&state->head_maxloc, head_rows * sizeof(uint64_t)) != cudaSuccess ||
+		cudaMalloc(&state->head_candidate_token, head_rows * state->head_tiles * sizeof(*state->head_candidate_token)) != cudaSuccess ||
+		cudaMalloc(&state->head_candidate_score, head_rows * state->head_tiles * sizeof(*state->head_candidate_score)) != cudaSuccess ||
 		cudaMalloc(&state->output_token, rows * sizeof(*state->output_token)) != cudaSuccess ||
 		cudaMalloc(&state->output_score, rows * sizeof(*state->output_score)) != cudaSuccess ||
-		cudaMalloc(&state->head_hidden, rows * hidden * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMalloc(&state->head_token, rows * sizeof(*state->head_token)) != cudaSuccess ||
-		cudaMalloc(&state->head_score, rows * sizeof(*state->head_score)) != cudaSuccess ||
+		cudaMalloc(&state->head_hidden, head_rows * hidden * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMalloc(&state->head_token, head_rows * sizeof(*state->head_token)) != cudaSuccess ||
+		cudaMalloc(&state->head_score, head_rows * sizeof(*state->head_score)) != cudaSuccess ||
 		cudaMalloc(&state->positions, sizeof(*state->positions)) != cudaSuccess ||
 		cudaMalloc(&state->token_ids_device, rows * sizeof(*state->token_ids_device)) != cudaSuccess ||
 		cudaMalloc(&state->context_length, sizeof(*state->context_length)) != cudaSuccess ||
@@ -943,6 +965,7 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	memset(runner, 0, sizeof(*runner));
 	state = new SparkStageRunnerState;
 	memset(state, 0, sizeof(*state));
+	state->tap_final_entry = UINT32_MAX;
 	runner->abi_version = SPARK_STAGE_RUNNER_ABI_VERSION;
 	runner->descriptor_bytes = SPARK_STAGE_RUNNER_BYTES;
 	runner->flags = configuration->flags;
@@ -960,6 +983,8 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	state->tp_degree = configuration->tp_degree;
 	state->stream = (cudaStream_t)configuration->execution_stream;
 	state->max_rows = configuration->max_input_row_count;
+	state->head_capacity = configuration->head_row_capacity != 0u && configuration->head_row_capacity < state->max_rows ?
+		configuration->head_row_capacity : state->max_rows;
 	state->max_context = configuration->resident_sequence_capacity;
 	state->multiprocessors = configuration->multiprocessors;
 	state->sequence_capacity = configuration->max_active_sequence_count;
@@ -1043,7 +1068,8 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 static SparkStatus StageRunnerAllocateDistribution(SparkStageRunnerState *state,
 	const SparkStageRunner *runner, const SparkStageRunnerConfiguration *configuration)
 {
-	const uint64_t rows = configuration->max_input_row_count, slice = state->vocab_slice_rows, hidden = state->geometry.hidden;
+	const uint64_t rows = state->head_capacity, slice = state->vocab_slice_rows, hidden = state->geometry.hidden;
+	const uint64_t gather_rows = configuration->max_input_row_count;
 	uint64_t full;
 	uint32_t elements, sub_rows;
 	state->distribution_capacity = 0u;
@@ -1063,7 +1089,7 @@ static SparkStatus StageRunnerAllocateDistribution(SparkStageRunnerState *state,
 		for ( sub_rows = 1u; sub_rows <= elements && (elements % sub_rows != 0u || elements / sub_rows > hidden); ++sub_rows )
 			;
 		state->distribution_sub_rows = sub_rows;
-		state->distribution_chunk_rows = sub_rows <= elements ? (uint32_t)rows / sub_rows : 0u;
+		state->distribution_chunk_rows = sub_rows <= elements ? (uint32_t)(gather_rows / sub_rows < rows ? gather_rows / sub_rows : rows) : 0u;
 		if ( state->distribution_chunk_rows == 0u )
 		{
 			fprintf(stderr, "sparkpipe_stage_runner: distribution refused: a %llu-token logit row needs %u collective rows and %llu are configured\n",
@@ -1753,18 +1779,33 @@ static SparkStatus StageRunnerStepBody(SparkStageRunnerState *state, const Spark
 	status = first != 0u ? StageRunnerLanesStep(state, in, first, stream) : state->model_interface->step(state->model, in, stream);
 	if ( status != SPARK_STATUS_OK )
 		{ fprintf(stderr, "sparkpipe_stage_runner: %s step failed status=%d\n", state->model_interface->tag, (int)status); return status; }
+	if ( state->tap_slab_device != 0 && state->tap_final_entry != UINT32_MAX )
+	{
+		StageRunnerTapCopyKernel<<<dim3((state->geometry.hidden + 255u) / 256u, in->rows), 256u, 0, stream>>>(in->hidden_bf16,
+			state->tap_slab_device + (uint64_t)state->tap_final_entry * state->geometry.hidden, in->rows, state->geometry.hidden,
+			state->tap_plan.row_stride_elements);
+		if ( cudaPeekAtLastError() != cudaSuccess )
+			return SPARK_STATUS_INTERNAL_ERROR;
+	}
 	if ( runner->owns_final_head != 0u && state->head_weight != 0 )
 		return StageRunnerHeadArgmax(state, in, stream);
 	return SPARK_STATUS_OK;
 }
 
-static uint32_t StageRunnerGraphEligible(const SparkStageRunnerState *state, const SparkStageRunner *runner,
-	uint32_t rows, uint32_t sequences)
+static uint32_t StageRunnerGraphSlot(uint32_t key, uint32_t rows)
 {
+	return (key - 1u) * STAGE_RUNNER_GRAPH_ROWS + rows - 1u;
+}
+
+static uint32_t StageRunnerGraphEligible(const SparkStageRunnerState *state, const SparkStageRunner *runner,
+	uint32_t key, uint32_t rows, uint32_t sequences)
+{
+	const uint32_t shape = (key == 1u && rows == sequences) ||
+		(key == 2u && sequences == 1u && rows > 1u && state->model_interface->graph_key != 0) ? 1u : 0u;
 	return (state->resident != 0u || state->geometry.experts == 0u) && state->device_collective_created != 0 &&
 		state->device_collective_deferred != 0u && runner->owns_embedding != 0u &&
-		runner->owns_final_head != 0u && state->head_weight != 0 && rows == sequences &&
-		rows <= STAGE_RUNNER_GRAPH_ROWS && state->graph_refused[rows - 1u] == 0u ? 1u : 0u;
+		runner->owns_final_head != 0u && state->head_weight != 0 && shape != 0u &&
+		rows <= STAGE_RUNNER_GRAPH_ROWS && state->graph_refused[StageRunnerGraphSlot(key, rows)] == 0u ? 1u : 0u;
 }
 
 static void StageRunnerGraphIdentity(const SparkStageRunnerStep *in, SparkStageRunnerStep *identity)
@@ -1772,11 +1813,30 @@ static void StageRunnerGraphIdentity(const SparkStageRunnerStep *in, SparkStageR
 	memcpy(identity, in, sizeof(*identity));
 	identity->host_positions = 0;
 	identity->host_sequence_of_row = 0;
+	if ( in->graph_key == 2u )
+	{
+		identity->gather_context = 0u;
+		identity->gather_sequence = 0u;
+	}
+}
+
+static void StageRunnerTapFree(SparkStageRunnerState *state)
+{
+	if ( state->tap_slab_host != 0 )
+		(void)cudaFreeHost(state->tap_slab_host);
+	if ( state->tap_chain_host != 0 )
+		(void)cudaFreeHost(state->tap_chain_host);
+	state->tap_slab_host = 0;
+	state->tap_slab_device = 0;
+	state->tap_chain_host = 0;
+	state->tap_chain_device = 0;
+	memset(&state->tap_plan, 0, sizeof(state->tap_plan));
+	state->tap_final_entry = UINT32_MAX;
 }
 
 static void StageRunnerGraphDrop(SparkStageRunnerState *state)
 {
-	for ( uint32_t index = 0u; index < STAGE_RUNNER_GRAPH_ROWS; ++index )
+	for ( uint32_t index = 0u; index < STAGE_RUNNER_GRAPH_SLOTS; ++index )
 	{
 		if ( state->graph_exec[index] != 0 )
 			(void)cudaGraphExecDestroy(state->graph_exec[index]);
@@ -1785,9 +1845,9 @@ static void StageRunnerGraphDrop(SparkStageRunnerState *state)
 	}
 }
 
-static LmWeightPrefetchPlan *StageRunnerGraphPrefetch(SparkStageRunnerState *state, uint32_t rows)
+static LmWeightPrefetchPlan *StageRunnerGraphPrefetch(SparkStageRunnerState *state, uint32_t slot)
 {
-	LmWeightPrefetchPlan *plan = &state->graph_prefetch[rows - 1u];
+	LmWeightPrefetchPlan *plan = &state->graph_prefetch[slot];
 	if ( plan->device != 0 )
 		return(plan);
 	plan->host = (LmWeightPrefetchGroup *)calloc(LM_WEIGHT_PREFETCH_GROUPS, sizeof(LmWeightPrefetchGroup));
@@ -1803,7 +1863,7 @@ static LmWeightPrefetchPlan *StageRunnerGraphPrefetch(SparkStageRunnerState *sta
 
 static void StageRunnerGraphPrefetchFree(SparkStageRunnerState *state)
 {
-	for ( uint32_t index = 0u; index < STAGE_RUNNER_GRAPH_ROWS; ++index )
+	for ( uint32_t index = 0u; index < STAGE_RUNNER_GRAPH_SLOTS; ++index )
 	{
 		LmWeightPrefetchPlan *plan = &state->graph_prefetch[index];
 		if ( plan->device != 0 )
@@ -1817,13 +1877,13 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 	const SparkStageRunnerStep *in, cudaStream_t stream)
 {
 	const uint64_t started = StageRunnerNowNs();
-	const uint32_t rows = in->rows;
+	const uint32_t rows = in->rows, slot = StageRunnerGraphSlot(in->graph_key, in->rows);
 	const uint32_t copy_failed = state->copy_failed, tp_collective_failed = state->tp_collective_failed;
 	cudaGraph_t graph = 0;
 	cudaGraphExec_t exec = 0;
 	cudaError_t error = cudaSuccess;
 	size_t nodes = 0u;
-	LmWeightPrefetchPlan *prefetch = StageRunnerGraphPrefetch(state, rows);
+	LmWeightPrefetchPlan *prefetch = StageRunnerGraphPrefetch(state, slot);
 	SparkStatus status = prefetch != 0 ? SparkTpDeviceCollectiveArmCapture(&state->device_collective) : SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status == SPARK_STATUS_OK )
 	{
@@ -1850,19 +1910,21 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 		StageRunnerMemoryMark(state, "graph", rows);
 	if ( status != SPARK_STATUS_OK || error != cudaSuccess || exec == 0 )
 	{
-		fprintf(stderr, "STAGE-GRAPH-CAPTURE-FAILED rows=%u status=%d cuda=%s: this row count runs eager\n",
-			rows, (int)status, cudaGetErrorString(error));
+		fprintf(stderr, "STAGE-GRAPH-CAPTURE-FAILED key=%u rows=%u status=%d cuda=%s: this row count runs eager\n",
+			in->graph_key, rows, (int)status, cudaGetErrorString(error));
 		if ( exec != 0 )
 			(void)cudaGraphExecDestroy(exec);
 		(void)cudaGetLastError();
-		state->graph_refused[rows - 1u] = 1u;
+		state->graph_refused[slot] = 1u;
 		state->copy_failed = copy_failed;
 		state->tp_collective_failed = tp_collective_failed;
+		state->capture_ns += StageRunnerNowNs() - started;
 		return;
 	}
-	state->graph_exec[rows - 1u] = exec;
-	StageRunnerGraphIdentity(in, &state->graph_input[rows - 1u]);
-	fprintf(stderr, "STAGE-GRAPH-CAPTURE rows=%u nodes=%llu capture_ms=%.1f prefetch_groups=%u prefetch_dropped=%u\n", rows,
+	state->graph_exec[slot] = exec;
+	StageRunnerGraphIdentity(in, &state->graph_input[slot]);
+	state->capture_ns += StageRunnerNowNs() - started;
+	fprintf(stderr, "STAGE-GRAPH-CAPTURE key=%u rows=%u nodes=%llu capture_ms=%.1f prefetch_groups=%u prefetch_dropped=%u\n", in->graph_key, rows,
 		(unsigned long long)nodes, (double)(StageRunnerNowNs() - started) / 1e6, prefetch->groups, prefetch->dropped);
 }
 
@@ -1903,10 +1965,31 @@ static void StageRunnerTiming(SparkStageRunnerState *state, uint32_t rank, uint6
 		state->timing_wait.peer_wait_ns += step.peer_wait_ns;
 		state->timing_wait.copy_ns += step.copy_ns;
 		state->timing_wait.combine_ns += step.combine_ns;
+		if ( state->timing_arrival_marked == 0u )
+		{
+			state->timing_arrival_mark = step;
+			state->timing_arrival_marked = 1u;
+		}
+		state->timing_wait.first_arrival_ns = step.first_arrival_ns;
+		memcpy(state->timing_wait.peer_arrival_ns, step.peer_arrival_ns, sizeof(step.peer_arrival_ns));
 	}
 	if ( state->timing_steps < 64u )
 		return;
 	steps = state->timing_steps;
+	if ( state->timing_arrival_marked != 0u )
+	{
+		char arrivals[16u * 12u];
+		size_t used = 0u;
+		uint32_t peer;
+		arrivals[0] = '\0';
+		for ( peer = 0u; peer < 16u && used < sizeof(arrivals); ++peer )
+			used += (size_t)snprintf(arrivals + used, sizeof(arrivals) - used, "%s%llu", peer != 0u ? "," : "",
+				(unsigned long long)((state->timing_wait.peer_arrival_ns[peer] - state->timing_arrival_mark.peer_arrival_ns[peer]) / steps / 1000u));
+		fprintf(stderr, "STAGE-STEP-ARRIVAL rank=%u steps=%llu first_us=%llu peer_us=%s\n", rank, (unsigned long long)steps,
+			(unsigned long long)((state->timing_wait.first_arrival_ns - state->timing_arrival_mark.first_arrival_ns) / steps / 1000u), arrivals);
+		state->timing_arrival_mark.first_arrival_ns = state->timing_wait.first_arrival_ns;
+		memcpy(state->timing_arrival_mark.peer_arrival_ns, state->timing_wait.peer_arrival_ns, sizeof(state->timing_wait.peer_arrival_ns));
+	}
 	fprintf(stderr, "STAGE-STEP-TIMING rank=%u steps=%llu graph_steps=%llu submit_us=%llu graph_us=%llu source_wait_us=%llu peer_wait_us=%llu copy_us=%llu combine_us=%llu\n",
 		rank, (unsigned long long)steps, (unsigned long long)state->timing_graph_steps,
 		(unsigned long long)(state->timing_submit_ns / steps / 1000u),
@@ -1921,7 +2004,10 @@ static void StageRunnerTiming(SparkStageRunnerState *state, uint32_t rank, uint6
 	state->timing_graph_steps = 0u;
 	state->timing_submit_ns = 0u;
 	state->timing_graph_ns = 0u;
-	memset(&state->timing_wait, 0, sizeof(state->timing_wait));
+	state->timing_wait.source_wait_ns = 0u;
+	state->timing_wait.peer_wait_ns = 0u;
+	state->timing_wait.copy_ns = 0u;
+	state->timing_wait.combine_ns = 0u;
 }
 
 static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStageRunner *runner,
@@ -1929,18 +2015,25 @@ static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStag
 {
 	const uint32_t rows = in->rows;
 	SparkStageRunnerStep identity;
-	if ( in->graph_key != 0u && StageRunnerGraphEligible(state, runner, rows, in->sequences) != 0u )
+	if ( in->graph_key != 0u && in->graph_key <= STAGE_RUNNER_GRAPH_KEYS && StageRunnerGraphEligible(state, runner, in->graph_key, rows, in->sequences) != 0u )
 	{
+		const uint32_t slot = StageRunnerGraphSlot(in->graph_key, rows);
 		StageRunnerGraphIdentity(in, &identity);
-		if ( state->graph_exec[rows - 1u] != 0 && memcmp(&state->graph_input[rows - 1u], &identity, sizeof(identity)) != 0 )
+		if ( state->graph_exec[slot] != 0 && memcmp(&state->graph_input[slot], &identity, sizeof(identity)) != 0 )
 		{
-			(void)cudaGraphExecDestroy(state->graph_exec[rows - 1u]);
-			state->graph_exec[rows - 1u] = 0;
+			(void)cudaGraphExecDestroy(state->graph_exec[slot]);
+			state->graph_exec[slot] = 0;
 		}
-		if ( state->graph_exec[rows - 1u] == 0 )
+		if ( state->graph_exec[slot] == 0 )
 			StageRunnerGraphCapture(state, runner, in, stream);
-		if ( state->graph_exec[rows - 1u] != 0 )
-			return StageRunnerGraphLaunch(state, state->graph_exec[rows - 1u], stream);
+		if ( state->graph_exec[slot] != 0 )
+			return StageRunnerGraphLaunch(state, state->graph_exec[slot], stream);
+	}
+	if ( in->graph_key > 1u )
+	{
+		SparkStageRunnerStep eager = *in;
+		eager.graph_key = 0u;
+		return StageRunnerStepBody(state, runner, &eager, stream);
 	}
 	return StageRunnerStepBody(state, runner, in, stream);
 }
@@ -2031,8 +2124,17 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	if ( runner == 0 || dispatch == 0 || runner->private_state == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	state = (SparkStageRunnerState *)runner->private_state;
+	state->capture_ns = 0u;
 	rows = dispatch->row_count;
 	steps = dispatch->chain_steps > 1u ? dispatch->chain_steps : 1u;
+	if ( state->tap_slab_device != 0 && steps > 1u && (steps > SPARK_STAGE_RUNNER_TAP_CHAIN_STEPS || rows > state->sequence_capacity) )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: decode chain refused: steps=%u rows=%u exceed the tap chain area (%u steps x %u rows)\n",
+			steps, rows, SPARK_STAGE_RUNNER_TAP_CHAIN_STEPS, state->sequence_capacity);
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
+	state->tap_last_steps = steps;
+	state->tap_last_rows = rows;
 	if ( steps > 1u && (runner->owns_embedding == 0u || runner->owns_final_head == 0u || state->head_weight == 0 ||
 		rows != dispatch->active_sequence_count || (uint64_t)rows * steps > state->max_rows ||
 		dispatch->distribution_count > STAGE_RUNNER_CHAIN_LANES || dispatch->positions == 0 || dispatch->context_length == 0) )
@@ -2044,6 +2146,15 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	if ( rows == 0u || rows > state->max_rows || dispatch->active_sequence_count == 0u || dispatch->active_sequence_count > rows ||
 		(runner->owns_embedding != 0u && dispatch->token_ids == 0) )
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ( runner->owns_final_head != 0u &&
+		((dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) != 0u && dispatch->active_sequence_count < rows ?
+			dispatch->active_sequence_count : rows) > state->head_capacity )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: submit refused: the final head would run on %u rows and holds %u\n",
+			(dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) != 0u && dispatch->active_sequence_count < rows ?
+				dispatch->active_sequence_count : rows, state->head_capacity);
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
 	if ( (dispatch->flags & ~SPARK_STAGE_RUNNER_DISPATCH_KNOWN_FLAGS) != 0u )
 	{
 		fprintf(stderr, "sparkpipe_stage_runner: submit refused: unknown dispatch flags 0x%x\n", dispatch->flags);
@@ -2149,6 +2260,10 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 				current.distribution_positions = chain_positions;
 		}
 		exchange_status = StageRunnerStep(state, runner, &in, stream);
+		if ( exchange_status == SPARK_STATUS_OK && state->tap_slab_device != 0 && steps > 1u &&
+			cudaMemcpyAsync(state->tap_chain_device + (uint64_t)step * rows * state->tap_plan.row_stride_elements, state->tap_slab_device,
+				(uint64_t)rows * state->tap_plan.row_stride_elements * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream) != cudaSuccess )
+			exchange_status = SPARK_STATUS_IO_ERROR;
 		phase_marks[2] = StageRunnerNowNs();
 		if ( exchange_status == SPARK_STATUS_OK )
 			exchange_status = StageRunnerStepOutputs(state, runner, &current, stream, rows);
@@ -2274,6 +2389,116 @@ uint64_t SparkStageRunnerRecurrentBytes(const SparkStageRunner *runner)
 	return ((const SparkStageRunnerState *)runner->private_state)->geometry.recurrent_bytes;
 }
 
+SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRunnerTapEntry *entries, uint32_t entry_count, uint32_t capture)
+{
+	SparkStageRunnerState *state;
+	SparkStageRunnerTapPlan plan;
+	uint32_t index, other, model_entries = 0u, final_entry = UINT32_MAX;
+	uint64_t stride, slab_bytes, chain_bytes;
+	if ( runner == 0 || runner->private_state == 0 || entries == 0 || entry_count == 0u || entry_count > SPARK_STAGE_RUNNER_TAP_MAX_ENTRIES )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	state = (SparkStageRunnerState *)runner->private_state;
+	if ( state->tap_plan.entry_count != 0u || state->model_interface->lane != 0 )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: taps refused: %s\n", state->tap_plan.entry_count != 0u ? "a tap plan is already set" : "the model runs lanes");
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	for ( index = 0u; index < entry_count; ++index )
+	{
+		for ( other = 0u; other < index; ++other )
+			if ( entries[other].form == entries[index].form && entries[other].layer == entries[index].layer )
+				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL )
+			final_entry = index;
+		else if ( entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT && entries[index].layer < state->geometry.total_layers )
+			model_entries++;
+		else
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( model_entries != 0u && state->model_interface->tap_plan == 0 )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: taps refused: %s exports no layer outputs\n", state->model_interface->tag);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	stride = (uint64_t)entry_count * state->geometry.hidden;
+	slab_bytes = (uint64_t)state->max_rows * stride * sizeof(uint16_t);
+	chain_bytes = (uint64_t)SPARK_STAGE_RUNNER_TAP_CHAIN_STEPS * state->sequence_capacity * stride * sizeof(uint16_t);
+	if ( capture != 0u )
+	{
+		if ( cudaHostAlloc((void **)&state->tap_slab_host, slab_bytes, cudaHostAllocMapped) != cudaSuccess ||
+			cudaHostGetDevicePointer((void **)&state->tap_slab_device, state->tap_slab_host, 0) != cudaSuccess ||
+			cudaHostAlloc((void **)&state->tap_chain_host, chain_bytes, cudaHostAllocMapped) != cudaSuccess ||
+			cudaHostGetDevicePointer((void **)&state->tap_chain_device, state->tap_chain_host, 0) != cudaSuccess )
+		{
+			fprintf(stderr, "sparkpipe_stage_runner: taps refused: %llu + %llu bytes of mapped host memory are not available\n",
+				(unsigned long long)slab_bytes, (unsigned long long)chain_bytes);
+			StageRunnerTapFree(state);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		}
+	}
+	memset(&plan, 0, sizeof(plan));
+	plan.entry_count = entry_count;
+	memcpy(plan.entries, entries, (size_t)entry_count * sizeof(entries[0]));
+	plan.capture = capture != 0u ? 1u : 0u;
+	plan.row_capacity = state->max_rows;
+	plan.slab = state->tap_slab_device;
+	plan.row_stride_elements = stride;
+	if ( model_entries != 0u )
+	{
+		const SparkStatus status = state->model_interface->tap_plan(state->model, &plan);
+		if ( status != SPARK_STATUS_OK )
+		{
+			fprintf(stderr, "sparkpipe_stage_runner: taps refused by %s status=%d\n", state->model_interface->tag, (int)status);
+			StageRunnerTapFree(state);
+			return status;
+		}
+	}
+	state->tap_plan = plan;
+	state->tap_final_entry = final_entry;
+	StageRunnerGraphDrop(state);
+	fprintf(stderr, "sparkpipe_stage_runner: taps entries=%u capture=%u row_bytes=%llu slab_bytes=%llu chain_bytes=%llu\n", entry_count, plan.capture,
+		(unsigned long long)(stride * sizeof(uint16_t)), (unsigned long long)(capture != 0u ? slab_bytes : 0u), (unsigned long long)(capture != 0u ? chain_bytes : 0u));
+	return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkStageRunnerTapShape(const SparkStageRunner *runner, uint32_t *hidden, uint32_t *total_layers)
+{
+	const SparkStageRunnerState *state;
+	if ( runner == 0 || runner->private_state == 0 || hidden == 0 || total_layers == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	state = (const SparkStageRunnerState *)runner->private_state;
+	*hidden = state->geometry.hidden;
+	*total_layers = state->geometry.total_layers;
+	return SPARK_STATUS_OK;
+}
+
+const uint16_t *SparkStageRunnerTapRows(const SparkStageRunner *runner, uint32_t step, uint32_t rows, uint64_t *row_stride_elements)
+{
+	const SparkStageRunnerState *state;
+	if ( runner == 0 || runner->private_state == 0 )
+		return 0;
+	state = (const SparkStageRunnerState *)runner->private_state;
+	if ( state->tap_slab_host == 0 || rows != state->tap_last_rows || step >= state->tap_last_steps )
+		return 0;
+	if ( row_stride_elements != 0 )
+		*row_stride_elements = state->tap_plan.row_stride_elements;
+	if ( state->tap_last_steps == 1u )
+		return state->tap_slab_host;
+	return state->tap_chain_host + (uint64_t)step * rows * state->tap_plan.row_stride_elements;
+}
+
+uint64_t SparkStageRunnerTakeCaptureNs(SparkStageRunner *runner)
+{
+	SparkStageRunnerState *state;
+	uint64_t ns;
+	if ( runner == 0 || runner->private_state == 0 )
+		return 0u;
+	state = (SparkStageRunnerState *)runner->private_state;
+	ns = state->capture_ns;
+	state->capture_ns = 0u;
+	return ns;
+}
+
 uint32_t SparkStageRunnerVerifyCapable(const SparkStageRunner *runner)
 {
 	const SparkStageRunnerState *state;
@@ -2348,6 +2573,7 @@ void SparkStageRunnerDestroy(SparkStageRunner *runner)
 	StageRunnerDestroyLanes(state);
 	StageRunnerGraphDrop(state);
 	StageRunnerGraphPrefetchFree(state);
+	StageRunnerTapFree(state);
 	SparkStageRunnerStrayReport(state);
 	free(state->stray_head_bits);
 	free(state->stray_seen_bits);

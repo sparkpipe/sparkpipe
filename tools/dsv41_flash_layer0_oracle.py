@@ -8,7 +8,7 @@ state, 20 projects m=1 norm(wkv(x)) per token; each owns its indexer
 expectations; tests/test_dsv41_flash_layer0_anchor.c recomputes the same
 pieces from the same pack bytes in C and prints the per-piece deltas. No
 module/driver code is imported: the formulas come from the pinned reference
-sources (cache/dsv41_warm/ref/{model,kernel}.py at revision dba1be0a, sha256
+sources (cache/dsv41_warm/ref/{model,kernel}.py at revision 1bae0e10, sha256
 recorded in model_contracts/dsv41_flash_authoritative.json):
 
   linear    = act_quant(x, 32, ue8m0) then fp8-block GEMM: per 32-wide
@@ -95,7 +95,7 @@ ROUTE_SCALE = 1.5
 SWIGLU_LIMIT = 10.0
 TP = 8
 RANK = 0
-REVISION = "dba1be0a40aa45a94ad051997016db3960a90277"
+REVISION = "1bae0e1088993b9b82de08f59de5be5a34e42170"
 COMP_THETA = 160000.0
 YARN_FACTOR = 16.0
 YARN_ORIGINAL = 65536
@@ -1161,7 +1161,7 @@ class Block:
         oa_vals = FP8_LUT[t[K_OA][0].reshape(LOCAL_OA_ROWS, OA_FULL_COLS)]
         oa_scales = e8m0_f32(t[K_OA][1].reshape(LOCAL_OA_ROWS // 32, OA_FULL_COLS // 32))
         oa = bf16_f32(bf16_u16(oa_vals * oa_scales.repeat(32, 0).repeat(32, 1))).astype(np.float32)
-        partial = (oa @ bf16_f32(o.reshape(-1)).astype(np.float32)).astype(np.float32)
+        partial = (oa @ bf16_f32(act_dequant(o.reshape(-1))).astype(np.float32)).astype(np.float32)
         attn_out = fp8_gemm_vector(bf16_u16(partial), t[K_OB][0], t[K_OB][1], HIDDEN)
         if tag:
             raw.add(f"{tag}.wo_b_out", bf16_f32(attn_out), 2e-2 * self.tol_amp,
@@ -1333,11 +1333,10 @@ def run(t, out_dir, source, pack_path, ckpt_report, plan):
         "hc": {"mult": HC, "sinkhorn_iters": SINKHORN_ITERS, "eps": HC_EPS},
         "checkpoint_report": ckpt_report,
         "reference_sha256": {
-            "inference/model.py": "4e9ae23620edc8028ccc5d5fef552ab7fdc7dcd6f79608754fe9f67644056f65",
+            "inference/model.py": "e5decd76fe70fd56ef2f10124d245c6f64fb6a0003cc9068a1d3182a168b8d2d",
             "inference/kernel.py": "1236c3507019ed176f5dba5e04bcea58867cf654818c6cf138ed4845398c2455",
             "inference/engram.py": "11f35ecbead8150c35aa002b3d180ef290b05a25afe883a11884f94d476d3897",
             "config.json": "8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879",
-            "DeepSeek_V41_Tech_Report.pdf": "ba68e2e40408125ae6d2f63a9a241b61c73910691c74ec1a2a7023c851eac08d",
         },
     }
     pieces.write(meta)
