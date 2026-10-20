@@ -1171,10 +1171,17 @@ static void check_lazy_pack(const char *socket_path,const char *path,const char 
 		const void *pool = 0;
 		SparkStatus mapped = SparkWeightdMapPool(pack->map,&pool);
 		assert(SparkWeightdLazyPackSlice(pack,512u,1u,&pointer) == SPARK_STATUS_OK);
+		void *writable = 0;
 		if ( mapped == SPARK_STATUS_OK )
+		{
 			assert(pack->spine_allocation == 0 && pack->spine_allocation_bytes == 0u && pointer == (const uint8_t *)pool + 512u);
+			assert(SparkWeightdLazyPackPrivateSlice(pack,512u,1u,&writable) == SPARK_STATUS_UNSUPPORTED && writable == 0);
+		}
 		else
+		{
 			assert(mapped == SPARK_STATUS_UNSUPPORTED && pool == 0 && pack->spine_allocation != 0);
+			assert(SparkWeightdLazyPackPrivateSlice(pack,512u,1u,&writable) == SPARK_STATUS_OK && writable == pointer);
+		}
 	}
 	assert(SparkWeightdMapAcquire(pack->map,&key,1u,&lease,TIMEOUT) == SPARK_STATUS_OK);
 	assert(SparkWeightdLazyPackDestroy(pack) == SPARK_STATUS_BUSY);

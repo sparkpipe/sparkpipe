@@ -1407,28 +1407,73 @@ static SparkStatus D41AttachEngram(D41ModelState *state, const SparkStageRunnerC
 		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS, D41DenseManifest, state, &state->engram_pack);
 }
 
-static SparkStatus D41PackCells(D41ModelState *state)
+static SparkStatus D41PackCells(D41ModelState *state, SparkWeightdLazyPack *lazy_pack)
 {
+	const uint32_t kinds[3] = {SPARK_DSV41_FLASH_STAGEPACK_TENSOR_EXPERT_W1, SPARK_DSV41_FLASH_STAGEPACK_TENSOR_EXPERT_W3,
+		SPARK_DSV41_FLASH_STAGEPACK_TENSOR_EXPERT_W2};
 	const uint64_t up = LmCellPackBytes(D41_LOCAL_EXPERTS, D41_MOE_INTER, D41_HIDDEN), down = LmCellPackBytes(D41_LOCAL_EXPERTS, D41_HIDDEN, D41_MOE_INTER);
-	state->cells_bytes = (uint64_t)D41_LAYERS * (2u * up + down);
-	if ( cudaMalloc((void **)&state->cells, state->cells_bytes) != cudaSuccess )
+	uint8_t *place[D41_LAYERS][3];
+	uint64_t separate = 0u, in_place = 0u;
+	uint8_t *scratch = 0;
+	for ( uint32_t index = 0u; index < D41_LAYERS; ++index )
+		for ( uint32_t m = 0u; m < 3u; ++m )
+		{
+			const D41PackEntry *entry = D41Find(state, kinds[m], index);
+			const uint64_t bytes = m < 2u ? up : down;
+			void *region = 0;
+			place[index][m] = 0;
+			if ( entry != 0 && entry->scale_offset == entry->payload_offset + entry->payload_bytes &&
+				entry->payload_bytes + entry->scale_bytes == bytes &&
+				SparkWeightdLazyPackPrivateSlice(lazy_pack, entry->payload_offset, bytes, &region) == SPARK_STATUS_OK )
+			{
+				place[index][m] = (uint8_t *)region;
+				in_place += bytes;
+			}
+			else
+				separate += bytes;
+		}
+	state->cells_bytes = separate;
+	if ( (separate != 0u && cudaMalloc((void **)&state->cells, separate) != cudaSuccess) ||
+		(in_place != 0u && cudaMalloc((void **)&scratch, up > down ? up : down) != cudaSuccess) )
 	{
-		state->cells = 0;
-		fprintf(stderr, "sparkpipe_dsv41_flash: %llu bytes for the expert cells could not be allocated\n", (unsigned long long)state->cells_bytes);
+		fprintf(stderr, "sparkpipe_dsv41_flash: %llu bytes for the expert cells could not be allocated\n", (unsigned long long)separate);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
+	separate = 0u;
 	for ( uint32_t index = 0u; index < D41_LAYERS; ++index )
 	{
 		D41Layer *layer = &state->layers[index];
-		uint8_t *base = state->cells + (uint64_t)index * (2u * up + down);
-		layer->e_w1_cells = base;
-		layer->e_w3_cells = base + up;
-		layer->e_w2_cells = base + 2u * up;
-		if ( LmCellPackMxfp4(layer->e_w1, layer->e_w1_scale, base, D41_LOCAL_EXPERTS, D41_MOE_INTER, D41_HIDDEN, 0) != LM_LAUNCH_OK ||
-			LmCellPackMxfp4(layer->e_w3, layer->e_w3_scale, base + up, D41_LOCAL_EXPERTS, D41_MOE_INTER, D41_HIDDEN, 0) != LM_LAUNCH_OK ||
-			LmCellPackMxfp4(layer->e_w2, layer->e_w2_scale, base + 2u * up, D41_LOCAL_EXPERTS, D41_HIDDEN, D41_MOE_INTER, 0) != LM_LAUNCH_OK )
-			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		const uint8_t *payload[3] = {layer->e_w1, layer->e_w3, layer->e_w2}, *scale[3] = {layer->e_w1_scale, layer->e_w3_scale, layer->e_w2_scale};
+		const uint8_t **cells[3] = {&layer->e_w1_cells, &layer->e_w3_cells, &layer->e_w2_cells};
+		for ( uint32_t m = 0u; m < 3u; ++m )
+		{
+			const uint64_t bytes = m < 2u ? up : down;
+			const uint32_t rows = m < 2u ? D41_MOE_INTER : D41_HIDDEN, columns = m < 2u ? D41_HIDDEN : D41_MOE_INTER;
+			uint8_t *target = place[index][m];
+			if ( target != 0 )
+			{
+				const uint64_t payload_bytes = (uint64_t)D41_LOCAL_EXPERTS * rows * columns / 2u;
+				if ( cudaMemcpy(scratch, target, bytes, cudaMemcpyDeviceToDevice) != cudaSuccess ||
+					LmCellPackMxfp4(scratch, scratch + payload_bytes, target, D41_LOCAL_EXPERTS, rows, columns, 0) != LM_LAUNCH_OK )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			}
+			else
+			{
+				target = state->cells + separate;
+				separate += bytes;
+				if ( LmCellPackMxfp4(payload[m], scale[m], target, D41_LOCAL_EXPERTS, rows, columns, 0) != LM_LAUNCH_OK )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			}
+			*cells[m] = target;
+		}
+		layer->e_w1 = layer->e_w1_scale = layer->e_w2 = layer->e_w2_scale = layer->e_w3 = layer->e_w3_scale = 0;
 	}
+	if ( cudaDeviceSynchronize() != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( scratch != 0 )
+		(void)cudaFree(scratch);
+	fprintf(stderr, "DSV41-CELLS rank=%u in_place_bytes=%llu separate_bytes=%llu\n", state->tp_rank, (unsigned long long)in_place,
+		(unsigned long long)state->cells_bytes);
 	return SPARK_STATUS_OK;
 }
 
@@ -1464,7 +1509,7 @@ static SparkStatus D41Bind(void *model, SparkWeightdLazyPack *lazy_pack, SparkSt
 		status = D41BindEngram(state, &bytes, D41BindConfiguration);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	status = D41PackCells(state);
+	status = D41PackCells(state, lazy_pack);
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	if ( cudaDeviceSynchronize() != cudaSuccess || cudaMalloc(&state->arena, state->arena_bytes) != cudaSuccess )
