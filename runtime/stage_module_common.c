@@ -1489,12 +1489,7 @@ SparkStatus SparkStageModuleLoadDeviceRegion(
     status = SparkWeightdAttachRequested();
     if (status == SPARK_STATUS_OK)
         return(SparkStageModulePackArenaSlice(ledger,file,offset,bytes,pointer));
-    if (status == SPARK_STATUS_BUSY)
-    {
-        fprintf(stderr,"stage-module direct pack load refused: weightd attach is mandatory (run under model_residentd, which prepares the socket and digest); full-pack loads by residentds kill shared nodes\n");
-        SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-    }
-    fprintf(stderr,"stage-module invalid weightd configuration: SPARK_WEIGHTD_ATTACH must be 0 or 1; a configured socket requires attach, and attach=1 requires a socket\n");
+    fprintf(stderr,"stage-module direct pack load refused: weightd attach is mandatory; full-pack loads by residentds kill shared nodes\n");
     SPARK_RETURN(status);
 }
 

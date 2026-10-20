@@ -1,0 +1,26 @@
+#ifndef SPARKPIPE_SPARK_LING3_STAGE_MODEL_H
+#define SPARKPIPE_SPARK_LING3_STAGE_MODEL_H
+
+#include "sparkpipe/spark_stage_runner_model.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define SPARK_LING3_STAGE_TP_DEGREE 16u
+#define SPARK_LING3_STAGE_PAGE_SLOTS 64u
+#define SPARK_LING3_STAGE_HIDDEN 2560u
+#define SPARK_LING3_STAGE_LAYERS 42u
+#define SPARK_LING3_STAGE_PERIOD 6u
+#define SPARK_LING3_STAGE_MLA_LAYERS (SPARK_LING3_STAGE_LAYERS / SPARK_LING3_STAGE_PERIOD)
+#define SPARK_LING3_STAGE_LATENT 512u
+#define SPARK_LING3_STAGE_ROPE 64u
+#define SPARK_LING3_STAGE_KV_SLOT_BYTES ((SPARK_LING3_STAGE_LATENT + SPARK_LING3_STAGE_ROPE) * 2u)
+
+const SparkStageRunnerModelInterface *SparkLing3StageModel(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

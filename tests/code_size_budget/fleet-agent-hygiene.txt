@@ -1,0 +1,2 @@
++44
+Fleet agent hygiene: the post-reboot readiness check that replaces boot-time units (owner decision 2026-10-03), periodic manifest re-verification and heartbeats in the agent; offset by deleting publish_core.sh, publish_local.sh and fullbuild_once.sh.

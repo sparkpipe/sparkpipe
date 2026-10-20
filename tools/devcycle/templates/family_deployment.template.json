@@ -35,6 +35,7 @@
    "transport_host": "@HOST0@",
    "adapter_configuration_path": "config/stage.json",
    "kv_backing_directory": "@HOME@/kvcache/@FAMILY@.@QUANT@.@TOPOLOGY@",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": @KV_BACKING_MAXIMUM_BYTES@,
    "control_endpoint": {
     "kind": "tcp",

@@ -1,0 +1,62 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "mimo-v2.6-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "53358921ca5ff3297ab1a4c56a75c4e1e7d7f27a2c3efb155b72cf56d424494b"
+ },
+ "response": {
+  "id": "chatcmpl-fbc5ccccad9d4673859b64cb72774f0e",
+  "created": 1791857551,
+  "model": "mimo-v2.6-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function assumes segments arrive in ascending order. If a segment with a smaller `segno` arrives after a larger one, `missing` becomes negative, and `a->segments[segno]` writes to an index that may be out of bounds or overwrite previously stored data. The core issue is the out-of-order handling around lines 9-11.\n\nAnswer: 9,10,11",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 84,
+   "prompt_tokens": 300,
+   "total_tokens": 384,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function assumes segments arrive in ascending order. If a segment with a smaller `segno` arrives after a larger one, `missing` becomes negative, and `a->segments[segno]` writes to an index that may be out of bounds or overwrite previously stored data. The core issue is the out-of-order handling around lines 9-11.\n\nAnswer: 9,10,11",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "9,10,11",
+  "passed": true,
+  "elapsed_ms": 4989.0,
+  "output_sha256": "6459e7ff60b3d1318360fceafc3cb1f103ad810909a95b60107da421a347df04",
+  "prompt_token_count": 300,
+  "generated_token_count": 84,
+  "reasoning_chars": 0,
+  "content_chars": 335,
+  "status": "stop"
+ }
+}

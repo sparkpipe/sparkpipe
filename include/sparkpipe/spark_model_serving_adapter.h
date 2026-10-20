@@ -11,11 +11,12 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 24u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 34u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES 512u
+#define SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES 4096u
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT 16u
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_LAYER_COUNT 256u
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT 1024u
@@ -24,6 +25,7 @@ extern "C" {
 	SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE \
 	SPARK_MODEL_DRIVER_MAX_TOKENS_PER_SEQUENCE
+#define SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE 256u
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_INFLIGHT_SUBMISSION_COUNT 64u
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT 16384u
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_TOKEN_COUNT 256u
@@ -33,15 +35,17 @@ extern "C" {
 #define SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN UINT32_C(0x00000001)
 #define SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX UINT32_C(0x00000002)
 #define SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH UINT32_C(0x00000004)
+#define SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS UINT32_C(0x00000008)
+#define SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED UINT32_C(0x00000010)
 #define SPARK_MODEL_SERVING_LANE_KNOWN_FLAGS \
 	(SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN | \
 	 SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX | \
-	 SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH)
+	 SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH | \
+	 SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS | \
+	 SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED)
 
 #define SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16 1u
 
-// Prefill, decode, release, JIT cache transactions and reset are mandatory.
-// Retired capability bits are reserved and rejected, never compatibility aliases.
 #define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION \
 	UINT32_C(0x00000008)
 #define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT \
@@ -61,8 +65,12 @@ extern "C" {
 	UINT32_C(0x00008000)
 #define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE \
 	UINT32_C(0x00010000)
-#define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_MULTI_BLOCK_PREFILL \
-	UINT32_C(0x00020000)
+#define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION \
+	UINT32_C(0x00040000)
+#define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS \
+	UINT32_C(0x00080000)
+#define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY \
+	UINT32_C(0x00100000)
 #define SPARK_MODEL_SERVING_ADAPTER_KNOWN_CAPABILITIES \
 	(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | \
@@ -74,7 +82,9 @@ extern "C" {
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE | \
-	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_MULTI_BLOCK_PREFILL)
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY)
 
 #define SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT 1u
 #define SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT 2u
@@ -83,6 +93,11 @@ extern "C" {
 #define SPARK_MODEL_SERVING_WORK_KIND_DECODE 2u
 #define SPARK_MODEL_SERVING_WORK_KIND_RELEASE 3u
 #define SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH 4u
+
+#define SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY UINT32_C(0x00000001)
+#define SPARK_MODEL_SERVING_SUBMISSION_KNOWN_FLAGS \
+	SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY
+#define SPARK_MODEL_SERVING_NO_TOKEN UINT32_MAX
 
 static inline uint32_t SparkModelServingWorkKindUsesRows(uint32_t work_kind)
 {
@@ -96,6 +111,13 @@ static inline uint32_t SparkModelServingCompletionStatus(uint32_t status)
 {
 	if ( status == (uint32_t)SPARK_STATUS_NO_LANE || status == (uint32_t)SPARK_STATUS_EVICT_DENIED )
 		return((uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED);
+	return(status);
+}
+
+static inline uint32_t SparkModelServingCompletionStatusStateless(uint32_t status)
+{
+	if ( status == (uint32_t)SPARK_STATUS_NO_LANE || status == (uint32_t)SPARK_STATUS_EVICT_DENIED )
+		return((uint32_t)SPARK_STATUS_BUSY);
 	return(status);
 }
 
@@ -136,7 +158,23 @@ typedef struct SparkModelServingAdapterDescriptor
 	uint32_t minimum_efficient_submission_row_count;
 	uint32_t cache_block_token_count;
 	uint32_t parallel_group_size;
+	uint32_t cache_checkpoint_token_count;
+	uint32_t max_verify_row_count;
 } SparkModelServingAdapterDescriptor;
+
+static inline uint32_t SparkModelServingAdapterCompletionTokenCapacity(
+	const SparkModelServingAdapterDescriptor *descriptor)
+{
+	return((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) != 0u ?
+		SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT : descriptor->max_output_token_count);
+}
+
+static inline uint32_t SparkModelServingAdapterTokensPerSequenceLimit(
+	const SparkModelServingAdapterDescriptor *descriptor)
+{
+	return((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) != 0u ?
+		SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE : SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE);
+}
 
 typedef struct SparkModelServingRuntimeLimits
 {
@@ -221,6 +259,20 @@ typedef struct SparkModelServingSubmission
 	SparkModelDriverResidencyToken residency;
 } SparkModelServingSubmission;
 
+static inline uint32_t SparkModelServingSubmissionFrameFlags(const SparkModelServingSubmission *submission)
+{
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
+		return(SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE &&
+		(submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
+		return(SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL | SPARK_MODEL_DRIVER_FRAME_FLAG_VERIFY);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		return(SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH )
+		return(SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH);
+	return(0u);
+}
+
 typedef struct SparkModelServingCompletion
 {
 	uint32_t abi_version;
@@ -241,6 +293,9 @@ typedef struct SparkModelServingCompletion
 	uint32_t token_count;
 	uint32_t tokens_per_sequence;
 	uint32_t token_ids[SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT];
+	uint32_t logprob_stride;
+	uint32_t logprob_entry_count;
+	SparkSamplingLogprob logprobs[SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES];
 	uint32_t model_extension_kind;
 	uint32_t model_extension_bytes;
 	uint8_t model_extension[SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES];
@@ -249,6 +304,38 @@ typedef struct SparkModelServingCompletion
 	uint64_t device_memcpy_bytes;
 	uint64_t host_staging_bytes;
 } SparkModelServingCompletion;
+
+static inline uint32_t SparkModelServingVerifyKeptRows(
+	const uint32_t *sequence_row_begin,
+	const uint32_t *sequence_row_indices,
+	const uint32_t *output_token_ids,
+	const uint32_t *input_token_ids,
+	uint32_t lane)
+{
+	const uint32_t first = sequence_row_begin[lane],count = sequence_row_begin[lane + 1u] - first;
+	uint32_t kept = 1u;
+	while ( kept < count && output_token_ids[sequence_row_indices[first + kept - 1u]] == input_token_ids[sequence_row_indices[first + kept]] )
+		kept++;
+	return(kept);
+}
+
+static inline uint32_t SparkModelServingCompletionKeptRows(
+	const SparkModelServingCompletion *completion,
+	uint32_t lane)
+{
+	uint32_t kept = 0u,base;
+	if ( (completion->completion_flags & SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS) == 0u || completion->tokens_per_sequence == 0u ||
+		(uint64_t)(lane + 1u) * completion->tokens_per_sequence > completion->token_count ||
+		completion->token_count > SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT )
+		return(0u);
+	base = lane * completion->tokens_per_sequence;
+	while ( kept < completion->tokens_per_sequence && completion->token_ids[base + kept] != SPARK_MODEL_SERVING_NO_TOKEN )
+		kept++;
+	for (uint32_t row=kept; row<completion->tokens_per_sequence; row++)
+		if ( completion->token_ids[base + row] != SPARK_MODEL_SERVING_NO_TOKEN )
+			return(0u);
+	return(kept);
+}
 
 typedef void (*SparkModelServingCompletionFunction)(
 	void *completion_context,
@@ -269,6 +356,8 @@ typedef struct SparkModelServingAdapterConfiguration
 	const char *driver_program_name;
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
+	const char *kv_snapshot_directory;
+	uint64_t kv_snapshot_maximum_bytes;
 	void *execution_stream;
 	SparkModelServingCompletionFunction completion_function;
 	void *completion_context;
@@ -290,6 +379,9 @@ typedef struct SparkModelServingAdapterSnapshot
 	uint64_t kv_token_capacity;
 	uint64_t device_memcpy_bytes_per_submit;
 	uint64_t host_staging_bytes_per_submit;
+	SparkModelDriverKvStoreCounters kv_store;
+	uint32_t max_sequence_positions;
+	uint32_t degraded_flags;
 } SparkModelServingAdapterSnapshot;
 
 typedef SparkStatus (*SparkModelServingAdapterInitializeFunction)(
@@ -323,6 +415,11 @@ typedef SparkStatus (*SparkModelServingAdapterResetFunction)(
 	void *adapter_state,
 	uint64_t control_generation);
 
+typedef SparkStatus (*SparkModelServingAdapterCacheHintFunction)(
+	void *adapter_state,
+	const SparkModelServingCacheIdentity *identity,
+	uint32_t token_count);
+
 typedef struct SparkModelServingAdapterInterface
 {
 	uint32_t abi_version;
@@ -338,6 +435,7 @@ typedef struct SparkModelServingAdapterInterface
 	SparkModelServingAdapterQuiesceFunction quiesce;
 	SparkModelServingAdapterSnapshotFunction snapshot;
 	SparkModelServingAdapterResetFunction reset;
+	SparkModelServingAdapterCacheHintFunction cache_hint;
 } SparkModelServingAdapterInterface;
 
 typedef const SparkModelServingAdapterInterface *

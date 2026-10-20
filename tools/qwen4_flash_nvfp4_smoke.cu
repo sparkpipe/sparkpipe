@@ -1,14 +1,3 @@
-// NVFP4 wire decode smoke gate for the qwen4_flash module paths.
-//
-// Loads one MoE layer's W1/W3/DOWN entries from a wire-8 stagepack rank,
-// routes a few tokens to one expert, and runs BOTH serving kernels the
-// module uses (the grouped-scalar dot-row path and the tile-MMloop path)
-// through their real host launchers. The device outputs are compared
-// against a host dequant reference computed from the SAME pack bytes:
-//   W = e2m1(nibble) * e4m3(plane_byte) * weight_scale_2(expert)
-// Verdict is the exit code (0 = all legs pass). Run on an sm_121 node:
-//   nvcc -arch=sm_121a -I<repo> tools/qwen4_flash_nvfp4_smoke.cu -o /tmp/nvfp4_smoke
-//   /tmp/nvfp4_smoke <pack.q4fsp> [layer]
 
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
@@ -67,8 +56,6 @@ static float DecodeE4m3Host(uint32_t code)
 	return((float)sign * (1.0f + (float)mantissa / 8.0f) * powf(2.0f,(int32_t)exponent - 7));
 }
 
-// Dequant one expert's packed row-major [rows, columns] e2m1 matrix with
-// its per-16 e4m3 plane + the segment-tail F32 weight global.
 static float *DequantNvfp4Host(const uint8_t *payload, const uint8_t *segment,
 	uint32_t rows, uint32_t columns, float *weight_global_out)
 {
@@ -104,8 +91,6 @@ static int CompareBf16(const char *leg, const void *device_bf16, const float *re
 		float want = reference[index];
 		double absolute = fabs((double)value - (double)want);
 		double relative = absolute > 0.0 ? absolute / fmax(fabs((double)want),1e-6) : 0.0;
-		// bf16 rounding of the output alone allows ~2^-8 relative; the
-		// kernel's f32 warp-reassociation adds a little more slack.
 		if ( relative > 0.02 && absolute > 1e-3 )
 		{
 			if ( failures < 6u )
@@ -147,11 +132,6 @@ static int CompareBf16(const char *leg, const void *device_bf16, const float *re
 	}
 	printf("SMOKE %s: %u values, %u outside tolerance, worst rel %.5f\n",
 		leg,count,failures,worst_relative);
-	// The tile paths stage decoded weights to bf16 for the tensor cores:
-	// the per-element relative gate above flags near-zero-reference
-	// elements on otherwise-correct output. The module validator's
-	// aggregate contract (rel L2 <= 5e-2, cosine >= 0.999) is the
-	// acceptance standard for these legs.
 	{
 		double sq_diff = 0.0,sq_ref = 0.0,dot = 0.0,norm_got = 0.0;
 		for (index = 0; index < count; index++)
@@ -186,7 +166,6 @@ static int CompareBf16(const char *leg, const void *device_bf16, const float *re
 static __global__ void DebugDecodeRow(const uint8_t *payload, const uint8_t *segment, uint32_t plane_bytes, float weight_global, uint16_t *out_bf16)
 {
 	__shared__ __nv_bfloat16 tile[64];
-	// mirror ProducerHalf: decode 32 k-values at stage_k, neuron 0
 	if ( threadIdx.x == 0u )
 	{
 		SparkLmTileDecodeRun<16u>(SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1, payload, segment,
@@ -271,8 +250,6 @@ int main(int argc, char **argv)
 		fprintf(stderr,"SMOKE layer %u lacks wire-8 W1/W3/DOWN entries\n",want_layer);
 		return(2);
 	}
-	// Load expert group 5's segment of W1/W3 (rows = intermediate) and
-	// the DOWN entry (rows = experts x hidden): segment stride = plane + 8.
 	w1_payload = ReadFileBytes(pack_path,w1.payload_offset + 5u * (w1.rows / group_count) * ((uint64_t)w1.columns / 2u),(uint64_t)(w1.rows / group_count) * (w1.columns / 2u));
 	w1_segment = ReadFileBytes(pack_path,w1.scale_offset + 5u * (w1.scale_bytes / group_count),w1.scale_bytes / group_count);
 	w3_payload = ReadFileBytes(pack_path,w3.payload_offset + 5u * (w3.rows / group_count) * ((uint64_t)w3.columns / 2u),(uint64_t)(w3.rows / group_count) * (w3.columns / 2u));
@@ -288,11 +265,9 @@ int main(int argc, char **argv)
 	w3_matrix = DequantNvfp4Host(w3_payload,w3_segment,w3.rows / group_count,w3.columns,&w3_global);
 	down_matrix = DequantNvfp4Host(down_payload,down_segment,down.rows / group_count,down.columns,&down_global);
 	printf("SMOKE globals: w1=%.6g w3=%.6g down=%.6g\n",w1_global,w3_global,down_global);
-	// Random-ish bounded input in bf16.
 	input_host = (float *)malloc((uint64_t)rows * hidden * sizeof(float));
 	for (i = 0; i < rows * hidden; i++)
 		input_host[i] = ((float)((i * 2654435761u) % 2001u) - 1000.0f) / 1000.0f;
-	// Host reference: gate/up via dequantized W1/W3, swiglu(limit), down.
 	reference_w1 = (float *)malloc((uint64_t)rows * intermediate * sizeof(float));
 	reference_w3 = (float *)malloc((uint64_t)rows * intermediate * sizeof(float));
 	reference_act = (float *)malloc((uint64_t)rows * intermediate * sizeof(float));
@@ -309,7 +284,6 @@ int main(int argc, char **argv)
 			gate += x * (double)w1_matrix[(uint64_t)neuron * hidden + k];
 			up += x * (double)w3_matrix[(uint64_t)neuron * hidden + k];
 		}
-		// Match the module: bf16-round the totals, clamp, swish * up.
 		g = (double)__bfloat162float(__float2bfloat16((float)gate));
 		u = (double)__bfloat162float(__float2bfloat16((float)up));
 		if ( g > limit ) g = limit;
@@ -330,8 +304,6 @@ int main(int argc, char **argv)
 		reference_out[i] = (float)total;
 		reference_down[i] = (float)total;
 	}
-	// Device buffers: full-entry payload/scale so the launchers stride
-	// experts the way serving does; rows routed to expert group 5.
 	cudaMalloc(&payload_dev,w1.payload_bytes + w3.payload_bytes + down.payload_bytes);
 	cudaMalloc(&scale_dev,w1.scale_bytes + w3.scale_bytes + down.scale_bytes);
 	cudaMalloc(&input_dev,(uint64_t)rows * hidden * 2u);
@@ -370,15 +342,12 @@ int main(int argc, char **argv)
 		cudaMemcpy(input_dev,input_bf16,(uint64_t)rows * hidden * 2u,cudaMemcpyHostToDevice);
 		free(input_bf16);
 	}
-	// Route arrays: ALL rows to expert group 5 (both array conventions).
 	for (i = 0; i <= group_count; i++)
 	{
 		expert_offsets[i] = (i > 5u) ? rows : 0u;
 		group_row_offset[i] = (i > 5u) ? rows : 0u;
 	}
 	{
-		// Tile prefix: expert 5 owns neuron_tiles x row-tiles; others
-		// none. SPARK_LM_TILE_N=128, SPARK_LM_TILE=16.
 		uint32_t neuron_tiles = (intermediate + 128u - 1u) / 128u;
 		uint32_t total = 0u;
 		for (i = 0; i <= group_count; i++)
@@ -392,9 +361,6 @@ int main(int argc, char **argv)
 		grouped_rows[i] = i;
 	cudaMemcpy(offsets_dev,expert_offsets,66u * 4u,cudaMemcpyHostToDevice);
 	cudaMemcpy(rows_dev,grouped_rows,(uint64_t)rows * 4u,cudaMemcpyHostToDevice);
-	// LEG 1: grouped-scalar dot-row path, W1 (gate) with rows routed to
-	// expert 5. Payload/scale device buffers hold the FULL entries, so the
-	// launchers stride experts exactly like serving.
 	{
 		uint32_t rows_per_expert = w1.rows / group_count;
 		uint64_t payload_stride = (uint64_t)rows_per_expert * (w1.columns / 2u);
@@ -422,7 +388,6 @@ int main(int argc, char **argv)
 		cudaFree(go);
 		cudaFree(tp);
 	}
-	// LEG 1b: decode-only check of the tile path's weight decode.
 	{
 		uint16_t *dev_out;
 		uint16_t host_out[64];
@@ -456,7 +421,6 @@ int main(int argc, char **argv)
 		cudaFree(dev_seg);
 		free(seg_host);
 	}
-	// LEG 2: the tile Mloop path, W3 (up), same routing.
 	{
 		uint32_t rows_per_expert = w3.rows / group_count;
 		uint64_t payload_stride = (uint64_t)rows_per_expert * (w3.columns / 2u);
@@ -479,7 +443,6 @@ int main(int argc, char **argv)
 			failures += CompareBf16("tile W3",w3_out_dev,reference_w3,(uint32_t)rows * intermediate,intermediate);
 		}
 	}
-	// LEG 3: the tile Mloop path, DOWN (input = reference activations).
 	{
 		__nv_bfloat16 *act_bf16 = (__nv_bfloat16 *)malloc((uint64_t)rows * intermediate * 2u);
 		uint32_t rows_per_expert = down.rows / group_count;

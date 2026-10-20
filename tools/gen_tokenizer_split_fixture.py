@@ -18,6 +18,8 @@ PATTERNS = {
         "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\r\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+| ?[\\p{P}\\p{S}]+[\r\n]*|\\s*[\r\n]+|\\s+(?!\\S)|\\s+",
     ],
     "letters_possessive": "'(?i:[sdmt]|ll|ve|re)|[^\\r\\n\\p{L}\\p{N}]?+\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]++[\\r\\n]*|\\s*[\\r\\n]|\\s+(?!\\S)|\\s+",
+    "byte_level_regex": {"byte_level": "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)|\\s+"},
+    "cased_letters": "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
 }
 
 HANDPICKED = [
@@ -45,6 +47,16 @@ HANDPICKED = [
     "東京タワーは333メートルです。ひらがなカタカナ漢字abc",
     "def f(x):\n    return x**2  # 平方\n\n\tprint(f(12))",
     "<b>bold</b> #tag @user .NET 'quote' \"dq\" ~/path_to/file.py",
+    "a   b",
+    "I'M you'RE we'll it's",
+    "x²³ y¹ z⁴",
+    "a\u3000b \u3000 c",
+    "!'s ?'t x'll",
+    "HTTPServer helloWorld XMLHttpRequest iPhone DON'T Don'T don't O'Neil",
+    "ÀÉÎõ àéÎ ǅungla ǈx ʰello ᵃbcD µs ΣΑΣ σας Ⅻ ⅻ",
+    "\"Quoted\" (Paren) [Bracket] {x}: path/to/file.py\r\n/x a/\n/b //\r\n//",
+    "x́Ý ́A ́a 'S 'Ab A'B a'BC",
+    "東京Tokyo大阪 한국어Korean Ελληνικά",
 ]
 
 POOLS = [
@@ -86,6 +98,34 @@ def oniguruma_class_ranges():
     return ranges
 
 
+CASE_REGEXES = (("upper", "[\\p{Lu}\\p{Lt}]", 1), ("lower", "\\p{Ll}", 2))
+
+
+def oniguruma_case_ranges():
+    values = [value for value in range(0, 0x110000) if not 0xD800 <= value <= 0xDFFF]
+    text = "".join(chr(value) for value in values)
+    classes = [0] * len(values)
+    for _, regex, klass in CASE_REGEXES:
+        kept = [False] * len(values)
+        for _, (start, stop) in pre_tokenizers.Split(Regex(regex), "removed").pre_tokenize_str(text):
+            for index in range(start, stop):
+                kept[index] = True
+        for index, is_kept in enumerate(kept):
+            if not is_kept:
+                if classes[index] != 0:
+                    raise SystemExit(f"U+{values[index]:04X} matches two cases")
+                classes[index] = klass
+    ranges = []
+    for value, klass in zip(values, classes):
+        if klass == 0:
+            continue
+        if ranges and ranges[-1][1] == value - 1 and ranges[-1][2] == klass:
+            ranges[-1][1] = value
+        else:
+            ranges.append([value, value, klass])
+    return ranges
+
+
 def corpus():
     generator = random.Random(20260928)
     texts = list(HANDPICKED)
@@ -105,6 +145,9 @@ def byte_ends(text, pieces):
 def tokenizer_for(pattern):
     vocabulary = {character: index for index, character in enumerate(sorted(ByteLevel.alphabet()))}
     tokenizer = Tokenizer(models.BPE(vocabulary, []))
+    if isinstance(pattern, dict):
+        tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=True)
+        return tokenizer
     patterns = pattern if isinstance(pattern, list) else [pattern]
     tokenizer.pre_tokenizer = pre_tokenizers.Sequence(
         [pre_tokenizers.Split(Regex(item), "isolated") for item in patterns]
@@ -127,11 +170,12 @@ def main():
         "patterns": {},
         "glm_ids": [],
         "oniguruma_class_ranges": oniguruma_class_ranges(),
+        "oniguruma_case_ranges": oniguruma_case_ranges(),
     }
     for name, pattern in PATTERNS.items():
         tokenizer = tokenizer_for(pattern)
         document["patterns"][name] = {
-            "regex": pattern,
+            "regex": pattern["byte_level"] if isinstance(pattern, dict) else pattern,
             "tokenizer": json.loads(tokenizer.to_str()),
             "piece_ends": [byte_ends(text, tokenizer.pre_tokenizer.pre_tokenize_str(text)) for text in texts],
         }

@@ -1,12 +1,3 @@
-/* weightd_smoke — the pure-lazy driver prover: ATTACH_LAZY a pack with a
- * bounded expert pool, ENSURE a spread of segments (exactly what a smoke
- * test touches - nothing else loads), then detach. Nothing is preloaded
- * and no whole-file pass runs; RSS stays at one expert staging range.
- *
- *   weightd_smoke <pack> <model> <revision> <pool-mib> <touches>
- * requires <pack>.experts (weightd_expert_segments) and
- * SPARK_WEIGHTD_SOCKET / SPARK_WEIGHTD_ATTACH in the environment.
- */
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_attach.h"

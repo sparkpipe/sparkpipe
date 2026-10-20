@@ -1,0 +1,22 @@
+{
+ "prefix": "〈|EOS|〉",
+ "thinking_prefix": "<system>You are a helpful, conversationally-fluent assistant made by Poolside. You are here to be helpful to users through natural language conversations.</system>\n",
+ "plain_prefix": "<system>You are a helpful, conversationally-fluent assistant made by Poolside. You are here to be helpful to users through natural language conversations.</system>\n",
+ "system": "<system>",
+ "system_thinking": "<system>",
+ "user": "<user>",
+ "observation": "<tool_response>",
+ "assistant": "<assistant></think>",
+ "assistant_thinking": "<assistant><think></think>",
+ "turn_suffix": "",
+ "assistant_suffix": "</assistant>\n",
+ "user_suffix": "</user>\n",
+ "system_turn_suffix": "</system>\n",
+ "observation_suffix": "</tool_response>\n",
+ "generation": "<assistant></think>",
+ "generation_thinking": "<assistant><think>",
+ "stop_markers": [
+  "</assistant>",
+  "〈|EOS|〉"
+ ]
+}

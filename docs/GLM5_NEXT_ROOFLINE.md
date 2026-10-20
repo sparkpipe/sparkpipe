@@ -31,9 +31,9 @@ fleet-agent drop-in `20-serving.conf` sets on every Spark:
 
 | Setting | Effect |
 | --- | --- |
-| `G5_GRAPH_PATH=1` | The agent passes it as `SPARK_GLM5_NEXT_GRAPH_PATH`, which is mandatory. The module fails with `INVALID_ARGUMENT` unless it is `0` or `1`, so deleting the drop-in stops the engines. Use `G5_GRAPH_PATH=0` for eager runs. |
-| `G5_PIN_EXPERTS=1` | Passed as `SPARK_GLM5_NEXT_PIN_EXPERTS`. Pins all 12096 routed experts per rank. Graphs and linear chains run only with it. |
-| `SPARK_TP_WAIT_MODE=hardware` | The collectives use hardware waits and chunked direct rounds. Unset or `spin` makes the GPU poll peer tails itself. |
+| `G5_GRAPH_PATH=1` | No longer read. The stage config's required `graph_path` (0 or 1) selects graph or eager chains. |
+| `G5_PIN_EXPERTS=1` | No longer read. The stage config's required `pin_experts` pins all 12096 routed experts per rank. Graphs and linear chains run only with it. |
+| `SPARK_TP_WAIT_MODE=hardware` | No longer read. The stage config's `tp_collective.wait_mode` (`hardware` or the default `spin`) selects hardware waits and chunked direct rounds. |
 | `G5_API_DISABLED=1` | Inert since #1261: the agent never starts an API. The API is `g53-api` on the rtx5090, port 8433. |
 | `G5_WARMUP=0` | The agent's warmup hook does not run. |
 
@@ -838,7 +838,8 @@ buffers. With 4 slots this saves three workspaces per rank.
    all-gather of the latent query (64 KiB per row) and a partial exchange
    of the same size per DSA layer.
 4. **Remove the host from the collective path.** This means two things:
-   - GPU-initiated RDMA;
+   - fewer and fused collective rounds (GPU-initiated RDMA is not possible
+     on GB10; see the decode list);
    - two micro-batches in flight, so that one computes while the other
      communicates.
 
@@ -1214,7 +1215,7 @@ shape is:
   rounds per layer. Above 2,048 tokens of context, the query rides in the
   index-CP all-gather that already runs, so it costs no round of its own.
 - **B ≥ 16:** per-peer exchange buffers sized to the exchange
-  (GPU-initiated RDMA, Phase 4). Until those exist, the sharded path is
+  (Phase 4). Until those exist, the sharded path is
   still exact, but it pays the round counts above.
 
 ### glm5_next wiring
@@ -1715,10 +1716,9 @@ instead; both measurements stand until a profile of a real rank settles it.
 1. Measure main on the fleet. Deploy a merged-main build, record its
    identity, and rerun B1, the 8-stream load and COMPSEC-17. Later changes
    should be measured against current code, not against `dd3526b`.
-2. Remove the CPU relay from the critical path with GPU-initiated RDMA
-   (IBGDA-style): the GPU writes the work requests and rings the NIC doorbell.
-   The expectation, not yet measured, is a 16-rank 8 KiB all-reduce in tens
-   of microseconds.
+2. (Dropped 2026-10-15.) GPU-initiated RDMA: a GB10 SM cannot ring the CX-7
+   doorbell (2026-10-01 probe), and GPU-built work requests with a CPU
+   doorbell measured within about 1 us of the relay per round.
 3. Take the host out of decode chains. Feed each step's tokens on the device,
    and stop waiting for every graph replay on residentd's thread (TECHDEBT;
    see "Resident decode chains").

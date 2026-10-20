@@ -1,0 +1,62 @@
+{
+ "id": "compsec-086",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe parser grows a reusable tag buffer before copying the current element name and closing delimiters. Sizes are attacker-influenced through XML input.\n\nCode:\n```c\n 1: static bool ensure_tag_buffer(struct Parser *p, size_t prefix_len, size_t name_len)\n 2: {\n 3:     unsigned int need = (unsigned int)(prefix_len + name_len + 3);\n 4: \n 5:     if (need > p->tag_cap) {\n 6:         char *q = realloc(p->tag_buf, need);\n 7:         if (q == NULL)\n 8:             return false;\n 9:         p->tag_buf = q;\n10:         p->tag_cap = need;\n11:     }\n12: \n13:     memcpy(p->tag_buf, p->prefix, prefix_len);\n14:     memcpy(p->tag_buf + prefix_len, p->name, name_len);\n15:     memcpy(p->tag_buf + prefix_len + name_len, \"/>\\0\", 3);\n16:     return true;\n17: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "8a47c8f996f191d5aa52a242ad6a259a0d1999173a05587257cc56549e3f9206"
+ },
+ "response": {
+  "id": "chatcmpl-983950c14cdb417191d2eb3215e10418",
+  "created": 1791721984,
+  "model": "qwen3.8-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability is an integer overflow leading to a heap buffer overflow.\n\n1.  **Line 3**: `unsigned int need = (unsigned int)(prefix_len + name_len + 3);`\n    *   `prefix_len` and `name_len` are `size_t` (typically 64-bit on modern systems).\n    *   The addition `prefix_len + name_len + 3` is performed in `size_t` arithmetic. If the sum exceeds `UINT_MAX` (4,294,967,295), the cast to `unsigned int` truncates the value.\n    *   For example, if `prefix_len + name_len + 3` equals `0x100000005` (approx 4GB + 5), the cast results in `5`.\n    *   Consequently, `need` becomes a small number (e.g., 5).\n\n2.  **Line 5**: `if (need > p->tag_cap)`\n    *   If `p->tag_cap` is already larger than the truncated `need` (e.g., 100), the reallocation is skipped. Even if it reallocates, it allocates only `need` bytes (e.g., 5 bytes).\n\n3.  **Lines 13-15**: `memcpy` operations\n    *   The code proceeds to copy `prefix_len` bytes, then `name_len` bytes, then 3 bytes into `p->tag_buf`.\n    *   Since `p->tag_buf` was allocated (or sized) based on the truncated `need`, but the actual data being copied is much larger (`prefix_len + name_len + 3`), a massive heap buffer overflow occurs.\n\nThe primary bug is introduced at the point where the size calculation is truncated, which is Line 3.\n\nAnswer: 3",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 401,
+   "prompt_tokens": 371,
+   "total_tokens": 772,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability is an integer overflow leading to a heap buffer overflow.\n\n1.  **Line 3**: `unsigned int need = (unsigned int)(prefix_len + name_len + 3);`\n    *   `prefix_len` and `name_len` are `size_t` (typically 64-bit on modern systems).\n    *   The addition `prefix_len + name_len + 3` is performed in `size_t` arithmetic. If the sum exceeds `UINT_MAX` (4,294,967,295), the cast to `unsigned int` truncates the value.\n    *   For example, if `prefix_len + name_len + 3` equals `0x100000005` (approx 4GB + 5), the cast results in `5`.\n    *   Consequently, `need` becomes a small number (e.g., 5).\n\n2.  **Line 5**: `if (need > p->tag_cap)`\n    *   If `p->tag_cap` is already larger than the truncated `need` (e.g., 100), the reallocation is skipped. Even if it reallocates, it allocates only `need` bytes (e.g., 5 bytes).\n\n3.  **Lines 13-15**: `memcpy` operations\n    *   The code proceeds to copy `prefix_len` bytes, then `name_len` bytes, then 3 bytes into `p->tag_buf`.\n    *   Since `p->tag_buf` was allocated (or sized) based on the truncated `need`, but the actual data being copied is much larger (`prefix_len + name_len + 3`), a massive heap buffer overflow occurs.\n\nThe primary bug is introduced at the point where the size calculation is truncated, which is Line 3.\n\nAnswer: 3",
+ "grade": {
+  "index": 11,
+  "id": "compsec-086",
+  "source": "COMPSEC",
+  "domain": "libexpat",
+  "expected": "3,13-15",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 10639.5,
+  "output_sha256": "91eb632acc96ffc45af71dc807fc44eafb064839ab41334462b17175b7aaa3a7",
+  "prompt_token_count": 371,
+  "generated_token_count": 401,
+  "reasoning_chars": 0,
+  "content_chars": 1293,
+  "status": "stop"
+ }
+}

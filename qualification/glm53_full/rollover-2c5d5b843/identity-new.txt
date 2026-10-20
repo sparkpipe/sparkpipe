@@ -1,0 +1,21 @@
+615cf6d74841f2c1  /proc/3590703/exe
+003c1000b280656a  /home/spec/glm53_full-kv-api/runtime/lib/libglm53_full_tp16_serving_adapter.so
+615cf6d74841f2c1  /home/spec/api-build-2c5d5b843/build/sparkpipe_model_api
+003c1000b280656a  /home/spec/api-build-2c5d5b843/build/libglm53_full_tp16_serving_adapter.so
+{"status":"ok","served":0,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+spark0: f7d140832c3d2224 cd8edbd8e1b3c9d7 f2b7388c715494c3 warm=75 resident=0
+spark1: f7d140832c3d2224 cd8edbd8e1b3c9d7 f2b7388c715494c3 warm=75 resident=0
+spark2: f7d140832c3d2224 cd8edbd8e1b3c9d7 f2b7388c715494c3 warm=75 resident=0
+spark3: f7d140832c3d2224 cd8edbd8e1b3c9d7 f2b7388c715494c3 warm=75 resident=0
+spark4: f7d140832c3d2224 cd8edbd8e1b3c9d7 f2b7388c715494c3 warm=75 resident=0
+spark5: f7d140832c3d2224 cd8edbd8e1b3c9d7 f2b7388c715494c3 warm=75 resident=0
+spark6: f7d140832c3d2224 cd8edbd8e1b3c9d7 f2b7388c715494c3 warm=75 resident=0
+spark7: f7d140832c3d2224 cd8edbd8e1b3c9d7 f2b7388c715494c3 warm=75 resident=0
+spark8: f7d140832c3d2224 cd8edbd8e1b3c9d7 f2b7388c715494c3 warm=75 resident=0
+spark9: f7d140832c3d2224 cd8edbd8e1b3c9d7 f2b7388c715494c3 warm=75 resident=0
+sparka: f7d140832c3d2224 cd8edbd8e1b3c9d7 f2b7388c715494c3 warm=75 resident=0
+sparkb: f7d140832c3d2224 cd8edbd8e1b3c9d7 f2b7388c715494c3 warm=75 resident=0
+sparkc: f7d140832c3d2224 cd8edbd8e1b3c9d7 f2b7388c715494c3 warm=75 resident=0
+sparkd: f7d140832c3d2224 cd8edbd8e1b3c9d7 f2b7388c715494c3 warm=75 resident=0
+sparke: f7d140832c3d2224 cd8edbd8e1b3c9d7 f2b7388c715494c3 warm=75 resident=0
+sparkf: f7d140832c3d2224 cd8edbd8e1b3c9d7 f2b7388c715494c3 warm=75 resident=0

@@ -1,0 +1,2 @@
++1725
+KV snapshot attach: the binding opens and attaches a per-rank snapshot store under a layout digest (model, pack, contract, codecs, driver binary, shard, geometry), saves every published chain at unload, recomputes unreadable or corrupt snapshot pages, exports store counters through driver and adapter snapshots and a residentd status report, and the engine keeps its prefix index on disk and across reconnects.

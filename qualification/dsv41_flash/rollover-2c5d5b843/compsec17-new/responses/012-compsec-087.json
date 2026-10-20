@@ -1,0 +1,62 @@
+{
+ "id": "compsec-087",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "deepseek-v4.1-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper parses an IPv6 address used in X.509 name constraints. It records where :: compression occurred, then shifts already parsed bytes.\n\nCode:\n```c\n 1: static int parse_ipv6_reduced(const char *src, uint8_t dst[16])\n 2: {\n 3:     uint8_t tmp[16];\n 4:     uint8_t *tp = tmp;\n 5:     uint8_t *colonp = NULL;\n 6: \n 7:     if (src[0] == ':' && src[1] == ':') {\n 8:         colonp = --tp;          // remember compression point at the beginning\n 9:         src += 2;\n10:     }\n11: \n12:     while (*src != '\\0') {\n13:         unsigned v = parse_hextet(&src);\n14:         *tp++ = (uint8_t)(v >> 8);\n15:         *tp++ = (uint8_t)v;\n16:         if (*src == ':') src++;\n17:     }\n18: \n19:     if (colonp != NULL) {\n20:         size_t n = (size_t)(tp - colonp);\n21:         memmove(colonp + (16 - (tp - tmp)), colonp, n);\n22:         memset(colonp, 0, 16 - (tp - tmp));\n23:     }\n24: \n25:     memcpy(dst, tmp, 16);\n26:     return 0;\n27: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "56496068490936181766f27707dfe5f4d4a29fda45e67125053474f286273f9b"
+ },
+ "response": {
+  "id": "chatcmpl-774aad83f9d0440c8b825706f8fa3eff",
+  "created": 1791726166,
+  "model": "deepseek-v4.1-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Let\u2019s go through the code carefully.\n\nThe function is parsing an IPv6 address into 16 bytes.  \nThe key part is the handling of `::` compression.\n\n---\n\n**Line 8:**  \n```c\ncolonp = --tp;\n```\nHere `tp` starts at `tmp` (the beginning of the array).  \n`--tp` moves `tp` **before** the start of the array \u2014 this is undefined behavior and a serious bug.  \n`colonp` is then pointing outside the array bounds.\n\nThis is the primary bug: pointer underflow before the buffer.\n\n---\n\nThe rest of the logic depends on `colonp` being valid, but it\u2019s already invalid from line 8.\n\n---\n\n**Answer:** 8",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 153,
+   "prompt_tokens": 441,
+   "total_tokens": 594,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Let\u2019s go through the code carefully.\n\nThe function is parsing an IPv6 address into 16 bytes.  \nThe key part is the handling of `::` compression.\n\n---\n\n**Line 8:**  \n```c\ncolonp = --tp;\n```\nHere `tp` starts at `tmp` (the beginning of the array).  \n`--tp` moves `tp` **before** the start of the array \u2014 this is undefined behavior and a serious bug.  \n`colonp` is then pointing outside the array bounds.\n\nThis is the primary bug: pointer underflow before the buffer.\n\n---\n\nThe rest of the logic depends on `colonp` being valid, but it\u2019s already invalid from line 8.\n\n---\n\n**Answer:** 8",
+ "grade": {
+  "index": 12,
+  "id": "compsec-087",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "8,20-22",
+  "extracted": "8",
+  "passed": true,
+  "elapsed_ms": 22736.1,
+  "output_sha256": "f15dcbc35e7d23daec6cbbc23aa6fa41e3c6c18e44c9cd507f48e895cd85b6af",
+  "prompt_token_count": 441,
+  "generated_token_count": 153,
+  "reasoning_chars": 0,
+  "content_chars": 582,
+  "status": "stop"
+ }
+}

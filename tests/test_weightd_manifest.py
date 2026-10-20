@@ -166,12 +166,16 @@ def main():
         good = [record(3, 0, 0, 0), record(3, 0, 1, 64)]
         malformed = [payload(good)[:-1], payload(good) + b"x",
                      payload(good, version=1), payload(good, reserved=1),
-                     payload([]), payload([good[0], record(3, 1, 0, 16)]),
+                     payload([good[0], record(3, 1, 0, 16)]),
                      payload([good[0], record(3, 0, 0, 64)]),
                      payload([record(3, 0, 0, 128)]),
                      payload([record(3, 0, 0, 0, 0)]),
                      payload([record(3, 0, 0, (1 << 64) - 1)]),
                      struct.pack("<4I", 0x58504557, 2, header_constant("SPARK_WEIGHTD_RANGE_COUNT_MAX") + 1, 0)]
+        path.write_bytes(payload([]))
+        assert lib.SparkWeightdManifestLoad(bytes(path), 128, C.byref(result)) == 0
+        assert result.range_count == 0 and result.group_count == 0
+        lib.SparkWeightdManifestDestroy(C.byref(result))
         for data in malformed:
             path.write_bytes(data)
             assert lib.SparkWeightdManifestLoad(bytes(path), 128, C.byref(result)) != 0

@@ -1,0 +1,2 @@
++484
+K3 on the KV binding: the K3 adapter admits, claims, restores and finishes through the common binding with its KDA slot state as the recurrent record, serves prefetch, publish-only frames and reset, and the runner takes its MLA KV pool and page table from the binding instead of allocating a private identity-mapped pool.

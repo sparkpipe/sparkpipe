@@ -3,7 +3,7 @@
  "model_revision": "84c6a6aa9497188e15a635ba793b0f95a79b1033",
  "expert_weight_codec": "fp8",
  "stage_pack_path": "packs/glm53flash.fp8.tp16.rankf.sp",
- "max_sequence_positions": 32768,
+ "max_sequence_positions": 131072,
  "execution_row_capacity": 1024,
  "decode_split_context_threshold": 64,
  "tp_degree": 16,
@@ -113,8 +113,11 @@
    [62758,62759,62760,62761,62762,62763,62764,62765,62766,62767,62768,62769,62770,0,62772,62773],
    [62774,62775,62776,62777,62778,62779,62780,62781,62782,62783,62784,62785,62786,62787,0,62789],
    [62790,62791,62792,62793,62794,62795,62796,62797,62798,62799,62800,62801,62802,62803,62804,0]
-  ]
+  ],
+  "wait_mode": "hardware"
  },
+ "graph_path": 1,
+ "pin_experts": 1,
  "dsa_index_context_parallel": 1,
  "kv_shard": 1
 }

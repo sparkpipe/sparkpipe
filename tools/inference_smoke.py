@@ -138,7 +138,7 @@ def replica_plans(spec):
     for plan in plans:
         lane, base = plan["lane"], plan["port_base"]
         require(type(base) is int and 1024 <= base <= 65535 - 3 * len(spec["hosts"]), "invalid resident port range")
-        require(lane is None and len(plans) == 1 or type(lane) is int and 0 <= lane < 8, "invalid explicit collective lane")
+        require(lane is None and len(plans) == 1 or type(lane) is int and 0 <= lane < 16, "invalid explicit collective lane")
         require(lane not in lanes, "residents share a collective lane")
         lanes.add(lane)
         ports = set(range(base, base + 2 * len(spec["hosts"]))) | set(plan["port_map"].values())
@@ -198,10 +198,10 @@ def prepare(spec, environment):
     require(all(any(first <= port <= last for first, last in reserved) for port in range(base, base + 3 * size + 1)), "queue does not reserve every listener")
     device = int(environment["SPARK_QUEUE_DEVICE_MEMORY_MIB"]) * 1024 * 1024
     limits = spec["budgets"]
-    require(all(isinstance(limits[key], int) and limits[key] > 0 for key in ("weightd_device_bytes", "model_device_bytes", "expert_pool_bytes", "spine_bytes")), "all device budgets must be finite and positive")
+    require(all(isinstance(limits[key], int) and limits[key] > 0 for key in ("weightd_device_bytes", "model_device_bytes", "expert_pool_bytes", "spine_bytes", "kv_reserve_bytes")), "all device budgets must be finite and positive")
     require(type(limits.get("weightd_overhead_bytes", 0)) is int and limits.get("weightd_overhead_bytes", 0) >= 0, "invalid daemon overhead budget")
     require(limits["weightd_device_bytes"] + limits.get("weightd_overhead_bytes", 0) + len(plans) * limits["model_device_bytes"] <= device, "device plan exceeds queue reservation")
-    require(limits["expert_pool_bytes"] + limits["spine_bytes"] <= limits["weightd_device_bytes"], "weightd working set exceeds ceiling")
+    require(limits["expert_pool_bytes"] + limits["spine_bytes"] + limits["kv_reserve_bytes"] <= limits["weightd_device_bytes"], "weightd working set and KV reserve exceed ceiling")
     deployment = json.loads(Path(spec["deployment"]).read_text())
     batch = json.loads(Path(spec["batch"]).read_text())
     reference = json.loads(Path(spec["reference"]).read_text())
@@ -246,8 +246,8 @@ def prepare(spec, environment):
     if "working_set" in spec:
         working = spec["working_set"]
         require(working["mode"] in ("partial", "full"), "working set mode must be partial or full")
-        expected = "1" if working["mode"] == "full" else "0"
-        require(all(spec["environment"].get(key) == expected for key in ("SPARK_GLM5_NEXT_GRAPH_PATH", "SPARK_GLM5_NEXT_PIN_EXPERTS")), "graph and pin-all must match explicit working set mode")
+        expected = 1 if working["mode"] == "full" else 0
+        require(all(config.get(key) == expected for key in ("graph_path", "pin_experts")), "graph and pin-all must match explicit working set mode")
         require(working["path"] in assets, "working set is not pinned")
         raw = (source / working["path"]).read_bytes()
         require(0 < len(raw) <= 512 * 8 and len(raw) % 8 == 0, "working set requires 1..512 complete key pairs")
@@ -343,7 +343,8 @@ def run(spec):
                SPARK_WEIGHTD_DEVICE_BYTES_MAX=str(limits["weightd_device_bytes"]),
                SPARK_WEIGHTD_EXPERT_POOL_BYTES=str(limits["expert_pool_bytes"]),
                SPARK_WEIGHTD_SPINE_BUDGET_BYTES=str(limits["spine_bytes"]),
-               SPARK_WEIGHTD_KV_RESERVE_BYTES="0", SPARK_WEIGHTD_MESH_DIR=str(root / "mesh"),
+               SPARK_WEIGHTD_KV_RESERVE_BYTES=str(limits["kv_reserve_bytes"]),
+               SPARK_WEIGHTD_MESH_DIR=str(root / "mesh"),
                SPARK_WEIGHTD_LATCH_PORT=str(spec["port_base"] + 3 * len(hosts)))
     owned = {
         "SPARK_WEIGHTD_ATTACH", "SPARK_WEIGHTD_SOCKET", "SPARK_WEIGHTD_DEVICE_BYTES_MAX",

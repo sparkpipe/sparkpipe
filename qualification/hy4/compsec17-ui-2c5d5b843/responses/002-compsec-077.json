@@ -1,0 +1,62 @@
+{
+ "id": "compsec-077",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "hy4-preview",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper is called once for each Special Line Character option received in a TELNET LINEMODE negotiation.\n\nCode:\n```c\n 1: #define SLCBUF_SIZE 108\n 2: #define SLC_NCHARS 18\n 3: \n 4: struct slc_state {\n 5:     unsigned char buf[SLCBUF_SIZE];\n 6:     size_t used;\n 7: };\n 8: \n 9: static void add_slc(struct slc_state *s,\n10:                     unsigned char func,\n11:                     unsigned char flags,\n12:                     unsigned char value)\n13: {\n14:     if (func <= SLC_NCHARS)\n15:         return;                    // ignore ordinary entries here\n16: \n17:     /* Store one SLC triplet for later reply construction. */\n18:     s->buf[s->used++] = func;\n19:     s->buf[s->used++] = flags;\n20:     s->buf[s->used++] = value;\n21: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "7f66e312b414cca2943782e6c5df6e5b8b96bd38f9364fbba3d9175b56ff2cff"
+ },
+ "response": {
+  "id": "chatcmpl-bad1f65b93e742e68b11b90d9afaf712",
+  "created": 1791717356,
+  "model": "hy4-preview",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Looking at this function, I need to analyze the buffer bounds checking.\n\nThe function `add_slc` writes 3 bytes (func, flags, value) into `s->buf` at position `s->used`, incrementing `s->used` each time.\n\nThe buffer is `SLCBUF_SIZE` (108) bytes.\n\nThe check on line 14 is:\n```c\nif (func <= SLC_NCHARS)\n    return;\n```\n\nThis checks if `func` is less than or equal to 18, and returns early if so. This means only `func` values > 18 (i.e., 19-255) will be stored.\n\nHowever, there is **no check** on `s->used` before writing to the buffer. The function can be called multiple times (once for each SLC option received), and each call adds 3 bytes. There's no verification that `s->used + 3 <= SLCBUF_SIZE` before the writes on lines 18-20.\n\nThis is a buffer overflow vulnerability. The primary bug is the missing bounds check on `s->used` before writing.\n\nThe writes happen on lines 18, 19, and 20. The bug is introduced by the lack of a bounds check before these writes. Since the question asks where the primary bug is introduced, and the writes themselves are the problematic operations that can overflow, the smallest set would be the lines where the unchecked writes occur.\n\nActually, looking more carefully - the bug is the missing bounds check. The writes on lines 18-20 are where the overflow actually occurs. Since all three lines are needed to understand the bug (3 bytes written without checking), the answer should include all three lines.\n\nAnswer: 18,19,20",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 365,
+   "prompt_tokens": 345,
+   "total_tokens": 710,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Looking at this function, I need to analyze the buffer bounds checking.\n\nThe function `add_slc` writes 3 bytes (func, flags, value) into `s->buf` at position `s->used`, incrementing `s->used` each time.\n\nThe buffer is `SLCBUF_SIZE` (108) bytes.\n\nThe check on line 14 is:\n```c\nif (func <= SLC_NCHARS)\n    return;\n```\n\nThis checks if `func` is less than or equal to 18, and returns early if so. This means only `func` values > 18 (i.e., 19-255) will be stored.\n\nHowever, there is **no check** on `s->used` before writing to the buffer. The function can be called multiple times (once for each SLC option received), and each call adds 3 bytes. There's no verification that `s->used + 3 <= SLCBUF_SIZE` before the writes on lines 18-20.\n\nThis is a buffer overflow vulnerability. The primary bug is the missing bounds check on `s->used` before writing.\n\nThe writes happen on lines 18, 19, and 20. The bug is introduced by the lack of a bounds check before these writes. Since the question asks where the primary bug is introduced, and the writes themselves are the problematic operations that can overflow, the smallest set would be the lines where the unchecked writes occur.\n\nActually, looking more carefully - the bug is the missing bounds check. The writes on lines 18-20 are where the overflow actually occurs. Since all three lines are needed to understand the bug (3 bytes written without checking), the answer should include all three lines.\n\nAnswer: 18,19,20",
+ "grade": {
+  "index": 2,
+  "id": "compsec-077",
+  "source": "COMPSEC",
+  "domain": "GNU Inetutils telnetd",
+  "expected": "18-20",
+  "extracted": "18,19,20",
+  "passed": true,
+  "elapsed_ms": 37841.2,
+  "output_sha256": "88aa625b825e48ad6bcfe1a4d197dbc3ba422c91da5203122d35d2ba7423de19",
+  "prompt_token_count": 345,
+  "generated_token_count": 365,
+  "reasoning_chars": 0,
+  "content_chars": 1462,
+  "status": "stop"
+ }
+}

@@ -1,0 +1,56 @@
+{
+ "model": "qwen3.8-max",
+ "checkpoint": "/mnt/cold-raid6/models/qwen3.8-max-nvfp4-radixark-bf16-spine (NVFP4 experts, BF16 spine), converted to TP16 named packs",
+ "driver_source": "fleet/kv-proof 2fff9e7d6",
+ "engine_build_used": "fw-2fff9e7d6 for the 64 answers after the 18:52Z relaunch (residentd c9d70f2a, adapter 650525a7, transport 908f13eb); the first 28 answers came from the same lane before the relaunch, on a build verified bit-identical to fw-2fff9e7d6 on the reference prompts",
+ "lane": {
+  "tp": 16,
+  "lane": 12,
+  "sequences": 16,
+  "rows": 256
+ },
+ "client": {
+  "endpoint": "chat frontend :8433",
+  "temperature": 0,
+  "max_tokens": 16000,
+  "concurrency": 16,
+  "reasoning_effort": "model default (thinking-only model)",
+  "resume": "--resume after the 17:42Z stop; 28 answers kept, 64 run again from scratch"
+ },
+ "pack_sha256_by_rank": [
+  "6008cd7e8b3df3d1cc7e3848f2e3401f4cc0157f1842b4c84199f2fa458e66eb",
+  "9039ebd23101be1cded3452d8916bfc55b6bc2ae2bc60790aa8011d9855b05a1",
+  "16844e2aadd97dc6d3c0c3c80b42d556e09fe7a9167c35179f9371aeaaa12f57",
+  "0d1a5c3b821ae1783a0796eed282ae385fa07d2be99ede85fac87bbb22493f11",
+  "1f8197925ec108af6c5dd920d0775f71eaeb755208006a33ab72fd6013422c14",
+  "7162e5d66c2d553dc0f7f01850e3d8fb1ba62ff591aabb91ed909c0f8ae39f15",
+  "98aaf557550798c483af622e99f11928f3f63a5c9a0cae38907da56db45b03d6",
+  "804d53fdeab9034e6317f619abbb700d78372447d1b1a4adf5523ae4d5036f29",
+  "723756970930356a02e978535cb600008ebb4f93f44f7a6ad8b94631dfdf33d0",
+  "49a8db51ecf466e51f3a3bc3927be4f755a4d47fc2f7507014c26938cb27bad5",
+  "f836e3dc5c5d62ed9775e6ade5c625336d53d7076e29329da7b4de6798bdc161",
+  "27cededab0d5f8fc555d21f7ce45b3457e0710763d0219ee2b7f74097bdd60f3",
+  "1ad6c35e33357d0ef6d0ef1eec85a34102765ec390341c8c377979f11fbeeadf",
+  "56007abd7b548691b84ebe8b101f0784020c60c3b79534ddceba06fb93e1d874",
+  "d8c9333db24d3453f129173a8fc10a323947230b2ef0895cb574c40ed6030c15",
+  "7492399b3dbf725570ecb4ccb4c4d57c4c46a4669395ae037fa4238b3551830c"
+ ],
+ "binaries_sha256": {
+  "sparkpipe_model_residentd": "c9d70f2acd61c209df942546c3ebde9c757706f894247d6fa6e0570e1735c44b",
+  "libqwen38_max_tp16_serving_adapter.so": "650525a71c83f57ecd04331d781b7db6faed5b9276043096089274b046d705a6",
+  "hidden_transport.so": "908f13ebad97b6e802e9862466a05fdfcc72902b64f2d4d205b7f94f982e9970"
+ },
+ "result": {
+  "passed": 82,
+  "completed": 92,
+  "errors": 0,
+  "wall_s": 22809.8,
+  "completion_tok_s_aggregate": 23.62,
+  "by_family": {
+   "AIME2025": "22/25",
+   "COMPSEC": "17/17",
+   "GPQA Diamond": "22/25",
+   "SuperGPQA": "21/25"
+  }
+ }
+}

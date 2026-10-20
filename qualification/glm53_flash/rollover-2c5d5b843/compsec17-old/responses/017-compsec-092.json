@@ -1,0 +1,63 @@
+{
+ "id": "compsec-092",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe verifier checks a serialized DFA. Some states are encoded as differences from another state default table.\n\nCode:\n```c\n 1: static int verify_dfa_reduced(const struct dfa *d)\n 2: {\n 3:     for (uint32_t state = 0; state < d->state_count; state++) {\n 4:         uint32_t j = state;\n 5: \n 6:         if (d->default_table[j] >= d->state_count)\n 7:             return -EINVAL;\n 8: \n 9:         while (d->is_differential[j]) {\n10:             uint32_t parent = d->default_table[j];\n11:             j = parent;                    // parent not rechecked here\n12:         }\n13: \n14:         validate_accept_table(d->accept[j]);\n15:     }\n16:     return 0;\n17: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "99f64538f6b3142c00f710e5441778da15256286592a1a369001ef049befb123"
+ },
+ "response": {
+  "id": "chatcmpl-0821153d6b7a47a3867febbbde8742ef",
+  "created": 1791731026,
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The loop at lines 9\u201312 follows the differential chain via `default_table[j]`, but the bounds check `d->default_table[j] >= d->state_count` at line 6 only applies to the initial state. Each subsequent `parent` fetched at line 10 and assigned at line 11 is never revalidated, so a differential state can point to an out-of-range index, causing an out-of-bounds read on the next iteration (or an infinite cycle). The fix would be to recheck each parent inside the loop.\n\nAnswer: 11",
+     "role": "assistant",
+     "reasoning_content": "Line 11: parent not rechecked \u2192 could loop/cycle or out-of-bounds? default_table[j] checked only for initial j; differential chain parents unchecked \u2192 out-of-bounds index. Bug at line 11 (or 9-12). Answer: 11."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 173,
+   "prompt_tokens": 305,
+   "total_tokens": 478,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>Line 11: parent not rechecked \u2192 could loop/cycle or out-of-bounds? default_table[j] checked only for initial j; differential chain parents unchecked \u2192 out-of-bounds index. Bug at line 11 (or 9-12). Answer: 11.</think>The loop at lines 9\u201312 follows the differential chain via `default_table[j]`, but the bounds check `d->default_table[j] >= d->state_count` at line 6 only applies to the initial state. Each subsequent `parent` fetched at line 10 and assigned at line 11 is never revalidated, so a differential state can point to an out-of-range index, causing an out-of-bounds read on the next iteration (or an infinite cycle). The fix would be to recheck each parent inside the loop.\n\nAnswer: 11",
+ "grade": {
+  "index": 17,
+  "id": "compsec-092",
+  "source": "COMPSEC",
+  "domain": "Linux kernel AppArmor",
+  "expected": "10-14",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 4001.7,
+  "output_sha256": "49316a8cafc075c6b9981b3852c515d9ab8f9b6224064a4f16913e04478f279f",
+  "prompt_token_count": 305,
+  "generated_token_count": 173,
+  "reasoning_chars": 209,
+  "content_chars": 478,
+  "status": "stop"
+ }
+}

@@ -1,7 +1,7 @@
 #include <assert.h>
 #include <stdint.h>
 
-#include "spark_glm52_stagepack_format.h"
+#include "sparkpipe/spark_glm52_stagepack.h"
 
 static void SparkTestHeaderLayout(void)
 {
@@ -18,6 +18,7 @@ static void SparkTestExpertCodec(uint32_t codec,uint32_t bits,uint32_t group)
 	assert(SparkGlm52StagePackExpectedShape(
 		SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE,
 		3u,
+		SPARK_WEIGHT_CODEC_BF16,
 		codec,
 		1u,
 		&shape) == 0);
@@ -53,6 +54,7 @@ static void SparkTestShapeContract(void)
 	assert(SparkGlm52StagePackExpectedShape(
 		SPARK_GLM52_STAGEPACK_TENSOR_Q_A,
 		0u,
+		SPARK_WEIGHT_CODEC_BF16,
 		SPARK_WEIGHT_CODEC_INT8,
 		1u,
 		&shape) == 0);
@@ -63,6 +65,7 @@ static void SparkTestShapeContract(void)
 	assert(SparkGlm52StagePackExpectedShape(
 		SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN,
 		3u,
+		SPARK_WEIGHT_CODEC_BF16,
 		SPARK_WEIGHT_CODEC_BF16,
 		1u,
 		&shape) == 0);
@@ -80,21 +83,50 @@ static void SparkTestShapeContract(void)
 	assert(SparkGlm52StagePackExpectedShape(
 		SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN,
 		3u,
+		SPARK_WEIGHT_CODEC_BF16,
 		SPARK_WEIGHT_CODEC_NONE,
 		1u,
 		&shape) == -5);
 	assert(SparkGlm52StagePackExpectedShape(
 		SPARK_GLM52_STAGEPACK_TENSOR_INDEX_Q,
 		4u,
+		SPARK_WEIGHT_CODEC_BF16,
 		SPARK_WEIGHT_CODEC_INT8,
 		1u,
 		&shape) == -3);
 	assert(SparkGlm52StagePackExpectedShape(
 		SPARK_GLM52_STAGEPACK_TENSOR_DENSE_DOWN,
 		3u,
+		SPARK_WEIGHT_CODEC_BF16,
 		SPARK_WEIGHT_CODEC_INT8,
 		1u,
 		&shape) == -4);
+}
+
+static void SparkTestFp8LinearContract(void)
+{
+	SparkGlm52StagePackTensorShape shape;
+	assert(SparkGlm52StagePackExpectedShape(
+		SPARK_GLM52_STAGEPACK_TENSOR_Q_A,
+		0u,
+		SPARK_WEIGHT_CODEC_FP8_E4M3,
+		SPARK_WEIGHT_CODEC_FP8_E4M3,
+		1u,
+		&shape) == 0);
+	assert(shape.payload_type == SPARK_GLM52_STAGEPACK_PAYLOAD_PACKED_WEIGHT);
+	assert(shape.weight_codec == SPARK_WEIGHT_CODEC_FP8_E4M3);
+	assert(shape.scale_encoding == SparkWeightCodecScaleEncoding(SPARK_WEIGHT_CODEC_FP8_E4M3));
+	assert(shape.rows == SPARK_GLM52_MODEL_QUERY_A_DIMENSION);
+	assert(shape.columns == SPARK_GLM52_MODEL_HIDDEN_DIMENSION);
+	assert(SparkGlm52StagePackExpectedPayloadBytes(&shape) ==
+		(uint64_t)SPARK_GLM52_MODEL_QUERY_A_DIMENSION * SPARK_GLM52_MODEL_HIDDEN_DIMENSION);
+	assert(SparkGlm52StagePackExpectedShape(
+		SPARK_GLM52_STAGEPACK_TENSOR_Q_A,
+		0u,
+		SPARK_WEIGHT_CODEC_INT8,
+		SPARK_WEIGHT_CODEC_FP8_E4M3,
+		1u,
+		&shape) == -8);
 }
 
 int main(void)
@@ -102,5 +134,6 @@ int main(void)
 	SparkTestHeaderLayout();
 	SparkTestAllExpertCodecs();
 	SparkTestShapeContract();
+	SparkTestFp8LinearContract();
 	return(0);
 }

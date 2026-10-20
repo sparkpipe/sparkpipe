@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCES = (".h", ".c", ".cu", ".cuh", ".cpp", ".hpp")
 SKIPPED = ("build", ".git", "tests")
 PLATFORM_SHIMS = {"_POSIX_C_SOURCE", "_GNU_SOURCE", "MSG_NOSIGNAL", "POLLRDHUP", "F_GETPATH", "HWCAP_SHA2", "O_DIRECT", "MFD_CLOEXEC"}
-PENDING = {("model-families/dsv4/include/sparkpipe/spark_dsv4_model.h", "SPARK_DSV4_MODEL_DSPARK_SPEC_STEP"): "the dsv4 adapters, tests and tools compile without the k-sweep step; TECHDEBT"}
+PENDING = {}
 GUARD = re.compile(r"^\s*#\s*(?:ifndef\s+(\w+)|if\s+!\s*defined\s*\(\s*(\w+)\s*\))\s*$")
 DEFINE = re.compile(r"^\s*#\s*define\s+(\w+)\s+\S")
 

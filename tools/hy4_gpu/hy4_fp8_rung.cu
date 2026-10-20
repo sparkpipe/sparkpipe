@@ -1,17 +1,3 @@
-// hy4 lane FP8 numerical rung: drives the PRODUCTION grouped-dot kernel
-// (SparkHy4GemvFp8GroupedKernel from the resident-decode-stage unity
-// layer, linked as a second TU) over sampled rows of the PLACED FP8
-// rank pack and compares every dot against an independent double
-// CPU expectation (E4M3 payload x exp2(scale-127) per group-32, scales
-// addressed through the scale-row-offset contract: byte index
-// (row_off + row) * stride + group_off + group). Covers all contract
-// planes: ALIGNED, REPLICATED_ROWS, REPLICATED_GROUPS (o_proj stride).
-// Resumable per plane: done markers + next-entry checkpoint,
-// ~660s self-cutoff, TSV deltas for the per-plane table.
-//
-// Usage: hy4_fp8_rung <pack.safetensors> <manifest> <workdir>
-// Env: HY4_FP8_CKPT (checkpoint path), HY4_FP8_TSV (deltas),
-//      HY4_FP8_CUTOFF (seconds, default 660).
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>

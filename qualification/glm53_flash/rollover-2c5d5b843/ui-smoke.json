@@ -1,0 +1,371 @@
+{
+ "format": "sparkpipe-ui-smoke-v1",
+ "generated_at": "2026-10-11T15:06:29+0000",
+ "endpoint": "http://127.0.0.1:4000",
+ "model": "glm-5.3-flash",
+ "passed": 5,
+ "total": 6,
+ "results": [
+  {
+   "check": "chat",
+   "request": {
+    "model": "glm-5.3-flash",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-41a1de1bae1d42bcbd646a674f4816a6",
+     "created": 1791731184,
+     "model": "glm-5.3-flash",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The capital of France is Paris.",
+        "role": "assistant",
+        "reasoning_content": "The user is asking a simple factual question: What is the capital of France? They want the answer in one sentence.\n\nThis is straightforward. The capital of France is Paris. I should answer in one sentence as requested."
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 52,
+      "prompt_tokens": 24,
+      "total_tokens": 76,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "The capital of France is Paris.",
+    "reasoning": "The user is asking a simple factual question: What is the capital of France? They want the answer in one sentence.\n\nThis is straightforward. The capital of France is Paris. I should answer in one sentence as requested.",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 1.25
+   },
+   "problems": []
+  },
+  {
+   "check": "stream",
+   "request": {
+    "model": "glm-5.3-flash",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "content": "The capital of France is Paris.",
+    "reasoning": "The user is asking a simple factual question: What is the capital of France? They want the answer in one sentence.\n\nThis is straightforward. The capital of France is Paris. I should answer in one sentence as requested.",
+    "tool_calls": [],
+    "finish": "stop",
+    "chunks": 11,
+    "elapsed_s": 1.27
+   },
+   "problems": []
+  },
+  {
+   "check": "tool",
+   "request": {
+    "model": "glm-5.3-flash",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-9bcec85f4b35478bb5f22a10db057f15",
+     "created": 1791731187,
+     "model": "glm-5.3-flash",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "tool_calls",
+       "index": 0,
+       "message": {
+        "role": "assistant",
+        "tool_calls": [
+         {
+          "function": {
+           "arguments": "{\"location\": \"Paris\", \"unit\": \"celsius\"}",
+           "name": "get_weather"
+          },
+          "id": "call_4149bd29a2a04731a5354f84",
+          "type": "function"
+         }
+        ],
+        "reasoning_content": "The user wants to know the weather in Paris. I'll use the get_weather tool with location \"Paris\". I could use Celsius or Fahrenheit - the user didn't specify. I'll default to Celsius since Paris is in France (metric system).",
+        "content": null
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 67,
+      "prompt_tokens": 196,
+      "total_tokens": 263,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "",
+    "reasoning": "The user wants to know the weather in Paris. I'll use the get_weather tool with location \"Paris\". I could use Celsius or Fahrenheit - the user didn't specify. I'll default to Celsius since Paris is in France (metric system).",
+    "tool_calls": [
+     {
+      "function": {
+       "arguments": "{\"location\": \"Paris\", \"unit\": \"celsius\"}",
+       "name": "get_weather"
+      },
+      "id": "call_4149bd29a2a04731a5354f84",
+      "type": "function"
+     }
+    ],
+    "finish": "tool_calls",
+    "elapsed_s": 1.72
+   },
+   "problems": []
+  },
+  {
+   "check": "tool_result",
+   "request": {
+    "model": "glm-5.3-flash",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     },
+     {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+       {
+        "function": {
+         "arguments": "{\"location\": \"Paris\", \"unit\": \"celsius\"}",
+         "name": "get_weather"
+        },
+        "id": "call_4149bd29a2a04731a5354f84",
+        "type": "function"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_4149bd29a2a04731a5354f84",
+      "content": "{\"location\": \"Paris\", \"temperature_c\": 18, \"condition\": \"sunny\"}"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-5820cd8ce2c940debf159fc7eae69701",
+     "created": 1791731188,
+     "model": "glm-5.3-flash",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The weather in Paris right now is **sunny** with a temperature of **18\u00b0C** (about 64\u00b0F). A pleasant day! \u2600\ufe0f",
+        "role": "assistant",
+        "reasoning_content": "The tool returned the weather for Paris. Let me report it to the user."
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 49,
+      "prompt_tokens": 239,
+      "total_tokens": 288,
+      "prompt_tokens_details": {
+       "cached_tokens": 192
+      }
+     }
+    },
+    "content": "The weather in Paris right now is **sunny** with a temperature of **18\u00b0C** (about 64\u00b0F). A pleasant day! \u2600\ufe0f",
+    "reasoning": "The tool returned the weather for Paris. Let me report it to the user.",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 1.14
+   },
+   "problems": []
+  },
+  {
+   "check": "reasoning_off",
+   "request": {
+    "model": "glm-5.3-flash",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "minimal"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-c254d15e1a78445294aa62ab12708b2f",
+     "created": 1791731188,
+     "model": "glm-5.3-flash",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "391",
+        "role": "assistant",
+        "reasoning_content": "17*23 = 391"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 10,
+      "prompt_tokens": 26,
+      "total_tokens": 36,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "391",
+    "reasoning": "17*23 = 391",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 0.44
+   },
+   "problems": [
+    "reasoning_content present with reasoning off"
+   ]
+  },
+  {
+   "check": "reasoning_on",
+   "request": {
+    "model": "glm-5.3-flash",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "high"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-f8acdf4637f24ed3bb6fc35a4261ae96",
+     "created": 1791731189,
+     "model": "glm-5.3-flash",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "391",
+        "role": "assistant",
+        "reasoning_content": "17 * 23 = 391\n\nLet me verify: 17 * 23 = 17 * 20 + 17 * 3 = 340 + 51 = 391"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 43,
+      "prompt_tokens": 26,
+      "total_tokens": 69,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "391",
+    "reasoning": "17 * 23 = 391\n\nLet me verify: 17 * 23 = 17 * 20 + 17 * 3 = 340 + 51 = 391",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 1.06
+   },
+   "problems": []
+  }
+ ]
+}

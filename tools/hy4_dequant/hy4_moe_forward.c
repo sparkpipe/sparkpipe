@@ -1,15 +1,3 @@
-/* hy4 lane: single-token routed-expert + shared-expert FFN forward (CPU).
- *
- * Semantics per hy4_layer_semantics.md / vendor hyv4_reference.cpp:
- *   probs      = sigmoid(ffn_gate_inp . x)      (unbiased, weights source)
- *   selection  = top-8 of (probs + exp_probs_b) (bias affects SELECTION only)
- *   w          = probs[sel] / max(sum, 6.103515625e-5) * 2.827
- *   per expert: up clamped +/-10 pre-activation; gate = silu(.) clamped
- *               one-sided +10 AFTER silu; h = gate*up; y += w * down.h
- *   shared expert: silu gate * up (unclamped) -> down, added unweighted
- * Rank-local: only this rank's 16 owned experts contribute (the TP16
- * all-reduce happens at serving); the receipt covers the partial sum.
- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,8 +18,6 @@ static int bs_of(int type) {
            type == 29 ? 56 : 0;
 }
 
-/* Dequantize one 2-D weight [rows, cols] (whole tensor) into row-major
- * float y. rows*cols floats must be allocated. Type 0 = raw F32. */
 static int dequant_view(const hy4_rank *rank, const hy4_tensor_view *tv,
                         float *y) {
     long nelems = 1;
@@ -63,9 +49,6 @@ static int dequant_view(const hy4_rank *rank, const hy4_tensor_view *tv,
     return 0;
 }
 
-/* matmul y[rows] = W[rows, cols] . x[cols]; W row-major (GGML ne order
- * transposed here: the manifest dims are ne[fastest..], so W row r starts
- * at r*cols elements). */
 static void matvec(const float *w, const float *x, float *y, long rows,
                    long cols) {
     for (long r = 0; r < rows; ++r) {
@@ -81,8 +64,6 @@ int main(int argc, char **argv) {
     hy4_rank *rank = NULL;
     if (hy4_rank_open(argv[1], 0, &rank)) { fprintf(stderr, "open failed\n"); return 1; }
 
-    /* deterministic input: router row of expert 40 (rank-02-owned) scaled
-     * small + a tiny sine tail, so the selection includes owned experts */
     const hy4_tensor_view *tv_probe = hy4_tensor_lookup(rank, "blk.47.ffn_gate_inp.weight");
     float *x = malloc(N_EMBD * 4);
     {
@@ -93,7 +74,6 @@ int main(int argc, char **argv) {
         free(row);
     }
 
-    /* router (F32 tensors) */
     const hy4_tensor_view *tv_gate = hy4_tensor_lookup(rank, "blk.47.ffn_gate_inp.weight");
     const hy4_tensor_view *tv_bias = hy4_tensor_lookup(rank, "blk.47.exp_probs_b.bias");
     if (!tv_gate || !tv_bias) { fprintf(stderr, "router tensors missing\n"); return 1; }
@@ -131,8 +111,6 @@ int main(int argc, char **argv) {
     for (int k = 0; k < N_USED; ++k) printf(" %d(%.6f)", sel[k], w[k]);
     printf("\n");
 
-    /* rank-local routed experts; optional forced expert for the FFN-path
-     * exactness receipt (selection itself is verified from the trace) */
     int force_expert = argc > 2 ? atoi(argv[2]) : -1;
     int rank_id = 2, own_lo = rank_id * 16;
     float y_moe[N_EMBD];
@@ -158,8 +136,6 @@ int main(int argc, char **argv) {
         if (!tvg || !tvu || !tvd) { fprintf(stderr, "expert tensors missing\n"); return 1; }
         long slab_g = tvg->nbytes / 16, slab_u = tvu->nbytes / 16,
              slab_d = tvd->nbytes / 16;
-        /* targeted slab reads: each expert's bytes are contiguous (dim-2
-         * split keeps whole quant blocks together) */
         hy4_tensor_view slab;
         slab = *tvg; slab.file_offset += li * slab_g; slab.nbytes = slab_g;
         slab.n_dims = 2; slab.dims[0] = N_FF; slab.dims[1] = N_EMBD; slab.dims[2] = 0;
@@ -171,7 +147,7 @@ int main(int argc, char **argv) {
         slab.n_dims = 2; slab.dims[0] = N_EMBD; slab.dims[1] = N_FF; slab.dims[2] = 0;
         if (dequant_view(rank, &slab, dw)) return 1;
 
-        { /* slab bisection stats */
+        {
             long nan_g = 0, nan_u = 0, nan_d = 0;
             float mg = 0, mu = 0, md = 0;
             for (long i = 0; i < N_FF * N_EMBD; ++i) {
@@ -189,11 +165,10 @@ int main(int argc, char **argv) {
         for (int j = 0; j < N_FF; ++j) {
             u[j] = u[j] < -10.0f ? -10.0f : u[j] > 10.0f ? 10.0f : u[j];
             float ga = silu(g[j]);
-            ga = ga > 10.0f ? 10.0f : ga;   /* one-sided clamp AFTER silu */
-            h[j] = 0; /* h is N_FF at this stage */
+            ga = ga > 10.0f ? 10.0f : ga;
+            h[j] = 0;
             u[j] = ga * u[j];
         }
-        /* h here is the FFN hidden [N_FF] = clamped silu(gate)*up */
         matvec(dw, u, h, N_EMBD, N_FF);
         for (int i = 0; i < N_EMBD; ++i) y_moe[i] += w[k] * h[i];
     }
@@ -202,8 +177,6 @@ int main(int argc, char **argv) {
     printf("rank-local experts used: %ld, routed partial sum %.6f amax %.6f\n",
            used_local, psum, fabsf(y_moe[0]));
 
-    /* trace for the numpy router cross-check (written before the shared
-     * path, which may refuse not-yet-vendored types) */
     {
         FILE *t = fopen("/tmp/hy4_moe_trace.bin", "wb");
         fwrite(x, 4, N_EMBD, t);
@@ -214,7 +187,6 @@ int main(int argc, char **argv) {
         fclose(t);
     }
 
-    /* shared expert (unclamped, unweighted) */
     const hy4_tensor_view *tsg = hy4_tensor_lookup(rank, "blk.47.ffn_gate_shexp.weight");
     const hy4_tensor_view *tsu = hy4_tensor_lookup(rank, "blk.47.ffn_up_shexp.weight");
     const hy4_tensor_view *tsd = hy4_tensor_lookup(rank, "blk.47.ffn_down_shexp.weight");

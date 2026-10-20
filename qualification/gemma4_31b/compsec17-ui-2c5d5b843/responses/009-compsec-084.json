@@ -1,0 +1,62 @@
+{
+ "id": "compsec-084",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "gemma-4-31b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nOn this target, plain char is signed, and the ctype implementation indexes a table for values other than EOF.\n\nCode:\n```c\n 1: static size_t decode_component(char *s, size_t len)\n 2: {\n 3:     size_t r = 0, w = 0;\n 4: \n 5:     while (r < len) {\n 6:         if (s[r] == '%' && r + 2 < len &&\n 7:             isxdigit(s[r + 1]) && isxdigit(s[r + 2])) {\n 8:             s[w++] = hexpair(s[r + 1], s[r + 2]);\n 9:             r += 3;\n10:         } else {\n11:             s[w++] = s[r++];\n12:         }\n13:     }\n14:     return w;\n15: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "4a27bb54876ee924ded68ca8879206a08547db8e8fcba4c02b509b875097850a"
+ },
+ "response": {
+  "id": "chatcmpl-42c7b563ead94be2a50896dc1b63db24",
+  "created": 1791716638,
+  "model": "gemma-4-31b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability in this code lies in the use of `isxdigit()` with a `char` type. \n\nAccording to the C standard, the functions in `<ctype.h>` (like `isxdigit`) require their argument to be representable as an `unsigned char` or be equal to `EOF`. On this target, `char` is signed. If `s[r + 1]` or `s[r + 2]` contains a negative value (e.g., a character with the high bit set, such as `0xFF`), it will be sign-extended when passed to `isxdigit`. This results in a negative integer value being used as an index into the internal `ctype` lookup table, leading to an out-of-bounds memory access (undefined behavior).\n\nThe bug is introduced on line 7 where the signed `char` values are passed directly to `isxdigit` without being cast to `unsigned char`.\n\nAnswer: 7",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 203,
+   "prompt_tokens": 348,
+   "total_tokens": 551,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability in this code lies in the use of `isxdigit()` with a `char` type. \n\nAccording to the C standard, the functions in `<ctype.h>` (like `isxdigit`) require their argument to be representable as an `unsigned char` or be equal to `EOF`. On this target, `char` is signed. If `s[r + 1]` or `s[r + 2]` contains a negative value (e.g., a character with the high bit set, such as `0xFF`), it will be sign-extended when passed to `isxdigit`. This results in a negative integer value being used as an index into the internal `ctype` lookup table, leading to an out-of-bounds memory access (undefined behavior).\n\nThe bug is introduced on line 7 where the signed `char` values are passed directly to `isxdigit` without being cast to `unsigned char`.\n\nAnswer: 7",
+ "grade": {
+  "index": 9,
+  "id": "compsec-084",
+  "source": "COMPSEC",
+  "domain": "PHP",
+  "expected": "6-7",
+  "extracted": "7",
+  "passed": true,
+  "elapsed_ms": 6815.5,
+  "output_sha256": "c91b8f445488960d73377e77805ee60bfc59d97b9d48cf20a27453744afb4b5b",
+  "prompt_token_count": 348,
+  "generated_token_count": 203,
+  "reasoning_chars": 0,
+  "content_chars": 762,
+  "status": "stop"
+ }
+}

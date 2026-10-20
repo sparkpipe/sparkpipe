@@ -23,6 +23,12 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#if defined(__linux__)
+#include <sys/vfs.h>
+#else
+#include <sys/mount.h>
+#include <sys/param.h>
+#endif
 #include <unistd.h>
 
 #include <cuda_runtime_api.h>
@@ -40,6 +46,7 @@
 #define SPARK_MODEL_RESIDENTD_PROGRESS_STEPS 64u
 #define SPARK_MODEL_RESIDENTD_QUIESCE_TIMEOUT_NS UINT64_C(5000000000)
 #define SPARK_MODEL_RESIDENTD_QUIESCE_POLL_NS 1000000L
+#define SPARK_MODEL_RESIDENTD_ABORT_RETRY_NS UINT64_C(5000000000)
 #define SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_ROUTE 1u
 #define SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_RESIDENCY 2u
 #define SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_IDENTITY 3u
@@ -69,7 +76,10 @@ typedef struct SparkModelResidentdConfiguration
 	const char *previous_transport_host;
 	const char *next_transport_host;
 	const char *kv_backing_directory;
+	const char *kv_partition;
 	uint64_t kv_backing_maximum_bytes;
+	const char *kv_snapshot_directory;
+	uint64_t kv_snapshot_maximum_bytes;
 	uint32_t rank_index;
 	uint32_t stage_index;
 	uint32_t previous_rank_index;
@@ -181,8 +191,10 @@ typedef struct SparkModelResidentdRoute
 	uint32_t deadline_expired;
 	uint32_t deadline_completion_queued;
 	uint32_t deadline_wait_state;
+	uint32_t transport_cancelled;
 	uint32_t failure_status;
 	uint32_t failure_delivered;
+	uint32_t driver_completed;
 	uint64_t message_id;
 	uint64_t submission_id;
 	uint64_t request_id;
@@ -190,6 +202,7 @@ typedef struct SparkModelResidentdRoute
 	uint64_t sequence_position;
 	uint64_t client_generation;
 	uint64_t adapter_submit_time_ns;
+	uint64_t abort_retry_since_ns;
 	SparkModelServingSubmission submission;
 	SparkHiddenTransportPacket input_packet;
 	SparkHiddenTransportPacket output_packet;
@@ -215,6 +228,10 @@ typedef struct SparkModelResidentdRuntime
 	SparkHiddenTransportSession *output_transport;
 	SparkPipelineRuntimeRankPlan rank_plan;
 	SparkModelServingRuntimeLimits runtime_limits;
+	uint32_t adapter_max_sequence_positions;
+	uint64_t cache_hint_count;
+	uint64_t cache_hint_unsupported_count;
+	uint64_t cache_hint_failure_count;
 	SparkModelResidentdClient client;
 	SparkModelResidentdRoute *routes;
 	SparkModelResidentdSlot *slots;
@@ -228,6 +245,7 @@ typedef struct SparkModelResidentdRuntime
 	uint32_t committed_fifo_head;
 	uint32_t committed_fifo_tail;
 	uint64_t progress_pass_count;
+	uint64_t session_reset_count;
 	uint64_t adapter_op_count;
 	uint32_t adapter_op_max_per_pass;
 	SparkModelResidentdMemoryMode memory_mode;
@@ -358,7 +376,10 @@ static SparkStatus SparkModelResidentdBuildConfiguration(
 	configuration->previous_transport_host = previous != 0 ? previous->transport_host : 0;
 	configuration->next_transport_host = next != 0 ? next->transport_host : 0;
 	configuration->kv_backing_directory = node->kv_backing_directory;
+	configuration->kv_partition = node->kv_partition;
 	configuration->kv_backing_maximum_bytes = node->kv_backing_maximum_bytes;
+	configuration->kv_snapshot_directory = node->kv_snapshot_directory;
+	configuration->kv_snapshot_maximum_bytes = node->kv_snapshot_maximum_bytes;
 	configuration->rank_index = node->rank_index;
 	configuration->stage_index = node->stage_index;
 	configuration->previous_rank_index = previous != 0 ? previous->rank_index : SPARK_PIPELINE_RUNTIME_NO_RANK;
@@ -375,16 +396,78 @@ static SparkStatus SparkModelResidentdBuildConfiguration(
 	return(SPARK_STATUS_OK);
 }
 
+static const char *SparkModelResidentdKvFilesystemRefusal(const char *partition)
+{
+#if defined(__linux__)
+	static const struct { long magic; const char *name; } refused[] = {
+		{ 0x01021994L,"tmpfs" },{ (long)0x858458f6L,"ramfs" },{ 0x6969L,"nfs" },{ 0x00c36400L,"ceph" },
+		{ 0x65735546L,"fuse" },{ (long)0xff534d42L,"cifs" },{ (long)0xfe534d42L,"smb2" },{ 0x01021997L,"9p" }
+	};
+	struct statfs info;
+	uint32_t index;
+	if ( statfs(partition,&info) != 0 )
+		return("unreadable");
+	for (index=0u; index<sizeof(refused) / sizeof(refused[0]); index++)
+		if ( (long)info.f_type == refused[index].magic )
+			return(refused[index].name);
+#else
+	static const char *const refused[] = { "nfs","smbfs","afpfs","webdav","devfs","autofs" };
+	struct statfs info;
+	uint32_t index;
+	if ( statfs(partition,&info) != 0 )
+		return("unreadable");
+	for (index=0u; index<sizeof(refused) / sizeof(refused[0]); index++)
+		if ( strcmp(info.f_fstypename,refused[index]) == 0 )
+			return(refused[index]);
+#endif
+	return(0);
+}
+
+static SparkStatus SparkModelResidentdValidateKvPartition(
+	const SparkModelResidentdConfiguration *configuration)
+{
+	struct stat partition,directory;
+	const char *refusal;
+	if ( configuration->kv_partition == 0 || stat(configuration->kv_partition,&partition) != 0 || !S_ISDIR(partition.st_mode) )
+	{
+		fprintf(stderr,"model_residentd: kv_partition %s is not a directory\n",configuration->kv_partition != 0 ? configuration->kv_partition : "(missing)");
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
+	refusal = SparkModelResidentdKvFilesystemRefusal(configuration->kv_partition);
+	if ( refusal != 0 )
+	{
+		fprintf(stderr,"model_residentd: kv_partition %s is on a %s filesystem; KV spill and snapshots need a local block device\n",configuration->kv_partition,refusal);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( stat(configuration->kv_backing_directory,&directory) != 0 || directory.st_dev != partition.st_dev )
+	{
+		fprintf(stderr,"model_residentd: kv_backing_directory %s is not on kv_partition %s\n",configuration->kv_backing_directory,configuration->kv_partition);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( configuration->kv_snapshot_directory != 0 && (stat(configuration->kv_snapshot_directory,&directory) != 0 || directory.st_dev != partition.st_dev) )
+	{
+		fprintf(stderr,"model_residentd: kv_snapshot_directory %s is not on kv_partition %s\n",configuration->kv_snapshot_directory,configuration->kv_partition);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkModelResidentdValidateDirectories(
 	const SparkModelResidentdConfiguration *configuration)
 {
 	if ( configuration == 0 ||
 		!SparkPathIsRealDirectoryTree(configuration->runtime_root) )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	if ( configuration->kv_backing_directory != 0 &&
+	if ( configuration->kv_backing_directory == 0 ||
 		!SparkPathIsRealDirectoryTree(configuration->kv_backing_directory) )
+	{
+		fprintf(stderr,"model_residentd: kv_backing_directory %s is not a real directory\n",configuration->kv_backing_directory != 0 ? configuration->kv_backing_directory : "(missing)");
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	return(SPARK_STATUS_OK);
+	}
+	if ( configuration->kv_snapshot_directory != 0 &&
+		!SparkPathIsRealDirectoryTree(configuration->kv_snapshot_directory) )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	return(SparkModelResidentdValidateKvPartition(configuration));
 }
 
 static SparkStatus SparkModelResidentdTransportContract(
@@ -397,9 +480,6 @@ static SparkStatus SparkModelResidentdTransportContract(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( strcmp(mode,"host-rdma") == 0 )
 	{
-		/* required means REQUIRED: the RECOMMENDED superset here demanded doorbells,
-		 * multi-lane and poll descriptors no honest host-rdma backend
-		 * implements, failing every module at load. */
 		*capabilities = SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS;
 		*module_id = SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_VERBS_MODULE_ID;
 		*memory_mode = SPARK_MODEL_RESIDENTD_MEMORY_MAPPED_HOST;
@@ -616,8 +696,11 @@ static SparkStatus SparkModelResidentdAllocateCuda(
 	SparkStatus status;
 	cudaError_t error;
 	uint32_t index;
+	int least_priority = 0,greatest_priority = 0;
 	runtime->memory_mode = memory_mode;
-	error = cudaStreamCreateWithFlags(&runtime->execution_stream,cudaStreamNonBlocking);
+	error = cudaDeviceGetStreamPriorityRange(&least_priority,&greatest_priority);
+	if ( error == cudaSuccess )
+		error = cudaStreamCreateWithPriority(&runtime->execution_stream,cudaStreamNonBlocking,greatest_priority);
 	if ( error != cudaSuccess )
 	{
 		fprintf(stderr,"model_residentd cuda_stream_create stream=execution rank=%u stage=%u cuda_error=%d detail=%s\n",
@@ -657,15 +740,15 @@ static SparkStatus SparkModelResidentdAllocateHostStorage(
 	descriptor = runtime->adapter_library.adapter_interface.descriptor;
 	status = SparkModelResidentIpcCalculateSubmitBytes(runtime->runtime_limits.max_active_sequence_count,runtime->runtime_limits.max_input_row_count,runtime->runtime_limits.max_input_row_count < SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT ? runtime->runtime_limits.max_input_row_count : SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,&submit_bytes);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentIpcCalculateCompletionBytes(descriptor->max_output_token_count,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,&completion_bytes);
+		status = SparkModelResidentIpcCalculateCompletionBytes(SparkModelServingAdapterCompletionTokenCapacity(descriptor),SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES,&completion_bytes);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	runtime->route_capacity = runtime->runtime_limits.max_inflight_submission_count;
 	runtime->route_message_capacity = submit_bytes;
 	runtime->client.input_capacity = SparkModelResidentdMaximumU32(submit_bytes,SPARK_MODEL_RESIDENT_IPC_HELLO_BYTES);
-	runtime->client.output_capacity = (2u * runtime->route_capacity) + 2u;
+	runtime->client.output_capacity = (2u * runtime->route_capacity) + 3u;
 	output_bytes = SparkModelResidentdMaximumU32(completion_bytes,SPARK_MODEL_RESIDENT_IPC_HELLO_ACK_BYTES);
-	runtime->client.output_message_capacity = SparkModelResidentdMaximumU32(output_bytes,SPARK_MODEL_RESIDENT_IPC_SUBMIT_RESULT_BYTES);
+	runtime->client.output_message_capacity = SparkModelResidentdMaximumU32(SparkModelResidentdMaximumU32(output_bytes,SPARK_MODEL_RESIDENT_IPC_SUBMIT_RESULT_BYTES),SPARK_MODEL_RESIDENT_IPC_STATUS_REPORT_BYTES);
 	if ( runtime->route_message_capacity > SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES || runtime->client.input_capacity > SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES || runtime->client.output_message_capacity > SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	runtime->routes = (SparkModelResidentdRoute *)calloc(runtime->route_capacity,sizeof(runtime->routes[0]));
@@ -805,6 +888,26 @@ static SparkStatus SparkModelResidentdReleaseResidentSlotsLocked(
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkModelResidentdSettleRanSlotsLocked(SparkModelResidentdRuntime *runtime,const SparkModelResidentdRoute *route)
+{
+	SparkModelResidentdSequenceSlot *slot;
+	const SparkModelServingLane *lane;
+	uint32_t index,owner = route->slot_index + 1u;
+	for (index=0u; route->resident_slots_claimed != 0u && index<route->submission.active_sequence_count; index++)
+	{
+		lane = &route->submission.lanes[index];
+		if ( lane->resident_sequence_slot >= runtime->runtime_limits.resident_sequence_capacity )
+			continue;
+		slot = &runtime->sequence_slots[lane->resident_sequence_slot];
+		if ( slot->active_owner != owner )
+			continue;
+		slot->bound = route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE ? 1u : 0u;
+		slot->request_id = slot->bound != 0u ? lane->request_id : 0u;
+		slot->request_generation = slot->bound != 0u ? lane->request_generation : 0u;
+		slot->sequence_id = slot->bound != 0u ? lane->sequence_id : 0u;
+	}
+}
+
 static void SparkModelResidentdDropClaimsLocked(SparkModelResidentdRuntime *runtime,SparkModelResidentdRoute *route)
 {
 	uint32_t lane,owner,slot;
@@ -823,9 +926,10 @@ static void SparkModelResidentdDropClaimsLocked(SparkModelResidentdRuntime *runt
 static SparkStatus SparkModelResidentdCompleteContinuationLease(
 	SparkModelResidentdRuntime *runtime,
 	SparkModelResidentdRoute *route,
-	const SparkModelServingLane *lane,
+	uint32_t lane_index,
 	SparkModelResidentdSequenceSlot *slot)
 {
+	const SparkModelServingLane *lane = &route->submission.lanes[lane_index];
 	SparkStatus status;
 	uint64_t next_sequence_position;
 	if ( route->submission.work_kind ==
@@ -835,7 +939,14 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 		return(SPARK_STATUS_OK);
 	}
 	next_sequence_position = lane->context_token_count;
-	if ( route->submission.work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
+	if ( (route->submission.flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
+	{
+		status = SparkModelContinuationLeaseVerifyPosition(lane->sequence_position,
+			SparkModelServingCompletionKeptRows(&route->completion,lane_index),&next_sequence_position);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+	}
+	else if ( route->submission.work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 	{
 		uint32_t completed_tokens = route->completion.tokens_per_sequence;
 		if ( completed_tokens == 0u )
@@ -889,7 +1000,7 @@ static SparkStatus SparkModelResidentdCompleteResidentSlotsLocked(
 			SparkModelContinuationLeaseInvalidate(&slot->lease);
 		else if ( (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) != 0u )
 		{
-			status = SparkModelResidentdCompleteContinuationLease(runtime,route,lane,slot);
+			status = SparkModelResidentdCompleteContinuationLease(runtime,route,lane_index,slot);
 			if ( status != SPARK_STATUS_OK )
 				SPARK_RETURN(status);
 		}
@@ -1147,6 +1258,7 @@ static void SparkModelResidentdAcceptCompletionLocked(const SparkModelResidentdR
 {
 	uint64_t completed_time_ns;
 	route->completion = *completion;
+	route->driver_completed = 1u;
 	if ( route->completion.service_time_ns == 0u && route->adapter_submit_time_ns != 0u )
 	{
 		completed_time_ns = SparkModelResidentdMonotonicTimeNs();
@@ -1212,12 +1324,33 @@ static SparkStatus SparkModelResidentdInitializeAdapter(
 		configuration->kv_backing_directory;
 	adapter_configuration.kv_backing_maximum_bytes =
 		configuration->kv_backing_maximum_bytes;
+	adapter_configuration.kv_snapshot_directory =
+		configuration->kv_snapshot_directory;
+	adapter_configuration.kv_snapshot_maximum_bytes =
+		configuration->kv_snapshot_maximum_bytes;
 	adapter_configuration.execution_stream = runtime->execution_stream;
 	adapter_configuration.completion_function = SparkModelResidentdCompletion;
 	adapter_configuration.completion_context = runtime;
 	adapter_configuration.wake_function = SparkModelResidentdWake;
 	adapter_configuration.wake_context = runtime;
 	return(runtime->adapter_library.adapter_interface.initialize(&adapter_configuration,&runtime->adapter_state));
+}
+
+static SparkStatus SparkModelResidentdReadAdapterLimits(SparkModelResidentdRuntime *runtime)
+{
+	SparkModelServingAdapterSnapshot snapshot;
+	SparkStatus status;
+	memset(&snapshot,0,sizeof(snapshot));
+	status = runtime->adapter_library.adapter_interface.snapshot != 0 ?
+		runtime->adapter_library.adapter_interface.snapshot(runtime->adapter_state,&snapshot) : SPARK_STATUS_UNSUPPORTED;
+	if ( status != SPARK_STATUS_OK || snapshot.max_sequence_positions == 0u )
+	{
+		fprintf(stderr,"model_residentd: the adapter reports no max_sequence_positions (snapshot status=%s)\n",SparkStatusToString(status));
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	runtime->adapter_max_sequence_positions = snapshot.max_sequence_positions;
+	fprintf(stderr,"model_residentd adapter_max_sequence_positions=%u\n",snapshot.max_sequence_positions);
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkModelResidentdResetRuntime(SparkModelResidentdRuntime *runtime)
@@ -1407,6 +1540,11 @@ static SparkStatus SparkModelResidentdInitializeResources(
 	}
 	if ( status == SPARK_STATUS_OK )
 	{
+		runtime->initialize_phase = "adapter_limits";
+		status = SparkModelResidentdReadAdapterLimits(runtime);
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
 		runtime->initialize_phase = "control_listener";
 		status = SparkModelResidentdOpenControlListener(runtime,configuration);
 	}
@@ -1468,6 +1606,18 @@ static void SparkModelResidentdCloseClientLocked(
 		}
 }
 
+static void SparkModelResidentdRequestSessionResetLocked(SparkModelResidentdRuntime *runtime,uint64_t submission_id,SparkStatus status)
+{
+	runtime->session_reset_count++;
+	fprintf(stderr,"model_residentd session_reset rank=%u submission=%llu abort=%s resets=%llu: the driver's cache state for this route is unknown, so the rank drops its client and resets every lane before the next hello instead of restarting\n",
+		runtime->rank_plan.rank_index,(unsigned long long)submission_id,SparkStatusToString(status),(unsigned long long)runtime->session_reset_count);
+	SparkModelResidentdCloseClientLocked(runtime);
+	runtime->client.generation += 1u;
+	if ( runtime->client.generation == 0u )
+		runtime->client.generation = 1u;
+	runtime->client.pending_client_reset = runtime->client.generation;
+}
+
 static SparkStatus SparkModelResidentdAbortPreparedRoutes(
 	SparkModelResidentdRuntime *runtime)
 {
@@ -1498,11 +1648,12 @@ static SparkStatus SparkModelResidentdAbortPreparedRoutes(
 		else if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING )
 			route->state = SPARK_MODEL_RESIDENTD_ROUTE_RESERVED;
 		else
+		{
+			route->prepared_cache = 0u;
 			(void)SparkModelResidentdFailRouteLocked(route,status,1u);
+			SparkModelResidentdRequestSessionResetLocked(runtime,route->submission_id,status);
+		}
 		pthread_mutex_unlock(&runtime->mutex);
-		if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY &&
-			status != SPARK_STATUS_PENDING )
-			SPARK_RETURN(status);
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -1797,7 +1948,8 @@ static SparkStatus SparkModelResidentdFinishHello(SparkModelResidentdRuntime *ru
 		runtime->client.hello_message_id,SPARK_STATUS_OK,
 		runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,
 		runtime->client.generation,runtime->client.session_epoch,
-		runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits);
+		runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits,
+		runtime->adapter_max_sequence_positions);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	pthread_mutex_lock(&runtime->mutex);
@@ -1855,7 +2007,8 @@ static SparkStatus SparkModelResidentdAdoptCandidate(
 			hello->header.message_id,SPARK_STATUS_BUSY,
 			runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,
 			runtime->client.generation,hello->session_epoch,
-			runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits);
+			runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits,
+			runtime->adapter_max_sequence_positions);
 		if ( status == SPARK_STATUS_OK && SparkModelResidentSend(fd,&ack,sizeof(ack)) != sizeof(ack) )
 			fprintf(stderr,"model_residentd client_rejection_reply_failed rank=%u\n",runtime->rank_plan.rank_index);
 		close(fd);
@@ -2070,7 +2223,7 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 			(uint32_t)status,(unsigned long long)submission.submission_id,submission.work_kind,
 			submission.row_count,submission.active_sequence_count,
 			(unsigned long long)runtime->client.last_submission_id);
-	if ( decoded != 0u && status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY && status != SPARK_STATUS_DUPLICATE )
+	if ( decoded != 0u && status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY && status != SPARK_STATUS_PENDING && status != SPARK_STATUS_DUPLICATE )
 		SparkModelResidentdLogSubmission("SUBMISSION-REJECTED",&submission,status);
 	pthread_mutex_lock(&runtime->mutex);
 	if ( route != 0 && status == SPARK_STATUS_OK && cache_committed != 0u &&
@@ -2283,6 +2436,58 @@ static SparkStatus SparkModelResidentdProcessDecision(
 	SPARK_RETURN(queue_status);
 }
 
+static SparkStatus SparkModelResidentdProcessStatusRequest(
+	SparkModelResidentdRuntime *runtime,
+	const void *message,
+	uint32_t message_bytes)
+{
+	SparkModelServingAdapterSnapshot snapshot;
+	SparkModelResidentIpcStatusReport report;
+	SparkStatus status,snapshot_status;
+	status = SparkModelResidentIpcValidateHeader((const SparkModelResidentIpcHeader *)message,message_bytes,SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REQUEST,SPARK_MODEL_RESIDENT_IPC_STATUS_REQUEST_BYTES);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	memset(&snapshot,0,sizeof(snapshot));
+	snapshot_status = runtime->adapter_state != 0 && runtime->adapter_library.adapter_interface.snapshot != 0 ?
+		runtime->adapter_library.adapter_interface.snapshot(runtime->adapter_state,&snapshot) : SPARK_STATUS_UNSUPPORTED;
+	if ( snapshot_status != SPARK_STATUS_OK )
+		memset(&snapshot,0,sizeof(snapshot));
+	status = SparkModelResidentIpcInitializeStatusReport(&report,(const SparkModelResidentIpcStatusRequest *)message,snapshot_status,runtime->client.generation,
+		runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,(uint32_t)getpid(),&snapshot);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	pthread_mutex_lock(&runtime->mutex);
+	status = SparkModelResidentdQueueRawLocked(runtime,&report,sizeof(report));
+	pthread_mutex_unlock(&runtime->mutex);
+	SPARK_RETURN(status);
+}
+
+static SparkStatus SparkModelResidentdProcessCacheHint(
+	SparkModelResidentdRuntime *runtime,
+	const void *message,
+	uint32_t message_bytes)
+{
+	const SparkModelResidentIpcCacheHint *hint = (const SparkModelResidentIpcCacheHint *)message;
+	SparkStatus status;
+	status = SparkModelResidentIpcValidateCacheHint(message,message_bytes);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	runtime->cache_hint_count++;
+	if ( runtime->adapter_state == 0 || runtime->adapter_library.adapter_interface.cache_hint == 0 )
+	{
+		runtime->cache_hint_unsupported_count++;
+		return(SPARK_STATUS_OK);
+	}
+	status = runtime->adapter_library.adapter_interface.cache_hint(runtime->adapter_state,&hint->identity,hint->token_count);
+	if ( status != SPARK_STATUS_OK )
+	{
+		runtime->cache_hint_failure_count++;
+		if ( (runtime->cache_hint_failure_count & (runtime->cache_hint_failure_count - 1u)) == 0u )
+			fprintf(stderr,"model_residentd cache_hint status=%s tokens=%u failures=%llu\n",SparkStatusToString(status),hint->token_count,(unsigned long long)runtime->cache_hint_failure_count);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkModelResidentdProcessMessage(
 	SparkModelResidentdRuntime *runtime,
 	const void *message,
@@ -2322,6 +2527,10 @@ static SparkStatus SparkModelResidentdProcessMessage(
 	}
 	else if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_DECISION )
 		status = SparkModelResidentdProcessDecision(runtime,(const SparkModelResidentIpcDecision *)message,message_bytes);
+	else if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REQUEST )
+		status = SparkModelResidentdProcessStatusRequest(runtime,message,message_bytes);
+	else if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_HINT )
+		status = SparkModelResidentdProcessCacheHint(runtime,message,message_bytes);
 	else
 		status = SPARK_STATUS_UNSUPPORTED;
 	if ( status == SPARK_STATUS_OK )
@@ -2497,6 +2706,16 @@ static SparkStatus SparkModelResidentdApplyTransportCompletionLocked(
 	}
 	if ( matched == 0 )
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+	if ( matched->transport_cancelled != 0u && state == SPARK_MODEL_RESIDENTD_ROUTE_WAIT_INPUT )
+	{
+		(void)SparkModelResidentdFailRouteLocked(matched,SPARK_STATUS_IO_ERROR,1u);
+		return(SPARK_STATUS_OK);
+	}
+	if ( matched->transport_cancelled != 0u )
+	{
+		matched->state = SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
+		return(SPARK_STATUS_OK);
+	}
 	if ( matched->deadline_expired == 0u )
 	{
 		SparkStatus deadline_status;
@@ -2704,7 +2923,7 @@ static SparkStatus SparkModelResidentdCloseFailedRouteLocked(SparkModelResidentd
 	SparkStatus status;
 	route->state = SPARK_MODEL_RESIDENTD_ROUTE_FAILED;
 	if ( abort_status != SPARK_STATUS_OK )
-		atomic_store(&runtime->failed_status,abort_status);
+		SparkModelResidentdRequestSessionResetLocked(runtime,route->submission_id,abort_status);
 	route->prepared_cache = 0u;
 	status = SparkModelResidentdRemoveCommittedLocked(runtime,route);
 	if ( status == SPARK_STATUS_OK )
@@ -2713,6 +2932,8 @@ static SparkStatus SparkModelResidentdCloseFailedRouteLocked(SparkModelResidentd
 		return(SPARK_STATUS_OK);
 	if ( status != SPARK_STATUS_OK )
 		atomic_store(&runtime->failed_status,status);
+	if ( route->driver_completed != 0u )
+		SparkModelResidentdSettleRanSlotsLocked(runtime,route);
 	SparkModelResidentdDropClaimsLocked(runtime,route);
 	fprintf(stderr,"ROUTE-FAILED id=%llu kind=%u status=%s abort=%s delivered=%u abandoned=%u — route released\n",(unsigned long long)route->submission_id,route->submission.work_kind,SparkStatusToString((SparkStatus)route->failure_status),SparkStatusToString(abort_status),route->failure_delivered,route->abandoned);
 	route->active = 0u;
@@ -2735,6 +2956,18 @@ static SparkStatus SparkModelResidentdFinalizeFailedRoute(SparkModelResidentdRun
 	pthread_mutex_unlock(&runtime->mutex);
 	status = abort_cache != 0u ? SparkModelServingAdapterResolvePrefetch(&runtime->adapter_library.adapter_interface,runtime->adapter_state,&route->submission,SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) : SPARK_STATUS_OK;
 	pthread_mutex_lock(&runtime->mutex);
+	if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING )
+	{
+		uint64_t now_ns = SparkModelResidentdMonotonicTimeNs();
+		if ( route->abort_retry_since_ns == 0u )
+			route->abort_retry_since_ns = now_ns;
+		if ( now_ns - route->abort_retry_since_ns < SPARK_MODEL_RESIDENTD_ABORT_RETRY_NS )
+		{
+			route->state = SPARK_MODEL_RESIDENTD_ROUTE_FAILED;
+			pthread_mutex_unlock(&runtime->mutex);
+			return(SPARK_STATUS_OK);
+		}
+	}
 	status = SparkModelResidentdCloseFailedRouteLocked(runtime,route,status);
 	pthread_mutex_unlock(&runtime->mutex);
 	SPARK_RETURN(status);
@@ -2789,13 +3022,40 @@ static SparkStatus SparkModelResidentdProgressRoute(
 		if ( state == SPARK_MODEL_RESIDENTD_ROUTE_WAIT_INPUT ||
 			state == SPARK_MODEL_RESIDENTD_ROUTE_WAIT_OUTPUT )
 		{
+			uint32_t cancel = 0u;
 			pthread_mutex_lock(&runtime->mutex);
 			if ( route->active != 0u && route->state == state )
+			{
 				status = SparkModelResidentdExpireTransportRouteLocked(runtime,
 					route,state);
+				if ( route->transport_cancelled == 0u && (route->deadline_expired != 0u || route->abandoned != 0u ||
+					runtime->client.fd < 0 || route->client_generation != runtime->client.generation) )
+				{
+					route->transport_cancelled = 1u;
+					route->deadline_wait_state = state;
+					cancel = 1u;
+				}
+			}
 			else
 				status = SPARK_STATUS_OK;
 			pthread_mutex_unlock(&runtime->mutex);
+			if ( cancel != 0u )
+			{
+				SparkStatus cancel_status = SparkHiddenTransportCancel(
+					state == SPARK_MODEL_RESIDENTD_ROUTE_WAIT_INPUT ? runtime->input_transport : runtime->output_transport,
+					state == SPARK_MODEL_RESIDENTD_ROUTE_WAIT_INPUT ? &route->input_packet : &route->output_packet);
+				fprintf(stderr,"ROUTE-TRANSPORT-CANCEL id=%llu wait=%s abandoned=%u deadline=%u status=%s\n",(unsigned long long)route->submission_id,
+					state == SPARK_MODEL_RESIDENTD_ROUTE_WAIT_INPUT ? "input" : "output",route->abandoned,route->deadline_expired,SparkStatusToString(cancel_status));
+				if ( cancel_status == SPARK_STATUS_BUSY )
+				{
+					pthread_mutex_lock(&runtime->mutex);
+					route->transport_cancelled = 0u;
+					pthread_mutex_unlock(&runtime->mutex);
+					return(SPARK_STATUS_OK);
+				}
+				if ( cancel_status != SPARK_STATUS_OK )
+					SPARK_RETURN(cancel_status);
+			}
 			return(status == SPARK_STATUS_CAPACITY_EXCEEDED ? SPARK_STATUS_OK :
 				status);
 		}

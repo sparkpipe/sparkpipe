@@ -208,8 +208,24 @@ DEFINE_RE = re.compile(r"^#define\s+SPARK_LLM_([A-Z0-9_]+)\s+(.+?)[ \t]*$", re.M
 ANY_DEFINE_RE = re.compile(r"^#define\s+([A-Z][A-Z0-9_]+)\s+(.+?)[ \t]*$", re.M)
 
 
-def parse_llm_defines(path):
+def _header_text(path, seen):
+    path = os.path.realpath(path)
+    if path in seen:
+        return ""
+    seen.add(path)
     text = open(path).read()
+    parts = [text]
+    for include in re.findall(r'^\s*#include\s+"([^"]+)"', text, re.M):
+        for base in (os.path.dirname(path), os.path.dirname(os.path.dirname(path))):
+            candidate = os.path.join(base, include)
+            if os.path.isfile(candidate):
+                parts.append(_header_text(candidate, seen))
+                break
+    return "\n".join(parts)
+
+
+def parse_llm_defines(path):
+    text = _header_text(path, set())
     graph = {}
     for name, value in ANY_DEFINE_RE.findall(text):
         graph[name] = value.strip()

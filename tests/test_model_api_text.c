@@ -51,6 +51,7 @@ static const char TestApiChatTemplateNonSpecialStopJson[] =
 	"\"assistant_thinking\":null,\"turn_suffix\":\"\",\"generation\":\"<|assistant|>\\n\","
 	"\"generation_thinking\":null,\"stop_markers\":[\"<think>\"]}";
 static const char *TestApiChatTemplate = TestApiChatTemplateJson;
+static uint32_t TestApiEosToken = 0u;
 
 static const char *const TestApiTransportHosts[TEST_RANK_COUNT] =
 {
@@ -136,7 +137,7 @@ static void TestApiWriteTokenizerFixture(const char *path)
 		"    \"type\": \"Sequence\",\n"
 		"    \"pretokenizers\": [\n"
 		"      {\"type\": \"Split\", \"pattern\": {\"Regex\": \"%s\"}, \"behavior\": \"Isolated\", \"invert\": false},\n"
-		"      {\"type\": \"ByteLevel\", \"add_prefix_space\": false}\n"
+		"      {\"type\": \"ByteLevel\", \"add_prefix_space\": false, \"use_regex\": false}\n"
 		"    ]\n"
 		"  },\n"
 		"  \"added_tokens\": [\n"
@@ -176,6 +177,8 @@ static uint32_t TestApiProbeFreeTcpPort(void)
 	}
 	return(port);
 }
+
+static const uint32_t TestApiTextPromptPrefix[1] = { 1u };
 
 static void TestApiWriteDeployment(const char *path,
 	const SparkModelResidentEndpoint *endpoints,
@@ -220,6 +223,7 @@ static void TestApiWriteDeployment(const char *path,
 	fixture.control_port_base = control_port_base;
 	fixture.node_count = TEST_RANK_COUNT;
 	fixture.coordinator_rank_index = 0u;
+	fixture.eos_token_id = TestApiEosToken;
 	if ( tokenizer_asset_path != 0 )
 	{
 		SparkTokenizerSidecar sidecar;
@@ -238,6 +242,8 @@ static void TestApiWriteDeployment(const char *path,
 		{
 			fixture.tokenizer_vocabulary_size = sidecar.tokenizer.maximum_token_id + 1u;
 			fixture.tokenizer_asset_sha256 = asset_sha256;
+			fixture.tokenizer_text_prompt_prefix_ids = TestApiTextPromptPrefix;
+			fixture.tokenizer_text_prompt_prefix_count = 1u;
 		}
 		else
 		{
@@ -842,9 +848,9 @@ static unsigned TestApiMeasurementCount(const char *log_data)
 	return count;
 }
 
-static void TestApiChatPromptServed(TestApiStack *stack,
-	const SparkTokenizerSidecar *sidecar, const char *body,
-	const char *expected_text, unsigned *measurements_seen)
+static void TestApiPromptServed(TestApiStack *stack,
+	const SparkTokenizerSidecar *sidecar, const char *path, const char *object, const char *body,
+	uint32_t prefix_count, const char *expected_text, unsigned *measurements_seen)
 {
 	char expected_hex[SPARK_SHA256_HEX_BYTES];
 	char response[65536];
@@ -856,13 +862,13 @@ static void TestApiChatPromptServed(TestApiStack *stack,
 	struct timespec delay = {0,2000000};
 	unsigned attempt;
 
-	TestApiHttpCall(stack->api_port,"POST","/v1/chat/completions",body,
+	TestApiHttpCall(stack->api_port,"POST",path,body,
 		response,sizeof(response));
 	assert(TestApiResponseStatus(response) == 200);
-	assert(TestApiBodyContains(TestApiResponseJsonBody(response),
-		"\"object\":\"chat.completion\""));
-	expected_count = TestApiEncodeExpected(sidecar,expected_text,
-		expected_ids,sizeof(expected_ids) / sizeof(expected_ids[0]));
+	assert(TestApiBodyContains(TestApiResponseJsonBody(response),object));
+	memcpy(expected_ids,TestApiTextPromptPrefix,(size_t)prefix_count * sizeof(uint32_t));
+	expected_count = prefix_count + TestApiEncodeExpected(sidecar,expected_text,
+		expected_ids + prefix_count,sizeof(expected_ids) / sizeof(expected_ids[0]) - prefix_count);
 	assert(SparkSha256Bytes(expected_ids,
 		(size_t)expected_count * sizeof(uint32_t),expected_hex) == SPARK_STATUS_OK);
 	for ( attempt = 0u; attempt < 500u; attempt++ )
@@ -885,6 +891,13 @@ static void TestApiChatPromptServed(TestApiStack *stack,
 	assert(field != 0);
 	assert(strncmp(field + 17,expected_hex,SPARK_SHA256_HEX_BYTES - 1u) == 0);
 	free(log_data);
+}
+
+static void TestApiChatPromptServed(TestApiStack *stack,
+	const SparkTokenizerSidecar *sidecar, const char *body,
+	const char *expected_text, unsigned *measurements_seen)
+{
+	TestApiPromptServed(stack,sidecar,"/v1/chat/completions","\"object\":\"chat.completion\"",body,0u,expected_text,measurements_seen);
 }
 
 static void TestApiChatOptionRejected(TestApiStack *stack, const char *path,
@@ -924,6 +937,8 @@ static void TestApiChatTemplateServing(TestApiStack *stack,
 	measurements_seen = TestApiMeasurementCount(log_data);
 	free(log_data);
 
+	TestApiPromptServed(stack,sidecar,"/v1/completions","\"object\":\"text_completion\"",
+		"{\"prompt\":\"hello there\",\"max_tokens\":1}",1u,"hello there",&measurements_seen);
 	TestApiChatPromptServed(stack,sidecar,
 		"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":2}",
 		thinking_off,&measurements_seen);
@@ -991,12 +1006,66 @@ static uint32_t TestApiTokensContain(const uint32_t *tokens, uint32_t token_coun
 	return 0u;
 }
 
+static unsigned long long TestApiServedCount(const TestApiStack *stack)
+{
+	char response[4096];
+	const char *served;
+	TestApiHttpCall(stack->api_port,"GET","/health",0,response,sizeof(response));
+	served = strstr(TestApiResponseJsonBody(response),"\"served\":");
+	assert(served != 0);
+	return strtoull(served + strlen("\"served\":"),0,10);
+}
+
+static void TestApiEngineStopCompletes(void)
+{
+	TestApiStack stack;
+	char response[65536];
+	uint32_t tokens[64];
+	uint32_t token_count;
+	char *log_data;
+	const char *last;
+	TestApiEosToken = 4200u;
+	memset(&stack,0,sizeof(stack));
+	stack.api_port = TestApiProbeFreeTcpPort();
+	if ( stack.api_port == 0u )
+		stack.api_port = 40000u + ((uint32_t)getpid() % 20000u);
+	stack.api_stderr_path = "build/test_model_api_text_engine_stop_stderr.log";
+	unlink(stack.api_stderr_path);
+	TestApiStartStack(&stack,0);
+	TestApiStartApi(&stack);
+	TestApiHttpCall(stack.api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":8,\"stop_token_ids\":[4200]}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	token_count = TestApiScanTokenArray(TestApiResponseJsonBody(response),tokens,64u);
+	assert(token_count == 1u && tokens[0] == 4203u);
+	assert(TestApiBodyContains(TestApiResponseJsonBody(response),"\"finish_reason\":\"stop\""));
+	log_data = TestApiReadFile(stack.api_stderr_path);
+	assert(log_data != 0);
+	last = TestApiLastMeasurements(log_data);
+	assert(last != 0 && strstr(last,"\"engine_completed\":1") != 0);
+	free(log_data);
+	TestApiHttpCall(stack.api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":8,\"stop_token_ids\":[4203]}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	token_count = TestApiScanTokenArray(TestApiResponseJsonBody(response),tokens,64u);
+	assert(token_count == 0u);
+	log_data = TestApiReadFile(stack.api_stderr_path);
+	assert(log_data != 0);
+	last = TestApiLastMeasurements(log_data);
+	assert(last != 0 && strstr(last,"\"engine_completed\":0") != 0);
+	free(log_data);
+	TestApiStopStack(&stack);
+	TestApiEosToken = 0u;
+	printf("test_model_api_text: requested stop tokens OK (one the engine also stops on completes in the engine, so the reply can be resumed; one it does not still ends the reply at once)\n");
+}
+
 static void TestApiChatDeclaredStops(TestApiStack *stack)
 {
 	char response[65536];
 	uint32_t tokens[64];
 	uint32_t token_count;
 	const char *body;
+	unsigned long long served_before;
 	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
 		"{\"prompt_token_ids\":[11,12],\"max_tokens\":8,\"temperature\":1,\"seed\":1}",
 		response,sizeof(response));
@@ -1005,6 +1074,7 @@ static void TestApiChatDeclaredStops(TestApiStack *stack)
 	token_count = TestApiScanTokenArray(body,tokens,64u);
 	assert(TestApiTokensContain(tokens,token_count,TEST_API_TURN_END_TOKEN) == 1u);
 	assert(TestApiBodyContains(body,"\"finish_reason\":\"length\""));
+	served_before = TestApiServedCount(stack);
 	TestApiHttpCall(stack->api_port,"POST","/v1/chat/completions",
 		"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":8,\"temperature\":1,\"seed\":1}",
 		response,sizeof(response));
@@ -1014,8 +1084,230 @@ static void TestApiChatDeclaredStops(TestApiStack *stack)
 	assert(token_count >= 1u && token_count < 8u);
 	assert(TestApiTokensContain(tokens,token_count,TEST_API_TURN_END_TOKEN) == 0u);
 	assert(TestApiBodyContains(body,"\"finish_reason\":\"stop\""));
+	assert(TestApiServedCount(stack) == served_before + 1u);
 	printf("test_model_api_text: declared chat stop markers end a chat reply OK "
-		"(the same sampling without messages emits the marker token)\n");
+		"(the same sampling without messages emits the marker token; the stopped reply counts as served once)\n");
+}
+
+static uint32_t TestApiWaitHealthBody(const TestApiStack *stack,int status,const char *needle,uint32_t seconds)
+{
+	char response[4096];
+	struct timespec delay;
+	uint32_t attempt;
+	delay.tv_sec = 0;
+	delay.tv_nsec = 100000000;
+	for (attempt=0u; attempt<seconds * 10u; attempt++)
+	{
+		TestApiHttpCall(stack->api_port,"GET","/health",0,response,sizeof(response));
+		if ( TestApiResponseStatus(response) == status && TestApiBodyContains(response,needle) )
+			return(1u);
+		nanosleep(&delay,0);
+	}
+	return(0u);
+}
+
+static void TestApiClientDisconnectDrains(TestApiStack *stack)
+{
+	const char *body = "{\"prompt_token_ids\":[11,12,13],\"max_tokens\":4096,\"stream\":true}";
+	struct sockaddr_in address;
+	char request[1024],response[4096];
+	uint32_t round;
+	int fd;
+	for (round=0u; round<4u; round++)
+	{
+		fd = socket(AF_INET,SOCK_STREAM,0);
+		assert(fd >= 0);
+		memset(&address,0,sizeof(address));
+		address.sin_family = AF_INET;
+		address.sin_addr.s_addr = htonl(0x7f000001u);
+		address.sin_port = htons((uint16_t)stack->api_port);
+		assert(connect(fd,(struct sockaddr *)&address,sizeof(address)) == 0);
+		(void)snprintf(request,sizeof(request),"POST /v1/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s",strlen(body),body);
+		assert(send(fd,request,strlen(request),0) == (ssize_t)strlen(request));
+		(void)recv(fd,response,64u,0);
+		close(fd);
+	}
+	assert(TestApiWaitHealthBody(stack,200,"\"live_requests\":0",10u) != 0u);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions","{\"prompt_token_ids\":[11,12],\"max_tokens\":2}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	printf("test_model_api_text: client disconnect OK (streams whose clients hang up mid-reply are cancelled and drained to zero live requests within 10 s, and the engine keeps serving)\n");
+}
+
+static int TestApiRawStatus(uint32_t port,const char *head,size_t head_len)
+{
+	struct sockaddr_in address;
+	struct timeval timeout;
+	char response[256];
+	size_t sent = 0u;
+	ssize_t got;
+	int fd = socket(AF_INET,SOCK_STREAM,0);
+	assert(fd >= 0);
+	timeout.tv_sec = 5;
+	timeout.tv_usec = 0;
+	assert(setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout)) == 0);
+	assert(setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout)) == 0);
+	memset(&address,0,sizeof(address));
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(0x7f000001u);
+	address.sin_port = htons((uint16_t)port);
+	assert(connect(fd,(struct sockaddr *)&address,sizeof(address)) == 0);
+	while ( sent < head_len )
+	{
+		ssize_t n = send(fd,head + sent,head_len - sent,MSG_NOSIGNAL);
+		if ( n <= 0 )
+			break;
+		sent += (size_t)n;
+	}
+	got = recv(fd,response,sizeof(response) - 1u,0);
+	if ( got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) )
+	{
+		close(fd);
+		return(-1);
+	}
+	close(fd);
+	if ( got < 12 )
+		return(0);
+	response[got] = '\0';
+	return(atoi(response + 9));
+}
+
+static void TestApiHttpBounds(TestApiStack *stack)
+{
+	static char head[80000];
+	char response[4096];
+	size_t length;
+	memset(head,'a',sizeof(head));
+	memcpy(head,"GET /health HTTP/1.1\r\nX-Pad: ",29u);
+	assert(TestApiRawStatus(stack->api_port,head,sizeof(head)) != -1);
+	length = (size_t)snprintf(head,sizeof(head),"POST /v1/completions HTTP/1.1\r\nX-Pad: ");
+	memset(head + length,'b',60000u);
+	length += 60000u;
+	length += (size_t)snprintf(head + length,sizeof(head) - length,"\r\nContent-Length: 16777216\r\n\r\n");
+	assert(TestApiRawStatus(stack->api_port,head,length) == 400);
+	length = (size_t)snprintf(head,sizeof(head),"POST /v1/completions HTTP/1.1\r\nContent-Length: 12abc\r\n\r\n");
+	assert(TestApiRawStatus(stack->api_port,head,length) == 400);
+	length = (size_t)snprintf(head,sizeof(head),"POST /v1/completions HTTP/1.1\r\nContent-Length: -5\r\n\r\n");
+	assert(TestApiRawStatus(stack->api_port,head,length) == 400);
+	length = (size_t)snprintf(head,sizeof(head),"POST /v1/completions HTTP/1.1\r\nContent-Length: 99999999999999999999\r\n\r\n");
+	assert(TestApiRawStatus(stack->api_port,head,length) == 400);
+	length = (size_t)snprintf(head,sizeof(head),"POST /v1/completions HTTP/1.1\r\nHost: localhost\r\n\r\n{\"x\":\"\r\ncontent-length: 999\r\n\"}");
+	assert(TestApiRawStatus(stack->api_port,head,length) > 0);
+	TestApiHttpCall(stack->api_port,"GET","/health/live",0,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions","{\"prompt_token_ids\":[11,12],\"max_tokens\":2}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	printf("test_model_api_text: http bounds OK (oversized headers close at once, headers plus a body past the buffer, malformed or overflowing Content-Length and a body-only content-length all get a prompt 400, and the engine keeps serving)\n");
+}
+
+static void TestApiStopTokenIds(TestApiStack *stack)
+{
+	static const char *const refused[] = {
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"stop_token_ids\":\"x\"}",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"stop_token_ids\":[11,\"a\"]}",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"stop_token_ids\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]}",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"stop_token_ids\":[999999]}",
+	};
+	char response[4096];
+	uint32_t index;
+	for (index = 0u; index < sizeof(refused) / sizeof(refused[0]); ++index)
+	{
+		TestApiHttpCall(stack->api_port,"POST","/v1/completions",refused[index],response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 400 && TestApiBodyContains(response,"invalid_stop_token_ids"));
+	}
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"stop_token_ids\":[]}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"stop_token_ids\":[99]}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	printf("test_model_api_text: stop_token_ids OK (a string, a non-integer id, more than 16 ids and an out-of-range id are refused with 400; an empty list and valid ids serve)\n");
+}
+
+static void TestApiDegradedPath(TestApiStack *stack)
+{
+	const char *flag = getenv("SPARK_TEST_ADAPTER_DEGRADED_FILE");
+	FILE *file;
+	assert(flag != 0 && TestApiWaitHealthBody(stack,200,"\"degraded_rank\":-1",20u) != 0u);
+	file = fopen(flag,"w");
+	assert(file != 0 && fclose(file) == 0);
+	assert(TestApiWaitHealthBody(stack,503,"\"degraded_path\":\"eager\"",20u) != 0u);
+	assert(TestApiWaitHealthBody(stack,503,"\"degraded_rank\":0",5u) != 0u);
+	assert(unlink(flag) == 0);
+	assert(TestApiWaitHealthBody(stack,200,"\"degraded_path\":\"none\"",20u) != 0u);
+	printf("test_model_api_text: degraded path OK (/health answers 503 naming the rank whose driver fell back to the eager path, and 200 once it reports none)\n");
+}
+
+static void TestApiRankLoss(TestApiStack *stack)
+{
+	char response[65536];
+	int32_t child_status;
+	TestApiHttpCall(stack->api_port,"GET","/health",0,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	assert(TestApiBodyContains(response,"\"status\":\"ok\"") && TestApiBodyContains(response,"\"ranks\":3") &&
+		TestApiBodyContains(response,"\"connected_ranks\":3") && TestApiBodyContains(response,"\"missing_rank\":-1"));
+	assert(kill(stack->residents[2],SIGTERM) == 0);
+	assert(waitpid(stack->residents[2],&child_status,0) == stack->residents[2]);
+	unlink(stack->paths[2]);
+	assert(TestApiWaitHealthBody(stack,503,"\"missing_rank\":2",20u) != 0u);
+	TestApiHttpCall(stack->api_port,"GET","/health",0,response,sizeof(response));
+	assert(TestApiBodyContains(response,"\"status\":\"degraded\"") && TestApiBodyContains(response,"\"connected_ranks\":2"));
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"deadline_ms\":1500}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 504);
+	assert(TestApiBodyContains(TestApiResponseJsonBody(response),"\"missing_rank\":2"));
+	stack->residents[2] = TestApiStartResident(stack->deployment_path,2u);
+	TestApiWaitForSockets(stack->paths);
+	assert(TestApiWaitHealthBody(stack,200,"\"missing_rank\":-1",60u) != 0u);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	printf("test_model_api_text: rank loss OK (/health names the missing rank and answers 503, a held request fails at its "
+		"deadline naming the rank, the rank's return restores health and service)\n");
+}
+
+static void TestApiSamplingOptions(TestApiStack *stack)
+{
+	char response[65536],expected[64];
+	uint32_t tokens[16];
+	uint32_t token_count,index;
+	const char *body,*cursor;
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"logprobs\":2}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	body = TestApiResponseJsonBody(response);
+	token_count = TestApiScanTokenArray(body,tokens,16u);
+	assert(token_count == 2u);
+	cursor = strstr(body,"\"token_logprobs\":[");
+	assert(cursor != 0);
+	for (index=0u; index<token_count; index++)
+	{
+		(void)snprintf(expected,sizeof(expected),"[[%u,-0.25],[1001,-0.5],[1002,-0.75]]",tokens[index]);
+		cursor = strstr(cursor,expected);
+		assert(cursor != 0);
+		cursor += strlen(expected);
+	}
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"stream\":true,\"logprobs\":0}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	assert(strstr(response,"\"token_logprobs\":[[[") != 0 && strstr(response,",-0.25]]") != 0 && strstr(response,"1001") == 0);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"temperature\":1,\"seed\":3,\"top_p\":0.9,\"top_k\":4}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	assert(strstr(TestApiResponseJsonBody(response),"token_logprobs") == 0);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"temperature\":0,\"top_p\":0.5,\"top_k\":3}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"temperature\":1,\"top_p\":0}");
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"temperature\":1,\"top_p\":1.5}");
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"temperature\":1,\"top_k\":-1}");
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"logprobs\":21}");
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"logprobs\":true}");
+	printf("test_model_api_text: sampling options OK (logprobs return the emitted token and its top alternatives "
+		"in order, streamed or not; top-p and top-k reach a truncating adapter; out-of-range options are 400)\n");
 }
 
 static void TestApiRefusedStartup(const char *tokenizer_asset_path, const char *label)
@@ -1087,6 +1379,8 @@ int main(void)
 {
 	TestApiStack stack;
 	TestApiWriteTokenizerFixture("build/test_tokenizer_sidecar_api_hf.json");
+	assert(setenv("SPARK_TEST_ADAPTER_DEGRADED_FILE","build/test_model_api_text_degraded.flag",1) == 0);
+	unlink("build/test_model_api_text_degraded.flag");
 
 	memset(&stack,0,sizeof(stack));
 	stack.api_port = TestApiProbeFreeTcpPort();
@@ -1124,9 +1418,16 @@ int main(void)
 		SparkTokenizerSidecarUnload(&sidecar);
 	}
 	TestApiChatDeclaredStops(&stack);
+	TestApiSamplingOptions(&stack);
+	TestApiClientDisconnectDrains(&stack);
+	TestApiHttpBounds(&stack);
+	TestApiStopTokenIds(&stack);
+	TestApiDegradedPath(&stack);
+	TestApiRankLoss(&stack);
 	TestApiStopStack(&stack);
 
 	TestApiStartsBeforeEngines();
+	TestApiEngineStopCompletes();
 	TestApiRefusedStartup("build/definitely_missing_tokenizer_asset.json","missing tokenizer asset");
 	TestApiChatTemplate = TestApiChatTemplateNonSpecialStopJson;
 	TestApiRefusedStartup("build/test_tokenizer_sidecar_api_hf.json",

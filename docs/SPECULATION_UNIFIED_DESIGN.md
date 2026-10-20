@@ -136,6 +136,65 @@ supplies three things: a model contract, a draft (local) or tap rows
   `-DSPARK_DSPARK_TARGET_GLM52=1` to `spark_speculation_policy.o`, which no
   longer includes that header.
 
+### Tree plan, runtime form
+
+`include/sparkpipe/spark_speculation_tree.h` holds the static tree logic in
+two forms.
+
+- **Macro form.** Before the include, the includer defines
+  `SPARK_SPECULATION_TREE_CANDIDATE_COUNT`,
+  `SPARK_SPECULATION_TREE_VERIFIER_ROW_COUNT`,
+  `SPARK_SPECULATION_TREE_MAX_COMMITTED_TOKEN_COUNT`,
+  `SPARK_SPECULATION_TREE_CONTEXT_EXTENSION`,
+  `SPARK_SPECULATION_TREE_VOCAB_COUNT` and the row table
+  `SPARK_SPECULATION_TREE_NODE_ROWS`. A missing one is an `#error`.
+  `SparkSpeculationTreeTopologyIsValid`, `SparkSpeculationTreeResolve` and
+  the per-row helpers read these macros. The form also uses
+  `SPARK_SPECULATION_TREE_VERIFIER_INPUT_ROW` and
+  `SPARK_SPECULATION_TREE_RESOLUTION_NONE`, which the header does not check.
+  `spark_glm52_mtp_tree.h` sets both to 0.
+- **Runtime-plan form.** `SparkSpeculationTreePlan` stores the five shape
+  values, `row_count` and up to `SPARK_SPECULATION_TREE_MAX_PLAN_ROWS` (64)
+  `SparkSpeculationTreeNode` rows as fields. This lets a host-side
+  compositor build a tree that no includer defined.
+  `SparkSpeculationTreePlanTopologyIsValid` applies the same topology rules
+  to a plan, and `SparkSpeculationTreePlanResolve` resolves against one.
+  `SparkSpeculationTreePlanFromMacros` fills a plan from the includer's
+  macros.
+
+The macro functions do not call the plan functions. Each form has its own
+copy of the logic.
+
+The two resolvers differ in where they start and what they report on a
+miss. `SparkSpeculationTreeResolve` starts at
+`SPARK_SPECULATION_TREE_VERIFIER_INPUT_ROW` and reports
+`SPARK_SPECULATION_TREE_RESOLUTION_NONE` when no child matches.
+`SparkSpeculationTreePlanResolve` always starts at row 0 and reports path 0.
+They agree only while both macros are 0.
+
+Limits that apply to both forms or to the plan form:
+
+- Neither resolver validates the topology. `SparkSpeculationTreePlanResolve`
+  dereferences every row it walks, so validate a plan with
+  `SparkSpeculationTreePlanTopologyIsValid` before resolving it.
+- Both topology checks track candidate indices in a 32-bit mask, so
+  `candidate_count` must stay below 32.
+- The header requires all six macros, so even a plan-only consumer must
+  define them.
+
+`tests/test_speculation_tree_pin.c` checks that the two forms agree on the
+glm52 topology. It builds a plan with `SparkSpeculationTreePlanFromMacros`
+and checks three things:
+
+- the plan passes `SparkSpeculationTreePlanTopologyIsValid`;
+- its `row_count`, `candidate_count` and `max_committed_token_count` equal
+  the macros, and its rows equal the macro table byte for byte;
+- five fixed candidate and verifier vectors resolve through both forms to the
+  same `path_id`, `accepted_token_count`, `committed_token_count` and
+  `fallback_row_index`.
+
+That test is the plan form's only user. No compositor exists.
+
 ## Per-family state
 
 | Family | Env | Available sources | Default | What runs |

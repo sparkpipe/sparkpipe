@@ -1,0 +1,62 @@
+{
+ "id": "compsec-089",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "deepseek-v4.1-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe public multipart CCM API lets the caller request a tag length.\n\nCode:\n```c\n 1: static int ccm_finish_reduced(struct CcmCtx *ctx, uint8_t *tag, size_t tag_len)\n 2: {\n 3:     uint8_t full_tag[16];\n 4: \n 5:     ccm_compute_full_tag(ctx, full_tag);\n 6: \n 7:     if (tag == NULL)\n 8:         return -1;\n 9: \n10:     memcpy(tag, full_tag, tag_len);\n11:     return 0;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "e58b5891f89ce3a2039a2c7f4db9f1a022e2bf3a0234e293301f9572fbd66d58"
+ },
+ "response": {
+  "id": "chatcmpl-84504d2ebf1549de94c964457d933189",
+  "created": 1791725759,
+  "model": "deepseek-v4.1-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability is that `tag_len` is caller-controlled and is used directly in `memcpy` without validation. If `tag_len` exceeds 16, this reads out of bounds from `full_tag` (stack buffer overflow read). If `tag_len` is larger than the destination buffer, it also writes out of bounds.\n\nThe primary bug is introduced at line 10, where the unchecked `tag_len` is used in `memcpy`.\n\nAnswer: 10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 95,
+   "prompt_tokens": 247,
+   "total_tokens": 342,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability is that `tag_len` is caller-controlled and is used directly in `memcpy` without validation. If `tag_len` exceeds 16, this reads out of bounds from `full_tag` (stack buffer overflow read). If `tag_len` is larger than the destination buffer, it also writes out of bounds.\n\nThe primary bug is introduced at line 10, where the unchecked `tag_len` is used in `memcpy`.\n\nAnswer: 10",
+ "grade": {
+  "index": 14,
+  "id": "compsec-089",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 13493.7,
+  "output_sha256": "701271a21752211a58c308966e308a6a2f1aea758b6fbe91f685f40a7bac3298",
+  "prompt_token_count": 247,
+  "generated_token_count": 95,
+  "reasoning_chars": 0,
+  "content_chars": 393,
+  "status": "stop"
+ }
+}

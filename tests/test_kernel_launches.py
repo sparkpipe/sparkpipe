@@ -131,6 +131,26 @@ def in_place_per_head():
     return failures
 
 
+def grid_is_multidimensional(path, grid):
+    """A launch grid is 2D or 3D when it is a dim3(...) with at least two
+    extents, or a local name declared that way in the same file."""
+    grid = grid.strip()
+    if grid.startswith("dim3"):
+        return True
+    if not re.fullmatch(r"[A-Za-z_]\w*", grid):
+        return False
+    text = re.sub(r"\s+", " ", re.sub(r"//[^\n]*", "", open(os.path.join(ROOT, path), errors="replace").read()))
+    for match in re.finditer(r"\bdim3 " + re.escape(grid) + r" ?(?:= ?dim3 ?)?\(", text):
+        depth, index = 1, match.end()
+        while depth and index < len(text):
+            depth += text[index] == "("
+            depth -= text[index] == ")"
+            index += 1
+        if len(split_arguments(text[match.end():index - 1])) >= 2:
+            return True
+    return False
+
+
 def main():
     kernels = kernel_signatures()
     sites = call_sites()
@@ -142,7 +162,7 @@ def main():
         parameters, uses_y = kernels[name]
         if uses_y:
             checked_grid += 1
-            if not grid.strip().startswith("dim3"):
+            if not grid_is_multidimensional(path, grid):
                 print(f"  FAIL {path}: {name} reads blockIdx.y and is launched "
                       f"with a 1D grid")
                 failures += 1

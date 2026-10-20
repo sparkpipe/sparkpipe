@@ -1,16 +1,3 @@
-/* hy4 lane: reassemble the 16 TP16 rank bundles into one full GGUF.
- *
- * The exact inverse of tools/hy4_tp16_shard.py: for every source tensor
- * the manifests record how each rank sliced it, so concatenating rank
- * slices in rank order reproduces the original tensor bytes. Uses the
- * rank loader for offsets; emits rank-0's header followed by all tensors
- * in offset order with rank-slab data concatenated per tensor.
- *
- * Verification is external: sha256 of the output must equal the Hub LFS
- * oid recorded in model_contracts/hy4_authoritative.json.
- *
- * Usage: hy4_reassemble <allranks_dir> <out.gguf>
- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,13 +33,10 @@ int main(int argc, char **argv) {
     }
     snprintf(pack, sizeof(pack), "%s/rank-00/model-ud-iq1m-tp16-rank-00.gguf", base);
 
-    /* the output header must be the ORIGINAL source header (full tensor
-     * dims); rank files carry sliced dims, so take it from the captured
-     * original-header file (argv[3]) */
     if (argc != 4) { fprintf(stderr, "usage: %s allranks_dir out.gguf orig_header\n", argv[0]); return 2; }
     FILE *hf = fopen(argv[3], "rb");
     if (!hf) { fprintf(stderr, "orig header missing\n"); return 1; }
-    long header_len = 5051520; /* validated: loader data_offset for rank files */
+    long header_len = 5051520;
     FILE *out = fopen(argv[2], "wb");
     if (!out) { fprintf(stderr, "out open failed\n"); return 1; }
     unsigned char *hdr = malloc((size_t)header_len);
@@ -62,9 +46,6 @@ int main(int argc, char **argv) {
     fprintf(stderr, "header %ld bytes from original\n", header_len);
     (void)pack;
 
-    /* tensors in offset order, per rank: the loader stores views in name
-     * order; rank files were written in offset order with matching info
-     * order, so walk rank-0 views sorted by file_offset */
     int *order = malloc(sizeof(int) * R[0]->tensor_count);
     for (int i = 0; i < R[0]->tensor_count; ++i) order[i] = i;
     for (int a = 1; a < R[0]->tensor_count; ++a) {
@@ -78,13 +59,10 @@ int main(int argc, char **argv) {
         const hy4_tensor_view *tv = &R[0]->views[order[i]];
         long pad = (32 - tv->nbytes % 32) % 32;
         if (tv->slice_kind == 0) {
-            /* replicated: one full copy (rank 0's), padded once */
             copy_range((FILE *)R[0]->file, tv->file_offset, tv->nbytes, out, buf);
             for (long p = 0; p < pad; ++p) fputc(0, out);
             continue;
         }
-        /* sliced: rank slabs concatenate to the original tensor bytes with
-         * no inter-slab padding (each slab is a whole-block partition) */
         for (int r = 0; r < RANKS; ++r) {
             const hy4_tensor_view *tvr = &R[r]->views[order[i]];
             copy_range((FILE *)R[r]->file, tvr->file_offset, tvr->nbytes, out, buf);

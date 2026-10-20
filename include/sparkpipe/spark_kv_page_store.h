@@ -4,12 +4,13 @@
 
 #include "sparkpipe/spark_kv_cache.h"
 #include "sparkpipe/spark_status.h"
+#include "sparkpipe/spark_kv_write_meter.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define SPARK_KV_PAGE_STORE_ABI_VERSION 3u
+#define SPARK_KV_PAGE_STORE_ABI_VERSION 5u
 #define SPARK_KV_PAGE_STORE_PATH_BYTES 1024u
 #define SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES \
 	((uint32_t)sizeof(SparkKvPageStoreConfiguration))
@@ -21,10 +22,12 @@ extern "C" {
 #define SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE UINT32_C(0x00000001)
 #define SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS UINT32_C(0x00000002)
 #define SPARK_KV_PAGE_STORE_FLAG_DIRECT_IO UINT32_C(0x00000004)
+#define SPARK_KV_PAGE_STORE_FLAG_MEMORY UINT32_C(0x00000008)
 #define SPARK_KV_PAGE_STORE_KNOWN_FLAGS \
 	(SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE | \
 	 SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS | \
-	 SPARK_KV_PAGE_STORE_FLAG_DIRECT_IO)
+	 SPARK_KV_PAGE_STORE_FLAG_DIRECT_IO | \
+	 SPARK_KV_PAGE_STORE_FLAG_MEMORY)
 
 #define SPARK_KV_PAGE_STORE_DIRECT_IO_ALIGNMENT UINT64_C(4096)
 
@@ -35,9 +38,6 @@ typedef SparkStatus (*SparkKvPageStoreCopyFunction)(
 	void *host_address,
 	uint64_t bytes);
 
-// A packed backing page contains one page slice from each native layer.
-// The device copy callback is the hardware boundary; this layout has no CUDA
-// dependency. Native layer slabs may have padding after their last page.
 typedef struct SparkKvLayeredPageLayout
 {
 	uintptr_t device_base;
@@ -123,29 +123,17 @@ typedef struct SparkKvPageStore
 	uint64_t read_count;
 	uint64_t write_bytes;
 	uint64_t read_bytes;
+	uint64_t read_digest_mismatch_count;
+	uint64_t read_error_count;
+	SparkKvWriteMeter *write_meter;
 }
 SparkKvPageStore;
 
 SparkStatus SparkKvPageStoreInitialize(
 	SparkKvPageStore *store,
 	const SparkKvPageStoreConfiguration *configuration);
-SparkStatus SparkKvPageStoreBuildPath(
-	char *path,
-	uint32_t path_capacity,
-	const char *backing_directory,
-	const char *model_id,
-	const char *model_revision,
-	const char *node_id,
-	uint32_t stage_index);
 void SparkKvPageStoreDestroy(SparkKvPageStore *store);
-// Host-worker wait: finishes queued transfers without consuming their results.
-// Caller retains buffers and excludes destruction; poll the original operation
-// afterward to consume its terminal status. Not callable from a copy callback.
 SparkStatus SparkKvPageStoreWaitForTransfers(SparkKvPageStore *store);
-SparkStatus SparkKvPageStoreCopyResidentPage(
-	SparkKvPageStore *store,
-	const SparkKvCacheBlockView *source,
-	const SparkKvCacheBlockView *destination);
 SparkStatus SparkKvPageStoreWriteback(
 	void *context,
 	uint32_t logical_page_index,
@@ -159,8 +147,6 @@ SparkStatus SparkKvPageStorePrefetch(
 	SparkKvPageStore *store,
 	SparkKvCacheArena *arena,
 	uint32_t logical_page_index);
-// Repeat the identical request while BUSY; destination remains owned until a
-// terminal result or store destruction. Does not change KV arena residency.
 SparkStatus SparkKvPageStoreReadback(
 	SparkKvPageStore *store,
 	uint32_t logical_page_index,
@@ -171,13 +157,19 @@ SparkStatus SparkKvPageStoreProgress(
 	SparkKvPageStore *store,
 	SparkKvCacheArena *arena,
 	uint32_t maximum_job_count);
-// Requires a completed record of this generation; does not schedule a copy.
 SparkStatus SparkKvPageStoreValidateRecord(SparkKvPageStore *store,uint32_t logical_page_index,uint64_t generation);
+SparkStatus SparkKvPageStoreSupersede(SparkKvPageStore *store,uint32_t logical_page_index,uint64_t generation);
+SparkStatus SparkKvPageStoreReleaseIdle(SparkKvPageStore *store,uint32_t logical_page_index,uint64_t generation);
 SparkStatus SparkKvPageStoreInvalidate(
 	SparkKvPageStore *store,
 	uint32_t logical_page_index,
 	uint64_t generation);
-// Validate both records under both worker locks before invalidating either.
+SparkStatus SparkKvPageStoreRekey(
+	SparkKvPageStore *store,
+	uint32_t from_page,
+	uint64_t from_generation,
+	uint32_t to_page,
+	uint64_t to_generation);
 SparkStatus SparkKvPageStoreInvalidatePair(
 	SparkKvPageStore *first,
 	SparkKvPageStore *second,

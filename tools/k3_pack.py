@@ -73,6 +73,9 @@ import struct
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from spark_named_pack import PayloadWriter, assemble  # noqa: E402
+
 try:
     import numpy as np
 except ImportError:  # layout logic below is stdlib-only; see module docstring
@@ -449,62 +452,6 @@ def q_fold_absorb(q_b_raw, kv_b_raw, heads, nope, rope, v_head, kv_lora,
 
 # -- the pack itself ------------------------------------------------------------
 
-class Pack:
-    """Sequential payload writer with a side journal: every entry is appended
-    to <out>.journal only AFTER its bytes are on disk, so a killed run can
-    resume by re-walking the journal, truncating to the last complete tensor,
-    and skipping already-emitted tensors (the emission order is deterministic,
-    so re-generated entries and offsets are byte-identical)."""
-    def __init__(self, out_path, resume=False):
-        out_path = Path(str(out_path)).resolve()
-        if ".." in out_path.parts:
-            raise ValueError(f"rejecting path with ..: {out_path}")
-        self.journal_path = str(out_path.parent / (out_path.name + ".journal"))
-        self.manifest = {}
-        self.offset = 0
-        if resume and os.path.exists(self.journal_path):
-            with open(self.journal_path, "r", encoding="utf-8") as journal:
-                for line in journal:
-                    if not line.strip():
-                        continue
-                    record = json.loads(line)
-                    name = record["name"]
-                    self.manifest[name] = record["entry"]
-                    self.offset = record["end"]
-            self.handle = out_path.open("r+b")
-            self.handle.truncate(self.offset)
-            self.handle.seek(0, 2)
-        else:
-            self.handle = out_path.open("wb")
-            Path(self.journal_path).write_text("", encoding="utf-8")
-        self.journal = Path(self.journal_path).open("a", encoding="utf-8")
-
-    def add(self, name, payload, kind, shape, extra=None):
-        if name in self.manifest:
-            return
-        pad = (-self.offset) % ALIGN
-        if pad:
-            self.handle.write(b"\0" * pad)
-            self.offset += pad
-        raw = bytes(payload)
-        entry = {"offset": self.offset, "bytes": len(raw), "align": ALIGN,
-                 "kind": kind, "shape": list(shape)}
-        if extra:
-            entry.update(extra)
-        self.manifest[name] = entry
-        self.handle.write(raw)
-        self.offset += len(raw)
-        self.journal.write(json.dumps({"name": name, "entry": entry,
-                                       "end": self.offset},
-                                      separators=(",", ":")) + "\n")
-        self.journal.flush()
-
-    def close(self):
-        self.journal.close()
-        self.handle.close()
-        os.unlink(self.journal_path)
-
-
 def validate_layout(manifest, config):
     """Re-derive every layout identity from the config and hold the emitted
     manifest to it. Runs at the end of pack_model and from the layout test; a
@@ -609,7 +556,7 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None,
                                   tile_k=expert_tile_k)
 
     payload_path = Path(str(out_path) + ".payload")
-    pack = Pack(payload_path, resume=payload_path.exists())
+    pack = PayloadWriter(payload_path, resume=payload_path.exists(), align=ALIGN)
     L = "model.layers.{}."
     SL = "language_model.model.layers.{}."
 
@@ -809,25 +756,7 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None,
            "kda_fused": {"qkvb_sections": ["q", "k", "v", "beta"],
                          "decay_gate_down_sections": ["decay_down",
                                                       "gate_down"]}}
-    manifest = json.dumps({"format": fmt, "config": echo,
-                           "tensors": pack.manifest},
-                          separators=(",", ":")).encode()
-    out_final = Path(str(out_path)).resolve()
-    if ".." in out_final.parts:
-        raise ValueError(f"rejecting path with ..: {out_path}")
-    payload_final = out_final.parent / (out_final.name + ".payload")
-    with out_final.open("wb") as out:
-        out.write(struct.pack("<IIQ", MAGIC, VERSION, len(manifest)))
-        out.write(manifest)
-        pad = (-out.tell()) % ALIGN
-        out.write(b"\0" * pad)
-        with payload_final.open("rb") as body:
-            while True:
-                chunk = body.read(1 << 24)
-                if not chunk:
-                    break
-                out.write(chunk)
-    payload_path.unlink()
+    assemble(out_path, payload_path, MAGIC, VERSION, ALIGN, fmt, echo, pack.manifest)
     return echo, pack.manifest
 
 

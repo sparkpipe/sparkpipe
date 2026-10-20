@@ -424,6 +424,8 @@ def check_family_headers():
     text = open(os.path.join(ROOT, "model-families/mimo26/include/sparkpipe/spark_mimo26_model.h")).read()
     model = dict((name, value.rstrip("uf")) for name, value in
                  re.findall(r"#define SPARK_MIMO26_MODEL_([A-Z0-9_]+) ([0-9.e+-]+[uf]?)\s*$", text, re.M))
+    for name, alias in re.findall(r"#define SPARK_MIMO26_MODEL_([A-Z0-9_]+) SPARK_LLM_([A-Z0-9_]+)\s*$", text, re.M):
+        model[name] = str(mimo.define_number(llm, alias))
     pairs = {"HIDDEN_DIMENSION": "HIDDEN_DIMENSION", "LAYER_COUNT": "LAYER_COUNT",
              "OUTPUT_VOCAB_COUNT": "VOCAB_COUNT", "MAXIMUM_CONTEXT_TOKENS": "MAX_POSITIONS",
              "RMS_NORM_EPSILON": "RMS_NORM_EPSILON", "ATTENTION_HEAD_COUNT": "ATTN_HEAD_COUNT",

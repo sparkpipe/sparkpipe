@@ -70,7 +70,6 @@ def compare(args):
     deadline = time.monotonic() + 720
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith("SPARK_WEIGHTD_")}
-    environment["SPARK_GLM5_NEXT_GRAPH_PATH"] = "0"
     processes = []
     with contextlib.ExitStack() as files, tempfile.TemporaryDirectory(prefix="glm-driver-") as directory:
         def launch(command, name, env):

@@ -44,7 +44,8 @@ SparkStatus SparkWeightdAttachRequested(void)
 		return(SparkWeightdAttachEnvIsOff(SPARK_WEIGHTD_ATTACH_ENV_SWITCH) != 0 ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK);
 	if ( setting != 0 && strcmp(setting,"1") == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	SPARK_FAIL(SPARK_STATUS_BUSY);
+	fprintf(stderr,"weightd attach is not configured (%s unset): every driver loads its pack through weightd, so this process cannot load one; start it under model_residentd with a deployment that declares weightd\n",SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
+	SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 }
 
 SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,

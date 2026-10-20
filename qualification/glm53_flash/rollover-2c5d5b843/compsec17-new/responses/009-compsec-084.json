@@ -1,0 +1,63 @@
+{
+ "id": "compsec-084",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nOn this target, plain char is signed, and the ctype implementation indexes a table for values other than EOF.\n\nCode:\n```c\n 1: static size_t decode_component(char *s, size_t len)\n 2: {\n 3:     size_t r = 0, w = 0;\n 4: \n 5:     while (r < len) {\n 6:         if (s[r] == '%' && r + 2 < len &&\n 7:             isxdigit(s[r + 1]) && isxdigit(s[r + 2])) {\n 8:             s[w++] = hexpair(s[r + 1], s[r + 2]);\n 9:             r += 3;\n10:         } else {\n11:             s[w++] = s[r++];\n12:         }\n13:     }\n14:     return w;\n15: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "f9014987378b746b6ecc2dbfb725c0bb79702279f67f5fefa7540741d892d1a4"
+ },
+ "response": {
+  "id": "chatcmpl-4061226f49284875a81258e62c5fcff4",
+  "created": 1791731217,
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The bug: `s[r+1]`/`s[r+2]` are plain `char`, which is signed here. If a byte \u2265 0x80 follows `%`, it converts to a negative int, and the ctype implementation indexes a table with that negative value (not EOF), causing out-of-bounds table access / undefined behavior.\n\nAnswer: 6,7",
+     "role": "assistant",
+     "reasoning_content": "isxdigit with signed char \u2014 but isxdigit only accepts hex digits, table indexing for values other than EOF... isxdigit(s[r+1]) where char is signed could pass negative value \u2192 UB indexing table. That's the classic bug. Lines 6-7."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 136,
+   "prompt_tokens": 302,
+   "total_tokens": 438,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>isxdigit with signed char \u2014 but isxdigit only accepts hex digits, table indexing for values other than EOF... isxdigit(s[r+1]) where char is signed could pass negative value \u2192 UB indexing table. That's the classic bug. Lines 6-7.</think>The bug: `s[r+1]`/`s[r+2]` are plain `char`, which is signed here. If a byte \u2265 0x80 follows `%`, it converts to a negative int, and the ctype implementation indexes a table with that negative value (not EOF), causing out-of-bounds table access / undefined behavior.\n\nAnswer: 6,7",
+ "grade": {
+  "index": 9,
+  "id": "compsec-084",
+  "source": "COMPSEC",
+  "domain": "PHP",
+  "expected": "6-7",
+  "extracted": "6,7",
+  "passed": true,
+  "elapsed_ms": 3195.1,
+  "output_sha256": "562f2970c623100a9253ec1937b71a8e03d76dfb74dcd32ac1b62fa7bcc415ab",
+  "prompt_token_count": 302,
+  "generated_token_count": 136,
+  "reasoning_chars": 229,
+  "content_chars": 278,
+  "status": "stop"
+ }
+}

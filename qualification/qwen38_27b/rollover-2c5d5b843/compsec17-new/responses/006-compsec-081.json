@@ -1,0 +1,62 @@
+{
+ "id": "compsec-081",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-27b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe diagnostic request builder has small protocol-defined fields.\n\nCode:\n```c\n 1: #define MAX_DIAG_PAYLOAD       6\n 2: #define MAX_REQUEST_PAYLOAD    7\n 3: \n 4: static int send_diagnostic_request(uint8_t sid,\n 5:                                    const uint8_t *pid, size_t pid_len,\n 6:                                    const uint8_t *payload, size_t payload_len)\n 7: {\n 8:     uint8_t req[MAX_DIAG_PAYLOAD];\n 9: \n10:     if (pid_len > 2 || payload_len > MAX_REQUEST_PAYLOAD)\n11:         return -1;\n12: \n13:     req[0] = sid;\n14:     memcpy(req + 1, pid, pid_len);\n15:     memcpy(req + 1 + pid_len, payload, payload_len);\n16: \n17:     return transport_send(req, 1 + pid_len + payload_len);\n18: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "2b841ea36e514e3cd6a2be99c6f0a1a670bbfa3daa3896aaf9fcaafb65a228df"
+ },
+ "response": {
+  "id": "chatcmpl-41b1fc5463de4c23be55da184e8a658c",
+  "created": 1791721411,
+  "model": "qwen3.8-27b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "length",
+    "index": 0,
+    "message": {
+     "content": "The function `send_diagnostic_request` constructs a request buffer `req` of size `MAX_DIAG_PAYLOAD` (which is 6).\n\n1.  **Line 8**: `uint8_t req[MAX_DIAG_PAYLOAD];` allocates a 6-byte buffer.\n2.  **Line 10**: The check `if (pid_len > 2 || payload_len > MAX_REQUEST_PAYLOAD)` validates the inputs.\n    *   `pid_len` must be $\\le 2$.\n    *   `payload_len` must be $\\le 7$ (`MAX_REQUEST_PAYLOAD`).\n3.  **Line 14**: `memcpy(req + 1, pid, pid_len);` copies `pid_len` bytes starting at index 1. The maximum end index is $1 + 2 = 3$. This is within bounds.\n4.  **Line 15**: `memcpy(req + 1 + pid_len, payload, payload_len);` copies `payload_len` bytes starting at index $1 + pid_len$.\n    *   The total size of the data written to `req` is $1 + pid_len + payload_len$.\n    *   The maximum possible value for this sum is $1 + 2 + 7 = 10$.\n    *   The buffer `req` only has a size of 6.\n    *   Therefore, if `pid_len` is 2 and `payload_len` is 7 (or even just 5, since $1+2+5=8 > 6$), the `memcpy` on line 15 will write past the end of the `req` array, causing a stack buffer overflow.\n\nThe vulnerability is introduced by the logic that allows the total payload to exceed the buffer size. The specific line where the out-of-bounds write occurs is line 15. However, the *primary bug* is the insufficient validation on line 10 which fails to ensure that the total length ($1 + pid_len + payload_len$) fits within `MAX_DIAG_PAYLOAD`. Without the correct check on line 10, line 15 executes the overflow. Usually, in these types of questions, if the bug is a buffer overflow caused by a missing check, the line with the missing/incorrect check is often cited, or the line with the unsafe operation. Let's look at the phrasing: \"single best line number where the primary bug is introduced\".\n\nThe",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 512,
+   "prompt_tokens": 344,
+   "total_tokens": 856,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `send_diagnostic_request` constructs a request buffer `req` of size `MAX_DIAG_PAYLOAD` (which is 6).\n\n1.  **Line 8**: `uint8_t req[MAX_DIAG_PAYLOAD];` allocates a 6-byte buffer.\n2.  **Line 10**: The check `if (pid_len > 2 || payload_len > MAX_REQUEST_PAYLOAD)` validates the inputs.\n    *   `pid_len` must be $\\le 2$.\n    *   `payload_len` must be $\\le 7$ (`MAX_REQUEST_PAYLOAD`).\n3.  **Line 14**: `memcpy(req + 1, pid, pid_len);` copies `pid_len` bytes starting at index 1. The maximum end index is $1 + 2 = 3$. This is within bounds.\n4.  **Line 15**: `memcpy(req + 1 + pid_len, payload, payload_len);` copies `payload_len` bytes starting at index $1 + pid_len$.\n    *   The total size of the data written to `req` is $1 + pid_len + payload_len$.\n    *   The maximum possible value for this sum is $1 + 2 + 7 = 10$.\n    *   The buffer `req` only has a size of 6.\n    *   Therefore, if `pid_len` is 2 and `payload_len` is 7 (or even just 5, since $1+2+5=8 > 6$), the `memcpy` on line 15 will write past the end of the `req` array, causing a stack buffer overflow.\n\nThe vulnerability is introduced by the logic that allows the total payload to exceed the buffer size. The specific line where the out-of-bounds write occurs is line 15. However, the *primary bug* is the insufficient validation on line 10 which fails to ensure that the total length ($1 + pid_len + payload_len$) fits within `MAX_DIAG_PAYLOAD`. Without the correct check on line 10, line 15 executes the overflow. Usually, in these types of questions, if the bug is a buffer overflow caused by a missing check, the line with the missing/incorrect check is often cited, or the line with the unsafe operation. Let's look at the phrasing: \"single best line number where the primary bug is introduced\".\n\nThe",
+ "grade": {
+  "index": 6,
+  "id": "compsec-081",
+  "source": "COMPSEC",
+  "domain": "uds-c",
+  "expected": "10-15",
+  "extracted": "15",
+  "passed": true,
+  "elapsed_ms": 10297.9,
+  "output_sha256": "25a350fb8d40113f64a2a6fee55993fdd7b682dfb71d8943b54e80070f2621bb",
+  "prompt_token_count": 344,
+  "generated_token_count": 512,
+  "reasoning_chars": 0,
+  "content_chars": 1780,
+  "status": "length"
+ }
+}

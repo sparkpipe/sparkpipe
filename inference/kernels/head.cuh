@@ -136,6 +136,31 @@ void LmHeadSampledCandidateRowsKernel(const uint16_t *__restrict__ normed_bf16, 
 	LmHeadCandidateRowsBody<THREADS, TILE, ROWS>(normed_bf16, head_weight_bf16, 0, candidate_score, candidate_token, rows, hidden, vocabulary, LmHeadSampler{sampling});
 }
 
+template<uint32_t THREADS, uint32_t TILE, uint32_t ROWS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmHeadLogitsRowsKernel(const uint16_t *__restrict__ normed_bf16, const uint16_t *__restrict__ head_weight_bf16, float *__restrict__ logits, uint32_t rows, uint32_t hidden, uint32_t vocabulary, uint32_t logit_stride)
+{
+	constexpr uint32_t per_thread = ROWS / (THREADS / LM_ROWS_TILE_N);
+	static_assert(TILE % LM_ROWS_TILE_N == 0u, "head tiles hold whole token groups");
+	__shared__ float weight_tile[LM_ROWS_TILE_N][LM_ROWS_TILE_K + 1u];
+	__shared__ float input_tile[ROWS][LM_ROWS_TILE_K];
+	const LmRowsTileOperand operand = {normed_bf16, head_weight_bf16, 0, hidden, hidden, rows, vocabulary, hidden};
+	const uint32_t tile = blockIdx.x, first_row = blockIdx.y * ROWS, lane = threadIdx.x % LM_ROWS_TILE_N, group = threadIdx.x / LM_ROWS_TILE_N;
+	uint32_t sub, j, index, row;
+	float total[per_thread];
+	for (sub = 0u; sub < TILE; sub += LM_ROWS_TILE_N)
+	{
+		index = tile * TILE + sub + lane;
+		LmRowsTileDot<THREADS, ROWS>(&operand, weight_tile, input_tile, tile * TILE + sub, first_row, total);
+		for (j = 0u; j < per_thread; ++j)
+		{
+			row = first_row + group * per_thread + j;
+			if ( index < vocabulary && row < rows )
+				logits[(uint64_t)row * logit_stride + index] = total[j];
+		}
+	}
+}
+
 template<uint32_t THREADS, uint32_t TILE, class Score>
 static __device__ __forceinline__ void LmHeadCandidateScalarBody(const uint16_t *__restrict__ normed_bf16, const uint16_t *__restrict__ head_weight_bf16, const uint32_t *__restrict__ token_ids, float *__restrict__ candidate_score, uint32_t *__restrict__ candidate_token, uint32_t hidden, uint32_t vocabulary, const Score &score)
 {

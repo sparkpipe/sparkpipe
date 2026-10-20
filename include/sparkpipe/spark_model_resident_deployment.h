@@ -9,8 +9,12 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_RESIDENT_DEPLOYMENT_ABI_VERSION 3u
+#define SPARK_MODEL_RESIDENT_DEPLOYMENT_ABI_VERSION 4u
+#define SPARK_MODEL_RESIDENT_DRAFT_TARGET_BYTES 32u
+#define SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH 8u
+#define SPARK_MODEL_RESIDENT_DRAFT_MAX_WAIT_MS 1000u
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_EOS_TOKEN_COUNT 16u
+#define SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_TEXT_PROMPT_PREFIX_COUNT 4u
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_SCHEMA_VERSION 2u
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT \
 	SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT
@@ -23,6 +27,9 @@ typedef struct SparkModelResidentChatTemplate
 	uint32_t stop_marker_count;
 	char *prefix;
 	char *thinking_prefix;
+	char *plain_prefix;
+	char *system_suffix;
+	char *system_suffix_thinking;
 	char *system;
 	char *system_thinking;
 	char *user;
@@ -36,6 +43,9 @@ typedef struct SparkModelResidentChatTemplate
 	char *stop_markers[SPARK_MODEL_RESIDENT_CHAT_TEMPLATE_MAX_STOP_MARKERS];
 	uint32_t control_marker_count;
 	char *control_markers[SPARK_MODEL_RESIDENT_CHAT_TEMPLATE_MAX_STOP_MARKERS];
+	char *user_suffix;
+	char *system_turn_suffix;
+	char *observation_suffix;
 } SparkModelResidentChatTemplate;
 
 typedef struct SparkModelResidentDeploymentNode
@@ -47,9 +57,22 @@ typedef struct SparkModelResidentDeploymentNode
 	char *transport_host;
 	char *adapter_configuration_path;
 	char *kv_backing_directory;
+	char *kv_partition;
 	uint64_t kv_backing_maximum_bytes;
+	char *kv_snapshot_directory;
+	uint64_t kv_snapshot_maximum_bytes;
 	SparkModelResidentEndpoint control_endpoint;
 } SparkModelResidentDeploymentNode;
+
+typedef struct SparkModelResidentDraftServer
+{
+	char *host;
+	uint32_t port;
+	uint32_t depth;
+	uint32_t wait_ms;
+	float min_confidence;
+	char target_model[SPARK_MODEL_RESIDENT_DRAFT_TARGET_BYTES];
+} SparkModelResidentDraftServer;
 
 typedef struct SparkModelResidentDeployment
 {
@@ -58,7 +81,7 @@ typedef struct SparkModelResidentDeployment
 	uint32_t schema_version;
 	uint32_t node_count;
 	uint32_t coordinator_rank_index;
-	uint32_t reserved0;
+	uint32_t max_shared_input_row_count;
 	SparkModelServingRuntimeLimits runtime_limits;
 	char *adapter_shared_object_path;
 	char *driver_shared_object_path;
@@ -69,7 +92,10 @@ typedef struct SparkModelResidentDeployment
 	char *tokenizer_asset_path;
 	uint32_t tokenizer_vocabulary_size;
 	char *tokenizer_asset_sha256;
+	uint32_t tokenizer_text_prompt_prefix_count;
+	uint32_t tokenizer_text_prompt_prefix_ids[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_TEXT_PROMPT_PREFIX_COUNT];
 	char *weightd_socket_path;
+	SparkModelResidentDraftServer draft_server;
 	uint32_t eos_token_count;
 	uint32_t eos_token_ids[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_EOS_TOKEN_COUNT];
 	uint32_t max_sequence_positions;

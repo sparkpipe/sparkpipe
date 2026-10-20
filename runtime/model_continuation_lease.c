@@ -48,6 +48,19 @@ SparkStatus SparkModelContinuationLeaseDecodePosition(
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkModelContinuationLeaseVerifyPosition(
+	uint64_t sequence_position,
+	uint32_t kept_token_count,
+	uint64_t *next_sequence_position)
+{
+	if ( kept_token_count == 0u || next_sequence_position == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( sequence_position > UINT64_MAX - kept_token_count )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	*next_sequence_position = sequence_position + kept_token_count;
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkModelContinuationLeaseValidate(
 	const SparkModelContinuationLease *lease,
 	uint64_t client_generation,

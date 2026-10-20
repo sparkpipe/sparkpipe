@@ -1,0 +1,3 @@
+FRAMES SX 163
+SPEED SX editfull tokens=2764 decode_s=32.1 tok_s=86.18 editsr tokens=489 decode_s=15.2 tok_s=32.25
+FRAMES TX 8

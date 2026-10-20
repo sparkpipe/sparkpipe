@@ -1,0 +1,7 @@
+ARM A b1_n 10 b1_median 28.40 b1_mean 28.37 ttft2k 1974 ttft8k 7361
+ARM C b1_n 10 b1_median 28.34 b1_mean 28.34 ttft2k 1953 ttft8k 6921
+ARM CF b1_n 10 b1_median 28.39 b1_mean 28.30 ttft2k 1901 ttft8k 6886
+ARM F b1_n 10 b1_median 28.30 b1_mean 28.23 ttft2k 1897 ttft8k 7295
+ARM I b1_n 10 b1_median 28.35 b1_mean 28.39 ttft2k 1959 ttft8k 7332
+ARM R b1_n 10 b1_median 28.44 b1_mean 28.41 ttft2k 1889 ttft8k 7067
+ARM RF b1_n 10 b1_median 28.46 b1_mean 28.43 ttft2k 1814 ttft8k 6895

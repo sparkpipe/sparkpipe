@@ -1,0 +1,62 @@
+{
+ "id": "compsec-077",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "mimo-v2.6-pro",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper is called once for each Special Line Character option received in a TELNET LINEMODE negotiation.\n\nCode:\n```c\n 1: #define SLCBUF_SIZE 108\n 2: #define SLC_NCHARS 18\n 3: \n 4: struct slc_state {\n 5:     unsigned char buf[SLCBUF_SIZE];\n 6:     size_t used;\n 7: };\n 8: \n 9: static void add_slc(struct slc_state *s,\n10:                     unsigned char func,\n11:                     unsigned char flags,\n12:                     unsigned char value)\n13: {\n14:     if (func <= SLC_NCHARS)\n15:         return;                    // ignore ordinary entries here\n16: \n17:     /* Store one SLC triplet for later reply construction. */\n18:     s->buf[s->used++] = func;\n19:     s->buf[s->used++] = flags;\n20:     s->buf[s->used++] = value;\n21: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "9c97949ef5d10f5bc2948e808590e619115a5f7cecd5c5f20ef85f62cbc77a00"
+ },
+ "response": {
+  "id": "chatcmpl-82e101d38e9944f4b8bc16d93f67fc48",
+  "created": 1791868591,
+  "model": "mimo-v2.6-pro",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function `add_slc` writes 3 bytes per call into `s->buf` (size 108) without checking `s->used` against `SLCBUF_SIZE`. The buffer can hold 36 triplets (108/3). The check `func <= SLC_NCHARS` filters out ordinary entries (func 0..18), but SLC functions can be up to 255 (unsigned char), and there are potentially many extended/variable function codes. With 18 SLC_NCHARS, the valid range for \"special\" entries is func 19..255 \u2014 that's 237 possible values, but in practice TELNET LINEMODE SLC negotiation sends a fixed set of SLC functions (SLC_SYNCH, SLC_BRK, SLC_IP, etc.), typically around 18-25 total. However, the function is called \"once for each Special Line Character option received\" \u2014 and a malicious/buggy peer could send many SLC options with func > 18 (e.g., repeated or extended function codes), each adding 3 bytes. After 36 such calls, writes overflow `buf`.\n\nThe primary bug is the missing bounds check before writing. The writes happen at lines 18-20, but the bug is introduced by the lack of a check \u2014 the clearest single location where the bug manifests is line 18 (first unguarded write), but the group 18,19,20 represents the unguarded writes. The smallest set that captures the bug is the write block.\n\nAnswer: 18,19,20",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 350,
+   "prompt_tokens": 345,
+   "total_tokens": 695,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `add_slc` writes 3 bytes per call into `s->buf` (size 108) without checking `s->used` against `SLCBUF_SIZE`. The buffer can hold 36 triplets (108/3). The check `func <= SLC_NCHARS` filters out ordinary entries (func 0..18), but SLC functions can be up to 255 (unsigned char), and there are potentially many extended/variable function codes. With 18 SLC_NCHARS, the valid range for \"special\" entries is func 19..255 \u2014 that's 237 possible values, but in practice TELNET LINEMODE SLC negotiation sends a fixed set of SLC functions (SLC_SYNCH, SLC_BRK, SLC_IP, etc.), typically around 18-25 total. However, the function is called \"once for each Special Line Character option received\" \u2014 and a malicious/buggy peer could send many SLC options with func > 18 (e.g., repeated or extended function codes), each adding 3 bytes. After 36 such calls, writes overflow `buf`.\n\nThe primary bug is the missing bounds check before writing. The writes happen at lines 18-20, but the bug is introduced by the lack of a check \u2014 the clearest single location where the bug manifests is line 18 (first unguarded write), but the group 18,19,20 represents the unguarded writes. The smallest set that captures the bug is the write block.\n\nAnswer: 18,19,20",
+ "grade": {
+  "index": 2,
+  "id": "compsec-077",
+  "source": "COMPSEC",
+  "domain": "GNU Inetutils telnetd",
+  "expected": "18-20",
+  "extracted": "18,19,20",
+  "passed": true,
+  "elapsed_ms": 27140.8,
+  "output_sha256": "5017453df91f4405930fcd29cfd69f20f8f3dc6848ab49e79f561233f2c113da",
+  "prompt_token_count": 345,
+  "generated_token_count": 350,
+  "reasoning_chars": 0,
+  "content_chars": 1243,
+  "status": "stop"
+ }
+}

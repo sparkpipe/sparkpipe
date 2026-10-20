@@ -62,6 +62,8 @@ typedef struct TestLoopbackStack
 	pid_t api_child;
 	uint32_t control_tcp_port;
 	uint32_t api_port;
+	const char *kv_backing_directory;
+	const char *kv_partition;
 } TestLoopbackStack;
 
 static uint32_t TestLoopbackSendChunk;
@@ -137,7 +139,7 @@ static void TestLoopbackSetupRoot(TestLoopbackStack *stack)
 {
 	char scratch[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
 	char path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
-	assert(snprintf(scratch,sizeof(scratch),"/tmp/sparkpipe-loopback-%ld-XXXXXX",(long)getpid()) > 0);
+	assert(snprintf(scratch,sizeof(scratch),"build/sparkpipe-loopback-%ld-XXXXXX",(long)getpid()) > 0);
 	assert(mkdtemp(scratch) != 0);
 	assert(realpath(scratch,stack->root) != 0);
 	assert(snprintf(path,sizeof(path),"%s/build",stack->root) > 0);
@@ -194,6 +196,8 @@ static void TestLoopbackWriteDeployment(TestLoopbackStack *stack)
 	fixture.transport_mode = "host-rdma";
 	fixture.node_target = "test.model.serving.target";
 	fixture.adapter_configuration_path = "tests/fixtures/model_serving_adapter_config.json";
+	fixture.kv_backing_directory = stack->kv_backing_directory;
+	fixture.kv_partition = stack->kv_partition;
 	fixture.runtime_roots = runtime_roots;
 	fixture.transport_hosts = TestLoopbackTransportHosts;
 	fixture.stage_indices = stage_indices;
@@ -493,6 +497,48 @@ static uint32_t TestLoopbackScanTokenArray(
 	return(count);
 }
 
+static int32_t TestLoopbackHealthStatus(uint32_t port)
+{
+	struct sockaddr_in address;
+	struct timeval timeout;
+	char response[256];
+	static const char request[] = "GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+	ssize_t got;
+	int32_t fd,status = 0;
+	fd = socket(AF_INET,SOCK_STREAM,0);
+	assert(fd >= 0);
+	timeout.tv_sec = 0;
+	timeout.tv_usec = 250000;
+	assert(setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout)) == 0);
+	memset(&address,0,sizeof(address));
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(0x7f000001u);
+	address.sin_port = htons((uint16_t)port);
+	if ( connect(fd,(struct sockaddr *)&address,sizeof(address)) == 0 && send(fd,request,sizeof(request) - 1u,0) == (ssize_t)(sizeof(request) - 1u) )
+	{
+		got = recv(fd,response,sizeof(response) - 1u,0);
+		if ( got > 12 )
+		{
+			response[got] = '\0';
+			if ( sscanf(response,"HTTP/1.1 %d",&status) != 1 )
+				status = 0;
+		}
+	}
+	close(fd);
+	return(status);
+}
+
+static void TestLoopbackWaitHealthy(uint32_t port,uint64_t deadline_ms)
+{
+	uint64_t started = TestLoopbackNowMs();
+	while ( TestLoopbackHealthStatus(port) != 200 )
+	{
+		struct timespec delay = { 0, 20000000L };
+		assert(TestLoopbackNowMs() - started < deadline_ms && "system loopback model_api never reported every rank ready");
+		(void)nanosleep(&delay,0);
+	}
+}
+
 static uint64_t TestLoopbackExpectServed(
 	const TestLoopbackStack *stack,
 	uint32_t max_tokens,
@@ -507,6 +553,7 @@ static uint64_t TestLoopbackExpectServed(
 	int32_t status;
 	assert(snprintf(body,sizeof(body),
 		"{\"prompt_token_ids\":[11,12],\"max_tokens\":%u}",max_tokens) > 0);
+	TestLoopbackWaitHealthy(stack->api_port,deadline_ms);
 	status = TestLoopbackHttpPost(stack->api_port,body,response,sizeof(response),
 		deadline_ms,&elapsed);
 	if ( status != 200 )
@@ -557,7 +604,9 @@ static void TestLoopbackSampling(const TestLoopbackStack *stack)
 	TestLoopbackTokens(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":0.8}",other);
 	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":3}",400,response,sizeof(response));
 	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":\"0.5\"}",400,response,sizeof(response));
-	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":0.5,\"top_p\":0.9}",400,response,sizeof(response));
+	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":0.5,\"top_p\":0.9}",200,response,sizeof(response));
+	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":0.5,\"top_p\":0}",400,response,sizeof(response));
+	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":0.5,\"top_k\":1048577}",400,response,sizeof(response));
 	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"seed\":-1}",400,response,sizeof(response));
 }
 
@@ -841,6 +890,8 @@ static void TestLoopbackRemoveTree(const TestLoopbackStack *stack)
 	unlink(stack->deployment_path);
 	assert(snprintf(path,sizeof(path),"%s/api_submission.seq",stack->root) > 0);
 	unlink(path);
+	assert(snprintf(path,sizeof(path),"%s/prefix_index.spi",stack->root) > 0);
+	unlink(path);
 	assert(snprintf(path,sizeof(path),"%s/%s",stack->root,TEST_MODEL_SERVING_ADAPTER_PATH) > 0);
 	unlink(path);
 	assert(snprintf(path,sizeof(path),"%s/%s",stack->root,TEST_MODEL_RESIDENT_TRANSPORT_PATH) > 0);
@@ -881,6 +932,65 @@ static void TestLoopbackBoot(TestLoopbackStack *stack)
 	TestLoopbackWriteDeployment(stack);
 	TestLoopbackStartResidents(stack);
 	TestLoopbackStartApi(stack);
+}
+
+static void TestLoopbackExpectResidentRefused(TestLoopbackStack *stack,const char *expected)
+{
+	char log_path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES],text[8192];
+	pid_t child,probe = 0;
+	int32_t child_status = 0;
+	uint32_t attempt;
+	FILE *log;
+	size_t got;
+	TestLoopbackWriteDeployment(stack);
+	child = TestLoopbackStartResident(stack,1u);
+	for (attempt=0u; attempt<1000u && probe == 0; attempt++)
+	{
+		struct timespec delay = { 0, 10000000L };
+		probe = waitpid(child,&child_status,WNOHANG);
+		if ( probe == 0 )
+			(void)nanosleep(&delay,0);
+	}
+	if ( probe == 0 )
+	{
+		(void)kill(child,SIGKILL);
+		(void)waitpid(child,&child_status,0);
+	}
+	assert(probe == child && WIFEXITED(child_status) && WEXITSTATUS(child_status) != 0);
+	assert(snprintf(log_path,sizeof(log_path),"%s/rank1.log",stack->root) > 0);
+	log = fopen(log_path,"r");
+	assert(log != 0);
+	got = fread(text,1u,sizeof(text) - 1u,log);
+	text[got] = '\0';
+	(void)fclose(log);
+	assert(strstr(text,expected) != 0);
+}
+
+static void TestLoopbackKvPartitionRefusals(TestLoopbackStack *stack)
+{
+#if defined(__linux__)
+	char shm[] = "/dev/shm/sparkpipe-kv-partition-XXXXXX",root[] = "build/sparkpipe-kv-partition-root-XXXXXX",path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
+	if ( mkdtemp(shm) == 0 )
+		return;
+	assert(mkdtemp(root) != 0);
+	assert(realpath(root,stack->root) != 0);
+	stack->kv_backing_directory = shm;
+	stack->kv_partition = shm;
+	TestLoopbackExpectResidentRefused(stack,"tmpfs filesystem");
+	stack->kv_partition = stack->root;
+	TestLoopbackExpectResidentRefused(stack,"is not on kv_partition");
+	stack->kv_backing_directory = 0;
+	stack->kv_partition = 0;
+	assert(rmdir(shm) == 0);
+	assert(snprintf(path,sizeof(path),"%s/deployment.json",root) > 0 && unlink(path) == 0);
+	assert(snprintf(path,sizeof(path),"%s/rank1.log",root) > 0 && unlink(path) == 0);
+	(void)snprintf(path,sizeof(path),"%s/rank1.sock",root);
+	(void)unlink(path);
+	assert(rmdir(root) == 0);
+	printf("test_system_loopback: KV on tmpfs or off the named kv_partition refused at load OK\n");
+#else
+	(void)stack;
+#endif
 }
 
 int main(int argc,char **argv)
@@ -924,6 +1034,7 @@ int main(int argc,char **argv)
 	TestLoopbackResurrectApi(&stack);
 	TestLoopbackResurrectMidFlight(&stack);
 	TestLoopbackStopStack(&stack);
+	TestLoopbackKvPartitionRefusals(&stack);
 	printf("test_system_loopback: ALL OK\n");
 	return(0);
 }

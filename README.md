@@ -22,6 +22,54 @@ This file describes the system SparkPipe is built to be.
 [`TECHDEBT.md`](TECHDEBT.md) lists where the code does not match it yet, and
 [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md) holds the measurements.
 
+## Performance today
+
+Sixteen DGX Spark nodes at TP16, measured 2026-10-18. Methods and receipts
+are in [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).
+
+**Decode without speculation**
+
+| | Kimi K3 | GLM 5.3 Full | GLM 5.3 Flash |
+| --- | ---: | ---: | ---: |
+| 1 request | 16.2 tok/s | 28.9 tok/s | 55.0 tok/s |
+| 1 request, long context | 15.1 tok/s at 73K | 24.1 tok/s at 197K | 46 tok/s at 71K |
+| 8 requests, total | 64 tok/s | 74 tok/s | 176 tok/s |
+| 16 requests, total | – | – | 227 tok/s |
+| Of the floor for the bytes it reads | 58% | about 50% | 59% |
+| Prefill, 8K prompt | 590 tok/s | 1,162 tok/s | 876 tok/s |
+| Context window | 737,280 tokens (measured to 337K) | 262,144 tokens | 131,072 tokens |
+
+**Speculation, one request**
+
+| Workload | Kimi K3 | GLM 5.3 Full |
+| --- | --- | --- |
+| Whole-file code rewrite | 15.3 → 140 tok/s | 27.6 → 233 tok/s |
+| SEARCH/REPLACE edit | 1.9× | 1.3× |
+| Short edits with the draft model | 1.4-1.6× | – |
+
+Drafts come from the request's own context (lookup) and, on K3, from a
+draft model on the hub's RTX 5090. The target model verifies every draft.
+
+**Long context and cache**
+
+- Each node stores 1/16 of every sequence's cache, so K3's 737,280-token
+  window needs 1.36 GB of KV per node.
+- The next turn of a long conversation reuses its cached prefix: 5 s at
+  137K tokens instead of 299 s, 8 s at 337K instead of 982 s.
+- Cached prefixes survive model swaps: 137,600 tokens restore in 2.7 s.
+
+**Accuracy**
+
+- Every release reproduces the previous build's tokens for all 16 models.
+- ds4_eval, 92 questions: Qwen 3.8 Max 82/92 and Qwen 3.8 Flash 79/92 as
+  served by SparkPipe.
+- Number formats ship only after a teacher-forced A/B shows no loss beyond
+  a same-precision floor.
+
+Limits today: K3 and GLM 5.3 Full serve up to 8 requests at once and GLM
+5.3 Flash up to 16; prefill reaches at most 5% of compute; and only K3 and
+GLM 5.3 Full speculate.
+
 ## The constraint everything follows from
 
 Decoding one token is bound by memory bandwidth: a step takes about as long
@@ -97,14 +145,13 @@ The contract is enforced rather than advisory
 - **No hidden clamps.** A power-of-two kernel bucket is never an admission
   rule. Diagnostic clamps live under `#ifdef DEBUG` and report themselves.
 
-**Adding a model.** Model families share code through
-[family templates](docs/FAMILY_TEMPLATES.md). A template moves into common
-code only if every family compiles it to identical host code and SASS. A new
-driver starts from one parameter header, whose compile errors list every
-value it must supply
-([`docs/COMMON_MODULE_ARCHITECTURE.md`](docs/COMMON_MODULE_ARCHITECTURE.md)).
-The recipe generator derives TP and PP placements from the model's
-authoritative contract in `model_contracts/`.
+**Adding a model.** Every driver runs on the common stage runner
+(`inference/runner/`). A new driver supplies only its math, as a stage model
+behind the runner's model interface
+(`include/sparkpipe/spark_stage_runner_model.h`), plus its serving glue and
+packer ([`docs/MODULE_MAP.md`](docs/MODULE_MAP.md)). The recipe generator
+derives TP and PP placements from the model's authoritative contract in
+`model_contracts/`.
 
 ## Weights: stage packs and a residency daemon
 
@@ -191,9 +238,11 @@ switching algorithm never changes a result bit. A collective carries its
 full logical batch count separately from its execution rows, so splitting a
 batch cannot select the wrong algorithm.
 
-**End state.** Kernels ring the NIC themselves (GPU-initiated RDMA), with no
-CPU relay per round. Two micro-batches alternate, so one computes while the
-other communicates. Both rails carry traffic at once: the switch for
+**End state.** Two micro-batches alternate, so one computes while the other
+communicates. A GB10 SM cannot ring the CX-7 doorbell (the 2026-10-01 probe:
+no write lands, no completion, no fault), and GPU-built work requests with a
+CPU doorbell measured within about 1 us of today's relay per round, so the
+CPU keeps ringing the NIC. Both rails carry traffic at once: the switch for
 all-to-all reach, the direct pair link for the first reduction level.
 
 ## Batching
@@ -258,12 +307,12 @@ cache-layout fingerprints, so a changed model or layout can never read old
 KV. Publication is transactional: prepare, commit and abort, with
 generations checked at every transition.
 
-**Tiers.** Pages move between GPU memory, host memory, the 2.5 TB NVMe tier
-and an optional external store. The pager parks and restores whole lanes
-rather than paging per token, because attention reads the entire context on
-every step. Under pressure, admission queues work instead of thrashing. The
-pager (`cache/kv_pager.c`) is host-tested but not yet wired into any module
-([`TECHDEBT.md`](TECHDEBT.md), KV tiers).
+**Tiers.** KV device memory belongs to weightd, which keeps each engine's
+pool across an engine restart. Pages leaving the device park in a per-engine
+spill file on the KV NVMe, and published prefixes are saved to a persistent
+snapshot store on the same drive, which serves restores after eviction or a
+restart; restores run on a worker off the admission path. There is no host
+DRAM tier ([`TECHDEBT.md`](TECHDEBT.md), KV tiers).
 
 **Sharding.** The fleet stores 1/N of the cache on each of N nodes:
 
@@ -448,33 +497,74 @@ the aarch64 Spark binaries. Host roles and the release procedure are in
 ## Models
 
 The product set and the owner's direction are in
-[`docs/MODEL_SUPPORT.md`](docs/MODEL_SUPPORT.md). Decode modules exist in
-`modules/` for these families:
+[`docs/MODEL_SUPPORT.md`](docs/MODEL_SUPPORT.md). Sixteen models serve today,
+all on the common TP16 stage runner (`inference/runner/`). Each model's math
+lives under `model-families/<family>/` and its serving adapter under
+`modules/`. One model holds the fleet at a time. A request names its model;
+if another model is loaded, the request waits while the swap controller
+(`tools/serving/model_swap.py`) swaps the named one in, and that model's
+cached prefixes come back from the KV snapshot store.
 
-- GLM 5.3 Flash (`glm5_next`, the current optimization focus) and GLM 5.3
-  Full (`glm52` module);
-- DeepSeek V4.1 Flash, which leads the DeepSeek line, V4 Flash, and V4 Pro
-  0813, last in the driver order and kept as the base for V4.1 Pro once it
-  is released;
-- Kimi K3, which moves into the slot V4 Pro 0813 held;
-- Qwen 3.8 Max, Qwen 3.8 27B and Qwen4 Flash, for internal use only: Qwen
-  models are not enabled on the external API service;
-- MiniMax;
-- Gemma 4;
-- Ling 3.0 Flash and its finance fine-tune;
-- Laguna;
-- Hunyuan HY4;
-- Muse Glimmer.
+| Served name | Model | Family | Context | Swap in | Decode, B1 | Of ideal floor | Prefill, 7-8K prompt | COMPSEC-17 |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `glm-5.3` | GLM 5.3 Full | `glm52` | 256K | 38 s | 28.9 tok/s | 27% | 1,162 tok/s | 15 |
+| `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K | 24 s | 55.0 tok/s | 23% | 876 tok/s | 13 |
+| `kimi-k3` | Kimi K3 | `k3` | 720K | 46 s | 16.2 tok/s | 51% | 590 tok/s | 17 |
+| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 16K | 24 s | 29.5 tok/s | – | 182 tok/s | 16 |
+| `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K | 24 s | 19.0 tok/s ‡ | – | 55 tok/s ‡ | 17 |
+| `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K | 19 s | 40.9 tok/s ‡ | – | 157 tok/s ‡ | 16 |
+| `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K | 28 s | 14.2 tok/s | 16% | 53 tok/s | 17 |
+| `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K | 17 s | 34.4 tok/s | 48% | 834 tok/s | 16 |
+| `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 32K | 16 s | 89.5 tok/s | 16% | 1,848 tok/s | 16 |
+| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 32K | 20 s | 80.4 tok/s | 19% | 1,514 tok/s | 13 |
+| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 32K | 20 s | 79.2 tok/s | 18% | 1,550 tok/s | 13 |
+| `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K | 20 s | 51.0 tok/s | – | 773 tok/s | 13 |
+| `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 32K | 16 s | 37.9 tok/s | 51% | 1,186 tok/s | 17 |
+| `qwen3.8-max` | Qwen 3.8 Max (internal) | `qwen38` | 32K | 35 s | 10.4 tok/s | – | 35 tok/s | 5 † |
+| `qwen3.8-27b` | Qwen 3.8 27B (internal) | `qwen38` | 256K | 19 s | 57.4 tok/s | 35% | 1,852 tok/s | 14 |
+| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 32K | 20 s | 45.0 tok/s | – | 358 tok/s | 15 |
 
-DeepSeek V4.1 Flash and Hunyuan HY4 have decode modules but no serving
-adapter yet. MiMo 2.6 Flash and Pro, the MiMo target, have contracts and a
-stage-pack format (the only file in `modules/mimo26_resident_decode_stage`),
-but no decode driver yet. MiMo 2.5 has only an older engine in
-`inference/llms/mimo_2_5` and no module. A driver in the tree is not a
-readiness claim. Each exact checkpoint needs its own contract, pack,
-numerical result, transport profile and service receipt. Status is in
-[`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md) and
-[`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).
+All on sixteen Sparks at TP16, with the GPU clocks capped at 2200 MHz and
+no speculation:
+
+- **Decode, B1** is one request, greedy, generating 256 tokens (case
+  `b1_o256` of `tools/api_serving_perf.py`), on a quiet fleet. Most rows
+  come from the qualification of release `91c0e6be3` on 2026-10-12, with
+  old and new builds measured in one hold. Newer runs replace four rows:
+  K3 on 2026-10-14 (release `1d89e0377`), the two GLM models on
+  2026-10-18, and DeepSeek V4.1 Flash on 2026-10-13 after its decode fix.
+- **Of ideal floor** compares B1 with the ideal memory floor: each rank
+  reads 1/16 of the active weights once per token at 273 GB/s. A dash means
+  the floor is not computed, or the split of active parameters between
+  formats is not verified. The arithmetic is in
+  [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md#all-served-models).
+- **Prefill** is one cold prompt of about 7,400 tokens (case `ttft6000`;
+  the count depends on the tokenizer): prompt tokens over the time to the
+  first token. K3 and GLM 5.3 Full were measured at 8K, on 2026-10-13 and
+  2026-10-15.
+- **COMPSEC-17** is the 17-question security set of the release
+  qualification, from release `91c0e6be3`; MiMo at its bring-up on
+  2026-10-13. † Qwen 3.8 Max always thinks; it ran with a 2,048-token
+  budget.
+- **Swap in** is the median time from a swap request until the model
+  serves, over the swaps the controller logged on 2026-10-13 and 2026-10-14.
+  It includes stopping the previous model. The slowest single swap was K3's,
+  at 79 s.
+- **Context** is the window the chat layer serves
+  (`deployment/hub/chat_frontend.json`). K3's is 737,280 tokens.
+- ‡ MiMo was measured only in the release qualification of 2026-10-14,
+  while a CPU tenant kept about 16 cores busy on every node, so its numbers
+  are lower bounds. The same load cut K3 from 16.2 to 10.0 tok/s.
+- On the six fixed release prompts every model produced the same tokens as
+  the build it replaced. GLM 5.3 Full's logprob golden moved slightly: 706 of
+  708 top-1 tokens agree, and the one flip is a near tie.
+- The Qwen models are internal only. They serve on the LAN door but not on
+  sparkpipe.ai, because of their license terms.
+
+Serving is not a readiness claim. Hy4 has not yet matched a reference run
+([`TECHDEBT.md`](TECHDEBT.md), Production qualification), and each driver's
+acceptance status is in [`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md)
+and [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).
 
 ## Serving API
 
@@ -647,3 +737,13 @@ qualification). GPU tests and harnesses have their own targets, for example
 Hardware qualification requires CUDA, transport, numerical and service
 receipts from an exact committed revision. Host or simulator results cannot
 stand in for them.
+
+## License
+
+SparkPipe is licensed under the [Apache License, Version 2.0](LICENSE).
+Copyright 2026 HYOR AI Tech Ltd. Third-party files kept in the tree and their
+licenses are listed in [`NOTICE`](NOTICE).
+
+Model weights, tokenizers and the stage packs built from them are not covered
+by the Apache License. They keep their publishers' licenses, some of which
+add conditions for large commercial deployments.

@@ -1,0 +1,63 @@
+{
+ "id": "compsec-085",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe database driver receives a language string token as (ptr,len), where len may include embedded NUL bytes. The function reconstructs a quoted SQL token.\n\nCode:\n```c\n1: static void append_quoted_token(char *sql, size_t sql_cap,\n2:                                 const char *tok, size_t tok_len)\n3: {\n4:     strlcat(sql, \"'\", sql_cap);\n5:     strncat(sql, tok, tok_len);\n6:     strlcat(sql, \"'\", sql_cap);\n7: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "0bf110a7a4ad94df379953fd664c3093b82fe887aec5d8d5ab1c594b512f2c3d"
+ },
+ "response": {
+  "id": "chatcmpl-69006b5a253644ff9336ed08671218eb",
+  "created": 1791731009,
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Line 5: `strncat` ignores `sql_cap`, so it can overflow the buffer; it also stops at embedded NULs, allowing token truncation/injection.\n\nAnswer: 5",
+     "role": "assistant",
+     "reasoning_content": "strncat stops at NUL and appends NUL \u2014 embedded NUL truncation, but vulnerability? strncat uses strlen of tok... Actually strncat copies up to tok_len bytes but stops at NUL; embedded NUL means token truncated \u2014 injection possible if attacker crafts NUL to end quote early? Also strncat doesn't bound by sql_cap \u2014 buffer overflow. Line 5."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 125,
+   "prompt_tokens": 225,
+   "total_tokens": 350,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>strncat stops at NUL and appends NUL \u2014 embedded NUL truncation, but vulnerability? strncat uses strlen of tok... Actually strncat copies up to tok_len bytes but stops at NUL; embedded NUL means token truncated \u2014 injection possible if attacker crafts NUL to end quote early? Also strncat doesn't bound by sql_cap \u2014 buffer overflow. Line 5.</think>Line 5: `strncat` ignores `sql_cap`, so it can overflow the buffer; it also stops at embedded NULs, allowing token truncation/injection.\n\nAnswer: 5",
+ "grade": {
+  "index": 10,
+  "id": "compsec-085",
+  "source": "COMPSEC",
+  "domain": "PHP PDO Firebird",
+  "expected": "5",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 2997.4,
+  "output_sha256": "a6356409050ca9d23571aa79ac1bdaae7b641641a6d28922007795388f4c6bda",
+  "prompt_token_count": 225,
+  "generated_token_count": 125,
+  "reasoning_chars": 338,
+  "content_chars": 147,
+  "status": "stop"
+ }
+}

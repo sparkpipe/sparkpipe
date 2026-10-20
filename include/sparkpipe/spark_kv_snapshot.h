@@ -9,13 +9,16 @@
 extern "C" {
 #endif
 
-#define SPARK_KV_SNAPSHOT_ABI_VERSION 2u
-#define SPARK_KV_SNAPSHOT_FORMAT_VERSION 1u
+#define SPARK_KV_SNAPSHOT_ABI_VERSION 4u
+#define SPARK_KV_SNAPSHOT_FORMAT_VERSION 2u
 #define SPARK_KV_SNAPSHOT_MAGIC UINT64_C(0x31504e534b565053)
 #define SPARK_KV_SNAPSHOT_MAX_SEGMENTS 4u
 #define SPARK_KV_SNAPSHOT_PATH_BYTES 1024u
 #define SPARK_KV_SNAPSHOT_ALIGNMENT UINT64_C(4096)
 #define SPARK_KV_SNAPSHOT_SUFFIX ".kvs"
+#define SPARK_KV_SNAPSHOT_STATE_SUFFIX ".kvst"
+#define SPARK_KV_SNAPSHOT_FILE_PAGES 0u
+#define SPARK_KV_SNAPSHOT_FILE_STATE 1u
 #define SPARK_KV_SNAPSHOT_TEMPORARY_PREFIX ".kvs-writing-"
 #define SPARK_KV_SNAPSHOT_LOCK_NAME ".kvs-lock"
 
@@ -24,7 +27,7 @@ typedef struct SparkKvSnapshotKey
 	uint8_t layout_sha256[SPARK_SHA256_DIGEST_BYTES];
 	uint8_t identity_sha256[SPARK_SHA256_DIGEST_BYTES];
 	uint32_t token_count;
-	uint32_t reserved0;
+	uint32_t file_kind;
 } SparkKvSnapshotKey;
 
 typedef struct SparkKvSnapshotSegment
@@ -50,6 +53,7 @@ typedef struct SparkKvSnapshotFileHeader
 	uint32_t format_version;
 	uint32_t header_bytes;
 	SparkKvSnapshotKey key;
+	SparkKvSnapshotKey parent;
 	uint32_t segment_count;
 	uint32_t reserved0;
 	uint64_t file_bytes;
@@ -73,6 +77,8 @@ typedef struct SparkKvSnapshotStore
 	uint64_t queued_count;
 	uint64_t queued_bytes;
 	uint64_t queue_full_count;
+	uint64_t spare_bytes;
+	uint64_t spare_maximum_bytes;
 	uint64_t duplicate_count;
 	uint64_t eviction_count;
 	uint64_t evicted_bytes;
@@ -83,14 +89,20 @@ typedef struct SparkKvSnapshotStore
 	uint64_t miss_count;
 	uint64_t checksum_failure_count;
 	uint64_t removed_temporary_count;
+	uint64_t removed_legacy_count;
+	uint64_t orphan_count;
 	SparkStatus failed_status;
 	uint32_t reserved0;
+	uint64_t failed_at_ns;
+	uint64_t failure_retry_ns;
+	uint64_t recovered_count;
 	void *runtime;
 } SparkKvSnapshotStore;
 
 typedef struct SparkKvSnapshotWriteTicket
 {
 	SparkKvSnapshotKey key;
+	SparkKvSnapshotKey parent;
 	uint32_t segment_count;
 	uint32_t reserved0;
 	uint64_t file_bytes;
@@ -99,14 +111,19 @@ typedef struct SparkKvSnapshotWriteTicket
 } SparkKvSnapshotWriteTicket;
 
 #define SPARK_KV_SNAPSHOT_STORE_BYTES ((uint32_t)sizeof(SparkKvSnapshotStore))
+#define SPARK_KV_SNAPSHOT_FAILURE_RETRY_NS UINT64_C(10000000000)
 
 SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *directory,uint64_t maximum_bytes,uint64_t queue_maximum_bytes);
 void SparkKvSnapshotStoreClose(SparkKvSnapshotStore *store);
 SparkStatus SparkKvSnapshotStoreSample(SparkKvSnapshotStore *store,SparkKvSnapshotStore *sample);
 SparkStatus SparkKvSnapshotPrune(SparkKvSnapshotStore *store,const uint8_t layout_sha256[SPARK_SHA256_DIGEST_BYTES]);
-SparkStatus SparkKvSnapshotPath(const SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,char *path,uint32_t path_capacity);
-SparkStatus SparkKvSnapshotWrite(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const SparkKvSnapshotSegment *segments,uint32_t segment_count);
-SparkStatus SparkKvSnapshotWriteBegin(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const uint32_t *kinds,const uint64_t *bytes,uint32_t segment_count,SparkKvSnapshotWriteTicket *ticket);
+SparkStatus SparkKvSnapshotCountLayout(SparkKvSnapshotStore *store,const uint8_t layout_sha256[SPARK_SHA256_DIGEST_BYTES],uint64_t *matching_files,uint64_t *foreign_files);
+SparkStatus SparkKvSnapshotBinaryDigest(const void *symbol,uint8_t digest[SPARK_SHA256_DIGEST_BYTES],char *path,uint32_t path_capacity);
+SparkStatus SparkKvSnapshotPath(const SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const SparkKvSnapshotKey *parent,char *path,uint32_t path_capacity);
+SparkStatus SparkKvSnapshotWrite(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const SparkKvSnapshotKey *parent,const SparkKvSnapshotSegment *segments,uint32_t segment_count);
+SparkStatus SparkKvSnapshotWriteBegin(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const SparkKvSnapshotKey *parent,const uint32_t *kinds,const uint64_t *bytes,uint32_t segment_count,SparkKvSnapshotWriteTicket *ticket);
+SparkStatus SparkKvSnapshotParent(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,SparkKvSnapshotKey *parent_out);
+uint32_t SparkKvSnapshotContains(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key);
 SparkStatus SparkKvSnapshotWriteCommit(SparkKvSnapshotStore *store,SparkKvSnapshotWriteTicket *ticket);
 void SparkKvSnapshotWriteCancel(SparkKvSnapshotStore *store,SparkKvSnapshotWriteTicket *ticket);
 SparkStatus SparkKvSnapshotFlush(SparkKvSnapshotStore *store);

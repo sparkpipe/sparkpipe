@@ -1,0 +1,62 @@
+{
+ "id": "compsec-085",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "laguna-s-2.1",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe database driver receives a language string token as (ptr,len), where len may include embedded NUL bytes. The function reconstructs a quoted SQL token.\n\nCode:\n```c\n1: static void append_quoted_token(char *sql, size_t sql_cap,\n2:                                 const char *tok, size_t tok_len)\n3: {\n4:     strlcat(sql, \"'\", sql_cap);\n5:     strncat(sql, tok, tok_len);\n6:     strlcat(sql, \"'\", sql_cap);\n7: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "a61944a06e995a13dde6415d4881ee2741d03f5ba72f6c17e56392cadce77fdc"
+ },
+ "response": {
+  "id": "chatcmpl-2c73bfd16da6409aba856d54de80d0fc",
+  "created": 1791770642,
+  "model": "laguna-s-2.1",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Looking at this function, I need to analyze the string operations being performed.\n\nThe function uses `strlcat` and `strncat` to build a quoted SQL token. Let me examine each call:\n\n1. `strlcat(sql, \"'\", sql_cap)` - This appends a single quote to `sql`, respecting the capacity `sql_cap`. This is safe.\n\n2. `strncat(sql, tok, tok_len)` - This is the problematic call. `strncat` appends at most `tok_len` characters from `tok` to `sql`, but it also adds a terminating NUL byte. The issue is that `strncat` doesn't take a size parameter for the destination buffer - it only limits the number of source characters. If `sql` already contains data and `tok_len` is large, this can write beyond `sql_cap`.\n\n3. `strlcat(sql, \"'\", sql_cap)` - This is safe as it respects `sql_cap`.\n\nThe primary vulnerability is on line 5 with `strncat`. The function should use `strlcat` instead, which properly respects the destination buffer size. `strncat` only limits the number of characters copied from the source, not the total size of the destination buffer, making it susceptible to buffer overflow when the existing content in `sql` plus `tok_len` exceeds `sql_cap`.\n\nAnswer: 5",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 286,
+   "prompt_tokens": 282,
+   "total_tokens": 568,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Looking at this function, I need to analyze the string operations being performed.\n\nThe function uses `strlcat` and `strncat` to build a quoted SQL token. Let me examine each call:\n\n1. `strlcat(sql, \"'\", sql_cap)` - This appends a single quote to `sql`, respecting the capacity `sql_cap`. This is safe.\n\n2. `strncat(sql, tok, tok_len)` - This is the problematic call. `strncat` appends at most `tok_len` characters from `tok` to `sql`, but it also adds a terminating NUL byte. The issue is that `strncat` doesn't take a size parameter for the destination buffer - it only limits the number of source characters. If `sql` already contains data and `tok_len` is large, this can write beyond `sql_cap`.\n\n3. `strlcat(sql, \"'\", sql_cap)` - This is safe as it respects `sql_cap`.\n\nThe primary vulnerability is on line 5 with `strncat`. The function should use `strlcat` instead, which properly respects the destination buffer size. `strncat` only limits the number of characters copied from the source, not the total size of the destination buffer, making it susceptible to buffer overflow when the existing content in `sql` plus `tok_len` exceeds `sql_cap`.\n\nAnswer: 5",
+ "grade": {
+  "index": 10,
+  "id": "compsec-085",
+  "source": "COMPSEC",
+  "domain": "PHP PDO Firebird",
+  "expected": "5",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 6416.5,
+  "output_sha256": "0457bae47ed29a124fb5a0d6edf27f9f94988f069f61650c937410ee77d27dd0",
+  "prompt_token_count": 282,
+  "generated_token_count": 286,
+  "reasoning_chars": 0,
+  "content_chars": 1163,
+  "status": "stop"
+ }
+}

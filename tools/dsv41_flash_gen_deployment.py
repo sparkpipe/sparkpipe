@@ -41,7 +41,7 @@ COLLECTIVE_ID = int(os.environ.get("DSV41_FLASH_COLLECTIVE_ID",
 BACKEND = os.environ.get("DSV41_FLASH_BACKEND", "hidden_transport")
 PACK_TEMPLATE = os.environ.get(
     "DSV41_FLASH_PACK_TEMPLATE", "packs/rank%x.spstage")
-MODEL_REVISION = "dba1be0a40aa45a94ad051997016db3960a90277"
+MODEL_REVISION = "1bae0e1088993b9b82de08f59de5be5a34e42170"
 CONTRACT = json.loads((Path(__file__).resolve().parents[1] / "model_contracts"
                        / "dsv41_flash_authoritative.json").read_text())
 TOKENIZER = {
@@ -141,6 +141,7 @@ def resident_deployment() -> dict:
             "adapter_configuration_path": "config/stage.json",
             "kv_backing_directory":
                 RUNTIME_ROOT.format(host=host) + "/kvcache",
+            "kv_partition": "/",
             "kv_backing_maximum_bytes": 0,
             "control_endpoint": {
                 "kind": "tcp",

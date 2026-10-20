@@ -1,0 +1,62 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-27b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "5bcb30fddc5a7fbf7d0b6472249bdd49d54903f301110c78503147f98cecf12a"
+ },
+ "response": {
+  "id": "chatcmpl-36feb40b9a9b4f0b967e4337ea3d053b",
+  "created": 1791721222,
+  "model": "qwen3.8-27b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "length",
+    "index": 0,
+    "message": {
+     "content": "The function `read_segments` is designed to store numbered segments into a vector `a->segments`. The code assumes that segments arrive in ascending order or handles gaps by growing the vector. However, the problem statement explicitly states: **\"Inputs are not guaranteed to arrive in ascending segment order.\"**\n\nLet's analyze the logic:\n1.  `last` is initialized to `-1`.\n2.  Inside the loop, `segno` is the current segment number.\n3.  `missing` is calculated as `segno - last - 1`.\n4.  The vector is grown by `missing` elements.\n5.  The segment is stored at index `segno`.\n6.  `last` is updated to `segno`.\n\n**Scenario 1: Out-of-order arrival (e.g., Segment 5 arrives before Segment 1)**\n*   Initial state: `last = -1`, `a->segments.size() = 0`.\n*   First iteration: `segno = 5`.\n*   `missing = 5 - (-1) - 1 = 5`.\n*   `a->segments.grow(0 + 5)` -> Size becomes 5 (indices 0-4).\n*   `a->segments[5] = ...` -> **Out-of-bounds write**. The vector has size 5, so valid indices are 0-4. Index 5 is invalid.\n\nEven if the vector implementation allows writing to `size()` (which is undefined behavior in C++ standard vectors, but let's assume it might work or crash), the logic is fundamentally flawed for non-ascending inputs. If `segno` is smaller than `last` (e.g., Segment 1 arrives after Segment 5), `missing` becomes negative. `grow` with a negative value or a value smaller than current size is likely undefined or a no-op, but `a->segments[segno]` might overwrite previous data or be out of bounds if the vector wasn't large enough for that specific index relative to the current size.\n\nThe primary bug is introduced when the code attempts to calculate the growth amount and access the vector based on the assumption that `segno` is greater than `last` and that the vector size corresponds to `last + 1`. The calculation of `missing` and the subsequent `grow` and index access rely on the ascending order assumption which is violated.\n\nThe specific line",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 512,
+   "prompt_tokens": 319,
+   "total_tokens": 831,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `read_segments` is designed to store numbered segments into a vector `a->segments`. The code assumes that segments arrive in ascending order or handles gaps by growing the vector. However, the problem statement explicitly states: **\"Inputs are not guaranteed to arrive in ascending segment order.\"**\n\nLet's analyze the logic:\n1.  `last` is initialized to `-1`.\n2.  Inside the loop, `segno` is the current segment number.\n3.  `missing` is calculated as `segno - last - 1`.\n4.  The vector is grown by `missing` elements.\n5.  The segment is stored at index `segno`.\n6.  `last` is updated to `segno`.\n\n**Scenario 1: Out-of-order arrival (e.g., Segment 5 arrives before Segment 1)**\n*   Initial state: `last = -1`, `a->segments.size() = 0`.\n*   First iteration: `segno = 5`.\n*   `missing = 5 - (-1) - 1 = 5`.\n*   `a->segments.grow(0 + 5)` -> Size becomes 5 (indices 0-4).\n*   `a->segments[5] = ...` -> **Out-of-bounds write**. The vector has size 5, so valid indices are 0-4. Index 5 is invalid.\n\nEven if the vector implementation allows writing to `size()` (which is undefined behavior in C++ standard vectors, but let's assume it might work or crash), the logic is fundamentally flawed for non-ascending inputs. If `segno` is smaller than `last` (e.g., Segment 1 arrives after Segment 5), `missing` becomes negative. `grow` with a negative value or a value smaller than current size is likely undefined or a no-op, but `a->segments[segno]` might overwrite previous data or be out of bounds if the vector wasn't large enough for that specific index relative to the current size.\n\nThe primary bug is introduced when the code attempts to calculate the growth amount and access the vector based on the assumption that `segno` is greater than `last` and that the vector size corresponds to `last + 1`. The calculation of `missing` and the subsequent `grow` and index access rely on the ascending order assumption which is violated.\n\nThe specific line",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "1",
+  "passed": false,
+  "elapsed_ms": 9265.8,
+  "output_sha256": "e9c0cf9155958fa9a192f01dc3325c18fc425275a462975134176cc2d626254f",
+  "prompt_token_count": 319,
+  "generated_token_count": 512,
+  "reasoning_chars": 0,
+  "content_chars": 1955,
+  "status": "length"
+ }
+}

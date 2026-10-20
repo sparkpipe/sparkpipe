@@ -1,0 +1,2 @@
++151
+GLM Flash on the KV binding: the binding gains a recurrent-state hook (per-prefix KDA records captured at publish, restored on a prefix hit at claim, budgeted in the backing store, cleared by reset), and glm5_next drops its private model table, arena, page store, copier, lane transactions, restore and reset copies in favour of the binding.

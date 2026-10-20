@@ -1,0 +1,62 @@
+{
+ "id": "compsec-086",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "gemma-4-26b-a4b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe parser grows a reusable tag buffer before copying the current element name and closing delimiters. Sizes are attacker-influenced through XML input.\n\nCode:\n```c\n 1: static bool ensure_tag_buffer(struct Parser *p, size_t prefix_len, size_t name_len)\n 2: {\n 3:     unsigned int need = (unsigned int)(prefix_len + name_len + 3);\n 4: \n 5:     if (need > p->tag_cap) {\n 6:         char *q = realloc(p->tag_buf, need);\n 7:         if (q == NULL)\n 8:             return false;\n 9:         p->tag_buf = q;\n10:         p->tag_cap = need;\n11:     }\n12: \n13:     memcpy(p->tag_buf, p->prefix, prefix_len);\n14:     memcpy(p->tag_buf + prefix_len, p->name, name_len);\n15:     memcpy(p->tag_buf + prefix_len + name_len, \"/>\\0\", 3);\n16:     return true;\n17: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "2fa2d75dad0433da2609a3d64aa71b6458415fb60d2b47df8303d4e2e3732df7"
+ },
+ "response": {
+  "id": "chatcmpl-c70d384ba44b45cab885b3ccb59a367f",
+  "created": 1791704190,
+  "model": "gemma-4-26b-a4b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function contains an integer overflow vulnerability on line 3. The variables `prefix_len` and `name_len` are of type `size_t` (typically 64-bit), but their sum is cast to an `unsigned int` (typically 32-bit). If the sum of `prefix_len + name_len + 3` exceeds the maximum value of an `unsigned int`, the value will wrap around. This small `need` value will pass the capacity check on line 5, leading to a heap-based buffer overflow when `memcpy` is called on lines 13, 14, and 15, as they use the original large `size_t` values.\n\nAnswer: 3",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 155,
+   "prompt_tokens": 401,
+   "total_tokens": 556,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function contains an integer overflow vulnerability on line 3. The variables `prefix_len` and `name_len` are of type `size_t` (typically 64-bit), but their sum is cast to an `unsigned int` (typically 32-bit). If the sum of `prefix_len + name_len + 3` exceeds the maximum value of an `unsigned int`, the value will wrap around. This small `need` value will pass the capacity check on line 5, leading to a heap-based buffer overflow when `memcpy` is called on lines 13, 14, and 15, as they use the original large `size_t` values.\n\nAnswer: 3",
+ "grade": {
+  "index": 11,
+  "id": "compsec-086",
+  "source": "COMPSEC",
+  "domain": "libexpat",
+  "expected": "3,13-15",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 2317.7,
+  "output_sha256": "90c6c8a29a2255c8dcbeef9ae75dddc1785bcbafc49bb9cf193f05e4f2b9713a",
+  "prompt_token_count": 401,
+  "generated_token_count": 155,
+  "reasoning_chars": 0,
+  "content_chars": 542,
+  "status": "stop"
+ }
+}

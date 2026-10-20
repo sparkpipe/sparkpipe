@@ -1,0 +1,62 @@
+{
+ "id": "compsec-091",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "gemma-4-26b-a4b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe SCSI command expresses transfer length in logical blocks. blkbits is the log2 block size.\n\nCode:\n```c\n 1: static int accept_transfer(struct lun *lun, uint32_t blocks, unsigned blkbits)\n 2: {\n 3:     uint32_t bytes = blocks << blkbits;\n 4: \n 5:     if (bytes > lun->backing_size)\n 6:         return -EINVAL;\n 7: \n 8:     lun->data_size_from_cmnd = bytes;\n 9:     return 0;\n10: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "2cd5ccccfe47000f2c3c4f18f12944dac5b54c2933be8ad91546d1172013796f"
+ },
+ "response": {
+  "id": "chatcmpl-b475605011d5429ab44a1974fc515251",
+  "created": 1791704206,
+  "model": "gemma-4-26b-a4b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function contains an integer overflow vulnerability on line 3.\n\nThe variable `blocks` is a `uint32_t` and `blkbits` is an `unsigned` integer. When calculating `bytes = blocks << blkbits`, the shift operation is performed using 32-bit arithmetic. If `blocks` is large or `blkbits` is large (e.g., `blocks = 0x10000000` and `blkbits = 4`), the result will overflow the 32-bit `uint32_t` container. \n\nBecause the overflow occurs before the comparison with `lun->backing_size` on line 5, a very large transfer request can wrap around to a small value, bypassing the bounds check and allowing an attacker to specify a transfer size that exceeds the actual backing storage, potentially leading to out-of-bounds access in subsequent operations.\n\nAnswer: 3",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 196,
+   "prompt_tokens": 267,
+   "total_tokens": 463,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function contains an integer overflow vulnerability on line 3.\n\nThe variable `blocks` is a `uint32_t` and `blkbits` is an `unsigned` integer. When calculating `bytes = blocks << blkbits`, the shift operation is performed using 32-bit arithmetic. If `blocks` is large or `blkbits` is large (e.g., `blocks = 0x10000000` and `blkbits = 4`), the result will overflow the 32-bit `uint32_t` container. \n\nBecause the overflow occurs before the comparison with `lun->backing_size` on line 5, a very large transfer request can wrap around to a small value, bypassing the bounds check and allowing an attacker to specify a transfer size that exceeds the actual backing storage, potentially leading to out-of-bounds access in subsequent operations.\n\nAnswer: 3",
+ "grade": {
+  "index": 16,
+  "id": "compsec-091",
+  "source": "COMPSEC",
+  "domain": "Linux kernel USB gadget storage",
+  "expected": "3",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 2656.7,
+  "output_sha256": "7013db4d682a4036076429393c5e1447b29ba531cce830b8cc72da73f9e281a9",
+  "prompt_token_count": 267,
+  "generated_token_count": 196,
+  "reasoning_chars": 0,
+  "content_chars": 752,
+  "status": "stop"
+ }
+}

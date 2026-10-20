@@ -7,7 +7,7 @@ import threading
 import time
 import urllib.parse
 
-STORY = "Write a long, detailed story about a lighthouse keeper who finds a map in a bottle. Describe every day of the journey."
+STORY = "Write a long, detailed story about a lighthouse keeper who finds a map in a bottle. Describe every day of the journey.\n\nDay one began when the keeper"
 PARAGRAPH = ("The committee reviewed the quarterly logistics report, which covered warehouse throughput, "
              "late shipments, staffing changes, fuel costs and the new routing software. ")
 
@@ -82,12 +82,16 @@ def run_ttft(endpoint, prompt_words, repeats):
     while len(text.split()) < prompt_words:
         text += PARAGRAPH
     records = []
-    for _ in range(repeats):
-        records.append(summarize(stream_completion(endpoint, {"prompt": text, "max_tokens": 1, "temperature": 0})))
+    for repeat in range(repeats):
+        unique = "Report %d-%d. " % (time.time_ns(), repeat)
+        records.append(summarize(stream_completion(endpoint, {"prompt": unique + text, "max_tokens": 1, "temperature": 0})))
     ttfts = [r["ttft_ms"] for r in records if "ttft_ms" in r]
     prompt_tokens = records[0]["usage"]["prompt_tokens"] if records and records[0]["usage"] else None
-    return {"case": "ttft", "prompt_tokens": prompt_tokens, "repeats": records,
-            "median_ttft_ms": statistics.median(ttfts) if ttfts else None}
+    cached = [((r["usage"] or {}).get("prompt_tokens_details") or {}).get("cached_tokens") for r in records]
+    median = statistics.median(ttfts) if ttfts else None
+    return {"case": "ttft%d" % prompt_words, "prompt_tokens": prompt_tokens, "cached_tokens": cached, "repeats": records,
+            "median_ttft_ms": median,
+            "prefill_tok_s": round(prompt_tokens * 1000.0 / median, 1) if median and prompt_tokens else None}
 
 
 def run_streams(endpoint, streams, max_tokens):
@@ -105,12 +109,17 @@ def run_streams(endpoint, streams, max_tokens):
         thread.join()
     wall = time.monotonic() - started
     total = sum(len(r["token_times"]) for r in results)
-    first = [r["started"] + r["token_times"][0] for r in results if r["token_times"]]
-    last = [r["started"] + r["token_times"][-1] for r in results if r["token_times"]]
-    steady = (total - len(first)) / (max(last) - max(first)) if first and max(last) > max(first) else None
+    decoding = [r for r in results if r["token_times"]]
+    window_begin = max(r["started"] + r["token_times"][0] for r in decoding) if len(decoding) == streams else None
+    window_end = min(r["started"] + r["token_times"][-1] for r in decoding) if len(decoding) == streams else None
+    together = None
+    if window_begin is not None and window_end > window_begin:
+        inside = sum(1 for r in decoding for t in r["token_times"] if window_begin < r["started"] + t <= window_end)
+        together = inside / (window_end - window_begin)
     return {"case": "streams%d_o%d" % (streams, max_tokens), "wall_s": round(wall, 3), "total_tokens": total,
             "aggregate_tok_s": round(total / wall, 2),
-            "aggregate_after_last_first_token_tok_s": round(steady, 2) if steady else None,
+            "all_streams_decoding_s": round(window_end - window_begin, 3) if together else None,
+            "aggregate_all_streams_decoding_tok_s": round(together, 2) if together else None,
             "errors": [r["error"] for r in results if r["error"]],
             "per_stream": [summarize(r) for r in results]}
 

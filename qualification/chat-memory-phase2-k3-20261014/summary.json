@@ -1,0 +1,84 @@
+{
+ "probes": 96,
+ "arms": {
+  "raw": {
+   "accuracy": 1.0,
+   "n": 96,
+   "by_pattern": {
+    "code": "12/12",
+    "correction": "12/12",
+    "document": "12/12",
+    "drafts": "12/12",
+    "instruction": "12/12",
+    "options": "12/12",
+    "table": "12/12",
+    "tool": "12/12"
+   }
+  },
+  "ledger_expand": {
+   "accuracy": 0.99,
+   "n": 96,
+   "minus_raw": -0.01,
+   "minus_raw_95ci": [
+    -0.031,
+    0.0
+   ],
+   "by_pattern": {
+    "code": "12/12",
+    "correction": "11/12",
+    "document": "12/12",
+    "drafts": "12/12",
+    "instruction": "12/12",
+    "options": "12/12",
+    "table": "12/12",
+    "tool": "12/12"
+   }
+  },
+  "ledger_only": {
+   "accuracy": 0.833,
+   "n": 96,
+   "minus_raw": -0.167,
+   "minus_raw_95ci": [
+    -0.25,
+    -0.094
+   ],
+   "by_pattern": {
+    "code": "10/12",
+    "correction": "12/12",
+    "document": "0/12",
+    "drafts": "11/12",
+    "instruction": "12/12",
+    "options": "12/12",
+    "table": "11/12",
+    "tool": "12/12"
+   }
+  },
+  "ledger_oracle": {
+   "accuracy": 0.99,
+   "n": 96,
+   "minus_raw": -0.01,
+   "minus_raw_95ci": [
+    -0.031,
+    0.0
+   ],
+   "by_pattern": {
+    "code": "12/12",
+    "correction": "12/12",
+    "document": "12/12",
+    "drafts": "12/12",
+    "instruction": "12/12",
+    "options": "12/12",
+    "table": "12/12",
+    "tool": "11/12"
+   }
+  }
+ },
+ "expand": {
+  "probes_with_fact_hidden": 87,
+  "expanded_the_fact": 12,
+  "expanded_anything": 12,
+  "correct_when_hidden": 86,
+  "correct_when_hidden_and_fact_not_in_line": 12,
+  "hidden_and_fact_not_in_line": 12
+ }
+}

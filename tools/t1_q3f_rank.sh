@@ -8,7 +8,6 @@ sha=$(python3 -c "import json;print(json.load(open('$pack.receipt.json'))['outpu
 rc=0
 ulimit -l unlimited 2>/dev/null || true
 env \
-	SPARK_QWEN4_FLASH_ALLOW_UNQUALIFIED_EXECUTION=1 \
 	"SPARK_QWEN4_FLASH_STAGE_PACK_PATH=$pack" \
 	SPARK_QWEN4_FLASH_STAGE_COUNT=1 \
 	SPARK_QWEN4_FLASH_STAGE_INDEX=0 \

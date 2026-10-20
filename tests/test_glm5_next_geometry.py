@@ -24,14 +24,20 @@ PATTERNS = ROOT / "model-families" / "glm5_next" / "tensor_patterns.json"
 
 
 def header_macros() -> dict[str, str]:
-    text = re.sub(r"/\*.*?\*/", "", HEADER.read_text(), flags=re.S)
-    text = re.sub(r"//[^\n]*", "", text)
-    text = re.sub(r"\\\s*\n\s*", " ", text)  # join line continuations
     out = {}
-    for match in re.finditer(
-        r"#define\s+(SPARK_GLM5_NEXT_MODEL_\w+)(?:\([^)]*\))?\s+([^\n]+)", text
-    ):
-        out[match.group(1)] = match.group(2).strip()
+    for path in (HEADER,):
+        text = re.sub(r"/\*.*?\*/", "", path.read_text(), flags=re.S)
+        text = re.sub(r"//[^\n]*", "", text)
+        text = re.sub(r"\\\s*\n\s*", " ", text)
+        for match in re.finditer(
+            r"#define\s+((?:SPARK_GLM5_NEXT_MODEL|SPARK_LLM)_\w+)(?:\([^)]*\))?\s+([^\n]+)", text
+        ):
+            out[match.group(1)] = match.group(2).strip()
+    for name, value in list(out.items()):
+        for _ in range(4):
+            if value in out:
+                value = out[value]
+        out[name] = value
     return out
 
 
@@ -45,9 +51,9 @@ def macro_int(macros: dict[str, str], name: str) -> int:
 
 def eval_dim(macros: dict[str, str], expr: str, depth: int = 0) -> int:
     value = expr.strip()
-    if depth < 4 and re.search(r"SPARK_GLM5_NEXT_MODEL_\w+", value):
+    if depth < 4 and re.search(r"(?:SPARK_GLM5_NEXT_MODEL|SPARK_LLM)_\w+", value):
         value = re.sub(
-            r"SPARK_GLM5_NEXT_MODEL_\w+",
+            r"(?:SPARK_GLM5_NEXT_MODEL|SPARK_LLM)_\w+",
             lambda m: f"({eval_dim(macros, macros[m.group(0)], depth + 1)})",
             value,
         )
@@ -267,10 +273,10 @@ def main() -> int:
     donors = {entry["donor_module"] for entry in name_map["entries"]}
     for donor in sorted(donors):
         dirs = {
-            "glm52": ROOT / "modules/glm52_resident_decode_stage",
             "k3": ROOT / "modules/k3_resident_decode_stage",
-            "dsv4": ROOT / "modules/dsv4_resident_decode_stage",
         }
+        if donor in RETIRED_DONORS:
+            continue
         check(f"donor module present: {donor}", dirs[donor].is_dir())
 
     print()
@@ -279,6 +285,9 @@ def main() -> int:
         return 1
     print("PASS glm5_next geometry + name mapping round-trip")
     return 0
+
+
+RETIRED_DONORS = {"dsv4", "glm52"}
 
 
 def pattern_of(name: str) -> str:

@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <stdint.h>
+#include <math.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -26,11 +27,12 @@
 #include "sparkpipe/spark_tokenizer_sidecar.h"
 #include "sparkpipe/spark_sampling.h"
 
-#define API_MAX_BODY		(8u * 1024u * 1024u)
-#define API_MAX_PROMPT_TOKENS	(260000u)
+#define API_MAX_BODY		(16u * 1024u * 1024u)
+#define API_MAX_HEADER		(64u * 1024u)
+#define API_MAX_PROMPT_TOKENS	(1048576u)
 #define API_MAX_STOP_TOKENS 16
-#define API_MAX_OUTPUT_TOKENS	(8192u)
-#define API_TOKEN_BUF_BYTES	(64u * 1024u)
+#define API_MAX_OUTPUT_TOKENS	(131072u)
+#define API_TOKEN_TEXT_BYTES	12u
 
 #define API_MAX_INFLIGHT 16u
 
@@ -38,12 +40,13 @@
 #define API_WAIT_SLICE_MS 250u
 #define API_STREAM_BATCH_TOKENS 64u
 #define API_UTF8_MAX_SEQUENCE 4u
-#define API_STREAM_EVENT_END "]}\n\n"
+#define API_STREAM_EVENT_END "}\n\n"
 #define API_WAIT_DONE 0u
 #define API_WAIT_TOKENS 1u
 #define API_WAIT_ADMISSION 2u
 #define API_BUSY_RETRY_MS 5
 #define API_SEQUENCE_SAVE_MS 60000u
+#define API_HEALTH_REFRESH_MS 1000u
 
 typedef struct ApiOptions
 {
@@ -53,6 +56,9 @@ typedef struct ApiOptions
 	uint32_t seeded;
 	float temperature;
 	uint64_t seed;
+	float top_p;
+	uint32_t top_k;
+	uint32_t logprobs;
 } ApiOptions;
 
 typedef struct ApiRequest
@@ -62,10 +68,11 @@ typedef struct ApiRequest
 	uint32_t *prompt_tokens;
 	uint32_t prompt_count;
 	uint32_t max_tokens;
-	char tokens_json[API_TOKEN_BUF_BYTES];
+	char *tokens_json;
+	size_t tokens_json_capacity;
 	volatile uint32_t tokens_json_len;
 	uint32_t *output_token_ids;
-	uint64_t token_ready_ns[API_MAX_OUTPUT_TOKENS];
+	uint64_t *token_ready_ns;
 	uint64_t accepted_ns;
 	uint64_t first_dispatch_ns;
 	uint32_t stale_prefix_recompute_count;
@@ -80,13 +87,19 @@ typedef struct ApiRequest
 	volatile uint32_t status;
 	SparkModelBatchRequestHandle handle;
 	uint32_t *stop_tokens;
+	uint32_t served_counted;
 	uint32_t stop_token_count;
 	uint32_t priority;
 	uint32_t stream;
 	uint32_t deadline_expired;
+	uint32_t engine_latched;
 	uint64_t deadline_ms;
 	float temperature;
 	uint64_t seed;
+	float top_p;
+	uint32_t top_k;
+	uint32_t logprob_count;
+	SparkSamplingLogprob *logprobs;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
 	struct ApiRequest *next;
@@ -103,10 +116,18 @@ typedef struct ApiState
 	uint64_t next_id;
 	uint64_t served;
 	const char *runtime_root;
+	const char *prefix_index_path;
 	uint64_t seq_saved_ms;
 	uint32_t context_limit;
 	volatile int ready;
 	volatile uint32_t bringup_status;
+	uint32_t health_rank_count;
+	uint32_t health_connected_rank_count;
+	uint32_t health_missing_rank;
+	uint32_t health_degraded_rank;
+	uint32_t health_write_alert_rank;
+	uint32_t health_failed_status;
+	uint32_t health_live_requests;
 	volatile uint32_t bringup_attempts;
 	const char *volatile bringup_phase;
 	uint64_t bringup_started_ms;
@@ -121,6 +142,8 @@ static int HaveQuantArm;
 static uint32_t EngineStopTokens[SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT];
 static uint32_t EngineStopTokenCount;
 static const SparkModelResidentChatTemplate *ChatTemplate;
+static uint32_t TextPromptPrefix[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_TEXT_PROMPT_PREFIX_COUNT];
+static uint32_t TextPromptPrefixCount;
 static uint32_t ChatStopTokens[SPARK_MODEL_RESIDENT_CHAT_TEMPLATE_MAX_STOP_MARKERS];
 static uint32_t ChatStopTokenCount;
 static char ApiBootTag[32];
@@ -174,7 +197,7 @@ static void api_log_request_measurements(const ApiRequest *request)
 	if (SparkSha256Bytes(request->prompt_tokens,(size_t)request->prompt_count * sizeof(uint32_t),prompt_sha256) != SPARK_STATUS_OK)
 		prompt_sha256[0] = '\0';
 	flockfile(stderr);
-	fprintf(stderr,"{\"event\":\"request_measurements\",\"boot_pid\":%d,\"request_id\":%llu,\"status\":%u,\"engine_completed\":%u,\"accepted_ns\":%llu,\"first_dispatch_ns\":%llu,\"stale_prefix_recomputes\":%u,\"prompt_tokens\":%u,\"cached_prompt_tokens\":%u,\"prompt_sha256\":\"%s\",\"adapter_id\":\"%s\",\"model_id\":\"%s\",\"model_revision\":\"%s\",\"driver_program\":\"%s\",\"driver_artifact_sha256\":\"%s\",\"session_fingerprint\":%llu,\"priority\":%u,\"deadline_expired\":%u,\"stream\":%u,\"temperature\":%.9g,\"seed\":%llu,\"finish_reason\":\"%s\",\"tokens\":[",(int)getpid(),(unsigned long long)request->id,request->status,request->engine_completed,(unsigned long long)request->accepted_ns,(unsigned long long)request->first_dispatch_ns,request->stale_prefix_recompute_count,request->prompt_count,request->cached_prompt_token_count,prompt_sha256,api_identity(adapter != 0 ? adapter->adapter_id : 0),api_identity(adapter != 0 ? adapter->model_id : 0),api_identity(adapter != 0 ? adapter->model_revision : 0),api_identity(adapter != 0 ? adapter->driver_program_name : 0),api_identity(adapter != 0 ? adapter->artifact_sha256 : 0),(unsigned long long)(S.engine != 0 ? SparkModelBatchEngineSessionFingerprint(S.engine) : 0u),request->priority,request->deadline_expired,request->stream,(double)request->temperature,(unsigned long long)request->seed,request->status == 0u && request->deadline_expired == 0u ? api_finish_reason(request) : "error");
+	fprintf(stderr,"{\"event\":\"request_measurements\",\"boot_pid\":%d,\"request_id\":%llu,\"status\":%u,\"engine_completed\":%u,\"accepted_ns\":%llu,\"first_dispatch_ns\":%llu,\"stale_prefix_recomputes\":%u,\"prompt_tokens\":%u,\"cached_prompt_tokens\":%u,\"prompt_sha256\":\"%s\",\"adapter_id\":\"%s\",\"model_id\":\"%s\",\"model_revision\":\"%s\",\"driver_program\":\"%s\",\"driver_artifact_sha256\":\"%s\",\"session_fingerprint\":%llu,\"priority\":%u,\"deadline_expired\":%u,\"stream\":%u,\"temperature\":%.9g,\"seed\":%llu,\"top_p\":%.9g,\"top_k\":%u,\"logprobs\":%u,\"finish_reason\":\"%s\",\"tokens\":[",(int)getpid(),(unsigned long long)request->id,request->status,request->engine_completed,(unsigned long long)request->accepted_ns,(unsigned long long)request->first_dispatch_ns,request->stale_prefix_recompute_count,request->prompt_count,request->cached_prompt_token_count,prompt_sha256,api_identity(adapter != 0 ? adapter->adapter_id : 0),api_identity(adapter != 0 ? adapter->model_id : 0),api_identity(adapter != 0 ? adapter->model_revision : 0),api_identity(adapter != 0 ? adapter->driver_program_name : 0),api_identity(adapter != 0 ? adapter->artifact_sha256 : 0),(unsigned long long)(S.engine != 0 ? SparkModelBatchEngineSessionFingerprint(S.engine) : 0u),request->priority,request->deadline_expired,request->stream,(double)request->temperature,(unsigned long long)request->seed,(double)request->top_p,request->top_k,request->logprob_count,request->status == 0u && request->deadline_expired == 0u ? api_finish_reason(request) : "error");
 	for (index=0u; index<request->output_token_count; index++)
 		fprintf(stderr,"%s[%u,%llu]",index == 0u ? "" : ",",request->output_token_ids[index],(unsigned long long)request->token_ready_ns[index]);
 	fputs("]",stderr);
@@ -191,6 +214,9 @@ static void api_request_destroy(ApiRequest *req)
 	free(req->stop_tokens);
 	free(req->prompt_tokens);
 	free(req->output_token_ids);
+	free(req->token_ready_ns);
+	free(req->tokens_json);
+	free(req->logprobs);
 	free(req);
 }
 
@@ -246,10 +272,15 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 					is_request_stop = 1;
 					break;
 				}
-			if ( is_request_stop )
+			if ( is_request_stop && (ev->flags & SPARK_MODEL_BATCH_EVENT_FLAG_STOP_TOKEN) == 0u )
 			{
 				pthread_mutex_lock(&r->mutex);
 				r->done = 1;
+				if ( r->served_counted == 0u )
+				{
+					r->served_counted = 1u;
+					S.served++;
+				}
 				pthread_cond_signal(&r->cond);
 				{
 					SparkModelBatchRequestHandle cancel_handle =
@@ -265,15 +296,17 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 					}
 				}
 			}
-			else if (r->tokens_json_len + 12u < sizeof(r->tokens_json) &&
+			else if (is_request_stop == 0 && r->tokens_json_len + API_TOKEN_TEXT_BYTES < r->tokens_json_capacity &&
 				r->output_token_count < r->max_tokens)
 			{
 				r->tokens_json_len += (uint32_t)snprintf(
 					r->tokens_json + r->tokens_json_len,
-					sizeof(r->tokens_json) - r->tokens_json_len,
+					r->tokens_json_capacity - r->tokens_json_len,
 					"%s%u", r->tokens_json_len ? "," : "",
 					(unsigned)ev->token_id);
 				r->token_ready_ns[r->output_token_count] = ev->monotonic_ns;
+				if ( r->logprob_count != 0u )
+					memcpy(r->logprobs + (size_t)r->output_token_count * r->logprob_count,ev->logprobs,(size_t)r->logprob_count * sizeof(r->logprobs[0]));
 				r->output_token_ids[r->output_token_count++] = ev->token_id;
 				pthread_mutex_lock(&r->mutex);
 				pthread_cond_signal(&r->cond);
@@ -287,7 +320,11 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 			r->status = ev->status;
 			r->engine_completed = ev->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED ? 1u : 0u;
 			r->done = 1;
-			S.served++;
+			if ( r->served_counted == 0u )
+			{
+				r->served_counted = 1u;
+				S.served++;
+			}
 			pthread_cond_signal(&r->cond);
 			pthread_mutex_unlock(&r->mutex);
 		}
@@ -417,13 +454,19 @@ static uint32_t api_submit(ApiRequest *r)
 	sub.request_id = r->id;
 	sub.sequence_id = r->id;
 	sub.priority = r->priority;
+	sub.deadline_ns = r->deadline_ms != 0u ? r->deadline_ms * UINT64_C(1000000) : 0u;
 	sub.temperature = r->temperature;
 	sub.seed = r->seed;
+	sub.top_p = r->top_p;
+	sub.top_k = r->top_k;
+	sub.logprobs = r->logprob_count;
 	sub.output_token_budget = r->max_tokens;
 	sub.prompt_token_ids = r->prompt_tokens;
 	sub.prompt_token_count = r->prompt_count;
-	(void)SparkModelBatchEngineReopenAdmission(S.engine);
-	st = SparkModelBatchEngineSubmit(S.engine,&sub,&h);
+	st = SparkModelBatchEngineReopenAdmission(S.engine);
+	r->engine_latched = st != SPARK_STATUS_OK ? 1u : 0u;
+	if ( st == SPARK_STATUS_OK )
+		st = SparkModelBatchEngineSubmit(S.engine,&sub,&h);
 	pthread_mutex_lock(&S.queue_mutex);
 	if ( st == SPARK_STATUS_OK )
 	{
@@ -488,6 +531,8 @@ static int api_poll_timeout(uint32_t busy)
 	if ( deadline_ms == 0u || save_ms < deadline_ms )
 		deadline_ms = save_ms;
 	now_ms = api_now_ms();
+	if ( deadline_ms > now_ms + API_HEALTH_REFRESH_MS )
+		deadline_ms = now_ms + API_HEALTH_REFRESH_MS;
 	timeout_ms = deadline_ms <= now_ms ? 0 : (int)(deadline_ms - now_ms);
 	return busy != 0u && timeout_ms > API_BUSY_RETRY_MS ? API_BUSY_RETRY_MS : timeout_ms;
 }
@@ -532,7 +577,91 @@ static void api_log_engine_measurements(void)
 		return;
 	logged_terminals = terminals;
 	logged_rejections = view.rejected_lane_count;
-	fprintf(stderr,"{\"event\":\"engine_measurements\",\"boot_pid\":%d,\"completed\":%llu,\"cancelled\":%llu,\"first_tokens\":%llu,\"queue_ns_total\":%llu,\"prefill_ns_total\":%llu,\"ttft_ns_total\":%llu,\"ttft_ns_maximum\":%llu,\"prefix_hits\":%llu,\"prefix_misses\":%llu,\"prefix_hit_tokens\":%llu,\"stale_prefix_recomputes\":%llu,\"stale_prefix_isolations\":%llu,\"rejected_lanes\":%llu,\"rejected_waves_busy\":%llu,\"rejected_waves_not_found\":%llu,\"rejected_waves_validation_failed\":%llu,\"rejected_waves_io_error\":%llu}\n",(int)getpid(),(unsigned long long)view.completed_request_count,(unsigned long long)view.cancelled_request_count,(unsigned long long)view.first_token_count,(unsigned long long)view.queue_ns_total,(unsigned long long)view.prefill_ns_total,(unsigned long long)view.ttft_ns_total,(unsigned long long)view.ttft_ns_maximum,(unsigned long long)view.prefix_hit_count,(unsigned long long)view.prefix_miss_count,(unsigned long long)view.prefix_hit_token_count,(unsigned long long)view.stale_prefix_recompute_count,(unsigned long long)view.stale_prefix_isolation_count,(unsigned long long)view.rejected_lane_count,(unsigned long long)view.rejected_submission_count_by_status[SPARK_STATUS_BUSY],(unsigned long long)view.rejected_submission_count_by_status[SPARK_STATUS_NOT_FOUND],(unsigned long long)view.rejected_submission_count_by_status[SPARK_STATUS_VALIDATION_FAILED],(unsigned long long)view.rejected_submission_count_by_status[SPARK_STATUS_IO_ERROR]);
+	fprintf(stderr,"{\"event\":\"engine_measurements\",\"boot_pid\":%d,\"completed\":%llu,\"cancelled\":%llu,\"first_tokens\":%llu,\"queue_ns_total\":%llu,\"prefill_ns_total\":%llu,\"ttft_ns_total\":%llu,\"ttft_ns_maximum\":%llu,\"prefix_hits\":%llu,\"prefix_misses\":%llu,\"prefix_hit_tokens\":%llu,\"stale_prefix_recomputes\":%llu,\"stale_prefix_isolations\":%llu,\"rejected_lanes\":%llu,\"rejected_waves_busy\":%llu,\"rejected_waves_not_found\":%llu,\"rejected_waves_validation_failed\":%llu,\"rejected_waves_io_error\":%llu,\"prefix_index_saves\":%llu,\"prefix_index_save_failures\":%llu,\"prefix_index_write_ns\":%llu,\"prefix_index_write_ns_max\":%llu,\"prefix_index_export_ns_max\":%llu,\"prefix_index_loaded\":%llu,\"prefix_index_refused\":%llu,\"prefix_index_reimported\":%llu,\"verify_lanes\":%llu,\"draft_tokens\":%llu,\"accepted_draft_tokens\":%llu}\n",(int)getpid(),(unsigned long long)view.completed_request_count,(unsigned long long)view.cancelled_request_count,(unsigned long long)view.first_token_count,(unsigned long long)view.queue_ns_total,(unsigned long long)view.prefill_ns_total,(unsigned long long)view.ttft_ns_total,(unsigned long long)view.ttft_ns_maximum,(unsigned long long)view.prefix_hit_count,(unsigned long long)view.prefix_miss_count,(unsigned long long)view.prefix_hit_token_count,(unsigned long long)view.stale_prefix_recompute_count,(unsigned long long)view.stale_prefix_isolation_count,(unsigned long long)view.rejected_lane_count,(unsigned long long)view.rejected_submission_count_by_status[SPARK_STATUS_BUSY],(unsigned long long)view.rejected_submission_count_by_status[SPARK_STATUS_NOT_FOUND],(unsigned long long)view.rejected_submission_count_by_status[SPARK_STATUS_VALIDATION_FAILED],(unsigned long long)view.rejected_submission_count_by_status[SPARK_STATUS_IO_ERROR],(unsigned long long)view.prefix_index_save_count,(unsigned long long)view.prefix_index_save_failure_count,(unsigned long long)view.prefix_index_write_ns_total,(unsigned long long)view.prefix_index_write_ns_maximum,(unsigned long long)view.prefix_index_export_ns_maximum,(unsigned long long)view.prefix_index_loaded_record_count,(unsigned long long)view.prefix_index_refused_count,(unsigned long long)view.prefix_index_reimported_record_count,(unsigned long long)view.speculative_verify_lane_count,(unsigned long long)view.speculative_draft_token_count,(unsigned long long)view.speculative_accepted_token_count);
+}
+
+static uint64_t api_per_page(uint64_t total,uint64_t pages)
+{
+	return(pages != 0u ? total / pages : 0u);
+}
+
+static void api_log_status_reports(void)
+{
+	static SparkModelResidentStatusReport logged[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
+	SparkModelResidentStatusReport report;
+	const SparkModelDriverKvStoreCounters *kv;
+	uint32_t rank;
+	for (rank=0u; rank<SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT; rank++)
+	{
+		if ( SparkModelBatchEngineGetRankStatus(S.engine,rank,&report) != SPARK_STATUS_OK )
+			break;
+		if ( report.generation == 0u || (memcmp(&report.adapter_snapshot.kv_store,&logged[rank].adapter_snapshot.kv_store,sizeof(report.adapter_snapshot.kv_store)) == 0 &&
+			report.residentd_pid == logged[rank].residentd_pid && report.client_generation == logged[rank].client_generation) )
+			continue;
+		logged[rank] = report;
+		kv = &report.adapter_snapshot.kv_store;
+		fprintf(stderr,"{\"event\":\"kv_store_report\",\"boot_pid\":%d,\"rank\":%u,\"stage\":%u,\"residentd_pid\":%u,\"client_generation\":%llu,\"status\":%u,\"generation\":%llu,\"attached\":%u,\"save_count\":%llu,\"save_pages\":%llu,\"save_ns\":%llu,\"save_ns_per_page\":%llu,\"save_failures\":%llu,\"save_deferred\":%llu,\"restore_count\":%llu,\"restore_pages\":%llu,\"restore_ns\":%llu,\"restore_ns_per_page\":%llu,\"restore_misses\":%llu,\"restore_corrupt\":%llu,\"restore_read_errors\":%llu,\"restore_failures\":%llu,\"store_used_bytes\":%llu,\"store_maximum_bytes\":%llu,\"store_files\":%llu,\"store_foreign_layout_files\":%llu,\"store_checksum_failures\":%llu,\"store_removed_temporaries\":%llu,\"store_evictions\":%llu,\"store_write_failures\":%llu,\"store_queue_full\":%llu,\"store_queued\":%llu,\"store_failed_status\":%u,\"pool_resident_pages\":%llu,\"pool_physical_pages\":%llu,\"pool_logical_pages\":%llu,\"pool_retained_pages\":%llu,\"pool_evicted_entries\":%llu,\"pool_resident_evictions\":%llu,\"spill_write_bytes\":%llu,\"spill_read_bytes\":%llu,\"spill_digest_mismatches\":%llu,\"spill_read_errors\":%llu,\"pool_device_bytes\":%llu,\"pool_generation\":%llu,\"pool_reattached\":%llu,\"pool_adopted_pages\":%llu,\"write_bytes\":%llu,\"write_bytes_this_hour\":%llu,\"write_bytes_previous_hour\":%llu,\"write_alerts\":%llu,\"write_alerting\":%llu}\n",
+			(int)getpid(),rank,report.stage_index,report.residentd_pid,(unsigned long long)report.client_generation,report.status,(unsigned long long)report.generation,kv->attached,
+			(unsigned long long)kv->save_count,(unsigned long long)kv->save_page_count,(unsigned long long)kv->save_ns,(unsigned long long)api_per_page(kv->save_ns,kv->save_page_count),
+			(unsigned long long)kv->save_failure_count,(unsigned long long)kv->save_deferred_count,(unsigned long long)kv->restore_count,(unsigned long long)kv->restore_page_count,
+			(unsigned long long)kv->restore_ns,(unsigned long long)api_per_page(kv->restore_ns,kv->restore_page_count),(unsigned long long)kv->restore_miss_count,(unsigned long long)kv->restore_corrupt_count,
+			(unsigned long long)kv->restore_read_error_count,(unsigned long long)kv->restore_failure_count,(unsigned long long)kv->store_used_bytes,(unsigned long long)kv->store_maximum_bytes,
+			(unsigned long long)kv->store_file_count,(unsigned long long)kv->store_foreign_layout_file_count,(unsigned long long)kv->store_checksum_failure_count,(unsigned long long)kv->store_removed_temporary_count,
+			(unsigned long long)kv->store_eviction_count,(unsigned long long)kv->store_write_failure_count,(unsigned long long)kv->store_queue_full_count,(unsigned long long)kv->store_queued_count,kv->store_failed_status,
+			(unsigned long long)kv->pool_resident_pages,(unsigned long long)kv->pool_physical_pages,(unsigned long long)kv->pool_logical_pages,(unsigned long long)kv->pool_retained_pages,
+			(unsigned long long)kv->pool_evicted_entries,(unsigned long long)kv->pool_resident_evictions,(unsigned long long)kv->spill_write_bytes,(unsigned long long)kv->spill_read_bytes,
+			(unsigned long long)kv->spill_digest_mismatches,(unsigned long long)kv->spill_read_errors,(unsigned long long)kv->pool_device_bytes,
+			(unsigned long long)kv->pool_generation,(unsigned long long)kv->pool_reattached,(unsigned long long)kv->pool_adopted_pages,
+			(unsigned long long)kv->write_bytes,(unsigned long long)kv->write_bytes_this_hour,(unsigned long long)kv->write_bytes_previous_hour,
+			(unsigned long long)kv->write_alerts,(unsigned long long)kv->write_alerting);
+	}
+}
+
+static uint32_t api_degraded_rank(void)
+{
+	SparkModelResidentStatusReport report;
+	uint32_t rank;
+	for (rank=0u; rank<SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT; rank++)
+	{
+		if ( SparkModelBatchEngineGetRankStatus(S.engine,rank,&report) != SPARK_STATUS_OK )
+			break;
+		if ( report.generation != 0u && (report.adapter_snapshot.degraded_flags & SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH) != 0u )
+			return(rank);
+	}
+	return(UINT32_MAX);
+}
+
+static uint32_t api_write_alert_rank(void)
+{
+	SparkModelResidentStatusReport report;
+	uint32_t rank;
+	for (rank=0u; rank<SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT; rank++)
+	{
+		if ( SparkModelBatchEngineGetRankStatus(S.engine,rank,&report) != SPARK_STATUS_OK )
+			break;
+		if ( report.generation != 0u && report.adapter_snapshot.kv_store.write_alerting != 0u )
+			return(rank);
+	}
+	return(UINT32_MAX);
+}
+
+static void api_publish_health(void)
+{
+	SparkModelBatchEngineView view;
+	if ( S.engine == 0 || SparkModelBatchEngineGetView(S.engine,&view) != SPARK_STATUS_OK )
+		return;
+	__atomic_store_n(&S.health_rank_count,view.pipeline.rank_count,__ATOMIC_RELEASE);
+	__atomic_store_n(&S.health_connected_rank_count,view.pipeline.connected_rank_count,__ATOMIC_RELEASE);
+	__atomic_store_n(&S.health_missing_rank,view.pipeline.first_disconnected_rank,__ATOMIC_RELEASE);
+	__atomic_store_n(&S.health_failed_status,view.failed_status,__ATOMIC_RELEASE);
+	__atomic_store_n(&S.health_live_requests,view.live_request_count,__ATOMIC_RELEASE);
+	__atomic_store_n(&S.health_degraded_rank,api_degraded_rank(),__ATOMIC_RELEASE);
+	__atomic_store_n(&S.health_write_alert_rank,api_write_alert_rank(),__ATOMIC_RELEASE);
+	if ( view.context_limit != 0u && view.context_limit != __atomic_load_n(&S.context_limit,__ATOMIC_ACQUIRE) )
+	{
+		__atomic_store_n(&S.context_limit,view.context_limit,__ATOMIC_RELEASE);
+		api_logf("api_context_limit max_context_tokens=%u source=engine", view.context_limit);
+	}
 }
 
 static void *api_worker(void *arg)
@@ -546,7 +675,9 @@ static void *api_worker(void *arg)
 		api_reap_orphans();
 		busy = api_submit_pending();
 		(void)SparkModelBatchEngineProgress(S.engine,4u);
+		api_publish_health();
 		api_log_engine_measurements();
+		api_log_status_reports();
 		api_save_sequence();
 		api_poll_engine(busy);
 	}
@@ -577,10 +708,11 @@ static uint32_t api_context_limit(const SparkModelResidentDeployment *deployment
 
 static int api_fit_context(uint32_t prompt_len, uint32_t *max_tokens)
 {
-	if ( prompt_len >= S.context_limit )
+	uint32_t limit = __atomic_load_n(&S.context_limit,__ATOMIC_ACQUIRE);
+	if ( prompt_len >= limit )
 		return(0);
-	if ( *max_tokens > S.context_limit - prompt_len )
-		*max_tokens = S.context_limit - prompt_len;
+	if ( *max_tokens > limit - prompt_len )
+		*max_tokens = limit - prompt_len;
 	return(1);
 }
 
@@ -640,6 +772,11 @@ static int read_http_request(int fd, char *method, size_t method_sz,
 				break;
 			}
 		}
+		if (total >= API_MAX_HEADER)
+		{
+			free(buf);
+			return 0;
+		}
 	}
 	if (header_end == 0)
 	{
@@ -672,11 +809,36 @@ static int read_http_request(int fd, char *method, size_t method_sz,
 		}
 	}
 	{
-		char *cl = strcasestr(buf, "content-length:");
+		char saved = buf[header_end];
+		char *cl;
+		buf[header_end] = '\0';
+		cl = strcasestr(buf, "\r\ncontent-length:");
 		if (cl != 0)
-			content_length = (uint32_t)strtoul(cl + 15, 0, 10);
+		{
+			const char *digits = cl + 17;
+			char *end = 0;
+			unsigned long long value;
+			while (*digits == ' ' || *digits == '\t')
+				digits++;
+			if (*digits < '0' || *digits > '9')
+			{
+				free(buf);
+				return 0;
+			}
+			errno = 0;
+			value = strtoull(digits, &end, 10);
+			while (end != 0 && (*end == ' ' || *end == '\t'))
+				end++;
+			if (errno != 0 || end == 0 || end[0] != '\r' || end[1] != '\n' || value > API_MAX_BODY)
+			{
+				free(buf);
+				return 0;
+			}
+			content_length = (uint32_t)value;
+		}
+		buf[header_end] = saved;
 	}
-	if (content_length > API_MAX_BODY)
+	if (content_length > API_MAX_BODY || header_end + (size_t)content_length > buf_cap - 1u)
 	{
 		free(buf);
 		return 0;
@@ -699,6 +861,7 @@ static int read_http_request(int fd, char *method, size_t method_sz,
 		}
 		total += (size_t)n;
 	}
+	buf[header_end + content_length] = '\0';
 	*body = buf + header_end;
 	*body_base = buf;
 	*body_len = content_length;
@@ -812,7 +975,7 @@ typedef struct ApiStream
 static int api_parse_sampling_options(const SparkJsonDocument *doc, int32_t root, ApiOptions *options)
 {
 	int32_t member;
-	float top_p;
+	uint32_t top_alternatives = 0u;
 	member = SparkJsonFindObjectMember(doc,root,"temperature");
 	if ( member >= 0 && (SparkJsonGetFloat(doc,member,&options->temperature) != SPARK_STATUS_OK || SparkSamplingTemperatureValid(options->temperature) == 0u) )
 		return 0;
@@ -821,7 +984,21 @@ static int api_parse_sampling_options(const SparkJsonDocument *doc, int32_t root
 	if ( member >= 0 && SparkJsonGetUInt64(doc,member,&options->seed) != SPARK_STATUS_OK )
 		return 0;
 	member = SparkJsonFindObjectMember(doc,root,"top_p");
-	return member < 0 || (SparkJsonGetFloat(doc,member,&top_p) == SPARK_STATUS_OK && top_p == 1.0f);
+	if ( member >= 0 && (SparkJsonGetFloat(doc,member,&options->top_p) != SPARK_STATUS_OK || SparkSamplingTopPValid(options->top_p) == 0u) )
+		return 0;
+	member = SparkJsonFindObjectMember(doc,root,"top_k");
+	if ( member >= 0 && (SparkJsonGetUInt32(doc,member,&options->top_k) != SPARK_STATUS_OK || options->top_k > SPARK_SAMPLING_MAX_TOP_K) )
+		return 0;
+	member = SparkJsonFindObjectMember(doc,root,"logprobs");
+	if ( member >= 0 && (SparkJsonGetUInt32(doc,member,&top_alternatives) != SPARK_STATUS_OK || top_alternatives > SPARK_SAMPLING_MAX_TOP_LOGPROBS) )
+		return 0;
+	options->logprobs = member >= 0 ? top_alternatives + 1u : 0u;
+	if ( options->temperature == 0.0f )
+	{
+		options->top_p = 1.0f;
+		options->top_k = 0u;
+	}
+	return 1;
 }
 
 static int api_parse_serving_options(const SparkJsonDocument *doc, int32_t root, ApiOptions *options)
@@ -829,6 +1006,7 @@ static int api_parse_serving_options(const SparkJsonDocument *doc, int32_t root,
 	int32_t member;
 	bool flag;
 	memset(options,0,sizeof(*options));
+	options->top_p = 1.0f;
 	if ( root < 0 )
 		return 1;
 	member = SparkJsonFindObjectMember(doc,root,"stream");
@@ -859,16 +1037,13 @@ static int api_resolve_seed(ApiOptions *options)
 	return 1;
 }
 
+_Static_assert(SPARK_MODEL_RESIDENT_CHAT_TEMPLATE_MAX_STOP_MARKERS <= API_MAX_STOP_TOKENS, "a chat template's stop markers fit a request's stop list");
+
 static uint32_t api_stop_list(const ApiRequest *req, uint32_t *stops)
 {
-	uint32_t count = EngineStopTokenCount;
 	memcpy(stops,EngineStopTokens,(size_t)EngineStopTokenCount * sizeof(uint32_t));
-	if ( req->stop_token_count <= API_MAX_STOP_TOKENS )
-	{
-		memcpy(stops + count,req->stop_tokens,(size_t)req->stop_token_count * sizeof(uint32_t));
-		count += req->stop_token_count;
-	}
-	return count;
+	memcpy(stops + EngineStopTokenCount,req->stop_tokens,(size_t)req->stop_token_count * sizeof(uint32_t));
+	return EngineStopTokenCount + req->stop_token_count;
 }
 
 static void api_usage_json(char *buffer, size_t capacity, const ApiRequest *req)
@@ -957,7 +1132,41 @@ static uint32_t api_utf8_complete(const char *text, uint32_t length)
 	return start - 1u + need > length ? start - 1u : length;
 }
 
-static int api_stream_open(int fd, ApiStream *stream)
+static size_t api_logprobs_json_capacity(const ApiRequest *req, uint32_t token_count)
+{
+	return req->logprob_count != 0u ? (size_t)token_count * ((size_t)req->logprob_count * 36u + 4u) + 32u : 0u;
+}
+
+static int api_logprobs_json(char *out, size_t capacity, size_t *length, const ApiRequest *req, uint32_t first, uint32_t token_count)
+{
+	const SparkSamplingLogprob *entry;
+	uint32_t token,index;
+	int written;
+	if ( req->logprob_count == 0u )
+		return 1;
+	written = snprintf(out + *length,capacity - *length,",\"token_logprobs\":[");
+	if ( written < 0 || (size_t)written >= capacity - *length )
+		return 0;
+	*length += (size_t)written;
+	for (token = 0u; token < token_count; token++)
+		for (index = 0u; index < req->logprob_count; index++)
+		{
+			entry = &req->logprobs[(size_t)(first + token) * req->logprob_count + index];
+			written = isfinite(entry->logprob)
+				? snprintf(out + *length,capacity - *length,"%s%s[%u,%.9g]%s",index == 0u && token != 0u ? "," : "",index == 0u ? "[" : ",",entry->token,(double)entry->logprob,index + 1u == req->logprob_count ? "]" : "")
+				: snprintf(out + *length,capacity - *length,"%s%s[%u,null]%s",index == 0u && token != 0u ? "," : "",index == 0u ? "[" : ",",entry->token,index + 1u == req->logprob_count ? "]" : "");
+			if ( written < 0 || (size_t)written >= capacity - *length )
+				return 0;
+			*length += (size_t)written;
+		}
+	if ( *length + 2u > capacity )
+		return 0;
+	out[(*length)++] = ']';
+	out[*length] = '\0';
+	return 1;
+}
+
+static int api_stream_open(int fd, ApiStream *stream, const ApiRequest *req)
 {
 	static const char headers[] = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
 	memset(stream,0,sizeof(*stream));
@@ -965,7 +1174,7 @@ static int api_stream_open(int fd, ApiStream *stream)
 	stream->piece_capacity = (HaveSidecar ? Sidecar.maximum_token_text_bytes : 0u) + 1u;
 	stream->pending_capacity = API_STREAM_BATCH_TOKENS * stream->piece_capacity + API_UTF8_MAX_SEQUENCE;
 	stream->escaped_capacity = (size_t)stream->pending_capacity * 6u + 8u;
-	stream->event_capacity = stream->escaped_capacity + (size_t)API_STREAM_BATCH_TOKENS * 12u + 512u;
+	stream->event_capacity = stream->escaped_capacity + (size_t)API_STREAM_BATCH_TOKENS * 12u + api_logprobs_json_capacity(req,API_STREAM_BATCH_TOKENS) + 512u;
 	stream->pending = malloc(stream->pending_capacity);
 	stream->piece = malloc(stream->piece_capacity);
 	stream->escaped = malloc(stream->escaped_capacity);
@@ -1010,7 +1219,7 @@ static int api_stream_text(ApiStream *stream, const uint32_t *tokens, uint32_t c
 	return 1;
 }
 
-static int api_stream_event(int fd, ApiStream *stream, int chat_format, const uint32_t *tokens, uint32_t count, const ApiRequest *finished)
+static int api_stream_event(int fd, ApiStream *stream, int chat_format, const ApiRequest *req, uint32_t first_token, const uint32_t *tokens, uint32_t count, const ApiRequest *finished)
 {
 	char usage[160],reason[24];
 	size_t length;
@@ -1030,6 +1239,9 @@ static int api_stream_event(int fd, ApiStream *stream, int chat_format, const ui
 		length += (size_t)snprintf(stream->event + length,stream->event_capacity - length,"%s%u",index != 0u ? "," : "",tokens[index]);
 	if ( index != count || length + 8u > stream->event_capacity )
 		return 0;
+	stream->event[length++] = ']';
+	if ( !api_logprobs_json(stream->event,stream->event_capacity,&length,req,first_token,count) || length + 8u > stream->event_capacity )
+		return 0;
 	memcpy(stream->event + length,API_STREAM_EVENT_END,sizeof(API_STREAM_EVENT_END) - 1u);
 	stream->first = 0u;
 	return send_all(fd,stream->event,length + sizeof(API_STREAM_EVENT_END) - 1u);
@@ -1037,11 +1249,23 @@ static int api_stream_event(int fd, ApiStream *stream, int chat_format, const ui
 
 static int api_failure(const ApiRequest *req, char *body, size_t capacity)
 {
+	const SparkModelServingAdapterDescriptor *adapter = S.engine != 0 ? SparkModelBatchEngineGetAdapterDescriptor(S.engine) : 0;
+	uint32_t capabilities = adapter != 0 ? adapter->capability_flags : 0u;
+	uint32_t missing = __atomic_load_n(&S.health_missing_rank,__ATOMIC_ACQUIRE);
+	uint32_t expired = req->deadline_expired != 0u || (req->status != 0u && req->deadline_ms != 0u && api_now_ms() >= req->deadline_ms) ? 1u : 0u;
 	int code = 500;
-	if ( req->deadline_expired != 0u )
+	if ( expired != 0u && missing != UINT32_MAX )
+		code = 504, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"deadline exceeded while rank %u is disconnected\",\"type\":\"timeout\",\"code\":\"deadline_exceeded\",\"missing_rank\":%u}}",missing,missing);
+	else if ( expired != 0u )
 		code = 504, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"deadline exceeded\",\"type\":\"timeout\",\"code\":\"deadline_exceeded\"}}");
+	else if ( req->engine_latched != 0u )
+		code = 503, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"the engine latched %s; restart or reset the deployment's ranks\",\"type\":\"server_error\",\"code\":\"engine_failed\"}}",SparkStatusToString((SparkStatus)req->status));
 	else if ( req->submitted == 0 && req->status == (uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED )
 		code = 400, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"prompt plus max_tokens exceeds the deployment's context or KV capacity\",\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\"}}");
+	else if ( req->submitted == 0 && req->status == (uint32_t)SPARK_STATUS_UNSUPPORTED && req->logprob_count != 0u && (capabilities & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS) == 0u )
+		code = 400, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"this deployment does not return logprobs\",\"type\":\"invalid_request_error\",\"code\":\"logprobs_unsupported\"}}");
+	else if ( req->submitted == 0 && req->status == (uint32_t)SPARK_STATUS_UNSUPPORTED && req->temperature != 0.0f && (capabilities & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING) != 0u )
+		code = 400, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"this deployment samples with temperature only; send top_p 1 and top_k 0\",\"type\":\"invalid_request_error\",\"code\":\"truncation_unsupported\"}}");
 	else if ( req->submitted == 0 && req->status == (uint32_t)SPARK_STATUS_UNSUPPORTED )
 		code = 400, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"this deployment decodes greedily only; send temperature 0\",\"type\":\"invalid_request_error\",\"code\":\"sampling_unsupported\"}}");
 	else
@@ -1060,7 +1284,7 @@ static void api_stream_close(int fd, const ApiRequest *req, ApiStream *stream, i
 		alive = send_all(fd,event,strlen(event));
 	}
 	else if ( alive )
-		alive = api_stream_text(stream,0,0u,stops,stop_count,1u) && api_stream_event(fd,stream,chat_format,0,0u,req);
+		alive = api_stream_text(stream,0,0u,stops,stop_count,1u) && api_stream_event(fd,stream,chat_format,req,stream->sent_tokens,0,0u,req);
 	if ( alive )
 		(void)send_all(fd,done,sizeof(done) - 1u);
 	free(stream->pending);
@@ -1072,30 +1296,38 @@ static void api_stream_close(int fd, const ApiRequest *req, ApiStream *stream, i
 static void api_send_completion(int fd, const ApiRequest *req, int chat_format)
 {
 	uint32_t stops[API_MAX_STOP_TOKENS + SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT],stop_count,text_capacity = 1u,text_bytes = 0u;
-	char *text = 0,*escaped = 0,*response = 0,usage[160],err[160];
-	size_t escaped_capacity,escaped_length = 0u,response_capacity;
+	char *text = 0,*escaped = 0,*response = 0,*logprobs = 0,usage[160],err[160];
+	size_t escaped_capacity,escaped_length = 0u,response_capacity,logprobs_capacity,logprobs_length = 0u;
 	SparkStatus status = SPARK_STATUS_OK;
 	stop_count = api_stop_list(req,stops);
 	if (HaveSidecar)
 		text_capacity = req->output_token_count * Sidecar.maximum_token_text_bytes + 1u;
 	escaped_capacity = (size_t)text_capacity * 6u + 8u;
-	response_capacity = (size_t)req->tokens_json_len + escaped_capacity + 384u;
+	logprobs_capacity = api_logprobs_json_capacity(req,req->output_token_count) + 1u;
+	response_capacity = (size_t)req->tokens_json_len + escaped_capacity + logprobs_capacity + 384u;
 	text = malloc(text_capacity);
 	escaped = malloc(escaped_capacity);
 	response = malloc(response_capacity);
-	if (text == 0 || escaped == 0 || response == 0)
+	logprobs = malloc(logprobs_capacity);
+	if (text == 0 || escaped == 0 || response == 0 || logprobs == 0)
 		status = SPARK_STATUS_INTERNAL_ERROR;
-	else if (HaveSidecar)
+	else
+	{
+		logprobs[0] = '\0';
+		if (!api_logprobs_json(logprobs,logprobs_capacity,&logprobs_length,req,0u,req->output_token_count))
+			status = SPARK_STATUS_INTERNAL_ERROR;
+	}
+	if (status == SPARK_STATUS_OK && HaveSidecar)
 		status = SparkTokenizerSidecarDecodeText(&Sidecar,req->output_token_ids,req->output_token_count,stops,stop_count,0u,text,text_capacity,&text_bytes);
 	if (status == SPARK_STATUS_OK && !append_json_escaped(escaped,escaped_capacity,&escaped_length,text,text_bytes))
 		status = SPARK_STATUS_INTERNAL_ERROR;
 	api_usage_json(usage,sizeof(usage),req);
 	if (status == SPARK_STATUS_OK && !HaveSidecar)
-		(void)snprintf(response,response_capacity,"{\"object\":\"text_completion\",\"tokens\":[%s],\"finish_reason\":\"%s\"%s,\"status\":0}",req->tokens_json,api_finish_reason(req),usage);
+		(void)snprintf(response,response_capacity,"{\"object\":\"text_completion\",\"tokens\":[%s]%s,\"finish_reason\":\"%s\"%s,\"status\":0}",req->tokens_json,logprobs,api_finish_reason(req),usage);
 	else if (status == SPARK_STATUS_OK && chat_format)
-		(void)snprintf(response,response_capacity,"{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"%s\"},\"finish_reason\":\"%s\"}]%s,\"tokens\":[%s],\"status\":0}",escaped,api_finish_reason(req),usage,req->tokens_json);
+		(void)snprintf(response,response_capacity,"{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"%s\"},\"finish_reason\":\"%s\"}]%s,\"tokens\":[%s]%s,\"status\":0}",escaped,api_finish_reason(req),usage,req->tokens_json,logprobs);
 	else if (status == SPARK_STATUS_OK)
-		(void)snprintf(response,response_capacity,"{\"object\":\"text_completion\",\"choices\":[{\"index\":0,\"text\":\"%s\",\"finish_reason\":\"%s\"}]%s,\"tokens\":[%s],\"status\":0}",escaped,api_finish_reason(req),usage,req->tokens_json);
+		(void)snprintf(response,response_capacity,"{\"object\":\"text_completion\",\"choices\":[{\"index\":0,\"text\":\"%s\",\"finish_reason\":\"%s\"}]%s,\"tokens\":[%s]%s,\"status\":0}",escaped,api_finish_reason(req),usage,req->tokens_json,logprobs);
 	if (status == SPARK_STATUS_OK)
 	{
 		send_response(fd,200,response);
@@ -1109,6 +1341,7 @@ static void api_send_completion(int fd, const ApiRequest *req, int chat_format)
 	free(text);
 	free(escaped);
 	free(response);
+	free(logprobs);
 }
 
 static void api_release_request(ApiRequest *req)
@@ -1130,7 +1363,7 @@ static void api_release_request(ApiRequest *req)
 static void api_stream(int fd, ApiRequest *req, int chat_format)
 {
 	ApiStream stream;
-	uint32_t tokens[API_STREAM_BATCH_TOKENS],stops[API_MAX_STOP_TOKENS + SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT],stop_count,count;
+	uint32_t tokens[API_STREAM_BATCH_TOKENS],stops[API_MAX_STOP_TOKENS + SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT],stop_count,count,first_token;
 	char error[224];
 	int alive;
 	api_await(fd,req,0u,API_WAIT_ADMISSION);
@@ -1142,15 +1375,16 @@ static void api_stream(int fd, ApiRequest *req, int chat_format)
 		return;
 	}
 	stop_count = api_stop_list(req,stops);
-	alive = api_stream_open(fd,&stream);
+	alive = api_stream_open(fd,&stream,req);
 	while ( alive )
 	{
 		api_await(fd,req,stream.sent_tokens,API_WAIT_TOKENS);
+		first_token = stream.sent_tokens;
 		count = api_stream_take(req,&stream,tokens);
 		if ( count == 0u && (req->done != 0 || S.running == 0) )
 			break;
 		if ( count != 0u )
-			alive = api_stream_text(&stream,tokens,count,stops,stop_count,0u) && api_stream_event(fd,&stream,chat_format,tokens,count,0);
+			alive = api_stream_text(&stream,tokens,count,stops,stop_count,0u) && api_stream_event(fd,&stream,chat_format,req,first_token,tokens,count,0);
 	}
 	if ( req->done == 0 )
 		api_abandon(req,alive != 0 ? SPARK_STATUS_INTERNAL_ERROR : SPARK_STATUS_IO_ERROR,0u);
@@ -1174,7 +1408,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 {
 	SparkJsonDocument doc;
 	int32_t root, mt;
-	uint32_t *request_stops = 0;
+	uint32_t request_stops[API_MAX_STOP_TOKENS];
 	uint32_t request_stop_count = 0;
 	uint32_t chat_request = 0;
 	bool chat_thinking = false;
@@ -1248,23 +1482,32 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	}
 	if (root >= 0)
 	{
+		int32_t stop_member = SparkJsonFindObjectMember(&doc, root, "stop_token_ids");
 		uint32_t *stops = 0;
-		uint32_t stop_len = parse_token_array(&doc, root, "stop_token_ids", &stops);
-		if (stop_len > 0 && stop_len <= API_MAX_STOP_TOKENS)
-			request_stops = stops, request_stop_count = stop_len;
-		else
-			free(stops);
-	}
-	if (chat_request != 0u && request_stops == 0 && ChatStopTokenCount != 0u)
-	{
-		request_stops = malloc(ChatStopTokenCount * sizeof(uint32_t));
-		if (request_stops == 0)
+		uint32_t stop_len = 0u;
+		if (stop_member >= 0 &&
+			!(SparkJsonTokenIsType(&doc, stop_member, SPARK_JSON_TOKEN_ARRAY) &&
+				SparkJsonGetArrayElementCount(&doc, stop_member) == 0))
 		{
-			SparkJsonDocumentDestroy(&doc);
-			free(prompt_text);
-			send_response(fd, 500, "{\"error\":\"oom\"}");
-			return;
+			stop_len = parse_token_array(&doc, root, "stop_token_ids", &stops);
+			if (stop_len == 0u || stop_len > API_MAX_STOP_TOKENS)
+			{
+				free(stops);
+				SparkJsonDocumentDestroy(&doc);
+				free(prompt);
+				free(prompt_text);
+				send_response(fd, 400,
+					"{\"error\":{\"message\":\"stop_token_ids must be an array of at most 16 token ids\","
+					"\"type\":\"invalid_request_error\",\"code\":\"invalid_stop_token_ids\"}}");
+				return;
+			}
+			memcpy(request_stops, stops, (size_t)stop_len * sizeof(uint32_t));
+			request_stop_count = stop_len;
+			free(stops);
 		}
+	}
+	if (chat_request != 0u && request_stop_count == 0u && ChatStopTokenCount != 0u)
+	{
 		memcpy(request_stops, ChatStopTokens, ChatStopTokenCount * sizeof(uint32_t));
 		request_stop_count = ChatStopTokenCount;
 	}
@@ -1272,19 +1515,26 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	if (mt >= 0)
 	{
 		uint32_t v;
-		if (SparkJsonGetUInt32(&doc, mt, &v) == SPARK_STATUS_OK && v > 0)
-			max_tokens = v > API_MAX_OUTPUT_TOKENS ? API_MAX_OUTPUT_TOKENS : v;
+		if (SparkJsonGetUInt32(&doc, mt, &v) != SPARK_STATUS_OK || v == 0u || v > API_MAX_OUTPUT_TOKENS)
+		{
+			SparkJsonDocumentDestroy(&doc);
+			free(prompt);
+			free(prompt_text);
+			send_response(fd, 400, "{\"error\":{\"message\":\"max_tokens must be an integer from 1 to 131072\",\"type\":\"invalid_request_error\"}}");
+			return;
+		}
+		max_tokens = v;
 	}
 	if (!api_parse_serving_options(&doc, root, &options))
 	{
 		SparkJsonDocumentDestroy(&doc);
 		free(prompt);
 		free(prompt_text);
-		free(request_stops);
 		send_response(fd, 400,
 			"{\"error\":{\"message\":\"stream must be a boolean; priority, deadline_ms and seed "
 			"must be unsigned integers, deadline_ms nonzero; temperature must be 0 or between "
-			"0.0001 and 2; top_p, if given, must be 1\","
+			"0.0001 and 2; top_p must be above 0 and at most 1; top_k must be an unsigned "
+			"integer of at most 1048576; logprobs must be an unsigned integer of at most 20\","
 			"\"type\":\"invalid_request_error\",\"code\":\"invalid_option\"}}");
 		return;
 	}
@@ -1318,8 +1568,9 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 				"\"type\":\"invalid_request_error\",\"code\":\"invalid_prompt\"}}");
 			return;
 		}
+		const uint32_t prefix_count = chat_request == 0u ? TextPromptPrefixCount : 0u;
 		SparkTokenizerWorkspaceReset(&workspace);
-		prompt = malloc((size_t)prompt_text_bytes * sizeof(uint32_t) + sizeof(uint32_t));
+		prompt = malloc(((size_t)prompt_text_bytes + 1u + prefix_count) * sizeof(uint32_t));
 		if (prompt == 0 ||
 			SparkTokenizerWorkspaceInitialize(&workspace, prompt_text_bytes + 1u) != SPARK_STATUS_OK)
 		{
@@ -1330,7 +1581,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 		}
 		SparkTokenizerEncodingReset(&encoding);
 		encoding.token_capacity = prompt_text_bytes + 1u;
-		encoding.token_ids = prompt;
+		encoding.token_ids = prompt + prefix_count;
 		encode_status = SparkTokenizerSidecarEncodeText(&Sidecar, prompt_text,
 			prompt_text_bytes, 0u, &workspace, &encoding);
 		SparkTokenizerWorkspaceDestroy(&workspace);
@@ -1349,7 +1600,8 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 			}
 			return;
 		}
-		prompt_len = encoding.token_count;
+		memcpy(prompt, TextPromptPrefix, (size_t)prefix_count * sizeof(uint32_t));
+		prompt_len = encoding.token_count + prefix_count;
 	}
 	if (prompt_len == 0)
 	{
@@ -1361,15 +1613,13 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	{
 		char err[224];
 		free(prompt);
-		free(request_stops);
-		(void)snprintf(err, sizeof(err), "{\"error\":{\"message\":\"the prompt has %u tokens and this deployment serves %u positions, so no output fits\",\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\"}}", prompt_len, S.context_limit);
+		(void)snprintf(err, sizeof(err), "{\"error\":{\"message\":\"the prompt has %u tokens and this deployment serves %u positions, so no output fits\",\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\"}}", prompt_len, __atomic_load_n(&S.context_limit,__ATOMIC_ACQUIRE));
 		send_response(fd, 400, err);
 		return;
 	}
 	if (!api_resolve_seed(&options))
 	{
 		free(prompt);
-		free(request_stops);
 		send_response(fd, 500, "{\"error\":{\"message\":\"no entropy for a sampling seed\",\"type\":\"server_error\",\"code\":\"seed_unavailable\"}}");
 		return;
 	}
@@ -1381,23 +1631,39 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 		return;
 	}
 	req->output_token_ids = malloc((size_t)max_tokens * sizeof(uint32_t));
-	if (req->output_token_ids == 0)
+	req->token_ready_ns = malloc((size_t)max_tokens * sizeof(uint64_t));
+	req->tokens_json_capacity = (size_t)max_tokens * API_TOKEN_TEXT_BYTES + API_TOKEN_TEXT_BYTES;
+	req->tokens_json = malloc(req->tokens_json_capacity);
+	req->logprobs = options.logprobs != 0u ? malloc((size_t)max_tokens * options.logprobs * sizeof(req->logprobs[0])) : 0;
+	req->stop_tokens = request_stop_count != 0u ? malloc((size_t)request_stop_count * sizeof(uint32_t)) : 0;
+	if (req->output_token_ids == 0 || req->token_ready_ns == 0 || req->tokens_json == 0 || (options.logprobs != 0u && req->logprobs == 0) ||
+		(request_stop_count != 0u && req->stop_tokens == 0))
 	{
 		free(prompt);
+		free(req->output_token_ids);
+		free(req->token_ready_ns);
+		free(req->tokens_json);
+		free(req->logprobs);
+		free(req->stop_tokens);
 		free(req);
 		send_response(fd, 500, "{\"error\":\"oom\"}");
 		return;
 	}
+	req->tokens_json[0] = '\0';
 	pthread_mutex_init(&req->mutex, 0);
 	pthread_cond_init(&req->cond, 0);
 	req->started_ms = api_now_ms();
-	req->stop_tokens = request_stops;
+	if (request_stop_count != 0u)
+		memcpy(req->stop_tokens, request_stops, (size_t)request_stop_count * sizeof(uint32_t));
 	req->stop_token_count = request_stop_count;
 	req->stream = options.stream;
 	req->priority = options.priority;
 	req->deadline_ms = options.deadline_ms != 0u ? req->started_ms + options.deadline_ms : 0u;
 	req->temperature = options.temperature;
 	req->seed = options.seed;
+	req->top_p = options.top_p;
+	req->top_k = options.top_k;
+	req->logprob_count = options.logprobs;
 	pthread_mutex_lock(&S.queue_mutex);
 	req->id = ++S.next_id + 100000;
 	req->prompt_tokens = prompt;
@@ -1458,11 +1724,21 @@ static void *api_connection(void *arg)
 	}
 	else if (strcmp(method, "GET") == 0 && strcmp(path, "/health") == 0)
 	{
-		char b[128];
+		char b[448];
+		uint32_t ranks = __atomic_load_n(&S.health_rank_count, __ATOMIC_ACQUIRE);
+		uint32_t write_alert = __atomic_load_n(&S.health_write_alert_rank, __ATOMIC_ACQUIRE);
+		uint32_t connected = __atomic_load_n(&S.health_connected_rank_count, __ATOMIC_ACQUIRE);
+		uint32_t missing = __atomic_load_n(&S.health_missing_rank, __ATOMIC_ACQUIRE);
+		uint32_t failed = __atomic_load_n(&S.health_failed_status, __ATOMIC_ACQUIRE);
+		uint32_t eager = __atomic_load_n(&S.health_degraded_rank, __ATOMIC_ACQUIRE);
+		uint32_t degraded = connected < ranks || eager != UINT32_MAX || (failed != 0u && failed != (uint32_t)SPARK_STATUS_IO_ERROR) ? 1u : 0u;
 		(void)snprintf(b, sizeof(b),
-			"{\"status\":\"ok\",\"served\":%llu,\"tokenizer\":%s}",
-			(unsigned long long)S.served, HaveSidecar ? "true" : "false");
-		send_response(fd, 200, b);
+			"{\"status\":\"%s\",\"served\":%llu,\"tokenizer\":%s,\"ranks\":%u,\"connected_ranks\":%u,\"missing_rank\":%d,\"degraded_rank\":%d,\"degraded_path\":\"%s\",\"engine_status\":\"%s\",\"live_requests\":%u,\"kv_write_alert_rank\":%d}",
+			degraded != 0u ? "degraded" : "ok", (unsigned long long)S.served, HaveSidecar ? "true" : "false", ranks, connected,
+			missing != UINT32_MAX ? (int)missing : -1, eager != UINT32_MAX ? (int)eager : -1, eager != UINT32_MAX ? "eager" : "none",
+			SparkStatusToString((SparkStatus)failed), __atomic_load_n(&S.health_live_requests, __ATOMIC_ACQUIRE),
+			write_alert != UINT32_MAX ? (int)write_alert : -1);
+		send_response(fd, degraded != 0u ? 503 : 200, b);
 	}
 	else if (strcmp(method, "GET") == 0 && strcmp(path, "/v1/models") == 0)
 	{
@@ -1577,6 +1853,9 @@ static void *api_bringup(void *argument)
 		(unsigned long long)(api_now_ms() - S.bringup_started_ms));
 	api_seed_submission_ids();
 	S.running = 1;
+	S.health_missing_rank = UINT32_MAX;
+	S.health_degraded_rank = UINT32_MAX;
+	S.health_write_alert_rank = UINT32_MAX;
 	if (pthread_create(&ApiWorker, 0, api_worker, 0) != 0)
 	{
 		api_logf("api_exit reason=worker_create_failed");
@@ -1591,6 +1870,10 @@ static void *api_bringup(void *argument)
 int main(int argc, char **argv)
 {
 	const char *dep_path = 0, *root = 0, *port_s = "8080", *quant_arm_path = 0;
+	const char *peer_roots[SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX];
+	static char peer_index_storage[SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX][4200];
+	static const char *peer_indexes[SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX];
+	uint32_t peer_count = 0u, peer;
 	SparkModelResidentDeployment dep;
 	SparkModelBatchEngineConfiguration cfg;
 	pthread_t bringup;
@@ -1601,6 +1884,15 @@ int main(int argc, char **argv)
 			dep_path = argv[++i];
 		else if (!strcmp(argv[i], "--runtime-root") && i + 1 < argc)
 			root = argv[++i];
+		else if (!strcmp(argv[i], "--peer-runtime-root") && i + 1 < argc)
+		{
+			if (peer_count == SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX)
+			{
+				fprintf(stderr, "model_api: more than %u --peer-runtime-root values\n", SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX);
+				return 1;
+			}
+			peer_roots[peer_count++] = argv[++i];
+		}
 		else if (!strcmp(argv[i], "--port") && i + 1 < argc)
 			port_s = argv[++i];
 		else if (!strcmp(argv[i], "--quant-arm") && i + 1 < argc)
@@ -1608,7 +1900,7 @@ int main(int argc, char **argv)
 	}
 	if (dep_path == 0 || root == 0)
 	{
-		fprintf(stderr, "usage: %s --deployment PATH --runtime-root PATH [--port N] [--quant-arm ARM_JSON]\n", argv[0]);
+		fprintf(stderr, "usage: %s --deployment PATH --runtime-root PATH [--peer-runtime-root PATH]... [--port N] [--quant-arm ARM_JSON]\n", argv[0]);
 		return 1;
 	}
 	if (quant_arm_path != 0)
@@ -1634,6 +1926,29 @@ int main(int argc, char **argv)
 			}
 		}
 	}
+	{
+		static char resolved_root[4096];
+		static char index_path[4200];
+		if (realpath(root, resolved_root) == 0)
+		{
+			fprintf(stderr, "model_api: --runtime-root %s cannot be resolved errno=%d\n", root, errno);
+			return 1;
+		}
+		root = resolved_root;
+		(void)snprintf(index_path, sizeof(index_path), "%s/prefix_index.spi", resolved_root);
+		S.prefix_index_path = index_path;
+		for (peer = 0u; peer < peer_count; peer++)
+		{
+			char resolved_peer[4096];
+			if (realpath(peer_roots[peer], resolved_peer) == 0)
+			{
+				fprintf(stderr, "model_api: --peer-runtime-root %s cannot be resolved errno=%d\n", peer_roots[peer], errno);
+				return 1;
+			}
+			(void)snprintf(peer_index_storage[peer], sizeof(peer_index_storage[peer]), "%s/prefix_index.spi", resolved_peer);
+			peer_indexes[peer] = peer_index_storage[peer];
+		}
+	}
 	api_logf("api_start pid=%d deployment=%s runtime_root=%s", (int)getpid(), dep_path, root);
 	S.runtime_root = root;
 	S.seq_saved_ms = 0u;
@@ -1648,20 +1963,15 @@ int main(int argc, char **argv)
 	cfg.descriptor_bytes = (uint32_t)sizeof(cfg);
 	cfg.deployment = &dep;
 	cfg.runtime_root = root;
-	cfg.request_capacity = 64;
+	cfg.prefix_index_path = S.prefix_index_path;
+	cfg.peer_prefix_index_paths = peer_count != 0u ? peer_indexes : 0;
+	cfg.peer_prefix_index_count = peer_count;
+	cfg.request_capacity = 128;
 	cfg.max_context_tokens = api_context_limit(&dep);
 	S.context_limit = cfg.max_context_tokens;
 	api_logf("api_context_limit max_context_tokens=%u deployment_max_sequence_positions=%u", cfg.max_context_tokens, dep.max_sequence_positions);
 	cfg.max_prefill_rows_per_submission = dep.runtime_limits.max_input_row_count;
-	{
-		const char *rows_env = getenv("SPARK_MODEL_API_MAX_PREFILL_ROWS");
-		if ( rows_env != 0 && rows_env[0] != '\0' )
-		{
-			uint32_t clamp = (uint32_t)strtoul(rows_env,0,10);
-			if ( clamp != 0u && clamp < cfg.max_prefill_rows_per_submission )
-				cfg.max_prefill_rows_per_submission = clamp;
-		}
-	}
+	api_logf("api_prefill_rows max_prefill_rows_per_submission=%u deployment_max_input_row_count=%u max_shared_input_row_count=%u", cfg.max_prefill_rows_per_submission, dep.runtime_limits.max_input_row_count, dep.max_shared_input_row_count != 0u ? dep.max_shared_input_row_count : dep.runtime_limits.max_input_row_count);
 	cfg.connect_timeout_ms = 30000;
 	cfg.maximum_messages_per_rank_per_progress = 8;
 	cfg.inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_DEFAULT_INFLIGHT_BUDGET_NS;
@@ -1732,9 +2042,11 @@ int main(int argc, char **argv)
 			}
 		}
 		HaveSidecar = 1;
+		TextPromptPrefixCount = dep.tokenizer_text_prompt_prefix_count;
+		memcpy(TextPromptPrefix, dep.tokenizer_text_prompt_prefix_ids, (size_t)TextPromptPrefixCount * sizeof(uint32_t));
 		fprintf(stderr, "model_api: tokenizer sidecar ready format=%u "
-			"vocab=%llu asset=%s\n", Sidecar.format,
-			(unsigned long long)Sidecar.tokenizer.maximum_token_id + 1ull, asset_path);
+			"vocab=%llu asset=%s text_prompt_prefix_tokens=%u\n", Sidecar.format,
+			(unsigned long long)Sidecar.tokenizer.maximum_token_id + 1ull, asset_path, TextPromptPrefixCount);
 	}
 	else
 		fprintf(stderr, "model_api: no tokenizer in deployment; text prompts "
@@ -1779,7 +2091,7 @@ int main(int argc, char **argv)
 		(void)setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
 		memset(&addr, 0, sizeof(addr));
 		addr.sin_family = AF_INET;
-		addr.sin_addr.s_addr = htonl(INADDR_ANY);
+		addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 		addr.sin_port = htons((uint16_t)strtoul(port_s, 0, 10));
 		if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
 			listen(srv, 128) != 0)

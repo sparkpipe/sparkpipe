@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include "../modules/glm52_resident_decode_stage/source/spark_glm52_stagepack_format.h"
+#include "sparkpipe/spark_glm52_stagepack.h"
 
 static int32_t range_write(FILE *pack,FILE *out,uint32_t layer,uint32_t expert,uint32_t kind,uint64_t offset,uint64_t bytes)
 {

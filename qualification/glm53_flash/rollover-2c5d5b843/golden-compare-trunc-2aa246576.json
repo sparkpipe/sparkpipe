@@ -1,0 +1,130 @@
+{
+ "prompts": {
+  "capital": {
+   "old_len": 8,
+   "new_len": 8,
+   "compared": 8,
+   "agree": 8,
+   "first_flip": null,
+   "identical": true,
+   "max_delta": 0.0,
+   "served_max_delta": 0.0
+  },
+  "arith": {
+   "old_len": 96,
+   "new_len": 96,
+   "compared": 96,
+   "agree": 96,
+   "first_flip": null,
+   "identical": true,
+   "max_delta": 0.0,
+   "served_max_delta": 0.0
+  },
+  "code": {
+   "old_len": 96,
+   "new_len": 96,
+   "compared": 96,
+   "agree": 96,
+   "first_flip": null,
+   "identical": true,
+   "max_delta": 0.0,
+   "served_max_delta": 0.0
+  },
+  "story": {
+   "old_len": 96,
+   "new_len": 96,
+   "compared": 96,
+   "agree": 96,
+   "first_flip": null,
+   "identical": true,
+   "max_delta": 0.0,
+   "served_max_delta": 0.0
+  },
+  "batch_haiku": {
+   "old_len": 22,
+   "new_len": 22,
+   "compared": 22,
+   "agree": 22,
+   "first_flip": null,
+   "identical": true,
+   "max_delta": 0.0,
+   "served_max_delta": 0.0
+  },
+  "batch_sort": {
+   "old_len": 82,
+   "new_len": 82,
+   "compared": 82,
+   "agree": 82,
+   "first_flip": null,
+   "identical": true,
+   "max_delta": 0.0,
+   "served_max_delta": 0.0
+  },
+  "batch_planet": {
+   "old_len": 96,
+   "new_len": 96,
+   "compared": 96,
+   "agree": 96,
+   "first_flip": null,
+   "identical": true,
+   "max_delta": 0.0,
+   "served_max_delta": 0.0
+  },
+  "batch_sql": {
+   "old_len": 96,
+   "new_len": 96,
+   "compared": 96,
+   "agree": 96,
+   "first_flip": null,
+   "identical": true,
+   "max_delta": 0.0,
+   "served_max_delta": 0.0
+  },
+  "doc2k_kernel": {
+   "old_len": 96,
+   "new_len": 96,
+   "compared": 96,
+   "agree": 96,
+   "first_flip": null,
+   "identical": true,
+   "max_delta": 0.0,
+   "served_max_delta": 0.0
+  },
+  "doc2k_contracts": {
+   "old_len": 96,
+   "new_len": 96,
+   "compared": 96,
+   "agree": 96,
+   "first_flip": null,
+   "identical": true,
+   "max_delta": 0.0,
+   "served_max_delta": 0.0
+  },
+  "doc8k_weightd": {
+   "old_len": 96,
+   "new_len": 96,
+   "compared": 96,
+   "agree": 96,
+   "first_flip": null,
+   "identical": true,
+   "max_delta": 0.0,
+   "served_max_delta": 0.0
+  },
+  "doc8k_dma": {
+   "old_len": 96,
+   "new_len": 96,
+   "compared": 96,
+   "agree": 96,
+   "first_flip": null,
+   "identical": true,
+   "max_delta": 0.0,
+   "served_max_delta": 0.0
+  }
+ },
+ "compared": 976,
+ "agree": 976,
+ "max_delta": 0.0,
+ "large": [],
+ "served_max_delta": 0.0,
+ "identical": true
+}

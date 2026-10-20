@@ -85,7 +85,7 @@ class FakeDaemon:
                     return
                 if kind == 1:
                     generation = struct.unpack_from("<Q", reply, HEADER.size)[0]
-                connection.sendall(reply)
+                connection.sendall(reply[:4] + struct.pack("<I", abi) + reply[8:])
 
     def close(self):
         self.server.close()

@@ -1277,8 +1277,10 @@ static void IndexerScore(const BlockWeights *w, BlockState *st, const uint16_t *
 
 static void OaProject(const BlockWeights *w, const uint16_t *o, uint16_t *partial_b)
 {
+	uint16_t rounded[OA_FULL_COLS];
 	float acc, oa_val, weight_val;
 	uint32_t r, d;
+	ActDequantRow(o, OA_FULL_COLS, rounded);
 	for (r = 0u; r < OA_ROWS; r++)
 	{
 		acc = 0.0f;
@@ -1287,7 +1289,7 @@ static void OaProject(const BlockWeights *w, const uint16_t *o, uint16_t *partia
 			oa_val = fp8_lut[w->oa[(uint64_t)r * OA_FULL_COLS + d]] *
 				E8M0ToF32(w->oa_s[(uint64_t)(r / 32u) * (OA_FULL_COLS / 32u) + d / 32u]);
 			weight_val = Bf16ToF32(F32ToBf16(oa_val));
-			acc += weight_val * Bf16ToF32(o[d]);
+			acc += weight_val * Bf16ToF32(rounded[d]);
 		}
 		partial_b[r] = F32ToBf16(acc);
 	}

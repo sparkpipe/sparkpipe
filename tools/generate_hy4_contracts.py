@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Generate the hy4 family header, the normalized contract and the fp8
-firmware description from model_contracts/hy4_authoritative.json, after
+"""Generate the hy4 normalized contract and the fp8 firmware description
+from model_contracts/hy4_authoritative.json, after
 checking that contract against the pinned publisher config. --check fails
 when a generated file differs from what the contract renders."""
 from __future__ import annotations
@@ -15,7 +15,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE_PATH = ROOT / "model_contracts" / "hy4_authoritative.json"
 COMMUNITY_PATH = ROOT / "model_contracts" / "hy4_ud_iq1m_authoritative.json"
 REFERENCE_CONFIG_PATH = ROOT / "model_contracts" / "references" / "hy4_preview_config.json"
-HEADER_PATH = ROOT / "model-families" / "hy4" / "include" / "sparkpipe" / "spark_hy4_model.h"
 NORMALIZED_PATH = ROOT / "model_contracts" / "hy4.json"
 DESCRIPTION_PATH = ROOT / "examples" / "model_descriptions" / "hy4_resident_decode_stage_fp8_firmware.json"
 DRIVER_MODEL_ID = "tencent.hy4-preview.resident-decode-stage-firmware"
@@ -119,91 +118,6 @@ def validate_community_contract(contract: dict[str, Any]) -> None:
     require_equal(shards["rank_bytes"] * TP_RANKS, 299589835776, "deployed GGUF rank bytes total")
 
 
-def c_float(value: float) -> str:
-    if value == int(value):
-        return f"{int(value)}.0f"
-    return f"{value:.10g}f"
-
-
-def layer_mask(layers: list[int], base: int) -> str:
-    return f"0x{sum(1 << (layer - base) for layer in layers if base <= layer < base + 64):016x}ull"
-
-
-def render_header(contract: dict[str, Any]) -> str:
-    model = contract["model"]
-    attention = contract["attention"]
-    hyper = contract["hyper_connections"]
-    full = attention["indexer_full_layers"]
-    prefix = "SPARK_HY4_MODEL"
-    lines = [
-        "#pragma once",
-        "",
-        '#include "sparkpipe/llm_defines.h"',
-        "",
-        f"#define {prefix}_ID SPARK_LLM_MODEL_SOURCE_URI",
-        f"#define {prefix}_SOURCE_REVISION SPARK_LLM_MODEL_REVISION",
-        f"#define {prefix}_SOURCE_SHA256 {json.dumps(contract['source_index_sha256'])}",
-        f"#define {prefix}_TP_RANKS SPARK_LLM_TP_DEGREE",
-        "",
-        f"#define {prefix}_HIDDEN_DIMENSION SPARK_LLM_HIDDEN_DIMENSION",
-        f"#define {prefix}_LAYER_COUNT SPARK_LLM_LAYER_COUNT",
-        f"#define {prefix}_MTP_LAYER_COUNT {model['mtp_layer_count']}u",
-        f"#define {prefix}_VOCAB_COUNT SPARK_LLM_VOCAB_COUNT",
-        f"#define {prefix}_VOCAB_PER_RANK \\",
-        "	(SPARK_LLM_OUTPUT_VOCAB_COUNT / SPARK_LLM_TP_DEGREE)",
-        f"#define {prefix}_MAX_POSITIONS SPARK_LLM_MAXIMUM_CONTEXT_TOKENS",
-        f"#define {prefix}_ATTN_QUERY_HEAD_COUNT SPARK_LLM_MLA_HEAD_COUNT",
-        f"#define {prefix}_ATTN_QUERY_HEADS_PER_RANK \\",
-        "	(SPARK_LLM_MLA_HEAD_COUNT / SPARK_LLM_TP_DEGREE)",
-        f"#define {prefix}_QK_HEAD_DIMENSION SPARK_LLM_MLA_QK_HEAD_DIMENSION",
-        f"#define {prefix}_QK_NOPE_HEAD_DIMENSION SPARK_LLM_MLA_QK_NOPE_HEAD_DIMENSION",
-        f"#define {prefix}_QK_ROPE_HEAD_DIMENSION SPARK_LLM_MLA_QK_ROPE_HEAD_DIMENSION",
-        f"#define {prefix}_V_HEAD_DIMENSION SPARK_LLM_MLA_V_HEAD_DIMENSION",
-        f"#define {prefix}_KV_LORA_RANK SPARK_LLM_MLA_LATENT_DIMENSION",
-        f"#define {prefix}_QUERY_LORA_RANK SPARK_LLM_MLA_QUERY_A_DIMENSION",
-        f"#define {prefix}_LEARNABLE_SINK {1 if attention['learnable_sink'] else 0}u",
-        f"#define {prefix}_INDEX_HEAD_COUNT {attention['index_head_count']}u",
-        f"#define {prefix}_INDEX_HEADS_PER_RANK \\",
-        f"	({prefix}_INDEX_HEAD_COUNT / SPARK_LLM_TP_DEGREE)",
-        f"#define {prefix}_INDEX_HEAD_DIMENSION {attention['index_head_dimension']}u",
-        f"#define {prefix}_INDEX_TOP_K {attention['index_top_k']}u",
-        f"#define {prefix}_INDEXER_FULL_LAYER_COUNT {len(full)}u",
-        f"#define {prefix}_INDEXER_FULL_MASK_LOW {layer_mask(full, 0)}",
-        f"#define {prefix}_INDEXER_FULL_MASK_HIGH {layer_mask(full, 64)}",
-        f"#define {prefix}_ROUTED_EXPERT_COUNT SPARK_LLM_MOE_EXPERT_COUNT",
-        f"#define {prefix}_EXPERTS_PER_RANK \\",
-        "	(SPARK_LLM_MOE_EXPERT_COUNT / SPARK_LLM_TP_DEGREE)",
-        f"#define {prefix}_SHARED_EXPERT_COUNT SPARK_LLM_MOE_SHARED_EXPERT_COUNT",
-        f"#define {prefix}_EXPERTS_PER_TOKEN SPARK_LLM_MOE_TOP_K",
-        f"#define {prefix}_EXPERT_INTERMEDIATE_DIMENSION \\",
-        "	SPARK_LLM_MOE_INTERMEDIATE_DIMENSION",
-        f"#define {prefix}_DENSE_FFN_INTERMEDIATE_DIMENSION \\",
-        "	SPARK_LLM_DENSE_INTERMEDIATE_DIMENSION",
-        f"#define {prefix}_HC_STREAM_COUNT {hyper['stream_count']}u",
-        f"#define {prefix}_ROPE_THETA SPARK_LLM_ROPE_THETA",
-        f"#define {prefix}_RMS_NORM_EPSILON SPARK_LLM_RMS_NORM_EPSILON",
-        f"#define {prefix}_HC_MAGNITUDE {c_float(hyper['magnitude'])}",
-        f"#define {prefix}_HC_EPSILON {c_float(hyper['epsilon'])}",
-        f"#define {prefix}_ROUTED_SCALING_FACTOR SPARK_LLM_MOE_ROUTED_SCALING_FACTOR",
-        f"#define {prefix}_SWIGLU_LIMIT SPARK_LLM_SWIGLU_LIMIT",
-        f"#define {prefix}_ATTN_QUERY_DIMENSION SPARK_LLM_MLA_QUERY_DIMENSION",
-        f"#define {prefix}_INDEX_DIMENSION \\",
-        f"	({prefix}_INDEX_HEAD_COUNT * {prefix}_INDEX_HEAD_DIMENSION)",
-        f"#define {prefix}_IS_INDEXER_FULL_LAYER(layer) \\",
-        f"	(((((layer) < 64u ? {prefix}_INDEXER_FULL_MASK_LOW : {prefix}_INDEXER_FULL_MASK_HIGH) >> ((layer) & 63u)) & 1ull) != 0ull)",
-        f"#define {prefix}_EXPERT_GROUPS_PER_LAYER \\",
-        f"	({prefix}_ROUTED_EXPERT_COUNT / {prefix}_EXPERTS_PER_RANK)",
-        f"#define {prefix}_HC_FN_OUTPUT_ROWS (2u * {prefix}_HC_STREAM_COUNT)",
-        f"#define {prefix}_HC_FLAT_WIDTH \\",
-        f"	({prefix}_HC_STREAM_COUNT * {prefix}_HIDDEN_DIMENSION)",
-        f"#define {prefix}_EXPERT_SCALE_GROUP_SIZE SPARK_LLM_FP8_SCALE_BLOCK",
-        f"#define {prefix}_ROUTE_GROUP_MAX \\",
-        f"	({prefix}_EXPERTS_PER_TOKEN * {prefix}_HC_STREAM_COUNT)",
-        "",
-    ]
-    return "\n".join(lines)
-
-
 def render_normalized_contract(contract: dict[str, Any]) -> str:
     keys = ("schema_version", "model_id", "architecture", "license", "source_revision", "model", "attention", "hyper_connections", "moe", "mtp", "source_precision", "source_config_sha256", "source_index_sha256", "source_bytes", "source_file_count", "source_safetensors_count", "runtime", "qualification")
     return json.dumps({key: contract[key] for key in keys}, indent=2, sort_keys=True) + "\n"
@@ -285,7 +199,7 @@ def main() -> int:
     validate_contract(contract)
     validate_against_config(contract, REFERENCE_CONFIG_PATH.read_bytes())
     validate_community_contract(json.loads(COMMUNITY_PATH.read_text(encoding="utf-8")))
-    outputs = ((HEADER_PATH, render_header(contract)), (NORMALIZED_PATH, render_normalized_contract(contract)), (DESCRIPTION_PATH, render_description(contract)))
+    outputs = ((NORMALIZED_PATH, render_normalized_contract(contract)), (DESCRIPTION_PATH, render_description(contract)))
     stale = [str(path.relative_to(ROOT)) for path, content in outputs if not write_or_check(path, content, args.check)]
     for path in stale:
         print(f"stale generated hy4 contract file: {path}")

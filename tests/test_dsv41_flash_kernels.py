@@ -175,6 +175,11 @@ def main():
     if shutil.which("nvidia-smi") is None:
         print("SKIP test_dsv41_flash_kernels (no GPU on this host)")
         return 0
+    capabilities = subprocess.run(["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+                                  capture_output=True, text=True).stdout.split()
+    if "12.1" not in capabilities:
+        print(f"SKIP test_dsv41_flash_kernels (needs an sm_121 device; this host reports {capabilities or 'none'})")
+        return 0
     rng = np.random.default_rng(20260928)
     workspace = Path(tempfile.mkdtemp(prefix="dsv41-kernels-"))
     try:

@@ -1,0 +1,63 @@
+{
+ "id": "compsec-089",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe public multipart CCM API lets the caller request a tag length.\n\nCode:\n```c\n 1: static int ccm_finish_reduced(struct CcmCtx *ctx, uint8_t *tag, size_t tag_len)\n 2: {\n 3:     uint8_t full_tag[16];\n 4: \n 5:     ccm_compute_full_tag(ctx, full_tag);\n 6: \n 7:     if (tag == NULL)\n 8:         return -1;\n 9: \n10:     memcpy(tag, full_tag, tag_len);\n11:     return 0;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "04208c34253aa152732fdde326be3a2f6d62bb2a0fc18d26f4d4536079e23981"
+ },
+ "response": {
+  "id": "chatcmpl-78aca8a352ac40609fd189c2214abe86",
+  "created": 1791730554,
+  "model": "glm-5.3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability is at line 10: `tag_len` is caller-controlled and never validated against `sizeof(full_tag)` (16 bytes). A caller requesting a tag longer than 16 bytes causes `memcpy` to read past the end of the stack buffer `full_tag`, leaking adjacent stack memory into the caller's tag buffer (an out-of-bounds read / information disclosure). The check on line 7 only guards against a NULL pointer, not an oversized length.\n\nAnswer: 10",
+     "role": "assistant",
+     "reasoning_content": "Tag length not validated against 16 \u2014 buffer overflow at memcpy line 10."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 115,
+   "prompt_tokens": 245,
+   "total_tokens": 360,
+   "prompt_tokens_details": {
+    "cached_tokens": 64
+   }
+  }
+ },
+ "graded_text": "<think>Tag length not validated against 16 \u2014 buffer overflow at memcpy line 10.</think>The vulnerability is at line 10: `tag_len` is caller-controlled and never validated against `sizeof(full_tag)` (16 bytes). A caller requesting a tag longer than 16 bytes causes `memcpy` to read past the end of the stack buffer `full_tag`, leaking adjacent stack memory into the caller's tag buffer (an out-of-bounds read / information disclosure). The check on line 7 only guards against a NULL pointer, not an oversized length.\n\nAnswer: 10",
+ "grade": {
+  "index": 14,
+  "id": "compsec-089",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 5360.0,
+  "output_sha256": "aa0ec90ea7392540ba90ba777d28335e4769c8c8511f65a0edb03e2495a488b3",
+  "prompt_token_count": 245,
+  "generated_token_count": 115,
+  "reasoning_chars": 72,
+  "content_chars": 440,
+  "status": "stop"
+ }
+}

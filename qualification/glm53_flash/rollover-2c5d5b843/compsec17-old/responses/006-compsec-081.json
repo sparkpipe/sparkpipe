@@ -1,0 +1,63 @@
+{
+ "id": "compsec-081",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe diagnostic request builder has small protocol-defined fields.\n\nCode:\n```c\n 1: #define MAX_DIAG_PAYLOAD       6\n 2: #define MAX_REQUEST_PAYLOAD    7\n 3: \n 4: static int send_diagnostic_request(uint8_t sid,\n 5:                                    const uint8_t *pid, size_t pid_len,\n 6:                                    const uint8_t *payload, size_t payload_len)\n 7: {\n 8:     uint8_t req[MAX_DIAG_PAYLOAD];\n 9: \n10:     if (pid_len > 2 || payload_len > MAX_REQUEST_PAYLOAD)\n11:         return -1;\n12: \n13:     req[0] = sid;\n14:     memcpy(req + 1, pid, pid_len);\n15:     memcpy(req + 1 + pid_len, payload, payload_len);\n16: \n17:     return transport_send(req, 1 + pid_len + payload_len);\n18: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "bd903cab951e708f42c8985ef1bf4e08922477d287ed26b962ccd88616e62367"
+ },
+ "response": {
+  "id": "chatcmpl-13769082e64d4f338fb0232c3a49e4ca",
+  "created": 1791730996,
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The buffer `req` holds only 6 bytes, but the validation allows `pid_len` up to 2 and `payload_len` up to 7, so up to 1+2+7 = 10 bytes can be written. The overflow occurs at the second memcpy.\n\nAnswer: 15",
+     "role": "assistant",
+     "reasoning_content": "Buffer size 6; 1+2+7=10 > 6. Overflow at line 15."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 86,
+   "prompt_tokens": 317,
+   "total_tokens": 403,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>Buffer size 6; 1+2+7=10 > 6. Overflow at line 15.</think>The buffer `req` holds only 6 bytes, but the validation allows `pid_len` up to 2 and `payload_len` up to 7, so up to 1+2+7 = 10 bytes can be written. The overflow occurs at the second memcpy.\n\nAnswer: 15",
+ "grade": {
+  "index": 6,
+  "id": "compsec-081",
+  "source": "COMPSEC",
+  "domain": "uds-c",
+  "expected": "10-15",
+  "extracted": "15",
+  "passed": true,
+  "elapsed_ms": 2297.7,
+  "output_sha256": "716cd54752648b2313d6c0f5ff0cdf561ba02e0dede5be905f0718ec54430f58",
+  "prompt_token_count": 317,
+  "generated_token_count": 86,
+  "reasoning_chars": 49,
+  "content_chars": 203,
+  "status": "stop"
+ }
+}

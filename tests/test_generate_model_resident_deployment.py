@@ -12,13 +12,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools" / "generate_model_resident_deployment.py"
-SPECIFICATION = (
-    ROOT / "examples" / "deployments" /
-    "dsv4_flash_pp13_host_rdma.spec.json")
-DEPLOYMENT = (
-    ROOT / "examples" / "deployments" / "dsv4_flash_pp13_host_rdma.json")
-STAGE_CONFIGURATION = (
-    ROOT / "examples" / "deployments" / "dsv4_flash_stage.json")
+FIXTURES = ROOT / "tests" / "fixtures" / "deployment_generator"
+SPECIFICATION = FIXTURES / "pp13_host_rdma.spec.json"
+DEPLOYMENT = FIXTURES / "pp13_host_rdma.json"
+STAGE_CONFIGURATION = FIXTURES / "stage.json"
 
 
 def load_module():

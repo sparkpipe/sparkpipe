@@ -1,0 +1,62 @@
+{
+ "id": "compsec-085",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "gemma-4-31b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe database driver receives a language string token as (ptr,len), where len may include embedded NUL bytes. The function reconstructs a quoted SQL token.\n\nCode:\n```c\n1: static void append_quoted_token(char *sql, size_t sql_cap,\n2:                                 const char *tok, size_t tok_len)\n3: {\n4:     strlcat(sql, \"'\", sql_cap);\n5:     strncat(sql, tok, tok_len);\n6:     strlcat(sql, \"'\", sql_cap);\n7: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "98c091b25e4c31bb418a545c3c79098810e4d7d3f9cfcc346b1a2e55201a3fb7"
+ },
+ "response": {
+  "id": "chatcmpl-8a4d324cca5741e683190fc4ce176809",
+  "created": 1791704041,
+  "model": "gemma-4-31b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability lies in the use of `strncat` on line 5. \n\nThe problem description states that `tok` may contain embedded NUL bytes. `strncat` is designed for NUL-terminated strings; it stops copying as soon as it encounters the first NUL byte in the source string (`tok`), regardless of the `tok_len` provided. Consequently, if `tok` contains an embedded NUL, the resulting SQL token will be truncated, potentially leading to SQL injection or logic errors if the application expects the full token to be quoted. Furthermore, `strncat` expects the source to be a string, and while it limits the copy to `n` characters, it does not handle binary data (data with embedded NULs) correctly.\n\nAdditionally, `strlcat` and `strncat` rely on the destination string `sql` being NUL-terminated and do not account for the actual remaining capacity of the buffer correctly in this specific sequence (they don't track the current length of `sql` relative to `sql_cap` across multiple calls), but the primary bug regarding the specific requirement of handling embedded NUL bytes is the use of `strncat`.\n\nAnswer: 5",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 256,
+   "prompt_tokens": 257,
+   "total_tokens": 513,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability lies in the use of `strncat` on line 5. \n\nThe problem description states that `tok` may contain embedded NUL bytes. `strncat` is designed for NUL-terminated strings; it stops copying as soon as it encounters the first NUL byte in the source string (`tok`), regardless of the `tok_len` provided. Consequently, if `tok` contains an embedded NUL, the resulting SQL token will be truncated, potentially leading to SQL injection or logic errors if the application expects the full token to be quoted. Furthermore, `strncat` expects the source to be a string, and while it limits the copy to `n` characters, it does not handle binary data (data with embedded NULs) correctly.\n\nAdditionally, `strlcat` and `strncat` rely on the destination string `sql` being NUL-terminated and do not account for the actual remaining capacity of the buffer correctly in this specific sequence (they don't track the current length of `sql` relative to `sql_cap` across multiple calls), but the primary bug regarding the specific requirement of handling embedded NUL bytes is the use of `strncat`.\n\nAnswer: 5",
+ "grade": {
+  "index": 10,
+  "id": "compsec-085",
+  "source": "COMPSEC",
+  "domain": "PHP PDO Firebird",
+  "expected": "5",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 8769.5,
+  "output_sha256": "e459bf1f4fc9f9b24ca2bec83625f79174811c6008aed76a55ed1170a52f5a47",
+  "prompt_token_count": 257,
+  "generated_token_count": 256,
+  "reasoning_chars": 0,
+  "content_chars": 1101,
+  "status": "stop"
+ }
+}

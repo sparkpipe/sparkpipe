@@ -103,7 +103,8 @@ def check_tree_resolver() -> None:
     shape = tree.parse_shape("tree-top2d2-r8")
     assert shape.width == 2 and shape.depth == 2 and shape.rows == 8
     assert tree.parse_shape("chain-k7").rows == 8 and tree.parse_shape("trie-mtp+suffix-r8").members == ("mtp", "suffix")
-    for bad in ("chain-k32", "tree-top1d2-r8", "trie-a+a-r4", "bush-3"):
+    assert tree.parse_shape("chain-k255").rows == 256
+    for bad in ("chain-k256", "tree-top1d2-r8", "trie-a+a-r4", "bush-3"):
         try:
             tree.parse_shape(bad)
         except ValueError:

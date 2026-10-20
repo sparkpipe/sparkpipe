@@ -1,0 +1,62 @@
+{
+ "id": "compsec-082",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "hy4-preview",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe decoder writes a cstring value into a slice selected by a descriptor. xdr_bytes_available() is accurate.\n\nCode:\n```c\n 1: static bool xdr_datum(struct Xdr *xdr, const struct SliceDesc *desc, char *base)\n 2: {\n 3:     uint32_t n = xdr_get_u32(xdr);       // declared cstring length\n 4:     char *dst = base + desc->offset;\n 5: \n 6:     if (n > xdr_bytes_available(xdr))\n 7:         return false;\n 8: \n 9:     xdr_read_bytes(xdr, dst, n);\n10:     dst[n] = '\\0';\n11:     return true;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "87d1c39b41a77254a3ccc5e85675f2efac67dced14f6956b97a1fd510e355856"
+ },
+ "response": {
+  "id": "chatcmpl-b276322c13f14cabba0cb93afab8f834",
+  "created": 1791704559,
+  "model": "hy4-preview",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Line 10 writes the NUL terminator at `dst[n]`, but the code only verifies that `n` bytes are available in the XDR stream. It never verifies that the destination slice has room for `n + 1` bytes. The primary bug is introduced at the write of the terminator.\n\nAnswer: 10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 69,
+   "prompt_tokens": 290,
+   "total_tokens": 359,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Line 10 writes the NUL terminator at `dst[n]`, but the code only verifies that `n` bytes are available in the XDR stream. It never verifies that the destination slice has room for `n + 1` bytes. The primary bug is introduced at the write of the terminator.\n\nAnswer: 10",
+ "grade": {
+  "index": 7,
+  "id": "compsec-082",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 13446.9,
+  "output_sha256": "6247bfbf9da938faf4d5b96221292466d437b5862a5dbc6387a757724993c7e0",
+  "prompt_token_count": 290,
+  "generated_token_count": 69,
+  "reasoning_chars": 0,
+  "content_chars": 268,
+  "status": "stop"
+ }
+}

@@ -18,9 +18,7 @@ describe() {
 	*/kernels/project.cuh) echo "low-rank projection, absorbed projection, fused QKV split" ;;
 	*/kernels/topk.cuh) echo "top-k both shapes: bitonic small, radix large" ;;
 	*/kernels/head.cuh) echo "sampling head: candidates, commit, softmax" ;;
-	*/kernels/speculate.cuh) echo "speculative verify and accept, greedy and sampled" ;;
 	*/kernels/linear_attn.cuh) echo "delta rule decode, causal conv; GDN and KDA" ;;
-	*/kernels/graph.cuh) echo "CUDA graph capture keyed by shape" ;;
 	*/kernels/tensor_map.cuh) echo "TMA descriptor geometry" ;;
 	*/kernels/formats/*) echo "weight format trait: stored width, mma, fragment decode" ;;
 	modules/*/source/cuda/config.h) echo "package-specialized model shapes and constants" ;;
@@ -39,9 +37,7 @@ describe() {
 	runtime/pipeline_runtime.c) echo "model-neutral rank and boundary plan" ;;
 	text/tokenizer.c) echo "generic compiled byte-level BPE tokenizer" ;;
 	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c) echo "DSpark dispatch policy" ;;
-	cache/cache.h) echo "THE CACHE: arena, content-addressed sharing, JIT reserve" ;;
 	cache/store/*) echo "KV block store and client" ;;
-	ring/sideband.h) echo "cross-rank payloads: index share, hidden tap, prefix indices" ;;
 	ring/transport/hidden_transport.*) echo "hidden state between ranks" ;;
 	ring/transport/tp_collective.*) echo "tensor-parallel collectives" ;;
 	ring/transport/memlink.*) echo "shared memory link" ;;
@@ -49,7 +45,6 @@ describe() {
 	ring/transport/tcp.cu) echo "TCP backend" ;;
 	runtime/launch.h) echo "launch planning: tile height, shared bytes, grid" ;;
 	runtime/gemm.cuh) echo "the four CUDA calls a GEMM needs" ;;
-	runtime/workspace.h) echo "workspace pool layout" ;;
 	runtime/tensor_map.h) echo "cuTensorMapEncodeTiled" ;;
 	runtime/linear_plan.cu) echo "linear plan binding" ;;
 	runtime/json.c) echo "JSON parser" ;;

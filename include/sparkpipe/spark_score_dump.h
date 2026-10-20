@@ -104,6 +104,7 @@ typedef struct SparkScoreDumpKeys
 {
 	uint64_t *keys;
 	uint32_t *known;
+	uint64_t *sequences;
 	uint32_t slot_count;
 	uint32_t position_count;
 } SparkScoreDumpKeys;
@@ -141,7 +142,7 @@ SparkStatus SparkScoreDumpShard(uint32_t vocabulary, uint32_t tp_degree, uint32_
 
 SparkStatus SparkScoreDumpKeysInitialize(SparkScoreDumpKeys *keys, uint32_t slot_count, uint32_t position_count);
 void SparkScoreDumpKeysDestroy(SparkScoreDumpKeys *keys);
-uint32_t SparkScoreDumpKeysAdvance(SparkScoreDumpKeys *keys, uint32_t slot, uint32_t position, uint32_t token, uint64_t *key);
+uint32_t SparkScoreDumpKeysAdvance(SparkScoreDumpKeys *keys, uint32_t slot, uint64_t sequence_id, uint32_t position, uint32_t token, uint64_t *key);
 
 SparkStatus SparkScoreDumpTableLoad(const char *path, const char *magic, uint32_t require_ids, SparkScoreDumpTable *table);
 void SparkScoreDumpTableDestroy(SparkScoreDumpTable *table);

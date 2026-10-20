@@ -104,7 +104,7 @@ def main():
     if "buffers->kda_state_bf16 = state->kda_state_bf16;" not in slice_:
         print("  FAIL the bind no longer propagates the state dtype flag")
         failures += 1
-    if "K3_KDA_STATE_SLOT_BYTES_BF16" not in slice_:
+    if not re.search(r"K3_KDA_RANK_STATE_SLOT_BYTES\(state->kda_rank_heads,\s*state->kda_state_bf16\)", slice_):
         print("  FAIL the bind does not stride the pool by the flag; a pool "
               "bound at one width and launched at another aliases sequences")
         failures += 1
@@ -123,7 +123,7 @@ def main():
 
     # -- default off: the only assignment is the bind's propagation -----------
     for name in ("layer.cuh", "slice.cuh", "bind.cu", "unity.cu",
-                 "engine.h", "dspark.h", "pipeline_sideband.h"):
+                 "engine.h", "dspark.h"):
         text = re.sub(r"//[^\n]*", "", (K3 / name).read_text())
         for match in re.finditer(r"kda_state_bf16\s*=\s*([^;\n]+);", text):
             value = match.group(1).strip()
@@ -205,7 +205,7 @@ def main():
 
     weighted = function_body(stripped, "K3LayerMoeWeighted")
     branches = re.findall(
-        r"if \( b->expert_interleave != 0u \)\s*\{(.*?)\n\t\}\n\telse",
+        r"if \( (?:status == LM_LAUNCH_ERR_SHAPE && )?b->expert_interleave != 0u \)\s*\{(.*?)\n\t\}\n\telse",
         weighted, re.S)
     launches = [re.findall(r"(LmGemmWeightOnly\w*Launch)<\s*Format,[^>]*?(,32u)?>",
                            branch) for branch in branches]

@@ -250,7 +250,7 @@ static void *TestPublishNewEpoch(void *context)
 
 static void TestRestartEpoch(SparkTpDeviceCollectiveConfig config,void *mesh)
 {
-    setenv("SPARK_TP_WAIT_MODE","hardware",1);
+    config.wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE;
     config.tp_rank = 1u;
     config.operation_timeout_milli = 1000u;
     mock_server = 1u;
@@ -290,7 +290,7 @@ static void TestRestartEpoch(SparkTpDeviceCollectiveConfig config,void *mesh)
     }
     mock_server = 0u;
     cuda_stub_mesh_hardware_launch_result = 0;
-    unsetenv("SPARK_TP_WAIT_MODE");
+    config.wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_SPIN;
 }
 
 static void TestTopologySlice(void)
@@ -368,10 +368,10 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     config.combine_bf16_function = 0;
     config.combine_u64_max_function = 0;
     config.combine_gather_bf16_function = 0;
-    setenv("SPARK_TP_WAIT_MODE","automatic",1);
+    config.wait_mode = 7u;
     CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_INVALID_ARGUMENT,
         "unknown wait mode fails instead of silently selecting spin");
-    setenv("SPARK_TP_WAIT_MODE","hardware",1);
+    config.wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE;
     CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK,"hardware create");
     request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
     CHECK(SparkTpDeviceCollectiveAllToAllSupported(&collective) == 0u,
@@ -505,6 +505,40 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     CHECK(SparkTpMeshRsagSlice(131068u,16u) == 8192u && SparkTpMeshRsagSlice(513u,16u) == 36u &&
         SparkTpMeshRsagSlice(49152u,3u) == 16384u && SparkTpMeshRsagSlice(49153u,4u) % 4u == 0u,
         "slices are whole 8-byte words and cover the chunk");
+    CHECK(SparkTpMeshDirectPipelined(16u * 131096u,16u,0u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u &&
+        SparkTpMeshDirectPipelined(16u * 131100u,16u,0u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 1u &&
+        SparkTpMeshDirectPipelined(16u * 131100u,16u,1u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u &&
+        SparkTpMeshDirectPipelined(16u * 131100u,16u,2u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u &&
+        SparkTpMeshPipelineChunks(131097u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 3u &&
+        SparkTpMeshPipelineChunks(196608u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 3u &&
+        SparkTpMeshPipelineChunks(196609u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 4u &&
+        SparkTpMeshPipelineChunks(26u * 65536u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 26u,
+        "only all-gathers whose local part exceeds one whole slot pipeline, in 65536-element half chunks");
+    {
+        char path_log[] = "/tmp/spark-tp-pipe-XXXXXX";
+        int fd = mkstemp(path_log),saved = dup(2);
+        char line[512];
+        uint32_t pipelined = 0u;
+        SparkStatus status;
+        FILE *file;
+        submission.logical_sequence_count = 1u;
+        submission.active_sequence_count = 4096u;
+        CHECK(fd >= 0 && saved >= 0 && dup2(fd,2) == 2,"pipelined path log capture opens");
+        status = SparkTpDeviceCollectiveEnqueue(&collective,&submission,0u);
+        fflush(stderr);
+        (void)dup2(saved,2);
+        (void)close(saved);
+        (void)close(fd);
+        file = fopen(path_log,"r");
+        while ( file != 0 && fgets(line,sizeof(line),file) != 0 )
+            pipelined += strstr(line,"MESH-PATH ") != 0 && strstr(line,"operation=0 path=direct-pipelined phases=4 elements=524288 ") != 0 ? 1u : 0u;
+        if ( file != 0 )
+            (void)fclose(file);
+        (void)unlink(path_log);
+        CHECK(status == SPARK_STATUS_OK && pipelined == 1u && cuda_stub_mesh_hardware_operation == 0u &&
+            cuda_stub_mesh_hardware_elements == 524288u && cuda_stub_mesh_hardware_logical_rows == 1u,
+            "an all-gather of 262144 local elements runs pipelined as four half-slot chunks and says so");
+    }
     {
         uint32_t calls_before = cuda_stub_mesh_hardware_calls;
         submission.active_sequence_count = 2u;
@@ -521,6 +555,28 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
             cuda_stub_mesh_hardware_elements == 128u &&
             cuda_stub_mesh_hardware_slice_routes == (SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER),
             "an all-to-all runs on the hardware path with the per-peer payload");
+        CHECK(SparkTpDeviceCollectiveSupportsReduceScatter(&collective) == 1u &&
+            SparkTpDeviceCollectiveSupportsReduceScatter(0) == 0u,
+            "an attached hardware collective with peer routes reports reduce-scatter");
+        submission.full_device = local;
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16) == SPARK_STATUS_INVALID_ARGUMENT,
+            "a reduce-scatter needs separate input and output buffers");
+        submission.full_device = output;
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16) == SPARK_STATUS_OK &&
+            cuda_stub_mesh_hardware_operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 &&
+            cuda_stub_mesh_hardware_elements == 128u &&
+            cuda_stub_mesh_hardware_slice_routes == (SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER),
+            "a reduce-scatter runs on the hardware path over the whole input of every rank");
+        submission.active_sequence_count = 1u;
+        submission.row_elements = 6u;
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16) == SPARK_STATUS_INVALID_ARGUMENT,
+            "a reduce-scatter input must split into equal 8-byte aligned rank segments");
+        submission.row_elements = 0u;
+        submission.active_sequence_count = 2u;
+        CHECK(SparkTpMeshScatterChunks(16u * 131072u,16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 1u &&
+            SparkTpMeshScatterChunks(16u * 131076u,16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 2u &&
+            SparkTpMeshScatterChunks(16u * 7168u * 64u,16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 4u,
+            "a reduce-scatter carries one staging slot of each rank segment per round");
         cuda_stub_mesh_hardware_calls = calls_before;
     }
     CHECK(SparkTpMeshAllToAllSliceElements(SPARK_WEIGHTD_MESH_SLOT_BYTES,16u) == 8192u &&
@@ -531,7 +587,7 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         SparkTpMeshAllToAllChunks(0u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u,
         "all-to-all slices are 16-byte aligned 1/degree shares of a slot; partials of 1/8/64 rows take 1/5/33 rounds");
     submission.active_sequence_count = 2u;
-    CHECK(cuda_stub_mesh_hardware_calls == 15u && cuda_stub_mesh_publish_calls == old_publish,
+    CHECK(cuda_stub_mesh_hardware_calls == 16u && cuda_stub_mesh_publish_calls == old_publish,
         "hardware capture never dispatches spinning publish or wait path");
     CHECK(SparkTpDeviceCollectiveDisarmCapture(&collective) == SPARK_STATUS_OK,"hardware disarm capture");
     cuda_stub_mesh_hardware_launch_result = cudaErrorUnknown;
@@ -589,7 +645,7 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     SparkTpDeviceCollectiveDestroy(&collective);
     CHECK(collective.implementation == 0,"hardware mapping owner destroys after terminal stream");
     cuda_stub_mesh_hardware_alias = 0;
-    unsetenv("SPARK_TP_WAIT_MODE");
+    config.wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_SPIN;
     CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK &&
         SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,2u,64u,0u,0) == SPARK_STATUS_OK,
         "legacy route fixture has no registered callbacks");
@@ -598,6 +654,12 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,operation) == SPARK_STATUS_UNSUPPORTED &&
             SparkTpDeviceCollectiveRoundIndex(&collective) == 0u,
             "legacy B1 still rejects its missing operation callback before consuming a round");
+    CHECK(SparkTpDeviceCollectiveSupportsReduceScatter(&collective) == 0u &&
+        SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16) == SPARK_STATUS_UNSUPPORTED &&
+        SparkTpDeviceCollectiveRoundIndex(&collective) == 0u,
+        "a spinning collective refuses reduce-scatter loudly before consuming a round");
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 + 1u) == SPARK_STATUS_INVALID_ARGUMENT,
+        "an unknown collective operation is refused");
     CHECK(SparkTpDeviceCollectiveEnqueueRounds(&collective,&submission,3u) == SPARK_STATUS_UNSUPPORTED,
         "legacy B1 round loop retains its missing callback rejection");
     CHECK(cuda_stub_mesh_publish_calls == old_publish,
@@ -616,7 +678,7 @@ static void TestPeerRoutes(SparkTpDeviceCollectiveConfig config,void *mesh)
     config.combine_bf16_function = 0;
     config.combine_u64_max_function = 0;
     config.combine_gather_bf16_function = 0;
-    setenv("SPARK_TP_WAIT_MODE","hardware",1);
+    config.wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE;
     cuda_stub_mesh_hardware_alias = 0;
     cuda_stub_mesh_hardware_prepare_result = 0;
     cuda_stub_mesh_hardware_launch_result = 0;
@@ -681,7 +743,7 @@ static void TestPeerRoutes(SparkTpDeviceCollectiveConfig config,void *mesh)
     memset(request,0,sizeof(*request));
     SparkTpDeviceCollectiveDestroy(&collective);
     CHECK(collective.implementation == 0,"peer-route collective destroys");
-    unsetenv("SPARK_TP_WAIT_MODE");
+    config.wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_SPIN;
 }
 
 static void TestSpinSingleSequenceWave(SparkTpDeviceCollectiveConfig config,void *mesh)
@@ -691,7 +753,7 @@ static void TestSpinSingleSequenceWave(SparkTpDeviceCollectiveConfig config,void
     uint32_t index;
     config.local_hidden_dimension = 16384u;
     config.operation_timeout_milli = 20u;
-    unsetenv("SPARK_TP_WAIT_MODE");
+    config.wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_SPIN;
     CHECK(cudaMalloc(&local,128u * 16384u * 2u) == cudaSuccess &&
         cudaMalloc(&output,128u * 16384u * 2u) == cudaSuccess,"spin wave buffers");
     for ( index = 0u; index < 4u; index++ )
@@ -802,7 +864,7 @@ static void TestDeferredRounds(SparkTpDeviceCollectiveConfig config,void *mesh)
     ((SparkWeightdMeshWaitRequest *)((uint8_t *)mesh + SPARK_WEIGHTD_MESH_WAIT_ENTRY(0u,0u)))->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
     cuda_stub_mesh_hardware_alias = (uint8_t *)mesh + 64u;
     cuda_stub_mesh_hardware_launch_result = 0;
-    setenv("SPARK_TP_WAIT_MODE","hardware",1);
+    config.wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE;
     CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK && SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,2u,64u,0u,0) == SPARK_STATUS_OK && SparkTpDeviceCollectiveChainKey(&collective,901u) == SPARK_STATUS_OK,"deferred fixture");
     CHECK(SparkTpDeviceCollectiveStreamOrdered(&collective) == 1u,"hardware waits can run stream-ordered rounds");
     TestDeferredSubmission(&submission,local,output);
@@ -834,7 +896,7 @@ static void TestDeferredRounds(SparkTpDeviceCollectiveConfig config,void *mesh)
     CHECK(SparkTpDeviceCollectiveVerifyDeferred(&collective,(void *)1) == SPARK_STATUS_OK,"the pending deferred round still verifies");
     TestGraphSettle(&collective,control);
     SparkTpDeviceCollectiveDestroy(&collective);
-    unsetenv("SPARK_TP_WAIT_MODE");
+    config.wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_SPIN;
     CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK && SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,2u,64u,0u,0) == SPARK_STATUS_OK,"spin fixture");
     CHECK(SparkTpDeviceCollectiveStreamOrdered(&collective) == 0u && SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_INVALID_ARGUMENT,"spin waits need a completion for every round");
     SparkTpDeviceCollectiveDestroy(&collective);

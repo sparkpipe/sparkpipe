@@ -1,0 +1,62 @@
+{
+ "id": "compsec-087",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-27b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper parses an IPv6 address used in X.509 name constraints. It records where :: compression occurred, then shifts already parsed bytes.\n\nCode:\n```c\n 1: static int parse_ipv6_reduced(const char *src, uint8_t dst[16])\n 2: {\n 3:     uint8_t tmp[16];\n 4:     uint8_t *tp = tmp;\n 5:     uint8_t *colonp = NULL;\n 6: \n 7:     if (src[0] == ':' && src[1] == ':') {\n 8:         colonp = --tp;          // remember compression point at the beginning\n 9:         src += 2;\n10:     }\n11: \n12:     while (*src != '\\0') {\n13:         unsigned v = parse_hextet(&src);\n14:         *tp++ = (uint8_t)(v >> 8);\n15:         *tp++ = (uint8_t)v;\n16:         if (*src == ':') src++;\n17:     }\n18: \n19:     if (colonp != NULL) {\n20:         size_t n = (size_t)(tp - colonp);\n21:         memmove(colonp + (16 - (tp - tmp)), colonp, n);\n22:         memset(colonp, 0, 16 - (tp - tmp));\n23:     }\n24: \n25:     memcpy(dst, tmp, 16);\n26:     return 0;\n27: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "a5ba2b00736dfe1407028baa546428fcdf6877900cb5383fb74745f285305609"
+ },
+ "response": {
+  "id": "chatcmpl-b94071f7f48d4b84a25aeb9464c9c7e5",
+  "created": 1791721463,
+  "model": "qwen3.8-27b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "length",
+    "index": 0,
+    "message": {
+     "content": "Looking at the code, I need to analyze the logic for parsing an IPv6 address with `::` compression.\n\n1.  **Lines 7-10**: If the string starts with `::`, `colonp` is set to `--tp`. Since `tp` initially points to `tmp[0]`, `--tp` makes `tp` point to `tmp[-1]` (out of bounds) and `colonp` points to that same location. This is a buffer underflow/overflow issue right at the start. `tmp` is a local array of size 16. `tp` starts at `&tmp[0]`. `--tp` decrements the pointer before assigning it to `colonp`. So `colonp` points to memory before `tmp`. This is undefined behavior and a security vulnerability (stack corruption or reading/writing outside the buffer).\n\nLet's re-read line 8 carefully: `colonp = --tp;`.\n`tp` is `uint8_t *tp = tmp;` (line 4).\n`--tp` decrements `tp` to point to `tmp - 1`.\n`colonp` is assigned this value.\nSo `colonp` points to `tmp[-1]`.\n\nLater, in line 21: `memmove(colonp + (16 - (tp - tmp)), colonp, n);`\nAnd line 22: `memset(colonp, 0, 16 - (tp - tmp));`\n\nThe logic seems to be trying to shift the parsed bytes to the right to account for the leading zeros represented by `::`.\nHowever, the initialization of `colonp` is fundamentally flawed because it points outside the allocated buffer `tmp`.\n\nEven if we assume the intent was to mark the position *within* the buffer, the standard way to handle leading `::` is to remember that the compression starts at index 0.\nIf `src` starts with `::`, the first 16 bytes are not all present. The `::` represents one or more 16-bit zero groups.\nThe code parses the rest of the hextets into `tmp` starting from `tp`.\nIf `colonp` is `tmp[-1]`, any subsequent operations on `colonp` are out-of-bounds.\n\nLet's look at the `memmove` logic.\n`tp` points to",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 512,
+   "prompt_tokens": 492,
+   "total_tokens": 1004,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Looking at the code, I need to analyze the logic for parsing an IPv6 address with `::` compression.\n\n1.  **Lines 7-10**: If the string starts with `::`, `colonp` is set to `--tp`. Since `tp` initially points to `tmp[0]`, `--tp` makes `tp` point to `tmp[-1]` (out of bounds) and `colonp` points to that same location. This is a buffer underflow/overflow issue right at the start. `tmp` is a local array of size 16. `tp` starts at `&tmp[0]`. `--tp` decrements the pointer before assigning it to `colonp`. So `colonp` points to memory before `tmp`. This is undefined behavior and a security vulnerability (stack corruption or reading/writing outside the buffer).\n\nLet's re-read line 8 carefully: `colonp = --tp;`.\n`tp` is `uint8_t *tp = tmp;` (line 4).\n`--tp` decrements `tp` to point to `tmp - 1`.\n`colonp` is assigned this value.\nSo `colonp` points to `tmp[-1]`.\n\nLater, in line 21: `memmove(colonp + (16 - (tp - tmp)), colonp, n);`\nAnd line 22: `memset(colonp, 0, 16 - (tp - tmp));`\n\nThe logic seems to be trying to shift the parsed bytes to the right to account for the leading zeros represented by `::`.\nHowever, the initialization of `colonp` is fundamentally flawed because it points outside the allocated buffer `tmp`.\n\nEven if we assume the intent was to mark the position *within* the buffer, the standard way to handle leading `::` is to remember that the compression starts at index 0.\nIf `src` starts with `::`, the first 16 bytes are not all present. The `::` represents one or more 16-bit zero groups.\nThe code parses the rest of the hextets into `tmp` starting from `tp`.\nIf `colonp` is `tmp[-1]`, any subsequent operations on `colonp` are out-of-bounds.\n\nLet's look at the `memmove` logic.\n`tp` points to",
+ "grade": {
+  "index": 12,
+  "id": "compsec-087",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "8,20-22",
+  "extracted": "1",
+  "passed": false,
+  "elapsed_ms": 9586.8,
+  "output_sha256": "7715ef4bafb2fb301614306532b1eb121964f88a73161de4ff896d164f2b29a5",
+  "prompt_token_count": 492,
+  "generated_token_count": 512,
+  "reasoning_chars": 0,
+  "content_chars": 1718,
+  "status": "length"
+ }
+}

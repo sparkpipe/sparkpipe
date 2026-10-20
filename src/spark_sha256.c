@@ -646,3 +646,45 @@ bool SparkSha256HexIsValid(const char *hex)
     }
     return true;
 }
+
+static int32_t SparkSha256HexNibble(char value)
+{
+    if (value >= '0' && value <= '9')
+    {
+        return value - '0';
+    }
+    if (value >= 'a' && value <= 'f')
+    {
+        return value - 'a' + 10;
+    }
+    return -1;
+}
+
+SparkStatus SparkSha256HexToDigest(const char *hex, uint8_t digest[SPARK_SHA256_DIGEST_BYTES])
+{
+    uint8_t parsed[SPARK_SHA256_DIGEST_BYTES];
+    uint32_t index;
+    int32_t high;
+    int32_t low;
+
+    if (hex == 0 || digest == 0)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    for (index = 0u; index < SPARK_SHA256_DIGEST_BYTES; ++index)
+    {
+        high = SparkSha256HexNibble(hex[2u * index]);
+        if (high < 0)
+        {
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+        }
+        low = SparkSha256HexNibble(hex[2u * index + 1u]);
+        if (low < 0)
+        {
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+        }
+        parsed[index] = (uint8_t)((high << 4) | low);
+    }
+    memcpy(digest, parsed, sizeof(parsed));
+    return SPARK_STATUS_OK;
+}

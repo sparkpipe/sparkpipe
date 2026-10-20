@@ -1,0 +1,63 @@
+{
+ "id": "compsec-080",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe validator is walking a certificate chain. trust_store.contains_subject(x) returns true if any configured trust anchor has subject DN x.\n\nCode:\n```c\n 1: static ValidationResult validate_path_step(const Certificate& cert,\n 2:                                            const TrustStore& trust_store)\n 3: {\n 4:     /* Optimization: stop once we have reached a known trust anchor subject. */\n 5:     if (trust_store.contains_subject(cert.subject_dn()))\n 6:         return ValidationResult::Valid;\n 7: \n 8:     Certificate issuer = find_issuer_for(cert);\n 9:     if (!cert.verify_signature_with(issuer.public_key()))\n10:         return ValidationResult::BadSignature;\n11: \n12:     return validate_path_step(issuer, trust_store);\n13: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "d255a7d1a533f2ff446182b968e207416eda7974f9dde51927102d30a7a25e28"
+ },
+ "response": {
+  "id": "chatcmpl-34cd512c599e46fdb91a662ee63da678",
+  "created": 1791730994,
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The bug is at line 5: matching a trust anchor by subject DN alone, without verifying the certificate's signature against the anchor's key. An attacker can craft a certificate whose subject DN equals a trust anchor's subject and it will be accepted as fully trusted, bypassing signature verification entirely.\n\nAnswer: 5",
+     "role": "assistant",
+     "reasoning_content": "Bug: trusting by subject DN only, without verifying the anchor's signature/key \u2014 line 5."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 84,
+   "prompt_tokens": 277,
+   "total_tokens": 361,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>Bug: trusting by subject DN only, without verifying the anchor's signature/key \u2014 line 5.</think>The bug is at line 5: matching a trust anchor by subject DN alone, without verifying the certificate's signature against the anchor's key. An attacker can craft a certificate whose subject DN equals a trust anchor's subject and it will be accepted as fully trusted, bypassing signature verification entirely.\n\nAnswer: 5",
+ "grade": {
+  "index": 5,
+  "id": "compsec-080",
+  "source": "COMPSEC",
+  "domain": "Botan",
+  "expected": "5-6",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 2286.1,
+  "output_sha256": "577d964d7e853c83c98fd50182f223deafdbbfa0a51b63a1af1f7db4d535f1cd",
+  "prompt_token_count": 277,
+  "generated_token_count": 84,
+  "reasoning_chars": 88,
+  "content_chars": 319,
+  "status": "stop"
+ }
+}

@@ -7,7 +7,6 @@ typedef struct SparkContinuousBatchQueueEntry
 {
 	uint64_t request_id;
 	uint32_t prompt_row_count;
-	uint32_t output_token_budget;
 	uint64_t enqueue_boundary;
 	uint8_t oversize;
 	uint8_t reserved0;
@@ -19,9 +18,7 @@ typedef struct SparkContinuousBatchLane
 {
 	uint64_t request_id;
 	uint32_t phase;
-	uint32_t remaining_rows;
-	uint32_t remaining_budget;
-	uint32_t generated_count;
+	uint32_t prompt_row_count;
 	uint64_t enqueue_boundary;
 	uint8_t retired;
 	uint8_t admitted_via_aging;
@@ -134,7 +131,6 @@ static void SparkContinuousBatchEnqueue(
 	entry = &controller->queue[controller->queue_count++];
 	entry->request_id = offer->request_id;
 	entry->prompt_row_count = offer->prompt_row_count;
-	entry->output_token_budget = offer->output_token_budget;
 	entry->enqueue_boundary = controller->boundary_index;
 	entry->oversize = oversize;
 }
@@ -143,7 +139,6 @@ static void SparkContinuousBatchCreateLane(
 	SparkContinuousBatch *controller,
 	uint64_t request_id,
 	uint32_t prompt_row_count,
-	uint32_t output_token_budget,
 	uint64_t enqueue_boundary,
 	uint32_t slot)
 {
@@ -152,10 +147,8 @@ static void SparkContinuousBatchCreateLane(
 	aged = SparkContinuousBatchOfferAged(controller,enqueue_boundary);
 	lane = &controller->lanes[slot];
 	lane->request_id = request_id;
-	lane->phase = SPARK_CONTINUOUS_BATCH_LANE_PREFILL;
-	lane->remaining_rows = prompt_row_count;
-	lane->remaining_budget = output_token_budget;
-	lane->generated_count = 0u;
+	lane->phase = SPARK_CONTINUOUS_BATCH_LANE_RESIDENT;
+	lane->prompt_row_count = prompt_row_count;
 	lane->enqueue_boundary = enqueue_boundary;
 	lane->retired = 0u;
 	lane->admitted_via_aging = aged;
@@ -172,15 +165,14 @@ static void SparkContinuousBatchAdmitFromQueue(
 {
 	SparkContinuousBatchQueueEntry *entry;
 	uint64_t request_id;
-	uint32_t prompt_row_count,output_token_budget;
+	uint32_t prompt_row_count;
 	uint64_t enqueue_boundary;
 	entry = &controller->queue[queue_index];
 	request_id = entry->request_id;
 	prompt_row_count = entry->prompt_row_count;
-	output_token_budget = entry->output_token_budget;
 	enqueue_boundary = entry->enqueue_boundary;
 	SparkContinuousBatchCreateLane(controller,request_id,prompt_row_count,
-		output_token_budget,enqueue_boundary,slot);
+		enqueue_boundary,slot);
 	memmove(controller->queue + queue_index,controller->queue + queue_index + 1u,
 		(controller->queue_count - queue_index - 1u) * sizeof(*controller->queue));
 	controller->queue_count -= 1u;
@@ -293,8 +285,7 @@ SparkStatus SparkContinuousBatchOffer(
 	if ( reason == SPARK_CONTINUOUS_BATCH_QUEUE_NONE )
 	{
 		SparkContinuousBatchCreateLane(controller,offer->request_id,
-			offer->prompt_row_count,offer->output_token_budget,
-			controller->boundary_index,
+			offer->prompt_row_count,controller->boundary_index,
 			SparkContinuousBatchAllocateSlot(controller));
 		decision.outcome = SPARK_CONTINUOUS_BATCH_ADMITTED;
 		*decision_out = decision;
@@ -357,68 +348,6 @@ SparkStatus SparkContinuousBatchRetire(
 	return(SPARK_STATUS_NOT_FOUND);
 }
 
-SparkStatus SparkContinuousBatchStep(
-	SparkContinuousBatch *controller,
-	SparkContinuousBatchStepEvent *events,
-	uint32_t events_capacity,
-	SparkContinuousBatchStepReport *report_out)
-{
-	SparkContinuousBatchLane *lane;
-	SparkContinuousBatchStepReport report;
-	uint32_t slot,decode_lanes,prefill_budget,chunk;
-	if ( controller == 0 || report_out == 0 || events == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( events_capacity < controller->lane_capacity )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	memset(&report,0,sizeof(report));
-	report.abi_version = SPARK_CONTINUOUS_BATCH_ABI_VERSION;
-	report.descriptor_bytes = SPARK_CONTINUOUS_BATCH_STEP_REPORT_BYTES;
-	decode_lanes = 0u;
-	for ( slot = 0u; slot < controller->lane_capacity; ++slot )
-		if ( controller->lanes[slot].phase == SPARK_CONTINUOUS_BATCH_LANE_DECODE )
-			decode_lanes += 1u;
-	prefill_budget = controller->max_input_rows - decode_lanes;
-	report.rows_spent = 0u;
-	for ( slot = 0u; slot < controller->lane_capacity; ++slot )
-	{
-		lane = &controller->lanes[slot];
-		if ( lane->phase == SPARK_CONTINUOUS_BATCH_LANE_FREE ||
-			lane->phase == SPARK_CONTINUOUS_BATCH_LANE_FINISHED )
-			continue;
-		if ( lane->retired != 0u )
-		{
-			lane->phase = SPARK_CONTINUOUS_BATCH_LANE_FINISHED;
-			report.finished_count += 1u;
-			continue;
-		}
-		if ( lane->phase == SPARK_CONTINUOUS_BATCH_LANE_PREFILL )
-		{
-			chunk = lane->remaining_rows < prefill_budget ?
-				lane->remaining_rows : prefill_budget;
-			lane->remaining_rows -= chunk;
-			prefill_budget -= chunk;
-			report.rows_spent += chunk;
-			if ( lane->remaining_rows != 0u )
-				continue;
-			lane->phase = SPARK_CONTINUOUS_BATCH_LANE_DECODE;
-			continue;
-		}
-		lane->generated_count += 1u;
-		events[report.event_count].request_id = lane->request_id;
-		events[report.event_count].slot = slot;
-		events[report.event_count].token_index = lane->generated_count;
-		report.event_count += 1u;
-		report.rows_spent += 1u;
-		if ( lane->generated_count >= lane->remaining_budget )
-		{
-			lane->phase = SPARK_CONTINUOUS_BATCH_LANE_FINISHED;
-			report.finished_count += 1u;
-		}
-	}
-	*report_out = report;
-	return(SPARK_STATUS_OK);
-}
-
 SparkStatus SparkContinuousBatchBoundary(
 	SparkContinuousBatch *controller,
 	uint64_t *released_request_ids,
@@ -440,8 +369,7 @@ SparkStatus SparkContinuousBatchBoundary(
 	{
 		if ( controller->lanes[slot].phase == SPARK_CONTINUOUS_BATCH_LANE_FREE )
 			continue;
-		if ( controller->lanes[slot].phase != SPARK_CONTINUOUS_BATCH_LANE_FINISHED &&
-			controller->lanes[slot].retired == 0u )
+		if ( controller->lanes[slot].retired == 0u )
 			continue;
 		controller->lanes[slot].phase = SPARK_CONTINUOUS_BATCH_LANE_FREE;
 		controller->lanes[slot].request_id = 0u;
@@ -512,9 +440,7 @@ SparkStatus SparkContinuousBatchGetLane(
 	lane_out->request_id = lane->request_id;
 	lane_out->slot = slot;
 	lane_out->phase = lane->phase;
-	lane_out->remaining_rows = lane->remaining_rows;
-	lane_out->remaining_budget = lane->remaining_budget;
-	lane_out->generated_count = lane->generated_count;
+	lane_out->prompt_row_count = lane->prompt_row_count;
 	lane_out->enqueue_boundary = lane->enqueue_boundary;
 	lane_out->retired = lane->retired;
 	lane_out->admitted_via_aging = lane->admitted_via_aging;

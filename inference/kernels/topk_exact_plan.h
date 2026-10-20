@@ -24,3 +24,12 @@ static inline uint32_t LmTopkExactSelectionRows(uint32_t row_capacity, uint32_t 
 		rows = 1u;
 	return(rows < row_capacity ? rows : row_capacity);
 }
+
+static inline uint32_t LmTopkExactGatherSelectionRows(uint32_t row_capacity, uint32_t n, uint32_t tp_degree)
+{
+	const uint32_t rows = LmTopkExactSelectionRows(row_capacity,n);
+	uint32_t slice = tp_degree != 0u ? (row_capacity + tp_degree - 1u) / tp_degree : row_capacity;
+	if ( slice > row_capacity )
+		slice = row_capacity;
+	return(rows > slice ? rows : slice);
+}

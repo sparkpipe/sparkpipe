@@ -1,0 +1,62 @@
+{
+ "id": "compsec-090",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-27b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe extension type is the low byte of a 16-bit protocol field. The mandatory-extension table has handlers for values 0 through 254.\n\nCode:\n```c\n 1: typedef int (*ule_handler)(struct skb *, const uint8_t *, size_t);\n 2: static ule_handler mandatory_handlers[255];\n 3: \n 4: static int handle_ule_ext(struct skb *skb, uint16_t type,\n 5:                           const uint8_t *p, size_t len)\n 6: {\n 7:     uint8_t htype = (uint8_t)(type & 0x00ff);\n 8: \n 9:     if (htype < 0x80)\n10:         return handle_optional_ext(skb, htype, p, len);\n11: \n12:     if (mandatory_handlers[htype] != NULL)\n13:         return mandatory_handlers[htype](skb, p, len);\n14: \n15:     return -EINVAL;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "a421f3f1bc1a6a6815fc76634bb645dc804870ad4334a8432f33d4eb754aa2d7"
+ },
+ "response": {
+  "id": "chatcmpl-10e3f269ca914f678a1944ffc1eb44d0",
+  "created": 1791721277,
+  "model": "qwen3.8-27b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function `handle_ule_ext` processes a 16-bit protocol field `type`.\n1.  Line 7 extracts the low byte: `uint8_t htype = (uint8_t)(type & 0x00ff);`. The value of `htype` is in the range `[0, 255]`.\n2.  Line 9 checks `if (htype < 0x80)`. If true, it handles optional extensions. This covers `htype` values `0` to `127`.\n3.  If `htype >= 0x80` (i.e., `128` to `255`), the code proceeds to line 12.\n4.  Line 12 accesses `mandatory_handlers[htype]`.\n5.  The array `mandatory_handlers` is declared on line 2 as `static ule_handler mandatory_handlers[255];`. This array has indices `0` to `254`.\n6.  The problem statement states: \"The mandatory-extension table has handlers for values 0 through 254.\" This implies that valid indices for the mandatory table are `0` to `254`.\n7.  However, the logic on line 9 diverts `htype < 128` to optional handling. This means the mandatory handler path is taken for `htype` in `[128, 255]`.\n8.  If `htype` is `255`, the code executes `mandatory_handlers[255]`.\n9.  Since the array size is 255 (indices 0-254), accessing index 255 is an out-of-bounds read (buffer over-read).\n\nThe vulnerability is introduced at the point where the out-of-bounds access occurs. The check on line 9 fails to exclude the value 255 from the mandatory path, or rather, the mandatory path assumes the index is valid for the array size, but the input allows 255. The specific line where the invalid memory access happens is line 12.\n\nAnswer: 12",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 465,
+   "prompt_tokens": 360,
+   "total_tokens": 825,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `handle_ule_ext` processes a 16-bit protocol field `type`.\n1.  Line 7 extracts the low byte: `uint8_t htype = (uint8_t)(type & 0x00ff);`. The value of `htype` is in the range `[0, 255]`.\n2.  Line 9 checks `if (htype < 0x80)`. If true, it handles optional extensions. This covers `htype` values `0` to `127`.\n3.  If `htype >= 0x80` (i.e., `128` to `255`), the code proceeds to line 12.\n4.  Line 12 accesses `mandatory_handlers[htype]`.\n5.  The array `mandatory_handlers` is declared on line 2 as `static ule_handler mandatory_handlers[255];`. This array has indices `0` to `254`.\n6.  The problem statement states: \"The mandatory-extension table has handlers for values 0 through 254.\" This implies that valid indices for the mandatory table are `0` to `254`.\n7.  However, the logic on line 9 diverts `htype < 128` to optional handling. This means the mandatory handler path is taken for `htype` in `[128, 255]`.\n8.  If `htype` is `255`, the code executes `mandatory_handlers[255]`.\n9.  Since the array size is 255 (indices 0-254), accessing index 255 is an out-of-bounds read (buffer over-read).\n\nThe vulnerability is introduced at the point where the out-of-bounds access occurs. The check on line 9 fails to exclude the value 255 from the mandatory path, or rather, the mandatory path assumes the index is valid for the array size, but the input allows 255. The specific line where the invalid memory access happens is line 12.\n\nAnswer: 12",
+ "grade": {
+  "index": 15,
+  "id": "compsec-090",
+  "source": "COMPSEC",
+  "domain": "Linux kernel",
+  "expected": "12-13",
+  "extracted": "12",
+  "passed": true,
+  "elapsed_ms": 8679.0,
+  "output_sha256": "3ea92604483d79ca046e15edde7d59e21a47d809ee3fbaa2ce04de005788bad0",
+  "prompt_token_count": 360,
+  "generated_token_count": 465,
+  "reasoning_chars": 0,
+  "content_chars": 1453,
+  "status": "stop"
+ }
+}

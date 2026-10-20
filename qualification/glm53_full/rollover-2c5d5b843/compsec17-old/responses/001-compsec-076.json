@@ -1,0 +1,63 @@
+{
+ "id": "compsec-076",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function validates a per-request authentication blob before passing it to the GSS layer.\n\nCode:\n```c\n 1: #define AUTH_STACK_MAX 256\n 2: \n 3: static bool check_rpcsec_packet(const uint8_t *wire, size_t wire_left)\n 4: {\n 5:     if (wire_left < 4)\n 6:         return false;\n 7: \n 8:     uint32_t body_len = get_be32(wire);      // attacker-controlled length field\n 9:     const uint8_t *body = wire + 4;\n10:     uint8_t scratch[AUTH_STACK_MAX];\n11: \n12:     /* XDR opaque values are padded to 4-byte alignment on the wire. */\n13:     uint32_t pad = (4 - (body_len & 3)) & 3;\n14:     uint32_t encoded_len = body_len + pad;\n15: \n16:     /* This check only proves the source bytes exist in the packet. */\n17:     if (encoded_len > wire_left - 4)\n18:         return false;\n19: \n20:     memcpy(scratch, body, encoded_len);\n21:     return gss_verify_mic(scratch, body_len);\n22: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "372f0e7559ad72ee0cae5c0b7ef197432808ab061715ff0479f5a90071f79b34"
+ },
+ "response": {
+  "id": "chatcmpl-1b333e6d44394866b015acfe783e2d20",
+  "created": 1791730439,
+  "model": "glm-5.3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "**Analysis:**\n\n- Line 17 validates `encoded_len` only against the packet size (`wire_left - 4`), not against the destination buffer size `AUTH_STACK_MAX` (256).\n- An attacker can supply a packet with `body_len` (and thus `encoded_len`) larger than 256 bytes, and line 17 will happily pass it.\n- Line 20 then performs `memcpy(scratch, body, encoded_len)` into the 256-byte stack buffer, causing a stack buffer overflow.\n\nThe primary bug manifests at the `memcpy` on line 20 (the missing size check at line 17 enables it).\n\nAnswer: 20",
+     "role": "assistant",
+     "reasoning_content": "Overflow: encoded_len can exceed 256. body_len up to wire_left-4, no check against AUTH_STACK_MAX. Bug at line 20 (memcpy), but root is missing check \u2014 line 17 or 20. Primary bug introduced where? The missing bound check is at 17; the overflow at 20. Best single line: 20."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 207,
+   "prompt_tokens": 384,
+   "total_tokens": 591,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>Overflow: encoded_len can exceed 256. body_len up to wire_left-4, no check against AUTH_STACK_MAX. Bug at line 20 (memcpy), but root is missing check \u2014 line 17 or 20. Primary bug introduced where? The missing bound check is at 17; the overflow at 20. Best single line: 20.</think>**Analysis:**\n\n- Line 17 validates `encoded_len` only against the packet size (`wire_left - 4`), not against the destination buffer size `AUTH_STACK_MAX` (256).\n- An attacker can supply a packet with `body_len` (and thus `encoded_len`) larger than 256 bytes, and line 17 will happily pass it.\n- Line 20 then performs `memcpy(scratch, body, encoded_len)` into the 256-byte stack buffer, causing a stack buffer overflow.\n\nThe primary bug manifests at the `memcpy` on line 20 (the missing size check at line 17 enables it).\n\nAnswer: 20",
+ "grade": {
+  "index": 1,
+  "id": "compsec-076",
+  "source": "COMPSEC",
+  "domain": "FreeBSD / librpcsec_gss",
+  "expected": "17-20",
+  "extracted": "20",
+  "passed": true,
+  "elapsed_ms": 9535.5,
+  "output_sha256": "e393ced12777f15f0659fe7caaf3e51cd591112d0433969b14ae7aa576f82f3e",
+  "prompt_token_count": 384,
+  "generated_token_count": 207,
+  "reasoning_chars": 272,
+  "content_chars": 532,
+  "status": "stop"
+ }
+}

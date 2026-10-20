@@ -1,12 +1,13 @@
-# Shared weight daemon/client sources for runtime and model module linkage.
 SPARKPIPE_WEIGHTD_SOURCES := \
 	runtime/spark_weightd.c \
 	runtime/spark_weightd_manifest.c \
 	runtime/spark_weightd_lease.c \
 	runtime/spark_weightd_attach.c \
+	runtime/spark_weightd_kv_pool.c \
 	runtime/spark_weightd_map.c \
 	runtime/spark_weightd_spine.c \
 	runtime/spark_weightd_direct.c \
 	runtime/spark_weightd_receipt.c \
 	runtime/spark_weightd_worker.c \
+	runtime/spark_weightd_pacer.c \
 	runtime/spark_weightd_lazy_pack.c

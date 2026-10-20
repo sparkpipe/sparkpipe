@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_KV_CACHE_ABI_VERSION 6u
+#define SPARK_KV_CACHE_ABI_VERSION 7u
 #define SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkKvCacheConfiguration))
 #define SPARK_KV_CACHE_ARENA_DESCRIPTOR_BYTES \
@@ -26,6 +26,8 @@ extern "C" {
 #define SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED 0x00000004u
 #define SPARK_KV_CACHE_BLOCK_FLAG_DIRTY 0x00000008u
 #define SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID 0x00000010u
+#define SPARK_KV_CACHE_BLOCK_FLAG_PARK_FAILED 0x00000020u
+#define SPARK_KV_CACHE_BLOCK_FLAG_SHARED 0x00000040u
 
 #define SPARK_KV_CACHE_NO_BLOCK 0xffffffffu
 #define SPARK_KV_CACHE_NO_RESIDENT_SLOT 0xffffffffu
@@ -343,6 +345,9 @@ typedef struct SparkKvCacheBlock
     uint64_t last_used_epoch;
     uintptr_t key_device_address;
     uintptr_t value_device_address;
+    uint32_t keep_priority;
+    uint32_t keep_reserved;
+    uint64_t keep_deadline_ns;
 } SparkKvCacheBlock;
 
 typedef SparkStatus (*SparkKvCacheEvictFunction)(
@@ -434,7 +439,9 @@ typedef struct SparkKvCacheArena
     uint32_t next_resident_slot_scan;
     uint32_t eviction_policy;
     atomic_uint unassigned_resident_block_count;
-    uint32_t write_back_degraded_block_count;
+    uint64_t park_failure_count;
+    uint64_t park_backing_full_count;
+    uint64_t park_stall_count;
     uint64_t epoch;
     uint64_t allocated_block_count;
     uint64_t recycled_block_count;
@@ -444,6 +451,11 @@ typedef struct SparkKvCacheArena
     uint64_t resident_capacity_stall_count;
     uint64_t retained_block_count;
     uint64_t released_reference_count;
+    uint32_t park_degraded;
+    uint64_t park_degraded_count;
+    uint32_t shared_page_base;
+    uint32_t shared_page_count;
+    uint32_t shared_block_count;
 } SparkKvCacheArena;
 
 SparkStatus SparkKvCacheEstimateCapacity(
@@ -504,6 +516,15 @@ SparkStatus SparkKvCacheArenaMarkBlockResident(
     SparkKvCacheArena *arena,
     uint32_t logical_block_index);
 
+SparkStatus SparkKvCacheArenaAdoptResidentSlot(
+    SparkKvCacheArena *arena,
+    uint32_t logical_block_index,
+    uint32_t resident_slot_index);
+
+SparkStatus SparkKvCacheArenaParkResidentBlock(
+    SparkKvCacheArena *arena,
+    uint32_t logical_block_index);
+
 SparkStatus SparkKvCacheArenaMarkParkedBlockResident(
     SparkKvCacheArena *arena,
     uint32_t logical_block_index);
@@ -511,6 +532,16 @@ SparkStatus SparkKvCacheArenaMarkParkedBlockResident(
 uint32_t SparkKvCacheArenaBlockIsParkable(
     const SparkKvCacheArena *arena,
     uint32_t logical_block_index);
+
+SparkStatus SparkKvCacheArenaSetSharedWindow(
+    SparkKvCacheArena *arena,
+    uint32_t shared_page_base,
+    uint32_t shared_page_count);
+
+SparkStatus SparkKvCacheArenaAdoptSharedBlock(
+    SparkKvCacheArena *arena,
+    uint32_t window_slot,
+    uint32_t *logical_block_index_out);
 
 SparkStatus SparkKvCacheArenaFreeBlock(
     SparkKvCacheArena *arena,
@@ -579,10 +610,6 @@ SparkStatus SparkKvCacheArenaResolveBlock(
     uint32_t logical_block_index,
     SparkKvCacheBlockView *block_view);
 
-/* Caller serializes arena access and keeps the logical table immutable until
- * unpin. Input/output arrays must not overlap. Pins protect physical mappings
- * through device completion. Failure rolls back only this call's pins; output
- * mappings are usable only on success. Repeated pages own repeated pins. */
 SparkStatus SparkKvCacheArenaPinResidentTable(
     SparkKvCacheArena *arena,
     const uint32_t *logical_block_indices,

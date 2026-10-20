@@ -1,0 +1,62 @@
+{
+ "id": "compsec-092",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "deepseek-v4.1-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe verifier checks a serialized DFA. Some states are encoded as differences from another state default table.\n\nCode:\n```c\n 1: static int verify_dfa_reduced(const struct dfa *d)\n 2: {\n 3:     for (uint32_t state = 0; state < d->state_count; state++) {\n 4:         uint32_t j = state;\n 5: \n 6:         if (d->default_table[j] >= d->state_count)\n 7:             return -EINVAL;\n 8: \n 9:         while (d->is_differential[j]) {\n10:             uint32_t parent = d->default_table[j];\n11:             j = parent;                    // parent not rechecked here\n12:         }\n13: \n14:         validate_accept_table(d->accept[j]);\n15:     }\n16:     return 0;\n17: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "8be7c7c9d56764387a4e348f75c5f1001bd31a5996ae63e45d9069135440919a"
+ },
+ "response": {
+  "id": "chatcmpl-d22aefd9ec0c4a92b31f7e749fbc4ae1",
+  "created": 1791725801,
+  "model": "deepseek-v4.1-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The bug is that after following the differential chain via `j = parent`, the code does not re-check that the new `j` is within bounds before using it in `d->is_differential[j]` or `d->accept[j]`. The initial bounds check on line 6 only applies to the starting `state`, not to intermediate parents. This can lead to out-of-bounds access if a parent index is invalid.\n\nThe primary bug is introduced at line 11 where `j` is reassigned without revalidation.\n\nAnswer: 11",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 112,
+   "prompt_tokens": 306,
+   "total_tokens": 418,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The bug is that after following the differential chain via `j = parent`, the code does not re-check that the new `j` is within bounds before using it in `d->is_differential[j]` or `d->accept[j]`. The initial bounds check on line 6 only applies to the starting `state`, not to intermediate parents. This can lead to out-of-bounds access if a parent index is invalid.\n\nThe primary bug is introduced at line 11 where `j` is reassigned without revalidation.\n\nAnswer: 11",
+ "grade": {
+  "index": 17,
+  "id": "compsec-092",
+  "source": "COMPSEC",
+  "domain": "Linux kernel AppArmor",
+  "expected": "10-14",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 15649.5,
+  "output_sha256": "dbf8078ba4721139add6cfa3548b54a1d6ad3af571132d8c38e2ef2f160a6243",
+  "prompt_token_count": 306,
+  "generated_token_count": 112,
+  "reasoning_chars": 0,
+  "content_chars": 465,
+  "status": "stop"
+ }
+}

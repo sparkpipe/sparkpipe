@@ -376,17 +376,17 @@ static void SparkTestTokenizerCompiledFileAndConfiguredBatch(void)
 }
 
 
-static const char *SparkTestTokenizerLegacyCompiledPath(void)
+static const char *SparkTestTokenizerHandWrittenCompiledPath(void)
 {
-    return "build/test_tokenizer_legacy_v1.compiled";
+    return "build/test_tokenizer_hand_written.compiled";
 }
 
-static void SparkTestTokenizerWriteLegacyCompiledFile(
+static void SparkTestTokenizerWriteHandWrittenCompiledFile(
+    uint32_t version,
     uint32_t added_token_text_bytes)
 {
     static const char special_text[] = "<|stop|>";
     const uint64_t magic = SPARK_TOKENIZER_COMPILED_FILE_MAGIC;
-    const uint32_t version = SPARK_TOKENIZER_COMPILED_FILE_LEGACY_VERSION;
     const uint32_t header[] = {
         SPARK_TOKENIZER_BPE_MODEL_KIND_BYTE_LEVEL,
         0u,
@@ -394,23 +394,32 @@ static void SparkTestTokenizerWriteLegacyCompiledFile(
         0u,
         0u,
         SPARK_TEST_TOKEN_STOP,
-        1u,
-        1u,
-        0u,
         1u};
+    const uint32_t current_flags[] = {0u, 0u, 0u};
+    const uint32_t counts[] = {1u, 0u, 1u};
     const uint32_t token_id = SPARK_TEST_TOKEN_STOP;
     const uint32_t text_bytes = (uint32_t)sizeof(special_text) - 1u;
+    const uint32_t is_special = 1u;
     FILE *file;
 
-    file = fopen(SparkTestTokenizerLegacyCompiledPath(), "wb");
+    file = fopen(SparkTestTokenizerHandWrittenCompiledPath(), "wb");
     assert(file != 0);
     assert(fwrite(&magic, sizeof(magic), 1u, file) == 1u);
     assert(fwrite(&version, sizeof(version), 1u, file) == 1u);
     assert(fwrite(header, sizeof(header), 1u, file) == 1u);
+    if (version == SPARK_TOKENIZER_COMPILED_FILE_VERSION)
+    {
+        assert(fwrite(current_flags, sizeof(current_flags), 1u, file) == 1u);
+    }
+    assert(fwrite(counts, sizeof(counts), 1u, file) == 1u);
     assert(fwrite(&token_id, sizeof(token_id), 1u, file) == 1u);
     assert(fwrite(&text_bytes, sizeof(text_bytes), 1u, file) == 1u);
     assert(fwrite(special_text, text_bytes, 1u, file) == 1u);
     assert(fwrite(&token_id, sizeof(token_id), 1u, file) == 1u);
+    if (version == SPARK_TOKENIZER_COMPILED_FILE_VERSION)
+    {
+        assert(fwrite(&is_special, sizeof(is_special), 1u, file) == 1u);
+    }
     assert(fwrite(&added_token_text_bytes, sizeof(added_token_text_bytes), 1u, file) == 1u);
     if (added_token_text_bytes != 0u)
     {
@@ -419,7 +428,30 @@ static void SparkTestTokenizerWriteLegacyCompiledFile(
     assert(fclose(file) == 0);
 }
 
-static void SparkTestTokenizerLoadsLegacyCompiledFile(void)
+static void SparkTestTokenizerRefusesOlderCompiledFiles(void)
+{
+    SparkTokenizer tokenizer;
+    SparkTokenizerCompiledFileConfiguration configuration;
+    uint32_t version;
+
+    for (version = 1u; version < SPARK_TOKENIZER_COMPILED_FILE_TIKTOKEN_VERSION; ++version)
+    {
+        SparkTestTokenizerWriteHandWrittenCompiledFile(
+            version,
+            (uint32_t)sizeof("<|stop|>") - 1u);
+        SparkTokenizerReset(&tokenizer);
+        memset(&configuration, 0, sizeof(configuration));
+        configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+        configuration.descriptor_bytes =
+            SPARK_TOKENIZER_COMPILED_FILE_CONFIGURATION_DESCRIPTOR_BYTES;
+        configuration.compiled_tokenizer_path = SparkTestTokenizerHandWrittenCompiledPath();
+        assert(SparkTokenizerLoadCompiledFile(&tokenizer, &configuration) ==
+            SPARK_STATUS_SCHEMA_ERROR);
+        SparkTokenizerDestroy(&tokenizer);
+    }
+}
+
+static void SparkTestTokenizerLoadsHandWrittenCompiledFile(void)
 {
     SparkTokenizer tokenizer;
     SparkTokenizerCompiledFileConfiguration configuration;
@@ -427,14 +459,15 @@ static void SparkTestTokenizerLoadsLegacyCompiledFile(void)
     uint32_t text_bytes;
     char text[16u];
 
-    SparkTestTokenizerWriteLegacyCompiledFile(
+    SparkTestTokenizerWriteHandWrittenCompiledFile(
+        SPARK_TOKENIZER_COMPILED_FILE_VERSION,
         (uint32_t)sizeof("<|stop|>") - 1u);
     SparkTokenizerReset(&tokenizer);
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
     configuration.descriptor_bytes =
         SPARK_TOKENIZER_COMPILED_FILE_CONFIGURATION_DESCRIPTOR_BYTES;
-    configuration.compiled_tokenizer_path = SparkTestTokenizerLegacyCompiledPath();
+    configuration.compiled_tokenizer_path = SparkTestTokenizerHandWrittenCompiledPath();
     assert(SparkTokenizerLoadCompiledFile(&tokenizer, &configuration) ==
         SPARK_STATUS_OK);
     assert(tokenizer.special_token_count == 1u);
@@ -478,13 +511,13 @@ static void SparkTestTokenizerRejectsEmptyAddedTokens(void)
     json_configuration.tokenizer_json_path = SparkTestTokenizerJsonPath();
     assert(SparkTokenizerLoadHuggingFaceJson(&tokenizer, &json_configuration) ==
         SPARK_STATUS_SCHEMA_ERROR);
-    SparkTestTokenizerWriteLegacyCompiledFile(0u);
+    SparkTestTokenizerWriteHandWrittenCompiledFile(SPARK_TOKENIZER_COMPILED_FILE_VERSION, 0u);
     memset(&compiled_configuration, 0, sizeof(compiled_configuration));
     compiled_configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
     compiled_configuration.descriptor_bytes =
         SPARK_TOKENIZER_COMPILED_FILE_CONFIGURATION_DESCRIPTOR_BYTES;
     compiled_configuration.compiled_tokenizer_path =
-        SparkTestTokenizerLegacyCompiledPath();
+        SparkTestTokenizerHandWrittenCompiledPath();
     assert(SparkTokenizerLoadCompiledFile(&tokenizer, &compiled_configuration) ==
         SPARK_STATUS_SCHEMA_ERROR);
     SparkTokenizerDestroy(&tokenizer);
@@ -907,6 +940,214 @@ static void SparkTestTokenizerWriteNfcFixtureJson(const char *path, const char *
     assert(fclose(file) == 0);
 }
 
+static void SparkTestCompiledRoundTripEncodes(
+    const SparkTokenizer *source,
+    const char *path,
+    const char *text,
+    const uint32_t *expected,
+    uint32_t expected_count)
+{
+    SparkTokenizer loaded;
+    SparkTokenizerCompiledFileConfiguration compiled;
+    SparkTokenizerEncoding source_encoding;
+    SparkTokenizerEncoding loaded_encoding;
+    uint32_t source_ids[16u];
+    uint32_t loaded_ids[16u];
+    uint32_t text_bytes = (uint32_t)strlen(text);
+    memset(&compiled, 0, sizeof(compiled));
+    compiled.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+    compiled.descriptor_bytes = SPARK_TOKENIZER_COMPILED_FILE_CONFIGURATION_DESCRIPTOR_BYTES;
+    compiled.compiled_tokenizer_path = path;
+    assert(SparkTokenizerSaveCompiledFile(source, &compiled) == SPARK_STATUS_OK);
+    SparkTokenizerReset(&loaded);
+    assert(SparkTokenizerLoadCompiledFile(&loaded, &compiled) == SPARK_STATUS_OK);
+    assert(loaded.ignore_merges == source->ignore_merges);
+    assert(loaded.rank_ordered_merges == source->rank_ordered_merges);
+    assert(loaded.normalizer_nfc == source->normalizer_nfc);
+    assert(loaded.byte_level_use_regex == source->byte_level_use_regex);
+    SparkTokenizerEncodingReset(&source_encoding);
+    source_encoding.token_capacity = 16u;
+    source_encoding.token_ids = source_ids;
+    SparkTokenizerEncodingReset(&loaded_encoding);
+    loaded_encoding.token_capacity = 16u;
+    loaded_encoding.token_ids = loaded_ids;
+    assert(SparkTokenizerEncodeUtf8(source, text, text_bytes, 0u, &source_encoding) == SPARK_STATUS_OK);
+    assert(SparkTokenizerEncodeUtf8(&loaded, text, text_bytes, 0u, &loaded_encoding) == SPARK_STATUS_OK);
+    assert(source_encoding.token_count == expected_count);
+    assert(loaded_encoding.token_count == expected_count);
+    assert(memcmp(source_ids, expected, expected_count * sizeof(uint32_t)) == 0);
+    assert(memcmp(loaded_ids, expected, expected_count * sizeof(uint32_t)) == 0);
+    SparkTokenizerDestroy(&loaded);
+}
+
+static void SparkTestCompiledFileCarriesEncodingFlags(void)
+{
+    static const uint32_t whole_word[1] = {5u};
+    static const uint32_t ranked[1] = {257u};
+    SparkTokenizer tokenizer;
+    SparkTokenizerHuggingFaceJsonConfiguration json_configuration;
+    SparkTokenizerTiktokenRanksConfiguration ranks_configuration;
+    FILE *file;
+    uint32_t byte_value;
+    file = fopen("build/test_tokenizer_ignore_merges.json", "wb");
+    assert(file != 0);
+    assert(fputs(
+        "{\"model\":{\"type\":\"BPE\",\"byte_fallback\":false,\"ignore_merges\":true,"
+        "\"vocab\":{\"a\":1,\"b\":2,\"c\":3,\"ab\":4,\"abc\":5},\"merges\":[\"a b\"]},"
+        "\"pre_tokenizer\":{\"type\":\"ByteLevel\",\"add_prefix_space\":false,\"use_regex\":false},"
+        "\"added_tokens\":[]}",
+        file) >= 0);
+    assert(fclose(file) == 0);
+    SparkTokenizerReset(&tokenizer);
+    memset(&json_configuration, 0, sizeof(json_configuration));
+    json_configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+    json_configuration.descriptor_bytes = SPARK_TOKENIZER_HF_JSON_CONFIGURATION_DESCRIPTOR_BYTES;
+    json_configuration.tokenizer_json_path = "build/test_tokenizer_ignore_merges.json";
+    assert(SparkTokenizerLoadHuggingFaceJson(&tokenizer, &json_configuration) == SPARK_STATUS_OK);
+    assert(tokenizer.ignore_merges == 1u);
+    SparkTestCompiledRoundTripEncodes(&tokenizer, "build/test_tokenizer_ignore_merges.bin", "abc", whole_word, 1u);
+    SparkTokenizerDestroy(&tokenizer);
+
+    file = fopen("build/test_tokenizer_ranks.tiktoken", "wb");
+    assert(file != 0);
+    for (byte_value = 0u; byte_value < 256u; ++byte_value)
+    {
+        static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        unsigned char value = (unsigned char)byte_value;
+        assert(fprintf(file, "%c%c==",
+            alphabet[value >> 2u],
+            alphabet[(value & 3u) << 4u]) > 0);
+        assert(fprintf(file, " %u\n", byte_value) > 0);
+    }
+    assert(fputs("YWI= 256\nYWJj 257\n", file) >= 0);
+    assert(fclose(file) == 0);
+    SparkTokenizerReset(&tokenizer);
+    memset(&ranks_configuration, 0, sizeof(ranks_configuration));
+    ranks_configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+    ranks_configuration.descriptor_bytes = SPARK_TOKENIZER_TIKTOKEN_RANKS_CONFIGURATION_DESCRIPTOR_BYTES;
+    ranks_configuration.ranks_path = "build/test_tokenizer_ranks.tiktoken";
+    assert(SparkTokenizerLoadTiktokenRanks(&tokenizer, &ranks_configuration) == SPARK_STATUS_OK);
+    assert(tokenizer.rank_ordered_merges == 1u);
+    SparkTestCompiledRoundTripEncodes(&tokenizer, "build/test_tokenizer_ranks.bin", "abc", ranked, 1u);
+    SparkTokenizerDestroy(&tokenizer);
+}
+
+static void SparkTestWriteBase64(FILE *file, const uint8_t *bytes, uint32_t count)
+{
+    static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    uint32_t index;
+    for (index = 0u; index < count; index += 3u)
+    {
+        uint32_t group = (uint32_t)bytes[index] << 16u;
+        if (index + 1u < count)
+        {
+            group |= (uint32_t)bytes[index + 1u] << 8u;
+        }
+        if (index + 2u < count)
+        {
+            group |= (uint32_t)bytes[index + 2u];
+        }
+        assert(fputc(alphabet[(group >> 18u) & 63u], file) != EOF);
+        assert(fputc(alphabet[(group >> 12u) & 63u], file) != EOF);
+        assert(fputc(index + 1u < count ? alphabet[(group >> 6u) & 63u] : '=', file) != EOF);
+        assert(fputc(index + 2u < count ? alphabet[group & 63u] : '=', file) != EOF);
+    }
+}
+
+static void SparkTestTiktokenMergesPastInlineKey(void)
+{
+    static const uint32_t whole_run[1] = {263u};
+    uint8_t spaces[256u];
+    char text[257u];
+    SparkTokenizer tokenizer;
+    SparkTokenizerTiktokenRanksConfiguration ranks_configuration;
+    FILE *file;
+    uint32_t byte_value;
+    uint32_t run;
+    memset(spaces, ' ', sizeof(spaces));
+    memset(text, ' ', 256u);
+    text[256u] = '\0';
+    file = fopen("build/test_tokenizer_long_merge.tiktoken", "wb");
+    assert(file != 0);
+    for (byte_value = 0u; byte_value < 256u; ++byte_value)
+    {
+        uint8_t value = (uint8_t)byte_value;
+        SparkTestWriteBase64(file, &value, 1u);
+        assert(fprintf(file, " %u\n", byte_value) > 0);
+    }
+    for (run = 2u; run <= 256u; run *= 2u)
+    {
+        SparkTestWriteBase64(file, spaces, run);
+        assert(fprintf(file, " %u\n", 255u + (uint32_t)__builtin_ctz(run)) > 0);
+    }
+    assert(fclose(file) == 0);
+    SparkTokenizerReset(&tokenizer);
+    memset(&ranks_configuration, 0, sizeof(ranks_configuration));
+    ranks_configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+    ranks_configuration.descriptor_bytes = SPARK_TOKENIZER_TIKTOKEN_RANKS_CONFIGURATION_DESCRIPTOR_BYTES;
+    ranks_configuration.ranks_path = "build/test_tokenizer_long_merge.tiktoken";
+    assert(SparkTokenizerLoadTiktokenRanks(&tokenizer, &ranks_configuration) == SPARK_STATUS_OK);
+    assert(tokenizer.token_text_bytes_by_id[262u] + tokenizer.token_text_bytes_by_id[262u] > SPARK_TOKENIZER_MAX_MERGE_KEY_INLINE_BYTES);
+    SparkTestCompiledRoundTripEncodes(&tokenizer, "build/test_tokenizer_long_merge.bin", text, whole_run, 1u);
+    SparkTokenizerDestroy(&tokenizer);
+}
+
+static void SparkTestPatchCompiledWord(const char *source, const char *target, long offset, uint32_t value)
+{
+    FILE *input = fopen(source, "rb");
+    FILE *output = fopen(target, "wb");
+    int character;
+    long position = 0;
+    assert(input != 0 && output != 0);
+    while ((character = fgetc(input)) != EOF)
+    {
+        if (position >= offset && position < offset + 4)
+            character = (int)((value >> (8u * (uint32_t)(position - offset))) & 0xffu);
+        assert(fputc(character, output) != EOF);
+        position++;
+    }
+    assert(fclose(input) == 0 && fclose(output) == 0);
+}
+
+static uint32_t SparkTestCompiledWord(const char *path, long offset)
+{
+    FILE *input = fopen(path, "rb");
+    uint8_t bytes[4];
+    assert(input != 0 && fseek(input, offset, SEEK_SET) == 0 && fread(bytes, 1u, 4u, input) == 4u && fclose(input) == 0);
+    return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8u) | ((uint32_t)bytes[2] << 16u) | ((uint32_t)bytes[3] << 24u);
+}
+
+static void SparkTestCompiledFileRefusesIdsPastMaximum(void)
+{
+    const char *good = "build/test_tokenizer_long_merge.bin";
+    const char *bad = "build/test_tokenizer_bad_ids.bin";
+    const long maximum_offset = 8 + 4 * 6;
+    SparkTokenizerCompiledFileConfiguration compiled;
+    SparkTokenizer loaded;
+    uint32_t maximum,version;
+    long first_entry;
+    version = SparkTestCompiledWord(good, 8);
+    maximum = SparkTestCompiledWord(good, maximum_offset);
+    first_entry = maximum_offset + 4 + 4 + (version == SPARK_TOKENIZER_COMPILED_FILE_VERSION ? 12 : 0) + 12;
+    assert(maximum == 263u && SparkTestCompiledWord(good, first_entry) <= maximum);
+    memset(&compiled, 0, sizeof(compiled));
+    compiled.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+    compiled.descriptor_bytes = SPARK_TOKENIZER_COMPILED_FILE_CONFIGURATION_DESCRIPTOR_BYTES;
+    compiled.compiled_tokenizer_path = bad;
+    SparkTestPatchCompiledWord(good, bad, maximum_offset, 0xffffffffu);
+    SparkTokenizerReset(&loaded);
+    assert(SparkTokenizerLoadCompiledFile(&loaded, &compiled) == SPARK_STATUS_SCHEMA_ERROR);
+    SparkTestPatchCompiledWord(good, bad, first_entry, maximum + 1u);
+    SparkTokenizerReset(&loaded);
+    assert(SparkTokenizerLoadCompiledFile(&loaded, &compiled) == SPARK_STATUS_SCHEMA_ERROR);
+    compiled.compiled_tokenizer_path = good;
+    SparkTokenizerReset(&loaded);
+    assert(SparkTokenizerLoadCompiledFile(&loaded, &compiled) == SPARK_STATUS_OK);
+    SparkTokenizerDestroy(&loaded);
+    (void)remove(bad);
+    printf("PASS a compiled tokenizer whose maximum id is past the cap or whose vocabulary names an id past its maximum is refused\n");
+}
+
 static void SparkTestTokenizerNfcNormalizerComposesBeforeBpe(void)
 {
     static const char *const normalizers[2] = {"{\"type\": \"NFC\"}", "null"};
@@ -944,7 +1185,9 @@ static void SparkTestTokenizerNfcNormalizerComposesBeforeBpe(void)
             compiled.abi_version = SPARK_TOKENIZER_ABI_VERSION;
             compiled.descriptor_bytes = SPARK_TOKENIZER_COMPILED_FILE_CONFIGURATION_DESCRIPTOR_BYTES;
             compiled.compiled_tokenizer_path = "build/test_tokenizer_nfc.bin";
-            assert(SparkTokenizerSaveCompiledFile(&tokenizer, &compiled) == SPARK_STATUS_UNSUPPORTED);
+            assert(SparkTokenizerSaveCompiledFile(&tokenizer, &compiled) == SPARK_STATUS_OK);
+            SparkTestCompiledRoundTripEncodes(&tokenizer, "build/test_tokenizer_nfc.bin", "cafe\xcc\x81", expected[0], expected_count[0]);
+            SparkTestCompiledRoundTripEncodes(&tokenizer, "build/test_tokenizer_nfc.bin", "caf\xc3\xa9", expected[0], expected_count[0]);
         }
         SparkTokenizerDestroy(&tokenizer);
     }
@@ -999,15 +1242,119 @@ static void SparkTestDigitIdeographSequencePretokenizes(void)
     SparkTokenizerDestroy(&tokenizer);
 }
 
+static void SparkTestNewlineRunSequencePretokenizes(void)
+{
+    static const uint32_t punctuation_then_newlines[] = {0u, 2u, 4u, 1u};
+    static const uint32_t newline_then_letter[] = {0u, 3u, 1u};
+    SparkTokenizer tokenizer;
+    SparkTokenizerHuggingFaceJsonConfiguration configuration;
+    FILE *file = fopen("build/test_tokenizer_newline_run_bpe.json", "wb");
+    assert(file != 0);
+    assert(fputs("{\"model\": {\"type\": \"BPE\", \"unk_token\": \"<unk>\", \"byte_fallback\": false, \"vocab\": {\"<unk>\": 7, \"a\": 0, \"b\": 1, \".\": 2, \"\304\212\": 3, \"\304\212\304\212\": 4, \".\304\212\": 5, \".\304\212\304\212\": 6}, \"merges\": [\". \304\212\", \".\304\212 \304\212\", \"\304\212 \304\212\"]}, "
+        "\"pre_tokenizer\": {\"type\": \"Sequence\", \"pretokenizers\": [{\"type\": \"Split\", \"pattern\": {\"Regex\": \"(?:\\\\r?\\\\n)+(?!\\\\r?\\\\n)\"}, \"behavior\": \"MergedWithNext\", \"invert\": false}, "
+        "{\"type\": \"Split\", \"pattern\": {\"Regex\": \"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?\\\\p{L}+|\\\\p{N}| ?[^\\\\s\\\\p{L}\\\\p{N}]+[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]+|\\\\s+(?!\\\\S)|\\\\s+\"}, \"behavior\": \"Isolated\", \"invert\": false}, "
+        "{\"type\": \"ByteLevel\", \"add_prefix_space\": false, \"trim_offsets\": true, \"use_regex\": false}]}, \"added_tokens\": []}", file) >= 0);
+    assert(fclose(file) == 0);
+    SparkTokenizerReset(&tokenizer);
+    memset(&configuration, 0, sizeof(configuration));
+    configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+    configuration.descriptor_bytes = SPARK_TOKENIZER_HF_JSON_CONFIGURATION_DESCRIPTOR_BYTES;
+    configuration.tokenizer_json_path = "build/test_tokenizer_newline_run_bpe.json";
+    assert(SparkTokenizerLoadHuggingFaceJson(&tokenizer, &configuration) == SPARK_STATUS_OK);
+    SparkTestDigitIdeographEncode(&tokenizer, "a.\n\nb", punctuation_then_newlines, 4u);
+    SparkTestDigitIdeographEncode(&tokenizer, "a\nb", newline_then_letter, 3u);
+    SparkTokenizerDestroy(&tokenizer);
+    printf("PASS a leading newline-run split merged with the next piece keeps punctuation and newline runs apart\n");
+}
+
+static SparkStatus SparkTestShapeLoad(const char *normalizer, const char *pre_tokenizer)
+{
+    SparkTokenizer tokenizer;
+    SparkTokenizerHuggingFaceJsonConfiguration configuration;
+    SparkStatus status;
+    FILE *file = fopen("build/test_tokenizer_shape.json", "wb");
+    assert(file != 0);
+    fprintf(file,
+        "{\"normalizer\":%s,\"pre_tokenizer\":%s,\"added_tokens\":[],"
+        "\"model\":{\"type\":\"BPE\",\"vocab\":{\"a\":0,\"b\":1,\"\304\240\":2},\"merges\":[]}}\n",
+        normalizer, pre_tokenizer);
+    assert(fclose(file) == 0);
+    SparkTokenizerReset(&tokenizer);
+    memset(&configuration, 0, sizeof(configuration));
+    configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+    configuration.descriptor_bytes = SPARK_TOKENIZER_HF_JSON_CONFIGURATION_DESCRIPTOR_BYTES;
+    configuration.tokenizer_json_path = "build/test_tokenizer_shape.json";
+    status = SparkTokenizerLoadHuggingFaceJson(&tokenizer, &configuration);
+    if (status == SPARK_STATUS_OK)
+    {
+        SparkTokenizerDestroy(&tokenizer);
+    }
+    return status;
+}
+
+static void SparkTestTokenizerRefusesUnimplementedShapes(void)
+{
+    static const char letters_split[] =
+        "{\"type\":\"Split\",\"pattern\":{\"Regex\":\"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?\\\\p{L}+|\\\\p{N}| ?[^\\\\s\\\\p{L}\\\\p{N}]+[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]+|\\\\s+(?!\\\\S)|\\\\s+\"},\"behavior\":\"%s\",\"invert\":false}";
+    char split[1024],sequence[1400];
+    assert(SparkTestShapeLoad("null", "null") == SPARK_STATUS_OK);
+    assert(SparkTestShapeLoad("{\"type\":\"NFC\"}", "{\"type\":\"ByteLevel\",\"use_regex\":true}") == SPARK_STATUS_OK);
+    (void)snprintf(split, sizeof(split), letters_split, "Isolated");
+    assert(SparkTestShapeLoad("null", split) == SPARK_STATUS_OK);
+    (void)snprintf(sequence, sizeof(sequence), "{\"type\":\"Sequence\",\"pretokenizers\":[%s,{\"type\":\"ByteLevel\",\"use_regex\":false}]}", split);
+    assert(SparkTestShapeLoad("null", sequence) == SPARK_STATUS_OK);
+    (void)snprintf(sequence, sizeof(sequence), "{\"type\":\"Sequence\",\"pretokenizers\":[%s,{\"type\":\"ByteLevel\",\"use_regex\":true}]}", split);
+    assert(SparkTestShapeLoad("null", sequence) == SPARK_STATUS_PARSE_ERROR);
+    (void)snprintf(split, sizeof(split), letters_split, "Removed");
+    assert(SparkTestShapeLoad("null", split) == SPARK_STATUS_PARSE_ERROR);
+    assert(SparkTestShapeLoad("null", "{\"type\":\"Split\",\"pattern\":{\"Regex\":\"\\\\n?\\\\p{L}+\"},\"behavior\":\"Isolated\",\"invert\":false}") == SPARK_STATUS_PARSE_ERROR);
+    assert(SparkTestShapeLoad("null", "{\"type\":\"Whitespace\"}") == SPARK_STATUS_PARSE_ERROR);
+    assert(SparkTestShapeLoad("{\"type\":\"Strip\",\"strip_left\":true,\"strip_right\":true}", "null") == SPARK_STATUS_PARSE_ERROR);
+    assert(SparkTestShapeLoad("{\"type\":\"Sequence\",\"normalizers\":[{\"type\":\"NFKC\"},{\"type\":\"Lowercase\"}]}", "null") == SPARK_STATUS_PARSE_ERROR);
+    assert(SparkTestShapeLoad("{\"type\":\"Replace\",\"pattern\":{\"String\":\"a\"},\"content\":\"b\"}", "null") == SPARK_STATUS_PARSE_ERROR);
+    printf("PASS tokenizer refuses pre-tokenizers and normalizers it does not implement\n");
+}
+
+static void SparkTestTokenizerRefusesPrefixSpaceAfterSplits(void)
+{
+    static const char letters[] =
+        "{\"type\":\"Split\",\"pattern\":{\"Regex\":\"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?\\\\p{L}+|\\\\p{N}| ?[^\\\\s\\\\p{L}\\\\p{N}]+[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]+|\\\\s+(?!\\\\S)|\\\\s+\"},\"behavior\":\"Isolated\",\"invert\":false}";
+    static const char newline[] =
+        "{\"type\":\"Split\",\"pattern\":{\"Regex\":\"(?:\\\\r?\\\\n)+(?!\\\\r?\\\\n)\"},\"behavior\":\"MergedWithNext\",\"invert\":false}";
+    static const char digit_ideograph[] =
+        "{\"type\": \"Split\", \"pattern\": {\"Regex\": \"\\\\p{N}{1,3}\"}, \"behavior\": \"Isolated\", \"invert\": false}, {\"type\": \"Split\", \"pattern\": {\"Regex\": \"[一-龥぀-ゟ゠-ヿ]+\"}, \"behavior\": \"Isolated\", \"invert\": false}, {\"type\": \"Split\", \"pattern\": {\"Regex\": \"[!\\\"#$%&'()*+,\\\\-./:;<=>?@\\\\[\\\\\\\\\\\\]^_`{|}~][A-Za-z]+|[^\\r\\n\\\\p{L}\\\\p{P}\\\\p{S}]?[\\\\p{L}\\\\p{M}]+| ?[\\\\p{P}\\\\p{S}]+[\\r\\n]*|\\\\s*[\\r\\n]+|\\\\s+(?!\\\\S)|\\\\s+\"}, \"behavior\": \"Isolated\", \"invert\": false}";
+    static const char *const byte_level[3] =
+    {
+        "{\"type\":\"ByteLevel\",\"use_regex\":false}",
+        "{\"type\":\"ByteLevel\",\"add_prefix_space\":false,\"use_regex\":false}",
+        "{\"type\":\"ByteLevel\",\"add_prefix_space\":true,\"use_regex\":false}"
+    };
+    char sequence[4096];
+    uint32_t index;
+    for (index = 0u; index < 3u; index++)
+    {
+        const SparkStatus expected = index < 2u ? SPARK_STATUS_OK : SPARK_STATUS_PARSE_ERROR;
+        (void)snprintf(sequence, sizeof(sequence), "{\"type\":\"Sequence\",\"pretokenizers\":[%s,%s]}", letters, byte_level[index]);
+        assert(SparkTestShapeLoad("null", sequence) == expected);
+        (void)snprintf(sequence, sizeof(sequence), "{\"type\":\"Sequence\",\"pretokenizers\":[%s,%s,%s]}", newline, letters, byte_level[index]);
+        assert(SparkTestShapeLoad("null", sequence) == expected);
+        (void)snprintf(sequence, sizeof(sequence), "{\"type\":\"Sequence\",\"pretokenizers\":[%s,%s]}", digit_ideograph, byte_level[index]);
+        assert(SparkTestShapeLoad("null", sequence) == expected);
+    }
+    printf("PASS tokenizer refuses a ByteLevel add_prefix_space after a split (it would prefix every piece)\n");
+}
+
 int main(void)
 {
+    SparkTestTokenizerRefusesUnimplementedShapes();
     SparkTestTokenizerPieceCacheMatchesUncached();
     SparkTestTokenizerWarmCacheSurvivesGrowthAndMatches();
     SparkTestTokenizerEncodesByteBpeAndSpecialTokens();
     SparkTestTokenizerDecodesByteLevelTokens();
     SparkTestTokenizerEncodesBatch();
     SparkTestTokenizerCompiledFileAndConfiguredBatch();
-    SparkTestTokenizerLoadsLegacyCompiledFile();
+    SparkTestTokenizerLoadsHandWrittenCompiledFile();
+    SparkTestTokenizerRefusesOlderCompiledFiles();
     SparkTestTokenizerRejectsEmptyAddedTokens();
     SparkTestTokenizerLoadsLargeMergeArrayWithoutIndexedArrayWalk();
     for (uint32_t pattern_index = 0u; pattern_index < sizeof(g_spark_test_letter_split_patterns) / sizeof(g_spark_test_letter_split_patterns[0]); ++pattern_index)
@@ -1016,6 +1363,11 @@ int main(void)
     }
     SparkTestMetaspaceTokenizerEncodesAndDecodes();
     SparkTestTokenizerNfcNormalizerComposesBeforeBpe();
+    SparkTestCompiledFileCarriesEncodingFlags();
+    SparkTestTiktokenMergesPastInlineKey();
+    SparkTestCompiledFileRefusesIdsPastMaximum();
     SparkTestDigitIdeographSequencePretokenizes();
+    SparkTestNewlineRunSequencePretokenizes();
+    SparkTestTokenizerRefusesPrefixSpaceAfterSplits();
     return 0;
 }

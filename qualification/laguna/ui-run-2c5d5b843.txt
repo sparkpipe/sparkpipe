@@ -1,0 +1,19 @@
+swap models 14 chat models 14 styles (1, '\n') (1, '\n')
+swap qwen3.8-max -> laguna-s-2.1 ok True 17.9 s error None memory {"model": "laguna-s-2.1", "projected_gib": 23.2, "used_gib_max": 21.0, "used_gib_min": 20.9, "available_gib_min": 85.3, "tightest": "spark4"}
+chat          PASS  | finish='stop' 2.3s content='The capital of France is Paris.' reasoning=371 chars
+stream        PASS  | finish='stop' 2.21s content='The capital of France is Paris.' reasoning=371 chars
+tool          PASS  | finish='tool_calls' 1.29s content='' reasoning=0 chars
+tool_result   PASS  | finish='stop' 0.61s content='The current weather in Paris is sunny with a temperature of 18°C.' reasoning=0 chars
+reasoning_off PASS  | finish='stop' 0.34s content='391' reasoning=0 chars
+reasoning_on  FAIL no reasoning_content with reasoning on | finish='stop' 0.34s content='391' reasoning=0 chars
+UI-SMOKE laguna-s-2.1: 5/6
+chat check: stop 'To compute \\(37 \\times 43\\), we can use the **difference of squares** method. Notice that 37 and 43 are equidistant from 40 (37 is 3 less, and 43 is 3 more). This allows us to rewrite the expression as:\n\n\\[\n(40 - 3)(40 + 3) = 40^2 - 3^2\n\\]\n\nCalculating each term:\n\\[\n40^2 = 1600 \\quad \\text{and} \\qua' usage 259
+swap laguna-s-2.1 -> qwen3.8-max ok True 34.1 s error None memory {"model": "qwen3.8-max", "projected_gib": 88.0, "used_gib_max": 90.2, "used_gib_min": 90.0, "available_gib_min": 15.9, "tightest": "spark4"}
+  16 DROP-KV label=laguna_stage released=0 bytes=0 busy=0
+  16 RECLAIM-PACK freed=268435456 arenas=1 busy=0 resident=_ remaining_arenas=2
+final: idle qwen3.8-max None 14
+[ 4/17] compsec-079 Botan                    FAIL expected='18-19' got='9' (9.8s, 428 tok, stop)
+[ 5/17] compsec-080 Botan                    FAIL expected='5-6' got='12' (10.1s, 451 tok, stop)
+[ 7/17] compsec-082 Firebird                 FAIL expected='9-10' got='6' (3.2s, 119 tok, stop)
+[13/17] compsec-088 Mbed TLS                 FAIL expected='11' got='7' (3.8s, 147 tok, stop)
+COMPSEC-17 RESULT: 13/17

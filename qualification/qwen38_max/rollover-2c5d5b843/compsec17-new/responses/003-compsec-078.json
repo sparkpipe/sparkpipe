@@ -1,0 +1,62 @@
+{
+ "id": "compsec-078",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-max",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function checks the SM2 C3 hash in a decoded ciphertext. Assume parse_sm2_ciphertext() may return a c3 field of any length.\n\nCode:\n```c\n 1: #define SM3_DIGEST_LEN 32\n 2: \n 3: static bool check_sm2_c3(const uint8_t *msg, size_t msg_len,\n 4:                          const struct sm2_ctext *ct)\n 5: {\n 6:     uint8_t expected[SM3_DIGEST_LEN];\n 7: \n 8:     sm3_c3_hash(expected, ct->x2, ct->x2_len, msg, msg_len, ct->y2, ct->y2_len);\n 9: \n10:     /* Constant-time comparison: returns 0 only if all bytes match. */\n11:     if (ct_memcmp(expected, ct->c3.data, SM3_DIGEST_LEN) != 0)\n12:         return false;\n13: \n14:     return true;\n15: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 2048,
+   "temperature": 0.0,
+   "stream": false
+  },
+  "body_sha256": "24a9ec5de865091409625108fc0f12afe6ac6300e0103e85a46bdb06297b6529"
+ },
+ "response": {
+  "id": "chatcmpl-e489ebd496884080816eebd7c9843500",
+  "created": 1791727510,
+  "model": "qwen3.8-max",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "\n\nAnswer: 11",
+     "role": "assistant",
+     "reasoning_content": "We need answer user's request. Need analyze reduced C/C++ function, identify primary bug line(s) or 0 if safe under assumptions. Need final line exactly Answer: ...\n\nWe need think carefully. Function checks SM2 C3 hash in decoded ciphertext. parse_sm2_ciphertext() may return a c3 field of any length. Code:\n1 #define SM3_DIGEST_LEN 32\n3 static bool check_sm2_c3(const uint8_t *msg, size_t msg_len, const struct sm2_ctext *ct)\n5 {\n6 uint8_t expected[SM3_DIGEST_LEN];\n8 sm3_c3_hash(expected, ct->x2, ct->x2_len, msg, msg_len, ct->y2, ct->y2_len);\n10 /* Constant-time comparison: returns 0 only if all bytes match. */\n11 if (ct_memcmp(expected, ct->c3.data, SM3_DIGEST_LEN) != 0)\n12 return false;\n14 return true;\n\nAssumption: parse_sm2_ciphertext() may return a c3 field of any length. Vulnerability likely missing length check before comparing fixed SM3_DIGEST_LEN bytes from ct->c3.data. If c3.data length < 32, ct_memcmp reads out-of-bounds. If c3 length > 32, maybe only compares first 32 bytes, but if c3 field any length and expected digest 32, maybe should verify ct->c3.len == SM3_DIGEST_LEN before compare. Bug introduced at line 11 where uses SM3_DIGEST_LEN without checking c3 length. Could include line 11 only. Or line 11 and maybe 12? Primary bug line 11. Need consider if ct_memcmp expects both buffers length n and if ct->c3.data may be NULL? Any length includes zero, data maybe NULL, reading. Need line 11.\n\nCould there be vulnerability due to constant-time comparison but length not checked causing OOB read. Yes.\n\nNeed output only final answer line? User says at end write exactly one final line format and do not write anything after it. We can include analysis? final should only answer. But likely can just final. Need ensure no extra. Answer: 11\n\nDouble-check if bug introduced maybe line 8? sm3_c3_hash writes expected fixed 32, safe. It doesn't use c3. The comparison line is bug. If c3 field any length, need check ct->c3.len != SM3_DIGEST_LEN. If c3 longer, comparing only 32 may be okay if spec expects 32 but parse may allow any; if longer, maybe should reject. But primary security bug is OOB read if shorter. Line 11.\n\nCould line 11 use ct->c3.data without validating length. If parse returns any length, and c3 length could be less than 32. ct_memcmp reads 32 bytes. Yes.\n\nNeed maybe include line 11 only. If they ask smallest comma-separated set of exact line numbers if small group adjacent. Single line.\n\nFinal: Answer: 11\n"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 679,
+   "prompt_tokens": 391,
+   "total_tokens": 1070,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>We need answer user's request. Need analyze reduced C/C++ function, identify primary bug line(s) or 0 if safe under assumptions. Need final line exactly Answer: ...\n\nWe need think carefully. Function checks SM2 C3 hash in decoded ciphertext. parse_sm2_ciphertext() may return a c3 field of any length. Code:\n1 #define SM3_DIGEST_LEN 32\n3 static bool check_sm2_c3(const uint8_t *msg, size_t msg_len, const struct sm2_ctext *ct)\n5 {\n6 uint8_t expected[SM3_DIGEST_LEN];\n8 sm3_c3_hash(expected, ct->x2, ct->x2_len, msg, msg_len, ct->y2, ct->y2_len);\n10 /* Constant-time comparison: returns 0 only if all bytes match. */\n11 if (ct_memcmp(expected, ct->c3.data, SM3_DIGEST_LEN) != 0)\n12 return false;\n14 return true;\n\nAssumption: parse_sm2_ciphertext() may return a c3 field of any length. Vulnerability likely missing length check before comparing fixed SM3_DIGEST_LEN bytes from ct->c3.data. If c3.data length < 32, ct_memcmp reads out-of-bounds. If c3 length > 32, maybe only compares first 32 bytes, but if c3 field any length and expected digest 32, maybe should verify ct->c3.len == SM3_DIGEST_LEN before compare. Bug introduced at line 11 where uses SM3_DIGEST_LEN without checking c3 length. Could include line 11 only. Or line 11 and maybe 12? Primary bug line 11. Need consider if ct_memcmp expects both buffers length n and if ct->c3.data may be NULL? Any length includes zero, data maybe NULL, reading. Need line 11.\n\nCould there be vulnerability due to constant-time comparison but length not checked causing OOB read. Yes.\n\nNeed output only final answer line? User says at end write exactly one final line format and do not write anything after it. We can include analysis? final should only answer. But likely can just final. Need ensure no extra. Answer: 11\n\nDouble-check if bug introduced maybe line 8? sm3_c3_hash writes expected fixed 32, safe. It doesn't use c3. The comparison line is bug. If c3 field any length, need check ct->c3.len != SM3_DIGEST_LEN. If c3 longer, comparing only 32 may be okay if spec expects 32 but parse may allow any; if longer, maybe should reject. But primary security bug is OOB read if shorter. Line 11.\n\nCould line 11 use ct->c3.data without validating length. If parse returns any length, and c3 length could be less than 32. ct_memcmp reads 32 bytes. Yes.\n\nNeed maybe include line 11 only. If they ask smallest comma-separated set of exact line numbers if small group adjacent. Single line.\n\nFinal: Answer: 11\n</think>\n\nAnswer: 11",
+ "grade": {
+  "index": 3,
+  "id": "compsec-078",
+  "source": "COMPSEC",
+  "domain": "Botan",
+  "expected": "11",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 85971.0,
+  "output_sha256": "b4d89dac97d4174fe82a97540084c082df6c29beb6156da4e32ad508b0c9b0aa",
+  "prompt_token_count": 391,
+  "generated_token_count": 679,
+  "reasoning_chars": 2457,
+  "content_chars": 12,
+  "status": "stop"
+ }
+}

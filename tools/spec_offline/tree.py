@@ -34,8 +34,8 @@ def parse_shape(text: str) -> Shape:
     match = CHAIN.match(text)
     if match:
         depth = int(match.group(1))
-        if depth > 31:
-            raise ValueError(f"{text}: chain depth above 31")
+        if depth > 255:
+            raise ValueError(f"{text}: chain depth above 255")
         return Shape("chain", depth, 1, depth + 1, ())
     match = TREE.match(text)
     if match:

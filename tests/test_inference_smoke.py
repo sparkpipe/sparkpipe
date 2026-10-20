@@ -195,7 +195,7 @@ class SmokePreparation(unittest.TestCase):
         self.reference_path = self.source / "reference.json"
         self.spec = dict(hosts=["spark0"], port_base=30000, port_map={"19000": 30002}, environment={},
                          deployment=str(self.deployment_path), batch=str(self.batch_path), reference=str(self.reference_path),
-                         budgets=dict(weightd_device_bytes=4096, model_device_bytes=1024, expert_pool_bytes=2048, spine_bytes=2048))
+                         budgets=dict(weightd_device_bytes=8192, model_device_bytes=1024, expert_pool_bytes=2048, spine_bytes=2048, kv_reserve_bytes=4096))
         self.environment = dict(SPARK_QUEUE_ATTEMPT=self.attempt, SPARK_QUEUE_RUNTIME_ROOT=str(self.root),
                                 SPARK_QUEUE_RANK="0", SPARK_QUEUE_SIZE="1", SPARK_QUEUE_PORTS="30000:30010",
                                 SPARK_QUEUE_DEVICE_MEMORY_MIB="1")
@@ -245,9 +245,23 @@ class SmokePreparation(unittest.TestCase):
         self.environment["SPARK_QUEUE_PORTS"] = "30000:30001"
         with self.assertRaisesRegex(ValueError, "reserve every listener"):
             self.prepare()
+        self.environment["SPARK_QUEUE_PORTS"] = "30000:30010"
+        del self.spec["budgets"]["kv_reserve_bytes"]
+        with self.assertRaises((KeyError, ValueError)):
+            self.prepare()
+        self.spec["budgets"]["kv_reserve_bytes"] = 4097
+        with self.assertRaisesRegex(ValueError, "KV reserve exceed ceiling"):
+            self.prepare()
 
 
 class SharedSmokePreparation(SmokePreparation):
+    def set_execution_mode(self, value):
+        path = self.source / "config/model.json"
+        config = json.loads(path.read_text())
+        config.update(graph_path=value, pin_experts=value)
+        path.write_text(json.dumps(config))
+        self.reference["ranks"][0]["assets"]["config/model.json"] = smoke.digest(path)
+
     def shared(self, count=4):
         self.deployment["runtime_limits"] = dict(max_inflight_submissions=1, max_active_sequences=1,
                                                 max_input_rows=1, resident_sequence_capacity=1)
@@ -259,7 +273,8 @@ class SharedSmokePreparation(SmokePreparation):
         (self.source / working).write_bytes(bytes(8))
         self.reference["ranks"][0]["assets"][working] = smoke.digest(self.source / working)
         self.reference["executables"]["build/weightd_warm"] = "b" * 64
-        self.spec["environment"] = {"SPARK_GLM5_NEXT_GRAPH_PATH": "1", "SPARK_GLM5_NEXT_PIN_EXPERTS": "1", "CUDA_MODULE_LOADING": "LAZY", "CUDA_MODULE_DATA_LOADING": "LAZY", "CUDA_DEVICE_MAX_CONNECTIONS": "32"}
+        self.set_execution_mode(1)
+        self.spec["environment"] = {"CUDA_MODULE_LOADING": "LAZY", "CUDA_MODULE_DATA_LOADING": "LAZY", "CUDA_DEVICE_MAX_CONNECTIONS": "32"}
         self.reference["environment"] = self.spec["environment"]
         self.spec["working_set"] = dict(mode="full", path=working)
         self.spec["replicas"] = [dict(lane=index, port_base=30000 + 100 * index,
@@ -373,11 +388,11 @@ class SharedSmokePreparation(SmokePreparation):
         self.spec["working_set"]["mode"] = "partial"
         with self.assertRaisesRegex(ValueError, "match explicit working set mode"):
             self.prepare()
-        self.spec["environment"].update(SPARK_GLM5_NEXT_GRAPH_PATH="0", SPARK_GLM5_NEXT_PIN_EXPERTS="0")
+        self.set_execution_mode(0)
         with self.assertRaisesRegex(ValueError, "must not premap full pack"):
             self.prepare()
         self.spec["working_set"]["mode"] = "full"
-        self.spec["environment"].update(SPARK_GLM5_NEXT_GRAPH_PATH="1", SPARK_GLM5_NEXT_PIN_EXPERTS="1")
+        self.set_execution_mode(1)
         self.spec["budgets"]["expert_pool_bytes"] = 1
         with self.assertRaisesRegex(ValueError, "full pack budget"):
             self.prepare()

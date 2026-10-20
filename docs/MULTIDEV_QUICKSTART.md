@@ -100,14 +100,12 @@ take a free lane instead of re-mapping the family's own lane.
 
 Ports: lane L owns control 23000 + 16L and transport 64000 + 16L, 16 ports each
 (`lane_assignments.json`; the TP collective uses the weightd mesh, not ports).
-For lanes 11-15 the same formula gives 23176-23255 and 64176-64255 (arithmetic),
-which no entry in `tools/devcycle/fleet_registry.json` uses. Reserve every
-listener with `--ports`.
+For lanes 11-15 the same formula gives 23176-23255 and 64176-64255 (arithmetic).
+Reserve every listener with `--ports`.
 
-The family wrappers default their socket to
-`/run/sparkpipe-weightd-shared/weightd.sock`, which no Spark provides (observed
-2026-09-28). Point them at `/tmp/spark_weightd.sock` through the socket variable
-named in each wrapper's header or `SPARK_WEIGHTD_SOCKET`.
+The family wrappers default their socket to the fleet weightd at
+`/tmp/spark_weightd.sock`; `SPARK_WEIGHTD_SOCKET` or the socket variable named in
+each wrapper's header overrides it.
 
 ## Lane tiers
 
@@ -130,7 +128,8 @@ pinned residents fit per Spark, production included (arithmetic in
 WEIGHTD_DESIGN.md, GLM graph residency today).
 
 **W, own arena with a trace-recorded working set.** Attach with a pool smaller
-than the pack, sized from the working set, so the arena stays per-chunk lazy.
+than the pack, sized from the working set, so the arena gets a slot pool
+(allocated at attach, evicting least recently used experts inside it).
 Record the set by running the job's prompt set once: the daemon appends every
 acquired key to `PACK.wset`. Copy that trace to a file named for the prompt set
 (committed examples: `model-families/dsv4/smoke-standard-v1.wset`,
