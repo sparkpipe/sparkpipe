@@ -162,7 +162,7 @@ typedef struct D41ModelState
 	uint64_t record_chunk_floats, a2a_units;
 	uint32_t local_score_stride, global_score_stride, step_score_stride, step_blocks;
 	uint32_t candidate_blocks, local_block_stride, global_block_stride, local_block_keep, global_block_keep, block_round_parts;
-	uint16_t *streams, *x, *xq, *q_latent, *qr, *qrq, *q_local, *q_gathered, *kv, *window_kv;
+	uint16_t *streams, *x, *xq, *q_latent, *qrq, *q_local, *q_gathered, *kv, *window_kv;
 	float *mixes, *pre_attn, *post_attn, *comb_attn, *post_ffn, *comb_ffn, *pre_head;
 	float *c_kv, *c_score;
 	uint16_t *c_latent, *c_latent_store, *idx_key, *idx_pack_local, *idx_query, *idx_w_full;
@@ -340,6 +340,34 @@ static void D41RmsNorm(const uint16_t *input, const uint16_t *weight, uint16_t *
 		(uint16_t *)input, (const uint16_t *)0, weight, (uint16_t *)0, output, width, width, D41_EPS);
 }
 
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void D41RmsNormQdqKernel(const uint16_t *input, const uint16_t *__restrict__ weight, uint16_t *output, uint16_t *__restrict__ quantized,
+	uint32_t dimension, float epsilon)
+{
+	extern __shared__ float d41_norm_shared[];
+	float *row = d41_norm_shared;
+	float *reduction = d41_norm_shared + dimension;
+	const uint64_t base = (uint64_t)blockIdx.x * dimension;
+	uint32_t index;
+	float total = 0.0f, scale;
+	for ( index = threadIdx.x; index < dimension; index += THREADS )
+	{
+		float value = LmBf16ToFloat(input[base + index]);
+		row[index] = value;
+		total += value * value;
+	}
+	total = LmBlockSum<THREADS>(total, reduction);
+	scale = rsqrtf((total / (float)dimension) + epsilon);
+	for ( index = threadIdx.x; index < dimension; index += THREADS )
+	{
+		const uint16_t normed = LmFloatToBf16(row[index] * scale * LmScalarToFloat(weight[index]));
+		if ( output != 0 )
+			output[base + index] = normed;
+		quantized[base + index] = SparkDsv41FlashFp8QdqLane(LmBf16ToFloat(normed));
+	}
+}
+
 static void D41Fp8Qdq(uint16_t *data, uint64_t elements, cudaStream_t stream)
 {
 	(void)SparkDsv41FlashLaunchFp8Qdq(stream, data, elements);
@@ -348,6 +376,19 @@ static void D41Fp8Qdq(uint16_t *data, uint64_t elements, cudaStream_t stream)
 static void D41Fp8QdqCopy(const uint16_t *source, uint16_t *data, uint64_t elements, cudaStream_t stream)
 {
 	(void)SparkDsv41FlashLaunchFp8QdqCopy(stream, source, data, elements);
+}
+
+static void D41RmsNormQdq(const uint16_t *input, const uint16_t *weight, uint16_t *output, uint16_t *quantized, uint32_t rows, uint32_t width,
+	cudaStream_t stream)
+{
+	static_assert(D41_THREADS % D41_FP8_BLOCK == 0u, "a norm block holds whole fp8 groups");
+	if ( width % D41_THREADS != 0u )
+	{
+		D41RmsNorm(input, weight, output != 0 ? output : quantized, rows, width, stream);
+		D41Fp8QdqCopy(output != 0 ? output : quantized, quantized, (uint64_t)rows * width, stream);
+		return;
+	}
+	D41RmsNormQdqKernel<D41_THREADS><<<rows, D41_THREADS, (width + 8u) * sizeof(float), stream>>>(input, weight, output, quantized, width, D41_EPS);
 }
 
 static void D41Rope(uint16_t *data, uint32_t rows, uint32_t heads, uint32_t head_stride, uint32_t rope_offset,
@@ -574,12 +615,10 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 	const uint64_t query_rank_stride = (uint64_t)rows * gather_width;
 	uint16_t *ring = (uint16_t *)state->recurrent + (uint64_t)index * D41_RING_ROWS * D41_HEAD_DIM;
 	SparkStatus status;
-	D41Fp8QdqCopy(state->x, state->xq, (uint64_t)rows * D41_HIDDEN, stream);
 	if ( D41LinearPair(&layer->q_a, &layer->kv_a, state->xq, state->q_latent, state->kv, rows, D41_HIDDEN, D41_QLORA, D41_HEAD_DIM, sms, stream) !=
 		LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	D41RmsNorm(state->q_latent, layer->q_norm, state->qr, rows, D41_QLORA, stream);
-	D41Fp8QdqCopy(state->qr, state->qrq, (uint64_t)rows * D41_QLORA, stream);
+	D41RmsNormQdq(state->q_latent, layer->q_norm, 0, state->qrq, rows, D41_QLORA, stream);
 	if ( (indexed != 0u ? D41LinearPair(&layer->q_b, &layer->idx_q_b, state->qrq, state->q_local, state->idx_pack_local, rows, D41_QLORA,
 		local_width, D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM, sms, stream) :
 		D41Linear(&layer->q_b, state->qrq, state->q_local, rows, D41_QLORA, local_width, sms, stream)) != LM_LAUNCH_OK )
@@ -691,7 +730,6 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 		stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
-	D41Fp8QdqCopy(state->x, state->xq, (uint64_t)rows * D41_HIDDEN, stream);
 	if ( D41Experts(layer->e_w1_cells, state->xq, state->expert_gate, state, rows, routes, 0u, D41_HIDDEN, D41_MOE_INTER, stream) != LM_LAUNCH_OK ||
 		D41Experts(layer->e_w3_cells, state->xq, state->expert_up, state, rows, routes, 0u, D41_HIDDEN, D41_MOE_INTER, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -763,7 +801,7 @@ static SparkStatus D41LayerStep(D41ModelState *state, uint32_t index, const Spar
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	D41HcPreRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->streams, pre_previous, state->x, D41_HIDDEN);
-	D41RmsNorm(state->x, layer->attn_norm, state->x, rows, D41_HIDDEN, stream);
+	D41RmsNormQdq(state->x, layer->attn_norm, state->x, state->xq, rows, D41_HIDDEN, stream);
 	if ( index < 2u && (status = D41DumpRows(state, index, 3u, state->x, rows, D41_HIDDEN, stream)) != SPARK_STATUS_OK )
 		return status;
 	status = D41Attention(state, layer, index, step, stream);
@@ -780,7 +818,7 @@ static SparkStatus D41LayerStep(D41ModelState *state, uint32_t index, const Spar
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	D41HcPreRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->streams, state->pre_attn, state->x, D41_HIDDEN);
-	D41RmsNorm(state->x, layer->ffn_norm, state->x, rows, D41_HIDDEN, stream);
+	D41RmsNormQdq(state->x, layer->ffn_norm, state->x, state->xq, rows, D41_HIDDEN, stream);
 	if ( index < 2u && (status = D41DumpRows(state, index, 4u, state->x, rows, D41_HIDDEN, stream)) != SPARK_STATUS_OK )
 		return status;
 	status = D41Moe(state, layer, step, stream);
@@ -1056,7 +1094,7 @@ static SparkStatus D41PlanArena(D41ModelState *state, uint64_t *bytes, uint8_t *
 	{
 		{ (void **)&state->streams, r * D41K_HC * D41_HIDDEN * 2u },
 		{ (void **)&state->x, r * D41_HIDDEN * 2u }, { (void **)&state->xq, r * D41_HIDDEN * 2u },
-		{ (void **)&state->q_latent, r * D41_QLORA * 2u }, { (void **)&state->qr, r * D41_QLORA * 2u }, { (void **)&state->qrq, r * D41_QLORA * 2u },
+		{ (void **)&state->q_latent, r * D41_QLORA * 2u }, { (void **)&state->qrq, r * D41_QLORA * 2u },
 		{ (void **)&state->q_local, r * (D41_LOCAL_HEADS * D41_HEAD_DIM + D41_INDEX_PACK) * 2u },
 		{ (void **)&state->q_gathered, D41_TP * r * (D41_LOCAL_HEADS * D41_HEAD_DIM + D41_INDEX_PACK) * 2u },
 		{ (void **)&state->kv, r * D41_HEAD_DIM * 2u }, { (void **)&state->window_kv, r * D41_HEAD_DIM * 2u },
