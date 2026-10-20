@@ -3106,7 +3106,7 @@ SparkStatus SparkPrefixCacheMarkResume(
     const uint32_t *token_ids,
     uint32_t token_count)
 {
-    SparkPrefixCacheEntry *entry = 0;
+    SparkPrefixCacheEntry *entry = 0,*parent = 0;
     uint64_t parent_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH,block_hash;
     uint32_t token_offset;
     SparkStatus status;
@@ -3118,6 +3118,7 @@ SparkStatus SparkPrefixCacheMarkResume(
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     for (token_offset = 0u; token_offset < token_count; token_offset += cache->block_token_count)
     {
+        parent = entry;
         entry = SparkPrefixCacheFindPromptBlock(cache, token_ids, token_offset,
             SparkPrefixCacheMinimumU32(cache->block_token_count, token_count - token_offset),
             parent_hash, &block_hash);
@@ -3126,6 +3127,8 @@ SparkStatus SparkPrefixCacheMarkResume(
         parent_hash = block_hash;
     }
     entry->flags |= SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME;
+    if (entry->token_count < cache->block_token_count && parent != 0)
+        parent->flags |= SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME_CHILD;
     return SPARK_STATUS_OK;
 }
 
@@ -3157,6 +3160,26 @@ SparkStatus SparkPrefixCacheClearResume(
     return SPARK_STATUS_OK;
 }
 
+static uint32_t SparkPrefixCacheResumeInBlock(
+    SparkPrefixCache *cache,
+    const uint32_t *token_ids,
+    uint32_t token_offset,
+    uint32_t longest,
+    uint64_t parent_hash)
+{
+    SparkPrefixCacheEntry *entry;
+    uint64_t block_hash;
+    uint32_t block_tokens;
+
+    for (block_tokens = longest; block_tokens != 0u; block_tokens--)
+    {
+        entry = SparkPrefixCacheFindPromptBlock(cache, token_ids, token_offset, block_tokens, parent_hash, &block_hash);
+        if (entry != 0 && (entry->flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME) != 0u)
+            return token_offset + block_tokens;
+    }
+    return 0u;
+}
+
 uint32_t SparkPrefixCacheResumeTokenCount(
     SparkPrefixCache *cache,
     const uint32_t *token_ids,
@@ -3164,7 +3187,7 @@ uint32_t SparkPrefixCacheResumeTokenCount(
 {
     SparkPrefixCacheEntry *entry;
     uint64_t parent_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH,block_hash,last_parent = 0u;
-    uint32_t token_offset,block_tokens,resume = 0u,last_offset = 0u,last_tokens = 0u;
+    uint32_t token_offset,block_tokens,child_offset,found,resume = 0u,last_offset = 0u,last_tokens = 0u;
 
     if (SparkPrefixCacheValidate(cache) != SPARK_STATUS_OK || token_ids == 0)
         return 0u;
@@ -3176,17 +3199,22 @@ uint32_t SparkPrefixCacheResumeTokenCount(
             break;
         if ((entry->flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME) != 0u)
             resume = token_offset + block_tokens;
+        child_offset = token_offset + block_tokens;
+        if ((entry->flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME_CHILD) != 0u && child_offset < matched_token_count)
+        {
+            found = SparkPrefixCacheResumeInBlock(cache, token_ids, child_offset,
+                SparkPrefixCacheMinimumU32(cache->block_token_count - 1u, matched_token_count - child_offset), block_hash);
+            resume = found > resume ? found : resume;
+        }
         last_parent = parent_hash;
         last_offset = token_offset;
         last_tokens = block_tokens;
         parent_hash = block_hash;
     }
-    for (block_tokens = last_tokens; resume < last_offset + last_tokens && block_tokens > 1u; )
+    if (resume < last_offset + last_tokens && last_tokens > 1u)
     {
-        block_tokens--;
-        entry = SparkPrefixCacheFindPromptBlock(cache, token_ids, last_offset, block_tokens, last_parent, &block_hash);
-        if (entry != 0 && (entry->flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME) != 0u)
-            resume = last_offset + block_tokens;
+        found = SparkPrefixCacheResumeInBlock(cache, token_ids, last_offset, last_tokens - 1u, last_parent);
+        resume = found > resume ? found : resume;
     }
     return resume;
 }
@@ -3235,28 +3263,24 @@ SparkStatus SparkPrefixCacheExportCommitted(
     return SPARK_STATUS_OK;
 }
 
-static uint32_t SparkPrefixCacheHasParent(
-    const SparkPrefixCache *cache,
+static SparkPrefixCacheEntry *SparkPrefixCacheFindParent(
+    SparkPrefixCache *cache,
     const SparkPrefixCacheCommittedRecord *record)
 {
     uint32_t entry_index;
 
-    if (record->first_token_index == 0u)
-    {
-        return 1u;
-    }
     for (entry_index = 0u; entry_index < cache->entry_count; ++entry_index)
     {
-        const SparkPrefixCacheEntry *entry = &cache->entries[entry_index];
+        SparkPrefixCacheEntry *entry = &cache->entries[entry_index];
         if (SparkPrefixCacheEntryIsReusable(cache, entry) != 0u &&
             entry->token_count == cache->block_token_count &&
             entry->block_hash == record->parent_hash &&
             entry->first_token_index + cache->block_token_count == record->first_token_index)
         {
-            return 1u;
+            return entry;
         }
     }
-    return 0u;
+    return 0;
 }
 
 SparkStatus SparkPrefixCacheImportCommitted(
@@ -3284,13 +3308,14 @@ SparkStatus SparkPrefixCacheImportCommitted(
     for (index = 0u; index < record_count; ++index)
     {
         const SparkPrefixCacheCommittedRecord *record = &records[index];
-        SparkPrefixCacheEntry *entry;
+        SparkPrefixCacheEntry *entry,*parent;
+        parent = record->first_token_index == 0u ? 0 : SparkPrefixCacheFindParent(cache, record);
         if (record->token_count == 0u || record->token_count > cache->block_token_count ||
             record->first_token_index % cache->block_token_count != 0u ||
             (record->flags & ~SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME) != 0u || record->reserved != 0u ||
             SparkPrefixCacheFindEntry(cache, record->parent_hash, record->block_hash, record->content_hash,
                 record->content_digest, record->first_token_index, record->token_count, 0u) != 0 ||
-            SparkPrefixCacheHasParent(cache, record) == 0u ||
+            (record->first_token_index != 0u && parent == 0) ||
             cache->free_entry_head == SPARK_PREFIX_CACHE_NO_ENTRY)
         {
             skipped++;
@@ -3307,6 +3332,11 @@ SparkStatus SparkPrefixCacheImportCommitted(
             continue;
         }
         entry->committed_epoch = epoch;
+        if ((record->flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME) != 0u &&
+            record->token_count < cache->block_token_count && parent != 0)
+        {
+            parent->flags |= SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME_CHILD;
+        }
         imported++;
     }
     *imported_out = imported;
