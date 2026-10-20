@@ -271,7 +271,7 @@ static void TestModelResidentMalformedStreamDrops(
 	memcpy(address.sun_path,path,strlen(path) + 1u);
 	assert(bind(listener,(const struct sockaddr *)&address,sizeof(address)) == 0);
 	assert(listen(listener,1) == 0);
-	server = fork();
+	server = TestChildGuardFork();
 	assert(server >= 0);
 	if ( server == 0 )
 	{
