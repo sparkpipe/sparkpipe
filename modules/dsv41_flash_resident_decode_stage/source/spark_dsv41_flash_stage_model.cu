@@ -99,6 +99,8 @@ static_assert(D41_ENGRAM_EMBED % 2u == 0u && D41_ENGRAM_HALF <= D41_HIDDEN && D4
 	"an engram embedding row splits into two collective rows");
 static_assert(D41_LOCAL_HEADS * D41_HEAD_DIM + D41_INDEX_PACK <= D41_HIDDEN && D41_INDEX_PACK % 8u == 0u,
 	"the index query pack rides in the query all-gather row and keeps 16-byte copies");
+static_assert(D41_HEAD_DIM % D41_THREADS == 0u && (D41_HEAD_DIM - D41_ROPE) % D41_FP8_BLOCK == 0u && D41_ROPE == 2u * D41K_ROPE_PAIRS,
+	"the key/value norm covers whole rows per thread block, and its rotary pairs sit in whole fp8 groups of one warp");
 static_assert(D41_ENGRAM_KV_ROWS % (D41_TP * D41_FP8_BLOCK) == 0u, "the engram key/value rows split into whole fp8 blocks per rank");
 static_assert(D41_MOE_INTER % D41_SHARED_GRANULE == 0u && D41_SHARED_GRANULE % D41_FP8_BLOCK == 0u,
 	"the shared expert width splits into whole fp8 blocks and whole dense GEMM k tiles");
@@ -378,6 +380,39 @@ static void D41Fp8QdqCopy(const uint16_t *source, uint16_t *data, uint64_t eleme
 	(void)SparkDsv41FlashLaunchFp8QdqCopy(stream, source, data, elements);
 }
 
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void D41KvNormRopeQdqKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ weight, const uint32_t *__restrict__ positions,
+	const double *__restrict__ inverse_frequency, uint16_t *__restrict__ quantized, uint32_t dimension, uint32_t rope_offset, float epsilon)
+{
+	extern __shared__ float d41_kv_shared[];
+	float *row = d41_kv_shared;
+	float *reduction = d41_kv_shared + dimension;
+	const uint64_t base = (uint64_t)blockIdx.x * dimension;
+	uint32_t index;
+	float total = 0.0f, scale;
+	for ( index = threadIdx.x; index < dimension; index += THREADS )
+	{
+		float value = LmBf16ToFloat(input[base + index]);
+		row[index] = value;
+		total += value * value;
+	}
+	total = LmBlockSum<THREADS>(total, reduction);
+	scale = rsqrtf((total / (float)dimension) + epsilon);
+	for ( index = threadIdx.x; index < dimension; index += THREADS )
+	{
+		uint16_t value = LmFloatToBf16(row[index] * scale * LmScalarToFloat(weight[index]));
+		const float own = LmBf16ToFloat(value), partner = __shfl_xor_sync(0xffffffffu, own, 1);
+		if ( index >= rope_offset )
+		{
+			double sine, cosine;
+			D41RopeTurn(positions[blockIdx.x], 0, inverse_frequency[(index - rope_offset) / 2u], 0u, &sine, &cosine);
+			value = (index & 1u) == 0u ? D41RopeReal(own, partner, sine, cosine) : D41RopeImaginary(partner, own, sine, cosine);
+		}
+		quantized[base + index] = SparkDsv41FlashFp8QdqLane(LmBf16ToFloat(value));
+	}
+}
+
 static void D41RmsNormQdq(const uint16_t *input, const uint16_t *weight, uint16_t *output, uint16_t *quantized, uint32_t rows, uint32_t width,
 	cudaStream_t stream)
 {
@@ -624,9 +659,8 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 		D41Linear(&layer->q_b, state->qrq, state->q_local, rows, D41_QLORA, local_width, sms, stream)) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41Rope(state->q_local, rows, D41_LOCAL_HEADS, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 0u, 0, stream);
-	D41RmsNorm(state->kv, layer->kv_norm, state->kv, rows, D41_HEAD_DIM, stream);
-	D41Rope(state->kv, rows, 1u, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 0u, 0, stream);
-	D41Fp8QdqCopy(state->kv, state->window_kv, (uint64_t)rows * D41_HEAD_DIM, stream);
+	D41KvNormRopeQdqKernel<D41_THREADS><<<rows, D41_THREADS, (D41_HEAD_DIM + 8u) * sizeof(float), stream>>>(state->kv, layer->kv_norm,
+		step->positions, frequency, state->window_kv, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, D41_EPS);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK && D41KvSource(index) && state->compress_done == 0u )
 		status = D41Compress(state, layer, index, step, stream);

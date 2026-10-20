@@ -136,6 +136,25 @@ static __global__ void D41ReplicateStreamsKernel(const uint16_t *__restrict__ hi
 			streams[((uint64_t)row * D41K_HC + copy) * width + element] = hidden[(uint64_t)row * width + element];
 }
 
+static __device__ __forceinline__ void D41RopeTurn(uint32_t position, int32_t shift, double inverse_frequency, uint32_t inverse, double *sine,
+	double *cosine)
+{
+	const double angle = (double)((int64_t)position + shift) * inverse_frequency;
+	sincos(angle, sine, cosine);
+	if ( inverse != 0u )
+		*sine = -*sine;
+}
+
+static __device__ __forceinline__ uint16_t D41RopeReal(float real, float imaginary, double sine, double cosine)
+{
+	return LmFloatToBf16((float)((double)real * cosine - (double)imaginary * sine));
+}
+
+static __device__ __forceinline__ uint16_t D41RopeImaginary(float real, float imaginary, double sine, double cosine)
+{
+	return LmFloatToBf16((float)((double)imaginary * cosine + (double)real * sine));
+}
+
 static __global__ void D41RopeRowsKernel(uint16_t *__restrict__ data, uint32_t heads, uint32_t head_stride, uint32_t rope_offset,
 	const uint32_t *__restrict__ positions, int32_t shift, const double *__restrict__ inverse_frequency, uint32_t inverse,
 	const uint32_t *__restrict__ row_valid)
@@ -143,15 +162,12 @@ static __global__ void D41RopeRowsKernel(uint16_t *__restrict__ data, uint32_t h
 	const uint32_t row = blockIdx.x, head = blockIdx.y, pair = threadIdx.x;
 	if ( pair >= D41K_ROPE_PAIRS || head >= heads || (row_valid != 0 && row_valid[row] == D41K_NO_ROW) )
 		return;
-	const double angle = (double)((int64_t)positions[row] + shift) * inverse_frequency[pair];
 	double sine, cosine;
-	sincos(angle, &sine, &cosine);
-	if ( inverse != 0u )
-		sine = -sine;
+	D41RopeTurn(positions[row], shift, inverse_frequency[pair], inverse, &sine, &cosine);
 	uint16_t *value = data + ((uint64_t)row * heads + head) * head_stride + rope_offset + 2u * pair;
 	const float real = LmBf16ToFloat(value[0]), imaginary = LmBf16ToFloat(value[1]);
-	value[0] = LmFloatToBf16((float)((double)real * cosine - (double)imaginary * sine));
-	value[1] = LmFloatToBf16((float)((double)imaginary * cosine + (double)real * sine));
+	value[0] = D41RopeReal(real, imaginary, sine, cosine);
+	value[1] = D41RopeImaginary(real, imaginary, sine, cosine);
 }
 
 static __global__ void D41Fp8SliceKernel(const uint8_t *__restrict__ payload, const uint8_t *__restrict__ block_scale, uint8_t *__restrict__ weight,
