@@ -12,6 +12,8 @@
 #include "sparkpipe/spark_weight_codec.h"
 #include "sparkpipe/spark_weightd_cxx.h"
 #include "inference/kernels/attn_shard.cuh"
+#include "inference/kernels/cell_mma.cuh"
+#include "inference/kernels/cell_pack.cuh"
 #include "inference/kernels/index_score.cuh"
 #include "inference/kernels/index_shard.cuh"
 #include "inference/kernels/kv_shard.cuh"
@@ -84,8 +86,7 @@ static_assert(D41_GRAIN == 8u, "a DSV4.1 candidate block is one context shard gr
 #define D41_INDEX_PACK 264u
 #define D41_ENGRAM_TABLES_MAGIC 0x45313444u
 #define D41_GEMM_TILE_N 128u
-#define D41_GEMM_STAGES 2u
-#define D41_GEMM_WARPS 8u
+#define D41_SKINNY_EXPERT_ROWS 16u
 
 static_assert(D41_ENGRAM_KV_ROWS % (D41_TP * D41_FP8_BLOCK) == 0u, "the engram key/value rows split into whole fp8 blocks per rank");
 static_assert(D41_MOE_INTER % D41_SHARED_GRANULE == 0u && D41_SHARED_GRANULE % D41_FP8_BLOCK == 0u,
@@ -106,6 +107,7 @@ typedef struct D41Layer
 	const uint16_t *router;
 	const float *router_bias;
 	const uint8_t *e_w1, *e_w1_scale, *e_w2, *e_w2_scale, *e_w3, *e_w3_scale;
+	const uint8_t *e_w1_cells, *e_w2_cells, *e_w3_cells;
 	const uint16_t *sh_w1, *sh_w2, *sh_w3;
 } D41Layer;
 
@@ -135,6 +137,8 @@ typedef struct D41ModelState
 	double *full_frequency, *compress_frequency;
 	uint16_t *dequant;
 	uint64_t dequant_bytes;
+	uint8_t *cells;
+	uint64_t cells_bytes;
 	void *arena;
 	uint64_t arena_bytes;
 	uint64_t record_chunk_floats, a2a_units;
@@ -595,36 +599,20 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 static SparkStatus D41DumpRows(D41ModelState *state, uint32_t layer, uint32_t kind, const uint16_t *rows_bf16, uint32_t rows,
 	uint32_t width, cudaStream_t stream);
 
-static int32_t D41ExpertsUp(D41ModelState *state, const uint8_t *weight, LmScaleTensor scale, uint16_t *output, uint32_t rows,
-	uint32_t routes, uint32_t sms, cudaStream_t stream)
+static int32_t D41Experts(const uint8_t *cells, const uint16_t *activation, uint16_t *output, const D41ModelState *state, uint32_t rows,
+	uint32_t routes, uint32_t packed, uint32_t input_dimension, uint32_t output_dimension, cudaStream_t stream)
 {
-	int32_t launch = LmSkinnyGroupedExperts<LmMxfp4>(weight, scale, state->xq, output, state->group_row_offset, state->route_source_token,
-		D41_LOCAL_EXPERTS, routes, 0u, D41_HIDDEN, D41_MOE_INTER, stream);
-	if ( launch == LM_LAUNCH_ERR_SHAPE )
-	{
-		LmGemmArguments gemm;
-		memset(&gemm, 0, sizeof(gemm));
-		gemm.scale_a = LmScaleTensorNone();
-		gemm.scale_b = scale;
-		gemm.prefix_built = 1u;
-		gemm.group_row_offset = state->group_row_offset;
-		gemm.group_tile_prefix = state->tile_prefix_up;
-		gemm.source_row_map = state->route_source_token;
-		gemm.source_row_count = rows;
-		gemm.output_bf16 = output;
-		launch = LmGemmWeightOnlyIndirectLaunch<LmMxfp4,D41_GEMM_TILE_N,D41_GEMM_STAGES,D41_GEMM_WARPS>(&gemm, state->xq, weight, routes, rows,
-			D41_TOPK, D41_LOCAL_EXPERTS, D41_HIDDEN, D41_MOE_INTER, sms, stream);
-	}
-	return launch;
+	const uint32_t *source = packed != 0u ? (const uint32_t *)0 : state->route_source_token;
+	if ( rows <= D41_SKINNY_EXPERT_ROWS )
+		return LmSkinnyCellExperts(cells, activation, output, state->group_row_offset, source, D41_LOCAL_EXPERTS, routes, rows, packed,
+			input_dimension, output_dimension, LM_SKINNY_CELL_TILE_K, stream);
+	return LmCellMmaExperts(cells, activation, output, state->group_row_offset, source, D41_LOCAL_EXPERTS, routes, packed, input_dimension,
+		output_dimension, LM_SKINNY_CELL_TILE_K, stream);
 }
 
 static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
 {
 	const uint32_t rows = step->rows, sms = step->multiprocessors, routes = rows * D41_TOPK;
-	const LmScaleTensor w1_scale = LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_MXFP4_E2M1>(layer->e_w1_scale, D41_LOCAL_EXPERTS, D41_MOE_INTER, D41_HIDDEN);
-	const LmScaleTensor w3_scale = LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_MXFP4_E2M1>(layer->e_w3_scale, D41_LOCAL_EXPERTS, D41_MOE_INTER, D41_HIDDEN);
-	const LmScaleTensor w2_scale = LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_MXFP4_E2M1>(layer->e_w2_scale, D41_LOCAL_EXPERTS, D41_HIDDEN, D41_MOE_INTER);
-	int32_t launch;
 	if ( D41Project(layer->router, state->x, 0, state->router_logits, rows, D41_HIDDEN, D41_EXPERTS, sms, stream) != LM_LAUNCH_OK ||
 		LmTopkRouteLaunch<D41_THREADS,D41_TOPK,true,LM_TOPK_SCORE_SQRT_SOFTPLUS>(rows, state->router_logits, D41_EXPERTS, state->route_expert,
 			state->route_weight, layer->router_bias, 0, D41_ROUTE_SCALE, stream) != cudaSuccess )
@@ -642,30 +630,14 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
 	D41Fp8Qdq(state->xq, (uint64_t)rows * D41_HIDDEN, stream);
-	launch = D41ExpertsUp(state, layer->e_w1, w1_scale, state->expert_gate, rows, routes, sms, stream);
-	if ( launch == LM_LAUNCH_OK )
-		launch = D41ExpertsUp(state, layer->e_w3, w3_scale, state->expert_up, rows, routes, sms, stream);
-	if ( launch != LM_LAUNCH_OK )
+	if ( D41Experts(layer->e_w1_cells, state->xq, state->expert_gate, state, rows, routes, 0u, D41_HIDDEN, D41_MOE_INTER, stream) != LM_LAUNCH_OK ||
+		D41Experts(layer->e_w3_cells, state->xq, state->expert_up, state, rows, routes, 0u, D41_HIDDEN, D41_MOE_INTER, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	LmSwigluPackedKernel<<<dim3(D41Blocks(D41_MOE_INTER), routes), D41_THREADS, 0, stream>>>(state->expert_gate, state->expert_up,
 		state->packed_weight, state->expert_act, D41_MOE_INTER, D41_SWIGLU_LIMIT);
 	D41Fp8Qdq(state->expert_act, (uint64_t)routes * D41_MOE_INTER, stream);
-	launch = LmSkinnyGroupedExperts<LmMxfp4>(layer->e_w2, w2_scale, state->expert_act, state->expert_out, state->group_row_offset,
-		state->route_source_token, D41_LOCAL_EXPERTS, routes, 1u, D41_MOE_INTER, D41_HIDDEN, stream);
-	if ( launch == LM_LAUNCH_ERR_SHAPE )
-	{
-		LmGemmArguments gemm;
-		memset(&gemm, 0, sizeof(gemm));
-		gemm.scale_a = LmScaleTensorNone();
-		gemm.scale_b = w2_scale;
-		gemm.prefix_built = 1u;
-		gemm.group_row_offset = state->group_row_offset;
-		gemm.group_tile_prefix = state->tile_prefix_down;
-		gemm.output_bf16 = state->expert_out;
-		launch = LmGemmWeightOnlyLaunch<LmMxfp4,D41_GEMM_TILE_N,D41_GEMM_STAGES,D41_GEMM_WARPS>(&gemm, state->expert_act, layer->e_w2, routes, rows,
-			D41_TOPK, D41_LOCAL_EXPERTS, D41_MOE_INTER, D41_HIDDEN, sms, true, stream);
-	}
-	if ( launch != LM_LAUNCH_OK )
+	if ( D41Experts(layer->e_w2_cells, state->expert_act, state->expert_out, state, rows, routes, 1u, D41_MOE_INTER, D41_HIDDEN, stream) !=
+		LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( D41Project(layer->sh_w1, state->xq, state->shared_gate, 0, rows, D41_HIDDEN, state->shared_width, sms, stream) != LM_LAUNCH_OK ||
 		D41Project(layer->sh_w3, state->xq, state->shared_up, 0, rows, D41_HIDDEN, state->shared_width, sms, stream) != LM_LAUNCH_OK )
@@ -1100,6 +1072,8 @@ static void D41Close(void *model)
 		(void)cudaFree(state->arena);
 	if ( state->dequant != 0 )
 		(void)cudaFree(state->dequant);
+	if ( state->cells != 0 )
+		(void)cudaFree(state->cells);
 	(void)cudaFree(state->token_map);
 	(void)cudaFree(state->full_frequency);
 	for ( uint32_t which = 0u; which < 2u; ++which )
@@ -1433,6 +1407,31 @@ static SparkStatus D41AttachEngram(D41ModelState *state, const SparkStageRunnerC
 		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS, D41DenseManifest, state, &state->engram_pack);
 }
 
+static SparkStatus D41PackCells(D41ModelState *state)
+{
+	const uint64_t up = LmCellPackBytes(D41_LOCAL_EXPERTS, D41_MOE_INTER, D41_HIDDEN), down = LmCellPackBytes(D41_LOCAL_EXPERTS, D41_HIDDEN, D41_MOE_INTER);
+	state->cells_bytes = (uint64_t)D41_LAYERS * (2u * up + down);
+	if ( cudaMalloc((void **)&state->cells, state->cells_bytes) != cudaSuccess )
+	{
+		state->cells = 0;
+		fprintf(stderr, "sparkpipe_dsv41_flash: %llu bytes for the expert cells could not be allocated\n", (unsigned long long)state->cells_bytes);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	for ( uint32_t index = 0u; index < D41_LAYERS; ++index )
+	{
+		D41Layer *layer = &state->layers[index];
+		uint8_t *base = state->cells + (uint64_t)index * (2u * up + down);
+		layer->e_w1_cells = base;
+		layer->e_w3_cells = base + up;
+		layer->e_w2_cells = base + 2u * up;
+		if ( LmCellPackMxfp4(layer->e_w1, layer->e_w1_scale, base, D41_LOCAL_EXPERTS, D41_MOE_INTER, D41_HIDDEN, 0) != LM_LAUNCH_OK ||
+			LmCellPackMxfp4(layer->e_w3, layer->e_w3_scale, base + up, D41_LOCAL_EXPERTS, D41_MOE_INTER, D41_HIDDEN, 0) != LM_LAUNCH_OK ||
+			LmCellPackMxfp4(layer->e_w2, layer->e_w2_scale, base + 2u * up, D41_LOCAL_EXPERTS, D41_HIDDEN, D41_MOE_INTER, 0) != LM_LAUNCH_OK )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
+	return SPARK_STATUS_OK;
+}
+
 static const SparkStageRunnerConfiguration *D41BindConfiguration;
 
 static SparkStatus D41Bind(void *model, SparkWeightdLazyPack *lazy_pack, SparkStageRunnerModelGeometry *geometry)
@@ -1463,6 +1462,9 @@ static SparkStatus D41Bind(void *model, SparkWeightdLazyPack *lazy_pack, SparkSt
 	status = D41BindLayers(state, lazy_pack, &bytes);
 	if ( status == SPARK_STATUS_OK )
 		status = D41BindEngram(state, &bytes, D41BindConfiguration);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	status = D41PackCells(state);
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	if ( cudaDeviceSynchronize() != cudaSuccess || cudaMalloc(&state->arena, state->arena_bytes) != cudaSuccess )
