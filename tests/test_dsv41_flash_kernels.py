@@ -120,6 +120,29 @@ def check_candidates(workspace, rng):
     return int(widths.sum())
 
 
+def check_shard_candidates(workspace, rng):
+    positions, block_size, topk_blocks = 65536, 8, 2048
+    reach = np.array([65536, 65531, 40000, 16385, 16384, 1000, 9, 65536], dtype=np.uint32)
+    scores = rng.standard_normal((reach.size, positions)).astype(np.float32)
+    scores[7] = np.round(scores[7] * 4.0) / np.float32(4.0)
+    source, output = workspace / "shard_candidates_in.bin", workspace / "shard_candidates_out.bin"
+    with open(source, "wb") as handle:
+        handle.write(reach.tobytes())
+        handle.write(scores.tobytes())
+    run("shard-candidates", source, output, reach.size, positions)
+    got = np.fromfile(output, dtype=np.float32).reshape(reach.size, positions)
+    engine = types.SimpleNamespace(candidate_block=block_size, candidate_blocks=topk_blocks)
+    for row, width in enumerate(reach):
+        mask = Dsv41FlashEngine._select_candidate_blocks(engine, scores[row, :width].copy(), int(width))
+        expected = np.where(mask, scores[row, :width], -np.inf).astype(np.float32)
+        if not np.array_equal(got[row, :width], expected):
+            differ = int((got[row, :width] != expected).sum())
+            raise AssertionError(f"sharded candidate blocks row {row} (reach {width}): {differ} positions differ from the reference")
+        if not np.all(np.isneginf(got[row, width:])):
+            raise AssertionError(f"sharded candidate blocks row {row}: an unreachable position survived")
+    return int(reach.sum())
+
+
 def fp8_linear_case(workspace, name, weight, scale, activations):
     rows, input_dimension = activations.shape
     output_dimension = weight.shape[0]
@@ -186,12 +209,14 @@ def main():
         fp4_values = check_kv_fp4(workspace, rng)
         engram_values, engram_exact = check_engram(workspace, rng)
         candidate_values = check_candidates(workspace, rng)
+        shard_values = check_shard_candidates(workspace, rng)
         linear_values, linear_exact, real = check_fp8_linear(workspace, rng)
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
     print(f"PASS dsv41 kernels: kv fp4 e4m3/16 qdq bit-equal to the reference on {fp4_values} values; "
           f"engram gate {engram_exact}/{engram_values} bit-equal, rest within 1 bf16 ulp; "
           f"candidate-block mask equal on {candidate_values} positions (top 2048 of 8-blocks, ties, -inf, pinned block); "
+          f"16-rank sharded candidate blocks equal to the reference on {shard_values} positions; "
           f"fp8 32x32-block linear {linear_exact}/{linear_values} bit-equal, rest within 1 bf16 ulp"
           + (f" (real weights: {', '.join(real)})" if real else ""))
     return 0
