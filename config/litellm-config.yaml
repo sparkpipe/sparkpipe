@@ -69,7 +69,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 16384
+    max_input_tokens: 1048576
     max_output_tokens: 16384
 - model_name: deepseek-v4.1-flash-bulk
   litellm_params:
@@ -77,7 +77,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 16384
+    max_input_tokens: 1048576
     max_output_tokens: 16384
 - model_name: qwen3.8-max
   litellm_params:
