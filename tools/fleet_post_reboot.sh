@@ -41,7 +41,7 @@ for host in "${REBOOTED[@]}"; do
   sb=$($SSH "$host" 'd=$(findmnt -n -o SOURCE /); c=$(sudo -n dd if=$d bs=1024 skip=1 count=1 2>/dev/null | dd bs=1 skip=56 count=2 2>/dev/null | od -An -tx1 | tr -d " \n"); o=$(sudo -n dd if=$d bs=4096 count=1 iflag=direct 2>/dev/null | dd bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d " \n"); echo "$c $o"')
   if [ "$sb" = "53ef 53ef" ]; then pass "$host" superblock "ext4 magic in cache and on disk"; else fail "$host" superblock "root superblock magic cache/disk = '$sb', want '53ef 53ef'"; fi
 
-  errors=$($SSH "$host" 'sudo -n dmesg 2>/dev/null | grep -i -E "EXT4-fs (error|warning)|arm-smmu.*event|smmu.*(fault|CMD_SYNC)|iommu.*fault|nvme.*(timeout|reset)|mlx5.*(syndrome|fatal)|AER:.*(Uncorrect|Fatal)" | tail -3')
+  errors=$($SSH "$host" 'sudo -n dmesg 2>/dev/null | grep -i -E "EXT4-fs (error|warning)|arm-smmu.*event|smmu.*(fault|CMD_SYNC)|iommu.*\bfault|nvme.*(timeout|reset)|mlx5.*(syndrome|fatal)|AER:.*(Uncorrect|Fatal)" | tail -3')
   if [ -z "$errors" ]; then pass "$host" kernel "no ext4, SMMU, NVMe, mlx5 or AER error lines since boot"; else fail "$host" kernel "$(echo "$errors" | tr '\n' '|' | cut -c1-240)"; fi
 
   guard=$($SSH "$host" 'systemctl is-active spark-dma-guard.service 2>/dev/null')

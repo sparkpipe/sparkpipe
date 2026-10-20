@@ -253,6 +253,7 @@ TEST_NAMES := \
     test_gdn_reference \
     test_numerical_metrics \
     test_kv_cache \
+    test_kv_state_retention \
     test_kv_snapshot \
     test_kv_page_layout \
 	test_k3_kv_cache \
@@ -306,6 +307,7 @@ TEST_NAMES := \
     test_speculation_relay_link \
     test_speculation_depth \
     test_speculation_frame \
+    test_topk_exact_plan \
     test_driver_compiler \
     test_orchestrator \
     test_tensor_map_geometry \
@@ -491,9 +493,12 @@ PYTHON_TESTS := \
 	tests/test_gqa_shard_cuda.py \
 	tests/test_head_certified_cuda.py \
 	tests/test_latent_gather_prefill_cuda.py \
+	tests/test_expanded_gather_prefill_cuda.py \
+	tests/test_latent_shard_decode_cuda.py \
 	tests/test_delta_rule_column_cuda.py \
 	tests/test_index_shard_cuda.py \
 	tests/test_latent_rope_heads_cuda.py \
+	tests/test_latent_attention_kernel_cuda.py \
 	tests/test_project_chain_cuda.py \
 	tests/test_topk_warp_cuda.py \
 	tests/test_rms_norm_cuda.py \
@@ -505,6 +510,7 @@ PYTHON_TESTS := \
 	tests/test_glm_attach_kv_cuda.py \
 	tests/test_glm_row_shard_host.py \
 	tests/test_topk_exact_cuda.py \
+	tests/test_sample_threads_cuda.py \
 	tests/test_hyper_inject_cuda.py \
 	tests/test_layer_norm_cuda.py \
 	tests/test_hidden_transport_host_rdma_load.py \
@@ -561,6 +567,7 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_engine_stream.py \
 	tests/test_chat_frontend_request_fields.py \
 	tests/test_chat_frontend_output_cap.py \
+	tests/test_chat_frontend_prefix_ledger.py \
 	tests/test_chat_frontend_sampling_defaults.py \
 	tests/test_open_webui_github_tool.py \
 	tests/test_model_swap_drain_quiet.py \
@@ -583,8 +590,14 @@ PYTHON_TESTS := \
 	tests/test_model_swap_failures.py \
 	tests/test_stage_lane_kv_labels.py \
 	tests/test_stage_lane_stop.py \
+	tests/test_stage_lane_state_memory.py \
 	tests/test_chat_frontend_object_and_channel_calls.py \
 	tests/test_draftd_kernels.py \
+	tests/test_latent_block_drafter.py \
+	tests/test_block_drafter_context.py \
+	tests/test_tapstream_truncated.py \
+	tests/test_block_draftd_latent.py \
+	tests/test_keyed_draft_capture.py \
 	tests/test_draftd_mtp_kv.py \
 	tests/test_k3_reshard_cells.py \
 	tests/test_laguna_reference_torch.py \
@@ -976,6 +989,9 @@ build/test_numerical_metrics: tests/test_numerical_metrics.c include/sparkpipe/s
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< -lm -o $@
 
 build/test_kv_cache: tests/test_kv_cache.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
+build/test_kv_state_retention: tests/test_kv_state_retention.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 build/test_kv_snapshot: tests/test_kv_snapshot.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
@@ -1563,6 +1579,9 @@ build/test_speculation_ngram_draft: tests/test_speculation_ngram_draft.c include
 
 build/test_speculation_drafter_mix: tests/test_speculation_drafter_mix.c include/sparkpipe/spark_speculation_drafter_mix.h include/sparkpipe/spark_speculation_lookup_draft.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_drafter_mix.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_topk_exact_plan: tests/test_topk_exact_plan.c inference/kernels/topk_exact_plan.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_topk_exact_plan.c $(LDFLAGS) -o $@
 
 build/test_speculation_frame: tests/test_speculation_frame.c include/sparkpipe/spark_speculation_frame.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_frame.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lm -o $@

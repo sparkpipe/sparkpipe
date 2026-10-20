@@ -38,16 +38,26 @@ Verified in code (review, 2026-10-14):
 - A `max_tokens` 1 request commits its prompt.
 - A request that arrives while another is still writing a shared prefix
   recomputes it; pages in flight are not shared (`prefix_cache.c:223-233`).
-- A checkpoint published onto an existing stateless entry is lost
-  (`kv_page_cache.c:1660-1667`). The first request to carry a new prefix
-  must be the one meant to checkpoint it.
+- A checkpoint published onto an existing stateless entry of the same
+  prefix moves its recurrent record onto that entry, so the order in which
+  requests first carry a prefix does not matter.
 - Pages are 64 tokens (DeepSeek V4.1 Flash: 256). `cached_tokens` is the
   exact number of skipped tokens, at most `P - 1`.
 - Request priority exists in the engine API (higher runs first); the chat
   layer sends foreground requests of memory models at 1 and its own
   background requests at 0.
-- Unknown: how many K3 recurrent-state records the pool holds across
-  conversations (about 28 MB per record per rank).
+- Recurrent-state records (K3, GLM Flash, DeepSeek V4.1 Flash, Ling and
+  Qwen 3.8; 28 MB per record per rank on K3) are kept per path: the newest 4
+  plus every record at a multiple of the checkpoint stride. A new record releases the
+  superseded ones behind it, so a conversation of length L holds at most
+  `4 + L / stride` records (20 at 270K on K3, 49 at 737K) and an agent session
+  of any number of turns never fills the store. The released points stay KV
+  pages; a branch that diverges behind the newest 4 resumes at the anchor
+  before it and recomputes at most one stride. When the store is full anyway,
+  the oldest records of paths no bound lane uses go first, and a lane's own
+  resume record is never released. If the ranks no longer hold a resume
+  point, the engine clears that point and resumes at the previous one instead
+  of discarding the rest of the chain.
 
 Per-model block size and stride go into `chat_frontend.json` as
 `cache_block_tokens` and `cache_checkpoint_tokens`; the chat layer keeps no

@@ -486,6 +486,12 @@ finished ones rewritten to say what is left.
   lane rejoins, so a lane is parked and restored page by page rather than as
   one contiguous transfer. Close it with a fleet backpressure run at 2x device
   pages where parked lanes restore bit-exact at B1 and B16.
+- The format-2 KV snapshot tier (page files naming their parent, separate
+  state files, leaf-first eviction, ordered writes) is host-tested only.
+  Prove it on the fleet: a K3 -> GLM -> K3 swap that restores a 270K
+  conversation in under 15 s, a store of 8 GiB per rank that keeps the newest
+  conversations whole while older ones go tip-first, and an open that removes
+  the format-1 files of the previous release once.
 - Crash recovery of the KV snapshot store has not run on the fleet. The store
   writes each file to a `.kvs-writing-` temporary, fsyncs, renames and fsyncs
   the directory, and its open deletes leftover temporaries; the binding opens

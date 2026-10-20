@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* Link-time stand-in for the real resident client. Fidelity contract with
  * runtime/model_resident_client.c:
@@ -38,6 +39,8 @@ typedef struct MockInflight
 	uint32_t row_lanes[MOCK_SCRIPT_ROWS];
 	uint64_t row_positions[MOCK_SCRIPT_ROWS];
 	uint32_t row_tokens[MOCK_SCRIPT_ROWS];
+	uint64_t ready_ns;
+	uint64_t service_ns;
 	SparkModelServingSubmission submission;
 } MockInflight;
 
@@ -102,12 +105,16 @@ static uint32_t mock_logprob_corrupt;
 static uint32_t mock_max_tokens_per_sequence;
 static uint32_t mock_script[MOCK_SCRIPT_TOKENS];
 static uint32_t mock_script_count;
+static uint32_t mock_step_delay_us;
+static uint32_t mock_verify_row_sevenths = 1u;
 static uint32_t mock_verify_submissions;
 static uint32_t mock_verify_rows;
 static uint32_t mock_verify_max_stride;
 static uint32_t mock_verify_corrupt;
 static uint32_t mock_row_cost_ns = 200u;
 static uint32_t mock_verify_shared;
+static uint32_t mock_prefill_shared;
+static uint32_t mock_prefill_shared_rows;
 
 static int MockTraceEnabled(void)
 {
@@ -406,6 +413,8 @@ void MockResidentClientReset(void)
 	mock_verify_corrupt = 0u;
 	mock_row_cost_ns = 200u;
 	mock_verify_shared = 0u;
+	mock_prefill_shared = 0u;
+	mock_prefill_shared_rows = 0u;
 	mock_token_start = 11u;
 	mock_logprob_stride = 0u;
 	mock_logprob_corrupt = 0u;
@@ -494,6 +503,13 @@ void SparkModelResidentClientFailStop(SparkModelResidentClient *client)
 	}
 }
 
+static uint64_t MockResidentClientNowNs(void)
+{
+	struct timespec now;
+	(void)clock_gettime(CLOCK_MONOTONIC,&now);
+	return((uint64_t)now.tv_sec * 1000000000u + (uint64_t)now.tv_nsec);
+}
+
 static SparkStatus MockResidentClientEnqueue(
 	SparkModelResidentClient *client,
 	const SparkModelServingSubmission *submission,
@@ -545,8 +561,21 @@ static SparkStatus MockResidentClientEnqueue(
 		if ( submission->active_sequence_count > 1u )
 			mock_verify_shared++;
 	}
+	if ( client->stage_index == 0u && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && submission->active_sequence_count > 1u )
+	{
+		mock_prefill_shared++;
+		if ( submission->row_count > mock_prefill_shared_rows )
+			mock_prefill_shared_rows = submission->row_count;
+	}
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 		client->release_submissions++;
+	if ( mock_step_delay_us != 0u && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
+	{
+		const uint64_t us = (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ?
+			(uint64_t)mock_step_delay_us * (7u + (submission->row_count - 1u) * mock_verify_row_sevenths) / 7u : (uint64_t)mock_step_delay_us * submission->tokens_per_sequence;
+		slot->ready_ns = MockResidentClientNowNs() + us * 1000u;
+		slot->service_ns = us * 1000u;
+	}
 	slot->committed = kind == MOCK_CALL_CONTINUE || kind == MOCK_CALL_SUBMIT;
 	slot->requires_decision = kind == MOCK_CALL_PREPARE;
 	client->last_submission_id = submission->submission_id;
@@ -796,10 +825,28 @@ static void MockScriptCompletion(const MockInflight *saved,SparkModelServingComp
 			completion->token_ids[lane * stride + step] = MockScriptToken(saved->lane_positions[lane] + 1u + step);
 }
 
+void MockResidentClientSetStepDelay(uint32_t microseconds)
+{
+	mock_step_delay_us = microseconds;
+}
+
+void MockResidentClientSetVerifyRowCost(uint32_t sevenths)
+{
+	mock_verify_row_sevenths = sevenths;
+}
+
 void MockResidentClientSetScript(const uint32_t *tokens,uint32_t count)
 {
 	mock_script_count = count < MOCK_SCRIPT_TOKENS ? count : MOCK_SCRIPT_TOKENS;
 	memcpy(mock_script,tokens,(size_t)mock_script_count * sizeof(uint32_t));
+}
+
+void MockResidentClientTakePrefillShared(uint32_t *submissions,uint32_t *max_rows)
+{
+	*submissions = mock_prefill_shared;
+	*max_rows = mock_prefill_shared_rows;
+	mock_prefill_shared = 0u;
+	mock_prefill_shared_rows = 0u;
 }
 
 uint32_t MockResidentClientTakeVerifyShared(void)
@@ -858,6 +905,8 @@ uint64_t MockResidentClientPendingEvent(uint32_t stage_index, uint32_t kind, uin
 	for (k=0u; k<c->inflight_count; k++)
 	{
 		MockInflight *slot = &c->inflight[k];
+		if ( kind == MOCK_EVENT_RESULT && slot->ready_ns != 0u && MockResidentClientNowNs() < slot->ready_ns )
+			continue;
 		if ( (kind == MOCK_EVENT_RESULT && slot->result_driven == 0u) ||
 			(kind == MOCK_EVENT_COMPLETION && slot->result_driven != 0u && slot->committed != 0u) )
 		{
@@ -929,7 +978,7 @@ uint32_t MockResidentClientDeliverEvent(uint32_t stage_index, uint64_t submissio
 				completion.request_generation = saved.submission.request_generation;
 				completion.step_generation = saved.submission.step_generation;
 				completion.residency = saved.submission.residency;
-				completion.service_time_ns = (uint64_t)((saved.submission.flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u || saved.submission.tokens_per_sequence == 0u ?
+				completion.service_time_ns = saved.service_ns != 0u ? saved.service_ns : (uint64_t)((saved.submission.flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u || saved.submission.tokens_per_sequence == 0u ?
 					1u : saved.submission.tokens_per_sequence) * (10000u + (uint64_t)mock_row_cost_ns * saved.row_count);
 				if ( c->is_final_rank != 0u && mock_script_count != 0u &&
 					saved.submission.work_kind < SPARK_MODEL_SERVING_WORK_KIND_RELEASE && status == SPARK_STATUS_OK )

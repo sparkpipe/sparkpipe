@@ -45,21 +45,32 @@ One call does the following:
 - On failure the call unpins only the blocks this call pinned. It returns the original error, or the unpin error if the rollback itself fails. `resident_slot_indices` is meaningful only on success.
 - `SparkKvCacheArenaUnpinResidentTable` processes every entry, even after an error, and returns the first error.
 
+## include/sparkpipe/spark_kv_snapshot.h
+
+The snapshot store keeps one file per KV page and one per recurrent state record, in one directory locked by one engine.
+
+- A page file `<layout>-<identity>-<tokens>-<parent identity>-<parent tokens>.kvs` holds the page's KV; its header repeats the key and the parent key. A root page names a zero parent. A state file `<layout>-<identity>-<tokens>.kvst` holds a record and has no parent.
+- The index is rebuilt at open from the file names alone. Files with the format-1 name (no parent) are removed and counted in `removed_legacy_count`; temporaries are removed as before.
+- Eviction takes the least recently used file among state files and page files that no other page file names as its parent, so a chain is consumed from its tips and no live file loses its parent. A page whose parent is missing (`orphan_count`) is evicted first. When a page loses its last child it becomes the next victim, so a dead chain goes as a whole. The parent of a file being written is never evicted during the write.
+- Writes are queued and written in order. `SparkKvSnapshotParent` returns a page's parent key from the index, and `SparkKvSnapshotContains` reports whether a key is on disk or queued.
+- The page cache saves a chain root first, a page before its state, and checks the index for every saved page it walks, clearing a stale saved flag so the page is written again. A restore rebuilds the chain from parent keys and reads the target's state file.
+
 ## include/sparkpipe/spark_kv_page_cache.h
 
 ### State store
 
-`SparkKvPageCacheAttachStateStore(cache, store)` attaches a second page store that holds recurrent state records, keyed by logical page. A page has a record only when a stateful publish ended on it; its backing may hold fewer records than there are logical pages.
+`SparkKvPageCacheAttachStateStore(cache, store, anchor_token_count)` attaches a second page store that holds recurrent state records, keyed by logical page. A page has a record only when a stateful publish ended on it; its backing may hold fewer records than there are logical pages. `anchor_token_count` is the checkpoint stride, a nonzero whole number of pages; records at its multiples are anchors (see State retention).
 
 - The call returns `SPARK_STATUS_INVALID_ARGUMENT` unless all of these hold:
   - the cache already has a page store and no state store;
   - `store` is a different object from the page store;
   - `store` has a matching ABI version and descriptor size, and an initialized transfer worker;
-  - `store->logical_page_capacity` is at least the arena's logical block count.
+  - `store->logical_page_capacity` is at least the arena's logical block count;
+  - `anchor_token_count` is nonzero and a multiple of the arena's block token count.
 - Attach before admitting any lane. The call returns `SPARK_STATUS_BUSY` once a sequence is live, a page has been published, or the store already holds backing pages.
 - A page's state record is keyed by the page's current arena generation. Hold the page's residency pin for the whole of a state transfer, so that the page cannot be evicted or freed during the transfer.
-- A publish whose lane carries `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS` needs no record and creates a stateless entry. A page sealed without a record also becomes a stateless entry. A stateless entry holds valid KV and can be shared, deduplicated and parked, but it is never a prefix: resolving a lane prefix that ends on it returns `SPARK_STATUS_NOT_FOUND`. The snapshot store saves it with its chain and KV page and no state segment.
-- `SparkKvPageCachePromoteState(cache, logical_page)` turns the stateless entry on that page stateful once the caller has written its record. It returns `SPARK_STATUS_NOT_FOUND` unless the page holds a valid stateless entry. If the entry was already saved to the snapshot store, its file is removed and the entry is queued for a new save with its state; a full save queue skips that save, as for any other save.
+- A publish whose lane carries `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS` needs no record and creates a stateless entry. A page sealed without a record also becomes a stateless entry. A stateless entry holds valid KV and can be shared, deduplicated and parked, but it is never a prefix: resolving a lane prefix that ends on it returns `SPARK_STATUS_NOT_FOUND`. The snapshot store saves it as a page file and writes no state file for it.
+- `SparkKvPageCachePromoteState(cache, logical_page)` turns the stateless entry on that page stateful once the caller has written its record. It returns `SPARK_STATUS_NOT_FOUND` unless the page holds a valid stateless entry. The entry is queued for a save of its state file; its page file, if any, is left as it is. A full save queue skips that save, as for any other save.
 
 ### Staged reply checkpoint
 
@@ -69,9 +80,15 @@ A stateless publish whose lane also carries `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_
 - When a CACHE_RELEASE admission releases the lane, the binding writes the staged state as the page's record and promotes the entry. A stage whose sequence, page generation or stateless entry no longer matches, or whose write fails, is dropped and counted in `recurrent_staged_drops`; the release itself never fails for it.
 - The batch engine marks the staged block a resume point when the release completes, so the next request that carries the whole reply resumes after it.
 
+### State retention
+
+Every time an entry gains a record (a stateful publish or seal, a promotion, a rekey, a restore with state), the cache walks the entry's ancestors and keeps the newest `SPARK_KV_PAGE_CACHE_RECENT_STATES` (4) records on that path, counting the entry itself, plus every anchor. It releases the other records: the record is invalidated, the entry becomes stateless, its snapshot state file is removed, and the KV page stays cached. A record that a bound sequence still resumes from (its terminal at its next position) or that a snapshot save is copying is skipped and counted in `state_pinned_skip_count`. A path of L tokens therefore holds at most `4 + L / anchor_token_count` records, whatever the number of turns.
+
+A stateful publish whose identity matches an existing stateless entry moves its record onto that entry with `SparkKvPageStoreRekey` (no copy) and counts it in `state_rekeyed_count`; only a rekey that the store refuses still counts in `stateful_dedup_lost_count`.
+
 ### State demotion
 
-`SparkKvPageCacheDemoteState` frees one state record. It walks the LRU list from the oldest entry, skips stateless entries and entries with a snapshot save pending, invalidates the first record it can, and marks that entry stateless. The KV page stays cached. It returns `SPARK_STATUS_CAPACITY_EXCEEDED` when no record can be freed, and `SPARK_STATUS_INVALID_ARGUMENT` when no state store is attached. The stage KV binding calls it before `SparkKvPageCacheEvictUnused` when a state record write finds the store full.
+`SparkKvPageCacheDemoteState(cache, protected_pages, protected_count)` frees one record when the state store is full. It scans every entry that holds a record. Records on the path of a bound sequence (its newest 4 and its anchors) go last; among the rest the least recently used goes first. It skips pinned records, records on the protected pages, and records whose store job is busy. The chosen entry becomes stateless with its KV page and its snapshot state file kept, so a later restore can bring the state back. It returns `SPARK_STATUS_CAPACITY_EXCEEDED` when no record can be freed, and `SPARK_STATUS_INVALID_ARGUMENT` when no state store is attached. The stage KV binding calls it when a state record write finds the store full and fails the write when it returns an error; a restore's state write calls it with the restoring page protected and, if the store is still full, the restore ends as a miss.
 
 ### Eviction
 

@@ -132,14 +132,11 @@ typedef struct SparkK3RankStateBytes
 {
 	uint64_t kda_state;
 	uint64_t kda_windows;
-	uint64_t mla_kv;
 	uint64_t total;
 } SparkK3RankStateBytes;
 
 static inline uint32_t SparkK3RankStateBytesFor(uint32_t kda_layer_count,
-	uint32_t mla_layer_count, uint32_t sequences, uint32_t tp_degree,
-	uint32_t kv_pages_per_view, uint64_t kv_page_bytes,
-	SparkK3RankStateBytes *bytes)
+	uint32_t sequences, uint32_t tp_degree, SparkK3RankStateBytes *bytes)
 {
 	SparkK3KdaRankLayout layout;
 	if ( bytes == 0 || sequences == 0u ||
@@ -149,9 +146,7 @@ static inline uint32_t SparkK3RankStateBytesFor(uint32_t kda_layer_count,
 		layout.state_slot_bytes;
 	bytes->kda_windows = (uint64_t)kda_layer_count * sequences *
 		(2u * layout.qk_window_slot_bytes + layout.v_window_slot_bytes);
-	bytes->mla_kv = (uint64_t)mla_layer_count * sequences *
-		kv_pages_per_view * kv_page_bytes;
-	bytes->total = bytes->kda_state + bytes->kda_windows + bytes->mla_kv;
+	bytes->total = bytes->kda_state + bytes->kda_windows;
 	return(1u);
 }
 

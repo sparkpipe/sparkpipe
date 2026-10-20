@@ -122,7 +122,7 @@ ZCode reaches the door as a custom provider in `~/.zcode/v2/provider_config.json
 
 - `"providerId": "custom:sparkpipe"`;
 - `"api": {"type": "anthropic-messages", "baseUrl": "http://rtx5090:4000"}`;
-- all 16 served model ids, with each context window in `modelConfigRules` taken from the chat layer's `context_tokens` (2026-10-14: `glm-5.3` and `qwen3.8-27b` 262144, `glm-5.3-flash` and `kimi-k3` 131072, `deepseek-v4.1-flash` 16384, the rest 32768).
+- all 16 served model ids, with each context window in `modelConfigRules` taken from the chat layer's `context_tokens` (2026-10-16: `kimi-k3` 737280, `glm-5.3` and `qwen3.8-27b` 262144, `glm-5.3-flash` 131072, `deepseek-v4.1-flash` 16384, the rest 32768).
 
 LiteLLM runs without a master key, so the provider's API key is a placeholder. Picking a model in ZCode swaps the fleet on its first request.
 

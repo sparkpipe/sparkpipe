@@ -25,10 +25,7 @@ This file describes the system SparkPipe is built to be.
 ## Performance today
 
 Sixteen DGX Spark nodes at TP16, measured 2026-10-18. Methods and receipts
-are in [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md). K3's 737,280-token
-window and its draft model serve from the branch `ctx/long-context`
-([sparkpipe/sparkpipe#1496](https://github.com/sparkpipe/sparkpipe/pull/1496)),
-which is not merged yet.
+are in [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).
 
 **Decode without speculation**
 
@@ -554,8 +551,7 @@ no speculation:
   It includes stopping the previous model. The slowest single swap was K3's,
   at 79 s.
 - **Context** is the window the chat layer serves
-  (`deployment/hub/chat_frontend.json`). K3's 737,280 tokens come from
-  `ctx/long-context`; main still configures 131,072.
+  (`deployment/hub/chat_frontend.json`). K3's is 737,280 tokens.
 - ‡ MiMo was measured only in the release qualification of 2026-10-14,
   while a CPU tenant kept about 16 cores busy on every node, so its numbers
   are lower bounds. The same load cut K3 from 16.2 to 10.0 tok/s.

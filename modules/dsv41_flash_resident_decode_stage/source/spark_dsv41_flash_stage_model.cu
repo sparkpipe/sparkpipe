@@ -517,6 +517,7 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 		return status;
 	D41GroupInputKernel<<<dim3(D41Blocks(2u * local_width), rows), D41_THREADS, 0, stream>>>(state->attn_gathered, state->group_input, rows,
 		local_width, (state->tp_rank / 2u) * 2u, 2u);
+	D41Fp8Qdq(state->group_input, (uint64_t)rows * 2u * local_width, stream);
 	if ( D41Project(layer->o_a, state->group_input, state->wo_a_out, 0, rows, 2u * local_width, D41_WO_A_ROWS, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41Fp8Qdq(state->wo_a_out, (uint64_t)rows * D41_WO_A_ROWS, stream);

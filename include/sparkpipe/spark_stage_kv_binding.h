@@ -135,6 +135,9 @@ typedef struct SparkStageKvRecurrent
 	uint64_t lane_bytes;
 	SparkStageKvRecurrentCopyFunction copy;
 	void *context;
+	uint32_t checkpoint_token_count;
+	uint32_t reserved0;
+	uint64_t memory_bytes;
 } SparkStageKvRecurrent;
 
 typedef struct SparkStageKvRecurrentCounters

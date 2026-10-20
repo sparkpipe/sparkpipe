@@ -284,7 +284,7 @@ typedef struct SparkTpDeviceCollective
     void *implementation;
 } SparkTpDeviceCollective;
 
-#define SPARK_TP_MESH_LAUNCHERS_ABI_VERSION 1u
+#define SPARK_TP_MESH_LAUNCHERS_ABI_VERSION 2u
 
 typedef int (*SparkTpMeshCopyDownFunction)(void *stream,volatile void *destination,const void *source,uint64_t bytes,
     const volatile void *shipped,void *round_control,const volatile void *cancel,uint64_t timeout_ns);

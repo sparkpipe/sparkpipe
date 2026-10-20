@@ -12,6 +12,8 @@
 
 #include "tests/test_k3_runner_stub.h"
 
+#include <pthread.h>
+
 static int32_t TestK3Check(int32_t condition, const char *what)
 {
 	printf("%s: %s\n", condition ? "PASS" : "FAIL", what);
@@ -152,6 +154,48 @@ static int32_t TestK3ReleaseValidation(void)
 	return(failures);
 }
 
+static int32_t TestK3SharedRows(void)
+{
+	static const uint64_t sequences[8] = { 7u, 7u, 7u, 9u, 9u, 9u, 11u, 11u };
+	SparkStageServingState state;
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[8];
+	int32_t failures = 0;
+	memset(&state, 0, sizeof(state));
+	state.model = &K3StageServing;
+	state.max_rows = 8u;
+	state.max_shared_rows = 4u;
+	state.runner_config.max_active_sequence_count = 8u;
+	memset(&submission, 0, sizeof(submission));
+	memset(lanes, 0, sizeof(lanes));
+	submission.lanes = lanes;
+	submission.lane_count = 2u;
+	submission.row_sequence_ids = sequences;
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	submission.active_sequence_count = 2u;
+	submission.row_count = 6u;
+	failures += TestK3Check(StageServingValidateSubmission(&state, &submission) == SPARK_STATUS_CAPACITY_EXCEEDED,
+		"a prefill wave of two sequences above the shared rows is refused before any work");
+	submission.row_count = 4u;
+	failures += TestK3Check(StageServingValidateSubmission(&state, &submission) == SPARK_STATUS_OK,
+		"a prefill wave of two sequences within the shared rows is accepted");
+	submission.lane_count = 1u;
+	submission.active_sequence_count = 1u;
+	submission.row_count = 8u;
+	failures += TestK3Check(StageServingValidateSubmission(&state, &submission) == SPARK_STATUS_OK,
+		"a single-sequence prefill may use every row");
+	submission.row_count = 9u;
+	failures += TestK3Check(StageServingValidateSubmission(&state, &submission) == SPARK_STATUS_CAPACITY_EXCEEDED,
+		"no wave exceeds max_rows");
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	submission.lane_count = 6u;
+	submission.active_sequence_count = 6u;
+	submission.row_count = 6u;
+	failures += TestK3Check(StageServingValidateSubmission(&state, &submission) == SPARK_STATUS_CAPACITY_EXCEEDED,
+		"a non-prefill wave above the shared rows is refused");
+	return(failures);
+}
+
 static const uint32_t *TestK3Host(const SparkMemoryBuffer *buffer)
 {
 	return((const uint32_t *)buffer->pointer);
@@ -257,11 +301,176 @@ static int32_t TestK3Grouping(void)
 	return(failures);
 }
 
+static SparkStatus TestK3ParseTaps(const char *text, SparkStageServingState *state)
+{
+	SparkJsonDocument doc;
+	SparkStatus status;
+	memset(&doc, 0, sizeof(doc));
+	memset(state, 0, sizeof(*state));
+	state->model = &K3StageServing;
+	state->tap_socket = -1;
+	status = SparkJsonParseText(text, strlen(text), &doc);
+	if ( status == SPARK_STATUS_OK )
+		status = StageServingParseTaps(state, &doc, SparkJsonGetRootToken(&doc));
+	SparkJsonDocumentDestroy(&doc);
+	return(status);
+}
+
+static void TestK3ReleaseTaps(SparkStageServingState *state)
+{
+	StageServingTapClose(state);
+	free(state->tap_buffer);
+	free(state->tap_file);
+	free(state->tap_stream);
+}
+
+static int TestK3Listen(uint32_t *port)
+{
+	struct sockaddr_in address;
+	socklen_t bytes = (socklen_t)sizeof(address);
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	memset(&address, 0, sizeof(address));
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if ( fd < 0 || bind(fd, (const struct sockaddr *)&address, bytes) != 0 || listen(fd, 1) != 0 ||
+		getsockname(fd, (struct sockaddr *)&address, &bytes) != 0 )
+	{
+		if ( fd >= 0 )
+			(void)close(fd);
+		return(-1);
+	}
+	*port = ntohs(address.sin_port);
+	return(fd);
+}
+
+typedef struct TestK3Reader
+{
+	int fd;
+	uint8_t *data;
+	size_t bytes;
+	size_t got;
+} TestK3Reader;
+
+static void *TestK3Receive(void *argument)
+{
+	TestK3Reader *reader = (TestK3Reader *)argument;
+	while ( reader->got < reader->bytes )
+	{
+		const ssize_t part = recv(reader->fd, reader->data + reader->got, reader->bytes - reader->got, 0);
+		if ( part <= 0 )
+			break;
+		reader->got += (size_t)part;
+	}
+	return(0);
+}
+
+static int32_t TestK3TapStream(void)
+{
+	SparkStageServingState state;
+	char endpoint[64];
+	uint8_t *sent, *received;
+	const size_t bytes = STAGE_SERVING_TAP_BUFFER_BYTES + 12345u;
+	uint32_t port = 0u, index, failed = 0u;
+	int listener, peer;
+	TestK3Reader reader;
+	pthread_t thread;
+	int32_t failures = 0;
+	failures += TestK3Check(TestK3ParseTaps("{\"entries\":\"o7,final\",\"rank\":15,\"stream\":\"127.0.0.1:9\"}", &state) == SPARK_STATUS_OK &&
+		state.tap_stream != 0 && state.tap_file == 0 && state.tap_count == 2u && state.tap_rank == 15u, "a tap stream endpoint configures taps without a file");
+	TestK3ReleaseTaps(&state);
+	failures += TestK3Check(TestK3ParseTaps("{\"entries\":\"o7\",\"stream\":\"127.0.0.1:9\",\"file\":\"/tmp/t\",\"file_max_bytes\":10}", &state) ==
+		SPARK_STATUS_SCHEMA_ERROR, "taps refuse a file and a stream together");
+	TestK3ReleaseTaps(&state);
+	failures += TestK3Check(TestK3ParseTaps("{\"entries\":\"o7\",\"stream\":\"127.0.0.1:9\",\"file_max_bytes\":10}", &state) == SPARK_STATUS_SCHEMA_ERROR,
+		"a tap stream refuses a file byte limit");
+	TestK3ReleaseTaps(&state);
+	failures += TestK3Check(TestK3ParseTaps("{\"entries\":\"o7\"}", &state) == SPARK_STATUS_SCHEMA_ERROR, "taps need a file or a stream");
+	TestK3ReleaseTaps(&state);
+	failures += TestK3Check(TestK3ParseTaps("{\"entries\":\"o7\",\"file\":\"/tmp/t\"}", &state) == SPARK_STATUS_SCHEMA_ERROR,
+		"a tap file still needs its byte limit");
+	TestK3ReleaseTaps(&state);
+	listener = TestK3Listen(&port);
+	failures += TestK3Check(listener >= 0, "a loopback listener for the tap stream");
+	if ( listener < 0 )
+		return(failures);
+	(void)snprintf(endpoint, sizeof(endpoint), "127.0.0.1:%u", port);
+	memset(&state, 0, sizeof(state));
+	state.model = &K3StageServing;
+	state.tap_socket = StageServingTapConnect(endpoint, STAGE_SERVING_TAP_CONNECT_MS);
+	state.tap_buffer = (uint8_t *)malloc(STAGE_SERVING_TAP_BUFFER_BYTES);
+	peer = accept(listener, 0, 0);
+	sent = (uint8_t *)malloc(bytes);
+	received = (uint8_t *)malloc(bytes);
+	for (index = 0u; sent != 0 && index < bytes; index++)
+		sent[index] = (uint8_t)(index * 131u + 7u);
+	failures += TestK3Check(state.tap_socket >= 0 && peer >= 0 && state.tap_buffer != 0 && sent != 0 && received != 0, "the tap rank connects to the stream endpoint");
+	if ( state.tap_socket >= 0 && peer >= 0 && state.tap_buffer != 0 && sent != 0 && received != 0 )
+	{
+		reader.fd = peer;
+		reader.data = received;
+		reader.bytes = bytes;
+		reader.got = 0u;
+		failures += TestK3Check(pthread_create(&thread, 0, TestK3Receive, &reader) == 0, "a receiver thread for the tap stream");
+		failures += TestK3Check(StageServingTapWrite(&state, sent, 100u) == 0 && state.tap_buffered == 100u, "small tap writes are buffered");
+		failures += TestK3Check(StageServingTapWrite(&state, sent + 100u, bytes - 100u) == 0 && StageServingTapFlush(&state) == 0 &&
+			state.tap_buffered == 0u, "a write larger than the buffer and a flush send everything");
+		(void)pthread_join(thread, 0);
+		failures += TestK3Check(reader.got == bytes && memcmp(sent, received, bytes) == 0, "the receiver gets every byte in order");
+		(void)close(peer);
+		peer = -1;
+		for (index = 0u; index < 64u && failed == 0u; index++)
+			if ( StageServingTapWrite(&state, sent, 65536u) != 0 || StageServingTapFlush(&state) != 0 )
+				failed = 1u;
+		failures += TestK3Check(failed != 0u, "a closed receiver fails the sends instead of killing the process");
+	}
+	if ( peer >= 0 )
+		(void)close(peer);
+	(void)close(listener);
+	TestK3ReleaseTaps(&state);
+	failures += TestK3Check(StageServingTapConnect(endpoint, STAGE_SERVING_TAP_RECONNECT_MS) < 0, "an endpoint with no listener is refused");
+	failures += TestK3Check(StageServingTapConnect("127.0.0.1", 50) < 0 && StageServingTapConnect("host:12", 50) < 0 && StageServingTapConnect("127.0.0.1:0", 50) < 0,
+		"malformed endpoints are refused");
+	memset(&state, 0, sizeof(state));
+	state.model = &K3StageServing;
+	state.tap_socket = -1;
+	state.tap_stream = strdup(endpoint);
+	memset(&state.tap_hello, 0x5c, sizeof(state.tap_hello));
+	failures += TestK3Check(StageServingTapStreamConnect(&state, STAGE_SERVING_TAP_RECONNECT_MS) == 0u && state.tap_stream_down != 0u && state.tap_socket < 0 &&
+		state.tap_retry_ns > StageServingNowNs(), "an unreachable tap stream pauses the taps with a retry time instead of failing");
+	listener = TestK3Listen(&port);
+	if ( listener >= 0 )
+	{
+		uint8_t hello[sizeof(state.tap_hello)];
+		free(state.tap_stream);
+		(void)snprintf(endpoint, sizeof(endpoint), "127.0.0.1:%u", port);
+		state.tap_stream = strdup(endpoint);
+		failures += TestK3Check(StageServingTapStreamConnect(&state, STAGE_SERVING_TAP_RECONNECT_MS) != 0u && state.tap_stream_down == 0u && state.tap_socket >= 0,
+			"the tap stream connects again once its endpoint listens");
+		peer = accept(listener, 0, 0);
+		reader.fd = peer;
+		reader.data = hello;
+		reader.bytes = sizeof(hello);
+		reader.got = 0u;
+		(void)TestK3Receive(&reader);
+		failures += TestK3Check(peer >= 0 && reader.got == sizeof(hello) && memcmp(hello, &state.tap_hello, sizeof(hello)) == 0,
+			"a reconnected stream starts with the stream hello");
+		if ( peer >= 0 )
+			(void)close(peer);
+		(void)close(listener);
+	}
+	TestK3ReleaseTaps(&state);
+	free(sent);
+	free(received);
+	return(failures);
+}
+
 int main(int argc, char **argv)
 {
 	int32_t failures = TestK3Descriptor();
 	failures += TestK3ReleaseValidation();
+	failures += TestK3SharedRows();
 	failures += TestK3Grouping();
+	failures += TestK3TapStream();
 	int index;
 	if ( argc == 1 )
 		failures += TestK3Deployment(TEST_K3_DEPLOYMENT);

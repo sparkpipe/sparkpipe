@@ -22,10 +22,12 @@ extern "C" {
 #define SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE UINT32_C(0x00000001)
 #define SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS UINT32_C(0x00000002)
 #define SPARK_KV_PAGE_STORE_FLAG_DIRECT_IO UINT32_C(0x00000004)
+#define SPARK_KV_PAGE_STORE_FLAG_MEMORY UINT32_C(0x00000008)
 #define SPARK_KV_PAGE_STORE_KNOWN_FLAGS \
 	(SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE | \
 	 SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS | \
-	 SPARK_KV_PAGE_STORE_FLAG_DIRECT_IO)
+	 SPARK_KV_PAGE_STORE_FLAG_DIRECT_IO | \
+	 SPARK_KV_PAGE_STORE_FLAG_MEMORY)
 
 #define SPARK_KV_PAGE_STORE_DIRECT_IO_ALIGNMENT UINT64_C(4096)
 
@@ -162,6 +164,12 @@ SparkStatus SparkKvPageStoreInvalidate(
 	SparkKvPageStore *store,
 	uint32_t logical_page_index,
 	uint64_t generation);
+SparkStatus SparkKvPageStoreRekey(
+	SparkKvPageStore *store,
+	uint32_t from_page,
+	uint64_t from_generation,
+	uint32_t to_page,
+	uint64_t to_generation);
 SparkStatus SparkKvPageStoreInvalidatePair(
 	SparkKvPageStore *first,
 	SparkKvPageStore *second,

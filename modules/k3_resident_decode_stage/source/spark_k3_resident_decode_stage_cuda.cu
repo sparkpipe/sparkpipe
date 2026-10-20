@@ -14,6 +14,27 @@ extern "C" int32_t K3StageSlice(const void *layer_weights, const void *slice_sta
 	uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context,
 	uint32_t multiprocessors, void *stream);
 #define K3_DISPATCH_PAIR_IDENTITY 16u
+#define K3_DISPATCH_GATHER_WINDOW_GRAIN 224u
+
+static_assert(K3_DISPATCH_GATHER_WINDOW_GRAIN % LM_PREFILL_ATTN_TILE == 0u, "a gather window starts on an attention key tile");
+static_assert((K3_DISPATCH_GATHER_WINDOW_GRAIN * K3_MLA_KV_A_DIM * sizeof(uint16_t)) % (K3_HIDDEN * sizeof(uint16_t)) == 0u,
+	"a gather window fills whole exchange units");
+static_assert(K3_DISPATCH_GATHER_WINDOW_GRAIN % LM_EXPANDED_PREFILL_TILE == 0u, "an expanded value pass starts on an expanded key tile");
+
+#define K3_DISPATCH_EXPANDED_MIN_ROWS 256u
+
+static uint64_t K3DispatchGatherWindowKeys(uint32_t max_rows, uint32_t degree)
+{
+	const uint64_t unit = (uint64_t)K3_HIDDEN * sizeof(uint16_t);
+	const uint64_t key_bytes = (uint64_t)K3_MLA_KV_A_DIM * sizeof(uint16_t);
+	const uint64_t landing_units = SparkK3KvShardQueryStride(max_rows, degree) / K3_HIDDEN;
+	return((landing_units / 2u * unit / key_bytes) / K3_DISPATCH_GATHER_WINDOW_GRAIN * K3_DISPATCH_GATHER_WINDOW_GRAIN);
+}
+
+static uint64_t K3DispatchExpandedValueBytes(uint32_t max_rows, uint32_t degree)
+{
+	return((uint64_t)degree * K3DispatchGatherWindowKeys(max_rows, degree) * SparkK3KvShardHeads(degree) * K3_V_HEAD_DIM * sizeof(uint16_t));
+}
 
 extern "C" int32_t K3StageFold(const void *layer_weights, const void *slice_state, void *layer_buffers,
 	uint32_t first_layer, uint32_t layer_count, uint32_t sequences, const uint32_t *verify_row_begin,
@@ -257,19 +278,18 @@ int32_t SparkK3DispatchScratchWidths(SparkK3Pack *pack, uint32_t first_layer, ui
 }
 
 int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizing,
-	uint32_t sequences, uint32_t max_rows, uint32_t kv_pages_per_view,
+	uint32_t sequences, uint32_t max_rows, uint32_t attention_rows, uint32_t kv_pages_per_view,
 	uint64_t kv_page_bytes, uint32_t tp_degree, uint32_t tp_rank, const SparkK3ScratchWidths *widths, int device)
 {
 	SparkK3KdaRankLayout layout;
 	SparkK3RankStateBytes state_plan;
 	if ( d == 0 || sizing == 0 || widths == 0 || sequences == 0u || max_rows == 0u ||
+		attention_rows == 0u || attention_rows > max_rows ||
 		sizing->layer_count == 0u ||
 		SparkK3KdaRankLayoutFor(tp_degree, &layout) == 0u ||
-		SparkK3RankStateBytesFor(sizing->kda_layer_count,
-			sizing->mla_layer_count, sequences, tp_degree,
-			kv_pages_per_view, kv_page_bytes, &state_plan) == 0u )
+		SparkK3RankStateBytesFor(sizing->kda_layer_count, sequences, tp_degree, &state_plan) == 0u )
 		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
-	if ( tp_degree > 1u && (tp_rank >= tp_degree || SparkK3KvShardFits(tp_degree, max_rows) == 0u) )
+	if ( tp_degree > 1u && (tp_rank >= tp_degree || SparkK3KvShardFits(tp_degree, attention_rows) == 0u) )
 	{
 		fprintf(stderr, "sparkpipe_k3: the MLA context split cannot run at tp_degree %u rank %u with %u rows\n",
 			tp_degree, tp_rank, max_rows);
@@ -286,6 +306,7 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	d->mla_count = sizing->mla_layer_count;
 	d->sequences = sequences;
 	d->max_rows = max_rows;
+	d->attention_rows = attention_rows;
 	d->routes_capacity = max_rows * K3_TOP_K;
 	d->kv_pages_per_view = kv_pages_per_view;
 	d->kv_page_bytes = kv_page_bytes;
@@ -343,11 +364,10 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	size_t off = 0u;
 	const SparkK3ScratchWidths *w = &d->widths;
 	const size_t rows = max_rows;
-	const size_t query_elements = tp_degree > 1u && SparkK3KvShardQueryStride(max_rows, tp_degree) > rows * w->query
-		? (size_t)SparkK3KvShardQueryStride(max_rows, tp_degree) : rows * w->query;
+	const size_t query_elements = tp_degree > 1u && SparkK3KvShardQueryStride(attention_rows, tp_degree) > rows * w->query
+		? (size_t)SparkK3KvShardQueryStride(attention_rows, tp_degree) : rows * w->query;
 	const size_t sizes[] = {
-		rows * K3_HIDDEN * 2u, rows * K3_HIDDEN * 2u, rows * w->qkvb * 2u,
-		rows * K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS * 2u, rows * K3_KDA_KEY_DIM * 2u, query_elements * 2u,
+		rows * K3_HIDDEN * 2u, rows * K3_HIDDEN * 2u, rows * w->qkvb * 2u, query_elements * 2u,
 		rows * w->key * 2u, rows * w->value * 2u, rows * w->gate * 2u, rows * w->decay * 2u,
 		rows * w->latent * 2u, rows * K3_MLA_KV_A_DIM * 2u, rows * w->attention_out * 2u,
 		rows * K3_HIDDEN * 2u, (size_t)K3_ATTNRES_MAX_SOURCES * rows * K3_HIDDEN * 2u, rows * K3_HIDDEN * 2u,
@@ -360,7 +380,8 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	for ( size_t item = 0u; item < count; ++item )
 		d->scratch_bytes += (sizes[item] + 15u) & ~(size_t)15u;
 	if ( tp_degree > 1u )
-		d->scratch_bytes += (size_t)SparkK3KvShardScratchBytes(max_rows, tp_degree) + 48u;
+		d->scratch_bytes += (size_t)SparkK3KvShardScratchBytes(attention_rows, tp_degree) + 48u +
+			(size_t)K3DispatchExpandedValueBytes(attention_rows, tp_degree) + 16u;
 	d->scratch_bytes += 256u;
 	if ( cudaMalloc(&d->scratch, d->scratch_bytes) != cudaSuccess )
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
@@ -369,8 +390,6 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	b->hidden_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
 	b->normed_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
 	b->fused_qkvb_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->fused_decay_gate_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->gate_latent_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
 	b->query_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
 	b->key_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
 	b->value_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
@@ -397,13 +416,16 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	{
 		b->kv_shard = SparkK3KvShardContext(tp_rank, tp_degree);
 		b->shard_query_gathered_bf16 = (uint16_t *)k3_carve(d, &off,
-			(size_t)tp_degree * SparkK3KvShardQueryStride(max_rows, tp_degree) * sizeof(uint16_t));
+			(size_t)tp_degree * SparkK3KvShardQueryStride(attention_rows, tp_degree) * sizeof(uint16_t));
 		b->shard_partials_f32 = (float *)k3_carve(d, &off,
-			(size_t)tp_degree * SparkK3KvShardPartialStride(max_rows, tp_degree) * sizeof(float));
+			(size_t)tp_degree * SparkK3KvShardPartialStride(attention_rows, tp_degree) * sizeof(float));
 		b->shard_partials_received_f32 = (float *)k3_carve(d, &off,
-			(size_t)tp_degree * SparkK3KvShardPartialStride(max_rows, tp_degree) * sizeof(float));
+			(size_t)tp_degree * SparkK3KvShardPartialStride(attention_rows, tp_degree) * sizeof(float));
+		b->shard_received_floats = (uint64_t)tp_degree * SparkK3KvShardPartialStride(attention_rows, tp_degree);
 		b->shard_gather_send = (uint8_t *)b->shard_partials_f32;
 		b->shard_gather_keys = (const uint8_t *)b->shard_query_gathered_bf16;
+		b->shard_gather_values_bytes = K3DispatchExpandedValueBytes(attention_rows, tp_degree);
+		b->shard_gather_values = b->shard_gather_values_bytes != 0u ? k3_carve(d, &off, (size_t)b->shard_gather_values_bytes) : 0;
 		if ( cudaMalloc(&d->gather_plan, (size_t)3u * sequences * sizeof(uint32_t)) != cudaSuccess )
 			{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
 		cudaMemset(d->gather_plan, 0, (size_t)3u * sequences * sizeof(uint32_t));
@@ -431,6 +453,11 @@ int32_t SparkK3DispatchAttachKv(SparkK3Dispatch *d, uint8_t *pool, uint64_t laye
 		d->mla_cache[i].page_table_stride = page_table_stride;
 		d->mla_cache[i].sequence_count = sequence_count;
 		d->mla_cache[i].pool_page_count = pool_page_count;
+	}
+	if ( d->mla_count != 0u && d->buffers_host != 0 && d->buffers_host->kv_shard.degree > 1u )
+	{
+		d->buffers_host->cache_shard.pages = d->mla_cache[0];
+		d->buffers_host->cache_shard.shard = d->buffers_host->kv_shard;
 	}
 	d->kv_attached = 1u;
 	return SPARK_K3_DISPATCH_OK;
@@ -617,6 +644,7 @@ int32_t SparkK3DispatchShardRows(SparkK3Dispatch *d, uint32_t rows)
 	b = d->buffers_host;
 	if ( b->kv_shard.degree < 2u )
 		return SPARK_K3_DISPATCH_OK;
+	rows = rows < d->attention_rows ? rows : d->attention_rows;
 	b->shard_query_rank_stride = SparkK3KvShardQueryStride(rows, b->kv_shard.degree);
 	b->shard_partial_rank_stride = SparkK3KvShardPartialStride(rows, b->kv_shard.degree);
 	return SPARK_K3_DISPATCH_OK;
@@ -642,8 +670,6 @@ static void K3DispatchPairView(const SparkK3Dispatch *d, const K3LayerBuffers *a
 	b->hidden_bf16 += r * K3_HIDDEN;
 	b->normed_bf16 += r * K3_HIDDEN;
 	b->fused_qkvb_bf16 += r * w->qkvb;
-	b->fused_decay_gate_bf16 += r * K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS;
-	b->gate_latent_bf16 += r * K3_KDA_KEY_DIM;
 	b->query_bf16 += r * w->query;
 	b->key_bf16 += r * w->key;
 	b->value_bf16 += r * w->value;
@@ -664,6 +690,8 @@ static void K3DispatchPairView(const SparkK3Dispatch *d, const K3LayerBuffers *a
 	b->attnres_score_f32 += r * K3_ATTNRES_MAX_SOURCES;
 	b->latent_full_bf16 += r * K3_ROUTED_EXPERT_HIDDEN;
 	b->shared_mid_bf16 += r * w->shared_mid;
+	if ( b->shard_gather_running != 0 )
+		b->shard_gather_running += r * SparkK3KvShardHeads(a->kv_shard.degree) * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK);
 	b->positions = a->positions + r;
 	b->sequence_of_row = a->sequence_of_row + r;
 	b->sequence_row_begin = d->pair_arrays + 2u;
@@ -679,25 +707,80 @@ __global__ static void K3DispatchGatherPlanKernel(uint32_t *plan, uint32_t capac
 	plan[2u * capacity + sequence] = context;
 }
 
+static uint32_t K3DispatchGatherHistory(SparkKvShard shard, uint32_t windows, uint32_t window_keys, uint32_t first)
+{
+	SparkKvShard last = shard;
+	uint32_t history = 0u;
+	last.rank = shard.degree - 1u;
+	while ( history + 1u < windows && SparkKvShardLocalPosition(last, (history + 1u) * window_keys - 1u) < first )
+		history++;
+	return(history);
+}
+
 static int32_t K3DispatchGatherPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint32_t rows, uint32_t sequence,
-	uint32_t context, cudaStream_t stream)
+	uint32_t context, uint32_t first, cudaStream_t stream)
 {
 	const uint32_t degree = b->kv_shard.degree;
 	const uint64_t unit = (uint64_t)K3_HIDDEN * sizeof(uint16_t);
+	const uint64_t key_bytes = (uint64_t)K3_MLA_KV_A_DIM * sizeof(uint16_t);
 	const uint32_t most = SparkKvShardGatherKeys(b->kv_shard, context);
-	const uint64_t units = ((uint64_t)most * K3_MLA_KV_A_DIM * sizeof(uint16_t) + unit - 1u) / unit;
+	const uint64_t units = ((uint64_t)most * key_bytes + unit - 1u) / unit;
+	const uint64_t landing_units = SparkK3KvShardQueryStride(d->attention_rows, degree) / K3_HIDDEN;
+	const uint64_t send_bytes = (uint64_t)degree * SparkK3KvShardPartialStride(d->attention_rows, degree) * sizeof(float);
+	const uint64_t running_bytes = (uint64_t)d->max_rows * SparkK3KvShardHeads(degree) * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK) * sizeof(float);
+	const uint64_t window_keys = K3DispatchGatherWindowKeys(d->attention_rows, degree);
 	const uint64_t query_units = SparkK3KvShardQuerySequences(rows, degree);
 	const uint64_t partial_units = SparkK3KvShardPartialSequences(rows, degree);
-	uint64_t gather_rounds, scatter_rounds;
+	uint64_t gather_rounds, scatter_rounds, running_offset;
 	b->shard_gather = 0u;
-	if ( d->gather_plan == 0 || sequence >= d->sequences || most == 0u ||
-		units * K3_HIDDEN > SparkK3KvShardQueryStride(d->max_rows, degree) ||
-		units * unit > (uint64_t)degree * SparkK3KvShardPartialStride(d->max_rows, degree) * sizeof(float) )
+	b->shard_gather_expanded = 0u;
+	b->shard_gather_passes = 0u;
+	b->shard_gather_value_keys = 0u;
+	b->shard_gather_history = 0u;
+	b->shard_gather_prefetched = 0u;
+	if ( d->gather_plan == 0 || sequence >= d->sequences || most == 0u )
 		return 0;
+	if ( units <= landing_units )
+	{
+		if ( units * unit > send_bytes )
+			return 0;
+		b->shard_gather_windows = 1u;
+		b->shard_gather_window_keys = 0u;
+		b->shard_gather_buffer_bytes = 0u;
+		b->shard_gather_running = 0;
+		b->shard_gather_stride = units * unit;
+	}
+	else
+	{
+		running_offset = send_bytes > running_bytes ? (send_bytes - running_bytes) / 256u * 256u : 0u;
+		if ( window_keys == 0u || (window_keys * key_bytes) % unit != 0u || (uint64_t)most * key_bytes > running_offset )
+			return 0;
+		b->shard_gather_windows = (uint32_t)(((uint64_t)most + window_keys - 1u) / window_keys);
+		b->shard_gather_window_keys = (uint32_t)window_keys;
+		b->shard_gather_buffer_bytes = (uint64_t)degree * (landing_units / 2u) * unit;
+		b->shard_gather_running = (float *)(b->shard_gather_send + running_offset);
+		b->shard_gather_stride = window_keys * key_bytes;
+	}
+	b->shard_gather_window = 0u;
+	if ( b->shard_gather_values != 0 && rows >= K3_DISPATCH_EXPANDED_MIN_ROWS && window_keys != 0u &&
+		SparkK3KvShardHeads(degree) % LM_EXPANDED_PREFILL_HEADS == 0u &&
+		b->shard_gather_values_bytes >= (uint64_t)degree * window_keys * SparkK3KvShardHeads(degree) * K3_V_HEAD_DIM * sizeof(uint16_t) )
+	{
+		const uint64_t passes = ((uint64_t)most + window_keys - 1u) / window_keys;
+		running_offset = send_bytes > running_bytes ? (send_bytes - running_bytes) / 256u * 256u : 0u;
+		if ( passes == 1u || b->shard_gather_windows > 1u || units * unit <= running_offset )
+		{
+			if ( passes > 1u && b->shard_gather_windows <= 1u )
+				b->shard_gather_running = (float *)(b->shard_gather_send + running_offset);
+			b->shard_gather_expanded = 1u;
+			b->shard_gather_passes = (uint32_t)passes;
+			b->shard_gather_value_keys = (uint32_t)window_keys;
+		}
+	}
 	scatter_rounds = SparkTpMeshDirectChunks(query_units * K3_HIDDEN * degree, degree, SPARK_TP_MESH_OPERATION_ALL_GATHER, SPARK_WEIGHTD_MESH_SLOT_BYTES) +
 		SparkTpMeshAllToAllChunks(partial_units * K3_HIDDEN, degree, SPARK_WEIGHTD_MESH_SLOT_BYTES);
 	gather_rounds = SparkTpMeshDirectChunks(units * K3_HIDDEN * degree, degree, SPARK_TP_MESH_OPERATION_ALL_GATHER, SPARK_WEIGHTD_MESH_SLOT_BYTES);
-	if ( SparkKvShardExchangeCostNs(gather_rounds, (uint64_t)(degree - 1u) * units * unit) >=
+	if ( rows <= d->attention_rows && SparkKvShardExchangeCostNs(gather_rounds, (uint64_t)(degree - 1u) * units * unit) >=
 		SparkKvShardExchangeCostNs(scatter_rounds, (uint64_t)(degree - 1u) * (query_units + partial_units) * unit) )
 		return 0;
 	K3DispatchGatherPlanKernel<<<1u, 1u, 0, stream>>>(d->gather_plan, d->sequences, sequence, context);
@@ -705,10 +788,11 @@ static int32_t K3DispatchGatherPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint3
 		return -1;
 	b->shard_gather = 1u;
 	b->shard_gather_most_keys = most;
+	b->shard_gather_history = b->shard_gather_windows > 1u && first < context
+		? K3DispatchGatherHistory(b->kv_shard, b->shard_gather_windows, b->shard_gather_window_keys, first) : 0u;
 	b->shard_gather_list = d->gather_plan;
 	b->shard_gather_offset = d->gather_plan + d->sequences;
 	b->shard_gather_context = d->gather_plan + 2u * d->sequences;
-	b->shard_gather_stride = units * unit;
 	return 1;
 }
 
@@ -743,16 +827,33 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	b->output_token = in->output_token;
 	b->output_score = in->output_score;
 	b->shard_gather = 0u;
+	b->shard_gather_expanded = 0u;
+	b->shard_gather_history = 0u;
+	b->shard_gather_prefetched = 0u;
+	if ( rows > d->attention_rows && (b->kv_shard.degree < 2u || sequences != 1u || commit == 0u || in->pair_rows == 0u ||
+		in->pair_rows > d->attention_rows || rows - in->pair_rows > d->attention_rows || in->gather_context == 0u ||
+		d->pair_buffers == 0 || d->pair_arrays == 0 || d->widths.latent != K3_ROUTED_EXPERT_HIDDEN) )
+	{
+		fprintf(stderr, "sparkpipe_k3: refused a %u-row wave of %u sequences: waves above %u attention rows must run as two paired halves\n",
+			rows, sequences, d->attention_rows);
+		return SPARK_K3_DISPATCH_ERR_CAPACITY;
+	}
 	if ( b->kv_shard.degree > 1u && rows > LM_SKINNY_ROWS_WIDE )
 	{
 		const int32_t gather = in->gather_context != 0u && sequences == 1u
-			? K3DispatchGatherPlan(d, b, rows, in->gather_sequence, in->gather_context, stream) : 0;
+			? K3DispatchGatherPlan(d, b, rows, in->gather_sequence, in->gather_context, in->gather_first, stream) : 0;
 		if ( gather < 0 )
 			return SPARK_K3_DISPATCH_ERR_CUDA;
 		if ( gather > 0 )
 			d->mla_gather_waves++;
 		else
 			d->mla_scatter_waves++;
+		if ( gather == 0 && rows > d->attention_rows )
+		{
+			fprintf(stderr, "sparkpipe_k3: refused a %u-row wave at context %u: its keys do not fit the paired gather\n",
+				rows, in->gather_context);
+			return SPARK_K3_DISPATCH_ERR_CAPACITY;
+		}
 	}
 	if ( commit == 0u && (d->replay_rows == 0u || rows > d->replay_rows || in->pair_rows != 0u) )
 		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
@@ -788,6 +889,11 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 				d->pair_waves++;
 			return status;
 		}
+	}
+	if ( rows > d->attention_rows )
+	{
+		fprintf(stderr, "sparkpipe_k3: refused a %u-row wave: the paired path is not ready\n", rows);
+		return SPARK_K3_DISPATCH_ERR_CAPACITY;
 	}
 	d->slice_state->replay_active = commit == 0u ? 1u : 0u;
 	const int32_t status = K3StageSlice(d->weights, d->slice_state, d->buffers, d->first_layer,
