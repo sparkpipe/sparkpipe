@@ -55,16 +55,16 @@ static SparkStatus BindWith(SparkStageServingState *state, uint32_t logical, uin
 static SparkStageServingState *Open(void)
 {
 	SparkStageServingState *state = (SparkStageServingState *)calloc(1u, sizeof(*state));
-	SparkMemoryBuffer *host[6], *device[8];
+	SparkMemoryBuffer *host[7], *device[8];
 	uint32_t index;
 	assert(state != 0);
 	state->model = &K3StageServing;
 	host[0] = &state->positions_host; host[1] = &state->context_host; host[2] = &state->state_host;
-	host[3] = &state->runs_host; host[4] = &state->seqslot_host; host[5] = &state->order_host;
+	host[3] = &state->runs_host; host[4] = &state->seqslot_host; host[5] = &state->order_host; host[6] = &state->target_host;
 	device[0] = &state->positions_device; device[1] = &state->context_device; device[2] = &state->state_device;
 	device[3] = &state->runs_device; device[4] = &state->seqslot_device; device[5] = &state->order_device;
 	device[6] = &state->output_tokens; device[7] = &state->output_scores;
-	for ( index = 0u; index < 6u; index++ )
+	for ( index = 0u; index < 7u; index++ )
 		assert(SparkMemoryBufferAllocate(host[index], SPARK_MEMORY_SPACE_HOST_COHERENT, 9u * sizeof(uint32_t)) == SPARK_STATUS_OK);
 	for ( index = 0u; index < 8u; index++ )
 		assert(SparkMemoryBufferAllocate(device[index], SPARK_MEMORY_SPACE_DEVICE_PRIVATE, 9u * sizeof(uint32_t)) == SPARK_STATUS_OK);
