@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "inference/kernels/dtype.cuh"
+#include "sparkpipe/spark_kv_shard.h"
 
 #define SPARK_DSV41_FLASH_KV_FP4_GROUP 16u
 #define SPARK_DSV41_FLASH_KV_FP4_AMAX_FLOOR (6.0f * 0.001953125f)
@@ -246,6 +247,127 @@ static inline cudaError_t SparkDsv41FlashLaunchCandidateMask(
 		return(cudaErrorInvalidValue);
 	SparkDsv41FlashCandidateMaskKernel<<<row_count,SPARK_DSV41_FLASH_CANDIDATE_THREADS,0,stream>>>(
 		scores_f32,widths,row_stride,block_scores_f32,block_stride,block_size,topk_blocks);
+	return(cudaGetLastError());
+}
+
+static __global__ void SparkDsv41FlashShardBlockMaxKernel(
+	const float *scores_f32,
+	uint64_t score_stride,
+	SparkKvShard shard,
+	const uint32_t *sequence_of_row,
+	const uint32_t *context_length,
+	const uint32_t *row_position,
+	float *block_scores_f32,
+	uint32_t block_stride)
+{
+	uint32_t row = blockIdx.x,reach,local,pinned,block,element,end;
+	const float *scores = scores_f32 + (uint64_t)row * score_stride;
+	float *blocks = block_scores_f32 + (uint64_t)row * block_stride;
+	float best;
+	reach = context_length[sequence_of_row[row]];
+	if ( row_position[row] + 1u < reach )
+		reach = row_position[row] + 1u;
+	local = SparkKvShardLocalKeys(shard,reach);
+	pinned = reach != 0u ? (reach - 1u) / shard.grain : UINT32_MAX;
+	for (block = threadIdx.x; block < block_stride; block += blockDim.x)
+	{
+		best = -INFINITY;
+		end = (block + 1u) * shard.grain < local ? (block + 1u) * shard.grain : local;
+		for (element = block * shard.grain; element < end; element++)
+			best = fmaxf(best,scores[element]);
+		blocks[block] = block * shard.grain < local && block * shard.degree + shard.rank == pinned ? INFINITY : best;
+	}
+}
+
+static __global__ void SparkDsv41FlashShardBlockMaskKernel(
+	const float *global_scores_f32,
+	uint32_t global_stride,
+	const uint32_t *selected,
+	uint32_t keep,
+	SparkKvShard blocks,
+	uint8_t *mask,
+	uint32_t block_stride)
+{
+	uint32_t row = blockIdx.x,entry,block;
+	uint8_t *line = mask + (uint64_t)row * block_stride;
+	for (block = threadIdx.x; block < block_stride; block += blockDim.x)
+		line[block] = 0u;
+	__syncthreads();
+	for (entry = threadIdx.x; entry < keep; entry += blockDim.x)
+	{
+		block = selected[(uint64_t)row * keep + entry];
+		if ( block < global_stride && block % blocks.degree == blocks.rank && block / blocks.degree < block_stride &&
+			global_scores_f32[(uint64_t)row * global_stride + block] > -INFINITY )
+			line[block / blocks.degree] = 1u;
+	}
+}
+
+static __global__ void SparkDsv41FlashShardBlockApplyKernel(
+	float *scores_f32,
+	uint64_t score_stride,
+	uint32_t grain,
+	const uint8_t *mask,
+	uint32_t block_stride)
+{
+	uint32_t row = blockIdx.x,element;
+	float *scores = scores_f32 + (uint64_t)row * score_stride;
+	const uint8_t *line = mask + (uint64_t)row * block_stride;
+	for (element = threadIdx.x; element < score_stride; element += blockDim.x)
+		if ( element / grain >= block_stride || line[element / grain] == 0u )
+			scores[element] = -INFINITY;
+}
+
+static inline cudaError_t SparkDsv41FlashLaunchShardBlockMax(
+	cudaStream_t stream,
+	const float *scores_f32,
+	uint64_t score_stride,
+	SparkKvShard shard,
+	const uint32_t *sequence_of_row,
+	const uint32_t *context_length,
+	const uint32_t *row_position,
+	float *block_scores_f32,
+	uint32_t block_stride,
+	uint32_t row_count)
+{
+	if ( scores_f32 == 0 || sequence_of_row == 0 || context_length == 0 || row_position == 0 || block_scores_f32 == 0 || row_count == 0u ||
+		shard.grain == 0u || shard.degree == 0u || shard.rank >= shard.degree || (uint64_t)block_stride * shard.grain < score_stride )
+		return(cudaErrorInvalidValue);
+	SparkDsv41FlashShardBlockMaxKernel<<<row_count,SPARK_DSV41_FLASH_CANDIDATE_THREADS,0,stream>>>(
+		scores_f32,score_stride,shard,sequence_of_row,context_length,row_position,block_scores_f32,block_stride);
+	return(cudaGetLastError());
+}
+
+static inline cudaError_t SparkDsv41FlashLaunchShardBlockMask(
+	cudaStream_t stream,
+	const float *global_scores_f32,
+	uint32_t global_stride,
+	const uint32_t *selected,
+	uint32_t keep,
+	SparkKvShard blocks,
+	uint8_t *mask,
+	uint32_t block_stride,
+	uint32_t row_count)
+{
+	if ( global_scores_f32 == 0 || selected == 0 || mask == 0 || row_count == 0u || keep == 0u || blocks.degree == 0u || blocks.rank >= blocks.degree )
+		return(cudaErrorInvalidValue);
+	SparkDsv41FlashShardBlockMaskKernel<<<row_count,SPARK_DSV41_FLASH_CANDIDATE_THREADS,0,stream>>>(
+		global_scores_f32,global_stride,selected,keep,blocks,mask,block_stride);
+	return(cudaGetLastError());
+}
+
+static inline cudaError_t SparkDsv41FlashLaunchShardBlockApply(
+	cudaStream_t stream,
+	float *scores_f32,
+	uint64_t score_stride,
+	uint32_t grain,
+	const uint8_t *mask,
+	uint32_t block_stride,
+	uint32_t row_count)
+{
+	if ( scores_f32 == 0 || mask == 0 || row_count == 0u || grain == 0u || (uint64_t)block_stride * grain < score_stride )
+		return(cudaErrorInvalidValue);
+	SparkDsv41FlashShardBlockApplyKernel<<<row_count,SPARK_DSV41_FLASH_CANDIDATE_THREADS,0,stream>>>(
+		scores_f32,score_stride,grain,mask,block_stride);
 	return(cudaGetLastError());
 }
 

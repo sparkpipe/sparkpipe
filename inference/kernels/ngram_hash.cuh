@@ -60,13 +60,17 @@ static __global__ void LmNgramHashKernel(const uint32_t *__restrict__ token_ids,
 
 static __global__ void LmNgramHistoryKernel(const uint32_t *__restrict__ token_ids, const int32_t *__restrict__ token_map,
 	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_indices, const uint32_t *__restrict__ recurrent_slot,
-	int32_t *__restrict__ history, uint32_t history_stride, uint32_t sequences, uint32_t orders, uint32_t commit)
+	int32_t *__restrict__ history, uint32_t history_stride, uint32_t sequences, uint32_t orders, uint32_t commit,
+	const uint32_t *__restrict__ lane_count)
 {
 	const uint32_t sequence = blockIdx.x * blockDim.x + threadIdx.x;
 	if ( commit == 0u || sequence >= sequences )
 		return;
 	const uint32_t begin = sequence_row_begin[sequence];
-	const uint32_t into_wave = sequence_row_begin[sequence + 1u] - begin - 1u;
+	const uint32_t count = lane_count != 0 ? lane_count[sequence] : sequence_row_begin[sequence + 1u] - begin;
+	if ( count == 0u )
+		return;
+	const uint32_t into_wave = count - 1u;
 	const uint32_t *lane_rows = sequence_row_indices + begin;
 	int32_t *slot = history + (uint64_t)recurrent_slot[sequence] * history_stride;
 	int32_t carried[4], updated[4];

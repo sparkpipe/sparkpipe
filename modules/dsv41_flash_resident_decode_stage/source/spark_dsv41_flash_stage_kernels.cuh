@@ -154,17 +154,19 @@ static __global__ void D41RopeRowsKernel(uint16_t *__restrict__ data, uint32_t h
 	value[1] = LmFloatToBf16((float)((double)imaginary * cosine + (double)real * sine));
 }
 
-static __global__ void D41DequantFp8BlockKernel(const uint8_t *__restrict__ payload, const uint8_t *__restrict__ scale, uint16_t *__restrict__ output,
-	uint32_t columns, uint32_t row_first, uint32_t column_first, uint32_t output_columns)
+static __global__ void D41Fp8SliceKernel(const uint8_t *__restrict__ payload, const uint8_t *__restrict__ block_scale, uint8_t *__restrict__ weight,
+	uint8_t *__restrict__ row_scale, uint16_t *__restrict__ wide, uint32_t columns, uint32_t row_first, uint32_t column_first,
+	uint32_t output_columns)
 {
-	const uint32_t row = row_first + blockIdx.y;
-	const uint32_t scale_columns = columns / 32u;
-	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < output_columns; index += gridDim.x * blockDim.x )
-	{
-		const uint32_t column = column_first + index;
-		const float factor = LmE8m0ToFloat(scale[(uint64_t)(row / 32u) * scale_columns + column / 32u]);
-		output[(uint64_t)blockIdx.y * output_columns + index] = LmFloatToBf16(LmE4m3ToFloat(payload[(uint64_t)row * columns + column]) * factor);
-	}
+	const uint32_t row = row_first + blockIdx.x, scale_columns = columns / 32u, output_groups = output_columns / 32u;
+	for ( uint32_t group = threadIdx.x; group < output_groups; group += blockDim.x )
+		row_scale[(uint64_t)blockIdx.x * output_groups + group] = block_scale[(uint64_t)(row / 32u) * scale_columns + column_first / 32u + group];
+	if ( weight != 0 )
+		for ( uint32_t index = threadIdx.x; index < output_columns; index += blockDim.x )
+			weight[(uint64_t)blockIdx.x * output_columns + index] = payload[(uint64_t)row * columns + column_first + index];
+	for ( uint32_t index = threadIdx.x; index < output_columns; index += blockDim.x )
+		wide[(uint64_t)blockIdx.x * output_columns + index] = LmFloatToBf16(LmE4m3ToFloat(payload[(uint64_t)row * columns + column_first + index]) *
+			LmE8m0ToFloat(block_scale[(uint64_t)(row / 32u) * scale_columns + (column_first + index) / 32u]));
 }
 
 static __global__ void D41CompressorRowsKernel(const float *__restrict__ kv, const float *__restrict__ score, uint16_t *__restrict__ pooled,
@@ -207,13 +209,14 @@ static __global__ void D41CompressorRowsKernel(const float *__restrict__ kv, con
 static __global__ void D41CompressorSaveKernel(const float *__restrict__ kv, const float *__restrict__ score, float *__restrict__ state,
 	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal,
 	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ recurrent_slot, uint32_t rows, uint32_t ratio,
-	uint32_t state_stride_floats, uint32_t width, uint32_t commit)
+	uint32_t state_stride_floats, uint32_t width, uint32_t commit, const uint32_t *__restrict__ lane_count)
 {
 	const uint32_t row = blockIdx.x;
 	if ( commit == 0u || row >= rows || (positions[row] + 1u) % ratio == 0u )
 		return;
 	const uint32_t lane = row_lane[row];
-	if ( row_ordinal[row] + 1u != sequence_row_begin[lane + 1u] - sequence_row_begin[lane] )
+	const uint32_t count = lane_count != 0 ? lane_count[lane] : sequence_row_begin[lane + 1u] - sequence_row_begin[lane];
+	if ( row_ordinal[row] + 1u != count )
 		return;
 	float *slot_state = state + (uint64_t)recurrent_slot[lane] * state_stride_floats;
 	for ( uint32_t c = threadIdx.x; c < width; c += blockDim.x )
@@ -327,13 +330,14 @@ static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t
 static __global__ void D41WindowRingStoreKernel(const uint16_t *__restrict__ wave_kv, uint16_t *__restrict__ ring,
 	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal,
 	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t ring_rows,
-	uint32_t window, uint32_t degree, uint32_t rank, uint32_t rows, uint32_t commit)
+	uint32_t window, uint32_t degree, uint32_t rank, uint32_t rows, uint32_t commit, const uint32_t *__restrict__ lane_count)
 {
 	const uint32_t row = blockIdx.x;
 	if ( commit == 0u || row >= rows || positions[row] % degree != rank )
 		return;
 	const uint32_t lane = row_lane[row];
-	if ( row_ordinal[row] + window < sequence_row_begin[lane + 1u] - sequence_row_begin[lane] )
+	const uint32_t count = lane_count != 0 ? lane_count[lane] : sequence_row_begin[lane + 1u] - sequence_row_begin[lane];
+	if ( row_ordinal[row] >= count || row_ordinal[row] + window < count )
 		return;
 	uint16_t *target = ring + (uint64_t)recurrent_slot[lane] * ring_slot_stride +
 		(uint64_t)((positions[row] / degree) % ring_rows) * D41K_LATENT;
