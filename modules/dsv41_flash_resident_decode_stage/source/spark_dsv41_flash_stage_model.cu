@@ -1740,6 +1740,12 @@ static void D41Report(void *model, uint32_t rank)
 		(unsigned long long)state->recurrent_bytes);
 }
 
+static uint32_t D41GraphKey(void *model, const SparkStageRunnerStep *step)
+{
+	(void)model;
+	return step->commit == 0u && step->last_rows_only == 0u && step->sequences == 1u && step->rows > 1u && step->rows <= D41_VERIFY_ROWS ? 2u : 1u;
+}
+
 static const SparkStageRunnerModelInterface spark_dsv41_flash_stage_model =
 {
 	SPARK_STAGE_RUNNER_MODEL_ABI_VERSION,
@@ -1757,7 +1763,7 @@ static const SparkStageRunnerModelInterface spark_dsv41_flash_stage_model =
 	D41ResetSlot,
 	D41ProbeBuffers,
 	D41Report,
-	0,
+	D41GraphKey,
 	0,
 	D41KeepRows,
 	0
