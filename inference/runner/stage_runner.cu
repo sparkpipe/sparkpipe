@@ -23,8 +23,9 @@
 #define STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS 4u
 #define STAGE_RUNNER_DISTRIBUTION_HEAD_TILE 128u
 #define STAGE_RUNNER_GRAPH_ROWS 16u
+#define STAGE_RUNNER_VERIFY_GRAPH_ROWS 32u
 #define STAGE_RUNNER_GRAPH_KEYS 2u
-#define STAGE_RUNNER_GRAPH_SLOTS (STAGE_RUNNER_GRAPH_KEYS * STAGE_RUNNER_GRAPH_ROWS)
+#define STAGE_RUNNER_GRAPH_SLOTS (STAGE_RUNNER_GRAPH_ROWS + STAGE_RUNNER_VERIFY_GRAPH_ROWS)
 #define STAGE_RUNNER_WIDE_ROWS 16u
 
 typedef struct SparkStageRunnerState SparkStageRunnerState;
@@ -1794,7 +1795,7 @@ static SparkStatus StageRunnerStepBody(SparkStageRunnerState *state, const Spark
 
 static uint32_t StageRunnerGraphSlot(uint32_t key, uint32_t rows)
 {
-	return (key - 1u) * STAGE_RUNNER_GRAPH_ROWS + rows - 1u;
+	return (key == 1u ? 0u : STAGE_RUNNER_GRAPH_ROWS) + rows - 1u;
 }
 
 static uint32_t StageRunnerGraphEligible(const SparkStageRunnerState *state, const SparkStageRunner *runner,
@@ -1805,7 +1806,7 @@ static uint32_t StageRunnerGraphEligible(const SparkStageRunnerState *state, con
 	return (state->resident != 0u || state->geometry.experts == 0u) && state->device_collective_created != 0 &&
 		state->device_collective_deferred != 0u && runner->owns_embedding != 0u &&
 		runner->owns_final_head != 0u && state->head_weight != 0 && shape != 0u &&
-		rows <= STAGE_RUNNER_GRAPH_ROWS && state->graph_refused[StageRunnerGraphSlot(key, rows)] == 0u ? 1u : 0u;
+		rows <= (key == 1u ? STAGE_RUNNER_GRAPH_ROWS : STAGE_RUNNER_VERIFY_GRAPH_ROWS) && state->graph_refused[StageRunnerGraphSlot(key, rows)] == 0u ? 1u : 0u;
 }
 
 static void StageRunnerGraphIdentity(const SparkStageRunnerStep *in, SparkStageRunnerStep *identity)
