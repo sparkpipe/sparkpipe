@@ -38,6 +38,7 @@ SWITCHED_INTERFACE = "enp1s0f1np1"
 SWITCHED_SPEED_MBIT = "100000"
 DIRECT_INTERFACE = "enp1s0f0np0"
 DIRECT_SPEED_MBIT = "200000"
+MESH_LINK_MAP = "0-1:200,2-3:200,4-5:200,6-7:200,8-9:200,10-11:200,12-13:200"
 HOSTS_BLOCK_BEGIN = "# SparkPipe fleet aliases BEGIN"
 HOSTS_BLOCK_END = "# SparkPipe fleet aliases END"
 LEGACY_CEPH_WARM_STORAGE_MARKER = Path("/etc/sparkpipe/enable-ceph-warm-storage")
@@ -416,6 +417,16 @@ def canonical_hosts(text: str,removed_aliases: set[str]) -> str:
     return(f"{rendered}\n\n{block}\n" if rendered else f"{block}\n")
 
 
+def direct_pair_linked(rank: int) -> bool:
+    linked = False
+    for link in MESH_LINK_MAP.split(","):
+        match = re.fullmatch(r"([0-9]+)-([0-9]+):([0-9]+)",link)
+        if match is None or int(match.group(1)) ^ 1 != int(match.group(2)) or int(match.group(1)) > int(match.group(2)):
+            raise BrickproofError(f"mesh link {link!r} does not join a rank with its rank^1 partner")
+        linked = linked or rank in (int(match.group(1)),int(match.group(2)))
+    return(linked)
+
+
 def spark_rank(node: str) -> int:
     match = re.fullmatch(r"spark([0-9a-f])",node.casefold())
     if match is None:
@@ -649,7 +660,7 @@ def remove_ceph_startup(
     run(["systemctl","reset-failed","ceph*.service","ceph*.target"],check=False)
 
 
-def enable_policy_services() -> None:
+def enable_policy_services(rank: int) -> None:
     run(["systemctl","daemon-reload"])
     run(["sysctl","--system"],timeout=180)
     run(["systemctl","enable","earlyoom.service"])
@@ -662,7 +673,10 @@ def enable_policy_services() -> None:
     disable_persistent_unit("ds4-switched-fabric.service")
     disable_persistent_unit("ds4-direct-pair-fabric.service")
     run(["systemctl","enable","--now","ds4-switched-fabric.timer"])
-    run(["systemctl","enable","--now","ds4-direct-pair-fabric.timer"])
+    if direct_pair_linked(rank):
+        run(["systemctl","enable","--now","ds4-direct-pair-fabric.timer"])
+    else:
+        run(["systemctl","disable","--now","ds4-direct-pair-fabric.timer"])
     disable_persistent_unit("sparkpipe_model_residentd.service")
     run(["systemctl","reset-failed","sparkpipe_model_residentd.service"],check=False)
     run(["systemctl","unmask","fstrim.service"])
@@ -738,7 +752,7 @@ def remote_apply(payload_path: Path) -> dict[str,object]:
     efi_boot_order_changed = install_efi_boot_order()
     rebuild_initramfs()
     decouple_optional_boot_work()
-    enable_policy_services()
+    enable_policy_services(spark_rank(str(payload["recovery_network"]["node_id"])))
     run(["systemctl","start","logrotate.service"])
     return({"efi_boot_order_changed":efi_boot_order_changed,"grub_changed":grub_changed,"identity_changed":identity_changed,"keys_changed":keys_changed,"memory_current_before":memory_current,"source_commit":payload["source_commit"]})
 
@@ -761,9 +775,10 @@ def is_enabled(unit: str) -> str:
 def audit_fleet_hardware(node_id: str) -> tuple[list[str],dict[str,object]]:
     failures = []
     observations: dict[str,object] = {}
-    for interface,expected_speed in (
-            (SWITCHED_INTERFACE,SWITCHED_SPEED_MBIT),
-            (DIRECT_INTERFACE,DIRECT_SPEED_MBIT)):
+    links = [(SWITCHED_INTERFACE,SWITCHED_SPEED_MBIT)]
+    if direct_pair_linked(spark_rank(node_id)):
+        links.append((DIRECT_INTERFACE,DIRECT_SPEED_MBIT))
+    for interface,expected_speed in links:
         root = Path("/sys/class/net") / interface
         link = {
             "carrier":read_optional(root / "carrier").strip(),
@@ -865,8 +880,11 @@ def remote_audit(payload_path: Path) -> dict[str,object]:
     for unit in ("serial-getty@ttyS0.service","sparkpipe-fsck-health.timer","ds4-switched-fabric.timer","ds4-direct-pair-fabric.timer"):
         state = is_enabled(unit)
         observations[f"{unit}.enabled"] = state
-        if state != "enabled":
-            failures.append(f"{unit}:not-enabled")
+        expected = "enabled"
+        if unit == "ds4-direct-pair-fabric.timer" and not direct_pair_linked(spark_rank(str(payload["recovery_network"]["node_id"]))):
+            expected = "disabled"
+        if state != expected:
+            failures.append(f"{unit}:not-{expected}")
     fstrim_service = is_enabled("fstrim.service")
     fstrim_timer = is_enabled("fstrim.timer")
     observations["fstrim.service.enabled"] = fstrim_service

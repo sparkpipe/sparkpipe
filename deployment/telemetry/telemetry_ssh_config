@@ -1,0 +1,26 @@
+Host lenovo7
+  HostName 192.168.50.66
+  User spark7
+  HostKeyAlias lenovo7
+  StrictHostKeyChecking accept-new
+  UserKnownHostsFile ~/.ssh/ds4_lenovo_known_hosts
+
+Host lenovo8
+  HostName 192.168.50.11
+  Port 2222
+  User root
+  ProxyJump sparke
+  IdentityFile ~/.ssh/id_ed25519.macstudio-emerg
+  IdentitiesOnly yes
+  HostKeyAlias spark8-emergency
+  UserKnownHostsFile ~/.ssh/ds4_emergency_known_hosts
+
+Host lenovo9
+  HostName 192.168.50.3
+  User spark9
+  HostKeyAlias lenovo9
+  StrictHostKeyChecking accept-new
+  UserKnownHostsFile ~/.ssh/ds4_lenovo_known_hosts
+
+Match all
+  Include ~/.ssh/config

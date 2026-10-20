@@ -37,6 +37,7 @@ declare -A BACKOFF
 AGENT_BLOCKED=""
 MESH_INTERFACE=switch
 MESH_PAIR_INTERFACE=pair
+MESH_PAIRED=1
 ''' + constant("BOOT_SHORT_SECONDS") + constant("BOOT_LOOP_WINDOW_SECONDS") + constant("BOOT_SETTLE_SECONDS") + 'SAFE_MODE=""\nSAFE_CLEAR_FILE="$WORK/clear"\n'
     + "".join(function(name).replace("/proc/sys/kernel/random/boot_id", "$WORK/boot_id")
               for name in ("boot_durations", "check_boot_loop", "safe_mode_active", "ensure_root", "node_doctor")))

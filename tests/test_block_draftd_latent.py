@@ -6,12 +6,16 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SPEC = importlib.util.spec_from_file_location("block_draftd", ROOT / "tools" / "block_draftd.py")
-block_draftd = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(block_draftd)
+HAVE_TORCH = importlib.util.find_spec("torch") is not None
 
 
 def main():
+    if not HAVE_TORCH:
+        print("SKIP torch is not installed")
+        return 0
+    spec = importlib.util.spec_from_file_location("block_draftd", ROOT / "tools" / "block_draftd.py")
+    block_draftd = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(block_draftd)
     failures = []
     latent_module = importlib.import_module("latent_block_drafter")
     built = []
