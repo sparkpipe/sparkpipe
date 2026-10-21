@@ -16,6 +16,7 @@ extern "C" {
 #define SPARK_DSV41_FLASH_STAGE_SHARD_GRAIN 8u
 #define SPARK_DSV41_FLASH_STAGE_A2A_HEADS 8u
 #define SPARK_DSV41_FLASH_STAGE_RECORD_FLOATS 514u
+#define SPARK_DSV41_FLASH_STAGE_ENGRAM_SPLIT_ROWS 16u
 
 const SparkStageRunnerModelInterface *SparkDsv41FlashStageModel(void);
 
