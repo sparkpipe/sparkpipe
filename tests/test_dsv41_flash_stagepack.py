@@ -42,9 +42,14 @@ def build_checkpoint(warm: Path):
     shards = {1: {}, 2: {}}
     meta = {}
     for kind, layer, spec in conv.entry_specs():
-        entries = [(spec[0], spec[2], spec[3])]
-        if spec[1]:
-            entries.append((spec[1], "F8_E8M0", spec[4]))
+        if "{e}" in spec[0]:
+            entries = []
+            for weight, scale in conv.expert_sources(kind, spec):
+                entries += [(weight, spec[2], spec[3]), (scale, "F8_E8M0", spec[4])]
+        else:
+            entries = [(spec[0], spec[2], spec[3])]
+            if spec[1]:
+                entries.append((spec[1], "F8_E8M0", spec[4]))
         for name_t, dtype, shape in entries:
             if "{e}" in name_t:
                 for expert in range(conv.ROUTED_EXPERTS):
@@ -121,7 +126,7 @@ def main() -> int:
         conv.cmd_plan(str(root / "headers.json"), str(out), TP, "selftest-revision",
                       "aa" * 32, "bb" * 32, "cc" * 32)
         plan = json.loads((out / "plan.json").read_text())
-        assert plan["tensor_count"] == 4 * 25 + 7 + 2 + 3, plan["tensor_count"]
+        assert plan["tensor_count"] == 4 * 24 + 7 + 2 + 3, plan["tensor_count"]
         assert plan["tp"] == TP
         conv.cmd_copy(str(root / "headers.json"), str(out / "plan.json"), str(out),
                       str(warm), 1, conv.SHARD_COUNT)
@@ -134,7 +139,7 @@ def main() -> int:
                        str(out / "plan.json"), 1, conv.SHARD_COUNT)
         pack3 = out / "rank3.spstage"
         payload = next(e for e in plan["entries"] if e["kind"] == conv.K_Q_A)
-        expert = next(e for e in plan["entries"] if e["kind"] == conv.K_EXP_W1)
+        expert = next(e for e in plan["entries"] if e["kind"] == conv.K_EXP_W13)
         for target, label in ((payload, "spine"), (expert, "expert")):
             with open(pack3, "r+b") as handle:
                 handle.seek(target["payload_offset"] + 3)

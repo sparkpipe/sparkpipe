@@ -31,16 +31,20 @@ static __global__ void LmPackedRouteWeightKernel(const uint32_t *__restrict__ ro
 		packed_weight[route_packed_row[route]] = route_weight[route];
 }
 
+static __device__ __forceinline__ uint16_t LmSwigluPackedValue(uint16_t gate, uint16_t up, float weight, float limit)
+{
+	const float g = fminf(LmBf16ToFloat(gate), limit);
+	const float u = fminf(fmaxf(LmBf16ToFloat(up), -limit), limit);
+	return LmFloatToBf16((g / (1.0f + expf(-g))) * u * weight);
+}
+
 static __global__ void LmSwigluPackedKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, const float *__restrict__ weight,
 	uint16_t *__restrict__ output, uint32_t width, float limit)
 {
 	const uint32_t row = blockIdx.y;
 	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < width; element += gridDim.x * blockDim.x )
-	{
-		const float g = fminf(LmBf16ToFloat(gate[(uint64_t)row * width + element]), limit);
-		const float u = fminf(fmaxf(LmBf16ToFloat(up[(uint64_t)row * width + element]), -limit), limit);
-		output[(uint64_t)row * width + element] = LmFloatToBf16((g / (1.0f + expf(-g))) * u * weight[row]);
-	}
+		output[(uint64_t)row * width + element] = LmSwigluPackedValue(gate[(uint64_t)row * width + element], up[(uint64_t)row * width + element],
+			weight[row], limit);
 }
 
 static __global__ void LmGeluTanhPackedKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, const float *__restrict__ weight,
