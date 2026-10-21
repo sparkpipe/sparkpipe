@@ -2,7 +2,7 @@
 set -eu
 UNIT=sparkpipe-draftd
 LOG=${DRAFTD_LOG:-/srv/workspace/sparkpipe/logs/draftd.log}
-DRAFTER=${DRAFTD_DRAFTER:-/mnt/cold-raid6/models/kimi-k3-dspark-radixark}
+DRAFTER=${DRAFTD_DRAFTER:-/mnt/cold-raid6/models/kimi-k3-dflash2-lightseek-e77935fb}
 SHARD=${DRAFTD_TARGET_SHARD:-/mnt/cold-raid6/models/kimi-k3/model-00094-of-000096.safetensors}
 TAP_HOST=${DRAFTD_TAP_HOST:-10.10.210.3}
 TAP_PORT=${DRAFTD_TAP_PORT:-7701}
