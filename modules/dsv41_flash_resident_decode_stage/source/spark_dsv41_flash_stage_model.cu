@@ -162,7 +162,7 @@ typedef struct D41ModelState
 	int32_t *token_map;
 	D41Layer layers[D41_LAYERS];
 	D41Engram engram[2];
-	double *full_frequency, *compress_frequency;
+	float *full_frequency, *compress_frequency;
 	uint8_t *fp8_side;
 	uint64_t fp8_side_bytes;
 	uint8_t *cells;
@@ -392,7 +392,7 @@ static void D41Fp8QdqCopy(const uint16_t *source, uint16_t *data, uint64_t eleme
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void D41KvNormRopeQdqKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ weight, const uint32_t *__restrict__ positions,
-	const double *__restrict__ inverse_frequency, uint16_t *__restrict__ quantized, uint32_t dimension, uint32_t rope_offset, float epsilon)
+	const float *__restrict__ inverse_frequency, uint16_t *__restrict__ quantized, uint32_t dimension, uint32_t rope_offset, float epsilon)
 {
 	extern __shared__ float d41_kv_shared[];
 	float *row = d41_kv_shared;
@@ -414,7 +414,7 @@ void D41KvNormRopeQdqKernel(const uint16_t *__restrict__ input, const uint16_t *
 		const float own = LmBf16ToFloat(value), partner = __shfl_xor_sync(0xffffffffu, own, 1);
 		if ( index >= rope_offset )
 		{
-			double sine, cosine;
+			float sine, cosine;
 			D41RopeTurn(positions[blockIdx.x], 0, inverse_frequency[(index - rope_offset) / 2u], 0u, &sine, &cosine);
 			value = (index & 1u) == 0u ? D41RopeReal(own, partner, sine, cosine) : D41RopeImaginary(partner, own, sine, cosine);
 		}
@@ -445,7 +445,7 @@ static void D41CollapseNormQdq(const uint16_t *streams, const float *pre, const 
 }
 
 static void D41Rope(uint16_t *data, uint32_t rows, uint32_t heads, uint32_t head_stride, uint32_t rope_offset,
-	const uint32_t *positions, int32_t shift, const double *frequency, uint32_t inverse, const uint32_t *row_valid, cudaStream_t stream)
+	const uint32_t *positions, int32_t shift, const float *frequency, uint32_t inverse, const uint32_t *row_valid, cudaStream_t stream)
 {
 	D41RopeRowsKernel<<<dim3(rows, heads), D41K_ROPE_PAIRS, 0, stream>>>(data, heads, head_stride, rope_offset, positions, shift,
 		frequency, inverse, row_valid);
@@ -658,7 +658,7 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 	cudaStream_t stream)
 {
 	const uint32_t rows = step->rows, sms = step->multiprocessors, ratio = D41Ratio(index);
-	const double *frequency = ratio > 0u ? state->compress_frequency : state->full_frequency;
+	const float *frequency = ratio > 0u ? state->compress_frequency : state->full_frequency;
 	const uint64_t destination_stride = D41DestinationStride(rows);
 	const uint32_t *bound = ratio == 2u ? state->bound_ratio2 : state->bound_ratio1;
 	const uint32_t *length = ratio == 2u ? state->length_ratio2 : state->length_ratio1;
@@ -1112,25 +1112,12 @@ static SparkStatus D41KeepRows(void *model, const SparkStageRunnerStep *step, co
 	return D41Launched();
 }
 
-static void D41Frequencies(double *full, double *compress)
+static SparkStatus D41Frequencies(float *table)
 {
-	for ( uint32_t pair = 0u; pair < D41K_ROPE_PAIRS; ++pair )
-	{
-		const double exponent = (double)(2u * pair) / (double)D41_ROPE;
-		full[pair] = pow(D41_ROPE_THETA, -exponent);
-		compress[pair] = pow(D41_COMPRESS_THETA, -exponent);
-	}
-	const double low_raw = D41_ROPE * log(D41_YARN_ORIGINAL / (D41_BETA_FAST * 2.0 * M_PI)) / (2.0 * log(D41_COMPRESS_THETA));
-	const double high_raw = D41_ROPE * log(D41_YARN_ORIGINAL / (D41_BETA_SLOW * 2.0 * M_PI)) / (2.0 * log(D41_COMPRESS_THETA));
-	const double low = floor(low_raw) > 0.0 ? floor(low_raw) : 0.0;
-	const double high = ceil(high_raw) < (double)(D41_ROPE - 1u) ? ceil(high_raw) : (double)(D41_ROPE - 1u);
-	for ( uint32_t pair = 0u; pair < D41K_ROPE_PAIRS; ++pair )
-	{
-		double ramp = ((double)pair - low) / (high - low > 1e-3 ? high - low : 1e-3);
-		ramp = ramp < 0.0 ? 0.0 : ramp > 1.0 ? 1.0 : ramp;
-		const double smooth = 1.0 - ramp;
-		compress[pair] = compress[pair] / D41_YARN_FACTOR * (1.0 - smooth) + compress[pair] * smooth;
-	}
+	if ( D41LaunchFrequencies(table, D41_ROPE_THETA, D41_COMPRESS_THETA, D41_YARN_FACTOR, D41_YARN_ORIGINAL, D41_BETA_FAST,
+		D41_BETA_SLOW) != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	return SPARK_STATUS_OK;
 }
 
 static const D41PackEntry *D41Find(const D41ModelState *state, uint32_t kind, uint32_t layer)
@@ -1354,7 +1341,6 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 {
 	const SparkStageRunnerConfiguration *configuration = request->configuration;
 	D41ModelState *state;
-	double frequencies[2u * D41K_ROPE_PAIRS];
 	uint64_t pack_bytes;
 	SparkStatus status;
 	if ( configuration->stage_count != 1u || configuration->tp_degree != D41_TP || configuration->max_input_row_count == 0u ||
@@ -1406,11 +1392,12 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 		status = D41OpenEngramShard(state, configuration->rank_pack_path);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	D41Frequencies(frequencies, frequencies + D41K_ROPE_PAIRS);
-	if ( cudaMalloc(&state->full_frequency, sizeof(frequencies)) != cudaSuccess ||
-		cudaMemcpy(state->full_frequency, frequencies, sizeof(frequencies), cudaMemcpyHostToDevice) != cudaSuccess )
+	if ( cudaMalloc(&state->full_frequency, 2u * D41K_ROPE_PAIRS * sizeof(float)) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->compress_frequency = state->full_frequency + D41K_ROPE_PAIRS;
+	status = D41Frequencies(state->full_frequency);
+	if ( status != SPARK_STATUS_OK )
+		return status;
 	{
 		const uint32_t blocks = D41_MOE_INTER / D41_SHARED_GRANULE, base = blocks / D41_TP, extra = blocks % D41_TP;
 		state->shared_first = (state->tp_rank * base + (state->tp_rank < extra ? state->tp_rank : extra)) * D41_SHARED_GRANULE;

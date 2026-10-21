@@ -141,33 +141,66 @@ static __global__ void D41ReplicateStreamsKernel(const uint16_t *__restrict__ hi
 			streams[((uint64_t)row * D41K_HC + copy) * width + element] = hidden[(uint64_t)row * width + element];
 }
 
-static __device__ __forceinline__ void D41RopeTurn(uint32_t position, int32_t shift, double inverse_frequency, uint32_t inverse, double *sine,
-	double *cosine)
+static __global__ void D41FrequencyKernel(float *__restrict__ table, float theta, float inverse_factor, float low, float inverse_span,
+	uint32_t yarn)
 {
-	const double angle = (double)((int64_t)position + shift) * inverse_frequency;
-	sincos(angle, sine, cosine);
+	const uint32_t pair = threadIdx.x;
+	if ( pair >= D41K_ROPE_PAIRS )
+		return;
+	const float frequency = __frcp_rn(powf(theta, __fmul_rn((float)(2u * pair), 1.0f / (float)(2u * D41K_ROPE_PAIRS))));
+	if ( yarn == 0u )
+	{
+		table[pair] = frequency;
+		return;
+	}
+	const float ramp = fminf(fmaxf(__fmul_rn(__fsub_rn((float)pair, low), inverse_span), 0.0f), 1.0f);
+	const float smooth = __fsub_rn(1.0f, ramp);
+	table[pair] = __fadd_rn(__fmul_rn(__fmul_rn(frequency, inverse_factor), __fsub_rn(1.0f, smooth)), __fmul_rn(frequency, smooth));
+}
+
+static inline cudaError_t D41LaunchFrequencies(float *table, double theta, double compress_theta, double factor, double original,
+	double beta_fast, double beta_slow)
+{
+	const double rope = 2.0 * D41K_ROPE_PAIRS;
+	const double low_raw = rope * log(original / (beta_fast * 2.0 * M_PI)) / (2.0 * log(compress_theta));
+	const double high_raw = rope * log(original / (beta_slow * 2.0 * M_PI)) / (2.0 * log(compress_theta));
+	const double low = floor(low_raw) > 0.0 ? floor(low_raw) : 0.0;
+	const double high = ceil(high_raw) < rope - 1.0 ? ceil(high_raw) : rope - 1.0;
+	const double span = high - low > 1e-3 ? high - low : 1e-3;
+	D41FrequencyKernel<<<1, D41K_ROPE_PAIRS>>>(table, (float)theta, 1.0f / (float)factor, 0.0f, 0.0f, 0u);
+	D41FrequencyKernel<<<1, D41K_ROPE_PAIRS>>>(table + D41K_ROPE_PAIRS, (float)compress_theta, 1.0f / (float)factor, (float)low,
+		1.0f / (float)span, 1u);
+	return cudaGetLastError();
+}
+
+static __device__ __forceinline__ void D41RopeTurn(uint32_t position, int32_t shift, float inverse_frequency, uint32_t inverse, float *sine,
+	float *cosine)
+{
+	const float angle = __fmul_rn((float)((int64_t)position + shift), inverse_frequency);
+	*sine = sinf(angle);
+	*cosine = cosf(angle);
 	if ( inverse != 0u )
 		*sine = -*sine;
 }
 
-static __device__ __forceinline__ uint16_t D41RopeReal(float real, float imaginary, double sine, double cosine)
+static __device__ __forceinline__ uint16_t D41RopeReal(float real, float imaginary, float sine, float cosine)
 {
-	return LmFloatToBf16((float)((double)real * cosine - (double)imaginary * sine));
+	return LmFloatToBf16(__fmaf_rn(real, cosine, -__fmul_rn(imaginary, sine)));
 }
 
-static __device__ __forceinline__ uint16_t D41RopeImaginary(float real, float imaginary, double sine, double cosine)
+static __device__ __forceinline__ uint16_t D41RopeImaginary(float real, float imaginary, float sine, float cosine)
 {
-	return LmFloatToBf16((float)((double)imaginary * cosine + (double)real * sine));
+	return LmFloatToBf16(__fmaf_rn(real, sine, __fmul_rn(imaginary, cosine)));
 }
 
 static __global__ void D41RopeRowsKernel(uint16_t *__restrict__ data, uint32_t heads, uint32_t head_stride, uint32_t rope_offset,
-	const uint32_t *__restrict__ positions, int32_t shift, const double *__restrict__ inverse_frequency, uint32_t inverse,
+	const uint32_t *__restrict__ positions, int32_t shift, const float *__restrict__ inverse_frequency, uint32_t inverse,
 	const uint32_t *__restrict__ row_valid)
 {
 	const uint32_t row = blockIdx.x, head = blockIdx.y, pair = threadIdx.x;
 	if ( pair >= D41K_ROPE_PAIRS || head >= heads || (row_valid != 0 && row_valid[row] == D41K_NO_ROW) )
 		return;
-	double sine, cosine;
+	float sine, cosine;
 	D41RopeTurn(positions[row], shift, inverse_frequency[pair], inverse, &sine, &cosine);
 	uint16_t *value = data + ((uint64_t)row * heads + head) * head_stride + rope_offset + 2u * pair;
 	const float real = LmBf16ToFloat(value[0]), imaginary = LmBf16ToFloat(value[1]);

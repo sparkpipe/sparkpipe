@@ -556,6 +556,7 @@ PYTHON_TESTS := \
 	tests/test_dsv41_flash_layer.py \
 	tests/test_dsv41_flash_layer0_anchor.py \
 	tests/test_dsv41_flash_pack_contract.py \
+	tests/test_dsv41_flash_rope_parity.py \
 	tests/test_dsv41_flash_smoke_experts.py \
 	tests/test_dsv41_flash_stagepack.py \
 	tests/test_gemma4_verify_existing.py \
@@ -1428,6 +1429,9 @@ build/test_dsv41_flash_kernels: tests/test_dsv41_flash_kernels.cu modules/dsv41_
 
 build/test_dsv41_flash_moe_slices: tests/test_dsv41_flash_moe_slices.cu modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_kernels.cuh modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh inference/kernels/moe_local.cuh inference/kernels/route.cuh inference/kernels/skinny.cuh inference/kernels/cell_mma.cuh inference/kernels/cell_pack.cuh | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_moe_slices (no nvcc on this host)"; fi
+
+build/test_dsv41_flash_rope_parity: tests/test_dsv41_flash_rope_parity.cu modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_kernels.cuh modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh inference/kernels/dtype.cuh | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_rope_parity (no nvcc on this host)"; fi
 
 build/test_rope_plan: tests/test_rope_plan.c model-families/common/include/sparkpipe/spark_rope_plan.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I. -Imodel-families/common/include $< -lm -o $@
