@@ -40,6 +40,7 @@ ENTRY_BYTES = 64
 ALIGN = 256
 WINDOW = 16 << 20
 MAGIC = 0x31413444
+FORMAT_VERSION = 2
 
 DTYPE_BYTES = {"BF16": 2, "F32": 4, "F8_E4M3": 1, "F8_E8M0": 1, "I8": 1}
 
@@ -72,14 +73,13 @@ K_HC_F_SCALE = 25
 K_ROUTER = 26
 K_ROUTER_BIAS = 27
 K_ROUTER_BIAS_VL = 28
-K_EXP_W1 = 29
-K_EXP_W2 = 30
-K_EXP_W3 = 31
 K_SH_W1 = 32
 K_SH_W2 = 33
 K_SH_W3 = 34
-KIND_COUNT = 35
-EXPERT_KINDS = (K_EXP_W1, K_EXP_W2, K_EXP_W3)
+K_EXP_W13 = 35
+K_EXP_W2 = 36
+KIND_COUNT = 37
+EXPERT_KINDS = (K_EXP_W13, K_EXP_W2)
 FP8_KINDS = (K_Q_A, K_Q_B, K_KV_A, K_O_A, K_O_B, K_IDX_Q_B, K_SH_W1, K_SH_W2, K_SH_W3)
 F32_KINDS = (K_ATTN_SINK, K_HC_A_FN, K_HC_A_BASE, K_HC_A_SCALE,
              K_HC_F_FN, K_HC_F_BASE, K_HC_F_SCALE, K_ROUTER_BIAS, K_ROUTER_BIAS_VL)
@@ -102,7 +102,7 @@ def normalize(shape: list) -> list:
 
 
 def in_layer(kind: int, layer: int) -> bool:
-    if kind <= K_LM_HEAD:
+    if kind <= K_LM_HEAD or K_ROUTER_BIAS_VL < kind < K_SH_W1:
         return False
     if kind in (K_IDX_Q_B, K_IDX_WK, K_IDX_WP, K_IDX_KN):
         if layer in SWA_ONLY_LAYERS:
@@ -171,8 +171,10 @@ def entry_shape(kind: int, tp: int):
         return (384, HIDDEN)
     if kind in (K_ROUTER_BIAS, K_ROUTER_BIAS_VL):
         return (1, 384)
-    if kind in EXPERT_KINDS:
-        return (5120, EXPERT_WIDTH // 2) if kind == K_EXP_W2 else (EXPERT_WIDTH, HIDDEN // 2)
+    if kind == K_EXP_W13:
+        return (2 * (EXPERT_WIDTH // tp), HIDDEN // 2)
+    if kind == K_EXP_W2:
+        return (HIDDEN // tp, EXPERT_WIDTH // 2)
     if kind == K_SH_W2:
         return (HIDDEN, EXPERT_WIDTH)
     return (EXPERT_WIDTH, HIDDEN)
@@ -181,7 +183,7 @@ def entry_shape(kind: int, tp: int):
 def expected_entry(kind: int, layer: int, tp: int) -> dict:
     rows, cols = entry_shape(kind, tp)
     if kind in EXPERT_KINDS:
-        groups = ROUTED_EXPERTS // tp
+        groups = ROUTED_EXPERTS
         return {"kind": kind, "layer": layer, "payload_type": 4, "codec": 7, "scale_encoding": 3,
                 "groups": groups, "rows": rows, "cols": cols,
                 "payload_bytes": rows * cols * groups,
@@ -261,9 +263,10 @@ def source_ref(kind: int, layer: int, plane: int):
         return (f + "gate.bias", "repl")
     if kind == K_ROUTER_BIAS_VL:
         return (f + "gate.bias_vl", "repl")
-    if kind in EXPERT_KINDS:
-        w = "w2" if kind == K_EXP_W2 else ("w1" if kind == K_EXP_W1 else "w3")
-        return (f + "experts.{e}." + w + "." + suffix, "expert")
+    if kind == K_EXP_W13:
+        return ([f + "experts.{e}.w1." + suffix, f + "experts.{e}.w3." + suffix], "slice")
+    if kind == K_EXP_W2:
+        return ([f + "experts.{e}.w2." + suffix], "slice")
     if kind == K_SH_W1:
         return (f + "shared_experts.w1." + suffix, "repl")
     if kind == K_SH_W2:
@@ -305,14 +308,18 @@ def pieces_for(flat: dict, tp: int, order: list, entries: list, lo: int, hi: int
             if total == 0:
                 continue
             name, mode = source_ref(kind, layer, plane)
-            if mode == "expert":
-                groups = ROUTED_EXPERTS // tp
-                per = total // groups
+            if mode == "slice":
+                per = total // ROUTED_EXPERTS
+                part = per // len(name)
                 for rank in range(tp):
-                    for g in range(groups):
-                        src = flat[name.format(e=rank * groups + g)]
-                        pieces.append((rank, kind, layer, plane, src, 0, src["shape"][0],
-                                       0, src["shape"][1], offset + g * per, per))
+                    for g in range(ROUTED_EXPERTS):
+                        for index, template in enumerate(name):
+                            src = flat[template.format(e=g)]
+                            step = src["shape"][0] // tp
+                            if step * src["shape"][1] * DTYPE_BYTES[src["dtype"]] != part:
+                                fail(f"slice of {src['name']} is not {part} bytes")
+                            pieces.append((rank, kind, layer, plane, src, rank * step, (rank + 1) * step,
+                                           0, src["shape"][1], offset + g * per + index * part, part))
                 continue
             src0 = flat[name]
             rows, cols = src0["shape"]
@@ -367,7 +374,7 @@ def verify_header(fd: int, rank: int, tp: int, plan: dict, entries: list,
     if len(raw) != HEADER_BYTES:
         fail(f"rank{rank}: short header")
     fields = struct.unpack_from("<20I2Q", raw, 0)
-    literal = (MAGIC, 1, HEADER_BYTES, ENTRY_BYTES, 1, 0, len(entries), 1, 0, 0,
+    literal = (MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, 1, 0, len(entries), 1, 0, 0,
                LAYER_COUNT, LAYER_COUNT, HIDDEN, VOCAB, ROUTED_EXPERTS, 5, 7, tp, rank, 0)
     if fields[:20] != literal:
         fail(f"rank{rank}: header fields {fields[:20]} != literals {literal}")
