@@ -1048,8 +1048,14 @@ static SparkStatus D41StepReach(D41ModelState *state, const SparkStageRunnerStep
 	state->step_score_stride = ((SparkKvShardGatherKeys(state->shard, reach) + 63u) / 64u) * 64u;
 	state->step_score_stride = state->step_score_stride < state->local_score_stride ? state->step_score_stride : state->local_score_stride;
 	state->step_blocks = state->candidate_blocks != 0u && reach > D41_CANDIDATE_ROWS ? 1u : 0u;
-	if ( uncaptured != 0u && step->sequences == 1u && step->rows > SPARK_STAGE_RUNNER_GRAPH_ROWS && step->rows > D41_PAIR_RECORD_ROWS )
-		D41PlanLocalAttention(state, step->rows, reach);
+	if ( step->host_positions != 0 && step->sequences == 1u && step->rows > SPARK_STAGE_RUNNER_GRAPH_ROWS && step->rows > D41_PAIR_RECORD_ROWS )
+	{
+		uint32_t landing_reach = 0u;
+		for ( row = 0u; row < step->rows; ++row )
+			landing_reach = step->host_positions[row] + 1u > landing_reach ? step->host_positions[row] + 1u : landing_reach;
+		if ( landing_reach <= state->max_positions )
+			D41PlanLocalAttention(state, step->rows, landing_reach);
+	}
 	if ( uncaptured != 0u && contiguous != 0u && step->sequences == 1u && step->rows > D41_TAIL_MIN_ROWS && step->last_rows_only != 0u &&
 		step->every_row_hidden == 0u && step->host_state_target != 0 && step->host_state_target[0] >= reach )
 	{
