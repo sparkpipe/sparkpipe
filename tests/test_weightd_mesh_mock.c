@@ -807,12 +807,35 @@ static void test_slice_routes(uint32_t local_rank)
         "an empty gather slice still delivers the tail");
     test_complete_range(first,last);
     CHECK(test_shipped(8u,local_rank) == seq + 1u,"gather releases after its tails complete");
-    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_PEER;
+    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_SCATTER;
+    route.fields.pair = 1u;
     CHECK(test_post_route(8u,local_rank,seq + 2u,bytes,route) == SPARK_STATUS_INVALID_ARGUMENT,
+        "a pair route carries the whole payload, never slices");
+    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_FULL;
+    route.fields.slice_bytes = 0u;
+    first = spark_stub_ibv_posted_count();
+    CHECK(test_post_route(8u,local_rank,seq + 2u,bytes,route) == SPARK_STATUS_OK,"pair route posts");
+    last = spark_stub_ibv_posted_count();
+    CHECK(last - first == TEST_MESH_PEERS + 1u,"a pair route sends one payload and a tail to every peer");
+    test_expect_route(first,last,slot_base,route,local_rank,bytes,
+        "a pair route sends the payload only to the rank it is paired with");
+    {
+        uint64_t length = 0u;
+        CHECK(SparkWeightdMeshRouteSpan(route,local_rank ^ 1u,local_rank,bytes,&length) == 0u && length == bytes,
+            "the paired rank receives the whole payload");
+        CHECK(SparkWeightdMeshRouteSpan(route,(local_rank + 2u) % SPARK_WEIGHTD_MESH_RANKS_PER_BAND,local_rank,bytes,&length) == 0u && length == 0u,
+            "every other rank receives the tail alone");
+    }
+    test_complete_range(first,last);
+    CHECK(test_shipped(8u,local_rank) == seq + 2u,"a pair route releases after its payload and tails complete");
+    route.fields.pair = 0u;
+    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_PEER;
+    route.fields.slice_bytes = 80u;
+    CHECK(test_post_route(8u,local_rank,seq + 3u,bytes,route) == SPARK_STATUS_INVALID_ARGUMENT,
         "a peer route must carry exactly its per-peer length");
     route.fields.reserved = 1u;
     route.fields.slice_bytes = 1000u;
-    CHECK(test_post_route(8u,local_rank,seq + 2u,bytes,route) == SPARK_STATUS_INVALID_ARGUMENT,
+    CHECK(test_post_route(8u,local_rank,seq + 3u,bytes,route) == SPARK_STATUS_INVALID_ARGUMENT,
         "reserved route bits are rejected");
 }
 

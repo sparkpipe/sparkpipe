@@ -658,7 +658,10 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16) == SPARK_STATUS_UNSUPPORTED &&
         SparkTpDeviceCollectiveRoundIndex(&collective) == 0u,
         "a spinning collective refuses reduce-scatter loudly before consuming a round");
-    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 + 1u) == SPARK_STATUS_INVALID_ARGUMENT,
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER) == SPARK_STATUS_UNSUPPORTED &&
+        SparkTpDeviceCollectiveRoundIndex(&collective) == 0u,
+        "a pair gather without hardware waits takes the all-gather path and its refusal");
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER + 1u) == SPARK_STATUS_INVALID_ARGUMENT,
         "an unknown collective operation is refused");
     CHECK(SparkTpDeviceCollectiveEnqueueRounds(&collective,&submission,3u) == SPARK_STATUS_UNSUPPORTED,
         "legacy B1 round loop retains its missing callback rejection");

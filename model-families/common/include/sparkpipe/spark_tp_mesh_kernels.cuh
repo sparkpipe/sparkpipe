@@ -1494,6 +1494,14 @@ static __device__ __forceinline__ void SparkTpMeshHardwareDirectRun(
         band += SPARK_WEIGHTD_MESH_HALF_OFFSET(SPARK_WEIGHTD_MESH_SEQUENCE_HALF(tag));
     lane = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
     lanes = (uint64_t)blockDim.x * gridDim.x;
+    if ( operation == SPARK_TP_MESH_OPERATION_PAIR_GATHER )
+    {
+        peer = blockIdx.y == 0u ? rank : rank ^ 1u;
+        SparkTpMeshCopyHalvesFromBand((uint16_t *)output + peer * local_elements + begin,
+            (const volatile uint16_t *)(band + (peer * slots_per_rank + ring) * slot_bytes),count,lane,lanes);
+        SparkTpMeshHardwareCombineSettle(control,last,started,own_wait);
+        return;
+    }
     if ( operation == SPARK_TP_MESH_OPERATION_ALL_GATHER || operation == SPARK_TP_MESH_OPERATION_SLICE_GATHER )
     {
         peer = blockIdx.y;
@@ -1846,6 +1854,23 @@ static cudaError_t SparkTpMeshHardwareDirectChunk(cudaStream_t stream,uint8_t *b
     return SparkTpMeshHardwareCombine(stream,band,slot_bytes,slots_per_rank,control,rank,degree,output,local_elements,begin,count,operation,0u,operation == 0u ? count * degree : count,begin + count == local_elements,UINT32_MAX);
 }
 
+static cudaError_t SparkTpMeshHardwarePairChunk(cudaStream_t stream,uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,volatile uint64_t *entry,SparkWeightdMeshWaitRequest *request,SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,const uint8_t *local,void *output,uint64_t local_elements,uint64_t begin,uint64_t count,uint64_t timeout_ns)
+{
+    SparkWeightdMeshRoute route = {0};
+    cudaError_t status;
+    route.fields.peer_mask = ((1u << degree) - 1u) & ~(1u << rank);
+    route.fields.pair = 1u;
+    status = SparkTpMeshHardwarePublish(stream,band,slot_bytes,slots_per_rank,entry,control,rank,local + begin * sizeof(uint16_t),count * sizeof(uint16_t),0u,
+        count * sizeof(uint16_t),route.word,request,SPARK_TP_MESH_PUBLISH_SHIP | SPARK_TP_MESH_PUBLISH_GUARD | SPARK_TP_MESH_PUBLISH_ARRIVAL,route.fields.peer_mask,timeout_ns);
+    if ( status == cudaSuccess )
+        status = SparkTpMeshHardwareArrival(stream,band,slot_bytes,slots_per_rank,control,rank,degree,timeout_ns);
+    if ( status != cudaSuccess )
+        return status;
+    SparkTpMeshHardwareDirectWideKernel<<<dim3(SparkTpMeshDirectBlocks(count,2u),2u),SPARK_TP_MESH_DIRECT_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,control,
+        degree,output,local_elements,begin,count,SPARK_TP_MESH_OPERATION_PAIR_GATHER,0u,count,begin + count == local_elements,UINT64_MAX,UINT32_MAX,rank,0u);
+    return cudaPeekAtLastError();
+}
+
 static cudaError_t SparkTpMeshHardwareRsagChunk(cudaStream_t stream,uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,volatile uint64_t *entry,SparkWeightdMeshWaitRequest *request,SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,const uint8_t *local,void *output,uint64_t local_elements,uint64_t begin,uint64_t count,uint64_t timeout_ns,uint32_t stage)
 {
     SparkWeightdMeshRoute route = {0};
@@ -2020,6 +2045,16 @@ static cudaError_t SparkTpMeshHardwareDirectRound(cudaStream_t stream,uint8_t *b
     uint32_t rsag,peer;
     cudaError_t status = cudaSuccess;
     local_elements = SparkTpMeshDirectLocalElements(elements,degree,operation);
+    if ( operation == SPARK_TP_MESH_OPERATION_ALL_GATHER && (slice_routes & SPARK_TP_MESH_ROUTES_PAIR) != 0u )
+    {
+        capacity = SparkTpMeshDirectCapacity(slot_bytes,operation);
+        for (begin=0u; begin<local_elements && status==cudaSuccess; begin+=count)
+        {
+            count = local_elements - begin < capacity ? local_elements - begin : capacity;
+            status = SparkTpMeshHardwarePairChunk(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,output,local_elements,begin,count,timeout_ns);
+        }
+        return status;
+    }
     if ( SparkTpMeshDirectPipelined(elements,degree,operation,slot_bytes) != 0u )
         return SparkTpMeshHardwarePipelineRound(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,output,local_elements,timeout_ns);
     rsag = SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,slice_routes) == 2u;
