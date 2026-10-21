@@ -80,6 +80,7 @@ def main():
         chosen.append((name, prompt, tokens, best[1]))
     raw = open(args.taps, "rb")
     taps = socket.create_connection((args.tap_host, args.tap_port))
+    taps.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     taps.sendall(raw.read(HELLO.size))
     drafts = socket.create_connection((args.draft_host, args.draft_port))
     drafts.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
