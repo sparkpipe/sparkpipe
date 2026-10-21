@@ -22,6 +22,8 @@
 #define D41K_RECORD (D41K_LATENT + 2u)
 #define D41K_NO_ROW 0xffffffffu
 #define D41K_FOLD_KEYS 8u
+#define D41K_HC_MIX_ROWS 4u
+#define D41K_HC_MIX_ROWS_FROM 32u
 
 static __global__ void D41HcMixPartialKernel(const uint16_t *__restrict__ streams, const float *__restrict__ fn, float *__restrict__ partials,
 	uint32_t width)
@@ -49,6 +51,40 @@ static __global__ void D41HcMixPartialKernel(const uint16_t *__restrict__ stream
 		total += __shfl_down_sync(0xffffffffu, total, offset);
 	if ( lane == 0u )
 		partials[((uint64_t)row * D41K_HC_TASKS + task) * D41K_HC_WARPS + warp] = total;
+}
+
+template<uint32_t ROWS>
+static __global__ void D41HcMixRowsKernel(const uint16_t *__restrict__ streams, const float *__restrict__ fn, float *__restrict__ partials,
+	uint32_t width, uint32_t rows)
+{
+	const uint32_t first_row = blockIdx.x * ROWS, flat = D41K_HC * width, lane = threadIdx.x % 32u, warp = threadIdx.x / 32u;
+	float total[D41K_HC_TASKS][ROWS];
+	for ( uint32_t task = 0u; task < D41K_HC_TASKS; ++task )
+		for ( uint32_t r = 0u; r < ROWS; ++r )
+			total[task][r] = 0.0f;
+	for ( uint32_t element = threadIdx.x; element < flat; element += D41K_THREADS )
+	{
+		float value[ROWS];
+		for ( uint32_t r = 0u; r < ROWS; ++r )
+			value[r] = first_row + r < rows ? LmBf16ToFloat(streams[(uint64_t)(first_row + r) * flat + element]) : 0.0f;
+		for ( uint32_t task = 0u; task < D41K_HC_MIX; ++task )
+		{
+			const float factor = fn[(uint64_t)task * flat + element];
+			for ( uint32_t r = 0u; r < ROWS; ++r )
+				total[task][r] += factor * value[r];
+		}
+		for ( uint32_t r = 0u; r < ROWS; ++r )
+			total[D41K_HC_MIX][r] += value[r] * value[r];
+	}
+	for ( uint32_t task = 0u; task < D41K_HC_TASKS; ++task )
+		for ( uint32_t r = 0u; r < ROWS; ++r )
+		{
+			float sum = total[task][r];
+			for ( uint32_t offset = 16u; offset != 0u; offset >>= 1u )
+				sum += __shfl_down_sync(0xffffffffu, sum, offset);
+			if ( lane == 0u && first_row + r < rows )
+				partials[((uint64_t)(first_row + r) * D41K_HC_TASKS + task) * D41K_HC_WARPS + warp] = sum;
+		}
 }
 
 static __device__ __forceinline__ float D41HcLineSum(float value, uint32_t first, uint32_t stride)

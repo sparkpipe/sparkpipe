@@ -465,7 +465,11 @@ static void D41Rope(uint16_t *data, uint32_t rows, uint32_t heads, uint32_t head
 static SparkStatus D41HcMixes(D41ModelState *state, const uint16_t *streams, const float *fn, const float *base, const float *scale,
 	float *pre, float *post, float *comb, uint32_t rows, cudaStream_t stream)
 {
-	D41HcMixPartialKernel<<<dim3(D41K_HC_TASKS, rows), D41K_THREADS, 0, stream>>>(streams, fn, state->mixes, D41_HIDDEN);
+	if ( rows >= D41K_HC_MIX_ROWS_FROM )
+		D41HcMixRowsKernel<D41K_HC_MIX_ROWS><<<(rows + D41K_HC_MIX_ROWS - 1u) / D41K_HC_MIX_ROWS, D41K_THREADS, 0, stream>>>(streams, fn, state->mixes,
+			D41_HIDDEN, rows);
+	else
+		D41HcMixPartialKernel<<<dim3(D41K_HC_TASKS, rows), D41K_THREADS, 0, stream>>>(streams, fn, state->mixes, D41_HIDDEN);
 	D41HcSinkhornRowsKernel<<<rows, 32u, 0, stream>>>(state->mixes, scale, base, pre, post, comb, D41_HIDDEN, D41_EPS, D41_HC_ITERATIONS,
 		D41_HC_EPS);
 	return D41Launched();
