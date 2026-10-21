@@ -1059,8 +1059,8 @@ static void SparkModelBatchRejectedResidency(
 {
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 		request->resident_bound = 0u;
-	else
-		SparkModelBatchAdmittedResidency(request,submission);
+	else if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
+		request->resident_bound = 1u;
 }
 
 static uint32_t SparkModelBatchShrinkPrefillSpan(
