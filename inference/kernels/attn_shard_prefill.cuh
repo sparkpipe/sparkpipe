@@ -449,7 +449,7 @@ static inline cudaError_t LmLatentShardSplitLaunch(
 	const uint64_t row_floats = (uint64_t)splits * total_heads * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
 	uint32_t first, count, chunk;
 	cudaError_t error;
-	if (rows == 0u || splits == 0u || total_heads % LM_LATENT_SHARD_QUERIES != 0u)
+	if (rows == 0u || splits == 0u || total_heads == 0u || total_heads % LM_LATENT_SHARD_QUERIES != 0u)
 		return cudaErrorInvalidValue;
 	if (splits == 1u)
 		return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16, query_rank_stride, heads_per_rank, total_heads,
