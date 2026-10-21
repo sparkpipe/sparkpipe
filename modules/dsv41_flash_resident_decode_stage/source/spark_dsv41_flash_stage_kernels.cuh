@@ -323,6 +323,24 @@ static __global__ void D41StoreCompressedKernel(LmKvShardView view, const uint16
 			target[D41K_LATENT + c] = index_key[(uint64_t)row * index_width + c];
 }
 
+static __global__ void D41GatherPlanKernel(uint32_t *__restrict__ plan, uint32_t capacity, const uint32_t *__restrict__ sequence_of_row,
+	const uint32_t *__restrict__ length)
+{
+	const uint32_t sequence = sequence_of_row[0];
+	plan[0] = sequence;
+	plan[capacity + sequence] = 0u;
+	plan[2u * capacity + sequence] = length[sequence];
+}
+
+static __global__ void D41RingPackKernel(const uint16_t *__restrict__ rings, const uint32_t *__restrict__ recurrent_slot, uint64_t slot_stride,
+	uint32_t ring_elements, uint16_t *__restrict__ send)
+{
+	const uint16_t *ring = rings + (uint64_t)blockIdx.x * ring_elements + (uint64_t)recurrent_slot[0] * slot_stride;
+	uint16_t *target = send + (uint64_t)blockIdx.x * ring_elements;
+	for ( uint32_t element = threadIdx.x; element < ring_elements; element += blockDim.x )
+		target[element] = ring[element];
+}
+
 static __global__ void D41InitRecordsKernel(float *__restrict__ records, uint64_t destination_stride, uint32_t rows, uint32_t heads_per_destination,
 	uint32_t destinations)
 {

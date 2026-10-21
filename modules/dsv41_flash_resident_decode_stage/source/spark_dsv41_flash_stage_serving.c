@@ -52,6 +52,8 @@ static uint32_t Dsv41FlashServingCollectiveSequences(uint32_t rows, uint32_t tp_
 	uint64_t capacity = engram > rows ? engram : rows;
 	(void)tp_degree;
 	capacity = split > capacity ? split : capacity;
+	capacity = SPARK_DSV41_FLASH_STAGE_LANDING_ROWS(SPARK_DSV41_FLASH_STAGE_MAX_POSITIONS) > capacity ?
+		SPARK_DSV41_FLASH_STAGE_LANDING_ROWS(SPARK_DSV41_FLASH_STAGE_MAX_POSITIONS) : capacity;
 	return (uint32_t)capacity + 1u;
 }
 
