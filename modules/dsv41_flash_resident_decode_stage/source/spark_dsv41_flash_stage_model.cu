@@ -818,7 +818,7 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK && pair == 0u )
 	{
-		status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, local_width, state->attn_merged,
+		status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER, rows, local_width, state->attn_merged,
 			state->attn_gathered);
 		if ( status == SPARK_STATUS_OK )
 		{
