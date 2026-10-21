@@ -56,6 +56,16 @@ class Swapper:
         for spec in config["models"]:
             require(spec, ("id", "kv_label", "node_memory_bytes", "node_reclaim", "node_start", "node_ready", "node_stop", "api_start", "api_stop", "health"), f"model {spec.get('id')!r}")
             self.models[spec["id"]] = spec
+        self.sets = []
+        for members in config.get("resident_sets", []):
+            unknown = [model_id for model_id in members if model_id not in self.models]
+            if unknown:
+                raise SystemExit(f"model_swap: resident set {members} names unconfigured models {unknown}")
+            labels = [self.models[model_id]["kv_label"] for model_id in members]
+            if len(set(members)) != len(members) or len(set(labels)) != len(labels):
+                raise SystemExit(f"model_swap: resident set {members} repeats a model or a KV label; members must own distinct lanes and pools")
+            self.sets.append(list(members))
+        self.resident = []
         self.active = None
         self.wanted = None
         self.state = "idle"
@@ -74,10 +84,11 @@ class Swapper:
 
     def status(self):
         now = time.time()
-        return {"active": self.active, "state": self.state, "target": self.target, "wanted": self.wanted, "phase": self.phase,
+        return {"active": self.active, "resident": list(self.resident), "state": self.state, "target": self.target, "wanted": self.wanted, "phase": self.phase,
                 "swap_elapsed_s": round(now - self.swap_started, 1) if self.state == "swapping" and self.swap_started else None,
                 "phase_elapsed_s": round(now - self.phase_started, 1) if self.state == "swapping" and self.phase_started else None,
-                "error": self.error, "memory": self.memory, "models": [{"id": model_id, "active": model_id == self.active} for model_id in self.models],
+                "error": self.error, "memory": self.memory,
+                "models": [{"id": model_id, "active": model_id == self.active, "resident": model_id in self.resident} for model_id in self.models],
                 "draining": self.draining, "force_requested": self.force_requested, "history": self.history[-10:]}
 
     def enter(self, phase):
@@ -123,12 +134,12 @@ class Swapper:
                 raise SwapError(f"memory probe on {self.nodes[rank]} printed {text[-80:]!r}, not a byte count")
         return values
 
-    async def admit(self, model):
+    async def admit(self, model, keep):
         before = await self.available()
         need = int(model["node_memory_bytes"]) + self.memory_margin
         if any(value < need for value in before):
             for other in self.models.values():
-                if other["id"] != model["id"]:
+                if other["id"] != model["id"] and other["id"] not in keep:
                     self.check(await self.fan(other["node_reclaim"], 120, {}), f"{other['id']} cold arena release")
             before = await self.available()
         if any(value < need for value in before):
@@ -140,7 +151,8 @@ class Swapper:
             before = await self.available()
         short = [f"{self.nodes[rank]} {value / 2**30:.1f}" for rank, value in enumerate(before) if value < need]
         if short:
-            raise SwapError(f"{model['id']} needs {need / 2**30:.1f} GiB available per node "
+            beside = f" beside resident {', '.join(keep)}" if keep else ""
+            raise SwapError(f"{model['id']} needs {need / 2**30:.1f} GiB available per node{beside} "
                             f"({int(model['node_memory_bytes']) / 2**30:.1f} GiB projected + {self.memory_margin / 2**30:.1f} GiB margin); "
                             f"short on {len(short)} node(s), GiB available: {', '.join(short)}")
         return before
@@ -195,6 +207,43 @@ class Swapper:
         finally:
             self.draining = None
 
+    async def quiet(self, model, target):
+        started = time.time()
+        deadline = started + self.drain_seconds
+        quiet_since = None
+        try:
+            while True:
+                if self.force_requested:
+                    self.forced = True
+                    print(json.dumps({"event": "swap_forced", "model": model["id"], "target": target, "waited_s": round(time.time() - started, 1)}),
+                          file=sys.stderr, flush=True)
+                    return
+                status, payload = await self.health(model)
+                if status != 200:
+                    raise SwapError(f"resident {model['id']} stopped answering while {target} was waiting to load beside it")
+                live = payload.get("live_requests") or 0
+                if live:
+                    quiet_since = None
+                else:
+                    quiet_since = quiet_since or time.time()
+                    if time.time() - quiet_since >= self.drain_quiet_seconds:
+                        return
+                if time.time() > deadline:
+                    raise SwapError(f"resident {model['id']} kept serving for {self.drain_seconds:g} s; {target} loads only while every resident is idle")
+                self.draining = {"model": model["id"], "live_requests": live, "waited_s": round(time.time() - started, 1),
+                                 "quiet_s": round(time.time() - quiet_since, 1) if quiet_since else 0.0,
+                                 "quiet_needed_s": self.drain_quiet_seconds, "limit_s": self.drain_seconds, "resident": True}
+                await asyncio.sleep(1)
+        finally:
+            self.draining = None
+
+    async def busy(self, keep):
+        for model_id in keep:
+            status, payload = await self.health(self.models[model_id])
+            if status == 200 and payload.get("live_requests"):
+                return True
+        return False
+
     async def stop(self, model):
         await self.drain(model)
         code, text = await self.local(model["api_stop"], 60)
@@ -236,6 +285,15 @@ class Swapper:
                 raise SwapError(f"{model['id']} api did not connect all {len(self.nodes)} ranks within {self.api_seconds:g} s")
             await asyncio.sleep(1)
 
+    async def keepers(self, target):
+        best = []
+        for members in self.sets:
+            if target in members:
+                kept = [model_id for model_id in self.resident if model_id != target and model_id in members]
+                if len(kept) > len(best):
+                    best = kept
+        return [model_id for model_id in best if await self.ready(self.models[model_id])]
+
     async def swap(self, target):
         model = self.models[target]
         self.state = "swapping"
@@ -244,26 +302,47 @@ class Swapper:
         self.swap_started = time.time()
         previous = self.active
         measured = None
+        keep = []
         try:
             if await self.ready(model):
                 self.active = target
+                if target not in self.resident:
+                    self.resident.append(target)
             else:
+                keep = await self.keepers(target)
                 self.active = None
-                others = [other for other in self.models.values() if other["id"] != target]
+                self.resident = list(keep)
+                others = [other for other in self.models.values() if other["id"] != target and other["id"] not in keep]
                 for other in others:
                     self.enter(f"stopping {other['id']}")
                     await self.stop(other)
                 self.enter(f"clearing {target}")
                 await self.stop(model)
+                held = {self.models[model_id]["kv_label"] for model_id in keep}
                 for label in dict.fromkeys(other["kv_label"] for other in others):
-                    self.enter(f"releasing KV pool {label}")
-                    await self.release(label)
-                self.enter("checking memory")
-                before = await self.admit(model)
-                await self.start(model)
+                    if label not in held:
+                        self.enter(f"releasing KV pool {label}")
+                        await self.release(label)
+                for attempt in (1, 2):
+                    for model_id in keep:
+                        self.enter(f"waiting for resident {model_id} to finish its requests")
+                        await self.quiet(self.models[model_id], target)
+                    self.enter("checking memory")
+                    before = await self.admit(model, keep)
+                    try:
+                        await self.start(model)
+                        break
+                    except SwapError as error:
+                        if attempt == 2 or not keep or not await self.busy(keep):
+                            raise
+                        print(json.dumps({"event": "swap_retry_beside_busy_resident", "target": target, "kept": keep, "error": str(error)}),
+                              file=sys.stderr, flush=True)
+                        self.enter(f"clearing {target} after a load beside a serving resident")
+                        await self.stop(model)
                 self.measure(model, before, await self.available())
                 measured = self.memory
                 self.active = target
+                self.resident.append(target)
             self.state = "idle"
         except SwapError as error:
             self.state = "failed"
@@ -272,8 +351,10 @@ class Swapper:
             self.state = "failed"
             self.error = f"unexpected {type(error).__name__} during {self.phase}: {error}"
             print(json.dumps({"event": "swap_exception", "target": target, "phase": self.phase, "error": self.error}), file=sys.stderr, flush=True)
+        if self.state == "failed" and self.active is None and self.resident:
+            self.active = previous if previous in self.resident else self.resident[0]
         elapsed = round(time.time() - self.swap_started, 1)
-        record = {"from": previous, "to": target, "ok": self.state == "idle", "seconds": elapsed, "error": self.error, "memory": measured,
+        record = {"from": previous, "to": target, "kept": keep, "ok": self.state == "idle", "seconds": elapsed, "error": self.error, "memory": measured,
                   "forced": self.forced, "finished": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         self.force_requested = False
         self.forced = False
@@ -323,10 +404,24 @@ class Swapper:
         model_id = body.get("model") if isinstance(body, dict) else None
         if model_id not in self.models:
             return web.json_response({"error": f"model {model_id!r} is not configured; configured: {sorted(self.models)}"}, status=404)
-        if model_id == self.active and self.state != "swapping":
-            if await self.ready(self.models[model_id]):
-                return web.json_response(self.status(), status=200)
-            self.active = None
+        if model_id in self.resident and self.state != "swapping" and self.wanted in (None, model_id):
+            healthy = await self.ready(self.models[model_id])
+            if model_id in self.resident and self.state != "swapping" and self.wanted in (None, model_id):
+                if healthy:
+                    previous = self.active
+                    self.active = model_id
+                    self.wanted = None
+                    self.state = "idle"
+                    self.error = None
+                    record = {"from": previous, "to": model_id, "kept": [other for other in self.resident if other != model_id], "ok": True,
+                              "seconds": 0.0, "error": None, "memory": None, "forced": False, "instant": True,
+                              "finished": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+                    self.history.append(record)
+                    print(json.dumps(dict(record, event="swap_done")), file=sys.stderr, flush=True)
+                    return web.json_response(self.status(), status=200)
+                self.resident.remove(model_id)
+                if model_id == self.active:
+                    self.active = None
         self.wanted = model_id
         if self.task is None or self.task.done():
             self.task = asyncio.ensure_future(self.drive())
@@ -339,9 +434,9 @@ class Swapper:
         self.session = aiohttp.ClientSession()
         for model in self.models.values():
             if await self.ready(model):
-                self.active = model["id"]
-                break
-        print(json.dumps({"event": "model_swap_ready", "active": self.active, "models": sorted(self.models)}), file=sys.stderr, flush=True)
+                self.resident.append(model["id"])
+        self.active = self.resident[0] if self.resident else None
+        print(json.dumps({"event": "model_swap_ready", "active": self.active, "resident": self.resident, "models": sorted(self.models)}), file=sys.stderr, flush=True)
 
     async def cleanup(self, app):
         await self.session.close()

@@ -31,11 +31,17 @@
  "node_seconds": 240,
  "memory_probe": "awk '/MemAvailable/ {print $2 * 1024}' /proc/meminfo",
  "memory_margin_bytes": 6442450944,
+ "resident_sets": [
+  [
+   "glm-5.3",
+   "deepseek-v4.1-flash"
+  ]
+ ],
  "models": [
   {
    "id": "glm-5.3",
    "kv_label": "glm53_full_tp16_stage",
-   "node_memory_bytes": 61203283968,
+   "node_memory_bytes": 63887638528,
    "node_reclaim": "$HOME/stage-lanes/glm53_full/lane6/root/lane.sh reclaim",
    "node_start": "$HOME/stage-lanes/glm53_full/lane6/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/glm53_full/lane6/root/lane.sh ready {run_id}",
@@ -86,7 +92,7 @@
   {
    "id": "deepseek-v4.1-flash",
    "kv_label": "dsv41_flash_stage",
-   "node_memory_bytes": 47244640256,
+   "node_memory_bytes": 41339060224,
    "node_reclaim": "$HOME/stage-lanes/dsv41_flash/lane10/root/lane.sh reclaim",
    "node_start": "$HOME/stage-lanes/dsv41_flash/lane10/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/dsv41_flash/lane10/root/lane.sh ready {run_id}",
