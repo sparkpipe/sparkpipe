@@ -18,7 +18,7 @@ static __device__ __forceinline__ float LmTopkScore(const float *scores, const u
 		return(1.0f / (1.0f + __expf(-value)));
 	if ( SCORE_TRANSFORM == LM_TOPK_SCORE_SQRT_SOFTPLUS )
 	{
-		float softplus = value > 20.0f ? value : __logf(1.0f + __expf(value));
+		float softplus = value > 20.0f ? value : log1pf(expf(value));
 		return(sqrtf(softplus > 0.0f ? softplus : 0.0f));
 	}
 	return(value);

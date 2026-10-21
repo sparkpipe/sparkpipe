@@ -520,23 +520,26 @@ static inline cudaError_t SparkDsv41FlashLaunchRope(cudaStream_t stream, uint16_
 	return(cudaGetLastError());
 }
 
-static __global__ void SparkDsv41FlashFp8QdqKernel(const uint16_t *source_bf16, uint16_t *data_bf16, uint32_t group_count)
+static __device__ __forceinline__ uint16_t SparkDsv41FlashFp8QdqLane(float value)
 {
-	const uint32_t group = blockIdx.x * (blockDim.x / SPARK_DSV41_FLASH_FP8_BLOCK) + threadIdx.x / SPARK_DSV41_FLASH_FP8_BLOCK;
-	const uint32_t element = threadIdx.x % SPARK_DSV41_FLASH_FP8_BLOCK;
 	uint32_t offset;
-	float amax,scale,value;
-	if ( group >= group_count )
-		return;
-	uint16_t *cell = data_bf16 + (uint64_t)group * SPARK_DSV41_FLASH_FP8_BLOCK + element;
-	value = LmBf16ToFloat(source_bf16[(uint64_t)group * SPARK_DSV41_FLASH_FP8_BLOCK + element]);
-	amax = fabsf(value);
+	float amax = fabsf(value),scale;
 	for (offset = SPARK_DSV41_FLASH_FP8_BLOCK / 2u; offset != 0u; offset >>= 1u)
 		amax = fmaxf(amax,__shfl_xor_sync(0xffffffffu,amax,offset));
 	amax = fmaxf(0.0f,amax);
 	scale = SparkDsv41FlashPow2CeilScale(fmaxf(amax,SPARK_DSV41_FLASH_FP8_AMAX_FLOOR),1.0f / LM_E4M3_MAX);
 	value = fminf(fmaxf(value / scale,-LM_E4M3_MAX),LM_E4M3_MAX);
-	*cell = LmFloatToBf16(LmE4m3ToFloat(LmFloatToE4m3(value)) * scale);
+	return(LmFloatToBf16(LmE4m3ToFloat(LmFloatToE4m3(value)) * scale));
+}
+
+static __global__ void SparkDsv41FlashFp8QdqKernel(const uint16_t *source_bf16, uint16_t *data_bf16, uint32_t group_count)
+{
+	const uint32_t group = blockIdx.x * (blockDim.x / SPARK_DSV41_FLASH_FP8_BLOCK) + threadIdx.x / SPARK_DSV41_FLASH_FP8_BLOCK;
+	const uint32_t element = threadIdx.x % SPARK_DSV41_FLASH_FP8_BLOCK;
+	if ( group >= group_count )
+		return;
+	data_bf16[(uint64_t)group * SPARK_DSV41_FLASH_FP8_BLOCK + element] =
+		SparkDsv41FlashFp8QdqLane(LmBf16ToFloat(source_bf16[(uint64_t)group * SPARK_DSV41_FLASH_FP8_BLOCK + element]));
 }
 
 static inline cudaError_t SparkDsv41FlashLaunchFp8QdqCopy(cudaStream_t stream, const uint16_t *source_bf16, uint16_t *data_bf16, uint64_t element_count)
