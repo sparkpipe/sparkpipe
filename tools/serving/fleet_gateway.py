@@ -169,7 +169,7 @@ class Gateway:
                     return web.json_response({"error": f"swap controller answered {response.status}: {swap}"}, status=503)
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
             return web.json_response({"error": f"swap controller unavailable: {error}"}, status=503)
-        keep = ("active", "state", "target", "wanted", "phase", "swap_elapsed_s", "draining", "error", "memory")
+        keep = ("active", "resident", "state", "target", "wanted", "phase", "swap_elapsed_s", "draining", "error", "memory")
         summary = {key: swap.get(key) for key in keep}
         summary["recent_switches"] = (swap.get("history") or [])[-5:]
         return web.json_response(summary)

@@ -45,7 +45,15 @@ def model(name, port, gib=10):
             "api_start": "true", "api_stop": "true", "health": f"http://127.0.0.1:{port}/{name}"}
 
 
-async def scenario(up, targets, sets, extra=()):
+class Request:
+    def __init__(self, body):
+        self.body = body
+
+    async def json(self):
+        return self.body
+
+
+async def scenario(up, targets, sets, extra=(), after=None):
     with tempfile.TemporaryDirectory() as state:
         os.environ["SWAP_TEST_STATE"] = state
         pathlib.Path(state, "fake_ssh.py").write_text(FAKE_SSH)
@@ -83,6 +91,8 @@ async def scenario(up, targets, sets, extra=()):
                              "running": running, "stopped": sorted({command.split()[1] for host, command in log if command.startswith("STOP")}),
                              "dropped": sorted({command.split()[1] for host, command in log if command.startswith("DROP")}),
                              "kept": swapper.history[-1]["kept"]})
+        if after is not None:
+            outcomes[-1]["after"] = await after(swapper)
         await swapper.cleanup(None)
         await runner.cleanup()
         return outcomes
@@ -114,9 +124,17 @@ def main():
     step, = asyncio.run(scenario(["a"], ["b"], []))
     check("without resident sets a swap still stops the running model", step["running"] == ["b"] and step["resident"] == ["b"] and "a" in step["stopped"])
 
-    step, = asyncio.run(scenario(["a", "b"], ["big"], [["a", "b", "big"]], extra=[("big", 60)]))
+    async def switch_to_b(swapper):
+        response = await swapper.activate(Request({"model": "b"}))
+        return {"http": response.status, "active": swapper.active, "state": swapper.state, "error": swapper.error,
+                "instant": swapper.history[-1].get("instant")}
+
+    step, = asyncio.run(scenario(["a", "b"], ["big"], [["a", "b", "big"]], extra=[("big", 60)], after=switch_to_b))
     check("a member that does not fit beside the residents is refused and the residents keep running",
           step["state"] == "failed" and "beside resident a, b" in step["error"] and step["running"] == ["a", "b"] and step["resident"] == ["a", "b"])
+    check("a refused member leaves a resident active", step["active"] == "a")
+    check("activating a resident after a refused load answers at once and clears the failure",
+          step["after"] == {"http": 200, "active": "b", "state": "idle", "error": None, "instant": True})
 
     try:
         model_swap.Swapper({"nodes": NODES, "ssh": ["true"], "drop_kv": "DROP {label}", "memory_probe": "PROBE", "memory_margin_bytes": GIB,

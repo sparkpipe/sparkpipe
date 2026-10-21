@@ -208,16 +208,41 @@ class Swapper:
             self.draining = None
 
     async def quiet(self, model, target):
-        deadline = time.time() + self.drain_seconds
-        while True:
-            status, payload = await self.health(model)
-            if status != 200:
-                raise SwapError(f"resident {model['id']} stopped answering while {target} was waiting to load beside it")
-            if not payload.get("live_requests"):
-                return
-            if time.time() > deadline:
-                raise SwapError(f"resident {model['id']} kept serving for {self.drain_seconds:g} s; {target} loads only while every resident is idle")
-            await asyncio.sleep(1)
+        started = time.time()
+        deadline = started + self.drain_seconds
+        quiet_since = None
+        try:
+            while True:
+                if self.force_requested:
+                    self.forced = True
+                    print(json.dumps({"event": "swap_forced", "model": model["id"], "target": target, "waited_s": round(time.time() - started, 1)}),
+                          file=sys.stderr, flush=True)
+                    return
+                status, payload = await self.health(model)
+                if status != 200:
+                    raise SwapError(f"resident {model['id']} stopped answering while {target} was waiting to load beside it")
+                live = payload.get("live_requests") or 0
+                if live:
+                    quiet_since = None
+                else:
+                    quiet_since = quiet_since or time.time()
+                    if time.time() - quiet_since >= self.drain_quiet_seconds:
+                        return
+                if time.time() > deadline:
+                    raise SwapError(f"resident {model['id']} kept serving for {self.drain_seconds:g} s; {target} loads only while every resident is idle")
+                self.draining = {"model": model["id"], "live_requests": live, "waited_s": round(time.time() - started, 1),
+                                 "quiet_s": round(time.time() - quiet_since, 1) if quiet_since else 0.0,
+                                 "quiet_needed_s": self.drain_quiet_seconds, "limit_s": self.drain_seconds, "resident": True}
+                await asyncio.sleep(1)
+        finally:
+            self.draining = None
+
+    async def busy(self, keep):
+        for model_id in keep:
+            status, payload = await self.health(self.models[model_id])
+            if status == 200 and payload.get("live_requests"):
+                return True
+        return False
 
     async def stop(self, model):
         await self.drain(model)
@@ -298,12 +323,22 @@ class Swapper:
                     if label not in held:
                         self.enter(f"releasing KV pool {label}")
                         await self.release(label)
-                for model_id in keep:
-                    self.enter(f"waiting for resident {model_id} to finish its requests")
-                    await self.quiet(self.models[model_id], target)
-                self.enter("checking memory")
-                before = await self.admit(model, keep)
-                await self.start(model)
+                for attempt in (1, 2):
+                    for model_id in keep:
+                        self.enter(f"waiting for resident {model_id} to finish its requests")
+                        await self.quiet(self.models[model_id], target)
+                    self.enter("checking memory")
+                    before = await self.admit(model, keep)
+                    try:
+                        await self.start(model)
+                        break
+                    except SwapError as error:
+                        if attempt == 2 or not keep or not await self.busy(keep):
+                            raise
+                        print(json.dumps({"event": "swap_retry_beside_busy_resident", "target": target, "kept": keep, "error": str(error)}),
+                              file=sys.stderr, flush=True)
+                        self.enter(f"clearing {target} after a load beside a serving resident")
+                        await self.stop(model)
                 self.measure(model, before, await self.available())
                 measured = self.memory
                 self.active = target
@@ -316,6 +351,8 @@ class Swapper:
             self.state = "failed"
             self.error = f"unexpected {type(error).__name__} during {self.phase}: {error}"
             print(json.dumps({"event": "swap_exception", "target": target, "phase": self.phase, "error": self.error}), file=sys.stderr, flush=True)
+        if self.state == "failed" and self.active is None and self.resident:
+            self.active = previous if previous in self.resident else self.resident[0]
         elapsed = round(time.time() - self.swap_started, 1)
         record = {"from": previous, "to": target, "kept": keep, "ok": self.state == "idle", "seconds": elapsed, "error": self.error, "memory": measured,
                   "forced": self.forced, "finished": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
@@ -368,13 +405,23 @@ class Swapper:
         if model_id not in self.models:
             return web.json_response({"error": f"model {model_id!r} is not configured; configured: {sorted(self.models)}"}, status=404)
         if model_id in self.resident and self.state != "swapping" and self.wanted in (None, model_id):
-            if await self.ready(self.models[model_id]):
-                self.active = model_id
-                self.wanted = None
-                return web.json_response(self.status(), status=200)
-            self.resident.remove(model_id)
-            if model_id == self.active:
-                self.active = None
+            healthy = await self.ready(self.models[model_id])
+            if model_id in self.resident and self.state != "swapping" and self.wanted in (None, model_id):
+                if healthy:
+                    previous = self.active
+                    self.active = model_id
+                    self.wanted = None
+                    self.state = "idle"
+                    self.error = None
+                    record = {"from": previous, "to": model_id, "kept": [other for other in self.resident if other != model_id], "ok": True,
+                              "seconds": 0.0, "error": None, "memory": None, "forced": False, "instant": True,
+                              "finished": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+                    self.history.append(record)
+                    print(json.dumps(dict(record, event="swap_done")), file=sys.stderr, flush=True)
+                    return web.json_response(self.status(), status=200)
+                self.resident.remove(model_id)
+                if model_id == self.active:
+                    self.active = None
         self.wanted = model_id
         if self.task is None or self.task.done():
             self.task = asyncio.ensure_future(self.drive())
