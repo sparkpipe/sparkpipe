@@ -9,7 +9,7 @@ reference only at rounding level:
 - the grouped output projection is a bf16 batched matmul.
 
 draft() replays one captured graph per sampling mode; ingest() replays one graph per row count up to
-INGEST_GRAPH_ROWS and runs eagerly above it. `python3 dspark_fast.py --checkpoint DIR` compares the fast
+INGEST_GRAPH_ROWS, in chunks of that many rows; warm() captures them all. `python3 dspark_fast.py --checkpoint DIR` compares the fast
 rounds with the eager ones on random taps and prints the round times.
 """
 import argparse
@@ -266,9 +266,12 @@ class DsparkFast(DsparkDrafter):
 
     @torch.inference_mode()
     def ingest(self, context, positions, taps):
+        positions = list(positions)
+        for first in range(0, len(positions), INGEST_GRAPH_ROWS):
+            self.ingest_rows(context, positions[first:first + INGEST_GRAPH_ROWS], taps[first:first + INGEST_GRAPH_ROWS])
+
+    def ingest_rows(self, context, positions, taps):
         rows = len(positions)
-        if rows > INGEST_GRAPH_ROWS:
-            return super().ingest(context, positions, taps)
         if rows not in self.ingest_graphs:
             self.ingest_graphs[rows] = self.capture(lambda: self.ingest_body(rows))
         self.ingest_positions[:rows].copy_(torch.as_tensor(positions, dtype=torch.int64), non_blocking=True)
@@ -277,6 +280,18 @@ class DsparkFast(DsparkDrafter):
         slots = self.ingest_positions[:rows] % self.window
         context.keys[:, slots] = self.ingest_keys[:, :rows]
         context.positions[slots] = self.ingest_positions[:rows]
+
+    @torch.inference_mode()
+    def warm(self):
+        context = self.context()
+        width = len(self.tap_names) * self.dim
+        for rows in range(1, INGEST_GRAPH_ROWS + 1):
+            self.ingest(context, list(range(rows)), torch.zeros(rows, width, dtype=torch.bfloat16, device=self.device))
+        rule = (torch.tensor(1, device=self.device), torch.tensor(1.0, device=self.device), torch.tensor(0.0, device=self.device),
+                torch.tensor(0, device=self.device))
+        self.draft(context, 0, self.window, None)
+        self.draft(context, 0, self.window, rule)
+        torch.cuda.synchronize(self.device)
 
     @torch.inference_mode()
     def draft(self, context, token, position, sampling=None):

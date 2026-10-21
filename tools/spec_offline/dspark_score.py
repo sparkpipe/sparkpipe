@@ -8,8 +8,9 @@ target committed at a+1 .. a+5 with SparkPipe's exact-match verify: greedy draft
 the verifier's keyed Gumbel noise for sampled ones. Tokens per round = accepted drafts + 1.
 
 --select names directories of <task>.u32 token files (prompt count, total count, prompt and reply tokens)
-written by the corpus recorders; only the recorded request whose every input token matches a file, the
-one covering most positions per file, is scored, so one recording can hold greedy and sampled corpora.
+written by the corpus recorders; only the recorded request whose every input token inside a file matches
+it, the one covering most positions per file, is scored, so one recording can hold greedy and sampled
+corpora. Verify rows past the committed reply (drafts the target rejected at the end) are dropped.
 --fast scores the CUDA-graph drafter (dspark_fast.DsparkFast) instead of the eager reference; both
 scores on the same recording must agree before the fast drafter serves.
 """
@@ -34,17 +35,19 @@ def selected(streams, directories):
             data = path.read_bytes()
             prompt, total = struct.unpack_from("<II", data)
             tokens = struct.unpack_from(f"<{total}I", data, 8)
-            best = None
+            best, best_inside = None, 0
             for key, item in streams.items():
                 positions = item["positions"]
-                if max(positions) < prompt or any(p >= total or tokens[p] != record[2] for p, record in positions.items()):
+                inside = sum(1 for p in positions if p < total)
+                if not any(prompt <= p < total for p in positions) or any(p < total and tokens[p] != record[2] for p, record in positions.items()):
                     continue
-                if best is None or len(positions) > len(streams[best]["positions"]):
-                    best = key
+                if inside > best_inside:
+                    best, best_inside = key, inside
             if best is None:
                 print(f"DSPARK-SCORE no recorded request matches {path}", flush=True)
                 continue
             chosen[best] = path.stem
+            streams[best]["positions"] = {p: record for p, record in streams[best]["positions"].items() if p < total}
     return chosen
 
 
