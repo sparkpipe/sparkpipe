@@ -1576,6 +1576,13 @@ static SparkStatus D41BindLayers(D41ModelState *state, SparkWeightdLazyPack *laz
 		D41_PAYLOAD(Q_NORM, index, layer->q_norm);
 		D41_PAYLOAD(KV_NORM, index, layer->kv_norm);
 		D41_PAYLOAD(ATTN_SINK, index, layer->sink);
+		if ( D41_ENTRY(ATTN_SINK, index)->columns != D41_HEADS )
+		{
+			fprintf(stderr, "sparkpipe_dsv41_flash: layer %u carries %u attention sinks, not all %u\n", index, D41_ENTRY(ATTN_SINK, index)->columns,
+				D41_HEADS);
+			return SPARK_STATUS_SCHEMA_ERROR;
+		}
+		layer->sink += (uint64_t)state->tp_rank * D41_LOCAL_HEADS;
 		D41_FP8(Q_A, index, layer->q_a);
 		D41_FP8(Q_B, index, layer->q_b);
 		D41_FP8(KV_A, index, layer->kv_a);

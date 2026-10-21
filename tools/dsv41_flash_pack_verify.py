@@ -144,7 +144,7 @@ def entry_shape(kind: int, tp: int):
     if kind == K_KV_NORM:
         return (1, 512)
     if kind == K_ATTN_SINK:
-        return (1, 64 // tp)
+        return (1, 64)
     if kind == K_O_A:
         return (8192 // tp, 4096)
     if kind == K_O_B:
@@ -226,7 +226,7 @@ def source_ref(kind: int, layer: int, plane: int):
     if kind == K_KV_NORM:
         return (a + "kv_norm.weight", "repl")
     if kind == K_ATTN_SINK:
-        return (a + "attn_sink", "cols")
+        return (a + "attn_sink", "repl")
     if kind == K_O_A:
         return (a + "wo_a." + suffix, "rows")
     if kind == K_O_B:

@@ -132,7 +132,7 @@ def entry_shape(kind: int, tp: int):
     if kind == K_KV_NORM:
         return (1, 512, 1)
     if kind == K_ATTN_SINK:
-        return (1, 64 // tp, 1)
+        return (1, 64, 1)
     if kind == K_O_A:
         return (8192 // tp, 4096, 1)
     if kind == K_O_B:
@@ -207,7 +207,7 @@ def checkpoint_spec(kind: int, layer: int):
     if kind == K_KV_NORM:
         return (a + "kv_norm.weight", None, "BF16", [512], None, "repl")
     if kind == K_ATTN_SINK:
-        return (a + "attn_sink", None, "F32", [64], None, "sink")
+        return (a + "attn_sink", None, "F32", [64], None, "repl")
     if kind == K_O_A:
         shape = [8192, 4096]
         return (a + "wo_a.weight", a + "wo_a.scale", "F8_E4M3", shape,
