@@ -188,7 +188,7 @@ typedef struct D41ModelState
 	uint64_t landing_stride;
 	uint8_t *landing;
 	uint16_t *ring_send, *ring_landing;
-	uint32_t *gather_plan;
+	uint32_t *gather_plan, *split_selected, *split_offsets;
 	float *local_scores, *topk_values;
 	uint32_t *local_selected, *selected, *topk_positions;
 	uint64_t topk_entries;
@@ -678,6 +678,9 @@ static SparkStatus D41LocalPartials(D41ModelState *state, uint32_t index, const 
 {
 	const uint32_t rows = step->rows, cache = D41CacheIndex(index);
 	const uint64_t stride = D41DestinationStride(rows, D41_LOCAL_HEADS);
+	if ( LmLatentShardSplitLaunch(state->latent_views[cache].shard, state->selected, D41_INDEX_TOPK, bound, state->split_selected, state->split_offsets,
+			rows, stream) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	for ( uint32_t source = 0u; source < D41_TP; ++source )
 	{
 		LmKvShardGatherView view;
@@ -689,7 +692,7 @@ static SparkStatus D41LocalPartials(D41ModelState *state, uint32_t index, const 
 			LmLatentShardPartialHeadsLaunch<D41Ratio2Kv,LmKvShardGatherView,D41_HEAD_DIM,0u>(view, state->q_local,
 				(uint64_t)rows * D41_LOCAL_HEADS * D41_HEAD_DIM, D41_LOCAL_HEADS, D41_LOCAL_HEADS, step->sequence_of_row, length, bound, state->selected,
 				D41_INDEX_TOPK, D41_INDEX_TOPK, 1.0f / sqrtf((float)D41_HEAD_DIM), state->records_received + (uint64_t)source * stride, stride,
-				D41_LOCAL_HEADS, 1u, rows, stream) != cudaSuccess )
+				D41_LOCAL_HEADS, 1u, rows, stream, state->split_selected, state->split_offsets, 1u) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 	return D41Launched();
@@ -1290,6 +1293,7 @@ static SparkStatus D41PlanArena(D41ModelState *state, uint64_t *bytes, uint8_t *
 		{ (void **)&state->ring_send, (uint64_t)D41_RING_LANDING_ROWS * D41_HIDDEN * 2u },
 		{ (void **)&state->ring_landing, (uint64_t)D41_TP * D41_RING_LANDING_ROWS * D41_HIDDEN * 2u },
 		{ (void **)&state->gather_plan, (3u * s + 1u) * 4u },
+		{ (void **)&state->split_selected, r * D41_INDEX_TOPK * 4u }, { (void **)&state->split_offsets, r * (D41_TP + 1u) * 4u },
 		{ (void **)&state->attn_merged, r * D41_LOCAL_HEADS * D41_HEAD_DIM * 2u },
 		{ (void **)&state->attn_gathered, D41_TP * r * D41_LOCAL_HEADS * D41_HEAD_DIM * 2u },
 		{ (void **)&state->group_input, r * 2u * D41_LOCAL_HEADS * D41_HEAD_DIM * 2u },
