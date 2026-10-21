@@ -428,6 +428,55 @@ static inline uint64_t LmLatentShardDecodeSplitFloats(uint32_t rows, uint32_t to
 }
 
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
+static inline cudaError_t LmLatentShardSplitLaunch(
+	Pages cache,
+	const uint16_t *query_bf16,
+	uint64_t query_rank_stride,
+	uint32_t heads_per_rank,
+	const uint32_t *sequence_of_row,
+	const uint32_t *context_length,
+	const uint32_t *row_position,
+	float qk_scale,
+	float *split_partials,
+	uint64_t split_capacity_floats,
+	float *partials,
+	uint64_t partial_rank_stride,
+	uint32_t rows,
+	uint32_t splits,
+	cudaStream_t stream)
+{
+	const uint32_t total_heads = heads_per_rank * cache.shard.degree;
+	const uint64_t row_floats = (uint64_t)splits * total_heads * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
+	uint32_t first, count, chunk;
+	cudaError_t error;
+	if (rows == 0u || splits == 0u || total_heads % LM_LATENT_SHARD_QUERIES != 0u)
+		return cudaErrorInvalidValue;
+	if (splits == 1u)
+		return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16, query_rank_stride, heads_per_rank, total_heads,
+			sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows, 1u, 0u, stream);
+	if (split_partials == 0 || split_capacity_floats < row_floats)
+		return cudaErrorInvalidValue;
+	chunk = split_capacity_floats / row_floats < rows ? (uint32_t)(split_capacity_floats / row_floats) : rows;
+	for (first = 0u; first < rows; first += count)
+	{
+		count = rows - first < chunk ? rows - first : chunk;
+		const uint64_t split_rank_stride = (uint64_t)count * heads_per_rank * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
+		const uint64_t split_stride = (uint64_t)cache.shard.degree * split_rank_stride;
+		const uint64_t records = (uint64_t)first * heads_per_rank;
+		error = LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16 + records * (LATENT + ROPE), query_rank_stride, heads_per_rank, total_heads,
+			sequence_of_row + first, context_length, row_position + first, qk_scale, split_partials, split_rank_stride, count, splits, split_stride, stream);
+		if (error != cudaSuccess)
+			return error;
+		LmLatentShardSplitMergeKernel<LATENT><<<dim3(count, total_heads), LM_LATENT_SHARD_THREADS, 0, stream>>>(split_partials, split_rank_stride, split_stride, splits,
+			partials + records * LM_LATENT_SHARD_RECORD_FLOATS(LATENT), partial_rank_stride, heads_per_rank);
+		error = cudaPeekAtLastError();
+		if (error != cudaSuccess)
+			return error;
+	}
+	return cudaSuccess;
+}
+
+template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
 static inline cudaError_t LmLatentShardDecodeLaunch(
 	Pages cache,
 	const uint16_t *query_bf16,
@@ -445,22 +494,12 @@ static inline cudaError_t LmLatentShardDecodeLaunch(
 	cudaStream_t stream)
 {
 	const uint32_t total_heads = heads_per_rank * cache.shard.degree, splits = rows != 0u ? LmLatentShardDecodeSplits(rows) : 1u;
-	const uint64_t split_rank_stride = (uint64_t)rows * heads_per_rank * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
-	const uint64_t split_stride = (uint64_t)cache.shard.degree * split_rank_stride;
-	cudaError_t error;
 	if (rows == 0u || rows >= LM_LATENT_SHARD_PREFILL_MIN_ROWS || total_heads % LM_LATENT_SHARD_QUERIES != 0u)
 		return cudaErrorInvalidValue;
-	if (splits == 1u)
-		return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16, query_rank_stride, heads_per_rank, total_heads,
-			sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows, 1u, 0u, stream);
-	if (split_partials == 0 || split_capacity_floats < (uint64_t)splits * split_stride)
+	if (splits > 1u && (split_partials == 0 || split_capacity_floats < LmLatentShardDecodeSplitFloats(rows, total_heads, LATENT)))
 		return cudaErrorInvalidValue;
-	error = LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16, query_rank_stride, heads_per_rank, total_heads,
-		sequence_of_row, context_length, row_position, qk_scale, split_partials, split_rank_stride, rows, splits, split_stride, stream);
-	if (error != cudaSuccess)
-		return error;
-	LmLatentShardSplitMergeKernel<LATENT><<<dim3(rows, total_heads), LM_LATENT_SHARD_THREADS, 0, stream>>>(split_partials, split_rank_stride, split_stride, splits, partials, partial_rank_stride, heads_per_rank);
-	return cudaPeekAtLastError();
+	return LmLatentShardSplitLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length,
+		row_position, qk_scale, split_partials, split_capacity_floats, partials, partial_rank_stride, rows, splits, stream);
 }
 
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>

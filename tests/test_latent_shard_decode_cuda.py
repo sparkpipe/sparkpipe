@@ -1,4 +1,6 @@
-"""Run the split tensor-core latent decode attention on an sm_121 device against the scalar partial kernel."""
+"""Run the split tensor-core latent decode attention on an sm_121 device against the scalar partial kernel,
+and check that a frame of any row count launched with the one-row split count holds, bit for bit, the
+record one-row decode computes for each of its rows (row-chunked when the split buffer is short)."""
 import os
 import pathlib
 import shutil

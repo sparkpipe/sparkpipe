@@ -200,8 +200,112 @@ static void DecodeCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 	cudaFree(tiled_device); cudaFree(oracle_device); cudaFree(error_device);
 }
 
+static void RowInvariantCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t heads_per_rank,uint32_t capacity_rows)
+{
+	const uint32_t pages = (context + DECODE_PAGE - 1u) / DECODE_PAGE,splits = LmLatentShardDecodeSplits(1u),total_heads = heads_per_rank * degree;
+	const uint64_t query_stride = (uint64_t)rows * heads_per_rank * DECODE_WIDTH,rank_stride = (uint64_t)rows * heads_per_rank * DECODE_RECORD;
+	const uint64_t single_stride = (uint64_t)heads_per_rank * DECODE_RECORD,capacity = (uint64_t)capacity_rows * splits * total_heads * DECODE_RECORD;
+	const uint64_t frame_floats = (uint64_t)degree * degree * rank_stride,single_floats = (uint64_t)degree * rows * degree * single_stride;
+	const uint64_t previous_floats = rows < LM_LATENT_SHARD_PREFILL_MIN_ROWS ? LmLatentShardDecodeSplitFloats(rows,total_heads,DECODE_LATENT) : 0u;
+	const float scale = 1.0f / sqrtf((float)DECODE_WIDTH);
+	std::vector<uint32_t> table(pages),positions(rows),sequences(rows,0u),contexts(1,context),token_sequence(context,0u),token_position(context);
+	std::vector<float> frame(frame_floats),single(single_floats),previous(frame_floats);
+	std::vector<uint8_t *> pools(degree);
+	uint32_t *table_device,*positions_device,*sequences_device,*contexts_device,*token_sequence_device,*token_position_device;
+	uint16_t *values_device,*query_device;
+	float *split_device,*frame_device,*single_device,*previous_device;
+	LmKvAccessError *error_device,error_host;
+	uint32_t page,row,rank,head,index,mismatched = 0u,sensitive = 0u;
+	char label[160];
+
+	snprintf(label,sizeof(label),"row-invariant rows%u ctx%u degree%u heads%u chunk%u",rows,context,degree,heads_per_rank,capacity_rows);
+	for (page=0u; page<pages; page++)
+		table[page] = (page * 7u + 3u) % pages;
+	for (row=0u; row<rows; row++)
+		positions[row] = context - rows + row;
+	for (index=0u; index<context; index++)
+		token_position[index] = index;
+	table_device = DecodeDevice(table);
+	positions_device = DecodeDevice(positions);
+	sequences_device = DecodeDevice(sequences);
+	contexts_device = DecodeDevice(contexts);
+	token_sequence_device = DecodeDevice(token_sequence);
+	token_position_device = DecodeDevice(token_position);
+	DECODE_CUDA(cudaMalloc((void **)&values_device,(uint64_t)context * DECODE_WIDTH * 2u));
+	DECODE_CUDA(cudaMalloc((void **)&query_device,(uint64_t)degree * query_stride * 2u));
+	DECODE_CUDA(cudaMalloc((void **)&split_device,(capacity > previous_floats ? capacity : previous_floats) * sizeof(float)));
+	DECODE_CUDA(cudaMalloc((void **)&frame_device,frame_floats * sizeof(float)));
+	DECODE_CUDA(cudaMalloc((void **)&single_device,single_floats * sizeof(float)));
+	DECODE_CUDA(cudaMalloc((void **)&previous_device,frame_floats * sizeof(float)));
+	DECODE_CUDA(cudaMalloc((void **)&error_device,sizeof(LmKvAccessError)));
+	DECODE_CUDA(cudaMemset(frame_device,0x7f,frame_floats * sizeof(float)));
+	DECODE_CUDA(cudaMemset(single_device,0x3f,single_floats * sizeof(float)));
+	LmKvAccessErrorReset(&error_host);
+	DECODE_CUDA(cudaMemcpy(error_device,&error_host,sizeof(error_host),cudaMemcpyHostToDevice));
+	DecodeFillKernel<<<512,256>>>(values_device,(uint64_t)context * DECODE_WIDTH,7u);
+	DecodeFillKernel<<<256,256>>>(query_device,(uint64_t)degree * query_stride,3ull << 60u);
+	DECODE_CUDA(cudaGetLastError());
+	for (rank=0u; rank<degree; rank++)
+	{
+		SparkKvShard shard = {degree,rank,1u};
+		LmKvShardView local;
+		uint64_t bytes = SparkKvShardPoolBytes(shard,DECODE_PAGE,DecodeKv::kSlotBytes,pages);
+		DECODE_CUDA(cudaMalloc((void **)&pools[rank],bytes));
+		DECODE_CUDA(cudaMemset(pools[rank],0,bytes));
+		DecodeCheck(LmKvShardViewInitialize<DecodeKv>(&local,pools[rank],table_device,pages,1u,pages,error_device,shard) == 0,"shard view",label);
+		LmKvShardStoreKernel<DecodeKv,256u><<<context,256>>>(local,values_device,token_sequence_device,token_position_device,context,DECODE_WIDTH);
+		DECODE_CUDA(cudaGetLastError());
+		DecodeCheck(LmLatentShardSplitLaunch<DecodeKv,LmKvShardView,DECODE_LATENT,DECODE_ROPE>(local,query_device,query_stride,heads_per_rank,sequences_device,
+			contexts_device,positions_device,scale,split_device,capacity,frame_device + (uint64_t)rank * degree * rank_stride,rank_stride,rows,splits,0) == cudaSuccess,
+			"frame launch with the one-row split count",label);
+		DECODE_CUDA(cudaDeviceSynchronize());
+		for (row=0u; row<rows; row++)
+		{
+			DecodeCheck(LmLatentShardDecodeLaunch<DecodeKv,LmKvShardView,DECODE_LATENT,DECODE_ROPE>(local,query_device + (uint64_t)row * heads_per_rank * DECODE_WIDTH,query_stride,
+				heads_per_rank,sequences_device + row,contexts_device,positions_device + row,scale,split_device,capacity,
+				single_device + ((uint64_t)rank * rows + row) * degree * single_stride,single_stride,1u,0) == cudaSuccess,"one-row decode launch",label);
+			DECODE_CUDA(cudaDeviceSynchronize());
+		}
+		DecodeCheck((rows < LM_LATENT_SHARD_PREFILL_MIN_ROWS
+			? LmLatentShardDecodeLaunch<DecodeKv,LmKvShardView,DECODE_LATENT,DECODE_ROPE>(local,query_device,query_stride,heads_per_rank,sequences_device,
+				contexts_device,positions_device,scale,split_device,previous_floats,previous_device + (uint64_t)rank * degree * rank_stride,rank_stride,rows,0)
+			: LmLatentShardPrefillLaunch<DecodeKv,LmKvShardView,DECODE_LATENT,DECODE_ROPE>(local,query_device,query_stride,heads_per_rank,sequences_device,
+				contexts_device,positions_device,scale,previous_device + (uint64_t)rank * degree * rank_stride,rank_stride,rows,0)) == cudaSuccess,
+			"frame launch with the row-count split",label);
+		DECODE_CUDA(cudaDeviceSynchronize());
+	}
+	DECODE_CUDA(cudaMemcpy(&error_host,error_device,sizeof(error_host),cudaMemcpyDeviceToHost));
+	DecodeCheck(error_host.error_code == LM_FRAME_ERROR_NONE,"no KV access error",label);
+	DECODE_CUDA(cudaMemcpy(frame.data(),frame_device,frame_floats * sizeof(float),cudaMemcpyDeviceToHost));
+	DECODE_CUDA(cudaMemcpy(single.data(),single_device,single_floats * sizeof(float),cudaMemcpyDeviceToHost));
+	DECODE_CUDA(cudaMemcpy(previous.data(),previous_device,frame_floats * sizeof(float),cudaMemcpyDeviceToHost));
+	for (rank=0u; rank<degree; rank++)
+		for (row=0u; row<rows; row++)
+			for (head=0u; head<total_heads; head++)
+			{
+				const uint64_t at = (uint64_t)rank * degree * rank_stride + (uint64_t)(head / heads_per_rank) * rank_stride + ((uint64_t)row * heads_per_rank + head % heads_per_rank) * DECODE_RECORD;
+				const float *b = single.data() + (((uint64_t)rank * rows + row) * degree + head / heads_per_rank) * single_stride + (uint64_t)(head % heads_per_rank) * DECODE_RECORD;
+				mismatched += memcmp(frame.data() + at,b,DECODE_RECORD * sizeof(float)) != 0 ? 1u : 0u;
+				sensitive += memcmp(previous.data() + at,b,DECODE_RECORD * sizeof(float)) != 0 ? 1u : 0u;
+			}
+	DecodeCheck(mismatched == 0u,"every row of the frame holds, bit for bit, the record a one-row decode step computes for that row",label);
+	DecodeCheck(sensitive != 0u,"the context spans enough key tiles that the row-count split changes the records",label);
+	printf("%s %s: %u of %u records differ from one-row decode (%u with the row-count split)\n",mismatched == 0u && sensitive != 0u ? "ok  " : "FAIL",label,
+		mismatched,degree * rows * total_heads,sensitive);
+	for (rank=0u; rank<degree; rank++)
+		cudaFree(pools[rank]);
+	cudaFree(table_device); cudaFree(positions_device); cudaFree(sequences_device); cudaFree(contexts_device);
+	cudaFree(token_sequence_device); cudaFree(token_position_device); cudaFree(values_device); cudaFree(query_device);
+	cudaFree(split_device); cudaFree(frame_device); cudaFree(single_device); cudaFree(previous_device); cudaFree(error_device);
+}
+
 int main(void)
 {
+	RowInvariantCase(5u,20000u,16u,6u,5u);
+	RowInvariantCase(17u,1500u,16u,6u,17u);
+	RowInvariantCase(17u,30000u,16u,6u,17u);
+	RowInvariantCase(40u,65536u,16u,6u,7u);
+	RowInvariantCase(233u,12000u,16u,6u,64u);
 	DecodeCase(1u,40u,16u,6u);
 	DecodeCase(1u,3000u,16u,6u);
 	DecodeCase(1u,65536u,16u,6u);
