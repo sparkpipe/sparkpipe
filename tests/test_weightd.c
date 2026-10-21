@@ -1299,8 +1299,11 @@ static SparkStatus SparkTestKvSharedAttach(SparkWeightdClient *client,uint8_t ke
 static SparkStatus SparkTestUnderFdCeiling(SparkStatus (*attach)(SparkWeightdClient *,void *),SparkWeightdClient *client,void *context)
 {
     struct rlimit saved,ceiling;
+    SparkWeightdKvPoolState settled;
     SparkStatus status;
-    int lowest = dup(0);
+    int lowest;
+    assert(SparkWeightdClientKvPoolStatus(client,0u,&settled,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_NOT_FOUND);
+    lowest = dup(0);
     assert(lowest >= 0 && close(lowest) == 0 && getrlimit(RLIMIT_NOFILE,&saved) == 0);
     ceiling = saved;
     ceiling.rlim_cur = (rlim_t)lowest;
