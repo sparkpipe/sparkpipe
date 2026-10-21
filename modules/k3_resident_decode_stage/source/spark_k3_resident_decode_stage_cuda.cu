@@ -826,6 +826,7 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	b->head_candidate_token = in->head_candidate_token;
 	b->output_token = in->output_token;
 	b->output_score = in->output_score;
+	b->row_invariant = commit == 0u ? 1u : 0u;
 	b->shard_gather = 0u;
 	b->shard_gather_expanded = 0u;
 	b->shard_gather_history = 0u;
@@ -838,7 +839,7 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 			rows, sequences, d->attention_rows);
 		return SPARK_K3_DISPATCH_ERR_CAPACITY;
 	}
-	if ( b->kv_shard.degree > 1u && rows > LM_SKINNY_ROWS_WIDE )
+	if ( b->kv_shard.degree > 1u && rows > LM_SKINNY_ROWS_WIDE && commit != 0u )
 	{
 		const int32_t gather = in->gather_context != 0u && sequences == 1u
 			? K3DispatchGatherPlan(d, b, rows, in->gather_sequence, in->gather_context, in->gather_first, stream) : 0;

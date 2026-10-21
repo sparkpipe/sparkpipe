@@ -216,6 +216,7 @@ struct K3LayerBuffers
 	uint32_t shard_gather_value_keys;
 	uint32_t shard_gather_history;
 	uint32_t shard_gather_prefetched;
+	uint32_t row_invariant;
 	const uint32_t *sequence_of_row;
 	const uint32_t *context_length;
 	const uint32_t *positions;
@@ -263,10 +264,10 @@ static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const 
 		"K3Project carries the unquantised projections; experts go weight-only");
 	if (weight_scale != 0)
 		return(LM_LAUNCH_ERR_SHAPE);
-	if ( accumulate == 0 && rows <= LM_SKINNY_ROWS_WIDE )
+	if ( accumulate == 0 && (rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u) )
 	{
 		int32_t status = K3SkinnyRows(weight,source,destination,(float *)0,rows,input_dimension,output_dimension,stream);
-		if ( status != LM_LAUNCH_ERR_SHAPE )
+		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
 			return(status);
 	}
 	if constexpr ( LmStreamWeight<Format>::kSupported )
@@ -666,7 +667,7 @@ static const uint8_t *K3LayerMlaWindowSend(const K3LayerBuffers *b, uint32_t win
 static uint32_t K3LayerMlaGatherReady(const K3LayerBuffers *b, uint32_t rows)
 {
 	const uint64_t key_bytes = (uint64_t)K3_MLA_KV_A_DIM * sizeof(uint16_t);
-	return(K3LayerMlaShardReady(b,rows) != 0u && b->shard_gather != 0u && rows > LM_SKINNY_ROWS_WIDE &&
+	return(K3LayerMlaShardReady(b,rows) != 0u && b->shard_gather != 0u && rows > LM_SKINNY_ROWS_WIDE && b->row_invariant == 0u &&
 		b->shard_gather_list != 0 && b->shard_gather_offset != 0 && b->shard_gather_context != 0 &&
 		b->shard_gather_send != 0 && b->shard_gather_keys != 0 && b->shard_gather_most_keys != 0u &&
 		(b->shard_gather_windows <= 1u
@@ -878,7 +879,7 @@ static int32_t K3LayerMoeRoute(const K3LayerBuffers *b, uint32_t rows,
 	{
 		const uint32_t experts = K3_EXPERTS / (K3_ROUTED_EXPERT_HIDDEN / moe_in);
 		const uint8_t *slice = (const uint8_t *)b->router_weight + (uint64_t)b->tp_rank * experts * K3_HIDDEN * sizeof(uint16_t);
-		if ( rows <= LM_SKINNY_ROWS_WIDE )
+		if ( rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u )
 			return(K3SkinnyRows(slice,b->normed_bf16,(uint16_t *)0,K3_ROUTER_SLICE(b,rows),rows,K3_HIDDEN,experts,stream));
 		status = LmStreamGemmDense<LmBf16Format>(slice,LmScaleTensorNone(),b->normed_bf16,(uint16_t *)0,K3_ROUTER_SLICE(b,rows),rows,K3_HIDDEN,experts,0u,0u,multiprocessors,stream);
 		if ( status != LM_LAUNCH_ERR_SHAPE )
@@ -963,7 +964,7 @@ static int32_t K3LayerMoeCells(const K3LayerBuffers *b, uint32_t rows,
 	if ( phase == 0u )
 		return(K3Project<LmBf16Format>(b,b->normed_bf16,b->routed_down_weight,b->routed_down_scale,
 			b->latent_bf16,rows,K3_HIDDEN,slice,multiprocessors,stream));
-	status = rows > LM_SKINNY_ROWS_WIDE ?
+	status = rows > LM_SKINNY_ROWS_WIDE && b->row_invariant == 0u ?
 		LmCellMmaExperts(b->expert_w1_weight,b->latent_full_bf16,b->gate_up_bf16,
 			b->group_row_offset,b->route_source_token,K3_EXPERTS,packed_rows,0u,
 			K3_ROUTED_EXPERT_HIDDEN,b->expert_w1_output,b->expert_tile_k,stream) :
@@ -974,7 +975,7 @@ static int32_t K3LayerMoeCells(const K3LayerBuffers *b, uint32_t rows,
 		return(status);
 	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), packed_rows, K3_LAYER_THREADS, 0, stream,
 		b->gate_up_bf16,b->intermediate_bf16,channels,K3_SITU_BETA,K3_SITU_LINEAR_BETA);
-	status = rows > LM_SKINNY_ROWS_WIDE ?
+	status = rows > LM_SKINNY_ROWS_WIDE && b->row_invariant == 0u ?
 		LmCellMmaExperts(b->expert_w2_weight,b->intermediate_bf16,b->gate_up_bf16,
 			b->group_row_offset,0,K3_EXPERTS,packed_rows,1u,channels,
 			K3_ROUTED_EXPERT_HIDDEN,b->expert_tile_k,stream) :
