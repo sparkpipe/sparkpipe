@@ -80,7 +80,8 @@ static uint32_t Case(uint32_t rows, uint32_t first_position)
 	std::vector<uint32_t> table(pages), positions(rows), zeros(rows, 0u), ordinal(rows), indices(rows), begin = {0u, rows}, slot = {0u};
 	std::vector<uint32_t> bound(rows), length = {keys}, key_positions(keys), key_sequences(keys, 0u), selected((uint64_t)rows * TOPK), plan = {0u, 0u, keys};
 	std::vector<float> sinks(HEADS);
-	uint32_t mismatched_records = 0u, mismatched_outputs = 0u;
+	uint32_t mismatched_records = 0u, mismatched_outputs = 0u, mismatched_split = 0u;
+	uint32_t *split_selected, *split_offsets;
 	for ( uint32_t page = 0u; page < pages; ++page )
 		table[page] = (page * 5u + 1u) % pages;
 	for ( uint32_t row = 0u; row < rows; ++row )
@@ -102,7 +103,7 @@ static uint32_t Case(uint32_t rows, uint32_t first_position)
 	float *sinks_d = Device(sinks);
 	uint16_t *values, *queries, *gathered, *wave, *rings, *ring_landing, *outputs_scatter, *outputs_local;
 	uint8_t *landing;
-	float *sent, *received_scatter, *received_local;
+	float *sent, *received_scatter, *received_local, *received_split;
 	LmKvAccessError *error_d, error;
 	std::vector<uint8_t *> pools(DEGREE);
 	std::vector<LmKvShardView> views(DEGREE);
@@ -182,6 +183,31 @@ static uint32_t Case(uint32_t rows, uint32_t first_position)
 			outputs_local + (uint64_t)rank * rows * LOCAL * LATENT);
 		CUDA(cudaGetLastError());
 	}
+	{
+		CUDA(cudaMalloc((void **)&split_selected, (uint64_t)rows * TOPK * 4u));
+		CUDA(cudaMalloc((void **)&split_offsets, (uint64_t)rows * (DEGREE + 1u) * 4u));
+		CUDA(cudaMalloc((void **)&received_split, (uint64_t)DEGREE * DEGREE * stride * 4u));
+		REQUIRE(LmLatentShardSplitLaunch(views[0].shard, selected_d, TOPK, bound_d, split_selected, split_offsets, rows, 0) == cudaSuccess);
+		for ( uint32_t rank = 0u; rank < DEGREE; ++rank )
+		{
+			float *received = received_split + (uint64_t)rank * DEGREE * stride;
+			const uint16_t *query = queries + (uint64_t)rank * rows * LOCAL * LATENT;
+			for ( uint32_t source = 0u; source < DEGREE; ++source )
+			{
+				LmKvShardGatherView view;
+				SparkKvShard shard = views[source].shard;
+				REQUIRE(LmKvShardGatherViewInitialize<Kv>(&view, views[source].pages, shard, landing + (uint64_t)source * landing_stride, plan_d + 1u,
+					plan_d + 2u) == 0 && LmKvShardGatherViewWindow(&view, 0u, landing_keys) == 0);
+				REQUIRE((LmLatentShardPartialHeadsLaunch<Kv, LmKvShardGatherView, LATENT, 0u>(view, query, (uint64_t)rows * LOCAL * LATENT, LOCAL, LOCAL,
+					zeros_d, length_d, bound_d, selected_d, TOPK, TOPK, scale, received + (uint64_t)source * stride, stride, LOCAL, 1u, rows, 0,
+					split_selected, split_offsets, 1u)) == cudaSuccess);
+				D41WindowFoldKernel<<<dim3(rows, LOCAL), D41K_THREADS>>>(received + (uint64_t)source * stride, stride, LOCAL, query,
+					(uint64_t)rows * LOCAL * LATENT, wave, ring_landing + (uint64_t)source * RING * LATENT, positions_d, zeros_d, ordinal_d, begin_d, indices_d,
+					slot_d, 0u, RING, WINDOW, DEGREE, source, scale, LOCAL, 1u);
+				CUDA(cudaGetLastError());
+			}
+		}
+	}
 	CUDA(cudaDeviceSynchronize());
 	CUDA(cudaMemcpy(&error, error_d, sizeof(error), cudaMemcpyDeviceToHost));
 	REQUIRE(error.error_code == LM_FRAME_ERROR_NONE);
@@ -192,17 +218,22 @@ static uint32_t Case(uint32_t rows, uint32_t first_position)
 			mismatched_records += memcmp(&a[record * RECORD], &b[record * RECORD], RECORD * sizeof(float)) != 0 ? 1u : 0u;
 		for ( size_t element = 0u; element < c.size(); ++element )
 			mismatched_outputs += c[element] != d[element] ? 1u : 0u;
+		const std::vector<float> e = Host(received_split, (size_t)DEGREE * DEGREE * stride);
+		for ( size_t record = 0u; record < b.size() / RECORD; ++record )
+			mismatched_split += memcmp(&b[record * RECORD], &e[record * RECORD], RECORD * sizeof(float)) != 0 ? 1u : 0u;
 	}
-	printf("%s rows %u positions %u-%u compressed keys %u landing keys %u: %u of %u records and %u of %u outputs differ\n",
-		mismatched_records == 0u && mismatched_outputs == 0u ? "ok  " : "FAIL", rows, first_position, context - 1u, keys, landing_keys, mismatched_records,
-		(uint32_t)((uint64_t)DEGREE * DEGREE * rows * LOCAL), mismatched_outputs, (uint32_t)((uint64_t)DEGREE * rows * LOCAL * LATENT));
+	printf("%s rows %u positions %u-%u compressed keys %u landing keys %u: %u of %u records and %u of %u outputs differ; split lists change %u records\n",
+		mismatched_records == 0u && mismatched_outputs == 0u && mismatched_split == 0u ? "ok  " : "FAIL", rows, first_position, context - 1u, keys, landing_keys,
+		mismatched_records, (uint32_t)((uint64_t)DEGREE * DEGREE * rows * LOCAL), mismatched_outputs, (uint32_t)((uint64_t)DEGREE * rows * LOCAL * LATENT),
+		mismatched_split);
 	for ( uint32_t rank = 0u; rank < DEGREE; ++rank )
 		cudaFree(pools[rank]);
 	cudaFree(table_d); cudaFree(positions_d); cudaFree(zeros_d); cudaFree(ordinal_d); cudaFree(indices_d); cudaFree(begin_d); cudaFree(slot_d);
 	cudaFree(bound_d); cudaFree(length_d); cudaFree(key_positions_d); cudaFree(key_sequences_d); cudaFree(selected_d); cudaFree(plan_d); cudaFree(sinks_d);
 	cudaFree(values); cudaFree(queries); cudaFree(gathered); cudaFree(wave); cudaFree(rings); cudaFree(ring_landing); cudaFree(landing);
 	cudaFree(sent); cudaFree(received_scatter); cudaFree(received_local); cudaFree(outputs_scatter); cudaFree(outputs_local); cudaFree(error_d);
-	return mismatched_records + mismatched_outputs;
+	cudaFree(split_selected); cudaFree(split_offsets); cudaFree(received_split);
+	return mismatched_records + mismatched_outputs + mismatched_split;
 }
 
 int main(void)
@@ -214,6 +245,6 @@ int main(void)
 	failures += Case(256u, 1500u);
 	if ( failures != 0u )
 		return 1;
-	printf("PASS dsv41 landing: attention over landed KV for a rank's own heads equals the all-to-all records and merged output bit for bit\n");
+	printf("PASS dsv41 landing: attention over landed KV for a rank's own heads equals the all-to-all records and merged output bit for bit, with or without split selection lists and one head per block\n");
 	return 0;
 }

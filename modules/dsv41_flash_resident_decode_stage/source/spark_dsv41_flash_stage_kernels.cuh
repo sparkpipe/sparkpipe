@@ -21,6 +21,9 @@
 #define D41K_LATENT 512u
 #define D41K_RECORD (D41K_LATENT + 2u)
 #define D41K_NO_ROW 0xffffffffu
+#define D41K_FOLD_KEYS 8u
+#define D41K_HC_MIX_ROWS 4u
+#define D41K_HC_MIX_ROWS_FROM 32u
 
 static __global__ void D41HcMixPartialKernel(const uint16_t *__restrict__ streams, const float *__restrict__ fn, float *__restrict__ partials,
 	uint32_t width)
@@ -48,6 +51,40 @@ static __global__ void D41HcMixPartialKernel(const uint16_t *__restrict__ stream
 		total += __shfl_down_sync(0xffffffffu, total, offset);
 	if ( lane == 0u )
 		partials[((uint64_t)row * D41K_HC_TASKS + task) * D41K_HC_WARPS + warp] = total;
+}
+
+template<uint32_t ROWS>
+static __global__ void D41HcMixRowsKernel(const uint16_t *__restrict__ streams, const float *__restrict__ fn, float *__restrict__ partials,
+	uint32_t width, uint32_t rows)
+{
+	const uint32_t first_row = blockIdx.x * ROWS, flat = D41K_HC * width, lane = threadIdx.x % 32u, warp = threadIdx.x / 32u;
+	float total[D41K_HC_TASKS][ROWS];
+	for ( uint32_t task = 0u; task < D41K_HC_TASKS; ++task )
+		for ( uint32_t r = 0u; r < ROWS; ++r )
+			total[task][r] = 0.0f;
+	for ( uint32_t element = threadIdx.x; element < flat; element += D41K_THREADS )
+	{
+		float value[ROWS];
+		for ( uint32_t r = 0u; r < ROWS; ++r )
+			value[r] = first_row + r < rows ? LmBf16ToFloat(streams[(uint64_t)(first_row + r) * flat + element]) : 0.0f;
+		for ( uint32_t task = 0u; task < D41K_HC_MIX; ++task )
+		{
+			const float factor = fn[(uint64_t)task * flat + element];
+			for ( uint32_t r = 0u; r < ROWS; ++r )
+				total[task][r] += factor * value[r];
+		}
+		for ( uint32_t r = 0u; r < ROWS; ++r )
+			total[D41K_HC_MIX][r] += value[r] * value[r];
+	}
+	for ( uint32_t task = 0u; task < D41K_HC_TASKS; ++task )
+		for ( uint32_t r = 0u; r < ROWS; ++r )
+		{
+			float sum = total[task][r];
+			for ( uint32_t offset = 16u; offset != 0u; offset >>= 1u )
+				sum += __shfl_down_sync(0xffffffffu, sum, offset);
+			if ( lane == 0u && first_row + r < rows )
+				partials[((uint64_t)(first_row + r) * D41K_HC_TASKS + task) * D41K_HC_WARPS + warp] = sum;
+		}
 }
 
 static __device__ __forceinline__ float D41HcLineSum(float value, uint32_t first, uint32_t stride)
@@ -362,8 +399,9 @@ static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t
 	const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t ring_rows, uint32_t window, uint32_t degree, uint32_t rank,
 	float qk_scale, uint32_t record_heads, uint32_t record_copies)
 {
-	__shared__ float score_shared[D41K_THREADS / 32u];
-	const uint32_t row = blockIdx.x, head = blockIdx.y;
+	__shared__ float warp_sums[D41K_FOLD_KEYS][D41K_THREADS / 32u];
+	__shared__ float key_sums[D41K_FOLD_KEYS];
+	const uint32_t row = blockIdx.x, head = blockIdx.y, lane_index = threadIdx.x % 32u, warp = threadIdx.x / 32u;
 	const uint32_t position = positions[row], lane = row_lane[row];
 	const uint32_t wave_first = position - row_ordinal[row];
 	const uint32_t *lane_rows = sequence_row_indices + sequence_row_begin[lane];
@@ -373,28 +411,54 @@ static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t
 	const uint64_t record_offset = ((uint64_t)row * record_heads + head % record_heads) * D41K_RECORD;
 	float *record = records + (uint64_t)(head / record_heads) * record_copies * destination_stride + record_offset;
 	float running_max = record[0], running_sum = record[1];
-	float accumulator[D41K_LATENT / D41K_THREADS];
+	float accumulator[D41K_LATENT / D41K_THREADS], query_value[D41K_LATENT / D41K_THREADS];
 	for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
-		accumulator[e] = record[2u + threadIdx.x + e * D41K_THREADS];
-	for ( uint32_t key = first; key <= position; ++key )
 	{
-		if ( key % degree != rank )
-			continue;
-		const uint16_t *k = key >= wave_first ? wave_kv + (uint64_t)lane_rows[key - wave_first] * D41K_LATENT :
-			ring + (uint64_t)recurrent_slot[lane] * ring_slot_stride + (uint64_t)((key / degree) % ring_rows) * D41K_LATENT;
-		float partial = 0.0f, value[D41K_LATENT / D41K_THREADS];
-		for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
+		accumulator[e] = record[2u + threadIdx.x + e * D41K_THREADS];
+		query_value[e] = LmBf16ToFloat(q[threadIdx.x + e * D41K_THREADS]);
+	}
+	uint32_t key = first + (rank + degree - first % degree) % degree;
+	while ( key <= position )
+	{
+		float value[D41K_FOLD_KEYS][D41K_LATENT / D41K_THREADS];
+		uint32_t count = 0u;
+		for ( ; count < D41K_FOLD_KEYS && key + count * degree <= position; ++count )
 		{
-			value[e] = LmBf16ToFloat(k[threadIdx.x + e * D41K_THREADS]);
-			partial += LmBf16ToFloat(q[threadIdx.x + e * D41K_THREADS]) * value[e];
+			const uint32_t at = key + count * degree;
+			const uint16_t *k = at >= wave_first ? wave_kv + (uint64_t)lane_rows[at - wave_first] * D41K_LATENT :
+				ring + (uint64_t)recurrent_slot[lane] * ring_slot_stride + (uint64_t)((at / degree) % ring_rows) * D41K_LATENT;
+			float partial = 0.0f;
+			for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
+			{
+				value[count][e] = LmBf16ToFloat(k[threadIdx.x + e * D41K_THREADS]);
+				partial += query_value[e] * value[count][e];
+			}
+			for ( uint32_t offset = 16u; offset != 0u; offset >>= 1u )
+				partial += __shfl_down_sync(0xffffffffu, partial, offset);
+			if ( lane_index == 0u )
+				warp_sums[count][warp] = partial;
 		}
-		const float score = SparkDsv41FlashBlockSum(partial, score_shared) * qk_scale;
-		const float top = fmaxf(running_max, score);
-		const float keep = running_max == -INFINITY ? 0.0f : __expf(running_max - top), add = __expf(score - top);
-		running_sum = running_sum * keep + add;
-		for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
-			accumulator[e] = accumulator[e] * keep + add * value[e];
-		running_max = top;
+		__syncthreads();
+		if ( threadIdx.x < count )
+		{
+			float total = 0.0f;
+			for ( uint32_t w = 0u; w < D41K_THREADS / 32u; ++w )
+				total += warp_sums[threadIdx.x][w];
+			key_sums[threadIdx.x] = total;
+		}
+		__syncthreads();
+		for ( uint32_t j = 0u; j < count; ++j )
+		{
+			const float score = key_sums[j] * qk_scale;
+			const float top = fmaxf(running_max, score);
+			const float keep = running_max == -INFINITY ? 0.0f : __expf(running_max - top), add = __expf(score - top);
+			running_sum = running_sum * keep + add;
+			for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
+				accumulator[e] = accumulator[e] * keep + add * value[j][e];
+			running_max = top;
+		}
+		__syncthreads();
+		key += count * degree;
 	}
 	__syncthreads();
 	for ( uint32_t copy = 0u; copy < record_copies; ++copy )

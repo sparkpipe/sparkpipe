@@ -21,6 +21,7 @@
 #define LM_SKINNY_CHUNK_BYTES 16u
 #define LM_SKINNY_GROUPED_MAX_MEAN_ROWS 16u
 #define LM_SKINNY_GROUPED_NEURONS 4u
+#define LM_SKINNY_ROWS_MIN_TASKS 256u
 
 typedef struct LmSkinnyArguments
 {
@@ -602,16 +603,27 @@ static int32_t LmSkinnyMultiShape(LmSkinnyMultiArguments *multi, cudaStream_t st
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
+static inline uint32_t LmSkinnyRowsNeurons(uint64_t outputs)
+{
+	return(outputs >= 4u * LM_SKINNY_ROWS_MIN_TASKS ? 4u : outputs >= 2u * LM_SKINNY_ROWS_MIN_TASKS ? 2u : 1u);
+}
+
 template<class Format, uint32_t LANES>
 static int32_t LmSkinnyMultiGroup(LmSkinnyMultiArguments *multi, uint32_t rows, uint32_t chunks, cudaStream_t stream)
 {
-	uint32_t per_lane = (chunks + LANES - 1u) / LANES;
+	uint32_t per_lane = (chunks + LANES - 1u) / LANES, part;
+	uint64_t outputs = 0u;
+	for ( part = 0u; part < multi->count; part++ )
+		outputs += multi->part[part].output_dimension;
+	const uint32_t neurons = LmSkinnyRowsNeurons(outputs);
 	if ( rows > LM_SKINNY_ROWS )
 		return(LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS_WIDE,1u>(multi,stream));
 	if ( rows > LM_SKINNY_ROWS_MID )
-		return(LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS,1u>(multi,stream));
+		return(neurons == 4u ? LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS,4u>(multi,stream) :
+			neurons == 2u ? LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS,2u>(multi,stream) : LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS,1u>(multi,stream));
 	if ( rows != 1u )
-		return(LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS_MID,1u>(multi,stream));
+		return(neurons == 4u ? LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS_MID,4u>(multi,stream) :
+			neurons == 2u ? LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS_MID,2u>(multi,stream) : LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS_MID,1u>(multi,stream));
 	if ( per_lane >= 8u )
 		return(LmSkinnyMultiShape<Format,LANES,1u,1u>(multi,stream));
 	if ( per_lane >= 4u )
@@ -625,12 +637,15 @@ template<class Format, uint32_t LANES>
 static int32_t LmSkinnyLaunchGroup(const LmSkinnyArguments *args, uint32_t chunks, cudaStream_t stream)
 {
 	uint32_t per_lane = (chunks + LANES - 1u) / LANES;
+	const uint32_t neurons = args->route_expert == 0 ? LmSkinnyRowsNeurons(args->output_dimension) : 1u;
 	if ( args->rows > LM_SKINNY_ROWS )
 		return(LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS_WIDE,1u>(args,stream));
 	if ( args->rows > LM_SKINNY_ROWS_MID )
-		return(LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS,1u>(args,stream));
+		return(neurons == 4u ? LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS,4u>(args,stream) :
+			neurons == 2u ? LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS,2u>(args,stream) : LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS,1u>(args,stream));
 	if ( args->rows != 1u )
-		return(LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS_MID,1u>(args,stream));
+		return(neurons == 4u ? LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS_MID,4u>(args,stream) :
+			neurons == 2u ? LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS_MID,2u>(args,stream) : LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS_MID,1u>(args,stream));
 	if ( per_lane >= 8u )
 		return(LmSkinnyLaunchShape<Format,LANES,1u,1u>(args,stream));
 	if ( per_lane >= 4u )
@@ -830,6 +845,55 @@ static int32_t LmSkinnyDenseMulti(const LmSkinnyDenseTarget *targets, uint32_t c
 			return(LmSkinnyMultiGroup<Format,16u>(&multi,rows,chunks,stream));
 		return(LmSkinnyMultiGroup<Format,8u>(&multi,rows,chunks,stream));
 	}
+}
+
+template<class Format>
+static int32_t LmSkinnyLaunchRowChunks(const LmSkinnyArguments *args, cudaStream_t stream)
+{
+	const uint32_t stride = args->output_row_stride != 0u ? args->output_row_stride : args->output_dimension;
+	uint32_t first;
+	int32_t status = LM_LAUNCH_ERR_SHAPE;
+	if ( args->route_expert != 0 || args->group_row_offset != 0 || args->rows == 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	for ( first = 0u; first < args->rows; first += LM_SKINNY_ROWS_WIDE )
+	{
+		LmSkinnyArguments chunk = *args;
+		chunk.rows = args->rows - first < LM_SKINNY_ROWS_WIDE ? args->rows - first : LM_SKINNY_ROWS_WIDE;
+		chunk.activation = args->activation + (uint64_t)first * args->input_dimension;
+		chunk.output_row_stride = stride;
+		chunk.output_bf16 = args->output_bf16 != 0 ? args->output_bf16 + (uint64_t)first * stride : 0;
+		chunk.output_f32 = args->output_f32 != 0 ? args->output_f32 + (uint64_t)first * stride : 0;
+		status = LmSkinnyLaunch<Format>(&chunk,stream);
+		if ( status != LM_LAUNCH_OK )
+			return(status);
+	}
+	return(status);
+}
+
+template<class Format>
+static int32_t LmSkinnyDenseMultiRowChunks(const LmSkinnyDenseTarget *targets, uint32_t count, const uint16_t *activation, uint32_t rows, uint32_t input_dimension, cudaStream_t stream)
+{
+	LmSkinnyDenseTarget chunk[LM_SKINNY_MULTI_MAX];
+	uint32_t first, part, stride;
+	int32_t status = LM_LAUNCH_ERR_SHAPE;
+	if ( targets == 0 || count == 0u || count > LM_SKINNY_MULTI_MAX || rows == 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	for ( first = 0u; first < rows; first += LM_SKINNY_ROWS_WIDE )
+	{
+		for ( part = 0u; part < count; part++ )
+		{
+			chunk[part] = targets[part];
+			stride = targets[part].output_row_stride != 0u ? targets[part].output_row_stride : targets[part].output_dimension;
+			chunk[part].output_row_stride = stride;
+			chunk[part].output_bf16 = targets[part].output_bf16 != 0 ? targets[part].output_bf16 + (uint64_t)first * stride : 0;
+			chunk[part].output_f32 = targets[part].output_f32 != 0 ? targets[part].output_f32 + (uint64_t)first * stride : 0;
+		}
+		status = LmSkinnyDenseMulti<Format>(chunk,count,activation + (uint64_t)first * input_dimension,
+			rows - first < LM_SKINNY_ROWS_WIDE ? rows - first : LM_SKINNY_ROWS_WIDE,input_dimension,stream);
+		if ( status != LM_LAUNCH_OK )
+			return(status);
+	}
+	return(status);
 }
 
 #define LM_SKINNY_CELL_NEURONS 16u

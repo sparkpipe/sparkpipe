@@ -94,6 +94,98 @@ static __device__ __forceinline__ uint32_t LmLatentShardCompact(
     return count;
 }
 
+static __global__ __launch_bounds__(LM_LATENT_SHARD_THREADS)
+void LmLatentShardSplitKernel(
+    SparkKvShard shard,
+    const uint32_t *__restrict__ selected_positions,
+    uint32_t selected_count,
+    const uint32_t *__restrict__ row_position,
+    uint32_t *__restrict__ split_positions,
+    uint32_t *__restrict__ split_offsets)
+{
+    __shared__ uint32_t warp_counts[LM_LATENT_SHARD_WARPS][SPARK_KV_SHARD_MAX_DEGREE];
+    __shared__ uint32_t chunk_total[SPARK_KV_SHARD_MAX_DEGREE];
+    __shared__ uint32_t cursor[SPARK_KV_SHARD_MAX_DEGREE];
+    __shared__ uint32_t starts[SPARK_KV_SHARD_MAX_DEGREE + 1u];
+    const uint32_t row = blockIdx.x, warp = threadIdx.x / 32u, lane = threadIdx.x % 32u, below = (1u << lane) - 1u;
+    const uint32_t *selected = selected_positions + (uint64_t)row * selected_count;
+    uint32_t *split = split_positions + (uint64_t)row * selected_count;
+    uint32_t base, index, position, owner, source, mask, rank_in_warp, running, here, w;
+    if (threadIdx.x < shard.degree)
+        cursor[threadIdx.x] = 0u;
+    __syncthreads();
+    for (base = 0u; base < selected_count; base += LM_LATENT_SHARD_THREADS)
+    {
+        index = base + threadIdx.x;
+        position = index < selected_count ? selected[index] : 0xffffffffu;
+        owner = index < selected_count && (row_position == 0 || position <= row_position[row]) ? SparkKvShardOwner(shard, position) : 0xffffffffu;
+        for (source = 0u; source < shard.degree; ++source)
+        {
+            mask = __ballot_sync(0xffffffffu, owner == source);
+            if (lane == 0u && mask != 0u)
+                atomicAdd(&cursor[source], (uint32_t)__popc(mask));
+        }
+    }
+    __syncthreads();
+    if (threadIdx.x == 0u)
+    {
+        starts[0] = 0u;
+        for (source = 0u; source < shard.degree; ++source)
+            starts[source + 1u] = starts[source] + cursor[source];
+    }
+    __syncthreads();
+    if (threadIdx.x <= shard.degree)
+        split_offsets[(uint64_t)row * (shard.degree + 1u) + threadIdx.x] = starts[threadIdx.x];
+    if (threadIdx.x < shard.degree)
+        cursor[threadIdx.x] = 0u;
+    __syncthreads();
+    for (base = 0u; base < selected_count; base += LM_LATENT_SHARD_THREADS)
+    {
+        index = base + threadIdx.x;
+        position = index < selected_count ? selected[index] : 0xffffffffu;
+        owner = index < selected_count && (row_position == 0 || position <= row_position[row]) ? SparkKvShardOwner(shard, position) : 0xffffffffu;
+        rank_in_warp = 0u;
+        for (source = 0u; source < shard.degree; ++source)
+        {
+            mask = __ballot_sync(0xffffffffu, owner == source);
+            if (lane == 0u)
+                warp_counts[warp][source] = (uint32_t)__popc(mask);
+            if (owner == source)
+                rank_in_warp = (uint32_t)__popc(mask & below);
+        }
+        __syncthreads();
+        if (threadIdx.x < shard.degree)
+        {
+            running = 0u;
+            for (w = 0u; w < LM_LATENT_SHARD_WARPS; ++w)
+            {
+                here = warp_counts[w][threadIdx.x];
+                warp_counts[w][threadIdx.x] = running;
+                running += here;
+            }
+            chunk_total[threadIdx.x] = running;
+        }
+        __syncthreads();
+        if (owner != 0xffffffffu)
+            split[starts[owner] + cursor[owner] + warp_counts[warp][owner] + rank_in_warp] = position;
+        __syncthreads();
+        if (threadIdx.x < shard.degree)
+            cursor[threadIdx.x] += chunk_total[threadIdx.x];
+        __syncthreads();
+    }
+}
+
+static inline cudaError_t LmLatentShardSplitLaunch(SparkKvShard shard, const uint32_t *selected_positions, uint32_t selected_count,
+    const uint32_t *row_position, uint32_t *split_positions, uint32_t *split_offsets, uint32_t rows, cudaStream_t stream)
+{
+    if (rows == 0u || selected_positions == 0 || split_positions == 0 || split_offsets == 0 || shard.degree == 0u ||
+        shard.degree > SPARK_KV_SHARD_MAX_DEGREE || shard.grain == 0u || selected_count > LM_LATENT_SHARD_LIST_CAPACITY)
+        return cudaErrorInvalidValue;
+    LM_LAUNCH((LmLatentShardSplitKernel), rows, LM_LATENT_SHARD_THREADS, 0, stream, shard, selected_positions, selected_count, row_position, split_positions,
+        split_offsets);
+    return cudaPeekAtLastError();
+}
+
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE, uint32_t HEADS>
 __global__ __launch_bounds__(LM_LATENT_SHARD_THREADS, 1)
 void LmLatentShardPartialKernel(
@@ -111,7 +203,9 @@ void LmLatentShardPartialKernel(
     float *__restrict__ partials,
     uint64_t partial_rank_stride,
     uint32_t record_heads,
-    uint32_t record_copies)
+    uint32_t record_copies,
+    const uint32_t *__restrict__ split_positions,
+    const uint32_t *__restrict__ split_offsets)
 {
     constexpr uint32_t WIDTH = LATENT + ROPE;
     constexpr uint32_t PER_LANE = WIDTH / 32u;
@@ -145,9 +239,17 @@ void LmLatentShardPartialKernel(
         LmKvReportRequiredAccessFailure(cache.pages, (LmKvAccessErrorCode)LM_FRAME_ERROR_SPARSE_INDEX_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence, selected_count, 0xffffffffu);
         return;
     }
-    count = listed != 0u
-        ? LmLatentShardCompact(cache.shard, selected_positions + (uint64_t)row * selected_count, selected_count, row_position != 0 ? row_position[row] : 0u, row_position != 0 ? 1u : 0u, local_list, scan)
-        : SparkKvShardLocalKeys(cache.shard, dense);
+    const uint32_t *split_list = 0;
+    if (listed != 0u && split_positions != 0)
+    {
+        const uint32_t *offsets = split_offsets + (uint64_t)row * (cache.shard.degree + 1u) + cache.shard.rank;
+        split_list = split_positions + (uint64_t)row * selected_count + offsets[0];
+        count = offsets[1] - offsets[0];
+    }
+    else
+        count = listed != 0u
+            ? LmLatentShardCompact(cache.shard, selected_positions + (uint64_t)row * selected_count, selected_count, row_position != 0 ? row_position[row] : 0u, row_position != 0 ? 1u : 0u, local_list, scan)
+            : SparkKvShardLocalKeys(cache.shard, dense);
     for (head = 0u; head < HEADS; ++head)
     {
         global_head = group * HEADS + head;
@@ -166,7 +268,7 @@ void LmLatentShardPartialKernel(
             slot[unroll] = 0;
             if (index >= count || failed != 0u)
                 continue;
-            position = listed != 0u ? local_list[index] : SparkKvShardLocalPosition(cache.shard, index);
+            position = split_list != 0 ? split_list[index] : listed != 0u ? local_list[index] : SparkKvShardLocalPosition(cache.shard, index);
             slot[unroll] = LmKvShardSlotRequired<Geometry>(cache, sequence, position, row, LM_KV_ACCESS_READ);
             failed = slot[unroll] == 0 ? 1u : 0u;
         }
@@ -362,7 +464,10 @@ static inline cudaError_t LmLatentShardPartialHeadsLaunch(
     uint32_t record_heads,
     uint32_t record_copies,
     uint32_t rows,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    const uint32_t *split_positions = 0,
+    const uint32_t *split_offsets = 0,
+    uint32_t heads_per_block_limit = 4u)
 {
     uint32_t per_block;
     if (rows == 0u || heads_per_rank == 0u || query_bf16 == 0 || partials == 0 ||
@@ -373,12 +478,14 @@ static inline cudaError_t LmLatentShardPartialHeadsLaunch(
         partial_rank_stride < (uint64_t)rows * record_heads * LM_LATENT_SHARD_RECORD_FLOATS(LATENT))
         return cudaErrorInvalidValue;
     per_block = LmLatentShardHeadsPerBlock(heads_per_rank);
+    while (per_block > heads_per_block_limit && per_block > 1u)
+        per_block /= 2u;
     if (per_block == 4u)
-        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 4u>), dim3(rows, total_heads / 4u), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies);
+        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 4u>), dim3(rows, total_heads / 4u), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets);
     else if (per_block == 2u)
-        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 2u>), dim3(rows, total_heads / 2u), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies);
+        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 2u>), dim3(rows, total_heads / 2u), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets);
     else
-        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 1u>), dim3(rows, total_heads), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies);
+        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 1u>), dim3(rows, total_heads), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets);
     return cudaPeekAtLastError();
 }
 
