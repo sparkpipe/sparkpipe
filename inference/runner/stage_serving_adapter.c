@@ -98,6 +98,7 @@ typedef struct SparkStageServingState
 	SparkStageRunnerTapEntry tap_entries[SPARK_STAGE_RUNNER_TAP_MAX_ENTRIES];
 	uint32_t tap_count;
 	uint32_t tap_rank;
+	uint32_t tap_window;
 	char *tap_file;
 	char *tap_stream;
 	uint64_t tap_file_max_bytes;
@@ -271,6 +272,7 @@ static SparkStatus StageServingParseTaps(SparkStageServingState *state, SparkJso
 		return SPARK_STATUS_SCHEMA_ERROR;
 	}
 	state->tap_rank = StageServingJsonU32(doc, taps, "rank", 0u);
+	state->tap_window = StageServingJsonU32(doc, taps, "window", 0u);
 	token = SparkJsonFindObjectMember(doc, taps, "file_max_bytes");
 	if ( file >= 0 && (token < 0 || SparkJsonGetUInt64(doc, token, &state->tap_file_max_bytes) != SPARK_STATUS_OK || state->tap_file_max_bytes == 0u) )
 	{
@@ -540,6 +542,8 @@ static void StageServingTapEmit(SparkStageServingState *state, const SparkModelS
 		uint32_t skip = 0u;
 		while ( chain == 0u && skip < listed && order[runs[s] + skip] < valid )
 			skip++;
+		if ( chain == 0u && state->tap_window != 0u && listed - skip > state->tap_window )
+			skip = listed - state->tap_window;
 		const uint32_t count = listed - skip;
 		const uint32_t begin = runs[s] + skip;
 		const uint32_t first_row = count != 0u ? order[begin] : 0u;
