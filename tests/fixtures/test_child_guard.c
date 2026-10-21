@@ -16,6 +16,7 @@
 static pid_t TestChildGuardOwner;
 static uint32_t TestChildGuardAtexitArmed;
 static volatile sig_atomic_t TestChildGuardCount;
+static volatile int TestChildGuardFirstSignal;
 static pid_t TestChildGuardPids[TEST_CHILD_GUARD_CAPACITY];
 static const int32_t TestChildGuardSignals[] =
 {
@@ -62,21 +63,24 @@ void TestChildGuardKillAll(void)
 	for (index=0u; index<count; index++)
 	{
 		pid = TestChildGuardPids[index];
-		TestChildGuardPids[index] = 0;
 		if ( pid > 0 )
 			TestChildGuardReapOne(pid);
+		TestChildGuardPids[index] = 0;
 	}
 	TestChildGuardCount = 0;
 }
 
 static void TestChildGuardFatalSignal(int signal_number)
 {
-	int saved_errno;
+	int saved_errno,first;
 	saved_errno = errno;
+	first = __sync_val_compare_and_swap(&TestChildGuardFirstSignal,0,signal_number);
+	if ( first == 0 )
+		first = signal_number;
 	TestChildGuardKillAll();
 	errno = saved_errno;
-	(void)signal(signal_number,SIG_DFL);
-	(void)raise(signal_number);
+	(void)signal(first,SIG_DFL);
+	(void)raise(first);
 }
 
 static void TestChildGuardInstallSignals(void)

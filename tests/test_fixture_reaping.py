@@ -302,6 +302,20 @@ class FixtureReapingTest(unittest.TestCase):
         self.assert_no_fixture(test_pid, pattern % test_pid, True)
 
 
+GUARD_THREAD = ROOT / "build/test_child_guard_thread"
+
+
+@unittest.skipUnless(HAVE_PROC and GUARD_THREAD.is_file(), "needs /proc and build/test_child_guard_thread")
+class ChildGuardThreadTest(unittest.TestCase):
+    def test_signal_on_another_thread(self):
+        test = subprocess.run([str(GUARD_THREAD)], capture_output=True, text=True, timeout=EXIT_SECONDS)
+        fixture = int(test.stdout.split()[1])
+        self.assertEqual(test.returncode, -signal.SIGTERM,
+                         "a SIGTERM handled on a helper thread must end the test by SIGTERM, even when the main thread "
+                         "fails on the fixture it kills: returncode=%d stderr=%s" % (test.returncode, test.stderr))
+        self.assertIsNone(stat_of(fixture), "the fixture %d outlived its test" % fixture)
+
+
 def add_cases():
     signals = {
         "sigabrt": signal.SIGABRT,
