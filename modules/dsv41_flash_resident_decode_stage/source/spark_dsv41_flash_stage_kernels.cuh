@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cuda_bf16.h>
 #include <math.h>
 #include <stdint.h>
 
@@ -476,4 +477,70 @@ static __global__ void D41ScaleRowsKernel(uint16_t *__restrict__ data, uint64_t 
 {
 	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < elements; index += (uint64_t)gridDim.x * blockDim.x )
 		data[index] = LmFloatToBf16(LmBf16ToFloat(data[index]) * factor);
+}
+
+static __global__ void D41MoeSendKernel(const uint16_t *__restrict__ gate_up, const float *__restrict__ packed_weight,
+	const uint16_t *__restrict__ shared, uint16_t *__restrict__ send, uint32_t routes, uint32_t slice, uint32_t hidden_slice, uint32_t degree,
+	uint64_t destination_stride, float limit)
+{
+	const uint32_t element = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( blockIdx.y < routes )
+	{
+		const uint32_t route = blockIdx.y;
+		if ( element >= slice )
+			return;
+		const uint16_t value = LmSwigluPackedValue(gate_up[(uint64_t)route * 2u * slice + element], gate_up[(uint64_t)route * 2u * slice + slice + element],
+			packed_weight[route], limit);
+		for ( uint32_t destination = 0u; destination < degree; ++destination )
+			send[(uint64_t)destination * destination_stride + (uint64_t)route * slice + element] = value;
+		return;
+	}
+	const uint32_t row = blockIdx.y - routes;
+	if ( element >= hidden_slice * degree )
+		return;
+	send[(uint64_t)(element / hidden_slice) * destination_stride + (uint64_t)routes * slice + (uint64_t)row * hidden_slice + element % hidden_slice] =
+		shared[(uint64_t)row * hidden_slice * degree + element];
+}
+
+static __global__ void D41ActAssembleQdqKernel(const uint16_t *__restrict__ received, uint16_t *__restrict__ act, uint32_t slice, uint32_t width,
+	uint64_t source_stride)
+{
+	const uint32_t route = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x, source = element / slice;
+	if ( element >= width )
+		return;
+	act[(uint64_t)route * width + element] = SparkDsv41FlashFp8QdqLane(LmBf16ToFloat(
+		received[(uint64_t)source * source_stride + (uint64_t)route * slice + element - source * slice]));
+}
+
+static __global__ void D41FinalizeSliceKernel(const uint16_t *__restrict__ slice_out, const uint16_t *__restrict__ received,
+	const uint32_t *__restrict__ route_expert, const uint32_t *__restrict__ route_packed_row, uint16_t *__restrict__ output, uint32_t top_k,
+	uint32_t local_experts, uint32_t degree, uint32_t hidden_slice, uint64_t source_stride, uint64_t shared_offset)
+{
+	const uint32_t row = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x;
+	float sum = 0.0f;
+	if ( element >= hidden_slice )
+		return;
+	for ( uint32_t source = 0u; source < degree; ++source )
+	{
+		float total = 0.0f;
+		for ( uint32_t k = 0u; k < top_k; ++k )
+		{
+			const uint32_t route = row * top_k + k;
+			if ( route_expert[route] / local_experts == source )
+				total += LmBf16ToFloat(slice_out[(uint64_t)route_packed_row[route] * hidden_slice + element]);
+		}
+		total += LmBf16ToFloat(received[(uint64_t)source * source_stride + shared_offset + (uint64_t)row * hidden_slice + element]);
+		sum += LmBf16ToFloat(LmFloatToBf16(total));
+	}
+	output[(uint64_t)row * hidden_slice + element] = __bfloat16_as_ushort(__float2bfloat16_rn(sum));
+}
+
+static __global__ void D41SliceGatherKernel(const uint16_t *__restrict__ gathered, uint16_t *__restrict__ output, uint32_t rows, uint32_t hidden_slice,
+	uint32_t degree)
+{
+	const uint32_t row = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( element >= hidden_slice * degree )
+		return;
+	output[(uint64_t)row * hidden_slice * degree + element] =
+		gathered[((uint64_t)(element / hidden_slice) * rows + row) * hidden_slice + element % hidden_slice];
 }
