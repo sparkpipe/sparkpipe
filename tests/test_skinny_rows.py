@@ -4,12 +4,6 @@
 Builds build/test_skinny_rows and runs it on an sm_121 device. For mxfp8 and bf16 weights and
 1 to 16 rows, every row of a multi-row launch and of a paired-target launch must be the same bits
 as a one-row launch of that row alone: speculative verify frames rely on it to reproduce decode.
-"""GB10 bitwise check of the DSV4.1 window fold against the sequential fold it replaced.
-
-Builds build/test_skinny_rows and runs it on an sm_121 device. The fold scores a batch of
-window keys before updating the online softmax; every record it writes must be the same bits as
-the key-by-key fold, for decode rows, verify frames, prefill waves, local-head landings, early
-positions and partial records. Perturbing one key must change the result.
 """
 
 import shutil

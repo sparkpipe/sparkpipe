@@ -5,12 +5,6 @@ Builds build/test_dsv41_hc_mix and runs it on an sm_121 device. The row-blocked 
 row's streams once for all 25 mix tasks; every warp partial it writes must be the same bits as the
 task-parallel kernel's, for 1 to 1024 rows including row counts that are not a multiple of the
 block. Perturbing one stream element must change the result.
-"""GB10 bitwise check of the DSV4.1 window fold against the sequential fold it replaced.
-
-Builds build/test_dsv41_hc_mix and runs it on an sm_121 device. The fold scores a batch of
-window keys before updating the online softmax; every record it writes must be the same bits as
-the key-by-key fold, for decode rows, verify frames, prefill waves, local-head landings, early
-positions and partial records. Perturbing one key must change the result.
 """
 
 import shutil
