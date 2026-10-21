@@ -847,6 +847,55 @@ static int32_t LmSkinnyDenseMulti(const LmSkinnyDenseTarget *targets, uint32_t c
 	}
 }
 
+template<class Format>
+static int32_t LmSkinnyLaunchRowChunks(const LmSkinnyArguments *args, cudaStream_t stream)
+{
+	const uint32_t stride = args->output_row_stride != 0u ? args->output_row_stride : args->output_dimension;
+	uint32_t first;
+	int32_t status = LM_LAUNCH_ERR_SHAPE;
+	if ( args->route_expert != 0 || args->group_row_offset != 0 || args->rows == 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	for ( first = 0u; first < args->rows; first += LM_SKINNY_ROWS_WIDE )
+	{
+		LmSkinnyArguments chunk = *args;
+		chunk.rows = args->rows - first < LM_SKINNY_ROWS_WIDE ? args->rows - first : LM_SKINNY_ROWS_WIDE;
+		chunk.activation = args->activation + (uint64_t)first * args->input_dimension;
+		chunk.output_row_stride = stride;
+		chunk.output_bf16 = args->output_bf16 != 0 ? args->output_bf16 + (uint64_t)first * stride : 0;
+		chunk.output_f32 = args->output_f32 != 0 ? args->output_f32 + (uint64_t)first * stride : 0;
+		status = LmSkinnyLaunch<Format>(&chunk,stream);
+		if ( status != LM_LAUNCH_OK )
+			return(status);
+	}
+	return(status);
+}
+
+template<class Format>
+static int32_t LmSkinnyDenseMultiRowChunks(const LmSkinnyDenseTarget *targets, uint32_t count, const uint16_t *activation, uint32_t rows, uint32_t input_dimension, cudaStream_t stream)
+{
+	LmSkinnyDenseTarget chunk[LM_SKINNY_MULTI_MAX];
+	uint32_t first, part, stride;
+	int32_t status = LM_LAUNCH_ERR_SHAPE;
+	if ( targets == 0 || count == 0u || count > LM_SKINNY_MULTI_MAX || rows == 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	for ( first = 0u; first < rows; first += LM_SKINNY_ROWS_WIDE )
+	{
+		for ( part = 0u; part < count; part++ )
+		{
+			chunk[part] = targets[part];
+			stride = targets[part].output_row_stride != 0u ? targets[part].output_row_stride : targets[part].output_dimension;
+			chunk[part].output_row_stride = stride;
+			chunk[part].output_bf16 = targets[part].output_bf16 != 0 ? targets[part].output_bf16 + (uint64_t)first * stride : 0;
+			chunk[part].output_f32 = targets[part].output_f32 != 0 ? targets[part].output_f32 + (uint64_t)first * stride : 0;
+		}
+		status = LmSkinnyDenseMulti<Format>(chunk,count,activation + (uint64_t)first * input_dimension,
+			rows - first < LM_SKINNY_ROWS_WIDE ? rows - first : LM_SKINNY_ROWS_WIDE,input_dimension,stream);
+		if ( status != LM_LAUNCH_OK )
+			return(status);
+	}
+	return(status);
+}
+
 #define LM_SKINNY_CELL_NEURONS 16u
 #define LM_SKINNY_CELL_ROWS 17u
 #define LM_SKINNY_CELL_TILE_K 32u
