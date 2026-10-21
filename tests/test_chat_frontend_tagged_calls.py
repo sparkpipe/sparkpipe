@@ -44,6 +44,8 @@ def run(text, chunk, tools=None, reasoning_open=True, model=None):
     for kind, value in events:
         if kind == "tool_call":
             calls.append(value)
+        elif kind == "bad_call":
+            parser.bad = value
         else:
             joined[kind] += value
     return joined, calls, parser
@@ -84,9 +86,24 @@ def main():
     joined, calls, _ = run(plain, 2, reasoning_open=False)
     check(joined == {"reasoning": "", "content": "Paris"} and not calls, "a reply without thinking keeps only the response text")
 
-    broken = "x" + C + "think" + S + O + "call no attributes" + C + "call" + S
-    joined, calls, _ = run(broken, 4)
-    check(not calls and "no attributes" in joined["content"], "a call that does not parse is returned as visible text, never dropped")
+    broken = "x" + C + "think" + S + "Before. " + O + "call no attributes" + C + "call" + S + "after"
+    joined, calls, parser = run(broken, 4)
+    bad = getattr(parser, "bad", None)
+    check(not calls and "no attributes" not in joined["content"] and bad is not None and bad["kind"] == "unparsed" and "no attributes" in bad["text"],
+          "a call that does not parse is reported as a bad call, never shown as content")
+    opening = broken.index(O + "call")
+    check(bad is not None and bad["offset"] == opening and bad["resume"].state == "content" and bad["resume"].fed == opening,
+          "a bad call carries the text offset where its envelope starts and a parser that resumes there")
+    check(joined["content"] == "Before. " and parser.stopped, "parsing stops at the bad call; the content before it stays")
+    cut = "x" + C + "think" + S + O + 'call tool="write_file"' + S + O + 'argument key="path"'
+    joined, calls, parser = run(cut, 3)
+    bad = getattr(parser, "bad", None)
+    check(not calls and bad is not None and bad["kind"] == "unclosed" and joined["content"] == "",
+          "a call still open when the reply ends is reported as unclosed, never shown as content")
+    opened = "x" + C + "think" + S + O + "call"
+    joined, calls, parser = run(opened, len(opened))
+    bad = getattr(parser, "bad", None)
+    check(bad is not None and bad["kind"] == "unclosed", "a reply that ends right after a call marker is an unclosed call, not dropped")
 
     def invoke(name, *arguments):
         body = "".join("\n<" + D + ' parameter name="' + key + '" string="' + flag + '">' + value + "</" + D + " parameter>" for key, flag, value in arguments)
@@ -111,7 +128,7 @@ def main():
         print("FAIL " + failure)
     if failures:
         return 1
-    print("PASS chat frontend tagged calls: reasoning, response and tool wrappers stream in any chunking; typed and JSON arguments decode; the message end stops; unparseable calls stay visible; configured name, key and string-flag attributes parse multi-call blocks")
+    print("PASS chat frontend tagged calls: reasoning, response and tool wrappers stream in any chunking; typed and JSON arguments decode; the message end stops; unparseable and unclosed calls are reported as bad calls with a resume point; configured name, key and string-flag attributes parse multi-call blocks")
     return 0
 
 

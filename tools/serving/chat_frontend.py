@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import codecs
+import copy
 import functools
 import hashlib
 import importlib.util
@@ -30,6 +31,7 @@ UNSUPPORTED_FIELDS = ("n", "logit_bias", "best_of", "echo", "suffix")
 NEUTRAL_FIELDS = {"frequency_penalty": 0, "presence_penalty": 0, "repetition_penalty": 1, "min_p": 0}
 MAX_TOP_LOGPROBS = 20
 MAX_TOP_K = 1048576
+TOOL_CALL_RETRIES = 2
 
 
 def read_token(path):
@@ -746,6 +748,15 @@ def tool_parameter_types(tools):
     return types
 
 
+def tool_required_parameters(tools):
+    required = {}
+    for tool in tools or []:
+        function = tool.get("function", tool) if isinstance(tool, dict) else {}
+        listed = (function.get("parameters") or {}).get("required") or []
+        required[function.get("name")] = [key for key in listed if isinstance(key, str)]
+    return required
+
+
 def call_entry(name, arguments):
     return {"id": "call_" + uuid.uuid4().hex[:24], "type": "function", "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}}
 
@@ -756,6 +767,7 @@ class OutputParser:
         self.reasoning_end = model.reasoning["end"]
         self.call = model.tool_calls
         self.types = tool_parameter_types(tools)
+        self.required = tool_required_parameters(tools)
         self.stops = [stop for stop in stops if stop] + model.end_markers
         self.end_markers = model.end_markers
         self.drops = model.content_markers
@@ -765,6 +777,31 @@ class OutputParser:
         self.buffer = ""
         self.calls = 0
         self.stopped = False
+        self.fed = 0
+        self.call_offset = None
+        self.resume = None
+
+    def call_opened(self, offset, state):
+        self.call_offset = offset
+        resume = copy.copy(self)
+        resume.buffer = ""
+        resume.state = state
+        resume.fed = self.call_offset
+        resume.resume = None
+        self.resume = resume
+
+    def bad_call(self, kind, text, repair=None):
+        return ("bad_call", {"kind": kind, "text": text, "offset": self.call_offset, "resume": self.resume, "repair": repair})
+
+    def unclosed_call(self):
+        body = self.buffer[:len(self.buffer) - longest_marker_prefix(self.buffer, [self.call["end"]])]
+        parsed = self.parse_call(body) if body.strip() else None
+        if parsed is not None:
+            name = parsed["function"]["name"]
+            arguments = json.loads(parsed["function"]["arguments"])
+            if name not in self.required or not isinstance(arguments, dict) or any(key not in arguments for key in self.required[name]):
+                parsed = None
+        return self.bad_call("unclosed", self.call["start"] + self.buffer, parsed)
 
     def parse_call(self, body):
         if self.call["format"] == "tagged":
@@ -897,6 +934,7 @@ class OutputParser:
 
     def feed(self, text):
         self.buffer += text
+        self.fed += len(text)
         events = []
         while self.buffer and not self.stopped:
             if self.state == "reasoning":
@@ -941,6 +979,7 @@ class OutputParser:
                     self.stopped = True
                     self.ended = marker in self.end_markers
                     break
+                self.call_opened(self.fed - len(self.buffer) + index, "content")
                 self.buffer = self.buffer[index + len(marker):]
                 self.state = "call"
             else:
@@ -952,19 +991,20 @@ class OutputParser:
                 self.state = "content"
                 parsed = self.parse_call(body)
                 if parsed is None:
-                    events.append(("content", self.call["start"] + body + self.call["end"]))
-                else:
-                    events.append(("tool_call", parsed))
-                    self.calls += 1
+                    events.append(self.bad_call("unparsed", self.call["start"] + body + self.call["end"]))
+                    self.stopped = True
+                    break
+                events.append(("tool_call", parsed))
+                self.calls += 1
         return events
 
     def finish(self):
         events = []
-        if self.buffer and not self.stopped:
+        if not self.stopped and (self.buffer or self.state == "call"):
             if self.state == "reasoning":
                 events.append(("reasoning", self.buffer))
             elif self.state == "call":
-                events.append(("content", self.call["start"] + self.buffer))
+                events.append(self.unclosed_call())
             else:
                 events.append(("content", self.buffer))
         self.buffer = ""
@@ -976,6 +1016,7 @@ class ChannelParser(OutputParser):
         self.channel = model.channels
         self.call = model.tool_calls
         self.types = tool_parameter_types(tools)
+        self.required = tool_required_parameters(tools)
         self.stops = [stop for stop in stops if stop] + model.end_markers
         self.end_markers = model.end_markers
         self.drops = model.content_markers
@@ -985,6 +1026,9 @@ class ChannelParser(OutputParser):
         self.buffer = ""
         self.calls = 0
         self.stopped = False
+        self.fed = 0
+        self.call_offset = None
+        self.resume = None
 
     def emit(self, events, text):
         if self.target == "reasoning":
@@ -1002,6 +1046,7 @@ class ChannelParser(OutputParser):
 
     def feed(self, text):
         self.buffer += text
+        self.fed += len(text)
         events = []
         start, end = self.channel["message_start"], self.channel["message_end"]
         while self.buffer and not self.stopped:
@@ -1021,10 +1066,11 @@ class ChannelParser(OutputParser):
                 self.state = "body"
                 parsed = self.parse_call(body)
                 if parsed is None:
-                    events.append(("content", self.call["start"] + body + self.call["end"]))
-                else:
-                    events.append(("tool_call", parsed))
-                    self.calls += 1
+                    events.append(self.bad_call("unparsed", self.call["start"] + body + self.call["end"]))
+                    self.stopped = True
+                    break
+                events.append(("tool_call", parsed))
+                self.calls += 1
             else:
                 markers = [start] if self.state == "between" else [end, start]
                 if self.state == "body" and self.target != "reasoning":
@@ -1039,12 +1085,14 @@ class ChannelParser(OutputParser):
                 index, marker = min(hits)
                 if index:
                     self.emit(events, self.buffer[:index])
+                opening = self.fed - len(self.buffer) + index
                 self.buffer = self.buffer[index + len(marker):]
                 if marker == start:
                     self.state = "header"
                 elif marker == end:
                     self.state, self.target = "between", "tool"
                 elif marker == self.call["start"]:
+                    self.call_opened(opening, "body")
                     self.state = "call"
                 elif marker not in self.drops:
                     self.buffer = ""
@@ -1054,9 +1102,9 @@ class ChannelParser(OutputParser):
 
     def finish(self):
         events = []
-        if self.buffer and not self.stopped:
+        if not self.stopped and (self.buffer or self.state == "call"):
             if self.state == "call":
-                events.append(("content", self.call["start"] + self.buffer))
+                events.append(self.unclosed_call())
             elif self.state != "header":
                 self.emit(events, self.buffer)
         self.buffer = ""
@@ -1120,6 +1168,7 @@ class Frontend:
         self.citation_wrapper = wrapper
         self.session = None
         self.memory = None
+        self.tool_call_faults = {}
         if config.get("chat_memory") is not None:
             loader = importlib.util.spec_from_file_location("sparkpipe_chat_memory", Path(__file__).with_name("chat_memory.py"))
             module = importlib.util.module_from_spec(loader)
@@ -1152,7 +1201,7 @@ class Frontend:
                 states[model.id] = {"status": 0, "error": str(error)}
             states[model.id]["warm_queue"] = model.gate.state()
         healthy = all(state["status"] == 200 for state in states.values())
-        return web.json_response({"ok": healthy, "models": states}, status=200 if healthy else 503)
+        return web.json_response({"ok": healthy, "models": states, "tool_call_faults": self.tool_call_faults}, status=200 if healthy else 503)
 
     async def liveliness(self, request):
         return web.json_response({"ok": True})
@@ -1330,14 +1379,17 @@ class Frontend:
         deadline = None
         while True:
             started = False
+            events = self.engine_events(model, engine_body)
             try:
-                async for chunk in self.engine_events(model, engine_body):
+                async for chunk in events:
                     started = True
                     yield chunk
                 return
             except RequestError as error:
                 if started or error.code not in ("engine_starting", "engine_unavailable"):
                     raise
+            finally:
+                await events.aclose()
             now = asyncio.get_running_loop().time()
             deadline = deadline if deadline is not None else now + model.gate.wait_seconds
             if self.memory is not None:
@@ -1360,42 +1412,123 @@ class Frontend:
             entries.append(entry)
         return entries
 
-    async def generate(self, model, engine_body, parser):
+    async def generate_attempt(self, model, engine_body, parser, outcome):
         step = model.vocabulary.decoder()
         finish = None
         usage = None
         token_ids = []
+        ends = []
+        start = None
+        written = 0
         stop_string = False
         logprobs = engine_body.get("logprobs")
-        async for chunk in self.engine_stream(model, engine_body):
-            if "error" in chunk:
-                raise RequestError(502, "engine_error", json.dumps(chunk["error"]))
-            if logprobs is not None:
-                entries = self.logprob_entries(model, chunk, logprobs + 1)
-                if entries:
-                    yield ("logprobs", entries)
-            text = []
-            for token in chunk.get("tokens", []):
-                token_ids.append(token)
-                if token in model.stop_token_ids:
+        stream = self.engine_stream(model, engine_body)
+        try:
+            async for chunk in stream:
+                if "error" in chunk:
+                    raise RequestError(502, "engine_error", json.dumps(chunk["error"]))
+                if logprobs is not None:
+                    entries = self.logprob_entries(model, chunk, logprobs + 1)
+                    if entries:
+                        yield ("logprobs", entries)
+                text = []
+                for token in chunk.get("tokens", []):
+                    token_ids.append(token)
+                    if token not in model.stop_token_ids:
+                        piece = step(token)
+                        if piece:
+                            text.append(piece)
+                            written += len(piece)
+                    ends.append(written)
+                choices = chunk.get("choices") or [{}]
+                finish = choices[0].get("finish_reason") or finish
+                usage = chunk.get("usage") or usage
+                if start is None:
+                    start = parser.fed
+                for event in parser.feed("".join(text)):
+                    if event[0] == "bad_call":
+                        outcome["fault"] = event[1]
+                        break
+                    yield event
+                if "fault" in outcome:
+                    break
+                if parser.stopped and not parser.ended:
+                    finish = "stop"
+                    stop_string = True
+                    break
+        finally:
+            await stream.aclose()
+        if "fault" not in outcome:
+            for event in parser.finish():
+                if event[0] == "bad_call" and event[1]["kind"] == "unclosed" and event[1]["repair"] is not None and finish == "stop":
+                    self.tool_call_fault(model, event[1], outcome.get("attempt", 0), "repaired")
+                    parser.calls += 1
+                    yield ("tool_call", event[1]["repair"])
                     continue
-                piece = step(token)
-                if piece:
-                    text.append(piece)
-            choices = chunk.get("choices") or [{}]
-            finish = choices[0].get("finish_reason") or finish
-            usage = chunk.get("usage") or usage
-            for event in parser.feed("".join(text)):
+                if event[0] == "bad_call":
+                    outcome["fault"] = event[1]
+                    break
                 yield event
-            if parser.stopped and not parser.ended:
-                finish = "stop"
-                stop_string = True
+        outcome.update(token_ids=token_ids, finish=finish, usage=usage, stop_string=stop_string)
+        fault = outcome.get("fault")
+        if fault is not None:
+            base = parser.fed if start is None else start
+            kept = 0
+            while kept < len(ends) and base + ends[kept] <= fault["offset"]:
+                kept += 1
+            fault["tokens"] = token_ids[:kept]
+            fault["boundary"] = base + (ends[kept - 1] if kept else 0) == fault["offset"]
+
+    def tool_call_fault(self, model, fault, attempt, action):
+        self.tool_call_faults[action] = self.tool_call_faults.get(action, 0) + 1
+        print(json.dumps({"event": "tool_call_fault", "model": model.id, "kind": fault["kind"], "attempt": attempt, "action": action,
+                          "text": fault["text"][:400]}, ensure_ascii=False), file=sys.stderr, flush=True)
+
+    async def generate(self, model, engine_body, parser):
+        prompt = list(engine_body["prompt_token_ids"])
+        budget = engine_body.get("max_tokens")
+        body, kept, attempt = engine_body, [], 0
+        while True:
+            outcome = {"attempt": attempt}
+            async for event in self.generate_attempt(model, body, parser, outcome):
+                yield event
+            fault = outcome.get("fault")
+            if fault is None:
                 break
-        for event in parser.finish():
-            yield event
-        self.prefix_ledger(model).record(list(engine_body["prompt_token_ids"]) + token_ids)
-        yield ("finish", {"finish_reason": "tool_calls" if parser.calls else (finish or "stop"), "usage": usage,
-                          "engine_finish": "stop_string" if stop_string else (finish or "stop"), "token_ids": token_ids})
+            kept = kept + fault["tokens"]
+            left = None if budget is None else budget - len(kept)
+            if fault["kind"] == "unclosed" and (outcome["finish"] == "length" or left == 0):
+                self.tool_call_fault(model, fault, attempt, "cut_by_length")
+                outcome.update(finish="length", token_ids=[], stop_string=False)
+                parser = fault["resume"]
+                break
+            if (attempt >= TOOL_CALL_RETRIES or not body.get("temperature") or body.get("logprobs") is not None or not fault["boundary"] or
+                    (left is not None and left <= 0)):
+                self.tool_call_fault(model, fault, attempt, "refused")
+                raise RequestError(502, "tool_call_invalid", f"the {model.id} reply has a tool call that does not parse, after {attempt} "
+                                   f"regeneration(s): {fault['text'][:200]}")
+            self.tool_call_fault(model, fault, attempt, "regenerated")
+            attempt += 1
+            parser = fault["resume"]
+            body = dict(engine_body, prompt_token_ids=prompt + kept)
+            if left is not None:
+                body["max_tokens"] = left
+            if body.get("seed") is not None:
+                body["seed"] = (body["seed"] + attempt) % (1 << 64)
+        token_ids = kept + outcome["token_ids"]
+        usage = dict(outcome["usage"] or {})
+        if usage and kept:
+            usage["prompt_tokens"] = len(prompt)
+            usage["completion_tokens"] = len(token_ids)
+            usage["total_tokens"] = len(prompt) + len(token_ids)
+            details = dict(usage.get("prompt_tokens_details") or {})
+            if "cached_tokens" in details:
+                details["cached_tokens"] = min(details["cached_tokens"], len(prompt))
+                usage["prompt_tokens_details"] = details
+        self.prefix_ledger(model).record(prompt + token_ids)
+        finish = outcome["finish"]
+        yield ("finish", {"finish_reason": "tool_calls" if parser.calls else (finish or "stop"), "usage": usage or None,
+                          "engine_finish": "stop_string" if outcome["stop_string"] else (finish or "stop"), "token_ids": token_ids})
 
     async def respond(self, model, plan):
         session = plan["session"]

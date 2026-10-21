@@ -25,11 +25,13 @@ def run(text, chunk, tools=None, reasoning_open=True):
     for start in range(0, len(text), chunk):
         events.extend(parser.feed(text[start:start + chunk]))
     events.extend(parser.finish())
-    joined = {"reasoning": "", "content": ""}
+    joined = {"reasoning": "", "content": "", "bad_call": []}
     calls = []
     for kind, value in events:
         if kind == "tool_call":
             calls.append(value)
+        elif kind == "bad_call":
+            joined["bad_call"].append(value)
         else:
             joined[kind] += value
     return joined, calls
@@ -59,12 +61,14 @@ def main():
             check(arguments == {"path": "a <b>/path.txt", "lines": 12, "body": "line one\nline two"},
                   "parameters keep inner text, drop one wrapping newline and type non-strings" + name)
     joined, calls = run("<tool_call>\n<function=write_file>\n<parameter=path>\nx\n</function>\n</tool_call>", 5, tools, False)
-    check(not calls and "<function=write_file>" in joined["content"], "a malformed call is returned as content, not dropped")
+    check(not calls and "<function=write_file>" not in joined["content"] and len(joined["bad_call"]) == 1 and
+          joined["bad_call"][0]["kind"] == "unparsed" and "<function=write_file>" in joined["bad_call"][0]["text"],
+          "a malformed call is reported as a bad call, never returned as content")
     if failures:
         for failure in failures:
             print("FAIL", failure)
         return 1
-    print("PASS chat frontend function_xml calls: name and parameters parse in any chunking; one wrapping newline is dropped; non-string parameters decode; a malformed call stays visible")
+    print("PASS chat frontend function_xml calls: name and parameters parse in any chunking; one wrapping newline is dropped; non-string parameters decode; a malformed call is reported, never shown as content")
     return 0
 
 

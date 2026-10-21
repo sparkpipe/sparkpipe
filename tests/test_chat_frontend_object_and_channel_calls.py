@@ -37,9 +37,12 @@ def collect(parser, text, chunk):
     events.extend(parser.finish())
     joined = {"reasoning": "", "content": ""}
     calls = []
+    collect.bad = []
     for kind, value in events:
         if kind == "tool_call":
             calls.append(value)
+        elif kind == "bad_call":
+            collect.bad.append(value["text"])
         else:
             joined[kind] += value
     return joined, calls
@@ -76,7 +79,8 @@ def main():
     check(joined == {"reasoning": "Done.", "content": "391"}, "a thought block opened by the prompt still ends at the close marker")
     for broken in ("call:get_weather{location:Paris}", "call:get-weather{location:" + Q + "Paris" + Q + "}", "call:f{a:" + Q + "x}", "call:f{a:1} tail"):
         joined, calls = collect(chat_frontend.OutputParser(ObjectModel(), None, False, []), "<|tool_call>" + broken + "<tool_call|>", 5)
-        check(not calls and broken in joined["content"], "an object call outside the published grammar stays visible: " + broken)
+        check(not calls and broken not in joined["content"] and any(broken in text for text in collect.bad),
+              "an object call outside the published grammar is reported as a bad call, never shown as content: " + broken)
 
     muse_tool = (" to=self<|message|>Call it.<|eom|><|start|>assistant to=get_weather<|message|><atem:function_calls>\n<atem:invoke name=\"get_weather\">\n"
                  "<atem:parameter name=\"location\">Paris</atem:parameter>\n<atem:parameter name=\"days\">3</atem:parameter>\n</atem:invoke>\n</atem:function_calls>")
