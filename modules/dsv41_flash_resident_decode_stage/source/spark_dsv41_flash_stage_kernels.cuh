@@ -342,7 +342,7 @@ static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t
 	const uint16_t *__restrict__ ring, const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane,
 	const uint32_t *__restrict__ row_ordinal, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_indices,
 	const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t ring_rows, uint32_t window, uint32_t degree, uint32_t rank,
-	float qk_scale)
+	float qk_scale, uint32_t record_heads, uint32_t record_copies)
 {
 	__shared__ float score_shared[D41K_THREADS / 32u];
 	const uint32_t row = blockIdx.x, head = blockIdx.y;
@@ -352,7 +352,8 @@ static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t
 	const uint32_t first = position + 1u > window ? position + 1u - window : 0u;
 	const uint32_t destination = head / heads_per_destination, local = head % heads_per_destination;
 	const uint16_t *q = query + (uint64_t)destination * query_rank_stride + ((uint64_t)row * heads_per_destination + local) * D41K_LATENT;
-	float *record = records + destination * destination_stride + ((uint64_t)row * heads_per_destination + local) * D41K_RECORD;
+	const uint64_t record_offset = ((uint64_t)row * record_heads + head % record_heads) * D41K_RECORD;
+	float *record = records + (uint64_t)(head / record_heads) * record_copies * destination_stride + record_offset;
 	float running_max = record[0], running_sum = record[1];
 	float accumulator[D41K_LATENT / D41K_THREADS];
 	for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
@@ -378,12 +379,16 @@ static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t
 		running_max = top;
 	}
 	__syncthreads();
-	for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
-		record[2u + threadIdx.x + e * D41K_THREADS] = accumulator[e];
-	if ( threadIdx.x == 0u )
+	for ( uint32_t copy = 0u; copy < record_copies; ++copy )
 	{
-		record[0] = running_max;
-		record[1] = running_sum;
+		float *target = record + (uint64_t)copy * destination_stride;
+		for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
+			target[2u + threadIdx.x + e * D41K_THREADS] = accumulator[e];
+		if ( threadIdx.x == 0u )
+		{
+			target[0] = running_max;
+			target[1] = running_sum;
+		}
 	}
 }
 
