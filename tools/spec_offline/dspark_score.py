@@ -6,9 +6,14 @@ target layers 37-39). For every anchor position a of a reply, the drafter holds 
 a-128 .. a-1, drafts five tokens from the committed token at a, and is scored against the tokens the
 target committed at a+1 .. a+5 with SparkPipe's exact-match verify: greedy drafts for greedy streams,
 the verifier's keyed Gumbel noise for sampled ones. Tokens per round = accepted drafts + 1.
+
+--select names directories of <task>.u32 token files (prompt count, total count, prompt and reply tokens)
+written by the corpus recorders; only the recorded request whose every input token matches a file, the
+one covering most positions per file, is scored, so one recording can hold greedy and sampled corpora.
 """
 import argparse
 import json
+import struct
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -20,6 +25,27 @@ from block_drafter import load_rows, requests  # noqa: E402
 from dspark_drafter import DsparkDrafter  # noqa: E402
 
 
+def selected(streams, directories):
+    chosen = {}
+    for directory in directories:
+        for path in sorted(Path(directory).glob("*.u32")):
+            data = path.read_bytes()
+            prompt, total = struct.unpack_from("<II", data)
+            tokens = struct.unpack_from(f"<{total}I", data, 8)
+            best = None
+            for key, item in streams.items():
+                positions = item["positions"]
+                if max(positions) < prompt or any(p >= total or tokens[p] != record[2] for p, record in positions.items()):
+                    continue
+                if best is None or len(positions) > len(streams[best]["positions"]):
+                    best = key
+            if best is None:
+                print(f"DSPARK-SCORE no recorded request matches {path}", flush=True)
+                continue
+            chosen[best] = path.stem
+    return chosen
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--checkpoint", required=True)
@@ -29,6 +55,7 @@ def main():
     parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--select", nargs="+")
     parser.add_argument("--out", required=True)
     parser.add_argument("--anchors-out")
     args = parser.parse_args()
@@ -39,6 +66,7 @@ def main():
     if missing or hello["hidden"] != drafter.dim:
         raise SystemExit(f"recording carries {hello['entries']} at hidden {hello['hidden']}; DSpark needs {list(drafter.tap_names)} at {drafter.dim}")
     columns = [hello["entries"].index(name) for name in drafter.tap_names]
+    names = selected(streams, args.select) if args.select else {key: None for key in streams}
     rule = None
     if args.temperature > 0.0:
         seed = args.seed - (1 << 64) if args.seed >= (1 << 63) else args.seed
@@ -52,6 +80,8 @@ def main():
     anchor_log = open(args.anchors_out, "w") if args.anchors_out else None
     total_anchors = total_accepted = 0
     for key, item in sorted(streams.items()):
+        if key not in names:
+            continue
         end = max(item["positions"]) + 1
         start = end - 1
         while start - 1 in item["positions"]:
@@ -94,10 +124,10 @@ def main():
                                              "truth": truth, "confidence": [round(c, 4) for c in confidence]}) + "\n")
         total_anchors += len(lengths)
         total_accepted += sum(lengths)
-        report["requests"].append({"request": key[1], "sequence": key[2], "positions": [start, end], "reply_rows": len(records) - reply[0],
+        report["requests"].append({"request": key[1], "task": names[key], "sequence": key[2], "positions": [start, end], "reply_rows": len(records) - reply[0],
                                    "anchors": len(lengths), "tokens_per_round": round(1.0 + sum(lengths) / max(len(lengths), 1), 4)})
-        print("DSPARK-SCORE request %d positions %d-%d reply %d anchors %d tokens/round %.3f"
-              % (key[1], start, end, len(records) - reply[0], len(lengths), 1.0 + sum(lengths) / max(len(lengths), 1)), flush=True)
+        print("DSPARK-SCORE request %d %s positions %d-%d reply %d anchors %d tokens/round %.3f"
+              % (key[1], names[key] or "-", start, end, len(records) - reply[0], len(lengths), 1.0 + sum(lengths) / max(len(lengths), 1)), flush=True)
     report["anchors"] = total_anchors
     report["tokens_per_round"] = round(1.0 + total_accepted / max(total_anchors, 1), 4)
     report["slot_acceptance"] = [round(h / t, 4) if t else None for h, t in zip(slot_hits, slot_tries)]
