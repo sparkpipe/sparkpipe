@@ -360,7 +360,7 @@ static void HostForeign(void)
 	HostCheck(LmKvShardViewInitialize<Geometry>(&view,pool.data(),&table,1u,1u,1u,&error,shard) == 0,"foreign view");
 	LM_LAUNCH((LmKvShardStoreKernel<Geometry,1u>),1u,1u,0,0,view,query.data(),&sequence,&position,1u,HOST_LATENT + ROPE);
 	HostCheck(error.error_code == LM_FRAME_ERROR_NONE,"a store of a foreign position is skipped, not written");
-	LM_LAUNCH((LmLatentShardPartialKernel<Geometry,LmKvShardView,HOST_LATENT,ROPE,1u>),dim3(1u,2u),LM_LATENT_SHARD_THREADS,0,0,view,query.data(),(uint64_t)(HOST_LATENT + ROPE),1u,&sequence,&context,&position,list,1u,0u,1.0f,partials.data(),(uint64_t)LM_LATENT_SHARD_RECORD_FLOATS(HOST_LATENT));
+	LM_LAUNCH((LmLatentShardPartialKernel<Geometry,LmKvShardView,HOST_LATENT,ROPE,1u>),dim3(1u,2u),LM_LATENT_SHARD_THREADS,0,0,view,query.data(),(uint64_t)(HOST_LATENT + ROPE),1u,&sequence,&context,&position,list,1u,0u,1.0f,partials.data(),(uint64_t)LM_LATENT_SHARD_RECORD_FLOATS(HOST_LATENT),1u,1u);
 	HostCheck(error.error_code == LM_FRAME_ERROR_NONE,"a selected foreign position is left to its owner");
 	LM_LAUNCH((HostShardProbeKernel<Geometry>),1u,1u,0,0,view,sequence,position);
 	HostCheck(error.error_code == LM_FRAME_ERROR_SHARD_NOT_OWNED && error.position == position,"reading a foreign position reports SHARD_NOT_OWNED");

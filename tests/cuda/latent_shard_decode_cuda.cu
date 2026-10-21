@@ -79,7 +79,7 @@ static void DecodeCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 	std::vector<uint16_t> tiled((uint64_t)degree * out_stride),oracle(tiled.size());
 	uint32_t *table_device,*positions_device,*sequences_device,*contexts_device,*token_sequence_device,*token_position_device;
 	uint16_t *values_device,*query_device,*tiled_device,*oracle_device;
-	float *split_device,*decode_device,*oracle_send_device,*decode_receive_device,*oracle_receive_device;
+	float *split_device,*decode_device,*oracle_send_device,*decode_receive_device,*oracle_receive_device,*pair_send_device;
 	LmKvAccessError *error_device,error_host;
 	uint32_t page,row,rank,source,target,index;
 	double worst = 0.0;
@@ -103,6 +103,7 @@ static void DecodeCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 	DECODE_CUDA(cudaMalloc((void **)&split_device,split_floats * sizeof(float)));
 	DECODE_CUDA(cudaMalloc((void **)&decode_device,(uint64_t)degree * degree * rank_stride * sizeof(float)));
 	DECODE_CUDA(cudaMalloc((void **)&oracle_send_device,(uint64_t)degree * degree * rank_stride * sizeof(float)));
+	DECODE_CUDA(cudaMalloc((void **)&pair_send_device,(uint64_t)degree * degree * 2u * rank_stride * sizeof(float)));
 	DECODE_CUDA(cudaMalloc((void **)&decode_receive_device,(uint64_t)degree * degree * rank_stride * sizeof(float)));
 	DECODE_CUDA(cudaMalloc((void **)&oracle_receive_device,(uint64_t)degree * degree * rank_stride * sizeof(float)));
 	DECODE_CUDA(cudaMalloc((void **)&tiled_device,tiled.size() * 2u));
@@ -130,6 +131,9 @@ static void DecodeCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 		DecodeCheck(LmLatentShardPartialLaunch<DecodeKv,LmKvShardView,DECODE_LATENT,DECODE_ROPE>(local,query_device,query_stride,heads_per_rank,sequences_device,
 			contexts_device,positions_device,0,0u,0u,scale,oracle_send_device + (uint64_t)rank * degree * rank_stride,rank_stride,rows,0) == cudaSuccess,
 			"scalar partial launch",label);
+		DecodeCheck(LmLatentShardPartialHeadsLaunch<DecodeKv,LmKvShardView,DECODE_LATENT,DECODE_ROPE>(local,query_device,query_stride,heads_per_rank,
+			heads_per_rank * degree,sequences_device,contexts_device,positions_device,0,0u,0u,scale,pair_send_device + (uint64_t)rank * degree * 2u * rank_stride,
+			2u * rank_stride,2u * heads_per_rank,2u,rows,0) == cudaSuccess,"pair-grouped partial launch",label);
 	}
 	DecodeCheck(LmLatentShardDecodeLaunch<DecodeKv,LmKvShardView,DECODE_LATENT,DECODE_ROPE>(LmKvShardView(),query_device,query_stride,heads_per_rank,sequences_device,
 		contexts_device,positions_device,scale,split_device,LmLatentShardDecodeSplits(rows) > 1u ? split_floats - 1u : 0u,decode_device,rank_stride,rows,0) != cudaSuccess,
@@ -152,6 +156,23 @@ static void DecodeCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 	DECODE_CUDA(cudaDeviceSynchronize());
 	DECODE_CUDA(cudaMemcpy(&error_host,error_device,sizeof(error_host),cudaMemcpyDeviceToHost));
 	DecodeCheck(error_host.error_code == LM_FRAME_ERROR_NONE,"no KV access error",label);
+	{
+		std::vector<float> single((uint64_t)degree * degree * rank_stride),pair((uint64_t)degree * degree * 2u * rank_stride);
+		uint32_t mismatched = 0u,head,copy;
+		DECODE_CUDA(cudaMemcpy(single.data(),oracle_send_device,single.size() * sizeof(float),cudaMemcpyDeviceToHost));
+		DECODE_CUDA(cudaMemcpy(pair.data(),pair_send_device,pair.size() * sizeof(float),cudaMemcpyDeviceToHost));
+		for (rank=0u; rank<degree; rank++)
+			for (row=0u; row<rows; row++)
+				for (head=0u; head<heads_per_rank * degree; head++)
+					for (copy=0u; copy<2u; copy++)
+					{
+						const float *a = single.data() + ((uint64_t)rank * degree + head / heads_per_rank) * rank_stride + ((uint64_t)row * heads_per_rank + head % heads_per_rank) * DECODE_RECORD;
+						const float *b = pair.data() + (uint64_t)rank * degree * 2u * rank_stride + ((uint64_t)(head / (2u * heads_per_rank)) * 2u + copy) * 2u * rank_stride +
+							((uint64_t)row * 2u * heads_per_rank + head % (2u * heads_per_rank)) * DECODE_RECORD;
+						mismatched += memcmp(a,b,DECODE_RECORD * sizeof(float)) != 0 ? 1u : 0u;
+					}
+		DecodeCheck(mismatched == 0u,"pair-grouped records hold every head's record for both ranks of its pair, bit for bit the per-rank records",label);
+	}
 	DECODE_CUDA(cudaMemcpy(tiled.data(),tiled_device,tiled.size() * 2u,cudaMemcpyDeviceToHost));
 	DECODE_CUDA(cudaMemcpy(oracle.data(),oracle_device,oracle.size() * 2u,cudaMemcpyDeviceToHost));
 	for (index=0u; index<tiled.size(); index+=DECODE_LATENT)
@@ -175,7 +196,7 @@ static void DecodeCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 		cudaFree(pools[rank]);
 	cudaFree(table_device); cudaFree(positions_device); cudaFree(sequences_device); cudaFree(contexts_device);
 	cudaFree(token_sequence_device); cudaFree(token_position_device); cudaFree(values_device); cudaFree(query_device);
-	cudaFree(split_device); cudaFree(decode_device); cudaFree(oracle_send_device); cudaFree(decode_receive_device); cudaFree(oracle_receive_device);
+	cudaFree(split_device); cudaFree(decode_device); cudaFree(oracle_send_device); cudaFree(pair_send_device); cudaFree(decode_receive_device); cudaFree(oracle_receive_device);
 	cudaFree(tiled_device); cudaFree(oracle_device); cudaFree(error_device);
 }
 
