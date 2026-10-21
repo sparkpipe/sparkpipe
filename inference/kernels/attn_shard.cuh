@@ -94,7 +94,7 @@ static __device__ __forceinline__ uint32_t LmLatentShardCompact(
     return count;
 }
 
-__global__ __launch_bounds__(LM_LATENT_SHARD_THREADS)
+static __global__ __launch_bounds__(LM_LATENT_SHARD_THREADS)
 void LmLatentShardSplitKernel(
     SparkKvShard shard,
     const uint32_t *__restrict__ selected_positions,
@@ -181,7 +181,7 @@ static inline cudaError_t LmLatentShardSplitLaunch(SparkKvShard shard, const uin
     if (rows == 0u || selected_positions == 0 || split_positions == 0 || split_offsets == 0 || shard.degree == 0u ||
         shard.degree > SPARK_KV_SHARD_MAX_DEGREE || shard.grain == 0u || selected_count > LM_LATENT_SHARD_LIST_CAPACITY)
         return cudaErrorInvalidValue;
-    LmLatentShardSplitKernel<<<rows, LM_LATENT_SHARD_THREADS, 0, stream>>>(shard, selected_positions, selected_count, row_position, split_positions,
+    LM_LAUNCH((LmLatentShardSplitKernel), rows, LM_LATENT_SHARD_THREADS, 0, stream, shard, selected_positions, selected_count, row_position, split_positions,
         split_offsets);
     return cudaPeekAtLastError();
 }
