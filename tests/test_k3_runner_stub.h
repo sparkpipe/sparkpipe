@@ -116,6 +116,12 @@ const uint16_t *SparkStageRunnerTapRows(const SparkStageRunner *runner, uint32_t
 	return(0);
 }
 
+uint32_t SparkStageRunnerTapFirstRow(const SparkStageRunner *runner)
+{
+	(void)runner;
+	return(0u);
+}
+
 uint64_t SparkStageRunnerTakeCaptureNs(SparkStageRunner *runner)
 {
 	(void)runner;

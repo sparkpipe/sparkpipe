@@ -185,6 +185,11 @@ typedef struct D41ModelState
 	uint32_t *emit_row, *bound_ratio2, *bound_ratio1, *length_ratio2, *length_ratio1, *row_lane, *row_ordinal, *tail_row_begin;
 	uint32_t tail_target, tail_first_position, compress_done, row_invariant;
 	uint32_t local_attention, landing_keys, landing_rows;
+	int16_t tap_output[D41_LAYERS];
+	uint16_t *tap_slab;
+	uint64_t tap_stride;
+	uint32_t *tap_first_row;
+	uint32_t tap_reach;
 	uint64_t landing_stride;
 	uint8_t *landing;
 	uint16_t *ring_send, *ring_landing;
@@ -937,7 +942,7 @@ static SparkStatus D41DumpRows(D41ModelState *state, uint32_t layer, uint32_t ki
 }
 
 static SparkStatus D41LayerStep(D41ModelState *state, uint32_t index, const SparkStageRunnerStep *step, const float *pre_previous,
-	cudaStream_t stream)
+	uint32_t row_offset, cudaStream_t stream)
 {
 	const D41Layer *layer = &state->layers[index];
 	const uint32_t rows = step->rows;
@@ -979,6 +984,10 @@ static SparkStatus D41LayerStep(D41ModelState *state, uint32_t index, const Spar
 		return status;
 	D41HcPostRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->partial, state->post_ffn,
 		state->comb_ffn, state->streams, D41_HIDDEN);
+	if ( state->tap_slab != 0 && state->tap_output[index] >= 0 )
+		LmStreamMeanRowsKernel<D41_THREADS><<<dim3((D41_HIDDEN + D41_THREADS - 1u) / D41_THREADS, rows), D41_THREADS, 0, stream>>>(state->streams,
+			state->tap_slab + (uint64_t)row_offset * state->tap_stride + (uint64_t)state->tap_output[index] * D41_HIDDEN, rows, D41K_HC, D41_HIDDEN,
+			state->tap_stride);
 	if ( state->dump != 0 )
 	{
 		const uint32_t header[4] = { 0x44344c44u, index, rows, D41_TOPK };
@@ -1075,9 +1084,14 @@ static SparkStatus D41StepReach(D41ModelState *state, const SparkStageRunnerStep
 	return SPARK_STATUS_OK;
 }
 
+static uint32_t D41TailReach(uint32_t index)
+{
+	return index >= D41_LAYERS ? 1u : D41_WINDOW + (D41_LAYERS - 1u - index) * (D41_WINDOW - 1u);
+}
+
 static uint32_t D41TailFirstRow(const D41ModelState *state, uint32_t index, uint32_t rows)
 {
-	const uint32_t reach = D41_WINDOW + (D41_LAYERS - 1u - index) * (D41_WINDOW - 1u);
+	const uint32_t reach = D41TailReach(index);
 	const uint32_t first = state->tail_target > reach ? state->tail_target - reach : 0u;
 	uint32_t skipped;
 	if ( state->tail_target == 0u || index < D41_CANDIDATE_SOURCE || first <= state->tail_first_position )
@@ -1145,6 +1159,12 @@ static SparkStatus D41Step(void *model, const SparkStageRunnerStep *step, void *
 	status = D41StepReach(state, step);
 	if ( status != SPARK_STATUS_OK )
 		return status;
+	if ( state->tap_first_row != 0 && state->tail_target != 0u && state->tap_reach < state->tail_target )
+	{
+		const uint32_t first = state->tail_target - state->tap_reach;
+		*state->tap_first_row = first <= state->tail_first_position ? 0u :
+			first - state->tail_first_position < rows ? first - state->tail_first_position : rows;
+	}
 	D41CompressedEmitPositionKernel<<<(rows + 255u) / 256u, 256u, 0, stream>>>(step->positions, state->bound_ratio2, rows, 2u);
 	D41CompressedEmitPositionKernel<<<(rows + 255u) / 256u, 256u, 0, stream>>>(step->positions, state->bound_ratio1, rows, 1u);
 	LmRowLanesKernel<<<step->sequences, 256u, 0, stream>>>(step->sequence_row_begin, step->sequence_row_indices, state->row_lane,
@@ -1189,7 +1209,7 @@ static SparkStatus D41Step(void *model, const SparkStageRunnerStep *step, void *
 				current = &tail;
 			}
 			if ( status == SPARK_STATUS_OK && current->rows != 0u )
-				status = D41LayerStep(state, index, current, index == 0u ? state->pre_init : state->pre_head, stream);
+				status = D41LayerStep(state, index, current, index == 0u ? state->pre_init : state->pre_head, shifted, stream);
 			state->compress_done = 0u;
 			if ( status != SPARK_STATUS_OK )
 				fprintf(stderr, "sparkpipe_dsv41_flash: layer %u failed status=%d rows=%u sequences=%u tail_rows=%u\n", index, (int)status, rows,
@@ -2013,6 +2033,36 @@ static uint32_t D41GraphKey(void *model, const SparkStageRunnerStep *step)
 	return step->commit == 0u && step->last_rows_only == 0u && step->sequences == 1u && step->rows > 1u && step->rows <= D41_VERIFY_ROWS ? 2u : 1u;
 }
 
+static SparkStatus D41TapPlan(void *model, const SparkStageRunnerTapPlan *plan)
+{
+	D41ModelState *state = (D41ModelState *)model;
+	int16_t outputs[D41_LAYERS];
+	uint32_t index, reach = UINT32_MAX;
+	if ( state == 0 || plan == 0 || plan->first_row == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for ( index = 0u; index < D41_LAYERS; ++index )
+		outputs[index] = -1;
+	for ( index = 0u; index < plan->entry_count; ++index )
+	{
+		const uint32_t layer = plan->entries[index].layer;
+		if ( plan->entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL )
+			continue;
+		if ( plan->entries[index].form != SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT || layer >= D41_LAYERS )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		outputs[layer] = (int16_t)index;
+		if ( layer >= D41_CANDIDATE_SOURCE && D41TailReach(layer + 1u) < reach )
+			reach = D41TailReach(layer + 1u);
+	}
+	memcpy(state->tap_output, outputs, sizeof(outputs));
+	state->tap_slab = plan->capture != 0u ? plan->slab : 0;
+	state->tap_stride = plan->row_stride_elements;
+	state->tap_first_row = plan->first_row;
+	state->tap_reach = reach;
+	fprintf(stderr, "sparkpipe_dsv41_flash: taps entries=%u capture=%u; layer outputs are the mean of the %u streams, valid on the last %u positions of a tail wave\n",
+		plan->entry_count, plan->capture, D41K_HC, reach);
+	return SPARK_STATUS_OK;
+}
+
 static const SparkStageRunnerModelInterface spark_dsv41_flash_stage_model =
 {
 	SPARK_STAGE_RUNNER_MODEL_ABI_VERSION,
@@ -2033,7 +2083,7 @@ static const SparkStageRunnerModelInterface spark_dsv41_flash_stage_model =
 	D41GraphKey,
 	0,
 	D41KeepRows,
-	0
+	D41TapPlan
 };
 
 const SparkStageRunnerModelInterface *SparkDsv41FlashStageModel(void)

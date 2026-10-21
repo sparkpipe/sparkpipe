@@ -319,6 +319,7 @@ typedef struct SparkStageRunnerState
 	uint32_t tap_final_entry;
 	uint32_t tap_last_steps;
 	uint32_t tap_last_rows;
+	uint32_t tap_first_row;
 	uint16_t *tap_slab_host;
 	uint16_t *tap_slab_device;
 	uint16_t *tap_chain_host;
@@ -2135,6 +2136,7 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	}
 	state->tap_last_steps = steps;
 	state->tap_last_rows = rows;
+	state->tap_first_row = 0u;
 	if ( steps > 1u && (runner->owns_embedding == 0u || runner->owns_final_head == 0u || state->head_weight == 0 ||
 		rows != dispatch->active_sequence_count || (uint64_t)rows * steps > state->max_rows ||
 		dispatch->distribution_count > STAGE_RUNNER_CHAIN_LANES || dispatch->positions == 0 || dispatch->context_length == 0) )
@@ -2445,6 +2447,7 @@ SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRu
 	plan.row_capacity = state->max_rows;
 	plan.slab = state->tap_slab_device;
 	plan.row_stride_elements = stride;
+	plan.first_row = &state->tap_first_row;
 	if ( model_entries != 0u )
 	{
 		const SparkStatus status = state->model_interface->tap_plan(state->model, &plan);
@@ -2472,6 +2475,13 @@ SparkStatus SparkStageRunnerTapShape(const SparkStageRunner *runner, uint32_t *h
 	*hidden = state->geometry.hidden;
 	*total_layers = state->geometry.total_layers;
 	return SPARK_STATUS_OK;
+}
+
+uint32_t SparkStageRunnerTapFirstRow(const SparkStageRunner *runner)
+{
+	if ( runner == 0 || runner->private_state == 0 )
+		return 0u;
+	return ((const SparkStageRunnerState *)runner->private_state)->tap_first_row;
 }
 
 const uint16_t *SparkStageRunnerTapRows(const SparkStageRunner *runner, uint32_t step, uint32_t rows, uint64_t *row_stride_elements)
