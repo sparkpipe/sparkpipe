@@ -1716,6 +1716,45 @@ static void TestScenarioCancelledInflightPrefillBusy(const SparkModelResidentDep
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioPartiallyAdmittedPrefillReleases(const SparkModelResidentDeployment *deployment, const char *runtime_root)
+{
+	TestBatchState state;
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	uint64_t ids[TEST_RANKS];
+	uint32_t releases[TEST_RANKS];
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmit(engine,1u,560u,2u);
+	for (uint32_t step=0u; step<20u; step++)
+		(void)SparkModelBatchEngineProgress(engine,8u);
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+	{
+		ids[rank] = MockResidentClientPendingEvent(rank,MOCK_EVENT_RESULT,0u);
+		releases[rank] = MockResidentClientReleaseSubmissions(rank);
+		CHECK(ids[rank] != 0u,"partial admission: the prefill waits for its result on every rank");
+	}
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+		CHECK(MockResidentClientDeliverEvent(rank,ids[rank],MOCK_EVENT_RESULT,rank == 1u ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK,1u) != 0u,
+			"partial admission: rank 1 fails the prefill result, the others admit it");
+	TestDrive(engine,200u);
+	CHECK(state.error_events[1] == 1u && state.completed_events[1] == 0u,"partial admission: the request fails once");
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+		CHECK(MockResidentClientReleaseSubmissions(rank) == releases[rank] + 1u,
+			"partial admission: the failed prefill is released on every rank, since some of them admitted it");
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.live_request_count == 0u,
+		"partial admission: the request slot is free after the release");
+	TestSubmit(engine,2u,561u,2u);
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	CHECK(state.completed_events[2] == 1u && state.error_events[2] == 0u,"partial admission: the next request on the slot completes");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioCompletionBeforeResult(const SparkModelResidentDeployment *deployment, const char *runtime_root)
 {
 	TestBatchState state;
@@ -2821,6 +2860,7 @@ int main(void)
 	TestScenarioBusyRestoreDeadline(&deployment,runtime_root);
 	TestScenarioPendingRestoreRetries(&deployment,runtime_root);
 	TestScenarioDriverIoError(&deployment,runtime_root);
+	TestScenarioPartiallyAdmittedPrefillReleases(&deployment,runtime_root);
 	TestScenarioInflightExpiryHoldsSlot(&deployment,runtime_root);
 	TestScenarioBusyAdmittedPrefillReleases(&deployment,runtime_root);
 	TestScenarioCancelledInflightPrefillBusy(&deployment,runtime_root);

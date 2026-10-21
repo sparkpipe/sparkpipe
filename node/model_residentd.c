@@ -812,6 +812,8 @@ static SparkStatus SparkModelResidentdValidatePersistentSlot(
 	slot = &runtime->sequence_slots[lane->resident_sequence_slot];
 	if ( SparkModelServingWorkKindUsesRows(route->submission.work_kind) == 0u )
 	{
+		if ( slot->bound == 0u && route->submission.work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+			return(SPARK_STATUS_OK);
 		if ( slot->bound == 0u )
 			SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 		return(SparkModelResidentdSequenceSlotMatches(slot,lane) != 0u ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);

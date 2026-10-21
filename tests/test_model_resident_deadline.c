@@ -137,6 +137,8 @@ static void TestPersistentSlotRequiresRelease(void)
 	lane.sequence_id = 1u;
 	assert(SparkModelResidentdValidatePersistentSlot(&runtime,&route,0u) == SPARK_STATUS_OK);
 	slot.bound = 0u;
+	assert(SparkModelResidentdValidatePersistentSlot(&runtime,&route,0u) == SPARK_STATUS_OK);
+	route.submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH;
 	assert(SparkModelResidentdValidatePersistentSlot(&runtime,&route,0u) == SPARK_STATUS_NOT_FOUND);
 	route.submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
 	lane.sequence_id = 2u;
