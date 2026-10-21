@@ -3,7 +3,9 @@
 regenerates it from where its envelope starts (prompt plus the tokens before it, the rest of
 the token budget, a bumped seed) up to TOOL_CALL_RETRIES times, then fails with an explicit
 tool_call_invalid error. Greedy and logprob requests are never regenerated. A call cut off by
-the token budget ends the reply as "length" without the partial call. Every fault is counted."""
+the token budget ends the reply as "length" without the partial call. A call the model ended with a stop
+token before its end marker is accepted as it is when its body parses and names every required parameter
+of a declared tool, greedy or not. Every fault is counted."""
 
 import asyncio
 import importlib.util
@@ -21,7 +23,7 @@ RequestError = chat_frontend.RequestError
 
 O, C, S = "<|open|>", "<|close|>", "<|sep|>"
 PIECES = ["Checking. ", O + "call", ' tool="read"' + S, O + 'argument key="path" type="string"' + S, "a.txt", C + "argument" + S,
-          C + "call" + S, " broken", "<eos>", O + "message"]
+          C + "call" + S, " broken", "<eos>", O + "message", C + "call"]
 GOOD = [1, 2, 3, 4, 5, 6]
 BAD = [1, 7, 6]
 PROMPT = [900, 901, 902]
@@ -77,7 +79,7 @@ class Engine:
 
 async def collect(frontend, model, body):
     parser = chat_frontend.OutputParser(model, [{"type": "function", "function": {"name": "read", "parameters": {
-        "type": "object", "properties": {"path": {"type": "string"}}}}}], False, [])
+        "type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}}], False, [])
     events = []
     try:
         async for event in frontend.generate(model, body, parser):
@@ -161,7 +163,28 @@ async def run(failures):
         events, error = await collect(frontend, model, dict(sampled))
         calls = [value for kind, value in events if kind == "tool_call"]
         check(error is None and len(calls) == 1 and len(engine.requests) == 2,
-              "a call left open by the end of the sequence is regenerated")
+              "a call left open by the end of the sequence without its required arguments is regenerated")
+
+        for name, tail in (("no end marker", []), ("half an end marker", [10])):
+            engine.requests.clear()
+            before = frontend.tool_call_faults.get("repaired", 0)
+            engine.replies = [([0, 1, 2, 3, 4, 5] + tail + [8], "stop")]
+            events, error = await collect(frontend, model, {"prompt_token_ids": PROMPT, "max_tokens": 40, "stream": True})
+            calls = [value for kind, value in events if kind == "tool_call"]
+            finish = [value for kind, value in events if kind == "finish"]
+            check(error is None and len(calls) == 1 and json.loads(calls[0]["function"]["arguments"]) == {"path": "a.txt"} and len(engine.requests) == 1,
+                  f"a greedy call ended by a stop token with {name} is accepted as it is, without regenerating")
+            check(finish and finish[0]["finish_reason"] == "tool_calls" and frontend.tool_call_faults.get("repaired", 0) == before + 1,
+                  f"the call with {name} ends the reply as tool_calls and is counted as repaired")
+
+        engine.requests.clear()
+        cut = frontend.tool_call_faults.get("cut_by_length", 0)
+        engine.replies = [([0, 1, 2, 3, 4, 5], "length")]
+        events, error = await collect(frontend, model, dict(sampled, max_tokens=6))
+        finish = [value for kind, value in events if kind == "finish"]
+        check(error is None and not [value for kind, value in events if kind == "tool_call"] and finish and finish[0]["finish_reason"] == "length" and
+              frontend.tool_call_faults.get("cut_by_length", 0) == cut + 1,
+              "a parseable call cut by the token budget is still cut, since the model may not have finished it")
     finally:
         await frontend.session.close()
         await runner.cleanup()
@@ -175,7 +198,7 @@ def main():
     if failures:
         return 1
     print("PASS chat frontend tool call recovery: bad calls are regenerated from their envelope start, then refused with an explicit error; "
-          "greedy and logprob requests are never regenerated; a call cut by the budget ends as length; every fault is counted")
+          "greedy and logprob requests are never regenerated; a call cut by the budget ends as length; a complete call missing only its end marker at a stop is accepted; every fault is counted")
     return 0
 
 

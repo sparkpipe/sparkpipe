@@ -748,6 +748,15 @@ def tool_parameter_types(tools):
     return types
 
 
+def tool_required_parameters(tools):
+    required = {}
+    for tool in tools or []:
+        function = tool.get("function", tool) if isinstance(tool, dict) else {}
+        listed = (function.get("parameters") or {}).get("required") or []
+        required[function.get("name")] = [key for key in listed if isinstance(key, str)]
+    return required
+
+
 def call_entry(name, arguments):
     return {"id": "call_" + uuid.uuid4().hex[:24], "type": "function", "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}}
 
@@ -758,6 +767,7 @@ class OutputParser:
         self.reasoning_end = model.reasoning["end"]
         self.call = model.tool_calls
         self.types = tool_parameter_types(tools)
+        self.required = tool_required_parameters(tools)
         self.stops = [stop for stop in stops if stop] + model.end_markers
         self.end_markers = model.end_markers
         self.drops = model.content_markers
@@ -780,8 +790,18 @@ class OutputParser:
         resume.resume = None
         self.resume = resume
 
-    def bad_call(self, kind, text):
-        return ("bad_call", {"kind": kind, "text": text, "offset": self.call_offset, "resume": self.resume})
+    def bad_call(self, kind, text, repair=None):
+        return ("bad_call", {"kind": kind, "text": text, "offset": self.call_offset, "resume": self.resume, "repair": repair})
+
+    def unclosed_call(self):
+        body = self.buffer[:len(self.buffer) - longest_marker_prefix(self.buffer, [self.call["end"]])]
+        parsed = self.parse_call(body) if body.strip() else None
+        if parsed is not None:
+            name = parsed["function"]["name"]
+            arguments = json.loads(parsed["function"]["arguments"])
+            if name not in self.required or not isinstance(arguments, dict) or any(key not in arguments for key in self.required[name]):
+                parsed = None
+        return self.bad_call("unclosed", self.call["start"] + self.buffer, parsed)
 
     def parse_call(self, body):
         if self.call["format"] == "tagged":
@@ -984,7 +1004,7 @@ class OutputParser:
             if self.state == "reasoning":
                 events.append(("reasoning", self.buffer))
             elif self.state == "call":
-                events.append(self.bad_call("unclosed", self.call["start"] + self.buffer))
+                events.append(self.unclosed_call())
             else:
                 events.append(("content", self.buffer))
         self.buffer = ""
@@ -996,6 +1016,7 @@ class ChannelParser(OutputParser):
         self.channel = model.channels
         self.call = model.tool_calls
         self.types = tool_parameter_types(tools)
+        self.required = tool_required_parameters(tools)
         self.stops = [stop for stop in stops if stop] + model.end_markers
         self.end_markers = model.end_markers
         self.drops = model.content_markers
@@ -1083,7 +1104,7 @@ class ChannelParser(OutputParser):
         events = []
         if not self.stopped and (self.buffer or self.state == "call"):
             if self.state == "call":
-                events.append(self.bad_call("unclosed", self.call["start"] + self.buffer))
+                events.append(self.unclosed_call())
             elif self.state != "header":
                 self.emit(events, self.buffer)
         self.buffer = ""
@@ -1439,6 +1460,11 @@ class Frontend:
             await stream.aclose()
         if "fault" not in outcome:
             for event in parser.finish():
+                if event[0] == "bad_call" and event[1]["kind"] == "unclosed" and event[1]["repair"] is not None and finish == "stop":
+                    self.tool_call_fault(model, event[1], outcome.get("attempt", 0), "repaired")
+                    parser.calls += 1
+                    yield ("tool_call", event[1]["repair"])
+                    continue
                 if event[0] == "bad_call":
                     outcome["fault"] = event[1]
                     break
@@ -1463,7 +1489,7 @@ class Frontend:
         budget = engine_body.get("max_tokens")
         body, kept, attempt = engine_body, [], 0
         while True:
-            outcome = {}
+            outcome = {"attempt": attempt}
             async for event in self.generate_attempt(model, body, parser, outcome):
                 yield event
             fault = outcome.get("fault")
