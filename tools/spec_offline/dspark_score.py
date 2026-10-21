@@ -10,6 +10,8 @@ the verifier's keyed Gumbel noise for sampled ones. Tokens per round = accepted 
 --select names directories of <task>.u32 token files (prompt count, total count, prompt and reply tokens)
 written by the corpus recorders; only the recorded request whose every input token matches a file, the
 one covering most positions per file, is scored, so one recording can hold greedy and sampled corpora.
+--fast scores the CUDA-graph drafter (dspark_fast.DsparkFast) instead of the eager reference; both
+scores on the same recording must agree before the fast drafter serves.
 """
 import argparse
 import json
@@ -56,10 +58,15 @@ def main():
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--select", nargs="+")
+    parser.add_argument("--fast", action="store_true")
     parser.add_argument("--out", required=True)
     parser.add_argument("--anchors-out")
     args = parser.parse_args()
-    drafter = DsparkDrafter(args.checkpoint)
+    if args.fast:
+        from dspark_fast import DsparkFast
+        drafter = DsparkFast(args.checkpoint)
+    else:
+        drafter = DsparkDrafter(args.checkpoint)
     device = drafter.device
     hello, streams = requests(args.taps, None)
     missing = [name for name in drafter.tap_names if name not in hello["entries"]]
@@ -75,7 +82,7 @@ def main():
     slot_hits = [0] * drafter.block
     slot_tries = [0] * drafter.block
     calibration = defaultdict(lambda: [0, 0])
-    report = {"arm": {"taps": list(drafter.tap_names), "temperature": args.temperature, "top_p": args.top_p, "top_k": args.top_k, "seed": args.seed},
+    report = {"arm": {"drafter": "fast" if args.fast else "eager", "taps": list(drafter.tap_names), "temperature": args.temperature, "top_p": args.top_p, "top_k": args.top_k, "seed": args.seed},
               "requests": []}
     anchor_log = open(args.anchors_out, "w") if args.anchors_out else None
     total_anchors = total_accepted = 0
