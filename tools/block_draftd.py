@@ -11,6 +11,10 @@ of block drafts, each scored by the drafter's confidence head.
 A sequence whose taps start after position 0 (a prefix-cache hit on the
 target) takes the missing context from another sequence that shares those
 tokens. Without a donor the draft attends only to the positions it has.
+
+--drafter dspark:CHECKPOINT serves a checkpoint's built-in DSpark drafter
+(spec_offline/dspark_fast.py): taps o36,o37,o38, a 128-position ring of
+window keys per sequence, five drafts per round with sigmoid confidences.
 """
 import argparse
 import io
@@ -99,14 +103,68 @@ class Context:
         return sum(t.numel() * t.element_size() for t in self.keys + self.values)
 
 
+class RingContext:
+    def __init__(self, drafter):
+        self.drafter = drafter
+        self.ring = drafter.context()
+        self.window = drafter.window
+        self.positions = np.full(self.window, -1, dtype=np.int64)
+        self.tokens = np.zeros(self.window, dtype=np.uint32)
+        self.used = time.monotonic()
+
+    def write(self, first, tokens, taps):
+        stale = self.positions >= first
+        if stale.any():
+            self.positions[stale] = -1
+            self.ring.positions[torch.from_numpy(np.flatnonzero(stale)).to(self.ring.positions.device)] = -1
+        skip = max(0, len(tokens) - self.window)
+        first, tokens, taps = first + skip, tokens[skip:], taps[skip:]
+        positions = np.arange(first, first + len(tokens))
+        self.drafter.ingest(self.ring, positions.tolist(), taps)
+        self.positions[positions % self.window] = positions
+        self.tokens[positions % self.window] = tokens
+        self.used = time.monotonic()
+
+    def held(self, positions):
+        return self.positions[positions % self.window] == positions
+
+    def copy_from(self, donor, positions):
+        slots = positions % self.window
+        index = torch.from_numpy(slots).to(self.ring.keys.device)
+        self.ring.keys.index_copy_(1, index, donor.ring.keys.index_select(1, index))
+        self.ring.positions.index_copy_(0, index, donor.ring.positions.index_select(0, index))
+        self.positions[slots] = positions
+        self.tokens[slots] = donor.tokens[slots]
+
+    def bytes(self):
+        return self.ring.keys.numel() * self.ring.keys.element_size()
+
+
+def dspark_rule(drafter, sampling):
+    seed, inverse_temperature, nucleus, top_k = sampling
+    if inverse_temperature == 0.0:
+        return None
+    device = drafter.device
+    return (torch.tensor(seed - (1 << 64) if seed >= (1 << 63) else seed, device=device), torch.tensor(inverse_temperature, device=device),
+            torch.tensor(nucleus if nucleus < 1.0 else 0.0, device=device), torch.tensor(top_k, device=device))
+
+
 class Server:
     def __init__(self, args):
         self.args = args
-        self.drafter = open_drafter(args.drafter, args.target_shard, {"embed": args.embed, "head": args.head, "norm": args.norm}, "cuda")
+        self.dspark = args.drafter.startswith("dspark:")
+        if self.dspark:
+            from dspark_fast import DsparkFast
+            self.drafter = DsparkFast(args.drafter[len("dspark:"):], "cuda")
+            started = time.monotonic()
+            self.drafter.warm()
+            print(f"DSPARK-WARM graphs captured in {time.monotonic() - started:.1f} s", flush=True)
+        else:
+            self.drafter = open_drafter(args.drafter, args.target_shard, {"embed": args.embed, "head": args.head, "norm": args.norm}, "cuda")
         self.latent = isinstance(self.drafter, LatentBlockDrafter)
-        self.layers = [f"o{layer}" for layer in self.drafter.layer_ids]
-        self.graph = LatentDraftGraph(self.drafter) if self.latent else DraftGraph(self.drafter)
-        self.max_drafts = self.drafter.max_drafts if self.latent else self.drafter.block
+        self.layers = list(self.drafter.tap_names) if self.dspark else [f"o{layer}" for layer in self.drafter.layer_ids]
+        self.graph = None if self.dspark else LatentDraftGraph(self.drafter) if self.latent else DraftGraph(self.drafter)
+        self.max_drafts = self.drafter.max_drafts if self.latent or self.dspark else self.drafter.block
         self.columns = None
         self.hello = None
         self.work = queue.Queue()
@@ -184,7 +242,7 @@ class Server:
         taps = rows.to(self.drafter.device)[:, self.columns].reshape(len(tokens), -1)
         context = self.contexts.get(sequence)
         if context is None or first == 0:
-            context = LatentContext(self.drafter) if self.latent else Context(self.drafter, self.args.window)
+            context = RingContext(self.drafter) if self.dspark else LatentContext(self.drafter) if self.latent else Context(self.drafter, self.args.window)
             self.contexts[sequence] = context
         self.contexts.move_to_end(sequence)
         context.write(first, tokens, taps)
@@ -305,7 +363,7 @@ class Server:
             return self.draft_latent(request)
         sequence, anchor, position, committed, depth, sampling = request
         context = self.contexts.get(sequence)
-        positions = np.arange(max(0, position - self.args.window), position)
+        positions = np.arange(max(0, position - context.window), position)
         held = context.held(positions)
         if not held.all():
             self.fill_window(context, sequence, committed, positions)
@@ -317,9 +375,13 @@ class Server:
             self.stats["unavailable"] += 1
             print(f"TOKEN-MISMATCH sequence {sequence} position {position}", flush=True)
             return None
-        start, block_at, valid = context.span(positions)
         started = time.monotonic()
-        drafts, confidence = self.graph.draft(int(anchor), position, context.keys, context.values, start, block_at, valid, min(depth, self.drafter.block), sampling)
+        if self.dspark:
+            drafts, confidence = self.drafter.draft(context.ring, int(anchor), position, dspark_rule(self.drafter, sampling))
+            drafts, confidence = drafts[:min(depth, self.max_drafts)], confidence[:min(depth, self.max_drafts)]
+        else:
+            start, block_at, valid = context.span(positions)
+            drafts, confidence = self.graph.draft(int(anchor), position, context.keys, context.values, start, block_at, valid, min(depth, self.drafter.block), sampling)
         elapsed = int((time.monotonic() - started) * 1e6)
         self.timing["compute"] += elapsed / 1e6
         self.timing["context"] += position
@@ -395,8 +457,8 @@ class Server:
         threading.Thread(target=self.gpu_loop, daemon=True).start()
         listener = socket.create_server((self.args.draft_host, self.args.draft_port))
         print(f"DRAFTD-READY taps {self.args.tap_host}:{self.args.tap_port} drafts {self.args.draft_host}:{self.args.draft_port} "
-              f"layers {self.layers} drafter {'latent attention ' + self.drafter.attention if self.latent else 'block'} max_drafts {self.max_drafts} "
-              f"window {self.drafter.windows if self.latent else self.args.window}", flush=True)
+              f"layers {self.layers} drafter {'dspark' if self.dspark else 'latent attention ' + self.drafter.attention if self.latent else 'block'} "
+              f"max_drafts {self.max_drafts} window {self.drafter.windows if self.latent else self.drafter.window if self.dspark else self.args.window}", flush=True)
         while True:
             connection, peer = listener.accept()
             connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -411,7 +473,7 @@ class Server:
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--drafter", required=True)
-    parser.add_argument("--target-shard", required=True)
+    parser.add_argument("--target-shard", default="")
     parser.add_argument("--embed", default="language_model.model.embed_tokens.weight")
     parser.add_argument("--head", default="language_model.lm_head.weight")
     parser.add_argument("--norm", default="language_model.model.norm.weight")
@@ -427,6 +489,8 @@ def main():
     args = parser.parse_args()
     if args.window <= 0:
         parser.error("--window must be positive")
+    if not args.drafter.startswith("dspark:") and not args.target_shard:
+        parser.error("--target-shard is required for block and latent drafters")
     Server(args).run()
 
 

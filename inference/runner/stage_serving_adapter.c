@@ -98,6 +98,7 @@ typedef struct SparkStageServingState
 	SparkStageRunnerTapEntry tap_entries[SPARK_STAGE_RUNNER_TAP_MAX_ENTRIES];
 	uint32_t tap_count;
 	uint32_t tap_rank;
+	uint32_t tap_window;
 	char *tap_file;
 	char *tap_stream;
 	uint64_t tap_file_max_bytes;
@@ -271,6 +272,7 @@ static SparkStatus StageServingParseTaps(SparkStageServingState *state, SparkJso
 		return SPARK_STATUS_SCHEMA_ERROR;
 	}
 	state->tap_rank = StageServingJsonU32(doc, taps, "rank", 0u);
+	state->tap_window = StageServingJsonU32(doc, taps, "window", 0u);
 	token = SparkJsonFindObjectMember(doc, taps, "file_max_bytes");
 	if ( file >= 0 && (token < 0 || SparkJsonGetUInt64(doc, token, &state->tap_file_max_bytes) != SPARK_STATUS_OK || state->tap_file_max_bytes == 0u) )
 	{
@@ -534,8 +536,17 @@ static void StageServingTapEmit(SparkStageServingState *state, const SparkModelS
 		SparkTapStreamFrame frame;
 		uint64_t stride = 0u, row_bytes, bytes;
 		const uint32_t chain = steps > 1u ? 1u : 0u;
-		const uint32_t count = chain != 0u ? steps : kept != 0 ? kept[s] : runs[s + 1u] - runs[s];
-		const uint32_t first_row = order[runs[s]];
+		const uint32_t listed = chain != 0u ? steps : kept != 0 ? kept[s] : runs[s + 1u] - runs[s];
+		const uint32_t valid = chain == 0u && kept == 0 && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ?
+			SparkStageRunnerTapFirstRow(&state->runner) : 0u;
+		uint32_t skip = 0u;
+		while ( chain == 0u && skip < listed && order[runs[s] + skip] < valid )
+			skip++;
+		if ( chain == 0u && state->tap_window != 0u && listed - skip > state->tap_window )
+			skip = listed - state->tap_window;
+		const uint32_t count = listed - skip;
+		const uint32_t begin = runs[s] + skip;
+		const uint32_t first_row = count != 0u ? order[begin] : 0u;
 		const uint16_t *base = SparkStageRunnerTapRows(&state->runner, 0u, rows, &stride);
 		if ( base == 0 || count == 0u )
 			continue;
@@ -551,7 +562,7 @@ static void StageServingTapEmit(SparkStageServingState *state, const SparkModelS
 		}
 		for ( uint32_t k = 0u; k < count; ++k )
 			tokens[k] = chain != 0u ? (k == 0u ? submission->token_ids[first_row] : state->completion_tokens[(k - 1u) * rows + first_row]) :
-				submission->token_ids[order[runs[s] + k]];
+				submission->token_ids[order[begin + k]];
 		memset(&frame, 0, sizeof(frame));
 		frame.magic = SPARK_TAP_STREAM_MAGIC;
 		frame.version = SPARK_TAP_STREAM_VERSION;
@@ -568,7 +579,7 @@ static void StageServingTapEmit(SparkStageServingState *state, const SparkModelS
 		frame.flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_TAP_STREAM_FLAG_PREFILL :
 			kept != 0 ? SPARK_TAP_STREAM_FLAG_VERIFY : chain != 0u ? SPARK_TAP_STREAM_FLAG_DECODE | SPARK_TAP_STREAM_FLAG_CHAIN : SPARK_TAP_STREAM_FLAG_DECODE;
 		frame.tail_token = state->runner.owns_final_head == 0u ? SPARK_TAP_STREAM_NO_TOKEN :
-			chain != 0u ? state->completion_tokens[(steps - 1u) * rows + first_row] : state->completion_tokens[order[runs[s] + count - 1u]];
+			chain != 0u ? state->completion_tokens[(steps - 1u) * rows + first_row] : state->completion_tokens[order[begin + count - 1u]];
 		frame.entry_count = state->tap_count;
 		frame.payload_bytes = bytes - sizeof(frame);
 		if ( StageServingTapWrite(state, &frame, sizeof(frame)) != 0 || StageServingTapWrite(state, tokens, (size_t)count * sizeof(uint32_t)) != 0 )
@@ -576,7 +587,7 @@ static void StageServingTapEmit(SparkStageServingState *state, const SparkModelS
 		for ( uint32_t k = 0u; k < count && state->tap_full == 0u; ++k )
 		{
 			const uint16_t *row = chain != 0u ? SparkStageRunnerTapRows(&state->runner, k, rows, &stride) + (uint64_t)first_row * stride :
-				base + (uint64_t)order[runs[s] + k] * stride;
+				base + (uint64_t)order[begin + k] * stride;
 			if ( StageServingTapWrite(state, row, (size_t)row_bytes) != 0 )
 				state->tap_full = 1u;
 		}
