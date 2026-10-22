@@ -2488,6 +2488,33 @@ static void TestDraftStop(TestDraftServer *server)
 	(void)pthread_join(server->thread,0);
 }
 
+static uint32_t TestHistoryMatch(const uint32_t *script,uint32_t position)
+{
+	uint32_t end,length,best = 0u;
+	for (end=0u; end<position; end++)
+	{
+		for (length=0u; length<64u && length<=end && script[end - length] == script[position - length]; length++)
+			;
+		if ( length > best )
+			best = length;
+	}
+	return(best);
+}
+
+static uint32_t TestModelFramesPastDepth(const uint32_t *script,uint32_t depth,uint32_t *short_match_frames)
+{
+	uint32_t index,position,rows,past = 0u;
+	*short_match_frames = 0u;
+	for (index=0u; MockResidentClientVerifyFrame(index,&position,&rows) != 0u; index++)
+		if ( TestHistoryMatch(script,position) < 8u )
+		{
+			(*short_match_frames)++;
+			if ( rows > depth + 1u )
+				past++;
+		}
+	return(past);
+}
+
 static void TestRunModelDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root,uint32_t mode,const uint32_t *script,uint32_t budget,
 	TestBatchState *state,SparkModelBatchEngineView *view,uint32_t *verify_submissions,uint32_t *verify_rows,TestDraftServer *server)
 {
@@ -2508,7 +2535,7 @@ static void TestRunModelDrafts(const SparkModelResidentDeployment *deployment,co
 
 static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
-	uint32_t script[256],index,submissions,rows;
+	uint32_t script[256],index,submissions,rows,short_frames;
 	SparkModelBatchEngineView view;
 	TestBatchState state;
 	TestDraftServer server;
@@ -2516,6 +2543,8 @@ static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployme
 		script[index] = 3000u + (index * 37u + index * index * 11u) % 4093u;
 	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_CORRECT,script,80u,&state,&view,&submissions,&rows,&server);
 	CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u,"model drafts: a stream with no repeats emits exactly the model's greedy stream");
+	CHECK(TestModelFramesPastDepth(script,4u,&short_frames) == 0u && short_frames != 0u,
+		"model drafts: with no earlier passage to continue, a model frame never runs past the drafter's depth");
 	CHECK(submissions != 0u && rows > submissions && view.speculative_accepted_token_count >= 40u,"model drafts: confident drafts are verified in multi-row frames and accepted");
 	CHECK(server.requests != 0u && server.bad_requests == 0u,"model drafts: each request names the target, the anchor and every committed token");
 	CHECK(TestLaneInputsFollowScript(1u,script,256u) != 0u,"model drafts: every decode lane's input token is a committed model token");
@@ -2565,6 +2594,21 @@ static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployme
 			"model drafts: an engine whose draft server is down at start still starts and emits exactly the model's greedy stream");
 		(void)close(closed);
 	}
+	for (index=0u; index<40u; index++)
+		script[index] = 1000u + (index * 7u) % 97u;
+	for (index=40u; index<50u; index++)
+		script[index] = 6000u + index;
+	for (index=50u; index<80u; index++)
+		script[index] = script[index - 40u];
+	for (index=80u; index<256u; index++)
+		script[index] = 3000u + (index * 37u + index * index * 11u) % 4093u;
+	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_CORRECT,script,60u,&state,&view,&submissions,&rows,&server);
+	CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,44u,60u) != 0u,
+		"model drafts: an edit that resumes an earlier passage after an insertion emits exactly the model's greedy stream");
+	CHECK(TestModelFramesPastDepth(script,4u,&short_frames) != 0u,
+		"model drafts: a model draft that completes an earlier passage carries the passage's continuation in the same frame");
+	CHECK(view.speculative_accepted_token_count >= 40u && TestLaneInputsFollowScript(1u,script,256u) != 0u,
+		"model drafts: the carried continuation is accepted and only committed tokens become lane inputs");
 }
 
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root)
