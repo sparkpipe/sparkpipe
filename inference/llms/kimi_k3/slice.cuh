@@ -63,6 +63,7 @@ struct K3LayerWeights
 #define K3_COLLECTIVE_MLA_PARTIALS 5u
 #define K3_COLLECTIVE_MLA_DOWN 6u
 #define K3_COLLECTIVE_MLA_KEYS 7u
+#define K3_COLLECTIVE_LATENT_SLICE 8u
 #define K3_COLLECTIVE_FINISH 0x100u
 #define K3_COLLECTIVE_BEGIN 0x200u
 #define K3_COLLECTIVE_ROWS 0x400u
@@ -721,13 +722,13 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 			if ( status == LM_LAUNCH_OK && state->lazy_acquire != 0 )
 				status = state->lazy_acquire(state->lazy_context,layer,(void *)a);
 			K3_PAIR_DO(K3LayerLatentMoe<Format>(a,total,total * K3_TOP_K,multiprocessors,sa,1u));
-			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,3u,1u));
+			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,K3_COLLECTIVE_LATENT_SLICE,0u));
 			K3_PAIR_DO(K3LayerSharedDown<Format>(b,rows_b,b->shared_mid_bf16,multiprocessors,sb));
-			K3_PAIR_DO(K3PairRound(state,lane_b,stream,sa,sb,layer,3u,1u));
+			K3_PAIR_DO(K3PairRound(state,lane_b,stream,sa,sb,layer,K3_COLLECTIVE_LATENT_SLICE,0u));
 			K3_PAIR_DO(K3LayerSharedDown<Format>(a,rows_a,a->shared_mid_bf16,multiprocessors,sa));
-			K3_PAIR_DO(K3LayerLatentMoe<Format>(a,rows_a,rows_a * K3_TOP_K,multiprocessors,sa,2u));
+			K3_PAIR_DO(K3LayerLatentMoe<Format>(a,rows_a,rows_a * K3_TOP_K,multiprocessors,sa,3u));
 			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,1u | row_shard,0u));
-			K3_PAIR_DO(K3LayerLatentMoe<Format>(b,rows_b,rows_b * K3_TOP_K,multiprocessors,sb,2u));
+			K3_PAIR_DO(K3LayerLatentMoe<Format>(b,rows_b,rows_b * K3_TOP_K,multiprocessors,sb,3u));
 			K3_PAIR_DO(K3PairRound(state,lane_b,stream,sb,sb,layer,1u | row_shard,0u));
 			if ( status != LM_LAUNCH_OK )
 				return(K3SliceFailure(layer,"pair-routed",status));

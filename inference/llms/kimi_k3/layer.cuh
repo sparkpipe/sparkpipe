@@ -1068,6 +1068,8 @@ static int32_t K3LayerMoeWeighted(const K3LayerBuffers *b, uint32_t rows,
 			b->latent_full_bf16,b->latent_bf16,moe_in,b->tp_rank * moe_in,K3_ROUTED_EXPERT_HIDDEN);
 		return(K3LayerMoeOutput<Format>(b,rows,multiprocessors,stream));
 	}
+	if ( phase == 3u )
+		return(b->tp_sharded != 0u ? K3LayerMoeOutput<Format>(b,rows,multiprocessors,stream) : LM_LAUNCH_ERR_SHAPE);
 	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), packed_rows, K3_LAYER_THREADS, 0, stream,
 		b->gate_up_bf16,b->intermediate_bf16,
 		K3_EXPERT_INTERMEDIATE,

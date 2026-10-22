@@ -95,6 +95,46 @@ __global__ static void K3RunnerLatentRowsKernel(const uint16_t *gathered, uint16
 		gathered[((uint64_t)(column / slice) * rows + row) * slice + (column % slice)];
 }
 
+__global__ static void K3RunnerLatentColumnsKernel(const uint16_t *latent, uint16_t *columns,
+	uint32_t rows, uint32_t slice, uint32_t ranks)
+{
+	const uint32_t row = blockIdx.y, column = (blockIdx.x * blockDim.x) + threadIdx.x;
+	if ( column >= slice * ranks )
+		return;
+	columns[((uint64_t)(column / slice) * rows + row) * slice + (column % slice)] =
+		latent[(uint64_t)row * slice * ranks + column];
+}
+
+__global__ static void K3RunnerLatentSquaresKernel(const uint16_t *latent, uint32_t *squares, uint32_t slice)
+{
+	const uint32_t row = blockIdx.x;
+	float total = 0.0f, value;
+	uint32_t column;
+	for (column = threadIdx.x; column < slice; column += 32u)
+	{
+		value = LmBf16ToFloat(latent[(uint64_t)row * slice + column]);
+		total += value * value;
+	}
+	for (column = 16u; column != 0u; column >>= 1u)
+		total += __shfl_xor_sync(0xffffffffu, total, column);
+	if ( threadIdx.x == 0u )
+		squares[row] = __float_as_uint(total);
+}
+
+__global__ static void K3RunnerLatentNormKernel(uint16_t *latent, const uint32_t *squares, const uint16_t *weight,
+	uint32_t rows, uint32_t slice, uint32_t ranks, float epsilon)
+{
+	const uint32_t row = blockIdx.x;
+	float total = 0.0f, scale;
+	uint32_t rank, column;
+	for (rank = 0u; rank < ranks; ++rank)
+		total += __uint_as_float(squares[(uint64_t)rank * rows + row]);
+	scale = rsqrtf((total / (float)(slice * ranks)) + epsilon);
+	for (column = threadIdx.x; column < slice; column += blockDim.x)
+		latent[(uint64_t)row * slice + column] =
+			LmFloatToBf16(LmBf16ToFloat(latent[(uint64_t)row * slice + column]) * scale * LmBf16ToFloat(weight[column]));
+}
+
 __global__ static void K3RunnerMlaDownRowsKernel(const uint16_t *gathered, uint16_t *query,
 	uint16_t *key, uint32_t rows, uint32_t query_slice, uint32_t key_slice)
 {
@@ -358,6 +398,30 @@ static void K3RunnerGatherLatent(SparkK3ModelState *state, K3LayerBuffers *b, cu
 			gathered, b->latent_full_bf16, rows, slice, ranks);
 }
 
+static void K3RunnerLatentSlice(SparkK3ModelState *state, K3LayerBuffers *b, cudaStream_t stream, uint32_t rows)
+{
+	const uint32_t slice = K3_RANK_DIM(b, routed_down_rows, K3_ROUTED_EXPERT_HIDDEN);
+	const uint32_t ranks = slice != 0u ? K3_ROUTED_EXPERT_HIDDEN / slice : 0u;
+	uint32_t *squares = (uint32_t *)(b->latent_bf16 + (uint64_t)rows * slice);
+	if ( rows == 0u || ranks != state->tp_degree || ranks * slice != K3_ROUTED_EXPERT_HIDDEN || slice % 4u != 0u ||
+		b->routed_norm_weight == 0 || (uint64_t)rows * K3_ROUTED_EXPERT_HIDDEN > (uint64_t)state->fused_rows * K3_HIDDEN )
+	{
+		K3ModelFail(state);
+		return;
+	}
+	K3RunnerLatentColumnsKernel<<<dim3((K3_ROUTED_EXPERT_HIDDEN + 255u) / 256u, rows), 256u, 0, stream>>>(
+		b->latent_bf16, state->fused_device, rows, slice, ranks);
+	K3RunnerRound(state, stream, rows, state->fused_device, b->latent_bf16, K3_ROUTED_EXPERT_HIDDEN,
+		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16, K3_RUNNER_STAGE_ALL);
+	K3RunnerLatentSquaresKernel<<<rows, 32u, 0, stream>>>(b->latent_bf16, squares, slice);
+	K3RunnerRound(state, stream, rows, squares, state->fused_device, 2u,
+		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
+	K3RunnerLatentNormKernel<<<rows, 256u, 0, stream>>>(b->latent_bf16, (const uint32_t *)state->fused_device,
+		(const uint16_t *)b->routed_norm_weight + (uint64_t)b->tp_rank * slice, rows, slice, ranks, K3_RMS_EPSILON);
+	if ( cudaPeekAtLastError() != cudaSuccess )
+		K3ModelFail(state);
+}
+
 static void K3RunnerRowShardTap(SparkK3ModelState *state, K3LayerBuffers *b, cudaStream_t stream,
 	uint32_t rows, uint32_t layer, uint32_t row_offset, uint32_t share, uint32_t first, uint32_t count)
 {
@@ -446,6 +510,11 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	{
 		K3RunnerGatherLatent(state, b, stream, rows, 1u,
 			stage == K3_RUNNER_STAGE_FINISH ? K3_RUNNER_STAGE_FINISH : K3_RUNNER_STAGE_BEGIN);
+		return;
+	}
+	if ( K3_EXPERT_CELLS(b) && base == K3_COLLECTIVE_LATENT_SLICE )
+	{
+		K3RunnerLatentSlice(state, b, stream, rows);
 		return;
 	}
 	if ( K3_EXPERT_CELLS(b) && base == 3u )
