@@ -878,7 +878,7 @@ static SparkStatus SparkTpDeviceCollectivePhases(const SparkTpDeviceCollectiveIm
         if ( SparkTpMeshDirectPipelined(elements,implementation->tp_degree,operation,implementation->slot_bytes) != 0u &&
              (slice_routes & SPARK_TP_MESH_ROUTES_PAIR) == 0u )
             chunks = SparkTpMeshPipelineChunks(SparkTpMeshDirectLocalElements(elements,implementation->tp_degree,operation),
-                SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES);
+                SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) + ((slice_routes & SPARK_TP_MESH_ROUTES_PAIR_FIRST) != 0u ? 2u : 0u);
         if ( phases == 2u && (slice_routes & SPARK_TP_MESH_ROUTES_PEER) != 0u )
             chunks = (SparkTpMeshDirectLocalElements(elements,implementation->tp_degree,operation) - 1u) /
                 SparkTpMeshDirectPeerCapacity(implementation->tp_degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) + 1u;
@@ -918,7 +918,7 @@ static uint32_t SparkTpDeviceCollectiveRowElements(
 
 static const char *const SparkTpDeviceCollectivePathNames[] = {
     "none","host-round","tree","direct","rsag-slice","rsag-peer","all-to-all-scatter","all-to-all-peer","reduce-scatter-peer","direct-pipelined","pair-gather",
-    "reduce-scatter-pipelined","pair-first-reduce-scatter"};
+    "reduce-scatter-pipelined","pair-first-reduce-scatter","pair-first-all-gather"};
 
 static void SparkTpDeviceCollectiveLogPath(SparkTpDeviceCollectiveImplementation *implementation,
     uint32_t operation,uint32_t path,uint64_t phases,uint64_t elements,uint32_t rows)
@@ -946,6 +946,8 @@ static uint32_t SparkTpDeviceCollectiveDevicePath(const SparkTpDeviceCollectiveI
         return 6u + peer;
     if ( SparkTpMeshDirectPhasesPerChunk(elements,implementation->tp_degree,operation,slice_routes) == 2u )
         return 4u + peer;
+    if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER && (slice_routes & SPARK_TP_MESH_ROUTES_PAIR_FIRST) != 0u )
+        return 13u;
     if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER && (slice_routes & SPARK_TP_MESH_ROUTES_PAIR) != 0u )
         return 10u;
     if ( SparkTpMeshDirectPipelined(elements,implementation->tp_degree,operation,implementation->slot_bytes) != 0u )
@@ -1000,6 +1002,9 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
              submission->local_device == submission->full_device )
             return SPARK_STATUS_INVALID_ARGUMENT;
         elements *= implementation->tp_degree;
+        if ( (slice_routes & SPARK_TP_MESH_ROUTES_PAIR) == 0u && SparkTpDeviceCollectiveReduceScatterReady(implementation) != 0u &&
+             SparkTpMeshGatherPairFirst(elements,implementation->tp_degree,implementation->slot_bytes,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) != 0u )
+            slice_routes |= SPARK_TP_MESH_ROUTES_PAIR_FIRST;
     }
     if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 &&
          (elements % (4u * (uint64_t)implementation->tp_degree) != 0u || submission->local_device == submission->full_device) )

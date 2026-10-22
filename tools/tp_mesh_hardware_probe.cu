@@ -349,7 +349,8 @@ struct Probe
                 uint32_t width=operation==2u ? 8u : operation==1u ? 4u : 2u;
                 uint64_t chunks=(elements-1u)/((SPARK_WEIGHTD_MESH_SLOT_BYTES-16u)/width)+1u;
                 uint64_t advances=rows==1u && SparkTpMeshDirectPipelined(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)!=0u ?
-                    SparkTpMeshPipelineChunks(SparkTpMeshDirectLocalElements(elements,degree,operation),SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) :
+                    SparkTpMeshPipelineChunks(SparkTpMeshDirectLocalElements(elements,degree,operation),SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)+
+                        ((routes&SPARK_TP_MESH_ROUTES_PAIR_FIRST)!=0u && SparkTpMeshGatherPairFirst(elements,degree,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)!=0u ? 2u : 0u) :
                     operation==SPARK_TP_MESH_OPERATION_REDUCE_SCATTER ? (SparkTpMeshScatterPipelined(elements,degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)!=0u ? SparkTpMeshPipelineChunks(elements/degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)+((routes&SPARK_TP_MESH_ROUTES_PAIR_FIRST)!=0u ? 2u : 0u) : SparkTpMeshScatterChunks(elements,degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)) : operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? SparkTpMeshAllToAllPeerChunks(elements,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) : SparkTpMeshAllToAllChunks(elements,degree,SPARK_WEIGHTD_MESH_SLOT_BYTES)) : rows==1u ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u && SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)==2u ? ((SparkTpMeshDirectLocalElements(elements,degree,operation)-1u)/SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+1u)*2u : SparkTpMeshDirectChunks(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)*SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)) : chunks*2u*SparkTpMeshTreeLevels(degree);
                 REQUIRE(control.seq-seq_base[rank]==launch_count*rounds*advances);
             }
@@ -432,6 +433,30 @@ struct Probe
                 std::printf("PAIR-FIRST REDUCE-SCATTER degree=%u segment=%llu rounds=%llu PASS\n",n,(unsigned long long)per,
                     (unsigned long long)(SparkTpMeshPipelineChunks(per,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)+2u));
             }
+        routes=saved;
+    }
+    void PairFirstGather()
+    {
+        const uint64_t half=SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES/2u;
+        uint32_t saved=routes;
+        routes=SPARK_TP_MESH_ROUTES_SLICE|SPARK_TP_MESH_ROUTES_PEER|SPARK_TP_MESH_ROUTES_PAIR_FIRST;
+        for (uint32_t n:{4u,6u,16u})
+            for (uint64_t local:{3u*half,3u*half+4u,5u*half+76u,UINT64_C(7168)*64u,11u*half+16u})
+                for (uint64_t delay:{UINT64_C(0),UINT64_C(150000)})
+                {
+                    if (local*n*2u>tensor_bytes) continue;
+                    REQUIRE(SparkTpMeshGatherPairFirst(local*n,n,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)!=0u);
+                    for (bool graph:{false,true})
+                    {
+                        Setup(n,0u,1u,local*n,3u);delay_ns.store(delay);Data(40u);double construction=graph ? Capture() : 0.0;
+                        StartWorker();uint64_t begin=Now();Launch(graph);double elapsed=Wait(begin);Verify();
+                        if (graph)
+                            for (uint32_t replay=0u;replay<2u;replay++) { Data(replay+41u);begin=Now();Launch(true);elapsed=Wait(begin);Verify(); }
+                        EndWorker();completed_cases++;
+                        std::printf("PASS pair-first all-gather tp=%u local=%llu rounds=%llu delay_us=%llu graph=%u construct_ms=%.3f last_ms=%.3f transfers=%llu\n",n,(unsigned long long)local,
+                            (unsigned long long)(SparkTpMeshPipelineChunks(local,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)+2u),(unsigned long long)(delay/1000u),graph,construction,elapsed,(unsigned long long)transfers.load());
+                    }
+                }
         routes=saved;
     }
     void Pipelined()
@@ -527,9 +552,9 @@ struct Probe
 int main(int argc,char **argv)
 {
     if (argc!=2 || (std::strcmp(argv[1],"--run")!=0 && std::strcmp(argv[1],"--all-to-all")!=0 && std::strcmp(argv[1],"--peer-reduce")!=0 && std::strcmp(argv[1],"--reduce-scatter")!=0 &&
-        std::strcmp(argv[1],"--pipelined")!=0 && std::strcmp(argv[1],"--pair-first")!=0))
+        std::strcmp(argv[1],"--pipelined")!=0 && std::strcmp(argv[1],"--pair-first")!=0 && std::strcmp(argv[1],"--pair-first-gather")!=0))
     {
-        std::fprintf(stderr,"usage: %s --run | --all-to-all | --peer-reduce | --reduce-scatter | --pipelined | --pair-first\n",argv[0]);return 2;
+        std::fprintf(stderr,"usage: %s --run | --all-to-all | --peer-reduce | --reduce-scatter | --pipelined | --pair-first | --pair-first-gather\n",argv[0]);return 2;
     }
     REQUIRE(std::setvbuf(stdout,nullptr,_IOLBF,0)==0);
     CUDA(cudaSetDeviceFlags(cudaDeviceMapHost));CUDA(cudaSetDevice(0));
@@ -560,6 +585,12 @@ int main(int argc,char **argv)
     {
         probe.PairFirst();
         std::printf("PASS tp_mesh_hardware_probe pair-first cases=%u\n",probe.completed_cases);
+        return 0;
+    }
+    if (std::strcmp(argv[1],"--pair-first-gather")==0)
+    {
+        probe.PairFirstGather();
+        std::printf("PASS tp_mesh_hardware_probe pair-first-gather cases=%u\n",probe.completed_cases);
         return 0;
     }
     if (std::strcmp(argv[1],"--reduce-scatter")==0)

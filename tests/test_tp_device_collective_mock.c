@@ -515,6 +515,14 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         SparkTpMeshPipelineChunks(196609u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 4u &&
         SparkTpMeshPipelineChunks(26u * 65536u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 26u,
         "only all-gathers whose local part exceeds one whole slot pipeline, in 65536-element half chunks");
+    CHECK(SparkTpMeshGatherPairFirst(16u * 131100u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 1u &&
+        SparkTpMeshGatherPairFirst(16u * 458752u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 1u &&
+        SparkTpMeshGatherPairFirst(6u * 131100u,6u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 1u &&
+        SparkTpMeshGatherPairFirst(16u * 131096u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
+        SparkTpMeshGatherPairFirst(2u * 262144u,2u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
+        SparkTpMeshGatherPairFirst(5u * 131100u,5u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
+        SparkTpMeshGatherPairFirst(16u * 131102u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u,
+        "a pipelined all-gather goes pair-first over an even degree of 4 or more when each rank's part is whole 8-byte words");
     {
         char path_log[] = "/tmp/spark-tp-pipe-XXXXXX";
         int fd = mkstemp(path_log),saved = dup(2);
