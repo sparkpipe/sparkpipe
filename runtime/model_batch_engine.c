@@ -115,6 +115,8 @@ typedef struct SparkModelBatchRequestState
 	float model_rate_ns;
 	float model_rate_frames;
 	float model_wait_ns;
+	float trace_draft_wait_ns;
+	uint64_t trace_completed_ns;
 	uint32_t model_backoff_until;
 	uint32_t model_backoff_tokens;
 	SparkSpeculationLookupIndex lookup;
@@ -156,6 +158,8 @@ typedef struct SparkModelBatchSubmissionState
 	uint32_t trace_match;
 	float trace_expected;
 	float trace_frame_ns;
+	float trace_gap_ns;
+	float trace_draft_wait_ns;
 } SparkModelBatchSubmissionState;
 
 struct SparkModelBatchEngine
@@ -2076,6 +2080,8 @@ SparkStatus SparkModelBatchEngineSubmit(
 	state->model_rate_ns = 0.0f;
 	state->model_rate_frames = 0.0f;
 	state->model_wait_ns = 0.0f;
+	state->trace_draft_wait_ns = 0.0f;
+	state->trace_completed_ns = 0u;
 	state->model_backoff_until = 0u;
 	state->model_backoff_tokens = SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS;
 	memset(state->draft_hazards,0,sizeof(state->draft_hazards));
@@ -2969,6 +2975,7 @@ static uint32_t SparkModelBatchPlanModelDraft(
 		request->sampling.inverse_temperature != 0.0f ? &request->sampling : 0,nodes,depth + 1u,&count,&info);
 	engine->model_draft_wait_us += (SparkModelBatchNowNs() - started) / 1000u;
 	request->model_wait_ns = (float)(SparkModelBatchNowNs() - started);
+	request->trace_draft_wait_ns = request->model_wait_ns;
 	if ( status != SPARK_STATUS_OK && info.server_status == SPARK_DRAFT_BRIDGE_SERVER_STATUS_UNAVAILABLE )
 	{
 		engine->model_draft_unavailable++;
@@ -3049,6 +3056,7 @@ static uint32_t SparkModelBatchPlanDraft(
 	uint32_t position,limit,checkpoint_remaining,index;
 	const uint32_t *tokens = SparkModelBatchRequestTokens(engine,slot);
 	request->draft_count = 0u;
+	request->trace_draft_wait_ns = 0.0f;
 	if ( engine->verify_capable == 0u || request->sampling.logprobs != 0u || draft_limit == 0u )
 		return(0u);
 	position = request->prompt_token_count + request->generated_token_count - 1u;
@@ -3350,10 +3358,12 @@ static void SparkModelBatchTraceStep(
 		kind = submission->steps > 1u ? "chain" : "single";
 		kept = submission->steps;
 	}
-	fprintf(stderr,"batch_step kind=%s request=%llu rows=%u steps=%u drafts=%u kept=%u match=%u class=%u expect=%.2f predict_ms=%.2f service_ms=%.2f wall_ms=%.2f context=%u\n",
+	fprintf(stderr,"batch_step kind=%s request=%llu rows=%u steps=%u drafts=%u kept=%u match=%u class=%u expect=%.2f predict_ms=%.2f service_ms=%.2f wall_ms=%.2f context=%u gap_ms=%.2f draft_wait_ms=%.2f\n",
 		kind,(unsigned long long)submission->trace_request_id,submission->rows,submission->steps,submission->trace_drafts,kept,submission->trace_match,submission->trace_class,
 		(double)submission->trace_expected,(double)submission->trace_frame_ns / 1e6,(double)completion->service_time_ns / 1e6,
-		(double)(SparkModelBatchNowNs() - submission->dispatched_ns) / 1e6,submission->context);
+		(double)(SparkModelBatchNowNs() - submission->dispatched_ns) / 1e6,submission->context,(double)submission->trace_gap_ns / 1e6,
+		(double)submission->trace_draft_wait_ns / 1e6);
+	engine->requests[SparkModelBatchSubmissionRequestSlots(engine,submission)[0]].trace_completed_ns = SparkModelBatchNowNs();
 }
 
 static void SparkModelBatchRecordSubmission(
@@ -3374,6 +3384,11 @@ static void SparkModelBatchRecordSubmission(
 	state->trace_match = state->verify != 0u ? engine->requests[engine->scratch_request_slots[0]].draft_match : 0u;
 	state->trace_expected = state->verify != 0u ? engine->requests[engine->scratch_request_slots[0]].draft_expected : 0.0f;
 	state->trace_frame_ns = state->verify != 0u ? engine->requests[engine->scratch_request_slots[0]].draft_frame_ns : 0.0f;
+	{
+		const SparkModelBatchRequestState *traced = &engine->requests[engine->scratch_request_slots[0]];
+		state->trace_gap_ns = traced->trace_completed_ns != 0u && now_ns > traced->trace_completed_ns ? (float)(now_ns - traced->trace_completed_ns) : 0.0f;
+		state->trace_draft_wait_ns = traced->trace_draft_wait_ns;
+	}
 	inflight_state = SparkModelBatchInflightStateForWork(state->work_kind);
 	for (lane=0u; lane<lane_count; lane++)
 	{
