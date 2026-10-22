@@ -111,10 +111,12 @@ int main(int count,char **arguments)
     double timed[BENCH_MAX_REPS];
     bench_require(degree >= 2u && degree <= 16u && rank < degree && rows >= 1u && row_elements >= 4u &&
         rounds >= 1u && reps >= 1u && reps <= BENCH_MAX_REPS &&
-        (operation == 0u || operation == 1u || operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16),"arguments");
+        (operation == 0u || operation == 1u || operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 ||
+         operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16),"arguments");
     const size_t local_elements = (size_t)rows * row_elements;
     const size_t output_elements = operation == 0u ? local_elements * degree :
-        operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 ? local_elements / degree : local_elements;
+        operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 || operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16 ?
+            local_elements / degree : local_elements;
     bench_require(setenv("SPARK_WEIGHTD_SOCKET",socket_path,1) == 0 && setenv("SPARK_TP_MESH_RANKS",rank_map,1) == 0,"environment");
     bench_status(SparkTpDeviceCollectiveMeshTopology(rank,degree,&topology),"topology");
     bench_require(cudaFree(0) == cudaSuccess,"cuda-init");

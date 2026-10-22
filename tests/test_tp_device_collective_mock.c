@@ -515,6 +515,14 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         SparkTpMeshPipelineChunks(196609u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 4u &&
         SparkTpMeshPipelineChunks(26u * 65536u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 26u,
         "only all-gathers whose local part exceeds one whole slot pipeline, in 65536-element half chunks");
+    CHECK(SparkTpMeshGatherPairFirst(16u * 131100u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 1u &&
+        SparkTpMeshGatherPairFirst(16u * 458752u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 1u &&
+        SparkTpMeshGatherPairFirst(6u * 131100u,6u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 1u &&
+        SparkTpMeshGatherPairFirst(16u * 131096u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
+        SparkTpMeshGatherPairFirst(2u * 262144u,2u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
+        SparkTpMeshGatherPairFirst(5u * 131100u,5u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
+        SparkTpMeshGatherPairFirst(16u * 131102u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u,
+        "a pipelined all-gather goes pair-first over an even degree of 4 or more when each rank's part is whole 8-byte words");
     {
         char path_log[] = "/tmp/spark-tp-pipe-XXXXXX";
         int fd = mkstemp(path_log),saved = dup(2);
@@ -604,8 +612,12 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
                 (void)fclose(file);
             (void)unlink(path_log);
             CHECK(status == SPARK_STATUS_OK && pipelined == 1u && cuda_stub_mesh_hardware_operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 &&
-                cuda_stub_mesh_hardware_elements == 262400u,
+                cuda_stub_mesh_hardware_elements == 262400u && (cuda_stub_mesh_hardware_slice_routes & SPARK_TP_MESH_ROUTES_PAIR_FIRST) == 0u,
                 "a reduce-scatter of 131200-element rank segments runs pipelined as three half-slot chunks and says so");
+            CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16) == SPARK_STATUS_OK &&
+                cuda_stub_mesh_hardware_operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 &&
+                (cuda_stub_mesh_hardware_slice_routes & SPARK_TP_MESH_ROUTES_PAIR_FIRST) == 0u,
+                "a pair-first reduce-scatter over two ranks has no parity groups and runs as the pipelined reduce-scatter");
             submission.active_sequence_count = 2u;
         }
         cuda_stub_mesh_hardware_calls = calls_before;
@@ -692,7 +704,10 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER) == SPARK_STATUS_UNSUPPORTED &&
         SparkTpDeviceCollectiveRoundIndex(&collective) == 0u,
         "a pair gather without hardware waits takes the all-gather path and its refusal");
-    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER + 1u) == SPARK_STATUS_INVALID_ARGUMENT,
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16) == SPARK_STATUS_UNSUPPORTED &&
+        SparkTpDeviceCollectiveRoundIndex(&collective) == 0u,
+        "a pair-first reduce-scatter without hardware waits takes the reduce-scatter path and its refusal");
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16 + 1u) == SPARK_STATUS_INVALID_ARGUMENT,
         "an unknown collective operation is refused");
     CHECK(SparkTpDeviceCollectiveEnqueueRounds(&collective,&submission,3u) == SPARK_STATUS_UNSUPPORTED,
         "legacy B1 round loop retains its missing callback rejection");
