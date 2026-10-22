@@ -23,6 +23,37 @@ static inline cudaError_t LmLatentShardPrefillLaunch(
 		sequence_of_row, context_length, row_position, 0, 0u, 0u, qk_scale, partials, partial_rank_stride, rows, stream);
 }
 
+static inline uint32_t LmLatentShardDecodeSplits(uint32_t rows)
+{
+	return rows >= 16u ? 1u : 16u / rows;
+}
+
+template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
+static inline cudaError_t LmLatentShardSplitLaunch(
+	Pages cache,
+	const uint16_t *query_bf16,
+	uint64_t query_rank_stride,
+	uint32_t heads_per_rank,
+	const uint32_t *sequence_of_row,
+	const uint32_t *context_length,
+	const uint32_t *row_position,
+	float qk_scale,
+	float *split_partials,
+	uint64_t split_capacity_floats,
+	float *partials,
+	uint64_t partial_rank_stride,
+	uint32_t rows,
+	uint32_t splits,
+	cudaStream_t stream)
+{
+	(void)split_partials;
+	(void)split_capacity_floats;
+	if (rows == 0u || splits == 0u || heads_per_rank == 0u)
+		return cudaErrorInvalidValue;
+	return LmLatentShardPartialLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, query_rank_stride, heads_per_rank,
+		sequence_of_row, context_length, row_position, 0, 0u, 0u, qk_scale, partials, partial_rank_stride, rows, stream);
+}
+
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
 static inline cudaError_t LmLatentShardDecodeLaunch(
 	Pages cache,

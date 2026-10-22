@@ -500,6 +500,7 @@ PYTHON_TESTS := \
 	tests/test_latent_gather_prefill_cuda.py \
 	tests/test_expanded_gather_prefill_cuda.py \
 	tests/test_latent_shard_decode_cuda.py \
+	tests/test_skinny_split.py \
 	tests/test_delta_rule_column_cuda.py \
 	tests/test_index_shard_cuda.py \
 	tests/test_latent_rope_heads_cuda.py \
@@ -864,6 +865,9 @@ build/test_skinny_rows_reference: tests/test_skinny_rows_reference.cu inference/
 .PHONY: test-skinny-rows-reference
 test-skinny-rows-reference: build/test_skinny_rows_reference
 	./build/test_skinny_rows_reference --run
+
+build/test_skinny_split: tests/test_skinny_split.cu inference/kernels/skinny.cuh | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_skinny_split (no nvcc on this host)"; fi
 
 build/test_skinny_grouped_reference: tests/test_skinny_grouped_reference.cu inference/kernels/skinny.cuh inference/kernels/route.cuh | build
 	$(KERNEL_TEST_NVCC) $< $(KERNEL_TEST_CUDA_LINK) -o $@
