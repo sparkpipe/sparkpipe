@@ -100,6 +100,7 @@ typedef struct SparkModelBatchRequestState
 	SparkModelServingCacheIdentity cache_published_identity;
 	SparkSha256Context cache_published_digest_context;
 	uint32_t draft_count;
+	uint32_t model_draft_rows;
 	uint32_t draft_class;
 	uint32_t draft_match;
 	float draft_expected;
@@ -191,6 +192,9 @@ struct SparkModelBatchEngine
 	uint64_t model_draft_frames;
 	uint64_t model_draft_tokens;
 	uint64_t model_draft_accepted;
+	uint64_t model_extension_frames;
+	uint64_t model_extension_tokens;
+	uint64_t model_extension_accepted;
 	uint64_t model_draft_wait_us;
 	uint64_t model_draft_unavailable;
 	uint64_t model_draft_backoffs;
@@ -1309,23 +1313,36 @@ static SparkStatus SparkModelBatchAcceptVerifiedLane(
 		engine->frame_kept[SparkSpeculationFrameRowBucket(draft_count + 1u)] += accepted + 1u;
 		engine->draft_token_count += draft_count;
 		engine->accepted_draft_token_count += accepted;
-		SparkSpeculationHazardObserve(&engine->frame_model.classes[request->draft_class],draft_count,accepted,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
-		SparkSpeculationHazardObserve(&request->draft_hazards[request->draft_class],draft_count,accepted,SPARK_SPECULATION_FRAME_REQUEST_DECAY);
 		if ( SparkSpeculationFrameClassIsModel(request->draft_class) != 0u )
 		{
+			const uint32_t model_rows = request->model_draft_rows < draft_count ? request->model_draft_rows : draft_count;
+			const uint32_t model_accepted = accepted < model_rows ? accepted : model_rows;
+			SparkSpeculationHazardObserve(&engine->frame_model.classes[request->draft_class],model_rows,model_accepted,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
+			SparkSpeculationHazardObserve(&request->draft_hazards[request->draft_class],model_rows,model_accepted,SPARK_SPECULATION_FRAME_REQUEST_DECAY);
+			if ( draft_count > model_rows && accepted >= model_rows )
+			{
+				const uint32_t extension_class = SparkSpeculationFrameClass(request->draft_match,request->sampling.inverse_temperature != 0.0f ? 1u : 0u);
+				SparkSpeculationHazardObserve(&engine->frame_model.classes[extension_class],draft_count - model_rows,accepted - model_rows,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
+				SparkSpeculationHazardObserve(&request->draft_hazards[extension_class],draft_count - model_rows,accepted - model_rows,SPARK_SPECULATION_FRAME_REQUEST_DECAY);
+				engine->model_extension_frames++;
+				engine->model_extension_tokens += draft_count - model_rows;
+				engine->model_extension_accepted += accepted - model_rows;
+			}
 			engine->model_draft_frames++;
-			engine->model_draft_tokens += draft_count;
-			engine->model_draft_accepted += accepted;
+			engine->model_draft_tokens += model_rows;
+			engine->model_draft_accepted += model_accepted;
 			for (row=0u; row<SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH; row++)
 			{
-				engine->model_depth_predicted[row] = engine->model_depth_predicted[row] * SPARK_MODEL_BATCH_MODEL_DRAFT_CALIBRATION_DECAY + (row < draft_count ? request->draft_path[row] : 0.0f);
-				engine->model_depth_observed[row] = engine->model_depth_observed[row] * SPARK_MODEL_BATCH_MODEL_DRAFT_CALIBRATION_DECAY + (row < draft_count && accepted > row ? 1.0f : 0.0f);
+				engine->model_depth_predicted[row] = engine->model_depth_predicted[row] * SPARK_MODEL_BATCH_MODEL_DRAFT_CALIBRATION_DECAY + (row < model_rows ? request->draft_path[row] : 0.0f);
+				engine->model_depth_observed[row] = engine->model_depth_observed[row] * SPARK_MODEL_BATCH_MODEL_DRAFT_CALIBRATION_DECAY + (row < model_rows && accepted > row ? 1.0f : 0.0f);
 			}
 			request->draft_run_drafts = 0u;
 			SparkModelBatchObserveModelRate(engine,request,kept,completion->service_time_ns);
 		}
 		else
 		{
+			SparkSpeculationHazardObserve(&engine->frame_model.classes[request->draft_class],draft_count,accepted,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
+			SparkSpeculationHazardObserve(&request->draft_hazards[request->draft_class],draft_count,accepted,SPARK_SPECULATION_FRAME_REQUEST_DECAY);
 			request->draft_run_drafts = accepted == draft_count ? draft_count : 0u;
 			request->draft_run_source = request->draft_source_end + kept;
 		}
@@ -2868,6 +2885,66 @@ static void SparkModelBatchBuildPrefillRows(
 	submission->new_token_count = row;
 }
 
+static uint32_t SparkModelBatchExtendModelDraft(
+	SparkModelBatchEngine *engine,
+	SparkModelBatchRequestState *request,
+	const uint32_t *tokens,
+	uint32_t position,
+	uint32_t drafts,
+	uint32_t limit,
+	float all_accepted,
+	float wait_ns)
+{
+	SparkSpeculationLookupMatch match;
+	const SparkSpeculationHazard *engine_hazard,*request_hazard;
+	const uint32_t context = position + 1u;
+	const float token_ns = SparkSpeculationFrameTokenCost(&engine->frame_model,context);
+	const uint32_t sampled = request->sampling.inverse_temperature != 0.0f ? 1u : 0u;
+	uint32_t available,index,extension = 0u,match_class;
+	float survival = 1.0f,gain = 0.0f,best_gain = 0.0f,best_rate,cost;
+	if ( drafts >= limit || drafts >= SPARK_SPECULATION_FRAME_MAX_DRAFTS ||
+		SparkSpeculationLookupIndexFindTail(&request->lookup,tokens,request->draft_tokens,drafts,SPARK_MODEL_BATCH_LOOKUP_MAX_MATCH,
+			SPARK_MODEL_BATCH_LOOKUP_CANDIDATES,&match) != SPARK_STATUS_OK || match.match_length < SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_LOOKUP_MATCH )
+		return(0u);
+	available = position - match.source_end;
+	if ( limit - drafts < available )
+		available = limit - drafts;
+	if ( SPARK_SPECULATION_FRAME_MAX_DRAFTS - drafts < available )
+		available = SPARK_SPECULATION_FRAME_MAX_DRAFTS - drafts;
+	for (index=0u; index<available; index++)
+		if ( SparkModelBatchTokenIsStop(engine,tokens[match.source_end + 1u + index]) != 0u )
+			available = index;
+	match_class = SparkSpeculationFrameClass(match.match_length,sampled);
+	engine_hazard = &engine->frame_model.classes[match_class];
+	request_hazard = &request->draft_hazards[match_class];
+	cost = SparkSpeculationFrameCost(&engine->frame_model,drafts + 1u,context);
+	cost = (cost > token_ns ? cost : token_ns) + wait_ns;
+	best_rate = cost > 0.0f ? request->draft_expected / cost : 0.0f;
+	for (index=1u; index<=available; index++)
+	{
+		float rate;
+		survival *= 1.0f - SparkSpeculationHazardAt(engine_hazard,request_hazard,SparkSpeculationFrameDepthBucket(index));
+		gain += survival;
+		cost = SparkSpeculationFrameCost(&engine->frame_model,drafts + index + 1u,context);
+		cost = (cost > token_ns ? cost : token_ns) + wait_ns;
+		rate = cost > 0.0f ? (request->draft_expected + all_accepted * gain) / cost : 0.0f;
+		if ( rate > best_rate )
+		{
+			best_rate = rate;
+			best_gain = gain;
+			extension = index;
+		}
+	}
+	if ( extension == 0u )
+		return(0u);
+	memcpy(request->draft_tokens + drafts,&tokens[match.source_end + 1u],(size_t)extension * sizeof(request->draft_tokens[0]));
+	request->draft_count = drafts + extension;
+	request->draft_match = match.match_length;
+	request->draft_expected += all_accepted * best_gain;
+	request->draft_frame_ns = SparkSpeculationFrameCost(&engine->frame_model,drafts + extension + 1u,context);
+	return(extension);
+}
+
 static uint32_t SparkModelBatchPlanModelDraft(
 	SparkModelBatchEngine *engine,
 	SparkModelBatchRequestState *request,
@@ -2880,7 +2957,7 @@ static uint32_t SparkModelBatchPlanModelDraft(
 	const uint32_t depth = engine->draft_depth < limit ? engine->draft_depth : limit;
 	const uint64_t started = SparkModelBatchNowNs();
 	uint32_t count = 0u, drafts = 0u, index;
-	float expected = 1.0f, path = 1.0f;
+	float expected = 1.0f, path = 1.0f, all_accepted = 0.0f, wait_ns = 0.0f;
 	SparkStatus status;
 	if ( depth == 0u || started < engine->model_draft_retry_ns || request->generated_token_count < request->model_backoff_until ||
 		!(SparkSpeculationFrameTokenCost(&engine->frame_model,position + 1u) > 0.0f) )
@@ -2908,8 +2985,8 @@ static uint32_t SparkModelBatchPlanModelDraft(
 	{
 		const uint32_t context = position + 1u;
 		const float token_ns = SparkSpeculationFrameTokenCost(&engine->frame_model,context);
-		const float wait_ns = (float)engine->model_draft_wait_us * 1000.0f / (float)engine->model_draft_rounds;
 		float best_rate = 0.0f, best_gain = 0.0f, drafted = 0.0f, calibration = 1.0f;
+		wait_ns = (float)engine->model_draft_wait_us * 1000.0f / (float)engine->model_draft_rounds;
 		for (index=1u; index<count && index<=depth; index++)
 		{
 			const float ratio = (engine->model_depth_observed[index - 1u] + SPARK_MODEL_BATCH_MODEL_DRAFT_PRIOR) /
@@ -2933,6 +3010,7 @@ static uint32_t SparkModelBatchPlanModelDraft(
 				best_gain = drafted;
 				drafts = index;
 				expected = 1.0f + drafted;
+				all_accepted = calibration * path;
 			}
 		}
 		if ( best_gain < SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_GAIN )
@@ -2949,12 +3027,13 @@ static uint32_t SparkModelBatchPlanModelDraft(
 		return(0u);
 	}
 	request->draft_count = drafts;
+	request->model_draft_rows = drafts;
 	request->draft_class = SparkSpeculationFrameModelClass(request->sampling.inverse_temperature != 0.0f ? 1u : 0u);
 	request->draft_source_end = position;
 	request->draft_match = 0u;
 	request->draft_expected = expected;
 	request->draft_frame_ns = SparkSpeculationFrameCost(&engine->frame_model,drafts + 1u,position + 1u);
-	return(drafts);
+	return(drafts + SparkModelBatchExtendModelDraft(engine,request,tokens,position,drafts,limit,all_accepted,wait_ns));
 }
 
 static uint32_t SparkModelBatchPlanDraft(
@@ -3623,9 +3702,10 @@ static void SparkModelBatchLogFrames(SparkModelBatchEngine *engine)
 				(double)engine->frame_kept[bucket] / (double)engine->frame_count[bucket],
 				engine->frame_timed[bucket] != 0u ? (double)engine->frame_ns[bucket] / (double)engine->frame_timed[bucket] / 1e6 : 0.0);
 	if ( engine->draft_bridge != 0 && used < sizeof(line) )
-		used += (size_t)snprintf(line + used,sizeof(line) - used," model rounds=%llu frames=%llu drafted=%llu kept_drafts=%llu declined=%llu unavailable=%llu backoffs=%llu failed=%llu wait_ms=%.2f",
+		used += (size_t)snprintf(line + used,sizeof(line) - used," model rounds=%llu frames=%llu drafted=%llu kept_drafts=%llu extended=%llu extension_drafts=%llu extension_kept=%llu declined=%llu unavailable=%llu backoffs=%llu failed=%llu wait_ms=%.2f",
 			(unsigned long long)engine->model_draft_rounds,(unsigned long long)engine->model_draft_frames,(unsigned long long)engine->model_draft_tokens,
-			(unsigned long long)engine->model_draft_accepted,(unsigned long long)engine->model_draft_declined,(unsigned long long)engine->model_draft_unavailable,
+			(unsigned long long)engine->model_draft_accepted,(unsigned long long)engine->model_extension_frames,(unsigned long long)engine->model_extension_tokens,
+			(unsigned long long)engine->model_extension_accepted,(unsigned long long)engine->model_draft_declined,(unsigned long long)engine->model_draft_unavailable,
 			(unsigned long long)engine->model_draft_backoffs,(unsigned long long)engine->model_draft_failures,
 			engine->model_draft_rounds != 0u ? (double)engine->model_draft_wait_us / (double)engine->model_draft_rounds / 1e3 : 0.0);
 	fprintf(stderr,"%s\n",line);

@@ -110,6 +110,9 @@ static uint32_t mock_verify_row_sevenths = 1u;
 static uint32_t mock_verify_submissions;
 static uint32_t mock_verify_rows;
 static uint32_t mock_verify_max_stride;
+static uint32_t mock_verify_frame_positions[256];
+static uint32_t mock_verify_frame_rows[256];
+static uint32_t mock_verify_frame_count;
 static uint32_t mock_verify_corrupt;
 static uint32_t mock_row_cost_ns = 200u;
 static uint32_t mock_verify_shared;
@@ -410,6 +413,7 @@ void MockResidentClientReset(void)
 	mock_verify_submissions = 0u;
 	mock_verify_rows = 0u;
 	mock_verify_max_stride = 0u;
+	mock_verify_frame_count = 0u;
 	mock_verify_corrupt = 0u;
 	mock_row_cost_ns = 200u;
 	mock_verify_shared = 0u;
@@ -556,6 +560,11 @@ static SparkStatus MockResidentClientEnqueue(
 	{
 		mock_verify_submissions++;
 		mock_verify_rows += submission->row_count;
+		if ( mock_verify_frame_count < 256u && submission->row_count != 0u )
+		{
+			mock_verify_frame_positions[mock_verify_frame_count] = (uint32_t)submission->row_positions[0];
+			mock_verify_frame_rows[mock_verify_frame_count++] = submission->row_count;
+		}
 		if ( submission->tokens_per_sequence > mock_verify_max_stride )
 			mock_verify_max_stride = submission->tokens_per_sequence;
 		if ( submission->active_sequence_count > 1u )
@@ -871,6 +880,15 @@ void MockResidentClientSetVerifyCorrupt(uint32_t corrupt)
 void MockResidentClientSetRowCost(uint32_t ns)
 {
 	mock_row_cost_ns = ns;
+}
+
+uint32_t MockResidentClientVerifyFrame(uint32_t index,uint32_t *position,uint32_t *rows)
+{
+	if ( index >= mock_verify_frame_count )
+		return(0u);
+	*position = mock_verify_frame_positions[index];
+	*rows = mock_verify_frame_rows[index];
+	return(1u);
 }
 
 void MockResidentClientTakeVerifyStats(uint32_t *submissions,uint32_t *rows)
