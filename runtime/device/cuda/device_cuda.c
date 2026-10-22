@@ -99,7 +99,7 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	(void)cudaDeviceGetAttribute(&managed,cudaDevAttrManagedMemory,cuda_ordinal);
 	(void)cudaDeviceGetAttribute(&pageable,cudaDevAttrPageableMemoryAccess,cuda_ordinal);
 	cuda_pageable_access = pageable;
-	memcpy(properties->backend,"cuda",5u);
+	snprintf(properties->backend,sizeof(properties->backend),"%s","cuda");
 	snprintf(properties->target,sizeof(properties->target),"cuda.sm%d%d",device.major,device.minor);
 	memcpy(properties->name,device.name,sizeof(properties->name) - 1u);
 	properties->name[sizeof(properties->name) - 1u] = '\0';
