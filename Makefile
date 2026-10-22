@@ -61,6 +61,17 @@ else
 SHARED_LIBRARY_FLAGS ?= -shared
 SHARED_LIBRARY_EXT ?= so
 endif
+DEVICE_RUNTIME_DIR := build/runtime_libs
+DEVICE_HOST_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_host.$(SHARED_LIBRARY_EXT)
+DEVICE_HOST_SOURCES := runtime/device/device.c runtime/device/host/device_host.c
+DEVICE_HEADERS := include/sparkpipe/spark_device.h runtime/device/device_backend.h
+ifeq ($(UNAME_S),Darwin)
+DEVICE_LIBRARY_NAME_FLAGS = -install_name @rpath/$(notdir $@)
+DEVICE_RPATH_FLAGS := -Wl,-rpath,@loader_path/runtime_libs
+else
+DEVICE_LIBRARY_NAME_FLAGS = -Wl,-soname,$(notdir $@)
+DEVICE_RPATH_FLAGS := -Wl,-rpath,'$$ORIGIN/runtime_libs'
+endif
 MOONCAKE_ROOT ?=
 MOONCAKE_LIB ?= $(MOONCAKE_ROOT)/build/mooncake-store/src
 MOONCAKE_DEP_INCLUDE ?= $(MOONCAKE_ROOT)/local/include
@@ -320,6 +331,7 @@ TEST_NAMES := \
 
 ifneq ($(UNAME_S),Darwin)
 TEST_NAMES += test_stage_kv_binding test_stage_kv_pool_resize test_stage_kv_shared_prefix test_k3_kv_binding
+TEST_NAMES += test_device_contract test_device_instance
 endif
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
@@ -1236,6 +1248,19 @@ build/test_model_resident_deadline: tests/test_model_resident_deadline.c node/mo
 
 build/test_model_resident_adapter_budget: tests/test_model_resident_adapter_budget.c node/model_residentd.c node/weightd_spawn.c node/weightd_spawn.h runtime/model_resident_socket.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) tests/test_model_resident_adapter_budget.c node/weightd_spawn.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
+$(DEVICE_HOST_LIBRARY): $(DEVICE_HOST_SOURCES) $(DEVICE_HEADERS) | build
+	@mkdir -p $(dir $@)
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_HOST_SOURCES) $(LDLIBS) -o $@
+
+build/test_device_contract: tests/test_device_contract.c $(DEVICE_HOST_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_host $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+
+build/test_device_instance_a.$(SHARED_LIBRARY_EXT) build/test_device_instance_b.$(SHARED_LIBRARY_EXT): tests/device_instance_module.c $(DEVICE_HOST_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_host $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+
+build/test_device_instance: tests/test_device_instance.c $(DEVICE_HOST_LIBRARY) build/test_device_instance_a.$(SHARED_LIBRARY_EXT) build/test_device_instance_b.$(SHARED_LIBRARY_EXT) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_TEST_MODULE_EXT='"$(SHARED_LIBRARY_EXT)"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_host $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
 build/test_memory_buffer: tests/test_memory_buffer.c runtime/memory_buffer.c include/sparkpipe/spark_memory_buffer.h tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_memory_buffer.c tests/cuda_stub/cuda_runtime_stub.c $(LDFLAGS) $(LDLIBS) -o $@
