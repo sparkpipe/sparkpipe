@@ -932,6 +932,7 @@ static int32_t LmSkinnyDenseMultiRowChunks(const LmSkinnyDenseTarget *targets, u
 #define LM_SKINNY_CELL_GROUP_CACHE 1024u
 #define LM_SKINNY_CELL_SHARED_TILES 8u
 #define LM_SKINNY_CELL_SHORT_BATCH 4u
+#define LM_SKINNY_CELL_SPREAD_THREADS 32u
 
 typedef struct LmSkinnyCellArguments
 {
@@ -1041,12 +1042,12 @@ static __device__ __forceinline__ void LmSkinnyCellRows(const LmSkinnyCellArgume
 		args.output_bf16[(uint64_t)(first + r) * args.output_dimension + cell * LM_SKINNY_CELL_NEURONS + sub] = LmFloatToBf16(accumulator[r]);
 }
 
-template<uint32_t BATCH, bool SHARED_OFFSETS>
-__global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnyCellKernel(const __grid_constant__ LmSkinnyCellArguments args)
+template<uint32_t BATCH, bool SHARED_OFFSETS, uint32_t THREADS = LM_SKINNY_THREADS>
+__global__ __launch_bounds__(THREADS) void LmSkinnyCellKernel(const __grid_constant__ LmSkinnyCellArguments args)
 {
 	__shared__ uint32_t cached[SHARED_OFFSETS ? LM_SKINNY_CELL_GROUP_CACHE : 1u];
 	const uint32_t lane = threadIdx.x % LM_WARP_LANES, sub = lane % LM_SKINNY_CELL_NEURONS, half = lane / LM_SKINNY_CELL_NEURONS;
-	const uint32_t task = (blockIdx.x * LM_SKINNY_THREADS + threadIdx.x) / LM_WARP_LANES;
+	const uint32_t task = (blockIdx.x * THREADS + threadIdx.x) / LM_WARP_LANES;
 	const uint64_t tile_stride = (uint64_t)args.cells * LM_SKINNY_CELL_ROWS * LM_SKINNY_CHUNK_BYTES;
 	const uint32_t *offset = SHARED_OFFSETS ? cached : args.group_row_offset;
 	uint32_t row, cell, group, start, end, first, index;
@@ -1054,7 +1055,7 @@ __global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnyCellKernel(const __
 	LmDependentWait();
 	if constexpr ( SHARED_OFFSETS )
 	{
-		for ( index = threadIdx.x; index <= args.groups; index += LM_SKINNY_THREADS )
+		for ( index = threadIdx.x; index <= args.groups; index += THREADS )
 			cached[index] = args.group_row_offset[index];
 		__syncthreads();
 	}
@@ -1142,7 +1143,8 @@ static int32_t LmSkinnyCellExperts(const void *weight, const uint16_t *activatio
 	if ( group_rows_max == 1u && shared )
 		LM_LAUNCH_DEPENDENT((LmSkinnyCellKernel<1u,true>),blocks,LM_SKINNY_THREADS,0u,stream,args);
 	else if ( group_rows_max == 1u )
-		LM_LAUNCH_DEPENDENT((LmSkinnyCellKernel<1u,false>),blocks,LM_SKINNY_THREADS,0u,stream,args);
+		LM_LAUNCH_DEPENDENT((LmSkinnyCellKernel<1u,false,LM_SKINNY_CELL_SPREAD_THREADS>),
+			(uint32_t)((tasks * LM_WARP_LANES + LM_SKINNY_CELL_SPREAD_THREADS - 1u) / LM_SKINNY_CELL_SPREAD_THREADS),LM_SKINNY_CELL_SPREAD_THREADS,0u,stream,args);
 	else if ( shared )
 		LM_LAUNCH_DEPENDENT((LmSkinnyCellKernel<LM_SKINNY_CELL_SHORT_BATCH,true>),blocks,LM_SKINNY_THREADS,0u,stream,args);
 	else
