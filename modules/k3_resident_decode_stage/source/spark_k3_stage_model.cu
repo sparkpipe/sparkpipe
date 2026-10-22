@@ -391,7 +391,7 @@ static void K3RunnerRowShard(SparkK3ModelState *state, K3LayerBuffers *b, cudaSt
 		return;
 	}
 	K3RunnerRound(state, stream, share * degree, state->fused_device, state->row_share_device, 0u,
-		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16, K3_RUNNER_STAGE_ALL);
+		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16, K3_RUNNER_STAGE_ALL);
 	if ( count != 0u )
 	{
 		K3PartialRows(b, state->row_share_device, first, count, base == 0u && (layer % K3_ATTNRES_BLOCK_SIZE) == 0u, stream);
