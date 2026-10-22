@@ -366,6 +366,7 @@ PYTHON_TESTS := \
 	tests/test_complexity_ceiling.py \
 	tests/test_config_coverage.py \
 	tests/test_cuda_performance_contracts.py \
+	tests/test_device_neutral.py \
 	tests/test_dry_law.py \
 	tests/test_family_defines_single_source.py \
 	tests/test_no_source_comments.py \
