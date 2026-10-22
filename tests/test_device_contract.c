@@ -126,8 +126,10 @@ static void TestSpaces(void)
 		CHECK(ChildFaults(device.device),"a host dereference of a device-private address faults");
 		CHECK(ChildFaults(shared.device),"a host dereference of a shared buffer's device address faults");
 	}
-	CHECK(SparkDeviceFree(&device) == SPARK_STATUS_OK && SparkDeviceFree(&shared) == SPARK_STATUS_OK &&
-		SparkDeviceFree(&pinned) == SPARK_STATUS_OK && SparkDeviceFree(&pageable) == SPARK_STATUS_OK,"free every space");
+	CHECK(SparkDeviceFree(&device) == SPARK_STATUS_OK,"free every space: device");
+	CHECK(SparkDeviceFree(&shared) == SPARK_STATUS_OK,"free every space: shared");
+	CHECK(SparkDeviceFree(&pinned) == SPARK_STATUS_OK,"free every space: pinned");
+	CHECK(SparkDeviceFree(&pageable) == SPARK_STATUS_OK,"free every space: pageable");
 	CHECK(device.handle == 0u && device.device == 0u,"free clears the buffer");
 }
 
@@ -164,7 +166,9 @@ static void TestCopies(SparkDeviceQueue *queue)
 	file_like = source;
 	file_like.handle ^= 1ull << 40;
 	CHECK(SparkDeviceCopy(queue,At(&file_like,0u),At(&device,0u),1u) == SPARK_STATUS_INVALID_ARGUMENT,"a forged handle is refused");
-	CHECK(SparkDeviceFree(&source) == SPARK_STATUS_OK && SparkDeviceFree(&device) == SPARK_STATUS_OK && SparkDeviceFree(&shared) == SPARK_STATUS_OK,"free the copy buffers");
+	CHECK(SparkDeviceFree(&source) == SPARK_STATUS_OK,"free the copy buffers: source");
+	CHECK(SparkDeviceFree(&device) == SPARK_STATUS_OK,"free the copy buffers: device");
+	CHECK(SparkDeviceFree(&shared) == SPARK_STATUS_OK,"free the copy buffers: shared");
 }
 
 static void TestOrdering(void)
@@ -198,7 +202,8 @@ static void TestOrdering(void)
 				ordered = 0;
 	}
 	CHECK(ordered,"a queue waiting on an event sees everything before the event on the other queue");
-	CHECK(SparkDeviceFree(&device) == SPARK_STATUS_OK && SparkDeviceFree(&result) == SPARK_STATUS_OK,"free the ordering buffers");
+	CHECK(SparkDeviceFree(&device) == SPARK_STATUS_OK,"free the ordering buffers: device");
+	CHECK(SparkDeviceFree(&result) == SPARK_STATUS_OK,"free the ordering buffers: result");
 	CHECK(SparkDeviceEventDestroy(ready) == SPARK_STATUS_OK,"destroy the event");
 	CHECK(SparkDeviceQueueDestroy(producer) == SPARK_STATUS_OK && SparkDeviceQueueDestroy(consumer) == SPARK_STATUS_OK,"destroy the queues");
 }
@@ -231,7 +236,8 @@ static void TestBusy(SparkDeviceQueue *queue)
 	CHECK(SparkDeviceEventWait(event,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"the event completes");
 	CHECK(SparkDeviceSynchronize(SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"device synchronize waits for every queue");
 	CHECK(__atomic_load_n(&flag,__ATOMIC_SEQ_CST) == 1,"the callback ran");
-	CHECK(SparkDeviceFree(&device) == SPARK_STATUS_OK && SparkDeviceFree(&host) == SPARK_STATUS_OK,"free after the work completes");
+	CHECK(SparkDeviceFree(&device) == SPARK_STATUS_OK,"free after the work completes: device");
+	CHECK(SparkDeviceFree(&host) == SPARK_STATUS_OK,"free after the work completes: host");
 	CHECK(SparkDeviceEventDestroy(event) == SPARK_STATUS_OK,"destroy the completed event");
 }
 
@@ -301,7 +307,9 @@ static void TestFileAndRegister(SparkDeviceQueue *queue)
 	CHECK(SparkDeviceFree(&registered) == SPARK_STATUS_OK,"unregister");
 	borrowed[0] = 0x44u;
 	CHECK(borrowed[0] == 0x44u,"unregistering leaves the host memory to its owner");
-	CHECK(SparkDeviceFree(&mapped) == SPARK_STATUS_OK && SparkDeviceFree(&device) == SPARK_STATUS_OK && SparkDeviceFree(&back) == SPARK_STATUS_OK,"free");
+	CHECK(SparkDeviceFree(&mapped) == SPARK_STATUS_OK,"free the mapping");
+	CHECK(SparkDeviceFree(&device) == SPARK_STATUS_OK,"free the device buffer");
+	CHECK(SparkDeviceFree(&back) == SPARK_STATUS_OK,"free the host buffer");
 	close(fd);
 	unlink(path);
 	free(contents);

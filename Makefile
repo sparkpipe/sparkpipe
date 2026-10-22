@@ -64,6 +64,7 @@ endif
 DEVICE_RUNTIME_DIR := build/runtime_libs
 DEVICE_HOST_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_host.$(SHARED_LIBRARY_EXT)
 DEVICE_HOST_SOURCES := runtime/device/device.c runtime/device/host/device_host.c
+DEVICE_CUDA_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_cuda.$(SHARED_LIBRARY_EXT)
 DEVICE_HEADERS := include/sparkpipe/spark_device.h runtime/device/device_backend.h
 ifeq ($(UNAME_S),Darwin)
 DEVICE_LIBRARY_NAME_FLAGS = -install_name @rpath/$(notdir $@)
@@ -379,6 +380,7 @@ PYTHON_TESTS := \
 	tests/test_config_coverage.py \
 	tests/test_cuda_performance_contracts.py \
 	tests/test_device_neutral.py \
+	tests/test_device_contract_cuda.py \
 	tests/test_dry_law.py \
 	tests/test_family_defines_single_source.py \
 	tests/test_no_source_comments.py \
@@ -1252,6 +1254,13 @@ build/test_model_resident_adapter_budget: tests/test_model_resident_adapter_budg
 $(DEVICE_HOST_LIBRARY): $(DEVICE_HOST_SOURCES) $(DEVICE_HEADERS) | build
 	@mkdir -p $(dir $@)
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_HOST_SOURCES) $(LDLIBS) -o $@
+
+$(DEVICE_CUDA_LIBRARY): runtime/device/device.c runtime/device/cuda/device_cuda.c $(DEVICE_HEADERS) | build
+	@mkdir -p $(dir $@)
+	@if [ -f "$(CUDA_HOME)/include/cuda_runtime.h" ]; then $(CC) $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) runtime/device/device.c runtime/device/cuda/device_cuda.c -L$(CUDA_HOME)/lib64 -lcudart $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no CUDA runtime headers on this host)"; fi
+
+build/test_device_contract_cuda: tests/test_device_contract.c $(DEVICE_CUDA_LIBRARY) | build
+	@if [ -f "$(DEVICE_CUDA_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_device_contract_cuda (no CUDA device library)"; fi
 
 build/test_device_contract: tests/test_device_contract.c $(DEVICE_HOST_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_host $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
