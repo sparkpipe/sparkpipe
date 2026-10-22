@@ -132,7 +132,7 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 			return(SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"initialize","",0,"cannot create a Metal command queue"));
 		}
 		metal_page_bytes = page > 0 ? (uint64_t)page : 16384u;
-		memcpy(properties->backend,"metal",6u);
+		snprintf(properties->backend,sizeof(properties->backend),"%s","metal");
 		snprintf(properties->target,sizeof(properties->target),"metal.%s",[metal_device supportsFamily:MTLGPUFamilyApple9] ? "apple9" : "apple");
 		snprintf(properties->name,sizeof(properties->name),"%s",metal_device.name.UTF8String);
 		properties->page_bytes = (uint32_t)metal_page_bytes;
