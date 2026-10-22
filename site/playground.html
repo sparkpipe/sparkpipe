@@ -119,6 +119,7 @@
     }
   };
   let control = false, chosen = false, residencyTimer = 0;
+  const local = () => location.hostname !== 'sparkpipe.ai' && base() === location.origin;
   const mark = (doc) => {
     if (!chosen && doc.active && Array.from($('model').options).some((option) => option.value === doc.active)) $('model').value = doc.active;
     Array.from($('model').options).forEach((option) => {
@@ -151,6 +152,17 @@
       return;
     }
     residencyTimer = setTimeout(residency, delay);
+  };
+  const activate = async () => {
+    if (!control || !local() || !$('model').value) return;
+    try {
+      const response = await fetch(base() + '/v1/sparkpipe/activate', { method: 'POST', headers: headers(), body: JSON.stringify({ model: $('model').value }) });
+      if (!response.ok) throw await failure(response);
+    } catch (error) {
+      $('residency').textContent = 'Could not load ' + $('model').value + ': ' + error.message;
+      return;
+    }
+    residency();
   };
   const connect = async () => {
     save('localStorage', 'sparkpipe-endpoint', $('endpoint').value.trim());
@@ -289,7 +301,7 @@
   $('key').value = load('sessionStorage', 'sparkpipe-key');
   $('connect').addEventListener('click', connect);
   $('send').addEventListener('click', send);
-  $('model').addEventListener('change', () => { chosen = true; });
+  $('model').addEventListener('change', () => { chosen = true; activate(); });
   $('clear').addEventListener('click', () => { if (controller) controller.abort(); history.length = 0; $('messages').replaceChildren(); });
   $('prompt').addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } });
   $('prompt').addEventListener('input', () => { $('prompt').style.height = 'auto'; $('prompt').style.height = Math.min($('prompt').scrollHeight, 180) + 'px'; snippet(); });
