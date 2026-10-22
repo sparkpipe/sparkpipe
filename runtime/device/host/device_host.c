@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -104,9 +105,9 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	if ( configuration->ordinal != 0u )
 		return(SparkDeviceRecordError(SPARK_STATUS_NOT_FOUND,"initialize","",0,"the host backend has one device, ordinal 0"));
 	host_page_bytes = page > 0 ? (uint64_t)page : 4096u;
-	memcpy(properties->backend,"host",5u);
-	memcpy(properties->target,"host",5u);
-	memcpy(properties->name,"host queues",12u);
+	snprintf(properties->backend,sizeof(properties->backend),"%s","host");
+	snprintf(properties->target,sizeof(properties->target),"%s","host");
+	snprintf(properties->name,sizeof(properties->name),"%s","host queues");
 	properties->page_bytes = (uint32_t)host_page_bytes;
 	properties->compute_units = processors > 0 ? (uint32_t)processors : 1u;
 	properties->simd_width = 32u;
