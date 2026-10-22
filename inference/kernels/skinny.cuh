@@ -740,6 +740,35 @@ static int32_t LmSkinnyDense(const void *weight, const uint16_t *activation, uin
 }
 
 template<class Format>
+static int32_t LmSkinnyDenseSplit(const void *weight, const uint16_t *activation, uint16_t *output_bf16, float *output_f32, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset, cudaStream_t stream)
+{
+	LmSkinnyArguments args;
+	int32_t status;
+	if constexpr ( !LmSkinnyFormat<Format>::kSupported || Format::kScaleGroup != 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	else
+	{
+		memset(&args,0,sizeof(args));
+		args.weight = (const uint8_t *)weight;
+		args.activation = activation;
+		args.output_bf16 = output_bf16;
+		args.output_f32 = output_f32;
+		args.scale = LmScaleTensorNone();
+		args.rows = rows;
+		args.input_dimension = input_dimension;
+		args.output_dimension = output_dimension;
+		args.output_row_stride = output_row_stride != 0u ? output_row_stride : output_dimension;
+		args.output_column_offset = output_column_offset;
+		status = LmSkinnyValidate<Format>(&args);
+		if ( status != LM_LAUNCH_OK )
+			return(status);
+		if ( input_dimension / LmSkinnyFormat<Format>::kElements < LM_SKINNY_SPLIT_WARPS * LM_WARP_LANES )
+			return(LM_LAUNCH_ERR_SHAPE);
+		return(LmSkinnySplitRows<Format>(&args,stream));
+	}
+}
+
+template<class Format>
 static int32_t LmSkinnyExperts(const void *weight, LmScaleTensor scale, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *route_expert, const uint32_t *route_packed_row, uint32_t pairs, uint32_t top_k, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, cudaStream_t stream)
 {
 	LmSkinnyArguments args;
