@@ -130,6 +130,7 @@ typedef struct SparkWeightdMeshSendQueue
     uint32_t mask;
     uint32_t qpn;
     uint32_t produced;
+    uint32_t completed;
     uint32_t completion_queue;
     uint32_t combining_bytes;
     uint64_t wr_id[SPARK_WEIGHTD_MESH_SQ_SLOTS];
@@ -731,6 +732,7 @@ static int SparkWeightdMeshCqPoll(uint32_t which,struct ibv_wc *completions,int 
             if ( weightd_mesh.send_qps[peer] != 0 && weightd_mesh.send_queues[peer].qpn == qpn && weightd_mesh.send_queues[peer].completion_queue == which )
             {
                 completions[count].wr_id = weightd_mesh.send_queues[peer].wr_id[counter & weightd_mesh.send_queues[peer].mask];
+                weightd_mesh.send_queues[peer].completed = counter;
                 break;
             }
         queue->consumed++;
@@ -2492,6 +2494,19 @@ static void SparkWeightdMeshDoorbellStuck(uint64_t index,const char *phase,uint6
         fprintf(stderr,"WD-STUCK idx=%llu phase=%s seq=%llu posted=%llu bytes=%llu slot=%llu\n",(unsigned long long)index,phase,(unsigned long long)seq,(unsigned long long)weightd_mesh.doorbell_posted[index],(unsigned long long)bytes,(unsigned long long)slot);
 }
 
+static void SparkWeightdMeshTransferStuck(uint32_t index,uint64_t seq)
+{
+    const SparkWeightdMeshTransfer *transfer = &weightd_mesh.transfers[SPARK_WEIGHTD_MESH_RECORD_OF(index,seq)];
+    uint32_t peer;
+    fprintf(stderr,"WD-TRANSFER-STUCK idx=%u seq=%llu record_seq=%llu pending=%llx chained=%x failed=%u\n",index,(unsigned long long)seq,
+        (unsigned long long)transfer->seq,(unsigned long long)transfer->pending,transfer->chained,transfer->failed);
+    for (peer=0u; peer<SPARK_WEIGHTD_MESH_PEERS; peer++)
+        if ( (transfer->pending & (UINT64_C(0xf) << (peer * 4u))) != 0u )
+            fprintf(stderr,"WD-TRANSFER-PEER idx=%u peer=%u rank=%u qpn=%u produced=%u completed=%u send_pending=%u chained_writes=%u\n",index,peer,
+                peer < weightd_mesh.local_rank ? peer : peer + 1u,weightd_mesh.send_queues[peer].qpn,weightd_mesh.send_queues[peer].produced & 0xffffu,
+                weightd_mesh.send_queues[peer].completed,weightd_mesh.send_pending[peer],transfer->chained_writes[peer]);
+}
+
 static uint32_t SparkWeightdMeshDoorbellCell(uint32_t band,uint32_t rank,uint64_t now_ns)
 {
     uint32_t index = band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + rank,alternate,candidate,count = 0u,order[2];
@@ -2524,6 +2539,8 @@ static uint32_t SparkWeightdMeshDoorbellCell(uint32_t band,uint32_t rank,uint64_
     if ( weightd_mesh.doorbell_stuck[index] != 0u && (weightd_mesh.doorbell_stuck[index] % 200u) == 0u )
         fprintf(stderr,"WD-SEEN idx=%u seq=%llu posted=%llu issued=%llu\n",index,(unsigned long long)newest,(unsigned long long)posted,(unsigned long long)weightd_mesh.issued[index]);
     SparkWeightdMeshDoorbellStuck(index,"pending",newest,0u,0u);
+    if ( count == 0u && (weightd_mesh.doorbell_stuck[index] % 5000u) == 0u )
+        SparkWeightdMeshTransferStuck(index,newest);
     for (candidate=0u; candidate<count; candidate++)
     {
         const uint64_t *cell = snapshot[order[candidate]];
