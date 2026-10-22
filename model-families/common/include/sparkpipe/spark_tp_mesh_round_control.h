@@ -204,6 +204,11 @@ static inline uint64_t SparkTpMeshScatterChunks(uint64_t elements,uint32_t degre
     return (elements / degree - 1u) / SparkTpMeshScatterCapacity(staging_slot_bytes) + 1u;
 }
 
+static inline uint32_t SparkTpMeshScatterPipelined(uint64_t elements,uint32_t degree,uint64_t half_payload_bytes)
+{
+    return degree != 0u && SparkTpMeshPipelineChunks(elements / degree,half_payload_bytes) >= 3u ? 1u : 0u;
+}
+
 #if defined(__CUDACC__)
 __host__ __device__
 #endif
