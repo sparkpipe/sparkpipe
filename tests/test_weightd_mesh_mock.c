@@ -924,6 +924,14 @@ static void test_peer_routes(uint32_t local_rank)
     CHECK(test_shipped(8u,local_rank) == seq,"partial peer route releases");
 }
 
+static uint32_t test_parity_mask(uint32_t local_rank)
+{
+    uint32_t rank, mask = 0u;
+    for ( rank = local_rank & 1u; rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; rank += 2u )
+        mask |= 1u << rank;
+    return mask;
+}
+
 static void test_peer_halves(uint32_t local_rank)
 {
     uint32_t all_peers = ((1u << SPARK_WEIGHTD_MESH_RANKS_PER_BAND) - 1u) & ~(1u << local_rank);
@@ -996,6 +1004,83 @@ static void test_peer_halves(uint32_t local_rank)
         "every peer gets one payload and one tail per half chunk");
     test_complete_range(first,last);
     CHECK(test_shipped(8u,local_rank) == seq + 1u,"both half peer chunks release after their completions");
+}
+
+static void test_pair_first_routes(uint32_t local_rank)
+{
+    uint32_t all_peers = ((1u << SPARK_WEIGHTD_MESH_RANKS_PER_BAND) - 1u) & ~(1u << local_rank);
+    const uint64_t seq = (UINT64_C(13) << 32u) | 1u, staging = (uint64_t)(uintptr_t)weightd_mesh.staging_buffer, group = 4096u, pair = 2048u;
+    const uint64_t bytes = SPARK_WEIGHTD_MESH_PAIR_FIRST_BYTES(group,pair), slot_base = test_half_slot_base(8u,local_rank,seq);
+    const uint64_t slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + ((seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+    const uint32_t half = SPARK_WEIGHTD_MESH_SEQUENCE_HALF(seq), partner = local_rank ^ 1u;
+    uint32_t first, last, i, peer, peer_rank, data[SPARK_WEIGHTD_MESH_RANKS_PER_BAND], tails = 0u, pending_before = 0u, pending_after = 0u, landed = 0u;
+    SparkWeightdMeshRoute route = {0};
+    memset(data,0,sizeof(data));
+    CHECK((SPARK_WEIGHTD_MESH_CAPABILITIES & SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_FIRST) != 0u,"weightd advertises pair-first routes");
+    route.fields.peer_mask = all_peers;
+    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_PEER;
+    route.fields.pair_first = 1u;
+    route.fields.half = SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE;
+    CHECK(test_post_route(8u,local_rank,seq,bytes,route) == SPARK_STATUS_INVALID_ARGUMENT,"a pair-first route always names a half");
+    route.fields.half = half;
+    route.fields.slice_bytes = 64u;
+    CHECK(test_post_route(8u,local_rank,seq,bytes,route) == SPARK_STATUS_INVALID_ARGUMENT,"a pair-first route carries its sizes in the doorbell bytes, never a slice");
+    route.fields.slice_bytes = 0u;
+    CHECK(test_post_route(8u,local_rank,seq,SPARK_WEIGHTD_MESH_PAIR_FIRST_BYTES(group,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES + 8u),route) == SPARK_STATUS_INVALID_ARGUMENT,
+        "a pair piece never exceeds one half payload");
+    CHECK(test_post_route(8u,local_rank,seq,SPARK_WEIGHTD_MESH_PAIR_FIRST_BYTES(group + 4u,pair),route) == SPARK_STATUS_INVALID_ARGUMENT,
+        "pair-first pieces keep 8-byte alignment");
+    for ( peer = 0u; peer < TEST_MESH_PEERS; peer++ )
+        pending_before += weightd_mesh.send_pending[peer];
+    *(volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer + slot_base + SPARK_WEIGHTD_MESH_TAIL_OFFSET(half)) = seq;
+    first = spark_stub_ibv_posted_count();
+    CHECK(test_post_route(8u,local_rank,seq,bytes,route) == SPARK_STATUS_OK,"a pair-first route posts");
+    last = spark_stub_ibv_posted_count();
+    for ( i = first; i < last; i++ )
+    {
+        SparkStubIbvPostedWork work;
+        CHECK(spark_stub_ibv_posted(i,&work) == 0,"pair-first work is recorded");
+        for ( peer = 0u; peer < TEST_MESH_PEERS; peer++ )
+            if ( weightd_mesh.send_qps[peer]->qp_num == work.qp_number ) break;
+        CHECK(peer < TEST_MESH_PEERS,"pair-first work names a mesh peer");
+        if ( peer >= TEST_MESH_PEERS ) continue;
+        peer_rank = test_peer_rank(peer,local_rank);
+        if ( (work.wr_id & 3u) == 3u )
+        {
+            tails++;
+            CHECK(work.length == 8u && work.inline_word == seq &&
+                work.remote - weightd_mesh.qp_info[peer].remote_addr == slot_base + SPARK_WEIGHTD_MESH_TAIL_OFFSET(half),
+                "every peer gets this rank's tail in this rank's own area");
+            continue;
+        }
+        data[peer_rank]++;
+        if ( peer_rank == partner )
+        {
+            uint32_t segment = (uint32_t)((work.source - staging - 8u * SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES) / SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES);
+            CHECK(work.lkey == weightd_mesh.staging_mr->lkey && work.length == pair && (segment & 1u) == (partner & 1u) &&
+                work.source == staging + SPARK_WEIGHTD_MESH_STAGING_OFFSET(8u,segment) + SPARK_WEIGHTD_MESH_STAGING_HALF_OFFSET(slot) &&
+                work.remote - weightd_mesh.qp_info[peer].remote_addr == SparkWeightdMeshPairFirstArea(8u,segment ^ 1u,slot,half),
+                "each pair piece reads the staging half of a partner-parity segment and lands in the area of that segment's partner");
+            landed |= 1u << (segment ^ 1u);
+        }
+        else
+            CHECK(((peer_rank ^ local_rank) & 1u) == 0u && work.length == group &&
+                work.source == staging + SPARK_WEIGHTD_MESH_STAGING_OFFSET(8u,peer_rank) + SPARK_WEIGHTD_MESH_STAGING_HALF_OFFSET(slot) &&
+                work.remote - weightd_mesh.qp_info[peer].remote_addr == slot_base + SPARK_WEIGHTD_MESH_HALF_OFFSET(half),
+                "a group piece goes only to a same-parity peer, from that peer's staging half into this rank's area");
+    }
+    for ( peer_rank = 0u; peer_rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; peer_rank++ )
+        if ( peer_rank != local_rank )
+            CHECK(data[peer_rank] == (peer_rank == partner ? SPARK_WEIGHTD_MESH_RANKS_PER_BAND / 2u : ((peer_rank ^ local_rank) & 1u) == 0u ? 1u : 0u),
+                "the partner gets one piece per partner-parity segment, a group peer one piece, every other peer only the tail");
+    CHECK(tails == TEST_MESH_PEERS,"every peer gets one tail");
+    CHECK(landed == test_parity_mask(local_rank),"the pair pieces land in the areas of every same-parity sender, this rank's own area included");
+    CHECK(test_shipped(8u,local_rank) != seq,"a pair-first round is not shipped before its completions");
+    test_complete_range(first,last);
+    CHECK(test_shipped(8u,local_rank) == seq,"a pair-first round releases after its tails complete");
+    for ( peer = 0u; peer < TEST_MESH_PEERS; peer++ )
+        pending_after += weightd_mesh.send_pending[peer];
+    CHECK(pending_after == pending_before,"completing the tails retires every unsignaled piece from the send queues");
 }
 
 typedef struct TestMeshActivityThread
@@ -2644,6 +2729,7 @@ int main(void)
     test_half_slots(local_rank);
     test_peer_routes(local_rank);
     test_peer_halves(local_rank);
+    test_pair_first_routes(local_rank);
     test_mesh_topology();
     test_mesh_peer_reset(local_rank);
 

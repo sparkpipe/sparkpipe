@@ -96,6 +96,7 @@ typedef struct SparkWeightdMeshTransfer
     uint32_t failed;
     uint32_t reset_peer;
     uint32_t chained;
+    uint8_t chained_writes[SPARK_WEIGHTD_MESH_PEERS];
 } SparkWeightdMeshTransfer;
 
 typedef struct SparkWeightdMeshTiming
@@ -2049,7 +2050,7 @@ static void SparkWeightdMeshCompleteTransfer(uint64_t work_id, int success, uint
     if ( (bit & 3u) == 3u && (transfer->chained & (1u << (bit / 4u))) != 0u )
     {
         transfer->chained &= ~(1u << (bit / 4u));
-        weightd_mesh.send_pending[bit / 4u]--;
+        weightd_mesh.send_pending[bit / 4u] -= transfer->chained_writes[bit / 4u];
     }
     weightd_mesh.send_pending[bit / 4u]--;
     if ( success == 0 && transfer->failed == 0u )
@@ -2073,13 +2074,13 @@ static uint32_t SparkWeightdMeshPhysicalMask(const SparkWeightdMeshTopology *top
     return(physical_mask);
 }
 
-static uint32_t SparkWeightdMeshSendRoom(uint32_t physical_mask)
+static uint32_t SparkWeightdMeshSendRoom(uint32_t physical_mask,uint32_t needed)
 {
     uint32_t peer,peer_rank;
     for (peer=0u; peer<SPARK_WEIGHTD_MESH_PEERS; peer++)
     {
         peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u;
-        if ( (physical_mask & (1u << peer_rank)) != 0u && weightd_mesh.send_pending[peer] > SPARK_WEIGHTD_MESH_SEND_CAPACITY - 2u )
+        if ( (physical_mask & (1u << peer_rank)) != 0u && weightd_mesh.send_pending[peer] > SPARK_WEIGHTD_MESH_SEND_CAPACITY - needed )
             return(0u);
     }
     return(1u);
@@ -2101,6 +2102,7 @@ static void SparkWeightdMeshPostPeer(uint32_t record,uint32_t band,uint32_t peer
     if ( length != 0u )
     {
         transfer->chained |= 1u << peer;
+        transfer->chained_writes[peer] = 1u;
         weightd_mesh.send_pending[peer]++;
     }
     SparkWeightdMeshSqWrite(peer,base | 3u,1u,0u,0u,0u,slot_base + SPARK_WEIGHTD_MESH_TAIL_OFFSET(route.fields.half),tag);
@@ -2108,7 +2110,40 @@ static void SparkWeightdMeshPostPeer(uint32_t record,uint32_t band,uint32_t peer
     weightd_mesh.send_pending[peer]++;
 }
 
-static void SparkWeightdMeshPostRoute(uint32_t record,uint32_t band,uint64_t slot_base,uint64_t bytes,SparkWeightdMeshRoute route,uint32_t physical_mask,const uint8_t *logical,uint32_t local)
+static void SparkWeightdMeshPostPairFirstPeer(uint32_t record,uint32_t band,uint32_t peer,uint64_t slot,uint64_t slot_base,uint64_t bytes,
+    SparkWeightdMeshRoute route,const uint8_t *logical,uint32_t local,uint32_t ranks,const uint64_t *tag)
+{
+    SparkWeightdMeshTransfer *transfer = &weightd_mesh.transfers[record];
+    uint32_t peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u, target = logical[peer_rank], segment, writes = 0u;
+    uint64_t base = SPARK_WEIGHTD_MESH_TRANSFER_ID | (transfer->generation << 16u) | ((uint64_t)record << 6u) | (uint64_t)(peer * 4u);
+    const uint64_t group = SparkWeightdMeshPairFirstGroupBytes(bytes), pair = SparkWeightdMeshPairFirstPairBytes(bytes);
+    const uint64_t half = SPARK_WEIGHTD_MESH_STAGING_HALF_OFFSET(slot);
+    const uint32_t lkey = SparkWeightdMeshPeerMr(peer,weightd_mesh.staging_mr,weightd_mesh.pair_staging_mr)->lkey;
+    if ( ((target ^ local) & 1u) == 0u && group != 0u )
+    {
+        SparkWeightdMeshSqWrite(peer,base | 2u,0u,(uint64_t)(uintptr_t)weightd_mesh.staging_buffer + SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,target) + half,
+            lkey,(uint32_t)group,slot_base + SPARK_WEIGHTD_MESH_HALF_OFFSET(route.fields.half),0);
+        writes = 1u;
+    }
+    else if ( target == (local ^ 1u) && pair != 0u )
+        for (segment = target & 1u; segment < ranks; segment += 2u)
+        {
+            SparkWeightdMeshSqWrite(peer,base | 2u,0u,(uint64_t)(uintptr_t)weightd_mesh.staging_buffer + SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,segment) + half,
+                lkey,(uint32_t)pair,SparkWeightdMeshPairFirstArea(band,segment ^ 1u,slot,route.fields.half),0);
+            writes++;
+        }
+    if ( writes != 0u )
+    {
+        transfer->chained |= 1u << peer;
+        transfer->chained_writes[peer] = (uint8_t)writes;
+        weightd_mesh.send_pending[peer] += writes;
+    }
+    SparkWeightdMeshSqWrite(peer,base | 3u,1u,0u,0u,0u,slot_base + SPARK_WEIGHTD_MESH_TAIL_OFFSET(route.fields.half),tag);
+    transfer->pending |= UINT64_C(1) << (peer * 4u + 3u);
+    weightd_mesh.send_pending[peer]++;
+}
+
+static void SparkWeightdMeshPostRoute(uint32_t record,uint32_t band,uint64_t slot,uint64_t slot_base,uint64_t bytes,SparkWeightdMeshRoute route,uint32_t physical_mask,const uint8_t *logical,uint32_t local)
 {
     uint64_t offset,length,tag;
     uint32_t peer,peer_rank,rung = 0u;
@@ -2118,8 +2153,13 @@ static void SparkWeightdMeshPostRoute(uint32_t record,uint32_t band,uint64_t slo
         peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u;
         if ( (physical_mask & (1u << peer_rank)) == 0u )
             continue;
-        offset = SparkWeightdMeshRouteSpan(route,logical[peer_rank],local,bytes,&length);
-        SparkWeightdMeshPostPeer(record,band,peer,slot_base,offset,length,route,logical,&tag);
+        if ( route.fields.pair_first != 0u )
+            SparkWeightdMeshPostPairFirstPeer(record,band,peer,slot,slot_base,bytes,route,logical,local,weightd_mesh.lane_topology[band / 2u].rank_count,&tag);
+        else
+        {
+            offset = SparkWeightdMeshRouteSpan(route,logical[peer_rank],local,bytes,&length);
+            SparkWeightdMeshPostPeer(record,band,peer,slot_base,offset,length,route,logical,&tag);
+        }
         rung |= 1u << peer;
     }
     SparkWeightdMeshSqRing(rung);
@@ -2179,13 +2219,13 @@ static SparkStatus SparkWeightdMeshPostSlot(uint32_t band,uint32_t rank,uint64_t
         return SPARK_STATUS_BUSY;
     if ( SparkWeightdMeshNextTransferGeneration == (SPARK_WEIGHTD_MESH_TRANSFER_ID >> 16u) - 1u )
         return SPARK_STATUS_CAPACITY_EXCEEDED;
-    if ( SparkWeightdMeshSendRoom(physical_mask) == 0u )
+    if ( SparkWeightdMeshSendRoom(physical_mask,route.fields.pair_first != 0u ? 2u + SPARK_WEIGHTD_MESH_RANKS_PER_BAND / 2u : 2u) == 0u )
         return SPARK_STATUS_BUSY;
     memset(transfer,0,sizeof(*transfer));
     transfer->seq = seq;
     transfer->generation = ++SparkWeightdMeshNextTransferGeneration;
     weightd_mesh.issued[index] = seq;
-    SparkWeightdMeshPostRoute(record,band,((uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES,bytes,route,physical_mask,logical,rank);
+    SparkWeightdMeshPostRoute(record,band,slot,((uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES,bytes,route,physical_mask,logical,rank);
     {
         uint64_t spent = SparkWeightdMeshMonotonicNs() - now_ns;
         weightd_mesh.timing.route_count++;
