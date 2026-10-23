@@ -89,7 +89,7 @@ The answer request for turn N+1:
 [system: fixed instructions + tools (including expand)]                 static
 [user: <ledger> l_1 .. l_{N-1} </ledger> + u_N]                          append-only ledger, then the raw tail
 [assistant: a_N in Open WebUI's replay form]
-[user: <reference> open nodes </reference> + u_{N+1}]                    this turn
+[user: u_{N+1} + <reference> open nodes </reference> when any are open]   this turn
 ```
 
 - The ledger is inside the first user message because templates render tools
@@ -106,8 +106,15 @@ The answer request for turn N+1:
 - Open nodes render as `<history id="e5">User (earlier): ...\nAssistant
   (earlier): ...</history>` after one fixed sentence saying they are
   reference, not new requests; the static system text says the same.
-- The reference block is always present, even when empty, so the pre-warm cut
-  is in the same place every turn.
+- Nothing before the newest question changes from one turn to the next. The
+  reference block follows the question and is left out when no node is open,
+  so the next turn's prompt begins with this turn's prompt (or, after a turn
+  that showed nodes, with its pre-warm cut). Models with recurrent state
+  resume only at a saved state checkpoint, at a prompt's end or a stride: a
+  block placed before the question and dropped once the exchange became past
+  changed the prompt where no checkpoint lay, and K3's first qualification
+  (2026-10-23) re-read 609K prompt tokens with memory against 105K with Full
+  context.
 
 ## One turn
 

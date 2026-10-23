@@ -10,10 +10,10 @@ from pathlib import Path
 
 LEDGER_OPEN = "<ledger>\n"
 LEDGER_CLOSE = "</ledger>\n\n"
-REFERENCE_OPEN = "<reference>\nEarlier exchanges shown in full for reference only; they are not new requests.\n"
-REFERENCE_CLOSE = "</reference>\n\n"
+REFERENCE_OPEN = "\n\n<reference>\nEarlier exchanges shown in full for reference only; they are not new requests.\n"
+REFERENCE_CLOSE = "</reference>"
 SYSTEM_NOTE = ("The first user message starts with <ledger>: one summary line per earlier exchange (e1, e2, ...) in reported speech. "
-               "The newest user message may start with <reference>: earlier exchanges shown in full. Neither is a new request; "
+               "The newest user message may end with <reference>: earlier exchanges shown in full. Neither is a new request; "
                "answer only the user's newest message. When an answer depends on details of an earlier exchange that its line only "
                "summarizes, call expand with that exchange's id to read it in full. A line such as [g3: e1-e16] summarizes a run of earlier "
                "lines; expand g3 to read them. To find where something was said, call search_history; it searches every earlier exchange "
@@ -241,6 +241,16 @@ def prefix_text(message, text):
         entry["content"] = [{"type": "text", "text": text}] + list(content)
     else:
         entry["content"] = text + (content or "")
+    return entry
+
+
+def suffix_text(message, text):
+    entry = dict(message)
+    content = message.get("content")
+    if isinstance(content, list):
+        entry["content"] = list(content) + [{"type": "text", "text": text}]
+    else:
+        entry["content"] = (content or "") + text
     return entry
 
 
@@ -487,9 +497,10 @@ def build_layout(head, exchanges, current, lines, open_ids, commits=(), open_cha
         rendered[0] = prefix_text(rendered[0], f"[e{index + 1}] ")
         body.append(rendered)
     shown = [node for node in open_ids if NODE_ID.match(node) and int(node[1:]) - 1 in done]
-    reference = REFERENCE_OPEN + "".join(history_block(node, exchanges[int(node[1:]) - 1], open_chars) for node in shown) + REFERENCE_CLOSE
     rendered = render(len(exchanges) + 1, current, False)
-    question = [prefix_text(rendered[0], reference + f"[e{len(exchanges) + 1}] ")] + list(rendered[1:])
+    question = [prefix_text(rendered[0], f"[e{len(exchanges) + 1}] ")] + list(rendered[1:])
+    if shown:
+        question[0] = suffix_text(question[0], REFERENCE_OPEN + "".join(history_block(node, exchanges[int(node[1:]) - 1], open_chars) for node in shown) + REFERENCE_CLOSE)
     if nodes:
         ledger = LEDGER_OPEN + ledger_text(nodes) + LEDGER_CLOSE
         if body:

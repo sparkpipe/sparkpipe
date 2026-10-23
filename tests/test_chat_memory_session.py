@@ -179,7 +179,7 @@ async def run():
         working.id = "working-model"
         working.memory = dict(working.memory, working_tokens=5)
         first = await turn(memory, frontend, working, 1, "u1", None, "a1", '{"lines": {"e1": "The user asked question 1; the assistant gave answer 1."}, "open": []}')
-        assert len(frontend.cuts) == 1 and frontend.cuts[0][-1]["content"] == cm.REFERENCE_OPEN + cm.REFERENCE_CLOSE + "[e2] " + cm.SENTINEL and cm.LEDGER_OPEN not in json.dumps(frontend.cuts[0]), \
+        assert len(frontend.cuts) == 1 and frontend.cuts[0][-1]["content"] == "[e2] " + cm.SENTINEL and cm.LEDGER_OPEN not in json.dumps(frontend.cuts[0]), \
             "no stem while the ledger is empty, but the next turn is pre-warmed"
         assert cm.SYSTEM_NOTE in first.messages[0]["content"] and [t["function"]["name"] for t in first.tools[-2:]] == ["expand", "search_history"] and first.layout["lined"] == 0
         assert first.messages[-1]["content"].endswith("[e1] question 1")
@@ -201,14 +201,14 @@ async def run():
         assert third.layout["lined"] == 1 and third.layout["open"] == ["e1"] and third.layout["working"] == [1], third.layout
         users = [m for m in third.messages if m["role"] == "user"]
         assert users[0]["content"] == cm.LEDGER_OPEN + "[e1] " + state["lines"][key1] + "\n" + cm.LEDGER_CLOSE + "[e2] question 2"
-        assert users[-1]["content"].startswith(cm.REFERENCE_OPEN) and 'history id="e1"' in users[-1]["content"] and users[-1]["content"].endswith("[e3] question 3")
-        assert prewarm[:-1] == third.messages[:-1] and prewarm[-1]["content"] == users[-1]["content"][:-len("question 3")] + cm.SENTINEL, \
+        assert users[-1]["content"].startswith("[e3] question 3" + cm.REFERENCE_OPEN) and 'history id="e1"' in users[-1]["content"] and users[-1]["content"].endswith(cm.REFERENCE_CLOSE)
+        assert prewarm[:-1] == third.messages[:-1] and prewarm[-1]["content"] == users[-1]["content"].replace("[e3] question 3", "[e3] " + cm.SENTINEL, 1), \
             "the pre-warm renders the next turn's layout up to its new question"
         key2 = cm.exchange_key(conversation(3)[3:5])
         assert state["commits"] == [key1, key2] and state["final"][key2].startswith("The user asked question 2, and later"), "a final line written with hindsight that keeps the earlier facts is used"
         stem, warm = frontend.cuts[-2], frontend.cuts[-1]
         assert stem[-1]["content"] == cm.LEDGER_OPEN + "[e1] " + state["lines"][key1] + "\n[e2] " + state["final"][key2] + "\n" + cm.SENTINEL
-        assert warm[-1]["content"].startswith(cm.REFERENCE_OPEN) and warm[-1]["content"].endswith("[e4] " + cm.SENTINEL) and warm[-2] == {"role": "assistant", "content": "answer 3"}
+        assert warm[-1]["content"] == "[e4] " + cm.SENTINEL and warm[-2] == {"role": "assistant", "content": "answer 3"}, warm[-1]
         fourth = await turn(memory, frontend, working, 4, "u4w", "a3", "a4w", '{"lines": {"e4": "The user asked question 4."}, "open": []}')
         key3 = cm.exchange_key(conversation(4)[5:7])
         assert fourth.layout["working"] == [2] and state["commits"][-1] == key3, "when the curator commits too little, the oldest open exchange is committed"
@@ -233,7 +233,7 @@ async def run():
         roles = [m["role"] for m in replay.messages]
         expand_at = next(i for i, m in enumerate(replay.messages) if m["role"] == "tool" and m.get("name") == "expand")
         search_at = next(i for i, m in enumerate(replay.messages) if m["role"] == "tool" and m.get("name") == "search_web")
-        assert expand_at < search_at and replay.messages[expand_at - 2]["content"].endswith("question 3"), roles
+        assert expand_at < search_at and replay.messages[expand_at - 2]["content"].startswith("[e3] question 3"), roles
         assert "User: question 1" in replay.messages[expand_at]["content"]
 
         searched_web = conversation(3) + [{"role": "assistant", "content": "", "tool_calls": [{"id": "w1", "type": "function", "function": {"name": "search_web", "arguments": "{}"}}]},
