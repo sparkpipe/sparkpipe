@@ -64,7 +64,7 @@ set_only_address() {
 up_switch_b() {
     need_root
     local n address rdma gid rings
-    rings="${1:-8192}"
+    rings="${1:-1024}"
     case "$rings" in ''|*[!0-9]*) echo "ring count must be a number: $rings" >&2; exit 2 ;; esac
     n=$((10 + $(rank)))
     address="$SWITCH_B_PREFIX.$n/24"
