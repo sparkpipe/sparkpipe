@@ -180,6 +180,50 @@ static void TestMinimum(void)
 	assert(edge.drafts == 40u);
 }
 
+static void TestStale(void)
+{
+	SparkSpeculationFrameModel model;
+	SparkSpeculationFrameRequest request;
+	SparkSpeculationFrameChoice choice;
+	const uint32_t model_class = SparkSpeculationFrameClass(64u,0u);
+	float cost;
+	uint32_t index;
+	memset(&model,0,sizeof(model));
+	memset(&request,0,sizeof(request));
+	request.feasible = 3u;
+	request.context = 256u;
+	request.match_length = 64u;
+	SparkSpeculationFrameObserveChain(&model,8u,256u,8u * 62000000ull);
+	SparkSpeculationFrameObserveChain(&model,1u,256u,64000000ull);
+	for (index=0u; index<40u; index++)
+		SparkSpeculationHazardObserve(&model.classes[model_class],3u,3u,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
+	SparkSpeculationFrameObserveFrame(&model,2u,256u,80000000ull);
+	SparkSpeculationFrameObserveFrame(&model,3u,256u,104000000ull);
+	SparkSpeculationFrameObserveFrame(&model,4u,256u,144000000ull);
+	for (index=0u; index<SPARK_SPECULATION_FRAME_STALE_FRAMES; index++)
+		SparkSpeculationFrameObserveFrame(&model,3u,256u,94000000ull);
+	assert(fabsf(SparkSpeculationFrameCost(&model,4u,256u) - 144e6f) < 1.0f);
+	SparkSpeculationFrameChoose(&model,0,&request,&choice);
+	assert(choice.drafts == 2u);
+	SparkSpeculationFrameObserveFrame(&model,3u,256u,94000000ull);
+	cost = SparkSpeculationFrameCost(&model,4u,256u);
+	assert(cost > SparkSpeculationFrameCost(&model,3u,256u) && fabsf(cost - SparkSpeculationFrameCost(&model,3u,256u) * 12.0f / 11.0f) < 2.0f);
+	assert(SparkSpeculationFrameCost(&model,3u,256u) < 95e6f && SparkSpeculationFrameCost(&model,3u,2048u) == SparkSpeculationFrameCost(&model,3u,256u));
+	SparkSpeculationFrameChoose(&model,0,&request,&choice);
+	assert(choice.drafts == 3u);
+	SparkSpeculationFrameObserveFrame(&model,4u,256u,100000000ull);
+	assert(fabsf(SparkSpeculationFrameCost(&model,4u,256u) - 100e6f) < 1.0f);
+	SparkSpeculationFrameObserveFrame(&model,4u,256u,300000000ull);
+	assert(fabsf(SparkSpeculationFrameCost(&model,4u,256u) - 125e6f) < 1.0f);
+	memset(&model,0,sizeof(model));
+	SparkSpeculationFrameObserveFrame(&model,4u,256u,90000000ull);
+	for (index=0u; index<=SPARK_SPECULATION_FRAME_STALE_FRAMES; index++)
+		SparkSpeculationFrameObserveFrame(&model,3u,256u,94000000ull);
+	assert(fabsf(SparkSpeculationFrameCost(&model,4u,256u) - 90e6f) < 1.0f);
+	SparkSpeculationFrameObserveFrame(&model,4u,256u,100000000ull);
+	assert(fabsf(SparkSpeculationFrameCost(&model,4u,256u) - 100e6f) < 1.0f);
+}
+
 int main(void)
 {
 	TestBuckets();
@@ -188,6 +232,7 @@ int main(void)
 	TestCost();
 	TestMinimum();
 	TestChoose();
-	printf("speculation frame: hazards per match class, interpolated frame costs and the chain price decide every frame: ok\n");
+	TestStale();
+	printf("speculation frame: hazards per match class, interpolated frame costs and the chain price decide every frame; a cost not refreshed for %u frames yields to its fresh neighbours and is replaced when measured again: ok\n",SPARK_SPECULATION_FRAME_STALE_FRAMES);
 	return(0);
 }
