@@ -92,6 +92,7 @@ static_assert(D41_GRAIN == 8u, "a DSV4.1 candidate block is one context shard gr
 #define D41_ENGRAM_TABLES_MAGIC 0x45313444u
 #define D41_GEMM_TILE_N 128u
 #define D41_SKINNY_EXPERT_ROWS 16u
+#define D41_NORM_SPLIT_ROWS 16u
 #define D41_TAIL_MIN_ROWS (LM_SKINNY_ROWS_WIDE > D41_SKINNY_EXPERT_ROWS ? LM_SKINNY_ROWS_WIDE : D41_SKINNY_EXPERT_ROWS)
 #define D41_RECORD_ROW_ELEMENTS (D41_LOCAL_HEADS * D41K_RECORD * (uint32_t)(sizeof(float) / sizeof(uint16_t)))
 #define D41_ENGRAM_SPLIT_ROWS SPARK_DSV41_FLASH_STAGE_ENGRAM_SPLIT_ROWS
@@ -102,6 +103,8 @@ static_assert(D41_GRAIN == 8u, "a DSV4.1 candidate block is one context shard gr
 #define D41_RING_LANDING_ROWS ((D41_LOCAL_LAYERS * D41_RING_ELEMENTS + D41_HIDDEN - 1u) / D41_HIDDEN)
 #define D41_PAIR_RECORD_ROWS ((uint32_t)(SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES / (2u * D41_RECORD_ROW_ELEMENTS * sizeof(uint16_t))))
 static_assert(D41_PAIR_RECORD_ROWS >= 1u, "a pair-duplicated record row fits a staging slot");
+#define D41_PAIR_RECORD_CHOSEN_ROWS 1u
+static_assert(D41_PAIR_RECORD_CHOSEN_ROWS <= D41_PAIR_RECORD_ROWS, "pair-duplicated records are chosen only where they fit a staging slot");
 static_assert(D41_RECORD_ROW_ELEMENTS <= D41_HIDDEN && D41_RECORD_ROW_ELEMENTS % 8u == 0u,
 	"one row of attention records fits a collective row and keeps 16-byte copies");
 static_assert(D41_ENGRAM_EMBED % 2u == 0u && D41_ENGRAM_HALF <= D41_HIDDEN && D41_ENGRAM_HALF % 8u == 0u,
@@ -379,6 +382,7 @@ void D41RmsNormQdqKernel(const uint16_t *input, const uint16_t *__restrict__ str
 	float *row = d41_norm_shared;
 	float *reduction = d41_norm_shared + dimension;
 	const uint64_t base = (uint64_t)blockIdx.x * dimension;
+	const uint32_t span = dimension / gridDim.y, begin = blockIdx.y * span;
 	uint32_t index;
 	float total = 0.0f, scale;
 	for ( index = threadIdx.x; index < dimension; index += THREADS )
@@ -389,7 +393,7 @@ void D41RmsNormQdqKernel(const uint16_t *input, const uint16_t *__restrict__ str
 	}
 	total = LmBlockSum<THREADS>(total, reduction);
 	scale = rsqrtf((total / (float)dimension) + epsilon);
-	for ( index = threadIdx.x; index < dimension; index += THREADS )
+	for ( index = begin + threadIdx.x; index < begin + span; index += THREADS )
 	{
 		const uint16_t normed = LmFloatToBf16(row[index] * scale * LmScalarToFloat(weight[index]));
 		if ( output != 0 )
@@ -441,6 +445,11 @@ void D41KvNormRopeQdqKernel(const uint16_t *__restrict__ input, const uint16_t *
 	}
 }
 
+static uint32_t D41NormParts(uint32_t rows, uint32_t width)
+{
+	return rows <= D41_NORM_SPLIT_ROWS ? width / D41_THREADS : 1u;
+}
+
 static void D41RmsNormQdq(const uint16_t *input, const uint16_t *weight, uint16_t *output, uint16_t *quantized, uint32_t rows, uint32_t width,
 	cudaStream_t stream)
 {
@@ -451,16 +460,16 @@ static void D41RmsNormQdq(const uint16_t *input, const uint16_t *weight, uint16_
 		D41Fp8QdqCopy(output != 0 ? output : quantized, quantized, (uint64_t)rows * width, stream);
 		return;
 	}
-	D41RmsNormQdqKernel<D41_THREADS><<<rows, D41_THREADS, (width + 8u) * sizeof(float), stream>>>(input, 0, 0, weight, output, quantized, width,
-		D41_EPS);
+	D41RmsNormQdqKernel<D41_THREADS><<<dim3(rows, D41NormParts(rows, width)), D41_THREADS, (width + 8u) * sizeof(float), stream>>>(input, 0, 0, weight,
+		output, quantized, width, D41_EPS);
 }
 
 static void D41CollapseNormQdq(const uint16_t *streams, const float *pre, const uint16_t *weight, uint16_t *output, uint16_t *quantized,
 	uint32_t rows, cudaStream_t stream)
 {
 	static_assert(D41_HIDDEN % D41_THREADS == 0u, "the hidden row splits evenly over the norm block");
-	D41RmsNormQdqKernel<D41_THREADS><<<rows, D41_THREADS, (D41_HIDDEN + 8u) * sizeof(float), stream>>>(0, streams, pre, weight, output, quantized,
-		D41_HIDDEN, D41_EPS);
+	D41RmsNormQdqKernel<D41_THREADS><<<dim3(rows, D41NormParts(rows, D41_HIDDEN)), D41_THREADS, (D41_HIDDEN + 8u) * sizeof(float), stream>>>(0, streams,
+		pre, weight, output, quantized, D41_HIDDEN, D41_EPS);
 }
 
 static void D41Rope(uint16_t *data, uint32_t rows, uint32_t heads, uint32_t head_stride, uint32_t rope_offset,
@@ -667,7 +676,7 @@ static uint64_t D41DestinationStride(uint32_t rows, uint32_t record_heads)
 
 static uint32_t D41PairRecords(const D41ModelState *state, uint32_t rows)
 {
-	return rows <= D41_PAIR_RECORD_ROWS && 2u * rows <= state->max_rows ? 1u : 0u;
+	return rows <= D41_PAIR_RECORD_CHOSEN_ROWS && 2u * rows <= state->max_rows ? 1u : 0u;
 }
 
 static SparkStatus D41LandCache(D41ModelState *state, uint32_t cache, const SparkStageRunnerStep *step, cudaStream_t stream)

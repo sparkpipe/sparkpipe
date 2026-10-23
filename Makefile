@@ -61,6 +61,19 @@ else
 SHARED_LIBRARY_FLAGS ?= -shared
 SHARED_LIBRARY_EXT ?= so
 endif
+DEVICE_RUNTIME_DIR := build/runtime_libs
+DEVICE_HOST_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_host.$(SHARED_LIBRARY_EXT)
+DEVICE_HOST_SOURCES := runtime/device/device.c runtime/device/host/device_host.c
+DEVICE_CUDA_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_cuda.$(SHARED_LIBRARY_EXT)
+DEVICE_METAL_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_metal.$(SHARED_LIBRARY_EXT)
+DEVICE_HEADERS := include/sparkpipe/spark_device.h runtime/device/device_backend.h
+ifeq ($(UNAME_S),Darwin)
+DEVICE_LIBRARY_NAME_FLAGS = -install_name @rpath/$(notdir $@)
+DEVICE_RPATH_FLAGS := -Wl,-rpath,@loader_path/runtime_libs
+else
+DEVICE_LIBRARY_NAME_FLAGS = -Wl,-soname,$(notdir $@)
+DEVICE_RPATH_FLAGS := -Wl,-rpath,'$$ORIGIN/runtime_libs'
+endif
 MOONCAKE_ROOT ?=
 MOONCAKE_LIB ?= $(MOONCAKE_ROOT)/build/mooncake-store/src
 MOONCAKE_DEP_INCLUDE ?= $(MOONCAKE_ROOT)/local/include
@@ -320,6 +333,7 @@ TEST_NAMES := \
 
 ifneq ($(UNAME_S),Darwin)
 TEST_NAMES += test_stage_kv_binding test_stage_kv_pool_resize test_stage_kv_shared_prefix test_k3_kv_binding
+TEST_NAMES += test_device_contract test_device_instance
 endif
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
@@ -367,9 +381,12 @@ PYTHON_TESTS := \
 	tests/test_config_coverage.py \
 	tests/test_cuda_performance_contracts.py \
 	tests/test_device_neutral.py \
+	tests/test_device_contract_cuda.py \
+	tests/test_device_contract_metal.py \
 	tests/test_dry_law.py \
 	tests/test_family_defines_single_source.py \
 	tests/test_no_source_comments.py \
+	tests/test_ci_supply_chain.py \
 	tests/test_third_party_notices.py \
 	tests/test_unicode_nfc.py \
 	tests/test_tokenizer_unicode_split.py \
@@ -502,6 +519,7 @@ PYTHON_TESTS := \
 	tests/test_expanded_gather_prefill_cuda.py \
 	tests/test_latent_shard_decode_cuda.py \
 	tests/test_skinny_split.py \
+	tests/test_skinny_cell_rows.py \
 	tests/test_delta_rule_column_cuda.py \
 	tests/test_index_shard_cuda.py \
 	tests/test_latent_rope_heads_cuda.py \
@@ -869,6 +887,8 @@ test-skinny-rows-reference: build/test_skinny_rows_reference
 
 build/test_skinny_split: tests/test_skinny_split.cu inference/kernels/skinny.cuh | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_skinny_split (no nvcc on this host)"; fi
+build/test_skinny_cell_rows: tests/test_skinny_cell_rows.cu inference/kernels/skinny.cuh | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_skinny_cell_rows (no nvcc on this host)"; fi
 
 build/test_skinny_grouped_reference: tests/test_skinny_grouped_reference.cu inference/kernels/skinny.cuh inference/kernels/route.cuh | build
 	$(KERNEL_TEST_NVCC) $< $(KERNEL_TEST_CUDA_LINK) -o $@
@@ -1240,6 +1260,33 @@ build/test_model_resident_deadline: tests/test_model_resident_deadline.c node/mo
 
 build/test_model_resident_adapter_budget: tests/test_model_resident_adapter_budget.c node/model_residentd.c node/weightd_spawn.c node/weightd_spawn.h runtime/model_resident_socket.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) tests/test_model_resident_adapter_budget.c node/weightd_spawn.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
+$(DEVICE_HOST_LIBRARY): $(DEVICE_HOST_SOURCES) $(DEVICE_HEADERS) | build
+	@mkdir -p $(dir $@)
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_HOST_SOURCES) $(LDLIBS) -o $@
+
+$(DEVICE_CUDA_LIBRARY): runtime/device/device.c runtime/device/cuda/device_cuda.c $(DEVICE_HEADERS) | build
+	@mkdir -p $(dir $@)
+	@if [ -f "$(CUDA_HOME)/include/cuda_runtime.h" ]; then $(CC) $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) runtime/device/device.c runtime/device/cuda/device_cuda.c -L$(CUDA_HOME)/lib64 -lcudart $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no CUDA runtime headers on this host)"; fi
+
+build/test_device_contract_cuda: tests/test_device_contract.c $(DEVICE_CUDA_LIBRARY) | build
+	@if [ -f "$(DEVICE_CUDA_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_device_contract_cuda (no CUDA device library)"; fi
+
+$(DEVICE_METAL_LIBRARY): runtime/device/device.c runtime/device/metal/device_metal.m $(DEVICE_HEADERS) | build
+	@mkdir -p $(dir $@)
+	@if [ "$(UNAME_S)" = Darwin ] && xcrun --find metal >/dev/null 2>&1; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fobjc-arc -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) runtime/device/device.c runtime/device/metal/device_metal.m -framework Metal -framework Foundation $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no Metal toolchain on this host)"; fi
+
+build/test_device_contract_metal: tests/test_device_contract.c $(DEVICE_METAL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_device_contract_metal (no Metal device library)"; fi
+
+build/test_device_contract: tests/test_device_contract.c $(DEVICE_HOST_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_host $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+
+build/test_device_instance_a.$(SHARED_LIBRARY_EXT) build/test_device_instance_b.$(SHARED_LIBRARY_EXT): tests/device_instance_module.c $(DEVICE_HOST_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_host $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+
+build/test_device_instance: tests/test_device_instance.c $(DEVICE_HOST_LIBRARY) build/test_device_instance_a.$(SHARED_LIBRARY_EXT) build/test_device_instance_b.$(SHARED_LIBRARY_EXT) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_TEST_MODULE_EXT='"$(SHARED_LIBRARY_EXT)"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_host $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
 build/test_memory_buffer: tests/test_memory_buffer.c runtime/memory_buffer.c include/sparkpipe/spark_memory_buffer.h tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_memory_buffer.c tests/cuda_stub/cuda_runtime_stub.c $(LDFLAGS) $(LDLIBS) -o $@

@@ -197,6 +197,65 @@ static void TestIndexBounds(void)
 	Require(index.length == 0u && SparkSpeculationLookupIndexFind(&index,history,8u,8u,&match) == SPARK_STATUS_NOT_FOUND,"reset forgets the history");
 }
 
+static void TestIndexTail(void)
+{
+	SparkSpeculationLookupIndex index;
+	SparkSpeculationLookupMatch match,plain;
+	uint32_t heads[8],chain[16],history[10] = {1u,2u,3u,4u,5u,6u,9u,1u,2u,3u},tail[2] = {4u,5u},miss[2] = {4u,7u};
+	Require(SparkSpeculationLookupIndexBind(&index,heads,8u,chain,16u,3u) == SPARK_STATUS_OK,"tail index binds");
+	Require(SparkSpeculationLookupIndexAppend(&index,history,10u) == SPARK_STATUS_OK,"tail history appends");
+	Require(SparkSpeculationLookupIndexFindTail(&index,history,tail,2u,8u,8u,&match) == SPARK_STATUS_OK && match.match_length == 5u && match.source_end == 4u &&
+		history[match.source_end + 1u] == 6u,"drafted tokens complete an earlier occurrence and its continuation follows in the history");
+	Require(SparkSpeculationLookupIndexFindTail(&index,history,miss,2u,8u,8u,&match) == SPARK_STATUS_NOT_FOUND,"a tail that never occurred has no match");
+	Require(SparkSpeculationLookupIndexFindTail(&index,history,0,0u,8u,8u,&match) == SparkSpeculationLookupIndexFind(&index,history,8u,8u,&plain) &&
+		match.match_length == plain.match_length && match.source_end == plain.source_end,"an empty tail finds what the plain lookup finds");
+	Require(SparkSpeculationLookupIndexFindTail(&index,history,0,2u,8u,8u,&match) == SPARK_STATUS_INVALID_ARGUMENT,"a tail length needs tail tokens");
+}
+
+static void TestIndexTailMatchesLinearScan(uint32_t alphabet,uint32_t seed)
+{
+	enum { LENGTH = 400u, GRAM = 3u, MAXIMUM = 12u };
+	SparkSpeculationLookupIndex index;
+	SparkSpeculationLookupMatch match;
+	uint32_t sequence[LENGTH],heads[64],chain[LENGTH],length,state = seed,found = 0u;
+	for (length=0u; length<LENGTH; length++)
+	{
+		state = state * 1103515245u + 12345u;
+		sequence[length] = (state >> 16) % alphabet;
+	}
+	for (length=GRAM + 2u; length<=LENGTH; length++)
+	{
+		const uint32_t tail_length = 1u + length % 6u < length - GRAM ? 1u + length % 6u : 1u;
+		const uint32_t history_length = length - tail_length;
+		uint32_t end,best_length = 0u,best_end = 0u;
+		SparkStatus status;
+		Require(SparkSpeculationLookupIndexBind(&index,heads,64u,chain,LENGTH,GRAM) == SPARK_STATUS_OK,"tail scan index binds");
+		Require(SparkSpeculationLookupIndexAppend(&index,sequence,history_length) == SPARK_STATUS_OK,"tail scan history appends");
+		for (end=history_length >= 2u ? history_length - 2u : 0u; end + 1u >= GRAM && history_length >= 2u; end--)
+		{
+			uint32_t run = 0u;
+			while ( run < MAXIMUM && run <= end && run < length && sequence[end - run] == sequence[length - 1u - run] )
+				run++;
+			if ( run >= GRAM && run > best_length )
+			{
+				best_length = run;
+				best_end = end;
+			}
+			if ( end == 0u )
+				break;
+		}
+		status = SparkSpeculationLookupIndexFindTail(&index,sequence,sequence + history_length,tail_length,MAXIMUM,UINT32_MAX,&match);
+		if ( best_length == 0u )
+		{
+			Require(status == SPARK_STATUS_NOT_FOUND,"tail lookup finds nothing where the scan finds nothing");
+			continue;
+		}
+		found++;
+		Require(status == SPARK_STATUS_OK && match.match_length == best_length && match.source_end == best_end,"tail lookup picks the scan's most recent longest match with a continuation");
+	}
+	Require(found > 50u,"the tail sequence repeats often enough to test matches");
+}
+
 int main(void)
 {
 	uint32_t prompt[TEST_PROMPT],expected[TEST_GENERATE],index,depth,accepted,rounds;
@@ -206,6 +265,9 @@ int main(void)
 	TestIndexMatchesLinearScan(64u,4u,1u);
 	TestIndexMatchesLinearScan(1u,3u,7u);
 	TestIndexMatchesLinearScan(16u,6u,11u);
+	TestIndexTail();
+	TestIndexTailMatchesLinearScan(3u,5u);
+	TestIndexTailMatchesLinearScan(5u,13u);
 	for (index=0u; index<TEST_PROMPT; index++)
 		prompt[index] = (index * 37u + 5u) % 61u;
 	Greedy(prompt,expected,TEST_GENERATE);
