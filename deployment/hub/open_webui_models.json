@@ -29,16 +29,16 @@
     {
       "id": "kimi-k3",
       "name": "Kimi K3",
-      "context": 131072,
+      "context": 1048576,
       "compact_token_threshold": 64000,
-      "description": "Kimi K3. 128K context. Switching to it takes about 70 s."
+      "description": "Kimi K3. 1M context. Switching to it takes about 70 s."
     },
     {
       "id": "glm-5.3",
       "name": "GLM 5.3",
-      "context": 262144,
+      "context": 1048576,
       "compact_token_threshold": 128000,
-      "description": "GLM 5.3, the largest GLM. 256K context. Switching to it takes about 40 s."
+      "description": "GLM 5.3, the largest GLM. 1M context. Switching to it takes about 40 s."
     },
     {
       "id": "glm-5.3-flash",
@@ -78,23 +78,23 @@
     {
       "id": "gemma-4-26b-a4b",
       "name": "Gemma 4 26B A4B",
-      "context": 32768,
+      "context": 262144,
       "compact_token_threshold": 16000,
-      "description": "Gemma 4 26B A4B, the fastest model here. 32K context, text only here. Switching to it takes about 15 s."
+      "description": "Gemma 4 26B A4B, the fastest model here. 256K context, text only here. Switching to it takes about 15 s."
     },
     {
       "id": "ling-3.0-flash",
       "name": "Ling 3.0 Flash",
-      "context": 32768,
+      "context": 262144,
       "compact_token_threshold": 16000,
-      "description": "Ling 3.0 Flash, fast. 32K context. Switching to it takes about 20 s."
+      "description": "Ling 3.0 Flash, fast. 256K context. Switching to it takes about 20 s."
     },
     {
       "id": "ling-3.0-flash-fin",
       "name": "Ling 3.0 Flash Finance",
-      "context": 32768,
+      "context": 262144,
       "compact_token_threshold": 16000,
-      "description": "Ling 3.0 Flash fine-tuned for finance. 32K context. Switching to it takes about 20 s."
+      "description": "Ling 3.0 Flash fine-tuned for finance. 256K context. Switching to it takes about 20 s."
     },
     {
       "id": "laguna-s-2.1",
@@ -106,9 +106,9 @@
     {
       "id": "muse-glimmer-30b",
       "name": "Muse Glimmer 30B",
-      "context": 32768,
+      "context": 131072,
       "compact_token_threshold": 16000,
-      "description": "Muse Glimmer 30B. 32K context. Switching to it takes about 15 s."
+      "description": "Muse Glimmer 30B. 128K context. Switching to it takes about 15 s."
     },
     {
       "id": "hy4-preview",
@@ -128,10 +128,10 @@
     {
       "id": "qwen3.8-flash",
       "name": "Qwen 3.8 Flash",
-      "context": 32768,
+      "context": 262144,
       "compact_token_threshold": 16000,
       "public": false,
-      "description": "Qwen 3.8 Flash. Internal only, so only the admin sees it. 32K context. Switching to it takes about 20 s."
+      "description": "Qwen 3.8 Flash. Internal only, so only the admin sees it. 256K context. Switching to it takes about 20 s."
     },
     {
       "id": "qwen3.8-max",

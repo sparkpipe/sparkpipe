@@ -4,7 +4,7 @@
    "id": "glm-5.3",
    "model_dir": "models/glm-5.3",
    "engine": "http://127.0.0.1:8475",
-   "context_tokens": 262144,
+   "context_tokens": 1048576,
    "max_output_tokens": 131072,
    "sampling_defaults": {
     "temperature": 1.0,
@@ -121,7 +121,7 @@
    },
    "model_dir": "models/kimi-k3",
    "engine": "http://127.0.0.1:8459",
-   "context_tokens": 737280,
+   "context_tokens": 1048576,
    "max_output_tokens": 131072,
    "sampling_defaults": {
     "temperature": 1.0,
@@ -362,7 +362,7 @@
    "id": "qwen3.8-flash",
    "model_dir": "models/qwen3.8-flash",
    "engine": "http://127.0.0.1:8465",
-   "context_tokens": 65536,
+   "context_tokens": 262144,
    "max_output_tokens": 32768,
    "sampling_defaults": {
     "temperature": 1.0,
@@ -470,7 +470,7 @@
    "id": "gemma-4-26b-a4b",
    "model_dir": "models/gemma-4-26b-a4b",
    "engine": "http://127.0.0.1:8467",
-   "context_tokens": 32768,
+   "context_tokens": 262144,
    "max_output_tokens": 32768,
    "sampling_defaults": {
     "temperature": 1.0,
@@ -577,7 +577,7 @@
    "id": "ling-3.0-flash",
    "model_dir": "models/ling-3.0-flash",
    "engine": "http://127.0.0.1:8468",
-   "context_tokens": 32768,
+   "context_tokens": 262144,
    "max_output_tokens": 32768,
    "sampling_defaults": {
     "temperature": 0.6,
@@ -630,7 +630,7 @@
    "id": "muse-glimmer-30b",
    "model_dir": "models/muse-glimmer-30b",
    "engine": "http://127.0.0.1:8471",
-   "context_tokens": 32768,
+   "context_tokens": 131072,
    "max_output_tokens": 32768,
    "sampling_defaults": {
     "temperature": 1.0,
@@ -692,7 +692,7 @@
    "id": "ling-3.0-flash-fin",
    "model_dir": "models/ling-3.0-flash-fin",
    "engine": "http://127.0.0.1:8469",
-   "context_tokens": 32768,
+   "context_tokens": 262144,
    "max_output_tokens": 32768,
    "sampling_defaults": {
     "temperature": 1.0,

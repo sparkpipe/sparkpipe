@@ -537,10 +537,10 @@ def check_arguments(model: dict, args) -> None:
         raise SystemExit("physical pages must hold one sequence and logical pages must cover the physical pages")
     if args.kv_logical_pages < args.sequences * args.kv_pages:
         raise SystemExit(f"logical pages {args.kv_logical_pages} must hold every resident sequence at full length: {args.sequences} x {args.kv_pages}")
-    minimum = (args.kv_logical_pages - args.kv_physical_pages + 2) * model["kv_page_bytes"]
-    if args.kv_backing_bytes < minimum:
-        raise SystemExit(f"kv-backing-bytes {args.kv_backing_bytes} cannot hold the spilled pages; it needs {minimum}")
     states = (2 * args.sequences + 2) * model["recurrent_bytes"]
+    minimum = (args.kv_logical_pages - args.kv_physical_pages + 2) * model["kv_page_bytes"] + states
+    if args.kv_backing_bytes < minimum:
+        raise SystemExit(f"kv-backing-bytes {args.kv_backing_bytes} cannot hold the spilled pages and the recurrent checkpoints a page store may keep beside them; it needs {minimum}")
     if args.state_memory_bytes is None:
         args.state_memory_bytes = 2 * states
     if model["recurrent_bytes"] and args.state_memory_bytes < states:
