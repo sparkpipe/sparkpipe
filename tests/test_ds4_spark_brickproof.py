@@ -1,4 +1,5 @@
 import importlib.util
+import re
 import base64
 from pathlib import Path
 import struct
@@ -358,6 +359,15 @@ Boot0002* ubuntu HD(1,GPT,def)
             with self.subTest(link_map=link_map),mock.patch.object(MODULE,"MESH_LINK_MAP",link_map):
                 with self.assertRaises(MODULE.BrickproofError):
                     MODULE.direct_pair_linked(0)
+
+    def test_fabric_netdev_rings_are_sized_for_roce(self) -> None:
+        fleet = ROOT / "tools" / "devcycle" / "fleet"
+        for name in ("ds4_direct_pair_fabric_apply.sh","ds4_switched_fabric_apply.sh"):
+            with self.subTest(script=name):
+                rings = re.findall(r'ethtool -G "\$\{[A-Z_]+\}" rx (\d+) tx (\d+)',(fleet / name).read_text())
+                self.assertEqual(rings,[("1024","1024")])
+        door = (ROOT / "tools" / "devcycle" / "spark_fabric_door.sh").read_text()
+        self.assertIn('rings="${1:-1024}"',door)
 
     def test_every_mesh_link_map_copy_agrees(self) -> None:
         agent = (ROOT / "tools" / "fleet_node_agent.sh").read_text()

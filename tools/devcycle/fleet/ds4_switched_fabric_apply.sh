@@ -185,7 +185,7 @@ EOF
 
 configure_fabric_link()
 {
-    ethtool -G "${FABRIC_DEVICE}" rx 8192 tx 8192
+    ethtool -G "${FABRIC_DEVICE}" rx 1024 tx 1024
     ethtool -K "${FABRIC_DEVICE}" tx-tcp-mangleid-segmentation off
     ip link set dev "${FABRIC_DEVICE}" mtu "${FABRIC_MTU}"
 }
