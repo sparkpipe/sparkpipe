@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 34u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 35u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
@@ -209,6 +209,8 @@ typedef struct SparkModelServingLane
 	uint32_t cache_publish_token_count;
 	uint32_t cache_block_identity_first;
 	uint32_t cache_block_identity_count;
+	uint32_t state_target_token_count;
+	uint32_t reserved;
 	SparkModelServingCacheIdentity cache_prefix_identity;
 	SparkModelServingCacheIdentity cache_publish_identity;
 	SparkRowSampling sampling;

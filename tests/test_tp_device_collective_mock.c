@@ -368,6 +368,7 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     config.combine_bf16_function = 0;
     config.combine_u64_max_function = 0;
     config.combine_gather_bf16_function = 0;
+    config.max_active_sequence_count = 4100u;
     config.wait_mode = 7u;
     CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_INVALID_ARGUMENT,
         "unknown wait mode fails instead of silently selecting spin");
@@ -577,6 +578,36 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
             SparkTpMeshScatterChunks(16u * 131076u,16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 2u &&
             SparkTpMeshScatterChunks(16u * 7168u * 64u,16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 4u,
             "a reduce-scatter carries one staging slot of each rank segment per round");
+        CHECK(SparkTpMeshScatterPipelined(16u * 131072u,16u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
+            SparkTpMeshScatterPipelined(16u * 131076u,16u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 1u &&
+            SparkTpMeshScatterPipelined(16u * 131076u,0u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
+            SparkTpMeshPipelineChunks(7168u * 64u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 7u,
+            "a reduce-scatter pipelines in 65536-element half chunks once each rank segment needs three of them");
+        {
+            char path_log[] = "/tmp/spark-tp-rs-XXXXXX";
+            int fd = mkstemp(path_log),saved = dup(2);
+            char line[512];
+            uint32_t pipelined = 0u;
+            SparkStatus status;
+            FILE *file;
+            submission.active_sequence_count = 4100u;
+            CHECK(fd >= 0 && saved >= 0 && dup2(fd,2) == 2,"pipelined reduce-scatter path log capture opens");
+            status = SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16);
+            fflush(stderr);
+            (void)dup2(saved,2);
+            (void)close(saved);
+            (void)close(fd);
+            file = fopen(path_log,"r");
+            while ( file != 0 && fgets(line,sizeof(line),file) != 0 )
+                pipelined += strstr(line,"MESH-PATH ") != 0 && strstr(line,"operation=4 path=reduce-scatter-pipelined phases=3 elements=262400 ") != 0 ? 1u : 0u;
+            if ( file != 0 )
+                (void)fclose(file);
+            (void)unlink(path_log);
+            CHECK(status == SPARK_STATUS_OK && pipelined == 1u && cuda_stub_mesh_hardware_operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 &&
+                cuda_stub_mesh_hardware_elements == 262400u,
+                "a reduce-scatter of 131200-element rank segments runs pipelined as three half-slot chunks and says so");
+            submission.active_sequence_count = 2u;
+        }
         cuda_stub_mesh_hardware_calls = calls_before;
     }
     CHECK(SparkTpMeshAllToAllSliceElements(SPARK_WEIGHTD_MESH_SLOT_BYTES,16u) == 8192u &&
@@ -658,7 +689,10 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16) == SPARK_STATUS_UNSUPPORTED &&
         SparkTpDeviceCollectiveRoundIndex(&collective) == 0u,
         "a spinning collective refuses reduce-scatter loudly before consuming a round");
-    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 + 1u) == SPARK_STATUS_INVALID_ARGUMENT,
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER) == SPARK_STATUS_UNSUPPORTED &&
+        SparkTpDeviceCollectiveRoundIndex(&collective) == 0u,
+        "a pair gather without hardware waits takes the all-gather path and its refusal");
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER + 1u) == SPARK_STATUS_INVALID_ARGUMENT,
         "an unknown collective operation is refused");
     CHECK(SparkTpDeviceCollectiveEnqueueRounds(&collective,&submission,3u) == SPARK_STATUS_UNSUPPORTED,
         "legacy B1 round loop retains its missing callback rejection");

@@ -807,12 +807,35 @@ static void test_slice_routes(uint32_t local_rank)
         "an empty gather slice still delivers the tail");
     test_complete_range(first,last);
     CHECK(test_shipped(8u,local_rank) == seq + 1u,"gather releases after its tails complete");
-    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_PEER;
+    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_SCATTER;
+    route.fields.pair = 1u;
     CHECK(test_post_route(8u,local_rank,seq + 2u,bytes,route) == SPARK_STATUS_INVALID_ARGUMENT,
+        "a pair route carries the whole payload, never slices");
+    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_FULL;
+    route.fields.slice_bytes = 0u;
+    first = spark_stub_ibv_posted_count();
+    CHECK(test_post_route(8u,local_rank,seq + 2u,bytes,route) == SPARK_STATUS_OK,"pair route posts");
+    last = spark_stub_ibv_posted_count();
+    CHECK(last - first == TEST_MESH_PEERS + 1u,"a pair route sends one payload and a tail to every peer");
+    test_expect_route(first,last,slot_base,route,local_rank,bytes,
+        "a pair route sends the payload only to the rank it is paired with");
+    {
+        uint64_t length = 0u;
+        CHECK(SparkWeightdMeshRouteSpan(route,local_rank ^ 1u,local_rank,bytes,&length) == 0u && length == bytes,
+            "the paired rank receives the whole payload");
+        CHECK(SparkWeightdMeshRouteSpan(route,(local_rank + 2u) % SPARK_WEIGHTD_MESH_RANKS_PER_BAND,local_rank,bytes,&length) == 0u && length == 0u,
+            "every other rank receives the tail alone");
+    }
+    test_complete_range(first,last);
+    CHECK(test_shipped(8u,local_rank) == seq + 2u,"a pair route releases after its payload and tails complete");
+    route.fields.pair = 0u;
+    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_PEER;
+    route.fields.slice_bytes = 80u;
+    CHECK(test_post_route(8u,local_rank,seq + 3u,bytes,route) == SPARK_STATUS_INVALID_ARGUMENT,
         "a peer route must carry exactly its per-peer length");
     route.fields.reserved = 1u;
     route.fields.slice_bytes = 1000u;
-    CHECK(test_post_route(8u,local_rank,seq + 2u,bytes,route) == SPARK_STATUS_INVALID_ARGUMENT,
+    CHECK(test_post_route(8u,local_rank,seq + 3u,bytes,route) == SPARK_STATUS_INVALID_ARGUMENT,
         "reserved route bits are rejected");
 }
 
@@ -899,6 +922,80 @@ static void test_peer_routes(uint32_t local_rank)
     CHECK(last - first == (TEST_MESH_PEERS - 1u) * 2u,"a peer route skips peers outside its mask");
     test_complete_range(first,last);
     CHECK(test_shipped(8u,local_rank) == seq,"partial peer route releases");
+}
+
+static void test_peer_halves(uint32_t local_rank)
+{
+    uint32_t all_peers = ((1u << SPARK_WEIGHTD_MESH_RANKS_PER_BAND) - 1u) & ~(1u << local_rank);
+    uint64_t seq = (UINT64_C(12) << 32u) | 1u, staging = (uint64_t)(uintptr_t)weightd_mesh.staging_buffer, bytes = 4096u;
+    uint32_t chunk, first, last, i, peer, peer_rank, data[2] = {0u,0u}, tails[2] = {0u,0u};
+    SparkWeightdMeshRoute route = {0};
+    const SparkWeightdMeshWaitRequest *request = (const SparkWeightdMeshWaitRequest *)(
+        (const uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_WAIT_ENTRY(8u,local_rank));
+    CHECK((request->capabilities & SPARK_WEIGHTD_MESH_CAPABILITY_PEER_HALVES) != 0u &&
+        (SPARK_WEIGHTD_MESH_CAPABILITIES & SPARK_WEIGHTD_MESH_CAPABILITY_PEER_HALVES) != 0u,
+        "configured lane advertises half-slot peer routes");
+    route.fields.peer_mask = all_peers;
+    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_PEER;
+    route.fields.half = SPARK_WEIGHTD_MESH_ROUTE_HALF_LOWER;
+    route.fields.slice_bytes = SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES + 8u;
+    CHECK(test_post_route(8u,local_rank,seq,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES + 8u,route) == SPARK_STATUS_INVALID_ARGUMENT,
+        "a half peer route never exceeds one half payload");
+    route.fields.slice_bytes = bytes;
+    CHECK(test_post_route(8u,local_rank,seq,bytes + 8u,route) == SPARK_STATUS_INVALID_ARGUMENT,
+        "a half peer route carries exactly its per-peer length");
+    route.fields.pair = 1u;
+    CHECK(test_post_route(8u,local_rank,seq,bytes,route) == SPARK_STATUS_INVALID_ARGUMENT,
+        "a half peer route is never a pair route");
+    route.fields.pair = 0u;
+    first = spark_stub_ibv_posted_count();
+    for ( chunk = 0u; chunk < 2u; chunk++ )
+    {
+        uint64_t slot_base = test_half_slot_base(8u,local_rank,seq + chunk);
+        *(volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer + slot_base +
+            SPARK_WEIGHTD_MESH_TAIL_OFFSET(SPARK_WEIGHTD_MESH_SEQUENCE_HALF(seq + chunk))) = seq + chunk;
+        route.fields.half = SPARK_WEIGHTD_MESH_SEQUENCE_HALF(seq + chunk);
+        CHECK(test_post_route(8u,local_rank,seq + chunk,bytes,route) == SPARK_STATUS_OK,"half peer routes post");
+    }
+    last = spark_stub_ibv_posted_count();
+    CHECK(last - first == 2u * TEST_MESH_PEERS * 2u,"two half peer chunks post one payload and one tail per peer each");
+    for ( i = first; i < last; i++ )
+    {
+        SparkStubIbvPostedWork work;
+        uint64_t chunk_seq, slot_base;
+        uint32_t half;
+        CHECK(spark_stub_ibv_posted(i,&work) == 0,"half peer route work is recorded");
+        for ( peer = 0u; peer < TEST_MESH_PEERS; peer++ )
+            if ( weightd_mesh.send_qps[peer]->qp_num == work.qp_number ) break;
+        CHECK(peer < TEST_MESH_PEERS,"half peer route work names a mesh peer");
+        if ( peer >= TEST_MESH_PEERS ) continue;
+        peer_rank = test_peer_rank(peer,local_rank);
+        chunk = (uint32_t)(((work.wr_id >> 6u) & 1u) ^ (seq & 1u));
+        chunk_seq = seq + chunk;
+        half = SPARK_WEIGHTD_MESH_SEQUENCE_HALF(chunk_seq);
+        slot_base = test_half_slot_base(8u,local_rank,chunk_seq);
+        if ( (work.wr_id & 3u) == 3u )
+        {
+            tails[chunk]++;
+            CHECK(work.length == 8u && work.inline_word == chunk_seq &&
+                work.remote - weightd_mesh.qp_info[peer].remote_addr == slot_base + SPARK_WEIGHTD_MESH_TAIL_OFFSET(half),
+                "a half peer chunk's tail lands at its half's tail");
+            continue;
+        }
+        data[chunk]++;
+        CHECK(work.lkey == weightd_mesh.staging_mr->lkey && work.length == bytes &&
+            work.source == staging + SPARK_WEIGHTD_MESH_STAGING_OFFSET(8u,peer_rank) +
+                SPARK_WEIGHTD_MESH_STAGING_HALF_OFFSET(slot_base / SPARK_WEIGHTD_MESH_SLOT_BYTES) &&
+            work.remote - weightd_mesh.qp_info[peer].remote_addr == slot_base + SPARK_WEIGHTD_MESH_HALF_OFFSET(half),
+            "a half peer chunk reads its staging half and lands in its receive half");
+    }
+    CHECK(SPARK_WEIGHTD_MESH_STAGING_HALF_OFFSET(test_half_slot_base(8u,local_rank,seq) / SPARK_WEIGHTD_MESH_SLOT_BYTES) !=
+        SPARK_WEIGHTD_MESH_STAGING_HALF_OFFSET(test_half_slot_base(8u,local_rank,seq + 1u) / SPARK_WEIGHTD_MESH_SLOT_BYTES),
+        "two consecutive half peer chunks read different staging halves, so both can be in flight");
+    CHECK(data[0] == TEST_MESH_PEERS && data[1] == TEST_MESH_PEERS && tails[0] == TEST_MESH_PEERS && tails[1] == TEST_MESH_PEERS,
+        "every peer gets one payload and one tail per half chunk");
+    test_complete_range(first,last);
+    CHECK(test_shipped(8u,local_rank) == seq + 1u,"both half peer chunks release after their completions");
 }
 
 typedef struct TestMeshActivityThread
@@ -2546,6 +2643,7 @@ int main(void)
     test_slice_routes(local_rank);
     test_half_slots(local_rank);
     test_peer_routes(local_rank);
+    test_peer_halves(local_rank);
     test_mesh_topology();
     test_mesh_peer_reset(local_rank);
 

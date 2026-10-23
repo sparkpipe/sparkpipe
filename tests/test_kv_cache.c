@@ -1346,6 +1346,37 @@ static void SparkTestPrefixCacheResumeInsideLastBlock(void)
 	printf("prefix cache resume points: a resumable point inside the last matched block is found under a longer stateless publication, partial or full, and a resumable longest match still wins: ok\n");
 }
 
+static void SparkTestPrefixCacheResumeInsideEarlierBlock(void)
+{
+	SparkTestKvFixture fixture,imported_fixture;
+	SparkPrefixCache cache,imported;
+	SparkPrefixCacheEntry entries[8u],imported_entries[8u];
+	SparkPrefixCacheSequenceBinding bindings[16u],imported_bindings[16u];
+	SparkPrefixCacheCommittedRecord records[8u];
+	SparkPrefixCacheLookup lookup;
+	uint32_t tokens[16u],follow[16u],sibling[16u],index,count,added,skipped;
+	const uint32_t checkpoint = SPARK_TEST_BLOCK_TOKENS + 2u,reply_end = 3u * SPARK_TEST_BLOCK_TOKENS + 2u;
+	SparkTestPrefixCacheResumeOpen(&fixture,&cache,entries,bindings);
+	for (index=0u; index<16u; index++)
+		tokens[index] = follow[index] = sibling[index] = 4000u + index;
+	for (index=reply_end; index<16u; index++)
+		follow[index] = 9500u + index;
+	sibling[checkpoint - 1u] = 11u;
+	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,checkpoint,&lookup) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheMarkResume(&cache,tokens,checkpoint) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,checkpoint + 1u,&lookup) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,reply_end,&lookup) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,follow,reply_end) == checkpoint);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,follow,checkpoint) == checkpoint);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,follow,checkpoint - 1u) == 0u);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,sibling,checkpoint - 1u) == 0u);
+	assert(SparkPrefixCacheExportCommitted(&cache,records,8u,&count) == SPARK_STATUS_OK);
+	SparkTestPrefixCacheResumeOpen(&imported_fixture,&imported,imported_entries,imported_bindings);
+	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == count && skipped == 0u);
+	assert(SparkPrefixCacheResumeTokenCount(&imported,follow,reply_end) == checkpoint);
+	printf("prefix cache resume points: a resumable point inside an earlier matched block is found when a later turn matches past it, a sibling that diverges before it gets none, and import keeps it findable: ok\n");
+}
+
 static void SparkTestPrefixCachePartialPublication(void)
 {
 	for (uint32_t hashed=0u; hashed<2u; hashed++)
@@ -3314,6 +3345,7 @@ int main(void)
 	SparkTestPrefixCacheReusesCommittedLogicalBlocks();
 	SparkTestPrefixCacheResumePoints();
 	SparkTestPrefixCacheResumeInsideLastBlock();
+	SparkTestPrefixCacheResumeInsideEarlierBlock();
 	SparkTestPrefixCachePartialPublication();
 	SparkTestPrefixCacheTombstone(0u);
 	SparkTestPrefixCacheTombstone(1u);

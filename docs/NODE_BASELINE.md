@@ -33,7 +33,7 @@ it on one node, reboot that node, and audit it before the others.
 | Factory boot units masked: rbdmap, nvmf-autoconnect, open-iscsi, iscsid, srp_daemon, srptools, cloud-init (4), pollinate, nvidia-spark-run-apt-upgrade-once, systemd-networkd-wait-online | apply (`OPTIONAL_BOOT_UNITS`) | Boot work the fleet does not use. srp_daemon is an RDMA consumer on every port. Apply refuses while remote storage is configured. |
 | Fabric ports unmanaged by NetworkManager | `ds4-switched-fabric-apply --network-manager` (`90-ds4-switched-fabric-unmanaged.conf`) | NetworkManager reads `conf.d` in name order and the last `unmanaged-devices` wins. A leftover `ds4-200g-unmanaged.conf` sorted last and left `enp1s0f0np0`/`enp1s0f1np1` managed, which flushes their manual addresses on carrier changes. The step moves the legacy override files to `/var/backups/ds4-fleet`. |
 | `95-ds4-uplink-no-assume.conf` (`keep-configuration=no` on `enP7s7`) | same step | The initramfs turns the kernel `ip=` argument into `/run/netplan/enP7s7.yaml`. When carrier is already up as NetworkManager starts, it adopts that profile (gateway 10.20.0.1, no internet) instead of `ds4-uplink-wired`. The fleet-agent then cannot reach the hub. The FE nodes lose this race on every boot. Older nodes win it only on carrier timing. On sparkf the rule activates `ds4-speculation-link` (priority 300), as today. |
-| `ds4-switched-fabric` and `ds4-direct-pair-fabric` scripts and timers | apply (assets) | The boot run sets only the switched-fabric address and the Ceph MDS host route. The route is added only when `10.20.0.2` is on-link on `enP7s7`. On sparkf it is not, and the old script failed every 30 s for 16 days. The pair map skips ranks 14 and 15. |
+| `ds4-switched-fabric` and `ds4-direct-pair-fabric` scripts and timers | apply (assets) | The boot run brings the switch port up with 1024-entry rings, MTU 9000 and its fabric address, nothing else. Every rank has a pair link since 2026-10-23. |
 | `sparkpipe-hub-route.service` | apply (`LINKED_RANK_ASSET_SOURCES`, ranks 0-14) | Route to the hub through sparkf. Rank 15 is the hub gateway and has no unit. |
 | DMA guard installed and armed | apply (`spark-dma-guard install --notify 192.168.50.4:5514`) | sysrq-b on the first CX-7 uncorrectable error or SMMU failure line. Audit requires `event=start mode=armed` in the current boot. The 7.0 kernel prints the same formats; a dry-run injection on spark7 on 2026-10-20 matched both the AER and the CMD_SYNC lines. |
 | Hardware watchdog, recovery sysctls | apply (`/etc/systemd/system.conf.d/90-ds4-recovery.conf`, sysctl files), audited | `RuntimeWatchdogSec=10min`, `RebootWatchdogSec=5min`; `kernel.panic=60`, soft-lockup and hung-task panics, `vm.swappiness=10`. Without the watchdog the SBSA watchdog stays off and a hard hang never reboots. |
@@ -106,8 +106,11 @@ If the fleet agent logs `SAFE MODE` after several short boots, clear it with
   literal `\n` and a `kernel` prefix, so its 4 GiB `vm.dirty_bytes` cap never
   applied (`dirty_bytes` reads 0 everywhere). It is not part of the baseline
   until the setting is decided.
-- **Ceph MDS route:** `10.10.100.2` via `10.20.0.2` points at an offline MDS
-  host. The active MDS runs on the hub. Remove the route with that host.
+- **Offline Ceph host:** `lima-mds-macstudio` (10.20.0.2, a Lima VM on the Mac
+  Studio) is still in the cephadm host list, Offline. It once served the MDS
+  that the sparks reached at `10.10.100.2` through a host route. Both MDS
+  daemons now run on the hub at 192.168.50.4, so the route was removed on
+  2026-10-23. Removing the host from Ceph is the owner's call.
 - **sparkf emergency path:** the workstation reaches sparkf over Tailscale, where
   port 2222 is not reachable; the controller's emergency probe falls back to
   `sparkN.local` on the LAN.

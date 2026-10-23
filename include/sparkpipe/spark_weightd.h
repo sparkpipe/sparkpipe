@@ -175,9 +175,12 @@ typedef struct SparkWeightdMeshWaitRequest
 #define SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES 1u
 #define SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES 2u
 #define SPARK_WEIGHTD_MESH_CAPABILITY_HALF_SLOTS 4u
+#define SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_ROUTES 8u
+#define SPARK_WEIGHTD_MESH_CAPABILITY_PEER_HALVES 16u
 #define SPARK_WEIGHTD_MESH_CAPABILITIES \
     (SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES | SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES | \
-     SPARK_WEIGHTD_MESH_CAPABILITY_HALF_SLOTS)
+     SPARK_WEIGHTD_MESH_CAPABILITY_HALF_SLOTS | SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_ROUTES | \
+     SPARK_WEIGHTD_MESH_CAPABILITY_PEER_HALVES)
 #define SPARK_WEIGHTD_MESH_ROUTE_FULL 0u
 #define SPARK_WEIGHTD_MESH_ROUTE_SCATTER 1u
 #define SPARK_WEIGHTD_MESH_ROUTE_GATHER 2u
@@ -215,6 +218,8 @@ typedef struct SparkWeightdMeshWaitRequest
 #define SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,peer) \
     ((uint64_t)(band) * SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES + \
      (uint64_t)(peer) * SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)
+#define SPARK_WEIGHTD_MESH_STAGING_HALF_OFFSET(slot) \
+    (((uint64_t)(slot) & 1u) * SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)
 
 typedef struct SparkWeightdMeshRouteFields
 {
@@ -222,7 +227,8 @@ typedef struct SparkWeightdMeshRouteFields
     uint64_t slice_bytes:24;
     uint64_t mode:2;
     uint64_t half:2;
-    uint64_t reserved:4;
+    uint64_t pair:1;
+    uint64_t reserved:3;
 } SparkWeightdMeshRouteFields;
 
 typedef union SparkWeightdMeshRoute
@@ -233,9 +239,13 @@ typedef union SparkWeightdMeshRoute
 
 static inline uint32_t SparkWeightdMeshRouteValid(SparkWeightdMeshRoute route)
 {
+    if ( route.fields.pair != 0u && (route.fields.mode != SPARK_WEIGHTD_MESH_ROUTE_FULL || route.fields.half != SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE) )
+        return 0u;
     if ( route.fields.half != SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE )
         return route.fields.reserved == 0u && route.fields.half <= SPARK_WEIGHTD_MESH_ROUTE_HALF_UPPER &&
-            route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_FULL && route.fields.slice_bytes == 0u;
+            (route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_FULL ? route.fields.slice_bytes == 0u :
+             route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER && route.fields.slice_bytes != 0u && (route.fields.slice_bytes & 7u) == 0u &&
+                route.fields.slice_bytes <= SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES);
     return route.fields.reserved == 0u && (route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_FULL ? route.fields.slice_bytes == 0u : route.fields.slice_bytes != 0u && (route.fields.slice_bytes & 7u) == 0u && (route.fields.mode != SPARK_WEIGHTD_MESH_ROUTE_PEER || route.fields.slice_bytes <= SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES));
 }
 
@@ -244,13 +254,18 @@ static inline uint32_t SparkWeightdMeshRouteFits(SparkWeightdMeshRoute route,uin
     if ( SparkWeightdMeshRouteValid(route) == 0u || bytes == 0u )
         return 0u;
     if ( route.fields.half != SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE )
-        return bytes <= SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES ? 1u : 0u;
+        return route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER ? bytes == route.fields.slice_bytes : bytes <= SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES ? 1u : 0u;
     return route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER ? bytes == route.fields.slice_bytes : bytes <= SPARK_WEIGHTD_MESH_SLOT_BYTES - 16u;
 }
 
 static inline uint64_t SparkWeightdMeshRouteSpan(SparkWeightdMeshRoute route,uint32_t peer,uint32_t local,uint64_t bytes,uint64_t *length)
 {
     uint64_t begin;
+    if ( route.fields.pair != 0u && peer != (local ^ 1u) )
+    {
+        *length = 0u;
+        return(0u);
+    }
     if ( route.fields.half != SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE )
     {
         *length = bytes;

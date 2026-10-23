@@ -189,6 +189,50 @@ SparkStatus SparkSpeculationLookupIndexAppend(SparkSpeculationLookupIndex *index
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t SparkSpeculationLookupTailToken(const uint32_t *history,uint32_t history_length,const uint32_t *tail,uint32_t tail_length,uint32_t back)
+{
+	return(back < tail_length ? tail[tail_length - 1u - back] : history[history_length - 1u - (back - tail_length)]);
+}
+
+SparkStatus SparkSpeculationLookupIndexFindTail(const SparkSpeculationLookupIndex *index,const uint32_t *history,const uint32_t *tail,uint32_t tail_length,
+	uint32_t max_match,uint32_t candidate_limit,SparkSpeculationLookupMatch *match_out)
+{
+	uint32_t last[SPARK_SPECULATION_LOOKUP_MATCH_LIMIT];
+	uint32_t end,length,best_length,best_end,steps,token,combined;
+	if ( index == 0 || index->heads == 0 || history == 0 || (tail == 0 && tail_length != 0u) || match_out == 0 || max_match < index->gram ||
+		max_match > SPARK_SPECULATION_LOOKUP_MATCH_LIMIT || candidate_limit == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	match_out->match_length = 0u;
+	match_out->source_end = 0u;
+	combined = index->length + tail_length;
+	if ( index->length <= index->gram || combined < index->gram )
+		return(SPARK_STATUS_NOT_FOUND);
+	for (token=0u; token<index->gram; token++)
+		last[token] = SparkSpeculationLookupTailToken(history,index->length,tail,tail_length,index->gram - 1u - token);
+	best_length = 0u;
+	best_end = 0u;
+	end = index->heads[SparkSpeculationLookupIndexBucket(index,last)];
+	for (steps=0u; end != SPARK_SPECULATION_LOOKUP_NO_POSITION && steps < candidate_limit && best_length < max_match; steps++, end=index->chain[end])
+	{
+		if ( end + 1u >= index->length || memcmp(history + end + 1u - index->gram,last,(size_t)index->gram * sizeof(uint32_t)) != 0 )
+			continue;
+		length = index->gram;
+		while ( length < max_match && length <= end && length < combined &&
+			history[end - length] == SparkSpeculationLookupTailToken(history,index->length,tail,tail_length,length) )
+			length++;
+		if ( length > best_length )
+		{
+			best_length = length;
+			best_end = end;
+		}
+	}
+	if ( best_length == 0u )
+		return(SPARK_STATUS_NOT_FOUND);
+	match_out->match_length = best_length;
+	match_out->source_end = best_end;
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkSpeculationLookupIndexFind(const SparkSpeculationLookupIndex *index,const uint32_t *history,uint32_t max_match,uint32_t candidate_limit,SparkSpeculationLookupMatch *match_out)
 {
 	uint32_t anchor,end,length,best_length,best_end,steps;

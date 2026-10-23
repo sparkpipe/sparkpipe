@@ -11,6 +11,13 @@
   model's `model-families/<model>/`, `modules/<driver>/`, tools and tests.
   `tests/test_dry_law.py` enforces this for the runtime, transport, cache,
   serving, kernel and common paths; its `PENDING` list may only shrink.
+- Shared host code is device-neutral: CUDA, Metal, MLX and other device APIs
+  live only in device translation units (`.cu`, `.cuh`, `.metal`) in kernel,
+  model and backend directories, and in `runtime/device/<backend>/`. Host
+  files carry no device headers, calls or type-erased stream, graph or event
+  handles, and production build rules take nothing from `tests/`.
+  `tests/test_device_neutral.py` enforces this; its `PENDING` and
+  `PENDING_BUILD` debt may only shrink.
 
 ## Workflow
 

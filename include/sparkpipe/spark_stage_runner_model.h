@@ -16,6 +16,7 @@ extern "C" {
 #define SPARK_STAGE_RUNNER_ROUND_BEGIN 1u
 #define SPARK_STAGE_RUNNER_ROUND_FINISH 2u
 #define SPARK_STAGE_RUNNER_LANES 2u
+#define SPARK_STAGE_RUNNER_GRAPH_ROWS 16u
 #define SPARK_STAGE_RUNNER_ROW_STATE_READ 0u
 #define SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN 1u
 
@@ -52,9 +53,11 @@ typedef struct SparkStageRunnerStep
 	uint32_t context;
 	uint32_t multiprocessors;
 	uint32_t last_rows_only;
+	uint32_t every_row_hidden;
 	const uint32_t *token_ids;
 	const uint32_t *host_positions;
 	const uint32_t *host_sequence_of_row;
+	const uint32_t *host_state_target;
 	uint32_t graph_key;
 } SparkStageRunnerStep;
 

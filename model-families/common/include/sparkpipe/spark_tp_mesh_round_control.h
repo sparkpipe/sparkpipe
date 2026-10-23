@@ -156,6 +156,8 @@ static inline uint64_t SparkTpMeshAllToAllChunks(uint64_t per_peer_elements,uint
 
 #define SPARK_TP_MESH_ROUTES_SLICE 1u
 #define SPARK_TP_MESH_ROUTES_PEER 2u
+#define SPARK_TP_MESH_ROUTES_PAIR 4u
+#define SPARK_TP_MESH_OPERATION_PAIR_GATHER 8u
 
 #if defined(__CUDACC__)
 __host__ __device__
@@ -200,6 +202,11 @@ __host__ __device__
 static inline uint64_t SparkTpMeshScatterChunks(uint64_t elements,uint32_t degree,uint64_t staging_slot_bytes)
 {
     return (elements / degree - 1u) / SparkTpMeshScatterCapacity(staging_slot_bytes) + 1u;
+}
+
+static inline uint32_t SparkTpMeshScatterPipelined(uint64_t elements,uint32_t degree,uint64_t half_payload_bytes)
+{
+    return degree != 0u && SparkTpMeshPipelineChunks(elements / degree,half_payload_bytes) >= 3u ? 1u : 0u;
 }
 
 #if defined(__CUDACC__)

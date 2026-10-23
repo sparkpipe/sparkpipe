@@ -48,7 +48,7 @@ static int32_t entry_write(FILE *pack,FILE *out,const SparkDsv41FlashStagePackHe
 		return(0);
 	if ( entry->weight_codec != SPARK_WEIGHT_CODEC_MXFP4_E2M1 && entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 )
 		return(-4);
-	if ( entry->group_count != header->routed_expert_count / header->tp_degree || entry->payload_bytes == 0u )
+	if ( entry->group_count != header->routed_expert_count || entry->payload_bytes == 0u )
 		return(-5);
 	if ( (entry->payload_bytes % entry->group_count) != 0u || (entry->scale_bytes % entry->group_count) != 0u )
 		return(-6);

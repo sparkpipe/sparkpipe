@@ -35,7 +35,9 @@ static uint64_t literal_layer_kind_bits(uint32_t layer_index)
 	bits = 0u;
 	for (kind=SPARK_DSV41_FLASH_STAGEPACK_TENSOR_ATTN_NORM; kind<=SPARK_DSV41_FLASH_STAGEPACK_TENSOR_O_B; kind++)
 		bits |= UINT64_C(1) << kind;
-	for (kind=SPARK_DSV41_FLASH_STAGEPACK_TENSOR_HC_ATTN_FN; kind<=SPARK_DSV41_FLASH_STAGEPACK_TENSOR_SHARED_W3; kind++)
+	for (kind=SPARK_DSV41_FLASH_STAGEPACK_TENSOR_HC_ATTN_FN; kind<=SPARK_DSV41_FLASH_STAGEPACK_TENSOR_ROUTER_BIAS_VL; kind++)
+		bits |= UINT64_C(1) << kind;
+	for (kind=SPARK_DSV41_FLASH_STAGEPACK_TENSOR_SHARED_W1; kind<=SPARK_DSV41_FLASH_STAGEPACK_TENSOR_EXPERT_W2_SLICE; kind++)
 		bits |= UINT64_C(1) << kind;
 	if ( layer_index == 2u || layer_index == 8u || layer_index == 14u || layer_index == 20u ||
 		layer_index == 24u || layer_index == 28u || layer_index == 32u || layer_index == 36u )
@@ -109,7 +111,7 @@ int main(int argc,char **argv)
 	CHECK(stat(argv[1],&st) == 0 && st.st_size > 0,"pack stat");
 	CHECK(fread(&header,sizeof(header),1u,pack) == 1u,"header read");
 	CHECK(header.magic == 0x31413444u,"magic literal");
-	CHECK(header.format_version == 1u,"format version");
+	CHECK(header.format_version == 2u,"format version");
 	CHECK(header.header_bytes == 257u,"header bytes literal");
 	CHECK(header.directory_entry_bytes == 64u,"entry bytes literal");
 	CHECK(header.hidden_dimension == 5120u,"hidden literal");
@@ -156,7 +158,7 @@ int main(int argc,char **argv)
 		uint64_t manifest_bytes = (uint64_t)ftello(manifest);
 		uint64_t records = (manifest_bytes - 16u) / 48u;
 		CHECK(manifest_bytes >= 16u && (manifest_bytes - 16u) % 48u == 0u,"manifest size multiple");
-		CHECK(records == 2u * (384u / header.tp_degree) * 3u * header.layer_count,"manifest record count");
+		CHECK(records == 2u * 384u * 2u * header.layer_count,"manifest record count");
 		CHECK(fseeko(manifest,16u,SEEK_SET) == 0,"manifest rewind");
 		for (index=0u; index<records; index++)
 		{

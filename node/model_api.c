@@ -15,6 +15,7 @@
 #include <time.h>
 #include <fcntl.h>
 #include <sys/random.h>
+#include <sys/resource.h>
 
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_chat_template.h"
@@ -167,6 +168,54 @@ static uint64_t api_now_ms(void)
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+#define API_ACCEPT_BACKOFF_MS 50u
+
+static uint64_t api_raise_open_files(void)
+{
+	struct rlimit limit;
+	if ( getrlimit(RLIMIT_NOFILE,&limit) != 0 )
+		return(0u);
+	if ( limit.rlim_cur < limit.rlim_max )
+	{
+		struct rlimit raised = limit;
+		raised.rlim_cur = limit.rlim_max;
+		if ( setrlimit(RLIMIT_NOFILE,&raised) != 0 && limit.rlim_max == RLIM_INFINITY )
+		{
+			raised.rlim_cur = (rlim_t)1048576u;
+			while ( raised.rlim_cur > limit.rlim_cur && setrlimit(RLIMIT_NOFILE,&raised) != 0 )
+				raised.rlim_cur /= 2u;
+		}
+	}
+	if ( getrlimit(RLIMIT_NOFILE,&limit) != 0 )
+		return(0u);
+	return((uint64_t)limit.rlim_cur);
+}
+
+static int api_accept(int srv)
+{
+	int cfd;
+	static uint32_t starved;
+	for (;;)
+	{
+		cfd = accept(srv,0,0);
+		if ( cfd >= 0 )
+		{
+			if ( starved != 0u )
+				api_logf("accept recovered after %u retries",starved);
+			starved = 0u;
+			return(cfd);
+		}
+		if ( errno == EINTR || errno == ECONNABORTED )
+			continue;
+		if ( starved++ == 0u )
+			api_logf("accept failed: %s; the API retries every %u ms and keeps serving the connections it holds",strerror(errno),API_ACCEPT_BACKOFF_MS);
+		{
+			struct timespec pause = {0,(long)API_ACCEPT_BACKOFF_MS * 1000000L};
+			nanosleep(&pause,0);
+		}
+	}
 }
 
 static void api_term_signal(int signal_number)
@@ -2072,6 +2121,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "model_api: no chat_template in deployment; messages requests "
 			"will be rejected (prompt and prompt_token_ids accepted)\n");
 	signal(SIGPIPE, SIG_IGN);
+	fprintf(stderr, "model_api: open files limit %llu\n", (unsigned long long)api_raise_open_files());
 	signal(SIGTERM, api_term_signal);
 	signal(SIGINT, api_term_signal);
 	pthread_mutex_init(&S.queue_mutex, 0);
@@ -2094,7 +2144,7 @@ int main(int argc, char **argv)
 		addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 		addr.sin_port = htons((uint16_t)strtoul(port_s, 0, 10));
 		if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
-			listen(srv, 128) != 0)
+			listen(srv, SOMAXCONN) != 0)
 		{
 			fprintf(stderr, "model_api: listen %s: %s\n", port_s, strerror(errno));
 			return 1;
@@ -2111,10 +2161,8 @@ int main(int argc, char **argv)
 	}
 	for (;;)
 	{
-		int cfd = accept(srv, 0, 0);
+		int cfd = api_accept(srv);
 		pthread_t t;
-		if (cfd < 0)
-			continue;
 		ApiSessionsAccepted++;
 		api_logf("session_accepted n=%u fd=%d queued_behind=%llu served=%llu",
 			ApiSessionsAccepted, cfd,

@@ -196,7 +196,6 @@ class RemoteAuditTest(unittest.TestCase):
             node.commands["nmcli -t -f NAME,DEVICE connection show --active"] = "ds4-speculation-link:enP7s7"
             node.drift = ["/route"]
             node.unit_states["sparkpipe-hub-route.service"] = "not-found"
-            node.unit_states["ds4-direct-pair-fabric.timer"] = "disabled"
         self.assert_adds(detach,set(),node="sparkf")
 
     def test_guard_mode_falls_back_to_the_state_file_after_journal_vacuum(self) -> None:

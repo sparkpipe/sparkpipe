@@ -5,7 +5,7 @@ DIRECT_DEVICE="${DS4_DIRECT_FABRIC_DEVICE:-enp1s0f0np0}"
 DIRECT_PREFIX="${DS4_DIRECT_FABRIC_PREFIX:-10.10.200}"
 DIRECT_MTU="${DS4_DIRECT_FABRIC_MTU:-9000}"
 RUNTIME_PATH="${DS4_DIRECT_FABRIC_RUNTIME_PATH:-/usr/local/sbin/ds4-direct-pair-fabric-apply}"
-MESH_LINK_MAP="0-1:200,2-3:200,4-5:200,6-7:200,8-9:200,10-11:200,12-13:200"
+MESH_LINK_MAP="0-1:200,2-3:200,4-5:200,6-7:200,8-9:200,10-11:200,12-13:200,14-15:200"
 
 node_rank()
 {
@@ -55,7 +55,7 @@ configure_direct_pair()
         return 3
     fi
     ip link set dev "${DIRECT_DEVICE}" up
-    ethtool -G "${DIRECT_DEVICE}" rx 8192 tx 8192
+    ethtool -G "${DIRECT_DEVICE}" rx 1024 tx 1024
     ethtool -K "${DIRECT_DEVICE}" tx-tcp-mangleid-segmentation off
     ip link set dev "${DIRECT_DEVICE}" mtu "${DIRECT_MTU}"
     ip -4 addr flush dev "${DIRECT_DEVICE}" scope global

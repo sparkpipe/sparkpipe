@@ -3,8 +3,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <algorithm>
 #include <vector>
 
+#include "runtime/launch.h"
+#include "inference/kernels/topk_exact.cuh"
+#include "inference/kernels/index_shard.cuh"
 #include "modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh"
 
 #define CUDA(call) do { cudaError_t e = (call); if (e != cudaSuccess) { \
@@ -133,6 +137,100 @@ static int RunCandidates(char **argv)
     return 0;
 }
 
+static int RunShardCandidates(char **argv)
+{
+    const uint32_t rows = (uint32_t)strtoul(argv[4], 0, 10), positions = (uint32_t)strtoul(argv[5], 0, 10);
+    const uint32_t degree = 16u, grain = 8u, topk_blocks = 2048u;
+    const SparkKvShard probe = { degree, 0u, grain };
+    const uint32_t local_stride = ((SparkKvShardLocalKeys(probe, positions) + 63u) / 64u) * 64u;
+    const uint32_t local_blocks = ((local_stride / grain + 63u) / 64u) * 64u;
+    const uint32_t global_blocks = (((positions + grain - 1u) / grain + 63u) / 64u) * 64u;
+    const uint32_t keep = local_blocks < topk_blocks ? local_blocks : topk_blocks;
+    const uint32_t global_keep = global_blocks < topk_blocks ? global_blocks : topk_blocks;
+    const uint64_t entries = 2u * (uint64_t)rows * LmTopkExactCandidateEntries(local_blocks, keep, LM_TOPK_EXACT_CHUNK) + 2u;
+    std::vector<uint32_t> reach(rows), row_position(rows), sequence(rows, 0u), length(1, positions);
+    std::vector<float> scores((size_t)rows * positions), output((size_t)rows * positions, -INFINITY), local((size_t)rows * local_stride);
+    FILE *file = fopen(argv[2], "rb");
+    if (file == 0 || fread(reach.data(), sizeof(uint32_t), rows, file) != rows ||
+        fread(scores.data(), sizeof(float), scores.size(), file) != scores.size())
+    {
+        fprintf(stderr, "FAIL cannot read %s\n", argv[2]);
+        return 1;
+    }
+    fclose(file);
+    for (uint32_t row = 0u; row < rows; ++row)
+        row_position[row] = reach[row] != 0u ? reach[row] - 1u : UINT32_MAX;
+    float *local_device[16], *block_scores = 0, *values = 0;
+    uint8_t *mask_device[16];
+    uint32_t *local_selected = 0, *selected = 0, *scratch_positions = 0, *sequence_device = 0, *length_device = 0, *row_position_device = 0;
+    uint2 *gathered = 0;
+    CUDA(cudaMalloc(&block_scores, (size_t)rows * local_blocks * sizeof(float)));
+    CUDA(cudaMalloc(&values, entries * sizeof(float)));
+    CUDA(cudaMalloc(&scratch_positions, entries * sizeof(uint32_t)));
+    CUDA(cudaMalloc(&local_selected, (size_t)rows * keep * sizeof(uint32_t)));
+    CUDA(cudaMalloc(&selected, (size_t)rows * global_keep * sizeof(uint32_t)));
+    CUDA(cudaMalloc(&gathered, (size_t)degree * rows * keep * sizeof(uint2)));
+    CUDA(cudaMalloc(&sequence_device, rows * sizeof(uint32_t)));
+    CUDA(cudaMalloc(&length_device, sizeof(uint32_t)));
+    CUDA(cudaMalloc(&row_position_device, rows * sizeof(uint32_t)));
+    CUDA(cudaMemcpy(sequence_device, sequence.data(), rows * sizeof(uint32_t), cudaMemcpyHostToDevice));
+    CUDA(cudaMemcpy(length_device, length.data(), sizeof(uint32_t), cudaMemcpyHostToDevice));
+    CUDA(cudaMemcpy(row_position_device, row_position.data(), rows * sizeof(uint32_t), cudaMemcpyHostToDevice));
+    for (uint32_t rank = 0u; rank < degree; ++rank)
+    {
+        const SparkKvShard shard = { degree, rank, grain }, blocks = { degree, rank, 1u };
+        const uint32_t owned = SparkKvShardLocalKeys(shard, positions);
+        std::fill(local.begin(), local.end(), -INFINITY);
+        for (uint32_t row = 0u; row < rows; ++row)
+            for (uint32_t entry = 0u; entry < owned; ++entry)
+            {
+                const uint32_t position = SparkKvShardLocalPosition(shard, entry);
+                local[(size_t)row * local_stride + entry] = position < reach[row] ? scores[(size_t)row * positions + position] : -INFINITY;
+            }
+        CUDA(cudaMalloc(&local_device[rank], local.size() * sizeof(float)));
+        CUDA(cudaMalloc(&mask_device[rank], (size_t)rows * local_blocks));
+        CUDA(cudaMemcpy(local_device[rank], local.data(), local.size() * sizeof(float), cudaMemcpyHostToDevice));
+        CUDA(SparkDsv41FlashLaunchShardBlockMax(0, local_device[rank], local_stride, shard, sequence_device, length_device, row_position_device,
+            block_scores, local_blocks, rows));
+        CUDA(LmTopkExactLaunch<256u>(block_scores, rows, local_blocks, keep, LM_TOPK_EXACT_CHUNK, LM_TOPK_EXACT_CHUNKED_ROWS, values,
+            scratch_positions, entries, local_selected, 0));
+        CUDA(LmIndexShardCandidatePackLaunch<256u>(blocks, block_scores, local_blocks, local_selected, keep, rows,
+            gathered + (size_t)rank * rows * keep, 0));
+    }
+    CUDA((LmIndexShardCandidateTopkLaunch<256u,2048u>(gathered, (uint64_t)rows * keep, degree, keep, rows, global_blocks, global_keep, 0u, selected, 0)));
+    for (uint32_t rank = 0u; rank < degree; ++rank)
+    {
+        const SparkKvShard shard = { degree, rank, grain }, blocks = { degree, rank, 1u };
+        const uint32_t owned = SparkKvShardLocalKeys(shard, positions);
+        CUDA(SparkDsv41FlashLaunchShardBlockMask(0, global_blocks, selected, global_keep, blocks, mask_device[rank], local_blocks, rows));
+        CUDA(SparkDsv41FlashLaunchShardBlockApply(0, local_device[rank], local_stride, grain, mask_device[rank], local_blocks, rows));
+        CUDA(cudaMemcpy(local.data(), local_device[rank], local.size() * sizeof(float), cudaMemcpyDeviceToHost));
+        for (uint32_t row = 0u; row < rows; ++row)
+            for (uint32_t entry = 0u; entry < owned; ++entry)
+                output[(size_t)row * positions + SparkKvShardLocalPosition(shard, entry)] = local[(size_t)row * local_stride + entry];
+        CUDA(cudaFree(local_device[rank]));
+        CUDA(cudaFree(mask_device[rank]));
+    }
+    CUDA(cudaDeviceSynchronize());
+    file = fopen(argv[3], "wb");
+    if (file == 0 || fwrite(output.data(), sizeof(float), output.size(), file) != output.size())
+    {
+        fprintf(stderr, "FAIL cannot write %s\n", argv[3]);
+        return 1;
+    }
+    fclose(file);
+    CUDA(cudaFree(block_scores));
+    CUDA(cudaFree(values));
+    CUDA(cudaFree(scratch_positions));
+    CUDA(cudaFree(local_selected));
+    CUDA(cudaFree(selected));
+    CUDA(cudaFree(gathered));
+    CUDA(cudaFree(sequence_device));
+    CUDA(cudaFree(length_device));
+    CUDA(cudaFree(row_position_device));
+    return 0;
+}
+
 static int RunFp8Linear(char **argv)
 {
     uint32_t rows = (uint32_t)strtoul(argv[6], 0, 10);
@@ -184,10 +282,12 @@ int main(int argc, char **argv)
         return RunFp8Linear(argv);
     if (argc == 8 && strcmp(argv[1], "candidates") == 0)
         return RunCandidates(argv);
+    if (argc == 6 && strcmp(argv[1], "shard-candidates") == 0)
+        return RunShardCandidates(argv);
     if (argc == 6 && strcmp(argv[1], "kv-fp4") == 0)
         return RunKvFp4(argv);
     if (argc == 11 && strcmp(argv[1], "engram") == 0)
         return RunEngram(argv);
-    fprintf(stderr, "usage: %s kv-fp4 IN OUT ROWS WIDTH | engram STREAMS KV QW KW OUT ROWS HC DIM EPS | candidates IN OUT ROWS STRIDE BLOCK TOPK | fp8-linear W SCALE IN OUT ROWS K N\n", argv[0]);
+    fprintf(stderr, "usage: %s kv-fp4 IN OUT ROWS WIDTH | engram STREAMS KV QW KW OUT ROWS HC DIM EPS | candidates IN OUT ROWS STRIDE BLOCK TOPK | shard-candidates IN OUT ROWS POSITIONS | fp8-linear W SCALE IN OUT ROWS K N\n", argv[0]);
     return 2;
 }

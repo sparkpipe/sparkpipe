@@ -44,6 +44,7 @@ typedef struct SparkStageRunnerTapPlan
 	uint32_t row_capacity;
 	uint16_t *slab;
 	uint64_t row_stride_elements;
+	uint32_t *first_row;
 } SparkStageRunnerTapPlan;
 
 typedef struct SparkStageRunnerWeights
@@ -122,6 +123,7 @@ typedef struct SparkStageRunnerDispatch
 	void *completion_context;
 	const uint32_t *host_positions;
 	const uint32_t *host_sequence_of_row;
+	const uint32_t *host_state_target;
 } SparkStageRunnerDispatch;
 
 typedef struct SparkStageRunnerKv
@@ -182,6 +184,7 @@ SparkStatus SparkStageRunnerKeepRows(SparkStageRunner *runner, const uint32_t *k
 SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRunnerTapEntry *entries, uint32_t entry_count, uint32_t capture);
 SparkStatus SparkStageRunnerTapShape(const SparkStageRunner *runner, uint32_t *hidden, uint32_t *total_layers);
 const uint16_t *SparkStageRunnerTapRows(const SparkStageRunner *runner, uint32_t step, uint32_t rows, uint64_t *row_stride_elements);
+uint32_t SparkStageRunnerTapFirstRow(const SparkStageRunner *runner);
 SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream);
 SparkStatus SparkStageRunnerPackIdentity(const SparkStageRunner *runner, uint8_t *digest, uint32_t digest_bytes);
 const void *SparkStageRunnerProbeBuffers(const SparkStageRunner *runner);

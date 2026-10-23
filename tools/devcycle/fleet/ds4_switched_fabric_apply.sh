@@ -8,8 +8,6 @@ CX7_HOTPLUG_MARKER="${DS4_CX7_HOTPLUG_MARKER:-/etc/nvidia/cx7-hotplug-enabled}"
 CX7_HOTPLUG_HANDLER="${DS4_CX7_HOTPLUG_HANDLER:-/opt/nvidia/dgx-spark-mlnx-hotplug/mtk-hotplug-handler.sh}"
 FLEET_SYSCTL_PATH="${DS4_FLEET_SYSCTL_PATH:-/etc/sysctl.d/99-ds4-fleet.conf}"
 MANAGEMENT_DEVICE="${DS4_MANAGEMENT_DEVICE:-enP7s7}"
-CEPH_MDS_FABRIC_ADDRESS="${DS4_CEPH_MDS_FABRIC_ADDRESS:-10.10.100.2}"
-CEPH_MDS_MANAGEMENT_ADDRESS="${DS4_CEPH_MDS_MANAGEMENT_ADDRESS:-10.20.0.2}"
 
 fabric_devices()
 {
@@ -188,21 +186,9 @@ EOF
 
 configure_fabric_link()
 {
-    ethtool -G "${FABRIC_DEVICE}" rx 8192 tx 8192
+    ethtool -G "${FABRIC_DEVICE}" rx 1024 tx 1024
     ethtool -K "${FABRIC_DEVICE}" tx-tcp-mangleid-segmentation off
     ip link set dev "${FABRIC_DEVICE}" mtu "${FABRIC_MTU}"
-}
-
-configure_ceph_mds_route()
-{
-    if ! ip -4 -o route get "${CEPH_MDS_MANAGEMENT_ADDRESS}" 2>/dev/null | grep -Eq "^${CEPH_MDS_MANAGEMENT_ADDRESS//./\\.} dev ${MANAGEMENT_DEVICE} "; then
-        printf 'skipped'
-        return 0
-    fi
-    ip route replace "${CEPH_MDS_FABRIC_ADDRESS}/32" \
-        via "${CEPH_MDS_MANAGEMENT_ADDRESS}" \
-        dev "${MANAGEMENT_DEVICE}" || return
-    printf '%s_via_%s' "${CEPH_MDS_FABRIC_ADDRESS}" "${CEPH_MDS_MANAGEMENT_ADDRESS}"
 }
 
 configure_management_link()
@@ -331,7 +317,7 @@ remove_legacy_profiles()
 
 apply_switched_fabric()
 {
-    local rank address mds_route
+    local rank address
     disable_cx7_hotplug_power_saving
     rank="$(node_rank)"
     if [ -z "${rank}" ] || ! [[ "${rank}" =~ ^[0-9]+$ ]] || [ "${rank}" -gt 15 ]; then
@@ -343,10 +329,8 @@ apply_switched_fabric()
     ip link set dev "${FABRIC_DEVICE}" up
     configure_fabric_link
     ip address replace "${address}" dev "${FABRIC_DEVICE}"
-    mds_route="$(configure_ceph_mds_route)"
-    printf 'switched_fabric node=%s rank=%s device=%s address=%s mtu=%s cx7_hotplug=disabled ceph_mds_route=%s\n' \
-        "${DS4_NODE_ID:-$(node_name)}" "${rank}" "${FABRIC_DEVICE}" "${address}" "${FABRIC_MTU}" \
-        "${mds_route}"
+    printf 'switched_fabric node=%s rank=%s device=%s address=%s mtu=%s cx7_hotplug=disabled\n' \
+        "${DS4_NODE_ID:-$(node_name)}" "${rank}" "${FABRIC_DEVICE}" "${address}" "${FABRIC_MTU}"
 }
 
 if [ "$(id -u)" -ne 0 ]; then

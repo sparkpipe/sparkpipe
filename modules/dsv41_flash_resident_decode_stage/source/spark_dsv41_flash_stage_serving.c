@@ -18,7 +18,6 @@
 #define SPARK_DSV41_FLASH_TP16_LATENT 512u
 #define SPARK_DSV41_FLASH_TP16_INDEX_KEY 128u
 #define SPARK_DSV41_FLASH_TP16_ENGRAM_WIDTH (24u * 256u)
-#define SPARK_DSV41_FLASH_TP16_RECORD_BYTES ((uint64_t)SPARK_DSV41_FLASH_STAGE_RECORD_FLOATS * sizeof(float))
 #define L SPARK_DSV41_FLASH_TP16_LAYERS
 
 static void Dsv41FlashServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, SparkStageKvConfiguration *kv)
@@ -47,13 +46,14 @@ static void Dsv41FlashServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, Spar
 
 static uint32_t Dsv41FlashServingCollectiveSequences(uint32_t rows, uint32_t tp_degree)
 {
-	const uint64_t heads = 64u / tp_degree;
-	const uint64_t bytes = (uint64_t)rows * heads * SPARK_DSV41_FLASH_TP16_RECORD_BYTES;
-	const uint64_t units = (bytes + SPARK_DSV41_FLASH_STAGE_HIDDEN * 2u - 1u) / (SPARK_DSV41_FLASH_STAGE_HIDDEN * 2u);
 	const uint64_t engram = ((uint64_t)rows * SPARK_DSV41_FLASH_TP16_ENGRAM_WIDTH + SPARK_DSV41_FLASH_STAGE_HIDDEN - 1u) /
 		SPARK_DSV41_FLASH_STAGE_HIDDEN;
-	uint64_t capacity = units > rows ? units : rows;
-	capacity = engram > capacity ? engram : capacity;
+	const uint64_t split = 2u * (uint64_t)(rows < SPARK_DSV41_FLASH_STAGE_ENGRAM_SPLIT_ROWS ? rows : SPARK_DSV41_FLASH_STAGE_ENGRAM_SPLIT_ROWS);
+	uint64_t capacity = engram > rows ? engram : rows;
+	(void)tp_degree;
+	capacity = split > capacity ? split : capacity;
+	capacity = SPARK_DSV41_FLASH_STAGE_LANDING_ROWS(SPARK_DSV41_FLASH_STAGE_MAX_POSITIONS, 1u) > capacity ?
+		SPARK_DSV41_FLASH_STAGE_LANDING_ROWS(SPARK_DSV41_FLASH_STAGE_MAX_POSITIONS, 1u) : capacity;
 	return (uint32_t)capacity + 1u;
 }
 
@@ -72,7 +72,9 @@ static const SparkModelServingAdapterDescriptor Dsv41FlashServingDescriptor =
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS,
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY,
 	.stage_count = SPARK_DSV41_FLASH_STAGE_TP_DEGREE,
 	.layer_count = SPARK_DSV41_FLASH_TP16_LAYERS,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -86,12 +88,13 @@ static const SparkModelServingAdapterDescriptor Dsv41FlashServingDescriptor =
 	.max_input_row_count = SPARK_DSV41_FLASH_TP16_MAX_ROWS,
 	.max_resident_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
 	.max_output_token_count = SPARK_DSV41_FLASH_TP16_CHAIN_TOKENS,
-	.max_speculative_token_count = 0u,
+	.max_speculative_token_count = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
 	.stage_layer_counts = { L, L, L, L, L, L, L, L, L, L, L, L, L, L, L, L },
 	.minimum_efficient_submission_row_count = 1u,
 	.cache_block_token_count = SPARK_DSV41_FLASH_STAGE_PAGE_TOKENS,
 	.parallel_group_size = 0u,
 	.cache_checkpoint_token_count = SPARK_DSV41_FLASH_TP16_CHECKPOINT_TOKENS,
+	.max_verify_row_count = SPARK_DSV41_FLASH_STAGE_VERIFY_ROWS,
 };
 
 #undef L

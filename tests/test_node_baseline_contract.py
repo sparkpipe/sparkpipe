@@ -216,24 +216,20 @@ class NodeBaselineContractTest(unittest.TestCase):
         install = script.split('if [ "${1:-}" = "--install" ]; then',1)[1].split("\nfi\n",1)[0]
         self.assertIn("    configure_unmanaged_fabric\n",install)
 
-    def test_switched_fabric_routes_the_ceph_mds_only_through_an_on_link_gateway(self) -> None:
-        cases = (
-            ("10.20.0.2 dev enP7s7 src 10.20.0.13 uid 1000 \\    cache","10.10.100.2_via_10.20.0.2",True),
-            ("10.20.0.2 via 192.168.50.1 dev wlP9s9 src 192.168.50.143 uid 1000 \\    cache","skipped",False),
-        )
-        for route,expected,replaced in cases:
-            with self.subTest(route=route):
-                harness = (fabric_functions()
-                           + f'\nip() {{ if [ "$1 $2 $3 $4" = "-4 -o route get" ]; then echo "{route}"; else echo "IP $*" >&2; fi; }}\n'
-                           + 'out=$(configure_ceph_mds_route); echo "OUT=$out"\n')
-                result = subprocess.run(["bash","-c",harness],capture_output=True,text=True)
-                self.assertEqual(result.returncode,0,result.stderr)
-                self.assertIn(f"OUT={expected}",result.stdout)
-                self.assertEqual("IP route replace 10.10.100.2/32 via 10.20.0.2 dev enP7s7" in result.stderr,replaced)
-        harness = fabric_functions() + '\nip() { if [ "$2" = "-o" ]; then echo "10.20.0.2 dev enP7s7 src 10.20.0.13"; else return 2; fi; }\nconfigure_ceph_mds_route\n'
-        failed = subprocess.run(["bash","-c",harness],capture_output=True,text=True)
-        self.assertNotEqual(failed.returncode,0)
-
+    def test_switched_fabric_boot_run_only_brings_up_and_addresses_the_port(self) -> None:
+        harness = (fabric_functions()
+                   + '\nip() { echo "IP $*"; }\nethtool() { echo "ETHTOOL $*"; }\n'
+                   + 'disable_cx7_hotplug_power_saving() { :; }\nnode_rank() { echo 3; }\nselect_fabric_device() { echo enp1s0f1np1; }\n'
+                   + 'apply_switched_fabric\n')
+        result = subprocess.run(["bash","-c",harness],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        calls = [line for line in result.stdout.splitlines() if line.startswith(("IP ","ETHTOOL "))]
+        self.assertEqual(calls,[
+            "IP link set dev enp1s0f1np1 up",
+            "ETHTOOL -G enp1s0f1np1 rx 1024 tx 1024",
+            "ETHTOOL -K enp1s0f1np1 tx-tcp-mangleid-segmentation off",
+            "IP link set dev enp1s0f1np1 mtu 9000",
+            "IP address replace 10.10.100.13/24 dev enp1s0f1np1"])
 
 if __name__ == "__main__":
     unittest.main()

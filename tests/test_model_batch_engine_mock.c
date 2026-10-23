@@ -1716,6 +1716,45 @@ static void TestScenarioCancelledInflightPrefillBusy(const SparkModelResidentDep
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioPartiallyAdmittedPrefillReleases(const SparkModelResidentDeployment *deployment, const char *runtime_root)
+{
+	TestBatchState state;
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	uint64_t ids[TEST_RANKS];
+	uint32_t releases[TEST_RANKS];
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmit(engine,1u,560u,2u);
+	for (uint32_t step=0u; step<20u; step++)
+		(void)SparkModelBatchEngineProgress(engine,8u);
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+	{
+		ids[rank] = MockResidentClientPendingEvent(rank,MOCK_EVENT_RESULT,0u);
+		releases[rank] = MockResidentClientReleaseSubmissions(rank);
+		CHECK(ids[rank] != 0u,"partial admission: the prefill waits for its result on every rank");
+	}
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+		CHECK(MockResidentClientDeliverEvent(rank,ids[rank],MOCK_EVENT_RESULT,rank == 1u ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK,1u) != 0u,
+			"partial admission: rank 1 fails the prefill result, the others admit it");
+	TestDrive(engine,200u);
+	CHECK(state.error_events[1] == 1u && state.completed_events[1] == 0u,"partial admission: the request fails once");
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+		CHECK(MockResidentClientReleaseSubmissions(rank) == releases[rank] + 1u,
+			"partial admission: the failed prefill is released on every rank, since some of them admitted it");
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.live_request_count == 0u,
+		"partial admission: the request slot is free after the release");
+	TestSubmit(engine,2u,561u,2u);
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	CHECK(state.completed_events[2] == 1u && state.error_events[2] == 0u,"partial admission: the next request on the slot completes");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioCompletionBeforeResult(const SparkModelResidentDeployment *deployment, const char *runtime_root)
 {
 	TestBatchState state;
@@ -2015,13 +2054,31 @@ static uint32_t TestPrefillPublishes(uint64_t request_id,uint32_t prompt_count,u
 	return(count);
 }
 
+static uint32_t TestRowTargets(uint64_t request_id,uint32_t prompt_count,uint32_t *targets,uint32_t capacity,uint32_t *decode_exact)
+{
+	SparkModelServingLane lane;
+	uint32_t index,count = 0u;
+	*decode_exact = 1u;
+	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
+	{
+		if ( lane.request_id != request_id || lane.context_token_count <= lane.sequence_position )
+			continue;
+		if ( lane.context_token_count <= prompt_count && count < capacity )
+			targets[count++] = lane.state_target_token_count;
+		else if ( lane.context_token_count > prompt_count && lane.state_target_token_count != lane.context_token_count )
+			*decode_exact = 0u;
+	}
+	return(count);
+}
+
 static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	static const uint32_t expected_spans[4] = {8u,4u,5u,1u},expected_ends[4] = {8u,12u,17u,18u},expected_stateful[4] = {0u,1u,1u,0u};
+	static const uint32_t expected_targets[4] = {12u,12u,17u,18u};
 	TestBatchState state = {0};
 	SparkModelBatchEngine *engine;
 	SparkModelServingLane lane = {0};
-	uint32_t prompt[18],diverge_late[18],diverge_early[18],extended[26],spans[8],ends[8],stateful[8],count,index;
+	uint32_t prompt[18],diverge_late[18],diverge_early[18],extended[26],spans[8],ends[8],stateful[8],targets[8],count,index,decode_exact;
 	for (index=0u; index<18u; index++)
 		prompt[index] = diverge_late[index] = diverge_early[index] = 300u + index;
 	diverge_late[14] = 9u;
@@ -2039,6 +2096,8 @@ static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment 
 	CHECK(state.completed_events[1] == 1u && count == 4u && memcmp(spans,expected_spans,sizeof(expected_spans)) == 0,"recurrent checkpoints: prefill spans stop at the checkpoint stride and one token before the prompt end, so the last wave is one row");
 	count = TestPrefillPublishes(1u,18u,ends,stateful,8u);
 	CHECK(count == 4u && memcmp(ends,expected_ends,sizeof(expected_ends)) == 0 && memcmp(stateful,expected_stateful,sizeof(expected_stateful)) == 0,"recurrent checkpoints: every wave end is published but only the stride and the token before the prompt end keep state");
+	count = TestRowTargets(1u,18u,targets,8u,&decode_exact);
+	CHECK(count == 4u && memcmp(targets,expected_targets,sizeof(expected_targets)) == 0 && decode_exact != 0u,"recurrent checkpoints: each prefill lane names the next position whose state is kept or the prompt end, and decode lanes name their own context");
 	TestSubmitPrompt(engine,2u,691u,1u,prompt,18u);
 	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 17u,"recurrent checkpoints: a repeated prompt resumes one token before its end");
 	TestDriveUntilTerminal(engine,&state,2u,800u);
@@ -2429,6 +2488,33 @@ static void TestDraftStop(TestDraftServer *server)
 	(void)pthread_join(server->thread,0);
 }
 
+static uint32_t TestHistoryMatch(const uint32_t *script,uint32_t position)
+{
+	uint32_t end,length,best = 0u;
+	for (end=0u; end<position; end++)
+	{
+		for (length=0u; length<64u && length<=end && script[end - length] == script[position - length]; length++)
+			;
+		if ( length > best )
+			best = length;
+	}
+	return(best);
+}
+
+static uint32_t TestModelFramesPastDepth(const uint32_t *script,uint32_t depth,uint32_t *short_match_frames)
+{
+	uint32_t index,position,rows,past = 0u;
+	*short_match_frames = 0u;
+	for (index=0u; MockResidentClientVerifyFrame(index,&position,&rows) != 0u; index++)
+		if ( TestHistoryMatch(script,position) < 8u )
+		{
+			(*short_match_frames)++;
+			if ( rows > depth + 1u )
+				past++;
+		}
+	return(past);
+}
+
 static void TestRunModelDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root,uint32_t mode,const uint32_t *script,uint32_t budget,
 	TestBatchState *state,SparkModelBatchEngineView *view,uint32_t *verify_submissions,uint32_t *verify_rows,TestDraftServer *server)
 {
@@ -2449,7 +2535,7 @@ static void TestRunModelDrafts(const SparkModelResidentDeployment *deployment,co
 
 static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
-	uint32_t script[256],index,submissions,rows;
+	uint32_t script[256],index,submissions,rows,short_frames;
 	SparkModelBatchEngineView view;
 	TestBatchState state;
 	TestDraftServer server;
@@ -2457,6 +2543,8 @@ static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployme
 		script[index] = 3000u + (index * 37u + index * index * 11u) % 4093u;
 	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_CORRECT,script,80u,&state,&view,&submissions,&rows,&server);
 	CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u,"model drafts: a stream with no repeats emits exactly the model's greedy stream");
+	CHECK(TestModelFramesPastDepth(script,4u,&short_frames) == 0u && short_frames != 0u,
+		"model drafts: with no earlier passage to continue, a model frame never runs past the drafter's depth");
 	CHECK(submissions != 0u && rows > submissions && view.speculative_accepted_token_count >= 40u,"model drafts: confident drafts are verified in multi-row frames and accepted");
 	CHECK(server.requests != 0u && server.bad_requests == 0u,"model drafts: each request names the target, the anchor and every committed token");
 	CHECK(TestLaneInputsFollowScript(1u,script,256u) != 0u,"model drafts: every decode lane's input token is a committed model token");
@@ -2506,6 +2594,21 @@ static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployme
 			"model drafts: an engine whose draft server is down at start still starts and emits exactly the model's greedy stream");
 		(void)close(closed);
 	}
+	for (index=0u; index<40u; index++)
+		script[index] = 1000u + (index * 7u) % 97u;
+	for (index=40u; index<50u; index++)
+		script[index] = 6000u + index;
+	for (index=50u; index<80u; index++)
+		script[index] = script[index - 40u];
+	for (index=80u; index<256u; index++)
+		script[index] = 3000u + (index * 37u + index * index * 11u) % 4093u;
+	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_CORRECT,script,60u,&state,&view,&submissions,&rows,&server);
+	CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,44u,60u) != 0u,
+		"model drafts: an edit that resumes an earlier passage after an insertion emits exactly the model's greedy stream");
+	CHECK(TestModelFramesPastDepth(script,4u,&short_frames) != 0u,
+		"model drafts: a model draft that completes an earlier passage carries the passage's continuation in the same frame");
+	CHECK(view.speculative_accepted_token_count >= 40u && TestLaneInputsFollowScript(1u,script,256u) != 0u,
+		"model drafts: the carried continuation is accepted and only committed tokens become lane inputs");
 }
 
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root)
@@ -2801,6 +2904,7 @@ int main(void)
 	TestScenarioBusyRestoreDeadline(&deployment,runtime_root);
 	TestScenarioPendingRestoreRetries(&deployment,runtime_root);
 	TestScenarioDriverIoError(&deployment,runtime_root);
+	TestScenarioPartiallyAdmittedPrefillReleases(&deployment,runtime_root);
 	TestScenarioInflightExpiryHoldsSlot(&deployment,runtime_root);
 	TestScenarioBusyAdmittedPrefillReleases(&deployment,runtime_root);
 	TestScenarioCancelledInflightPrefillBusy(&deployment,runtime_root);

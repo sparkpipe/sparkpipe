@@ -463,8 +463,10 @@ class Dsv41FlashEngine:
         self._head_input = None
 
     def _freqs(self, theta, original):
-        inv = theta ** (-np.arange(0, self.rope_dim, 2, dtype=np.float64)
-                        / self.rope_dim)
+        one = np.float32(1.0)
+        exponent = (np.arange(0, self.rope_dim, 2, dtype=np.float32)
+                    * np.float32(1.0 / self.rope_dim))
+        inv = one / np.power(np.float32(theta), exponent)
         if original > 0:
             def corrected(rotations):
                 return (self.rope_dim
@@ -474,22 +476,29 @@ class Dsv41FlashEngine:
             low = max(math.floor(corrected(self.beta_fast)), 0)
             high = min(math.ceil(corrected(self.beta_slow)),
                        self.rope_dim - 1)
-            ramp = np.clip((np.arange(self.rope_dim // 2, dtype=np.float64)
-                            - low) / max(high - low, 1e-3), 0.0, 1.0)
-            smooth = 1.0 - ramp
-            inv = inv / self.yarn_factor * (1.0 - smooth) + inv * smooth
-        return inv.astype(np.float64)
+            span = one / np.float32(max(high - low, 1e-3))
+            ramp = np.clip((np.arange(self.rope_dim // 2, dtype=np.float32)
+                            - np.float32(low)) * span, one * 0, one)
+            smooth = one - ramp
+            inv = (inv * (one / np.float32(self.yarn_factor))
+                   * (one - smooth) + inv * smooth)
+        return inv.astype(np.float32)
+
+    @staticmethod
+    def _fma(a, b, c):
+        return (a.astype(np.float64) * b.astype(np.float64)
+                + c.astype(np.float64)).astype(np.float32)
 
     def _rotate(self, rows, table, position, inverse=False):
-        angle = np.float64(position) * table
-        cos = np.cos(angle)
-        sin = np.sin(angle)
+        angle = np.float32(position) * table
+        cos = np.cos(angle).astype(np.float32)
+        sin = np.sin(angle).astype(np.float32)
         if inverse:
             sin = -sin
-        real = rows[..., 0::2].copy()
-        imag = rows[..., 1::2].copy()
-        rows[..., 0::2] = real * cos - imag * sin
-        rows[..., 1::2] = imag * cos + real * sin
+        real = rows[..., 0::2].astype(np.float32)
+        imag = rows[..., 1::2].astype(np.float32)
+        rows[..., 0::2] = self._fma(real, cos, -(imag * sin))
+        rows[..., 1::2] = self._fma(real, sin, imag * cos)
         return rows
 
     def _engram_init(self, text, layer_ids):
