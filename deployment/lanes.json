@@ -132,7 +132,7 @@
    "sequences": 16,
    "rows": 256,
    "context_tokens": 32768,
-   "context_reason": "32,768 positions until the gate at 262,144 positions passes",
+   "context_reason": "32,768 positions: at 262,144 the engine starts and its short output is unchanged (gate maxctx-20261023T172335Z), but a 250K-token prefill did not finish within 3 hours on the 10-14 build",
    "kv_physical_pages": 8192,
    "kv_logical_pages": 8192,
    "kv_backing_bytes": 8589934592,
