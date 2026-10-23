@@ -313,7 +313,18 @@
    "content_markers": [
     "<｜DSML｜ calls>",
     "\n</｜DSML｜ calls>"
-   ]
+   ],
+   "chat_memory": {
+    "curator_suffix": "</think>",
+    "cache_checkpoint_tokens": 16384,
+    "open_budget": 1500,
+    "line_tokens": 48,
+    "working_tokens": 24576,
+    "ledger_tokens": 12288,
+    "part_small_tokens": 1024,
+    "part_cap_tokens": 12288,
+    "keep_tokens": 4096
+   }
   },
   {
    "id": "qwen3.8-max",
