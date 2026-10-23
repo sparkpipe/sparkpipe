@@ -255,6 +255,8 @@ def main() -> int:
     command.add_argument("field")
     command = commands.add_parser("shell", help="print the STAGE_* variables of a stage-lane record for tools/stage_lane.sh")
     command.add_argument("record")
+    command = commands.add_parser("release-row", help="print the release kit's lane, firmware library, installed library, API directory, port and KV label of a record")
+    command.add_argument("record")
     args = parser.parse_args()
     if args.command == "render":
         render(args.record, args.directory)
@@ -268,6 +270,14 @@ def main() -> int:
         print(record(args.record)[args.field])
         return 0
     lane = record(args.record)
+    if args.command == "release-row":
+        model = stage_lane.MODELS[lane["model"]]
+        root = lane["runtime_root"].format(host="HOST")
+        if not root.startswith("/home/HOST/") or not root.endswith("/root"):
+            raise SystemExit(f"{args.record}: runtime root {lane['runtime_root']} is not /home/{{host}}/<lane>/root")
+        print(root[len("/home/HOST/"):-len("/root")], model.get("firmware_adapter", model["adapter"]), model["adapter"],
+              f"{lane['model']}-kv-api", model["api_port"], model["kv_label"])
+        return 0
     if lane["launcher"] != "stage_lane":
         raise SystemExit(f"{args.record} is not launched by tools/stage_lane.sh")
     values = {"STAGE_MODEL": lane["model"], "STAGE_LANE": lane["lane"], "STAGE_WEIGHTD_SOCKET": lane["weightd_socket"],

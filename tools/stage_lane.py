@@ -308,6 +308,7 @@ K3 = {
     "tokenizer_json": "/mnt/cold-raid6/models/kimi-k3/tiktoken.model",
     "pack": "sparkdata/k3.mxfp4.tp16/packs/k3.stage0.rank{rank:02d}.pack",
     "adapter": "libk3_serving_adapter.so",
+    "firmware_adapter": "libk3_tp16_serving_adapter.so",
     "program": "k3",
     "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
     "contract": "model_contracts/k3_authoritative.json",
@@ -335,15 +336,6 @@ MODELS = {
     "qwen38_flash": QWEN38_FLASH,
     "qwen38_max": QWEN38_MAX,
     "qwen38_27b": QWEN38_27B,
-    "qwen38_27b_bf16": {
-        **QWEN38_27B,
-        "swap_id": "qwen3.8-27b-bf16",
-        "api_port": 8462,
-        "node_memory_bytes": 20 << 30,
-        "pack": "sparkdata/qwen38_27b.bf16.tp16/packs/qwen38_27b.tp16.rank{rank:02d}.pack",
-        "adapter": "libqwen38_27b_bf16_tp16_serving_adapter.so",
-        "node_target": "cuda.sm121.qwen38_27b.stage_runner.linear_bf16.kv_bf16",
-    },
 }
 
 
