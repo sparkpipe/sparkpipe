@@ -854,9 +854,59 @@ class Session:
         self.memory.schedule(self, plan_messages, content, prompt_ids or [], token_ids or [])
 
 
+MEMORY_OFF = "\ue000SPARKPIPE-MEMORY-OFF\ue001"
+
+
+def memory_switch(messages):
+    off = False
+    cleaned = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str) and MEMORY_OFF in content:
+            off = True
+            content = content.replace(MEMORY_OFF, "")
+            if not content.strip() and message.get("role") == "system":
+                continue
+            message = dict(message, content=content)
+        elif isinstance(content, list) and any(isinstance(part, dict) and isinstance(part.get("text"), str) and MEMORY_OFF in part["text"] for part in content):
+            off = True
+            parts = [dict(part, text=part["text"].replace(MEMORY_OFF, "")) if isinstance(part, dict) and isinstance(part.get("text"), str) else part for part in content]
+            parts = [part for part in parts if not (isinstance(part, dict) and part.get("type") == "text" and not part.get("text", "").strip())]
+            if not parts and message.get("role") == "system":
+                continue
+            message = dict(message, content=parts)
+        cleaned.append(message)
+    return cleaned, off
+
+
+BUDGET_KEYS = ("open_budget", "line_tokens", "group_size", "working_tokens", "ledger_tokens", "part_small_tokens", "part_cap_tokens", "keep_tokens")
+OVERRIDE_KEYS = BUDGET_KEYS + ("prompt_tokens",)
+
+
+class MemoryProfile:
+    def __init__(self, budgets, model):
+        overrides = getattr(model, "memory", None) or {}
+        if not isinstance(overrides, dict) or set(overrides) - set(OVERRIDE_KEYS):
+            raise SystemExit(f"chat_memory: {model.id} may override only {', '.join(OVERRIDE_KEYS)}")
+        values = dict(budgets)
+        values.update(overrides)
+        missing = [key for key in BUDGET_KEYS if key not in values]
+        if missing:
+            raise SystemExit(f"chat_memory: the budgets lack {', '.join(missing)}")
+        for key in BUDGET_KEYS:
+            setattr(self, key, int(values[key]))
+        context = int(getattr(model, "context_tokens", 0) or 0)
+        self.prompt_tokens = int(values["prompt_tokens"]) if "prompt_tokens" in values else (context - max(4096, context * 15 // 100) if context else 0)
+        reasoning = getattr(model, "reasoning", None)
+        self.curator_suffix = reasoning.get("close", reasoning["end"]) if reasoning else None
+
+
 class Memory:
     def __init__(self, config, frontend):
         self.frontend = frontend
+        self.shared_budgets = config.get("budgets")
+        if not isinstance(self.shared_budgets, dict) or set(self.shared_budgets) != set(BUDGET_KEYS):
+            raise SystemExit(f"chat_memory: budgets must set exactly {', '.join(BUDGET_KEYS)}")
         self.store = ChatStore(config["store"])
         self.secret = Path(config["jwt_secret_file"]).read_text().strip()
         if len(self.secret) < 32:
@@ -873,10 +923,10 @@ class Memory:
         self.tasks = {}
         self.counts = {}
 
+    def profile(self, model):
+        return MemoryProfile(self.shared_budgets, model)
+
     def session(self, model, headers, messages, tools, kwargs):
-        settings = getattr(model, "memory", None)
-        if not settings:
-            return None
         claims = verify_jwt(headers.get("X-OpenWebUI-User-Jwt") or "", self.secret)
         if not claims or claims.get("iss") != self.issuer or not isinstance(claims.get("sub"), str):
             return None
@@ -929,11 +979,8 @@ class Memory:
         return lines
 
     def part_settings(self, model):
-        settings = model.memory
-        missing = [key for key in ("part_small_tokens", "part_cap_tokens", "keep_tokens") if key not in settings]
-        if missing:
-            raise KeyError(f"chat_memory for {model.id} lacks {', '.join(missing)}")
-        return int(settings["part_small_tokens"]), int(settings["part_cap_tokens"]), int(settings["keep_tokens"])
+        profile = self.profile(model)
+        return profile.part_small_tokens, profile.part_cap_tokens, profile.keep_tokens
 
     def count(self, model, text):
         key = (model.id, hashlib.sha256(text.encode()).hexdigest())
@@ -964,15 +1011,11 @@ class Memory:
         return render
 
     def budgets(self, model):
-        settings = model.memory
-        context = int(getattr(model, "context_tokens", 0) or 0)
-        ledger = int(settings.get("ledger_tokens") or max(1024, context // 10))
-        prompt = int(settings.get("prompt_tokens") or (context - max(4096, context * 15 // 100) if context else 0))
-        return ledger, prompt, int(settings.get("group_size", 16)), int(settings.get("line_tokens", 48))
+        profile = self.profile(model)
+        return profile.ledger_tokens, profile.prompt_tokens, profile.group_size, profile.line_tokens
 
     def working_budget(self, model):
-        context = int(getattr(model, "context_tokens", 0) or 0)
-        return int(model.memory.get("working_tokens") or max(4096, context * 3 // 16))
+        return self.profile(model).working_tokens
 
     def prompt_size(self, model, layout, tools):
         parts = [json.dumps(list(tools or []) + list(MEMORY_TOOLS), ensure_ascii=False)]
@@ -1100,12 +1143,12 @@ class Memory:
         indices = list(job["missing"]) + [len(session.exchanges)]
         everything = session.exchanges + [session.current + [{"role": "assistant", "content": job["content"]}]]
         sizes = self.node_tokens(session)
-        settings = model.memory
+        profile = self.profile(model)
         planned = self.plan_regroup(model, session)
         job["planned"] = planned
         large = self.large_parts(model, session)
         job["large"] = large
-        instruction = curator_instruction(everything, {}, indices, session.layout["open"], sizes, int(settings.get("open_budget", 1500)), int(settings.get("line_tokens", 48)), planned)
+        instruction = curator_instruction(everything, {}, indices, session.layout["open"], sizes, profile.open_budget, profile.line_tokens, planned)
         if large:
             instruction += keep_instruction(large, self.part_settings(model)[0], self.part_settings(model)[2])
         commit_plan = self.plan_commit(model, session, job["content"], large)
@@ -1115,14 +1158,14 @@ class Memory:
             instruction += commit_instruction(commit_plan, session.exchanges, state["lines"], self.working_budget(model))
         continued = None
         if job["prompt_ids"] and job["token_ids"] and job["attempts"] == 0:
-            continued = self.frontend.memory_continuation_ids(model, job["messages"], session.tools, session.kwargs, job["prompt_ids"], job["token_ids"], instruction, settings.get("curator_suffix"))
+            continued = self.frontend.memory_continuation_ids(model, job["messages"], session.tools, session.kwargs, job["prompt_ids"], job["token_ids"], instruction, profile.curator_suffix)
         if continued is not None:
             ids, reasoning_open = continued
         else:
             messages = job["messages"] + [{"role": "assistant", "content": job["content"]}, {"role": "user", "content": instruction}]
-            ids, reasoning_open = self.frontend.memory_curator_ids(model, messages, session.tools, session.kwargs, settings.get("curator_suffix"))
+            ids, reasoning_open = self.frontend.memory_curator_ids(model, messages, session.tools, session.kwargs, profile.curator_suffix)
         text = await self.frontend.memory_complete(model, ids, self.curator_tokens + 80 * len(indices), reasoning_open, "curator" if continued is not None else "curator_render", session.trace())
-        lines, opened, complete = parse_curator(text, indices, len(everything), sizes, int(settings.get("open_budget", 1500)))
+        lines, opened, complete = parse_curator(text, indices, len(everything), sizes, profile.open_budget)
         if lines is None:
             return False
         for index, line in lines.items():
@@ -1208,9 +1251,6 @@ class Memory:
             self.write_line(session, len(session.exchanges), fallback_line(session.current + [{"role": "assistant", "content": job["content"]}]), "fallback")
 
     async def stem(self, model, session):
-        settings = model.memory
-        if not int(settings.get("cache_checkpoint_tokens", 0)):
-            return
         state = self.store.load(session.user, session.chat)
         lines = self.ledger_lines(state)
         order = [index for index in committed_order(session.exchanges, state["commits"]) if exchange_key(session.exchanges[index]) in lines]

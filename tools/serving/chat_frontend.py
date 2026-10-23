@@ -504,9 +504,9 @@ class Model:
         self.end_markers = list(spec.get("end_markers", []))
         self.stop_token_ids = [self.token_id(text) for text in spec["stop_tokens"]]
         self.gate = WarmGate(self.id, self.engine, spec.get("warm_queue"))
-        self.memory = spec.get("chat_memory")
-        if self.memory is not None and not isinstance(self.memory, dict):
-            raise SystemExit(f"chat_frontend: {self.id} chat_memory must be an object")
+        self.memory = spec.get("chat_memory", {})
+        if not isinstance(self.memory, dict):
+            raise SystemExit(f"chat_frontend: {self.id} chat_memory must be an object of budget overrides")
 
     def logprob(self, pair):
         text = self.vocabulary.piece(pair[0])
@@ -1174,6 +1174,7 @@ class Frontend:
             module = importlib.util.module_from_spec(loader)
             loader.loader.exec_module(module)
             self.memory = module.Memory(config["chat_memory"], self)
+            self.memory_switch = module.memory_switch
 
     async def start(self, app):
         self.session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=0), timeout=aiohttp.ClientTimeout(total=None, sock_connect=10))
@@ -1305,7 +1306,12 @@ class Frontend:
         if self.citation_wrapper is not None and headers is not None and headers.get("X-OpenWebUI-Chat-Id"):
             messages, citations = canonical_citations(messages, self.citation_wrapper)
             trace.update(citations)
-        if self.memory is not None and headers is not None:
+        memory_off = False
+        if self.memory is not None:
+            messages, memory_off = self.memory_switch(messages)
+            if memory_off:
+                trace.update(memory_off=True)
+        if self.memory is not None and headers is not None and not memory_off:
             session = self.memory.session(model, headers, messages, tools, kwargs)
             if session is not None:
                 messages, tools = normalize_messages(session.messages), session.tools

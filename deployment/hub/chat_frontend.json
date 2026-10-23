@@ -108,17 +108,6 @@
   },
   {
    "id": "kimi-k3",
-   "chat_memory": {
-    "curator_suffix": "<|close|>think<|sep|><|open|>response<|sep|>",
-    "cache_checkpoint_tokens": 16384,
-    "open_budget": 1500,
-    "line_tokens": 48,
-    "working_tokens": 24576,
-    "ledger_tokens": 12288,
-    "part_small_tokens": 1024,
-    "part_cap_tokens": 12288,
-    "keep_tokens": 4096
-   },
    "model_dir": "models/kimi-k3",
    "engine": "http://127.0.0.1:8459",
    "context_tokens": 737280,
@@ -171,7 +160,8 @@
    },
    "reasoning": {
     "start": "<|open|>think<|sep|>",
-    "end": "<|close|>think<|sep|>"
+    "end": "<|close|>think<|sep|>",
+    "close": "<|close|>think<|sep|><|open|>response<|sep|>"
    },
    "tool_calls": {
     "format": "tagged",
@@ -236,7 +226,8 @@
    },
    "reasoning": {
     "start": "<think>",
-    "end": "</think>"
+    "end": "</think>",
+    "close": "\n</think>\n\n"
    },
    "tool_calls": {
     "format": "function_xml",
@@ -313,18 +304,7 @@
    "content_markers": [
     "<｜DSML｜ calls>",
     "\n</｜DSML｜ calls>"
-   ],
-   "chat_memory": {
-    "curator_suffix": "</think>",
-    "cache_checkpoint_tokens": 16384,
-    "open_budget": 1500,
-    "line_tokens": 48,
-    "working_tokens": 24576,
-    "ledger_tokens": 12288,
-    "part_small_tokens": 1024,
-    "part_cap_tokens": 12288,
-    "keep_tokens": 4096
-   }
+   ]
   },
   {
    "id": "qwen3.8-max",
@@ -356,7 +336,8 @@
    },
    "reasoning": {
     "start": "<think>",
-    "end": "</think>"
+    "end": "</think>",
+    "close": "\n</think>\n\n"
    },
    "tool_calls": {
     "format": "function_xml",
@@ -412,7 +393,8 @@
    },
    "reasoning": {
     "start": "<think>",
-    "end": "</think>"
+    "end": "</think>",
+    "close": "\n</think>\n\n"
    },
    "tool_calls": {
     "format": "function_xml",
@@ -927,7 +909,17 @@
  "site_dir": "site",
  "chat_memory": {
   "store": "/srv/workspace/sparkpipe/chat-memory",
-  "jwt_secret_file": "/home/spec/sparkpipe-chat/memory-jwt.secret"
+  "jwt_secret_file": "/home/spec/sparkpipe-chat/memory-jwt.secret",
+  "budgets": {
+   "open_budget": 1500,
+   "line_tokens": 48,
+   "group_size": 16,
+   "working_tokens": 24576,
+   "ledger_tokens": 12288,
+   "part_small_tokens": 1024,
+   "part_cap_tokens": 12288,
+   "keep_tokens": 4096
+  }
  },
  "client": {
   "citation_wrapper": {
