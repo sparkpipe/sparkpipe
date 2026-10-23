@@ -345,6 +345,21 @@ a prefix its index still lists but the ranks no longer hold, which costs
 prefill but not correctness. Reports are kept under
 `qualification/chat_memory/<model>/`.
 
+Status, 2026-10-23 (`qualification/chat_memory/<model>/20261023T202945Z.json`):
+
+| Model | Qualified | Recall memory / Full | Uncached memory / Full | Stale recomputes, user turns memory / Full |
+|---|---|---|---|---|
+| Kimi K3 | yes | 15 / 15 | 102,982 / 104,997 | 3 / 3 |
+| DeepSeek V4.1 Flash | no | 15 / 15 | 97,992 / 101,005 | 1 / 0 (plus 2 in background jobs) |
+
+DeepSeek V4.1 Flash fails one check by one event. A turn resumed at a
+recurrent-state checkpoint the ranks had evicted. Each memory turn adds a
+curator continuation and a pre-warm, and each leaves checkpoints, while the KV
+binding keeps the newest four per path (`SPARK_KV_PAGE_CACHE_RECENT_STATES`).
+The turn resumed one checkpoint earlier and recomputed 177 of 7,294 prompt
+tokens. It qualifies once the binding keeps the checkpoint the next turn
+resumes from. The other 14 models have not run yet.
+
 An earlier check, a median cached share of 90%, failed chats with perfect
 reuse: when every other turn adds a 3,000-token note, cached over prompt sits
 near 0.8 even when the whole previous prompt is reused, and the Full context
