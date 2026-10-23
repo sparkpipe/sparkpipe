@@ -915,7 +915,9 @@
    "line_tokens": 48,
    "group_size": 16,
    "working_tokens": 24576,
+   "working_context_share": 0.1875,
    "ledger_tokens": 12288,
+   "ledger_context_share": 0.1,
    "part_small_tokens": 1024,
    "part_cap_tokens": 12288,
    "keep_tokens": 4096

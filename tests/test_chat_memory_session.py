@@ -37,8 +37,8 @@ def headers(user_message, parent=None, message=None, chat="chat-1", task="", jwt
     return result
 
 
-BUDGETS = {"open_budget": 1500, "line_tokens": 48, "group_size": 16, "working_tokens": 24576, "ledger_tokens": 12288,
-           "part_small_tokens": 1024, "part_cap_tokens": 12288, "keep_tokens": 4096}
+BUDGETS = {"open_budget": 1500, "line_tokens": 48, "group_size": 16, "working_tokens": 24576, "working_context_share": 0.1875, "ledger_tokens": 12288,
+           "ledger_context_share": 0.1, "part_small_tokens": 1024, "part_cap_tokens": 12288, "keep_tokens": 4096}
 
 
 class Model:
@@ -134,6 +134,8 @@ async def run():
         assert memory.session(plain, headers("u1", chat="plain-chat"), conversation(1), [], {}) is not None, "every model gets memory, with the shared budgets"
         assert memory.profile(plain).curator_suffix is None and memory.profile(plain).working_tokens == BUDGETS["working_tokens"]
         assert memory.profile(model).curator_suffix == "</think>"
+        small_context = type("Small", (), {"id": "small", "reasoning": None, "context_tokens": 32768})()
+        assert (memory.profile(small_context).working_tokens, memory.profile(small_context).ledger_tokens) == (6144, 3276), "budgets shrink with a small context"
         closing = type("Closing", (), {"id": "closing", "reasoning": {"start": "<a>", "end": "</a>", "close": "\n</a><b>"}, "memory": {"ledger_tokens": 99}})()
         assert memory.profile(closing).curator_suffix == "\n</a><b>" and memory.profile(closing).ledger_tokens == 99
         try:

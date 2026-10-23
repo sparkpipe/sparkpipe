@@ -879,7 +879,9 @@ def memory_switch(messages):
     return cleaned, off
 
 
-BUDGET_KEYS = ("open_budget", "line_tokens", "group_size", "working_tokens", "ledger_tokens", "part_small_tokens", "part_cap_tokens", "keep_tokens")
+BUDGET_KEYS = ("open_budget", "line_tokens", "group_size", "working_tokens", "working_context_share", "ledger_tokens", "ledger_context_share",
+               "part_small_tokens", "part_cap_tokens", "keep_tokens")
+SHARE_KEYS = ("working_context_share", "ledger_context_share")
 OVERRIDE_KEYS = BUDGET_KEYS + ("prompt_tokens",)
 
 
@@ -894,8 +896,11 @@ class MemoryProfile:
         if missing:
             raise SystemExit(f"chat_memory: the budgets lack {', '.join(missing)}")
         for key in BUDGET_KEYS:
-            setattr(self, key, int(values[key]))
+            setattr(self, key, float(values[key]) if key in SHARE_KEYS else int(values[key]))
         context = int(getattr(model, "context_tokens", 0) or 0)
+        if context:
+            self.working_tokens = min(self.working_tokens, int(context * self.working_context_share))
+            self.ledger_tokens = min(self.ledger_tokens, int(context * self.ledger_context_share))
         self.prompt_tokens = int(values["prompt_tokens"]) if "prompt_tokens" in values else (context - max(4096, context * 15 // 100) if context else 0)
         reasoning = getattr(model, "reasoning", None)
         self.curator_suffix = reasoning.get("close", reasoning["end"]) if reasoning else None

@@ -210,8 +210,11 @@ stubs with an expand id.
 
 One set for every model: `chat_memory.budgets` in `chat_frontend.json` sets
 `open_budget`, `line_tokens`, `group_size`, `working_tokens`,
-`ledger_tokens`, `part_small_tokens`, `part_cap_tokens` and `keep_tokens`,
-all required. A model's own `chat_memory` object may override only those keys
+`working_context_share`, `ledger_tokens`, `ledger_context_share`,
+`part_small_tokens`, `part_cap_tokens` and `keep_tokens`, all required. The
+working set and the ledger take the smaller of their cap and their share of
+the model's `context_tokens` (3/16 and 1/10): 24,576 and 12,288 tokens on K3
+and DSV4.1, 6,144 and 3,276 on a 32K model. A model's own `chat_memory` object may override only those keys
 and `prompt_tokens`. The prompt budget is otherwise the model's
 `context_tokens` minus an output reserve of max(4K, 15%). `MemoryProfile` in
 `tools/serving/chat_memory.py` resolves and checks this per model; nothing

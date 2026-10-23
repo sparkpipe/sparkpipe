@@ -23,7 +23,7 @@ for spec in CONFIG["models"]:
     check(isinstance(overrides, dict) and set(overrides) <= set(cm.OVERRIDE_KEYS), f"{spec['id']} chat_memory may only override {cm.OVERRIDE_KEYS}")
     model = type("Model", (), {"id": spec["id"], "memory": overrides, "reasoning": spec.get("reasoning"), "context_tokens": spec["context_tokens"]})()
     profile = cm.MemoryProfile(budgets, model)
-    check(profile.prompt_tokens > 0 and profile.working_tokens < profile.prompt_tokens, f"{spec['id']} resolves a usable prompt budget")
+    check(profile.working_tokens + profile.ledger_tokens + 8192 <= profile.prompt_tokens, f"{spec['id']} fits its working set and ledger with 8K to spare: {profile.working_tokens} + {profile.ledger_tokens} of {profile.prompt_tokens}")
     check((profile.curator_suffix is None) == (spec.get("reasoning") is None), f"{spec['id']} gets a curator suffix exactly when it declares reasoning markers")
     suffixes[spec["id"]] = profile.curator_suffix
 check(suffixes["kimi-k3"] == "<|close|>think<|sep|><|open|>response<|sep|>", f"K3's derived suffix is the one its memory qualification used: {suffixes['kimi-k3']!r}")
