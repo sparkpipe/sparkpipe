@@ -50,6 +50,7 @@ class Node:
             "timedatectl show-timesync -p ServerName --value":"192.168.50.4","timedatectl show -p NTPSynchronized --value":"yes",
             "systemctl show -p RuntimeWatchdogUSec --value":"10min","systemctl show -p RebootWatchdogUSec --value":"5min",
             f"loginctl show-user {node} -p Linger --value":"yes",
+            "sysctl -n vm.dirty_bytes":"4294967296","sysctl -n vm.dirty_background_bytes":"536870912",
         }
         for root in ("extnvme","kvcache","sparkdata","srcdata"):
             self.commands[f"findmnt -rn -T /home/{node}/{root} -o TARGET,SOURCE,FSTYPE,OPTIONS"] = "/ /dev/nvme0n1p2 ext4 rw,relatime"
@@ -192,6 +193,10 @@ class RemoteAuditTest(unittest.TestCase):
     def test_ntp_accepts_either_hub_address(self) -> None:
         self.assert_adds(lambda n: n.commands.__setitem__("timedatectl show-timesync -p ServerName --value","10.10.250.2"),set())
         self.assert_adds(lambda n: n.commands.__setitem__("timedatectl show-timesync -p ServerName --value","ntp.ubuntu.com"),{"ntp:ntp.ubuntu.com:yes"})
+
+    def test_the_dirty_page_cap_must_be_live(self) -> None:
+        self.assert_adds(lambda n: n.commands.__setitem__("sysctl -n vm.dirty_bytes","0"),{"sysctl:vm.dirty_bytes=0"})
+        self.assert_adds(lambda n: n.commands.__setitem__("sysctl -n vm.dirty_background_bytes","0"),{"sysctl:vm.dirty_background_bytes=0"})
 
     def test_every_node_layout_root_must_be_a_writable_directory(self) -> None:
         self.assertEqual(Node("spark3").audit() & {f"layout-root-not-writable:{root}" for root in ("extnvme","kvcache","sparkdata","srcdata")},set())

@@ -151,6 +151,8 @@ RECOVERY_SYSCTL = """kernel.panic=60
 kernel.softlockup_panic=1
 kernel.hung_task_panic=1
 """
+DIRTY_CAP_SYSCTL = "vm.dirty_bytes=4294967296\nvm.dirty_background_bytes=536870912\n"
+DIRTY_CAP_SETTINGS = {"vm.dirty_bytes":"4294967296","vm.dirty_background_bytes":"536870912"}
 SYSTEMD_RECOVERY = """[Manager]
 RuntimeWatchdogSec=10min
 RebootWatchdogSec=5min
@@ -842,6 +844,7 @@ def remote_apply(payload_path: Path) -> dict[str,object]:
     atomic_write(Path("/etc/default/earlyoom"),EARLYOOM_DEFAULT,0o644)
     atomic_write(Path("/etc/sysctl.d/90-sparkpipe-no-thrash.conf"),NO_THRASH_SYSCTL,0o644)
     atomic_write(Path("/etc/sysctl.d/99-spark-recovery.conf"),RECOVERY_SYSCTL,0o644)
+    atomic_write(Path("/etc/sysctl.d/99-dirty-cap.conf"),DIRTY_CAP_SYSCTL,0o644)
     atomic_write(Path("/etc/systemd/system.conf.d/90-ds4-recovery.conf"),SYSTEMD_RECOVERY,0o644)
     install_sshd_config()
     atomic_write(Path("/etc/systemd/system/ssh-emergency.service"),EMERGENCY_SSH_SERVICE,0o644)
@@ -1215,7 +1218,7 @@ def remote_audit(payload_path: Path) -> dict[str,object]:
     observations["watchdog"] = [command(["systemctl","show","-p",name,"--value"],check=False) for name in ("RuntimeWatchdogUSec","RebootWatchdogUSec")]
     if observations["watchdog"] != ["10min","5min"]:
         failures.append(f"systemd-watchdog:{observations['watchdog'][0]}:{observations['watchdog'][1]}")
-    for key,expected in RECOVERY_SETTINGS.items():
+    for key,expected in {**RECOVERY_SETTINGS,**DIRTY_CAP_SETTINGS}.items():
         value = command(["sysctl","-n",key],check=False)
         if value != expected:
             failures.append(f"sysctl:{key}={value}")

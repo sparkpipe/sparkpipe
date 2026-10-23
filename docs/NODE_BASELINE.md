@@ -43,6 +43,7 @@ it on one node, reboot that node, and audit it before the others.
 | Ceph: cephadm daemons run; host package units masked; `/var/log/ceph/<fsid>` owned 167:167; mon/mgr/osd units enabled; enabled units (enablement links) without a daemon directory disabled; start-after-ssh drop-ins | apply (`install_ceph_policy`, assets) | cephadm will not start a daemon without its log directory. A copied state tree once enabled a `crash` unit with no daemon. Stopped MDS or crash daemons may stay disabled. A directory without a cluster target or daemons (a leftover cluster) is ignored. The drop-ins order the cluster after ssh with 180-second timeouts, so Ceph can never block ssh. |
 | `spark-osd-guard` (udev event and 2-minute scan), `95-ceph-osd-lvm.rules`, `ds4-ceph-warm` and its mount unit | apply (assets) | Repairs stale device-mapper tables after a USB enclosure re-enumerates. Gives the OSD logical volumes the container's ceph UID 167. Mounts the CephFS warm store. `ceph-osd-retry.service` is retired: its `ExecStart` named a file that did not exist on any node, and the OSD guard covers its job. |
 | timesyncd to the hub, `restart-resolved`, fsck health timer, fstrim, persistent serial getty, `ssh.service` | apply | Fleet services every node already runs. timesyncd lists only the hub (192.168.50.4, then 10.10.250.2). With a public server in the list it fails over during a hub outage and never comes back: 15 nodes ran 26 ms off the hub on 2026-10-23. Apply restarts timesyncd when it is not on a hub server. |
+| Dirty-page cap `/etc/sysctl.d/99-dirty-cap.conf` (`vm.dirty_bytes` 4 GiB, `vm.dirty_background_bytes` 512 MiB) | apply | The kernel's 20%/10% ratios are shares of dirtyable memory: about 3.8 GiB with a model's weights pinned, but about 24 GiB while memory is free (boot, model swaps, stagepack builds). That backlog must be written back to NVMe or CephFS before a large pinned allocation can proceed, which can stall it or end in an OOM kill or a hung-task reboot. The earlier node copy held a literal `\n` and a `kernel` prefix and never applied. The audit checks both live values. |
 | Node layout roots `/home/sparkN/{sparkdata,srcdata,extnvme,kvcache}` | apply (`tools/spark_node_layout.json`) | Deployment and release tooling resolve paths against these roots. Apply creates any missing root owned by the node user (mode 0775) and leaves existing ones alone. The audit requires every root to be a directory on a writable filesystem. |
 | Tool and build packages (`iperf3`, `fio`, `ninja-build`, `gh`, `exfatprogs`, `python3.12-dev`, `libnng-dev`, `libmbedtls-dev`, `libexpat1-dev`) | apply (`FLEET_TOOL_PACKAGES`) | Present on the older nodes; missing on the factory image. |
 | Stale snap mount units removed | apply (`retire_stale_snap_units`) | Units whose snap file is gone fail at every boot and hide real failures. They arrived on the FE nodes with a copy of `/etc/systemd/system` from the old nodes. |
@@ -102,10 +103,6 @@ If the fleet agent logs `SAFE MODE` after several short boots, clear it with
 - **GRUB serial terminal:** spark0-6 have it; sparka-f and the FE nodes do not.
 - **Kernel and driver:** the FE nodes run 7.0.0-1019 with 580.178.04; the older
   nodes run 6.17.0-1026/1029 with 580.159/173. Label FE results in any A/B.
-- **Dirty-page cap:** `/etc/sysctl.d/99-dirty-cap.conf` on the nodes holds a
-  literal `\n` and a `kernel` prefix, so its 4 GiB `vm.dirty_bytes` cap never
-  applied (`dirty_bytes` reads 0 everywhere). It is not part of the baseline
-  until the setting is decided.
 - **Offline Ceph host:** `lima-mds-macstudio` (10.20.0.2, a Lima VM on the Mac
   Studio) is still in the cephadm host list, Offline. It once served the MDS
   that the sparks reached at `10.10.100.2` through a host route. Both MDS
