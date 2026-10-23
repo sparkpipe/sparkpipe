@@ -506,19 +506,23 @@ curl() { echo FORBIDDEN_CURL >&3; }
 
     def test_rank_comes_from_the_fleet_host_list(self):
         hosts = ["spark%x" % rank for rank in range(16)]
-        for host in hosts + ["spark10", "sparkg", "rtx5090", ""]:
-            with self.subTest(host=host):
-                result = subprocess.run(["bash", "-c", "set -uo pipefail\n" + self.identity + '\necho "RANK=$RANK PAIRED=$MESH_PAIRED"\n'],
-                                        env=dict(os.environ, HOST=host), capture_output=True, text=True)
-                if host in hosts:
-                    rank = hosts.index(host)
-                    self.assertEqual((result.returncode, result.stdout), (0, "RANK=%d PAIRED=%s\n" % (rank, "1" if rank < 14 else "")))
-                else:
-                    self.assertEqual((result.returncode, result.stdout), (2, ""))
+        cabled = 'MESH_LINK_MAP="0-1:200,2-3:200,4-5:200,6-7:200,8-9:200,10-11:200,12-13:200,14-15:200"'
+        self.assertIn(cabled, self.identity)
+        seven = self.identity.replace(cabled, 'MESH_LINK_MAP="0-1:200,2-3:200,4-5:200,6-7:200,8-9:200,10-11:200,12-13:200"')
+        for identity, paired in ((self.identity, 16), (seven, 14)):
+            for host in hosts + ["spark10", "sparkg", "rtx5090", ""]:
+                with self.subTest(host=host, paired=paired):
+                    result = subprocess.run(["bash", "-c", "set -uo pipefail\n" + identity + '\necho "RANK=$RANK PAIRED=$MESH_PAIRED"\n'],
+                                            env=dict(os.environ, HOST=host), capture_output=True, text=True)
+                    if host in hosts:
+                        rank = hosts.index(host)
+                        self.assertEqual((result.returncode, result.stdout), (0, "RANK=%d PAIRED=%s\n" % (rank, "1" if rank < paired else "")))
+                    else:
+                        self.assertEqual((result.returncode, result.stdout), (2, ""))
 
     def test_the_mesh_link_map_joins_only_cabled_rank_partners(self):
         line = next(line for line in self.identity.splitlines() if line.startswith("MESH_LINK_MAP="))
-        self.assertEqual(line, 'MESH_LINK_MAP="0-1:200,2-3:200,4-5:200,6-7:200,8-9:200,10-11:200,12-13:200"')
+        self.assertEqual(line, 'MESH_LINK_MAP="0-1:200,2-3:200,4-5:200,6-7:200,8-9:200,10-11:200,12-13:200,14-15:200"')
         for link_map in ("0-2:200", "1-0:200", "0-1", "0-1:", "-1:200", "0-1:2x0", "0-1:200,14-15", "0-1:200,15-14:200"):
             with self.subTest(link_map=link_map):
                 identity = self.identity.replace(line, 'MESH_LINK_MAP="%s"' % link_map)

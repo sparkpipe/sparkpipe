@@ -27,15 +27,17 @@ treated as equal-rate useful data paths.
 | ---: | --- | --- |
 | 4 | `0-3` | `0<->1`, `2<->3` |
 | 8 | `0-7` | `0<->1`, `2<->3`, `4<->5`, `6<->7` |
-| 16 | `0-F` | `0<->1`, `2<->3`, `4<->5`, `6<->7`, `8<->9`, `A<->B`, `C<->D` |
+| 16 | `0-F` | `0<->1`, `2<->3`, `4<->5`, `6<->7`, `8<->9`, `A<->B`, `C<->D`, `E<->F` |
 
 Every node remains on the switched fabric. Direct pairing adds a second path;
 it does not partition the switched topology.
 
-Since 2026-10-16 sparke (rank 14) and sparkf (rank 15) have no direct link:
-sparkf's direct port is cabled to the hub, rtx5090, at 100 Gb/s, and traffic
-between ranks 14 and 15 crosses the switch. `MESH_LINK_MAP` lists the cabled
-pairs. It appears in `tools/fleet_node_agent.sh`, which passes the weightd
+Since 2026-10-23 all eight pairs are cabled again: the sparke (rank 14) and
+sparkf (rank 15) direct link, removed on 2026-10-16 for a hub link, is back. The
+hub, rtx5090, has no direct high-speed link to any Spark; it reaches the fleet
+over its 10 GbE link to sparkf (`eno1` 10.10.250.2/30, sparkf 10.10.250.1), and
+the hub draft servers take the tap rank's stream on that address.
+`MESH_LINK_MAP` lists the cabled pairs. It appears in `tools/fleet_node_agent.sh`, which passes the weightd
 pair-link flags only to listed ranks, in `tools/devcycle/ds4_spark_brickproof.py`,
 which enables `ds4-direct-pair-fabric.timer` only on listed ranks, and in
 `tools/devcycle/fleet/ds4_direct_pair_fabric_apply.sh`, which leaves the port of

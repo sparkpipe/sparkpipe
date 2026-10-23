@@ -79,7 +79,8 @@ K3 serves model drafts from the RadixArk DSpark block drafter on the 5090.
   request answers unavailable.
 - **Inputs:** the K3 tap rank (sparkf, rank 15) streams the drafter's five
   target layers (`taps` in the K3 lane's `config/adapter.json`) to
-  `10.10.210.3:7701`, the hub's 100G link to sparkf (`enp4s0f1np1`).
+  `10.10.250.2:7701`, the hub's 10 GbE link to sparkf (`eno1`). The 100G
+  link it used until 2026-10-23 no longer reaches a Spark.
 - **Clients:** the K3 API (`~/k3-kv-api`, `draft_server` in its
   `model_resident.json`) asks `127.0.0.1:7702` over DFT3.
 - **Log:** `/srv/workspace/sparkpipe/logs/draftd.log`. It prints
