@@ -38,7 +38,8 @@ def headers(user_message, parent=None, message=None, chat="chat-1", task="", jwt
 
 
 BUDGETS = {"open_budget": 1500, "line_tokens": 48, "group_size": 16, "working_tokens": 24576, "working_context_share": 0.1875, "ledger_tokens": 12288,
-           "ledger_context_share": 0.1, "part_small_tokens": 1024, "part_cap_tokens": 12288, "keep_tokens": 4096}
+           "ledger_context_share": 0.1, "part_small_tokens": 1024, "part_cap_tokens": 12288, "keep_tokens": 4096, "target_tolerance": 0.25,
+           "target_minimum_tokens": 16384}
 
 
 class Model:
@@ -138,6 +139,27 @@ async def run():
         assert (memory.profile(small_context).working_tokens, memory.profile(small_context).ledger_tokens) == (6144, 3276), "budgets shrink with a small context"
         closing = type("Closing", (), {"id": "closing", "reasoning": {"start": "<a>", "end": "</a>", "close": "\n</a><b>"}, "memory": {"ledger_tokens": 99}})()
         assert memory.profile(closing).curator_suffix == "\n</a><b>" and memory.profile(closing).ledger_tokens == 99
+        long_context = type("Long", (), {"id": "long", "reasoning": None, "context_tokens": 262144})()
+        aimed = memory.profile(long_context, 100000)
+        assert (aimed.target, aimed.prompt_tokens, aimed.ledger_tokens, aimed.working_tokens, aimed.working_low) == (100000, 125000, 10000, 113500, 63500), \
+            "a target lets the prompt reach the target plus the tolerance and compacts the working set back to the target minus it"
+        limit = 262144 - 262144 * 15 // 100
+        topped = memory.profile(long_context, 10 ** 7)
+        assert (topped.target, topped.prompt_tokens, topped.working_tokens, topped.working_low) == (262144, limit, limit - 13788, int(limit * 0.5) - 13788), \
+            "at the true maximum the target is a hard limit with no overshoot"
+        assert memory.profile(long_context, 1000).target == BUDGETS["target_minimum_tokens"], "a target below the minimum is raised to it"
+        untargeted = memory.profile(long_context)
+        assert untargeted.target is None and untargeted.working_low == untargeted.working_tokens // 2, "without a target the shared budgets apply"
+        steered = Model()
+        steered.id = "steered"
+        steered.memory = {"target_minimum_tokens": 1, "open_budget": 0, "ledger_context_share": 0.0}
+        long_chat = [dict(m, content=m["content"] + " " + "word " * 80) for m in conversation(5)]
+        near = memory.session(steered, headers("t5", chat="chat-target"), long_chat, [], {}, 2000)
+        assert near.target == 2000 and near.layout["working"] == [0, 1, 2, 3], ("the prompt is inside the target plus its tolerance", near.layout["working"])
+        plan = memory.plan_commit(steered, near, "answer 5 " + "word " * 2000, [])
+        assert plan is not None and plan["total"] > 2500 and plan["needed"] == plan["total"] - 1500, plan
+        far = memory.session(steered, headers("t5", chat="chat-untargeted"), long_chat, [], {})
+        assert memory.plan_commit(steered, far, "answer 5 " + "word " * 2000, []) is None, "the same chat without a target stays inside the shared working budget"
         try:
             memory.profile(type("Bad", (), {"id": "bad", "memory": {"curator_suffix": "x"}})())
             raise AssertionError("an override outside the budget keys must be refused")
@@ -368,4 +390,4 @@ async def run():
 
 
 asyncio.run(run())
-print("PASS test_chat_memory_session: every model gets memory with the shared budgets and a curator suffix from its reasoning close (or end) marker, a memory-off marker removed before rendering, verified identity only, system note, expand and search_history from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, tool results with ids and sections, collapsed after their turn to the kept sections, state that survives a restart")
+print("PASS test_chat_memory_session: every model gets memory with the shared budgets or a context target held within its tolerance (a hard limit at the true maximum) and a curator suffix from its reasoning close (or end) marker, a memory-off marker removed before rendering, verified identity only, system note, expand and search_history from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, tool results with ids and sections, collapsed after their turn to the kept sections, state that survives a restart")

@@ -233,6 +233,15 @@ BACKGROUND_PRIORITY = 0
 BULK_SUFFIX = "-bulk"
 
 
+def context_target(body):
+    value = body.get("num_ctx")
+    if value is None or value in (0, -1):
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise RequestError(400, "invalid_request", "num_ctx must be a positive integer: the context chat memory keeps the prompt near")
+    return value
+
+
 def request_priority(model, body):
     return BULK_PRIORITY if body.get("model") == model.id + BULK_SUFFIX else INTERACTIVE_PRIORITY
 
@@ -1311,11 +1320,12 @@ class Frontend:
             messages, memory_off = self.memory_switch(messages)
             if memory_off:
                 trace.update(memory_off=True)
+        target = context_target(body)
         if self.memory is not None and headers is not None and not memory_off:
-            session = self.memory.session(model, headers, messages, tools, kwargs)
+            session = self.memory.session(model, headers, messages, tools, kwargs, target)
             if session is not None:
                 messages, tools = normalize_messages(session.messages), session.tools
-                trace.update(memory_lined=session.layout["lined"], memory_open=len(session.layout["open"]))
+                trace.update(memory_lined=session.layout["lined"], memory_open=len(session.layout["open"]), memory_target=session.target)
         plan = self.finish_plan(model, body, messages, tools, kwargs, session)
         engine = plan["engine_body"]
         seen, seen_of = self.prefix_ledger(model).seen(engine["prompt_token_ids"])

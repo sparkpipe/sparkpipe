@@ -211,7 +211,8 @@ stubs with an expand id.
 One set for every model: `chat_memory.budgets` in `chat_frontend.json` sets
 `open_budget`, `line_tokens`, `group_size`, `working_tokens`,
 `working_context_share`, `ledger_tokens`, `ledger_context_share`,
-`part_small_tokens`, `part_cap_tokens` and `keep_tokens`, all required. The
+`part_small_tokens`, `part_cap_tokens`, `keep_tokens`, `target_tolerance`
+and `target_minimum_tokens`, all required. The
 working set and the ledger take the smaller of their cap and their share of
 the model's `context_tokens` (3/16 and 1/10): 24,576 and 12,288 tokens on K3
 and DSV4.1, 6,144 and 3,276 on a 32K model. A model's own `chat_memory` object may override only those keys
@@ -220,8 +221,31 @@ and `prompt_tokens`. The prompt budget is otherwise the model's
 `tools/serving/chat_memory.py` resolves and checks this per model; nothing
 else in the chat layer reads a budget. Before every answer a synchronous fit step folds the
 oldest lines into a stub group instead of returning `context_length_exceeded`
-(DeepSeek V4.1 Flash serves 16K and ten models serve 32K; a switch from K3
-to a 32K model can arrive with a ledger over budget).
+(a switch from a long-context model to a 32K model can arrive with a ledger
+over budget). The working set is compacted with hysteresis: once it passes
+`working_tokens`, the curator commits the oldest exchanges until it is back
+to `working_low` (half the budget without a target).
+
+### Context target
+
+A chat may set a target for its prompt length: Open WebUI's Context Length
+slider (Chat Controls, Advanced Params; a user default in Settings, a model
+default in the admin model editor) sends `num_ctx`, and the chat layer hands
+it to the memory session (`context_target` in `chat_frontend.py`; `-1` and
+`0` mean no target). With a target T, clamped to at least
+`target_minimum_tokens` (16,384) and at most the model's `context_tokens`:
+
+- the prompt may grow to T × (1 + `target_tolerance`), 25% over, before the
+  fit step folds lines;
+- the working set may grow to that limit less the ledger budget and
+  `open_budget`, then compacts back to T × (1 − tolerance) less the same;
+- the ledger takes its share of T instead of the model's context;
+- at the model's true maximum the target is a hard limit: the prompt stays
+  inside the prompt budget, and the working set compacts to
+  (1 − 2 × tolerance) of it.
+
+Between compactions the prompt only grows, so the engine reuses its cached
+prefix. "Full context" overrides any target and sends the whole chat.
 
 ## Bookkeeping
 

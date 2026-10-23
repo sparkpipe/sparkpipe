@@ -783,8 +783,9 @@ def header(headers, name):
 
 
 class Session:
-    def __init__(self, memory, model, user, chat, user_message, parent, message, head, exchanges, current, layout, tools, kwargs):
+    def __init__(self, memory, model, user, chat, user_message, parent, message, head, exchanges, current, layout, tools, kwargs, target=None):
         self.memory = memory
+        self.target = target
         self.model = model
         self.user = user
         self.chat = chat
@@ -880,13 +881,13 @@ def memory_switch(messages):
 
 
 BUDGET_KEYS = ("open_budget", "line_tokens", "group_size", "working_tokens", "working_context_share", "ledger_tokens", "ledger_context_share",
-               "part_small_tokens", "part_cap_tokens", "keep_tokens")
-SHARE_KEYS = ("working_context_share", "ledger_context_share")
+               "part_small_tokens", "part_cap_tokens", "keep_tokens", "target_tolerance", "target_minimum_tokens")
+SHARE_KEYS = ("working_context_share", "ledger_context_share", "target_tolerance")
 OVERRIDE_KEYS = BUDGET_KEYS + ("prompt_tokens",)
 
 
 class MemoryProfile:
-    def __init__(self, budgets, model):
+    def __init__(self, budgets, model, target=None):
         overrides = getattr(model, "memory", None) or {}
         if not isinstance(overrides, dict) or set(overrides) - set(OVERRIDE_KEYS):
             raise SystemExit(f"chat_memory: {model.id} may override only {', '.join(OVERRIDE_KEYS)}")
@@ -898,10 +899,26 @@ class MemoryProfile:
         for key in BUDGET_KEYS:
             setattr(self, key, float(values[key]) if key in SHARE_KEYS else int(values[key]))
         context = int(getattr(model, "context_tokens", 0) or 0)
-        if context:
-            self.working_tokens = min(self.working_tokens, int(context * self.working_context_share))
-            self.ledger_tokens = min(self.ledger_tokens, int(context * self.ledger_context_share))
-        self.prompt_tokens = int(values["prompt_tokens"]) if "prompt_tokens" in values else (context - max(4096, context * 15 // 100) if context else 0)
+        limit = int(values["prompt_tokens"]) if "prompt_tokens" in values else (context - max(4096, context * 15 // 100) if context else 0)
+        self.target = None
+        if target:
+            self.target = max(self.target_minimum_tokens, min(int(target), context) if context else int(target))
+            self.ledger_tokens = min(self.ledger_tokens, int(self.target * self.ledger_context_share))
+            if context and self.target >= context:
+                high, low = limit, int(limit * (1 - 2 * self.target_tolerance))
+            else:
+                high, low = int(self.target * (1 + self.target_tolerance)), int(self.target * (1 - self.target_tolerance))
+                high = min(high, limit) if limit else high
+            fixed = self.ledger_tokens + self.open_budget
+            self.prompt_tokens = high
+            self.working_tokens = max(1, high - fixed)
+            self.working_low = max(0, min(low, high) - fixed)
+        else:
+            if context:
+                self.working_tokens = min(self.working_tokens, int(context * self.working_context_share))
+                self.ledger_tokens = min(self.ledger_tokens, int(context * self.ledger_context_share))
+            self.prompt_tokens = limit
+            self.working_low = self.working_tokens // 2
         reasoning = getattr(model, "reasoning", None)
         self.curator_suffix = reasoning.get("close", reasoning["end"]) if reasoning else None
 
@@ -928,10 +945,10 @@ class Memory:
         self.tasks = {}
         self.counts = {}
 
-    def profile(self, model):
-        return MemoryProfile(self.shared_budgets, model)
+    def profile(self, model, target=None):
+        return MemoryProfile(self.shared_budgets, model, target)
 
-    def session(self, model, headers, messages, tools, kwargs):
+    def session(self, model, headers, messages, tools, kwargs, target=None):
         claims = verify_jwt(headers.get("X-OpenWebUI-User-Jwt") or "", self.secret)
         if not claims or claims.get("iss") != self.issuer or not isinstance(claims.get("sub"), str):
             return None
@@ -968,7 +985,7 @@ class Memory:
         else:
             parts = self.part_renderer(model, state["forms"])
             layout = build_layout(head, exchanges, current, lines, open_ids, state["commits"], self.open_chars, state["groups"], None, parts)
-            layout = self.fit(model, user, chat, head, exchanges, current, layout, tools)
+            layout = self.fit(model, user, chat, head, exchanges, current, layout, tools, target)
             used = {part["key"]: state["forms"][part["key"]] for index in layout["working"] for part in tool_parts(exchanges[index]) if part["key"] in state["forms"]}
             self.store.append(user, chat, {"type": "layout", "message": user_message, "lined": layout["lined"], "open": layout["open"], "commits": layout["keys"],
                                            "groups": layout["groups"], "forms": used})
@@ -976,7 +993,7 @@ class Memory:
         if replay:
             layout["messages"] = layout["messages"][:len(layout["messages"]) - len(current)] + splice_expansions(layout["messages"][len(layout["messages"]) - len(current):], replay)
         return Session(self, model, user, chat, user_message, parent, message, head, exchanges, current, layout,
-                       list(tools or []) + list(MEMORY_TOOLS), dict(kwargs))
+                       list(tools or []) + list(MEMORY_TOOLS), dict(kwargs), self.profile(model, target).target)
 
     def ledger_lines(self, state):
         lines = dict(state["lines"])
@@ -1015,14 +1032,15 @@ class Memory:
 
         return render
 
-    def budgets(self, model):
-        profile = self.profile(model)
+    def budgets(self, model, target=None):
+        profile = self.profile(model, target)
         return profile.ledger_tokens, profile.prompt_tokens, profile.group_size, profile.line_tokens
 
-    def working_budget(self, model):
-        return self.profile(model).working_tokens
+    def working_range(self, model, target=None):
+        profile = self.profile(model, target)
+        return profile.working_tokens, profile.working_low
 
-    def prompt_size(self, model, layout, tools):
+    def prompt_size(self, model, layout, tools, target=None):
         parts = [json.dumps(list(tools or []) + list(MEMORY_TOOLS), ensure_ascii=False)]
         for message in layout["messages"]:
             parts.append(text_of(message.get("content")))
@@ -1030,17 +1048,17 @@ class Memory:
                 parts.append(json.dumps(message["tool_calls"], ensure_ascii=False))
         text = "\n".join(parts)
         overhead = 8 * len(layout["messages"]) + 64
-        if len(text.encode()) + overhead <= self.budgets(model)[1]:
+        if len(text.encode()) + overhead <= self.budgets(model, target)[1]:
             return len(text.encode()) + overhead
         return self.frontend.memory_count(model, text) + overhead
 
-    def fit(self, model, user, chat, head, exchanges, current, layout, tools):
-        limit = self.budgets(model)[1]
+    def fit(self, model, user, chat, head, exchanges, current, layout, tools, target=None):
+        limit = self.budgets(model, target)[1]
         state = self.store.load(user, chat)
         rebuild = lambda open_ids: build_layout(head, exchanges, current, self.ledger_lines(state), open_ids, state["commits"], self.open_chars,
                                                 state["groups"], None, self.part_renderer(model, state["forms"]))
         for _ in range(64):
-            if not limit or self.prompt_size(model, layout, tools) <= limit:
+            if not limit or self.prompt_size(model, layout, tools, target) <= limit:
                 return layout
             if layout["open"]:
                 layout = rebuild([])
@@ -1160,7 +1178,7 @@ class Memory:
         job["commit_plan"] = commit_plan
         if commit_plan:
             state = self.store.load(session.user, session.chat)
-            instruction += commit_instruction(commit_plan, session.exchanges, state["lines"], self.working_budget(model))
+            instruction += commit_instruction(commit_plan, session.exchanges, state["lines"], self.working_range(model, session.target)[0])
         continued = None
         if job["prompt_ids"] and job["token_ids"] and job["attempts"] == 0:
             continued = self.frontend.memory_continuation_ids(model, job["messages"], session.tools, session.kwargs, job["prompt_ids"], job["token_ids"], instruction, profile.curator_suffix)
@@ -1195,11 +1213,11 @@ class Memory:
         pending = {item["part"]["key"]: [] for item in large}
         newest = self.part_renderer(model, dict(state["forms"], **pending))(len(session.exchanges) + 1, session.current + [{"role": "assistant", "content": content}], True)
         total = sum(sizes.values()) + self.count(model, messages_text(newest)) + (self.part_settings(model)[2] if large else 0)
-        budget = self.working_budget(model)
-        print(json.dumps(dict(session.trace(), event="chat_memory_working", open_exchanges=len(sizes), tokens=total, budget=budget)), flush=True)
+        budget, low = self.working_range(model, session.target)
+        print(json.dumps(dict(session.trace(), event="chat_memory_working", open_exchanges=len(sizes), tokens=total, budget=budget, low=low, target=session.target)), flush=True)
         if total <= budget or not sizes:
             return None
-        return {"total": total, "needed": total - budget // 2, "sizes": sizes}
+        return {"total": total, "needed": total - low, "sizes": sizes}
 
     def apply_commits(self, session, plan, chosen):
         state = self.store.load(session.user, session.chat)
@@ -1221,7 +1239,7 @@ class Memory:
 
     def plan_regroup(self, model, session):
         state = self.store.load(session.user, session.chat)
-        ledger_budget, _, size, line_tokens = self.budgets(model)
+        ledger_budget, _, size, line_tokens = self.budgets(model, session.target)
         lines = self.ledger_lines(state)
         order = [index for index in committed_order(session.exchanges, state["commits"]) if exchange_key(session.exchanges[index]) in lines]
         nodes = ledger_nodes(session.exchanges, lines, state["groups"], order)

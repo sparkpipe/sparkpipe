@@ -29,4 +29,9 @@ for spec in CONFIG["models"]:
 check(suffixes["kimi-k3"] == "<|close|>think<|sep|><|open|>response<|sep|>", f"K3's derived suffix is the one its memory qualification used: {suffixes['kimi-k3']!r}")
 check(suffixes["deepseek-v4.1-flash"] == "</think>", f"DSV4.1's derived suffix closes its reasoning: {suffixes['deepseek-v4.1-flash']!r}")
 check(all(suffixes[name] == "\n</think>\n\n" for name in ("qwen3.8-27b", "qwen3.8-max", "qwen3.8-flash")), "the Qwen templates close reasoning with their own newlines")
-print(f"PASS test_chat_memory_deployment: {len(suffixes)} models resolve memory profiles from one shared budget set; curator suffixes come from each model's reasoning markers")
+contexts = {spec["id"]: spec["context_tokens"] for spec in CONFIG["models"]}
+for entry in json.loads((ROOT / "deployment" / "hub" / "open_webui_models.json").read_text())["models"]:
+    tokens = contexts[entry["id"]]
+    label = f"{tokens // 1048576}M context" if tokens % 1048576 == 0 else f"{tokens // 1024}K context"
+    check(label in entry["description"], f"{entry['id']}'s Open WebUI description must name the {label} the chat layer serves: {entry['description']!r}")
+print(f"PASS test_chat_memory_deployment: {len(suffixes)} models resolve memory profiles from one shared budget set; curator suffixes come from each model's reasoning markers; Open WebUI shows each model's served context")
