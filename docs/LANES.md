@@ -74,6 +74,13 @@ rank.
 
 It prints one line per finding and exits non-zero when there is any.
 
+`zcode` compares the context windows of the SparkPipe models in ZCode's
+`~/.zcode/v2/provider_config.json` with the records; `zcode --write` sets them
+(keeping the previous file). Write them only after the hub's chat layer and
+LiteLLM serve the same contexts.
+
+`restore ID STAMP` puts back the files a push kept as `<file>.prev-STAMP`.
+
 `push` writes one record's rendered files to the nodes and the hub, keeps
 every replaced file as `<file>.prev-<UTC>`, and audits the record. It does
 not touch binaries, packs or KV, so a lane restart picks the change up.

@@ -277,6 +277,42 @@ def restore(record_id: str, stamp: str) -> int:
     return failed
 
 
+ZCODE = Path.home() / ".zcode" / "v2" / "provider_config.json"
+ZCODE_PROVIDER = "custom:sparkpipe"
+
+
+def zcode(write: bool) -> int:
+    if not ZCODE.exists():
+        print(f"{ZCODE} does not exist on this machine")
+        return 0
+    document = json.loads(ZCODE.read_text())
+    lanes = records()
+    rules = [rule for rule in document["config"]["modelConfigRules"]["providerModelRules"] if rule.get("providerId") == ZCODE_PROVIDER]
+    changes = []
+    for rule in rules:
+        if rule.get("modelId") not in lanes:
+            continue
+        properties = rule.setdefault("config", {}).setdefault("properties", {})
+        context = lanes[rule["modelId"]]["context_tokens"]
+        if properties.get("contextWindow") != context:
+            changes.append(f"{rule['modelId']}: {properties.get('contextWindow')} -> {context}")
+            properties["contextWindow"] = context
+    missing = sorted(set(lanes) - {rule.get("modelId") for rule in rules})
+    for line in changes:
+        print(("SET " if write else "DRIFT ") + line)
+    for model in missing:
+        print(f"MISSING {model} has no {ZCODE_PROVIDER} rule in {ZCODE}")
+    if write and changes:
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup = ZCODE.with_name(ZCODE.name + f".prev-{stamp}")
+        backup.write_text(ZCODE.read_text())
+        temporary = ZCODE.with_name(ZCODE.name + ".tmp")
+        temporary.write_text(json.dumps(document, indent=2) + "\n")
+        os.replace(temporary, ZCODE)
+        print(f"{ZCODE} written; previous kept as {backup.name}")
+    return 1 if (changes and not write) or missing else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -290,6 +326,8 @@ def main() -> int:
     command = commands.add_parser("restore", help="put back one record's node and hub files kept by a push as *.prev-STAMP")
     command.add_argument("record")
     command.add_argument("stamp")
+    command = commands.add_parser("zcode", help="compare ZCode's context windows for SparkPipe models with the records, or --write them")
+    command.add_argument("--write", action="store_true")
     command = commands.add_parser("field", help="print one field of a record")
     command.add_argument("record")
     command.add_argument("field")
@@ -308,6 +346,8 @@ def main() -> int:
         return push(args.record)
     if args.command == "restore":
         return restore(args.record, args.stamp)
+    if args.command == "zcode":
+        return zcode(args.write)
     if args.command == "field":
         print(record(args.record)[args.field])
         return 0
