@@ -78,6 +78,8 @@ It prints one line per finding and exits non-zero when there is any.
 every replaced file as `<file>.prev-<UTC>`, and audits the record. It does
 not touch binaries, packs or KV, so a lane restart picks the change up.
 
+`SPARK_LANES=<file>` renders, audits or pushes from another copy of the
+records, which is how a gate tries a raised record before it is committed.
 `tools/stage_lane.sh` with `STAGE_RECORD=<swap id>` and `tools/k3_lane.sh`
 with `K3_RECORD=kimi-k3` render from the record when they set a lane up;
 their flag form stays for experiment lanes in their own roots.

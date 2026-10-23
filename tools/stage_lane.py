@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LANES = ROOT / "deployment/lanes.json"
+LANES = Path(os.environ.get("SPARK_LANES") or ROOT / "deployment/lanes.json")
 WORLD = 16
 HEX = "0123456789abcdef"
 HOSTS = [f"spark{HEX[i]}" for i in range(WORLD)]
