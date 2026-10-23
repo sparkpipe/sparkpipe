@@ -1200,7 +1200,7 @@ static void SparkTestKvPools(void)
     SparkWeightdAttachResult attach;
     SparkTestServerThread context;
     pthread_t thread;
-    SparkWeightdClient *first = 0,*second = 0,*third = 0;
+    SparkWeightdClient *first = 0,*second = 0,*third = 0,*holder = 0;
     SparkWeightdKvPoolGrant grant,other;
     SparkWeightdKvPoolState state;
     SparkWeightdServerConfig config;
@@ -1217,6 +1217,12 @@ static void SparkTestKvPools(void)
 
     (void)unlink(socket_path);
     SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,3u * SPARK_TEST_KV_CHUNK_BYTES);
+    SparkTestWritePack(pack_path,31u,5u * SPARK_TEST_KV_CHUNK_BYTES,digest);
+    SparkTestMakeIdentity(&identity,"weightd-test","kv-lend",4u,0x31ull,digest,5u * SPARK_TEST_KV_CHUNK_BYTES);
+    SparkTestMakeRequest(&request,&identity,pack_path);
+    SparkTestConnect(&holder,socket_path,0ull);
+    SparkTestAttach(holder,&request,&attach);
+    assert(attach.status == SPARK_STATUS_OK);
     SparkTestConnect(&first,socket_path,0ull);
     assert(SparkTestKvAttach(first,0x31,SPARK_TEST_KV_CHUNK_BYTES + 1u,SPARK_TEST_KV_CHUNK_BYTES,4096u,&grant) == SPARK_STATUS_OK);
     assert(grant.reattached == 0u && grant.pool_generation != 0u && grant.chunk_capacity == 2u && grant.chunk_count == 2u && grant.chunk_bytes == SPARK_TEST_KV_CHUNK_BYTES);
@@ -1334,6 +1340,60 @@ static void SparkTestKvPools(void)
         assert(SparkWeightdClientKvPoolDrop(dropper,"",&drop,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_INVALID_ARGUMENT);
         SparkWeightdClientClose(dropper);
     }
+    {
+        SparkWeightdClient *lender = 0;
+        SparkWeightdKvPoolGrant lent;
+        SparkStatus status = SPARK_STATUS_OK;
+        SparkWeightdIdentity small;
+        SparkWeightdAttachRequest small_request;
+        SparkWeightdClient *small_holder = 0;
+        char small_digest[SPARK_SHA256_HEX_BYTES];
+        const char *small_path = "/tmp/spark_weightd_test_kv_small.spack";
+        SparkTestConnect(&lender,socket_path,0ull);
+        assert(SparkTestKvAttach(lender,0x36,6u * SPARK_TEST_KV_CHUNK_BYTES,4u * SPARK_TEST_KV_CHUNK_BYTES,0u,&lent) == SPARK_STATUS_CAPACITY_EXCEEDED);
+        SparkWeightdClientClose(holder);
+        holder = 0;
+        SparkTestWritePack(small_path,32u,SPARK_TEST_KV_CHUNK_BYTES,small_digest);
+        SparkTestMakeIdentity(&small,"weightd-test","kv-lend-small",4u,0x32ull,small_digest,SPARK_TEST_KV_CHUNK_BYTES);
+        SparkTestMakeRequest(&small_request,&small,small_path);
+        SparkTestConnect(&small_holder,socket_path,0ull);
+        for (index = 0u; index < 500u; index++)
+        {
+            SparkTestAttach(small_holder,&small_request,&attach);
+            if (attach.status == SPARK_STATUS_OK)
+                break;
+            usleep(2000u);
+        }
+        assert(attach.status == SPARK_STATUS_OK);
+        for (index = 0u; index < 500u; index++)
+        {
+            status = SparkTestKvAttach(lender,0x36,6u * SPARK_TEST_KV_CHUNK_BYTES,4u * SPARK_TEST_KV_CHUNK_BYTES,0u,&lent);
+            if (status == SPARK_STATUS_OK)
+                break;
+            assert(status == SPARK_STATUS_CAPACITY_EXCEEDED || status == SPARK_STATUS_BUSY);
+            usleep(2000u);
+        }
+        assert(status == SPARK_STATUS_OK && lent.chunk_count == 6u && SparkWeightdServerKvCommittedBytes(context.server) == 6u * SPARK_TEST_KV_CHUNK_BYTES);
+        assert(SparkTestKvAttach(lender,0x37,8u * SPARK_TEST_KV_CHUNK_BYTES,8u * SPARK_TEST_KV_CHUNK_BYTES,0u,&other) == SPARK_STATUS_CAPACITY_EXCEEDED);
+        SparkTestConnect(&holder,socket_path,0ull);
+        SparkTestAttach(holder,&request,&attach);
+        assert(attach.status == SPARK_STATUS_CAPACITY_EXCEEDED);
+        SparkTestKvGrantClose(&lent);
+        SparkWeightdClientClose(lender);
+        SparkWeightdClientClose(small_holder);
+        small_holder = 0;
+        for (index = 0u; index < 500u; index++)
+        {
+            SparkTestAttach(holder,&request,&attach);
+            if (attach.status == SPARK_STATUS_OK)
+                break;
+            usleep(2000u);
+        }
+        assert(attach.status == SPARK_STATUS_OK && SparkWeightdServerKvCommittedBytes(context.server) == 0u && SparkWeightdServerKvPoolCount(context.server) == 0u);
+        SparkWeightdClientClose(holder);
+        holder = 0;
+        (void)unlink(small_path);
+    }
     SparkTestStopServer(&context,thread);
 
     (void)unlink(socket_path);
@@ -1362,7 +1422,7 @@ static void SparkTestKvPools(void)
     assert(attach.status == SPARK_STATUS_OK && attach.arena_count == 1u);
     SparkWeightdClientClose(first);
     SparkTestStopServer(&context,thread);
-    printf("weightd kv pools: take the free reserve up to the pool size at attach and resize by chunk within it, a short grow records the wanted chunks and other pools see them as reclaim, a shrink releases chunks to the waiting pool, export only granted chunks, one owner, reattach keeps generation and metadata, a resized pool is new, detached pools evicted under pressure, no reserve refuses, an ABI 12 client is granted an unlimited legacy write budget, weight arenas admitted under the ceiling minus the reserve\n");
+    printf("weightd kv pools: take the free reserve up to the pool size at attach and resize by chunk within it, a short grow records the wanted chunks and other pools see them as reclaim, a shrink releases chunks to the waiting pool, export only granted chunks, one owner, reattach keeps generation and metadata, a resized pool is new, detached pools evicted under pressure, KV lent what the attached weights leave of the ceiling (cold weights reclaimed for it, a detached lent pool released when weights need room, an owned one kept), no reserve refuses, an ABI 12 client is granted an unlimited legacy write budget, weight arenas admitted under the ceiling minus the reserve\n");
 }
 
 static uint64_t SparkTestMonotonicNs(void)
@@ -1544,7 +1604,12 @@ static void SparkTestKvSharedPools(void)
     uint8_t layout[SPARK_KV_SHARED_INDEX_LAYOUT_BYTES],identity[32];
     SparkTestServerThread context;
     pthread_t thread;
-    SparkWeightdClient *first = 0,*second = 0,*third = 0;
+    const char *pack_path = "/tmp/spark_weightd_test_kv_shared.spack";
+    char digest[SPARK_SHA256_HEX_BYTES];
+    SparkWeightdIdentity weights;
+    SparkWeightdAttachRequest request;
+    SparkWeightdAttachResult attach;
+    SparkWeightdClient *first = 0,*second = 0,*third = 0,*holder = 0;
     SparkWeightdKvSharedGrant grant,joined,refused,again;
     SparkWeightdKvPoolGrant private_grant;
     SparkWeightdKvPoolState state;
@@ -1572,6 +1637,12 @@ static void SparkTestKvSharedPools(void)
     (void)unlink(socket_path);
     spark_test_kv_shared_window_bytes = 2u * SPARK_TEST_KV_CHUNK_BYTES + page_bytes;
     SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,4u * SPARK_TEST_KV_CHUNK_BYTES);
+    SparkTestWritePack(pack_path,41u,4u * SPARK_TEST_KV_CHUNK_BYTES,digest);
+    SparkTestMakeIdentity(&weights,"weightd-test","kv-shared",4u,0x41ull,digest,4u * SPARK_TEST_KV_CHUNK_BYTES);
+    SparkTestMakeRequest(&request,&weights,pack_path);
+    SparkTestConnect(&holder,socket_path,0ull);
+    SparkTestAttach(holder,&request,&attach);
+    assert(attach.status == SPARK_STATUS_OK);
     SparkTestConnect(&first,socket_path,0ull);
     SparkTestConnect(&second,socket_path,0ull);
     SparkTestConnect(&third,socket_path,0ull);
@@ -1629,6 +1700,7 @@ static void SparkTestKvSharedPools(void)
     SparkTestKvGrantClose(&private_grant);
     SparkWeightdClientClose(first);
     SparkWeightdClientClose(third);
+    SparkWeightdClientClose(holder);
     SparkTestStopServer(&context,thread);
     spark_test_kv_shared_window_bytes = 0u;
     (void)unlink(socket_path);

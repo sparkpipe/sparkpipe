@@ -1136,10 +1136,41 @@ static void SparkWeightdServerFreeArenaSlot(SparkWeightdServer *server,
     }
 }
 
+static uint64_t SparkWeightdKvFloor(const SparkWeightdServer *server)
+{
+    return(server->kv_committed_bytes > server->config.kv_reserve_bytes ? server->kv_committed_bytes : server->config.kv_reserve_bytes);
+}
+
 static uint64_t SparkWeightdArenaCeiling(const SparkWeightdServer *server)
 {
-    return server->config.device_bytes_max - server->config.kv_reserve_bytes;
+    return server->config.device_bytes_max - SparkWeightdKvFloor(server);
 }
+
+static uint32_t SparkWeightdAttachedArenaBudget(const SparkWeightdServer *server,uint64_t *budget)
+{
+    uint32_t index,attached = 0u;
+    *budget = 0u;
+    for (index = 0u; index < server->arena_count; index++)
+        if (server->arenas[index].refcount != 0u)
+        {
+            *budget += server->arenas[index].lazy != 0u ? server->arenas[index].preload_chunk_bytes + server->arenas[index].expert_pool_bytes :
+                server->arenas[index].identity.arena_bytes;
+            attached++;
+        }
+    return(attached);
+}
+
+static uint64_t SparkWeightdKvLimit(const SparkWeightdServer *server)
+{
+    uint64_t budget;
+    if (SparkWeightdAttachedArenaBudget(server,&budget) == 0u || server->config.kv_reserve_bytes == 0u)
+        return(server->config.kv_reserve_bytes);
+    uint64_t lent = budget < server->config.device_bytes_max ? server->config.device_bytes_max - budget : 0u;
+    return(lent > server->config.kv_reserve_bytes ? lent : server->config.kv_reserve_bytes);
+}
+
+static uint32_t SparkWeightdKvPoolOldestDetached(const SparkWeightdServer *server,const SparkWeightdKvPool *keep);
+static void SparkWeightdKvPoolRelease(SparkWeightdServer *server,uint32_t slot,const char *reason);
 
 static uint32_t SparkWeightdServerShort(const SparkWeightdServer *server,
     uint64_t needed_bytes)
@@ -1189,6 +1220,13 @@ static void SparkWeightdServerEvictColdGroups(SparkWeightdServer *server,
 static void SparkWeightdServerReclaimCold(SparkWeightdServer *server,
     uint64_t needed_bytes)
 {
+    while (SparkWeightdServerShort(server, needed_bytes) != 0u && server->kv_committed_bytes > server->config.kv_reserve_bytes)
+    {
+        uint32_t victim = SparkWeightdKvPoolOldestDetached(server, 0);
+        if (victim == SPARK_WEIGHTD_KV_POOL_COUNT_MAX)
+            break;
+        SparkWeightdKvPoolRelease(server, victim, "arena_needs_room");
+    }
     while (SparkWeightdServerShort(server, needed_bytes) != 0u)
     {
         uint32_t coldest_slot = server->arena_count;
@@ -3375,19 +3413,26 @@ static uint32_t SparkWeightdKvPoolOldestDetached(const SparkWeightdServer *serve
 
 static uint64_t SparkWeightdKvFreeBytes(const SparkWeightdServer *server)
 {
-	return(server->config.kv_reserve_bytes > server->kv_committed_bytes ? server->config.kv_reserve_bytes - server->kv_committed_bytes : 0u);
+	uint64_t limit = SparkWeightdKvLimit(server),used = server->resident_bytes + server->kv_committed_bytes;
+	uint64_t free = limit > server->kv_committed_bytes ? limit - server->kv_committed_bytes : 0u;
+	uint64_t room = used < server->config.device_bytes_max ? server->config.device_bytes_max - used : 0u;
+	return(free < room ? free : room);
 }
 
 static void SparkWeightdKvMakeRoom(SparkWeightdServer *server,const SparkWeightdKvPool *keep,uint64_t bytes)
 {
 	uint32_t victim;
+	uint64_t floor;
 	while ( SparkWeightdKvFreeBytes(server) < bytes )
 	{
 		victim = SparkWeightdKvPoolOldestDetached(server,keep);
 		if ( victim == SPARK_WEIGHTD_KV_POOL_COUNT_MAX )
-			return;
+			break;
 		SparkWeightdKvPoolRelease(server,victim,"evicted_detached");
 	}
+	floor = SparkWeightdKvFloor(server);
+	if ( SparkWeightdKvFreeBytes(server) < bytes && server->kv_committed_bytes + bytes > floor )
+		SparkWeightdServerReclaimCold(server,server->kv_committed_bytes + bytes - floor);
 }
 
 static uint32_t SparkWeightdKvPoolGrow(SparkWeightdServer *server,SparkWeightdKvPool *pool,uint32_t target)
@@ -3474,10 +3519,10 @@ static SparkStatus SparkWeightdKvPoolCreate(SparkWeightdServer *server,const Spa
 {
 	SparkWeightdKvPool *pool;
 	uint32_t slot,victim;
-	if ( (uint64_t)SparkWeightdKvMinimumChunks(request) * request->chunk_bytes > server->config.kv_reserve_bytes )
+	if ( (uint64_t)SparkWeightdKvMinimumChunks(request) * request->chunk_bytes > SparkWeightdKvLimit(server) )
 	{
-		fprintf(stderr,"weightd kv pool refused label=%s: the minimum %llu bytes (%u chunks of %llu) exceed kv_reserve=%llu%s\n",request->label,(unsigned long long)request->minimum_bytes,
-			SparkWeightdKvMinimumChunks(request),(unsigned long long)request->chunk_bytes,(unsigned long long)server->config.kv_reserve_bytes,
+		fprintf(stderr,"weightd kv pool refused label=%s: the minimum %llu bytes (%u chunks of %llu) exceed the KV limit %llu (kv_reserve=%llu plus what the attached weights leave of the ceiling)%s\n",request->label,(unsigned long long)request->minimum_bytes,
+			SparkWeightdKvMinimumChunks(request),(unsigned long long)request->chunk_bytes,(unsigned long long)SparkWeightdKvLimit(server),(unsigned long long)server->config.kv_reserve_bytes,
 			server->config.kv_reserve_bytes == 0u ? "; weightd runs without --kv-reserve-bytes" : "");
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
@@ -3563,10 +3608,10 @@ static SparkStatus SparkWeightdKvPoolAdmit(SparkWeightdServer *server,SparkWeigh
 	pool->detached_ns = 0u;
 	connection->kv_pool_count++;
 	*slot_out = slot;
-	fprintf(stderr,"weightd kv pool attached label=%s generation=%llu reattached=%u bytes=%llu of %llu chunks=%u/%u chunk_bytes=%llu metadata_bytes=%llu kv_committed=%llu kv_reserve=%llu\n",
+	fprintf(stderr,"weightd kv pool attached label=%s generation=%llu reattached=%u bytes=%llu of %llu chunks=%u/%u chunk_bytes=%llu metadata_bytes=%llu kv_committed=%llu kv_reserve=%llu kv_limit=%llu\n",
 		pool->label,(unsigned long long)pool->generation,*reattached,(unsigned long long)(pool->chunk_bytes * pool->chunk_count),(unsigned long long)pool->requested_bytes,
 		pool->chunk_count,pool->chunk_capacity,(unsigned long long)pool->chunk_bytes,(unsigned long long)pool->metadata_bytes,(unsigned long long)server->kv_committed_bytes,
-		(unsigned long long)server->config.kv_reserve_bytes);
+		(unsigned long long)server->config.kv_reserve_bytes,(unsigned long long)SparkWeightdKvLimit(server));
 	return(SPARK_STATUS_OK);
 }
 
