@@ -27,7 +27,8 @@
  "drop_kv": "$HOME/sparkdata/swap/weightd_warm /tmp/spark_weightd.sock --drop-kv {label}",
  "ready_seconds": 300,
  "api_seconds": 120,
- "drain_seconds": 600, "drain_quiet_seconds": 15,
+ "drain_seconds": 600,
+ "drain_quiet_seconds": 15,
  "node_seconds": 240,
  "memory_probe": "awk '/MemAvailable/ {print $2 * 1024}' /proc/meminfo",
  "memory_margin_bytes": 6442450944,
@@ -66,7 +67,7 @@
    "node_start": "cd $HOME/k3-lanes/lane8/root && mkdir -p logs && if [ -f residentd.log ] && [ ! -L residentd.log ]; then mv residentd.log logs/residentd-before-{run_id}.log; fi && ln -sfn logs/residentd-{run_id}.log residentd.log && systemctl --user reset-failed sp-k3-rd8 2>/dev/null; systemd-run --user --unit=sp-k3-rd8 -p MemoryMax=16G -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$HOME/k3-lanes/lane8/root -E LD_LIBRARY_PATH=$HOME/k3-lanes/lane8/root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=/tmp/spark_weightd.sock -E SPARK_WEIGHTD_LANE=8 -E SPARK_TP_MESH_RANKS=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=99568941440 -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=32 bash -c 'exec ./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index {rank} > logs/residentd-{run_id}.log 2>&1' >/dev/null",
    "node_ready": "cd $HOME/k3-lanes/lane8/root; a=$(systemctl --user is-active sp-k3-rd8); if [ \"$a\" = active ] && grep -q 'model_residentd ready' logs/residentd-{run_id}.log 2>/dev/null; then echo READY; elif [ \"$a\" = active ] || [ \"$a\" = activating ]; then echo WAIT; else echo DEAD; fi",
    "node_stop": "systemctl --user stop sp-k3-rd8 2>/dev/null; systemctl --user reset-failed sp-k3-rd8 2>/dev/null; ! systemctl --user is-active -q sp-k3-rd8",
-   "node_warm": "cd $HOME/k3-lanes/lane8/root && P=$(ls ~/sparkdata/k3.mxfp4.tp16/packs/k3.stage0.rank*.pack | head -1) && H=$(cut -d' ' -f1 $P.sha256) && SPARK_WEIGHTD_EXPERT_POOL_BYTES=99568941440 ./bin/weightd_warm /tmp/spark_weightd.sock $P $H mxfp4 16 --family k3 93 896 3600 > warm.log 2>&1",
+   "node_warm": "cd $HOME/k3-lanes/lane8/root && P=$(ls $HOME/k3-lanes/lane8/root/packs/k3.stage0.rank*.pack | head -1) && H=$(head -c 64 packs/pack.sha256) && SPARK_WEIGHTD_EXPERT_POOL_BYTES=99568941440 ./bin/weightd_warm /tmp/spark_weightd.sock $P $H mxfp4 16 --family k3 93 896 3600 > warm.log 2>&1",
    "api_start": "systemctl --user reset-failed kv-k3-api 2>/dev/null; systemctl --user is-active -q kv-k3-api || systemd-run --user --unit=kv-k3-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/k3-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/k3-kv-api/runtime --port 8459 >> /srv/workspace/sparkpipe/logs/k3-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-k3-api 2>/dev/null; systemctl --user reset-failed kv-k3-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8459/health"

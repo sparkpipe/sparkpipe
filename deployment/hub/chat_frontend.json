@@ -362,7 +362,7 @@
    "id": "qwen3.8-flash",
    "model_dir": "models/qwen3.8-flash",
    "engine": "http://127.0.0.1:8465",
-   "context_tokens": 32768,
+   "context_tokens": 65536,
    "max_output_tokens": 32768,
    "sampling_defaults": {
     "temperature": 1.0,

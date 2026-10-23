@@ -662,8 +662,8 @@ Related common-code debt:
 - GLM Flash's shared batch scheduler already selects arbitrary counts up to
   its configured limit; a power-of-two kernel bucket is not an admission rule.
   The GLM deployments set active and resident capacity to 16 or less
-  (`deployment/glm5_next_tp16/model_resident.json`,
-  `deployment/glm53full_tp16_lane6/model_resident.json`), while the stage
+  (`deployment/glm5_next_tp16/model_resident.json` and the GLM records in
+  `deployment/lanes.json`), while the stage
   serving adapter allows up to `SPARK_STAGE_SERVING_MAX_LANES` (128). KV is
   paged from the weightd pool through `runtime/stage_kv_binding.c`, so a
   sequence no longer reserves its full context. Qualify explicit larger
