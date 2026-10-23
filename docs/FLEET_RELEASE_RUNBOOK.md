@@ -542,7 +542,7 @@ Each of these was paid for in an incident.
    instead. A 30.5 GB verifier livelocked in `mem_cgroup_handle_over_high` for
    hours (09-13 to 09-15). The user slice, where GLM serving also runs, is
    capped at MemoryHigh 100G and MemoryMax 108G
-   (`tools/devcycle/ds4_spark_brickproof.py:98-99`).
+   (`USER_SLICE` in `tools/devcycle/ds4_spark_brickproof.py`).
 10. Commit tool scripts with the exec bit (`git update-index --chmod=+x`). The
     agent restores `bin/*` modes itself (`:301`).
 11. `strings | grep -q` under `pipefail` exits 141 (SIGPIPE). Redirect to
@@ -553,9 +553,9 @@ Each of these was paid for in an incident.
     claim time, purpose; release right after the batch). Concurrent readers
     collapsed to kB/s (09-13 to 09-15: spark4 read at 64 KB/s); when one
     client crawls, dd-probe the candidates and move the read to an idle one
-    (spark5 read the same data in 69 s against spark4's 84 min). Whether Ceph
-    stays supported is an open question; see
-    [INCIDENT_RECOVERY_PLAYBOOK.md](INCIDENT_RECOVERY_PLAYBOOK.md).
+    (spark5 read the same data in 69 s against spark4's 84 min). Ceph runs under
+    cephadm on every node; the node policy is in
+    [NODE_BASELINE.md](NODE_BASELINE.md).
 13. Required configuration fails loudly: no silent fallbacks and no `#ifndef`
     defaults. Grade every claim MEASURED, DERIVED or ASSUMED, with its artifact
     (file, node, date, build sha).

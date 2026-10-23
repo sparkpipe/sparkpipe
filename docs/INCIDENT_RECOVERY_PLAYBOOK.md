@@ -134,7 +134,7 @@ The policy repairs and verifies:
 - `/lib/modules` trees and `dpkg -V` package integrity
 - initramfs rebuild for every managed kernel
 - root fleet key and initramfs Dropbear key
-- emergency root-only SSH on port 2222
+- emergency SSH on port 2222 for root and the `sparkemerg` account
 - canonical hostname `sparkN`, `/etc/ds4-node-rank`, and no Spark loopback alias
 - one generated `/etc/hosts` fleet block: `sparkN`/`sparkN-fabric` use switched
   100G and `sparkN-mgmt` uses the management network; obsolete `-ring`, `-200g`,
@@ -144,45 +144,36 @@ The policy repairs and verifies:
 - root fsck skipped during boot and handled by the post-boot health timer
 - bounded fabric, remote-storage, and firewall work
 - fabric services launched by timers, never as login-blocking boot dependencies
-- every Ceph service and target is stopped and persistently masked; SparkPipe's
-  former optional-storage timer and marker are removed
+- cephadm keeps running: the host package Ceph units are masked, the cluster
+  log directory is owned by uid 167, the mon/mgr/osd units are enabled, and units
+  without a daemon directory are disabled; SparkPipe's former optional-storage
+  timer and marker are removed
 - weekly filesystem trim has an unmasked service and an enabled timer
 - logrotate configuration is parsed during every fleet audit
-- 64 GiB swap, earlyoom, no-swap model cgroups, and a 108 GiB user/model ceiling
+- earlyoom `-m 3 -s 100 -r 5`, no-swap model cgroups, and a 108 GiB user/model ceiling
 - network recovery sysctls and required qdisc modules
 
-### Ceph quarantine
+### Ceph policy
 
-This playbook treats Ceph as unsupported. Before changing Ceph state, the
-controller fails closed on remote-storage configuration: a non-comment
-`/etc/ceph/rbdmap` entry, an `/etc/fstab` entry of type `nfs`, `nfs4`, `cifs`
-or `ceph` or with `_netdev`, a file under `/etc/iscsi/nodes`, or an
-`/etc/nvme/discovery.conf` entry (`tools/devcycle/ds4_spark_brickproof.py:676-693`).
-It does not inspect live mounts. A `ceph-fuse@` mount started by its unit
-passes the precheck and is then stopped and masked (`CEPH_MASK_UNITS`,
-`ds4_spark_brickproof.py:44-61`; `remove_ceph_startup`, `:617-649`). With the
-precheck clear, apply performs the complete quarantine:
+Ceph runs on every node under cephadm (owner decision). Before masking the
+optional boot units, the controller fails closed on remote-storage
+configuration: a non-comment `/etc/ceph/rbdmap` entry, an `/etc/fstab` entry of
+type `nfs`, `nfs4`, `cifs` or `ceph` or with `_netdev`, a file under
+`/etc/iscsi/nodes`, or an `/etc/nvme/discovery.conf` entry. Apply then:
 
-- stop every active `ceph*.service` and `ceph*.target`
-- remove all Ceph wants/requires links and Cephadm-generated unit definitions
-  from `/etc/systemd/system`
-- remove the legacy SparkPipe optional-storage service, timer, and selection
-  marker
-- mask the canonical package units and every discovered Ceph service/target
-- preserve `/var/lib/ceph`, `/etc/ceph`, OSD devices, and installed packages
+- masks the host package units (`CEPH_MASK_UNITS`); `ceph.target` and the
+  cluster's `ceph-<fsid>.target` stay enabled;
+- creates `/var/log/ceph/<fsid>` owned by 167:167 (cephadm does not start a
+  daemon without it);
+- enables the mon, mgr and osd units that have a daemon directory under
+  `/var/lib/ceph/<fsid>` and disables enabled units that have none;
+- retires `ceph-osd-retry.service` and the legacy optional-storage files to
+  `/var/backups/ds4-fleet`.
 
-The audit rejects any active Ceph unit, process, or labeled container, startup
-link, non-mask Ceph systemd artifact, unmasked Ceph unit, legacy marker, or
-obsolete SparkPipe optional-storage file. Re-enabling Ceph requires a separate
-tested design and deployment; it is not a fleet-recovery operation.
-
-**Open policy conflict.** Other current material uses Ceph at `/mnt/model-warm`
-as the pack source: the GLM 5.3 Flash contract (`source.path_on_sparks` in
-`model_contracts/glm53_flash_authoritative.json`) and the fleet runbook's
-warm-storage law ([FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md#9-laws)).
-spark0 had `/mnt/model-warm` mounted on 2026-09-28 (read-only check). Until the
-operator rules on Ceph, do not run stage 2 on a node that mounts
-`/mnt/model-warm` unless losing that mount is intended.
+`/var/lib/ceph`, `/etc/ceph`, the OSD devices and the packages are preserved.
+The audit rejects unmasked package units, a required daemon that is not enabled
+and active, an enabled daemon that is not active, a unit without state, a wrong
+log-directory owner, and any retired file still present.
 
 ## DMA guard
 
@@ -227,7 +218,8 @@ spark8 failed twice (2026-10-01, 2026-10-02) the same way:
 **After any node reboots**
 - Nothing SparkPipe-specific runs at boot (owner decision 2026-10-03). From the hub or the workstation, run `tools/fleet_post_reboot.sh HOST [HOST...]`. It checks, read-only:
   - the root superblock and kernel error lines since boot;
-  - that the DMA guard is armed and linger is on;
+  - that the DMA guard is armed in this boot, linger is on, and `multi-user.target` was reached;
+  - the wired uplink and its default route (rank 15 reaches the hub directly), the emergency port, earlyoom's arguments, fleet-agent safe mode and the GPU clock cap;
   - the fleet agent and the weightd owner process;
   - mesh readiness on all 16 nodes (`sparkpipe_mesh_status` where installed, else `.ready` and the last `WD-MESH-STATS` line);
   - that every peer is wired to the rebooted node's new mesh boot identity;
@@ -236,11 +228,8 @@ spark8 failed twice (2026-10-01, 2026-10-02) the same way:
 - The other nodes' weightd keep wiring to its old queue pair: `WD-WIRE-FAIL ... RTR failed errno=22`. Engines then fail with BUSY at collective attach.
 - Fix: stop the engines, then run `systemctl --user restart sparkpipe-weightd` on the surviving nodes (restarting `fleet-agent` no longer restarts weightd; it runs in its own unit). On every node, wait until `~/sparkdata/core/bin/sparkpipe_mesh_status --socket /tmp/spark_weightd.sock --wait-lane-peers 0xffff --timeout 300` exits 0, then start the engines. Exit 3 lists the ranks still missing.
 
-**IOMMU passthrough on the Lenovo nodes**
-- spark7, spark8 and spark9 boot with `iommu.passthrough=1`, from `/etc/default/grub.d/zz-spark-iommu-passthrough.cfg`. It sorts after the DGX OS `iommu.cfg`, and the kernel uses the last value.
-- The kernel then reports `Default domain type: Passthrough`. The CX-7, NVMe and USB groups are `identity`, and the GPU group stays `DMA`.
-- To revert, delete the file, run `update-grub` and reboot.
-- Passthrough lowers the Lenovo crash rate about 2x but does not stop the completion timeout. The investigation and every crash run are in [CX7_DMA_INVESTIGATION_2026-10.md](CX7_DMA_INVESTIGATION_2026-10.md).
+**IOMMU mode**
+- All 16 nodes run translated DMA (`iommu.passthrough=0`, `DMA-FQ` for the CX-7) since the Lenovo units left on 2026-10-20. spark7, spark8 and spark9 are NVIDIA DGX Spark Founders Edition units on kernel 7.0.0-1019. The Lenovo passthrough history is in [CX7_DMA_INVESTIGATION_2026-10.md](CX7_DMA_INVESTIGATION_2026-10.md).
 
 ## Fleet-duty acceptance
 

@@ -30,6 +30,9 @@ MANAGEMENT_GATEWAY = "10.20.0.1"
 MANAGEMENT_INTERFACE = "enP7s7"
 MANAGEMENT_NETMASK = "255.255.255.0"
 MANAGEMENT_PREFIX = "10.20.0"
+LAN_ADDRESS_BASE = 128
+LAN_PREFIX = "192.168.50"
+NODE_LAYOUT_SOURCE = "tools/spark_node_layout.json"
 MAX_SPARK_RANK = 15
 NODE_RANK_PATH = Path("/etc/ds4-node-rank")
 SWITCHED_ADDRESS_BASE = 10
@@ -42,8 +45,16 @@ MESH_LINK_MAP = "0-1:200,2-3:200,4-5:200,6-7:200,8-9:200,10-11:200,12-13:200,14-
 HOSTS_BLOCK_BEGIN = "# SparkPipe fleet aliases BEGIN"
 HOSTS_BLOCK_END = "# SparkPipe fleet aliases END"
 LEGACY_CEPH_WARM_STORAGE_MARKER = Path("/etc/sparkpipe/enable-ceph-warm-storage")
+HUB_GATEWAY_RANK = 15
+HUB_NOTIFY = "192.168.50.4:5514"
+NETWORK_MANAGER_RUNTIME = "/usr/local/sbin/ds4-switched-fabric-apply"
+DMA_GUARD_RUNTIME = "/usr/local/sbin/spark-dma-guard"
+CEPH_UID = 167
+CEPH_STATE_ROOT = Path("/var/lib/ceph")
+CEPH_LOG_ROOT = Path("/var/log/ceph")
+CEPH_DAEMON_PREFIXES = ("mon.","mgr.","osd.","mds.","crash.")
+CEPH_REQUIRED_DAEMON_PREFIXES = ("mon.","mgr.","osd.")
 CEPH_MASK_UNITS = (
-    "ceph.target",
     "ceph-crash.service",
     "ceph-fuse@.service",
     "ceph-mds.target",
@@ -64,17 +75,30 @@ OBSOLETE_CEPH_STARTUP_UNITS = (
     "ds4-optional-storage.service",
     "ds4-optional-storage.timer",
 )
-CEPH_PROCESS_PATTERN = re.compile(r"(?:^|[\s/])(?:ceph(?:-[a-z0-9_-]+)?|cephadm)(?:\s|$)")
 LEGACY_HOSTS_BLOCKS = {
     "# DS4 Spark aliases BEGIN":"# DS4 Spark aliases END",
     "# DS4 switched Spark aliases BEGIN":"# DS4 switched Spark aliases END",
     HOSTS_BLOCK_BEGIN:HOSTS_BLOCK_END,
 }
-SWAP_FILES = (("/swap.img",16), ("/swap-extra-16g.img",16), ("/swap-extra-32g.img",32))
 REQUIRED_KERNEL_MODULES = ("sch_fq_codel",)
+FLEET_TOOL_PACKAGES = ("iperf3","fio","ninja-build","gh","exfatprogs","python3.12-dev","libnng-dev","libmbedtls-dev","libexpat1-dev")
+OPTIONAL_BOOT_UNITS = (
+    "rbdmap.service","nvmf-autoconnect.service","open-iscsi.service","iscsid.service","srp_daemon.service","srptools.service",
+    "cloud-init.service","cloud-init-local.service","cloud-config.service","cloud-final.service","pollinate.service",
+    "nvidia-spark-run-apt-upgrade-once.service","systemd-networkd-wait-online.service","plymouth-quit-wait.service",
+)
+FABRIC_INTERFACES = ("enp1s0f0np0","enp1s0f1np1","enP2p1s0f0np0","enP2p1s0f1np1")
+UPLINK_PROFILE = "ds4-uplink-wired"
+UPLINK_GATEWAY = "192.168.50.1"
+UPLINK_METRIC = "10"
+MIN_MEMTOTAL_KB = 127000000
+NTP_SERVERS = ("192.168.50.4","10.10.250.2")
+CEPH_CLUSTER_FSID = "cd8715a1-47b9-4e4a-8d3c-2cddb02077d1"
+FIREWALL_RULESET = Path("/etc/spark-firewall.nft")
+DMA_GUARD_STATE = Path("/var/lib/spark-dma-guard/boots.json")
+RECOVERY_SETTINGS = {"kernel.panic":"60","kernel.softlockup_panic":"1","kernel.hung_task_panic":"1","vm.swappiness":"10"}
 KERNEL_MODULES_LOAD = "".join(f"{module}\n" for module in REQUIRED_KERNEL_MODULES)
 ASSET_SOURCES = {
-    "/etc/systemd/system/sparkpipe_model_residentd.service": ("tools/devcycle/sparkpipe_model_residentd.service",0o644),
     "/usr/local/bin/sparkpipe_fsck_health.sh": ("tools/devcycle/sparkpipe_fsck_health.sh",0o755),
     "/etc/systemd/system/sparkpipe-fsck-health.service": ("tools/devcycle/sparkpipe-fsck-health.service",0o644),
 }
@@ -94,18 +118,41 @@ ASSET_SOURCES.update({
     "/usr/local/sbin/ds4-direct-pair-fabric-apply": ("tools/devcycle/fleet/ds4_direct_pair_fabric_apply.sh",0o755),
     "/etc/systemd/system/sparkpipe-fsck-health.timer": ("tools/devcycle/fleet/sparkpipe-fsck-health.timer",0o644),
     "/etc/systemd/system/spark-firewall.service.d/10-ds4-timeout.conf": ("tools/devcycle/fleet/spark-firewall-timeout.conf",0o644),
+    "/etc/systemd/system/spark-firewall.service": ("tools/devcycle/fleet/spark-firewall.service",0o644),
+    DMA_GUARD_RUNTIME: ("tools/devcycle/spark_dma_guard.py",0o755),
+    "/usr/local/sbin/spark-osd-guard": ("tools/devcycle/fleet/spark_osd_guard.sh",0o755),
+    "/etc/systemd/system/spark-osd-guard@.service": ("tools/devcycle/fleet/spark-osd-guard@.service",0o644),
+    "/etc/systemd/system/spark-osd-guard-scan.service": ("tools/devcycle/fleet/spark-osd-guard-scan.service",0o644),
+    "/etc/systemd/system/spark-osd-guard-scan.timer": ("tools/devcycle/fleet/spark-osd-guard-scan.timer",0o644),
+    "/etc/udev/rules.d/71-spark-osd-guard.rules": ("tools/devcycle/fleet/71-spark-osd-guard.rules",0o644),
+    "/etc/udev/rules.d/95-ceph-osd-lvm.rules": ("tools/devcycle/fleet/95-ceph-osd-lvm.rules",0o644),
+    "/usr/local/sbin/ds4-ceph-warm": ("tools/devcycle/fleet/ds4_ceph_warm.sh",0o755),
+    "/etc/systemd/system/ds4-ceph-warm-mount.service": ("tools/devcycle/fleet/ds4-ceph-warm-mount.service",0o644),
+    "/etc/systemd/system/restart-resolved.service": ("tools/devcycle/fleet/restart-resolved.service",0o644),
+    "/etc/systemd/timesyncd.conf.d/sparkpipe-hub.conf": ("tools/devcycle/fleet/timesyncd-sparkpipe-hub.conf",0o644),
+    "/etc/systemd/system/sparkpipe-roce-qos.service": ("tools/fabric/sparkpipe-roce-qos.service",0o644),
+    "/usr/local/sbin/sparkpipe_roce_qos.sh": ("tools/fabric/sparkpipe_roce_qos.sh",0o755),
+    f"/etc/systemd/system/ceph-{CEPH_CLUSTER_FSID}.target.d/20-ds4-start-after-ssh.conf": ("tools/devcycle/fleet/ceph-cluster-start-after-ssh.conf",0o644),
+    f"/etc/systemd/system/ceph-{CEPH_CLUSTER_FSID}@.service.d/20-ds4-start-after-ssh.conf": ("tools/devcycle/fleet/ceph-daemon-start-after-ssh.conf",0o644),
 })
+LINKED_RANK_ASSET_SOURCES = {
+    "/etc/systemd/system/sparkpipe-hub-route.service": ("tools/devcycle/fleet/sparkpipe-hub-route.service",0o644),
+    "/etc/systemd/system/sparkpipe-hub-route.service.d/10-retry.conf": ("tools/devcycle/fleet/sparkpipe-hub-route-retry.conf",0o644),
+}
 USER_SLICE = """[Slice]
 MemoryHigh=100G
 MemoryMax=108G
 MemorySwapMax=0
 """
-EARLYOOM_DEFAULT = 'EARLYOOM_ARGS="-m 7 -s 25 -r 5 --avoid sshd|systemd|init"\n'
+EARLYOOM_ARGS = "-m 3 -s 100 -r 5 --avoid sshd|systemd|init"
+EARLYOOM_DEFAULT = f'EARLYOOM_ARGS="{EARLYOOM_ARGS}"\n'
 NO_THRASH_SYSCTL = "vm.swappiness=10\n"
 RECOVERY_SYSCTL = """kernel.panic=60
 kernel.softlockup_panic=1
 kernel.hung_task_panic=1
 """
+DIRTY_CAP_SYSCTL = "vm.dirty_bytes=4294967296\nvm.dirty_background_bytes=536870912\n"
+DIRTY_CAP_SETTINGS = {"vm.dirty_bytes":"4294967296","vm.dirty_background_bytes":"536870912"}
 SYSTEMD_RECOVERY = """[Manager]
 RuntimeWatchdogSec=10min
 RebootWatchdogSec=5min
@@ -119,7 +166,7 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 PubkeyAuthentication yes
 AuthorizedKeysFile .ssh/authorized_keys
-AllowUsers root
+AllowUsers root sparkemerg
 PidFile /run/sshd-spark-emergency.pid
 PrintMotd no
 UseDNS no
@@ -144,8 +191,8 @@ class BrickproofError(RuntimeError):
     pass
 
 
-def run(argv: list[str],input_bytes: bytes | None = None,timeout: int = 120,check: bool = True) -> subprocess.CompletedProcess[bytes]:
-    result = subprocess.run(argv,input=input_bytes,capture_output=True,timeout=timeout)
+def run(argv: list[str],input_bytes: bytes | None = None,timeout: int = 120,check: bool = True,env: dict[str,str] | None = None) -> subprocess.CompletedProcess[bytes]:
+    result = subprocess.run(argv,input=input_bytes,stdin=None if input_bytes is not None else subprocess.DEVNULL,capture_output=True,timeout=timeout,env=env)
     if check and result.returncode != 0:
         detail = (result.stderr or result.stdout).decode("utf-8",errors="replace").strip()
         raise BrickproofError(f"command failed ({result.returncode}): {' '.join(argv)}: {detail}")
@@ -340,7 +387,7 @@ def kernel_packages(kernel_release: str) -> tuple[str,...]:
 
 
 def required_packages(kernel_release: str) -> tuple[str,...]:
-    return("earlyoom","dropbear-initramfs","efibootmgr",*kernel_packages(kernel_release))
+    return("earlyoom","dropbear-initramfs","efibootmgr",*FLEET_TOOL_PACKAGES,*kernel_packages(kernel_release))
 
 
 def package_verification_lines(name: str) -> tuple[str,...]:
@@ -355,12 +402,13 @@ def install_packages() -> None:
         packages.extend(kernel_packages(release))
     packages = list(dict.fromkeys(packages))
     missing = [name for name in packages if not package_installed(name)]
+    environment = {**os.environ,"DEBIAN_FRONTEND":"noninteractive"}
     if missing:
-        run(["apt-get","install","-y",*missing],timeout=600)
+        run(["apt-get","install","-y","-o","Dpkg::Options::=--force-confdef","-o","Dpkg::Options::=--force-confold",*missing],timeout=900,env=environment)
     damaged = [name for release in kernel_releases() for name in kernel_packages(release) if package_verification_lines(name)]
     damaged = list(dict.fromkeys(damaged))
     if damaged:
-        run(["apt-get","install","--reinstall","-y",*damaged],timeout=600)
+        run(["apt-get","install","--reinstall","-y","-o","Dpkg::Options::=--force-confdef","-o","Dpkg::Options::=--force-confold",*damaged],timeout=900,env=environment)
 
 
 def rebuild_initramfs() -> None:
@@ -451,35 +499,6 @@ def install_node_identity(payload: dict[str,object]) -> bool:
     return(changed or hosts_changed or rank_changed)
 
 
-def ensure_swap_file(path_text: str,size_gib: int) -> None:
-    path = Path(path_text)
-    expected = size_gib * 1024 * 1024 * 1024
-    active = {line.split()[0] for line in Path("/proc/swaps").read_text().splitlines()[1:]}
-    if path.exists() and path.stat().st_size != expected:
-        raise BrickproofError(f"{path} has {path.stat().st_size} bytes, expected {expected}")
-    if not path.exists():
-        run(["fallocate","-l",f"{size_gib}G",path_text],timeout=600)
-        os.chmod(path,0o600)
-        run(["mkswap",path_text],timeout=120)
-    elif path_text not in active:
-        os.chmod(path,0o600)
-        run(["mkswap",path_text],timeout=120)
-    if path_text not in active:
-        run(["swapon",path_text],timeout=120)
-
-
-def ensure_swap() -> None:
-    for path,size_gib in SWAP_FILES:
-        ensure_swap_file(path,size_gib)
-    fstab_path = Path("/etc/fstab")
-    fstab = fstab_path.read_text()
-    fields = {line.split()[0] for line in fstab.splitlines() if line.strip() and not line.lstrip().startswith("#")}
-    additions = [f"{path} none swap sw 0 0" for path,_ in SWAP_FILES if path not in fields]
-    if additions:
-        suffix = "" if fstab.endswith("\n") else "\n"
-        atomic_write(fstab_path,f"{fstab}{suffix}" + "\n".join(additions) + "\n",0o644)
-
-
 def install_sshd_config() -> None:
     target = Path("/etc/ssh/sshd_config_spark_emergency")
     handle,temp_name = tempfile.mkstemp(prefix="sshd-spark-emergency.",dir="/etc/ssh")
@@ -508,9 +527,36 @@ def install_recovery_keys(public_key: str) -> bool:
     return(changed)
 
 
-def install_assets(payload: dict[str,object]) -> bool:
+def node_layout_roots(text: str) -> list[str]:
+    return(sorted(json.loads(text)["roots"].values()))
+
+
+def install_node_layout(node_id: str,roots: object,home_root: Path = Path("/home")) -> list[str]:
+    if not isinstance(roots,list) or not roots or any(not isinstance(root,str) or not re.fullmatch(r"[a-z][a-z0-9_]*",root) for root in roots):
+        raise BrickproofError(f"payload node layout roots are invalid: {roots!r}")
+    home = home_root / node_id
+    owner = home.stat()
+    created = []
+    for root in roots:
+        path = home / root
+        if path.exists() or path.is_symlink():
+            continue
+        path.mkdir(mode=0o775)
+        os.chown(path,owner.st_uid,owner.st_gid)
+        os.chmod(path,0o775)
+        created.append(str(path))
+    return(created)
+
+
+def heal_time_sync() -> bool:
+    if command(["timedatectl","show-timesync","-p","ServerName","--value"],check=False) in NTP_SERVERS:
+        return(False)
+    run(["systemctl","restart","systemd-timesyncd.service"])
+    return(True)
+
+
+def install_assets(assets: object) -> bool:
     changed = False
-    assets = payload["assets"]
     if not isinstance(assets,dict):
         raise BrickproofError("payload assets are invalid")
     for path_text,specification in assets.items():
@@ -572,43 +618,35 @@ def ceph_unit_file_states() -> dict[str,str]:
     return(states)
 
 
-def active_ceph_units() -> list[str]:
-    output = command([
-        "systemctl","list-units","--state=active","--no-legend",
-        "ceph*.service","ceph*.target",
-    ],check=False)
-    return(sorted({row.split()[0] for row in output.splitlines() if row.split()}))
-
-
-def active_ceph_processes() -> list[str]:
-    output = command(["ps","-eo","pid=,comm=,args="],check=False)
-    return(sorted(row.strip() for row in output.splitlines() if CEPH_PROCESS_PATTERN.search(row)))
-
-
-def active_ceph_containers() -> list[str]:
-    if shutil.which("podman") is None:
+def ceph_fsids(root: Path = CEPH_STATE_ROOT,systemd_root: Path = Path("/etc/systemd/system")) -> list[str]:
+    if not root.is_dir():
         return([])
-    output = command([
-        "podman","ps","--filter=label=ceph=True",
-        "--format={{.ID}}:{{.Names}}:{{.Status}}",
-    ])
-    return(sorted(row.strip() for row in output.splitlines() if row.strip()))
-
-
-def ceph_persistent_links(root: Path = Path("/etc/systemd/system")) -> list[Path]:
-    return(sorted(
-        path for path in root.rglob("ceph*")
-        if path.is_symlink() and path.parent.name.endswith((".wants",".requires"))
-    ))
-
-
-def ceph_startup_artifacts(root: Path = Path("/etc/systemd/system")) -> list[Path]:
-    artifacts = []
-    for path in root.glob("ceph*"):
-        if path.is_symlink() and path.readlink() == Path("/dev/null"):
+    pattern = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+    clusters = []
+    for path in sorted(root.iterdir()):
+        if not path.is_dir() or not pattern.fullmatch(path.name):
             continue
-        artifacts.append(path)
-    return(sorted(artifacts))
+        if (systemd_root / f"ceph-{path.name}.target").exists() or ceph_daemons(path.name,root):
+            clusters.append(path.name)
+    return(clusters)
+
+
+def ceph_enabled_instances(fsid: str,systemd_root: Path = Path("/etc/systemd/system")) -> list[str]:
+    prefix = f"ceph-{fsid}@"
+    names = set()
+    for kind in ("wants","requires"):
+        for link in systemd_root.glob(f"*.{kind}/{prefix}*.service"):
+            if link.is_symlink():
+                names.add(link.name[len(prefix):-len(".service")])
+    return(sorted(names))
+
+
+def ceph_daemons(fsid: str,root: Path = CEPH_STATE_ROOT) -> list[str]:
+    return(sorted(path.name for path in (root / fsid).iterdir() if path.is_dir() and path.name.startswith(CEPH_DAEMON_PREFIXES)))
+
+
+def ceph_stray_units(fsid: str,daemons: list[str],enabled: list[str]) -> list[str]:
+    return(sorted(f"ceph-{fsid}@{instance}.service" for instance in enabled if instance and instance not in daemons))
 
 
 def remove_path(path: Path) -> None:
@@ -618,53 +656,111 @@ def remove_path(path: Path) -> None:
         path.unlink()
 
 
+def retire_path(path: Path,backup_root: Path) -> bool:
+    if not (path.exists() or path.is_symlink()):
+        return(False)
+    target = backup_root / path.relative_to("/")
+    target.parent.mkdir(parents=True,exist_ok=True)
+    shutil.move(str(path),str(target))
+    return(True)
+
+
 def mask_unit_file(unit: str,root: Path = Path("/etc/systemd/system")) -> None:
     path = root / unit
+    if path.is_symlink() and path.readlink() == Path("/dev/null"):
+        return
     if path.exists() or path.is_symlink():
         path.unlink()
     path.symlink_to("/dev/null")
 
 
-def remove_ceph_startup(
-        configured: list[str],
+def stale_snap_units(root: Path = Path("/etc/systemd/system")) -> list[str]:
+    stale = []
+    for unit in sorted(root.glob("snap-*.mount")):
+        what = next((line.split("=",1)[1].strip() for line in read_optional(unit).splitlines() if line.startswith("What=")),"")
+        if what.startswith("/var/lib/snapd/snaps/") and not Path(what).exists():
+            stale.append(unit.name)
+    return(stale)
+
+
+def retire_stale_snap_units(root: Path = Path("/etc/systemd/system"),backup_root: Path | None = None) -> list[str]:
+    backup_root = backup_root or backup_directory()
+    retired = []
+    for name in stale_snap_units(root):
+        run(["systemctl","disable",name],check=False)
+        for link in sorted(root.glob(f"*.wants/{name}")) + sorted(root.glob(f"*.requires/{name}")):
+            retire_path(link,backup_root)
+        retire_path(root / name,backup_root)
+        retired.append(name)
+    if retired:
+        run(["systemctl","daemon-reload"])
+        run(["systemctl","reset-failed",*retired],check=False)
+    return(retired)
+
+
+def reset_vanished_failed_units() -> list[str]:
+    vanished = []
+    for line in command(["systemctl","list-units","--failed","--all","--plain","--no-legend"],check=False).splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[1] == "not-found":
+            vanished.append(fields[0])
+    if vanished:
+        run(["systemctl","reset-failed",*vanished],check=False)
+    return(vanished)
+
+
+def retired_paths(systemd_root: Path = Path("/etc/systemd/system")) -> list[Path]:
+    return([systemd_root / "ceph-osd-retry.service",Path("/usr/local/sbin/ceph-osd-retry-start")])
+
+
+def backup_directory() -> Path:
+    return(Path("/var/backups/ds4-fleet") / datetime.datetime.now(datetime.timezone.utc).strftime("brickproof-%Y%m%dT%H%M%SZ"))
+
+
+def install_ceph_policy(
         systemd_root: Path = Path("/etc/systemd/system"),
-        marker: Path = LEGACY_CEPH_WARM_STORAGE_MARKER) -> None:
-    if configured:
-        raise BrickproofError(f"remote storage configuration exists; refusing to stop Ceph: {configured}")
+        state_root: Path = CEPH_STATE_ROOT,
+        log_root: Path = CEPH_LOG_ROOT,
+        marker: Path = LEGACY_CEPH_WARM_STORAGE_MARKER,
+        backup_root: Path | None = None) -> list[str]:
+    backup_root = backup_root or backup_directory()
+    changes = []
     if marker.exists():
         marker.unlink()
-    active = active_ceph_units()
-    units = sorted(set(CEPH_MASK_UNITS) | set(ceph_unit_file_states()) | set(active))
-    for unit in units + list(OBSOLETE_CEPH_STARTUP_UNITS):
-        disable_persistent_unit(unit)
-    for path in ceph_persistent_links(systemd_root):
-        path.unlink()
+        changes.append(f"removed {marker}")
     for unit in OBSOLETE_CEPH_STARTUP_UNITS:
-        remove_path(systemd_root / unit)
-    for path in systemd_root.glob("ceph*"):
-        remove_path(path)
-    for unit in units:
+        disable_persistent_unit(unit)
+        if retire_path(systemd_root / unit,backup_root):
+            changes.append(f"retired {unit}")
+    disable_persistent_unit("ceph-osd-retry.service")
+    for path in retired_paths(systemd_root):
+        if retire_path(path,backup_root):
+            changes.append(f"retired {path}")
+    for unit in CEPH_MASK_UNITS:
         mask_unit_file(unit,systemd_root)
     run(["systemctl","daemon-reload"])
-    if active:
-        run(["systemctl","stop",*active],timeout=180)
-    remaining = active_ceph_units()
-    if remaining:
-        raise BrickproofError(f"Ceph units remained active after stop: {remaining}")
-    processes = active_ceph_processes()
-    if processes:
-        raise BrickproofError(f"Ceph processes remained after stop: {processes}")
-    containers = active_ceph_containers()
-    if containers:
-        raise BrickproofError(f"Ceph containers remained after stop: {containers}")
-    run(["systemctl","reset-failed","ceph*.service","ceph*.target"],check=False)
+    run(["systemctl","reset-failed","ceph-osd-retry.service",*OBSOLETE_CEPH_STARTUP_UNITS],check=False)
+    for fsid in ceph_fsids(state_root,systemd_root):
+        log_dir = log_root / fsid
+        log_dir.mkdir(parents=True,exist_ok=True)
+        os.chown(log_dir,CEPH_UID,CEPH_UID)
+        os.chmod(log_dir,0o770)
+        daemons = ceph_daemons(fsid,state_root)
+        for unit in ceph_stray_units(fsid,daemons,ceph_enabled_instances(fsid,systemd_root)):
+            disable_persistent_unit(unit)
+            changes.append(f"disabled stray {unit}")
+        required = [f"ceph-{fsid}@{daemon}.service" for daemon in daemons if daemon.startswith(CEPH_REQUIRED_DAEMON_PREFIXES)]
+        run(["systemctl","enable","ceph.target",f"ceph-{fsid}.target",*required])
+    return(changes)
 
 
-def enable_policy_services(rank: int) -> None:
+def enable_policy_services(rank: int,node_id: str = "") -> None:
     run(["systemctl","daemon-reload"])
     run(["sysctl","--system"],timeout=180)
+    run(["udevadm","control","--reload"])
     run(["systemctl","enable","earlyoom.service"])
     run(["systemctl","restart","earlyoom.service"])
+    run(["systemctl","enable","ssh.service"])
     run(["systemctl","enable","ssh-emergency.service"])
     run(["systemctl","restart","ssh-emergency.service"])
     disable_persistent_unit("sparkpipe-fsck-health.service")
@@ -677,8 +773,16 @@ def enable_policy_services(rank: int) -> None:
         run(["systemctl","enable","--now","ds4-direct-pair-fabric.timer"])
     else:
         run(["systemctl","disable","--now","ds4-direct-pair-fabric.timer"])
-    disable_persistent_unit("sparkpipe_model_residentd.service")
-    run(["systemctl","reset-failed","sparkpipe_model_residentd.service"],check=False)
+    if rank == HUB_GATEWAY_RANK:
+        disable_persistent_unit("sparkpipe-hub-route.service")
+    else:
+        run(["systemctl","enable","sparkpipe-hub-route.service"])
+    run(["systemctl","enable","spark-firewall.service"])
+    run(["systemctl","enable","--now","spark-osd-guard-scan.timer"])
+    run(["systemctl","enable","restart-resolved.service","ds4-ceph-warm-mount.service","sparkpipe-roce-qos.service"])
+    if node_id:
+        run(["loginctl","enable-linger",node_id])
+    run(["systemctl","restart","systemd-timesyncd.service"])
     run(["systemctl","unmask","fstrim.service"])
     run(["systemctl","enable","--now","fstrim.timer"])
     run(["systemctl","reset-failed","fstrim.service","fstrim.timer"],check=False)
@@ -711,11 +815,7 @@ def decouple_optional_boot_work() -> None:
     configured = has_configured_remote_storage()
     if configured:
         raise BrickproofError(f"remote storage configuration exists; refusing to mask initiators: {configured}")
-    remove_ceph_startup(configured)
-    for unit in ("rbdmap.service","nvmf-autoconnect.service","open-iscsi.service","iscsid.service","srp_daemon.service"):
-        run(["systemctl","disable",unit],check=False)
-        run(["systemctl","mask",unit],check=False)
-    for unit in ("cloud-init.service","cloud-init-local.service","cloud-config.service","cloud-final.service","pollinate.service","nvidia-spark-run-apt-upgrade-once.service","systemd-networkd-wait-online.service"):
+    for unit in OPTIONAL_BOOT_UNITS:
         run(["systemctl","disable",unit],check=False)
         run(["systemctl","mask",unit],check=False)
     atomic_write(Path("/etc/cloud/cloud-init.disabled"),"commissioned by ds4_spark_brickproof\n",0o644)
@@ -725,24 +825,29 @@ def remote_apply(payload_path: Path) -> dict[str,object]:
     if os.geteuid() != 0:
         raise BrickproofError("remote apply must run as root")
     payload = json.loads(payload_path.read_text())
+    if not FIREWALL_RULESET.is_file():
+        raise BrickproofError(f"{FIREWALL_RULESET} is missing; place the host firewall ruleset from the private coordination store before apply")
     memory_current = int(command(["systemctl","show","user-1000.slice","-p","MemoryCurrent","--value"]) or "0")
     if memory_current >= 108 * 1024 * 1024 * 1024:
         raise BrickproofError(f"user-1000.slice already uses {memory_current} bytes; refusing a 108G cap")
     install_packages()
     install_required_kernel_modules()
     identity_changed = install_node_identity(payload)
-    ensure_swap()
-    install_assets(payload)
+    rank = spark_rank(str(payload["recovery_network"]["node_id"]))
+    install_assets(payload["assets"])
+    if rank != HUB_GATEWAY_RANK:
+        install_assets(payload["linked_rank_assets"])
+    layout_created = install_node_layout(str(payload["recovery_network"]["node_id"]),payload["node_layout_roots"])
+    time_sync_restarted = heal_time_sync()
+    run([NETWORK_MANAGER_RUNTIME,"--network-manager"],timeout=120)
     atomic_write(Path("/etc/systemd/system/user-1000.slice.d/20-ds4-brickproof.conf"),USER_SLICE,0o644)
     atomic_write(Path("/etc/default/earlyoom"),EARLYOOM_DEFAULT,0o644)
     atomic_write(Path("/etc/sysctl.d/90-sparkpipe-no-thrash.conf"),NO_THRASH_SYSCTL,0o644)
     atomic_write(Path("/etc/sysctl.d/99-spark-recovery.conf"),RECOVERY_SYSCTL,0o644)
+    atomic_write(Path("/etc/sysctl.d/99-dirty-cap.conf"),DIRTY_CAP_SYSCTL,0o644)
     atomic_write(Path("/etc/systemd/system.conf.d/90-ds4-recovery.conf"),SYSTEMD_RECOVERY,0o644)
     install_sshd_config()
     atomic_write(Path("/etc/systemd/system/ssh-emergency.service"),EMERGENCY_SSH_SERVICE,0o644)
-    obsolete = Path("/etc/systemd/system/sparkpipe_model_residentd.service.d/10-oom-guardrails.conf")
-    if obsolete.exists():
-        obsolete.unlink()
     for unit in ("ds4-switched-fabric.service","ds4-direct-pair-fabric.service"):
         legacy_timeout = Path(f"/etc/systemd/system/{unit}.d/10-boot-timeout.conf")
         if legacy_timeout.exists():
@@ -752,9 +857,12 @@ def remote_apply(payload_path: Path) -> dict[str,object]:
     efi_boot_order_changed = install_efi_boot_order()
     rebuild_initramfs()
     decouple_optional_boot_work()
-    enable_policy_services(spark_rank(str(payload["recovery_network"]["node_id"])))
+    ceph_changes = install_ceph_policy()
+    snap_units_retired = retire_stale_snap_units() + reset_vanished_failed_units()
+    enable_policy_services(rank,str(payload["recovery_network"]["node_id"]))
+    run([DMA_GUARD_RUNTIME,"install","--notify",HUB_NOTIFY],timeout=120)
     run(["systemctl","start","logrotate.service"])
-    return({"efi_boot_order_changed":efi_boot_order_changed,"grub_changed":grub_changed,"identity_changed":identity_changed,"keys_changed":keys_changed,"memory_current_before":memory_current,"source_commit":payload["source_commit"]})
+    return({"ceph_changes":ceph_changes,"layout_created":layout_created,"snap_units_retired":snap_units_retired,"time_sync_restarted":time_sync_restarted,"efi_boot_order_changed":efi_boot_order_changed,"grub_changed":grub_changed,"identity_changed":identity_changed,"keys_changed":keys_changed,"memory_current_before":memory_current,"source_commit":payload["source_commit"]})
 
 
 def read_optional(path: Path) -> str:
@@ -792,12 +900,6 @@ def audit_fleet_hardware(node_id: str) -> tuple[list[str],dict[str,object]]:
     observations["gpu"] = gpu.stdout.decode("utf-8",errors="replace").strip()
     if gpu.returncode != 0 or not str(observations["gpu"]).startswith("NVIDIA GB10,"):
         failures.append("gpu-unhealthy")
-    extnvme = Path("/home") / node_id / "extnvme"
-    stat_result = run(["timeout","15","stat",str(extnvme)],check=False)
-    mount = command(["findmnt","-rn","-T",str(extnvme),"-o","TARGET,SOURCE,FSTYPE,OPTIONS"],check=False)
-    observations["extnvme"] = mount
-    if stat_result.returncode != 0 or not mount or "rw" not in mount.split()[-1].split(","):
-        failures.append("extnvme-not-mounted-rw")
     tailscale = run(["tailscale","status","--json"],timeout=30,check=False)
     try:
         status = json.loads(tailscale.stdout.decode("utf-8"))
@@ -816,17 +918,86 @@ def audit_fleet_hardware(node_id: str) -> tuple[list[str],dict[str,object]]:
     return(failures,observations)
 
 
+def nm_sections(config: str) -> dict[str,dict[str,str]]:
+    sections: dict[str,dict[str,str]] = {}
+    current = None
+    for raw in config.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current = line[1:-1]
+            sections.setdefault(current,{})
+        elif current is not None and "=" in line:
+            key,value = line.split("=",1)
+            sections[current][key.strip()] = value.strip()
+    return(sections)
+
+
+def unmanaged_interfaces(config: str) -> set[str]:
+    devices = nm_sections(config).get("keyfile",{}).get("unmanaged-devices","")
+    return({spec.split(":",1)[1] for spec in (item.strip() for item in devices.split(";")) if spec.startswith("interface-name:")})
+
+
+def uplink_assume_disabled(config: str) -> bool:
+    for name,values in nm_sections(config).items():
+        matches = [item.strip() for item in values.get("match-device","").split(",")]
+        if name.startswith("device") and f"interface-name:{MANAGEMENT_INTERFACE}" in matches and values.get("keep-configuration") == "no":
+            return(True)
+    return(False)
+
+
+def hosts_entries(text: str) -> set[tuple[str,tuple[str,...]]]:
+    entries = set()
+    for line in text.splitlines():
+        fields = line.split("#",1)[0].split()
+        if len(fields) >= 2:
+            entries.add((fields[0],tuple(sorted(fields[1:]))))
+    return(entries)
+
+
+def uplink_default_route_present(default_routes: list[str]) -> bool:
+    for line in default_routes:
+        tokens = line.split()
+        if tokens[:5] == ["default","via",UPLINK_GATEWAY,"dev",MANAGEMENT_INTERFACE] and "metric" in tokens[:-1] and tokens[tokens.index("metric") + 1] == UPLINK_METRIC:
+            return(True)
+    return(False)
+
+
+def dma_guard_mode(state_path: Path = DMA_GUARD_STATE) -> str:
+    starts = re.findall(r"event=start mode=([a-z-]+)",command(["journalctl","-b","-u","spark-dma-guard.service","-o","cat","--no-pager"],check=False))
+    if starts:
+        return(starts[-1])
+    boot_id = read_optional(Path("/proc/sys/kernel/random/boot_id")).strip()
+    try:
+        boots = json.loads(state_path.read_text()).get("boots",[])
+    except (OSError,json.JSONDecodeError):
+        return("")
+    current = [boot for boot in boots if boot.get("id") == boot_id]
+    return("armed" if current and current[-1].get("armed") is True else "")
+
+
+def asset_drift(assets: dict[str,dict[str,object]]) -> list[str]:
+    drifted = []
+    for path_text,specification in sorted(assets.items()):
+        path = Path(path_text)
+        try:
+            same = path.read_bytes() == str(specification["text"]).encode("utf-8") and (path.stat().st_mode & 0o777) == int(specification["mode"])
+        except OSError:
+            same = False
+        if not same:
+            drifted.append(path_text)
+    return(drifted)
+
+
 def remote_audit(payload_path: Path) -> dict[str,object]:
     payload = json.loads(payload_path.read_text())
     public_key = str(payload["fleet_public_key"])
     failures = []
     observations: dict[str,object] = {}
     required_module_state: dict[str,object] = {}
-    swaps = Path("/proc/swaps").read_text()
-    swap_bytes = sum(int(line.split()[2]) * 1024 for line in swaps.splitlines()[1:] if len(line.split()) >= 3)
-    observations["swap_bytes"] = swap_bytes
-    if swap_bytes < 63 * 1024 * 1024 * 1024:
-        failures.append("swap<63GiB")
+    node_id = str(payload["recovery_network"]["node_id"])
+    rank = spark_rank(node_id)
     observations["swappiness"] = command(["sysctl","-n","vm.swappiness"],check=False)
     observations["panic"] = command(["sysctl","-n","kernel.panic"],check=False)
     running_kernel = os.uname().release
@@ -870,19 +1041,25 @@ def remote_audit(payload_path: Path) -> dict[str,object]:
     if observations["default_qdisc"] != "fq_codel":
         failures.append(f"default-qdisc:{observations['default_qdisc']}")
     observations["earlyoom_process"] = command(["pgrep","-af","earlyoom"],check=False)
-    if "-m 7 -s 25 -r 5" not in str(observations["earlyoom_process"]):
+    if not str(observations["earlyoom_process"]).endswith(EARLYOOM_ARGS):
         failures.append("earlyoom-runtime-args")
     for unit in ("earlyoom.service","ssh-emergency.service"):
         state = service_value(unit,"ActiveState")
         observations[f"{unit}.active"] = state
         if state != "active":
             failures.append(f"{unit}:{state}")
-    for unit in ("serial-getty@ttyS0.service","sparkpipe-fsck-health.timer","ds4-switched-fabric.timer","ds4-direct-pair-fabric.timer"):
+    expected_unit_states = {unit:"enabled" for unit in (
+        "serial-getty@ttyS0.service","sparkpipe-fsck-health.timer","ds4-switched-fabric.timer","ds4-direct-pair-fabric.timer",
+        "ssh.service","spark-dma-guard.timer","spark-osd-guard-scan.timer","restart-resolved.service","ds4-ceph-warm-mount.service",
+        "sparkpipe-hub-route.service",
+    )}
+    if not direct_pair_linked(rank):
+        expected_unit_states["ds4-direct-pair-fabric.timer"] = "disabled"
+    if rank == HUB_GATEWAY_RANK:
+        del expected_unit_states["sparkpipe-hub-route.service"]
+    for unit,expected in expected_unit_states.items():
         state = is_enabled(unit)
         observations[f"{unit}.enabled"] = state
-        expected = "enabled"
-        if unit == "ds4-direct-pair-fabric.timer" and not direct_pair_linked(spark_rank(str(payload["recovery_network"]["node_id"]))):
-            expected = "disabled"
         if state != expected:
             failures.append(f"{unit}:not-{expected}")
     fstrim_service = is_enabled("fstrim.service")
@@ -895,7 +1072,7 @@ def remote_audit(payload_path: Path) -> dict[str,object]:
         failures.append(f"fstrim.timer:{fstrim_timer}")
     cmdline_tokens = shlex.split(read_optional(Path("/proc/cmdline")))
     runtime_masks = {token.split("=",1)[1] for token in cmdline_tokens if token.startswith("systemd.mask=")}
-    for unit in ("ds4-switched-fabric.service","ds4-direct-pair-fabric.service","sparkpipe-fsck-health.service","sparkpipe_model_residentd.service"):
+    for unit in ("ds4-switched-fabric.service","ds4-direct-pair-fabric.service","sparkpipe-fsck-health.service"):
         state = is_enabled(unit)
         links = [str(path) for path in persistent_unit_links(unit)]
         observations[f"{unit}.enabled"] = state
@@ -905,7 +1082,7 @@ def remote_audit(payload_path: Path) -> dict[str,object]:
             failures.append(f"boot-critical-link:{unit}={state}")
         if links:
             failures.append(f"boot-critical-links:{unit}")
-    for unit in ("rbdmap.service","nvmf-autoconnect.service","open-iscsi.service","iscsid.service","srp_daemon.service","cloud-init.service","cloud-init-local.service","cloud-config.service","cloud-final.service","pollinate.service","nvidia-spark-run-apt-upgrade-once.service","systemd-networkd-wait-online.service"):
+    for unit in OPTIONAL_BOOT_UNITS:
         state = is_enabled(unit)
         observations[f"{unit}.enabled"] = state
         if state != "masked":
@@ -927,18 +1104,11 @@ def remote_audit(payload_path: Path) -> dict[str,object]:
     if firewall_timeout not in ("15s","15sec"):
         failures.append(f"spark-firewall-timeout={firewall_timeout}")
     expected_limits = {"MemoryHigh":str(100 * 1024**3),"MemoryMax":str(108 * 1024**3),"MemorySwapMax":"0"}
-    for unit in ("user-1000.slice","sparkpipe_model_residentd.service"):
-        for property_name,expected in expected_limits.items():
-            value = service_value(unit,property_name)
-            observations[f"{unit}.{property_name}"] = value
-            if value != expected:
-                failures.append(f"{unit}.{property_name}={value}")
-    watchdog = service_value("sparkpipe_model_residentd.service","WatchdogUSec")
-    observations["resident_watchdog"] = watchdog
-    if watchdog not in ("0","0us","infinity"):
-        failures.append(f"resident-watchdog={watchdog}")
-    if Path("/etc/systemd/system/sparkpipe_model_residentd.service.d/10-oom-guardrails.conf").exists():
-        failures.append("obsolete-resident-dropin")
+    for property_name,expected in expected_limits.items():
+        value = service_value("user-1000.slice",property_name)
+        observations[f"user-1000.slice.{property_name}"] = value
+        if value != expected:
+            failures.append(f"user-1000.slice.{property_name}={value}")
     key_id = " ".join(public_key.split()[:2])
     for path in (Path("/root/.ssh/authorized_keys"),Path("/etc/dropbear/initramfs/authorized_keys")):
         key_text = read_optional(path)
@@ -993,7 +1163,7 @@ def remote_audit(payload_path: Path) -> dict[str,object]:
     if observations["node_rank"] != expected_rank:
         failures.append(f"node-rank:{observations['node_rank']}")
     hosts = read_optional(Path("/etc/hosts"))
-    if hosts != canonical_hosts(hosts,{str(payload["recovery_network"]["node_id"])}):
+    if hosts_entries(hosts) != hosts_entries(canonical_hosts(hosts,{node_id})):
         failures.append("hosts-loopback-alias")
     observations["kernel"] = command(["uname","-r"],check=False)
     observations["system_state"] = command(["systemctl","is-system-running"],check=False)
@@ -1009,48 +1179,97 @@ def remote_audit(payload_path: Path) -> dict[str,object]:
     observations["logrotate_config_rc"] = logrotate.returncode
     if logrotate.returncode != 0:
         failures.append("logrotate-config")
+    observations["default_target"] = command(["systemctl","get-default"],check=False)
+    if observations["default_target"] != "multi-user.target":
+        failures.append(f"default-target:{observations['default_target']}")
+    observations["dma_guard"] = {"active":service_value("spark-dma-guard.service","ActiveState"),"mode":dma_guard_mode()}
+    if observations["dma_guard"] != {"active":"active","mode":"armed"}:
+        failures.append(f"dma-guard:{observations['dma_guard']['active']}:{observations['dma_guard']['mode'] or 'no-start'}")
+    expected_assets = dict(payload["assets"])
+    if rank != HUB_GATEWAY_RANK:
+        expected_assets.update(payload["linked_rank_assets"])
+    drifted = asset_drift(expected_assets)
+    observations["asset_drift"] = drifted
+    failures.extend(f"asset-drift:{path}" for path in drifted)
+    network_manager = command(["NetworkManager","--print-config"],check=False)
+    missing_unmanaged = sorted(set(FABRIC_INTERFACES) - unmanaged_interfaces(network_manager))
+    observations["networkmanager_managed_fabric"] = missing_unmanaged
+    if missing_unmanaged:
+        failures.append("fabric-managed:" + ",".join(missing_unmanaged))
+    if not uplink_assume_disabled(network_manager):
+        failures.append("uplink-assume-enabled")
+    active_profiles = command(["nmcli","-t","-f","NAME,DEVICE","connection","show","--active"],check=False).splitlines()
+    default_routes = command(["ip","-4","route","show","default"],check=False).splitlines()
+    observations["default_routes"] = default_routes
+    if rank != HUB_GATEWAY_RANK and f"{UPLINK_PROFILE}:{MANAGEMENT_INTERFACE}" not in active_profiles:
+        failures.append("uplink-profile-inactive")
+    if rank != HUB_GATEWAY_RANK and not uplink_default_route_present(default_routes):
+        failures.append("uplink-default-route")
+    stale_snaps = stale_snap_units()
+    observations["stale_snap_units"] = stale_snaps
+    failures.extend(f"stale-snap-unit:{unit}" for unit in stale_snaps)
+    memtotal = int(next((line.split()[1] for line in read_optional(Path("/proc/meminfo")).splitlines() if line.startswith("MemTotal:")),"0"))
+    observations["memtotal_kb"] = memtotal
+    if memtotal < MIN_MEMTOTAL_KB:
+        failures.append(f"firmware-carveout:{memtotal}")
+    observations["ntp"] = [command(["timedatectl","show-timesync","-p","ServerName","--value"],check=False),command(["timedatectl","show","-p","NTPSynchronized","--value"],check=False)]
+    if observations["ntp"][0] not in NTP_SERVERS or observations["ntp"][1] != "yes":
+        failures.append(f"ntp:{observations['ntp'][0] or 'none'}:{observations['ntp'][1]}")
+    observations["watchdog"] = [command(["systemctl","show","-p",name,"--value"],check=False) for name in ("RuntimeWatchdogUSec","RebootWatchdogUSec")]
+    if observations["watchdog"] != ["10min","5min"]:
+        failures.append(f"systemd-watchdog:{observations['watchdog'][0]}:{observations['watchdog'][1]}")
+    for key,expected in {**RECOVERY_SETTINGS,**DIRTY_CAP_SETTINGS}.items():
+        value = command(["sysctl","-n",key],check=False)
+        if value != expected:
+            failures.append(f"sysctl:{key}={value}")
+    failures.extend(f"missing-package:{name}" for name in FLEET_TOOL_PACKAGES if not package_installed(name))
+    if not FIREWALL_RULESET.is_file():
+        failures.append(f"firewall-ruleset-missing:{FIREWALL_RULESET}")
+    for unit in ("spark-firewall.service","sparkpipe-roce-qos.service"):
+        state = (is_enabled(unit),service_value(unit,"ActiveState"))
+        if state != ("enabled","active"):
+            failures.append(f"{unit}:{state[0]}:{state[1]}")
+    observations["linger"] = command(["loginctl","show-user",node_id,"-p","Linger","--value"],check=False)
+    if observations["linger"] != "yes":
+        failures.append(f"linger:{observations['linger'] or 'none'}")
     ceph_states = ceph_unit_file_states()
-    ceph_active = active_ceph_units()
-    ceph_processes = active_ceph_processes()
-    ceph_containers = active_ceph_containers()
-    ceph_links = [str(path) for path in ceph_persistent_links()]
-    ceph_artifacts = [str(path) for path in ceph_startup_artifacts()]
     observations["ceph_unit_states"] = ceph_states
-    observations["ceph_active_units"] = ceph_active
-    observations["ceph_active_processes"] = ceph_processes
-    observations["ceph_active_containers"] = ceph_containers
-    observations["ceph_startup_links"] = ceph_links
-    observations["ceph_startup_artifacts"] = ceph_artifacts
-    observations["ceph_legacy_marker"] = LEGACY_CEPH_WARM_STORAGE_MARKER.exists()
-    observations["ceph_obsolete_startup_files"] = [
-        unit for unit in OBSOLETE_CEPH_STARTUP_UNITS
-        if ((Path("/etc/systemd/system") / unit).exists() or
-            (Path("/etc/systemd/system") / unit).is_symlink())
-    ]
-    not_masked = sorted(unit for unit,state in ceph_states.items() if state != "masked")
-    missing_masks = sorted(unit for unit in CEPH_MASK_UNITS if ceph_states.get(unit) != "masked")
-    if ceph_active:
-        failures.append("ceph-active:" + ",".join(ceph_active))
-    if ceph_processes:
-        failures.append("ceph-processes:" + ",".join(ceph_processes))
-    if ceph_containers:
-        failures.append("ceph-containers:" + ",".join(ceph_containers))
-    if ceph_links:
-        failures.append("ceph-startup-links:" + ",".join(ceph_links))
-    if ceph_artifacts:
-        failures.append("ceph-startup-artifacts:" + ",".join(ceph_artifacts))
-    if not_masked:
-        failures.append("ceph-unmasked:" + ",".join(not_masked))
-    if missing_masks:
-        failures.append("ceph-missing-masks:" + ",".join(missing_masks))
-    if observations["ceph_legacy_marker"]:
-        failures.append("ceph-legacy-marker")
-    if observations["ceph_obsolete_startup_files"]:
-        failures.append("ceph-obsolete-startup-files")
+    unmasked = sorted(unit for unit in CEPH_MASK_UNITS if ceph_states.get(unit) != "masked")
+    if unmasked:
+        failures.append("ceph-package-units-unmasked:" + ",".join(unmasked))
+    if ceph_states.get("ceph.target") != "enabled":
+        failures.append(f"ceph.target:{ceph_states.get('ceph.target','missing')}")
+    for fsid in ceph_fsids():
+        daemons = ceph_daemons(fsid)
+        enabled_instances = ceph_enabled_instances(fsid)
+        observations[f"ceph:{fsid}"] = daemons
+        if ceph_states.get(f"ceph-{fsid}.target") != "enabled":
+            failures.append(f"ceph-{fsid}.target:{ceph_states.get(f'ceph-{fsid}.target','missing')}")
+        for daemon in daemons:
+            unit = f"ceph-{fsid}@{daemon}.service"
+            state = (is_enabled(unit),service_value(unit,"ActiveState"))
+            required = daemon.startswith(CEPH_REQUIRED_DAEMON_PREFIXES)
+            if (required and state != ("enabled","active")) or (state[0] == "enabled" and state[1] != "active"):
+                failures.append(f"ceph-daemon:{daemon}:{state[0]}:{state[1]}")
+        failures.extend(f"ceph-stray-unit:{unit}" for unit in ceph_stray_units(fsid,daemons,enabled_instances))
+        log_dir = CEPH_LOG_ROOT / fsid
+        owner = f"{log_dir.stat().st_uid}:{log_dir.stat().st_gid}" if log_dir.is_dir() else "missing"
+        if owner != f"{CEPH_UID}:{CEPH_UID}":
+            failures.append(f"ceph-log-dir:{owner}")
+    for path in (*retired_paths(),*(Path("/etc/systemd/system") / unit for unit in OBSOLETE_CEPH_STARTUP_UNITS),LEGACY_CEPH_WARM_STORAGE_MARKER):
+        if path.exists() or path.is_symlink():
+            failures.append(f"retired-path-present:{path}")
     hardware_failures,hardware_observations = audit_fleet_hardware(
         str(payload["recovery_network"]["node_id"]))
     failures.extend(hardware_failures)
     observations.update(hardware_observations)
+    for root in payload["node_layout_roots"]:
+        path = Path("/home") / str(payload["recovery_network"]["node_id"]) / str(root)
+        stat_result = run(["timeout","15","stat",str(path)],check=False)
+        mount = command(["findmnt","-rn","-T",str(path),"-o","TARGET,SOURCE,FSTYPE,OPTIONS"],check=False)
+        observations[f"layout:{root}"] = mount
+        if stat_result.returncode != 0 or not mount or "rw" not in mount.split()[-1].split(","):
+            failures.append(f"layout-root-not-writable:{root}")
     health_path = Path("/var/lib/sparkpipe/fsck-health/last.json")
     if health_path.exists():
         try:
@@ -1067,13 +1286,17 @@ def git_show(repo: Path,ref: str,path: str) -> str:
     return(result.stdout.decode("utf-8"))
 
 
+def asset_texts(repo: Path,ref: str,sources: dict[str,tuple[str,int]]) -> dict[str,dict[str,object]]:
+    assets: dict[str,dict[str,object]] = {}
+    for destination,(source,mode) in sources.items():
+        text = git_show(repo,ref,source)
+        assets[destination] = {"mode":mode,"text":text if text.endswith("\n") else text + "\n"}
+    return(assets)
+
+
 def build_payload(repo: Path,ref: str) -> dict[str,object]:
     commit = command(["git","-C",str(repo),"rev-parse","--verify",ref])
-    assets: dict[str,dict[str,object]] = {}
-    for destination,(source,mode) in ASSET_SOURCES.items():
-        assets[destination] = {"mode":mode,"text":git_show(repo,ref,source)}
-        if not str(assets[destination]["text"]).endswith("\n"):
-            assets[destination]["text"] = str(assets[destination]["text"]) + "\n"
+    assets = asset_texts(repo,ref,ASSET_SOURCES)
     for unit,source_name in BOOT_TIMEOUT_SOURCES.items():
         destination = f"/etc/systemd/system/{unit}.d/10-boot-timeout.conf"
         source = f"tools/devcycle/boot-unblock/{source_name}"
@@ -1085,7 +1308,8 @@ def build_payload(repo: Path,ref: str) -> dict[str,object]:
     remote_script = git_show(repo,ref,SELF_SOURCE)
     if Path(__file__).read_text(encoding="utf-8") != remote_script:
         raise BrickproofError(f"controller does not match {ref}:{SELF_SOURCE}")
-    return({"assets":assets,"fleet_public_key":public_key,"remote_script":remote_script,"source_commit":commit})
+    return({"assets":assets,"fleet_public_key":public_key,"linked_rank_assets":asset_texts(repo,ref,LINKED_RANK_ASSET_SOURCES),"node_layout_roots":node_layout_roots(git_show(repo,ref,NODE_LAYOUT_SOURCE)),
+            "remote_script":remote_script,"source_commit":commit})
 
 
 def recovery_network_for_node(node: str) -> dict[str,str]:
@@ -1127,8 +1351,13 @@ def remote_action(host: str,action: str,payload: dict[str,object]) -> dict[str,o
 
 
 def emergency_probe(host: str,identity: Path) -> str:
-    result = run(["ssh","-T","-p","2222","-i",str(identity),"-o","BatchMode=yes","-o","IdentitiesOnly=yes","-o","StrictHostKeyChecking=accept-new","-o","ConnectTimeout=8",f"root@{host}","true"],timeout=20,check=False)
-    return("ok" if result.returncode == 0 else (result.stderr or result.stdout).decode("utf-8",errors="replace").strip())
+    detail = ""
+    for target in (host,f"{host}.local",f"{LAN_PREFIX}.{LAN_ADDRESS_BASE + spark_rank(host)}"):
+        result = run(["ssh","-T","-p","2222","-i",str(identity),"-o","BatchMode=yes","-o","IdentitiesOnly=yes","-o",f"HostKeyAlias={host}-emergency","-o","StrictHostKeyChecking=accept-new","-o","ConnectTimeout=8",f"root@{target}","true"],timeout=20,check=False)
+        if result.returncode == 0:
+            return("ok")
+        detail = (result.stderr or result.stdout).decode("utf-8",errors="replace").strip()
+    return(detail)
 
 
 def apply_one(host: str,payload: dict[str,object],identity: Path) -> dict[str,object]:
@@ -1144,7 +1373,10 @@ def apply_one(host: str,payload: dict[str,object],identity: Path) -> dict[str,ob
 
 
 def audit_one(host: str,payload: dict[str,object],identity: Path) -> dict[str,object]:
-    audited = remote_action(host,"audit",payload)
+    try:
+        audited = remote_action(host,"audit",payload)
+    except (BrickproofError,subprocess.TimeoutExpired,json.JSONDecodeError,OSError) as error:
+        return({"node":host,"failures":[f"controller-error:{error}"]})
     audited["emergency_login"] = emergency_probe(host,identity)
     if audited["emergency_login"] != "ok":
         audited["failures"].append("controller-emergency-login")
@@ -1169,30 +1401,51 @@ def controller_main(args: argparse.Namespace) -> int:
     nodes = parse_nodes(args.nodes)
     payload = build_payload(args.sparkpipe_repo,args.source_ref)
     documents = []
+    errors = []
     if not args.recovery_identity.is_file():
         raise BrickproofError(f"missing recovery identity: {args.recovery_identity}")
-    if args.action == "apply":
-        canary = args.canary if args.canary in nodes else nodes[0]
-        print(f"canary={canary}",flush=True)
-        documents.append(apply_one(canary,payload,args.recovery_identity))
-        remaining = [node for node in nodes if node != canary]
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(args.jobs,len(remaining) or 1)) as executor:
-            futures = {executor.submit(apply_one,node,payload,args.recovery_identity):node for node in remaining}
-            for future in concurrent.futures.as_completed(futures):
-                document = future.result()
-                documents.append(document)
-                print(f"{document['node']}: PASS",flush=True)
-    else:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(args.jobs,len(nodes))) as executor:
-            futures = {executor.submit(audit_one,node,payload,args.recovery_identity):node for node in nodes}
-            for future in concurrent.futures.as_completed(futures):
-                document = future.result()
-                documents.append(document)
-                print(f"{document['node']}: {'PASS' if not document['failures'] else 'FAIL'}",flush=True)
-    documents.sort(key=lambda item:str(item["node"]))
-    receipt = write_receipt(args.action,documents)
-    print(f"receipt={receipt}")
-    return(1 if any(document.get("failures") for document in documents) else 0)
+    try:
+        if args.action == "apply":
+            canary = args.canary if args.canary in nodes else nodes[0]
+            print(f"canary={canary}",flush=True)
+            documents.append(apply_one(canary,payload,args.recovery_identity))
+            waiting = [node for node in nodes if node != canary]
+            jobs = max(1,args.jobs)
+            running: dict[concurrent.futures.Future[dict[str,object]],str] = {}
+            failed = False
+            with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
+                while True:
+                    while waiting and not failed and len(running) < jobs:
+                        node = waiting.pop(0)
+                        running[executor.submit(apply_one,node,payload,args.recovery_identity)] = node
+                    if not running:
+                        break
+                    done,_ = concurrent.futures.wait(running,return_when=concurrent.futures.FIRST_COMPLETED)
+                    for future in done:
+                        node = running.pop(future)
+                        try:
+                            documents.append(future.result())
+                            print(f"{node}: PASS",flush=True)
+                        except Exception as error:
+                            errors.append({"node":node,"failures":[f"controller-error:{error}"]})
+                            failed = True
+            errors.extend({"node":node,"failures":["skipped: rollout stopped after a failure"]} for node in waiting)
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max(1,min(args.jobs,len(nodes)))) as executor:
+                futures = {executor.submit(audit_one,node,payload,args.recovery_identity):node for node in nodes}
+                for future in concurrent.futures.as_completed(futures):
+                    document = future.result()
+                    documents.append(document)
+                    print(f"{document['node']}: {'PASS' if not document['failures'] else 'FAIL'}",flush=True)
+    except Exception as error:
+        errors.append({"node":"controller","failures":[f"controller-error:{error}"]})
+    finally:
+        documents.sort(key=lambda item:str(item["node"]))
+        receipt = write_receipt(args.action,documents + errors)
+        print(f"receipt={receipt}")
+    for item in errors:
+        print(f"{item['node']}: FAIL {item['failures'][0][:300]}",flush=True)
+    return(1 if errors or any(document.get("failures") for document in documents) else 0)
 
 
 def parse_args() -> argparse.Namespace:

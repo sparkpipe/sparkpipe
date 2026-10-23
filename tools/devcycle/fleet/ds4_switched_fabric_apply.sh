@@ -7,6 +7,7 @@ FABRIC_MTU="${DS4_SWITCHED_FABRIC_MTU:-9000}"
 CX7_HOTPLUG_MARKER="${DS4_CX7_HOTPLUG_MARKER:-/etc/nvidia/cx7-hotplug-enabled}"
 CX7_HOTPLUG_HANDLER="${DS4_CX7_HOTPLUG_HANDLER:-/opt/nvidia/dgx-spark-mlnx-hotplug/mtk-hotplug-handler.sh}"
 FLEET_SYSCTL_PATH="${DS4_FLEET_SYSCTL_PATH:-/etc/sysctl.d/99-ds4-fleet.conf}"
+MANAGEMENT_DEVICE="${DS4_MANAGEMENT_DEVICE:-enP7s7}"
 
 fabric_devices()
 {
@@ -277,15 +278,28 @@ remove_legacy_addresses()
 
 configure_unmanaged_fabric()
 {
-    local device
+    local disconnect="${1:-disconnect}" device path
     mkdir -p /etc/NetworkManager/conf.d
+    for path in \
+        /etc/NetworkManager/conf.d/99-ds4-200g-unmanaged.conf \
+        /etc/NetworkManager/conf.d/99-ds4-ring-unmanaged.conf \
+        /etc/NetworkManager/conf.d/ds4-200g-unmanaged.conf; do
+        backup_and_remove "${path}"
+    done
     cat > /etc/NetworkManager/conf.d/90-ds4-switched-fabric-unmanaged.conf <<'EOF'
 [keyfile]
 unmanaged-devices=interface-name:enp1s0f0np0;interface-name:enp1s0f1np1;interface-name:enP2p1s0f0np0;interface-name:enP2p1s0f1np1;interface-name:enP2p1;interface-name:enP2p2
 EOF
+    cat > /etc/NetworkManager/conf.d/95-ds4-uplink-no-assume.conf <<EOF
+[device-ds4-uplink-wired]
+match-device=interface-name:${MANAGEMENT_DEVICE}
+keep-configuration=no
+EOF
     command -v nmcli >/dev/null 2>&1 || return 0
     while read -r device; do
-        nmcli device disconnect "${device}" >/dev/null 2>&1 || true
+        if [ "${disconnect}" = disconnect ]; then
+            nmcli device disconnect "${device}" >/dev/null 2>&1 || true
+        fi
         nmcli device set "${device}" managed no >/dev/null 2>&1 || true
     done < <(fabric_devices)
     nmcli general reload >/dev/null 2>&1 || true
@@ -321,6 +335,11 @@ apply_switched_fabric()
 
 if [ "$(id -u)" -ne 0 ]; then
     exec sudo -- "$0" "$@"
+fi
+
+if [ "${1:-}" = "--network-manager" ]; then
+    configure_unmanaged_fabric keep-addresses
+    exit 0
 fi
 
 if [ "${1:-}" = "--install" ]; then
