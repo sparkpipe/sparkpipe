@@ -235,10 +235,14 @@ BULK_SUFFIX = "-bulk"
 
 def context_target(body):
     value = body.get("num_ctx")
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        value = int(value.strip())
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
     if value is None or value in (0, -1):
         return None
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise RequestError(400, "invalid_request", "num_ctx must be a positive integer: the context chat memory keeps the prompt near")
+        raise RequestError(400, "invalid_request", "num_ctx must be a positive whole number: the context chat memory keeps the prompt near")
     return value
 
 
