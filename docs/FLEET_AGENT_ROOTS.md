@@ -62,9 +62,19 @@ A release that changes `agent.env`, `config/env_*.env` or
 ## Node KV reserve
 
 weightd owns the KV device memory of every engine that uses the common KV
-binding (GLM Full, GLM Flash, K3): each engine maps one weightd KV pool, and
-weightd admits pools only inside `SPARK_WEIGHTD_KV_RESERVE_BYTES`, carved out
-of `SPARK_WEIGHTD_DEVICE_BYTES_MAX` (weight arenas get the rest). The agent
+binding: each engine maps one weightd KV pool. `SPARK_WEIGHTD_KV_RESERVE_BYTES`
+is carved out of `SPARK_WEIGHTD_DEVICE_BYTES_MAX` and always belongs to KV.
+While weights are attached, KV may also borrow what their budgets leave of
+the ceiling: the KV limit is the ceiling less the attached arenas' full sizes
+(a lazy arena's preload plus its expert pool), and never below the reserve.
+A model with small weights can so hold a long context that the reserve alone
+could not (Gemma 4 31B needs 14.8 GB per rank for one 262,144-position
+sequence). Borrowed KV is real: weight arenas may grow only into what KV
+leaves (the ceiling less the larger of the reserve and the committed KV),
+cold weights are reclaimed when KV needs their room, and when weights need
+room, detached pools above the reserve are released first; a pool an engine
+still owns is never taken away, so the swap controller's KV drop at a model
+switch frees it. With no weights attached the limit is the reserve. The agent
 passes every `SPARK_WEIGHTD_*` variable in its own environment to weightd, so
 set the reserve in the agent unit's environment on every node. Pools resize
 inside the reserve by chunk: an engine attaches with its full size when the
