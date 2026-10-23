@@ -332,12 +332,23 @@ committed to the ledger. The model is then asked for every fact. The same chats
 run with memory and with the Full context marker. A model qualifies when, with
 memory:
 - recall is within one probe of Full context;
-- the median answer reuses at least 90% of its prompt from the engine's cache;
-- every background memory job finishes.
+- every turn that does not compact reuses the previous turn's whole prompt from
+  the engine's cache (`--slack`, 512 tokens: two blocks of the largest KV
+  block), and all turns together re-read at most 5% more prompt tokens than
+  the Full context chats;
+- every background memory job finishes;
+- user turns see no more stale prefix recomputes than with Full context.
 
-The Full context chats must start no memory job, and the engine must log no
-stale prefix recomputes. Reports are kept under
+The Full context chats must start no memory job. Stale prefix recomputes are
+reported per arm for user turns and for background jobs: the engine recomputes
+a prefix its index still lists but the ranks no longer hold, which costs
+prefill but not correctness. Reports are kept under
 `qualification/chat_memory/<model>/`.
+
+An earlier check, a median cached share of 90%, failed chats with perfect
+reuse: when every other turn adds a 3,000-token note, cached over prompt sits
+near 0.8 even when the whole previous prompt is reused, and the Full context
+chats show the same share.
 
 ## Evaluation
 

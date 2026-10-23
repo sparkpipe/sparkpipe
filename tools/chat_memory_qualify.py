@@ -98,15 +98,25 @@ def memory_jobs(chat_log, offset, chat):
     return rows
 
 
-def stale_recomputes(api_log, offset):
-    total = 0
+def stale_recomputes(api_log, start, end):
+    counts = {"turns": 0, "background": 0}
     with api_log.open("rb") as handle:
-        handle.seek(offset)
-        for line in handle.read().decode("utf-8", "replace").splitlines():
+        handle.seek(start)
+        for line in handle.read(end - start).decode("utf-8", "replace").splitlines():
             match = re.search(r'"stale_prefix_recomputes":(\d+)', line)
+            priority = re.search(r'"priority":(\d+)', line)
             if '"request_measurements"' in line and match:
-                total += int(match.group(1))
-    return total
+                counts["background" if priority and int(priority.group(1)) == 0 else "turns"] += int(match.group(1))
+    return counts
+
+
+def kept_previous(rows, slack):
+    misses = []
+    for index in range(1, len(rows)):
+        previous, row = rows[index - 1], rows[index]
+        if row["prompt_tokens"] >= previous["prompt_tokens"] and row["cached_tokens"] < previous["prompt_tokens"] - slack:
+            misses.append({"row": index, "previous_prompt": previous["prompt_tokens"], "prompt": row["prompt_tokens"], "cached": row["cached_tokens"]})
+    return misses
 
 
 def ask(url, model, messages, headers, effort):
@@ -140,6 +150,7 @@ def run_chat(args, secret, marker, turns, probes, arm):
     headers = {"X-OpenWebUI-User-Jwt": token(secret, user), "X-OpenWebUI-Chat-Id": chat, "X-OpenWebUI-Task": ""}
     history, parent, rows, jobs = [], None, [], []
     offset = args.chat_log.stat().st_size
+    api_start = args.api_log.stat().st_size
     for kind, text in [("turn", t) for t in turns] + [("probe", p["question"]) for p in probes]:
         user_message, assistant_message = str(uuid.uuid4()), str(uuid.uuid4())
         turn_headers = dict(headers, **{"X-OpenWebUI-User-Message-Id": user_message, "X-OpenWebUI-Message-Id": assistant_message})
@@ -162,7 +173,8 @@ def run_chat(args, secret, marker, turns, probes, arm):
         hit = any(value.replace(",", "").lower() in flat for value in probe["expected"])
         wrong = any(value.replace(",", "").lower() in flat for value in probe["forbidden"])
         graded.append({"question": probe["question"], "answer": answer[:200], "correct": hit and not wrong})
-    return {"arm": arm, "chat": short(chat), "rows": rows, "probes": graded, "jobs": [{k: job.get(k) for k in ("kind", "outcome", "prompt_tokens", "cached_tokens", "seconds")} for job in jobs]}
+    return {"arm": arm, "chat": short(chat), "rows": rows, "probes": graded, "stale": stale_recomputes(args.api_log, api_start, args.api_log.stat().st_size),
+            "jobs": [{k: job.get(k) for k in ("kind", "outcome", "prompt_tokens", "cached_tokens", "seconds")} for job in jobs]}
 
 
 def main():
@@ -172,6 +184,7 @@ def main():
     parser.add_argument("--seed", type=int, default=1017)
     parser.add_argument("--effort", default="low")
     parser.add_argument("--quiet", type=float, default=8.0)
+    parser.add_argument("--slack", type=int, default=512, help="tokens a turn may recompute of the previous prompt: two KV blocks of the largest block size")
     parser.add_argument("--note-words", type=int, default=1800)
     parser.add_argument("--url", default="http://127.0.0.1:8433/v1/chat/completions")
     parser.add_argument("--layer", type=Path, default=Path.home() / "sparkpipe-chat")
@@ -182,7 +195,6 @@ def main():
     config = json.loads((args.layer / "config.json").read_text())
     memory = load("chat_memory", args.layer / "chat_memory.py")
     secret = Path(config["chat_memory"]["jwt_secret_file"]).read_text().strip()
-    api_offset = args.api_log.stat().st_size
     results = []
     for index in range(args.chats):
         turns, probes = make_chat(args.seed + index, args.note_words)
@@ -192,28 +204,26 @@ def main():
             print(json.dumps({"chat": index, "arm": arm, "correct": sum(p["correct"] for p in result["probes"]), "probes": len(result["probes"])}), flush=True)
     recall = {arm: sum(p["correct"] for r in results if r["arm"] == arm for p in r["probes"]) for arm in ("memory", "full")}
     probes = sum(len(r["probes"]) for r in results if r["arm"] == "memory")
-    later = [row for r in results if r["arm"] == "memory" for row in r["rows"][1:]]
-    reuse = [row["cached_tokens"] / row["prompt_tokens"] for row in later if row["prompt_tokens"]]
-    low = [round(value, 3) for value in reuse if value < 0.9]
-    median = sorted(reuse)[len(reuse) // 2] if reuse else 0.0
+    misses = [dict(miss, chat=r["chat"]) for r in results if r["arm"] == "memory" for miss in kept_previous(r["rows"], args.slack)]
     uncached = {arm: sum(row["prompt_tokens"] - row["cached_tokens"] for r in results if r["arm"] == arm for row in r["rows"]) for arm in ("memory", "full")}
     failed_jobs = [job for r in results if r["arm"] == "memory" for job in r["jobs"] if job["outcome"] != "done"]
     full_jobs = [job for r in results if r["arm"] == "full" for job in r["jobs"]]
-    stale = stale_recomputes(args.api_log, api_offset)
+    stale = {arm: {kind: sum(r["stale"][kind] for r in results if r["arm"] == arm) for kind in ("turns", "background")} for arm in ("memory", "full")}
     prompt = {arm: round(sum(row["prompt_tokens"] for r in results if r["arm"] == arm for row in r["rows"]) / max(1, sum(len(r["rows"]) for r in results if r["arm"] == arm))) for arm in ("memory", "full")}
     checks = {
         "recall": recall["memory"] >= recall["full"] - 1,
-        "prefix_reuse": median >= 0.9,
+        "keeps_previous_prompt": not misses,
+        "rereads_no_more_than_full": uncached["memory"] <= uncached["full"] * 1.05,
         "memory_jobs": not failed_jobs,
         "full_context_has_no_memory_jobs": not full_jobs,
-        "no_stale_recomputes": stale == 0,
+        "no_stale_recomputes_from_memory": stale["memory"]["turns"] <= stale["full"]["turns"],
     }
     report = {"model": args.model, "chats": args.chats, "seed": args.seed, "effort": args.effort, "recall": recall, "probes_per_arm": probes,
-              "mean_prompt_tokens": prompt, "uncached_prompt_tokens": uncached, "reuse_median": round(median, 3), "reuse_below_90": low, "failed_jobs": failed_jobs,
+              "mean_prompt_tokens": prompt, "uncached_prompt_tokens": uncached, "previous_prompt_misses": misses, "failed_jobs": failed_jobs,
               "stale_prefix_recomputes": stale, "checks": checks, "qualified": all(checks.values()), "results": results}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=1) + "\n")
-    print(json.dumps({k: report[k] for k in ("model", "recall", "probes_per_arm", "mean_prompt_tokens", "uncached_prompt_tokens", "reuse_median", "stale_prefix_recomputes", "checks", "qualified")}))
+    print(json.dumps({k: report[k] for k in ("model", "recall", "probes_per_arm", "mean_prompt_tokens", "uncached_prompt_tokens", "previous_prompt_misses", "stale_prefix_recomputes", "checks", "qualified")}))
     sys.exit(0 if report["qualified"] else 1)
 
 
