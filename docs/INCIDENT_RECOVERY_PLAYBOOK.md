@@ -256,7 +256,7 @@ all of these live checks:
 6. GPU is visible and healthy.
 7. Switched interface is 100000 Mb/s full duplex with carrier.
 8. Direct-pair interface is 200000 Mb/s full duplex with carrier, on ranks that
-   `MESH_LINK_MAP` lists. sparke and sparkf have none.
+   `MESH_LINK_MAP` lists, which is all 16 since 2026-10-23.
 9. Required local and external filesystems are mounted read-write.
 10. Tailscale reports the node online with `tag:spark`.
 11. Brickproof audit has no failures and records the merged source commit.
