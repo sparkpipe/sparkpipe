@@ -68,7 +68,15 @@ def main():
         check(not reasoning_open, "the suffix leaves the reasoning channel closed")
         ids, reasoning_open = frontend.memory_continuation_ids(closing, messages, None, {}, prompt, generated, "summarize it", None)
         check(reasoning_open and ids[-1] == token(THINK), "without a suffix the curator reply is parsed as reasoning first")
-    print("PASS test_chat_memory_frontend: curator continuations extend the answer's cached prompt and reply with the template's own tail; cuts match the full render up to the sentinel")
+    for body, expected in (({}, None), ({"num_ctx": -1}, None), ({"num_ctx": 0}, None), ({"num_ctx": 65536}, 65536), ({"num_ctx": 65536.0}, 65536), ({"num_ctx": "65536"}, 65536), ({"num_ctx": "-1"}, None)):
+        check(chat_frontend.context_target(body) == expected, f"Open WebUI's context length {body} is the memory target {expected}")
+    for body in ({"num_ctx": "lots"}, {"num_ctx": True}, {"num_ctx": -5}, {"num_ctx": 1.5}):
+        try:
+            chat_frontend.context_target(body)
+            check(False, f"{body} must be refused")
+        except chat_frontend.RequestError as error:
+            check(error.status == 400, f"{body} is a client error")
+    print("PASS test_chat_memory_frontend: curator continuations extend the answer's cached prompt and reply with the template's own tail; cuts match the full render up to the sentinel; Open WebUI's context length becomes the memory target")
 
 
 if __name__ == "__main__":

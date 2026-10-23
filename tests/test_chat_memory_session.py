@@ -37,11 +37,16 @@ def headers(user_message, parent=None, message=None, chat="chat-1", task="", jwt
     return result
 
 
+BUDGETS = {"open_budget": 1500, "line_tokens": 48, "group_size": 16, "working_tokens": 24576, "working_context_share": 0.1875, "ledger_tokens": 12288,
+           "ledger_context_share": 0.1, "part_small_tokens": 1024, "part_cap_tokens": 12288, "keep_tokens": 4096, "target_tolerance": 0.25,
+           "target_minimum_tokens": 16384}
+
+
 class Model:
-    def __init__(self, checkpoint):
+    def __init__(self):
         self.id = "fake-model"
-        self.memory = {"curator_suffix": "</think>", "cache_checkpoint_tokens": checkpoint, "open_budget": 1500, "line_tokens": 48,
-                       "part_small_tokens": 1024, "part_cap_tokens": 12288, "keep_tokens": 4096}
+        self.reasoning = {"start": "<think>", "end": "</think>"}
+        self.memory = {}
 
 
 class Frontend:
@@ -112,8 +117,8 @@ async def run():
     with tempfile.TemporaryDirectory() as tmp:
         (Path(tmp) / "secret").write_text(SECRET)
         frontend = Frontend()
-        memory = cm.Memory({"store": tmp + "/store", "jwt_secret_file": tmp + "/secret", "idle_seconds": 0.01}, frontend)
-        model = Model(16384)
+        memory = cm.Memory({"store": tmp + "/store", "jwt_secret_file": tmp + "/secret", "idle_seconds": 0.01, "budgets": BUDGETS}, frontend)
+        model = Model()
 
         refused = [
             (headers("u1", jwt=""), []), (headers("u1", jwt=token(secret="x" * 48)), []), (headers("u1", jwt=token(iss="other")), []),
@@ -126,13 +131,55 @@ async def run():
             assert memory.session(model, request_headers, conversation(1), tools, {}) is None, request_headers
         summary = [{"role": "system", "content": "[CONVERSATION SUMMARY]\nold"}, {"role": "user", "content": "hi"}]
         assert memory.session(model, headers("u1"), summary, [], {}) is None
-        assert memory.session(type("Plain", (), {"id": "plain", "memory": None})(), headers("u1"), conversation(1), [], {}) is None
+        plain = type("Plain", (), {"id": "plain", "reasoning": None})()
+        assert memory.session(plain, headers("u1", chat="plain-chat"), conversation(1), [], {}) is not None, "every model gets memory, with the shared budgets"
+        assert memory.profile(plain).curator_suffix is None and memory.profile(plain).working_tokens == BUDGETS["working_tokens"]
+        assert memory.profile(model).curator_suffix == "</think>"
+        small_context = type("Small", (), {"id": "small", "reasoning": None, "context_tokens": 32768})()
+        assert (memory.profile(small_context).working_tokens, memory.profile(small_context).ledger_tokens) == (6144, 3276), "budgets shrink with a small context"
+        closing = type("Closing", (), {"id": "closing", "reasoning": {"start": "<a>", "end": "</a>", "close": "\n</a><b>"}, "memory": {"ledger_tokens": 99}})()
+        assert memory.profile(closing).curator_suffix == "\n</a><b>" and memory.profile(closing).ledger_tokens == 99
+        long_context = type("Long", (), {"id": "long", "reasoning": None, "context_tokens": 262144})()
+        aimed = memory.profile(long_context, 100000)
+        assert (aimed.target, aimed.prompt_tokens, aimed.ledger_tokens, aimed.working_tokens, aimed.working_low) == (100000, 125000, 10000, 113500, 63500), \
+            "a target lets the prompt reach the target plus the tolerance and compacts the working set back to the target minus it"
+        limit = 262144 - 262144 * 15 // 100
+        topped = memory.profile(long_context, 10 ** 7)
+        assert (topped.target, topped.prompt_tokens, topped.working_tokens, topped.working_low) == (262144, limit, limit - 13788, int(limit * 0.5) - 13788), \
+            "at the true maximum the target is a hard limit with no overshoot"
+        assert memory.profile(long_context, 1000).target == BUDGETS["target_minimum_tokens"], "a target below the minimum is raised to it"
+        untargeted = memory.profile(long_context)
+        assert untargeted.target is None and untargeted.working_low == untargeted.working_tokens // 2, "without a target the shared budgets apply"
+        steered = Model()
+        steered.id = "steered"
+        steered.memory = {"target_minimum_tokens": 1, "open_budget": 0, "ledger_context_share": 0.0}
+        long_chat = [dict(m, content=m["content"] + " " + "word " * 80) for m in conversation(5)]
+        near = memory.session(steered, headers("t5", chat="chat-target"), long_chat, [], {}, 2000)
+        assert near.target == 2000 and near.layout["working"] == [0, 1, 2, 3], ("the prompt is inside the target plus its tolerance", near.layout["working"])
+        plan = memory.plan_commit(steered, near, "answer 5 " + "word " * 2000, [])
+        assert plan is not None and plan["total"] > 2500 and plan["needed"] == plan["total"] - 1500, plan
+        far = memory.session(steered, headers("t5", chat="chat-untargeted"), long_chat, [], {})
+        assert memory.plan_commit(steered, far, "answer 5 " + "word " * 2000, []) is None, "the same chat without a target stays inside the shared working budget"
+        try:
+            memory.profile(type("Bad", (), {"id": "bad", "memory": {"curator_suffix": "x"}})())
+            raise AssertionError("an override outside the budget keys must be refused")
+        except SystemExit:
+            pass
+        off = cm.MEMORY_OFF
+        cases = [
+            ([{"role": "system", "content": off}, {"role": "user", "content": "hi"}], [{"role": "user", "content": "hi"}], True),
+            ([{"role": "system", "content": "Be brief." + off}, {"role": "user", "content": "hi"}], [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "hi"}], True),
+            ([{"role": "user", "content": [{"type": "text", "text": "hi" + off}]}], [{"role": "user", "content": [{"type": "text", "text": "hi"}]}], True),
+            ([{"role": "user", "content": "hi"}], [{"role": "user", "content": "hi"}], False),
+        ]
+        for given, cleaned, switched in cases:
+            assert cm.memory_switch(given) == (cleaned, switched), given
 
-        working = Model(16384)
+        working = Model()
         working.id = "working-model"
         working.memory = dict(working.memory, working_tokens=5)
         first = await turn(memory, frontend, working, 1, "u1", None, "a1", '{"lines": {"e1": "The user asked question 1; the assistant gave answer 1."}, "open": []}')
-        assert len(frontend.cuts) == 1 and frontend.cuts[0][-1]["content"] == cm.REFERENCE_OPEN + cm.REFERENCE_CLOSE + "[e2] " + cm.SENTINEL and cm.LEDGER_OPEN not in json.dumps(frontend.cuts[0]), \
+        assert len(frontend.cuts) == 1 and frontend.cuts[0][-1]["content"] == "[e2] " + cm.SENTINEL and cm.LEDGER_OPEN not in json.dumps(frontend.cuts[0]), \
             "no stem while the ledger is empty, but the next turn is pre-warmed"
         assert cm.SYSTEM_NOTE in first.messages[0]["content"] and [t["function"]["name"] for t in first.tools[-2:]] == ["expand", "search_history"] and first.layout["lined"] == 0
         assert first.messages[-1]["content"].endswith("[e1] question 1")
@@ -154,14 +201,14 @@ async def run():
         assert third.layout["lined"] == 1 and third.layout["open"] == ["e1"] and third.layout["working"] == [1], third.layout
         users = [m for m in third.messages if m["role"] == "user"]
         assert users[0]["content"] == cm.LEDGER_OPEN + "[e1] " + state["lines"][key1] + "\n" + cm.LEDGER_CLOSE + "[e2] question 2"
-        assert users[-1]["content"].startswith(cm.REFERENCE_OPEN) and 'history id="e1"' in users[-1]["content"] and users[-1]["content"].endswith("[e3] question 3")
-        assert prewarm[:-1] == third.messages[:-1] and prewarm[-1]["content"] == users[-1]["content"][:-len("question 3")] + cm.SENTINEL, \
+        assert users[-1]["content"].startswith("[e3] question 3" + cm.REFERENCE_OPEN) and 'history id="e1"' in users[-1]["content"] and users[-1]["content"].endswith(cm.REFERENCE_CLOSE)
+        assert prewarm[:-1] == third.messages[:-1] and prewarm[-1]["content"] == users[-1]["content"].replace("[e3] question 3", "[e3] " + cm.SENTINEL, 1), \
             "the pre-warm renders the next turn's layout up to its new question"
         key2 = cm.exchange_key(conversation(3)[3:5])
         assert state["commits"] == [key1, key2] and state["final"][key2].startswith("The user asked question 2, and later"), "a final line written with hindsight that keeps the earlier facts is used"
         stem, warm = frontend.cuts[-2], frontend.cuts[-1]
         assert stem[-1]["content"] == cm.LEDGER_OPEN + "[e1] " + state["lines"][key1] + "\n[e2] " + state["final"][key2] + "\n" + cm.SENTINEL
-        assert warm[-1]["content"].startswith(cm.REFERENCE_OPEN) and warm[-1]["content"].endswith("[e4] " + cm.SENTINEL) and warm[-2] == {"role": "assistant", "content": "answer 3"}
+        assert warm[-1]["content"] == "[e4] " + cm.SENTINEL and warm[-2] == {"role": "assistant", "content": "answer 3"}, warm[-1]
         fourth = await turn(memory, frontend, working, 4, "u4w", "a3", "a4w", '{"lines": {"e4": "The user asked question 4."}, "open": []}')
         key3 = cm.exchange_key(conversation(4)[5:7])
         assert fourth.layout["working"] == [2] and state["commits"][-1] == key3, "when the curator commits too little, the oldest open exchange is committed"
@@ -186,7 +233,7 @@ async def run():
         roles = [m["role"] for m in replay.messages]
         expand_at = next(i for i, m in enumerate(replay.messages) if m["role"] == "tool" and m.get("name") == "expand")
         search_at = next(i for i, m in enumerate(replay.messages) if m["role"] == "tool" and m.get("name") == "search_web")
-        assert expand_at < search_at and replay.messages[expand_at - 2]["content"].endswith("question 3"), roles
+        assert expand_at < search_at and replay.messages[expand_at - 2]["content"].startswith("[e3] question 3"), roles
         assert "User: question 1" in replay.messages[expand_at]["content"]
 
         searched_web = conversation(3) + [{"role": "assistant", "content": "", "tool_calls": [{"id": "w1", "type": "function", "function": {"name": "search_web", "arguments": "{}"}}]},
@@ -254,7 +301,7 @@ async def run():
         memory.curate = original
         assert captured and captured[0] == [0, 1, 2, 3, 4, 5], captured
 
-        small = Model(16384)
+        small = Model()
         small.id = "small-model"
         small.memory = dict(small.memory, ledger_tokens=60, group_size=4)
         lined = conversation(12)
@@ -291,7 +338,7 @@ async def run():
         stubs = memory.store.load("user-1", "chat-stub")["groups"]
         assert stubs and all(g["source"] == "fallback" and g["line"].startswith("(auto) ") for g in stubs.values()), stubs
 
-        tight = Model(16384)
+        tight = Model()
         tight.id = "tight-model"
         tight.context_tokens = 32768
         tight.memory = dict(tight.memory, prompt_tokens=700)
@@ -303,7 +350,7 @@ async def run():
         assert all(source == "fit" for source in fit_state["sources"].values()) and len(fit_state["lines"]) == 38
         assert fit_state["groups"] and all(g["source"] == "fit" for g in fit_state["groups"].values()) and len(fitted.layout["nodes"]) < 38
         assert fit_state["layouts"]["t40"]["groups"] == fitted.layout["groups"]
-        roomy = Model(16384)
+        roomy = Model()
         roomy.id = "roomy-model"
         roomy.context_tokens = 131072
         assert memory.session(roomy, headers("r40", None, "z40", chat="chat-roomy"), conversation(40), [], {}).layout["lined"] == 0, "nothing is folded while the prompt fits"
@@ -338,9 +385,9 @@ async def run():
         assert read_back.startswith("e2.t1 (fetch_url), sections §10-") and "[§10] " in read_back, read_back[:120]
         assert later.expand({"function": {"name": "expand", "arguments": {"id": "e2.t7"}}}).startswith("No tool result")
 
-        reopened = cm.Memory({"store": tmp + "/store", "jwt_secret_file": tmp + "/secret"}, frontend).store.load("user-1", "chat-1")
+        reopened = cm.Memory({"store": tmp + "/store", "jwt_secret_file": tmp + "/secret", "budgets": BUDGETS}, frontend).store.load("user-1", "chat-1")
         assert reopened["lines"] == state["lines"] and reopened["pending"].keys() == state["pending"].keys()
 
 
 asyncio.run(run())
-print("PASS test_chat_memory_session: verified identity only, system note, expand and search_history from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, tool results with ids and sections, collapsed after their turn to the kept sections, state that survives a restart")
+print("PASS test_chat_memory_session: every model gets memory with the shared budgets or a context target held within its tolerance (a hard limit at the true maximum) and a curator suffix from its reasoning close (or end) marker, a memory-off marker removed before rendering, verified identity only, system note, expand and search_history from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, tool results with ids and sections, collapsed after their turn to the kept sections, state that survives a restart")

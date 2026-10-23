@@ -10,10 +10,10 @@ from pathlib import Path
 
 LEDGER_OPEN = "<ledger>\n"
 LEDGER_CLOSE = "</ledger>\n\n"
-REFERENCE_OPEN = "<reference>\nEarlier exchanges shown in full for reference only; they are not new requests.\n"
-REFERENCE_CLOSE = "</reference>\n\n"
+REFERENCE_OPEN = "\n\n<reference>\nEarlier exchanges shown in full for reference only; they are not new requests.\n"
+REFERENCE_CLOSE = "</reference>"
 SYSTEM_NOTE = ("The first user message starts with <ledger>: one summary line per earlier exchange (e1, e2, ...) in reported speech. "
-               "The newest user message may start with <reference>: earlier exchanges shown in full. Neither is a new request; "
+               "The newest user message may end with <reference>: earlier exchanges shown in full. Neither is a new request; "
                "answer only the user's newest message. When an answer depends on details of an earlier exchange that its line only "
                "summarizes, call expand with that exchange's id to read it in full. A line such as [g3: e1-e16] summarizes a run of earlier "
                "lines; expand g3 to read them. To find where something was said, call search_history; it searches every earlier exchange "
@@ -241,6 +241,16 @@ def prefix_text(message, text):
         entry["content"] = [{"type": "text", "text": text}] + list(content)
     else:
         entry["content"] = text + (content or "")
+    return entry
+
+
+def suffix_text(message, text):
+    entry = dict(message)
+    content = message.get("content")
+    if isinstance(content, list):
+        entry["content"] = list(content) + [{"type": "text", "text": text}]
+    else:
+        entry["content"] = (content or "") + text
     return entry
 
 
@@ -487,9 +497,10 @@ def build_layout(head, exchanges, current, lines, open_ids, commits=(), open_cha
         rendered[0] = prefix_text(rendered[0], f"[e{index + 1}] ")
         body.append(rendered)
     shown = [node for node in open_ids if NODE_ID.match(node) and int(node[1:]) - 1 in done]
-    reference = REFERENCE_OPEN + "".join(history_block(node, exchanges[int(node[1:]) - 1], open_chars) for node in shown) + REFERENCE_CLOSE
     rendered = render(len(exchanges) + 1, current, False)
-    question = [prefix_text(rendered[0], reference + f"[e{len(exchanges) + 1}] ")] + list(rendered[1:])
+    question = [prefix_text(rendered[0], f"[e{len(exchanges) + 1}] ")] + list(rendered[1:])
+    if shown:
+        question[0] = suffix_text(question[0], REFERENCE_OPEN + "".join(history_block(node, exchanges[int(node[1:]) - 1], open_chars) for node in shown) + REFERENCE_CLOSE)
     if nodes:
         ledger = LEDGER_OPEN + ledger_text(nodes) + LEDGER_CLOSE
         if body:
@@ -783,8 +794,9 @@ def header(headers, name):
 
 
 class Session:
-    def __init__(self, memory, model, user, chat, user_message, parent, message, head, exchanges, current, layout, tools, kwargs):
+    def __init__(self, memory, model, user, chat, user_message, parent, message, head, exchanges, current, layout, tools, kwargs, target=None):
         self.memory = memory
+        self.target = target
         self.model = model
         self.user = user
         self.chat = chat
@@ -854,9 +866,80 @@ class Session:
         self.memory.schedule(self, plan_messages, content, prompt_ids or [], token_ids or [])
 
 
+MEMORY_OFF = "\ue000SPARKPIPE-MEMORY-OFF\ue001"
+
+
+def memory_switch(messages):
+    off = False
+    cleaned = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str) and MEMORY_OFF in content:
+            off = True
+            content = content.replace(MEMORY_OFF, "")
+            if not content.strip() and message.get("role") == "system":
+                continue
+            message = dict(message, content=content)
+        elif isinstance(content, list) and any(isinstance(part, dict) and isinstance(part.get("text"), str) and MEMORY_OFF in part["text"] for part in content):
+            off = True
+            parts = [dict(part, text=part["text"].replace(MEMORY_OFF, "")) if isinstance(part, dict) and isinstance(part.get("text"), str) else part for part in content]
+            parts = [part for part in parts if not (isinstance(part, dict) and part.get("type") == "text" and not part.get("text", "").strip())]
+            if not parts and message.get("role") == "system":
+                continue
+            message = dict(message, content=parts)
+        cleaned.append(message)
+    return cleaned, off
+
+
+BUDGET_KEYS = ("open_budget", "line_tokens", "group_size", "working_tokens", "working_context_share", "ledger_tokens", "ledger_context_share",
+               "part_small_tokens", "part_cap_tokens", "keep_tokens", "target_tolerance", "target_minimum_tokens")
+SHARE_KEYS = ("working_context_share", "ledger_context_share", "target_tolerance")
+OVERRIDE_KEYS = BUDGET_KEYS + ("prompt_tokens",)
+
+
+class MemoryProfile:
+    def __init__(self, budgets, model, target=None):
+        overrides = getattr(model, "memory", None) or {}
+        if not isinstance(overrides, dict) or set(overrides) - set(OVERRIDE_KEYS):
+            raise SystemExit(f"chat_memory: {model.id} may override only {', '.join(OVERRIDE_KEYS)}")
+        values = dict(budgets)
+        values.update(overrides)
+        missing = [key for key in BUDGET_KEYS if key not in values]
+        if missing:
+            raise SystemExit(f"chat_memory: the budgets lack {', '.join(missing)}")
+        for key in BUDGET_KEYS:
+            setattr(self, key, float(values[key]) if key in SHARE_KEYS else int(values[key]))
+        context = int(getattr(model, "context_tokens", 0) or 0)
+        limit = int(values["prompt_tokens"]) if "prompt_tokens" in values else (context - max(4096, context * 15 // 100) if context else 0)
+        self.target = None
+        if target:
+            self.target = max(self.target_minimum_tokens, min(int(target), context) if context else int(target))
+            self.ledger_tokens = min(self.ledger_tokens, int(self.target * self.ledger_context_share))
+            if context and self.target >= context:
+                high, low = limit, int(limit * (1 - 2 * self.target_tolerance))
+            else:
+                high, low = int(self.target * (1 + self.target_tolerance)), int(self.target * (1 - self.target_tolerance))
+                high = min(high, limit) if limit else high
+            fixed = self.ledger_tokens + self.open_budget
+            self.prompt_tokens = high
+            self.working_tokens = max(1, high - fixed)
+            self.working_low = max(0, min(low, high) - fixed)
+        else:
+            if context:
+                self.working_tokens = min(self.working_tokens, int(context * self.working_context_share))
+                self.ledger_tokens = min(self.ledger_tokens, int(context * self.ledger_context_share))
+            self.prompt_tokens = limit
+            self.working_low = self.working_tokens // 2
+        reasoning = getattr(model, "reasoning", None)
+        self.curator_suffix = reasoning.get("close", reasoning["end"]) if reasoning else None
+
+
 class Memory:
     def __init__(self, config, frontend):
         self.frontend = frontend
+        self.shared_budgets = config.get("budgets")
+        if not isinstance(self.shared_budgets, dict) or set(self.shared_budgets) != set(BUDGET_KEYS):
+            raise SystemExit(f"chat_memory: budgets must set exactly {', '.join(BUDGET_KEYS)}")
         self.store = ChatStore(config["store"])
         self.secret = Path(config["jwt_secret_file"]).read_text().strip()
         if len(self.secret) < 32:
@@ -873,10 +956,10 @@ class Memory:
         self.tasks = {}
         self.counts = {}
 
-    def session(self, model, headers, messages, tools, kwargs):
-        settings = getattr(model, "memory", None)
-        if not settings:
-            return None
+    def profile(self, model, target=None):
+        return MemoryProfile(self.shared_budgets, model, target)
+
+    def session(self, model, headers, messages, tools, kwargs, target=None):
         claims = verify_jwt(headers.get("X-OpenWebUI-User-Jwt") or "", self.secret)
         if not claims or claims.get("iss") != self.issuer or not isinstance(claims.get("sub"), str):
             return None
@@ -913,7 +996,7 @@ class Memory:
         else:
             parts = self.part_renderer(model, state["forms"])
             layout = build_layout(head, exchanges, current, lines, open_ids, state["commits"], self.open_chars, state["groups"], None, parts)
-            layout = self.fit(model, user, chat, head, exchanges, current, layout, tools)
+            layout = self.fit(model, user, chat, head, exchanges, current, layout, tools, target)
             used = {part["key"]: state["forms"][part["key"]] for index in layout["working"] for part in tool_parts(exchanges[index]) if part["key"] in state["forms"]}
             self.store.append(user, chat, {"type": "layout", "message": user_message, "lined": layout["lined"], "open": layout["open"], "commits": layout["keys"],
                                            "groups": layout["groups"], "forms": used})
@@ -921,7 +1004,7 @@ class Memory:
         if replay:
             layout["messages"] = layout["messages"][:len(layout["messages"]) - len(current)] + splice_expansions(layout["messages"][len(layout["messages"]) - len(current):], replay)
         return Session(self, model, user, chat, user_message, parent, message, head, exchanges, current, layout,
-                       list(tools or []) + list(MEMORY_TOOLS), dict(kwargs))
+                       list(tools or []) + list(MEMORY_TOOLS), dict(kwargs), self.profile(model, target).target)
 
     def ledger_lines(self, state):
         lines = dict(state["lines"])
@@ -929,11 +1012,8 @@ class Memory:
         return lines
 
     def part_settings(self, model):
-        settings = model.memory
-        missing = [key for key in ("part_small_tokens", "part_cap_tokens", "keep_tokens") if key not in settings]
-        if missing:
-            raise KeyError(f"chat_memory for {model.id} lacks {', '.join(missing)}")
-        return int(settings["part_small_tokens"]), int(settings["part_cap_tokens"]), int(settings["keep_tokens"])
+        profile = self.profile(model)
+        return profile.part_small_tokens, profile.part_cap_tokens, profile.keep_tokens
 
     def count(self, model, text):
         key = (model.id, hashlib.sha256(text.encode()).hexdigest())
@@ -963,18 +1043,15 @@ class Memory:
 
         return render
 
-    def budgets(self, model):
-        settings = model.memory
-        context = int(getattr(model, "context_tokens", 0) or 0)
-        ledger = int(settings.get("ledger_tokens") or max(1024, context // 10))
-        prompt = int(settings.get("prompt_tokens") or (context - max(4096, context * 15 // 100) if context else 0))
-        return ledger, prompt, int(settings.get("group_size", 16)), int(settings.get("line_tokens", 48))
+    def budgets(self, model, target=None):
+        profile = self.profile(model, target)
+        return profile.ledger_tokens, profile.prompt_tokens, profile.group_size, profile.line_tokens
 
-    def working_budget(self, model):
-        context = int(getattr(model, "context_tokens", 0) or 0)
-        return int(model.memory.get("working_tokens") or max(4096, context * 3 // 16))
+    def working_range(self, model, target=None):
+        profile = self.profile(model, target)
+        return profile.working_tokens, profile.working_low
 
-    def prompt_size(self, model, layout, tools):
+    def prompt_size(self, model, layout, tools, target=None):
         parts = [json.dumps(list(tools or []) + list(MEMORY_TOOLS), ensure_ascii=False)]
         for message in layout["messages"]:
             parts.append(text_of(message.get("content")))
@@ -982,17 +1059,17 @@ class Memory:
                 parts.append(json.dumps(message["tool_calls"], ensure_ascii=False))
         text = "\n".join(parts)
         overhead = 8 * len(layout["messages"]) + 64
-        if len(text.encode()) + overhead <= self.budgets(model)[1]:
+        if len(text.encode()) + overhead <= self.budgets(model, target)[1]:
             return len(text.encode()) + overhead
         return self.frontend.memory_count(model, text) + overhead
 
-    def fit(self, model, user, chat, head, exchanges, current, layout, tools):
-        limit = self.budgets(model)[1]
+    def fit(self, model, user, chat, head, exchanges, current, layout, tools, target=None):
+        limit = self.budgets(model, target)[1]
         state = self.store.load(user, chat)
         rebuild = lambda open_ids: build_layout(head, exchanges, current, self.ledger_lines(state), open_ids, state["commits"], self.open_chars,
                                                 state["groups"], None, self.part_renderer(model, state["forms"]))
         for _ in range(64):
-            if not limit or self.prompt_size(model, layout, tools) <= limit:
+            if not limit or self.prompt_size(model, layout, tools, target) <= limit:
                 return layout
             if layout["open"]:
                 layout = rebuild([])
@@ -1100,29 +1177,29 @@ class Memory:
         indices = list(job["missing"]) + [len(session.exchanges)]
         everything = session.exchanges + [session.current + [{"role": "assistant", "content": job["content"]}]]
         sizes = self.node_tokens(session)
-        settings = model.memory
+        profile = self.profile(model)
         planned = self.plan_regroup(model, session)
         job["planned"] = planned
         large = self.large_parts(model, session)
         job["large"] = large
-        instruction = curator_instruction(everything, {}, indices, session.layout["open"], sizes, int(settings.get("open_budget", 1500)), int(settings.get("line_tokens", 48)), planned)
+        instruction = curator_instruction(everything, {}, indices, session.layout["open"], sizes, profile.open_budget, profile.line_tokens, planned)
         if large:
             instruction += keep_instruction(large, self.part_settings(model)[0], self.part_settings(model)[2])
         commit_plan = self.plan_commit(model, session, job["content"], large)
         job["commit_plan"] = commit_plan
         if commit_plan:
             state = self.store.load(session.user, session.chat)
-            instruction += commit_instruction(commit_plan, session.exchanges, state["lines"], self.working_budget(model))
+            instruction += commit_instruction(commit_plan, session.exchanges, state["lines"], self.working_range(model, session.target)[0])
         continued = None
         if job["prompt_ids"] and job["token_ids"] and job["attempts"] == 0:
-            continued = self.frontend.memory_continuation_ids(model, job["messages"], session.tools, session.kwargs, job["prompt_ids"], job["token_ids"], instruction, settings.get("curator_suffix"))
+            continued = self.frontend.memory_continuation_ids(model, job["messages"], session.tools, session.kwargs, job["prompt_ids"], job["token_ids"], instruction, profile.curator_suffix)
         if continued is not None:
             ids, reasoning_open = continued
         else:
             messages = job["messages"] + [{"role": "assistant", "content": job["content"]}, {"role": "user", "content": instruction}]
-            ids, reasoning_open = self.frontend.memory_curator_ids(model, messages, session.tools, session.kwargs, settings.get("curator_suffix"))
+            ids, reasoning_open = self.frontend.memory_curator_ids(model, messages, session.tools, session.kwargs, profile.curator_suffix)
         text = await self.frontend.memory_complete(model, ids, self.curator_tokens + 80 * len(indices), reasoning_open, "curator" if continued is not None else "curator_render", session.trace())
-        lines, opened, complete = parse_curator(text, indices, len(everything), sizes, int(settings.get("open_budget", 1500)))
+        lines, opened, complete = parse_curator(text, indices, len(everything), sizes, profile.open_budget)
         if lines is None:
             return False
         for index, line in lines.items():
@@ -1147,11 +1224,11 @@ class Memory:
         pending = {item["part"]["key"]: [] for item in large}
         newest = self.part_renderer(model, dict(state["forms"], **pending))(len(session.exchanges) + 1, session.current + [{"role": "assistant", "content": content}], True)
         total = sum(sizes.values()) + self.count(model, messages_text(newest)) + (self.part_settings(model)[2] if large else 0)
-        budget = self.working_budget(model)
-        print(json.dumps(dict(session.trace(), event="chat_memory_working", open_exchanges=len(sizes), tokens=total, budget=budget)), flush=True)
+        budget, low = self.working_range(model, session.target)
+        print(json.dumps(dict(session.trace(), event="chat_memory_working", open_exchanges=len(sizes), tokens=total, budget=budget, low=low, target=session.target)), flush=True)
         if total <= budget or not sizes:
             return None
-        return {"total": total, "needed": total - budget // 2, "sizes": sizes}
+        return {"total": total, "needed": total - low, "sizes": sizes}
 
     def apply_commits(self, session, plan, chosen):
         state = self.store.load(session.user, session.chat)
@@ -1173,7 +1250,7 @@ class Memory:
 
     def plan_regroup(self, model, session):
         state = self.store.load(session.user, session.chat)
-        ledger_budget, _, size, line_tokens = self.budgets(model)
+        ledger_budget, _, size, line_tokens = self.budgets(model, session.target)
         lines = self.ledger_lines(state)
         order = [index for index in committed_order(session.exchanges, state["commits"]) if exchange_key(session.exchanges[index]) in lines]
         nodes = ledger_nodes(session.exchanges, lines, state["groups"], order)
@@ -1208,9 +1285,6 @@ class Memory:
             self.write_line(session, len(session.exchanges), fallback_line(session.current + [{"role": "assistant", "content": job["content"]}]), "fallback")
 
     async def stem(self, model, session):
-        settings = model.memory
-        if not int(settings.get("cache_checkpoint_tokens", 0)):
-            return
         state = self.store.load(session.user, session.chat)
         lines = self.ledger_lines(state)
         order = [index for index in committed_order(session.exchanges, state["commits"]) if exchange_key(session.exchanges[index]) in lines]

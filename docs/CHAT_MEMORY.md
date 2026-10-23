@@ -89,7 +89,7 @@ The answer request for turn N+1:
 [system: fixed instructions + tools (including expand)]                 static
 [user: <ledger> l_1 .. l_{N-1} </ledger> + u_N]                          append-only ledger, then the raw tail
 [assistant: a_N in Open WebUI's replay form]
-[user: <reference> open nodes </reference> + u_{N+1}]                    this turn
+[user: u_{N+1} + <reference> open nodes </reference> when any are open]   this turn
 ```
 
 - The ledger is inside the first user message because templates render tools
@@ -106,8 +106,15 @@ The answer request for turn N+1:
 - Open nodes render as `<history id="e5">User (earlier): ...\nAssistant
   (earlier): ...</history>` after one fixed sentence saying they are
   reference, not new requests; the static system text says the same.
-- The reference block is always present, even when empty, so the pre-warm cut
-  is in the same place every turn.
+- Nothing before the newest question changes from one turn to the next. The
+  reference block follows the question and is left out when no node is open,
+  so the next turn's prompt begins with this turn's prompt (or, after a turn
+  that showed nodes, with its pre-warm cut). Models with recurrent state
+  resume only at a saved state checkpoint, at a prompt's end or a stride: a
+  block placed before the question and dropped once the exchange became past
+  changed the prompt where no checkpoint lay, and K3's first qualification
+  (2026-10-23) re-read 609K prompt tokens with memory against 105K with Full
+  context.
 
 ## One turn
 
@@ -208,12 +215,44 @@ stubs with an expand id.
 
 ## Budgets
 
-Per model, as fractions of `context_tokens`: measured system and tools, the
-ledger, the raw tail, the open set, documents, and an output reserve of at
-least max(4K, 15%). Before every answer a synchronous fit step folds the
+One set for every model: `chat_memory.budgets` in `chat_frontend.json` sets
+`open_budget`, `line_tokens`, `group_size`, `working_tokens`,
+`working_context_share`, `ledger_tokens`, `ledger_context_share`,
+`part_small_tokens`, `part_cap_tokens`, `keep_tokens`, `target_tolerance`
+and `target_minimum_tokens`, all required. The
+working set and the ledger take the smaller of their cap and their share of
+the model's `context_tokens` (3/16 and 1/10): 24,576 and 12,288 tokens on K3
+and DSV4.1, 6,144 and 3,276 on a 32K model. A model's own `chat_memory` object may override only those keys
+and `prompt_tokens`. The prompt budget is otherwise the model's
+`context_tokens` minus an output reserve of max(4K, 15%). `MemoryProfile` in
+`tools/serving/chat_memory.py` resolves and checks this per model; nothing
+else in the chat layer reads a budget. Before every answer a synchronous fit step folds the
 oldest lines into a stub group instead of returning `context_length_exceeded`
-(DeepSeek V4.1 Flash serves 16K and ten models serve 32K; a switch from K3
-to a 32K model can arrive with a ledger over budget).
+(a switch from a long-context model to a 32K model can arrive with a ledger
+over budget). The working set is compacted with hysteresis: once it passes
+`working_tokens`, the curator commits the oldest exchanges until it is back
+to `working_low` (half the budget without a target).
+
+### Context target
+
+A chat may set a target for its prompt length: Open WebUI's Context Length
+slider (Chat Controls, Advanced Params; a user default in Settings, a model
+default in the admin model editor) sends `num_ctx`, and the chat layer hands
+it to the memory session (`context_target` in `chat_frontend.py`; `-1` and
+`0` mean no target). With a target T, clamped to at least
+`target_minimum_tokens` (16,384) and at most the model's `context_tokens`:
+
+- the prompt may grow to T × (1 + `target_tolerance`), 25% over, before the
+  fit step folds lines;
+- the working set may grow to that limit less the ledger budget and
+  `open_budget`, then compacts back to T × (1 − tolerance) less the same;
+- the ledger takes its share of T instead of the model's context;
+- at the model's true maximum the target is a hard limit: the prompt stays
+  inside the prompt budget, and the working set compacts to
+  (1 − 2 × tolerance) of it.
+
+Between compactions the prompt only grows, so the engine reuses its cached
+prefix. "Full context" overrides any target and sends the whole chat.
 
 ## Bookkeeping
 
@@ -259,15 +298,72 @@ memory only. Deleted chats are removed when Open WebUI no longer knows them.
 
 ## Integration
 
-- In the chat layer (`tools/serving/`), model-neutral; per-model data
-  (`curator_suffix`, cache geometry, budgets) lives in `chat_frontend.json`.
-- `curator_suffix` per model, read from the templates (unverified until
-  phase 1): GLM ×2, DeepSeek, Ling ×2, Laguna `</think>`; K3
-  `<|close|>think<|sep|><|open|>response<|sep|>`; Qwen ×3 `\n</think>\n\n`;
-  Hy4 `</think:opensource>`; MiMo ×2 `<think></think>`; Muse
-  ` to=user<|message|>`; Gemma none. Reasoning is not switched off through
-  template kwargs: that changes the prompt within its first 37 tokens on 11
-  of 16 models.
+- Memory serves every model; it is not a per-model option. The chat layer
+  (`tools/serving/`) is model-neutral and keeps no memory settings per model
+  beyond budget overrides.
+- The curator suffix comes from the model's output format, not from memory
+  settings: `reasoning.close` when the format closes an empty reasoning block
+  with more than its end marker (K3
+  `<|close|>think<|sep|><|open|>response<|sep|>`, Qwen ×3 `\n</think>\n\n`),
+  else `reasoning.end`. It applies only when the prompt ends inside an opened
+  reasoning block. Reasoning is not switched off through template kwargs:
+  that changes the prompt within its first 37 tokens on 11 of 16 models.
+- The engine resumes every model at a prompt's checkpoint, so the ledger-end
+  stem runs for every model.
+- Users can turn memory off per chat with the global "Full context" toggle
+  (`tools/serving/open_webui/functions/memory_off.py`). It puts
+  `MEMORY_OFF` in front of the messages; the chat layer removes it and serves
+  the turn raw.
+- A model is qualified for chat only after `tools/chat_memory_qualify.py`
+  passes on it through the production chat layer: prefix reuse and recall
+  with memory on, against the same chats with Full context.
+
+## Qualification
+
+Every model is qualified with `tools/chat_memory_qualify.py` before chat users
+rely on it. The tool drives the production chat layer the way Open WebUI does:
+- signed user JWT, chat and message ids, parent links;
+- live answers kept as the history.
+
+Each synthetic chat plants facts in user turns (a memo's room number, a quote
+table, an option list, a budget and its later correction, a standing
+instruction). Its long notes carry it past `working_tokens`, so older turns are
+committed to the ledger. The model is then asked for every fact. The same chats
+run with memory and with the Full context marker. A model qualifies when, with
+memory:
+- recall is within one probe of Full context;
+- every turn that does not compact reuses the previous turn's whole prompt from
+  the engine's cache (`--slack`, 512 tokens: two blocks of the largest KV
+  block), and all turns together re-read at most 5% more prompt tokens than
+  the Full context chats;
+- every background memory job finishes;
+- user turns see no more stale prefix recomputes than with Full context.
+
+The Full context chats must start no memory job. Stale prefix recomputes are
+reported per arm for user turns and for background jobs: the engine recomputes
+a prefix its index still lists but the ranks no longer hold, which costs
+prefill but not correctness. Reports are kept under
+`qualification/chat_memory/<model>/`.
+
+Status, 2026-10-23 (`qualification/chat_memory/<model>/20261023T202945Z.json`):
+
+| Model | Qualified | Recall memory / Full | Uncached memory / Full | Stale recomputes, user turns memory / Full |
+|---|---|---|---|---|
+| Kimi K3 | yes | 15 / 15 | 102,982 / 104,997 | 3 / 3 |
+| DeepSeek V4.1 Flash | no | 15 / 15 | 97,992 / 101,005 | 1 / 0 (plus 2 in background jobs) |
+
+DeepSeek V4.1 Flash fails one check by one event. A turn resumed at a
+recurrent-state checkpoint the ranks had evicted. Each memory turn adds a
+curator continuation and a pre-warm, and each leaves checkpoints, while the KV
+binding keeps the newest four per path (`SPARK_KV_PAGE_CACHE_RECENT_STATES`).
+The turn resumed one checkpoint earlier and recomputed 177 of 7,294 prompt
+tokens. It qualifies once the binding keeps the checkpoint the next turn
+resumes from. The other 14 models have not run yet.
+
+An earlier check, a median cached share of 90%, failed chats with perfect
+reuse: when every other turn adds a 3,000-token note, cached over prompt sits
+near 0.8 even when the whole previous prompt is reused, and the Full context
+chats show the same share.
 
 ## Evaluation
 
