@@ -21,6 +21,7 @@ extern "C" {
 #define SPARK_SPECULATION_FRAME_REQUEST_DECAY 0.98f
 #define SPARK_SPECULATION_FRAME_COST_WEIGHT 0.125f
 #define SPARK_SPECULATION_FRAME_MARGIN 1.05f
+#define SPARK_SPECULATION_FRAME_STALE_FRAMES 64u
 
 typedef struct SparkSpeculationHazard
 {
@@ -34,6 +35,7 @@ typedef struct SparkSpeculationCost
 	float ns;
 	float rows;
 	float samples;
+	uint64_t seen;
 } SparkSpeculationCost;
 
 typedef struct SparkSpeculationFrameModel
@@ -42,6 +44,7 @@ typedef struct SparkSpeculationFrameModel
 	SparkSpeculationCost frame[SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS][SPARK_SPECULATION_FRAME_ROW_BUCKETS];
 	SparkSpeculationCost token[SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS];
 	SparkSpeculationCost single[SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS];
+	uint64_t observed[SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS];
 } SparkSpeculationFrameModel;
 
 typedef struct SparkSpeculationFrameRequest
