@@ -409,7 +409,7 @@ Boot0002* ubuntu HD(1,GPT,def)
         source = SCRIPT.read_text()
         self.assertIn('"nvidia-smi","--query-gpu=name,temperature.gpu"',source)
         self.assertIn('["tailscale","status","--json"]',source)
-        self.assertIn('extnvme-not-mounted-rw',source)
+        self.assertIn('layout-root-not-writable:',source)
 
     def test_persistent_unit_links_only_returns_dependency_links(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

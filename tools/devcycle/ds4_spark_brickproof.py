@@ -30,6 +30,9 @@ MANAGEMENT_GATEWAY = "10.20.0.1"
 MANAGEMENT_INTERFACE = "enP7s7"
 MANAGEMENT_NETMASK = "255.255.255.0"
 MANAGEMENT_PREFIX = "10.20.0"
+LAN_ADDRESS_BASE = 128
+LAN_PREFIX = "192.168.50"
+NODE_LAYOUT_SOURCE = "tools/spark_node_layout.json"
 MAX_SPARK_RANK = 15
 NODE_RANK_PATH = Path("/etc/ds4-node-rank")
 SWITCHED_ADDRESS_BASE = 10
@@ -522,6 +525,34 @@ def install_recovery_keys(public_key: str) -> bool:
     return(changed)
 
 
+def node_layout_roots(text: str) -> list[str]:
+    return(sorted(json.loads(text)["roots"].values()))
+
+
+def install_node_layout(node_id: str,roots: object,home_root: Path = Path("/home")) -> list[str]:
+    if not isinstance(roots,list) or not roots or any(not isinstance(root,str) or not re.fullmatch(r"[a-z][a-z0-9_]*",root) for root in roots):
+        raise BrickproofError(f"payload node layout roots are invalid: {roots!r}")
+    home = home_root / node_id
+    owner = home.stat()
+    created = []
+    for root in roots:
+        path = home / root
+        if path.exists() or path.is_symlink():
+            continue
+        path.mkdir(mode=0o775)
+        os.chown(path,owner.st_uid,owner.st_gid)
+        os.chmod(path,0o775)
+        created.append(str(path))
+    return(created)
+
+
+def heal_time_sync() -> bool:
+    if command(["timedatectl","show-timesync","-p","ServerName","--value"],check=False) in NTP_SERVERS:
+        return(False)
+    run(["systemctl","restart","systemd-timesyncd.service"])
+    return(True)
+
+
 def install_assets(assets: object) -> bool:
     changed = False
     if not isinstance(assets,dict):
@@ -804,6 +835,8 @@ def remote_apply(payload_path: Path) -> dict[str,object]:
     install_assets(payload["assets"])
     if rank != HUB_GATEWAY_RANK:
         install_assets(payload["linked_rank_assets"])
+    layout_created = install_node_layout(str(payload["recovery_network"]["node_id"]),payload["node_layout_roots"])
+    time_sync_restarted = heal_time_sync()
     run([NETWORK_MANAGER_RUNTIME,"--network-manager"],timeout=120)
     atomic_write(Path("/etc/systemd/system/user-1000.slice.d/20-ds4-brickproof.conf"),USER_SLICE,0o644)
     atomic_write(Path("/etc/default/earlyoom"),EARLYOOM_DEFAULT,0o644)
@@ -826,7 +859,7 @@ def remote_apply(payload_path: Path) -> dict[str,object]:
     enable_policy_services(rank,str(payload["recovery_network"]["node_id"]))
     run([DMA_GUARD_RUNTIME,"install","--notify",HUB_NOTIFY],timeout=120)
     run(["systemctl","start","logrotate.service"])
-    return({"ceph_changes":ceph_changes,"snap_units_retired":snap_units_retired,"efi_boot_order_changed":efi_boot_order_changed,"grub_changed":grub_changed,"identity_changed":identity_changed,"keys_changed":keys_changed,"memory_current_before":memory_current,"source_commit":payload["source_commit"]})
+    return({"ceph_changes":ceph_changes,"layout_created":layout_created,"snap_units_retired":snap_units_retired,"time_sync_restarted":time_sync_restarted,"efi_boot_order_changed":efi_boot_order_changed,"grub_changed":grub_changed,"identity_changed":identity_changed,"keys_changed":keys_changed,"memory_current_before":memory_current,"source_commit":payload["source_commit"]})
 
 
 def read_optional(path: Path) -> str:
@@ -864,12 +897,6 @@ def audit_fleet_hardware(node_id: str) -> tuple[list[str],dict[str,object]]:
     observations["gpu"] = gpu.stdout.decode("utf-8",errors="replace").strip()
     if gpu.returncode != 0 or not str(observations["gpu"]).startswith("NVIDIA GB10,"):
         failures.append("gpu-unhealthy")
-    extnvme = Path("/home") / node_id / "extnvme"
-    stat_result = run(["timeout","15","stat",str(extnvme)],check=False)
-    mount = command(["findmnt","-rn","-T",str(extnvme),"-o","TARGET,SOURCE,FSTYPE,OPTIONS"],check=False)
-    observations["extnvme"] = mount
-    if stat_result.returncode != 0 or not mount or "rw" not in mount.split()[-1].split(","):
-        failures.append("extnvme-not-mounted-rw")
     tailscale = run(["tailscale","status","--json"],timeout=30,check=False)
     try:
         status = json.loads(tailscale.stdout.decode("utf-8"))
@@ -1233,6 +1260,13 @@ def remote_audit(payload_path: Path) -> dict[str,object]:
         str(payload["recovery_network"]["node_id"]))
     failures.extend(hardware_failures)
     observations.update(hardware_observations)
+    for root in payload["node_layout_roots"]:
+        path = Path("/home") / str(payload["recovery_network"]["node_id"]) / str(root)
+        stat_result = run(["timeout","15","stat",str(path)],check=False)
+        mount = command(["findmnt","-rn","-T",str(path),"-o","TARGET,SOURCE,FSTYPE,OPTIONS"],check=False)
+        observations[f"layout:{root}"] = mount
+        if stat_result.returncode != 0 or not mount or "rw" not in mount.split()[-1].split(","):
+            failures.append(f"layout-root-not-writable:{root}")
     health_path = Path("/var/lib/sparkpipe/fsck-health/last.json")
     if health_path.exists():
         try:
@@ -1271,7 +1305,8 @@ def build_payload(repo: Path,ref: str) -> dict[str,object]:
     remote_script = git_show(repo,ref,SELF_SOURCE)
     if Path(__file__).read_text(encoding="utf-8") != remote_script:
         raise BrickproofError(f"controller does not match {ref}:{SELF_SOURCE}")
-    return({"assets":assets,"fleet_public_key":public_key,"linked_rank_assets":asset_texts(repo,ref,LINKED_RANK_ASSET_SOURCES),"remote_script":remote_script,"source_commit":commit})
+    return({"assets":assets,"fleet_public_key":public_key,"linked_rank_assets":asset_texts(repo,ref,LINKED_RANK_ASSET_SOURCES),"node_layout_roots":node_layout_roots(git_show(repo,ref,NODE_LAYOUT_SOURCE)),
+            "remote_script":remote_script,"source_commit":commit})
 
 
 def recovery_network_for_node(node: str) -> dict[str,str]:
@@ -1314,7 +1349,7 @@ def remote_action(host: str,action: str,payload: dict[str,object]) -> dict[str,o
 
 def emergency_probe(host: str,identity: Path) -> str:
     detail = ""
-    for target in (host,f"{host}.local"):
+    for target in (host,f"{host}.local",f"{LAN_PREFIX}.{LAN_ADDRESS_BASE + spark_rank(host)}"):
         result = run(["ssh","-T","-p","2222","-i",str(identity),"-o","BatchMode=yes","-o","IdentitiesOnly=yes","-o",f"HostKeyAlias={host}-emergency","-o","StrictHostKeyChecking=accept-new","-o","ConnectTimeout=8",f"root@{target}","true"],timeout=20,check=False)
         if result.returncode == 0:
             return("ok")

@@ -51,6 +51,8 @@ class Node:
             "systemctl show -p RuntimeWatchdogUSec --value":"10min","systemctl show -p RebootWatchdogUSec --value":"5min",
             f"loginctl show-user {node} -p Linger --value":"yes",
         }
+        for root in ("extnvme","kvcache","sparkdata","srcdata"):
+            self.commands[f"findmnt -rn -T /home/{node}/{root} -o TARGET,SOURCE,FSTYPE,OPTIONS"] = "/ /dev/nvme0n1p2 ext4 rw,relatime"
         self.unit_states = {unit:"masked" for unit in MODULE.OPTIONAL_BOOT_UNITS}
         self.unit_states.update({unit:"enabled" for unit in (
             "serial-getty@ttyS0.service","sparkpipe-fsck-health.timer","ds4-switched-fabric.timer","ds4-direct-pair-fabric.timer",
@@ -108,6 +110,7 @@ class Node:
             payload.write_text(json.dumps({
                 "assets":{"/a":{"text":"a\n","mode":0o644}},
                 "linked_rank_assets":{"/route":{"text":"r\n","mode":0o644}},
+                "node_layout_roots":["extnvme","kvcache","sparkdata","srcdata"],
                 "fleet_public_key":PUBLIC_KEY,
                 "recovery_network":MODULE.recovery_network_for_node(self.node),
                 "source_commit":"abc",
@@ -189,6 +192,11 @@ class RemoteAuditTest(unittest.TestCase):
     def test_ntp_accepts_either_hub_address(self) -> None:
         self.assert_adds(lambda n: n.commands.__setitem__("timedatectl show-timesync -p ServerName --value","10.10.250.2"),set())
         self.assert_adds(lambda n: n.commands.__setitem__("timedatectl show-timesync -p ServerName --value","ntp.ubuntu.com"),{"ntp:ntp.ubuntu.com:yes"})
+
+    def test_every_node_layout_root_must_be_a_writable_directory(self) -> None:
+        self.assertEqual(Node("spark3").audit() & {f"layout-root-not-writable:{root}" for root in ("extnvme","kvcache","sparkdata","srcdata")},set())
+        self.assert_adds(lambda n: n.commands.pop("findmnt -rn -T /home/spark3/srcdata -o TARGET,SOURCE,FSTYPE,OPTIONS"),{"layout-root-not-writable:srcdata"})
+        self.assert_adds(lambda n: n.commands.__setitem__("findmnt -rn -T /home/spark3/extnvme -o TARGET,SOURCE,FSTYPE,OPTIONS","/ /dev/nvme0n1p2 ext4 ro,relatime"),{"layout-root-not-writable:extnvme"})
 
     def test_hub_gateway_rank_skips_the_wired_uplink_and_the_hub_route(self) -> None:
         def detach(node: Node) -> None:

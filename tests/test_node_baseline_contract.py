@@ -155,6 +155,7 @@ class NodeBaselineContractTest(unittest.TestCase):
                     "assets":{"/a":{"text":"a\n","mode":0o644}},
                     "linked_rank_assets":{"/route":{"text":"r\n","mode":0o644}},
                     "fleet_public_key":"ssh-ed25519 AAAA test",
+                    "node_layout_roots":["extnvme"],
                     "recovery_network":{"node_id":node},
                     "source_commit":"abc",
                 }))
@@ -163,6 +164,7 @@ class NodeBaselineContractTest(unittest.TestCase):
                     "install_packages","install_required_kernel_modules","install_node_identity","atomic_write",
                     "install_sshd_config","install_recovery_keys","install_grub_policy","install_efi_boot_order",
                     "rebuild_initramfs","decouple_optional_boot_work","install_ceph_policy","retire_stale_snap_units",
+                    "install_node_layout","heal_time_sync",
                 )
                 patches = [mock.patch.object(MODULE,name,side_effect=lambda *args,_name=name,**_kwargs: calls.append((_name,args)) or []) for name in names]
                 patches.append(mock.patch.object(MODULE,"install_assets",side_effect=lambda assets: calls.append(("install_assets",tuple(assets)))))
@@ -189,6 +191,8 @@ class NodeBaselineContractTest(unittest.TestCase):
                 guard = order.index(f"{MODULE.DMA_GUARD_RUNTIME} install --notify {MODULE.HUB_NOTIFY}")
                 self.assertLess(order.index("enable_policy_services"),guard)
                 self.assertLess(order.index("install_ceph_policy"),order.index("enable_policy_services"))
+                self.assertIn(("install_node_layout",(node,["extnvme"])),calls)
+                self.assertLess(max(index for index,name in enumerate(order) if name == "install_assets"),order.index("heal_time_sync"))
                 self.assertIn(("enable_policy_services",(rank,node)),calls)
 
     def test_switched_fabric_network_manager_mode_writes_the_fleet_policy(self) -> None:
@@ -230,6 +234,46 @@ class NodeBaselineContractTest(unittest.TestCase):
             "ETHTOOL -K enp1s0f1np1 tx-tcp-mangleid-segmentation off",
             "IP link set dev enp1s0f1np1 mtu 9000",
             "IP address replace 10.10.100.13/24 dev enp1s0f1np1"])
+
+    def test_node_layout_installs_every_missing_root_owned_by_the_node_user(self) -> None:
+        self.assertEqual(MODULE.node_layout_roots((ROOT / "tools" / "spark_node_layout.json").read_text()),["extnvme","kvcache","sparkdata","srcdata"])
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "spark3" / "kvcache").mkdir(parents=True)
+            (home / "spark3" / "kvcache" / "keep").write_text("x")
+            owner = (home / "spark3").stat()
+            created = MODULE.install_node_layout("spark3",["extnvme","kvcache","sparkdata","srcdata"],home)
+            self.assertEqual(created,[str(home / "spark3" / name) for name in ("extnvme","sparkdata","srcdata")])
+            for name in ("extnvme","sparkdata","srcdata"):
+                info = (home / "spark3" / name).stat()
+                self.assertEqual((info.st_mode & 0o777,info.st_uid,info.st_gid),(0o775,owner.st_uid,owner.st_gid))
+            self.assertEqual((home / "spark3" / "kvcache" / "keep").read_text(),"x")
+            self.assertEqual(MODULE.install_node_layout("spark3",["extnvme","kvcache","sparkdata","srcdata"],home),[])
+            for roots in ([],["../etc"],["a/b"],"extnvme"):
+                with self.subTest(roots=roots),self.assertRaises(MODULE.BrickproofError):
+                    MODULE.install_node_layout("spark3",roots,home)
+
+    def test_time_sync_follows_only_the_hub_and_apply_heals_a_fallback(self) -> None:
+        config = (ROOT / "tools" / "devcycle" / "fleet" / "timesyncd-sparkpipe-hub.conf").read_text()
+        servers = [line.split("=",1)[1].split() for line in config.splitlines() if line.startswith("NTP=")]
+        self.assertEqual(servers,[list(MODULE.NTP_SERVERS)])
+        for server,restarted in (("ntp.ubuntu.com",True),("",True),("192.168.50.4",False),("10.10.250.2",False)):
+            with self.subTest(server=server),mock.patch.object(MODULE,"command",return_value=server),mock.patch.object(MODULE,"run") as run:
+                self.assertEqual(MODULE.heal_time_sync(),restarted)
+                self.assertEqual(run.call_args_list,[mock.call(["systemctl","restart","systemd-timesyncd.service"])] if restarted else [])
+
+    def test_emergency_probe_falls_back_to_the_node_lan_address(self) -> None:
+        targets = []
+        def attempt(argv: list[str],**_kwargs: object) -> object:
+            targets.append(argv[-2])
+            return(mock.Mock(returncode=0 if argv[-2] == "root@192.168.50.143" else 255,stdout=b"",stderr=b"timed out"))
+        with mock.patch.object(MODULE,"run",side_effect=attempt):
+            self.assertEqual(MODULE.emergency_probe("sparkf",Path("/k")),"ok")
+        self.assertEqual(targets,["root@sparkf","root@sparkf.local","root@192.168.50.143"])
+        targets.clear()
+        with mock.patch.object(MODULE,"run",side_effect=lambda argv,**_k: (targets.append(argv[-2]),mock.Mock(returncode=255,stdout=b"",stderr=b"refused"))[1]):
+            self.assertEqual(MODULE.emergency_probe("spark3",Path("/k")),"refused")
+        self.assertEqual(targets,["root@spark3","root@spark3.local","root@192.168.50.131"])
 
 if __name__ == "__main__":
     unittest.main()
