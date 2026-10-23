@@ -386,6 +386,7 @@ PYTHON_TESTS := \
 	tests/test_dry_law.py \
 	tests/test_family_defines_single_source.py \
 	tests/test_no_source_comments.py \
+	tests/test_ci_supply_chain.py \
 	tests/test_third_party_notices.py \
 	tests/test_unicode_nfc.py \
 	tests/test_tokenizer_unicode_split.py \
