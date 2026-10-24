@@ -176,6 +176,29 @@ float SparkSpeculationFrameSingleCost(const SparkSpeculationFrameModel *model, u
 	return(cost != 0.0f ? cost : SparkSpeculationCostNearest(model->token,context));
 }
 
+void SparkSpeculationFrameObserveBatchStep(SparkSpeculationFrameModel *model, uint32_t lanes, uint32_t steps, uint32_t context, uint64_t ns)
+{
+	if ( model == 0 || lanes < 2u || lanes > SPARK_SPECULATION_FRAME_BATCH_LANES || steps == 0u || ns == 0u )
+		return;
+	SparkSpeculationCostObserve(&model->batch_step[SparkSpeculationFrameContextBucket(context)][lanes - 1u],(float)lanes,(float)ns / (float)steps);
+}
+
+float SparkSpeculationFrameBatchStepCost(const SparkSpeculationFrameModel *model, uint32_t lanes, uint32_t context)
+{
+	const uint32_t bucket = SparkSpeculationFrameContextBucket(context);
+	uint32_t distance;
+	if ( model == 0 || lanes < 2u || lanes > SPARK_SPECULATION_FRAME_BATCH_LANES )
+		return(0.0f);
+	for (distance=0u; distance<SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS; distance++)
+	{
+		if ( bucket + distance < SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS && model->batch_step[bucket + distance][lanes - 1u].samples != 0.0f )
+			return(model->batch_step[bucket + distance][lanes - 1u].ns);
+		if ( distance != 0u && distance <= bucket && model->batch_step[bucket - distance][lanes - 1u].samples != 0.0f )
+			return(model->batch_step[bucket - distance][lanes - 1u].ns);
+	}
+	return(0.0f);
+}
+
 static float SparkSpeculationFrameRowCost(const SparkSpeculationCost *row, float rows)
 {
 	int32_t below = -1,above = -1,next = -1;
@@ -237,24 +260,46 @@ float SparkSpeculationFrameCost(const SparkSpeculationFrameModel *model, uint32_
 	return(single * (1.0f + (float)(rows - 1u) / 8.0f));
 }
 
+float SparkSpeculationFrameBatchSpread(const SparkSpeculationFrameModel *model, uint32_t lanes, uint32_t context)
+{
+	float step,single;
+	if ( lanes < 2u )
+		return(0.0f);
+	step = SparkSpeculationFrameBatchStepCost(model,lanes,context);
+	single = SparkSpeculationFrameCost(model,lanes,context);
+	return(step != 0.0f && single != 0.0f && step > single ? step - single : 0.0f);
+}
+
+float SparkSpeculationFrameBatchCost(const SparkSpeculationFrameModel *model, uint32_t lanes, uint32_t rows, uint32_t context)
+{
+	float cost = SparkSpeculationFrameCost(model,rows,context),step;
+	if ( lanes < 2u )
+		return(cost);
+	if ( cost != 0.0f )
+		return(cost + SparkSpeculationFrameBatchSpread(model,lanes,context));
+	step = SparkSpeculationFrameBatchStepCost(model,lanes,context);
+	return(step != 0.0f && rows >= lanes ? step * (1.0f + (float)(rows - lanes) / 8.0f) : 0.0f);
+}
+
 void SparkSpeculationFrameChoose(const SparkSpeculationFrameModel *model, const SparkSpeculationHazard *request_hazard,
 	const SparkSpeculationFrameRequest *request, SparkSpeculationFrameChoice *choice)
 {
 	const SparkSpeculationHazard *engine_hazard;
 	float best_rate = 0.0f,expected,cost;
-	uint32_t index,drafts,feasible,pass;
+	uint32_t index,drafts,feasible,pass,lanes;
 	memset(choice,0,sizeof(*choice));
 	if ( model == 0 || request == 0 || request->feasible == 0u )
 		return;
 	feasible = request->feasible < SPARK_SPECULATION_FRAME_MAX_DRAFTS ? request->feasible : SPARK_SPECULATION_FRAME_MAX_DRAFTS;
 	choice->chain_token_ns = SparkSpeculationFrameTokenCost(model,request->context);
-	if ( choice->chain_token_ns == 0.0f )
+	if ( choice->chain_token_ns == 0.0f && request->base_rows == 0u )
 		return;
 	engine_hazard = &model->classes[SparkSpeculationFrameClass(request->match_length,request->sampled)];
+	lanes = request->lanes > 1u ? request->lanes : 1u;
 	if ( engine_hazard->frames == 0u )
 	{
 		drafts = feasible < SPARK_SPECULATION_FRAME_PROBE_DRAFTS ? feasible : SPARK_SPECULATION_FRAME_PROBE_DRAFTS;
-		cost = SparkSpeculationFrameCost(model,drafts + 1u,request->context);
+		cost = SparkSpeculationFrameBatchCost(model,lanes,request->base_rows + drafts + 1u,request->context);
 		if ( request->cost_cap_ns != 0.0f && cost > request->cost_cap_ns )
 			return;
 		choice->drafts = drafts;
@@ -269,18 +314,29 @@ void SparkSpeculationFrameChoose(const SparkSpeculationFrameModel *model, const 
 			drafts = index < sizeof(SparkSpeculationFrameCandidates) / sizeof(SparkSpeculationFrameCandidates[0]) ? SparkSpeculationFrameCandidates[index] : feasible;
 			if ( drafts > feasible || (pass == 0u && drafts < request->minimum) )
 				continue;
-			cost = SparkSpeculationFrameCost(model,drafts + 1u,request->context);
+			cost = SparkSpeculationFrameBatchCost(model,lanes,request->base_rows + drafts + 1u,request->context);
 			if ( cost == 0.0f || (request->cost_cap_ns != 0.0f && cost > request->cost_cap_ns) )
 				continue;
 			expected = SparkSpeculationFrameExpected(engine_hazard,request_hazard,drafts);
-			if ( expected / cost > best_rate )
+			if ( (request->base_tokens + expected) / cost > best_rate )
 			{
-				best_rate = expected / cost;
+				best_rate = (request->base_tokens + expected) / cost;
 				choice->drafts = drafts;
 				choice->expected_tokens = expected;
 				choice->frame_ns = cost;
 			}
 		}
+	if ( request->base_rows != 0u )
+	{
+		cost = SparkSpeculationFrameBatchCost(model,lanes,request->base_rows + 1u,request->context);
+		if ( cost != 0.0f && best_rate * cost <= request->base_tokens + 1.0f )
+		{
+			choice->drafts = 0u;
+			choice->expected_tokens = 0.0f;
+			choice->frame_ns = 0.0f;
+		}
+		return;
+	}
 	if ( best_rate * choice->chain_token_ns < SPARK_SPECULATION_FRAME_MARGIN )
 	{
 		choice->drafts = 0u;

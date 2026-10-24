@@ -189,6 +189,8 @@ struct SparkModelBatchEngine
 	uint64_t model_draft_rounds;
 	uint64_t model_draft_failures;
 	uint64_t model_draft_declined;
+	uint64_t batch_verify_frames;
+	uint64_t batch_draft_declined;
 	uint64_t model_draft_frames;
 	uint64_t model_draft_tokens;
 	uint64_t model_draft_accepted;
@@ -223,6 +225,10 @@ struct SparkModelBatchEngine
 	uint32_t *prefix_binding_sequence_hash_heads;
 	SparkPrefixCache prefix_cache;
 	SparkSpeculationFrameModel frame_model;
+	uint32_t plan_lanes;
+	uint32_t plan_base_rows;
+	uint32_t plan_context;
+	float plan_base_tokens;
 	uint32_t served_priority;
 	uint32_t request_capacity;
 	uint32_t resident_sequence_capacity;
@@ -2892,6 +2898,12 @@ static void SparkModelBatchBuildPrefillRows(
 	submission->new_token_count = row;
 }
 
+static float SparkModelBatchPlanFrameCost(const SparkModelBatchEngine *engine,uint32_t rows,uint32_t context,float token_ns,float wait_ns)
+{
+	const float cost = SparkSpeculationFrameBatchCost(&engine->frame_model,engine->plan_lanes,engine->plan_base_rows + rows,context);
+	return((cost > token_ns ? cost : token_ns) + wait_ns);
+}
+
 static uint32_t SparkModelBatchExtendModelDraft(
 	SparkModelBatchEngine *engine,
 	SparkModelBatchRequestState *request,
@@ -2904,7 +2916,7 @@ static uint32_t SparkModelBatchExtendModelDraft(
 {
 	SparkSpeculationLookupMatch match;
 	const SparkSpeculationHazard *engine_hazard,*request_hazard;
-	const uint32_t context = position + 1u;
+	const uint32_t context = position + 1u > engine->plan_context ? position + 1u : engine->plan_context;
 	const float token_ns = SparkSpeculationFrameTokenCost(&engine->frame_model,context);
 	const uint32_t sampled = request->sampling.inverse_temperature != 0.0f ? 1u : 0u;
 	uint32_t available,index,extension = 0u,match_class;
@@ -2924,17 +2936,15 @@ static uint32_t SparkModelBatchExtendModelDraft(
 	match_class = SparkSpeculationFrameClass(match.match_length,sampled);
 	engine_hazard = &engine->frame_model.classes[match_class];
 	request_hazard = &request->draft_hazards[match_class];
-	cost = SparkSpeculationFrameCost(&engine->frame_model,drafts + 1u,context);
-	cost = (cost > token_ns ? cost : token_ns) + wait_ns;
-	best_rate = cost > 0.0f ? request->draft_expected / cost : 0.0f;
+	cost = SparkModelBatchPlanFrameCost(engine,drafts + 1u,context,token_ns,wait_ns);
+	best_rate = cost > 0.0f ? (engine->plan_base_tokens + request->draft_expected) / cost : 0.0f;
 	for (index=1u; index<=available; index++)
 	{
 		float rate;
 		survival *= 1.0f - SparkSpeculationHazardAt(engine_hazard,request_hazard,SparkSpeculationFrameDepthBucket(index));
 		gain += survival;
-		cost = SparkSpeculationFrameCost(&engine->frame_model,drafts + index + 1u,context);
-		cost = (cost > token_ns ? cost : token_ns) + wait_ns;
-		rate = cost > 0.0f ? (request->draft_expected + all_accepted * gain) / cost : 0.0f;
+		cost = SparkModelBatchPlanFrameCost(engine,drafts + index + 1u,context,token_ns,wait_ns);
+		rate = cost > 0.0f ? (engine->plan_base_tokens + request->draft_expected + all_accepted * gain) / cost : 0.0f;
 		if ( rate > best_rate )
 		{
 			best_rate = rate;
@@ -2991,7 +3001,7 @@ static uint32_t SparkModelBatchPlanModelDraft(
 		return(0u);
 	}
 	{
-		const uint32_t context = position + 1u;
+		const uint32_t context = position + 1u > engine->plan_context ? position + 1u : engine->plan_context;
 		const float token_ns = SparkSpeculationFrameTokenCost(&engine->frame_model,context);
 		float best_rate = 0.0f, best_gain = 0.0f, drafted = 0.0f, calibration = 1.0f;
 		wait_ns = (float)engine->model_draft_wait_us * 1000.0f / (float)engine->model_draft_rounds;
@@ -3009,9 +3019,8 @@ static uint32_t SparkModelBatchPlanModelDraft(
 			request->draft_path[index - 1u] = path;
 			drafted += calibration * path;
 			request->draft_tokens[index - 1u] = nodes[index].token_id;
-			cost = SparkSpeculationFrameCost(&engine->frame_model,index + 1u,context);
-			cost = (cost > token_ns ? cost : token_ns) + wait_ns;
-			rate = cost > 0.0f ? (1.0f + drafted) / cost : 0.0f;
+			cost = SparkModelBatchPlanFrameCost(engine,index + 1u,context,token_ns,wait_ns);
+			rate = cost > 0.0f ? (engine->plan_base_tokens + 1.0f + drafted) / cost : 0.0f;
 			if ( rate > best_rate )
 			{
 				best_rate = rate;
@@ -3022,6 +3031,8 @@ static uint32_t SparkModelBatchPlanModelDraft(
 			}
 		}
 		if ( best_gain < SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_GAIN )
+			drafts = 0u;
+		if ( engine->plan_base_rows != 0u && best_rate * SparkModelBatchPlanFrameCost(engine,1u,context,token_ns,wait_ns) <= engine->plan_base_tokens + 1.0f )
 			drafts = 0u;
 	}
 	if ( drafts == 0u )
@@ -3090,9 +3101,12 @@ static uint32_t SparkModelBatchPlanDraft(
 		return(0u);
 	memset(&frame,0,sizeof(frame));
 	frame.feasible = limit;
+	frame.lanes = engine->plan_lanes;
+	frame.base_rows = engine->plan_base_rows;
+	frame.base_tokens = engine->plan_base_tokens;
 	if ( request->draft_run_drafts != 0u && match.source_end == request->draft_run_source )
 		frame.minimum = 2u * request->draft_run_drafts < limit ? 2u * request->draft_run_drafts : limit;
-	frame.context = position + 1u;
+	frame.context = position + 1u > engine->plan_context ? position + 1u : engine->plan_context;
 	frame.match_length = match.match_length;
 	frame.sampled = request->sampling.inverse_temperature != 0.0f ? 1u : 0u;
 	frame.cost_cap_ns = cost_cap_ns;
@@ -3115,6 +3129,69 @@ static uint32_t SparkModelBatchPlanDraft(
 	return(choice.drafts);
 }
 
+static uint32_t SparkModelBatchPlanBatchDrafts(
+	SparkModelBatchEngine *engine,
+	uint32_t lane_count)
+{
+	uint32_t lane,rows,rows_left,draft_limit,stride = 1u,context = 0u;
+	float tokens,cost_cap_ns = 0.0f,frame_ns,step_ns;
+	rows_left = engine->scratch_row_capacity < engine->adapter_descriptor->max_verify_row_count ? engine->scratch_row_capacity : engine->adapter_descriptor->max_verify_row_count;
+	if ( rows_left <= lane_count )
+		return(stride);
+	rows_left -= lane_count;
+	draft_limit = SparkModelServingAdapterCompletionTokenCapacity(engine->adapter_descriptor) / lane_count - 1u;
+	if ( engine->adapter_descriptor->max_speculative_token_count < draft_limit )
+		draft_limit = engine->adapter_descriptor->max_speculative_token_count;
+	for (lane=0u; lane<lane_count; lane++)
+	{
+		const SparkModelBatchRequestState *request = &engine->requests[engine->scratch_request_slots[lane]];
+		if ( request->prompt_token_count + request->generated_token_count > context )
+			context = request->prompt_token_count + request->generated_token_count;
+	}
+	if ( SparkModelBatchPrefillWaiting(engine) != 0u )
+		cost_cap_ns = 2.0f * SparkSpeculationFrameBatchCost(&engine->frame_model,lane_count,lane_count,context);
+	rows = lane_count;
+	tokens = (float)lane_count;
+	engine->plan_lanes = lane_count;
+	engine->plan_context = context;
+	for (lane=0u; lane<lane_count && rows_left != 0u && draft_limit != 0u; lane++)
+	{
+		uint32_t slot = engine->scratch_request_slots[lane],count;
+		engine->plan_base_rows = rows - 1u;
+		engine->plan_base_tokens = tokens - 1.0f;
+		count = SparkModelBatchPlanDraft(engine,&engine->requests[slot],slot,draft_limit < rows_left ? draft_limit : rows_left,cost_cap_ns);
+		engine->scratch_prefill_counts[lane] = count;
+		rows_left -= count;
+		rows += count;
+		if ( count != 0u )
+			tokens += engine->requests[slot].draft_expected - 1.0f;
+		if ( count + 1u > stride )
+			stride = count + 1u;
+	}
+	engine->plan_lanes = 1u;
+	engine->plan_base_rows = 0u;
+	engine->plan_base_tokens = 0.0f;
+	engine->plan_context = 0u;
+	if ( stride == 1u )
+		return(stride);
+	frame_ns = SparkSpeculationFrameBatchCost(&engine->frame_model,lane_count,rows,context);
+	step_ns = SparkSpeculationFrameBatchStepCost(&engine->frame_model,lane_count,context);
+	if ( step_ns == 0.0f )
+		step_ns = SparkSpeculationFrameCost(&engine->frame_model,lane_count,context);
+	if ( frame_ns == 0.0f || step_ns == 0.0f || tokens * step_ns < SPARK_SPECULATION_FRAME_MARGIN * (float)lane_count * frame_ns )
+	{
+		for (lane=0u; lane<lane_count; lane++)
+		{
+			engine->requests[engine->scratch_request_slots[lane]].draft_count = 0u;
+			engine->scratch_prefill_counts[lane] = 0u;
+		}
+		engine->batch_draft_declined++;
+		return(1u);
+	}
+	engine->batch_verify_frames++;
+	return(stride);
+}
+
 static uint32_t SparkModelBatchPlanDrafts(
 	SparkModelBatchEngine *engine,
 	uint32_t lane_count)
@@ -3124,8 +3201,10 @@ static uint32_t SparkModelBatchPlanDrafts(
 	stride = 1u;
 	for (lane=0u; lane<lane_count; lane++)
 		engine->scratch_prefill_counts[lane] = 0u;
-	if ( engine->verify_capable == 0u || lane_count != 1u || engine->scratch_row_capacity < lane_count || SparkModelBatchNeedsSingleStep(engine,lane_count) != 0u )
+	if ( engine->verify_capable == 0u || lane_count > SPARK_SPECULATION_FRAME_BATCH_LANES || engine->scratch_row_capacity < lane_count || SparkModelBatchNeedsSingleStep(engine,lane_count) != 0u )
 		return(stride);
+	if ( lane_count > 1u )
+		return(SparkModelBatchPlanBatchDrafts(engine,lane_count));
 	rows_left = (engine->scratch_row_capacity < engine->adapter_descriptor->max_verify_row_count ? engine->scratch_row_capacity : engine->adapter_descriptor->max_verify_row_count);
 	if ( rows_left <= lane_count )
 		return(stride);
@@ -3306,10 +3385,14 @@ static void SparkModelBatchRecordTiming(
 	const SparkModelServingSubmission *submission,
 	uint64_t dispatch_ns)
 {
+	uint32_t lane;
 	state->dispatched_ns = dispatch_ns;
 	state->rows = submission->row_count;
 	state->steps = submission->tokens_per_sequence;
-	state->context = submission->lane_count == 1u ? submission->lanes[0].context_token_count : 0u;
+	state->context = 0u;
+	for (lane=0u; lane<submission->lane_count; lane++)
+		if ( submission->lanes[lane].context_token_count > state->context )
+			state->context = submission->lanes[lane].context_token_count;
 	state->clean = submission->lane_count == 1u &&
 		(submission->lanes[0].flags & (SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH)) == 0u ? 1u : 0u;
 }
@@ -3320,8 +3403,17 @@ static void SparkModelBatchObserveCost(
 	const SparkModelServingCompletion *completion)
 {
 	const uint64_t ns = completion->service_time_ns;
-	if ( engine->verify_capable == 0u || submission->lane_count != 1u || ns == 0u )
+	if ( engine->verify_capable == 0u || ns == 0u )
 		return;
+	if ( submission->lane_count != 1u )
+	{
+		const float spread = SparkSpeculationFrameBatchSpread(&engine->frame_model,submission->lane_count,submission->context);
+		if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && submission->verify == 0u && submission->rows == submission->lane_count )
+			SparkSpeculationFrameObserveBatchStep(&engine->frame_model,submission->lane_count,submission->steps,submission->context,ns);
+		else if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && submission->verify != 0u && (float)ns > spread )
+			SparkSpeculationFrameObserveFrame(&engine->frame_model,submission->rows,submission->context,(uint64_t)((float)ns - spread));
+		return;
+	}
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && submission->verify != 0u )
 	{
 		engine->frame_timed[SparkSpeculationFrameRowBucket(submission->rows)]++;
@@ -3708,8 +3800,9 @@ static void SparkModelBatchLogFrames(SparkModelBatchEngine *engine)
 	size_t used;
 	uint32_t bucket;
 	engine->frame_logged = engine->verify_lane_count;
-	used = (size_t)snprintf(line,sizeof(line),"batch_speculation frames=%llu drafted=%llu kept_drafts=%llu chain_token_ms=%.1f single_ms=%.1f buckets",
+	used = (size_t)snprintf(line,sizeof(line),"batch_speculation frames=%llu drafted=%llu kept_drafts=%llu batch_frames=%llu batch_declined=%llu chain_token_ms=%.1f single_ms=%.1f buckets",
 		(unsigned long long)engine->verify_lane_count,(unsigned long long)engine->draft_token_count,(unsigned long long)engine->accepted_draft_token_count,
+		(unsigned long long)engine->batch_verify_frames,(unsigned long long)engine->batch_draft_declined,
 		SparkSpeculationFrameTokenCost(&engine->frame_model,2048u) / 1e6,SparkSpeculationFrameSingleCost(&engine->frame_model,2048u) / 1e6);
 	for (bucket=0u; bucket<SPARK_SPECULATION_FRAME_ROW_BUCKETS && used < sizeof(line); bucket++)
 		if ( engine->frame_count[bucket] != 0u )

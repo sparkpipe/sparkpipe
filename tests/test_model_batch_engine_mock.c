@@ -2363,6 +2363,7 @@ static void TestScenarioResumeSuperseded(const SparkModelResidentDeployment *dep
 
 static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deployment,const SparkModelResidentDeployment *plain_deployment,const char *runtime_root);
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root);
+static void TestScenarioBatchVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioLongVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 
@@ -2393,6 +2394,7 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 		TestLoadVariantDeployment(runtime_root,"plain-decode",TEST_MODEL_SERVING_ADAPTER_PATH,plain_path,sizeof(plain_path),&plain);
 		TestScenarioLookupVerify(&deployment,&plain,runtime_root);
 		TestScenarioLookupVerifyMixedLanes(&deployment,runtime_root);
+		TestScenarioBatchVerify(&deployment,runtime_root);
 		TestScenarioModelDrafts(&deployment,runtime_root);
 		SparkModelResidentDeploymentReset(&plain);
 		(void)unlink(plain_path);
@@ -2826,8 +2828,42 @@ static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeploymen
 	MockResidentClientTakeVerifyStats(&submissions,&rows);
 	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u,"lookup mixed: both requests complete");
 	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,60u) != 0u && TestScriptedOutputMatches(&state,2u,script,44u,60u) != 0u,"lookup mixed: greedy and sampled lanes both emit the model stream");
-	CHECK(MockResidentClientTakeVerifyShared() == 0u,"lookup mixed: a verify frame never carries a co-batched lane, which would lose its chain");
 	CHECK(TestLaneInputsFollowScript(2u,script,256u) != 0u,"lookup mixed: every sampled-lane input is a committed model token");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioBatchVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	uint32_t script[256],index,submissions,rows,shared;
+	SparkModelBatchEngineView view;
+	SparkModelBatchEngine *engine;
+	TestBatchState state;
+	for (index=0u; index<40u; index++)
+		script[index] = 1000u + (index * 7u) % 97u;
+	for (index=40u; index<44u; index++)
+		script[index] = 2000u + index;
+	for (index=44u; index<256u; index++)
+		script[index] = script[(index - 44u) % 40u];
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	engine = TestConnectFlags(deployment,&state,runtime_root,32u,8u,0u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetScript(script,256u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,920u,80u,script,44u);
+	TestSubmitPrompt(engine,2u,921u,80u,script,44u);
+	TestDriveUntilTerminal(engine,&state,1u,3000u);
+	TestDriveUntilTerminal(engine,&state,2u,3000u);
+	memset(&view,0,sizeof(view));
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK,"batch verify: engine view");
+	MockResidentClientTakeVerifyStats(&submissions,&rows);
+	shared = MockResidentClientTakeVerifyShared();
+	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u,"batch verify: both requests complete");
+	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u && TestScriptedOutputMatches(&state,2u,script,44u,80u) != 0u,"batch verify: both requests emit exactly the model's greedy stream");
+	CHECK(shared != 0u && rows > 2u * submissions,"batch verify: two decoding requests share verify frames, each with drafts");
+	CHECK(submissions < 80u && view.speculative_accepted_token_count >= 60u,"batch verify: accepted drafts let the pair finish in fewer frames than tokens");
+	CHECK(TestLaneInputsFollowScript(1u,script,256u) != 0u && TestLaneInputsFollowScript(2u,script,256u) != 0u,"batch verify: every lane input in a shared frame is a committed model token");
 	SparkModelBatchEngineDestroy(engine);
 }
 
