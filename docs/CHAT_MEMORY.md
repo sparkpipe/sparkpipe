@@ -397,7 +397,8 @@ DeepSeek V4.1 Flash ran 2026-10-23T20:29Z, GLM 5.3 Full 2026-10-24T03:45Z, GLM
 Memory keeps every fact on all four models. The prompts it sends average
 12.4K to 12.7K tokens against 18.9K to 20.1K with Full context.
 
-DeepSeek V4.1 Flash and GLM 5.3 Flash fail only the stale-recompute check:
+DeepSeek V4.1 Flash and GLM 5.3 Flash fail only the stale-recompute check.
+On DeepSeek V4.1 Flash the cause is known:
 - The ranks keep the recurrent state of only the newest four block-aligned
   entries on a chain (`SPARK_KV_PAGE_CACHE_RECENT_STATES`), plus every
   checkpoint-stride anchor.
@@ -406,10 +407,13 @@ DeepSeek V4.1 Flash and GLM 5.3 Flash fail only the stale-recompute check:
   checkpoints the ranks had already dropped. On DeepSeek V4.1 Flash those were
   256-aligned positions between 7,168 and 43,520 tokens.
 
-GLM 5.3 Flash's serving build predates the log line that names the stale
-position, so its cause is presumed to be the same, not shown. PR #1543 makes
-the index apply the ranks' rule. Both models are requalified after it serves,
-which tests that. GLM 5.3 Full keeps no recurrent state, so it has no such
+PR #1543 makes the index apply the ranks' rule; DeepSeek V4.1 Flash is
+requalified on a build with it. GLM 5.3 Flash's cause is not known. It
+serves a node root from 2026-10-13 and an API from 2026-10-14, both
+older than the per-path retention (f75981958, 2026-10-18) and than the
+log line that names a stale position. So the rule above does not apply to
+it, and the stale events cannot be traced on that build. It is requalified
+after a release from main. GLM 5.3 Full keeps no recurrent state, so it has no such
 events. K3's 3 / 3 are partial prompt checkpoints at 138 to 650 tokens, in both
 arms, which retention cannot drop; their cause is not yet traced. The other 12
 models have not run yet.
