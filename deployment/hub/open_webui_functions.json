@@ -1,0 +1,9 @@
+{
+ "functions": [
+  {
+   "id": "sparkpipe_memory_off",
+   "file": "functions/memory_off.py",
+   "global": true
+  }
+ ]
+}

@@ -463,7 +463,12 @@ against the chat layer). Each has an Open WebUI model entry from that file,
 applied inside the container with `tools/serving/open_webui/open_webui_models.py`: name,
 description (context window and switch time), text-only input, web search
 and the code interpreter on by default, the GitHub tool, the trimmed
-built-in tools, and a `compact_token_threshold` for context compaction.
+built-in tools. Open WebUI's own context compaction stays off: SparkPipe chat
+memory serves every model (docs/CHAT_MEMORY.md), and the chat layer refuses a
+memory session once a compaction summary appears. The global "Full context"
+filter (`tools/serving/open_webui/functions/memory_off.py`, installed with
+`open_webui_functions.py` from `deployment/hub/open_webui_functions.json`) is
+the user's switch to turn memory off for a chat.
 
 The 13 public models carry a public read grant. The three Qwen models carry
 none, so only the admin sees them (admins bypass grants): their license

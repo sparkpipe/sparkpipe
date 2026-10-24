@@ -233,6 +233,19 @@ BACKGROUND_PRIORITY = 0
 BULK_SUFFIX = "-bulk"
 
 
+def context_target(body):
+    value = body.get("num_ctx")
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        value = int(value.strip())
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if value is None or value in (0, -1):
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise RequestError(400, "invalid_request", "num_ctx must be a positive whole number: the context chat memory keeps the prompt near")
+    return value
+
+
 def request_priority(model, body):
     return BULK_PRIORITY if body.get("model") == model.id + BULK_SUFFIX else INTERACTIVE_PRIORITY
 
@@ -504,9 +517,9 @@ class Model:
         self.end_markers = list(spec.get("end_markers", []))
         self.stop_token_ids = [self.token_id(text) for text in spec["stop_tokens"]]
         self.gate = WarmGate(self.id, self.engine, spec.get("warm_queue"))
-        self.memory = spec.get("chat_memory")
-        if self.memory is not None and not isinstance(self.memory, dict):
-            raise SystemExit(f"chat_frontend: {self.id} chat_memory must be an object")
+        self.memory = spec.get("chat_memory", {})
+        if not isinstance(self.memory, dict):
+            raise SystemExit(f"chat_frontend: {self.id} chat_memory must be an object of budget overrides")
 
     def logprob(self, pair):
         text = self.vocabulary.piece(pair[0])
@@ -1174,6 +1187,7 @@ class Frontend:
             module = importlib.util.module_from_spec(loader)
             loader.loader.exec_module(module)
             self.memory = module.Memory(config["chat_memory"], self)
+            self.memory_switch = module.memory_switch
 
     async def start(self, app):
         self.session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=0), timeout=aiohttp.ClientTimeout(total=None, sock_connect=10))
@@ -1305,11 +1319,17 @@ class Frontend:
         if self.citation_wrapper is not None and headers is not None and headers.get("X-OpenWebUI-Chat-Id"):
             messages, citations = canonical_citations(messages, self.citation_wrapper)
             trace.update(citations)
-        if self.memory is not None and headers is not None:
-            session = self.memory.session(model, headers, messages, tools, kwargs)
+        memory_off = False
+        if self.memory is not None:
+            messages, memory_off = self.memory_switch(messages)
+            if memory_off:
+                trace.update(memory_off=True)
+        target = context_target(body)
+        if self.memory is not None and headers is not None and not memory_off:
+            session = self.memory.session(model, headers, messages, tools, kwargs, target)
             if session is not None:
                 messages, tools = normalize_messages(session.messages), session.tools
-                trace.update(memory_lined=session.layout["lined"], memory_open=len(session.layout["open"]))
+                trace.update(memory_lined=session.layout["lined"], memory_open=len(session.layout["open"]), memory_target=session.target)
         plan = self.finish_plan(model, body, messages, tools, kwargs, session)
         engine = plan["engine_body"]
         seen, seen_of = self.prefix_ledger(model).seen(engine["prompt_token_ids"])

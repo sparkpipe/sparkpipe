@@ -617,6 +617,8 @@ PYTHON_TESTS := \
 	tests/test_open_webui_fleet_tool.py \
 	tests/test_chat_memory_core.py \
 	tests/test_chat_memory_session.py \
+	tests/test_chat_memory_deployment.py \
+	tests/test_open_webui_memory_off.py \
 	tests/test_chat_memory_frontend.py \
 	tests/test_chat_frontend_trace.py \
 	tests/test_chat_frontend_citations.py \
