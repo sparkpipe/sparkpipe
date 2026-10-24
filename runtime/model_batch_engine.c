@@ -17,7 +17,8 @@
 #include "sparkpipe/spark_speculation_frame.h"
 #include "sparkpipe/spark_speculation_lookup_draft.h"
 
-#define SPARK_MODEL_BATCH_VERIFY_LANES 2u
+#define SPARK_MODEL_BATCH_VERIFY_LANES 4u
+#define SPARK_MODEL_BATCH_MODEL_DRAFT_LANES 2u
 #define SPARK_MODEL_BATCH_REQUEST_FREE 0u
 #define SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL 1u
 #define SPARK_MODEL_BATCH_REQUEST_PREFILL_INFLIGHT 2u
@@ -3093,7 +3094,7 @@ static uint32_t SparkModelBatchPlanDraft(
 		return(0u);
 	if ( SparkSpeculationLookupIndexFind(&request->lookup,tokens,SPARK_MODEL_BATCH_LOOKUP_MAX_MATCH,SPARK_MODEL_BATCH_LOOKUP_CANDIDATES,&match) != SPARK_STATUS_OK ||
 		(engine->draft_bridge != 0 && match.match_length < SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_LOOKUP_MATCH) )
-		return(engine->draft_bridge != 0 ? SparkModelBatchPlanModelDraft(engine,request,tokens,position,limit) : 0u);
+		return(engine->draft_bridge != 0 && engine->plan_lanes <= SPARK_MODEL_BATCH_MODEL_DRAFT_LANES ? SparkModelBatchPlanModelDraft(engine,request,tokens,position,limit) : 0u);
 	if ( position - match.source_end < limit )
 		limit = position - match.source_end;
 	for (index=0u; index<limit; index++)
