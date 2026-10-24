@@ -5,7 +5,8 @@
       "web_search": true,
       "file_upload": true,
       "citations": true,
-      "code_interpreter": true
+      "code_interpreter": true,
+      "usage": true
     },
     "defaultFeatureIds": [
       "web_search",
@@ -22,7 +23,8 @@
       "knowledge": false
     },
     "toolIds": [
-      "github"
+      "github",
+      "sparkpipe_chat_timer_tool"
     ]
   },
   "models": [

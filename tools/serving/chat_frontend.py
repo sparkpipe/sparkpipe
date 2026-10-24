@@ -1159,6 +1159,7 @@ class PrefixLedger:
 
 class Frontend:
     memory = None
+    commands = None
     citation_wrapper = None
     prefixes = None
 
@@ -1188,6 +1189,11 @@ class Frontend:
             loader.loader.exec_module(module)
             self.memory = module.Memory(config["chat_memory"], self)
             self.memory_switch = module.memory_switch
+            loader = importlib.util.spec_from_file_location("sparkpipe_chat_commands", Path(__file__).with_name("chat_commands.py"))
+            commands = importlib.util.module_from_spec(loader)
+            loader.loader.exec_module(commands)
+            self.commands = commands.Commands(self.memory, module, self)
+            self.command_strip = commands.strip
 
     async def start(self, app):
         self.session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=0), timeout=aiohttp.ClientTimeout(total=None, sock_connect=10))
@@ -1320,11 +1326,22 @@ class Frontend:
             messages, citations = canonical_citations(messages, self.citation_wrapper)
             trace.update(citations)
         memory_off = False
+        identity, settings = None, {}
         if self.memory is not None:
             messages, memory_off = self.memory_switch(messages)
+            if headers is not None:
+                identity = self.commands.identity(headers)
+                command = self.commands.match(messages)
+                if command is not None:
+                    trace.update(command=command[0])
+                    return {"command": command, "identity": identity, "messages": messages, "memory_off": memory_off, "trace": trace}
+                messages = self.command_strip(messages)
+                settings = self.commands.settings(identity)
+            memory_off = memory_off or settings.get("memory") == "off"
             if memory_off:
                 trace.update(memory_off=True)
-        target = context_target(body)
+                messages = self.commands.compacted(identity, messages)
+        target = context_target(body) or settings.get("target")
         if self.memory is not None and headers is not None and not memory_off:
             session = self.memory.session(model, headers, messages, tools, kwargs, target)
             if session is not None:
@@ -1708,6 +1725,11 @@ class Frontend:
             plan = self.plan(model, body, request.headers)
         except RequestError as error:
             return error_response(error)
+        if "command" in plan:
+            name, argument = plan["command"]
+            text = await self.commands.run(model, plan["identity"], plan["messages"], name, argument, plan["memory_off"])
+            print(json.dumps(dict(plan["trace"], event="chat_command", model=model.id, command=name)), file=sys.stderr, flush=True)
+            return await self.reply_text(request, model, body, text)
         if self.memory is not None:
             self.memory.enter(model)
         try:
@@ -1715,6 +1737,24 @@ class Frontend:
         finally:
             if self.memory is not None:
                 self.memory.leave(model)
+
+    async def reply_text(self, request, model, body, text):
+        identifier = "chatcmpl-" + uuid.uuid4().hex
+        created = int(time.time())
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        if not body.get("stream"):
+            return web.json_response({"id": identifier, "object": "chat.completion", "created": created, "model": model.id,
+                                      "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "logprobs": None, "finish_reason": "stop"}], "usage": usage})
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"})
+        await response.prepare(request)
+        for delta, finish in (({"role": "assistant", "content": text}, None), ({}, "stop")):
+            payload = {"id": identifier, "object": "chat.completion.chunk", "created": created, "model": model.id,
+                       "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+            if finish:
+                payload["usage"] = usage
+            await response.write(("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode())
+        await response.write(b"data: [DONE]\n\n")
+        return response
 
     async def answer(self, request, model, body, plan, started):
         engine_body, prompt_tokens = plan["engine_body"], plan["prompt_tokens"]
