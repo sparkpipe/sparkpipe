@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SparkPipe Fleet-Hours</title>
-<meta name="description" content="Buy SparkPipe fleet-hours: prepaid by the hour, or committed for two years at a lower price. Mock checkout: nothing is charged.">
+<meta name="description" content="Buy SparkPipe fleet-hours: prepaid by the hour, or every hour of a two-year term at a lower price. Mock checkout: nothing is charged.">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -21,7 +21,6 @@
 .progress i { position: absolute; inset: 0 auto 0 0; width: var(--w, 0%); background: var(--signal); }
 .progress b { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--ink); }
 .ok { color: var(--live); }
-.bad { color: var(--error); }
 .out { margin: 0; padding: 14px; border-radius: 3px; background: var(--screen); color: var(--screen-ink); font: 400 11.5px/1.65 var(--mono); font-variation-settings: 'wdth' 87.5; overflow-x: auto; white-space: pre; max-height: 420px; }
 .out:empty { display: none; }
 .split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(24px, 4vw, 48px); }
@@ -41,11 +40,10 @@
     <nav class="nav-links" aria-label="Sections">
       <a href="#fleets">Fleets</a>
       <a href="#hourly">Hourly</a>
-      <a href="#reserved">Reserved</a>
+      <a href="#reserved">Two-year</a>
       <a href="#prepayment">Prepayment</a>
-      <a href="#credits">Credits</a>
+      <a href="#hours">Your hours</a>
       <a href="#ledger">Ledger</a>
-      <a href="index.html">Home</a>
     </nav>
     <div class="nav-actions">
       <a class="btn small" href="playground.html">Playground</a>
@@ -60,12 +58,12 @@
   <h1>A whole fleet, by the hour.</h1>
   <div class="hero-grid">
     <div class="hero-copy">
-      <p class="lead">One fleet-hour is an entire SparkPipe fleet for sixty minutes. Try it prepaid by the hour, or commit for two years at the lower price. Your hours start on the date you choose.</p>
-      <p class="mock" role="note">Mock checkout. Nothing is charged and nothing leaves this page: orders, payments and credits are simulated and kept in this browser only. <button class="link" id="reset" type="button">Reset the demo</button></p>
+      <p class="lead">One fleet-hour is an entire SparkPipe fleet for sixty minutes. Try it prepaid by the hour, or take every hour of a two-year term at the lower price. Your hours start on the date you choose.</p>
+      <p class="mock" role="note">Mock checkout. Nothing is charged and nothing leaves this page: orders, payments and hours are simulated and kept in this browser only. <button class="link" id="reset" type="button">Reset the demo</button></p>
     </div>
     <div class="specs plate">
-      <div><strong id="p-hourly">$20</strong><span>per fleet-hour, prepaid, no commitment, up to <b id="p-hourly-max">24</b> hours held</span></div>
-      <div><strong id="p-committed">$15</strong><span>per fleet-hour on a two-year commitment, up to <b id="p-committed-max">15,000</b> hours, after a business check</span></div>
+      <div><strong id="p-hourly">$20</strong><span>per fleet-hour, prepaid, no commitment: up to <b id="p-hourly-max">24</b> hours held, or <b id="p-verified-max">720</b> after a business check</span></div>
+      <div><strong id="p-committed">$15</strong><span>per fleet-hour for every hour of a two-year term, after a business check</span></div>
       <div><strong id="p-vat">10%</strong><span>VAT added to USDC payments; a USD wire from abroad is zero-rated</span></div>
       <div><strong id="p-start">2027-01-01</strong><span>earliest start date for new hours</span></div>
     </div>
@@ -76,13 +74,13 @@
 <section id="fleets" class="sec">
   <div class="sec-rail">
     <p class="label">Fleets</p>
-    <p class="label">Credit rates</p>
+    <p class="label">Rates</p>
   </div>
   <div class="sec-body">
-    <h2>Every fleet, one credit system.</h2>
-    <p class="prose">A credit buys one hour on a fleet with rate 1. A fleet with another rate costs that many credits per hour, so the price per hour on each fleet is its rate times the credit price.</p>
+    <h2>One balance, every fleet.</h2>
+    <p class="prose">Your hours work on every fleet. A fleet's rate is how many hours an hour on it takes from your balance, so its price per hour is the rate times the hour price.</p>
     <div class="table-wrap"><table>
-      <thead><tr><th>Fleet</th><th>State</th><th>Credits per hour</th><th>Hourly price</th><th>Two-year price</th></tr></thead>
+      <thead><tr><th>Fleet</th><th>State</th><th>Rate</th><th>Hourly price</th><th>Two-year price</th></tr></thead>
       <tbody id="f-rows"></tbody>
     </table></div>
   </div>
@@ -91,16 +89,16 @@
 <section id="hourly" class="sec">
   <div class="sec-rail">
     <p class="label">Hourly</p>
-    <p class="label">Pre-commit</p>
+    <p class="label">No commitment</p>
   </div>
   <div class="sec-body">
     <h2>Try it by the hour.</h2>
-    <p class="prose">Prepaid hours for any business. Hold up to the cap at a time; reserve them on any fleet once they start. A two-year customer may take an hourly reservation until <b id="p-displace">6</b> hours before it begins, and the hour comes back to you.</p>
+    <p class="prose">Prepaid hours for any business, with no business check: hold up to <b id="p-hourly-max-2">24</b> hours at a time, or <b id="p-verified-max-2">720</b> (30 days) once we have approved your business. A two-year customer may take an hourly reservation until <b id="p-displace">6</b> hours before it begins, and the hour comes back to you.</p>
     <div class="split">
       <form class="form" id="hourly-form" novalidate>
         <label>Company<input id="h-company" autocomplete="organization" placeholder="Legal name"></label>
         <label>Email<input id="h-email" type="email" autocomplete="email" placeholder="billing@example.com"></label>
-        <label>Hours <output id="h-hours-out">4</output><input id="h-hours" type="range" min="1" max="24" value="4"></label>
+        <label>Hours<input id="h-hours" type="number" inputmode="numeric" min="1" max="24" step="1" value="4"></label>
         <label>Start date<input id="h-start" type="date"></label>
         <label class="check"><input id="h-korea" type="checkbox">We have a place of business in Korea</label>
         <p class="hint">Pay in USDC through an invoice. VAT is added, and refunded as extra hours if it turns out not to be owed.</p>
@@ -122,20 +120,19 @@
 
 <section id="reserved" class="sec">
   <div class="sec-rail">
-    <p class="label">Reserved</p>
-    <p class="label">Two-year commitment</p>
+    <p class="label">Two-year</p>
+    <p class="label">Every hour of the term</p>
   </div>
   <div class="sec-body">
-    <h2 id="r-title">Commit for two years at the lower price.</h2>
-    <p class="prose">Open to businesses we approve. Choose how many hours, when the term starts, and how they split between the East and West windows. Prepay through three gates; when the last one is paid, every monthly tranche is released to you as transferable credits.</p>
+    <h2 id="r-title">Every hour of two years, at the lower price.</h2>
+    <p class="prose">For businesses we approve. The agreement covers every hour of a two-year term on one fleet's capacity: 17,520 hours, or 17,544 when the term includes 29 February. Nothing is payable for the first 30 days after signing (Phase A). Pay Gate 1 by the end of Phase A to continue, or let it pass and the agreement ends with nothing owed. Once the last gate is paid, every tranche is released: use your hours in either window within your election, and spend ahead from later months.</p>
     <div class="panel" id="kyb-panel">
       <p><b>Business check:</b> <span id="kyb-state" class="state">not approved</span></p>
-      <p class="hint">In the live service this is a manual review of company documents, owners and sanctions screening.</p>
+      <p class="hint">In the live service this is a manual review of company documents, owners and sanctions screening. Approval raises your hourly cap to 30 days of hours and opens the two-year agreement.</p>
       <div class="actions"><button class="btn small" id="kyb" type="button">Simulate approval (mock)</button></div>
     </div>
     <div class="split" id="reserved-body">
       <form class="form" id="reserved-form" novalidate>
-        <label>Hours<input id="r-hours" type="number" inputmode="numeric" min="1" max="15000" step="1" value="8760"></label>
         <label>Term start<input id="r-start" type="date"></label>
         <label>Window election<select id="r-election"><option value="split">50/50 East and West</option><option value="east">100% East</option><option value="west">100% West</option></select></label>
         <label>Payment method<select id="r-method"><option value="wire">USD wire from our account abroad</option><option value="usdc">USDC invoice</option></select></label>
@@ -150,8 +147,10 @@
         <div><span>Subtotal</span><strong id="r-r-net">-</strong></div>
         <div><span>VAT</span><strong id="r-r-vat">-</strong></div>
         <div class="you"><span>Total</span><strong id="r-r-total">-</strong></div>
+        <div><span>Phase A</span><strong id="r-r-phase">-</strong></div>
       </div>
     </div>
+    <p class="note-line" id="r-phase-note"></p>
     <h3>Prepayment gates</h3>
     <div class="table-wrap"><table>
       <thead><tr><th>Gate</th><th>Due</th><th>Hours paid by then</th><th>Paid by then, with VAT</th></tr></thead>
@@ -184,7 +183,10 @@
       <form class="form pair" id="pp-form" novalidate>
         <label>Amount received (USD)<input id="pp-amount" type="number" inputmode="decimal" min="0.01" step="0.01"></label>
         <label>Date received<input id="pp-date" type="date"></label>
-        <div class="actions"><button class="btn solid" id="pp-add" type="submit">Record payment (mock)</button></div>
+        <div class="actions">
+          <button class="btn solid" id="pp-add" type="submit">Record payment (mock)</button>
+          <button class="btn" id="pp-lapse" type="button">Let Phase A end unpaid (mock)</button>
+        </div>
       </form>
       <p class="note-line" id="pp-msg" role="status"></p>
       <div class="table-wrap"><table>
@@ -195,41 +197,18 @@
   </div>
 </section>
 
-<section id="credits" class="sec">
+<section id="hours" class="sec">
   <div class="sec-rail">
-    <p class="label">Credits</p>
-    <p class="label">Yours to trade</p>
+    <p class="label">Your hours</p>
+    <p class="label">One account</p>
   </div>
   <div class="sec-body">
-    <h2>Your credits.</h2>
-    <p class="prose">Hourly credits are for your own use. Two-year credits are released in full once prepayment completes, one class per month and window, such as <span class="mono">2027-03-E</span>. Each class expires at the end of its month. Released credits are yours: transfer them, sell them, or swap East for West or one month for another. A sell or swap order is a signed message any orderbook can match; settling it is a signed transfer, recorded in the ledger.</p>
+    <h2>Your hours.</h2>
+    <p class="prose">All your hours stay in your account and are used through it. If you resell time, let your buyers reserve and use hours with your access tokens, or add them as signers on your account: that arrangement is yours, and hours never move between accounts.</p>
     <div class="table-wrap scroll"><table>
-      <thead><tr><th>Class</th><th>Hours</th><th>Usable until</th><th>State</th></tr></thead>
+      <thead><tr><th>Hours</th><th>Amount</th><th>Usable</th><th>State</th></tr></thead>
       <tbody id="c-rows"></tbody>
     </table></div>
-    <p class="note-line" id="trade-lock" role="status"></p>
-    <div class="split" id="trade">
-      <form class="form" id="t-form" novalidate>
-        <h3>Transfer</h3>
-        <label>Class<select id="t-class"></select></label>
-        <label>Hours<input id="t-hours" type="number" inputmode="numeric" min="1" step="1" value="1"></label>
-        <label>To address<input id="t-to" placeholder="0x…" autocomplete="off" spellcheck="false"></label>
-        <button class="btn" id="t-send" type="submit">Sign and transfer (mock)</button>
-        <p class="note-line" id="t-msg" role="status"></p>
-      </form>
-      <form class="form" id="o-form" novalidate>
-        <h3>Make an order</h3>
-        <label>Order<select id="o-kind"><option value="sell">Sell for USDC</option><option value="swap">Swap for another class</option></select></label>
-        <label>Give<select id="o-class"></select></label>
-        <label>Hours<input id="o-hours" type="number" inputmode="numeric" min="1" step="1" value="10"></label>
-        <label id="o-price-label">USDC per hour<input id="o-price" type="number" inputmode="decimal" min="0" step="0.01" value="15"></label>
-        <label id="o-want-label" hidden>Want class<input id="o-want" placeholder="2027-03-W" autocomplete="off" spellcheck="false"></label>
-        <label>Valid for (days)<input id="o-days" type="number" inputmode="numeric" min="1" max="90" step="1" value="7"></label>
-        <button class="btn" id="o-make" type="submit">Sign the order (mock)</button>
-        <p class="note-line" id="o-msg" role="status"></p>
-      </form>
-    </div>
-    <pre class="out" id="t-out" aria-label="Signed message"></pre>
   </div>
 </section>
 
@@ -240,7 +219,7 @@
   </div>
   <div class="sec-body">
     <h2>Every change is one line.</h2>
-    <p class="prose">Each payment, credit, reservation and transfer is appended to a hash-chained ledger: every line carries the hash of the one before it, so no line can change unnoticed. This is the demo's own copy.</p>
+    <p class="prose">Each order, payment, issue of hours and reservation is appended to a hash-chained ledger: every line carries the hash of the one before it, so no line can change unnoticed. This is the demo's own copy.</p>
     <pre class="out" id="l-out" aria-label="Ledger"></pre>
   </div>
 </section>
@@ -260,8 +239,8 @@
 (() => {
   const P = window.SP_PRICING;
   const $ = (id) => document.getElementById(id);
-  const KEY = 'sparkpipe-buy-demo';
-  const fresh = () => ({ account: '0x' + Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, '0')).join(''), hourly: [], kyb: false, contract: null, payments: [], transfers: [], ledger: [], nonce: 0 });
+  const KEY = 'sparkpipe-buy-demo-2';
+  const fresh = () => ({ account: '0x' + Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, '0')).join(''), hourly: [], kyb: false, contract: null, payments: [], ledger: [] });
   const load = () => { try { const doc = JSON.parse(localStorage.getItem(KEY) || 'null'); return doc && doc.account ? doc : fresh(); } catch (_) { return fresh(); } };
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (_) {} };
   let S = load();
@@ -277,12 +256,14 @@
     return { time: Date.UTC(year, month, Math.min(d, last)), exists: d <= last };
   };
   const termEnd = (start, months) => { const next = monthsLater(start, months); return next.exists ? next.time - DAY : next.time; };
+  const dayN = (from, n) => ymd(parse(from) + (n - 1) * DAY);
   const usd = (n) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const short = (n) => usd(n).replace('.00', '');
   const whole = (n) => Math.round(n).toLocaleString('en-US');
   const hrs = (n) => (Math.round(n * 10) / 10).toLocaleString('en-US');
   const cell = (text, cls) => { const td = document.createElement('td'); td.textContent = text; if (cls) td.className = cls; return td; };
   const row = (cells) => { const tr = document.createElement('tr'); cells.forEach((c) => tr.appendChild(c)); return tr; };
-  const fill = (id, rows) => { const body = $(id); body.replaceChildren(...rows); };
+  const fill = (id, rows) => { $(id).replaceChildren(...rows); };
 
   const sha256 = async (text) => {
     if (!(window.crypto && crypto.subtle)) return 'unavailable';
@@ -294,8 +275,7 @@
     chain = chain.then(async () => {
       const prev = S.ledger.length ? S.ledger[S.ledger.length - 1].hash : '0'.repeat(64);
       const body = { seq: S.ledger.length + 1, at: new Date().toISOString(), type, account: S.account, data, prev };
-      const line = Object.assign({}, body, { hash: await sha256(JSON.stringify(body)) });
-      S.ledger.push(line);
+      S.ledger.push(Object.assign({}, body, { hash: await sha256(JSON.stringify(body)) }));
       save();
       renderLedger();
     });
@@ -303,99 +283,85 @@
   };
 
   const vatApplies = (korea, method) => korea || method === 'usdc';
-  const split = (hours, election, index) => {
-    if (election === 'east') return [hours, 0];
-    if (election === 'west') return [0, hours];
-    const east = index % 2 === 0 ? Math.ceil(hours / 2) : Math.floor(hours / 2);
-    return [east, hours - east];
-  };
-  const plan = (hours, start, election) => {
-    const end = termEnd(start, P.termMonths), first = parse(start), days = Math.round((end - first) / DAY) + 1;
-    const spans = [];
-    let cursor = first;
+  const plan = (start, election) => {
+    const end = termEnd(start, P.termMonths), tranches = [];
+    let cursor = parse(start);
     while (cursor <= end) {
       const d = new Date(cursor), monthEnd = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0), to = Math.min(monthEnd, end);
-      spans.push({ key: ymd(cursor).slice(0, 7), from: ymd(cursor), to: ymd(to), days: Math.round((to - cursor) / DAY) + 1 });
+      const days = Math.round((to - cursor) / DAY) + 1, hours = 24 * days;
+      const east = election === 'east' ? hours : election === 'west' ? 0 : hours / 2;
+      tranches.push({ key: ymd(cursor).slice(0, 7), from: ymd(cursor), to: ymd(to), days, hours, east, west: hours - east });
       cursor = to + DAY;
     }
-    const exact = spans.map((s) => hours * s.days / days), floors = exact.map(Math.floor);
-    let left = hours - floors.reduce((a, b) => a + b, 0);
-    exact.map((x, i) => [x - floors[i], i]).sort((a, b) => b[0] - a[0] || a[1] - b[1]).slice(0, left).forEach(([, i]) => { floors[i] += 1; });
-    spans.forEach((s, i) => { s.hours = floors[i]; [s.east, s.west] = split(floors[i], election, i); });
-    return { start, end: ymd(end), days, tranches: spans };
+    return { start, end: ymd(end), hours: tranches.reduce((a, t) => a + t.hours, 0), tranches };
   };
-  const gates = (contract) => {
-    let paidBefore = 0;
-    return P.gates.map((g) => {
-      const n = g.tranches === null ? contract.tranches.length : Math.min(g.tranches, contract.tranches.length);
-      const hours = contract.tranches.slice(0, n).reduce((a, t) => a + t.hours, 0);
-      const due = g.dueDay === 0 ? parse(contract.start) - DAY : parse(contract.start) + (g.dueDay - 1) * DAY;
-      const gate = { name: g.name, hours, due: ymd(due), label: g.dueDay === 0 ? 'before the term starts' : 'end of day ' + g.dueDay, delta: hours - paidBefore };
-      paidBefore = hours;
-      return gate;
-    });
-  };
+  const gates = (c) => P.gates.map((g) => {
+    const n = g.tranches === null ? c.tranches.length : Math.min(g.tranches, c.tranches.length);
+    return { name: g.name, day: g.dueDay, due: dayN(c.signedOn, g.dueDay), hours: c.tranches.slice(0, n).reduce((a, t) => a + t.hours, 0) };
+  });
 
   const minStart = () => (today() > P.earliestStart ? today() : P.earliestStart);
+  const cap = () => (S.kyb ? P.verifiedMaxHours : P.hourlyMaxHours);
   const heldHourly = () => S.hourly.reduce((a, h) => a + h.hours, 0);
 
   const renderPrices = () => {
-    $('p-hourly').textContent = usd(P.hourlyPrice).replace('.00', '');
-    $('p-committed').textContent = usd(P.committedPrice).replace('.00', '');
+    $('p-hourly').textContent = short(P.hourlyPrice);
+    $('p-committed').textContent = short(P.committedPrice);
     $('p-vat').textContent = Math.round(P.vatRate * 100) + '%';
     $('p-start').textContent = P.earliestStart;
-    $('p-hourly-max').textContent = P.hourlyMaxHours;
+    ['p-hourly-max', 'p-hourly-max-2'].forEach((id) => { $(id).textContent = whole(P.hourlyMaxHours); });
+    ['p-verified-max', 'p-verified-max-2'].forEach((id) => { $(id).textContent = whole(P.verifiedMaxHours); });
     $('p-displace').textContent = P.displaceNoticeHours;
-    $('p-committed-max').textContent = whole(P.committedMaxHours);
-    $('r-title').textContent = 'Commit for two years at ' + usd(P.committedPrice).replace('.00', '') + ' an hour.';
+    $('r-title').textContent = 'Every hour of two years, at ' + short(P.committedPrice) + ' an hour.';
     ['h-start', 'r-start'].forEach((id) => { $(id).min = minStart(); if (!$(id).value || $(id).value < minStart()) $(id).value = minStart(); });
-    $('r-hours').min = P.committedMinHours;
-    $('r-hours').max = P.committedMaxHours;
+  };
+
+  const renderFleets = () => {
+    const rate = (n) => (Math.round(n * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
+    fill('f-rows', P.fleets.map((f) => {
+      const state = cell(''), tag = document.createElement('span');
+      tag.className = 'state ' + (f.state === 'serving' ? 'live' : 'building');
+      tag.textContent = f.state === 'serving' ? 'Serving' : 'Under construction';
+      state.appendChild(tag);
+      return row([cell(f.name + ' · ' + f.kind, 'model'), state, cell(rate(f.rate), 'figure'), cell(usd(f.rate * P.hourlyPrice), 'figure'), cell(usd(f.rate * P.committedPrice), 'figure')]);
+    }));
   };
 
   const renderHourly = () => {
-    const room = Math.max(0, P.hourlyMaxHours - heldHourly());
-    const input = $('h-hours');
+    const room = Math.max(0, cap() - heldHourly()), input = $('h-hours');
     input.max = Math.max(1, room);
     if (+input.value > room) input.value = Math.max(1, room);
-    const hours = room ? +input.value : 0, start = $('h-start').value || minStart();
+    const hours = room ? Math.max(0, Math.round(+input.value)) : 0, start = $('h-start').value || minStart();
     const net = hours * P.hourlyPrice, vat = net * P.vatRate;
-    $('h-hours-out').value = hours;
-    $('h-r-hours').textContent = hours;
+    $('h-r-hours').textContent = whole(hours);
     $('h-r-price').textContent = usd(P.hourlyPrice);
     $('h-r-net').textContent = usd(net);
     $('h-r-vat').textContent = usd(vat);
     $('h-r-total').textContent = usd(net + vat);
     $('h-r-valid').textContent = start + ' to ' + ymd(termEnd(start, P.hourlyValidityMonths));
-    $('h-r-held').textContent = heldHourly() + ' of ' + P.hourlyMaxHours;
+    $('h-r-held').textContent = whole(heldHourly()) + ' of ' + whole(cap());
     $('h-buy').disabled = room === 0;
-    if (room === 0) $('h-msg').textContent = 'You hold the maximum of ' + P.hourlyMaxHours + ' hourly hours. Use some, or commit for two years to buy more.';
+    if (room === 0) $('h-msg').textContent = S.kyb ? 'You hold the maximum of ' + whole(cap()) + ' hours. Use some, or take the two-year agreement.' : 'You hold the maximum of ' + whole(cap()) + ' hours. A business check raises the cap to ' + whole(P.verifiedMaxHours) + '.';
   };
 
-  const draft = () => {
-    const hours = Math.round(+$('r-hours').value), start = $('r-start').value || minStart();
-    return Object.assign(plan(hours, start, $('r-election').value), { hours, election: $('r-election').value, method: $('r-method').value, korea: $('r-korea').checked, price: P.committedPrice, vatRate: vatApplies($('r-korea').checked, $('r-method').value) ? P.vatRate : 0 });
-  };
-  const validReserved = (c) => {
-    if (!Number.isFinite(c.hours) || c.hours < P.committedMinHours || c.hours > P.committedMaxHours) return 'Hours must be between ' + whole(P.committedMinHours) + ' and ' + whole(P.committedMaxHours) + '.';
-    if (c.start < minStart()) return 'The term cannot start before ' + minStart() + '.';
-    return '';
+  const draft = () => Object.assign(plan($('r-start').value || minStart(), $('r-election').value), { election: $('r-election').value, method: $('r-method').value, korea: $('r-korea').checked, price: P.committedPrice, vatRate: vatApplies($('r-korea').checked, $('r-method').value) ? P.vatRate : 0, signedOn: today() });
+  const phaseEnd = (c) => dayN(c.signedOn, P.phaseADays);
+  const phaseNote = (c) => {
+    const end = phaseEnd(c);
+    if (c.start > end) return 'Phase A runs ' + c.signedOn + ' to ' + end + ', before the term starts, so it has no service: use hourly hours meanwhile. Your hourly cap is ' + whole(P.verifiedMaxHours) + ' hours once approved.';
+    return 'Phase A runs ' + c.signedOn + ' to ' + end + '. From ' + c.start + ' you are served at the Phase A pace, 24 hours a day split by your election, and those hours are paid in Gate 1.';
   };
   const renderReserved = () => {
     $('kyb-state').textContent = S.kyb ? 'approved' : 'not approved';
     $('kyb-state').className = 'state' + (S.kyb ? ' live' : '');
     $('kyb').hidden = S.kyb;
-    const signed = Boolean(S.contract);
-    const c = signed ? S.contract : draft();
-    ['r-hours', 'r-start', 'r-election', 'r-method', 'r-korea'].forEach((id) => { $(id).disabled = signed; });
-    if (signed) {
-      $('r-hours').value = c.hours; $('r-start').value = c.start; $('r-election').value = c.election; $('r-method').value = c.method; $('r-korea').checked = c.korea;
-    }
+    const signed = Boolean(S.contract), c = signed ? S.contract : draft();
+    ['r-start', 'r-election', 'r-method', 'r-korea'].forEach((id) => { $(id).disabled = signed; });
+    if (signed) { $('r-start').value = c.start; $('r-election').value = c.election; $('r-method').value = c.method; $('r-korea').checked = c.korea; }
     $('reserved-body').classList.toggle('locked', !S.kyb);
-    const problem = signed ? '' : validReserved(c);
-    $('r-sign').disabled = signed || !S.kyb || Boolean(problem);
-    $('r-msg').textContent = signed ? 'Signed on ' + c.signedOn + '. Payments are tracked below.' : (S.kyb ? problem : 'Approval is needed before signing.');
-    if (problem) { ['r-r-term', 'r-r-hours', 'r-r-price', 'r-r-net', 'r-r-vat', 'r-r-total'].forEach((id) => { $(id).textContent = '-'; }); fill('r-gates', []); fill('r-tranches', []); return; }
+    const late = !signed && c.start < minStart();
+    $('r-sign').disabled = signed || !S.kyb || late;
+    $('r-msg').textContent = signed ? (c.endedOn ? 'Ended on ' + c.endedOn + ' with nothing owed: Gate 1 was not paid.' : 'Signed on ' + c.signedOn + '. Payments are tracked below.') : (S.kyb ? (late ? 'The term cannot start before ' + minStart() + '.' : '') : 'Approval is needed before signing.');
     const net = c.hours * c.price, vat = net * c.vatRate;
     $('r-r-term').textContent = c.start + ' to ' + c.end;
     $('r-r-hours').textContent = whole(c.hours);
@@ -403,20 +369,23 @@
     $('r-r-net').textContent = usd(net);
     $('r-r-vat').textContent = c.vatRate ? usd(vat) : '$0.00 (zero-rated)';
     $('r-r-total').textContent = usd(net + vat);
-    fill('r-gates', gates(c).map((g) => row([cell(g.name), cell(g.due + ', ' + g.label), cell(whole(g.hours), 'figure'), cell(usd(g.hours * c.price * (1 + c.vatRate)), 'figure')])));
+    $('r-r-phase').textContent = 'to ' + phaseEnd(c);
+    $('r-phase-note').textContent = phaseNote(c);
+    fill('r-gates', gates(c).map((g) => row([cell(g.name), cell(g.due + ', end of day ' + g.day + ' after signing'), cell(whole(g.hours), 'figure'), cell(usd(g.hours * c.price * (1 + c.vatRate)), 'figure')])));
     fill('r-tranches', c.tranches.map((t, i) => row([cell(String(i + 1) + ' · ' + t.key), cell(t.from + ' to ' + t.to), cell(String(t.days), 'figure'), cell(whole(t.east), 'figure'), cell(whole(t.west), 'figure')])));
   };
 
   const paidNet = () => S.payments.reduce((a, p) => a + p.net, 0);
   const contractNet = () => S.contract.hours * S.contract.price;
   const complete = () => Boolean(S.contract && S.contract.completedOn);
+  const ended = () => Boolean(S.contract && S.contract.endedOn);
   const renderPrepayment = () => {
     const c = S.contract;
     $('pp-empty').hidden = Boolean(c);
     $('pp-panel').hidden = !c;
     if (!c) return;
     const total = contractNet() * (1 + c.vatRate), paid = S.payments.reduce((a, p) => a + p.amount, 0);
-    const hoursPaid = Math.min(c.hours, paidNet() / c.price), left = Math.max(0, total - paid);
+    const hoursPaid = Math.min(c.hours, paidNet() / c.price), left = ended() ? 0 : Math.max(0, total - paid);
     const bar = $('pp-bar');
     bar.querySelectorAll('b').forEach((b) => b.remove());
     bar.style.setProperty('--w', (100 * hoursPaid / c.hours).toFixed(2) + '%');
@@ -425,145 +394,92 @@
     $('pp-hours').textContent = hrs(hoursPaid) + ' of ' + whole(c.hours);
     $('pp-left').textContent = usd(left);
     const next = gates(c).find((g) => hoursPaid + 1e-6 < g.hours);
-    $('pp-state').textContent = complete() ? 'Complete' : (next ? next.name + ' by ' + next.due : 'Complete');
+    $('pp-state').textContent = ended() ? 'Ended' : complete() ? 'Complete' : (next ? next.name + ' by ' + next.due : 'Complete');
     $('pp-state').className = complete() ? 'ok' : '';
-    $('pp-add').disabled = complete();
-    if (!$('pp-amount').value && next) $('pp-amount').value = Math.max(0.01, (next.hours * c.price - paidNet()) * (1 + c.vatRate)).toFixed(2);
+    $('pp-add').disabled = complete() || ended();
+    $('pp-lapse').hidden = S.payments.length > 0 || ended();
+    if (!$('pp-amount').value && next && !ended()) $('pp-amount').value = Math.max(0.01, (next.hours * c.price - paidNet()) * (1 + c.vatRate)).toFixed(2);
     if (!$('pp-date').value) $('pp-date').value = today();
     let running = 0;
     fill('pp-rows', S.payments.map((p) => { running += p.amount; return row([cell(p.date), cell(usd(p.amount), 'figure'), cell(usd(p.amount - p.net), 'figure'), cell(hrs(p.net / c.price), 'figure'), cell(usd(running), 'figure')]); }));
-    $('pp-msg').textContent = complete() ? 'Prepayment completed on ' + c.completedOn + '. All ' + c.tranches.length + ' tranches are released as transferable credits below.' : 'Paid tranches stay locked and are served at the initial daily pace until prepayment completes.';
+    $('pp-msg').textContent = ended() ? 'Phase A ended on ' + c.endedOn + ' without Gate 1, so the agreement ended with nothing owed by either side.' : complete() ? 'Prepayment completed on ' + c.completedOn + '. All ' + c.tranches.length + ' tranches are released: use them in either window within your election, and spend ahead.' : 'Paid tranches are served at the initial daily pace until prepayment completes.';
   };
 
-  const classes = () => {
-    const list = S.hourly.map((h, i) => ({ id: 'hourly-' + (i + 1), label: 'Hourly · ' + h.start, hours: h.hours, until: h.expires, state: 'Own use only', tradable: false }));
+  const renderHours = () => {
+    const rows = S.hourly.map((h) => row([cell('Hourly, bought ' + h.bought), cell(whole(h.hours), 'figure'), cell(h.start + ' to ' + h.expires), cell('Ready')]));
     const c = S.contract;
-    if (!c) return list;
-    const hoursPaid = Math.min(c.hours, paidNet() / c.price);
-    let cumulative = 0;
-    c.tranches.forEach((t) => {
-      cumulative += t.hours;
-      const state = complete() ? 'Released' : (cumulative <= hoursPaid + 1e-6 ? 'Paid · locked' : 'Unpaid');
-      [['E', t.east], ['W', t.west]].forEach(([w, h]) => {
-        if (!h) return;
-        const id = t.key + '-' + w;
-        const moved = S.transfers.filter((x) => x.creditClass === id).reduce((a, x) => a + x.hours, 0);
-        list.push({ id, label: id, hours: h - moved, until: t.to, state, tradable: complete() });
+    if (c && !ended()) {
+      const hoursPaid = Math.min(c.hours, paidNet() / c.price);
+      let cumulative = 0;
+      c.tranches.forEach((t) => {
+        cumulative += t.hours;
+        const state = complete() ? 'Released' : (cumulative <= hoursPaid + 1e-6 ? 'Paid, initial pace' : 'Not yet paid');
+        rows.push(row([cell('Two-year tranche ' + t.key), cell(whole(t.hours) + ' (' + whole(t.east) + ' E / ' + whole(t.west) + ' W)', 'figure'), cell(t.from + ' to ' + t.to), cell(state, complete() ? 'ok' : '')]));
       });
-    });
-    return list;
-  };
-  const renderCredits = () => {
-    const list = classes();
-    fill('c-rows', list.length ? list.map((k) => row([cell(k.label, 'mono'), cell(whole(k.hours), 'figure'), cell(k.until), cell(k.state, k.tradable ? 'ok' : '')])) : [row([cell('No credits yet'), cell(''), cell(''), cell('')])]);
-    const tradable = list.filter((k) => k.tradable && k.hours > 0);
-    ['t-class', 'o-class'].forEach((id) => {
-      const sel = $(id), keep = sel.value;
-      sel.replaceChildren(...tradable.map((k) => { const o = document.createElement('option'); o.value = k.id; o.textContent = k.id + ' · ' + whole(k.hours) + ' h'; return o; }));
-      if (tradable.some((k) => k.id === keep)) sel.value = keep;
-    });
-    $('trade').classList.toggle('locked', tradable.length === 0);
-    $('trade-lock').textContent = tradable.length ? '' : 'Transfers and orders open once two-year prepayment completes.';
+    }
+    fill('c-rows', rows.length ? rows : [row([cell('No hours yet'), cell(''), cell(''), cell('')])]);
   };
   const renderLedger = () => { $('l-out').textContent = S.ledger.map((l) => JSON.stringify(l)).join('\n'); };
-  const renderFleets = () => {
-    const rate = (n) => (Math.round(n * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
-    fill('f-rows', P.fleets.map((f) => {
-      const state = cell('', ''), tag = document.createElement('span');
-      tag.className = 'state ' + (f.state === 'serving' ? 'live' : 'building');
-      tag.textContent = f.state === 'serving' ? 'Serving' : 'Under construction';
-      state.appendChild(tag);
-      return row([cell(f.name + ' · ' + f.kind, 'model'), state, cell(rate(f.creditRate), 'figure'), cell(usd(f.creditRate * P.hourlyPrice), 'figure'), cell(usd(f.creditRate * P.committedPrice), 'figure')]);
-    }));
-  };
-  const render = () => { renderPrices(); renderFleets(); renderHourly(); renderReserved(); renderPrepayment(); renderCredits(); renderLedger(); };
+  const render = () => { renderPrices(); renderFleets(); renderHourly(); renderReserved(); renderPrepayment(); renderHours(); renderLedger(); };
 
   $('h-hours').addEventListener('input', renderHourly);
   $('h-start').addEventListener('change', renderHourly);
   $('hourly-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const company = $('h-company').value.trim(), email = $('h-email').value.trim(), start = $('h-start').value;
-    const room = P.hourlyMaxHours - heldHourly(), hours = +$('h-hours').value;
+    const room = cap() - heldHourly(), hours = Math.round(+$('h-hours').value);
     if (!company || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { $('h-msg').textContent = 'Enter the company name and a valid email.'; return; }
     if (!start || start < minStart()) { $('h-msg').textContent = 'Hours cannot start before ' + minStart() + '.'; return; }
-    if (hours < 1 || hours > room) { $('h-msg').textContent = 'You can buy at most ' + room + ' more hours.'; return; }
+    if (!(hours >= 1 && hours <= room)) { $('h-msg').textContent = 'You can buy at most ' + whole(room) + ' more hours.'; return; }
     const net = hours * P.hourlyPrice, vat = net * P.vatRate, order = 'ord-' + (S.ledger.length + 1);
-    const purchase = { hours, start, expires: ymd(termEnd(start, P.hourlyValidityMonths)), paid: net + vat };
+    const purchase = { hours, start, bought: today(), expires: ymd(termEnd(start, P.hourlyValidityMonths)) };
     S.hourly.push(purchase);
     await append('order', { order, tier: 'hourly', hours, unit_price: P.hourlyPrice, subtotal: net, vat, total: net + vat, currency: 'USD', pay_with: 'USDC' });
     await append('payment_confirmed', { order, amount: net + vat, currency: 'USDC', mock: true });
-    await append('credit_purchase', { order, hours, starts: start, expires: purchase.expires });
-    $('h-msg').textContent = hours + ' hours credited, usable from ' + start + '.';
+    await append('hours_issued', { order, hours, starts: start, expires: purchase.expires });
+    $('h-msg').textContent = whole(hours) + ' hours added, usable from ' + start + '.';
     render();
   });
 
-  $('kyb').addEventListener('click', async () => { S.kyb = true; await append('kyb_decided', { decision: 'approved', mock: true }); render(); });
-  ['r-hours', 'r-start', 'r-election', 'r-method', 'r-korea'].forEach((id) => $(id).addEventListener(id === 'r-hours' ? 'input' : 'change', renderReserved));
+  $('kyb').addEventListener('click', async () => { S.kyb = true; await append('kyb_decided', { decision: 'approved', hourly_cap: P.verifiedMaxHours, mock: true }); $('h-msg').textContent = ''; render(); });
+  ['r-start', 'r-election', 'r-method', 'r-korea'].forEach((id) => $(id).addEventListener('change', renderReserved));
   $('reserved-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!S.kyb || S.contract) return;
-    const c = draft(), problem = validReserved(c);
-    if (problem) { $('r-msg').textContent = problem; return; }
-    c.signedOn = today();
+    const c = draft();
+    if (c.start < minStart()) { $('r-msg').textContent = 'The term cannot start before ' + minStart() + '.'; return; }
     S.contract = c;
-    await append('agreement_signed', { hours: c.hours, unit_price: c.price, term_start: c.start, term_end: c.end, election: c.election, method: c.method, vat_rate: c.vatRate, tranches: c.tranches.length, agreement_sha256: await sha256(JSON.stringify(c)) });
+    await append('agreement_signed', { hours: c.hours, unit_price: c.price, signed: c.signedOn, phase_a_ends: phaseEnd(c), term_start: c.start, term_end: c.end, election: c.election, method: c.method, vat_rate: c.vatRate, tranches: c.tranches.length, agreement_sha256: await sha256(JSON.stringify(c)) });
     render();
   });
 
   $('pp-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const c = S.contract;
-    if (!c || complete()) return;
+    if (!c || complete() || ended()) return;
     const amount = Math.round(+$('pp-amount').value * 100) / 100, date = $('pp-date').value || today();
     if (!(amount > 0)) { $('pp-msg').textContent = 'Enter the amount received.'; return; }
     const net = amount / (1 + c.vatRate), remaining = contractNet() - paidNet();
     if (net > remaining + 0.005) { $('pp-msg').textContent = 'That is more than the ' + usd(remaining * (1 + c.vatRate)) + ' still owed.'; return; }
     S.payments.push({ amount, net, date });
-    await append('payment_confirmed', { tier: 'reserved', amount, vat: amount - net, hours_paid_for: Math.round(net / c.price * 10) / 10, method: c.method, received: date, mock: true });
+    await append('payment_confirmed', { tier: 'two_year', amount, vat: amount - net, hours_paid_for: Math.round(net / c.price * 10) / 10, method: c.method, received: date, mock: true });
     if (paidNet() + 0.005 >= contractNet()) {
       c.completedOn = date;
       await append('prepayment_complete', { completed: date, paid_total: S.payments.reduce((a, p) => a + p.amount, 0), hours: c.hours });
-      await append('credits_released', { classes: c.tranches.flatMap((t) => [['E', t.east], ['W', t.west]].filter(([, h]) => h).map(([w, h]) => ({ creditClass: t.key + '-' + w, hours: h, expires: t.to }))) });
+      await append('hours_released', { tranches: c.tranches.length, hours: c.hours });
     }
     $('pp-amount').value = '';
     render();
   });
-
-  const typed = (primaryType, fields, message) => JSON.stringify({ domain: { name: 'SparkPipe', version: '1', chainId: 1 }, primaryType, types: { [primaryType]: fields }, message, signature: 'requested from your wallet in the live service' }, null, 2).replace(/\{\n\s+"name": "(\w+)",\n\s+"type": "(\w+)"\n\s+\}/g, '{ "name": "$1", "type": "$2" }');
-  $('t-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const id = $('t-class').value, hours = Math.round(+$('t-hours').value), to = $('t-to').value.trim();
-    const k = classes().find((x) => x.id === id && x.tradable);
-    if (!k) { $('t-msg').textContent = 'Choose a released class.'; return; }
-    if (!(hours >= 1 && hours <= k.hours)) { $('t-msg').textContent = 'You hold ' + k.hours + ' hours of ' + id + '.'; return; }
-    if (!/^0x[0-9a-fA-F]{40}$/.test(to) || to.toLowerCase() === S.account) { $('t-msg').textContent = 'Enter another account address: 0x and 40 hex digits.'; return; }
-    S.nonce += 1;
-    const message = { from: S.account, to: to.toLowerCase(), creditClass: id, hours, nonce: S.nonce };
-    S.transfers.push(message);
-    $('t-out').textContent = typed('Transfer', [{ name: 'from', type: 'address' }, { name: 'to', type: 'address' }, { name: 'creditClass', type: 'string' }, { name: 'hours', type: 'uint32' }, { name: 'nonce', type: 'uint64' }], message);
-    await append('transfer', message);
-    $('t-msg').textContent = hours + ' hours of ' + id + ' sent.';
+  $('pp-lapse').addEventListener('click', async () => {
+    const c = S.contract;
+    if (!c || S.payments.length || ended()) return;
+    c.endedOn = phaseEnd(c);
+    await append('agreement_ended', { reason: 'gate_1_not_paid_by_end_of_phase_a', ended: c.endedOn, owed: 0 });
     render();
   });
-  $('o-kind').addEventListener('change', () => { const swap = $('o-kind').value === 'swap'; $('o-price-label').hidden = swap; $('o-want-label').hidden = !swap; });
-  $('o-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const id = $('o-class').value, hours = Math.round(+$('o-hours').value), days = Math.round(+$('o-days').value), swap = $('o-kind').value === 'swap';
-    const k = classes().find((x) => x.id === id && x.tradable);
-    if (!k) { $('o-msg').textContent = 'Choose a released class.'; return; }
-    if (!(hours >= 1 && hours <= k.hours)) { $('o-msg').textContent = 'You hold ' + k.hours + ' hours of ' + id + '.'; return; }
-    const want = $('o-want').value.trim().toUpperCase();
-    if (swap && !/^\d{4}-\d{2}-[EW]$/.test(want)) { $('o-msg').textContent = 'Name the class you want, such as 2027-03-W.'; return; }
-    S.nonce += 1;
-    save();
-    const expires = Math.floor(Date.now() / 1000) + days * 86400;
-    const fields = [{ name: 'maker', type: 'address' }, { name: 'giveClass', type: 'string' }, { name: 'giveHours', type: 'uint32' }].concat(swap ? [{ name: 'wantClass', type: 'string' }, { name: 'wantHours', type: 'uint32' }] : [{ name: 'priceUsdcPerHour', type: 'string' }]).concat([{ name: 'expires', type: 'uint64' }, { name: 'nonce', type: 'uint64' }]);
-    const message = Object.assign({ maker: S.account, giveClass: id, giveHours: hours }, swap ? { wantClass: want, wantHours: hours } : { priceUsdcPerHour: (+$('o-price').value).toFixed(2) }, { expires, nonce: S.nonce });
-    $('t-out').textContent = typed('Order', fields, message);
-    $('o-msg').textContent = 'Order signed. Publish it to any orderbook; when it is filled, settlement is a signed transfer each way.';
-  });
 
-  $('reset').addEventListener('click', () => { S = fresh(); save(); ['pp-amount', 'pp-date', 't-to'].forEach((id) => { $(id).value = ''; }); $('t-out').textContent = ''; render(); });
+  $('reset').addEventListener('click', () => { S = fresh(); save(); ['pp-amount', 'pp-date'].forEach((id) => { $(id).value = ''; }); $('h-msg').textContent = ''; render(); });
   render();
 })();
 </script>
