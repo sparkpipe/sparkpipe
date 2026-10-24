@@ -174,7 +174,7 @@ class Commands:
         total = sum(self.sizes(model, exchanges))
         off = memory_off or settings.get("memory") == "off"
         compaction = self.memory.store.load(*identity)["compaction"]
-        lines = [f"The chat holds {len(exchanges)} exchanges, {total:,} tokens, of the {model.context_tokens:,} {model.id} serves."]
+        lines = [f"The chat holds {len(exchanges)} exchange{'' if len(exchanges) == 1 else 's'}, {total:,} tokens, of the {model.context_tokens:,} {model.id} serves."]
         lines.append("Memory is off: every request sends the whole chat." if off else
                      f"Memory is on: the prompt keeps the newest exchanges and a summary line for each older one" +
                      (f", near a target of {label(settings['target'])} tokens." if settings.get("target") else "."))
@@ -209,8 +209,9 @@ class Commands:
         instruction = ("Compact this conversation for its next turns. " +
                        (f"Keep in full the exchanges most relevant to continuing it, within {budget:,} tokens in total; always keep {newest}. "
                         if not full else "Keep no exchange in full. ") +
-                       "Write a summary of every exchange you do not keep: facts, decisions, names, numbers, file paths, code identifiers and open questions, "
-                       "in reported speech, so the conversation can continue without them. "
+                       "Write a summary that covers every exchange you do not keep, each marked with its id in parentheses like (e2): "
+                       "facts, decisions, names, numbers, file paths, code identifiers and open questions, in reported speech, "
+                       "so the conversation can continue without them. "
                        'Reply with one JSON object and nothing else: {"keep": ["e3", "e9"], "summary": "..."}')
         messages = [{"role": "system", "content": "You compact conversations. Answer with JSON only."},
                     {"role": "user", "content": "\n\n".join(listing) + "\n\n" + instruction}]
@@ -224,6 +225,9 @@ class Commands:
         keep = [] if full else sorted(set(keep) | {newest}, key=ids.index)
         while not full and len(keep) > 1 and sum(sizes[ids.index(item)] for item in keep) > budget:
             keep.remove(min((item for item in keep if item != newest), key=lambda item: ids.index(item)))
+        missing = [item for item in ids if item not in keep and f"({item})" not in summary]
+        if missing:
+            summary = "\n".join([summary] + [f"({item}) " + self.module.fallback_line(exchanges[ids.index(item)]) for item in missing]).strip()
         kept_tokens = sum(sizes[ids.index(item)] for item in keep)
         self.memory.store.append(*identity, {"type": "compaction", "covered": [self.module.exchange_key(exchange) for exchange in exchanges],
                                              "keep": [self.module.exchange_key(exchanges[ids.index(item)]) for item in keep], "summary": summary,

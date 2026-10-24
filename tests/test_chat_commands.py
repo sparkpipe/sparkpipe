@@ -110,7 +110,7 @@ async def run():
         check("Memory is on" in refused and memory.store.load(*identity2)["compaction"] is None, "compaction is for chats with memory off")
 
         long_chat = chat(6)
-        frontend.reply = 'Here: {"keep": ["e2", "e5"], "summary": "The user asked six questions; the third set the budget at 4,000 euros."}'
+        frontend.reply = 'Here: {"keep": ["e2", "e5"], "summary": "The third question set the budget at 4,000 euros (e3)."}'
         reply = await commands.run(model, identity, long_chat + [{"role": "user", "content": "/compact 50%"}], "compact", "50%", False)
         check("kept e2, e5, e6" in reply, reply)
         listing = frontend.asked[-1][1]["content"]
@@ -118,6 +118,8 @@ async def run():
         compacted = commands.compacted(identity, long_chat + [{"role": "user", "content": "question 7"}])
         users = [m["content"] for m in compacted if m["role"] == "user"]
         check(len(users) == 4 and users[0].startswith(cc.SUMMARY_OPEN) and "4,000 euros" in users[0] and "question 2" in users[0], users[:1])
+        summary = memory.store.load(*identity)["compaction"]["summary"]
+        check(all(f"({item})" in summary for item in ("e1", "e3", "e4")), "every dropped exchange is in the summary: the model's (e3) and fallback lines for e1 and e4")
         check([u.split(" ")[1] for u in users[1:]] == ["5", "6", "7"], "kept exchanges stay in order, later turns follow")
         check(compacted[0]["role"] == "system", "the system message stays first")
 
