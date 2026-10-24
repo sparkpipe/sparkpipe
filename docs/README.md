@@ -83,9 +83,9 @@ current authority.
 
 ## Other models
 
-- [`K3_PERF.md`](K3_PERF.md): SparkPipe's only K3 numbers.
 - [`K3_VS_GB10_VLLM.md`](K3_VS_GB10_VLLM.md): K3 against the gb10-vllm
-  stack, lever by lever.
+  stack, lever by lever, with SparkPipe's numbers from
+  [`PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md).
 
 ## Speculation
 

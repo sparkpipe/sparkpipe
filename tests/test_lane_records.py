@@ -15,6 +15,11 @@ def main():
     reserve = document["weightd"]["kv_reserve_bytes"]
     swap = {entry["id"]: entry for entry in json.loads((ROOT / "deployment/hub/model_swap.json").read_text())["models"]}
     chat = {entry["id"]: entry for entry in json.loads((ROOT / "deployment/hub/chat_frontend.json").read_text())["models"]}
+    readme = {}
+    for row in (ROOT / "README.md").read_text().splitlines():
+        cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+        if len(cells) > 3 and cells[0].startswith("`") and cells[0].strip("`") in lanes:
+            readme[cells[0].strip("`")] = cells[3]
     failures = []
     for missing in sorted(set(swap) - set(lanes)):
         failures.append(f"{missing}: the swap controller serves it but deployment/lanes.json has no record")
@@ -71,11 +76,14 @@ def main():
             failures.append(f"{record_id}: deployment/hub/model_swap.json node_memory_bytes differs from tools/stage_lane.py")
         if record_id in chat and chat[record_id].get("context_tokens") != context:
             failures.append(f"{record_id}: deployment/hub/chat_frontend.json context_tokens {chat[record_id].get('context_tokens')} differs from the engine's {context}")
+        label = f"{context // 1048576}M" if context % 1048576 == 0 else f"{context // 1024}K"
+        if readme.get(record_id) != label:
+            failures.append(f"{record_id}: README.md's model table lists context {readme.get(record_id)} where the engine serves {label}")
     for line in failures:
         print("FAILED: " + line)
     if failures:
         return 1
-    print(f"PASS {len(lanes)} lane records render, match the swap controller and the chat layer, give the hub API the raw text prompt prefix the record names, and serve the contract maximum or say why not")
+    print(f"PASS {len(lanes)} lane records render, match the swap controller, the chat layer and the README model table, give the hub API the raw text prompt prefix the record names, and serve the contract maximum or say why not")
     return 0
 
 

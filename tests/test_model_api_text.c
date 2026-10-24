@@ -1306,8 +1306,13 @@ static void TestApiSamplingOptions(TestApiStack *stack)
 	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"temperature\":1,\"top_k\":-1}");
 	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"logprobs\":21}");
 	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"logprobs\":true}");
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"speculation\":false}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"speculation\":0}");
 	printf("test_model_api_text: sampling options OK (logprobs return the emitted token and its top alternatives "
-		"in order, streamed or not; top-p and top-k reach a truncating adapter; out-of-range options are 400)\n");
+		"in order, streamed or not; top-p and top-k reach a truncating adapter; speculation false is accepted; out-of-range options are 400)\n");
 }
 
 static void TestApiRefusedStartup(const char *tokenizer_asset_path, const char *label)

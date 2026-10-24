@@ -168,6 +168,7 @@ static void TestWriteDeployment(const char *path, const char *runtime_root, cons
 }
 
 static uint32_t TestKeepPrefixIndex;
+static uint32_t TestDraftsDisabled;
 static const char *TestPeerPrefixIndex;
 
 static const char *TestPrefixIndexPath(void)
@@ -245,6 +246,7 @@ static SparkStatus TestSubmitPromptStatus(SparkModelBatchEngine *engine,uint64_t
 	request.prompt_token_ids = prompt;
 	request.prompt_token_count = prompt_count;
 	request.output_token_budget = budget;
+	request.drafts_disabled = TestDraftsDisabled;
 	handle = 0;
 	return(SparkModelBatchEngineSubmit(engine,&request,&handle));
 }
@@ -1345,6 +1347,141 @@ static void TestScenarioStalePrefixIsolatesLanes(const SparkModelResidentDeploym
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static uint32_t TestLaneLogEdge(uint64_t request_id,uint32_t last)
+{
+	SparkModelServingLane lane;
+	uint32_t index,found = UINT32_MAX;
+	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
+		if ( lane.request_id == request_id && (found == UINT32_MAX || last != 0u) )
+			found = index;
+	return(found);
+}
+
+static void TestScenarioSharedPrefixReservation(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	SparkModelResidentDeployment bounded = *deployment;
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t shared_a[18],shared_b[18],other[12],whole[36],index;
+	for (index=0u; index<16u; index++)
+		shared_a[index] = shared_b[index] = 100u + index;
+	shared_a[16] = 201u;
+	shared_a[17] = 202u;
+	shared_b[16] = 211u;
+	shared_b[17] = 212u;
+	for (index=0u; index<12u; index++)
+		other[index] = 300u + index;
+	for (index=0u; index<36u; index++)
+		whole[index] = 400u + index;
+	MockResidentClientReset();
+	bounded.runtime_limits.kv_physical_page_capacity = 9u;
+	engine = TestConnectRows(&bounded,&state,runtime_root,16u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,960u,1u,shared_a,16u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	TestSubmitPrompt(engine,2u,961u,4u,shared_a,18u);
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u,"shared reservation: the first sharer of the cached prefix is bound and holds its pages");
+	TestSubmitPrompt(engine,3u,962u,8u,shared_b,18u);
+	TestDriveUntilTerminal(engine,&state,2u,800u);
+	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 16u,"shared reservation: the holder reuses the cached 16-token prefix");
+	CHECK(TestLaneLogEdge(3u,0u) < TestLaneLogEdge(2u,1u),"shared reservation: the second request is bound beside the first, reserving 6 + 3 of 9 pages, where charging its whole prompt (6 + 7) would wait for the first to finish");
+	TestSubmitPrompt(engine,4u,963u,1u,other,12u);
+	TestDriveUntilTerminal(engine,&state,4u,800u);
+	CHECK(state.completed_events[3] == 1u && state.cached_tokens[3] == 16u && state.completed_events[4] == 1u && state.error_events[3] + state.error_events[4] == 0u,"shared reservation: the sharer reuses the same prefix and it and a later request complete");
+	CHECK(TestLaneLogEdge(4u,0u) > TestLaneLogEdge(3u,1u),"shared reservation: when the holder finishes first the sharer inherits the shared pages, so a 3-page request waits (7 + 3 > 9)");
+	TestSubmitPrompt(engine,5u,964u,1u,whole,36u);
+	TestDriveUntilTerminal(engine,&state,5u,800u);
+	CHECK(state.completed_events[5] == 1u,"shared reservation: every page is returned, so a request needing all 9 pages is admitted");
+	TestSubmitPrompt(engine,6u,965u,4u,shared_a,18u);
+	CHECK(TestWaitFirstRequestLane(engine,6u,&lane) != 0u,"shared reservation: a new holder of the cached prefix is bound");
+	MockResidentClientScriptStalePrefixRequest(1u,7u);
+	TestSubmitPrompt(engine,7u,966u,8u,shared_b,18u);
+	TestDriveUntilTerminal(engine,&state,7u,800u);
+	MockResidentClientScriptStalePrefixRequest(1u,0u);
+	CHECK(state.completed_events[6] == 1u && state.error_events[6] == 0u,"shared reservation: the holder completes when a sharer's prefix turns stale");
+	CHECK(state.error_events[7] == 1u && state.token_events[7] == 0u && state.stale_recomputes[7] == 1u,"shared reservation: a sharer whose shared prefix is gone and whose own copy does not fit beside the holder (6 + 7 > 9) fails instead of overcommitting the pages");
+	TestSubmitPrompt(engine,8u,967u,1u,whole,36u);
+	TestDriveUntilTerminal(engine,&state,8u,800u);
+	CHECK(state.completed_events[8] == 1u,"shared reservation: the failed sharer returns its pages too");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioSharedMidBlockPrefixDecode(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	SparkModelResidentDeployment bounded = *deployment;
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	uint32_t seed[18],first[20],second[20],index,decode_lanes;
+	for (index=0u; index<18u; index++)
+		seed[index] = first[index] = second[index] = 700u + index;
+	first[18] = 801u;
+	first[19] = 802u;
+	second[18] = 811u;
+	second[19] = 812u;
+	MockResidentClientReset();
+	bounded.runtime_limits.kv_physical_page_capacity = 10u;
+	engine = TestConnectRows(&bounded,&state,runtime_root,16u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,970u,1u,seed,18u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	(void)MockResidentClientTakeMaxDecodeLanes();
+	TestSubmitPrompt(engine,2u,971u,6u,first,20u);
+	TestSubmitPrompt(engine,3u,972u,6u,second,20u);
+	TestDriveUntilTerminal(engine,&state,3u,800u);
+	decode_lanes = MockResidentClientTakeMaxDecodeLanes();
+	CHECK(state.completed_events[2] == 1u && state.completed_events[3] == 1u && state.error_events[2] + state.error_events[3] == 0u &&
+		state.cached_tokens[2] == 18u && state.cached_tokens[3] == 18u,"shared mid-block prefix: both requests resume from the cached 18 tokens, four whole blocks and a copied tail, and complete");
+	CHECK(decode_lanes == 2u,"shared mid-block prefix: the two requests decode in one wave, the four shared blocks counted once (4 + 3 + 3 of 10 pages), where charging each its whole context (7 + 7) would decode them one at a time");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioSharedBlocksAcrossChains(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	SparkModelResidentDeployment bounded = *deployment;
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	uint32_t document[16],first[20],second[20],index,decode_lanes;
+	for (index=0u; index<16u; index++)
+		document[index] = first[index] = second[index] = 1400u + index;
+	first[16] = 1501u;
+	first[17] = 1502u;
+	first[18] = 1503u;
+	first[19] = 1504u;
+	second[16] = 1601u;
+	second[17] = 1602u;
+	second[18] = 1603u;
+	second[19] = 1604u;
+	MockResidentClientReset();
+	bounded.runtime_limits.kv_physical_page_capacity = 10u;
+	engine = TestConnectRows(&bounded,&state,runtime_root,16u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,980u,1u,document,16u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	TestSubmitPrompt(engine,2u,981u,1u,first,18u);
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	TestSubmitPrompt(engine,3u,982u,1u,second,18u);
+	TestDriveUntilTerminal(engine,&state,3u,400u);
+	(void)MockResidentClientTakeMaxDecodeLanes();
+	TestSubmitPrompt(engine,4u,983u,6u,first,20u);
+	TestSubmitPrompt(engine,5u,984u,6u,second,20u);
+	TestDriveUntilTerminal(engine,&state,5u,800u);
+	decode_lanes = MockResidentClientTakeMaxDecodeLanes();
+	CHECK(state.completed_events[4] == 1u && state.completed_events[5] == 1u && state.error_events[4] + state.error_events[5] == 0u &&
+		state.cached_tokens[4] == 18u && state.cached_tokens[5] == 18u,"shared blocks across chains: each turn resumes from its own cached 18-token turn and completes");
+	CHECK(decode_lanes == 2u,"shared blocks across chains: two turns whose cached prefixes differ but hold the same four document blocks decode in one wave (4 + 3 + 3 of 10 pages); matching whole prefixes would charge each its 7 pages and decode them one at a time");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioVerificationFailureIsFatal(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	static const uint32_t prompt[8] = {11u,12u,13u,14u,15u,16u,17u,18u};
@@ -2190,6 +2327,40 @@ static void TestScenarioReplyCheckpoint(const SparkModelResidentDeployment *depl
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioResumeSuperseded(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t blocks[5] = {1u,2u,4u,5u,7u};
+	static const uint32_t probes[3] = {10u,14u,22u},expected[3] = {0u,12u,20u};
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t chat[29],probe[29],index,turn,resumed = 1u;
+	for (index=0u; index<29u; index++)
+		chat[index] = 1200u + index;
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,10u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	for (turn=0u; turn<5u; turn++)
+	{
+		TestSubmitPrompt(engine,1u + turn,1300u + turn,1u,chat,4u * blocks[turn] + 1u);
+		TestDriveUntilTerminal(engine,&state,1u + turn,800u);
+	}
+	CHECK(state.completed_events[5] == 1u && state.error_events[1] + state.error_events[2] + state.error_events[3] + state.error_events[4] + state.error_events[5] == 0u,"superseded resume: five turns of one chat complete, each publishing the state one token before its prompt end");
+	for (index=0u; index<3u; index++)
+	{
+		memcpy(probe,chat,sizeof(chat));
+		probe[probes[index]] = 9u;
+		TestSubmitPrompt(engine,6u + index,1310u + index,1u,probe,probes[index] + 2u);
+		resumed &= TestWaitFirstRequestLane(engine,6u + index,&lane) != 0u && lane.cache_prefix_token_count == expected[index] ? 1u : 0u;
+		TestDriveUntilTerminal(engine,&state,6u + index,800u);
+	}
+	CHECK(resumed != 0u && state.error_events[6] + state.error_events[7] + state.error_events[8] == 0u,"superseded resume: the states at 4 and 8 lie four or more block-aligned states back on the chain, so the engine stops offering them, as the ranks drop them; the stride state at 12 and the newer 20 still resume");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deployment,const SparkModelResidentDeployment *plain_deployment,const char *runtime_root);
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root);
@@ -2236,6 +2407,7 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 	TestScenarioRecurrentCheckpoints(&deployment,runtime_root);
 	TestScenarioRecurrentStaleResume(&deployment,runtime_root);
 	TestScenarioReplyCheckpoint(&deployment,runtime_root);
+	TestScenarioResumeSuperseded(&deployment,runtime_root);
 	SparkModelResidentDeploymentReset(&deployment);
 	(void)unlink(path);
 	TestLoadVariantDeployment(runtime_root,"multi-block-prefill",TEST_MODEL_SERVING_ADAPTER_PATH,path,sizeof(path),&deployment);
@@ -2305,6 +2477,11 @@ static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deploym
 	CHECK(submissions != 0u && rows > submissions && view.speculative_verify_lane_count != 0u,"lookup: a repeated passage is verified in multi-row waves");
 	CHECK(view.speculative_accepted_token_count * 2u > view.speculative_draft_token_count && view.speculative_accepted_token_count >= 30u,"lookup: drafts from the repeated passage are accepted");
 	CHECK(TestLaneInputsFollowScript(1u,script,256u) != 0u,"lookup: every decode lane's input token is a committed model token");
+	TestDraftsDisabled = 1u;
+	TestRunScript(deployment,runtime_root,script,256u,44u,80u,&plain_state,&plain_view,&plain_submissions,&plain_rows);
+	TestDraftsDisabled = 0u;
+	CHECK(plain_state.completed_events[1] == 1u && TestScriptedOutputMatches(&plain_state,1u,script,44u,80u) != 0u && plain_submissions == 0u &&
+		plain_view.speculative_draft_token_count == 0u && plain_view.speculative_verify_lane_count == 0u,"lookup: a request that turns speculation off decodes the same greedy stream with no drafts and no verify waves on a verifying adapter");
 	TestRunScript(plain_deployment,runtime_root,script,256u,44u,80u,&plain_state,&plain_view,&plain_submissions,&plain_rows);
 	CHECK(TestScriptedOutputMatches(&plain_state,1u,script,44u,80u) != 0u && plain_submissions == 0u && plain_view.speculative_draft_token_count == 0u,"lookup: an adapter without verify decodes the same stream with no verify waves");
 	for (index=0u; index<256u; index++)
@@ -2899,6 +3076,9 @@ int main(void)
 	TestScenarioStalePrefixRecomputes(&deployment,runtime_root);
 	TestScenarioStalePrefixTerminates(&deployment,runtime_root);
 	TestScenarioStalePrefixIsolatesLanes(&deployment,runtime_root);
+	TestScenarioSharedPrefixReservation(&deployment,runtime_root);
+	TestScenarioSharedMidBlockPrefixDecode(&deployment,runtime_root);
+	TestScenarioSharedBlocksAcrossChains(&deployment,runtime_root);
 	TestScenarioVerificationFailureIsFatal(&deployment,runtime_root);
 	TestScenarioRankBusyBackpressure(&deployment,runtime_root);
 	TestScenarioBusyRestoreDeadline(&deployment,runtime_root);

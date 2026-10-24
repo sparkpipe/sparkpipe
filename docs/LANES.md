@@ -46,7 +46,8 @@ weightd runs with.
   ones the record renders, and the chat layer's `context_tokens` in
   `deployment/hub/chat_frontend.json` is the record's;
 - the hub `model_resident.json` gives the API the record's raw text prompt
-  prefix.
+  prefix;
+- the README model table's context column is the record's.
 
 `audit` also recomputes every record's raw text prompt prefix on the hub
 from its publisher tokenizer (`tokenizer_json` in `tools/stage_lane.py`) and

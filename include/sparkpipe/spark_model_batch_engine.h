@@ -102,6 +102,7 @@ typedef struct SparkModelBatchSubmitRequest
 	uint32_t top_k;
 	uint32_t logprobs;
 	uint64_t deadline_ns;
+	uint32_t drafts_disabled;
 } SparkModelBatchSubmitRequest;
 
 typedef struct SparkModelBatchEngineView
