@@ -1373,11 +1373,13 @@ static void TestModelBatchEngineCachePageBudget(
 {
 	SparkModelBatchEngine *engine;
 	TestModelBatchState state;
-	uint32_t index,lane,page_lanes,widest;
+	uint32_t index,lane,page_lanes,shared_lanes,full,own,widest;
 	uint32_t prompt[13] = {11u,12u,13u,14u,15u,16u,17u,18u,19u,20u,21u,22u,23u};
 	memset(&state,0,sizeof(state));
-	page_lanes = deployment->runtime_limits.kv_physical_page_capacity /
-		SparkModelBatchSchedulerRequestPageCount(4u,13u,2u);
+	full = SparkModelBatchSchedulerRequestPageCount(4u,13u,2u);
+	own = full - 12u / 4u;
+	page_lanes = deployment->runtime_limits.kv_physical_page_capacity / full;
+	shared_lanes = 1u + (deployment->runtime_limits.kv_physical_page_capacity - full) / own;
 	assert(page_lanes != 0u && page_lanes < deployment->runtime_limits.max_active_sequence_count);
 	engine = TestModelBatchConnectCapacity(deployment,&state,0u,0u,32u,32u);
 	for (lane=0u; lane<32u; lane++)
@@ -1389,7 +1391,8 @@ static void TestModelBatchEngineCachePageBudget(
 	for (index=0u; index<state.submission_count; index++)
 		if ( state.submission_lane_counts[index] > widest )
 			widest = state.submission_lane_counts[index];
-	assert(widest != 0u && widest <= page_lanes);
+	assert(widest != 0u && widest <= shared_lanes && widest <= deployment->runtime_limits.max_active_sequence_count);
+	assert(widest > page_lanes || shared_lanes <= page_lanes);
 	assert(state.completed_count == 32u);
 	assert(state.error_count == 0u);
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
