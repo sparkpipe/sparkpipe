@@ -17,6 +17,7 @@
 #include "sparkpipe/spark_speculation_frame.h"
 #include "sparkpipe/spark_speculation_lookup_draft.h"
 
+#define SPARK_MODEL_BATCH_VERIFY_LANES 2u
 #define SPARK_MODEL_BATCH_REQUEST_FREE 0u
 #define SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL 1u
 #define SPARK_MODEL_BATCH_REQUEST_PREFILL_INFLIGHT 2u
@@ -3202,7 +3203,7 @@ static uint32_t SparkModelBatchPlanDrafts(
 	stride = 1u;
 	for (lane=0u; lane<lane_count; lane++)
 		engine->scratch_prefill_counts[lane] = 0u;
-	if ( engine->verify_capable == 0u || lane_count > SPARK_SPECULATION_FRAME_BATCH_LANES || engine->scratch_row_capacity < lane_count || SparkModelBatchNeedsSingleStep(engine,lane_count) != 0u )
+	if ( engine->verify_capable == 0u || lane_count > SPARK_MODEL_BATCH_VERIFY_LANES || engine->scratch_row_capacity < lane_count || SparkModelBatchNeedsSingleStep(engine,lane_count) != 0u )
 		return(stride);
 	if ( lane_count > 1u )
 		return(SparkModelBatchPlanBatchDrafts(engine,lane_count));
