@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
-: "${STAGE_MODEL:?STAGE_MODEL names a tools/stage_lane.py MODELS entry}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+if [ -n "${STAGE_RECORD:-}" ]; then
+  eval "$(python3 "$HERE/lane_config.py" shell "$STAGE_RECORD")"
+fi
+: "${STAGE_MODEL:?STAGE_MODEL names a tools/stage_lane.py MODELS entry, or STAGE_RECORD names a deployment/lanes.json record}"
 : "${STAGE_LANE:?STAGE_LANE is the weightd mesh lane (0..15)}"
-: "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds sparkpipe_model_residentd, the model adapter library, libhidden_transport_spark_host_rdma_verbs.so and weightd_warm}"
 : "${STAGE_WEIGHTD_SOCKET:?STAGE_WEIGHTD_SOCKET is the running weightd socket on every node}"
 : "${STAGE_EXPERT_POOL_BYTES:?STAGE_EXPERT_POOL_BYTES is the per-rank routed expert pool}"
 : "${STAGE_MEMORY_MAX:?STAGE_MEMORY_MAX is the residentd unit MemoryMax, e.g. 16G}"
-HERE="$(cd "$(dirname "$0")" && pwd)"
 LANE_TOOL=stage_lane
 LANE_RANKS=16
 . "$HERE/lane_run_log.sh"
@@ -69,6 +71,10 @@ SCRIPT
 }
 
 render() {
+  if [ -n "${STAGE_RECORD:-}" ]; then
+    python3 "$HERE/stage_lane.py" --record "$STAGE_RECORD" --output-dir "$1"
+    return
+  fi
   python3 "$HERE/stage_lane.py" --model "$STAGE_MODEL" --lane "$STAGE_LANE" \
     --sequences "${STAGE_SEQUENCES:-8}" --rows "${STAGE_ROWS:-1024}" --kv-pages "${STAGE_KV_PAGES:-64}" \
     ${STAGE_KV_PHYSICAL_PAGES:+--kv-physical-pages "$STAGE_KV_PHYSICAL_PAGES"} \
@@ -84,6 +90,7 @@ render() {
 
 setup() {
   local generated rank host root pack
+  : "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds sparkpipe_model_residentd, the model adapter library, libhidden_transport_spark_host_rdma_verbs.so and weightd_warm}"
   generated="$(mktemp -d)"
   render "$generated" > /dev/null
   for rank in $(seq 0 15); do
@@ -143,8 +150,14 @@ api_setup() {
   mkdir -p "$generated/tokenizer"
   $SSH "$hub" "cd $(dirname "$tokenizer_json") && tar cf - $(basename "$tokenizer_json") \$(ls tokenizer_config.json 2>/dev/null)" < /dev/null | tar xf - -C "$generated/tokenizer"
   [ "$(basename "$tokenizer_json")" = tokenizer.json ] && [ -s "$generated/tokenizer/tokenizer.json" ] || { echo "api-setup: could not copy $hub:$tokenizer_json" >&2; exit 1; }
-  STAGE_TOKENIZER_SHA256="$sha" STAGE_TOKENIZER_DIR="$generated/tokenizer" STAGE_SWAP_ENTRY=1 render "$generated" > /dev/null
-  scp -q "$generated/deployment.json" "$hub:$api/model_resident.json"
+  if [ -n "${STAGE_RECORD:-}" ]; then
+    [ "$sha" = "$(python3 "$HERE/lane_config.py" field "$STAGE_RECORD" tokenizer_sha256)" ] || { echo "api-setup: the compiled tokenizer $sha differs from the tokenizer_sha256 of lane record $STAGE_RECORD; update deployment/lanes.json first" >&2; exit 1; }
+    render "$generated" > /dev/null
+    scp -q "$generated/model_resident.json" "$hub:$api/model_resident.json"
+  else
+    STAGE_TOKENIZER_SHA256="$sha" STAGE_TOKENIZER_DIR="$generated/tokenizer" STAGE_SWAP_ENTRY=1 render "$generated" > /dev/null
+    scp -q "$generated/deployment.json" "$hub:$api/model_resident.json"
+  fi
   cp "$generated/swap_entry.json" "./$STAGE_MODEL.swap_entry.json"
   rm -rf "$generated"
   echo "$hub:$api ready (tokenizer $sha); swap controller entry in ./$STAGE_MODEL.swap_entry.json"
@@ -171,10 +184,12 @@ stop() {
 
 case "${1:-}" in
   render) render "${2:?render OUTPUT_DIRECTORY}" ;;
+  lane-scripts)
+    for rank in $(seq 0 15); do node_script "$rank" > "${2:?lane-scripts OUTPUT_DIRECTORY}/lane.$(host_of "$rank").sh"; done ;;
   setup) setup ;;
   start) start ;;
   status) status ;;
   stop) stop ;;
   api-setup) api_setup ;;
-  *) echo "usage: $0 render DIR|setup|start|status|stop|api-setup" >&2; exit 2 ;;
+  *) echo "usage: $0 render DIR|lane-scripts DIR|setup|start|status|stop|api-setup" >&2; exit 2 ;;
 esac

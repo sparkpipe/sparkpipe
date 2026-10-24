@@ -34,28 +34,8 @@ BK=$HUB_WORK/backups
 OLD_WD=${OLD_WD:-60b3ca5d0d3e444b}
 NEW_WD=$(shasum -a 256 "$FW/sparkpipe_weightd" | cut -c1-16)
 MODELS="qwen3.8-max glm-5.3 kimi-k3 glm-5.3-flash qwen3.8-27b qwen3.8-flash deepseek-v4.1-flash gemma-4-31b gemma-4-26b-a4b ling-3.0-flash ling-3.0-flash-fin hy4-preview muse-glimmer-30b laguna-s-2.1 mimo-v2.6-flash mimo-v2.6-pro"
-EXTRA_LANES="stage-lanes/qwen38_27b_bf16/lane11"
-row() {
-  case "$1" in
-    glm-5.3) echo "stage-lanes/glm53_full/lane6 libglm53_full_tp16_serving_adapter.so libglm53_full_tp16_serving_adapter.so glm53_full-kv-api 8475 glm53_full_tp16_stage" ;;
-    glm-5.3-flash) echo "stage-lanes/glm53_flash/lane0 libglm53_flash_tp16_serving_adapter.so libglm53_flash_tp16_serving_adapter.so glm53_flash-kv-api 8476 glm53_flash_stage" ;;
-    kimi-k3) echo "k3-lanes/lane8 libk3_tp16_serving_adapter.so libk3_serving_adapter.so k3-kv-api 8459 k3_stage" ;;
-    qwen3.8-27b) echo "stage-lanes/qwen38_27b/lane9 libqwen38_27b_tp16_serving_adapter.so libqwen38_27b_tp16_serving_adapter.so qwen38_27b-kv-api 8461 qwen38_27b_stage" ;;
-    deepseek-v4.1-flash) echo "stage-lanes/dsv41_flash/lane10 libdsv41_flash_tp16_serving_adapter.so libdsv41_flash_tp16_serving_adapter.so dsv41_flash-kv-api 8463 dsv41_flash_stage" ;;
-    qwen3.8-max) echo "stage-lanes/qwen38_max/lane12 libqwen38_max_tp16_serving_adapter.so libqwen38_max_tp16_serving_adapter.so qwen38_max-kv-api 8464 qwen38_max_stage" ;;
-    qwen3.8-flash) echo "stage-lanes/qwen38_flash/lane13 libqwen38_flash_tp16_serving_adapter.so libqwen38_flash_tp16_serving_adapter.so qwen38_flash-kv-api 8465 qwen38_flash_stage" ;;
-    gemma-4-31b) echo "stage-lanes/gemma4_31b/lane14 libgemma4_31b_tp16_serving_adapter.so libgemma4_31b_tp16_serving_adapter.so gemma4_31b-kv-api 8466 gemma4_31b_stage" ;;
-    gemma-4-26b-a4b) echo "stage-lanes/gemma4_26b/lane15 libgemma4_26b_tp16_serving_adapter.so libgemma4_26b_tp16_serving_adapter.so gemma4_26b-kv-api 8467 gemma4_26b_stage" ;;
-    ling-3.0-flash) echo "stage-lanes/ling3_flash/lane2 libling3_flash_tp16_serving_adapter.so libling3_flash_tp16_serving_adapter.so ling3_flash-kv-api 8468 ling3_stage" ;;
-    ling-3.0-flash-fin) echo "stage-lanes/ling3_fin/lane2 libling3_fin_tp16_serving_adapter.so libling3_fin_tp16_serving_adapter.so ling3_fin-kv-api 8469 ling3_stage" ;;
-    hy4-preview) echo "stage-lanes/hy4/lane3 libhy4_tp16_serving_adapter.so libhy4_tp16_serving_adapter.so hy4-kv-api 8470 hy4_tp16_stage" ;;
-    muse-glimmer-30b) echo "stage-lanes/muse_glimmer/lane4 libmuse_glimmer_tp16_serving_adapter.so libmuse_glimmer_tp16_serving_adapter.so muse_glimmer-kv-api 8471 muse_glimmer_stage" ;;
-    laguna-s-2.1) echo "stage-lanes/laguna/lane5 liblaguna_tp16_serving_adapter.so liblaguna_tp16_serving_adapter.so laguna-kv-api 8472 laguna_stage" ;;
-    mimo-v2.6-flash) echo "stage-lanes/mimo26_flash/lane7 libmimo26_flash_tp16_serving_adapter.so libmimo26_flash_tp16_serving_adapter.so mimo26_flash-kv-api 8473 mimo26_flash_tp16_stage" ;;
-    mimo-v2.6-pro) echo "stage-lanes/mimo26_pro/lane1 libmimo26_pro_tp16_serving_adapter.so libmimo26_pro_tp16_serving_adapter.so mimo26_pro-kv-api 8474 mimo26_pro_tp16_stage" ;;
-    *) return 1 ;;
-  esac
-}
+row() { python3 "$KIT/../tools/lane_config.py" release-row "$1" 2>/dev/null; }
+python3 -c "import json,sys; sys.exit(sorted(sys.argv[2].split()) != sorted(json.load(open(sys.argv[1]))['lanes']))" "$KIT/../deployment/lanes.json" "$MODELS" || { echo "MODELS differ from the records in deployment/lanes.json: refusing to run" >&2; exit 1; }
 field() { local r k="$2"; r=$(row "$1") || return 1; set -- $r; case "$k" in lane) echo "$1";; fwlib) echo "$2";; lib) echo "$3";; api) echo "$4";; port) echo "$5";; label) echo "$6";; esac; }
 for id in $MODELS; do for k in lane fwlib lib api port label; do v=$(field "$id" "$k"); case "$k:$v" in *:|*" "*|lane:/*|lane:*..*|[!l]*:*/*|l[!a]*:*/*) echo "field $k of $id is '$v': refusing to run" >&2; exit 1;; esac; done; case "$(field "$id" lane)" in */lane[0-9]*) ;; *) echo "lane of $id is not <dir>/lane<N>: refusing to run" >&2; exit 1;; esac; done
 utc() { [ -f "$STATE/utc" ] || date -u +%Y%m%dT%H%M%SZ > "$STATE/utc"; cat "$STATE/utc"; }
@@ -67,7 +47,6 @@ backups_present() {
     fan_all "backup $L/root.prev-$U" "test -d \$HOME/$L/root.prev-$U" || missing=1
     hub "test -d $BK/$(field $id api).prev-$U" || { echo "backup hub $BK/$(field $id api).prev-$U missing"; missing=1; }
   done
-  for L in $EXTRA_LANES; do fan_all "backup $L/root.prev-$U" "test -d \$HOME/$L/root.prev-$U" || missing=1; done
   fan_all "backup weightd_warm.prev-$U" "test -s \$HOME/sparkdata/swap/weightd_warm.prev-$U" || missing=1
   hub "test \"\$(sha256sum < ~/release-staging/weightd-rollback/sparkpipe_weightd.$OLD_WD | cut -c1-16)\" = $OLD_WD" || { echo "backup hub weightd $OLD_WD missing"; missing=1; }
   return $missing
@@ -130,7 +109,6 @@ case "$step" in
       fan_all "backup $L" "cd \$HOME/$L && [ ! -e root.prev-$U ] && mkdir root.prev-$U && rsync -a '--exclude=/kvsnapshot/*' '--exclude=/kvcache/*' root/ root.prev-$U/" || exit 1
       hub "[ -e $BK/$(field $id api).prev-$U ] || cp -a ~/$(field $id api) $BK/$(field $id api).prev-$U" || { echo "BACKUP-FAILED hub $(field $id api)"; exit 1; }
     done
-    for L in $EXTRA_LANES; do fan_all "backup $L" "cd \$HOME/$L && [ ! -e root.prev-$U ] && mkdir root.prev-$U && rsync -a '--exclude=/kvsnapshot/*' '--exclude=/kvcache/*' root/ root.prev-$U/" || exit 1; done
     fan_all "backup weightd" "cp -p \$HOME/sparkdata/swap/weightd_warm \$HOME/sparkdata/swap/weightd_warm.prev-$U && cp -p \$HOME/sparkdata/weightd/sparkpipe_weightd \$HOME/sparkdata/weightd/sparkpipe_weightd.prev-$U" || exit 1
     hub "mkdir -p ~/release-staging/weightd-rollback && r=~/release-staging/weightd-rollback/sparkpipe_weightd.$OLD_WD && { [ -f \$r ] || cp ~/release/core/bin/sparkpipe_weightd \$r; } && test \"\$(sha256sum < \$r | cut -c1-16)\" = $OLD_WD && cp -p ~/sparkpipe-swap/model_swap.json ~/sparkpipe-swap/model_swap.json.prev-$U && echo hub backups ok" || { echo "BACKUP-FAILED hub"; exit 1; } ;;
   down)
@@ -156,7 +134,6 @@ case "$step" in
       fan "cd \$HOME/$L/root && cp ~/rp-release-$SHA/sparkpipe_model_residentd ~/rp-release-$SHA/weightd_warm ~/rp-release-$SHA/weightd_spine_budget.py bin/ && { [ ! -e bin/sparkpipe_model_batch ] || cp ~/rp-release-$SHA/sparkpipe_model_batch bin/; } && cp ~/rp-release-$SHA/libhidden_transport_spark_host_rdma_verbs.so lib/hidden_transport.so && cp ~/rp-release-$SHA/$(field $id fwlib) lib/$(field $id lib) && sha256sum bin/sparkpipe_model_residentd bin/weightd_warm lib/hidden_transport.so lib/$(field $id lib) | cut -c1-16 | tr '\n' ' '" | awk '{$1=""; print}' | sort | uniq -c | one_variant "$id" || { echo "INSTALL-FAILED $id"; exit 1; }
       hub "cd ~/$(field $id api) && install -m 755 $APIB/sparkpipe_model_api $APIB/sparkpipe_tokenize_prompt bin/ && install -m 755 $APIB/$(field $id fwlib) runtime/lib/$(field $id lib) && rm -f runtime/prefix_index.spi && echo hub $id \$(sha256sum bin/sparkpipe_model_api runtime/lib/$(field $id lib) | cut -c1-16 | tr '\n' ' ')" || { echo "INSTALL-FAILED hub $id"; exit 1; }
     done
-    for L in $EXTRA_LANES; do fan_all "install $L" "cd \$HOME/$L/root && cp ~/rp-release-$SHA/sparkpipe_model_residentd ~/rp-release-$SHA/weightd_warm bin/ && cp ~/rp-release-$SHA/libhidden_transport_spark_host_rdma_verbs.so lib/hidden_transport.so && cp ~/rp-release-$SHA/libqwen38_27b_bf16_tp16_serving_adapter.so lib/" || exit 1; done
     stamp "glm-5.3 lane switches to the official FP8 linear packs (glm53full.fp8lin.tp16)"
     fan "cd \$HOME/stage-lanes/glm53_full/lane6/root && n=glm53full.fp8lin.tp16-rank\$(python3 -c 'import json;print(json.load(open(\"config/adapter.json\"))[\"tp_rank\"])').glm52sp && d=\$HOME/sparkdata/glm53full.fp8lin.tp16/packs && test -s \$d/\$n.experts && rm -f packs/glm53full.fp8.tp16-rank*.glm52sp packs/glm53full.fp8.tp16-rank*.glm52sp.experts && ln -sfn \$d/\$n packs/\$n && ln -sfn \$d/\$n.experts packs/\$n.experts && printf '%s' \$(cut -c1-64 \$d/\$n.sha256) > packs/pack.sha256 && sed -i 's#glm53full\\.fp8\\.tp16#glm53full.fp8lin.tp16#g' config/adapter.json && grep -c fp8lin config/adapter.json" | awk '{print $2}' | sort | uniq -c | sed 's/^/glm fp8lin adapter.json lines: /'
     fan "cp ~/rp-release-$SHA/weightd_warm \$HOME/sparkdata/swap/weightd_warm && sha256sum < \$HOME/sparkdata/swap/weightd_warm | cut -c1-16" | awk '{print $2}' | sort | uniq -c | one_variant "shared weightd_warm" || { echo "INSTALL-FAILED shared weightd_warm"; exit 1; } ;;
@@ -186,7 +163,6 @@ case "$step" in
       fan_all "restore $L" "cd \$HOME/$L && $(restore_root $U) && { rmdir root/kvsnapshot root/kvcache 2>/dev/null; mv root.failed-$U/kvsnapshot root.failed-$U/kvcache root/ 2>/dev/null; true; }" || restored=0
       hub "test -d $BK/$(field $id api).prev-$U && rm -rf $BK/$(field $id api).failed-$U && mv ~/$(field $id api) $BK/$(field $id api).failed-$U && { cp -a $BK/$(field $id api).prev-$U ~/$(field $id api) || { rm -rf ~/$(field $id api); mv $BK/$(field $id api).failed-$U ~/$(field $id api); false; }; } && rm -f ~/$(field $id api)/runtime/prefix_index.spi" || { echo "restore hub $(field $id api) FAILED"; restored=0; }
     done
-    for L in $EXTRA_LANES; do fan_all "restore $L" "cd \$HOME/$L && $(restore_root $U)" || restored=0; done
     fan_all "restore weightd_warm" "cp -p \$HOME/sparkdata/swap/weightd_warm.prev-$U \$HOME/sparkdata/swap/weightd_warm" || restored=0
     [ "$restored" = 1 ] || { echo "ROLLBACK-INCOMPLETE: a restore failed; weightd and the models were left down for a manual repair"; exit 1; }
     hub "cd ~/release/core && exec 9>\$HOME/release/.core.publish.lock && flock 9 && cp ~/release-staging/weightd-rollback/sparkpipe_weightd.$OLD_WD bin/sparkpipe_weightd.new && chmod 755 bin/sparkpipe_weightd.new && mv bin/sparkpipe_weightd.new bin/sparkpipe_weightd && test \"\$(sha256sum < bin/sparkpipe_weightd | cut -c1-16)\" = $OLD_WD && find bin -type f | sort | xargs sha256sum > MANIFEST.tmp && mv MANIFEST.tmp MANIFEST && printf '%s\n' $OLD_WD > WEIGHTSD_BIN.tmp && mv WEIGHTSD_BIN.tmp WEIGHTSD_BIN && echo announced \$(cat WEIGHTSD_BIN)"

@@ -27,7 +27,7 @@ MANIFEST written last. Bare line references (`:NNN`) are to
 | Role | Host | What lives there |
 | --- | --- | --- |
 | Hub | `rtx5090`: x86_64, one RTX 5090 32 GB, user `spec`, tailscale `100.123.97.61` | `~/release/<root>/` served on `:8802` by the user unit `fleet-release` (`tools/fleet_release_serve.py`, installed as `~/fleet_release_serve.py`); `~/current/<host>.json` heartbeats; `~/release/qpn/<host>/` mesh records; the serving stack: swap controller, chat layer, LiteLLM and one model's engine API at a time (section 6) |
-| Build host | `BUILD_HOST` of `scripts/release_build.sh` (default `sparkd`): aarch64, `sm_121a`, also a fleet rank | `~/build-rp/fw-<sha>-src` build tree and `~/build-rp/fw-<sha>.out` log (section 4.1). The build host is not the hub: no agent reads its `~/release` |
+| Build host | `BUILD_HOST` of `scripts/release_build.sh` (default `lenovo7`): aarch64, `sm_121a`, not a fleet rank | `~/build-rp/fw-<sha>-src` build tree and `~/build-rp/fw-<sha>.out` log (section 4.1). The build host is not the hub: no agent reads its `~/release` |
 | Fleet | `spark0`-`spark9`, `sparka`-`sparkf` | `~/sparkdata/core/` core root, `~/sparkdata/weightd/` installed weightd, `~/sparkdata/<root>/` runtime root and packs, `~/current/<host>.json` local heartbeat |
 
 A node's rank is its position in `FLEET_HOSTS` (`:8-23`). Pack names use hex
@@ -254,9 +254,8 @@ directories it installs into.
 2. On the hub, in the background: unpack into `$HUB_WORK/api-build-<sha>`
    and build `sparkpipe_model_api`, `sparkpipe_tokenize_prompt` and every
    TP16 serving adapter for x86 (log `$HUB_WORK/logs/api-<sha>.out`).
-3. On `BUILD_HOST` (default `sparkd`), holding a shared lock on
-   `/Users/mac/sparkpipe-coord/locks/tp16.lock` (it waits up to 3 h): unpack
-   into `~/build-rp/fw-<sha>-src` and build residentd, weightd,
+3. On `BUILD_HOST` (default `lenovo7`; every aarch64 build runs on a
+   Lenovo, never on a fleet node, so it takes no fleet lock): unpack into `~/build-rp/fw-<sha>-src` and build residentd, weightd,
    `weightd_warm`, `weightd_receipt`, `weightdctl`, `sparkpipe_model_batch`,
    the RDMA transport and the same adapters (log `~/build-rp/fw-<sha>.out`).
 4. It prints the first error lines of both logs and writes the firmware
@@ -277,8 +276,10 @@ sha, so set it, and `precheck` refuses unless the hub's `WEIGHTSD_BIN` is
 that value. The step state (the backup stamp, the
 staged tarball) is kept in `scripts/state-<sha>` (`STATE` overrides). The
 kit knows every served model by its swap id: lane root, adapter, hub API
-directory and port (`row` in the script, the ports of
-`deployment/hub/model_swap.json`). Captures, comparisons and perf receipts
+directory, port and KV label come from the model's record in
+`deployment/lanes.json` (`tools/lane_config.py release-row`, docs/LANES.md),
+and the script refuses to run when its `MODELS` and the records differ.
+Captures, comparisons and perf receipts
 go to `$HUB_WORK/release-<sha>/<model>/`; the published receipts of a
 release are committed under `qualification/releases/<sha>/`.
 

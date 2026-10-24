@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if [ -n "${K3_RECORD:-}" ]; then
+  K3_LANE="$(python3 "$(dirname "$0")/lane_config.py" field "$K3_RECORD" lane)"
+  K3_TOPOLOGY=tp16
+fi
 : "${K3_LANE:?K3_LANE is the weightd mesh lane (1..15, never 0)}"
 : "${K3_FIRMWARE:?K3_FIRMWARE is a local directory holding sparkpipe_model_residentd, libk3_serving_adapter.so (TP4xPP4) or libk3_tp16_serving_adapter.so (TP16), libhidden_transport_spark_host_rdma_verbs.so, weightd_warm and sparkpipe_model_batch}"
 : "${K3_WEIGHTD_SOCKET:?K3_WEIGHTD_SOCKET is the running weightd socket on every node}"
@@ -54,6 +58,10 @@ join_ranks() {
 }
 
 render() {
+  if [ -n "${K3_RECORD:-}" ]; then
+    python3 "$HERE/stage_lane.py" --record "$K3_RECORD" --output-dir "$1"
+    return
+  fi
   python3 "$HERE/k3_multidev_lane.py" --lane "$K3_LANE" \
     --sequences "${K3_SEQUENCES:-16}" --kv-pages "${K3_KV_PAGES:-64}" \
     ${K3_ROWS:+--rows "$K3_ROWS"} \

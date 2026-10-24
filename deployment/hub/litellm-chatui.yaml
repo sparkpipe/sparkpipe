@@ -5,7 +5,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 737280
+    max_input_tokens: 1048576
     max_output_tokens: 131072
 - model_name: kimi-k3-bulk
   litellm_params:
@@ -13,7 +13,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 737280
+    max_input_tokens: 1048576
     max_output_tokens: 131072
 - model_name: glm-5.3
   litellm_params:
@@ -21,7 +21,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 262144
+    max_input_tokens: 1048576
     max_output_tokens: 131072
 - model_name: glm-5.3-bulk
   litellm_params:
@@ -29,7 +29,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 262144
+    max_input_tokens: 1048576
     max_output_tokens: 131072
 - model_name: glm-5.3-flash
   litellm_params:
@@ -117,7 +117,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 32768
+    max_input_tokens: 262144
     max_output_tokens: 32768
 - model_name: gemma-4-26b-a4b-bulk
   litellm_params:
@@ -125,7 +125,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 32768
+    max_input_tokens: 262144
     max_output_tokens: 32768
 - model_name: ling-3.0-flash
   litellm_params:
@@ -133,7 +133,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 32768
+    max_input_tokens: 262144
     max_output_tokens: 32768
 - model_name: ling-3.0-flash-bulk
   litellm_params:
@@ -141,7 +141,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 32768
+    max_input_tokens: 262144
     max_output_tokens: 32768
 - model_name: ling-3.0-flash-fin
   litellm_params:
@@ -149,7 +149,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 32768
+    max_input_tokens: 262144
     max_output_tokens: 32768
 - model_name: ling-3.0-flash-fin-bulk
   litellm_params:
@@ -157,7 +157,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 32768
+    max_input_tokens: 262144
     max_output_tokens: 32768
 - model_name: laguna-s-2.1
   litellm_params:
@@ -181,7 +181,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 32768
+    max_input_tokens: 131072
     max_output_tokens: 32768
 - model_name: muse-glimmer-30b-bulk
   litellm_params:
@@ -189,7 +189,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 32768
+    max_input_tokens: 131072
     max_output_tokens: 32768
 - model_name: hy4-preview
   litellm_params:
@@ -229,7 +229,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 32768
+    max_input_tokens: 262144
     max_output_tokens: 32768
 - model_name: qwen3.8-flash-bulk
   litellm_params:
@@ -237,7 +237,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 32768
+    max_input_tokens: 262144
     max_output_tokens: 32768
 - model_name: qwen3.8-max
   litellm_params:
