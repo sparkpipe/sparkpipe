@@ -57,7 +57,16 @@ if request["weightd"]:
     line = subprocess.run("grep 'spark_weightd ready' ~/weightd.log | tail -1", shell=True, capture_output=True, text=True).stdout
     match = re.search(r"ceiling=(\d+) kv_reserve=(\d+)", line)
     weightd = {"device_bytes_max": int(match.group(1)), "kv_reserve_bytes": int(match.group(2))} if match else None
-print(json.dumps({"files": files, "roots": roots, "apis": apis, "weightd": weightd}))
+prefixes = {}
+if request.get("prefix"):
+    namespace = {"__name__": "tokenizer_text_prefix"}
+    exec(compile(request["prefix"]["source"], "tokenizer_text_prefix.py", "exec"), namespace)
+    for record_id, directory in request["prefix"]["directories"].items():
+        try:
+            prefixes[record_id] = namespace["directory_prefix"](namespace["Path"](directory))
+        except Exception as error:
+            prefixes[record_id] = "%s: %s" % (type(error).__name__, error)
+print(json.dumps({"files": files, "roots": roots, "apis": apis, "weightd": weightd, "prefixes": prefixes}))
 '''
 WRITE = r'''
 import json, os, sys
@@ -205,7 +214,10 @@ def audit(selected: list[str], fleet: bool = True) -> int:
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(stage_lane.HOSTS) + 1) as pool:
             futures = [pool.submit(node, host) for host in stage_lane.HOSTS]
-            hub_future = pool.submit(remote, HUB, READ, {"paths": sorted(expected_hub), "weightd": False})
+            directories = {record_id: os.path.dirname(stage_lane.MODELS[lanes[record_id]["model"]]["tokenizer_json"])
+                           for record_id in selected if stage_lane.MODELS[lanes[record_id]["model"]].get("tokenizer_json")}
+            prefix = {"source": (HERE / "tokenizer_text_prefix.py").read_text(), "directories": directories}
+            hub_future = pool.submit(remote, HUB, READ, {"paths": sorted(expected_hub), "weightd": False, "prefix": prefix})
             for future in futures:
                 try:
                     host, live = future.result()
@@ -225,6 +237,9 @@ def audit(selected: list[str], fleet: bool = True) -> int:
                 for path, (record_id, text) in sorted(expected_hub.items()):
                     if not same(path, text, live["files"][path]):
                         drift.append(f"DRIFT {record_id} {HUB}:{path} {describe(path, text, live['files'][path])}")
+                for record_id, prefix in sorted(live.get("prefixes", {}).items()):
+                    if prefix != lanes[record_id]["text_prompt_prefix_token_ids"]:
+                        drift.append(f"DRIFT {record_id} text_prompt_prefix_token_ids {lanes[record_id]['text_prompt_prefix_token_ids']}, the publisher tokenizer gives {prefix}")
                 for api in live["apis"] if fleet else ():
                     if api not in apis:
                         drift.append(f"ORPHAN {HUB}:{api} is an API directory no record names")

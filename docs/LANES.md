@@ -23,6 +23,7 @@ whether the fleet still matches.
 | `taps` | layer taps a hub drafter reads, passed to every rank's adapter |
 | `expert_pool_bytes`, `memory_max` | `lane.sh` residentd environment for stage lanes |
 | `tokenizer_sha256` | the compiled tokenizer the hub API loads |
+| `text_prompt_prefix_token_ids` | the token ids the publisher tokenizer puts before a raw text prompt, as Hugging Face and vLLM do for `/v1/completions` (`tools/tokenizer_text_prefix.py`); `[]` for none. Gemma 4 and Laguna start with BOS `[2]`, Muse Glimmer with `[200000]` |
 | `draft_server` | the hub drafter the API asks for drafts |
 
 `weightd` at the top holds the device ceiling and KV reserve every node's
@@ -43,7 +44,13 @@ weightd runs with.
   pages, recurrent checkpoint memory holds two per sequence plus two;
 - the stage lanes' swap entries in `deployment/hub/model_swap.json` are the
   ones the record renders, and the chat layer's `context_tokens` in
-  `deployment/hub/chat_frontend.json` is the record's.
+  `deployment/hub/chat_frontend.json` is the record's;
+- the hub `model_resident.json` gives the API the record's raw text prompt
+  prefix.
+
+`audit` also recomputes every record's raw text prompt prefix on the hub
+from its publisher tokenizer (`tokenizer_json` in `tools/stage_lane.py`) and
+reports a record that differs.
 
 Concurrency follows from the pages: the batch engine admits a request only
 while its prompt and output budget fit the free physical pages, so at full
