@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SparkPipe Privacy</title>
+<meta name="description" content="How sparkpipe.ai, SparkPipe Chat and the SparkPipe API handle your data.">
+<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="site.css?v=0c90e191">
+<style>
+.policy { padding-block: 48px 64px; display: grid; gap: 28px; }
+.policy h1 { font-size: clamp(36px, 6vw, 64px); }
+.policy h2 { font-size: clamp(22px, 2.6vw, 30px); margin-top: 12px; }
+.policy section { display: grid; gap: 12px; max-width: 72ch; }
+.policy p, .policy li { color: var(--steel); font: 400 16px/1.6 var(--text); }
+.policy ul { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; }
+.policy b { color: var(--ink); font-weight: 650; }
+.policy table { border-collapse: collapse; width: 100%; font: 400 15px/1.5 var(--text); }
+.policy th, .policy td { text-align: left; vertical-align: top; padding: 10px 12px; border-top: 1px solid var(--rule); color: var(--steel); }
+.policy th { color: var(--ink); font-weight: 650; }
+.policy .scroll { overflow-x: auto; }
+.policy .scroll table { min-width: 560px; }
+.effective { font: 500 12px/1.6 var(--mono); color: var(--faint); }
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html">SparkPipe<span class="tag">privacy</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="index.html">Home</a>
+      <a href="playground.html">Playground</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap policy">
+  <section>
+    <h1>Privacy</h1>
+    <p class="effective">Effective 24 October 2026</p>
+    <p>This policy covers the sparkpipe.ai website, SparkPipe Chat at sparkpipe.ai:8443 and the SparkPipe API at sparkpipe.ai/v1. They are operated by HYOR AI Tech Ltd ("we"), Yongsan-gu, Seoul, South Korea. Write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a> with any question or request about your data.</p>
+  </section>
+
+  <section>
+    <h2>The short version</h2>
+    <ul>
+      <li>The models run on hardware we own and operate. We do not send your conversations to any other AI company.</li>
+      <li>We store your chats so the chat works. People who operate SparkPipe can access them.</li>
+      <li>We do not sell your data, show ads or use analytics or tracking. We do not train models on your conversations.</li>
+      <li>You can ask us at any time to export or delete your data.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Where your data is processed</h2>
+    <p>The models run on sixteen NVIDIA DGX Spark computers and a server that hosts the chat application. We operate all of them in Seoul, South Korea, on SK Telecom's network. Public traffic reaches them through a server we rent from WorldStream in the Netherlands. That server ends the encrypted HTTPS connection and forwards traffic to our hardware in Seoul through an encrypted tunnel. If you are in the EU, your data is therefore transferred to South Korea, which the European Commission has recognised as providing an adequate level of data protection.</p>
+  </section>
+
+  <section>
+    <h2>What we collect and why</h2>
+    <div class="scroll">
+    <table>
+      <tr><th>Data</th><th>Where it comes from</th><th>Why</th><th>How long we keep it</th></tr>
+      <tr><td>Web server logs: IP address, time, requested address, response code and size, referring page, browser identifier</td><td>Every visit to sparkpipe.ai, the chat or the API</td><td>Running and securing the service</td><td>14 days</td></tr>
+      <tr><td>Chat account: name, email address, password (stored only as a hash), profile picture if you add one</td><td>When you sign up. New accounts wait for our approval.</td><td>Signing you in</td><td>Until you ask us to delete your account</td></tr>
+      <tr><td>Chat content: your messages, the model's replies, files you upload and the text extracted from them, your chat settings</td><td>When you use SparkPipe Chat</td><td>Showing your chats and answering them</td><td>Until you delete the chat or your account</td></tr>
+      <tr><td>Chat memory: a summary of earlier turns of each chat, plus the exchanges it was built from</td><td>When chat memory is on (the default; the Full context control turns it off for a chat)</td><td>Keeping long chats within the model's working context</td><td>Until you ask us to delete it. Deleting a chat in the app does not yet delete its memory; email us to remove it.</td></tr>
+      <tr><td>Model cache: the model's computed internal state for recent prompts. It is derived from your messages, not stored as text.</td><td>Every request</td><td>Answering follow-up messages quickly</td><td>Overwritten by newer requests during normal operation</td></tr>
+      <tr><td>Operational records for each request: the model used, token counts, timings, chat and message identifiers, and a one-way hash of the prompt. They contain no message text.</td><td>Every chat and API request</td><td>Operating the service and measuring its performance</td><td>Kept for performance analysis</td></tr>
+      <tr><td>Playground and API account: an account name and a hash of its password</td><td>When we create an account for you; the playground and the API are open only to these accounts</td><td>Signing you in to the playground and the API</td><td>Until you ask us to delete the account</td></tr>
+      <tr><td>API requests and replies</td><td>When you call the SparkPipe API</td><td>Answering the request</td><td>Not stored beyond processing, apart from the model cache and operational records above</td></tr>
+    </table>
+    </div>
+    <p>We publish performance figures for the service, such as tokens per second. They never include your content.</p>
+  </section>
+
+  <section>
+    <h2>When a third party is involved</h2>
+    <ul>
+      <li><b>Web search in the chat.</b> When you turn on web search, the search query goes from our own search server to public search engines. It is sent from our server's address and without your account details. Pages from the results are fetched by our server.</li>
+      <li><b>Tools.</b> When the model uses a tool such as the GitHub tool, the tool's request goes to that service.</li>
+      <li><b>Fonts on the website.</b> The sparkpipe.ai home, playground and provider pages load fonts from Google Fonts, so your browser sends your IP address to Google when it loads them. See Google's privacy policy. The chat, the API and this page do not use Google Fonts.</li>
+      <li><b>Payments.</b> We do not take payments on this website yet. Before we do, we will name our payment processor here and describe the payment data we receive.</li>
+      <li><b>Hosting, network and certificates.</b> WorldStream hosts our public server in the Netherlands, and SK Telecom carries traffic to our hardware in Seoul. Traffic between the two is encrypted. Let's Encrypt issues our HTTPS certificate and receives no user data.</li>
+    </ul>
+    <p>Code that you run with the chat's code interpreter runs inside your own browser. Speech-to-text, document reading and search over your files run on our own hardware.</p>
+    <p>We share personal data only with the parties above, or when the law requires it.</p>
+  </section>
+
+  <section>
+    <h2>Cookies and browser storage</h2>
+    <p>The chat keeps you signed in with a session token stored in your browser. The playground stores the API address you enter in your browser's local storage, and your API key in session storage, which clears when you close the tab. Neither leaves your browser except in the requests you make. We use no advertising or analytics cookies.</p>
+  </section>
+
+  <section>
+    <h2>Who can see your data</h2>
+    <p>The people who operate SparkPipe can access stored accounts, chats, chat memory and logs. They do so only to run the service, give support, keep it secure or meet a legal obligation.</p>
+  </section>
+
+  <section>
+    <h2>Your choices and rights</h2>
+    <ul>
+      <li>You can view and export your chats in the chat application, and delete them there.</li>
+      <li>Email <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a> to get a copy of your data, correct it, or delete your account together with its chats, chat memory and cached state. We answer within 30 days.</li>
+      <li>Depending on where you live, for example in the EU or the UK, you may also have the right to object to or restrict processing, and to complain to a data protection authority.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Security</h2>
+    <p>All traffic to sparkpipe.ai is encrypted with HTTPS, and traffic between the public server and our hardware runs through an encrypted tunnel. Access to our systems is limited to the people who operate them. No system is perfectly secure, so do not send information you could not afford to have exposed.</p>
+  </section>
+
+  <section>
+    <h2>Children</h2>
+    <p>SparkPipe is not meant for children under 16. Please do not create an account if you are under 16.</p>
+  </section>
+
+  <section>
+    <h2>Changes</h2>
+    <p>When this policy changes we update the effective date above. We announce material changes in the chat.</p>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span>© 2026 HYOR AI Tech Ltd</span>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="playground.html">Playground</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+  </div>
+</footer>
+</body>
+</html>
