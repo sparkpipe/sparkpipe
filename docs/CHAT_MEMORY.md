@@ -406,8 +406,10 @@ DeepSeek V4.1 Flash and GLM 5.3 Flash fail only the stale-recompute check:
   checkpoints the ranks had already dropped. On DeepSeek V4.1 Flash those were
   256-aligned positions between 7,168 and 43,520 tokens.
 
-PR #1543 makes the index apply the ranks' rule. Both models are requalified
-after it serves. GLM 5.3 Full keeps no recurrent state, so it has no such
+GLM 5.3 Flash's serving build predates the log line that names the stale
+position, so its cause is presumed to be the same, not shown. PR #1543 makes
+the index apply the ranks' rule. Both models are requalified after it serves,
+which tests that. GLM 5.3 Full keeps no recurrent state, so it has no such
 events. K3's 3 / 3 are partial prompt checkpoints at 138 to 650 tokens, in both
 arms, which retention cannot drop; their cause is not yet traced. The other 12
 models have not run yet.
