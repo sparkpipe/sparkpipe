@@ -259,10 +259,19 @@ static void SparkKvPageCacheDereference(SparkKvPageCache *cache, uint32_t entry_
 		SparkKvPageCacheLruLinkAfter(cache,entry_index,SparkKvPageCacheLruPredecessor(cache,cache->entries[entry_index].last_used_epoch));
 }
 
+static uint64_t SparkKvPageCacheWallSeconds(void)
+{
+	struct timespec now;
+	if ( clock_gettime(CLOCK_REALTIME,&now) != 0 )
+		return(0u);
+	return((uint64_t)now.tv_sec);
+}
+
 static void SparkKvPageCacheTouch(SparkKvPageCache *cache, uint32_t entry_index)
 {
 	cache->epoch++;
 	cache->entries[entry_index].last_used_epoch = cache->epoch;
+	cache->entries[entry_index].used_seconds = SparkKvPageCacheWallSeconds();
 	if ( cache->entries[entry_index].reference_count != 0u )
 		return;
 	SparkKvPageCacheLruUnlink(cache,entry_index);
@@ -608,6 +617,33 @@ SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache)
 	if ( SparkKvPageCacheIsValid(cache) == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SparkKvPageCacheEvictUnusedExcept(cache,0,0u));
+}
+
+SparkStatus SparkKvPageCacheExpire(SparkKvPageCache *cache,uint64_t now_seconds,uint32_t *expired_entries)
+{
+	uint32_t entry,next,pass,total = 0u;
+	if ( expired_entries != 0 )
+		*expired_entries = 0u;
+	if ( SparkKvPageCacheIsValid(cache) == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	do
+	{
+		pass = 0u;
+		for (entry=cache->lru_head; entry != SPARK_KV_PAGE_CACHE_NO_INDEX; entry=next)
+		{
+			next = cache->entries[entry].lru_next;
+			if ( cache->entries[entry].used_seconds + SPARK_KV_RETENTION_SECONDS > now_seconds ||
+				SparkKvPageCachePageCanDiscard(cache,cache->entries[entry].logical_page_index) == 0u ||
+				SparkKvPageCacheEvictEntry(cache,entry) != SPARK_STATUS_OK )
+				continue;
+			pass++;
+		}
+		total += pass;
+	} while ( pass != 0u );
+	cache->expired_entry_count += total;
+	if ( expired_entries != 0 )
+		*expired_entries = total;
+	return(SPARK_STATUS_OK);
 }
 
 static uint32_t SparkKvPageCacheHoldsState(const SparkKvPageCache *cache,uint32_t entry_index)
@@ -1752,6 +1788,7 @@ static SparkStatus SparkKvPageCachePublishNewEntry(
 		entry_index;
 	cache->epoch++;
 	entry->last_used_epoch = cache->epoch;
+	entry->used_seconds = SparkKvPageCacheWallSeconds();
 	entry->hash_next = SPARK_KV_PAGE_CACHE_NO_INDEX;
 	if ( identity != 0 )
 	{
@@ -2572,7 +2609,7 @@ static SparkStatus SparkKvPageCacheSaveBegin(SparkKvPageCache *cache,uint32_t en
 	SparkKvSnapshotKey key,parent;
 	SparkKvPageCacheEntryKey(cache,entry_index,file_kind,&key);
 	SparkKvPageCacheParentKey(cache,entry_index,&parent);
-	return(SparkKvSnapshotWriteBegin(cache->snapshot->store,&key,&parent,&kind,&bytes,1u,&work->ticket));
+	return(SparkKvSnapshotWriteBegin(cache->snapshot->store,&key,&parent,&kind,&bytes,1u,cache->entries[entry_index].used_seconds,&work->ticket));
 }
 
 SparkStatus SparkKvPageCacheSaveTake(SparkKvPageCache *cache,SparkKvPageCacheSaveWork *work)
@@ -2826,6 +2863,7 @@ static SparkStatus SparkKvPageCacheImportPage(SparkKvPageCache *cache,const Spar
 	cache->entry_indices_by_logical_page[page] = entry_index;
 	cache->epoch++;
 	entry->last_used_epoch = cache->epoch;
+	entry->used_seconds = SparkKvPageCacheWallSeconds();
 	bucket = SparkKvPageCacheBucket(cache,&entry->identity,entry->token_count);
 	entry->hash_next = cache->hash_bucket_heads[bucket];
 	cache->hash_bucket_heads[bucket] = entry_index;
@@ -2931,6 +2969,7 @@ static SparkStatus SparkKvPageCacheImportSharedPage(SparkKvPageCache *cache,cons
 	cache->entry_indices_by_logical_page[page] = entry_index;
 	cache->epoch++;
 	entry->last_used_epoch = cache->epoch;
+	entry->used_seconds = SparkKvPageCacheWallSeconds();
 	bucket = SparkKvPageCacheBucket(cache,&entry->identity,entry->token_count);
 	entry->hash_next = cache->hash_bucket_heads[bucket];
 	cache->hash_bucket_heads[bucket] = entry_index;
@@ -3252,6 +3291,7 @@ SparkStatus SparkKvPageCacheExportResident(const SparkKvPageCache *cache,SparkKv
 			records[count].resident_slot = block->resident_slot_index;
 			records[count].parent_record = parent == SPARK_KV_PAGE_CACHE_NO_INDEX ? SPARK_KV_PAGE_CACHE_NO_INDEX : record_of[parent];
 			records[count].flags = entry->flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED;
+			records[count].used_seconds = entry->used_seconds;
 			record_of[index] = count++;
 		}
 	}
@@ -3321,6 +3361,7 @@ static SparkStatus SparkKvPageCacheAdoptOne(SparkKvPageCache *cache,const SparkK
 	cache->entry_indices_by_logical_page[page] = entry_index;
 	cache->epoch++;
 	entry->last_used_epoch = cache->epoch;
+	entry->used_seconds = record->used_seconds;
 	bucket = SparkKvPageCacheBucket(cache,&entry->identity,entry->token_count);
 	entry->hash_next = cache->hash_bucket_heads[bucket];
 	cache->hash_bucket_heads[bucket] = entry_index;
