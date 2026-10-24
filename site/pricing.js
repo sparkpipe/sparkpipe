@@ -8,7 +8,8 @@ window.SP_PRICING = {
   displaceNoticeHours: 6,
   termMonths: 24,
   phaseADays: 30,
-  earliestStart: "2027-01-01",
+  hourlyEarliestStart: "2026-12-01",
+  committedEarliestStart: "2026-12-01",
   fleets: [
     { name: "Fleet 1", kind: "16 Sparks", state: "serving", rate: 1 },
     { name: "Fleet 2", kind: "M5U", state: "building", rate: 1 },

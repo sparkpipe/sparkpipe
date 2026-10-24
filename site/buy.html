@@ -65,7 +65,7 @@
       <div><strong id="p-hourly">$20</strong><span>per fleet-hour, prepaid, no commitment: up to <b id="p-hourly-max">24</b> hours held, or <b id="p-verified-max">720</b> after a business check</span></div>
       <div><strong id="p-committed">$15</strong><span>per fleet-hour for every hour of a two-year term, after a business check</span></div>
       <div><strong id="p-vat">10%</strong><span>VAT added to USDC payments; a USD wire from abroad is zero-rated</span></div>
-      <div><strong id="p-start">2027-01-01</strong><span>earliest start date for new hours</span></div>
+      <div><strong id="p-start">2026-12-01</strong><span>earliest start for hourly hours and two-year agreements</span></div>
     </div>
   </div>
 </section>
@@ -125,7 +125,7 @@
   </div>
   <div class="sec-body">
     <h2 id="r-title">Every hour of two years, at the lower price.</h2>
-    <p class="prose">For businesses we approve. The agreement covers every hour of a two-year term on one fleet's capacity: 17,520 hours, or 17,544 when the term includes 29 February. Nothing is payable for the first 30 days after signing (Phase A). Pay Gate 1 by the end of Phase A to continue, or let it pass and the agreement ends with nothing owed. Once the last gate is paid, every tranche is released: use your hours in either window within your election, and spend ahead from later months.</p>
+    <p class="prose">For businesses we approve. The two-year term starts the day you sign and covers every hour of it on one fleet's capacity: 17,520 hours, or 17,544 when it includes 29 February. After signing you can pay any amount at any time, up to the whole term, and meet each deadline at your own pace. Hours exist only once paid, and you choose when to use them; hours that pass before they are paid for are lost. Nothing is due in the first 30 days (Phase A), and if you pay nothing by then the agreement ends with nothing owed. Once the last gate is paid, every tranche is released: either window within your election, and spending ahead.</p>
     <div class="panel" id="kyb-panel">
       <p><b>Business check:</b> <span id="kyb-state" class="state">not approved</span></p>
       <p class="hint">In the live service this is a manual review of company documents, owners and sanctions screening. Approval raises your hourly cap to 30 days of hours and opens the two-year agreement.</p>
@@ -133,7 +133,7 @@
     </div>
     <div class="split" id="reserved-body">
       <form class="form" id="reserved-form" novalidate>
-        <label>Term start<input id="r-start" type="date"></label>
+        <label>Signing date (the term starts that day)<input id="r-start" type="date"></label>
         <label>Window election<select id="r-election"><option value="split">50/50 East and West</option><option value="east">100% East</option><option value="west">100% West</option></select></label>
         <label>Payment method<select id="r-method"><option value="wire">USD wire from our account abroad</option><option value="usdc">USDC invoice</option></select></label>
         <label class="check"><input id="r-korea" type="checkbox">We have a place of business in Korea</label>
@@ -185,12 +185,12 @@
         <label>Date received<input id="pp-date" type="date"></label>
         <div class="actions">
           <button class="btn solid" id="pp-add" type="submit">Record payment (mock)</button>
-          <button class="btn" id="pp-lapse" type="button">Let Phase A end unpaid (mock)</button>
+          <button class="btn" id="pp-lapse" type="button">Pay nothing in Phase A (mock)</button>
         </div>
       </form>
       <p class="note-line" id="pp-msg" role="status"></p>
       <div class="table-wrap"><table>
-        <thead><tr><th>Date</th><th>Amount</th><th>VAT</th><th>Hours paid for</th><th>Running total</th></tr></thead>
+        <thead><tr><th>Date</th><th>Amount</th><th>VAT</th><th>Hours paid for</th><th>Lost (already passed)</th><th>Running total</th></tr></thead>
         <tbody id="pp-rows"></tbody>
       </table></div>
     </div>
@@ -204,9 +204,9 @@
   </div>
   <div class="sec-body">
     <h2>Your hours.</h2>
-    <p class="prose">All your hours stay in your account and are used through it. If you resell time, let your buyers reserve and use hours with your access tokens, or add them as signers on your account: that arrangement is yours, and hours never move between accounts.</p>
+    <p class="prose">Your hours are used through your account: your key, your access tokens and the signers you add. Our system has no transfer feature. If you resell or pass hours on, for example by sharing access, that is between you and the other party and out of our control.</p>
     <div class="table-wrap scroll"><table>
-      <thead><tr><th>Hours</th><th>Amount</th><th>Usable</th><th>State</th></tr></thead>
+      <thead><tr><th>Hours</th><th>Usable hours</th><th>Period</th><th>State</th></tr></thead>
       <tbody id="c-rows"></tbody>
     </table></div>
   </div>
@@ -300,7 +300,8 @@
     return { name: g.name, day: g.dueDay, due: dayN(c.signedOn, g.dueDay), hours: c.tranches.slice(0, n).reduce((a, t) => a + t.hours, 0) };
   });
 
-  const minStart = () => (today() > P.earliestStart ? today() : P.earliestStart);
+  const minStart = () => (today() > P.hourlyEarliestStart ? today() : P.hourlyEarliestStart);
+  const minSign = () => (today() > P.committedEarliestStart ? today() : P.committedEarliestStart);
   const cap = () => (S.kyb ? P.verifiedMaxHours : P.hourlyMaxHours);
   const heldHourly = () => S.hourly.reduce((a, h) => a + h.hours, 0);
 
@@ -308,12 +309,13 @@
     $('p-hourly').textContent = short(P.hourlyPrice);
     $('p-committed').textContent = short(P.committedPrice);
     $('p-vat').textContent = Math.round(P.vatRate * 100) + '%';
-    $('p-start').textContent = P.earliestStart;
+    $('p-start').textContent = P.committedEarliestStart < P.hourlyEarliestStart ? P.committedEarliestStart : P.hourlyEarliestStart;
     ['p-hourly-max', 'p-hourly-max-2'].forEach((id) => { $(id).textContent = whole(P.hourlyMaxHours); });
     ['p-verified-max', 'p-verified-max-2'].forEach((id) => { $(id).textContent = whole(P.verifiedMaxHours); });
     $('p-displace').textContent = P.displaceNoticeHours;
     $('r-title').textContent = 'Every hour of two years, at ' + short(P.committedPrice) + ' an hour.';
-    ['h-start', 'r-start'].forEach((id) => { $(id).min = minStart(); if (!$(id).value || $(id).value < minStart()) $(id).value = minStart(); });
+    $('h-start').min = minStart(); if (!$('h-start').value || $('h-start').value < minStart()) $('h-start').value = minStart();
+    if (!S.contract) { $('r-start').min = minSign(); if (!$('r-start').value || $('r-start').value < minSign()) $('r-start').value = minSign(); }
   };
 
   const renderFleets = () => {
@@ -344,13 +346,9 @@
     if (room === 0) $('h-msg').textContent = S.kyb ? 'You hold the maximum of ' + whole(cap()) + ' hours. Use some, or take the two-year agreement.' : 'You hold the maximum of ' + whole(cap()) + ' hours. A business check raises the cap to ' + whole(P.verifiedMaxHours) + '.';
   };
 
-  const draft = () => Object.assign(plan($('r-start').value || minStart(), $('r-election').value), { election: $('r-election').value, method: $('r-method').value, korea: $('r-korea').checked, price: P.committedPrice, vatRate: vatApplies($('r-korea').checked, $('r-method').value) ? P.vatRate : 0, signedOn: today() });
+  const draft = () => { const sign = $('r-start').value || minSign(); return Object.assign(plan(sign, $('r-election').value), { election: $('r-election').value, method: $('r-method').value, korea: $('r-korea').checked, price: P.committedPrice, vatRate: vatApplies($('r-korea').checked, $('r-method').value) ? P.vatRate : 0, signedOn: sign }); };
   const phaseEnd = (c) => dayN(c.signedOn, P.phaseADays);
-  const phaseNote = (c) => {
-    const end = phaseEnd(c);
-    if (c.start > end) return 'Phase A runs ' + c.signedOn + ' to ' + end + ', before the term starts, so it has no service: use hourly hours meanwhile. Your hourly cap is ' + whole(P.verifiedMaxHours) + ' hours once approved.';
-    return 'Phase A runs ' + c.signedOn + ' to ' + end + '. From ' + c.start + ' you are served at the Phase A pace, 24 hours a day split by your election, and those hours are paid in Gate 1.';
-  };
+  const phaseNote = (c) => 'Phase A runs ' + c.signedOn + ' to ' + phaseEnd(c) + '. Nothing is due until then, but hours exist only once paid: pay early to use the first weeks, since hours that pass unpaid are lost.';
   const renderReserved = () => {
     $('kyb-state').textContent = S.kyb ? 'approved' : 'not approved';
     $('kyb-state').className = 'state' + (S.kyb ? ' live' : '');
@@ -359,9 +357,9 @@
     ['r-start', 'r-election', 'r-method', 'r-korea'].forEach((id) => { $(id).disabled = signed; });
     if (signed) { $('r-start').value = c.start; $('r-election').value = c.election; $('r-method').value = c.method; $('r-korea').checked = c.korea; }
     $('reserved-body').classList.toggle('locked', !S.kyb);
-    const late = !signed && c.start < minStart();
+    const late = !signed && c.start < minSign();
     $('r-sign').disabled = signed || !S.kyb || late;
-    $('r-msg').textContent = signed ? (c.endedOn ? 'Ended on ' + c.endedOn + ' with nothing owed: Gate 1 was not paid.' : 'Signed on ' + c.signedOn + '. Payments are tracked below.') : (S.kyb ? (late ? 'The term cannot start before ' + minStart() + '.' : '') : 'Approval is needed before signing.');
+    $('r-msg').textContent = signed ? (c.endedOn ? 'Ended on ' + c.endedOn + ' with nothing owed: Gate 1 was not paid.' : 'Signed on ' + c.signedOn + '. Payments are tracked below.') : (S.kyb ? (late ? 'Two-year agreements start no earlier than ' + minSign() + '.' : '') : 'Approval is needed before signing.');
     const net = c.hours * c.price, vat = net * c.vatRate;
     $('r-r-term').textContent = c.start + ' to ' + c.end;
     $('r-r-hours').textContent = whole(c.hours);
@@ -376,6 +374,16 @@
   };
 
   const paidNet = () => S.payments.reduce((a, p) => a + p.net, 0);
+  const coverage = (c) => {
+    const start = parse(c.signedOn);
+    let cursor = 0;
+    return S.payments.map((p) => {
+      const a = cursor, b = Math.min(c.hours, cursor + p.net / c.price), cut = Math.round((parse(p.date) - start) / DAY) * 24;
+      cursor = b;
+      return { p, a, b, usableFrom: Math.max(a, Math.min(b, cut)) };
+    });
+  };
+  const overlap = (a, b, x, y) => Math.max(0, Math.min(b, y) - Math.max(a, x));
   const contractNet = () => S.contract.hours * S.contract.price;
   const complete = () => Boolean(S.contract && S.contract.completedOn);
   const ended = () => Boolean(S.contract && S.contract.endedOn);
@@ -399,22 +407,25 @@
     $('pp-add').disabled = complete() || ended();
     $('pp-lapse').hidden = S.payments.length > 0 || ended();
     if (!$('pp-amount').value && next && !ended()) $('pp-amount').value = Math.max(0.01, (next.hours * c.price - paidNet()) * (1 + c.vatRate)).toFixed(2);
-    if (!$('pp-date').value) $('pp-date').value = today();
+    if (!$('pp-date').value) $('pp-date').value = today() > c.signedOn ? today() : c.signedOn;
     let running = 0;
-    fill('pp-rows', S.payments.map((p) => { running += p.amount; return row([cell(p.date), cell(usd(p.amount), 'figure'), cell(usd(p.amount - p.net), 'figure'), cell(hrs(p.net / c.price), 'figure'), cell(usd(running), 'figure')]); }));
-    $('pp-msg').textContent = ended() ? 'Phase A ended on ' + c.endedOn + ' without Gate 1, so the agreement ended with nothing owed by either side.' : complete() ? 'Prepayment completed on ' + c.completedOn + '. All ' + c.tranches.length + ' tranches are released: use them in either window within your election, and spend ahead.' : 'Paid tranches are served at the initial daily pace until prepayment completes.';
+    fill('pp-rows', coverage(c).map((k) => { running += k.p.amount; return row([cell(k.p.date), cell(usd(k.p.amount), 'figure'), cell(usd(k.p.amount - k.p.net), 'figure'), cell(hrs(k.b - k.a), 'figure'), cell(hrs(k.usableFrom - k.a), 'figure'), cell(usd(running), 'figure')]); }));
+    $('pp-msg').textContent = ended() ? 'Phase A ended on ' + c.endedOn + ' without Gate 1, so the agreement ended with nothing owed by either side.' : complete() ? 'Prepayment completed on ' + c.completedOn + '. All ' + c.tranches.length + ' tranches are released: use them in either window within your election, and spend ahead.' : 'Paid hours are yours to reserve when you choose, within their month and 12 East plus 12 West hours a day, until prepayment completes.';
   };
 
   const renderHours = () => {
     const rows = S.hourly.map((h) => row([cell('Hourly, bought ' + h.bought), cell(whole(h.hours), 'figure'), cell(h.start + ' to ' + h.expires), cell('Ready')]));
     const c = S.contract;
     if (c && !ended()) {
-      const hoursPaid = Math.min(c.hours, paidNet() / c.price);
-      let cumulative = 0;
+      const cover = coverage(c);
+      let begin = 0;
       c.tranches.forEach((t) => {
-        cumulative += t.hours;
-        const state = complete() ? 'Released' : (cumulative <= hoursPaid + 1e-6 ? 'Paid, initial pace' : 'Not yet paid');
-        rows.push(row([cell('Two-year tranche ' + t.key), cell(whole(t.hours) + ' (' + whole(t.east) + ' E / ' + whole(t.west) + ' W)', 'figure'), cell(t.from + ' to ' + t.to), cell(state, complete() ? 'ok' : '')]));
+        const end = begin + t.hours;
+        const paid = cover.reduce((a, k) => a + overlap(k.a, k.b, begin, end), 0);
+        const usable = cover.reduce((a, k) => a + overlap(k.usableFrom, k.b, begin, end), 0);
+        const state = complete() ? 'Released' : paid >= t.hours - 1e-6 ? 'Paid' : paid > 0 ? 'Partly paid' : 'Not yet paid';
+        rows.push(row([cell('Two-year tranche ' + t.key), cell(hrs(usable) + ' of ' + whole(t.hours) + (paid - usable > 1e-6 ? ' (' + hrs(paid - usable) + ' lost)' : ''), 'figure'), cell(t.from + ' to ' + t.to), cell(state, complete() ? 'ok' : '')]));
+        begin = end;
       });
     }
     fill('c-rows', rows.length ? rows : [row([cell('No hours yet'), cell(''), cell(''), cell('')])]);
@@ -447,9 +458,9 @@
     e.preventDefault();
     if (!S.kyb || S.contract) return;
     const c = draft();
-    if (c.start < minStart()) { $('r-msg').textContent = 'The term cannot start before ' + minStart() + '.'; return; }
+    if (c.start < minSign()) { $('r-msg').textContent = 'Two-year agreements start no earlier than ' + minSign() + '.'; return; }
     S.contract = c;
-    await append('agreement_signed', { hours: c.hours, unit_price: c.price, signed: c.signedOn, phase_a_ends: phaseEnd(c), term_start: c.start, term_end: c.end, election: c.election, method: c.method, vat_rate: c.vatRate, tranches: c.tranches.length, agreement_sha256: await sha256(JSON.stringify(c)) });
+    await append('agreement_signed', { hours: c.hours, unit_price: c.price, signed: c.signedOn, phase_a_ends: phaseEnd(c), term_end: c.end, election: c.election, method: c.method, vat_rate: c.vatRate, tranches: c.tranches.length, agreement_sha256: await sha256(JSON.stringify(c)) });
     render();
   });
 
@@ -459,10 +470,12 @@
     if (!c || complete() || ended()) return;
     const amount = Math.round(+$('pp-amount').value * 100) / 100, date = $('pp-date').value || today();
     if (!(amount > 0)) { $('pp-msg').textContent = 'Enter the amount received.'; return; }
+    if (date < c.signedOn || date > c.end || (S.payments.length && date < S.payments[S.payments.length - 1].date)) { $('pp-msg').textContent = 'The date must fall in the term, on or after the last payment.'; return; }
     const net = amount / (1 + c.vatRate), remaining = contractNet() - paidNet();
     if (net > remaining + 0.005) { $('pp-msg').textContent = 'That is more than the ' + usd(remaining * (1 + c.vatRate)) + ' still owed.'; return; }
     S.payments.push({ amount, net, date });
-    await append('payment_confirmed', { tier: 'two_year', amount, vat: amount - net, hours_paid_for: Math.round(net / c.price * 10) / 10, method: c.method, received: date, mock: true });
+    const k = coverage(c).slice(-1)[0];
+    await append('payment_confirmed', { tier: 'two_year', amount, vat: amount - net, hours_paid_for: Math.round((k.b - k.a) * 10) / 10, hours_issued: Math.round((k.b - k.usableFrom) * 10) / 10, hours_already_passed: Math.round((k.usableFrom - k.a) * 10) / 10, method: c.method, received: date, mock: true });
     if (paidNet() + 0.005 >= contractNet()) {
       c.completedOn = date;
       await append('prepayment_complete', { completed: date, paid_total: S.payments.reduce((a, p) => a + p.amount, 0), hours: c.hours });
