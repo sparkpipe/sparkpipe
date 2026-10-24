@@ -78,8 +78,8 @@ def warm(arguments):
 
 
 def question(index, count):
-    return ("\n\nQuestion %d of %d: in about two hundred words, explain what part %d of the reference document above "
-            "describes, quoting nothing.\n\nAnswer:" % (index + 1, count, index + 1))
+    return ("\n\nQuestion %d of %d: write a long, detailed essay of at least one thousand words on what part %d of the "
+            "reference document above describes, in your own words, quoting nothing.\n\nEssay:" % (index + 1, count, index + 1))
 
 
 def arm(arguments, text, count, speculation):
