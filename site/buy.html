@@ -39,6 +39,7 @@
   <div class="wrap">
     <a class="brand" href="index.html"><svg width="26" height="26"><use href="#logo"/></svg>SparkPipe<span class="tag">fleet-hours</span></a>
     <nav class="nav-links" aria-label="Sections">
+      <a href="#fleets">Fleets</a>
       <a href="#hourly">Hourly</a>
       <a href="#reserved">Reserved</a>
       <a href="#prepayment">Prepayment</a>
@@ -72,6 +73,21 @@
 </section>
 
 <div class="wrap">
+<section id="fleets" class="sec">
+  <div class="sec-rail">
+    <p class="label">Fleets</p>
+    <p class="label">Credit rates</p>
+  </div>
+  <div class="sec-body">
+    <h2>Every fleet, one credit system.</h2>
+    <p class="prose">A credit buys one hour on a fleet with rate 1. A fleet with another rate costs that many credits per hour, so the price per hour on each fleet is its rate times the credit price.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Fleet</th><th>State</th><th>Credits per hour</th><th>Hourly price</th><th>Two-year price</th></tr></thead>
+      <tbody id="f-rows"></tbody>
+    </table></div>
+  </div>
+</section>
+
 <section id="hourly" class="sec">
   <div class="sec-rail">
     <p class="label">Hourly</p>
@@ -450,7 +466,17 @@
     $('trade-lock').textContent = tradable.length ? '' : 'Transfers and orders open once two-year prepayment completes.';
   };
   const renderLedger = () => { $('l-out').textContent = S.ledger.map((l) => JSON.stringify(l)).join('\n'); };
-  const render = () => { renderPrices(); renderHourly(); renderReserved(); renderPrepayment(); renderCredits(); renderLedger(); };
+  const renderFleets = () => {
+    const rate = (n) => (Math.round(n * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
+    fill('f-rows', P.fleets.map((f) => {
+      const state = cell('', ''), tag = document.createElement('span');
+      tag.className = 'state ' + (f.state === 'serving' ? 'live' : 'building');
+      tag.textContent = f.state === 'serving' ? 'Serving' : 'Under construction';
+      state.appendChild(tag);
+      return row([cell(f.name + ' · ' + f.kind, 'model'), state, cell(rate(f.creditRate), 'figure'), cell(usd(f.creditRate * P.hourlyPrice), 'figure'), cell(usd(f.creditRate * P.committedPrice), 'figure')]);
+    }));
+  };
+  const render = () => { renderPrices(); renderFleets(); renderHourly(); renderReserved(); renderPrepayment(); renderCredits(); renderLedger(); };
 
   $('h-hours').addEventListener('input', renderHourly);
   $('h-start').addEventListener('change', renderHourly);

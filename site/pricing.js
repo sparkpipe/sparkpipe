@@ -9,6 +9,11 @@ window.SP_PRICING = {
   committedMaxHours: 15000,
   termMonths: 24,
   earliestStart: "2027-01-01",
+  fleets: [
+    { name: "Fleet 1", kind: "16 Sparks", state: "serving", creditRate: 1 },
+    { name: "Fleet 2", kind: "M5U", state: "building", creditRate: 1 },
+    { name: "Fleet 3", kind: "16 Sparks", state: "building", creditRate: 1 }
+  ],
   gates: [
     { name: "Gate 1", tranches: 6, dueDay: 0 },
     { name: "Gate 2", tranches: 12, dueDay: 60 },
