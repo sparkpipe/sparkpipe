@@ -168,6 +168,7 @@ static void TestWriteDeployment(const char *path, const char *runtime_root, cons
 }
 
 static uint32_t TestKeepPrefixIndex;
+static uint32_t TestDraftsDisabled;
 static const char *TestPeerPrefixIndex;
 
 static const char *TestPrefixIndexPath(void)
@@ -245,6 +246,7 @@ static SparkStatus TestSubmitPromptStatus(SparkModelBatchEngine *engine,uint64_t
 	request.prompt_token_ids = prompt;
 	request.prompt_token_count = prompt_count;
 	request.output_token_budget = budget;
+	request.drafts_disabled = TestDraftsDisabled;
 	handle = 0;
 	return(SparkModelBatchEngineSubmit(engine,&request,&handle));
 }
@@ -2305,6 +2307,11 @@ static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deploym
 	CHECK(submissions != 0u && rows > submissions && view.speculative_verify_lane_count != 0u,"lookup: a repeated passage is verified in multi-row waves");
 	CHECK(view.speculative_accepted_token_count * 2u > view.speculative_draft_token_count && view.speculative_accepted_token_count >= 30u,"lookup: drafts from the repeated passage are accepted");
 	CHECK(TestLaneInputsFollowScript(1u,script,256u) != 0u,"lookup: every decode lane's input token is a committed model token");
+	TestDraftsDisabled = 1u;
+	TestRunScript(deployment,runtime_root,script,256u,44u,80u,&plain_state,&plain_view,&plain_submissions,&plain_rows);
+	TestDraftsDisabled = 0u;
+	CHECK(plain_state.completed_events[1] == 1u && TestScriptedOutputMatches(&plain_state,1u,script,44u,80u) != 0u && plain_submissions == 0u &&
+		plain_view.speculative_draft_token_count == 0u && plain_view.speculative_verify_lane_count == 0u,"lookup: a request that turns speculation off decodes the same greedy stream with no drafts and no verify waves on a verifying adapter");
 	TestRunScript(plain_deployment,runtime_root,script,256u,44u,80u,&plain_state,&plain_view,&plain_submissions,&plain_rows);
 	CHECK(TestScriptedOutputMatches(&plain_state,1u,script,44u,80u) != 0u && plain_submissions == 0u && plain_view.speculative_draft_token_count == 0u,"lookup: an adapter without verify decodes the same stream with no verify waves");
 	for (index=0u; index<256u; index++)

@@ -60,6 +60,7 @@ typedef struct ApiOptions
 	float top_p;
 	uint32_t top_k;
 	uint32_t logprobs;
+	uint32_t drafts_disabled;
 } ApiOptions;
 
 typedef struct ApiRequest
@@ -100,6 +101,7 @@ typedef struct ApiRequest
 	float top_p;
 	uint32_t top_k;
 	uint32_t logprob_count;
+	uint32_t drafts_disabled;
 	SparkSamplingLogprob *logprobs;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
@@ -509,6 +511,7 @@ static uint32_t api_submit(ApiRequest *r)
 	sub.top_p = r->top_p;
 	sub.top_k = r->top_k;
 	sub.logprobs = r->logprob_count;
+	sub.drafts_disabled = r->drafts_disabled;
 	sub.output_token_budget = r->max_tokens;
 	sub.prompt_token_ids = r->prompt_tokens;
 	sub.prompt_token_count = r->prompt_count;
@@ -1025,6 +1028,7 @@ static int api_parse_sampling_options(const SparkJsonDocument *doc, int32_t root
 {
 	int32_t member;
 	uint32_t top_alternatives = 0u;
+	bool speculation = true;
 	member = SparkJsonFindObjectMember(doc,root,"temperature");
 	if ( member >= 0 && (SparkJsonGetFloat(doc,member,&options->temperature) != SPARK_STATUS_OK || SparkSamplingTemperatureValid(options->temperature) == 0u) )
 		return 0;
@@ -1042,6 +1046,10 @@ static int api_parse_sampling_options(const SparkJsonDocument *doc, int32_t root
 	if ( member >= 0 && (SparkJsonGetUInt32(doc,member,&top_alternatives) != SPARK_STATUS_OK || top_alternatives > SPARK_SAMPLING_MAX_TOP_LOGPROBS) )
 		return 0;
 	options->logprobs = member >= 0 ? top_alternatives + 1u : 0u;
+	member = SparkJsonFindObjectMember(doc,root,"speculation");
+	if ( member >= 0 && SparkJsonGetBoolean(doc,member,&speculation) != SPARK_STATUS_OK )
+		return 0;
+	options->drafts_disabled = member >= 0 && speculation == false ? 1u : 0u;
 	if ( options->temperature == 0.0f )
 	{
 		options->top_p = 1.0f;
@@ -1713,6 +1721,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	req->top_p = options.top_p;
 	req->top_k = options.top_k;
 	req->logprob_count = options.logprobs;
+	req->drafts_disabled = options.drafts_disabled;
 	pthread_mutex_lock(&S.queue_mutex);
 	req->id = ++S.next_id + 100000;
 	req->prompt_tokens = prompt;
