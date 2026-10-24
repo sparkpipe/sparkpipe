@@ -712,7 +712,7 @@ class ChatStore:
         if key in self.memory:
             return self.memory[key]
         state = {"lines": {}, "sources": {}, "open": {}, "layouts": {}, "pending": {}, "open_by_message": {}, "expansions": {}, "turns": {}, "groups": {}, "forms": {},
-                 "commits": [], "committed": set(), "final": {}}
+                 "commits": [], "committed": set(), "final": {}, "settings": {}, "compaction": None}
         path = self.path(user, chat)
         if self.persistent(chat) and path.is_file():
             for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -754,6 +754,10 @@ class ChatStore:
                 {"round": int(record.get("round") or 0), "prefix": record.get("prefix") or "", "turns": list(record.get("turns") or [])})
         elif kind == "turn" and record.get("user_message"):
             state["turns"][record["user_message"]] = {k: record.get(k) for k in ("parent", "message", "index")}
+        elif kind == "settings":
+            state["settings"].update({k: record[k] for k in ("memory", "target") if k in record})
+        elif kind == "compaction":
+            state["compaction"] = None if record.get("undo") else {k: record.get(k) for k in ("covered", "keep", "summary", "target")}
 
     def append(self, user, chat, record):
         state = self.load(user, chat)

@@ -296,6 +296,44 @@ canonical exchanges, lines, groups, open sets, regroups, frozen layouts and
 curator replies, append-only. Temporary, local and channel chats stay in
 memory only. Deleted chats are removed when Open WebUI no longer knows them.
 
+## Controls in the chat
+
+Every reply ends with a status line (`tools/serving/open_webui/functions/context_status.py`, a global filter):
+`Context 32K of 1M (3.1%) · 30K cached · memory on, target 64K`. The filter reads the reply's token usage, which
+models report since their `usage` capability is on, and asks the chat layer `/context json` through the same
+LiteLLM connection with the user's signed header, so the chat layer stays the one source of the memory state.
+
+Commands are typed as messages; the `/` menu lists them as prompts (`deployment/hub/open_webui_functions.json`).
+The chat layer answers each one itself (`tools/serving/chat_commands.py`), and leaves the command and its answer
+out of every later prompt. Settings and compactions are records in the chat's memory store.
+
+| Command | Effect |
+|---|---|
+| `/context` | what the chat holds, the model's limit, memory, target and compaction |
+| `/memory off`, `/memory on` | memory for this chat; the Full context toggle turns it off per request |
+| `/target 64K`, `/target 25%`, `/target off` | the context target memory keeps the prompt near (the Context Length slider sets it per request) |
+| `/compact 50%`, `/compact 40K` | with memory off: keep the most relevant exchanges in full within the target, summarize the rest |
+| `/compact full` | with memory off: keep only a summary |
+| `/compact undo` | every exchange again |
+| `/timer every 10m <prompt>`, `/timer off` | this chat's timer prompt |
+
+`/compact` asks the model which exchanges matter for continuing the chat: it sees every exchange's size and an
+excerpt, keeps the newest exchange and what it chooses within the target (the oldest choices go first when the
+choice is over budget), and writes a summary of the rest (facts, decisions, names, numbers, paths, identifiers,
+open questions). Later prompts carry the kept exchanges, with the summary in front of the first, and every later
+exchange in full. A new compaction replaces the previous one and is computed from the whole chat, which Open
+WebUI always sends, so summaries do not compound. With memory on, memory does this continuously.
+
+The timer is three pieces:
+- the Timer box, a toggle filter in the chat input's Integrations menu (`functions/timer_toggle.py`);
+- an always-on filter (`functions/chat_timer.py`) that stores `/timer` settings per chat in
+  `data/sparkpipe/chat_timers.json` and, after each reply while the box is ticked, schedules the prompt with
+  Open WebUI's own chat timer (`cancel_on: chat.user_message`, so a message from the user restarts the countdown);
+- the model's `set_chat_timer` and `stop_chat_timer` tool (`tools/chat_timer.py`), which writes the same record.
+
+A run posts the prompt into the chat and keeps the request's toggles, so it schedules the next one. Untick the
+box or send `/timer off` to stop it. Intervals are at least one minute.
+
 ## Integration
 
 - Memory serves every model; it is not a per-model option. The chat layer
