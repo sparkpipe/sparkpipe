@@ -102,6 +102,7 @@ typedef struct SparkModelBatchRequestState
 	SparkModelServingCacheIdentity cache_published_identity;
 	SparkSha256Context cache_published_digest_context;
 	uint32_t draft_count;
+	uint32_t drafts_disabled;
 	uint32_t model_draft_rows;
 	uint32_t draft_class;
 	uint32_t draft_match;
@@ -2121,6 +2122,7 @@ SparkStatus SparkModelBatchEngineSubmit(
 		engine->served_priority = request->priority;
 	state->deadline_ns = request->deadline_ns;
 	state->sampling = SparkSamplingRuleWith(request->temperature,request->seed,request->top_p,request->top_k,request->logprobs);
+	state->drafts_disabled = request->drafts_disabled != 0u ? 1u : 0u;
 	state->prompt_token_count = request->prompt_token_count;
 	state->output_token_budget = request->output_token_budget;
 	state->request_id = request->request_id;
@@ -3056,7 +3058,7 @@ static uint32_t SparkModelBatchPlanDraft(
 	const uint32_t *tokens = SparkModelBatchRequestTokens(engine,slot);
 	request->draft_count = 0u;
 	request->trace_draft_wait_ns = 0.0f;
-	if ( engine->verify_capable == 0u || request->sampling.logprobs != 0u || draft_limit == 0u )
+	if ( engine->verify_capable == 0u || request->sampling.logprobs != 0u || request->drafts_disabled != 0u || draft_limit == 0u )
 		return(0u);
 	position = request->prompt_token_count + request->generated_token_count - 1u;
 	limit = draft_limit;
