@@ -633,6 +633,8 @@ PYTHON_TESTS := \
 	tests/test_stage_lane_stop.py \
 	tests/test_stage_lane_state_memory.py \
 	tests/test_lane_records.py \
+	tests/test_chat_commands.py \
+	tests/test_open_webui_chat_tools.py \
 	tests/test_chat_frontend_object_and_channel_calls.py \
 	tests/test_draftd_kernels.py \
 	tests/test_latent_block_drafter.py \
