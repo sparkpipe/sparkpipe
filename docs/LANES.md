@@ -45,7 +45,6 @@ weightd runs with.
 - the stage lanes' swap entries in `deployment/hub/model_swap.json` are the
   ones the record renders, and the chat layer's `context_tokens` in
   `deployment/hub/chat_frontend.json` is the record's;
-- the README model table's context column is the record's;
 - the hub `model_resident.json` gives the API the record's raw text prompt
   prefix.
 
