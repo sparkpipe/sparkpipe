@@ -1440,6 +1440,46 @@ static void TestScenarioSharedMidBlockPrefixDecode(const SparkModelResidentDeplo
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioSharedBlocksAcrossChains(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	SparkModelResidentDeployment bounded = *deployment;
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	uint32_t document[16],first[20],second[20],index,decode_lanes;
+	for (index=0u; index<16u; index++)
+		document[index] = first[index] = second[index] = 1400u + index;
+	first[16] = 1501u;
+	first[17] = 1502u;
+	first[18] = 1503u;
+	first[19] = 1504u;
+	second[16] = 1601u;
+	second[17] = 1602u;
+	second[18] = 1603u;
+	second[19] = 1604u;
+	MockResidentClientReset();
+	bounded.runtime_limits.kv_physical_page_capacity = 10u;
+	engine = TestConnectRows(&bounded,&state,runtime_root,16u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,980u,1u,document,16u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	TestSubmitPrompt(engine,2u,981u,1u,first,18u);
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	TestSubmitPrompt(engine,3u,982u,1u,second,18u);
+	TestDriveUntilTerminal(engine,&state,3u,400u);
+	(void)MockResidentClientTakeMaxDecodeLanes();
+	TestSubmitPrompt(engine,4u,983u,6u,first,20u);
+	TestSubmitPrompt(engine,5u,984u,6u,second,20u);
+	TestDriveUntilTerminal(engine,&state,5u,800u);
+	decode_lanes = MockResidentClientTakeMaxDecodeLanes();
+	CHECK(state.completed_events[4] == 1u && state.completed_events[5] == 1u && state.error_events[4] + state.error_events[5] == 0u &&
+		state.cached_tokens[4] == 18u && state.cached_tokens[5] == 18u,"shared blocks across chains: each turn resumes from its own cached 18-token turn and completes");
+	CHECK(decode_lanes == 2u,"shared blocks across chains: two turns whose cached prefixes differ but hold the same four document blocks decode in one wave (4 + 3 + 3 of 10 pages); matching whole prefixes would charge each its 7 pages and decode them one at a time");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioVerificationFailureIsFatal(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	static const uint32_t prompt[8] = {11u,12u,13u,14u,15u,16u,17u,18u};
@@ -2996,6 +3036,7 @@ int main(void)
 	TestScenarioStalePrefixIsolatesLanes(&deployment,runtime_root);
 	TestScenarioSharedPrefixReservation(&deployment,runtime_root);
 	TestScenarioSharedMidBlockPrefixDecode(&deployment,runtime_root);
+	TestScenarioSharedBlocksAcrossChains(&deployment,runtime_root);
 	TestScenarioVerificationFailureIsFatal(&deployment,runtime_root);
 	TestScenarioRankBusyBackpressure(&deployment,runtime_root);
 	TestScenarioBusyRestoreDeadline(&deployment,runtime_root);
