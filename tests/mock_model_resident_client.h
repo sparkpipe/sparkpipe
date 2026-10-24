@@ -55,6 +55,7 @@ void MockResidentClientRevive(uint32_t stage_index);
 void MockResidentClientSetAutoTokens(uint32_t count);
 void MockResidentClientSetLogprobs(uint32_t stride, uint32_t corrupt);
 void MockResidentClientSetMaxSequencePositions(uint32_t stage_index, uint32_t positions);
+uint32_t MockResidentClientTakeMaxDecodeLanes(void);
 uint32_t MockResidentClientTakeMaxTokensPerSequence(void);
 void MockResidentClientSetTokenStart(uint32_t first_token_id);
 void MockResidentClientSetScript(const uint32_t *tokens,uint32_t count);

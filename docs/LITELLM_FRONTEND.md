@@ -195,6 +195,7 @@ Optional request fields:
 | `top_p` | above 0 and at most 1, default 1; samples from the smallest set of top tokens whose probability at the request's temperature reaches `top_p` |
 | `top_k` | unsigned integer up to 1048576, default 0 (off); samples from the `top_k` most likely tokens, applied before `top_p` |
 | `logprobs` | unsigned integer up to 20: return each emitted token's log-probability and that many top alternatives. The response adds `token_logprobs`, one entry per token in `tokens`: an array of `[token_id, logprob]` pairs, the emitted token first and the alternatives in descending order. Logprobs are the model's log_softmax at temperature 1 (before truncation); `null` stands for a value too small for a float |
+| `speculation` | boolean, default `true`. `false` makes the engine draft nothing for this request, neither lookup nor model drafts, so every token is one plain decode step. Chained decode steps are unchanged, so this measures decode without speculation. A request that asks for `logprobs` never drafts either, but it also decodes one step per submission |
 | `chat_template_kwargs` | `messages` requests only, exactly `{"enable_thinking": bool}`; default `false` |
 
 ### Declared chat template
@@ -249,7 +250,7 @@ An older `model_api` refuses a `model_resident.json` that carries
 install as the API binary that reads it.
 
 A malformed `stream`, `priority`, `deadline_ms`, `temperature`, `seed`,
-`top_p`, `top_k`, `logprobs` or `chat_template_kwargs`, or
+`top_p`, `top_k`, `logprobs`, `speculation` or `chat_template_kwargs`, or
 `chat_template_kwargs` on a `prompt` or `prompt_token_ids` request, is a
 `400 invalid_option`, never a silent default. With `temperature` 0,
 `top_p` and `top_k` cannot change the greedy token and are not forwarded.

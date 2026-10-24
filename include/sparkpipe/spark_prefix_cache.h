@@ -35,6 +35,7 @@ extern "C" {
 #define SPARK_PREFIX_CACHE_ENTRY_FLAG_STALE 0x00000010u
 #define SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME 0x00000020u
 #define SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME_CHILD 0x00000040u
+#define SPARK_PREFIX_CACHE_RESUME_RECENT_MAXIMUM 16u
 
 #define SPARK_PREFIX_CACHE_BINDING_FLAG_VALID 0x00000001u
 #define SPARK_PREFIX_CACHE_BINDING_FLAG_PENDING 0x00000002u
@@ -367,6 +368,14 @@ SparkStatus SparkPrefixCacheClearResume(
     SparkPrefixCache *cache,
     const uint32_t *token_ids,
     uint32_t token_count);
+
+SparkStatus SparkPrefixCacheSupersedeResume(
+    SparkPrefixCache *cache,
+    const uint32_t *token_ids,
+    uint32_t token_count,
+    uint32_t recent_count,
+    uint32_t anchor_token_count,
+    uint32_t *superseded_out);
 uint32_t SparkPrefixCacheResumeTokenCount(
     SparkPrefixCache *cache,
     const uint32_t *token_ids,

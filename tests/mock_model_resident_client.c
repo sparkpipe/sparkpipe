@@ -96,6 +96,7 @@ static uint32_t mock_registry_count;
 static uint32_t mock_auto_tokens;
 static SparkModelServingLane mock_lane_log[256];
 static uint32_t mock_lane_log_count;
+static uint32_t mock_max_decode_lanes;
 static SparkModelServingCacheIdentity mock_identity_log[256];
 static uint32_t mock_identity_log_count;
 static uint32_t mock_token_start = 11u;
@@ -407,6 +408,7 @@ void MockResidentClientReset(void)
 			free(mock_registry[i]);
 	mock_registry_count = 0u;
 	mock_lane_log_count = 0u;
+	mock_max_decode_lanes = 0u;
 	mock_identity_log_count = 0u;
 	mock_auto_tokens = 0u;
 	mock_script_count = 0u;
@@ -590,6 +592,8 @@ static SparkStatus MockResidentClientEnqueue(
 	client->last_submission_id = submission->submission_id;
 	if ( submission->lane_count != 0u && submission->lanes != 0 )
 		client->last_lane = submission->lanes[0];
+	if ( client->stage_index == 0u && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && submission->lane_count > mock_max_decode_lanes )
+		mock_max_decode_lanes = submission->lane_count;
 	for (lane=0u; client->stage_index == 0u && submission->lanes != 0 && lane<submission->lane_count && mock_lane_log_count<256u; lane++)
 	{
 		uint32_t identity;
@@ -770,6 +774,13 @@ void MockResidentClientSetLogprobs(uint32_t stride, uint32_t corrupt)
 {
 	mock_logprob_stride = stride;
 	mock_logprob_corrupt = corrupt;
+}
+
+uint32_t MockResidentClientTakeMaxDecodeLanes(void)
+{
+	uint32_t lanes = mock_max_decode_lanes;
+	mock_max_decode_lanes = 0u;
+	return(lanes);
 }
 
 uint32_t MockResidentClientTakeMaxTokensPerSequence(void)

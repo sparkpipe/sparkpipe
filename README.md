@@ -37,7 +37,7 @@ are in [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).
 | 16 requests, total | – | – | 227 tok/s |
 | Of the floor for the bytes it reads | 58% | about 50% | 59% |
 | Prefill, 8K prompt | 590 tok/s | 1,162 tok/s | 876 tok/s |
-| Context window | 737,280 tokens (measured to 337K) | 262,144 tokens | 131,072 tokens |
+| Context window | 1,048,576 tokens (needle found at 998K) | 1,048,576 tokens (needle found at 1.01M) | 131,072 tokens |
 
 **Speculation, one request**
 
@@ -52,8 +52,10 @@ draft model on the hub's RTX 5090. The target model verifies every draft.
 
 **Long context and cache**
 
-- Each node stores 1/16 of every sequence's cache, so K3's 737,280-token
-  window needs 1.36 GB of KV per node.
+- Each node stores 1/16 of every sequence's cache, so K3 and GLM 5.3 Full
+  serve 1,048,576-token windows. A needle placed in a 998K-token prompt
+  (K3) and a 1.01M-token prompt (GLM 5.3 Full) was found after a cold
+  prefill of 66 and 55 minutes.
 - The next turn of a long conversation reuses its cached prefix: 5 s at
   137K tokens instead of 299 s, 8 s at 337K instead of 982 s.
 - Cached prefixes survive model swaps: 137,600 tokens restore in 2.7 s.
@@ -507,22 +509,22 @@ cached prefixes come back from the KV snapshot store.
 
 | Served name | Model | Family | Context | Swap in | Decode, B1 | Of ideal floor | Prefill, 7-8K prompt | COMPSEC-17 |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `glm-5.3` | GLM 5.3 Full | `glm52` | 256K | 38 s | 28.9 tok/s | 27% | 1,162 tok/s | 15 |
+| `glm-5.3` | GLM 5.3 Full | `glm52` | 1M | 38 s | 28.9 tok/s | 27% | 1,162 tok/s | 15 |
 | `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K | 24 s | 55.0 tok/s | 23% | 876 tok/s | 13 |
-| `kimi-k3` | Kimi K3 | `k3` | 720K | 46 s | 16.2 tok/s | 51% | 590 tok/s | 17 |
-| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 16K | 24 s | 29.5 tok/s | – | 182 tok/s | 16 |
+| `kimi-k3` | Kimi K3 | `k3` | 1M | 46 s | 16.2 tok/s | 51% | 590 tok/s | 17 |
+| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 1M | 24 s | 29.5 tok/s | – | 182 tok/s | 16 |
 | `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K | 24 s | 19.0 tok/s ‡ | – | 55 tok/s ‡ | 17 |
 | `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K | 19 s | 40.9 tok/s ‡ | – | 157 tok/s ‡ | 16 |
 | `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K | 28 s | 14.2 tok/s | 16% | 53 tok/s | 17 |
 | `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K | 17 s | 34.4 tok/s | 48% | 834 tok/s | 16 |
-| `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 32K | 16 s | 89.5 tok/s | 16% | 1,848 tok/s | 16 |
-| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 32K | 20 s | 80.4 tok/s | 19% | 1,514 tok/s | 13 |
-| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 32K | 20 s | 79.2 tok/s | 18% | 1,550 tok/s | 13 |
+| `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 256K | 16 s | 89.5 tok/s | 16% | 1,848 tok/s | 16 |
+| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 256K | 20 s | 80.4 tok/s | 19% | 1,514 tok/s | 13 |
+| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 256K | 20 s | 79.2 tok/s | 18% | 1,550 tok/s | 13 |
 | `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K | 20 s | 51.0 tok/s | – | 773 tok/s | 13 |
-| `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 32K | 16 s | 37.9 tok/s | 51% | 1,186 tok/s | 17 |
+| `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 128K | 16 s | 37.9 tok/s | 51% | 1,186 tok/s | 17 |
 | `qwen3.8-max` | Qwen 3.8 Max (internal) | `qwen38` | 32K | 35 s | 10.4 tok/s | – | 35 tok/s | 5 † |
 | `qwen3.8-27b` | Qwen 3.8 27B (internal) | `qwen38` | 256K | 19 s | 57.4 tok/s | 35% | 1,852 tok/s | 14 |
-| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 32K | 20 s | 45.0 tok/s | – | 358 tok/s | 15 |
+| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 256K | 20 s | 45.0 tok/s | – | 358 tok/s | 15 |
 
 All on sixteen Sparks at TP16, with the GPU clocks capped at 2200 MHz and
 no speculation:
@@ -551,7 +553,9 @@ no speculation:
   It includes stopping the previous model. The slowest single swap was K3's,
   at 79 s.
 - **Context** is the window the chat layer serves
-  (`deployment/hub/chat_frontend.json`). K3's is 737,280 tokens.
+  (`deployment/hub/chat_frontend.json`), from the lane records in
+  `deployment/lanes.json`; `tests/test_lane_records.py` keeps this column equal
+  to them.
 - ‡ MiMo was measured only in the release qualification of 2026-10-14,
   while a CPU tenant kept about 16 cores busy on every node, so its numbers
   are lower bounds. The same load cut K3 from 16.2 to 10.0 tok/s.
