@@ -43,7 +43,8 @@ weightd runs with.
   pages, recurrent checkpoint memory holds two per sequence plus two;
 - the stage lanes' swap entries in `deployment/hub/model_swap.json` are the
   ones the record renders, and the chat layer's `context_tokens` in
-  `deployment/hub/chat_frontend.json` is the record's.
+  `deployment/hub/chat_frontend.json` is the record's;
+- the README model table's context column is the record's.
 
 Concurrency follows from the pages: the batch engine admits a request only
 while its prompt and output budget fit the free physical pages, so at full
