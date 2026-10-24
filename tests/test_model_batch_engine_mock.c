@@ -2190,6 +2190,40 @@ static void TestScenarioReplyCheckpoint(const SparkModelResidentDeployment *depl
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioResumeSuperseded(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t blocks[5] = {1u,2u,4u,5u,7u};
+	static const uint32_t probes[3] = {10u,14u,22u},expected[3] = {0u,12u,20u};
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t chat[29],probe[29],index,turn,resumed = 1u;
+	for (index=0u; index<29u; index++)
+		chat[index] = 1200u + index;
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,10u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	for (turn=0u; turn<5u; turn++)
+	{
+		TestSubmitPrompt(engine,1u + turn,1300u + turn,1u,chat,4u * blocks[turn] + 1u);
+		TestDriveUntilTerminal(engine,&state,1u + turn,800u);
+	}
+	CHECK(state.completed_events[5] == 1u && state.error_events[1] + state.error_events[2] + state.error_events[3] + state.error_events[4] + state.error_events[5] == 0u,"superseded resume: five turns of one chat complete, each publishing the state one token before its prompt end");
+	for (index=0u; index<3u; index++)
+	{
+		memcpy(probe,chat,sizeof(chat));
+		probe[probes[index]] = 9u;
+		TestSubmitPrompt(engine,6u + index,1310u + index,1u,probe,probes[index] + 2u);
+		resumed &= TestWaitFirstRequestLane(engine,6u + index,&lane) != 0u && lane.cache_prefix_token_count == expected[index] ? 1u : 0u;
+		TestDriveUntilTerminal(engine,&state,6u + index,800u);
+	}
+	CHECK(resumed != 0u && state.error_events[6] + state.error_events[7] + state.error_events[8] == 0u,"superseded resume: the states at 4 and 8 lie four or more block-aligned states back on the chain, so the engine stops offering them, as the ranks drop them; the stride state at 12 and the newer 20 still resume");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deployment,const SparkModelResidentDeployment *plain_deployment,const char *runtime_root);
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root);
@@ -2236,6 +2270,7 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 	TestScenarioRecurrentCheckpoints(&deployment,runtime_root);
 	TestScenarioRecurrentStaleResume(&deployment,runtime_root);
 	TestScenarioReplyCheckpoint(&deployment,runtime_root);
+	TestScenarioResumeSuperseded(&deployment,runtime_root);
 	SparkModelResidentDeploymentReset(&deployment);
 	(void)unlink(path);
 	TestLoadVariantDeployment(runtime_root,"multi-block-prefill",TEST_MODEL_SERVING_ADAPTER_PATH,path,sizeof(path),&deployment);

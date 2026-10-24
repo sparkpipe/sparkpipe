@@ -10,6 +10,7 @@
 
 #include "model_batch_scheduler.h"
 #include "sparkpipe/spark_draft_bridge.h"
+#include "sparkpipe/spark_kv_page_cache.h"
 #include "sparkpipe/spark_prefix_cache.h"
 #include "sparkpipe/spark_prefix_index_file.h"
 #include "sparkpipe/spark_sha256.h"
@@ -295,6 +296,7 @@ struct SparkModelBatchEngine
 	uint64_t restore_hint_count;
 	uint64_t restore_hint_dropped_count;
 	uint64_t cache_resume_unmarked_count;
+	uint64_t cache_resume_superseded_count;
 	uint64_t prefix_hit_token_count;
 	uint64_t stale_prefix_recompute_count;
 	uint64_t stale_prefix_isolation_count;
@@ -1162,6 +1164,27 @@ static void SparkModelBatchHandleRejected(
 	}
 }
 
+static SparkStatus SparkModelBatchMarkResume(
+	SparkModelBatchEngine *engine,
+	const SparkModelBatchRequestState *request,
+	const uint32_t *tokens,
+	uint32_t token_count)
+{
+	uint32_t superseded = 0u;
+	SparkStatus status;
+	status = SparkPrefixCacheMarkResume(&engine->prefix_cache,tokens,token_count);
+	if ( status == SPARK_STATUS_OK && engine->adapter_descriptor->cache_checkpoint_token_count != 0u )
+		status = SparkPrefixCacheSupersedeResume(&engine->prefix_cache,tokens,token_count,SPARK_KV_PAGE_CACHE_RECENT_STATES,
+			engine->adapter_descriptor->cache_checkpoint_token_count,&superseded);
+	if ( superseded != 0u )
+	{
+		engine->cache_resume_superseded_count += superseded;
+		fprintf(stderr,"batch_resume_superseded request=%llu tokens=%u superseded=%u total=%llu: the ranks keep only the newest %u states on a path and every checkpoint-aligned one, so older resume points on this path are no longer offered\n",
+			(unsigned long long)request->request_id,token_count,superseded,(unsigned long long)engine->cache_resume_superseded_count,SPARK_KV_PAGE_CACHE_RECENT_STATES);
+	}
+	return(status);
+}
+
 static SparkStatus SparkModelBatchPublishCompletedPrefix(
 	SparkModelBatchEngine *engine,
 	SparkModelBatchRequestState *request,
@@ -1187,7 +1210,7 @@ static SparkStatus SparkModelBatchPublishCompletedPrefix(
 		completed_token_count,
 		&committed);
 	if ( status == SPARK_STATUS_OK && request->cache_pending_resume != 0u && engine->adapter_descriptor->cache_checkpoint_token_count != 0u &&
-		SparkPrefixCacheMarkResume(&engine->prefix_cache,tokens,completed_token_count) != SPARK_STATUS_OK )
+		SparkModelBatchMarkResume(engine,request,tokens,completed_token_count) != SPARK_STATUS_OK )
 	{
 		engine->cache_resume_unmarked_count++;
 		fprintf(stderr,"batch_resume_unmarked request=%llu tokens=%u unmarked=%llu: a block of the chain is stale, so this checkpoint is not a resume point\n",
@@ -1445,7 +1468,7 @@ static void SparkModelBatchHandleReleaseCompletion(
 		request->resident_bound = 0u;
 		if ( request->cache_staged_token_count != 0u && request->cache_staged_token_count == request->cache_published_token_count )
 		{
-			if ( SparkPrefixCacheMarkResume(&engine->prefix_cache,SparkModelBatchRequestTokens(engine,request_slots[lane]),request->cache_staged_token_count) == SPARK_STATUS_OK )
+			if ( SparkModelBatchMarkResume(engine,request,SparkModelBatchRequestTokens(engine,request_slots[lane]),request->cache_staged_token_count) == SPARK_STATUS_OK )
 				engine->prefix_index_dirty = 1u;
 			else
 			{

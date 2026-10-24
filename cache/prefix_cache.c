@@ -3160,6 +3160,62 @@ SparkStatus SparkPrefixCacheClearResume(
     return SPARK_STATUS_OK;
 }
 
+SparkStatus SparkPrefixCacheSupersedeResume(
+    SparkPrefixCache *cache,
+    const uint32_t *token_ids,
+    uint32_t token_count,
+    uint32_t recent_count,
+    uint32_t anchor_token_count,
+    uint32_t *superseded_out)
+{
+    SparkPrefixCacheEntry *entry,*victim,*kept[SPARK_PREFIX_CACHE_RESUME_RECENT_MAXIMUM];
+    uint64_t parent_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH,block_hash;
+    uint32_t kept_end[SPARK_PREFIX_CACHE_RESUME_RECENT_MAXIMUM];
+    uint32_t token_offset,limit,window,held = 0u,head = 0u,victim_end,superseded = 0u;
+    SparkStatus status;
+
+    status = SparkPrefixCacheValidate(cache);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    if (token_ids == 0 || token_count == 0u || recent_count == 0u || recent_count > SPARK_PREFIX_CACHE_RESUME_RECENT_MAXIMUM ||
+        anchor_token_count == 0u || anchor_token_count % cache->block_token_count != 0u || superseded_out == 0)
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    window = recent_count - 1u;
+    limit = (token_count - 1u) / cache->block_token_count * cache->block_token_count;
+    for (token_offset = 0u; token_offset < limit; token_offset += cache->block_token_count)
+    {
+        entry = SparkPrefixCacheFindPromptBlock(cache, token_ids, token_offset, cache->block_token_count, parent_hash, &block_hash);
+        if (entry == 0)
+            break;
+        parent_hash = block_hash;
+        if ((entry->flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME) == 0u)
+            continue;
+        victim = entry;
+        victim_end = token_offset + cache->block_token_count;
+        if (window != 0u && held < window)
+        {
+            kept[held] = entry;
+            kept_end[held++] = victim_end;
+            continue;
+        }
+        if (window != 0u)
+        {
+            victim = kept[head];
+            victim_end = kept_end[head];
+            kept[head] = entry;
+            kept_end[head] = token_offset + cache->block_token_count;
+            head = (head + 1u) % window;
+        }
+        if (victim_end % anchor_token_count != 0u)
+        {
+            victim->flags &= ~SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME;
+            superseded++;
+        }
+    }
+    *superseded_out = superseded;
+    return SPARK_STATUS_OK;
+}
+
 static uint32_t SparkPrefixCacheResumeInBlock(
     SparkPrefixCache *cache,
     const uint32_t *token_ids,
