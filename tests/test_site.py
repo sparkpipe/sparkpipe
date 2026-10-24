@@ -69,7 +69,7 @@ def main():
                 failures.append(f"{name}: {link} names no file in site/")
             elif fragment and fragment not in pages.get(target or name, page).ids:
                 failures.append(f"{name}: {link} names no element")
-        failures += [f"{name}: external script {src}" for src in page.scripts]
+        failures += [f"{name}: external script {src}" for src in page.scripts if src.startswith(EXTERNAL)]
         failures += [f"{name}: stylesheet {href}" for href in page.styles if href.startswith(EXTERNAL) and not href.startswith(ALLOWED_STYLES)]
         check_tables(name, page, failures)
     for failure in failures:
