@@ -94,9 +94,12 @@ nodes at the format's peak over 2 FLOPs per active parameter per token:
 
 Two draft sources serve, and the target model verifies every draft. Lookup
 copies drafts from the request's own context by suffix match and verifies up
-to 255 of them in one frame (K3 and GLM 5.3 Full). Model drafts come from a
-DSpark block drafter on the hub's RTX 5090, fed by hidden states from five
-K3 layers, when lookup has no match of at least 8 tokens (K3).
+to 255 of them in one frame (K3 and GLM 5.3 Full). Model drafts come from the
+lightseek DFlash2 drafter on the hub's RTX 5090 (in production since
+2026-10-19; the RadixArk DSpark drafter before it), fed by hidden states from
+five K3 layers, when lookup has no match of at least 8 tokens (K3). The rows
+below were measured with the DSpark drafter; in a same-hold A/B, DFlash2 was
+4-5% faster per token on edits, 128K code and 137.7K prose.
 
 | Workload, B1 | Kimi K3 | GLM 5.3 Full |
 | --- | --- | --- |
