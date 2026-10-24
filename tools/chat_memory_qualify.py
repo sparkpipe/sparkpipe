@@ -9,6 +9,7 @@ import random
 import re
 import sys
 import time
+import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
@@ -123,8 +124,11 @@ def ask(url, model, messages, headers, effort):
     body = json.dumps({"model": model, "messages": messages, "stream": False, "reasoning_effort": effort}).encode()
     request = urllib.request.Request(url, data=body, headers=dict(headers, **{"Content-Type": "application/json"}))
     started = time.monotonic()
-    with urllib.request.urlopen(request, timeout=1800) as response:
-        reply = json.load(response)
+    try:
+        with urllib.request.urlopen(request, timeout=1800) as response:
+            reply = json.load(response)
+    except urllib.error.HTTPError as error:
+        raise SystemExit(f"HTTP {error.code} after {len(messages)} messages: {error.read().decode(errors='replace')[:2000]}")
     usage = reply.get("usage") or {}
     content = (reply["choices"][0]["message"].get("content") or "").strip()
     return content, usage.get("prompt_tokens") or 0, (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0, time.monotonic() - started
