@@ -1377,6 +1377,45 @@ static void SparkTestPrefixCacheResumeInsideEarlierBlock(void)
 	printf("prefix cache resume points: a resumable point inside an earlier matched block is found when a later turn matches past it, a sibling that diverges before it gets none, and import keeps it findable: ok\n");
 }
 
+static void SparkTestPrefixCacheResumeSuperseded(void)
+{
+	SparkTestKvFixture fixture;
+	SparkPrefixCache cache;
+	SparkPrefixCacheEntry entries[8u];
+	SparkPrefixCacheSequenceBinding bindings[16u];
+	SparkPrefixCacheLookup lookup;
+	const uint32_t anchor = 3u * SPARK_TEST_BLOCK_TOKENS,checkpoint = 6u * SPARK_TEST_BLOCK_TOKENS + 2u;
+	uint32_t tokens[28u],index,position,superseded,total = 0u;
+	SparkTestPrefixCacheResumeOpen(&fixture,&cache,entries,bindings);
+	for (index=0u; index<28u; index++)
+		tokens[index] = 5000u + index;
+	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,checkpoint,&lookup) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,28u,&lookup) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheSupersedeResume(&cache,tokens,8u,0u,anchor,&superseded) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkPrefixCacheSupersedeResume(&cache,tokens,8u,4u,anchor + 1u,&superseded) == SPARK_STATUS_INVALID_ARGUMENT);
+	for (position=SPARK_TEST_BLOCK_TOKENS; position<=6u*SPARK_TEST_BLOCK_TOKENS; position+=SPARK_TEST_BLOCK_TOKENS)
+	{
+		assert(SparkPrefixCacheMarkResume(&cache,tokens,position) == SPARK_STATUS_OK);
+		assert(SparkPrefixCacheSupersedeResume(&cache,tokens,position,4u,anchor,&superseded) == SPARK_STATUS_OK);
+		assert(superseded == (position == 5u * SPARK_TEST_BLOCK_TOKENS || position == 6u * SPARK_TEST_BLOCK_TOKENS ? 1u : 0u));
+		total += superseded;
+	}
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,11u) == 0u);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,15u) == 12u);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,23u) == 20u);
+	assert(SparkPrefixCacheMarkResume(&cache,tokens,checkpoint) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheSupersedeResume(&cache,tokens,checkpoint,4u,anchor,&superseded) == SPARK_STATUS_OK && superseded == 0u);
+	assert(SparkPrefixCacheMarkResume(&cache,tokens,28u) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheSupersedeResume(&cache,tokens,28u,4u,anchor,&superseded) == SPARK_STATUS_OK && superseded == 0u);
+	assert(total == 2u);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,15u) == 12u);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,19u) == 16u);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,checkpoint) == checkpoint);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,27u) == checkpoint);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,28u) == 28u);
+	printf("prefix cache resume points: marking a resume point clears the block-aligned ones on its path beyond the three nearest, as the ranks drop those states, keeps every checkpoint-aligned one, and never counts a resume point inside a block: ok\n");
+}
+
 static void SparkTestPrefixCachePartialPublication(void)
 {
 	for (uint32_t hashed=0u; hashed<2u; hashed++)
@@ -3346,6 +3385,7 @@ int main(void)
 	SparkTestPrefixCacheResumePoints();
 	SparkTestPrefixCacheResumeInsideLastBlock();
 	SparkTestPrefixCacheResumeInsideEarlierBlock();
+	SparkTestPrefixCacheResumeSuperseded();
 	SparkTestPrefixCachePartialPublication();
 	SparkTestPrefixCacheTombstone(0u);
 	SparkTestPrefixCacheTombstone(1u);
