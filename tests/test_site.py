@@ -49,6 +49,23 @@ def check_tables(name, page, failures):
                 failures.append(f"{name}: table row has {cell_count(row)} cells, header has {expected}")
 
 
+def check_chat_requests(pages):
+    import re
+    page = pages.get("playground.html")
+    if page is None:
+        return ["playground.html is missing"]
+    calls = re.findall(r"\bfetch\((.{0,40})", page.source)
+    failures = [f"playground.html: fetch({call.strip()}...) does not go to the API the page is pointed at" for call in calls if not call.strip().startswith("base() + '/")]
+    if not calls:
+        failures.append("playground.html makes no API request")
+    for needle in ("sendBeacon", "XMLHttpRequest", "WebSocket", "EventSource", "new Image(", "document.cookie"):
+        if needle in page.source:
+            failures.append(f"playground.html uses {needle}; chats may leave the browser only as requests to the chosen API")
+    if "indexedDB.open(" not in page.source:
+        failures.append("playground.html does not keep chats in the browser's IndexedDB")
+    return failures
+
+
 def parse(path):
     source = path.read_text(encoding="utf-8")
     page = Page()
@@ -72,11 +89,12 @@ def main():
         failures += [f"{name}: external script {src}" for src in page.scripts]
         failures += [f"{name}: stylesheet {href}" for href in page.styles if href.startswith(EXTERNAL) and not href.startswith(ALLOWED_STYLES)]
         check_tables(name, page, failures)
+    failures += check_chat_requests(pages)
     for failure in failures:
         print(f"  FAIL {failure}")
     if failures or not pages:
         return 1
-    print(f"site: {len(pages)} pages, every local link and anchor resolves, no external scripts")
+    print(f"site: {len(pages)} pages, every local link and anchor resolves, no external scripts; the chat page keeps chats in IndexedDB and sends them only to the API it is pointed at")
     return 0
 
 
