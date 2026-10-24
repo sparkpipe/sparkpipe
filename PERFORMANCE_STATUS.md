@@ -55,6 +55,45 @@ Kimi K3, GLM 5.3 Full and GLM 5.3 Flash get the performance work.
   B128 347 tok/s (with B64 token-identical across runs), and GLM 5.3 Full
   B16 109-116 tok/s by step time, on the modules the common runner replaced.
 
+### Batches at the full window
+
+One document fills each model's window. It is prefilled once, then B
+requests each append a distinct question to it and resume from its cache,
+generating 256 tokens each. Aggregate decode in tok/s, measured over the
+window in which every stream decodes, both repeats:
+
+| | Kimi K3 | GLM 5.3 Full | GLM 5.3 Flash | DeepSeek V4.1 Flash |
+| --- | ---: | ---: | ---: | ---: |
+| Prompt | 1,048,273 | 1,048,325 | 130,361 | 1,047,883 |
+| Cold prefill of the document | 4,542 s | 3,534 s | 252 s | 814 s |
+| First token from the cache, B1 to B8 | 0.3-6.2 s | 0.7-3.1 s | 0.2-2.6 s | 9.3-10.5 s |
+| B1, no speculation | 12.0-12.4 | 20.9-21.0 | 48.3 | 42.5-42.7 |
+| B1, as served | 11.9-12.7 | 20.3-21.0 | 48.3 | 47.5-55.8 |
+| B2 | 17.7-18.2 | 28.2 | 68.4 | 67.7-67.8 |
+| B4 | 24.6-24.8 | 43.6-43.9 | 97.9 | 104.5-106.4 |
+| B8 | 34.4-34.6 | 60.0-60.3 | 129.8 | 151.3-152.7 |
+| B16 | – | – | 152.5 | – |
+
+- Builds:
+  - These are candidate hub APIs, not production: each production API's
+    source plus PR #1542 (shared cached blocks reserved once) and PR #1544
+    (`"speculation": false`); K3's also carries PR #1543.
+  - The production APIs cannot run B>1 at 1M on K3 or GLM 5.3 Full. K3's
+    run with the earlier span-keyed reservation decoded one request at a
+    time (`kimi-k3.span-reservation.jsonl`).
+- Arms:
+  - "No speculation" sends `"speculation": false`. Batches of two or more
+    never speculate.
+  - GLM 5.3 Flash does not speculate, so its two B1 rows are one arm.
+  - GLM 5.3 Full's streams stream 221 of their 256 tokens.
+- Overlap: one owner request (a 32K-token turn) reached DeepSeek V4.1 Flash
+  near the end of its second B8 arm. The first DeepSeek V4.1 Flash run
+  stopped early on a short question (`deepseek-v4.1-flash.short-answers.jsonl`).
+- Receipts:
+  [`qualification/batch-sweep-20261024/`](qualification/batch-sweep-20261024/)
+  (`tools/context_batch_sweep.py`; the document is the K3 documentation
+  corpus, repeated).
+
 ### Prefill
 
 | | Kimi K3 | GLM 5.3 Full | GLM 5.3 Flash |
