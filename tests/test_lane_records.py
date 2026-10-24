@@ -61,6 +61,11 @@ def main():
             node = json.loads((pathlib.Path(directory) / "deployment.json").read_text())
             if "tokenizer" in node or "draft_server" in node or hub["tokenizer"]["sha256"] != record["tokenizer_sha256"]:
                 failures.append(f"{record_id}: the tokenizer and draft server belong to the hub model_resident.json only")
+            prefix = record.get("text_prompt_prefix_token_ids")
+            if not isinstance(prefix, list) or not all(isinstance(token, int) and not isinstance(token, bool) and 0 <= token < model["tokenizer_vocabulary"] for token in prefix):
+                failures.append(f"{record_id}: text_prompt_prefix_token_ids must list the ids the publisher tokenizer puts before a raw text prompt (tools/tokenizer_text_prefix.py), [] for none")
+            elif hub["tokenizer"].get("text_prompt_prefix_token_ids", []) != prefix:
+                failures.append(f"{record_id}: the hub model_resident.json carries text prompt prefix {hub['tokenizer'].get('text_prompt_prefix_token_ids')}, the record {prefix}")
         if record["launcher"] == "stage_lane":
             generated = stage_lane.swap_entry(record["model"], model, record["lane"])
             entry = swap.get(record_id, {})
@@ -78,7 +83,7 @@ def main():
         print("FAILED: " + line)
     if failures:
         return 1
-    print(f"PASS {len(lanes)} lane records render, match the swap controller, the chat layer and the README model table, and serve the contract maximum or say why not")
+    print(f"PASS {len(lanes)} lane records render, match the swap controller, the chat layer and the README model table, give the hub API the raw text prompt prefix the record names, and serve the contract maximum or say why not")
     return 0
 
 
