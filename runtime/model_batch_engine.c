@@ -75,6 +75,8 @@ typedef struct SparkModelBatchRequestState
 	uint64_t busy_retry_not_before_ns;
 	uint32_t resident_sequence_slot;
 	uint32_t reserved_kv_page_count;
+	uint32_t reserved_span_token_count;
+	uint32_t reserved_span_page_count;
 	uint32_t terminal_event_kind;
 	uint32_t terminal_status;
 	uint32_t scheduling_bypass_count;
@@ -96,6 +98,7 @@ typedef struct SparkModelBatchRequestState
 	uint64_t request_id;
 	uint64_t sequence_id;
 	SparkModelServingCacheIdentity cache_prefix_identity;
+	SparkModelServingCacheIdentity reserved_span_identity;
 	uint32_t restore_hint_sent;
 	SparkModelServingCacheIdentity cache_published_identity;
 	SparkSha256Context cache_published_digest_context;
@@ -708,11 +711,87 @@ static void SparkModelBatchEmit(
 	engine->event_function(engine->event_context,&event);
 }
 
+static uint32_t SparkModelBatchSpanPeer(
+	const SparkModelBatchEngine *engine,
+	const SparkModelBatchRequestState *request,
+	const SparkModelServingCacheIdentity *identity,
+	uint32_t token_count,
+	uint32_t holding)
+{
+	const SparkModelBatchRequestState *peer;
+	uint32_t slot;
+	for (slot=0u; slot<engine->request_capacity; slot++)
+	{
+		peer = &engine->requests[slot];
+		if ( peer != request && peer->reserved_span_token_count == token_count &&
+			(peer->reserved_span_page_count != 0u ? 1u : 0u) == holding &&
+			memcmp(&peer->reserved_span_identity,identity,sizeof(*identity)) == 0 )
+			return(slot);
+	}
+	return(SPARK_MODEL_BATCH_NO_SLOT);
+}
+
+static uint32_t SparkModelBatchReservationPages(
+	const SparkModelBatchEngine *engine,
+	const SparkModelBatchRequestState *request,
+	uint32_t *span_pages,
+	uint32_t *shared_pages)
+{
+	uint32_t pages,span = 0u;
+	pages = SparkModelBatchSchedulerRequestPageCount(engine->cache_block_token_count,request->prompt_token_count,request->output_token_budget);
+	if ( pages != UINT32_MAX && request->cache_prefix_token_count != 0u &&
+		SparkModelBatchCacheIdentityIsPresent(&request->cache_prefix_identity) != 0u )
+		span = request->cache_prefix_token_count / engine->cache_block_token_count;
+	*span_pages = span <= pages ? span : 0u;
+	*shared_pages = *span_pages != 0u && SparkModelBatchSpanPeer(engine,request,&request->cache_prefix_identity,
+		request->cache_prefix_token_count,1u) != SPARK_MODEL_BATCH_NO_SLOT ? *span_pages : 0u;
+	return(pages == UINT32_MAX ? UINT32_MAX : pages - *shared_pages);
+}
+
+static void SparkModelBatchPassReservedSpan(
+	SparkModelBatchEngine *engine,
+	SparkModelBatchRequestState *request)
+{
+	SparkModelBatchRequestState *heir;
+	uint32_t slot;
+	if ( request->reserved_span_page_count != 0u )
+	{
+		slot = SparkModelBatchSpanPeer(engine,request,&request->reserved_span_identity,request->reserved_span_token_count,0u);
+		if ( slot != SPARK_MODEL_BATCH_NO_SLOT )
+		{
+			heir = &engine->requests[slot];
+			heir->reserved_span_page_count = request->reserved_span_page_count;
+			heir->reserved_kv_page_count += request->reserved_span_page_count;
+			engine->reserved_kv_page_count += request->reserved_span_page_count;
+		}
+	}
+	request->reserved_span_token_count = 0u;
+	request->reserved_span_page_count = 0u;
+	memset(&request->reserved_span_identity,0,sizeof(request->reserved_span_identity));
+}
+
+static uint32_t SparkModelBatchUnshareReservation(
+	SparkModelBatchEngine *engine,
+	SparkModelBatchRequestState *request)
+{
+	uint32_t span;
+	if ( request->reserved_span_token_count == 0u )
+		return(1u);
+	if ( request->reserved_span_page_count == 0u )
+	{
+		span = request->reserved_span_token_count / engine->cache_block_token_count;
+		request->reserved_kv_page_count += span;
+		engine->reserved_kv_page_count += span;
+	}
+	SparkModelBatchPassReservedSpan(engine,request);
+	return(engine->reserved_kv_page_count <= engine->kv_physical_page_capacity ? 1u : 0u);
+}
+
 static uint32_t SparkModelBatchPrefillCanStart(
 	const SparkModelBatchEngine *engine,
 	const SparkModelBatchRequestState *request)
 {
-	uint32_t pages;
+	uint32_t pages,span,shared;
 	if ( request->state != SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL )
 		return(0u);
 	if ( request->resident_sequence_slot != SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT )
@@ -721,7 +800,7 @@ static uint32_t SparkModelBatchPrefillCanStart(
 		return(0u);
 	if ( engine->kv_physical_page_capacity == 0u )
 		return(1u);
-	pages = SparkModelBatchSchedulerRequestPageCount(engine->cache_block_token_count,request->prompt_token_count,request->output_token_budget);
+	pages = SparkModelBatchReservationPages(engine,request,&span,&shared);
 	return(pages <= engine->kv_physical_page_capacity && engine->reserved_kv_page_count <= engine->kv_physical_page_capacity - pages ? 1u : 0u);
 }
 
@@ -738,17 +817,23 @@ static uint32_t SparkModelBatchBindResidentSlot(
 	SparkModelBatchEngine *engine,
 	SparkModelBatchRequestState *request)
 {
-	uint32_t slot,pages = 0u;
+	uint32_t slot,pages = 0u,span,shared;
 	if ( request->resident_sequence_slot != SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT )
 		return(1u);
 	if ( engine->free_resident_slot_head == SPARK_MODEL_BATCH_NO_SLOT )
 		return(0u);
 	if ( engine->kv_physical_page_capacity != 0u )
 	{
-		pages = SparkModelBatchSchedulerRequestPageCount(engine->cache_block_token_count,request->prompt_token_count,request->output_token_budget);
+		pages = SparkModelBatchReservationPages(engine,request,&span,&shared);
 		if ( pages > engine->kv_physical_page_capacity || engine->reserved_kv_page_count > engine->kv_physical_page_capacity - pages )
 			return(0u);
 		engine->reserved_kv_page_count += pages;
+		if ( span != 0u )
+		{
+			request->reserved_span_identity = request->cache_prefix_identity;
+			request->reserved_span_token_count = request->cache_prefix_token_count;
+			request->reserved_span_page_count = shared == 0u ? span : 0u;
+		}
 	}
 	request->reserved_kv_page_count = pages;
 	slot = engine->free_resident_slot_head;
@@ -767,6 +852,7 @@ static void SparkModelBatchReleaseResidentSlot(
 	slot = request->resident_sequence_slot;
 	if ( slot == SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT )
 		return;
+	SparkModelBatchPassReservedSpan(engine,request);
 	engine->reserved_kv_page_count -= request->reserved_kv_page_count;
 	request->reserved_kv_page_count = 0u;
 	engine->resident_slot_next[slot] = engine->free_resident_slot_head;
@@ -1025,7 +1111,7 @@ static void SparkModelBatchRestoreOrCancel(
 static void SparkModelBatchRequeueStaleWave(SparkModelBatchEngine *engine,SparkModelBatchSubmissionState *submission)
 {
 	SparkModelBatchRequestState *request;
-	uint32_t lane,*request_slots;
+	uint32_t lane,*request_slots,fits;
 	uint32_t prefix_lanes = 0u;
 	SparkStatus status;
 	request_slots = SparkModelBatchSubmissionRequestSlots(engine,submission);
@@ -1037,12 +1123,22 @@ static void SparkModelBatchRequeueStaleWave(SparkModelBatchEngine *engine,SparkM
 	{
 		request = &engine->requests[request_slots[lane]];
 		status = SPARK_STATUS_OK;
+		fits = 1u;
 		if ( SparkModelBatchRequestCarriesPrefix(request) != 0u && prefix_lanes > 1u )
 			request->prefix_isolated = 1u;
 		else if ( SparkModelBatchRequestCarriesPrefix(request) != 0u )
+		{
 			status = SparkModelBatchRecomputeStalePrefix(engine,request);
+			fits = status == SPARK_STATUS_OK ? SparkModelBatchUnshareReservation(engine,request) : 1u;
+		}
 		request->busy_retry_not_before_ns = 0u;
-		if ( status == SPARK_STATUS_OK )
+		if ( fits == 0u )
+		{
+			fprintf(stderr,"batch_shared_prefix_lost request=%llu reserved_pages=%u capacity=%u: the shared cached prefix is gone and this request's own copy does not fit beside the bound requests\n",
+				(unsigned long long)request->request_id,engine->reserved_kv_page_count,engine->kv_physical_page_capacity);
+			SparkModelBatchFailRequest(engine,request,SPARK_STATUS_CAPACITY_EXCEEDED);
+		}
+		else if ( status == SPARK_STATUS_OK )
 			SparkModelBatchRestoreOrCancel(engine,request,submission);
 		else
 		{

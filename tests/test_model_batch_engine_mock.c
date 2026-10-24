@@ -1345,6 +1345,69 @@ static void TestScenarioStalePrefixIsolatesLanes(const SparkModelResidentDeploym
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static uint32_t TestLaneLogEdge(uint64_t request_id,uint32_t last)
+{
+	SparkModelServingLane lane;
+	uint32_t index,found = UINT32_MAX;
+	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
+		if ( lane.request_id == request_id && (found == UINT32_MAX || last != 0u) )
+			found = index;
+	return(found);
+}
+
+static void TestScenarioSharedPrefixReservation(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	SparkModelResidentDeployment bounded = *deployment;
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t shared_a[18],shared_b[18],other[12],whole[36],index;
+	for (index=0u; index<16u; index++)
+		shared_a[index] = shared_b[index] = 100u + index;
+	shared_a[16] = 201u;
+	shared_a[17] = 202u;
+	shared_b[16] = 211u;
+	shared_b[17] = 212u;
+	for (index=0u; index<12u; index++)
+		other[index] = 300u + index;
+	for (index=0u; index<36u; index++)
+		whole[index] = 400u + index;
+	MockResidentClientReset();
+	bounded.runtime_limits.kv_physical_page_capacity = 9u;
+	engine = TestConnectRows(&bounded,&state,runtime_root,16u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,960u,1u,shared_a,16u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	TestSubmitPrompt(engine,2u,961u,4u,shared_a,18u);
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u,"shared reservation: the first sharer of the cached prefix is bound and holds its pages");
+	TestSubmitPrompt(engine,3u,962u,8u,shared_b,18u);
+	TestDriveUntilTerminal(engine,&state,2u,800u);
+	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 16u,"shared reservation: the holder reuses the cached 16-token prefix");
+	CHECK(TestLaneLogEdge(3u,0u) < TestLaneLogEdge(2u,1u),"shared reservation: the second request is bound beside the first, reserving 6 + 3 of 9 pages, where charging its whole prompt (6 + 7) would wait for the first to finish");
+	TestSubmitPrompt(engine,4u,963u,1u,other,12u);
+	TestDriveUntilTerminal(engine,&state,4u,800u);
+	CHECK(state.completed_events[3] == 1u && state.cached_tokens[3] == 16u && state.completed_events[4] == 1u && state.error_events[3] + state.error_events[4] == 0u,"shared reservation: the sharer reuses the same prefix and it and a later request complete");
+	CHECK(TestLaneLogEdge(4u,0u) > TestLaneLogEdge(3u,1u),"shared reservation: when the holder finishes first the sharer inherits the shared pages, so a 3-page request waits (7 + 3 > 9)");
+	TestSubmitPrompt(engine,5u,964u,1u,whole,36u);
+	TestDriveUntilTerminal(engine,&state,5u,800u);
+	CHECK(state.completed_events[5] == 1u,"shared reservation: every page is returned, so a request needing all 9 pages is admitted");
+	TestSubmitPrompt(engine,6u,965u,4u,shared_a,18u);
+	CHECK(TestWaitFirstRequestLane(engine,6u,&lane) != 0u,"shared reservation: a new holder of the cached prefix is bound");
+	MockResidentClientScriptStalePrefixRequest(1u,7u);
+	TestSubmitPrompt(engine,7u,966u,8u,shared_b,18u);
+	TestDriveUntilTerminal(engine,&state,7u,800u);
+	MockResidentClientScriptStalePrefixRequest(1u,0u);
+	CHECK(state.completed_events[6] == 1u && state.error_events[6] == 0u,"shared reservation: the holder completes when a sharer's prefix turns stale");
+	CHECK(state.error_events[7] == 1u && state.token_events[7] == 0u && state.stale_recomputes[7] == 1u,"shared reservation: a sharer whose shared prefix is gone and whose own copy does not fit beside the holder (6 + 7 > 9) fails instead of overcommitting the pages");
+	TestSubmitPrompt(engine,8u,967u,1u,whole,36u);
+	TestDriveUntilTerminal(engine,&state,8u,800u);
+	CHECK(state.completed_events[8] == 1u,"shared reservation: the failed sharer returns its pages too");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioVerificationFailureIsFatal(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	static const uint32_t prompt[8] = {11u,12u,13u,14u,15u,16u,17u,18u};
@@ -2899,6 +2962,7 @@ int main(void)
 	TestScenarioStalePrefixRecomputes(&deployment,runtime_root);
 	TestScenarioStalePrefixTerminates(&deployment,runtime_root);
 	TestScenarioStalePrefixIsolatesLanes(&deployment,runtime_root);
+	TestScenarioSharedPrefixReservation(&deployment,runtime_root);
 	TestScenarioVerificationFailureIsFatal(&deployment,runtime_root);
 	TestScenarioRankBusyBackpressure(&deployment,runtime_root);
 	TestScenarioBusyRestoreDeadline(&deployment,runtime_root);
