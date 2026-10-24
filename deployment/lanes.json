@@ -21,7 +21,8 @@
    "state_budget_bytes": 12884901888,
    "expert_pool_bytes": 55834574848,
    "memory_max": "28G",
-   "tokenizer_sha256": "cbb3d47283ad867d9e4ea5ef5494a25b0d8de613036fdbcf764ce1e95099dc52"
+   "tokenizer_sha256": "cbb3d47283ad867d9e4ea5ef5494a25b0d8de613036fdbcf764ce1e95099dc52",
+   "text_prompt_prefix_token_ids": []
   },
   "glm-5.3-flash": {
    "launcher": "stage_lane",
@@ -40,7 +41,8 @@
    "state_budget_bytes": 5368709120,
    "expert_pool_bytes": 34359738368,
    "memory_max": "24G",
-   "tokenizer_sha256": "cbb3d47283ad867d9e4ea5ef5494a25b0d8de613036fdbcf764ce1e95099dc52"
+   "tokenizer_sha256": "cbb3d47283ad867d9e4ea5ef5494a25b0d8de613036fdbcf764ce1e95099dc52",
+   "text_prompt_prefix_token_ids": []
   },
   "kimi-k3": {
    "launcher": "k3_lane",
@@ -63,6 +65,7 @@
     "stream": "10.10.250.2:7701"
    },
    "tokenizer_sha256": "58578ae8cb9f99f2b928afd7af00c6ac87d8262a01484fb7a51b7dc608742ad9",
+   "text_prompt_prefix_token_ids": [],
    "draft_server": {
     "host": "127.0.0.1",
     "port": 7702,
@@ -88,7 +91,8 @@
    "state_budget_bytes": 5368709120,
    "expert_pool_bytes": 268435456,
    "memory_max": "16G",
-   "tokenizer_sha256": "9b79d0392771e25eebe35ddf6fca7eccbd14f0cf6bc44f2fa6a9ae7380231c7e"
+   "tokenizer_sha256": "9b79d0392771e25eebe35ddf6fca7eccbd14f0cf6bc44f2fa6a9ae7380231c7e",
+   "text_prompt_prefix_token_ids": []
   },
   "deepseek-v4.1-flash": {
    "launcher": "stage_lane",
@@ -114,6 +118,7 @@
    "expert_pool_bytes": 268435456,
    "memory_max": "32G",
    "tokenizer_sha256": "3bbe031d05c81f60a90e07974bf0b61560cacb7b4dcbdb99c02e555d831b3d54",
+   "text_prompt_prefix_token_ids": [],
    "draft_server": {
     "host": "127.0.0.1",
     "port": 7712,
@@ -140,7 +145,8 @@
    "state_budget_bytes": 5368709120,
    "expert_pool_bytes": 268435456,
    "memory_max": "16G",
-   "tokenizer_sha256": "9b79d0392771e25eebe35ddf6fca7eccbd14f0cf6bc44f2fa6a9ae7380231c7e"
+   "tokenizer_sha256": "9b79d0392771e25eebe35ddf6fca7eccbd14f0cf6bc44f2fa6a9ae7380231c7e",
+   "text_prompt_prefix_token_ids": []
   },
   "qwen3.8-flash": {
    "launcher": "stage_lane",
@@ -158,7 +164,8 @@
    "state_budget_bytes": 5368709120,
    "expert_pool_bytes": 268435456,
    "memory_max": "16G",
-   "tokenizer_sha256": "9b79d0392771e25eebe35ddf6fca7eccbd14f0cf6bc44f2fa6a9ae7380231c7e"
+   "tokenizer_sha256": "9b79d0392771e25eebe35ddf6fca7eccbd14f0cf6bc44f2fa6a9ae7380231c7e",
+   "text_prompt_prefix_token_ids": []
   },
   "gemma-4-31b": {
    "launcher": "stage_lane",
@@ -177,7 +184,10 @@
    "state_budget_bytes": 5368709120,
    "expert_pool_bytes": 268435456,
    "memory_max": "16G",
-   "tokenizer_sha256": "b5a7b6b3508a56324312737509f38f001ef8f54f728aaf54e054e9de0d022914"
+   "tokenizer_sha256": "b5a7b6b3508a56324312737509f38f001ef8f54f728aaf54e054e9de0d022914",
+   "text_prompt_prefix_token_ids": [
+    2
+   ]
   },
   "gemma-4-26b-a4b": {
    "launcher": "stage_lane",
@@ -195,7 +205,10 @@
    "state_budget_bytes": 5368709120,
    "expert_pool_bytes": 268435456,
    "memory_max": "16G",
-   "tokenizer_sha256": "b5a7b6b3508a56324312737509f38f001ef8f54f728aaf54e054e9de0d022914"
+   "tokenizer_sha256": "b5a7b6b3508a56324312737509f38f001ef8f54f728aaf54e054e9de0d022914",
+   "text_prompt_prefix_token_ids": [
+    2
+   ]
   },
   "ling-3.0-flash": {
    "launcher": "stage_lane",
@@ -213,7 +226,8 @@
    "state_budget_bytes": 5368709120,
    "expert_pool_bytes": 268435456,
    "memory_max": "16G",
-   "tokenizer_sha256": "2b9bbfb072e09cc4e4ae7e92711e661878e2b705c7d325acf7a0d7d51ed3a996"
+   "tokenizer_sha256": "2b9bbfb072e09cc4e4ae7e92711e661878e2b705c7d325acf7a0d7d51ed3a996",
+   "text_prompt_prefix_token_ids": []
   },
   "hy4-preview": {
    "launcher": "stage_lane",
@@ -232,7 +246,8 @@
    "state_budget_bytes": 5368709120,
    "expert_pool_bytes": 268435456,
    "memory_max": "32G",
-   "tokenizer_sha256": "ac95145adf17fd0579a64bbcaade30f7cd5a0c4be69d9aa0473f83b163cde61c"
+   "tokenizer_sha256": "ac95145adf17fd0579a64bbcaade30f7cd5a0c4be69d9aa0473f83b163cde61c",
+   "text_prompt_prefix_token_ids": []
   },
   "muse-glimmer-30b": {
    "launcher": "stage_lane",
@@ -250,7 +265,10 @@
    "state_budget_bytes": 5368709120,
    "expert_pool_bytes": 268435456,
    "memory_max": "16G",
-   "tokenizer_sha256": "56c2ca763f0e60b4d8895e1a1122bc0aed8a039e1ca45dca7c7e739cb8bc14b4"
+   "tokenizer_sha256": "56c2ca763f0e60b4d8895e1a1122bc0aed8a039e1ca45dca7c7e739cb8bc14b4",
+   "text_prompt_prefix_token_ids": [
+    200000
+   ]
   },
   "ling-3.0-flash-fin": {
    "launcher": "stage_lane",
@@ -268,7 +286,8 @@
    "state_budget_bytes": 5368709120,
    "expert_pool_bytes": 268435456,
    "memory_max": "16G",
-   "tokenizer_sha256": "2b9bbfb072e09cc4e4ae7e92711e661878e2b705c7d325acf7a0d7d51ed3a996"
+   "tokenizer_sha256": "2b9bbfb072e09cc4e4ae7e92711e661878e2b705c7d325acf7a0d7d51ed3a996",
+   "text_prompt_prefix_token_ids": []
   },
   "laguna-s-2.1": {
    "launcher": "stage_lane",
@@ -287,7 +306,10 @@
    "state_budget_bytes": 5368709120,
    "expert_pool_bytes": 268435456,
    "memory_max": "24G",
-   "tokenizer_sha256": "c4422d45792ae0e0673d48f022a3186b0d675175d3ce55826130958452bc905b"
+   "tokenizer_sha256": "c4422d45792ae0e0673d48f022a3186b0d675175d3ce55826130958452bc905b",
+   "text_prompt_prefix_token_ids": [
+    2
+   ]
   },
   "mimo-v2.6-flash": {
    "launcher": "stage_lane",
@@ -306,7 +328,8 @@
    "state_budget_bytes": 5368709120,
    "expert_pool_bytes": 268435456,
    "memory_max": "16G",
-   "tokenizer_sha256": "b3736c75df6a767365e6df2d7762a7fc9e74974f8fa37124a9761f0e748c0052"
+   "tokenizer_sha256": "b3736c75df6a767365e6df2d7762a7fc9e74974f8fa37124a9761f0e748c0052",
+   "text_prompt_prefix_token_ids": []
   },
   "mimo-v2.6-pro": {
    "launcher": "stage_lane",
@@ -325,7 +348,8 @@
    "state_budget_bytes": 5368709120,
    "expert_pool_bytes": 268435456,
    "memory_max": "32G",
-   "tokenizer_sha256": "b3736c75df6a767365e6df2d7762a7fc9e74974f8fa37124a9761f0e748c0052"
+   "tokenizer_sha256": "b3736c75df6a767365e6df2d7762a7fc9e74974f8fa37124a9761f0e748c0052",
+   "text_prompt_prefix_token_ids": []
   }
  }
 }

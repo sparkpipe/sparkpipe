@@ -474,6 +474,8 @@ def hub_deployment(model: dict, lane: int, args) -> dict:
     result = deployment(model, lane, args)
     result["tokenizer"] = {"path": "tokenizer/tokenizer.compiled", "sha256": args.tokenizer_sha256,
                            "vocabulary_size": model["tokenizer_vocabulary"]}
+    if args.text_prompt_prefix:
+        result["tokenizer"]["text_prompt_prefix_token_ids"] = args.text_prompt_prefix
     if args.draft_server:
         result["draft_server"] = args.draft_server
     return result
@@ -517,6 +519,7 @@ def record_arguments(swap_id: str) -> argparse.Namespace:
         kv_backing_bytes=record["kv_backing_bytes"], kv_snapshot_bytes=record["kv_snapshot_bytes"],
         state_budget_bytes=record["state_budget_bytes"], state_memory_bytes=record.get("state_memory_bytes"),
         taps=record.get("taps"), tokenizer_sha256=record["tokenizer_sha256"], tokenizer_dir=None,
+        text_prompt_prefix=record["text_prompt_prefix_token_ids"],
         draft_server=record.get("draft_server"), swap_entry=True, output_dir=None)
 
 
