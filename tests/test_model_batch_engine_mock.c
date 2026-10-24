@@ -2865,6 +2865,24 @@ static void TestScenarioBatchVerify(const SparkModelResidentDeployment *deployme
 	CHECK(submissions < 80u && view.speculative_accepted_token_count >= 60u,"batch verify: accepted drafts let the pair finish in fewer frames than tokens");
 	CHECK(TestLaneInputsFollowScript(1u,script,256u) != 0u && TestLaneInputsFollowScript(2u,script,256u) != 0u,"batch verify: every lane input in a shared frame is a committed model token");
 	SparkModelBatchEngineDestroy(engine);
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	engine = TestConnectFlags(deployment,&state,runtime_root,32u,8u,0u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetScript(script,256u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,922u,80u,script,44u);
+	TestDraftsDisabled = 1u;
+	TestSubmitPrompt(engine,2u,923u,80u,script,44u);
+	TestDraftsDisabled = 0u;
+	TestDriveUntilTerminal(engine,&state,1u,3000u);
+	TestDriveUntilTerminal(engine,&state,2u,3000u);
+	MockResidentClientTakeVerifyStats(&submissions,&rows);
+	shared = MockResidentClientTakeVerifyShared();
+	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u && state.error_events[1] == 0u && state.error_events[2] == 0u,"batch verify: a drafting request and one with speculation off both complete when they share verify frames");
+	CHECK(shared != 0u && TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u && TestScriptedOutputMatches(&state,2u,script,44u,80u) != 0u,"batch verify: a lane with no drafts rides shared verify frames across cache block boundaries and both emit the greedy stream");
+	SparkModelBatchEngineDestroy(engine);
 }
 
 static void TestLongVerifyScript(uint32_t *script,uint32_t count,uint32_t passage,uint32_t prompt)

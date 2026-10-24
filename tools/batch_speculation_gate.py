@@ -130,11 +130,15 @@ def main():
                     handle.flush()
                     print(json.dumps({key: record[key] for key in ("kind", "batch", "repeat", "off_tok_s", "on_tok_s", "identical", "first_differences", "errors")}), flush=True)
                     summary.setdefault((kind, count), []).append(record)
+                    if record["errors"]:
+                        print(f"GATE {arguments.label} STOPPED at {kind} B{count} repeat {repeat}: {json.dumps(record['errors'][0])[:300]}", flush=True)
+                        return
     for (kind, count), records in summary.items():
         off = statistics.median(record["off_tok_s"] for record in records)
         on = statistics.median(record["on_tok_s"] for record in records)
         exact = sum(record["identical"] for record in records)
-        print(f"GATE {arguments.label} {kind} B{count}: off {off:.1f} tok/s, on {on:.1f} tok/s ({on / off:.2f}x), identical streams {exact}/{count * len(records)}", flush=True)
+        ratio = f"{on / off:.2f}x" if off else "n/a"
+        print(f"GATE {arguments.label} {kind} B{count}: off {off:.1f} tok/s, on {on:.1f} tok/s ({ratio}), identical streams {exact}/{count * len(records)}", flush=True)
 
 
 if __name__ == "__main__":

@@ -226,6 +226,7 @@ struct SparkModelBatchEngine
 	SparkPrefixCache prefix_cache;
 	SparkSpeculationFrameModel frame_model;
 	uint32_t plan_lanes;
+	uint32_t building_verify_frame;
 	uint32_t plan_base_rows;
 	uint32_t plan_context;
 	float plan_base_tokens;
@@ -2826,7 +2827,7 @@ static void SparkModelBatchInitializeLane(
 		lane->cache_prefix_token_count = request->cache_prefix_token_count;
 		lane->cache_prefix_identity = request->cache_prefix_identity;
 	}
-	if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && context_token_count > sequence_position + 1u )
+	if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && (context_token_count > sequence_position + 1u || engine->building_verify_frame != 0u) )
 	{
 		SparkModelBatchVerifyIdentities(engine,request,request_slot,lane);
 		return;
@@ -3235,6 +3236,7 @@ static void SparkModelBatchBuildDecodeRows(
 	uint32_t block_remaining,chain_tokens,lane,remaining,row,slot,position,stride,wave;
 	chain_tokens = 1u;
 	stride = SparkModelBatchPlanDrafts(engine,lane_count);
+	engine->building_verify_frame = stride > 1u ? 1u : 0u;
 	if ( stride == 1u && (engine->adapter_descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN) != 0u &&
 		SparkModelBatchNeedsSingleStep(engine,lane_count) == 0u && SparkModelBatchPrefillWaiting(engine) == 0u )
@@ -3292,6 +3294,7 @@ static void SparkModelBatchBuildDecodeRows(
 			engine->scratch_row_sequence_ids[row] = request->sequence_id;
 			row++;
 		}
+	engine->building_verify_frame = 0u;
 	submission->row_count = row;
 	submission->token_count = row;
 	submission->new_token_count = row;
