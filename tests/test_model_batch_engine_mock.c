@@ -1408,6 +1408,38 @@ static void TestScenarioSharedPrefixReservation(const SparkModelResidentDeployme
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioSharedMidBlockPrefixDecode(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	SparkModelResidentDeployment bounded = *deployment;
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	uint32_t seed[18],first[20],second[20],index,decode_lanes;
+	for (index=0u; index<18u; index++)
+		seed[index] = first[index] = second[index] = 700u + index;
+	first[18] = 801u;
+	first[19] = 802u;
+	second[18] = 811u;
+	second[19] = 812u;
+	MockResidentClientReset();
+	bounded.runtime_limits.kv_physical_page_capacity = 10u;
+	engine = TestConnectRows(&bounded,&state,runtime_root,16u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,970u,1u,seed,18u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	(void)MockResidentClientTakeMaxDecodeLanes();
+	TestSubmitPrompt(engine,2u,971u,6u,first,20u);
+	TestSubmitPrompt(engine,3u,972u,6u,second,20u);
+	TestDriveUntilTerminal(engine,&state,3u,800u);
+	decode_lanes = MockResidentClientTakeMaxDecodeLanes();
+	CHECK(state.completed_events[2] == 1u && state.completed_events[3] == 1u && state.error_events[2] + state.error_events[3] == 0u &&
+		state.cached_tokens[2] == 18u && state.cached_tokens[3] == 18u,"shared mid-block prefix: both requests resume from the cached 18 tokens, four whole blocks and a copied tail, and complete");
+	CHECK(decode_lanes == 2u,"shared mid-block prefix: the two requests decode in one wave, the four shared blocks counted once (4 + 3 + 3 of 10 pages), where charging each its whole context (7 + 7) would decode them one at a time");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioVerificationFailureIsFatal(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	static const uint32_t prompt[8] = {11u,12u,13u,14u,15u,16u,17u,18u};
@@ -2963,6 +2995,7 @@ int main(void)
 	TestScenarioStalePrefixTerminates(&deployment,runtime_root);
 	TestScenarioStalePrefixIsolatesLanes(&deployment,runtime_root);
 	TestScenarioSharedPrefixReservation(&deployment,runtime_root);
+	TestScenarioSharedMidBlockPrefixDecode(&deployment,runtime_root);
 	TestScenarioVerificationFailureIsFatal(&deployment,runtime_root);
 	TestScenarioRankBusyBackpressure(&deployment,runtime_root);
 	TestScenarioBusyRestoreDeadline(&deployment,runtime_root);

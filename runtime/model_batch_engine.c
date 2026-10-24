@@ -2392,8 +2392,7 @@ static uint32_t SparkModelBatchCacheDemandInsertSpans(
 	uint32_t prefix_seen)
 {
 	uint32_t status;
-	if ( request->cache_prefix_token_count != 0u &&
-		request->cache_prefix_token_count % engine->cache_block_token_count == 0u &&
+	if ( request->cache_prefix_token_count / engine->cache_block_token_count != 0u &&
 		SparkModelBatchCacheSpansDiffer(request) != 0u && prefix_seen == 0u )
 	{
 		status = SparkModelBatchCacheSpanLookup(engine,
@@ -2434,8 +2433,7 @@ static uint32_t SparkModelBatchCacheDemandAdditional(
 	if ( published_seen == UINT32_MAX )
 		return(UINT32_MAX);
 	prefix_seen = 1u;
-	if ( published_seen == 0u && prefix_tokens != 0u &&
-		prefix_tokens % block_tokens == 0u &&
+	if ( published_seen == 0u && prefix_tokens / block_tokens != 0u &&
 		SparkModelBatchCacheSpansDiffer(request) != 0u )
 	{
 		if ( SparkModelBatchCacheIdentityIsPresent(
@@ -2446,8 +2444,8 @@ static uint32_t SparkModelBatchCacheDemandAdditional(
 		if ( prefix_seen == UINT32_MAX )
 			return(UINT32_MAX);
 		additional += prefix_seen == 0u ? prefix_tokens / block_tokens : 0u;
-		additional += (published_tokens - prefix_tokens) / block_tokens +
-			(published_tokens % block_tokens != 0u);
+		additional += published_tokens / block_tokens +
+			(published_tokens % block_tokens != 0u) - prefix_tokens / block_tokens;
 	}
 	else if ( published_seen == 0u )
 		additional += published_tokens / block_tokens +
