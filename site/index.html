@@ -137,6 +137,7 @@ footer.end { border-top: 1px solid var(--line); padding-block: 28px; display: gr
   <nav class="top" aria-label="Sections">
     <div class="mark">Spark<span>Pipe</span></div>
     <ul>
+      <li><a href="#rent">Rent the fleet</a></li>
       <li><a href="#machine">One machine</a></li>
       <li><a href="#context">Long context</a></li>
       <li><a href="#speculation">Speculation</a></li>
@@ -162,6 +163,30 @@ footer.end { border-top: 1px solid var(--line); padding-block: 28px; display: gr
       <div class="stat"><b>5 s</b><span>to resume a 137K-token conversation, from 299 s cold</span></div>
     </div>
   </header>
+
+  <section class="panel" id="rent">
+    <div class="copy">
+      <div class="eyebrow">Fleet-hours · from <span data-start>1 December 2026</span></div>
+      <h2>Rent the whole fleet, by the hour.</h2>
+      <p>Businesses can reserve an entire SparkPipe fleet for their own work: the models on this page, the long-context cache and speculation, with no one else on the fleet during their hours.</p>
+      <ul class="lead-list">
+        <li><b>Hourly:</b> <span data-price="hourly">$20</span> per fleet-hour plus VAT, prepaid, with no commitment and no business check. Hold up to <span data-cap="hourly">24</span> hours at a time, or <span data-cap="verified">720</span> once we have verified your business.</li>
+        <li><b>Two years:</b> <span data-price="committed">$15</span> per fleet-hour plus VAT, for every hour of a two-year term. Nothing is due for the first 30 days, and you pay in any amounts up to three deadlines.</li>
+        <li><b>Automatic credit:</b> a reserved hour with more than 15 minutes of downtime comes back in full, without a claim.</li>
+        <li><b>Seoul:</b> the fleets and our servers are in Seoul, South Korea.</li>
+      </ul>
+      <a class="btn" href="buy.html">See how buying works (preview)</a>
+      <p>Questions or a two-year quote: <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></p>
+    </div>
+    <div class="fig">
+      <div class="stats">
+        <div class="stat"><b data-price="hourly">$20</b><span>per fleet-hour, prepaid, no commitment</span></div>
+        <div class="stat"><b data-price="committed">$15</b><span>per fleet-hour on a two-year term</span></div>
+        <div class="stat"><b>3 fleets</b><span>16 Sparks serving now; an M5U fleet and 16 more Sparks under construction</span></div>
+        <div class="stat"><b data-start>1 December 2026</b><span>first hours for new customers</span></div>
+      </div>
+    </div>
+  </section>
 
   <section class="panel" id="machine">
     <div class="copy">
@@ -274,10 +299,25 @@ footer.end { border-top: 1px solid var(--line); padding-block: 28px; display: gr
 
   <footer class="end">
     <div>All performance figures were measured on the reference fleet of sixteen DGX Spark nodes, through 2026-10-18. Methods and receipts are in <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>.</div>
-    <div>Source, Apache-2.0: <a href="https://github.com/sparkpipe/sparkpipe">github.com/sparkpipe/sparkpipe</a> · Try the API in the <a href="playground.html">playground</a> · <a href="https://twitter.com/sparkpipeai">@sparkpipeai</a> · <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a> · <a href="privacy.html">Privacy</a></div>
+    <div>Source, Apache-2.0: <a href="https://github.com/sparkpipe/sparkpipe">github.com/sparkpipe/sparkpipe</a> · Try the API in the <a href="playground.html">playground</a> · Rent the fleet: <a href="buy.html">fleet-hours</a> · <a href="https://twitter.com/sparkpipeai">@sparkpipeai</a> · <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a> · <a href="privacy.html">Privacy</a></div>
   </footer>
 </div>
 
+<script src="pricing.js"></script>
+<script>
+(function () {
+  var P = window.SP_PRICING;
+  if (!P) return;
+  var usd = function (n) { return "$" + (Number.isInteger(n) ? n : n.toFixed(2)); };
+  var months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  var start = P.committedEarliestStart < P.hourlyEarliestStart ? P.committedEarliestStart : P.hourlyEarliestStart;
+  var parts = start.split("-");
+  var when = Number(parts[2]) + " " + months[Number(parts[1]) - 1] + " " + parts[0];
+  document.querySelectorAll("[data-price]").forEach(function (el) { el.textContent = usd(el.dataset.price === "hourly" ? P.hourlyPrice : P.committedPrice); });
+  document.querySelectorAll("[data-cap]").forEach(function (el) { el.textContent = (el.dataset.cap === "hourly" ? P.hourlyMaxHours : P.verifiedMaxHours).toLocaleString("en-US"); });
+  document.querySelectorAll("[data-start]").forEach(function (el) { el.textContent = when; });
+})();
+</script>
 <script>
 window.SP_CMP = [
   ["Built for", "Sixteen 128 GB unified-memory boxes on 100 Gb/s Ethernet RDMA, run as one TP16 machine", "GPUs inside one fast NVLink domain; NVIDIA's own vLLM and TensorRT-LLM playbooks link two Sparks"],

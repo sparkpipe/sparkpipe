@@ -39,7 +39,7 @@
 <main class="wrap policy">
   <section>
     <h1>Privacy</h1>
-    <p class="effective">Effective 24 October 2026</p>
+    <p class="effective">Effective 25 October 2026</p>
     <p>This policy covers the sparkpipe.ai website, SparkPipe Chat at sparkpipe.ai:8443 and the SparkPipe API at sparkpipe.ai/v1. They are operated by HYOR AI Tech Ltd ("we"), Yongsan-gu, Seoul, South Korea. Write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a> with any question or request about your data.</p>
   </section>
 
@@ -55,7 +55,7 @@
 
   <section>
     <h2>Where your data is processed</h2>
-    <p>The models run on sixteen NVIDIA DGX Spark computers and a server that hosts the chat application. We operate all of them in Seoul, South Korea, on SK Telecom's network. Public traffic reaches them through a server we rent from WorldStream in the Netherlands. That server ends the encrypted HTTPS connection and forwards traffic to our hardware in Seoul through an encrypted tunnel. If you are in the EU, your data is therefore transferred to South Korea, which the European Commission has recognised as providing an adequate level of data protection.</p>
+    <p>The models run on sixteen NVIDIA DGX Spark computers and a server that hosts the chat application. We operate all of them in Seoul, South Korea, on SK Telecom's network. Public traffic reaches them through a server we rent from KCInfra in Seoul. That server ends the encrypted HTTPS connection, forwards traffic to our hardware through an encrypted tunnel, and runs our email. If you are in the EU, your data is therefore transferred to South Korea, which the European Commission has recognised as providing an adequate level of data protection.</p>
   </section>
 
   <section>
@@ -76,6 +76,21 @@
     <p>We publish performance figures for the service, such as tokens per second. They never include your content.</p>
   </section>
 
+  <section id="fleet-hours">
+    <h2>Fleet-hour customers</h2>
+    <p>From 1 December 2026, businesses can buy fleet-hours. Fleet-hours are sold to businesses only, so the people concerned are the customer's staff and owners.</p>
+    <div class="scroll">
+    <table>
+      <tr><th>Data</th><th>Where it comes from</th><th>Why</th><th>How long we keep it</th></tr>
+      <tr><td>Business account: company name, registration number and country, contact name, email address and phone number if given, and the Ethereum address that identifies the account</td><td>When a business signs up</td><td>Entering into and performing the contract, and sending notices</td><td>While the account is open, then as long as the tax records below</td></tr>
+      <tr><td>Acceptance records: the version and hash of the terms accepted, the signature, the time, and the IP address and browser used</td><td>When a business accepts our terms</td><td>Proving what was agreed</td><td>Signature and terms for as long as the contract records; IP address and browser for 1 year</td></tr>
+      <tr><td>Payments, orders and reservations: amounts, VAT, payment references, hours bought, reserved and credited</td><td>Each order, payment and reservation</td><td>Performing the contract and keeping tax records</td><td>5 years, as tax law requires</td></tr>
+      <tr><td>Business verification, for two-year customers: company documents, and the names, nationality, country of residence and date of birth of directors and of owners of 25% or more. We do not collect ID or passport numbers.</td><td>When a business applies for a two-year agreement</td><td>Deciding whether to enter into the agreement, and sanctions screening</td><td>For the life of the agreement and 5 years after it ends</td></tr>
+    </table>
+    </div>
+    <p>Our record of payments and reservations holds account addresses, amounts and hashes, not names or emails, which we keep separately and encrypted.</p>
+  </section>
+
   <section>
     <h2>When a third party is involved</h2>
     <ul>
@@ -83,7 +98,7 @@
       <li><b>Tools.</b> When the model uses a tool such as the GitHub tool, the tool's request goes to that service.</li>
       <li><b>Fonts on the website.</b> The sparkpipe.ai home, playground and provider pages load fonts from Google Fonts, so your browser sends your IP address to Google when it loads them. See Google's privacy policy. The chat, the API and this page do not use Google Fonts.</li>
       <li><b>Payments.</b> We do not take payments on this website yet. Before we do, we will name our payment processor here and describe the payment data we receive.</li>
-      <li><b>Hosting, network and certificates.</b> WorldStream hosts our public server in the Netherlands, and SK Telecom carries traffic to our hardware in Seoul. Traffic between the two is encrypted. Let's Encrypt issues our HTTPS certificate and receives no user data.</li>
+      <li><b>Hosting, network and certificates.</b> KCInfra hosts our public web and email server in Seoul, and SK Telecom carries traffic to our hardware. Traffic between them is encrypted. Let's Encrypt issues our HTTPS certificate and receives no user data.</li>
     </ul>
     <p>Code that you run with the chat's code interpreter runs inside your own browser. Speech-to-text, document reading and search over your files run on our own hardware.</p>
     <p>We share personal data only with the parties above, or when the law requires it.</p>
