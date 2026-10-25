@@ -752,6 +752,15 @@ Related common-code debt:
   Full build pins) and read them from there.
 - Retain independent numerical, transport, memory, and performance gates for
   every model and precision route.
+- GLM 5.3 Full serves Z.ai's FP8 release (`glm53full.fp8lin.tp16`), and the
+  BF16 release fits one fleet. #1558 builds the stage with BF16 codecs on the
+  BF16 packs (`glm53full.bf16.tp16`) and scores both against the CT-short
+  corpus through the API; its result decides the served precision.
+- `model_contracts/glm53_full_authoritative.json`'s top-level `model_id` names
+  `RadixArk/GLM-5.3-NVFP4`, which no lane serves, and
+  `tools/glm52_model_contract.py --print-build-identity bf16` prints the FP8
+  revision. Re-freeze the contract with the served source on top and give each
+  codec its own source's revision.
 - K3's BF16-activation/MXFP4-weight expert paths run in production. Decode
   uses the skinny experts. Wide waves use `LmCellMmaExperts`
   (`inference/kernels/cell_mma.cuh`) and `LmGemmKernel<LmBf16Format, LmMxfp4>`
@@ -762,6 +771,16 @@ Related common-code debt:
   `LmCellMmaExperts`. Qualify the tensor-core expert paths and the full expert
   path (route, gate/up, down, combine) against a dequantised reference at
   prefill widths.
+
+## Korean models
+
+README's Korean models have no contract, driver, pack, lane or qualification. The sources are pinned:
+
+- **K-EXAONE 2.0** (`LGAI-EXAONE/K-EXAONE-2.0-750B-A37B@fec0c8dd`, BF16, 1.50 TB): 78 layers with 64 query and 8 KV heads of 128; 20 layers attend globally without position encoding, 57 a 128-token window and one a 4,096-token window; 256 routed experts (top 8) plus one shared, after two dense layers; one MTP layer. Its DSpark drafter is `model-dspark.safetensors` of `LGAI-EXAONE/K-EXAONE-2.0-750B-A37B-DSpark@e42409db`, whose other files are the base weights.
+- **A.X K2** (`skt/A.X-K2@d0805cfd`, block-128 FP8, the precision it was trained in, 0.69 TB): 61 layers of latent attention (query rank 1,536, KV rank 512) with top-2,048 sparse attention through a 64-head indexer, a gated attention output and a gated norm; 256 routed experts (top 8) plus one shared; YaRN to 256K. Drafter `skt/A.X-K2-DSpark@0b278334`. GLM 5.3 Full has the same attention and expert design.
+- **Solar Open 2** (`upstage/Solar-Open2-250B@9190fbe6`, BF16, 0.50 TB): 48 layers, three linear-attention layers (short convolution 4, 64 heads) for each GQA layer, no position encoding, 320 routed experts (top 8) plus one shared, 1M context. The Upstage Solar License asks that derivatives be named Solar and show "Built with Solar". The nearest served design is the linear-attention path of Kimi K3 and Ling.
+
+Each needs, in order: the checkpoint contract, the driver on the common stage runner, the packer emitter and packs, a lane record, the release gates and qualification, speculation with its drafter, then the perf climb that every core model gets.
 
 ## Speculation
 
@@ -964,18 +983,18 @@ Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`
 - **Won payments.** Electronic tax invoices (세금계산서) issued for each won order, matching of incoming bank transfers to orders, and won amounts in the ledger beside the hours they buy.
 - **Korean site.** The checkout preview (`site/buy.html`) is English only; the console that replaces it needs Korean from the start. The Korean address list behind the language redirect (`tools/site_kr_networks.py`, `docs/LITELLM_FRONTEND.md`) is rebuilt by hand; APNIC changes it daily, so it needs a monthly refresh job.
 - **ESTIMATED values on sparkpipe.ai.** The site shows projections marked ESTIMATED (the home page Speed and Roadmap sections, `fleets.html#estimates`). Each is replaced by a fleet measurement, with its receipt in `PERFORMANCE_STATUS.md`:
-  - prefill accelerators: boxes of four RTX 5080 cards (PCIe reduce inside a box, 100 Gb/s per box over the 32-port 400 Gb/s switch) prefilling a 128K-token prompt, with 4 / 8 boxes: Kimi K3 31 / 16 s, Qwen 3.8 Max 4-bit 28 / 14 s, K-EXAONE 2.0 30 / 15 s, A.X K1 57 / 28 s, Nemotron 3 Ultra 22 / 11 s, Muse Spark Open 33 / 16 s; a 1M-token Kimi K3 prompt in about 17 / 9 minutes. Assumes weights streamed once per prompt at 50 / 100 GB/s, cards at 40% of dense peak (FP8 450, BF16 225 TFLOPS) including attention, and short prompts kept on the fleet. Needs the boxes, the switch and an accelerator prefill path;
-  - Qwen 3.8 Max: a 4-bit build (AMD MXFP4, Red Hat or RadixArk NVFP4) that passes the accuracy A/B, to fit one fleet (estimate 28 tok/s on Fleet 1, 61 on Fleet 2); and FP8 across Fleets 1 and 2 (estimate 30 tok/s), which needs a two-fleet pipeline;
-  - Fleet 1 decode at 80% of each model's memory floor: Kimi K3 22 tok/s (16.2 today), K-EXAONE 2.0 41, A.X K1 46, Nemotron 3 Ultra 28, Muse Spark Open 36;
-  - Fleet 2 (eight M5 Ultra Mac Studios) decode at 70% of its floor: Kimi K3 49 tok/s, K-EXAONE 2.0 91, A.X K1 100, Nemotron 3 Ultra 61, Muse Spark Open 80. Needs the Metal backend and the Thunderbolt 5 link class;
-  - speculation at 2.5 times plain decode on agent coding turns (1.4 to 1.6 times measured on short edits today);
-  - each candidate model also needs a driver, qualification and a license check: K-EXAONE 2.0, A.X K1, Solar Open 2, Nemotron 3 Ultra, Mistral Large 3, Inkling (BF16 across two fleets, or an FP8 build that passes the accuracy A/B) and Muse Spark Open (gated license under review).
+  - prefill accelerators: boxes of four RTX 5080 cards (PCIe reduce inside a box, 100 Gb/s per box over the 32-port 400 Gb/s switch) prefilling a 128K-token prompt, with 4 / 8 boxes: Kimi K3 37 / 18 s, Qwen 3.8 Max 4-bit 35 / 17 s, K-EXAONE 2.0 35 / 18 s, A.X K2 16 / 8 s; a 1M-token Kimi K3 prompt in about 17 / 9 minutes. Assumes weights streamed once per prompt at 85% of 50 / 100 GB/s, cards at 40% of dense peak (FP8 450, BF16 225 TFLOPS) including attention, and short prompts kept on the fleet. Needs the boxes, the switch and an accelerator prefill path;
+  - decode estimates take a token's time as each node's share of the weights at the measured 245 GB/s plus 0.44 ms per layer, the fixed cost Kimi K3 measures (GLM 5.3 measures 0.31 ms). Fleet 1: K-EXAONE 2.0 19 tok/s, A.X K2 28. Fleet 2 (eight M5 Ultra Mac Studios, 90% of 1.2 TB/s, the same cost per layer): Kimi K3 23 tok/s, K-EXAONE 2.0 23, A.X K2 33; it needs the Metal backend and the Thunderbolt 5 link class. Lowering the per-layer cost raises every figure, and the site follows each measurement;
+  - Qwen 3.8 Max's 4-bit build serves at 10.4 tok/s on Fleet 1, which the per-layer model does not explain, so it has no Fleet 2 estimate; FP8 across Fleets 1 and 2 needs a two-fleet pipeline;
+  - speculation at 1.5 times plain decode on agent coding turns, as measured on short edits; tree drafts carry no estimate until they are built and measured;
+  - each candidate model also needs a driver, qualification and a license check: K-EXAONE 2.0, A.X K2 and Solar Open 2 (see Korean models), Nemotron 3 Ultra, Mistral Large 3, Inkling (BF16 across two fleets, or an FP8 build that passes the accuracy A/B) and Muse Spark Open (gated license under review). Nemotron 3 Ultra and Muse Spark Open get site estimates once their layer counts and formats are checked against the per-layer model.
 - **LiteLLM door limits.** LiteLLM consumes a request's `priority` for its own scheduler and does not forward it, so the batch engine's priorities do not cross the door. `tools/generate_litellm_config.py` emits `num_retries: 1`, which can duplicate a generation; the hub's hand-written `config/litellm-config.yaml` uses 0. The LAN door on port 4000 has no accounts, keys, quotas or spend logs.
 
 ## SparkPipe Chat
 
 - **AI label on downloaded chats.** Copied replies end with the bilingual AI label (`ui.watermark`); chats downloaded as files carry none, and Open WebUI v0.12.0 has no setting for it.
 - **Notice before sign-up.** Open WebUI's sign-up page cannot show text. The AI and privacy notice appears on the waiting screen right after sign-up, before the account is approved or used.
+- **Field search.** None of README's field search exists. Each field is an Open WebUI tool beside `tools/serving/open_webui/tools/github.py`, shown as a checkbox and attached per chat, and every answer cites the documents it used. Sources to evaluate first: Korean statutes and court decisions (the national law information center's open API), EU law (EUR-Lex), US federal law (eCFR and the Federal Register), medicine (PubMed), Korean company filings (Open DART) and patents (KIPRIS). A tool whose source is abroad sends the query out of Korea and must say so before the user ticks it.
 - **Korean command replies.** The chat layer answers `/context`, `/memory` and `/compact` in English only, also in the Korean interface.
 - **Memory switch state.** The toolbar shows the memory setting it last sent from this browser; a `/memory` typed by hand or sent from another device is not reflected. A chat-layer endpoint that reports a chat's memory settings would let the toolbar read the real state.
 - **Local mode needs an account.** Local mode reaches the models through the user's Open WebUI session; access by API key without an account is #1549.

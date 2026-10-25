@@ -118,25 +118,23 @@
   </section>
 
   <section id="estimates">
-    <h2>Near-term speeds for models over 1 TB (ESTIMATED)</h2>
-    <p><b>ESTIMATED</b> values are projections from our measurements and the hardware's published figures, not measurements. Each one is replaced by a measurement when the hardware or software behind it is running.</p>
+    <h2>Near-term speeds for the largest and Korean models (ESTIMATED)</h2>
+    <p><b>ESTIMATED</b> values are projections from our measurements and the hardware's published figures, not measurements. We publish one only when we expect to meet it, and each is replaced by a measurement when the hardware or software behind it is running. Cells marked measured already are.</p>
     <div class="scroll">
     <table>
       <tr><th>Model</th><th class="num">Size</th><th class="num">Decode, Fleet 1</th><th class="num">Decode, Fleet 2</th><th class="num">Fleet 2 with speculation</th><th class="num">128K prompt, 4 accelerator boxes</th><th class="num">8 boxes</th></tr>
-      <tr><td><b>Kimi K3</b></td><td class="num">1.56 TB</td><td class="num">22 tok/s</td><td class="num">49 tok/s</td><td class="num">120 tok/s</td><td class="num">31 s</td><td class="num">16 s</td></tr>
-      <tr><td><b>Qwen 3.8 Max</b>, 4-bit build</td><td class="num">1.37–1.48 TB</td><td class="num">28 tok/s</td><td class="num">61 tok/s</td><td class="num">150 tok/s</td><td class="num">28 s</td><td class="num">14 s</td></tr>
-      <tr><td><b>K-EXAONE 2.0</b>, LG (next)</td><td class="num">1.50 TB</td><td class="num">41 tok/s</td><td class="num">91 tok/s</td><td class="num">230 tok/s</td><td class="num">30 s</td><td class="num">15 s</td></tr>
-      <tr><td><b>A.X K1</b>, SKT (next)</td><td class="num">1.04 TB</td><td class="num">46 tok/s</td><td class="num">100 tok/s</td><td class="num">250 tok/s</td><td class="num">57 s</td><td class="num">28 s</td></tr>
-      <tr><td><b>Nemotron 3 Ultra</b>, NVIDIA (next)</td><td class="num">1.12 TB</td><td class="num">28 tok/s</td><td class="num">61 tok/s</td><td class="num">150 tok/s</td><td class="num">22 s</td><td class="num">11 s</td></tr>
-      <tr><td><b>Muse Spark Open</b>, meta-models (next)</td><td class="num">1.64 TB</td><td class="num">36 tok/s</td><td class="num">80 tok/s</td><td class="num">200 tok/s</td><td class="num">33 s</td><td class="num">16 s</td></tr>
+      <tr><td><b>Kimi K3</b></td><td class="num">1.56 TB</td><td class="num">16.2 tok/s, measured</td><td class="num">23 tok/s</td><td class="num">35 tok/s</td><td class="num">37 s</td><td class="num">18 s</td></tr>
+      <tr><td><b>Qwen 3.8 Max</b>, 4-bit build</td><td class="num">1.37–1.48 TB</td><td class="num">10.4 tok/s, measured</td><td class="num">–</td><td class="num">–</td><td class="num">35 s</td><td class="num">17 s</td></tr>
+      <tr><td><b>K-EXAONE 2.0</b>, LG (next)</td><td class="num">1.50 TB</td><td class="num">19 tok/s</td><td class="num">23 tok/s</td><td class="num">35 tok/s</td><td class="num">35 s</td><td class="num">18 s</td></tr>
+      <tr><td><b>A.X K2</b>, SKT (next)</td><td class="num">0.69 TB</td><td class="num">28 tok/s</td><td class="num">33 tok/s</td><td class="num">49 tok/s</td><td class="num">16 s</td><td class="num">8 s</td></tr>
     </table>
     </div>
-    <p>A 1M-token Kimi K3 prompt from cold is estimated at about 17 minutes with four accelerator boxes and 9 minutes with eight. Fleet 1 and Fleet 2 together hold 4 TB, and Fleet 3 adds 2 TB more, so models above 2 TB run across two fleets: Qwen 3.8 Max at its published FP8 precision (2.5 TB) is estimated at 30 tok/s across Fleets 1 and 2, and Inkling at its published BF16 precision (1.9 TB) fits the same way.</p>
+    <p>A 1M-token Kimi K3 prompt from cold is estimated at about 17 minutes with four accelerator boxes and 9 minutes with eight. Fleet 1 and Fleet 2 together hold 4 TB, and Fleet 3 adds 2 TB more, so a model too large for one fleet at its published precision can run across two: Qwen 3.8 Max in FP8 (2.5 TB) and Inkling in BF16 (1.9 TB).</p>
     <p>How the estimates are made:</p>
     <ul>
-      <li><b>Decode</b> is limited by how fast each node reads its share of the weights a token uses. Fleet 1 is taken at 80% of that limit, Fleet 2 at 70% of its limit, with the model split over all eight Mac Studios, which are joined by 50 Gb/s links plus 10 GbE.</li>
-      <li><b>Speculation</b> on agent coding turns is taken as 2.5 times plain decode, between the 1.4 to 1.6 times measured on short edits and the 8.3 times measured on whole-file rewrites.</li>
-      <li><b>Prefill accelerators</b> are boxes of four RTX 5080 cards that reduce over PCIe inside the box and reach the fleets at 100 Gb/s each over a 400 Gb/s switch. Each long prompt streams the model's weights through the boxes once (50 GB/s with four boxes, 100 GB/s with eight), and the cards compute at 40% of their dense peak (about 450 TFLOPS each in FP8, 225 in BF16), including the attention cost of the prompt. Prompts shorter than about 20,000 tokens stay on the fleet's own prefill.</li>
+      <li><b>Decode:</b> a token takes the time each node needs to read its share of the weights the token uses, at the 245 GB/s measured on Fleet 1, plus a fixed 0.44 ms per layer for the kernels and collectives around those reads. Kimi K3 measures 0.44 ms and GLM 5.3 0.31 ms; that fixed cost, not memory, is most of today's decode time, so the estimates rise as our work lowers it. Fleet 2 is taken at 90% of the Mac Studios' 1.2 TB/s with the same cost per layer and the model split over all eight, which are joined by 50 Gb/s links plus 10 GbE. Qwen 3.8 Max's 10.4 tok/s is not yet explained by this, so it has no Fleet 2 estimate.</li>
+      <li><b>Speculation</b> on agent coding turns is taken as 1.5 times plain decode, as measured on short edits; whole-file rewrites measure 8.3 times and new prose 1.0 to 1.2 times.</li>
+      <li><b>Prefill accelerators</b> are boxes of four RTX 5080 cards that reduce over PCIe inside the box and reach the fleets at 100 Gb/s each over a 400 Gb/s switch. Each long prompt streams the model's weights through the boxes once, at 85% of the links (42.5 GB/s with four boxes, 85 GB/s with eight), and the cards compute at 40% of their dense peak (about 450 TFLOPS each in FP8, 225 in BF16), including the attention cost of the prompt. Prompts shorter than about 20,000 tokens stay on the fleet's own prefill.</li>
       <li><b>Qwen 3.8 Max</b> at its published FP8 precision (2.5 TB) is larger than one fleet's 2 TB. Its row assumes one of its 4-bit builds (AMD MXFP4, Red Hat or RadixArk NVFP4), which fit one fleet and pass our accuracy A/B.</li>
     </ul>
   </section>
@@ -148,7 +146,7 @@
     <table>
       <tr><th>Model</th><th>Publisher</th><th class="num">Parameters</th><th class="num">Size</th><th>License</th><th>Note</th></tr>
       <tr><td><b>K-EXAONE 2.0</b></td><td>LG AI Research, Korea</td><td class="num">750B, 37B active</td><td class="num">1.50 TB</td><td><a href="https://huggingface.co/LGAI-EXAONE/K-EXAONE-2.0-750B-A37B">Apache 2.0</a></td><td>Korea's largest open model, from the national foundation-model project</td></tr>
-      <tr><td><b>A.X K1</b></td><td>SK Telecom, Korea</td><td class="num">519B, about 33B active</td><td class="num">1.04 TB</td><td><a href="https://huggingface.co/skt/A.X-K1">Apache 2.0</a></td><td>From Korea's sovereign AI foundation-model project; 128K context</td></tr>
+      <tr><td><b>A.X K2</b></td><td>SK Telecom, Korea</td><td class="num">688B, 33B active</td><td class="num">0.69 TB</td><td><a href="https://huggingface.co/skt/A.X-K2">Apache 2.0</a></td><td>Successor to A.X K1, from Korea's sovereign AI foundation-model project; trained in FP8; 256K context</td></tr>
       <tr><td><b>Solar Open 2</b></td><td>Upstage, Korea</td><td class="num">250B, 15B active</td><td class="num">0.50 TB</td><td><a href="https://huggingface.co/upstage/Solar-Open2-250B">Upstage Solar License</a> (Apache 2.0 with a naming rule for redistributed models)</td><td>Built for agents; 1M-token context</td></tr>
       <tr><td><b>Nemotron 3 Ultra</b></td><td>NVIDIA, US</td><td class="num">550B, 55B active</td><td class="num">1.12 TB</td><td><a href="https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16">OpenMDW 1.1</a></td><td>NVIDIA's largest open model</td></tr>
       <tr><td><b>Mistral Large 3</b></td><td>Mistral AI, France</td><td class="num">675B, 41B active</td><td class="num">0.68 TB</td><td><a href="https://huggingface.co/mistralai/Mistral-Large-3-675B-Instruct-2512">Apache 2.0</a></td><td>European, general purpose</td></tr>

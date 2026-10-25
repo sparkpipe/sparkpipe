@@ -58,7 +58,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
   <h1>Your own AI fleet in Korea, by the hour.</h1>
   <div class="hero-grid">
     <div class="hero-copy">
-      <p class="lead">Rent a whole SparkPipe fleet and, for those hours, it serves only you. It runs Kimi K3 and other open models over a terabyte, too large for most GPU servers, with million-token context and speculation, and LG's K-EXAONE 2.0 and SKT's A.X K1 are next on the Fleet List. Your data stays in Korea, there is no queue of other customers' requests, and the price is per hour, not per token.</p>
+      <p class="lead">Rent a whole SparkPipe fleet and, for those hours, it serves only you. It runs Kimi K3 and other open models over a terabyte, too large for most GPU servers, with million-token context and speculation, and LG's K-EXAONE 2.0 and SKT's A.X K2 are next on the Fleet List. Your data stays in Korea, there is no queue of other customers' requests, and the price is per hour, not per token.</p>
       <div class="actions">
         <a class="btn solid" href="#prices">Prices and how to buy</a>
         <a class="btn" href="terms.html">Read the terms</a>
@@ -95,7 +95,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
       <div><p class="label">Data stays in Korea</p><p>The fleets and our servers are in Seoul, and your requests go to no foreign AI service. Cached request state is deleted within 24 hours of its last use.</p></div>
       <div><p class="label">A Korean company</p><p>You contract with HYOR AI Tech Ltd., a Korean company, under Korean law. Both contracts are in Korean and English, and the Korean text prevails.</p></div>
       <div><p class="label">Pay in won</p><p>Korean businesses pay by bank transfer against our electronic tax invoice (세금계산서), with 10% VAT. Customers abroad pay in USDC or by USD wire.</p></div>
-      <div><p class="label">Korean models</p><p>LG's K-EXAONE 2.0 and SKT's A.X K1, both under Apache 2.0, and Upstage's Solar Open 2 are next on the Fleet List, beside Kimi K3, GLM 5.3 and the other open models.</p></div>
+      <div><p class="label">Korean models</p><p>LG's K-EXAONE 2.0 and SKT's A.X K2, both under Apache 2.0, and Upstage's Solar Open 2 are next on the Fleet List, beside Kimi K3, GLM 5.3 and the other open models.</p></div>
       <div><p class="label">Dedicated, not shared</p><p>During your hours the whole fleet serves only your requests. Nobody else's traffic waits in front of yours, so answers start as soon as the fleet is free.</p></div>
       <div><p class="label">By the hour</p><p>You pay for the fleet's time, not for tokens: long prompts, million-token contexts and agents that re-read their history cost nothing extra.</p></div>
     </div>
@@ -133,9 +133,9 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
     <div class="facts">
       <div><strong class="mono">126 tok/s</strong><p>Kimi K3 rewriting whole files with speculation, measured; 15 tok/s without it. Search-and-replace edits run at 28 tok/s.</p></div>
       <div><strong class="mono">0.3–5 s</strong><p>to the first token of a follow-up turn whose conversation is cached, measured on Kimi K3 up to 137,700 tokens.</p></div>
-      <div><strong class="mono">31 s</strong><p><b>ESTIMATED</b>: a 128K-token Kimi K3 prompt from cold with four prefill accelerator boxes, 16 s with eight.</p></div>
+      <div><strong class="mono">37 s</strong><p><b>ESTIMATED</b>: a 128K-token Kimi K3 prompt from cold with four prefill accelerator boxes, 18 s with eight.</p></div>
     </div>
-    <p class="prose"><b>ESTIMATED</b> for Kimi K3 on Fleet 2, eight M5 Ultra Mac Studios: 49 tok/s for one request without speculation, and about 120 tok/s with it on agent coding turns. LG's K-EXAONE 2.0 is estimated at 91 and about 230 tok/s. Estimates are projections from our measurements and published hardware figures; the <a href="fleets.html#estimates">Fleet List</a> shows how each is made, and each is replaced by a measurement once the hardware runs.</p>
+    <p class="prose"><b>ESTIMATED</b> for Kimi K3 on Fleet 2, eight M5 Ultra Mac Studios: 23 tok/s for one request without speculation, and about 35 tok/s with it on agent coding turns. LG's K-EXAONE 2.0 is estimated at 23 and about 35 tok/s, and SKT's A.X K2 at 33 and about 49. Estimates are projections from our measurements and published hardware figures, published only where we expect to meet them; the <a href="fleets.html#estimates">Fleet List</a> shows how each is made, and each is replaced by a measurement once the hardware runs.</p>
   </div>
 </section>
 
@@ -147,10 +147,11 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
   <div class="sec-body">
     <h2>What comes next.</h2>
     <div class="check-list">
-      <div><b>Prefill accelerators</b><span>Boxes of four NVIDIA RTX 5080 cards compute long prompts, four boxes first, then eight. ESTIMATED: a 128K-token Kimi K3 prompt in 31 s (16 s with eight boxes), and a 1M-token prompt in about 17 minutes.</span></div>
-      <div><b>Fleet 2</b><span>Eight M5 Ultra Mac Studios with 2.2 times Fleet 1's memory bandwidth, for faster decoding. ESTIMATED: Kimi K3 at 49 tok/s without speculation.</span></div>
-      <div><b>Better speculation</b><span>Tree drafts from several drafters at once. ESTIMATED: 2.5 times plain decode on agent coding turns.</span></div>
-      <div><b>More large models</b><span>K-EXAONE 2.0, A.X K1, Solar Open 2, Nemotron 3 Ultra and Mistral Large 3.</span></div>
+      <div><b>Prefill accelerators</b><span>Boxes of four NVIDIA RTX 5080 cards compute long prompts, four boxes first, then eight. ESTIMATED: a 128K-token Kimi K3 prompt in 37 s (18 s with eight boxes), and a 1M-token prompt in about 17 minutes.</span></div>
+      <div><b>Fleet 2</b><span>Eight M5 Ultra Mac Studios with 2.2 times Fleet 1's memory bandwidth, for faster decoding. ESTIMATED: Kimi K3 at 23 tok/s without speculation.</span></div>
+      <div><b>Better speculation</b><span>Tree drafts from several drafters at once, so more drafted tokens are accepted in each step.</span></div>
+      <div><b>Field search</b><span>Checkboxes in the chat add search tools for law, medicine, finance, patents and more, so any model answers from current primary sources and cites them.</span></div>
+      <div><b>More large models</b><span>K-EXAONE 2.0, A.X K2, Solar Open 2, Nemotron 3 Ultra and Mistral Large 3.</span></div>
       <div><b>Fleet 3</b><span>Sixteen more DGX Sparks. With Fleet 1 and Fleet 2 together holding 4 TB, models above 2 TB, such as Qwen 3.8 Max at full FP8 precision, run across two fleets.</span></div>
     </div>
   </div>
