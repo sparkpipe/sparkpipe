@@ -349,7 +349,7 @@ sudo mv /etc/apache2/sparkpipe/kr24.new.pag /etc/apache2/sparkpipe/kr24.pag
 sudo mv /etc/apache2/sparkpipe/kr24.new.dir /etc/apache2/sparkpipe/kr24.dir
 ```
 
-Check the md5 against the downloaded `.md5` first. The builder refuses a file with fewer than 100,000 Korean networks (2026-10-25: 439,358).
+Check the md5 against the downloaded `.md5` first. The builder refuses a file with fewer than 100,000 Korean networks; APNIC lists about 440,000.
 
 | VPS path | Goes to |
 | --- | --- |
