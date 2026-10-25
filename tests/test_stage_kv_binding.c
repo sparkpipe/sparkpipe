@@ -1015,31 +1015,50 @@ static uint32_t ValidPageEntries(uint64_t *oldest)
 	return(count);
 }
 
+static void AgePageEntries(uint64_t used_seconds)
+{
+	uint32_t index;
+	for (index=0u; index<BINDING.page_cache.entry_capacity; index++)
+		if ( (BINDING.page_cache.entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u )
+			BINDING.page_cache.entries[index].used_seconds = used_seconds;
+}
+
 static void TestAdoptedPagesKeepTheirAge(void)
 {
 	uint8_t pages[2][TEST_PAGE_BYTES];
 	struct timespec now;
-	uint64_t idle_since,oldest;
-	uint32_t index,held,expired = 0u;
+	uint64_t kept_since,due_since,oldest;
+	uint32_t held,expired = 0u;
 	Open();
 	PublishTwoPageChain(pages);
 	assert(clock_gettime(CLOCK_REALTIME,&now) == 0);
-	idle_since = (uint64_t)now.tv_sec - SPARK_KV_RETENTION_SECONDS - 5u;
+	kept_since = (uint64_t)now.tv_sec - (SPARK_KV_RETENTION_SECONDS - SPARK_KV_DETACHED_POOL_SECONDS) + 600u;
 	assert(ValidPageEntries(&oldest) == 2u && oldest + 60u >= (uint64_t)now.tv_sec);
-	for (index=0u; index<BINDING.page_cache.entry_capacity; index++)
-		if ( (BINDING.page_cache.entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u )
-			BINDING.page_cache.entries[index].used_seconds = idle_since;
+	AgePageEntries(kept_since);
 	Unload();
 	assert(nftw(SNAPSHOT_DIRECTORY,RemoveSnapshotEntry,16,FTW_DEPTH | FTW_PHYS) == 0);
 	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
 	pthread_mutex_lock(&BINDING.mutex);
 	held = ValidPageEntries(&oldest);
-	assert(BINDING.kv_pool_adopted_pages == 2u && ((held == 2u && oldest == idle_since) || (held == 0u && BINDING.page_cache.expired_entry_count == 2u)));
-	assert(SparkKvPageCacheExpire(&BINDING.page_cache,(uint64_t)now.tv_sec,&expired) == SPARK_STATUS_OK);
+	assert(BINDING.kv_pool_adopted_pages == 2u && held == 2u && oldest == kept_since);
+	assert(SparkKvPageCacheExpire(&BINDING.page_cache,kept_since + SPARK_KV_RETENTION_SECONDS,&expired) == SPARK_STATUS_OK);
 	pthread_mutex_unlock(&BINDING.mutex);
-	assert(expired == held && ValidPageEntries(&oldest) == 0u && BINDING.page_cache.expired_entry_count == 2u);
+	assert(expired == 2u && ValidPageEntries(&oldest) == 0u);
 	Close();
-	printf("adopted pages keep their age: pages idle for a day before a clean shutdown come back from the weightd seal with that age, and the expiry sweep drops them\n");
+	Open();
+	PublishTwoPageChain(pages);
+	assert(clock_gettime(CLOCK_REALTIME,&now) == 0);
+	due_since = (uint64_t)now.tv_sec - SPARK_KV_RETENTION_SECONDS + 60u;
+	AgePageEntries(due_since);
+	Unload();
+	assert(nftw(SNAPSHOT_DIRECTORY,RemoveSnapshotEntry,16,FTW_DEPTH | FTW_PHYS) == 0);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	pthread_mutex_lock(&BINDING.mutex);
+	held = ValidPageEntries(&oldest);
+	pthread_mutex_unlock(&BINDING.mutex);
+	assert(BINDING.kv_pool_adopted_pages == 0u && held == 0u);
+	Close();
+	printf("adopted pages keep their age: pages that would outlive the retention limit within the detached-pool hour are dropped before the pool is sealed, older ones come back from the weightd seal with their age and the expiry sweep drops them on time\n");
 }
 
 static void TestRestartAdoptsDevicePages(void)
