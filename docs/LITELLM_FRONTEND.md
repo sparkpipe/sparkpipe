@@ -441,6 +441,18 @@ Apache logs on the VPS are the only access logs with visitor addresses, kept
 92 days as the privacy policy states. The container log is capped at three
 10 MB files.
 
+Retention follows the privacy policy:
+
+- **Chat memory goes with its chat.**
+  - A root timer, `open-webui-chat-list.timer`, runs every 5 minutes. It reads `webui.db` read-only and writes Open WebUI's chats, as hashed (user, chat) names, to `/srv/workspace/sparkpipe/open-webui-chats.json`. The chat layer's user cannot read the database itself.
+  - Every 10 minutes the chat layer deletes the memory file of each chat not on that list and drops that chat from RAM. Files written in the last hour are kept, for chats whose row is not stored yet.
+  - It deletes nothing when the list is missing, older than 30 minutes, or names no users.
+  - Install:
+    1. Copy `tools/serving/open_webui_chat_list.py` to `/usr/local/lib/sparkpipe/` (root, 644).
+    2. Copy `deployment/hub/open-webui-chat-list.service` and `.timer` to `/etc/systemd/system/`.
+    3. Run `systemctl enable --now open-webui-chat-list.timer`.
+- **Operational records:** `chat.log`, the LiteLLM logs and the model APIs' logs rotate monthly under `/etc/logrotate.d/sparkpipe-hub` (`deployment/hub/logrotate-sparkpipe-hub`). A rotated file is deleted 334 days after its last write, so no record is older than a year.
+
 `open_webui.env` is copied from `deployment/hub/open_webui.env`. v0.12.0
 writes every persistent setting into the `config` table (`key`, JSON `value`)
 at its first start and reads it from there afterwards, so an env change only

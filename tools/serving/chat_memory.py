@@ -699,13 +699,43 @@ def next_group(groups):
     return max((int(gid[1:]) for gid in groups), default=0) + 1
 
 
+def store_name(text):
+    return hashlib.sha256(text.encode()).hexdigest()[:32]
+
+
+def read_chat_list(path):
+    listing = json.loads(Path(path).read_text(encoding="utf-8"))
+    kept = set()
+    for entry in listing["chats"]:
+        user, _, chat = entry.partition("/")
+        kept.add((user, chat))
+    return float(listing["at"]), int(listing["users"]), kept
+
+
 class ChatStore:
     def __init__(self, root):
         self.root = Path(root)
         self.memory = {}
 
     def path(self, user, chat):
-        return self.root / hashlib.sha256(user.encode()).hexdigest()[:32] / (hashlib.sha256(chat.encode()).hexdigest()[:32] + ".jsonl")
+        return self.root / store_name(user) / (store_name(chat) + ".jsonl")
+
+    def prune(self, kept, grace_seconds, now=None):
+        if not self.root.is_dir():
+            return 0
+        now = time.time() if now is None else now
+        removed = set()
+        for path in self.root.glob("*/*.jsonl"):
+            name = (path.parent.name, path.stem)
+            if name not in kept and now - path.stat().st_mtime >= grace_seconds:
+                path.unlink()
+                removed.add(name)
+        for directory in self.root.iterdir():
+            if directory.is_dir() and not any(directory.iterdir()):
+                directory.rmdir()
+        for key in [key for key in self.memory if (store_name(key[0]), store_name(key[1])) in removed]:
+            del self.memory[key]
+        return len(removed)
 
     def load(self, user, chat):
         key = (user, chat)
@@ -955,6 +985,10 @@ class Memory:
         self.curator_tokens = int(config.get("curator_max_tokens", 160))
         self.catch_up = int(config.get("catch_up_per_turn", 6))
         self.idle_seconds = float(config.get("idle_seconds", 1.0))
+        self.chat_list = config.get("open_webui_chat_list")
+        self.prune_seconds = float(config.get("prune_seconds", 600))
+        self.prune_grace_seconds = float(config.get("prune_grace_seconds", 3600))
+        self.chat_list_max_age_seconds = float(config.get("chat_list_max_age_seconds", 1800))
         self.active = {}
         self.jobs = {}
         self.tasks = {}
@@ -962,6 +996,26 @@ class Memory:
 
     def profile(self, model, target=None):
         return MemoryProfile(self.shared_budgets, model, target)
+
+    async def prune_once(self, now=None):
+        now = time.time() if now is None else now
+        try:
+            at, users, kept = read_chat_list(self.chat_list)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            print(json.dumps({"event": "chat_memory_prune_skipped", "reason": f"{type(error).__name__}: {error}"}), flush=True)
+            return None
+        if users < 1 or now - at > self.chat_list_max_age_seconds:
+            print(json.dumps({"event": "chat_memory_prune_skipped", "reason": "the chat list is empty or stale", "users": users, "age_s": round(now - at)}), flush=True)
+            return None
+        removed = self.store.prune(kept, self.prune_grace_seconds, now)
+        if removed:
+            print(json.dumps({"event": "chat_memory_pruned", "removed": removed, "chats": len(kept)}), flush=True)
+        return removed
+
+    async def prune_loop(self):
+        while True:
+            await self.prune_once()
+            await asyncio.sleep(self.prune_seconds)
 
     def session(self, model, headers, messages, tools, kwargs, target=None):
         claims = verify_jwt(headers.get("X-OpenWebUI-User-Jwt") or "", self.secret)
