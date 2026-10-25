@@ -417,11 +417,29 @@ and the prefix cache instead of retrieval chunks. Users cannot change
 sampling, see other models, share chats publicly, create API keys or add
 tools.
 
+SparkPipe Chat provides generative AI directly to its users, so it carries
+the notice and labelling duties of Article 31 of Korea's AI Basic Act. The
+`ai-notice` banner (`ui.banners`, `WEBUI_BANNERS`) tells users on every new
+chat, before their first message, that the replies come from generative AI;
+Open WebUI shows it in Korean when the interface language is Korean. It is
+not dismissible, so closing it hides it only until the next visit. Every
+reply copied with the copy button ends with the bilingual label in
+`ui.watermark` (`RESPONSE_WATERMARK`). Customers who serve their own users
+with fleet-hours carry these duties themselves (agreement 8.10, Hourly Terms
+7.2).
+
 Start or replace the container with `sudo sh /srv/workspace/open-webui/run.sh`,
 a copy of `deployment/hub/open_webui_run.sh`. It pins v0.12.0 by digest,
 mounts the data directory and mounts the SparkPipe icons from
 `/srv/workspace/open-webui/branding` (a copy of
 `deployment/hub/open_webui_branding`) over Open WebUI's own.
+
+Visitors' IP addresses stay out of the hub. Open WebUI trusts forwarded
+addresses only from `127.0.0.1` (`FORWARDED_ALLOW_IPS`), and its requests
+arrive from the Docker bridge, so its log shows the bridge address. The
+Apache logs on the VPS are the only access logs with visitor addresses, kept
+92 days as the privacy policy states. The container log is capped at three
+10 MB files.
 
 `open_webui.env` is copied from `deployment/hub/open_webui.env`. v0.12.0
 writes every persistent setting into the `config` table (`key`, JSON `value`)
