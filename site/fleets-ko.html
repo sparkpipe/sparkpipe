@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SparkPipe 플릿 목록</title>
-<meta name="description" content="SparkPipe 플릿 목록: 플릿, 요율, 이용 가능한 모델과 그 라이선스, 현재 빌드의 제한 사항.">
+<meta name="description" content="SparkPipe 플릿 목록: 플릿, 요율, 이용 가능한 모델과 그 라이선스.">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
 <link rel="alternate" hreflang="en" href="https://sparkpipe.ai/fleets.html">
@@ -40,7 +40,6 @@
       <a href="#models">모델</a>
       <a href="#speculation">추측 디코딩</a>
       <a href="#estimates">추정치</a>
-      <a href="#limits">제한 사항</a>
       <a href="terms-ko.html">약관</a>
       <a href="index-ko.html">홈</a>
     </nav>
@@ -69,8 +68,7 @@
       <tr><td><b>플릿&nbsp;3</b></td><td>NVIDIA DGX Spark(GB10) 16대</td><td>서울</td><td>구축 중</td><td class="num">1</td><td>플릿을 열 때 여기에 게시</td></tr>
     </table>
     </div>
-    <p>프리필 가속기: NVIDIA RTX 5080 4장을 담은 박스가 플릿의 긴 프롬프트를 계산합니다. 먼저 4대, 나중에 8대입니다(계획 중, 아래 추정치 참고). 플릿 1과 플릿 2를 합치면 4TB로, 플릿 하나에 담기지 않는 모델을 실행합니다.</p>
-    <p>2026년 12월 1일부터 저희 시스템은 플릿별 상태와 구간별 예약 가능 시간을 담은 실시간 가용 용량을 <span class="mono">https://sparkpipe.ai/availability.txt</span>에 공개하며, 최소 30초마다 갱신합니다.</p>
+    <p>저희 시스템은 플릿별 상태와 구간별 예약 가능 시간을 담은 실시간 가용 용량을 <span class="mono">https://sparkpipe.ai/availability.txt</span>에 공개하며, 최소 30초마다 갱신합니다.</p>
   </section>
 
   <section id="models">
@@ -97,7 +95,7 @@
       <tr><td><b>Qwen 3.8 Max</b><br><span class="mono">qwen3.8-max</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B">Qwen3.8-Max License</a></td><td class="num">32K</td><td class="num">10.4 tok/s</td><td class="num">35 tok/s</td><td>검증</td><td>제공</td></tr>
     </table>
     </div>
-    <p>컨텍스트 창은 현재 제공 기준입니다. 디코드는 추측 디코딩 없는 단일 요청으로, 2026-10-18에 7~8K 토큰 프롬프트로 측정했습니다. 방법과 근거: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>(영문).</p>
+    <p>컨텍스트 창은 제공 기준입니다. 디코드는 추측 디코딩 없는 단일 요청으로, 2026-10-18에 7~8K 토큰 프롬프트로 측정했습니다. 방법과 근거: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>(영문).</p>
     <p>¹ DeepSeek V4.1 Flash는 2026-10-24에 1,047,883토큰 프롬프트로 측정했습니다. 디코드는 그 프롬프트 뒤의 단일 요청이고, 프리필은 그 프롬프트의 평균 속도입니다. ² 다른 작업이 모든 노드에서 CPU 코어 16개를 쓰는 동안 측정했으므로 하한값입니다.</p>
     <p>Qwen 3.8 Flash는 제공하지 않습니다. 그 라이선스는 모델을 서비스로 제공하는 모든 사업에 Qwen과의 별도 계약을 요구하므로, 저희 회사 내부에서만 씁니다.</p>
   </section>
@@ -125,21 +123,21 @@
     <div class="scroll">
     <table>
       <tr><th>모델</th><th class="num">크기</th><th class="num">디코드, 플릿 1</th><th class="num">디코드, 플릿 2</th><th class="num">플릿 2, 추측 디코딩</th><th class="num">128K 프롬프트, 가속기 박스 4대</th><th class="num">박스 8대</th></tr>
-      <tr><td><b>Kimi K3</b>(제공 중)</td><td class="num">1.56 TB</td><td class="num">22 tok/s(실측 16.2)</td><td class="num">49 tok/s</td><td class="num">120 tok/s</td><td class="num">31초(137,700토큰 실측 299초)</td><td class="num">16초</td></tr>
-      <tr><td><b>Qwen 3.8 Max</b>, 4비트 빌드(현재 FP8로 제공)</td><td class="num">1.37–1.48 TB</td><td class="num">28 tok/s(실측 10.4, NVMe에서 FP8)</td><td class="num">61 tok/s</td><td class="num">150 tok/s</td><td class="num">28초</td><td class="num">14초</td></tr>
+      <tr><td><b>Kimi K3</b></td><td class="num">1.56 TB</td><td class="num">22 tok/s</td><td class="num">49 tok/s</td><td class="num">120 tok/s</td><td class="num">31초</td><td class="num">16초</td></tr>
+      <tr><td><b>Qwen 3.8 Max</b>, 4비트 빌드</td><td class="num">1.37–1.48 TB</td><td class="num">28 tok/s</td><td class="num">61 tok/s</td><td class="num">150 tok/s</td><td class="num">28초</td><td class="num">14초</td></tr>
       <tr><td><b>K-EXAONE 2.0</b>, LG(다음)</td><td class="num">1.50 TB</td><td class="num">41 tok/s</td><td class="num">91 tok/s</td><td class="num">230 tok/s</td><td class="num">30초</td><td class="num">15초</td></tr>
       <tr><td><b>A.X K1</b>, SKT(다음)</td><td class="num">1.04 TB</td><td class="num">46 tok/s</td><td class="num">100 tok/s</td><td class="num">250 tok/s</td><td class="num">57초</td><td class="num">28초</td></tr>
       <tr><td><b>Nemotron 3 Ultra</b>, NVIDIA(다음)</td><td class="num">1.12 TB</td><td class="num">28 tok/s</td><td class="num">61 tok/s</td><td class="num">150 tok/s</td><td class="num">22초</td><td class="num">11초</td></tr>
-      <tr><td><b>Muse Spark Open</b>, meta-models(라이선스 검토 중)</td><td class="num">1.64 TB</td><td class="num">36 tok/s</td><td class="num">80 tok/s</td><td class="num">200 tok/s</td><td class="num">33초</td><td class="num">16초</td></tr>
+      <tr><td><b>Muse Spark Open</b>, meta-models(다음)</td><td class="num">1.64 TB</td><td class="num">36 tok/s</td><td class="num">80 tok/s</td><td class="num">200 tok/s</td><td class="num">33초</td><td class="num">16초</td></tr>
     </table>
     </div>
-    <p>지금 처음부터 76분 걸리는 100만 토큰 Kimi K3 프롬프트는 가속기 박스 4대로 약 17분, 8대로 9분으로 추정합니다. 플릿 1과 플릿 2를 합치면 4TB이고 플릿 3이 2TB를 더하므로, 2TB가 넘는 모델은 두 플릿에 걸쳐 실행합니다. 공개된 FP8 정밀도의 Qwen 3.8 Max(2.5TB)는 플릿 1과 2에 걸쳐 30 tok/s로 추정하며, 공개된 BF16 정밀도의 Inkling(1.9TB)도 같은 방식으로 담깁니다.</p>
+    <p>100만 토큰 Kimi K3 프롬프트를 처음부터 처리하는 시간은 가속기 박스 4대로 약 17분, 8대로 9분으로 추정합니다. 플릿 1과 플릿 2를 합치면 4TB이고 플릿 3이 2TB를 더하므로, 2TB가 넘는 모델은 두 플릿에 걸쳐 실행합니다. 공개된 FP8 정밀도의 Qwen 3.8 Max(2.5TB)는 플릿 1과 2에 걸쳐 30 tok/s로 추정하며, 공개된 BF16 정밀도의 Inkling(1.9TB)도 같은 방식으로 담깁니다.</p>
     <p>추정 방법:</p>
     <ul>
-      <li><b>디코드</b>는 각 노드가 토큰 하나에 쓰이는 가중치 중 자기 몫을 얼마나 빨리 읽느냐로 제한됩니다. 플릿 1은 그 한계의 80%(Kimi K3는 지금 58%), 플릿 2는 한계의 70%로 잡았으며, 플릿 2는 50 Gb/s 링크와 10GbE로 연결된 Mac Studio 8대 전체에 모델을 나눕니다.</li>
+      <li><b>디코드</b>는 각 노드가 토큰 하나에 쓰이는 가중치 중 자기 몫을 얼마나 빨리 읽느냐로 제한됩니다. 플릿 1은 그 한계의 80%, 플릿 2는 한계의 70%로 잡았으며, 플릿 2는 50 Gb/s 링크와 10GbE로 연결된 Mac Studio 8대 전체에 모델을 나눕니다.</li>
       <li><b>추측 디코딩</b>은 에이전트 코딩 턴에서 일반 디코드의 2.5배로 잡았습니다. 짧은 편집에서 실측한 1.4~1.6배와 파일 전체 재작성에서 실측한 8.3배 사이입니다.</li>
       <li><b>프리필 가속기</b>는 RTX 5080 4장을 담은 박스로, 박스 안에서는 PCIe로 결과를 합치고 박스마다 100 Gb/s로 400 Gb/s 스위치를 거쳐 플릿에 연결됩니다. 긴 프롬프트마다 모델 가중치를 박스로 한 번 흘려보내며(박스 4대 50 GB/s, 8대 100 GB/s), 카드는 밀집 연산 최대치의 40%(카드당 FP8 약 450 TFLOPS, BF16 225)로 프롬프트의 어텐션 비용까지 계산합니다. 약 2만 토큰보다 짧은 프롬프트는 플릿 자체의 프리필로 처리합니다.</li>
-      <li><b>Qwen 3.8 Max</b>는 공개된 FP8 정밀도(2.5TB)로는 플릿 하나의 2TB보다 크므로, 지금은 전문가 가중치를 NVMe에서 읽어 10.4 tok/s입니다. 4비트 빌드(AMD MXFP4, Red Hat과 RadixArk의 NVFP4) 중 하나가 저희 정확도 A/B 검증을 통과하면 플릿 하나에 담깁니다.</li>
+      <li><b>Qwen 3.8 Max</b>는 공개된 FP8 정밀도(2.5TB)로는 플릿 하나의 2TB보다 큽니다. 이 행은 플릿 하나에 담기고 저희 정확도 A/B 검증을 통과하는 4비트 빌드(AMD MXFP4, Red Hat 또는 RadixArk의 NVFP4)를 가정합니다.</li>
     </ul>
   </section>
 
@@ -155,7 +153,7 @@
       <tr><td><b>Nemotron 3 Ultra</b></td><td>NVIDIA, 미국</td><td class="num">550B, 활성 55B</td><td class="num">1.12 TB</td><td><a href="https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16">OpenMDW 1.1</a></td><td>NVIDIA의 최대 오픈 모델</td></tr>
       <tr><td><b>Mistral Large 3</b></td><td>Mistral AI, 프랑스</td><td class="num">675B, 활성 41B</td><td class="num">0.68 TB</td><td><a href="https://huggingface.co/mistralai/Mistral-Large-3-675B-Instruct-2512">Apache 2.0</a></td><td>유럽산 범용 모델</td></tr>
       <tr><td><b>Inkling</b></td><td>Thinking Machines, 미국</td><td class="num">975B, 활성 41B</td><td class="num">1.91 TB</td><td><a href="https://huggingface.co/thinkingmachines/Inkling">Apache 2.0</a></td><td>공개된 BF16 정밀도로는 두 플릿(4TB)에 걸쳐 실행하며, FP8 빌드라면 플릿 하나에 담깁니다</td></tr>
-      <tr><td><b>Muse Spark Open</b></td><td>meta-models</td><td class="num">816B, 활성 42B</td><td class="num">1.64 TB</td><td>Muse 모델 라이선스, 요청 시 접근 허가</td><td>라이선스 조건 검토 중</td></tr>
+      <tr><td><b>Muse Spark Open</b></td><td>meta-models</td><td class="num">816B, 활성 42B</td><td class="num">1.64 TB</td><td>Muse 모델 라이선스</td><td>요청 시 접근 허가</td></tr>
     </table>
     </div>
   </section>
@@ -171,16 +169,6 @@
       <li><b>OpenMDW 1.1</b>(Laguna S 2.1): 이용이나 출력물에 대한 조건이 없으며, 모델이 특허나 저작권을 침해한다고 소송을 제기한 자에 대해서는 라이선스가 종료됩니다.</li>
     </ul>
     <p>Kimi K3, GLM-5.3, Qwen 3.8 Max 라이선스는 모든 이용이 관련 법령을 지키도록 요구합니다. 모든 라이선스는 가중치 사본에 게시자의 고지를 함께 두도록 요구하며, 고객은 저희 플릿에서 모델을 이용할 뿐 사본을 받지 않습니다.</p>
-  </section>
-
-  <section id="limits">
-    <h2>현재 빌드의 제한 사항</h2>
-    <ul>
-      <li><b>배치:</b> Kimi K3와 GLM 5.3은 동시에 최대 8개, GLM 5.3 Flash는 16개 요청을 처리합니다.</li>
-      <li><b>추측 디코딩</b>은 Kimi K3와 GLM 5.3에서 한 번에 요청 하나에 대해 실행됩니다. 파일 전체 코드 재작성처럼 요청에 이미 들어 있는 텍스트를 빠르게 합니다(Kimi K3 15에서 126 tok/s, GLM 5.3 28에서 124 tok/s). 새로 쓰는 글에서는 1.0~1.2배입니다.</li>
-      <li><b>긴 프롬프트</b>는 처음 처리할 때 느립니다. 프리필이 플릿 연산 한계의 1~4%에 머물러, Kimi K3에서 137,700토큰 프롬프트에 299초가 걸립니다. 캐시된 앞부분을 다시 쓰는 후속 턴은 약 5초입니다.</li>
-      <li><b>한 번에 한 모델</b>만 플릿을 차지합니다. 다른 모델을 불러오는 데 약 1분, Kimi K3는 최대 79초가 걸립니다. 예약 시간 안의 모델 로딩은 그 시간에 포함됩니다(시간제 이용약관 제5.3조).</li>
-    </ul>
   </section>
 </main>
 

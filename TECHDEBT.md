@@ -8,15 +8,7 @@ removed rather than retained as a progress diary.
 Required behaviour that is not implemented is recorded here as "Left out on
 purpose", with the date, what is missing, its consequence and the fleet proof
 that closes it; no other way of not implementing a required feature is
-accepted. The 2026-10-02 entries come from the JIT KV audit, the prefix-reuse
-audit and the production-code findings of the 2026-10-01 test-honesty audit,
-each verified against branch `kv/sequence-shard` at `b41ed891f`; their line
-citations refer to that commit.
-
-On 2026-10-14 every item was checked against the code on `sprint/integration`
-(`059e7eaab`), and each claim that an item was finished or obsolete was
-checked a second time. Finished and obsolete items were removed and partly
-finished ones rewritten to say what is left.
+accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Dual-fabric topology contract
 
@@ -269,6 +261,15 @@ finished ones rewritten to say what is left.
   (`SparkTpMeshHardwareGuardKernel`, rank-15 profile, 2026-10-02) serially
   with about 400 ms of compute. Overlap the collectives of a 1,024-row MoE
   wave without reading the expert weights twice.
+
+## Prefill
+
+- Prefill reaches at most 5% of the fleet's compute: Kimi K3 prefills an 8K
+  prompt at 590 tok/s and a 137,700-token prompt in 299 s
+  ([`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md#prefill)). The target is
+  80% of the first resource to saturate. The overlap of prefill-wave
+  collectives under Mesh collectives is part of it; the prefill accelerators
+  under Fleet-hours take the long prompts.
 
 ## Placement beyond TP16
 
@@ -659,7 +660,8 @@ Related common-code debt:
 
 ## Dynamic batching
 
-- GLM Flash's shared batch scheduler already selects arbitrary counts up to
+- Kimi K3 and GLM 5.3 Full serve at most 8 sequences at once and GLM 5.3
+  Flash 16. GLM Flash's shared batch scheduler selects arbitrary counts up to
   its configured limit; a power-of-two kernel bucket is not an admission rule.
   The GLM deployments set active and resident capacity to 16 or less
   (`deployment/glm5_next_tp16/model_resident.json` and the GLM records in
@@ -764,34 +766,21 @@ Related common-code debt:
   `source_bit`. `SparkSpeculationDrafterMix`
   (`src/spark_speculation_drafter_mix.c`) only switches between a primary and
   a fallback source and has no production caller.
-- Context-lookup speculation has its engine half, but no model serves it. The
-  engine (`runtime/model_batch_engine.c`) keeps a 3-gram chain index over each
-  request's prompt and generated tokens (`SparkSpeculationLookupIndex`) and
-  drafts up to 8 tokens with the adaptive depth of
-  `spark_speculation_depth.h`. It sends a wave with drafts as one decode
-  submission flagged `SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY` and commits
-  the longest matching prefix plus the model's token at the first mismatch. It
-  counts verify lanes, drafted and accepted tokens in the API's
-  `engine_measurements` line. The page cache and stage binding keep the verify
-  rewind window (`cache/kv_page_cache.c`, `runtime/stage_kv_binding.c`). The
-  engine drafts only for an adapter that declares `SPECULATIVE_VERIFY`, and
-  none does. The glm52 adapter that ran verify frames with the certified head
-  on every row was deleted with the per-family modules. The stage serving
-  adapter (`inference/runner/stage_serving_adapter.c`) maps no verify frame.
+- Speculation serves on Kimi K3, GLM 5.3 Full and DeepSeek V4.1 Flash, whose
+  adapters declare `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`.
   Still to do:
-  - a verify wave on the stage runner with the certified head on every row,
-    declared by GLM Full, GLM Flash and K3, plus restoring recurrent state to
-    the accepted row for GLM Flash and K3 through the binding's
-    recurrent-state hook;
-  - verify waves on the graph path: the runner captures graphs only for one
-    row per sequence;
+  - verify frames for GLM 5.3 Flash and the twelve other models, with GLM 5.3
+    Flash's recurrent state restored to the accepted row through the
+    binding's recurrent-state hook;
+  - graphs for verify frames that carry several sequences: the runner
+    captures a graph for one row per sequence or for one sequence's verify
+    frame (`StageRunnerGraphEligible` in `inference/runner/stage_runner.cu`),
+    so shared verify frames run eager;
   - multi-row verify numerics differ from a 1-row decode by the reordering
     floor, so speculative output is judged against the floor like batched
-    output. Close it with a fleet session on GLM-5.3 Full of edit-style
-    requests (a long file re-emitted with small changes). Report the
-    acceptance-length distribution, verify-wave cost and tok/s against plain
-    decode, and the accuracy gate as excess over the floor. Plain prompts with
-    no matches must show no slowdown beyond noise.
+    output. Add the accuracy gate as excess over the floor for edit-style
+    requests, and show that plain prompts with no matches lose no speed
+    beyond noise.
 
 ## Packaging and provenance
 
@@ -821,6 +810,9 @@ Related common-code debt:
 
 ## Driver consolidation
 
+- Kimi K3's device code (its slices and unity kernels) lives in
+  `inference/llms/kimi_k3/`, outside `model-families/k3/` where every other
+  model's math lives. Move it there.
 - Every stage-runner model, K3 included, resets every runner slot and the KV
   binding on a client reset and refuses stale-generation submissions
   (`StageServingReset` and the `reset_generation` check in
@@ -959,7 +951,6 @@ Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`
 - **Fleet access.** Access tokens scoped to an account's reserved hours, the gate in front of the fleet that admits only the current hour's customer, the customer-facing API (sparkpipe.ai has no API today), and loading the reserved model before the hour starts.
 - **`availability.txt`.** Generated from the calendar and fleet state every 30 seconds.
 - **Credits.** Automatic credits for downtime over 15 minutes and for performance below the threshold, from the fleet's own records.
-- **Cached request state.** The terms promise deletion within 24 hours of last use from 1 December 2026; `cache/kv-retention` holds the code, which needs a fleet KV gate and a node release.
 - **Won payments.** Electronic tax invoices (세금계산서) issued for each won order, matching of incoming bank transfers to orders, and won amounts in the ledger beside the hours they buy.
 - **Korean site.** The checkout preview (`site/buy.html`) is English only; the console that replaces it needs Korean from the start. The Korean address list behind the language redirect (`tools/site_kr_networks.py`, `docs/LITELLM_FRONTEND.md`) is rebuilt by hand; APNIC changes it daily, so it needs a monthly refresh job.
 - **ESTIMATED values on sparkpipe.ai.** The site shows projections marked ESTIMATED (the home page Speed and Roadmap sections, `fleets.html#estimates`). Each is replaced by a fleet measurement, with its receipt in `PERFORMANCE_STATUS.md`:
@@ -1086,14 +1077,9 @@ The design is in
 
 ## Multi-model serving (parallel inference on shared Sparks)
 
-Assessed 2026-09-13 against the lane/mesh/weightd architecture
-(PRs #959-#973). Handled today: per-model lanes (weightd-assigned, fail-closed),
-weight arenas shared by content identity (same model never loads twice),
-per-connection collectives (two engines of one model get distinct mesh
-pathways), swap-in loads that run daemon-side (a serving model does not
-stop while another loads), and per-engine continuous batching at
-MAXBATCHSIZE=128 with per-request completion. The gaps below are required
-for seamless production multi-model.
+One model holds a fleet at a time, and loading another takes about a
+minute (79 s for Kimi K3). Several models sharing a fleet's Sparks need the
+items below.
 
 - Lane-priority over-subscription policy: the explicit `EVICT` request
   enforces lane order (`SparkWeightdServerOnEvict` in

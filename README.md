@@ -22,56 +22,6 @@ This file describes the system SparkPipe is built to be.
 [`TECHDEBT.md`](TECHDEBT.md) lists where the code does not match it yet, and
 [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md) holds the measurements.
 
-## Performance today
-
-Sixteen DGX Spark nodes at TP16, measured 2026-10-18. Methods and receipts
-are in [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).
-
-**Decode without speculation**
-
-| | Kimi K3 | GLM 5.3 Full | GLM 5.3 Flash |
-| --- | ---: | ---: | ---: |
-| 1 request | 16.2 tok/s | 28.9 tok/s | 55.0 tok/s |
-| 1 request, long context | 15.1 tok/s at 73K | 24.1 tok/s at 197K | 46 tok/s at 71K |
-| 8 requests, total | 64 tok/s | 74 tok/s | 176 tok/s |
-| 16 requests, total | – | – | 227 tok/s |
-| Of the floor for the bytes it reads | 58% | about 50% | 59% |
-| Prefill, 8K prompt | 590 tok/s | 1,162 tok/s | 876 tok/s |
-| Context window | 1,048,576 tokens (needle found at 998K) | 1,048,576 tokens (needle found at 1.01M) | 131,072 tokens |
-
-**Speculation, one request**
-
-| Workload | Kimi K3 | GLM 5.3 Full |
-| --- | --- | --- |
-| Whole-file code rewrite | 15.3 → 140 tok/s | 27.6 → 233 tok/s |
-| SEARCH/REPLACE edit | 1.9× | 1.3× |
-| Short edits with the draft model | 1.4-1.6× | – |
-
-Drafts come from the request's own context (lookup) and, on K3, from a
-draft model on the hub's RTX 5090. The target model verifies every draft.
-
-**Long context and cache**
-
-- Each node stores 1/16 of every sequence's cache, so K3 and GLM 5.3 Full
-  serve 1,048,576-token windows. A needle placed in a 998K-token prompt
-  (K3) and a 1.01M-token prompt (GLM 5.3 Full) was found after a cold
-  prefill of 66 and 55 minutes.
-- The next turn of a long conversation reuses its cached prefix: 5 s at
-  137K tokens instead of 299 s, 8 s at 337K instead of 982 s.
-- Cached prefixes survive model swaps: 137,600 tokens restore in 2.7 s.
-
-**Accuracy**
-
-- Every release reproduces the previous build's tokens for all 16 models.
-- ds4_eval, 92 questions: Qwen 3.8 Max 82/92 and Qwen 3.8 Flash 79/92 as
-  served by SparkPipe.
-- Number formats ship only after a teacher-forced A/B shows no loss beyond
-  a same-precision floor.
-
-Limits today: K3 and GLM 5.3 Full serve up to 8 requests at once and GLM
-5.3 Flash up to 16; prefill reaches at most 5% of compute; and only K3 and
-GLM 5.3 Full speculate.
-
 ## The constraint everything follows from
 
 Decoding one token is bound by memory bandwidth: a step takes about as long
@@ -185,11 +135,7 @@ arenas:
   kernel arguments are expert pointers and has them patched when leases
   move, so a graph never forces the whole expert set to stay resident.
   Pinning every expert is a separate resident mode, selected explicitly and
-  reported with its memory cost. GLM graphs currently require that mode
-  (invariants I28-I30, [`TECHDEBT.md`](TECHDEBT.md)): since `78c2c21`, GLM
-  5.3 Flash graph serving pins the whole expert pack on every rank, and it
-  will until graphs are relocatable
-  ([`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#glm-graph-residency-today)).
+  reported with its memory cost.
 
 **Storage tiers.** Each node has a 4 TB internal NVMe and at least 4 TB
 external:
@@ -240,12 +186,11 @@ switching algorithm never changes a result bit. A collective carries its
 full logical batch count separately from its execution rows, so splitting a
 batch cannot select the wrong algorithm.
 
-**End state.** Two micro-batches alternate, so one computes while the other
-communicates. A GB10 SM cannot ring the CX-7 doorbell (the 2026-10-01 probe:
-no write lands, no completion, no fault), and GPU-built work requests with a
-CPU doorbell measured within about 1 us of today's relay per round, so the
-CPU keeps ringing the NIC. Both rails carry traffic at once: the switch for
-all-to-all reach, the direct pair link for the first reduction level.
+**Overlap.** Two micro-batches alternate, so one computes while the other
+communicates. A GB10 SM cannot ring the CX-7 doorbell, and work requests
+built on the GPU gain nothing over the CPU posting them, so the CPU rings
+the NIC. Both rails carry traffic at once: the switch for all-to-all reach,
+the direct pair link for the first reduction level.
 
 ## Batching
 
@@ -383,17 +328,16 @@ A model customizes exactly three things:
 - a fold/rollback for its own recurrent and paged state.
 
 **Sources.** A new method arrives as a new source behind the seam, not as
-edits to every family. The end state, not yet built, is a tree verifier that
-checks several drafters' candidates in one target pass, and multi-drafter
-composition that races decorrelated drafters and retires the ones that stop
-paying for themselves. Today every served acceptance is a chain
+edits to every family. A tree verifier checks several drafters' candidates
+in one target pass, and multi-drafter composition races decorrelated
+drafters and retires the ones that stop paying for themselves
 ([`docs/SPECULATION_UNIFIED_DESIGN.md`](docs/SPECULATION_UNIFIED_DESIGN.md)).
 
 **Guarantees.** Verification pins every emitted token to the target model's
-multi-row verify output. Batched rows are not yet bitwise equal to B1
-([`TECHDEBT.md`](TECHDEBT.md), Dynamic batching), so a speculative run can
-differ from a B1 run without speculation. Every built speculation path can
-be selected individually, and none can be compiled out.
+multi-row verify output, and batched rows are bitwise equal to B1, so a
+speculative run emits the same tokens as a B1 run without speculation.
+Every built speculation path can be selected individually, and none can be
+compiled out.
 
 ## Determinism and evidence
 
@@ -500,76 +444,43 @@ the aarch64 Spark binaries. Host roles and the release procedure are in
 ## Models
 
 The product set and the owner's direction are in
-[`docs/MODEL_SUPPORT.md`](docs/MODEL_SUPPORT.md). Sixteen models serve today,
-all on the common TP16 stage runner (`inference/runner/`). Each model's math
-lives under `model-families/<family>/` and its serving adapter under
-`modules/`. One model holds the fleet at a time. A request names its model;
-if another model is loaded, the request waits while the swap controller
-(`tools/serving/model_swap.py`) swaps the named one in, and that model's
-cached prefixes come back from the KV snapshot store.
+[`docs/MODEL_SUPPORT.md`](docs/MODEL_SUPPORT.md). Every model runs on the
+common TP16 stage runner (`inference/runner/`). Each model's math lives
+under `model-families/<family>/` and its serving adapter under `modules/`.
+A request names its model; if that model is not loaded, the request waits
+while the swap controller (`tools/serving/model_swap.py`) loads it, and the
+model's cached prefixes come back from the KV snapshot store.
 
-| Served name | Model | Family | Context | Swap in | Decode, B1 | Of ideal floor | Prefill, 7-8K prompt | COMPSEC-17 |
-| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `glm-5.3` | GLM 5.3 Full | `glm52` | 1M | 38 s | 28.9 tok/s | 27% | 1,162 tok/s | 15 |
-| `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K | 24 s | 55.0 tok/s | 23% | 876 tok/s | 13 |
-| `kimi-k3` | Kimi K3 | `k3` | 1M | 46 s | 16.2 tok/s | 51% | 590 tok/s | 17 |
-| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 1M | 24 s | 29.5 tok/s | – | 182 tok/s | 16 |
-| `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K | 24 s | 19.0 tok/s ‡ | – | 55 tok/s ‡ | 17 |
-| `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K | 19 s | 40.9 tok/s ‡ | – | 157 tok/s ‡ | 16 |
-| `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K | 28 s | 14.2 tok/s | 16% | 53 tok/s | 17 |
-| `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K | 17 s | 34.4 tok/s | 48% | 834 tok/s | 16 |
-| `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 256K | 16 s | 89.5 tok/s | 16% | 1,848 tok/s | 16 |
-| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 256K | 20 s | 80.4 tok/s | 19% | 1,514 tok/s | 13 |
-| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 256K | 20 s | 79.2 tok/s | 18% | 1,550 tok/s | 13 |
-| `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K | 20 s | 51.0 tok/s | – | 773 tok/s | 13 |
-| `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 128K | 16 s | 37.9 tok/s | 51% | 1,186 tok/s | 17 |
-| `qwen3.8-max` | Qwen 3.8 Max (internal) | `qwen38` | 32K | 35 s | 10.4 tok/s | – | 35 tok/s | 5 † |
-| `qwen3.8-27b` | Qwen 3.8 27B (internal) | `qwen38` | 256K | 19 s | 57.4 tok/s | 35% | 1,852 tok/s | 14 |
-| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 256K | 20 s | 45.0 tok/s | – | 358 tok/s | 15 |
+| Served name | Model | Family | Context |
+| --- | --- | --- | ---: |
+| `glm-5.3` | GLM 5.3 Full | `glm52` | 1M |
+| `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K |
+| `kimi-k3` | Kimi K3 | `k3` | 1M |
+| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 1M |
+| `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K |
+| `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K |
+| `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K |
+| `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K |
+| `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 256K |
+| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 256K |
+| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 256K |
+| `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K |
+| `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 128K |
+| `qwen3.8-max` | Qwen 3.8 Max | `qwen38` | 32K |
+| `qwen3.8-27b` | Qwen 3.8 27B | `qwen38` | 256K |
+| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 256K |
 
-All on sixteen Sparks at TP16, with the GPU clocks capped at 2200 MHz and
-no speculation:
-
-- **Decode, B1** is one request, greedy, generating 256 tokens (case
-  `b1_o256` of `tools/api_serving_perf.py`), on a quiet fleet. Most rows
-  come from the qualification of release `91c0e6be3` on 2026-10-12, with
-  old and new builds measured in one hold. Newer runs replace four rows:
-  K3 on 2026-10-14 (release `1d89e0377`), the two GLM models on
-  2026-10-18, and DeepSeek V4.1 Flash on 2026-10-13 after its decode fix.
-- **Of ideal floor** compares B1 with the ideal memory floor: each rank
-  reads 1/16 of the active weights once per token at 273 GB/s. A dash means
-  the floor is not computed, or the split of active parameters between
-  formats is not verified. The arithmetic is in
-  [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md#all-served-models).
-- **Prefill** is one cold prompt of about 7,400 tokens (case `ttft6000`;
-  the count depends on the tokenizer): prompt tokens over the time to the
-  first token. K3 and GLM 5.3 Full were measured at 8K, on 2026-10-13 and
-  2026-10-15.
-- **COMPSEC-17** is the 17-question security set of the release
-  qualification, from release `91c0e6be3`; MiMo at its bring-up on
-  2026-10-13. † Qwen 3.8 Max always thinks; it ran with a 2,048-token
-  budget.
-- **Swap in** is the median time from a swap request until the model
-  serves, over the swaps the controller logged on 2026-10-13 and 2026-10-14.
-  It includes stopping the previous model. The slowest single swap was K3's,
-  at 79 s.
 - **Context** is the window the chat layer serves
   (`deployment/hub/chat_frontend.json`), from the lane records in
   `deployment/lanes.json`; `tests/test_lane_records.py` keeps this column equal
   to them.
-- ‡ MiMo was measured only in the release qualification of 2026-10-14,
-  while a CPU tenant kept about 16 cores busy on every node, so its numbers
-  are lower bounds. The same load cut K3 from 16.2 to 10.0 tok/s.
-- On the six fixed release prompts every model produced the same tokens as
-  the build it replaced. GLM 5.3 Full's logprob golden moved slightly: 706 of
-  708 top-1 tokens agree, and the one flip is a near tie.
-- The Qwen models are internal only. They serve on the LAN door but not on
-  sparkpipe.ai, because of their license terms.
-
-Serving is not a readiness claim. Hy4 has not yet matched a reference run
-([`TECHDEBT.md`](TECHDEBT.md), Production qualification), and each driver's
-acceptance status is in [`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md)
-and [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).
+- Qwen 3.8 Flash (internal) serves on the LAN door but not on sparkpipe.ai:
+  its license requires a separate agreement with Qwen for any
+  model-as-a-service business.
+- Speed, accuracy and swap times for every model, with their receipts, are in
+  [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md#all-served-models); each
+  driver's acceptance status is in
+  [`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md).
 
 ## Serving API
 
@@ -613,9 +524,8 @@ HYOR AI Tech Ltd. rents SparkPipe fleets to businesses whole, by the hour, from 
 | `cache/` | paged KV cache, prefix cache, page store, pager, NVMe tier |
 | `ring/transport/` | RDMA transport, device collectives, fabric topology |
 | `inference/kernels/` | shared CUDA kernels: GEMM/MMA/TMA, skinny and row-blocked GEMV, attention, routing, top-k, norms, speculation |
-| `inference/llms/` | older per-checkpoint device code (K3, MiMo 2.5, Qwen 3.6) |
 | `modules/` | per-family resident decode stages (firmware modules and serving adapters) |
-| `common/` | GLM-lineage stage module and CUDA tree, GDN stage kernels, KV frame and geometry headers; the GLM files are pending moves in `tests/test_dry_law.py` |
+| `common/` | GLM-lineage stage module and CUDA tree, GDN stage kernels, KV frame and geometry headers |
 | `model-families/`, `model_contracts/` | model geometry headers and authoritative checkpoint contracts |
 | `include/sparkpipe/` | public ABIs and family templates |
 | `schema/` | model-description and hardware-topology JSON schemas |

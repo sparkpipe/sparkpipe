@@ -181,7 +181,7 @@ def page(p):
 <meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
 {alternates(p)}
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="site.css?v=7515b90b">
+<link rel="stylesheet" href="site.css?v=2ebd53ca">
 {STYLE}
 </head>
 <body>

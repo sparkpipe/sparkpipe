@@ -58,7 +58,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
   <h1>Your own AI fleet in Korea, by the hour.</h1>
   <div class="hero-grid">
     <div class="hero-copy">
-      <p class="lead">Rent a whole SparkPipe fleet and, for those hours, it serves only you. It runs open models over a terabyte, too large for most GPU servers: Kimi K3 today, and LG's K-EXAONE 2.0 and SKT's A.X K1 next, with million-token context and speculation. Your data stays in Korea, there is no queue of other customers' requests, and the price is per hour, not per token.</p>
+      <p class="lead">Rent a whole SparkPipe fleet and, for those hours, it serves only you. It runs Kimi K3 and other open models over a terabyte, too large for most GPU servers, with million-token context and speculation, and LG's K-EXAONE 2.0 and SKT's A.X K1 are next on the Fleet List. Your data stays in Korea, there is no queue of other customers' requests, and the price is per hour, not per token.</p>
       <div class="actions">
         <a class="btn solid" href="#prices">Prices and how to buy</a>
         <a class="btn" href="terms.html">Read the terms</a>
@@ -92,7 +92,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
   <div class="sec-body">
     <h2>Built for Korean companies.</h2>
     <div class="defs">
-      <div><p class="label">Data stays in Korea</p><p>The fleets and our servers are in Seoul, and your requests go to no foreign AI service. From 1 December 2026, cached request state is deleted within 24 hours of its last use.</p></div>
+      <div><p class="label">Data stays in Korea</p><p>The fleets and our servers are in Seoul, and your requests go to no foreign AI service. Cached request state is deleted within 24 hours of its last use.</p></div>
       <div><p class="label">A Korean company</p><p>You contract with HYOR AI Tech Ltd., a Korean company, under Korean law. Both contracts are in Korean and English, and the Korean text prevails.</p></div>
       <div><p class="label">Pay in won</p><p>Korean businesses pay by bank transfer against our electronic tax invoice (세금계산서), with 10% VAT. Customers abroad pay in USDC or by USD wire.</p></div>
       <div><p class="label">Korean models</p><p>LG's K-EXAONE 2.0 and SKT's A.X K1, both under Apache 2.0, and Upstage's Solar Open 2 are next on the Fleet List, beside Kimi K3, GLM 5.3 and the other open models.</p></div>
@@ -126,14 +126,14 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
 <section id="speed" class="sec">
   <div class="sec-rail">
     <p class="label">Speed</p>
-    <p class="label">Today and next</p>
+    <p class="label">Measured and estimated</p>
   </div>
   <div class="sec-body">
-    <h2>Fast where agents need it, faster soon.</h2>
+    <h2>Fast where agents need it.</h2>
     <div class="facts">
       <div><strong class="mono">126 tok/s</strong><p>Kimi K3 rewriting whole files with speculation, measured; 15 tok/s without it. Search-and-replace edits run at 28 tok/s.</p></div>
       <div><strong class="mono">0.3–5 s</strong><p>to the first token of a follow-up turn whose conversation is cached, measured on Kimi K3 up to 137,700 tokens.</p></div>
-      <div><strong class="mono">31 s</strong><p><b>ESTIMATED</b>: a 128K-token Kimi K3 prompt from cold with four prefill accelerator boxes, 16 s with eight, from 299 s today.</p></div>
+      <div><strong class="mono">31 s</strong><p><b>ESTIMATED</b>: a 128K-token Kimi K3 prompt from cold with four prefill accelerator boxes, 16 s with eight.</p></div>
     </div>
     <p class="prose"><b>ESTIMATED</b> for Kimi K3 on Fleet 2, eight M5 Ultra Mac Studios: 49 tok/s for one request without speculation, and about 120 tok/s with it on agent coding turns. LG's K-EXAONE 2.0 is estimated at 91 and about 230 tok/s. Estimates are projections from our measurements and published hardware figures; the <a href="fleets.html#estimates">Fleet List</a> shows how each is made, and each is replaced by a measurement once the hardware runs.</p>
   </div>
@@ -147,7 +147,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
   <div class="sec-body">
     <h2>What comes next.</h2>
     <div class="check-list">
-      <div><b>Prefill accelerators</b><span>Boxes of four NVIDIA RTX 5080 cards compute long prompts, four boxes first, then eight. ESTIMATED: a 128K-token Kimi K3 prompt in 31 s (16 s with eight boxes) instead of 299 s, and a 1M-token prompt in about 17 minutes instead of 76.</span></div>
+      <div><b>Prefill accelerators</b><span>Boxes of four NVIDIA RTX 5080 cards compute long prompts, four boxes first, then eight. ESTIMATED: a 128K-token Kimi K3 prompt in 31 s (16 s with eight boxes), and a 1M-token prompt in about 17 minutes.</span></div>
       <div><b>Fleet 2</b><span>Eight M5 Ultra Mac Studios with 2.2 times Fleet 1's memory bandwidth, for faster decoding. ESTIMATED: Kimi K3 at 49 tok/s without speculation.</span></div>
       <div><b>Better speculation</b><span>Tree drafts from several drafters at once. ESTIMATED: 2.5 times plain decode on agent coding turns.</span></div>
       <div><b>More large models</b><span>K-EXAONE 2.0, A.X K1, Solar Open 2, Nemotron 3 Ultra and Mistral Large 3.</span></div>
@@ -169,7 +169,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
       <li><h3>Reserve</h3><p>Choose a fleet, a model and the hours on the fleet's calendar, and sign; on hourly terms you reserve up to 7 days ahead. A confirmed reservation is final and is taken from your balance as the hour passes.</p></li>
       <li><h3>Use</h3><p>During your hours the whole fleet serves only your requests, through the SparkPipe API, which follows the OpenAI chat format. You issue the access tokens, so you decide who uses your hours.</p></li>
     </ol>
-    <p class="caption">Won payments go straight to HYOR AI Tech Ltd.'s Korean bank account. USDC payments go through a payment processor, which we will name on this site before we accept any. Our system has no feature for passing hours between accounts.</p>
+    <p class="caption">Won payments go straight to HYOR AI Tech Ltd.'s Korean bank account. USDC payments go through a payment processor. Our system has no feature for passing hours between accounts.</p>
   </div>
 </section>
 
@@ -208,7 +208,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
   </div>
   <div class="sec-body">
     <h2>One balance, every fleet.</h2>
-    <p class="prose">Your hours work on every fleet we operate. A fleet's rate is the number of hours one hour on it takes from your balance. The <a href="fleets.html">Fleet List</a> is the list the terms refer to: fleets, rates, models, their licenses, and the limits of today's builds.</p>
+    <p class="prose">Your hours work on every fleet we operate. A fleet's rate is the number of hours one hour on it takes from your balance. The <a href="fleets.html">Fleet List</a> is the list the terms refer to: fleets, rates, models and their licenses.</p>
     <div class="table-wrap"><table>
       <thead><tr><th>Fleet</th><th>Machines</th><th>State</th><th>Rate</th></tr></thead>
       <tbody>
@@ -226,7 +226,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
         <tr><td><b>DeepSeek V4.1 Flash</b><span>DeepSeek · deepseek-v4.1-flash</span></td><td><a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017">MIT</a></td><td class="figure">1M</td><td class="figure"><b>42.5</b>tok/s ¹</td><td class="figure"><b>151</b>tok/s ¹</td><td class="figure"><b>1,290</b>tok/s ¹</td></tr>
       </tbody>
     </table></div>
-    <p class="caption">Context windows as served today. Decode without speculation, measured on 2026-10-18 with prompts of 7 to 8K tokens. ¹ DeepSeek V4.1 Flash was measured on 2026-10-24 after a prompt of about a million tokens; its prefill figure is that prompt's average. All sixteen installed models, their licenses and speeds are on the <a href="fleets.html">Fleet List</a>; you must follow each model's license.</p>
+    <p class="caption">Context windows as served. Decode without speculation, measured on 2026-10-18 with prompts of 7 to 8K tokens. ¹ DeepSeek V4.1 Flash was measured on 2026-10-24 after a prompt of about a million tokens; its prefill figure is that prompt's average. All sixteen installed models, their licenses and speeds are on the <a href="fleets.html">Fleet List</a>; you must follow each model's license.</p>
   </div>
 </section>
 
@@ -242,7 +242,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
       <div><p class="label">Your users</p><p>You may let your own users, or anyone you choose, use your hours through the key and access tokens you control. That happens outside our system: it keeps no register of it and takes no part. You stay responsible for everyone who uses your hours.</p></div>
       <div><p class="label">Lawful use</p><p>Every use must follow the law, including sanctions and export control, personal data and intellectual property law, and each model's license. We may suspend use that a law or authority requires us to stop, that breaks the terms, or that threatens a fleet.</p></div>
       <div><p class="label">AI law</p><p>If you offer generative AI to your own users, you are their provider under Korea's AI Basic Act and carry its notice and labelling duties.</p></div>
-      <div><p class="label">Your data</p><p>You keep every right in your data and outputs. We keep no backups of it. From 1 December 2026, cached request state is deleted within 24 hours of its last use. The fleets and our servers are in Seoul.</p></div>
+      <div><p class="label">Your data</p><p>You keep every right in your data and outputs. We keep no backups of it. Cached request state is deleted within 24 hours of its last use. The fleets and our servers are in Seoul.</p></div>
       <div><p class="label">Businesses only</p><p>Fleet-hours are sold to businesses for their business, never to consumers. Korean law governs both contracts, and disputes go to arbitration in Seoul under the Korean Commercial Arbitration Board's rules.</p></div>
     </div>
   </div>

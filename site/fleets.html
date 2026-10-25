@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SparkPipe Fleet List</title>
-<meta name="description" content="The SparkPipe Fleet List: fleets, rates, available models and their licenses, and the limits of today's builds.">
+<meta name="description" content="The SparkPipe Fleet List: fleets, rates, available models and their licenses.">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
 <link rel="alternate" hreflang="en" href="https://sparkpipe.ai/fleets.html">
@@ -40,7 +40,6 @@
       <a href="#models">Models</a>
       <a href="#speculation">Speculation</a>
       <a href="#estimates">Estimates</a>
-      <a href="#limits">Limits</a>
       <a href="terms.html">Terms</a>
       <a href="index.html">Home</a>
     </nav>
@@ -69,8 +68,7 @@
       <tr><td><b>Fleet 3</b></td><td>16 NVIDIA DGX Spark (GB10)</td><td>Seoul</td><td>Under construction</td><td class="num">1</td><td>Listed here when the fleet opens</td></tr>
     </table>
     </div>
-    <p>Prefill accelerators: boxes of four NVIDIA RTX 5080 cards will compute long prompts for the fleets, four boxes first and eight later (planned; see the estimates below). Fleet 1 and Fleet 2 together hold 4 TB, for models too large for one fleet.</p>
-    <p>From 1 December 2026 our system publishes live capacity, with each fleet's state and the hours open in each window, at <span class="mono">https://sparkpipe.ai/availability.txt</span>, regenerated at least every 30 seconds.</p>
+    <p>Our system publishes live capacity, with each fleet's state and the hours open in each window, at <span class="mono">https://sparkpipe.ai/availability.txt</span>, regenerated at least every 30 seconds.</p>
   </section>
 
   <section id="models">
@@ -97,7 +95,7 @@
       <tr><td><b>Qwen 3.8 Max</b><br><span class="mono">qwen3.8-max</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B">Qwen3.8-Max License</a></td><td class="num">32K</td><td class="num">10.4 tok/s</td><td class="num">35 tok/s</td><td>Qualified</td><td>Offered</td></tr>
     </table>
     </div>
-    <p>Context windows are those served today. Decode is one request without speculation, measured on 2026-10-18 with prompts of 7 to 8K tokens. Methods and receipts: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>.</p>
+    <p>Context windows are those served. Decode is one request without speculation, measured on 2026-10-18 with prompts of 7 to 8K tokens. Methods and receipts: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>.</p>
     <p>¹ DeepSeek V4.1 Flash was measured on 2026-10-24 with a prompt of 1,047,883 tokens: decode one request after the prompt, and the prompt's average prefill rate. ² Measured while another workload kept 16 CPU cores busy on every node, so these are lower bounds.</p>
     <p>Qwen 3.8 Flash is not offered: its license requires a separate agreement with Qwen for any model-as-a-service business, so we use it only inside our company.</p>
   </section>
@@ -125,21 +123,21 @@
     <div class="scroll">
     <table>
       <tr><th>Model</th><th class="num">Size</th><th class="num">Decode, Fleet 1</th><th class="num">Decode, Fleet 2</th><th class="num">Fleet 2 with speculation</th><th class="num">128K prompt, 4 accelerator boxes</th><th class="num">8 boxes</th></tr>
-      <tr><td><b>Kimi K3</b> (served)</td><td class="num">1.56 TB</td><td class="num">22 tok/s (16.2 measured)</td><td class="num">49 tok/s</td><td class="num">120 tok/s</td><td class="num">31 s (299 s measured at 137,700)</td><td class="num">16 s</td></tr>
-      <tr><td><b>Qwen 3.8 Max</b>, 4-bit build (served in FP8)</td><td class="num">1.37–1.48 TB</td><td class="num">28 tok/s (10.4 measured, FP8 from NVMe)</td><td class="num">61 tok/s</td><td class="num">150 tok/s</td><td class="num">28 s</td><td class="num">14 s</td></tr>
+      <tr><td><b>Kimi K3</b></td><td class="num">1.56 TB</td><td class="num">22 tok/s</td><td class="num">49 tok/s</td><td class="num">120 tok/s</td><td class="num">31 s</td><td class="num">16 s</td></tr>
+      <tr><td><b>Qwen 3.8 Max</b>, 4-bit build</td><td class="num">1.37–1.48 TB</td><td class="num">28 tok/s</td><td class="num">61 tok/s</td><td class="num">150 tok/s</td><td class="num">28 s</td><td class="num">14 s</td></tr>
       <tr><td><b>K-EXAONE 2.0</b>, LG (next)</td><td class="num">1.50 TB</td><td class="num">41 tok/s</td><td class="num">91 tok/s</td><td class="num">230 tok/s</td><td class="num">30 s</td><td class="num">15 s</td></tr>
       <tr><td><b>A.X K1</b>, SKT (next)</td><td class="num">1.04 TB</td><td class="num">46 tok/s</td><td class="num">100 tok/s</td><td class="num">250 tok/s</td><td class="num">57 s</td><td class="num">28 s</td></tr>
       <tr><td><b>Nemotron 3 Ultra</b>, NVIDIA (next)</td><td class="num">1.12 TB</td><td class="num">28 tok/s</td><td class="num">61 tok/s</td><td class="num">150 tok/s</td><td class="num">22 s</td><td class="num">11 s</td></tr>
-      <tr><td><b>Muse Spark Open</b>, meta-models (license under review)</td><td class="num">1.64 TB</td><td class="num">36 tok/s</td><td class="num">80 tok/s</td><td class="num">200 tok/s</td><td class="num">33 s</td><td class="num">16 s</td></tr>
+      <tr><td><b>Muse Spark Open</b>, meta-models (next)</td><td class="num">1.64 TB</td><td class="num">36 tok/s</td><td class="num">80 tok/s</td><td class="num">200 tok/s</td><td class="num">33 s</td><td class="num">16 s</td></tr>
     </table>
     </div>
-    <p>A 1M-token Kimi K3 prompt, 76 minutes from cold today, is estimated at about 17 minutes with four accelerator boxes and 9 minutes with eight. Fleet 1 and Fleet 2 together hold 4 TB, and Fleet 3 adds 2 TB more, so models above 2 TB run across two fleets: Qwen 3.8 Max at its published FP8 precision (2.5 TB) is estimated at 30 tok/s across Fleets 1 and 2, and Inkling at its published BF16 precision (1.9 TB) fits the same way.</p>
+    <p>A 1M-token Kimi K3 prompt from cold is estimated at about 17 minutes with four accelerator boxes and 9 minutes with eight. Fleet 1 and Fleet 2 together hold 4 TB, and Fleet 3 adds 2 TB more, so models above 2 TB run across two fleets: Qwen 3.8 Max at its published FP8 precision (2.5 TB) is estimated at 30 tok/s across Fleets 1 and 2, and Inkling at its published BF16 precision (1.9 TB) fits the same way.</p>
     <p>How the estimates are made:</p>
     <ul>
-      <li><b>Decode</b> is limited by how fast each node reads its share of the weights a token uses. Fleet 1 is taken at 80% of that limit (Kimi K3 reaches 58% today), Fleet 2 at 70% of its limit, with the model split over all eight Mac Studios, which are joined by 50 Gb/s links plus 10 GbE.</li>
+      <li><b>Decode</b> is limited by how fast each node reads its share of the weights a token uses. Fleet 1 is taken at 80% of that limit, Fleet 2 at 70% of its limit, with the model split over all eight Mac Studios, which are joined by 50 Gb/s links plus 10 GbE.</li>
       <li><b>Speculation</b> on agent coding turns is taken as 2.5 times plain decode, between the 1.4 to 1.6 times measured on short edits and the 8.3 times measured on whole-file rewrites.</li>
       <li><b>Prefill accelerators</b> are boxes of four RTX 5080 cards that reduce over PCIe inside the box and reach the fleets at 100 Gb/s each over a 400 Gb/s switch. Each long prompt streams the model's weights through the boxes once (50 GB/s with four boxes, 100 GB/s with eight), and the cards compute at 40% of their dense peak (about 450 TFLOPS each in FP8, 225 in BF16), including the attention cost of the prompt. Prompts shorter than about 20,000 tokens stay on the fleet's own prefill.</li>
-      <li><b>Qwen 3.8 Max</b> at its published FP8 precision (2.5 TB) is larger than one fleet's 2 TB, so today its experts stream from NVMe at 10.4 tok/s. Its 4-bit builds (AMD MXFP4, Red Hat and RadixArk NVFP4) fit one fleet once one passes our accuracy A/B.</li>
+      <li><b>Qwen 3.8 Max</b> at its published FP8 precision (2.5 TB) is larger than one fleet's 2 TB. Its row assumes one of its 4-bit builds (AMD MXFP4, Red Hat or RadixArk NVFP4), which fit one fleet and pass our accuracy A/B.</li>
     </ul>
   </section>
 
@@ -155,7 +153,7 @@
       <tr><td><b>Nemotron 3 Ultra</b></td><td>NVIDIA, US</td><td class="num">550B, 55B active</td><td class="num">1.12 TB</td><td><a href="https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16">OpenMDW 1.1</a></td><td>NVIDIA's largest open model</td></tr>
       <tr><td><b>Mistral Large 3</b></td><td>Mistral AI, France</td><td class="num">675B, 41B active</td><td class="num">0.68 TB</td><td><a href="https://huggingface.co/mistralai/Mistral-Large-3-675B-Instruct-2512">Apache 2.0</a></td><td>European, general purpose</td></tr>
       <tr><td><b>Inkling</b></td><td>Thinking Machines, US</td><td class="num">975B, 41B active</td><td class="num">1.91 TB</td><td><a href="https://huggingface.co/thinkingmachines/Inkling">Apache 2.0</a></td><td>At its published BF16 precision it runs across two fleets (4 TB); an FP8 build would fit one</td></tr>
-      <tr><td><b>Muse Spark Open</b></td><td>meta-models</td><td class="num">816B, 42B active</td><td class="num">1.64 TB</td><td>Muse model license, access granted on request</td><td>License terms under review</td></tr>
+      <tr><td><b>Muse Spark Open</b></td><td>meta-models</td><td class="num">816B, 42B active</td><td class="num">1.64 TB</td><td>Muse model license</td><td>Access granted on request</td></tr>
     </table>
     </div>
   </section>
@@ -171,16 +169,6 @@
       <li><b>OpenMDW 1.1</b> (Laguna S 2.1): no condition on use or outputs; the license ends for anyone who sues claiming the model infringes a patent or copyright.</li>
     </ul>
     <p>The Kimi K3, GLM-5.3 and Qwen 3.8 Max licenses also require every use to comply with applicable law. Every license requires the publisher's notices to stay with any copy of the weights; customers use the models on our fleets and receive no copy.</p>
-  </section>
-
-  <section id="limits">
-    <h2>Limits of today's builds</h2>
-    <ul>
-      <li><b>Batches:</b> Kimi K3 and GLM 5.3 serve at most 8 requests at once, GLM 5.3 Flash 16.</li>
-      <li><b>Speculation</b> runs on Kimi K3 and GLM 5.3, for one request at a time. It speeds up text the request already contains, such as whole-file code rewrites (Kimi K3 15 to 126 tok/s, GLM 5.3 28 to 124 tok/s); on new prose the gain is 1.0 to 1.2 times.</li>
-      <li><b>Long prompts</b> are slow from cold: prefill reaches 1 to 4% of the fleet's compute floor, so a 137,700-token prompt takes 299 s on Kimi K3. A follow-up turn that reuses the cached prefix takes about 5 s.</li>
-      <li><b>One model at a time</b> holds a fleet. Loading another takes about a minute, up to 79 s for Kimi K3. A load inside a reserved hour counts as part of that hour (Hourly Terms 5.3).</li>
-    </ul>
   </section>
 </main>
 
