@@ -424,7 +424,10 @@ chat, before their first message, that the replies come from generative AI;
 Open WebUI shows it in Korean when the interface language is Korean. It is
 not dismissible, so closing it hides it only until the next visit. Every
 reply copied with the copy button ends with the bilingual label in
-`ui.watermark` (`RESPONSE_WATERMARK`). Customers who serve their own users
+`ui.watermark` (`RESPONSE_WATERMARK`). A new account's waiting screen
+(`ui.pending_user_overlay_title` and `_content`, `PENDING_USER_OVERLAY_*`)
+says, in English and Korean, that the replies come from generative AI and
+links the privacy policy, before the account is approved or used. Customers who serve their own users
 with fleet-hours carry these duties themselves (agreement 8.10, Hourly Terms
 7.2).
 

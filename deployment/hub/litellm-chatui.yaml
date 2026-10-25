@@ -7,25 +7,9 @@ model_list:
   model_info:
     max_input_tokens: 1048576
     max_output_tokens: 131072
-- model_name: kimi-k3-bulk
-  litellm_params:
-    model: hosted_vllm/kimi-k3-bulk
-    api_base: http://127.0.0.1:8433/v1
-    api_key: none
-  model_info:
-    max_input_tokens: 1048576
-    max_output_tokens: 131072
 - model_name: glm-5.3
   litellm_params:
     model: hosted_vllm/glm-5.3
-    api_base: http://127.0.0.1:8433/v1
-    api_key: none
-  model_info:
-    max_input_tokens: 1048576
-    max_output_tokens: 131072
-- model_name: glm-5.3-bulk
-  litellm_params:
-    model: hosted_vllm/glm-5.3-bulk
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
@@ -39,25 +23,9 @@ model_list:
   model_info:
     max_input_tokens: 131072
     max_output_tokens: 131072
-- model_name: glm-5.3-flash-bulk
-  litellm_params:
-    model: hosted_vllm/glm-5.3-flash-bulk
-    api_base: http://127.0.0.1:8433/v1
-    api_key: none
-  model_info:
-    max_input_tokens: 131072
-    max_output_tokens: 131072
 - model_name: deepseek-v4.1-flash
   litellm_params:
     model: hosted_vllm/deepseek-v4.1-flash
-    api_base: http://127.0.0.1:8433/v1
-    api_key: none
-  model_info:
-    max_input_tokens: 1048576
-    max_output_tokens: 16384
-- model_name: deepseek-v4.1-flash-bulk
-  litellm_params:
-    model: hosted_vllm/deepseek-v4.1-flash-bulk
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
@@ -71,25 +39,9 @@ model_list:
   model_info:
     max_input_tokens: 32768
     max_output_tokens: 32768
-- model_name: mimo-v2.6-pro-bulk
-  litellm_params:
-    model: hosted_vllm/mimo-v2.6-pro-bulk
-    api_base: http://127.0.0.1:8433/v1
-    api_key: none
-  model_info:
-    max_input_tokens: 32768
-    max_output_tokens: 32768
 - model_name: mimo-v2.6-flash
   litellm_params:
     model: hosted_vllm/mimo-v2.6-flash
-    api_base: http://127.0.0.1:8433/v1
-    api_key: none
-  model_info:
-    max_input_tokens: 32768
-    max_output_tokens: 32768
-- model_name: mimo-v2.6-flash-bulk
-  litellm_params:
-    model: hosted_vllm/mimo-v2.6-flash-bulk
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
@@ -103,25 +55,9 @@ model_list:
   model_info:
     max_input_tokens: 32768
     max_output_tokens: 32768
-- model_name: gemma-4-31b-bulk
-  litellm_params:
-    model: hosted_vllm/gemma-4-31b-bulk
-    api_base: http://127.0.0.1:8433/v1
-    api_key: none
-  model_info:
-    max_input_tokens: 32768
-    max_output_tokens: 32768
 - model_name: gemma-4-26b-a4b
   litellm_params:
     model: hosted_vllm/gemma-4-26b-a4b
-    api_base: http://127.0.0.1:8433/v1
-    api_key: none
-  model_info:
-    max_input_tokens: 262144
-    max_output_tokens: 32768
-- model_name: gemma-4-26b-a4b-bulk
-  litellm_params:
-    model: hosted_vllm/gemma-4-26b-a4b-bulk
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
@@ -135,25 +71,9 @@ model_list:
   model_info:
     max_input_tokens: 262144
     max_output_tokens: 32768
-- model_name: ling-3.0-flash-bulk
-  litellm_params:
-    model: hosted_vllm/ling-3.0-flash-bulk
-    api_base: http://127.0.0.1:8433/v1
-    api_key: none
-  model_info:
-    max_input_tokens: 262144
-    max_output_tokens: 32768
 - model_name: ling-3.0-flash-fin
   litellm_params:
     model: hosted_vllm/ling-3.0-flash-fin
-    api_base: http://127.0.0.1:8433/v1
-    api_key: none
-  model_info:
-    max_input_tokens: 262144
-    max_output_tokens: 32768
-- model_name: ling-3.0-flash-fin-bulk
-  litellm_params:
-    model: hosted_vllm/ling-3.0-flash-fin-bulk
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
@@ -167,25 +87,9 @@ model_list:
   model_info:
     max_input_tokens: 32768
     max_output_tokens: 32768
-- model_name: laguna-s-2.1-bulk
-  litellm_params:
-    model: hosted_vllm/laguna-s-2.1-bulk
-    api_base: http://127.0.0.1:8433/v1
-    api_key: none
-  model_info:
-    max_input_tokens: 32768
-    max_output_tokens: 32768
 - model_name: muse-glimmer-30b
   litellm_params:
     model: hosted_vllm/muse-glimmer-30b
-    api_base: http://127.0.0.1:8433/v1
-    api_key: none
-  model_info:
-    max_input_tokens: 131072
-    max_output_tokens: 32768
-- model_name: muse-glimmer-30b-bulk
-  litellm_params:
-    model: hosted_vllm/muse-glimmer-30b-bulk
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
@@ -199,25 +103,9 @@ model_list:
   model_info:
     max_input_tokens: 32768
     max_output_tokens: 32768
-- model_name: hy4-preview-bulk
-  litellm_params:
-    model: hosted_vllm/hy4-preview-bulk
-    api_base: http://127.0.0.1:8433/v1
-    api_key: none
-  model_info:
-    max_input_tokens: 32768
-    max_output_tokens: 32768
 - model_name: qwen3.8-27b
   litellm_params:
     model: hosted_vllm/qwen3.8-27b
-    api_base: http://127.0.0.1:8433/v1
-    api_key: none
-  model_info:
-    max_input_tokens: 262144
-    max_output_tokens: 131072
-- model_name: qwen3.8-27b-bulk
-  litellm_params:
-    model: hosted_vllm/qwen3.8-27b-bulk
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
@@ -231,25 +119,9 @@ model_list:
   model_info:
     max_input_tokens: 262144
     max_output_tokens: 32768
-- model_name: qwen3.8-flash-bulk
-  litellm_params:
-    model: hosted_vllm/qwen3.8-flash-bulk
-    api_base: http://127.0.0.1:8433/v1
-    api_key: none
-  model_info:
-    max_input_tokens: 262144
-    max_output_tokens: 32768
 - model_name: qwen3.8-max
   litellm_params:
     model: hosted_vllm/qwen3.8-max
-    api_base: http://127.0.0.1:8433/v1
-    api_key: none
-  model_info:
-    max_input_tokens: 32768
-    max_output_tokens: 32768
-- model_name: qwen3.8-max-bulk
-  litellm_params:
-    model: hosted_vllm/qwen3.8-max-bulk
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
