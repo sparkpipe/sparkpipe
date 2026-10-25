@@ -344,7 +344,7 @@ Every page with a Korean twin (`index`, `fleets`, `terms`, `privacy`, `hourly-te
 curl -sSfO https://ftp.apnic.net/stats/apnic/delegated-apnic-latest
 curl -sSfO https://ftp.apnic.net/stats/apnic/delegated-apnic-latest.md5
 python3 tools/site_kr_networks.py delegated-apnic-latest kr24.txt
-sudo httxt2dbm -F SDBM -i kr24.txt -o /etc/apache2/sparkpipe/kr24.new
+sudo httxt2dbm -f SDBM -i kr24.txt -o /etc/apache2/sparkpipe/kr24.new
 sudo mv /etc/apache2/sparkpipe/kr24.new.pag /etc/apache2/sparkpipe/kr24.pag
 sudo mv /etc/apache2/sparkpipe/kr24.new.dir /etc/apache2/sparkpipe/kr24.dir
 ```

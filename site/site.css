@@ -302,9 +302,10 @@ body.app .status { margin-left: 8px; }
 html:lang(ko) {
   --display: 'Archivo', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
   --text: 'Archivo', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
-  --mono: 'Martian Mono', 'Noto Sans KR', 'Apple SD Gothic Neo', ui-monospace, Menlo, monospace;
+  --mono: 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
 }
 html:lang(ko) body { word-break: keep-all; overflow-wrap: break-word; }
+html:lang(ko) .mono { font-family: 'Martian Mono', ui-monospace, Menlo, monospace; }
 html:lang(ko) h1 { line-height: 1.12; letter-spacing: -.02em; }
 html:lang(ko) h2 { line-height: 1.22; letter-spacing: -.015em; }
 html:lang(ko) .label { letter-spacing: .04em; }
