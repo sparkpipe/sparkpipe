@@ -32,7 +32,7 @@ These Terms are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 ## 4. Hours
 
-4.1. **Holding limit.** Customer may hold at most 24 hours at a time, counting unused hours and reserved hours that have not yet occurred. Once we approve Customer's business after our verification, the limit is 720 hours. We may change these limits for future purchases.
+4.1. **Holding limit.** Customer may hold at most 168 hours (one week) at a time, counting unused hours and reserved hours that have not yet occurred. Once we approve Customer's business after our verification, the limit is 720 hours. We may change these limits for future purchases.
 
 4.2. Hours may be used from the start date chosen at purchase, which may not be earlier than the first date we offer. They expire 12 months after that start date.
 

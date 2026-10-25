@@ -593,7 +593,7 @@ HYOR AI Tech Ltd. rents SparkPipe fleets to businesses whole, by the hour, from 
 
 - **A fleet-hour** is one entire fleet for sixty minutes. During it the fleet serves only the customer's requests, with the model the customer chose from the [Fleet List](https://sparkpipe.ai/fleets.html).
 - **Two ways to buy:**
-  - **Hourly:** prepaid at the hourly price, with no commitment and no business check. A customer holds up to 24 hours, or 720 after a business check. A two-year customer may take an hourly reservation until 6 hours before it starts, and the hour returns to the balance.
+  - **Hourly:** prepaid at the hourly price, with no commitment and no business check. A customer holds up to 168 hours (a week), or 720 after a business check. A two-year customer may take an hourly reservation until 6 hours before it starts, and the hour returns to the balance.
   - **The two-year agreement:** every hour of a two-year term at a lower price, after a business check, negotiated clause by clause. The models the customer names stay available for the term.
 - **Self-serve:** an account is an Ethereum address. The customer accepts the terms, reserves hours on each fleet's calendar and changes its account by messages signed with that key. `https://sparkpipe.ai/availability.txt` publishes live capacity every 30 seconds.
 - **Payment:** prepaid in USDC through a payment processor, with Korean VAT; two-year customers may also wire USD from abroad.

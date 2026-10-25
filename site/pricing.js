@@ -2,7 +2,7 @@ window.SP_PRICING = {
   hourlyPrice: 20,
   committedPrice: 15,
   vatRate: 0.10,
-  hourlyMaxHours: 24,
+  hourlyMaxHours: 168,
   verifiedMaxHours: 720,
   hourlyValidityMonths: 12,
   displaceNoticeHours: 6,
