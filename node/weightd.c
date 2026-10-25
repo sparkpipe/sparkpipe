@@ -111,6 +111,17 @@ static SparkStatus SparkWeightdKvPurgeStart(void)
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkWeightdStartThreads(int mesh_enabled)
+{
+    static pthread_t mesh_thread;
+    if (mesh_enabled && pthread_create(&mesh_thread, 0, SparkWeightdMeshThread, 0) != 0)
+    {
+        fprintf(stderr, "weightd-mesh: thread create failed; startup failed\n");
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    return SparkWeightdKvPurgeStart();
+}
+
 static void SparkWeightdUsage(const char *program)
 {
     fprintf(stderr,
@@ -547,19 +558,7 @@ int main(int argument_count, char **arguments)
         SparkWeightdServerDestroy(server);
         return 1;
     }
-    if (mesh_fields == 15u)
-    {
-        static pthread_t mesh_thread;
-        if (pthread_create(&mesh_thread,0,SparkWeightdMeshThread,0) != 0)
-        {
-            fprintf(stderr,"weightd-mesh: thread create failed; startup failed\n");
-            SparkWeightdMeshStop();
-            SparkWeightdServerDestroy(server);
-            return 1;
-        }
-    }
-
-    if (SparkWeightdKvPurgeStart() != SPARK_STATUS_OK)
+    if (SparkWeightdStartThreads(mesh_fields == 15u) != SPARK_STATUS_OK)
     {
         SparkWeightdMeshStop();
         SparkWeightdServerDestroy(server);
