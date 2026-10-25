@@ -157,8 +157,8 @@ about 320 GB, from the per-rank shapes in
 [`GLM5_NEXT_ROOFLINE.md`](GLM5_NEXT_ROOFLINE.md). It needs TP2, so the pool
 holds four replicas. A B1 step reads about 25 GB; split over two Studios that
 is a 10.4 ms floor, 96 tok/s per replica. A 4-bit build fits one Studio, but
-to the provider network it is a different model: a separate offer, with its
-own reference nodes.
+it is a different model: a separate entry on the Fleet List, qualified on its
+own.
 
 ## Mixed fleets
 

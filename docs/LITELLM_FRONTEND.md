@@ -6,7 +6,6 @@ through this stack on the rtx5090 hub:
 | Port | Process | Protocol |
 | --- | --- | --- |
 | 4000 | LiteLLM proxy (`config/litellm-config.yaml`, user unit `sparkpipe-litellm`) | OpenAI `/v1/chat/completions` and Anthropic `/v1/messages`; any model name routes to `glm-5.3` |
-| 4001 | stopped 2026-10-25: the external LiteLLM that served the sparkpipe.ai playground | – |
 | 8433 | chat layer (`tools/serving/chat_frontend.py`, user unit `sparkpipe-chat`, 127.0.0.1 only) | OpenAI `/v1/chat/completions`, `/v1/models`, `/health`; the tunnel forwards sparkpipe.ai:8443/fleet here |
 | 8446 | `sparkpipe_model_api` (user unit `glmfull-api6`) | the engine endpoint: `prompt_token_ids` in, token ids, usage and `cached_tokens` out |
 
@@ -329,11 +328,11 @@ the markers itself. GLM 5.3 Flash IDs: `[gMASK]` 154822, `<sop>` 154824,
 Qwen's `<|im_start|>user\n` IDs (151644, 872, 198) are ordinary text pieces
 to GLM.
 
-## sparkpipe.ai (2026-10-25)
+## sparkpipe.ai
 
 `https://sparkpipe.ai` is static, with no API and no login. It holds the home page, the Fleet List, the terms, the privacy policy and the checkout preview. They are copied from `site/` to `/var/www/html` on the KCInfra VPS (27.102.120.99). `tools/site_terms.py` generates the terms pages from `site/terms/`; `tests/test_site.py` fails when they differ.
 
-The playground, the providers page and `/v1` were removed on 2026-10-25. So were Apache's Basic auth and its gateway bearer, and the external LiteLLM (4001) is stopped. Fleet-hour customers will reach their fleet through an API that waits for the legal review of the business flow.
+Apache serves only these pages: no API, no login, no proxy. Fleet-hour customers will reach their fleet through the customer API that TECHDEBT lists under fleet-hours.
 
 | VPS path | Goes to |
 | --- | --- |
@@ -341,7 +340,7 @@ The playground, the providers page and `/v1` were removed on 2026-10-25. So were
 | `:8443/` | VPS 127.0.0.1:18082, then hub 8090 (Open WebUI, next section) |
 | `:8443/fleet`, `/fleet/status`, `/fleet/switch-now` | VPS 127.0.0.1:18081, then hub 8433 (the chat layer's admin page) |
 
-The tunnel is the hub system unit `sparkpipe-ai-door` (root, key `/root/.ssh/sparkpipe_ai_tunnel_ed25519`). It still forwards 127.0.0.1:18080 to the stopped 4001, and the VPS key may still listen on 18080. Dropping 18080 from both is an SSH change, which the owner decides.
+The tunnel is the hub system unit `sparkpipe-ai-door` (root, key `/root/.ssh/sparkpipe_ai_tunnel_ed25519`). It also forwards 127.0.0.1:18080 to the hub's port 4001, where nothing listens, and the VPS key may listen on 18080. Dropping 18080 from both is an SSH change, which the owner decides.
 
 ## SparkPipe Chat (Open WebUI, sparkpipe.ai:8443)
 

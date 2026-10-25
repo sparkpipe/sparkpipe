@@ -732,9 +732,7 @@ Related common-code debt:
 
 - Add an exact checkpoint-derived contract for MiniMax H3; `model_contracts/`
   has none.
-- Remove legacy model names from operator surfaces: `site/index.html` still
-  lists DeepSeek V4 Pro, Qwen4 Flash and MiniMax H3, whose drivers are gone,
-  and `deployment/minimax_text_tp4` remains.
+- Remove `deployment/minimax_text_tp4`; the MiniMax driver is gone.
 - `model_contracts/glm53_full_authoritative.json` carries no rope theta or
   interleave flags, so `tools/generate_recipe.py` reads them for the GLM Full
   recipes from `spark_glm52_model.h`. Add them to the contract's geometry at
@@ -950,69 +948,19 @@ Related common-code debt:
   and it takes that pool as a page count. Size the physical pool from a byte
   budget the lanes share and let paged admission share it.
 
-## Provider network
+## Fleet-hours
 
-Of the provider network in `README.md`, the tree has only the LiteLLM front
-door, the static pages in `site/` and the login-gated sparkpipe.ai playground
-(`docs/LITELLM_FRONTEND.md`, sparkpipe.ai).
+Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`, published by `tools/site_terms.py`), the Fleet List, the privacy policy, the price and rate table `site/pricing.js`, and a checkout preview (`site/buy.html`) that keeps everything in the browser. Nothing else exists. The business flow is settled by the legal review of the terms, so building waits for it.
 
-- **Tailnet.** No tailnet exists yet. It needs a control server that scales
-  to hundreds of providers at a sane cost (Tailscale or a self-hosted
-  Headscale), tagged auth keys issued at registration, access rules that
-  let only the router and the reference nodes reach a provider's model API
-  port (and providers nothing of each other), key rotation, and removal of
-  a provider whose bond is forfeited.
-- **Provider agent.** `sparkpipe provider register` and an agent that
-  joins the tailnet, publishes the provider's offers (models, prices,
-  limits, the resale switch) to the router and signs completion receipts.
-- **Owner-first scheduling.** The batch engine has priorities but no
-  preemptible class. Add a network class that runs only on capacity owner
-  traffic leaves idle, and that yields at frame boundaries.
-- **Hand-off.** A network request either finishes within the bound the
-  router set when it placed it, or resumes on another provider. Resuming
-  mid-request needs KV transfer between installations; until then, a
-  preempted network request restarts elsewhere.
-- **LiteLLM door limits.** Found with LiteLLM 1.74 and a mock upstream
-  (`docs/LITELLM_FRONTEND.md`, browser clients):
-  - LiteLLM consumes a request's `priority` for its own scheduler and does not
-    forward it, so the batch engine's priorities do not cross the door.
-    `seed`, `temperature` and `deadline_ms` do.
-  - `tools/generate_litellm_config.py` emits `num_retries: 1`, which retries a
-    failed upstream call once and can duplicate a generation on the fleet; the
-    hub's hand-written `config/litellm-config.yaml` uses 0.
-  - The LAN door has no accounts: `config/litellm-config.yaml` sets no
-    `master_key` or `database_url`, so anyone on the LAN who reaches port
-    4000 can use the fleet. sparkpipe.ai puts one Apache login file in
-    front of an external LiteLLM with a master key, but has no per-user
-    keys, quotas or spend logs. Those need LiteLLM's Postgres database
-    (`tools/generate_litellm_config.py --database-url --master-key`).
-- **Metering, billing, payouts and bonds.** Bill buyers from signed receipts
-  at the serving provider's price, pay providers 85% after the challenge
-  window, and hold and forfeit bonds.
-- **Audit service.** It needs:
-  - a cost-weighted secret sampler over real completed requests (about 2% of
-    tokens);
-  - a replay scheduler, and reference nodes for each hardware type and
-    driver build;
-  - a comparator: exact tokens for greedy traffic, logprobs within a stated
-    tolerance for sampled traffic;
-  - the challenge and dispute state machine;
-  - weight fingerprints.
-- **Exact replays need batch-invariant numerics.** Batched decode is not
-  bitwise equal to B1 (see Dynamic batching). Until the batch kernels agree
-  bitwise, replays of batched requests can only compare logprobs within a
-  tolerance, which is weaker against mild quantization.
-- **Every driver update splits audit cohorts.** Replays compare only against
-  the same driver hash, so the router must track each provider's build, and
-  releases need per-model cohort changeovers.
-- **sparkpipe.ai has no marketplace pages.** The VPS serves the landing page,
-  the provider page and the playground from `site/`. The playground and `/v1`
-  need a login, and the hub tunnel forwards `/v1` to an external LiteLLM
-  without the Qwen models and `/v1/sparkpipe/status` to the chat layer
-  (`docs/LITELLM_FRONTEND.md`, sparkpipe.ai). The catalog, the buyer console
-  and the provider dashboard need the router and the ledger behind them.
-- **Payments.** Provider identity checks, tax reporting and payout rails
-  (fiat, crypto or both) are undecided.
+- **Accounts.** Ethereum-address accounts; acceptance of the terms as an EIP-712 message signed over the text's hash; business details and automatic sanctions screening; the business check (company documents, owners of 25% or more) with its 720-hour holding limit; recovery addresses.
+- **Payments.** The payment processor's USDC invoices and confirmations, refunds of VAT that was not owed, USD wires from abroad for two-year customers, and VAT invoices: tax invoices for Korean businesses and zero-rating evidence for wires. The processor is not approved yet.
+- **Ledger.** An append-only, hash-chained file of every payment, issue of hours, reservation, displacement, credit and consumption; a published daily root; per-customer proofs. Balances must come only from replaying it.
+- **Reservations.** One writer, the per-fleet calendar and its API, the 7-day hourly horizon, displacement of hourly hours more than 6 hours ahead with an email, consumption and expiry, and the two-year tranches, gates and window elections.
+- **Fleet access.** Access tokens scoped to an account's reserved hours, the gate in front of the fleet that admits only the current hour's customer, the customer-facing API (sparkpipe.ai has no API today), and loading the reserved model before the hour starts.
+- **`availability.txt`.** Generated from the calendar and fleet state every 30 seconds.
+- **Credits.** Automatic credits for downtime over 15 minutes and for performance below the threshold, from the fleet's own records.
+- **Cached request state.** The terms promise deletion within 24 hours of last use from 1 December 2026; `cache/kv-retention` holds the code, which needs a fleet KV gate and a node release.
+- **LiteLLM door limits.** LiteLLM consumes a request's `priority` for its own scheduler and does not forward it, so the batch engine's priorities do not cross the door. `tools/generate_litellm_config.py` emits `num_retries: 1`, which can duplicate a generation; the hub's hand-written `config/litellm-config.yaml` uses 0. The LAN door on port 4000 has no accounts, keys, quotas or spend logs.
 
 ## Production qualification
 

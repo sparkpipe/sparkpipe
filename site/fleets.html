@@ -83,14 +83,14 @@
       <tr><td><b>Laguna S 2.1</b><br><span class="mono">laguna-s-2.1</span></td><td>Poolside</td><td><a href="https://huggingface.co/poolside/Laguna-S-2.1">OpenMDW 1.1</a></td><td class="num">32K</td><td class="num">51.0 tok/s</td><td class="num">773 tok/s</td><td>Qualified</td><td>Offered</td></tr>
       <tr><td><b>Muse Glimmer 30B</b><br><span class="mono">muse-glimmer-30b</span></td><td>meta-models</td><td><a href="https://huggingface.co/meta-models/Muse-Glimmer-30B">Apache 2.0</a></td><td class="num">128K</td><td class="num">37.9 tok/s</td><td class="num">1,186 tok/s</td><td>Qualified</td><td>Offered</td></tr>
       <tr><td><b>Hunyuan Hy4 Preview</b><br><span class="mono">hy4-preview</span></td><td>Tencent</td><td><a href="https://huggingface.co/tencent/Hy4-preview-FP8">Apache 2.0</a></td><td class="num">32K</td><td class="num">14.2 tok/s</td><td class="num">53 tok/s</td><td>Qualified</td><td>Offered</td></tr>
-      <tr><td><b>Qwen 3.8 27B</b><br><span class="mono">qwen3.8-27b</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-27B">Apache 2.0</a></td><td class="num">256K</td><td class="num">57.4 tok/s</td><td class="num">1,852 tok/s</td><td>Qualified</td><td>Internal use only</td></tr>
-      <tr><td><b>Qwen 3.8 Flash</b><br><span class="mono">qwen3.8-flash</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-Flash-Next">Qwen Community License 1.0</a></td><td class="num">256K</td><td class="num">45.0 tok/s</td><td class="num">358 tok/s</td><td>Qualified</td><td>Internal use only</td></tr>
-      <tr><td><b>Qwen 3.8 Max</b><br><span class="mono">qwen3.8-max</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B">Qwen3.8-Max License</a></td><td class="num">32K</td><td class="num">10.4 tok/s</td><td class="num">35 tok/s</td><td>Qualified</td><td>Internal use only</td></tr>
+      <tr><td><b>Qwen 3.8 27B</b><br><span class="mono">qwen3.8-27b</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-27B">Apache 2.0</a></td><td class="num">256K</td><td class="num">57.4 tok/s</td><td class="num">1,852 tok/s</td><td>Qualified</td><td>Offered</td></tr>
+      <tr><td><b>Qwen 3.8 Flash</b><br><span class="mono">qwen3.8-flash</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-Flash-Next">Qwen Community License 1.0</a></td><td class="num">256K</td><td class="num">45.0 tok/s</td><td class="num">358 tok/s</td><td>Qualified</td><td>Not offered</td></tr>
+      <tr><td><b>Qwen 3.8 Max</b><br><span class="mono">qwen3.8-max</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B">Qwen3.8-Max License</a></td><td class="num">32K</td><td class="num">10.4 tok/s</td><td class="num">35 tok/s</td><td>Qualified</td><td>Offered</td></tr>
     </table>
     </div>
     <p>Context windows are those served today. Decode is one request without speculation, measured on 2026-10-18 with prompts of 7 to 8K tokens. Methods and receipts: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>.</p>
     <p>¹ DeepSeek V4.1 Flash was measured on 2026-10-24 with a prompt of 1,047,883 tokens: decode one request after the prompt, and the prompt's average prefill rate. ² Measured while another workload kept 16 CPU cores busy on every node, so these are lower bounds.</p>
-    <p>The Qwen models are used only inside our company and are not offered to customers.</p>
+    <p>Qwen 3.8 Flash is not offered: its license requires a separate agreement with Qwen for any model-as-a-service business, so we use it only inside our company.</p>
   </section>
 
   <section id="licenses">
@@ -99,10 +99,11 @@
     <ul>
       <li><b>Kimi K3:</b> a model-as-a-service business whose group revenue exceeds US$20 million in any 12 months needs a separate agreement with Moonshot AI, and a commercial product with more than 100 million monthly active users or US$20 million in monthly revenue must display "Kimi K3" in its interface.</li>
       <li><b>GLM 5.3:</b> a model-as-a-service business whose group revenue exceeds US$10 billion in any 12 months must pass Z.AI's security review before commercial use.</li>
-      <li><b>MIT</b> (GLM 5.3 Flash, DeepSeek V4.1 Flash, MiMo V2.6, Ling 3.0) and <b>Apache 2.0</b> (Gemma 4, Muse Glimmer 30B, Hunyuan Hy4 Preview): no field-of-use or revenue condition.</li>
+      <li><b>Qwen 3.8 Max:</b> a model-as-a-service or AI work-assistant business whose group revenue exceeds US$50 million in any 12 months needs a separate license from Qwen, and a commercial product with more than 100 million monthly active users or US$20 million in monthly revenue must display the model's name.</li>
+      <li><b>MIT</b> (GLM 5.3 Flash, DeepSeek V4.1 Flash, MiMo V2.6, Ling 3.0) and <b>Apache 2.0</b> (Gemma 4, Muse Glimmer 30B, Hunyuan Hy4 Preview, Qwen 3.8 27B): no field-of-use or revenue condition.</li>
       <li><b>OpenMDW 1.1</b> (Laguna S 2.1): no condition on use or outputs; the license ends for anyone who sues claiming the model infringes a patent or copyright.</li>
     </ul>
-    <p>The Kimi K3 and GLM-5.3 licenses also require every use to comply with applicable law. Every license requires the publisher's notices to stay with any copy of the weights; customers use the models on our fleets and receive no copy.</p>
+    <p>The Kimi K3, GLM-5.3 and Qwen 3.8 Max licenses also require every use to comply with applicable law. Every license requires the publisher's notices to stay with any copy of the weights; customers use the models on our fleets and receive no copy.</p>
   </section>
 
   <section id="limits">

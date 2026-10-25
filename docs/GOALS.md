@@ -278,10 +278,10 @@ the harness for it. The operator's multi-speculator-live idea is assessed as
 multi-drafter composition: see that doc's "Direction: multi-drafter trees"
 section.
 
-## MARKETPLACE TRACK
+## FLEET-HOURS TRACK
 
-The commercial frame is [`MARKETPLACE_PLAN.md`](MARKETPLACE_PLAN.md): the
-fee, the build hooks and the determinism gates. ROADMAP M9 orders the work.
+The product is the Fleet-hours section of [`README.md`](../README.md), with
+its terms on sparkpipe.ai. ROADMAP M9 orders the work.
 
 ## The island-catalog manifest (operator-ratified abstraction)
 

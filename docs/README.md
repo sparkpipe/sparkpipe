@@ -143,8 +143,6 @@ current authority.
   target, model direction, COMPSEC-17 gate).
 - [`HANDOFF_DRIVERS_2026-09-28.md`](HANDOFF_DRIVERS_2026-09-28.md): milestone
   and driver status and open operator questions as of 2026-09-28.
-- [`MARKETPLACE_PLAN.md`](MARKETPLACE_PLAN.md): business plan draft for the
-  provider network, deferred since 2026-10-03.
 
 ## Evidence and research material
 

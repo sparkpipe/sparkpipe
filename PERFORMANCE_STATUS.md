@@ -192,7 +192,7 @@ At B8, K3's model drafts change nothing measurable (62.5-64.8 against
   3.8 Max always thinks and ran with a 2,048-token budget.
 - No floor is shown where the split of active parameters between formats is
   not verified (DeepSeek V4.1 Flash, the Qwen 3.8 MoE models) or not
-  computed (MiMo, Laguna). The Qwen models are internal only, by their
+  computed (MiMo, Laguna). Qwen 3.8 Flash is internal only, by its
   license.
 
 Ideal floors, from the active parameters each rank reads per token (K3:

@@ -47,8 +47,10 @@ Owner direction (2026-09-28):
   ([GOALS.md](GOALS.md), model direction).
 - Ling 3.0 Flash and its finance fine-tune are the Ling targets; Ling 2.x is
   not.
-- Qwen models are for internal use and are not enabled on the external API
-  service (license terms).
+- Qwen 3.8 Flash is for internal use only: its license requires a separate
+  agreement with Qwen for any model-as-a-service business. Qwen 3.8 27B
+  (Apache 2.0) and Qwen 3.8 Max (a separate license only above US$50 million
+  of yearly revenue) are offered.
 - MiniMax 2.5 is not a support target.
 
 The catalog is not capped at this table. A new open-source frontier model joins
