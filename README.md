@@ -587,86 +587,17 @@ A LiteLLM front door routes several islands behind one endpoint
 ([`docs/LITELLM_FRONTEND.md`](docs/LITELLM_FRONTEND.md)). Memory, tools,
 policy and user interfaces belong above the API.
 
-## The provider network
+## Fleet-hours
 
-Anyone running SparkPipe can sell the capacity they are not using through
-sparkpipe.ai and keep 85% of what it earns. The economics are in
-[`docs/MARKETPLACE_PLAN.md`](docs/MARKETPLACE_PLAN.md).
+HYOR AI Tech Ltd. rents whole SparkPipe fleets to businesses by the hour, from Seoul. Sales open on 1 December 2026; the terms are published for review on [sparkpipe.ai](https://sparkpipe.ai).
 
-**Joining.** `sparkpipe provider register` binds an installation to a
-sparkpipe.ai account and joins its head node to the SparkPipe tailnet: one
-WireGuard mesh that connects every provider, the router and the reference
-nodes. The installation opens no port to the internet. The tailnet's access
-rules let only the router and the reference nodes reach the installation's
-model API. The provider chooses, in the dashboard or the agent's
-configuration:
+- **A fleet-hour** is one entire fleet for sixty minutes. During those hours it serves only the customer's requests, with the model the customer chooses from the [Fleet List](https://sparkpipe.ai/fleets.html).
+- **Hourly terms:** prepaid hours at the hourly price, with no commitment and no business check. A customer holds up to 24 hours at a time, or 720 after a business check. A two-year customer may take an hourly reservation until 6 hours before it starts.
+- **The two-year agreement:** every hour of a two-year term at a lower price, after a business check, negotiated clause by clause. The models the customer names stay available for the term.
+- **Payment and records:** accounts are identified by an Ethereum address, and acceptance and reservations are messages signed with its key. Payments are prepaid in USDC through a payment processor, with Korean VAT; two-year customers may also wire USD from abroad. Every payment and reservation is a line in an append-only, hash-chained ledger.
+- **Responsibility:** we provide capacity only. The customer decides what runs, answers for its users and anyone it passes hours to, and carries any AI-law duties toward its own users. Our system has no feature for transferring hours.
 
-- which resident models to offer;
-- its own price per million input and output tokens for each model;
-- limits on concurrency, context length and hours of availability;
-- whether reselling is on at all. Switching it off stops new network work
-  at once.
-
-**The owner comes first.** Network requests run as the lowest priority class
-in the installation's own batch engine, on capacity the owner's traffic
-leaves idle. When the owner's traffic arrives, network work yields at the
-next frame boundary. A network request that is still running either finishes
-within the bound the router set when it placed the request, or goes back to
-the router, which resumes it on another provider. Offering a model that is
-not resident costs one model promotion.
-
-**Providers are interchangeable.** Every provider is verified (below), so
-all offers of the same model at the same quantization serve the same model.
-The router is a LiteLLM proxy, the same OpenAI-compatible door the fleet
-already uses. Each offer is one LiteLLM deployment of its model, at the
-provider's tailnet address and priced at the provider's price. The router
-spreads a buyer's requests across as many providers as it needs, choosing
-by price, measured latency, load and verification record, so one buyer can
-use more capacity than any single installation has. Requests that share a
-prompt prefix stay on one provider, so its KV cache is reused. A buyer who
-needs a seeded reply to replay bit for bit is pinned to one driver build and
-hardware type, because different kernels give different bits.
-
-**Metering.** Every completion carries a receipt signed by the provider,
-naming:
-
-- the driver hash and model contract hash;
-- the request identity and sampling seed;
-- the input and output token counts.
-
-Buyers pay the serving provider's own price, with nothing added. The
-provider is paid 85% of it and sparkpipe.ai keeps 15%.
-
-**Verification.** Every provider is verified the same way; there is no
-unverified tier. Nothing a provider's machine reports about itself is
-trusted, so about 2% of served tokens are computed again. The router
-secretly samples real completed requests, weighted by cost, and replays them
-on reference nodes. The reference nodes run the same pinned driver build and
-weights on the same hardware type.
-
-- **Greedy replays compare token for token.** Determinism (above) makes that
-  exact.
-- **Logprobs are recomputed for sampled tokens.** They cover sampled traffic,
-  and they catch quantization even where the tokens agree.
-- **Cheaper secondary checks:** weight fingerprints (trigger prompts whose
-  responses only the exact weights reproduce) and performance envelopes.
-
-A mismatch holds the payout through the challenge window and triggers one
-independent re-execution. If that confirms it, the provider forfeits its
-bond. The verification replays are paid for out of the 15%. A provider sees
-the prompts it serves, as with any hosted API; GB10 has no confidential
-computing mode.
-
-**sparkpipe.ai.** The site ([`site/`](site/)) holds:
-
-- the landing page, and the provider page with an earnings calculator;
-- the playground, which talks to the LiteLLM door: it lists the models,
-  streams replies with their time to first token and decode rate, and
-  writes the same request as curl or Python;
-- the public model catalog, with live prices and capacity;
-- the buyer console: keys, usage and billing;
-- the provider dashboard: registration, models and prices, the resale
-  switch, earnings and the verification record.
+The provider network once planned here, reselling other installations' idle capacity, is deferred ([`docs/MARKETPLACE_PLAN.md`](docs/MARKETPLACE_PLAN.md)).
 
 ## Repository
 
@@ -692,7 +623,7 @@ computing mode.
 | `tools/` | packers, recipe generator, harnesses, fleet tooling |
 | `tests/` | host, contract, host-shim kernel and GPU tests |
 | `experiments/` | research code outside the code-size ratchet; no serving path links it |
-| `site/` | sparkpipe.ai: public pages and the playground |
+| `site/` | sparkpipe.ai: home page, Fleet List, terms (generated from `site/terms/` by `tools/site_terms.py`), privacy policy and checkout preview |
 
 Common runtime code does not choose a model family, codec, topology, batch
 width or fallback implementation by name. A deployment package binds those

@@ -6,8 +6,8 @@ through this stack on the rtx5090 hub:
 | Port | Process | Protocol |
 | --- | --- | --- |
 | 4000 | LiteLLM proxy (`config/litellm-config.yaml`, user unit `sparkpipe-litellm`) | OpenAI `/v1/chat/completions` and Anthropic `/v1/messages`; any model name routes to `glm-5.3` |
-| 4001 | external LiteLLM (`~/sparkpipe-chat/litellm-external.yaml`, user unit `sparkpipe-litellm-external`, 127.0.0.1 only) | the 4000 door without Qwen models or the `*` route, behind a master key; the sparkpipe.ai tunnel (`sparkpipe-ai-door`) forwards here |
-| 8433 | chat layer (`tools/serving/chat_frontend.py`, user unit `sparkpipe-chat`, 127.0.0.1 only) | OpenAI `/v1/chat/completions`, `/v1/models`, `/health`; the tunnel forwards `/v1/sparkpipe/status` here |
+| 4001 | stopped 2026-10-25: the external LiteLLM that served the sparkpipe.ai playground | – |
+| 8433 | chat layer (`tools/serving/chat_frontend.py`, user unit `sparkpipe-chat`, 127.0.0.1 only) | OpenAI `/v1/chat/completions`, `/v1/models`, `/health`; the tunnel forwards sparkpipe.ai:8443/fleet here |
 | 8446 | `sparkpipe_model_api` (user unit `glmfull-api6`) | the engine endpoint: `prompt_token_ids` in, token ids, usage and `cached_tokens` out |
 
 Smoke receipts (2026-10-02, build de944ae): chat answered "Paris" with the
@@ -329,68 +329,19 @@ the markers itself. GLM 5.3 Flash IDs: `[gMASK]` 154822, `<sop>` 154824,
 Qwen's `<|im_start|>user\n` IDs (151644, 872, 198) are ordinary text pieces
 to GLM.
 
-## sparkpipe.ai (2026-10-14)
+## sparkpipe.ai (2026-10-25)
 
-`https://sparkpipe.ai/playground.html` is the chat interface for people
-outside the LAN. Apache on the VPS (62.112.9.102) asks for a login, and the
-hub holds a reverse tunnel to it:
+`https://sparkpipe.ai` is static, with no API and no login. It holds the home page, the Fleet List, the terms, the privacy policy and the checkout preview. They are copied from `site/` to `/var/www/html` on the KCInfra VPS (27.102.120.99). `tools/site_terms.py` generates the terms pages from `site/terms/`; `tests/test_site.py` fails when they differ.
 
-| VPS path | Login | Goes to |
-| --- | --- | --- |
-| `/playground.html` | yes | `site/playground.html`, copied to `/var/www/html` |
-| `/v1/` | yes | VPS 127.0.0.1:18080, then hub 127.0.0.1:4001 (external LiteLLM) |
-| `/v1/sparkpipe/status` | yes | VPS 127.0.0.1:18081, then hub 8433 (the playground's loaded-model line) |
-| other `/v1/sparkpipe/` paths | yes | refused (404); the page only loads models on demand there |
-| `/health/liveliness` | no | the external LiteLLM's liveliness check |
+The playground, the providers page and `/v1` were removed on 2026-10-25. So were Apache's Basic auth and its gateway bearer, and the external LiteLLM (4001) is stopped. Fleet-hour customers will reach their fleet through an API that waits for the legal review of the business flow.
 
-- The tunnel is the hub system unit `sparkpipe-ai-door` (root, key
-  `/root/.ssh/sparkpipe_ai_tunnel_ed25519`). On the VPS that key may only
-  listen on 127.0.0.1:18080 and 127.0.0.1:18081 (`permitlisten` in
-  `/root/.ssh/authorized_keys`).
-- Apache replaces the browser's `Authorization` header with the external
-  master key, so browsers never see it. The key is defined in
-  `/etc/apache2/sparkpipe-gateway.conf` (mode 600) and kept on the hub in
-  `~/sparkpipe-chat/external.env` (mode 600), which the external unit reads.
-- Qwen models stay off this door, as `docs/MODEL_SUPPORT.md` requires. The
-  4000 door on the LAN still serves all 16 models.
-- A request for a model that is not loaded waits in the chat layer's warm
-  queue while the fleet swaps, as on the LAN.
+| VPS path | Goes to |
+| --- | --- |
+| `/` and the pages | `/var/www/html` |
+| `:8443/` | VPS 127.0.0.1:18082, then hub 8090 (Open WebUI, next section) |
+| `:8443/fleet`, `/fleet/status`, `/fleet/switch-now` | VPS 127.0.0.1:18081, then hub 8433 (the chat layer's admin page) |
 
-Accounts live in `/etc/apache2/sparkpipe-users.htpasswd` (bcrypt, owner
-root, group www-data, mode 640). On the VPS:
-
-```sh
-htpasswd -B -C 12 /etc/apache2/sparkpipe-users.htpasswd <user>
-htpasswd -D /etc/apache2/sparkpipe-users.htpasswd <user>
-```
-
-The first command adds a user or changes a password; the second removes one.
-Apache reads the file on each request, so no reload is needed. The test
-account's password is in `~/.config/sparkpipe/sparkpipe-ai-accounts.txt`
-(mode 600) on the controller Mac.
-
-Rebuild the external config whenever `litellm.yaml` changes, then restart
-`sparkpipe-litellm-external`:
-
-```sh
-cd ~/sparkpipe-chat && ~/litellm-venv/bin/python - <<'PY'
-import pathlib, yaml
-source = yaml.safe_load(pathlib.Path("litellm.yaml").read_text())
-kept = [entry for entry in source["model_list"]
-        if entry["model_name"] != "*" and not entry["model_name"].startswith("qwen")]
-external = {"model_list": kept, "litellm_settings": source["litellm_settings"],
-            "general_settings": {"master_key": "os.environ/LITELLM_MASTER_KEY", "cancel_on_disconnect": True}}
-pathlib.Path("litellm-external.yaml").write_text(yaml.safe_dump(external, sort_keys=False))
-PY
-systemd-run --user --unit=sparkpipe-litellm-external \
-  -p WorkingDirectory=/home/spec/sparkpipe-chat \
-  -p EnvironmentFile=/home/spec/sparkpipe-chat/external.env \
-  -p LimitNOFILE=524288 \
-  /usr/bin/bash -c 'exec $HOME/litellm-venv/bin/litellm --config litellm-external.yaml --host 127.0.0.1 --port 4001 >> litellm-external.log 2>&1'
-```
-
-Like the other hub user units, it is transient: start it again after a hub
-reboot.
+The tunnel is the hub system unit `sparkpipe-ai-door` (root, key `/root/.ssh/sparkpipe_ai_tunnel_ed25519`). It still forwards 127.0.0.1:18080 to the stopped 4001, and the VPS key may still listen on 18080. Dropping 18080 from both is an SSH change, which the owner decides.
 
 ## SparkPipe Chat (Open WebUI, sparkpipe.ai:8443)
 
@@ -607,12 +558,9 @@ directory). Its callers:
 A request for a model that is not loaded still swaps the fleet through the
 warm queue: whoever can reach the chat layer can switch models. Only the hub
 reaches it now: `chat_frontend.py` refuses a `--host` that is not a loopback
-address. Its clients are LiteLLM 4000, 4001 and 4002 and the sparkpipe.ai
-tunnel (`-R 127.0.0.1:18081:127.0.0.1:8433`), all on the hub. The playground
-no longer pre-loads the model picked in the list; the first request loads it,
-and the admin's Load now on `/fleet` remains. Opening the playground from
-`http://rtx5090:8433/` on the LAN no longer works; use sparkpipe.ai or an
-ssh tunnel.
+address. Its clients are LiteLLM 4000 and 4002 and the sparkpipe.ai tunnel
+(`-R 127.0.0.1:18081:127.0.0.1:8433`, for `/fleet`), all on the hub. The
+admin's Load now on `/fleet` loads a model at once.
 
 Start or restart the two units (hub, as spec):
 
@@ -756,26 +704,6 @@ drop the branding mounts from `run.sh` first. The name is set to "SparkPipe
 Chat", which v0.12.0 shows as "SparkPipe Chat (Open WebUI)" because it adds
 the suffix in code. The repository holds only configuration and the icons, no
 Open WebUI code.
-
-## Browser clients (the sparkpipe.ai playground)
-
-`site/playground.html` calls the door from a browser. Checked on 2026-09-27
-against LiteLLM 1.74.0 and a mock upstream that speaks the chat contract
-above, with deployments as `tools/generate_litellm_config.py` writes them
-(`openai/` provider, `api_base` ending in `/v1`):
-
-- CORS allows any origin, and preflights pass for `authorization` and
-  `content-type`, so the page need not share the proxy's origin.
-- `GET /health/liveliness` needs no key; the page uses it for its status
-  light. `GET /v1/models` needs the key.
-- Streamed chat works. With `stream_options: {"include_usage": true}` the
-  last event before `[DONE]` carries `usage`, which the page uses for its
-  decode rate.
-- `seed`, `temperature`, `max_tokens` and `deadline_ms` reach the upstream.
-  `priority` does not: LiteLLM takes it for its own scheduler.
-- `vllm/` deployments fail the chat route with `No module named 'vllm'`:
-  LiteLLM's `vllm/` provider runs a local vLLM engine rather than calling
-  the upstream.
 
 ## Install (controller Mac)
 

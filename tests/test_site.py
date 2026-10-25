@@ -57,9 +57,21 @@ def parse(path):
     return page
 
 
+def check_terms(failures):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("site_terms", SITE.parent / "tools" / "site_terms.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for name, text in module.pages().items():
+        path = SITE / name
+        if not path.is_file() or path.read_text(encoding="utf-8") != text:
+            failures.append(f"{name}: differs from site/terms/; run python3 tools/site_terms.py")
+
+
 def main():
     pages = {path.name: parse(path) for path in sorted(SITE.glob("*.html"))}
     failures = []
+    check_terms(failures)
     for name, page in pages.items():
         for link in page.links:
             target, _, fragment = link.partition("#")
@@ -76,7 +88,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures or not pages:
         return 1
-    print(f"site: {len(pages)} pages, every local link and anchor resolves, no external scripts")
+    print(f"site: {len(pages)} pages, every local link and anchor resolves, no external scripts, the contract pages match site/terms/")
     return 0
 
 

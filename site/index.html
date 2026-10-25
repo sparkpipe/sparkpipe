@@ -74,7 +74,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
     <div><strong data-price="hourly">$20</strong><span>per fleet-hour plus VAT, prepaid, no commitment</span></div>
     <div><strong data-price="committed">$15</strong><span>per fleet-hour plus VAT, for every hour of a two-year term</span></div>
     <div><strong><span data-cap="hourly">24</span> / <span data-cap="verified">720</span></strong><span>hours you may hold on hourly terms, before and after a business check</span></div>
-    <div><strong>4 models</strong><span>Kimi K3, GLM 5.3, GLM 5.3 Flash and DeepSeek V4.1 Flash, under their publishers' open licenses</span></div>
+    <div><strong>13 models</strong><span>offered, among them Kimi K3, GLM 5.3 and DeepSeek V4.1 Flash, each under its publisher's open license</span></div>
   </div>
 </section>
 
@@ -109,6 +109,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
       <tbody>
         <tr><th scope="row">Price</th><td><span data-price="hourly">$20</span> per fleet-hour plus VAT</td><td><span data-price="committed">$15</span> per fleet-hour plus VAT, fixed for the term</td></tr>
         <tr><th scope="row">Commitment</th><td>None</td><td>Every hour of two years from signing: 17,520 hours, or 17,544 when the term contains 29 February</td></tr>
+        <tr><th scope="row">Models</th><td>Any offered model on the Fleet List, chosen for each reservation</td><td>The models you choose in the agreement stay available for the whole term; the others while they are listed</td></tr>
         <tr><th scope="row">Business check</th><td>Not needed</td><td>Required before signing</td></tr>
         <tr><th scope="row">Hours held</th><td>Up to <span data-cap="hourly">24</span> at a time, or <span data-cap="verified">720</span> after a business check; each lasts 12 months</td><td>Each month's paid hours, reserved when you choose within that month: 12 in each 12-hour window a day until you have prepaid the whole term</td></tr>
         <tr><th scope="row">Payment</th><td>USDC invoice, before use</td><td>USDC invoice, or a USD wire from your own account abroad, which is zero-rated for VAT. Nothing is due in the first 30 days; you pay any amounts up to three deadlines, on days 30, 60 and 90</td></tr>
@@ -140,15 +141,15 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
       </tbody>
     </table></div>
     <div class="table-wrap"><table class="models">
-      <thead><tr><th>Model on Fleet 1</th><th>License</th><th>Context window</th><th>One request</th><th>Eight requests</th><th>Prefill, 8K prompt</th></tr></thead>
+      <thead><tr><th>Core model on Fleet 1</th><th>License</th><th>Context window</th><th>One request</th><th>Eight requests</th><th>Prefill, 8K prompt</th></tr></thead>
       <tbody>
-        <tr><td><b>Kimi K3</b><span>Moonshot AI · kimi-k3</span></td><td><a href="https://huggingface.co/moonshotai/Kimi-K3/blob/main/LICENSE">Kimi K3 License</a></td><td class="figure">720K</td><td class="figure"><b>16.2</b>tok/s</td><td class="figure"><b>64</b>tok/s</td><td class="figure"><b>590</b>tok/s</td></tr>
-        <tr><td><b>GLM 5.3</b><span>Z.AI · glm-5.3</span></td><td><a href="https://huggingface.co/zai-org/GLM-5.3/blob/main/LICENSE">GLM-5.3 License</a></td><td class="figure">256K</td><td class="figure"><b>28.9</b>tok/s</td><td class="figure"><b>74</b>tok/s</td><td class="figure"><b>1,162</b>tok/s</td></tr>
+        <tr><td><b>Kimi K3</b><span>Moonshot AI · kimi-k3</span></td><td><a href="https://huggingface.co/moonshotai/Kimi-K3/blob/main/LICENSE">Kimi K3 License</a></td><td class="figure">1M</td><td class="figure"><b>16.2</b>tok/s</td><td class="figure"><b>64</b>tok/s</td><td class="figure"><b>590</b>tok/s</td></tr>
+        <tr><td><b>GLM 5.3</b><span>Z.AI · glm-5.3</span></td><td><a href="https://huggingface.co/zai-org/GLM-5.3/blob/main/LICENSE">GLM-5.3 License</a></td><td class="figure">1M</td><td class="figure"><b>28.9</b>tok/s</td><td class="figure"><b>74</b>tok/s</td><td class="figure"><b>1,162</b>tok/s</td></tr>
         <tr><td><b>GLM 5.3 Flash</b><span>Z.AI · glm-5.3-flash</span></td><td><a href="https://huggingface.co/zai-org/GLM-5.3-Flash">MIT</a></td><td class="figure">128K</td><td class="figure"><b>55.0</b>tok/s</td><td class="figure"><b>176</b>tok/s</td><td class="figure"><b>876</b>tok/s</td></tr>
-        <tr><td><b>DeepSeek V4.1 Flash</b><span>DeepSeek · deepseek-v4.1-flash</span></td><td><a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017">MIT</a></td><td class="figure">16K</td><td class="figure"><b>29.5</b>tok/s</td><td class="figure">–</td><td class="figure"><b>182</b>tok/s</td></tr>
+        <tr><td><b>DeepSeek V4.1 Flash</b><span>DeepSeek · deepseek-v4.1-flash</span></td><td><a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017">MIT</a></td><td class="figure">1M</td><td class="figure"><b>42.5</b>tok/s ¹</td><td class="figure"><b>151</b>tok/s ¹</td><td class="figure"><b>1,290</b>tok/s ¹</td></tr>
       </tbody>
     </table></div>
-    <p class="caption">Decode without speculation, as served on 2026-10-18. Candidate builds have run all four models with windows of about a million tokens. You must follow each model's license; the <a href="fleets.html">Fleet List</a> summarises their conditions.</p>
+    <p class="caption">Context windows as served today. Decode without speculation, measured on 2026-10-18 with prompts of 7 to 8K tokens. ¹ DeepSeek V4.1 Flash was measured on 2026-10-24 after a prompt of about a million tokens; its prefill figure is that prompt's average. All sixteen installed models, their licenses and speeds are on the <a href="fleets.html">Fleet List</a>; you must follow each model's license.</p>
   </div>
 </section>
 

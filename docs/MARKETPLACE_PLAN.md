@@ -1,5 +1,7 @@
 # SparkPipe Compute Marketplace — Business Plan Draft
 
+**Deferred (owner, 2026-10-03): not being built.** sparkpipe.ai sells whole-fleet hours instead; see the Fleet-hours section of [`README.md`](../README.md). The plan below is kept for later.
+
 Status: DRAFT, 2026-08-28 (ratified into the repo 2026-08-29); fee model, revenue basis and network design revised 2026-09-27
 Scope: business model, competitive pricing, anti-cheating architecture, unit economics.
 The system it describes is the provider network in `README.md`; its gaps are in `TECHDEBT.md`.

@@ -56,7 +56,7 @@
     <div class="scroll">
     <table>
       <tr><th>Fleet</th><th>Machines</th><th>Location</th><th>State</th><th class="num">Rate</th><th>Models</th></tr>
-      <tr><td><b>Fleet 1</b></td><td>16 NVIDIA DGX Spark (GB10), 128 GB of memory each, joined by a 100 Gb/s RDMA switch and direct pair links</td><td>Seoul</td><td>Serving</td><td class="num">1</td><td>The four models below</td></tr>
+      <tr><td><b>Fleet 1</b></td><td>16 NVIDIA DGX Spark (GB10), 128 GB of memory each, joined by a 100 Gb/s RDMA switch and direct pair links</td><td>Seoul</td><td>Serving</td><td class="num">1</td><td>The models below</td></tr>
       <tr><td><b>Fleet 2</b></td><td>Apple Mac Studio (M5 Ultra)</td><td>Seoul</td><td>Under construction</td><td class="num">1</td><td>Listed here when the fleet opens</td></tr>
       <tr><td><b>Fleet 3</b></td><td>16 NVIDIA DGX Spark (GB10)</td><td>Seoul</td><td>Under construction</td><td class="num">1</td><td>Listed here when the fleet opens</td></tr>
     </table>
@@ -66,28 +66,43 @@
 
   <section id="models">
     <h2>Models on Fleet 1</h2>
+    <p>Every model installed on Fleet 1. An <b>offered</b> model can be chosen for any reservation, and named among the Chosen Models of a two-year agreement. A <b>core</b> model gets ongoing performance work; a <b>qualified</b> model passed the release qualification and serves at the speeds shown.</p>
     <div class="scroll">
     <table>
-      <tr><th>Model</th><th>Publisher</th><th>License</th><th class="num">Context window</th><th class="num">Decode, one request</th><th class="num">Decode, eight requests</th><th class="num">Prefill, 8K prompt</th></tr>
-      <tr><td><b>Kimi K3</b><br><span class="mono">kimi-k3</span></td><td>Moonshot AI</td><td><a href="https://huggingface.co/moonshotai/Kimi-K3/blob/main/LICENSE">Kimi K3 License</a></td><td class="num">720K</td><td class="num">16.2 tok/s</td><td class="num">63.7 tok/s</td><td class="num">590 tok/s</td></tr>
-      <tr><td><b>GLM 5.3</b><br><span class="mono">glm-5.3</span></td><td>Z.AI</td><td><a href="https://huggingface.co/zai-org/GLM-5.3/blob/main/LICENSE">GLM-5.3 License</a></td><td class="num">256K</td><td class="num">28.9 tok/s</td><td class="num">73.2 tok/s</td><td class="num">1,162 tok/s</td></tr>
-      <tr><td><b>GLM 5.3 Flash</b><br><span class="mono">glm-5.3-flash</span></td><td>Z.AI</td><td><a href="https://huggingface.co/zai-org/GLM-5.3-Flash">MIT</a></td><td class="num">128K</td><td class="num">55.0 tok/s</td><td class="num">173.7 tok/s</td><td class="num">876 tok/s</td></tr>
-      <tr><td><b>DeepSeek V4.1 Flash</b><br><span class="mono">deepseek-v4.1-flash</span></td><td>DeepSeek</td><td><a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017">MIT</a></td><td class="num">16K</td><td class="num">29.5 tok/s</td><td class="num">–</td><td class="num">182 tok/s</td></tr>
+      <tr><th>Model</th><th>Publisher</th><th>License</th><th class="num">Context window</th><th class="num">Decode, one request</th><th class="num">Prefill, 8K prompt</th><th>Track</th><th>Availability</th></tr>
+      <tr><td><b>Kimi K3</b><br><span class="mono">kimi-k3</span></td><td>Moonshot AI</td><td><a href="https://huggingface.co/moonshotai/Kimi-K3">Kimi K3 License</a></td><td class="num">1M</td><td class="num">16.2 tok/s</td><td class="num">590 tok/s</td><td>Core</td><td>Offered</td></tr>
+      <tr><td><b>GLM 5.3</b><br><span class="mono">glm-5.3</span></td><td>Z.AI</td><td><a href="https://huggingface.co/zai-org/GLM-5.3">GLM-5.3 License</a></td><td class="num">1M</td><td class="num">28.9 tok/s</td><td class="num">1,162 tok/s</td><td>Core</td><td>Offered</td></tr>
+      <tr><td><b>GLM 5.3 Flash</b><br><span class="mono">glm-5.3-flash</span></td><td>Z.AI</td><td><a href="https://huggingface.co/zai-org/GLM-5.3-Flash">MIT</a></td><td class="num">128K</td><td class="num">55.0 tok/s</td><td class="num">876 tok/s</td><td>Core</td><td>Offered</td></tr>
+      <tr><td><b>DeepSeek V4.1 Flash</b><br><span class="mono">deepseek-v4.1-flash</span></td><td>DeepSeek</td><td><a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017">MIT</a></td><td class="num">1M</td><td class="num">42.5 ¹ tok/s</td><td class="num">1,290 ¹ tok/s</td><td>Core</td><td>Offered</td></tr>
+      <tr><td><b>MiMo V2.6 Pro</b><br><span class="mono">mimo-v2.6-pro</span></td><td>Xiaomi</td><td><a href="https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-RL">MIT</a></td><td class="num">32K</td><td class="num">19.0 ² tok/s</td><td class="num">55 ² tok/s</td><td>Qualified</td><td>Offered</td></tr>
+      <tr><td><b>MiMo V2.6 Flash</b><br><span class="mono">mimo-v2.6-flash</span></td><td>Xiaomi</td><td><a href="https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL">MIT</a></td><td class="num">32K</td><td class="num">40.9 ² tok/s</td><td class="num">157 ² tok/s</td><td>Qualified</td><td>Offered</td></tr>
+      <tr><td><b>Gemma 4 31B</b><br><span class="mono">gemma-4-31b</span></td><td>Google</td><td><a href="https://huggingface.co/google/gemma-4-31B-it">Apache 2.0</a></td><td class="num">32K</td><td class="num">34.4 tok/s</td><td class="num">834 tok/s</td><td>Qualified</td><td>Offered, text only</td></tr>
+      <tr><td><b>Gemma 4 26B A4B</b><br><span class="mono">gemma-4-26b-a4b</span></td><td>Google</td><td><a href="https://huggingface.co/google/gemma-4-26B-A4B-it">Apache 2.0</a></td><td class="num">256K</td><td class="num">89.5 tok/s</td><td class="num">1,848 tok/s</td><td>Qualified</td><td>Offered, text only</td></tr>
+      <tr><td><b>Ling 3.0 Flash</b><br><span class="mono">ling-3.0-flash</span></td><td>inclusionAI</td><td><a href="https://huggingface.co/inclusionAI/Ling-3.0-flash">MIT</a></td><td class="num">256K</td><td class="num">80.4 tok/s</td><td class="num">1,514 tok/s</td><td>Qualified</td><td>Offered</td></tr>
+      <tr><td><b>Ling 3.0 Flash Finance</b><br><span class="mono">ling-3.0-flash-fin</span></td><td>inclusionAI</td><td><a href="https://huggingface.co/inclusionAI/Ling-3.0-flash-Fin">MIT</a></td><td class="num">256K</td><td class="num">79.2 tok/s</td><td class="num">1,550 tok/s</td><td>Qualified</td><td>Offered</td></tr>
+      <tr><td><b>Laguna S 2.1</b><br><span class="mono">laguna-s-2.1</span></td><td>Poolside</td><td><a href="https://huggingface.co/poolside/Laguna-S-2.1">OpenMDW 1.1</a></td><td class="num">32K</td><td class="num">51.0 tok/s</td><td class="num">773 tok/s</td><td>Qualified</td><td>Offered</td></tr>
+      <tr><td><b>Muse Glimmer 30B</b><br><span class="mono">muse-glimmer-30b</span></td><td>meta-models</td><td><a href="https://huggingface.co/meta-models/Muse-Glimmer-30B">Apache 2.0</a></td><td class="num">128K</td><td class="num">37.9 tok/s</td><td class="num">1,186 tok/s</td><td>Qualified</td><td>Offered</td></tr>
+      <tr><td><b>Hunyuan Hy4 Preview</b><br><span class="mono">hy4-preview</span></td><td>Tencent</td><td><a href="https://huggingface.co/tencent/Hy4-preview-FP8">Apache 2.0</a></td><td class="num">32K</td><td class="num">14.2 tok/s</td><td class="num">53 tok/s</td><td>Qualified</td><td>Offered</td></tr>
+      <tr><td><b>Qwen 3.8 27B</b><br><span class="mono">qwen3.8-27b</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-27B">Apache 2.0</a></td><td class="num">256K</td><td class="num">57.4 tok/s</td><td class="num">1,852 tok/s</td><td>Qualified</td><td>Internal use only</td></tr>
+      <tr><td><b>Qwen 3.8 Flash</b><br><span class="mono">qwen3.8-flash</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-Flash-Next">Qwen Community License 1.0</a></td><td class="num">256K</td><td class="num">45.0 tok/s</td><td class="num">358 tok/s</td><td>Qualified</td><td>Internal use only</td></tr>
+      <tr><td><b>Qwen 3.8 Max</b><br><span class="mono">qwen3.8-max</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B">Qwen3.8-Max License</a></td><td class="num">32K</td><td class="num">10.4 tok/s</td><td class="num">35 tok/s</td><td>Qualified</td><td>Internal use only</td></tr>
     </table>
     </div>
-    <p>Figures are without speculation, as served on 2026-10-18, on sixteen nodes with GPU clocks capped at 2,200 MHz. Candidate builds measured on 2026-10-24 ran prompts of about a million tokens on Kimi K3, GLM 5.3 and DeepSeek V4.1 Flash, and 130,361 tokens on GLM 5.3 Flash. Methods and receipts: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>.</p>
-    <p>Nine more models are installed and can be enabled on request. Models that are licensed for internal use only are never offered.</p>
+    <p>Context windows are those served today. Decode is one request without speculation, measured on 2026-10-18 with prompts of 7 to 8K tokens. Methods and receipts: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>.</p>
+    <p>¹ DeepSeek V4.1 Flash was measured on 2026-10-24 with a prompt of 1,047,883 tokens: decode one request after the prompt, and the prompt's average prefill rate. ² Measured while another workload kept 16 CPU cores busy on every node, so these are lower bounds.</p>
+    <p>The Qwen models are used only inside our company and are not offered to customers.</p>
   </section>
 
   <section id="licenses">
     <h2>Model licenses</h2>
-    <p>Each model is the publisher's open-weight software under its own license, which the customer must follow (Hourly Terms 8.1, agreement 10.3). The conditions most likely to matter:</p>
+    <p>Each model is the publisher's open-weight software under its own license, which the customer must follow (Hourly Terms 8.1, agreement 10.3). The conditions of the offered models:</p>
     <ul>
       <li><b>Kimi K3:</b> a model-as-a-service business whose group revenue exceeds US$20 million in any 12 months needs a separate agreement with Moonshot AI, and a commercial product with more than 100 million monthly active users or US$20 million in monthly revenue must display "Kimi K3" in its interface.</li>
       <li><b>GLM 5.3:</b> a model-as-a-service business whose group revenue exceeds US$10 billion in any 12 months must pass Z.AI's security review before commercial use.</li>
-      <li><b>GLM 5.3 Flash and DeepSeek V4.1 Flash:</b> MIT, with no field-of-use or revenue condition.</li>
+      <li><b>MIT</b> (GLM 5.3 Flash, DeepSeek V4.1 Flash, MiMo V2.6, Ling 3.0) and <b>Apache 2.0</b> (Gemma 4, Muse Glimmer 30B, Hunyuan Hy4 Preview): no field-of-use or revenue condition.</li>
+      <li><b>OpenMDW 1.1</b> (Laguna S 2.1): no condition on use or outputs; the license ends for anyone who sues claiming the model infringes a patent or copyright.</li>
     </ul>
-    <p>The Kimi K3 and GLM-5.3 licenses also require every use to comply with applicable law. All four require the publisher's copyright notice to stay with any copy of the weights; customers use the models on our fleets and receive no copy.</p>
+    <p>The Kimi K3 and GLM-5.3 licenses also require every use to comply with applicable law. Every license requires the publisher's notices to stay with any copy of the weights; customers use the models on our fleets and receive no copy.</p>
   </section>
 
   <section id="limits">

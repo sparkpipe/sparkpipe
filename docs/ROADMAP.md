@@ -174,6 +174,8 @@ expansion.
 
 ## M9. The provider network
 
+Deferred by the owner on 2026-10-03; sparkpipe.ai sells whole-fleet hours instead (`README.md`, Fleet-hours).
+
 Exit, with an installation that sparkpipe.ai does not operate:
 
 - it registers, joins the tailnet, offers a model at its own price and

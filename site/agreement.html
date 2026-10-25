@@ -51,7 +51,7 @@
 <p>This Agreement is made on the Signature Date between:</p>
 <ul><li><b>Supplier:</b> HYOR AI Tech, Ltd., a company organised under the laws of the Republic of Korea, business registration number 641-87-03809, corporate registration number 110114-0039555, registered address Building B Unit 1522, 95 Hangang-daero, Yongsan-gu, Seoul, Republic of Korea ("<b>we</b>", "<b>Supplier</b>"); and</li><li><b>Customer:</b> [legal name], a company organised under the laws of [jurisdiction], registration number [number], registered address [address] ("<b>Customer</b>").</li></ul>
 <p>In this Agreement:</p>
-<ul><li><b>Signature Date</b> means the date of the last signature below.</li><li><b>Trial Start</b> means the Signature Date, on which the Term begins. The Term, the Tranches, Phase A and every payment deadline run from it.</li><li><b>KST</b> means Korea Standard Time (UTC+9). All times and days in this Agreement are KST.</li><li><b>Day N</b> means the Nth calendar day counting the Signature Date as <b>Day 1</b>.</li><li><b>Fleet</b> means a group of computing machines that we operate as a single unit and list on our Fleet List, published at sparkpipe.ai/fleets.html.</li><li><b>Fleet-hour</b> or <b>hour</b> means the use of one entire Fleet for sixty minutes.</li><li><b>Rate</b> means the number of hours that one hour on a Fleet consumes, as published on our Fleet List; 1 unless the Fleet List states otherwise. The Rate of each Fleet listed at the Signature Date is fixed for the Term.</li><li><b>East Window</b> and <b>West Window</b> mean the two 12-hour periods of each day defined in the Schedule.</li><li><b>Tranche</b> means the hours of one calendar month within the Term, as set out in clause 3.</li><li><b>Reservation</b> means the booking of one or more hours on a selected Fleet through our system under clause 8. <b>Reserve</b> has a matching meaning.</li><li><b>Phase A</b> means Day 1 to Day 30 inclusive.</li><li><b>Full Prepayment</b> means our receipt, in cleared funds, of the price of every Tranche in the Term.</li><li><b>Key</b> means the private key held by Customer under clause 8.5.</li></ul>
+<ul><li><b>Signature Date</b> means the date of the last signature below. The Term begins on it, and the Tranches, Phase A and every payment deadline run from it.</li><li><b>KST</b> means Korea Standard Time (UTC+9). All times and days in this Agreement are KST.</li><li><b>Day N</b> means the Nth calendar day counting the Signature Date as <b>Day 1</b>.</li><li><b>Fleet</b> means a group of computing machines that we operate as a single unit and list on our Fleet List, published at sparkpipe.ai/fleets.html.</li><li><b>Fleet-hour</b> or <b>hour</b> means the use of one entire Fleet for sixty minutes.</li><li><b>Rate</b> means the number of hours that one hour on a Fleet consumes, as published on our Fleet List; 1 unless the Fleet List states otherwise. The Rate of each Fleet listed at the Signature Date is fixed for the Term.</li><li><b>East Window</b> and <b>West Window</b> mean the two 12-hour periods of each day defined in the Schedule.</li><li><b>Tranche</b> means the hours of one calendar month within the Term, as set out in clause 3.</li><li><b>Reservation</b> means the booking of one or more hours on a selected Fleet through our system under clause 8. <b>Reserve</b> has a matching meaning.</li><li><b>Phase A</b> means Day 1 to Day 30 inclusive.</li><li><b>Full Prepayment</b> means our receipt, in cleared funds, of the price of every Tranche in the Term.</li><li><b>Key</b> means the private key held by Customer under clause 8.5.</li></ul>
 </section>
 <section id="s1">
 <h2>1. Subject</h2>
@@ -68,10 +68,10 @@
 </section>
 <section id="s3">
 <h2>3. Term and Tranches</h2>
-<p id="c3-1">3.1. The Term starts at 00:00:00 on Trial Start and ends at 23:59:59 on the day before the date 24 calendar months later. Where Trial Start is 29 February, the Term ends at 23:59:59 on 28 February two years later.</p>
-<p id="c3-2">3.2. Each calendar month within the Term is one Tranche. Tranche 1 runs from Trial Start to the end of that month. The final Tranche runs from the first day of its month to the end of the Term. There are 24 Tranches where Trial Start is the first day of a month, and 25 otherwise.</p>
+<p id="c3-1">3.1. The Term starts at 00:00:00 on the Signature Date and ends at 23:59:59 on the day before the date 24 calendar months later. Where the Signature Date is 29 February, the Term ends at 23:59:59 on 28 February two years later.</p>
+<p id="c3-2">3.2. Each calendar month within the Term is one Tranche. Tranche 1 runs from the Signature Date to the end of that month. The final Tranche runs from the first day of its month to the end of the Term. There are 24 Tranches where the Signature Date is the first day of a month, and 25 otherwise.</p>
 <p id="c3-3">3.3. Each Tranche holds 24 hours for each of its days within the Term: 672 hours for February (696 in a leap year), 720 for a 30-day month, 744 for a 31-day month, and proportionally fewer for a partial first or final Tranche.</p>
-<p id="c3-4">3.4. Example, Trial Start 15 December 2026:</p>
+<p id="c3-4">3.4. Example, signed on 15 December 2026:</p>
 <div class="scroll"><table>
 <tr><th>Tranche</th><th>Period</th><th>Hours</th></tr>
 <tr><td>1</td><td>15–31 Dec 2026</td><td>408</td></tr>
@@ -152,7 +152,7 @@
 </section>
 <section id="s9">
 <h2>9. Delivery obligation</h2>
-<p id="c9-1">9.1. This is our only performance commitment. Each reserved hour will deliver <b>materially the same performance as measured on Customer's own workload in the first 30 days after Trial Start</b> (the <b>Trial Baseline</b>). We record the Trial Baseline at the end of that period and give Customer a copy.</p>
+<p id="c9-1">9.1. This is our only performance commitment. Each reserved hour will deliver <b>materially the same performance as measured on Customer's own workload in the 30 days that begin with Customer's first reserved hour</b> (the <b>Baseline</b>). We record the Baseline at the end of that period and give Customer a copy.</p>
 <p id="c9-2">9.2. <b>Automatic credit.</b> If a reserved hour is unavailable, or the Fleet it was reserved on is unreachable for more than 15 consecutive minutes, every reserved hour in which any part of that period falls is credited back to Customer in full and is not counted as consumed. The same applies to any period of more than 15 consecutive minutes in which Customer's workload runs below the Performance Threshold stated in the Schedule. No claim is needed: we credit from our own records. Where Customer's records show such a period and ours do not, Customer may send its records within 7 days, and we credit the hours unless our records show the Fleet was available and at or above the Performance Threshold throughout that period.</p>
 <p id="c9-3">9.3. Credits are made in hours, never in cash: each affected hour is credited as one hour. We credit within 24 hours after the end of the period, to the Tranche current at that time, or to the next Tranche where fewer than 7 days remain in the current one. Credited hours expire with the Tranche they are credited to.</p>
 <p id="c9-4">9.4. Credited hours are Customer's sole and exclusive remedy for any failure of performance, subject to clause 12.5.</p>
@@ -160,7 +160,7 @@
 <section id="s10">
 <h2>10. Models</h2>
 <p id="c10-1">10.1. We offer only open-source models whose availability cannot be withdrawn by any third party. We publish the available models on the Fleet List.</p>
-<p id="c10-2">10.2. Once a model is made available to Customer under this Agreement, it remains available for the rest of the Term.</p>
+<p id="c10-2">10.2. The models Customer chooses from the Fleet List and names in the Schedule (the <b>Chosen Models</b>) remain available to Customer, on at least one Fleet, for the whole Term. Other models on the Fleet List are available while they are listed.</p>
 <p id="c10-3">10.3. <b>Model licences and outputs.</b> Each model is third-party open-source software provided under its own licence, which Customer must comply with. Outputs are generated automatically from Customer's inputs: we do not author, review or endorse them, and we give no warranty that any output is accurate, complete, lawful, safe or fit for any purpose. Customer is responsible for evaluating outputs before relying on, publishing or acting on them.</p>
 </section>
 <section id="s11">
@@ -185,7 +185,7 @@
 </section>
 <section id="s13">
 <h2>13. General</h2>
-<p id="c13-1">13.1. <b>Entire agreement.</b> This Agreement is the whole agreement between the parties. Neither party relies on any pre-contractual statement, projection, benchmark or representation, including anything said in diligence or during Phase A, except the Trial Baseline recorded under clause 9.1.</p>
+<p id="c13-1">13.1. <b>Entire agreement.</b> This Agreement is the whole agreement between the parties. Neither party relies on any pre-contractual statement, projection, benchmark or representation, including anything said in diligence or during Phase A, except the Baseline recorded under clause 9.1.</p>
 <p id="c13-2">13.2. <b>Amendment and waiver.</b> Amendments must be in writing and signed by both parties. No conduct, delay or extension operates as a waiver.</p>
 <p id="c13-3">13.3. <b>Third parties.</b> This Agreement gives no rights to anyone except the parties.</p>
 <p id="c13-4">13.4. <b>Publicity.</b> Customer may not publicise this Agreement or our relationship without our written consent. We may refer to Customer by name and logo after Full Prepayment.</p>
@@ -207,14 +207,14 @@
 <tr><th>Item</th><th>Entry</th></tr>
 <tr><td>Customer legal name and jurisdiction</td><td>[ ]</td></tr>
 <tr><td>Signature Date</td><td>[ ]</td></tr>
-<tr><td>Trial Start (the Signature Date)</td><td>[ ]</td></tr>
 <tr><td>Hour Price (clause 2)</td><td>USD [ ] per fleet-hour, exclusive of VAT, fixed for the Term</td></tr>
 <tr><td>Customer VAT status (clause 2.2)</td><td>[No place of business in the Republic of Korea / Korean business registration number [ ]]</td></tr>
 <tr><td>Timezone election</td><td>[50/50 / 100% East / 100% West], subject to clause 4.3</td></tr>
 <tr><td>East Window</td><td>[hh:mm–hh:mm KST]</td></tr>
 <tr><td>West Window</td><td>[hh:mm–hh:mm KST]</td></tr>
-<tr><td>Performance Threshold (clause 9.2)</td><td>[80]% of the Trial Baseline</td></tr>
+<tr><td>Performance Threshold (clause 9.2)</td><td>[80]% of the Baseline</td></tr>
 <tr><td>Live capacity address (clause 8.8)</td><td>https://sparkpipe.ai/availability.txt</td></tr>
+<tr><td>Chosen Models (clause 10.2)</td><td>[models from the Fleet List]</td></tr>
 <tr><td>Customer Ethereum address (for the Key)</td><td>[ ]</td></tr>
 <tr><td>Payment currency and account</td><td>Either (a) USD, by bank transfer from Customer's own account outside the Republic of Korea to our USD account at a Korean foreign exchange bank, zero-rated where Customer has no place of business in the Republic of Korea: [bank, account holder, account number, SWIFT], confirmed by both parties before payment; or (b) USDC, through the payment invoice our system issues, with VAT charged under clause 2.2</td></tr>
 <tr><td>Supplier notice address and email</td><td>[ ]</td></tr>
