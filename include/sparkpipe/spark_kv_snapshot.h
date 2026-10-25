@@ -24,6 +24,20 @@ extern "C" {
 #define SPARK_KV_RETENTION_SECONDS UINT64_C(86400)
 #define SPARK_KV_EXPIRY_SWEEP_SECONDS 60u
 #define SPARK_KV_SNAPSHOT_USE_STAMP_SECONDS UINT64_C(60)
+#define SPARK_KV_DETACHED_POOL_SECONDS UINT64_C(3600)
+#define SPARK_KV_PURGE_SECONDS 60u
+#define SPARK_KV_PURGE_DEPTH_MAX 16u
+#define SPARK_KV_SNAPSHOT_OPEN_WAIT_NS UINT64_C(30000000000)
+
+typedef struct SparkKvSnapshotPurgeResult
+{
+	uint64_t deleted_files;
+	uint64_t deleted_bytes;
+	uint32_t stores;
+	uint32_t busy_stores;
+	uint32_t failed_unlinks;
+	uint32_t reserved0;
+} SparkKvSnapshotPurgeResult;
 
 typedef struct SparkKvSnapshotKey
 {
@@ -138,6 +152,9 @@ SparkStatus SparkKvSnapshotStat(SparkKvSnapshotStore *store,const SparkKvSnapsho
 SparkStatus SparkKvSnapshotRead(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,SparkKvSnapshotSegment *segments,uint32_t segment_count);
 SparkStatus SparkKvSnapshotReadSegment(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,uint32_t segment_index,uint32_t kind,void *data,uint64_t capacity,uint64_t *bytes_out);
 SparkStatus SparkKvSnapshotRemove(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key);
+uint32_t SparkKvSnapshotIsCacheFileName(const char *name);
+SparkStatus SparkKvSnapshotPurgeDirectory(const char *directory,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result);
+SparkStatus SparkKvSnapshotPurgeTree(const char *root,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result);
 
 #ifdef __cplusplus
 }

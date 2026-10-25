@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -98,6 +99,28 @@ static void SnapRemoveTree(const char *directory)
 			continue;
 		(void)snprintf(path,sizeof(path),"%s/%s",directory,item->d_name);
 		(void)unlink(path);
+	}
+	(void)closedir(listing);
+	(void)rmdir(directory);
+}
+
+static void SnapRemoveAll(const char *directory)
+{
+	char path[1200];
+	struct dirent *item;
+	struct stat info;
+	DIR *listing = opendir(directory);
+	if ( listing == 0 )
+		return;
+	while ( (item = readdir(listing)) != 0 )
+	{
+		if ( strcmp(item->d_name,".") == 0 || strcmp(item->d_name,"..") == 0 )
+			continue;
+		(void)snprintf(path,sizeof(path),"%s/%s",directory,item->d_name);
+		if ( lstat(path,&info) == 0 && S_ISDIR(info.st_mode) )
+			SnapRemoveAll(path);
+		else
+			(void)unlink(path);
 	}
 	(void)closedir(listing);
 	(void)rmdir(directory);
@@ -1224,6 +1247,81 @@ static void SnapTestSyncWriteSeesQueuedWrite(const char *directory)
 	printf("kv snapshot: a synchronous write of a key with a queued write answers PENDING and writes nothing\n");
 }
 
+static void SnapPurgeFile(const char *directory,const char *name,uint64_t age_seconds)
+{
+	char path[1200];
+	struct timespec times[2];
+	int descriptor;
+	(void)snprintf(path,sizeof(path),"%s/%s",directory,name);
+	descriptor = open(path,O_WRONLY | O_CREAT | O_TRUNC,0600);
+	CHECK(descriptor >= 0 && write(descriptor,"kvdata",6) == 6);
+	if ( descriptor >= 0 )
+		(void)close(descriptor);
+	times[0].tv_sec = times[1].tv_sec = time(0) - (time_t)age_seconds;
+	times[0].tv_nsec = times[1].tv_nsec = 0;
+	CHECK(utimensat(AT_FDCWD,path,times,0) == 0);
+}
+
+static uint32_t SnapPurgeExists(const char *directory,const char *name)
+{
+	char path[1200];
+	struct stat info;
+	(void)snprintf(path,sizeof(path),"%s/%s",directory,name);
+	return(lstat(path,&info) == 0 ? 1u : 0u);
+}
+
+static void SnapTestPurge(const char *root)
+{
+	const uint64_t old = SPARK_KV_RETENTION_SECONDS + 60u,fresh = SPARK_KV_RETENTION_SECONDS - 600u;
+	char store[1024],nested[1024],busy[1024],outside[1024],link_path[1024],lock_path[1200];
+	SparkKvSnapshotPurgeResult result;
+	int lock;
+	(void)snprintf(store,sizeof(store),"%s/lanes/old/root.failed-1/kvsnapshot",root);
+	(void)snprintf(nested,sizeof(nested),"%s/kvsnapshot/flash-tip",root);
+	(void)snprintf(busy,sizeof(busy),"%s/lanes/live/root/kvsnapshot",root);
+	(void)snprintf(outside,sizeof(outside),"%s-outside",root);
+	(void)snprintf(link_path,sizeof(link_path),"%s/lanes/linked",root);
+	CHECK(mkdir(root,0700) == 0 || access(root,F_OK) == 0);
+	{
+		char build[1024];
+		const char *parts[] = {"/lanes","/lanes/old","/lanes/old/root.failed-1","/lanes/old/root.failed-1/kvsnapshot","/kvsnapshot","/kvsnapshot/flash-tip",
+			"/lanes/live","/lanes/live/root","/lanes/live/root/kvsnapshot"};
+		uint32_t index;
+		for (index=0u; index<sizeof(parts)/sizeof(parts[0]); index++)
+		{
+			(void)snprintf(build,sizeof(build),"%s%s",root,parts[index]);
+			CHECK(mkdir(build,0700) == 0);
+		}
+	}
+	CHECK(mkdir(outside,0700) == 0);
+	CHECK(symlink(outside,link_path) == 0);
+	SnapPurgeFile(store,"aa-bb-64.kvs",old);
+	SnapPurgeFile(store,"aa-bb-12.kvst",old);
+	SnapPurgeFile(store,"aa-bb-128.kvs",fresh);
+	SnapPurgeFile(store,".kvs-writing-7",0u);
+	SnapPurgeFile(store,"notes.txt",old);
+	SnapPurgeFile(nested,"legacy-name.kvs",old);
+	SnapPurgeFile(busy,"cc-dd-64.kvs",old);
+	SnapPurgeFile(outside,"ee-ff-64.kvs",old);
+	(void)snprintf(lock_path,sizeof(lock_path),"%s/%s",busy,SPARK_KV_SNAPSHOT_LOCK_NAME);
+	lock = open(lock_path,O_RDWR | O_CREAT,0600);
+	CHECK(lock >= 0 && flock(lock,LOCK_EX | LOCK_NB) == 0);
+	CHECK(SparkKvSnapshotPurgeTree(root,(uint64_t)time(0),&result) == SPARK_STATUS_OK);
+	CHECK(result.stores == 2u && result.busy_stores == 1u && result.deleted_files == 4u && result.deleted_bytes == 24u && result.failed_unlinks == 0u);
+	CHECK(SnapPurgeExists(store,"aa-bb-64.kvs") == 0u && SnapPurgeExists(store,"aa-bb-12.kvst") == 0u && SnapPurgeExists(store,".kvs-writing-7") == 0u);
+	CHECK(SnapPurgeExists(store,"aa-bb-128.kvs") == 1u && SnapPurgeExists(store,"notes.txt") == 1u);
+	CHECK(SnapPurgeExists(nested,"legacy-name.kvs") == 0u);
+	CHECK(SnapPurgeExists(busy,"cc-dd-64.kvs") == 1u);
+	CHECK(SnapPurgeExists(outside,"ee-ff-64.kvs") == 1u);
+	(void)close(lock);
+	CHECK(SparkKvSnapshotPurgeDirectory(busy,(uint64_t)time(0),&result) == SPARK_STATUS_OK && SnapPurgeExists(busy,"cc-dd-64.kvs") == 0u);
+	CHECK(SparkKvSnapshotPurgeDirectory(store,(uint64_t)time(0) + 600u,&result) == SPARK_STATUS_OK && SnapPurgeExists(store,"aa-bb-128.kvs") == 0u);
+	CHECK(SparkKvSnapshotPurgeTree("relative",(uint64_t)time(0),&result) == SPARK_STATUS_INVALID_ARGUMENT);
+	CHECK(SparkKvSnapshotIsCacheFileName("x.kvs") == 1u && SparkKvSnapshotIsCacheFileName("x.kvst") == 1u && SparkKvSnapshotIsCacheFileName(".kvs-writing-1") == 1u &&
+		SparkKvSnapshotIsCacheFileName(".kvs-lock") == 0u && SparkKvSnapshotIsCacheFileName("x.kvs.txt") == 0u);
+	(void)unlink(link_path);
+}
+
 int main(void)
 {
 	char directory[] = "/tmp/sparkpipe-kv-snapshot-XXXXXX";
@@ -1290,6 +1388,14 @@ int main(void)
 	SnapTestSpareRetention(directory);
 	SnapTestStatesSpillBeforeDemotion(directory);
 	SnapRemoveTree(directory);
+	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
+		return(2);
+	{
+		char root[256];
+		(void)snprintf(root,sizeof(root),"%s/home",directory);
+		SnapTestPurge(root);
+	}
+	SnapRemoveAll(directory);
 	printf("test_kv_snapshot: %u checks, %u failures\n",snap_checks,snap_failures);
 	return(snap_failures == 0u ? 0 : 1);
 }

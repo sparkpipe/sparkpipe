@@ -44,6 +44,8 @@ DFT3_FOOTER = struct.Struct("<8I4I")
 STATUS_OK, STATUS_BAD_REQUEST, STATUS_BAD_SEQUENCE, STATUS_INTERNAL, STATUS_UNAVAILABLE = 0, 1, 2, 3, 4
 SPEC_DSPARK = 2
 ROOT_PARENT = 0xFFFFFFFF
+RETENTION_SECONDS = 86400
+EXPIRY_SWEEP_SECONDS = 60
 
 
 class Context:
@@ -254,7 +256,17 @@ class Server:
         self.stats["rows"] += len(tokens)
         self.evict()
 
+    def expire(self, now):
+        stale = [sequence for sequence, context in self.contexts.items() if now - context.used >= RETENTION_SECONDS]
+        for sequence in stale:
+            del self.contexts[sequence]
+            print(f"CONTEXT-EXPIRED sequence {sequence} unused for {RETENTION_SECONDS} s", flush=True)
+        if stale and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return len(stale)
+
     def evict(self):
+        self.expire(time.monotonic())
         budget = self.args.context_bytes
         evicted = False
         while len(self.contexts) > 1 and sum(c.bytes() for c in self.contexts.values()) > budget:
@@ -266,11 +278,15 @@ class Server:
 
     def gpu_loop(self):
         pending = None
+        next_sweep = time.monotonic() + EXPIRY_SWEEP_SECONDS
         while True:
             item = None
+            if time.monotonic() >= next_sweep:
+                self.expire(time.monotonic())
+                next_sweep = time.monotonic() + EXPIRY_SWEEP_SECONDS
             try:
                 if pending is None:
-                    item = self.work.get()
+                    item = self.work.get(timeout=max(0.0, next_sweep - time.monotonic()))
                 else:
                     item = self.work.get(timeout=max(0.0, pending[2] - time.monotonic()))
             except queue.Empty:

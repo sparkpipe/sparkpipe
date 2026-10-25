@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_model_batch_engine.h"
+#include "sparkpipe/spark_kv_snapshot.h"
 #include "sparkpipe/spark_error_site.h"
 
 #include <libgen.h>
@@ -268,6 +269,8 @@ struct SparkModelBatchEngine
 	uint32_t prefix_index_loaded;
 	uint64_t prefix_index_next_save_ns;
 	uint64_t prefix_index_export_ns_maximum;
+	uint64_t prefix_expiry_next_ns;
+	uint64_t prefix_expired_count;
 	uint64_t prefix_index_loaded_record_count;
 	uint64_t prefix_index_refused_count;
 	uint64_t prefix_index_reimported_record_count;
@@ -808,6 +811,17 @@ static void SparkModelBatchSetFailed(
 	SparkModelBatchEngine *engine,
 	SparkStatus status);
 
+static void SparkModelBatchClearRequestTokens(
+	SparkModelBatchEngine *engine,
+	uint32_t slot)
+{
+	memset(SparkModelBatchRequestTokens(engine,slot),0,(size_t)engine->max_context_tokens * sizeof(engine->request_token_storage[0]));
+	if ( engine->lookup_chain != 0 )
+		memset(&engine->lookup_chain[(uint64_t)slot * engine->max_context_tokens],0,(size_t)engine->max_context_tokens * sizeof(engine->lookup_chain[0]));
+	if ( engine->lookup_heads != 0 )
+		memset(&engine->lookup_heads[(uint64_t)slot * SPARK_MODEL_BATCH_LOOKUP_BUCKETS],0,(size_t)SPARK_MODEL_BATCH_LOOKUP_BUCKETS * sizeof(engine->lookup_heads[0]));
+}
+
 static void SparkModelBatchFreeRequest(
 	SparkModelBatchEngine *engine,
 	SparkModelBatchRequestState *request)
@@ -816,6 +830,7 @@ static void SparkModelBatchFreeRequest(
 	uint32_t slot,generation;
 	slot = (uint32_t)(request - engine->requests);
 	generation = request->generation;
+	SparkModelBatchClearRequestTokens(engine,slot);
 	status = SparkPrefixCacheReleaseSequence(&engine->prefix_cache,request->sequence_id);
 	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND )
 	{
@@ -1857,6 +1872,28 @@ static SparkStatus SparkModelBatchLoadPrefixIndex(SparkModelBatchEngine *engine)
 	engine->prefix_index_loaded = 1u;
 	engine->next_status_ns = SparkModelBatchNowNs() + SPARK_MODEL_BATCH_STATUS_INTERVAL_NS;
 	return(SPARK_STATUS_OK);
+}
+
+static void SparkModelBatchExpirePrefixes(SparkModelBatchEngine *engine)
+{
+	struct timespec now;
+	uint32_t expired = 0u;
+	SparkStatus status;
+	if ( clock_gettime(CLOCK_REALTIME,&now) != 0 )
+		return;
+	status = SparkPrefixCacheExpire(&engine->prefix_cache,(uint64_t)now.tv_sec,&expired);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"batch engine prefix index expiry failed status=%d: the index may hold records past %llu s\n",(int)status,(unsigned long long)SPARK_KV_RETENTION_SECONDS);
+		SparkModelBatchSetFailed(engine,status);
+		return;
+	}
+	if ( expired == 0u )
+		return;
+	engine->prefix_expired_count += expired;
+	engine->prefix_index_dirty = 1u;
+	fprintf(stderr,"batch engine prefix index expired records=%u unused_for_s=%llu total_expired=%llu\n",expired,(unsigned long long)SPARK_KV_RETENTION_SECONDS,
+		(unsigned long long)engine->prefix_expired_count);
 }
 
 static void SparkModelBatchSavePrefixIndex(SparkModelBatchEngine *engine,uint64_t now_ns)
@@ -3840,6 +3877,11 @@ static void SparkModelBatchPeriodicWork(SparkModelBatchEngine *engine)
 		(void)SparkModelPipelineClientRequestStatus(engine->pipeline);
 		engine->next_status_ns = now + SPARK_MODEL_BATCH_STATUS_INTERVAL_NS;
 	}
+	if ( now >= engine->prefix_expiry_next_ns )
+	{
+		SparkModelBatchExpirePrefixes(engine);
+		engine->prefix_expiry_next_ns = now + (uint64_t)SPARK_KV_EXPIRY_SWEEP_SECONDS * UINT64_C(1000000000);
+	}
 	if ( now >= engine->prefix_index_next_save_ns && engine->prefix_index_dirty != 0u )
 	{
 		SparkModelBatchSavePrefixIndex(engine,now);
@@ -4039,6 +4081,26 @@ uint64_t SparkModelBatchEngineSessionFingerprint(
 {
 	return(engine == 0 ? 1u :
 	    SparkModelPipelineClientSessionFingerprint(engine->pipeline));
+}
+
+uint64_t SparkModelBatchEngineFreeSlotTokenWords(
+	const SparkModelBatchEngine *engine)
+{
+	uint64_t held = 0u,index;
+	uint32_t slot;
+	if ( engine == 0 )
+		return(0u);
+	for (slot=engine->free_request_head; slot != SPARK_MODEL_BATCH_NO_SLOT && slot < engine->request_capacity; slot=engine->requests[slot].next_free_slot)
+	{
+		const uint32_t *tokens = &engine->request_token_storage[(uint64_t)slot * engine->max_context_tokens];
+		for (index=0u; index<engine->max_context_tokens; index++)
+			held += tokens[index] != 0u ? 1u : 0u;
+		for (index=0u; engine->lookup_chain != 0 && index<engine->max_context_tokens; index++)
+			held += engine->lookup_chain[(uint64_t)slot * engine->max_context_tokens + index] != 0u ? 1u : 0u;
+		for (index=0u; engine->lookup_heads != 0 && index<SPARK_MODEL_BATCH_LOOKUP_BUCKETS; index++)
+			held += engine->lookup_heads[(uint64_t)slot * SPARK_MODEL_BATCH_LOOKUP_BUCKETS + index] != 0u ? 1u : 0u;
+	}
+	return(held);
 }
 
 uint32_t SparkModelBatchEngineAllRanksReady(

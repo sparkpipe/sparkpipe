@@ -464,28 +464,15 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## KV tiers
 
-- Cached request state outlives 24 hours where nothing runs the retention
-  clock. The clock runs only inside a running model: its snapshot store
-  expires files at open and every 60 s, its page cache every 60 s. Still to
-  do:
-  - a weightd thread that purges every lane's snapshot store every 60 s,
-    whether or not its model runs: residentd registers its store directory
-    with weightd at attach, weightd keeps the list across restarts, and for
-    each store whose lock it can take deletes the files unused for 24 hours
-    (`SparkKvSnapshotScan`'s rule); a store a running model holds keeps its
-    own sweep. Fleet proof: backdate an inactive model's store while another
-    model serves, and see weightd empty it within a minute;
-  - the hub draft servers (`tools/block_draftd.py`) evict a sequence's
-    context, its last 4,096 token ids and drafter keys and values, only to
-    stay under `--context-bytes` and always keep one; evict any context
-    unused for 24 hours;
-  - the batch engine keeps a finished request's tokens and lookup chain in
-    its slot until the next request takes the slot; clear them when the
-    request ends;
-  - the API's prefix index file (`prefix_index.spi`: block hashes and
-    digests, no tokens) has no clock; drop a record when its KV expires;
-  - delete the stores and prefix index files of retired lanes and APIs on
-    the nodes and the hub.
+- The 24-hour retention outside a running model (weightd's purge thread and
+  its release of detached KV pools, the draft servers' context expiry, the
+  batch engine's slot clearing and the prefix index's record expiry) has no
+  fleet proof yet. Proof: backdate an inactive model's snapshot store while
+  another model serves and see `weightd kv purge` empty it within a minute;
+  swap a model away and see `reason=detached_retention` an hour later; see
+  `CONTEXT-EXPIRED` and `prefix index expired` on a backdated hub. The
+  retired API directories on the hub keep prefix index files that no engine
+  opens; they need deleting by hand.
 
 - Left out on purpose (2026-10-04): JIT-KV W3
   (`docs/archive/JIT_KV_RESPONSE.md:47-49`) is partly done. The slot file, the

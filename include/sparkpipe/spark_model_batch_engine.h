@@ -210,6 +210,8 @@ uint64_t SparkModelBatchEngineSessionFingerprint(
 	const SparkModelBatchEngine *engine);
 uint32_t SparkModelBatchEngineAllRanksReady(
 	const SparkModelBatchEngine *engine);
+uint64_t SparkModelBatchEngineFreeSlotTokenWords(
+	const SparkModelBatchEngine *engine);
 
 #ifdef __cplusplus
 }
