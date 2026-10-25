@@ -7,8 +7,11 @@
 <meta name="description" content="How HYOR AI Tech handles personal information on sparkpipe.ai, SparkPipe Chat and fleet-hour accounts.">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
+<link rel="alternate" hreflang="en" href="https://sparkpipe.ai/privacy.html">
+<link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/privacy-ko.html">
+<link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/privacy.html">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="site.css?v=0c90e191">
+<link rel="stylesheet" href="site.css?v=7515b90b">
 <style>
 .policy { padding-block: 48px 64px; display: grid; gap: 28px; }
 .policy h1 { font-size: clamp(36px, 6vw, 64px); }
@@ -30,10 +33,12 @@
   <div class="wrap">
     <a class="brand" href="index.html">SparkPipe<span class="tag">privacy</span></a>
     <nav class="nav-links" aria-label="Sections">
-      <a href="privacy-ko.html" hreflang="ko">한국어</a>
       <a href="terms.html">Terms</a>
       <a href="index.html">Home</a>
     </nav>
+    <div class="nav-actions">
+      <div class="lang" role="group" aria-label="Language / 언어"><a href="privacy.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="privacy-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
+    </div>
   </div>
 </header>
 
@@ -138,7 +143,9 @@
 
   <section>
     <h2>10. Cookies and browser storage</h2>
-    <p>The chat keeps you signed in with a session token stored in your browser; without it the chat cannot work. The checkout preview keeps its demo in local storage only. None of this leaves your browser except to sign you in to the chat, and we use no advertising, analytics or tracking cookies. You can delete or block them in your browser settings.</p>
+    <p>The chat keeps you signed in with a session token stored in your browser; without it the chat cannot work. The checkout preview keeps its demo in local storage only. Neither leaves your browser except to sign you in to the chat.</p>
+    <p><b>Language.</b> On your first visit, the site shows Korean pages if your IP address is in the Korean address ranges that APNIC, the regional internet registry, publishes, and English pages otherwise. The check runs on our own server against a copy of that list; your address goes to no one else, and we keep no record of the result. When you choose a language with the EN / 한국어 switch, a cookie named <span class="mono">lang</span>, holding only <span class="mono">ko</span> or <span class="mono">en</span>, remembers your choice for one year and is sent to our server with each page request.</p>
+    <p>We use no advertising, analytics or tracking cookies. You can delete or block any of these in your browser settings.</p>
   </section>
 
   <section>
@@ -170,7 +177,7 @@
 <footer class="foot">
   <div class="wrap">
     <span>© 2026 HYOR AI Tech Ltd</span>
-    <nav aria-label="Footer"><a href="index.html">Home</a><a href="terms.html">Terms</a><a href="privacy-ko.html" hreflang="ko">개인정보처리방침</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="terms.html">Terms</a><a href="privacy-ko.html?lang=ko" hreflang="ko" lang="ko">개인정보처리방침</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
 </body>

@@ -334,6 +334,23 @@ to GLM.
 
 Apache serves only these pages: no API, no login, no proxy. Fleet-hour customers will reach their fleet through the customer API that TECHDEBT lists under fleet-hours.
 
+Every page with a Korean twin (`index`, `fleets`, `terms`, `privacy`, `hourly-terms`, `agreement`, each with a `-ko.html` page) carries the EN / 한국어 switch and `hreflang` alternates. `deployment/vps/sparkpipe-lang.conf`, included in the port-443 virtual host after the canonical-host rule, chooses the language:
+
+- `?lang=ko` or `?lang=en` on any page sets the cookie `lang` (one year, Secure, HttpOnly, SameSite=Lax) and redirects to the same page without the query. The switch links carry it.
+- A request that does not come from one of our own pages (no `https://sparkpipe.ai/` referrer) for an English page with a Korean twin goes to the Korean twin when the cookie says `ko`, or when there is no `lang` cookie and the client's /24 is in the Korean map. Links between our pages are followed as written, so an English link on a Korean page stays English. This needs `Referrer-Policy: same-origin` on the virtual host: other sites still get no referrer.
+- The map `/etc/apache2/sparkpipe/kr24` (SDBM) holds every /24 that APNIC lists as allocated or assigned to KR, keyed `a.b.c`. Build it from APNIC's daily file and install it on the VPS:
+
+```sh
+curl -sSfO https://ftp.apnic.net/stats/apnic/delegated-apnic-latest
+curl -sSfO https://ftp.apnic.net/stats/apnic/delegated-apnic-latest.md5
+python3 tools/site_kr_networks.py delegated-apnic-latest kr24.txt
+sudo httxt2dbm -F SDBM -i kr24.txt -o /etc/apache2/sparkpipe/kr24.new
+sudo mv /etc/apache2/sparkpipe/kr24.new.pag /etc/apache2/sparkpipe/kr24.pag
+sudo mv /etc/apache2/sparkpipe/kr24.new.dir /etc/apache2/sparkpipe/kr24.dir
+```
+
+Check the md5 against the downloaded `.md5` first. The builder refuses a file with fewer than 100,000 Korean networks (2026-10-25: 439,358).
+
 | VPS path | Goes to |
 | --- | --- |
 | `/` and the pages | `/var/www/html` |

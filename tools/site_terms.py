@@ -113,25 +113,25 @@ STYLE = """<style>
 PAGES = [
     {
         "src": "hourly-en.md", "out": "hourly-terms.html", "lang": "en", "tag": "terms",
-        "title": "SparkPipe Hourly Terms", "other": "hourly-terms-ko.html", "other_label": "한국어",
+        "title": "SparkPipe Hourly Terms", "other": "hourly-terms-ko.html",
         "desc": "Draft Hourly Terms for prepaid SparkPipe fleet-hours, published for review.",
         "lead": "These Terms are accepted online: Customer signs their exact text with its Key at sign-up. The Korean text prevails (clause 12.3).",
     },
     {
         "src": "hourly-ko.md", "out": "hourly-terms-ko.html", "lang": "ko", "tag": "약관",
-        "title": "SparkPipe 시간제 이용약관", "other": "hourly-terms.html", "other_label": "English",
+        "title": "SparkPipe 시간제 이용약관", "other": "hourly-terms.html",
         "desc": "선불 SparkPipe 플릿시간 시간제 이용약관 검토용 공개 문안.",
         "lead": "본 약관은 온라인으로 체결되며, 고객은 가입 시 자신의 키로 본 약관의 정확한 문안에 서명한다. 국문본이 우선한다(제12.3조).",
     },
     {
         "src": "agreement-en.md", "out": "agreement.html", "lang": "en", "tag": "terms",
-        "title": "SparkPipe 2-Year Reserved Fleet Service Agreement", "other": "agreement-ko.html", "other_label": "한국어",
+        "title": "SparkPipe 2-Year Reserved Fleet Service Agreement", "other": "agreement-ko.html",
         "desc": "Draft 2-Year Reserved Fleet Service Agreement for SparkPipe fleet-hours, published for review.",
         "lead": "Signed individually after business verification; each clause may be negotiated. The Korean text prevails (clause 14.3).",
     },
     {
         "src": "agreement-ko.md", "out": "agreement-ko.html", "lang": "ko", "tag": "약관",
-        "title": "SparkPipe 2년 예약 플릿 서비스 계약서", "other": "agreement.html", "other_label": "English",
+        "title": "SparkPipe 2년 예약 플릿 서비스 계약서", "other": "agreement.html",
         "desc": "SparkPipe 플릿시간 2년 예약 플릿 서비스 계약서 검토용 공개 문안.",
         "lead": "사업자 확인 후 개별적으로 체결하며, 각 조항은 협의할 수 있다. 국문본이 우선한다(제14.3조).",
     },
@@ -144,8 +144,26 @@ NOTICE = {
 VERSION = {"en": "Version of 25 October 2026", "ko": "2026년 10월 25일 판"}
 NAV = {
     "en": ('<a href="terms.html">All terms</a>', '<a href="privacy.html">Privacy</a>', '<a href="index.html">Home</a>'),
-    "ko": ('<a href="terms.html">약관 목록</a>', '<a href="privacy-ko.html">개인정보처리방침</a>', '<a href="index.html">홈</a>'),
+    "ko": ('<a href="terms-ko.html">약관 목록</a>', '<a href="privacy-ko.html">개인정보처리방침</a>', '<a href="index-ko.html">홈</a>'),
 }
+HOME = {"en": "index.html", "ko": "index-ko.html"}
+GROUP = {"en": "Language / 언어", "ko": "언어 / Language"}
+
+
+def toggle(p):
+    en, ko = (p["out"], p["other"]) if p["lang"] == "en" else (p["other"], p["out"])
+    current = {"en": ' aria-current="true"', "ko": ""} if p["lang"] == "en" else {"en": "", "ko": ' aria-current="true"'}
+    attr = {"en": ' lang="en"' if p["lang"] == "ko" else "", "ko": ' lang="ko"' if p["lang"] == "en" else ""}
+    return (f'<div class="lang" role="group" aria-label="{GROUP[p["lang"]]}">'
+            f'<a href="{en}?lang=en" hreflang="en"{attr["en"]}{current["en"]}>EN</a>'
+            f'<a href="{ko}?lang=ko" hreflang="ko"{attr["ko"]}{current["ko"]}>한국어</a></div>')
+
+
+def alternates(p):
+    en, ko = (p["out"], p["other"]) if p["lang"] == "en" else (p["other"], p["out"])
+    return (f'<link rel="alternate" hreflang="en" href="https://sparkpipe.ai/{en}">\n'
+            f'<link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/{ko}">\n'
+            f'<link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/{en}">')
 
 
 def page(p):
@@ -161,18 +179,21 @@ def page(p):
 <meta name="description" content="{html.escape(p['desc'])}">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
+{alternates(p)}
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="site.css?v=0c90e191">
+<link rel="stylesheet" href="site.css?v=7515b90b">
 {STYLE}
 </head>
 <body>
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="index.html">SparkPipe<span class="tag">{p['tag']}</span></a>
+    <a class="brand" href="{HOME[p['lang']]}">SparkPipe<span class="tag">{p['tag']}</span></a>
     <nav class="nav-links" aria-label="Sections">
-      <a href="{p['other']}" hreflang="{'ko' if p['lang'] == 'en' else 'en'}">{p['other_label']}</a>
       {nav}
     </nav>
+    <div class="nav-actions">
+      {toggle(p)}
+    </div>
   </div>
 </header>
 

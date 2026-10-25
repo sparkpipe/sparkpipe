@@ -4,7 +4,9 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 
-SITE = Path(__file__).resolve().parents[1] / "site"
+ROOT = Path(__file__).resolve().parents[1]
+SITE = ROOT / "site"
+LANG_CONF = ROOT / "deployment" / "vps" / "sparkpipe-lang.conf"
 EXTERNAL = ("https://", "http://", "mailto:")
 ALLOWED_STYLES = ("https://fonts.googleapis.com/",)
 CHAT_APP_PAGES = {"fleet.html": {"/", "/static/favicon.svg", "/static/favicon.png"}}
@@ -68,10 +70,69 @@ def check_terms(failures):
             failures.append(f"{name}: differs from site/terms/; run python3 tools/site_terms.py")
 
 
+def twins():
+    import re
+    conf = LANG_CONF.read_text(encoding="utf-8")
+    names = ["index"] if re.search(r"RewriteRule \^/\(\?:index\\\.html\)\?\$ /index-ko\.html ", conf) else []
+    for group in re.findall(r"RewriteRule \^/\(([a-z|-]+)\)\\\.html\$ /\$1-ko\.html ", conf):
+        names += group.split("|")
+    return {f"{name}.html": f"{name}-ko.html" for name in names}
+
+
+def check_languages(pages, failures):
+    import re
+    pairs = twins()
+    if "index.html" not in pairs:
+        failures.append("sparkpipe-lang.conf: the home page has no Korean redirect")
+    korean = {name for name in pages if name.endswith("-ko.html")}
+    for name in sorted(korean - set(pairs.values())):
+        failures.append(f"{name}: Korean page without a redirect in {LANG_CONF.name}")
+    for en, ko in pairs.items():
+        for name in (en, ko):
+            if name not in pages:
+                failures.append(f"{LANG_CONF.name}: {name} names no file in site/")
+                continue
+            source = pages[name].source
+            lang = "ko" if name == ko else "en"
+            if f'<html lang="{lang}">' not in source:
+                failures.append(f"{name}: html lang is not {lang}")
+            for code, target in (("en", en), ("ko", ko)):
+                if f'<link rel="alternate" hreflang="{code}" href="https://sparkpipe.ai/{target}">' not in source:
+                    failures.append(f"{name}: no hreflang {code} alternate for {target}")
+            toggle = re.search(r'<div class="lang" role="group"[^>]*>(.*?)</div>', source, re.S)
+            if not toggle:
+                failures.append(f"{name}: no language switch")
+                continue
+            links = re.findall(r'<a href="([^"]+)"([^>]*)>', toggle.group(1))
+            if [href for href, _ in links] != [f"{en}?lang=en", f"{ko}?lang=ko"]:
+                failures.append(f"{name}: language switch links {[href for href, _ in links]}")
+            current = [href for href, attrs in links if 'aria-current="true"' in attrs]
+            if current != [f"{name}?lang={lang}"]:
+                failures.append(f"{name}: language switch marks {current} as current")
+
+
+def check_kr_networks(failures):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("site_kr_networks", ROOT / "tools" / "site_kr_networks.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    lines = ["2|apnic|20261024|5|19830613|20261023|+1000",
+             "apnic|KR|ipv4|1.11.0.0|65536|20100101|allocated",
+             "apnic|KR|ipv4|27.100.0.128|128|20100101|assigned",
+             "apnic|KR|ipv4|61.32.0.0|1024|20000101|available",
+             "apnic|JP|ipv4|1.0.16.0|4096|20110412|allocated",
+             "apnic|KR|ipv6|2001:220::|32|19990917|allocated"]
+    keys = module.prefixes(lines)
+    if len(keys) != 257 or keys[0] != "1.11.0" or keys[255] != "1.11.255" or keys[256] != "27.100.0":
+        failures.append(f"site_kr_networks: wrong /24 networks {len(keys)} {keys[:1]} {keys[-2:]}")
+
+
 def main():
     pages = {path.name: parse(path) for path in sorted(SITE.glob("*.html"))}
     failures = []
     check_terms(failures)
+    check_languages(pages, failures)
+    check_kr_networks(failures)
     for name, page in pages.items():
         for link in page.links:
             target, _, fragment = link.partition("#")
@@ -88,7 +149,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures or not pages:
         return 1
-    print(f"site: {len(pages)} pages, every local link and anchor resolves, no external scripts, the contract pages match site/terms/")
+    print(f"site: {len(pages)} pages, every local link and anchor resolves, no external scripts, the contract pages match site/terms/, every page with a Korean twin has the language switch and redirect")
     return 0
 
 
