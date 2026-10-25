@@ -1001,6 +1001,47 @@ static int RemoveSnapshotEntry(const char *path,const struct stat *info,int flag
 	return(walk->level == 0 ? 0 : remove(path));
 }
 
+static uint32_t ValidPageEntries(uint64_t *oldest)
+{
+	uint32_t index,count = 0u;
+	*oldest = UINT64_MAX;
+	for (index=0u; index<BINDING.page_cache.entry_capacity; index++)
+		if ( (BINDING.page_cache.entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u )
+		{
+			count++;
+			if ( BINDING.page_cache.entries[index].used_seconds < *oldest )
+				*oldest = BINDING.page_cache.entries[index].used_seconds;
+		}
+	return(count);
+}
+
+static void TestAdoptedPagesKeepTheirAge(void)
+{
+	uint8_t pages[2][TEST_PAGE_BYTES];
+	struct timespec now;
+	uint64_t idle_since,oldest;
+	uint32_t index,held,expired = 0u;
+	Open();
+	PublishTwoPageChain(pages);
+	assert(clock_gettime(CLOCK_REALTIME,&now) == 0);
+	idle_since = (uint64_t)now.tv_sec - SPARK_KV_RETENTION_SECONDS - 5u;
+	assert(ValidPageEntries(&oldest) == 2u && oldest + 60u >= (uint64_t)now.tv_sec);
+	for (index=0u; index<BINDING.page_cache.entry_capacity; index++)
+		if ( (BINDING.page_cache.entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u )
+			BINDING.page_cache.entries[index].used_seconds = idle_since;
+	Unload();
+	assert(nftw(SNAPSHOT_DIRECTORY,RemoveSnapshotEntry,16,FTW_DEPTH | FTW_PHYS) == 0);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	pthread_mutex_lock(&BINDING.mutex);
+	held = ValidPageEntries(&oldest);
+	assert(BINDING.kv_pool_adopted_pages == 2u && ((held == 2u && oldest == idle_since) || (held == 0u && BINDING.page_cache.expired_entry_count == 2u)));
+	assert(SparkKvPageCacheExpire(&BINDING.page_cache,(uint64_t)now.tv_sec,&expired) == SPARK_STATUS_OK);
+	pthread_mutex_unlock(&BINDING.mutex);
+	assert(expired == held && ValidPageEntries(&oldest) == 0u && BINDING.page_cache.expired_entry_count == 2u);
+	Close();
+	printf("adopted pages keep their age: pages idle for a day before a clean shutdown come back from the weightd seal with that age, and the expiry sweep drops them\n");
+}
+
 static void TestRestartAdoptsDevicePages(void)
 {
 	SparkModelDriverKvStoreCounters counters;
@@ -1660,6 +1701,7 @@ int main(void)
 	TestSnapshotRefusals();
 	TestSnapshotRestartRestore();
 	TestRestartAdoptsDevicePages();
+	TestAdoptedPagesKeepTheirAge();
 	TestRestoreHintStartsEarly();
 	TestWriteMeterCountsAndAlerts();
 	TestParkedPrefixSaves();

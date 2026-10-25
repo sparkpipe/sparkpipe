@@ -771,10 +771,11 @@ static SparkStatus SparkStageKvBindingAttachSnapshot(SparkStageKvBinding *bindin
 		SPARK_RETURN(status);
 	}
 	(void)SparkKvSnapshotCountLayout(&binding->snapshot_store,binding->layout_sha256,&matching,&foreign);
-	fprintf(stderr,"%s kv snapshot store directory=%s maximum_bytes=%llu queue_bytes=%llu file_bytes=%llu used_bytes=%llu files=%llu matching_files=%llu foreign_layout_files=%llu orphans=%llu evicted_at_open=%llu removed_temporaries=%llu removed_legacy=%llu driver=%s identity_us=%llu layout=%s\n",
+	fprintf(stderr,"%s kv snapshot store directory=%s maximum_bytes=%llu queue_bytes=%llu file_bytes=%llu used_bytes=%llu files=%llu matching_files=%llu foreign_layout_files=%llu orphans=%llu evicted_at_open=%llu expired_at_open=%llu expired_bytes_at_open=%llu removed_temporaries=%llu removed_legacy=%llu driver=%s identity_us=%llu layout=%s\n",
 		binding->module_tag,configuration->snapshot_directory,(unsigned long long)binding->snapshot_store.maximum_bytes,(unsigned long long)binding->snapshot_store.queue_maximum_bytes,
 		(unsigned long long)binding->snapshot_page_file_bytes,(unsigned long long)binding->snapshot_store.used_bytes,(unsigned long long)binding->snapshot_store.file_count,
 		(unsigned long long)matching,(unsigned long long)foreign,(unsigned long long)binding->snapshot_store.orphan_count,(unsigned long long)binding->snapshot_store.eviction_count,
+		(unsigned long long)binding->snapshot_store.expired_count,(unsigned long long)binding->snapshot_store.expired_bytes,
 		(unsigned long long)binding->snapshot_store.removed_temporary_count,(unsigned long long)binding->snapshot_store.removed_legacy_count,binding->driver_path,
 		(unsigned long long)((SparkStageKvNowNs() - start_ns) / 1000u),binding->layout_hex);
 	return(SPARK_STATUS_OK);
@@ -2694,19 +2695,37 @@ static void SparkStageKvBindingSaveOne(SparkStageKvBinding *binding,uint64_t *he
 	binding->save_running = 0u;
 }
 
+static void SparkStageKvBindingDeadline(uint64_t timeout_ns,struct timespec *deadline);
+
+static void SparkStageKvBindingExpire(SparkStageKvBinding *binding)
+{
+	struct timespec now;
+	uint32_t expired = 0u;
+	if ( clock_gettime(CLOCK_REALTIME,&now) != 0 || (uint64_t)now.tv_sec < binding->expiry_sweep_seconds + SPARK_KV_EXPIRY_SWEEP_SECONDS )
+		return;
+	binding->expiry_sweep_seconds = (uint64_t)now.tv_sec;
+	if ( SparkKvPageCacheExpire(&binding->page_cache,(uint64_t)now.tv_sec,&expired) == SPARK_STATUS_OK && expired != 0u )
+		fprintf(stderr,"%s kv cache expired entries=%u unused_for_s=%llu total_expired=%llu\n",binding->module_tag,expired,
+			(unsigned long long)SPARK_KV_RETENTION_SECONDS,(unsigned long long)binding->page_cache.expired_entry_count);
+}
+
 static void *SparkStageKvBindingSaveMain(void *context)
 {
 	SparkStageKvBinding *binding = (SparkStageKvBinding *)context;
+	struct timespec wake;
 	uint64_t held;
 	(void)SparkStageKvBindingLock(binding,&held);
 	for (;;)
 	{
+		SparkStageKvBindingExpire(binding);
 		while ( binding->save_stop == 0u && (binding->page_cache.snapshot == 0 || SparkKvPageCacheSavePending(&binding->page_cache) == 0u) )
 		{
 			(void)pthread_cond_broadcast(&binding->save_idle);
 			SparkStageKvBindingAccount(binding,SPARK_STAGE_KV_LOCK_SITE_SAVE,held);
-			(void)pthread_cond_wait(&binding->save_ready,&binding->mutex);
+			SparkStageKvBindingDeadline((uint64_t)SPARK_KV_EXPIRY_SWEEP_SECONDS * 1000000000ull,&wake);
+			(void)pthread_cond_timedwait(&binding->save_ready,&binding->mutex,&wake);
 			held = SparkStageKvNowNs();
+			SparkStageKvBindingExpire(binding);
 		}
 		if ( binding->save_stop != 0u )
 			break;
