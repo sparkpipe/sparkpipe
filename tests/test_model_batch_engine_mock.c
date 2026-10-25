@@ -305,6 +305,8 @@ static void TestScenarioHappyPath(const SparkModelResidentDeployment *deployment
 		"happy: the request produced tokens through the full stack");
 	CHECK( state.completed_events[1] == 1u && state.error_events[1] == 0u,
 		"happy: the request completed cleanly");
+	CHECK( SparkModelBatchEngineFreeSlotTokenWords(engine) == 0u,
+		"happy: a finished request leaves no prompt or generated tokens and no lookup chain in its slot");
 	SparkModelBatchEngineDestroy(engine);
 }
 

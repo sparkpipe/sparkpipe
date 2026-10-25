@@ -138,9 +138,11 @@ changes to common code. Track implementation evidence in
   model state. Descriptor declarations and byte-copy tests alone are insufficient.
 - **Cached request state expires.** KV and recurrent state derived from
   requests are deleted from every tier (device, host, weightd pool, snapshot
-  files) within 24 hours of their last use. The limit is a constant; no flag,
-  configuration or driver path lengthens it, and a restart keeps each entry's
-  age.
+  files) within 24 hours of their last use, whether or not their model is
+  running, and so are the hub draft servers' sequence contexts, the batch
+  engine's copy of a finished request's tokens and the API's prefix index
+  records. The limit is a constant; no flag, configuration or driver path
+  lengthens it, and a restart keeps each entry's age.
 
 ## 6. Experts, fleet access and deployment
 

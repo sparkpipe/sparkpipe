@@ -899,6 +899,19 @@ static SparkStatus SparkKvSnapshotScan(SparkKvSnapshotStore *store)
 	return(SparkKvSnapshotEvictLocked(store,0u));
 }
 
+static uint32_t SparkKvSnapshotLockWithin(int descriptor,uint64_t wait_ns)
+{
+	const struct timespec pause = {0,50000000L};
+	uint64_t deadline = SparkKvSnapshotNowNs() + wait_ns;
+	while ( flock(descriptor,LOCK_EX | LOCK_NB) != 0 )
+	{
+		if ( errno != EWOULDBLOCK || SparkKvSnapshotNowNs() >= deadline )
+			return(1u);
+		(void)nanosleep(&pause,0);
+	}
+	return(0u);
+}
+
 static void SparkKvSnapshotRuntimeFree(SparkKvSnapshotRuntime *runtime)
 {
 	if ( runtime->lock_descriptor >= 0 )
@@ -931,7 +944,7 @@ SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *dir
 		SparkKvSnapshotRuntimeFree(runtime);
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
-	if ( flock(runtime->lock_descriptor,LOCK_EX | LOCK_NB) != 0 )
+	if ( SparkKvSnapshotLockWithin(runtime->lock_descriptor,SPARK_KV_SNAPSHOT_OPEN_WAIT_NS) != 0u )
 	{
 		SparkKvSnapshotRuntimeFree(runtime);
 		SPARK_FAIL(SPARK_STATUS_BUSY);

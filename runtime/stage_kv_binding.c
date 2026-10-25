@@ -1270,13 +1270,20 @@ static SparkStatus SparkStageKvBindingAdoptPool(SparkStageKvBinding *binding)
 static void SparkStageKvBindingSealPool(SparkStageKvBinding *binding)
 {
 	SparkStageKvPoolSeal *seal = (SparkStageKvPoolSeal *)binding->kv_pool.metadata;
-	uint32_t count = 0u,entry,valid = 0u,private_entries = 0u,nonresident = 0u,shared = 0u;
+	uint32_t count = 0u,entry,valid = 0u,private_entries = 0u,nonresident = 0u,shared = 0u,expired = 0u;
+	struct timespec now;
 	SparkStatus status;
 	if ( seal == 0 || binding->mutex_initialized == 0u || binding->kv_pool_seal_cleared == 0u )
 		return;
 	if ( cudaDeviceSynchronize() != cudaSuccess )
 	{
 		fprintf(stderr,"%s kv pool not sealed: the device did not drain\n",binding->module_tag);
+		return;
+	}
+	if ( clock_gettime(CLOCK_REALTIME,&now) != 0 ||
+		SparkKvPageCacheExpire(&binding->page_cache,(uint64_t)now.tv_sec + SPARK_KV_DETACHED_POOL_SECONDS,&expired) != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"%s kv pool not sealed: entries due to expire while detached could not be dropped\n",binding->module_tag);
 		return;
 	}
 	status = SparkKvPageCacheExportResident(&binding->page_cache,(SparkKvPageCacheResidentRecord *)(seal + 1),binding->physical_page_count,&count);
@@ -1310,8 +1317,8 @@ static void SparkStageKvBindingSealPool(SparkStageKvBinding *binding)
 			binding->arena.blocks[candidate->logical_page_index].resident_slot_index == SPARK_KV_CACHE_NO_RESIDENT_SLOT )
 			nonresident++;
 	}
-	fprintf(stderr,"%s kv pool sealed generation=%llu resident_pages=%u entries=%u window=%u private=%u nonresident=%u orphaned=%u\n",binding->module_tag,(unsigned long long)binding->kv_pool.pool_generation,count,
-		valid,shared,private_entries,nonresident,valid - shared - private_entries - nonresident - count);
+	fprintf(stderr,"%s kv pool sealed generation=%llu resident_pages=%u entries=%u window=%u private=%u nonresident=%u orphaned=%u expired_before_seal=%u detached_limit_s=%llu\n",binding->module_tag,(unsigned long long)binding->kv_pool.pool_generation,count,
+		valid,shared,private_entries,nonresident,valid - shared - private_entries - nonresident - count,expired,(unsigned long long)SPARK_KV_DETACHED_POOL_SECONDS);
 }
 
 static void SparkStageKvBindingAttachWriteMeter(SparkStageKvBinding *binding)

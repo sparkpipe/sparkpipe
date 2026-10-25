@@ -9,6 +9,7 @@
 #include "sparkpipe/spark_weightd_direct.h"
 #include "sparkpipe/spark_weightd_receipt.h"
 #include "sparkpipe/spark_kv_shared_index.h"
+#include "sparkpipe/spark_kv_snapshot.h"
 #include <stdatomic.h>
 
 #include <errno.h>
@@ -4280,6 +4281,25 @@ static void SparkWeightdServerPublish(SparkWeightdServer *server)
     atomic_store_explicit(&server->published_kv_pool_count,server->kv_pool_count,memory_order_release);
 }
 
+uint32_t SparkWeightdServerExpireKv(SparkWeightdServer *server,uint64_t now_ns)
+{
+	const uint64_t limit_ns = SPARK_KV_DETACHED_POOL_SECONDS * UINT64_C(1000000000);
+	uint32_t index,released = 0u;
+	if ( server == 0 )
+		return(0u);
+	for (index=0u; index<SPARK_WEIGHTD_KV_POOL_COUNT_MAX; index++)
+	{
+		const SparkWeightdKvPool *pool = &server->kv_pools[index];
+		if ( pool->generation == 0u || pool->owner_connection != 0u || (pool->shared != 0u && pool->holder_mask != 0u) || now_ns < pool->detached_ns + limit_ns )
+			continue;
+		SparkWeightdKvPoolRelease(server,index,"detached_retention");
+		released++;
+	}
+	if ( released != 0u )
+		SparkWeightdServerPublish(server);
+	return(released);
+}
+
 static void SparkWeightdServerCompleteWork(SparkWeightdServer *server)
 {
     if (atomic_load_explicit(&server->dispatch_state,memory_order_acquire) == 2u)
@@ -4551,6 +4571,7 @@ SparkStatus SparkWeightdServerStep(SparkWeightdServer *server)
 
     SparkWeightdServerCompleteWork(server);
     SparkWeightdMeshPoll();
+    (void)SparkWeightdServerExpireKv(server,SparkWeightdMonotonicTimeNs());
 
     if (server->listen_fd >= 0)
     {
