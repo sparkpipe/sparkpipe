@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SparkPipe Fleet List</title>
+<meta name="description" content="The SparkPipe Fleet List: fleets, rates, available models and their licenses, and the limits of today's builds.">
+<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="site.css?v=0c90e191">
+<style>
+.policy { padding-block: 48px 64px; display: grid; gap: 28px; }
+.policy h1 { font-size: clamp(36px, 6vw, 64px); }
+.policy h2 { font-size: clamp(22px, 2.6vw, 30px); margin-top: 12px; }
+.policy section { display: grid; gap: 12px; max-width: 92ch; }
+.policy p, .policy li { color: var(--steel); font: 400 16px/1.6 var(--text); max-width: 76ch; }
+.policy ul { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; }
+.policy b { color: var(--ink); font-weight: 650; }
+.policy table { border-collapse: collapse; width: 100%; font: 400 15px/1.5 var(--text); }
+.policy th, .policy td { text-align: left; vertical-align: top; padding: 10px 12px; border-top: 1px solid var(--rule); color: var(--steel); }
+.policy th { color: var(--ink); font-weight: 650; }
+.policy td.num, .policy th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.policy .scroll { overflow-x: auto; }
+.policy .scroll table { min-width: 720px; }
+.policy .notice { max-width: 76ch; border: 1px solid var(--rule); border-left: 3px solid var(--ink); padding: 14px 16px; }
+.policy .notice p { color: var(--ink); }
+.effective { font: 500 12px/1.6 var(--mono); color: var(--faint); }
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html">SparkPipe<span class="tag">fleet list</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#fleets">Fleets</a>
+      <a href="#models">Models</a>
+      <a href="#limits">Limits</a>
+      <a href="terms.html">Terms</a>
+      <a href="index.html">Home</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap policy">
+  <section>
+    <h1>Fleet List</h1>
+    <p class="effective">Updated 25 October 2026</p>
+    <p>This page is the Fleet List and the list of available models that the <a href="hourly-terms.html">Hourly Terms</a> (clauses 1.1 and 8.2) and the <a href="agreement.html">2-Year Reserved Fleet Service Agreement</a> (definitions and clause 10.1) refer to. Each fleet's rate is the number of hours one hour on it consumes.</p>
+  </section>
+
+  <div class="notice"><p><b>The terms are published for review and are not in force.</b> Fleet-hours go on sale on 1 December 2026, and nobody can buy or pay before then.</p></div>
+
+  <section id="fleets">
+    <h2>Fleets</h2>
+    <div class="scroll">
+    <table>
+      <tr><th>Fleet</th><th>Machines</th><th>Location</th><th>State</th><th class="num">Rate</th><th>Models</th></tr>
+      <tr><td><b>Fleet 1</b></td><td>16 NVIDIA DGX Spark (GB10), 128 GB of memory each, joined by a 100 Gb/s RDMA switch and direct pair links</td><td>Seoul</td><td>Serving</td><td class="num">1</td><td>The four models below</td></tr>
+      <tr><td><b>Fleet 2</b></td><td>Apple Mac Studio (M5 Ultra)</td><td>Seoul</td><td>Under construction</td><td class="num">1</td><td>Listed here when the fleet opens</td></tr>
+      <tr><td><b>Fleet 3</b></td><td>16 NVIDIA DGX Spark (GB10)</td><td>Seoul</td><td>Under construction</td><td class="num">1</td><td>Listed here when the fleet opens</td></tr>
+    </table>
+    </div>
+    <p>From 1 December 2026 our system publishes live capacity, with each fleet's state and the hours open in each window, at <span class="mono">https://sparkpipe.ai/availability.txt</span>, regenerated at least every 30 seconds.</p>
+  </section>
+
+  <section id="models">
+    <h2>Models on Fleet 1</h2>
+    <div class="scroll">
+    <table>
+      <tr><th>Model</th><th>Publisher</th><th>License</th><th class="num">Context window</th><th class="num">Decode, one request</th><th class="num">Decode, eight requests</th><th class="num">Prefill, 8K prompt</th></tr>
+      <tr><td><b>Kimi K3</b><br><span class="mono">kimi-k3</span></td><td>Moonshot AI</td><td><a href="https://huggingface.co/moonshotai/Kimi-K3/blob/main/LICENSE">Kimi K3 License</a></td><td class="num">720K</td><td class="num">16.2 tok/s</td><td class="num">63.7 tok/s</td><td class="num">590 tok/s</td></tr>
+      <tr><td><b>GLM 5.3</b><br><span class="mono">glm-5.3</span></td><td>Z.AI</td><td><a href="https://huggingface.co/zai-org/GLM-5.3/blob/main/LICENSE">GLM-5.3 License</a></td><td class="num">256K</td><td class="num">28.9 tok/s</td><td class="num">73.2 tok/s</td><td class="num">1,162 tok/s</td></tr>
+      <tr><td><b>GLM 5.3 Flash</b><br><span class="mono">glm-5.3-flash</span></td><td>Z.AI</td><td><a href="https://huggingface.co/zai-org/GLM-5.3-Flash">MIT</a></td><td class="num">128K</td><td class="num">55.0 tok/s</td><td class="num">173.7 tok/s</td><td class="num">876 tok/s</td></tr>
+      <tr><td><b>DeepSeek V4.1 Flash</b><br><span class="mono">deepseek-v4.1-flash</span></td><td>DeepSeek</td><td><a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017">MIT</a></td><td class="num">16K</td><td class="num">29.5 tok/s</td><td class="num">–</td><td class="num">182 tok/s</td></tr>
+    </table>
+    </div>
+    <p>Figures are without speculation, as served on 2026-10-18, on sixteen nodes with GPU clocks capped at 2,200 MHz. Candidate builds measured on 2026-10-24 ran prompts of about a million tokens on Kimi K3, GLM 5.3 and DeepSeek V4.1 Flash, and 130,361 tokens on GLM 5.3 Flash. Methods and receipts: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>.</p>
+    <p>Nine more models are installed and can be enabled on request. Models that are licensed for internal use only are never offered.</p>
+  </section>
+
+  <section id="licenses">
+    <h2>Model licenses</h2>
+    <p>Each model is the publisher's open-weight software under its own license, which the customer must follow (Hourly Terms 8.1, agreement 10.3). The conditions most likely to matter:</p>
+    <ul>
+      <li><b>Kimi K3:</b> a model-as-a-service business whose group revenue exceeds US$20 million in any 12 months needs a separate agreement with Moonshot AI, and a commercial product with more than 100 million monthly active users or US$20 million in monthly revenue must display "Kimi K3" in its interface.</li>
+      <li><b>GLM 5.3:</b> a model-as-a-service business whose group revenue exceeds US$10 billion in any 12 months must pass Z.AI's security review before commercial use.</li>
+      <li><b>GLM 5.3 Flash and DeepSeek V4.1 Flash:</b> MIT, with no field-of-use or revenue condition.</li>
+    </ul>
+    <p>The Kimi K3 and GLM-5.3 licenses also require every use to comply with applicable law. All four require the publisher's copyright notice to stay with any copy of the weights; customers use the models on our fleets and receive no copy.</p>
+  </section>
+
+  <section id="limits">
+    <h2>Limits of today's builds</h2>
+    <ul>
+      <li><b>Batches:</b> Kimi K3 and GLM 5.3 serve at most 8 requests at once, GLM 5.3 Flash 16.</li>
+      <li><b>Speculation</b> runs on Kimi K3 and GLM 5.3, for one request at a time. It speeds up text the request already contains, such as whole-file code rewrites (Kimi K3 15 to 126 tok/s, GLM 5.3 28 to 124 tok/s); on new prose the gain is 1.0 to 1.2 times.</li>
+      <li><b>Long prompts</b> are slow from cold: prefill reaches 1 to 4% of the fleet's compute floor, so a 137,700-token prompt takes 299 s on Kimi K3. A follow-up turn that reuses the cached prefix takes about 5 s.</li>
+      <li><b>One model at a time</b> holds a fleet. Loading another takes about a minute, up to 79 s for Kimi K3. A load inside a reserved hour counts as part of that hour (Hourly Terms 5.3).</li>
+    </ul>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span>© 2026 HYOR AI Tech Ltd</span>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Fleet-hours</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+  </div>
+</footer>
+</body>
+</html>
