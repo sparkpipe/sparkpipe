@@ -106,7 +106,7 @@ static SparkStatus SparkWeightdKvPurgeStart(void)
         fprintf(stderr, "weightd kv purge: thread create failed; startup failed\n");
         return SPARK_STATUS_INTERNAL_ERROR;
     }
-    printf("weightd kv purge: every %u s under %s, cache files unused for %llu s are deleted\n",
+    fprintf(stderr, "weightd kv purge: every %u s under %s, cache files unused for %llu s are deleted\n",
         SPARK_KV_PURGE_SECONDS, weightd_kv_purge_root, (unsigned long long)SPARK_KV_RETENTION_SECONDS);
     return SPARK_STATUS_OK;
 }

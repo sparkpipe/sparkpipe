@@ -1302,7 +1302,7 @@ static void SparkTestKvDetachedRetention(void)
     uint32_t index;
 
     (void)unlink(socket_path);
-    SparkTestStartServer(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES);
+    SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,4u * SPARK_TEST_KV_CHUNK_BYTES);
     SparkTestConnect(&detached,socket_path,0ull);
     SparkTestConnect(&attached,socket_path,0ull);
     assert(SparkTestKvAttach(detached,0x41,SPARK_TEST_KV_CHUNK_BYTES,SPARK_TEST_KV_CHUNK_BYTES,4096u,&grant) == SPARK_STATUS_OK);

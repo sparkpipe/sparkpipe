@@ -1249,7 +1249,7 @@ static void SnapTestSyncWriteSeesQueuedWrite(const char *directory)
 
 static void SnapPurgeFile(const char *directory,const char *name,uint64_t age_seconds)
 {
-	char path[512];
+	char path[1200];
 	struct timespec times[2];
 	int descriptor;
 	(void)snprintf(path,sizeof(path),"%s/%s",directory,name);
@@ -1264,7 +1264,7 @@ static void SnapPurgeFile(const char *directory,const char *name,uint64_t age_se
 
 static uint32_t SnapPurgeExists(const char *directory,const char *name)
 {
-	char path[512];
+	char path[1200];
 	struct stat info;
 	(void)snprintf(path,sizeof(path),"%s/%s",directory,name);
 	return(lstat(path,&info) == 0 ? 1u : 0u);
@@ -1273,7 +1273,7 @@ static uint32_t SnapPurgeExists(const char *directory,const char *name)
 static void SnapTestPurge(const char *root)
 {
 	const uint64_t old = SPARK_KV_RETENTION_SECONDS + 60u,fresh = SPARK_KV_RETENTION_SECONDS - 600u;
-	char store[512],nested[512],busy[512],outside[512],link_path[512],lock_path[512];
+	char store[1024],nested[1024],busy[1024],outside[1024],link_path[1024],lock_path[1200];
 	SparkKvSnapshotPurgeResult result;
 	int lock;
 	(void)snprintf(store,sizeof(store),"%s/lanes/old/root.failed-1/kvsnapshot",root);
@@ -1283,7 +1283,7 @@ static void SnapTestPurge(const char *root)
 	(void)snprintf(link_path,sizeof(link_path),"%s/lanes/linked",root);
 	CHECK(mkdir(root,0700) == 0 || access(root,F_OK) == 0);
 	{
-		char build[512];
+		char build[1024];
 		const char *parts[] = {"/lanes","/lanes/old","/lanes/old/root.failed-1","/lanes/old/root.failed-1/kvsnapshot","/kvsnapshot","/kvsnapshot/flash-tip",
 			"/lanes/live","/lanes/live/root","/lanes/live/root/kvsnapshot"};
 		uint32_t index;
@@ -1391,7 +1391,7 @@ int main(void)
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);
 	{
-		char root[512];
+		char root[256];
 		(void)snprintf(root,sizeof(root),"%s/home",directory);
 		SnapTestPurge(root);
 	}
