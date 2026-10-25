@@ -1,0 +1,714 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
+<meta name="robots" content="noindex">
+<title>SparkPipe Chat · Local mode</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&family=Noto+Sans+KR:wght@100..900&display=swap">
+<link rel="stylesheet" href="chat.css">
+<style>
+html:lang(ko) { --display: 'Archivo', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif; --text: 'Archivo', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif; --mono: 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif; }
+html:lang(ko) body { word-break: keep-all; overflow-wrap: break-word; }
+.lang { display: inline-flex; flex: none; border: 1px solid var(--rule-strong); border-radius: 2px; overflow: hidden; margin-left: 12px; }
+.lang button { min-height: 30px; padding: 0 10px; border: 0; background: transparent; color: var(--steel); font: 600 12px/1 var(--text); cursor: pointer; }
+.lang button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+.local-note { border: 1px solid var(--rule-strong); border-left: 3px solid var(--signal); padding: 10px 12px; font: 400 13px/1.55 var(--text); color: var(--ink); background: var(--paper); }
+.local-note b { font-weight: 650; }
+.signin { max-width: 720px; margin: 8vh auto 0; display: grid; gap: 14px; }
+</style>
+</head>
+<body class="app">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><mask id="logo-bore" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 3.5 11 16.5H21L10.5 28.5" stroke="#fff" stroke-width="5.6"/><path d="M21.5 3.5 11 16.5H21L10.5 28.5" stroke="#000" stroke-width="1.5"/></g></mask></defs><symbol id="logo" viewBox="0 0 32 32"><rect width="32" height="32" fill="currentColor" mask="url(#logo-bore)"/></symbol></svg>
+
+<header class="nav">
+  <div class="wrap wide">
+    <a class="brand" href="/"><svg width="26" height="26"><use href="#logo"/></svg>SparkPipe<span class="tag" data-t="tag"></span></a>
+    <nav class="nav-links" aria-label="Site">
+      <a href="/" data-t="back"></a>
+      <a id="privacy" href="https://sparkpipe.ai/privacy.html" data-t="privacy"></a>
+    </nav>
+    <span class="status" aria-live="polite"><i id="dot" class="dot"></i><span id="status"></span></span>
+    <div class="lang" role="group" aria-label="Language / 언어"><button type="button" data-lang="en-US">EN</button><button type="button" data-lang="ko-KR">한국어</button></div>
+  </div>
+</header>
+
+<main class="console">
+  <aside class="side form">
+    <p class="local-note" data-t="localNote" data-html="1"></p>
+    <div class="row"><button id="new" class="btn small solid" type="button" data-t="newChat"></button><button id="rename" class="link" type="button" data-t="rename"></button><button id="export" class="link" type="button" data-t="export"></button><button id="delete" class="link" type="button" data-t="delete"></button></div>
+    <nav id="chats" class="chats" aria-label="Chats in this browser"></nav>
+    <label for="model"><span data-t="model"></span><select id="model"></select></label>
+    <p id="models-note" class="hint"></p>
+    <details class="snippet" open>
+      <summary data-t="context"></summary>
+      <label for="memory"><span data-t="memory"></span><select id="memory"><option value="full" data-t="memoryFull"></option><option value="compact" data-t="memoryCompact"></option></select></label>
+      <label for="target"><span data-t="target"></span><input id="target" type="number" min="1024" step="1024"></label>
+      <p class="hint" data-t="memoryHint"></p>
+    </details>
+    <details class="snippet">
+      <summary data-t="timer"></summary>
+      <label class="check" for="timer-on"><input id="timer-on" type="checkbox"><span data-t="timerOn"></span></label>
+      <label for="timer-minutes"><span data-t="timerEvery"></span><input id="timer-minutes" type="number" min="1" step="1" value="30"></label>
+      <label for="timer-prompt"><span data-t="timerPrompt"></span><textarea id="timer-prompt" rows="4"></textarea></label>
+      <p id="timer-note" class="hint"></p>
+    </details>
+    <details class="snippet">
+      <summary data-t="options"></summary>
+      <div class="pair">
+        <label for="max"><span data-t="replyLimit"></span><input id="max" type="number" min="1" step="1"></label>
+        <label for="temp"><span data-t="temperature"></span><input id="temp" type="number" min="0" max="2" step="0.1"></label>
+        <label for="seed"><span data-t="seed"></span><input id="seed" type="number" min="0" step="1"></label>
+      </div>
+      <label class="check" for="stream"><input id="stream" type="checkbox" checked><span data-t="stream"></span></label>
+      <p class="hint" data-t="optionsHint"></p>
+    </details>
+    <div class="snippet">
+      <p class="hint" data-t="storageHint"></p>
+      <p id="storage-note" class="hint"></p>
+      <div class="row"><button id="export-all" class="link" type="button" data-t="exportAll"></button><button id="import" class="link" type="button" data-t="import"></button><button id="delete-all" class="link" type="button" data-t="deleteAll"></button></div>
+      <input id="import-file" type="file" accept="application/json,.json" hidden>
+    </div>
+  </aside>
+
+  <section class="chat">
+    <div id="messages" class="messages" aria-live="polite">
+      <div id="empty" class="empty">
+        <p class="label signal" data-t="emptyLabel"></p>
+        <h2 data-t="emptyTitle"></h2>
+        <p data-t="emptyText"></p>
+      </div>
+    </div>
+    <div class="composer">
+      <div class="gauge">
+        <div class="gauge-bar" aria-hidden="true"><i id="gauge-used"></i><b id="gauge-target"></b></div>
+        <div class="gauge-row"><span id="gauge-text"></span><span id="note" aria-live="polite"></span><span id="gauge-mode"></span></div>
+      </div>
+      <div class="composer-row">
+        <textarea id="prompt" rows="1" aria-label="Prompt"></textarea>
+        <button id="send" class="btn solid" type="button"></button>
+      </div>
+      <div class="composer-meta"><span data-t="enterHint"></span><button id="compact" class="link" type="button" data-t="compactNow"></button></div>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const TEXT = {
+    en: {
+      tag: 'local mode', back: 'SparkPipe Chat', privacy: 'Privacy',
+      localNote: '<b>Local mode.</b> Your chats are kept only in this browser. Our servers keep no chat history and no memory of them; a request goes to the model and back. The model\'s computed cache of a request is deleted within 24 hours of its last use.',
+      newChat: 'New chat', rename: 'Rename', export: 'Export', delete: 'Delete', model: 'Model', context: 'Context', memory: 'Memory',
+      memoryFull: 'Full context', memoryCompact: 'Compact at the target', target: 'Target, tokens',
+      memoryHint: 'Full context sends the whole chat with every message. Compact at the target summarizes the oldest exchanges whenever the chat grows past the target, then sends that summary and the newest exchanges. Compact now does it once. Either way, this browser keeps the full text.',
+      timer: 'Timer', timerOn: 'Send a prompt on a timer', timerEvery: 'Every, minutes', timerPrompt: 'Prompt',
+      timerHint: 'It runs while this page is open. While it is on, the model can change the prompt or the interval, or turn it off, with its set_timer tool.',
+      timerWrite: 'Write the prompt the timer sends. ', timerNext: 'Next run in {n} min. ', timerDue: 'Due; it runs when the page is free. ',
+      options: 'Options', replyLimit: 'Reply limit, tokens', temperature: 'Temperature', seed: 'Seed', stream: 'Stream tokens as they decode',
+      optionsHint: 'With no reply limit a reply may use the rest of the model\'s context window. An empty temperature uses the model\'s published sampling; 0 decodes greedily.',
+      storageHint: 'Export a chat to keep a copy or move it to another device. Clearing this site\'s data in the browser deletes the chats.',
+      exportAll: 'Export all', import: 'Import', deleteAll: 'Delete all',
+      emptyLabel: 'SparkPipe chat · local mode', emptyTitle: 'Ask anything.',
+      emptyText: 'Pick a model. A model that is not loaded yet takes 15 to 45 seconds to load onto the fleet; after that, replies start in about a second.',
+      enterHint: 'Enter to send, Shift+Enter for a new line', compactNow: 'Compact now', send: 'Send', stop: 'Stop',
+      placeholder: 'Message the model', signinTitle: 'Sign in first.', signinText: 'Local mode uses your SparkPipe Chat account to reach the models. Sign in, then open local mode again.', signinLink: 'Sign in to SparkPipe Chat',
+      online: 'Signed in', offline: 'Not signed in', unreachable: 'Chat unreachable', noModels: 'No model list: {e}', pickModel: 'Pick a model first.',
+      untitled: 'Untitled chat', you: 'You', timerWho: 'Timer', thinking: 'Thinking', summaryLabel: 'Summary', undoCompaction: 'Undo compaction',
+      seesSummary: 'The model sees the messages above only as this summary, about {n} tokens{by}.', writtenBy: ', written by {m}',
+      compacting: 'Compacting to {n} tokens', compactingWho: 'Compacting · {m}', noSummary: 'the model wrote no summary, so nothing was compacted',
+      fits: 'This chat already fits the target of {n} tokens.', nothingOlder: 'Only the newest exchange is left; there is nothing older to compact.',
+      compactStopped: 'Compaction stopped.', compactFailed: 'Compaction failed: {e}', stopped: 'Stopped.', noReply: 'No reply: {e}',
+      limitRanOut: 'the reply limit ran out before an answer. Raise or clear the reply limit under Options and send again.', noAnswer: 'the model returned no answer.',
+      contextText: 'Context {approx}{n}{of}', of: ' of {w} tokens · {p}%', tokens: ' tokens', compactsAt: 'Compacts at {n}', fullTarget: 'Full context · target {n}',
+      notSaved: 'This browser did not save the chat ({e}); it lasts until you close the tab. Export it to keep a copy.',
+      noStorage: 'This browser does not let the page save chats, so they last until you close the tab. Export a chat to keep it.',
+      chatName: 'Chat name', confirmDelete: 'Delete "{t}" from this browser? This cannot be undone.', confirmDeleteAll: 'Delete all {n} chats from this browser? This cannot be undone.',
+      imported: '{n} chats imported.', importFailed: 'Import failed: {e}', timerOnText: 'Timer on, every {m} min: {p}', timerOffText: 'Timer off'
+    },
+    ko: {
+      tag: '로컬 모드', back: 'SparkPipe Chat', privacy: '개인정보처리방침',
+      localNote: '<b>로컬 모드.</b> 대화는 이 브라우저에만 저장됩니다. 저희 서버는 대화 기록도 메모리도 남기지 않으며, 요청은 모델에 갔다가 돌아올 뿐입니다. 요청에 대해 모델이 계산한 캐시는 마지막 사용 후 24시간 이내에 삭제됩니다.',
+      newChat: '새 대화', rename: '이름 바꾸기', export: '내보내기', delete: '삭제', model: '모델', context: '컨텍스트', memory: '메모리',
+      memoryFull: '전체 컨텍스트', memoryCompact: '목표 크기에서 압축', target: '목표, 토큰',
+      memoryHint: '전체 컨텍스트는 메시지마다 대화 전체를 보냅니다. 목표 크기에서 압축은 대화가 목표를 넘을 때마다 가장 오래된 대화를 요약하고, 그 요약과 최근 대화를 보냅니다. 지금 압축은 한 번만 실행합니다. 어느 쪽이든 이 브라우저에는 원문 전체가 남습니다.',
+      timer: '타이머', timerOn: '타이머로 프롬프트 보내기', timerEvery: '간격, 분', timerPrompt: '프롬프트',
+      timerHint: '이 페이지가 열려 있는 동안 실행됩니다. 켜져 있는 동안 모델은 set_timer 도구로 프롬프트나 간격을 바꾸거나 끌 수 있습니다.',
+      timerWrite: '타이머가 보낼 프롬프트를 쓰세요. ', timerNext: '{n}분 뒤에 다음 실행. ', timerDue: '실행 시간이 되었으며, 페이지가 비면 실행됩니다. ',
+      options: '옵션', replyLimit: '답변 한도, 토큰', temperature: '온도', seed: '시드', stream: '생성되는 토큰을 바로 표시',
+      optionsHint: '답변 한도가 없으면 답변이 모델 컨텍스트 창의 나머지를 모두 쓸 수 있습니다. 온도를 비워 두면 모델의 공개 샘플링 설정을 쓰고, 0이면 그리디 디코딩입니다.',
+      storageHint: '대화를 내보내 사본을 보관하거나 다른 기기로 옮길 수 있습니다. 브라우저에서 이 사이트의 데이터를 지우면 대화도 삭제됩니다.',
+      exportAll: '모두 내보내기', import: '가져오기', deleteAll: '모두 삭제',
+      emptyLabel: 'SparkPipe Chat · 로컬 모드', emptyTitle: '무엇이든 물어보세요.',
+      emptyText: '모델을 고르세요. 아직 올라가 있지 않은 모델은 플릿에 올리는 데 15~45초가 걸리며, 그 뒤로는 약 1초 안에 답변이 시작됩니다.',
+      enterHint: 'Enter로 보내기, Shift+Enter로 줄바꿈', compactNow: '지금 압축', send: '보내기', stop: '중지',
+      placeholder: '모델에게 메시지 보내기', signinTitle: '먼저 로그인하세요.', signinText: '로컬 모드는 SparkPipe Chat 계정으로 모델에 접속합니다. 로그인한 뒤 로컬 모드를 다시 여세요.', signinLink: 'SparkPipe Chat에 로그인',
+      online: '로그인됨', offline: '로그인 안 됨', unreachable: '채팅 서버에 연결할 수 없음', noModels: '모델 목록 없음: {e}', pickModel: '먼저 모델을 고르세요.',
+      untitled: '제목 없는 대화', you: '나', timerWho: '타이머', thinking: '생각', summaryLabel: '요약', undoCompaction: '압축 되돌리기',
+      seesSummary: '모델은 위의 메시지를 약 {n}토큰의 이 요약으로만 봅니다{by}.', writtenBy: ' ({m} 작성)',
+      compacting: '{n}토큰으로 압축 중', compactingWho: '압축 중 · {m}', noSummary: '모델이 요약을 쓰지 않아 압축하지 않았습니다',
+      fits: '이 대화는 이미 목표 {n}토큰 안에 있습니다.', nothingOlder: '최근 대화만 남아 있어 압축할 이전 대화가 없습니다.',
+      compactStopped: '압축을 중지했습니다.', compactFailed: '압축 실패: {e}', stopped: '중지했습니다.', noReply: '답변 없음: {e}',
+      limitRanOut: '답변 한도가 답변 전에 끝났습니다. 옵션에서 답변 한도를 늘리거나 비우고 다시 보내세요.', noAnswer: '모델이 답변을 돌려주지 않았습니다.',
+      contextText: '컨텍스트 {approx}{n}{of}', of: ' / {w}토큰 · {p}%', tokens: '토큰', compactsAt: '{n}에서 압축', fullTarget: '전체 컨텍스트 · 목표 {n}',
+      notSaved: '이 브라우저가 대화를 저장하지 않았습니다({e}). 탭을 닫을 때까지만 남으니 내보내서 보관하세요.',
+      noStorage: '이 브라우저는 대화 저장을 허용하지 않아 탭을 닫으면 사라집니다. 대화를 내보내서 보관하세요.',
+      chatName: '대화 이름', confirmDelete: '"{t}"을(를) 이 브라우저에서 삭제할까요? 되돌릴 수 없습니다.', confirmDeleteAll: '이 브라우저의 대화 {n}개를 모두 삭제할까요? 되돌릴 수 없습니다.',
+      imported: '대화 {n}개를 가져왔습니다.', importFailed: '가져오기 실패: {e}', timerOnText: '타이머 켜짐, {m}분마다: {p}', timerOffText: '타이머 꺼짐'
+    }
+  };
+  const $ = (id) => document.getElementById(id);
+  const load = (kind, key) => { try { return window[kind].getItem(key) || ''; } catch (_) { return ''; } };
+  const save = (kind, key, value) => { try { window[kind].setItem(key, value); } catch (_) {} };
+  const korean = () => (load('localStorage', 'locale') || navigator.language || '').toLowerCase().startsWith('ko');
+  const t = (key, vars) => (TEXT[korean() ? 'ko' : 'en'][key] || TEXT.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars && vars[name] !== undefined ? String(vars[name]) : '');
+  const translate = () => {
+    document.documentElement.lang = korean() ? 'ko' : 'en';
+    document.querySelectorAll('[data-t]').forEach((node) => { if (node.dataset.html) node.innerHTML = t(node.dataset.t); else node.textContent = t(node.dataset.t); });
+    document.querySelectorAll('.lang button').forEach((button) => button.setAttribute('aria-pressed', String((button.dataset.lang === 'ko-KR') === korean())));
+    $('privacy').href = 'https://sparkpipe.ai/' + (korean() ? 'privacy-ko.html' : 'privacy.html');
+    $('prompt').placeholder = t('placeholder');
+    $('timer-prompt').placeholder = korean() ? '작업을 확인하고 바뀐 점을 알려 줘' : 'Check on the task and report what changed';
+    $('max').placeholder = korean() ? '없음' : 'none';
+    $('temp').placeholder = korean() ? '모델' : 'model';
+    $('seed').placeholder = korean() ? '무작위' : 'random';
+  };
+  const TIMER_TOOL = { type: 'function', function: { name: 'set_timer', description: "Change this chat's timer, which sends a prompt as the user every few minutes while the chat page is open. Use it when the user asks for a recurring check, or to adjust what the timer sends.", parameters: { type: 'object', properties: { prompt: { type: 'string', description: 'the prompt the timer sends' }, minutes: { type: 'number', minimum: 1, description: 'minutes between runs' }, enabled: { type: 'boolean', description: 'false turns the timer off' } } } } };
+  const store = (() => {
+    const kept = new Map();
+    let db = null;
+    const run = (mode, work) => new Promise((resolve, reject) => {
+      const transaction = db.transaction('chats', mode), request = work(transaction.objectStore('chats'));
+      transaction.oncomplete = () => resolve(request.result);
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error || new Error('the browser refused to save'));
+    });
+    return {
+      open: () => new Promise((resolve) => {
+        try {
+          const request = indexedDB.open('sparkpipe-local-chat', 1);
+          request.onupgradeneeded = () => request.result.createObjectStore('chats', { keyPath: 'id' });
+          request.onsuccess = () => { db = request.result; resolve(true); };
+          request.onerror = request.onblocked = () => resolve(false);
+        } catch (_) { resolve(false); }
+      }),
+      all: async () => {
+        const found = new Map();
+        if (db) ((await run('readonly', (chats) => chats.getAll()).catch(() => [])) || []).forEach((item) => found.set(item.id, item));
+        kept.forEach((item, id) => found.set(id, item));
+        return Array.from(found.values());
+      },
+      put: async (item) => {
+        kept.set(item.id, item);
+        if (!db) return;
+        await run('readwrite', (chats) => chats.put(item));
+        kept.delete(item.id);
+      },
+      remove: async (id) => {
+        kept.delete(id);
+        if (db) await run('readwrite', (chats) => chats.delete(id)).catch(() => {});
+      },
+    };
+  })();
+  const empty = $('empty');
+  let chats = [], chat = null, controller = null, windows = {}, ratio = 0.3, saveTimer = 0, chosen = false;
+  const token = () => load('localStorage', 'token');
+  const headers = () => ({ 'Content-Type': 'application/json', Authorization: 'Bearer ' + token() });
+  const failure = async (response) => { const doc = await response.json().catch(() => ({})); return new Error((doc.error && (doc.error.message || doc.error)) || doc.detail || 'HTTP ' + response.status); };
+  const status = (state, text) => { $('dot').className = 'dot ' + state; $('status').textContent = text; };
+  const note = (text) => { $('note').textContent = text; };
+  const count = (n) => n >= 1e6 ? (n / 1e6).toFixed(2).replace(/\.?0+$/, '') + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'K' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'K' : String(Math.round(n));
+  const makeId = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
+  const blank = () => ({ id: makeId(), title: '', model: $('model').value, created: Date.now(), updated: Date.now(), messages: [], summary: null, memory: 'full', target: 0, timer: { on: false, minutes: 30, prompt: '', last: 0 }, context: null });
+  const options = () => {
+    const body = { model: $('model').value };
+    if ($('temp').value !== '') body.temperature = +$('temp').value;
+    if ($('max').value !== '') body.max_tokens = +$('max').value;
+    if ($('seed').value !== '') body.seed = +$('seed').value;
+    return body;
+  };
+  const signin = () => {
+    const box = document.createElement('div'), title = document.createElement('h2'), text = document.createElement('p'), link = document.createElement('a');
+    box.className = 'signin';
+    title.textContent = t('signinTitle');
+    text.textContent = t('signinText');
+    link.className = 'btn solid';
+    link.href = '/';
+    link.textContent = t('signinLink');
+    box.append(title, text, link);
+    $('messages').replaceChildren(box);
+    status('off', t('offline'));
+  };
+  const models = async () => {
+    if (!token()) { signin(); return false; }
+    try {
+      const response = await fetch('/api/models', { headers: headers() });
+      if (response.status === 401 || response.status === 403) { signin(); return false; }
+      if (!response.ok) throw await failure(response);
+      const data = ((await response.json()).data || []).filter((model) => model && model.id && !(model.info && model.info.meta && model.info.meta.hidden));
+      windows = Object.fromEntries(data.map((model) => [model.id, model.max_model_len || model.max_input_tokens || (model.openai && (model.openai.max_model_len || model.openai.max_input_tokens)) || 0]));
+      const kept = (chat && chat.model) || $('model').value;
+      $('model').replaceChildren(...data.map((model) => new Option(model.name || model.id, model.id, false, model.id === kept)));
+      if (chat && !chat.model) chat.model = $('model').value;
+      $('models-note').textContent = '';
+      status('on', t('online'));
+      return true;
+    } catch (error) {
+      $('models-note').textContent = t('noModels', { e: error.message });
+      status('off', t('unreachable'));
+      return false;
+    }
+  };
+  const size = (messages) => messages.reduce((sum, message) => sum + (message.content || '').length + (message.tool_calls ? JSON.stringify(message.tool_calls).length : 0) + 16, 0);
+  const estimate = (messages) => Math.ceil(size(messages) * ratio);
+  const limit = () => windows[$('model').value] || 0;
+  const target = () => chat.target || (limit() ? Math.min(65536, Math.floor(limit() / 2)) : 32768);
+  const wire = (message) => {
+    const out = { role: message.role, content: message.content || '' };
+    if (message.tool_calls) out.tool_calls = message.tool_calls;
+    if (message.tool_call_id) out.tool_call_id = message.tool_call_id;
+    return out;
+  };
+  const view = () => {
+    const out = chat.summary ? [{ role: 'system', content: 'Summary of the earlier part of this conversation, which you no longer see in full:\n\n' + chat.summary.text }] : [];
+    return out.concat(chat.messages.slice(chat.summary ? chat.summary.through : 0).map(wire));
+  };
+  const used = () => {
+    const last = chat.messages[chat.messages.length - 1];
+    if (chat.context && last && last.role === 'assistant') return { tokens: chat.context.prompt + estimate([last]), exact: true };
+    return { tokens: estimate(view()), exact: false };
+  };
+  const gauge = () => {
+    if (!chat) return;
+    const whole = limit(), goal = target(), now = chat.messages.length ? used() : { tokens: 0, exact: true };
+    $('gauge-used').style.width = whole ? Math.min(100, now.tokens * 100 / whole) + '%' : '0';
+    $('gauge-target').style.left = whole ? Math.min(100, goal * 100 / whole) + '%' : '0';
+    $('gauge-target').hidden = !whole;
+    $('gauge-text').textContent = t('contextText', { approx: now.exact ? '' : '≈', n: count(now.tokens), of: whole ? t('of', { w: count(whole), p: (now.tokens * 100 / whole).toFixed(1) }) : t('tokens') });
+    $('gauge-mode').textContent = chat.memory === 'compact' ? t('compactsAt', { n: count(goal) }) : t('fullTarget', { n: count(goal) });
+  };
+  const settings = () => {
+    if (!chat) return;
+    $('memory').value = chat.memory;
+    $('target').value = chat.target || '';
+    $('target').placeholder = String(target());
+    $('timer-on').checked = chat.timer.on;
+    $('timer-minutes').value = chat.timer.minutes;
+    $('timer-prompt').value = chat.timer.prompt;
+    tick();
+    gauge();
+  };
+  const persist = async () => {
+    clearTimeout(saveTimer);
+    if (!chat || !chat.messages.length) return;
+    chat.updated = Date.now();
+    if (!chats.includes(chat)) chats.push(chat);
+    try {
+      await store.put(JSON.parse(JSON.stringify(chat)));
+      $('storage-note').textContent = '';
+    } catch (error) {
+      $('storage-note').textContent = t('notSaved', { e: error.message });
+    }
+    list();
+  };
+  const later = () => { clearTimeout(saveTimer); saveTimer = setTimeout(persist, 600); };
+  const list = () => {
+    chats.sort((a, b) => b.updated - a.updated);
+    $('chats').replaceChildren(...chats.map((item) => {
+      const button = document.createElement('button'), when = document.createElement('span');
+      button.type = 'button';
+      button.textContent = item.title || t('untitled');
+      when.textContent = new Date(item.updated).toLocaleString(korean() ? 'ko-KR' : [], { dateStyle: 'medium', timeStyle: 'short' }) + (item.model ? ' · ' + item.model : '');
+      button.append(when);
+      if (item === chat) button.setAttribute('aria-current', 'true');
+      button.addEventListener('click', () => open(item));
+      return button;
+    }));
+  };
+  const show = (message, index) => {
+    if (empty.isConnected) empty.remove();
+    const item = document.createElement('div');
+    if (message.role === 'tool') {
+      let answer = {};
+      try { answer = JSON.parse(message.content); } catch (_) {}
+      item.className = 'msg tool';
+      item.textContent = answer.timer ? (answer.timer.enabled ? t('timerOnText', { m: answer.timer.minutes, p: answer.timer.prompt }) : t('timerOffText')) : (message.name || 'tool') + ': ' + (answer.error || message.content);
+      $('messages').append(item);
+      return { item };
+    }
+    const who = document.createElement('div'), think = document.createElement('details'), label = document.createElement('summary'), thought = document.createElement('div'), bubble = document.createElement('div'), meta = document.createElement('div');
+    item.className = 'msg ' + message.role + (chat.summary && index !== undefined && index < chat.summary.through ? ' compacted' : '');
+    who.className = 'who';
+    who.textContent = message.role === 'user' ? (message.timer ? t('timerWho') : t('you')) : (message.model || chat.model || '');
+    think.className = 'thinking';
+    label.textContent = t('thinking');
+    thought.textContent = message.reasoning || '';
+    think.append(label, thought);
+    think.hidden = !message.reasoning;
+    bubble.className = 'bubble';
+    bubble.textContent = message.content || '';
+    bubble.hidden = message.role === 'assistant' && !message.content && !!message.tool_calls;
+    meta.className = 'meta';
+    meta.textContent = message.meta || '';
+    item.append(who, think, bubble, meta);
+    $('messages').append(item);
+    $('messages').scrollTop = $('messages').scrollHeight;
+    return { item, who, think, thought, bubble, meta };
+  };
+  const divider = () => {
+    const box = document.createElement('div'), head = document.createElement('div'), details = document.createElement('details'), label = document.createElement('summary'), text = document.createElement('div'), undo = document.createElement('button');
+    box.className = 'divider';
+    head.textContent = t('seesSummary', { n: count(estimate([{ content: chat.summary.text }])), by: chat.summary.model ? t('writtenBy', { m: chat.summary.model }) : '' });
+    label.textContent = t('summaryLabel');
+    text.textContent = chat.summary.text;
+    details.append(label, text);
+    undo.type = 'button';
+    undo.className = 'link';
+    undo.textContent = t('undoCompaction');
+    undo.addEventListener('click', () => {
+      if (controller) return;
+      chat.summary = chat.summary.previous || null;
+      chat.context = null;
+      render();
+      gauge();
+      persist();
+    });
+    box.append(head, details, undo);
+    return box;
+  };
+  const render = () => {
+    if (!chat.messages.length) { $('messages').replaceChildren(empty); return; }
+    $('messages').replaceChildren();
+    chat.messages.forEach((message, index) => {
+      if (chat.summary && index === chat.summary.through) $('messages').append(divider());
+      show(message, index);
+    });
+    $('messages').scrollTop = $('messages').scrollHeight;
+  };
+  const open = (item) => {
+    if (controller) return;
+    chat = item;
+    if (chat.model && Array.from($('model').options).some((option) => option.value === chat.model)) { $('model').value = chat.model; chosen = true; }
+    note('');
+    settings();
+    render();
+    list();
+  };
+  const rate = (clock, usage, stream, model) => {
+    const parts = [model], tokens = usage && usage.completion_tokens;
+    if (stream && clock.first) parts.push('first token ' + Math.round(clock.first - clock.start) + ' ms');
+    const prompt = usage && usage.prompt_tokens, cached = usage && usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens;
+    if (prompt) parts.push(prompt + ' prompt tokens' + (typeof cached === 'number' ? ' (' + cached + ' cached)' : ''));
+    if (tokens) parts.push(tokens + ' tokens' + (clock.thinking ? ' incl. thinking' : ''));
+    if (tokens > 1 && stream && clock.arrivals >= 8 && clock.last - clock.first >= 250) parts.push(((tokens - 1) * 1000 / (clock.last - clock.first)).toFixed(1) + ' tok/s decode');
+    if (stream && clock.end) parts.push(((clock.end - clock.start) / 1000).toFixed(1) + ' s total');
+    if (clock.finish) parts.push(clock.finish);
+    return parts.join(' · ');
+  };
+  const collect = (out, calls) => {
+    for (const call of calls || []) {
+      const index = call.index || 0, slot = out.calls[index] = out.calls[index] || { id: '', type: 'function', function: { name: '', arguments: '' } };
+      if (call.id) slot.id = call.id;
+      if (call.function && call.function.name) slot.function.name = slot.function.name || call.function.name;
+      if (call.function && call.function.arguments) slot.function.arguments += call.function.arguments;
+    }
+  };
+  const read = async (response, out, refs, clock) => {
+    const reader = response.body.getReader(), decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        const data = line.startsWith('data:') ? line.slice(5).trim() : '';
+        if (!data || data === '[DONE]') continue;
+        let chunk;
+        try { chunk = JSON.parse(data); } catch (_) { continue; }
+        const choice = (chunk.choices && chunk.choices[0]) || {}, delta = choice.delta || {}, piece = delta.content || '', thought = delta.reasoning_content || '';
+        const now = performance.now();
+        if (thought || piece) {
+          if (now !== clock.last) clock.arrivals++;
+          clock.first = clock.first || now;
+          clock.last = now;
+        }
+        if (thought) {
+          clock.thinking = true;
+          out.reasoning += thought;
+          refs.think.hidden = false;
+          refs.thought.textContent = out.reasoning;
+        }
+        if (piece) {
+          out.content += piece;
+          refs.bubble.textContent = out.content;
+        }
+        if (thought || piece) $('messages').scrollTop = $('messages').scrollHeight;
+        collect(out, delta.tool_calls);
+        clock.finish = choice.finish_reason || clock.finish;
+        out.usage = chunk.usage || out.usage;
+      }
+    }
+  };
+  const request = async (messages, refs, tools) => {
+    const stream = $('stream').checked, clock = { start: performance.now(), first: 0, last: 0, end: 0, arrivals: 0, thinking: false, finish: '' };
+    const body = Object.assign(options(), { messages, stream });
+    if (tools) body.tools = tools;
+    if (stream) body.stream_options = { include_usage: true };
+    const response = await fetch('/api/chat/completions', { method: 'POST', headers: headers(), body: JSON.stringify(body), signal: controller.signal });
+    if (response.status === 401 || response.status === 403) { signin(); throw new Error(t('offline')); }
+    if (!response.ok) throw await failure(response);
+    const out = { content: '', reasoning: '', calls: [], usage: null, finish: '' };
+    if (stream) await read(response, out, refs, clock);
+    else {
+      const doc = await response.json(), choice = (doc.choices && doc.choices[0]) || {}, message = choice.message || {};
+      out.content = message.content || '';
+      out.reasoning = message.reasoning_content || '';
+      collect(out, (message.tool_calls || []).map((call, index) => Object.assign({ index }, call)));
+      clock.thinking = !!out.reasoning;
+      clock.finish = choice.finish_reason || '';
+      out.usage = doc.usage;
+      refs.think.hidden = !out.reasoning;
+      refs.thought.textContent = out.reasoning;
+      refs.bubble.textContent = out.content;
+    }
+    clock.end = performance.now();
+    out.finish = clock.finish;
+    out.calls = out.calls.filter(Boolean);
+    out.meta = rate(clock, out.usage, stream, body.model);
+    if (out.usage && out.usage.prompt_tokens && size(messages) > 2000) ratio = Math.min(1, Math.max(0.15, out.usage.prompt_tokens / size(messages)));
+    return out;
+  };
+  const applyTool = (call) => {
+    if (call.function.name !== 'set_timer') return { error: 'no tool named ' + call.function.name };
+    let args;
+    try { args = JSON.parse(call.function.arguments || '{}'); } catch (_) { return { error: 'the arguments are not JSON' }; }
+    if (typeof args.prompt === 'string') chat.timer.prompt = args.prompt;
+    if (typeof args.minutes === 'number' && args.minutes >= 1) chat.timer.minutes = Math.round(args.minutes);
+    if (typeof args.enabled === 'boolean') {
+      if (args.enabled && !chat.timer.on) chat.timer.last = Date.now();
+      chat.timer.on = args.enabled;
+    }
+    settings();
+    return { ok: true, timer: { enabled: chat.timer.on, minutes: chat.timer.minutes, prompt: chat.timer.prompt } };
+  };
+  const compact = async (tools) => {
+    const start = chat.summary ? chat.summary.through : 0, goal = target(), marks = [];
+    for (let index = start; index < chat.messages.length; index++) if (chat.messages[index].role === 'user') marks.push(index);
+    if (marks.length < 2) return false;
+    const room = Math.floor(goal * 0.75), words = Math.max(150, Math.min(3000, Math.floor(goal * 0.15)));
+    let keep = marks[marks.length - 1], kept = estimate(chat.messages.slice(keep));
+    for (let k = marks.length - 2; k > 0; k--) {
+      const more = estimate(chat.messages.slice(marks[k], marks[k + 1]));
+      if (kept + more > room) break;
+      kept += more;
+      keep = marks[k];
+    }
+    const anchor = chat.messages[keep].content.replace(/\s+/g, ' ').slice(0, 80);
+    const instruction = { role: 'user', content: 'This message comes from the chat page, not from the user: the chat is being compacted. Write a summary of the conversation above, up to but not including the user message that begins "' + anchor + '". ' + (chat.summary ? 'Fold the earlier summary at the start into it. ' : '') + "Keep facts, decisions, names, numbers, code identifiers, open questions and the user's preferences. Use at most " + words + ' words. Reply with the summary only, in the language of the conversation.' };
+    note(t('compacting', { n: count(goal) }));
+    const refs = show({ role: 'assistant', content: '', model: $('model').value });
+    refs.who.textContent = t('compactingWho', { m: $('model').value });
+    let result;
+    try {
+      result = await request(view().concat([instruction]), refs, tools);
+    } finally {
+      refs.item.remove();
+    }
+    const text = result.content.trim();
+    if (!text) throw new Error(t('noSummary'));
+    chat.summary = { text, through: keep, previous: chat.summary, model: $('model').value, at: Date.now() };
+    chat.context = null;
+    note('');
+    render();
+    return true;
+  };
+  const busy = (on) => {
+    $('send').textContent = on ? t('stop') : t('send');
+    $('send').classList.toggle('solid', !on);
+    $('prompt').disabled = on;
+  };
+  const send = async (text, origin) => {
+    if (controller) { if (origin !== 'timer') controller.abort(); return; }
+    text = (text || '').trim();
+    if (!text) return;
+    if (!$('model').value) { $('models-note').textContent = t('pickModel'); return; }
+    chat.model = $('model').value;
+    const tools = chat.timer.on ? [TIMER_TOOL] : null, user = { role: 'user', content: text, at: Date.now() };
+    const over = chat.memory === 'compact' && chat.messages.length > 0 && used().tokens + estimate([user]) > target();
+    if (origin === 'timer') user.timer = true;
+    chat.messages.push(user);
+    if (!chat.title) chat.title = text.replace(/\s+/g, ' ').slice(0, 60);
+    show(user, chat.messages.length - 1);
+    if (origin !== 'timer') { $('prompt').value = ''; resize(); }
+    controller = new AbortController();
+    busy(true);
+    note('');
+    let refs = null;
+    try {
+      if (over) await compact(tools);
+      for (let round = 0; round < 4; round++) {
+        refs = show({ role: 'assistant', content: '', model: chat.model });
+        const result = await request(view(), refs, tools);
+        refs.meta.textContent = result.meta;
+        if (!result.content && !result.calls.length) throw new Error(result.finish === 'length' ? t('limitRanOut') : t('noAnswer'));
+        const message = { role: 'assistant', content: result.content, model: chat.model, meta: result.meta, at: Date.now() };
+        if (result.reasoning) message.reasoning = result.reasoning;
+        if (result.calls.length) message.tool_calls = result.calls.map((call, index) => ({ id: call.id || 'call_' + Date.now().toString(36) + index, type: 'function', function: { name: call.function.name, arguments: call.function.arguments || '{}' } }));
+        chat.messages.push(message);
+        if (result.usage) chat.context = { prompt: result.usage.prompt_tokens || 0, reply: result.usage.completion_tokens || 0, cached: (result.usage.prompt_tokens_details || {}).cached_tokens };
+        refs = null;
+        if (!message.tool_calls) break;
+        for (const call of message.tool_calls) {
+          const answer = { role: 'tool', tool_call_id: call.id, name: call.function.name, content: JSON.stringify(applyTool(call)) };
+          chat.messages.push(answer);
+          show(answer, chat.messages.length - 1);
+        }
+      }
+    } catch (error) {
+      const stopped = error.name === 'AbortError';
+      if (refs) {
+        refs.bubble.hidden = false;
+        if (!stopped) refs.bubble.classList.add('error');
+        refs.bubble.textContent = (refs.bubble.textContent ? refs.bubble.textContent + '\n\n' : '') + (stopped ? t('stopped') : t('noReply', { e: error.message }));
+      } else note(stopped ? t('stopped') : t('noReply', { e: error.message }));
+      if (chat.messages[chat.messages.length - 1] === user) {
+        chat.messages.pop();
+        if (origin !== 'timer' && !$('prompt').value) { $('prompt').value = text; resize(); }
+      }
+    } finally {
+      controller = null;
+      busy(false);
+      await persist();
+      gauge();
+      if (origin !== 'timer') $('prompt').focus();
+    }
+  };
+  const tick = (run) => {
+    if (!chat || !chat.timer.on) { $('timer-note').textContent = t('timerHint'); return; }
+    const prompt = chat.timer.prompt.trim(), left = (chat.timer.last || 0) + chat.timer.minutes * 60000 - Date.now();
+    if (!prompt) { $('timer-note').textContent = t('timerWrite') + t('timerHint'); return; }
+    if (left > 0) { $('timer-note').textContent = t('timerNext', { n: Math.max(1, Math.ceil(left / 60000)) }) + t('timerHint'); return; }
+    if (controller || !run || !$('model').value) { $('timer-note').textContent = t('timerDue') + t('timerHint'); return; }
+    chat.timer.last = Date.now();
+    send(prompt, 'timer');
+  };
+  const download = (name, chosenChats) => {
+    const doc = { format: 'sparkpipe-chat', version: 1, exported: new Date().toISOString(), chats: chosenChats };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 1)], { type: 'application/json' })), link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const stamp = () => new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+  const resize = () => { $('prompt').style.height = 'auto'; $('prompt').style.height = Math.min($('prompt').scrollHeight, 180) + 'px'; };
+  document.querySelectorAll('.lang button').forEach((button) => button.addEventListener('click', () => {
+    if ((button.dataset.lang === 'ko-KR') === korean()) return;
+    save('localStorage', 'locale', button.dataset.lang);
+    translate();
+    busy(!!controller);
+    if (chat) { render(); list(); settings(); }
+  }));
+  $('send').addEventListener('click', () => send($('prompt').value));
+  $('model').addEventListener('change', () => { chosen = true; chat.model = $('model').value; settings(); later(); });
+  $('prompt').addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); send($('prompt').value); } });
+  $('prompt').addEventListener('input', resize);
+  $('memory').addEventListener('change', () => { chat.memory = $('memory').value; gauge(); later(); });
+  $('target').addEventListener('change', () => {
+    const value = Math.round(+$('target').value || 0);
+    chat.target = value >= 1024 ? value : 0;
+    settings();
+    later();
+  });
+  $('timer-on').addEventListener('change', () => { chat.timer.on = $('timer-on').checked; if (chat.timer.on) chat.timer.last = Date.now(); tick(); later(); });
+  $('timer-minutes').addEventListener('change', () => { chat.timer.minutes = Math.max(1, Math.round(+$('timer-minutes').value || 30)); $('timer-minutes').value = chat.timer.minutes; tick(); later(); });
+  $('timer-prompt').addEventListener('input', () => { chat.timer.prompt = $('timer-prompt').value; tick(); later(); });
+  $('compact').addEventListener('click', async () => {
+    if (controller || !chat.messages.length) return;
+    if (used().tokens <= target()) { note(t('fits', { n: count(target()) })); return; }
+    controller = new AbortController();
+    busy(true);
+    try {
+      if (!(await compact(chat.timer.on ? [TIMER_TOOL] : null))) note(t('nothingOlder'));
+    } catch (error) {
+      note(error.name === 'AbortError' ? t('compactStopped') : t('compactFailed', { e: error.message }));
+    } finally {
+      controller = null;
+      busy(false);
+      await persist();
+      gauge();
+    }
+  });
+  $('new').addEventListener('click', () => { if (controller) return; open(blank()); $('prompt').focus(); });
+  $('rename').addEventListener('click', () => {
+    if (!chat.messages.length) return;
+    const name = window.prompt(t('chatName'), chat.title);
+    if (name === null) return;
+    chat.title = name.trim().slice(0, 120);
+    persist();
+  });
+  $('export').addEventListener('click', () => { if (chat.messages.length) download('sparkpipe-chat-' + stamp() + '.json', [chat]); });
+  $('export-all').addEventListener('click', () => { if (chats.length) download('sparkpipe-chats-' + stamp() + '.json', chats); });
+  $('delete').addEventListener('click', async () => {
+    if (controller || !chat.messages.length) return;
+    if (!window.confirm(t('confirmDelete', { t: chat.title || t('untitled') }))) return;
+    await store.remove(chat.id);
+    chats = chats.filter((item) => item !== chat);
+    open(chats[0] || blank());
+  });
+  $('delete-all').addEventListener('click', async () => {
+    if (controller || !chats.length) return;
+    if (!window.confirm(t('confirmDeleteAll', { n: chats.length }))) return;
+    for (const item of chats) await store.remove(item.id);
+    chats = [];
+    open(blank());
+  });
+  $('import').addEventListener('click', () => $('import-file').click());
+  $('import-file').addEventListener('change', async () => {
+    const file = $('import-file').files[0];
+    $('import-file').value = '';
+    if (!file) return;
+    try {
+      const doc = JSON.parse(await file.text()), incoming = Array.isArray(doc.chats) ? doc.chats : [doc];
+      let added = 0;
+      for (const item of incoming) {
+        if (!item || !Array.isArray(item.messages)) continue;
+        const copy = Object.assign(blank(), item);
+        copy.timer = Object.assign(blank().timer, item.timer || {}, { on: false });
+        copy.messages = item.messages.filter((message) => message && typeof message.role === 'string').map((message) => Object.assign({}, message, { content: typeof message.content === 'string' ? message.content : '' }));
+        if (!copy.messages.length) continue;
+        if (copy.summary && !(Number.isInteger(copy.summary.through) && copy.summary.through < copy.messages.length && typeof copy.summary.text === 'string')) copy.summary = null;
+        if (typeof copy.id !== 'string' || chats.some((existing) => existing.id === copy.id)) copy.id = makeId();
+        chats.push(copy);
+        await store.put(JSON.parse(JSON.stringify(copy))).catch(() => {});
+        added++;
+      }
+      list();
+      note(t('imported', { n: added }));
+    } catch (error) {
+      note(t('importFailed', { e: error.message }));
+    }
+  });
+  setInterval(() => tick(true), 5000);
+  (async () => {
+    translate();
+    busy(false);
+    if (!(await store.open())) $('storage-note').textContent = t('noStorage');
+    chats = await store.all();
+    chats.sort((a, b) => b.updated - a.updated);
+    open(chats[0] || blank());
+    if (await models() && chat && !chosen && chat.model) $('model').value = chat.model;
+  })();
+})();
+</script>
+</body>
+</html>

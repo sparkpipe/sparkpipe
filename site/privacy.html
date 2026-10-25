@@ -145,6 +145,7 @@
     <h2>10. Cookies and browser storage</h2>
     <p>The chat keeps you signed in with a session token stored in your browser; without it the chat cannot work. The checkout preview keeps its demo in local storage only. Neither leaves your browser except to sign you in to the chat.</p>
     <p><b>Language.</b> On your first visit, the site shows Korean pages if your IP address is in the Korean address ranges that APNIC, the regional internet registry, publishes, and English pages otherwise. The check runs on our own server against a copy of that list; your address goes to no one else, and we keep no record of the result. When you choose a language with the EN / 한국어 switch, a cookie named <span class="mono">lang</span>, holding only <span class="mono">ko</span> or <span class="mono">en</span>, remembers your choice for one year and is sent to our server with each page request.</p>
+    <p><b>Chat controls and local mode.</b> The chat keeps your language choice, the memory switch of each chat and the compaction setting in the browser's local storage. In local mode (<span class="mono">sparkpipe.ai:8443/local/</span>) your chats are stored only in the browser's IndexedDB: each message is sent to the model and the reply comes back, and our servers keep no chat history or memory of them.</p>
     <p>We use no advertising, analytics or tracking cookies. You can delete or block any of these in your browser settings.</p>
   </section>
 

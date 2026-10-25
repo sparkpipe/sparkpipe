@@ -484,6 +484,7 @@ PYTHON_TESTS := \
 	tests/test_staging_manifest.py \
 	tests/test_status_truth.py \
 	tests/test_site.py \
+	tests/test_chat_controls.py \
 	tests/test_weightd_manifest.py \
 	tests/test_weightd_spine_budget.py \
 	tests/test_glm5_next_range_manifest.py \
