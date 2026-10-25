@@ -1,0 +1,20 @@
+{
+ "phase": "restore",
+ "chars": 60000,
+ "cold_again": {
+  "text": " The KV cache is described as holding the complete computation state of a cache entry, including every KV tensor, sparse-attention indexer keys, recurrent state (KDA, GDN) and convolution windows, plus position and continuity fields. Restoring an entry must produce the same tokens as never having evicted it. P",
+  "finish": "length",
+  "prompt_tokens": 16586,
+  "cached_tokens": 16585,
+  "completion_tokens": 64,
+  "seconds": 1.68
+ },
+ "follow_restored": {
+  "text": " Speculation goes through one seam per serving adapter, with each family having one source mask, `SPARK_<FAMILY>_SPECULATORS`, that selects its draft sources: local drafts the model makes itself (MTP heads, DSpark) and remote drafts from a drafter host through the DFT",
+  "finish": "length",
+  "prompt_tokens": 16669,
+  "cached_tokens": 16668,
+  "completion_tokens": 64,
+  "seconds": 1.66
+ }
+}

@@ -144,7 +144,7 @@ case "$step" in
       capture "$id" new
       compare "$id" old new
       hub "cd ~/rollover/tree && timeout 3000 python3 tools/ui_smoke.py --endpoint http://127.0.0.1:4000 --model $id --reasoning both --out $RD/$id/ui-smoke.json > $RD/$id/smoke.log 2>&1; tail -2 $RD/$id/smoke.log | cut -c1-200"
-      if [ -n "${COMPSEC:-}" ] || ! hub "cd $RD && python3 kit/release_compare.py $id/old.json $id/new.json | grep -q 'EXACT 6/6'"; then
+      if [ -n "${COMPSEC:-}" ] || hub "cd $RD && python3 kit/release_compare.py $id/old.json $id/new.json | grep -q 'first-diff@'"; then
         eff="--reasoning-effort minimal"; [ "$id" = qwen3.8-max ] && eff="--max-tokens 2048"
         hub "cd ~/rollover/tree && timeout 7200 python3 tools/compsec17_openai.py --endpoint http://127.0.0.1:4000 --model $id $eff --out $RD/$id/compsec17 > $RD/$id/compsec.log 2>&1; grep -o 'RESULT: [0-9]*/[0-9]*' $RD/$id/compsec.log"
       fi

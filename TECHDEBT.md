@@ -464,6 +464,29 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## KV tiers
 
+- Cached request state outlives 24 hours where nothing runs the retention
+  clock. The clock runs only inside a running model: its snapshot store
+  expires files at open and every 60 s, its page cache every 60 s. Still to
+  do:
+  - a weightd thread that purges every lane's snapshot store every 60 s,
+    whether or not its model runs: residentd registers its store directory
+    with weightd at attach, weightd keeps the list across restarts, and for
+    each store whose lock it can take deletes the files unused for 24 hours
+    (`SparkKvSnapshotScan`'s rule); a store a running model holds keeps its
+    own sweep. Fleet proof: backdate an inactive model's store while another
+    model serves, and see weightd empty it within a minute;
+  - the hub draft servers (`tools/block_draftd.py`) evict a sequence's
+    context, its last 4,096 token ids and drafter keys and values, only to
+    stay under `--context-bytes` and always keep one; evict any context
+    unused for 24 hours;
+  - the batch engine keeps a finished request's tokens and lookup chain in
+    its slot until the next request takes the slot; clear them when the
+    request ends;
+  - the API's prefix index file (`prefix_index.spi`: block hashes and
+    digests, no tokens) has no clock; drop a record when its KV expires;
+  - delete the stores and prefix index files of retired lanes and APIs on
+    the nodes and the hub.
+
 - Left out on purpose (2026-10-04): JIT-KV W3
   (`docs/archive/JIT_KV_RESPONSE.md:47-49`) is partly done. The slot file, the
   lane pager and the header-only `LmCache` are deleted, and every driver
@@ -970,6 +993,12 @@ Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`
 
 ## Production qualification
 
+- `scripts/release_rollout.sh` captures the old and the new build through the
+  live prefix cache, so a capture can be served from KV another build wrote:
+  in the 2026-10-25 release most old captures read their long prompts from
+  cache entries of earlier builds. Clear the model's cached state on every
+  node before each capture and fail the comparison unless every capture
+  reports `cached_tokens` 0.
 - `tools/sparkpipe_weightd_vmm_verify.sh` prints `SKIP` and exits 0 when CUDA
   or a GPU is missing, so a receipt run on the wrong host reads as a pass.
   Make both cases exit nonzero with the named reason.

@@ -151,7 +151,7 @@ typedef struct SparkStageKvRecurrentCounters
 } SparkStageKvRecurrentCounters;
 
 #define SPARK_STAGE_KV_POOL_SEAL_MAGIC UINT64_C(0x4c4145534c4f4f50)
-#define SPARK_STAGE_KV_POOL_SEAL_VERSION 1u
+#define SPARK_STAGE_KV_POOL_SEAL_VERSION 2u
 
 typedef struct SparkStageKvPoolSeal
 {
@@ -281,6 +281,7 @@ struct SparkStageKvBinding
 	uint64_t restore_hinted_jobs;
 	uint64_t restore_imported_pages;
 	uint32_t save_stop;
+	uint64_t expiry_sweep_seconds;
 	uint32_t save_running;
 	uint32_t sync_initialized;
 	SparkStageKvBindingCounters counters;

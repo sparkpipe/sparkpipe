@@ -136,6 +136,11 @@ changes to common code. Track implementation evidence in
 - **I27 — Restored execution matches uninterrupted execution.** Prove hits,
   misses, eviction, movement, copy-on-write, slot changes and reset with real
   model state. Descriptor declarations and byte-copy tests alone are insufficient.
+- **Cached request state expires.** KV and recurrent state derived from
+  requests are deleted from every tier (device, host, weightd pool, snapshot
+  files) within 24 hours of their last use. The limit is a constant; no flag,
+  configuration or driver path lengthens it, and a restart keeps each entry's
+  age.
 
 ## 6. Experts, fleet access and deployment
 

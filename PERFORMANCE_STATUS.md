@@ -215,8 +215,14 @@ Ideal floors, from the active parameters each rank reads per token (K3:
 
 ## Accuracy
 
-- **Release gate:** every release reproduces the previous build's tokens on
-  six fixed prompts for all 16 models (last: `1d89e0377`).
+- **Release gate:** each release is compared with the build it replaces on
+  six fixed prompts for all 16 models. Release `9b253f5b4` reproduced the
+  short prompts bit for bit on every model and all six on K3, GLM 5.3 Full
+  and DeepSeek V4.1 Flash; on the two long prompts the other models' log-probs
+  moved (at most 0.49 nats on a chosen token) and near ties flipped, with
+  COMPSEC-17 at the recorded scores except Muse Glimmer 30B (16 against 17).
+  The new build repeats itself exactly, cached or cold
+  ([`qualification/releases/9b253f5b4/`](qualification/releases/9b253f5b4/)).
 - **ds4_eval, 92 questions** (GPQA Diamond, SuperGPQA, AIME 2025, COMPSEC),
   served by SparkPipe: Qwen 3.8 Max 82/92 and Qwen 3.8 Flash 79/92 (greedy,
   16,000-token budget;

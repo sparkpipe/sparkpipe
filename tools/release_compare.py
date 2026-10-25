@@ -21,5 +21,12 @@ for name in a:
         elif isinstance(x, dict) and isinstance(y, dict):
             for k in set(x) & set(y):
                 dl = max(dl, abs(x[k] - y[k]))
+        elif isinstance(x, list) and isinstance(y, list) and x and y:
+            served = [x[0], y[0]]
+            if all(isinstance(entry, list) and len(entry) == 2 for entry in served):
+                dl = max(dl, abs(served[0][1] - served[1][1]))
+            tops = [{entry[0]: entry[1] for entry in side[1:] if isinstance(entry, list) and len(entry) == 2} for side in (x, y)]
+            for k in set(tops[0]) & set(tops[1]):
+                dl = max(dl, abs(tops[0][k] - tops[1][k]))
     print(f"{name}: {'exact' if same else 'tokens-equal' if first is None else 'first-diff@' + str(first)} n={len(ta)} served_max_dlp={dl:.4f}")
 print(f"EXACT {exact}/{len(a)}")
