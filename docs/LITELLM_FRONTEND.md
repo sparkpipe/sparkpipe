@@ -373,7 +373,24 @@ SearXNG (not enabled yet).
 | Open WebUI | hub Docker container `sparkpipe-chatui`, `127.0.0.1:8090` -> 8080, data `/srv/workspace/open-webui/data` | settings `deployment/hub/open_webui.env`, secrets `/srv/workspace/open-webui/secrets.env` (root, 600: `WEBUI_SECRET_KEY`, `OPENAI_API_KEYS`) |
 | Chat LiteLLM | hub user unit `sparkpipe-litellm-chatui` on `172.17.0.1:4002` (Docker bridge only), `~/sparkpipe-chat/litellm-chatui.yaml` (copy of `deployment/hub/litellm-chatui.yaml`), key in `~/sparkpipe-chat/chatui.env` | serves every fleet model; K3 is the default (owner 2026-10-14) |
 | Tunnel | hub `sparkpipe-ai-door`, `-R 127.0.0.1:18082:127.0.0.1:8090` | the VPS key may listen on 18082 |
-| Apache | VPS `/etc/apache2/sites-available/sparkpipe-chat-8443.conf` | TLS with the sparkpipe.ai certificate, websocket upgrade, no Basic auth |
+| Apache | VPS `/etc/apache2/sites-available/sparkpipe-chat-8443.conf` | TLS with the sparkpipe.ai certificate, websocket upgrade, no Basic auth; includes `/etc/apache2/sparkpipe/chat-local.conf` (copy of `deployment/vps/sparkpipe-chat-local.conf`) before its proxy lines |
+
+**Controls and languages.** `deployment/hub/open_webui_loader.js` is mounted
+as Open WebUI's `static/loader.js` (`open_webui_run.sh`; the hub copy is
+`/srv/workspace/open-webui/branding/loader.js`). It adds an EN / 한국어 switch,
+which sets Open WebUI's own locale in the browser, and above the message box
+the memory switch, the compaction slider with Compact and Undo, a Context
+button and the Local mode link. The buttons send the chat layer's commands
+(`/memory on|off`, `/compact N%|full|undo`, `/context`), which the chat layer
+answers itself and leaves out of every later prompt. A user who has not
+chosen a language gets the browser's (`ui.default_locale` is empty).
+
+**Local mode.** `https://sparkpipe.ai:8443/local/` (`deployment/vps/chat-local/`,
+served by the VPS from `/var/www/chat-local`) keeps chats in the browser's
+IndexedDB and sends each request to Open WebUI's `/api/chat/completions` with
+the user's Open WebUI session. The request carries no chat id, so Open WebUI
+saves no chat and the chat layer opens no memory; compaction runs in the
+page. `tests/test_chat_controls.py` checks that the page calls nothing else.
 
 Requests run browser -> Apache 8443 -> tunnel -> Open WebUI -> chat LiteLLM ->
 chat layer -> engine. The chat layer gives requests without sampling fields

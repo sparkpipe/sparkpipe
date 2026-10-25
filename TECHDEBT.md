@@ -989,6 +989,9 @@ Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`
 
 - **AI label on downloaded chats.** Copied replies end with the bilingual AI label (`ui.watermark`); chats downloaded as files carry none, and Open WebUI v0.12.0 has no setting for it.
 - **Notice before sign-up.** Open WebUI's sign-up page cannot show text. The AI and privacy notice appears on the waiting screen right after sign-up, before the account is approved or used.
+- **Korean command replies.** The chat layer answers `/context`, `/memory` and `/compact` in English only, also in the Korean interface.
+- **Memory switch state.** The toolbar shows the memory setting it last sent from this browser; a `/memory` typed by hand or sent from another device is not reflected. A chat-layer endpoint that reports a chat's memory settings would let the toolbar read the real state.
+- **Local mode needs an account.** Local mode reaches the models through the user's Open WebUI session; access by API key without an account is #1549.
 - **Tunnel port 18080.** `sparkpipe-ai-door` forwards VPS 127.0.0.1:18080 to the hub's port 4001, where nothing listens, and the VPS key may listen on 18080. Removing both is an SSH change for the owner.
 
 ## Production qualification
