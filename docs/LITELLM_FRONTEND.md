@@ -102,7 +102,7 @@ another model waits while the fleet swaps.
 | Piece | Where | What |
 | --- | --- | --- |
 | Swap controller | `tools/serving/model_swap.py`, config `deployment/hub/model_swap.json`, hub unit `sparkpipe-swap` on 127.0.0.1:8440 | `GET /status`, `POST /activate {"model": id}`, `POST /force`; every call needs the controller token (see Control-plane access) |
-| Chat layer | `tools/serving/chat_frontend.py`, config `deployment/hub/chat_frontend.json`, hub unit `sparkpipe-chat` on 127.0.0.1:8433 | every model's `warm_queue.activation_url` is the controller; `GET /v1/sparkpipe/status` passes through to it; `/` serves the playground |
+| Chat layer | `tools/serving/chat_frontend.py`, config `deployment/hub/chat_frontend.json`, hub unit `sparkpipe-chat` on 127.0.0.1:8433 | every model's `warm_queue.activation_url` is the controller; `GET /v1/sparkpipe/status` passes through to it; `/` redirects to the fleet page |
 | LiteLLM | `config/litellm-config.yaml`, hub unit `sparkpipe-litellm` on 4000 | the three names, and `*` routes to `glm-5.3` |
 
 A swap to model T, in order:
@@ -417,11 +417,44 @@ and the prefix cache instead of retrieval chunks. Users cannot change
 sampling, see other models, share chats publicly, create API keys or add
 tools.
 
+SparkPipe Chat provides generative AI directly to its users, so it carries
+the notice and labelling duties of Article 31 of Korea's AI Basic Act. The
+`ai-notice` banner (`ui.banners`, `WEBUI_BANNERS`) tells users on every new
+chat, before their first message, that the replies come from generative AI;
+Open WebUI shows it in Korean when the interface language is Korean. It is
+not dismissible, so closing it hides it only until the next visit. Every
+reply copied with the copy button ends with the bilingual label in
+`ui.watermark` (`RESPONSE_WATERMARK`). A new account's waiting screen
+(`ui.pending_user_overlay_title` and `_content`, `PENDING_USER_OVERLAY_*`)
+says, in English and Korean, that the replies come from generative AI and
+links the privacy policy, before the account is approved or used. Customers who serve their own users
+with fleet-hours carry these duties themselves (agreement 8.10, Hourly Terms
+7.2).
+
 Start or replace the container with `sudo sh /srv/workspace/open-webui/run.sh`,
 a copy of `deployment/hub/open_webui_run.sh`. It pins v0.12.0 by digest,
 mounts the data directory and mounts the SparkPipe icons from
 `/srv/workspace/open-webui/branding` (a copy of
 `deployment/hub/open_webui_branding`) over Open WebUI's own.
+
+Visitors' IP addresses stay out of the hub. Open WebUI trusts forwarded
+addresses only from `127.0.0.1` (`FORWARDED_ALLOW_IPS`), and its requests
+arrive from the Docker bridge, so its log shows the bridge address. The
+Apache logs on the VPS are the only access logs with visitor addresses, kept
+92 days as the privacy policy states. The container log is capped at three
+10 MB files.
+
+Retention follows the privacy policy:
+
+- **Chat memory goes with its chat.**
+  - A root timer, `open-webui-chat-list.timer`, runs every 5 minutes. It reads `webui.db` read-only and writes Open WebUI's chats, as hashed (user, chat) names, to `/srv/workspace/sparkpipe/open-webui-chats.json`. The chat layer's user cannot read the database itself.
+  - Every 10 minutes the chat layer deletes the memory file of each chat not on that list and drops that chat from RAM. Files written in the last hour are kept, for chats whose row is not stored yet.
+  - It deletes nothing when the list is missing, older than 30 minutes, or names no users.
+  - Install:
+    1. Copy `tools/serving/open_webui_chat_list.py` to `/usr/local/lib/sparkpipe/` (root, 644).
+    2. Copy `deployment/hub/open-webui-chat-list.service` and `.timer` to `/etc/systemd/system/`.
+    3. Run `systemctl enable --now open-webui-chat-list.timer`.
+- **Operational records:** `chat.log`, the LiteLLM logs and the model APIs' logs rotate monthly under `/etc/logrotate.d/sparkpipe-hub` (`deployment/hub/logrotate-sparkpipe-hub`). A rotated file is deleted 334 days after its last write, so no record is older than a year.
 
 `open_webui.env` is copied from `deployment/hub/open_webui.env`. v0.12.0
 writes every persistent setting into the `config` table (`key`, JSON `value`)
@@ -471,9 +504,12 @@ filter (`tools/serving/open_webui/functions/memory_off.py`, installed with
 `open_webui_functions.py` from `deployment/hub/open_webui_functions.json`) is
 the user's switch to turn memory off for a chat.
 
-The 13 public models carry a public read grant. The three Qwen models carry
-none, so only the admin sees them (admins bypass grants): their license
-keeps them internal, and the owner's own use is internal.
+The 15 public models carry a public read grant. Qwen 3.8 Flash carries none,
+so only the admin sees it (admins bypass grants): its license requires a
+separate agreement with Qwen for any model-as-a-service business, and the
+owner's own use is internal. Qwen 3.8 27B (Apache 2.0) and Qwen 3.8 Max
+(whose license asks for a separate agreement only above US$50 million of
+yearly revenue) are public.
 `BYPASS_MODEL_ACCESS_CONTROL` is off again; a model with no entry or no grant
 stays hidden from users.
 

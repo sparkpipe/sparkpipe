@@ -910,6 +910,7 @@
  "chat_memory": {
   "store": "/srv/workspace/sparkpipe/chat-memory",
   "jwt_secret_file": "/home/spec/sparkpipe-chat/memory-jwt.secret",
+  "open_webui_chat_list": "/srv/workspace/sparkpipe/open-webui-chats.json",
   "budgets": {
    "open_budget": 1500,
    "line_tokens": 48,

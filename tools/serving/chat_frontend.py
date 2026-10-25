@@ -1197,8 +1197,13 @@ class Frontend:
 
     async def start(self, app):
         self.session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=0), timeout=aiohttp.ClientTimeout(total=None, sock_connect=10))
+        self.prune_task = None
+        if self.memory is not None and self.memory.chat_list:
+            self.prune_task = asyncio.create_task(self.memory.prune_loop())
 
     async def stop(self, app):
+        if self.prune_task is not None:
+            self.prune_task.cancel()
         await self.session.close()
 
     def model_for(self, body):
@@ -1267,7 +1272,7 @@ class Frontend:
             return web.json_response(error_body("control_unavailable", str(error)), status=503)
 
     async def site_root(self, request):
-        raise web.HTTPFound("/site/playground.html")
+        raise web.HTTPFound("/site/fleet.html")
 
     async def list_models(self, request):
         created = int(time.time())

@@ -1014,6 +1014,12 @@ door, the static pages in `site/` and the login-gated sparkpipe.ai playground
 - **Payments.** Provider identity checks, tax reporting and payout rails
   (fiat, crypto or both) are undecided.
 
+## SparkPipe Chat
+
+- **AI label on downloaded chats.** Copied replies end with the bilingual AI label (`ui.watermark`); chats downloaded as files carry none, and Open WebUI v0.12.0 has no setting for it.
+- **Notice before sign-up.** Open WebUI's sign-up page cannot show text. The AI and privacy notice appears on the waiting screen right after sign-up, before the account is approved or used.
+- **Tunnel port 18080.** `sparkpipe-ai-door` forwards VPS 127.0.0.1:18080 to the hub's port 4001, where nothing listens, and the VPS key may listen on 18080. Removing both is an SSH change for the owner.
+
 ## Production qualification
 
 - `tools/sparkpipe_weightd_vmm_verify.sh` prints `SKIP` and exits 0 when CUDA
