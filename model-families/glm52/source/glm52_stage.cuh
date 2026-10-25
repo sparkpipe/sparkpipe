@@ -97,8 +97,9 @@
 #define GLM_SPLIT_THRESHOLD 64u
 #define GLM_TENSOR_KINDS SPARK_GLM52_STAGEPACK_TENSOR_KIND_COUNT
 #define GLM_MAX_TENSORS 2048u
-#define GLM_EXPERT_CODEC SPARK_WEIGHT_CODEC_FP8_E4M3
-#define GLM_LINEAR_CODEC SPARK_WEIGHT_CODEC_FP8_E4M3
+#if !defined(GLM_LINEAR_CODEC) || !defined(GLM_EXPERT_CODEC)
+#error "the build names GLM_LINEAR_CODEC and GLM_EXPERT_CODEC"
+#endif
 
 static_assert(LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS == GLM_SPLIT_PARTITIONS, "split-partials sizing matches the kernel's partition cap");
 static_assert(GLM_QUERY_A % GLM_GRANULE == 0u && GLM_SLOT % GLM_GRANULE == 0u, "projection slices start on 16-byte columns");
@@ -435,11 +436,14 @@ static int32_t GlmLinearBf16(const uint16_t *activation, const void *weight, uin
 }
 
 typedef LmWeightCodec<GLM_LINEAR_CODEC>::Format GlmLinearFormat;
+static constexpr bool kGlmLinearScaled = LmWeightCodec<GLM_LINEAR_CODEC>::kScaleEncoding != LM_SCALE_ENCODING_NONE;
+static constexpr bool kGlmExpertScaled = LmWeightCodec<GLM_EXPERT_CODEC>::kScaleEncoding != LM_SCALE_ENCODING_NONE;
 
 static GlmLinearWeight GlmLinearRows(GlmLinearWeight weight, uint32_t first_row, uint32_t input_dimension)
 {
 	weight.weight += (uint64_t)first_row * input_dimension * GlmLinearFormat::kStoredBits / 8u;
-	weight.scale += (uint64_t)first_row * ((input_dimension + GlmLinearFormat::kScaleGroup - 1u) / GlmLinearFormat::kScaleGroup);
+	if ( kGlmLinearScaled )
+		weight.scale += (uint64_t)first_row * ((input_dimension + GlmLinearFormat::kScaleGroup - 1u) / GlmLinearFormat::kScaleGroup);
 	return weight;
 }
 
@@ -452,7 +456,7 @@ static int32_t GlmLinear(const uint16_t *activation, GlmLinearWeight weight, uin
 	uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset, uint32_t multiprocessors, cudaStream_t stream)
 {
 	const LmScaleTensor scale = GlmLinearScale(weight, input_dimension, output_dimension);
-	if ( activation == 0 || weight.weight == 0 || weight.scale == 0 || output == 0 || rows == 0u || input_dimension == 0u || output_dimension == 0u ||
+	if ( activation == 0 || weight.weight == 0 || (kGlmLinearScaled && weight.scale == 0) || output == 0 || rows == 0u || input_dimension == 0u || output_dimension == 0u ||
 		multiprocessors == 0u )
 		return LM_LAUNCH_ERR_SHAPE;
 	if ( rows <= LM_SKINNY_ROWS_WIDE )
@@ -1199,7 +1203,7 @@ struct GlmModel
 			header->kv_cache_codec != SPARK_WEIGHT_CODEC_BF16 )
 		{
 			fclose(file);
-			return PackFail(path, "codecs are not fp8 linear, fp8 experts, bf16 kv");
+			return PackFail(path, "linear or expert codec differs from this build, or the kv codec is not bf16");
 		}
 		if ( ContractBytes(contract) == 0u || memcmp(header->contract_sha256, contract, sizeof(contract)) != 0 ||
 			header->model_revision[SPARK_GLM52_STAGEPACK_MODEL_REVISION_BYTES - 1u] != '\0' || strcmp(header->model_revision, G::Revision()) != 0 ||
@@ -1458,8 +1462,8 @@ struct GlmModel
 		SparkGlm52StagePackEntry scales = *entry;
 		scales.payload_offset = entry->scale_offset;
 		scales.payload_bytes = entry->scale_bytes;
-		if ( entry->weight_codec != GLM_LINEAR_CODEC || entry->scale_bytes == 0u || Slice(lazy_pack, entry, &payload) != SPARK_STATUS_OK ||
-			Slice(lazy_pack, &scales, &scale) != SPARK_STATUS_OK )
+		if ( entry->weight_codec != GLM_LINEAR_CODEC || (entry->scale_bytes != 0u) != kGlmLinearScaled || Slice(lazy_pack, entry, &payload) != SPARK_STATUS_OK ||
+			(kGlmLinearScaled && Slice(lazy_pack, &scales, &scale) != SPARK_STATUS_OK) )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 		field->weight = (const uint8_t *)payload;
 		field->scale = (const float *)scale;
@@ -1918,9 +1922,9 @@ struct GlmModel
 				return status != SPARK_STATUS_OK ? status : SPARK_STATUS_INTERNAL_ERROR;
 			}
 			b.expert_w1_weight = w1;
-			b.expert_w1_scale = (const uint8_t *)w1 - state->w1_offset[layer] + state->layers[layer].up_gate_scale;
+			b.expert_w1_scale = kGlmExpertScaled ? (const uint8_t *)w1 - state->w1_offset[layer] + state->layers[layer].up_gate_scale : 0;
 			b.expert_w2_weight = w2;
-			b.expert_w2_scale = (const uint8_t *)w2 - state->w2_offset[layer] + state->layers[layer].down_scale;
+			b.expert_w2_scale = kGlmExpertScaled ? (const uint8_t *)w2 - state->w2_offset[layer] + state->layers[layer].down_scale : 0;
 			code = GlmMoeExperts(&b, rows, packed, sms, stream);
 		}
 		if ( code != LM_LAUNCH_OK )

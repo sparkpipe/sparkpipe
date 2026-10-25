@@ -31,5 +31,6 @@ with tempfile.TemporaryDirectory(prefix="glm-attach-kv-cuda-") as directory:
     subprocess.run([NVCC, "-O3", "-std=c++17", "-gencode", "arch=compute_121a,code=sm_121a",
                     "-I.", "-Iinclude", "-Imodel-families/common/include", "-Imodel-families/glm52/source", "-Imodel-families/glm52/include",
                     "-Imodules/glm53_full_tp16_resident_decode_stage/include",
+                    "-DGLM_LINEAR_CODEC=SPARK_WEIGHT_CODEC_FP8_E4M3", "-DGLM_EXPERT_CODEC=SPARK_WEIGHT_CODEC_FP8_E4M3",
                     "tests/cuda/glm_attach_kv_cuda.cu", "-o", binary], cwd=ROOT, check=True)
     subprocess.run([binary], check=True, timeout=900)
