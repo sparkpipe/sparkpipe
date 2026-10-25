@@ -354,6 +354,7 @@ PYTHON_TESTS := \
 	tests/test_ab_stats.py \
 	tests/test_ab_verdict.py \
 	tests/test_ab_arm.py \
+	tests/test_ab_api_score.py \
 	tests/test_ab_receipt.py \
 	tests/test_ab_suite_compare.py \
 	tests/test_ab_corpus.py \
