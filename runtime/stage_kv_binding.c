@@ -1267,10 +1267,32 @@ static SparkStatus SparkStageKvBindingAdoptPool(SparkStageKvBinding *binding)
 	SPARK_RETURN(status);
 }
 
+static uint32_t SparkStageKvBindingDropDueRecords(SparkKvPageCacheResidentRecord *records,uint32_t count,uint64_t due_seconds)
+{
+	uint32_t index,kept = 0u,*kept_at = (uint32_t *)malloc((size_t)(count != 0u ? count : 1u) * sizeof(uint32_t));
+	if ( kept_at == 0 )
+		return(UINT32_MAX);
+	for (index=0u; index<count; index++)
+	{
+		SparkKvPageCacheResidentRecord record = records[index];
+		const uint32_t parent = record.parent_record;
+		kept_at[index] = SPARK_KV_PAGE_CACHE_NO_INDEX;
+		if ( record.used_seconds + SPARK_KV_RETENTION_SECONDS <= due_seconds ||
+			(parent != SPARK_KV_PAGE_CACHE_NO_INDEX && (parent >= index || kept_at[parent] == SPARK_KV_PAGE_CACHE_NO_INDEX)) )
+			continue;
+		record.parent_record = parent == SPARK_KV_PAGE_CACHE_NO_INDEX ? SPARK_KV_PAGE_CACHE_NO_INDEX : kept_at[parent];
+		records[kept] = record;
+		kept_at[index] = kept++;
+	}
+	free(kept_at);
+	return(kept);
+}
+
 static void SparkStageKvBindingSealPool(SparkStageKvBinding *binding)
 {
 	SparkStageKvPoolSeal *seal = (SparkStageKvPoolSeal *)binding->kv_pool.metadata;
-	uint32_t count = 0u,entry,valid = 0u,private_entries = 0u,nonresident = 0u,shared = 0u;
+	uint32_t count = 0u,exported = 0u,entry,valid = 0u,private_entries = 0u,nonresident = 0u,shared = 0u;
+	struct timespec now;
 	SparkStatus status;
 	if ( seal == 0 || binding->mutex_initialized == 0u || binding->kv_pool_seal_cleared == 0u )
 		return;
@@ -1283,6 +1305,12 @@ static void SparkStageKvBindingSealPool(SparkStageKvBinding *binding)
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"%s kv pool not sealed: export status=%s\n",binding->module_tag,SparkStatusToString(status));
+		return;
+	}
+	if ( clock_gettime(CLOCK_REALTIME,&now) != 0 ||
+		(exported = count,count = SparkStageKvBindingDropDueRecords((SparkKvPageCacheResidentRecord *)(seal + 1),count,(uint64_t)now.tv_sec + SPARK_KV_DETACHED_POOL_SECONDS)) == UINT32_MAX )
+	{
+		fprintf(stderr,"%s kv pool not sealed: records due within the detached-pool limit could not be dropped\n",binding->module_tag);
 		return;
 	}
 	seal->magic = SPARK_STAGE_KV_POOL_SEAL_MAGIC;
@@ -1310,8 +1338,8 @@ static void SparkStageKvBindingSealPool(SparkStageKvBinding *binding)
 			binding->arena.blocks[candidate->logical_page_index].resident_slot_index == SPARK_KV_CACHE_NO_RESIDENT_SLOT )
 			nonresident++;
 	}
-	fprintf(stderr,"%s kv pool sealed generation=%llu resident_pages=%u entries=%u window=%u private=%u nonresident=%u orphaned=%u\n",binding->module_tag,(unsigned long long)binding->kv_pool.pool_generation,count,
-		valid,shared,private_entries,nonresident,valid - shared - private_entries - nonresident - count);
+	fprintf(stderr,"%s kv pool sealed generation=%llu resident_pages=%u entries=%u window=%u private=%u nonresident=%u orphaned=%u due_dropped=%u\n",binding->module_tag,(unsigned long long)binding->kv_pool.pool_generation,count,
+		valid,shared,private_entries,nonresident,valid - shared - private_entries - nonresident - exported,exported - count);
 }
 
 static void SparkStageKvBindingAttachWriteMeter(SparkStageKvBinding *binding)
@@ -1510,6 +1538,8 @@ static void SparkStageKvBindingExpireBeforeDetach(SparkStageKvBinding *binding)
 	SparkStatus status = SPARK_STATUS_INTERNAL_ERROR;
 	if ( binding->mutex_initialized == 0u || binding->kv_pool.metadata == 0 )
 		return;
+	if ( binding->copier_initialized != 0u )
+		(void)SparkKvDeviceCopierDrain(&binding->copier);
 	pthread_mutex_lock(&binding->mutex);
 	if ( clock_gettime(CLOCK_REALTIME,&now) == 0 )
 		status = SparkKvPageCacheExpire(&binding->page_cache,(uint64_t)now.tv_sec + SPARK_KV_DETACHED_POOL_SECONDS,&expired);
