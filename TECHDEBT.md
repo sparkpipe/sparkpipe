@@ -463,6 +463,29 @@ finished ones rewritten to say what is left.
 
 ## KV tiers
 
+- Cached request state outlives 24 hours where nothing runs the retention
+  clock. The clock runs only inside a running model: its snapshot store
+  expires files at open and every 60 s, its page cache every 60 s. Still to
+  do:
+  - a weightd thread that purges every lane's snapshot store every 60 s,
+    whether or not its model runs: residentd registers its store directory
+    with weightd at attach, weightd keeps the list across restarts, and for
+    each store whose lock it can take deletes the files unused for 24 hours
+    (`SparkKvSnapshotScan`'s rule); a store a running model holds keeps its
+    own sweep. Fleet proof: backdate an inactive model's store while another
+    model serves, and see weightd empty it within a minute;
+  - the hub draft servers (`tools/block_draftd.py`) evict a sequence's
+    context, its last 4,096 token ids and drafter keys and values, only to
+    stay under `--context-bytes` and always keep one; evict any context
+    unused for 24 hours;
+  - the batch engine keeps a finished request's tokens and lookup chain in
+    its slot until the next request takes the slot; clear them when the
+    request ends;
+  - the API's prefix index file (`prefix_index.spi`: block hashes and
+    digests, no tokens) has no clock; drop a record when its KV expires;
+  - delete the stores and prefix index files of retired lanes and APIs on
+    the nodes and the hub.
+
 - Left out on purpose (2026-10-04): JIT-KV W3
   (`docs/archive/JIT_KV_RESPONSE.md:47-49`) is partly done. The slot file, the
   lane pager and the header-only `LmCache` are deleted, and every driver
