@@ -1272,7 +1272,7 @@ class Frontend:
             return web.json_response(error_body("control_unavailable", str(error)), status=503)
 
     async def site_root(self, request):
-        raise web.HTTPFound("/site/playground.html")
+        raise web.HTTPFound("/site/fleet.html")
 
     async def list_models(self, request):
         created = int(time.time())

@@ -102,7 +102,7 @@ another model waits while the fleet swaps.
 | Piece | Where | What |
 | --- | --- | --- |
 | Swap controller | `tools/serving/model_swap.py`, config `deployment/hub/model_swap.json`, hub unit `sparkpipe-swap` on 127.0.0.1:8440 | `GET /status`, `POST /activate {"model": id}`, `POST /force`; every call needs the controller token (see Control-plane access) |
-| Chat layer | `tools/serving/chat_frontend.py`, config `deployment/hub/chat_frontend.json`, hub unit `sparkpipe-chat` on 127.0.0.1:8433 | every model's `warm_queue.activation_url` is the controller; `GET /v1/sparkpipe/status` passes through to it; `/` serves the playground |
+| Chat layer | `tools/serving/chat_frontend.py`, config `deployment/hub/chat_frontend.json`, hub unit `sparkpipe-chat` on 127.0.0.1:8433 | every model's `warm_queue.activation_url` is the controller; `GET /v1/sparkpipe/status` passes through to it; `/` redirects to the fleet page |
 | LiteLLM | `config/litellm-config.yaml`, hub unit `sparkpipe-litellm` on 4000 | the three names, and `*` routes to `glm-5.3` |
 
 A swap to model T, in order:
@@ -504,9 +504,12 @@ filter (`tools/serving/open_webui/functions/memory_off.py`, installed with
 `open_webui_functions.py` from `deployment/hub/open_webui_functions.json`) is
 the user's switch to turn memory off for a chat.
 
-The 13 public models carry a public read grant. The three Qwen models carry
-none, so only the admin sees them (admins bypass grants): their license
-keeps them internal, and the owner's own use is internal.
+The 15 public models carry a public read grant. Qwen 3.8 Flash carries none,
+so only the admin sees it (admins bypass grants): its license requires a
+separate agreement with Qwen for any model-as-a-service business, and the
+owner's own use is internal. Qwen 3.8 27B (Apache 2.0) and Qwen 3.8 Max
+(whose license asks for a separate agreement only above US$50 million of
+yearly revenue) are public.
 `BYPASS_MODEL_ACCESS_CONTROL` is off again; a model with no entry or no grant
 stays hidden from users.
 
