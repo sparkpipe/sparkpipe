@@ -172,47 +172,34 @@ stages across the two classes also need M5's pipeline execution.
 TECHDEBT: hardware independence, Mac Studio deployment, incremental
 expansion.
 
-## M9. The provider network
+## M9. Fleet-hours
 
-Exit, with an installation that sparkpipe.ai does not operate:
+Exit: a business rents a whole fleet without our help.
 
-- it registers, joins the tailnet, offers a model at its own price and
-  serves buyer traffic through the sparkpipe.ai router;
-- one buyer's requests for a model run on at least two providers at once;
-- the owner's own traffic takes over within one frame;
-- at least 2% of served tokens are replayed on reference nodes, with exact
-  greedy comparison and logprob comparison for sampled traffic, and a
-  planted quantized provider is caught;
-- payouts settle from signed receipts after the challenge window;
-- the catalog, buyer console and provider dashboard are live on
-  sparkpipe.ai.
+- It opens an account with its Ethereum wallet and accepts the Hourly Terms by signing their text.
+- It pays a USDC invoice through the payment processor, and its hours appear once the payment clears.
+- It reserves hours on a fleet's calendar with a signed message. A two-year customer can take an hourly reservation more than 6 hours ahead, and the hourly customer is told and gets the hour back.
+- During its hours its access tokens reach the fleet, and nobody else's do.
+- `sparkpipe.ai/availability.txt` shows live capacity, regenerated every 30 seconds.
+- Every payment, issue of hours, reservation, displacement, credit and consumption is a line in the hash-chained ledger, whose daily root is published.
+- Downtime credits are issued from the fleet's own records, without a claim.
 
 Work:
 
-- the tailnet: its control server, tagged keys and access rules;
-- the provider agent and registration;
-- an owner-first priority class, with preemption at frame boundaries;
-- network requests that finish within their bound or resume elsewhere;
-- signed completion receipts;
-- the router on LiteLLM: one deployment per offer at the provider's price,
-  routing by price, latency, load and verification record, and prefix
-  affinity;
-- the audit service (sampler, replay scheduler, comparator, challenge
-  state), and reference nodes for each hardware type;
-- bonds and payouts;
-- the site's catalog, buyer console and provider dashboard (its static
-  pages and playground are in `site/`).
+- the account service: signed acceptance, business details, sanctions screening, the business check and the 720-hour limit;
+- invoices, the processor integration and VAT invoices;
+- the ledger and its daily root;
+- the reservation writer, the calendar, displacement and expiry;
+- access tokens scoped to reserved hours, and the gate in front of the fleet;
+- `availability.txt`;
+- automatic credits.
 
 It depends on:
 
-- batch-invariant numerics, so replays compare bit for bit (M2);
-- logprobs (M3);
-- model promotion (M6).
+- the legal review of the terms, which settles the business flow;
+- the 24-hour retention of cached request state in production.
 
-Revenue per provider scales with batched throughput, so M2 matters to this
-milestone as much as the network code does.
-
-TECHDEBT: provider network.
+TECHDEBT: fleet-hours.
 
 ## M10. Speculation at B1 and above
 

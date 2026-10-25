@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SparkPipe Fleet List</title>
+<meta name="description" content="The SparkPipe Fleet List: fleets, rates, available models and their licenses.">
+<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
+<link rel="alternate" hreflang="en" href="https://sparkpipe.ai/fleets.html">
+<link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/fleets-ko.html">
+<link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/fleets.html">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="site.css?v=2ebd53ca">
+<style>
+.policy { padding-block: 48px 64px; display: grid; gap: 28px; }
+.policy h1 { font-size: clamp(36px, 6vw, 64px); }
+.policy h2 { font-size: clamp(22px, 2.6vw, 30px); margin-top: 12px; }
+.policy section { display: grid; gap: 12px; max-width: 92ch; }
+.policy p, .policy li { color: var(--steel); font: 400 16px/1.6 var(--text); max-width: 76ch; }
+.policy ul { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; }
+.policy b { color: var(--ink); font-weight: 650; }
+.policy table { border-collapse: collapse; width: 100%; font: 400 15px/1.5 var(--text); }
+.policy th, .policy td { text-align: left; vertical-align: top; padding: 10px 12px; border-top: 1px solid var(--rule); color: var(--steel); }
+.policy th { color: var(--ink); font-weight: 650; }
+.policy td.num, .policy th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.policy .scroll { overflow-x: auto; }
+.policy .scroll table { min-width: 720px; }
+.policy .notice { max-width: 76ch; border: 1px solid var(--rule); border-left: 3px solid var(--ink); padding: 14px 16px; }
+.policy .notice p { color: var(--ink); }
+.effective { font: 500 12px/1.6 var(--mono); color: var(--faint); }
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html">SparkPipe<span class="tag">fleet list</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#fleets">Fleets</a>
+      <a href="#models">Models</a>
+      <a href="#speculation">Speculation</a>
+      <a href="#estimates">Estimates</a>
+      <a href="terms.html">Terms</a>
+      <a href="index.html">Home</a>
+    </nav>
+    <div class="nav-actions">
+      <div class="lang" role="group" aria-label="Language / 언어"><a href="fleets.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="fleets-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap policy">
+  <section>
+    <h1>Fleet List</h1>
+    <p class="effective">Updated 25 October 2026</p>
+    <p>This page is the Fleet List and the list of available models that the <a href="hourly-terms.html">Hourly Terms</a> (clauses 1.1 and 8.2) and the <a href="agreement.html">2-Year Reserved Fleet Service Agreement</a> (definitions and clause 10.1) refer to. Each fleet's rate is the number of hours one hour on it consumes. The Korean version (<a href="fleets-ko.html" hreflang="ko">fleets-ko.html</a>) has the same content and prevails if they differ.</p>
+  </section>
+
+  <div class="notice"><p><b>The terms are published for review and are not in force.</b> Fleet-hours go on sale on 1 December 2026, and nobody can buy or pay before then.</p></div>
+
+  <section id="fleets">
+    <h2>Fleets</h2>
+    <div class="scroll">
+    <table>
+      <tr><th>Fleet</th><th>Machines</th><th>Location</th><th>State</th><th class="num">Rate</th><th>Models</th></tr>
+      <tr><td><b>Fleet 1</b></td><td>16 NVIDIA DGX Spark (GB10), 128 GB of memory each, joined by a 100 Gb/s RDMA switch and direct pair links</td><td>Seoul</td><td>Serving</td><td class="num">1</td><td>The models below</td></tr>
+      <tr><td><b>Fleet 2</b></td><td>Eight Apple Mac Studio (M5 Ultra, 256 GB each at 1.2 TB/s: 2 TB at 9.6 TB/s in all, 2.2 times Fleet 1's memory bandwidth)</td><td>Seoul</td><td>Under construction</td><td class="num">1</td><td>Listed here when the fleet opens</td></tr>
+      <tr><td><b>Fleet 3</b></td><td>16 NVIDIA DGX Spark (GB10)</td><td>Seoul</td><td>Under construction</td><td class="num">1</td><td>Listed here when the fleet opens</td></tr>
+    </table>
+    </div>
+    <p>Our system publishes live capacity, with each fleet's state and the hours open in each window, at <span class="mono">https://sparkpipe.ai/availability.txt</span>, regenerated at least every 30 seconds.</p>
+  </section>
+
+  <section id="models">
+    <h2>Models on Fleet 1</h2>
+    <p>Every model installed on Fleet 1. An <b>offered</b> model can be chosen for any reservation, and named among the Chosen Models of a two-year agreement. A <b>core</b> model gets ongoing performance work; a <b>qualified</b> model passed the release qualification and serves at the speeds shown.</p>
+    <div class="scroll">
+    <table>
+      <tr><th>Model</th><th>Publisher</th><th>License</th><th class="num">Context window</th><th class="num">Decode, one request</th><th class="num">Prefill, 8K prompt</th><th>Track</th><th>Availability</th></tr>
+      <tr><td><b>Kimi K3</b><br><span class="mono">kimi-k3</span></td><td>Moonshot AI</td><td><a href="https://huggingface.co/moonshotai/Kimi-K3">Kimi K3 License</a></td><td class="num">1M</td><td class="num">16.2 tok/s</td><td class="num">590 tok/s</td><td>Core</td><td>Offered</td></tr>
+      <tr><td><b>GLM 5.3</b><br><span class="mono">glm-5.3</span></td><td>Z.AI</td><td><a href="https://huggingface.co/zai-org/GLM-5.3">GLM-5.3 License</a></td><td class="num">1M</td><td class="num">28.9 tok/s</td><td class="num">1,162 tok/s</td><td>Core</td><td>Offered</td></tr>
+      <tr><td><b>GLM 5.3 Flash</b><br><span class="mono">glm-5.3-flash</span></td><td>Z.AI</td><td><a href="https://huggingface.co/zai-org/GLM-5.3-Flash">MIT</a></td><td class="num">128K</td><td class="num">55.0 tok/s</td><td class="num">876 tok/s</td><td>Core</td><td>Offered</td></tr>
+      <tr><td><b>DeepSeek V4.1 Flash</b><br><span class="mono">deepseek-v4.1-flash</span></td><td>DeepSeek</td><td><a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017">MIT</a></td><td class="num">1M</td><td class="num">42.5 ¹ tok/s</td><td class="num">1,290 ¹ tok/s</td><td>Core</td><td>Offered</td></tr>
+      <tr><td><b>MiMo V2.6 Pro</b><br><span class="mono">mimo-v2.6-pro</span></td><td>Xiaomi</td><td><a href="https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-RL">MIT</a></td><td class="num">32K</td><td class="num">19.0 ² tok/s</td><td class="num">55 ² tok/s</td><td>Qualified</td><td>Offered</td></tr>
+      <tr><td><b>MiMo V2.6 Flash</b><br><span class="mono">mimo-v2.6-flash</span></td><td>Xiaomi</td><td><a href="https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL">MIT</a></td><td class="num">32K</td><td class="num">40.9 ² tok/s</td><td class="num">157 ² tok/s</td><td>Qualified</td><td>Offered</td></tr>
+      <tr><td><b>Gemma 4 31B</b><br><span class="mono">gemma-4-31b</span></td><td>Google</td><td><a href="https://huggingface.co/google/gemma-4-31B-it">Apache 2.0</a></td><td class="num">32K</td><td class="num">34.4 tok/s</td><td class="num">834 tok/s</td><td>Qualified</td><td>Offered, text only</td></tr>
+      <tr><td><b>Gemma 4 26B A4B</b><br><span class="mono">gemma-4-26b-a4b</span></td><td>Google</td><td><a href="https://huggingface.co/google/gemma-4-26B-A4B-it">Apache 2.0</a></td><td class="num">256K</td><td class="num">89.5 tok/s</td><td class="num">1,848 tok/s</td><td>Qualified</td><td>Offered, text only</td></tr>
+      <tr><td><b>Ling 3.0 Flash</b><br><span class="mono">ling-3.0-flash</span></td><td>inclusionAI</td><td><a href="https://huggingface.co/inclusionAI/Ling-3.0-flash">MIT</a></td><td class="num">256K</td><td class="num">80.4 tok/s</td><td class="num">1,514 tok/s</td><td>Qualified</td><td>Offered</td></tr>
+      <tr><td><b>Ling 3.0 Flash Finance</b><br><span class="mono">ling-3.0-flash-fin</span></td><td>inclusionAI</td><td><a href="https://huggingface.co/inclusionAI/Ling-3.0-flash-Fin">MIT</a></td><td class="num">256K</td><td class="num">79.2 tok/s</td><td class="num">1,550 tok/s</td><td>Qualified</td><td>Offered</td></tr>
+      <tr><td><b>Laguna S 2.1</b><br><span class="mono">laguna-s-2.1</span></td><td>Poolside</td><td><a href="https://huggingface.co/poolside/Laguna-S-2.1">OpenMDW 1.1</a></td><td class="num">32K</td><td class="num">51.0 tok/s</td><td class="num">773 tok/s</td><td>Qualified</td><td>Offered</td></tr>
+      <tr><td><b>Muse Glimmer 30B</b><br><span class="mono">muse-glimmer-30b</span></td><td>meta-models</td><td><a href="https://huggingface.co/meta-models/Muse-Glimmer-30B">Apache 2.0</a></td><td class="num">128K</td><td class="num">37.9 tok/s</td><td class="num">1,186 tok/s</td><td>Qualified</td><td>Offered</td></tr>
+      <tr><td><b>Hunyuan Hy4 Preview</b><br><span class="mono">hy4-preview</span></td><td>Tencent</td><td><a href="https://huggingface.co/tencent/Hy4-preview-FP8">Apache 2.0</a></td><td class="num">32K</td><td class="num">14.2 tok/s</td><td class="num">53 tok/s</td><td>Qualified</td><td>Offered</td></tr>
+      <tr><td><b>Qwen 3.8 27B</b><br><span class="mono">qwen3.8-27b</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-27B">Apache 2.0</a></td><td class="num">256K</td><td class="num">57.4 tok/s</td><td class="num">1,852 tok/s</td><td>Qualified</td><td>Offered</td></tr>
+      <tr><td><b>Qwen 3.8 Flash</b><br><span class="mono">qwen3.8-flash</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-Flash-Next">Qwen Community License 1.0</a></td><td class="num">256K</td><td class="num">45.0 tok/s</td><td class="num">358 tok/s</td><td>Qualified</td><td>Not offered</td></tr>
+      <tr><td><b>Qwen 3.8 Max</b><br><span class="mono">qwen3.8-max</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B">Qwen3.8-Max License</a></td><td class="num">32K</td><td class="num">10.4 tok/s</td><td class="num">35 tok/s</td><td>Qualified</td><td>Offered</td></tr>
+    </table>
+    </div>
+    <p>Context windows are those served. Decode is one request without speculation, measured on 2026-10-18 with prompts of 7 to 8K tokens. Methods and receipts: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>.</p>
+    <p>¹ DeepSeek V4.1 Flash was measured on 2026-10-24 with a prompt of 1,047,883 tokens: decode one request after the prompt, and the prompt's average prefill rate. ² Measured while another workload kept 16 CPU cores busy on every node, so these are lower bounds.</p>
+    <p>Qwen 3.8 Flash is not offered: its license requires a separate agreement with Qwen for any model-as-a-service business, so we use it only inside our company.</p>
+  </section>
+
+  <section id="speculation">
+    <h2>Speculation (measured)</h2>
+    <p>Speculation drafts tokens from the request's own context and from a draft model, and the model checks them in one pass, so the output is exactly the model's own. Measured on Fleet 1, one request unless noted:</p>
+    <div class="scroll">
+    <table>
+      <tr><th>Model</th><th>Workload</th><th class="num">Plain decode</th><th class="num">With speculation</th></tr>
+      <tr><td><b>Kimi K3</b></td><td>Whole-file code rewrite</td><td class="num">15.3 tok/s</td><td class="num">126.4 tok/s (best 140.6)</td></tr>
+      <tr><td><b>Kimi K3</b></td><td>Search-and-replace edit</td><td class="num">15.0 tok/s</td><td class="num">28.0 tok/s</td></tr>
+      <tr><td><b>Kimi K3</b></td><td>Short edits, two requests at once</td><td class="num">–</td><td class="num">1.3 to 1.4 times plain</td></tr>
+      <tr><td><b>GLM 5.3</b></td><td>Whole-file code rewrite</td><td class="num">27.6 tok/s</td><td class="num">124.2 tok/s (232.9 with uncapped frames)</td></tr>
+      <tr><td><b>DeepSeek V4.1 Flash</b></td><td>Code edits</td><td class="num">–</td><td class="num">2.0 times plain</td></tr>
+      <tr><td><b>All</b></td><td>New prose</td><td class="num">–</td><td class="num">1.0 to 1.2 times plain</td></tr>
+    </table>
+    </div>
+    <p>Receipts: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>, 2026-10-15 to 2026-10-24.</p>
+  </section>
+
+  <section id="estimates">
+    <h2>Near-term speeds for models over 1 TB (ESTIMATED)</h2>
+    <p><b>ESTIMATED</b> values are projections from our measurements and the hardware's published figures, not measurements. Each one is replaced by a measurement when the hardware or software behind it is running.</p>
+    <div class="scroll">
+    <table>
+      <tr><th>Model</th><th class="num">Size</th><th class="num">Decode, Fleet 1</th><th class="num">Decode, Fleet 2</th><th class="num">Fleet 2 with speculation</th><th class="num">128K prompt, 4 accelerator boxes</th><th class="num">8 boxes</th></tr>
+      <tr><td><b>Kimi K3</b></td><td class="num">1.56 TB</td><td class="num">22 tok/s</td><td class="num">49 tok/s</td><td class="num">120 tok/s</td><td class="num">31 s</td><td class="num">16 s</td></tr>
+      <tr><td><b>Qwen 3.8 Max</b>, 4-bit build</td><td class="num">1.37–1.48 TB</td><td class="num">28 tok/s</td><td class="num">61 tok/s</td><td class="num">150 tok/s</td><td class="num">28 s</td><td class="num">14 s</td></tr>
+      <tr><td><b>K-EXAONE 2.0</b>, LG (next)</td><td class="num">1.50 TB</td><td class="num">41 tok/s</td><td class="num">91 tok/s</td><td class="num">230 tok/s</td><td class="num">30 s</td><td class="num">15 s</td></tr>
+      <tr><td><b>A.X K1</b>, SKT (next)</td><td class="num">1.04 TB</td><td class="num">46 tok/s</td><td class="num">100 tok/s</td><td class="num">250 tok/s</td><td class="num">57 s</td><td class="num">28 s</td></tr>
+      <tr><td><b>Nemotron 3 Ultra</b>, NVIDIA (next)</td><td class="num">1.12 TB</td><td class="num">28 tok/s</td><td class="num">61 tok/s</td><td class="num">150 tok/s</td><td class="num">22 s</td><td class="num">11 s</td></tr>
+      <tr><td><b>Muse Spark Open</b>, meta-models (next)</td><td class="num">1.64 TB</td><td class="num">36 tok/s</td><td class="num">80 tok/s</td><td class="num">200 tok/s</td><td class="num">33 s</td><td class="num">16 s</td></tr>
+    </table>
+    </div>
+    <p>A 1M-token Kimi K3 prompt from cold is estimated at about 17 minutes with four accelerator boxes and 9 minutes with eight. Fleet 1 and Fleet 2 together hold 4 TB, and Fleet 3 adds 2 TB more, so models above 2 TB run across two fleets: Qwen 3.8 Max at its published FP8 precision (2.5 TB) is estimated at 30 tok/s across Fleets 1 and 2, and Inkling at its published BF16 precision (1.9 TB) fits the same way.</p>
+    <p>How the estimates are made:</p>
+    <ul>
+      <li><b>Decode</b> is limited by how fast each node reads its share of the weights a token uses. Fleet 1 is taken at 80% of that limit, Fleet 2 at 70% of its limit, with the model split over all eight Mac Studios, which are joined by 50 Gb/s links plus 10 GbE.</li>
+      <li><b>Speculation</b> on agent coding turns is taken as 2.5 times plain decode, between the 1.4 to 1.6 times measured on short edits and the 8.3 times measured on whole-file rewrites.</li>
+      <li><b>Prefill accelerators</b> are boxes of four RTX 5080 cards that reduce over PCIe inside the box and reach the fleets at 100 Gb/s each over a 400 Gb/s switch. Each long prompt streams the model's weights through the boxes once (50 GB/s with four boxes, 100 GB/s with eight), and the cards compute at 40% of their dense peak (about 450 TFLOPS each in FP8, 225 in BF16), including the attention cost of the prompt. Prompts shorter than about 20,000 tokens stay on the fleet's own prefill.</li>
+      <li><b>Qwen 3.8 Max</b> at its published FP8 precision (2.5 TB) is larger than one fleet's 2 TB. Its row assumes one of its 4-bit builds (AMD MXFP4, Red Hat or RadixArk NVFP4), which fit one fleet and pass our accuracy A/B.</li>
+    </ul>
+  </section>
+
+  <section id="next-models">
+    <h2>Models coming next</h2>
+    <p>Large open models from Korean and other non-Chinese publishers, under licenses that allow serving them to businesses. We qualify each one before it is offered.</p>
+    <div class="scroll">
+    <table>
+      <tr><th>Model</th><th>Publisher</th><th class="num">Parameters</th><th class="num">Size</th><th>License</th><th>Note</th></tr>
+      <tr><td><b>K-EXAONE 2.0</b></td><td>LG AI Research, Korea</td><td class="num">750B, 37B active</td><td class="num">1.50 TB</td><td><a href="https://huggingface.co/LGAI-EXAONE/K-EXAONE-2.0-750B-A37B">Apache 2.0</a></td><td>Korea's largest open model, from the national foundation-model project</td></tr>
+      <tr><td><b>A.X K1</b></td><td>SK Telecom, Korea</td><td class="num">519B, about 33B active</td><td class="num">1.04 TB</td><td><a href="https://huggingface.co/skt/A.X-K1">Apache 2.0</a></td><td>From Korea's sovereign AI foundation-model project; 128K context</td></tr>
+      <tr><td><b>Solar Open 2</b></td><td>Upstage, Korea</td><td class="num">250B, 15B active</td><td class="num">0.50 TB</td><td><a href="https://huggingface.co/upstage/Solar-Open2-250B">Upstage Solar License</a> (Apache 2.0 with a naming rule for redistributed models)</td><td>Built for agents; 1M-token context</td></tr>
+      <tr><td><b>Nemotron 3 Ultra</b></td><td>NVIDIA, US</td><td class="num">550B, 55B active</td><td class="num">1.12 TB</td><td><a href="https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16">OpenMDW 1.1</a></td><td>NVIDIA's largest open model</td></tr>
+      <tr><td><b>Mistral Large 3</b></td><td>Mistral AI, France</td><td class="num">675B, 41B active</td><td class="num">0.68 TB</td><td><a href="https://huggingface.co/mistralai/Mistral-Large-3-675B-Instruct-2512">Apache 2.0</a></td><td>European, general purpose</td></tr>
+      <tr><td><b>Inkling</b></td><td>Thinking Machines, US</td><td class="num">975B, 41B active</td><td class="num">1.91 TB</td><td><a href="https://huggingface.co/thinkingmachines/Inkling">Apache 2.0</a></td><td>At its published BF16 precision it runs across two fleets (4 TB); an FP8 build would fit one</td></tr>
+      <tr><td><b>Muse Spark Open</b></td><td>meta-models</td><td class="num">816B, 42B active</td><td class="num">1.64 TB</td><td>Muse model license</td><td>Access granted on request</td></tr>
+    </table>
+    </div>
+  </section>
+
+  <section id="licenses">
+    <h2>Model licenses</h2>
+    <p>Each model is the publisher's open-weight software under its own license, which the customer must follow (Hourly Terms 8.1, agreement 10.3). The conditions of the offered models:</p>
+    <ul>
+      <li><b>Kimi K3:</b> a model-as-a-service business whose group revenue exceeds US$20 million in any 12 months needs a separate agreement with Moonshot AI, and a commercial product with more than 100 million monthly active users or US$20 million in monthly revenue must display "Kimi K3" in its interface.</li>
+      <li><b>GLM 5.3:</b> a model-as-a-service business whose group revenue exceeds US$10 billion in any 12 months must pass Z.AI's security review before commercial use.</li>
+      <li><b>Qwen 3.8 Max:</b> a model-as-a-service or AI work-assistant business whose group revenue exceeds US$50 million in any 12 months needs a separate license from Qwen, and a commercial product with more than 100 million monthly active users or US$20 million in monthly revenue must display the model's name.</li>
+      <li><b>MIT</b> (GLM 5.3 Flash, DeepSeek V4.1 Flash, MiMo V2.6, Ling 3.0) and <b>Apache 2.0</b> (Gemma 4, Muse Glimmer 30B, Hunyuan Hy4 Preview, Qwen 3.8 27B): no field-of-use or revenue condition.</li>
+      <li><b>OpenMDW 1.1</b> (Laguna S 2.1): no condition on use or outputs; the license ends for anyone who sues claiming the model infringes a patent or copyright.</li>
+    </ul>
+    <p>The Kimi K3, GLM-5.3 and Qwen 3.8 Max licenses also require every use to comply with applicable law. Every license requires the publisher's notices to stay with any copy of the weights; customers use the models on our fleets and receive no copy.</p>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span>© 2026 HYOR AI Tech Ltd</span>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Fleet-hours</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+  </div>
+</footer>
+</body>
+</html>

@@ -162,24 +162,24 @@ At B8, K3's model drafts change nothing measurable (62.5-64.8 against
 
 ## All served models
 
-| Served name | Context | Decode, B1 | Of ideal floor | Prefill, 7-8K prompt | COMPSEC-17 |
+| Served name | Swap in | Decode, B1 | Of ideal floor | Prefill, 7-8K prompt | COMPSEC-17 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `glm-5.3` | 256K | 28.9 tok/s | 27% | 1,162 tok/s | 15 |
-| `glm-5.3-flash` | 128K | 55.0 tok/s | 23% | 876 tok/s | 13 |
-| `kimi-k3` | 720K | 16.2 tok/s | 51% | 590 tok/s | 17 |
-| `deepseek-v4.1-flash` | 16K | 29.5 tok/s | – | 182 tok/s | 16 |
-| `mimo-v2.6-pro` | 32K | 19.0 tok/s † | – | 55 tok/s † | 17 |
-| `mimo-v2.6-flash` | 32K | 40.9 tok/s † | – | 157 tok/s † | 16 |
-| `hy4-preview` | 32K | 14.2 tok/s | 16% | 53 tok/s | 17 |
-| `gemma-4-31b` | 32K | 34.4 tok/s | 48% | 834 tok/s | 16 |
-| `gemma-4-26b-a4b` | 32K | 89.5 tok/s | 16% | 1,848 tok/s | 16 |
-| `ling-3.0-flash` | 32K | 80.4 tok/s | 19% | 1,514 tok/s | 13 |
-| `ling-3.0-flash-fin` | 32K | 79.2 tok/s | 18% | 1,550 tok/s | 13 |
-| `laguna-s-2.1` | 32K | 51.0 tok/s | – | 773 tok/s | 13 |
-| `muse-glimmer-30b` | 32K | 37.9 tok/s | 51% | 1,186 tok/s | 17 |
-| `qwen3.8-max` | 32K | 10.4 tok/s | – | 35 tok/s | 5 |
-| `qwen3.8-27b` | 256K | 57.4 tok/s | 35% | 1,852 tok/s | 14 |
-| `qwen3.8-flash` | 32K | 45.0 tok/s | – | 358 tok/s | 15 |
+| `glm-5.3` | 38 s | 28.9 tok/s | 27% | 1,162 tok/s | 15 |
+| `glm-5.3-flash` | 24 s | 55.0 tok/s | 23% | 876 tok/s | 13 |
+| `kimi-k3` | 46 s | 16.2 tok/s | 51% | 590 tok/s | 17 |
+| `deepseek-v4.1-flash` | 24 s | 29.5 tok/s | – | 182 tok/s | 16 |
+| `mimo-v2.6-pro` | 24 s | 19.0 tok/s † | – | 55 tok/s † | 17 |
+| `mimo-v2.6-flash` | 19 s | 40.9 tok/s † | – | 157 tok/s † | 16 |
+| `hy4-preview` | 28 s | 14.2 tok/s | 16% | 53 tok/s | 17 |
+| `gemma-4-31b` | 17 s | 34.4 tok/s | 48% | 834 tok/s | 16 |
+| `gemma-4-26b-a4b` | 16 s | 89.5 tok/s | 16% | 1,848 tok/s | 16 |
+| `ling-3.0-flash` | 20 s | 80.4 tok/s | 19% | 1,514 tok/s | 13 |
+| `ling-3.0-flash-fin` | 20 s | 79.2 tok/s | 18% | 1,550 tok/s | 13 |
+| `laguna-s-2.1` | 20 s | 51.0 tok/s | – | 773 tok/s | 13 |
+| `muse-glimmer-30b` | 16 s | 37.9 tok/s | 51% | 1,186 tok/s | 17 |
+| `qwen3.8-max` | 35 s | 10.4 tok/s | – | 35 tok/s | 5 |
+| `qwen3.8-27b` | 19 s | 57.4 tok/s | 35% | 1,852 tok/s | 14 |
+| `qwen3.8-flash` | 20 s | 45.0 tok/s | – | 358 tok/s | 15 |
 
 - Non-core rows are the release `91c0e6be3` qualification on a quiet fleet
   ([`qualification/releases/91c0e6be3/`](qualification/releases/91c0e6be3/)),
@@ -188,11 +188,14 @@ At B8, K3's model drafts change nothing measurable (62.5-64.8 against
 - † MiMo was measured only under a CPU tenant that kept 16 cores busy per
   node ([`qualification/releases/1d89e0377/`](qualification/releases/1d89e0377/)),
   so its numbers are lower bounds; that load cut K3 from 16.2 to 10.0 tok/s.
+- Swap in is the median time from a swap request until the model serves, over
+  the swaps the controller logged on 2026-10-13 and 2026-10-14, including
+  stopping the previous model. The slowest single swap was K3's, at 79 s.
 - COMPSEC-17 is the release qualification's 17-question security set. Qwen
   3.8 Max always thinks and ran with a 2,048-token budget.
 - No floor is shown where the split of active parameters between formats is
   not verified (DeepSeek V4.1 Flash, the Qwen 3.8 MoE models) or not
-  computed (MiMo, Laguna). The Qwen models are internal only, by their
+  computed (MiMo, Laguna). Qwen 3.8 Flash is internal only, by its
   license.
 
 Ideal floors, from the active parameters each rank reads per token (K3:
