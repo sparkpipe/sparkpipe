@@ -960,6 +960,13 @@ Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`
 - **`availability.txt`.** Generated from the calendar and fleet state every 30 seconds.
 - **Credits.** Automatic credits for downtime over 15 minutes and for performance below the threshold, from the fleet's own records.
 - **Cached request state.** The terms promise deletion within 24 hours of last use from 1 December 2026; `cache/kv-retention` holds the code, which needs a fleet KV gate and a node release.
+- **Won payments.** Electronic tax invoices (세금계산서) issued for each won order, matching of incoming bank transfers to orders, and won amounts in the ledger beside the hours they buy.
+- **ESTIMATED values on sparkpipe.ai.** The site shows projections marked ESTIMATED (the home page Speed and Roadmap sections, `fleets.html#estimates`). Each is replaced by a fleet measurement, with its receipt in `PERFORMANCE_STATUS.md`:
+  - prefill accelerators: four RTX 5080 cards prefilling a 128K-token prompt for Kimi K3 (estimate 40 s), K-EXAONE 2.0 (13 s), A.X K1 (12 s), Nemotron 3 Ultra (20 s) and Muse Spark Open (15 s). The estimate assumes 40% of dense FP8 peak and weights fed fast enough to stay compute-bound; the feed path (the cards' host links and the fleet's network) is not designed yet;
+  - Fleet 1 decode at 80% of each model's memory floor: Kimi K3 22 tok/s (16.2 today), K-EXAONE 2.0 41, A.X K1 46, Nemotron 3 Ultra 28, Muse Spark Open 36;
+  - Fleet 2 (eight M5 Ultra Mac Studios) decode at 70% of its floor: Kimi K3 49 tok/s, K-EXAONE 2.0 91, A.X K1 100, Nemotron 3 Ultra 61, Muse Spark Open 80. Needs the Metal backend and the Thunderbolt 5 link class;
+  - speculation at 2.5 times plain decode on agent coding turns (1.4 to 1.6 times measured on short edits today);
+  - each candidate model also needs a driver, qualification and a license check: K-EXAONE 2.0, A.X K1, Solar Open 2, Nemotron 3 Ultra, Mistral Large 3, Inkling (an FP8 build that passes the accuracy A/B) and Muse Spark Open (gated license under review).
 - **LiteLLM door limits.** LiteLLM consumes a request's `priority` for its own scheduler and does not forward it, so the batch engine's priorities do not cross the door. `tools/generate_litellm_config.py` emits `num_retries: 1`, which can duplicate a generation; the hub's hand-written `config/litellm-config.yaml` uses 0. The LAN door on port 4000 has no accounts, keys, quotas or spend logs.
 
 ## Production qualification

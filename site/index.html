@@ -33,6 +33,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
   <div class="wrap">
     <a class="brand" href="index.html"><svg width="26" height="26"><use href="#logo"/></svg>SparkPipe<span class="tag">fleet-hours</span></a>
     <nav class="nav-links" aria-label="Sections">
+      <a href="#korea">Korea</a>
       <a href="#how">How it works</a>
       <a href="#prices">Prices</a>
       <a href="#fleets">Fleets and models</a>
@@ -49,11 +50,11 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
 
 <main>
 <section class="wrap hero">
-  <p class="label hero-kicker">Fleet-hours · sales open <span data-start>1 December 2026</span></p>
-  <h1>Rent a whole AI fleet by the hour.</h1>
+  <p class="label hero-kicker">Fleet-hours in Seoul · sales open <span data-start>1 December 2026</span></p>
+  <h1>Your own AI fleet in Korea, by the hour.</h1>
   <div class="hero-grid">
     <div class="hero-copy">
-      <p class="lead">SparkPipe serves open frontier models on fleets of sixteen NVIDIA DGX Spark computers in Seoul. Reserve a fleet and, for those hours, it serves only you: the model you choose, its long-context cache, and speculation that multiplies the speed of code edits.</p>
+      <p class="lead">Rent a whole SparkPipe fleet and, for those hours, it serves only you. It runs open models over a terabyte, too large for most GPU servers: Kimi K3 today, and LG's K-EXAONE 2.0 and SKT's A.X K1 next, with million-token context and speculation. Your data stays in Korea, there is no queue of other customers' requests, and the price is per hour, not per token.</p>
       <div class="actions">
         <a class="btn solid" href="#prices">Prices and how to buy</a>
         <a class="btn" href="terms.html">Read the terms</a>
@@ -71,14 +72,86 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
     </figure>
   </div>
   <div class="specs">
-    <div><strong data-price="hourly">$20</strong><span>per fleet-hour plus VAT, prepaid, no commitment</span></div>
-    <div><strong data-price="committed">$15</strong><span>per fleet-hour plus VAT, for every hour of a two-year term</span></div>
+    <div><strong data-krw="hourly">₩29,000</strong><span><span data-price="hourly">$20</span> per fleet-hour plus VAT, prepaid, no commitment</span></div>
+    <div><strong data-krw="committed">₩22,000</strong><span><span data-price="committed">$15</span> per fleet-hour plus VAT, for every hour of a two-year term</span></div>
     <div><strong><span data-cap="hourly">168</span> / <span data-cap="verified">720</span></strong><span>hours you may hold on hourly terms, before and after a business check</span></div>
     <div><strong>15 models</strong><span>offered, among them Kimi K3, GLM 5.3 and DeepSeek V4.1 Flash, each under its publisher's open license</span></div>
   </div>
 </section>
 
 <div class="wrap">
+<section id="korea" class="sec">
+  <div class="sec-rail">
+    <p class="label">Korea</p>
+    <p class="label">Data stays here</p>
+  </div>
+  <div class="sec-body">
+    <h2>Built for Korean companies.</h2>
+    <div class="defs">
+      <div><p class="label">Data stays in Korea</p><p>The fleets and our servers are in Seoul, and your requests go to no foreign AI service. From 1 December 2026, cached request state is deleted within 24 hours of its last use.</p></div>
+      <div><p class="label">A Korean company</p><p>You contract with HYOR AI Tech Ltd., a Korean company, under Korean law. Both contracts are in Korean and English, and the Korean text prevails.</p></div>
+      <div><p class="label">Pay in won</p><p>Korean businesses pay by bank transfer against our electronic tax invoice (세금계산서), with 10% VAT. Customers abroad pay in USDC or by USD wire.</p></div>
+      <div><p class="label">Korean models</p><p>LG's K-EXAONE 2.0 and SKT's A.X K1, both under Apache 2.0, and Upstage's Solar Open 2 are next on the Fleet List, beside Kimi K3, GLM 5.3 and the other open models.</p></div>
+      <div><p class="label">Dedicated, not shared</p><p>During your hours the whole fleet serves only your requests. Nobody else's traffic waits in front of yours, so answers start as soon as the fleet is free.</p></div>
+      <div><p class="label">By the hour</p><p>You pay for the fleet's time, not for tokens: long prompts, million-token contexts and agents that re-read their history cost nothing extra.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="compare" class="sec">
+  <div class="sec-rail">
+    <p class="label">Compare</p>
+    <p class="label">Hardware by the hour</p>
+  </div>
+  <div class="sec-body">
+    <h2>What an hour of comparable hardware costs.</h2>
+    <p class="prose">A fleet-hour rents a machine, so it compares with renting hardware, not with per-token APIs.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Option</th><th>What you get</th><th>Per hour</th></tr></thead>
+      <tbody>
+        <tr><td class="model">SparkPipe fleet-hour</td><td>16 DGX Sparks run as one machine, Kimi K3 loaded with a million-token context, speculation, operated for you</td><td class="figure"><b data-price="hourly">$20</b></td></tr>
+        <tr><td class="model">16 rented DGX Sparks</td><td>The same boxes, without the engine that runs one model across all sixteen</td><td class="figure">about $10–12</td></tr>
+        <tr><td class="model">One 8× B300 GPU server</td><td>2.3 TB of GPU memory: holds Kimi K3 at full precision and serves many requests at once</td><td class="figure">about $64–90</td></tr>
+        <tr><td class="model">One 8× H200 GPU server</td><td>1.1 TB of GPU memory: too small for Kimi K3 at full precision</td><td class="figure">about $38</td></tr>
+      </tbody>
+    </table></div>
+    <p class="caption">Public rental listings checked in October 2026: hosted DGX Sparks at $0.60–0.75 per hour (<a href="https://www.spheron.network/blog/dgx-spark-vs-renting-a-cloud-gpu-the-real-break-even-hours-2/">Spheron</a>), B300 at $8.00–11.19 per GPU-hour (<a href="https://computeprices.com/providers/latitude/gpus/hgx-b300">Latitude.sh</a>, <a href="https://computeprices.com/providers/digitalocean/gpus/hgx-b300">DigitalOcean</a>), H200 at $4.80 per GPU-hour (Spheron). Prices vary by provider and change often.</p>
+  </div>
+</section>
+
+<section id="speed" class="sec">
+  <div class="sec-rail">
+    <p class="label">Speed</p>
+    <p class="label">Today and next</p>
+  </div>
+  <div class="sec-body">
+    <h2>Fast where agents need it, faster soon.</h2>
+    <div class="facts">
+      <div><strong class="mono">126 tok/s</strong><p>Kimi K3 rewriting whole files with speculation, measured; 15 tok/s without it. Search-and-replace edits run at 28 tok/s.</p></div>
+      <div><strong class="mono">0.3–5 s</strong><p>to the first token of a follow-up turn whose conversation is cached, measured on Kimi K3 up to 137,700 tokens.</p></div>
+      <div><strong class="mono">40 s</strong><p><b>ESTIMATED</b>: a 128K-token Kimi K3 prompt from cold with the planned prefill accelerators, from 299 s today.</p></div>
+    </div>
+    <p class="prose"><b>ESTIMATED</b> for Kimi K3 on Fleet 2, eight M5 Ultra Mac Studios: 49 tok/s for one request without speculation, and about 120 tok/s with it on agent coding turns. LG's K-EXAONE 2.0 is estimated at 91 and about 230 tok/s. Estimates are projections from our measurements and published hardware figures; the <a href="fleets.html#estimates">Fleet List</a> shows how each is made, and each is replaced by a measurement once the hardware runs.</p>
+  </div>
+</section>
+
+<section id="roadmap" class="sec">
+  <div class="sec-rail">
+    <p class="label">Roadmap</p>
+    <p class="label">Next</p>
+  </div>
+  <div class="sec-body">
+    <h2>What comes next.</h2>
+    <div class="check-list">
+      <div><b>Prefill accelerators</b><span>Four NVIDIA RTX 5080 cards compute long prompts. ESTIMATED: a 128K-token Kimi K3 prompt in about 40 s instead of 299 s.</span></div>
+      <div><b>Fleet 2</b><span>Eight M5 Ultra Mac Studios with 2.2 times Fleet 1's memory bandwidth, for faster decoding. ESTIMATED: Kimi K3 at 49 tok/s without speculation.</span></div>
+      <div><b>Better speculation</b><span>Tree drafts from several drafters at once. ESTIMATED: 2.5 times plain decode on agent coding turns.</span></div>
+      <div><b>More large models</b><span>K-EXAONE 2.0, A.X K1, Solar Open 2, Nemotron 3 Ultra and Mistral Large 3.</span></div>
+      <div><b>Fleet 3</b><span>Sixteen more DGX Sparks.</span></div>
+    </div>
+  </div>
+</section>
+
 <section id="how" class="sec">
   <div class="sec-rail">
     <p class="label">How it works</p>
@@ -88,11 +161,11 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
     <h2>Account, hours, reservation, use.</h2>
     <ol class="steps">
       <li><h3>Open an account</h3><p>Give your company's details and connect an Ethereum wallet: its address identifies the account. Accept the Hourly Terms by signing their text with the wallet. Every business is screened against sanctions lists.</p></li>
-      <li><h3>Buy hours</h3><p>Pay in advance, in USDC, through an invoice from our payment processor. Korean VAT of 10% is added. Your hours are issued once the payment has cleared.</p></li>
+      <li><h3>Buy hours</h3><p>Pay in advance: Korean businesses in won, by bank transfer against our electronic tax invoice; customers abroad in USDC, through an invoice from our payment processor. Korean VAT of 10% is added. Your hours are issued once the payment has cleared.</p></li>
       <li><h3>Reserve</h3><p>Choose a fleet, a model and the hours on the fleet's calendar, and sign; on hourly terms you reserve up to 7 days ahead. A confirmed reservation is final and is taken from your balance as the hour passes.</p></li>
       <li><h3>Use</h3><p>During your hours the whole fleet serves only your requests, through the SparkPipe API, which follows the OpenAI chat format. You issue the access tokens, so you decide who uses your hours.</p></li>
     </ol>
-    <p class="caption">Payments go to HYOR AI Tech Ltd. through the payment processor, which we will name on this site before we accept any payment. Our system has no feature for passing hours between accounts.</p>
+    <p class="caption">Won payments go straight to HYOR AI Tech Ltd.'s Korean bank account. USDC payments go through a payment processor, which we will name on this site before we accept any. Our system has no feature for passing hours between accounts.</p>
   </div>
 </section>
 
@@ -107,12 +180,12 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
     <div class="table-wrap"><table class="cmp">
       <thead><tr><th scope="col"></th><th scope="col">Hourly</th><th scope="col">Two years</th></tr></thead>
       <tbody>
-        <tr><th scope="row">Price</th><td><span data-price="hourly">$20</span> per fleet-hour plus VAT</td><td><span data-price="committed">$15</span> per fleet-hour plus VAT, fixed for the term</td></tr>
+        <tr><th scope="row">Price</th><td><span data-krw="hourly">₩29,000</span> or <span data-price="hourly">$20</span> per fleet-hour plus VAT</td><td><span data-krw="committed">₩22,000</span> or <span data-price="committed">$15</span> per fleet-hour plus VAT, fixed for the term</td></tr>
         <tr><th scope="row">Commitment</th><td>None</td><td>Every hour of two years from signing: 17,520 hours, or 17,544 when the term contains 29 February</td></tr>
         <tr><th scope="row">Models</th><td>Any offered model on the Fleet List, chosen for each reservation</td><td>The models you choose in the agreement stay available for the whole term; the others while they are listed</td></tr>
         <tr><th scope="row">Business check</th><td>Not needed</td><td>Required before signing</td></tr>
         <tr><th scope="row">Hours held</th><td>Up to <span data-cap="hourly">168</span> at a time, or <span data-cap="verified">720</span> after a business check; each lasts 12 months</td><td>Each month's paid hours, reserved when you choose within that month: 12 in each 12-hour window a day until you have prepaid the whole term</td></tr>
-        <tr><th scope="row">Payment</th><td>USDC invoice, before use</td><td>USDC invoice, or a USD wire from your own account abroad, which is zero-rated for VAT. Nothing is due in the first 30 days; you pay any amounts up to three deadlines, on days 30, 60 and 90</td></tr>
+        <tr><th scope="row">Payment</th><td>Before use: a won bank transfer against our electronic tax invoice (세금계산서) for Korean businesses, or a USDC invoice</td><td>A won bank transfer against our electronic tax invoice, a USD wire from your own account abroad (zero-rated for VAT), or a USDC invoice. Nothing is due in the first 30 days; you pay any amounts up to three deadlines, on days 30, 60 and 90</td></tr>
         <tr><th scope="row">Reservations</th><td>Final. A two-year customer may take your reserved hour until 6 hours before it starts; the hour goes back to your balance</td><td>Final, and never taken by anyone</td></tr>
         <tr><th scope="row">Downtime</th><td colspan="2">A reserved hour with more than 15 minutes of downtime comes back in full, automatically, from our own records</td></tr>
         <tr><th scope="row">Refunds</th><td>None, unless we stop hourly service or close your account through no fault of yours</td><td>None, except paid hours not yet used if the agreement ends early (clause 11.3). If no payment is made by day 30, it ends with nothing owed</td></tr>
@@ -235,6 +308,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
   var parts = start.split("-");
   var when = Number(parts[2]) + " " + months[Number(parts[1]) - 1] + " " + parts[0];
   document.querySelectorAll("[data-price]").forEach(function (el) { el.textContent = usd(el.dataset.price === "hourly" ? P.hourlyPrice : P.committedPrice); });
+  document.querySelectorAll("[data-krw]").forEach(function (el) { el.textContent = "₩" + (el.dataset.krw === "hourly" ? P.hourlyPriceKRW : P.committedPriceKRW).toLocaleString("en-US"); });
   document.querySelectorAll("[data-cap]").forEach(function (el) { el.textContent = (el.dataset.cap === "hourly" ? P.hourlyMaxHours : P.verifiedMaxHours).toLocaleString("en-US"); });
   document.querySelectorAll("[data-start]").forEach(function (el) { el.textContent = when; });
 })();

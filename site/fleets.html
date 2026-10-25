@@ -35,6 +35,8 @@
     <nav class="nav-links" aria-label="Sections">
       <a href="#fleets">Fleets</a>
       <a href="#models">Models</a>
+      <a href="#speculation">Speculation</a>
+      <a href="#estimates">Estimates</a>
       <a href="#limits">Limits</a>
       <a href="terms.html">Terms</a>
       <a href="index.html">Home</a>
@@ -57,10 +59,11 @@
     <table>
       <tr><th>Fleet</th><th>Machines</th><th>Location</th><th>State</th><th class="num">Rate</th><th>Models</th></tr>
       <tr><td><b>Fleet 1</b></td><td>16 NVIDIA DGX Spark (GB10), 128 GB of memory each, joined by a 100 Gb/s RDMA switch and direct pair links</td><td>Seoul</td><td>Serving</td><td class="num">1</td><td>The models below</td></tr>
-      <tr><td><b>Fleet 2</b></td><td>Apple Mac Studio (M5 Ultra)</td><td>Seoul</td><td>Under construction</td><td class="num">1</td><td>Listed here when the fleet opens</td></tr>
+      <tr><td><b>Fleet 2</b></td><td>Eight Apple Mac Studio (M5 Ultra, 256 GB each at 1.2 TB/s: 2 TB at 9.6 TB/s in all, 2.2 times Fleet 1's memory bandwidth)</td><td>Seoul</td><td>Under construction</td><td class="num">1</td><td>Listed here when the fleet opens</td></tr>
       <tr><td><b>Fleet 3</b></td><td>16 NVIDIA DGX Spark (GB10)</td><td>Seoul</td><td>Under construction</td><td class="num">1</td><td>Listed here when the fleet opens</td></tr>
     </table>
     </div>
+    <p>Prefill accelerators: four NVIDIA RTX 5080 cards will compute long prompts for the fleets (planned; see the estimates below).</p>
     <p>From 1 December 2026 our system publishes live capacity, with each fleet's state and the hours open in each window, at <span class="mono">https://sparkpipe.ai/availability.txt</span>, regenerated at least every 30 seconds.</p>
   </section>
 
@@ -91,6 +94,62 @@
     <p>Context windows are those served today. Decode is one request without speculation, measured on 2026-10-18 with prompts of 7 to 8K tokens. Methods and receipts: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>.</p>
     <p>¹ DeepSeek V4.1 Flash was measured on 2026-10-24 with a prompt of 1,047,883 tokens: decode one request after the prompt, and the prompt's average prefill rate. ² Measured while another workload kept 16 CPU cores busy on every node, so these are lower bounds.</p>
     <p>Qwen 3.8 Flash is not offered: its license requires a separate agreement with Qwen for any model-as-a-service business, so we use it only inside our company.</p>
+  </section>
+
+  <section id="speculation">
+    <h2>Speculation (measured)</h2>
+    <p>Speculation drafts tokens from the request's own context and from a draft model, and the model checks them in one pass, so the output is exactly the model's own. Measured on Fleet 1, one request unless noted:</p>
+    <div class="scroll">
+    <table>
+      <tr><th>Model</th><th>Workload</th><th class="num">Plain decode</th><th class="num">With speculation</th></tr>
+      <tr><td><b>Kimi K3</b></td><td>Whole-file code rewrite</td><td class="num">15.3 tok/s</td><td class="num">126.4 tok/s (best 140.6)</td></tr>
+      <tr><td><b>Kimi K3</b></td><td>Search-and-replace edit</td><td class="num">15.0 tok/s</td><td class="num">28.0 tok/s</td></tr>
+      <tr><td><b>Kimi K3</b></td><td>Short edits, two requests at once</td><td class="num">–</td><td class="num">1.3 to 1.4 times plain</td></tr>
+      <tr><td><b>GLM 5.3</b></td><td>Whole-file code rewrite</td><td class="num">27.6 tok/s</td><td class="num">124.2 tok/s (232.9 with uncapped frames)</td></tr>
+      <tr><td><b>DeepSeek V4.1 Flash</b></td><td>Code edits</td><td class="num">–</td><td class="num">2.0 times plain</td></tr>
+      <tr><td><b>All</b></td><td>New prose</td><td class="num">–</td><td class="num">1.0 to 1.2 times plain</td></tr>
+    </table>
+    </div>
+    <p>Receipts: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>, 2026-10-15 to 2026-10-24.</p>
+  </section>
+
+  <section id="estimates">
+    <h2>Near-term speeds for models over 1 TB (ESTIMATED)</h2>
+    <p><b>ESTIMATED</b> values are projections from our measurements and the hardware's published figures, not measurements. Each one is replaced by a measurement when the hardware or software behind it is running.</p>
+    <div class="scroll">
+    <table>
+      <tr><th>Model</th><th class="num">Size</th><th class="num">Decode on Fleet 1 (16 Sparks)</th><th class="num">Decode on Fleet 2 (8 M5 Ultra)</th><th class="num">Fleet 2 with speculation, agent turns</th><th class="num">128K-token prompt, with prefill accelerators</th></tr>
+      <tr><td><b>Kimi K3</b> (served)</td><td class="num">1.56 TB</td><td class="num">22 tok/s (16.2 measured)</td><td class="num">49 tok/s</td><td class="num">120 tok/s</td><td class="num">40 s (299 s measured at 137,700)</td></tr>
+      <tr><td><b>K-EXAONE 2.0</b>, LG (next)</td><td class="num">1.50 TB</td><td class="num">41 tok/s</td><td class="num">91 tok/s</td><td class="num">230 tok/s</td><td class="num">13 s</td></tr>
+      <tr><td><b>A.X K1</b>, SKT (next)</td><td class="num">1.04 TB</td><td class="num">46 tok/s</td><td class="num">100 tok/s</td><td class="num">250 tok/s</td><td class="num">12 s</td></tr>
+      <tr><td><b>Nemotron 3 Ultra</b>, NVIDIA (next)</td><td class="num">1.12 TB</td><td class="num">28 tok/s</td><td class="num">61 tok/s</td><td class="num">150 tok/s</td><td class="num">20 s</td></tr>
+      <tr><td><b>Muse Spark Open</b>, meta-models (license under review)</td><td class="num">1.64 TB</td><td class="num">36 tok/s</td><td class="num">80 tok/s</td><td class="num">200 tok/s</td><td class="num">15 s</td></tr>
+    </table>
+    </div>
+    <p>How the estimates are made:</p>
+    <ul>
+      <li><b>Decode</b> is limited by how fast each node reads its share of the weights a token uses. Fleet 1 is taken at 80% of that limit (Kimi K3 reaches 58% today), Fleet 2 at 70% of its limit, with the model split over all eight Mac Studios.</li>
+      <li><b>Speculation</b> on agent coding turns is taken as 2.5 times plain decode, between the 1.4 to 1.6 times measured on short edits and the 8.3 times measured on whole-file rewrites.</li>
+      <li><b>Prefill</b> runs on four RTX 5080 cards at 40% of their dense FP8 peak (about 450 TFLOPS each), at 2 operations per active parameter per token. It assumes the cards are fed weights fast enough to stay compute-bound, and leaves out the attention cost, which grows with prompt length.</li>
+      <li><b>Qwen 3.8 Max</b> (2.4 TB at its published FP8 precision) is larger than the fleet's 2 TB of memory, so its experts stream from NVMe; it runs at 10.4 tok/s and gets no estimate until a fleet has more memory.</li>
+    </ul>
+  </section>
+
+  <section id="next-models">
+    <h2>Models coming next</h2>
+    <p>Large open models from Korean and other non-Chinese publishers, under licenses that allow serving them to businesses. We qualify each one before it is offered.</p>
+    <div class="scroll">
+    <table>
+      <tr><th>Model</th><th>Publisher</th><th class="num">Parameters</th><th class="num">Size</th><th>License</th><th>Note</th></tr>
+      <tr><td><b>K-EXAONE 2.0</b></td><td>LG AI Research, Korea</td><td class="num">750B, 37B active</td><td class="num">1.50 TB</td><td><a href="https://huggingface.co/LGAI-EXAONE/K-EXAONE-2.0-750B-A37B">Apache 2.0</a></td><td>Korea's largest open model, from the national foundation-model project</td></tr>
+      <tr><td><b>A.X K1</b></td><td>SK Telecom, Korea</td><td class="num">519B, about 33B active</td><td class="num">1.04 TB</td><td><a href="https://huggingface.co/skt/A.X-K1">Apache 2.0</a></td><td>From Korea's sovereign AI foundation-model project; 128K context</td></tr>
+      <tr><td><b>Solar Open 2</b></td><td>Upstage, Korea</td><td class="num">250B, 15B active</td><td class="num">0.50 TB</td><td><a href="https://huggingface.co/upstage/Solar-Open2-250B">Upstage Solar License</a> (Apache 2.0 with a naming rule for redistributed models)</td><td>Built for agents; 1M-token context</td></tr>
+      <tr><td><b>Nemotron 3 Ultra</b></td><td>NVIDIA, US</td><td class="num">550B, 55B active</td><td class="num">1.12 TB</td><td><a href="https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16">OpenMDW 1.1</a></td><td>NVIDIA's largest open model</td></tr>
+      <tr><td><b>Mistral Large 3</b></td><td>Mistral AI, France</td><td class="num">675B, 41B active</td><td class="num">0.68 TB</td><td><a href="https://huggingface.co/mistralai/Mistral-Large-3-675B-Instruct-2512">Apache 2.0</a></td><td>European, general purpose</td></tr>
+      <tr><td><b>Inkling</b></td><td>Thinking Machines, US</td><td class="num">975B, 41B active</td><td class="num">1.91 TB</td><td><a href="https://huggingface.co/thinkingmachines/Inkling">Apache 2.0</a></td><td>Needs an FP8 build that passes our accuracy A/B to fit the fleet</td></tr>
+      <tr><td><b>Muse Spark Open</b></td><td>meta-models</td><td class="num">816B, 42B active</td><td class="num">1.64 TB</td><td>Muse model license, access granted on request</td><td>License terms under review</td></tr>
+    </table>
+    </div>
   </section>
 
   <section id="licenses">

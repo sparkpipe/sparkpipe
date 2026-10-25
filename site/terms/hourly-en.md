@@ -22,13 +22,13 @@ These Terms are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 ## 3. Price, VAT and payment
 
-3.1. The price of an hour is the **Hourly Price** shown on our website when Customer buys it. It is fixed for the hours bought.
+3.1. The price of an hour is the **Hourly Price** shown on our website when Customer buys it: in Korean won for payment in won, otherwise in US dollars. It is fixed for the hours bought.
 
 3.2. The Hourly Price is exclusive of value-added tax (VAT). We charge VAT at the statutory rate (10% today) on every payment and show it separately on our invoice. Any amount charged as VAT that is not owed is an overpayment, and we refund it to Customer.
 
-3.3. Customer pays in full and in advance, through the payment invoice our system issues. Customer bears the payment service's fees, network fees, bank charges and any tax a law requires it to withhold, so that we receive the full amount invoiced.
+3.3. Customer pays in full and in advance, in one of two ways: (a) if Customer has a Korean business registration number, in Korean won, by bank transfer to the account named on the electronic tax invoice (세금계산서) we issue; or (b) in USDC, through the payment invoice our system issues. Customer bears the payment service's fees, network fees, bank charges and any tax a law requires it to withhold, so that we receive the full amount invoiced.
 
-3.4. Hours are issued when the payment service confirms the full payment and we have verified it.
+3.4. Hours are issued once we have verified the full payment: for a won transfer when it reaches our account, and for USDC when the payment service confirms it.
 
 ## 4. Hours
 

@@ -464,6 +464,7 @@ Scheduling and cache policy contain no CUDA, NCCL or Metal assumptions
 | 16 Sparks | TP16, TP4 × PP4, PP16 or other splits, chosen by measurement |
 | 1 to 8 Mac Studios (M5 Ultra, 256 GB) | one replica per Studio, TP inside a Thunderbolt 5 island of four, or TP4 × PP2 across two islands |
 | Sparks with Mac Studios | one catalog: Sparks prefill and Studios decode, or PP2 across both |
+| Prefill accelerators (4 RTX 5080) | compute long prompts for a fleet and hand it the KV cache |
 
 **Fabric.** Every Spark uses two data rails:
 
@@ -589,14 +590,14 @@ policy and user interfaces belong above the API.
 
 ## Fleet-hours
 
-HYOR AI Tech Ltd. rents SparkPipe fleets to businesses whole, by the hour, from Seoul. The terms, the Fleet List and the privacy policy are on [sparkpipe.ai](https://sparkpipe.ai).
+HYOR AI Tech Ltd. rents SparkPipe fleets to businesses whole, by the hour, from Seoul, first of all to Korean companies whose data must stay in Korea. The terms, the Fleet List and the privacy policy are on [sparkpipe.ai](https://sparkpipe.ai).
 
 - **A fleet-hour** is one entire fleet for sixty minutes. During it the fleet serves only the customer's requests, with the model the customer chose from the [Fleet List](https://sparkpipe.ai/fleets.html).
 - **Two ways to buy:**
   - **Hourly:** prepaid at the hourly price, with no commitment and no business check. A customer holds up to 168 hours (a week), or 720 after a business check. A two-year customer may take an hourly reservation until 6 hours before it starts, and the hour returns to the balance.
   - **The two-year agreement:** every hour of a two-year term at a lower price, after a business check, negotiated clause by clause. The models the customer names stay available for the term.
 - **Self-serve:** an account is an Ethereum address. The customer accepts the terms, reserves hours on each fleet's calendar and changes its account by messages signed with that key. `https://sparkpipe.ai/availability.txt` publishes live capacity every 30 seconds.
-- **Payment:** prepaid in USDC through a payment processor, with Korean VAT; two-year customers may also wire USD from abroad.
+- **Payment:** prepaid. Korean businesses pay in won by bank transfer against an electronic tax invoice (세금계산서); customers abroad pay in USDC through a payment processor, and two-year customers may also wire USD. Korean VAT applies except to a zero-rated wire from abroad.
 - **Records:** every payment, issue of hours, reservation, displacement, credit and consumption is a line in an append-only, hash-chained ledger whose daily root is published. Downtime credits are issued automatically from the fleet's own records.
 - **Access:** during its hours, the access tokens a customer issues under its key reach its fleet through the SparkPipe API; outside them they reach nothing.
 - **Responsibility:** we provide capacity only. The customer decides what runs, answers for its users and anyone it passes hours to, and carries any AI-law duties toward its own users. Our system has no feature for transferring hours.

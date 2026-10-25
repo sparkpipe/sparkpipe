@@ -1,6 +1,8 @@
 window.SP_PRICING = {
   hourlyPrice: 20,
   committedPrice: 15,
+  hourlyPriceKRW: 29000,
+  committedPriceKRW: 22000,
   vatRate: 0.10,
   hourlyMaxHours: 168,
   verifiedMaxHours: 720,

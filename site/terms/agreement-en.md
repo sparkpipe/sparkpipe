@@ -248,7 +248,7 @@ Where this Agreement ends under clause 11.2 or 11.3:
 | --- | --- |
 | Customer legal name and jurisdiction | \[ \] |
 | Signature Date | \[ \] |
-| Hour Price (clause 2) | USD \[ \] per fleet-hour, exclusive of VAT, fixed for the Term |
+| Hour Price (clause 2) | KRW \[ \] or USD \[ \] per fleet-hour, in the currency of payment below, exclusive of VAT, fixed for the Term |
 | Customer VAT status (clause 2.2) | \[No place of business in the Republic of Korea / Korean business registration number \[ \]\] |
 | Timezone election | \[50/50 / 100% East / 100% West\], subject to clause 4.3 |
 | East Window | \[hh:mm–hh:mm KST\] |
@@ -257,7 +257,7 @@ Where this Agreement ends under clause 11.2 or 11.3:
 | Live capacity address (clause 8.8) | https://sparkpipe.ai/availability.txt |
 | Chosen Models (clause 10.2) | \[models from the Fleet List\] |
 | Customer Ethereum address (for the Key) | \[ \] |
-| Payment currency and account | Either (a) USD, by bank transfer from Customer's own account outside the Republic of Korea to our USD account at a Korean foreign exchange bank, zero-rated where Customer has no place of business in the Republic of Korea: \[bank, account holder, account number, SWIFT\], confirmed by both parties before payment; or (b) USDC, through the payment invoice our system issues, with VAT charged under clause 2.2 |
+| Payment currency and account | Either (a) KRW, by bank transfer from Customer's account at a Korean bank to our won account named on our electronic tax invoice (세금계산서), with VAT charged under clause 2.2; or (b) USD, by bank transfer from Customer's own account outside the Republic of Korea to our USD account at a Korean foreign exchange bank, zero-rated where Customer has no place of business in the Republic of Korea: \[bank, account holder, account number, SWIFT\], confirmed by both parties before payment; or (c) USDC, through the payment invoice our system issues, with VAT charged under clause 2.2 |
 | Supplier notice address and email | \[ \] |
 | Customer notice address and email | \[ \] |
 | Fleet Rates at the Signature Date | As published on the Fleet List at signing: \[Fleet 1 (16 Sparks): 1.00; Fleet 2 (M5U): 1.00; Fleet 3 (16 Sparks): 1.00\] |
