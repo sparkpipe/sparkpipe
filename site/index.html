@@ -72,8 +72,8 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
     </figure>
   </div>
   <div class="specs">
-    <div><strong data-krw="hourly">₩29,000</strong><span><span data-price="hourly">$20</span> per fleet-hour plus VAT, prepaid, no commitment</span></div>
-    <div><strong data-krw="committed">₩22,000</strong><span><span data-price="committed">$15</span> per fleet-hour plus VAT, for every hour of a two-year term</span></div>
+    <div><strong data-krw="hourly">₩26,000</strong><span><span data-price="hourly">$20</span> per fleet-hour plus VAT, prepaid, no commitment</span></div>
+    <div><strong data-krw="committed">₩20,000</strong><span><span data-price="committed">$15</span> per fleet-hour plus VAT, for every hour of a two-year term</span></div>
     <div><strong><span data-cap="hourly">168</span> / <span data-cap="verified">720</span></strong><span>hours you may hold on hourly terms, before and after a business check</span></div>
     <div><strong>15 models</strong><span>offered, among them Kimi K3, GLM 5.3 and DeepSeek V4.1 Flash, each under its publisher's open license</span></div>
   </div>
@@ -129,7 +129,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
     <div class="facts">
       <div><strong class="mono">126 tok/s</strong><p>Kimi K3 rewriting whole files with speculation, measured; 15 tok/s without it. Search-and-replace edits run at 28 tok/s.</p></div>
       <div><strong class="mono">0.3–5 s</strong><p>to the first token of a follow-up turn whose conversation is cached, measured on Kimi K3 up to 137,700 tokens.</p></div>
-      <div><strong class="mono">40 s</strong><p><b>ESTIMATED</b>: a 128K-token Kimi K3 prompt from cold with the planned prefill accelerators, from 299 s today.</p></div>
+      <div><strong class="mono">31 s</strong><p><b>ESTIMATED</b>: a 128K-token Kimi K3 prompt from cold with four prefill accelerator boxes, 16 s with eight, from 299 s today.</p></div>
     </div>
     <p class="prose"><b>ESTIMATED</b> for Kimi K3 on Fleet 2, eight M5 Ultra Mac Studios: 49 tok/s for one request without speculation, and about 120 tok/s with it on agent coding turns. LG's K-EXAONE 2.0 is estimated at 91 and about 230 tok/s. Estimates are projections from our measurements and published hardware figures; the <a href="fleets.html#estimates">Fleet List</a> shows how each is made, and each is replaced by a measurement once the hardware runs.</p>
   </div>
@@ -143,11 +143,11 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
   <div class="sec-body">
     <h2>What comes next.</h2>
     <div class="check-list">
-      <div><b>Prefill accelerators</b><span>Four NVIDIA RTX 5080 cards compute long prompts. ESTIMATED: a 128K-token Kimi K3 prompt in about 40 s instead of 299 s.</span></div>
+      <div><b>Prefill accelerators</b><span>Boxes of four NVIDIA RTX 5080 cards compute long prompts, four boxes first, then eight. ESTIMATED: a 128K-token Kimi K3 prompt in 31 s (16 s with eight boxes) instead of 299 s, and a 1M-token prompt in about 17 minutes instead of 76.</span></div>
       <div><b>Fleet 2</b><span>Eight M5 Ultra Mac Studios with 2.2 times Fleet 1's memory bandwidth, for faster decoding. ESTIMATED: Kimi K3 at 49 tok/s without speculation.</span></div>
       <div><b>Better speculation</b><span>Tree drafts from several drafters at once. ESTIMATED: 2.5 times plain decode on agent coding turns.</span></div>
       <div><b>More large models</b><span>K-EXAONE 2.0, A.X K1, Solar Open 2, Nemotron 3 Ultra and Mistral Large 3.</span></div>
-      <div><b>Fleet 3</b><span>Sixteen more DGX Sparks.</span></div>
+      <div><b>Fleet 3</b><span>Sixteen more DGX Sparks. With Fleet 1 and Fleet 2 together holding 4 TB, models above 2 TB, such as Qwen 3.8 Max at full FP8 precision, run across two fleets.</span></div>
     </div>
   </div>
 </section>
@@ -180,7 +180,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
     <div class="table-wrap"><table class="cmp">
       <thead><tr><th scope="col"></th><th scope="col">Hourly</th><th scope="col">Two years</th></tr></thead>
       <tbody>
-        <tr><th scope="row">Price</th><td><span data-krw="hourly">₩29,000</span> or <span data-price="hourly">$20</span> per fleet-hour plus VAT</td><td><span data-krw="committed">₩22,000</span> or <span data-price="committed">$15</span> per fleet-hour plus VAT, fixed for the term</td></tr>
+        <tr><th scope="row">Price</th><td><span data-krw="hourly">₩26,000</span> or <span data-price="hourly">$20</span> per fleet-hour plus VAT</td><td><span data-krw="committed">₩20,000</span> or <span data-price="committed">$15</span> per fleet-hour plus VAT, fixed for the term</td></tr>
         <tr><th scope="row">Commitment</th><td>None</td><td>Every hour of two years from signing: 17,520 hours, or 17,544 when the term contains 29 February</td></tr>
         <tr><th scope="row">Models</th><td>Any offered model on the Fleet List, chosen for each reservation</td><td>The models you choose in the agreement stay available for the whole term; the others while they are listed</td></tr>
         <tr><th scope="row">Business check</th><td>Not needed</td><td>Required before signing</td></tr>
