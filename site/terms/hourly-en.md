@@ -2,7 +2,7 @@
 
 ## Parties
 
-These Terms are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유한회사), business registration number 641-87-03809, corporate registration number 110114-0039555, Building B Unit 1522, 95 Hangang-daero, Yongsan-gu, Seoul, Republic of Korea ("**we**"), and the business identified in the account that accepts them ("**Customer**").
+These Terms are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유한회사), business registration number 641-87-03809, of Yongsan-gu, Seoul, Republic of Korea, whose full address we give on request ("**we**"), and the business identified in the account that accepts them ("**Customer**").
 
 ## 1. The service
 

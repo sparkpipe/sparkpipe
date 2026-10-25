@@ -4,7 +4,7 @@
 
 This Agreement is made on the Signature Date between:
 
-- **Supplier:** HYOR AI Tech, Ltd., a company organised under the laws of the Republic of Korea, business registration number 641-87-03809, corporate registration number 110114-0039555, registered address Building B Unit 1522, 95 Hangang-daero, Yongsan-gu, Seoul, Republic of Korea ("**we**", "**Supplier**"); and
+- **Supplier:** HYOR AI Tech, Ltd., a company organised under the laws of the Republic of Korea, business registration number 641-87-03809, with its registered office in Yongsan-gu, Seoul, Republic of Korea, whose full address we give on request and in the signed Agreement ("**we**", "**Supplier**"); and
 - **Customer:** \[legal name\], a company organised under the laws of \[jurisdiction\], registration number \[number\], registered address \[address\] ("**Customer**").
 
 In this Agreement:
