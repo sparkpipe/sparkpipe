@@ -1,0 +1,7 @@
+chat          PASS  | finish='stop' 1.01s content='The capital of France is Paris.' reasoning=31 chars
+stream        PASS  | finish='stop' 1.01s content='The capital of France is Paris.' reasoning=31 chars
+tool          PASS  | finish='tool_calls' 6.08s content='' reasoning=32 chars
+tool_result   PASS  | finish='stop' 2.6s content="The weather in Paris right now is **sunny** with a temperature of **18°C (64°F)**. It's a " reasoning=24 chars
+reasoning_off PASS  | finish='stop' 0.67s content='391' reasoning=0 chars
+reasoning_on  PASS  | finish='stop' 1.01s content='391' reasoning=13 chars
+UI-SMOKE mimo-v2.6-pro: 6/6

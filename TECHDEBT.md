@@ -1017,14 +1017,11 @@ door, the static pages in `site/` and the login-gated sparkpipe.ai playground
 ## Production qualification
 
 - `scripts/release_rollout.sh` captures the old and the new build through the
-  live prefix cache. In the 2026-10-25 release the old captures served the
-  long prompts from cache entries that earlier builds had written (GLM 5.3
-  Flash long_8k: 6,720 of 6,773 tokens cached) while the new captures ran
-  cold, so several models showed token drift that came from the cache, not the
-  build. The reverse hides regressions: when a release keeps the cache layout,
-  the new capture can be served from KV the old build wrote. Clear the model's
-  cached state on every node before each capture and fail the comparison
-  unless every capture reports `cached_tokens` 0.
+  live prefix cache, so a capture can be served from KV another build wrote:
+  in the 2026-10-25 release most old captures read their long prompts from
+  cache entries of earlier builds. Clear the model's cached state on every
+  node before each capture and fail the comparison unless every capture
+  reports `cached_tokens` 0.
 - `tools/sparkpipe_weightd_vmm_verify.sh` prints `SKIP` and exits 0 when CUDA
   or a GPU is missing, so a receipt run on the wrong host reads as a pass.
   Make both cases exit nonzero with the named reason.
