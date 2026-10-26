@@ -1172,7 +1172,7 @@ Metal backend and the single-Studio stage are in
   - a lane record, model description and swap-controller entry for the
     Studio target (`metal.apple10`);
   - one frame chooser. Until the batch engine drives the device runner,
-    `tools/qwen38_27b_metal_run.c` chooses speculative frames itself on the
+    `tools/metal_stage_run.c` chooses speculative frames itself on the
     common cost model (`src/spark_speculation_frame.c`). That includes the
     rule that a first probe frame may cost at most the cost model's margin
     over a plain step, which took Metal prose from a 0.5% loss to a 0.4%

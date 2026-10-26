@@ -293,7 +293,7 @@ overwritten when the sequence reaches them again.
   KV rows are already in place.
 
 Drafts come from the request's own context, as in the CUDA serving path:
-`qwen38_27b_metal_run --mode spec` indexes the prompt and the generated
+`metal_stage_run --mode spec` indexes the prompt and the generated
 tokens with the common lookup index (`src/spark_speculation_lookup_draft.c`,
 3-token grams, matches up to 64 tokens, 64 candidates) and sizes each frame
 with the serving path's frame chooser (`src/spark_speculation_frame.c`),
@@ -302,6 +302,9 @@ class as it goes; a step with no useful draft is an ordinary one-row step.
 The chooser's first frame in a match class probes; the tool caps a probe at
 the largest frame whose measured cost is within the chooser's margin of a
 one-row step, so text the lookup cannot predict pays nothing for the probe.
+Where no frame is that cheap (a mixture-of-experts step, where every extra
+row reads more experts) the probe is one draft, about a fifth of a step
+once per match class.
 The accepted prefix plus the model's next token are emitted, so greedy
 output with speculation is exactly greedy output without it.
 
@@ -349,7 +352,7 @@ expert order; the FP32 logits, soft-capped at 30.
 
 The gates run on the Studio from a committed revision shipped with
 `git archive`; `tools/qwen38_27b_metal_gates.sh PACK CHECKPOINT OUT REVISION`
-runs all of them and `tools/qwen38_27b_metal_summary.py` writes the receipt.
+runs all of them and `tools/metal_gate_summary.py` writes the receipt.
 
 **Device contract.** `build/test_device_contract_metal`: the backend-neutral
 contract plus the kernel tests (refusals, kernel-copy-kernel ordering on one
@@ -441,7 +444,7 @@ largest change in the target token's log-probability and, given the other
 variant, the paired counts per block. Both implementations also continue each
 prompt greedily for 128 tokens.
 
-**Batches.** `qwen38_27b_metal_run --mode ladder --batches 1,2,4,...,64`
+**Batches.** `metal_stage_run --mode ladder --batches 1,2,4,...,64`
 decodes 128 tokens for each of 64 sequences alone, then for each batch size
 prefills that many sequences (1,024-token prompts cut from the gate prompts
 at different offsets) and decodes them together, three timed runs after a
@@ -450,7 +453,7 @@ for token with its solo run; at the first token that differs, both runs'
 top-1 and top-2 tokens and margins are recorded, so a divergence can be
 shown to be a near tie. Repeated runs must give the same tokens.
 
-**Speculation.** `qwen38_27b_metal_run --mode spec` measures the verify
+**Speculation.** `metal_stage_run --mode spec` measures the verify
 cost curve (one sequence after a 933-token prompt, frames of 1 to 64 rows,
 and the replay that keeps all of them, median of three after a warm-up),
 then decodes 256 tokens greedily with and without speculation on the four
@@ -462,7 +465,7 @@ separately, as the median with the lowest and highest.
 
 **Speed.** `build/device_bandwidth 16 PACK` measures streaming reads of a
 16 GiB device-private buffer and of the mapped pack (seven timed passes after
-a warm-up, the median kept). `qwen38_27b_metal_run --mode bench` measures B1
+a warm-up, the median kept). `metal_stage_run --mode bench` measures B1
 decode of 256 tokens after a 1,024-token prompt and prefill of 1,024 and
 8,192 tokens in 2,048-row chunks, three timed runs after a discarded warm-up,
 the median kept. Decode reads every weight but the embedding table once per
@@ -505,7 +508,8 @@ noise is that of a correct implementation. Pinned routes: Metal, the same
 pass prefilled in 64-row chunks (`metal_rows64`, the skinny tensor-unit
 projection the batches use) and the controls (run pinned), against a and bp
 with each other as the floor; the Metal runs must pass and
-`control_layers` and `control_rotate` must fail. Metal's own top-k is
+`control_layers`, `control_rotate` and `control_experts` (experts 0 and 1 of
+every layer's `moe_w2` swapped, the reach of a misindexed expert) must fail. Metal's own top-k is
 checked by the kernel test (exact experts at 128 experts, top 8).
 
 The fast batch ladder is not identical to solo decode for most sequences,

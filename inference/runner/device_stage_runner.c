@@ -316,14 +316,19 @@ SparkStatus SparkDeviceStageRunnerOpen(SparkDeviceStageRunner **out, const Spark
 	{
 		const SparkDeviceStage *stage = (const SparkDeviceStage *)runner->model;
 		const uint64_t tied_head = runner->geometry.head_offset == runner->geometry.embed_offset ? runner->geometry.head_bytes : 0u;
-		runner->info.streamed_bytes_per_token = runner->weights.bytes - runner->geometry.embed_bytes + tied_head - stage->routed_bytes +
-			stage->routed_bytes_per_token;
+		runner->info.streamed_bytes_per_chunk = runner->weights.bytes - runner->geometry.embed_bytes + tied_head;
+		runner->info.streamed_bytes_per_token = runner->info.streamed_bytes_per_chunk - stage->routed_bytes + stage->routed_bytes_per_token;
 	}
 	runner->info.device_state_bytes = total;
 	snprintf(runner->info.device,sizeof(runner->info.device),"%s",SparkDeviceGetProperties()->name);
 	snprintf(runner->info.target,sizeof(runner->info.target),"%s",SparkDeviceGetProperties()->target);
 	*out = runner;
 	return(SPARK_STATUS_OK);
+}
+
+uint64_t SparkDeviceStageRunnerDecodeBytes(const SparkDeviceStageRunner *runner, uint32_t context)
+{
+	return(runner->info.streamed_bytes_per_token + SparkDeviceStageStateBytes((const SparkDeviceStage *)runner->model,context));
 }
 
 static SparkStatus RunnerValidate(SparkDeviceStageRunner *runner, const SparkDeviceStageRunnerBatch *batch, uint32_t *sequences)

@@ -58,6 +58,7 @@ typedef struct SparkDeviceStageRunnerInfo
 	uint32_t layers;
 	uint64_t pack_bytes;
 	uint64_t streamed_bytes_per_token;
+	uint64_t streamed_bytes_per_chunk;
 	uint64_t device_state_bytes;
 	char pack_sha256[SPARK_SHA256_HEX_BYTES];
 	char device[64];
@@ -65,6 +66,7 @@ typedef struct SparkDeviceStageRunnerInfo
 } SparkDeviceStageRunnerInfo;
 
 SparkStatus SparkDeviceStageRunnerOpen(SparkDeviceStageRunner **runner, const SparkDeviceStageRunnerConfig *config);
+uint64_t SparkDeviceStageRunnerDecodeBytes(const SparkDeviceStageRunner *runner, uint32_t context);
 SparkStatus SparkDeviceStageRunnerStep(SparkDeviceStageRunner *runner, const SparkDeviceStageRunnerBatch *batch, SparkDeviceStageRunnerResult *result);
 SparkStatus SparkDeviceStageRunnerKeepRows(SparkDeviceStageRunner *runner, const uint32_t *kept, uint32_t sequences);
 SparkStatus SparkDeviceStageRunnerResetSequence(SparkDeviceStageRunner *runner, uint32_t sequence);

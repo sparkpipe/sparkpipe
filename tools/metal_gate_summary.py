@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Summarize a Qwen3.8-27B Metal gate run into one receipt with verdicts.
+"""Summarize a Metal stage gate run into one receipt with verdicts.
 
-Reads the outputs tools/qwen38_27b_metal_gates.sh writes and applies the
+Reads the outputs a model's gate script (tools/qwen38_27b_metal_gates.sh,
+tools/gemma4_26b_metal_gates.sh) writes and applies the
 gate rule against both reference variants (A and B, the same reference with
 different reduction orders), each leg measured against the other variant as
 its floor: the position-weighted mean KL at most KL_FACTOR times the floor's,
@@ -11,7 +12,8 @@ reference than the other variant is, which is one half for a candidate whose
 error is distributed like the floor's) not above one half by more than
 PAIRED_SIGMA standard errors, the errors taken over contiguous blocks of
 positions. The Metal run must pass both legs; the all-layer and whole-tensor
-corrupted-weight controls must fail, and greedy decoding with lookup
+corrupted-weight controls must fail (and, where the gate runs it, the
+control that swaps two experts in every layer), and greedy decoding with lookup
 speculation must reproduce greedy decoding without it token for token. Speed
 is reported against the measured streaming-read bandwidth.
 
@@ -24,7 +26,7 @@ chunks) must pass every set present, and a required control must fail in
 every set it appears in. A batch ladder run with --exact-rows (exact/) must
 give every batched sequence the tokens of its solo run.
 
-  qwen38_27b_metal_summary.py --out RUN_DIR --revision REV --prompts PROMPTS_JSON
+  metal_gate_summary.py --out RUN_DIR --revision REV --prompts PROMPTS_JSON
 """
 
 import argparse
@@ -39,6 +41,7 @@ KL_FACTOR = 2.0
 TOP1_FACTOR = 1.5
 PAIRED_SIGMA = 3.0
 REQUIRED_CONTROLS = ("control_layers", "control_rotate")
+REQUIRED_WHERE_RUN = ("control_experts",)
 PROBE_CONTROLS = ("control",)
 CANDIDATES = ("metal", "metal_rows64")
 
@@ -134,26 +137,29 @@ def speed(out):
     bandwidth = json.loads((out / "bandwidth.json").read_text())
     measured = {run["buffer"]: run for run in bandwidth["runs"]}
     peak = measured["device_private"]["median_gb_per_s"] * 1e9
-    streamed = bench["streamed_bytes_per_token"]
+    weights = bench["streamed_bytes_per_token"]
+    streamed = bench["decode"].get("bytes_per_token_mean", weights)
     decode_ceiling = peak / streamed
     decode = bench["decode"]["median_tokens_per_second"]
-    result = {"bandwidth": measured, "streamed_bytes_per_token": streamed,
+    result = {"bandwidth": measured, "streamed_bytes_per_token": streamed, "weight_bytes_per_token": weights,
               "decode": {"prompt_tokens": bench["decode"]["prompt_tokens"], "output_tokens": bench["decode"]["output_tokens"],
                          "median_tokens_per_second": decode, "runs": bench["decode"]["runs"],
                          "roofline_tokens_per_second": decode_ceiling, "fraction_of_roofline": decode / decode_ceiling,
-                         "roofline": f"{streamed / 1e9:.2f} GB read per token / {peak / 1e9:.1f} GB/s measured = "
+                         "roofline": f"{streamed / 1e9:.2f} GB read per token ({weights / 1e9:.2f} GB of weights, the rest KV and recurrent state) / "
+                                     f"{peak / 1e9:.1f} GB/s measured = "
                                      f"{decode_ceiling:.2f} tok/s; measured {decode:.2f} tok/s = {100.0 * decode / decode_ceiling:.1f}%"}}
     for key in ("prefill_1024", "prefill_8192"):
         item = bench[key]
         rows = min(item["chunk_rows"], int(key.split("_")[1]))
-        per_token = streamed / rows
+        chunk = bench.get("streamed_bytes_per_chunk", weights)
+        per_token = chunk / rows
         ceiling = peak / per_token
         rate = item["median_tokens_per_second"]
-        flops = 2.0 * streamed / 2.0
+        flops = 2.0 * weights / 2.0
         result[key] = {"median_tokens_per_second": rate, "runs_seconds": item["runs_seconds"], "chunk_rows": item["chunk_rows"],
                        "weight_bytes_per_token": per_token, "memory_roofline_tokens_per_second": ceiling,
                        "projection_tflops": rate * flops / 1e12,
-                       "roofline": f"weights {streamed / 1e9:.2f} GB per {rows}-row chunk = {per_token / 1e6:.1f} MB per token / "
+                       "roofline": f"weights {chunk / 1e9:.2f} GB per {rows}-row chunk = {per_token / 1e6:.1f} MB per token / "
                                    f"{peak / 1e9:.1f} GB/s = {ceiling:.0f} tok/s memory ceiling; measured {rate:.1f} tok/s, "
                                    f"{rate * flops / 1e12:.1f} TFLOPS in the projections, so prefill is compute-bound"}
     return result
@@ -162,7 +168,7 @@ def speed(out):
 def numerics_set(rows, prefix, out):
     labels = {row["label"] for row in rows}
     floor = aggregate(rows, prefix + "floor")
-    candidates = {name: (aggregate(rows, prefix + name), aggregate(rows, f"{prefix}{name}_vs_b")) for name in CANDIDATES + REQUIRED_CONTROLS + PROBE_CONTROLS
+    candidates = {name: (aggregate(rows, prefix + name), aggregate(rows, f"{prefix}{name}_vs_b")) for name in CANDIDATES + REQUIRED_CONTROLS + REQUIRED_WHERE_RUN + PROBE_CONTROLS
                   if prefix + name in labels and f"{prefix}{name}_vs_b" in labels}
     result = {"floor": floor,
               **{name: {"against_reference_a": pair[0], "against_reference_b": pair[1], "verdict": verdict(pair[0], pair[1], floor),
@@ -225,7 +231,8 @@ def main():
     if pinned is not None:
         numerics["pinned_routes"] = pinned
     numerics["controls_fail_as_required"] = all(any(name in item for item in sets) and
-                                                all(not item[name]["verdict"]["pass"] for item in sets if name in item) for name in REQUIRED_CONTROLS)
+                                                all(not item[name]["verdict"]["pass"] for item in sets if name in item) for name in REQUIRED_CONTROLS) and \
+        all(not item[name]["verdict"]["pass"] for name in REQUIRED_WHERE_RUN for item in sets if name in item)
     numerics["pass"] = all("metal" in item and all(item[name]["verdict"]["pass"] for name in CANDIDATES if name in item) for item in sets) and \
         numerics["controls_fail_as_required"]
     (out / "RECEIPT.json").write_text(json.dumps(receipt, indent=1) + "\n")

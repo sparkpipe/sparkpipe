@@ -54,6 +54,21 @@ static uint64_t NowNs(void)
 	return((uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec);
 }
 
+typedef const SparkStageRunnerModelInterface *(*RunModelGetter)(void);
+
+static const RunModelGetter run_models[] = { SparkQwen38_27bDeviceStageModel, SparkGemma4_26bDeviceStageModel };
+
+static const SparkStageRunnerModelInterface *RunModel(const char *name)
+{
+	uint32_t index;
+	if ( name == 0 )
+		return(run_models[0]());
+	for ( index = 0u; index < sizeof(run_models) / sizeof(run_models[0]); index++ )
+		if ( strcmp(name,run_models[index]()->weightd_model) == 0 )
+			return(run_models[index]());
+	return(0);
+}
+
 static int Usage(const char *program)
 {
 	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|pairs|bench|ladder|spec --out DIR [--prefill-rows N] [--new-tokens N] "
@@ -152,6 +167,7 @@ typedef struct Session
 	uint32_t *positions;
 	uint32_t *sequence;
 	uint32_t *targets;
+	uint32_t *kept;
 	uint32_t capacity;
 	uint32_t layers;
 	SparkDeviceBuffer routes;
@@ -468,9 +484,12 @@ static int BenchDecode(Session *session, const RunOptions *options, const uint32
 	}
 	if ( status == SPARK_STATUS_OK )
 	{
+		double bytes = 0.0;
 		qsort(totals + 1,options->repeats,sizeof(uint64_t),CompareU64);
 		median = totals[1u + options->repeats / 2u];
-		fprintf(json,"],\"median_tokens_per_second\":%.4f}",steps / (median / 1e9));
+		for ( index = 0u; index < steps; index++ )
+			bytes += (double)SparkDeviceStageRunnerDecodeBytes(session->runner,prompt_tokens + index + 1u) / steps;
+		fprintf(json,"],\"median_tokens_per_second\":%.4f,\"bytes_per_token_mean\":%.0f}",steps / (median / 1e9),bytes);
 		printf("decode median of %u: %.3f tok/s\n",options->repeats,steps / (median / 1e9));
 	}
 	free(totals);
@@ -525,8 +544,9 @@ static int RunBench(Session *session, const RunOptions *options, const SparkToke
 	int failed = json == 0 || decode_prompt == 0 || short_prompt == 0 || long_prompt == 0;
 	if ( !failed )
 	{
-		fprintf(json,"{\"device\":\"%s\",\"target\":\"%s\",\"pack_bytes\":%llu,\"streamed_bytes_per_token\":%llu,",info->device,info->target,
-			(unsigned long long)info->pack_bytes,(unsigned long long)info->streamed_bytes_per_token);
+		fprintf(json,"{\"device\":\"%s\",\"target\":\"%s\",\"pack_bytes\":%llu,\"streamed_bytes_per_token\":%llu,\"streamed_bytes_per_chunk\":%llu,",
+			info->device,info->target,(unsigned long long)info->pack_bytes,(unsigned long long)info->streamed_bytes_per_token,
+			(unsigned long long)info->streamed_bytes_per_chunk);
 		failed = BenchDecode(session,options,decode_prompt,1024u,json) != 0;
 	}
 	if ( !failed )
@@ -624,7 +644,7 @@ static SparkStatus LadderDecode(Session *session, uint32_t batch, uint32_t promp
 		status = SparkDeviceStageRunnerStep(session->runner,&step,&result);
 		for ( lane = 0u; status == SPARK_STATUS_OK && lane < batch; lane++ )
 		{
-			session->targets[lane] = 1u;
+			session->kept[lane] = 1u;
 			token[lane] = result.argmax[lane];
 			if ( trace != 0 )
 			{
@@ -636,7 +656,7 @@ static SparkStatus LadderDecode(Session *session, uint32_t batch, uint32_t promp
 			}
 		}
 		if ( status == SPARK_STATUS_OK && exact != 0u )
-			status = SparkDeviceStageRunnerKeepRows(session->runner,session->targets,batch);
+			status = SparkDeviceStageRunnerKeepRows(session->runner,session->kept,batch);
 	}
 	*ns = NowNs() - start;
 	return(status);
@@ -1029,16 +1049,13 @@ int main(int argc, char **argv)
 	uint32_t index;
 	int failed = 0;
 	setvbuf(stdout,0,_IOLBF,0);
-	if ( ParseOptions(argc,argv,&options) != 0 )
+	memset(&config,0,sizeof(config));
+	if ( ParseOptions(argc,argv,&options) != 0 || (config.model = RunModel(options.model)) == 0 )
 		return(Usage(argv[0]));
 	if ( SparkTokenPromptsLoad(options.prompts,&prompts) != SPARK_STATUS_OK )
 		return(1);
 	mkdir(options.out,0755);
-	memset(&config,0,sizeof(config));
 	config.pack_path = options.pack;
-	config.model = options.model != 0 && strcmp(options.model,"gemma4-26b-a4b") == 0 ? SparkGemma4_26bDeviceStageModel() : SparkQwen38_27bDeviceStageModel();
-	if ( options.model != 0 && strcmp(options.model,config.model->weightd_model) != 0 )
-		return(Usage(argv[0]));
 	config.max_rows = options.prefill_rows;
 	config.sequences = strcmp(options.mode,"pairs") == 0 ? 2u : 1u;
 	config.max_context = RUN_MAX_CONTEXT;
@@ -1063,6 +1080,9 @@ int main(int argc, char **argv)
 	session.positions = (uint32_t *)calloc(session.capacity,sizeof(uint32_t));
 	session.sequence = (uint32_t *)calloc(session.capacity,sizeof(uint32_t));
 	session.targets = (uint32_t *)calloc(session.capacity,sizeof(uint32_t));
+	session.kept = (uint32_t *)calloc(session.capacity,sizeof(uint32_t));
+	if ( session.rows == 0 || session.positions == 0 || session.sequence == 0 || session.targets == 0 || session.kept == 0 )
+		return(1);
 	{
 		const uint64_t start = NowNs();
 		if ( SparkDeviceStageRunnerOpen(&session.runner,&config) != SPARK_STATUS_OK )
@@ -1126,6 +1146,7 @@ int main(int argc, char **argv)
 	free(session.positions);
 	free(session.sequence);
 	free(session.targets);
+	free(session.kept);
 	free(session.pinned);
 	if ( session.routes.host != 0 )
 		SparkDeviceFree(&session.routes);

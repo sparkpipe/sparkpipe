@@ -243,6 +243,8 @@ SparkStatus SparkDeviceAttentionBind(SparkDeviceStage *stage, const SparkStageRu
 		status = SparkDeviceStageLayerTensor(stage,weights,layer,"attn_q_norm","f32",(uint64_t)shape->head_dimension * 4u,&bound->q_norm);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceStageLayerTensor(stage,weights,layer,"attn_k_norm","f32",(uint64_t)shape->head_dimension * 4u,&bound->k_norm);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceStageNoteKvRead(stage,shape->window,(uint64_t)SparkDeviceAttentionKvWidth(shape) * 2u * sizeof(uint16_t));
 	return(status);
 }
 

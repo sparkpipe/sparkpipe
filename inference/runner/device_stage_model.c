@@ -256,6 +256,35 @@ static SparkStatus StageResolve(const SparkDeviceStage *stage, const void *addre
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkDeviceStageNoteKvRead(SparkDeviceStage *stage, uint32_t window, uint64_t position_bytes)
+{
+	uint32_t index;
+	for ( index = 0u; index < stage->kv_read_count && stage->kv_reads[index].window != window; index++ )
+		continue;
+	if ( index == SPARK_DEVICE_STAGE_KV_WINDOWS )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_UNSUPPORTED,"a stage's attention layers use at most four distinct windows"));
+	if ( index == stage->kv_read_count )
+	{
+		stage->kv_reads[index].window = window;
+		stage->kv_reads[index].position_bytes = 0u;
+		stage->kv_read_count++;
+	}
+	stage->kv_reads[index].position_bytes += position_bytes;
+	return(SPARK_STATUS_OK);
+}
+
+uint64_t SparkDeviceStageStateBytes(const SparkDeviceStage *stage, uint32_t context)
+{
+	uint64_t bytes = 2u * SparkDeviceStageRecurrentBytes(stage);
+	uint32_t index;
+	for ( index = 0u; index < stage->kv_read_count; index++ )
+	{
+		const uint32_t window = stage->kv_reads[index].window;
+		bytes += (uint64_t)(window != 0u && window < context ? window : context) * stage->kv_reads[index].position_bytes;
+	}
+	return(bytes);
+}
+
 SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, SparkDeviceStepTensors *tensors)
 {
 	SparkStatus status;
