@@ -277,6 +277,9 @@ tokens with the common lookup index (`src/spark_speculation_lookup_draft.c`,
 with the serving path's frame chooser (`src/spark_speculation_frame.c`),
 seeded with the measured verify costs and learning acceptance per match
 class as it goes; a step with no useful draft is an ordinary one-row step.
+The chooser's first frame in a match class probes; the tool caps a probe at
+the largest frame whose measured cost is within the chooser's margin of a
+one-row step, so text the lookup cannot predict pays nothing for the probe.
 The accepted prefix plus the model's next token are emitted, so greedy
 output with speculation is exactly greedy output without it.
 
@@ -417,9 +420,10 @@ cost curve (one sequence after a 933-token prompt, frames of 1 to 64 rows,
 and the replay that keeps all of them, median of three after a warm-up),
 then decodes 256 tokens greedily with and without speculation on the four
 gate prompts and on `qualification/metal/qwen38_27b/spec_prompts.json`: a
-whole-file rewrite of `tools/token_prompts.c` and a prose request. Every
-prompt's tokens must be identical with and without speculation; tok/s with
-and without are reported separately.
+whole-file rewrite of `tools/token_prompts.c` and a prose request, three
+times each after a warm-up, alternating the two. Every run's tokens must be
+identical with and without speculation; tok/s with and without are reported
+separately, as the median with the lowest and highest.
 
 **Speed.** `build/device_bandwidth 16 PACK` measures streaming reads of a
 16 GiB device-private buffer and of the mapped pack (seven timed passes after

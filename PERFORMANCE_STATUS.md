@@ -264,25 +264,31 @@ aggregate at B1 to B32:
   step) costs about 27 ms of the step and decode attention about 14 ms.
 
 Speculation from the request's own context (receipt
-[`qualification/metal/qwen38_27b/07e0c1e00/`](qualification/metal/qwen38_27b/07e0c1e00/)):
+[`qualification/metal/qwen38_27b/07e0c1e00/speculation_2670f0d58/`](qualification/metal/qwen38_27b/07e0c1e00/speculation_2670f0d58/)):
 lookup drafts over the prompt and the generated text, sized by the serving
 path's frame chooser, verified in one frame and kept with the recurrent
-replay. Greedy, 256 tokens; the tokens with speculation are identical to
-those without it on every prompt.
+replay. Greedy, 256 tokens, median of three runs after a warm-up with the
+lowest and highest; the tokens with speculation are identical to those
+without it in every run of every prompt.
 
 | Prompt | Without speculation | With speculation | Frames | Drafts accepted |
 | --- | ---: | ---: | ---: | --- |
-| Whole-file rewrite (`tools/token_prompts.c`, 933 tokens) | 20.10 tok/s | 95.92 tok/s | 20 | 247 of 273 |
-| Prose (42-token request) | 20.14 | 20.04 | 1 | 1 of 16 |
-| `design` (summary) | 20.12 | 21.20 | 15 | 17 of 64 |
-| `code` (review) | 20.03 | 21.38 | 12 | 19 of 49 |
-| `korean` (summary) | 20.12 | 20.68 | 17 | 12 of 77 |
-| `rules` (analysis) | 19.99 | 21.39 | 23 | 30 of 133 |
+| Whole-file rewrite (`tools/token_prompts.c`, 933 tokens) | 20.10 tok/s (20.09-20.10) | 103.95 tok/s (103.93-103.97) | 24 | 237 of 252 |
+| Prose (42-token request) | 20.13 (20.13-20.14) | 20.21 (20.21-20.21) | 1 | 1 of 3 |
+| `design` (summary) | 20.15 (20.09-20.16) | 21.53 (21.47-21.54) | 15 | 17 of 49 |
+| `code` (review) | 20.09 (20.08-20.10) | 21.67 (21.66-21.67) | 12 | 19 of 36 |
+| `korean` (summary) | 20.14 (20.13-20.16) | 21.09 (21.08-21.11) | 17 | 12 of 51 |
+| `rules` (analysis) | 19.98 (19.98-19.99) | 22.57 (22.56-22.57) | 23 | 30 of 69 |
+
+The chooser's first frame in a match class is a probe. A probe is capped at
+the largest frame whose measured cost is within the chooser's margin of a
+one-row step (three drafts here, since four rows cost what one does); an
+uncapped 16-draft probe cost prose about 70 ms (20.04 against 20.14 tok/s).
 
 | Verify frame rows | 1 | 2 | 4 | 8 | 16 | 32 | 64 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Frame | 49.5 ms | 50.4 ms | 49.3 ms | 62.8 ms | 121.6 ms | 239.0 ms | 474.6 ms |
-| Keeping every row | 1.4 ms | 1.5 ms | 1.6 ms | 2.0 ms | 2.7 ms | 4.2 ms | 7.1 ms |
+| Frame | 49.7 ms | 50.3 ms | 49.2 ms | 62.8 ms | 121.5 ms | 238.8 ms | 474.3 ms |
+| Keeping every row | 1.4 ms | 1.4 ms | 1.6 ms | 2.0 ms | 2.7 ms | 4.2 ms | 7.1 ms |
 
 A frame computes each row exactly as a one-row step does, in GEMV passes of
 up to eight rows, so frames longer than eight rows cost one pass per eight.
