@@ -94,7 +94,7 @@ static uint32_t QwenScratchSlices(QwenDeviceModel *model, SparkDeviceStageSlice 
 		{ rows * QwenGatedWidth() * 2u, &model->delta.gated },
 		{ rows * SparkDeviceAttentionQueryWidth(&qwen_attention) * 2u, &model->attention.query },
 		{ rows * SparkDeviceAttentionKvWidth(&qwen_attention) * 2u, &model->attention.key },
-		{ SparkOpsAttentionScratchBytes(model->stage.max_rows,qwen_attention.heads,model->stage.max_positions), &model->attention.records },
+		{ SparkOpsAttentionScratchBytes(model->stage.max_rows,qwen_attention.heads,qwen_attention.head_dimension,model->stage.max_positions), &model->attention.records },
 		{ rows * 2u * QD_FFN * 2u, &model->ffn.gate_up },
 		{ rows * QD_FFN * 2u, &model->ffn.act },
 		{ SparkDeviceGatedDeltaKeepBytes(&qwen_delta,model->stage.verify_rows,QD_GDN_LAYERS), &model->delta.keep }
@@ -189,7 +189,7 @@ static SparkStatus QwenStep(void *opaque, const SparkStageRunnerStep *step, void
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceResidualNorm(stage,queue,&t,&model->partial,layer->post_norm,model->normed);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceGatedFfn(stage,queue,QD_FFN,&t,&layer->ffn,&model->ffn,model->normed,model->partial);
+			status = SparkDeviceGatedFfn(stage,queue,QD_FFN,SPARK_GATED_SILU,&t,&layer->ffn,&model->ffn,model->normed,model->partial);
 		if ( status == SPARK_STATUS_OK )
 			SparkDeviceStageLayerDone(stage,index);
 	}

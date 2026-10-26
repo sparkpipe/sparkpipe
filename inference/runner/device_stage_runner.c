@@ -415,6 +415,9 @@ static SparkStatus RunnerHead(SparkDeviceStageRunner *runner, const SparkDeviceS
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsLinear(runner->ops,runner->queue,SparkTensorAt(&runner->head_normed,0u,(uint64_t)rows * g->hidden * 2u),
 			SparkTensorAt(&runner->weights,g->head_offset,g->head_bytes),SparkTensorAt(&runner->logits,0u,(uint64_t)rows * g->vocab * 4u),&head);
+	if ( status == SPARK_STATUS_OK && g->logit_softcap != 0.0f )
+		status = SparkOpsSoftcap(runner->ops,runner->queue,SparkTensorAt(&runner->logits,0u,(uint64_t)rows * g->vocab * sizeof(float)),(uint64_t)rows * g->vocab,
+			g->logit_softcap);
 	memset(&logprob,0,sizeof(logprob));
 	logprob.rows = rows;
 	logprob.vocabulary = g->vocab;

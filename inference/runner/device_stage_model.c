@@ -138,10 +138,17 @@ SparkStatus SparkDeviceStageGeometry(SparkDeviceStage *stage, SparkStageRunnerMo
 	status = SparkDeviceStageEntry(stage,"embed","bf16",&geometry->embed_offset,&geometry->embed_bytes,&embed_rows);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceStageEntry(stage,"head_norm","f32",&geometry->head_norm_offset,&geometry->head_norm_bytes,0);
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && shape->tied_head != 0u )
+	{
+		geometry->head_offset = geometry->embed_offset;
+		geometry->head_bytes = geometry->embed_bytes;
+		head_rows = embed_rows;
+	}
+	else if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceStageEntry(stage,"head","bf16",&geometry->head_offset,&geometry->head_bytes,&head_rows);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	geometry->logit_softcap = shape->logit_softcap;
 	if ( embed_rows != shape->vocab || head_rows != shape->vocab || geometry->embed_bytes != table_bytes || geometry->head_bytes != table_bytes ||
 		geometry->head_norm_bytes != (uint64_t)shape->hidden * 4u )
 		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_SCHEMA_ERROR,"the pack's embedding, head or head norm has the wrong shape"));

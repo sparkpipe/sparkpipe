@@ -7,6 +7,7 @@
 
 #include "inference/runner/device_stage_model.h"
 #include "inference/runner/device_stage_runner.h"
+#include "sparkpipe/spark_gemma4_26b_device_stage.h"
 #include "sparkpipe/spark_qwen38_device_stage.h"
 #include "sparkpipe/spark_speculation_frame.h"
 #include "sparkpipe/spark_speculation_lookup_draft.h"
@@ -40,6 +41,7 @@ typedef struct RunOptions
 	uint32_t batch_count;
 	uint32_t max_batch;
 	const char *spec_prompts;
+	const char *model;
 	uint32_t draft_max;
 } RunOptions;
 
@@ -53,7 +55,7 @@ static uint64_t NowNs(void)
 static int Usage(const char *program)
 {
 	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|pairs|bench|ladder|spec --out DIR [--prefill-rows N] [--new-tokens N] "
-		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N]\n",program);
+		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|gemma4-26b-a4b]\n",program);
 	return(2);
 }
 
@@ -93,6 +95,8 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 			options->new_tokens = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--repeats") == 0 )
 			options->repeats = (uint32_t)strtoul(value,0,10);
+		else if ( strcmp(flag,"--model") == 0 )
+			options->model = value;
 		else if ( strcmp(flag,"--spec-prompts") == 0 )
 			options->spec_prompts = value;
 		else if ( strcmp(flag,"--draft-max") == 0 )
@@ -962,7 +966,9 @@ int main(int argc, char **argv)
 	mkdir(options.out,0755);
 	memset(&config,0,sizeof(config));
 	config.pack_path = options.pack;
-	config.model = SparkQwen38_27bDeviceStageModel();
+	config.model = options.model != 0 && strcmp(options.model,"gemma4-26b-a4b") == 0 ? SparkGemma4_26bDeviceStageModel() : SparkQwen38_27bDeviceStageModel();
+	if ( options.model != 0 && strcmp(options.model,config.model->weightd_model) != 0 )
+		return(Usage(argv[0]));
 	config.max_rows = options.prefill_rows;
 	config.sequences = strcmp(options.mode,"pairs") == 0 ? 2u : 1u;
 	config.max_context = RUN_MAX_CONTEXT;

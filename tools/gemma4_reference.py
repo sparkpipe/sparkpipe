@@ -12,6 +12,16 @@
              with, for every served token, the served top logprobs, the
              reference top-5 (token, logprob), the reference logprob of the
              served token and the top-1/top-2 logit margin
+  teacher    teacher-forced FP32 logits for every position but the last of
+             each prompt (--prompts prompts.json) to
+             <out>/<name>.ref_<variant>.logits; --variant a sums every
+             reduction in numpy's order, --variant b splits every matmul's
+             inner dimension into 1,024-wide chunks summed last chunk first
+             and reverses every other reduction, so a against b is the noise
+             of FP32 reduction order under the same bf16 rounding
+  gate-prompts  the Metal gate prompts (the same instructions and repository
+             files as the Qwen3.8-27B gate) in this model's chat framing,
+             each file cut to the target token count -> --out prompts.json
   summary    --report report.json -> a per-prompt markdown table: top-1
              agreement, mismatches whose reference top-1/top-2 margin is at
              least --tie (default 0.1 nat; smaller margins are near ties),
@@ -65,13 +75,33 @@ def bf16(values):
     return rounded.astype(np.uint32).view(np.float32)
 
 
+REVERSED = False
+CHUNK = 1024
+
+
+def reduce_sum(values, axis=-1, keepdims=False):
+    return np.flip(values, axis=axis).sum(axis=axis, keepdims=keepdims) if REVERSED else values.sum(axis=axis, keepdims=keepdims)
+
+
+def matmul(left, right, chunk=CHUNK):
+    if not REVERSED or left.shape[-1] <= chunk:
+        return left @ right
+    total = None
+    for first in reversed(range(0, left.shape[-1], chunk)):
+        part = left[..., first:first + chunk] @ right[first:first + chunk]
+        total = part if total is None else total + part
+    return total
+
+
 def rms(values, weight=None, epsilon=1e-6):
-    normed = values * np.power((values * values).mean(axis=-1, keepdims=True) + np.float32(epsilon), np.float32(-0.5))
+    mean = reduce_sum(values * values, keepdims=True) / np.float32(values.shape[-1])
+    normed = values * np.power(mean + np.float32(epsilon), np.float32(-0.5))
     return normed * weight if weight is not None else normed
 
 
 def gelu_tanh(values):
-    return 0.5 * values * (1.0 + np.tanh(np.float32(0.7978845608028654) * (values + np.float32(0.044715) * values * values * values)))
+    cube = values * values * values
+    return 0.5 * values * (1.0 + np.tanh(np.float32(0.7978845608028654) * (values + np.float32(0.044715) * cube)))
 
 
 def sigmoid(values):
@@ -137,14 +167,14 @@ class Reference:
             rope = config["rope_parameters"]
             sliding_dim, full_dim = config["head_dim"], config["global_head_dim"]
             self.inv_freq["sliding"] = (1.0 / rope["sliding_attention"]["rope_theta"] **
-                                        (np.arange(0, sliding_dim, 2, dtype=np.int64).astype(np.float32) / sliding_dim)).astype(np.float32)
+                                        (np.arange(0, sliding_dim, 2, dtype=np.float64) / sliding_dim)).astype(np.float32)
             pairs = int(rope["full_attention"]["partial_rotary_factor"] * full_dim // 2)
             rotated = (1.0 / rope["full_attention"]["rope_theta"] **
-                       (np.arange(0, 2 * pairs, 2, dtype=np.int64).astype(np.float32) / full_dim)).astype(np.float32)
+                       (np.arange(0, 2 * pairs, 2, dtype=np.float64) / full_dim)).astype(np.float32)
             self.inv_freq["full"] = np.concatenate([rotated, np.zeros(full_dim // 2 - pairs, dtype=np.float32)])
 
     def linear(self, values, name):
-        return bf16(values @ self.checkpoint.f32(name).T)
+        return bf16(matmul(values, self.checkpoint.f32(name).T))
 
     def norm(self, values, name, epsilon=None):
         epsilon = self.epsilon if epsilon is None else epsilon
@@ -167,11 +197,11 @@ class Reference:
             causal &= positions[None, :] > positions[:, None] - window
         output = np.empty((rows, heads, value.shape[-1]), dtype=np.float32)
         for head in range(heads):
-            scores = (query[:, head, :] @ key[:, head // group, :].T) * np.float32(scale)
+            scores = matmul(query[:, head, :], key[:, head // group, :].T, query.shape[-1] // 2) * np.float32(scale)
             scores = np.where(causal, scores, -np.inf)
             weights = np.exp(scores - scores.max(axis=-1, keepdims=True))
-            weights /= weights.sum(axis=-1, keepdims=True)
-            output[:, head, :] = bf16(weights @ value[:, head // group, :])
+            weights /= reduce_sum(weights, keepdims=True)
+            output[:, head, :] = bf16(matmul(weights, value[:, head // group, :]))
         return output.reshape(rows, -1)
 
     def attention(self, layer, normed, positions):
@@ -216,18 +246,18 @@ class Reference:
         routed = bf16(bf16(routed * self.checkpoint.f32(p + "router.scale")) * np.float32(self.hidden ** -0.5))
         logits = self.linear(routed, p + "router.proj.weight")
         probabilities = np.exp(logits - logits.max(axis=-1, keepdims=True))
-        probabilities /= probabilities.sum(axis=-1, keepdims=True)
+        probabilities /= reduce_sum(probabilities, keepdims=True)
         chosen = np.argsort(-probabilities, axis=-1, kind="stable")[:, :top_k]
         weights = np.take_along_axis(probabilities, chosen, axis=-1)
-        weights = (weights / weights.sum(axis=-1, keepdims=True)) * self.checkpoint.f32(p + "router.per_expert_scale")[chosen]
+        weights = (weights / reduce_sum(weights, keepdims=True)) * self.checkpoint.f32(p + "router.per_expert_scale")[chosen]
         source = self.norm(residual, p + "pre_feedforward_layernorm_2.weight")
         gate_up, down = self.checkpoint.raw(p + "experts.gate_up_proj"), self.checkpoint.raw(p + "experts.down_proj")
         output = np.zeros_like(residual)
         for expert in np.unique(chosen):
             rows, slots = np.nonzero(chosen == expert)
-            projected = bf16(source[rows] @ widen(gate_up[expert]).T)
+            projected = bf16(matmul(source[rows], widen(gate_up[expert]).T))
             activated = bf16(bf16(gelu_tanh(projected[:, :inter])) * projected[:, inter:])
-            contribution = bf16(bf16(activated @ widen(down[expert]).T) * weights[rows, slots][:, None])
+            contribution = bf16(bf16(matmul(activated, widen(down[expert]).T)) * weights[rows, slots][:, None])
             output[rows] = bf16(output[rows] + contribution)
         return output
 
@@ -263,7 +293,7 @@ class Reference:
 
     def logits(self, normed, chunk=16384):
         head = self.checkpoint.raw("lm_head.weight" if self.muse else PREFIX + "embed_tokens.weight")
-        logits = np.concatenate([normed @ widen(head[first:first + chunk]).T for first in range(0, head.shape[0], chunk)], axis=-1)
+        logits = np.concatenate([matmul(normed, widen(head[first:first + chunk]).T) for first in range(0, head.shape[0], chunk)], axis=-1)
         if self.muse:
             logits = logits * self.output_multiplier
         return np.float32(self.softcap) * np.tanh(logits / np.float32(self.softcap))
@@ -309,6 +339,60 @@ def score(args):
     Path(args.out).write_text(json.dumps(report))
 
 
+GATE_PROMPTS = (
+    ("design", "docs/INFERENCE_OS_DESIGN.md", "Summarize the design described below in five short bullet points.\n\n", 1100),
+    ("code", "inference/kernels/linear_attn.cuh", "Review this CUDA header. Explain what it does and name one risk in it.\n\n", 1800),
+    ("korean", "site/index-ko.html", "다음 글을 세 문장으로 요약해 주세요.\n\n", 700),
+    ("rules", "sparkpipe_invariants.md", "Read these engineering rules, then say which two matter most for a new driver and why.\n\n", 2040),
+)
+
+
+def gate_prompts(args):
+    import hashlib
+    import html
+    import re
+    from tokenizers import Tokenizer
+    root = Path(__file__).resolve().parents[1]
+    template = json.loads(Path(args.template).read_text())
+    tokenizer = Tokenizer.from_file(str(Path(args.checkpoint) / "tokenizer.json"))
+    encode = lambda text: tokenizer.encode(text, add_special_tokens=False).ids
+    head, tail = encode(template["prefix"] + template["user"]), encode(template["turn_suffix"] + template["generation"])
+    prompts = []
+    for name, source, instruction, target in GATE_PROMPTS:
+        path = root / source
+        text = path.read_text(encoding="utf-8")
+        if path.suffix == ".html":
+            text = re.sub(r"(?s)<(script|style)[^>]*>.*?</\1>", " ", text)
+            text = html.unescape(re.sub(r"<[^>]+>", " ", text))
+            text = re.sub(r"\n\s*\n+", "\n\n", re.sub(r"[ \t\r\f\v]+", " ", text)).strip()
+        body = encode(instruction + text)
+        keep = target - len(head) - len(tail)
+        if len(body) < keep:
+            raise ValueError(f"{source} yields {len(body)} tokens, fewer than the {keep} the prompt needs")
+        tokens = head + body[:keep] + tail
+        prompts.append({"name": name, "source": source, "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                        "instruction": instruction, "tokens": len(tokens), "prompt_token_ids": tokens})
+        print(f"{name}: {len(tokens)} tokens from {source}", flush=True)
+    Path(args.out).write_text(json.dumps({"tokenizer_sha256": hashlib.sha256((Path(args.checkpoint) / "tokenizer.json").read_bytes()).hexdigest(),
+                                          "prompts": prompts}, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def teacher(args):
+    global REVERSED
+    REVERSED = args.variant == "b"
+    reference = Reference(args.checkpoint)
+    prompts = json.loads(Path(args.prompts).read_text())["prompts"]
+    normed = reference.forward([prompt["prompt_token_ids"] for prompt in prompts])
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    for prompt, hidden in zip(prompts, normed):
+        with open(out / f"{prompt['name']}.ref_{args.variant}.logits", "wb") as handle:
+            for first in range(0, len(prompt["prompt_token_ids"]) - 1, 128):
+                last = min(first + 128, len(prompt["prompt_token_ids"]) - 1)
+                handle.write(np.ascontiguousarray(reference.logits(hidden[first:last]), dtype=np.float32).tobytes())
+        print(f"{prompt['name']}: {len(prompt['prompt_token_ids']) - 1} positions, variant {args.variant}", flush=True)
+
+
 def summary(args):
     report = json.loads(Path(args.report).read_text())
     print("| prompt | tokens | top-1 agree | mismatches at margin >= %.2f | first divergence (margin) | served-token logprob delta median / max |" % args.tie)
@@ -343,13 +427,22 @@ def main():
     s.add_argument("--prompts", required=True)
     s.add_argument("--capture", required=True)
     s.add_argument("--out", required=True)
+    g = sub.add_parser("gate-prompts")
+    g.add_argument("--checkpoint", required=True)
+    g.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/gemma4/chat_template.json"))
+    g.add_argument("--out", required=True)
+    r = sub.add_parser("teacher")
+    r.add_argument("--checkpoint", required=True)
+    r.add_argument("--prompts", required=True)
+    r.add_argument("--out", required=True)
+    r.add_argument("--variant", choices=("a", "b"), default="a")
     m = sub.add_parser("summary")
     m.add_argument("--report", required=True)
     m.add_argument("--tie", type=float, default=0.1)
     args = parser.parse_args()
     if args.command == "summary":
         return summary(args)
-    tokenize(args) if args.command == "tokenize" else score(args)
+    {"tokenize": tokenize, "score": score, "gate-prompts": gate_prompts, "teacher": teacher}[args.command](args)
     return 0
 
 
