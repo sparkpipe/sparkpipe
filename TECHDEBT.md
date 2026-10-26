@@ -1107,6 +1107,16 @@ Metal backend and the single-Studio stage are in
     the arena that survives a code-only redeploy, is CUDA VMM only;
   - a lane record, model description and swap-controller entry for the
     Studio target (`metal.apple10`).
+- Find a numerics gate with power at BF16 for the Studio stage. Against
+  the reference (`tools/qwen38_27b_reference.c`), Metal's teacher-forced
+  top-1 agreement is 97.62% over 5,636 positions, below the 99% bar, while
+  the reference agrees with itself across two reduction orders on only
+  97.75%; mean KL is 1.11 times that floor. A whole-tensor layout fault fails
+  at 15.4 times the floor, but swapping two rows of one projection is not
+  detected (1.16 times). Settle the bar against this floor, or measure on
+  positions the floor leaves stable, more positions, or the model's own
+  greedy text, and keep both controls
+  ([`qualification/metal/qwen38_27b/a2bd02d0a/`](qualification/metal/qwen38_27b/a2bd02d0a/)).
 - Batch above two sequences on a Studio. The kernels and the runner take
   per-sequence row tables, and two-sequence decode reproduces
   single-sequence decode token for token, but larger batches, prefill and
@@ -1116,8 +1126,9 @@ Metal backend and the single-Studio stage are in
   once for any count is needed, and speculative verify frames need it too.
 - Close the single-Studio speed gaps: B1 decode runs the per-layer small
   kernels (norms, convolution, gates, rotary embedding, KV store) one after
-  another between the projections, and prefill attention is a tiled SIMD
-  kernel without the tensor operations, a third of an 8K prefill.
+  another between the projections (86% of the streaming-read roofline),
+  and prefill attention is a tiled SIMD kernel without the tensor
+  operations, about 30% of an 8K prefill.
 - The kernel library builds with Metal 4.0 and its prefill GEMM uses the
   Metal 4 tensor operations, so it loads only on Apple family 10 GPUs (M5).
   Another Studio generation needs its own qualified kernel set.

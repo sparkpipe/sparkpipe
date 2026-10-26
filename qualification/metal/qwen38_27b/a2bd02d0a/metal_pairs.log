@@ -1,0 +1,3 @@
+opened /Users/m5u0/models/packs/qwen38_27b_tp1_bf16/qwen38_27b.tp1.rank00.pack on Apple M5 Ultra (metal.apple10) in 0.06 s: pack 53793417600 bytes, device state 1220491688 bytes
+pair design + code: 128 two-row decode steps, 32.760 rows/s
+pair korean + rules: 128 two-row decode steps, 32.800 rows/s

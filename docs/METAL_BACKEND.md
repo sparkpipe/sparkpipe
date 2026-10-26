@@ -203,8 +203,22 @@ chunks accumulated last chunk first and reverses every sum. KL divergence
 between A and B is the floor: the noise of FP32 reduction order under BF16
 rounding. The Metal run passes when its position-weighted mean KL against A
 is at most ten times the floor and its top-1 agreement with A is at least 99%.
-`tools/pack_tensor_control.py` writes an APFS clone of the pack with rows 0
-and 1 of `layers.31.ffn_down` swapped; the same gate must fail on it.
+`tools/pack_tensor_control.py` writes APFS clones of the pack with one
+tensor corrupted, `layers.31.ffn_down` with rows 0 and 1 swapped and with
+every row moved down by one; the gate is run on both. The reference also runs
+once with FP32 activations (no BF16 rounding), as a diagnostic of how far
+BF16 inference itself moves the distribution.
+
+The floor is large for this model: references A and B agree on the top-1
+token at 97.75% of the positions and differ by 0.0395 nats of KL on average,
+most of it at a few percent of positions in long contexts where a rounding
+difference changes a near tie and the divergence carries on for some tokens.
+Metal sits inside it (1.11 times the floor's KL, 97.62% top-1), so the 99%
+top-1 bar is not met, by Metal or by the reference against itself. The
+whole-tensor control lands at 15.4 times the floor and fails; the two-row
+swap lands at 1.16 times the floor and is not detected, because its effect
+on the output is inside the BF16 noise. Results are in
+[`PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md#mac-studio).
 `tools/logit_compare.c` computes KL(ref || test), top-1 agreement and the
 largest change in the target token's log-probability. Both implementations
 also continue each prompt greedily for 128 tokens.
