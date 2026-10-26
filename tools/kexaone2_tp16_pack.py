@@ -164,7 +164,18 @@ def pack_layer(checkpoint, packs, config, layer):
             packs.add(rank, name + tensor, stacked, "bf16")
 
 
-def finish(packs, config, revision, contract_sha256):
+def seal(final, payload, fmt, settings, manifest):
+    assemble(final, payload, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, NAMED_PACK_ALIGN, fmt, settings, manifest)
+    digest = hashlib.sha256()
+    with final.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 24), b""):
+            digest.update(chunk)
+    Path(str(final) + ".sha256").write_text(f"{digest.hexdigest()}  {final.name}\n")
+    Path(str(final) + ".experts").write_bytes(struct.pack("<4I", EXPERTS_MAGIC, EXPERTS_VERSION, 0, 0))
+    print(f"{final.name} {final.stat().st_size} {digest.hexdigest()}", flush=True)
+
+
+def finish(packs, config, revision, contract_sha256, defer):
     vocab_rows = config["vocab_size"] // TP
     local = config["num_experts"] // TP
     for rank in packs.ranks:
@@ -178,25 +189,32 @@ def finish(packs, config, revision, contract_sha256):
         fmt = {"container": "spark_named_pack", "version": NAMED_PACK_VERSION, "alignment": NAMED_PACK_ALIGN,
                "linear_codec": "bf16", "attn_qkv_layout": "fused_windows", "revision": revision, "contract_sha256": contract_sha256}
         final = packs.final(rank)
-        assemble(final, packs.payload(rank), NAMED_PACK_MAGIC, NAMED_PACK_VERSION, NAMED_PACK_ALIGN, fmt, settings,
-                 packs.writers[rank].manifest)
-        digest = hashlib.sha256()
-        with final.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1 << 24), b""):
-                digest.update(chunk)
-        Path(str(final) + ".sha256").write_text(f"{digest.hexdigest()}  {final.name}\n")
-        Path(str(final) + ".experts").write_bytes(struct.pack("<4I", EXPERTS_MAGIC, EXPERTS_VERSION, 0, 0))
-        print(f"rank {rank:02d} {final.stat().st_size} {digest.hexdigest()}", flush=True)
+        if defer:
+            Path(str(final) + ".assembly.json").write_text(json.dumps({"final": final.name, "payload": packs.payload(rank).name, "format": fmt,
+                                                                       "settings": settings, "manifest": packs.writers[rank].manifest}))
+            print(f"rank {rank:02d} payload written, assembly deferred to {final.name}.assembly.json", flush=True)
+        else:
+            seal(final, packs.payload(rank), fmt, settings, packs.writers[rank].manifest)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--checkpoint", type=Path, required=True)
-    parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--contract", type=Path, required=True)
+    parser.add_argument("--assemble", type=Path)
+    parser.add_argument("--defer-assembly", action="store_true")
+    parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--contract", type=Path)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--ranks", default=",".join(str(rank) for rank in range(TP)))
     args = parser.parse_args()
+    if args.assemble is not None:
+        plan = json.loads(args.assemble.read_text())
+        directory = args.assemble.parent
+        seal(directory / plan["final"], directory / plan["payload"], plan["format"], plan["settings"], plan["manifest"])
+        args.assemble.unlink()
+        return 0
+    if args.checkpoint is None or args.output_dir is None or args.contract is None:
+        raise PackFailure("--checkpoint, --output-dir and --contract are required to pack")
     ranks = sorted({int(rank) for rank in args.ranks.split(",")})
     if not ranks or ranks[0] < 0 or ranks[-1] >= TP:
         raise PackFailure(f"--ranks must name ranks in 0..{TP - 1}")
@@ -224,7 +242,7 @@ def main():
     for layer in range(config["num_hidden_layers"]):
         pack_layer(checkpoint, packs, config, layer)
         print(f"layer {layer} packed", flush=True)
-    finish(packs, config, contract["revision"], hashlib.sha256(contract_bytes).hexdigest())
+    finish(packs, config, contract["revision"], hashlib.sha256(contract_bytes).hexdigest(), args.defer_assembly)
     return 0
 
 
