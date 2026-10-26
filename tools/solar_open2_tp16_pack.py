@@ -20,10 +20,11 @@ Rank r holds, bf16 unless noted:
                       [10240, H]; gqa_gate: g_proj rows of the rank's 4
                       query heads [512, H]; gqa_out: o_proj columns [H, 512]
   MoE layers          router [E, H] and expert_bias f32 [E] (replicated);
-                      experts [r*E/16, +E/16) as moe_w1 / moe_w3 [E/16, I, H]
-                      and moe_w2 [E/16, H, I]; the shared expert's rank
-                      slice of 80 rows padded with zero rows to 128:
-                      shared_gate_up [256, H], shared_down [H, 128]
+                      every routed expert's rank slice of I/16 = 80 rows as
+                      moe_w1 / moe_w3 [E, 80, H] and moe_w2 [E, H, 80]; the
+                      shared expert's rank slice of 80 rows padded with
+                      zero rows to 128: shared_gate_up [256, H],
+                      shared_down [H, 128]
 """
 
 import argparse
@@ -41,7 +42,6 @@ from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERS
 
 TP = 16
 SHARED_ROWS = 128
-EXPERT_ROWS = 128
 PREFIX = "solar_open2"
 
 
@@ -111,9 +111,9 @@ def pack_layer(checkpoint, packs, config, layer):
         for rank in packs.ranks:
             window = slice(rank * expert_rows, (rank + 1) * expert_rows)
             if key == "down":
-                stacked = np.stack([pad_rows(np.ascontiguousarray(matrix[:, window].T), EXPERT_ROWS).T for matrix in matrices])
+                stacked = np.stack([matrix[:, window] for matrix in matrices])
             else:
-                stacked = np.stack([pad_rows(matrix[window], EXPERT_ROWS) for matrix in matrices])
+                stacked = np.stack([matrix[window] for matrix in matrices])
             packs.add(rank, name + target, stacked, "bf16")
     for rank in packs.ranks:
         window = slice(rank * shared_rows, (rank + 1) * shared_rows)
@@ -129,7 +129,7 @@ def finish(packs, config, revision, contract_sha256):
         layout = {"model": PREFIX, "tp_degree": TP, "tp_rank": rank, "hidden": config["hidden_size"], "layers": config["num_hidden_layers"],
                   "vocab": config["vocab_size"], "vocab_first": rank * vocab_rows, "vocab_rows": vocab_rows,
                   "ffn_rows": 0, "experts": config["n_routed_experts"], "local_experts": local,
-                  "expert_first": 0, "expert_rows": EXPERT_ROWS, "top_k": config["num_experts_per_tok"], "shared_rows": SHARED_ROWS}
+                  "expert_first": 0, "expert_rows": config["moe_intermediate_size"] // TP, "top_k": config["num_experts_per_tok"], "shared_rows": SHARED_ROWS}
         fmt = {"container": "spark_named_pack", "version": NAMED_PACK_VERSION, "alignment": NAMED_PACK_ALIGN,
                "linear_codec": "bf16", "expert_codec": "bf16", "revision": revision, "contract_sha256": contract_sha256}
         final = packs.final(rank)
@@ -156,7 +156,7 @@ def check_layout(config):
                           f"config differs in {wrong or 'the KDA heads, gate bound, attention bias, qk norm, routing or tied embeddings'}")
     if config["num_attention_heads"] % TP or linear["num_heads"] % TP or config["n_routed_experts"] % TP or config["vocab_size"] % TP or \
             (config["moe_intermediate_size"] * config["n_shared_experts"]) // TP > SHARED_ROWS or \
-            config["moe_intermediate_size"] % TP or config["moe_intermediate_size"] // TP > EXPERT_ROWS or \
+            config["moe_intermediate_size"] % TP or (config["moe_intermediate_size"] // TP) % 8 or \
             ((config["num_attention_heads"] + 2 * config["num_key_value_heads"]) * config["head_dim"]) % TP:
         raise PackFailure("heads, experts, vocab or the shared expert do not fit the TP16 layout")
     period = sorted(gqa_layers(config))

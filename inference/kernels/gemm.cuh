@@ -328,7 +328,7 @@ void LmGemmKernel(
         (TILE_N / WARPS / FormatA::kMmaN);
     const uint32_t neuron_tiles =
         (args.output_dimension + TILE_N - 1u) / TILE_N;
-    const uint32_t k_tiles = args.input_dimension / TILE_K;
+    const uint32_t k_tiles = (args.input_dimension + TILE_K - 1u) / TILE_K;
     const uint32_t dense_rows = args.group_count == 1u
         ? args.group_row_offset[1] - args.group_row_offset[0]
         : 0u;

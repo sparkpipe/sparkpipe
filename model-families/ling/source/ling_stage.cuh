@@ -785,14 +785,22 @@ struct LingModel
 	}
 
 	template<class T>
-	static SparkStatus Bind(State *state, SparkWeightdLazyPack *lazy_pack, uint32_t index, const char *name, const char *kind, T **field)
+	static SparkStatus Bind(State *state, SparkWeightdLazyPack *lazy_pack, uint32_t index, const char *name, const char *kind, T **field,
+		uint64_t expected_bytes = 0u)
 	{
 		char key[SPARK_NAMED_PACK_MAX_NAME_BYTES];
 		uint64_t offset, bytes;
 		const void *bound = 0;
 		snprintf(key, sizeof(key), "layers.%u.%s", index, name);
-		if ( Entry(state, key, kind, &offset, &bytes, 0) != SPARK_STATUS_OK ||
-			SparkWeightdLazyPackSlice(lazy_pack, offset, bytes, &bound) != SPARK_STATUS_OK || bound == 0 )
+		if ( Entry(state, key, kind, &offset, &bytes, 0) != SPARK_STATUS_OK )
+			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+		if ( expected_bytes != 0u && bytes != expected_bytes )
+		{
+			fprintf(stderr, "%s: pack tensor %s is %llu bytes, the stage geometry needs %llu\n", G::Tag(), key, (unsigned long long)bytes,
+				(unsigned long long)expected_bytes);
+			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
+		}
+		if ( SparkWeightdLazyPackSlice(lazy_pack, offset, bytes, &bound) != SPARK_STATUS_OK || bound == 0 )
 		{
 			fprintf(stderr, "%s: weightd has no resident bytes for %s\n", G::Tag(), key);
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
@@ -882,15 +890,15 @@ struct LingModel
 				if ( status == SPARK_STATUS_OK )
 					status = Bind(state, lazy_pack, index, "expert_bias", "f32", &layer->expert_bias);
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "moe_w1", "bf16", &layer->moe_w1);
+					status = Bind(state, lazy_pack, index, "moe_w1", "bf16", &layer->moe_w1, (uint64_t)G::kLocalExperts * G::kMoeInter * G::kHidden * sizeof(uint16_t));
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "moe_w3", "bf16", &layer->moe_w3);
+					status = Bind(state, lazy_pack, index, "moe_w3", "bf16", &layer->moe_w3, (uint64_t)G::kLocalExperts * G::kMoeInter * G::kHidden * sizeof(uint16_t));
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "moe_w2", "bf16", &layer->moe_w2);
+					status = Bind(state, lazy_pack, index, "moe_w2", "bf16", &layer->moe_w2, (uint64_t)G::kLocalExperts * G::kMoeInter * G::kHidden * sizeof(uint16_t));
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "shared_gate_up", "bf16", &layer->shared_gate_up);
+					status = Bind(state, lazy_pack, index, "shared_gate_up", "bf16", &layer->shared_gate_up, (uint64_t)2u * G::kSharedRows * G::kHidden * sizeof(uint16_t));
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "shared_down", "bf16", &layer->shared_down);
+					status = Bind(state, lazy_pack, index, "shared_down", "bf16", &layer->shared_down, (uint64_t)G::kSharedRows * G::kHidden * sizeof(uint16_t));
 			}
 			if ( status != SPARK_STATUS_OK )
 				return SPARK_STATUS_PARSE_ERROR;
