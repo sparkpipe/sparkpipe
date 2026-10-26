@@ -935,6 +935,13 @@ build/test_skinny_grouped_reference: tests/test_skinny_grouped_reference.cu infe
 test-skinny-grouped-reference: build/test_skinny_grouped_reference
 	./build/test_skinny_grouped_reference --run
 
+build/test_expert_tail_reference: tests/test_expert_tail_reference.cu inference/kernels/moe_experts.cuh inference/kernels/skinny.cuh inference/kernels/gemm.cuh runtime/gemm.cuh runtime/launch.h inference/kernels/route.cuh | build
+	$(KERNEL_TEST_NVCC) $< $(KERNEL_TEST_CUDA_LINK) -o $@
+
+.PHONY: test-expert-tail-reference
+test-expert-tail-reference: build/test_expert_tail_reference
+	./build/test_expert_tail_reference --run
+
 WORKING_SET_NVCC = $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude
 
 build/test_working_set_rollback: tests/test_working_set_rollback.cu runtime/spark_expert_working_set.c include/sparkpipe/spark_expert_working_set.h include/sparkpipe/spark_step_verdict.h inference/kernels/expert_cover.cuh inference/kernels/state_snapshot.cuh include/sparkpipe/spark_state_span.h | build

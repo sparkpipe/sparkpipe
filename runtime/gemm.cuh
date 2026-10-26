@@ -259,6 +259,8 @@ static int32_t LmGemmLaunchAsymmetric(
     alignas(64) CUtensorMap activation_map;
     alignas(64) CUtensorMap weight_map;
     int32_t status;
+	constexpr bool k_tail = !INDIRECT_A && ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_NONE && !INTERLEAVED_B &&
+		FormatA::kScaleGroup == 0u && FormatB::kScaleGroup == 0u;
 
     static_assert(
         FormatA::kMmaM == FormatB::kMmaM &&
@@ -347,7 +349,7 @@ static int32_t LmGemmLaunchAsymmetric(
             return status;
         }
     }
-    if ((input_dimension % TILE_K) != 0u)
+    if (!k_tail && (input_dimension % TILE_K) != 0u)
     {
         return LM_LAUNCH_ERR_SHAPE;
     }
@@ -367,6 +369,7 @@ static int32_t LmGemmLaunchAsymmetric(
     shape.tile_k = TILE_K;
     shape.stages = STAGES;
     shape.interleaved_b = INTERLEAVED_B ? 1u : 0u;
+    shape.k_tail = k_tail ? 1u : 0u;
     status = LmLaunchPlanBuild(&shape, multiprocessors, &plan);
     if (status != LM_LAUNCH_OK)
         return status;
