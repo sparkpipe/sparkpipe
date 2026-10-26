@@ -587,6 +587,7 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_pack_regions.py \
 	tests/test_tp_mesh_cancel_lifetime.py \
 	tests/test_clamped_up_gate.py \
+	tests/test_kernel_math_bf16.py \
 	tests/test_glm52_expert_graft.py \
 	tests/test_glm52_spine_source_verify.py \
 	tests/test_glm52_routed_parity.py \
