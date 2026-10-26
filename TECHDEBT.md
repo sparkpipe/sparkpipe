@@ -792,8 +792,8 @@ The sources are pinned. K-EXAONE 2.0 and A.X K2 serve; Solar Open 2 has only its
     - DeepSeek's own gate and Megatron mask with −inf.
     - Teacher-forced on the A/B corpus (20 documents, 640 positions, the same engine and firmware but for the mask), −inf predicts the next token correctly at 63.9% of positions against 58.8% with 0.0-fill. Only −inf is right at 49 positions, only 0.0-fill at 16 (McNemar p = 5e-5), and −inf gives the true token 0.17 nats more log-probability per position.
     - The lane serves −inf since 2026-10-26 14:55Z. The numpy reference masks the same way.
+  - **Reference:** with both masking with −inf, the served tokens agree with the numpy reference at all 122 positions, served logprobs within 0.31 (median under 0.005). Under 0.0-fill, the Korean contract prompt had disagreed at 3 to 5 of 48 positions, and which positions moved with how the reference batched its prompts.
   - **Missing:**
-    - The −inf reference's check of the served tokens is running. Against the earlier 0.0-fill reference, the Korean contract prompt disagreed at 3 to 5 of 48 positions, and which positions depended on how that reference batched its prompts, because its tie order moved with them.
     - Speculation with the DSpark drafter is not wired.
 - **Solar Open 2** (`upstage/Solar-Open2-250B@9190fbe6`, BF16, 0.50 TB): 48 layers, three linear-attention layers (short convolution 4, 64 heads) for each GQA layer, no position encoding, 320 routed experts (top 8) plus one shared, 1M context. The Upstage Solar License asks that derivatives be named Solar and show "Built with Solar". The nearest served design is the linear-attention path of Kimi K3 and Ling.
 
