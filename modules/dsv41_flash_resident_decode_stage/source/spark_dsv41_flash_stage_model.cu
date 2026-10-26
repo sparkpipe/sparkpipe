@@ -639,7 +639,7 @@ static SparkStatus D41Select(D41ModelState *state, uint32_t index, const SparkSt
 	SparkStatus status;
 	D41IndexUnpackKernel<<<dim3(rows, D41_TP), D41_THREADS, 0, stream>>>(packed, rank_stride, state->idx_query, state->idx_w_full,
 		local_width, D41_LOCAL_INDEX_HEADS, D41_INDEX_PACK);
-	if ( LmWeightedSparseScoreLaunch<Geometry,D41_INDEX_HEADS,D41_INDEX_DIM,LmKvShardView,true>(state->idx_query, state->idx_w_full,
+	if ( LmWeightedSparseScoreLaunch<Geometry,D41_INDEX_HEADS,D41_INDEX_DIM,LmKvShardView>(state->idx_query, state->idx_w_full,
 		state->index_views[cache], step->sequence_of_row, length, bound, rows, state->step_score_stride, 1.0f, state->local_scores,
 		stream) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
