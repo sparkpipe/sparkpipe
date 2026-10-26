@@ -398,6 +398,7 @@
    "sequences": 16,
    "rows": 2048,
    "context_tokens": 262144,
+   "context_reason": "262,144 positions: the model's 1,048,576 has not yet passed the max-context gate (maxctx.sh) on this lane",
    "kv_physical_pages": 32768,
    "kv_logical_pages": 65536,
    "kv_backing_bytes": 8589934592,
