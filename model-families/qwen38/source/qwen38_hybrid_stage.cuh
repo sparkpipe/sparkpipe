@@ -347,7 +347,7 @@ __global__ static void QwenHybridRowDotKernel(const uint16_t *rows_bf16, const u
 __global__ static void QwenHybridSigmoidGateRowsKernel(uint16_t *rows_bf16, const uint16_t *logit, uint32_t width)
 {
 	const uint32_t row = blockIdx.y;
-	const float gate = 1.0f / (1.0f + expf(-LmBf16ToFloat(logit[row])));
+	const float gate = SparkMathSigmoid(LmBf16ToFloat(logit[row]));
 	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < width; index += gridDim.x * blockDim.x )
 		rows_bf16[(uint64_t)row * width + index] = LmFloatToBf16(LmBf16ToFloat(rows_bf16[(uint64_t)row * width + index]) * gate);
 }

@@ -36,7 +36,7 @@ kernel void spark_gemm(constant SparkGemmParams &p [[buffer(0)]], device bfloat 
 				if ( F32 )
 					((device float *)out)[at] = product[i];
 				else
-					((device ushort *)out)[at] = SparkFloatToBf16(product[i]);
+					((device ushort *)out)[at] = SparkMathFloatToBf16(product[i]);
 			}
 		}
 }

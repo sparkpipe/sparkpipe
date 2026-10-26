@@ -19,7 +19,7 @@ static __device__ __forceinline__ float LmHyperRound(float value)
 
 static __device__ __forceinline__ float LmHyperSigmoid(float value)
 {
-	return 1.0f / (1.0f + expf(-value));
+	return SparkMathSigmoid(value);
 }
 
 template<uint32_t THREADS>

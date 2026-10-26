@@ -15,7 +15,7 @@ static __device__ __forceinline__ float LmTopkScore(const float *scores, const u
 		? LmBf16ToFloat(logits_bf16[index])
 		: scores[index];
 	if ( SCORE_TRANSFORM == LM_TOPK_SCORE_SIGMOID )
-		return(1.0f / (1.0f + __expf(-value)));
+		return(SparkMathSigmoidFast(value));
 	if ( SCORE_TRANSFORM == LM_TOPK_SCORE_SQRT_SOFTPLUS )
 	{
 		float softplus = value > 20.0f ? value : log1pf(expf(value));

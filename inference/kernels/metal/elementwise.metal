@@ -25,7 +25,7 @@ kernel void spark_add_rows(constant SparkSiluMulParams &p [[buffer(0)]], device 
 	if ( index >= p.dimension )
 		return;
 	const ulong at = (ulong)row * p.input_stride + index;
-	hidden[at] = SparkFloatToBf16(SparkBf16ToFloat(hidden[at]) + SparkBf16ToFloat(addend[(ulong)row * p.output_stride + index]));
+	hidden[at] = SparkMathFloatToBf16(SparkMathBf16ToFloat(hidden[at]) + SparkMathBf16ToFloat(addend[(ulong)row * p.output_stride + index]));
 }
 
 kernel void spark_silu_mul(constant SparkSiluMulParams &p [[buffer(0)]], device const ushort *input [[buffer(1)]],
@@ -37,8 +37,8 @@ kernel void spark_silu_mul(constant SparkSiluMulParams &p [[buffer(0)]], device 
 	if ( index >= p.dimension )
 		return;
 	device const ushort *source = input + (ulong)row * p.input_stride;
-	const float gate = SparkBf16ToFloat(source[index]), up = SparkBf16ToFloat(source[p.dimension + index]);
-	output[(ulong)row * p.output_stride + index] = SparkFloatToBf16(SparkSilu(gate) * up);
+	const float gate = SparkMathBf16ToFloat(source[index]), up = SparkMathBf16ToFloat(source[p.dimension + index]);
+	output[(ulong)row * p.output_stride + index] = SparkMathFloatToBf16(SparkMathSilu(gate) * up);
 }
 
 kernel void spark_logprob_rows(constant SparkLogprobParams &p [[buffer(0)]], device const float *logits [[buffer(1)]],

@@ -4,6 +4,8 @@
 #include <cuda_fp16.h>
 #include <stdint.h>
 
+#include "inference/kernels/kernel_math.cuh"
+
 
 struct LmBf16 { static constexpr uint32_t kBits = 16u; };
 struct LmE4m3 { static constexpr uint32_t kBits = 8u; };
@@ -28,7 +30,7 @@ static __host__ __device__ __forceinline__ uint64_t LmBytesForElements(uint64_t 
 
 static __device__ __forceinline__ float LmBf16ToFloat(uint16_t value)
 {
-	return(__uint_as_float((uint32_t)value << 16u));
+	return(SparkMathBf16ToFloat(value));
 }
 
 static __device__ __forceinline__ float LmScalarToFloat(uint16_t value)
@@ -43,8 +45,7 @@ static __device__ __forceinline__ float LmScalarToFloat(float value)
 
 static __device__ __forceinline__ uint16_t LmFloatToBf16(float value)
 {
-	uint32_t bits = __float_as_uint(value);
-	return((uint16_t)((bits + 0x7fffu + ((bits >> 16u) & 1u)) >> 16u));
+	return(SparkMathFloatToBf16(value));
 }
 
 static __device__ __forceinline__ float2 LmLoadBf16Pair(const void *base, uint64_t pair_index)

@@ -17,23 +17,23 @@ kernel void spark_causal_conv_silu(constant SparkConvParams &p [[buffer(0)]], de
 	device ushort *slot = window + ((ulong)state_index[sequence] * p.channels + channel) * taps_count;
 	for ( uint tap = 0u; tap < taps_count; tap++ )
 	{
-		taps[tap] = SparkBf16ToFloat(slot[tap]);
-		weights[tap] = SparkBf16ToFloat(weight[channel * taps_count + tap]);
+		taps[tap] = SparkMathBf16ToFloat(slot[tap]);
+		weights[tap] = SparkMathBf16ToFloat(weight[channel * taps_count + tap]);
 	}
 	for ( uint row = row_begin[sequence]; row < row_begin[sequence + 1u]; row++ )
 	{
 		float total = 0.0f;
 		for ( uint tap = 0u; tap + 1u < taps_count; tap++ )
 			taps[tap] = taps[tap + 1u];
-		taps[taps_count - 1u] = SparkBf16ToFloat(input[(ulong)row * p.row_stride + channel]);
+		taps[taps_count - 1u] = SparkMathBf16ToFloat(input[(ulong)row * p.row_stride + channel]);
 		for ( uint tap = 0u; tap < taps_count; tap++ )
 			total += taps[tap] * weights[tap];
-		total = SparkRoundBf16(total);
-		output[(ulong)row * p.row_stride + channel] = SparkFloatToBf16(SparkSilu(total));
+		total = SparkMathRoundBf16(total);
+		output[(ulong)row * p.row_stride + channel] = SparkMathFloatToBf16(SparkMathSilu(total));
 	}
 	if ( p.commit != 0u )
 		for ( uint tap = 0u; tap < taps_count; tap++ )
-			slot[tap] = SparkFloatToBf16(taps[tap]);
+			slot[tap] = SparkMathFloatToBf16(taps[tap]);
 }
 
 kernel void spark_gated_delta_prepare(constant SparkDeltaParams &p [[buffer(0)]], device const ushort *mix [[buffer(1)]],
@@ -49,8 +49,8 @@ kernel void spark_gated_delta_prepare(constant SparkDeltaParams &p [[buffer(0)]]
 	float q_sum = 0.0f, k_sum = 0.0f;
 	for ( uint i = tid; i < D; i += threads )
 	{
-		const float q = SparkBf16ToFloat(row_mix[p.query_offset + head * D + i]);
-		const float k = SparkBf16ToFloat(row_mix[p.key_offset + head * D + i]);
+		const float q = SparkMathBf16ToFloat(row_mix[p.query_offset + head * D + i]);
+		const float k = SparkMathBf16ToFloat(row_mix[p.key_offset + head * D + i]);
 		q_sum += q * q;
 		k_sum += k * k;
 	}
@@ -61,17 +61,16 @@ kernel void spark_gated_delta_prepare(constant SparkDeltaParams &p [[buffer(0)]]
 	device float *k_out = key + ((ulong)row * p.key_heads + head) * D;
 	for ( uint i = tid; i < D; i += threads )
 	{
-		q_out[i] = SparkBf16ToFloat(row_mix[p.query_offset + head * D + i]) * q_scale;
-		k_out[i] = SparkBf16ToFloat(row_mix[p.key_offset + head * D + i]) * k_scale;
+		q_out[i] = SparkMathBf16ToFloat(row_mix[p.query_offset + head * D + i]) * q_scale;
+		k_out[i] = SparkMathBf16ToFloat(row_mix[p.key_offset + head * D + i]) * k_scale;
 	}
 	if ( tid < per_key )
 	{
 		const uint value_head = head * per_key + tid;
 		device const ushort *row_gates = gates + (ulong)row * p.gate_stride;
-		const float shifted = SparkBf16ToFloat(row_gates[p.decay_offset + value_head]) + bias[value_head];
-		const float softplus = shifted > 20.0f ? shifted : log(1.0f + exp(shifted));
-		decay[(ulong)row * p.value_heads + value_head] = exp(-exp(log_scale[value_head]) * softplus);
-		beta[(ulong)row * p.value_heads + value_head] = SparkSigmoid(SparkBf16ToFloat(row_gates[p.beta_offset + value_head]));
+		const float shifted = SparkMathBf16ToFloat(row_gates[p.decay_offset + value_head]) + bias[value_head];
+		decay[(ulong)row * p.value_heads + value_head] = SparkMathGatedDeltaDecay(log_scale[value_head],shifted);
+		beta[(ulong)row * p.value_heads + value_head] = SparkMathSigmoid(SparkMathBf16ToFloat(row_gates[p.beta_offset + value_head]));
 	}
 }
 
@@ -94,13 +93,13 @@ kernel void spark_gated_delta_rule(constant SparkDeltaParams &p [[buffer(0)]], d
 		const float4 q = *(device const float4 *)(query + vector);
 		const float factor = decay[(ulong)row * p.value_heads + head];
 		const float strength = beta[(ulong)row * p.value_heads + head];
-		const float value = SparkBf16ToFloat(mix[(ulong)row * p.mix_stride + p.value_offset + head * V + column]);
+		const float value = SparkMathBf16ToFloat(mix[(ulong)row * p.mix_stride + p.value_offset + head * V + column]);
 		cell *= factor;
 		const float predicted = simd_sum(dot(cell, k));
 		cell += (strength * (value - predicted)) * k;
 		const float result = simd_sum(dot(cell, q));
 		if ( lane == 0u )
-			output[(ulong)row * p.output_stride + head * V + column] = SparkFloatToBf16(result);
+			output[(ulong)row * p.output_stride + head * V + column] = SparkMathFloatToBf16(result);
 	}
 	if ( p.commit != 0u )
 	{
