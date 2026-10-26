@@ -81,9 +81,9 @@
       <tr><td><b>GLM 5.3</b><br><span class="mono">glm-5.3</span></td><td>Z.AI</td><td><a href="https://huggingface.co/zai-org/GLM-5.3">GLM-5.3 License</a></td><td class="num">1M</td><td class="num">28.9 tok/s</td><td class="num">1,162 tok/s</td><td>핵심</td><td>제공</td></tr>
       <tr><td><b>GLM 5.3 Flash</b><br><span class="mono">glm-5.3-flash</span></td><td>Z.AI</td><td><a href="https://huggingface.co/zai-org/GLM-5.3-Flash">MIT</a></td><td class="num">128K</td><td class="num">55.0 tok/s</td><td class="num">876 tok/s</td><td>핵심</td><td>제공</td></tr>
       <tr><td><b>DeepSeek V4.1 Flash</b><br><span class="mono">deepseek-v4.1-flash</span></td><td>DeepSeek</td><td><a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017">MIT</a></td><td class="num">1M</td><td class="num">42.5 ¹ tok/s</td><td class="num">1,290 ¹ tok/s</td><td>핵심</td><td>제공</td></tr>
-      <tr><td><b>K-EXAONE 2.0</b><br><span class="mono">k-exaone-2.0</span></td><td>LG AI연구원</td><td><a href="https://huggingface.co/LGAI-EXAONE/K-EXAONE-2.0-750B-A37B">Apache 2.0</a></td><td class="num">256K</td><td class="num">23.0 ³ tok/s</td><td class="num">324 ³ tok/s</td><td>검증 중</td><td>제공</td></tr>
-      <tr><td><b>A.X K2</b><br><span class="mono">a.x-k2</span></td><td>SK텔레콤</td><td><a href="https://huggingface.co/skt/A.X-K2">Apache 2.0</a></td><td class="num">256K</td><td class="num">23.5 ³ tok/s</td><td class="num">1,252 ³ tok/s</td><td>검증 중</td><td>제공</td></tr>
-      <tr><td><b>Solar Open 2</b><br><span class="mono">solar-open-2</span></td><td>업스테이지</td><td><a href="https://huggingface.co/upstage/Solar-Open2-250B">Upstage Solar License</a></td><td class="num">256K</td><td class="num">47.9 ³ tok/s</td><td class="num">1,025 ³ tok/s</td><td>검증 중</td><td>제공</td></tr>
+      <tr><td><b>K-EXAONE 2.0</b><br><span class="mono">k-exaone-2.0</span></td><td>LG AI연구원</td><td><a href="https://huggingface.co/LGAI-EXAONE/K-EXAONE-2.0-750B-A37B">Apache 2.0</a></td><td class="num">256K</td><td class="num">23.0 ³ ⁴ tok/s</td><td class="num">324 ³ tok/s</td><td>검증 중</td><td>제공</td></tr>
+      <tr><td><b>A.X K2</b><br><span class="mono">a.x-k2</span></td><td>SK텔레콤</td><td><a href="https://huggingface.co/skt/A.X-K2">Apache 2.0</a></td><td class="num">256K</td><td class="num">23.8 ³ ⁴ tok/s</td><td class="num">1,274 ³ tok/s</td><td>검증 중</td><td>제공</td></tr>
+      <tr><td><b>Solar Open 2</b><br><span class="mono">solar-open-2</span></td><td>업스테이지</td><td><a href="https://huggingface.co/upstage/Solar-Open2-250B">Upstage Solar License</a></td><td class="num">256K</td><td class="num">47.9 ³ ⁴ tok/s</td><td class="num">1,025 ³ tok/s</td><td>검증 중</td><td>제공</td></tr>
       <tr><td><b>MiMo V2.6 Pro</b><br><span class="mono">mimo-v2.6-pro</span></td><td>Xiaomi</td><td><a href="https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-RL">MIT</a></td><td class="num">32K</td><td class="num">19.0 ² tok/s</td><td class="num">55 ² tok/s</td><td>검증</td><td>제공</td></tr>
       <tr><td><b>MiMo V2.6 Flash</b><br><span class="mono">mimo-v2.6-flash</span></td><td>Xiaomi</td><td><a href="https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL">MIT</a></td><td class="num">32K</td><td class="num">40.9 ² tok/s</td><td class="num">157 ² tok/s</td><td>검증</td><td>제공</td></tr>
       <tr><td><b>Gemma 4 31B</b><br><span class="mono">gemma-4-31b</span></td><td>Google</td><td><a href="https://huggingface.co/google/gemma-4-31B-it">Apache 2.0</a></td><td class="num">32K</td><td class="num">34.4 tok/s</td><td class="num">834 tok/s</td><td>검증</td><td>제공, 텍스트만</td></tr>
@@ -99,7 +99,7 @@
     </table>
     </div>
     <p>컨텍스트 창은 제공 기준입니다. 디코드는 추측 디코딩 없는 단일 요청으로, 2026-10-18에 7~8K 토큰 프롬프트로 측정했습니다. 방법과 근거: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>(영문).</p>
-    <p>¹ DeepSeek V4.1 Flash는 2026-10-24에 1,047,883토큰 프롬프트로 측정했습니다. 디코드는 그 프롬프트 뒤의 단일 요청이고, 프리필은 그 프롬프트의 평균 속도입니다. ² 다른 작업이 모든 노드에서 CPU 코어 16개를 쓰는 동안 측정했으므로 하한값입니다. ³ 2026-10-26에 6,850~7,396토큰 프롬프트로 측정했습니다.</p>
+    <p>¹ DeepSeek V4.1 Flash는 2026-10-24에 1,047,883토큰 프롬프트로 측정했습니다. 디코드는 그 프롬프트 뒤의 단일 요청이고, 프리필은 그 프롬프트의 평균 속도입니다. ² 다른 작업이 모든 노드에서 CPU 코어 16개를 쓰는 동안 측정했으므로 하한값입니다. ³ 2026-10-26에 6,850~7,396토큰 프롬프트로 측정했습니다. ⁴ 추측 디코딩을 켜면 약 3,800토큰 파일에서 함수 하나의 이름만 바꿔 전체를 다시 쓰는 요청이 K-EXAONE 2.0에서 190.9 tok/s, A.X K2에서 298.0 tok/s, Solar Open 2에서 426.6 tok/s로 처리되며(프롬프트 프리필 포함), 출력은 추측 디코딩 없이 디코딩한 결과와 같습니다(2026-10-26).</p>
     <p>Qwen 3.8 Flash는 제공하지 않습니다. 그 라이선스는 모델을 서비스로 제공하는 모든 사업에 Qwen과의 별도 계약을 요구하므로, 저희 회사 내부에서만 씁니다.</p>
   </section>
 
@@ -129,7 +129,7 @@
       <tr><td><b>Kimi K3</b></td><td class="num">1.56 TB</td><td class="num">16.2 tok/s, 실측</td><td class="num">23 tok/s</td><td class="num">35 tok/s</td><td class="num">37초</td><td class="num">18초</td></tr>
       <tr><td><b>Qwen 3.8 Max</b>, 4비트 빌드</td><td class="num">1.37–1.48 TB</td><td class="num">10.4 tok/s, 실측</td><td class="num">–</td><td class="num">–</td><td class="num">35초</td><td class="num">17초</td></tr>
       <tr><td><b>K-EXAONE 2.0</b>, LG</td><td class="num">1.50 TB</td><td class="num">23.0 tok/s, 실측</td><td class="num">–</td><td class="num">–</td><td class="num">35초</td><td class="num">18초</td></tr>
-      <tr><td><b>A.X K2</b>, SKT</td><td class="num">0.69 TB</td><td class="num">23.5 tok/s, 실측</td><td class="num">33 tok/s</td><td class="num">49 tok/s</td><td class="num">16초</td><td class="num">8초</td></tr>
+      <tr><td><b>A.X K2</b>, SKT</td><td class="num">0.69 TB</td><td class="num">23.8 tok/s, 실측</td><td class="num">33 tok/s</td><td class="num">49 tok/s</td><td class="num">16초</td><td class="num">8초</td></tr>
     </table>
     </div>
     <p><b>M5 Ultra Mac Studio 한 대에서 실측</b>(플릿 2의 장비, SparkPipe Metal 엔진, 2026-10-26): Qwen 3.8 27B를 원래 BF16 정밀도로 단일 요청 20.1 tok/s로 디코딩하며, 이는 Studio에서 실측한 1.14 TB/s 메모리 대역폭이 허용하는 22.3 tok/s의 90%입니다. 여러 요청이 가중치 읽기를 함께 사용하므로 동시 요청 2개에서 합계 39.0 tok/s, 8개 130, 16개 231, 32개 366, 64개 442 tok/s입니다. 프리필은 1K 토큰 프롬프트에서 1,429 tok/s, 8K에서 1,501 tok/s입니다.</p>
