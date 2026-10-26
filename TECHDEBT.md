@@ -785,9 +785,14 @@ The sources are pinned. K-EXAONE 2.0 and A.X K2 serve; Solar Open 2 has only its
     - Speculation (its MTP layer or the DSpark drafter) is not wired.
 - **A.X K2** (`skt/A.X-K2@d0805cfd`, block-128 FP8, the precision it was trained in, 0.69 TB): 61 layers of latent attention (query rank 1,536, KV rank 512) with top-2,048 sparse attention through a 64-head indexer, a gated attention output and a gated norm; 256 routed experts (top 8) plus one shared; YaRN to 256K. Drafter `skt/A.X-K2-DSpark@0b278334`. GLM 5.3 Full has the same attention and expert design.
   - **Serving:** contract, tokenizer split, driver (`axk2` on the GLM stage, with its options for the query gate, gated norms, index rope and ReLU, YaRN and grouped routing), FP8 packer, numpy reference and lane 3. Answers are right in English and Korean, including a 3,076-token passkey past the indexer's 2,048 tokens.
-  - **Measured:** 23.5 tok/s at B1 without speculation, 1,252 tok/s prefill at 6K.
+  - **Measured:** 23.8 tok/s at B1 without speculation, 1,274 tok/s prefill at 6K.
+  - **Expert routing masks unselected groups with −inf.**
+    - The publisher's `modeling_axk2.py` fills the experts of the unselected groups with 0.0 before the top-8, as the DeepSeek-V3 HF code does. At layers 24, 34 and 36 every routing bias is negative (layer 24: −1.64 to −1.50), so every allowed expert scores below zero. With 0.0-fill, the router then takes 8 experts from the unselected groups, tied at 0.0, in whatever order the top-k breaks ties.
+    - DeepSeek's own gate and Megatron mask with −inf.
+    - Teacher-forced on the A/B corpus (20 documents, 640 positions, the same engine and firmware but for the mask), −inf predicts the next token correctly at 63.9% of positions against 58.8% with 0.0-fill. Only −inf is right at 49 positions, only 0.0-fill at 16 (McNemar p = 5e-5), and −inf gives the true token 0.17 nats more log-probability per position.
+    - The lane serves −inf since 2026-10-26 14:55Z. The numpy reference masks the same way.
   - **Missing:**
-    - The reference has not confirmed served tokens.
+    - The −inf reference's check of the served tokens is running. Against the earlier 0.0-fill reference, the Korean contract prompt disagreed at 3 to 5 of 48 positions, and which positions depended on how that reference batched its prompts, because its tie order moved with them.
     - Speculation with the DSpark drafter is not wired.
 - **Solar Open 2** (`upstage/Solar-Open2-250B@9190fbe6`, BF16, 0.50 TB): 48 layers, three linear-attention layers (short convolution 4, 64 heads) for each GQA layer, no position encoding, 320 routed experts (top 8) plus one shared, 1M context. The Upstage Solar License asks that derivatives be named Solar and show "Built with Solar". The nearest served design is the linear-attention path of Kimi K3 and Ling.
 

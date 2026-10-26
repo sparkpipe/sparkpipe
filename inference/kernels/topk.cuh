@@ -40,7 +40,7 @@ static __device__ __forceinline__ float LmTopkValue(uint32_t key)
 
 #define LM_TOPK_MAX_GROUPS 16u
 
-template<uint32_t THREADS, uint32_t K, bool RENORMALISE = false, uint32_t GROUPS = 1u, uint32_t TOP_GROUPS = 1u, uint32_t SCORE_TRANSFORM = LM_TOPK_SCORE_IDENTITY, bool GROUP_MASK_ZERO = false>
+template<uint32_t THREADS, uint32_t K, bool RENORMALISE = false, uint32_t GROUPS = 1u, uint32_t TOP_GROUPS = 1u, uint32_t SCORE_TRANSFORM = LM_TOPK_SCORE_IDENTITY>
 __global__ __launch_bounds__(THREADS, 1)
 void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias, const uint16_t *__restrict__ logits_bf16, float mixture_scale)
 {
@@ -86,7 +86,7 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 		__syncthreads();
 		for (index = threadIdx.x; index < LM_TOPK_SMALL_LIMIT; index += THREADS)
 			if ( index < n && group_key[index / per_group] == 0xffffffffu )
-				keys[index] = GROUP_MASK_ZERO ? LmTopkKey(0.0f) : 0u;
+				keys[index] = 0u;
 		__syncthreads();
 	}
 	for (size = 2u; size <= LM_TOPK_SMALL_LIMIT; size <<= 1u)

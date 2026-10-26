@@ -227,7 +227,7 @@ class Reference:
         top_groups = np.argsort(-group_scores, axis=-1, kind="stable")[:, :self.top_groups]
         allowed = np.zeros((rows, self.groups), dtype=bool)
         np.put_along_axis(allowed, top_groups, True, axis=-1)
-        choice = np.where(np.repeat(allowed, per_group, axis=-1), choice, np.float32(0.0))
+        choice = np.where(np.repeat(allowed, per_group, axis=-1), choice, np.float32(-np.inf))
         order = np.argsort(-choice, axis=-1, kind="stable")
         chosen = order[:, :self.top_k]
         if self.margins is not None:

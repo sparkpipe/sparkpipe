@@ -79,7 +79,6 @@ struct GlmDefaults
 	static constexpr bool kIndexRelu = false;
 	static constexpr uint32_t kExpertGroups = 1u;
 	static constexpr uint32_t kTopGroups = 1u;
-	static constexpr bool kGroupMaskZero = false;
 	static constexpr float kRopeFactor = 1.0f;
 	static constexpr float kRopeBetaFast = 32.0f;
 	static constexpr float kRopeBetaSlow = 1.0f;
@@ -869,7 +868,7 @@ static int32_t GlmMoeRoute(const GlmBuffers *b, uint32_t rows, uint32_t packed_r
 		return status != LM_LAUNCH_OK ? status : LM_LAUNCH_ERR_LAUNCH;
 	if constexpr ( S::kExpertGroups > 1u )
 	{
-		LM_LAUNCH((LmTopkSmallKernel<GLM_THREADS,S::kTopK,true,S::kExpertGroups,S::kTopGroups,LM_TOPK_SCORE_SIGMOID,S::kGroupMaskZero>), rows, GLM_THREADS,
+		LM_LAUNCH((LmTopkSmallKernel<GLM_THREADS,S::kTopK,true,S::kExpertGroups,S::kTopGroups,LM_TOPK_SCORE_SIGMOID>), rows, GLM_THREADS,
 			2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t), stream, b->router_logits, S::kExperts, b->route_expert, b->route_weight, b->weights->router_bias,
 			(const uint16_t *)0, S::kRoutedScale);
 		if ( cudaPeekAtLastError() != cudaSuccess )
