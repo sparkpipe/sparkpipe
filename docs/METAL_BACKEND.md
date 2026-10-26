@@ -105,8 +105,30 @@ The prefill GEMM uses Apple's `MetalPerformancePrimitives` `matmul2d` as its
 SDK header documents it. No third-party source is copied, so NOTICE has no
 entry for them.
 They implement the same operations as the CUDA kernels in
-`inference/kernels/`; one kernel body for both backends is open work
-(TECHDEBT).
+`inference/kernels/`.
+
+### Shared kernel math
+
+`inference/kernels/kernel_math.cuh` holds the formulas both compilers build:
+bf16 conversion and rounding, the scaled sigmoid with sigmoid and SiLU as
+its cases, softplus, the gated-delta decay, the tanh GeLU and the softcap.
+Each is an inline function that the CUDA kernels (through `dtype.cuh`), the
+Metal kernels (through `common.metal`) and the host CUDA shim of the host
+tests include. A formula is defined once, so a change to it reaches both
+backends.
+
+- The header shares formulas, not schedules. Tiling, data movement, matrix
+  units, reductions and launch shapes stay per backend, because that is
+  where each backend's speed is.
+- The macros at the top of the header pick each backend's intrinsics:
+  bit casts, `exp`, `log` and `tanh`. A `Fast` variant is CUDA's `__expf`
+  and `__logf`. Metal builds with `-fno-fast-math`, so both variants are the
+  precise functions there.
+- A CUDA kernel that moves to the header keeps its machine code: every
+  conversion reproduces the replaced expression and its exp flavor, and the
+  `cuobjdump -sass` of every serving adapter is compared before and after.
+  A copy whose expression differs stays until a change with its own gate
+  replaces it (TECHDEBT lists them).
 
 ## The single-device stage runner
 

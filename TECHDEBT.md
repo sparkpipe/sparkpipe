@@ -1076,10 +1076,30 @@ and the multidev docs on 2026-09-28. Line numbers are in
   and device addresses. Convert them to `SparkDeviceQueue *` and
   `SparkDeviceAddress` in one ABI change with every consumer.
 - The Metal kernels (`inference/kernels/metal/`) implement the operations of
-  the CUDA kernels (`inference/kernels/`) a second time, in Metal. Convert
-  the production kernels in place to one body per operation for CUDA, Metal
-  and the host executor, each conversion with a fleet receipt; until then a
-  numerical change to an operation has to be made, and qualified, in both.
+  the CUDA kernels (`inference/kernels/`) a second time, in Metal. The
+  formulas they share are moving into `inference/kernels/kernel_math.cuh`
+  ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#shared-kernel-math)):
+  bf16 conversion, sigmoid and SiLU (29 CUDA copies), softplus with the
+  gated-delta decay, the tanh GeLU and the softcap are there. Still a copy
+  per kernel or per backend:
+  - RMSNorm scales, rotary angles and rotation, the delta-rule cell update,
+    online-softmax merges and the log-probability reduction;
+  - copies whose expression differs from the shared one, each a numerical
+    change that needs the affected model's gate: the experts' tanh GeLU in
+    `moe_local.cuh` computes `0.044715 * g * g * g`, while the shared one
+    (and PyTorch) cube first, so Gemma 4's dense and expert FFNs round
+    differently; the head-gate softplus uses `log1pf(__expf(x))`, the
+    gated delta `__logf(1 + __expf(x))`; the causal convolution's swish is
+    `x * sigmoid(x)` on CUDA and `x / (1 + exp(-x))` on Metal;
+  - exp flavor: CUDA kernels use `__expf` in some places and `expf` in
+    others, Metal the precise functions everywhere, so the backends differ
+    by the intrinsic's error until one policy is chosen and measured;
+  - the bf16 conversion carries CUDA's semantics on both backends: a NaN
+    whose payload sits only in the low 16 bits rounds to infinity. The
+    hardware conversion (`cvt.rn.bf16.f32`) keeps NaNs and is one
+    instruction; switching changes every kernel's machine code, so it needs
+    a fleet speed check.
+  Kernel bodies (the schedules) stay per backend.
 - Add rank, island and link-class descriptors and derive collective
   decomposition from the link matrix instead of a configured backend.
 - Keep the host backend as a CI oracle for common policy, not only for
