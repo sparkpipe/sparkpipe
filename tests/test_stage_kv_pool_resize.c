@@ -231,6 +231,27 @@ static void EnginePublish(TestEngine *engine,uint8_t seed)
 	assert(SparkStageKvBindingAdmit(&engine->binding,&request,&decision) == SPARK_STATUS_OK);
 }
 
+static uint32_t EngineOccupiedPages(TestEngine *engine)
+{
+	uint32_t slot,occupied = 0u;
+	assert(pthread_mutex_lock(&engine->binding.mutex) == 0);
+	for (slot=0u; slot<engine->binding.arena.resident_block_capacity; slot++)
+		if ( engine->binding.arena.resident_slot_logical_block_indices[slot] != SPARK_KV_CACHE_NO_BLOCK )
+			occupied++;
+	assert(pthread_mutex_unlock(&engine->binding.mutex) == 0);
+	return(occupied);
+}
+
+static void EngineFill(TestEngine *engine,uint8_t seed)
+{
+	uint32_t round;
+	for (round=0u; EngineOccupiedPages(engine) < EngineView(engine).pages; round++)
+	{
+		assert(round < 2u * TEST_PHYSICAL);
+		EnginePublish(engine,(uint8_t)(seed + round));
+	}
+}
+
 static uint64_t CommittedChunks(void)
 {
 	return(SparkWeightdServerKvCommittedBytes(TestKvServer) / TEST_CHUNK_BYTES);
@@ -286,15 +307,16 @@ static void TestBusyEngineBorrowsFromIdle(void)
 	assert(b.grows > b_before.grows && b.chunks > b_before.chunks);
 	assert(a.chunks < a_before.chunks && a.pages < a_before.pages && a.chunks >= TEST_MINIMUM_CHUNKS);
 	assert(CommittedChunks() <= TEST_POOL_CHUNKS);
+	EngineFill(&ENGINE_B,0x60u);
 	SleepMs(400u);
 	a_before = EngineView(&ENGINE_A);
 	b_before = EngineView(&ENGINE_B);
 	PressUntilLent(&ENGINE_A,&ENGINE_B,0x90u,&a,&b);
 	assert(a.grows > a_before.grows && a.chunks > a_before.chunks);
 	assert(b.chunks < b_before.chunks && b.pages < b_before.pages && b.chunks >= TEST_MINIMUM_CHUNKS);
-	assert(b.vacated > b_before.vacated);
+	assert(b.vacated - b_before.vacated == b_before.pages - b.pages);
 	assert(CommittedChunks() <= TEST_POOL_CHUNKS);
-	printf("two engines under load: the engine that evicts grows, the idle engine vacates its top pages (parked or discarded) and shrinks, the node reserve is never exceeded, and the roles reverse when the load moves\n");
+	printf("two engines under load: the engine that evicts grows, the idle engine, every page full, vacates each page it gives up (parked or discarded) and shrinks, the node reserve is never exceeded, and the roles reverse when the load moves\n");
 }
 
 static void TestVacatedPagesStillServe(void)
