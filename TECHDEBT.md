@@ -1055,16 +1055,34 @@ and the multidev docs on 2026-09-28. Line numbers are in
 
 ## Hardware independence
 
-- The device layer exists only as `SparkMemoryBuffer`
-  (`include/sparkpipe/spark_memory_buffer.h`). Build the rest of the memory
-  interface (register, map_file, make_resident/evict) and then streams,
-  events and launch, per `docs/INFERENCE_OS_DESIGN.md`.
-- Modules call the CUDA runtime directly. Move them behind the device layer
-  so a module target can be `host.*`, `metal.*` or `rocm.*`.
+- The device API (`include/sparkpipe/spark_device.h`, `runtime/device/`)
+  has buffers in the five spaces, register and map_file, queues, events and
+  kernel launch, with host, CUDA and Metal backends built as one shared
+  library each. Only the contract tests and the Metal stage runner use it.
+  Production modules call the CUDA runtime directly and own their streams,
+  graphs and allocations; move them behind the device layer so a module
+  target can be `host.*`, `metal.*` or `rocm.*`. The CUDA backend then needs
+  kernel launch (it refuses kernel libraries today) and graph capture and
+  replay.
+- The stage-runner model interface
+  (`include/sparkpipe/spark_stage_runner_model.h`) still passes queues and
+  device addresses type-erased: `void *stream` in `step`, `recurrent_copy`,
+  `reset_slot` and `sideband`, and raw pointers in `SparkStageRunnerStep` and
+  `SparkStageRunnerKv`. The Metal model reads them as a `SparkDeviceQueue *`
+  and device addresses. Convert them to `SparkDeviceQueue *` and
+  `SparkDeviceAddress` in one ABI change with every consumer.
+- The Metal kernels (`inference/kernels/metal/`) implement the operations of
+  the CUDA kernels (`inference/kernels/`) a second time, in Metal. Convert
+  the production kernels in place to one body per operation for CUDA, Metal
+  and the host executor, each conversion with a fleet receipt; until then a
+  numerical change to an operation has to be made, and qualified, in both.
 - Add rank, island and link-class descriptors and derive collective
   decomposition from the link matrix instead of a configured backend.
-- Qualify the Metal backend on the Mac Studios and keep the host backend as
-  a CI oracle for common policy, not only for kernels.
+- Keep the host backend as a CI oracle for common policy, not only for
+  kernels. The Metal backend is qualified on one M5 Ultra for the device
+  contract, every kernel Qwen3.8-27B uses, and that model end to end
+  ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)); no other model and no
+  multi-Studio topology is.
 - Left out on purpose (2026-10-02): KV and weights share weightd but not one
   budget. weightd maps KV device memory as KV pools that grow and shrink in
   chunks (`runtime/spark_weightd_kv_pool.c`, driven from
@@ -1073,9 +1091,8 @@ and the multidev docs on 2026-09-28. Line numbers are in
   (`node/weightd.c`, `runtime/spark_weightd.c`), so KV pressure cannot reclaim
   idle weight memory and the reverse. KV pages still enter the arena through
   `SparkKvCacheArenaMarkBlockResident` (`cache/kv_cache.c`), and the device
-  layer offers only allocate, free and copy
-  (`include/sparkpipe/spark_memory_buffer.h`), while
-  `docs/INFERENCE_OS_DESIGN.md` requires one `make_resident`/`evict` for both.
+  API (`include/sparkpipe/spark_device.h`) has no `make_resident`/`evict`,
+  while `docs/INFERENCE_OS_DESIGN.md` requires one for both.
   Close it by building `make_resident`/`evict` in the device layer and moving
   KV pool sizing and weightd lease eviction onto it, proven on the fleet by a
   run where KV growth and expert demand both resolve through that one
@@ -1084,7 +1101,60 @@ and the multidev docs on 2026-09-28. Line numbers are in
 ## Mac Studio deployment
 
 The design is in
-[`docs/HARDWARE_TOPOLOGY.md`](docs/HARDWARE_TOPOLOGY.md#mac-studio-pool).
+[`docs/HARDWARE_TOPOLOGY.md`](docs/HARDWARE_TOPOLOGY.md#mac-studio-pool); the
+Metal backend and the single-Studio stage are in
+[`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md).
+
+- Serve the single-Studio stage. `inference/runner/device_stage_runner.c`
+  runs Qwen3.8-27B on one M5 Ultra through the stage-runner model interface,
+  but no serving process hosts it: `model_residentd` and the stage serving
+  adapter are CUDA builds. A served Studio replica still needs:
+  - a device-backend serving adapter that drives the device runner from the
+    batch engine, with admission, continuous batching, cancellation and
+    release in common code (I02, I18-I20);
+  - JIT and prefix KV reuse (I23-I27): the runner holds one identity page
+    table over a fixed pool and no page store, so every request recomputes
+    its prompt. Its pages must come from the common page cache with
+    copy-on-write prefixes, and cached request state from the snapshot tiers
+    under the 24-hour retention rule;
+  - state save and restore: the model's `recurrent_copy` packs its recurrent
+    state in the CUDA model's order, but no runner path exports or restores a
+    sequence's KV pages and state, and decode after a restore has not been
+    compared with uninterrupted decode;
+  - generation policy: EOS from deployment metadata (I49), stop tokens and
+    sampling beyond greedy;
+  - weight residency: the runner maps the pack in its own process; weightd,
+    the arena that survives a code-only redeploy, is CUDA VMM only;
+  - a lane record, model description and swap-controller entry for the
+    Studio target (`metal.apple10`).
+- Find a numerics gate with power at BF16 for the Studio stage. Against
+  the reference (`tools/qwen38_27b_reference.c`), Metal's teacher-forced
+  top-1 agreement is 97.62% over 5,636 positions, below the 99% bar, while
+  the reference agrees with itself across two reduction orders on only
+  97.75%; mean KL is 1.11 times that floor. A whole-tensor layout fault fails
+  at 15.4 times the floor, but swapping two rows of one projection is not
+  detected (1.16 times). Settle the bar against this floor, or measure on
+  positions the floor leaves stable, more positions, or the model's own
+  greedy text, and keep both controls
+  ([`qualification/metal/qwen38_27b/a2bd02d0a/`](qualification/metal/qwen38_27b/a2bd02d0a/)).
+- Batch above two sequences on a Studio. The kernels and the runner take
+  per-sequence row tables, and two-sequence decode reproduces
+  single-sequence decode token for token, but larger batches, prefill and
+  decode mixed in one step, and occupancy scaling are not measured (I18, I19,
+  I21). The decode GEMV takes up to eight rows in power-of-two passes, so
+  three rows read the weights twice; a small-row-count kernel that reads them
+  once for any count is needed, and speculative verify frames need it too.
+- Close the single-Studio speed gaps: B1 decode runs the per-layer small
+  kernels (norms, convolution, gates, rotary embedding, KV store) one after
+  another between the projections (86% of the streaming-read roofline),
+  and prefill attention is a tiled SIMD kernel without the tensor
+  operations, about 30% of an 8K prefill.
+- The kernel library builds with Metal 4.0 and its prefill GEMM uses the
+  Metal 4 tensor operations, so it loads only on Apple family 10 GPUs (M5).
+  Another Studio generation needs its own qualified kernel set.
+- Only Qwen3.8-27B has a device model. Each further model needs its stage
+  model under its family, a TP1 or Studio-topology pack, and its own gates;
+  MoE models also need expert residency on unified memory.
 
 - Define hardware profiles for one to eight Studios: memory, bandwidth, the
   Thunderbolt 5 island wiring, the bridge to the Sparks, power, and storage.

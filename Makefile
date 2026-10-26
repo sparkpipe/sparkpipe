@@ -67,6 +67,15 @@ DEVICE_HOST_SOURCES := runtime/device/device.c runtime/device/host/device_host.c
 DEVICE_CUDA_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_cuda.$(SHARED_LIBRARY_EXT)
 DEVICE_METAL_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_metal.$(SHARED_LIBRARY_EXT)
 DEVICE_HEADERS := include/sparkpipe/spark_device.h runtime/device/device_backend.h
+METAL_KERNEL_UNITS := inference/kernels/metal/norm.metal inference/kernels/metal/gemv.metal inference/kernels/metal/gemm.metal \
+	inference/kernels/metal/recurrent.metal inference/kernels/metal/attention.metal inference/kernels/metal/elementwise.metal
+METAL_KERNEL_INCLUDES := inference/kernels/metal/common.metal inference/kernels/metal/kernel_params.h
+METAL_KERNEL_LIBRARY := $(DEVICE_RUNTIME_DIR)/sparkpipe_kernels.metallib
+METAL_TEST_KERNEL_LIBRARY := build/metal/test_device_kernels.metallib
+METAL_FLAGS := -std=metal4.0 -O3 -fno-fast-math -Wall -Werror -I.
+METAL_TEST_FLAGS := -std=metal3.2 -O3 -fno-fast-math -Wall -Werror -I.
+METAL_TOOLCHAIN := $(if $(filter Darwin,$(UNAME_S)),$(shell xcrun --find metal 2>/dev/null))
+METAL4_TOOLCHAIN := $(if $(METAL_TOOLCHAIN),$(shell printf 'kernel void probe(){}' | xcrun -sdk macosx metal -std=metal4.0 -x metal -c - -o /dev/null 2>/dev/null && echo metal4))
 ifeq ($(UNAME_S),Darwin)
 DEVICE_LIBRARY_NAME_FLAGS = -install_name @rpath/$(notdir $@)
 DEVICE_RPATH_FLAGS := -Wl,-rpath,@loader_path/runtime_libs
@@ -383,6 +392,7 @@ PYTHON_TESTS := \
 	tests/test_device_neutral.py \
 	tests/test_device_contract_cuda.py \
 	tests/test_device_contract_metal.py \
+	tests/test_metal_kernels.py \
 	tests/test_dry_law.py \
 	tests/test_family_defines_single_source.py \
 	tests/test_no_source_comments.py \
@@ -1282,17 +1292,67 @@ $(DEVICE_CUDA_LIBRARY): runtime/device/device.c runtime/device/cuda/device_cuda.
 	@if [ -f "$(CUDA_HOME)/include/cuda_runtime.h" ]; then $(CC) $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) runtime/device/device.c runtime/device/cuda/device_cuda.c -L$(CUDA_HOME)/lib64 -lcudart $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no CUDA runtime headers on this host)"; fi
 
 build/test_device_contract_cuda: tests/test_device_contract.c $(DEVICE_CUDA_LIBRARY) | build
-	@if [ -f "$(DEVICE_CUDA_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_device_contract_cuda (no CUDA device library)"; fi
+	@if [ -f "$(DEVICE_CUDA_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_DEVICE_TEST_LIBRARY='"$(METAL_TEST_KERNEL_LIBRARY)"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_device_contract_cuda (no CUDA device library)"; fi
 
 $(DEVICE_METAL_LIBRARY): runtime/device/device.c runtime/device/metal/device_metal.m $(DEVICE_HEADERS) | build
 	@mkdir -p $(dir $@)
-	@if [ "$(UNAME_S)" = Darwin ] && xcrun --find metal >/dev/null 2>&1; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fobjc-arc -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) runtime/device/device.c runtime/device/metal/device_metal.m -framework Metal -framework Foundation $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no Metal toolchain on this host)"; fi
+	@if [ "$(UNAME_S)" = Darwin ] && xcrun --find metal >/dev/null 2>&1; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fobjc-arc -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) runtime/device/device.c runtime/device/metal/device_metal.m -framework Metal -framework Foundation -framework IOKit $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no Metal toolchain on this host)"; fi
 
-build/test_device_contract_metal: tests/test_device_contract.c $(DEVICE_METAL_LIBRARY) | build
-	@if [ -f "$(DEVICE_METAL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_device_contract_metal (no Metal device library)"; fi
+ifneq ($(METAL_TOOLCHAIN),)
+build/metal/%.air: %.metal $(METAL_KERNEL_INCLUDES) | build
+	@mkdir -p $(dir $@)
+	xcrun -sdk macosx metal $(METAL_FLAGS) -c $< -o $@
+
+ifneq ($(METAL4_TOOLCHAIN),)
+$(METAL_KERNEL_LIBRARY): $(addprefix build/metal/,$(METAL_KERNEL_UNITS:.metal=.air)) | build
+	@mkdir -p $(dir $@)
+	xcrun -sdk macosx metallib $^ -o $@
+else
+$(METAL_KERNEL_LIBRARY):
+	@echo "SKIP $(notdir $@) (the Metal toolchain on this host has no Metal 4.0)"
+endif
+
+build/metal/tests/device_contract_kernels.air: METAL_FLAGS := $(METAL_TEST_FLAGS)
+
+$(METAL_TEST_KERNEL_LIBRARY): build/metal/tests/device_contract_kernels.air | build
+	xcrun -sdk macosx metallib $^ -o $@
+else
+$(METAL_KERNEL_LIBRARY) $(METAL_TEST_KERNEL_LIBRARY):
+	@echo "SKIP $(notdir $@) (no Metal toolchain on this host)"
+endif
+
+build/test_device_contract_metal: tests/test_device_contract.c $(DEVICE_METAL_LIBRARY) $(METAL_TEST_KERNEL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_DEVICE_TEST_LIBRARY='"$(METAL_TEST_KERNEL_LIBRARY)"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_device_contract_metal (no Metal device library)"; fi
+
+DEVICE_OPS_SOURCES := inference/runner/device_ops.c
+DEVICE_OPS_HEADERS := inference/runner/device_ops.h inference/kernels/metal/kernel_params.h
+
+.PHONY: test-metal-kernels
+test-metal-kernels: build/test_metal_kernels
+	python3 tests/test_metal_kernels.py
+
+build/test_metal_kernels: tests/test_metal_kernels.c $(DEVICE_OPS_SOURCES) $(DEVICE_OPS_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_KERNEL_LIBRARY='"$(METAL_KERNEL_LIBRARY)"' tests/test_metal_kernels.c $(DEVICE_OPS_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lm -o $@; else echo "SKIP test_metal_kernels (no Metal device or kernel library)"; fi
+
+DEVICE_RUNNER_SOURCES := inference/runner/device_stage_runner.c $(DEVICE_OPS_SOURCES) runtime/named_pack.c runtime/json.c runtime/filesystem.c src/spark_sha256.c
+DEVICE_RUNNER_HEADERS := inference/runner/device_stage_runner.h $(DEVICE_OPS_HEADERS) include/sparkpipe/spark_stage_runner_model.h
+QWEN38_DEVICE_SOURCES := model-families/qwen38/device/qwen38_device_stage.c
+QWEN38_DEVICE_INCLUDE_FLAGS := -Imodel-families/qwen38/include
+
+build/qwen38_27b_metal_run: tools/qwen38_27b_metal_run.c tools/token_prompts.c $(QWEN38_DEVICE_SOURCES) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(CFLAGS) tools/qwen38_27b_metal_run.c tools/token_prompts.c $(QWEN38_DEVICE_SOURCES) $(DEVICE_RUNNER_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lm -o $@; else echo "SKIP qwen38_27b_metal_run (no Metal device or kernel library)"; fi
+
+build/qwen38_27b_reference: tools/qwen38_27b_reference.c tools/token_prompts.c runtime/json.c runtime/filesystem.c | build
+	@if [ "$(UNAME_S)" = Darwin ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fblocks -DACCELERATE_NEW_LAPACK tools/qwen38_27b_reference.c tools/token_prompts.c runtime/json.c runtime/filesystem.c -framework Accelerate $(LDLIBS) -lm -o $@; else echo "SKIP qwen38_27b_reference (it uses the Accelerate BLAS)"; fi
+
+build/device_bandwidth: tools/device_bandwidth.c $(DEVICE_OPS_SOURCES) $(DEVICE_OPS_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) tools/device_bandwidth.c $(DEVICE_OPS_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP device_bandwidth (no Metal device or kernel library)"; fi
+
+build/logit_compare: tools/logit_compare.c tools/token_prompts.c runtime/json.c runtime/filesystem.c | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) tools/logit_compare.c tools/token_prompts.c runtime/json.c runtime/filesystem.c $(LDLIBS) -lm -o $@
 
 build/test_device_contract: tests/test_device_contract.c $(DEVICE_HOST_LIBRARY) | build
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_host $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_DEVICE_TEST_LIBRARY='"$(METAL_TEST_KERNEL_LIBRARY)"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_host $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
 build/test_device_instance_a.$(SHARED_LIBRARY_EXT) build/test_device_instance_b.$(SHARED_LIBRARY_EXT): tests/device_instance_module.c $(DEVICE_HOST_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_host $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@

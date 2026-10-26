@@ -1,0 +1,13 @@
+loaded 8 layers
+loaded 16 layers
+loaded 24 layers
+loaded 32 layers
+loaded 40 layers
+loaded 48 layers
+loaded 56 layers
+loaded 64 layers
+weights converted to f32 in 9.8 s
+design: FP32-activation forward written
+code: FP32-activation forward written
+korean: FP32-activation forward written
+rules: FP32-activation forward written

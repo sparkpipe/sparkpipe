@@ -115,7 +115,11 @@ matrix throughput near a Spark's: EXO rates a Spark at about 100 FP16 TFLOPS
 against 26 for an M3 Ultra ([EXO][exo-spark]), and Apple claims up to 4 times
 the M3 Ultra's prompt processing for the M5 Ultra ([Apple][m5-ultra]). Sixteen
 Sparks therefore have about twice the matrix throughput of eight Studios. The
-Studios run SparkPipe through the Metal backend, which does not exist yet.
+Studios run SparkPipe through the Metal backend
+([`METAL_BACKEND.md`](METAL_BACKEND.md)). The first Studio measures 1.14 TB/s
+streaming reads from GPU memory and about 95 TFLOPS for a BF16 projection on
+the M5's tensor operations
+([`PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md#mac-studio)).
 
 **Thunderbolt 5 RDMA.** From macOS 26.2, Macs expose RDMA over Thunderbolt 5
 through a verbs-compatible API ([TN3205][tn3205]). It is narrower than the

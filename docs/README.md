@@ -28,6 +28,9 @@ current authority.
 - [`MODULE_MAP.md`](MODULE_MAP.md): source ownership boundaries.
 - [`INFERENCE_OS_DESIGN.md`](INFERENCE_OS_DESIGN.md): device-layer memory
   model for hardware independence.
+- [`METAL_BACKEND.md`](METAL_BACKEND.md): kernel launch in the device API,
+  the Metal queue and kernel library, the single-device stage runner, the
+  precision policy and the single-Studio Qwen3.8-27B gates.
 - [`EXPERT_GROUPED_SCHEDULING.md`](EXPERT_GROUPED_SCHEDULING.md):
   expert-grouped continuous batching.
 

@@ -213,6 +213,53 @@ Ideal floors, from the active parameters each rank reads per token (K3:
 | `muse-glimmer-30b` | BF16, dense | 29.2B × 2 B | – | 3.65 | 75 tok/s |
 | `qwen3.8-27b` | FP8, dense | 27B × 1 B | – | 1.69 | 162 tok/s |
 
+## Mac Studio
+
+One Mac Studio, Apple M5 Ultra with 256 GB, runs Qwen3.8-27B whole (TP1, the
+publisher's BF16 weights, 53.8 GB pack) through the Metal backend and the
+single-device stage runner ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)).
+It is not served yet (TECHDEBT, Mac Studio deployment). Receipts:
+[`qualification/metal/qwen38_27b/a2bd02d0a/`](qualification/metal/qwen38_27b/a2bd02d0a/).
+
+| | |
+| --- | --- |
+| Streaming read | 1,144 GB/s from a 16 GiB GPU buffer, 1,148 GB/s from the mapped pack (median of seven) |
+| Decode, B1 | 19.29 tok/s: 256 tokens after a 1,024-token prompt, median of three after a warm-up |
+| Decode roofline | 51.25 GB read per token / 1,144 GB/s = 22.33 tok/s; measured 86.4% of it |
+| Decode, two sequences | 32.8 rows/s, each sequence's tokens identical to its B1 run |
+| Prefill, 1,024 tokens | 1,372 tok/s, one 1,024-row chunk |
+| Prefill, 8,192 tokens | 1,139 tok/s, four 2,048-row chunks |
+| Prefill roofline | compute-bound: the projections run on the M5 tensor operations at 95 TFLOPS in isolation (2048 x 5120 x 16384) and 70 TFLOPS averaged over a 1,024-token prefill; the weights are read once per chunk, 50 MB per token at 1,024 rows against a 22,900 tok/s memory ceiling |
+
+Numerics, teacher-forced over 5,636 positions of four prompts (700 to 2,040
+tokens; the first half of each prompt by prefill, the rest by decode),
+against a CPU reference of the same BF16 precision policy that ran twice
+with different FP32 reduction orders:
+
+| Comparison | Mean KL | Top-1 agreement | Mean, max change of the target's log-prob |
+| --- | ---: | ---: | ---: |
+| Reference B against reference A (the floor) | 0.0395 | 97.75% | 0.145, 16.4 |
+| Metal against reference A | 0.0437 | 97.62% | 0.151, 17.2 |
+| Metal against reference B | 0.0467 | 97.57% | 0.160, 13.4 |
+| FP32 activations against reference A (diagnostic) | 0.0568 | 97.37% | |
+| Control: two rows of `layers.31.ffn_down` swapped | 0.0459 | 97.59% | 0.156, 17.3 |
+| Control: every row of `layers.31.ffn_down` moved by one | 0.609 | 85.82% | 1.08, 26.8 |
+
+- Metal sits at 1.11 times the floor's KL and agrees with reference A on
+  98.78% of the positions where references A and B agree with each other.
+  The 99% top-1 bar is not met, and the reference does not meet it against
+  itself: this model in BF16 diverges at about 2-3% of the positions of text
+  it is fed, wherever a rounding difference changes a near tie.
+- The whole-tensor control fails at 15.4 times the floor. The two-row swap is
+  not detected (1.16 times the floor): its effect is inside the BF16 noise.
+- Greedy continuations of 128 tokens match both reference variants token
+  for token on two prompts. On the third the variants part after 45 tokens
+  and Metal follows B to the end; on the fourth they part after 55 and Metal
+  follows A for 100 tokens.
+- Every Metal kernel matches a float64 reference within its derived
+  tolerance at the model's shapes, and each one's corrupted-input control
+  fails (41 cases).
+
 ## Accuracy
 
 - **Release gate:** each release is compared with the build it replaces on
