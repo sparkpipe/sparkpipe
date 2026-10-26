@@ -791,13 +791,14 @@ The sources are pinned. All three serve.
     - Speculation with the DSpark drafter is not wired.
 - **Solar Open 2** (`upstage/Solar-Open2-250B@9190fbe6`, BF16, 0.50 TB): 48 layers, three linear-attention layers (short convolution 4, 64 heads) for each GQA layer, no position encoding, 320 routed experts (top 8) plus one shared, 1M context. The Upstage Solar License asks that derivatives be named Solar and show "Built with Solar".
   - **Serving:** contract, tokenizer (the C tokenizer matches HF on 306 mixed English, Korean, code and emoji texts), driver (`solar_open2` on the Ling stage, with its options for gated GQA without position encoding over position-sharded KV, the low-rank decay and output gates, the doubled write gate and 1e-5 norms), BF16 packer, numpy reference and lane 4. Answers are right in English and Korean, including a 3,076-token passkey; the UI smoke passes 6 of 6, tool calls included.
-  - **Measured:** 41.1 tok/s at B1 without speculation, 1,041 tok/s prefill at 6K.
+  - **Measured:** 47.9 tok/s at B1 without speculation, 1,025 tok/s prefill at 6K, with every expert split over the 16 ranks by rows (41.1 tok/s with 20 whole experts per rank).
   - The decay follows the fla kernel the publisher's fast path calls, lower bound × sigmoid(exp(A_log) · (g + dt_bias)); the publisher's torch fallback computes −exp(A_log) · softplus(g + dt_bias) clamped at the bound, which is a different function.
   - **Missing:**
     - The publisher rounds the KDA short convolution to bf16 before SiLU (F.conv1d, then F.silu); the Ling stage rounds once after SiLU. Against a reference that rounds once (`--conv-rounding fused`), the served tokens agree at 121 of 122 positions, with served logprobs within 0.20 (median under 0.10); the publisher's rounding gives 120 of 122 and up to 0.42. The kernel could take the publisher's rounding as a template option; the remaining miss is a near tie between "Paris" and a blank line.
     - The lane serves 256K; the model's 1M needs the max-context gate.
     - With reasoning off the reply opens with two newlines after the empty think block; the chat layer passes them through.
-    - Each rank holds 20 whole experts, so B1 decode lands experts unevenly, as on K-EXAONE.
+    - Each rank's share of an expert is 80 rows, zero-padded to 128 because the prefill expert GEMM steps its inner dimension 64 at a time; the padding is 37.5% of a rank's expert reads, about 1.9 ms of the 20.9 ms decode step. A GEMM that takes an inner-dimension tail (TMA fills past the edge with zeros) would drop it.
+    - The rest of the step is the per-layer fixed cost (collectives and latency-bound small kernels), not graph launches: a GB10 graph node costs 0.4 to 0.7 us, about 1 ms over the 1,708 nodes of a decode step.
     - No drafter is wired.
 
 Each needs, in order: the checkpoint contract, the driver on the common stage runner, the packer emitter and packs, a lane record, the release gates and qualification, speculation with its drafter, then the perf climb that every core model gets.
