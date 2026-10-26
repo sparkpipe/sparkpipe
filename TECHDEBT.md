@@ -794,7 +794,7 @@ The sources are pinned. All three serve.
   - **Measured:** 41.1 tok/s at B1 without speculation, 1,041 tok/s prefill at 6K.
   - The decay follows the fla kernel the publisher's fast path calls, lower bound × sigmoid(exp(A_log) · (g + dt_bias)); the publisher's torch fallback computes −exp(A_log) · softplus(g + dt_bias) clamped at the bound, which is a different function.
   - **Missing:**
-    - The reference agrees with the served top token at 120 of 122 positions of six prompts. The two disagreements are close two-way choices, but served logprobs differ by up to 0.42 (median up to 0.24 on the long prompt), against under 0.005 for K-EXAONE 2.0. Find the layer that opens the gap with `tools/solar_open2_reference.py --dump`; the first suspect is the KDA short convolution, which the publisher rounds to bf16 before SiLU and the Ling stage does not.
+    - The publisher rounds the KDA short convolution to bf16 before SiLU (F.conv1d, then F.silu); the Ling stage rounds once after SiLU. Against a reference that rounds once (`--conv-rounding fused`), the served tokens agree at 121 of 122 positions, with served logprobs within 0.20 (median under 0.10); the publisher's rounding gives 120 of 122 and up to 0.42. The kernel could take the publisher's rounding as a template option; the remaining miss is a near tie between "Paris" and a blank line.
     - The lane serves 256K; the model's 1M needs the max-context gate.
     - With reasoning off the reply opens with two newlines after the empty think block; the chat layer passes them through.
     - Each rank holds 20 whole experts, so B1 decode lands experts unevenly, as on K-EXAONE.
