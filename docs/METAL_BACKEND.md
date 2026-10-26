@@ -132,13 +132,55 @@ The model interface is used with these meanings on a device backend:
 - The runner has one execution lane and no collectives; a model's `round` or
   `lane` call is refused.
 
-`model-families/qwen38/device/qwen38_device_stage.c` is the Qwen3.8-27B model
-(64 layers, 48 gated-delta and 16 gated-attention, dense SwiGLU FFN) for this
-runner. Prefill rows above eight use the tensor-operation GEMM and the tiled
-prefill attention; up to eight rows use the GEMV kernels, the fused gated
-down projection and the partitioned decode attention. The recurrent state is
-FP32, `[layer][slot][head][key][value]`, and `recurrent_copy` packs it in the
-same order as the CUDA model.
+## Device stage models
+
+A device model is a shape, a tensor list and a layer schedule over two
+model-neutral layers in `inference/runner/`. A model directory holds nothing
+else, so every further model tests these interfaces: an operation a model
+needs that they lack is added there, for every model, and the existing
+models' gates are re-run to show their output is unchanged.
+
+- `device_stage_model.{h,c}` (`SparkDeviceStage`) is the model's lifecycle. It
+  opens the rank pack and checks its topology (`SparkDeviceStageOpen`) and its
+  configuration values (`SparkDeviceStageExpectConfig`), reserves scratch and
+  recurrent state against the state budget (`SparkDeviceStageReserve`), fills
+  the runner geometry from the stage shape and the pack's `embed`,
+  `head_norm` and `head` (`SparkDeviceStageGeometry`), binds named tensors
+  with their expected sizes (`SparkDeviceStageTensor`,
+  `SparkDeviceStageLayerTensor`), lays out scratch slices
+  (`SparkDeviceStagePlan`, `SparkDeviceStageAllocate`), validates a step's
+  row tables (`SparkDeviceStageStepTables`) and serves the KV pool
+  (`SparkDeviceStagePaged`). It also provides the interface entries that do
+  not depend on the model: close, manifest check, the weightd, sideband and
+  lane refusals, `attach_kv`, `recurrent_copy`, `reset_slot`, probe and
+  report. A model struct starts with its `SparkDeviceStage`, so these entries
+  take the model pointer as it is.
+- Recurrent state is a set of pools, each `[layer][slot]` of one width;
+  `recurrent_copy` packs pool by pool, layer by layer, and `reset_slot` zeroes
+  a slot in every pool.
+- `device_layers.{h,c}` are the layer kinds, each a shape struct, a bind call
+  that names the layer's pack tensors and a run call:
+
+| Layer kind | Shape | Pack tensors (`layers.N.`) |
+| --- | --- | --- |
+| gated delta rule (`SparkDeviceGatedDelta`) | key and value heads and dimensions, convolution taps; recurrent pools 0 (FP32 state) and 1 (BF16 convolution window) | `gdn_qkvz`, `gdn_ba`, `gdn_conv`, `gdn_a_log`, `gdn_dt_bias`, `gdn_norm`, `gdn_out` |
+| attention with a sigmoid output gate (`SparkDeviceAttention`) | heads, KV heads, head dimension, rotary width and base, scale; queries and gates interleaved per head, then keys, then values in one fused projection | `attn_qkv`, `attn_q_norm`, `attn_k_norm`, `attn_out` |
+| SwiGLU FFN (`SparkDeviceGatedFfn`) | intermediate width; up to eight rows use the fused gated down projection | `ffn_gate_up`, `ffn_down` |
+| residual RMSNorm (`SparkDeviceResidualNorm`) | the stage's hidden width and epsilon | the model names its norm weights |
+
+Attention without an output gate, sliding-window attention, other norm
+placements, other activations and experts have no layer kind yet; the model
+that needs one adds it here.
+
+`model-families/qwen38/device/qwen38_device_stage.c` is Qwen3.8-27B on these
+layers: 64 layers, every fourth one (from the fourth) attention and the rest
+gated delta, each followed by the SwiGLU FFN, with the attention and
+gated-delta projections sharing one scratch slice. Prefill rows above eight
+use the tensor-operation GEMM and the tiled prefill attention; up to eight
+rows use the GEMV kernels, the fused gated down projection and the
+partitioned decode attention. The recurrent state is FP32,
+`[layer][slot][head][key][value]`, and `recurrent_copy` packs it in the same
+order as the CUDA model.
 
 ## Precision policy
 

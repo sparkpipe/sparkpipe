@@ -1156,9 +1156,15 @@ Metal backend and the single-Studio stage are in
 - The kernel library builds with Metal 4.0 and its prefill GEMM uses the
   Metal 4 tensor operations, so it loads only on Apple family 10 GPUs (M5).
   Another Studio generation needs its own qualified kernel set.
-- Only Qwen3.8-27B has a device model. Each further model needs its stage
-  model under its family, a TP1 or Studio-topology pack, and its own gates;
-  MoE models also need expert residency on unified memory.
+- Only Qwen3.8-27B has a device model. Each further model is a shape, a
+  tensor list and a layer schedule over the device stage and layer kinds
+  (`inference/runner/device_stage_model.c`, `device_layers.c`), plus a TP1
+  pack and its own gates. The layer kinds cover gated delta, attention with a
+  sigmoid output gate, the SwiGLU FFN and residual RMSNorm; ungated and
+  sliding-window attention, sandwich norms, GeGLU and experts (with expert
+  residency on unified memory) are still to add, each by the first model that
+  needs it. Order: Gemma 4 26B A4B, Gemma 4 31B, Muse Glimmer 30B, MiMo V2.6
+  Flash, Qwen 3.8 Flash Next, each merged before the next starts.
 
 - Define hardware profiles for one to eight Studios: memory, bandwidth, the
   Thunderbolt 5 island wiring, the bridge to the Sparks, power, and storage.

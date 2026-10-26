@@ -486,6 +486,13 @@ static SparkStatus OpsAttentionPrefill(SparkDeviceOps *ops, SparkDeviceQueue *qu
 	return(status);
 }
 
+uint64_t SparkOpsAttentionScratchBytes(uint32_t rows, uint32_t heads, uint32_t positions)
+{
+	const uint64_t decode = (uint64_t)SPARK_OPS_GEMV_MAX_ROWS * ((positions + OPS_DECODE_PARTITION_KEYS - 1u) / OPS_DECODE_PARTITION_KEYS);
+	const uint64_t prefill = (uint64_t)rows * ((positions + OPS_PREFILL_PARTITION_KEYS - 1u) / OPS_PREFILL_PARTITION_KEYS);
+	return((decode > prefill ? decode : prefill) * heads * SPARK_OPS_PARTIAL_FLOATS * 4u);
+}
+
 SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor query, SparkTensor gate,
 	SparkTensor partial, SparkTensor output, const SparkAttentionParams *params, const uint32_t *host_positions, const uint32_t *host_sequence_of_row)
 {
