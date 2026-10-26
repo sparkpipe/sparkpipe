@@ -170,6 +170,11 @@ work. `model_api` checks no API key and ignores the request's `model` field.
 | `POST /v1/chat/completions` | `messages`, or `prompt` or `prompt_token_ids` | `chat.completion` with `choices[0].message`, `finish_reason`, `usage`, `tokens` |
 | anything else | — | `404 {"error":"not found"}` |
 
+Reply text is always valid UTF-8. When the emitted tokens leave a byte
+sequence incomplete or invalid (a reply cut inside a character, a
+byte-fallback token), each maximal invalid subpart comes out as U+FFFD, as
+in a lossy UTF-8 decode; `tokens` keeps the exact ids.
+
 A request with `messages` and no `prompt` or `prompt_token_ids` is rendered
 with the chat template the deployment declares (`chat_template` in
 `model_resident.json`, see below). A deployment without one answers every
