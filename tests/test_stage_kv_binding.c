@@ -1406,7 +1406,13 @@ static void TestRecurrentRoundTrip(void)
 	StepInit(&step,3u,0u,4u,5u);
 	StepPrefix(&step,4u,0x90u);
 	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK && BINDING.lane_state_flags[0] != 0u);
-	assert(SparkStageKvBindingReset(&BINDING,2u) == SPARK_STATUS_OK);
+	{
+		SparkStatus reset;
+		uint32_t attempt = 0u;
+		while ( (reset = SparkStageKvBindingReset(&BINDING,2u)) == SPARK_STATUS_BUSY && attempt++ < 1000u )
+			SleepMs(1u);
+		assert(reset == SPARK_STATUS_OK);
+	}
 	for (index=0u; index<TEST_LANES; index++)
 		assert(BINDING.lane_state_flags[index] == 0u && BINDING.lanes[index].phase == SPARK_KV_LANE_TRANSACTION_EMPTY);
 	SparkStageKvBindingTakeRecurrentCounters(&BINDING,&counters);

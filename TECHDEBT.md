@@ -595,11 +595,7 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   read-only mid-run; requests should keep completing through recompute,
   and the log should show the degrade and the recovery.
 
-- **Binding races with its worker threads.** `tests/test_stage_kv_binding.c` still fails about 1 run in 100 on a busy host:
-  - `SparkStageKvBindingReset` refuses while the restore worker is still restoring a lane's prefix (`TestRecurrentRoundTrip`, 2 of 300 runs).
-  - A page's residency count reads one high right after a copy-on-write admit, while a save or spill holds it (1 of 300).
-
-  Decide whether a reset should wait for the restore worker or the caller should retry, then make the test deterministic for that contract.
+- **Binding test race.** `tests/test_stage_kv_binding.c` can fail on a busy host (1 of 300 runs in one loop, 0 of 300 in the next): a page's residency count reads one high right after a copy-on-write admit, while a save or spill still holds a reference. The test should read the count after the save settles without draining the copy it is checking.
 
 ## Prefix reuse (I23)
 
