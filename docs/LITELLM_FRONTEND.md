@@ -408,8 +408,12 @@ python3 api_keys.py --file api_keys.json revoke k_1a2b3c4d
 `deployment/hub/chat_frontend.json` makes every model public except the
 Qwen models, as `docs/MODEL_SUPPORT.md` requires.
 
-Until Apache sends public `/v1` traffic to the chat layer with this header,
-the public door is still the login and the external LiteLLM above.
+`https://sparkpipe.ai/v1` is this door: `deployment/vps/sparkpipe-public-api.conf`,
+included in the port-443 virtual host after the language rules
+(`/etc/apache2/sparkpipe/public-api.conf`), strips the header from every
+request, sets it on `/v1/` and proxies `/v1/` to the chat layer through the
+hub tunnel's port 18081. The chat app on port 8443 and the LAN door are
+unchanged.
 
 ## SparkPipe Chat (Open WebUI, sparkpipe.ai:8443)
 
