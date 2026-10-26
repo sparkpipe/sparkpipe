@@ -145,8 +145,18 @@ static void Observe(Check *check, double got, double expected, double tolerance)
 	check->count++;
 }
 
+static const char *JsonNumber(double value, char *text, size_t bytes)
+{
+	if ( isfinite(value) )
+		snprintf(text,bytes,"%.6g",value);
+	else
+		snprintf(text,bytes,"null");
+	return(text);
+}
+
 static void Report(const char *op, const char *shape, const Check *clean, const Check *corrupted, const char *tolerance)
 {
+	char ratio[32], control_ratio[32];
 	const int clean_pass = clean->bad == 0u && clean->count != 0u;
 	const int control_fails = corrupted->bad != 0u;
 	printf("%s %-22s %-44s checked %9llu worst error/tolerance %.3f; corrupted input: %llu outside tolerance (%s)\n",
@@ -155,10 +165,11 @@ static void Report(const char *op, const char *shape, const Check *clean, const 
 	if ( !clean_pass || !control_fails )
 		failures++;
 	if ( receipt != 0 )
-		fprintf(receipt,"%s{\"op\":\"%s\",\"shape\":\"%s\",\"checked\":%llu,\"worst_ratio\":%.6g,\"worst_error\":%.6g,\"worst_tolerance\":%.6g,"
-			"\"outside\":%llu,\"control_outside\":%llu,\"control_worst_ratio\":%.6g,\"tolerance\":\"%s\",\"pass\":%s}",
-			ftell(receipt) > 2 ? ",\n" : "",op,shape,(unsigned long long)clean->count,clean->worst,clean->worst_error,clean->worst_tolerance,
-			(unsigned long long)clean->bad,(unsigned long long)corrupted->bad,corrupted->worst,tolerance,clean_pass && control_fails ? "true" : "false");
+		fprintf(receipt,"%s{\"op\":\"%s\",\"shape\":\"%s\",\"checked\":%llu,\"worst_ratio\":%s,\"worst_error\":%.6g,\"worst_tolerance\":%.6g,"
+			"\"outside\":%llu,\"control_outside\":%llu,\"control_worst_ratio\":%s,\"tolerance\":\"%s\",\"pass\":%s}",
+			ftell(receipt) > 2 ? ",\n" : "",op,shape,(unsigned long long)clean->count,JsonNumber(clean->worst,ratio,sizeof(ratio)),clean->worst_error,
+			clean->worst_tolerance,(unsigned long long)clean->bad,(unsigned long long)corrupted->bad,
+			JsonNumber(corrupted->worst,control_ratio,sizeof(control_ratio)),tolerance,clean_pass && control_fails ? "true" : "false");
 }
 
 static void TestGather(void)

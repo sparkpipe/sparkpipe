@@ -136,12 +136,15 @@ def main():
                     for item in prompts["prompts"]},
         "device_contract": (out / "device_contract.txt").read_text().strip().splitlines()[-1],
         "kernels": {"cases": len(kernels), "pass": all(case["pass"] for case in kernels),
-                    "worst_ratio": max(case["worst_ratio"] for case in kernels)},
+                    "worst_ratio": max(case["worst_ratio"] for case in kernels if case["worst_ratio"] is not None),
+                    "cases_list": [{key: case[key] for key in ("op", "shape", "checked", "worst_ratio", "control_outside", "pass")}
+                                   for case in kernels]},
         "numerics": {"rule": f"KL(ref_a || metal) position-weighted mean <= {KL_FACTOR:g} x KL(ref_a || ref_b) and top-1 >= {TOP1_MINIMUM:.0%}",
                      "floor": floor, "metal": metal, "metal_against_reference_b": metal_b,
                      "metal_verdict": verdict(metal, floor), "control": control,
                      "control_corruption": json.loads((out / "control" / "control.json").read_text()),
                      "control_verdict": verdict(control, floor),
+                     "reference_b_against_a_verdict": verdict(floor, floor),
                      "diagnostics": diagnostics},
         "greedy": greedy_table(out),
         "two_sequence_decode": pairs_table(out),
@@ -150,6 +153,7 @@ def main():
     receipt["numerics"]["control_fails_as_required"] = not receipt["numerics"]["control_verdict"]["pass"]
     (out / "RECEIPT.json").write_text(json.dumps(receipt, indent=1) + "\n")
     print(json.dumps({"metal": receipt["numerics"]["metal_verdict"], "control": receipt["numerics"]["control_verdict"],
+                      "reference_b_against_a": receipt["numerics"]["reference_b_against_a_verdict"],
                       "floor_kl": floor["kl_mean"], "metal_kl": metal["kl_mean"], "metal_top1": metal["top1_agreement"],
                       "decode": receipt["speed"]["decode"]["roofline"]}, indent=1))
     return 0 if receipt["numerics"]["metal_verdict"]["pass"] and receipt["numerics"]["control_fails_as_required"] else 1
