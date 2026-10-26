@@ -1130,6 +1130,10 @@ int main(int argc, char **argv)
 	TestLinear(1u,17408u,5120u,0u,1u,UINT64_MAX);
 	TestLinear(3u,17408u,5120u,0u,1u,UINT64_MAX);
 	TestLinear(7u,5120u,1000u,0u,0u,UINT64_MAX);
+	TestLinear(8u,5120u,1000u,0u,0u,UINT64_MAX);
+	TestLinear(2u,6144u,5120u,0u,0u,UINT64_MAX);
+	TestLinear(8u,17408u,5120u,0u,1u,UINT64_MAX);
+	TestLinear(2u,5120u,248320u,1u,0u,UINT64_MAX);
 	TestLinear(1u,5120u,248320u,1u,0u,UINT64_MAX);
 	TestLinear(130u,5120u,200u,0u,0u,UINT64_MAX);
 	TestLinear(512u,5120u,16384u,0u,0u,20000u);
