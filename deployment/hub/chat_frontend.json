@@ -950,6 +950,53 @@
     "parameter_start": "<parameter=",
     "parameter_end": "</parameter>"
    }
+  },
+  {
+   "id": "a.x-k2",
+   "model_dir": "models/a.x-k2",
+   "engine": "http://127.0.0.1:8478",
+   "context_tokens": 262144,
+   "max_output_tokens": 32768,
+   "sampling_defaults": {
+    "temperature": 0.9,
+    "top_p": 0.95
+   },
+   "sampling_source": "/mnt/cold-raid6/models/ax-k2-fp8-official/generation_config.json",
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 3900,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<|im_end|>"
+   ],
+   "template_defaults": {},
+   "template_kwargs": [
+    "enable_thinking"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "enable_thinking": false
+    },
+    "low": {
+     "enable_thinking": true
+    },
+    "medium": {
+     "enable_thinking": true
+    },
+    "high": {
+     "enable_thinking": true
+    }
+   },
+   "reasoning": {
+    "start": "<think>",
+    "end": "</think>"
+   },
+   "tool_calls": {
+    "format": "json",
+    "start": "<tool_call>",
+    "end": "</tool_call>"
+   }
   }
  ],
  "controller_token_file": "/srv/workspace/sparkpipe/swap-controller/token",

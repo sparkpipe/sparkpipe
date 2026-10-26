@@ -521,8 +521,8 @@ class Model:
         self.reasoning = spec.get("reasoning")
         self.tool_calls = dict(spec["tool_calls"])
         self.tool_calls.setdefault("format", "key_value")
-        if self.tool_calls["format"] not in ("key_value", "tagged", "function_xml", "object"):
-            raise SystemExit(f"chat_frontend: {self.id} tool_calls format must be key_value, tagged, function_xml or object")
+        if self.tool_calls["format"] not in ("key_value", "tagged", "function_xml", "object", "json"):
+            raise SystemExit(f"chat_frontend: {self.id} tool_calls format must be key_value, tagged, function_xml, object or json")
         if self.tool_calls["format"] == "object" and not all(isinstance(self.tool_calls.get(key), str) and self.tool_calls[key] for key in ("name_prefix", "string_delimiter")):
             raise SystemExit(f"chat_frontend: {self.id} object tool calls need name_prefix and string_delimiter")
         self.content_markers = list(spec.get("content_markers", []))
@@ -835,7 +835,26 @@ class OutputParser:
             return self.parse_function_xml_call(body)
         if self.call["format"] == "object":
             return self.parse_object_call(body)
+        if self.call["format"] == "json":
+            return self.parse_json_call(body)
         return self.parse_key_value_call(body)
+
+    def parse_json_call(self, body):
+        try:
+            parsed = json.loads(body.strip())
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(parsed, dict) or set(parsed) - {"name", "arguments"} or not isinstance(parsed.get("name"), str) or not parsed["name"]:
+            return None
+        arguments = parsed.get("arguments", {})
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                return None
+        if not isinstance(arguments, dict):
+            return None
+        return call_entry(parsed["name"], arguments)
 
     def parse_object_call(self, body):
         prefix = self.call["name_prefix"]
