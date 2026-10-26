@@ -6,8 +6,8 @@
 #define SPARK_MATH_FN static inline
 typedef uint SparkMathU32;
 typedef ushort SparkMathU16;
-#define SPARK_MATH_AS_FLOAT(bits) metal::as_type<float>(bits)
-#define SPARK_MATH_AS_BITS(value) metal::as_type<uint>(value)
+#define SPARK_MATH_AS_FLOAT(bits) as_type<float>(bits)
+#define SPARK_MATH_AS_BITS(value) as_type<uint>(value)
 #define SPARK_MATH_EXP(x) metal::exp(x)
 #define SPARK_MATH_EXP_FAST(x) metal::exp(x)
 #define SPARK_MATH_LOG(x) metal::log(x)
