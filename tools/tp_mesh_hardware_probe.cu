@@ -244,11 +244,11 @@ struct Probe
                     for (uint32_t rank=owner&1u;rank<degree;rank+=2u)
                     {
                         uint16_t own,partner;
-                        std::memcpy(&own,inputs[rank].data()+(owner*(elements/degree)+i)*2u,2u);
-                        std::memcpy(&partner,inputs[rank^1u].data()+(owner*(elements/degree)+i)*2u,2u);
+                        std::memcpy(&own,inputs[rank].data()+(owner*(elements/degree)+i)*sizeof(own),sizeof(own));
+                        std::memcpy(&partner,inputs[rank^1u].data()+(owner*(elements/degree)+i)*sizeof(partner),sizeof(partner));
                         sum+=Float(Bf16(Float(own)+Float(partner)));
                     }
-                    uint16_t bits=Bf16(sum);std::memcpy(expected_rank[owner].data()+i*2u,&bits,2u);
+                    uint16_t bits=Bf16(sum);std::memcpy(expected_rank[owner].data()+i*sizeof(bits),&bits,sizeof(bits));
                 }
         else if (scatter)
             for (uint32_t owner=0u;owner<degree;owner++)
