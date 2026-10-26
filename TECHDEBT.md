@@ -1121,11 +1121,10 @@ and the multidev docs on 2026-09-28. Line numbers are in
   - exp flavor: CUDA kernels use `__expf` in some places and `expf` in
     others, Metal the precise functions everywhere, so the backends differ
     by the intrinsic's error until one policy is chosen and measured;
-  - the bf16 conversion carries CUDA's semantics on both backends: a NaN
-    whose payload sits only in the low 16 bits rounds to infinity. The
-    hardware conversion (`cvt.rn.bf16.f32`) keeps NaNs and is one
-    instruction; switching changes every kernel's machine code, so it needs
-    a fleet speed check.
+  - the bf16 conversion is a software round-to-nearest-even with an
+    explicit NaN case on both backends; the hardware conversion
+    (`cvt.rn.bf16.f32`) gives the same bits in one instruction, and
+    switching to it on CUDA needs a fleet speed check.
   Kernel bodies (the schedules) stay per backend.
 - Add rank, island and link-class descriptors and derive collective
   decomposition from the link matrix instead of a configured backend.
