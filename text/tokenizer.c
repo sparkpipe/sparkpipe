@@ -1726,6 +1726,7 @@ static uint32_t SparkTokenizerJsonSplitElementVariant(
 #define SPARK_TOKENIZER_SPLIT_MODE_CASED_LETTERS 6u
 #define SPARK_TOKENIZER_SPLIT_MODE_NEWLINE_LETTERS 7u
 #define SPARK_TOKENIZER_SPLIT_MODE_PHRASE_LETTERS 8u
+#define SPARK_TOKENIZER_SPLIT_MODE_IDEOGRAPH_LETTERS 9u
 #define SPARK_TOKENIZER_SEQUENCE_SPLIT_COUNT 3u
 
 static const char *const SPARK_TOKENIZER_DIGIT_IDEOGRAPH_SEQUENCE_PATTERNS[SPARK_TOKENIZER_SEQUENCE_SPLIT_COUNT] =
@@ -1811,6 +1812,36 @@ static uint32_t SparkTokenizerJsonIsDigitIdeographSequence(
 }
 
 static const char SPARK_TOKENIZER_NEWLINE_RUN_PATTERN[] = "(?:\\r?\\n)+(?!\\r?\\n)";
+
+static uint32_t SparkTokenizerJsonIsIdeographLettersSequence(
+    const SparkJsonDocument *document,
+    int32_t pre_tokenizer_token_index)
+{
+    int32_t elements;
+    int32_t member;
+    bool use_regex = true;
+    if (pre_tokenizer_token_index < 0)
+    {
+        return 0u;
+    }
+    member = SparkJsonFindObjectMember(document,pre_tokenizer_token_index,"type");
+    elements = SparkJsonFindObjectMember(document,pre_tokenizer_token_index,"pretokenizers");
+    if (member < 0 || !SparkJsonStringEquals(document,member,"Sequence") || elements < 0 ||
+        !SparkJsonTokenIsType(document,elements,SPARK_JSON_TOKEN_ARRAY) || SparkJsonGetArrayElementCount(document,elements) != 3u ||
+        !SparkTokenizerJsonIsIsolatedSplit(document,SparkJsonGetArrayElement(document,elements,0u),SPARK_TOKENIZER_DIGIT_IDEOGRAPH_SEQUENCE_PATTERNS[1]) ||
+        !SparkTokenizerJsonIsIsolatedSplit(document,SparkJsonGetArrayElement(document,elements,1u),SPARK_TOKENIZER_LETTER_SPLIT_PATTERN))
+    {
+        return 0u;
+    }
+    member = SparkJsonGetArrayElement(document,elements,2u);
+    if (!SparkJsonStringEquals(document,SparkJsonFindObjectMember(document,member,"type"),"ByteLevel") ||
+        !SparkTokenizerJsonNoPrefixSpace(document,member))
+    {
+        return 0u;
+    }
+    member = SparkJsonFindObjectMember(document,member,"use_regex");
+    return member >= 0 && SparkJsonGetBoolean(document,member,&use_regex) == SPARK_STATUS_OK && !use_regex ? 1u : 0u;
+}
 
 static uint32_t SparkTokenizerJsonIsNewlineLettersSequence(
     const SparkJsonDocument *document,
@@ -2039,6 +2070,7 @@ static uint32_t SparkTokenizerJsonPreTokenizerSupported(
     if (SparkTokenizerJsonIsByteLevelElement(document, pre_tokenizer_token_index, 0u) ||
         SparkTokenizerJsonIsKnownSplitElement(document, pre_tokenizer_token_index) ||
         SparkTokenizerJsonIsDigitIdeographSequence(document, pre_tokenizer_token_index) ||
+        SparkTokenizerJsonIsIdeographLettersSequence(document, pre_tokenizer_token_index) ||
         SparkTokenizerJsonIsNewlineLettersSequence(document, pre_tokenizer_token_index))
     {
         return 1u;
@@ -2253,6 +2285,10 @@ SparkStatus SparkTokenizerLoadHuggingFaceJson(
         if (SparkTokenizerJsonIsNewlineLettersSequence(&document, pre_tokenizer_token_index) != 0u)
         {
             tokenizer->byte_level_use_regex = SPARK_TOKENIZER_SPLIT_MODE_NEWLINE_LETTERS;
+        }
+        if (SparkTokenizerJsonIsIdeographLettersSequence(&document, pre_tokenizer_token_index) != 0u)
+        {
+            tokenizer->byte_level_use_regex = SPARK_TOKENIZER_SPLIT_MODE_IDEOGRAPH_LETTERS;
         }
     }
     if (tokenizer->model_kind == SPARK_TOKENIZER_BPE_MODEL_KIND_METASPACE)
@@ -2772,7 +2808,7 @@ SparkStatus SparkTokenizerLoadCompiledFile(
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &tokenizer->unk_token_id);
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &tokenizer->maximum_token_id);
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &tokenizer->byte_level_use_regex);
-    if (status == SPARK_STATUS_OK && tokenizer->byte_level_use_regex > SPARK_TOKENIZER_SPLIT_MODE_PHRASE_LETTERS) status = SPARK_STATUS_PARSE_ERROR;
+    if (status == SPARK_STATUS_OK && tokenizer->byte_level_use_regex > SPARK_TOKENIZER_SPLIT_MODE_IDEOGRAPH_LETTERS) status = SPARK_STATUS_PARSE_ERROR;
     if (status == SPARK_STATUS_OK && version == SPARK_TOKENIZER_COMPILED_FILE_VERSION)
     {
         status = SparkTokenizerBinaryReadUInt32(file, &tokenizer->ignore_merges);
@@ -4526,6 +4562,29 @@ static uint32_t SparkTokenizerNewlineRunAt(const char *text, uint32_t text_bytes
     return position + 1u < text_bytes && text[position] == '\r' && text[position + 1u] == '\n' ? 2u : 0u;
 }
 
+static uint32_t SparkTokenizerIdeographRunEnd(const char *text, uint32_t text_bytes, uint32_t position)
+{
+    uint32_t next;
+    uint32_t code_point;
+    uint32_t ideograph;
+    if (SparkTokenizerSequenceClassAt(text, text_bytes, position, &next, &code_point) == 0u)
+    {
+        return position;
+    }
+    ideograph = SparkTokenizerIsIdeographOrKana(code_point);
+    while (next < text_bytes)
+    {
+        uint32_t cursor;
+        if (SparkTokenizerSequenceClassAt(text, text_bytes, next, &cursor, &code_point) == 0u ||
+            SparkTokenizerIsIdeographOrKana(code_point) != ideograph)
+        {
+            break;
+        }
+        next = cursor;
+    }
+    return next;
+}
+
 static uint32_t SparkTokenizerNewlinePieceEnd(const char *text, uint32_t text_bytes, uint32_t position)
 {
     uint32_t step;
@@ -4595,6 +4654,13 @@ SparkStatus SparkTokenizerSplitUtf8(
                 bound = SparkTokenizerNewlinePieceEnd(text, text_bytes, position);
             }
             found = SparkTokenizerFindNextExtendedPiece(text, bound, position, 1u, 0u, &piece_start, &piece_bytes);
+            break;
+        case SPARK_TOKENIZER_SPLIT_MODE_IDEOGRAPH_LETTERS:
+            if (position >= bound)
+            {
+                bound = SparkTokenizerIdeographRunEnd(text, text_bytes, position);
+            }
+            found = bound > position && SparkTokenizerFindNextExtendedPiece(text, bound, position, 1u, 0u, &piece_start, &piece_bytes);
             break;
         default:
             found = 0u;
@@ -4678,6 +4744,13 @@ static SparkStatus SparkTokenizerEncodeNormalizedSegment(
                 bound = SparkTokenizerNewlinePieceEnd(text, text_bytes, position);
             }
             found = SparkTokenizerFindNextExtendedPiece(text, bound, position, 1u, 0u, &piece_start, &piece_bytes);
+            break;
+        case SPARK_TOKENIZER_SPLIT_MODE_IDEOGRAPH_LETTERS:
+            if (position >= bound)
+            {
+                bound = SparkTokenizerIdeographRunEnd(text, text_bytes, position);
+            }
+            found = bound > position && SparkTokenizerFindNextExtendedPiece(text, bound, position, 1u, 0u, &piece_start, &piece_bytes);
             break;
         default:
             found = 0u;
