@@ -505,7 +505,7 @@ static int32_t GlmIndexerScore(const GlmBuffers *b, LmKvShardView pages, uint32_
 	for ( uint32_t first = 0u; first < rows; first += chunk_rows )
 	{
 		const uint32_t count = rows - first < chunk_rows ? rows - first : chunk_rows;
-		if ( LmWeightedSparseScoreLaunch<GlmIndexKv,GLM_INDEX_HEADS,GLM_INDEX_DIM>(b->index_query_bf16 + (uint64_t)first * GLM_INDEX_QUERY,
+		if ( LmWeightedSparseScoreLaunch<GlmIndexKv,GLM_INDEX_HEADS,GLM_INDEX_DIM,LmKvShardView,true>(b->index_query_bf16 + (uint64_t)first * GLM_INDEX_QUERY,
 				b->index_head_weight_bf16 + (uint64_t)first * GLM_INDEX_HEADS, pages, b->sequence_of_row + first, b->context_length,
 				b->row_positions != 0 ? b->row_positions + first : 0, count, score_stride, GLM_INDEX_SCALE / sqrtf((float)GLM_INDEX_HEADS),
 				b->selection_scores, stream) != cudaSuccess ||
@@ -525,7 +525,7 @@ static int32_t GlmIndexerScoreSelect(const GlmBuffers *b, uint32_t rows, uint32_
 	for ( uint32_t first = 0u; first < rows; first += chunk_rows )
 	{
 		const uint32_t count = rows - first < chunk_rows ? rows - first : chunk_rows;
-		if ( LmWeightedSparseScoreLaunch<GlmIndexKv,GLM_INDEX_HEADS,GLM_INDEX_DIM>(b->index_query_bf16 + (uint64_t)first * GLM_INDEX_QUERY,
+		if ( LmWeightedSparseScoreLaunch<GlmIndexKv,GLM_INDEX_HEADS,GLM_INDEX_DIM,LmKvShardView,true>(b->index_query_bf16 + (uint64_t)first * GLM_INDEX_QUERY,
 				b->index_head_weight_bf16 + (uint64_t)first * GLM_INDEX_HEADS, b->index_shard, b->sequence_of_row + first, b->context_length,
 				b->row_positions + first, count, score_stride, GLM_INDEX_SCALE / sqrtf((float)GLM_INDEX_HEADS), b->selection_scores, stream) != cudaSuccess ||
 			LmIndexSelectLocalLaunch<LM_INDEX_SELECT_THREADS>(b->kv_shard, b->selection_scores, score_stride, b->sequence_of_row + first, b->context_length,
