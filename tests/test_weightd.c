@@ -1326,8 +1326,24 @@ static void SparkTestKvDetachedRetention(void)
     SparkWeightdClientClose(attached);
     SparkWeightdServerDestroy(context.server);
     context.server = 0;
+    SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,4u * SPARK_TEST_KV_CHUNK_BYTES);
+    SparkTestConnect(&detached,socket_path,0ull);
+    assert(SparkTestKvAttach(detached,0x43,SPARK_TEST_KV_CHUNK_BYTES,SPARK_TEST_KV_CHUNK_BYTES,4096u,&grant) == SPARK_STATUS_OK);
+    SparkTestKvGrantClose(&grant);
+    SparkWeightdClientClose(detached);
+    SparkTestConnect(&detached,socket_path,0ull);
+    assert(SparkTestKvAttach(detached,0x43,SPARK_TEST_KV_CHUNK_BYTES,SPARK_TEST_KV_CHUNK_BYTES,4096u,&grant) == SPARK_STATUS_OK && grant.reattached == 1u);
+    SparkTestKvGrantClose(&grant);
+    for (index = 0u; index < 2u; index++)
+        assert(SparkWeightdClientKvPoolStatus(detached,grant.pool_generation,&state,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+    __atomic_store_n(&context.stop,1,__ATOMIC_SEQ_CST);
+    assert(pthread_join(thread,0) == 0 && context.run_status == SPARK_STATUS_OK);
+    assert(SparkWeightdServerExpireKv(context.server,SparkTestMonotonicNs() + 30u * SPARK_KV_DETACHED_POOL_SECONDS * second_ns) == 0u);
+    SparkWeightdClientClose(detached);
+    SparkWeightdServerDestroy(context.server);
+    context.server = 0;
     assert(spark_stub_cuda_outstanding_allocs() == 0u);
-    printf("weightd kv pools: a detached pool is released %llu s after its owner leaves, an attached pool is never released by age\n",
+    printf("weightd kv pools: a detached pool is released %llu s after its owner leaves, an attached or reattached pool is never released by age\n",
         (unsigned long long)SPARK_KV_DETACHED_POOL_SECONDS);
 }
 
