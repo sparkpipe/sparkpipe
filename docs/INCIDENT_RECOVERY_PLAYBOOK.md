@@ -282,6 +282,7 @@ not on the serving path.
 | `host:H:unreachable` | ping and ssh | `tools/fleet_post_reboot.sh H` once it is back |
 | `cluster:OSD_DOWN:osd.N ...` | on the OSD's host: its unit, `lsusb -t` (the enclosure must run at 20000M), `ds4-extnvme-link.service` | a USB re-enumeration: `tools/fleet_post_reboot.sh H --fix-ceph`; an enclosure at 480M (USB 2) means a loose or wrong cable, so reseat it, then start the guard and the OSD and clear any `noout` flag left on it |
 | `cluster:unreachable` | the monitors (`ceph -s` from spark0, sparkf, spark7) | |
+| `cluster:PG_DAMAGED`, `cluster:OSD_SCRUB_ERRORS` | `ceph health detail` names the PG; `sudo cephadm shell -- rados list-inconsistent-obj PG --format=json` on spark0 names the object and the shard with the error (the host `rados` cannot fetch its config); on that OSD's host, `_verify_csum` lines in its log, `smartctl -a -d sntasmedia` on the enclosure and USB disconnects in the kernel log | with every other shard clean, `ceph pg repair PG` rebuilds the bad shard from the others (a full deep scrub of the PG, 10 minutes or more); a disk with media errors, or errors that come back, needs replacing |
 
 ## Fleet-duty acceptance
 
