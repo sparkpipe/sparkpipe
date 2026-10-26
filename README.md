@@ -112,10 +112,14 @@ packs. A pack is already sharded for one topology and already in the exact
 byte layout the kernels read, and it is identified by SHA-256 at every
 storage tier.
 
-SparkPipe never quantizes a model itself. Packs carry either the
-publisher's own precision (BF16, FP8, MXFP4, NVFP4) or a vetted community
-release with pinned provenance. The packer only converts formats, slices by
-topology and lays out scale planes; its codecs come from one shared table.
+SparkPipe never quantizes a model itself. Packs carry a publisher's release
+or a vetted community release with pinned provenance. A model at or near the
+frontier serves at its publisher's full precision whenever it fits one fleet:
+BF16, or the format it was trained or released in (A.X K2's FP8, Kimi K3's
+MXFP4 experts). A vetted 4-bit build serves only a model that does not fit one
+fleet at full precision (Qwen 3.8 Max), because that is better than not
+serving it. The packer only converts formats, slices by topology and lays out
+scale planes; its codecs come from one shared table.
 
 **weightd.** One persistent daemon per node, `weightd`, owns the weight
 arenas:
@@ -477,6 +481,9 @@ model's cached prefixes come back from the KV snapshot store.
 - Qwen 3.8 Flash (internal) serves on the LAN door but not on sparkpipe.ai:
   its license requires a separate agreement with Qwen for any
   model-as-a-service business.
+- **Korean models:** K-EXAONE 2.0 (LG AI Research, BF16), A.X K2 (SK Telecom,
+  FP8, the precision it was trained in) and Solar Open 2 (Upstage, BF16) serve
+  on the same runner, each with its publisher's drafter where there is one.
 - Speed, accuracy and swap times for every model, with their receipts, are in
   [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md#all-served-models); each
   driver's acceptance status is in
@@ -498,6 +505,22 @@ algorithm.
 A LiteLLM front door routes several islands behind one endpoint
 ([`docs/LITELLM_FRONTEND.md`](docs/LITELLM_FRONTEND.md)). Memory, tools,
 policy and user interfaces belong above the API.
+
+## SparkPipe Chat
+
+SparkPipe Chat (`https://sparkpipe.ai:8443`) is Open WebUI in front of the
+chat layer, in Korean and English, for accounts the operator approves
+([`docs/LITELLM_FRONTEND.md`](docs/LITELLM_FRONTEND.md)).
+
+- **Memory:** one memory layer serves every model. A chat that outgrows the
+  context keeps its most relevant turns and a summary of the rest; a switch
+  turns memory off for a chat, and a slider compacts it by hand.
+- **Local mode** (`/local/`) keeps a user's chats in the browser; the servers
+  keep no history of them.
+- **Field search:** checkboxes in the chat add search tools for one field at a
+  time (law, medicine, finance, patents and others), so any model answers from
+  current primary sources and cites them. Korean law comes from the national
+  law database; each tool says where its queries go before it is ticked.
 
 ## Fleet-hours
 
