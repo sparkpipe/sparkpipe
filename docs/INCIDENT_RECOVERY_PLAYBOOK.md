@@ -231,6 +231,56 @@ spark8 failed twice (2026-10-01, 2026-10-02) the same way:
 **IOMMU mode**
 - All 16 nodes run translated DMA (`iommu.passthrough=0`, `DMA-FQ` for the CX-7) since the Lenovo units left on 2026-10-20. spark7, spark8 and spark9 are NVIDIA DGX Spark Founders Edition units on kernel 7.0.0-1019. The Lenovo passthrough history is in [CX7_DMA_INVESTIGATION_2026-10.md](CX7_DMA_INVESTIGATION_2026-10.md).
 
+## Ceph canary
+
+A Spark can lose CephFS while its OSD and the cluster look healthy: the
+kernel client hangs, the mount is gone, or writes fail. A Spark that does no
+data I/O for days looks the same as one that cannot do any, so the canary
+tries.
+
+- **What it does.** `tools/hub/ceph_canary.py run` (hub user unit
+  `sparkpipe-ceph-canary`, enabled, config `deployment/hub/ceph_canary.json`
+  copied to `~/sparkpipe-ceph-canary/`) probes the hub and all 16 Sparks
+  every 120 s. Each probe checks that `/mnt/model-warm` is a ceph mount,
+  creates and lists `/mnt/model-warm/.ceph-canary/<host>/`, writes 1 MiB of
+  random data with `O_DIRECT` and `fsync`, reads it back with `O_DIRECT`,
+  compares, and deletes it. New files land in `ds4warm_data` (EC 14+2, 4 MiB
+  objects), so one write touches every OSD in its placement group's acting set.
+  Each round also reads `ceph health detail` from spark0, falling back to
+  sparkf and spark7.
+- **What counts as a problem.**
+  - A host that is not mounted, fails a stage, gives no answer within 60 s,
+    or still has the previous probe running. The previous probe is usually
+    stuck in the kernel, and no second probe is started on top of it.
+  - A host that ssh cannot reach, or whose probe takes over 15 s.
+  - Any Ceph health check except the known warnings in `ignore_checks`. These
+    are matched by their exact messages, so a new stray daemon or a new
+    insecure key still alerts.
+  - Down OSDs, down hosts, OSD flags, slow-op and fullness checks are one
+    problem per OSD or host.
+  - A problem becomes active after 2 consecutive rounds and clears in the
+    first round without it.
+- **Where to look.**
+  - `/srv/workspace/sparkpipe/ceph-canary/state.json` holds the last round:
+    per-host stage times, active and pending problems, and the ignored checks.
+  - `/srv/workspace/sparkpipe/logs/ceph-canary.jsonl` logs every problem and
+    clearing, plus an hourly summary.
+- **Alerts.** From the workstation:
+  - `python3 tools/hub/ceph_canary.py watch --ack ACK.json` exits 1 when
+    the active problems differ from the acknowledged ones, 3 when the canary
+    has stopped writing its state, and 2 when the hub cannot be read.
+  - `... ack --ack ACK.json` acknowledges the current set once it is handled.
+
+| Problem key | First checks | Fix |
+| --- | --- | --- |
+| `host:H:mount` | `findmnt /mnt/model-warm` on H | `ssh H /usr/local/sbin/ds4-ceph-warm mount` |
+| `host:H:metadata`, or a hang at `metadata` | the MDS session of H (`ceph tell mds.<active> session ls`), `ceph osd blocklist ls` | an evicted or blocklisted client needs the mount remounted (`ds4-ceph-warm unmount`, then `mount`) once nothing uses it |
+| `host:H:write` or `read`, a hang there, or `host:H:slow` | `ceph health detail`; on H the in-flight requests in `/sys/kernel/debug/ceph/*/osdc` and the switch link `enp1s0f1np1` | follow the OSD or network fault the in-flight requests point at |
+| `host:H:stuck` | `ps -o pid,stat,wchan` and `/proc/PID/stack` of the old probe | as for a hang; the probe process stays in D state until the kernel client recovers |
+| `host:H:unreachable` | ping and ssh | `tools/fleet_post_reboot.sh H` once it is back |
+| `cluster:OSD_DOWN:osd.N ...` | on the OSD's host: its unit, `lsusb -t` (the enclosure must run at 20000M), `ds4-extnvme-link.service` | a USB re-enumeration: `tools/fleet_post_reboot.sh H --fix-ceph`; an enclosure at 480M (USB 2) means a loose or wrong cable, so reseat it, then start the guard and the OSD and clear any `noout` flag left on it |
+| `cluster:unreachable` | the monitors (`ceph -s` from spark0, sparkf, spark7) | |
+
 ## Fleet-duty acceptance
 
 A host is not fleet-ready merely because it answers ping or accepts TCP. Record
