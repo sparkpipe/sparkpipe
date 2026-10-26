@@ -83,7 +83,7 @@
       <tr><td><b>DeepSeek V4.1 Flash</b><br><span class="mono">deepseek-v4.1-flash</span></td><td>DeepSeek</td><td><a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017">MIT</a></td><td class="num">1M</td><td class="num">42.5 ¹ tok/s</td><td class="num">1,290 ¹ tok/s</td><td>핵심</td><td>제공</td></tr>
       <tr><td><b>K-EXAONE 2.0</b><br><span class="mono">k-exaone-2.0</span></td><td>LG AI연구원</td><td><a href="https://huggingface.co/LGAI-EXAONE/K-EXAONE-2.0-750B-A37B">Apache 2.0</a></td><td class="num">256K</td><td class="num">23.0 ³ tok/s</td><td class="num">324 ³ tok/s</td><td>검증 중</td><td>제공</td></tr>
       <tr><td><b>A.X K2</b><br><span class="mono">a.x-k2</span></td><td>SK텔레콤</td><td><a href="https://huggingface.co/skt/A.X-K2">Apache 2.0</a></td><td class="num">256K</td><td class="num">23.5 ³ tok/s</td><td class="num">1,252 ³ tok/s</td><td>검증 중</td><td>제공</td></tr>
-      <tr><td><b>Solar Open 2</b><br><span class="mono">solar-open-2</span></td><td>업스테이지</td><td><a href="https://huggingface.co/upstage/Solar-Open2-250B">Upstage Solar License</a></td><td class="num">256K</td><td class="num">41.1 ³ tok/s</td><td class="num">1,041 ³ tok/s</td><td>검증 중</td><td>제공</td></tr>
+      <tr><td><b>Solar Open 2</b><br><span class="mono">solar-open-2</span></td><td>업스테이지</td><td><a href="https://huggingface.co/upstage/Solar-Open2-250B">Upstage Solar License</a></td><td class="num">256K</td><td class="num">47.9 ³ tok/s</td><td class="num">1,025 ³ tok/s</td><td>검증 중</td><td>제공</td></tr>
       <tr><td><b>MiMo V2.6 Pro</b><br><span class="mono">mimo-v2.6-pro</span></td><td>Xiaomi</td><td><a href="https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-RL">MIT</a></td><td class="num">32K</td><td class="num">19.0 ² tok/s</td><td class="num">55 ² tok/s</td><td>검증</td><td>제공</td></tr>
       <tr><td><b>MiMo V2.6 Flash</b><br><span class="mono">mimo-v2.6-flash</span></td><td>Xiaomi</td><td><a href="https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL">MIT</a></td><td class="num">32K</td><td class="num">40.9 ² tok/s</td><td class="num">157 ² tok/s</td><td>검증</td><td>제공</td></tr>
       <tr><td><b>Gemma 4 31B</b><br><span class="mono">gemma-4-31b</span></td><td>Google</td><td><a href="https://huggingface.co/google/gemma-4-31B-it">Apache 2.0</a></td><td class="num">32K</td><td class="num">34.4 tok/s</td><td class="num">834 tok/s</td><td>검증</td><td>제공, 텍스트만</td></tr>
@@ -132,6 +132,7 @@
       <tr><td><b>A.X K2</b>, SKT</td><td class="num">0.69 TB</td><td class="num">23.5 tok/s, 실측</td><td class="num">33 tok/s</td><td class="num">49 tok/s</td><td class="num">16초</td><td class="num">8초</td></tr>
     </table>
     </div>
+    <p><b>M5 Ultra Mac Studio 한 대에서 실측</b>(플릿 2의 장비, SparkPipe Metal 엔진, 2026-10-26): Qwen 3.8 27B를 원래 BF16 정밀도로 단일 요청 19.3 tok/s로 디코딩하며, 이는 Studio에서 실측한 1.14 TB/s 메모리 대역폭이 허용하는 22.3 tok/s의 86%입니다. 요청 2개를 동시에 처리하면 32.8 tok/s입니다. 프리필은 1K 토큰 프롬프트에서 1,372 tok/s, 8K에서 1,139 tok/s입니다.</p>
     <p>100만 토큰 Kimi K3 프롬프트를 처음부터 처리하는 시간은 가속기 박스 4대로 약 17분, 8대로 9분으로 추정합니다. 플릿 1과 플릿 2를 합치면 4TB이고 플릿 3이 2TB를 더하므로, 공개된 정밀도로는 플릿 하나에 담기지 않는 모델도 두 플릿에 걸쳐 실행할 수 있습니다. FP8의 Qwen 3.8 Max(2.5TB)와 BF16의 Inkling(1.9TB)이 그렇습니다.</p>
     <p>추정 방법:</p>
     <ul>
