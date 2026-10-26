@@ -93,7 +93,7 @@ typedef struct GemmaDeviceModel
 	SparkDeviceAttentionRope full_rope;
 } GemmaDeviceModel;
 
-static uint32_t GemmaMax(uint32_t a, uint32_t b)
+static uint64_t GemmaMax(uint64_t a, uint64_t b)
 {
 	return(a > b ? a : b);
 }
@@ -115,7 +115,8 @@ static uint32_t GemmaScratchSlices(GemmaDeviceModel *model, SparkDeviceStageSlic
 		{ rows * query * 2u, &model->attention.query },
 		{ rows * kv * 2u, &model->attention.key },
 		{ rows * kv * 2u, &model->attention.value },
-		{ SparkOpsAttentionScratchBytes(model->stage.max_rows,gemma_full.heads,gemma_full.head_dimension,model->stage.max_positions),
+		{ GemmaMax(SparkOpsAttentionScratchBytes(model->stage.max_rows,gemma_full.heads,gemma_full.head_dimension,model->stage.max_positions),
+			SparkOpsAttentionScratchBytes(model->stage.max_rows,gemma_sliding.heads,gemma_sliding.head_dimension,model->stage.max_positions)),
 			&model->attention.records },
 		{ rows * query * 2u, &model->attention.gated },
 		{ rows * 2u * GD_FFN * 2u, &model->ffn.gate_up },

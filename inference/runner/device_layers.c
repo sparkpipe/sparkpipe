@@ -400,8 +400,14 @@ static SparkStatus ExpertsOverride(SparkDeviceStage *stage, const SparkDeviceExp
 	if ( status != SPARK_STATUS_OK )
 		return(SparkDeviceStageRefuse(stage,status,"a route override must be host-visible device memory"));
 	for ( index = 0u; index < count; index++ )
+	{
+		uint64_t other;
 		if ( experts[index] >= shape->experts )
 			return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"a route override names an expert outside the layer"));
+		for ( other = index - index % shape->top_k; other < index; other++ )
+			if ( experts[other] == experts[index] )
+				return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"a route override names an expert twice in one row"));
+	}
 	return(SPARK_STATUS_OK);
 }
 
