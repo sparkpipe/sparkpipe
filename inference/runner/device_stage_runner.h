@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_device.h"
+#include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_stage_runner_model.h"
 
 #ifdef __cplusplus
@@ -55,7 +56,7 @@ typedef struct SparkDeviceStageRunnerInfo
 	uint64_t pack_bytes;
 	uint64_t streamed_bytes_per_token;
 	uint64_t device_state_bytes;
-	char pack_sha256[65];
+	char pack_sha256[SPARK_SHA256_HEX_BYTES];
 	char device[64];
 	char target[64];
 } SparkDeviceStageRunnerInfo;

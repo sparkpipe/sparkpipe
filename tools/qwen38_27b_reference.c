@@ -18,6 +18,7 @@
 #define REF_HIDDEN 5120u
 #define REF_VOCAB 248320u
 #define REF_FFN 17408u
+#define REF_GATE_UP (2u * REF_FFN)
 #define REF_KEY_HEADS 16u
 #define REF_VALUE_HEADS 48u
 #define REF_DIM 128u
@@ -28,6 +29,7 @@
 #define REF_KV_HEADS 4u
 #define REF_HEAD_DIM 256u
 #define REF_Q (REF_HEADS * REF_HEAD_DIM)
+#define REF_GATED_Q (2u * REF_Q)
 #define REF_KV (REF_KV_HEADS * REF_HEAD_DIM)
 #define REF_ROPE 64u
 #define REF_THETA 10000000.0
@@ -84,7 +86,7 @@ static float Bf16(uint16_t bits)
 {
 	uint32_t word = (uint32_t)bits << 16;
 	float value;
-	memcpy(&value,&word,4);
+	memcpy(&value,&word,sizeof(value));
 	return(value);
 }
 
@@ -95,11 +97,11 @@ static float RoundBf16(float value)
 	uint32_t bits;
 	if ( ref_round_activations == 0u )
 		return(value);
-	memcpy(&bits,&value,4);
+	memcpy(&bits,&value,sizeof(bits));
 	if ( (bits & 0x7fffffffu) > 0x7f800000u )
 		return(value);
 	bits = (bits + 0x7fffu + ((bits >> 16) & 1u)) & 0xffff0000u;
-	memcpy(&value,&bits,4);
+	memcpy(&value,&bits,sizeof(value));
 	return(value);
 }
 
@@ -150,7 +152,7 @@ static RefShard *RefOpenShard(RefCheckpoint *checkpoint, const char *name)
 	close(fd);
 	if ( shard->base == MAP_FAILED )
 		Die("cannot map shard",path);
-	memcpy(&header_bytes,shard->base,8);
+	memcpy(&header_bytes,shard->base,sizeof(header_bytes));
 	SparkJsonDocumentReset(&shard->header);
 	if ( SparkJsonParseText((const char *)shard->base + 8,(size_t)header_bytes,&shard->header) != SPARK_STATUS_OK )
 		Die("cannot parse shard header",path);
@@ -442,7 +444,7 @@ static void RefHeadNormRope(uint32_t variant, const float *in, uint32_t in_strid
 static void RefAttention(uint32_t variant, const RefLayer *layer, uint32_t index, RefState *state, const float *x, uint32_t rows, float *partial)
 {
 	const uint32_t first = state->length, length = first + rows;
-	float *gq = (float *)malloc((size_t)rows * 2u * REF_Q * sizeof(float));
+	float *gq = (float *)malloc((size_t)rows * REF_GATED_Q * sizeof(float));
 	float *kraw = (float *)malloc((size_t)rows * REF_KV * sizeof(float));
 	float *vraw = (float *)malloc((size_t)rows * REF_KV * sizeof(float));
 	float *query = (float *)malloc((size_t)rows * REF_Q * sizeof(float));
@@ -504,7 +506,7 @@ static void RefForward(uint32_t variant, const RefModel *model, RefState *state,
 	float *hidden = (float *)malloc((size_t)rows * REF_HIDDEN * sizeof(float));
 	float *normed = (float *)malloc((size_t)rows * REF_HIDDEN * sizeof(float));
 	float *partial = (float *)malloc((size_t)rows * REF_HIDDEN * sizeof(float));
-	float *gate_up = (float *)malloc((size_t)rows * 2u * REF_FFN * sizeof(float));
+	float *gate_up = (float *)malloc((size_t)rows * REF_GATE_UP * sizeof(float));
 	float *act = (float *)malloc((size_t)rows * REF_FFN * sizeof(float));
 	uint32_t row, index, attention = 0u, recurrent = 0u;
 	for ( row = 0u; row < rows; row++ )

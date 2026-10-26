@@ -115,8 +115,7 @@ static SparkStatus RunnerVerifyPack(SparkDeviceStageRunner *runner)
 		return(RunnerFail(status,"cannot hash the pack"));
 	if ( strcmp(hex,expected) != 0 )
 		return(RunnerFail(SPARK_STATUS_HASH_MISMATCH,"the pack bytes do not match its .sha256 record"));
-	memcpy(runner->info.pack_sha256,hex,64u);
-	runner->info.pack_sha256[64] = '\0';
+	memcpy(runner->info.pack_sha256,hex,sizeof(runner->info.pack_sha256));
 	return(SparkSha256HexToDigest(hex,runner->device_weights.pack_sha256));
 }
 
@@ -186,7 +185,7 @@ static SparkStatus RunnerKvCreate(SparkDeviceStageRunner *runner, uint64_t *tota
 	status = RunnerAllocate(&runner->kv_pool,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,(uint64_t)g->kv_layer_count * pool_pages * g->kv_layer_page_bytes,
 		"runner KV pool",total);
 	if ( status == SPARK_STATUS_OK )
-		status = RunnerAllocate(&runner->page_table,SPARK_DEVICE_SPACE_SHARED_COHERENT,(uint64_t)pool_pages * 4u,"runner page table",total);
+		status = RunnerAllocate(&runner->page_table,SPARK_DEVICE_SPACE_SHARED_COHERENT,(uint64_t)pool_pages * sizeof(uint32_t),"runner page table",total);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	table = (uint32_t *)runner->page_table.host;
@@ -213,17 +212,17 @@ static SparkStatus RunnerBuffers(SparkDeviceStageRunner *runner, uint64_t *total
 	const uint64_t hidden = runner->geometry.hidden, vocab = runner->geometry.vocab, head = runner->config.head_rows;
 	SparkStatus status = RunnerTablesCreate(runner,total);
 	if ( status == SPARK_STATUS_OK )
-		status = RunnerAllocate(&runner->hidden,SPARK_DEVICE_SPACE_SHARED_COHERENT,(uint64_t)runner->config.max_rows * hidden * 2u,"runner hidden rows",total);
+		status = RunnerAllocate(&runner->hidden,SPARK_DEVICE_SPACE_SHARED_COHERENT,(uint64_t)runner->config.max_rows * hidden * sizeof(uint16_t),"runner hidden rows",total);
 	if ( status == SPARK_STATUS_OK )
-		status = RunnerAllocate(&runner->head_hidden,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,head * hidden * 2u,"runner head rows",total);
+		status = RunnerAllocate(&runner->head_hidden,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,head * hidden * sizeof(uint16_t),"runner head rows",total);
 	if ( status == SPARK_STATUS_OK )
-		status = RunnerAllocate(&runner->head_normed,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,head * hidden * 2u,"runner head normed rows",total);
+		status = RunnerAllocate(&runner->head_normed,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,head * hidden * sizeof(uint16_t),"runner head normed rows",total);
 	if ( status == SPARK_STATUS_OK )
-		status = RunnerAllocate(&runner->logits,SPARK_DEVICE_SPACE_SHARED_COHERENT,head * vocab * 4u,"runner logits",total);
+		status = RunnerAllocate(&runner->logits,SPARK_DEVICE_SPACE_SHARED_COHERENT,head * vocab * sizeof(float),"runner logits",total);
 	if ( status == SPARK_STATUS_OK )
 		status = RunnerAllocate(&runner->logprob,SPARK_DEVICE_SPACE_SHARED_COHERENT,head * 16u,"runner log-probabilities",total);
 	if ( status == SPARK_STATUS_OK )
-		status = RunnerAllocate(&runner->argmax,SPARK_DEVICE_SPACE_SHARED_COHERENT,head * 4u,"runner argmax",total);
+		status = RunnerAllocate(&runner->argmax,SPARK_DEVICE_SPACE_SHARED_COHERENT,head * sizeof(uint32_t),"runner argmax",total);
 	if ( status == SPARK_STATUS_OK )
 		status = RunnerKvCreate(runner,total);
 	return(status);
@@ -352,9 +351,9 @@ static void RunnerWriteTables(SparkDeviceStageRunner *runner, const SparkDeviceS
 {
 	RunnerTables *t = &runner->table;
 	uint32_t row, lane = 0u;
-	memcpy(t->token_ids,batch->token_ids,(size_t)batch->rows * 4u);
-	memcpy(t->positions,batch->positions,(size_t)batch->rows * 4u);
-	memcpy(t->sequence_of_row,batch->sequence_of_row,(size_t)batch->rows * 4u);
+	memcpy(t->token_ids,batch->token_ids,(size_t)batch->rows * sizeof(*t->token_ids));
+	memcpy(t->positions,batch->positions,(size_t)batch->rows * sizeof(*t->positions));
+	memcpy(t->sequence_of_row,batch->sequence_of_row,(size_t)batch->rows * sizeof(*t->sequence_of_row));
 	for ( row = 0u; row < batch->rows; row++ )
 	{
 		t->row_indices[row] = row;
@@ -367,7 +366,7 @@ static void RunnerWriteTables(SparkDeviceStageRunner *runner, const SparkDeviceS
 		t->context_length[batch->sequence_of_row[row]] = batch->positions[row] + 1u;
 	}
 	t->row_begin[sequences] = batch->rows;
-	memcpy(t->head_rows,batch->head_row_index,(size_t)batch->head_rows * 4u);
+	memcpy(t->head_rows,batch->head_row_index,(size_t)batch->head_rows * sizeof(*t->head_rows));
 	for ( row = 0u; row < batch->head_rows; row++ )
 		t->targets[row] = batch->targets != 0 ? batch->targets[row] : 0xffffffffu;
 }

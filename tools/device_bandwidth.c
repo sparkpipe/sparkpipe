@@ -79,7 +79,7 @@ int main(int argc, char **argv)
 	}
 	if ( SparkDeviceInitialize(0) != SPARK_STATUS_OK || SparkDeviceQueueCreate(&queue,"bandwidth") != SPARK_STATUS_OK ||
 		SparkDeviceOpsAcquire(&ops) != SPARK_STATUS_OK || SparkDeviceAllocate(&buffer,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,bytes,"bandwidth buffer") != SPARK_STATUS_OK ||
-		SparkDeviceAllocate(&sink,SPARK_DEVICE_SPACE_SHARED_COHERENT,4096u * 4u,"bandwidth sink") != SPARK_STATUS_OK )
+		SparkDeviceAllocate(&sink,SPARK_DEVICE_SPACE_SHARED_COHERENT,4096u * sizeof(float),"bandwidth sink") != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"device setup failed: %s\n",SparkDeviceLastError()->text);
 		return(1);
