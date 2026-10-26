@@ -378,7 +378,7 @@ void LmSigmoidRowsKernel(const uint16_t *__restrict__ logits_bf16, float *__rest
 	}
 }
 
-template<uint32_t THREADS>
+template<uint32_t THREADS, bool DOUBLED = false>
 __global__ __launch_bounds__(THREADS, 1)
 void LmBf16SigmoidRowsKernel(const uint16_t *__restrict__ logits_bf16,float *__restrict__ scores,uint32_t width)
 {
@@ -387,7 +387,10 @@ void LmBf16SigmoidRowsKernel(const uint16_t *__restrict__ logits_bf16,float *__r
 	for (index=threadIdx.x; index<width; index+=THREADS)
 	{
 		float value = LmBf16ToFloat(logits_bf16[base + index]);
-		scores[base + index] = LmBf16ToFloat(LmFloatToBf16(1.0f / (1.0f + __expf(-value))));
+		if constexpr ( DOUBLED )
+			scores[base + index] = 2.0f * LmBf16ToFloat(LmFloatToBf16(1.0f / (1.0f + __expf(-value))));
+		else
+			scores[base + index] = LmBf16ToFloat(LmFloatToBf16(1.0f / (1.0f + __expf(-value))));
 	}
 }
 
@@ -583,6 +586,23 @@ void LmCopyRowsKernel(const uint16_t *__restrict__ source_bf16, uint16_t *__rest
 		return;
 	index = ((uint64_t)row * dimension) + element;
 	destination_bf16[index] = source_bf16[index];
+}
+
+__global__ static void LmRankMajorRowsKernel(const uint16_t *gathered, uint16_t *full, uint32_t rows, uint32_t width, uint32_t ranks)
+{
+	const uint32_t row = blockIdx.y;
+	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < width * ranks; index += gridDim.x * blockDim.x )
+	{
+		const uint32_t rank = index / width, element = index % width;
+		full[(uint64_t)row * width * ranks + index] = gathered[((uint64_t)rank * rows + row) * width + element];
+	}
+}
+
+__global__ static void LmSliceColumnsKernel(const uint16_t *source, uint16_t *target, uint32_t source_width, uint32_t offset, uint32_t width)
+{
+	const uint32_t row = blockIdx.y;
+	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < width; index += gridDim.x * blockDim.x )
+		target[(uint64_t)row * width + index] = source[(uint64_t)row * source_width + offset + index];
 }
 
 template<uint32_t THREADS>

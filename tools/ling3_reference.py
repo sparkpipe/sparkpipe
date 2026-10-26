@@ -118,6 +118,10 @@ class Checkpoint:
 
 
 class Reference:
+    embed_name = "model.word_embeddings.weight"
+    expert_bias_name = "gate.expert_bias"
+    attention_kind = "mla"
+
     def __init__(self, directory, limits):
         self.checkpoint = Checkpoint(directory)
         config = json.loads((Path(directory) / "config.json").read_text())
@@ -161,8 +165,11 @@ class Reference:
             raise ValueError("swiglu limit lists do not cover every layer")
         self.inv_freq = (1.0 / config["rope_theta"] ** (np.arange(0, self.rope_dim, 2, dtype=np.int64).astype(np.float32) / self.rope_dim)).astype(np.float32)
 
-    def is_mla(self, layer):
+    def is_attention(self, layer):
         return (layer + 1) % self.period == 0 or layer >= self.layers // self.period * self.period
+
+    def attention(self, layer, normed, positions):
+        return self.mla(layer, normed, positions)
 
     def norm(self, values, name, dim):
         weight = self.checkpoint.bf16(name, dim)
@@ -267,7 +274,7 @@ class Reference:
         m = f"model.layers.{layer}.mlp."
         logits = normed @ self.checkpoint.bf16(m + "gate.weight", self.experts, self.hidden).T
         scores = sigmoid(logits)
-        selection = scores + self.checkpoint.f32(m + "gate.expert_bias", self.experts)[None, :]
+        selection = scores + self.checkpoint.f32(m + self.expert_bias_name, self.experts)[None, :]
         rows = normed.shape[0]
         grouped = selection.reshape(rows, self.groups, -1)
         group_score = np.sort(grouped, axis=-1)[..., -2:].sum(axis=-1)
@@ -303,7 +310,7 @@ class Reference:
         tokens = np.concatenate([np.asarray(s, dtype=np.int64) for s in segments])
         positions = np.concatenate([np.arange(len(s), dtype=np.int64) for s in segments])
         bounds = np.cumsum([0] + [len(s) for s in segments])
-        embed = self.checkpoint.raw("model.word_embeddings.weight", (self.vocab, self.hidden), "BF16")
+        embed = self.checkpoint.raw(self.embed_name, (self.vocab, self.hidden), "BF16")
         residual = (np.asarray(embed[tokens]).astype(np.uint32) << 16).view(np.float32)
         del embed
         if dump is not None:
@@ -316,7 +323,7 @@ class Reference:
             attention = np.empty_like(residual)
             for first, last in zip(bounds[:-1], bounds[1:]):
                 part = normed[first:last]
-                attention[first:last] = self.mla(layer, part, positions[first:last]) if self.is_mla(layer) else self.kda(layer, part)
+                attention[first:last] = self.attention(layer, part, positions[first:last]) if self.is_attention(layer) else self.kda(layer, part)
             residual = bf16(residual + attention)
             if dump is not None:
                 dump[f"attn{layer:02d}"] = residual.copy()
@@ -328,7 +335,7 @@ class Reference:
             residual = bf16(residual + mlp)
             if dump is not None:
                 dump[f"layer{layer:02d}"] = residual.copy()
-            print(f"layer {layer} {'mla' if self.is_mla(layer) else 'kda'} done in {time.time() - began:.1f}s", file=sys.stderr, flush=True)
+            print(f"layer {layer} {self.attention_kind if self.is_attention(layer) else 'kda'} done in {time.time() - began:.1f}s", file=sys.stderr, flush=True)
         return self.norm(residual, "model.norm.weight", self.hidden), routes
 
     def logits(self, normed, chunk=16384):
@@ -353,8 +360,7 @@ def tokenize(args):
     Path(args.out).write_text(json.dumps({"prompts": rendered}, indent=1))
 
 
-def score(args):
-    reference = Reference(args.checkpoint, args.swiglu_limits)
+def score(args, reference):
     prompts = {p["name"]: p["prompt_token_ids"] for p in json.loads(Path(args.prompts).read_text())["prompts"]}
     capture = json.loads(Path(args.capture).read_text())
     names = [name for name in capture if capture[name]["tokens"]]
@@ -369,7 +375,7 @@ def score(args):
     if dump is not None:
         np.savez(args.dump, names=np.array(names), bounds=np.cumsum([0] + [len(s) for s in segments]), **dump)
     bounds = np.cumsum([0] + [len(s) for s in segments])
-    report = {"checkpoint": str(args.checkpoint), "swiglu_limits": args.swiglu_limits, "prompts": {}}
+    report = {"checkpoint": str(args.checkpoint), "swiglu_limits": getattr(args, "swiglu_limits", None), "prompts": {}}
     for index, name in enumerate(names):
         prompt, served = prompts[name], capture[name]
         first = bounds[index] + len(prompt) - 1
@@ -415,7 +421,7 @@ def main():
     else:
         if not args.capture:
             parser.error("score needs --capture")
-        score(args)
+        score(args, Reference(args.checkpoint, args.swiglu_limits))
     return 0
 
 
