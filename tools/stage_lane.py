@@ -285,6 +285,24 @@ AXK2 = {
     "recurrent_bytes": 0,
     "expert_warm": {"model_tag": "axk2_stage", "layers": 61, "experts": 256},
 }
+SOLAR_OPEN2 = {
+    "swap_id": "solar-open-2",
+    "api_port": 8479,
+    "kv_label": "solar_open2_stage",
+    "node_memory_bytes": 60 << 30,
+    "tokenizer_json": "/mnt/cold-raid6/models/solar-open2-250b-bf16-official/tokenizer.json",
+    "pack": "sparkdata/solar_open2.rows.tp16/solar_open2.tp16.rank{rank:02d}.pack",
+    "adapter": "libsolar_open2_tp16_serving_adapter.so",
+    "program": "solar_open2",
+    "node_target": "cuda.sm121.solar_open2.stage_runner.linear_bf16.expert_bf16.kv_bf16",
+    "contract": "model_contracts/solar_open2_authoritative.json",
+    "chat_template": "model-families/solar_open2/chat_template.json",
+    "eos_token_ids": [2, 129],
+    "tokenizer_vocabulary": 196608,
+    "hidden": 4096,
+    "kv_page_bytes": (12 * 64 * 4096) // WORLD,
+    "recurrent_bytes": 36 * (4 * 128 * 128 * 4 + 1536 * 4 * 2),
+}
 GLM53_FULL = {
     "swap_id": "glm-5.3",
     "api_port": 8475,
@@ -366,6 +384,7 @@ MODELS = {
     "laguna": LAGUNA,
     "kexaone2": KEXAONE2,
     "axk2": AXK2,
+    "solar_open2": SOLAR_OPEN2,
     "ling3_fin": LING3_FIN,
     "mimo26_flash": MIMO26_FLASH,
     "mimo26_pro": MIMO26_PRO,

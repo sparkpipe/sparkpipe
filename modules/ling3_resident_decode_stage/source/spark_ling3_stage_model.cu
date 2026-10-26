@@ -1,7 +1,7 @@
 #include "sparkpipe/spark_ling3_stage_model.h"
 #include "ling_stage.cuh"
 
-struct Ling3Geometry
+struct Ling3Geometry : LingDefaults
 {
 	static constexpr uint32_t kTpDegree = SPARK_LING3_STAGE_TP_DEGREE;
 	static constexpr uint32_t kHidden = SPARK_LING3_STAGE_HIDDEN;
@@ -37,7 +37,7 @@ struct Ling3Geometry
 };
 
 static_assert(LingShape<Ling3Geometry>::Kv::kSlotBytes == SPARK_LING3_STAGE_KV_SLOT_BYTES, "an MLA slot is the normed latent and its rope part");
-static_assert(LingShape<Ling3Geometry>::kMlaLayers == SPARK_LING3_STAGE_MLA_LAYERS, "every sixth layer is MLA");
+static_assert(LingShape<Ling3Geometry>::kAttnLayers == SPARK_LING3_STAGE_MLA_LAYERS, "every sixth layer is MLA");
 
 const SparkStageRunnerModelInterface *SparkLing3StageModel(void)
 {

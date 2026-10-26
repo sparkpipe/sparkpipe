@@ -1016,6 +1016,56 @@
     "start": "<tool_call>",
     "end": "</tool_call>"
    }
+  },
+  {
+   "id": "solar-open-2",
+   "model_dir": "models/solar-open-2",
+   "engine": "http://127.0.0.1:8479",
+   "context_tokens": 262144,
+   "max_output_tokens": 32768,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 1.0
+   },
+   "sampling_source": "/mnt/cold-raid6/models/solar-open2-250b-bf16-official/README.md",
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 3900,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<|im:end|>"
+   ],
+   "template_defaults": {},
+   "template_kwargs": [
+    "reasoning_effort"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "reasoning_effort": "low"
+    },
+    "low": {
+     "reasoning_effort": "medium"
+    },
+    "medium": {
+     "reasoning_effort": "medium"
+    },
+    "high": {
+     "reasoning_effort": "high"
+    }
+   },
+   "reasoning": {
+    "start": "<|think:start|>",
+    "end": "<|think:end|>"
+   },
+   "tool_calls": {
+    "start": "<|tool_call:start|>",
+    "end": "<|tool_call:end|>",
+    "key_start": "<|tool_arg:start|>",
+    "key_end": "<|tool_arg:value|>",
+    "value_start": "",
+    "value_end": "<|tool_arg:end|>"
+   }
   }
  ],
  "controller_token_file": "/srv/workspace/sparkpipe/swap-controller/token",

@@ -5,6 +5,11 @@
 - sha256 prefixes: 2f218206b5526d1e (modeling), 6dc3a4509d468852 (modular), 37c78827e2eb6290 (configuration), 214168ee8214f99e (deepseek_v32 base); pinned by model_contracts/axk2_authoritative.json
 - Purpose: A.X K2 semantics ground truth for the axk2 driver and tools/axk2_reference.py. One departure: the expert router masks unselected groups with -inf, where these files fill 0.0 (TECHDEBT, A.X K2).
 
+## modeling_solar_open2.py, modular_solar_open2.py, configuration_solar_open2.py, modeling_solar_open.py, fla_kda_gate.py
+- Source: upstageAI/transformers @ ef5c37485091057070b36dd0620798f74988eb01 (branch v5.14.1-solar-open2; models/solar_open2/ and models/solar_open/) and fla-org/flash-linear-attention @ 3a59c2ac74b708d5774346cf784f03239f8ab534 (fla/ops/kda/gate.py)
+- sha256 pinned by model_contracts/solar_open2_authoritative.json
+- Purpose: Solar Open 2 semantics ground truth for the solar_open2 driver and tools/solar_open2_reference.py. The KDA decay follows the fla gate the publisher's fast path calls (lower bound times sigmoid), not the torch fallback (softplus then clamp), which is a different function (TECHDEBT, Solar Open 2).
+
 ## modeling_exaone_moe.py, configuration_exaone_moe.py
 - Source: nuxlear/transformers @ 969f8bdfc73d7d8bb0df1b426e057d80a1adf501 (LG AI Research fork named by the K-EXAONE 2.0 model card)
 - sha256 prefixes: e2b107896dd690aa (modeling), a3218188e7d8e462 (configuration); pinned by model_contracts/kexaone2_authoritative.json
