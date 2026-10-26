@@ -774,7 +774,7 @@ Related common-code debt:
 
 ## Korean models
 
-The sources are pinned. K-EXAONE 2.0 and A.X K2 serve; Solar Open 2 has only its contract.
+The sources are pinned. K-EXAONE 2.0 and A.X K2 serve; Solar Open 2 is built but not yet run.
 
 - **K-EXAONE 2.0** (`LGAI-EXAONE/K-EXAONE-2.0-750B-A37B@fec0c8dd`, BF16, 1.50 TB): 78 layers with 64 query and 8 KV heads of 128; 20 layers attend globally without position encoding, 57 a 128-token window and one a 4,096-token window; 256 routed experts (top 8) plus one shared, after two dense layers; one MTP layer. Its DSpark drafter is `model-dspark.safetensors` of `LGAI-EXAONE/K-EXAONE-2.0-750B-A37B-DSpark@e42409db`, whose other files are the base weights.
   - **Serving:** contract, driver (`kexaone2` on the Gemma stage), packs and lane 11.
@@ -789,7 +789,16 @@ The sources are pinned. K-EXAONE 2.0 and A.X K2 serve; Solar Open 2 has only its
   - **Missing:**
     - The reference has not confirmed served tokens.
     - Speculation with the DSpark drafter is not wired.
-- **Solar Open 2** (`upstage/Solar-Open2-250B@9190fbe6`, BF16, 0.50 TB): 48 layers, three linear-attention layers (short convolution 4, 64 heads) for each GQA layer, no position encoding, 320 routed experts (top 8) plus one shared, 1M context. The Upstage Solar License asks that derivatives be named Solar and show "Built with Solar". The nearest served design is the linear-attention path of Kimi K3 and Ling.
+- **Solar Open 2** (`upstage/Solar-Open2-250B@9190fbe6`, BF16, 0.50 TB): 48 layers, three linear-attention layers (short convolution 4, 64 heads) for each GQA layer, no position encoding, 320 routed experts (top 8) plus one shared, 1M context. The Upstage Solar License asks that derivatives be named Solar and show "Built with Solar".
+  - **In place:** contract, tokenizer (the C tokenizer matches HF on 306 mixed English, Korean, code and emoji texts), driver (`solar_open2` on the Ling stage, with its options for gated GQA without position encoding over position-sharded KV, the low-rank decay and output gates, the doubled write gate and 1e-5 norms), BF16 packer, numpy reference and lane 4.
+  - The decay follows the fla kernel the publisher's fast path calls, lower bound × sigmoid(exp(A_log) · (g + dt_bias)); the publisher's torch fallback computes −exp(A_log) · softplus(g + dt_bias) clamped at the bound, which is a different function.
+  - **Missing:**
+    - The packs are not yet on the fleet, and the lane has not run.
+    - The reference has not confirmed served tokens.
+    - The lane serves 256K; the model's 1M needs the max-context gate.
+    - Tool calls parse through the chat layer's key-value format with Solar's tags; no tool-call smoke has run.
+    - Each rank holds 20 whole experts, so B1 decode lands experts unevenly, as on K-EXAONE.
+    - No drafter is wired.
 
 Each needs, in order: the checkpoint contract, the driver on the common stage runner, the packer emitter and packs, a lane record, the release gates and qualification, speculation with its drafter, then the perf climb that every core model gets.
 

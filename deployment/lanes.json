@@ -405,7 +405,7 @@
    "state_budget_bytes": 5368709120,
    "expert_pool_bytes": 268435456,
    "memory_max": "16G",
-   "tokenizer_sha256": "PENDING",
+   "tokenizer_sha256": "b8e27a8697719fb4514eec2a950c164dbf249eef5ee807bec60541a1632baf95",
    "text_prompt_prefix_token_ids": []
   }
  }
