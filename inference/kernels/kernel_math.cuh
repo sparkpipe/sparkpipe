@@ -87,12 +87,14 @@ SPARK_MATH_FN float SparkMathSoftplusFast(float value)
 
 SPARK_MATH_FN float SparkMathGatedDeltaDecay(float log_scale, float shifted)
 {
-	return(SPARK_MATH_EXP(-SPARK_MATH_EXP(log_scale) * SparkMathSoftplus(shifted)));
+	const float softplus = SparkMathSoftplus(shifted);
+	return(SPARK_MATH_EXP(-SPARK_MATH_EXP(log_scale) * softplus));
 }
 
 SPARK_MATH_FN float SparkMathGatedDeltaDecayFast(float log_scale, float shifted)
 {
-	return(SPARK_MATH_EXP_FAST(-SPARK_MATH_EXP_FAST(log_scale) * SparkMathSoftplusFast(shifted)));
+	const float softplus = SparkMathSoftplusFast(shifted);
+	return(SPARK_MATH_EXP_FAST(-SPARK_MATH_EXP_FAST(log_scale) * softplus));
 }
 
 SPARK_MATH_FN float SparkMathGeluTanh(float value)
