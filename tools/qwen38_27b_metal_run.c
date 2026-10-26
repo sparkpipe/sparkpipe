@@ -12,6 +12,9 @@
 
 #define RUN_MAX_CONTEXT 9216u
 #define RUN_STATE_BUDGET (16ull << 30)
+#define RUN_LADDER_STATE_BUDGET (96ull << 30)
+#define RUN_LADDER_MAX 16u
+#define RUN_PROMPT_STRIDE 331u
 
 typedef struct RunOptions
 {
@@ -24,6 +27,10 @@ typedef struct RunOptions
 	uint32_t new_tokens;
 	uint32_t repeats;
 	uint32_t verify;
+	uint32_t prompt_tokens;
+	uint32_t batches[RUN_LADDER_MAX];
+	uint32_t batch_count;
+	uint32_t max_batch;
 } RunOptions;
 
 static uint64_t NowNs(void)
@@ -35,8 +42,8 @@ static uint64_t NowNs(void)
 
 static int Usage(const char *program)
 {
-	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|pairs|bench --out DIR [--prefill-rows N] [--new-tokens N] "
-		"[--repeats N] [--bench-prompt NAME] [--verify-pack]\n",program);
+	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|pairs|bench|ladder --out DIR [--prefill-rows N] [--new-tokens N] "
+		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N]\n",program);
 	return(2);
 }
 
@@ -47,6 +54,7 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 	options->prefill_rows = 1024u;
 	options->new_tokens = 128u;
 	options->repeats = 3u;
+	options->prompt_tokens = 1024u;
 	for ( index = 1; index < argc; index++ )
 	{
 		const char *flag = argv[index], *value = index + 1 < argc ? argv[index + 1] : 0;
@@ -74,11 +82,37 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 			options->new_tokens = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--repeats") == 0 )
 			options->repeats = (uint32_t)strtoul(value,0,10);
+		else if ( strcmp(flag,"--prompt-tokens") == 0 )
+			options->prompt_tokens = (uint32_t)strtoul(value,0,10);
+		else if ( strcmp(flag,"--batches") == 0 )
+		{
+			const char *cursor = value;
+			char *end;
+			while ( *cursor != 0 && options->batch_count < RUN_LADDER_MAX )
+			{
+				const uint32_t batch = (uint32_t)strtoul(cursor,&end,10);
+				if ( end == cursor || batch == 0u )
+					return(-1);
+				options->batches[options->batch_count++] = batch;
+				if ( batch > options->max_batch )
+					options->max_batch = batch;
+				cursor = *end == ',' ? end + 1 : end;
+			}
+			if ( *cursor != 0 )
+				return(-1);
+		}
 		else
 			return(-1);
 	}
 	if ( options->pack == 0 || options->prompts == 0 || options->mode == 0 || options->out == 0 || options->prefill_rows == 0u ||
-		options->prefill_rows > 2048u || options->repeats == 0u )
+		options->prefill_rows > 2048u || options->repeats == 0u || options->prompt_tokens == 0u )
+		return(-1);
+	if ( options->batch_count == 0u )
+	{
+		options->batches[0] = options->max_batch = 1u;
+		options->batch_count = 1u;
+	}
+	if ( options->max_batch > options->prefill_rows )
 		return(-1);
 	return(0);
 }
@@ -423,6 +457,226 @@ static int RunBench(Session *session, const RunOptions *options, const SparkToke
 	return(failed);
 }
 
+static uint32_t *SynthesizeAt(const SparkTokenPrompts *prompts, uint32_t count, uint64_t offset)
+{
+	uint64_t total = 0u;
+	uint32_t index, filled = 0u, *tokens = (uint32_t *)malloc((size_t)count * sizeof(uint32_t));
+	for ( index = 0u; index < prompts->count; index++ )
+		total += prompts->prompts[index].count;
+	offset = total != 0u ? offset % total : 0u;
+	for ( index = 0u; tokens != 0 && total != 0u && filled < count; index = (index + 1u) % prompts->count )
+	{
+		const SparkTokenPrompt *prompt = &prompts->prompts[index];
+		uint32_t skip = 0u, take;
+		if ( offset >= prompt->count )
+		{
+			offset -= prompt->count;
+			continue;
+		}
+		skip = (uint32_t)offset;
+		offset = 0u;
+		take = prompt->count - skip < count - filled ? prompt->count - skip : count - filled;
+		memcpy(tokens + filled,prompt->tokens + skip,(size_t)take * sizeof(uint32_t));
+		filled += take;
+	}
+	return(tokens);
+}
+
+static void Top2(const float *logits, uint32_t vocab, uint32_t *first, uint32_t *second, float *gap)
+{
+	uint32_t index, a = 0u, b = 1u;
+	if ( logits[1] > logits[0] )
+	{
+		a = 1u;
+		b = 0u;
+	}
+	for ( index = 2u; index < vocab; index++ )
+		if ( logits[index] > logits[a] )
+		{
+			b = a;
+			a = index;
+		}
+		else if ( logits[index] > logits[b] )
+			b = index;
+	*first = a;
+	*second = b;
+	*gap = logits[a] - logits[b];
+}
+
+typedef struct LadderTrace
+{
+	uint32_t *token;
+	uint32_t *second;
+	float *gap;
+} LadderTrace;
+
+static SparkStatus LadderDecode(Session *session, uint32_t batch, uint32_t prompt_tokens, uint32_t steps, uint32_t vocab, uint32_t *token,
+	LadderTrace *trace, uint64_t *ns)
+{
+	SparkDeviceStageRunnerBatch step;
+	SparkDeviceStageRunnerResult result;
+	uint32_t index, lane, first;
+	SparkStatus status = SPARK_STATUS_OK;
+	const uint64_t start = NowNs();
+	for ( index = 0u; status == SPARK_STATUS_OK && index < steps; index++ )
+	{
+		for ( lane = 0u; lane < batch; lane++ )
+		{
+			session->positions[lane] = prompt_tokens + index;
+			session->sequence[lane] = lane;
+			session->rows[lane] = lane;
+		}
+		memset(&step,0,sizeof(step));
+		step.rows = batch;
+		step.token_ids = token;
+		step.positions = session->positions;
+		step.sequence_of_row = session->sequence;
+		step.head_rows = batch;
+		step.head_row_index = session->rows;
+		status = SparkDeviceStageRunnerStep(session->runner,&step,&result);
+		for ( lane = 0u; status == SPARK_STATUS_OK && lane < batch; lane++ )
+		{
+			token[lane] = result.argmax[lane];
+			if ( trace != 0 )
+			{
+				const size_t at = (size_t)lane * steps + index;
+				Top2(result.logits + (size_t)lane * result.logit_stride,vocab,&first,&trace->second[at],&trace->gap[at]);
+				trace->token[at] = token[lane];
+				if ( first != token[lane] )
+					trace->gap[at] = 0.0f;
+			}
+		}
+	}
+	*ns = NowNs() - start;
+	return(status);
+}
+
+static SparkStatus LadderPrefill(Session *session, uint32_t batch, uint32_t **prompt, uint32_t prompt_tokens, uint32_t chunk, uint32_t *token)
+{
+	uint32_t lane;
+	SparkStatus status = SPARK_STATUS_OK;
+	for ( lane = 0u; status == SPARK_STATUS_OK && lane < batch; lane++ )
+	{
+		status = SparkDeviceStageRunnerResetSequence(session->runner,lane);
+		if ( status == SPARK_STATUS_OK )
+			status = SessionPrefillSequence(session,lane,prompt[lane],prompt_tokens,chunk,&token[lane]);
+	}
+	return(status);
+}
+
+static int RunLadder(Session *session, const RunOptions *options, const SparkTokenPrompts *prompts, const SparkDeviceStageRunnerInfo *info)
+{
+	const uint32_t most = options->max_batch, steps = options->new_tokens, length = options->prompt_tokens;
+	const size_t cells = (size_t)most * steps;
+	FILE *json = OpenOut(options,"ladder",".metal.json","w");
+	uint32_t **prompt = (uint32_t **)calloc(most,sizeof(uint32_t *)), *token = (uint32_t *)calloc(most,sizeof(uint32_t)), lane, entry, repeat;
+	uint32_t *first = (uint32_t *)calloc(most,sizeof(uint32_t));
+	uint64_t *ns = (uint64_t *)calloc(options->repeats + 1u,sizeof(uint64_t)), solo_ns = 0u;
+	LadderTrace solo, run;
+	SparkStatus status;
+	solo.token = (uint32_t *)calloc(cells,sizeof(uint32_t));
+	solo.second = (uint32_t *)calloc(cells,sizeof(uint32_t));
+	solo.gap = (float *)calloc(cells,sizeof(float));
+	run.token = (uint32_t *)calloc(cells,sizeof(uint32_t));
+	run.second = (uint32_t *)calloc(cells,sizeof(uint32_t));
+	run.gap = (float *)calloc(cells,sizeof(float));
+	status = json != 0 && prompt != 0 && token != 0 && first != 0 && ns != 0 && solo.token != 0 && solo.second != 0 && solo.gap != 0 &&
+		run.token != 0 && run.second != 0 && run.gap != 0 ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED;
+	for ( lane = 0u; status == SPARK_STATUS_OK && lane < most; lane++ )
+		if ( (prompt[lane] = SynthesizeAt(prompts,length,(uint64_t)lane * RUN_PROMPT_STRIDE)) == 0 )
+			status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	if ( status == SPARK_STATUS_OK )
+		fprintf(json,"{\"device\":\"%s\",\"streamed_bytes_per_token\":%llu,\"prompt_tokens\":%u,\"decode_steps\":%u,\"repeats\":%u,\"batches\":[",
+			info->device,(unsigned long long)info->streamed_bytes_per_token,length,steps,options->repeats);
+	for ( lane = 0u; status == SPARK_STATUS_OK && lane < most; lane++ )
+	{
+		LadderTrace view;
+		uint64_t elapsed = 0u;
+		view.token = solo.token + (size_t)lane * steps;
+		view.second = solo.second + (size_t)lane * steps;
+		view.gap = solo.gap + (size_t)lane * steps;
+		status = SparkDeviceStageRunnerResetSequence(session->runner,0u);
+		if ( status == SPARK_STATUS_OK )
+			status = SessionPrefillSequence(session,0u,prompt[lane],length,options->prefill_rows,&token[0]);
+		first[lane] = token[0];
+		if ( status == SPARK_STATUS_OK )
+			status = LadderDecode(session,1u,length,steps,info->vocab,token,&view,&elapsed);
+		solo_ns += elapsed;
+	}
+	if ( status == SPARK_STATUS_OK )
+		printf("solo references: %u sequences x %u steps in %.2f s\n",most,steps,solo_ns / 1e9);
+	for ( entry = 0u; status == SPARK_STATUS_OK && entry < options->batch_count; entry++ )
+	{
+		const uint32_t batch = options->batches[entry];
+		uint32_t identical = 0u, nondeterministic = 0u, divergences = 0u, index;
+		uint64_t median;
+		for ( repeat = 0u; status == SPARK_STATUS_OK && repeat <= options->repeats; repeat++ )
+		{
+			status = LadderPrefill(session,batch,prompt,length,options->prefill_rows,token);
+			for ( lane = 0u; status == SPARK_STATUS_OK && lane < batch; lane++ )
+				if ( token[lane] != first[lane] )
+					nondeterministic++;
+			if ( status == SPARK_STATUS_OK && repeat == 0u )
+				status = LadderDecode(session,batch,length,steps,info->vocab,token,&run,&ns[repeat]);
+			else if ( status == SPARK_STATUS_OK )
+			{
+				status = LadderDecode(session,batch,length,steps,info->vocab,token,0,&ns[repeat]);
+				for ( lane = 0u; status == SPARK_STATUS_OK && lane < batch; lane++ )
+					if ( token[lane] != run.token[(size_t)lane * steps + steps - 1u] )
+						nondeterministic++;
+			}
+		}
+		if ( status != SPARK_STATUS_OK )
+			break;
+		qsort(ns + 1,options->repeats,sizeof(uint64_t),CompareU64);
+		median = ns[1u + options->repeats / 2u];
+		fprintf(json,"%s\n{\"batch\":%u,\"step_ms\":%.4f,\"per_sequence_tokens_per_second\":%.4f,\"aggregate_tokens_per_second\":%.4f,\"runs_seconds\":[",
+			entry != 0u ? "," : "",batch,median / 1e6 / steps,steps / (median / 1e9),(double)batch * steps / (median / 1e9));
+		for ( repeat = 0u; repeat <= options->repeats; repeat++ )
+			fprintf(json,"%s%.6f",repeat != 0u ? "," : "",ns[repeat] / 1e9);
+		fprintf(json,"],\"warmup_discarded\":true,\"divergences\":[");
+		for ( lane = 0u; lane < batch; lane++ )
+		{
+			for ( index = 0u; index < steps && run.token[(size_t)lane * steps + index] == solo.token[(size_t)lane * steps + index]; index++ )
+				continue;
+			if ( index == steps )
+			{
+				identical++;
+				continue;
+			}
+			{
+				const size_t at = (size_t)lane * steps + index;
+				fprintf(json,"%s{\"sequence\":%u,\"step\":%u,\"solo_token\":%u,\"solo_second\":%u,\"solo_gap\":%.6g,\"batch_token\":%u,\"batch_second\":%u,"
+					"\"batch_gap\":%.6g}",divergences != 0u ? "," : "",lane,index,solo.token[at],solo.second[at],solo.gap[at],run.token[at],run.second[at],
+					run.gap[at]);
+				divergences++;
+			}
+		}
+		fprintf(json,"],\"sequences_identical_to_solo\":%u,\"nondeterministic\":%u}",identical,nondeterministic);
+		printf("B%u: step %.3f ms, %.3f tok/s per sequence, %.2f tok/s aggregate, %u/%u sequences identical to solo%s\n",batch,median / 1e6 / steps,
+			steps / (median / 1e9),(double)batch * steps / (median / 1e9),identical,batch,nondeterministic != 0u ? ", NONDETERMINISTIC" : "");
+		fflush(stdout);
+	}
+	if ( json != 0 )
+	{
+		fprintf(json,"\n]}\n");
+		fclose(json);
+	}
+	for ( lane = 0u; prompt != 0 && lane < most; lane++ )
+		free(prompt[lane]);
+	free(prompt);
+	free(token);
+	free(first);
+	free(ns);
+	free(solo.token);
+	free(solo.second);
+	free(solo.gap);
+	free(run.token);
+	free(run.second);
+	free(run.gap);
+	return(status == SPARK_STATUS_OK ? 0 : 1);
+}
+
 int main(int argc, char **argv)
 {
 	RunOptions options;
@@ -432,6 +686,7 @@ int main(int argc, char **argv)
 	Session session;
 	uint32_t index;
 	int failed = 0;
+	setvbuf(stdout,0,_IOLBF,0);
 	if ( ParseOptions(argc,argv,&options) != 0 )
 		return(Usage(argv[0]));
 	if ( SparkTokenPromptsLoad(options.prompts,&prompts) != SPARK_STATUS_OK )
@@ -445,6 +700,12 @@ int main(int argc, char **argv)
 	config.max_context = RUN_MAX_CONTEXT;
 	config.head_rows = strcmp(options.mode,"teacher") == 0 ? options.prefill_rows : strcmp(options.mode,"pairs") == 0 ? 2u : 1u;
 	config.state_budget_bytes = RUN_STATE_BUDGET;
+	if ( strcmp(options.mode,"ladder") == 0 )
+	{
+		config.sequences = config.head_rows = options.max_batch;
+		config.max_context = options.prompt_tokens + options.new_tokens + 1u;
+		config.state_budget_bytes = RUN_LADDER_STATE_BUDGET;
+	}
 	config.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16;
 	config.verify_pack = options.verify;
 	memset(&session,0,sizeof(session));
@@ -495,6 +756,8 @@ int main(int argc, char **argv)
 	}
 	else if ( strcmp(options.mode,"bench") == 0 )
 		failed = RunBench(&session,&options,&prompts,&info);
+	else if ( strcmp(options.mode,"ladder") == 0 )
+		failed = RunLadder(&session,&options,&prompts,&info);
 	else
 		failed = Usage(argv[0]);
 	SparkDeviceStageRunnerClose(session.runner);

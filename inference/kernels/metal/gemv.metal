@@ -2,7 +2,7 @@
 
 #define SPARK_GEMV_SIMDS 4u
 #define SPARK_GEMV_OUTPUTS 4u
-#define SPARK_GEMV_SPAN 256u
+#define SPARK_GEMV_SPAN (SPARK_GEMV_SIMDS * 256u)
 
 static inline void SparkUnpack8(uint4 bits, thread float4 &low, thread float4 &high)
 {
@@ -21,8 +21,9 @@ kernel void spark_gemv(constant SparkGemvParams &p [[buffer(0)]], device const u
 	device void *out [[buffer(3)]], uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
 	uint simd [[simdgroup_index_in_threadgroup]])
 {
+	threadgroup float partial[SPARK_GEMV_SIMDS][SPARK_GEMV_OUTPUTS][R];
 	const uint K = p.input_dimension, N = p.output_dimension;
-	const uint first = (group * SPARK_GEMV_SIMDS + simd) * SPARK_GEMV_OUTPUTS;
+	const uint first = group * SPARK_GEMV_OUTPUTS;
 	float acc[SPARK_GEMV_OUTPUTS][R];
 	device const ushort *rows[SPARK_GEMV_OUTPUTS];
 	for ( uint i = 0u; i < SPARK_GEMV_OUTPUTS; i++ )
@@ -31,7 +32,7 @@ kernel void spark_gemv(constant SparkGemvParams &p [[buffer(0)]], device const u
 		for ( uint r = 0u; r < R; r++ )
 			acc[i][r] = 0.0f;
 	}
-	for ( uint k = lane * 8u; k < K; k += SPARK_GEMV_SPAN )
+	for ( uint k = (simd * 32u + lane) * 8u; k < K; k += SPARK_GEMV_SPAN )
 	{
 		float4 xl[R], xh[R];
 		for ( uint r = 0u; r < R; r++ )
@@ -58,15 +59,24 @@ kernel void spark_gemv(constant SparkGemvParams &p [[buffer(0)]], device const u
 		for ( uint r = 0u; r < R; r++ )
 		{
 			const float total = simd_sum(acc[i][r]);
-			if ( lane == 0u && first + i < N )
-			{
-				const ulong at = (ulong)r * p.output_stride + first + i;
-				if ( F32 )
-					((device float *)out)[at] = total;
-				else
-					((device ushort *)out)[at] = SparkMathFloatToBf16(total);
-			}
+			if ( lane == 0u )
+				partial[simd][i][r] = total;
 		}
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	if ( simd != 0u || lane >= SPARK_GEMV_OUTPUTS * R )
+		return;
+	const uint i = lane / R, r = lane % R;
+	float total = partial[0][i][r];
+	for ( uint s = 1u; s < SPARK_GEMV_SIMDS; s++ )
+		total += partial[s][i][r];
+	if ( first + i < N )
+	{
+		const ulong at = (ulong)r * p.output_stride + first + i;
+		if ( F32 )
+			((device float *)out)[at] = total;
+		else
+			((device ushort *)out)[at] = SparkMathFloatToBf16(total);
+	}
 }
 
 #define SPARK_GEMV_INSTANCE(rows, f32, gated, name) \
@@ -76,13 +86,7 @@ kernel void spark_gemv(constant SparkGemvParams &p [[buffer(0)]], device const u
 
 SPARK_GEMV_INSTANCE(1u, false, false, "spark_gemv_r1")
 SPARK_GEMV_INSTANCE(2u, false, false, "spark_gemv_r2")
-SPARK_GEMV_INSTANCE(4u, false, false, "spark_gemv_r4")
-SPARK_GEMV_INSTANCE(8u, false, false, "spark_gemv_r8")
 SPARK_GEMV_INSTANCE(1u, true, false, "spark_gemv_f32_r1")
 SPARK_GEMV_INSTANCE(2u, true, false, "spark_gemv_f32_r2")
-SPARK_GEMV_INSTANCE(4u, true, false, "spark_gemv_f32_r4")
-SPARK_GEMV_INSTANCE(8u, true, false, "spark_gemv_f32_r8")
 SPARK_GEMV_INSTANCE(1u, false, true, "spark_gemv_gated_r1")
 SPARK_GEMV_INSTANCE(2u, false, true, "spark_gemv_gated_r2")
-SPARK_GEMV_INSTANCE(4u, false, true, "spark_gemv_gated_r4")
-SPARK_GEMV_INSTANCE(8u, false, true, "spark_gemv_gated_r8")

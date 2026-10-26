@@ -219,46 +219,75 @@ One Mac Studio, Apple M5 Ultra with 256 GB, runs Qwen3.8-27B whole (TP1, the
 publisher's BF16 weights, 53.8 GB pack) through the Metal backend and the
 single-device stage runner ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)).
 It is not served yet (TECHDEBT, Mac Studio deployment). Receipts:
-[`qualification/metal/qwen38_27b/a2bd02d0a/`](qualification/metal/qwen38_27b/a2bd02d0a/).
+[`qualification/metal/qwen38_27b/76576307c/`](qualification/metal/qwen38_27b/76576307c/).
 
 | | |
 | --- | --- |
-| Streaming read | 1,144 GB/s from a 16 GiB GPU buffer, 1,148 GB/s from the mapped pack (median of seven) |
-| Decode, B1 | 19.29 tok/s: 256 tokens after a 1,024-token prompt, median of three after a warm-up |
-| Decode roofline | 51.25 GB read per token / 1,144 GB/s = 22.33 tok/s; measured 86.4% of it |
-| Decode, two sequences | 32.8 rows/s, each sequence's tokens identical to its B1 run |
-| Prefill, 1,024 tokens | 1,372 tok/s, one 1,024-row chunk |
-| Prefill, 8,192 tokens | 1,139 tok/s, four 2,048-row chunks |
-| Prefill roofline | compute-bound: the projections run on the M5 tensor operations at 95 TFLOPS in isolation (2048 x 5120 x 16384) and 70 TFLOPS averaged over a 1,024-token prefill; the weights are read once per chunk, 50 MB per token at 1,024 rows against a 22,900 tok/s memory ceiling |
+| Streaming read | 1,141 GB/s from a 16 GiB GPU buffer (median of seven) |
+| Decode, B1 | 20.12 tok/s: 256 tokens after a 1,024-token prompt, median of three after a warm-up (main at 09f224b93: 19.26) |
+| Decode roofline | 51.25 GB read per token / 1,141 GB/s = 22.27 tok/s; measured 90.4% of it |
+| Prefill, 1,024 tokens | 1,429 tok/s, one 1,024-row chunk (main: 1,372) |
+| Prefill, 8,192 tokens | 1,501 tok/s, four 2,048-row chunks, attention on the tensor operations (main: 1,139) |
+| Prefill roofline | compute-bound: the projections run on the M5 tensor operations at 95 TFLOPS in isolation (2048 x 5120 x 16384); the weights are read once per chunk |
+
+Decode by batch size: each sequence decodes 128 tokens after its own
+1,024-token prompt, median of three runs after a warm-up. The roofline is the
+weight stream alone, 22.27 tok/s per sequence at any batch, since the weights
+are read once per step for up to 64 rows. Main at 09f224b93, measured the
+same way over 64 tokens, ran 19.27, 33.1, 54.6, 64.0, 97.3 and 145.2 tok/s
+aggregate at B1 to B32:
+
+| Sequences | Step | Per sequence | Aggregate | Of the roofline | Identical to solo decode | Margins at the first differing token |
+| ---: | ---: | ---: | ---: | ---: | --- | --- |
+| 1 | 49.8 ms | 20.07 tok/s | 20.1 tok/s | 90.1% | 1 of 1 | |
+| 2 | 51.3 ms | 19.50 | 39.0 | 87.6% | 2 of 2 | |
+| 4 | 58.2 ms | 17.20 | 68.8 | 77.2% | 3 of 4 | 0.099 (swap) |
+| 8 | 61.7 ms | 16.21 | 129.7 | 72.8% | 6 of 8 | 0.039, 0.099 (both swaps) |
+| 16 | 69.2 ms | 14.45 | 231.1 | 64.9% | 14 of 16 | the same two |
+| 32 | 87.5 ms | 11.43 | 365.7 | 51.3% | 23 of 32 | 9 between 0.003 and 0.099, 8 swaps |
+| 64 | 144.7 ms | 6.91 | 442.4 | 31.0% | 42 of 64 | 22 between 0.003 and 0.383, 20 swaps |
+
+- One and two sequences run the GEMV and give exactly the solo tokens. Three
+  to 64 run the tensor-unit projection, whose rows do not depend on one
+  another or on the batch, so a sequence's tokens are the same at every batch
+  size from 3 to 64 (the divergent sequences at B8 are among those at B16,
+  B32 and B64, at the same token); they differ from the solo GEMV only where
+  a rounding difference flips a near tie. A margin above is the larger of the
+  two runs' top-1 minus top-2 log-probability at the first differing token; a
+  swap means each run's second choice is the other's first. Repeated runs
+  give identical tokens.
+- Above 16 sequences the per-sequence work takes over: at B64 the gated delta
+  rule's FP32 state (3.1 MB per layer and sequence, read and written each
+  step) costs about 27 ms of the step and decode attention about 14 ms.
 
 Numerics, teacher-forced over 5,636 positions of four prompts (700 to 2,040
 tokens; the first half of each prompt by prefill, the rest by decode),
 against a CPU reference of the same BF16 precision policy that ran twice
-with different FP32 reduction orders:
+with different FP32 reduction orders. The rule is relative to the floor,
+in two legs: mean KL at most 2 times the floor's, top-1 disagreement at most
+1.5 times, and the share of positions where the candidate is further from the
+reference than the other variant at most 0.5 plus 3 block standard errors
+([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#qualification-on-one-m5-ultra)):
 
-| Comparison | Mean KL | Top-1 agreement | Mean, max change of the target's log-prob |
-| --- | ---: | ---: | ---: |
-| Reference B against reference A (the floor) | 0.0395 | 97.75% | 0.145, 16.4 |
-| Metal against reference A | 0.0437 | 97.62% | 0.151, 17.2 |
-| Metal against reference B | 0.0467 | 97.57% | 0.160, 13.4 |
-| FP32 activations against reference A (diagnostic) | 0.0568 | 97.37% | |
-| Control: two rows of `layers.31.ffn_down` swapped | 0.0459 | 97.59% | 0.156, 17.3 |
-| Control: every row of `layers.31.ffn_down` moved by one | 0.609 | 85.82% | 1.08, 26.8 |
+| Comparison (against reference A) | Mean KL | Top-1 | Target log-prob change, mean / max | Leg A: KL and top-1 ratio to floor, paired sigma | Leg B: same | Verdict |
+| --- | ---: | ---: | --- | --- | --- | --- |
+| Reference B (the floor) | 0.0395 | 97.75% | 0.145 / 16.4 | | | |
+| Metal | 0.0320 | 98.01% | 0.131 / 17.3 | 0.81 / 0.88, -3.6 | 1.00 / 1.13, +2.0 | pass |
+| Probe: rows 0 and 1 of `layers.31.ffn_down` swapped | 0.0312 | 97.82% | 0.131 / 17.3 | 0.79 / 0.97, -4.8 | 1.00 / 1.08, +0.2 | passes: inside the BF16 noise |
+| Control: rows 0 and 1 of every layer's `ffn_down` swapped | 0.172 | 91.31% | 0.597 / 18.4 | 4.36 / 3.86, +95 | 4.78 / 3.94, +124 | fails, as required |
+| Control: every row of `layers.31.ffn_down` moved by one | 0.599 | 85.63% | 1.08 / 27.1 | 15.2 / 6.38, +188 | 17.5 / 6.35, +197 | fails, as required |
+| FP32 activations (diagnostic) | 0.0568 | 97.37% | | | | |
 
-- Metal sits at 1.11 times the floor's KL and agrees with reference A on
-  98.78% of the positions where references A and B agree with each other.
-  The 99% top-1 bar is not met, and the reference does not meet it against
-  itself: this model in BF16 diverges at about 2-3% of the positions of text
-  it is fed, wherever a rounding difference changes a near tie.
-- The whole-tensor control fails at 15.4 times the floor. The two-row swap is
-  not detected (1.16 times the floor): its effect is inside the BF16 noise.
+- Metal agrees with reference A on 98.93% of the positions where A and B
+  agree with each other. Its paired share against A is 0.449: it is closer to
+  A than B is.
 - Greedy continuations of 128 tokens match both reference variants token
-  for token on two prompts. On the third the variants part after 45 tokens
-  and Metal follows B to the end; on the fourth they part after 55 and Metal
-  follows A for 100 tokens.
+  for token on `code` and `rules`. On `design` the variants part after 45
+  tokens and Metal follows B to the end; on `korean` they part after 55 and
+  Metal follows A to the end.
 - Every Metal kernel matches a float64 reference within its derived
-  tolerance at the model's shapes, and each one's corrupted-input control
-  fails (41 cases).
+  tolerance at the model's shapes, each one's corrupted-input control fails,
+  and the projections' rows are bit-independent of the batch (54 cases).
 
 ## Accuracy
 

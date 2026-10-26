@@ -2,7 +2,9 @@
 #define SPARKPIPE_INFERENCE_KERNELS_METAL_KERNEL_PARAMS_H
 
 #define SPARK_KERNEL_ROPE_PAIRS 64u
-#define SPARK_KERNEL_GEMV_ROWS 8u
+#define SPARK_GEMM_ROWS_OUTPUTS 128u
+#define SPARK_GEMM_ROWS_DEPTH 64u
+#define SPARK_GEMM_ROWS_THREADS 128u
 #define SPARK_KERNEL_SEQUENCE_NONE 0xffffffffu
 
 typedef struct SparkGatherParams
@@ -61,20 +63,10 @@ typedef struct SparkGemvParams
 	uint32_t output_stride;
 	uint32_t output_f32;
 	uint32_t gated_input;
-	uint32_t pad;
+	uint32_t splits;
+	uint32_t split_span;
+	uint32_t pad[3];
 } SparkGemvParams;
-
-typedef struct SparkGemmParams
-{
-	uint32_t rows;
-	uint32_t input_dimension;
-	uint32_t output_dimension;
-	uint32_t input_stride;
-	uint32_t output_stride;
-	uint32_t output_f32;
-	uint32_t gated_input;
-	uint32_t pad;
-} SparkGemmParams;
 
 typedef struct SparkConvParams
 {

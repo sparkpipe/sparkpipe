@@ -86,12 +86,13 @@ tensor sizes before each launch.
 | `spark_rmsnorm_residual` | `h = bf16(h + r)` written back, then `bf16(rmsnorm(h) * w)` with an FP32 gain |
 | `spark_rmsnorm_gate` | per-head RMSNorm with a BF16 gain and a SiLU output gate read from a fused row |
 | `spark_head_rmsnorm_rope` | per-head RMSNorm with an FP32 gain, then rotary embedding on the head's first dimensions (rotate-half pairs) |
-| `spark_gemv_r{1,2,4,8}`, `spark_gemv_f32_r*`, `spark_gemv_gated_r*` | decode projections for up to eight rows: BF16 weights `[N, K]`, FP32 accumulation, BF16 or FP32 out, and the gated form that computes `bf16(silu(gate) * up)` from a fused input row |
+| `spark_gemv_r{1,2}`, `spark_gemv_f32_r*`, `spark_gemv_gated_r*` | decode projections for one or two rows: BF16 weights `[N, K]`, four outputs per threadgroup with the inner dimension split across its four SIMD groups, FP32 accumulation, BF16 or FP32 out, and the gated form that computes `bf16(silu(gate) * up)` from a fused input row |
+| `spark_gemm_rows16`, `spark_gemm_rows32`, `spark_gemm_reduce` | decode projections for 3 to 64 rows on the tensor operations: 128 outputs per threadgroup, the weights staged through threadgroup memory 64 inputs at a time with the next slice prefetched into registers, the inner dimension split so the launch has about 1,024 threadgroups, FP32 partials summed in split order by the reduce kernel |
 | `spark_gemm`, `spark_gemm_f32` | prefill projections on the Metal 4 tensor operations (`matmul2d`, 128 x 64 tiles, FP32 accumulation, relaxed precision off) |
 | `spark_causal_conv_silu` | depthwise causal convolution over a per-sequence window, BF16 sum, SiLU |
 | `spark_gated_delta_prepare`, `spark_gated_delta_rule` | L2-normalised query and key, decay and write strength, then the gated delta rule over FP32 state, one SIMD group per value column |
 | `spark_kv_store_paged` | key and value rows into 64-slot pages through a page table |
-| `spark_attention_decode`, `spark_attention_prefill`, `spark_attention_combine` | causal grouped-query attention over paged KV, split into key partitions and merged, with the sigmoid output gate |
+| `spark_attention_decode`, `spark_attention_prefill_blocks`, `spark_attention_combine` | causal grouped-query attention over paged KV, split into key partitions and merged, with the sigmoid output gate; decode walks 128-key partitions one key per SIMD group, prefill computes 32 query rows against 64-key pages on the tensor operations (scores and the FP32 probability-times-value product in `matmul2d`, the online softmax in FP32 between them) |
 | `spark_silu_mul`, `spark_add_rows` | the FFN activation and the final residual add |
 | `spark_logprob_rows` | argmax (lowest index on ties), log-normaliser and a target's log-probability over FP32 logits |
 | `spark_stream_read` | the streaming-read bandwidth probe |
@@ -99,10 +100,11 @@ tensor sizes before each launch.
 The kernels are Metal sources written for this tree. The decode GEMV has the
 shape of MLX's GEMV for row-major matrices (`mlx/backend/metal/kernels/gemv.h`
 at `github.com/ml-explore/mlx`): a SIMD group's 32 lanes walk the inner
-dimension for a block of four output rows, reduce with SIMD operations and
-stage nothing in group memory; here each lane loads 16 bytes per row per step.
-The prefill GEMM uses Apple's `MetalPerformancePrimitives` `matmul2d` as its
-SDK header documents it. No third-party source is copied, so NOTICE has no
+dimension for a block of four output rows and reduce with SIMD operations;
+here each lane loads 16 bytes per row per step and the four SIMD groups of a
+threadgroup take interleaved quarters of the inner dimension, summed in SIMD
+order through group memory. The GEMMs and the prefill attention use Apple's
+`MetalPerformancePrimitives` `matmul2d` as its SDK header documents it. No third-party source is copied, so NOTICE has no
 entry for them.
 They implement the same operations as the CUDA kernels in
 `inference/kernels/`.
@@ -187,7 +189,7 @@ models' gates are re-run to show their output is unchanged.
 | --- | --- | --- |
 | gated delta rule (`SparkDeviceGatedDelta`) | key and value heads and dimensions, convolution taps; recurrent pools 0 (FP32 state) and 1 (BF16 convolution window) | `gdn_qkvz`, `gdn_ba`, `gdn_conv`, `gdn_a_log`, `gdn_dt_bias`, `gdn_norm`, `gdn_out` |
 | attention with a sigmoid output gate (`SparkDeviceAttention`) | heads, KV heads, head dimension, rotary width and base, scale; queries and gates interleaved per head, then keys, then values in one fused projection | `attn_qkv`, `attn_q_norm`, `attn_k_norm`, `attn_out` |
-| SwiGLU FFN (`SparkDeviceGatedFfn`) | intermediate width; up to eight rows use the fused gated down projection | `ffn_gate_up`, `ffn_down` |
+| SwiGLU FFN (`SparkDeviceGatedFfn`) | intermediate width; at the GEMV row counts the down projection takes the gated input directly | `ffn_gate_up`, `ffn_down` |
 | residual RMSNorm (`SparkDeviceResidualNorm`) | the stage's hidden width and epsilon | the model names its norm weights |
 
 Attention without an output gate, sliding-window attention, other norm
@@ -197,12 +199,42 @@ that needs one adds it here.
 `model-families/qwen38/device/qwen38_device_stage.c` is Qwen3.8-27B on these
 layers: 64 layers, every fourth one (from the fourth) attention and the rest
 gated delta, each followed by the SwiGLU FFN, with the attention and
-gated-delta projections sharing one scratch slice. Prefill rows above eight
-use the tensor-operation GEMM and the tiled prefill attention; up to eight
-rows use the GEMV kernels, the fused gated down projection and the
-partitioned decode attention. The recurrent state is FP32,
+gated-delta projections sharing one scratch slice. The recurrent state is FP32,
 `[layer][slot][head][key][value]`, and `recurrent_copy` packs it in the same
 order as the CUDA model.
+
+## Decode and prefill by row count
+
+`SparkOpsLinear` picks the projection kernel from the step's row count, and
+`SparkOpsAttention` the attention kernel from the longest run of rows any one
+sequence has in the step:
+
+| Rows in the step | Projection | Weight reads per step |
+| --- | --- | --- |
+| 1 or 2 | `spark_gemv_r1`/`_r2`; the FFN down projection takes the gated input directly | once |
+| 3 to 64 | `spark_gemm_rows16` (up to 16 rows) or `spark_gemm_rows32`, then `spark_gemm_reduce`; the FFN computes `silu(gate) * up` first | once |
+| above 64 | `spark_gemm` (prefill) | once per 128 rows |
+
+| Rows per sequence | Attention |
+| --- | --- |
+| at most 8 | `spark_attention_decode`, every row independent |
+| more | `spark_attention_prefill_blocks` |
+
+A row's result depends only on its own inputs and on which projection
+kernel ran, never on the other rows or on the row count inside one kernel
+class: the GEMV computes every row with the same sequence of operations, the
+tensor-unit kernel tiles rows in 16 or 32 with identical arithmetic for each
+row (the two tile heights give the same bits), and its split count depends
+only on the projection's shape. `tests/test_metal_kernels.c` checks this bit
+for bit (`linear row independence`). Decoding one or two sequences therefore
+gives exactly the tokens of decoding each alone; three to 64 sequences give
+exactly the same tokens as one another, and differ from the solo GEMV only
+where FP32 rounding in a different reduction order flips a near tie. The
+batch ladder records each such divergence with both runs' top-two margins.
+
+The split-K partials live in a 64 MiB buffer the ops instance owns; the first
+queue that runs a split projection owns it, and a split projection on another
+queue is refused.
 
 ## Precision policy
 
@@ -210,6 +242,13 @@ Weights are the publisher's BF16. Every projection accumulates in FP32 and
 rounds its output to BF16; the head projection keeps FP32 logits. Rounding to
 BF16 is round-to-nearest-even and happens at these points, the same in the
 Metal kernels and in the reference:
+
+The batch work moved no rounding point. The K-split GEMV, the split-K
+tensor-unit projection with its ordered reduce, the 128-key decode
+partitions and the block prefill attention (FP32 scores, FP32
+probabilities times BF16 values with FP32 accumulation on the tensor
+operations) only reorder FP32 sums; every value in the table below is
+rounded where it was before.
 
 | Step | Value rounded to BF16 |
 | --- | --- |
@@ -265,27 +304,69 @@ orders: variant A uses the BLAS GEMM over the full inner dimension and
 forward sums; variant B splits every GEMM's inner dimension into 1,024-wide
 chunks accumulated last chunk first and reverses every sum. KL divergence
 between A and B is the floor: the noise of FP32 reduction order under BF16
-rounding. The Metal run passes when its position-weighted mean KL against A
-is at most ten times the floor and its top-1 agreement with A is at least 99%.
-`tools/pack_tensor_control.py` writes APFS clones of the pack with one
-tensor corrupted, `layers.31.ffn_down` with rows 0 and 1 swapped and with
-every row moved down by one; the gate is run on both. The reference also runs
+rounding.
+
+The gate rule is relative to that floor and runs in two legs, against A with
+B as the floor and against B with A as the floor. A candidate passes a leg
+when all three hold:
+
+- its position-weighted mean KL is at most 2 times the floor's;
+- its top-1 disagreement rate is at most 1.5 times the floor's;
+- the paired test: for each position, the candidate is "above the floor" when
+  KL(reference || candidate) exceeds KL(reference || other variant). A
+  candidate whose error is distributed like the reduction-order noise is
+  above the floor at half the positions; the share may exceed one half by at
+  most 3 standard errors, the error taken over contiguous 128-position
+  blocks (`sqrt(n/(n-1) * sum (above_b - share * size_b)^2) / positions`),
+  because neighbouring positions share context and are not independent.
+
+Metal must pass both legs. `tools/pack_tensor_control.py` writes APFS clones
+of the pack with tensors corrupted, and the gate runs each through the same
+teacher-forced pass:
+
+| Control | Corruption | What it shows | Required |
+| --- | --- | --- | --- |
+| `control_layers` | rows 0 and 1 of `ffn_down` swapped in all 64 layers | a kernel that misplaces one output does so in every layer it runs; the gate must see a fault of that reach | fails |
+| `control_rotate` | every row of `layers.31.ffn_down` moved down by one | a whole-tensor layout or offset fault | fails |
+| `control` | rows 0 and 1 of `layers.31.ffn_down` swapped, one layer only | a probe of the gate's resolution, reported with its numbers | none |
+
+The probe passes: at BF16 the effect of one misplaced output pair in one of
+64 layers is inside the rounding noise, and no statistic over these 5,636
+positions separates it from a correct run (in the receipt for this revision
+its mean KL is 0.79 and 1.00 times the floor's against A and B, and the
+paired test sits at -4.8 and +0.2 standard errors). The all-layer control
+fails at 4.4 and 4.8 times the floor's KL and +95 and +124 standard errors,
+the whole-tensor control at 15 and 18 times and +188 and +197. The gate thus
+sees a fault that every layer shares, or that moves a whole tensor, and does
+not see a two-channel fault confined to one layer; where between those
+sizes its threshold lies is not measured (TECHDEBT). The reference also runs
 once with FP32 activations (no BF16 rounding), as a diagnostic of how far
 BF16 inference itself moves the distribution.
 
 The floor is large for this model: references A and B agree on the top-1
 token at 97.75% of the positions and differ by 0.0395 nats of KL on average,
 most of it at a few percent of positions in long contexts where a rounding
-difference changes a near tie and the divergence carries on for some tokens.
-Metal sits inside it (1.11 times the floor's KL, 97.62% top-1), so the 99%
-top-1 bar is not met, by Metal or by the reference against itself. The
-whole-tensor control lands at 15.4 times the floor and fails; the two-row
-swap lands at 1.16 times the floor and is not detected, because its effect
-on the output is inside the BF16 noise. Results are in
-[`PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md#mac-studio).
-`tools/logit_compare.c` computes KL(ref || test), top-1 agreement and the
-largest change in the target token's log-probability. Both implementations
-also continue each prompt greedily for 128 tokens.
+difference changes a near tie. An absolute top-1 bar of 99%, which an
+earlier gate used, fails the reference against itself, so it could not pass
+any correct implementation; top-1 is judged against the floor's 2.25%
+disagreement instead, and the KL bound, once 10 times the floor, is 2 times.
+The mean KL is dominated by a few near-tie positions and cannot see a small
+systematic error; the paired test can, because a systematic error makes the
+candidate worse than the floor at most positions rather than at a few.
+Results are in [`PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md#mac-studio).
+`tools/logit_compare.c` computes KL(ref || test), top-1 agreement, the
+largest change in the target token's log-probability and, given the other
+variant, the paired counts per block. Both implementations also continue each
+prompt greedily for 128 tokens.
+
+**Batches.** `qwen38_27b_metal_run --mode ladder --batches 1,2,4,...,64`
+decodes 128 tokens for each of 64 sequences alone, then for each batch size
+prefills that many sequences (1,024-token prompts cut from the gate prompts
+at different offsets) and decodes them together, three timed runs after a
+discarded warm-up, the median kept. Every batched sequence is compared token
+for token with its solo run; at the first token that differs, both runs'
+top-1 and top-2 tokens and margins are recorded, so a divergence can be
+shown to be a near tie. Repeated runs must give the same tokens.
 
 **Speed.** `build/device_bandwidth 16 PACK` measures streaming reads of a
 16 GiB device-private buffer and of the mapped pack (seven timed passes after
@@ -293,6 +374,9 @@ a warm-up, the median kept). `qwen38_27b_metal_run --mode bench` measures B1
 decode of 256 tokens after a 1,024-token prompt and prefill of 1,024 and
 8,192 tokens in 2,048-row chunks, three timed runs after a discarded warm-up,
 the median kept. Decode reads every weight but the embedding table once per
-token, so its roofline is that byte count over the measured bandwidth;
+step, whatever the batch, so its roofline is that byte count over the
+measured bandwidth per sequence at B1, and the batch multiplies it until the
+per-sequence state (the recurrent state, read and written each step, and the
+KV) and the tensor operations' compute take over;
 prefill reads the weights once per chunk and is bounded by the tensor
 operations, not memory.
