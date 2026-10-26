@@ -138,7 +138,15 @@ async def run():
         await commands.run(model, identity, [], "compact", "undo", False)
         check(commands.compacted(identity, long_chat + [{"role": "user", "content": "q"}]) == long_chat + [{"role": "user", "content": "q"}], "undo restores the full chat")
         check(await commands.run(model, None, [], "context", "", False) == "Commands need a signed-in Open WebUI chat: this request carries no chat identity.", "no identity")
+        korean_chat = [{"role": "user", "content": "대한민국의 수도는 어디인가요?"}, {"role": "assistant", "content": "서울입니다."}]
+        check(cc.korean(korean_chat) and not cc.korean(chat(2)) and not cc.korean(chat(1) + [{"role": "user", "content": "/memory"}]), "the chat's own last user message sets the language")
+        check(cc.korean(chat(2) + korean_chat + [{"role": "user", "content": "/context"}]), "a command is not the chat's language")
+        check("메모리" in await commands.run(model, identity, korean_chat + [{"role": "user", "content": "/memory"}], "memory", "", False), "a Korean chat gets a Korean answer")
+        check("Memory is" in await commands.run(model, identity, chat(1) + [{"role": "user", "content": "/memory"}], "memory", "", False), "an English chat keeps English")
+        check("대화 1개" in await commands.run(model, identity, korean_chat + [{"role": "user", "content": "/context"}], "context", "", False), "a Korean context report")
+        check("채팅 타이머" in await commands.run(model, identity, korean_chat + [{"role": "user", "content": "/timer off"}], "timer", "off", False), "a Korean timer answer")
+        check("로그인" in await commands.run(model, None, korean_chat + [{"role": "user", "content": "/context"}], "context", "", False), "a Korean no-identity answer")
 
 
 asyncio.run(run())
-print("PASS test_chat_commands: /context, /memory, /target and /timer answer without the model and persist per chat; /compact keeps the model's most relevant exchanges within the target (dropping the oldest over budget), always the newest, summarizes the rest, refuses with memory on, ignores a bad answer and undoes; command exchanges never reach a prompt")
+print("PASS test_chat_commands: /context, /memory, /target and /timer answer without the model and persist per chat; /compact keeps the model's most relevant exchanges within the target (dropping the oldest over budget), always the newest, summarizes the rest, refuses with memory on, ignores a bad answer and undoes; command exchanges never reach a prompt; a Korean chat is answered in Korean")
