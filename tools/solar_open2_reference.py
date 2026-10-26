@@ -48,7 +48,8 @@ class Reference(ling3_reference.Reference):
     expert_bias_name = "gate.e_score_correction_bias"
     attention_kind = "gqa"
 
-    def __init__(self, directory):
+    def __init__(self, directory, conv_rounding="publisher"):
+        self.conv_rounding = conv_rounding
         self.checkpoint = ling3_reference.Checkpoint(directory)
         config = json.loads((Path(directory) / "config.json").read_text())
         self.config = config
@@ -92,7 +93,7 @@ class Reference(ling3_reference.Reference):
         total = np.zeros_like(values)
         for tap in range(self.conv):
             total += padded[tap:tap + values.shape[0]] * weight[:, tap][None, :]
-        return bf16(silu(bf16(total)))
+        return bf16(silu(bf16(total) if self.conv_rounding == "publisher" else total))
 
     def low_rank(self, normed, prefix, width):
         return self.linear(self.linear(normed, prefix + "_a_proj.weight", self.kda_dim, self.hidden), prefix + "_b_proj.weight", width, self.kda_dim)
@@ -168,6 +169,8 @@ def main():
     parser.add_argument("--prompts", required=True)
     parser.add_argument("--capture")
     parser.add_argument("--tie-margin", type=float, default=0.1)
+    parser.add_argument("--conv-rounding", choices=("publisher", "fused"), default="publisher",
+                        help="publisher rounds the short convolution to bf16 before SiLU as F.conv1d then F.silu do; fused rounds once after SiLU")
     parser.add_argument("--dump", help="write the embedding and every layer's post-attention and post-MLP residual for all rows to this .npz")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
@@ -176,7 +179,7 @@ def main():
     else:
         if not args.capture:
             parser.error("score needs --capture")
-        ling3_reference.score(args, Reference(args.checkpoint))
+        ling3_reference.score(args, Reference(args.checkpoint, args.conv_rounding))
     return 0
 
 
