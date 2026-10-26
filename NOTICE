@@ -83,7 +83,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Files: model_contracts/references/modeling_exaone_moe.py
-       model_contracts/references/configuration_exaone_moe.py
+Files: model_contracts/references/configuration_exaone_moe.py
 Upstream: https://github.com/nuxlear/transformers
 Commit: 969f8bdfc73d7d8bb0df1b426e057d80a1adf501
 License: Apache-2.0
