@@ -378,7 +378,7 @@ void LmSigmoidRowsKernel(const uint16_t *__restrict__ logits_bf16, float *__rest
 	}
 }
 
-template<uint32_t THREADS>
+template<uint32_t THREADS, bool DOUBLED = false>
 __global__ __launch_bounds__(THREADS, 1)
 void LmBf16SigmoidRowsKernel(const uint16_t *__restrict__ logits_bf16,float *__restrict__ scores,uint32_t width)
 {
@@ -387,7 +387,10 @@ void LmBf16SigmoidRowsKernel(const uint16_t *__restrict__ logits_bf16,float *__r
 	for (index=threadIdx.x; index<width; index+=THREADS)
 	{
 		float value = LmBf16ToFloat(logits_bf16[base + index]);
-		scores[base + index] = LmBf16ToFloat(LmFloatToBf16(SparkMathSigmoidFast(value)));
+		if constexpr ( DOUBLED )
+			scores[base + index] = 2.0f * LmBf16ToFloat(LmFloatToBf16(SparkMathSigmoidFast(value)));
+		else
+			scores[base + index] = LmBf16ToFloat(LmFloatToBf16(SparkMathSigmoidFast(value)));
 	}
 }
 
@@ -583,6 +586,26 @@ void LmCopyRowsKernel(const uint16_t *__restrict__ source_bf16, uint16_t *__rest
 		return;
 	index = ((uint64_t)row * dimension) + element;
 	destination_bf16[index] = source_bf16[index];
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmRankMajorRowsKernel(const uint16_t *__restrict__ gathered_bf16, uint16_t *__restrict__ rows_bf16, uint32_t rows, uint32_t width, uint32_t ranks)
+{
+	const uint32_t row = blockIdx.y;
+	uint32_t index;
+	for (index = (blockIdx.x * THREADS) + threadIdx.x; index < width * ranks; index += gridDim.x * THREADS)
+		rows_bf16[((uint64_t)row * width * ranks) + index] = gathered_bf16[((((uint64_t)(index / width) * rows) + row) * width) + (index % width)];
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmSliceColumnsKernel(const uint16_t *__restrict__ source_bf16, uint16_t *__restrict__ target_bf16, uint32_t source_width, uint32_t offset, uint32_t width)
+{
+	const uint32_t row = blockIdx.y;
+	uint32_t index;
+	for (index = (blockIdx.x * THREADS) + threadIdx.x; index < width; index += gridDim.x * THREADS)
+		target_bf16[((uint64_t)row * width) + index] = source_bf16[((uint64_t)row * source_width) + offset + index];
 }
 
 template<uint32_t THREADS>

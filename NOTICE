@@ -99,6 +99,56 @@ Copyright 2026 SK Telecom and the HuggingFace Inc. team.
 Copyright 2025 the HuggingFace Team.
 Licensed under the Apache License, Version 2.0 (LICENSE).
 
+Files: model_contracts/references/fla_kda_gate.py
+Upstream: https://github.com/fla-org/flash-linear-attention
+Commit: 3a59c2ac74b708d5774346cf784f03239f8ab534
+License: MIT
+
+model_contracts/references/fla_kda_gate.py is an unmodified copy of
+fla/ops/kda/gate.py of flash-linear-attention at that commit, the KDA gate
+Solar Open 2's fast path calls, kept as semantics ground truth. It is
+distributed under the following license:
+
+MIT License
+
+Copyright (c) 2023-2026 Songlin Yang, Yu Zhang, Zhiyuan Li
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Files: model_contracts/references/modeling_solar_open2.py
+Files: model_contracts/references/modular_solar_open2.py
+Files: model_contracts/references/configuration_solar_open2.py
+Files: model_contracts/references/modeling_solar_open.py
+Upstream: https://github.com/upstageAI/transformers
+Commit: ef5c37485091057070b36dd0620798f74988eb01
+License: Apache-2.0
+
+model_contracts/references/modeling_solar_open2.py, modular_solar_open2.py
+and configuration_solar_open2.py are unmodified copies of
+src/transformers/models/solar_open2/ of Upstage's Transformers fork
+(branch v5.14.1-solar-open2) at that commit, and modeling_solar_open.py of
+src/transformers/models/solar_open/, the base Solar Open 2's modular file
+builds on; kept as semantics ground truth.
+Copyright 2026 Upstage AI and the HuggingFace Inc. team.
+Copyright 2026 Upstage and HuggingFace Inc. team.
+Licensed under the Apache License, Version 2.0 (LICENSE).
+
 Files: model_contracts/references/modeling_exaone_moe.py
 Files: model_contracts/references/configuration_exaone_moe.py
 Upstream: https://github.com/nuxlear/transformers
