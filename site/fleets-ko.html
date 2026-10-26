@@ -73,7 +73,7 @@
 
   <section id="models">
     <h2>플릿 1의 모델</h2>
-    <p>플릿 1에 설치된 모든 모델입니다. <b>제공</b> 모델은 어떤 예약에서든 고를 수 있고, 2년 계약의 선택 모델로 지정할 수 있습니다. <b>핵심</b> 모델은 계속 성능을 개선하며, <b>검증</b> 모델은 릴리스 검증을 통과해 표의 속도로 제공됩니다.</p>
+    <p>플릿 1에 설치된 모든 모델입니다. <b>제공</b> 모델은 어떤 예약에서든 고를 수 있고, 2년 계약의 선택 모델로 지정할 수 있습니다. <b>핵심</b> 모델은 계속 성능을 개선하며, <b>검증</b> 모델은 릴리스 검증을 통과해 표의 속도로 제공됩니다. <b>검증 중</b> 모델은 서비스 중이고 채팅 점검을 통과했으며, 출력 토큰을 게시자의 참조 구현과 비교하는 중입니다.</p>
     <div class="scroll">
     <table>
       <tr><th>모델</th><th>게시자</th><th>라이선스</th><th class="num">컨텍스트 창</th><th class="num">디코드, 단일 요청</th><th class="num">프리필, 8K 프롬프트</th><th>분류</th><th>제공 여부</th></tr>
@@ -81,6 +81,9 @@
       <tr><td><b>GLM 5.3</b><br><span class="mono">glm-5.3</span></td><td>Z.AI</td><td><a href="https://huggingface.co/zai-org/GLM-5.3">GLM-5.3 License</a></td><td class="num">1M</td><td class="num">28.9 tok/s</td><td class="num">1,162 tok/s</td><td>핵심</td><td>제공</td></tr>
       <tr><td><b>GLM 5.3 Flash</b><br><span class="mono">glm-5.3-flash</span></td><td>Z.AI</td><td><a href="https://huggingface.co/zai-org/GLM-5.3-Flash">MIT</a></td><td class="num">128K</td><td class="num">55.0 tok/s</td><td class="num">876 tok/s</td><td>핵심</td><td>제공</td></tr>
       <tr><td><b>DeepSeek V4.1 Flash</b><br><span class="mono">deepseek-v4.1-flash</span></td><td>DeepSeek</td><td><a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017">MIT</a></td><td class="num">1M</td><td class="num">42.5 ¹ tok/s</td><td class="num">1,290 ¹ tok/s</td><td>핵심</td><td>제공</td></tr>
+      <tr><td><b>K-EXAONE 2.0</b><br><span class="mono">k-exaone-2.0</span></td><td>LG AI연구원</td><td><a href="https://huggingface.co/LGAI-EXAONE/K-EXAONE-2.0-750B-A37B">Apache 2.0</a></td><td class="num">256K</td><td class="num">12.1 ³ tok/s</td><td class="num">277 ³ tok/s</td><td>검증 중</td><td>제공</td></tr>
+      <tr><td><b>A.X K2</b><br><span class="mono">a.x-k2</span></td><td>SK텔레콤</td><td><a href="https://huggingface.co/skt/A.X-K2">Apache 2.0</a></td><td class="num">256K</td><td class="num">23.5 ³ tok/s</td><td class="num">1,252 ³ tok/s</td><td>검증 중</td><td>제공</td></tr>
+      <tr><td><b>Solar Open 2</b><br><span class="mono">solar-open-2</span></td><td>업스테이지</td><td><a href="https://huggingface.co/upstage/Solar-Open2-250B">Upstage Solar License</a></td><td class="num">256K</td><td class="num">41.1 ³ tok/s</td><td class="num">1,041 ³ tok/s</td><td>검증 중</td><td>제공</td></tr>
       <tr><td><b>MiMo V2.6 Pro</b><br><span class="mono">mimo-v2.6-pro</span></td><td>Xiaomi</td><td><a href="https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-RL">MIT</a></td><td class="num">32K</td><td class="num">19.0 ² tok/s</td><td class="num">55 ² tok/s</td><td>검증</td><td>제공</td></tr>
       <tr><td><b>MiMo V2.6 Flash</b><br><span class="mono">mimo-v2.6-flash</span></td><td>Xiaomi</td><td><a href="https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL">MIT</a></td><td class="num">32K</td><td class="num">40.9 ² tok/s</td><td class="num">157 ² tok/s</td><td>검증</td><td>제공</td></tr>
       <tr><td><b>Gemma 4 31B</b><br><span class="mono">gemma-4-31b</span></td><td>Google</td><td><a href="https://huggingface.co/google/gemma-4-31B-it">Apache 2.0</a></td><td class="num">32K</td><td class="num">34.4 tok/s</td><td class="num">834 tok/s</td><td>검증</td><td>제공, 텍스트만</td></tr>
@@ -96,7 +99,7 @@
     </table>
     </div>
     <p>컨텍스트 창은 제공 기준입니다. 디코드는 추측 디코딩 없는 단일 요청으로, 2026-10-18에 7~8K 토큰 프롬프트로 측정했습니다. 방법과 근거: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>(영문).</p>
-    <p>¹ DeepSeek V4.1 Flash는 2026-10-24에 1,047,883토큰 프롬프트로 측정했습니다. 디코드는 그 프롬프트 뒤의 단일 요청이고, 프리필은 그 프롬프트의 평균 속도입니다. ² 다른 작업이 모든 노드에서 CPU 코어 16개를 쓰는 동안 측정했으므로 하한값입니다.</p>
+    <p>¹ DeepSeek V4.1 Flash는 2026-10-24에 1,047,883토큰 프롬프트로 측정했습니다. 디코드는 그 프롬프트 뒤의 단일 요청이고, 프리필은 그 프롬프트의 평균 속도입니다. ² 다른 작업이 모든 노드에서 CPU 코어 16개를 쓰는 동안 측정했으므로 하한값입니다. ³ 2026-10-26에 6,850~7,396토큰 프롬프트로 측정했습니다.</p>
     <p>Qwen 3.8 Flash는 제공하지 않습니다. 그 라이선스는 모델을 서비스로 제공하는 모든 사업에 Qwen과의 별도 계약을 요구하므로, 저희 회사 내부에서만 씁니다.</p>
   </section>
 
@@ -125,14 +128,14 @@
       <tr><th>모델</th><th class="num">크기</th><th class="num">디코드, 플릿 1</th><th class="num">디코드, 플릿 2</th><th class="num">플릿 2, 추측 디코딩</th><th class="num">128K 프롬프트, 가속기 박스 4대</th><th class="num">박스 8대</th></tr>
       <tr><td><b>Kimi K3</b></td><td class="num">1.56 TB</td><td class="num">16.2 tok/s, 실측</td><td class="num">23 tok/s</td><td class="num">35 tok/s</td><td class="num">37초</td><td class="num">18초</td></tr>
       <tr><td><b>Qwen 3.8 Max</b>, 4비트 빌드</td><td class="num">1.37–1.48 TB</td><td class="num">10.4 tok/s, 실측</td><td class="num">–</td><td class="num">–</td><td class="num">35초</td><td class="num">17초</td></tr>
-      <tr><td><b>K-EXAONE 2.0</b>, LG(다음)</td><td class="num">1.50 TB</td><td class="num">19 tok/s</td><td class="num">23 tok/s</td><td class="num">35 tok/s</td><td class="num">35초</td><td class="num">18초</td></tr>
-      <tr><td><b>A.X K2</b>, SKT(다음)</td><td class="num">0.69 TB</td><td class="num">28 tok/s</td><td class="num">33 tok/s</td><td class="num">49 tok/s</td><td class="num">16초</td><td class="num">8초</td></tr>
+      <tr><td><b>K-EXAONE 2.0</b>, LG</td><td class="num">1.50 TB</td><td class="num">12.1 tok/s, 실측</td><td class="num">–</td><td class="num">–</td><td class="num">35초</td><td class="num">18초</td></tr>
+      <tr><td><b>A.X K2</b>, SKT</td><td class="num">0.69 TB</td><td class="num">23.5 tok/s, 실측</td><td class="num">33 tok/s</td><td class="num">49 tok/s</td><td class="num">16초</td><td class="num">8초</td></tr>
     </table>
     </div>
     <p>100만 토큰 Kimi K3 프롬프트를 처음부터 처리하는 시간은 가속기 박스 4대로 약 17분, 8대로 9분으로 추정합니다. 플릿 1과 플릿 2를 합치면 4TB이고 플릿 3이 2TB를 더하므로, 공개된 정밀도로는 플릿 하나에 담기지 않는 모델도 두 플릿에 걸쳐 실행할 수 있습니다. FP8의 Qwen 3.8 Max(2.5TB)와 BF16의 Inkling(1.9TB)이 그렇습니다.</p>
     <p>추정 방법:</p>
     <ul>
-      <li><b>디코드:</b> 토큰 하나의 시간은 각 노드가 그 토큰에 쓰이는 가중치 중 자기 몫을 플릿 1에서 실측한 245 GB/s로 읽는 시간에, 그 읽기를 둘러싼 커널과 집합 통신의 고정 비용으로 레이어마다 0.44 ms를 더한 값입니다. Kimi K3는 0.44 ms, GLM 5.3은 0.31 ms로 실측됩니다. 지금의 디코드 시간은 대부분 메모리가 아니라 이 고정 비용이므로, 저희 작업으로 이 비용이 줄면 추정치도 올라갑니다. 플릿 2는 Mac Studio의 1.2 TB/s 중 90%와 같은 레이어당 비용으로 잡았으며, 50 Gb/s 링크와 10GbE로 연결된 8대 전체에 모델을 나눕니다. Qwen 3.8 Max의 10.4 tok/s는 아직 이 방식으로 설명되지 않아 플릿 2 추정치를 싣지 않았습니다.</li>
+      <li><b>디코드:</b> 토큰 하나의 시간은 각 노드가 그 토큰에 쓰이는 가중치 중 자기 몫을 플릿 1에서 실측한 245 GB/s로 읽는 시간에, 그 읽기를 둘러싼 커널과 집합 통신의 고정 비용으로 레이어마다 0.44 ms를 더한 값입니다. Kimi K3는 0.44 ms, GLM 5.3은 0.31 ms로 실측됩니다. 지금의 디코드 시간은 대부분 메모리가 아니라 이 고정 비용이므로, 저희 작업으로 이 비용이 줄면 추정치도 올라갑니다. 플릿 2는 Mac Studio의 1.2 TB/s 중 90%와 같은 레이어당 비용으로 잡았으며, 50 Gb/s 링크와 10GbE로 연결된 8대 전체에 모델을 나눕니다. Qwen 3.8 Max의 10.4 tok/s는 아직 이 방식으로 설명되지 않아 플릿 2 추정치를 싣지 않았습니다. K-EXAONE 2.0도 마찬가지입니다. 각 노드가 전문가(expert)를 통째로 담고 있어 토큰의 전문가가 노드에 고르게 나뉘지 않으므로 이 방식의 19 tok/s가 아닌 12.1 tok/s로 측정되며, 고르게 나누는 배치를 측정하면 추정치를 다시 싣습니다.</li>
       <li><b>추측 디코딩</b>은 에이전트 코딩 턴에서 짧은 편집의 실측치대로 일반 디코드의 1.5배로 잡았습니다. 파일 전체 재작성은 8.3배, 새 산문은 1.0~1.2배로 실측됩니다.</li>
       <li><b>프리필 가속기</b>는 RTX 5080 4장을 담은 박스로, 박스 안에서는 PCIe로 결과를 합치고 박스마다 100 Gb/s로 400 Gb/s 스위치를 거쳐 플릿에 연결됩니다. 긴 프롬프트마다 모델 가중치를 링크 속도의 85%로 박스에 한 번 흘려보내며(박스 4대 42.5 GB/s, 8대 85 GB/s), 카드는 밀집 연산 최대치의 40%(카드당 FP8 약 450 TFLOPS, BF16 225)로 프롬프트의 어텐션 비용까지 계산합니다. 약 2만 토큰보다 짧은 프롬프트는 플릿 자체의 프리필로 처리합니다.</li>
       <li><b>Qwen 3.8 Max</b>는 공개된 FP8 정밀도(2.5TB)로는 플릿 하나의 2TB보다 큽니다. 이 행은 플릿 하나에 담기고 저희 정확도 A/B 검증을 통과하는 4비트 빌드(AMD MXFP4, Red Hat 또는 RadixArk의 NVFP4)를 가정합니다.</li>
@@ -141,13 +144,10 @@
 
   <section id="next-models">
     <h2>다음에 오는 모델</h2>
-    <p>한국과 그 밖의 비중국 게시자의 대형 오픈 모델로, 사업자에게 서비스로 제공할 수 있는 라이선스를 가진 모델입니다. 각 모델은 제공 전에 검증합니다.</p>
+    <p>중국 외 게시자의 대형 오픈 모델로, 사업자에게 서비스로 제공할 수 있는 라이선스를 가진 모델입니다. 각 모델은 제공 전에 검증합니다.</p>
     <div class="scroll">
     <table>
       <tr><th>모델</th><th>게시자</th><th class="num">파라미터</th><th class="num">크기</th><th>라이선스</th><th>비고</th></tr>
-      <tr><td><b>K-EXAONE 2.0</b></td><td>LG AI연구원, 한국</td><td class="num">750B, 활성 37B</td><td class="num">1.50 TB</td><td><a href="https://huggingface.co/LGAI-EXAONE/K-EXAONE-2.0-750B-A37B">Apache 2.0</a></td><td>독자 AI 파운데이션 모델 프로젝트에서 나온 국내 최대 오픈 모델</td></tr>
-      <tr><td><b>A.X K2</b></td><td>SK텔레콤, 한국</td><td class="num">688B, 활성 33B</td><td class="num">0.69 TB</td><td><a href="https://huggingface.co/skt/A.X-K2">Apache 2.0</a></td><td>A.X K1의 후속 모델, 독자 AI 파운데이션 모델 프로젝트, FP8로 학습, 256K 컨텍스트</td></tr>
-      <tr><td><b>Solar Open 2</b></td><td>업스테이지, 한국</td><td class="num">250B, 활성 15B</td><td class="num">0.50 TB</td><td><a href="https://huggingface.co/upstage/Solar-Open2-250B">Upstage Solar License</a>(재배포 모델 명칭 규칙이 붙은 Apache 2.0)</td><td>에이전트용, 100만 토큰 컨텍스트</td></tr>
       <tr><td><b>Nemotron 3 Ultra</b></td><td>NVIDIA, 미국</td><td class="num">550B, 활성 55B</td><td class="num">1.12 TB</td><td><a href="https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16">OpenMDW 1.1</a></td><td>NVIDIA의 최대 오픈 모델</td></tr>
       <tr><td><b>Mistral Large 3</b></td><td>Mistral AI, 프랑스</td><td class="num">675B, 활성 41B</td><td class="num">0.68 TB</td><td><a href="https://huggingface.co/mistralai/Mistral-Large-3-675B-Instruct-2512">Apache 2.0</a></td><td>유럽산 범용 모델</td></tr>
       <tr><td><b>Inkling</b></td><td>Thinking Machines, 미국</td><td class="num">975B, 활성 41B</td><td class="num">1.91 TB</td><td><a href="https://huggingface.co/thinkingmachines/Inkling">Apache 2.0</a></td><td>공개된 BF16 정밀도로는 두 플릿(4TB)에 걸쳐 실행하며, FP8 빌드라면 플릿 하나에 담깁니다</td></tr>
@@ -163,7 +163,8 @@
       <li><b>Kimi K3:</b> 그룹 매출이 어느 12개월 동안이든 2,000만 달러를 넘는 모델 서비스 사업은 Moonshot AI와 별도 계약이 필요하며, 월간 활성 사용자가 1억 명을 넘거나 월 매출이 2,000만 달러를 넘는 상용 제품은 인터페이스에 "Kimi K3"를 표시해야 합니다.</li>
       <li><b>GLM 5.3:</b> 그룹 매출이 어느 12개월 동안이든 100억 달러를 넘는 모델 서비스 사업은 상업적 이용 전에 Z.AI의 보안 심사를 통과해야 합니다.</li>
       <li><b>Qwen 3.8 Max:</b> 그룹 매출이 어느 12개월 동안이든 5,000만 달러를 넘는 모델 서비스 또는 AI 업무 보조 사업은 Qwen의 별도 라이선스가 필요하며, 월간 활성 사용자가 1억 명을 넘거나 월 매출이 2,000만 달러를 넘는 상용 제품은 모델 이름을 표시해야 합니다.</li>
-      <li><b>MIT</b>(GLM 5.3 Flash, DeepSeek V4.1 Flash, MiMo V2.6, Ling 3.0)와 <b>Apache 2.0</b>(Gemma 4, Muse Glimmer 30B, Hunyuan Hy4 Preview, Qwen 3.8 27B): 이용 분야나 매출 조건이 없습니다.</li>
+      <li><b>MIT</b>(GLM 5.3 Flash, DeepSeek V4.1 Flash, MiMo V2.6, Ling 3.0)와 <b>Apache 2.0</b>(Gemma 4, Muse Glimmer 30B, Hunyuan Hy4 Preview, Qwen 3.8 27B, K-EXAONE 2.0, A.X K2): 이용 분야나 매출 조건이 없습니다.</li>
+      <li><b>Upstage Solar License</b>(Solar Open 2): Apache 2.0 조건에, Solar Open 2를 바탕으로 만들어 다른 사람에게 배포하는 모델은 "Solar" 브랜드를 밝혀야 한다는 규칙이 더해집니다. 이용 분야나 매출 조건은 없습니다.</li>
       <li><b>OpenMDW 1.1</b>(Laguna S 2.1): 이용이나 출력물에 대한 조건이 없으며, 모델이 특허나 저작권을 침해한다고 소송을 제기한 자에 대해서는 라이선스가 종료됩니다.</li>
     </ul>
     <p>Kimi K3, GLM-5.3, Qwen 3.8 Max 라이선스는 모든 이용이 관련 법령을 지키도록 요구합니다. 모든 라이선스는 가중치 사본에 게시자의 고지를 함께 두도록 요구하며, 고객은 저희 플릿에서 모델을 이용할 뿐 사본을 받지 않습니다.</p>
