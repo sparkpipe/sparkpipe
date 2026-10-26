@@ -219,7 +219,10 @@ One Mac Studio, Apple M5 Ultra with 256 GB, runs Qwen3.8-27B whole (TP1, the
 publisher's BF16 weights, 53.8 GB pack) through the Metal backend and the
 single-device stage runner ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)).
 It is not served yet (TECHDEBT, Mac Studio deployment). Receipts:
-[`qualification/metal/qwen38_27b/76576307c/`](qualification/metal/qwen38_27b/76576307c/).
+[`qualification/metal/qwen38_27b/76576307c/`](qualification/metal/qwen38_27b/76576307c/)
+(decode, prefill, batches and numerics) and
+[`qualification/metal/qwen38_27b/07e0c1e00/`](qualification/metal/qwen38_27b/07e0c1e00/)
+(speculation, which reproduces them).
 
 | | |
 | --- | --- |
@@ -259,6 +262,38 @@ aggregate at B1 to B32:
 - Above 16 sequences the per-sequence work takes over: at B64 the gated delta
   rule's FP32 state (3.1 MB per layer and sequence, read and written each
   step) costs about 27 ms of the step and decode attention about 14 ms.
+
+Speculation from the request's own context (receipt
+[`qualification/metal/qwen38_27b/07e0c1e00/speculation_2670f0d58/`](qualification/metal/qwen38_27b/07e0c1e00/speculation_2670f0d58/)):
+lookup drafts over the prompt and the generated text, sized by the serving
+path's frame chooser, verified in one frame and kept with the recurrent
+replay. Greedy, 256 tokens, median of three runs after a warm-up with the
+lowest and highest; the tokens with speculation are identical to those
+without it in every run of every prompt.
+
+| Prompt | Without speculation | With speculation | Frames | Drafts accepted |
+| --- | ---: | ---: | ---: | --- |
+| Whole-file rewrite (`tools/token_prompts.c`, 933 tokens) | 20.10 tok/s (20.09-20.10) | 103.95 tok/s (103.93-103.97) | 24 | 237 of 252 |
+| Prose (42-token request) | 20.13 (20.13-20.14) | 20.21 (20.21-20.21) | 1 | 1 of 3 |
+| `design` (summary) | 20.15 (20.09-20.16) | 21.53 (21.47-21.54) | 15 | 17 of 49 |
+| `code` (review) | 20.09 (20.08-20.10) | 21.67 (21.66-21.67) | 12 | 19 of 36 |
+| `korean` (summary) | 20.14 (20.13-20.16) | 21.09 (21.08-21.11) | 17 | 12 of 51 |
+| `rules` (analysis) | 19.98 (19.98-19.99) | 22.57 (22.56-22.57) | 23 | 30 of 69 |
+
+The chooser's first frame in a match class is a probe. A probe is capped at
+the largest frame whose measured cost is within the chooser's margin of a
+one-row step (three drafts here, since four rows cost what one does); an
+uncapped 16-draft probe cost prose about 70 ms (20.04 against 20.14 tok/s).
+
+| Verify frame rows | 1 | 2 | 4 | 8 | 16 | 32 | 64 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Frame | 49.7 ms | 50.3 ms | 49.2 ms | 62.8 ms | 121.5 ms | 238.8 ms | 474.3 ms |
+| Keeping every row | 1.4 ms | 1.4 ms | 1.6 ms | 2.0 ms | 2.7 ms | 4.2 ms | 7.1 ms |
+
+A frame computes each row exactly as a one-row step does, in GEMV passes of
+up to eight rows, so frames longer than eight rows cost one pass per eight.
+The non-speculative outputs of this revision are byte-identical to the
+ladder receipt's.
 
 Numerics, teacher-forced over 5,636 positions of four prompts (700 to 2,040
 tokens; the first half of each prompt by prefill, the rest by decode),

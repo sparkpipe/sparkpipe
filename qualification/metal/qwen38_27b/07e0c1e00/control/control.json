@@ -1,0 +1,15 @@
+{
+  "pack": "/Users/m5u0/models/packs/qwen38_27b_tp1_bf16/qwen38_27b.tp1.rank00.pack",
+  "control_pack": "/Users/m5u0/gates/07e0c1e00/control.pack",
+  "pattern": "layers.31.ffn_down",
+  "corruption": "rows 0 and 1 swapped",
+  "tensors": [
+    {
+      "tensor": "layers.31.ffn_down",
+      "rows": 5120,
+      "row_bytes": 34816,
+      "sha256_before": "1b1e87dfe27e21d1352826d35c0d27ccaf9e504d338a4793ab25525cc2bd8e1a",
+      "sha256_after": "fd6c09075eb0072a40fbe226b68a96b0c82ba863b5d124f2d3f328dcb3b0be5d"
+    }
+  ]
+}

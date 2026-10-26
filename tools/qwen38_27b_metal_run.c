@@ -5,8 +5,11 @@
 #include <sys/stat.h>
 #include <time.h>
 
+#include "inference/runner/device_stage_model.h"
 #include "inference/runner/device_stage_runner.h"
 #include "sparkpipe/spark_qwen38_device_stage.h"
+#include "sparkpipe/spark_speculation_frame.h"
+#include "sparkpipe/spark_speculation_lookup_draft.h"
 #include "sparkpipe/spark_weight_codec.h"
 #include "tools/token_prompts.h"
 
@@ -15,6 +18,11 @@
 #define RUN_LADDER_STATE_BUDGET (96ull << 30)
 #define RUN_LADDER_MAX 16u
 #define RUN_PROMPT_STRIDE 331u
+#define RUN_LOOKUP_GRAM 3u
+#define RUN_LOOKUP_MAX_MATCH 64u
+#define RUN_LOOKUP_BUCKETS 4096u
+#define RUN_LOOKUP_CANDIDATES 64u
+#define RUN_FRAME_SIZES 7u
 
 typedef struct RunOptions
 {
@@ -31,6 +39,8 @@ typedef struct RunOptions
 	uint32_t batches[RUN_LADDER_MAX];
 	uint32_t batch_count;
 	uint32_t max_batch;
+	const char *spec_prompts;
+	uint32_t draft_max;
 } RunOptions;
 
 static uint64_t NowNs(void)
@@ -42,8 +52,8 @@ static uint64_t NowNs(void)
 
 static int Usage(const char *program)
 {
-	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|pairs|bench|ladder --out DIR [--prefill-rows N] [--new-tokens N] "
-		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N]\n",program);
+	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|pairs|bench|ladder|spec --out DIR [--prefill-rows N] [--new-tokens N] "
+		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N]\n",program);
 	return(2);
 }
 
@@ -55,6 +65,7 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 	options->new_tokens = 128u;
 	options->repeats = 3u;
 	options->prompt_tokens = 1024u;
+	options->draft_max = 15u;
 	for ( index = 1; index < argc; index++ )
 	{
 		const char *flag = argv[index], *value = index + 1 < argc ? argv[index + 1] : 0;
@@ -82,6 +93,10 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 			options->new_tokens = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--repeats") == 0 )
 			options->repeats = (uint32_t)strtoul(value,0,10);
+		else if ( strcmp(flag,"--spec-prompts") == 0 )
+			options->spec_prompts = value;
+		else if ( strcmp(flag,"--draft-max") == 0 )
+			options->draft_max = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--prompt-tokens") == 0 )
 			options->prompt_tokens = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--batches") == 0 )
@@ -112,7 +127,7 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 		options->batches[0] = options->max_batch = 1u;
 		options->batch_count = 1u;
 	}
-	if ( options->max_batch > options->prefill_rows )
+	if ( options->max_batch > options->prefill_rows || options->draft_max == 0u || options->draft_max >= SPARK_DEVICE_STAGE_VERIFY_ROWS )
 		return(-1);
 	return(0);
 }
@@ -677,6 +692,259 @@ static int RunLadder(Session *session, const RunOptions *options, const SparkTok
 	return(status == SPARK_STATUS_OK ? 0 : 1);
 }
 
+typedef struct SpecRun
+{
+	SparkSpeculationFrameModel *model;
+	uint32_t *tokens;
+	uint32_t count;
+	uint32_t frames;
+	uint32_t drafted;
+	uint32_t accepted;
+	uint64_t ns;
+} SpecRun;
+
+static SparkStatus SpecFrame(Session *session, const uint32_t *rows, uint32_t count, uint32_t first, SparkDeviceStageRunnerResult *result)
+{
+	SparkDeviceStageRunnerBatch batch;
+	uint32_t row;
+	for ( row = 0u; row < count; row++ )
+	{
+		session->positions[row] = first + row;
+		session->sequence[row] = 0u;
+		session->rows[row] = row;
+	}
+	memset(&batch,0,sizeof(batch));
+	batch.rows = count;
+	batch.token_ids = rows;
+	batch.positions = session->positions;
+	batch.sequence_of_row = session->sequence;
+	batch.head_rows = count;
+	batch.head_row_index = session->rows;
+	batch.verify = 1u;
+	return(SparkDeviceStageRunnerStep(session->runner,&batch,result));
+}
+
+static uint32_t SpecChoose(SpecRun *run, SparkSpeculationHazard *hazards, const SparkSpeculationLookupMatch *match, uint32_t feasible, uint32_t context,
+	uint32_t *frame_class)
+{
+	SparkSpeculationFrameRequest request;
+	SparkSpeculationFrameChoice choice;
+	memset(&request,0,sizeof(request));
+	*frame_class = SparkSpeculationFrameClass(match->match_length,0u);
+	if ( run->model->classes[*frame_class].frames == 0u )
+	{
+		const float step = SparkSpeculationFrameTokenCost(run->model,context);
+		uint32_t free_drafts = 0u, drafts;
+		for ( drafts = 1u; drafts <= feasible; drafts++ )
+		{
+			const float cost = SparkSpeculationFrameCost(run->model,drafts + 1u,context);
+			if ( cost > 0.0f && cost <= SPARK_SPECULATION_FRAME_MARGIN * step )
+				free_drafts = drafts;
+		}
+		feasible = free_drafts;
+		if ( feasible == 0u )
+			return(0u);
+	}
+	request.feasible = feasible;
+	request.context = context;
+	request.match_length = match->match_length;
+	request.lanes = 1u;
+	SparkSpeculationFrameChoose(run->model,&hazards[*frame_class],&request,&choice);
+	return(choice.drafts < feasible ? choice.drafts : feasible);
+}
+
+static SparkStatus SpecGreedy(Session *session, const RunOptions *options, const SparkTokenPrompt *prompt, uint32_t speculate, SpecRun *run)
+{
+	SparkSpeculationHazard hazards[SPARK_SPECULATION_FRAME_CLASSES];
+	const uint32_t capacity = prompt->count + options->new_tokens + options->draft_max + 2u;
+	uint32_t *history = (uint32_t *)calloc(capacity,sizeof(uint32_t)), *heads = (uint32_t *)calloc(RUN_LOOKUP_BUCKETS,sizeof(uint32_t));
+	uint32_t *chain = (uint32_t *)calloc(capacity,sizeof(uint32_t)), frame[SPARK_DEVICE_STAGE_VERIFY_ROWS], length = prompt->count, next = 0u;
+	SparkSpeculationLookupIndex index;
+	SparkDeviceStageRunnerResult result;
+	SparkStatus status = history != 0 && heads != 0 && chain != 0 && run->tokens != 0 ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED;
+	uint64_t start;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkSpeculationLookupIndexBind(&index,heads,RUN_LOOKUP_BUCKETS,chain,capacity,RUN_LOOKUP_GRAM);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceStageRunnerResetSequence(session->runner,0u);
+	if ( status == SPARK_STATUS_OK )
+		status = SessionPrefill(session,prompt->tokens,prompt->count,options->prefill_rows,&next,0);
+	memcpy(history,prompt->tokens,(size_t)prompt->count * sizeof(uint32_t));
+	run->count = run->frames = run->drafted = run->accepted = 0u;
+	memset(hazards,0,sizeof(hazards));
+	memset(run->model->classes,0,sizeof(run->model->classes));
+	start = NowNs();
+	while ( status == SPARK_STATUS_OK && run->count < options->new_tokens )
+	{
+		SparkSpeculationLookupMatch match = { 0u, 0u };
+		uint32_t drafts = 0u, accepted = 0u, kept, position = length, frame_class = 0u;
+		uint64_t before;
+		history[length++] = next;
+		run->tokens[run->count++] = next;
+		status = SparkSpeculationLookupIndexAppend(&index,history,length);
+		if ( status == SPARK_STATUS_OK && speculate != 0u &&
+			SparkSpeculationLookupIndexFind(&index,history,RUN_LOOKUP_MAX_MATCH,RUN_LOOKUP_CANDIDATES,&match) == SPARK_STATUS_OK )
+		{
+			drafts = length - 1u - match.source_end;
+			drafts = SpecChoose(run,hazards,&match,drafts < options->draft_max ? drafts : options->draft_max,length,&frame_class);
+		}
+		frame[0] = next;
+		memcpy(frame + 1,history + match.source_end + 1u,(size_t)drafts * sizeof(uint32_t));
+		if ( status != SPARK_STATUS_OK )
+			break;
+		before = NowNs();
+		if ( drafts == 0u )
+			status = SessionStep(session,&next,position,1u,0u,0,&result);
+		else
+			status = SpecFrame(session,frame,drafts + 1u,position,&result);
+		if ( status == SPARK_STATUS_OK && drafts == 0u )
+			SparkSpeculationFrameObserveChain(run->model,1u,length,NowNs() - before);
+		if ( status != SPARK_STATUS_OK )
+			break;
+		while ( accepted < drafts && result.argmax[accepted] == frame[accepted + 1u] )
+			accepted++;
+		if ( drafts != 0u )
+		{
+			kept = accepted + 1u;
+			status = SparkDeviceStageRunnerKeepRows(session->runner,&kept,1u);
+			SparkSpeculationFrameObserveFrame(run->model,drafts + 1u,length,NowNs() - before);
+			SparkSpeculationHazardObserve(&run->model->classes[frame_class],drafts,accepted,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
+			SparkSpeculationHazardObserve(&hazards[frame_class],drafts,accepted,SPARK_SPECULATION_FRAME_REQUEST_DECAY);
+			run->frames++;
+			run->drafted += drafts;
+			run->accepted += accepted;
+		}
+		for ( kept = 0u; kept < accepted && run->count < options->new_tokens; kept++ )
+		{
+			history[length++] = frame[kept + 1u];
+			run->tokens[run->count++] = frame[kept + 1u];
+		}
+		if ( kept < accepted )
+			break;
+		next = result.argmax[accepted];
+	}
+	run->ns = NowNs() - start;
+	free(history);
+	free(heads);
+	free(chain);
+	return(status);
+}
+
+static int CompareDoubles(const void *a, const void *b)
+{
+	const double x = *(const double *)a, y = *(const double *)b;
+	return(x < y ? -1 : x > y ? 1 : 0);
+}
+
+static SparkStatus SpecCostCurve(Session *session, const RunOptions *options, const uint32_t *prompt, uint32_t length, SparkSpeculationFrameModel *model,
+	FILE *json)
+{
+	static const uint32_t sizes[RUN_FRAME_SIZES] = { 1u, 2u, 4u, 8u, 16u, 32u, 64u };
+	double *verify = (double *)calloc(options->repeats + 1u,sizeof(double)), *keep = (double *)calloc(options->repeats + 1u,sizeof(double));
+	SparkDeviceStageRunnerResult result;
+	uint32_t size, repeat, next = 0u;
+	SparkStatus status = verify != 0 && keep != 0 ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED;
+	fprintf(json,"\"verify_frames\":[");
+	for ( size = 0u; status == SPARK_STATUS_OK && size < RUN_FRAME_SIZES; size++ )
+	{
+		for ( repeat = 0u; status == SPARK_STATUS_OK && repeat <= options->repeats; repeat++ )
+		{
+			uint64_t before;
+			uint32_t kept = sizes[size];
+			status = SparkDeviceStageRunnerResetSequence(session->runner,0u);
+			if ( status == SPARK_STATUS_OK )
+				status = SessionPrefill(session,prompt,length,options->prefill_rows,&next,0);
+			before = NowNs();
+			if ( status == SPARK_STATUS_OK )
+				status = SpecFrame(session,prompt,sizes[size],length,&result);
+			verify[repeat] = (NowNs() - before) / 1e6;
+			before = NowNs();
+			if ( status == SPARK_STATUS_OK )
+				status = SparkDeviceStageRunnerKeepRows(session->runner,&kept,1u);
+			keep[repeat] = (NowNs() - before) / 1e6;
+		}
+		if ( status != SPARK_STATUS_OK )
+			break;
+		for ( repeat = 1u; repeat <= options->repeats; repeat++ )
+			if ( sizes[size] == 1u )
+				SparkSpeculationFrameObserveChain(model,1u,length,(uint64_t)(verify[repeat] * 1e6));
+			else
+				SparkSpeculationFrameObserveFrame(model,sizes[size],length,(uint64_t)((verify[repeat] + keep[repeat]) * 1e6));
+		qsort(verify + 1,options->repeats,sizeof(double),CompareDoubles);
+		qsort(keep + 1,options->repeats,sizeof(double),CompareDoubles);
+		fprintf(json,"%s{\"rows\":%u,\"verify_ms\":%.4f,\"keep_all_ms\":%.4f}",size != 0u ? "," : "",sizes[size],verify[1u + options->repeats / 2u],
+			keep[1u + options->repeats / 2u]);
+		printf("verify frame %2u rows: %.3f ms, keeping all rows %.3f ms\n",sizes[size],verify[1u + options->repeats / 2u],keep[1u + options->repeats / 2u]);
+	}
+	fprintf(json,"]");
+	free(verify);
+	free(keep);
+	return(status);
+}
+
+static int RunSpec(Session *session, const RunOptions *options, const SparkTokenPrompts *gate, const SparkTokenPrompts *extra)
+{
+	FILE *json = OpenOut(options,"spec",".metal.json","w");
+	SparkSpeculationFrameModel *model = (SparkSpeculationFrameModel *)calloc(1u,sizeof(SparkSpeculationFrameModel));
+	double *plain_rate = (double *)calloc(options->repeats + 1u,sizeof(double)), *spec_rate = (double *)calloc(options->repeats + 1u,sizeof(double));
+	SpecRun plain, spec;
+	uint32_t index, total = gate->count + extra->count, identical = 0u;
+	SparkStatus status = json != 0 && model != 0 && plain_rate != 0 && spec_rate != 0 ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+	plain.model = spec.model = model;
+	plain.tokens = (uint32_t *)calloc(options->new_tokens,sizeof(uint32_t));
+	spec.tokens = (uint32_t *)calloc(options->new_tokens,sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+	{
+		fprintf(json,"{\"new_tokens\":%u,\"draft_max\":%u,\"repeats\":%u,\"lookup\":{\"gram\":%u,\"max_match\":%u,\"candidates\":%u},",options->new_tokens,
+			options->draft_max,options->repeats,RUN_LOOKUP_GRAM,RUN_LOOKUP_MAX_MATCH,RUN_LOOKUP_CANDIDATES);
+		status = SpecCostCurve(session,options,extra->prompts[0].tokens,extra->prompts[0].count,model,json);
+		fprintf(json,",\"prompts\":[");
+	}
+	for ( index = 0u; status == SPARK_STATUS_OK && index < total; index++ )
+	{
+		const SparkTokenPrompt *prompt = index < gate->count ? &gate->prompts[index] : &extra->prompts[index - gate->count];
+		uint32_t same = options->new_tokens, run, token;
+		for ( run = 0u; status == SPARK_STATUS_OK && run <= options->repeats; run++ )
+		{
+			status = SpecGreedy(session,options,prompt,0u,&plain);
+			if ( status == SPARK_STATUS_OK )
+				status = SpecGreedy(session,options,prompt,1u,&spec);
+			plain_rate[run] = plain.count / (plain.ns / 1e9);
+			spec_rate[run] = spec.count / (spec.ns / 1e9);
+			for ( token = 0u; status == SPARK_STATUS_OK && token < same; token++ )
+				if ( token >= plain.count || token >= spec.count || plain.tokens[token] != spec.tokens[token] )
+					same = token;
+		}
+		if ( status != SPARK_STATUS_OK )
+			break;
+		identical += same == options->new_tokens ? 1u : 0u;
+		qsort(plain_rate + 1,options->repeats,sizeof(double),CompareDoubles);
+		qsort(spec_rate + 1,options->repeats,sizeof(double),CompareDoubles);
+		fprintf(json,"%s{\"name\":\"%s\",\"prompt_tokens\":%u,\"tokens_identical\":%u,\"plain_tokens_per_second\":%.4f,\"spec_tokens_per_second\":%.4f,"
+			"\"plain_runs_tokens_per_second\":[%.4f,%.4f],\"spec_runs_tokens_per_second\":[%.4f,%.4f],\"frames\":%u,\"drafted\":%u,\"accepted\":%u,"
+			"\"spec_tokens\":[",index != 0u ? "," : "",prompt->name,prompt->count,same,plain_rate[1u + options->repeats / 2u],spec_rate[1u + options->repeats / 2u],
+			plain_rate[1],plain_rate[options->repeats],spec_rate[1],spec_rate[options->repeats],spec.frames,spec.drafted,spec.accepted);
+		for ( token = 0u; token < spec.count; token++ )
+			fprintf(json,"%s%u",token != 0u ? "," : "",spec.tokens[token]);
+		fprintf(json,"]}");
+		printf("%s: %u of %u tokens identical in every run; %.2f tok/s plain (%.2f-%.2f), %.2f tok/s with lookup speculation (%.2f-%.2f); "
+			"%u frames, %u of %u drafts accepted\n",prompt->name,same,options->new_tokens,plain_rate[1u + options->repeats / 2u],plain_rate[1],
+			plain_rate[options->repeats],spec_rate[1u + options->repeats / 2u],spec_rate[1],spec_rate[options->repeats],spec.frames,spec.accepted,spec.drafted);
+		fflush(stdout);
+	}
+	if ( json != 0 )
+	{
+		fprintf(json,"],\"prompts_identical\":%u,\"prompt_count\":%u}\n",identical,total);
+		fclose(json);
+	}
+	free(plain.tokens);
+	free(spec.tokens);
+	free(model);
+	free(plain_rate);
+	free(spec_rate);
+	return(status == SPARK_STATUS_OK && identical == total ? 0 : 1);
+}
+
 int main(int argc, char **argv)
 {
 	RunOptions options;
@@ -700,6 +968,11 @@ int main(int argc, char **argv)
 	config.max_context = RUN_MAX_CONTEXT;
 	config.head_rows = strcmp(options.mode,"teacher") == 0 ? options.prefill_rows : strcmp(options.mode,"pairs") == 0 ? 2u : 1u;
 	config.state_budget_bytes = RUN_STATE_BUDGET;
+	if ( strcmp(options.mode,"spec") == 0 )
+	{
+		config.head_rows = SPARK_DEVICE_STAGE_VERIFY_ROWS;
+		config.max_context = RUN_MAX_CONTEXT;
+	}
 	if ( strcmp(options.mode,"ladder") == 0 )
 	{
 		config.sequences = config.head_rows = options.max_batch;
@@ -758,6 +1031,16 @@ int main(int argc, char **argv)
 		failed = RunBench(&session,&options,&prompts,&info);
 	else if ( strcmp(options.mode,"ladder") == 0 )
 		failed = RunLadder(&session,&options,&prompts,&info);
+	else if ( strcmp(options.mode,"spec") == 0 )
+	{
+		SparkTokenPrompts extra;
+		failed = options.spec_prompts == 0 || SparkTokenPromptsLoad(options.spec_prompts,&extra) != SPARK_STATUS_OK;
+		if ( !failed )
+		{
+			failed = RunSpec(&session,&options,&prompts,&extra);
+			SparkTokenPromptsFree(&extra);
+		}
+	}
 	else
 		failed = Usage(argv[0]);
 	SparkDeviceStageRunnerClose(session.runner);

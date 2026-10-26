@@ -2,6 +2,8 @@
 #define SPARKPIPE_INFERENCE_KERNELS_METAL_KERNEL_PARAMS_H
 
 #define SPARK_KERNEL_ROPE_PAIRS 64u
+#define SPARK_GEMV_OUTPUTS 4u
+#define SPARK_GEMV_ROW_OUTPUTS(rows) ((rows) >= 8u ? 1u : (rows) >= 4u ? 2u : SPARK_GEMV_OUTPUTS)
 #define SPARK_GEMM_ROWS_OUTPUTS 128u
 #define SPARK_GEMM_ROWS_DEPTH 64u
 #define SPARK_GEMM_ROWS_THREADS 128u
@@ -65,7 +67,8 @@ typedef struct SparkGemvParams
 	uint32_t gated_input;
 	uint32_t splits;
 	uint32_t split_span;
-	uint32_t pad[3];
+	uint32_t row_exact;
+	uint32_t pad[2];
 } SparkGemvParams;
 
 typedef struct SparkConvParams
@@ -130,6 +133,8 @@ typedef struct SparkAttentionParams
 	uint32_t partition_keys;
 	float scale;
 	uint32_t row_offset;
+	uint32_t row_exact;
+	uint32_t pad[3];
 } SparkAttentionParams;
 
 typedef struct SparkSiluMulParams

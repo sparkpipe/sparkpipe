@@ -33,6 +33,7 @@ SparkStatus SparkDeviceStageOpen(SparkDeviceStage *stage, const SparkDeviceStage
 		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_UNSUPPORTED,"the device model reads the publisher's BF16 projections; this codec has no Metal kernels"));
 	stage->services = request->services;
 	stage->max_rows = configuration->max_input_row_count;
+	stage->verify_rows = stage->max_rows < SPARK_DEVICE_STAGE_VERIFY_ROWS ? stage->max_rows : SPARK_DEVICE_STAGE_VERIFY_ROWS;
 	stage->slots = configuration->resident_sequence_capacity;
 	stage->pages_per_sequence = configuration->kv_pages_per_sequence;
 	stage->max_positions = configuration->kv_pages_per_sequence * SPARK_DEVICE_RUNNER_PAGE_SLOTS;
@@ -208,8 +209,16 @@ SparkStatus SparkDeviceStageAllocate(SparkDeviceStage *stage, const SparkDeviceS
 		status = SparkDeviceAllocate(&stage->recurrent_pools[pool].buffer,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,
 			(uint64_t)stage->recurrent_layers * stage->slots * stage->recurrent_pools[pool].width,label);
 	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		snprintf(label,sizeof(label),"%s keep tables",stage->shape->tag);
+		status = SparkDeviceAllocate(&stage->keep_tables,SPARK_DEVICE_SPACE_SHARED_COHERENT,
+			((uint64_t)2u * stage->verify_rows + stage->slots + 1u) * sizeof(uint32_t),label);
+	}
 	if ( status != SPARK_STATUS_OK )
 		return(SparkDeviceStageRefuse(stage,status,"cannot allocate the device scratch and recurrent state"));
+	for ( pool = 0u; pool < stage->verify_rows; pool++ )
+		((uint32_t *)stage->keep_tables.host)[pool] = pool;
 	SparkDeviceStagePlan(&stage->scratch_buffer,slices,count);
 	return(SPARK_STATUS_OK);
 }
@@ -256,6 +265,10 @@ SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStage
 	}
 	if ( groups != step->sequences )
 		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"each step sequence must own one contiguous run of rows"));
+	if ( step->commit == 0u && step->rows > stage->verify_rows )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"a verify step holds more rows than the stage keeps for its replay"));
+	stage->step_exact = step->commit == 0u ? 1u : 0u;
+	tensors->row_identity = SparkTensorAt(&stage->keep_tables,0u,(uint64_t)stage->verify_rows * sizeof(uint32_t));
 	tensors->rows = step->rows;
 	tensors->host_positions = step->host_positions;
 	tensors->host_sequence_of_row = step->host_sequence_of_row;
@@ -271,6 +284,43 @@ SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStage
 	tensors->sequences.sequences = step->sequences;
 	tensors->sequences.commit = step->commit;
 	return(status);
+}
+
+SparkStatus SparkDeviceStageKeepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, const uint32_t *kept, SparkDeviceKeepTensors *keep)
+{
+	uint32_t *table = (uint32_t *)stage->keep_tables.host, *ids = table + stage->verify_rows, *begin = ids + stage->verify_rows;
+	const uint32_t *host_kept = 0, *host_begin = 0;
+	SparkDeviceRange range;
+	uint32_t sequence, row, count = 0u;
+	SparkStatus status;
+	if ( step->commit != 0u || step->rows > stage->verify_rows || step->sequences > stage->slots )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"keep_rows follows a verify step within the stage's verify rows"));
+	status = SparkDeviceResolve((SparkDeviceAddress)(uintptr_t)kept,(uint64_t)step->sequences * sizeof(uint32_t),&range);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceHostOf(range,(uint64_t)step->sequences * sizeof(uint32_t),(void **)&host_kept);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceResolve((SparkDeviceAddress)(uintptr_t)step->sequence_row_begin,((uint64_t)step->sequences + 1u) * sizeof(uint32_t),&range);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceHostOf(range,((uint64_t)step->sequences + 1u) * sizeof(uint32_t),(void **)&host_begin);
+	if ( status != SPARK_STATUS_OK )
+		return(SparkDeviceStageRefuse(stage,status,"keep_rows needs host-visible kept counts and row tables"));
+	for ( sequence = 0u; sequence < step->sequences; sequence++ )
+	{
+		if ( host_kept[sequence] > host_begin[sequence + 1u] - host_begin[sequence] )
+			return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"a sequence keeps more rows than its verify step held"));
+		begin[sequence] = count;
+		for ( row = 0u; row < host_kept[sequence]; row++ )
+			ids[count++] = host_begin[sequence] + row;
+	}
+	begin[step->sequences] = count;
+	keep->rows = count;
+	keep->frame_rows = step->rows;
+	keep->kept_rows = SparkTensorAt(&stage->keep_tables,(uint64_t)stage->verify_rows * sizeof(uint32_t),(uint64_t)stage->verify_rows * sizeof(uint32_t));
+	keep->sequences.row_begin = SparkTensorAt(&stage->keep_tables,(uint64_t)2u * stage->verify_rows * sizeof(uint32_t),
+		((uint64_t)step->sequences + 1u) * sizeof(uint32_t));
+	keep->sequences.sequences = step->sequences;
+	keep->sequences.commit = 1u;
+	return(StageResolve(stage,step->recurrent_index,(uint64_t)step->sequences * sizeof(uint32_t),&keep->sequences.state_index));
 }
 
 SparkOpsPaged SparkDeviceStagePaged(const SparkDeviceStage *stage, const SparkDeviceStepTensors *tensors, uint32_t kv_layer)
@@ -301,6 +351,8 @@ void SparkDeviceStageClose(void *model)
 		return;
 	if ( stage->scratch_buffer.handle != 0u )
 		(void)SparkDeviceFree(&stage->scratch_buffer);
+	if ( stage->keep_tables.handle != 0u )
+		(void)SparkDeviceFree(&stage->keep_tables);
 	for ( pool = 0u; pool < stage->recurrent_pool_count; pool++ )
 		if ( stage->recurrent_pools[pool].buffer.handle != 0u )
 			(void)SparkDeviceFree(&stage->recurrent_pools[pool].buffer);

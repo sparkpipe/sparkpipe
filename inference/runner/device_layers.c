@@ -39,6 +39,56 @@ uint64_t SparkDeviceGatedDeltaWindowBytes(const SparkDeviceGatedDeltaShape *shap
 	return((uint64_t)SparkDeviceGatedDeltaChannels(shape) * shape->conv_taps * 2u);
 }
 
+uint64_t SparkDeviceGatedDeltaKeepBytes(const SparkDeviceGatedDeltaShape *shape, uint32_t rows, uint32_t layers)
+{
+	return((uint64_t)layers * rows * (SparkDeviceGatedDeltaMix(shape) + SparkDeviceGatedDeltaGates(shape)) * sizeof(uint16_t));
+}
+
+static SparkTensor GatedDeltaKeepSlab(const SparkDeviceStage *stage, const SparkDeviceGatedDeltaShape *shape, const SparkDeviceGatedDeltaScratch *scratch,
+	uint32_t recurrent_layer, uint32_t gates)
+{
+	const uint64_t mix_bytes = (uint64_t)stage->verify_rows * SparkDeviceGatedDeltaMix(shape) * sizeof(uint16_t);
+	const uint64_t gate_bytes = (uint64_t)stage->verify_rows * SparkDeviceGatedDeltaGates(shape) * sizeof(uint16_t);
+	return(SparkTensorSlice(scratch->keep,(uint64_t)recurrent_layer * (mix_bytes + gate_bytes) + (gates != 0u ? mix_bytes : 0u),
+		gates != 0u ? gate_bytes : mix_bytes));
+}
+
+static SparkDeltaParams GatedDeltaParams(const SparkDeviceGatedDeltaShape *shape, uint32_t rows, const SparkOpsSequences *sequences)
+{
+	const uint32_t qk = SparkDeviceGatedDeltaQk(shape);
+	SparkDeltaParams delta;
+	memset(&delta,0,sizeof(delta));
+	delta.rows = rows;
+	delta.sequences = sequences->sequences;
+	delta.key_heads = shape->key_heads;
+	delta.value_heads = shape->value_heads;
+	delta.key_dimension = shape->key_dimension;
+	delta.value_dimension = shape->value_dimension;
+	delta.mix_stride = SparkDeviceGatedDeltaMix(shape);
+	delta.query_offset = 0u;
+	delta.key_offset = qk;
+	delta.value_offset = 2u * qk;
+	delta.gate_stride = SparkDeviceGatedDeltaGates(shape);
+	delta.beta_offset = 0u;
+	delta.decay_offset = shape->value_heads;
+	delta.output_stride = SparkDeviceGatedDeltaValues(shape);
+	delta.commit = sequences->commit;
+	delta.epsilon = shape->epsilon;
+	return(delta);
+}
+
+static SparkConvParams GatedDeltaConvParams(const SparkDeviceGatedDeltaShape *shape, const SparkOpsSequences *sequences)
+{
+	SparkConvParams conv;
+	memset(&conv,0,sizeof(conv));
+	conv.channels = SparkDeviceGatedDeltaChannels(shape);
+	conv.row_stride = SparkDeviceGatedDeltaMix(shape);
+	conv.sequences = sequences->sequences;
+	conv.kernel_taps = shape->conv_taps;
+	conv.commit = sequences->commit;
+	return(conv);
+}
+
 SparkStatus SparkDeviceGatedDeltaBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer,
 	const SparkDeviceGatedDeltaShape *shape, SparkDeviceGatedDeltaWeights *bound)
 {
@@ -65,39 +115,21 @@ SparkStatus SparkDeviceGatedDelta(SparkDeviceStage *stage, SparkDeviceQueue *que
 	const SparkDeviceGatedDeltaScratch *scratch, SparkTensor normed, SparkTensor output)
 {
 	const uint32_t hidden = stage->shape->hidden, rows = tensors->rows, mix = SparkDeviceGatedDeltaMix(shape);
-	const uint32_t gates = SparkDeviceGatedDeltaGates(shape), values = SparkDeviceGatedDeltaValues(shape), qk = SparkDeviceGatedDeltaQk(shape);
-	SparkConvParams conv;
-	SparkDeltaParams delta;
+	const uint32_t gates = SparkDeviceGatedDeltaGates(shape), values = SparkDeviceGatedDeltaValues(shape);
+	const SparkConvParams conv = GatedDeltaConvParams(shape,&tensors->sequences);
+	const SparkDeltaParams delta = GatedDeltaParams(shape,rows,&tensors->sequences);
 	SparkGatedNormParams gate;
 	SparkStatus status = SparkDeviceLinear(stage,queue,normed,hidden,weights->mix,scratch->mix,mix,rows,hidden,mix,0u);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceLinear(stage,queue,normed,hidden,weights->gates,scratch->gates,gates,rows,hidden,gates,0u);
-	memset(&conv,0,sizeof(conv));
-	conv.channels = SparkDeviceGatedDeltaChannels(shape);
-	conv.row_stride = mix;
-	conv.sequences = tensors->sequences.sequences;
-	conv.kernel_taps = shape->conv_taps;
-	conv.commit = tensors->sequences.commit;
+	if ( status == SPARK_STATUS_OK && tensors->sequences.commit == 0u )
+		status = SparkOpsGather(stage->ops,queue,scratch->mix,tensors->row_identity,GatedDeltaKeepSlab(stage,shape,scratch,recurrent_layer,0u),rows,mix,rows);
+	if ( status == SPARK_STATUS_OK && tensors->sequences.commit == 0u )
+		status = SparkOpsGather(stage->ops,queue,scratch->gates,tensors->row_identity,GatedDeltaKeepSlab(stage,shape,scratch,recurrent_layer,1u),rows,gates,
+			rows);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsCausalConv(stage->ops,queue,SparkDeviceStageRecurrent(stage,SPARK_DEVICE_GATED_DELTA_WINDOW_POOL,recurrent_layer),&tensors->sequences,scratch->mix,weights->conv,
 			scratch->mix,&conv);
-	memset(&delta,0,sizeof(delta));
-	delta.rows = rows;
-	delta.sequences = tensors->sequences.sequences;
-	delta.key_heads = shape->key_heads;
-	delta.value_heads = shape->value_heads;
-	delta.key_dimension = shape->key_dimension;
-	delta.value_dimension = shape->value_dimension;
-	delta.mix_stride = mix;
-	delta.query_offset = 0u;
-	delta.key_offset = qk;
-	delta.value_offset = 2u * qk;
-	delta.gate_stride = gates;
-	delta.beta_offset = 0u;
-	delta.decay_offset = shape->value_heads;
-	delta.output_stride = values;
-	delta.commit = tensors->sequences.commit;
-	delta.epsilon = shape->epsilon;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsGatedDelta(stage->ops,queue,SparkDeviceStageRecurrent(stage,SPARK_DEVICE_GATED_DELTA_STATE_POOL,recurrent_layer),&tensors->sequences,scratch->mix,scratch->gates,
 			weights->log_scale,weights->bias,scratch->delta,scratch->core,&delta);
@@ -114,6 +146,28 @@ SparkStatus SparkDeviceGatedDelta(SparkDeviceStage *stage, SparkDeviceQueue *que
 		status = SparkOpsRmsNormGate(stage->ops,queue,scratch->core,scratch->mix,weights->norm,scratch->gated,&gate);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceLinear(stage,queue,scratch->gated,values,weights->out,output,hidden,rows,values,hidden,0u);
+	return(status);
+}
+
+SparkStatus SparkDeviceGatedDeltaKeep(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceGatedDeltaShape *shape,
+	const SparkDeviceKeepTensors *keep, const SparkDeviceGatedDeltaWeights *weights, uint32_t recurrent_layer, const SparkDeviceGatedDeltaScratch *scratch)
+{
+	const uint32_t mix = SparkDeviceGatedDeltaMix(shape), gates = SparkDeviceGatedDeltaGates(shape);
+	const SparkConvParams conv = GatedDeltaConvParams(shape,&keep->sequences);
+	const SparkDeltaParams delta = GatedDeltaParams(shape,keep->rows,&keep->sequences);
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( keep->rows != 0u )
+		status = SparkOpsGather(stage->ops,queue,GatedDeltaKeepSlab(stage,shape,scratch,recurrent_layer,0u),keep->kept_rows,scratch->mix,keep->rows,mix,
+			keep->frame_rows);
+	if ( status == SPARK_STATUS_OK && keep->rows != 0u )
+		status = SparkOpsGather(stage->ops,queue,GatedDeltaKeepSlab(stage,shape,scratch,recurrent_layer,1u),keep->kept_rows,scratch->gates,keep->rows,gates,
+			keep->frame_rows);
+	if ( status == SPARK_STATUS_OK && keep->rows != 0u )
+		status = SparkOpsCausalConv(stage->ops,queue,SparkDeviceStageRecurrent(stage,SPARK_DEVICE_GATED_DELTA_WINDOW_POOL,recurrent_layer),&keep->sequences,
+			scratch->mix,weights->conv,scratch->mix,&conv);
+	if ( status == SPARK_STATUS_OK && keep->rows != 0u )
+		status = SparkOpsGatedDelta(stage->ops,queue,SparkDeviceStageRecurrent(stage,SPARK_DEVICE_GATED_DELTA_STATE_POOL,recurrent_layer),&keep->sequences,
+			scratch->mix,scratch->gates,weights->log_scale,weights->bias,scratch->delta,scratch->core,&delta);
 	return(status);
 }
 
@@ -222,6 +276,7 @@ SparkStatus SparkDeviceAttention(SparkDeviceStage *stage, SparkDeviceQueue *queu
 	attention.gate_head_stride = 2u * shape->head_dimension;
 	attention.output_stride = q;
 	attention.scale = shape->scale;
+	attention.row_exact = stage->step_exact;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsAttention(stage->ops,queue,&paged,scratch->query,scratch->qkv,scratch->records,scratch->gated,&attention,tensors->host_positions,
 			tensors->host_sequence_of_row);
@@ -286,5 +341,6 @@ SparkStatus SparkDeviceLinear(SparkDeviceStage *stage, SparkDeviceQueue *queue, 
 	params.input_stride = x_stride;
 	params.output_stride = y_stride;
 	params.gated_input = gated;
+	params.row_exact = stage->step_exact;
 	return(SparkOpsLinear(stage->ops,queue,x,w,y,&params));
 }

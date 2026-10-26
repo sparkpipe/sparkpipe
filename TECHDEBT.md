@@ -1176,7 +1176,16 @@ Metal backend and the single-Studio stage are in
   - weight residency: the runner maps the pack in its own process; weightd,
     the arena that survives a code-only redeploy, is CUDA VMM only;
   - a lane record, model description and swap-controller entry for the
-    Studio target (`metal.apple10`).
+    Studio target (`metal.apple10`);
+  - one frame chooser. Until the batch engine drives the device runner,
+    `tools/qwen38_27b_metal_run.c` chooses speculative frames itself on the
+    common cost model (`src/spark_speculation_frame.c`). That includes the
+    rule that a first probe frame may cost at most the cost model's margin
+    over a plain step, which took Metal prose from a 0.5% loss to a 0.4%
+    gain. The batch engine (`runtime/model_batch_engine.c`) has its own
+    chooser. Fold both into one function in `src/` that the engine and every
+    backend call, and check whether the probe rule also helps the CUDA
+    lanes' prose speculation.
 - Map the numerics gate's resolution at BF16. The gate now judges the Studio
   stage against the reference's own reduction-order floor (mean KL at most
   2 times, top-1 disagreement at most 1.5 times, a paired block test at 3
@@ -1201,6 +1210,15 @@ Metal backend and the single-Studio stage are in
   projections fall to the prefill GEMM, which reads the weights once per 128
   rows. Prefill and decode mixed in one step are not measured (I18, I19,
   I21), and speculative verify frames have no cost curve yet.
+- Make long verify frames cheaper. A verify frame must compute its rows
+  exactly as one-row decode does, so it runs the GEMV in passes of at most
+  eight rows: on one M5 Ultra 1 to 4 rows cost the same 49-50 ms as a decode
+  step, 8 rows 63 ms, and every further 8 rows another pass (16 rows 122 ms,
+  64 rows 474 ms). A 16-row GEMV pass spills registers (over 1 s). A GEMV
+  that holds more rows per pass without changing each row's order of sums
+  would let whole-file rewrites run frames of 16 to 32 drafts. Verify frames
+  over several sequences in one step, and speculation through a served
+  request (the serving adapter is CUDA), are not built.
 - Close the B1 gap to the streaming roofline (90.4%, 20.12 of 22.27 tok/s).
   The projections stream at about 1,100 GB/s; the rest of the 49.8 ms step
   is about 710 dependent dispatches with a floor of about 5 us each, the

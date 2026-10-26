@@ -86,7 +86,7 @@ tensor sizes before each launch.
 | `spark_rmsnorm_residual` | `h = bf16(h + r)` written back, then `bf16(rmsnorm(h) * w)` with an FP32 gain |
 | `spark_rmsnorm_gate` | per-head RMSNorm with a BF16 gain and a SiLU output gate read from a fused row |
 | `spark_head_rmsnorm_rope` | per-head RMSNorm with an FP32 gain, then rotary embedding on the head's first dimensions (rotate-half pairs) |
-| `spark_gemv_r{1,2}`, `spark_gemv_f32_r*`, `spark_gemv_gated_r*` | decode projections for one or two rows: BF16 weights `[N, K]`, four outputs per threadgroup with the inner dimension split across its four SIMD groups, FP32 accumulation, BF16 or FP32 out, and the gated form that computes `bf16(silu(gate) * up)` from a fused input row |
+| `spark_gemv_r{1,2,4,8}`, `spark_gemv_f32_r*`, `spark_gemv_gated_r*` | decode projections for one or two rows, and verify frames in passes of up to eight rows: BF16 weights `[N, K]`, 4, 4, 2 and 1 outputs per threadgroup at 1, 2, 4 and 8 rows, the inner dimension split across the threadgroup's four SIMD groups, FP32 accumulation, BF16 or FP32 out, and the gated form that computes `bf16(silu(gate) * up)` from a fused input row |
 | `spark_gemm_rows16`, `spark_gemm_rows32`, `spark_gemm_reduce` | decode projections for 3 to 64 rows on the tensor operations: 128 outputs per threadgroup, the weights staged through threadgroup memory 64 inputs at a time with the next slice prefetched into registers, the inner dimension split so the launch has about 1,024 threadgroups, FP32 partials summed in split order by the reduce kernel |
 | `spark_gemm`, `spark_gemm_f32` | prefill projections on the Metal 4 tensor operations (`matmul2d`, 128 x 64 tiles, FP32 accumulation, relaxed precision off) |
 | `spark_causal_conv_silu` | depthwise causal convolution over a per-sequence window, BF16 sum, SiLU |
@@ -232,9 +232,56 @@ exactly the same tokens as one another, and differ from the solo GEMV only
 where FP32 rounding in a different reduction order flips a near tie. The
 batch ladder records each such divergence with both runs' top-two margins.
 
+A verify step (below) sets `row_exact` on its projections and attention, and
+then every row is computed exactly as a one-row decode step would compute it:
+the GEMV in passes of 8, 4, 2 and 1 rows whatever the frame's length, and
+the decode attention for every row. Every GEMV row count runs the same
+per-row operations (the outputs per threadgroup change, the order of each
+output's sums does not), which `linear row independence ... row-exact`
+checks bit for bit.
+
 The split-K partials live in a 64 MiB buffer the ops instance owns; the first
 queue that runs a split projection owns it, and a split projection on another
 queue is refused.
+
+## Speculation
+
+The device runner takes the CUDA stage runner's verify contract.
+`SparkDeviceStageRunnerBatch.verify` makes a step a verify frame: the model
+runs it with `commit = 0`, so the recurrent state and the convolution window
+are read but not written and the sequence's next position does not move.
+`SparkDeviceStageRunnerKeepRows(runner, kept, sequences)` then keeps the
+first `kept[s]` rows of each sequence: the model's `keep_rows` replays the
+recurrent update over those rows with `commit = 1`, and the runner advances
+each sequence by its kept count. KV written for rejected positions is
+overwritten when the sequence reaches them again.
+
+- `SparkDeviceStageStepTables` marks a `commit = 0` step row-exact and
+  refuses one longer than the stage's verify rows (64, the replay slab).
+- The gated-delta layer kind gathers each verify row's mix and gate
+  projections into a per-layer slab before the convolution;
+  `SparkDeviceGatedDeltaKeep` gathers the kept rows back, reruns the
+  convolution and the delta rule over them with `commit = 1` and so writes
+  the state and window the rows would have left one step at a time. No
+  projection runs again. `SparkDeviceStageKeepTables` builds the kept-row
+  list and the per-sequence row ranges on the host from the runner's
+  shared tables.
+- A model wires `keep_rows` to its recurrent layers; for Qwen3.8-27B that is
+  the 48 gated-delta layers. The attention layers keep nothing, since their
+  KV rows are already in place.
+
+Drafts come from the request's own context, as in the CUDA serving path:
+`qwen38_27b_metal_run --mode spec` indexes the prompt and the generated
+tokens with the common lookup index (`src/spark_speculation_lookup_draft.c`,
+3-token grams, matches up to 64 tokens, 64 candidates) and sizes each frame
+with the serving path's frame chooser (`src/spark_speculation_frame.c`),
+seeded with the measured verify costs and learning acceptance per match
+class as it goes; a step with no useful draft is an ordinary one-row step.
+The chooser's first frame in a match class probes; the tool caps a probe at
+the largest frame whose measured cost is within the chooser's margin of a
+one-row step, so text the lookup cannot predict pays nothing for the probe.
+The accepted prefix plus the model's next token are emitted, so greedy
+output with speculation is exactly greedy output without it.
 
 ## Precision policy
 
@@ -367,6 +414,16 @@ discarded warm-up, the median kept. Every batched sequence is compared token
 for token with its solo run; at the first token that differs, both runs'
 top-1 and top-2 tokens and margins are recorded, so a divergence can be
 shown to be a near tie. Repeated runs must give the same tokens.
+
+**Speculation.** `qwen38_27b_metal_run --mode spec` measures the verify
+cost curve (one sequence after a 933-token prompt, frames of 1 to 64 rows,
+and the replay that keeps all of them, median of three after a warm-up),
+then decodes 256 tokens greedily with and without speculation on the four
+gate prompts and on `qualification/metal/qwen38_27b/spec_prompts.json`: a
+whole-file rewrite of `tools/token_prompts.c` and a prose request, three
+times each after a warm-up, alternating the two. Every run's tokens must be
+identical with and without speculation; tok/s with and without are reported
+separately, as the median with the lowest and highest.
 
 **Speed.** `build/device_bandwidth 16 PACK` measures streaming reads of a
 16 GiB device-private buffer and of the mapped pack (seven timed passes after

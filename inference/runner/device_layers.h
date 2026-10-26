@@ -41,6 +41,7 @@ typedef struct SparkDeviceGatedDeltaScratch
 	SparkTensor delta;
 	SparkTensor core;
 	SparkTensor gated;
+	SparkTensor keep;
 } SparkDeviceGatedDeltaScratch;
 
 typedef struct SparkDeviceAttentionShape
@@ -97,11 +98,14 @@ uint32_t SparkDeviceGatedDeltaMix(const SparkDeviceGatedDeltaShape *shape);
 uint32_t SparkDeviceGatedDeltaGates(const SparkDeviceGatedDeltaShape *shape);
 uint64_t SparkDeviceGatedDeltaStateBytes(const SparkDeviceGatedDeltaShape *shape);
 uint64_t SparkDeviceGatedDeltaWindowBytes(const SparkDeviceGatedDeltaShape *shape);
+uint64_t SparkDeviceGatedDeltaKeepBytes(const SparkDeviceGatedDeltaShape *shape, uint32_t rows, uint32_t layers);
 SparkStatus SparkDeviceGatedDeltaBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer,
 	const SparkDeviceGatedDeltaShape *shape, SparkDeviceGatedDeltaWeights *bound);
 SparkStatus SparkDeviceGatedDelta(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceGatedDeltaShape *shape,
 	const SparkDeviceStepTensors *tensors, const SparkDeviceGatedDeltaWeights *weights, uint32_t recurrent_layer,
 	const SparkDeviceGatedDeltaScratch *scratch, SparkTensor normed, SparkTensor output);
+SparkStatus SparkDeviceGatedDeltaKeep(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceGatedDeltaShape *shape,
+	const SparkDeviceKeepTensors *keep, const SparkDeviceGatedDeltaWeights *weights, uint32_t recurrent_layer, const SparkDeviceGatedDeltaScratch *scratch);
 
 uint32_t SparkDeviceAttentionQueryWidth(const SparkDeviceAttentionShape *shape);
 uint32_t SparkDeviceAttentionKvWidth(const SparkDeviceAttentionShape *shape);
