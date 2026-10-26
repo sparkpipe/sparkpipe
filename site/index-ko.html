@@ -148,7 +148,7 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
     <h2>다음에 오는 것.</h2>
     <div class="check-list">
       <div><b>프리필 가속기</b><span>NVIDIA RTX 5080 4장을 담은 박스가 긴 프롬프트를 계산합니다. 먼저 4대, 다음에 8대입니다. 추정치: 128K 토큰 Kimi K3 프롬프트를 37초(박스 8대로 18초)에, 100만 토큰 프롬프트를 약 17분에 처리합니다.</span></div>
-      <div><b>플릿 2</b><span>플릿 1의 2.2배 메모리 대역폭을 가진 M5 Ultra Mac Studio 8대로 더 빠르게 디코딩합니다. Studio 한 대에서 실측: Qwen 3.8 27B를 원래 BF16 정밀도로 단일 요청 19.3 tok/s로 디코딩하며, 이는 Studio의 메모리 대역폭이 허용하는 속도의 86%입니다. 추정치: 추측 디코딩 없이 Kimi K3 23 tok/s.</span></div>
+      <div><b>플릿 2</b><span>플릿 1의 2.2배 메모리 대역폭을 가진 M5 Ultra Mac Studio 8대로 더 빠르게 디코딩합니다. Studio 한 대에서 실측: Qwen 3.8 27B를 원래 BF16 정밀도로 단일 요청 20.1 tok/s로 디코딩하며, 이는 Studio의 메모리 대역폭이 허용하는 속도의 90%이고, 요청 64개를 동시에 처리하면 합계 442 tok/s입니다. 추정치: 추측 디코딩 없이 Kimi K3 23 tok/s.</span></div>
       <div><b>더 나은 추측 디코딩</b><span>여러 드래프터의 초안을 한 번에 검증하는 트리 드래프트로, 단계마다 더 많은 초안 토큰이 채택됩니다.</span></div>
       <div><b>분야별 검색</b><span>채팅에서 법률, 의료, 금융, 특허 등의 검색 도구를 체크하면, 어떤 모델이든 최신 1차 자료를 근거로 출처를 밝혀 답합니다.</span></div>
       <div><b>더 많은 대형 모델</b><span>Nemotron 3 Ultra, Mistral Large 3.</span></div>

@@ -132,7 +132,7 @@
       <tr><td><b>A.X K2</b>, SKT</td><td class="num">0.69 TB</td><td class="num">23.5 tok/s, measured</td><td class="num">33 tok/s</td><td class="num">49 tok/s</td><td class="num">16 s</td><td class="num">8 s</td></tr>
     </table>
     </div>
-    <p><b>Measured on one M5 Ultra Mac Studio</b>, the Fleet 2 machine, with SparkPipe's Metal engine (2026-10-26): Qwen 3.8 27B at its full BF16 precision decodes 19.3 tok/s for one request, 86% of the 22.3 tok/s that the Studio's measured 1.14 TB/s of memory bandwidth allows, and 32.8 tok/s for two requests at once. Its prefill runs at 1,372 tok/s for a 1K-token prompt and 1,139 tok/s for 8K.</p>
+    <p><b>Measured on one M5 Ultra Mac Studio</b>, the Fleet 2 machine, with SparkPipe's Metal engine (2026-10-26): Qwen 3.8 27B at its full BF16 precision decodes 20.1 tok/s for one request, 90% of the 22.3 tok/s that the Studio's measured 1.14 TB/s of memory bandwidth allows. Several requests share each read of the weights: 39.0 tok/s in total for 2 requests, 130 for 8, 231 for 16, 366 for 32 and 442 for 64. Its prefill runs at 1,429 tok/s for a 1K-token prompt and 1,501 tok/s for 8K.</p>
     <p>A 1M-token Kimi K3 prompt from cold is estimated at about 17 minutes with four accelerator boxes and 9 minutes with eight. Fleet 1 and Fleet 2 together hold 4 TB, and Fleet 3 adds 2 TB more, so a model too large for one fleet at its published precision can run across two: Qwen 3.8 Max in FP8 (2.5 TB) and Inkling in BF16 (1.9 TB).</p>
     <p>How the estimates are made:</p>
     <ul>
