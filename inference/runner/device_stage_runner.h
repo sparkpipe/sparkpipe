@@ -37,6 +37,7 @@ typedef struct SparkDeviceStageRunnerBatch
 	uint32_t head_rows;
 	const uint32_t *head_row_index;
 	const uint32_t *targets;
+	uint32_t verify;
 } SparkDeviceStageRunnerBatch;
 
 typedef struct SparkDeviceStageRunnerResult
@@ -63,6 +64,7 @@ typedef struct SparkDeviceStageRunnerInfo
 
 SparkStatus SparkDeviceStageRunnerOpen(SparkDeviceStageRunner **runner, const SparkDeviceStageRunnerConfig *config);
 SparkStatus SparkDeviceStageRunnerStep(SparkDeviceStageRunner *runner, const SparkDeviceStageRunnerBatch *batch, SparkDeviceStageRunnerResult *result);
+SparkStatus SparkDeviceStageRunnerKeepRows(SparkDeviceStageRunner *runner, const uint32_t *kept, uint32_t sequences);
 SparkStatus SparkDeviceStageRunnerResetSequence(SparkDeviceStageRunner *runner, uint32_t sequence);
 SparkStatus SparkDeviceStageRunnerInfoGet(const SparkDeviceStageRunner *runner, SparkDeviceStageRunnerInfo *info);
 void *SparkDeviceStageRunnerModel(const SparkDeviceStageRunner *runner);

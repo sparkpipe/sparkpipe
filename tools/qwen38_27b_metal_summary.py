@@ -11,8 +11,9 @@ reference than the other variant is, which is one half for a candidate whose
 error is distributed like the floor's) not above one half by more than
 PAIRED_SIGMA standard errors, the errors taken over contiguous blocks of
 positions. The Metal run must pass both legs; the all-layer and whole-tensor
-corrupted-weight controls must fail. Speed is reported against the measured
-streaming-read bandwidth.
+corrupted-weight controls must fail, and greedy decoding with lookup
+speculation must reproduce greedy decoding without it token for token. Speed
+is reported against the measured streaming-read bandwidth.
 
   qwen38_27b_metal_summary.py --out RUN_DIR --revision REV --prompts PROMPTS_JSON
 """
@@ -188,16 +189,22 @@ def main():
         "speed": speed(out),
     }
     receipt["batch_ladder"] = ladder_table(out, receipt["speed"]["bandwidth"]["device_private"]["median_gb_per_s"] * 1e9)
+    speculation = json.loads((out / "metal" / "spec.metal.json").read_text())
+    receipt["speculation"] = {key: speculation[key] for key in ("new_tokens", "draft_max", "repeats", "lookup", "verify_frames")}
+    receipt["speculation"]["prompts"] = [{key: item[key] for key in ("name", "prompt_tokens", "tokens_identical", "plain_tokens_per_second",
+                                                                      "spec_tokens_per_second", "frames", "drafted", "accepted")}
+                                         for item in speculation["prompts"]]
+    receipt["speculation"]["exact"] = speculation["prompts_identical"] == speculation["prompt_count"]
     numerics = receipt["numerics"]
     numerics["controls_fail_as_required"] = all(name in numerics and not numerics[name]["verdict"]["pass"] for name in REQUIRED_CONTROLS)
     numerics["pass"] = "metal" in numerics and numerics["metal"]["verdict"]["pass"] and numerics["controls_fail_as_required"]
     (out / "RECEIPT.json").write_text(json.dumps(receipt, indent=1) + "\n")
-    print(json.dumps({"numerics_pass": numerics["pass"],
+    print(json.dumps({"numerics_pass": numerics["pass"], "speculation_exact": receipt["speculation"]["exact"],
                       **{name: {leg_name: {key: item[key] for key in ("kl_ratio_to_floor", "top1_disagreement_ratio_to_floor", "paired_sigma", "pass")}
                                 for leg_name, item in numerics[name]["verdict"].items() if leg_name != "pass"}
                          for name in candidates},
                       "decode": receipt["speed"]["decode"]["roofline"]}, indent=1))
-    return 0 if numerics["pass"] else 1
+    return 0 if numerics["pass"] and receipt["speculation"]["exact"] else 1
 
 if __name__ == "__main__":
     sys.exit(main())

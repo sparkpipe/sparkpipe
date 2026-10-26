@@ -512,7 +512,7 @@ static void TestLinear(uint32_t rows, uint32_t K, uint32_t N, uint32_t output_f3
 	SparkDeviceFree(&y);
 }
 
-static void TestLinearRowIndependence(uint32_t rows, uint32_t other_rows, uint32_t K, uint32_t N, uint32_t output_f32, uint32_t gated)
+static void TestLinearRowIndependence(uint32_t rows, uint32_t other_rows, uint32_t K, uint32_t N, uint32_t output_f32, uint32_t gated, uint32_t exact)
 {
 	const uint32_t width = gated != 0u ? 2u * K : K, element = output_f32 != 0u ? (uint32_t)sizeof(float) : (uint32_t)sizeof(uint16_t);
 	const uint32_t picks[3] = { 0u, rows / 2u, rows - 1u };
@@ -536,6 +536,7 @@ static void TestLinearRowIndependence(uint32_t rows, uint32_t other_rows, uint32
 	params.output_stride = N;
 	params.output_f32 = output_f32;
 	params.gated_input = gated;
+	params.row_exact = exact;
 	other = params;
 	other.rows = other_rows;
 	memset(&clean,0,sizeof(clean));
@@ -556,8 +557,8 @@ static void TestLinearRowIndependence(uint32_t rows, uint32_t other_rows, uint32
 					Observe(check,memcmp(yv + ((uint64_t)picks[pick] * N + n) * element,oyv + ((uint64_t)slot * N + n) * element,element) == 0 ? 0.0 : 1.0,
 						0.0,0.0);
 			}
-	snprintf(shape,sizeof(shape),"rows %u vs %u, K %u -> N %u%s%s",rows,other_rows,K,N,output_f32 != 0u ? ", f32 out" : "",
-		gated != 0u ? ", silu-gated input" : "");
+	snprintf(shape,sizeof(shape),"rows %u vs %u, K %u -> N %u%s%s%s",rows,other_rows,K,N,output_f32 != 0u ? ", f32 out" : "",
+		gated != 0u ? ", silu-gated input" : "",exact != 0u ? ", row-exact" : "");
 	Report("linear row independence",shape,&clean,&corrupted,"exact: a row's output bits do not depend on the other rows or the row count");
 	SparkDeviceFree(&x);
 	SparkDeviceFree(&w);
@@ -1213,14 +1214,17 @@ int main(int argc, char **argv)
 	TestLinear(77u,17408u,5120u,0u,0u,20000u);
 	TestLinear(2048u,5120u,34816u,0u,0u,20000u);
 	TestLinear(64u,5120u,248320u,1u,0u,20000u);
-	TestLinearRowIndependence(2u,1u,17408u,5120u,0u,1u);
-	TestLinearRowIndependence(3u,64u,5120u,34816u,0u,0u);
-	TestLinearRowIndependence(2u,1u,5120u,248320u,1u,0u);
-	TestLinearRowIndependence(64u,5u,17408u,5120u,0u,0u);
-	TestLinearRowIndependence(16u,9u,5120u,96u,0u,0u);
-	TestLinearRowIndependence(32u,17u,5120u,16384u,0u,0u);
-	TestLinearRowIndependence(32u,16u,6144u,5120u,0u,0u);
-	TestLinearRowIndependence(40u,8u,5120u,248320u,1u,0u);
+	TestLinearRowIndependence(2u,1u,17408u,5120u,0u,1u,0u);
+	TestLinearRowIndependence(3u,64u,5120u,34816u,0u,0u,0u);
+	TestLinearRowIndependence(2u,1u,5120u,248320u,1u,0u,0u);
+	TestLinearRowIndependence(64u,5u,17408u,5120u,0u,0u,0u);
+	TestLinearRowIndependence(16u,9u,5120u,96u,0u,0u,0u);
+	TestLinearRowIndependence(32u,17u,5120u,16384u,0u,0u,0u);
+	TestLinearRowIndependence(32u,16u,6144u,5120u,0u,0u,0u);
+	TestLinearRowIndependence(40u,8u,5120u,248320u,1u,0u,0u);
+	TestLinearRowIndependence(8u,1u,17408u,5120u,0u,1u,1u);
+	TestLinearRowIndependence(23u,1u,5120u,248320u,1u,0u,1u);
+	TestLinearRowIndependence(13u,1u,5120u,34816u,0u,0u,1u);
 	TestCausalConv();
 	TestGatedDelta();
 	TestAttention(1u,1u,0u);

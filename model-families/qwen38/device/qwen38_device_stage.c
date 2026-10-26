@@ -96,7 +96,8 @@ static uint32_t QwenScratchSlices(QwenDeviceModel *model, SparkDeviceStageSlice 
 		{ rows * SparkDeviceAttentionKvWidth(&qwen_attention) * 2u, &model->attention.key },
 		{ SparkOpsAttentionScratchBytes(model->stage.max_rows,qwen_attention.heads,model->stage.max_positions), &model->attention.records },
 		{ rows * 2u * QD_FFN * 2u, &model->ffn.gate_up },
-		{ rows * QD_FFN * 2u, &model->ffn.act }
+		{ rows * QD_FFN * 2u, &model->ffn.act },
+		{ SparkDeviceGatedDeltaKeepBytes(&qwen_delta,model->stage.verify_rows,QD_GDN_LAYERS), &model->delta.keep }
 	};
 	const uint32_t count = sizeof(plan) / sizeof(plan[0]);
 	uint32_t index;
@@ -197,6 +198,19 @@ static SparkStatus QwenStep(void *opaque, const SparkStageRunnerStep *step, void
 	return(status);
 }
 
+static SparkStatus QwenKeepRows(void *opaque, const SparkStageRunnerStep *step, const uint32_t *kept, void *device_queue)
+{
+	QwenDeviceModel *model = (QwenDeviceModel *)opaque;
+	SparkDeviceKeepTensors keep;
+	uint32_t index;
+	SparkStatus status = SparkDeviceStageKeepTables(&model->stage,step,kept,&keep);
+	for ( index = 0u; index < QD_LAYERS && status == SPARK_STATUS_OK; index++ )
+		if ( model->layers[index].is_attention == 0u )
+			status = SparkDeviceGatedDeltaKeep(&model->stage,(SparkDeviceQueue *)device_queue,&qwen_delta,&keep,&model->layers[index].delta,
+				model->layers[index].index,&model->delta);
+	return(status);
+}
+
 const SparkStageRunnerModelInterface *SparkQwen38_27bDeviceStageModel(void)
 {
 	static const SparkStageRunnerModelInterface interface_table =
@@ -218,7 +232,7 @@ const SparkStageRunnerModelInterface *SparkQwen38_27bDeviceStageModel(void)
 		SparkDeviceStageReport,
 		0,
 		SparkDeviceStageLane,
-		0,
+		QwenKeepRows,
 		0,
 		QwenBindDevice
 	};

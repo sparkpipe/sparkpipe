@@ -13,6 +13,7 @@ extern "C" {
 #endif
 
 #define SPARK_DEVICE_STAGE_MAX_RECURRENT_POOLS 4u
+#define SPARK_DEVICE_STAGE_VERIFY_ROWS SPARK_OPS_DECODE_MAX_ROWS
 
 typedef struct SparkDeviceStageConfigValue
 {
@@ -67,6 +68,9 @@ typedef struct SparkDeviceStage
 	uint64_t kv_layer_stride;
 	uint32_t pool_pages;
 	uint32_t kv_attached;
+	uint32_t step_exact;
+	uint32_t verify_rows;
+	SparkDeviceBuffer keep_tables;
 } SparkDeviceStage;
 
 typedef struct SparkDeviceStepTensors
@@ -78,7 +82,16 @@ typedef struct SparkDeviceStepTensors
 	const uint32_t *host_positions;
 	const uint32_t *host_sequence_of_row;
 	uint32_t rows;
+	SparkTensor row_identity;
 } SparkDeviceStepTensors;
+
+typedef struct SparkDeviceKeepTensors
+{
+	SparkTensor kept_rows;
+	SparkOpsSequences sequences;
+	uint32_t rows;
+	uint32_t frame_rows;
+} SparkDeviceKeepTensors;
 
 SparkStatus SparkDeviceStageRefuse(const SparkDeviceStage *stage, SparkStatus status, const char *what);
 SparkStatus SparkDeviceStageOpen(SparkDeviceStage *stage, const SparkDeviceStageShape *shape, const SparkStageRunnerModelOpen *request);
@@ -96,6 +109,7 @@ SparkStatus SparkDeviceStageAllocate(SparkDeviceStage *stage, const SparkDeviceS
 SparkTensor SparkDeviceStageRecurrent(const SparkDeviceStage *stage, uint32_t pool, uint32_t layer);
 uint64_t SparkDeviceStageRecurrentBytes(const SparkDeviceStage *stage);
 SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, SparkDeviceStepTensors *tensors);
+SparkStatus SparkDeviceStageKeepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, const uint32_t *kept, SparkDeviceKeepTensors *keep);
 SparkOpsPaged SparkDeviceStagePaged(const SparkDeviceStage *stage, const SparkDeviceStepTensors *tensors, uint32_t kv_layer);
 void SparkDeviceStageLayerDone(const SparkDeviceStage *stage, uint32_t layer);
 

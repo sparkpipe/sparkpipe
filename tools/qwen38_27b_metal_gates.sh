@@ -11,6 +11,7 @@ out=$3
 revision=$4
 root=$(cd "$(dirname "$0")/.." && pwd)
 prompts=$root/qualification/metal/qwen38_27b/gate_prompts.json
+spec_prompts=$root/qualification/metal/qwen38_27b/spec_prompts.json
 control_pack=$out/control.pack
 batches=${SPARK_LADDER_BATCHES:-1,2,4,8,16,32,64}
 mkdir -p "$out/ref" "$out/metal" "$out/compare"
@@ -35,6 +36,7 @@ for control in control:layers.31.ffn_down:swap-rows control_layers:layers.*.ffn_
 	rm -f "$control_pack"
 done
 set +f
+./build/qwen38_27b_metal_run --pack "$pack" --prompts "$prompts" --spec-prompts "$spec_prompts" --mode spec --new-tokens 256 --repeats 3 --draft-max 31 --out "$out/metal" > "$out/metal_spec.log"
 ./build/qwen38_27b_metal_run --pack "$pack" --prompts "$prompts" --mode ladder --batches "$batches" --new-tokens 128 --repeats 3 --out "$out/metal" > "$out/metal_ladder.log"
 rm -f "$out/compare/compare.jsonl"
 for name in $(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in json.load(open(sys.argv[1]))["prompts"]))' "$prompts"); do

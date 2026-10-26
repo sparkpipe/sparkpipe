@@ -10,7 +10,6 @@
 #define OPS_PREFILL_PARTITION_KEYS 1024u
 #define OPS_DECODE_ROWS_PER_SEQUENCE 8u
 #define OPS_PREFILL_BLOCK_ROWS 32u
-#define OPS_GEMV_OUTPUTS_PER_GROUP 4u
 #define OPS_GEMM_ROWS 128u
 #define OPS_GEMM_OUTPUTS 64u
 #define OPS_LIBRARY_NAME "sparkpipe_kernels.metallib"
@@ -23,10 +22,16 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_head_rmsnorm_rope",
 	"spark_gemv_r1",
 	"spark_gemv_r2",
+	"spark_gemv_r4",
+	"spark_gemv_r8",
 	"spark_gemv_f32_r1",
 	"spark_gemv_f32_r2",
+	"spark_gemv_f32_r4",
+	"spark_gemv_f32_r8",
 	"spark_gemv_gated_r1",
 	"spark_gemv_gated_r2",
+	"spark_gemv_gated_r4",
+	"spark_gemv_gated_r8",
 	"spark_gemm",
 	"spark_gemm_f32",
 	"spark_gemm_rows16",
@@ -312,7 +317,7 @@ SparkStatus SparkOpsHeadRmsNormRope(SparkDeviceOps *ops, SparkDeviceQueue *queue
 
 static SparkOpsKernel OpsGemvKernel(const SparkGemvParams *params, uint32_t rows)
 {
-	const uint32_t slot = rows == 2u ? 1u : 0u;
+	const uint32_t slot = rows == 8u ? 3u : rows == 4u ? 2u : rows == 2u ? 1u : 0u;
 	if ( params->gated_input != 0u )
 		return((SparkOpsKernel)(SPARK_OPS_GEMV_GATED_R1 + slot));
 	if ( params->output_f32 != 0u )
@@ -363,11 +368,11 @@ SparkStatus SparkOpsLinear(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTe
 	SparkGemvParams chunk;
 	SparkStatus status;
 	uint32_t done;
+	const uint32_t gemv = params->rows <= SPARK_OPS_GEMV_MAX_ROWS || params->row_exact != 0u ? 1u : 0u;
 	if ( params->rows == 0u || K == 0u || N == 0u || K % 8u != 0u || params->input_stride % 8u != 0u || params->input_stride < input_width ||
-		(params->rows > SPARK_OPS_GEMV_MAX_ROWS && (K % SPARK_GEMM_ROWS_DEPTH != 0u || params->gated_input != 0u)) ||
-		(params->output_f32 != 0u && params->gated_input != 0u) )
+		(gemv == 0u && (K % SPARK_GEMM_ROWS_DEPTH != 0u || params->gated_input != 0u)) || (params->output_f32 != 0u && params->gated_input != 0u) )
 		return(OpsRefuse("linear","an input width that is a multiple of 8 (of the row-tile depth above the GEMV rows), a stride that covers it, "
-			"and a gated input only at the GEMV row counts"));
+			"and a gated input only on the GEMV"));
 	status = OpsNeed("linear","input",x,OpsRowsBytes(params->rows,params->input_stride,input_width,2u));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("linear","weight",w,(uint64_t)N * K * sizeof(uint16_t));
@@ -378,22 +383,22 @@ SparkStatus SparkOpsLinear(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTe
 	bindings[0] = OpsBind(x,SPARK_DEVICE_BIND_READ);
 	bindings[1] = OpsBind(w,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(y,SPARK_DEVICE_BIND_WRITE);
-	if ( params->rows > SPARK_OPS_DECODE_MAX_ROWS )
+	if ( gemv == 0u && params->rows > SPARK_OPS_DECODE_MAX_ROWS )
 		return(OpsLaunch(ops,queue,params->output_f32 != 0u ? SPARK_OPS_GEMM_F32 : SPARK_OPS_GEMM,(N + OPS_GEMM_OUTPUTS - 1u) / OPS_GEMM_OUTPUTS,
 			(params->rows + OPS_GEMM_ROWS - 1u) / OPS_GEMM_ROWS,1u,128u,params,sizeof(*params),bindings,3u));
-	if ( params->rows > SPARK_OPS_GEMV_MAX_ROWS )
+	if ( gemv == 0u )
 		return(OpsLinearRows(ops,queue,bindings,params));
 	for ( done = 0u; status == SPARK_STATUS_OK && done < params->rows; done += chunk.rows )
 	{
 		const uint32_t left = params->rows - done;
 		chunk = *params;
-		chunk.rows = left >= 2u ? 2u : 1u;
+		chunk.rows = left >= SPARK_OPS_GEMV_PASS_ROWS ? SPARK_OPS_GEMV_PASS_ROWS : left >= 4u ? 4u : left >= 2u ? 2u : 1u;
 		bindings[0] = OpsBind(SparkTensorSlice(x,(uint64_t)done * params->input_stride * sizeof(uint16_t),
 			OpsRowsBytes(chunk.rows,params->input_stride,input_width,2u)),SPARK_DEVICE_BIND_READ);
 		bindings[2] = OpsBind(SparkTensorSlice(y,(uint64_t)done * params->output_stride * element,OpsRowsBytes(chunk.rows,params->output_stride,N,element)),
 			SPARK_DEVICE_BIND_WRITE);
-		status = OpsLaunch(ops,queue,OpsGemvKernel(params,chunk.rows),(N + OPS_GEMV_OUTPUTS_PER_GROUP - 1u) / OPS_GEMV_OUTPUTS_PER_GROUP,1u,1u,128u,
-			&chunk,sizeof(chunk),bindings,3u);
+		const uint32_t outputs = SPARK_GEMV_ROW_OUTPUTS(chunk.rows);
+		status = OpsLaunch(ops,queue,OpsGemvKernel(params,chunk.rows),(N + outputs - 1u) / outputs,1u,1u,128u,&chunk,sizeof(chunk),bindings,3u);
 	}
 	return(status);
 }
@@ -552,7 +557,7 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 		if ( host_positions[row] + 1u > longest )
 			longest = host_positions[row] + 1u;
 	}
-	decode = widest <= OPS_DECODE_ROWS_PER_SEQUENCE ? 1u : 0u;
+	decode = widest <= OPS_DECODE_ROWS_PER_SEQUENCE || params->row_exact != 0u ? 1u : 0u;
 	launch.partition_keys = decode != 0u ? OPS_DECODE_PARTITION_KEYS : OPS_PREFILL_PARTITION_KEYS;
 	launch.partitions = (longest + launch.partition_keys - 1u) / launch.partition_keys;
 	launch.row_offset = 0u;

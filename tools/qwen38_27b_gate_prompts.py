@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Build the Metal numerics gate prompts for Qwen3.8-27B from files in this tree.
+"""Build the Metal gate prompts for Qwen3.8-27B from files in this tree.
 
 Each prompt is one chat turn, <|im_start|>user ... <|im_end|> followed by the
 assistant header with an empty think block, in the same token framing as
 qualification/qwen38_27b/bench_prompts_tp1.json. The user text is an
-instruction followed by the start of a repository file, tokenized with the
-checkpoint's tokenizer.json by build/sparkpipe_tokenize_prompt and cut to the
-target length. The output records every source path, its sha256 and the token
-counts, so the same prompts can be rebuilt from the same revision.
+instruction followed by a repository file, tokenized with the checkpoint's
+tokenizer.json by build/sparkpipe_tokenize_prompt. The numerics set cuts each
+file to a target length; the speculation set holds a whole-file rewrite and a
+prose request with no file. The output records every source path, its sha256
+and the token counts, so the same prompts can be rebuilt from the same
+revision.
 
-  qwen38_27b_gate_prompts.py --tokenizer TOKENIZER_JSON --output PROMPTS_JSON
+  qwen38_27b_gate_prompts.py --tokenizer TOKENIZER_JSON --output PROMPTS_JSON [--set numerics|speculation]
 """
 
 import argparse
@@ -31,6 +33,12 @@ PROMPTS = (
     ("code", "inference/kernels/linear_attn.cuh", "Review this CUDA header. Explain what it does and name one risk in it.\n\n", 1800),
     ("korean", "site/index-ko.html", "다음 글을 세 문장으로 요약해 주세요.\n\n", 700),
     ("rules", "sparkpipe_invariants.md", "Read these engineering rules, then say which two matter most for a new driver and why.\n\n", 2040),
+)
+SPECULATION = (
+    ("rewrite", "tools/token_prompts.c", "Rewrite this C file in full. Rename SparkTokenPrompt to SparkPromptTokens everywhere and change nothing "
+                                         "else. Output only the file.\n\n", 0),
+    ("prose", None, "Write a short essay, about four hundred words, on why lighthouses were built where they were and what their keepers' "
+                    "days were like.", 0),
 )
 
 
@@ -60,18 +68,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--tokenizer", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--set", choices=("numerics", "speculation"), default="numerics")
     arguments = parser.parse_args()
     if not TOKENIZER_TOOL.is_file():
         raise SystemExit(f"build {TOKENIZER_TOOL.relative_to(ROOT)} first (make {TOKENIZER_TOOL.relative_to(ROOT)})")
     prompts = []
-    for name, source, instruction, target in PROMPTS:
-        path = ROOT / source
-        body = tokenize(arguments.tokenizer, instruction + plain_text(path))
-        keep = target - len(OPEN) - len(CLOSE)
+    for name, source, instruction, target in PROMPTS if arguments.set == "numerics" else SPECULATION:
+        path = ROOT / source if source else None
+        body = tokenize(arguments.tokenizer, instruction + (plain_text(path) if path else ""))
+        keep = target - len(OPEN) - len(CLOSE) if target else len(body)
         if len(body) < keep:
             raise SystemExit(f"{source} yields {len(body)} tokens, fewer than the {keep} the prompt needs")
         tokens = OPEN + body[:keep] + CLOSE
-        prompts.append({"name": name, "source": source, "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        prompts.append({"name": name, "source": source, "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest() if path else None,
                         "instruction": instruction, "tokens": len(tokens), "prompt_token_ids": tokens})
         print(f"{name}: {len(tokens)} tokens from {source}")
     document = {"tokenizer_sha256": hashlib.sha256(arguments.tokenizer.read_bytes()).hexdigest(),
