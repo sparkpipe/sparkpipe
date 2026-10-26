@@ -72,7 +72,8 @@ METAL_KERNEL_UNITS := inference/kernels/metal/norm.metal inference/kernels/metal
 METAL_KERNEL_INCLUDES := inference/kernels/metal/common.metal inference/kernels/metal/kernel_params.h
 METAL_KERNEL_LIBRARY := $(DEVICE_RUNTIME_DIR)/sparkpipe_kernels.metallib
 METAL_TEST_KERNEL_LIBRARY := build/metal/test_device_kernels.metallib
-METAL_FLAGS := -std=metal3.2 -O3 -fno-fast-math -Wall -Werror -I.
+METAL_FLAGS := -std=metal4.0 -O3 -fno-fast-math -Wall -Werror -I.
+METAL_TEST_FLAGS := -std=metal3.2 -O3 -fno-fast-math -Wall -Werror -I.
 METAL_TOOLCHAIN := $(if $(filter Darwin,$(UNAME_S)),$(shell xcrun --find metal 2>/dev/null))
 ifeq ($(UNAME_S),Darwin)
 DEVICE_LIBRARY_NAME_FLAGS = -install_name @rpath/$(notdir $@)
@@ -1303,6 +1304,8 @@ $(METAL_KERNEL_LIBRARY): $(addprefix build/metal/,$(METAL_KERNEL_UNITS:.metal=.a
 	@mkdir -p $(dir $@)
 	xcrun -sdk macosx metallib $^ -o $@
 
+build/metal/tests/device_contract_kernels.air: METAL_FLAGS := $(METAL_TEST_FLAGS)
+
 $(METAL_TEST_KERNEL_LIBRARY): build/metal/tests/device_contract_kernels.air | build
 	xcrun -sdk macosx metallib $^ -o $@
 else
@@ -1333,6 +1336,9 @@ build/qwen38_27b_metal_run: tools/qwen38_27b_metal_run.c tools/token_prompts.c $
 
 build/qwen38_27b_reference: tools/qwen38_27b_reference.c tools/token_prompts.c runtime/json.c runtime/filesystem.c | build
 	@if [ "$(UNAME_S)" = Darwin ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fblocks -DACCELERATE_NEW_LAPACK tools/qwen38_27b_reference.c tools/token_prompts.c runtime/json.c runtime/filesystem.c -framework Accelerate $(LDLIBS) -lm -o $@; else echo "SKIP qwen38_27b_reference (it uses the Accelerate BLAS)"; fi
+
+build/device_bandwidth: tools/device_bandwidth.c $(DEVICE_OPS_SOURCES) $(DEVICE_OPS_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) tools/device_bandwidth.c $(DEVICE_OPS_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP device_bandwidth (no Metal device or kernel library)"; fi
 
 build/logit_compare: tools/logit_compare.c tools/token_prompts.c runtime/json.c runtime/filesystem.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) tools/logit_compare.c tools/token_prompts.c runtime/json.c runtime/filesystem.c $(LDLIBS) -lm -o $@

@@ -10,7 +10,8 @@
 #define OPS_PREFILL_PARTITION_KEYS 1024u
 #define OPS_PREFILL_ROWS_PER_GROUP 8u
 #define OPS_GEMV_OUTPUTS_PER_GROUP 16u
-#define OPS_GEMM_TILE 64u
+#define OPS_GEMM_ROWS 128u
+#define OPS_GEMM_OUTPUTS 64u
 #define OPS_LIBRARY_NAME "sparkpipe_kernels.metallib"
 
 static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
@@ -33,7 +34,6 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_gemv_gated_r8",
 	"spark_gemm",
 	"spark_gemm_f32",
-	"spark_gemm_gated",
 	"spark_causal_conv_silu",
 	"spark_gated_delta_prepare",
 	"spark_gated_delta_rule",
@@ -327,8 +327,8 @@ SparkStatus SparkOpsLinear(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTe
 	SparkStatus status;
 	uint32_t done;
 	if ( params->rows == 0u || K == 0u || N == 0u || K % 8u != 0u || params->input_stride % 8u != 0u || params->input_stride < input_width ||
-		(params->rows > SPARK_OPS_GEMV_MAX_ROWS && K % 32u != 0u) || (params->output_f32 != 0u && params->gated_input != 0u) )
-		return(OpsRefuse("linear","an input width that is a multiple of 8 (32 above 8 rows) and a stride that covers it are required"));
+		(params->rows > SPARK_OPS_GEMV_MAX_ROWS && (K % 32u != 0u || params->gated_input != 0u)) || (params->output_f32 != 0u && params->gated_input != 0u) )
+		return(OpsRefuse("linear","an input width that is a multiple of 8 (32 above 8 rows), a stride that covers it, and a gated input only at 8 rows or fewer"));
 	status = OpsNeed("linear","input",x,OpsRowsBytes(params->rows,params->input_stride,input_width,2u));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("linear","weight",w,(uint64_t)N * K * 2u);
@@ -341,8 +341,8 @@ SparkStatus SparkOpsLinear(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTe
 	{
 		bindings[0] = OpsBind(x,SPARK_DEVICE_BIND_READ);
 		bindings[2] = OpsBind(y,SPARK_DEVICE_BIND_WRITE);
-		return(OpsLaunch(ops,queue,params->gated_input != 0u ? SPARK_OPS_GEMM_GATED : params->output_f32 != 0u ? SPARK_OPS_GEMM_F32 : SPARK_OPS_GEMM,
-			(N + OPS_GEMM_TILE - 1u) / OPS_GEMM_TILE,(params->rows + OPS_GEMM_TILE - 1u) / OPS_GEMM_TILE,1u,128u,params,sizeof(*params),bindings,3u));
+		return(OpsLaunch(ops,queue,params->output_f32 != 0u ? SPARK_OPS_GEMM_F32 : SPARK_OPS_GEMM,(N + OPS_GEMM_OUTPUTS - 1u) / OPS_GEMM_OUTPUTS,
+			(params->rows + OPS_GEMM_ROWS - 1u) / OPS_GEMM_ROWS,1u,128u,params,sizeof(*params),bindings,3u));
 	}
 	for ( done = 0u; status == SPARK_STATUS_OK && done < params->rows; done += chunk.rows )
 	{

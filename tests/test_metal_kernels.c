@@ -1130,7 +1130,8 @@ int main(int argc, char **argv)
 	TestLinear(512u,5120u,96u,0u,0u,UINT64_MAX);
 	TestLinear(512u,6144u,5120u,0u,0u,20000u);
 	TestLinear(512u,17408u,5120u,0u,0u,20000u);
-	TestLinear(77u,17408u,5120u,0u,1u,20000u);
+	TestLinear(77u,17408u,5120u,0u,0u,20000u);
+	TestLinear(2048u,5120u,34816u,0u,0u,20000u);
 	TestLinear(64u,5120u,248320u,1u,0u,20000u);
 	TestCausalConv();
 	TestGatedDelta();
