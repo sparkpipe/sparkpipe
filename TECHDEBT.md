@@ -1138,6 +1138,19 @@ stop while another loads), and per-engine continuous batching at
 MAXBATCHSIZE=128 with per-request completion. The gaps below are required
 for seamless production multi-model.
 
+- Two lanes in two processes on one GPU stall each other. Each process's
+  collective waits spin on the GPU, and the GPU time-slices between
+  processes, so a 1024 x 7168 reduce-scatter round that takes 1.47 ms on one
+  lane takes 10.97 ms on each of two concurrent lanes, for the production
+  pipelined reduce-scatter and for pair-first alike. Under a per-user MPS
+  daemon the two lanes take 2.53 ms (pipelined) and 2.12 ms (pair-first)
+  per round, and one lane is unchanged at 1.47 ms (2026-10-26, 16 ranks,
+  interleaved plain and MPS arms, no AER). The mesh is not the cause: the
+  nodes logged no repairs and no completion errors. Fix by starting MPS with
+  each lane launch (runtime only; one client's fault ends every client of
+  that daemon) or by hosting the lanes in one process, and gate it with two
+  concurrent lanes of one model and with two co-resident models.
+
 - Lane-priority over-subscription policy: the explicit `EVICT` request
   enforces lane order (`SparkWeightdServerOnEvict` in
   `runtime/spark_weightd.c` denies a requester lane that is not below the
