@@ -388,6 +388,25 @@
    "memory_max": "28G",
    "tokenizer_sha256": "899c0b89971cd5c2a944361bf7193db7616eb6d761c982800d80afbaaacf0fd4",
    "text_prompt_prefix_token_ids": []
+  },
+  "solar-open-2": {
+   "launcher": "stage_lane",
+   "model": "solar_open2",
+   "lane": 4,
+   "runtime_root": "/home/{host}/stage-lanes/solar_open2/lane4/root",
+   "weightd_socket": "/tmp/spark_weightd.sock",
+   "sequences": 16,
+   "rows": 2048,
+   "context_tokens": 262144,
+   "kv_physical_pages": 32768,
+   "kv_logical_pages": 65536,
+   "kv_backing_bytes": 8589934592,
+   "kv_snapshot_bytes": 8589934592,
+   "state_budget_bytes": 5368709120,
+   "expert_pool_bytes": 268435456,
+   "memory_max": "16G",
+   "tokenizer_sha256": "PENDING",
+   "text_prompt_prefix_token_ids": []
   }
  }
 }

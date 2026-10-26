@@ -677,7 +677,7 @@ struct QwenHybridModel
 		status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, state->attn_rows, state->attn_local, state->attn_gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		LmRankMajorRowsKernel<<<dim3(Blocks(S::kQkvWidth),rows), QH_THREADS, 0, stream>>>(state->attn_gathered, state->attn_full, rows, state->attn_rows, degree);
+		LmRankMajorRowsKernel<QH_THREADS><<<dim3(Blocks(S::kQkvWidth),rows), QH_THREADS, 0, stream>>>(state->attn_gathered, state->attn_full, rows, state->attn_rows, degree);
 		QwenHybridSplitAttentionKernel<G><<<dim3(Blocks(S::kQkvWidth),rows), QH_THREADS, 0, stream>>>(state->attn_full, state->attn_query,
 			state->attn_gate, state->attn_key, state->attn_value);
 		LM_LAUNCH((LmHeadRmsNormKernel<QH_THREADS,float>), dim3(G::kHeads,rows), QH_THREADS, 0, stream,
@@ -713,7 +713,7 @@ struct QwenHybridModel
 			return status;
 		if ( LmGqaShardMergeLaunch<G::kHeadDim>(state->received, stride, degree, G::kHeads, state->tp_rank, state->merged, rows, stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmSliceColumnsKernel<<<dim3(Blocks(state->attn_width),rows), QH_THREADS, 0, stream>>>(state->attn_gate, state->merged_gate,
+		LmSliceColumnsKernel<QH_THREADS><<<dim3(Blocks(state->attn_width),rows), QH_THREADS, 0, stream>>>(state->attn_gate, state->merged_gate,
 			S::kQWidth, state->tp_rank * state->attn_width, state->attn_width);
 		LM_LAUNCH((LmOutputGateKernel<QH_THREADS>), rows, QH_THREADS, 0, stream, state->merged, state->merged_gate, state->attn_width);
 		if ( Launched() != SPARK_STATUS_OK ||

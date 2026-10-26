@@ -402,11 +402,11 @@ struct LingModel
 		status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, S::kGqaRankFused, state->gqa_local, state->gqa_gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		LmRankMajorRowsKernel<<<dim3(Blocks(S::kGqaFused), rows), LG_THREADS, 0, stream>>>(state->gqa_gathered, state->gqa_full, rows, S::kGqaRankFused,
+		LmRankMajorRowsKernel<LG_THREADS><<<dim3(Blocks(S::kGqaFused), rows), LG_THREADS, 0, stream>>>(state->gqa_gathered, state->gqa_full, rows, S::kGqaRankFused,
 			degree);
-		LmSliceColumnsKernel<<<dim3(Blocks(S::kGqaWidth), rows), LG_THREADS, 0, stream>>>(state->gqa_full, state->gqa_query, S::kGqaFused, 0u,
+		LmSliceColumnsKernel<LG_THREADS><<<dim3(Blocks(S::kGqaWidth), rows), LG_THREADS, 0, stream>>>(state->gqa_full, state->gqa_query, S::kGqaFused, 0u,
 			S::kGqaWidth);
-		LmSliceColumnsKernel<<<dim3(Blocks(S::kSlot), rows), LG_THREADS, 0, stream>>>(state->gqa_full, state->gqa_slot, S::kGqaFused, S::kGqaWidth,
+		LmSliceColumnsKernel<LG_THREADS><<<dim3(Blocks(S::kSlot), rows), LG_THREADS, 0, stream>>>(state->gqa_full, state->gqa_slot, S::kGqaFused, S::kGqaWidth,
 			S::kSlot);
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::Kv,LG_THREADS>), rows, LG_THREADS, 0, stream, *view, state->gqa_slot, step->sequence_of_row,
 			step->positions, rows, S::kSlot);
