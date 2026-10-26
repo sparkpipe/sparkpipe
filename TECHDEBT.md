@@ -1052,6 +1052,10 @@ and the multidev docs on 2026-09-28. Line numbers are in
   assume 8 lanes, and `lane_assignments.json` gives lane 0 to a GLM development
   lane while production GLM runs on lane 6. Replace both with the lane
   allocator of lane B04 (TD287/TD288).
+- The Ceph canary (`tools/hub/ceph_canary.py`) only records problems on the
+  hub. They reach a person only while a session runs its `watch` command
+  from the workstation. Nothing sends mail or a push on its own, and the
+  hub's own outage shows only as the watcher's stale-state exit.
 
 ## Hardware independence
 

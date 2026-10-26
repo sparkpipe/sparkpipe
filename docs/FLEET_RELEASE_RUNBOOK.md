@@ -412,14 +412,21 @@ Since 2026-10-08 one model holds the fleet at a time. The hub runs:
   `deployment/hub/chat_frontend.json`) on `127.0.0.1:8433`, unit
   `sparkpipe-chat` from `~/sparkpipe-chat`;
 - LiteLLM on `:4000`, unit `sparkpipe-litellm`, configured from
-  `config/litellm-config.yaml`.
+  `config/litellm-config.yaml`;
+- the Ceph canary (`tools/hub/ceph_canary.py`, config
+  `deployment/hub/ceph_canary.json`, unit `sparkpipe-ceph-canary` from
+  `~/sparkpipe-ceph-canary`, installed and enabled on its own), which
+  probes CephFS on the hub and every Spark
+  ([INCIDENT_RECOVERY_PLAYBOOK.md](INCIDENT_RECOVERY_PLAYBOOK.md#ceph-canary)).
 
 [LITELLM_FRONTEND.md](LITELLM_FRONTEND.md) describes the APIs and the swap
 order. `tools/hub/install_units.sh` installs the versioned units in
-`tools/hub/systemd/` (the chat layer, LiteLLM and the DMA-guard listener)
-into `~/.config/systemd/user` and reloads; `--enable` also enables them and
-refuses if linger is off. The `sparkpipe-swap` unit is not versioned there
-yet. The engine APIs have no persistent unit: the
+`tools/hub/systemd/` (the chat layer, LiteLLM, the DMA-guard listener and
+the Ceph canary) into `~/.config/systemd/user` and reloads; `--enable` also
+enables them and refuses if linger is off. The chat layer and LiteLLM run as
+transient units today, so enabling their versioned units would start a
+second copy at the next boot. The `sparkpipe-swap` unit is not versioned
+there yet. The engine APIs have no persistent unit: the
 controller owns their lifecycle, and a release installs into their
 directories only while the fleet is down (section 4.2).
 

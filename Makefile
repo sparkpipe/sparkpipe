@@ -625,6 +625,7 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_classes.py \
 	tests/test_litellm_queue_settings.py \
 	tests/test_fleet_gateway.py \
+	tests/test_ceph_canary.py \
 	tests/test_open_webui_fleet_tool.py \
 	tests/test_chat_memory_core.py \
 	tests/test_chat_memory_session.py \
