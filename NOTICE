@@ -82,6 +82,19 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+Files: model_contracts/references/modeling_exaone_moe.py
+       model_contracts/references/configuration_exaone_moe.py
+Upstream: https://github.com/nuxlear/transformers
+Commit: 969f8bdfc73d7d8bb0df1b426e057d80a1adf501
+License: Apache-2.0
+
+model_contracts/references/modeling_exaone_moe.py and
+configuration_exaone_moe.py are unmodified copies of the EXAONE MoE modeling
+and configuration files of LG AI Research's Transformers fork, the fork the
+K-EXAONE 2.0 model card names, at that commit, kept as semantics ground truth.
+Copyright 2026 The LG AI Research and HuggingFace Inc. team.
+Licensed under the Apache License, Version 2.0 (LICENSE).
+
 Files: model_contracts/references/modeling_ling_bailing_moe_v3.py
 Upstream: https://huggingface.co/inclusionAI/Ling-3.0-flash
 Commit: e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3
