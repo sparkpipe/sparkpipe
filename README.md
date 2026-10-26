@@ -385,7 +385,11 @@ as `(address, space, residency)`. The spaces are device-private,
 coherent-shared, host-pinned, host-pageable and file-backed. Copies are
 elided when both ends are coherent (GB10) and staged when they are not
 (discrete GPUs). Weights, KV pages and collective buffers are all memory
-objects with residency transitions.
+objects with residency transitions. Kernels launch through the same layer:
+a backend loads a kernel library and launches kernels by name with
+buffer-range bindings, which the layer checks against the kernel's limits
+and keeps alive until the work that reads them completes
+([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)).
 
 **Topology model.** Topology is described as ranks inside islands joined by
 link classes: shared memory, peer memory, fabric RDMA and TCP. Collectives
@@ -423,8 +427,10 @@ other. Management networks never carry inference traffic.
 fully meshed islands of four, and to the Sparks over a TCP bridge. No
 tensor-parallel collective crosses hardware classes: a mixed plan hands over
 the KV cache after prefill, or each token's residual stream at a pipeline
-stage boundary. The Studios need the Metal backend. See
-[`docs/HARDWARE_TOPOLOGY.md`](docs/HARDWARE_TOPOLOGY.md#mac-studio-pool).
+stage boundary. The Studios run the Metal backend; a model that fits one
+Studio runs on its single-device stage runner. See
+[`docs/HARDWARE_TOPOLOGY.md`](docs/HARDWARE_TOPOLOGY.md#mac-studio-pool) and
+[`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md).
 
 **Topology generation.** One deployment JSON generates the pinned
 interfaces, peers and topology tables for every rank. Startup rejects

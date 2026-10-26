@@ -1102,7 +1102,13 @@ int main(int argc, char **argv)
 	}
 	if ( receipt != 0 )
 		fputs("[\n",receipt);
-	if ( SparkDeviceInitialize(0) != SPARK_STATUS_OK || SparkDeviceQueueCreate(&queue,"kernel tests") != SPARK_STATUS_OK ||
+	if ( SparkDeviceInitialize(0) == SPARK_STATUS_OK && strcmp(SparkDeviceGetProperties()->target,"metal.apple10") != 0 )
+	{
+		printf("SKIP test_metal_kernels (the kernel library needs an Apple family 10 GPU; this device is %s)\n",SparkDeviceGetProperties()->target);
+		SparkDeviceShutdown();
+		return(0);
+	}
+	if ( SparkDeviceGetProperties() == 0 || SparkDeviceQueueCreate(&queue,"kernel tests") != SPARK_STATUS_OK ||
 		SparkDeviceOpsOpen(&ops,SPARK_KERNEL_LIBRARY) != SPARK_STATUS_OK )
 	{
 		printf("FAIL device setup: %s\n",SparkDeviceLastError()->text);

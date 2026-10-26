@@ -22,11 +22,13 @@ def main():
         print(built.stdout + built.stderr)
         return 1
     if platform.system() != "Darwin" or not BINARY.is_file():
-        print("SKIP test_metal_kernels (Metal needs macOS and its toolchain)")
+        print("SKIP test_metal_kernels (Metal needs macOS and a Metal 4.0 toolchain)")
         return 0
     arguments = [str(BINARY)] + sys.argv[1:]
     result = subprocess.run(arguments, capture_output=True, text=True, timeout=3600)
     print(result.stdout + result.stderr, end="")
+    if result.returncode == 0 and result.stdout.startswith("SKIP test_metal_kernels"):
+        return 0
     return 0 if result.returncode == 0 and "PASS metal kernels" in result.stdout else 1
 
 

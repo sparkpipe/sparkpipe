@@ -75,6 +75,7 @@ METAL_TEST_KERNEL_LIBRARY := build/metal/test_device_kernels.metallib
 METAL_FLAGS := -std=metal4.0 -O3 -fno-fast-math -Wall -Werror -I.
 METAL_TEST_FLAGS := -std=metal3.2 -O3 -fno-fast-math -Wall -Werror -I.
 METAL_TOOLCHAIN := $(if $(filter Darwin,$(UNAME_S)),$(shell xcrun --find metal 2>/dev/null))
+METAL4_TOOLCHAIN := $(if $(METAL_TOOLCHAIN),$(shell printf 'kernel void probe(){}' | xcrun -sdk macosx metal -std=metal4.0 -x metal -c - -o /dev/null 2>/dev/null && echo metal4))
 ifeq ($(UNAME_S),Darwin)
 DEVICE_LIBRARY_NAME_FLAGS = -install_name @rpath/$(notdir $@)
 DEVICE_RPATH_FLAGS := -Wl,-rpath,@loader_path/runtime_libs
@@ -391,6 +392,7 @@ PYTHON_TESTS := \
 	tests/test_device_neutral.py \
 	tests/test_device_contract_cuda.py \
 	tests/test_device_contract_metal.py \
+	tests/test_metal_kernels.py \
 	tests/test_dry_law.py \
 	tests/test_family_defines_single_source.py \
 	tests/test_no_source_comments.py \
@@ -1300,9 +1302,14 @@ build/metal/%.air: %.metal $(METAL_KERNEL_INCLUDES) | build
 	@mkdir -p $(dir $@)
 	xcrun -sdk macosx metal $(METAL_FLAGS) -c $< -o $@
 
+ifneq ($(METAL4_TOOLCHAIN),)
 $(METAL_KERNEL_LIBRARY): $(addprefix build/metal/,$(METAL_KERNEL_UNITS:.metal=.air)) | build
 	@mkdir -p $(dir $@)
 	xcrun -sdk macosx metallib $^ -o $@
+else
+$(METAL_KERNEL_LIBRARY):
+	@echo "SKIP $(notdir $@) (the Metal toolchain on this host has no Metal 4.0)"
+endif
 
 build/metal/tests/device_contract_kernels.air: METAL_FLAGS := $(METAL_TEST_FLAGS)
 
