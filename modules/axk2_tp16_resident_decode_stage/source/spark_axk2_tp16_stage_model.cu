@@ -48,7 +48,7 @@ struct Axk2Geometry : GlmDefaults
 	static constexpr bool kIndexRelu = true;
 	static constexpr uint32_t kExpertGroups = 8u;
 	static constexpr uint32_t kTopGroups = 4u;
-	static constexpr bool kGroupMaskZero = true;
+	static constexpr bool kGroupMaskZero = false;
 	static constexpr float kRopeFactor = 2.0f;
 	static constexpr float kRopeBetaFast = 32.0f;
 	static constexpr float kRopeBetaSlow = 1.0f;
