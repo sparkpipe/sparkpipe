@@ -858,7 +858,8 @@ struct GemmaModel
 				SparkNamedPackConfigU32(&state->pack, "expert_first", &state->expert_first) != SPARK_STATUS_OK ||
 				SparkNamedPackConfigU32(&state->pack, "top_k", &top_k) != SPARK_STATUS_OK )
 				SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-			if ( experts != G::kExperts || local != G::kLocalExperts || top_k != G::kTopK || state->expert_first != rank * G::kLocalExperts )
+			if ( experts != G::kExperts || local != G::kLocalExperts || top_k != G::kTopK ||
+				state->expert_first != (G::kLocalExperts == G::kExperts ? 0u : rank * G::kLocalExperts) )
 			{
 				fprintf(stderr, "%s: pack experts %u local %u first %u top_k %u do not match the model\n", G::Tag(), experts, local,
 					state->expert_first, top_k);

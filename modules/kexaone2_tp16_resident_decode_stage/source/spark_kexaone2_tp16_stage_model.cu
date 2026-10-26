@@ -1,6 +1,10 @@
 #include "sparkpipe/spark_kexaone2_tp16_stage_model.h"
 #include "gemma4_stage.cuh"
 
+#ifndef KEXAONE2_EXPERT_ROWS
+#error "KEXAONE2_EXPERT_ROWS selects the expert layout: 1 shards every expert by rows, 0 gives each rank whole experts"
+#endif
+
 struct Kexaone2Geometry : GemmaDefaults
 {
 	static constexpr uint32_t kTpDegree = SPARK_KEXAONE2_TP16_STAGE_TP_DEGREE;
@@ -32,9 +36,9 @@ struct Kexaone2Geometry : GemmaDefaults
 	static constexpr bool kLayerScalar = false;
 	static constexpr bool kMoe = true;
 	static constexpr uint32_t kExperts = 256u;
-	static constexpr uint32_t kLocalExperts = kExperts / kTpDegree;
+	static constexpr uint32_t kLocalExperts = KEXAONE2_EXPERT_ROWS ? kExperts : kExperts / kTpDegree;
 	static constexpr uint32_t kTopK = 8u;
-	static constexpr uint32_t kMoeInter = 2048u;
+	static constexpr uint32_t kMoeInter = KEXAONE2_EXPERT_ROWS ? 2048u / kTpDegree : 2048u;
 	static constexpr bool kPreNorm = true;
 	static constexpr bool kSigmoidRouter = true;
 	static constexpr bool kRouterFloat = true;

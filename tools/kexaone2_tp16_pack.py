@@ -23,7 +23,9 @@ Rank r holds, all bf16 unless noted:
                       expert_bias = mlp.e_score_correction_bias f32 [256]
                       replicated, experts [16r, 16r+16) as moe_w1
                       (gate_proj) and moe_w3 (up_proj) [16, 2048, H] and
-                      moe_w2 (down_proj) [16, H, 2048]
+                      moe_w2 (down_proj) [16, H, 2048]; with --expert-layout
+                      rows every expert's intermediate rows [128r, +128)
+                      instead, [256, 128, H] and [256, H, 128]
 
 The MTP layer (mtp.*) is the drafter's and is not packed here. The packer
 checks config.json against the frozen contract, every tensor's dtype and
@@ -120,7 +122,7 @@ def float32(checkpoint, name, shape):
         return np.frombuffer(handle.read(end - begin), dtype=np.float32).reshape(shape)
 
 
-def pack_layer(checkpoint, packs, config, layer):
+def pack_layer(checkpoint, packs, config, layer, expert_rows):
     hidden = config["hidden_size"]
     p = f"{PREFIX}layers.{layer}."
     name = f"layers.{layer}."
@@ -156,6 +158,15 @@ def pack_layer(checkpoint, packs, config, layer):
     local = experts // TP
     packs.replicated(name + "router_proj", checkpoint.array(p + "mlp.gate.weight", (experts, hidden)), "bf16")
     packs.replicated(name + "expert_bias", float32(checkpoint, p + "mlp.e_score_correction_bias", (experts,)), "f32")
+    if expert_rows:
+        width = expert_inter // TP
+        for tensor, source, shape in (("moe_w1", "gate_proj", (expert_inter, hidden)), ("moe_w3", "up_proj", (expert_inter, hidden)),
+                                      ("moe_w2", "down_proj", (hidden, expert_inter))):
+            matrices = [checkpoint.array(f"{p}mlp.experts.{expert}.{source}.weight", shape) for expert in range(experts)]
+            for rank in packs.ranks:
+                window = slice(rank * width, (rank + 1) * width)
+                packs.add(rank, name + tensor, np.stack([matrix[:, window] if tensor == "moe_w2" else matrix[window] for matrix in matrices]), "bf16")
+        return
     for rank in packs.ranks:
         owned = range(rank * local, (rank + 1) * local)
         for tensor, source, shape in (("moe_w1", "gate_proj", (expert_inter, hidden)), ("moe_w3", "up_proj", (expert_inter, hidden)),
@@ -175,16 +186,16 @@ def seal(final, payload, fmt, settings, manifest):
     print(f"{final.name} {final.stat().st_size} {digest.hexdigest()}", flush=True)
 
 
-def finish(packs, config, revision, contract_sha256, defer):
+def finish(packs, config, revision, contract_sha256, defer, expert_rows):
     vocab_rows = config["vocab_size"] // TP
-    local = config["num_experts"] // TP
+    local = config["num_experts"] if expert_rows else config["num_experts"] // TP
     for rank in packs.ranks:
         packs.writers[rank].close()
         window = ffn_window(config["intermediate_size"], rank)
         settings = {"model": "k_exaone_2_0", "tp_degree": TP, "tp_rank": rank, "hidden": config["hidden_size"],
                     "layers": config["num_hidden_layers"], "vocab": config["vocab_size"], "vocab_first": rank * vocab_rows,
                     "vocab_rows": vocab_rows, "ffn_rows": window.stop - window.start, "sliding_window": 128, "wide_window_layer": 1,
-                    "wide_window": 4096, "experts": config["num_experts"], "local_experts": local, "expert_first": rank * local,
+                    "wide_window": 4096, "experts": config["num_experts"], "local_experts": local, "expert_first": 0 if expert_rows else rank * local, "expert_layout": "rows" if expert_rows else "whole",
                     "top_k": config["num_experts_per_tok"]}
         fmt = {"container": "spark_named_pack", "version": NAMED_PACK_VERSION, "alignment": NAMED_PACK_ALIGN,
                "linear_codec": "bf16", "attn_qkv_layout": "fused_windows", "revision": revision, "contract_sha256": contract_sha256}
@@ -205,6 +216,7 @@ def main():
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--contract", type=Path)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--expert-layout", choices=("whole", "rows"), default="whole")
     parser.add_argument("--ranks", default=",".join(str(rank) for rank in range(TP)))
     args = parser.parse_args()
     if args.assemble is not None:
@@ -240,9 +252,9 @@ def main():
         packs.add(rank, "head", head[rank * vocab_rows:(rank + 1) * vocab_rows], "bf16")
     packs.replicated("head_norm", checkpoint.f32(PREFIX + "norm.weight", (hidden,)), "f32")
     for layer in range(config["num_hidden_layers"]):
-        pack_layer(checkpoint, packs, config, layer)
+        pack_layer(checkpoint, packs, config, layer, args.expert_layout == "rows")
         print(f"layer {layer} packed", flush=True)
-    finish(packs, config, contract["revision"], hashlib.sha256(contract_bytes).hexdigest(), args.defer_assembly)
+    finish(packs, config, contract["revision"], hashlib.sha256(contract_bytes).hexdigest(), args.defer_assembly, args.expert_layout == "rows")
     return 0
 
 
