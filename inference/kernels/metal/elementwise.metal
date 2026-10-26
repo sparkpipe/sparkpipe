@@ -84,33 +84,25 @@ kernel void spark_route_topk(constant SparkRouteParams &p [[buffer(0)]], device 
 	for ( uint i = tid; i < p.experts; i += threads )
 		probability[i] /= total;
 	threadgroup_barrier(mem_flags::mem_threadgroup);
+	threadgroup uint chosen[SPARK_ROUTE_MAX_TOP_K];
+	for ( uint i = tid; i < p.experts; i += threads )
+	{
+		uint rank = 0u;
+		for ( uint j = 0u; j < p.experts; j++ )
+			rank += probability[j] > probability[i] || (probability[j] == probability[i] && j < i) ? 1u : 0u;
+		if ( rank < p.top_k )
+			chosen[rank] = i;
+	}
+	threadgroup_barrier(mem_flags::mem_threadgroup);
 	if ( tid != 0u )
 		return;
-	uint chosen[SPARK_ROUTE_MAX_TOP_K];
-	float picked[SPARK_ROUTE_MAX_TOP_K], sum = 0.0f;
+	float sum = 0.0f;
 	for ( uint k = 0u; k < p.top_k; k++ )
-	{
-		uint winner = 0u;
-		float value = -INFINITY;
-		for ( uint e = 0u; e < p.experts; e++ )
-		{
-			bool taken = false;
-			for ( uint j = 0u; j < k; j++ )
-				taken = taken || chosen[j] == e;
-			if ( !taken && probability[e] > value )
-			{
-				value = probability[e];
-				winner = e;
-			}
-		}
-		chosen[k] = winner;
-		picked[k] = value;
-		sum += value;
-	}
+		sum += probability[chosen[k]];
 	for ( uint k = 0u; k < p.top_k; k++ )
 	{
 		experts[(ulong)row * p.top_k + k] = chosen[k];
-		weights[(ulong)row * p.top_k + k] = picked[k] / sum * expert_scale[chosen[k]];
+		weights[(ulong)row * p.top_k + k] = probability[chosen[k]] / sum * expert_scale[chosen[k]];
 	}
 }
 

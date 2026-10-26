@@ -1225,16 +1225,29 @@ Metal backend and the single-Studio stage are in
 - The kernel library builds with Metal 4.0 and its prefill GEMM uses the
   Metal 4 tensor operations, so it loads only on Apple family 10 GPUs (M5).
   Another Studio generation needs its own qualified kernel set.
-- Only Qwen3.8-27B has a device model. Each further model is a shape, a
-  tensor list and a layer schedule over the device stage and layer kinds
-  (`inference/runner/device_stage_model.c`, `device_layers.c`), plus a TP1
-  pack and its own gates. The layer kinds cover gated delta, attention with a
-  sigmoid output gate, the SwiGLU FFN and residual RMSNorm; ungated and
-  sliding-window attention, sandwich norms, GeGLU and experts (with expert
-  residency on unified memory) are still to add, each by the first model that
-  needs it. Order: Gemma 4 26B A4B, Gemma 4 31B, Muse Glimmer 30B, MiMo V2.6
-  Flash, Qwen 3.8 Flash Next, each merged before the next starts.
-
+- Two models have device stages, Qwen3.8-27B and Gemma 4 26B A4B; each is a
+  shape, a tensor list and a layer schedule over the device stage and layer
+  kinds (`inference/runner/device_stage_model.c`, `device_layers.c`), plus a
+  TP1 pack and its own gates. Next, one at a time and each merged before the
+  next starts: Gemma 4 31B, Muse Glimmer 30B, MiMo V2.6 Flash, Qwen 3.8
+  Flash Next.
+- Gemma 4 26B A4B on the Studio:
+  - experts run as one GEMV per route (`spark_gemv_routed`): a prefill chunk
+    or a batch reads an expert once for every row routed to it, not once per
+    step. Prefill (1,100 tok/s) and the batch ladder need routes grouped by
+    expert into one skinny or tensor-unit GEMM per expert;
+  - B1 decode runs at about 62% of its 7.6 GB-per-token roofline; the
+    attention layers and the per-layer small kernels (three per-head norms,
+    the KV store, the router norm, top-k and combine) are the rest;
+  - the KV pool holds the full context for the 25 sliding-window layers,
+    which only ever read their last 1,024 positions;
+  - the CUDA stage rounds the experts' tanh GeLU as `0.044715 * g * g * g`
+    and folds the route weight into the activation; the Metal stage and the
+    numpy reference follow the publisher's eager order (cube first, weight
+    after the down projection, BF16 sums in ascending expert order), so the
+    two backends differ by those rounding points;
+  - speculation is not gated for Gemma (it has no recurrent state, so verify
+    frames need no replay, but the exactness run is still to do).
 - Define hardware profiles for one to eight Studios: memory, bandwidth, the
   Thunderbolt 5 island wiring, the bridge to the Sparks, power, and storage.
 - Add Thunderbolt 5 RDMA as a link class. Apple's verbs API (TN3205) offers

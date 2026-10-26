@@ -85,15 +85,19 @@ tensor sizes before each launch.
 | `spark_gather_rows` | embedding rows by id; an id outside the table raises the device error word |
 | `spark_rmsnorm_residual` | `h = bf16(h + r)` written back, then `bf16(rmsnorm(h) * w)` with an FP32 gain |
 | `spark_rmsnorm_gate` | per-head RMSNorm with a BF16 gain and a SiLU output gate read from a fused row |
-| `spark_head_rmsnorm_rope` | per-head RMSNorm with an FP32 gain, then rotary embedding on the head's first dimensions (rotate-half pairs) |
+| `spark_head_rmsnorm_rope` | per-head RMSNorm with an optional FP32 gain, then rotary embedding with rotate-half pairs over the head's first `rope_dimension` dimensions, a table of up to 256 inverse frequencies (a zero frequency leaves its pair as it is), and either one FP32 rotation rounded once or the publisher's eager rounding (`bf16(bf16(x bf16(cos)) + bf16(p bf16(sin)))`) |
+| `spark_rmsnorm_branches` | sandwich norms: `h = bf16(h + bf16(rms(a) w))`, or with two branches `c = bf16(bf16(rms(a) w1) + bf16(rms(b) w2))` and `h = bf16(h + bf16(rms(c) w))`, then optionally `bf16(h * scalar)` |
+| `spark_rmsnorm_scaled` | `bf16(bf16(bf16(rms(x)) s) c)`: a weightless norm, a per-channel scale and a constant, each rounded (an expert router's input) |
 | `spark_gemv_r{1,2,4,8}`, `spark_gemv_f32_r*`, `spark_gemv_gated_r*` | decode projections for one or two rows, and verify frames in passes of up to eight rows: BF16 weights `[N, K]`, 4, 4, 2 and 1 outputs per threadgroup at 1, 2, 4 and 8 rows, the inner dimension split across the threadgroup's four SIMD groups, FP32 accumulation, BF16 or FP32 out, and the gated form that computes `bf16(silu(gate) * up)` from a fused input row |
 | `spark_gemm_rows16`, `spark_gemm_rows32`, `spark_gemm_reduce` | decode projections for 3 to 64 rows on the tensor operations: 128 outputs per threadgroup, the weights staged through threadgroup memory 64 inputs at a time with the next slice prefetched into registers, the inner dimension split so the launch has about 1,024 threadgroups, FP32 partials summed in split order by the reduce kernel |
 | `spark_gemm`, `spark_gemm_f32` | prefill projections on the Metal 4 tensor operations (`matmul2d`, 128 x 64 tiles, FP32 accumulation, relaxed precision off) |
 | `spark_causal_conv_silu` | depthwise causal convolution over a per-sequence window, BF16 sum, SiLU |
 | `spark_gated_delta_prepare`, `spark_gated_delta_rule` | L2-normalised query and key, decay and write strength, then the gated delta rule over FP32 state, one SIMD group per value column |
 | `spark_kv_store_paged` | key and value rows into 64-slot pages through a page table |
-| `spark_attention_decode`, `spark_attention_prefill_blocks`, `spark_attention_combine` | causal grouped-query attention over paged KV, split into key partitions and merged, with the sigmoid output gate; decode walks 128-key partitions one key per SIMD group, prefill computes 32 query rows against 64-key pages on the tensor operations (scores and the FP32 probability-times-value product in `matmul2d`, the online softmax in FP32 between them) |
-| `spark_silu_mul`, `spark_add_rows` | the FFN activation and the final residual add |
+| `spark_attention_{decode,prefill_blocks,combine}_d{256,512}` | causal grouped-query attention over paged KV for 256- and 512-wide heads, split into key partitions and merged, with an optional sliding window (a row sees its last `window` positions) and an optional sigmoid output gate; decode walks 128-key partitions one key per SIMD group, prefill computes 32 (16 for 512-wide heads) query rows against 64-key pages on the tensor operations (scores and the FP32 probability-times-value product in `matmul2d`, the online softmax in FP32 between them) |
+| `spark_silu_mul`, `spark_gelu_tanh_mul`, `spark_add_rows` | the gated activations (`bf16(silu(g) u)`, `bf16(bf16(gelu_tanh(g)) u)` with `SparkMathGeluTanh`) and the final residual add |
+| `spark_route_topk`, `spark_gemv_routed`, `spark_route_combine` | expert routing: softmax over the router's BF16 logits, the top k (lowest index on ties), renormalised and times a per-expert scale; the GEMV of each route's expert on its row (the same per-row arithmetic as `spark_gemv_r1`); and the routes' outputs times their weights, summed in BF16 in ascending expert order |
+| `spark_scale_rows`, `spark_softcap_rows` | a BF16 row scale (an embedding multiplier) and the FP32 logit softcap `cap tanh(z / cap)` (`SparkMathSoftcap`) |
 | `spark_logprob_rows` | argmax (lowest index on ties), log-normaliser and a target's log-probability over FP32 logits |
 | `spark_stream_read` | the streaming-read bandwidth probe |
 
@@ -188,13 +192,19 @@ models' gates are re-run to show their output is unchanged.
 | Layer kind | Shape | Pack tensors (`layers.N.`) |
 | --- | --- | --- |
 | gated delta rule (`SparkDeviceGatedDelta`) | key and value heads and dimensions, convolution taps; recurrent pools 0 (FP32 state) and 1 (BF16 convolution window) | `gdn_qkvz`, `gdn_ba`, `gdn_conv`, `gdn_a_log`, `gdn_dt_bias`, `gdn_norm`, `gdn_out` |
-| attention with a sigmoid output gate (`SparkDeviceAttention`) | heads, KV heads, head dimension, rotary width and base, scale; queries and gates interleaved per head, then keys, then values in one fused projection | `attn_qkv`, `attn_q_norm`, `attn_k_norm`, `attn_out` |
-| SwiGLU FFN (`SparkDeviceGatedFfn`) | intermediate width; at the GEMV row counts the down projection takes the gated input directly | `ffn_gate_up`, `ffn_down` |
+| attention (`SparkDeviceAttention`) | heads, KV heads, head dimension, rotary span, base and the number of rotated pairs, eager or fused rotary rounding, scale; options: a sigmoid output gate (queries and gates interleaved per head in the fused projection), a sliding window, a weightless value norm, and keys shared as values (the fused projection then holds queries and keys only) | `attn_qkv`, `attn_q_norm`, `attn_k_norm`, `attn_out` |
+| gated FFN (`SparkDeviceGatedFfn`) | intermediate width and activation (SiLU, or tanh GeLU); with SiLU at the GEMV row counts the down projection takes the gated input directly | `ffn_gate_up`, `ffn_down` |
+| experts (`SparkDeviceExperts`) | experts, top k, expert width, activation; the router reads the residual through `spark_rmsnorm_scaled`, the experts read it through their own norm | `router_proj`, `router_scale`, `expert_scale`, `pre_ff_norm_2`, `moe_w1` (gate), `moe_w3` (up), `moe_w2` (down) |
 | residual RMSNorm (`SparkDeviceResidualNorm`) | the stage's hidden width and epsilon | the model names its norm weights |
+| branch norms (`SparkDeviceBranchNorm`) | one or two branches, an optional layer scalar | the model names its norm weights |
 
-Attention without an output gate, sliding-window attention, other norm
-placements, other activations and experts have no layer kind yet; the model
-that needs one adds it here.
+A stage's KV pool holds the widest slot any of its attention layers needs
+(`kv_heads x head_dimension` of the stage shape); a layer with narrower slots
+uses its pages at that layer's own slot stride. A stage shape can tie the
+head to the embedding table and soft-cap the logits, which the runner applies
+before the log-probabilities. Other norm placements, other activations and
+attention without query and key norms have no option yet; the model that
+needs one adds it here.
 
 `model-families/qwen38/device/qwen38_device_stage.c` is Qwen3.8-27B on these
 layers: 64 layers, every fourth one (from the fourth) attention and the rest
@@ -202,6 +212,18 @@ gated delta, each followed by the SwiGLU FFN, with the attention and
 gated-delta projections sharing one scratch slice. The recurrent state is FP32,
 `[layer][slot][head][key][value]`, and `recurrent_copy` packs it in the same
 order as the CUDA model.
+
+`model-families/gemma4/device/gemma4_26b_device_stage.c` is Gemma 4 26B A4B
+(text only) on the same layers: 30 layers, every sixth one (from the sixth)
+full attention (16 query and 2 KV heads of 512, keys shared as values, rotary
+on the first 64 of 256 pairs with base 10^6) and the rest sliding-window
+attention (16 query and 8 KV heads of 256, window 1,024, the whole head
+rotated with base 10^4), q and k norms weighted and the value norm
+weightless, attention scale 1; then the tanh-GeLU dense FFN (2,112 wide) and
+128 experts (top 8, 704 wide) on the same residual, combined by the two-branch
+sandwich norm and the layer scalar. The embedding is multiplied by
+`bf16(sqrt(2816)) = 53`, the head is the embedding table and the logits are
+capped at 30. The pack is `tools/gemma4_tp16_pack.py --tp-degree 1`.
 
 ## Decode and prefill by row count
 

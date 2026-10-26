@@ -185,26 +185,28 @@ def main():
                      **{name: {"against_reference_a": pair[0], "against_reference_b": pair[1], "verdict": verdict(pair[0], pair[1], floor),
                                "corruption": json.loads((out / name / "control.json").read_text()) if name != "metal" else None}
                         for name, pair in candidates.items()}},
-        "greedy": greedy_table(out),
+        "greedy": greedy_table(out) if (out / "ref" / "greedy.ref.json").exists() else None,
         "speed": speed(out),
     }
     receipt["batch_ladder"] = ladder_table(out, receipt["speed"]["bandwidth"]["device_private"]["median_gb_per_s"] * 1e9)
-    speculation = json.loads((out / "metal" / "spec.metal.json").read_text())
-    receipt["speculation"] = {key: speculation[key] for key in ("new_tokens", "draft_max", "repeats", "lookup", "verify_frames")}
-    receipt["speculation"]["prompts"] = [{key: item[key] for key in ("name", "prompt_tokens", "tokens_identical", "plain_tokens_per_second",
-                                                                      "spec_tokens_per_second", "frames", "drafted", "accepted")}
-                                         for item in speculation["prompts"]]
-    receipt["speculation"]["exact"] = speculation["prompts_identical"] == speculation["prompt_count"]
+    if (out / "metal" / "spec.metal.json").exists():
+        speculation = json.loads((out / "metal" / "spec.metal.json").read_text())
+        receipt["speculation"] = {key: speculation[key] for key in ("new_tokens", "draft_max", "repeats", "lookup", "verify_frames")}
+        receipt["speculation"]["prompts"] = [{key: item[key] for key in ("name", "prompt_tokens", "tokens_identical", "plain_tokens_per_second",
+                                                                          "spec_tokens_per_second", "frames", "drafted", "accepted")}
+                                             for item in speculation["prompts"]]
+        receipt["speculation"]["exact"] = speculation["prompts_identical"] == speculation["prompt_count"]
     numerics = receipt["numerics"]
     numerics["controls_fail_as_required"] = all(name in numerics and not numerics[name]["verdict"]["pass"] for name in REQUIRED_CONTROLS)
     numerics["pass"] = "metal" in numerics and numerics["metal"]["verdict"]["pass"] and numerics["controls_fail_as_required"]
     (out / "RECEIPT.json").write_text(json.dumps(receipt, indent=1) + "\n")
-    print(json.dumps({"numerics_pass": numerics["pass"], "speculation_exact": receipt["speculation"]["exact"],
+    speculation_exact = receipt["speculation"]["exact"] if "speculation" in receipt else None
+    print(json.dumps({"numerics_pass": numerics["pass"], "speculation_exact": speculation_exact,
                       **{name: {leg_name: {key: item[key] for key in ("kl_ratio_to_floor", "top1_disagreement_ratio_to_floor", "paired_sigma", "pass")}
                                 for leg_name, item in numerics[name]["verdict"].items() if leg_name != "pass"}
                          for name in candidates},
                       "decode": receipt["speed"]["decode"]["roofline"]}, indent=1))
-    return 0 if numerics["pass"] and receipt["speculation"]["exact"] else 1
+    return 0 if numerics["pass"] and speculation_exact is not False else 1
 
 if __name__ == "__main__":
     sys.exit(main())
