@@ -494,17 +494,20 @@ SparkStatus SparkDeviceStageRunnerKeepRows(SparkDeviceStageRunner *runner, const
 	for ( sequence = 0u; sequence < sequences; sequence++ )
 		if ( kept[sequence] > t->row_begin[sequence + 1u] - t->row_begin[sequence] )
 			return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"a sequence keeps more rows than its verify step held"));
+	if ( runner->config.model->keep_rows == 0 && runner->geometry.recurrent_bytes != 0u )
+		return(RunnerFail(SPARK_STATUS_UNSUPPORTED,"the model keeps no verified rows"));
 	runner->verify_pending = 0u;
 	memcpy(t->kept,kept,(size_t)sequences * sizeof(*t->kept));
-	if ( runner->config.model->keep_rows == 0 )
-		return(runner->geometry.recurrent_bytes == 0u ? SPARK_STATUS_OK : RunnerFail(SPARK_STATUS_UNSUPPORTED,"the model keeps no verified rows"));
-	status = runner->config.model->keep_rows(runner->model,&runner->verify_step,RunnerDeviceTable(runner,9u),runner->queue);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkDeviceQueueWait(runner->queue,SPARK_DEVICE_WAIT_FOREVER);
-	if ( status == SPARK_STATUS_OK && SparkDeviceOpsTakeError(runner->ops,&error) != SPARK_STATUS_OK )
-		status = SPARK_STATUS_IO_ERROR;
-	if ( status != SPARK_STATUS_OK )
-		return(RunnerFail(status,"keep_rows failed"));
+	if ( runner->config.model->keep_rows != 0 )
+	{
+		status = runner->config.model->keep_rows(runner->model,&runner->verify_step,RunnerDeviceTable(runner,9u),runner->queue);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceQueueWait(runner->queue,SPARK_DEVICE_WAIT_FOREVER);
+		if ( status == SPARK_STATUS_OK && SparkDeviceOpsTakeError(runner->ops,&error) != SPARK_STATUS_OK )
+			status = SPARK_STATUS_IO_ERROR;
+		if ( status != SPARK_STATUS_OK )
+			return(RunnerFail(status,"keep_rows failed"));
+	}
 	for ( sequence = 0u; sequence < sequences; sequence++ )
 		runner->next_position[t->recurrent_index[sequence]] = t->positions[t->row_begin[sequence]] + kept[sequence];
 	return(SPARK_STATUS_OK);

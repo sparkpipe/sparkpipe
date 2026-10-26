@@ -18,9 +18,11 @@ is reported against the measured streaming-read bandwidth.
 A mixture-of-experts gate adds a pinned-route set (labels prefixed pinned_):
 the Metal run and the controls with every layer's experts taken from
 reference A's choice, against A and against B pinned the same way (bp), with
-A against bp as the floor. The same rule applies to it; the Metal run must
-pass every set present, and a required control must fail in every set it
-appears in.
+A against bp as the floor. The same rule applies to it; the Metal runs
+(metal, and metal_rows64 when present: the same pass prefilled in 64-row
+chunks) must pass every set present, and a required control must fail in
+every set it appears in. A batch ladder run with --exact-rows (exact/) must
+give every batched sequence the tokens of its solo run.
 
   qwen38_27b_metal_summary.py --out RUN_DIR --revision REV --prompts PROMPTS_JSON
 """
@@ -38,6 +40,7 @@ TOP1_FACTOR = 1.5
 PAIRED_SIGMA = 3.0
 REQUIRED_CONTROLS = ("control_layers", "control_rotate")
 PROBE_CONTROLS = ("control",)
+CANDIDATES = ("metal", "metal_rows64")
 
 
 def aggregate(rows, label):
@@ -114,8 +117,8 @@ def greedy_table(out):
     return table
 
 
-def ladder_table(out, peak):
-    ladder = json.loads((out / "metal" / "ladder.metal.json").read_text())
+def ladder_table(out, peak, run="metal"):
+    ladder = json.loads((out / run / "ladder.metal.json").read_text())
     ceiling = peak / ladder["streamed_bytes_per_token"]
     return {"prompt_tokens": ladder["prompt_tokens"], "decode_steps": ladder["decode_steps"], "repeats": ladder["repeats"],
             "single_sequence_roofline_tokens_per_second": ceiling,
@@ -159,11 +162,11 @@ def speed(out):
 def numerics_set(rows, prefix, out):
     labels = {row["label"] for row in rows}
     floor = aggregate(rows, prefix + "floor")
-    candidates = {name: (aggregate(rows, prefix + name), aggregate(rows, f"{prefix}{name}_vs_b")) for name in ("metal",) + REQUIRED_CONTROLS + PROBE_CONTROLS
+    candidates = {name: (aggregate(rows, prefix + name), aggregate(rows, f"{prefix}{name}_vs_b")) for name in CANDIDATES + REQUIRED_CONTROLS + PROBE_CONTROLS
                   if prefix + name in labels and f"{prefix}{name}_vs_b" in labels}
     result = {"floor": floor,
               **{name: {"against_reference_a": pair[0], "against_reference_b": pair[1], "verdict": verdict(pair[0], pair[1], floor),
-                        "corruption": json.loads((out / name / "control.json").read_text()) if name != "metal" else None}
+                        "corruption": json.loads((out / name / "control.json").read_text()) if name not in CANDIDATES else None}
                  for name, pair in candidates.items()}}
     return candidates, result
 
@@ -204,6 +207,12 @@ def main():
         "speed": speed(out),
     }
     receipt["batch_ladder"] = ladder_table(out, receipt["speed"]["bandwidth"]["device_private"]["median_gb_per_s"] * 1e9)
+    exact_identical = None
+    if (out / "exact" / "ladder.metal.json").exists():
+        receipt["batch_ladder_exact_rows"] = ladder_table(out, receipt["speed"]["bandwidth"]["device_private"]["median_gb_per_s"] * 1e9, "exact")
+        exact_identical = all(row["sequences_identical_to_solo"] == row["batch"] and row["nondeterministic"] == 0
+                              for row in receipt["batch_ladder_exact_rows"]["rows"])
+        receipt["batch_ladder_exact_rows"]["identical_to_solo"] = exact_identical
     if (out / "metal" / "spec.metal.json").exists():
         speculation = json.loads((out / "metal" / "spec.metal.json").read_text())
         receipt["speculation"] = {key: speculation[key] for key in ("new_tokens", "draft_max", "repeats", "lookup", "verify_frames")}
@@ -217,10 +226,11 @@ def main():
         numerics["pinned_routes"] = pinned
     numerics["controls_fail_as_required"] = all(any(name in item for item in sets) and
                                                 all(not item[name]["verdict"]["pass"] for item in sets if name in item) for name in REQUIRED_CONTROLS)
-    numerics["pass"] = all("metal" in item and item["metal"]["verdict"]["pass"] for item in sets) and numerics["controls_fail_as_required"]
+    numerics["pass"] = all("metal" in item and all(item[name]["verdict"]["pass"] for name in CANDIDATES if name in item) for item in sets) and \
+        numerics["controls_fail_as_required"]
     (out / "RECEIPT.json").write_text(json.dumps(receipt, indent=1) + "\n")
     speculation_exact = receipt["speculation"]["exact"] if "speculation" in receipt else None
-    print(json.dumps({"numerics_pass": numerics["pass"], "speculation_exact": speculation_exact,
+    print(json.dumps({"numerics_pass": numerics["pass"], "speculation_exact": speculation_exact, "ladder_exact_rows_identical": exact_identical,
                       **{name: {leg_name: {key: item[key] for key in ("kl_ratio_to_floor", "top1_disagreement_ratio_to_floor", "paired_sigma", "pass")}
                                 for leg_name, item in numerics[name]["verdict"].items() if leg_name != "pass"}
                          for name in candidates},
@@ -229,7 +239,7 @@ def main():
                                             for leg_name, item in pinned[name]["verdict"].items() if leg_name != "pass"}
                          for name in pinned_candidates},
                       "decode": receipt["speed"]["decode"]["roofline"]}, indent=1))
-    return 0 if numerics["pass"] and speculation_exact is not False else 1
+    return 0 if numerics["pass"] and speculation_exact is not False and exact_identical is not False else 1
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -44,6 +44,7 @@ typedef struct RunOptions
 	const char *model;
 	uint32_t draft_max;
 	const char *pin_routes;
+	uint32_t exact_rows;
 } RunOptions;
 
 static uint64_t NowNs(void)
@@ -56,7 +57,7 @@ static uint64_t NowNs(void)
 static int Usage(const char *program)
 {
 	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|pairs|bench|ladder|spec --out DIR [--prefill-rows N] [--new-tokens N] "
-		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|gemma4-26b-a4b] [--pin-routes DIR]\n",program);
+		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|gemma4-26b-a4b] [--pin-routes DIR] [--exact-rows]\n",program);
 	return(2);
 }
 
@@ -75,6 +76,11 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 		if ( strcmp(flag,"--verify-pack") == 0 )
 		{
 			options->verify = 1u;
+			continue;
+		}
+		if ( strcmp(flag,"--exact-rows") == 0 )
+		{
+			options->exact_rows = 1u;
 			continue;
 		}
 		if ( value == 0 )
@@ -591,7 +597,7 @@ typedef struct LadderTrace
 	float *gap;
 } LadderTrace;
 
-static SparkStatus LadderDecode(Session *session, uint32_t batch, uint32_t prompt_tokens, uint32_t steps, uint32_t vocab, uint32_t *token,
+static SparkStatus LadderDecode(Session *session, uint32_t batch, uint32_t prompt_tokens, uint32_t steps, uint32_t vocab, uint32_t exact, uint32_t *token,
 	LadderTrace *trace, uint64_t *ns)
 {
 	SparkDeviceStageRunnerBatch step;
@@ -614,9 +620,11 @@ static SparkStatus LadderDecode(Session *session, uint32_t batch, uint32_t promp
 		step.sequence_of_row = session->sequence;
 		step.head_rows = batch;
 		step.head_row_index = session->rows;
+		step.verify = exact;
 		status = SparkDeviceStageRunnerStep(session->runner,&step,&result);
 		for ( lane = 0u; status == SPARK_STATUS_OK && lane < batch; lane++ )
 		{
+			session->targets[lane] = 1u;
 			token[lane] = result.argmax[lane];
 			if ( trace != 0 )
 			{
@@ -627,6 +635,8 @@ static SparkStatus LadderDecode(Session *session, uint32_t batch, uint32_t promp
 					trace->gap[at] = 0.0f;
 			}
 		}
+		if ( status == SPARK_STATUS_OK && exact != 0u )
+			status = SparkDeviceStageRunnerKeepRows(session->runner,session->targets,batch);
 	}
 	*ns = NowNs() - start;
 	return(status);
@@ -667,8 +677,8 @@ static int RunLadder(Session *session, const RunOptions *options, const SparkTok
 		if ( (prompt[lane] = SynthesizeAt(prompts,length,(uint64_t)lane * RUN_PROMPT_STRIDE)) == 0 )
 			status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status == SPARK_STATUS_OK )
-		fprintf(json,"{\"device\":\"%s\",\"streamed_bytes_per_token\":%llu,\"prompt_tokens\":%u,\"decode_steps\":%u,\"repeats\":%u,\"batches\":[",
-			info->device,(unsigned long long)info->streamed_bytes_per_token,length,steps,options->repeats);
+		fprintf(json,"{\"device\":\"%s\",\"streamed_bytes_per_token\":%llu,\"prompt_tokens\":%u,\"decode_steps\":%u,\"repeats\":%u,\"exact_rows\":%s,"
+			"\"batches\":[",info->device,(unsigned long long)info->streamed_bytes_per_token,length,steps,options->repeats,options->exact_rows != 0u ? "true" : "false");
 	for ( lane = 0u; status == SPARK_STATUS_OK && lane < most; lane++ )
 	{
 		LadderTrace view;
@@ -681,7 +691,7 @@ static int RunLadder(Session *session, const RunOptions *options, const SparkTok
 			status = SessionPrefillSequence(session,0u,prompt[lane],length,options->prefill_rows,&token[0]);
 		first[lane] = token[0];
 		if ( status == SPARK_STATUS_OK )
-			status = LadderDecode(session,1u,length,steps,info->vocab,token,&view,&elapsed);
+			status = LadderDecode(session,1u,length,steps,info->vocab,options->exact_rows,token,&view,&elapsed);
 		solo_ns += elapsed;
 	}
 	if ( status == SPARK_STATUS_OK )
@@ -698,10 +708,10 @@ static int RunLadder(Session *session, const RunOptions *options, const SparkTok
 				if ( token[lane] != first[lane] )
 					nondeterministic++;
 			if ( status == SPARK_STATUS_OK && repeat == 0u )
-				status = LadderDecode(session,batch,length,steps,info->vocab,token,&run,&ns[repeat]);
+				status = LadderDecode(session,batch,length,steps,info->vocab,options->exact_rows,token,&run,&ns[repeat]);
 			else if ( status == SPARK_STATUS_OK )
 			{
-				status = LadderDecode(session,batch,length,steps,info->vocab,token,0,&ns[repeat]);
+				status = LadderDecode(session,batch,length,steps,info->vocab,options->exact_rows,token,0,&ns[repeat]);
 				for ( lane = 0u; status == SPARK_STATUS_OK && lane < batch; lane++ )
 					if ( token[lane] != run.token[(size_t)lane * steps + steps - 1u] )
 						nondeterministic++;

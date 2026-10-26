@@ -14,7 +14,7 @@ prompts=$root/qualification/metal/gemma4_26b/gate_prompts.json
 control_pack=$out/control.pack
 batches=${SPARK_LADDER_BATCHES:-1,2,4,8,16,32,64}
 run="./build/qwen38_27b_metal_run --model gemma4-26b-a4b --prompts $prompts"
-mkdir -p "$out/metal" "$out/pinned" "$out/compare"
+mkdir -p "$out/metal" "$out/pinned" "$out/pinned64" "$out/exact" "$out/compare"
 ln -sfn "$reference" "$out/ref"
 cd "$root"
 make -s build/test_device_contract_metal build/test_metal_kernels build/device_bandwidth build/qwen38_27b_metal_run build/logit_compare
@@ -23,6 +23,7 @@ make -s build/test_device_contract_metal build/test_metal_kernels build/device_b
 ./build/device_bandwidth 16 "$pack" > "$out/bandwidth.json" 2> "$out/bandwidth.log"
 $run --pack "$pack" --mode teacher --out "$out/metal" --verify-pack > "$out/metal_teacher.log"
 $run --pack "$pack" --mode teacher --out "$out/pinned" --pin-routes "$out/ref" > "$out/pinned_teacher.log"
+$run --pack "$pack" --mode teacher --out "$out/pinned64" --pin-routes "$out/ref" --prefill-rows 64 > "$out/pinned64_teacher.log"
 $run --pack "$pack" --mode greedy --out "$out/metal" --new-tokens 128 > "$out/metal_greedy.log"
 set -f
 for control in control:layers.11.ffn_down:swap-rows control_layers:layers.*.ffn_down:swap-rows control_rotate:layers.11.ffn_down:rotate-rows; do
@@ -35,6 +36,7 @@ for control in control:layers.11.ffn_down:swap-rows control_layers:layers.*.ffn_
 done
 set +f
 $run --pack "$pack" --mode ladder --batches "$batches" --new-tokens 128 --repeats 3 --out "$out/metal" > "$out/metal_ladder.log"
+$run --pack "$pack" --mode ladder --batches "$batches" --new-tokens 128 --repeats 1 --exact-rows --out "$out/exact" > "$out/exact_ladder.log"
 rm -f "$out/compare/compare.jsonl"
 for name in $(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in json.load(open(sys.argv[1]))["prompts"]))' "$prompts"); do
 	split=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["prefill_positions"])' "$out/metal/$name.metal.json")
@@ -42,7 +44,7 @@ for name in $(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in 
 	./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_a.logits" "$out/metal/$name.metal.logits" metal "$split" "$out/ref/$name.ref_b.logits" >> "$out/compare/compare.jsonl"
 	./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_b.logits" "$out/metal/$name.metal.logits" metal_vs_b "$split" "$out/ref/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
 	./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_a.logits" "$out/ref/$name.ref_bp.logits" pinned_floor "$split" >> "$out/compare/compare.jsonl"
-	for run in pinned:metal control:control control_layers:control_layers control_rotate:control_rotate; do
+	for run in pinned:metal pinned64:metal_rows64 control:control control_layers:control_layers control_rotate:control_rotate; do
 		dir=${run%%:*}
 		tag=pinned_${run#*:}
 		./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_a.logits" "$out/$dir/$name.metal.logits" "$tag" "$split" "$out/ref/$name.ref_bp.logits" >> "$out/compare/compare.jsonl"
