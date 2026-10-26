@@ -44,9 +44,9 @@ for name in $(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in 
 	./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_a.logits" "$out/metal/$name.metal.logits" metal "$split" "$out/ref/$name.ref_b.logits" >> "$out/compare/compare.jsonl"
 	./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_b.logits" "$out/metal/$name.metal.logits" metal_vs_b "$split" "$out/ref/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
 	./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_a.logits" "$out/ref/$name.ref_bp.logits" pinned_floor "$split" >> "$out/compare/compare.jsonl"
-	for run in pinned:metal pinned64:metal_rows64 control:control control_layers:control_layers control_rotate:control_rotate; do
-		dir=${run%%:*}
-		tag=pinned_${run#*:}
+	for pass in pinned:metal pinned64:metal_rows64 control:control control_layers:control_layers control_rotate:control_rotate; do
+		dir=${pass%%:*}
+		tag=pinned_${pass#*:}
 		./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_a.logits" "$out/$dir/$name.metal.logits" "$tag" "$split" "$out/ref/$name.ref_bp.logits" >> "$out/compare/compare.jsonl"
 		./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_bp.logits" "$out/$dir/$name.metal.logits" "${tag}_vs_b" "$split" "$out/ref/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
 	done

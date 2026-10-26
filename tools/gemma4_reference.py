@@ -14,19 +14,18 @@
              served token and the top-1/top-2 logit margin
   teacher    teacher-forced FP32 logits for every position but the last of
              each prompt (--prompts prompts.json) to
-             <out>/<name>.ref_<variant>.logits; --variant a sums every
-             reduction in numpy's order, --variant b splits every matmul's
-             inner dimension into 1,024-wide chunks summed last chunk first
-             and reverses every other reduction, so a against b is the noise
-             of FP32 reduction order under the same bf16 rounding;
-             MoE models also write <out>/<name>.ref_<variant>.routes, the
-             chosen experts as little-endian uint16 [layer][position][rank];
-             --pinned-b (with --variant a) also runs b in the same pass with
-             every layer's experts taken from a's choice instead of b's own
-             top-k (the weights are still b's probabilities of those experts,
-             renormalised) and writes <out>/<name>.ref_bp.logits, so a
-             against bp is the reduction-order noise without the discrete
-             expert choice
+             <out>/<name>.ref_<variant>.logits for each of --variants
+             (comma-separated, one pass): a sums every reduction in numpy's
+             order, b splits every matmul's inner dimension into 1,024-wide
+             chunks summed last chunk first and reverses every other
+             reduction, so a against b is the noise of FP32 reduction order
+             under the same bf16 rounding; bp (MoE models, with a) is b with
+             every layer's experts taken from a's choice instead of its own
+             top-k (the weights are still b's probabilities of those
+             experts, renormalised), so a against bp is that noise without
+             the discrete expert choice. MoE models also write
+             <out>/<name>.ref_<variant>.routes for a and b, the chosen
+             experts as little-endian uint16 [layer][position][rank]
   gate-prompts  the Metal gate prompts (the same instructions and repository
              files as the Qwen3.8-27B gate) in this model's chat framing,
              each file cut to the target token count -> --out prompts.json
@@ -121,6 +120,7 @@ class Checkpoint:
         self.directory = Path(directory)
         self.weight_map = json.loads((self.directory / "model.safetensors.index.json").read_text())["weight_map"]
         self.headers = {}
+        self.cache = {}
 
     def raw(self, name):
         shard = self.weight_map[name]
@@ -136,8 +136,11 @@ class Checkpoint:
         return np.memmap(self.directory / shard, dtype=np.uint16, mode="r", offset=base + begin,
                          shape=((end - begin) // 2,)).reshape(meta["shape"])
 
-    def f32(self, name):
-        return widen(self.raw(name))
+    def f32(self, name, index=None):
+        key = (name, index)
+        if key not in self.cache:
+            self.cache[key] = widen(self.raw(name) if index is None else self.raw(name)[index])
+        return self.cache[key]
 
 
 def widen(raw):
@@ -161,6 +164,7 @@ class Reference:
         self.sequence = 0
         self.reversed_of = []
         self.pin_source = []
+        self.head = None
         self.routes = {}
         if self.muse:
             self.post_epsilon = config["post_norm_eps"]
@@ -266,13 +270,12 @@ class Reference:
         weights = np.take_along_axis(probabilities, chosen, axis=-1)
         weights = (weights / reduce_sum(weights, keepdims=True)) * self.checkpoint.f32(p + "router.per_expert_scale")[chosen]
         source = self.norm(residual, p + "pre_feedforward_layernorm_2.weight")
-        gate_up, down = self.checkpoint.raw(p + "experts.gate_up_proj"), self.checkpoint.raw(p + "experts.down_proj")
         output = np.zeros_like(residual)
         for expert in np.unique(chosen):
             rows, slots = np.nonzero(chosen == expert)
-            projected = bf16(matmul(source[rows], widen(gate_up[expert]).T))
+            projected = bf16(matmul(source[rows], self.checkpoint.f32(p + "experts.gate_up_proj", expert).T))
             activated = bf16(bf16(gelu_tanh(projected[:, :inter])) * projected[:, inter:])
-            contribution = bf16(bf16(matmul(activated, widen(down[expert]).T)) * weights[rows, slots][:, None])
+            contribution = bf16(bf16(matmul(activated, self.checkpoint.f32(p + "experts.down_proj", expert).T)) * weights[rows, slots][:, None])
             output[rows] = bf16(output[rows] + contribution)
         return output
 
@@ -302,12 +305,14 @@ class Reference:
         residuals = [self.embed(tokens) for tokens in sequences]
         positions = [np.arange(len(tokens), dtype=np.int64) for tokens in sequences]
         for layer in range(self.config["num_hidden_layers"]):
+            self.checkpoint.cache.clear()
             for index, position in enumerate(positions):
                 self.sequence = index
                 if self.reversed_of:
                     REVERSED = self.reversed_of[index]
                 residuals[index] = self.layer(layer, residuals[index], position)
             print(f"layer {layer} done", file=sys.stderr, flush=True)
+        self.checkpoint.cache.clear()
         final = widen(self.checkpoint.raw(PREFIX + "norm.weight"))
         normed = []
         for index, residual in enumerate(residuals):
@@ -317,8 +322,10 @@ class Reference:
         return normed
 
     def logits(self, normed, chunk=16384):
-        head = self.checkpoint.raw("lm_head.weight" if self.muse else PREFIX + "embed_tokens.weight")
-        logits = np.concatenate([matmul(normed, widen(head[first:first + chunk]).T) for first in range(0, head.shape[0], chunk)], axis=-1)
+        if self.head is None:
+            self.head = widen(self.checkpoint.raw("lm_head.weight" if self.muse else PREFIX + "embed_tokens.weight"))
+        head = self.head
+        logits = np.concatenate([matmul(normed, head[first:first + chunk].T) for first in range(0, head.shape[0], chunk)], axis=-1)
         if self.muse:
             logits = logits * self.output_multiplier
         return np.float32(self.softcap) * np.tanh(logits / np.float32(self.softcap))
@@ -404,16 +411,19 @@ def gate_prompts(args):
 
 def teacher(args):
     global REVERSED
-    REVERSED = args.variant == "b"
+    variants = args.variants.split(",")
+    if not variants or any(label not in ("a", "b", "bp") for label in variants) or len(set(variants)) != len(variants):
+        raise ValueError("--variants takes distinct a, b and bp")
     reference = Reference(args.checkpoint)
+    if "bp" in variants and ("a" not in variants or not reference.moe):
+        raise ValueError("bp pins b to a's experts: it needs a in the same pass and an MoE model")
     prompts = json.loads(Path(args.prompts).read_text())["prompts"]
-    runs = [(prompt, args.variant) for prompt in prompts]
-    if args.pinned_b:
-        if args.variant != "a" or not reference.moe:
-            raise ValueError("--pinned-b pins b to a's experts: it needs --variant a and an MoE model")
-        runs += [(prompt, "bp") for prompt in prompts]
-        reference.reversed_of = [label != "a" for _, label in runs]
-        reference.pin_source = [None] * len(prompts) + list(range(len(prompts)))
+    runs = [(prompt, label) for label in variants for prompt in prompts]
+    first_a = variants.index("a") * len(prompts) if "a" in variants else None
+    reference.reversed_of = [label != "a" for _, label in runs]
+    reference.pin_source = [first_a + index % len(prompts) if label == "bp" else None for index, (_, label) in enumerate(runs)]
+    if "bp" in variants and variants.index("bp") < variants.index("a"):
+        raise ValueError("list a before bp so a's experts are chosen first in every layer")
     normed = reference.forward([prompt["prompt_token_ids"] for prompt, _ in runs])
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -470,8 +480,7 @@ def main():
     r.add_argument("--checkpoint", required=True)
     r.add_argument("--prompts", required=True)
     r.add_argument("--out", required=True)
-    r.add_argument("--variant", choices=("a", "b"), default="a")
-    r.add_argument("--pinned-b", action="store_true")
+    r.add_argument("--variants", default="a")
     m = sub.add_parser("summary")
     m.add_argument("--report", required=True)
     m.add_argument("--tie", type=float, default=0.1)

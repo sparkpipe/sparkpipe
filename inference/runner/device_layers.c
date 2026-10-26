@@ -362,6 +362,11 @@ SparkStatus SparkDeviceExpertsBind(SparkDeviceStage *stage, const SparkStageRunn
 		status = SparkDeviceStageLayerTensor(stage,weights,layer,"moe_w3","bf16",expert_bytes,&bound->up);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceStageLayerTensor(stage,weights,layer,"moe_w2","bf16",expert_bytes,&bound->down);
+	if ( status == SPARK_STATUS_OK )
+	{
+		stage->routed_bytes += 3u * expert_bytes;
+		stage->routed_bytes_per_token += 3u * expert_bytes / shape->experts * shape->top_k;
+	}
 	return(status);
 }
 

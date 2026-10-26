@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include "inference/runner/device_ops.h"
+#include "inference/runner/device_stage_model.h"
 #include "inference/runner/device_stage_runner.h"
 #include "sparkpipe/spark_sha256.h"
 
@@ -312,7 +313,12 @@ SparkStatus SparkDeviceStageRunnerOpen(SparkDeviceStageRunner **out, const Spark
 	runner->info.vocab = runner->geometry.vocab;
 	runner->info.layers = runner->geometry.total_layers;
 	runner->info.pack_bytes = runner->weights.bytes;
-	runner->info.streamed_bytes_per_token = runner->weights.bytes - runner->geometry.embed_bytes;
+	{
+		const SparkDeviceStage *stage = (const SparkDeviceStage *)runner->model;
+		const uint64_t tied_head = runner->geometry.head_offset == runner->geometry.embed_offset ? runner->geometry.head_bytes : 0u;
+		runner->info.streamed_bytes_per_token = runner->weights.bytes - runner->geometry.embed_bytes + tied_head - stage->routed_bytes +
+			stage->routed_bytes_per_token;
+	}
 	runner->info.device_state_bytes = total;
 	snprintf(runner->info.device,sizeof(runner->info.device),"%s",SparkDeviceGetProperties()->name);
 	snprintf(runner->info.target,sizeof(runner->info.target),"%s",SparkDeviceGetProperties()->target);

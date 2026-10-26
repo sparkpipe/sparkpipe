@@ -312,13 +312,6 @@ rounds its output to BF16; the head projection keeps FP32 logits. Rounding to
 BF16 is round-to-nearest-even and happens at these points, the same in the
 Metal kernels and in the reference:
 
-The batch work moved no rounding point. The K-split GEMV, the split-K
-tensor-unit projection with its ordered reduce, the 128-key decode
-partitions and the block prefill attention (FP32 scores, FP32
-probabilities times BF16 values with FP32 accumulation on the tensor
-operations) only reorder FP32 sums; every value in the table below is
-rounded where it was before.
-
 | Step | Value rounded to BF16 |
 | --- | --- |
 | residual | `h + attention`, `h + ffn` |
@@ -326,6 +319,13 @@ rounded where it was before.
 | gated delta | every projection; the convolution sum, then `silu` of it; the rule's output; in the gated norm `x * rsqrt(..)`, then `* w`, then `* silu(z)` |
 | attention | every projection; the normed query and key, then the rotated query and key; the attention output, then `* sigmoid(gate)` |
 | FFN | gate and up; `silu(gate) * up` |
+
+The batch work moved no rounding point. The K-split GEMV, the split-K
+tensor-unit projection with its ordered reduce, the 128-key decode
+partitions and the block prefill attention (FP32 scores, FP32
+probabilities times BF16 values with FP32 accumulation on the tensor
+operations) only reorder FP32 sums; every value in the table above is
+rounded where it was before.
 
 The delta-rule state, the L2-normalised query and key, the decay and write
 strength, the attention scores and softmax stay FP32. Rotary angles are
