@@ -2,13 +2,13 @@
 """Write a control copy of a named stage pack with one tensor deliberately corrupted.
 
 The copy is an APFS clone (cp -c), so only the corrupted tensor's blocks take
-new space. The named tensor's first two rows are swapped in the copy, which is
-the size of a packer layout bug that misplaces one row. The receipt records the
-tensor, its rows, and the sha256 of its bytes before and after. A numerics gate
-run against the copy must fail; the copy is a qualification control and is
-never served.
+new space. --corruption swap-rows swaps the tensor's first two rows, the size
+of a packer bug that misplaces one row; rotate-rows moves every row down by
+one, the size of a packer bug that offsets a whole tensor. The receipt
+records the tensor, the corruption, and the sha256 of its bytes before and
+after. The copy is a qualification control and is never served.
 
-  pack_tensor_control.py --pack PACK --tensor NAME --output CONTROL_PACK --receipt RECEIPT_JSON
+  pack_tensor_control.py --pack PACK --tensor NAME --corruption swap-rows|rotate-rows --output CONTROL_PACK --receipt RECEIPT_JSON
 """
 
 import argparse
@@ -40,6 +40,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--pack", type=Path, required=True)
     parser.add_argument("--tensor", required=True)
+    parser.add_argument("--corruption", choices=("swap-rows", "rotate-rows"), required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
     arguments = parser.parse_args()
@@ -52,13 +53,17 @@ def main():
     with arguments.output.open("r+b") as handle:
         handle.seek(offset)
         original = handle.read(entry["bytes"])
-        corrupted = original[row_bytes:2 * row_bytes] + original[:row_bytes] + original[2 * row_bytes:]
+        if arguments.corruption == "swap-rows":
+            corrupted = original[row_bytes:2 * row_bytes] + original[:row_bytes] + original[2 * row_bytes:]
+        else:
+            corrupted = original[-row_bytes:] + original[:-row_bytes]
         handle.seek(offset)
         handle.write(corrupted)
     if original[:row_bytes] == original[row_bytes:2 * row_bytes]:
         raise SystemExit(f"rows 0 and 1 of {arguments.tensor} are identical; swapping them changes nothing")
     receipt = {"pack": str(arguments.pack), "control_pack": str(arguments.output), "tensor": arguments.tensor,
-               "corruption": "rows 0 and 1 swapped", "row_bytes": row_bytes, "rows": rows,
+               "corruption": {"swap-rows": "rows 0 and 1 swapped", "rotate-rows": "every row moved down by one"}[arguments.corruption],
+               "row_bytes": row_bytes, "rows": rows,
                "tensor_sha256_before": hashlib.sha256(original).hexdigest(),
                "tensor_sha256_after": hashlib.sha256(corrupted).hexdigest()}
     arguments.receipt.write_text(json.dumps(receipt, indent=2) + "\n")

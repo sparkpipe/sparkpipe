@@ -24,8 +24,12 @@ if [ ! -f "$out/ref/greedy.ref.json" ]; then
 fi
 ./build/qwen38_27b_metal_run --pack "$pack" --prompts "$prompts" --mode teacher --out "$out/metal" --verify-pack > "$out/metal_teacher.log"
 ./build/qwen38_27b_metal_run --pack "$pack" --prompts "$prompts" --mode greedy --out "$out/metal" --new-tokens 128 > "$out/metal_greedy.log"
-python3 -I tools/pack_tensor_control.py --pack "$pack" --tensor layers.31.ffn_down --output "$control" --receipt "$out/control/control.json"
+python3 -I tools/pack_tensor_control.py --pack "$pack" --tensor layers.31.ffn_down --corruption swap-rows --output "$control" --receipt "$out/control/control.json"
 ./build/qwen38_27b_metal_run --pack "$control" --prompts "$prompts" --mode teacher --out "$out/control" > "$out/control_teacher.log"
+rm -f "$control"
+mkdir -p "$out/control_rotate"
+python3 -I tools/pack_tensor_control.py --pack "$pack" --tensor layers.31.ffn_down --corruption rotate-rows --output "$control" --receipt "$out/control_rotate/control.json"
+./build/qwen38_27b_metal_run --pack "$control" --prompts "$prompts" --mode teacher --out "$out/control_rotate" > "$out/control_rotate_teacher.log"
 rm -f "$control"
 ./build/qwen38_27b_metal_run --pack "$pack" --prompts "$prompts" --mode pairs --out "$out/metal" --new-tokens 128 > "$out/metal_pairs.log"
 rm -f "$out/compare/compare.jsonl"
@@ -35,6 +39,7 @@ for name in $(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in 
 	./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_a.logits" "$out/metal/$name.metal.logits" metal "$split" "$out/ref/$name.ref_b.logits" >> "$out/compare/compare.jsonl"
 	./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_b.logits" "$out/metal/$name.metal.logits" metal_vs_b "$split" >> "$out/compare/compare.jsonl"
 	./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_a.logits" "$out/control/$name.metal.logits" control "$split" "$out/ref/$name.ref_b.logits" >> "$out/compare/compare.jsonl"
+	./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_a.logits" "$out/control_rotate/$name.metal.logits" control_rotate "$split" "$out/ref/$name.ref_b.logits" >> "$out/compare/compare.jsonl"
 	if [ -f "$out/ref/$name.ref_c.logits" ]; then
 		./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_c.logits" "$out/ref/$name.ref_a.logits" fp32_activations_vs_a "$split" >> "$out/compare/compare.jsonl"
 		./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_c.logits" "$out/metal/$name.metal.logits" fp32_activations_vs_metal "$split" >> "$out/compare/compare.jsonl"

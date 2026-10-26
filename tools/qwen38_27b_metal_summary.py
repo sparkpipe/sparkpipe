@@ -123,6 +123,7 @@ def main():
     metal = aggregate(rows, "metal")
     metal_b = aggregate(rows, "metal_vs_b")
     control = aggregate(rows, "control")
+    rotate = aggregate(rows, "control_rotate") if any(row["label"] == "control_rotate" for row in rows) else None
     diagnostics = {label: aggregate(rows, label) for label in ("fp32_activations_vs_a", "fp32_activations_vs_metal")
                    if any(row["label"] == label for row in rows)}
     kernels = json.loads((out / "kernels.json").read_text())
@@ -144,6 +145,9 @@ def main():
                      "metal_verdict": verdict(metal, floor), "control": control,
                      "control_corruption": json.loads((out / "control" / "control.json").read_text()),
                      "control_verdict": verdict(control, floor),
+                     "control_rotate": rotate,
+                     "control_rotate_corruption": json.loads((out / "control_rotate" / "control.json").read_text()) if rotate else None,
+                     "control_rotate_verdict": verdict(rotate, floor) if rotate else None,
                      "reference_b_against_a_verdict": verdict(floor, floor),
                      "diagnostics": diagnostics},
         "greedy": greedy_table(out),
@@ -151,8 +155,12 @@ def main():
         "speed": speed(out),
     }
     receipt["numerics"]["control_fails_as_required"] = not receipt["numerics"]["control_verdict"]["pass"]
+    receipt["numerics"]["control_swap_detected_by_kl"] = not receipt["numerics"]["control_verdict"]["kl_within_10x_floor"]
+    if rotate:
+        receipt["numerics"]["control_rotate_detected_by_kl"] = not receipt["numerics"]["control_rotate_verdict"]["kl_within_10x_floor"]
     (out / "RECEIPT.json").write_text(json.dumps(receipt, indent=1) + "\n")
     print(json.dumps({"metal": receipt["numerics"]["metal_verdict"], "control": receipt["numerics"]["control_verdict"],
+                      "control_rotate": receipt["numerics"]["control_rotate_verdict"],
                       "reference_b_against_a": receipt["numerics"]["reference_b_against_a_verdict"],
                       "floor_kl": floor["kl_mean"], "metal_kl": metal["kl_mean"], "metal_top1": metal["top1_agreement"],
                       "decode": receipt["speed"]["decode"]["roofline"]}, indent=1))
