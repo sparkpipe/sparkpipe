@@ -243,7 +243,12 @@ rounds its output to BF16; the head projection keeps FP32 logits. Rounding to
 BF16 is round-to-nearest-even and happens at these points, the same in the
 Metal kernels and in the reference:
 
-Split-K projections sum their FP32 partials in split order and round once.
+The batch work moved no rounding point. The K-split GEMV, the split-K
+tensor-unit projection with its ordered reduce, the 128-key decode
+partitions and the block prefill attention (FP32 scores, FP32
+probabilities times BF16 values with FP32 accumulation on the tensor
+operations) only reorder FP32 sums; every value in the table below is
+rounded where it was before.
 
 | Step | Value rounded to BF16 |
 | --- | --- |
@@ -316,26 +321,39 @@ when all three hold:
   because neighbouring positions share context and are not independent.
 
 Metal must pass both legs. `tools/pack_tensor_control.py` writes APFS clones
-of the pack with tensors corrupted, and the gate runs three controls:
-`layers.31.ffn_down` with rows 0 and 1 swapped (one misplaced output in one
-layer, a probe of the gate's resolution), `layers.*.ffn_down` with rows 0
-and 1 swapped in all 64 layers (a kernel that misplaces one output, as a
-kernel bug does in every layer it runs), and `layers.31.ffn_down` with every
-row moved down by one (a whole-tensor offset). The all-layer and
-whole-tensor controls must fail; the one-layer probe is reported. The
-reference also runs once with FP32 activations (no BF16 rounding), as a
-diagnostic of how far BF16 inference itself moves the distribution.
+of the pack with tensors corrupted, and the gate runs each through the same
+teacher-forced pass:
+
+| Control | Corruption | What it shows | Required |
+| --- | --- | --- | --- |
+| `control_layers` | rows 0 and 1 of `ffn_down` swapped in all 64 layers | a kernel that misplaces one output does so in every layer it runs; the gate must see a fault of that reach | fails |
+| `control_rotate` | every row of `layers.31.ffn_down` moved down by one | a whole-tensor layout or offset fault | fails |
+| `control` | rows 0 and 1 of `layers.31.ffn_down` swapped, one layer only | a probe of the gate's resolution, reported with its numbers | none |
+
+The probe passes: at BF16 the effect of one misplaced output pair in one of
+64 layers is inside the rounding noise, and no statistic over these 5,636
+positions separates it from a correct run (in the receipt for this revision
+its mean KL is 0.79 and 1.00 times the floor's against A and B, and the
+paired test sits at -4.8 and +0.2 standard errors). The all-layer control
+fails at 4.4 and 4.8 times the floor's KL and +95 and +124 standard errors,
+the whole-tensor control at 15 and 18 times and +188 and +197. The gate thus
+sees a fault that every layer shares, or that moves a whole tensor, and does
+not see a two-channel fault confined to one layer; where between those
+sizes its threshold lies is not measured (TECHDEBT). The reference also runs
+once with FP32 activations (no BF16 rounding), as a diagnostic of how far
+BF16 inference itself moves the distribution.
 
 The floor is large for this model: references A and B agree on the top-1
 token at 97.75% of the positions and differ by 0.0395 nats of KL on average,
 most of it at a few percent of positions in long contexts where a rounding
-difference changes a near tie. An absolute top-1 bar of 99% therefore fails
-the reference against itself; the rule above measures a candidate against
-that noise instead. The mean KL is dominated by a few such positions and
-cannot see a small systematic error; the paired test can, because a
-systematic error makes the candidate worse than the floor at most positions
-rather than at a few. Results are in
-[`PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md#mac-studio).
+difference changes a near tie. An absolute top-1 bar of 99%, which an
+earlier gate used, fails the reference against itself, so it could not pass
+any correct implementation; top-1 is judged against the floor's 2.25%
+disagreement instead, and the KL bound, once 10 times the floor, is 2 times.
+The mean KL is dominated by a few near-tie positions and cannot see a small
+systematic error; the paired test can, because a systematic error makes the
+candidate worse than the floor at most positions rather than at a few.
+Results are in [`PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md#mac-studio).
 `tools/logit_compare.c` computes KL(ref || test), top-1 agreement, the
 largest change in the target token's log-probability and, given the other
 variant, the paired counts per block. Both implementations also continue each

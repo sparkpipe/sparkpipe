@@ -1151,6 +1151,20 @@ Metal backend and the single-Studio stage are in
     the arena that survives a code-only redeploy, is CUDA VMM only;
   - a lane record, model description and swap-controller entry for the
     Studio target (`metal.apple10`).
+- Map the numerics gate's resolution at BF16. The gate now judges the Studio
+  stage against the reference's own reduction-order floor (mean KL at most
+  2 times, top-1 disagreement at most 1.5 times, a paired block test at 3
+  standard errors, both reference variants), and it passes Metal while
+  failing two controls by wide margins: two output rows of `ffn_down`
+  swapped in all 64 layers (4.4 times the floor's KL, paired test at 95
+  standard errors) and a whole tensor offset by one row (15 times, 188).
+  What it cannot see: the same two-row swap in one layer only
+  (`layers.31.ffn_down`; 0.79 and 1.00 times the floor's KL, paired test at
+  -4.8 and +0.2 standard errors), a fault whose effect on the output is
+  smaller than BF16 rounding noise. Between those two sizes the threshold is
+  not measured; controls at 2, 8 and 32 layers, and more positions to shrink
+  the block standard error, would place it
+  ([`qualification/metal/qwen38_27b/`](qualification/metal/qwen38_27b/)).
 - Batch past the per-sequence state on a Studio. Decode reads the weights
   once per step for up to 64 rows, but per-sequence work then dominates: at
   B64 the gated delta rule reads and writes 3.1 MB of FP32 state per layer
@@ -1161,8 +1175,8 @@ Metal backend and the single-Studio stage are in
   projections fall to the prefill GEMM, which reads the weights once per 128
   rows. Prefill and decode mixed in one step are not measured (I18, I19,
   I21), and speculative verify frames have no cost curve yet.
-- Close the B1 gap to the streaming roofline (89.6%, 20.0 of 22.33 tok/s).
-  The projections stream at about 1,100 GB/s; the rest of the 50.0 ms step
+- Close the B1 gap to the streaming roofline (90.4%, 20.12 of 22.27 tok/s).
+  The projections stream at about 1,100 GB/s; the rest of the 49.8 ms step
   is about 710 dependent dispatches with a floor of about 5 us each, the
   residual RMSNorm (14 us a call, 128 calls; it loads 2 bytes per thread per
   step), the two-kernel delta rule (33 us) and the convolution (9 us). The
