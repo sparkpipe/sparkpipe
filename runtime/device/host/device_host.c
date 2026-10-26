@@ -530,3 +530,34 @@ SparkStatus SparkDeviceBackendEventElapsed(SparkDeviceEvent *start, SparkDeviceE
 	*nanoseconds = end - begin;
 	return(SPARK_STATUS_OK);
 }
+
+SparkStatus SparkDeviceBackendLibraryLoad(SparkDeviceLibrary *library, const char *path)
+{
+	(void)path;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"library_load",library->owner,0,"the host backend loads no device kernel libraries"));
+}
+
+void SparkDeviceBackendLibraryUnload(SparkDeviceLibrary *library)
+{
+	library->backend = 0;
+}
+
+SparkStatus SparkDeviceBackendKernelCreate(SparkDeviceKernel *kernel, const char *name)
+{
+	(void)kernel;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_create",name,0,"the host backend creates no device kernels"));
+}
+
+void SparkDeviceBackendKernelDestroy(SparkDeviceKernel *kernel)
+{
+	kernel->backend = 0;
+}
+
+SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkDeviceKernel *kernel, const SparkDeviceLaunch *launch,
+	SparkDeviceAllocation *const *allocations)
+{
+	(void)queue;
+	(void)launch;
+	(void)allocations;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_launch",kernel->name,0,"the host backend launches no device kernels"));
+}

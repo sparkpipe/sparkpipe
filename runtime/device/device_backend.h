@@ -58,6 +58,26 @@ struct SparkDeviceEvent
 	void *backend;
 };
 
+struct SparkDeviceLibrary
+{
+	uint64_t id;
+	uint32_t kernels;
+	void *backend;
+	SparkDeviceLibrary *next;
+	char owner[SPARK_DEVICE_OWNER_BYTES];
+};
+
+struct SparkDeviceKernel
+{
+	uint64_t id;
+	SparkDeviceLibrary *library;
+	SparkDeviceKernelInfo info;
+	void *backend;
+	SparkDeviceKernel *next;
+	SparkDeviceStamp stamps[SPARK_DEVICE_STAMPS];
+	char name[SPARK_DEVICE_KERNEL_NAME_BYTES];
+};
+
 SparkStatus SparkDeviceRecordError(SparkStatus status, const char *operation, const char *owner, int32_t backend_code, const char *text);
 
 SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configuration, SparkDeviceProperties *properties);
@@ -85,6 +105,13 @@ SparkStatus SparkDeviceBackendEventRecord(SparkDeviceEvent *event, SparkDeviceQu
 SparkStatus SparkDeviceBackendQueueWaitEvent(SparkDeviceQueue *queue, SparkDeviceEvent *event);
 SparkStatus SparkDeviceBackendEventWait(SparkDeviceEvent *event, uint64_t timeout_ns);
 SparkStatus SparkDeviceBackendEventElapsed(SparkDeviceEvent *start, SparkDeviceEvent *stop, uint64_t *nanoseconds);
+
+SparkStatus SparkDeviceBackendLibraryLoad(SparkDeviceLibrary *library, const char *path);
+void SparkDeviceBackendLibraryUnload(SparkDeviceLibrary *library);
+SparkStatus SparkDeviceBackendKernelCreate(SparkDeviceKernel *kernel, const char *name);
+void SparkDeviceBackendKernelDestroy(SparkDeviceKernel *kernel);
+SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkDeviceKernel *kernel, const SparkDeviceLaunch *launch,
+	SparkDeviceAllocation *const *allocations);
 
 #ifdef __cplusplus
 }

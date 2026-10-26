@@ -27,8 +27,12 @@ static uint32_t device_live_allocations;
 static uint32_t device_live_events;
 static SparkDeviceQueue *device_queues;
 static SparkDeviceQueue *device_sync_queue;
+static SparkDeviceLibrary *device_libraries;
+static SparkDeviceKernel *device_kernels;
 static uint64_t device_next_queue_id = 1u;
 static uint64_t device_next_event_id = 1u;
+static uint64_t device_next_library_id = 1u;
+static uint64_t device_next_kernel_id = 1u;
 
 static void DeviceCopyText(char *destination, size_t capacity, const char *source)
 {
@@ -110,11 +114,11 @@ SparkStatus SparkDeviceShutdown(void)
 		pthread_mutex_unlock(&device_mutex);
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"shutdown","",0,"device is not initialized"));
 	}
-	if ( device_live_allocations != 0u || device_live_events != 0u ||
+	if ( device_live_allocations != 0u || device_live_events != 0u || device_libraries != 0 ||
 		(device_queues != 0 && (device_queues != device_sync_queue || device_queues->next != 0)) )
 	{
 		pthread_mutex_unlock(&device_mutex);
-		return(SparkDeviceRecordError(SPARK_STATUS_BUSY,"shutdown","",0,"buffers, queues or events are still live"));
+		return(SparkDeviceRecordError(SPARK_STATUS_BUSY,"shutdown","",0,"buffers, queues, events or kernel libraries are still live"));
 	}
 	if ( device_sync_queue != 0 )
 	{
@@ -159,31 +163,46 @@ static uint32_t DeviceStampDone(const SparkDeviceStamp *stamp)
 	return(SparkDeviceBackendQueueCompleted(queue) >= stamp->sequence ? 1u : 0u);
 }
 
-static uint32_t DeviceAllocationBusy(const SparkDeviceAllocation *allocation)
+static uint32_t DeviceStampsBusy(const SparkDeviceStamp *stamps)
 {
 	uint32_t index;
 	for ( index = 0u; index < SPARK_DEVICE_STAMPS; index++ )
-		if ( DeviceStampDone(&allocation->stamps[index]) == 0u )
+		if ( DeviceStampDone(&stamps[index]) == 0u )
 			return(1u);
 	return(0u);
 }
 
-static int32_t DeviceStampSlot(const SparkDeviceAllocation *allocation, uint64_t queue_id)
+static uint32_t DeviceAllocationBusy(const SparkDeviceAllocation *allocation)
+{
+	return(DeviceStampsBusy(allocation->stamps));
+}
+
+static int32_t DeviceStampsSlot(const SparkDeviceStamp *stamps, uint64_t queue_id)
 {
 	uint32_t index;
 	for ( index = 0u; index < SPARK_DEVICE_STAMPS; index++ )
-		if ( allocation->stamps[index].queue_id == queue_id )
+		if ( stamps[index].queue_id == queue_id )
 			return((int32_t)index);
 	for ( index = 0u; index < SPARK_DEVICE_STAMPS; index++ )
-		if ( DeviceStampDone(&allocation->stamps[index]) != 0u )
+		if ( DeviceStampDone(&stamps[index]) != 0u )
 			return((int32_t)index);
 	return(-1);
 }
 
+static int32_t DeviceStampSlot(const SparkDeviceAllocation *allocation, uint64_t queue_id)
+{
+	return(DeviceStampsSlot(allocation->stamps,queue_id));
+}
+
+static void DeviceStampAt(SparkDeviceStamp *stamps, int32_t slot, uint64_t queue_id, uint64_t sequence)
+{
+	stamps[slot].queue_id = queue_id;
+	stamps[slot].sequence = sequence;
+}
+
 static void DeviceStamp(SparkDeviceAllocation *allocation, int32_t slot, uint64_t queue_id, uint64_t sequence)
 {
-	allocation->stamps[slot].queue_id = queue_id;
-	allocation->stamps[slot].sequence = sequence;
+	DeviceStampAt(allocation->stamps,slot,queue_id,sequence);
 }
 
 static uint64_t DeviceHandle(uint32_t slot)
@@ -897,4 +916,239 @@ SparkStatus SparkDeviceEventElapsed(SparkDeviceEvent *start, SparkDeviceEvent *s
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	return(SparkDeviceBackendEventElapsed(start,stop,nanoseconds));
+}
+
+static SparkDeviceLibrary *DeviceLibraryLive(const SparkDeviceLibrary *library)
+{
+	SparkDeviceLibrary *entry;
+	for ( entry = device_libraries; entry != 0; entry = entry->next )
+		if ( entry == library && entry->id != 0u )
+			return(entry);
+	return(0);
+}
+
+static SparkDeviceKernel *DeviceKernelLive(const SparkDeviceKernel *kernel)
+{
+	SparkDeviceKernel *entry;
+	for ( entry = device_kernels; entry != 0; entry = entry->next )
+		if ( entry == kernel && entry->id != 0u )
+			return(entry);
+	return(0);
+}
+
+SparkStatus SparkDeviceLibraryLoad(SparkDeviceLibrary **library, const char *path, const char *owner)
+{
+	SparkDeviceLibrary *created = 0;
+	SparkStatus status;
+	if ( library == 0 || path == 0 || path[0] == '\0' )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"library_load",owner,0,"needs an output and a library path"));
+	*library = 0;
+	pthread_mutex_lock(&device_mutex);
+	status = DeviceReady("library_load",owner);
+	if ( status == SPARK_STATUS_OK && (created = (SparkDeviceLibrary *)calloc(1u,sizeof(*created))) == 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"library_load",owner,0,"out of host memory for the library record");
+	if ( status == SPARK_STATUS_OK )
+	{
+		created->id = device_next_library_id++;
+		DeviceCopyText(created->owner,sizeof(created->owner),owner);
+		status = SparkDeviceBackendLibraryLoad(created,path);
+		if ( status != SPARK_STATUS_OK )
+			free(created);
+		else
+		{
+			created->next = device_libraries;
+			device_libraries = created;
+			*library = created;
+		}
+	}
+	pthread_mutex_unlock(&device_mutex);
+	return(status);
+}
+
+SparkStatus SparkDeviceLibraryUnload(SparkDeviceLibrary *library)
+{
+	SparkDeviceLibrary **link;
+	SparkStatus status;
+	pthread_mutex_lock(&device_mutex);
+	status = DeviceReady("library_unload",0);
+	if ( status == SPARK_STATUS_OK && DeviceLibraryLive(library) == 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"library_unload",0,0,"not a loaded library");
+	if ( status == SPARK_STATUS_OK && library->kernels != 0u )
+		status = SparkDeviceRecordError(SPARK_STATUS_BUSY,"library_unload",library->owner,0,"kernels from the library are still live");
+	if ( status == SPARK_STATUS_OK )
+	{
+		for ( link = &device_libraries; *link != 0; link = &(*link)->next )
+			if ( *link == library )
+			{
+				*link = library->next;
+				break;
+			}
+		SparkDeviceBackendLibraryUnload(library);
+		library->id = 0u;
+		free(library);
+	}
+	pthread_mutex_unlock(&device_mutex);
+	return(status);
+}
+
+SparkStatus SparkDeviceKernelCreate(SparkDeviceKernel **kernel, SparkDeviceLibrary *library, const char *name)
+{
+	SparkDeviceKernel *created = 0;
+	SparkStatus status;
+	if ( kernel == 0 || name == 0 || name[0] == '\0' || strlen(name) >= SPARK_DEVICE_KERNEL_NAME_BYTES )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_create",name,0,"needs an output and a kernel name under 64 bytes"));
+	*kernel = 0;
+	pthread_mutex_lock(&device_mutex);
+	status = DeviceReady("kernel_create",name);
+	if ( status == SPARK_STATUS_OK && DeviceLibraryLive(library) == 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_create",name,0,"not a loaded library");
+	if ( status == SPARK_STATUS_OK && (created = (SparkDeviceKernel *)calloc(1u,sizeof(*created))) == 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"kernel_create",name,0,"out of host memory for the kernel record");
+	if ( status == SPARK_STATUS_OK )
+	{
+		created->id = device_next_kernel_id++;
+		created->library = library;
+		DeviceCopyText(created->name,sizeof(created->name),name);
+		status = SparkDeviceBackendKernelCreate(created,name);
+		if ( status == SPARK_STATUS_OK && (created->info.max_threads == 0u || created->info.simd_width == 0u) )
+		{
+			SparkDeviceBackendKernelDestroy(created);
+			status = SparkDeviceRecordError(SPARK_STATUS_TARGET_MISMATCH,"kernel_create",name,0,"the backend reported no thread limit for the kernel");
+		}
+		if ( status != SPARK_STATUS_OK )
+			free(created);
+		else
+		{
+			library->kernels++;
+			created->next = device_kernels;
+			device_kernels = created;
+			*kernel = created;
+		}
+	}
+	pthread_mutex_unlock(&device_mutex);
+	return(status);
+}
+
+SparkStatus SparkDeviceKernelDestroy(SparkDeviceKernel *kernel)
+{
+	SparkDeviceKernel **link;
+	SparkStatus status;
+	pthread_mutex_lock(&device_mutex);
+	status = DeviceReady("kernel_destroy",0);
+	if ( status == SPARK_STATUS_OK && DeviceKernelLive(kernel) == 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_destroy",0,0,"not a live kernel");
+	if ( status == SPARK_STATUS_OK && DeviceStampsBusy(kernel->stamps) != 0u )
+		status = SparkDeviceRecordError(SPARK_STATUS_BUSY,"kernel_destroy",kernel->name,0,"a queued launch still uses the kernel");
+	if ( status == SPARK_STATUS_OK )
+	{
+		for ( link = &device_kernels; *link != 0; link = &(*link)->next )
+			if ( *link == kernel )
+			{
+				*link = kernel->next;
+				break;
+			}
+		SparkDeviceBackendKernelDestroy(kernel);
+		kernel->library->kernels--;
+		kernel->id = 0u;
+		free(kernel);
+	}
+	pthread_mutex_unlock(&device_mutex);
+	return(status);
+}
+
+SparkStatus SparkDeviceKernelGetInfo(const SparkDeviceKernel *kernel, SparkDeviceKernelInfo *info)
+{
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( info == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_info",0,0,"needs an output"));
+	pthread_mutex_lock(&device_mutex);
+	if ( DeviceKernelLive(kernel) == 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_info",0,0,"not a live kernel");
+	else
+		*info = kernel->info;
+	pthread_mutex_unlock(&device_mutex);
+	return(status);
+}
+
+static SparkStatus DeviceLaunchShape(const SparkDeviceKernel *kernel, const SparkDeviceLaunch *launch)
+{
+	const uint64_t threads = (uint64_t)launch->threads.x * launch->threads.y * launch->threads.z;
+	if ( launch->groups.x == 0u || launch->groups.y == 0u || launch->groups.z == 0u || threads == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",kernel->name,0,"a launch needs at least one group of one thread"));
+	if ( threads > kernel->info.max_threads )
+		return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_launch",kernel->name,0,"more threads per group than the kernel allows"));
+	if ( (uint64_t)launch->shared_bytes + kernel->info.static_shared_bytes > device_properties.max_shared_bytes )
+		return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_launch",kernel->name,0,"more group-shared memory than the device has"));
+	if ( launch->constant_bytes > SPARK_DEVICE_MAX_CONSTANT_BYTES || (launch->constant_bytes != 0u) != (launch->constants != 0) )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",kernel->name,0,"constants need a pointer and at most 4096 bytes"));
+	if ( launch->binding_count > SPARK_DEVICE_MAX_BINDINGS || (launch->binding_count != 0u && launch->bindings == 0) )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",kernel->name,0,"more than 30 bindings or a missing binding table"));
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus DeviceBind(const SparkDeviceKernel *kernel, const SparkDeviceBinding *binding, SparkDeviceAllocation **out)
+{
+	SparkDeviceAllocation *allocation = 0;
+	const uint32_t access = binding->access;
+	SparkStatus status = DeviceRange("kernel_launch",binding->range,binding->bytes,&allocation);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( allocation->device == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",kernel->name,0,"a binding names memory the device cannot see"));
+	if ( access == 0u || (access & ~(SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE)) != 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",kernel->name,0,"a binding reads, writes or both"));
+	if ( ((access & SPARK_DEVICE_BIND_READ) != 0u && (allocation->access & SPARK_DEVICE_ACCESS_DEVICE_READ) == 0u) ||
+		((access & SPARK_DEVICE_BIND_WRITE) != 0u && (allocation->access & SPARK_DEVICE_ACCESS_DEVICE_WRITE) == 0u) )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",allocation->owner,0,"a binding asks for access the buffer does not grant"));
+	*out = allocation;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus DeviceLaunchStamps(SparkDeviceKernel *kernel, SparkDeviceAllocation *const *allocations, uint32_t count, uint64_t queue_id,
+	int32_t *slots)
+{
+	uint32_t index;
+	slots[count] = DeviceStampsSlot(kernel->stamps,queue_id);
+	for ( index = 0u; index < count; index++ )
+		slots[index] = DeviceStampSlot(allocations[index],queue_id);
+	for ( index = 0u; index <= count; index++ )
+		if ( slots[index] < 0 )
+			return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"kernel_launch",kernel->name,0,"a binding is in flight on too many queues"));
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceKernelLaunch(SparkDeviceQueue *queue, const SparkDeviceKernel *kernel, const SparkDeviceLaunch *launch)
+{
+	SparkDeviceAllocation *allocations[SPARK_DEVICE_MAX_BINDINGS];
+	int32_t slots[SPARK_DEVICE_MAX_BINDINGS + 1u];
+	SparkDeviceKernel *live = 0;
+	uint32_t index;
+	SparkStatus status;
+	pthread_mutex_lock(&device_mutex);
+	status = DeviceReady("kernel_launch",0);
+	if ( status == SPARK_STATUS_OK )
+		status = DeviceQueueValid(queue,"kernel_launch");
+	if ( status == SPARK_STATUS_OK && ((live = DeviceKernelLive(kernel)) == 0 || launch == 0) )
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",0,0,"needs a live kernel and a launch");
+	if ( status == SPARK_STATUS_OK )
+		status = DeviceLaunchShape(live,launch);
+	for ( index = 0u; status == SPARK_STATUS_OK && index < launch->binding_count; index++ )
+		status = DeviceBind(live,&launch->bindings[index],&allocations[index]);
+	if ( status == SPARK_STATUS_OK )
+		status = DeviceLaunchStamps(live,allocations,launch->binding_count,queue->id,slots);
+	if ( status == SPARK_STATUS_OK )
+	{
+		queue->submitted++;
+		status = SparkDeviceBackendKernelLaunch(queue,live,launch,allocations);
+		if ( status != SPARK_STATUS_OK )
+			queue->submitted--;
+		else
+		{
+			for ( index = 0u; index < launch->binding_count; index++ )
+				DeviceStamp(allocations[index],slots[index],queue->id,queue->submitted);
+			DeviceStampAt(live->stamps,slots[launch->binding_count],queue->id,queue->submitted);
+		}
+	}
+	pthread_mutex_unlock(&device_mutex);
+	return(status);
 }

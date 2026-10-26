@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 3u
+#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 4u
 #define SPARK_STAGE_RUNNER_ROUND_ALL 0u
 #define SPARK_STAGE_RUNNER_ROUND_BEGIN 1u
 #define SPARK_STAGE_RUNNER_ROUND_FINISH 2u
@@ -99,6 +99,13 @@ typedef struct SparkStageRunnerModelGeometry
 	uint32_t embed_alias_row;
 } SparkStageRunnerModelGeometry;
 
+typedef struct SparkStageRunnerDeviceWeights
+{
+	uint64_t pack_address;
+	uint64_t pack_bytes;
+	uint8_t pack_sha256[32];
+} SparkStageRunnerDeviceWeights;
+
 typedef struct SparkStageRunnerModelOpen
 {
 	const SparkStageRunnerConfiguration *configuration;
@@ -127,6 +134,7 @@ struct SparkStageRunnerModelInterface
 	SparkStatus (*lane)(void *model, uint32_t lane, const SparkStageRunnerStep *step, const SparkStageRunnerServices *services, void **lane_model);
 	SparkStatus (*keep_rows)(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream);
 	SparkStatus (*tap_plan)(void *model, const SparkStageRunnerTapPlan *plan);
+	SparkStatus (*bind_device)(void *model, const SparkStageRunnerDeviceWeights *weights, SparkStageRunnerModelGeometry *geometry);
 };
 
 #ifdef __cplusplus
