@@ -256,7 +256,7 @@
   {
    "id": "solar-open-2",
    "kv_label": "solar_open2_stage",
-   "node_memory_bytes": 42949672960,
+   "node_memory_bytes": 64424509440,
    "node_reclaim": "$HOME/stage-lanes/solar_open2/lane4/root/lane.sh reclaim",
    "node_start": "$HOME/stage-lanes/solar_open2/lane4/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/solar_open2/lane4/root/lane.sh ready {run_id}",

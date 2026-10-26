@@ -22,11 +22,11 @@ struct SolarOpen2Geometry : LingDefaults
 	static constexpr uint32_t kGqaKvHeads = SPARK_SOLAR_OPEN2_TP16_STAGE_KV_HEADS;
 	static constexpr uint32_t kGqaHeadDim = SPARK_SOLAR_OPEN2_TP16_STAGE_HEAD_DIM;
 	static constexpr uint32_t kExperts = 320u;
-	static constexpr uint32_t kLocalExperts = kExperts / kTpDegree;
+	static constexpr uint32_t kLocalExperts = kExperts;
 	static constexpr uint32_t kTopK = 8u;
 	static constexpr uint32_t kGroups = 1u;
 	static constexpr uint32_t kTopkGroups = 1u;
-	static constexpr uint32_t kMoeInter = 1280u;
+	static constexpr uint32_t kMoeInter = 128u;
 	static constexpr uint32_t kSharedRows = 128u;
 	static constexpr float kRouteScale = 1.0f;
 	static constexpr uint32_t kPageSlots = SPARK_SOLAR_OPEN2_TP16_STAGE_PAGE_SLOTS;
