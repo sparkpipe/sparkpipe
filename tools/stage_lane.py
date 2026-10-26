@@ -284,6 +284,7 @@ AXK2 = {
     "hidden": 7168,
     "kv_page_bytes": (61 * 64 * 1152 + 61 * 64 * 256) // WORLD,
     "recurrent_bytes": 0,
+    "expert_warm": {"model_tag": "axk2_stage", "layers": 61, "experts": 256},
 }
 GLM53_FULL = {
     "swap_id": "glm-5.3",
@@ -505,7 +506,18 @@ def swap_entry(name: str, model: dict, lane: int) -> dict:
                       f"--port {model['api_port']} >> {HUB_LOG_DIR}/{name}-kv-api.log 2>&1' >/dev/null"),
         "api_stop": f"systemctl --user stop {unit} 2>/dev/null; systemctl --user reset-failed {unit} 2>/dev/null; true",
         "health": f"http://127.0.0.1:{model['api_port']}/health",
+        **expert_warm(model, root),
     }
+
+
+def expert_warm(model: dict, root: str) -> dict:
+    warm = model.get("expert_warm")
+    if warm is None:
+        return {}
+    revision = json.loads((ROOT / model["contract"]).read_text())["revision"]
+    return {"node_warm": (f"cd {root} && SPARK_WEIGHTD_EXPERT_POOL_BYTES=$(grep -o 'SPARK_WEIGHTD_EXPERT_POOL_BYTES=[0-9]*' lane.sh | head -1 | cut -d= -f2) "
+                          f"./bin/weightd_warm /tmp/spark_weightd.sock $(readlink -f packs/*.pack) $(cut -c1-64 packs/pack.sha256) {revision} {WORLD} "
+                          f"--model {warm['model_tag']} --shared {warm['layers']} {warm['experts']} 1800 > warm.log 2>&1")}
 
 
 def hub_deployment(model: dict, lane: int, args) -> dict:

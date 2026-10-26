@@ -784,10 +784,10 @@ The sources are pinned. K-EXAONE 2.0 serves; A.X K2 is built but not yet run; So
     - B1 decode waits on experts: each rank holds 16 whole experts, so a token's 8 experts land unevenly and the busiest rank reads about 2.2 of them per layer. The row layout (`--expert-layout rows`, `KEXAONE2_EXPERT_ROWS=1`, every rank holding 128 of each expert's 2,048 rows) is built but not yet measured or chosen.
     - Speculation (its MTP layer or the DSpark drafter) is not wired.
 - **A.X K2** (`skt/A.X-K2@d0805cfd`, block-128 FP8, the precision it was trained in, 0.69 TB): 61 layers of latent attention (query rank 1,536, KV rank 512) with top-2,048 sparse attention through a 64-head indexer, a gated attention output and a gated norm; 256 routed experts (top 8) plus one shared; YaRN to 256K. Drafter `skt/A.X-K2-DSpark@0b278334`. GLM 5.3 Full has the same attention and expert design.
-  - **In place:** contract, tokenizer split, driver (`axk2` on the GLM stage, with its options for the query gate, gated norms, index rope and ReLU, YaRN and grouped routing), FP8 packer, numpy reference and lane 3.
+  - **Serving:** contract, tokenizer split, driver (`axk2` on the GLM stage, with its options for the query gate, gated norms, index rope and ReLU, YaRN and grouped routing), FP8 packer, numpy reference and lane 3. Answers are right in English and Korean, including a 3,076-token passkey past the indexer's 2,048 tokens.
+  - **Measured:** 23.5 tok/s at B1 without speculation, 1,252 tok/s prefill at 6K.
   - **Missing:**
-    - The packs are not yet on the fleet, and the lane has not run.
-    - The reference has not confirmed served tokens, including one prompt past the indexer's 2,048 tokens.
+    - The reference has not confirmed served tokens.
     - Speculation with the DSpark drafter is not wired.
 - **Solar Open 2** (`upstage/Solar-Open2-250B@9190fbe6`, BF16, 0.50 TB): 48 layers, three linear-attention layers (short convolution 4, 64 heads) for each GQA layer, no position encoding, 320 routed experts (top 8) plus one shared, 1M context. The Upstage Solar License asks that derivatives be named Solar and show "Built with Solar". The nearest served design is the linear-attention path of Kimi K3 and Ling.
 
