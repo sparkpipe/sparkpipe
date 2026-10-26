@@ -200,6 +200,21 @@ void LmSiluMulLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *_
 	}
 }
 
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmSiluMulGateLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, float limit)
+{
+	uint64_t base = (uint64_t)blockIdx.x * dimension * 2u;
+	uint64_t out_base = (uint64_t)blockIdx.x * dimension;
+	uint32_t index;
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+	{
+		float gate = fminf(LmBf16ToFloat(gate_up_bf16[base + index]), limit);
+		float up = fminf(fmaxf(LmBf16ToFloat(gate_up_bf16[base + dimension + index]), -limit), limit);
+		output_bf16[out_base + index] = LmFloatToBf16((gate / (1.0f + expf(-gate))) * up);
+	}
+}
+
 #define LM_GATE_SIGMOID 0u
 #define LM_GATE_SOFTPLUS 1u
 #define LM_GATE_SILU 2u
