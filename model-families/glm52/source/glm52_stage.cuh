@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <numeric>
 
 #include "runtime/launch.h"
 #include "runtime/gemm.cuh"
@@ -53,7 +54,6 @@
 #define GLM_STREAM_EXPERT_ROWS 256u
 #define GLM_LANE_ROWS 1024u
 #define GLM_CANDIDATE_BYTES 8u
-#define GLM_SLOT_ALIGN 3u
 #define GLM_SCATTER_ROWS 256u
 #define GLM_SPLIT_PARTITIONS 16u
 #define GLM_PREFILL_BLOCK_ROWS 4u
@@ -94,6 +94,7 @@ struct GlmShape : G
 	static constexpr uint32_t kIndexQuery = G::kIndexHeads * G::kIndexDim;
 	static constexpr uint32_t kGatherWidth = G::kQueryA + kSlot;
 	static constexpr uint64_t kUnitBytes = (uint64_t)G::kHidden * 2u;
+	static constexpr uint32_t kSlotAlign = (uint32_t)(kSlotBytes / std::gcd(kUnitBytes, (uint64_t)kSlotBytes));
 	static constexpr uint32_t kPartialFloats = G::kLatent + 2u;
 	static constexpr uint32_t kQueryHead = G::kNope + G::kRope + G::kQueryGate;
 	static constexpr uint32_t kQueryInput = G::kQueryConcat ? 2u * G::kQueryA : G::kQueryA;
@@ -1134,8 +1135,8 @@ struct GlmModel
 
 	static SparkKvShardSectionLayout GatherLayout(const State *state, uint32_t old_bound)
 	{
-		return SparkKvShardSectionLayoutBuild(SparkKvShardGatherKeys(state->shard, old_bound), S::kSlotBytes, S::kUnitBytes, GLM_SLOT_ALIGN,
-			state->max_rows / GLM_SLOT_ALIGN * GLM_SLOT_ALIGN);
+		return SparkKvShardSectionLayoutBuild(SparkKvShardGatherKeys(state->shard, old_bound), S::kSlotBytes, S::kUnitBytes, S::kSlotAlign,
+			state->max_rows / S::kSlotAlign * S::kSlotAlign);
 	}
 
 	static uint32_t RowRegime(void *context, uint32_t row)
