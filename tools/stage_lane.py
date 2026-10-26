@@ -289,7 +289,7 @@ SOLAR_OPEN2 = {
     "swap_id": "solar-open-2",
     "api_port": 8479,
     "kv_label": "solar_open2_stage",
-    "node_memory_bytes": 60 << 30,
+    "node_memory_bytes": 42 << 30,
     "tokenizer_json": "/mnt/cold-raid6/models/solar-open2-250b-bf16-official/tokenizer.json",
     "pack": "sparkdata/solar_open2.tp16/solar_open2.tp16.rank{rank:02d}.pack",
     "adapter": "libsolar_open2_tp16_serving_adapter.so",
