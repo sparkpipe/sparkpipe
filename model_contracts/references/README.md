@@ -1,5 +1,10 @@
 # Pinned modeling references (semantics ground truth for kernel ports)
 
+## modeling_exaone_moe.py, configuration_exaone_moe.py
+- Source: nuxlear/transformers @ 969f8bdfc73d7d8bb0df1b426e057d80a1adf501 (LG AI Research fork named by the K-EXAONE 2.0 model card)
+- sha256 prefixes: e2b107896dd690aa (modeling), a3218188e7d8e462 (configuration); pinned by model_contracts/kexaone2_authoritative.json
+- Purpose: K-EXAONE 2.0 semantics ground truth for the kexaone2 driver and tools/kexaone2_reference.py.
+
 ## modeling_ling_bailing_moe_v3.py
 - Source: inclusionAI/Ling-3.0-flash @ e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3 (modeling_bailing_moe_v3.py, repo remote code)
 - Fetched: 2026-09-07 from huggingface.co (resolve/main)

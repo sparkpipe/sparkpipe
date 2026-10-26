@@ -350,6 +350,25 @@
    "memory_max": "32G",
    "tokenizer_sha256": "b3736c75df6a767365e6df2d7762a7fc9e74974f8fa37124a9761f0e748c0052",
    "text_prompt_prefix_token_ids": []
+  },
+  "k-exaone-2.0": {
+   "launcher": "stage_lane",
+   "model": "kexaone2",
+   "lane": 11,
+   "runtime_root": "/home/{host}/stage-lanes/kexaone2/lane11/root",
+   "weightd_socket": "/tmp/spark_weightd.sock",
+   "sequences": 4,
+   "rows": 1024,
+   "context_tokens": 262144,
+   "kv_physical_pages": 4096,
+   "kv_logical_pages": 16384,
+   "kv_backing_bytes": 17179869184,
+   "kv_snapshot_bytes": 8589934592,
+   "state_budget_bytes": 4294967296,
+   "expert_pool_bytes": 268435456,
+   "memory_max": "24G",
+   "tokenizer_sha256": "f0bbfdc01fe00c3c5ee17aeff418f6e7f271deae5f5c5badc5c0cf7294aa1714",
+   "text_prompt_prefix_token_ids": []
   }
  }
 }

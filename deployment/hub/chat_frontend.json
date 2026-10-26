@@ -917,6 +917,58 @@
     "parameter_start": "<parameter=",
     "parameter_end": "</parameter>"
    }
+  },
+  {
+   "id": "k-exaone-2.0",
+   "model_dir": "models/k-exaone-2.0",
+   "engine": "http://127.0.0.1:8477",
+   "context_tokens": 262144,
+   "max_output_tokens": 32768,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95
+   },
+   "sampling_source": "/mnt/cold-raid6/models/k-exaone-2.0-750b-bf16-official/generation_config.json",
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 3900,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<|endofturn|>"
+   ],
+   "template_defaults": {},
+   "template_kwargs": [
+    "enable_thinking"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "enable_thinking": false
+    },
+    "low": {
+     "enable_thinking": true
+    },
+    "medium": {
+     "enable_thinking": true
+    },
+    "high": {
+     "enable_thinking": true
+    }
+   },
+   "reasoning": {
+    "start": "<think>",
+    "end": "</think>"
+   },
+   "tool_calls": {
+    "format": "function_xml",
+    "start": "<tool_call>",
+    "end": "</tool_call>",
+    "attribute_end": ">",
+    "function_start": "<function=",
+    "function_end": "</function>",
+    "parameter_start": "<parameter=",
+    "parameter_end": "</parameter>"
+   }
   }
  ],
  "controller_token_file": "/srv/workspace/sparkpipe/swap-controller/token",
