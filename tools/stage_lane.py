@@ -269,7 +269,7 @@ KEXAONE2 = {
 AXK2 = {
     "swap_id": "a.x-k2",
     "api_port": 8478,
-    "kv_label": "axk2_stage",
+    "kv_label": "axk2_tp16_stage",
     "node_memory_bytes": 57 << 30,
     "tokenizer_json": "/mnt/cold-raid6/models/ax-k2-fp8-official/tokenizer.json",
     "pack": "sparkdata/axk2.fp8.tp16/axk2.tp16.rank{rank:02d}.pack",

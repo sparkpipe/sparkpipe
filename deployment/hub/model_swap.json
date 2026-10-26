@@ -242,7 +242,7 @@
   },
   {
    "id": "a.x-k2",
-   "kv_label": "axk2_stage",
+   "kv_label": "axk2_tp16_stage",
    "node_memory_bytes": 61203283968,
    "node_reclaim": "$HOME/stage-lanes/axk2/lane3/root/lane.sh reclaim",
    "node_start": "$HOME/stage-lanes/axk2/lane3/root/lane.sh start {run_id}",
