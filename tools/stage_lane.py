@@ -249,6 +249,24 @@ LAGUNA = {
     "kv_page_bytes": (48 * 64 * 4096) // WORLD,
     "recurrent_bytes": 0,
 }
+KEXAONE2 = {
+    "swap_id": "k-exaone-2.0",
+    "api_port": 8477,
+    "kv_label": "kexaone2_stage",
+    "node_memory_bytes": 100 << 30,
+    "tokenizer_json": "/mnt/cold-raid6/models/k-exaone-2.0-750b-bf16-official/tokenizer.json",
+    "pack": "sparkdata/kexaone2.bf16.tp16/kexaone2.tp16.rank{rank:02d}.pack",
+    "adapter": "libkexaone2_tp16_serving_adapter.so",
+    "program": "kexaone2",
+    "node_target": "cuda.sm121.kexaone2.stage_runner.linear_bf16.expert_bf16.kv_bf16",
+    "contract": "model_contracts/kexaone2_authoritative.json",
+    "chat_template": "model-families/kexaone2/chat_template.json",
+    "eos_token_ids": [53, 2],
+    "tokenizer_vocabulary": 153600,
+    "hidden": 6144,
+    "kv_page_bytes": (78 * 64 * 4096) // WORLD,
+    "recurrent_bytes": 0,
+}
 GLM53_FULL = {
     "swap_id": "glm-5.3",
     "api_port": 8475,
@@ -328,6 +346,7 @@ MODELS = {
     "hy4": HY4,
     "k3": K3,
     "laguna": LAGUNA,
+    "kexaone2": KEXAONE2,
     "ling3_fin": LING3_FIN,
     "mimo26_flash": MIMO26_FLASH,
     "mimo26_pro": MIMO26_PRO,
