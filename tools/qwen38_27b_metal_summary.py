@@ -32,8 +32,15 @@ def aggregate(rows, label):
         "target_logprob_delta_mean": sum(row["target_logprob_delta_mean"] * row["positions"] for row in picked) / positions,
         "target_logprob_delta_max": max(row["target_logprob_delta_max"] for row in picked),
         "reference_top1_logprob_delta_max": max(row["reference_top1_logprob_delta_max"] for row in picked),
-        "per_prompt": {row["prompt"]: {key: row[key] for key in ("positions", "kl_mean", "kl_max", "top1_agreement",
-                                                                  "target_logprob_delta_max")} for row in picked},
+        "kl_mean_prefill_positions": sum(row["kl_mean_prefill"] * row["prefill_positions"] for row in picked) /
+            max(1, sum(row["prefill_positions"] for row in picked)),
+        "kl_mean_decode_positions": sum(row["kl_mean_decode"] * (row["positions"] - row["prefill_positions"]) for row in picked) /
+            max(1, sum(row["positions"] - row["prefill_positions"] for row in picked)),
+        "top1_agreement_where_references_agree": (sum(row["stable_top1_agree"] for row in picked) /
+                                                  sum(row["stable_positions"] for row in picked)) if sum(row["stable_positions"] for row in picked) else None,
+        "per_prompt": {row["prompt"]: {key: row[key] for key in ("positions", "prefill_positions", "kl_mean", "kl_mean_prefill", "kl_mean_decode",
+                                                                  "kl_max", "kl_max_position", "top1_agreement", "target_logprob_delta_max",
+                                                                  "stable_positions", "stable_top1_agree")} for row in picked},
     }
 
 
@@ -65,6 +72,13 @@ def greedy_table(out):
         entry["metal_matches_reference_b_tokens"] = common_prefix(entry["metal"], entry["reference_b"])
         entry["reference_a_matches_b_tokens"] = common_prefix(entry["reference_a"], entry["reference_b"])
     return table
+
+
+def pairs_table(out):
+    single = {item["name"]: item["generated"] for item in json.loads((out / "metal" / "greedy.metal.json").read_text())["prompts"]}
+    batched = json.loads((out / "metal" / "pairs.metal.json").read_text())["prompts"]
+    return {item["name"]: {"batched_with": item["batched_with"], "identical_to_single_sequence": item["generated"] == single[item["name"]],
+                           "rows_per_second": item["rows_per_second"]} for item in batched}
 
 
 def speed(out):
@@ -109,6 +123,8 @@ def main():
     metal = aggregate(rows, "metal")
     metal_b = aggregate(rows, "metal_vs_b")
     control = aggregate(rows, "control")
+    diagnostics = {label: aggregate(rows, label) for label in ("fp32_activations_vs_a", "fp32_activations_vs_metal")
+                   if any(row["label"] == label for row in rows)}
     kernels = json.loads((out / "kernels.json").read_text())
     teacher_log = (out / "metal_teacher.log").read_text()
     sha = re.search(r"sha256 ([0-9a-f]{64})", teacher_log)
@@ -125,8 +141,10 @@ def main():
                      "floor": floor, "metal": metal, "metal_against_reference_b": metal_b,
                      "metal_verdict": verdict(metal, floor), "control": control,
                      "control_corruption": json.loads((out / "control" / "control.json").read_text()),
-                     "control_verdict": verdict(control, floor)},
+                     "control_verdict": verdict(control, floor),
+                     "diagnostics": diagnostics},
         "greedy": greedy_table(out),
+        "two_sequence_decode": pairs_table(out),
         "speed": speed(out),
     }
     receipt["numerics"]["control_fails_as_required"] = not receipt["numerics"]["control_verdict"]["pass"]

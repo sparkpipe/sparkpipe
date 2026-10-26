@@ -35,7 +35,7 @@ static uint64_t NowNs(void)
 
 static int Usage(const char *program)
 {
-	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|bench --out DIR [--prefill-rows N] [--new-tokens N] "
+	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|pairs|bench --out DIR [--prefill-rows N] [--new-tokens N] "
 		"[--repeats N] [--bench-prompt NAME] [--verify-pack]\n",program);
 	return(2);
 }
@@ -93,15 +93,15 @@ typedef struct Session
 	uint32_t capacity;
 } Session;
 
-static SparkStatus SessionStep(Session *session, const uint32_t *tokens, uint32_t first, uint32_t count, uint32_t head_all, const uint32_t *targets,
-	SparkDeviceStageRunnerResult *result)
+static SparkStatus SessionStepSequence(Session *session, uint32_t sequence, const uint32_t *tokens, uint32_t first, uint32_t count,
+	uint32_t head_all, const uint32_t *targets, SparkDeviceStageRunnerResult *result)
 {
 	SparkDeviceStageRunnerBatch batch;
 	uint32_t row;
 	for ( row = 0u; row < count; row++ )
 	{
 		session->positions[row] = first + row;
-		session->sequence[row] = 0u;
+		session->sequence[row] = sequence;
 		session->rows[row] = row;
 		session->targets[row] = targets != 0 ? targets[row] : 0u;
 	}
@@ -114,6 +114,28 @@ static SparkStatus SessionStep(Session *session, const uint32_t *tokens, uint32_
 	batch.head_row_index = head_all != 0u ? session->rows : session->rows + (count - 1u);
 	batch.targets = targets != 0 ? session->targets : 0;
 	return(SparkDeviceStageRunnerStep(session->runner,&batch,result));
+}
+
+static SparkStatus SessionStep(Session *session, const uint32_t *tokens, uint32_t first, uint32_t count, uint32_t head_all, const uint32_t *targets,
+	SparkDeviceStageRunnerResult *result)
+{
+	return(SessionStepSequence(session,0u,tokens,first,count,head_all,targets,result));
+}
+
+static SparkStatus SessionPrefillSequence(Session *session, uint32_t sequence, const uint32_t *tokens, uint32_t count, uint32_t chunk,
+	uint32_t *next_token)
+{
+	SparkDeviceStageRunnerResult result;
+	uint32_t first;
+	SparkStatus status = SPARK_STATUS_OK;
+	for ( first = 0u; status == SPARK_STATUS_OK && first < count; first += chunk )
+	{
+		const uint32_t rows = count - first < chunk ? count - first : chunk;
+		status = SessionStepSequence(session,sequence,tokens + first,first,rows,0u,0,&result);
+		if ( status == SPARK_STATUS_OK )
+			*next_token = result.argmax[0];
+	}
+	return(status);
 }
 
 static SparkStatus SessionPrefill(Session *session, const uint32_t *tokens, uint32_t count, uint32_t chunk, uint32_t *next_token, uint64_t *ns)
@@ -219,6 +241,67 @@ static int RunGreedy(Session *session, const RunOptions *options, const SparkTok
 	}
 	free(generated);
 	free(scores);
+	return(status == SPARK_STATUS_OK ? 0 : 1);
+}
+
+static int RunPair(Session *session, const RunOptions *options, const SparkTokenPrompt *first, const SparkTokenPrompt *second, FILE *json,
+	uint32_t first_pair)
+{
+	const SparkTokenPrompt *pair[2] = { first, second };
+	uint32_t *generated[2], token[2] = { 0u, 0u }, index, lane;
+	uint64_t total = 0u;
+	SparkStatus status = SPARK_STATUS_OK;
+	generated[0] = (uint32_t *)calloc(options->new_tokens,sizeof(uint32_t));
+	generated[1] = (uint32_t *)calloc(options->new_tokens,sizeof(uint32_t));
+	for ( lane = 0u; status == SPARK_STATUS_OK && lane < 2u; lane++ )
+	{
+		status = generated[lane] != 0 ? SparkDeviceStageRunnerResetSequence(session->runner,lane) : SPARK_STATUS_CAPACITY_EXCEEDED;
+		if ( status == SPARK_STATUS_OK )
+			status = SessionPrefillSequence(session,lane,pair[lane]->tokens,pair[lane]->count,options->prefill_rows,&token[lane]);
+	}
+	for ( index = 0u; status == SPARK_STATUS_OK && index < options->new_tokens; index++ )
+	{
+		SparkDeviceStageRunnerBatch batch;
+		SparkDeviceStageRunnerResult result;
+		const uint64_t before = NowNs();
+		for ( lane = 0u; lane < 2u; lane++ )
+		{
+			generated[lane][index] = token[lane];
+			session->positions[lane] = pair[lane]->count + index;
+			session->sequence[lane] = lane;
+			session->rows[lane] = lane;
+		}
+		memset(&batch,0,sizeof(batch));
+		batch.rows = 2u;
+		batch.token_ids = token;
+		batch.positions = session->positions;
+		batch.sequence_of_row = session->sequence;
+		batch.head_rows = 2u;
+		batch.head_row_index = session->rows;
+		status = SparkDeviceStageRunnerStep(session->runner,&batch,&result);
+		total += NowNs() - before;
+		if ( status == SPARK_STATUS_OK )
+		{
+			token[0] = result.argmax[0];
+			token[1] = result.argmax[1];
+		}
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		for ( lane = 0u; lane < 2u; lane++ )
+		{
+			fprintf(json,"%s{\"name\":\"%s\",\"batched_with\":\"%s\",\"generated\":[",first_pair != 0u && lane == 0u ? "" : ",\n",pair[lane]->name,
+				pair[1u - lane]->name);
+			for ( index = 0u; index < options->new_tokens; index++ )
+				fprintf(json,"%s%u",index != 0u ? "," : "",generated[lane][index]);
+			fprintf(json,"],\"decode_steps\":%u,\"decode_seconds\":%.6f,\"rows_per_second\":%.4f}",options->new_tokens,total / 1e9,
+				2.0 * options->new_tokens / (total / 1e9));
+		}
+		printf("pair %s + %s: %u two-row decode steps, %.3f rows/s\n",first->name,second->name,options->new_tokens,
+			2.0 * options->new_tokens / (total / 1e9));
+	}
+	free(generated[0]);
+	free(generated[1]);
 	return(status == SPARK_STATUS_OK ? 0 : 1);
 }
 
@@ -358,9 +441,9 @@ int main(int argc, char **argv)
 	config.pack_path = options.pack;
 	config.model = SparkQwen38_27bDeviceStageModel();
 	config.max_rows = options.prefill_rows;
-	config.sequences = 1u;
+	config.sequences = strcmp(options.mode,"pairs") == 0 ? 2u : 1u;
 	config.max_context = RUN_MAX_CONTEXT;
-	config.head_rows = strcmp(options.mode,"teacher") == 0 ? options.prefill_rows : 1u;
+	config.head_rows = strcmp(options.mode,"teacher") == 0 ? options.prefill_rows : strcmp(options.mode,"pairs") == 0 ? 2u : 1u;
 	config.state_budget_bytes = RUN_STATE_BUDGET;
 	config.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16;
 	config.verify_pack = options.verify;
@@ -390,6 +473,20 @@ int main(int argc, char **argv)
 			fprintf(json,"{\"new_tokens\":%u,\"prompts\":[\n",options.new_tokens);
 		for ( index = 0u; !failed && index < prompts.count; index++ )
 			failed = RunGreedy(&session,&options,&prompts.prompts[index],json,index == 0u);
+		if ( json != 0 )
+		{
+			fprintf(json,"\n]}\n");
+			fclose(json);
+		}
+	}
+	else if ( strcmp(options.mode,"pairs") == 0 )
+	{
+		FILE *json = OpenOut(&options,"pairs",".metal.json","w");
+		failed = json == 0;
+		if ( !failed )
+			fprintf(json,"{\"new_tokens\":%u,\"prompts\":[\n",options.new_tokens);
+		for ( index = 0u; !failed && index + 1u < prompts.count; index += 2u )
+			failed = RunPair(&session,&options,&prompts.prompts[index],&prompts.prompts[index + 1u],json,index == 0u);
 		if ( json != 0 )
 		{
 			fprintf(json,"\n]}\n");
