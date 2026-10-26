@@ -1,0 +1,14 @@
+opened /Users/m5u0/models/packs/qwen38_27b_tp1_bf16/qwen38_27b.tp1.rank00.pack on Apple M5 Ultra (metal.apple10) in 0.08 s: pack 53793417600 bytes, device state 679365952 bytes
+verify frame  1 rows: 49.492 ms, keeping all rows 1.407 ms
+verify frame  2 rows: 50.357 ms, keeping all rows 1.466 ms
+verify frame  4 rows: 49.324 ms, keeping all rows 1.618 ms
+verify frame  8 rows: 62.802 ms, keeping all rows 1.973 ms
+verify frame 16 rows: 121.604 ms, keeping all rows 2.674 ms
+verify frame 32 rows: 239.017 ms, keeping all rows 4.176 ms
+verify frame 64 rows: 474.565 ms, keeping all rows 7.140 ms
+design: 256 of 256 tokens identical; 20.12 tok/s plain, 21.20 tok/s with lookup speculation (15 frames, 17 of 64 drafts accepted)
+code: 256 of 256 tokens identical; 20.03 tok/s plain, 21.38 tok/s with lookup speculation (12 frames, 19 of 49 drafts accepted)
+korean: 256 of 256 tokens identical; 20.12 tok/s plain, 20.68 tok/s with lookup speculation (17 frames, 12 of 77 drafts accepted)
+rules: 256 of 256 tokens identical; 19.99 tok/s plain, 21.39 tok/s with lookup speculation (23 frames, 30 of 133 drafts accepted)
+rewrite: 256 of 256 tokens identical; 20.10 tok/s plain, 95.92 tok/s with lookup speculation (20 frames, 247 of 273 drafts accepted)
+prose: 256 of 256 tokens identical; 20.14 tok/s plain, 20.04 tok/s with lookup speculation (1 frames, 1 of 16 drafts accepted)

@@ -219,7 +219,10 @@ One Mac Studio, Apple M5 Ultra with 256 GB, runs Qwen3.8-27B whole (TP1, the
 publisher's BF16 weights, 53.8 GB pack) through the Metal backend and the
 single-device stage runner ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)).
 It is not served yet (TECHDEBT, Mac Studio deployment). Receipts:
-[`qualification/metal/qwen38_27b/76576307c/`](qualification/metal/qwen38_27b/76576307c/).
+[`qualification/metal/qwen38_27b/76576307c/`](qualification/metal/qwen38_27b/76576307c/)
+(decode, prefill, batches and numerics) and
+[`qualification/metal/qwen38_27b/07e0c1e00/`](qualification/metal/qwen38_27b/07e0c1e00/)
+(speculation, which reproduces them).
 
 | | |
 | --- | --- |
@@ -259,6 +262,32 @@ aggregate at B1 to B32:
 - Above 16 sequences the per-sequence work takes over: at B64 the gated delta
   rule's FP32 state (3.1 MB per layer and sequence, read and written each
   step) costs about 27 ms of the step and decode attention about 14 ms.
+
+Speculation from the request's own context (receipt
+[`qualification/metal/qwen38_27b/07e0c1e00/`](qualification/metal/qwen38_27b/07e0c1e00/)):
+lookup drafts over the prompt and the generated text, sized by the serving
+path's frame chooser, verified in one frame and kept with the recurrent
+replay. Greedy, 256 tokens; the tokens with speculation are identical to
+those without it on every prompt.
+
+| Prompt | Without speculation | With speculation | Frames | Drafts accepted |
+| --- | ---: | ---: | ---: | --- |
+| Whole-file rewrite (`tools/token_prompts.c`, 933 tokens) | 20.10 tok/s | 95.92 tok/s | 20 | 247 of 273 |
+| Prose (42-token request) | 20.14 | 20.04 | 1 | 1 of 16 |
+| `design` (summary) | 20.12 | 21.20 | 15 | 17 of 64 |
+| `code` (review) | 20.03 | 21.38 | 12 | 19 of 49 |
+| `korean` (summary) | 20.12 | 20.68 | 17 | 12 of 77 |
+| `rules` (analysis) | 19.99 | 21.39 | 23 | 30 of 133 |
+
+| Verify frame rows | 1 | 2 | 4 | 8 | 16 | 32 | 64 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Frame | 49.5 ms | 50.4 ms | 49.3 ms | 62.8 ms | 121.6 ms | 239.0 ms | 474.6 ms |
+| Keeping every row | 1.4 ms | 1.5 ms | 1.6 ms | 2.0 ms | 2.7 ms | 4.2 ms | 7.1 ms |
+
+A frame computes each row exactly as a one-row step does, in GEMV passes of
+up to eight rows, so frames longer than eight rows cost one pass per eight.
+The non-speculative outputs of this revision are byte-identical to the
+ladder receipt's.
 
 Numerics, teacher-forced over 5,636 positions of four prompts (700 to 2,040
 tokens; the first half of each prompt by prefill, the rest by decode),
