@@ -5,7 +5,7 @@
 #include "sparkpipe/spark_glm53_full_tp16_stage_model.h"
 #include "glm52_stage.cuh"
 
-struct ProbeGeometry
+struct ProbeGeometry : Glm52Dimensions
 {
 	static constexpr uint32_t kTpDegree = SPARK_GLM53_FULL_TP16_STAGE_TP_DEGREE;
 	static constexpr uint32_t kIndexLayers = SPARK_GLM53_FULL_TP16_STAGE_INDEX_LAYERS;
@@ -17,11 +17,12 @@ struct ProbeGeometry
 };
 
 typedef GlmModel<ProbeGeometry> ProbeModel;
+typedef GlmShape<ProbeGeometry> ProbeShape;
 
 #define PROBE_PAGES_PER_SEQUENCE 4u
 #define PROBE_POOL_PAGES 32u
 #define PROBE_SEQUENCES 2u
-#define PROBE_INDEX_PAGE_BYTES (GlmIndexKv::kPageBytes / SPARK_GLM53_FULL_TP16_STAGE_TP_DEGREE)
+#define PROBE_INDEX_PAGE_BYTES (GlmIndexKv<ProbeShape>::kPageBytes / SPARK_GLM53_FULL_TP16_STAGE_TP_DEGREE)
 
 static int probe_failures;
 static uint8_t probe_pool[8];
@@ -50,9 +51,9 @@ static SparkStageRunnerKv ProbeBinding(const ProbeModel::State *state)
 	SparkStageRunnerKv kv;
 	memset(&kv, 0, sizeof(kv));
 	kv.pool = probe_pool;
-	kv.layer_page_bytes = (uint64_t)GLM_PAGE_SLOTS * GLM_SLOT_BYTES;
+	kv.layer_page_bytes = (uint64_t)GLM_PAGE_SLOTS * ProbeShape::kSlotBytes;
 	kv.layer_stride_bytes = kv.layer_page_bytes / state->tp_degree;
-	kv.layer_count = GLM_LAYERS;
+	kv.layer_count = ProbeShape::kLayers;
 	kv.page_table = probe_table;
 	kv.page_table_stride = PROBE_PAGES_PER_SEQUENCE;
 	kv.pool_page_count = PROBE_POOL_PAGES;
@@ -60,7 +61,7 @@ static SparkStageRunnerKv ProbeBinding(const ProbeModel::State *state)
 	kv.context_shard = state->shard;
 	kv.second_pool = probe_index;
 	kv.second_layer_stride_bytes = (uint64_t)PROBE_POOL_PAGES * PROBE_INDEX_PAGE_BYTES;
-	kv.second_layer_page_bytes = GlmIndexKv::kPageBytes;
+	kv.second_layer_page_bytes = GlmIndexKv<ProbeShape>::kPageBytes;
 	kv.second_layer_count = ProbeGeometry::kIndexLayers;
 	return kv;
 }

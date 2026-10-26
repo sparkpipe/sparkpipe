@@ -207,6 +207,22 @@ model_list:
   model_info:
     max_input_tokens: 262144
     max_output_tokens: 32768
+- model_name: a.x-k2
+  litellm_params:
+    model: hosted_vllm/a.x-k2
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 262144
+    max_output_tokens: 32768
+- model_name: a.x-k2-bulk
+  litellm_params:
+    model: hosted_vllm/a.x-k2-bulk
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 262144
+    max_output_tokens: 32768
 - model_name: k-exaone-2.0
   litellm_params:
     model: hosted_vllm/k-exaone-2.0

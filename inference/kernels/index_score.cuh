@@ -62,7 +62,8 @@ __global__ __launch_bounds__(LM_INDEX_SCORE_THREADS)
 void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, const uint16_t *__restrict__ head_weight_bf16, Pages index_view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *__restrict__ scores)
 {
 	const LmKvView &index_cache = LmIndexScorePages(index_view);
-	static_assert(INDEX_HEADS == 32u, "two 16-head operand tiles");
+	constexpr uint32_t HEAD_TILES = INDEX_HEADS / 16u;
+	static_assert(INDEX_HEADS % 16u == 0u && HEAD_TILES >= 2u, "whole 16-head operand tiles, at least two");
 	static_assert(INDEX_DIM % 16u == 0u, "whole 16-wide k steps");
 	static_assert(LM_INDEX_SCORE_WARPS % ROWS_PER_BLOCK == 0u, "every row gets the same number of warps");
 	const uint32_t steps = INDEX_DIM / 16u;
@@ -70,8 +71,8 @@ void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, 
 	const uint32_t group = lane / 4u,pair = lane % 4u;
 	const uint32_t row = blockIdx.y * ROWS_PER_BLOCK + warp % ROWS_PER_BLOCK;
 	const uint32_t tile_stride = LM_INDEX_SCORE_WARPS / ROWS_PER_BLOCK;
-	uint32_t a[2][INDEX_DIM / 16u][4];
-	float weight[4];
+	uint32_t a[HEAD_TILES][INDEX_DIM / 16u][4];
+	float weight[2u * HEAD_TILES];
 	uint32_t sequence,bound,tile,step,head_tile,entry,valid;
 	if ( scores == 0 || row >= rows )
 		return;
@@ -91,7 +92,7 @@ void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, 
 		if ( row_position != 0 && row_position[row] + 1u < bound )
 			bound = row_position[row] + 1u;
 		bound = LmIndexScoreKeys(index_view, bound);
-		for (head_tile = 0u; head_tile < 2u; head_tile++)
+		for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
 			for (step = 0u; step < steps; step++)
 			{
 				const uint16_t *top = query + (uint64_t)(head_tile * 16u + group) * INDEX_DIM + step * 16u + pair * 2u;
@@ -101,17 +102,18 @@ void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, 
 				a[head_tile][step][2] = *(const uint32_t *)(top + 8u);
 				a[head_tile][step][3] = *(const uint32_t *)(bottom + 8u);
 			}
-		weight[0] = LmBf16ToFloat(head_weight_bf16[(uint64_t)row * INDEX_HEADS + group]);
-		weight[1] = LmBf16ToFloat(head_weight_bf16[(uint64_t)row * INDEX_HEADS + group + 8u]);
-		weight[2] = LmBf16ToFloat(head_weight_bf16[(uint64_t)row * INDEX_HEADS + group + 16u]);
-		weight[3] = LmBf16ToFloat(head_weight_bf16[(uint64_t)row * INDEX_HEADS + group + 24u]);
+		for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+		{
+			weight[2u * head_tile] = LmBf16ToFloat(head_weight_bf16[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group]);
+			weight[2u * head_tile + 1u] = LmBf16ToFloat(head_weight_bf16[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group + 8u]);
+		}
 	}
 	for (tile = warp / ROWS_PER_BLOCK; tile < LM_INDEX_SCORE_BLOCK_TILES; tile += tile_stride)
 	{
 		const uint32_t first = blockIdx.x * LM_INDEX_SCORE_BLOCK_POSITIONS + tile * LM_INDEX_SCORE_TILE_POSITIONS;
 		const uint32_t mine = first + group;
 		const uint32_t written = first + pair * 2u;
-		float accumulator[2][4] = { { 0.0f, 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
+		float accumulator[HEAD_TILES][4] = {};
 		float low,high;
 		if ( first >= score_stride )
 			break;
@@ -123,18 +125,25 @@ void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, 
 				uint32_t b[2];
 				b[0] = slot != 0 ? *(const uint32_t *)(slot + (step * 16u + pair * 2u) * sizeof(uint16_t)) : 0u;
 				b[1] = slot != 0 ? *(const uint32_t *)(slot + (step * 16u + pair * 2u + 8u) * sizeof(uint16_t)) : 0u;
-				LmMmaBf16(accumulator[0],a[0][step],b);
-				LmMmaBf16(accumulator[1],a[1][step],b);
+				for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+					LmMmaBf16(accumulator[head_tile],a[head_tile][step],b);
 			}
 		}
 		if ( RELU )
-			for (entry = 0u; entry < 4u; entry++)
-			{
-				accumulator[0][entry] = fmaxf(accumulator[0][entry], 0.0f);
-				accumulator[1][entry] = fmaxf(accumulator[1][entry], 0.0f);
-			}
-		low = weight[0] * accumulator[0][0] + weight[1] * accumulator[0][2] + weight[2] * accumulator[1][0] + weight[3] * accumulator[1][2];
-		high = weight[0] * accumulator[0][1] + weight[1] * accumulator[0][3] + weight[2] * accumulator[1][1] + weight[3] * accumulator[1][3];
+			for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+				for (entry = 0u; entry < 4u; entry++)
+					accumulator[head_tile][entry] = fmaxf(accumulator[head_tile][entry], 0.0f);
+		low = __fmul_rn(weight[0], accumulator[0][0]);
+		high = __fmul_rn(weight[0], accumulator[0][1]);
+		low = __fmaf_rn(weight[1], accumulator[0][2], low);
+		high = __fmaf_rn(weight[1], accumulator[0][3], high);
+		for (head_tile = 1u; head_tile < HEAD_TILES; head_tile++)
+		{
+			low = __fmaf_rn(weight[2u * head_tile], accumulator[head_tile][0], low);
+			high = __fmaf_rn(weight[2u * head_tile], accumulator[head_tile][1], high);
+			low = __fmaf_rn(weight[2u * head_tile + 1u], accumulator[head_tile][2], low);
+			high = __fmaf_rn(weight[2u * head_tile + 1u], accumulator[head_tile][3], high);
+		}
 		for (entry = 4u; entry < LM_WARP_LANES; entry <<= 1u)
 		{
 			low += __shfl_xor_sync(0xffffffffu,low,(int)entry);
