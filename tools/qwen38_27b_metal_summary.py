@@ -2,11 +2,17 @@
 """Summarize a Qwen3.8-27B Metal gate run into one receipt with verdicts.
 
 Reads the outputs tools/qwen38_27b_metal_gates.sh writes and applies the
-gate rules: the Metal run's position-weighted mean KL against reference A must
-be at most ten times the floor (reference B against reference A, the same
-reference with a different reduction order), and its top-1 agreement with
-reference A at least 99%; the corrupted-weight control must fail the same
-rules. Speed is reported against the measured streaming-read bandwidth.
+gate rule against both reference variants (A and B, the same reference with
+different reduction orders), each leg measured against the other variant as
+its floor: the position-weighted mean KL at most KL_FACTOR times the floor's,
+the top-1 disagreement rate at most TOP1_FACTOR times the floor's, and the
+paired test (the share of positions where the candidate is further from the
+reference than the other variant is, which is one half for a candidate whose
+error is distributed like the floor's) not above one half by more than
+PAIRED_SIGMA standard errors, the errors taken over contiguous blocks of
+positions. The Metal run must pass both legs; the all-layer and whole-tensor
+corrupted-weight controls must fail. Speed is reported against the measured
+streaming-read bandwidth.
 
   qwen38_27b_metal_summary.py --out RUN_DIR --revision REV --prompts PROMPTS_JSON
 """
@@ -17,8 +23,13 @@ import re
 import sys
 from pathlib import Path
 
-KL_FACTOR = 10.0
-TOP1_MINIMUM = 0.99
+import math
+
+KL_FACTOR = 2.0
+TOP1_FACTOR = 1.5
+PAIRED_SIGMA = 3.0
+REQUIRED_CONTROLS = ("control_layers", "control_rotate")
+PROBE_CONTROLS = ("control",)
 
 
 def aggregate(rows, label):
@@ -38,17 +49,38 @@ def aggregate(rows, label):
             max(1, sum(row["positions"] - row["prefill_positions"] for row in picked)),
         "top1_agreement_where_references_agree": (sum(row["stable_top1_agree"] for row in picked) /
                                                   sum(row["stable_positions"] for row in picked)) if sum(row["stable_positions"] for row in picked) else None,
+        "floor_kl_mean": (sum(row["floor_kl_mean"] * row["positions"] for row in picked) / positions) if all("floor_kl_mean" in row for row in picked) else None,
+        "above_floor_positions": sum(row.get("above_floor_positions", 0) for row in picked),
+        "above_floor_blocks": [block for row in picked for block in row.get("above_floor_blocks", [])],
         "per_prompt": {row["prompt"]: {key: row[key] for key in ("positions", "prefill_positions", "kl_mean", "kl_mean_prefill", "kl_mean_decode",
                                                                   "kl_max", "kl_max_position", "top1_agreement", "target_logprob_delta_max",
                                                                   "stable_positions", "stable_top1_agree")} for row in picked},
     }
 
 
-def verdict(candidate, floor):
-    ratio = candidate["kl_mean"] / floor["kl_mean"]
-    return {"kl_ratio_to_floor": ratio, "kl_within_10x_floor": ratio <= KL_FACTOR,
-            "top1_at_least_99_percent": candidate["top1_agreement"] >= TOP1_MINIMUM,
-            "pass": ratio <= KL_FACTOR and candidate["top1_agreement"] >= TOP1_MINIMUM}
+def paired(candidate):
+    blocks = candidate["above_floor_blocks"]
+    positions = candidate["positions"]
+    share = candidate["above_floor_positions"] / positions
+    spread = sum((above - share * count) ** 2 for above, count in blocks)
+    error = math.sqrt(len(blocks) / (len(blocks) - 1) * spread) / positions
+    return share, error, (share - 0.5) / error if error > 0.0 else math.inf
+
+
+def leg(candidate, floor_top1):
+    kl_ratio = candidate["kl_mean"] / candidate["floor_kl_mean"]
+    top1_ratio = (1.0 - candidate["top1_agreement"]) / (1.0 - floor_top1)
+    share, error, sigma = paired(candidate)
+    checks = {"kl_within_factor": kl_ratio <= KL_FACTOR, "top1_within_factor": top1_ratio <= TOP1_FACTOR,
+              "paired_within_sigma": sigma <= PAIRED_SIGMA}
+    return {"kl_ratio_to_floor": kl_ratio, "top1_disagreement_ratio_to_floor": top1_ratio, "paired_share_above_floor": share,
+            "paired_standard_error": error, "paired_sigma": sigma, "blocks": len(candidate["above_floor_blocks"]), **checks,
+            "pass": all(checks.values())}
+
+
+def verdict(against_a, against_b, floor):
+    legs = {"reference_a": leg(against_a, floor["top1_agreement"]), "reference_b": leg(against_b, floor["top1_agreement"])}
+    return {**legs, "pass": all(item["pass"] for item in legs.values())}
 
 
 def common_prefix(first, second):
@@ -74,11 +106,16 @@ def greedy_table(out):
     return table
 
 
-def pairs_table(out):
-    single = {item["name"]: item["generated"] for item in json.loads((out / "metal" / "greedy.metal.json").read_text())["prompts"]}
-    batched = json.loads((out / "metal" / "pairs.metal.json").read_text())["prompts"]
-    return {item["name"]: {"batched_with": item["batched_with"], "identical_to_single_sequence": item["generated"] == single[item["name"]],
-                           "rows_per_second": item["rows_per_second"]} for item in batched}
+def ladder_table(out, peak):
+    ladder = json.loads((out / "metal" / "ladder.metal.json").read_text())
+    ceiling = peak / ladder["streamed_bytes_per_token"]
+    return {"prompt_tokens": ladder["prompt_tokens"], "decode_steps": ladder["decode_steps"], "repeats": ladder["repeats"],
+            "single_sequence_roofline_tokens_per_second": ceiling,
+            "rows": [{"batch": item["batch"], "step_ms": item["step_ms"], "per_sequence_tokens_per_second": item["per_sequence_tokens_per_second"],
+                      "aggregate_tokens_per_second": item["aggregate_tokens_per_second"],
+                      "fraction_of_weight_stream_roofline": item["per_sequence_tokens_per_second"] / ceiling,
+                      "sequences_identical_to_solo": item["sequences_identical_to_solo"], "divergences": item["divergences"],
+                      "nondeterministic": item["nondeterministic"], "runs_seconds": item["runs_seconds"]} for item in ladder["batches"]]}
 
 
 def speed(out):
@@ -120,10 +157,9 @@ def main():
     out = arguments.out
     rows = [json.loads(line) for line in (out / "compare" / "compare.jsonl").read_text().splitlines() if line.strip()]
     floor = aggregate(rows, "floor")
-    metal = aggregate(rows, "metal")
-    metal_b = aggregate(rows, "metal_vs_b")
-    control = aggregate(rows, "control")
-    rotate = aggregate(rows, "control_rotate") if any(row["label"] == "control_rotate" for row in rows) else None
+    labels = {row["label"] for row in rows}
+    candidates = {name: (aggregate(rows, name), aggregate(rows, f"{name}_vs_b")) for name in ("metal",) + REQUIRED_CONTROLS + PROBE_CONTROLS
+                  if name in labels and f"{name}_vs_b" in labels}
     diagnostics = {label: aggregate(rows, label) for label in ("fp32_activations_vs_a", "fp32_activations_vs_metal")
                    if any(row["label"] == label for row in rows)}
     kernels = json.loads((out / "kernels.json").read_text())
@@ -140,32 +176,28 @@ def main():
                     "worst_ratio": max(case["worst_ratio"] for case in kernels if case["worst_ratio"] is not None),
                     "cases_list": [{key: case[key] for key in ("op", "shape", "checked", "worst_ratio", "control_outside", "pass")}
                                    for case in kernels]},
-        "numerics": {"rule": f"KL(ref_a || metal) position-weighted mean <= {KL_FACTOR:g} x KL(ref_a || ref_b) and top-1 >= {TOP1_MINIMUM:.0%}",
-                     "floor": floor, "metal": metal, "metal_against_reference_b": metal_b,
-                     "metal_verdict": verdict(metal, floor), "control": control,
-                     "control_corruption": json.loads((out / "control" / "control.json").read_text()),
-                     "control_verdict": verdict(control, floor),
-                     "control_rotate": rotate,
-                     "control_rotate_corruption": json.loads((out / "control_rotate" / "control.json").read_text()) if rotate else None,
-                     "control_rotate_verdict": verdict(rotate, floor) if rotate else None,
-                     "reference_b_against_a_verdict": verdict(floor, floor),
-                     "diagnostics": diagnostics},
+        "numerics": {"rule": (f"against each reference variant, with the other variant as the floor: mean KL <= {KL_FACTOR:g} x the floor's, "
+                              f"top-1 disagreement <= {TOP1_FACTOR:g} x the floor's, and the share of positions further from the reference than "
+                              f"the floor at most 0.5 + {PAIRED_SIGMA:g} block standard errors; Metal passes both legs, "
+                              f"{' and '.join(REQUIRED_CONTROLS)} fail"),
+                     "floor": floor, "diagnostics": diagnostics,
+                     **{name: {"against_reference_a": pair[0], "against_reference_b": pair[1], "verdict": verdict(pair[0], pair[1], floor),
+                               "corruption": json.loads((out / name / "control.json").read_text()) if name != "metal" else None}
+                        for name, pair in candidates.items()}},
         "greedy": greedy_table(out),
-        "two_sequence_decode": pairs_table(out),
         "speed": speed(out),
     }
-    receipt["numerics"]["control_fails_as_required"] = not receipt["numerics"]["control_verdict"]["pass"]
-    receipt["numerics"]["control_swap_detected_by_kl"] = not receipt["numerics"]["control_verdict"]["kl_within_10x_floor"]
-    if rotate:
-        receipt["numerics"]["control_rotate_detected_by_kl"] = not receipt["numerics"]["control_rotate_verdict"]["kl_within_10x_floor"]
+    receipt["batch_ladder"] = ladder_table(out, receipt["speed"]["bandwidth"]["device_private"]["median_gb_per_s"] * 1e9)
+    numerics = receipt["numerics"]
+    numerics["controls_fail_as_required"] = all(name in numerics and not numerics[name]["verdict"]["pass"] for name in REQUIRED_CONTROLS)
+    numerics["pass"] = "metal" in numerics and numerics["metal"]["verdict"]["pass"] and numerics["controls_fail_as_required"]
     (out / "RECEIPT.json").write_text(json.dumps(receipt, indent=1) + "\n")
-    print(json.dumps({"metal": receipt["numerics"]["metal_verdict"], "control": receipt["numerics"]["control_verdict"],
-                      "control_rotate": receipt["numerics"]["control_rotate_verdict"],
-                      "reference_b_against_a": receipt["numerics"]["reference_b_against_a_verdict"],
-                      "floor_kl": floor["kl_mean"], "metal_kl": metal["kl_mean"], "metal_top1": metal["top1_agreement"],
+    print(json.dumps({"numerics_pass": numerics["pass"],
+                      **{name: {leg_name: {key: item[key] for key in ("kl_ratio_to_floor", "top1_disagreement_ratio_to_floor", "paired_sigma", "pass")}
+                                for leg_name, item in numerics[name]["verdict"].items() if leg_name != "pass"}
+                         for name in candidates},
                       "decode": receipt["speed"]["decode"]["roofline"]}, indent=1))
-    return 0 if receipt["numerics"]["metal_verdict"]["pass"] and receipt["numerics"]["control_fails_as_required"] else 1
-
+    return 0 if numerics["pass"] else 1
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -473,7 +473,7 @@ static void TestLinear(uint32_t rows, uint32_t K, uint32_t N, uint32_t output_f3
 		memset(check,0,sizeof(*check));
 		if ( pass == 1u )
 		{
-			xv[poke] = ToBf16(Bf16(saved) + (Bf16(saved) >= 0.0f ? -6.0f : 6.0f));
+			xv[poke] = ToBf16(Bf16(saved) + (Bf16(saved) >= 0.0f ? -64.0f : 64.0f));
 			if ( gated != 0u )
 			{
 				xv[poke] = ToBf16(3.0f);
@@ -502,7 +502,7 @@ static void TestLinear(uint32_t rows, uint32_t K, uint32_t N, uint32_t output_f3
 	}
 	snprintf(shape,sizeof(shape),"rows %u, K %u -> N %u%s%s%s",rows,K,N,output_f32 != 0u ? ", f32 out" : "",gated != 0u ? ", silu-gated input" : "",
 		samples < total ? ", sampled" : "");
-	Report(rows > SPARK_OPS_GEMV_MAX_ROWS ? "gemm" : "gemv",shape,&clean,&corrupted,
+	Report(rows > SPARK_OPS_DECODE_MAX_ROWS ? "gemm" : rows > SPARK_OPS_GEMV_MAX_ROWS ? "gemm rows" : "gemv",shape,&clean,&corrupted,
 		output_f32 != 0u ? "gamma_K sum|x w|: fp32 accumulation of exact bf16 products" :
 		gated != 0u ? "u|y| + (1+u)(gamma_K sum|x w| + sum flip slack(x)|w|), x = bf16(silu(gate) up)" : "u|y| + (1+u) gamma_K sum|x w|, u = 2^-8");
 	free(xd);
@@ -510,6 +510,60 @@ static void TestLinear(uint32_t rows, uint32_t K, uint32_t N, uint32_t output_f3
 	SparkDeviceFree(&x);
 	SparkDeviceFree(&w);
 	SparkDeviceFree(&y);
+}
+
+static void TestLinearRowIndependence(uint32_t rows, uint32_t other_rows, uint32_t K, uint32_t N, uint32_t output_f32, uint32_t gated)
+{
+	const uint32_t width = gated != 0u ? 2u * K : K, element = output_f32 != 0u ? (uint32_t)sizeof(float) : (uint32_t)sizeof(uint16_t);
+	const uint32_t picks[3] = { 0u, rows / 2u, rows - 1u };
+	SparkDeviceBuffer x, w, y, ox, oy;
+	uint16_t *xv = (uint16_t *)Shared(&x,(uint64_t)rows * width * sizeof(uint16_t),"row independence x");
+	uint16_t *wv = (uint16_t *)Shared(&w,(uint64_t)N * K * sizeof(uint16_t),"row independence w");
+	uint8_t *yv = (uint8_t *)Shared(&y,(uint64_t)rows * N * element,"row independence y");
+	uint16_t *oxv = (uint16_t *)Shared(&ox,(uint64_t)other_rows * width * sizeof(uint16_t),"row independence other x");
+	uint8_t *oyv = (uint8_t *)Shared(&oy,(uint64_t)other_rows * N * element,"row independence other y");
+	SparkGemvParams params, other;
+	Check clean, corrupted;
+	char shape[128];
+	uint32_t pick, pass, n;
+	FillBf16(xv,(uint64_t)rows * width,1.0);
+	FillBf16(wv,(uint64_t)N * K,1.0 / sqrt((double)K));
+	memset(&params,0,sizeof(params));
+	params.rows = rows;
+	params.input_dimension = K;
+	params.output_dimension = N;
+	params.input_stride = width;
+	params.output_stride = N;
+	params.output_f32 = output_f32;
+	params.gated_input = gated;
+	other = params;
+	other.rows = other_rows;
+	memset(&clean,0,sizeof(clean));
+	memset(&corrupted,0,sizeof(corrupted));
+	if ( Run(SparkOpsLinear(&ops,queue,Whole(&x),Whole(&w),Whole(&y),&params),"row independence batch") )
+		for ( pick = 0u; pick < 3u; pick++ )
+			for ( pass = 0u; pass < 2u; pass++ )
+			{
+				Check *check = pass == 0u ? &clean : &corrupted;
+				const uint32_t slot = (picks[pick] * 7u + 3u) % other_rows;
+				FillBf16(oxv,(uint64_t)other_rows * width,1.0);
+				memcpy(oxv + (uint64_t)slot * width,xv + (uint64_t)picks[pick] * width,(size_t)width * sizeof(uint16_t));
+				if ( pass == 1u )
+					oxv[(uint64_t)slot * width + K / 3u] = ToBf16(Bf16(oxv[(uint64_t)slot * width + K / 3u]) >= 0.0f ? -2.0f : 2.0f);
+				if ( !Run(SparkOpsLinear(&ops,queue,Whole(&ox),Whole(&w),Whole(&oy),&other),"row independence other batch") )
+					break;
+				for ( n = 0u; n < N; n++ )
+					Observe(check,memcmp(yv + ((uint64_t)picks[pick] * N + n) * element,oyv + ((uint64_t)slot * N + n) * element,element) == 0 ? 0.0 : 1.0,
+						0.0,0.0);
+			}
+	snprintf(shape,sizeof(shape),"rows %u vs %u, K %u -> N %u%s%s",rows,other_rows,K,N,output_f32 != 0u ? ", f32 out" : "",
+		gated != 0u ? ", silu-gated input" : "");
+	Report("linear row independence",shape,&clean,&corrupted,"exact: a row's output bits do not depend on the other rows or the row count");
+	SparkDeviceFree(&x);
+	SparkDeviceFree(&w);
+	SparkDeviceFree(&y);
+	SparkDeviceFree(&ox);
+	SparkDeviceFree(&oy);
 }
 
 static void ConvReference(const uint16_t *input, const uint16_t *weight, double *window, uint32_t channels, uint32_t stride, uint32_t first,
@@ -880,7 +934,7 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 	query = (uint16_t *)Shared(&f.query,(uint64_t)rows * ATT_HEADS * ATT_DIM * 2u,"attention query");
 	gate = (uint16_t *)Shared(&f.gate,(uint64_t)rows * ATT_QKV * 2u,"attention gate");
 	output = (uint16_t *)Shared(&f.output,(uint64_t)rows * ATT_HEADS * ATT_DIM * 2u,"attention output");
-	Shared(&f.partial,(uint64_t)rows * ATT_HEADS * ((context + 511u) / 512u) * SPARK_OPS_PARTIAL_FLOATS * 4u,"attention partial");
+	Shared(&f.partial,SparkOpsAttentionScratchBytes(rows,ATT_HEADS,context),"attention partial");
 	FillBf16(query,(uint64_t)rows * ATT_HEADS * ATT_DIM,1.0);
 	FillBf16(gate,(uint64_t)rows * ATT_QKV,1.0);
 	SparkDeviceFree(&f.sequence);
@@ -1139,11 +1193,16 @@ int main(int argc, char **argv)
 	TestLinear(1u,6144u,5120u,0u,0u,UINT64_MAX);
 	TestLinear(1u,5120u,34816u,0u,0u,UINT64_MAX);
 	TestLinear(1u,17408u,5120u,0u,1u,UINT64_MAX);
-	TestLinear(3u,17408u,5120u,0u,1u,UINT64_MAX);
+	TestLinear(2u,17408u,5120u,0u,1u,UINT64_MAX);
+	TestLinear(3u,17408u,5120u,0u,0u,UINT64_MAX);
 	TestLinear(7u,5120u,1000u,0u,0u,UINT64_MAX);
 	TestLinear(8u,5120u,1000u,0u,0u,UINT64_MAX);
 	TestLinear(2u,6144u,5120u,0u,0u,UINT64_MAX);
-	TestLinear(8u,17408u,5120u,0u,1u,UINT64_MAX);
+	TestLinear(4u,17408u,5120u,0u,0u,UINT64_MAX);
+	TestLinear(5u,17408u,5120u,0u,0u,UINT64_MAX);
+	TestLinear(16u,5120u,96u,0u,0u,UINT64_MAX);
+	TestLinear(17u,6144u,5120u,0u,0u,UINT64_MAX);
+	TestLinear(64u,5120u,34816u,0u,0u,20000u);
 	TestLinear(2u,5120u,248320u,1u,0u,UINT64_MAX);
 	TestLinear(1u,5120u,248320u,1u,0u,UINT64_MAX);
 	TestLinear(130u,5120u,200u,0u,0u,UINT64_MAX);
@@ -1154,6 +1213,14 @@ int main(int argc, char **argv)
 	TestLinear(77u,17408u,5120u,0u,0u,20000u);
 	TestLinear(2048u,5120u,34816u,0u,0u,20000u);
 	TestLinear(64u,5120u,248320u,1u,0u,20000u);
+	TestLinearRowIndependence(2u,1u,17408u,5120u,0u,1u);
+	TestLinearRowIndependence(3u,64u,5120u,34816u,0u,0u);
+	TestLinearRowIndependence(2u,1u,5120u,248320u,1u,0u);
+	TestLinearRowIndependence(64u,5u,17408u,5120u,0u,0u);
+	TestLinearRowIndependence(16u,9u,5120u,96u,0u,0u);
+	TestLinearRowIndependence(32u,17u,5120u,16384u,0u,0u);
+	TestLinearRowIndependence(32u,16u,6144u,5120u,0u,0u);
+	TestLinearRowIndependence(40u,8u,5120u,248320u,1u,0u);
 	TestCausalConv();
 	TestGatedDelta();
 	TestAttention(1u,1u,0u);

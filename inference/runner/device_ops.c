@@ -6,10 +6,11 @@
 
 #include "inference/runner/device_ops.h"
 
-#define OPS_DECODE_PARTITION_KEYS 512u
+#define OPS_DECODE_PARTITION_KEYS 128u
 #define OPS_PREFILL_PARTITION_KEYS 1024u
-#define OPS_PREFILL_ROWS_PER_GROUP 8u
-#define OPS_GEMV_OUTPUTS_PER_GROUP 16u
+#define OPS_DECODE_ROWS_PER_SEQUENCE 8u
+#define OPS_PREFILL_BLOCK_ROWS 32u
+#define OPS_GEMV_OUTPUTS_PER_GROUP 4u
 #define OPS_GEMM_ROWS 128u
 #define OPS_GEMM_OUTPUTS 64u
 #define OPS_LIBRARY_NAME "sparkpipe_kernels.metallib"
@@ -22,24 +23,21 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_head_rmsnorm_rope",
 	"spark_gemv_r1",
 	"spark_gemv_r2",
-	"spark_gemv_r4",
-	"spark_gemv_r8",
 	"spark_gemv_f32_r1",
 	"spark_gemv_f32_r2",
-	"spark_gemv_f32_r4",
-	"spark_gemv_f32_r8",
 	"spark_gemv_gated_r1",
 	"spark_gemv_gated_r2",
-	"spark_gemv_gated_r4",
-	"spark_gemv_gated_r8",
 	"spark_gemm",
 	"spark_gemm_f32",
+	"spark_gemm_rows16",
+	"spark_gemm_rows32",
+	"spark_gemm_reduce",
 	"spark_causal_conv_silu",
 	"spark_gated_delta_prepare",
 	"spark_gated_delta_rule",
 	"spark_kv_store_paged",
 	"spark_attention_decode",
-	"spark_attention_prefill",
+	"spark_attention_prefill_blocks",
 	"spark_attention_combine",
 	"spark_silu_mul",
 	"spark_add_rows",
@@ -126,6 +124,8 @@ SparkStatus SparkDeviceOpsOpen(SparkDeviceOps *ops, const char *library_path)
 		status = SparkDeviceKernelCreate(&ops->kernels[index],ops->library,ops_kernel_names[index]);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceAllocate(&ops->error,SPARK_DEVICE_SPACE_SHARED_COHERENT,16u,"device ops error word");
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceAllocate(&ops->partial,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,SPARK_OPS_PARTIAL_BYTES,"device ops split partials");
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"device_ops: cannot open %s: %s %s\n",library_path,SparkDeviceLastError()->operation,SparkDeviceLastError()->text);
@@ -139,6 +139,8 @@ void SparkDeviceOpsClose(SparkDeviceOps *ops)
 	uint32_t index;
 	if ( ops->error.handle != 0u )
 		(void)SparkDeviceFree(&ops->error);
+	if ( ops->partial.handle != 0u )
+		(void)SparkDeviceFree(&ops->partial);
 	for ( index = 0u; index < SPARK_OPS_KERNEL_COUNT; index++ )
 		if ( ops->kernels[index] != 0 )
 			(void)SparkDeviceKernelDestroy(ops->kernels[index]);
@@ -310,7 +312,7 @@ SparkStatus SparkOpsHeadRmsNormRope(SparkDeviceOps *ops, SparkDeviceQueue *queue
 
 static SparkOpsKernel OpsGemvKernel(const SparkGemvParams *params, uint32_t rows)
 {
-	const uint32_t slot = rows == 8u ? 3u : rows == 4u ? 2u : rows == 2u ? 1u : 0u;
+	const uint32_t slot = rows == 2u ? 1u : 0u;
 	if ( params->gated_input != 0u )
 		return((SparkOpsKernel)(SPARK_OPS_GEMV_GATED_R1 + slot));
 	if ( params->output_f32 != 0u )
@@ -318,39 +320,76 @@ static SparkOpsKernel OpsGemvKernel(const SparkGemvParams *params, uint32_t rows
 	return((SparkOpsKernel)(SPARK_OPS_GEMV_R1 + slot));
 }
 
+static SparkStatus OpsLinearRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkDeviceBinding *bindings, const SparkGemvParams *params)
+{
+	const uint32_t K = params->input_dimension, N = params->output_dimension, depth = SPARK_GEMM_ROWS_DEPTH;
+	const uint32_t tiles = (N + SPARK_GEMM_ROWS_OUTPUTS - 1u) / SPARK_GEMM_ROWS_OUTPUTS, tile_rows = params->rows <= 16u ? 16u : 32u;
+	SparkGemvParams launch = *params;
+	SparkDeviceBinding staged[3];
+	uint32_t splits = (SPARK_OPS_SPLIT_TARGET_GROUPS + tiles - 1u) / tiles;
+	SparkStatus status;
+	if ( splits > K / depth )
+		splits = K / depth;
+	launch.split_span = (K / depth + splits - 1u) / splits * depth;
+	launch.splits = (K + launch.split_span - 1u) / launch.split_span;
+	staged[0] = bindings[0];
+	staged[1] = bindings[1];
+	staged[2] = bindings[2];
+	if ( launch.splits > 1u )
+	{
+		const uint64_t bytes = (uint64_t)launch.splits * params->rows * N * sizeof(float);
+		if ( bytes > ops->partial.bytes )
+			return(OpsRefuse("linear","the split partials of this shape do not fit the ops partial buffer"));
+		if ( ops->partial_queue != 0 && ops->partial_queue != queue )
+			return(OpsRefuse("linear","the split partials belong to another queue; split projections run on one queue per ops instance"));
+		ops->partial_queue = queue;
+		staged[2] = OpsBind(SparkTensorAt(&ops->partial,0u,bytes),SPARK_DEVICE_BIND_WRITE);
+	}
+	status = OpsLaunch(ops,queue,tile_rows == 16u ? SPARK_OPS_GEMM_ROWS16 : SPARK_OPS_GEMM_ROWS32,(params->rows + tile_rows - 1u) / tile_rows,tiles,
+		launch.splits,SPARK_GEMM_ROWS_THREADS,&launch,sizeof(launch),staged,3u);
+	if ( status != SPARK_STATUS_OK || launch.splits == 1u )
+		return(status);
+	staged[0] = OpsBind(SparkTensorAt(&ops->partial,0u,(uint64_t)launch.splits * params->rows * N * sizeof(float)),SPARK_DEVICE_BIND_READ);
+	staged[1] = bindings[2];
+	return(OpsLaunch(ops,queue,SPARK_OPS_GEMM_REDUCE,(N + 255u) / 256u,params->rows,1u,256u,&launch,sizeof(launch),staged,2u));
+}
+
 SparkStatus SparkOpsLinear(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor y, const SparkGemvParams *params)
 {
-	const uint32_t K = params->input_dimension, N = params->output_dimension, element = params->output_f32 != 0u ? 4u : 2u;
+	const uint32_t K = params->input_dimension, N = params->output_dimension;
+	const uint32_t element = params->output_f32 != 0u ? (uint32_t)sizeof(float) : (uint32_t)sizeof(uint16_t);
 	const uint32_t input_width = params->gated_input != 0u ? 2u * K : K;
 	SparkDeviceBinding bindings[3];
 	SparkGemvParams chunk;
 	SparkStatus status;
 	uint32_t done;
 	if ( params->rows == 0u || K == 0u || N == 0u || K % 8u != 0u || params->input_stride % 8u != 0u || params->input_stride < input_width ||
-		(params->rows > SPARK_OPS_GEMV_MAX_ROWS && (K % 32u != 0u || params->gated_input != 0u)) || (params->output_f32 != 0u && params->gated_input != 0u) )
-		return(OpsRefuse("linear","an input width that is a multiple of 8 (32 above 8 rows), a stride that covers it, and a gated input only at 8 rows or fewer"));
+		(params->rows > SPARK_OPS_GEMV_MAX_ROWS && (K % SPARK_GEMM_ROWS_DEPTH != 0u || params->gated_input != 0u)) ||
+		(params->output_f32 != 0u && params->gated_input != 0u) )
+		return(OpsRefuse("linear","an input width that is a multiple of 8 (of the row-tile depth above the GEMV rows), a stride that covers it, "
+			"and a gated input only at the GEMV row counts"));
 	status = OpsNeed("linear","input",x,OpsRowsBytes(params->rows,params->input_stride,input_width,2u));
 	if ( status == SPARK_STATUS_OK )
-		status = OpsNeed("linear","weight",w,(uint64_t)N * K * 2u);
+		status = OpsNeed("linear","weight",w,(uint64_t)N * K * sizeof(uint16_t));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("linear","output",y,OpsRowsBytes(params->rows,params->output_stride,N,element));
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	bindings[0] = OpsBind(x,SPARK_DEVICE_BIND_READ);
 	bindings[1] = OpsBind(w,SPARK_DEVICE_BIND_READ);
-	if ( params->rows > SPARK_OPS_GEMV_MAX_ROWS )
-	{
-		bindings[0] = OpsBind(x,SPARK_DEVICE_BIND_READ);
-		bindings[2] = OpsBind(y,SPARK_DEVICE_BIND_WRITE);
+	bindings[2] = OpsBind(y,SPARK_DEVICE_BIND_WRITE);
+	if ( params->rows > SPARK_OPS_DECODE_MAX_ROWS )
 		return(OpsLaunch(ops,queue,params->output_f32 != 0u ? SPARK_OPS_GEMM_F32 : SPARK_OPS_GEMM,(N + OPS_GEMM_OUTPUTS - 1u) / OPS_GEMM_OUTPUTS,
 			(params->rows + OPS_GEMM_ROWS - 1u) / OPS_GEMM_ROWS,1u,128u,params,sizeof(*params),bindings,3u));
-	}
+	if ( params->rows > SPARK_OPS_GEMV_MAX_ROWS )
+		return(OpsLinearRows(ops,queue,bindings,params));
 	for ( done = 0u; status == SPARK_STATUS_OK && done < params->rows; done += chunk.rows )
 	{
 		const uint32_t left = params->rows - done;
 		chunk = *params;
-		chunk.rows = left >= 8u ? 8u : left >= 4u ? 4u : left >= 2u ? 2u : 1u;
-		bindings[0] = OpsBind(SparkTensorSlice(x,(uint64_t)done * params->input_stride * 2u,OpsRowsBytes(chunk.rows,params->input_stride,input_width,2u)),
-			SPARK_DEVICE_BIND_READ);
+		chunk.rows = left >= 2u ? 2u : 1u;
+		bindings[0] = OpsBind(SparkTensorSlice(x,(uint64_t)done * params->input_stride * sizeof(uint16_t),
+			OpsRowsBytes(chunk.rows,params->input_stride,input_width,2u)),SPARK_DEVICE_BIND_READ);
 		bindings[2] = OpsBind(SparkTensorSlice(y,(uint64_t)done * params->output_stride * element,OpsRowsBytes(chunk.rows,params->output_stride,N,element)),
 			SPARK_DEVICE_BIND_WRITE);
 		status = OpsLaunch(ops,queue,OpsGemvKernel(params,chunk.rows),(N + OPS_GEMV_OUTPUTS_PER_GROUP - 1u) / OPS_GEMV_OUTPUTS_PER_GROUP,1u,1u,128u,
@@ -481,16 +520,16 @@ static SparkStatus OpsAttentionPrefill(SparkDeviceOps *ops, SparkDeviceQueue *qu
 		segment.row_offset = begin;
 		segment.rows = end;
 		status = OpsLaunch(ops,queue,SPARK_OPS_ATTENTION_PREFILL,params->partitions,params->heads,
-			(end - begin + OPS_PREFILL_ROWS_PER_GROUP - 1u) / OPS_PREFILL_ROWS_PER_GROUP,256u,&segment,sizeof(segment),bindings,6u);
+			(end - begin + OPS_PREFILL_BLOCK_ROWS - 1u) / OPS_PREFILL_BLOCK_ROWS,128u,&segment,sizeof(segment),bindings,6u);
 	}
 	return(status);
 }
 
 uint64_t SparkOpsAttentionScratchBytes(uint32_t rows, uint32_t heads, uint32_t positions)
 {
-	const uint64_t decode = (uint64_t)SPARK_OPS_GEMV_MAX_ROWS * ((positions + OPS_DECODE_PARTITION_KEYS - 1u) / OPS_DECODE_PARTITION_KEYS);
+	const uint64_t decode = (uint64_t)rows * ((positions + OPS_DECODE_PARTITION_KEYS - 1u) / OPS_DECODE_PARTITION_KEYS);
 	const uint64_t prefill = (uint64_t)rows * ((positions + OPS_PREFILL_PARTITION_KEYS - 1u) / OPS_PREFILL_PARTITION_KEYS);
-	return((decode > prefill ? decode : prefill) * heads * SPARK_OPS_PARTIAL_FLOATS * 4u);
+	return((decode > prefill ? decode : prefill) * heads * SPARK_OPS_PARTIAL_FLOATS * sizeof(float));
 }
 
 SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor query, SparkTensor gate,
@@ -499,16 +538,22 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 	SparkAttentionParams launch = *params;
 	SparkDeviceBinding bindings[6];
 	SparkStatus status;
-	uint32_t row, longest = 0u;
+	uint32_t row, longest = 0u, run = 0u, widest = 0u, decode;
 	if ( params->rows == 0u || params->heads == 0u || params->kv_heads != paged->kv_heads || params->heads % params->kv_heads != 0u ||
 		params->head_dimension != SPARK_OPS_ATTENTION_HEAD_DIM || params->page_slots != paged->page_slots ||
 		params->pages_per_sequence != paged->pages_per_sequence || params->pool_pages != paged->pool_pages || host_positions == 0 ||
 		host_sequence_of_row == 0 )
 		return(OpsRefuse("attention","256-dimensional heads, whole query groups per key head and the host row tables are required"));
 	for ( row = 0u; row < params->rows; row++ )
+	{
+		run = row != 0u && host_sequence_of_row[row] == host_sequence_of_row[row - 1u] ? run + 1u : 1u;
+		if ( run > widest )
+			widest = run;
 		if ( host_positions[row] + 1u > longest )
 			longest = host_positions[row] + 1u;
-	launch.partition_keys = params->rows <= SPARK_OPS_GEMV_MAX_ROWS ? OPS_DECODE_PARTITION_KEYS : OPS_PREFILL_PARTITION_KEYS;
+	}
+	decode = widest <= OPS_DECODE_ROWS_PER_SEQUENCE ? 1u : 0u;
+	launch.partition_keys = decode != 0u ? OPS_DECODE_PARTITION_KEYS : OPS_PREFILL_PARTITION_KEYS;
 	launch.partitions = (longest + launch.partition_keys - 1u) / launch.partition_keys;
 	launch.row_offset = 0u;
 	status = OpsNeed("attention","partial",partial,(uint64_t)params->rows * params->heads * launch.partitions * SPARK_OPS_PARTIAL_FLOATS * 4u);
@@ -527,7 +572,7 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 	bindings[3] = OpsBind(paged->sequence_of_row,SPARK_DEVICE_BIND_READ);
 	bindings[4] = OpsBind(paged->positions,SPARK_DEVICE_BIND_READ);
 	bindings[5] = OpsBind(partial,SPARK_DEVICE_BIND_WRITE);
-	if ( params->rows <= SPARK_OPS_GEMV_MAX_ROWS )
+	if ( decode != 0u )
 		status = OpsLaunch(ops,queue,SPARK_OPS_ATTENTION_DECODE,launch.partitions,params->heads,params->rows,256u,&launch,sizeof(launch),bindings,6u);
 	else
 		status = OpsAttentionPrefill(ops,queue,bindings,&launch,host_sequence_of_row);

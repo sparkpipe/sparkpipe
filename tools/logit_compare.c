@@ -5,6 +5,8 @@
 
 #include "tools/token_prompts.h"
 
+#define COMPARE_BLOCK_POSITIONS 128u
+
 typedef struct CompareTotals
 {
 	double kl_prefill;
@@ -20,6 +22,9 @@ typedef struct CompareTotals
 	uint32_t top1_agree;
 	uint32_t positions;
 	uint32_t worst_position;
+	double *kl;
+	double *floor_kl;
+	uint32_t above_floor;
 } CompareTotals;
 
 static void LogSoftmax(const float *logits, uint32_t vocab, double *out, uint32_t *argmax)
@@ -39,27 +44,48 @@ static void LogSoftmax(const float *logits, uint32_t vocab, double *out, uint32_
 		out[index] = (double)logits[index] - best - log(total);
 }
 
-static uint32_t Argmax(const float *logits, uint32_t vocab)
+static double Kl(const double *ref_log, const double *test_log, uint32_t vocab)
 {
-	uint32_t index, best = 0u;
-	for ( index = 1u; index < vocab; index++ )
-		if ( logits[index] > logits[best] )
-			best = index;
-	return(best);
+	double kl = 0.0;
+	uint32_t index;
+	for ( index = 0u; index < vocab; index++ )
+		kl += exp(ref_log[index]) * (ref_log[index] - test_log[index]);
+	return(kl);
+}
+
+static int CompareDouble(const void *a, const void *b)
+{
+	const double x = *(const double *)a, y = *(const double *)b;
+	return(x < y ? -1 : x > y ? 1 : 0);
+}
+
+static double Quantile(double *values, uint32_t count, double q)
+{
+	qsort(values,count,sizeof(double),CompareDouble);
+	return(count != 0u ? values[(uint32_t)(q * (count - 1u) + 0.5)] : 0.0);
 }
 
 static int ComparePosition(const float *reference, const float *test, uint32_t vocab, uint32_t target, double *ref_log, double *test_log,
 	CompareTotals *totals, uint32_t position, uint32_t split, const float *second)
 {
-	uint32_t ref_top, test_top, index;
-	double kl = 0.0, delta;
+	uint32_t ref_top, test_top, second_top, index;
+	double kl, delta;
 	for ( index = 0u; index < vocab; index++ )
 		if ( !isfinite(reference[index]) || !isfinite(test[index]) )
 			return(-1);
 	LogSoftmax(reference,vocab,ref_log,&ref_top);
 	LogSoftmax(test,vocab,test_log,&test_top);
-	for ( index = 0u; index < vocab; index++ )
-		kl += exp(ref_log[index]) * (ref_log[index] - test_log[index]);
+	kl = Kl(ref_log,test_log,vocab);
+	totals->kl[position] = kl;
+	if ( second != 0 )
+	{
+		for ( index = 0u; index < vocab; index++ )
+			if ( !isfinite(second[index]) )
+				return(-1);
+		LogSoftmax(second,vocab,test_log,&second_top);
+		totals->floor_kl[position] = Kl(ref_log,test_log,vocab);
+		totals->above_floor += kl > totals->floor_kl[position] ? 1u : 0u;
+	}
 	delta = fabs(ref_log[target] - test_log[target]);
 	totals->kl_sum += kl;
 	if ( position < split )
@@ -69,7 +95,7 @@ static int ComparePosition(const float *reference, const float *test, uint32_t v
 	}
 	else
 		totals->kl_decode += kl;
-	if ( second != 0 && Argmax(second,vocab) == ref_top )
+	if ( second != 0 && second_top == ref_top )
 	{
 		totals->stable_positions++;
 		totals->stable_agree += ref_top == test_top ? 1u : 0u;
@@ -135,6 +161,10 @@ int main(int argc, char **argv)
 	}
 	memset(&totals,0,sizeof(totals));
 	positions = prompt->count - 1u;
+	totals.kl = (double *)calloc(positions,sizeof(double));
+	totals.floor_kl = (double *)calloc(positions,sizeof(double));
+	if ( totals.kl == 0 || totals.floor_kl == 0 )
+		return(1);
 	for ( index = 0u; index < positions; index++ )
 	{
 		if ( fread(ref_row,sizeof(float),vocab,reference) != vocab || fread(test_row,sizeof(float),vocab,test) != vocab ||
@@ -157,12 +187,31 @@ int main(int argc, char **argv)
 	printf("{\"label\":\"%s\",\"prompt\":\"%s\",\"positions\":%u,\"kl_mean\":%.6e,\"kl_max\":%.6e,\"kl_max_position\":%u,"
 		"\"top1_agreement\":%.6f,\"top1_agree\":%u,\"target_logprob_delta_mean\":%.6e,\"target_logprob_delta_max\":%.6e,"
 		"\"reference_top1_logprob_delta_max\":%.6e,\"prefill_positions\":%u,\"kl_mean_prefill\":%.6e,\"kl_mean_decode\":%.6e,"
-		"\"stable_positions\":%u,\"stable_top1_agree\":%u}\n",argv[6],prompt->name,totals.positions,totals.kl_sum / totals.positions,totals.kl_max,
+		"\"stable_positions\":%u,\"stable_top1_agree\":%u,",argv[6],prompt->name,totals.positions,totals.kl_sum / totals.positions,totals.kl_max,
 		totals.worst_position,(double)totals.top1_agree / totals.positions,totals.top1_agree,totals.target_delta_sum / totals.positions,
 		totals.target_delta_max,totals.top1_delta_max,totals.prefill_positions,
 		totals.prefill_positions != 0u ? totals.kl_prefill / totals.prefill_positions : 0.0,
 		totals.positions > totals.prefill_positions ? totals.kl_decode / (totals.positions - totals.prefill_positions) : 0.0,
 		totals.stable_positions,totals.stable_agree);
+	if ( second != 0 )
+	{
+		double floor_sum = 0.0;
+		for ( index = 0u; index < positions; index++ )
+			floor_sum += totals.floor_kl[index];
+		printf("\"floor_kl_mean\":%.6e,\"above_floor_positions\":%u,\"block_positions\":%u,\"above_floor_blocks\":[",floor_sum / positions,
+			totals.above_floor,COMPARE_BLOCK_POSITIONS);
+		for ( index = 0u; index < positions; index += COMPARE_BLOCK_POSITIONS )
+		{
+			uint32_t at, above = 0u;
+			for ( at = index; at < positions && at < index + COMPARE_BLOCK_POSITIONS; at++ )
+				above += totals.kl[at] > totals.floor_kl[at] ? 1u : 0u;
+			printf("%s[%u,%u]",index != 0u ? "," : "",above,at - index);
+		}
+		printf("],\"floor_kl_median\":%.6e,",Quantile(totals.floor_kl,positions,0.5));
+	}
+	printf("\"kl_median\":%.6e,\"kl_p90\":%.6e}\n",Quantile(totals.kl,positions,0.5),Quantile(totals.kl,positions,0.9));
+	free(totals.kl);
+	free(totals.floor_kl);
 	fclose(reference);
 	fclose(test);
 	if ( second != 0 )
