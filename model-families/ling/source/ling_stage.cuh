@@ -50,6 +50,7 @@ struct LingDefaults
 	static constexpr uint32_t kGqaHeads = 0u;
 	static constexpr uint32_t kGqaKvHeads = 0u;
 	static constexpr uint32_t kGqaHeadDim = 0u;
+	static constexpr uint32_t kVerifyRows = 0u;
 	static float RoutedLimit(uint32_t layer) { (void)layer; return 0.0f; }
 	static float SharedLimit(uint32_t layer) { (void)layer; return 0.0f; }
 };
@@ -151,6 +152,9 @@ struct LingState
 	float *retention;
 	float *write_gate;
 	uint16_t *kda_mixed;
+	uint16_t *replay_qkv;
+	float *replay_retention;
+	float *replay_write_gate;
 	uint16_t *mla_q;
 	uint16_t *mla_latent_query;
 	uint16_t *mla_query;
@@ -289,6 +293,21 @@ struct LingModel
 		return cudaPeekAtLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 	}
 
+	static uint16_t *ReplayQkv(State *state, const LingLayer *layer)
+	{
+		return state->replay_qkv + (uint64_t)layer->recurrent_index * G::kVerifyRows * S::kKdaChannels;
+	}
+
+	static float *ReplayRetention(State *state, const LingLayer *layer)
+	{
+		return state->replay_retention + (uint64_t)layer->recurrent_index * G::kVerifyRows * S::kKdaWidth;
+	}
+
+	static float *ReplayWriteGate(State *state, const LingLayer *layer)
+	{
+		return state->replay_write_gate + (uint64_t)layer->recurrent_index * G::kVerifyRows * S::kKdaRankHeads;
+	}
+
 	static SparkStatus Kda(State *state, const LingLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
 	{
 		const uint32_t rows = step->rows, sequences = step->sequences, sms = step->multiprocessors;
@@ -308,6 +327,12 @@ struct LingModel
 		else if ( Linear(layer->kda_f, state->normed, state->decay_logit, rows, G::kHidden, S::kKdaWidth, sms, stream) != LM_LAUNCH_OK ||
 			Linear(layer->kda_g, state->normed, state->kda_gate, rows, G::kHidden, S::kKdaWidth, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		const bool replay = G::kVerifyRows != 0u && step->commit == 0u;
+		if ( step->commit == 0u && (G::kVerifyRows == 0u || rows > G::kVerifyRows) )
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		if ( replay && cudaMemcpyAsync(ReplayQkv(state, layer), state->qkv, (uint64_t)rows * S::kKdaChannels * sizeof(uint16_t), cudaMemcpyDeviceToDevice,
+			stream) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LM_LAUNCH((LmCausalConvKernel<LG_THREADS,G::kConv,LM_CONV_SWISH,uint16_t>), dim3(sequences,(S::kKdaChannels + LG_THREADS - 1u) / LG_THREADS),
 			LG_THREADS, 0, stream, window, step->recurrent_index, step->sequence_row_begin, (const uint32_t *)0, state->qkv, layer->kda_conv,
 			state->qkv, S::kKdaChannels, sequences, step->commit, step->sequence_row_indices);
@@ -319,6 +344,11 @@ struct LingModel
 			LM_LAUNCH((LmBf16SigmoidRowsKernel<LG_THREADS,true>), rows, LG_THREADS, 0, stream, state->beta, state->write_gate, S::kKdaRankHeads);
 		else
 			LM_LAUNCH((LmSigmoidRowsKernel<LG_THREADS>), rows, LG_THREADS, 0, stream, state->beta, state->write_gate, S::kKdaRankHeads);
+		if ( replay && (cudaMemcpyAsync(ReplayRetention(state, layer), state->retention, (uint64_t)rows * S::kKdaWidth * sizeof(float),
+				cudaMemcpyDeviceToDevice, stream) != cudaSuccess ||
+			cudaMemcpyAsync(ReplayWriteGate(state, layer), state->write_gate, (uint64_t)rows * S::kKdaRankHeads * sizeof(float),
+				cudaMemcpyDeviceToDevice, stream) != cudaSuccess) )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LM_LAUNCH((LmDeltaRuleColumnKernel<LG_THREADS,G::kKdaDim,G::kKdaDim,float>), dim3(sequences,S::kKdaRankHeads,G::kKdaDim / LM_WARP_LANES),
 			LM_DELTA_COLUMN_THREADS, 0, stream, state_pool, (uint32_t)state->kda_state_bytes, step->recurrent_index, step->sequence_row_begin,
 			(const uint32_t *)0, state->query, state->key, state->value, state->retention, state->write_gate, state->kda_mixed,
@@ -531,6 +561,33 @@ struct LingModel
 		return Launched();
 	}
 
+	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream_void)
+	{
+		State *state = (State *)model;
+		cudaStream_t stream = (cudaStream_t)stream_void;
+		const uint32_t rows = step->rows, sequences = step->sequences;
+		if ( G::kVerifyRows == 0u || kept == 0 || rows == 0u || rows > G::kVerifyRows || sequences == 0u || sequences > state->slots )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		for ( uint32_t index = 0u; index < G::kLayers; ++index )
+		{
+			const LingLayer *layer = &state->layers[index];
+			if ( index % G::kPeriod == G::kPhase )
+				continue;
+			uint8_t *state_pool = state->kda_state + (uint64_t)layer->recurrent_index * state->slots * state->kda_state_bytes;
+			uint16_t *window = state->kda_window + (uint64_t)layer->recurrent_index * state->slots * (state->kda_window_bytes / sizeof(uint16_t));
+			LM_LAUNCH((LmCausalConvKernel<LG_THREADS,G::kConv,LM_CONV_SWISH,uint16_t>), dim3(sequences,(S::kKdaChannels + LG_THREADS - 1u) / LG_THREADS),
+				LG_THREADS, 0, stream, window, step->recurrent_index, step->sequence_row_begin, kept, ReplayQkv(state, layer), layer->kda_conv,
+				state->qkv, S::kKdaChannels, sequences, 1u, step->sequence_row_indices);
+			LingSplitRowsKernel<<<dim3(Blocks(S::kKdaChannels), rows), LG_THREADS, 0, stream>>>(state->qkv, state->query, state->key, state->value,
+				S::kKdaWidth);
+			LM_LAUNCH((LmDeltaRuleColumnKernel<LG_THREADS,G::kKdaDim,G::kKdaDim,float>), dim3(sequences,S::kKdaRankHeads,G::kKdaDim / LM_WARP_LANES),
+				LM_DELTA_COLUMN_THREADS, 0, stream, state_pool, (uint32_t)state->kda_state_bytes, step->recurrent_index, step->sequence_row_begin,
+				kept, state->query, state->key, state->value, ReplayRetention(state, layer), ReplayWriteGate(state, layer), state->kda_mixed,
+				S::kKdaRankHeads, 1u, sequences, 1u, step->sequence_row_indices);
+		}
+		return Launched();
+	}
+
 	static SparkStatus Entry(State *state, const char *name, const char *kind, uint64_t *offset, uint64_t *bytes, uint32_t *rows)
 	{
 		SparkNamedPackEntry entry;
@@ -566,6 +623,9 @@ struct LingModel
 			{ (void **)&state->retention, rows * S::kKdaWidth * sizeof(float) },
 			{ (void **)&state->write_gate, rows * S::kKdaRankHeads * sizeof(float) },
 			{ (void **)&state->kda_mixed, rows * S::kKdaWidth * sizeof(uint16_t) },
+			{ (void **)&state->replay_qkv, (uint64_t)S::kKdaLayers * G::kVerifyRows * S::kKdaChannels * sizeof(uint16_t) },
+			{ (void **)&state->replay_retention, (uint64_t)S::kKdaLayers * G::kVerifyRows * S::kKdaWidth * sizeof(float) },
+			{ (void **)&state->replay_write_gate, (uint64_t)S::kKdaLayers * G::kVerifyRows * S::kKdaRankHeads * sizeof(float) },
 			{ (void **)&state->mla_q, rows * S::kMlaRankHeads * S::kQkDim * sizeof(uint16_t) },
 			{ (void **)&state->mla_latent_query, rows * S::kMlaRankHeads * G::kLatent * sizeof(uint16_t) },
 			{ (void **)&state->mla_query, rows * S::kMlaRankHeads * S::kSlot * sizeof(uint16_t) },
@@ -936,7 +996,10 @@ struct LingModel
 			RecurrentCopy,
 			ResetSlot,
 			ProbeBuffers,
-			Report
+			Report,
+			0,
+			0,
+			G::kVerifyRows != 0u ? KeepRows : 0
 		};
 		return &interface_table;
 	}
