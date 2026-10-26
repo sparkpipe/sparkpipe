@@ -150,9 +150,9 @@ kernel void spark_attention_combine(constant SparkAttentionParams &p [[buffer(0)
 			sum += record[1] * factor;
 			value += record[2u + d] * factor;
 		}
-		const float attended = SparkRoundBf16(value / sum);
-		const float g = SparkBf16ToFloat(gate[(ulong)row * p.gate_stride + p.gate_offset + head * p.gate_head_stride + d]);
-		output[(ulong)row * p.output_stride + head * SPARK_ATTENTION_DIM + d] = SparkFloatToBf16(attended * SparkSigmoid(g));
+		const float attended = SparkMathRoundBf16(value / sum);
+		const float g = SparkMathBf16ToFloat(gate[(ulong)row * p.gate_stride + p.gate_offset + head * p.gate_head_stride + d]);
+		output[(ulong)row * p.output_stride + head * SPARK_ATTENTION_DIM + d] = SparkMathFloatToBf16(attended * SparkMathSigmoid(g));
 	}
 }
 

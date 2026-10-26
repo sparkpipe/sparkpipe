@@ -174,7 +174,7 @@ __global__ static void LingHeadGateKernel(uint16_t *values, const uint16_t *gate
 	const uint32_t row = blockIdx.x;
 	for ( uint32_t index = threadIdx.x; index < heads * head_dim; index += blockDim.x )
 	{
-		const float gate = LmBf16ToFloat(LmFloatToBf16(1.0f / (1.0f + expf(-LmBf16ToFloat(gate_logits[(uint64_t)row * heads + index / head_dim])))));
+		const float gate = LmBf16ToFloat(LmFloatToBf16(SparkMathSigmoid(LmBf16ToFloat(gate_logits[(uint64_t)row * heads + index / head_dim]))));
 		values[(uint64_t)row * heads * head_dim + index] = LmFloatToBf16(LmBf16ToFloat(values[(uint64_t)row * heads * head_dim + index]) * gate);
 	}
 }
@@ -187,7 +187,7 @@ __global__ static void LingSiluClampPackedKernel(const uint16_t *gate, const uin
 	{
 		const float g = LmBf16ToFloat(gate[(uint64_t)row * width + element]);
 		const float u = fminf(fmaxf(LmBf16ToFloat(up[(uint64_t)row * width + element]), -limit), limit);
-		output[(uint64_t)row * width + element] = LmFloatToBf16(fminf(g / (1.0f + expf(-g)), limit) * u * weight[row]);
+		output[(uint64_t)row * width + element] = LmFloatToBf16(fminf(SparkMathSilu(g), limit) * u * weight[row]);
 	}
 }
 

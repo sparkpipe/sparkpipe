@@ -12,8 +12,8 @@ static inline void SparkUnpack8(uint4 bits, thread float4 &low, thread float4 &h
 
 static inline float4 SparkGated4(float4 gate, float4 up)
 {
-	return float4(SparkRoundBf16(SparkSilu(gate.x) * up.x), SparkRoundBf16(SparkSilu(gate.y) * up.y),
-		SparkRoundBf16(SparkSilu(gate.z) * up.z), SparkRoundBf16(SparkSilu(gate.w) * up.w));
+	return float4(SparkMathRoundBf16(SparkMathSilu(gate.x) * up.x), SparkMathRoundBf16(SparkMathSilu(gate.y) * up.y),
+		SparkMathRoundBf16(SparkMathSilu(gate.z) * up.z), SparkMathRoundBf16(SparkMathSilu(gate.w) * up.w));
 }
 
 template <uint R, bool F32, bool GATED>
@@ -64,7 +64,7 @@ kernel void spark_gemv(constant SparkGemvParams &p [[buffer(0)]], device const u
 				if ( F32 )
 					((device float *)out)[at] = total;
 				else
-					((device ushort *)out)[at] = SparkFloatToBf16(total);
+					((device ushort *)out)[at] = SparkMathFloatToBf16(total);
 			}
 		}
 }

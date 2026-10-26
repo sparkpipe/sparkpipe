@@ -24,7 +24,7 @@ void LmTopkGroupLimitedKernel(const float *__restrict__ logits, const float *__r
 	const uint32_t row = blockIdx.x, lane = threadIdx.x % 32u, warp = threadIdx.x / 32u;
 	for ( uint32_t expert = threadIdx.x; expert < EXPERTS; expert += THREADS )
 	{
-		const float value = 1.0f / (1.0f + expf(-logits[(uint64_t)row * EXPERTS + expert]));
+		const float value = SparkMathSigmoid(logits[(uint64_t)row * EXPERTS + expert]);
 		score[expert] = value;
 		selection[expert] = value + (selection_bias != 0 ? selection_bias[expert] : 0.0f);
 	}

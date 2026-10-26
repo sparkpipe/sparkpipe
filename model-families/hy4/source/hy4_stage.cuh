@@ -191,9 +191,9 @@ static __device__ __forceinline__ void HyHcWeights(const float *total, uint32_t 
 	const float inverse = rsqrtf(total[MIXES] / (float)flat + norm_epsilon);
 	for ( uint32_t s = 0u; s < STREAMS; ++s )
 	{
-		weights[s] = 1.0f / (1.0f + expf(-(total[s] * inverse * scale[0] + base[s]))) + hc_epsilon;
+		weights[s] = SparkMathSigmoid(total[s] * inverse * scale[0] + base[s]) + hc_epsilon;
 		if ( MIXES > STREAMS && post != 0 )
-			post[s] = post_magnitude / (1.0f + expf(-(total[STREAMS + s] * inverse * scale[1] + base[STREAMS + s]))) + hc_epsilon;
+			post[s] = SparkMathScaledSigmoid(post_magnitude,total[STREAMS + s] * inverse * scale[1] + base[STREAMS + s]) + hc_epsilon;
 	}
 }
 
@@ -408,7 +408,7 @@ __global__ static void HySigmoidGateKernel(uint16_t *values, const uint16_t *gat
 {
 	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < count; index += (uint64_t)gridDim.x * blockDim.x )
 	{
-		const float gate = LmBf16ToFloat(LmFloatToBf16(1.0f / (1.0f + expf(-LmBf16ToFloat(gate_logits[index])))));
+		const float gate = LmBf16ToFloat(LmFloatToBf16(SparkMathSigmoid(LmBf16ToFloat(gate_logits[index]))));
 		values[index] = LmFloatToBf16(LmBf16ToFloat(values[index]) * gate);
 	}
 }

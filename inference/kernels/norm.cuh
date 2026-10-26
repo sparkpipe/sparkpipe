@@ -179,7 +179,7 @@ void LmSiluMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__rest
 		float gate = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? index : dimension + index)]);
 		float up = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? dimension + index : index)]);
 		output_bf16[out_base + index] =
-			LmFloatToBf16((gate / (1.0f + __expf(-gate))) * up);
+			LmFloatToBf16(SparkMathSiluFast(gate) * up);
 	}
 }
 
@@ -194,7 +194,7 @@ void LmSiluMulLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *_
 	{
 		float gate = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? index : dimension + index)]);
 		float up = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? dimension + index : index)]);
-		float activated = fminf(gate / (1.0f + __expf(-gate)), limit);
+		float activated = fminf(SparkMathSiluFast(gate), limit);
 		output_bf16[out_base + index] =
 			LmFloatToBf16(activated * fminf(fmaxf(up, -limit), limit));
 	}
@@ -254,7 +254,7 @@ static __device__ __forceinline__ void LmHeadRmsNormGateBody(const uint16_t *__r
 		value = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(input_bf16[base + index]) * scale));
 		value = LmBf16ToFloat(LmFloatToBf16(value * LmBf16ToFloat(weight_bf16[index])));
 		gate = LmBf16ToFloat(gate_bf16[base + index]);
-		output_bf16[base + index] = LmFloatToBf16(value * (GATE == LM_GATE_SIGMOID ? 1.0f / (1.0f + __expf(-gate)) : gate / (1.0f + __expf(-gate))));
+		output_bf16[base + index] = LmFloatToBf16(value * (GATE == LM_GATE_SIGMOID ? SparkMathSigmoidFast(gate) : SparkMathSiluFast(gate)));
 	}
 }
 
@@ -284,7 +284,7 @@ void LmHeadGateBroadcastKernel(uint16_t *__restrict__ heads_bf16, const uint16_t
 	if ( ACTIVATION == LM_GATE_SOFTPLUS )
 		gate = gate > 20.0f ? gate : log1pf(__expf(gate));
 	if ( ACTIVATION == LM_GATE_SIGMOID )
-		gate = 1.0f / (1.0f + __expf(-gate));
+		gate = SparkMathSigmoidFast(gate);
 	for (index = threadIdx.x; index < head_dimension; index += THREADS)
 	{
 		at = base + index;
@@ -309,7 +309,7 @@ void LmRmsNormSigmoidGateKernel(const uint16_t *__restrict__ input_bf16,const ui
 	for (index=threadIdx.x; index<dimension; index+=THREADS)
 	{
 		value = LmBf16ToFloat(input_bf16[base + index]) * inverse * weight[index];
-		value *= 1.0f / (1.0f + __expf(-LmBf16ToFloat(gate_bf16[base + index])));
+		value *= SparkMathSigmoidFast(LmBf16ToFloat(gate_bf16[base + index]));
 		output_bf16[base + index] = LmFloatToBf16(value);
 	}
 }
@@ -327,7 +327,7 @@ void LmClampedUpGateKernel(const uint16_t *__restrict__ up_gate_bf16,uint16_t *_
 		gate = LmBf16ToFloat(up_gate_bf16[base + dimension + index]);
 		gate = gate > limit ? limit : gate;
 		up = up > limit ? limit : (up < -limit ? -limit : up);
-		output_bf16[out_base + index] = LmFloatToBf16((gate / (1.0f + __expf(-gate))) * up);
+		output_bf16[out_base + index] = LmFloatToBf16(SparkMathSiluFast(gate) * up);
 	}
 }
 
@@ -343,7 +343,7 @@ void LmSituMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__rest
 		float gate = LmBf16ToFloat(gate_up_bf16[base + index]);
 		float up = LmBf16ToFloat(gate_up_bf16[base + dimension + index]);
 		float activated = beta * tanhf(gate / beta) *
-			(1.0f / (1.0f + __expf(-gate)));
+			SparkMathSigmoidFast(gate);
 		if (linear_beta > 0.0f)
 			up = linear_beta * tanhf(up / linear_beta);
 		output_bf16[out_base + index] = LmFloatToBf16(activated * up);
@@ -359,7 +359,7 @@ void LmSigmoidRowsKernel(const uint16_t *__restrict__ logits_bf16, float *__rest
 	for (index = threadIdx.x; index < width; index += THREADS)
 	{
 		float value = LmBf16ToFloat(logits_bf16[base + index]);
-		scores[base + index] = 1.0f / (1.0f + __expf(-value));
+		scores[base + index] = SparkMathSigmoidFast(value);
 	}
 }
 
@@ -372,7 +372,7 @@ void LmBf16SigmoidRowsKernel(const uint16_t *__restrict__ logits_bf16,float *__r
 	for (index=threadIdx.x; index<width; index+=THREADS)
 	{
 		float value = LmBf16ToFloat(logits_bf16[base + index]);
-		scores[base + index] = LmBf16ToFloat(LmFloatToBf16(1.0f / (1.0f + __expf(-value))));
+		scores[base + index] = LmBf16ToFloat(LmFloatToBf16(SparkMathSigmoidFast(value)));
 	}
 }
 
@@ -387,7 +387,7 @@ void LmOutputGateKernel(uint16_t *__restrict__ output_bf16, const uint16_t *__re
 		float gate = LmBf16ToFloat(gate_bf16[base + index]);
 		float value = LmBf16ToFloat(output_bf16[base + index]);
 		output_bf16[base + index] =
-			LmFloatToBf16(value * (1.0f / (1.0f + __expf(-gate))));
+			LmFloatToBf16(value * SparkMathSigmoidFast(gate));
 	}
 }
 
@@ -400,7 +400,7 @@ void LmHeadWiseGateKernel(uint16_t *__restrict__ output_bf16, const uint16_t *__
 	for (head = 0u; head < heads; ++head)
 	{
 		float gate = LmBf16ToFloat(gate_bf16[base + (uint64_t)head]);
-		gate = 1.0f / (1.0f + __expf(-gate));
+		gate = SparkMathSigmoidFast(gate);
 		for (index = threadIdx.x; index < head_dimension; index += THREADS)
 		{
 			uint64_t element = base + (uint64_t)head * head_dimension + index;

@@ -520,8 +520,8 @@ static __device__ void Glm5NextHcGatesWarp(const float *mixes, const float *scal
 	const uint32_t lane = threadIdx.x % LM_WARP_LANES;
 	if ( lane < G5N_HC )
 	{
-		pre[lane] = 1.0f / (1.0f + __expf(-(mixes[lane] * scale3[0] + base[lane]))) + G5N_HC_EPS;
-		post[lane] = 2.0f / (1.0f + __expf(-(mixes[G5N_HC + lane] * scale3[1] + base[G5N_HC + lane])));
+		pre[lane] = SparkMathSigmoidFast(mixes[lane] * scale3[0] + base[lane]) + G5N_HC_EPS;
+		post[lane] = SparkMathScaledSigmoidFast(2.0f,mixes[G5N_HC + lane] * scale3[1] + base[G5N_HC + lane]);
 	}
 }
 

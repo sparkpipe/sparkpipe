@@ -236,7 +236,7 @@ __global__ static void GemmaSigmoidGateKernel(uint16_t *values, const uint16_t *
 {
 	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < count; index += (uint64_t)gridDim.x * blockDim.x )
 	{
-		const float gate = LmBf16ToFloat(LmFloatToBf16(1.0f / (1.0f + expf(-LmBf16ToFloat(gate_logits[index])))));
+		const float gate = LmBf16ToFloat(LmFloatToBf16(SparkMathSigmoid(LmBf16ToFloat(gate_logits[index]))));
 		values[index] = LmFloatToBf16(LmBf16ToFloat(values[index]) * gate);
 	}
 }
@@ -274,8 +274,7 @@ void GemmaGeluTanhMulKernel(const uint16_t *gate_up, uint16_t *output, uint32_t 
 	{
 		const float gate = LmBf16ToFloat(gate_up[(uint64_t)row * 2u * width + index]);
 		const float up = LmBf16ToFloat(gate_up[(uint64_t)row * 2u * width + width + index]);
-		const float cube = gate * gate * gate;
-		const float activated = LmBf16ToFloat(LmFloatToBf16(0.5f * gate * (1.0f + tanhf(0.7978845608028654f * (gate + 0.044715f * cube)))));
+		const float activated = LmBf16ToFloat(LmFloatToBf16(SparkMathGeluTanh(gate)));
 		output[(uint64_t)row * width + index] = LmFloatToBf16(activated * up);
 	}
 }

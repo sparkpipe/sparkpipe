@@ -170,7 +170,7 @@ __global__ static void MimoSwigluKernel(const uint16_t *gate, const uint16_t *up
 	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < width; index += gridDim.x * blockDim.x )
 	{
 		const float g = LmBf16ToFloat(gate[(uint64_t)row * source_stride + index]);
-		const float activated = LmBf16ToFloat(LmFloatToBf16(g / (1.0f + expf(-g))));
+		const float activated = LmBf16ToFloat(LmFloatToBf16(SparkMathSilu(g)));
 		output[(uint64_t)row * width + index] = LmFloatToBf16(activated * LmBf16ToFloat(up[(uint64_t)row * source_stride + index]));
 	}
 }
