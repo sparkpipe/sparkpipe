@@ -43,6 +43,9 @@ FP8 = fp8_table()
 
 
 class Checkpoint:
+    margins = None
+    layer = 0
+
     def __init__(self, directory):
         self.directory = Path(directory)
         self.weight_map = json.loads((self.directory / "model.safetensors.index.json").read_text())["weight_map"]
@@ -225,13 +228,20 @@ class Reference:
         allowed = np.zeros((rows, self.groups), dtype=bool)
         np.put_along_axis(allowed, top_groups, True, axis=-1)
         choice = np.where(np.repeat(allowed, per_group, axis=-1), choice, np.float32(0.0))
-        chosen = np.argsort(-choice, axis=-1, kind="stable")[:, :self.top_k]
+        order = np.argsort(-choice, axis=-1, kind="stable")
+        chosen = order[:, :self.top_k]
+        if self.margins is not None:
+            ranked = np.sort(-group_scores, axis=-1)
+            picked = np.take_along_axis(choice, order[:, self.top_k - 1:self.top_k + 1], axis=-1)
+            groups = (ranked[:, self.top_groups] - ranked[:, self.top_groups - 1]).tolist() if self.top_groups < self.groups else None
+            self.margins.append({"layer": self.layer, "expert": (picked[:, 0] - picked[:, 1]).tolist(), "group": groups})
         weights = np.take_along_axis(scores, chosen, axis=-1)
         weights = (weights / (weights.sum(axis=-1, keepdims=True) + np.float32(1e-20)) * self.routed_scale).astype(np.float32)
         return chosen, weights
 
     def moe(self, layer, normed):
         p = f"{PREFIX}layers.{layer}.mlp."
+        self.layer = layer
         shared = self.mlp(normed, p + "shared_experts.")
         chosen, weights = self.route(normed, p)
         routed = np.zeros_like(normed)
@@ -319,9 +329,10 @@ def served_logprob(entry, token):
 
 def score(args):
     reference = Reference(args.checkpoint)
+    reference.margins = [] if args.route_margins else None
     prompts = {p["name"]: p["prompt_token_ids"] for p in json.loads(Path(args.prompts).read_text())["prompts"]}
     capture = json.loads(Path(args.capture).read_text())
-    names = [name for name in capture if name in prompts]
+    names = [name for name in capture if name in prompts and (not args.only or name in args.only)]
     sequences = [prompts[name] + capture[name]["tokens"] for name in names]
     finals = reference.forward(sequences)
     report = {}
@@ -350,6 +361,9 @@ def score(args):
         print(f"{name}: {agree}/{len(rows)} top-1 agree; disagreements {disagree} (near ties {near_tie}); "
               f"|served - reference| logprob median {summary['logprob_delta_median']} max {summary['logprob_delta_max']}", flush=True)
     Path(args.out).write_text(json.dumps(report))
+    if args.route_margins:
+        Path(args.route_margins).write_text(json.dumps({"names": names, "lengths": [len(s) for s in sequences],
+                                                        "prompt_lengths": [len(prompts[n]) for n in names], "layers": reference.margins}))
 
 
 def main():
@@ -360,6 +374,9 @@ def main():
     parser.add_argument("--capture")
     parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/axk2/chat_template.json"))
     parser.add_argument("--out")
+    parser.add_argument("--only", nargs="*", help="score only these prompt names")
+    parser.add_argument("--route-margins", help="write, per MoE layer and row, the gap between the last chosen and the first unchosen expert "
+                        "and between the last chosen and the first unchosen group, to this JSON")
     args = parser.parse_args()
     if args.mode == "tokenize":
         tokenize(args)
