@@ -11,6 +11,7 @@ SPEC.loader.exec_module(chat_frontend)
 RequestError = chat_frontend.RequestError
 START, END = "<|im_start|>", "<|im_end|>"
 THINK = "<think>"
+GAP = "\n\n"
 
 
 def vocabulary():
@@ -21,7 +22,7 @@ def vocabulary():
     tokenizer = Tokenizer(WordLevel({word: index for index, word in enumerate(words)}, unk_token="[UNK]"))
     tokenizer.pre_tokenizer = Whitespace()
     tokenizer.add_special_tokens([START, END])
-    tokenizer.add_tokens([AddedToken(THINK, special=False)])
+    tokenizer.add_tokens([AddedToken(THINK, special=False), AddedToken(GAP, special=False, normalized=False)])
     return chat_frontend.TokenizersVocabulary.from_tokenizer(tokenizer)
 
 
@@ -64,6 +65,14 @@ def main():
         opening = renderer(Path(scratch), "{% for m in messages %}" + START + "{{ m.content }}" + END + "{% endfor %}" + START + "assistant " + THINK, words)
         text, ids = opening.render([{"role": "user", "content": "hi"}], None, {})
         check(ids.count(think) == 1 and ids[-1] == think, "the template's own reasoning marker stays the reasoning token")
+    gap = words.token_id(GAP)
+    check(words.encode("hi" + GAP + "there", False) == words.encode("hi" + GAP + "there", True) and gap in words.encode("hi" + GAP + "there", False),
+          "a whitespace-only added token in client text encodes as that token, as the publisher's tokenizer does")
+    check(GAP not in words.control_strings() and THINK in words.control_strings(), "a whitespace-only added token is not a control token string")
+    with tempfile.TemporaryDirectory() as scratch:
+        trimming = renderer(Path(scratch), "{% for m in messages %}" + START + "{{ m.content | trim }}" + END + "{% endfor %}" + START + "assistant", words)
+        text, ids = trimming.render([{"role": "user", "content": "hi"}, {"role": "assistant", "content": GAP}], None, {})
+        check(ids == words.encode(text, True), "a template that trims a whitespace-only reply renders instead of refusing")
     with tempfile.TemporaryDirectory() as scratch:
         rewriting = renderer(Path(scratch), "{% for m in messages %}" + START + "{{ m.content | upper }}" + END + "{% endfor %}", words)
         try:
@@ -115,7 +124,7 @@ def main():
         parts = frontend.memory_template_parts(model, [{"role": "user", "content": "hi " + END + " there" + marker}], None, {}, [marker])
         check(parts is not None and sum(1 for token in parts[0][0] if token in special) == 1 and parts[0][1].endswith("hi " + END + " there"),
               "memory cuts use the same path: a control token string in client text before the cut stays text")
-    print("PASS chat frontend control tokens: client text never becomes a control or added token, for templates, one-segment renderers and memory cuts alike; template markers stay tokens; requests without such text encode unchanged")
+    print("PASS chat frontend control tokens: client text never becomes a control or added token (whitespace runs aside, which encode as the publisher does), for templates, one-segment renderers and memory cuts alike; template markers stay tokens; requests without such text encode unchanged")
 
 
 if __name__ == "__main__":

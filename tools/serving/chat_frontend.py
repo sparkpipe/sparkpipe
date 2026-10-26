@@ -166,16 +166,28 @@ class TokenizersVocabulary:
     def adopt(self, tokenizer):
         self.tokenizer = tokenizer
         document = json.loads(tokenizer.to_str())
+        self.spacing = {token["content"]: token["id"] for token in document["added_tokens"]
+                        if not token["special"] and token["content"] and not token["content"].strip() and
+                        not (token.get("lstrip") or token.get("rstrip") or token.get("single_word"))}
+        self.spacing_pattern = re.compile("(" + "|".join(re.escape(text) for text in sorted(self.spacing, key=len, reverse=True)) + ")") if self.spacing else None
         document["added_tokens"] = []
         self.plain = Tokenizer.from_str(json.dumps(document))
 
     def encode(self, text, special):
         if special:
             return self.tokenizer.encode(text, add_special_tokens=False).ids
-        return self.plain.encode(text, add_special_tokens=False).ids
+        if self.spacing_pattern is None:
+            return self.plain.encode(text, add_special_tokens=False).ids
+        ids = []
+        for index, piece in enumerate(self.spacing_pattern.split(text)):
+            if index % 2 == 1:
+                ids.append(self.spacing[piece])
+            elif piece:
+                ids.extend(self.plain.encode(piece, add_special_tokens=False).ids)
+        return ids
 
     def control_strings(self):
-        return [token.content for token in self.tokenizer.get_added_tokens_decoder().values()]
+        return [token.content for token in self.tokenizer.get_added_tokens_decoder().values() if token.content not in self.spacing]
 
     def decoder(self):
         stream = DecodeStream(skip_special_tokens=False)
