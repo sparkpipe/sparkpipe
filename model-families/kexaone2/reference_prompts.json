@@ -1,0 +1,7 @@
+[
+ {"name": "capital_of_france", "text": "What is the capital of France? Answer in one word."},
+ {"name": "korea_capital_ko", "text": "대한민국의 수도는 어디인가요? 한 단어로 답하세요."},
+ {"name": "python_is_prime", "text": "Write a Python function is_prime(n) that returns True when n is prime."},
+ {"name": "contract_clause_ko", "text": "계약서에서 '불가항력' 조항이 무엇인지 두 문장으로 설명하세요."},
+ {"name": "count_up", "text": "Count from one to ten in English words, separated by commas."}
+]
