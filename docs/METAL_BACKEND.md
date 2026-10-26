@@ -332,6 +332,19 @@ strength, the attention scores and softmax stay FP32. Rotary angles are
 `float(position) * inverse_frequency` in FP32, with the inverse frequencies
 computed in double and rounded once.
 
+Gemma 4 26B A4B follows the publisher's eager PyTorch rounding, which
+`tools/gemma4_reference.py` reproduces in numpy: the embedding times
+`bf16(sqrt(hidden))`; every norm `bf16(x rsqrt(mean(x^2) + eps) w)` with plain
+FP32 `w`; every projection; the per-head query and key norms, then the
+rotation as `bf16(bf16(x bf16(cos)) + bf16(p bf16(sin)))`; the weightless
+value norm; the attention output (FP32 scores, softmax and probability times
+value); the sandwich norms and residual sums as in `spark_rmsnorm_branches`;
+`bf16(gelu_tanh(g))`, then `* up`, for the dense FFN and each expert; the
+router input `bf16(bf16(bf16(rms(x)) s) / sqrt(hidden))` and its BF16
+logits (softmax, top 8 and the weights in FP32); each expert's down
+projection, then `* weight`, then the BF16 sum over the routes in ascending
+expert order; the FP32 logits, soft-capped at 30.
+
 ## Qualification on one M5 Ultra
 
 The gates run on the Studio from a committed revision shipped with
