@@ -88,9 +88,13 @@ static float Bf16(uint16_t bits)
 	return(value);
 }
 
+static uint32_t ref_round_activations = 1u;
+
 static float RoundBf16(float value)
 {
 	uint32_t bits;
+	if ( ref_round_activations == 0u )
+		return(value);
 	memcpy(&bits,&value,4);
 	if ( (bits & 0x7fffffffu) > 0x7f800000u )
 		return(value);
@@ -629,9 +633,9 @@ int main(int argc, char **argv)
 	FILE *greedy;
 	uint32_t index, new_tokens;
 	double start = Seconds();
-	if ( argc != 5 )
+	if ( argc != 5 && !(argc == 6 && strcmp(argv[5],"fp32-activations") == 0) )
 	{
-		fprintf(stderr,"usage: %s CHECKPOINT_DIR PROMPTS.json OUT_DIR NEW_TOKENS\n",argv[0]);
+		fprintf(stderr,"usage: %s CHECKPOINT_DIR PROMPTS.json OUT_DIR NEW_TOKENS [fp32-activations]\n",argv[0]);
 		return(2);
 	}
 	memset(&checkpoint,0,sizeof(checkpoint));
@@ -647,6 +651,26 @@ int main(int argc, char **argv)
 	RefLoadModel(&checkpoint,&model);
 	RefStateCreate(&state);
 	fprintf(stderr,"weights converted to f32 in %.1f s\n",Seconds() - start);
+	if ( argc == 6 )
+	{
+		float *logits = (float *)malloc((size_t)REF_MAX_CONTEXT * REF_VOCAB * sizeof(float));
+		ref_round_activations = 0u;
+		for ( index = 0u; logits != 0 && index < prompts.count; index++ )
+		{
+			const SparkTokenPrompt *prompt = &prompts.prompts[index];
+			FILE *file;
+			RefStateReset(&state);
+			RefForward(0u,&model,&state,prompt->tokens,prompt->count,logits);
+			snprintf(path,sizeof(path),"%s/%s.ref_c.logits",argv[3],prompt->name);
+			file = fopen(path,"wb");
+			if ( file == 0 || fwrite(logits,sizeof(float),(size_t)(prompt->count - 1u) * REF_VOCAB,file) != (size_t)(prompt->count - 1u) * REF_VOCAB ||
+				fclose(file) != 0 )
+				Die("cannot write",path);
+			fprintf(stderr,"%s: FP32-activation forward written\n",prompt->name);
+		}
+		free(logits);
+		return(0);
+	}
 	snprintf(path,sizeof(path),"%s/greedy.ref.json",argv[3]);
 	greedy = fopen(path,"w");
 	if ( greedy == 0 )
