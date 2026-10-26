@@ -774,7 +774,7 @@ Related common-code debt:
 
 ## Korean models
 
-The sources are pinned. K-EXAONE 2.0 serves; A.X K2 is built but not yet run; Solar Open 2 has only its contract.
+The sources are pinned. K-EXAONE 2.0 and A.X K2 serve; Solar Open 2 has only its contract.
 
 - **K-EXAONE 2.0** (`LGAI-EXAONE/K-EXAONE-2.0-750B-A37B@fec0c8dd`, BF16, 1.50 TB): 78 layers with 64 query and 8 KV heads of 128; 20 layers attend globally without position encoding, 57 a 128-token window and one a 4,096-token window; 256 routed experts (top 8) plus one shared, after two dense layers; one MTP layer. Its DSpark drafter is `model-dspark.safetensors` of `LGAI-EXAONE/K-EXAONE-2.0-750B-A37B-DSpark@e42409db`, whose other files are the base weights.
   - **Serving:** contract, driver (`kexaone2` on the Gemma stage), packs and lane 11.
