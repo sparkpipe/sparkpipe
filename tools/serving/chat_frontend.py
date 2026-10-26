@@ -640,6 +640,36 @@ def canonical_citations(messages, wrapper):
     return messages, {}
 
 
+PUBLIC_PATHS = frozenset({"/health/liveliness", "/v1/models", "/v1/chat/completions", "/v1/sparkpipe/status"})
+PUBLIC_KEY_PREFIX = "sk-sp-"
+
+
+class PublicKeys:
+    def __init__(self, path):
+        self.path = path
+        self.stamp = None
+        self.entries = {}
+
+    def lookup(self, key):
+        if not key.startswith(PUBLIC_KEY_PREFIX):
+            return None
+        try:
+            stamp = self.path.stat().st_mtime_ns
+        except OSError:
+            return None
+        if stamp != self.stamp:
+            try:
+                document = json.loads(self.path.read_text())
+            except (OSError, json.JSONDecodeError):
+                return None
+            self.entries = {entry["sha256"]: entry for entry in document.get("keys", []) if isinstance(entry, dict) and isinstance(entry.get("sha256"), str)}
+            self.stamp = stamp
+        entry = self.entries.get(hashlib.sha256(key.encode()).hexdigest())
+        if entry is None or entry.get("revoked") or (entry.get("expires") is not None and entry["expires"] <= time.time()):
+            return None
+        return entry
+
+
 def short_hash(value):
     return hashlib.sha256(value.encode()).hexdigest()[:12] if value else None
 
@@ -1180,6 +1210,15 @@ class Frontend:
         if wrapper is not None and (not isinstance(wrapper, dict) or set(wrapper) != CITATION_WRAPPER_KEYS or not all(isinstance(wrapper[key], str) and wrapper[key] for key in CITATION_WRAPPER_KEYS)):
             raise SystemExit(f"chat_frontend: client.citation_wrapper needs exactly the non-empty strings {sorted(CITATION_WRAPPER_KEYS)}")
         self.citation_wrapper = wrapper
+        public = config.get("public")
+        self.public_header, self.public_keys, self.public_models = None, None, frozenset()
+        if public is not None:
+            if not isinstance(public, dict) or set(public) - {"header", "keys_file", "models"} or not isinstance(public.get("header"), str) or not public["header"] or not isinstance(public.get("keys_file"), str):
+                raise SystemExit("chat_frontend: public needs a header and a keys_file, and optionally the public models")
+            models = public.get("models", sorted(self.models))
+            if not isinstance(models, list) or not set(models) <= set(self.models):
+                raise SystemExit(f"chat_frontend: public models must be served models; served: {sorted(self.models)}")
+            self.public_header, self.public_keys, self.public_models = public["header"], PublicKeys(base / public["keys_file"]), frozenset(models)
         self.session = None
         self.memory = None
         self.tool_call_faults = {}
@@ -1276,9 +1315,10 @@ class Frontend:
 
     async def list_models(self, request):
         created = int(time.time())
+        public = request is not None and request.get("public_key") is not None
         return web.json_response({"object": "list", "data": [
             {"id": name, "object": "model", "created": created, "owned_by": "sparkpipe", "max_model_len": model.context_tokens}
-            for model in self.models.values() for name in (model.id, model.id + BULK_SUFFIX)]})
+            for model in self.models.values() if not public or model.id in self.public_models for name in (model.id, model.id + BULK_SUFFIX)]})
 
     def prefix_ledger(self, model):
         if self.prefixes is None:
@@ -1725,11 +1765,16 @@ class Frontend:
             body = await request.json()
         except json.JSONDecodeError:
             return web.json_response(error_body("invalid_json", "the request body is not JSON"), status=400)
+        public = request.get("public_key")
         try:
             model = self.model_for(body)
-            plan = self.plan(model, body, request.headers)
+            if public is not None and model.id not in self.public_models:
+                raise RequestError(404, "model_not_found", f"model {body.get('model')!r} is not served here; served: {sorted(self.public_models)}")
+            plan = self.plan(model, body, None if public is not None else request.headers)
         except RequestError as error:
             return error_response(error)
+        if public is not None:
+            plan["trace"]["key"] = public["id"]
         if "command" in plan:
             name, argument = plan["command"]
             text = await self.commands.run(model, plan["identity"], plan["messages"], name, argument, plan["memory_off"])
@@ -1870,8 +1915,26 @@ def raise_open_files():
     return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
 
 
+def public_door(frontend):
+    @web.middleware
+    async def door(request, handler):
+        if frontend.public_header is None or request.headers.get(frontend.public_header) is None:
+            return await handler(request)
+        if request.path not in PUBLIC_PATHS:
+            return web.json_response(error_body("not_found", "this path is not served to the public API"), status=404)
+        if request.path == "/health/liveliness":
+            return await handler(request)
+        authorization = request.headers.get("Authorization", "")
+        entry = frontend.public_keys.lookup(authorization[len("Bearer "):].strip()) if authorization.startswith("Bearer ") else None
+        if entry is None:
+            return web.json_response(error_body("invalid_api_key", "send a valid SparkPipe API key as Authorization: Bearer sk-sp-..."), status=401)
+        request["public_key"] = entry
+        return await handler(request)
+    return door
+
+
 def build(frontend):
-    app = web.Application(client_max_size=256 * 1024 * 1024)
+    app = web.Application(client_max_size=256 * 1024 * 1024, middlewares=[public_door(frontend)])
     app.on_startup.append(frontend.start)
     app.on_cleanup.append(frontend.stop)
     app.router.add_get("/health", frontend.health)
@@ -1897,7 +1960,7 @@ def main():
     except ValueError:
         loopback = False
     if not loopback:
-        raise SystemExit(f"chat_frontend: --host {arguments.host} is not a loopback address; the chat layer checks no API key, so it serves this host only and LiteLLM is the door")
+        raise SystemExit(f"chat_frontend: --host {arguments.host} is not a loopback address; the chat layer checks API keys only on requests the public door marks, so it serves this host only")
     config_path = Path(arguments.config).resolve()
     frontend = Frontend(json.loads(config_path.read_text()), config_path.parent)
     print(f"chat_frontend: open files limit {raise_open_files()}", file=sys.stderr, flush=True)

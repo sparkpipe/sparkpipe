@@ -364,6 +364,53 @@ Check the md5 against the downloaded `.md5` first. The builder refuses a file wi
 
 The tunnel is the hub system unit `sparkpipe-ai-door` (root, key `/root/.ssh/sparkpipe_ai_tunnel_ed25519`). It also forwards 127.0.0.1:18080 to the hub's port 4001, where nothing listens, and the VPS key may listen on 18080. Dropping 18080 from both is an SSH change, which the owner decides.
 
+### Public API keys (2026-10-24)
+
+The chat layer can serve the public API itself, with keys instead of
+logins. Its config's `public` block names a header, a keys file and the
+public models:
+
+```json
+"public": {"header": "X-SparkPipe-Public", "keys_file": "api_keys.json", "models": ["glm-5.3", "kimi-k3"]}
+```
+
+- A request that carries the header, with any value, is public. The door
+  that sets the header must also strip it from what the browser sends, so
+  only the door can mark a request.
+- A public request needs `Authorization: Bearer sk-sp-...` with a key that
+  is in the keys file, not revoked and not expired; otherwise it gets 401
+  `invalid_api_key`. `/health/liveliness` needs no key.
+- Public requests may use only `/v1/models`, `/v1/chat/completions`,
+  `/v1/sparkpipe/status` and `/health/liveliness`; every other path is 404.
+  `/v1/models` lists only the public models, and a request for any other
+  model gets 404 naming only the public ones. Leaving out `models` makes
+  every served model public.
+- A public request is planned without the caller's Open WebUI headers, so it
+  opens no chat memory, runs no chat command and keeps no conversation
+  state. Its trace line records the key's id, never the key.
+- Requests without the header (SparkPipe Chat, LiteLLM, the LAN) are
+  unchanged.
+
+The keys file holds each key's SHA-256, an id, its creation and expiry
+times, whether it is revoked and a note. It is written with mode 600, and
+the chat layer rereads it when it changes, so a revoke applies from the next
+request with no restart. On the hub, `tools/serving/api_keys.py` sits next
+to `chat_frontend.py` in `~/sparkpipe-chat`:
+
+```sh
+cd ~/sparkpipe-chat
+python3 api_keys.py --file api_keys.json create --days 30 --note "who it is for"
+python3 api_keys.py --file api_keys.json list
+python3 api_keys.py --file api_keys.json revoke k_1a2b3c4d
+```
+
+`create` prints the id and the key once; only the hash is stored.
+`deployment/hub/chat_frontend.json` makes every model public except the
+Qwen models, as `docs/MODEL_SUPPORT.md` requires.
+
+Until Apache sends public `/v1` traffic to the chat layer with this header,
+the public door is still the login and the external LiteLLM above.
+
 ## SparkPipe Chat (Open WebUI, sparkpipe.ai:8443)
 
 `https://sparkpipe.ai:8443` is the chat app for invited people: Open WebUI

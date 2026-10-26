@@ -1,4 +1,23 @@
 {
+ "public": {
+  "header": "X-SparkPipe-Public",
+  "keys_file": "api_keys.json",
+  "models": [
+   "glm-5.3",
+   "glm-5.3-flash",
+   "kimi-k3",
+   "deepseek-v4.1-flash",
+   "gemma-4-31b",
+   "gemma-4-26b-a4b",
+   "hy4-preview",
+   "ling-3.0-flash",
+   "muse-glimmer-30b",
+   "ling-3.0-flash-fin",
+   "laguna-s-2.1",
+   "mimo-v2.6-flash",
+   "mimo-v2.6-pro"
+  ]
+ },
  "models": [
   {
    "id": "glm-5.3",
@@ -921,7 +940,9 @@
    "ledger_context_share": 0.1,
    "part_small_tokens": 1024,
    "part_cap_tokens": 12288,
-   "keep_tokens": 4096, "target_tolerance": 0.25, "target_minimum_tokens": 16384
+   "keep_tokens": 4096,
+   "target_tolerance": 0.25,
+   "target_minimum_tokens": 16384
   }
  },
  "client": {
