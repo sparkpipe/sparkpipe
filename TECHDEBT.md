@@ -776,9 +776,14 @@ Related common-code debt:
 
 ## Korean models
 
-README's Korean models have no contract, driver, pack, lane or qualification. The sources are pinned:
+The sources are pinned. K-EXAONE 2.0 serves; A.X K2 and Solar Open 2 do not yet.
 
 - **K-EXAONE 2.0** (`LGAI-EXAONE/K-EXAONE-2.0-750B-A37B@fec0c8dd`, BF16, 1.50 TB): 78 layers with 64 query and 8 KV heads of 128; 20 layers attend globally without position encoding, 57 a 128-token window and one a 4,096-token window; 256 routed experts (top 8) plus one shared, after two dense layers; one MTP layer. Its DSpark drafter is `model-dspark.safetensors` of `LGAI-EXAONE/K-EXAONE-2.0-750B-A37B-DSpark@e42409db`, whose other files are the base weights.
+  - **Serving:** contract, driver (`kexaone2` on the Gemma stage), packs and lane 11.
+  - **Measured:** 23.0 tok/s at B1 without speculation and 324 tok/s prefill at 6,850 tokens, with every expert split over the ranks by rows. Giving each rank 16 whole experts measured 12.0 and 273: a token's 8 experts landed unevenly. Both layouts score the same on the A/B corpus (McNemar p 0.39).
+  - **Missing:**
+    - The numpy reference (`tools/kexaone2_reference.py`) agrees with the served tokens at all 92 positions of six prompts (served logprobs within 0.11, median under 0.005). With reasoning off the model answers 17 × 23 as 401 in the reference too, so the UI smoke's one miss is the model's answer.
+    - Speculation (its MTP layer or the DSpark drafter) is not wired.
 - **A.X K2** (`skt/A.X-K2@d0805cfd`, block-128 FP8, the precision it was trained in, 0.69 TB): 61 layers of latent attention (query rank 1,536, KV rank 512) with top-2,048 sparse attention through a 64-head indexer, a gated attention output and a gated norm; 256 routed experts (top 8) plus one shared; YaRN to 256K. Drafter `skt/A.X-K2-DSpark@0b278334`. GLM 5.3 Full has the same attention and expert design.
 - **Solar Open 2** (`upstage/Solar-Open2-250B@9190fbe6`, BF16, 0.50 TB): 48 layers, three linear-attention layers (short convolution 4, 64 heads) for each GQA layer, no position encoding, 320 routed experts (top 8) plus one shared, 1M context. The Upstage Solar License asks that derivatives be named Solar and show "Built with Solar". The nearest served design is the linear-attention path of Kimi K3 and Ling.
 
@@ -1003,6 +1008,7 @@ Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`
 
 ## Production qualification
 
+- Fold the engine-evidence checks of the closed end-to-end suite (#1491) into the release qualification: assert `cached_prompt_tokens`, `stale_prefix_recomputes`, `status` and `finish_reason` from each request's `request_measurements` line, so prefix sharing, KV restore and park/resume pass only on engine evidence.
 - `scripts/release_rollout.sh` captures the old and the new build through the
   live prefix cache, so a capture can be served from KV another build wrote:
   in the 2026-10-25 release most old captures read their long prompts from

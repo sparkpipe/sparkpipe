@@ -249,6 +249,23 @@ LAGUNA = {
     "kv_page_bytes": (48 * 64 * 4096) // WORLD,
     "recurrent_bytes": 0,
 }
+KEXAONE2 = {
+    "swap_id": "k-exaone-2.0",
+    "api_port": 8477,
+    "kv_label": "kexaone2_stage",
+    "node_memory_bytes": 100 << 30,
+    "tokenizer_json": "/mnt/cold-raid6/models/k-exaone-2.0-750b-bf16-official/tokenizer.json",
+    "pack": "sparkdata/kexaone2.rows.tp16/kexaone2.tp16.rank{rank:02d}.pack",
+    "adapter": "libkexaone2_tp16_serving_adapter.so",
+    "program": "kexaone2",
+    "node_target": "cuda.sm121.kexaone2.stage_runner.linear_bf16.expert_bf16.kv_bf16",
+    "contract": "model_contracts/kexaone2_authoritative.json",
+    "chat_template": "model-families/kexaone2/chat_template.json",
+    "eos_token_ids": [53, 2],
+    "tokenizer_vocabulary": 153600,
+    "kv_page_bytes": (78 * 64 * 4096) // WORLD,
+    "recurrent_bytes": 0,
+}
 GLM53_FULL = {
     "swap_id": "glm-5.3",
     "api_port": 8475,
@@ -328,6 +345,7 @@ MODELS = {
     "hy4": HY4,
     "k3": K3,
     "laguna": LAGUNA,
+    "kexaone2": KEXAONE2,
     "ling3_fin": LING3_FIN,
     "mimo26_flash": MIMO26_FLASH,
     "mimo26_pro": MIMO26_PRO,
@@ -365,6 +383,12 @@ def rank_pack_path(model: dict, lane: int, rank: int, args) -> str:
     return f"/home/{host}/" + model["pack"].format(rank=rank)
 
 
+def model_hidden(model: dict) -> int:
+    if "hidden" in model:
+        return model["hidden"]
+    return json.loads((ROOT / model["contract"]).read_text())["source"]["config_json"]["hidden_size"]
+
+
 def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
     host = HOSTS[rank]
     return {
@@ -379,7 +403,7 @@ def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
         "kv_pages": args.kv_pages,
         "state_budget_bytes": args.state_budget_bytes,
         **({"state_memory_bytes": args.state_memory_bytes} if model["recurrent_bytes"] else {}),
-        "hidden": model["hidden"],
+        "hidden": model_hidden(model),
         **({"taps": args.taps} if args.taps else {}),
         "device_collective": {
             "backend": "hidden_transport",
