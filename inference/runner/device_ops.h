@@ -115,6 +115,7 @@ SparkStatus SparkOpsLogprob(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkT
 	SparkTensor argmax, const SparkLogprobParams *params);
 SparkStatus SparkOpsStreamRead(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor words, SparkTensor sink, uint32_t groups);
 uint64_t SparkOpsDeltaScratchBytes(uint32_t rows, uint32_t key_heads, uint32_t value_heads, uint32_t key_dimension);
+uint64_t SparkOpsAttentionScratchBytes(uint32_t rows, uint32_t heads, uint32_t positions);
 
 #ifdef __cplusplus
 }
