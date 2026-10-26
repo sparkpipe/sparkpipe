@@ -77,6 +77,13 @@ static int ComparePosition(const float *reference, const float *test, uint32_t v
 	LogSoftmax(test,vocab,test_log,&test_top);
 	kl = Kl(ref_log,test_log,vocab);
 	totals->kl[position] = kl;
+	delta = fabs(ref_log[target] - test_log[target]);
+	totals->target_delta_sum += delta;
+	if ( delta > totals->target_delta_max )
+		totals->target_delta_max = delta;
+	delta = fabs(ref_log[ref_top] - test_log[ref_top]);
+	if ( delta > totals->top1_delta_max )
+		totals->top1_delta_max = delta;
 	if ( second != 0 )
 	{
 		for ( index = 0u; index < vocab; index++ )
@@ -86,7 +93,6 @@ static int ComparePosition(const float *reference, const float *test, uint32_t v
 		totals->floor_kl[position] = Kl(ref_log,test_log,vocab);
 		totals->above_floor += kl > totals->floor_kl[position] ? 1u : 0u;
 	}
-	delta = fabs(ref_log[target] - test_log[target]);
 	totals->kl_sum += kl;
 	if ( position < split )
 	{
@@ -105,12 +111,6 @@ static int ComparePosition(const float *reference, const float *test, uint32_t v
 		totals->kl_max = kl;
 		totals->worst_position = position;
 	}
-	totals->target_delta_sum += delta;
-	if ( delta > totals->target_delta_max )
-		totals->target_delta_max = delta;
-	delta = fabs(ref_log[ref_top] - test_log[ref_top]);
-	if ( delta > totals->top1_delta_max )
-		totals->top1_delta_max = delta;
 	totals->top1_agree += ref_top == test_top ? 1u : 0u;
 	totals->positions++;
 	return(0);
