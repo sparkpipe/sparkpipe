@@ -369,6 +369,25 @@
    "memory_max": "24G",
    "tokenizer_sha256": "f0bbfdc01fe00c3c5ee17aeff418f6e7f271deae5f5c5badc5c0cf7294aa1714",
    "text_prompt_prefix_token_ids": []
+  },
+  "a.x-k2": {
+   "launcher": "stage_lane",
+   "model": "axk2",
+   "lane": 3,
+   "runtime_root": "/home/{host}/stage-lanes/axk2/lane3/root",
+   "weightd_socket": "/tmp/spark_weightd.sock",
+   "sequences": 8,
+   "rows": 4096,
+   "context_tokens": 262144,
+   "kv_physical_pages": 20480,
+   "kv_logical_pages": 32768,
+   "kv_backing_bytes": 17179869184,
+   "kv_snapshot_bytes": 8589934592,
+   "state_budget_bytes": 12884901888,
+   "expert_pool_bytes": 55834574848,
+   "memory_max": "28G",
+   "tokenizer_sha256": "899c0b89971cd5c2a944361bf7193db7616eb6d761c982800d80afbaaacf0fd4",
+   "text_prompt_prefix_token_ids": []
   }
  }
 }

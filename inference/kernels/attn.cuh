@@ -34,16 +34,19 @@ static __device__ __forceinline__ void LmRopeRotate(uint16_t *rows_bf16, uint64_
 	rows_bf16[base + high_offset] = LmFloatToBf16(high);
 }
 
-template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT>
+template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT, bool TABLE = false>
 __global__ __launch_bounds__(THREADS, 1)
-void LmRopeKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t row_stride, uint32_t rope_offset, uint32_t rope_dim, float theta)
+void LmRopeKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t row_stride, uint32_t rope_offset, uint32_t rope_dim, float theta, const float *__restrict__ inv_freq_table = 0)
 {
 	uint64_t base = ((uint64_t)blockIdx.x * row_stride) + rope_offset;
 	uint32_t half = rope_dim / 2u,index;
 	float position = (float)positions[blockIdx.x];
 	for (index = threadIdx.x; index < half; index += THREADS)
-		LmRopeRotate<PAIRING>(rows_bf16,base,index,half,
-			position * __powf(theta,-2.0f * (float)index / (float)rope_dim));
+		if constexpr ( TABLE )
+			LmRopeRotate<PAIRING>(rows_bf16,base,index,half,position * inv_freq_table[index]);
+		else
+			LmRopeRotate<PAIRING>(rows_bf16,base,index,half,
+				position * __powf(theta,-2.0f * (float)index / (float)rope_dim));
 }
 
 template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT>

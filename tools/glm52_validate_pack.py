@@ -44,7 +44,8 @@ K_KV_B_KEY_T, K_KV_B_VALUE, K_ATTN_OUTPUT, K_POST_ATTN_NORM = 9, 10, 11, 12
 K_INDEX_Q, K_INDEX_K, K_INDEX_HEAD, K_INDEX_NORM_W, K_INDEX_NORM_B = 13, 14, 15, 16, 17
 K_DENSE_GATE_UP, K_DENSE_DOWN, K_ROUTER, K_ROUTER_CORR = 18, 19, 20, 21
 K_EXPERT_UP_GATE, K_EXPERT_DOWN, K_SHARED_GATE_UP, K_SHARED_DOWN = 22, 23, 24, 25
-KIND_COUNT = 26
+K_ATTN_NORM_GATE_DOWN, K_ATTN_NORM_GATE_UP, K_POST_NORM_GATE_DOWN, K_POST_NORM_GATE_UP = 26, 27, 28, 29
+KIND_COUNT = 30
 
 KIND_NAME = {
     0: "EMBEDDING", 1: "FINAL_NORM", 2: "LM_HEAD", 3: "ATTN_NORM", 4: "Q_A",
@@ -53,6 +54,7 @@ KIND_NAME = {
     14: "INDEX_K", 15: "INDEX_HEAD", 16: "INDEX_NORM_W", 17: "INDEX_NORM_B",
     18: "DENSE_GATE_UP", 19: "DENSE_DOWN", 20: "ROUTER", 21: "ROUTER_CORRECTION",
     22: "EXPERT_UP_GATE", 23: "EXPERT_DOWN", 24: "SHARED_GATE_UP", 25: "SHARED_DOWN",
+    26: "ATTN_NORM_GATE_DOWN", 27: "ATTN_NORM_GATE_UP", 28: "POST_NORM_GATE_DOWN", 29: "POST_NORM_GATE_UP",
 }
 
 TP_SHARDS_ROWS = {K_EMBEDDING, K_LM_HEAD, K_Q_B, K_DENSE_GATE_UP,
@@ -66,6 +68,10 @@ def kind_is_global(k):
 
 def kind_is_indexer(k):
     return K_INDEX_Q <= k <= K_INDEX_NORM_B
+
+
+def kind_is_norm_gate(k):
+    return K_ATTN_NORM_GATE_DOWN <= k <= K_POST_NORM_GATE_UP
 
 
 def kind_is_dense(k):
@@ -100,6 +106,8 @@ def expected_shape(kind, layer, tp, expert_codec=FP8, linear_codec=BF16):
         return None, "global/layer placement"
     if kind_is_indexer(kind) and not layer_has_full_indexer(layer):
         return None, "indexer on shared layer"
+    if kind_is_norm_gate(kind):
+        return None, "GLM norms carry no gate"
     if kind_is_dense(kind) != layer_is_dense(layer) and (kind_is_dense(kind) or kind_is_routed(kind)):
         return None, "dense/routed layer kind mismatch"
     qk_head = QK_NOPE + ROPE

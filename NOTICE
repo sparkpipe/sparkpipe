@@ -82,6 +82,23 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+Files: model_contracts/references/modeling_axk2.py
+Files: model_contracts/references/modular_axk2.py
+Files: model_contracts/references/configuration_axk2.py
+Files: model_contracts/references/modeling_deepseek_v32.py
+Upstream: https://github.com/huggingface/transformers
+Commit: a672eb5f474b8b30173e9f96eab66adf292da635
+License: Apache-2.0
+
+model_contracts/references/modeling_axk2.py, modular_axk2.py and
+configuration_axk2.py are unmodified copies of src/transformers/models/axk2/
+of Hugging Face Transformers at that commit, and modeling_deepseek_v32.py of
+src/transformers/models/deepseek_v32/, the base A.X K2's modular file builds
+on; kept as semantics ground truth.
+Copyright 2026 SK Telecom and the HuggingFace Inc. team.
+Copyright 2025 the HuggingFace Team.
+Licensed under the Apache License, Version 2.0 (LICENSE).
+
 Files: model_contracts/references/modeling_exaone_moe.py
 Files: model_contracts/references/configuration_exaone_moe.py
 Upstream: https://github.com/nuxlear/transformers

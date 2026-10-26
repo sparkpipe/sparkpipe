@@ -476,6 +476,7 @@ model's cached prefixes come back from the KV snapshot store.
 | `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 256K |
 | `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K |
 | `k-exaone-2.0` | K-EXAONE 2.0 | `kexaone2` | 256K |
+| `a.x-k2` | A.X K2 | `axk2` | 256K |
 | `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 128K |
 | `qwen3.8-max` | Qwen 3.8 Max | `qwen38` | 32K |
 | `qwen3.8-27b` | Qwen 3.8 27B | `qwen38` | 256K |

@@ -1,5 +1,10 @@
 # Pinned modeling references (semantics ground truth for kernel ports)
 
+## modeling_axk2.py, modular_axk2.py, configuration_axk2.py, modeling_deepseek_v32.py
+- Source: huggingface/transformers @ a672eb5f474b8b30173e9f96eab66adf292da635 (src/transformers/models/axk2/ and models/deepseek_v32/)
+- sha256 prefixes: 2f218206b5526d1e (modeling), 6dc3a4509d468852 (modular), 37c78827e2eb6290 (configuration), 214168ee8214f99e (deepseek_v32 base); pinned by model_contracts/axk2_authoritative.json
+- Purpose: A.X K2 semantics ground truth for the axk2 driver and tools/axk2_reference.py. One departure: the expert router masks unselected groups with -inf, where these files fill 0.0 (TECHDEBT, A.X K2).
+
 ## modeling_exaone_moe.py, configuration_exaone_moe.py
 - Source: nuxlear/transformers @ 969f8bdfc73d7d8bb0df1b426e057d80a1adf501 (LG AI Research fork named by the K-EXAONE 2.0 model card)
 - sha256 prefixes: e2b107896dd690aa (modeling), a3218188e7d8e462 (configuration); pinned by model_contracts/kexaone2_authoritative.json
