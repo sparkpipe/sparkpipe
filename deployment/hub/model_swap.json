@@ -239,6 +239,18 @@
    "api_start": "systemctl --user reset-failed kv-kexaone2-api 2>/dev/null; systemctl --user is-active -q kv-kexaone2-api || systemd-run --user --unit=kv-kexaone2-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/kexaone2-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/kexaone2-kv-api/runtime --port 8477 >> /srv/workspace/sparkpipe/logs/kexaone2-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-kexaone2-api 2>/dev/null; systemctl --user reset-failed kv-kexaone2-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8477/health"
+  },
+  {
+   "id": "a.x-k2",
+   "kv_label": "axk2_stage",
+   "node_memory_bytes": 61203283968,
+   "node_reclaim": "$HOME/stage-lanes/axk2/lane3/root/lane.sh reclaim",
+   "node_start": "$HOME/stage-lanes/axk2/lane3/root/lane.sh start {run_id}",
+   "node_ready": "$HOME/stage-lanes/axk2/lane3/root/lane.sh ready {run_id}",
+   "node_stop": "$HOME/stage-lanes/axk2/lane3/root/lane.sh stop",
+   "api_start": "systemctl --user reset-failed kv-axk2-api 2>/dev/null; systemctl --user is-active -q kv-axk2-api || systemd-run --user --unit=kv-axk2-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/axk2-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/axk2-kv-api/runtime --port 8478 >> /srv/workspace/sparkpipe/logs/axk2-kv-api.log 2>&1' >/dev/null",
+   "api_stop": "systemctl --user stop kv-axk2-api 2>/dev/null; systemctl --user reset-failed kv-axk2-api 2>/dev/null; true",
+   "health": "http://127.0.0.1:8478/health"
   }
  ]
 }

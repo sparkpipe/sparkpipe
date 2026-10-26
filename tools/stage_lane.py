@@ -267,6 +267,24 @@ KEXAONE2 = {
     "kv_page_bytes": (78 * 64 * 4096) // WORLD,
     "recurrent_bytes": 0,
 }
+AXK2 = {
+    "swap_id": "a.x-k2",
+    "api_port": 8478,
+    "kv_label": "axk2_stage",
+    "node_memory_bytes": 57 << 30,
+    "tokenizer_json": "/mnt/cold-raid6/models/ax-k2-fp8-official/tokenizer.json",
+    "pack": "sparkdata/axk2.fp8.tp16/axk2.tp16.rank{rank:02d}.pack",
+    "adapter": "libaxk2_tp16_serving_adapter.so",
+    "program": "axk2",
+    "node_target": "cuda.sm121.axk2.stage_runner.linear_fp8.expert_fp8.kv_bf16",
+    "contract": "model_contracts/axk2_authoritative.json",
+    "chat_template": "model-families/axk2/chat_template.json",
+    "eos_token_ids": [163704],
+    "tokenizer_vocabulary": 163840,
+    "hidden": 7168,
+    "kv_page_bytes": (61 * 64 * 1152 + 61 * 64 * 256) // WORLD,
+    "recurrent_bytes": 0,
+}
 GLM53_FULL = {
     "swap_id": "glm-5.3",
     "api_port": 8475,
@@ -347,6 +365,7 @@ MODELS = {
     "k3": K3,
     "laguna": LAGUNA,
     "kexaone2": KEXAONE2,
+    "axk2": AXK2,
     "ling3_fin": LING3_FIN,
     "mimo26_flash": MIMO26_FLASH,
     "mimo26_pro": MIMO26_PRO,
