@@ -11,6 +11,7 @@ out=$3
 revision=$4
 root=$(cd "$(dirname "$0")/.." && pwd)
 prompts=$root/qualification/metal/gemma4_26b/gate_prompts.json
+spec_prompts=$root/qualification/metal/gemma4_26b/spec_prompts.json
 control_pack=$out/control.pack
 batches=${SPARK_LADDER_BATCHES:-1,2,4,8,16,32,64}
 run="./build/qwen38_27b_metal_run --model gemma4-26b-a4b --prompts $prompts"
@@ -52,4 +53,5 @@ for name in $(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in 
 	done
 done
 $run --pack "$pack" --mode bench --out "$out/metal" --new-tokens 256 --prefill-rows 2048 --repeats 3 > "$out/metal_bench.log"
+$run --pack "$pack" --spec-prompts "$spec_prompts" --mode spec --new-tokens 256 --repeats 3 --draft-max 31 --out "$out/metal" > "$out/metal_spec.log"
 python3 -I tools/qwen38_27b_metal_summary.py --out "$out" --revision "$revision" --prompts "$prompts"

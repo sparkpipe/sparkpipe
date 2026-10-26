@@ -1255,12 +1255,14 @@ Metal backend and the single-Studio stage are in
     tensor does. Metal's own top-k is checked by the kernel test only; how
     often it agrees with the reference's choice in a pinned run, against
     how often b's does, is not measured;
-  - at three to eight rows the batch takes the skinny tensor-unit projection
-    with its split-K reduce, which for Gemma's small matrices is slower than
-    the row-exact GEMV passes: an exact-rows ladder (every row bit-identical
-    to its solo run) decoded B4 and B8 at 244 and 339 tok/s against 206 and
-    292 on the fast path. The projection policy needs the matrix size, not
-    only the row count.
+  - at three to eight rows a batch takes the skinny tensor-unit projection
+    with its split-K reduce, which is slower than the row-exact GEMV passes
+    for both models: Gemma's exact-rows ladder (every row bit-identical to
+    its solo run) decoded B4 and B8 faster than its fast path (see the
+    receipt), and Qwen3.8-27B's four-row verify frame costs 49.2 ms against
+    a 58.2 ms B4 step. GEMV passes up to eight rows would make B3 to B8 both
+    faster and identical to solo decode; it changes Qwen's ladder receipt,
+    so it belongs with the B1 dispatch work and its gate.
 - Define hardware profiles for one to eight Studios: memory, bandwidth, the
   Thunderbolt 5 island wiring, the bridge to the Sparks, power, and storage.
 - Add Thunderbolt 5 RDMA as a link class. Apple's verbs API (TN3205) offers

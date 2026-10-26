@@ -29,6 +29,9 @@
   gate-prompts  the Metal gate prompts (the same instructions and repository
              files as the Qwen3.8-27B gate) in this model's chat framing,
              each file cut to the target token count -> --out prompts.json
+  spec-prompts  the Metal speculation prompts (the same as the Qwen3.8-27B
+             gate's: a whole-file rewrite of tools/token_prompts.c and a prose
+             request) in this model's chat framing -> --out prompts.json
   summary    --report report.json -> a per-prompt markdown table: top-1
              agreement, mismatches whose reference top-1/top-2 margin is at
              least --tie (default 0.1 nat; smaller margins are near ties),
@@ -379,6 +382,33 @@ GATE_PROMPTS = (
 )
 
 
+SPEC_PROMPTS = (
+    ("rewrite", "tools/token_prompts.c",
+     "Rewrite this C file in full. Rename SparkTokenPrompt to SparkPromptTokens everywhere and change nothing else. Output only the file.\n\n"),
+    ("prose", None,
+     "Write a short essay, about four hundred words, on why lighthouses were built where they were and what their keepers' days were like."),
+)
+
+
+def spec_prompts(args):
+    import hashlib
+    from tokenizers import Tokenizer
+    root = Path(__file__).resolve().parents[1]
+    template = json.loads(Path(args.template).read_text())
+    tokenizer = Tokenizer.from_file(str(Path(args.checkpoint) / "tokenizer.json"))
+    encode = lambda text: tokenizer.encode(text, add_special_tokens=False).ids
+    head, tail = encode(template["prefix"] + template["user"]), encode(template["turn_suffix"] + template["generation"])
+    prompts = []
+    for name, source, instruction in SPEC_PROMPTS:
+        path = root / source if source else None
+        tokens = head + encode(instruction + (path.read_text(encoding="utf-8") if path else "")) + tail
+        prompts.append({"name": name, "source": source, "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest() if path else None,
+                        "instruction": instruction, "tokens": len(tokens), "prompt_token_ids": tokens})
+        print(f"{name}: {len(tokens)} tokens", flush=True)
+    Path(args.out).write_text(json.dumps({"tokenizer_sha256": hashlib.sha256((Path(args.checkpoint) / "tokenizer.json").read_bytes()).hexdigest(),
+                                          "prompts": prompts}, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
 def gate_prompts(args):
     import hashlib
     import html
@@ -476,6 +506,10 @@ def main():
     g.add_argument("--checkpoint", required=True)
     g.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/gemma4/chat_template.json"))
     g.add_argument("--out", required=True)
+    sp = sub.add_parser("spec-prompts")
+    sp.add_argument("--checkpoint", required=True)
+    sp.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/gemma4/chat_template.json"))
+    sp.add_argument("--out", required=True)
     r = sub.add_parser("teacher")
     r.add_argument("--checkpoint", required=True)
     r.add_argument("--prompts", required=True)
@@ -487,7 +521,7 @@ def main():
     args = parser.parse_args()
     if args.command == "summary":
         return summary(args)
-    {"tokenize": tokenize, "score": score, "gate-prompts": gate_prompts, "teacher": teacher}[args.command](args)
+    {"tokenize": tokenize, "score": score, "gate-prompts": gate_prompts, "spec-prompts": spec_prompts, "teacher": teacher}[args.command](args)
     return 0
 
 

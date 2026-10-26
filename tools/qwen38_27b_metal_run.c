@@ -817,9 +817,7 @@ static uint32_t SpecChoose(SpecRun *run, SparkSpeculationHazard *hazards, const 
 			if ( cost > 0.0f && cost <= SPARK_SPECULATION_FRAME_MARGIN * step )
 				free_drafts = drafts;
 		}
-		feasible = free_drafts;
-		if ( feasible == 0u )
-			return(0u);
+		feasible = free_drafts != 0u ? free_drafts : 1u;
 	}
 	request.feasible = feasible;
 	request.context = context;
