@@ -379,9 +379,29 @@ static SparkGemvParams ExpertsRouted(uint32_t routes, uint32_t divisor, uint32_t
 	return(params);
 }
 
-SparkStatus SparkDeviceExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceExpertsShape *shape, const SparkDeviceStepTensors *tensors,
-	const SparkDeviceExpertsWeights *weights, const SparkDeviceExpertsScratch *scratch, SparkTensor output)
+static SparkStatus ExpertsOverride(SparkDeviceStage *stage, const SparkDeviceExpertsShape *shape, const SparkDeviceStepTensors *tensors, uint32_t layer,
+	SparkTensor *pinned)
 {
+	const uint64_t count = (uint64_t)tensors->rows * shape->top_k, bytes = count * sizeof(uint32_t);
+	const uint32_t *experts = 0;
+	uint64_t index;
+	SparkStatus status;
+	if ( tensors->route_override_width != shape->top_k || layer >= stage->shape->layers )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"a route override names top-k experts for every layer of the stage"));
+	*pinned = SparkTensorSlice(tensors->route_override,(uint64_t)layer * bytes,bytes);
+	status = SparkDeviceHostOf(pinned->range,bytes,(void **)&experts);
+	if ( status != SPARK_STATUS_OK )
+		return(SparkDeviceStageRefuse(stage,status,"a route override must be host-visible device memory"));
+	for ( index = 0u; index < count; index++ )
+		if ( experts[index] >= shape->experts )
+			return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"a route override names an expert outside the layer"));
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceExpertsShape *shape, const SparkDeviceStepTensors *tensors,
+	uint32_t layer, const SparkDeviceExpertsWeights *weights, const SparkDeviceExpertsScratch *scratch, SparkTensor output)
+{
+	SparkTensor pinned;
 	const uint32_t hidden = stage->shape->hidden, rows = tensors->rows, routes = rows * shape->top_k, inter = shape->intermediate;
 	SparkBranchNormParams routed;
 	SparkNormParams norm;
@@ -404,8 +424,11 @@ SparkStatus SparkDeviceExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue,
 	route.top_k = shape->top_k;
 	route.width = hidden;
 	route.logit_stride = shape->experts;
+	if ( status == SPARK_STATUS_OK && tensors->route_override_width != 0u )
+		status = ExpertsOverride(stage,shape,tensors,layer,&pinned);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkOpsRouteTopk(stage->ops,queue,scratch->logits,weights->expert_scale,scratch->experts,scratch->weights,&route);
+		status = SparkOpsRouteTopk(stage->ops,queue,scratch->logits,weights->expert_scale,tensors->route_override_width != 0u ? &pinned : 0,scratch->experts,
+			scratch->weights,&route);
 	memset(&norm,0,sizeof(norm));
 	norm.rows = rows;
 	norm.dimension = hidden;

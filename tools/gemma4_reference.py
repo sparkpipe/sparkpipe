@@ -18,7 +18,15 @@
              reduction in numpy's order, --variant b splits every matmul's
              inner dimension into 1,024-wide chunks summed last chunk first
              and reverses every other reduction, so a against b is the noise
-             of FP32 reduction order under the same bf16 rounding
+             of FP32 reduction order under the same bf16 rounding;
+             MoE models also write <out>/<name>.ref_<variant>.routes, the
+             chosen experts as little-endian uint16 [layer][position][rank];
+             --pinned-b (with --variant a) also runs b in the same pass with
+             every layer's experts taken from a's choice instead of b's own
+             top-k (the weights are still b's probabilities of those experts,
+             renormalised) and writes <out>/<name>.ref_bp.logits, so a
+             against bp is the reduction-order noise without the discrete
+             expert choice
   gate-prompts  the Metal gate prompts (the same instructions and repository
              files as the Qwen3.8-27B gate) in this model's chat framing,
              each file cut to the target token count -> --out prompts.json
@@ -150,6 +158,10 @@ class Reference:
         self.epsilon = config["rms_norm_eps"]
         self.softcap = config["final_logit_softcapping"]
         self.inv_freq = {}
+        self.sequence = 0
+        self.reversed_of = []
+        self.pin_source = []
+        self.routes = {}
         if self.muse:
             self.post_epsilon = config["post_norm_eps"]
             self.qk_scale = np.float32(config["qk_scale_factor"])
@@ -248,6 +260,9 @@ class Reference:
         probabilities = np.exp(logits - logits.max(axis=-1, keepdims=True))
         probabilities /= reduce_sum(probabilities, keepdims=True)
         chosen = np.argsort(-probabilities, axis=-1, kind="stable")[:, :top_k]
+        if self.pin_source and self.pin_source[self.sequence] is not None:
+            chosen = self.routes[self.pin_source[self.sequence]][layer].astype(np.int64)
+        self.routes.setdefault(self.sequence, []).append(chosen.astype(np.uint16))
         weights = np.take_along_axis(probabilities, chosen, axis=-1)
         weights = (weights / reduce_sum(weights, keepdims=True)) * self.checkpoint.f32(p + "router.per_expert_scale")[chosen]
         source = self.norm(residual, p + "pre_feedforward_layernorm_2.weight")
@@ -283,13 +298,23 @@ class Reference:
         return residual
 
     def forward(self, sequences):
+        global REVERSED
         residuals = [self.embed(tokens) for tokens in sequences]
         positions = [np.arange(len(tokens), dtype=np.int64) for tokens in sequences]
         for layer in range(self.config["num_hidden_layers"]):
-            residuals = [self.layer(layer, residual, position) for residual, position in zip(residuals, positions)]
+            for index, position in enumerate(positions):
+                self.sequence = index
+                if self.reversed_of:
+                    REVERSED = self.reversed_of[index]
+                residuals[index] = self.layer(layer, residuals[index], position)
             print(f"layer {layer} done", file=sys.stderr, flush=True)
         final = widen(self.checkpoint.raw(PREFIX + "norm.weight"))
-        return [bf16(rms(residual, final, self.epsilon)) for residual in residuals]
+        normed = []
+        for index, residual in enumerate(residuals):
+            if self.reversed_of:
+                REVERSED = self.reversed_of[index]
+            normed.append(bf16(rms(residual, final, self.epsilon)))
+        return normed
 
     def logits(self, normed, chunk=16384):
         head = self.checkpoint.raw("lm_head.weight" if self.muse else PREFIX + "embed_tokens.weight")
@@ -382,15 +407,25 @@ def teacher(args):
     REVERSED = args.variant == "b"
     reference = Reference(args.checkpoint)
     prompts = json.loads(Path(args.prompts).read_text())["prompts"]
-    normed = reference.forward([prompt["prompt_token_ids"] for prompt in prompts])
+    runs = [(prompt, args.variant) for prompt in prompts]
+    if args.pinned_b:
+        if args.variant != "a" or not reference.moe:
+            raise ValueError("--pinned-b pins b to a's experts: it needs --variant a and an MoE model")
+        runs += [(prompt, "bp") for prompt in prompts]
+        reference.reversed_of = [label != "a" for _, label in runs]
+        reference.pin_source = [None] * len(prompts) + list(range(len(prompts)))
+    normed = reference.forward([prompt["prompt_token_ids"] for prompt, _ in runs])
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    for prompt, hidden in zip(prompts, normed):
-        with open(out / f"{prompt['name']}.ref_{args.variant}.logits", "wb") as handle:
+    for index, ((prompt, label), hidden) in enumerate(zip(runs, normed)):
+        REVERSED = label != "a"
+        if reference.moe and label != "bp":
+            np.ascontiguousarray(np.stack(reference.routes[index]), dtype="<u2").tofile(out / f"{prompt['name']}.ref_{label}.routes")
+        with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
             for first in range(0, len(prompt["prompt_token_ids"]) - 1, 128):
                 last = min(first + 128, len(prompt["prompt_token_ids"]) - 1)
                 handle.write(np.ascontiguousarray(reference.logits(hidden[first:last]), dtype=np.float32).tobytes())
-        print(f"{prompt['name']}: {len(prompt['prompt_token_ids']) - 1} positions, variant {args.variant}", flush=True)
+        print(f"{prompt['name']}: {len(prompt['prompt_token_ids']) - 1} positions, variant {label}", flush=True)
 
 
 def summary(args):
@@ -436,6 +471,7 @@ def main():
     r.add_argument("--prompts", required=True)
     r.add_argument("--out", required=True)
     r.add_argument("--variant", choices=("a", "b"), default="a")
+    r.add_argument("--pinned-b", action="store_true")
     m = sub.add_parser("summary")
     m.add_argument("--report", required=True)
     m.add_argument("--tie", type=float, default=0.1)

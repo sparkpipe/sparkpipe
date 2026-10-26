@@ -221,7 +221,7 @@ static SparkStatus GemmaStep(void *opaque, const SparkStageRunnerStep *step, voi
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceGatedFfn(stage,queue,GD_FFN,SPARK_GATED_GELU_TANH,&t,&layer->ffn,&model->ffn,model->normed,model->partial);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceExperts(stage,queue,&gemma_experts,&t,&layer->experts,&model->experts,model->expert_out);
+			status = SparkDeviceExperts(stage,queue,&gemma_experts,&t,index,&layer->experts,&model->experts,model->expert_out);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceBranchNorm(stage,queue,&t,model->partial,&model->expert_out,&layer->post_ff_norm_1,&layer->post_ff_norm_2,
 				layer->post_ff_norm,&layer->layer_scalar);

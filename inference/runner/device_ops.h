@@ -59,6 +59,7 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_SCALE_ROWS,
 	SPARK_OPS_SOFTCAP_ROWS,
 	SPARK_OPS_ROUTE_TOPK,
+	SPARK_OPS_ROUTE_PINNED,
 	SPARK_OPS_ROUTE_COMBINE,
 	SPARK_OPS_GEMV_ROUTED,
 	SPARK_OPS_ADD_ROWS,
@@ -138,8 +139,8 @@ SparkStatus SparkOpsRmsNormScaled(SparkDeviceOps *ops, SparkDeviceQueue *queue, 
 	const SparkBranchNormParams *params);
 SparkStatus SparkOpsScaleRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, uint64_t count, float scale);
 SparkStatus SparkOpsSoftcap(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, uint64_t count, float cap);
-SparkStatus SparkOpsRouteTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor expert_scale, SparkTensor experts,
-	SparkTensor weights, const SparkRouteParams *params);
+SparkStatus SparkOpsRouteTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor expert_scale, const SparkTensor *pinned,
+	SparkTensor experts, SparkTensor weights, const SparkRouteParams *params);
 SparkStatus SparkOpsRouteCombine(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor experts, SparkTensor weights,
 	SparkTensor output, const SparkRouteParams *params);
 SparkStatus SparkOpsLinearRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor y, SparkTensor experts,

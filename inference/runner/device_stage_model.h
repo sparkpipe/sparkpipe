@@ -85,6 +85,8 @@ typedef struct SparkDeviceStepTensors
 	const uint32_t *host_sequence_of_row;
 	uint32_t rows;
 	SparkTensor row_identity;
+	SparkTensor route_override;
+	uint32_t route_override_width;
 } SparkDeviceStepTensors;
 
 typedef struct SparkDeviceKeepTensors

@@ -43,6 +43,7 @@ typedef struct RunOptions
 	const char *spec_prompts;
 	const char *model;
 	uint32_t draft_max;
+	const char *pin_routes;
 } RunOptions;
 
 static uint64_t NowNs(void)
@@ -55,7 +56,7 @@ static uint64_t NowNs(void)
 static int Usage(const char *program)
 {
 	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|pairs|bench|ladder|spec --out DIR [--prefill-rows N] [--new-tokens N] "
-		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|gemma4-26b-a4b]\n",program);
+		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|gemma4-26b-a4b] [--pin-routes DIR]\n",program);
 	return(2);
 }
 
@@ -101,6 +102,8 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 			options->spec_prompts = value;
 		else if ( strcmp(flag,"--draft-max") == 0 )
 			options->draft_max = (uint32_t)strtoul(value,0,10);
+		else if ( strcmp(flag,"--pin-routes") == 0 )
+			options->pin_routes = value;
 		else if ( strcmp(flag,"--prompt-tokens") == 0 )
 			options->prompt_tokens = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--batches") == 0 )
@@ -144,6 +147,11 @@ typedef struct Session
 	uint32_t *sequence;
 	uint32_t *targets;
 	uint32_t capacity;
+	uint32_t layers;
+	SparkDeviceBuffer routes;
+	uint16_t *pinned;
+	uint32_t pinned_positions;
+	uint32_t pinned_width;
 } Session;
 
 static SparkStatus SessionStepSequence(Session *session, uint32_t sequence, const uint32_t *tokens, uint32_t first, uint32_t count,
@@ -166,6 +174,19 @@ static SparkStatus SessionStepSequence(Session *session, uint32_t sequence, cons
 	batch.head_rows = head_all != 0u ? count : 1u;
 	batch.head_row_index = head_all != 0u ? session->rows : session->rows + (count - 1u);
 	batch.targets = targets != 0 ? session->targets : 0;
+	if ( session->pinned != 0 )
+	{
+		uint32_t *routes = (uint32_t *)session->routes.host, layer, k;
+		if ( first + count > session->pinned_positions )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		for ( layer = 0u; layer < session->layers; layer++ )
+			for ( row = 0u; row < count; row++ )
+				for ( k = 0u; k < session->pinned_width; k++ )
+					routes[((uint64_t)layer * count + row) * session->pinned_width + k] =
+						session->pinned[((uint64_t)layer * session->pinned_positions + first + row) * session->pinned_width + k];
+		batch.route_override = (const uint32_t *)(uintptr_t)session->routes.device;
+		batch.route_override_width = session->pinned_width;
+	}
 	return(SparkDeviceStageRunnerStep(session->runner,&batch,result));
 }
 
@@ -220,6 +241,46 @@ static FILE *OpenOut(const RunOptions *options, const char *name, const char *su
 	return(file);
 }
 
+static int LoadPinnedRoutes(Session *session, const RunOptions *options, const SparkTokenPrompt *prompt)
+{
+	char path[4096];
+	FILE *file;
+	long bytes;
+	uint64_t per_width;
+	free(session->pinned);
+	session->pinned = 0;
+	if ( options->pin_routes == 0 )
+		return(0);
+	snprintf(path,sizeof(path),"%s/%s.ref_a.routes",options->pin_routes,prompt->name);
+	file = fopen(path,"rb");
+	if ( file == 0 || fseek(file,0,SEEK_END) != 0 || (bytes = ftell(file)) <= 0 || fseek(file,0,SEEK_SET) != 0 )
+	{
+		fprintf(stderr,"cannot read routes %s\n",path);
+		if ( file != 0 )
+			fclose(file);
+		return(1);
+	}
+	per_width = (uint64_t)session->layers * prompt->count * sizeof(uint16_t);
+	session->pinned_width = (uint32_t)((uint64_t)bytes / per_width);
+	session->pinned_positions = prompt->count;
+	session->pinned = (uint16_t *)malloc((size_t)bytes);
+	if ( (uint64_t)bytes % per_width != 0u || session->pinned_width == 0u || session->pinned_width > SPARK_ROUTE_MAX_TOP_K || session->pinned == 0 ||
+		fread(session->pinned,1u,(size_t)bytes,file) != (size_t)bytes )
+	{
+		fprintf(stderr,"routes %s: %ld bytes is not %u layers x %u positions x top-k uint16\n",path,bytes,session->layers,prompt->count);
+		fclose(file);
+		free(session->pinned);
+		session->pinned = 0;
+		return(1);
+	}
+	fclose(file);
+	if ( session->routes.host == 0 && SparkDeviceAllocate(&session->routes,SPARK_DEVICE_SPACE_SHARED_COHERENT,
+		(uint64_t)session->layers * session->capacity * SPARK_ROUTE_MAX_TOP_K * sizeof(uint32_t),"pinned routes") != SPARK_STATUS_OK )
+		return(1);
+	printf("teacher %s: experts pinned from %s (top %u)\n",prompt->name,path,session->pinned_width);
+	return(0);
+}
+
 static int RunTeacher(Session *session, const RunOptions *options, const SparkTokenPrompt *prompt, uint32_t vocab)
 {
 	const uint32_t positions = prompt->count - 1u, prefill = (positions + 1u) / 2u;
@@ -227,7 +288,8 @@ static int RunTeacher(Session *session, const RunOptions *options, const SparkTo
 	FILE *logits = OpenOut(options,prompt->name,".metal.logits","wb"), *json = OpenOut(options,prompt->name,".metal.json","w");
 	float *logprob = (float *)calloc(positions,sizeof(float));
 	uint32_t *argmax = (uint32_t *)calloc(positions,sizeof(uint32_t)), first, row;
-	SparkStatus status = logits != 0 && json != 0 && logprob != 0 && argmax != 0 ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+	SparkStatus status = logits != 0 && json != 0 && logprob != 0 && argmax != 0 && LoadPinnedRoutes(session,options,prompt) == 0 ? SPARK_STATUS_OK :
+		SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceStageRunnerResetSequence(session->runner,0u);
 	for ( first = 0u; status == SPARK_STATUS_OK && first < positions; )
@@ -998,6 +1060,7 @@ int main(int argc, char **argv)
 		if ( SparkDeviceStageRunnerOpen(&session.runner,&config) != SPARK_STATUS_OK )
 			return(1);
 		SparkDeviceStageRunnerInfoGet(session.runner,&info);
+		session.layers = info.layers;
 		printf("opened %s on %s (%s) in %.2f s: pack %llu bytes%s%s, device state %llu bytes\n",options.pack,info.device,info.target,
 			(NowNs() - start) / 1e9,(unsigned long long)info.pack_bytes,options.verify != 0u ? ", sha256 " : "",options.verify != 0u ? info.pack_sha256 : "",
 			(unsigned long long)info.device_state_bytes);
@@ -1055,5 +1118,8 @@ int main(int argc, char **argv)
 	free(session.positions);
 	free(session.sequence);
 	free(session.targets);
+	free(session.pinned);
+	if ( session.routes.host != 0 )
+		SparkDeviceFree(&session.routes);
 	return(failed ? 1 : 0);
 }

@@ -15,6 +15,13 @@ corrupted-weight controls must fail, and greedy decoding with lookup
 speculation must reproduce greedy decoding without it token for token. Speed
 is reported against the measured streaming-read bandwidth.
 
+A mixture-of-experts gate adds a pinned-route set (labels prefixed pinned_):
+the Metal run and the controls with every layer's experts taken from
+reference A's choice, against A and against B pinned the same way (bp), with
+A against bp as the floor. The same rule applies to it; the Metal run must
+pass every set present, and a required control must fail in every set it
+appears in.
+
   qwen38_27b_metal_summary.py --out RUN_DIR --revision REV --prompts PROMPTS_JSON
 """
 
@@ -149,6 +156,18 @@ def speed(out):
     return result
 
 
+def numerics_set(rows, prefix, out):
+    labels = {row["label"] for row in rows}
+    floor = aggregate(rows, prefix + "floor")
+    candidates = {name: (aggregate(rows, prefix + name), aggregate(rows, f"{prefix}{name}_vs_b")) for name in ("metal",) + REQUIRED_CONTROLS + PROBE_CONTROLS
+                  if prefix + name in labels and f"{prefix}{name}_vs_b" in labels}
+    result = {"floor": floor,
+              **{name: {"against_reference_a": pair[0], "against_reference_b": pair[1], "verdict": verdict(pair[0], pair[1], floor),
+                        "corruption": json.loads((out / name / "control.json").read_text()) if name != "metal" else None}
+                 for name, pair in candidates.items()}}
+    return candidates, result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--out", type=Path, required=True)
@@ -157,10 +176,9 @@ def main():
     arguments = parser.parse_args()
     out = arguments.out
     rows = [json.loads(line) for line in (out / "compare" / "compare.jsonl").read_text().splitlines() if line.strip()]
-    floor = aggregate(rows, "floor")
     labels = {row["label"] for row in rows}
-    candidates = {name: (aggregate(rows, name), aggregate(rows, f"{name}_vs_b")) for name in ("metal",) + REQUIRED_CONTROLS + PROBE_CONTROLS
-                  if name in labels and f"{name}_vs_b" in labels}
+    candidates, free = numerics_set(rows, "", out)
+    pinned_candidates, pinned = numerics_set(rows, "pinned_", out) if "pinned_floor" in labels else ({}, None)
     diagnostics = {label: aggregate(rows, label) for label in ("fp32_activations_vs_a", "fp32_activations_vs_metal")
                    if any(row["label"] == label for row in rows)}
     kernels = json.loads((out / "kernels.json").read_text())
@@ -181,10 +199,7 @@ def main():
                               f"top-1 disagreement <= {TOP1_FACTOR:g} x the floor's, and the share of positions further from the reference than "
                               f"the floor at most 0.5 + {PAIRED_SIGMA:g} block standard errors; Metal passes both legs, "
                               f"{' and '.join(REQUIRED_CONTROLS)} fail"),
-                     "floor": floor, "diagnostics": diagnostics,
-                     **{name: {"against_reference_a": pair[0], "against_reference_b": pair[1], "verdict": verdict(pair[0], pair[1], floor),
-                               "corruption": json.loads((out / name / "control.json").read_text()) if name != "metal" else None}
-                        for name, pair in candidates.items()}},
+                     "diagnostics": diagnostics, **free},
         "greedy": greedy_table(out) if (out / "ref" / "greedy.ref.json").exists() else None,
         "speed": speed(out),
     }
@@ -197,14 +212,22 @@ def main():
                                              for item in speculation["prompts"]]
         receipt["speculation"]["exact"] = speculation["prompts_identical"] == speculation["prompt_count"]
     numerics = receipt["numerics"]
-    numerics["controls_fail_as_required"] = all(name in numerics and not numerics[name]["verdict"]["pass"] for name in REQUIRED_CONTROLS)
-    numerics["pass"] = "metal" in numerics and numerics["metal"]["verdict"]["pass"] and numerics["controls_fail_as_required"]
+    sets = [numerics] + ([pinned] if pinned is not None else [])
+    if pinned is not None:
+        numerics["pinned_routes"] = pinned
+    numerics["controls_fail_as_required"] = all(any(name in item for item in sets) and
+                                                all(not item[name]["verdict"]["pass"] for item in sets if name in item) for name in REQUIRED_CONTROLS)
+    numerics["pass"] = all("metal" in item and item["metal"]["verdict"]["pass"] for item in sets) and numerics["controls_fail_as_required"]
     (out / "RECEIPT.json").write_text(json.dumps(receipt, indent=1) + "\n")
     speculation_exact = receipt["speculation"]["exact"] if "speculation" in receipt else None
     print(json.dumps({"numerics_pass": numerics["pass"], "speculation_exact": speculation_exact,
                       **{name: {leg_name: {key: item[key] for key in ("kl_ratio_to_floor", "top1_disagreement_ratio_to_floor", "paired_sigma", "pass")}
                                 for leg_name, item in numerics[name]["verdict"].items() if leg_name != "pass"}
                          for name in candidates},
+                      **{"pinned_" + name: {leg_name: {key: item[key] for key in ("kl_ratio_to_floor", "top1_disagreement_ratio_to_floor", "paired_sigma",
+                                                                                     "pass")}
+                                            for leg_name, item in pinned[name]["verdict"].items() if leg_name != "pass"}
+                         for name in pinned_candidates},
                       "decode": receipt["speed"]["decode"]["roofline"]}, indent=1))
     return 0 if numerics["pass"] and speculation_exact is not False else 1
 

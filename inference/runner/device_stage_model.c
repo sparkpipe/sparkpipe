@@ -290,6 +290,15 @@ SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStage
 		status = StageResolve(stage,step->sequence_row_begin,((uint64_t)step->sequences + 1u) * 4u,&tensors->sequences.row_begin);
 	tensors->sequences.sequences = step->sequences;
 	tensors->sequences.commit = step->commit;
+	tensors->route_override_width = 0u;
+	if ( status == SPARK_STATUS_OK && step->route_override != 0 )
+	{
+		if ( step->route_override_width == 0u || step->route_override_width > SPARK_ROUTE_MAX_TOP_K )
+			return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"a route override needs between 1 and 16 experts per row"));
+		status = StageResolve(stage,step->route_override,(uint64_t)stage->shape->layers * step->rows * step->route_override_width * sizeof(uint32_t),
+			&tensors->route_override);
+		tensors->route_override_width = step->route_override_width;
+	}
 	return(status);
 }
 

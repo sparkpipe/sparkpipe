@@ -59,6 +59,8 @@ typedef struct SparkStageRunnerStep
 	const uint32_t *host_sequence_of_row;
 	const uint32_t *host_state_target;
 	uint32_t graph_key;
+	const uint32_t *route_override;
+	uint32_t route_override_width;
 } SparkStageRunnerStep;
 
 typedef struct SparkStageRunnerModelGeometry

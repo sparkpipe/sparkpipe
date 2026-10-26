@@ -53,6 +53,7 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_scale_rows",
 	"spark_softcap_rows",
 	"spark_route_topk",
+	"spark_route_pinned",
 	"spark_route_combine",
 	"spark_gemv_routed",
 	"spark_add_rows",
@@ -730,10 +731,10 @@ SparkStatus SparkOpsSoftcap(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkT
 	return(OpsScale(ops,queue,SPARK_OPS_SOFTCAP_ROWS,values,count,(uint32_t)sizeof(float),cap,"softcap"));
 }
 
-SparkStatus SparkOpsRouteTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor expert_scale, SparkTensor experts,
-	SparkTensor weights, const SparkRouteParams *params)
+SparkStatus SparkOpsRouteTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor expert_scale, const SparkTensor *pinned,
+	SparkTensor experts, SparkTensor weights, const SparkRouteParams *params)
 {
-	SparkDeviceBinding bindings[4];
+	SparkDeviceBinding bindings[5];
 	SparkStatus status;
 	if ( params->rows == 0u || params->experts == 0u || params->experts > SPARK_ROUTE_MAX_EXPERTS || params->top_k == 0u ||
 		params->top_k > SPARK_ROUTE_MAX_TOP_K || params->top_k > params->experts || params->logit_stride < params->experts )
@@ -745,13 +746,18 @@ SparkStatus SparkOpsRouteTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spar
 		status = OpsNeed("route_topk","experts",experts,(uint64_t)params->rows * params->top_k * sizeof(uint32_t));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("route_topk","weights",weights,(uint64_t)params->rows * params->top_k * sizeof(float));
+	if ( status == SPARK_STATUS_OK && pinned != 0 )
+		status = OpsNeed("route_topk","pinned experts",*pinned,(uint64_t)params->rows * params->top_k * sizeof(uint32_t));
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	bindings[0] = OpsBind(logits,SPARK_DEVICE_BIND_READ);
 	bindings[1] = OpsBind(expert_scale,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(experts,SPARK_DEVICE_BIND_WRITE);
 	bindings[3] = OpsBind(weights,SPARK_DEVICE_BIND_WRITE);
-	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_TOPK,params->rows,1u,1u,OpsThreads(params->experts,256u),params,sizeof(*params),bindings,4u));
+	if ( pinned != 0 )
+		bindings[4] = OpsBind(*pinned,SPARK_DEVICE_BIND_READ);
+	return(OpsLaunch(ops,queue,pinned != 0 ? SPARK_OPS_ROUTE_PINNED : SPARK_OPS_ROUTE_TOPK,params->rows,1u,1u,OpsThreads(params->experts,256u),params,
+		sizeof(*params),bindings,pinned != 0 ? 5u : 4u));
 }
 
 SparkStatus SparkOpsRouteCombine(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor experts, SparkTensor weights,

@@ -700,6 +700,70 @@ static void TestScaleAndSoftcap(void)
 	SparkDeviceFree(&logits);
 }
 
+static void TestRoutesPinned(uint32_t rows)
+{
+	enum { EXPERTS = 128u, TOP = 8u };
+	SparkDeviceBuffer logits, scale, pinned, experts, weights;
+	uint16_t *l = (uint16_t *)Shared(&logits,(uint64_t)rows * EXPERTS * sizeof(uint16_t),"pinned logits");
+	float *sc = (float *)Shared(&scale,EXPERTS * sizeof(float),"pinned scale");
+	uint32_t *pv = (uint32_t *)Shared(&pinned,(uint64_t)rows * TOP * sizeof(uint32_t),"pinned experts");
+	uint32_t *e = (uint32_t *)Shared(&experts,(uint64_t)rows * TOP * sizeof(uint32_t),"pinned out experts");
+	float *wt = (float *)Shared(&weights,(uint64_t)rows * TOP * sizeof(float),"pinned weights");
+	SparkTensor pin = Whole(&pinned);
+	SparkRouteParams params;
+	Check clean, corrupted;
+	char shape[64];
+	uint32_t pass, row, k, x;
+	FillBf16(l,(uint64_t)rows * EXPERTS,2.0);
+	for ( x = 0u; x < EXPERTS; x++ )
+		sc[x] = (float)(0.5 + Uniform());
+	for ( row = 0u; row < rows; row++ )
+		for ( k = 0u; k < TOP; k++ )
+			pv[row * TOP + k] = (row * 37u + (TOP - k) * 13u) % EXPERTS;
+	memset(&params,0,sizeof(params));
+	params.rows = rows;
+	params.experts = EXPERTS;
+	params.top_k = TOP;
+	params.width = 1u;
+	params.logit_stride = EXPERTS;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint32_t poke = (rows - 1u) * EXPERTS + pv[(rows - 1u) * TOP + 2u];
+		const uint16_t saved = l[poke];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			l[poke] = ToBf16(Bf16(saved) + 1.0f);
+		if ( !Run(SparkOpsRouteTopk(&ops,queue,Whole(&logits),Whole(&scale),&pin,Whole(&experts),Whole(&weights),&params),"route_topk pinned") )
+			break;
+		l[poke] = saved;
+		for ( row = 0u; row < rows; row++ )
+		{
+			double best = -INFINITY, total = 0.0, probability[EXPERTS], picked = 0.0;
+			for ( x = 0u; x < EXPERTS; x++ )
+				best = fmax(best,Bf16(l[row * EXPERTS + x]));
+			for ( x = 0u; x < EXPERTS; x++ )
+				total += (probability[x] = exp(Bf16(l[row * EXPERTS + x]) - best));
+			for ( k = 0u; k < TOP; k++ )
+				picked += probability[pv[row * TOP + k]] / total;
+			for ( k = 0u; k < TOP; k++ )
+			{
+				const uint32_t chosen = pv[row * TOP + k];
+				const double weight = probability[chosen] / total / picked * sc[chosen];
+				Observe(check,e[row * TOP + k] == chosen ? 0.0 : 1.0,0.0,0.0);
+				Observe(check,wt[row * TOP + k],weight,(TOP + EXPERTS + 2.0 * FUNCTION_ERROR / UNIT_F32 + 8.0) * UNIT_F32 * fabs(weight));
+			}
+		}
+	}
+	snprintf(shape,sizeof(shape),"rows %u, 128 experts, 8 pinned",rows);
+	Report("route_pinned",shape,&clean,&corrupted,"experts copied; weights of the pinned experts (k + E + 2*16 + 8) eps32 relative");
+	SparkDeviceFree(&logits);
+	SparkDeviceFree(&scale);
+	SparkDeviceFree(&pinned);
+	SparkDeviceFree(&experts);
+	SparkDeviceFree(&weights);
+}
+
 static void TestRoutes(uint32_t rows)
 {
 	enum { EXPERTS = 128u, TOP = 8u, WIDTH = 2816u };
@@ -732,7 +796,7 @@ static void TestRoutes(uint32_t rows)
 		memset(check,0,sizeof(*check));
 		if ( pass == 1u )
 			l[poke] = ToBf16(9.0f);
-		if ( !Run(SparkOpsRouteTopk(&ops,queue,Whole(&logits),Whole(&scale),Whole(&experts),Whole(&weights),&params),"route_topk") )
+		if ( !Run(SparkOpsRouteTopk(&ops,queue,Whole(&logits),Whole(&scale),0,Whole(&experts),Whole(&weights),&params),"route_topk") )
 			break;
 		l[poke] = saved;
 		for ( row = 0u; row < rows; row++ )
@@ -1676,6 +1740,16 @@ int main(int argc, char **argv)
 	TestLinear(77u,17408u,5120u,0u,0u,20000u);
 	TestLinear(2048u,5120u,34816u,0u,0u,20000u);
 	TestLinear(64u,5120u,248320u,1u,0u,20000u);
+	{
+		static const uint32_t shapes[][2] = { { 2816u, 4224u }, { 2112u, 2816u }, { 2816u, 8192u }, { 4096u, 2816u }, { 8192u, 2816u },
+			{ 2816u, 1024u }, { 2816u, 128u }, { 704u, 2816u } }, row_counts[] = { 1u, 4u, 9u, 64u, 512u };
+		uint32_t s, c;
+		for ( s = 0u; s < sizeof(shapes) / sizeof(shapes[0]); s++ )
+			for ( c = 0u; c < sizeof(row_counts) / sizeof(row_counts[0]); c++ )
+				TestLinear(row_counts[c],shapes[s][0],shapes[s][1],0u,0u,20000u);
+		TestLinear(1u,2816u,262144u,1u,0u,20000u);
+		TestLinear(64u,2816u,262144u,1u,0u,20000u);
+	}
 	TestLinearRowIndependence(2u,1u,17408u,5120u,0u,1u,0u);
 	TestLinearRowIndependence(3u,64u,5120u,34816u,0u,0u,0u);
 	TestLinearRowIndependence(2u,1u,5120u,248320u,1u,0u,0u);
@@ -1707,6 +1781,7 @@ int main(int argc, char **argv)
 	TestGeluMul(2u);
 	TestScaleAndSoftcap();
 	TestRoutes(3u);
+	TestRoutesPinned(3u);
 	TestLinearRouted(2u);
 	TestBranchNorms(2u,1u);
 	TestBranchNorms(3u,2u);
