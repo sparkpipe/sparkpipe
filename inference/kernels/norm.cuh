@@ -211,7 +211,7 @@ void LmSiluMulGateLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_
 	{
 		float gate = fminf(LmBf16ToFloat(gate_up_bf16[base + index]), limit);
 		float up = fminf(fmaxf(LmBf16ToFloat(gate_up_bf16[base + dimension + index]), -limit), limit);
-		output_bf16[out_base + index] = LmFloatToBf16((gate / (1.0f + expf(-gate))) * up);
+		output_bf16[out_base + index] = LmFloatToBf16(SparkMathSilu(gate) * up);
 	}
 }
 
