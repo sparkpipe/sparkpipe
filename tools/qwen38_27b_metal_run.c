@@ -730,11 +730,25 @@ static uint32_t SpecChoose(SpecRun *run, SparkSpeculationHazard *hazards, const 
 	SparkSpeculationFrameRequest request;
 	SparkSpeculationFrameChoice choice;
 	memset(&request,0,sizeof(request));
+	*frame_class = SparkSpeculationFrameClass(match->match_length,0u);
+	if ( run->model->classes[*frame_class].frames == 0u )
+	{
+		const float step = SparkSpeculationFrameTokenCost(run->model,context);
+		uint32_t free_drafts = 0u, drafts;
+		for ( drafts = 1u; drafts <= feasible; drafts++ )
+		{
+			const float cost = SparkSpeculationFrameCost(run->model,drafts + 1u,context);
+			if ( cost > 0.0f && cost <= SPARK_SPECULATION_FRAME_MARGIN * step )
+				free_drafts = drafts;
+		}
+		feasible = free_drafts;
+		if ( feasible == 0u )
+			return(0u);
+	}
 	request.feasible = feasible;
 	request.context = context;
 	request.match_length = match->match_length;
 	request.lanes = 1u;
-	*frame_class = SparkSpeculationFrameClass(match->match_length,0u);
 	SparkSpeculationFrameChoose(run->model,&hazards[*frame_class],&request,&choice);
 	return(choice.drafts < feasible ? choice.drafts : feasible);
 }
@@ -872,9 +886,10 @@ static int RunSpec(Session *session, const RunOptions *options, const SparkToken
 {
 	FILE *json = OpenOut(options,"spec",".metal.json","w");
 	SparkSpeculationFrameModel *model = (SparkSpeculationFrameModel *)calloc(1u,sizeof(SparkSpeculationFrameModel));
+	double *plain_rate = (double *)calloc(options->repeats + 1u,sizeof(double)), *spec_rate = (double *)calloc(options->repeats + 1u,sizeof(double));
 	SpecRun plain, spec;
 	uint32_t index, total = gate->count + extra->count, identical = 0u;
-	SparkStatus status = json != 0 && model != 0 ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+	SparkStatus status = json != 0 && model != 0 && plain_rate != 0 && spec_rate != 0 ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
 	plain.model = spec.model = model;
 	plain.tokens = (uint32_t *)calloc(options->new_tokens,sizeof(uint32_t));
 	spec.tokens = (uint32_t *)calloc(options->new_tokens,sizeof(uint32_t));
@@ -888,24 +903,33 @@ static int RunSpec(Session *session, const RunOptions *options, const SparkToken
 	for ( index = 0u; status == SPARK_STATUS_OK && index < total; index++ )
 	{
 		const SparkTokenPrompt *prompt = index < gate->count ? &gate->prompts[index] : &extra->prompts[index - gate->count];
-		uint32_t same = 0u;
-		status = SpecGreedy(session,options,prompt,0u,&plain);
-		if ( status == SPARK_STATUS_OK )
-			status = SpecGreedy(session,options,prompt,1u,&spec);
+		uint32_t same = options->new_tokens, run, token;
+		for ( run = 0u; status == SPARK_STATUS_OK && run <= options->repeats; run++ )
+		{
+			status = SpecGreedy(session,options,prompt,0u,&plain);
+			if ( status == SPARK_STATUS_OK )
+				status = SpecGreedy(session,options,prompt,1u,&spec);
+			plain_rate[run] = plain.count / (plain.ns / 1e9);
+			spec_rate[run] = spec.count / (spec.ns / 1e9);
+			for ( token = 0u; status == SPARK_STATUS_OK && token < same; token++ )
+				if ( token >= plain.count || token >= spec.count || plain.tokens[token] != spec.tokens[token] )
+					same = token;
+		}
 		if ( status != SPARK_STATUS_OK )
 			break;
-		while ( same < plain.count && same < spec.count && plain.tokens[same] == spec.tokens[same] )
-			same++;
 		identical += same == options->new_tokens ? 1u : 0u;
+		qsort(plain_rate + 1,options->repeats,sizeof(double),CompareDoubles);
+		qsort(spec_rate + 1,options->repeats,sizeof(double),CompareDoubles);
 		fprintf(json,"%s{\"name\":\"%s\",\"prompt_tokens\":%u,\"tokens_identical\":%u,\"plain_tokens_per_second\":%.4f,\"spec_tokens_per_second\":%.4f,"
-			"\"frames\":%u,\"drafted\":%u,\"accepted\":%u,\"spec_tokens\":[",index != 0u ? "," : "",prompt->name,prompt->count,same,
-			plain.count / (plain.ns / 1e9),spec.count / (spec.ns / 1e9),spec.frames,spec.drafted,spec.accepted);
-		for ( same = 0u; same < spec.count; same++ )
-			fprintf(json,"%s%u",same != 0u ? "," : "",spec.tokens[same]);
+			"\"plain_runs_tokens_per_second\":[%.4f,%.4f],\"spec_runs_tokens_per_second\":[%.4f,%.4f],\"frames\":%u,\"drafted\":%u,\"accepted\":%u,"
+			"\"spec_tokens\":[",index != 0u ? "," : "",prompt->name,prompt->count,same,plain_rate[1u + options->repeats / 2u],spec_rate[1u + options->repeats / 2u],
+			plain_rate[1],plain_rate[options->repeats],spec_rate[1],spec_rate[options->repeats],spec.frames,spec.drafted,spec.accepted);
+		for ( token = 0u; token < spec.count; token++ )
+			fprintf(json,"%s%u",token != 0u ? "," : "",spec.tokens[token]);
 		fprintf(json,"]}");
-		printf("%s: %u of %u tokens identical; %.2f tok/s plain, %.2f tok/s with lookup speculation (%u frames, %u of %u drafts accepted)\n",prompt->name,
-			same == spec.count ? same : same,options->new_tokens,plain.count / (plain.ns / 1e9),spec.count / (spec.ns / 1e9),spec.frames,spec.accepted,
-			spec.drafted);
+		printf("%s: %u of %u tokens identical in every run; %.2f tok/s plain (%.2f-%.2f), %.2f tok/s with lookup speculation (%.2f-%.2f); "
+			"%u frames, %u of %u drafts accepted\n",prompt->name,same,options->new_tokens,plain_rate[1u + options->repeats / 2u],plain_rate[1],
+			plain_rate[options->repeats],spec_rate[1u + options->repeats / 2u],spec_rate[1],spec_rate[options->repeats],spec.frames,spec.accepted,spec.drafted);
 		fflush(stdout);
 	}
 	if ( json != 0 )
@@ -916,6 +940,8 @@ static int RunSpec(Session *session, const RunOptions *options, const SparkToken
 	free(plain.tokens);
 	free(spec.tokens);
 	free(model);
+	free(plain_rate);
+	free(spec_rate);
 	return(status == SPARK_STATUS_OK && identical == total ? 0 : 1);
 }
 
