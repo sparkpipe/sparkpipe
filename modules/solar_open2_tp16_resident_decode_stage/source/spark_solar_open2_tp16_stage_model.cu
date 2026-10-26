@@ -28,6 +28,7 @@ struct SolarOpen2Geometry : LingDefaults
 	static constexpr uint32_t kTopkGroups = 1u;
 	static constexpr uint32_t kMoeInter = 128u;
 	static constexpr uint32_t kSharedRows = 128u;
+	static constexpr uint32_t kVerifyRows = SPARK_SOLAR_OPEN2_TP16_VERIFY_ROWS;
 	static constexpr float kRouteScale = 1.0f;
 	static constexpr uint32_t kPageSlots = SPARK_SOLAR_OPEN2_TP16_STAGE_PAGE_SLOTS;
 	static const char *Tag(void) { return "sparkpipe_solar_open2"; }
