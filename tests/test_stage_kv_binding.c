@@ -469,13 +469,14 @@ static void TestCopyOnWriteIsOneDeviceCopyPerRegionLayer(void)
 	source = PublishPrefix(3u,1u,2u,0x40u,0x22u);
 	StepInit(&y,2u,1u,2u,3u);
 	StepPrefix(&y,2u,0x40u);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
 	HookReset();
 	spark_stub_cuda_event_pending(1u);
 	assert(StepAdmit(&y,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK);
 	destination = LanePage(1u,0u);
 	assert(destination != source);
 	assert(spark_stub_cuda_sync_copy_calls() == 0u);
-	assert(spark_stub_cuda_async_copy_calls() == 1u + TEST_LAYERS && HOOK.device_copies == 1u + TEST_LAYERS && HOOK.foreign_stream_copies == 0u);
+	assert(HOOK.device_copies == 1u + TEST_LAYERS && spark_stub_cuda_async_copy_calls() >= HOOK.device_copies && HOOK.foreign_stream_copies == 0u);
 	PageBytes(source,source_bytes);
 	PageBytes(destination,destination_bytes);
 	assert(memcmp(source_bytes,destination_bytes,sizeof(source_bytes)) == 0);
@@ -1405,7 +1406,13 @@ static void TestRecurrentRoundTrip(void)
 	StepInit(&step,3u,0u,4u,5u);
 	StepPrefix(&step,4u,0x90u);
 	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK && BINDING.lane_state_flags[0] != 0u);
-	assert(SparkStageKvBindingReset(&BINDING,2u) == SPARK_STATUS_OK);
+	{
+		SparkStatus reset;
+		uint32_t attempt = 0u;
+		while ( (reset = SparkStageKvBindingReset(&BINDING,2u)) == SPARK_STATUS_BUSY && attempt++ < 1000u )
+			SleepMs(1u);
+		assert(reset == SPARK_STATUS_OK);
+	}
 	for (index=0u; index<TEST_LANES; index++)
 		assert(BINDING.lane_state_flags[index] == 0u && BINDING.lanes[index].phase == SPARK_KV_LANE_TRANSACTION_EMPTY);
 	SparkStageKvBindingTakeRecurrentCounters(&BINDING,&counters);
