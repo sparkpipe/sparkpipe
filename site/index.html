@@ -148,7 +148,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
     <h2>What comes next.</h2>
     <div class="check-list">
       <div><b>Prefill accelerators</b><span>Boxes of four NVIDIA RTX 5080 cards compute long prompts, four boxes first, then eight. ESTIMATED: a 128K-token Kimi K3 prompt in 37 s (18 s with eight boxes), and a 1M-token prompt in about 17 minutes.</span></div>
-      <div><b>Fleet 2</b><span>Eight M5 Ultra Mac Studios with 2.2 times Fleet 1's memory bandwidth, for faster decoding. ESTIMATED: Kimi K3 at 23 tok/s without speculation.</span></div>
+      <div><b>Fleet 2</b><span>Eight M5 Ultra Mac Studios with 2.2 times Fleet 1's memory bandwidth, for faster decoding. Measured on one of its Studios: Qwen 3.8 27B at full BF16 precision decodes 19.3 tok/s for one request, 86% of what the Studio's memory bandwidth allows. ESTIMATED: Kimi K3 at 23 tok/s without speculation.</span></div>
       <div><b>Better speculation</b><span>Tree drafts from several drafters at once, so more drafted tokens are accepted in each step.</span></div>
       <div><b>Field search</b><span>Checkboxes in the chat add search tools for law, medicine, finance, patents and more, so any model answers from current primary sources and cites them.</span></div>
       <div><b>More large models</b><span>Nemotron 3 Ultra and Mistral Large 3.</span></div>
