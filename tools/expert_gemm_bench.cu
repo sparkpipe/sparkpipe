@@ -66,6 +66,42 @@ static uint64_t Digest(const uint16_t *device, uint64_t count)
 	return h;
 }
 
+static bool force_gemm;
+
+static int32_t Up(const LmLocalExpertRoutes &r, const void *weight, const uint16_t *activation, uint16_t *output, cudaStream_t s)
+{
+	if ( !force_gemm )
+		return LmLocalExpertsUp<LmBf16Format>(r, weight, LmScaleTensorNone(), activation, output, BENCH_HIDDEN, BENCH_INTER, s);
+	LmGemmArguments gemm;
+	memset(&gemm, 0, sizeof(gemm));
+	gemm.scale_a = LmScaleTensorNone();
+	gemm.scale_b = LmScaleTensorNone();
+	gemm.prefix_built = 1u;
+	gemm.group_row_offset = r.group_row_offset;
+	gemm.group_tile_prefix = r.tile_prefix_up;
+	gemm.source_row_map = r.route_source_token;
+	gemm.source_row_count = r.rows;
+	gemm.output_bf16 = output;
+	return LmGemmWeightOnlyIndirectLaunch<LmBf16Format,LM_MOE_GEMM_TILE_N,LM_MOE_GEMM_STAGES,LM_MOE_GEMM_WARPS>(&gemm, activation, weight,
+		r.routes, r.rows, r.top_k, r.local_experts, BENCH_HIDDEN, BENCH_INTER, r.multiprocessors, s);
+}
+
+static int32_t Down(const LmLocalExpertRoutes &r, const void *weight, const uint16_t *activation, uint16_t *output, cudaStream_t s)
+{
+	if ( !force_gemm )
+		return LmLocalExpertsDown<LmBf16Format>(r, weight, LmScaleTensorNone(), activation, output, BENCH_INTER, BENCH_HIDDEN, s);
+	LmGemmArguments gemm;
+	memset(&gemm, 0, sizeof(gemm));
+	gemm.scale_a = LmScaleTensorNone();
+	gemm.scale_b = LmScaleTensorNone();
+	gemm.prefix_built = 1u;
+	gemm.group_row_offset = r.group_row_offset;
+	gemm.group_tile_prefix = r.tile_prefix_down;
+	gemm.output_bf16 = output;
+	return LmGemmWeightOnlyLaunch<LmBf16Format,LM_MOE_GEMM_TILE_N,LM_MOE_GEMM_STAGES,LM_MOE_GEMM_WARPS>(&gemm, activation, weight, r.routes,
+		r.rows, r.top_k, r.local_experts, BENCH_INTER, BENCH_HIDDEN, r.multiprocessors, true, s);
+}
+
 static float Elapsed(cudaEvent_t start, cudaEvent_t stop)
 {
 	float ms = 0.0f;
@@ -77,6 +113,7 @@ static float Elapsed(cudaEvent_t start, cudaEvent_t stop)
 int main(int argc, char **argv)
 {
 	const uint32_t rows = argc > 1 ? (uint32_t)strtoul(argv[1], 0, 10) : 2048u;
+	force_gemm = argc > 2 && strcmp(argv[2], "gemm") == 0;
 	const uint32_t routes = rows * BENCH_TOP_K;
 	const uint64_t weight_elements = (uint64_t)BENCH_EXPERTS * BENCH_INTER * BENCH_HIDDEN;
 	std::vector<uint32_t> expert(routes);
@@ -132,18 +169,18 @@ int main(int argc, char **argv)
 	r.top_k = BENCH_TOP_K;
 	r.local_experts = BENCH_EXPERTS;
 	r.multiprocessors = (uint32_t)sms;
-	LAUNCH(LmLocalExpertsUp<LmBf16Format>(r, w_up, LmScaleTensorNone(), activation, up_out, BENCH_HIDDEN, BENCH_INTER, s));
-	LAUNCH(LmLocalExpertsDown<LmBf16Format>(r, w_down, LmScaleTensorNone(), act, down_out, BENCH_INTER, BENCH_HIDDEN, s));
+	LAUNCH(Up(r, w_up, activation, up_out, s));
+	LAUNCH(Down(r, w_down, act, down_out, s));
 	CHECK(cudaStreamSynchronize(s));
 	const uint64_t up_digest = Digest(up_out, (uint64_t)routes * BENCH_INTER), down_digest = Digest(down_out, (uint64_t)routes * BENCH_HIDDEN);
 	CHECK(cudaEventRecord(start, s));
 	for ( uint32_t i = 0; i < BENCH_ITERATIONS; i++ )
-		LAUNCH(LmLocalExpertsUp<LmBf16Format>(r, w_up, LmScaleTensorNone(), activation, up_out, BENCH_HIDDEN, BENCH_INTER, s));
+		LAUNCH(Up(r, w_up, activation, up_out, s));
 	CHECK(cudaEventRecord(stop, s));
 	const double up_us = 1000.0 * Elapsed(start, stop) / BENCH_ITERATIONS;
 	CHECK(cudaEventRecord(start, s));
 	for ( uint32_t i = 0; i < BENCH_ITERATIONS; i++ )
-		LAUNCH(LmLocalExpertsDown<LmBf16Format>(r, w_down, LmScaleTensorNone(), act, down_out, BENCH_INTER, BENCH_HIDDEN, s));
+		LAUNCH(Down(r, w_down, act, down_out, s));
 	CHECK(cudaEventRecord(stop, s));
 	const double down_us = 1000.0 * Elapsed(start, stop) / BENCH_ITERATIONS;
 	if ( Digest(up_out, (uint64_t)routes * BENCH_INTER) != up_digest || Digest(down_out, (uint64_t)routes * BENCH_HIDDEN) != down_digest )
@@ -154,8 +191,8 @@ int main(int argc, char **argv)
 	const double flop = 2.0 * routes * BENCH_HIDDEN * BENCH_INTER;
 	const double up_bytes = weight_elements * 2.0 + (double)routes * BENCH_HIDDEN * 2.0 + (double)routes * BENCH_INTER * 2.0;
 	const double down_bytes = weight_elements * 2.0 + (double)routes * BENCH_INTER * 2.0 + (double)routes * BENCH_HIDDEN * 2.0;
-	printf("expert_gemm_bench experts=%u top_k=%u hidden=%u inter=%u rows=%u routes=%u sms=%d\n",
-		BENCH_EXPERTS, BENCH_TOP_K, BENCH_HIDDEN, BENCH_INTER, rows, routes, sms);
+	printf("expert_gemm_bench experts=%u top_k=%u hidden=%u inter=%u rows=%u routes=%u sms=%d path=%s\n",
+		BENCH_EXPERTS, BENCH_TOP_K, BENCH_HIDDEN, BENCH_INTER, rows, routes, sms, force_gemm ? "gemm" : "dispatch");
 	printf("up   %9.1f us %6.2f TFLOP/s %6.1f GB/s digest %016llx\n", up_us, flop / up_us / 1e6, up_bytes / up_us / 1e3,
 		(unsigned long long)up_digest);
 	printf("down %9.1f us %6.2f TFLOP/s %6.1f GB/s digest %016llx\n", down_us, flop / down_us / 1e6, down_bytes / down_us / 1e3,
