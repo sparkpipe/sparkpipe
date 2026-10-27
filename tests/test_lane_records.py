@@ -7,6 +7,7 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import stage_lane  # noqa: E402
+import lane_config  # noqa: E402
 
 
 def main():
@@ -21,6 +22,17 @@ def main():
         if len(cells) > 3 and cells[0].startswith("`") and cells[0].strip("`") in lanes:
             readme[cells[0].strip("`")] = cells[3]
     failures = []
+    original = lane_config.record
+    try:
+        cold = dict(lanes["kimi-k3"])
+        cold["draftd"] = dict(cold["draftd"], drafter="/mnt/cold-raid6/models/kimi-k3-dflash2-lightseek-e77935fb")
+        lane_config.record = lambda record_id: cold
+        lane_config.draftd_environment("kimi-k3")
+        failures.append("a draft server whose drafter sits on /mnt/cold-raid6 rendered; inference must read local NVMe only")
+    except SystemExit:
+        pass
+    finally:
+        lane_config.record = original
     for missing in sorted(set(swap) - set(lanes)):
         failures.append(f"{missing}: the swap controller serves it but deployment/lanes.json has no record")
     for extra in sorted(set(lanes) - set(swap)):
@@ -30,6 +42,11 @@ def main():
         if model is None or model["swap_id"] != record_id:
             failures.append(f"{record_id}: model {record.get('model')!r} is no tools/stage_lane.py MODELS entry with this swap id")
             continue
+        if record.get("draft_server") is not None or record.get("draftd") is not None:
+            try:
+                lane_config.draftd_environment(record_id)
+            except SystemExit as error:
+                failures.append(f"{record_id}: draft server does not render: {error}")
         if record["launcher"] not in ("stage_lane", "k3_lane"):
             failures.append(f"{record_id}: launcher {record['launcher']!r} is neither stage_lane nor k3_lane")
         if record["launcher"] == "stage_lane" and record["runtime_root"] != f"/home/{{host}}/stage-lanes/{record['model']}/lane{record['lane']}/root":

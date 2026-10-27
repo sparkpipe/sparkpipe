@@ -73,6 +73,18 @@
     "depth": 7,
     "wait_ms": 30,
     "min_confidence": 0.05
+   },
+   "draftd": {
+    "unit": "sparkpipe-draftd",
+    "source": "/srv/workspace/sparkpipe/draftd-5903345aa",
+    "drafter": "/srv/workspace/sparkpipe/drafter-weights/kimi-k3-dflash2-lightseek-e77935fb",
+    "target_shard": "/srv/workspace/sparkpipe/drafter-weights/kimi-k3/model-00094-of-000096.safetensors",
+    "tap_port": 7701,
+    "tap_host": "10.10.250.2",
+    "window": 4096,
+    "context_bytes": 8589934592,
+    "restart": "on-failure",
+    "log": "/srv/workspace/sparkpipe/logs/draftd.log"
    }
   },
   "qwen3.8-27b": {
@@ -126,6 +138,17 @@
     "depth": 5,
     "wait_ms": 30,
     "min_confidence": 0.05
+   },
+   "draftd": {
+    "unit": "sparkpipe-draftd-dsv41",
+    "source": "/srv/workspace/sparkpipe/draftd-99c1cf7aa",
+    "drafter": "dspark:/srv/workspace/sparkpipe/drafter-weights/deepseek-v4.1-flash-1017",
+    "tap_port": 7711,
+    "tap_host": "10.10.250.2",
+    "window": 4096,
+    "context_bytes": 8589934592,
+    "restart": "no",
+    "log": "/srv/workspace/sparkpipe/logs/draftd-dsv41.log"
    }
   },
   "qwen3.8-max": {
