@@ -1348,6 +1348,12 @@ $(METAL_KERNEL_LIBRARY) $(METAL_TEST_KERNEL_LIBRARY):
 	@echo "SKIP $(notdir $@) (no Metal toolchain on this host)"
 endif
 
+build/metal/test_math_kernels.metallib: build/metal/tests/metal_math_kernels.air | build
+	@if [ -n "$(METAL4_TOOLCHAIN)" ]; then xcrun -sdk macosx metallib $^ -o $@; else echo "SKIP $(notdir $@) (the Metal toolchain on this host has no Metal 4.0)"; fi
+
+build/test_metal_math_accuracy: tests/test_metal_math_accuracy.c $(DEVICE_METAL_LIBRARY) build/metal/test_math_kernels.metallib | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f build/metal/test_math_kernels.metallib ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_MATH_TEST_LIBRARY='"build/metal/test_math_kernels.metallib"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lm -o $@; else echo "SKIP test_metal_math_accuracy (no Metal device library)"; fi
+
 build/metal/test_bf16_kernels.metallib: build/metal/tests/bf16_convert_kernels.air | build
 	@if [ -n "$(METAL4_TOOLCHAIN)" ]; then xcrun -sdk macosx metallib $^ -o $@; else echo "SKIP $(notdir $@) (the Metal toolchain on this host has no Metal 4.0)"; fi
 

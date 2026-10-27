@@ -26,9 +26,10 @@ pin=""
 mkdir -p "$out/metal" "$out/exact" "$out/compare"
 ln -sfn "$reference" "$out/ref"
 cd "$root"
-make -s build/test_device_contract_metal build/test_metal_bf16_convert build/test_metal_kernels build/device_bandwidth build/metal_stage_run build/logit_compare
+make -s build/test_device_contract_metal build/test_metal_bf16_convert build/test_metal_math_accuracy build/test_metal_kernels build/device_bandwidth build/metal_stage_run build/logit_compare
 ./build/test_device_contract_metal > "$out/device_contract.txt"
 ./build/test_metal_bf16_convert > "$out/bf16_convert.txt"
+./build/test_metal_math_accuracy > "$out/math_accuracy.txt"
 ./build/test_metal_kernels "$out/kernels.json" > "$out/kernels.txt"
 ./build/device_bandwidth 16 "$pack" > "$out/bandwidth.json" 2> "$out/bandwidth.log"
 $run --pack "$pack" --mode teacher --out "$out/metal" --verify-pack > "$out/metal_teacher.log"

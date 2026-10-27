@@ -200,6 +200,7 @@ def main():
         "prompts": {item["name"]: {"tokens": item["tokens"], "source": item["source"], "source_sha256": item["source_sha256"]}
                     for item in prompts["prompts"]},
         "device_contract": (out / "device_contract.txt").read_text().strip().splitlines()[-1],
+        "math_accuracy": (out / "math_accuracy.txt").read_text().strip().splitlines()[-1] if (out / "math_accuracy.txt").exists() else None,
         "kernels": {"cases": len(kernels), "pass": all(case["pass"] for case in kernels),
                     "worst_ratio": max(case["worst_ratio"] for case in kernels if case["worst_ratio"] is not None),
                     "cases_list": [{key: case[key] for key in ("op", "shape", "checked", "worst_ratio", "control_outside", "pass")}
