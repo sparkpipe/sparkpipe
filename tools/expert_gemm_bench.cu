@@ -50,7 +50,7 @@ static __global__ void BenchFill(uint16_t *out, uint64_t count, uint64_t seed, f
 static uint16_t *Filled(uint64_t count, uint64_t seed, float scale)
 {
 	uint16_t *device;
-	CHECK(cudaMalloc(&device, count * 2u));
+	CHECK(cudaMalloc(&device, count * sizeof(uint16_t)));
 	BenchFill<<<512u, 256u>>>(device, count, seed, scale);
 	CHECK(cudaGetLastError());
 	return device;
@@ -60,7 +60,7 @@ static uint64_t Digest(const uint16_t *device, uint64_t count)
 {
 	std::vector<uint16_t> host(count);
 	uint64_t h = 0xcbf29ce484222325ull;
-	CHECK(cudaMemcpy(host.data(), device, count * 2u, cudaMemcpyDeviceToHost));
+	CHECK(cudaMemcpy(host.data(), device, count * sizeof(uint16_t), cudaMemcpyDeviceToHost));
 	for ( uint16_t v : host )
 		h = (h ^ v) * 0x100000001b3ull;
 	return h;
@@ -140,24 +140,24 @@ int main(int argc, char **argv)
 				expert[(uint64_t)t * BENCH_TOP_K + chosen++] = e;
 		}
 	}
-	CHECK(cudaMalloc(&route_expert, routes * 4u));
-	CHECK(cudaMalloc(&route_global, routes * 4u));
-	CHECK(cudaMalloc(&route_weight, routes * 4u));
-	CHECK(cudaMalloc(&group_row_offset, (BENCH_EXPERTS + 2u) * 4u));
-	CHECK(cudaMalloc(&route_packed_row, routes * 4u));
-	CHECK(cudaMalloc(&route_source_token, routes * 4u));
-	CHECK(cudaMalloc(&tile_prefix_up, (BENCH_EXPERTS + 2u) * 4u));
-	CHECK(cudaMalloc(&tile_prefix_down, (BENCH_EXPERTS + 2u) * 4u));
-	CHECK(cudaMemcpy(route_expert, expert.data(), routes * 4u, cudaMemcpyHostToDevice));
-	CHECK(cudaMemcpy(route_weight, weight.data(), routes * 4u, cudaMemcpyHostToDevice));
+	CHECK(cudaMalloc(&route_expert, routes * sizeof(uint32_t)));
+	CHECK(cudaMalloc(&route_global, routes * sizeof(uint32_t)));
+	CHECK(cudaMalloc(&route_weight, routes * sizeof(float)));
+	CHECK(cudaMalloc(&group_row_offset, (BENCH_EXPERTS + 2u) * sizeof(uint32_t)));
+	CHECK(cudaMalloc(&route_packed_row, routes * sizeof(uint32_t)));
+	CHECK(cudaMalloc(&route_source_token, routes * sizeof(uint32_t)));
+	CHECK(cudaMalloc(&tile_prefix_up, (BENCH_EXPERTS + 2u) * sizeof(uint32_t)));
+	CHECK(cudaMalloc(&tile_prefix_down, (BENCH_EXPERTS + 2u) * sizeof(uint32_t)));
+	CHECK(cudaMemcpy(route_expert, expert.data(), routes * sizeof(uint32_t), cudaMemcpyHostToDevice));
+	CHECK(cudaMemcpy(route_weight, weight.data(), routes * sizeof(float), cudaMemcpyHostToDevice));
 	LmRouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, s>>>(route_expert, route_weight, route_global, routes, 0u, BENCH_EXPERTS);
 	LAUNCH((LmRouteBuild<256u, BENCH_EXPERTS + 1u>(route_expert, rows, routes, BENCH_TOP_K, group_row_offset, route_packed_row,
 		route_source_token, BENCH_INTER, BENCH_HIDDEN, LM_MOE_GEMM_TILE_N, tile_prefix_up, tile_prefix_down, s)));
 	uint16_t *w_up = Filled(weight_elements, 1u, 0.05f), *w_down = Filled(weight_elements, 2u, 0.05f);
 	uint16_t *activation = Filled((uint64_t)rows * BENCH_HIDDEN, 3u, 1.0f), *act = Filled((uint64_t)routes * BENCH_INTER, 4u, 1.0f);
 	uint16_t *up_out, *down_out;
-	CHECK(cudaMalloc(&up_out, (uint64_t)routes * BENCH_INTER * 2u));
-	CHECK(cudaMalloc(&down_out, (uint64_t)routes * BENCH_HIDDEN * 2u));
+	CHECK(cudaMalloc(&up_out, (uint64_t)routes * BENCH_INTER * sizeof(uint16_t)));
+	CHECK(cudaMalloc(&down_out, (uint64_t)routes * BENCH_HIDDEN * sizeof(uint16_t)));
 	CHECK(cudaDeviceSynchronize());
 	LmLocalExpertRoutes r;
 	r.group_row_offset = group_row_offset;
