@@ -52,7 +52,7 @@ class Swapper:
         self.drain_quiet_seconds = float(config.get("drain_quiet_seconds", 0))
         self.node_seconds = float(config.get("node_seconds", 240))
         self.release_seconds = float(config.get("release_seconds", 60))
-        self.draft_seconds = float(config.get("draft_seconds", 360))
+        self.draft_seconds = float(config.get("draft_seconds", 420))
         self.models = {}
         for spec in config["models"]:
             require(spec, ("id", "kv_label", "node_memory_bytes", "node_reclaim", "node_start", "node_ready", "node_stop", "api_start", "api_stop", "health"), f"model {spec.get('id')!r}")
