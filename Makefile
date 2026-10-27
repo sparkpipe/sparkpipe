@@ -411,6 +411,7 @@ PYTHON_TESTS := \
 	tests/test_metal_kernels.py \
 	tests/test_metal_bf16_convert.py \
 	tests/test_dry_law.py \
+	tests/test_device_stage_tables.py \
 	tests/test_geometry_required_switches.py \
 	tests/test_family_defines_single_source.py \
 	tests/test_no_source_comments.py \
