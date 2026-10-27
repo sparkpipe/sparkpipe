@@ -1,0 +1,65 @@
+{"pattern": "layers.31.ffn_down", "tensors": 1, "corruption": "rows 0 and 1 swapped"}
+{"pattern": "layers.*.ffn_down", "tensors": 64, "corruption": "rows 0 and 1 swapped"}
+{"pattern": "layers.31.ffn_down", "tensors": 1, "corruption": "every row moved down by one"}
+{
+ "numerics_pass": false,
+ "speculation_exact": true,
+ "ladder_exact_rows_identical": null,
+ "metal": {
+  "reference_a": {
+   "kl_ratio_to_floor": 1.0985065906147395,
+   "top1_disagreement_ratio_to_floor": 1.0866141732283428,
+   "paired_sigma": -2.1107034545672962,
+   "pass": true
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 1.3662942211137208,
+   "top1_disagreement_ratio_to_floor": 1.11811023622047,
+   "paired_sigma": 3.7944348085017867,
+   "pass": false
+  }
+ },
+ "control_layers": {
+  "reference_a": {
+   "kl_ratio_to_floor": 4.526680656287789,
+   "top1_disagreement_ratio_to_floor": 3.8425196850393637,
+   "paired_sigma": 87.32581641997808,
+   "pass": false
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 4.835505796368078,
+   "top1_disagreement_ratio_to_floor": 3.858267716535422,
+   "paired_sigma": 88.0817800876737,
+   "pass": false
+  }
+ },
+ "control_rotate": {
+  "reference_a": {
+   "kl_ratio_to_floor": 15.119881220601773,
+   "top1_disagreement_ratio_to_floor": 6.377952755905498,
+   "paired_sigma": 238.92712166620515,
+   "pass": false
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 17.44857847653374,
+   "top1_disagreement_ratio_to_floor": 6.322834645669277,
+   "paired_sigma": 194.5822928177595,
+   "pass": false
+  }
+ },
+ "control": {
+  "reference_a": {
+   "kl_ratio_to_floor": 1.0558412546419111,
+   "top1_disagreement_ratio_to_floor": 1.0314960629921224,
+   "paired_sigma": -2.3486721881296013,
+   "pass": true
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 1.2792051565632558,
+   "top1_disagreement_ratio_to_floor": 1.0866141732283428,
+   "paired_sigma": 0.43135431644904076,
+   "pass": true
+  }
+ },
+ "decode": "51.64 GB read per token (51.25 GB of weights, the rest KV and recurrent state) / 1135.3 GB/s measured = 21.99 tok/s; measured 18.13 tok/s = 82.4%"
+}

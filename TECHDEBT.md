@@ -1274,6 +1274,16 @@ Metal backend and the single-Studio stage are in
   prefill) passes in two of three order variants and misses korean by 0.1
   in the third. What separates Metal from the draws on code, and the
   64-row path from the 1,024-row one, is not found yet.
+- Qwen3.8-27B fails its 3-sigma gate at 8b4836e52 (reference B leg, paired
+  +3.8): the margin rescale that brought Gemma 4 31B closer to its floor
+  moves Qwen away. Over three order-only variants each (Qwen gate legs,
+  qualification/metal/qwen38_27b/8b4836e52/kernel_variants.txt) the eager
+  kernel gives KL ratios 0.82-1.04 / 0.97-1.28 and paired +0.7 to +1.3 on
+  the B leg (all pass), the margin kernel 1.10-1.30 / 1.37-1.55 and +2.2
+  to +4.6 (two of three fail), the two-pass kernel 1.09-1.19 / 1.35-1.52
+  and +4.9 to +5.6 (all fail). The kernels' partition records are equally
+  accurate on synthetic data, so why rescaling helps one model's agreement
+  with its reference and hurts the other's is not isolated.
 - The other Metal gates (Qwen3.8-27B, Gemma 4 26B A4B) still judge the
   paired test against one floor draw at 3 sigma; on Gemma 4 31B the
   reference itself fails that rule (draw D at +4.4 against B). They need

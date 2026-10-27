@@ -375,14 +375,17 @@ to 2.3; and four of a two-pass kernel that never rescales (branch
 and 2.2 to 3.6. On synthetic keys and values the three kernels' partition
 records are equally accurate (within 0.5 units of `2^-24 sum p|v|` RMS of
 float64 at 8K keys, with and without a rising score ramp), so how the eager
-rescaling errs on the model's own activations is not isolated. `matmul2d`
-takes the FP32 probabilities at full precision (32 x 64 FP32 times 64 x 256
-BF16 errs by at most 3.1 and on average 0.29 units of `2^-24 sum |p v|`).
-Metal's `exp` measures at most 1.47 ulp on [-80, 0], mean +0.36 ulp, 62%
-correctly rounded (`build/test_metal_math_accuracy`, which holds it to the
-16-ulp envelope the kernel tests assume); numpy's float32 `exp` on the
-reference host measures at most 2.54 ulp, mean -0.07 ulp, 61% correctly
-rounded.
+rescaling errs on the model's own activations is not isolated. On
+Qwen3.8-27B the margin moves the statistic the other way: three order-only
+variants of the eager kernel sat at +0.7 to +1.3 against reference B, three
+of the margin kernel at +2.2 to +4.6 and the two-pass kernel at +4.9 to +5.6
+(TECHDEBT). `matmul2d` takes the FP32 probabilities at full precision (32 x
+64 FP32 times 64 x 256 BF16 errs by at most 3.1 and on average 0.29 units of
+`2^-24 sum |p v|`). Metal's `exp` measures at most 1.47 ulp on [-80, 0],
+mean +0.36 ulp, 62% correctly rounded (`build/test_metal_math_accuracy`,
+which holds it to the 16-ulp envelope the kernel tests assume); numpy's
+float32 `exp` on the reference host measures at most 2.54 ulp, mean -0.07
+ulp, 61% correctly rounded.
 
 The delta-rule state, the L2-normalised query and key, the decay and write
 strength, the attention scores and softmax stay FP32. Rotary angles are

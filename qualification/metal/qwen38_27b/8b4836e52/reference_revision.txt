@@ -1,0 +1,1 @@
+reference logits and greedy continuations: the 76576307c receipt's (from a2bd02d0a; tools/qwen38_27b_reference.c has changed since only in byte-width spelling, f4a48e255); this gate judges the paired test at 3 sigma (no floor draws C and D for this model yet)

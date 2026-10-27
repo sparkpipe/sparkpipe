@@ -1,0 +1,9 @@
+eager: metal kl 0.0332 ratio 0.84 top1 ratio 0.91 paired -3.4 metal_vs_b kl 0.0327 ratio 0.98 top1 ratio 1.13 paired 0.7 
+margin: metal kl 0.0434 ratio 1.10 top1 ratio 1.09 paired -2.1 metal_vs_b kl 0.0457 ratio 1.37 top1 ratio 1.12 paired 3.8 
+margin_simd: metal kl 0.0515 ratio 1.30 top1 ratio 1.08 paired -3.0 metal_vs_b kl 0.0519 ratio 1.55 top1 ratio 1.06 paired 2.2 
+margin_comb: metal kl 0.0486 ratio 1.23 top1 ratio 1.08 paired -2.1 metal_vs_b kl 0.0488 ratio 1.46 top1 ratio 1.13 paired 4.6 
+twopass: metal kl 0.0449 ratio 1.14 top1 ratio 1.02 paired 1.1 metal_vs_b kl 0.0478 ratio 1.43 top1 ratio 1.21 paired 4.9 
+twopass_simd: metal kl 0.0468 ratio 1.19 top1 ratio 1.01 paired 0.8 metal_vs_b kl 0.0509 ratio 1.52 top1 ratio 1.18 paired 5.6 
+twopass_comb: metal kl 0.0431 ratio 1.09 top1 ratio 0.95 paired -1.7 metal_vs_b kl 0.0453 ratio 1.35 top1 ratio 1.15 paired 5.1 
+eager_simd: metal kl 0.0413 ratio 1.04 top1 ratio 0.95 paired -3.3 metal_vs_b kl 0.0427 ratio 1.28 top1 ratio 1.09 paired 1.0 
+eager_comb: metal kl 0.0322 ratio 0.82 top1 ratio 0.92 paired -2.8 metal_vs_b kl 0.0326 ratio 0.97 top1 ratio 1.14 paired 1.3 
