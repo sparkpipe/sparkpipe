@@ -47,6 +47,25 @@ SPARK_MATH_FN SparkMathU16 SparkMathFloatToBf16(float value)
 #endif
 }
 
+typedef struct SparkMathCompensated
+{
+	float sum;
+	float carry;
+} SparkMathCompensated;
+
+SPARK_MATH_FN SparkMathCompensated SparkMathCompensatedAdd(SparkMathCompensated value, float term)
+{
+	const float corrected = term - value.carry, total = value.sum + corrected;
+	value.carry = (total - value.sum) - corrected;
+	value.sum = total;
+	return(value);
+}
+
+SPARK_MATH_FN float SparkMathCompensatedValue(SparkMathCompensated value)
+{
+	return(value.sum - value.carry);
+}
+
 SPARK_MATH_FN float SparkMathRoundBf16(float value)
 {
 	return(SparkMathBf16ToFloat(SparkMathFloatToBf16(value)));

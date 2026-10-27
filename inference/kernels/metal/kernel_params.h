@@ -176,7 +176,7 @@ typedef struct SparkAttentionParams
 	uint32_t row_exact;
 	uint32_t window;
 	uint32_t output_gate;
-	uint32_t pad;
+	uint32_t max_pass;
 } SparkAttentionParams;
 
 typedef struct SparkSiluMulParams

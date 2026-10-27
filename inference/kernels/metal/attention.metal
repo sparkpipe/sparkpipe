@@ -70,12 +70,50 @@ kernel void spark_attention_decode(constant SparkAttentionParams &p [[buffer(0)]
 	const uint part = group.x, head = group.y, row = group.z;
 	const uint kv_head = head / (p.heads / p.kv_heads), sequence = sequence_of_row[row], length = positions[row] + 1u;
 	const uint begin = max(part * p.partition_keys, SparkAttentionFirstKey(p, positions[row])), end = min(length, part * p.partition_keys + p.partition_keys);
-	float q[LANE], acc[LANE];
-	float running_max = -INFINITY, running_sum = 0.0f;
+	device float *records = partial + ((ulong)row * p.heads + head) * p.partitions * (D + 2u);
+	device float *record = records + part * (D + 2u);
+	float q[LANE];
 	for ( uint chunk = 0u; chunk < LANE; chunk += 8u )
 		SparkLoad8(query + (ulong)row * p.query_stride + head * D + lane * LANE + chunk, q + chunk);
+	if ( p.max_pass != 0u )
+	{
+		float best = -INFINITY;
+		for ( uint key = begin + simd; key < end; key += SPARK_ATTENTION_SIMDS )
+		{
+			device const ushort *slot = SparkKvSlot(p, pool, page_table, sequence, key);
+			float k[LANE], score = 0.0f;
+			if ( slot == (device const ushort *)0 )
+				continue;
+			for ( uint chunk = 0u; chunk < LANE; chunk += 8u )
+				SparkLoad8(slot + kv_head * D + lane * LANE + chunk, k + chunk);
+			for ( uint d = 0u; d < LANE; d++ )
+				score += q[d] * k[d];
+			best = max(best, simd_sum(score) * p.scale);
+		}
+		if ( lane == 0u )
+			shared_max[simd] = best;
+		threadgroup_barrier(mem_flags::mem_threadgroup);
+		if ( simd == 0u && lane == 0u )
+		{
+			for ( uint s = 0u; s < SPARK_ATTENTION_SIMDS; s++ )
+				best = max(best, shared_max[s]);
+			record[0] = best;
+		}
+		return;
+	}
+	const uint used = min(p.partitions, (length + p.partition_keys - 1u) / p.partition_keys);
+	float row_max = -INFINITY;
+	for ( uint other = simd * 32u + lane; other < used; other += SPARK_ATTENTION_SIMDS * 32u )
+		row_max = max(row_max, records[other * (D + 2u)]);
+	row_max = simd_max(row_max);
+	if ( lane == 0u )
+		shared_max[simd] = row_max;
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	for ( uint s = 0u; s < SPARK_ATTENTION_SIMDS; s++ )
+		row_max = max(row_max, shared_max[s]);
+	SparkMathCompensated sum = { 0.0f, 0.0f }, acc[LANE];
 	for ( uint d = 0u; d < LANE; d++ )
-		acc[d] = 0.0f;
+		acc[d] = SparkMathCompensated{ 0.0f, 0.0f };
 	for ( uint key = begin + simd; key < end; key += SPARK_ATTENTION_SIMDS )
 	{
 		device const ushort *slot = SparkKvSlot(p, pool, page_table, sequence, key);
@@ -89,45 +127,34 @@ kernel void spark_attention_decode(constant SparkAttentionParams &p [[buffer(0)]
 		}
 		for ( uint d = 0u; d < LANE; d++ )
 			score += q[d] * k[d];
-		score = simd_sum(score) * p.scale;
-		const float next_max = max(running_max, score);
-		const float correction = exp(running_max - next_max), weight = exp(score - next_max);
-		running_sum = running_sum * correction + weight;
+		const float weight = exp(simd_sum(score) * p.scale - row_max);
+		sum = SparkMathCompensatedAdd(sum, weight);
 		for ( uint d = 0u; d < LANE; d++ )
-			acc[d] = acc[d] * correction + weight * v[d];
-		running_max = next_max;
+			acc[d] = SparkMathCompensatedAdd(acc[d], weight * v[d]);
 	}
 	if ( lane == 0u )
-	{
-		shared_max[simd] = running_max;
-		shared_sum[simd] = running_sum;
-	}
+		shared_sum[simd] = SparkMathCompensatedValue(sum);
 	for ( uint d = 0u; d < LANE; d++ )
-		shared_out[simd][lane * LANE + d] = acc[d];
+		shared_out[simd][lane * LANE + d] = SparkMathCompensatedValue(acc[d]);
 	threadgroup_barrier(mem_flags::mem_threadgroup);
 	if ( simd != 0u )
 		return;
-	float total_max = -INFINITY, total_sum = 0.0f;
-	for ( uint s = 0u; s < SPARK_ATTENTION_SIMDS; s++ )
-		total_max = max(total_max, shared_max[s]);
-	float out[LANE];
+	SparkMathCompensated total = { 0.0f, 0.0f }, out[LANE];
 	for ( uint d = 0u; d < LANE; d++ )
-		out[d] = 0.0f;
+		out[d] = SparkMathCompensated{ 0.0f, 0.0f };
 	for ( uint s = 0u; s < SPARK_ATTENTION_SIMDS; s++ )
 	{
-		const float factor = shared_max[s] == -INFINITY ? 0.0f : exp(shared_max[s] - total_max);
-		total_sum += shared_sum[s] * factor;
+		total = SparkMathCompensatedAdd(total, shared_sum[s]);
 		for ( uint d = 0u; d < LANE; d++ )
-			out[d] += shared_out[s][lane * LANE + d] * factor;
+			out[d] = SparkMathCompensatedAdd(out[d], shared_out[s][lane * LANE + d]);
 	}
-	device float *record = partial + (((ulong)row * p.heads + head) * p.partitions + part) * (D + 2u);
 	if ( lane == 0u )
 	{
-		record[0] = total_max;
-		record[1] = total_sum;
+		record[0] = row_max;
+		record[1] = SparkMathCompensatedValue(total);
 	}
 	for ( uint d = 0u; d < LANE; d++ )
-		record[2u + lane * LANE + d] = out[d];
+		record[2u + lane * LANE + d] = SparkMathCompensatedValue(out[d]);
 }
 
 template <uint D>
@@ -144,15 +171,15 @@ kernel void spark_attention_combine(constant SparkAttentionParams &p [[buffer(0)
 		total_max = max(total_max, records[part * (D + 2u)]);
 	for ( uint d = tid; d < D; d += threads )
 	{
-		float sum = 0.0f, value = 0.0f;
+		SparkMathCompensated sum = { 0.0f, 0.0f }, value = { 0.0f, 0.0f };
 		for ( uint part = 0u; part < used; part++ )
 		{
 			device const float *record = records + part * (D + 2u);
 			const float factor = record[0] == -INFINITY ? 0.0f : exp(record[0] - total_max);
-			sum += record[1] * factor;
-			value += record[2u + d] * factor;
+			sum = SparkMathCompensatedAdd(sum, record[1] * factor);
+			value = SparkMathCompensatedAdd(value, record[2u + d] * factor);
 		}
-		const float attended = SparkMathRoundBf16(value / sum);
+		const float attended = SparkMathRoundBf16(SparkMathCompensatedValue(value) / SparkMathCompensatedValue(sum));
 		const float g = p.output_gate != 0u ? SparkMathSigmoid(SparkMathBf16ToFloat(gate[(ulong)row * p.gate_stride + p.gate_offset + head * p.gate_head_stride + d])) : 1.0f;
 		output[(ulong)row * p.output_stride + head * D + d] = SparkMathFloatToBf16(p.output_gate != 0u ? attended * g : attended);
 	}
@@ -168,7 +195,7 @@ kernel void spark_attention_prefill_blocks(constant SparkAttentionParams &p [[bu
 	threadgroup float block[ROWS * SPARK_ATTENTION_BLOCK_KEYS];
 	threadgroup float row_max[ROWS];
 	threadgroup float row_sum[ROWS];
-	threadgroup float row_scale[ROWS];
+	threadgroup float row_carry[ROWS];
 	const uint part = group.x, head = group.y, kv_head = head / (p.heads / p.kv_heads);
 	const uint first_row = p.row_offset + group.z * ROWS;
 	if ( first_row >= p.rows )
@@ -177,7 +204,7 @@ kernel void spark_attention_prefill_blocks(constant SparkAttentionParams &p [[bu
 	const uint first_position = positions[first_row], span_end = positions[first_row + count - 1u] + 1u;
 	const uint begin = max(part * p.partition_keys, SparkAttentionFirstKey(p, first_position) / SPARK_ATTENTION_BLOCK_KEYS * SPARK_ATTENTION_BLOCK_KEYS);
 	const uint end = min(span_end, part * p.partition_keys + p.partition_keys);
-	const uint slot_stride = 2u * p.kv_heads * D;
+	const uint slot_stride = 2u * p.kv_heads * D, record_stride = D + 2u;
 	const float scale = p.scale;
 	constexpr auto score_descriptor = matmul2d_descriptor(ROWS, SPARK_ATTENTION_BLOCK_KEYS, D, false, true, false);
 	constexpr auto value_descriptor = matmul2d_descriptor(ROWS, D, static_cast<int>(dynamic_extent), false, false,
@@ -191,14 +218,38 @@ kernel void spark_attention_prefill_blocks(constant SparkAttentionParams &p [[bu
 	tensor<device bfloat, dextents<int32_t, 2>, tensor_inline> first_values(pool, dextents<int32_t, 2>(D, SPARK_ATTENTION_BLOCK_KEYS),
 		array<int32_t, 2>{ 1, int(slot_stride) });
 	auto attended = value_operation.template get_destination_cooperative_tensor<decltype(weights), decltype(first_values), float>();
+	auto carry = value_operation.template get_destination_cooperative_tensor<decltype(weights), decltype(first_values), float>();
+	auto product = value_operation.template get_destination_cooperative_tensor<decltype(weights), decltype(first_values), float>();
 	for ( uint16_t i = 0; i < attended.get_capacity(); ++i )
 		if ( attended.is_valid_element(i) )
+		{
 			attended[i] = 0.0f;
-	if ( simd == 0u && lane < ROWS )
+			carry[i] = 0.0f;
+		}
+	if ( p.max_pass != 0u )
 	{
-		row_max[lane] = -INFINITY;
-		row_sum[lane] = 0.0f;
+		if ( simd == 0u && lane < ROWS )
+			row_max[lane] = -INFINITY;
 	}
+	else
+		for ( uint r = simd; r < ROWS; r += SPARK_ATTENTION_BLOCK_SIMDS )
+		{
+			float best = -INFINITY;
+			if ( r < count )
+			{
+				const uint used = min(p.partitions, (first_position + r + p.partition_keys) / p.partition_keys);
+				device const float *records = partial + ((ulong)(first_row + r) * p.heads + head) * p.partitions * record_stride;
+				for ( uint other = lane; other < used; other += 32u )
+					best = max(best, records[other * record_stride]);
+			}
+			best = simd_max(best);
+			if ( lane == 0u )
+			{
+				row_max[r] = best;
+				row_sum[r] = 0.0f;
+				row_carry[r] = 0.0f;
+			}
+		}
 	for ( uint tile = begin; tile < end; tile += SPARK_ATTENTION_BLOCK_KEYS )
 	{
 		const uint keys = min(SPARK_ATTENTION_BLOCK_KEYS, end - tile);
@@ -224,42 +275,59 @@ kernel void spark_attention_prefill_blocks(constant SparkAttentionParams &p [[bu
 		{
 			const uint limit = r < count ? first_position + r + 1u : 0u, low = r < count ? SparkAttentionFirstKey(p, first_position + r) : 0u;
 			const uint low_key = tile + lane, high_key = tile + lane + 32u;
-			float low_value = low_key < limit && low_key >= low && lane < keys ? block[r * SPARK_ATTENTION_BLOCK_KEYS + lane] * scale : -INFINITY;
-			float high_value = high_key < limit && high_key >= low && lane + 32u < keys ? block[r * SPARK_ATTENTION_BLOCK_KEYS + lane + 32u] * scale : -INFINITY;
-			const float previous = row_max[r], next = max(previous, simd_max(max(low_value, high_value)));
-			const float correction = next == -INFINITY ? 1.0f : exp(previous - next);
-			low_value = next == -INFINITY ? 0.0f : exp(low_value - next);
-			high_value = next == -INFINITY ? 0.0f : exp(high_value - next);
-			const float total = simd_sum(low_value + high_value);
-			block[r * SPARK_ATTENTION_BLOCK_KEYS + lane] = low_value;
-			block[r * SPARK_ATTENTION_BLOCK_KEYS + lane + 32u] = high_value;
+			const float low_value = low_key < limit && low_key >= low && lane < keys ? block[r * SPARK_ATTENTION_BLOCK_KEYS + lane] * scale : -INFINITY;
+			const float high_value = high_key < limit && high_key >= low && lane + 32u < keys ? block[r * SPARK_ATTENTION_BLOCK_KEYS + lane + 32u] * scale : -INFINITY;
+			if ( p.max_pass != 0u )
+			{
+				const float best = simd_max(max(low_value, high_value));
+				if ( lane == 0u )
+					row_max[r] = max(row_max[r], best);
+				continue;
+			}
+			const float m = row_max[r];
+			const float low_weight = low_value == -INFINITY ? 0.0f : exp(low_value - m), high_weight = high_value == -INFINITY ? 0.0f : exp(high_value - m);
+			block[r * SPARK_ATTENTION_BLOCK_KEYS + lane] = low_weight;
+			block[r * SPARK_ATTENTION_BLOCK_KEYS + lane + 32u] = high_weight;
+			const float total = simd_sum(low_weight + high_weight);
 			if ( lane == 0u )
 			{
-				row_max[r] = next;
-				row_sum[r] = row_sum[r] * correction + total;
-				row_scale[r] = correction;
+				const SparkMathCompensated sum = SparkMathCompensatedAdd(SparkMathCompensated{ row_sum[r], row_carry[r] }, total);
+				row_sum[r] = sum.sum;
+				row_carry[r] = sum.carry;
 			}
 		}
 		threadgroup_barrier(mem_flags::mem_threadgroup);
-		for ( uint16_t i = 0; i < attended.get_capacity(); ++i )
-			if ( attended.is_valid_element(i) )
-				attended[i] *= row_scale[attended.get_multidimensional_index(i)[1]];
-		value_operation.run(tile_weights, value_block, attended);
+		if ( p.max_pass != 0u )
+			continue;
+		for ( uint16_t i = 0; i < product.get_capacity(); ++i )
+			if ( product.is_valid_element(i) )
+				product[i] = 0.0f;
+		value_operation.run(tile_weights, value_block, product);
+		for ( uint16_t i = 0; i < product.get_capacity(); ++i )
+			if ( product.is_valid_element(i) )
+			{
+				const SparkMathCompensated value = SparkMathCompensatedAdd(SparkMathCompensated{ attended[i], carry[i] }, product[i]);
+				attended[i] = value.sum;
+				carry[i] = value.carry;
+			}
 	}
 	threadgroup_barrier(mem_flags::mem_threadgroup);
-	for ( uint16_t i = 0; i < attended.get_capacity(); ++i )
-		if ( attended.is_valid_element(i) )
-		{
-			const auto index = attended.get_multidimensional_index(i);
-			const uint r = uint(index[1]);
-			if ( r < count && part * p.partition_keys < first_position + r + 1u )
-				partial[(((ulong)(first_row + r) * p.heads + head) * p.partitions + part) * (D + 2u) + 2u + uint(index[0])] = attended[i];
-		}
+	if ( p.max_pass == 0u )
+		for ( uint16_t i = 0; i < attended.get_capacity(); ++i )
+			if ( attended.is_valid_element(i) )
+			{
+				const auto index = attended.get_multidimensional_index(i);
+				const uint r = uint(index[1]);
+				if ( r < count && part * p.partition_keys < first_position + r + 1u )
+					partial[(((ulong)(first_row + r) * p.heads + head) * p.partitions + part) * record_stride + 2u + uint(index[0])] =
+						SparkMathCompensatedValue(SparkMathCompensated{ attended[i], carry[i] });
+			}
 	if ( simd == 0u && lane < count && part * p.partition_keys < first_position + lane + 1u )
 	{
-		device float *record = partial + (((ulong)(first_row + lane) * p.heads + head) * p.partitions + part) * (D + 2u);
+		device float *record = partial + (((ulong)(first_row + lane) * p.heads + head) * p.partitions + part) * record_stride;
 		record[0] = row_max[lane];
-		record[1] = row_sum[lane];
+		if ( p.max_pass == 0u )
+			record[1] = SparkMathCompensatedValue(SparkMathCompensated{ row_sum[lane], row_carry[lane] });
 	}
 }
 

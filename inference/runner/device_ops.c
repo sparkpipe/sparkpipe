@@ -554,7 +554,7 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 	SparkAttentionParams launch = *params;
 	SparkDeviceBinding bindings[6];
 	SparkStatus status;
-	uint32_t row, longest = 0u, run = 0u, widest = 0u, decode;
+	uint32_t row, longest = 0u, run = 0u, widest = 0u, decode, pass;
 	if ( params->rows == 0u || params->heads == 0u || params->kv_heads != paged->kv_heads || params->heads % params->kv_heads != 0u ||
 		(params->head_dimension != SPARK_OPS_ATTENTION_HEAD_DIM && params->head_dimension != SPARK_OPS_ATTENTION_WIDE_HEAD_DIM) ||
 		params->page_slots != paged->page_slots ||
@@ -588,12 +588,16 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 	bindings[2] = OpsBind(paged->page_table,SPARK_DEVICE_BIND_READ);
 	bindings[3] = OpsBind(paged->sequence_of_row,SPARK_DEVICE_BIND_READ);
 	bindings[4] = OpsBind(paged->positions,SPARK_DEVICE_BIND_READ);
-	bindings[5] = OpsBind(partial,SPARK_DEVICE_BIND_WRITE);
-	if ( decode != 0u )
-		status = OpsLaunch(ops,queue,(SparkOpsKernel)(SPARK_OPS_ATTENTION_DECODE + OpsAttentionWidth(params)),launch.partitions,params->heads,params->rows,256u,
-			&launch,sizeof(launch),bindings,6u);
-	else
-		status = OpsAttentionPrefill(ops,queue,bindings,&launch,host_sequence_of_row);
+	bindings[5] = OpsBind(partial,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
+	for ( pass = 2u; status == SPARK_STATUS_OK && pass > 0u; pass-- )
+	{
+		launch.max_pass = pass - 1u;
+		if ( decode != 0u )
+			status = OpsLaunch(ops,queue,(SparkOpsKernel)(SPARK_OPS_ATTENTION_DECODE + OpsAttentionWidth(params)),launch.partitions,params->heads,params->rows,
+				256u,&launch,sizeof(launch),bindings,6u);
+		else
+			status = OpsAttentionPrefill(ops,queue,bindings,&launch,host_sequence_of_row);
+	}
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	bindings[0] = OpsBind(partial,SPARK_DEVICE_BIND_READ);

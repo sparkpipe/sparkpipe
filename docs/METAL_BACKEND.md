@@ -95,7 +95,7 @@ tensor sizes before each launch.
 | `spark_causal_conv_silu` | depthwise causal convolution over a per-sequence window, BF16 sum, SiLU |
 | `spark_gated_delta_prepare`, `spark_gated_delta_rule` | L2-normalised query and key, decay and write strength, then the gated delta rule over FP32 state, one SIMD group per value column |
 | `spark_kv_store_paged` | key and value rows into 64-slot pages through a page table |
-| `spark_attention_{decode,prefill_blocks,combine}_d{256,512}` | causal grouped-query attention over paged KV for 256- and 512-wide heads, split into key partitions and merged, with an optional sliding window (a row sees its last `window` positions) and an optional sigmoid output gate; decode walks 128-key partitions one key per SIMD group, prefill computes 32 (16 for 512-wide heads) query rows against 64-key pages on the tensor operations (scores and the FP32 probability-times-value product in `matmul2d`, the online softmax in FP32 between them) |
+| `spark_attention_{decode,prefill_blocks,combine}_d{256,512}` | causal grouped-query attention over paged KV for 256- and 512-wide heads, split into key partitions and merged, with an optional sliding window (a row sees its last `window` positions) and an optional sigmoid output gate; decode walks 128-key partitions one key per SIMD group, prefill computes 32 (16 for 512-wide heads) query rows against 64-key pages on the tensor operations; both kernels run twice, first for every row's largest score in each partition, then for `exp(score - M)` once per key with `M` the row's largest score over all its partitions, the sums compensated (`SparkMathCompensatedAdd`), so no partial result is ever rescaled; prefill adds each page's FP32 probability-times-value product from `matmul2d` to a compensated FP32 accumulator |
 | `spark_silu_mul`, `spark_gelu_tanh_mul`, `spark_add_rows` | the gated activations (`bf16(silu(g) u)`, `bf16(bf16(gelu_tanh(g)) u)` with `SparkMathGeluTanh`) and the final residual add |
 | `spark_route_topk`, `spark_route_pinned`, `spark_gemv_routed`, `spark_route_combine` | expert routing: softmax over the router's BF16 logits, the top k (lowest index on ties) or, pinned, the experts a route override names, renormalised and times a per-expert scale; the GEMV of each route's expert on its row (the same per-row arithmetic as `spark_gemv_r1`); and the routes' outputs times their weights, summed in BF16 in ascending expert order |
 | `spark_scale_rows`, `spark_softcap_rows` | a BF16 row scale (an embedding multiplier) and the FP32 logit softcap `cap tanh(z / cap)` (`SparkMathSoftcap`) |
@@ -359,6 +359,25 @@ partitions and the block prefill attention (FP32 scores, FP32
 probabilities times BF16 values with FP32 accumulation on the tensor
 operations) only reorder FP32 sums; every value in the table above is
 rounded where it was before.
+
+Attention is two-pass. The first launch writes each row's largest scaled
+score per key partition into the partition record; the second reads the
+row's maximum `M` over all its partitions and computes `exp(score - M)` once
+per key, so the softmax never rescales a running sum (an online softmax
+multiplies the sum and every accumulator by `exp(old - new)` each time the
+maximum grows, and those factors' rounding compounds over a long context).
+The sums of weights and of weights times values are compensated (Kahan) per
+SIMD group, across SIMD groups and across partitions, where every partition
+record then carries the same `M` and the combine's factors are 1. The
+prefill kernel runs P x V for each 64-key page into a fresh product and adds
+that product to the compensated accumulator; `matmul2d` takes the FP32
+probabilities at full precision (a probe of 32 x 64 FP32 times 64 x 256 BF16
+errs by at most 3.1 and on average 0.29 units of `2^-24 sum |p v|`, where
+splitting P into two BF16 terms errs by 25.8 and 4.8). Metal's `exp`
+measures at most 1.47 ulp on [-80, 0] (mean +0.36 ulp, 62% correctly
+rounded; `build/test_metal_math_accuracy`, which also holds it to the 16-ulp
+envelope the kernel tests assume); numpy's float32 `exp` on the reference
+host measures at most 2.54 ulp (mean -0.07 ulp, 61% correctly rounded).
 
 The delta-rule state, the L2-normalised query and key, the decay and write
 strength, the attention scores and softmax stay FP32. Rotary angles are
