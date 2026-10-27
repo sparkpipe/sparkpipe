@@ -771,6 +771,15 @@ Related common-code debt:
   `LmCellMmaExperts`. Qualify the tensor-core expert paths and the full expert
   path (route, gate/up, down, combine) against a dequantised reference at
   prefill widths.
+- Two stages still bind pack tensors without checking each one's bytes against
+  the stage geometry, so a pack built for another geometry would bind and the
+  kernels would read past its tensors. The Qwen 3.8 hybrid stage
+  (`model-families/qwen38/source/qwen38_hybrid_stage.cuh`) checks name and
+  dtype only. K3 (`modules/k3_resident_decode_stage`) checks that each tensor
+  is present and reads its rank dimensions from one layer per kind. Every
+  other stage checks every tensor: GLM, glm5_next and DSV4.1 check the whole
+  pack directory at open, and Ling, Gemma, hy4 and mimo26 check each bind's
+  bytes.
 
 ## Korean models
 

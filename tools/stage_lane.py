@@ -62,7 +62,7 @@ DSV41_FLASH = {
     "kv_label": "dsv41_flash_stage",
     "node_memory_bytes": 44 << 30,
     "tokenizer_json": "/mnt/cold-raid6/models/deepseek-v4.1-flash/tokenizer.json",
-    "pack": "sparkdata/dsv41flash-1017.mxfp4.tp16/packs/rank{rank}.spstage",
+    "pack": "sparkdata/dsv41flash-1017.mxfp4.tp16.xs/packs/rank{rank}.spstage",
     "dense": True,
     "extra_packs": {
         "engram.spengram": "sparkdata/dsv41flash-1017.mxfp4.tp16/engram/engram.rank{rank}.spengram",
