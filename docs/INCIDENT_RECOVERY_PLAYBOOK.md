@@ -233,15 +233,17 @@ spark8 failed twice (2026-10-01, 2026-10-02) the same way:
 
 ## Ceph canary
 
-A Spark can lose CephFS while its OSD and the cluster look healthy: the
-kernel client hangs, the mount is gone, or writes fail. A Spark that does no
-data I/O for days looks the same as one that cannot do any, so the canary
-tries.
+The canary checks that CephFS still answers I/O, which cluster health alone
+does not show: the kernel client hangs, the mount is gone, or writes fail.
+It probes from the hub only. Every Spark runs `kernel.hung_task_panic=1`
+(the node baseline), and a CephFS create and `fsync` waits uninterruptibly
+for the MDS, so a probe on the Sparks would turn one MDS stall into a panic
+on all 16 at once. Inference reads no CephFS, so the Sparks' own mounts are
+not on the serving path.
 
 - **What it does.** `tools/hub/ceph_canary.py run` (hub user unit
   `sparkpipe-ceph-canary`, enabled, config `deployment/hub/ceph_canary.json`
-  copied to `~/sparkpipe-ceph-canary/`) probes the hub and all 16 Sparks
-  every 120 s. Each probe checks that `/mnt/model-warm` is a ceph mount,
+  copied to `~/sparkpipe-ceph-canary/`) probes the hub's mount every 120 s. Each probe checks that `/mnt/model-warm` is a ceph mount,
   creates and lists `/mnt/model-warm/.ceph-canary/<host>/`, writes 1 MiB of
   random data with `O_DIRECT` and `fsync`, reads it back with `O_DIRECT`,
   compares, and deletes it. New files land in `ds4warm_data` (EC 14+2, 4 MiB
