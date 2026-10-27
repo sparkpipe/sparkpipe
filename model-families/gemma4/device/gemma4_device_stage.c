@@ -242,19 +242,60 @@ static SparkStatus GemmaStep(void *opaque, const SparkStageRunnerStep *step, voi
 	return(status);
 }
 
-#define GEMMA_INTERFACE(open, tag, weightd_model) \
-	{ SPARK_STAGE_RUNNER_MODEL_ABI_VERSION, tag, weightd_model, "official", open, SparkDeviceStageManifestCheck, SparkDeviceStageBindWeightd, \
-		SparkDeviceStageClose, GemmaStep, SparkDeviceStageSideband, SparkDeviceStageAttachKv, SparkDeviceStageRecurrentCopy, SparkDeviceStageResetSlot, \
-		SparkDeviceStageProbeBuffers, SparkDeviceStageReport, 0, SparkDeviceStageLane, 0, 0, GemmaBindDevice, 0 }
-
 const SparkStageRunnerModelInterface *SparkGemma4_26bDeviceStageModel(void)
 {
-	static const SparkStageRunnerModelInterface interface_table = GEMMA_INTERFACE(Gemma26bOpen,"sparkpipe_gemma4_26b_device","gemma4-26b-a4b");
+	static const SparkStageRunnerModelInterface interface_table =
+	{
+		SPARK_STAGE_RUNNER_MODEL_ABI_VERSION,
+		"sparkpipe_gemma4_26b_device",
+		"gemma4-26b-a4b",
+		"official",
+		Gemma26bOpen,
+		SparkDeviceStageManifestCheck,
+		SparkDeviceStageBindWeightd,
+		SparkDeviceStageClose,
+		GemmaStep,
+		SparkDeviceStageSideband,
+		SparkDeviceStageAttachKv,
+		SparkDeviceStageRecurrentCopy,
+		SparkDeviceStageResetSlot,
+		SparkDeviceStageProbeBuffers,
+		SparkDeviceStageReport,
+		0,
+		SparkDeviceStageLane,
+		0,
+		0,
+		GemmaBindDevice,
+		0
+	};
 	return(&interface_table);
 }
 
 const SparkStageRunnerModelInterface *SparkGemma4_31bDeviceStageModel(void)
 {
-	static const SparkStageRunnerModelInterface interface_table = GEMMA_INTERFACE(Gemma31bOpen,"sparkpipe_gemma4_31b_device","gemma4-31b");
+	static const SparkStageRunnerModelInterface interface_table =
+	{
+		SPARK_STAGE_RUNNER_MODEL_ABI_VERSION,
+		"sparkpipe_gemma4_31b_device",
+		"gemma4-31b",
+		"official",
+		Gemma31bOpen,
+		SparkDeviceStageManifestCheck,
+		SparkDeviceStageBindWeightd,
+		SparkDeviceStageClose,
+		GemmaStep,
+		SparkDeviceStageSideband,
+		SparkDeviceStageAttachKv,
+		SparkDeviceStageRecurrentCopy,
+		SparkDeviceStageResetSlot,
+		SparkDeviceStageProbeBuffers,
+		SparkDeviceStageReport,
+		0,
+		SparkDeviceStageLane,
+		0,
+		0,
+		GemmaBindDevice,
+		0
+	};
 	return(&interface_table);
 }
