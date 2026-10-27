@@ -171,7 +171,7 @@ class Reference:
         self.pin_source = []
         self.head = None
         self.routes = {}
-        self.hidden = None
+        self.layer_outputs = None
         if self.muse:
             self.post_epsilon = config["post_norm_eps"]
             self.qk_scale = np.float32(config["qk_scale_factor"])
@@ -317,8 +317,8 @@ class Reference:
                 if self.reversed_of:
                     REVERSED = self.reversed_of[index]
                 residuals[index] = self.layer(layer, residuals[index], position)
-                if self.hidden is not None:
-                    self.hidden.setdefault(index, []).append((np.ascontiguousarray(residuals[index], dtype=np.float32).view(np.uint32) >> 16).astype(np.uint16))
+                if self.layer_outputs is not None:
+                    self.layer_outputs.setdefault(index, []).append((np.ascontiguousarray(residuals[index], dtype=np.float32).view(np.uint32) >> 16).astype(np.uint16))
             print(f"layer {layer} done", file=sys.stderr, flush=True)
         self.checkpoint.cache.clear()
         final = widen(self.checkpoint.raw(PREFIX + "norm.weight"))
@@ -460,13 +460,13 @@ def teacher(args):
     if "bp" in variants and variants.index("bp") < variants.index("a"):
         raise ValueError("list a before bp so a's experts are chosen first in every layer")
     if args.hidden:
-        reference.hidden = {}
+        reference.layer_outputs = {}
     normed = reference.forward([prompt["prompt_token_ids"] for prompt, _ in runs])
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     for index, ((prompt, label), hidden) in enumerate(zip(runs, normed)):
         if args.hidden:
-            np.ascontiguousarray(np.stack(reference.hidden[index]), dtype="<u2").tofile(out / f"{prompt['name']}.ref_{label}.hidden")
+            np.ascontiguousarray(np.stack(reference.layer_outputs[index]), dtype="<u2").tofile(out / f"{prompt['name']}.ref_{label}.hidden")
         REVERSED = label != "a"
         if reference.moe and label != "bp":
             np.ascontiguousarray(np.stack(reference.routes[index]), dtype="<u2").tofile(out / f"{prompt['name']}.ref_{label}.routes")
