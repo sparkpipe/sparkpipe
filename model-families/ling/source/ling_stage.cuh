@@ -138,6 +138,9 @@ struct LingState
 	LingLayer layers[G::kLayers];
 	void *arena;
 	uint64_t arena_bytes;
+	void *lane_arena;
+	uint64_t lane_bytes;
+	LingState *lane_states[SPARK_STAGE_RUNNER_LANES];
 	uint16_t *normed;
 	uint16_t *partial;
 	uint16_t *qkv;
@@ -293,6 +296,12 @@ struct LingModel
 		return cudaPeekAtLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 	}
 
+	static void RowState(const State *state, uint32_t layer, uint32_t phase)
+	{
+		if ( state->services->row_state != 0 )
+			state->services->row_state(state->services->context, layer, phase);
+	}
+
 	static uint16_t *ReplayQkv(State *state, const LingLayer *layer)
 	{
 		return state->replay_qkv + (uint64_t)layer->recurrent_index * G::kVerifyRows * S::kKdaChannels;
@@ -333,6 +342,7 @@ struct LingModel
 		if ( replay && cudaMemcpyAsync(ReplayQkv(state, layer), state->qkv, (uint64_t)rows * S::kKdaChannels * sizeof(uint16_t), cudaMemcpyDeviceToDevice,
 			stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		RowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		LM_LAUNCH((LmCausalConvKernel<LG_THREADS,G::kConv,LM_CONV_SWISH,uint16_t>), dim3(sequences,(S::kKdaChannels + LG_THREADS - 1u) / LG_THREADS),
 			LG_THREADS, 0, stream, window, step->recurrent_index, step->sequence_row_begin, (const uint32_t *)0, state->qkv, layer->kda_conv,
 			state->qkv, S::kKdaChannels, sequences, step->commit, step->sequence_row_indices);
@@ -353,6 +363,7 @@ struct LingModel
 			LM_DELTA_COLUMN_THREADS, 0, stream, state_pool, (uint32_t)state->kda_state_bytes, step->recurrent_index, step->sequence_row_begin,
 			(const uint32_t *)0, state->query, state->key, state->value, state->retention, state->write_gate, state->kda_mixed,
 			S::kKdaRankHeads, 1u, sequences, step->commit, step->sequence_row_indices);
+		RowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		LM_LAUNCH((LmHeadRmsNormSigmoidGateKernel<LG_THREADS>), dim3(S::kKdaRankHeads,rows), LG_THREADS, 0, stream,
 			state->kda_mixed, state->kda_gate, layer->kda_norm, state->kda_mixed, rows, S::kKdaRankHeads, G::kKdaDim, G::kNormEpsilon);
 		if ( Launched() != SPARK_STATUS_OK ||
@@ -386,8 +397,10 @@ struct LingModel
 			state->mla_kv, (const uint16_t *)0, layer->mla_kv_norm, (uint16_t *)0, state->mla_kv, G::kLatent, S::kSlot, G::kNormEpsilon);
 		LM_LAUNCH((LmRopePerHeadKernel<LG_THREADS,LM_ROPE_INTERLEAVED>), dim3(rows,1u), LG_THREADS, 0, stream,
 			state->mla_kv, step->positions, 1u, S::kSlot, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kLatent);
+		RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::Kv,LG_THREADS>), rows, LG_THREADS, 0, stream, *view, state->mla_kv, step->sequence_of_row,
 			step->positions, rows, S::kSlot);
+		RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( Launched() != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, S::kMlaRankHeads * S::kSlot, state->mla_query,
@@ -438,8 +451,10 @@ struct LingModel
 			S::kGqaWidth);
 		LmSliceColumnsKernel<LG_THREADS><<<dim3(Blocks(S::kSlot), rows), LG_THREADS, 0, stream>>>(state->gqa_full, state->gqa_slot, S::kGqaFused, S::kGqaWidth,
 			S::kSlot);
+		RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::Kv,LG_THREADS>), rows, LG_THREADS, 0, stream, *view, state->gqa_slot, step->sequence_of_row,
 			step->positions, rows, S::kSlot);
+		RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( Launched() != SPARK_STATUS_OK ||
 			LmGqaShardPartialLaunch<typename S::Kv,LmKvShardView,G::kGqaKvHeads,G::kGqaHeadDim,G::kGqaHeadDim>(*view, state->gqa_query, G::kGqaHeads,
 				step->sequence_of_row, step->context_length, step->positions, 1.0f / sqrtf((float)G::kGqaHeadDim), state->attn_send, partial_stride, rows,
@@ -603,9 +618,10 @@ struct LingModel
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Plan(State *state, uint64_t *bytes, uint8_t *base)
+	static SparkStatus Plan(State *state, uint64_t *bytes, uint8_t *base, uint32_t lane)
 	{
-		const uint64_t rows = state->max_rows, slots = state->slots, routes = rows * G::kTopK, groups = G::kLocalExperts + 2u, degree = state->tp_degree;
+		const uint64_t rows = state->max_rows, slots = lane == 0u ? state->slots : 0u, routes = rows * G::kTopK, groups = G::kLocalExperts + 2u;
+		const uint64_t degree = state->tp_degree, verify_rows = lane == 0u ? G::kVerifyRows : 0u;
 		const uint64_t width = rows * G::kHidden * sizeof(uint16_t);
 		struct { void **target; uint64_t bytes; } plan[] =
 		{
@@ -623,9 +639,9 @@ struct LingModel
 			{ (void **)&state->retention, rows * S::kKdaWidth * sizeof(float) },
 			{ (void **)&state->write_gate, rows * S::kKdaRankHeads * sizeof(float) },
 			{ (void **)&state->kda_mixed, rows * S::kKdaWidth * sizeof(uint16_t) },
-			{ (void **)&state->replay_qkv, (uint64_t)S::kKdaLayers * G::kVerifyRows * S::kKdaChannels * sizeof(uint16_t) },
-			{ (void **)&state->replay_retention, (uint64_t)S::kKdaLayers * G::kVerifyRows * S::kKdaWidth * sizeof(float) },
-			{ (void **)&state->replay_write_gate, (uint64_t)S::kKdaLayers * G::kVerifyRows * S::kKdaRankHeads * sizeof(float) },
+			{ (void **)&state->replay_qkv, (uint64_t)S::kKdaLayers * verify_rows * S::kKdaChannels * sizeof(uint16_t) },
+			{ (void **)&state->replay_retention, (uint64_t)S::kKdaLayers * verify_rows * S::kKdaWidth * sizeof(float) },
+			{ (void **)&state->replay_write_gate, (uint64_t)S::kKdaLayers * verify_rows * S::kKdaRankHeads * sizeof(float) },
 			{ (void **)&state->mla_q, rows * S::kMlaRankHeads * S::kQkDim * sizeof(uint16_t) },
 			{ (void **)&state->mla_latent_query, rows * S::kMlaRankHeads * G::kLatent * sizeof(uint16_t) },
 			{ (void **)&state->mla_query, rows * S::kMlaRankHeads * S::kSlot * sizeof(uint16_t) },
@@ -664,7 +680,7 @@ struct LingModel
 			{ (void **)&state->shared_out, width },
 			{ (void **)&state->kda_state, (uint64_t)S::kKdaLayers * slots * state->kda_state_bytes },
 			{ (void **)&state->kda_window, (uint64_t)S::kKdaLayers * slots * state->kda_window_bytes },
-			{ (void **)&state->kv_error, sizeof(LmKvAccessError) },
+			{ (void **)&state->kv_error, lane == 0u ? sizeof(LmKvAccessError) : 0u },
 		};
 		uint64_t cursor = 0u;
 		for ( uint32_t index = 0u; index < sizeof(plan) / sizeof(plan[0]); ++index )
@@ -685,6 +701,10 @@ struct LingModel
 			return;
 		if ( state->arena != 0 )
 			(void)cudaFree(state->arena);
+		if ( state->lane_arena != 0 )
+			(void)cudaFree(state->lane_arena);
+		for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
+			free(state->lane_states[lane]);
 		if ( state->pack_open != 0u )
 			SparkNamedPackClose(&state->pack);
 		free(state);
@@ -742,12 +762,15 @@ struct LingModel
 		}
 		state->partial_stride = ((uint64_t)state->max_rows * (S::kGqa ? LmGqaShardRecordFloats(G::kGqaHeads, G::kGqaHeadDim, state->tp_degree) :
 			S::kMlaRankHeads * S::kRecord) + record_unit - 1u) / record_unit * record_unit;
-		status = Plan(state, &state->arena_bytes, 0);
+		status = Plan(state, &state->arena_bytes, 0, 0u);
+		if ( status == SPARK_STATUS_OK )
+			status = Plan(state, &state->lane_bytes, 0, 1u);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( state->arena_bytes > configuration->state_budget_bytes )
+		if ( state->arena_bytes + state->lane_bytes > configuration->state_budget_bytes )
 		{
-			fprintf(stderr, "%s: rank state %llu bytes is over the %llu-byte budget\n", G::Tag(), (unsigned long long)state->arena_bytes,
+			fprintf(stderr, "%s: rank state %llu bytes (%llu for the second prefill lane) is over the %llu-byte budget\n", G::Tag(),
+				(unsigned long long)(state->arena_bytes + state->lane_bytes), (unsigned long long)state->lane_bytes,
 				(unsigned long long)configuration->state_budget_bytes);
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
@@ -916,8 +939,43 @@ struct LingModel
 			state->arena = 0;
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
-		if ( cudaMemset(state->arena, 0, state->arena_bytes) != cudaSuccess || Plan(state, &state->arena_bytes, (uint8_t *)state->arena) != SPARK_STATUS_OK )
+		if ( cudaMemset(state->arena, 0, state->arena_bytes) != cudaSuccess || Plan(state, &state->arena_bytes, (uint8_t *)state->arena, 0u) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		if ( cudaMalloc(&state->lane_arena, state->lane_bytes) != cudaSuccess )
+		{
+			state->lane_arena = 0;
+			fprintf(stderr, "%s: the %llu-byte second lane state could not be allocated\n", G::Tag(), (unsigned long long)state->lane_bytes);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		}
+		if ( cudaMemset(state->lane_arena, 0, state->lane_bytes) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
+			if ( (state->lane_states[lane] = (State *)calloc(1u, sizeof(State))) == 0 )
+				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus Lane(void *model, uint32_t lane, const SparkStageRunnerStep *step, const SparkStageRunnerServices *services, void **lane_model)
+	{
+		State *state = (State *)model;
+		State *copy;
+		uint64_t bytes = 0u;
+		if ( lane >= SPARK_STAGE_RUNNER_LANES || step == 0 || services == 0 || lane_model == 0 || state->lane_states[lane] == 0 || state->lane_arena == 0 )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		if ( step->commit == 0u )
+			return SPARK_STATUS_UNSUPPORTED;
+		copy = state->lane_states[lane];
+		memcpy(copy, state, sizeof(*copy));
+		copy->services = services;
+		if ( lane != 0u )
+		{
+			if ( Plan(copy, &bytes, (uint8_t *)state->lane_arena, lane) != SPARK_STATUS_OK || bytes != state->lane_bytes )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			copy->kda_state = state->kda_state;
+			copy->kda_window = state->kda_window;
+			copy->kv_error = state->kv_error;
+		}
+		*lane_model = copy;
 		return SPARK_STATUS_OK;
 	}
 
@@ -1014,7 +1072,7 @@ struct LingModel
 			ProbeBuffers,
 			Report,
 			0,
-			0,
+			Lane,
 			G::kVerifyRows != 0u ? KeepRows : 0
 		};
 		return &interface_table;
