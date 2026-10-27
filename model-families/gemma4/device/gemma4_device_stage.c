@@ -41,7 +41,7 @@ static const GemmaGeometry gemma_31b =
 	.weightd_model = "gemma4-31b",
 	.shape = { .tag = "sparkpipe_gemma4_31b_device", .hidden = 5376u, .vocab = 262144u, .layers = 60u, .kv_layers = 60u, .kv_heads = 16u,
 		.kv_head_dimension = 256u, .pack_alignment = 128u, .epsilon = 1e-6f, .tied_head = 1u, .logit_softcap = 30.0f,
-		.projection = SPARK_PROJECTION_GEMV },
+		.projection = SPARK_PROJECTION_ROW_TILES },
 	.sliding = { .heads = 32u, .kv_heads = 16u, .head_dimension = 256u, .rope_dimension = 256u, .rope_theta = 10000.0, .epsilon = 1e-6f,
 		.scale = 1.0f, .value_norm = 1u, .window = 1024u, .rope_rounded_terms = 1u },
 	.full = { .heads = 32u, .kv_heads = 4u, .head_dimension = 512u, .rope_dimension = 512u, .rope_theta = 1000000.0, .epsilon = 1e-6f,

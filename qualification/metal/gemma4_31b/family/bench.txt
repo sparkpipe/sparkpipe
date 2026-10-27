@@ -1,0 +1,12 @@
+g31 round 1 decode median of 3: 16.527 tok/s
+prefill 1024 run 3: 1266.41 tok/s
+prefill 8192 run 3: 1218.12 tok/s
+g31rt round 1 decode median of 3: 15.413 tok/s
+prefill 1024 run 3: 1269.94 tok/s
+prefill 8192 run 3: 1217.36 tok/s
+g31 round 2 decode median of 3: 16.602 tok/s
+prefill 1024 run 3: 1268.03 tok/s
+prefill 8192 run 3: 1218.75 tok/s
+g31rt round 2 decode median of 3: 15.421 tok/s
+prefill 1024 run 3: 1264.93 tok/s
+prefill 8192 run 3: 1218.36 tok/s

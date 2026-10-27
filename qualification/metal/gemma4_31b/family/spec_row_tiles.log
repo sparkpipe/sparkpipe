@@ -1,0 +1,14 @@
+opened /Users/m5u0/models/packs/gemma4_31b_tp1_bf16/gemma4.tp1.rank00.pack on Apple M5 Ultra (metal.apple10) in 0.46 s: pack 61397429888 bytes, device state 9139211584 bytes
+verify frame  1 rows: 65.237 ms, keeping all rows 0.000 ms
+verify frame  2 rows: 66.053 ms, keeping all rows 0.001 ms
+verify frame  4 rows: 68.627 ms, keeping all rows 0.000 ms
+verify frame  8 rows: 73.440 ms, keeping all rows 0.000 ms
+verify frame 16 rows: 79.522 ms, keeping all rows 0.000 ms
+verify frame 32 rows: 97.795 ms, keeping all rows 0.000 ms
+verify frame 64 rows: 164.452 ms, keeping all rows 0.000 ms
+design: 256 of 256 tokens identical in every run; 15.34 tok/s plain (15.33-15.35), 20.61 tok/s with lookup speculation (20.60-20.62); 11 frames, 83 of 99 drafts accepted
+code: 256 of 256 tokens identical in every run; 15.20 tok/s plain (15.19-15.20), 15.65 tok/s with lookup speculation (15.65-15.65); 10 frames, 8 of 30 drafts accepted
+korean: 256 of 256 tokens identical in every run; 15.46 tok/s plain (15.46-15.46), 26.00 tok/s with lookup speculation (25.99-26.01); 33 frames, 110 of 305 drafts accepted
+rules: 256 of 256 tokens identical in every run; 15.23 tok/s plain (15.23-15.23), 16.09 tok/s with lookup speculation (16.09-16.10); 19 frames, 15 of 72 drafts accepted
+rewrite: 256 of 256 tokens identical in every run; 15.33 tok/s plain (15.33-15.33), 135.12 tok/s with lookup speculation (135.11-135.15); 17 frames, 261 of 308 drafts accepted
+prose: 256 of 256 tokens identical in every run; 15.62 tok/s plain (15.62-15.62), 15.62 tok/s with lookup speculation (15.62-15.62); 2 frames, 0 of 7 drafts accepted
