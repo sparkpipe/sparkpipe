@@ -331,9 +331,8 @@ struct LingModel
 		if ( replay && cudaMemcpyAsync(ReplayQkv(state, layer), state->qkv, (uint64_t)rows * S::kKdaChannels * sizeof(uint16_t), cudaMemcpyDeviceToDevice,
 			stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((LmCausalConvKernel<LG_THREADS,G::kConv,LM_CONV_SWISH,uint16_t>), dim3(sequences,(S::kKdaChannels + LG_THREADS - 1u) / LG_THREADS),
-			LG_THREADS, 0, stream, window, step->recurrent_index, step->sequence_row_begin, (const uint32_t *)0, state->qkv, layer->kda_conv,
-			state->qkv, S::kKdaChannels, sequences, step->commit, step->sequence_row_indices);
+		LmCausalConvLaunch<G::kConv,LM_CONV_SWISH,uint16_t>(window, step->recurrent_index, step->sequence_row_begin, (const uint32_t *)0, state->qkv, layer->kda_conv,
+			state->qkv, S::kKdaChannels, sequences, step->commit, step->sequence_row_indices, rows, stream);
 		LingSplitRowsKernel<<<dim3(Blocks(S::kKdaChannels), rows), LG_THREADS, 0, stream>>>(state->qkv, state->query, state->key, state->value,
 			S::kKdaWidth);
 		LM_LAUNCH((LmBoundedDecayKernel<LG_THREADS,G::kKdaDim>), dim3(rows,S::kKdaRankHeads), LG_THREADS, 0, stream,
@@ -573,9 +572,8 @@ struct LingModel
 				continue;
 			uint8_t *state_pool = state->kda_state + (uint64_t)layer->recurrent_index * state->slots * state->kda_state_bytes;
 			uint16_t *window = state->kda_window + (uint64_t)layer->recurrent_index * state->slots * (state->kda_window_bytes / sizeof(uint16_t));
-			LM_LAUNCH((LmCausalConvKernel<LG_THREADS,G::kConv,LM_CONV_SWISH,uint16_t>), dim3(sequences,(S::kKdaChannels + LG_THREADS - 1u) / LG_THREADS),
-				LG_THREADS, 0, stream, window, step->recurrent_index, step->sequence_row_begin, kept, ReplayQkv(state, layer), layer->kda_conv,
-				state->qkv, S::kKdaChannels, sequences, 1u, step->sequence_row_indices);
+			LmCausalConvLaunch<G::kConv,LM_CONV_SWISH,uint16_t>(window, step->recurrent_index, step->sequence_row_begin, kept, ReplayQkv(state, layer), layer->kda_conv,
+				state->qkv, S::kKdaChannels, sequences, 1u, step->sequence_row_indices, rows, stream);
 			LingSplitRowsKernel<<<dim3(Blocks(S::kKdaChannels), rows), LG_THREADS, 0, stream>>>(state->qkv, state->query, state->key, state->value,
 				S::kKdaWidth);
 			LM_LAUNCH((LmDeltaRuleColumnKernel<LG_THREADS,G::kKdaDim,G::kKdaDim,float>), dim3(sequences,S::kKdaRankHeads,G::kKdaDim / LM_WARP_LANES),
