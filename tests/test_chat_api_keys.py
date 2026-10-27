@@ -29,6 +29,7 @@ class FakeModel:
     def __init__(self, name):
         self.id = name
         self.context_tokens = 4096
+        self.reasoning_effort = {}
 
 
 def check(condition, message):
