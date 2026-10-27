@@ -137,9 +137,11 @@ which could be mistaken for the qualified route.
 - **Tensor boxes.** Tensor-map loads (`LmTmaLoad2d`, `LmTmaLoad3d`) are
   bounds-checked and zero-fill out-of-range elements. In `LmTmaLoad3d`,
   coordinate 2 selects the expert, so one descriptor covers every expert.
-- **Linear bulk copies.** `LmTmaLoadBulk1d` copies linear addresses for
-  indirect rows. It has no hardware bounds check, so the caller must clamp
-  the index.
+- **Linear bulk copies.** `LmTmaLoadBulk1d` copies a linear address range
+  with no hardware bounds check, so the caller must clamp the index. Do not
+  use it for many small chunks: one CTA's bulk copies queue on the SM's TMA
+  unit. The indirect A gather below implies about 20 ns per 16-byte copy,
+  derived from kernel time rather than measured per copy.
 - **Store side.** Stores use `LmTmaStore2d`, then `LmTmaStoreCommit`, then
   `LmTmaStoreWait<KEEP>`. The wait uses `wait_group.read`, which only
   guarantees that the staging buffer can be reused.
@@ -176,8 +178,22 @@ which could be mistaken for the qualified route.
   for 128-255.
 - **Indirect A replaces the MoE gather.** `LmPipelineProduceIndirectA`
   stages packed row `p` straight from source row
-  `LmRouteSourceRow(source_row_map, p)`, one `LmTmaLoadBulk1d` per 16-byte
-  chunk, so no packed activation tensor is ever written.
+  `LmRouteSourceRow(source_row_map, p)`, so no packed activation tensor is
+  ever written.
+  - Each thread copies its 16-byte chunks with `LmCopyAsync16`
+    (`cp.async.cg`) and then calls `LmCopyAsyncArrive`
+    (`cp.async.mbarrier.arrive.noinc`) once per stage. The producer thread
+    expects only the weight bytes, and `LmGemmKernel` initialises the stage
+    barriers with `1 + blockDim.x` arrivals on this path.
+  - Before 2026-10-27 each chunk was its own `LmTmaLoadBulk1d`. A 64-row
+    tile then issued 512 TMA copies per k-step, and the TMA unit serialised
+    them. At 2048 rows the Solar Open 2 expert up projection took 5.7 ms
+    on one GB10 (1.9 TFLOP/s, 60 GB/s). With `cp.async` it takes 1.4 ms
+    (249 GB/s, near the memory roofline). K-EXAONE's shape (256 experts,
+    hidden 6144, 128 rows per rank) went from 11.5 to 2.7 ms. The staged
+    bytes and the MMA order are unchanged, so outputs are bit-identical.
+    `build/expert_gemm_bench ROWS [gemm]` measures it; set the geometry
+    with `-DBENCH_EXPERTS`, `-DBENCH_HIDDEN` and `-DBENCH_INTER`.
   - Ragged tail rows are clamped to `row_base`.
   - A source row at or past `source_row_count` does not trap. The kernel
     reports `LM_FRAME_ERROR_ROUTE_MAP_OUT_OF_RANGE` through
