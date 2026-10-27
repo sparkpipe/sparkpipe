@@ -810,7 +810,6 @@ The sources are pinned. All three serve.
   - **Missing:**
     - The publisher rounds the KDA short convolution to bf16 before SiLU (F.conv1d, then F.silu); the Ling stage rounds once after SiLU. With experts split by rows, the served tokens agree with a reference that rounds once (`--conv-rounding fused`) at all 123 positions, served logprobs within 0.14; with whole experts per rank it was 121 of 122, and the publisher's rounding gives 120 of 122 and up to 0.42. The kernel could take the publisher's rounding as a template option.
     - The lane serves 256K; the model's 1M needs the max-context gate.
-    - With reasoning off the reply opens with two newlines after the empty think block; the chat layer passes them through.
     - The shared expert's 80 rows per rank are still zero-padded to 128: its prefill runs on the stream GEMM, which needs a whole number of 64-element k-tiles. The weight-only TMA GEMM takes a zero-filled tail and carries the routed experts at 80 rows; the stream GEMM has no tail path.
     - The rest of the step is the per-layer fixed cost (collectives and latency-bound small kernels), not graph launches: a GB10 graph node costs 0.4 to 0.7 us, about 1 ms over the 1,708 nodes of a decode step.
     - No drafter is wired.

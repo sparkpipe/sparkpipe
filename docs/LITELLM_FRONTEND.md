@@ -30,7 +30,10 @@ nothing more:
   `tokenizers` and sends `prompt_token_ids` to the engine endpoint;
 - it decodes the returned token ids incrementally and splits the model's
   reasoning and tool-call markup into standard `reasoning_content` and
-  `tool_calls` (tool arguments typed from the tool's JSON schema);
+  `tool_calls` (tool arguments typed from the tool's JSON schema). Content
+  keeps every character the model wrote, including the blank lines some
+  models put after a reasoning block, so the client's history re-renders to
+  the generated tokens and prefix reuse covers the whole reply;
 - it keeps no request state; prefix reuse happens in the engine;
 - while the engine is starting (its 503 says `"status":"starting"`) or is
   unreachable, a request waits in the model's `warm_queue` (`depth`,
