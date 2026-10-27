@@ -1246,6 +1246,14 @@ Metal backend and the single-Studio stage are in
   models are two geometries of one schedule. Every model gets a Metal port,
   one at a time and each merged before the next starts: Muse Glimmer 30B,
   MiMo V2.6 Flash, Qwen 3.8 Flash Next FP8, then the rest.
+- The Metal numerics gate compares against one floor draw (reference B).
+  On Gemma 4 31B that draw is unusually close to A at positions 550+ of the
+  design prompt: two more draws of the reference itself (C and D, other FP32
+  reduction orders) score +3.0 and +2.0 standard errors there, like Metal,
+  and order-only reruns of one Metal kernel spread the four-prompt paired
+  statistic over 0.7 to 2.6 standard errors. A verdict near the 3-sigma line
+  is then a draw, not a measurement; the floor needs several draws
+  (`tools/gemma4_reference.py` has C and D) and a rule over them.
 - The NaN check in the shared BF16 conversion (abce321a5) costs Gemma 4
   26B A4B's B1 decode about 0.9% on the Studio (91.5 to 91.6 tok/s against
   92.2 to 92.5 without it, interleaved runs), since every BF16 store now
