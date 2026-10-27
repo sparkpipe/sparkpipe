@@ -39,9 +39,9 @@ int main(int argc, char **argv)
 	projection = strtoul(argv[6],0,10) != 0u ? SPARK_PROJECTION_ROW_TILES : SPARK_PROJECTION_GEMV;
 	if ( SparkDeviceInitialize(0) != SPARK_STATUS_OK || SparkDeviceQueueCreate(&queue,"linear bench") != SPARK_STATUS_OK ||
 		SparkDeviceOpsOpen(ops,argv[1]) != SPARK_STATUS_OK ||
-		SparkDeviceAllocate(&x,SPARK_DEVICE_SPACE_SHARED_COHERENT,(uint64_t)rows * K * 2u,"bench x") != SPARK_STATUS_OK ||
-		SparkDeviceAllocate(&w,SPARK_DEVICE_SPACE_SHARED_COHERENT,(uint64_t)N * K * 2u,"bench w") != SPARK_STATUS_OK ||
-		SparkDeviceAllocate(&y,SPARK_DEVICE_SPACE_SHARED_COHERENT,(uint64_t)rows * N * (f32 != 0u ? 4u : 2u),"bench y") != SPARK_STATUS_OK )
+		SparkDeviceAllocate(&x,SPARK_DEVICE_SPACE_SHARED_COHERENT,(uint64_t)rows * K * sizeof(uint16_t),"bench x") != SPARK_STATUS_OK ||
+		SparkDeviceAllocate(&w,SPARK_DEVICE_SPACE_SHARED_COHERENT,(uint64_t)N * K * sizeof(uint16_t),"bench w") != SPARK_STATUS_OK ||
+		SparkDeviceAllocate(&y,SPARK_DEVICE_SPACE_SHARED_COHERENT,(uint64_t)rows * N * (f32 != 0u ? sizeof(float) : sizeof(uint16_t)),"bench y") != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"device setup failed: %s\n",SparkDeviceLastError()->text);
 		return(1);
