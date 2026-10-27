@@ -536,7 +536,7 @@ static SparkStatus OpsAttentionPrefill(SparkDeviceOps *ops, SparkDeviceQueue *qu
 		segment.row_offset = begin;
 		segment.rows = end;
 		status = OpsLaunch(ops,queue,(SparkOpsKernel)(SPARK_OPS_ATTENTION_PREFILL + OpsAttentionWidth(params)),params->partitions,params->heads,
-			(end - begin + block_rows - 1u) / block_rows,128u,&segment,sizeof(segment),bindings,6u);
+			(end - begin + block_rows - 1u) / block_rows,128u,&segment,sizeof(segment),bindings,7u);
 	}
 	return(status);
 }
@@ -552,7 +552,7 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 	SparkTensor partial, SparkTensor output, const SparkAttentionParams *params, const uint32_t *host_positions, const uint32_t *host_sequence_of_row)
 {
 	SparkAttentionParams launch = *params;
-	SparkDeviceBinding bindings[6];
+	SparkDeviceBinding bindings[7];
 	SparkStatus status;
 	uint32_t row, longest = 0u, run = 0u, widest = 0u, decode;
 	if ( params->rows == 0u || params->heads == 0u || params->kv_heads != paged->kv_heads || params->heads % params->kv_heads != 0u ||
@@ -569,6 +569,8 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 		if ( host_positions[row] + 1u > longest )
 			longest = host_positions[row] + 1u;
 	}
+	if ( (uint64_t)longest > (uint64_t)params->pages_per_sequence * params->page_slots )
+		return(OpsRefuse("attention","every row's position must lie inside its sequence's pages"));
 	decode = widest <= OPS_DECODE_ROWS_PER_SEQUENCE || params->row_exact != 0u ? 1u : 0u;
 	launch.partition_keys = decode != 0u ? OPS_DECODE_PARTITION_KEYS : OPS_PREFILL_PARTITION_KEYS;
 	launch.partitions = (longest + launch.partition_keys - 1u) / launch.partition_keys;
@@ -589,9 +591,10 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 	bindings[3] = OpsBind(paged->sequence_of_row,SPARK_DEVICE_BIND_READ);
 	bindings[4] = OpsBind(paged->positions,SPARK_DEVICE_BIND_READ);
 	bindings[5] = OpsBind(partial,SPARK_DEVICE_BIND_WRITE);
+	bindings[6] = OpsBind(OpsErrorWord(ops),SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
 	if ( decode != 0u )
 		status = OpsLaunch(ops,queue,(SparkOpsKernel)(SPARK_OPS_ATTENTION_DECODE + OpsAttentionWidth(params)),launch.partitions,params->heads,params->rows,256u,
-			&launch,sizeof(launch),bindings,6u);
+			&launch,sizeof(launch),bindings,7u);
 	else
 		status = OpsAttentionPrefill(ops,queue,bindings,&launch,host_sequence_of_row);
 	if ( status != SPARK_STATUS_OK )
@@ -728,7 +731,7 @@ SparkStatus SparkOpsSoftcap(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkT
 SparkStatus SparkOpsRouteTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor expert_scale, const SparkTensor *pinned,
 	SparkTensor experts, SparkTensor weights, const SparkRouteParams *params)
 {
-	SparkDeviceBinding bindings[5];
+	SparkDeviceBinding bindings[6];
 	SparkStatus status;
 	if ( params->rows == 0u || params->experts == 0u || params->experts > SPARK_ROUTE_MAX_EXPERTS || params->top_k == 0u ||
 		params->top_k > SPARK_ROUTE_MAX_TOP_K || params->top_k > params->experts || params->logit_stride < params->experts )
@@ -750,8 +753,9 @@ SparkStatus SparkOpsRouteTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spar
 	bindings[3] = OpsBind(weights,SPARK_DEVICE_BIND_WRITE);
 	if ( pinned != 0 )
 		bindings[4] = OpsBind(*pinned,SPARK_DEVICE_BIND_READ);
+	bindings[pinned != 0 ? 5u : 4u] = OpsBind(OpsErrorWord(ops),SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,pinned != 0 ? SPARK_OPS_ROUTE_PINNED : SPARK_OPS_ROUTE_TOPK,params->rows,1u,1u,OpsThreads(params->experts,256u),params,
-		sizeof(*params),bindings,pinned != 0 ? 5u : 4u));
+		sizeof(*params),bindings,pinned != 0 ? 6u : 5u));
 }
 
 SparkStatus SparkOpsRouteCombine(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor experts, SparkTensor weights,
