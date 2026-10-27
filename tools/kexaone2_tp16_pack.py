@@ -43,7 +43,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gemma4_tp16_pack import EXPERTS_MAGIC, EXPERTS_VERSION, TP, Checkpoint, PackFailure, RankPacks, ffn_window  # noqa: E402
-from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, assemble  # noqa: E402
+from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, assemble, source_identity  # noqa: E402
 
 PREFIX = "model."
 HEAD_DIM = 128
@@ -232,7 +232,7 @@ def main():
     if missing or not MTP_TENSORS <= names:
         raise PackFailure(f"checkpoint tensors differ from the K-EXAONE 2.0 layout: {sorted(missing)[:8]} ({len(missing)} names)")
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    packs = RankPacks(args.output_dir, args.resume, ranks, "kexaone2")
+    packs = RankPacks(args.output_dir, args.resume, ranks, "kexaone2", source_identity(args.checkpoint, "kexaone2", files=(args.contract,)))
     hidden, vocab_rows = config["hidden_size"], config["vocab_size"] // TP
     embed = checkpoint.array(PREFIX + "embed_tokens.weight", (config["vocab_size"], hidden))
     head = checkpoint.array("lm_head.weight", (config["vocab_size"], hidden))

@@ -25,9 +25,15 @@ score + bias, weights the unbiased scores normalized (+1e-20) times 2.5 in
 f32, each routed expert's bf16 output times its f32 weight cast to bf16 and
 added in ascending expert order, plus the shared expert. Layers 62..77 clamp
 the gate above at 7 before SiLU and the up projection to +-7 on every MLP.
-Projections round to bf16; the attention softmax and the final logits are
-f32. Every prompt goes through one layer at a time, so each layer's weights
-are read once per run.
+Projections round to bf16; the attention softmax runs in f32 and its
+probabilities round to bf16 before they weight the values, as the
+publisher's eager attention (softmax in f32, then .to(bf16)) and flash
+attention do; the final logits are f32. Every matrix product accumulates in
+f64 before it is rounded, so a prompt's numbers do not depend on the other
+prompts in the run or on how many served tokens follow (BLAS picks its
+summation order by matrix shape, and f32 order noise rounded to bf16 over 78
+layers exceeded the near-tie threshold). Every prompt goes through one layer
+at a time, so each layer's weights are read once per run.
 """
 
 import argparse
@@ -37,6 +43,8 @@ import sys
 from pathlib import Path
 
 import numpy as np
+
+from t1_reference_common import matmul
 
 PREFIX = "model."
 
@@ -112,7 +120,7 @@ class Reference:
         return bf16(self.weight(name) * bf16(rms(values, self.epsilon)))
 
     def linear(self, values, name):
-        return bf16(values @ self.weight(name).T)
+        return bf16(matmul(values, self.weight(name).T))
 
     def rope(self, values, positions):
         angles = positions[:, None].astype(np.float32) * self.inv_freq[None, :]
@@ -137,11 +145,11 @@ class Reference:
         group = heads // self.kv_heads
         output = np.empty((rows, heads, dim), dtype=np.float32)
         for head in range(heads):
-            scores = (query[:, head, :] @ key[:, head // group, :].T) * self.scale
+            scores = matmul(query[:, head, :], key[:, head // group, :].T) * self.scale
             scores = np.where(visible, scores, -np.inf)
             weights = np.exp(scores - scores.max(axis=-1, keepdims=True))
-            weights /= weights.sum(axis=-1, keepdims=True)
-            output[:, head, :] = bf16(weights @ value[:, head // group, :])
+            weights = bf16(weights / weights.sum(axis=-1, keepdims=True))
+            output[:, head, :] = bf16(matmul(weights, value[:, head // group, :]))
         return self.linear(output.reshape(rows, heads * dim), p + "o_proj.weight")
 
     def swiglu(self, gate, up, limit):
@@ -158,7 +166,7 @@ class Reference:
     def moe(self, layer, normed, limit):
         p = f"{PREFIX}layers.{layer}.mlp."
         shared = self.mlp(normed, p + "shared_experts.", limit)
-        logits = (normed @ self.weight(p + "gate.weight").T).astype(np.float32)
+        logits = matmul(normed, self.weight(p + "gate.weight").T)
         scores = (np.float32(1.0) / (np.float32(1.0) + np.exp(-logits))).astype(np.float32)
         selection = scores + self.weight(p + "e_score_correction_bias")[None, :]
         chosen = np.argsort(-selection, axis=-1, kind="stable")[:, :self.top_k]
@@ -169,9 +177,9 @@ class Reference:
             rows, slots = np.nonzero(chosen == expert)
             e = f"{p}experts.{int(expert)}."
             x = normed[rows]
-            gate = bf16(x @ self.checkpoint.f32(e + "gate_proj.weight").T)
-            up = bf16(x @ self.checkpoint.f32(e + "up_proj.weight").T)
-            out = bf16(self.swiglu(gate, up, limit) @ self.checkpoint.f32(e + "down_proj.weight").T)
+            gate = bf16(matmul(x, self.checkpoint.f32(e + "gate_proj.weight").T))
+            up = bf16(matmul(x, self.checkpoint.f32(e + "up_proj.weight").T))
+            out = bf16(matmul(self.swiglu(gate, up, limit), self.checkpoint.f32(e + "down_proj.weight").T))
             routed[rows] = bf16(routed[rows] + bf16(out * weights[rows, slots][:, None]))
         return bf16(routed + shared), chosen
 
@@ -203,7 +211,7 @@ class Reference:
         parts = []
         for first in range(0, head.shape[0], chunk):
             rows = (np.asarray(head[first:first + chunk]).astype(np.uint32) << 16).view(np.float32)
-            parts.append(normed @ rows.T)
+            parts.append(matmul(normed, rows.T))
         return np.concatenate(parts, axis=-1)
 
 
