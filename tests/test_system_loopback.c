@@ -694,6 +694,45 @@ static void TestLoopbackOverload(const TestLoopbackStack *stack)
 		assert(TestLoopbackJoinRequest(requests[index],TEST_LOOPBACK_HTTP_DEADLINE_MS) == 0);
 }
 
+static void TestLoopbackTailLog(const char *path,uint32_t lines)
+{
+	char buffer[16384];
+	FILE *file = fopen(path,"rb");
+	long size,start;
+	size_t count,index;
+	uint32_t seen = 0u;
+	if ( file == 0 )
+	{
+		fprintf(stderr,"test_system_loopback: no %s\n",path);
+		return;
+	}
+	assert(fseek(file,0,SEEK_END) == 0);
+	size = ftell(file);
+	start = size > (long)sizeof(buffer) - 1 ? size - (long)sizeof(buffer) + 1 : 0;
+	assert(fseek(file,start,SEEK_SET) == 0);
+	count = fread(buffer,1u,sizeof(buffer) - 1u,file);
+	fclose(file);
+	buffer[count] = '\0';
+	for (index=count; index>0u; index--)
+		if ( buffer[index - 1u] == '\n' && index != count && ++seen == lines )
+			break;
+	fprintf(stderr,"test_system_loopback: ---- last %u lines of %s ----\n%s",lines,path,buffer + index);
+	fprintf(stderr,"test_system_loopback: ---- end of %s ----\n",path);
+}
+
+static void TestLoopbackDumpLogs(const TestLoopbackStack *stack)
+{
+	char path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
+	uint32_t rank;
+	assert(snprintf(path,sizeof(path),"%s/api.log",stack->root) > 0);
+	TestLoopbackTailLog(path,60u);
+	for (rank=0u; rank<TEST_LOOPBACK_RANK_COUNT; rank++)
+	{
+		assert(snprintf(path,sizeof(path),"%s/rank%u.log",stack->root,rank) > 0);
+		TestLoopbackTailLog(path,20u);
+	}
+}
+
 static void TestLoopbackSleepMs(uint64_t milliseconds)
 {
 	struct timespec delay;
@@ -762,8 +801,11 @@ static void TestLoopbackResurrectMidFlight(TestLoopbackStack *stack)
 	outcome = TestLoopbackJoinRequest(request_child,
 		(uint64_t)TEST_LOOPBACK_HTTP_DEADLINE_MS + 5000u);
 	if ( outcome != 0 && outcome != 10 )
+	{
 		fprintf(stderr,"test_system_loopback: mid-flight request outcome=%d\n",
 			(int)outcome);
+		TestLoopbackDumpLogs(stack);
+	}
 	assert(outcome == 0 || outcome == 10);
 	TestLoopbackExpectServed(stack,4u,(uint64_t)TEST_LOOPBACK_HTTP_DEADLINE_MS,
 		(uint64_t)TEST_LOOPBACK_HTTP_DEADLINE_MS);
@@ -835,7 +877,13 @@ static void TestLoopbackFuzz(TestLoopbackStack *stack,uint32_t rounds,uint32_t s
 			TestLoopbackSleepMs(100u);
 			TestLoopbackKillRank(stack,rank);
 			TestLoopbackRestartRank(stack,rank);
-			outcome = TestLoopbackJoinRequest(requests[0],TEST_LOOPBACK_HTTP_DEADLINE_MS);
+			outcome = TestLoopbackJoinRequest(requests[0],(uint64_t)TEST_LOOPBACK_HTTP_DEADLINE_MS + 5000u);
+			if ( outcome != 0 && outcome != 10 )
+			{
+				fprintf(stderr,"test_system_loopback: seed=%u round=%u stopped-rank request outcome=%d (20: no answer within the request deadline, -1: killed)\n",
+					initial_seed,round,(int)outcome);
+				TestLoopbackDumpLogs(stack);
+			}
 			assert(outcome == 0 || outcome == 10);
 			break;
 		}
