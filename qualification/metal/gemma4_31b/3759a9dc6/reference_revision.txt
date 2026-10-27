@@ -1,0 +1,1 @@
+reference logits from tools/gemma4_reference.py teacher --variants a,b on the hub (main at 4df3b8e81's reference), against the BF16 checkpoint gemma-4-31b-it; prompts identical to gemma4_26b's (same tokenizer, sha256 cc8d3a0c..., same chat framing)

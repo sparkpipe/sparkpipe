@@ -1,0 +1,79 @@
+{"pattern": "layers.11.ffn_down", "tensors": 1, "corruption": "rows 0 and 1 swapped"}
+{"pattern": "layers.*.ffn_down", "tensors": 60, "corruption": "rows 0 and 1 swapped"}
+{"pattern": "layers.11.ffn_down", "tensors": 1, "corruption": "every row moved down by one"}
+{
+ "numerics_pass": false,
+ "speculation_exact": true,
+ "ladder_exact_rows_identical": true,
+ "metal": {
+  "reference_a": {
+   "kl_ratio_to_floor": 1.3163518214859973,
+   "top1_disagreement_ratio_to_floor": 1.178217821782178,
+   "paired_sigma": 4.783166735763396,
+   "pass": false
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 1.4197651782638891,
+   "top1_disagreement_ratio_to_floor": 1.0693069306930694,
+   "paired_sigma": 4.31750264317935,
+   "pass": false
+  }
+ },
+ "metal_rows64": {
+  "reference_a": {
+   "kl_ratio_to_floor": 1.1901910700493081,
+   "top1_disagreement_ratio_to_floor": 1.046204620462046,
+   "paired_sigma": 3.0779916383281014,
+   "pass": false
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 1.2992883225867355,
+   "top1_disagreement_ratio_to_floor": 0.9636963696369631,
+   "paired_sigma": 2.150890278963733,
+   "pass": true
+  }
+ },
+ "control_layers": {
+  "reference_a": {
+   "kl_ratio_to_floor": 1.6828641914512583,
+   "top1_disagreement_ratio_to_floor": 1.7656765676567667,
+   "paired_sigma": 37.06723766582522,
+   "pass": false
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 2.0723908286044512,
+   "top1_disagreement_ratio_to_floor": 1.7194719471947204,
+   "paired_sigma": 41.22977144634085,
+   "pass": false
+  }
+ },
+ "control_rotate": {
+  "reference_a": {
+   "kl_ratio_to_floor": 12.83931368032532,
+   "top1_disagreement_ratio_to_floor": 4.811881188118813,
+   "paired_sigma": 136.45327699419565,
+   "pass": false
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 13.93198713529185,
+   "top1_disagreement_ratio_to_floor": 4.805280528052806,
+   "paired_sigma": 135.12952635929662,
+   "pass": false
+  }
+ },
+ "control": {
+  "reference_a": {
+   "kl_ratio_to_floor": 1.098402322153268,
+   "top1_disagreement_ratio_to_floor": 1.08910891089109,
+   "paired_sigma": 2.9356530521529534,
+   "pass": true
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 1.2083127624959953,
+   "top1_disagreement_ratio_to_floor": 1.0,
+   "paired_sigma": 3.9310285990255514,
+   "pass": false
+  }
+ },
+ "decode": "62.33 GB read per token (61.40 GB of weights, the rest KV and recurrent state) / 1143.3 GB/s measured = 18.34 tok/s; measured 15.36 tok/s = 83.7%"
+}

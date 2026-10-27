@@ -1,0 +1,9 @@
+Paired-test diagnosis (position-weighted over the four prompts; leg a: against reference a with b as floor, leg b: the reverse; KL ratio, top-1 disagreement ratio, paired sigma; the rule allows 2, 1.5 and 3):
+  gate build (3759a9dc6, 1,024-row prefill: tensor-unit GEMM and block attention)  a 1.32 / 1.18 / +4.8   b 1.42 / 1.07 / +4.3
+  same, decode attention for every prefill row (OPS_DECODE_ROWS_PER_SEQUENCE 4096)   a 1.01 / 1.01 / +3.0   b 1.11 / 0.91 / +1.8
+  same, block attention with P split into FP32 high (bf16) and low parts            a 1.01 / 1.00 / +3.1   b 1.29 / 0.95 / +3.0
+  same, P split plus SIMT scores                                                    a 1.04 / 0.98 / +2.9   b 1.21 / 0.98 / +3.9
+  same, P as two bf16 terms (hi + lo) on the tensor units                           a 1.13 / 1.03 / +2.4   b 1.39 / 0.98 / +3.6
+Per prompt (gate build): design +2.0, code +4.0, korean +3.5, rules +1.4 sigma; design stays at +2.0 to +2.8 in every variant, korean drops to 0 with decode attention.
+Korean alone (350 prefill positions): KL to a, prefill / decode positions: 1,024-row prefill 0.131 / (decode by GEMV) 0.244; 64-row prefill 0.082; 8-row prefill (decode attention, row tiles) 0.045; GEMM with decode attention 0.051; floor b 0.033 / 0.109.
+Every variant passes the per-operation kernel tests, including attention at 32 heads and projections at every 31B shape; the teacher pass is deterministic.
