@@ -1125,6 +1125,10 @@ struct GlmModel
 		uint64_t steps;
 		uint64_t waves;
 		uint64_t gather_waves;
+		int16_t tap_output[S::kLayers];
+		uint16_t *tap_slab;
+		uint64_t tap_stride;
+		uint32_t tap_active;
 	};
 
 	static uint32_t Units(uint64_t bytes)
@@ -2014,6 +2018,31 @@ struct GlmModel
 		return Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, row.share, 0u, state->row_normed, state->normed);
 	}
 
+	static SparkStatus Tap(State *state, const GlmWave *wave, uint32_t layer, const uint16_t *hidden, cudaStream_t stream)
+	{
+		const int16_t entry = state->tap_output[layer];
+		const uint16_t *source = state->residual, *addend = hidden;
+		if ( state->tap_active == 0u || entry < 0 )
+			return SPARK_STATUS_OK;
+		if ( RowSharded(wave) != 0u )
+		{
+			const GlmRowShare row = GlmRowShareOf(wave->rows, state->tp_degree, state->tp_rank);
+			const SparkStatus status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, row.share, 0u,
+				state->residual + (uint64_t)state->tp_rank * row.share * S::kHidden, state->attention_out);
+			if ( status != SPARK_STATUS_OK )
+				return status;
+			source = state->attention_out;
+			addend = 0;
+		}
+		if ( state->tap_slab == 0 )
+			return SPARK_STATUS_OK;
+		LM_LAUNCH((LmSumRowsStridedKernel<GLM_THREADS>), dim3((S::kHidden + GLM_THREADS - 1u) / GLM_THREADS, wave->rows), GLM_THREADS, 0, stream,
+			source, addend, wave->ordered != 0u ? state->order + wave->first : (const uint32_t *)0,
+			state->tap_slab + (wave->ordered != 0u ? 0u : (uint64_t)wave->first * state->tap_stride) + (uint64_t)entry * S::kHidden, wave->rows, S::kHidden,
+			state->tap_stride);
+		return GlmLaunched() != LM_LAUNCH_OK ? Fail("tap", layer, LM_LAUNCH_ERR_LAUNCH) : SPARK_STATUS_OK;
+	}
+
 	static SparkStatus Layer(State *state, const GlmWave *wave, uint32_t layer, uint16_t *hidden, const uint32_t *positions, const uint32_t *slots,
 		uint32_t sms, cudaStream_t stream)
 	{
@@ -2095,8 +2124,11 @@ struct GlmModel
 		}
 		if ( code != LM_LAUNCH_OK )
 			return Fail("mlp", layer, code);
-		status = sharded != 0u ? RowShard(state, wave, layer, hidden, last != 0u ? state->final_norm : state->layers[layer + 1u].attn_norm, last == 0u ? 1u : 0u,
+		status = sharded != 0u ? RowShard(state, wave, layer, hidden, last != 0u ? state->final_norm : state->layers[layer + 1u].attn_norm,
+			last == 0u || (state->tap_active != 0u && state->tap_output[layer] >= 0) ? 1u : 0u,
 			last != 0u ? 0 : state->layers[layer + 1u].attn_gate_down, last != 0u ? 0 : state->layers[layer + 1u].attn_gate_up, stream) : Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, hidden, hidden);
+		if ( status == SPARK_STATUS_OK )
+			status = Tap(state, wave, layer, hidden, stream);
 		if ( status == SPARK_STATUS_OK && state->services->layer_done != 0 )
 			state->services->layer_done(state->services->context, layer);
 		return status;
@@ -2318,6 +2350,33 @@ struct GlmModel
 		return FrameShape(step) != 0u ? 2u : 0u;
 	}
 
+	static SparkStatus TapPlan(void *model, const SparkStageRunnerTapPlan *plan)
+	{
+		State *state = (State *)model;
+		int16_t outputs[S::kLayers];
+		uint32_t active = 0u;
+		if ( state == 0 || plan == 0 )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		for ( uint32_t layer = 0u; layer < S::kLayers; layer++ )
+			outputs[layer] = -1;
+		for ( uint32_t index = 0u; index < plan->entry_count; index++ )
+		{
+			if ( plan->entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL )
+				continue;
+			if ( plan->entries[index].form != SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT || plan->entries[index].layer >= S::kLayers )
+				SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+			outputs[plan->entries[index].layer] = (int16_t)index;
+			active = 1u;
+		}
+		memcpy(state->tap_output, outputs, sizeof(outputs));
+		state->tap_slab = plan->capture != 0u ? plan->slab : 0;
+		state->tap_stride = plan->row_stride_elements;
+		state->tap_active = active;
+		fprintf(stderr, "%s: taps entries=%u capture=%u; a tapped layer of a row-sharded wave all-gathers its residual rows\n", G::Tag(), plan->entry_count,
+			plan->capture);
+		return SPARK_STATUS_OK;
+	}
+
 	static SparkStatus RecurrentCopy(void *model, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream)
 	{
 		(void)model; (void)to_buffer; (void)slot; (void)buffer; (void)bytes; (void)stream;
@@ -2369,7 +2428,9 @@ struct GlmModel
 			ProbeBuffers,
 			Report,
 			GraphKey,
-			Lane
+			Lane,
+			0,
+			TapPlan
 		};
 		return &interface_table;
 	}

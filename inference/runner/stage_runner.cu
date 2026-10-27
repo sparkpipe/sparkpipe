@@ -1676,7 +1676,7 @@ static uint32_t StageRunnerLanesSplit(const SparkStageRunnerState *state, const 
 {
 	const uint32_t first = in->rows / 2u / STAGE_RUNNER_LANE_ALIGN * STAGE_RUNNER_LANE_ALIGN;
 	uint32_t index;
-	if ( state->lanes.created == 0u || in->sequences != 1u || in->last_rows_only == 0u || in->host_positions == 0 ||
+	if ( state->lanes.created == 0u || state->tap_plan.entry_count != 0u || in->sequences != 1u || in->last_rows_only == 0u || in->host_positions == 0 ||
 		in->host_sequence_of_row == 0 || (state->resident == 0u && state->geometry.experts != 0u) ||
 		first < STAGE_RUNNER_LANE_MIN_ROWS || in->rows - first < STAGE_RUNNER_LANE_MIN_ROWS ||
 		in->host_sequence_of_row[0] >= state->lanes.context_entries )
@@ -2402,9 +2402,9 @@ SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRu
 	if ( runner == 0 || runner->private_state == 0 || entries == 0 || entry_count == 0u || entry_count > SPARK_STAGE_RUNNER_TAP_MAX_ENTRIES )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	state = (SparkStageRunnerState *)runner->private_state;
-	if ( state->tap_plan.entry_count != 0u || state->model_interface->lane != 0 )
+	if ( state->tap_plan.entry_count != 0u )
 	{
-		fprintf(stderr, "sparkpipe_stage_runner: taps refused: %s\n", state->tap_plan.entry_count != 0u ? "a tap plan is already set" : "the model runs lanes");
+		fprintf(stderr, "sparkpipe_stage_runner: taps refused: a tap plan is already set\n");
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	}
 	for ( index = 0u; index < entry_count; ++index )
@@ -2461,8 +2461,9 @@ SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRu
 	state->tap_plan = plan;
 	state->tap_final_entry = final_entry;
 	StageRunnerGraphDrop(state);
-	fprintf(stderr, "sparkpipe_stage_runner: taps entries=%u capture=%u row_bytes=%llu slab_bytes=%llu chain_bytes=%llu\n", entry_count, plan.capture,
-		(unsigned long long)(stride * sizeof(uint16_t)), (unsigned long long)(capture != 0u ? slab_bytes : 0u), (unsigned long long)(capture != 0u ? chain_bytes : 0u));
+	fprintf(stderr, "sparkpipe_stage_runner: taps entries=%u capture=%u row_bytes=%llu slab_bytes=%llu chain_bytes=%llu%s\n", entry_count, plan.capture,
+		(unsigned long long)(stride * sizeof(uint16_t)), (unsigned long long)(capture != 0u ? slab_bytes : 0u), (unsigned long long)(capture != 0u ? chain_bytes : 0u),
+		state->model_interface->lane != 0 ? "; a wave does not split into lanes while a tap plan is set" : "");
 	return SPARK_STATUS_OK;
 }
 
