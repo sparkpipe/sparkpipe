@@ -43,6 +43,8 @@ static uint16_t Bf16(float value)
 {
 	uint32_t bits;
 	memcpy(&bits, &value, 4u);
+	if ( (bits & 0x7fffffffu) > 0x7f800000u )
+		return(0x7fffu);
 	bits += 0x7fffu + ((bits >> 16u) & 1u);
 	return (uint16_t)(bits >> 16u);
 }

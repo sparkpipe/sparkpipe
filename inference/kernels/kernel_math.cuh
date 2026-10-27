@@ -37,7 +37,7 @@ SPARK_MATH_FN float SparkMathBf16ToFloat(SparkMathU16 bits)
 SPARK_MATH_FN SparkMathU16 SparkMathFloatToBf16(float value)
 {
 	const SparkMathU32 bits = SPARK_MATH_AS_BITS(value);
-	return((SparkMathU16)((bits + 0x7fffu + ((bits >> 16u) & 1u)) >> 16u));
+	return((bits & 0x7fffffffu) > 0x7f800000u ? (SparkMathU16)0x7fffu : (SparkMathU16)((bits + 0x7fffu + ((bits >> 16u) & 1u)) >> 16u));
 }
 
 SPARK_MATH_FN float SparkMathRoundBf16(float value)
