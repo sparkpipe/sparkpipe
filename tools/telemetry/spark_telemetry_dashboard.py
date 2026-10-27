@@ -25,6 +25,8 @@ DEFAULT_HISTORY_LIMIT = 720
 DEFAULT_REPO_ROOT = ""
 DEFAULT_MODEL_LAYER_PARTITIONS_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)),"model_layer_partitions.json")
 NODE_DOWN_ERROR_THRESHOLD = 3
+SAMPLE_STALE_AFTER_S = 30.0
+SUMMARY_STALE_AFTER_S = 30.0
 NODE_ERROR_STREAKS: dict[str,dict[str,Any]] = {}
 MODEL_LAYER_PARTITIONS: dict[str,list[int]] | None = None
 REPO_ROOT_OVERRIDE = ""
@@ -57,7 +59,7 @@ DASHBOARD_HTML = """<!doctype html>
 :root{color-scheme:dark;--bg:#111316;--panel:#1b1f24;--line:#313943;--text:#f2f5f8;--muted:#a8b1bb;--ok:#53d18a;--busy:#63b3ff;--warn:#f4bf5f;--bad:#ff6b6b}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px;letter-spacing:0}
 main{max-width:1280px;margin:0 auto;padding:18px}.top{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:14px}
-h1{font-size:22px;line-height:1.1;margin:0}.meta{color:var(--muted);text-align:right;line-height:1.5}.summary{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:10px;margin-bottom:10px}.models{background:var(--panel);border:1px solid var(--line);border-radius:8px;margin-bottom:14px;overflow:hidden}.model-table{width:100%;border-collapse:collapse;table-layout:fixed}.model-table th,.model-table td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:right;font-variant-numeric:tabular-nums}.model-table th{color:var(--muted);font-size:11px;text-transform:uppercase}.model-table td:first-child,.model-table th:first-child{text-align:left;width:38%}.model-table tr:last-child td{border-bottom:0}.model-name{font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.model-empty{color:var(--muted);padding:10px}
+h1{font-size:22px;line-height:1.1;margin:0}.meta{color:var(--muted);text-align:right;line-height:1.5}.meta .stale{color:var(--bad);font-weight:700}.summary{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:10px;margin-bottom:10px}.models{background:var(--panel);border:1px solid var(--line);border-radius:8px;margin-bottom:14px;overflow:hidden}.model-table{width:100%;border-collapse:collapse;table-layout:fixed}.model-table th,.model-table td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:right;font-variant-numeric:tabular-nums}.model-table th{color:var(--muted);font-size:11px;text-transform:uppercase}.model-table td:first-child,.model-table th:first-child{text-align:left;width:38%}.model-table tr:last-child td{border-bottom:0}.model-name{font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.model-empty{color:var(--muted);padding:10px}
 .metric,.card{background:var(--panel);border:1px solid var(--line);border-radius:8px}.metric{padding:12px}.label{color:var(--muted);font-size:12px}.value{font-size:23px;font-weight:700;margin-top:4px}
 .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));grid-auto-rows:minmax(150px,auto);gap:10px}.card{padding:12px;min-height:150px;cursor:pointer}.card.selected{border-color:var(--busy);box-shadow:0 0 0 1px var(--busy)}.card header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
 .node{font-size:18px;font-weight:700}.pill{border-radius:999px;padding:3px 8px;font-size:12px;font-weight:700;color:#111316;background:var(--muted)}.busy .pill{background:var(--busy)}.idle .pill{background:var(--ok)}.warn .pill,.hot .pill{background:var(--warn)}.down .pill{background:var(--bad)}
@@ -109,7 +111,7 @@ function drawHistory(data){lastHistory=data;let el=document.getElementById("hist
 function paintChart(data,metrics,colors){let canvas=document.getElementById("chart");if(!canvas)return;metrics=metrics||activeMetrics(data);colors=colors||modeColors[selectedMode]||modeColors.queue;let rect=canvas.getBoundingClientRect();let dpr=window.devicePixelRatio||1;canvas.width=Math.max(1,Math.floor(rect.width*dpr));canvas.height=Math.max(1,Math.floor(rect.height*dpr));let ctx=canvas.getContext("2d");ctx.scale(dpr,dpr);let w=rect.width,h=rect.height,pad=28;ctx.clearRect(0,0,w,h);ctx.strokeStyle="#313943";ctx.lineWidth=1;for(let i=0;i<=4;i++){let y=pad+((h-(pad*2))*i/4);ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(w-pad,y);ctx.stroke()}let points=data.points;metrics.forEach((m,i)=>{let scale=metricScale(m,points);let vals=emaValues(points,m.key);ctx.strokeStyle=colors[i%colors.length];ctx.lineWidth=2.2;ctx.beginPath();vals.forEach((v,idx)=>{let x=pad+((w-(pad*2))*idx/Math.max(1,points.length-1));let y=h-pad-((h-(pad*2))*Math.max(0,Math.min(scale,v))/scale);if(idx===0)ctx.moveTo(x,y);else ctx.lineTo(x,y)});ctx.stroke()});ctx.fillStyle="#a8b1bb";ctx.font="12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif";ctx.fillText("now",w-pad-24,h-8);ctx.fillText("then",pad,h-8)}
 async function refreshHistory(){if(!selectedNode)return;try{let r=await fetch(`/api/history?node=${encodeURIComponent(selectedNode)}`,{cache:"no-store"});drawHistory(await r.json())}catch(e){document.getElementById("history").innerHTML=`<div class="empty">history read failed</div>`}}
 function renderModels(d){let models=d.models||[];let el=document.getElementById("models");if(!models.length){el.innerHTML=`<div class="model-empty">no active model token rate</div>`;return}el.innerHTML=`<table class="model-table"><thead><tr><th>Model</th><th>In/s</th><th>Out/s</th><th>Total/s</th><th>Run</th><th>Wait</th></tr></thead><tbody>${models.map(m=>`<tr><td><div class="model-name">${m.model}</div></td><td>${rate(m.input_tok_s)}</td><td>${rate(m.output_tok_s)}</td><td>${rate(m.tok_s)}</td><td>${rate(m.running)}</td><td>${rate(m.waiting)}</td></tr>`).join("")}</tbody></table>`}
-function renderSummary(d){if(!selectedNode&&d.nodes&&d.nodes.length)selectedNode=d.selected_node||d.nodes[0].node;document.getElementById("updated").textContent="updated "+(d.updated_iso||"unknown");document.getElementById("source").textContent=d.summary_path||"";document.getElementById("summary").innerHTML=[metric("Active",`${fmt(d.active_nodes)}/${d.reachable_nodes}`),metric("GPU Avg",d.gpu_known?pct(d.avg_gpu_pct):"n/a"),metric("Run/Wait",`${fmt(d.vllm_running)}/${fmt(d.vllm_waiting)}`),metric("Live In/Out",`${val(d.input_tok_s)} / ${val(d.output_tok_s)}`),metric("Active Svc",d.ds_services_known?`${fmt(d.ds_service_count)} svc`:"n/a"),metric("Queue Depth",fmt(d.queue_depth))].join("");renderModels(d);document.getElementById("nodes").innerHTML=d.nodes.map(card).join("");wireCards()}
+function renderSummary(d){if(!selectedNode&&d.nodes&&d.nodes.length)selectedNode=d.selected_node||d.nodes[0].node;const updated=document.getElementById("updated");updated.textContent=(d.stale?`STALE: collector last wrote ${fmt(d.age_s)} s ago, `:"")+"updated "+(d.updated_iso||"unknown");updated.className=d.stale?"stale":"";document.getElementById("source").textContent=d.summary_path||"";document.getElementById("summary").innerHTML=[metric("Active",`${fmt(d.active_nodes)}/${d.reachable_nodes}`),metric("GPU Avg",d.gpu_known?pct(d.avg_gpu_pct):"n/a"),metric("Run/Wait",`${fmt(d.vllm_running)}/${fmt(d.vllm_waiting)}`),metric("Live In/Out",`${val(d.input_tok_s)} / ${val(d.output_tok_s)}`),metric("Active Svc",d.ds_services_known?`${fmt(d.ds_service_count)} svc`:"n/a"),metric("Queue Depth",fmt(d.queue_depth))].join("");renderModels(d);document.getElementById("nodes").innerHTML=d.nodes.map(card).join("");wireCards()}
 async function refreshOnce(){try{let r=await fetch("/api/summary",{cache:"no-store"});let d=await r.json();renderSummary(d);await refreshHistory()}catch(e){document.getElementById("updated").textContent="dashboard read failed: "+e}}
 function startTelemetryStream(){if(telemetryStream)telemetryStream.close();if(!window.EventSource){refreshOnce();return}let node=encodeURIComponent(selectedNode||"");telemetryStream=new EventSource(`/api/stream?node=${node}`);telemetryStream.addEventListener("telemetry",event=>{try{let payload=JSON.parse(event.data);if(payload.summary){renderSummary(payload.summary)}if(payload.history){drawHistory(payload.history)}}catch(e){document.getElementById("updated").textContent="stream parse failed: "+e}});telemetryStream.onerror=()=>{document.getElementById("updated").textContent="stream reconnecting"}}
 window.addEventListener("resize",()=>{if(lastHistory)paintChart(lastHistory)});
@@ -169,13 +171,15 @@ def node_error_streak(node: str, row: dict[str,Any], summary_id: Any) -> int:
     return(count)
 
 
-def node_state(row: dict[str,Any], error_streak: int = NODE_DOWN_ERROR_THRESHOLD) -> tuple[str,str]:
+def node_state(row: dict[str,Any], error_streak: int = NODE_DOWN_ERROR_THRESHOLD, summary_stale: bool = False) -> tuple[str,str]:
     if node_down_error(row) != "":
         if error_streak >= NODE_DOWN_ERROR_THRESHOLD:
             return("down","down")
         return("warn","checking")
-    if fnum(row.get("stale_data")) > 0.0 or str(row.get("fetch_error","")) != "":
+    if summary_stale or fnum(row.get("stale_data")) > 0.0 or str(row.get("fetch_error","")) != "" or fnum(row.get("last_sample_age_s")) > SAMPLE_STALE_AFTER_S:
         return("warn","stale")
+    if str(row.get("last_sample_error","")) != "":
+        return("warn","sample error")
     if fnum(row.get("last_gpu_temp_c")) >= 80.0 or fnum(row.get("last_thermal_max_c")) >= 85.0:
         return("hot","hot")
     if fnum(row.get("last_vllm_requests_waiting")) > 0.0 or fnum(row.get("last_vllm_kv_cache_pct")) >= 90.0:
@@ -185,8 +189,8 @@ def node_state(row: dict[str,Any], error_streak: int = NODE_DOWN_ERROR_THRESHOLD
     return("idle","idle")
 
 
-def normalize_node(node: str, row: dict[str,Any], error_streak: int = NODE_DOWN_ERROR_THRESHOLD) -> dict[str,Any]:
-    state,label = node_state(row,error_streak)
+def normalize_node(node: str, row: dict[str,Any], error_streak: int = NODE_DOWN_ERROR_THRESHOLD, summary_stale: bool = False) -> dict[str,Any]:
+    state,label = node_state(row,error_streak,summary_stale)
     gpu_power_known = fnum(row.get("last_gpu_power_known")) > 0.0
     return({
         "node": node,
@@ -197,6 +201,7 @@ def normalize_node(node: str, row: dict[str,Any], error_streak: int = NODE_DOWN_
         "sample_count": int(fnum(row.get("sample_count"))),
         "last_iso_ts": row.get("last_iso_ts",""),
         "last_sample_age_s": fnum(row.get("last_sample_age_s")),
+        "last_sample_error": str(row.get("last_sample_error","")),
         "gpu_pct": fnum(row.get("last_gpu_util_pct")),
         "gpu_temp_c": fnum(row.get("last_gpu_temp_c")),
         "gpu_power_w": fnum(row.get("last_gpu_power_w")) if gpu_power_known else 0.0,
@@ -396,7 +401,9 @@ def build_snapshot(summary_path: str) -> dict[str,Any]:
         base = raw_nodes.get(name,{})
         row = dict(base) if isinstance(base,dict) else {}
         rows[name] = row
-    nodes = [normalize_node(node,row,node_error_streak(node,row,summary_id)) for node,row in sorted(rows.items())]
+    age_s = max(0,int(time.time()) - int(fnum(raw.get("updated_unix"))))
+    stale = age_s > SUMMARY_STALE_AFTER_S
+    nodes = [normalize_node(node,row,node_error_streak(node,row,summary_id),stale) for node,row in sorted(rows.items())]
     for node in nodes:
         name = str(node.get("node",""))
         service_id = queue_kv_by_node.get(name) or stage_service_by_node.get(name) or ""
@@ -507,7 +514,9 @@ def build_snapshot(summary_path: str) -> dict[str,Any]:
         "summary_path": str(path),
         "updated_iso": raw.get("updated_iso",""),
         "updated_unix": raw.get("updated_unix",0),
-        "age_s": max(0,int(time.time()) - int(fnum(raw.get("updated_unix")))),
+        "age_s": age_s,
+        "stale": stale,
+        "stale_after_s": SUMMARY_STALE_AFTER_S,
         "nodes": nodes,
         "models": model_items,
         "reachable_nodes": len(reachable),

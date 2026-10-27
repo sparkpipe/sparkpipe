@@ -150,7 +150,7 @@ class SparkTelemetryTest(unittest.TestCase):
         self.assertEqual(summary["fetch_error"],"ssh timed out")
         self.assertEqual(summary["stale_data"],1)
 
-    def test_collect_summary_uses_latest_good_gpu_sample_after_timeout(self):
+    def test_collect_summary_reports_the_latest_sample_gpu_failure(self):
         text = "\n".join([
             ",".join(node_mon.CSV_FIELDS),
             telemetry_row(unix_ts=1,cpu_util_pct=10,mem_used_pct=50,gpu_util_pct=20,gpu_power_w=12,gpu_power_raw_w=12,gpu_power_limit_w=120,gpu_power_known=1,gpu_temp_c=63),
@@ -160,9 +160,39 @@ class SparkTelemetryTest(unittest.TestCase):
         summary = collect.summarize_node(rows,"")
         self.assertEqual(summary["last_cpu_util_pct"],30.0)
         self.assertEqual(summary["last_mem_used_pct"],60.0)
+        self.assertEqual(summary["last_gpu_util_pct"],0.0)
+        self.assertEqual(summary["last_gpu_power_w"],0.0)
+        self.assertEqual(summary["last_gpu_temp_c"],0.0)
+        self.assertEqual(summary["last_sample_error"],"nvidia-smi timeout")
+
+    def test_collect_summary_has_no_sample_error_on_a_good_sample(self):
+        text = "\n".join([
+            ",".join(node_mon.CSV_FIELDS),
+            telemetry_row(unix_ts=1,gpu_util_pct=20,gpu_temp_c=63),
+        ])
+        summary = collect.summarize_node(collect.read_rows(text),"")
         self.assertEqual(summary["last_gpu_util_pct"],20.0)
-        self.assertEqual(summary["last_gpu_power_w"],12.0)
-        self.assertEqual(summary["last_gpu_temp_c"],63.0)
+        self.assertEqual(summary["last_sample_error"],"")
+
+    def test_collect_loop_survives_a_failed_pass(self):
+        class Stop(BaseException):
+            pass
+        with mock.patch("sys.argv",["spark_telemetry_collect.py","--loop-interval","5"]), \
+                mock.patch.object(collect,"collect_once",side_effect=[ValueError("line contains NUL"),{"combined_csv":"x"},Stop()]) as once, \
+                mock.patch.object(collect.time,"sleep") as sleep, \
+                mock.patch("sys.stderr"):
+            with self.assertRaises(Stop):
+                collect.main()
+        self.assertEqual(once.call_count,3)
+        self.assertEqual([call.args for call in sleep.call_args_list],[(5.0,),(5.0,)])
+
+    def test_collect_single_pass_failure_propagates(self):
+        with mock.patch("sys.argv",["spark_telemetry_collect.py"]), \
+                mock.patch.object(collect,"collect_once",side_effect=ValueError("line contains NUL")), \
+                mock.patch.object(collect.time,"sleep") as sleep:
+            with self.assertRaises(ValueError):
+                collect.main()
+        sleep.assert_not_called()
 
     def test_vllm_metrics_parser_sums_live_depth(self):
         text = "\n".join([
@@ -370,6 +400,8 @@ class SparkTelemetryTest(unittest.TestCase):
         args = collector["ProgramArguments"]
         self.assertEqual(args[args.index("--ssh-config") + 1],"@DEST@/ssh_config")
         self.assertNotIn("EnvironmentVariables",collector)
+        self.assertGreater(float(args[args.index("--loop-interval") + 1]),0.0)
+        self.assertIs(collector.get("KeepAlive"),True)
         with open(os.path.join(root,"com.ds4.spark-telemetry-dashboard.plist"),"rb") as fp:
             dashboard_plist = plistlib.load(fp)
         self.assertNotIn("--repo-root",dashboard_plist["ProgramArguments"])

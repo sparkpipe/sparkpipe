@@ -9,6 +9,7 @@ import io
 import os
 import shlex
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Tuple
@@ -138,11 +139,6 @@ def summarize_node(rows: List[Dict[str,str]], error: str, fetch_error: str = "",
         return({"sample_count":0,"error":error})
     good = [r for r in rows if not r.get("error")]
     latest = rows[-1]
-    latest_gpu = latest
-    for row in reversed(good):
-        if telemetry.gpu_index(row) >= 0:
-            latest_gpu = row
-            break
     latest_age_s = max(0.0,time.time() - row_unix_ts(latest))
     gpu_vals = [telemetry.fnum(r,"gpu_util_pct") for r in good if telemetry.gpu_index(r) >= 0]
     gpu_temps = [telemetry.fnum(r,"gpu_temp_c") for r in good if telemetry.gpu_index(r) >= 0 and telemetry.fnum(r,"gpu_temp_c") > 0.0]
@@ -155,6 +151,7 @@ def summarize_node(rows: List[Dict[str,str]], error: str, fetch_error: str = "",
         "last_sample_age_s": round(latest_age_s,2),
         "stale_data": 1 if stale_data else 0,
         "fetch_error": fetch_error,
+        "last_sample_error": str(latest.get("error","")),
         "last_cpu_util_pct": telemetry.fnum(latest,"cpu_util_pct"),
         "last_mem_used_pct": telemetry.fnum(latest,"mem_used_pct"),
         "last_thermal_avg_c": telemetry.fnum(latest,"thermal_avg_c"),
@@ -213,18 +210,18 @@ def summarize_node(rows: List[Dict[str,str]], error: str, fetch_error: str = "",
         "last_vllm_pipeline_stage_models": latest.get("vllm_pipeline_stage_models",""),
         "last_vllm_pipeline_stage_pp_by_model": latest.get("vllm_pipeline_stage_pp_by_model",""),
         "last_vllm_pipeline_stage_rank_by_model": latest.get("vllm_pipeline_stage_rank_by_model",""),
-        "last_gpu_util_pct": telemetry.fnum(latest_gpu,"gpu_util_pct"),
-        "last_gpu_temp_c": telemetry.fnum(latest_gpu,"gpu_temp_c"),
-        "last_gpu_fan_pct": telemetry.fnum(latest_gpu,"gpu_fan_pct"),
-        "last_gpu_clock_sm_mhz": telemetry.fnum(latest_gpu,"gpu_clock_sm_mhz"),
-        "last_gpu_clock_mem_mhz": telemetry.fnum(latest_gpu,"gpu_clock_mem_mhz"),
-        "last_gpu_power_w": telemetry.fnum(latest_gpu,"gpu_power_w"),
-        "last_gpu_power_raw_w": telemetry.fnum(latest_gpu,"gpu_power_raw_w"),
-        "last_gpu_power_limit_w": telemetry.fnum(latest_gpu,"gpu_power_limit_w"),
-        "last_gpu_power_known": telemetry.fnum(latest_gpu,"gpu_power_known"),
-        "last_gpu_power_source": latest_gpu.get("gpu_power_source",""),
-        "last_gpu_power_reason": latest_gpu.get("gpu_power_reason",""),
-        "last_gpu_pstate": latest_gpu.get("gpu_pstate",""),
+        "last_gpu_util_pct": telemetry.fnum(latest,"gpu_util_pct"),
+        "last_gpu_temp_c": telemetry.fnum(latest,"gpu_temp_c"),
+        "last_gpu_fan_pct": telemetry.fnum(latest,"gpu_fan_pct"),
+        "last_gpu_clock_sm_mhz": telemetry.fnum(latest,"gpu_clock_sm_mhz"),
+        "last_gpu_clock_mem_mhz": telemetry.fnum(latest,"gpu_clock_mem_mhz"),
+        "last_gpu_power_w": telemetry.fnum(latest,"gpu_power_w"),
+        "last_gpu_power_raw_w": telemetry.fnum(latest,"gpu_power_raw_w"),
+        "last_gpu_power_limit_w": telemetry.fnum(latest,"gpu_power_limit_w"),
+        "last_gpu_power_known": telemetry.fnum(latest,"gpu_power_known"),
+        "last_gpu_power_source": latest.get("gpu_power_source",""),
+        "last_gpu_power_reason": latest.get("gpu_power_reason",""),
+        "last_gpu_pstate": latest.get("gpu_pstate",""),
         "cpu_util_pct": telemetry.stats(telemetry.fnum(r,"cpu_util_pct") for r in rows),
         "mem_used_pct": telemetry.stats(telemetry.fnum(r,"mem_used_pct") for r in rows),
         "thermal_max_c": telemetry.stats(telemetry.fnum(r,"thermal_max_c") for r in rows if telemetry.fnum(r,"thermal_max_c") > 0.0),
@@ -396,13 +393,16 @@ def collect_once(args: argparse.Namespace) -> Dict[str,object]:
 
 def main() -> int:
     args = parse_args()
-    while True:
+    if args.loop_interval <= 0.0:
         summary = collect_once(args)
         print("wrote %s" % summary["combined_csv"],flush=True)
-        if args.loop_interval <= 0.0:
-            break
+        return(0)
+    while True:
+        try:
+            collect_once(args)
+        except Exception as exc:
+            print("collect failed: %s: %s" % (type(exc).__name__,exc),file=sys.stderr,flush=True)
         time.sleep(args.loop_interval)
-    return(0)
 
 
 if __name__ == "__main__":
