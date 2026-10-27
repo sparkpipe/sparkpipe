@@ -570,9 +570,8 @@ struct QwenHybridModel
 			Project<LmBf16Format>(layer->gdn_ba, 0, state->normed, state->ba, rows, G::kHidden, 2u * heads, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		RowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-		LM_LAUNCH((LmCausalConvKernel<QH_THREADS,QH_CONV,LM_CONV_SWISH,uint16_t>), dim3(sequences,(state->gdn_channels + QH_THREADS - 1u) / QH_THREADS),
-			QH_THREADS, 0, stream, window, step->recurrent_index, step->sequence_row_begin, (const uint32_t *)0, state->qkv, layer->gdn_conv,
-			state->qkv, state->gdn_channels, sequences, step->commit, step->sequence_row_indices);
+		LmCausalConvLaunch<QH_CONV,LM_CONV_SWISH,uint16_t>(window, step->recurrent_index, step->sequence_row_begin, (const uint32_t *)0, state->qkv, layer->gdn_conv,
+			state->qkv, state->gdn_channels, sequences, step->commit, step->sequence_row_indices, rows, stream);
 		layout.query_dimension = state->gdn_qk;
 		layout.key_dimension = state->gdn_qk;
 		layout.value_dimension = state->gdn_v;
@@ -882,10 +881,9 @@ struct QwenHybridModel
 			state->ple_gated, G::kStreams, G::kHidden);
 		LmGroupRmsNormKernel<QH_THREADS><<<dim3(G::kStreams, rows), QH_THREADS, 0, stream>>>(state->ple_gated, state->ple_norm_conv, state->ple_conv_in,
 			G::kStreams, G::kHidden, QH_EPSILON);
-		LM_LAUNCH((LmCausalConvKernel<QH_THREADS,G::kPleConv,LM_CONV_SWISH,uint16_t,G::kPleDilation>),
-			dim3(step->sequences,(S::kResidual + QH_THREADS - 1u) / QH_THREADS), QH_THREADS, 0, stream, state->ple_window, step->recurrent_index,
-			step->sequence_row_begin, (const uint32_t *)0, state->ple_conv_in, state->ple_conv_weight, state->ple_conv_out, S::kResidual,
-			step->sequences, step->commit, step->sequence_row_indices);
+		LmCausalConvLaunch<G::kPleConv,LM_CONV_SWISH,uint16_t,G::kPleDilation>(state->ple_window, step->recurrent_index, step->sequence_row_begin,
+			(const uint32_t *)0, state->ple_conv_in, state->ple_conv_weight, state->ple_conv_out, S::kResidual, step->sequences, step->commit,
+			step->sequence_row_indices, rows, stream);
 		LmHyperAddKernel<QH_THREADS><<<Blocks(elements), QH_THREADS, 0, stream>>>(state->residual, state->ple_gated, state->ple_conv_out, elements);
 		LmNgramHistoryKernel<<<(step->sequences + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, (const int32_t *)0, step->sequence_row_begin,
 			step->sequence_row_indices, step->recurrent_index, state->ple_history, S::kPleHistory, step->sequences, G::kPleOrders, step->commit, (const uint32_t *)0);

@@ -3,6 +3,7 @@
 
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/norm.cuh"
+#include "runtime/launch.h"
 #include <stdint.h>
 
 static __device__ __forceinline__ float LmBoundedDecay(float logit, float bias, float head_log_scale, float minimum_log_decay)
@@ -484,4 +485,118 @@ void LmCausalConvStreamsKernel(const __grid_constant__ LmCausalConvStreams<Weigh
 {
 	const uint32_t stream = blockIdx.z;
 	LmCausalConvBody<THREADS,KERNEL,ACTIVATION,Weight>(streams.window[stream],state_index,sequence_row_begin,sequence_row_count,streams.input_bf16[stream],streams.weight[stream],streams.output_bf16[stream],streams.channels[stream],sequences,commit,sequence_row_indices);
+}
+
+#define LM_CAUSAL_CONV_TILE_THREADS 256u
+#define LM_CAUSAL_CONV_TILE_CHANNELS 32u
+#define LM_CAUSAL_CONV_TILE_ROWS 64u
+#define LM_CAUSAL_CONV_SERIAL_ROWS 4u
+
+template<uint32_t KERNEL, uint32_t ACTIVATION, class Weight, uint32_t DILATION>
+static __device__ __forceinline__ void LmCausalConvTiledBody(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *input_bf16, const Weight *__restrict__ weight, uint16_t *output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit, const uint32_t *__restrict__ sequence_row_indices)
+{
+	constexpr uint32_t SPAN = (KERNEL - 1u) * DILATION + 1u, HALO = SPAN - 1u;
+	constexpr uint32_t GROUPS = LM_CAUSAL_CONV_TILE_THREADS / LM_CAUSAL_CONV_TILE_CHANNELS;
+	__shared__ uint16_t tile[HALO + LM_CAUSAL_CONV_TILE_ROWS][LM_CAUSAL_CONV_TILE_CHANNELS];
+	const uint32_t sequence = blockIdx.x, lane = threadIdx.x % LM_CAUSAL_CONV_TILE_CHANNELS, group = threadIdx.x / LM_CAUSAL_CONV_TILE_CHANNELS;
+	const uint32_t channel = (blockIdx.y * LM_CAUSAL_CONV_TILE_CHANNELS) + lane;
+	const bool live = channel < channels;
+	uint32_t begin, end, base, count, offset, tap, row;
+	float taps_weight[KERNEL];
+	uint16_t carried[HALO > 0u ? HALO : 1u];
+	uint16_t *slot;
+	if ( sequence >= sequences )
+		return;
+	begin = sequence_row_begin != 0 ? sequence_row_begin[sequence] : sequence;
+	end = sequence_row_begin != 0 ? sequence_row_begin[sequence + 1u] : sequence + 1u;
+	if ( sequence_row_count != 0 )
+		end = begin + sequence_row_count[sequence];
+	slot = window + ((uint64_t)state_index[sequence] * channels * SPAN);
+	for (tap = 0u; tap < KERNEL; ++tap)
+		taps_weight[tap] = live ? LmScalarToFloat(weight[(channel * KERNEL) + tap]) : 0.0f;
+	if ( group == 0u && live )
+		for (tap = 0u; tap < HALO; ++tap)
+			tile[tap][lane] = slot[(channel * SPAN) + 1u + tap];
+	for (base = begin; base < end; base += LM_CAUSAL_CONV_TILE_ROWS)
+	{
+		count = end - base < LM_CAUSAL_CONV_TILE_ROWS ? end - base : LM_CAUSAL_CONV_TILE_ROWS;
+		__syncthreads();
+		for (offset = group; offset < count && live; offset += GROUPS)
+		{
+			row = sequence_row_indices != 0 ? sequence_row_indices[base + offset] : base + offset;
+			tile[HALO + offset][lane] = input_bf16[((uint64_t)row * channels) + channel];
+		}
+		__syncthreads();
+		for (offset = group; offset < count && live; offset += GROUPS)
+		{
+			float total = 0.0f;
+			row = sequence_row_indices != 0 ? sequence_row_indices[base + offset] : base + offset;
+			for (tap = 0u; tap < KERNEL; ++tap)
+				total += LmBf16ToFloat(tile[offset + tap * DILATION][lane]) * taps_weight[tap];
+			if ( ACTIVATION == LM_CONV_SWISH )
+			{
+				if ( sizeof(Weight) == sizeof(uint16_t) )
+					total = LmBf16ToFloat(LmFloatToBf16(total));
+				total = total * SparkMathSigmoidFast(total);
+			}
+			output_bf16[((uint64_t)row * channels) + channel] = LmFloatToBf16(total);
+		}
+		__syncthreads();
+		if ( group == 0u && live )
+		{
+			if ( commit != 0u && base + count == end )
+				for (tap = 0u; tap < SPAN; ++tap)
+					slot[(channel * SPAN) + tap] = tile[count - 1u + tap][lane];
+			for (tap = 0u; tap < HALO; ++tap)
+				carried[tap] = tile[count + tap][lane];
+			for (tap = 0u; tap < HALO; ++tap)
+				tile[tap][lane] = carried[tap];
+		}
+	}
+}
+
+template<uint32_t KERNEL, uint32_t ACTIVATION, class Weight, uint32_t DILATION = 1u>
+__global__ __launch_bounds__(LM_CAUSAL_CONV_TILE_THREADS, 1)
+void LmCausalConvTiledKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *input_bf16, const Weight *__restrict__ weight, uint16_t *output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit, const uint32_t *__restrict__ sequence_row_indices = 0)
+{
+	LmCausalConvTiledBody<KERNEL,ACTIVATION,Weight,DILATION>(window,state_index,sequence_row_begin,sequence_row_count,input_bf16,weight,output_bf16,channels,sequences,commit,sequence_row_indices);
+}
+
+template<uint32_t KERNEL, uint32_t ACTIVATION, class Weight>
+__global__ __launch_bounds__(LM_CAUSAL_CONV_TILE_THREADS, 1)
+void LmCausalConvStreamsTiledKernel(const __grid_constant__ LmCausalConvStreams<Weight> streams, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, uint32_t sequences, uint32_t commit, const uint32_t *__restrict__ sequence_row_indices)
+{
+	const uint32_t stream = blockIdx.z;
+	if ( blockIdx.y * LM_CAUSAL_CONV_TILE_CHANNELS >= streams.channels[stream] )
+		return;
+	LmCausalConvTiledBody<KERNEL,ACTIVATION,Weight,1u>(streams.window[stream],state_index,sequence_row_begin,sequence_row_count,streams.input_bf16[stream],streams.weight[stream],streams.output_bf16[stream],streams.channels[stream],sequences,commit,sequence_row_indices);
+}
+
+template<uint32_t KERNEL, uint32_t ACTIVATION, class Weight, uint32_t DILATION = 1u>
+static cudaError_t LmCausalConvLaunch(uint16_t *window, const uint32_t *state_index, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_count, const uint16_t *input_bf16, const Weight *weight, uint16_t *output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit, const uint32_t *sequence_row_indices, uint32_t rows, cudaStream_t stream)
+{
+	if ( rows <= LM_CAUSAL_CONV_SERIAL_ROWS * sequences )
+		LM_LAUNCH((LmCausalConvKernel<LM_CAUSAL_CONV_TILE_THREADS,KERNEL,ACTIVATION,Weight,DILATION>), dim3(sequences, (channels + LM_CAUSAL_CONV_TILE_THREADS - 1u) / LM_CAUSAL_CONV_TILE_THREADS),
+			LM_CAUSAL_CONV_TILE_THREADS, 0, stream, window, state_index, sequence_row_begin, sequence_row_count, input_bf16, weight, output_bf16, channels, sequences,
+			commit, sequence_row_indices);
+	else
+		LM_LAUNCH((LmCausalConvTiledKernel<KERNEL,ACTIVATION,Weight,DILATION>), dim3(sequences, (channels + LM_CAUSAL_CONV_TILE_CHANNELS - 1u) / LM_CAUSAL_CONV_TILE_CHANNELS),
+		LM_CAUSAL_CONV_TILE_THREADS, 0, stream, window, state_index, sequence_row_begin, sequence_row_count, input_bf16, weight, output_bf16, channels, sequences,
+		commit, sequence_row_indices);
+	return cudaPeekAtLastError();
+}
+
+template<uint32_t KERNEL, uint32_t ACTIVATION, class Weight>
+static cudaError_t LmCausalConvStreamsLaunch(const LmCausalConvStreams<Weight> &streams, const uint32_t *state_index, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_count, uint32_t sequences, uint32_t commit, const uint32_t *sequence_row_indices, uint32_t rows, cudaStream_t stream)
+{
+	uint32_t widest = 0u;
+	for (uint32_t index = 0u; index < LM_CAUSAL_CONV_STREAMS; ++index)
+		widest = streams.channels[index] > widest ? streams.channels[index] : widest;
+	if ( rows <= LM_CAUSAL_CONV_SERIAL_ROWS * sequences )
+		LM_LAUNCH((LmCausalConvStreamsKernel<LM_CAUSAL_CONV_TILE_THREADS,KERNEL,ACTIVATION,Weight>), dim3(sequences, (widest + LM_CAUSAL_CONV_TILE_THREADS - 1u) / LM_CAUSAL_CONV_TILE_THREADS, LM_CAUSAL_CONV_STREAMS),
+			LM_CAUSAL_CONV_TILE_THREADS, 0, stream, streams, state_index, sequence_row_begin, sequence_row_count, sequences, commit, sequence_row_indices);
+	else
+		LM_LAUNCH((LmCausalConvStreamsTiledKernel<KERNEL,ACTIVATION,Weight>), dim3(sequences, (widest + LM_CAUSAL_CONV_TILE_CHANNELS - 1u) / LM_CAUSAL_CONV_TILE_CHANNELS, LM_CAUSAL_CONV_STREAMS),
+		LM_CAUSAL_CONV_TILE_THREADS, 0, stream, streams, state_index, sequence_row_begin, sequence_row_count, sequences, commit, sequence_row_indices);
+	return cudaPeekAtLastError();
 }
