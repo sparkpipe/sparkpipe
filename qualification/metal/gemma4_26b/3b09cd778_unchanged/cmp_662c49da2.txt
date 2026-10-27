@@ -1,0 +1,9 @@
+SAME metal/code.metal.logits
+SAME metal/design.metal.logits
+SAME metal/korean.metal.logits
+SAME metal/rules.metal.logits
+SAME metal/greedy.metal.json
+SAME pinned/code.metal.logits
+SAME pinned/design.metal.logits
+SAME pinned/korean.metal.logits
+SAME pinned/rules.metal.logits
