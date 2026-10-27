@@ -40,6 +40,7 @@ HUB_FILES = (
     ("config/litellm-config.yaml", "sparkpipe-chat/litellm.yaml"),
 )
 SSH = ("ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
+INFERENCE_ROOTS = ("/srv/workspace/", "/home/")
 READ = r'''
 import glob, json, os, re, subprocess, sys
 request = json.load(sys.stdin)
@@ -57,6 +58,10 @@ if request["weightd"]:
     line = subprocess.run("grep 'spark_weightd ready' ~/weightd.log | tail -1", shell=True, capture_output=True, text=True).stdout
     match = re.search(r"ceiling=(\d+) kv_reserve=(\d+)", line)
     weightd = {"device_bytes_max": int(match.group(1)), "kv_reserve_bytes": int(match.group(2))} if match else None
+units = {}
+for unit in request.get("units", []):
+    shown = subprocess.run(["systemctl", "--user", "show", unit, "-p", "ActiveState", "-p", "ExecStart", "--value"], capture_output=True, text=True).stdout
+    units[unit] = shown
 prefixes = {}
 if request.get("prefix"):
     namespace = {"__name__": "tokenizer_text_prefix"}
@@ -66,7 +71,7 @@ if request.get("prefix"):
             prefixes[record_id] = namespace["directory_prefix"](namespace["Path"](directory))
         except Exception as error:
             prefixes[record_id] = "%s: %s" % (type(error).__name__, error)
-print(json.dumps({"files": files, "roots": roots, "apis": apis, "weightd": weightd, "prefixes": prefixes}))
+print(json.dumps({"files": files, "roots": roots, "apis": apis, "weightd": weightd, "prefixes": prefixes, "units": units}))
 '''
 WRITE = r'''
 import json, os, sys
@@ -127,6 +132,44 @@ def render(record_id: str, directory: Path) -> None:
     if lane["launcher"] == "stage_lane":
         subprocess.run(["bash", str(HERE / "stage_lane.sh"), "lane-scripts", str(directory)],
                        env={**os.environ, "STAGE_RECORD": record_id}, check=True)
+
+
+def draftd_environment(record_id: str) -> tuple[str, dict[str, str]]:
+    lane = record(record_id)
+    spec, server = lane.get("draftd"), lane.get("draft_server")
+    if spec is None or server is None:
+        raise SystemExit(f"{record_id}: a draft server needs both a draft_server and a draftd record")
+    drafter = spec["drafter"]
+    paths = [spec["source"], drafter.split(":", 1)[1] if drafter.startswith("dspark:") else drafter, spec["log"]]
+    if spec.get("target_shard"):
+        paths.append(spec["target_shard"])
+    for path in paths:
+        if not path.startswith(INFERENCE_ROOTS) or ".." in path.split("/"):
+            raise SystemExit(f"{record_id}: draftd path {path} is not on the hub's local NVMe ({', '.join(INFERENCE_ROOTS)}); inference never reads CephFS or cold storage")
+    environment = {"DRAFTD_UNIT": spec["unit"], "DRAFTD_LOG": spec["log"], "DRAFTD_DRAFTER": drafter, "DRAFTD_TARGET_SHARD": spec.get("target_shard", ""),
+                   "DRAFTD_TAP_HOST": spec["tap_host"], "DRAFTD_TAP_PORT": str(spec["tap_port"]), "DRAFTD_DRAFT_PORT": str(server["port"]),
+                   "DRAFTD_WINDOW": str(spec["window"]), "DRAFTD_CONTEXT_BYTES": str(spec["context_bytes"]), "DRAFTD_RESTART": spec.get("restart", "no")}
+    return spec["source"], environment
+
+
+def draftd_flags(environment: dict[str, str]) -> list[str]:
+    flags = [f"--drafter {environment['DRAFTD_DRAFTER']}", f"--tap-host {environment['DRAFTD_TAP_HOST']}", f"--tap-port {environment['DRAFTD_TAP_PORT']}",
+             f"--draft-port {environment['DRAFTD_DRAFT_PORT']}", f"--window {environment['DRAFTD_WINDOW']}", f"--context-bytes {environment['DRAFTD_CONTEXT_BYTES']}"]
+    if environment["DRAFTD_TARGET_SHARD"]:
+        flags.append(f"--target-shard {environment['DRAFTD_TARGET_SHARD']}")
+    return flags
+
+
+def draftd_start(record_id: str) -> int:
+    source, environment = draftd_environment(record_id)
+    settings = " ".join(f"{key}={shlex.quote(value)}" for key, value in environment.items())
+    script = (HERE / "hub_draftd.sh").read_text()
+    for step in ("stop", f"start {shlex.quote(source)}"):
+        completed = subprocess.run([*SSH, HUB, f"env {settings} bash -s {step}"], input=script, capture_output=True, text=True, timeout=600)
+        print((completed.stdout + completed.stderr).strip())
+        if completed.returncode != 0:
+            return completed.returncode
+    return 0
 
 
 def node_files(record_id: str, directory: Path) -> dict[str, dict[str, Path]]:
@@ -217,7 +260,9 @@ def audit(selected: list[str], fleet: bool = True) -> int:
             directories = {record_id: os.path.dirname(stage_lane.MODELS[lanes[record_id]["model"]]["tokenizer_json"])
                            for record_id in selected if stage_lane.MODELS[lanes[record_id]["model"]].get("tokenizer_json")}
             prefix = {"source": (HERE / "tokenizer_text_prefix.py").read_text(), "directories": directories}
-            hub_future = pool.submit(remote, HUB, READ, {"paths": sorted(expected_hub), "weightd": False, "prefix": prefix})
+            drafters = {record_id: draftd_environment(record_id)[1] for record_id in selected if lanes[record_id].get("draftd")}
+            hub_future = pool.submit(remote, HUB, READ, {"paths": sorted(expected_hub), "weightd": False, "prefix": prefix,
+                                                         "units": sorted(environment["DRAFTD_UNIT"] for environment in drafters.values())})
             for future in futures:
                 try:
                     host, live = future.result()
@@ -240,6 +285,14 @@ def audit(selected: list[str], fleet: bool = True) -> int:
                 for record_id, prefix in sorted(live.get("prefixes", {}).items()):
                     if prefix != lanes[record_id]["text_prompt_prefix_token_ids"]:
                         drift.append(f"DRIFT {record_id} text_prompt_prefix_token_ids {lanes[record_id]['text_prompt_prefix_token_ids']}, the publisher tokenizer gives {prefix}")
+                for record_id, environment in sorted(drafters.items()):
+                    unit = environment["DRAFTD_UNIT"]
+                    shown = live.get("units", {}).get(unit, "").replace("'", "")
+                    missing = [flag for flag in draftd_flags(environment) if flag not in shown]
+                    if not shown.startswith("active"):
+                        drift.append(f"DRIFT {record_id} {HUB}: draft server unit {unit} is not active")
+                    elif missing or "/mnt/" in shown:
+                        drift.append(f"DRIFT {record_id} {HUB}: draft server unit {unit} runs without {missing or 'local paths'} (restart it with lane_config.py draftd {record_id})")
                 for api in live["apis"] if fleet else ():
                     if api not in apis:
                         drift.append(f"ORPHAN {HUB}:{api} is an API directory no record names")
@@ -348,6 +401,8 @@ def main() -> int:
     command.add_argument("field")
     command = commands.add_parser("shell", help="print the STAGE_* variables of a stage-lane record for tools/stage_lane.sh")
     command.add_argument("record")
+    command = commands.add_parser("draftd", help="start a record's hub draft server from its draftd record, refusing any path off the hub's local NVMe")
+    command.add_argument("record")
     command = commands.add_parser("release-row", help="print the release kit's lane, firmware library, installed library, API directory, port and KV label of a record")
     command.add_argument("record")
     args = parser.parse_args()
@@ -363,6 +418,8 @@ def main() -> int:
         return restore(args.record, args.stamp)
     if args.command == "zcode":
         return zcode(args.write)
+    if args.command == "draftd":
+        return draftd_start(args.record)
     if args.command == "field":
         print(record(args.record)[args.field])
         return 0
