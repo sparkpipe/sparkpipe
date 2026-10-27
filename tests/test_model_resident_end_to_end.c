@@ -15,6 +15,7 @@
 #include "sparkpipe/spark_model_resident_client.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 #include "fixtures/test_child_guard.h"
+#include "fixtures/test_tcp_port.h"
 
 #ifndef TEST_MODEL_RESIDENTD_PATH
 #define TEST_MODEL_RESIDENTD_PATH ""
@@ -321,7 +322,8 @@ static void TestModelResidentWriteDeployment(
 	fixture.runtime_limits.resident_sequence_capacity = 8u;
 	fixture.runtime_limits.kv_logical_page_capacity = 16u;
 	fixture.runtime_limits.kv_physical_page_capacity = 8u;
-	fixture.control_port_base = 59000u;
+	fixture.control_port_base = TestTcpPortRange(TEST_MODEL_RESIDENT_RANK_COUNT);
+	assert(fixture.control_port_base != 0u && "no free loopback port range below the ephemeral range");
 	fixture.node_count = TEST_MODEL_RESIDENT_RANK_COUNT;
 	fixture.coordinator_rank_index = 0u;
 	assert(TestModelResidentDeploymentWrite(path,&fixture) == 0);

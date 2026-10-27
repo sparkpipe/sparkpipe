@@ -24,6 +24,7 @@
 #include "fixtures/model_resident_deployment_fixture.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 #include "fixtures/test_child_guard.h"
+#include "fixtures/test_tcp_port.h"
 
 #ifndef TEST_MODEL_API_PATH
 #define TEST_MODEL_API_PATH ""
@@ -75,28 +76,6 @@ static uint64_t TestLoopbackNowMs(void)
 	assert(clock_gettime(CLOCK_MONOTONIC,&timestamp) == 0);
 	return((uint64_t)timestamp.tv_sec * 1000u +
 		(uint64_t)timestamp.tv_nsec / 1000000u);
-}
-
-static uint32_t TestLoopbackProbeFreeTcpPort(void)
-{
-	struct sockaddr_in address;
-	socklen_t address_length;
-	int32_t fd;
-	uint32_t port;
-	port = 0u;
-	fd = socket(AF_INET,SOCK_STREAM,0);
-	if ( fd >= 0 )
-	{
-		memset(&address,0,sizeof(address));
-		address.sin_family = AF_INET;
-		address.sin_addr.s_addr = htonl(0x7f000001u);
-		address.sin_port = htons(0u);
-		address_length = (socklen_t)sizeof(address);
-		if ( bind(fd,(const struct sockaddr *)&address,(socklen_t)sizeof(address)) == 0 && getsockname(fd,(struct sockaddr *)&address,&address_length) == 0 )
-			port = (uint32_t)ntohs(address.sin_port);
-		close(fd);
-	}
-	return(port);
 }
 
 static int32_t TestLoopbackProbeTcpPort(uint32_t port)
@@ -210,9 +189,8 @@ static void TestLoopbackWriteDeployment(TestLoopbackStack *stack)
 	fixture.runtime_limits.resident_sequence_capacity = 32u;
 	fixture.runtime_limits.kv_logical_page_capacity = 128u;
 	fixture.runtime_limits.kv_physical_page_capacity = 64u;
-	fixture.control_port_base = TestLoopbackProbeFreeTcpPort();
-	if ( fixture.control_port_base == 0u || fixture.control_port_base > UINT16_MAX - (TEST_LOOPBACK_RANK_COUNT - 1u) )
-		fixture.control_port_base = 59000u;
+	fixture.control_port_base = TestTcpPortRange(TEST_LOOPBACK_RANK_COUNT);
+	assert(fixture.control_port_base != 0u && "no free loopback port range below the ephemeral range");
 	fixture.node_count = TEST_LOOPBACK_RANK_COUNT;
 	fixture.coordinator_rank_index = 0u;
 	assert(snprintf(stack->deployment_path,sizeof(stack->deployment_path),"%s/deployment.json",stack->root) > 0);
@@ -924,9 +902,9 @@ static void TestLoopbackBoot(TestLoopbackStack *stack)
 {
 	memset(stack,0,sizeof(*stack));
 	assert(setenv("SPARK_BATCH_INFLIGHT_BUDGET_NS","5000000000",1) == 0);
-	stack->control_tcp_port = TestLoopbackProbeFreeTcpPort();
+	stack->control_tcp_port = TestTcpPortRange(1u);
 	assert(stack->control_tcp_port != 0u);
-	stack->api_port = TestLoopbackProbeFreeTcpPort();
+	stack->api_port = TestTcpPortRange(1u);
 	assert(stack->api_port != 0u && stack->api_port != stack->control_tcp_port);
 	TestLoopbackSetupRoot(stack);
 	TestLoopbackWriteDeployment(stack);
