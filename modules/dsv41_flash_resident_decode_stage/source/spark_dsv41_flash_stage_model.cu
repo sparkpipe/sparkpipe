@@ -131,6 +131,8 @@ static_assert(D41_MOE_ROW_ELEMENTS <= D41_HIDDEN && D41_MOE_ROW_ELEMENTS % 8u ==
 	"the MoE exchange rows fit a collective row and keep 16-byte copies");
 static_assert(D41_MOE_INTER % D41_THREADS == 0u, "the activation assembly covers whole fp8 groups with full warps");
 static_assert(D41_ENGRAM_KV_ROWS % (D41_TP * D41_FP8_BLOCK) == 0u, "the engram key/value rows split into whole fp8 blocks per rank");
+static_assert(D41_ENGRAM_KV_ROWS == SPARK_DSV41_FLASH_ENGRAM_KV_ROWS && D41_ENGRAM_EMBED == SPARK_DSV41_FLASH_ENGRAM_EMBED_COLUMNS &&
+	D41_ENGRAM_HEAD_DIM == SPARK_DSV41_FLASH_MODEL_ENGRAM_HEAD_DIMENSION && D41K_HC == SPARK_DSV41_FLASH_MODEL_HC_MULT, "the stage reads the engram shard the format check accepts");
 static_assert(D41_MOE_INTER % D41_SHARED_GRANULE == 0u && D41_SHARED_GRANULE % D41_FP8_BLOCK == 0u,
 	"the shared expert width splits into whole fp8 blocks and whole dense GEMM k tiles");
 
@@ -1512,60 +1514,6 @@ static SparkStatus D41OpenEngramTables(D41ModelState *state, const char *pack_pa
 	return SPARK_STATUS_OK;
 }
 
-static uint32_t D41BytesZero(const uint8_t *bytes, uint64_t count)
-{
-	for ( uint64_t index = 0u; index < count; ++index )
-		if ( bytes[index] != 0u )
-			return 0u;
-	return 1u;
-}
-
-static uint32_t D41ContractMatches(const uint8_t *digest)
-{
-	static const char hex[] = DSV41_FLASH_CONTRACT_SHA256;
-	static_assert(sizeof(hex) == 2u * SPARK_DSV41_FLASH_STAGEPACK_SHA256_BYTES + 1u, "the compiled contract digest is 64 hex digits");
-	for ( uint32_t index = 0u; index < SPARK_DSV41_FLASH_STAGEPACK_SHA256_BYTES; ++index )
-	{
-		uint32_t value = 0u;
-		for ( uint32_t nibble = 0u; nibble < 2u; ++nibble )
-		{
-			const char c = hex[2u * index + nibble];
-			const uint32_t digit = c >= '0' && c <= '9' ? (uint32_t)(c - '0') : c >= 'a' && c <= 'f' ? (uint32_t)(c - 'a' + 10) : 16u;
-			if ( digit > 15u )
-				return 0u;
-			value = (value << 4u) | digit;
-		}
-		if ( digest[index] != value )
-			return 0u;
-	}
-	return 1u;
-}
-
-static uint32_t D41EngramEntryValid(const D41PackEntry *entry, uint32_t which, uint32_t slot, uint64_t file_bytes)
-{
-	const uint32_t layer = which == 0u ? 1u : 14u;
-	const uint64_t elements = (uint64_t)entry->rows * entry->columns;
-	uint32_t shape;
-	uint64_t scale;
-	if ( entry->tensor_kind != 2u * slot + which || entry->layer_index != layer || entry->group_count != 1u || entry->rows == 0u )
-		return 0u;
-	if ( slot < 2u )
-	{
-		shape = slot == 0u ? entry->columns == D41_ENGRAM_HEAD_DIM : entry->rows == D41_ENGRAM_KV_ROWS && entry->columns == D41_ENGRAM_EMBED;
-		scale = slot == 0u ? (uint64_t)entry->rows * (entry->columns / D41_FP8_BLOCK) :
-			(uint64_t)((entry->rows + D41_FP8_BLOCK - 1u) / D41_FP8_BLOCK) * ((entry->columns + D41_FP8_BLOCK - 1u) / D41_FP8_BLOCK);
-		if ( shape == 0u || entry->payload_type != SPARK_DSV41_FLASH_STAGEPACK_PAYLOAD_PACKED_WEIGHT || entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 ||
-			entry->scale_encoding != SPARK_WEIGHT_SCALE_ENCODING_E8M0 || entry->payload_bytes != elements || entry->scale_bytes != scale ||
-			entry->scale_offset > file_bytes || entry->scale_bytes > file_bytes - entry->scale_offset )
-			return 0u;
-	}
-	else if ( entry->rows != D41K_HC || entry->columns != D41_HIDDEN || entry->payload_type != SPARK_DSV41_FLASH_STAGEPACK_PAYLOAD_BF16 ||
-		entry->weight_codec != SPARK_WEIGHT_CODEC_BF16 || entry->scale_encoding != SPARK_WEIGHT_SCALE_ENCODING_NONE ||
-		entry->payload_bytes != elements * sizeof(uint16_t) || entry->scale_bytes != 0u )
-		return 0u;
-	return entry->payload_offset <= file_bytes && entry->payload_bytes <= file_bytes - entry->payload_offset ? 1u : 0u;
-}
-
 static SparkStatus D41OpenEngramShard(D41ModelState *state, const char *pack_path)
 {
 	char sha_path[1100];
@@ -1589,26 +1537,20 @@ static SparkStatus D41OpenEngramShard(D41ModelState *state, const char *pack_pat
 		fprintf(stderr, "sparkpipe_dsv41_flash: the engram shard %s (with its .digest) is missing or not an engram shard\n", state->engram_path);
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	}
-	if ( header.format_version != 1u || header.header_bytes != sizeof(header) || header.directory_entry_bytes != sizeof(D41PackEntry) ||
-		header.tensor_count != 8u || header.tp_degree != D41_TP || header.tp_rank != state->tp_rank || header.file_bytes != state->engram_bytes ||
-		header.directory_offset < header.header_bytes || header.directory_offset > state->engram_bytes - sizeof(state->engram_entries) ||
-		memcmp(header.model_revision, state->header.model_revision, sizeof(header.model_revision)) != 0 ||
-		memcmp(header.source_config_sha256, state->header.source_config_sha256, sizeof(header.source_config_sha256)) != 0 ||
-		D41ReadFile(state->engram_path, header.directory_offset, state->engram_entries, sizeof(state->engram_entries)) != SPARK_STATUS_OK )
+	const int32_t check = SparkDsv41FlashEngramHeaderCheck(&header, &state->header, state->tp_rank, state->engram_bytes);
+	if ( check != 0 || D41ReadFile(state->engram_path, header.directory_offset, state->engram_entries, sizeof(state->engram_entries)) != SPARK_STATUS_OK )
 	{
 		fprintf(stderr, "sparkpipe_dsv41_flash: the engram shard %s is not this rank's (%u of %u) shard of the rank pack's checkpoint "
-			"(shard: format %u, rank %u of %u, %u tensors)\n", state->engram_path, state->tp_rank, D41_TP, header.format_version, header.tp_rank,
+			"(check %d; shard: format %u, rank %u of %u, %u tensors)\n", state->engram_path, state->tp_rank, D41_TP, check, header.format_version, header.tp_rank,
 			header.tp_degree, header.tensor_count);
 		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 	}
-	for ( uint32_t which = 0u; which < 2u; ++which )
-		for ( uint32_t slot = 0u; slot < 4u; ++slot )
-			if ( D41EngramEntryValid(&state->engram_entries[which * 4u + slot], which, slot, state->engram_bytes) == 0u )
-			{
-				fprintf(stderr, "sparkpipe_dsv41_flash: engram shard %s entry %u has the wrong kind, layer, codec, shape or bytes\n", state->engram_path,
-					which * 4u + slot);
-				SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-			}
+	uint32_t at = 0u;
+	if ( SparkDsv41FlashEngramDirectoryCheck(state->engram_entries, state->engram_bytes, &at) != 0 )
+	{
+		fprintf(stderr, "sparkpipe_dsv41_flash: engram shard %s entry %u has the wrong kind, layer, codec, shape or bytes\n", state->engram_path, at);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
 	return SPARK_STATUS_OK;
 }
 
@@ -1694,13 +1636,10 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 			configuration->rank_pack_path, SPARK_DSV41_FLASH_STAGEPACK_FORMAT_VERSION);
 		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 	}
-	if ( D41ContractMatches(state->header.contract_sha256) == 0u ||
-		state->header.model_revision[0] == '\0' || state->header.model_revision[SPARK_DSV41_FLASH_STAGEPACK_MODEL_REVISION_BYTES - 1u] != '\0' ||
-		D41BytesZero(state->header.source_config_sha256, sizeof(state->header.source_config_sha256)) != 0u ||
-		D41BytesZero(state->header.pack_recipe_sha256, sizeof(state->header.pack_recipe_sha256)) != 0u )
+	if ( SparkDsv41FlashStagePackIdentityCheck(&state->header, DSV41_FLASH_CONTRACT_SHA256) != 0 )
 	{
-		fprintf(stderr, "sparkpipe_dsv41_flash: %s was not packed from this build's contract (%s) or carries no model revision or source identity\n",
-			configuration->rank_pack_path, DSV41_FLASH_CONTRACT_SHA256);
+		fprintf(stderr, "sparkpipe_dsv41_flash: %s was not packed from this build's contract (%s) or carries no model revision or source identity (check %d)\n",
+			configuration->rank_pack_path, DSV41_FLASH_CONTRACT_SHA256, SparkDsv41FlashStagePackIdentityCheck(&state->header, DSV41_FLASH_CONTRACT_SHA256));
 		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 	}
 	state->entries = (D41PackEntry *)malloc((size_t)state->header.tensor_count * sizeof(D41PackEntry));
