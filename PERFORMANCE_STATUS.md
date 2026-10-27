@@ -332,7 +332,7 @@ the same Studio through the same runner. Receipt:
 
 | | |
 | --- | --- |
-| Decode, B1 | 92.73 tok/s: 256 tokens after a 1,024-token prompt, median of three after a warm-up |
+| Decode, B1 | 92.73 tok/s: 256 tokens after a 1,024-token prompt, median of three after a warm-up; with main's NaN-preserving BF16 conversion (abce321a5) 91.5 to 91.6 against 92.2 to 92.5, interleaved (TECHDEBT) |
 | Decode roofline | 7.65 GB of active weights (8 of 128 experts per layer, and the tied head) plus 0.23 GB of KV per token at the bench's mean context = 7.88 GB / 1,143 GB/s = 145.0 tok/s; measured 63.9% of it |
 | Prefill, 1,024 tokens | 1,128 tok/s, one chunk |
 | Prefill, 8,192 tokens | 1,113 tok/s, 2,048-row chunks; the experts run one GEMV per route, so a chunk reads an expert once for every row routed to it (TECHDEBT) |

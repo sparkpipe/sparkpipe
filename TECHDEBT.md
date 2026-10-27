@@ -1231,6 +1231,14 @@ Metal backend and the single-Studio stage are in
   TP1 pack and its own gates. Next, one at a time and each merged before the
   next starts: Gemma 4 31B, Muse Glimmer 30B, MiMo V2.6 Flash, Qwen 3.8
   Flash Next.
+- The NaN check in the shared BF16 conversion (abce321a5) costs Gemma 4
+  26B A4B's B1 decode about 0.9% on the Studio (91.5 to 91.6 tok/s against
+  92.2 to 92.5 without it, interleaved runs), since every BF16 store now
+  compares and selects. Metal's own `bfloat` conversion rounds to nearest
+  even in one instruction; if an exhaustive test over all 2^32 FP32 inputs
+  shows it gives the shared conversion's bits for every non-NaN value, the
+  Metal branch of `kernel_math.cuh` should use it, with the Qwen and Gemma
+  gates re-run.
 - Gemma 4 26B A4B on the Studio:
   - experts run as one GEMV per route (`spark_gemv_routed`): a prefill chunk
     or a batch reads an expert once for every row routed to it, not once per
