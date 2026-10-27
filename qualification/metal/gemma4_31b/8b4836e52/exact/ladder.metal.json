@@ -1,0 +1,9 @@
+{"device":"Apple M5 Ultra","streamed_bytes_per_token":61397429888,"prompt_tokens":1024,"decode_steps":128,"repeats":1,"exact_rows":true,"batches":[
+{"batch":1,"step_ms":65.2426,"per_sequence_tokens_per_second":15.3274,"aggregate_tokens_per_second":15.3274,"runs_seconds":[8.397946,8.351055],"warmup_discarded":true,"divergences":[],"sequences_identical_to_solo":1,"nondeterministic":0},
+{"batch":2,"step_ms":66.3167,"per_sequence_tokens_per_second":15.0792,"aggregate_tokens_per_second":30.1583,"runs_seconds":[8.587246,8.488538],"warmup_discarded":true,"divergences":[],"sequences_identical_to_solo":2,"nondeterministic":0},
+{"batch":4,"step_ms":69.2644,"per_sequence_tokens_per_second":14.4374,"aggregate_tokens_per_second":57.7498,"runs_seconds":[9.068721,8.865837],"warmup_discarded":true,"divergences":[],"sequences_identical_to_solo":4,"nondeterministic":0},
+{"batch":8,"step_ms":75.3717,"per_sequence_tokens_per_second":13.2676,"aggregate_tokens_per_second":106.1406,"runs_seconds":[10.057661,9.647579],"warmup_discarded":true,"divergences":[],"sequences_identical_to_solo":8,"nondeterministic":0},
+{"batch":16,"step_ms":88.1630,"per_sequence_tokens_per_second":11.3426,"aggregate_tokens_per_second":181.4821,"runs_seconds":[12.242577,11.284858],"warmup_discarded":true,"divergences":[],"sequences_identical_to_solo":16,"nondeterministic":0},
+{"batch":32,"step_ms":120.3199,"per_sequence_tokens_per_second":8.3112,"aggregate_tokens_per_second":265.9578,"runs_seconds":[17.171329,15.400941],"warmup_discarded":true,"divergences":[],"sequences_identical_to_solo":32,"nondeterministic":0},
+{"batch":64,"step_ms":218.0298,"per_sequence_tokens_per_second":4.5865,"aggregate_tokens_per_second":293.5379,"runs_seconds":[31.218171,27.907810],"warmup_discarded":true,"divergences":[],"sequences_identical_to_solo":64,"nondeterministic":0}
+]}

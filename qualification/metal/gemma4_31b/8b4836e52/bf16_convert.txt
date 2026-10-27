@@ -1,0 +1,5 @@
+SparkMathFloatToBf16: 0 of 4294967296 inputs differ from round-to-nearest-even with every NaN as 0x7fff
+hardware bfloat(), non-NaN inputs: 16711678 of 4294967296 inputs differ from round-to-nearest-even with every NaN as 0x7fff (first 0x00008001)
+hardware bfloat(), NaN inputs: 16777214 of 4294967296 inputs differ from round-to-nearest-even with every NaN as 0x7fff (first 0x7f800001)
+hardware bfloat() with NaN -> 0x7fff: 16711678 of 4294967296 inputs differ from round-to-nearest-even with every NaN as 0x7fff (first 0x00008001)
+PASS the shared bf16 conversion matches its contract on all 2^32 FP32 inputs

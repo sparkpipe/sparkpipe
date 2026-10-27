@@ -1,0 +1,5 @@
+opened /Users/m5u0/models/packs/gemma4_31b_tp1_bf16/gemma4.tp1.rank00.pack on Apple M5 Ultra (metal.apple10) in 0.44 s: pack 61397429888 bytes, device state 9071795284 bytes
+greedy design: 128 tokens after a 1100-token prompt
+greedy code: 128 tokens after a 1800-token prompt
+greedy korean: 128 tokens after a 700-token prompt
+greedy rules: 128 tokens after a 2040-token prompt

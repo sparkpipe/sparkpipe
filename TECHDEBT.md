@@ -1246,14 +1246,22 @@ Metal backend and the single-Studio stage are in
   models are two geometries of one schedule. Every model gets a Metal port,
   one at a time and each merged before the next starts: Muse Glimmer 30B,
   MiMo V2.6 Flash, Qwen 3.8 Flash Next FP8, then the rest.
-- The Metal numerics gate compares against one floor draw (reference B).
-  On Gemma 4 31B that draw is unusually close to A at positions 550+ of the
-  design prompt: two more draws of the reference itself (C and D, other FP32
-  reduction orders) score +3.0 and +2.0 standard errors there, like Metal,
-  and order-only reruns of one Metal kernel spread the four-prompt paired
-  statistic over 0.7 to 2.6 standard errors. A verdict near the 3-sigma line
-  is then a draw, not a measurement; the floor needs several draws
-  (`tools/gemma4_reference.py` has C and D) and a rule over them.
+- Gemma 4 31B fails the multi-draw numerics floor (METAL_BACKEND.md) at
+  8b4836e52 on the code prompt: Metal's worst paired statistic against
+  draws B, C and D is +2.9 standard errors where the draws' own worst is
+  +1.1 (design, korean and rules pass), and the 64-row prefill pass fails
+  code (+6.1) and korean (+5.0 against +3.6). The order-only variants of
+  the shipped margin kernel fail code too (+1.3 and +4.5); the eager
+  kernel fails code and korean by more (+6.7 to +7.5, +6.1 to +6.4); the
+  two-pass kernel (branch metal/attention-two-pass, 20% slower 8K
+  prefill) passes in two of three order variants and misses korean by 0.1
+  in the third. What separates Metal from the draws on code, and the
+  64-row path from the 1,024-row one, is not found yet.
+- The other Metal gates (Qwen3.8-27B, Gemma 4 26B A4B) still judge the
+  paired test against one floor draw at 3 sigma; on Gemma 4 31B the
+  reference itself fails that rule (draw D at +4.4 against B). They need
+  draws C and D from their references (the Qwen reference is C, the Gemma
+  26B one needs pinned-route draws) and the multi-draw rule.
 - The NaN check in the shared BF16 conversion (abce321a5) costs Gemma 4
   26B A4B's B1 decode about 0.9% on the Studio (91.5 to 91.6 tok/s against
   92.2 to 92.5 without it, interleaved runs), since every BF16 store now

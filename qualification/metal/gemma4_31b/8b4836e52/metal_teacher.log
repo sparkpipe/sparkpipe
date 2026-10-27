@@ -1,0 +1,5 @@
+opened /Users/m5u0/models/packs/gemma4_31b_tp1_bf16/gemma4.tp1.rank00.pack on Apple M5 Ultra (metal.apple10) in 17.86 s: pack 61397429888 bytes, sha256 cec666a6e4393eda5da933469aacf0f847802009e851ab06e03eac0f3b943374, device state 10166515264 bytes
+teacher design: 1099 positions (550 by prefill, 549 by decode)
+teacher code: 1799 positions (900 by prefill, 899 by decode)
+teacher korean: 699 positions (350 by prefill, 349 by decode)
+teacher rules: 2039 positions (1020 by prefill, 1019 by decode)

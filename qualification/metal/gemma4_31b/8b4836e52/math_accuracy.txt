@@ -1,0 +1,1 @@
+PASS exp                    [-80, 0], 4194304 inputs: max 1.47 ulp (at -0.008812), mean |error| 0.448 ulp, mean signed error +0.3587 ulp, correctly rounded 62.0%; envelope 16 ulp; one output moved by 17 ulp: max 17.23 ulp (control fails as required: yes)

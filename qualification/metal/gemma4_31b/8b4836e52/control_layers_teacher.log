@@ -1,0 +1,5 @@
+opened /Users/m5u0/gates/gemma31-8b4836e52/control.pack on Apple M5 Ultra (metal.apple10) in 0.35 s: pack 61397429888 bytes, device state 10166515264 bytes
+teacher design: 1099 positions (550 by prefill, 549 by decode)
+teacher code: 1799 positions (900 by prefill, 899 by decode)
+teacher korean: 699 positions (350 by prefill, 349 by decode)
+teacher rules: 2039 positions (1020 by prefill, 1019 by decode)

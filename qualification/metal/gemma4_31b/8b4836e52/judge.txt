@@ -1,0 +1,2 @@
+The gate ran at 8b4836e52 with the summary of that revision (3-sigma paired test; compare/compare.3sigma.jsonl, gate.log: numerics fail on metal_rows64, leg A +4.7 sigma).
+It was then judged with the multi-draw floor of 1c1546591, written before any Metal run was scored with it: the floor-draw rows were appended to compare/compare.jsonl by the same logit_compare and RECEIPT.json and summary_floor_draws.json rewritten by tools/metal_gate_summary.py at 1c1546591. The kernel code is unchanged between the two revisions.

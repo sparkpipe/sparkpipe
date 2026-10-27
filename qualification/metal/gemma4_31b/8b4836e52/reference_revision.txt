@@ -1,0 +1,1 @@
+reference logits a and b: tools/gemma4_reference.py teacher --variants a,b on the hub (main at 4df3b8e81's reference); c and d: the same tool with the floor draws of 6c0e66d6f (teacher --variants c,d, hub, 2026-10-27), against the BF16 checkpoint gemma-4-31b-it; prompts identical to gemma4_26b's (same tokenizer, sha256 cc8d3a0c..., same chat framing)

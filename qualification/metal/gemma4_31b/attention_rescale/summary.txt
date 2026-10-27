@@ -66,3 +66,24 @@ they change nothing but FP32 summation order.
 6. exp: Metal's exp on [-80, 0] at most 1.47 ulp (at -0.0088), mean +0.36 ulp, 62.0% correctly rounded
    (build/test_metal_math_accuracy); numpy 2.5.2 float32 exp on the reference host at most 2.54 ulp, mean -0.07 ulp,
    60.7% correctly rounded.
+
+7. Reference draws C and D on all four prompts (hub, tools/gemma4_reference.py at 6c0e66d6f), and the multi-draw floor
+   (rule of 1c1546591, written before any Metal run was scored with it).
+   Under the 3-sigma rule the reference fails against itself (KL ratio / top-1 ratio / paired sigma, per prompt in brackets):
+     C against A (floor B): 0.82 / 0.95 / +0.1  (design +3.0, code -0.7, korean -0.7, rules -1.0)
+     C against B (floor A): 1.16 / 0.96 / +2.9  (design +2.3, code +1.7, korean -0.0, rules +1.5)
+     D against A (floor B): 1.09 / 1.07 / +2.8  (design +2.0, code -1.1, korean +2.4, rules +2.4)
+     D against B (floor A): 1.42 / 1.06 / +4.4  (design +3.5, code +1.1, korean +2.8, rules +2.3)   fails
+   Floor noise, the worst paired sigma against A over the ordered pairs of B, C, D: design +3.0, code +1.1, korean +3.6,
+   rules +3.8 (floor_draws_variants.txt has every pair).
+   Candidates, worst paired sigma against A with B, C or D as the floor, per prompt (pass when no worse than the floor's):
+     8b4836e52 gate, metal (margin kernel)  FAIL  code +2.9 (floor +1.1); design +2.4, korean -1.6, rules +1.1 pass
+     8b4836e52 gate, metal_rows64           FAIL  code +6.1, korean +5.0; design +2.0, rules +2.3 pass
+     margin, cross-SIMD sum reversed        FAIL  code +1.3
+     margin, partition combine reversed     FAIL  code +4.5
+     eager (3759a9dc6) and its two variants FAIL  code +6.7 to +7.5, korean +6.1 to +6.4
+     two-pass (metal/attention-two-pass)    PASS  (code +0.4, design +2.0, korean +3.1, rules +3.3)
+     two-pass, cross-SIMD sum reversed      FAIL  korean +3.7 (floor +3.6)
+     two-pass, partition combine reversed   PASS
+   Controls under the rule: control_layers and control_rotate fail every prompt (+25 to +143); the one-layer probe fails
+   code (+1.3).

@@ -468,12 +468,14 @@ paired statistic, against A, of one draw with another as its floor, over
 every ordered pair of B, C and D. Metal passes a prompt when its paired
 statistic against A with each of B, C and D as the floor is no worse than
 that worst value, with no added margin, and it must pass every prompt; the
-KL and top-1 checks of both legs are unchanged. One draw is not enough for
-this model: B sits unusually close to A at positions 550 and later of the
-design prompt, where C and D themselves score 0.648 and 0.639 of their
-positions above B. The rule was written down before Metal was scored with
-it, and the order-only variants of the shipped kernel (sums across SIMD
-groups or across partitions reversed) are scored the same way.
+KL and top-1 checks of both legs are unchanged, and A is the target of every
+leg. The rule was written down (1c1546591) before Metal was scored with it.
+The reason for it is that the reference fails the 3-sigma rule against
+itself: draw D scores +4.4 standard errors against B with A as the floor
+(+2.8 against A), and on single prompts C reaches +3.0 (design) and D +3.5
+(design), +2.8 (korean). The floor's noise per prompt is +3.0 (design), +1.1
+(code), +3.6 (korean) and +3.8 (rules); code is tight because the draws
+agree closely there.
 
 Metal must pass both legs. `tools/pack_tensor_control.py` writes APFS clones
 of the pack with tensors corrupted, and the gate runs each through the same
