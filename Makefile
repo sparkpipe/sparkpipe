@@ -962,6 +962,11 @@ build/test_expert_tail_reference: tests/test_expert_tail_reference.cu inference/
 test-expert-tail-reference: build/test_expert_tail_reference
 	./build/test_expert_tail_reference --run
 
+EXPERT_GEMM_BENCH_SHAPE := -DBENCH_EXPERTS=320u -DBENCH_TOP_K=8u -DBENCH_HIDDEN=4096u -DBENCH_INTER=80u
+
+build/expert_gemm_bench: tools/expert_gemm_bench.cu inference/kernels/moe_experts.cuh inference/kernels/skinny.cuh inference/kernels/gemm.cuh inference/kernels/tile.cuh inference/kernels/tma.cuh runtime/gemm.cuh runtime/launch.h inference/kernels/route.cuh | build
+	$(KERNEL_TEST_NVCC) $(EXPERT_GEMM_BENCH_SHAPE) $< $(KERNEL_TEST_CUDA_LINK) -o $@
+
 WORKING_SET_NVCC = $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude
 
 build/test_working_set_rollback: tests/test_working_set_rollback.cu runtime/spark_expert_working_set.c include/sparkpipe/spark_expert_working_set.h include/sparkpipe/spark_step_verdict.h inference/kernels/expert_cover.cuh inference/kernels/state_snapshot.cuh include/sparkpipe/spark_state_span.h | build
