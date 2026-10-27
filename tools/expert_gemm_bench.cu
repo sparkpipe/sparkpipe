@@ -10,17 +10,8 @@
 #include "inference/kernels/moe_local.cuh"
 #include "inference/kernels/moe_experts.cuh"
 
-#ifndef BENCH_EXPERTS
-#define BENCH_EXPERTS 320u
-#endif
-#ifndef BENCH_TOP_K
-#define BENCH_TOP_K 8u
-#endif
-#ifndef BENCH_HIDDEN
-#define BENCH_HIDDEN 4096u
-#endif
-#ifndef BENCH_INTER
-#define BENCH_INTER 80u
+#if !defined(BENCH_EXPERTS) || !defined(BENCH_TOP_K) || !defined(BENCH_HIDDEN) || !defined(BENCH_INTER)
+#error "expert_gemm_bench takes its shape from the build: -DBENCH_EXPERTS, -DBENCH_TOP_K, -DBENCH_HIDDEN and -DBENCH_INTER"
 #endif
 #define BENCH_ITERATIONS 20u
 

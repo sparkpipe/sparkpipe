@@ -192,8 +192,11 @@ which could be mistaken for the qualified route.
     (249 GB/s, near the memory roofline). K-EXAONE's shape (256 experts,
     hidden 6144, 128 rows per rank) went from 11.5 to 2.7 ms. The staged
     bytes and the MMA order are unchanged, so outputs are bit-identical.
-    `build/expert_gemm_bench ROWS [gemm]` measures it; set the geometry
-    with `-DBENCH_EXPERTS`, `-DBENCH_HIDDEN` and `-DBENCH_INTER`.
+    `build/expert_gemm_bench ROWS [gemm]` measures it. Its make target
+    names the geometry in `EXPERT_GEMM_BENCH_SHAPE` (Solar's by default;
+    `make EXPERT_GEMM_BENCH_SHAPE="-DBENCH_EXPERTS=256u -DBENCH_TOP_K=8u
+    -DBENCH_HIDDEN=6144u -DBENCH_INTER=128u" build/expert_gemm_bench` for
+    K-EXAONE).
 - **Grouped skinny tasks cover real row batches.** `LmSkinnyGroupedKernel`
   scans `ceil(rows / ROWS)` per expert into a shared batch prefix
   (`LmSkinnyGroupedBatchScan`) and maps each task to one batch and one neuron
