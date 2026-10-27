@@ -1,0 +1,9 @@
+opened /Users/m5u0/gates/gemma-662c49da2/control.pack on Apple M5 Ultra (metal.apple10) in 0.16 s: pack 50467750912 bytes, device state 3356014144 bytes
+teacher design: experts pinned from /Users/m5u0/gates/gemma-662c49da2/ref/design.ref_a.routes (top 8)
+teacher design: 1099 positions (550 by prefill, 549 by decode)
+teacher code: experts pinned from /Users/m5u0/gates/gemma-662c49da2/ref/code.ref_a.routes (top 8)
+teacher code: 1799 positions (900 by prefill, 899 by decode)
+teacher korean: experts pinned from /Users/m5u0/gates/gemma-662c49da2/ref/korean.ref_a.routes (top 8)
+teacher korean: 699 positions (350 by prefill, 349 by decode)
+teacher rules: experts pinned from /Users/m5u0/gates/gemma-662c49da2/ref/rules.ref_a.routes (top 8)
+teacher rules: 2039 positions (1020 by prefill, 1019 by decode)

@@ -1,13 +1,14 @@
-# Metal backend and the single-Studio Qwen3.8-27B stage
+# Metal backend and the single-Studio stages
 
 This is the authority for how SparkPipe runs on an Apple GPU: the kernel
 launch part of the device API, the Metal backend's queue model, the Metal
 kernel library, the single-device stage runner, the precision policy those
-kernels and the reference share, and how the Qwen3.8-27B stage is qualified
-on one M5 Ultra Mac Studio. Measured results are in
+kernels and the references share, and how the Qwen3.8-27B and Gemma 4 26B
+A4B stages are qualified on one M5 Ultra Mac Studio. Measured results are in
 [`PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md#mac-studio) and the
 receipts under
-[`qualification/metal/qwen38_27b/`](../qualification/metal/qwen38_27b/).
+[`qualification/metal/qwen38_27b/`](../qualification/metal/qwen38_27b/) and
+[`qualification/metal/gemma4_26b/`](../qualification/metal/gemma4_26b/).
 Open work is in [`TECHDEBT.md`](../TECHDEBT.md#mac-studio-deployment).
 
 ## Kernel launch in the device API
@@ -491,16 +492,17 @@ BF16, so the eighth and ninth experts of a row are often a rounding step
 apart, and the reduction order alone changes the choice: in a 160-token
 pass, b chose different experts than a for 7 rows at layer 1 and 63 at layer
 29, and its logits sat 0.31 nats of KL from a's with 82.5% top-1 agreement.
-A misplaced output in every layer's FFN moves the logits less than that, so
-no rule relative to this floor can see it. The gate therefore has a second
+Over the gate's 5,636 positions a and b differ at 18.3% of the layer and
+position decisions (0.2% at layer 0, 36% at layer 29), and the free-route
+floor is 0.31 nats. A misplaced output in every layer's FFN moves the logits
+less than that, so no rule relative to this floor can see it. The gate therefore has a second
 set in which every layer's experts are pinned to a's choice: the reference
 writes a's experts per layer and position (`<name>.ref_a.routes`), bp is b
 with those experts (its own probabilities of them, renormalised, as the
 weights), and the Metal tool's teacher mode takes `--pin-routes DIR`, which
 fills a route override for every step (`SparkStageRunnerStep.route_override`,
 `[layer][row][rank]`) that the experts layer kind uses instead of its top-k
-(`spark_route_pinned`). In the 160-token pass, pinning cut a against b from
-0.31 to 0.012 nats.
+(`spark_route_pinned`). Pinned, a against bp is 0.063 nats.
 
 The receipt applies the rule to both sets. Free routes: Metal against a
 and b with b and a as the floor; it must pass, which shows the end-to-end

@@ -161,7 +161,7 @@ def speed(out):
                        "projection_tflops": rate * flops / 1e12,
                        "roofline": f"weights {chunk / 1e9:.2f} GB per {rows}-row chunk = {per_token / 1e6:.1f} MB per token / "
                                    f"{peak / 1e9:.1f} GB/s = {ceiling:.0f} tok/s memory ceiling; measured {rate:.1f} tok/s, "
-                                   f"{rate * flops / 1e12:.1f} TFLOPS in the projections, so prefill is compute-bound"}
+                                   f"{rate * flops / 1e12:.1f} TFLOPS in the projections"}
     return result
 
 

@@ -1124,9 +1124,9 @@ and the multidev docs on 2026-09-28. Line numbers are in
   decomposition from the link matrix instead of a configured backend.
 - Keep the host backend as a CI oracle for common policy, not only for
   kernels. The Metal backend is qualified on one M5 Ultra for the device
-  contract, every kernel Qwen3.8-27B uses, and that model end to end
-  ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)); no other model and no
-  multi-Studio topology is.
+  contract, every kernel Qwen3.8-27B and Gemma 4 26B A4B use, and those two
+  models end to end ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)); no
+  other model and no multi-Studio topology is.
 - Left out on purpose (2026-10-02): KV and weights share weightd but not one
   budget. weightd maps KV device memory as KV pools that grow and shrink in
   chunks (`runtime/spark_weightd_kv_pool.c`, driven from
@@ -1175,8 +1175,8 @@ Metal backend and the single-Studio stage are in
     `tools/metal_stage_run.c` chooses speculative frames itself on the
     common cost model (`src/spark_speculation_frame.c`). That includes the
     rule that a first probe frame may cost at most the cost model's margin
-    over a plain step, which took Metal prose from a 0.5% loss to a 0.4%
-    gain. The batch engine (`runtime/model_batch_engine.c`) has its own
+    over a plain step (one draft where no frame is that cheap), which took
+    Metal prose from a 0.5% loss to a 0.4% gain. The batch engine (`runtime/model_batch_engine.c`) has its own
     chooser. Fold both into one function in `src/` that the engine and every
     backend call, and check whether the probe rule also helps the CUDA
     lanes' prose speculation.
@@ -1236,18 +1236,28 @@ Metal backend and the single-Studio stage are in
     or a batch reads an expert once for every row routed to it, not once per
     step. Prefill (1,100 tok/s) and the batch ladder need routes grouped by
     expert into one skinny or tensor-unit GEMM per expert;
-  - B1 decode runs at about 62% of its 7.6 GB-per-token roofline; the
-    attention layers and the per-layer small kernels (three per-head norms,
-    the KV store, the router norm, top-k and combine) are the rest;
+  - B1 decode runs at 63.9% of its 7.88 GB-per-token roofline (92.73 of
+    145.0 tok/s); the attention layers and the per-layer small kernels
+    (three per-head norms, the KV store, the router norm, top-k and combine)
+    are the rest, for the B1 dispatch work;
   - the KV pool holds the full context for the 25 sliding-window layers,
-    which only ever read their last 1,024 positions;
+    which only ever read their last 1,024 positions: at 256K positions that
+    is 52 GB of the Studio's 256 GB for nothing. A windowed attention layer
+    should take its pages from a ring of `window / page + 1` pages per
+    sequence, indexed by position modulo the ring;
   - the CUDA stage rounds the experts' tanh GeLU as `0.044715 * g * g * g`
     and folds the route weight into the activation; the Metal stage and the
     numpy reference follow the publisher's eager order (cube first, weight
     after the down projection, BF16 sums in ascending expert order), so the
-    two backends differ by those rounding points;
-  - speculation is not gated for Gemma (it has no recurrent state, so verify
-    frames need no replay, but the exactness run is still to do);
+    two backends differ by those rounding points. The CUDA stage should take
+    the shared GeLU and the publisher's order and pass this reference's
+    pinned-route gate;
+  - speculation is exact (every run's tokens equal plain decode's on six
+    prompts) and takes the rewrite from 92 to 323 tok/s, but a frame costs
+    more than a step from two rows on, so the first probe in a match class
+    is one draft and costs 0.1 to 0.3% on text the lookup cannot predict.
+    The cost model should price a probe by the expected acceptance of its
+    match length instead of capping it;
   - the numerics gate checks the arithmetic with every layer's experts pinned
     to reference A's choice, because FP32 reduction order alone flips the
     BF16 router's top 8 at a growing share of rows (7 of 160 rows at layer 1,
@@ -1258,11 +1268,12 @@ Metal backend and the single-Studio stage are in
   - at three to eight rows a batch takes the skinny tensor-unit projection
     with its split-K reduce, which is slower than the row-exact GEMV passes
     for both models: Gemma's exact-rows ladder (every row bit-identical to
-    its solo run) decoded B4 and B8 faster than its fast path (see the
-    receipt), and Qwen3.8-27B's four-row verify frame costs 49.2 ms against
-    a 58.2 ms B4 step. GEMV passes up to eight rows would make B3 to B8 both
-    faster and identical to solo decode; it changes Qwen's ladder receipt,
-    so it belongs with the B1 dispatch work and its gate.
+    its solo run) decodes B4 and B8 at 235.5 and 311.4 tok/s against 206.2
+    and 291.8 on the fast path, and Qwen3.8-27B's four-row verify frame costs
+    49.2 ms against a 58.2 ms B4 step. GEMV passes up to eight rows would
+    make B3 to B8 both faster and identical to solo decode; it changes Qwen's
+    ladder receipt, so it goes with the exact multi-row verify kernel and
+    its gate.
 - Define hardware profiles for one to eight Studios: memory, bandwidth, the
   Thunderbolt 5 island wiring, the bridge to the Sparks, power, and storage.
 - Add Thunderbolt 5 RDMA as a link class. Apple's verbs API (TN3205) offers
