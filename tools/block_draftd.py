@@ -164,7 +164,7 @@ class Server:
         else:
             self.drafter = open_drafter(args.drafter, args.target_shard, {"embed": args.embed, "head": args.head, "norm": args.norm}, "cuda")
         self.latent = isinstance(self.drafter, LatentBlockDrafter)
-        self.layers = list(self.drafter.tap_names) if self.dspark else [f"o{layer}" for layer in self.drafter.layer_ids]
+        self.layers = list(self.drafter.tap_names) if self.dspark else [f"o{layer + args.delta}" for layer in self.drafter.layer_ids]
         self.graph = None if self.dspark else LatentDraftGraph(self.drafter) if self.latent else DraftGraph(self.drafter)
         self.max_drafts = self.drafter.max_drafts if self.latent or self.dspark else self.drafter.block
         self.columns = None
@@ -489,6 +489,7 @@ def main():
     parser.add_argument("--draft-host", default="127.0.0.1")
     parser.add_argument("--draft-port", type=int, required=True)
     parser.add_argument("--window", type=int, default=4096, help="context positions each sequence keeps and a draft attends to")
+    parser.add_argument("--delta", type=int, default=0, help="offset added to the drafter's target layer ids to name the taps it reads, as block_drafter.py --delta")
     parser.add_argument("--wait-ms", type=float, default=30.0, help="how long a request waits for the taps it needs")
     parser.add_argument("--context-bytes", type=int, default=8 << 30, help="keys and values held for all sequences; the least recently used goes first")
     parser.add_argument("--switch-interval", type=float, default=0.0005, help="interpreter thread switch interval, seconds")
