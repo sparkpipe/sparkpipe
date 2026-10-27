@@ -95,7 +95,7 @@ tensor sizes before each launch.
 | `spark_causal_conv_silu` | depthwise causal convolution over a per-sequence window, BF16 sum, SiLU |
 | `spark_gated_delta_prepare`, `spark_gated_delta_rule` | L2-normalised query and key, decay and write strength, then the gated delta rule over FP32 state, one SIMD group per value column |
 | `spark_kv_store_paged` | key and value rows into 64-slot pages through a page table |
-| `spark_attention_{decode,prefill_blocks,combine}_d{256,512}` | causal grouped-query attention over paged KV for 256- and 512-wide heads, split into key partitions and merged, with an optional sliding window (a row sees its last `window` positions) and an optional sigmoid output gate; decode walks 128-key partitions one key per SIMD group, prefill computes 32 (16 for 512-wide heads) query rows against 64-key pages on the tensor operations (scores and the FP32 probability-times-value product in `matmul2d`, the online softmax in FP32 between them) |
+| `spark_attention_{decode,prefill_blocks,combine}_d{256,512}` | causal grouped-query attention over paged KV for 256- and 512-wide heads, split into key partitions and merged, with an optional sliding window (a row sees its last `window` positions) and an optional sigmoid output gate; decode walks 128-key partitions one key per SIMD group, prefill computes 32 (16 for 512-wide heads) query rows against 64-key pages on the tensor operations (scores and the FP32 probability-times-value product in `matmul2d`, the online softmax in FP32 between them); both online softmaxes move a row's running maximum only when a score exceeds it by more than `SPARK_ATTENTION_RESCALE_MARGIN` (8), so the sums are rescaled a few times per partition instead of at every new maximum and every weight stays below e^8 |
 | `spark_silu_mul`, `spark_gelu_tanh_mul`, `spark_add_rows` | the gated activations (`bf16(silu(g) u)`, `bf16(bf16(gelu_tanh(g)) u)` with `SparkMathGeluTanh`) and the final residual add |
 | `spark_route_topk`, `spark_route_pinned`, `spark_gemv_routed`, `spark_route_combine` | expert routing: softmax over the router's BF16 logits, the top k (lowest index on ties) or, pinned, the experts a route override names, renormalised and times a per-expert scale; the GEMV of each route's expert on its row (the same per-row arithmetic as `spark_gemv_r1`); and the routes' outputs times their weights, summed in BF16 in ascending expert order |
 | `spark_scale_rows`, `spark_softcap_rows` | a BF16 row scale (an embedding multiplier) and the FP32 logit softcap `cap tanh(z / cap)` (`SparkMathSoftcap`) |
@@ -359,6 +359,30 @@ partitions and the block prefill attention (FP32 scores, FP32
 probabilities times BF16 values with FP32 accumulation on the tensor
 operations) only reorder FP32 sums; every value in the table above is
 rounded where it was before.
+
+The attention softmax is online within a key partition and rescales lazily:
+a row's running maximum moves only when a score exceeds it by more than 8,
+so the weights `exp(score - max)` stay below e^8 = 2981 and the running sum
+and accumulators are multiplied by `exp(old - new)` a few times per
+partition instead of at every new maximum. Nothing else changes: the same
+launches, the same per-row arithmetic, row results independent of the batch.
+On Gemma 4 31B this moved the gate's paired statistic by about two standard
+errors. Three order-only variants of the eager kernel (summation order
+across SIMD groups or partitions reversed) sat at 3.5 to 4.8 and 3.7 to 4.4
+against references A and B; three of the margin kernel at 0.9 to 3.5 and 1.6
+to 2.3; and four of a two-pass kernel that never rescales (branch
+`metal/attention-two-pass`, 20% slower 8K prefill on the 31B) at 1.4 to 2.3
+and 2.2 to 3.6. On synthetic keys and values the three kernels' partition
+records are equally accurate (within 0.5 units of `2^-24 sum p|v|` RMS of
+float64 at 8K keys, with and without a rising score ramp), so how the eager
+rescaling errs on the model's own activations is not isolated. `matmul2d`
+takes the FP32 probabilities at full precision (32 x 64 FP32 times 64 x 256
+BF16 errs by at most 3.1 and on average 0.29 units of `2^-24 sum |p v|`).
+Metal's `exp` measures at most 1.47 ulp on [-80, 0], mean +0.36 ulp, 62%
+correctly rounded (`build/test_metal_math_accuracy`, which holds it to the
+16-ulp envelope the kernel tests assume); numpy's float32 `exp` on the
+reference host measures at most 2.54 ulp, mean -0.07 ulp, 61% correctly
+rounded.
 
 The delta-rule state, the L2-normalised query and key, the decay and write
 strength, the attention scores and softmax stay FP32. Rotary angles are
