@@ -130,8 +130,9 @@ def render(record_id: str, directory: Path) -> None:
     args.swap_entry = lane["launcher"] == "stage_lane"
     stage_lane.write_lane(args, directory)
     if lane["launcher"] == "stage_lane":
+        environment = {name: os.environ[name] for name in ("PATH", "HOME", "SPARK_LANES") if name in os.environ}
         subprocess.run(["bash", str(HERE / "stage_lane.sh"), "lane-scripts", str(directory)],
-                       env={**os.environ, "STAGE_RECORD": record_id}, check=True)
+                       env=dict(environment, STAGE_RECORD=record_id), check=True)
 
 
 def draftd_environment(record_id: str) -> tuple[str, dict[str, str]]:
@@ -146,8 +147,12 @@ def draftd_environment(record_id: str) -> tuple[str, dict[str, str]]:
     for path in paths:
         if not path.startswith(INFERENCE_ROOTS) or ".." in path.split("/"):
             raise SystemExit(f"{record_id}: draftd path {path} is not on the hub's local NVMe ({', '.join(INFERENCE_ROOTS)}); inference never reads CephFS or cold storage")
+    stream = (lane.get("taps") or {}).get("stream", "")
+    tap_host, _, tap_port = stream.rpartition(":")
+    if not tap_host or not tap_port.isdigit():
+        raise SystemExit(f"{record_id}: a draft server needs the record's taps.stream as host:port, the endpoint the rank streams to and draftd listens on")
     environment = {"DRAFTD_UNIT": spec["unit"], "DRAFTD_LOG": spec["log"], "DRAFTD_DRAFTER": drafter, "DRAFTD_TARGET_SHARD": spec.get("target_shard", ""),
-                   "DRAFTD_TAP_HOST": spec["tap_host"], "DRAFTD_TAP_PORT": str(spec["tap_port"]), "DRAFTD_DRAFT_PORT": str(server["port"]),
+                   "DRAFTD_TAP_HOST": tap_host, "DRAFTD_TAP_PORT": tap_port, "DRAFTD_DRAFT_PORT": str(server["port"]),
                    "DRAFTD_WINDOW": str(spec["window"]), "DRAFTD_CONTEXT_BYTES": str(spec["context_bytes"]), "DRAFTD_RESTART": spec.get("restart", "no")}
     return spec["source"], environment
 

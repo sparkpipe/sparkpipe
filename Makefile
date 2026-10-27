@@ -662,6 +662,8 @@ PYTHON_TESTS := \
 	tests/test_model_swap_failures.py \
 	tests/test_stage_lane_kv_labels.py \
 	tests/test_stage_lane_stop.py \
+	tests/test_stage_lane_setup.py \
+	tests/test_lane_tools.py \
 	tests/test_stage_lane_state_memory.py \
 	tests/test_lane_records.py \
 	tests/test_chat_commands.py \

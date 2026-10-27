@@ -51,7 +51,7 @@ case "\${1:-}" in
     run_id="\$(lane_run_id "\${2:-}")" || exit 2
     eval "\$(lane_log_prelude $host "\$run_id")" || exit 2
     systemctl --user reset-failed $UNIT 2>/dev/null
-    systemd-run --user --unit=$UNIT -p MemoryMax=$STAGE_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=$STAGE_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$STAGE_LANE -E SPARK_TP_MESH_RANKS=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$STAGE_EXPERT_POOL_BYTES -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=\$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=32 $(for pair in ${STAGE_EXTRA_ENV:-}; do printf -- '-E %s ' "$pair"; done)bash -c "exec ./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index $rank > \$(lane_log_file "\$run_id") 2>&1" > /dev/null ;;
+    systemd-run --user --unit=$UNIT -p MemoryMax=$STAGE_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=$STAGE_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$STAGE_LANE -E SPARK_TP_MESH_RANKS=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$STAGE_EXPERT_POOL_BYTES -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=\$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=32 bash -c "exec ./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index $rank > \$(lane_log_file "\$run_id") 2>&1" > /dev/null ;;
   ready)
     state="\$(systemctl --user is-active $UNIT)"
     if [ "\$state" = active ] && grep -q 'model_residentd ready' "\$(lane_log_file "\${2:?ready RUN_ID}")" 2>/dev/null; then echo READY
@@ -89,8 +89,14 @@ render() {
 }
 
 setup() {
-  local generated rank host root pack
+  local generated rank host root pack state busy=""
   : "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds sparkpipe_model_residentd, the model adapter library, libhidden_transport_spark_host_rdma_verbs.so and weightd_warm}"
+  for rank in $(seq 0 15); do
+    host="$(host_of "$rank")"
+    state="$($SSH "$host" "systemctl --user is-active $UNIT" < /dev/null || true)"
+    case "$state" in active|activating|deactivating|reloading|refreshing) busy="$busy $host($state)" ;; esac
+  done
+  [ -z "$busy" ] || { echo "stage_lane setup: $UNIT is running on:$busy; setup clears the lane's packs, KV cache and snapshots, so stop the lane first (stage_lane.sh stop)" >&2; exit 1; }
   generated="$(mktemp -d)"
   render "$generated" > /dev/null
   for rank in $(seq 0 15); do

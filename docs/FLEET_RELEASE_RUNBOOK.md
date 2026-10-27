@@ -250,10 +250,14 @@ directories it installs into.
 (default `/Users/mac/wf/integ`), named by its 9-character sha:
 
 1. `git archive` of the revision to `$HUB_WORK/src/rp-src-<sha>.tar` on the
-   hub and to `~/build-rp/` on the build host.
+   hub and to `~/build-rp/` on the build host. The adapters to build are the
+   firmware libraries of every record in that revision's
+   `deployment/lanes.json` (`tools/lane_config.py release-row`), so a new
+   lane record is built without editing the kit; the build stops if a record
+   does not resolve.
 2. On the hub, in the background: unpack into `$HUB_WORK/api-build-<sha>`
-   and build `sparkpipe_model_api`, `sparkpipe_tokenize_prompt` and every
-   TP16 serving adapter for x86 (log `$HUB_WORK/logs/api-<sha>.out`).
+   and build `sparkpipe_model_api`, `sparkpipe_tokenize_prompt` and those
+   adapters for x86 (log `$HUB_WORK/logs/api-<sha>.out`).
 3. On `BUILD_HOST` (default `lenovo7`; every aarch64 build runs on a
    Lenovo, never on a fleet node, so it takes no fleet lock): unpack into `~/build-rp/fw-<sha>-src` and build residentd, weightd,
    `weightd_warm`, `weightd_receipt`, `weightdctl`, `sparkpipe_model_batch`,
@@ -292,7 +296,7 @@ release are committed under `qualification/releases/<sha>/`.
 | `down` | **down from here** | runs the controller's own `node_stop` for every record, whether or not its API answers (a lane started outside the controller is stopped too), and `api_stop` for every model whose API answers; fails unless no residentd runs anywhere |
 | `weightd` | down | section 5.2; it changes nothing when `FW` carries the production weightd |
 | `install` | down | per model: residentd, `weightd_warm`, the spine budget, the batch client where the lane has one, the transport and the adapter into `~/<lane>/root`, each install one hash variant on all sixteen; the API, the tokenizer tool and the adapter into the hub's `~/<model>-kv-api`, dropping its `runtime/prefix_index.spi`; the shared `~/sparkdata/swap/weightd_warm`. This kit version also moves the GLM Full lane to the `glm53full.fp8lin.tp16` packs |
-| `qualify` | serving, swapping | per model (`ONLY=<ids>` limits it): activate, capture and compare against `old`; `tools/ui_smoke.py` through LiteLLM; COMPSEC-17 (`tools/compsec17_openai.py`) when the outputs are not exact 6/6 or `COMPSEC` is set; `api_serving_perf.py` cases `o256` and `ttft6000`; the count of error lines in the rank logs. It ends on `qwen3.8-max` |
+| `qualify` | serving, swapping | per model (`ONLY=<ids>` limits it): activate, capture and compare against `old`; `tools/ui_smoke.py` through LiteLLM; COMPSEC-17 (`tools/compsec17_openai.py`) unless `tools/release_compare.py` proves every prompt's tokens equal (it exits 0 only then, so a failed, missing or empty capture runs the gate) or `COMPSEC` is set; `api_serving_perf.py` cases `o256` and `ttft6000`; the count of error lines in the rank logs. It ends on `qwen3.8-max` |
 | `rollback` | down, then swapping | refuses unless every backup of the stamp exists; runs `down`; restores every lane root, hub API directory and `weightd_warm`; restores the production weightd and `WEIGHTSD_BIN` (section 5.2); then activates, captures and compares each model against `old` |
 
 Run `precheck`, `old`, `stage` and `backup` while production serves, then the
