@@ -61,6 +61,7 @@ typedef struct SparkStageRunnerStep
 	uint32_t graph_key;
 	const uint32_t *route_override;
 	uint32_t route_override_width;
+	uint16_t *hidden_record;
 } SparkStageRunnerStep;
 
 typedef struct SparkStageRunnerModelGeometry

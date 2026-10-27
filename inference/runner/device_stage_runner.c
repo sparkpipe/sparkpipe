@@ -468,6 +468,7 @@ SparkStatus SparkDeviceStageRunnerStep(SparkDeviceStageRunner *runner, const Spa
 	step.host_sequence_of_row = runner->table.sequence_of_row;
 	step.route_override = batch->route_override;
 	step.route_override_width = batch->route_override != 0 ? batch->route_override_width : 0u;
+	step.hidden_record = batch->hidden_record;
 	if ( status == SPARK_STATUS_OK )
 		status = runner->config.model->step(runner->model,&step,runner->queue);
 	if ( status == SPARK_STATUS_OK )

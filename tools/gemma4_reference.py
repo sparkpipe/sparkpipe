@@ -25,7 +25,9 @@
              experts, renormalised), so a against bp is that noise without
              the discrete expert choice. MoE models also write
              <out>/<name>.ref_<variant>.routes for a and b, the chosen
-             experts as little-endian uint16 [layer][position][rank]
+             experts as little-endian uint16 [layer][position][rank];
+             --hidden also writes <out>/<name>.ref_<variant>.hidden, every
+             layer's output residual as BF16 [layer][position][hidden]
   gate-prompts  the Metal gate prompts (the same instructions and repository
              files as the Qwen3.8-27B gate) in this model's chat framing,
              each file cut to the target token count -> --out prompts.json
@@ -169,6 +171,7 @@ class Reference:
         self.pin_source = []
         self.head = None
         self.routes = {}
+        self.hidden = None
         if self.muse:
             self.post_epsilon = config["post_norm_eps"]
             self.qk_scale = np.float32(config["qk_scale_factor"])
@@ -314,6 +317,8 @@ class Reference:
                 if self.reversed_of:
                     REVERSED = self.reversed_of[index]
                 residuals[index] = self.layer(layer, residuals[index], position)
+                if self.hidden is not None:
+                    self.hidden.setdefault(index, []).append((np.ascontiguousarray(residuals[index], dtype=np.float32).view(np.uint32) >> 16).astype(np.uint16))
             print(f"layer {layer} done", file=sys.stderr, flush=True)
         self.checkpoint.cache.clear()
         final = widen(self.checkpoint.raw(PREFIX + "norm.weight"))
@@ -454,10 +459,14 @@ def teacher(args):
     reference.pin_source = [first_a + index % len(prompts) if label == "bp" else None for index, (_, label) in enumerate(runs)]
     if "bp" in variants and variants.index("bp") < variants.index("a"):
         raise ValueError("list a before bp so a's experts are chosen first in every layer")
+    if args.hidden:
+        reference.hidden = {}
     normed = reference.forward([prompt["prompt_token_ids"] for prompt, _ in runs])
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     for index, ((prompt, label), hidden) in enumerate(zip(runs, normed)):
+        if args.hidden:
+            np.ascontiguousarray(np.stack(reference.hidden[index]), dtype="<u2").tofile(out / f"{prompt['name']}.ref_{label}.hidden")
         REVERSED = label != "a"
         if reference.moe and label != "bp":
             np.ascontiguousarray(np.stack(reference.routes[index]), dtype="<u2").tofile(out / f"{prompt['name']}.ref_{label}.routes")
@@ -515,6 +524,7 @@ def main():
     r.add_argument("--prompts", required=True)
     r.add_argument("--out", required=True)
     r.add_argument("--variants", default="a")
+    r.add_argument("--hidden", action="store_true")
     m = sub.add_parser("summary")
     m.add_argument("--report", required=True)
     m.add_argument("--tie", type=float, default=0.1)

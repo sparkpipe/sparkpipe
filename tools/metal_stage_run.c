@@ -45,6 +45,7 @@ typedef struct RunOptions
 	uint32_t draft_max;
 	const char *pin_routes;
 	uint32_t exact_rows;
+	const char *record_hidden;
 } RunOptions;
 
 static uint64_t NowNs(void)
@@ -72,7 +73,7 @@ static const SparkStageRunnerModelInterface *RunModel(const char *name)
 static int Usage(const char *program)
 {
 	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|pairs|bench|ladder|spec --out DIR [--prefill-rows N] [--new-tokens N] "
-		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|gemma4-26b-a4b] [--pin-routes DIR] [--exact-rows]\n",program);
+		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|gemma4-26b-a4b] [--pin-routes DIR] [--exact-rows] [--record-hidden FILE]\n",program);
 	return(2);
 }
 
@@ -125,6 +126,8 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 			options->draft_max = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--pin-routes") == 0 )
 			options->pin_routes = value;
+		else if ( strcmp(flag,"--record-hidden") == 0 )
+			options->record_hidden = value;
 		else if ( strcmp(flag,"--prompt-tokens") == 0 )
 			options->prompt_tokens = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--batches") == 0 )
@@ -174,6 +177,10 @@ typedef struct Session
 	uint16_t *pinned;
 	uint32_t pinned_positions;
 	uint32_t pinned_width;
+	uint32_t hidden;
+	SparkDeviceBuffer record;
+	uint16_t *recorded;
+	uint32_t recorded_positions;
 } Session;
 
 static SparkStatus SessionStepSequence(Session *session, uint32_t sequence, const uint32_t *tokens, uint32_t first, uint32_t count,
@@ -208,6 +215,19 @@ static SparkStatus SessionStepSequence(Session *session, uint32_t sequence, cons
 						session->pinned[((uint64_t)layer * session->pinned_positions + first + row) * session->pinned_width + k];
 		batch.route_override = (const uint32_t *)(uintptr_t)session->routes.device;
 		batch.route_override_width = session->pinned_width;
+	}
+	if ( session->recorded != 0 )
+	{
+		SparkStatus status;
+		uint32_t layer;
+		if ( first + count > session->recorded_positions )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		batch.hidden_record = (uint16_t *)(uintptr_t)session->record.device;
+		status = SparkDeviceStageRunnerStep(session->runner,&batch,result);
+		for ( layer = 0u; status == SPARK_STATUS_OK && layer < session->layers; layer++ )
+			memcpy(session->recorded + ((uint64_t)layer * session->recorded_positions + first) * session->hidden,
+				(const uint16_t *)session->record.host + (uint64_t)layer * count * session->hidden,(size_t)count * session->hidden * sizeof(uint16_t));
+		return(status);
 	}
 	return(SparkDeviceStageRunnerStep(session->runner,&batch,result));
 }
@@ -314,6 +334,14 @@ static int RunTeacher(Session *session, const RunOptions *options, const SparkTo
 		SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceStageRunnerResetSequence(session->runner,0u);
+	if ( status == SPARK_STATUS_OK && options->record_hidden != 0 )
+	{
+		session->recorded_positions = positions;
+		session->recorded = (uint16_t *)calloc((size_t)session->layers * positions * session->hidden,sizeof(uint16_t));
+		if ( session->recorded == 0 || (session->record.host == 0 && SparkDeviceAllocate(&session->record,SPARK_DEVICE_SPACE_SHARED_COHERENT,
+			(uint64_t)session->layers * session->capacity * session->hidden * sizeof(uint16_t),"hidden record") != SPARK_STATUS_OK) )
+			status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
 	for ( first = 0u; status == SPARK_STATUS_OK && first < positions; )
 	{
 		const uint32_t rows = first < prefill ? (prefill - first < options->prefill_rows ? prefill - first : options->prefill_rows) : 1u;
@@ -338,6 +366,20 @@ static int RunTeacher(Session *session, const RunOptions *options, const SparkTo
 		fprintf(json,"]}\n");
 		printf("teacher %s: %u positions (%u by prefill, %u by decode)\n",prompt->name,positions,prefill,positions - prefill);
 	}
+	if ( status == SPARK_STATUS_OK && session->recorded != 0 )
+	{
+		char path[4096];
+		FILE *file;
+		snprintf(path,sizeof(path),"%s.%s.hidden",options->record_hidden,prompt->name);
+		file = fopen(path,"wb");
+		if ( file == 0 || fwrite(session->recorded,sizeof(uint16_t),(size_t)session->layers * positions * session->hidden,file) !=
+			(size_t)session->layers * positions * session->hidden )
+			status = SPARK_STATUS_IO_ERROR;
+		if ( file != 0 )
+			fclose(file);
+	}
+	free(session->recorded);
+	session->recorded = 0;
 	if ( logits != 0 )
 		fclose(logits);
 	if ( json != 0 )
@@ -1089,6 +1131,7 @@ int main(int argc, char **argv)
 			return(1);
 		SparkDeviceStageRunnerInfoGet(session.runner,&info);
 		session.layers = info.layers;
+		session.hidden = info.hidden;
 		printf("opened %s on %s (%s) in %.2f s: pack %llu bytes%s%s, device state %llu bytes\n",options.pack,info.device,info.target,
 			(NowNs() - start) / 1e9,(unsigned long long)info.pack_bytes,options.verify != 0u ? ", sha256 " : "",options.verify != 0u ? info.pack_sha256 : "",
 			(unsigned long long)info.device_state_bytes);
@@ -1150,5 +1193,7 @@ int main(int argc, char **argv)
 	free(session.pinned);
 	if ( session.routes.host != 0 )
 		SparkDeviceFree(&session.routes);
+	if ( session.record.host != 0 )
+		SparkDeviceFree(&session.record);
 	return(failed ? 1 : 0);
 }

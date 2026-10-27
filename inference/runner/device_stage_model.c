@@ -320,6 +320,13 @@ SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStage
 	tensors->sequences.sequences = step->sequences;
 	tensors->sequences.commit = step->commit;
 	tensors->route_override_width = 0u;
+	tensors->record_hidden = 0u;
+	if ( status == SPARK_STATUS_OK && step->hidden_record != 0 )
+	{
+		status = StageResolve(stage,step->hidden_record,(uint64_t)stage->shape->layers * step->rows * stage->shape->hidden * sizeof(uint16_t),
+			&tensors->hidden_record);
+		tensors->record_hidden = status == SPARK_STATUS_OK ? 1u : 0u;
+	}
 	if ( status == SPARK_STATUS_OK && step->route_override != 0 )
 	{
 		if ( step->route_override_width == 0u || step->route_override_width > SPARK_ROUTE_MAX_TOP_K )
@@ -382,10 +389,14 @@ SparkOpsPaged SparkDeviceStagePaged(const SparkDeviceStage *stage, const SparkDe
 	return(paged);
 }
 
-void SparkDeviceStageLayerDone(const SparkDeviceStage *stage, uint32_t layer)
+SparkStatus SparkDeviceStageLayerDone(const SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceStepTensors *tensors, uint32_t layer)
 {
+	const uint64_t bytes = (uint64_t)tensors->rows * stage->shape->hidden * sizeof(uint16_t);
 	if ( stage->services != 0 && stage->services->layer_done != 0 )
 		stage->services->layer_done(stage->services->context,layer);
+	if ( tensors->record_hidden == 0u )
+		return(SPARK_STATUS_OK);
+	return(SparkDeviceCopy(queue,SparkTensorSlice(tensors->hidden_record,(uint64_t)layer * bytes,bytes).range,tensors->hidden.range,bytes));
 }
 
 void SparkDeviceStageClose(void *model)

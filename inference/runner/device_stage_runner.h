@@ -40,6 +40,7 @@ typedef struct SparkDeviceStageRunnerBatch
 	uint32_t verify;
 	const uint32_t *route_override;
 	uint32_t route_override_width;
+	uint16_t *hidden_record;
 } SparkDeviceStageRunnerBatch;
 
 typedef struct SparkDeviceStageRunnerResult

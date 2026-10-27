@@ -100,6 +100,8 @@ typedef struct SparkDeviceStepTensors
 	SparkTensor row_identity;
 	SparkTensor route_override;
 	uint32_t route_override_width;
+	SparkTensor hidden_record;
+	uint32_t record_hidden;
 } SparkDeviceStepTensors;
 
 typedef struct SparkDeviceKeepTensors
@@ -130,7 +132,7 @@ uint64_t SparkDeviceStageStateBytes(const SparkDeviceStage *stage, uint32_t cont
 SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, SparkDeviceStepTensors *tensors);
 SparkStatus SparkDeviceStageKeepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, const uint32_t *kept, SparkDeviceKeepTensors *keep);
 SparkOpsPaged SparkDeviceStagePaged(const SparkDeviceStage *stage, const SparkDeviceStepTensors *tensors, uint32_t kv_layer);
-void SparkDeviceStageLayerDone(const SparkDeviceStage *stage, uint32_t layer);
+SparkStatus SparkDeviceStageLayerDone(const SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceStepTensors *tensors, uint32_t layer);
 
 void SparkDeviceStageClose(void *model);
 SparkStatus SparkDeviceStageManifestCheck(void *model, const struct SparkWeightdManifest *manifest);
