@@ -24,6 +24,10 @@ def f32_to_bf16_u16(x):
     return rounded.astype(np.uint16)
 
 
+def matmul(left, right):
+    return (np.asarray(left, dtype=np.float64) @ np.asarray(right, dtype=np.float64)).astype(np.float32)
+
+
 def bf16_round_f32(x):
     return bf16_to_f32(f32_to_bf16_u16(x))
 
