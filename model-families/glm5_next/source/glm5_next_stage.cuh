@@ -84,6 +84,7 @@
 #define G5N_HC_CLUSTER 8u
 #define G5N_HC_SLICE (G5N_HC_FLAT / G5N_HC_CLUSTER)
 #define G5N_HC_PRE_SLICE (G5N_HIDDEN / G5N_HC_CLUSTER)
+#define G5N_HC_ROWS 8u
 #define G5N_HC_VECTORS (G5N_HC_SLICE / 4u / LM_WARP_LANES)
 #define G5N_NO_ORDINAL 0xffffffffu
 
@@ -475,15 +476,16 @@ __global__ static void Glm5NextDenseOffsetsKernel(uint32_t *offsets, uint32_t ro
 	}
 }
 
-typedef struct Glm5NextHcShared
+template<uint32_t ROWS>
+struct __align__(16) Glm5NextHcShared
 {
-	float staged[G5N_HC_SLICE];
-	float partial[G5N_HC_CLUSTER][G5N_HC_MIX + 1u];
-	float mixes[G5N_HC_MIX + 1u];
+	uint16_t staged[ROWS][G5N_HC_SLICE];
+	float partial[ROWS][G5N_HC_CLUSTER][G5N_HC_MIX + 1u];
+	float mixes[ROWS][G5N_HC_MIX + 1u];
 	float reduction[G5N_THREADS / LM_WARP_LANES];
-	float pre[G5N_HC];
-	float post[G5N_HC];
-} Glm5NextHcShared;
+	float pre[ROWS][G5N_HC];
+	float post[ROWS][G5N_HC];
+};
 
 static __device__ __forceinline__ float Glm5NextHcRowSum(float value, uint32_t lane)
 {
@@ -547,79 +549,96 @@ static __device__ void Glm5NextHcCombWarp(const float *mixes, const float *scale
 		comb_out[cell] = value;
 }
 
-static __device__ float Glm5NextHcStage(Glm5NextHcShared *shared, const uint16_t *slice)
+template<uint32_t ROWS>
+static __device__ float Glm5NextHcStage(Glm5NextHcShared<ROWS> *shared, uint32_t row, const uint16_t *slice)
 {
 	float total = 0.0f;
 	for ( uint32_t element = threadIdx.x; element < G5N_HC_SLICE; element += G5N_THREADS )
 	{
-		const float value = LmBf16ToFloat(slice[element]);
-		shared->staged[element] = value;
+		const uint16_t raw = slice[element];
+		const float value = LmBf16ToFloat(raw);
+		shared->staged[row][element] = raw;
 		total += value * value;
 	}
 	return LmBlockSum<G5N_THREADS>(total, shared->reduction);
 }
 
-static __device__ void Glm5NextHcDot(Glm5NextHcShared *shared, const float *fn, uint32_t offset, uint32_t slice)
+template<uint32_t ROWS>
+static __device__ void Glm5NextHcDot(Glm5NextHcShared<ROWS> *shared, const float *fn, uint32_t offset, uint32_t slice, uint32_t live)
 {
 	const uint32_t warp = threadIdx.x / LM_WARP_LANES, lane = threadIdx.x % LM_WARP_LANES;
 	float4 weight[G5N_HC_VECTORS], value;
+	uint2 packed;
 	for ( uint32_t mix = warp; mix < G5N_HC_MIX; mix += G5N_THREADS / LM_WARP_LANES )
 	{
-		float accumulator = 0.0f;
 #pragma unroll
 		for ( uint32_t vector = 0u; vector < G5N_HC_VECTORS; vector++ )
 			weight[vector] = __ldcs((const float4 *)(fn + (uint64_t)mix * G5N_HC_FLAT + offset) + lane + vector * LM_WARP_LANES);
-#pragma unroll
-		for ( uint32_t vector = 0u; vector < G5N_HC_VECTORS; vector++ )
+		for ( uint32_t row = 0u; row < live; ++row )
 		{
-			value = ((const float4 *)shared->staged)[lane + vector * LM_WARP_LANES];
-			accumulator = fmaf(weight[vector].x, value.x, accumulator);
-			accumulator = fmaf(weight[vector].y, value.y, accumulator);
-			accumulator = fmaf(weight[vector].z, value.z, accumulator);
-			accumulator = fmaf(weight[vector].w, value.w, accumulator);
+			float accumulator = 0.0f;
+#pragma unroll
+			for ( uint32_t vector = 0u; vector < G5N_HC_VECTORS; vector++ )
+			{
+				packed = ((const uint2 *)shared->staged[row])[lane + vector * LM_WARP_LANES];
+				value.x = __uint_as_float(packed.x << 16u);
+				value.y = __uint_as_float(packed.x & 0xffff0000u);
+				value.z = __uint_as_float(packed.y << 16u);
+				value.w = __uint_as_float(packed.y & 0xffff0000u);
+				accumulator = fmaf(weight[vector].x, value.x, accumulator);
+				accumulator = fmaf(weight[vector].y, value.y, accumulator);
+				accumulator = fmaf(weight[vector].z, value.z, accumulator);
+				accumulator = fmaf(weight[vector].w, value.w, accumulator);
+			}
+			for ( uint32_t step = LM_WARP_LANES / 2u; step > 0u; step >>= 1u )
+				accumulator += __shfl_xor_sync(0xffffffffu, accumulator, step);
+			if ( lane == 0u )
+				shared->partial[row][slice][mix] = accumulator;
 		}
-		for ( uint32_t step = LM_WARP_LANES / 2u; step > 0u; step >>= 1u )
-			accumulator += __shfl_xor_sync(0xffffffffu, accumulator, step);
-		if ( lane == 0u )
-			shared->partial[slice][mix] = accumulator;
 	}
 }
 
-static __device__ void Glm5NextHcScatter(cooperative_groups::cluster_group &cluster, Glm5NextHcShared *shared, uint32_t slice)
+template<uint32_t ROWS>
+static __device__ void Glm5NextHcScatter(cooperative_groups::cluster_group &cluster, Glm5NextHcShared<ROWS> *shared, uint32_t slice, uint32_t live)
 {
-	for ( uint32_t index = threadIdx.x; index < G5N_HC_CLUSTER * (G5N_HC_MIX + 1u); index += G5N_THREADS )
+	for ( uint32_t index = threadIdx.x; index < live * G5N_HC_CLUSTER * (G5N_HC_MIX + 1u); index += G5N_THREADS )
 	{
-		const uint32_t rank = index / (G5N_HC_MIX + 1u), mix = index % (G5N_HC_MIX + 1u);
+		const uint32_t row = index / (G5N_HC_CLUSTER * (G5N_HC_MIX + 1u)), rank = index / (G5N_HC_MIX + 1u) % G5N_HC_CLUSTER;
+		const uint32_t mix = index % (G5N_HC_MIX + 1u);
 		if ( rank != slice )
-			cluster.map_shared_rank(shared->partial[slice], rank)[mix] = shared->partial[slice][mix];
+			cluster.map_shared_rank(shared->partial[row][slice], rank)[mix] = shared->partial[row][slice][mix];
 	}
 }
 
-static __device__ void Glm5NextHcFinish(Glm5NextHcShared *shared, const float *scale3, const float *base, float *mixes, float *pre, float *post, uint32_t slice)
+template<uint32_t ROWS>
+static __device__ void Glm5NextHcFinish(Glm5NextHcShared<ROWS> *shared, const float *scale3, const float *base, float *mixes, float *pre, float *post,
+	uint32_t slice, uint32_t live)
 {
-	if ( threadIdx.x <= G5N_HC_MIX )
+	const uint32_t warp = threadIdx.x / LM_WARP_LANES, lane = threadIdx.x % LM_WARP_LANES;
+	for ( uint32_t index = threadIdx.x; index < live * (G5N_HC_MIX + 1u); index += G5N_THREADS )
 	{
+		const uint32_t row = index / (G5N_HC_MIX + 1u), mix = index % (G5N_HC_MIX + 1u);
 		float total = 0.0f;
 		for ( uint32_t rank = 0u; rank < G5N_HC_CLUSTER; rank++ )
-			total += shared->partial[rank][threadIdx.x];
-		shared->mixes[threadIdx.x] = total;
+			total += shared->partial[row][rank][mix];
+		shared->mixes[row][mix] = total;
 	}
 	__syncthreads();
-	if ( threadIdx.x < LM_WARP_LANES )
+	if ( warp < live )
 	{
-		const float inverse = rsqrtf(shared->mixes[G5N_HC_MIX] / (float)G5N_HC_FLAT + G5N_EPS);
-		if ( threadIdx.x < G5N_HC_MIX )
+		const float inverse = rsqrtf(shared->mixes[warp][G5N_HC_MIX] / (float)G5N_HC_FLAT + G5N_EPS);
+		if ( lane < G5N_HC_MIX )
 		{
-			const float value = shared->mixes[threadIdx.x] * inverse;
-			shared->mixes[threadIdx.x] = value;
+			const float value = shared->mixes[warp][lane] * inverse;
+			shared->mixes[warp][lane] = value;
 			if ( slice == 0u )
-				mixes[threadIdx.x] = value;
+				mixes[(uint64_t)warp * G5N_HC_MIX + lane] = value;
 		}
 		__syncwarp();
-		Glm5NextHcGatesWarp(shared->mixes, scale3, base, shared->pre, slice == 0u ? post : shared->post);
+		Glm5NextHcGatesWarp(shared->mixes[warp], scale3, base, shared->pre[warp], slice == 0u ? post + (uint64_t)warp * G5N_HC : shared->post[warp]);
 		__syncwarp();
-		if ( slice == 0u && threadIdx.x < G5N_HC )
-			pre[threadIdx.x] = shared->pre[threadIdx.x];
+		if ( slice == 0u && lane < G5N_HC )
+			pre[(uint64_t)warp * G5N_HC + lane] = shared->pre[warp][lane];
 	}
 	__syncthreads();
 }
@@ -642,48 +661,58 @@ static __device__ void Glm5NextHcCollapse(const float *pre, const uint16_t *stre
 	}
 }
 
+template<uint32_t ROWS>
 __global__ void __cluster_dims__(G5N_HC_CLUSTER, 1, 1) __launch_bounds__(G5N_THREADS) Glm5NextHcSiteKernel(const uint16_t *__restrict__ streams_bf16,
 	const float *__restrict__ fn_f32, const float *__restrict__ scale3_f32, const float *__restrict__ base_f32, float *__restrict__ mixes_f32,
 	float *__restrict__ pre_f32, float *__restrict__ post_f32, float *__restrict__ comb_f32, uint16_t *__restrict__ collapsed_bf16,
-	uint16_t *__restrict__ snapshot_bf16)
+	uint16_t *__restrict__ snapshot_bf16, uint32_t rows)
 {
-	__shared__ Glm5NextHcShared shared;
+	__shared__ Glm5NextHcShared<ROWS> shared;
 	cooperative_groups::cluster_group cluster = cooperative_groups::this_cluster();
-	const uint32_t slice = cluster.block_rank(), row = blockIdx.x / G5N_HC_CLUSTER;
-	const uint16_t *streams = streams_bf16 + (uint64_t)row * G5N_HC_FLAT;
+	const uint32_t slice = cluster.block_rank(), first = blockIdx.x / G5N_HC_CLUSTER * ROWS, warp = threadIdx.x / LM_WARP_LANES;
+	const uint32_t live = rows - first < ROWS ? rows - first : ROWS;
+	const uint16_t *streams = streams_bf16 + (uint64_t)first * G5N_HC_FLAT;
 	float total;
 	asm volatile("barrier.cluster.arrive.relaxed.aligned;" ::: "memory");
 	if ( threadIdx.x % LM_WARP_LANES == 0u )
 		for ( uint32_t mix = threadIdx.x / LM_WARP_LANES; mix < G5N_HC_MIX; mix += G5N_THREADS / LM_WARP_LANES )
 			LmPrefetchL2(fn_f32 + (uint64_t)mix * G5N_HC_FLAT + slice * G5N_HC_SLICE, G5N_HC_SLICE * sizeof(float));
 	LmDependentWait();
-	total = Glm5NextHcStage(&shared, streams + slice * G5N_HC_SLICE);
-	Glm5NextHcDot(&shared, fn_f32, slice * G5N_HC_SLICE, slice);
-	if ( threadIdx.x == 0u )
-		shared.partial[slice][G5N_HC_MIX] = total;
+	for ( uint32_t row = 0u; row < live; ++row )
+	{
+		total = Glm5NextHcStage(&shared, row, streams + (uint64_t)row * G5N_HC_FLAT + slice * G5N_HC_SLICE);
+		if ( threadIdx.x == 0u )
+			shared.partial[row][slice][G5N_HC_MIX] = total;
+	}
+	Glm5NextHcDot(&shared, fn_f32, slice * G5N_HC_SLICE, slice, live);
 	__syncthreads();
 	asm volatile("barrier.cluster.wait.aligned;" ::: "memory");
-	Glm5NextHcScatter(cluster, &shared, slice);
+	Glm5NextHcScatter(cluster, &shared, slice, live);
 	cluster.sync();
-	Glm5NextHcFinish(&shared, scale3_f32, base_f32, mixes_f32 + (uint64_t)row * G5N_HC_MIX, pre_f32 + (uint64_t)row * G5N_HC,
-		post_f32 + (uint64_t)row * G5N_HC, slice);
-	if ( slice != 0u )
-		Glm5NextHcCollapse(shared.pre, streams, collapsed_bf16 + (uint64_t)row * G5N_HIDDEN, snapshot_bf16 + (uint64_t)row * G5N_HC_FLAT,
-			slice * G5N_HC_PRE_SLICE, threadIdx.x, G5N_THREADS);
-	else if ( threadIdx.x >= LM_WARP_LANES )
-		Glm5NextHcCollapse(shared.pre, streams, collapsed_bf16 + (uint64_t)row * G5N_HIDDEN, snapshot_bf16 + (uint64_t)row * G5N_HC_FLAT,
-			0u, threadIdx.x - LM_WARP_LANES, G5N_THREADS - LM_WARP_LANES);
-	else
-		Glm5NextHcCombWarp(shared.mixes, scale3_f32, base_f32, comb_f32 + (uint64_t)row * G5N_HC * G5N_HC);
+	Glm5NextHcFinish(&shared, scale3_f32, base_f32, mixes_f32 + (uint64_t)first * G5N_HC_MIX, pre_f32 + (uint64_t)first * G5N_HC,
+		post_f32 + (uint64_t)first * G5N_HC, slice, live);
+	if ( slice == 0u && warp < live )
+		Glm5NextHcCombWarp(shared.mixes[warp], scale3_f32, base_f32, comb_f32 + (uint64_t)(first + warp) * G5N_HC * G5N_HC);
+	for ( uint32_t row = 0u; row < live; ++row )
+		Glm5NextHcCollapse(shared.pre[row], streams + (uint64_t)row * G5N_HC_FLAT, collapsed_bf16 + (uint64_t)(first + row) * G5N_HIDDEN,
+			snapshot_bf16 + (uint64_t)(first + row) * G5N_HC_FLAT, slice * G5N_HC_PRE_SLICE, threadIdx.x, G5N_THREADS);
+}
+
+template<uint32_t ROWS>
+static cudaError_t Glm5NextHcSiteLaunch(const uint16_t *streams, const float *fn, const float *scale, const float *base, float *mixes, float *pre,
+	float *post, float *comb, uint16_t *collapsed, uint16_t *snapshot, uint32_t rows, cudaStream_t stream)
+{
+	return LM_LAUNCH_DEPENDENT((Glm5NextHcSiteKernel<ROWS>), (rows + ROWS - 1u) / ROWS * G5N_HC_CLUSTER, G5N_THREADS, 0, stream, streams, fn, scale,
+		base, mixes, pre, post, comb, collapsed, snapshot, rows);
 }
 
 static int32_t Glm5NextHcSite(const Glm5NextLayerBuffers *b, const void *fn, const void *base, const void *scale, uint32_t rows, cudaStream_t stream)
 {
 	if ( fn == 0 || base == 0 || scale == 0 || ((uintptr_t)fn % 16u) != 0u )
 		return LM_LAUNCH_ERR_SHAPE;
-	if ( LM_LAUNCH_DEPENDENT((Glm5NextHcSiteKernel), rows * G5N_HC_CLUSTER, G5N_THREADS, 0, stream, (const uint16_t *)b->hidden_bf16,
-		(const float *)fn, (const float *)scale, (const float *)base, b->hc_mixes_f32, b->hc_pre_f32, b->hc_post_f32, b->hc_comb_f32,
-		b->hc_collapsed_bf16, b->hc_snapshot_bf16) != cudaSuccess )
+	if ( (rows >= G5N_HC_ROWS ? Glm5NextHcSiteLaunch<G5N_HC_ROWS> : Glm5NextHcSiteLaunch<1u>)((const uint16_t *)b->hidden_bf16, (const float *)fn,
+			(const float *)scale, (const float *)base, b->hc_mixes_f32, b->hc_pre_f32, b->hc_post_f32, b->hc_comb_f32, b->hc_collapsed_bf16,
+			b->hc_snapshot_bf16, rows, stream) != cudaSuccess )
 		return LM_LAUNCH_ERR_LAUNCH;
 	return LM_LAUNCH_OK;
 }

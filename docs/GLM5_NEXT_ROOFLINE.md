@@ -114,6 +114,15 @@ earlier kernel, which gathered the partials into CTA 0 and broadcast `pre`
 with two more cluster syncs. The result is bitwise equal
 (`test_glm5_next_hc_mix`, `ROOFLINE-HASH`). Only CTA 0 writes `mixes`, `pre`
 and `post` to global memory.
+
+For prefill a cluster takes `G5N_HC_ROWS` (8) rows. Each `fn` vector is loaded
+once and applied to all eight rows, so a 2,048-row site reads the 1.5 MiB
+matrix 256 times instead of 2,048 times. The rows are staged as bf16, which
+converts to the same floats, so each row's dot product, Sinkhorn and collapse
+are unchanged. On one GB10 (lenovo7) a 2,048-row site takes 1,245 us against
+3,250 us with one row per cluster, and the outputs are bitwise equal
+(`tests/test_glm5_next_hc_site_cuda.py`). The fleet profile of 2026-10-27
+put the site at 13% of a GLM 5.3 Flash 16K prefill wave.
 Bench, sparkf, 5 interleaved rounds: B1 12.912 -> 12.831 ms, B8 31.569 -> 31.531 ms
 (`qualification/glm5next/performance/glmflash_b1_20260929/ab/ab_hc1_one_sync.txt`).
 

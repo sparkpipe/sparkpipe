@@ -549,6 +549,7 @@ PYTHON_TESTS := \
 	tests/test_latent_gather_prefill_cuda.py \
 	tests/test_expanded_gather_prefill_cuda.py \
 	tests/test_latent_shard_decode_cuda.py \
+	tests/test_glm5_next_hc_site_cuda.py \
 	tests/test_skinny_split.py \
 	tests/test_skinny_cell_rows.py \
 	tests/test_delta_rule_column_cuda.py \
@@ -849,8 +850,6 @@ build:
 .PHONY: test-glm-head-offset
 
 .PHONY: test-glm-mtp-join
-
-.PHONY: test-glm-hc-mix
 
 .PHONY: test-glm-l2-prefetch
 
