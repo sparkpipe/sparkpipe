@@ -375,6 +375,7 @@ PYTHON_TESTS := \
 	tests/test_kv_snapshot_law.py \
 	tests/test_ab_stats.py \
 	tests/test_metal_stage_run_inputs.py \
+	tests/test_metal_gate_summary.py \
 	tests/test_ab_verdict.py \
 	tests/test_ab_arm.py \
 	tests/test_ab_receipt.py \
@@ -732,6 +733,7 @@ PYTHON_TESTS := \
 	tests/test_mesh_status_tool.py \
 	tests/test_weightd_warm_family.py
 PYTHON_TEST_BINARIES := build/test_tiktoken_compiled \
+	build/logit_compare \
 	build/test_child_guard_thread \
 	build/weightd_lazy_consumer \
 	build/sparkpipe_weightd \
