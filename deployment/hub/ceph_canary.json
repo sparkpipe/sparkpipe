@@ -1,22 +1,6 @@
 {
  "hosts": [
-  "rtx5090",
-  "spark0",
-  "spark1",
-  "spark2",
-  "spark3",
-  "spark4",
-  "spark5",
-  "spark6",
-  "spark7",
-  "spark8",
-  "spark9",
-  "sparka",
-  "sparkb",
-  "sparkc",
-  "sparkd",
-  "sparke",
-  "sparkf"
+  "rtx5090"
  ],
  "local_host": "rtx5090",
  "ssh": [
