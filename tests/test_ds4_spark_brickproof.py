@@ -1,6 +1,10 @@
 import importlib.util
+import json
 import re
 import base64
+import shlex
+import subprocess
+import sys
 from pathlib import Path
 import struct
 import tempfile
@@ -279,7 +283,37 @@ Boot0002* ubuntu HD(1,GPT,def)
         self.assertNotIn("LOCAL_ASSET_SOURCES",source)
         self.assertIn('remote_script = git_show(repo,ref,SELF_SOURCE)',source)
         self.assertIn('controller does not match {ref}:{SELF_SOURCE}',source)
-        self.assertIn('script_data = str(staged_payload.pop("remote_script")).encode("utf-8")',source)
+
+    def test_remote_action_streams_script_and_payload_over_stdin(self) -> None:
+        script = "def remote_audit(payload):\n    return({'node_seen':payload['recovery_network']['node_id'],'value':payload['value']})\n"
+        calls = []
+        def fake_ssh(host,*argv,input_bytes=None,timeout=120,check=True):
+            remote_argv = shlex.split(" ".join(argv))
+            calls.append((host,remote_argv))
+            result = subprocess.run([sys.executable,*remote_argv[3:]],input=input_bytes,capture_output=True,check=True)
+            return(subprocess.CompletedProcess(remote_argv,0,result.stdout,result.stderr))
+        with mock.patch.object(MODULE,"ssh",side_effect=fake_ssh):
+            document = MODULE.remote_action("spark2","audit",{"remote_script":script,"value":7})
+        self.assertEqual(document,{"node":"spark2","node_seen":"spark2","value":7})
+        self.assertEqual(len(calls),1)
+        self.assertEqual(calls[0][1][:5],["sudo","-n","python3","-I","-c"])
+        self.assertEqual(calls[0][1][6:],["audit"])
+        self.assertFalse(any("/tmp" in argument for argument in calls[0][1]))
+        with mock.patch.object(MODULE,"ssh") as ssh, self.assertRaises(MODULE.BrickproofError):
+            MODULE.remote_action("spark2","remove",{"remote_script":script})
+        ssh.assert_not_called()
+
+    def test_remote_bootstrap_loads_the_real_script_without_running_its_controller(self) -> None:
+        probe = "\ndef remote_probe(payload):\n    return({'module':BrickproofError.__module__,'payload':payload,'path':sys.path[0]})\n"
+        request = json.dumps({"payload":{"value":3},"script":SCRIPT.read_text() + probe})
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "json.py").write_text("raise SystemExit('planted json imported')\n")
+            result = subprocess.run([sys.executable,"-I","-c",MODULE.REMOTE_BOOTSTRAP,"probe"],input=request.encode("utf-8"),capture_output=True,cwd=directory,timeout=60)
+        self.assertEqual(result.returncode,0,result.stderr.decode("utf-8",errors="replace"))
+        document = json.loads(result.stdout)
+        self.assertEqual(document["module"],"ds4_spark_brickproof")
+        self.assertEqual(document["payload"],{"value":3})
+        self.assertNotEqual(document["path"],"")
 
     def test_kernel_image_and_modules_are_required_packages(self) -> None:
         self.assertEqual(MODULE.required_packages("6.17.0-test"),(

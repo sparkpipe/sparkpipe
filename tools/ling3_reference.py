@@ -40,6 +40,10 @@ residual sums round to bf16; recurrent state, gates, softmax and router in
 f32. Two deliberate f32 choices: attention scores (the HF eager path rounds
 QK^T to bf16, the serving flash kernels do not) and the final logits.
 
+Every matrix product accumulates in f64 before it is rounded
+(t1_reference_common.matmul), so a prompt's numbers do not depend on the other
+prompts in the run or on how many served tokens follow.
+
 The checkpoint is memmapped; dense tensors and each routed expert are
 converted one at a time. All prompts run together layer by layer so a
 layer's experts are read once.
@@ -55,6 +59,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
+
+from t1_reference_common import matmul
 
 
 def bf16(values):
@@ -177,7 +183,7 @@ class Reference:
         return bf16(normed * weight)
 
     def linear(self, values, name, out_dim, in_dim):
-        return bf16(values @ self.checkpoint.bf16(name, out_dim, in_dim).T)
+        return bf16(matmul(values, self.checkpoint.bf16(name, out_dim, in_dim).T))
 
     def output(self, values, name, out_dim, in_dim):
         return self.linear(values, name, out_dim, in_dim)
@@ -243,24 +249,24 @@ class Reference:
         scale = np.float32(self.qk_dim ** -0.5)
         output = np.empty((rows, heads, self.value_dim), dtype=np.float32)
         for head in range(heads):
-            scores = (query[:, head, :] @ key[:, head, :].T) * scale
+            scores = matmul(query[:, head, :], key[:, head, :].T) * scale
             scores = np.where(causal, scores, -np.inf)
             weights = np.exp(scores - scores.max(axis=-1, keepdims=True))
             weights = bf16(weights / weights.sum(axis=-1, keepdims=True))
-            output[:, head, :] = bf16(weights @ value[:, head, :])
+            output[:, head, :] = bf16(matmul(weights, value[:, head, :]))
         gate = bf16(sigmoid(self.linear(normed, a + "g_proj.weight", heads, self.hidden)))
         output = bf16(output * gate[:, :, None])
         return self.output(output.reshape(rows, heads * self.value_dim), a + "dense.weight", self.hidden, heads * self.value_dim)
 
     def swiglu_weights(self, values, weights, limit):
         gate_weight, up_weight, down_weight = weights
-        gate = bf16(values @ gate_weight.T)
-        up = bf16(values @ up_weight.T)
+        gate = bf16(matmul(values, gate_weight.T))
+        up = bf16(matmul(values, up_weight.T))
         activated = bf16(silu(gate))
         if limit > 0.0:
             activated = np.minimum(activated, np.float32(limit))
             up = np.clip(up, np.float32(-limit), np.float32(limit))
-        return bf16(bf16(activated * up) @ down_weight.T)
+        return bf16(matmul(bf16(activated * up), down_weight.T))
 
     def mlp_weights(self, prefix, inter):
         return (self.checkpoint.read_bf16(prefix + "gate_proj.weight", inter, self.hidden),
@@ -272,7 +278,7 @@ class Reference:
 
     def route(self, layer, normed):
         m = f"model.layers.{layer}.mlp."
-        logits = normed @ self.checkpoint.bf16(m + "gate.weight", self.experts, self.hidden).T
+        logits = matmul(normed, self.checkpoint.bf16(m + "gate.weight", self.experts, self.hidden).T)
         scores = sigmoid(logits)
         selection = scores + self.checkpoint.f32(m + self.expert_bias_name, self.experts)[None, :]
         rows = normed.shape[0]
@@ -343,7 +349,7 @@ class Reference:
         parts = []
         for first in range(0, self.vocab, chunk):
             rows = (np.asarray(head[first:first + chunk]).astype(np.uint32) << 16).view(np.float32)
-            parts.append(normed @ rows.T)
+            parts.append(matmul(normed, rows.T))
         return np.concatenate(parts, axis=-1)
 
 

@@ -64,7 +64,7 @@ class FakeModel:
 
 async def collect(frontend, model):
     chunks = []
-    async for chunk in frontend.engine_stream(model, {"prompt_token_ids": [1], "max_tokens": 1, "stream": True}):
+    async for chunk in frontend.engine_stream(model, {"prompt_token_ids": [1], "max_tokens": 1, "stream": True}, False):
         chunks.append(chunk)
     return chunks
 

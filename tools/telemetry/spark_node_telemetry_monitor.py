@@ -372,7 +372,7 @@ def metric_map_text(values: Dict[str,float]) -> str:
         safe_key = str(key).replace(";","_").replace(":","_").strip()
         if safe_key:
             parts.append("%s:%.6f" % (safe_key,float(values[key])))
-    return(";".join(parts)[:480])
+    return(telemetry.bounded_join(parts))
 
 
 def parse_metric_map(raw: object) -> Dict[str,float]:

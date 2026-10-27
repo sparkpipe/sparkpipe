@@ -43,16 +43,23 @@ class Frontend:
     def __init__(self):
         self.reply = ""
         self.asked = []
+        self.ready = True
+        self.curator_tokens = 3
+        self.completed = 0
+
+    async def memory_model_ready(self, model):
+        return self.ready
 
     def memory_count(self, model, text):
         return len(text) // 4
 
     def memory_curator_ids(self, model, messages, tools, kwargs, suffix):
         self.asked.append(messages)
-        return [1, 2, 3], False
+        return list(range(self.curator_tokens)), False
 
     async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None):
         assert kind == "compact" and max_tokens >= 1024
+        self.completed += 1
         return self.reply
 
 
@@ -117,10 +124,11 @@ async def run():
         check("[e1]" in listing and "[e6]" in listing and "always keep e6" in listing, "the model sees every exchange and must keep the newest")
         compacted = commands.compacted(identity, long_chat + [{"role": "user", "content": "question 7"}])
         users = [m["content"] for m in compacted if m["role"] == "user"]
-        check(len(users) == 4 and users[0].startswith(cc.SUMMARY_OPEN) and "4,000 euros" in users[0] and "question 2" in users[0], users[:1])
+        check(len(users) == 4 and users[0].startswith(cc.SUMMARY_OPEN) and "4,000 euros" in users[0] and "[e2] question 2" in users[0], users[:1])
+        check("a higher number is later" in cc.SUMMARY_OPEN and "(e3)" in users[0], "the summary says its (eN) marks and the kept [eN] labels share one order")
         summary = memory.store.load(*identity)["compaction"]["summary"]
         check(all(f"({item})" in summary for item in ("e1", "e3", "e4")), "every dropped exchange is in the summary: the model's (e3) and fallback lines for e1 and e4")
-        check([u.split(" ")[1] for u in users[1:]] == ["5", "6", "7"], "kept exchanges stay in order, later turns follow")
+        check([" ".join(u.split(" ")[:3]) for u in users[1:]] == ["[e5] question 5", "[e6] question 6", "question 7"], "kept exchanges stay in order with their ids, later turns follow unlabeled")
         check(compacted[0]["role"] == "system", "the system message stays first")
 
         frontend.reply = '{"keep": ["e1", "e2", "e3", "e4", "e5", "e6"], "summary": "nothing"}'
@@ -132,6 +140,16 @@ async def run():
         reply = await commands.run(model, identity, long_chat + [{"role": "user", "content": "/compact full"}], "compact", "full", False)
         compaction = memory.store.load(*identity)["compaction"]
         check(compaction["keep"] == [] and "summarized the other 6" in reply, reply)
+        before = memory.store.load(*identity)["compaction"]
+        frontend.ready, completed = False, frontend.completed
+        reply = await commands.run(model, identity, long_chat + [{"role": "user", "content": "/compact 50%"}], "compact", "50%", False)
+        check("loading or the fleet is switching" in reply and frontend.completed == completed and memory.store.load(*identity)["compaction"] == before,
+              "a compaction asked while the model is not ready reaches no engine and changes nothing")
+        frontend.ready, frontend.curator_tokens = True, model.context_tokens
+        reply = await commands.run(model, identity, long_chat + [{"role": "user", "content": "/compact 50%"}], "compact", "50%", False)
+        check("does not fit" in reply and frontend.completed == completed and memory.store.load(*identity)["compaction"] == before,
+              "a listing that cannot fit the context with its answer reaches no engine and changes nothing")
+        frontend.curator_tokens = 3
         frontend.reply = "not json"
         reply = await commands.run(model, identity, long_chat + [{"role": "user", "content": "/compact 50%"}], "compact", "50%", False)
         check("nothing changed" in reply and memory.store.load(*identity)["compaction"]["summary"].startswith("Everything"), "a bad answer changes nothing")

@@ -42,6 +42,10 @@ struct MuseGlimmerGeometry : GemmaDefaults
 	static const char *Tag(void) { return "sparkpipe_muse_glimmer"; }
 	static const char *Name(void) { return "muse-glimmer-30b"; }
 	static const char *ReportTag(void) { return "MUSE-STATE"; }
+	static constexpr bool kPreNorm = false;
+	static constexpr bool kSigmoidRouter = false;
+	static constexpr float kRoutedScale = 1.0f;
+	static constexpr bool kRouterFloat = false;
 };
 
 static_assert(GemmaShape<MuseGlimmerGeometry>::SlidingKvGeometry::kSlotBytes == SPARK_MUSE_TP16_STAGE_SLIDING_SLOT_BYTES,

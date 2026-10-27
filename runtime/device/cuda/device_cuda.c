@@ -189,7 +189,16 @@ SparkStatus SparkDeviceBackendAllocate(SparkDeviceAllocation *allocation)
 		return(status);
 	}
 	if ( allocation->space == SPARK_DEVICE_SPACE_DEVICE_PRIVATE || allocation->space == SPARK_DEVICE_SPACE_SHARED_COHERENT )
-		status = CudaStatus(cudaMemset(cuda->base,0,(size_t)allocation->bytes),"allocate",allocation->owner);
+	{
+		cudaStream_t zero = 0;
+		status = CudaStatus(cudaStreamCreateWithFlags(&zero,cudaStreamNonBlocking),"allocate",allocation->owner);
+		if ( status == SPARK_STATUS_OK )
+			status = CudaStatus(cudaMemsetAsync(cuda->base,0,(size_t)allocation->bytes,zero),"allocate",allocation->owner);
+		if ( status == SPARK_STATUS_OK )
+			status = CudaStatus(cudaStreamSynchronize(zero),"allocate",allocation->owner);
+		if ( zero != 0 )
+			(void)cudaStreamDestroy(zero);
+	}
 	else
 		memset(cuda->base,0,(size_t)allocation->bytes);
 	allocation->device = (SparkDeviceAddress)(uintptr_t)device;

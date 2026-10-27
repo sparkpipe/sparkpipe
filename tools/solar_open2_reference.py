@@ -29,6 +29,10 @@ fast path calls (model_contracts/references/fla_kda_gate.py):
   selection only, one group, top-8, weights renormalized (+1e-20), scale 1;
   expert outputs combined in f32; the shared expert added in bf16.
 Rounding otherwise follows tools/ling3_reference.py.
+
+Every matrix product accumulates in f64 before it is rounded
+(t1_reference_common.matmul), so a prompt's numbers do not depend on the other
+prompts in the run or on how many served tokens follow.
 """
 
 import argparse
@@ -41,6 +45,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ling3_reference  # noqa: E402
 from ling3_reference import bf16, sigmoid, silu  # noqa: E402
+from t1_reference_common import matmul  # noqa: E402
 
 
 class Reference(ling3_reference.Reference):
@@ -139,11 +144,11 @@ class Reference(ling3_reference.Reference):
         group = heads // kv_heads
         output = np.empty((rows, heads, dim), dtype=np.float32)
         for head in range(heads):
-            scores = (q[:, head, :] @ k[:, head // group, :].T) * scale
+            scores = matmul(q[:, head, :], k[:, head // group, :].T) * scale
             scores = np.where(causal, scores, -np.inf)
             weights = np.exp(scores - scores.max(axis=-1, keepdims=True))
             weights = bf16(weights / weights.sum(axis=-1, keepdims=True))
-            output[:, head, :] = bf16(weights @ v[:, head // group, :])
+            output[:, head, :] = bf16(matmul(weights, v[:, head // group, :]))
         gate = bf16(sigmoid(self.linear(normed, a + "g_proj.weight", heads * dim, self.hidden)))
         output = bf16(output.reshape(rows, heads * dim) * gate)
         return self.output(output, a + "o_proj.weight", self.hidden, heads * dim)

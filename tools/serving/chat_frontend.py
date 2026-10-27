@@ -239,6 +239,7 @@ VOCABULARIES = {"tokenizers": TokenizersVocabulary, "tiktoken": TiktokenVocabula
 
 CARRIED = re.compile("\ue000([0-9]+)\ue001")
 PIECE_CACHE_BYTES = 512 << 20
+TEMPLATE_PIECE_CACHE_BYTES = 0
 INTERACTIVE_PRIORITY = 2
 BULK_PRIORITY = 1
 BACKGROUND_PRIORITY = 0
@@ -291,7 +292,7 @@ class PieceCache:
         self.entries = OrderedDict()
         self.bytes = 0
 
-    def encode(self, piece, special):
+    def encode(self, piece, special, room):
         key = (piece, special)
         entry = self.entries.get(key)
         if entry is not None:
@@ -299,7 +300,7 @@ class PieceCache:
             return entry[0]
         ids = array("I", self.vocabulary.encode(piece, special))
         size = sys.getsizeof(piece) + ids.itemsize * len(ids) + 128
-        if size <= self.budget:
+        if size <= self.budget and len(ids) <= room:
             self.entries[key] = (ids, size)
             self.bytes += size
             while self.bytes > self.budget:
@@ -347,10 +348,10 @@ def uncarry(pieces, carried, expected):
     return result
 
 
-def encode_pieces(cache, text, pieces):
+def encode_pieces(cache, text, pieces, room):
     ids = []
     for piece, special in pieces:
-        ids.extend(cache.encode(piece, special))
+        ids.extend(cache.encode(piece, special, room - len(ids)))
     return text, ids
 
 
@@ -364,7 +365,7 @@ class TemplateRenderer:
         tokenizer_config = json.loads((directory / spec.get("tokenizer_config", "tokenizer_config.json")).read_text())
         self.template_tokens = {name: tokenizer_config[name] for name in ("bos_token", "eos_token", "pad_token", "unk_token") if isinstance(tokenizer_config.get(name), str)}
         self.vocabulary = vocabulary
-        self.cache = PieceCache(vocabulary, PIECE_CACHE_BYTES)
+        self.cache = PieceCache(vocabulary, TEMPLATE_PIECE_CACHE_BYTES)
 
     def render_text(self, messages, tools, context):
         try:
@@ -383,8 +384,8 @@ class TemplateRenderer:
             return text, [(text, True)]
         return text, uncarry([(self.render_text(marked_messages, marked_tools, context), True)], carried, text)
 
-    def render(self, messages, tools, kwargs):
-        return encode_pieces(self.cache, *self.pieces(messages, tools, kwargs))
+    def render(self, messages, tools, kwargs, room):
+        return encode_pieces(self.cache, *self.pieces(messages, tools, kwargs), room)
 
 
 class SegmentRenderer:
@@ -415,8 +416,8 @@ class SegmentRenderer:
         marked = self.segments(marked_messages, marked_tools, kwargs)
         return text, uncarry([(segment.text, segment.allow_special) for segment in marked], carried, text)
 
-    def render(self, messages, tools, kwargs):
-        return encode_pieces(self.cache, *self.pieces(messages, tools, kwargs))
+    def render(self, messages, tools, kwargs, room):
+        return encode_pieces(self.cache, *self.pieces(messages, tools, kwargs), room)
 
 
 RENDERERS = {"template": TemplateRenderer, "segments": SegmentRenderer}
@@ -546,7 +547,7 @@ class Model:
     def render(self, messages, tools, kwargs):
         context = dict(self.template_defaults)
         context.update(kwargs)
-        return self.renderer.render(messages, tools, context)
+        return self.renderer.render(messages, tools, context, self.context_tokens - 1)
 
 
 SOURCE_TAG = re.compile(r'<source id="([0-9]+)"((?: [a-z][a-z-]*="[^"]*")*)>')
@@ -654,6 +655,13 @@ def canonical_citations(messages, wrapper):
 
 PUBLIC_PATHS = frozenset({"/health/liveliness", "/v1/models", "/v1/chat/completions", "/v1/sparkpipe/status"})
 PUBLIC_KEY_PREFIX = "sk-sp-"
+PUBLIC_KEY_CONCURRENCY = 4
+PUBLIC_BODY_BYTES_PER_TOKEN = 16
+PUBLIC_BODY_OVERHEAD_BYTES = 1 << 20
+PUBLIC_KEY_PREFIX_BLOCKS = 1 << 16
+STATUS_VIEW_FIELDS = ("state", "phase", "swap_elapsed_s", "phase_elapsed_s", "force_requested")
+DRAINING_VIEW_FIELDS = ("live_requests", "waited_s", "limit_s", "quiet_s", "quiet_needed_s")
+HISTORY_VIEW_FIELDS = ("finished", "seconds", "forced", "ok")
 
 
 class PublicKeys:
@@ -1250,6 +1258,8 @@ class Frontend:
             if not isinstance(models, list) or not set(models) <= set(self.models):
                 raise SystemExit(f"chat_frontend: public models must be served models; served: {sorted(self.models)}")
             self.public_header, self.public_keys, self.public_models = public["header"], PublicKeys(base / public["keys_file"]), frozenset(models)
+        self.public_inflight = {}
+        self.public_prefixes = {}
         self.session = None
         self.memory = None
         self.tool_call_faults = {}
@@ -1301,17 +1311,43 @@ class Frontend:
     async def liveliness(self, request):
         return web.json_response({"ok": True})
 
+    async def login_role(self, authorization):
+        async with self.session.get(self.control["admin_url"], headers={"Authorization": authorization}, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            user = await response.json(content_type=None) if response.status == 200 else None
+        return user.get("role") if isinstance(user, dict) else None
+
+    def status_view(self, payload):
+        def shown(model_id):
+            return model_id if model_id is None or self.public_header is None or model_id in self.public_models else None
+        view = {key: payload.get(key) for key in STATUS_VIEW_FIELDS}
+        for key in ("active", "target", "wanted"):
+            view[key] = shown(payload.get(key))
+        draining = payload.get("draining")
+        view["draining"] = dict({key: draining.get(key) for key in DRAINING_VIEW_FIELDS}, model=shown(draining.get("model"))) if isinstance(draining, dict) else None
+        view["models"] = [{"id": entry.get("id"), "active": entry.get("active")} for entry in payload.get("models") or [] if isinstance(entry, dict) and shown(entry.get("id")) is not None]
+        view["history"] = [dict({key: entry.get(key) for key in HISTORY_VIEW_FIELDS}, **{"from": shown(entry.get("from")), "to": shown(entry.get("to"))})
+                           for entry in payload.get("history") or [] if isinstance(entry, dict)]
+        view["waiting"] = {model_id: count for model_id, count in (payload.get("waiting") or {}).items() if shown(model_id) is not None}
+        return view
+
     async def control_status(self, request):
         if self.control is None:
             return web.json_response(error_body("not_found", "this front end has no model control"), status=404)
+        public = request.get("public_key") is not None
+        authorization = request.headers.get("Authorization", "")
+        try:
+            admin = not public and authorization.startswith("Bearer ") and await self.login_role(authorization) == "admin"
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError):
+            admin = False
         try:
             async with self.session.get(self.control["status_url"], headers=self.controller_headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
                 payload = await response.json(content_type=None)
-                if isinstance(payload, dict):
-                    payload["waiting"] = {model.id: model.gate.state()["waiting"] for model in self.models.values() if model.gate.state()["waiting"]}
-                return web.json_response(payload, status=response.status)
+                if not isinstance(payload, dict):
+                    raise json.JSONDecodeError("the controller status is not an object", "", 0)
+                payload["waiting"] = {model.id: model.gate.state()["waiting"] for model in self.models.values() if model.gate.state()["waiting"]}
+                return web.json_response(payload if admin else self.status_view(payload), status=response.status)
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
-            return web.json_response(error_body("control_unavailable", str(error)), status=503)
+            return web.json_response(error_body("control_unavailable", str(error) if admin else "the fleet controller is unreachable"), status=503)
 
     async def control_switch_now(self, request):
         if self.control is None or "force_url" not in self.control:
@@ -1320,11 +1356,10 @@ class Frontend:
         if not authorization.startswith("Bearer ") or not authorization[len("Bearer "):].strip():
             return web.json_response(error_body("unauthorized", "Switch now needs the admin's SparkPipe Chat login"), status=401)
         try:
-            async with self.session.get(self.control["admin_url"], headers={"Authorization": authorization}, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                user = await response.json(content_type=None) if response.status == 200 else None
+            role = await self.login_role(authorization)
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
             return web.json_response(error_body("control_unavailable", f"could not check the login: {error}"), status=503)
-        if not isinstance(user, dict) or user.get("role") != "admin":
+        if role != "admin":
             return web.json_response(error_body("forbidden", "only the admin can use Switch now"), status=403)
         body = {}
         if request.can_read_body:
@@ -1356,6 +1391,13 @@ class Frontend:
         if self.prefixes is None:
             self.prefixes = {}
         return self.prefixes.setdefault(model.id, PrefixLedger())
+
+    def public_body_limit(self):
+        context = max((self.models[model_id].context_tokens for model_id in self.public_models if model_id in self.models), default=0)
+        return PUBLIC_BODY_BYTES_PER_TOKEN * context + PUBLIC_BODY_OVERHEAD_BYTES
+
+    def public_prefix_ledger(self, key, model):
+        return self.public_prefixes.setdefault((key["id"], model.id), PrefixLedger(capacity_blocks=PUBLIC_KEY_PREFIX_BLOCKS))
 
     def prepare(self, model, body):
         plan = self.plan(model, body, None)
@@ -1489,7 +1531,7 @@ class Frontend:
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
             raise RequestError(503, "engine_unavailable", f"the {model.id} engine at {model.engine} is unreachable: {error}")
 
-    async def engine_stream(self, model, engine_body):
+    async def engine_stream(self, model, engine_body, public):
         deadline = None
         while True:
             started = False
@@ -1506,7 +1548,7 @@ class Frontend:
                 await events.aclose()
             now = asyncio.get_running_loop().time()
             deadline = deadline if deadline is not None else now + model.gate.wait_seconds
-            if self.memory is not None:
+            if self.memory is not None and not public:
                 self.memory.cancel_all()
             await model.gate.wait_ready(self.session, deadline - now, self.controller_headers)
 
@@ -1526,7 +1568,7 @@ class Frontend:
             entries.append(entry)
         return entries
 
-    async def generate_attempt(self, model, engine_body, parser, outcome):
+    async def generate_attempt(self, model, engine_body, parser, outcome, public):
         step = model.vocabulary.decoder()
         finish = None
         usage = None
@@ -1536,7 +1578,7 @@ class Frontend:
         written = 0
         stop_string = False
         logprobs = engine_body.get("logprobs")
-        stream = self.engine_stream(model, engine_body)
+        stream = self.engine_stream(model, engine_body, public)
         try:
             async for chunk in stream:
                 if "error" in chunk:
@@ -1598,13 +1640,13 @@ class Frontend:
         print(json.dumps({"event": "tool_call_fault", "model": model.id, "kind": fault["kind"], "attempt": attempt, "action": action,
                           "text": fault["text"][:400]}, ensure_ascii=False), file=sys.stderr, flush=True)
 
-    async def generate(self, model, engine_body, parser):
+    async def generate(self, model, engine_body, parser, public):
         prompt = list(engine_body["prompt_token_ids"])
         budget = engine_body.get("max_tokens")
         body, kept, attempt = engine_body, [], 0
         while True:
             outcome = {"attempt": attempt}
-            async for event in self.generate_attempt(model, body, parser, outcome):
+            async for event in self.generate_attempt(model, body, parser, outcome, public):
                 yield event
             fault = outcome.get("fault")
             if fault is None:
@@ -1647,14 +1689,14 @@ class Frontend:
     async def respond(self, model, plan):
         session = plan["session"]
         if session is None:
-            async for event in self.generate(model, plan["engine_body"], plan["parser"]):
+            async for event in self.generate(model, plan["engine_body"], plan["parser"], "public_key" in plan):
                 yield event
             return
         completion = 0
         while True:
             internal, visible, content, reasoning = [], [], [], []
             result = {}
-            async for kind, value in self.generate(model, plan["engine_body"], plan["parser"]):
+            async for kind, value in self.generate(model, plan["engine_body"], plan["parser"], False):
                 if kind == "tool_call" and session.claims(value):
                     internal.append(value)
                     continue
@@ -1773,12 +1815,18 @@ class Frontend:
             content.extend(value for kind_, value in parser.finish() if kind_ == "content")
         return "".join(content)
 
-    def usage_block(self, usage, prompt_tokens):
+    def usage_block(self, usage, prompt_tokens, plan):
         usage = usage or {}
         completion = usage.get("completion_tokens", 0)
         prompt = usage.get("prompt_tokens", prompt_tokens)
         cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+        if "public_key" in plan:
+            cached = min(cached, plan["public_cached"])
         return {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion, "prompt_tokens_details": {"cached_tokens": cached}}
+
+    def record_public_prefix(self, model, plan, result):
+        if "public_key" in plan:
+            self.public_prefix_ledger(plan["public_key"], model).record(list(plan["engine_body"]["prompt_token_ids"]) + list(result.get("token_ids") or []))
 
     def log(self, model, prompt_tokens, usage, started, first, finish, trace=None):
         now = time.monotonic()
@@ -1802,14 +1850,28 @@ class Frontend:
             model = self.model_for(body)
             if public is not None and model.id not in self.public_models:
                 raise RequestError(404, "model_not_found", f"model {body.get('model')!r} is not served here; served: {sorted(self.public_models)}")
+            if public is not None and self.public_inflight.get(public["id"], 0) >= PUBLIC_KEY_CONCURRENCY:
+                raise RequestError(429, "rate_limited", f"this key already has {PUBLIC_KEY_CONCURRENCY} requests running; wait for one to finish")
             plan = self.plan(model, body, None if public is not None else request.headers)
         except RequestError as error:
             return error_response(error)
         if public is not None:
             plan["trace"]["key"] = public["id"]
+            plan["public_key"] = public
+            plan["public_cached"] = self.public_prefix_ledger(public, model).seen(plan["engine_body"]["prompt_token_ids"])[0]
+            self.public_inflight[public["id"]] = self.public_inflight.get(public["id"], 0) + 1
+            try:
+                return await self.answer(request, model, body, plan, started)
+            finally:
+                self.public_inflight[public["id"]] -= 1
+                if self.public_inflight[public["id"]] == 0:
+                    del self.public_inflight[public["id"]]
         if "command" in plan:
             name, argument = plan["command"]
-            text = await self.commands.run(model, plan["identity"], plan["messages"], name, argument, plan["memory_off"])
+            try:
+                text = await self.commands.run(model, plan["identity"], plan["messages"], name, argument, plan["memory_off"])
+            except RequestError as error:
+                return error_response(error)
             print(json.dumps(dict(plan["trace"], event="chat_command", model=model.id, command=name)), file=sys.stderr, flush=True)
             return await self.reply_text(request, model, body, text)
         if self.memory is not None:
@@ -1869,9 +1931,10 @@ class Frontend:
         if calls:
             message["tool_calls"] = calls
         self.log(model, prompt_tokens, result.get("usage"), started, first, result.get("finish_reason"), plan.get("trace"))
+        self.record_public_prefix(model, plan, result)
         choice = {"index": 0, "message": message, "logprobs": {"content": logprobs} if "logprobs" in engine_body else None, "finish_reason": result.get("finish_reason")}
         return web.json_response({"id": "chatcmpl-" + uuid.uuid4().hex, "object": "chat.completion", "created": int(time.time()),
-                                  "model": model.id, "choices": [choice], "usage": self.usage_block(result.get("usage"), prompt_tokens)})
+                                  "model": model.id, "choices": [choice], "usage": self.usage_block(result.get("usage"), prompt_tokens, plan)})
 
     async def chat_stream(self, request, model, body, plan, started):
         prompt_tokens = plan["prompt_tokens"]
@@ -1922,13 +1985,14 @@ class Frontend:
         except asyncio.CancelledError:
             self.log(model, prompt_tokens, result.get("usage"), started, first, "client_gone", plan.get("trace"))
             raise
-        usage = self.usage_block(result.get("usage"), prompt_tokens)
+        usage = self.usage_block(result.get("usage"), prompt_tokens, plan)
         await response.write(chunk({}, result.get("finish_reason"), usage))
         if include_usage:
             payload = {"id": identifier, "object": "chat.completion.chunk", "created": created, "model": model.id, "choices": [], "usage": usage}
             await response.write(("data: " + json.dumps(payload) + "\n\n").encode())
         await response.write(b"data: [DONE]\n\n")
         self.log(model, prompt_tokens, result.get("usage"), started, first, result.get("finish_reason"), plan.get("trace"))
+        self.record_public_prefix(model, plan, result)
         return response
 
 
@@ -1961,6 +2025,12 @@ def public_door(frontend):
         if entry is None:
             return web.json_response(error_body("invalid_api_key", "send a valid SparkPipe API key as Authorization: Bearer sk-sp-..."), status=401)
         request["public_key"] = entry
+        if request.method == "POST":
+            if request.content_length is None:
+                return web.json_response(error_body("length_required", "send the request body with a Content-Length"), status=411)
+            limit = frontend.public_body_limit()
+            if request.content_length > limit:
+                return web.json_response(error_body("request_too_large", f"the request body is {request.content_length} bytes; the public API takes at most {limit}"), status=413)
         return await handler(request)
     return door
 
