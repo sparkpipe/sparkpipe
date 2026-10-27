@@ -15,6 +15,9 @@ typedef ushort SparkMathU16;
 #define SPARK_MATH_TANH(x) metal::tanh(x)
 #elif defined(__CUDACC__) || defined(LM_HOST_CUDA_PRELUDE)
 #include <stdint.h>
+#if defined(__CUDACC__)
+#include <cuda_bf16.h>
+#endif
 #define SPARK_MATH_FN static __device__ __forceinline__
 typedef uint32_t SparkMathU32;
 typedef uint16_t SparkMathU16;
@@ -36,8 +39,12 @@ SPARK_MATH_FN float SparkMathBf16ToFloat(SparkMathU16 bits)
 
 SPARK_MATH_FN SparkMathU16 SparkMathFloatToBf16(float value)
 {
+#if defined(__CUDA_ARCH__)
+	return(__bfloat16_as_ushort(__float2bfloat16_rn(value)));
+#else
 	const SparkMathU32 bits = SPARK_MATH_AS_BITS(value);
 	return((bits & 0x7fffffffu) > 0x7f800000u ? (SparkMathU16)0x7fffu : (SparkMathU16)((bits + 0x7fffu + ((bits >> 16u) & 1u)) >> 16u));
+#endif
 }
 
 SPARK_MATH_FN float SparkMathRoundBf16(float value)

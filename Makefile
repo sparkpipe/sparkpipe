@@ -552,6 +552,7 @@ PYTHON_TESTS := \
 	tests/test_project_chain_cuda.py \
 	tests/test_topk_warp_cuda.py \
 	tests/test_topk_small_cuda.py \
+	tests/test_bf16_convert_cuda.py \
 	tests/test_rms_norm_cuda.py \
 	tests/test_quantise_rows_cuda.py \
 	tests/test_index_select_bound_cuda.py \
