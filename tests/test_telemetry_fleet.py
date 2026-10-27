@@ -178,7 +178,7 @@ class SparkTelemetryTest(unittest.TestCase):
         class Stop(BaseException):
             pass
         with mock.patch("sys.argv",["spark_telemetry_collect.py","--loop-interval","5"]), \
-                mock.patch.object(collect,"collect_once",side_effect=[ValueError("line contains NUL"),{"combined_csv":"x"},Stop()]) as once, \
+                mock.patch.object(collect,"collect_once",side_effect=[ValueError("line contains NUL"),{"summary_json":"x"},Stop()]) as once, \
                 mock.patch.object(collect.time,"sleep") as sleep, \
                 mock.patch("sys.stderr"):
             with self.assertRaises(Stop):
@@ -392,6 +392,46 @@ class SparkTelemetryTest(unittest.TestCase):
         targets = telemetry.parse_node_targets(telemetry.DEFAULT_NODES)
         self.assertEqual([node for node, _ in targets], list(expected) + ["lenovo7","lenovo8","lenovo9"])
         self.assertEqual(dict(targets)["lenovo8"], "lenovo8")
+
+    def test_node_rows_append_only_new_samples(self):
+        collect.NODE_FILES.clear()
+        header = ",".join(node_mon.CSV_FIELDS)
+        def text_of(first, last):
+            return collect.labelled_csv("\n".join([header] + [telemetry_row(unix_ts=ts, cpu_util_pct=ts) for ts in range(first, last + 1)]), "spark0")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "spark0.csv")
+            text = text_of(1, 10)
+            self.assertEqual(collect.write_node_rows(path, text, collect.read_rows(text), 10), len(text))
+            text = text_of(2, 11)
+            written = collect.write_node_rows(path, text, collect.read_rows(text), 10)
+            rows = collect.read_rows(Path(path).read_text())
+            self.assertLess(written, len(text) // 5)
+            self.assertEqual([row["unix_ts"] for row in rows], [str(ts) for ts in range(1, 12)])
+            self.assertEqual(collect.write_node_rows(path, text, collect.read_rows(text), 10), 0)
+            for last in range(12, 21):
+                text = text_of(last - 9, last)
+                collect.write_node_rows(path, text, collect.read_rows(text), 10)
+            self.assertEqual(len(collect.read_rows(Path(path).read_text())), 20)
+            text = text_of(12, 21)
+            collect.write_node_rows(path, text, collect.read_rows(text), 10)
+            self.assertEqual([row["unix_ts"] for row in collect.read_rows(Path(path).read_text())], [str(ts) for ts in range(12, 22)])
+            text = text_of(1, 5)
+            collect.write_node_rows(path, text, collect.read_rows(text), 10)
+            self.assertEqual([row["unix_ts"] for row in collect.read_rows(Path(path).read_text())], [str(ts) for ts in range(1, 6)])
+            renamed = collect.labelled_csv("\n".join([header + ",extra"] + [telemetry_row(unix_ts=6) + ",x"]), "spark0")
+            collect.write_node_rows(path, renamed, collect.read_rows(renamed), 10)
+            self.assertEqual([row["unix_ts"] for row in collect.read_rows(Path(path).read_text())], ["6"])
+        collect.NODE_FILES.clear()
+
+    def test_map_text_drops_whole_entries_never_cuts_one(self):
+        nodes = {f"spark{rank:x}": "glm-full-tp16" for rank in range(16)}
+        self.assertEqual(dict(item.split(":", 1) for item in telemetry.format_text_map(nodes).split(";")), nodes)
+        values = {f"model{index:02d}xxxxxxxxxxxxxxxx": 123456789.0 + index for index in range(200)}
+        text = node_mon.metric_map_text(values)
+        decoded = node_mon.parse_metric_map(text)
+        self.assertLessEqual(len(text), telemetry.MAP_TEXT_LIMIT)
+        self.assertTrue(0 < len(decoded) < len(values))
+        self.assertTrue(all(values[key] == value for key, value in decoded.items()))
 
     def test_deployment_templates_wire_the_auxiliary_ssh_config(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)),"..","deployment","telemetry")

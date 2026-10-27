@@ -255,27 +255,10 @@ def write_combined(out_dir: str, all_rows: Dict[str,List[Dict[str,str]]], errors
     fetch_errors = fetch_errors or {}
     stale_nodes = stale_nodes or set()
     os.makedirs(out_dir,exist_ok=True)
-    combined_path = os.path.join(out_dir,"combined_latest.csv")
     summary_path = os.path.join(out_dir,"cluster_summary.json")
     md_path = os.path.join(out_dir,"cluster_summary.md")
-    fieldnames: List[str] = []
-    seen = set()
-    for rows in all_rows.values():
-        for row in rows:
-            for key in row.keys():
-                if key not in seen:
-                    seen.add(key)
-                    fieldnames.append(key)
-    with open(combined_path + ".tmp","w",encoding="utf-8",newline="") as f:
-        if fieldnames:
-            w = csv.DictWriter(f,fieldnames=fieldnames)
-            w.writeheader()
-            for node in sorted(all_rows):
-                for row in all_rows[node]:
-                    w.writerow({key:row.get(key,"") for key in fieldnames})
-    os.replace(combined_path + ".tmp",combined_path)
     summary = telemetry.summary_base()
-    summary.update({"combined_csv":combined_path,"queue":queue,"nodes":{}})
+    summary.update({"summary_json":summary_path,"queue":queue,"nodes":{}})
     for node in sorted(set(all_rows) | set(errors)):
         summary["nodes"][node] = summarize_node(all_rows.get(node,[]),errors.get(node,""),fetch_errors.get(node,""),node in stale_nodes)
     telemetry.write_json_atomic(summary_path,summary)
@@ -355,6 +338,31 @@ def write_combined(out_dir: str, all_rows: Dict[str,List[Dict[str,str]]], errors
     return(summary)
 
 
+NODE_FILES: Dict[str,Tuple[str,float,int]] = {}
+
+
+def write_node_rows(path: str, text: str, rows: List[Dict[str,str]], window: int) -> int:
+    fields = list(rows[0]) if rows else []
+    header = ",".join(fields)
+    state = NODE_FILES.get(path)
+    last_ts = row_unix_ts(rows[-1]) if rows else 0.0
+    fresh = [row for row in rows if state is not None and row_unix_ts(row) > state[1]]
+    if state is None or state[0] != header or not os.path.exists(path) or last_ts < state[1] or state[2] + len(fresh) > window:
+        telemetry.write_text_atomic(path,text)
+        NODE_FILES[path] = (header,last_ts,0)
+        return(len(text))
+    if not fresh:
+        return(0)
+    output = io.StringIO()
+    writer = csv.DictWriter(output,fieldnames=fields)
+    for row in fresh:
+        writer.writerow({key:row.get(key,"") for key in fields})
+    with open(path,"a",encoding="utf-8",newline="") as handle:
+        handle.write(output.getvalue())
+    NODE_FILES[path] = (header,last_ts,state[2] + len(fresh))
+    return(len(output.getvalue()))
+
+
 def collect_once(args: argparse.Namespace) -> Dict[str,object]:
     raw_dir = os.path.join(args.out_dir,"nodes")
     os.makedirs(raw_dir,exist_ok=True)
@@ -385,8 +393,9 @@ def collect_once(args: argparse.Namespace) -> Dict[str,object]:
                 all_rows[name] = []
             continue
         text = labelled_csv(text,name)
-        telemetry.write_text_atomic(os.path.join(raw_dir,name + ".csv"),text)
-        all_rows[name] = read_rows(text)
+        rows = read_rows(text)
+        write_node_rows(os.path.join(raw_dir,name + ".csv"),text,rows,args.tail_lines)
+        all_rows[name] = rows
     queue = telemetry.read_ds4_api_queue(args.ds4_api_url,args.ds4_api_timeout)
     return(write_combined(args.out_dir,all_rows,errors,queue,fetch_errors,stale_nodes))
 
@@ -395,7 +404,7 @@ def main() -> int:
     args = parse_args()
     if args.loop_interval <= 0.0:
         summary = collect_once(args)
-        print("wrote %s" % summary["combined_csv"],flush=True)
+        print("wrote %s" % summary["summary_json"],flush=True)
         return(0)
     while True:
         try:
