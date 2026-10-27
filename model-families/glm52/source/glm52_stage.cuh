@@ -96,6 +96,7 @@ struct GlmShape : G
 	static constexpr uint32_t kPartialFloats = G::kLatent + 2u;
 	static constexpr uint32_t kQueryHead = G::kNope + G::kRope + G::kQueryGate;
 	static constexpr uint32_t kQueryInput = G::kQueryConcat ? 2u * G::kQueryA : G::kQueryA;
+	static constexpr uint32_t kMlpScratchInter = G::kTopK * G::kExpertInter > G::kDenseInter ? G::kTopK * G::kExpertInter : G::kDenseInter;
 	static constexpr bool kRopeTable = G::kRopeFactor > 1.0f;
 	static_assert(G::kQueryA % GLM_GRANULE == 0u && kSlot % GLM_GRANULE == 0u, "projection slices start on 16-byte columns");
 	static_assert(G::kQueryGate == 0u || G::kQueryGate == G::kValue, "the attention output gate covers each head's value");
@@ -1200,8 +1201,8 @@ struct GlmModel
 			{ (void **)&state->attention_out, hidden },
 			{ (void **)&state->projection_local, rows * width * sizeof(uint16_t) },
 			{ (void **)&state->projection_gather, degree * rows * width * sizeof(uint16_t) },
-			{ (void **)&state->gate_up, rows * (S::kTopK * 2u * S::kExpertInter / degree) * sizeof(uint16_t) },
-			{ (void **)&state->intermediate, rows * (S::kTopK * S::kExpertInter / degree) * sizeof(uint16_t) },
+			{ (void **)&state->gate_up, rows * (2u * S::kMlpScratchInter / degree) * sizeof(uint16_t) },
+			{ (void **)&state->intermediate, rows * (S::kMlpScratchInter / degree) * sizeof(uint16_t) },
 			{ (void **)&state->expert_out, packed * S::kHidden * sizeof(uint16_t) },
 			{ (void **)&state->shared_out, hidden },
 			{ (void **)&state->router_logits, rows * S::kExperts * sizeof(float) },
