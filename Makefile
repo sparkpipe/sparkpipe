@@ -398,6 +398,7 @@ PYTHON_TESTS := \
 	tests/test_gemma4_smoke_manifest.py \
 	tests/test_ling_contract_freeze.py \
 	tests/test_laguna_reference_fixture.py \
+	tests/test_kexaone2_reference_batch.py \
 	tests/test_api_stress.py \
 	tests/test_code_size.py \
 	tests/test_complexity_ceiling.py \
