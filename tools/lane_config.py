@@ -153,7 +153,9 @@ def draftd_environment(record_id: str) -> tuple[str, dict[str, str]]:
         raise SystemExit(f"{record_id}: a draft server needs the record's taps.stream as host:port, the endpoint the rank streams to and draftd listens on")
     environment = {"DRAFTD_UNIT": spec["unit"], "DRAFTD_LOG": spec["log"], "DRAFTD_DRAFTER": drafter, "DRAFTD_TARGET_SHARD": spec.get("target_shard", ""),
                    "DRAFTD_TAP_HOST": tap_host, "DRAFTD_TAP_PORT": tap_port, "DRAFTD_DRAFT_PORT": str(server["port"]),
-                   "DRAFTD_WINDOW": str(spec["window"]), "DRAFTD_CONTEXT_BYTES": str(spec["context_bytes"]), "DRAFTD_RESTART": spec.get("restart", "no")}
+                   "DRAFTD_WINDOW": str(spec["window"]), "DRAFTD_CONTEXT_BYTES": str(spec["context_bytes"]), "DRAFTD_RESTART": spec.get("restart", "no"),
+                   "DRAFTD_EMBED": spec.get("embed", ""), "DRAFTD_HEAD": spec.get("head", ""), "DRAFTD_NORM": spec.get("norm", ""),
+                   "DRAFTD_DELTA": str(spec["delta"]) if "delta" in spec else ""}
     return spec["source"], environment
 
 
@@ -162,6 +164,9 @@ def draftd_flags(environment: dict[str, str]) -> list[str]:
              f"--draft-port {environment['DRAFTD_DRAFT_PORT']}", f"--window {environment['DRAFTD_WINDOW']}", f"--context-bytes {environment['DRAFTD_CONTEXT_BYTES']}"]
     if environment["DRAFTD_TARGET_SHARD"]:
         flags.append(f"--target-shard {environment['DRAFTD_TARGET_SHARD']}")
+    for name, flag in (("DRAFTD_EMBED", "--embed"), ("DRAFTD_HEAD", "--head"), ("DRAFTD_NORM", "--norm"), ("DRAFTD_DELTA", "--delta")):
+        if environment.get(name):
+            flags.append(f"{flag} {environment[name]}")
     return flags
 
 
