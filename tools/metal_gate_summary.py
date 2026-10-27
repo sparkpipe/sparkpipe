@@ -26,6 +26,15 @@ chunks) must pass every set present, and a required control must fail in
 every set it appears in. A batch ladder run with --exact-rows (exact/) must
 give every batched sequence the tokens of its solo run.
 
+Where the gate also scores reference draws C and D (the same reference code
+and BF16 rounding as B, other FP32 reduction orders; rows labelled
+draw_X_vs_floor_Y and NAME_vs_floor_Y, all against reference A), the paired
+test is replaced by the multi-draw floor: for each prompt, the floor's noise
+is the worst paired statistic of one draw against another (B, C and D, every
+ordered pair), and a candidate passes the prompt when its paired statistic
+against each of the three draws is no worse than that. It must pass every
+prompt. The KL and top-1 checks of both legs stay as above.
+
   metal_gate_summary.py --out RUN_DIR --revision REV --prompts PROMPTS_JSON
 """
 
@@ -44,6 +53,7 @@ REQUIRED_CONTROLS = ("control_layers", "control_rotate")
 REQUIRED_WHERE_RUN = ("control_experts",)
 PROBE_CONTROLS = ("control",)
 CANDIDATES = ("metal", "metal_rows64")
+FLOOR_DRAWS = ("b", "c", "d")
 
 
 def aggregate(rows, label):
@@ -81,6 +91,48 @@ def paired(candidate):
     return share, error, (share - 0.5) / error if error > 0.0 else math.inf
 
 
+def row_paired(row):
+    blocks = row["above_floor_blocks"]
+    positions = row["positions"]
+    share = row["above_floor_positions"] / positions
+    spread = sum((above - share * count) ** 2 for above, count in blocks)
+    error = math.sqrt(len(blocks) / (len(blocks) - 1) * spread) / positions
+    if error > 0.0:
+        return (share - 0.5) / error
+    return -math.inf if share <= 0.5 else math.inf
+
+
+def floor_draws(rows, names):
+    draw_rows = {(row["label"], row["prompt"]): row for row in rows if row["label"].startswith("draw_")}
+    if not draw_rows:
+        return None
+    prompts = sorted({prompt for _, prompt in draw_rows})
+    pairs = [(x, y) for x in FLOOR_DRAWS for y in FLOOR_DRAWS if x != y]
+    by_label = {(row["label"], row["prompt"]): row for row in rows}
+    noise = {}
+    for prompt in prompts:
+        missing = [f"draw_{x}_vs_floor_{y}" for x, y in pairs if (f"draw_{x}_vs_floor_{y}", prompt) not in draw_rows]
+        if missing:
+            raise SystemExit(f"floor draws: {prompt} lacks {', '.join(missing)}")
+        sigmas = {f"{x}_vs_{y}": row_paired(draw_rows[(f"draw_{x}_vs_floor_{y}", prompt)]) for x, y in pairs}
+        noise[prompt] = {"paired_sigma": sigmas, "worst": max(sigmas.values())}
+    result = {"rule": "per prompt, the paired statistic against A of the candidate with each of draws B, C and D as the floor is no worse than "
+                      "the worst of one draw against another (every ordered pair of B, C and D); every prompt must pass",
+              "floor_noise": noise, "candidates": {}}
+    for name in names:
+        per_prompt = {}
+        for prompt in prompts:
+            missing = [f"{name}_vs_floor_{y}" for y in FLOOR_DRAWS if (f"{name}_vs_floor_{y}", prompt) not in by_label]
+            if missing:
+                raise SystemExit(f"floor draws: {prompt} lacks {', '.join(missing)}")
+            sigmas = {y: row_paired(by_label[(f"{name}_vs_floor_{y}", prompt)]) for y in FLOOR_DRAWS}
+            worst = max(sigmas.values())
+            per_prompt[prompt] = {"paired_sigma_by_floor": sigmas, "worst": worst, "floor_worst": noise[prompt]["worst"],
+                                  "pass": worst <= noise[prompt]["worst"]}
+        result["candidates"][name] = {"per_prompt": per_prompt, "pass": all(item["pass"] for item in per_prompt.values())}
+    return result
+
+
 def leg(candidate, floor_top1):
     kl_ratio = candidate["kl_mean"] / candidate["floor_kl_mean"]
     top1_ratio = (1.0 - candidate["top1_agreement"]) / (1.0 - floor_top1)
@@ -92,9 +144,13 @@ def leg(candidate, floor_top1):
             "pass": all(checks.values())}
 
 
-def verdict(against_a, against_b, floor):
+def verdict(against_a, against_b, floor, draws=None):
     legs = {"reference_a": leg(against_a, floor["top1_agreement"]), "reference_b": leg(against_b, floor["top1_agreement"])}
-    return {**legs, "pass": all(item["pass"] for item in legs.values())}
+    if draws is None:
+        return {**legs, "paired_rule": "3 sigma", "pass": all(item["pass"] for item in legs.values())}
+    for item in legs.values():
+        item["pass"] = item["kl_within_factor"] and item["top1_within_factor"]
+    return {**legs, "paired_rule": "floor draws", "floor_draws": draws, "pass": all(item["pass"] for item in legs.values()) and draws["pass"]}
 
 
 def common_prefix(first, second):
@@ -170,8 +226,10 @@ def numerics_set(rows, prefix, out):
     floor = aggregate(rows, prefix + "floor")
     candidates = {name: (aggregate(rows, prefix + name), aggregate(rows, f"{prefix}{name}_vs_b")) for name in CANDIDATES + REQUIRED_CONTROLS + REQUIRED_WHERE_RUN + PROBE_CONTROLS
                   if prefix + name in labels and f"{prefix}{name}_vs_b" in labels}
-    result = {"floor": floor,
-              **{name: {"against_reference_a": pair[0], "against_reference_b": pair[1], "verdict": verdict(pair[0], pair[1], floor),
+    draws = floor_draws([row for row in rows if not row["label"].startswith("pinned_")], list(candidates)) if prefix == "" else None
+    result = {"floor": floor, **({"floor_draws": {key: draws[key] for key in ("rule", "floor_noise")}} if draws is not None else {}),
+              **{name: {"against_reference_a": pair[0], "against_reference_b": pair[1],
+                        "verdict": verdict(pair[0], pair[1], floor, draws["candidates"][name] if draws is not None else None),
                         "corruption": json.loads((out / name / "control.json").read_text()) if name not in CANDIDATES else None}
                  for name, pair in candidates.items()}}
     return candidates, result
@@ -239,12 +297,17 @@ def main():
     (out / "RECEIPT.json").write_text(json.dumps(receipt, indent=1) + "\n")
     speculation_exact = receipt["speculation"]["exact"] if "speculation" in receipt else None
     print(json.dumps({"numerics_pass": numerics["pass"], "speculation_exact": speculation_exact, "ladder_exact_rows_identical": exact_identical,
-                      **{name: {leg_name: {key: item[key] for key in ("kl_ratio_to_floor", "top1_disagreement_ratio_to_floor", "paired_sigma", "pass")}
-                                for leg_name, item in numerics[name]["verdict"].items() if leg_name != "pass"}
+                      **{name: {**{leg_name: {key: item[key] for key in ("kl_ratio_to_floor", "top1_disagreement_ratio_to_floor", "paired_sigma", "pass")}
+                                   for leg_name, item in numerics[name]["verdict"].items() if leg_name in ("reference_a", "reference_b")},
+                                "paired_rule": numerics[name]["verdict"]["paired_rule"],
+                                **({"floor_draws": {prompt: {"worst": item["worst"], "floor_worst": item["floor_worst"], "pass": item["pass"]}
+                                                    for prompt, item in numerics[name]["verdict"]["floor_draws"]["per_prompt"].items()}}
+                                   if "floor_draws" in numerics[name]["verdict"] else {}),
+                                "pass": numerics[name]["verdict"]["pass"]}
                          for name in candidates},
                       **{"pinned_" + name: {leg_name: {key: item[key] for key in ("kl_ratio_to_floor", "top1_disagreement_ratio_to_floor", "paired_sigma",
                                                                                      "pass")}
-                                            for leg_name, item in pinned[name]["verdict"].items() if leg_name != "pass"}
+                                            for leg_name, item in pinned[name]["verdict"].items() if leg_name in ("reference_a", "reference_b")}
                          for name in pinned_candidates},
                       "decode": receipt["speed"]["decode"]["roofline"]}, indent=1))
     return 0 if numerics["pass"] and speculation_exact is not False and exact_identical is not False else 1

@@ -459,6 +459,22 @@ when all three hold:
   blocks (`sqrt(n/(n-1) * sum (above_b - share * size_b)^2) / positions`),
   because neighbouring positions share context and are not independent.
 
+For Gemma 4 31B the paired test uses a multi-draw floor instead.
+`tools/gemma4_reference.py` also writes draws C and D (the same code and
+BF16 rounding as B, other FP32 reduction orders: matmuls in 512-wide chunks
+with the scores' inner dimension in four parts, and 2,048-wide chunks with
+the scores unsplit). For each prompt the floor's own noise is the worst
+paired statistic, against A, of one draw with another as its floor, over
+every ordered pair of B, C and D. Metal passes a prompt when its paired
+statistic against A with each of B, C and D as the floor is no worse than
+that worst value, with no added margin, and it must pass every prompt; the
+KL and top-1 checks of both legs are unchanged. One draw is not enough for
+this model: B sits unusually close to A at positions 550 and later of the
+design prompt, where C and D themselves score 0.648 and 0.639 of their
+positions above B. The rule was written down before Metal was scored with
+it, and the order-only variants of the shipped kernel (sums across SIMD
+groups or across partitions reversed) are scored the same way.
+
 Metal must pass both legs. `tools/pack_tensor_control.py` writes APFS clones
 of the pack with tensors corrupted, and the gate runs each through the same
 teacher-forced pass:

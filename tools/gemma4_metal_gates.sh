@@ -11,8 +11,8 @@ reference=$3
 out=$4
 revision=$5
 case $model in
-	gemma4-26b-a4b) receipts=gemma4_26b; routed=1;;
-	gemma4-31b) receipts=gemma4_31b; routed=0;;
+	gemma4-26b-a4b) receipts=gemma4_26b; routed=1; draws="";;
+	gemma4-31b) receipts=gemma4_31b; routed=0; draws="b c d";;
 	*) echo "unknown model $model" >&2; exit 2;;
 esac
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -25,6 +25,14 @@ pin=""
 [ "$routed" = 1 ] && pin="--pin-routes $out/ref"
 mkdir -p "$out/metal" "$out/exact" "$out/compare"
 ln -sfn "$reference" "$out/ref"
+for name in $(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in json.load(open(sys.argv[1]))["prompts"]))' "$prompts"); do
+	for draw in $draws; do
+		if [ ! -f "$out/ref/$name.ref_$draw.logits" ]; then
+			echo "the $model gate scores floor draws $draws: $out/ref/$name.ref_$draw.logits is missing (tools/gemma4_reference.py teacher --variants)" >&2
+			exit 2
+		fi
+	done
+done
 cd "$root"
 make -s build/test_device_contract_metal build/test_metal_bf16_convert build/test_metal_math_accuracy build/test_metal_kernels build/device_bandwidth build/metal_stage_run build/logit_compare
 ./build/test_device_contract_metal > "$out/device_contract.txt"
@@ -68,11 +76,20 @@ for name in $(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in 
 		free="metal:metal metal64:metal_rows64 control:control control_layers:control_layers control_rotate:control_rotate"
 		pinned=""
 	fi
+	for draw in $draws; do
+		for floor in $draws; do
+			[ "$draw" = "$floor" ] && continue
+			./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_a.logits" "$out/ref/$name.ref_$draw.logits" "draw_${draw}_vs_floor_$floor" "$split" "$out/ref/$name.ref_$floor.logits" >> "$out/compare/compare.jsonl"
+		done
+	done
 	for pass in $free; do
 		dir=${pass%%:*}
 		tag=${pass#*:}
 		./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_a.logits" "$out/$dir/$name.metal.logits" "$tag" "$split" "$out/ref/$name.ref_b.logits" >> "$out/compare/compare.jsonl"
 		./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_b.logits" "$out/$dir/$name.metal.logits" "${tag}_vs_b" "$split" "$out/ref/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
+		for floor in $draws; do
+			./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_a.logits" "$out/$dir/$name.metal.logits" "${tag}_vs_floor_$floor" "$split" "$out/ref/$name.ref_$floor.logits" >> "$out/compare/compare.jsonl"
+		done
 	done
 	for pass in $pinned; do
 		dir=${pass%%:*}
