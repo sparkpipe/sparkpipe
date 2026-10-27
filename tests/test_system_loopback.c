@@ -935,11 +935,28 @@ static void TestLoopbackRemoveTree(const TestLoopbackStack *stack)
 	assert(rmdir(stack->root) == 0);
 }
 
+static void TestLoopbackExpectDrained(const TestLoopbackStack *stack)
+{
+	char path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES],line[4096];
+	uint32_t drained = 0u;
+	FILE *file;
+	assert(snprintf(path,sizeof(path),"%s/api.log",stack->root) > 0);
+	file = fopen(path,"r");
+	assert(file != 0);
+	while ( fgets(line,sizeof(line),file) != 0 )
+		drained = strstr(line,"api_exit reason=signal drained=1") != 0 ? 1u : drained;
+	fclose(file);
+	assert(drained != 0u && "SIGTERM must drain the engine and save the prefix index before the API exits");
+}
+
 static void TestLoopbackStopStack(TestLoopbackStack *stack)
 {
 	uint32_t rank;
 	if ( stack->api_child > 0 )
+	{
 		TestLoopbackKillApi(stack,SIGTERM);
+		TestLoopbackExpectDrained(stack);
+	}
 	for (rank=0u; rank<TEST_LOOPBACK_RANK_COUNT; rank++)
 		if ( stack->residents[rank] > 0 )
 			TestLoopbackKillRank(stack,rank);
