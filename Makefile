@@ -551,6 +551,7 @@ PYTHON_TESTS := \
 	tests/test_latent_gather_prefill_cuda.py \
 	tests/test_expanded_gather_prefill_cuda.py \
 	tests/test_latent_shard_decode_cuda.py \
+	tests/test_causal_conv_tiled_cuda.py \
 	tests/test_skinny_split.py \
 	tests/test_skinny_cell_rows.py \
 	tests/test_delta_rule_column_cuda.py \
@@ -964,6 +965,11 @@ build/test_expert_tail_reference: tests/test_expert_tail_reference.cu inference/
 .PHONY: test-expert-tail-reference
 test-expert-tail-reference: build/test_expert_tail_reference
 	./build/test_expert_tail_reference --run
+
+EXPERT_GEMM_BENCH_SHAPE := -DBENCH_EXPERTS=320u -DBENCH_TOP_K=8u -DBENCH_HIDDEN=4096u -DBENCH_INTER=80u
+
+build/expert_gemm_bench: tools/expert_gemm_bench.cu inference/kernels/moe_experts.cuh inference/kernels/skinny.cuh inference/kernels/gemm.cuh inference/kernels/tile.cuh inference/kernels/tma.cuh runtime/gemm.cuh runtime/launch.h inference/kernels/route.cuh | build
+	$(KERNEL_TEST_NVCC) $(EXPERT_GEMM_BENCH_SHAPE) $< $(KERNEL_TEST_CUDA_LINK) -o $@
 
 WORKING_SET_NVCC = $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude
 

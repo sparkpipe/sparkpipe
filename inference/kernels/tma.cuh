@@ -86,6 +86,20 @@ static __device__ __forceinline__ void LmTmaLoadBulk1d(void *shared_destination,
 		: "memory");
 }
 
+static __device__ __forceinline__ void LmCopyAsync16(void *shared_destination, const void *global_source)
+{
+	asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n"
+		:: "r"(LmTmaSharedAddress(shared_destination)), "l"(global_source)
+		: "memory");
+}
+
+static __device__ __forceinline__ void LmCopyAsyncArrive(uint64_t *barrier)
+{
+	asm volatile("cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%0];\n"
+		:: "r"(LmTmaSharedAddress(barrier))
+		: "memory");
+}
+
 static __device__ __forceinline__ void LmTmaStore2d(const void *tensor_map, const void *shared_source, int32_t coordinate_0, int32_t coordinate_1)
 {
 	asm volatile("cp.async.bulk.tensor.2d.global.shared::cta.tile.bulk_group [%0, {%2, %3}], [%1];\n"
