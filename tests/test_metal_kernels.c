@@ -1535,19 +1535,21 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 		Check *check = pass == 0u ? &clean : &corrupted;
 		uint16_t *keys = (uint16_t *)f.keys.host;
 		const uint32_t poke_position = att.window != 0u && context > att.window ? context - 1u - att.window / 2u : (context - 1u) / 2u;
+		const uint32_t poked_rows = context > 1u ? 2u : 1u, value_position = poke_position + poked_rows - 1u;
 		const uint64_t poke = ((uint64_t)(sequences - 1u) * f.context + poke_position) * att.kv * att.dim + (att.kv - 1u) * att.dim + 17u;
 		const uint16_t saved = keys[poke];
+		const float probe = Bf16(query[((uint64_t)(prefill != 0u ? rows / 2u : 0u) * att.heads + (att.heads / att.kv) * (att.kv - 1u)) * att.dim + 17u]);
 		SparkKvParams store;
 		memset(check,0,sizeof(*check));
 		uint16_t *values = (uint16_t *)f.values.host;
-		const uint64_t value_poke = (poke / (att.kv * att.dim)) * att.qkv + att.value_offset + (att.kv - 1u) * att.dim + 17u;
+		const uint64_t value_poke = ((uint64_t)(sequences - 1u) * f.context + value_position) * att.qkv + att.value_offset + (att.kv - 1u) * att.dim + 17u;
 		const uint16_t value_saved = values[value_poke];
 		if ( pass == 1u )
 		{
-			keys[poke] = ToBf16(Bf16(saved) + 64.0f);
+			keys[poke] = ToBf16(Bf16(saved) + (probe < 0.0f ? -64.0f : 64.0f));
 			values[value_poke] = ToBf16(Bf16(value_saved) + 4.0f);
 			memset(&store,0,sizeof(store));
-			store.rows = 1u;
+			store.rows = poked_rows;
 			store.kv_heads = att.kv;
 			store.head_dimension = att.dim;
 			store.page_slots = ATT_SLOTS;
@@ -1559,12 +1561,16 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 			{
 				SparkDeviceBuffer one_sequence, one_position;
 				SparkOpsPaged single = f.paged;
-				*(uint32_t *)Shared(&one_sequence,4u,"poke sequence") = sequences - 1u;
-				*(uint32_t *)Shared(&one_position,4u,"poke position") = poke_position;
+				const uint64_t first_row = (uint64_t)(sequences - 1u) * f.context + poke_position;
+				uint32_t *poke_sequences = (uint32_t *)Shared(&one_sequence,2u * 4u,"poke sequence");
+				uint32_t *poke_positions = (uint32_t *)Shared(&one_position,2u * 4u,"poke position");
+				poke_sequences[0] = poke_sequences[1] = sequences - 1u;
+				poke_positions[0] = poke_position;
+				poke_positions[1] = poke_position + 1u;
 				single.sequence_of_row = Whole(&one_sequence);
 				single.positions = Whole(&one_position);
-				Run(SparkOpsKvStore(&ops,queue,&single,SparkTensorSlice(Whole(&f.keys),(poke / (att.kv * att.dim)) * att.kv * att.dim * 2u,att.kv * att.dim * 2u),
-					SparkTensorSlice(Whole(&f.values),(poke / (att.kv * att.dim)) * att.qkv * 2u,att.qkv * 2u),&store),"kv_store poke");
+				Run(SparkOpsKvStore(&ops,queue,&single,SparkTensorSlice(Whole(&f.keys),first_row * att.kv * att.dim * 2u,(uint64_t)poked_rows * att.kv * att.dim * 2u),
+					SparkTensorSlice(Whole(&f.values),first_row * att.qkv * 2u,(uint64_t)poked_rows * att.qkv * 2u),&store),"kv_store poke");
 				SparkDeviceFree(&one_sequence);
 				SparkDeviceFree(&one_position);
 			}
@@ -1949,7 +1955,6 @@ int main(int argc, char **argv)
 	TestAttention(8192u,4u,0u);
 	TestAttention(300u,40u,1u);
 	TestAttention(2048u,64u,1u);
-	TestAttentionPages();
 	{
 		const AttentionCase qwen = att, sliding = { 16u, 8u, 256u, 8192u, 6144u, 1024u, 0u, 1.0f }, full = { 16u, 2u, 512u, 10240u, 9216u, 0u, 0u, 1.0f };
 		att = sliding;
@@ -1960,6 +1965,7 @@ int main(int argc, char **argv)
 		TestAttention(300u,40u,1u);
 		att = qwen;
 	}
+	TestAttentionPages();
 	TestGeluMul(2u);
 	TestScaleAndSoftcap();
 	TestRoutes(3u);
