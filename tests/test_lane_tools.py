@@ -64,12 +64,43 @@ def main():
             failures.append(f"{record}: a record with another memory_max must render differently (the comparison above must see changes)")
         if any(b"-E SPARK_REQUIRED_CHECK" in data for data in baseline.values()):
             failures.append(f"{record}: a rendered lane.sh carries extra residentd environment")
+    sys.path.insert(0, str(ROOT / "tools"))
+    import lane_config
+    for record_id, lane in sorted(json.loads((ROOT / "deployment" / "lanes.json").read_text())["lanes"].items()):
+        if "draftd" not in lane:
+            continue
+        environment = lane_config.draftd_environment(record_id)[1]
+        if f"{environment['DRAFTD_TAP_HOST']}:{environment['DRAFTD_TAP_PORT']}" != lane["taps"]["stream"] or "tap_host" in lane["draftd"] or "tap_port" in lane["draftd"]:
+            failures.append(f"{record_id}: the draft server must listen where the rank's taps.stream points, from that one field")
+    original = lane_config.record
+    try:
+        for broken in ({}, {"stream": "10.10.250.2"}, {"stream": "10.10.250.2:port"}):
+            lane_config.record = lambda record_id, broken=broken: dict(original("kimi-k3"), taps=broken)
+            try:
+                lane_config.draftd_environment("kimi-k3")
+                failures.append(f"a draft server record with taps {broken} must be refused")
+            except SystemExit:
+                pass
+    finally:
+        lane_config.record = original
+    swap = {entry["id"]: entry for entry in json.loads((ROOT / "deployment" / "hub" / "model_swap.json").read_text())["models"]}
+    for record_id, lane in sorted(records["lanes"].items()):
+        if lane["launcher"] != "k3_lane":
+            continue
+        root = f"$HOME/k3-lanes/lane{lane['lane']}/root"
+        start, warm = swap[record_id]["node_start"], swap[record_id]["node_warm"]
+        wanted = (root, f"--unit=sp-k3-rd{lane['lane']} ", f"MemoryMax={lane['memory_max']} ", f"SPARK_WEIGHTD_LANE={lane['lane']} ",
+                  f"SPARK_WEIGHTD_SOCKET={lane['weightd_socket']} ", f"SPARK_WEIGHTD_EXPERT_POOL_BYTES={lane['expert_pool_bytes']} ")
+        missing = [piece for piece in wanted if piece not in start]
+        if lane["runtime_root"] != f"/home/{{host}}/k3-lanes/lane{lane['lane']}/root" or missing or \
+                f"SPARK_WEIGHTD_EXPERT_POOL_BYTES={lane['expert_pool_bytes']} " not in warm or f" {lane['weightd_socket']} " not in warm:
+            failures.append(f"{record_id}: the swap entry starts and warms the lane with values the record does not hold: {missing or 'runtime_root or warm'}")
     for failure in failures:
         print("FAIL", failure)
     if failures:
         raise SystemExit(1)
     print("PASS lane tools: release_compare passes only when every prompt's tokens match (not on a diverged token, a missing prompt, an empty or a missing capture); "
-          "a lane record renders the same files under an operator's STAGE_* environment, and a changed record renders differently")
+          "a lane record renders the same files under an operator's STAGE_* environment, and a changed record renders differently; a draft server listens where taps.stream points, and a record without one is refused")
 
 
 if __name__ == "__main__":

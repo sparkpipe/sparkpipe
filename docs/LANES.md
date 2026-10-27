@@ -20,8 +20,8 @@ whether the fleet still matches.
 | `kv_logical_pages` | pages including those parked on the node's NVMe; at least `sequences` full-length sequences |
 | `kv_backing_bytes`, `kv_snapshot_bytes` | per-node NVMe caps for parked pages and prefix snapshots |
 | `state_budget_bytes`, `state_memory_bytes` | rank state budget; recurrent checkpoint memory (default twice the minimum) |
-| `taps` | layer taps a hub drafter reads, passed to every rank's adapter |
-| `expert_pool_bytes`, `memory_max` | `lane.sh` residentd environment for stage lanes |
+| `taps` | layer taps a hub drafter reads, passed to every rank's adapter; `taps.stream` is also where the draft server listens, so the endpoint is written once |
+| `expert_pool_bytes`, `memory_max` | the residentd unit's expert pool and MemoryMax: rendered into `lane.sh` for stage lanes; for K3, `tools/k3_lane.sh` with `K3_RECORD` takes them (and the socket and state budget) from the record and refuses a conflicting `K3_*` value, and the test requires the kimi-k3 swap entry's start and warm commands to carry them |
 | `tokenizer_sha256` | the compiled tokenizer the hub API loads |
 | `text_prompt_prefix_token_ids` | the token ids the publisher tokenizer puts before a raw text prompt, as Hugging Face and vLLM do for `/v1/completions` (`tools/tokenizer_text_prefix.py`); `[]` for none. Gemma 4 and Laguna start with BOS `[2]`, Muse Glimmer with `[200000]` |
 | `draft_server` | the hub drafter the API asks for drafts |
