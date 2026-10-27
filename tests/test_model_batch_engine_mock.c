@@ -2367,6 +2367,7 @@ static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deploym
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioBatchVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root);
+static void TestScenarioModelDraftsYieldToPrefill(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioLongVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioRejectedVerifyDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 
@@ -2399,6 +2400,7 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 		TestScenarioLookupVerifyMixedLanes(&deployment,runtime_root);
 		TestScenarioBatchVerify(&deployment,runtime_root);
 		TestScenarioModelDrafts(&deployment,runtime_root);
+		TestScenarioModelDraftsYieldToPrefill(&deployment,runtime_root);
 		SparkModelResidentDeploymentReset(&plain);
 		(void)unlink(plain_path);
 		SparkModelResidentDeploymentReset(&deployment);
@@ -2792,6 +2794,107 @@ static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployme
 		"model drafts: a model draft that completes an earlier passage carries the passage's continuation in the same frame");
 	CHECK(view.speculative_accepted_token_count >= 40u && TestLaneInputsFollowScript(1u,script,256u) != 0u,
 		"model drafts: the carried continuation is accepted and only committed tokens become lane inputs");
+}
+
+static uint32_t TestVerifyFrameCount(void)
+{
+	uint32_t index,position,rows;
+	for (index=0u; MockResidentClientVerifyFrame(index,&position,&rows) != 0u; index++)
+		;
+	return(index);
+}
+
+static uint32_t TestPendingSubmissions(void)
+{
+	uint32_t rank,pending = 0u;
+	for (rank=0u; rank<TEST_RANKS; rank++)
+		pending += MockResidentClientPendingCount(rank);
+	return(pending);
+}
+
+static uint32_t TestModelDraftFrameAt(const SparkModelResidentDeployment *deployment,const char *runtime_root,const uint32_t *script,uint32_t trigger,uint32_t prefill_waits,
+	TestBatchState *state)
+{
+	SparkModelResidentDeployment drafted = *deployment;
+	static char host[] = "127.0.0.1";
+	static uint32_t other[100];
+	SparkModelBatchEngine *engine;
+	TestDraftServer server;
+	uint32_t steps,first,stride,position = 0u,rows = 0u;
+	for (steps=0u; steps<100u; steps++)
+		other[steps] = 7000u + steps;
+	CHECK(TestDraftStart(&server,TEST_DRAFT_CORRECT,script,256u) != 0u,"model drafts yield: a stub draft server listens");
+	drafted.draft_server.host = host;
+	drafted.draft_server.port = server.port;
+	strcpy(drafted.draft_server.target_model,"test-target");
+	drafted.draft_server.depth = 4u;
+	drafted.draft_server.wait_ms = 50u;
+	drafted.draft_server.min_confidence = 0.05f;
+	MockResidentClientReset();
+	memset(state,0,sizeof(*state));
+	engine = TestConnectFlags(&drafted,state,runtime_root,32u,8u,0u);
+	if ( engine == 0 )
+	{
+		TestDraftStop(&server);
+		return(0u);
+	}
+	MockResidentClientSetScript(script,256u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	MockResidentClientSetStepDelay(2000u);
+	MockResidentClientSetVerifyRowCost(3u);
+	TestSubmitPrompt(engine,1u,900u,60u,script,44u);
+	for (steps=0u; steps<2000u && state->token_events[1] < trigger; steps++)
+		TestDrive(engine,1u);
+	for (steps=0u; steps<200u && TestPendingSubmissions() != 0u; steps++)
+	{
+		(void)MockResidentClientDriveAll();
+		usleep(1000);
+	}
+	first = TestVerifyFrameCount();
+	(void)MockResidentClientTakeMaxTokensPerSequence();
+	(void)MockResidentClientTakeVerifyMaxStride();
+	if ( prefill_waits != 0u )
+	{
+		TestSubmitPrompt(engine,2u,901u,2u,other,100u);
+		TestSubmitPrompt(engine,3u,902u,2u,other + 50u,50u);
+	}
+	(void)SparkModelBatchEngineProgress(engine,8u);
+	rows = MockResidentClientTakeMaxTokensPerSequence();
+	stride = MockResidentClientTakeVerifyMaxStride();
+	if ( stride > rows )
+		rows = stride;
+	if ( TestVerifyFrameCount() > first )
+		(void)MockResidentClientVerifyFrame(first,&position,&rows);
+	TestDriveUntilTerminal(engine,state,prefill_waits != 0u ? 3u : 1u,4000u);
+	MockResidentClientSetStepDelay(0u);
+	MockResidentClientSetVerifyRowCost(1u);
+	SparkModelBatchEngineDestroy(engine);
+	TestDraftStop(&server);
+	return(rows);
+}
+
+static void TestScenarioModelDraftsYieldToPrefill(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	uint32_t script[256],index,trigger,alone = 0u,waiting = 0u;
+	TestBatchState state;
+	for (index=0u; index<40u; index++)
+		script[index] = 1000u + (index * 7u) % 97u;
+	for (index=40u; index<50u; index++)
+		script[index] = 6000u + index;
+	for (index=50u; index<80u; index++)
+		script[index] = script[index - 40u];
+	for (index=80u; index<256u; index++)
+		script[index] = 3000u + (index * 37u + index * index * 11u) % 4093u;
+	for (trigger=8u; trigger<16u && alone <= 3u; trigger++)
+		alone = TestModelDraftFrameAt(deployment,runtime_root,script,trigger,0u,&state);
+	trigger--;
+	CHECK(alone > 3u && TestScriptedOutputMatches(&state,1u,script,44u,60u) != 0u,
+		"model drafts yield: with nothing waiting, a model draft that completes an earlier passage runs a frame that costs more than two single steps");
+	waiting = TestModelDraftFrameAt(deployment,runtime_root,script,trigger,1u,&state);
+	CHECK(waiting != 0u && waiting <= 3u,
+		"model drafts yield: the decode planned while a second prefill waits behind the first one's chunk stays within twice a single step's cost");
+	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u && state.completed_events[3] == 1u && TestScriptedOutputMatches(&state,1u,script,44u,60u) != 0u,
+		"model drafts yield: every request completes and the drafted stream stays exact");
 }
 
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root)
