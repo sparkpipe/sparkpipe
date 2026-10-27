@@ -30,7 +30,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "spec_offline"))
+from context_retention import EXPIRY_SWEEP_SECONDS, RETENTION_SECONDS, evict_contexts, expire_contexts
 from block_drafter import DraftGraph, open_drafter
 from latent_block_drafter import LatentBlockDrafter, LatentContext, LatentDraftGraph
 from tapstream import FRAME, HELLO, MAGIC, read_hello
@@ -44,8 +46,6 @@ DFT3_FOOTER = struct.Struct("<8I4I")
 STATUS_OK, STATUS_BAD_REQUEST, STATUS_BAD_SEQUENCE, STATUS_INTERNAL, STATUS_UNAVAILABLE = 0, 1, 2, 3, 4
 SPEC_DSPARK = 2
 ROOT_PARENT = 0xFFFFFFFF
-RETENTION_SECONDS = 86400
-EXPIRY_SWEEP_SECONDS = 60
 
 
 class Context:
@@ -257,23 +257,14 @@ class Server:
         self.evict()
 
     def expire(self, now):
-        stale = [sequence for sequence, context in self.contexts.items() if now - context.used >= RETENTION_SECONDS]
-        for sequence in stale:
-            del self.contexts[sequence]
-            print(f"CONTEXT-EXPIRED sequence {sequence} unused for {RETENTION_SECONDS} s", flush=True)
+        stale = expire_contexts(self.contexts, now)
         if stale and torch.cuda.is_available():
             torch.cuda.empty_cache()
-        return len(stale)
+        return stale
 
     def evict(self):
         self.expire(time.monotonic())
-        budget = self.args.context_bytes
-        evicted = False
-        while len(self.contexts) > 1 and sum(c.bytes() for c in self.contexts.values()) > budget:
-            sequence, _ = self.contexts.popitem(last=False)
-            print(f"CONTEXT-EVICTED sequence {sequence}", flush=True)
-            evicted = True
-        if evicted:
+        if evict_contexts(self.contexts, self.args.context_bytes):
             torch.cuda.empty_cache()
 
     def gpu_loop(self):
