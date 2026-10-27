@@ -20,6 +20,8 @@ static uint32_t test_recurrent_to_buffer;
 static uint32_t test_recurrent_from_buffer;
 static SparkStatus test_recurrent_status = SPARK_STATUS_OK;
 static SparkStatus test_pack_status = SPARK_STATUS_OK;
+static SparkStatus test_check_status = SPARK_STATUS_OK;
+static uint32_t test_check_calls;
 
 const SparkStageRunnerModelInterface *SparkK3StageModel(void)
 {
@@ -145,7 +147,8 @@ SparkStatus SparkStageRunnerKeepRows(SparkStageRunner *runner, const uint32_t *k
 SparkStatus SparkStageRunnerCheck(SparkStageRunner *runner)
 {
 	(void)runner;
-	return(SPARK_STATUS_OK);
+	test_check_calls++;
+	return(test_check_status);
 }
 
 SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer,
