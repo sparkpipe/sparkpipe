@@ -186,7 +186,8 @@ static inline cudaError_t LmPerHeadProjectRowsLaunch(const uint16_t *input_bf16,
 
 template<
 	uint32_t THREADS,
-	LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT>
+	LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT,
+	bool TABLE = false>
 __global__ __launch_bounds__(THREADS, 1)
 void LmExtractRopePerHeadKernel(
 	const uint16_t *__restrict__ input_bf16,
@@ -196,7 +197,8 @@ void LmExtractRopePerHeadKernel(
 	uint32_t input_head_dimension,
 	uint32_t input_offset,
 	uint32_t rope_dimension,
-	float theta)
+	float theta,
+	const float *__restrict__ inv_freq_table = 0)
 {
 	uint32_t row = blockIdx.x,head = blockIdx.y,index;
 	uint32_t half = rope_dimension / 2u;
@@ -218,8 +220,11 @@ void LmExtractRopePerHeadKernel(
 			? (index * 2u) + 1u : half + index;
 		low = LmBf16ToFloat(input_bf16[input_base + low_offset]);
 		high = LmBf16ToFloat(input_bf16[input_base + high_offset]);
-		angle = position * __powf(
-			theta,-2.0f * (float)index / (float)rope_dimension);
+		if constexpr ( TABLE )
+			angle = position * inv_freq_table[index];
+		else
+			angle = position * __powf(
+				theta,-2.0f * (float)index / (float)rope_dimension);
 		LmRopePair(&low,&high,angle);
 		output_bf16[output_base + low_offset] = LmFloatToBf16(low);
 		output_bf16[output_base + high_offset] = LmFloatToBf16(high);

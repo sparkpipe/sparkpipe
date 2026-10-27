@@ -13,7 +13,7 @@ async def main(path):
     admin = [user for user in users if user.role == "admin"][0]
     for entry in spec["models"]:
         meta = dict(spec["defaults"], description=entry["description"])
-        params = {"compact_token_threshold": entry["compact_token_threshold"]}
+        params = {}
         grants = [{"principal_type": "user", "principal_id": "*", "permission": "read"}] if entry.get("public", True) else []
         form = ModelForm(id=entry["id"], base_model_id=None, name=entry["name"], meta=meta, params=params, is_active=True, access_grants=grants)
         if await Models.get_model_by_id(entry["id"]) is None:

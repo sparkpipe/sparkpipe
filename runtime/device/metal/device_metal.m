@@ -1,3 +1,4 @@
+#import <IOKit/IOKitLib.h>
 #import <Metal/Metal.h>
 
 #include <errno.h>
@@ -30,14 +31,8 @@ typedef struct MetalAllocation
 	uint64_t memory_bytes;
 } MetalAllocation;
 
-typedef enum MetalOperationKind
-{
-	METAL_OPERATION_COPY = 1,
-	METAL_OPERATION_FILL = 2,
-	METAL_OPERATION_CALLBACK = 3,
-	METAL_OPERATION_RECORD = 4,
-	METAL_OPERATION_WAIT = 5
-} MetalOperationKind;
+#define METAL_COMMIT_OPERATIONS 64u
+#define METAL_ERROR_BYTES 128u
 
 typedef struct MetalEvent
 {
@@ -46,24 +41,35 @@ typedef struct MetalEvent
 	uint64_t recorded;
 	uint64_t completed;
 	uint64_t timestamp_ns;
+	void *shared;
 } MetalEvent;
 
-typedef struct MetalOperation
+typedef enum MetalMarkKind
 {
-	MetalOperationKind kind;
-	uint64_t sequence;
-	void *destination;
-	uint64_t destination_offset;
-	void *source;
-	uint64_t source_offset;
-	uint64_t bytes;
-	uint8_t value;
-	SparkDeviceHostFunction function;
-	void *context;
+	METAL_MARK_NONE = 0,
+	METAL_MARK_EVENT = 1,
+	METAL_MARK_CALLBACK = 2
+} MetalMarkKind;
+
+typedef struct MetalMark
+{
+	MetalMarkKind kind;
 	MetalEvent *event;
 	uint64_t generation;
-	struct MetalOperation *next;
-} MetalOperation;
+	SparkDeviceHostFunction function;
+	void *context;
+} MetalMark;
+
+typedef struct MetalBatch
+{
+	uint64_t sequence;
+	MetalMark mark;
+	uint32_t done;
+	int32_t code;
+	uint64_t end_ns;
+	char error[METAL_ERROR_BYTES];
+	struct MetalBatch *next;
+} MetalBatch;
 
 typedef struct MetalQueue
 {
@@ -71,11 +77,20 @@ typedef struct MetalQueue
 	pthread_mutex_t mutex;
 	pthread_cond_t wake;
 	pthread_cond_t progress;
-	MetalOperation *head;
-	MetalOperation *tail;
+	pthread_mutex_t encode;
+	MetalBatch *head;
+	MetalBatch *tail;
 	uint64_t completed;
 	uint32_t stop;
+	int32_t error_code;
+	char error[METAL_ERROR_BYTES];
 	void *commands;
+	void *open;
+	void *compute;
+	uint32_t open_operations;
+	uint64_t open_sequence;
+	void *gate;
+	uint64_t gate_target;
 	char owner[SPARK_DEVICE_OWNER_BYTES];
 } MetalQueue;
 
@@ -85,9 +100,7 @@ static uint64_t metal_page_bytes;
 
 static uint64_t MetalNowNs(void)
 {
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC,&now);
-	return((uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec);
+	return(clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
 }
 
 static void MetalDeadline(uint64_t timeout_ns, struct timespec *deadline)
@@ -108,11 +121,18 @@ static uint64_t MetalRound(uint64_t bytes)
 
 static uint32_t MetalGpuCores(void)
 {
+	io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault,IOServiceMatching("AGXAccelerator"));
+	CFTypeRef property;
 	uint32_t cores = 0u;
-	size_t size = sizeof(cores);
-	if ( sysctlbyname("hw.perflevel0.gpu_cores",&cores,&size,0,0) == 0 && cores != 0u )
-		return(cores);
-	return(0u);
+	if ( service == IO_OBJECT_NULL )
+		return(0u);
+	property = IORegistryEntrySearchCFProperty(service,kIOServicePlane,CFSTR("gpu-core-count"),kCFAllocatorDefault,kIORegistryIterateRecursively);
+	if ( property != 0 && CFGetTypeID(property) == CFNumberGetTypeID() )
+		CFNumberGetValue((CFNumberRef)property,kCFNumberSInt32Type,&cores);
+	if ( property != 0 )
+		CFRelease(property);
+	IOObjectRelease(service);
+	return(cores);
 }
 
 SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configuration, SparkDeviceProperties *properties)
@@ -133,7 +153,8 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 		}
 		metal_page_bytes = page > 0 ? (uint64_t)page : 16384u;
 		snprintf(properties->backend,sizeof(properties->backend),"%s","metal");
-		snprintf(properties->target,sizeof(properties->target),"metal.%s",[metal_device supportsFamily:MTLGPUFamilyApple9] ? "apple9" : "apple");
+		snprintf(properties->target,sizeof(properties->target),"metal.%s",[metal_device supportsFamily:(MTLGPUFamily)(MTLGPUFamilyApple9 + 1)] ? "apple10" :
+			[metal_device supportsFamily:MTLGPUFamilyApple9] ? "apple9" : "apple");
 		snprintf(properties->name,sizeof(properties->name),"%s",metal_device.name.UTF8String);
 		properties->page_bytes = (uint32_t)metal_page_bytes;
 		properties->compute_units = MetalGpuCores();
@@ -142,6 +163,8 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 			(uint64_t)metal_device.recommendedMaxWorkingSetSize;
 		properties->max_buffer_bytes = (uint64_t)metal_device.maxBufferLength;
 		properties->properties = metal_device.hasUnifiedMemory ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u;
+		properties->max_group_threads = (uint32_t)metal_device.maxThreadsPerThreadgroup.width;
+		properties->max_shared_bytes = (uint32_t)metal_device.maxThreadgroupMemoryLength;
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -317,61 +340,46 @@ void SparkDeviceBackendRelease(SparkDeviceAllocation *allocation)
 	allocation->backend = 0;
 }
 
-static void MetalRunBlit(MetalQueue *queue, MetalOperation *operation)
+static void MetalReleaseObject(void **object)
 {
-	@autoreleasepool
-	{
-		id<MTLCommandQueue> commands_queue = (__bridge id<MTLCommandQueue>)queue->commands;
-		id<MTLCommandBuffer> commands = [commands_queue commandBuffer];
-		id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
-		id<MTLBuffer> destination = (__bridge id<MTLBuffer>)operation->destination;
-		if ( operation->kind == METAL_OPERATION_COPY )
-			[blit copyFromBuffer:(__bridge id<MTLBuffer>)operation->source sourceOffset:(NSUInteger)operation->source_offset
-				toBuffer:destination destinationOffset:(NSUInteger)operation->destination_offset size:(NSUInteger)operation->bytes];
-		else
-			[blit fillBuffer:destination range:NSMakeRange((NSUInteger)operation->destination_offset,(NSUInteger)operation->bytes) value:operation->value];
-		[blit endEncoding];
-		[commands commit];
-		[commands waitUntilCompleted];
-		if ( commands.status != MTLCommandBufferStatusCompleted )
-			SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,operation->kind == METAL_OPERATION_COPY ? "copy" : "fill",queue->owner,(int32_t)commands.status,
-				commands.error != nil ? commands.error.localizedDescription.UTF8String : "the Metal command buffer failed");
-	}
+	if ( *object != 0 )
+		CFRelease(*object);
+	*object = 0;
 }
 
-static void MetalRun(MetalQueue *queue, MetalOperation *operation)
+static void MetalBatchDone(MetalQueue *queue, MetalBatch *batch, id<MTLCommandBuffer> buffer)
 {
-	if ( operation->kind == METAL_OPERATION_COPY || operation->kind == METAL_OPERATION_FILL )
-		MetalRunBlit(queue,operation);
-	else if ( operation->kind == METAL_OPERATION_CALLBACK )
-		operation->function(operation->context);
-	else if ( operation->kind == METAL_OPERATION_RECORD )
+	pthread_mutex_lock(&queue->mutex);
+	batch->end_ns = buffer.GPUEndTime > 0.0 ? (uint64_t)(buffer.GPUEndTime * 1e9) : MetalNowNs();
+	if ( buffer.status != MTLCommandBufferStatusCompleted )
 	{
-		pthread_mutex_lock(&operation->event->mutex);
-		if ( operation->event->completed < operation->generation )
+		batch->code = buffer.error != nil ? (int32_t)buffer.error.code : -1;
+		snprintf(batch->error,sizeof(batch->error),"%s",buffer.error != nil ? buffer.error.localizedDescription.UTF8String : "the Metal command buffer failed");
+	}
+	batch->done = 1u;
+	pthread_cond_broadcast(&queue->wake);
+	pthread_mutex_unlock(&queue->mutex);
+}
+
+static void MetalFinishMark(MetalQueue *queue, const MetalBatch *batch)
+{
+	const MetalMark *mark = &batch->mark;
+	if ( mark->kind == METAL_MARK_EVENT )
+	{
+		pthread_mutex_lock(&mark->event->mutex);
+		if ( mark->event->completed < mark->generation )
 		{
-			operation->event->completed = operation->generation;
-			operation->event->timestamp_ns = MetalNowNs();
+			mark->event->completed = mark->generation;
+			mark->event->timestamp_ns = batch->end_ns;
 		}
-		pthread_cond_broadcast(&operation->event->done);
-		pthread_mutex_unlock(&operation->event->mutex);
+		pthread_cond_broadcast(&mark->event->done);
+		pthread_mutex_unlock(&mark->event->mutex);
 	}
-	else if ( operation->kind == METAL_OPERATION_WAIT )
+	else if ( mark->kind == METAL_MARK_CALLBACK )
 	{
-		pthread_mutex_lock(&operation->event->mutex);
-		while ( operation->event->completed < operation->generation )
-			pthread_cond_wait(&operation->event->done,&operation->event->mutex);
-		pthread_mutex_unlock(&operation->event->mutex);
+		mark->function(mark->context);
+		((__bridge id<MTLSharedEvent>)queue->gate).signaledValue = mark->generation;
 	}
-}
-
-static void MetalReleaseOperation(MetalOperation *operation)
-{
-	if ( operation->destination != 0 )
-		CFRelease(operation->destination);
-	if ( operation->source != 0 )
-		CFRelease(operation->source);
-	free(operation);
 }
 
 static void *MetalWorker(void *argument)
@@ -380,24 +388,98 @@ static void *MetalWorker(void *argument)
 	pthread_mutex_lock(&queue->mutex);
 	for ( ;; )
 	{
-		MetalOperation *operation;
-		while ( queue->head == 0 && queue->stop == 0u )
+		MetalBatch *batch;
+		while ( (queue->head == 0 && queue->stop == 0u) || (queue->head != 0 && queue->head->done == 0u) )
 			pthread_cond_wait(&queue->wake,&queue->mutex);
 		if ( queue->head == 0 )
 			break;
-		operation = queue->head;
-		queue->head = operation->next;
+		batch = queue->head;
+		queue->head = batch->next;
 		if ( queue->head == 0 )
 			queue->tail = 0;
+		if ( batch->code != 0 && queue->error_code == 0 )
+		{
+			queue->error_code = batch->code;
+			memcpy(queue->error,batch->error,sizeof(queue->error));
+		}
 		pthread_mutex_unlock(&queue->mutex);
-		MetalRun(queue,operation);
+		if ( batch->code != 0 )
+			SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"queue_worker",queue->owner,batch->code,batch->error);
+		@autoreleasepool
+		{
+			MetalFinishMark(queue,batch);
+		}
 		pthread_mutex_lock(&queue->mutex);
-		queue->completed = operation->sequence;
+		queue->completed = batch->sequence;
 		pthread_cond_broadcast(&queue->progress);
-		MetalReleaseOperation(operation);
+		free(batch);
 	}
 	pthread_mutex_unlock(&queue->mutex);
 	return(0);
+}
+
+static id<MTLCommandBuffer> MetalOpen(MetalQueue *queue)
+{
+	if ( queue->open == 0 )
+	{
+		id<MTLCommandBuffer> buffer = [(__bridge id<MTLCommandQueue>)queue->commands commandBufferWithUnretainedReferences];
+		if ( buffer == nil )
+			return(nil);
+		if ( queue->gate_target != 0u )
+			[buffer encodeWaitForEvent:(__bridge id<MTLSharedEvent>)queue->gate value:queue->gate_target];
+		queue->open = (__bridge_retained void *)buffer;
+	}
+	return((__bridge id<MTLCommandBuffer>)queue->open);
+}
+
+static void MetalEndCompute(MetalQueue *queue)
+{
+	if ( queue->compute != 0 )
+	{
+		[(__bridge id<MTLComputeCommandEncoder>)queue->compute endEncoding];
+		MetalReleaseObject(&queue->compute);
+	}
+}
+
+static SparkStatus MetalCommit(MetalQueue *queue, const MetalMark *mark, const char *operation)
+{
+	MetalBatch *batch;
+	id<MTLCommandBuffer> buffer;
+	if ( queue->open == 0 && mark == 0 )
+		return(SPARK_STATUS_OK);
+	buffer = MetalOpen(queue);
+	batch = (MetalBatch *)calloc(1u,sizeof(*batch));
+	if ( buffer == nil || batch == 0 )
+	{
+		free(batch);
+		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,operation,queue->owner,0,"cannot create a Metal command buffer"));
+	}
+	MetalEndCompute(queue);
+	batch->sequence = queue->open_sequence;
+	if ( mark != 0 )
+		batch->mark = *mark;
+	if ( mark != 0 && mark->kind == METAL_MARK_EVENT )
+		[buffer encodeSignalEvent:(__bridge id<MTLSharedEvent>)mark->event->shared value:mark->generation];
+	pthread_mutex_lock(&queue->mutex);
+	if ( queue->tail != 0 )
+		queue->tail->next = batch;
+	else
+		queue->head = batch;
+	queue->tail = batch;
+	pthread_mutex_unlock(&queue->mutex);
+	[buffer addCompletedHandler:^(id<MTLCommandBuffer> done) { MetalBatchDone(queue,batch,done); }];
+	[buffer commit];
+	MetalReleaseObject(&queue->open);
+	queue->open_operations = 0u;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus MetalCounted(MetalQueue *queue, uint64_t sequence, const char *operation)
+{
+	queue->open_sequence = sequence;
+	if ( ++queue->open_operations < METAL_COMMIT_OPERATIONS )
+		return(SPARK_STATUS_OK);
+	return(MetalCommit(queue,0,operation));
 }
 
 SparkStatus SparkDeviceBackendQueueCreate(SparkDeviceQueue *queue)
@@ -409,15 +491,18 @@ SparkStatus SparkDeviceBackendQueueCreate(SparkDeviceQueue *queue)
 	@autoreleasepool
 	{
 		id<MTLCommandQueue> commands = [metal_device newCommandQueue];
-		if ( commands == nil )
+		id<MTLSharedEvent> gate = [metal_device newSharedEvent];
+		if ( commands == nil || gate == nil )
 		{
 			free(metal);
 			return(SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"queue_create",queue->owner,0,"cannot create a Metal command queue"));
 		}
 		metal->commands = (__bridge_retained void *)commands;
+		metal->gate = (__bridge_retained void *)gate;
 	}
 	memcpy(metal->owner,queue->owner,sizeof(metal->owner));
 	pthread_mutex_init(&metal->mutex,0);
+	pthread_mutex_init(&metal->encode,0);
 	pthread_cond_init(&metal->wake,0);
 	pthread_cond_init(&metal->progress,0);
 	error = pthread_create(&metal->thread,0,MetalWorker,metal);
@@ -425,8 +510,10 @@ SparkStatus SparkDeviceBackendQueueCreate(SparkDeviceQueue *queue)
 	{
 		pthread_cond_destroy(&metal->progress);
 		pthread_cond_destroy(&metal->wake);
+		pthread_mutex_destroy(&metal->encode);
 		pthread_mutex_destroy(&metal->mutex);
-		CFRelease(metal->commands);
+		MetalReleaseObject(&metal->gate);
+		MetalReleaseObject(&metal->commands);
 		free(metal);
 		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"queue_create",queue->owner,error,"cannot start the queue worker"));
 	}
@@ -444,87 +531,115 @@ void SparkDeviceBackendQueueDestroy(SparkDeviceQueue *queue)
 	pthread_cond_broadcast(&metal->wake);
 	pthread_mutex_unlock(&metal->mutex);
 	pthread_join(metal->thread,0);
+	MetalEndCompute(metal);
+	MetalReleaseObject(&metal->open);
 	pthread_cond_destroy(&metal->progress);
 	pthread_cond_destroy(&metal->wake);
+	pthread_mutex_destroy(&metal->encode);
 	pthread_mutex_destroy(&metal->mutex);
-	CFRelease(metal->commands);
+	MetalReleaseObject(&metal->gate);
+	MetalReleaseObject(&metal->commands);
 	free(metal);
 	queue->backend = 0;
-}
-
-static SparkStatus MetalEnqueue(SparkDeviceQueue *queue, MetalOperation *operation, const char *name)
-{
-	MetalQueue *metal = (MetalQueue *)queue->backend;
-	MetalOperation *copy = (MetalOperation *)malloc(sizeof(*copy));
-	if ( copy == 0 )
-		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,name,queue->owner,ENOMEM,"out of host memory"));
-	*copy = *operation;
-	if ( copy->destination != 0 )
-		CFRetain(copy->destination);
-	if ( copy->source != 0 )
-		CFRetain(copy->source);
-	copy->sequence = queue->submitted;
-	copy->next = 0;
-	pthread_mutex_lock(&metal->mutex);
-	if ( metal->tail != 0 )
-		metal->tail->next = copy;
-	else
-		metal->head = copy;
-	metal->tail = copy;
-	pthread_cond_signal(&metal->wake);
-	pthread_mutex_unlock(&metal->mutex);
-	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkDeviceBackendCopy(SparkDeviceQueue *queue, SparkDeviceDirection direction,
 	const SparkDeviceAllocation *destination, uint64_t destination_offset,
 	const SparkDeviceAllocation *source, uint64_t source_offset, uint64_t bytes)
 {
+	MetalQueue *metal = (MetalQueue *)queue->backend;
 	const MetalAllocation *target = (const MetalAllocation *)destination->backend, *origin = (const MetalAllocation *)source->backend;
-	MetalOperation operation;
+	SparkStatus status = SPARK_STATUS_OK;
 	(void)direction;
-	memset(&operation,0,sizeof(operation));
-	operation.kind = METAL_OPERATION_COPY;
-	operation.destination = target->buffer;
-	operation.destination_offset = target->offset + destination_offset;
-	operation.source = origin->buffer;
-	operation.source_offset = origin->offset + source_offset;
-	operation.bytes = bytes;
-	return(MetalEnqueue(queue,&operation,"copy"));
+	pthread_mutex_lock(&metal->encode);
+	@autoreleasepool
+	{
+		id<MTLCommandBuffer> buffer = MetalOpen(metal);
+		id<MTLBlitCommandEncoder> blit;
+		MetalEndCompute(metal);
+		blit = buffer != nil ? [buffer blitCommandEncoder] : nil;
+		if ( blit == nil )
+			status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"copy",queue->owner,0,"cannot create a Metal blit encoder");
+		else
+		{
+			[blit copyFromBuffer:(__bridge id<MTLBuffer>)origin->buffer sourceOffset:(NSUInteger)(origin->offset + source_offset)
+				toBuffer:(__bridge id<MTLBuffer>)target->buffer destinationOffset:(NSUInteger)(target->offset + destination_offset) size:(NSUInteger)bytes];
+			[blit endEncoding];
+			status = MetalCounted(metal,queue->submitted,"copy");
+		}
+	}
+	pthread_mutex_unlock(&metal->encode);
+	return(status);
 }
 
 SparkStatus SparkDeviceBackendFill(SparkDeviceQueue *queue, const SparkDeviceAllocation *destination, uint64_t offset, uint8_t value, uint64_t bytes)
 {
+	MetalQueue *metal = (MetalQueue *)queue->backend;
 	const MetalAllocation *target = (const MetalAllocation *)destination->backend;
-	MetalOperation operation;
-	memset(&operation,0,sizeof(operation));
-	operation.kind = METAL_OPERATION_FILL;
-	operation.destination = target->buffer;
-	operation.destination_offset = target->offset + offset;
-	operation.value = value;
-	operation.bytes = bytes;
-	return(MetalEnqueue(queue,&operation,"fill"));
+	SparkStatus status = SPARK_STATUS_OK;
+	pthread_mutex_lock(&metal->encode);
+	@autoreleasepool
+	{
+		id<MTLCommandBuffer> buffer = MetalOpen(metal);
+		id<MTLBlitCommandEncoder> blit;
+		MetalEndCompute(metal);
+		blit = buffer != nil ? [buffer blitCommandEncoder] : nil;
+		if ( blit == nil )
+			status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"fill",queue->owner,0,"cannot create a Metal blit encoder");
+		else
+		{
+			[blit fillBuffer:(__bridge id<MTLBuffer>)target->buffer range:NSMakeRange((NSUInteger)(target->offset + offset),(NSUInteger)bytes) value:value];
+			[blit endEncoding];
+			status = MetalCounted(metal,queue->submitted,"fill");
+		}
+	}
+	pthread_mutex_unlock(&metal->encode);
+	return(status);
 }
 
 SparkStatus SparkDeviceBackendQueueHostCallback(SparkDeviceQueue *queue, SparkDeviceHostFunction function, void *context)
 {
-	MetalOperation operation;
-	memset(&operation,0,sizeof(operation));
-	operation.kind = METAL_OPERATION_CALLBACK;
-	operation.function = function;
-	operation.context = context;
-	return(MetalEnqueue(queue,&operation,"host_callback"));
+	MetalQueue *metal = (MetalQueue *)queue->backend;
+	MetalMark mark;
+	SparkStatus status;
+	memset(&mark,0,sizeof(mark));
+	mark.kind = METAL_MARK_CALLBACK;
+	mark.function = function;
+	mark.context = context;
+	pthread_mutex_lock(&metal->encode);
+	@autoreleasepool
+	{
+		if ( MetalOpen(metal) == nil )
+			status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"host_callback",queue->owner,0,"cannot create a Metal command buffer");
+		else
+		{
+			mark.generation = ++metal->gate_target;
+			metal->open_sequence = queue->submitted;
+			status = MetalCommit(metal,&mark,"host_callback");
+		}
+	}
+	pthread_mutex_unlock(&metal->encode);
+	return(status);
 }
 
 SparkStatus SparkDeviceBackendQueueWait(SparkDeviceQueue *queue, uint64_t sequence, uint64_t timeout_ns)
 {
 	MetalQueue *metal = (MetalQueue *)queue->backend;
 	struct timespec deadline;
-	SparkStatus status = SPARK_STATUS_OK;
+	SparkStatus status;
+	int32_t code;
+	pthread_mutex_lock(&metal->encode);
+	@autoreleasepool
+	{
+		status = MetalCommit(metal,0,"queue_wait");
+	}
+	pthread_mutex_unlock(&metal->encode);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	if ( timeout_ns != 0u && timeout_ns != SPARK_DEVICE_WAIT_FOREVER )
 		MetalDeadline(timeout_ns,&deadline);
 	pthread_mutex_lock(&metal->mutex);
-	while ( metal->completed < sequence )
+	while ( metal->completed < sequence && metal->error_code == 0 )
 	{
 		if ( timeout_ns == 0u )
 		{
@@ -539,7 +654,10 @@ SparkStatus SparkDeviceBackendQueueWait(SparkDeviceQueue *queue, uint64_t sequen
 			break;
 		}
 	}
+	code = metal->error_code;
 	pthread_mutex_unlock(&metal->mutex);
+	if ( code != 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"queue_wait",queue->owner,code,metal->error));
 	return(status);
 }
 
@@ -558,6 +676,16 @@ SparkStatus SparkDeviceBackendEventCreate(SparkDeviceEvent *event)
 	MetalEvent *metal = (MetalEvent *)calloc(1u,sizeof(*metal));
 	if ( metal == 0 )
 		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"event_create","",ENOMEM,"out of host memory"));
+	@autoreleasepool
+	{
+		id<MTLSharedEvent> shared = [metal_device newSharedEvent];
+		if ( shared == nil )
+		{
+			free(metal);
+			return(SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"event_create","",0,"cannot create a Metal shared event"));
+		}
+		metal->shared = (__bridge_retained void *)shared;
+	}
 	pthread_mutex_init(&metal->mutex,0);
 	pthread_cond_init(&metal->done,0);
 	event->backend = metal;
@@ -571,42 +699,63 @@ void SparkDeviceBackendEventDestroy(SparkDeviceEvent *event)
 		return;
 	pthread_cond_destroy(&metal->done);
 	pthread_mutex_destroy(&metal->mutex);
+	MetalReleaseObject(&metal->shared);
 	free(metal);
 	event->backend = 0;
 }
 
 SparkStatus SparkDeviceBackendEventRecord(SparkDeviceEvent *event, SparkDeviceQueue *queue)
 {
-	MetalEvent *metal = (MetalEvent *)event->backend;
-	MetalOperation operation;
+	MetalEvent *metal_event = (MetalEvent *)event->backend;
+	MetalQueue *metal = (MetalQueue *)queue->backend;
+	MetalMark mark;
 	SparkStatus status;
-	memset(&operation,0,sizeof(operation));
-	operation.kind = METAL_OPERATION_RECORD;
-	operation.event = metal;
-	pthread_mutex_lock(&metal->mutex);
-	operation.generation = ++metal->recorded;
-	pthread_mutex_unlock(&metal->mutex);
-	status = MetalEnqueue(queue,&operation,"event_record");
+	memset(&mark,0,sizeof(mark));
+	mark.kind = METAL_MARK_EVENT;
+	mark.event = metal_event;
+	pthread_mutex_lock(&metal->encode);
+	pthread_mutex_lock(&metal_event->mutex);
+	mark.generation = ++metal_event->recorded;
+	pthread_mutex_unlock(&metal_event->mutex);
+	metal->open_sequence = queue->submitted;
+	@autoreleasepool
+	{
+		status = MetalCommit(metal,&mark,"event_record");
+	}
 	if ( status != SPARK_STATUS_OK )
 	{
-		pthread_mutex_lock(&metal->mutex);
-		metal->recorded--;
-		pthread_mutex_unlock(&metal->mutex);
+		pthread_mutex_lock(&metal_event->mutex);
+		metal_event->recorded--;
+		pthread_mutex_unlock(&metal_event->mutex);
 	}
+	pthread_mutex_unlock(&metal->encode);
 	return(status);
 }
 
 SparkStatus SparkDeviceBackendQueueWaitEvent(SparkDeviceQueue *queue, SparkDeviceEvent *event)
 {
-	MetalEvent *metal = (MetalEvent *)event->backend;
-	MetalOperation operation;
-	memset(&operation,0,sizeof(operation));
-	operation.kind = METAL_OPERATION_WAIT;
-	operation.event = metal;
-	pthread_mutex_lock(&metal->mutex);
-	operation.generation = metal->recorded;
-	pthread_mutex_unlock(&metal->mutex);
-	return(MetalEnqueue(queue,&operation,"queue_wait_event"));
+	MetalEvent *metal_event = (MetalEvent *)event->backend;
+	MetalQueue *metal = (MetalQueue *)queue->backend;
+	SparkStatus status = SPARK_STATUS_OK;
+	uint64_t generation;
+	pthread_mutex_lock(&metal_event->mutex);
+	generation = metal_event->recorded;
+	pthread_mutex_unlock(&metal_event->mutex);
+	pthread_mutex_lock(&metal->encode);
+	@autoreleasepool
+	{
+		id<MTLCommandBuffer> buffer = MetalOpen(metal);
+		if ( buffer == nil )
+			status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"queue_wait_event",queue->owner,0,"cannot create a Metal command buffer");
+		else
+		{
+			MetalEndCompute(metal);
+			[buffer encodeWaitForEvent:(__bridge id<MTLSharedEvent>)metal_event->shared value:generation];
+			status = MetalCounted(metal,queue->submitted,"queue_wait_event");
+		}
+	}
+	pthread_mutex_unlock(&metal->encode);
+	return(status);
 }
 
 SparkStatus SparkDeviceBackendEventWait(SparkDeviceEvent *event, uint64_t timeout_ns)
@@ -633,6 +782,96 @@ SparkStatus SparkDeviceBackendEventWait(SparkDeviceEvent *event, uint64_t timeou
 		}
 	}
 	pthread_mutex_unlock(&metal->mutex);
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendLibraryLoad(SparkDeviceLibrary *library, const char *path)
+{
+	@autoreleasepool
+	{
+		NSError *error = nil;
+		NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
+		id<MTLLibrary> loaded = url != nil ? [metal_device newLibraryWithURL:url error:&error] : nil;
+		if ( loaded == nil )
+			return(SparkDeviceRecordError(SPARK_STATUS_NOT_FOUND,"library_load",library->owner,error != nil ? (int32_t)error.code : 0,
+				error != nil ? error.localizedDescription.UTF8String : "cannot read the Metal library"));
+		library->backend = (__bridge_retained void *)loaded;
+	}
+	return(SPARK_STATUS_OK);
+}
+
+void SparkDeviceBackendLibraryUnload(SparkDeviceLibrary *library)
+{
+	MetalReleaseObject(&library->backend);
+}
+
+SparkStatus SparkDeviceBackendKernelCreate(SparkDeviceKernel *kernel, const char *name)
+{
+	@autoreleasepool
+	{
+		NSError *error = nil;
+		id<MTLLibrary> library = (__bridge id<MTLLibrary>)kernel->library->backend;
+		id<MTLFunction> function = [library newFunctionWithName:[NSString stringWithUTF8String:name]];
+		id<MTLComputePipelineState> pipeline;
+		if ( function == nil )
+			return(SparkDeviceRecordError(SPARK_STATUS_NOT_FOUND,"kernel_create",name,0,"the Metal library has no function of that name"));
+		pipeline = [metal_device newComputePipelineStateWithFunction:function error:&error];
+		if ( pipeline == nil )
+			return(SparkDeviceRecordError(SPARK_STATUS_TARGET_MISMATCH,"kernel_create",name,error != nil ? (int32_t)error.code : 0,
+				error != nil ? error.localizedDescription.UTF8String : "Metal cannot build the compute pipeline"));
+		kernel->info.max_threads = (uint32_t)pipeline.maxTotalThreadsPerThreadgroup;
+		kernel->info.simd_width = (uint32_t)pipeline.threadExecutionWidth;
+		kernel->info.static_shared_bytes = (uint32_t)pipeline.staticThreadgroupMemoryLength;
+		kernel->backend = (__bridge_retained void *)pipeline;
+	}
+	return(SPARK_STATUS_OK);
+}
+
+void SparkDeviceBackendKernelDestroy(SparkDeviceKernel *kernel)
+{
+	MetalReleaseObject(&kernel->backend);
+}
+
+SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkDeviceKernel *kernel, const SparkDeviceLaunch *launch,
+	SparkDeviceAllocation *const *allocations)
+{
+	MetalQueue *metal = (MetalQueue *)queue->backend;
+	SparkStatus status = SPARK_STATUS_OK;
+	uint32_t index;
+	pthread_mutex_lock(&metal->encode);
+	@autoreleasepool
+	{
+		id<MTLCommandBuffer> buffer = MetalOpen(metal);
+		id<MTLComputeCommandEncoder> encoder = nil;
+		if ( buffer != nil && metal->compute == 0 )
+		{
+			encoder = [buffer computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+			if ( encoder != nil )
+				metal->compute = (__bridge_retained void *)encoder;
+		}
+		else if ( buffer != nil )
+			encoder = (__bridge id<MTLComputeCommandEncoder>)metal->compute;
+		if ( encoder == nil )
+			status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"kernel_launch",kernel->name,0,"cannot create a Metal compute encoder");
+		else
+		{
+			[encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)kernel->backend];
+			if ( launch->constant_bytes != 0u )
+				[encoder setBytes:launch->constants length:launch->constant_bytes atIndex:0];
+			for ( index = 0u; index < launch->binding_count; index++ )
+			{
+				const MetalAllocation *bound = (const MetalAllocation *)allocations[index]->backend;
+				[encoder setBuffer:(__bridge id<MTLBuffer>)bound->buffer offset:(NSUInteger)(bound->offset + launch->bindings[index].range.offset)
+					atIndex:index + 1u];
+			}
+			if ( launch->shared_bytes != 0u )
+				[encoder setThreadgroupMemoryLength:(launch->shared_bytes + 15u) / 16u * 16u atIndex:0];
+			[encoder dispatchThreadgroups:MTLSizeMake(launch->groups.x,launch->groups.y,launch->groups.z)
+				threadsPerThreadgroup:MTLSizeMake(launch->threads.x,launch->threads.y,launch->threads.z)];
+			status = MetalCounted(metal,queue->submitted,"kernel_launch");
+		}
+	}
+	pthread_mutex_unlock(&metal->encode);
 	return(status);
 }
 

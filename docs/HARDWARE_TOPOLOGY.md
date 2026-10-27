@@ -115,7 +115,11 @@ matrix throughput near a Spark's: EXO rates a Spark at about 100 FP16 TFLOPS
 against 26 for an M3 Ultra ([EXO][exo-spark]), and Apple claims up to 4 times
 the M3 Ultra's prompt processing for the M5 Ultra ([Apple][m5-ultra]). Sixteen
 Sparks therefore have about twice the matrix throughput of eight Studios. The
-Studios run SparkPipe through the Metal backend, which does not exist yet.
+Studios run SparkPipe through the Metal backend
+([`METAL_BACKEND.md`](METAL_BACKEND.md)). The first Studio measures 1.14 TB/s
+streaming reads from GPU memory and about 95 TFLOPS for a BF16 projection on
+the M5's tensor operations
+([`PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md#mac-studio)).
 
 **Thunderbolt 5 RDMA.** From macOS 26.2, Macs expose RDMA over Thunderbolt 5
 through a verbs-compatible API ([TN3205][tn3205]). It is narrower than the
@@ -157,8 +161,8 @@ about 320 GB, from the per-rank shapes in
 [`GLM5_NEXT_ROOFLINE.md`](GLM5_NEXT_ROOFLINE.md). It needs TP2, so the pool
 holds four replicas. A B1 step reads about 25 GB; split over two Studios that
 is a 10.4 ms floor, 96 tok/s per replica. A 4-bit build fits one Studio, but
-to the provider network it is a different model: a separate offer, with its
-own reference nodes.
+it is a different model: a separate entry on the Fleet List, qualified on its
+own.
 
 ## Mixed fleets
 

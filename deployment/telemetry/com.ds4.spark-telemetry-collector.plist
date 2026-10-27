@@ -28,6 +28,8 @@
   <string>@DEST@</string>
   <key>RunAtLoad</key>
   <true/>
+  <key>KeepAlive</key>
+  <true/>
   <key>StandardOutPath</key>
   <string>/tmp/ds4_telemetry/mac/telemetry-collector.out.log</string>
   <key>StandardErrorPath</key>

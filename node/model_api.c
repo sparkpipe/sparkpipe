@@ -60,6 +60,7 @@ typedef struct ApiOptions
 	float top_p;
 	uint32_t top_k;
 	uint32_t logprobs;
+	uint32_t drafts_disabled;
 } ApiOptions;
 
 typedef struct ApiRequest
@@ -100,6 +101,7 @@ typedef struct ApiRequest
 	float top_p;
 	uint32_t top_k;
 	uint32_t logprob_count;
+	uint32_t drafts_disabled;
 	SparkSamplingLogprob *logprobs;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
@@ -509,6 +511,7 @@ static uint32_t api_submit(ApiRequest *r)
 	sub.top_p = r->top_p;
 	sub.top_k = r->top_k;
 	sub.logprobs = r->logprob_count;
+	sub.drafts_disabled = r->drafts_disabled;
 	sub.output_token_budget = r->max_tokens;
 	sub.prompt_token_ids = r->prompt_tokens;
 	sub.prompt_token_count = r->prompt_count;
@@ -949,15 +952,48 @@ static uint32_t parse_token_array(SparkJsonDocument *doc, int32_t root,
 	return count;
 }
 
+static uint32_t api_utf8_sequence(const unsigned char *text, uint32_t available, uint32_t *valid)
+{
+	unsigned char lead = text[0],low = 0x80u,high = 0xbfu;
+	uint32_t need,index;
+	*valid = 1u;
+	if ( lead < 0x80u )
+		return 1u;
+	need = lead >= 0xc2u && lead <= 0xdfu ? 2u : lead >= 0xe0u && lead <= 0xefu ? 3u : lead >= 0xf0u && lead <= 0xf4u ? 4u : 0u;
+	*valid = 0u;
+	if ( need == 0u )
+		return 1u;
+	if ( lead == 0xe0u )
+		low = 0xa0u;
+	else if ( lead == 0xedu )
+		high = 0x9fu;
+	else if ( lead == 0xf0u )
+		low = 0x90u;
+	else if ( lead == 0xf4u )
+		high = 0x8fu;
+	for (index = 1u; index < need; index++)
+	{
+		if ( index >= available || text[index] < low || text[index] > high )
+			return index;
+		low = 0x80u;
+		high = 0xbfu;
+	}
+	*valid = 1u;
+	return need;
+}
+
 static int append_json_escaped(char *buf, size_t cap, size_t *len,
 	const char *text, uint32_t text_bytes)
 {
-	uint32_t i;
-	for (i = 0; i < text_bytes; i++)
+	static const char replacement[] = "\xef\xbf\xbd";
+	uint32_t i = 0u,step,valid;
+	while (i < text_bytes)
 	{
 		unsigned char c = (unsigned char)text[i];
 		char escape_buf[8];
 		const char *escape = 0;
+		size_t escape_len;
+		step = 1u;
 		switch (c)
 		{
 			case '"': escape = "\\\""; break;
@@ -974,22 +1010,20 @@ static int append_json_escaped(char *buf, size_t cap, size_t *len,
 						"\\u%04x", (unsigned)c);
 					escape = escape_buf;
 				}
+				else if (c >= 0x80u)
+				{
+					step = api_utf8_sequence((const unsigned char *)text + i,text_bytes - i,&valid);
+					if (valid == 0u)
+						escape = replacement;
+				}
 				break;
 		}
-		if (escape != 0)
-		{
-			size_t escape_len = strlen(escape);
-			if (*len + escape_len + 1u > cap)
-				return 0;
-			memcpy(buf + *len, escape, escape_len);
-			*len += escape_len;
-		}
-		else
-		{
-			if (*len + 2u > cap)
-				return 0;
-			buf[(*len)++] = (char)c;
-		}
+		escape_len = escape != 0 ? strlen(escape) : step;
+		if (*len + escape_len + 1u > cap)
+			return 0;
+		memcpy(buf + *len, escape != 0 ? escape : text + i, escape_len);
+		*len += escape_len;
+		i += step;
 	}
 	buf[*len] = '\0';
 	return 1;
@@ -1025,6 +1059,7 @@ static int api_parse_sampling_options(const SparkJsonDocument *doc, int32_t root
 {
 	int32_t member;
 	uint32_t top_alternatives = 0u;
+	bool speculation = true;
 	member = SparkJsonFindObjectMember(doc,root,"temperature");
 	if ( member >= 0 && (SparkJsonGetFloat(doc,member,&options->temperature) != SPARK_STATUS_OK || SparkSamplingTemperatureValid(options->temperature) == 0u) )
 		return 0;
@@ -1042,6 +1077,10 @@ static int api_parse_sampling_options(const SparkJsonDocument *doc, int32_t root
 	if ( member >= 0 && (SparkJsonGetUInt32(doc,member,&top_alternatives) != SPARK_STATUS_OK || top_alternatives > SPARK_SAMPLING_MAX_TOP_LOGPROBS) )
 		return 0;
 	options->logprobs = member >= 0 ? top_alternatives + 1u : 0u;
+	member = SparkJsonFindObjectMember(doc,root,"speculation");
+	if ( member >= 0 && SparkJsonGetBoolean(doc,member,&speculation) != SPARK_STATUS_OK )
+		return 0;
+	options->drafts_disabled = member >= 0 && speculation == false ? 1u : 0u;
 	if ( options->temperature == 0.0f )
 	{
 		options->top_p = 1.0f;
@@ -1713,6 +1752,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	req->top_p = options.top_p;
 	req->top_k = options.top_k;
 	req->logprob_count = options.logprobs;
+	req->drafts_disabled = options.drafts_disabled;
 	pthread_mutex_lock(&S.queue_mutex);
 	req->id = ++S.next_id + 100000;
 	req->prompt_tokens = prompt;
@@ -1798,8 +1838,8 @@ static void *api_connection(void *arg)
 		(void)snprintf(b, sizeof(b),
 			"{\"object\":\"list\",\"data\":[{\"id\":\"%s\","
 			"\"object\":\"model\",\"owned_by\":\"sparkpipe\","
-			"\"served\":%llu}]}",
-			model_id, (unsigned long long)S.served);
+			"\"max_model_len\":%u,\"served\":%llu}]}",
+			model_id, __atomic_load_n(&S.context_limit, __ATOMIC_ACQUIRE), (unsigned long long)S.served);
 		send_response(fd, 200, b);
 	}
 	else if (strcmp(method, "POST") == 0 &&

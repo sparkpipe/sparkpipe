@@ -19,8 +19,8 @@ geometry fingerprint, ABI version). Code bump w/o pack change
 attaches in ms; pack change misses → daemon-side reload. The daemon
 is the module library's runtime twin — content-addressing throughout.
 
-READ-ONLY EXPORT: VMM access flags map consumers read-only (the
-marketplace tenant-scribble protection for free).
+READ-ONLY EXPORT: VMM access flags map consumers read-only (one tenant
+cannot scribble on another's weights, for free).
 
 ## Production ownership
 

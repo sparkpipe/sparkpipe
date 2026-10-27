@@ -1,0 +1,1 @@
+PASS device contract (metal backend)

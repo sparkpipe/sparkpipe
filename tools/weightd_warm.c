@@ -234,6 +234,7 @@ int main(int argument_count,char **arguments)
     char manifest_path[SPARK_WEIGHTD_PATH_BYTES + 16u];
     const char *wset_path = 0;
     const char *family = 0;
+    const char *model_tag = 0;
     int identity_print = 0;
     int shared = 0;
     char *filtered[24];
@@ -247,6 +248,12 @@ int main(int argument_count,char **arguments)
             index_argument + 1 < argument_count )
         {
             family = arguments[++index_argument];
+            continue;
+        }
+        if ( strcmp(arguments[index_argument],"--model") == 0 &&
+            index_argument + 1 < argument_count )
+        {
+            model_tag = arguments[++index_argument];
             continue;
         }
         if ( strcmp(arguments[index_argument],"--identity-print") == 0 )
@@ -269,6 +276,11 @@ int main(int argument_count,char **arguments)
          strcmp(family,"ling") != 0 && strcmp(family,"glm52") != 0 )
     {
         fprintf(stderr,"weightd_warm: unknown family %s (dsv41_flash, glm52, k3, ling)\n",family);
+        goto usage;
+    }
+    if ( model_tag != 0 && (family != 0 || model_tag[0] == '\0' || strlen(model_tag) >= sizeof(request.identity.model)) )
+    {
+        fprintf(stderr,"weightd_warm: --model takes one module tag shorter than %zu bytes and excludes --family\n",sizeof(request.identity.model));
         goto usage;
     }
     if ( argument_count >= 4 && strcmp(arguments[2],"--reclaim-pack") == 0 )
@@ -346,6 +358,10 @@ int main(int argument_count,char **arguments)
     else if ( family != 0 && strcmp(family,"glm52") == 0 )
     {
         strcpy(request.identity.model,"glm52_stage");
+    }
+    else if ( model_tag != 0 )
+    {
+        (void)snprintf(request.identity.model,sizeof(request.identity.model),"%s",model_tag);
     }
     else if ( family != 0 && strcmp(family,"k3") == 0 )
     {
@@ -466,6 +482,7 @@ usage:
         "       options (any position): --family dsv41_flash (pin the module tag; REVISION/TOPOLOGY stay authoritative)\n"
         "                           --family ling (pin the module tag; REVISION/TOPOLOGY stay authoritative)\n"
         "                           --family glm52 (pin the module tag; REVISION/TOPOLOGY stay authoritative)\n"
+        "                           --model TAG (pin this module tag, the stage's weightd model name; excludes --family)\n"
         "                           --family k3 (pin the k3 runner identity: kimi-k3/mxfp4,\n"
         "                              topology = TOPOLOGY, the runner tp_degree: 4 or 16;\n"
         "                              arena bytes stay the pack size per the daemon's\n"

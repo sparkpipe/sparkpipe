@@ -1,0 +1,14 @@
+opened /Users/m5u0/models/packs/qwen38_27b_tp1_bf16/qwen38_27b.tp1.rank00.pack on Apple M5 Ultra (metal.apple10) in 0.08 s: pack 53793417600 bytes, device state 679365952 bytes
+verify frame  1 rows: 54.871 ms, keeping all rows 1.426 ms
+verify frame  2 rows: 55.481 ms, keeping all rows 1.458 ms
+verify frame  4 rows: 56.644 ms, keeping all rows 1.621 ms
+verify frame  8 rows: 58.347 ms, keeping all rows 2.009 ms
+verify frame 16 rows: 61.829 ms, keeping all rows 2.703 ms
+verify frame 32 rows: 72.238 ms, keeping all rows 4.226 ms
+verify frame 64 rows: 114.216 ms, keeping all rows 7.338 ms
+design: 256 of 256 tokens identical in every run; 18.11 tok/s plain (18.09-18.11), 19.37 tok/s with lookup speculation (19.37-19.38); 16 frames, 18 of 88 drafts accepted
+code: 256 of 256 tokens identical in every run; 18.04 tok/s plain (18.04-18.05), 19.48 tok/s with lookup speculation (19.48-19.49); 11 frames, 20 of 75 drafts accepted
+korean: 256 of 256 tokens identical in every run; 18.12 tok/s plain (18.12-18.13), 19.14 tok/s with lookup speculation (19.14-19.14); 18 frames, 15 of 119 drafts accepted
+rules: 256 of 256 tokens identical in every run; 18.02 tok/s plain (18.02-18.03), 20.28 tok/s with lookup speculation (20.07-20.29); 22 frames, 31 of 167 drafts accepted
+rewrite: 256 of 256 tokens identical in every run; 18.11 tok/s plain (18.11-18.11), 222.69 tok/s with lookup speculation (222.66-222.87); 13 frames, 258 of 297 drafts accepted
+prose: 256 of 256 tokens identical in every run; 18.15 tok/s plain (18.15-18.15), 18.14 tok/s with lookup speculation (18.14-18.14); 3 frames, 0 of 12 drafts accepted

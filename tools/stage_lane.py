@@ -20,19 +20,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+LANES = Path(os.environ.get("SPARK_LANES") or ROOT / "deployment/lanes.json")
 WORLD = 16
 HEX = "0123456789abcdef"
 HOSTS = [f"spark{HEX[i]}" for i in range(WORLD)]
 SESSION_BLOCK_BASE = 18432
-MAX_ROWS = 2048
+MAX_ROWS = 4096
 MAX_SEQUENCES = 128
 DEFAULT_STATE_BUDGET_BYTES = 5 << 30
 DEFAULT_KV_SNAPSHOT_BYTES = 8 << 30
+KV_BLOCK_TOKENS = 64
 
 QWEN38_27B = {
     "swap_id": "qwen3.8-27b",
@@ -59,7 +62,7 @@ DSV41_FLASH = {
     "kv_label": "dsv41_flash_stage",
     "node_memory_bytes": 44 << 30,
     "tokenizer_json": "/mnt/cold-raid6/models/deepseek-v4.1-flash/tokenizer.json",
-    "pack": "sparkdata/dsv41flash-1017.mxfp4.tp16/packs/rank{rank}.spstage",
+    "pack": "sparkdata/dsv41flash-1017.mxfp4.tp16.xs/packs/rank{rank}.spstage",
     "dense": True,
     "extra_packs": {
         "engram.spengram": "sparkdata/dsv41flash-1017.mxfp4.tp16/engram/engram.rank{rank}.spengram",
@@ -74,6 +77,7 @@ DSV41_FLASH = {
     "tokenizer_vocabulary": 129280,
     "hidden": 5120,
     "kv_page_bytes": (3 * 128 + 256) * 1280 // WORLD,
+    "kv_block_tokens": 256,
     "recurrent_bytes": (40 * 8 * 512 * 2 + 3 * 2 * 512 * 4 + 16 + 255) // 256 * 256,
 }
 
@@ -231,7 +235,7 @@ LAGUNA = {
     "swap_id": "laguna-s-2.1",
     "api_port": 8472,
     "kv_label": "laguna_stage",
-    "node_memory_bytes": 24 << 30,
+    "node_memory_bytes": 24964497408,
     "tokenizer_json": "/mnt/cold-raid6/models/laguna-s-2.1/tokenizer.json",
     "pack": "sparkdata/laguna.bf16.tp16/laguna.tp16.rank{rank:02d}.pack",
     "adapter": "liblaguna_tp16_serving_adapter.so",
@@ -244,6 +248,60 @@ LAGUNA = {
     "hidden": 3072,
     "kv_page_bytes": (48 * 64 * 4096) // WORLD,
     "recurrent_bytes": 0,
+}
+KEXAONE2 = {
+    "swap_id": "k-exaone-2.0",
+    "api_port": 8477,
+    "kv_label": "kexaone2_stage",
+    "node_memory_bytes": 100 << 30,
+    "tokenizer_json": "/mnt/cold-raid6/models/k-exaone-2.0-750b-bf16-official/tokenizer.json",
+    "pack": "sparkdata/kexaone2.rows.tp16/kexaone2.tp16.rank{rank:02d}.pack",
+    "adapter": "libkexaone2_tp16_serving_adapter.so",
+    "program": "kexaone2",
+    "node_target": "cuda.sm121.kexaone2.stage_runner.linear_bf16.expert_bf16.kv_bf16",
+    "contract": "model_contracts/kexaone2_authoritative.json",
+    "chat_template": "model-families/kexaone2/chat_template.json",
+    "eos_token_ids": [53, 2],
+    "tokenizer_vocabulary": 153600,
+    "kv_page_bytes": (78 * 64 * 4096) // WORLD,
+    "recurrent_bytes": 0,
+}
+AXK2 = {
+    "swap_id": "a.x-k2",
+    "api_port": 8478,
+    "kv_label": "axk2_tp16_stage",
+    "node_memory_bytes": 57 << 30,
+    "tokenizer_json": "/mnt/cold-raid6/models/ax-k2-fp8-official/tokenizer.json",
+    "pack": "sparkdata/axk2.fp8.tp16/axk2.tp16.rank{rank:02d}.pack",
+    "adapter": "libaxk2_tp16_serving_adapter.so",
+    "program": "axk2",
+    "node_target": "cuda.sm121.axk2.stage_runner.linear_fp8.expert_fp8.kv_bf16",
+    "contract": "model_contracts/axk2_authoritative.json",
+    "chat_template": "model-families/axk2/chat_template.json",
+    "eos_token_ids": [163704],
+    "tokenizer_vocabulary": 163840,
+    "hidden": 7168,
+    "kv_page_bytes": (61 * 64 * 1152 + 61 * 64 * 256) // WORLD,
+    "recurrent_bytes": 0,
+    "expert_warm": {"model_tag": "axk2_stage", "layers": 61, "experts": 256},
+}
+SOLAR_OPEN2 = {
+    "swap_id": "solar-open-2",
+    "api_port": 8479,
+    "kv_label": "solar_open2_stage",
+    "node_memory_bytes": 42 << 30,
+    "tokenizer_json": "/mnt/cold-raid6/models/solar-open2-250b-bf16-official/tokenizer.json",
+    "pack": "sparkdata/solar_open2.tp16/solar_open2.tp16.rank{rank:02d}.pack",
+    "adapter": "libsolar_open2_tp16_serving_adapter.so",
+    "program": "solar_open2",
+    "node_target": "cuda.sm121.solar_open2.stage_runner.linear_bf16.expert_bf16.kv_bf16",
+    "contract": "model_contracts/solar_open2_authoritative.json",
+    "chat_template": "model-families/solar_open2/chat_template.json",
+    "eos_token_ids": [2, 129],
+    "tokenizer_vocabulary": 196608,
+    "hidden": 4096,
+    "kv_page_bytes": (12 * 64 * 4096) // WORLD,
+    "recurrent_bytes": 36 * (4 * 128 * 128 * 4 + 1536 * 4 * 2),
 }
 GLM53_FULL = {
     "swap_id": "glm-5.3",
@@ -267,7 +325,7 @@ MIMO26_FLASH = {
     "swap_id": "mimo-v2.6-flash",
     "api_port": 8473,
     "kv_label": "mimo26_flash_tp16_stage",
-    "node_memory_bytes": 20 << 30,
+    "node_memory_bytes": 21267628032,
     "tokenizer_json": "/mnt/cold-raid6/models/mimo-v2.6-flash-rl/tokenizer.json",
     "pack": "sparkdata/mimo26_flash.fp8_mxfp4.tp16/mimo26_flash.tp16.rank{rank:02d}.pack",
     "adapter": "libmimo26_flash_tp16_serving_adapter.so",
@@ -286,7 +344,7 @@ MIMO26_PRO = {
     "swap_id": "mimo-v2.6-pro",
     "api_port": 8474,
     "kv_label": "mimo26_pro_tp16_stage",
-    "node_memory_bytes": 48 << 30,
+    "node_memory_bytes": 46406873088,
     "tokenizer_json": "/mnt/cold-raid6/models/mimo-v2.6-pro-rl/tokenizer.json",
     "pack": "sparkdata/mimo26_pro.fp8_mxfp4.tp16/mimo26_pro.tp16.rank{rank:02d}.pack",
     "adapter": "libmimo26_pro_tp16_serving_adapter.so",
@@ -296,6 +354,25 @@ MIMO26_PRO = {
     "hidden": 6144,
     "kv_page_bytes": (60 * 64 * 5120 + 10 * 64 * 5120) // WORLD,
 }
+K3 = {
+    "swap_id": "kimi-k3",
+    "api_port": 8459,
+    "kv_label": "k3_stage",
+    "node_memory_bytes": 104689827840,
+    "tokenizer_json": "/mnt/cold-raid6/models/kimi-k3/tiktoken.model",
+    "pack": "sparkdata/k3.mxfp4.tp16/packs/k3.stage0.rank{rank:02d}.pack",
+    "adapter": "libk3_serving_adapter.so",
+    "firmware_adapter": "libk3_tp16_serving_adapter.so",
+    "program": "k3",
+    "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+    "contract": "model_contracts/k3_authoritative.json",
+    "chat_template": "model-families/k3/chat_template.json",
+    "eos_token_ids": [163585, 163586],
+    "tokenizer_vocabulary": 163840,
+    "hidden": 7168,
+    "kv_page_bytes": 24 * 64 * (512 + 64) * 2 // WORLD,
+    "recurrent_bytes": 69 * (6 * 128 * 128 * 4 + 6 * (2 * 128 + 128) * 4 * 2),
+}
 MODELS = {
     "dsv41_flash": DSV41_FLASH,
     "gemma4_26b": GEMMA4_26B,
@@ -303,7 +380,11 @@ MODELS = {
     "glm53_flash": GLM53_FLASH,
     "glm53_full": GLM53_FULL,
     "hy4": HY4,
+    "k3": K3,
     "laguna": LAGUNA,
+    "kexaone2": KEXAONE2,
+    "axk2": AXK2,
+    "solar_open2": SOLAR_OPEN2,
     "ling3_fin": LING3_FIN,
     "mimo26_flash": MIMO26_FLASH,
     "mimo26_pro": MIMO26_PRO,
@@ -312,15 +393,6 @@ MODELS = {
     "qwen38_flash": QWEN38_FLASH,
     "qwen38_max": QWEN38_MAX,
     "qwen38_27b": QWEN38_27B,
-    "qwen38_27b_bf16": {
-        **QWEN38_27B,
-        "swap_id": "qwen3.8-27b-bf16",
-        "api_port": 8462,
-        "node_memory_bytes": 20 << 30,
-        "pack": "sparkdata/qwen38_27b.bf16.tp16/packs/qwen38_27b.tp16.rank{rank:02d}.pack",
-        "adapter": "libqwen38_27b_bf16_tp16_serving_adapter.so",
-        "node_target": "cuda.sm121.qwen38_27b.stage_runner.linear_bf16.kv_bf16",
-    },
 }
 
 
@@ -350,6 +422,12 @@ def rank_pack_path(model: dict, lane: int, rank: int, args) -> str:
     return f"/home/{host}/" + model["pack"].format(rank=rank)
 
 
+def model_hidden(model: dict) -> int:
+    if "hidden" in model:
+        return model["hidden"]
+    return json.loads((ROOT / model["contract"]).read_text())["source"]["config_json"]["hidden_size"]
+
+
 def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
     host = HOSTS[rank]
     return {
@@ -359,11 +437,13 @@ def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
         "world_size": WORLD,
         "max_sequences": args.sequences,
         "max_rows": args.rows,
+        **({"max_shared_rows": args.shared_rows} if args.shared_rows else {}),
         "resident_capacity": args.sequences,
         "kv_pages": args.kv_pages,
         "state_budget_bytes": args.state_budget_bytes,
         **({"state_memory_bytes": args.state_memory_bytes} if model["recurrent_bytes"] else {}),
-        "hidden": model["hidden"],
+        "hidden": model_hidden(model),
+        **({"taps": args.taps} if args.taps else {}),
         "device_collective": {
             "backend": "hidden_transport",
             "backend_module_path": "lib/hidden_transport.so",
@@ -410,6 +490,7 @@ def deployment(model: dict, lane: int, args) -> dict:
             "max_inflight_submissions": min(args.sequences, 16),
             "max_active_sequences": args.sequences,
             "max_input_rows": args.rows,
+            **({"max_shared_input_rows": args.shared_rows} if args.shared_rows else {}),
             "resident_sequence_capacity": args.sequences,
             "kv_logical_page_capacity": args.kv_logical_pages,
             "kv_physical_page_capacity": args.kv_physical_pages,
@@ -417,7 +498,7 @@ def deployment(model: dict, lane: int, args) -> dict:
         "chat_template": chat_template(model),
         "nodes": nodes,
     }
-    if args.tokenizer_sha256:
+    if args.tokenizer_sha256 and not args.record:
         result["tokenizer"] = {"path": "tokenizer/tokenizer.compiled", "sha256": args.tokenizer_sha256,
                                "vocabulary_size": model["tokenizer_vocabulary"]}
         if args.tokenizer_dir is None:
@@ -449,22 +530,127 @@ def swap_entry(name: str, model: dict, lane: int) -> dict:
                       f"--port {model['api_port']} >> {HUB_LOG_DIR}/{name}-kv-api.log 2>&1' >/dev/null"),
         "api_stop": f"systemctl --user stop {unit} 2>/dev/null; systemctl --user reset-failed {unit} 2>/dev/null; true",
         "health": f"http://127.0.0.1:{model['api_port']}/health",
+        **expert_warm(model, root),
     }
+
+
+def expert_warm(model: dict, root: str) -> dict:
+    warm = model.get("expert_warm")
+    if warm is None:
+        return {}
+    revision = json.loads((ROOT / model["contract"]).read_text())["revision"]
+    return {"node_warm": (f"cd {root} && SPARK_WEIGHTD_EXPERT_POOL_BYTES=$(grep -o 'SPARK_WEIGHTD_EXPERT_POOL_BYTES=[0-9]*' lane.sh | head -1 | cut -d= -f2) "
+                          f"./bin/weightd_warm /tmp/spark_weightd.sock $(readlink -f packs/*.pack) $(cut -c1-64 packs/pack.sha256) {revision} {WORLD} "
+                          f"--model {warm['model_tag']} --shared {warm['layers']} {warm['experts']} 1800 > warm.log 2>&1")}
+
+
+def hub_deployment(model: dict, lane: int, args) -> dict:
+    result = deployment(model, lane, args)
+    result["tokenizer"] = {"path": "tokenizer/tokenizer.compiled", "sha256": args.tokenizer_sha256,
+                           "vocabulary_size": model["tokenizer_vocabulary"]}
+    if args.text_prompt_prefix:
+        result["tokenizer"]["text_prompt_prefix_token_ids"] = args.text_prompt_prefix
+    if args.draft_server:
+        result["draft_server"] = args.draft_server
+    return result
+
+
+CONTEXT_FIELDS = (("model", "maximum_context_tokens"), ("maximum_context_tokens",),
+                  ("model", "max_position_embeddings"), ("source", "config_json", "max_position_embeddings"))
+
+
+def native_context_tokens(model: dict) -> int:
+    contract = json.loads((ROOT / model["contract"]).read_text())
+    for path in CONTEXT_FIELDS:
+        value = contract
+        for key in path:
+            value = value.get(key) if isinstance(value, dict) else None
+        if isinstance(value, int) and value > 0:
+            return value
+    raise SystemExit(f"{model['contract']} names no maximum context")
+
+
+def lane_records() -> dict:
+    return json.loads(LANES.read_text())
+
+
+def record_arguments(swap_id: str) -> argparse.Namespace:
+    records = lane_records()["lanes"]
+    if swap_id not in records:
+        raise SystemExit(f"{LANES} has no lane record {swap_id}; known: {', '.join(sorted(records))}")
+    record = records[swap_id]
+    model = MODELS[record["model"]]
+    if model["swap_id"] != swap_id:
+        raise SystemExit(f"lane record {swap_id} names model {record['model']}, whose swap id is {model['swap_id']}")
+    block = model.get("kv_block_tokens", KV_BLOCK_TOKENS)
+    if record["context_tokens"] % block:
+        raise SystemExit(f"lane record {swap_id}: context_tokens {record['context_tokens']} is not a whole number of {block}-token KV pages")
+    return argparse.Namespace(
+        record=swap_id, model=record["model"], lane=record["lane"], runtime_root=record["runtime_root"],
+        weightd_socket=record["weightd_socket"], sequences=record["sequences"], rows=record["rows"],
+        shared_rows=record.get("shared_rows"), kv_pages=record["context_tokens"] // block,
+        kv_physical_pages=record["kv_physical_pages"], kv_logical_pages=record["kv_logical_pages"],
+        kv_backing_bytes=record["kv_backing_bytes"], kv_snapshot_bytes=record["kv_snapshot_bytes"],
+        state_budget_bytes=record["state_budget_bytes"], state_memory_bytes=record.get("state_memory_bytes"),
+        taps=record.get("taps"), tokenizer_sha256=record["tokenizer_sha256"], tokenizer_dir=None,
+        text_prompt_prefix=record["text_prompt_prefix_token_ids"],
+        draft_server=record.get("draft_server"), swap_entry=True, output_dir=None)
 
 
 def render(value: dict) -> str:
     return json.dumps(value, indent=2) + "\n"
 
 
+def check_arguments(model: dict, args) -> None:
+    if not 0 <= args.lane <= 15:
+        raise SystemExit("lane must be within 0..15")
+    if not 1 <= args.sequences <= MAX_SEQUENCES or not args.sequences <= args.rows <= MAX_ROWS:
+        raise SystemExit(f"sequences must be within 1..{MAX_SEQUENCES} and rows within sequences..{MAX_ROWS}")
+    if args.shared_rows is not None and not 1 <= args.shared_rows < args.rows:
+        raise SystemExit("shared rows must be within 1..rows-1")
+    args.kv_physical_pages = args.kv_physical_pages or args.sequences * args.kv_pages
+    args.kv_logical_pages = args.kv_logical_pages or args.kv_physical_pages
+    if args.kv_physical_pages < args.kv_pages or args.kv_logical_pages < args.kv_physical_pages:
+        raise SystemExit("physical pages must hold one sequence and logical pages must cover the physical pages")
+    if args.kv_logical_pages < args.sequences * args.kv_pages:
+        raise SystemExit(f"logical pages {args.kv_logical_pages} must hold every resident sequence at full length: {args.sequences} x {args.kv_pages}")
+    states = (2 * args.sequences + 2) * model["recurrent_bytes"]
+    minimum = (args.kv_logical_pages - args.kv_physical_pages + 2) * model["kv_page_bytes"] + states
+    if args.kv_backing_bytes < minimum:
+        raise SystemExit(f"kv-backing-bytes {args.kv_backing_bytes} cannot hold the spilled pages and the recurrent checkpoints a page store may keep beside them; it needs {minimum}")
+    if args.state_memory_bytes is None:
+        args.state_memory_bytes = 2 * states
+    if model["recurrent_bytes"] and args.state_memory_bytes < states:
+        raise SystemExit(f"state-memory-bytes {args.state_memory_bytes} cannot hold two recurrent checkpoints per sequence plus two; it needs {states}")
+    if args.state_budget_bytes <= 0:
+        raise SystemExit("state-budget-bytes must be positive")
+
+
+def write_lane(args, output_dir: Path) -> None:
+    model = MODELS[args.model]
+    check_arguments(model, args)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "deployment.json").write_text(render(deployment(model, args.lane, args)))
+    for rank, host in enumerate(HOSTS):
+        (output_dir / f"adapter.{host}.json").write_text(render(adapter_config(model, args.lane, rank, args)))
+    if args.record:
+        (output_dir / "model_resident.json").write_text(render(hub_deployment(model, args.lane, args)))
+    if args.swap_entry:
+        (output_dir / "swap_entry.json").write_text(render(swap_entry(args.model, model, args.lane)))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--model", choices=sorted(MODELS), required=True)
-    parser.add_argument("--lane", type=int, required=True)
-    parser.add_argument("--runtime-root", required=True, help="per-node root, {host} is substituted")
-    parser.add_argument("--weightd-socket", required=True)
+    parser.add_argument("--record", default=None,
+                        help=f"render the production lane of this swap id from {LANES.relative_to(ROOT)}; no other lane flag applies")
+    parser.add_argument("--model", choices=sorted(MODELS))
+    parser.add_argument("--lane", type=int)
+    parser.add_argument("--runtime-root", help="per-node root, {host} is substituted")
+    parser.add_argument("--weightd-socket")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--sequences", type=int, default=8)
     parser.add_argument("--rows", type=int, default=1024)
+    parser.add_argument("--shared-rows", type=int, default=None)
     parser.add_argument("--kv-pages", type=int, default=64)
     parser.add_argument("--kv-physical-pages", type=int, default=None)
     parser.add_argument("--kv-logical-pages", type=int, default=None)
@@ -478,32 +664,18 @@ def main() -> int:
                         help="local copy of the publisher tokenizer.json and tokenizer_config.json")
     parser.add_argument("--swap-entry", action="store_true")
     args = parser.parse_args()
-    model = MODELS[args.model]
-    if not 0 <= args.lane <= 15:
-        raise SystemExit("lane must be within 0..15")
-    if not 1 <= args.sequences <= MAX_SEQUENCES or not args.sequences <= args.rows <= MAX_ROWS:
-        raise SystemExit(f"sequences must be within 1..{MAX_SEQUENCES} and rows within sequences..{MAX_ROWS}")
-    args.kv_physical_pages = args.kv_physical_pages or args.sequences * args.kv_pages
-    args.kv_logical_pages = args.kv_logical_pages or args.kv_physical_pages
-    if args.kv_physical_pages < args.kv_pages or args.kv_logical_pages < args.kv_physical_pages:
-        raise SystemExit("physical pages must hold one sequence and logical pages must cover the physical pages")
-    minimum = (args.kv_logical_pages - args.kv_physical_pages + 2) * model["kv_page_bytes"]
-    if args.kv_backing_bytes < minimum:
-        raise SystemExit(f"kv-backing-bytes {args.kv_backing_bytes} cannot hold the spilled pages; it needs {minimum}")
-    states = (2 * args.sequences + 2) * model["recurrent_bytes"]
-    if args.state_memory_bytes is None:
-        args.state_memory_bytes = 2 * states
-    if model["recurrent_bytes"] and args.state_memory_bytes < states:
-        raise SystemExit(f"state-memory-bytes {args.state_memory_bytes} cannot hold two recurrent checkpoints per sequence plus two; it needs {states}")
-    if args.state_budget_bytes <= 0:
-        raise SystemExit("state-budget-bytes must be positive")
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    (args.output_dir / "deployment.json").write_text(render(deployment(model, args.lane, args)))
-    for rank, host in enumerate(HOSTS):
-        (args.output_dir / f"adapter.{host}.json").write_text(render(adapter_config(model, args.lane, rank, args)))
-    if args.swap_entry:
-        (args.output_dir / "swap_entry.json").write_text(render(swap_entry(args.model, model, args.lane)))
-    print(f"{args.model} lane {args.lane} rendered under {args.output_dir}")
+    if args.record:
+        output_dir = args.output_dir
+        args = record_arguments(args.record)
+        args.swap_entry = lane_records()["lanes"][args.record]["launcher"] == "stage_lane"
+    else:
+        if None in (args.model, args.lane, args.runtime_root, args.weightd_socket):
+            parser.error("--model, --lane, --runtime-root and --weightd-socket are required without --record")
+        output_dir = args.output_dir
+        args.taps = None
+        args.draft_server = None
+    write_lane(args, output_dir)
+    print(f"{args.model} lane {args.lane} rendered under {output_dir}")
     return 0
 
 

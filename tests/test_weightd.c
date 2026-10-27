@@ -20,6 +20,7 @@
 #include "fixtures/test_child_guard.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_kv_snapshot.h"
 #include "sparkpipe/spark_weightd_receipt.h"
 #include "sparkpipe/spark_kv_shared_index.h"
 #include <sys/mman.h>
@@ -1281,6 +1282,71 @@ static void SparkTestKvPools(void)
     printf("weightd kv pools: take the free reserve up to the pool size at attach and resize by chunk within it, a short grow records the wanted chunks and other pools see them as reclaim, a shrink releases chunks to the waiting pool, export only granted chunks, one owner, reattach keeps generation and metadata, a resized pool is new, detached pools evicted under pressure, no reserve refuses, an ABI 12 client is granted an unlimited legacy write budget, weight arenas admitted under the ceiling minus the reserve\n");
 }
 
+static uint64_t SparkTestMonotonicNs(void)
+{
+    struct timespec now;
+    assert(clock_gettime(CLOCK_MONOTONIC,&now) == 0);
+    return (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
+}
+
+static void SparkTestKvDetachedRetention(void)
+{
+    const char *socket_path = "/tmp/spark_weightd_test_kv_retention.sock";
+    const uint64_t second_ns = UINT64_C(1000000000);
+    SparkTestServerThread context;
+    pthread_t thread;
+    SparkWeightdClient *detached = 0,*attached = 0;
+    SparkWeightdKvPoolGrant grant,kept;
+    SparkWeightdKvPoolState state;
+    uint64_t closed_ns;
+    uint32_t index;
+
+    (void)unlink(socket_path);
+    SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,4u * SPARK_TEST_KV_CHUNK_BYTES);
+    SparkTestConnect(&detached,socket_path,0ull);
+    SparkTestConnect(&attached,socket_path,0ull);
+    assert(SparkTestKvAttach(detached,0x41,SPARK_TEST_KV_CHUNK_BYTES,SPARK_TEST_KV_CHUNK_BYTES,4096u,&grant) == SPARK_STATUS_OK);
+    assert(SparkTestKvAttach(attached,0x42,SPARK_TEST_KV_CHUNK_BYTES,SPARK_TEST_KV_CHUNK_BYTES,4096u,&kept) == SPARK_STATUS_OK);
+    assert(SparkWeightdServerKvPoolCount(context.server) == 2u);
+    SparkTestKvGrantClose(&grant);
+    closed_ns = SparkTestMonotonicNs();
+    SparkWeightdClientClose(detached);
+    detached = 0;
+    for (index = 0u; index < 2u; index++)
+        assert(SparkWeightdClientKvPoolStatus(attached,kept.pool_generation,&state,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+    __atomic_store_n(&context.stop,1,__ATOMIC_SEQ_CST);
+    assert(pthread_join(thread,0) == 0 && context.run_status == SPARK_STATUS_OK);
+    assert(SparkWeightdServerKvPoolCount(context.server) == 2u);
+    assert(SparkWeightdServerExpireKv(context.server,closed_ns + (SPARK_KV_DETACHED_POOL_SECONDS - 1u) * second_ns) == 0u);
+    assert(SparkWeightdServerKvPoolCount(context.server) == 2u);
+    assert(SparkWeightdServerExpireKv(context.server,SparkTestMonotonicNs() + SPARK_KV_DETACHED_POOL_SECONDS * second_ns) == 1u);
+    assert(SparkWeightdServerKvPoolCount(context.server) == 1u && SparkWeightdServerKvCommittedBytes(context.server) == SPARK_TEST_KV_CHUNK_BYTES);
+    assert(SparkWeightdServerExpireKv(context.server,SparkTestMonotonicNs() + 30u * SPARK_KV_DETACHED_POOL_SECONDS * second_ns) == 0u);
+    SparkTestKvGrantClose(&kept);
+    SparkWeightdClientClose(attached);
+    SparkWeightdServerDestroy(context.server);
+    context.server = 0;
+    SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,4u * SPARK_TEST_KV_CHUNK_BYTES);
+    SparkTestConnect(&detached,socket_path,0ull);
+    assert(SparkTestKvAttach(detached,0x43,SPARK_TEST_KV_CHUNK_BYTES,SPARK_TEST_KV_CHUNK_BYTES,4096u,&grant) == SPARK_STATUS_OK);
+    SparkTestKvGrantClose(&grant);
+    SparkWeightdClientClose(detached);
+    SparkTestConnect(&detached,socket_path,0ull);
+    assert(SparkTestKvAttach(detached,0x43,SPARK_TEST_KV_CHUNK_BYTES,SPARK_TEST_KV_CHUNK_BYTES,4096u,&grant) == SPARK_STATUS_OK && grant.reattached == 1u);
+    SparkTestKvGrantClose(&grant);
+    for (index = 0u; index < 2u; index++)
+        assert(SparkWeightdClientKvPoolStatus(detached,grant.pool_generation,&state,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+    __atomic_store_n(&context.stop,1,__ATOMIC_SEQ_CST);
+    assert(pthread_join(thread,0) == 0 && context.run_status == SPARK_STATUS_OK);
+    assert(SparkWeightdServerExpireKv(context.server,SparkTestMonotonicNs() + 30u * SPARK_KV_DETACHED_POOL_SECONDS * second_ns) == 0u);
+    SparkWeightdClientClose(detached);
+    SparkWeightdServerDestroy(context.server);
+    context.server = 0;
+    assert(spark_stub_cuda_outstanding_allocs() == 0u);
+    printf("weightd kv pools: a detached pool is released %llu s after its owner leaves, an attached or reattached pool is never released by age\n",
+        (unsigned long long)SPARK_KV_DETACHED_POOL_SECONDS);
+}
+
 static SparkStatus SparkTestKvSharedAttach(SparkWeightdClient *client,uint8_t key_byte,uint8_t layout_byte,uint64_t page_bytes,SparkWeightdKvSharedGrant *grant)
 {
     SparkWeightdKvSharedRequest request;
@@ -1491,6 +1557,7 @@ int main(void)
     SparkTestMeshStatus();
     SparkTestFailClosedPaths();
     SparkTestKvPools();
+    SparkTestKvDetachedRetention();
     SparkTestKvSharedPools();
     SparkTestKvAttachRollsBackOnFdFailure();
     SparkTestKvPoolRefusesWrappingSize();

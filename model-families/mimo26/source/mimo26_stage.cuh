@@ -170,7 +170,7 @@ __global__ static void MimoSwigluKernel(const uint16_t *gate, const uint16_t *up
 	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < width; index += gridDim.x * blockDim.x )
 	{
 		const float g = LmBf16ToFloat(gate[(uint64_t)row * source_stride + index]);
-		const float activated = LmBf16ToFloat(LmFloatToBf16(g / (1.0f + expf(-g))));
+		const float activated = LmBf16ToFloat(LmFloatToBf16(SparkMathSilu(g)));
 		output[(uint64_t)row * width + index] = LmFloatToBf16(activated * LmBf16ToFloat(up[(uint64_t)row * source_stride + index]));
 	}
 }
@@ -573,10 +573,12 @@ struct MimoModel
 			Entry(state, "head", "bf16", &geometry->head_offset, &geometry->head_bytes, &geometry->head_rows) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 		geometry->embed_rows = embed_rows;
-		if ( embed_rows != vocab_rows || geometry->head_rows != vocab_rows )
+		if ( embed_rows != vocab_rows || geometry->head_rows != vocab_rows || geometry->embed_bytes != (uint64_t)vocab_rows * G::kHidden * sizeof(uint16_t) ||
+			geometry->head_bytes != (uint64_t)vocab_rows * G::kHidden * sizeof(uint16_t) || geometry->head_norm_bytes != (uint64_t)G::kHidden * sizeof(float) )
 		{
-			fprintf(stderr, "%s: embed rows %u and head rows %u are not the pack's %u vocab rows\n", G::Tag(), embed_rows, geometry->head_rows,
-				vocab_rows);
+			fprintf(stderr, "%s: embed %u rows %llu bytes, head %u rows %llu bytes, head norm %llu bytes do not match the pack's %u vocab rows of %u\n",
+				G::Tag(), embed_rows, (unsigned long long)geometry->embed_bytes, geometry->head_rows, (unsigned long long)geometry->head_bytes,
+				(unsigned long long)geometry->head_norm_bytes, vocab_rows, G::kHidden);
 			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 		}
 		return SPARK_STATUS_OK;
@@ -593,7 +595,8 @@ struct MimoModel
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Slice(State *state, SparkWeightdLazyPack *lazy_pack, const char *key, const char *kind, uint32_t rows, const void **field)
+	static SparkStatus Slice(State *state, SparkWeightdLazyPack *lazy_pack, const char *key, const char *kind, uint32_t rows, uint64_t expected_bytes,
+		const void **field)
 	{
 		uint64_t offset, bytes;
 		uint32_t found = 0u;
@@ -603,6 +606,12 @@ struct MimoModel
 		if ( rows != 0u && found != rows )
 		{
 			fprintf(stderr, "%s: pack tensor %s has %u rows, the model needs %u\n", G::Tag(), key, found, rows);
+			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
+		}
+		if ( expected_bytes == 0u || bytes != expected_bytes )
+		{
+			fprintf(stderr, "%s: pack tensor %s is %llu bytes, the stage geometry needs %llu\n", G::Tag(), key, (unsigned long long)bytes,
+				(unsigned long long)expected_bytes);
 			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 		}
 		if ( SparkWeightdLazyPackSlice(lazy_pack, offset, bytes, &bound) != SPARK_STATUS_OK || bound == 0 )
@@ -615,20 +624,39 @@ struct MimoModel
 	}
 
 	template<class T>
-	static SparkStatus Bind(State *state, SparkWeightdLazyPack *lazy_pack, uint32_t index, const char *name, const char *kind, uint32_t rows, T **field)
+	static SparkStatus Bind(State *state, SparkWeightdLazyPack *lazy_pack, uint32_t index, const char *name, const char *kind, uint32_t rows, T **field,
+		uint64_t expected_bytes)
 	{
 		char key[SPARK_NAMED_PACK_MAX_NAME_BYTES];
 		snprintf(key, sizeof(key), "layers.%u.%s", index, name);
-		return Slice(state, lazy_pack, key, kind, rows, (const void **)field);
+		return Slice(state, lazy_pack, key, kind, rows, expected_bytes, (const void **)field);
 	}
 
 	static SparkStatus BindScaled(State *state, SparkWeightdLazyPack *lazy_pack, uint32_t index, const char *name, const char *kind,
-		const char *scale_kind, uint32_t rows, MimoScaled *field)
+		const char *scale_kind, uint32_t rows, MimoScaled *field, uint64_t weight_bytes, uint64_t scale_bytes)
 	{
 		char key[SPARK_NAMED_PACK_MAX_NAME_BYTES];
-		SparkStatus status = Bind(state, lazy_pack, index, name, kind, rows, &field->weight);
+		SparkStatus status = Bind(state, lazy_pack, index, name, kind, rows, &field->weight, weight_bytes);
 		snprintf(key, sizeof(key), "%s.scale", name);
-		return status == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, key, scale_kind, rows, &field->scale) : status;
+		return status == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, key, scale_kind, rows, &field->scale, scale_bytes) : status;
+	}
+
+	static uint64_t Fp8Bytes(uint32_t rows, uint32_t columns)
+	{
+		return (uint64_t)rows * columns;
+	}
+
+	static uint64_t Fp8ScaleBytes(uint32_t rows, uint32_t columns)
+	{
+		return (uint64_t)rows * ((columns + MM_FP8_GROUP - 1u) / MM_FP8_GROUP) * sizeof(float);
+	}
+
+	static SparkStatus BindExperts(State *state, SparkWeightdLazyPack *lazy_pack, uint32_t index, const char *name, MimoScaled *field, uint32_t rows,
+		uint32_t columns)
+	{
+		return BindScaled(state, lazy_pack, index, name, "mxfp4_e2m1", "e8m0", G::kLocalExperts, field,
+			SparkWeightCodecPayloadBytes(SPARK_WEIGHT_CODEC_MXFP4_E2M1, (uint64_t)G::kLocalExperts * rows, columns),
+			SparkWeightCodecScaleBytes(SPARK_WEIGHT_CODEC_MXFP4_E2M1, G::kLocalExperts, rows, columns));
 	}
 
 	static SparkStatus BindModel(void *model, SparkWeightdLazyPack *lazy_pack, SparkStageRunnerModelGeometry *geometry)
@@ -644,17 +672,18 @@ struct MimoModel
 			SparkNamedPackEntry entry;
 			SparkStatus status;
 			layer->full = G::FullLayer(index) ? 1u : 0u;
-			status = Bind(state, lazy_pack, index, "input_norm", "bf16", 0u, &layer->input_norm);
+			status = Bind(state, lazy_pack, index, "input_norm", "bf16", 0u, &layer->input_norm, (uint64_t)G::kHidden * sizeof(uint16_t));
 			if ( status == SPARK_STATUS_OK )
-				status = Bind(state, lazy_pack, index, "post_attn_norm", "bf16", 0u, &layer->post_attn_norm);
+				status = Bind(state, lazy_pack, index, "post_attn_norm", "bf16", 0u, &layer->post_attn_norm, (uint64_t)G::kHidden * sizeof(uint16_t));
+			const uint32_t qkv_rows = (layer->full != 0u ? S::kFullFused : S::kSlidingFused) / G::kTpDegree;
 			if ( status == SPARK_STATUS_OK )
-				status = BindScaled(state, lazy_pack, index, "attn_qkv", "fp8_e4m3", "f32",
-					(layer->full != 0u ? S::kFullFused : S::kSlidingFused) / G::kTpDegree, &layer->qkv);
+				status = BindScaled(state, lazy_pack, index, "attn_qkv", "fp8_e4m3", "f32", qkv_rows, &layer->qkv, Fp8Bytes(qkv_rows, G::kHidden),
+					Fp8ScaleBytes(qkv_rows, G::kHidden));
 			if ( status == SPARK_STATUS_OK )
-				status = Bind(state, lazy_pack, index, "attn_out", "bf16", G::kHidden, &layer->out);
+				status = Bind(state, lazy_pack, index, "attn_out", "bf16", G::kHidden, &layer->out, (uint64_t)G::kHidden * S::kRankWidth * sizeof(uint16_t));
 			snprintf(key, sizeof(key), "layers.%u.sinks", index);
 			if ( status == SPARK_STATUS_OK && layer->full == 0u )
-				status = Bind(state, lazy_pack, index, "sinks", "f32", G::kHeads, &layer->sinks);
+				status = Bind(state, lazy_pack, index, "sinks", "f32", G::kHeads, &layer->sinks, (uint64_t)G::kHeads * sizeof(float));
 			else if ( status == SPARK_STATUS_OK && SparkNamedPackEntryLoad(&state->pack, key, &entry) == SPARK_STATUS_OK )
 			{
 				fprintf(stderr, "%s: layer %u is a full-attention layer in the model but the pack gives it sinks\n", G::Tag(), index);
@@ -663,22 +692,24 @@ struct MimoModel
 			if ( index < G::kDenseLayers )
 			{
 				if ( status == SPARK_STATUS_OK )
-					status = BindScaled(state, lazy_pack, index, "ffn_gate_up", "fp8_e4m3", "f32", 2u * S::kDenseRows, &layer->ffn_gate_up);
+					status = BindScaled(state, lazy_pack, index, "ffn_gate_up", "fp8_e4m3", "f32", 2u * S::kDenseRows, &layer->ffn_gate_up,
+						Fp8Bytes(2u * S::kDenseRows, G::kHidden), Fp8ScaleBytes(2u * S::kDenseRows, G::kHidden));
 				if ( status == SPARK_STATUS_OK )
-					status = BindScaled(state, lazy_pack, index, "ffn_down", "fp8_e4m3", "f32", G::kHidden, &layer->ffn_down);
+					status = BindScaled(state, lazy_pack, index, "ffn_down", "fp8_e4m3", "f32", G::kHidden, &layer->ffn_down, Fp8Bytes(G::kHidden, S::kDenseRows),
+						Fp8ScaleBytes(G::kHidden, S::kDenseRows));
 			}
 			else
 			{
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "router", "bf16", G::kExperts, &layer->router);
+					status = Bind(state, lazy_pack, index, "router", "bf16", G::kExperts, &layer->router, (uint64_t)G::kExperts * G::kHidden * sizeof(uint16_t));
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "router_bias", "f32", G::kExperts, &layer->router_bias);
+					status = Bind(state, lazy_pack, index, "router_bias", "f32", G::kExperts, &layer->router_bias, (uint64_t)G::kExperts * sizeof(float));
 				if ( status == SPARK_STATUS_OK )
-					status = BindScaled(state, lazy_pack, index, "moe_w1", "mxfp4_e2m1", "e8m0", G::kLocalExperts, &layer->moe_w1);
+					status = BindExperts(state, lazy_pack, index, "moe_w1", &layer->moe_w1, G::kMoeInter, G::kHidden);
 				if ( status == SPARK_STATUS_OK )
-					status = BindScaled(state, lazy_pack, index, "moe_w3", "mxfp4_e2m1", "e8m0", G::kLocalExperts, &layer->moe_w3);
+					status = BindExperts(state, lazy_pack, index, "moe_w3", &layer->moe_w3, G::kMoeInter, G::kHidden);
 				if ( status == SPARK_STATUS_OK )
-					status = BindScaled(state, lazy_pack, index, "moe_w2", "mxfp4_e2m1", "e8m0", G::kLocalExperts, &layer->moe_w2);
+					status = BindExperts(state, lazy_pack, index, "moe_w2", &layer->moe_w2, G::kHidden, G::kMoeInter);
 			}
 			if ( status != SPARK_STATUS_OK )
 				return status == SPARK_STATUS_TARGET_MISMATCH ? status : SPARK_STATUS_PARSE_ERROR;

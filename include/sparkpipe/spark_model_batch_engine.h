@@ -102,6 +102,7 @@ typedef struct SparkModelBatchSubmitRequest
 	uint32_t top_k;
 	uint32_t logprobs;
 	uint64_t deadline_ns;
+	uint32_t drafts_disabled;
 } SparkModelBatchSubmitRequest;
 
 typedef struct SparkModelBatchEngineView
@@ -208,6 +209,8 @@ uint64_t SparkModelBatchEnginePeekSubmissionId(
 uint64_t SparkModelBatchEngineSessionFingerprint(
 	const SparkModelBatchEngine *engine);
 uint32_t SparkModelBatchEngineAllRanksReady(
+	const SparkModelBatchEngine *engine);
+uint64_t SparkModelBatchEngineFreeSlotTokenWords(
 	const SparkModelBatchEngine *engine);
 
 #ifdef __cplusplus

@@ -18,6 +18,7 @@
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_tokenizer_sidecar.h"
 #include "fixtures/test_child_guard.h"
+#include "fixtures/test_tcp_port.h"
 
 #ifndef TEST_MODEL_API_PATH
 #define TEST_MODEL_API_PATH ""
@@ -154,28 +155,6 @@ static void TestApiWriteTokenizerFixture(const char *path)
 		"}\n",
 		"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?\\\\p{L}+|\\\\p{N}{1,3}| ?[^\\\\s\\\\p{L}\\\\p{N}]+[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]+|\\\\s+(?!\\\\S)|\\\\s+");
 	assert(fclose(file) == 0);
-}
-
-static uint32_t TestApiProbeFreeTcpPort(void)
-{
-	struct sockaddr_in address;
-	socklen_t address_length;
-	int32_t fd;
-	uint32_t port;
-	port = 0u;
-	fd = socket(AF_INET,SOCK_STREAM,0);
-	if ( fd >= 0 )
-	{
-		memset(&address,0,sizeof(address));
-		address.sin_family = AF_INET;
-		address.sin_addr.s_addr = htonl(0x7f000001u);
-		address.sin_port = htons(0u);
-		if ( bind(fd,(const struct sockaddr *)&address,(socklen_t)sizeof(address)) == 0 &&
-			getsockname(fd,(struct sockaddr *)&address,&address_length) == 0 )
-			port = (uint32_t)ntohs(address.sin_port);
-		close(fd);
-	}
-	return(port);
 }
 
 static const uint32_t TestApiTextPromptPrefix[1] = { 1u };
@@ -488,9 +467,8 @@ static void TestApiWriteStack(TestApiStack *stack,const char *tokenizer_asset_pa
 {
 	SparkModelResidentEndpoint endpoints[TEST_RANK_COUNT];
 	uint32_t tcp_port,rank;
-	tcp_port = TestApiProbeFreeTcpPort();
-	if ( tcp_port == 0u )
-		tcp_port = 30000u + ((uint32_t)getpid() % 20000u);
+	tcp_port = TestTcpPortRange(1u);
+	assert(tcp_port != 0u && "no free loopback port below the ephemeral range");
 	memset(endpoints,0,sizeof(endpoints));
 	for (rank=0u; rank<TEST_RANK_COUNT; rank++)
 	{
@@ -604,9 +582,8 @@ static void TestApiStartsBeforeEngines(void)
 	TestApiStack stack;
 	char response[65536];
 	memset(&stack,0,sizeof(stack));
-	stack.api_port = TestApiProbeFreeTcpPort();
-	if ( stack.api_port == 0u )
-		stack.api_port = 40000u + ((uint32_t)getpid() % 20000u);
+	stack.api_port = TestTcpPortRange(1u);
+	assert(stack.api_port != 0u && "no free loopback port below the ephemeral range");
 	TestApiWriteStack(&stack,0);
 	TestApiLaunchApi(&stack);
 	TestApiHttpCall(stack.api_port,"GET","/health",0,response,sizeof(response));
@@ -1026,9 +1003,8 @@ static void TestApiEngineStopCompletes(void)
 	const char *last;
 	TestApiEosToken = 4200u;
 	memset(&stack,0,sizeof(stack));
-	stack.api_port = TestApiProbeFreeTcpPort();
-	if ( stack.api_port == 0u )
-		stack.api_port = 40000u + ((uint32_t)getpid() % 20000u);
+	stack.api_port = TestTcpPortRange(1u);
+	assert(stack.api_port != 0u && "no free loopback port below the ephemeral range");
 	stack.api_stderr_path = "build/test_model_api_text_engine_stop_stderr.log";
 	unlink(stack.api_stderr_path);
 	TestApiStartStack(&stack,0);
@@ -1306,8 +1282,13 @@ static void TestApiSamplingOptions(TestApiStack *stack)
 	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"temperature\":1,\"top_k\":-1}");
 	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"logprobs\":21}");
 	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"logprobs\":true}");
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"speculation\":false}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"speculation\":0}");
 	printf("test_model_api_text: sampling options OK (logprobs return the emitted token and its top alternatives "
-		"in order, streamed or not; top-p and top-k reach a truncating adapter; out-of-range options are 400)\n");
+		"in order, streamed or not; top-p and top-k reach a truncating adapter; speculation false is accepted; out-of-range options are 400)\n");
 }
 
 static void TestApiRefusedStartup(const char *tokenizer_asset_path, const char *label)
@@ -1315,9 +1296,8 @@ static void TestApiRefusedStartup(const char *tokenizer_asset_path, const char *
 	TestApiStack stack;
 	int32_t child_status;
 	memset(&stack,0,sizeof(stack));
-	stack.api_port = TestApiProbeFreeTcpPort();
-	if ( stack.api_port == 0u )
-		stack.api_port = 40000u + ((uint32_t)getpid() % 20000u);
+	stack.api_port = TestTcpPortRange(1u);
+	assert(stack.api_port != 0u && "no free loopback port below the ephemeral range");
 	TestApiStartStack(&stack,tokenizer_asset_path);
 	stack.api_child = TestChildGuardFork();
 	assert(stack.api_child >= 0);
@@ -1383,9 +1363,8 @@ int main(void)
 	unlink("build/test_model_api_text_degraded.flag");
 
 	memset(&stack,0,sizeof(stack));
-	stack.api_port = TestApiProbeFreeTcpPort();
-	if ( stack.api_port == 0u )
-		stack.api_port = 40000u + ((uint32_t)getpid() % 20000u);
+	stack.api_port = TestTcpPortRange(1u);
+	assert(stack.api_port != 0u && "no free loopback port below the ephemeral range");
 	TestApiStartStack(&stack,0);
 	TestApiStartApi(&stack);
 	TestApiIdleWake(&stack);
@@ -1395,9 +1374,8 @@ int main(void)
 	TestApiStopResidents(stack.residents,stack.paths);
 	unlink(stack.deployment_path);
 	memset(&stack,0,sizeof(stack));
-	stack.api_port = TestApiProbeFreeTcpPort();
-	if ( stack.api_port == 0u )
-		stack.api_port = 40000u + ((uint32_t)getpid() % 20000u);
+	stack.api_port = TestTcpPortRange(1u);
+	assert(stack.api_port != 0u && "no free loopback port below the ephemeral range");
 	TestApiStartStack(&stack,"build/test_tokenizer_sidecar_api_hf.json");
 	stack.api_stderr_path = "build/test_model_api_text_chat_stderr.log";
 	unlink(stack.api_stderr_path);

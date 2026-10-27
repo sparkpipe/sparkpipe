@@ -8,7 +8,7 @@
 static __device__ __forceinline__ float LmBoundedDecay(float logit, float bias, float head_log_scale, float minimum_log_decay)
 {
 	float scaled = __expf(head_log_scale) * (logit + bias);
-	float log_decay = minimum_log_decay * (1.0f / (1.0f + __expf(-scaled)));
+	float log_decay = minimum_log_decay * SparkMathSigmoidFast(scaled);
 	return(__expf(log_decay));
 }
 
@@ -32,20 +32,19 @@ void LmGdnGateKernel(const uint16_t *__restrict__ decay_logit_bf16, const uint16
 {
 	uint32_t row = blockIdx.x,head = blockIdx.y,index;
 	uint64_t scalar,logit;
-	float shifted,softplus,factor;
+	float shifted,factor;
 	if ( row >= rows || head >= heads )
 		return;
 	scalar = ((uint64_t)row * heads) + head;
 	logit = ((uint64_t)row * (logit_stride != 0u ? logit_stride : heads)) + head;
 	shifted = LmBf16ToFloat(decay_logit_bf16[logit]) + head_bias[head];
-	softplus = shifted > 20.0f ? shifted : __logf(1.0f + __expf(shifted));
-	factor = __expf(-__expf(head_log_scale[head]) * softplus);
+	factor = SparkMathGatedDeltaDecayFast(head_log_scale[head],shifted);
 	for (index = threadIdx.x; index < KEY_DIM; index += THREADS)
 		retention[(scalar * KEY_DIM) + index] = factor;
 	if ( threadIdx.x == 0u )
 	{
 		float beta_logit = LmBf16ToFloat(beta_logit_bf16[logit]);
-		write_gate[scalar] = 1.0f / (1.0f + __expf(-beta_logit));
+		write_gate[scalar] = SparkMathSigmoidFast(beta_logit);
 	}
 }
 
@@ -450,7 +449,7 @@ static __device__ __forceinline__ void LmCausalConvBody(uint16_t *__restrict__ w
 		{
 			if ( sizeof(Weight) == sizeof(uint16_t) )
 				total = LmBf16ToFloat(LmFloatToBf16(total));
-			total = total * (1.0f / (1.0f + __expf(-total)));
+			total = total * SparkMathSigmoidFast(total);
 		}
 		output_bf16[((uint64_t)row * channels) + channel] = LmFloatToBf16(total);
 	}

@@ -191,9 +191,9 @@ static __device__ __forceinline__ void HyHcWeights(const float *total, uint32_t 
 	const float inverse = rsqrtf(total[MIXES] / (float)flat + norm_epsilon);
 	for ( uint32_t s = 0u; s < STREAMS; ++s )
 	{
-		weights[s] = 1.0f / (1.0f + expf(-(total[s] * inverse * scale[0] + base[s]))) + hc_epsilon;
+		weights[s] = SparkMathSigmoid(total[s] * inverse * scale[0] + base[s]) + hc_epsilon;
 		if ( MIXES > STREAMS && post != 0 )
-			post[s] = post_magnitude / (1.0f + expf(-(total[STREAMS + s] * inverse * scale[1] + base[STREAMS + s]))) + hc_epsilon;
+			post[s] = SparkMathScaledSigmoid(post_magnitude,total[STREAMS + s] * inverse * scale[1] + base[STREAMS + s]) + hc_epsilon;
 	}
 }
 
@@ -408,7 +408,7 @@ __global__ static void HySigmoidGateKernel(uint16_t *values, const uint16_t *gat
 {
 	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < count; index += (uint64_t)gridDim.x * blockDim.x )
 	{
-		const float gate = LmBf16ToFloat(LmFloatToBf16(1.0f / (1.0f + expf(-LmBf16ToFloat(gate_logits[index])))));
+		const float gate = LmBf16ToFloat(LmFloatToBf16(SparkMathSigmoid(LmBf16ToFloat(gate_logits[index]))));
 		values[index] = LmFloatToBf16(LmBf16ToFloat(values[index]) * gate);
 	}
 }
@@ -934,6 +934,14 @@ struct HyModel
 			Entry(state, "head_norm", "f32", &geometry->head_norm_offset, &geometry->head_norm_bytes, 0) != SPARK_STATUS_OK ||
 			Entry(state, "head", "bf16", &geometry->head_offset, &geometry->head_bytes, &geometry->head_rows) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+		if ( embed_rows != vocab_rows || geometry->head_rows != vocab_rows || geometry->embed_bytes != (uint64_t)vocab_rows * G::kHidden * sizeof(uint16_t) ||
+			geometry->head_bytes != (uint64_t)vocab_rows * G::kHidden * sizeof(uint16_t) || geometry->head_norm_bytes != (uint64_t)G::kHidden * sizeof(float) )
+		{
+			fprintf(stderr, "%s: pack embed %u rows %llu bytes, head %u rows %llu bytes, head norm %llu bytes; the rank holds %u vocab rows of %u\n", G::Tag(),
+				embed_rows, (unsigned long long)geometry->embed_bytes, geometry->head_rows, (unsigned long long)geometry->head_bytes,
+				(unsigned long long)geometry->head_norm_bytes, vocab_rows, G::kHidden);
+			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
+		}
 		geometry->embed_rows = embed_rows;
 		return SPARK_STATUS_OK;
 	}
@@ -949,12 +957,19 @@ struct HyModel
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Slice(State *state, SparkWeightdLazyPack *lazy_pack, const char *key, const char *kind, const void **field)
+	static SparkStatus Slice(State *state, SparkWeightdLazyPack *lazy_pack, const char *key, const char *kind, uint64_t expected_bytes, const void **field)
 	{
 		uint64_t offset, bytes;
 		const void *bound = 0;
-		if ( Entry(state, key, kind, &offset, &bytes, 0) != SPARK_STATUS_OK ||
-			SparkWeightdLazyPackSlice(lazy_pack, offset, bytes, &bound) != SPARK_STATUS_OK || bound == 0 )
+		if ( Entry(state, key, kind, &offset, &bytes, 0) != SPARK_STATUS_OK )
+			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+		if ( expected_bytes == 0u || bytes != expected_bytes )
+		{
+			fprintf(stderr, "%s: pack tensor %s is %llu bytes, the stage geometry needs %llu\n", G::Tag(), key, (unsigned long long)bytes,
+				(unsigned long long)expected_bytes);
+			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
+		}
+		if ( SparkWeightdLazyPackSlice(lazy_pack, offset, bytes, &bound) != SPARK_STATUS_OK || bound == 0 )
 		{
 			fprintf(stderr, "%s: weightd has no resident bytes for %s\n", G::Tag(), key);
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
@@ -964,19 +979,26 @@ struct HyModel
 	}
 
 	template<class T>
-	static SparkStatus Bind(State *state, SparkWeightdLazyPack *lazy_pack, uint32_t index, const char *name, const char *kind, T **field)
+	static SparkStatus Bind(State *state, SparkWeightdLazyPack *lazy_pack, uint32_t index, const char *name, const char *kind, T **field, uint64_t elements)
 	{
 		char key[SPARK_NAMED_PACK_MAX_NAME_BYTES];
 		snprintf(key, sizeof(key), "layers.%u.%s", index, name);
-		return Slice(state, lazy_pack, key, kind, (const void **)field);
+		return Slice(state, lazy_pack, key, kind, elements * sizeof(T), (const void **)field);
 	}
 
-	static SparkStatus BindScaled(State *state, SparkWeightdLazyPack *lazy_pack, uint32_t index, const char *name, HyScaled *field)
+	static SparkStatus BindScaled(State *state, SparkWeightdLazyPack *lazy_pack, uint32_t index, const char *name, HyScaled *field, uint64_t rows,
+		uint32_t columns)
 	{
 		char key[SPARK_NAMED_PACK_MAX_NAME_BYTES];
-		SparkStatus status = Bind(state, lazy_pack, index, name, "fp8", &field->weight);
+		SparkStatus status;
+		if ( columns % HY_SCALE_GROUP != 0u )
+		{
+			fprintf(stderr, "%s: layer %u %s has %u columns, not whole %u-column scale groups\n", G::Tag(), index, name, columns, HY_SCALE_GROUP);
+			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
+		}
+		status = Bind(state, lazy_pack, index, name, "fp8", &field->weight, rows * columns);
 		snprintf(key, sizeof(key), "%s_scale", name);
-		return status == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, key, "u8", &field->scale) : status;
+		return status == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, key, "u8", &field->scale, rows * (columns / HY_SCALE_GROUP)) : status;
 	}
 
 	static SparkStatus BindModel(void *model, SparkWeightdLazyPack *lazy_pack, SparkStageRunnerModelGeometry *geometry)
@@ -984,56 +1006,56 @@ struct HyModel
 		State *state = (State *)model;
 		uint32_t indexers = 0u;
 		(void)geometry;
-		if ( Slice(state, lazy_pack, "head_hc_fn", "f32", (const void **)&state->head_hc_fn) != SPARK_STATUS_OK ||
-			Slice(state, lazy_pack, "head_hc_base", "f32", (const void **)&state->head_hc_base) != SPARK_STATUS_OK ||
-			Slice(state, lazy_pack, "head_hc_scale", "f32", (const void **)&state->head_hc_scale) != SPARK_STATUS_OK )
+		if ( Slice(state, lazy_pack, "head_hc_fn", "f32", (uint64_t)G::kStreams * S::kResidual * sizeof(float), (const void **)&state->head_hc_fn) != SPARK_STATUS_OK ||
+			Slice(state, lazy_pack, "head_hc_base", "f32", (uint64_t)G::kStreams * sizeof(float), (const void **)&state->head_hc_base) != SPARK_STATUS_OK ||
+			Slice(state, lazy_pack, "head_hc_scale", "f32", sizeof(float), (const void **)&state->head_hc_scale) != SPARK_STATUS_OK )
 			return SPARK_STATUS_PARSE_ERROR;
 		for ( uint32_t index = 0u; index < G::kLayers; ++index )
 		{
 			HyLayer *layer = &state->layers[index];
-			SparkStatus status = Bind(state, lazy_pack, index, "attn_hc_fn", "f32", &layer->attn_hc_fn);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "attn_hc_base", "f32", &layer->attn_hc_base);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "attn_hc_scale", "f32", &layer->attn_hc_scale);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "mlp_hc_fn", "f32", &layer->mlp_hc_fn);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "mlp_hc_base", "f32", &layer->mlp_hc_base);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "mlp_hc_scale", "f32", &layer->mlp_hc_scale);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "input_norm", "bf16", &layer->input_norm);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "post_norm", "bf16", &layer->post_norm);
-			if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "q_a", &layer->q_a);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "q_norm", "bf16", &layer->q_norm);
-			if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "q_b", &layer->q_b);
-			if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "kv_a", &layer->kv_a);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "kv_norm", "bf16", &layer->kv_norm);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "uk", "bf16", &layer->uk);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "uv", "bf16", &layer->uv);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "gate", "bf16", &layer->gate);
-			if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "out", &layer->out);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "sinks", "f32", &layer->sinks);
+			SparkStatus status = Bind(state, lazy_pack, index, "attn_hc_fn", "f32", &layer->attn_hc_fn, (uint64_t)2u * G::kStreams * S::kResidual);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "attn_hc_base", "f32", &layer->attn_hc_base, 2u * G::kStreams);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "attn_hc_scale", "f32", &layer->attn_hc_scale, 2u);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "mlp_hc_fn", "f32", &layer->mlp_hc_fn, (uint64_t)2u * G::kStreams * S::kResidual);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "mlp_hc_base", "f32", &layer->mlp_hc_base, 2u * G::kStreams);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "mlp_hc_scale", "f32", &layer->mlp_hc_scale, 2u);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "input_norm", "bf16", &layer->input_norm, G::kHidden);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "post_norm", "bf16", &layer->post_norm, G::kHidden);
+			if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "q_a", &layer->q_a, G::kQLora, G::kHidden);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "q_norm", "bf16", &layer->q_norm, G::kQLora);
+			if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "q_b", &layer->q_b, (uint64_t)S::kRankHeads * S::kQkDim, G::kQLora);
+			if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "kv_a", &layer->kv_a, S::kSlot, G::kHidden);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "kv_norm", "bf16", &layer->kv_norm, G::kLatent);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "uk", "bf16", &layer->uk, (uint64_t)S::kRankHeads * G::kLatent * G::kNope);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "uv", "bf16", &layer->uv, (uint64_t)S::kRankHeads * G::kValueDim * G::kLatent);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "gate", "bf16", &layer->gate, (uint64_t)S::kRankHeads * G::kValueDim * G::kHidden);
+			if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "out", &layer->out, G::kHidden, S::kRankHeads * G::kValueDim);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "sinks", "f32", &layer->sinks, G::kHeads);
 			if ( G::IndexerLayer(index) )
 			{
-				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "index_q", &layer->index_q);
-				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "index_k", &layer->index_k);
-				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "index_k_norm", "f32", &layer->index_k_norm);
-				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "index_k_bias", "f32", &layer->index_k_bias);
-				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "index_weights", "bf16", &layer->index_weights);
+				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "index_q", &layer->index_q, S::kIndexWidth, G::kQLora);
+				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "index_k", &layer->index_k, G::kIndexDim, G::kHidden);
+				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "index_k_norm", "f32", &layer->index_k_norm, G::kIndexDim);
+				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "index_k_bias", "f32", &layer->index_k_bias, G::kIndexDim);
+				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "index_weights", "bf16", &layer->index_weights, (uint64_t)G::kIndexHeads * G::kHidden);
 				layer->index_slot = indexers++;
 			}
 			else
 				layer->index_slot = indexers == 0u ? 0u : indexers - 1u;
 			if ( index < G::kDenseLayers )
 			{
-				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "ffn_gate_up", &layer->ffn_gate_up);
-				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "ffn_down", &layer->ffn_down);
+				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "ffn_gate_up", &layer->ffn_gate_up, 2u * (uint64_t)state->ffn_rows, G::kHidden);
+				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "ffn_down", &layer->ffn_down, G::kHidden, state->ffn_rows);
 			}
 			else
 			{
-				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "router", "bf16", &layer->router);
-				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "router_bias", "f32", &layer->router_bias);
-				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "moe_w1", &layer->moe_w1);
-				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "moe_w3", &layer->moe_w3);
-				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "moe_w2", &layer->moe_w2);
-				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "shared_gate_up", &layer->shared_gate_up);
-				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "shared_down", &layer->shared_down);
+				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "router", "bf16", &layer->router, (uint64_t)G::kExperts * G::kHidden);
+				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "router_bias", "f32", &layer->router_bias, G::kExperts);
+				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "moe_w1", &layer->moe_w1, (uint64_t)G::kLocalExperts * G::kMoeInter, G::kHidden);
+				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "moe_w3", &layer->moe_w3, (uint64_t)G::kLocalExperts * G::kMoeInter, G::kHidden);
+				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "moe_w2", &layer->moe_w2, (uint64_t)G::kLocalExperts * G::kHidden, G::kMoeInter);
+				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "shared_gate_up", &layer->shared_gate_up, 2u * (uint64_t)state->shared_rows, G::kHidden);
+				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "shared_down", &layer->shared_down, G::kHidden, state->shared_rows);
 			}
 			if ( status != SPARK_STATUS_OK )
 				return SPARK_STATUS_PARSE_ERROR;

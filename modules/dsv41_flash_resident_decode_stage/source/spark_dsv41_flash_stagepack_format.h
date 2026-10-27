@@ -19,6 +19,15 @@
 #define SPARK_DSV41_FLASH_STAGEPACK_SHA256_BYTES 32u
 #define SPARK_DSV41_FLASH_STAGEPACK_FLAG_DSPARK UINT32_C(0x00000001)
 #define SPARK_DSV41_FLASH_STAGEPACK_KNOWN_FLAGS SPARK_DSV41_FLASH_STAGEPACK_FLAG_DSPARK
+#define SPARK_DSV41_FLASH_STAGEPACK_FP8_BLOCK 32u
+#define SPARK_DSV41_FLASH_STAGEPACK_CHECK_SHAPE (-1)
+#define SPARK_DSV41_FLASH_STAGEPACK_CHECK_BYTES (-2)
+#define SPARK_DSV41_FLASH_STAGEPACK_CHECK_GLOBAL (-3)
+#define SPARK_DSV41_FLASH_STAGEPACK_CHECK_LAYER (-4)
+#define SPARK_DSV41_FLASH_STAGEPACK_CHECK_OVERLAP (-5)
+#define SPARK_DSV41_FLASH_STAGEPACK_CHECK_SELF_OVERLAP (-6)
+#define SPARK_DSV41_FLASH_STAGEPACK_CHECK_GLOBALS (-7)
+#define SPARK_DSV41_FLASH_STAGEPACK_CHECK_LAYER_SET (-8)
 
 typedef enum SparkDsv41FlashStagePackPayloadType
 {
@@ -335,6 +344,109 @@ static inline uint32_t SparkDsv41FlashStagePackKindInLayer(uint32_t tensor_kind,
 		return(SparkDsv41FlashStagePackKindUsesKvSourceLayer(layer_index));
 	}
 	return(1u);
+}
+
+static inline uint64_t SparkDsv41FlashStagePackExpectedPayloadBytes(const SparkDsv41FlashStagePackTensorShape *shape)
+{
+	uint64_t elements;
+	elements = (uint64_t)shape->group_count * shape->rows * shape->columns;
+	if ( shape->payload_type == SPARK_DSV41_FLASH_STAGEPACK_PAYLOAD_BF16 )
+		return(elements * 2u);
+	if ( shape->payload_type == SPARK_DSV41_FLASH_STAGEPACK_PAYLOAD_F32 )
+		return(elements * 4u);
+	if ( shape->payload_type == SPARK_DSV41_FLASH_STAGEPACK_PAYLOAD_PACKED_WEIGHT )
+		return(elements);
+	return(0u);
+}
+
+static inline uint64_t SparkDsv41FlashStagePackExpectedScaleBytes(const SparkDsv41FlashStagePackTensorShape *shape)
+{
+	uint32_t group;
+	group = SparkWeightCodecScaleGroupSize(shape->weight_codec);
+	if ( shape->payload_type != SPARK_DSV41_FLASH_STAGEPACK_PAYLOAD_PACKED_WEIGHT )
+		return(0u);
+	if ( shape->weight_codec == SPARK_WEIGHT_CODEC_MXFP4_E2M1 )
+		return(group == 0u ? 0u : (uint64_t)shape->group_count * shape->rows * ((2u * (uint64_t)shape->columns + group - 1u) / group));
+	return((uint64_t)shape->group_count * ((shape->rows + SPARK_DSV41_FLASH_STAGEPACK_FP8_BLOCK - 1u) / SPARK_DSV41_FLASH_STAGEPACK_FP8_BLOCK) *
+		((shape->columns + SPARK_DSV41_FLASH_STAGEPACK_FP8_BLOCK - 1u) / SPARK_DSV41_FLASH_STAGEPACK_FP8_BLOCK));
+}
+
+static inline uint32_t SparkDsv41FlashStagePackRangesOverlap(uint64_t first,uint64_t first_bytes,uint64_t second,uint64_t second_bytes)
+{
+	return(first_bytes != 0u && second_bytes != 0u && first < second + second_bytes && second < first + first_bytes ? 1u : 0u);
+}
+
+static inline uint32_t SparkDsv41FlashStagePackRangeInside(uint64_t offset,uint64_t bytes,uint64_t first,uint64_t end)
+{
+	return(offset % SPARK_DSV41_FLASH_STAGEPACK_ALIGNMENT_BYTES == 0u && offset >= first && offset <= end && bytes <= end - offset ? 1u : 0u);
+}
+
+static inline int32_t SparkDsv41FlashStagePackDirectoryCheck(const SparkDsv41FlashStagePackHeader *header,const SparkDsv41FlashStagePackEntry *entries,uint32_t *at)
+{
+	uint64_t directory_end,global_seen,layer_seen[SPARK_DSV41_FLASH_MODEL_LAYER_COUNT],expected,bit,payload,scale;
+	SparkDsv41FlashStagePackTensorShape shape;
+	const SparkDsv41FlashStagePackEntry *entry,*right;
+	uint32_t index,other,layer,kind;
+	directory_end = header->directory_offset + (uint64_t)header->tensor_count * sizeof(SparkDsv41FlashStagePackEntry);
+	global_seen = 0u;
+	memset(layer_seen,0,sizeof(layer_seen));
+	for ( index = 0u; index < header->tensor_count; index++ )
+	{
+		entry = &entries[index];
+		*at = index;
+		if ( entry->tensor_kind >= SPARK_DSV41_FLASH_STAGEPACK_TENSOR_KIND_COUNT || entry->tensor_kind >= 64u ||
+			SparkDsv41FlashStagePackExpectedShape(entry->tensor_kind,header->expert_weight_codec,header->tp_degree,&shape) == 0u ||
+			entry->payload_type != shape.payload_type || entry->weight_codec != shape.weight_codec || entry->scale_encoding != shape.scale_encoding ||
+			entry->group_count != shape.group_count || entry->rows != shape.rows || entry->columns != shape.columns )
+			return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_SHAPE);
+		bit = UINT64_C(1) << entry->tensor_kind;
+		payload = SparkDsv41FlashStagePackExpectedPayloadBytes(&shape);
+		scale = SparkDsv41FlashStagePackExpectedScaleBytes(&shape);
+		if ( payload == 0u || entry->payload_bytes != payload || entry->scale_bytes != scale ||
+			SparkDsv41FlashStagePackRangeInside(entry->payload_offset,entry->payload_bytes,directory_end,header->file_bytes) == 0u ||
+			(scale == 0u ? entry->scale_offset != 0u : SparkDsv41FlashStagePackRangeInside(entry->scale_offset,entry->scale_bytes,directory_end,header->file_bytes) == 0u) )
+			return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_BYTES);
+		if ( SparkDsv41FlashStagePackKindIsGlobal(entry->tensor_kind) )
+		{
+			if ( entry->layer_index != SPARK_DSV41_FLASH_STAGEPACK_GLOBAL_LAYER || (global_seen & bit) != 0u )
+				return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_GLOBAL);
+			global_seen |= bit;
+		}
+		else
+		{
+			if ( entry->layer_index >= SPARK_DSV41_FLASH_MODEL_LAYER_COUNT || SparkDsv41FlashStagePackKindInLayer(entry->tensor_kind,entry->layer_index) == 0u ||
+				(layer_seen[entry->layer_index] & bit) != 0u )
+				return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_LAYER);
+			layer_seen[entry->layer_index] |= bit;
+		}
+		for ( other = 0u; other < index; other++ )
+		{
+			right = &entries[other];
+			if ( SparkDsv41FlashStagePackRangesOverlap(entry->payload_offset,entry->payload_bytes,right->payload_offset,right->payload_bytes) != 0u ||
+				SparkDsv41FlashStagePackRangesOverlap(entry->payload_offset,entry->payload_bytes,right->scale_offset,right->scale_bytes) != 0u ||
+				SparkDsv41FlashStagePackRangesOverlap(entry->scale_offset,entry->scale_bytes,right->payload_offset,right->payload_bytes) != 0u ||
+				SparkDsv41FlashStagePackRangesOverlap(entry->scale_offset,entry->scale_bytes,right->scale_offset,right->scale_bytes) != 0u )
+				return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_OVERLAP);
+		}
+		if ( SparkDsv41FlashStagePackRangesOverlap(entry->payload_offset,entry->payload_bytes,entry->scale_offset,entry->scale_bytes) != 0u )
+			return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_SELF_OVERLAP);
+	}
+	*at = 0u;
+	if ( global_seen != ((UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_EMBEDDING) | (UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_FINAL_NORM) |
+		(UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_LM_HEAD)) )
+		return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_GLOBALS);
+	for ( layer = 0u; layer < SPARK_DSV41_FLASH_MODEL_LAYER_COUNT; layer++ )
+	{
+		expected = 0u;
+		for ( kind = 0u; kind < SPARK_DSV41_FLASH_STAGEPACK_TENSOR_KIND_COUNT; kind++ )
+			if ( SparkDsv41FlashStagePackKindInLayer(kind,layer) != 0u )
+				expected |= UINT64_C(1) << kind;
+		*at = layer;
+		if ( layer_seen[layer] != expected )
+			return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_LAYER_SET);
+	}
+	*at = 0u;
+	return(0);
 }
 
 static inline uint32_t SparkDsv41FlashStagePackTpShardsRows(uint32_t tensor_kind)

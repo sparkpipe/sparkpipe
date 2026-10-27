@@ -55,6 +55,45 @@ Kimi K3, GLM 5.3 Full and GLM 5.3 Flash get the performance work.
   B128 347 tok/s (with B64 token-identical across runs), and GLM 5.3 Full
   B16 109-116 tok/s by step time, on the modules the common runner replaced.
 
+### Batches at the full window
+
+One document fills each model's window. It is prefilled once, then B
+requests each append a distinct question to it and resume from its cache,
+generating 256 tokens each. Aggregate decode in tok/s, measured over the
+window in which every stream decodes, both repeats:
+
+| | Kimi K3 | GLM 5.3 Full | GLM 5.3 Flash | DeepSeek V4.1 Flash |
+| --- | ---: | ---: | ---: | ---: |
+| Prompt | 1,048,273 | 1,048,325 | 130,361 | 1,047,883 |
+| Cold prefill of the document | 4,542 s | 3,534 s | 252 s | 814 s |
+| First token from the cache, B1 to B8 | 0.3-6.2 s | 0.7-3.1 s | 0.2-2.6 s | 9.3-10.5 s |
+| B1, no speculation | 12.0-12.4 | 20.9-21.0 | 48.3 | 42.5-42.7 |
+| B1, as served | 11.9-12.7 | 20.3-21.0 | 48.3 | 47.5-55.8 |
+| B2 | 17.7-18.2 | 28.2 | 68.4 | 67.7-67.8 |
+| B4 | 24.6-24.8 | 43.6-43.9 | 97.9 | 104.5-106.4 |
+| B8 | 34.4-34.6 | 60.0-60.3 | 129.8 | 151.3-152.7 |
+| B16 | – | – | 152.5 | – |
+
+- Builds:
+  - These are candidate hub APIs, not production: each production API's
+    source plus PR #1542 (shared cached blocks reserved once) and PR #1544
+    (`"speculation": false`); K3's also carries PR #1543.
+  - The production APIs cannot run B>1 at 1M on K3 or GLM 5.3 Full. K3's
+    run with the earlier span-keyed reservation decoded one request at a
+    time (`kimi-k3.span-reservation.jsonl`).
+- Arms:
+  - "No speculation" sends `"speculation": false`. Batches of two or more
+    never speculate.
+  - GLM 5.3 Flash does not speculate, so its two B1 rows are one arm.
+  - GLM 5.3 Full streams 221 token events for each 256-token answer.
+- Overlap: one owner request (a 32K-token turn) reached DeepSeek V4.1 Flash
+  near the end of its second B8 arm. The first DeepSeek V4.1 Flash run
+  stopped early on a short question (`deepseek-v4.1-flash.short-answers.jsonl`).
+- Receipts:
+  [`qualification/batch-sweep-20261024/`](qualification/batch-sweep-20261024/)
+  (`tools/context_batch_sweep.py`; the document is the K3 documentation
+  corpus, repeated).
+
 ### Prefill
 
 | | Kimi K3 | GLM 5.3 Full | GLM 5.3 Flash |
@@ -94,9 +133,12 @@ nodes at the format's peak over 2 FLOPs per active parameter per token:
 
 Two draft sources serve, and the target model verifies every draft. Lookup
 copies drafts from the request's own context by suffix match and verifies up
-to 255 of them in one frame (K3 and GLM 5.3 Full). Model drafts come from a
-DSpark block drafter on the hub's RTX 5090, fed by hidden states from five
-K3 layers, when lookup has no match of at least 8 tokens (K3).
+to 255 of them in one frame (K3 and GLM 5.3 Full). Model drafts come from the
+lightseek DFlash2 drafter on the hub's RTX 5090 (in production since
+2026-10-19; the RadixArk DSpark drafter before it), fed by hidden states from
+five K3 layers, when lookup has no match of at least 8 tokens (K3). The rows
+below were measured with the DSpark drafter; in a same-hold A/B, DFlash2 was
+4-5% faster per token on edits, 128K code and 137.7K prose.
 
 | Workload, B1 | Kimi K3 | GLM 5.3 Full |
 | --- | --- | --- |
@@ -120,24 +162,24 @@ At B8, K3's model drafts change nothing measurable (62.5-64.8 against
 
 ## All served models
 
-| Served name | Context | Decode, B1 | Of ideal floor | Prefill, 7-8K prompt | COMPSEC-17 |
+| Served name | Swap in | Decode, B1 | Of ideal floor | Prefill, 7-8K prompt | COMPSEC-17 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `glm-5.3` | 256K | 28.9 tok/s | 27% | 1,162 tok/s | 15 |
-| `glm-5.3-flash` | 128K | 55.0 tok/s | 23% | 876 tok/s | 13 |
-| `kimi-k3` | 720K | 16.2 tok/s | 51% | 590 tok/s | 17 |
-| `deepseek-v4.1-flash` | 16K | 29.5 tok/s | – | 182 tok/s | 16 |
-| `mimo-v2.6-pro` | 32K | 19.0 tok/s † | – | 55 tok/s † | 17 |
-| `mimo-v2.6-flash` | 32K | 40.9 tok/s † | – | 157 tok/s † | 16 |
-| `hy4-preview` | 32K | 14.2 tok/s | 16% | 53 tok/s | 17 |
-| `gemma-4-31b` | 32K | 34.4 tok/s | 48% | 834 tok/s | 16 |
-| `gemma-4-26b-a4b` | 32K | 89.5 tok/s | 16% | 1,848 tok/s | 16 |
-| `ling-3.0-flash` | 32K | 80.4 tok/s | 19% | 1,514 tok/s | 13 |
-| `ling-3.0-flash-fin` | 32K | 79.2 tok/s | 18% | 1,550 tok/s | 13 |
-| `laguna-s-2.1` | 32K | 51.0 tok/s | – | 773 tok/s | 13 |
-| `muse-glimmer-30b` | 32K | 37.9 tok/s | 51% | 1,186 tok/s | 17 |
-| `qwen3.8-max` | 32K | 10.4 tok/s | – | 35 tok/s | 5 |
-| `qwen3.8-27b` | 256K | 57.4 tok/s | 35% | 1,852 tok/s | 14 |
-| `qwen3.8-flash` | 32K | 45.0 tok/s | – | 358 tok/s | 15 |
+| `glm-5.3` | 38 s | 28.9 tok/s | 27% | 1,162 tok/s | 15 |
+| `glm-5.3-flash` | 24 s | 55.0 tok/s | 23% | 876 tok/s | 13 |
+| `kimi-k3` | 46 s | 16.2 tok/s | 51% | 590 tok/s | 17 |
+| `deepseek-v4.1-flash` | 24 s | 29.5 tok/s | – | 182 tok/s | 16 |
+| `mimo-v2.6-pro` | 24 s | 19.0 tok/s † | – | 55 tok/s † | 17 |
+| `mimo-v2.6-flash` | 19 s | 40.9 tok/s † | – | 157 tok/s † | 16 |
+| `hy4-preview` | 28 s | 14.2 tok/s | 16% | 53 tok/s | 17 |
+| `gemma-4-31b` | 17 s | 34.4 tok/s | 48% | 834 tok/s | 16 |
+| `gemma-4-26b-a4b` | 16 s | 89.5 tok/s | 16% | 1,848 tok/s | 16 |
+| `ling-3.0-flash` | 20 s | 80.4 tok/s | 19% | 1,514 tok/s | 13 |
+| `ling-3.0-flash-fin` | 20 s | 79.2 tok/s | 18% | 1,550 tok/s | 13 |
+| `laguna-s-2.1` | 20 s | 51.0 tok/s | – | 773 tok/s | 13 |
+| `muse-glimmer-30b` | 16 s | 37.9 tok/s | 51% | 1,186 tok/s | 17 |
+| `qwen3.8-max` | 35 s | 10.4 tok/s | – | 35 tok/s | 5 |
+| `qwen3.8-27b` | 19 s | 57.4 tok/s | 35% | 1,852 tok/s | 14 |
+| `qwen3.8-flash` | 20 s | 45.0 tok/s | – | 358 tok/s | 15 |
 
 - Non-core rows are the release `91c0e6be3` qualification on a quiet fleet
   ([`qualification/releases/91c0e6be3/`](qualification/releases/91c0e6be3/)),
@@ -146,11 +188,14 @@ At B8, K3's model drafts change nothing measurable (62.5-64.8 against
 - † MiMo was measured only under a CPU tenant that kept 16 cores busy per
   node ([`qualification/releases/1d89e0377/`](qualification/releases/1d89e0377/)),
   so its numbers are lower bounds; that load cut K3 from 16.2 to 10.0 tok/s.
+- Swap in is the median time from a swap request until the model serves, over
+  the swaps the controller logged on 2026-10-13 and 2026-10-14, including
+  stopping the previous model. The slowest single swap was K3's, at 79 s.
 - COMPSEC-17 is the release qualification's 17-question security set. Qwen
   3.8 Max always thinks and ran with a 2,048-token budget.
 - No floor is shown where the split of active parameters between formats is
   not verified (DeepSeek V4.1 Flash, the Qwen 3.8 MoE models) or not
-  computed (MiMo, Laguna). The Qwen models are internal only, by their
+  computed (MiMo, Laguna). Qwen 3.8 Flash is internal only, by its
   license.
 
 Ideal floors, from the active parameters each rank reads per token (K3:
@@ -168,10 +213,204 @@ Ideal floors, from the active parameters each rank reads per token (K3:
 | `muse-glimmer-30b` | BF16, dense | 29.2B × 2 B | – | 3.65 | 75 tok/s |
 | `qwen3.8-27b` | FP8, dense | 27B × 1 B | – | 1.69 | 162 tok/s |
 
+## Mac Studio
+
+One Mac Studio, Apple M5 Ultra with 256 GB, runs Qwen3.8-27B whole (TP1, the
+publisher's BF16 weights, 53.8 GB pack) through the Metal backend and the
+single-device stage runner ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)).
+It is not served yet (TECHDEBT, Mac Studio deployment). Qwen3.8-27B runs
+every projection of up to 64 rows on the row-independent tensor-unit tile
+(owner decision 2026-10-27), so B1, every batch row and every verify frame
+share one set of bits. Receipt:
+[`qualification/metal/qwen38_27b/3b09cd778/`](qualification/metal/qwen38_27b/3b09cd778/)
+(decode, prefill, batches, speculation and numerics).
+
+| | |
+| --- | --- |
+| Streaming read | 1,144 GB/s from a 16 GiB GPU buffer (median of seven) |
+| Decode, B1 | 18.12 tok/s: 256 tokens after a 1,024-token prompt, median of three after a warm-up (20.12 with the one-row GEMV, which verify frames could not match) |
+| Decode roofline | 51.25 GB of weights plus 0.39 GB of KV and recurrent state per token at the bench's mean context = 51.64 GB / 1,144 GB/s = 22.16 tok/s; measured 81.8% of it |
+| Prefill, 1,024 tokens | 1,424 tok/s, one 1,024-row chunk |
+| Prefill, 8,192 tokens | 1,498 tok/s, four 2,048-row chunks, attention on the tensor operations |
+| Prefill roofline | compute-bound: the projections run on the M5 tensor operations at 95 TFLOPS in isolation (2048 x 5120 x 16384); the weights are read once per chunk |
+
+Decode by batch size: each sequence decodes 128 tokens after its own
+1,024-token prompt, median of three runs after a warm-up. The roofline is the
+weight stream alone, 22.27 tok/s per sequence at any batch, since the weights
+are read once per step for up to 64 rows:
+
+| Sequences | Step | Per sequence | Aggregate | Of the roofline | Identical to solo decode |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 1 | 55.1 ms | 18.15 tok/s | 18.2 tok/s | 81.3% | 1 of 1 |
+| 2 | 56.1 | 17.81 | 35.6 | 79.8% | 2 of 2 |
+| 4 | 58.2 | 17.17 | 68.7 | 76.9% | 4 of 4 |
+| 8 | 61.7 | 16.21 | 129.6 | 72.6% | 8 of 8 |
+| 16 | 69.2 | 14.45 | 231.1 | 64.7% | 16 of 16 |
+| 32 | 87.6 | 11.42 | 365.3 | 51.1% | 32 of 32 |
+| 64 | 144.8 | 6.91 | 441.9 | 30.9% | 64 of 64 |
+
+- Every row of every step runs the same row-tile arithmetic, so every
+  batched sequence decodes exactly its solo tokens at every batch size, and
+  repeated runs give identical tokens. B4 to B64 cost what they did with
+  the one-row GEMV at B1 and B2 (the same kernels ran them); B1 and B2 are
+  5 ms slower.
+- Above 16 sequences the per-sequence work takes over: at B64 the gated delta
+  rule's FP32 state (3.1 MB per layer and sequence, read and written each
+  step) costs about 27 ms of the step and decode attention about 14 ms.
+
+Speculation from the request's own context: lookup drafts over the prompt
+and the generated text, sized by the serving path's frame chooser, verified
+in one frame and kept with the recurrent replay. Greedy, 256 tokens, median
+of three runs after a warm-up; the tokens with speculation are identical to
+those without it in every run of every prompt:
+
+| Prompt | Without speculation | With speculation | Frames | Drafts accepted |
+| --- | ---: | ---: | ---: | --- |
+| Whole-file rewrite (`tools/token_prompts.c`, 933 tokens) | 18.11 tok/s | 222.69 tok/s | 13 | 258 of 297 |
+| Prose (42-token request) | 18.15 | 18.14 | 3 | 0 of 12 |
+| `design` (summary) | 18.11 | 19.37 | 16 | 18 of 88 |
+| `code` (review) | 18.04 | 19.48 | 11 | 20 of 75 |
+| `korean` (summary) | 18.12 | 19.14 | 18 | 15 of 119 |
+| `rules` (analysis) | 18.02 | 20.28 | 22 | 31 of 167 |
+
+| Verify frame rows | 1 | 2 | 4 | 8 | 16 | 32 | 64 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Frame | 54.9 ms | 55.5 ms | 56.6 ms | 58.3 ms | 61.8 ms | 72.2 ms | 114.2 ms |
+| Keeping every row | 1.4 ms | 1.5 ms | 1.6 ms | 2.0 ms | 2.7 ms | 4.2 ms | 7.3 ms |
+
+A frame computes each row with the same row tiles as a one-row step and
+reads the weights once, so a 32-row frame costs 1.32 one-row steps (with
+the one-row GEMV it ran eight-row GEMV passes: 238.8 ms, and the rewrite
+reached 103.7 tok/s). The comparison of both designs is in
+[`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#decode-and-prefill-by-row-count).
+
+Numerics, teacher-forced over 5,636 positions of four prompts (700 to 2,040
+tokens; the first half of each prompt by prefill, the rest by decode),
+against a CPU reference of the same BF16 precision policy that ran twice
+with different FP32 reduction orders. The rule is relative to the floor,
+in two legs: mean KL at most 2 times the floor's, top-1 disagreement at most
+1.5 times, and the share of positions where the candidate is further from the
+reference than the other variant at most 0.5 plus 3 block standard errors
+([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#qualification-on-one-m5-ultra)):
+
+| Comparison (against reference A) | Mean KL | Top-1 | Target log-prob change, mean / max | Leg A: KL and top-1 ratio to floor, paired sigma | Leg B: same | Verdict |
+| --- | ---: | ---: | --- | --- | --- | --- |
+| Reference B (the floor) | 0.0395 | 97.75% | 0.145 / 16.4 | | | |
+| Metal | 0.0332 | 97.96% | 0.135 / 20.6 | 0.84 / 0.91, -3.4 | 0.98 / 1.13, +0.7 | pass |
+| Probe: rows 0 and 1 of `layers.31.ffn_down` swapped | 0.0327 | 97.78% | 0.135 / 22.0 | 0.83 / 0.98, -4.1 | 0.98 / 1.09, -0.5 | passes: inside the BF16 noise |
+| Control: rows 0 and 1 of every layer's `ffn_down` swapped | 0.177 | 91.41% | 0.597 / 18.3 | 4.49 / 3.81, +96 | 5.01 / 3.87, +108 | fails, as required |
+| Control: every row of `layers.31.ffn_down` moved by one | 0.599 | 85.65% | 1.08 / 27.1 | 15.2 / 6.37, +188 | 17.5 / 6.34, +197 | fails, as required |
+| FP32 activations (diagnostic) | 0.0568 | 97.37% | | | | |
+
+- Metal agrees with reference A on 98.87% of the positions where A and B
+  agree with each other. Its paired share against A is 0.454: it is closer to
+  A than B is.
+- Greedy continuations of 128 tokens match both reference variants token
+  for token on `code` and `rules`. On `design` the variants part after 45
+  tokens and Metal follows B to the end; on `korean` they part after 55 and
+  Metal follows A for 100 tokens.
+- Every Metal kernel matches a float64 reference within its derived
+  tolerance at the model's shapes, each one's corrupted-input control fails,
+  and the projections' rows are bit-independent of the batch, with and
+  without row tiles (119 cases). The shared BF16 conversion matches its
+  contract on all 2^32 FP32 inputs (`bf16_convert.txt`).
+
+### Gemma 4 26B A4B on one Mac Studio
+
+Gemma 4 26B A4B (text, TP1, the publisher's BF16 weights, 50.5 GB pack) on
+the same Studio through the same runner. Receipt:
+[`qualification/metal/gemma4_26b/662c49da2/`](qualification/metal/gemma4_26b/662c49da2/).
+
+| | |
+| --- | --- |
+| Decode, B1 | 92.73 tok/s: 256 tokens after a 1,024-token prompt, median of three after a warm-up; with main's NaN-preserving BF16 conversion (abce321a5) 91.5 to 91.6 against 92.2 to 92.5, interleaved (TECHDEBT) |
+| Decode roofline | 7.65 GB of active weights (8 of 128 experts per layer, and the tied head) plus 0.23 GB of KV per token at the bench's mean context = 7.88 GB / 1,143 GB/s = 145.0 tok/s; measured 63.9% of it |
+| Prefill, 1,024 tokens | 1,128 tok/s, one chunk |
+| Prefill, 8,192 tokens | 1,113 tok/s, 2,048-row chunks; the experts run one GEMV per route, so a chunk reads an expert once for every row routed to it (TECHDEBT) |
+
+Decode by batch size, 128 tokens per sequence after its own 1,024-token
+prompt, median of three runs after a warm-up; the single-sequence roofline is
+the weight stream alone, 149.5 tok/s:
+
+| Sequences | Step | Per sequence | Aggregate | Identical to solo | Exact rows: step, aggregate, identical |
+| ---: | ---: | ---: | ---: | --- | --- |
+| 1 | 10.83 ms | 92.36 tok/s | 92.4 tok/s | 1 of 1 | 10.82 ms, 92.4 tok/s, 1 of 1 |
+| 2 | 13.31 | 75.13 | 150.3 | 2 of 2 | 13.28, 150.6, 2 of 2 |
+| 4 | 19.40 | 51.56 | 206.2 | 0 of 4 | 16.99, 235.5, 4 of 4 |
+| 8 | 27.42 | 36.47 | 291.8 | 1 of 8 | 25.69, 311.4, 8 of 8 |
+| 16 | 42.68 | 23.43 | 374.9 | 3 of 16 | 45.74, 349.8, 16 of 16 |
+| 32 | 76.44 | 13.08 | 418.6 | 7 of 32 | 88.00, 363.7, 32 of 32 |
+| 64 | 136.40 | 7.33 | 469.2 | 13 of 64 | 162.94, 392.8, 64 of 64 |
+
+- From three rows the fast path runs the tensor-unit projection, whose
+  rounding differs from the solo GEMV's, and here that changes the tokens of
+  most sequences, with first differing tokens up to 5.6 nats apart: a
+  rounding difference flips one of the BF16 router's near-tied experts, and
+  the output follows the other expert. The exact-rows ladder decodes every
+  step as a verify frame (every row in the GEMV passes that compute it as a
+  one-row step does) and gives every sequence its solo tokens at every batch
+  size, which shows the batch itself is exact. It is also faster at four and
+  eight rows (TECHDEBT). Repeated runs give identical tokens.
+
+Speculation from the request's own context, greedy, 256 tokens, median of
+three runs after a warm-up; with speculation every run's tokens are
+identical to those without it:
+
+| Prompt | Without speculation | With speculation | Frames | Drafts accepted |
+| --- | ---: | ---: | ---: | --- |
+| Whole-file rewrite (`tools/token_prompts.c`, 1,072 tokens) | 92.25 tok/s | 322.97 tok/s | 25 | 254 of 263 |
+| Prose (42-token request) | 93.94 | 93.87 | 2 | 1 of 8 |
+| `design` (summary) | 92.26 | 93.59 | 11 | 9 of 31 |
+| `code` (review) | 90.92 | 90.75 | 3 | 0 of 3 |
+| `korean` (summary) | 93.07 | 103.07 | 21 | 34 of 63 |
+| `rules` (analysis) | 90.68 | 90.43 | 4 | 1 of 10 |
+
+A frame costs more than a step from two rows on (10.8 ms for one row, 13.0
+for two, 16.2 for four, 23.4 for eight, 39.3 for 16, 68.1 for 32), since every
+extra row reads eight more experts per layer, so the chooser's first probe in
+a match class is one draft; on text the lookup cannot predict the probes
+cost 0.1 to 0.3%.
+
+Numerics, teacher-forced over the 5,636 positions of four prompts against a
+numpy reference of the publisher's eager BF16 rounding, run in two reduction
+orders (a, b) and with b's experts pinned to a's (bp)
+([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#gemma-4-26b-a4b)). The
+reduction order alone changes the router's choice at 18.3% of the layer and
+position decisions, so with free routes the floor is 0.31 nats and a
+corrupted run hides in it; pinned, the floor is 0.063:
+
+| Comparison (against reference a) | Mean KL | Top-1 | Leg a: KL and top-1 ratio to floor, paired sigma | Leg b: same | Verdict |
+| --- | ---: | ---: | --- | --- | --- |
+| Free routes: reference b (the floor) | 0.3065 | 86.00% | | | |
+| Free routes: Metal | 0.3530 | 85.27% | 1.15 / 1.05, +0.3 | 1.18 / 1.03, +1.6 | pass |
+| Pinned: reference bp (the floor) | 0.0627 | 94.27% | | | |
+| Pinned: Metal | 0.0585 | 94.46% | 0.93 / 0.97, +1.1 | 0.96 / 0.92, +0.3 | pass |
+| Pinned: Metal, 64-row prefill chunks | 0.0557 | 94.38% | 0.89 / 0.98, -0.8 | 0.99 / 1.00, +0.4 | pass |
+| Pinned probe: rows 0 and 1 of `layers.11.ffn_down` swapped | 0.0572 | 94.36% | 0.91 / 0.98, +1.0 | 0.95 / 0.91, +0.5 | passes: inside the BF16 noise |
+| Pinned control: rows 0 and 1 of every layer's `ffn_down` swapped | 0.1049 | 91.08% | 1.67 / 1.56, +36 | 1.88 / 1.54, +41 | fails, as required |
+| Pinned control: every row of `layers.11.ffn_down` moved by one | 3.439 | 52.79% | 55 / 8.2, +425 | 59 / 8.2, +443 | fails, as required |
+| Pinned control: experts 0 and 1 of every layer's `moe_w2` swapped | 0.6665 | 78.55% | 10.6 / 3.7, +99 | 11.4 / 3.7, +84 | fails, as required |
+
+- Every Metal kernel matches a float64 reference within its derived
+  tolerance at the model's shapes (including every Gemma projection shape at
+  1, 4, 9, 64 and 512 rows), and each one's corrupted-input control fails.
+- Qwen3.8-27B on that revision gave byte-identical teacher logits and
+  greedy output to its GEMV receipt and the same speculative frames
+  ([`qualification/metal/qwen38_27b/662c49da2_unchanged/`](qualification/metal/qwen38_27b/662c49da2_unchanged/)).
+  Gemma's teacher logits (free and pinned) and greedy output at 3b09cd778,
+  after the projection family was introduced, are byte-identical to this
+  receipt ([`qualification/metal/gemma4_26b/3b09cd778_unchanged/`](qualification/metal/gemma4_26b/3b09cd778_unchanged/)).
+
 ## Accuracy
 
-- **Release gate:** every release reproduces the previous build's tokens on
-  six fixed prompts for all 16 models (last: `1d89e0377`).
+- **Release gate:** each release is compared with the build it replaces on
+  six fixed prompts for all 16 models. Release `9b253f5b4` reproduced the
+  short prompts bit for bit on every model and all six on K3, GLM 5.3 Full
+  and DeepSeek V4.1 Flash; on the two long prompts the other models' log-probs
+  moved (at most 0.49 nats on a chosen token) and near ties flipped, with
+  COMPSEC-17 at the recorded scores except Muse Glimmer 30B (16 against 17).
+  The new build repeats itself exactly, cached or cold
+  ([`qualification/releases/9b253f5b4/`](qualification/releases/9b253f5b4/)).
 - **ds4_eval, 92 questions** (GPQA Diamond, SuperGPQA, AIME 2025, COMPSEC),
   served by SparkPipe: Qwen 3.8 Max 82/92 and Qwen 3.8 Flash 79/92 (greedy,
   16,000-token budget;
@@ -192,7 +431,7 @@ Ideal floors, from the active parameters each rank reads per token (K3:
 | | |
 | --- | --- |
 | Sharding | each node holds 1/16 of a sequence's MLA latent, split by context |
-| K3 window | 737,280 tokens on a 1.36 GB KV pool per node; measured end to end to 337K |
+| Windows | K3 and GLM 5.3 Full 1,048,576 tokens on pools of 20,480 pages of 64 tokens per node (2.1 and 7.3 GiB); a needle at 998K (K3) and 1.01M (GLM 5.3 Full) is found after a cold prefill of 66 and 55 minutes |
 | Pages | lanes share one physical page pool; pages beyond it park on NVMe |
 | K3 follow-up turn, cached prefix | 4.7-5.1 s at 137.7K (299-316 s cold); 8.0 s for 1,872 new tokens at 337K (982 s cold) |
 | Prefix restored after a model swap | 137,600 tokens in 2.7 s |

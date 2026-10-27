@@ -9,6 +9,7 @@
 #include "sparkpipe/spark_weightd_direct.h"
 #include "sparkpipe/spark_weightd_receipt.h"
 #include "sparkpipe/spark_kv_shared_index.h"
+#include "sparkpipe/spark_kv_snapshot.h"
 #include <stdatomic.h>
 
 #include <errno.h>
@@ -3527,6 +3528,7 @@ static SparkStatus SparkWeightdKvPoolAdmit(SparkWeightdServer *server,SparkWeigh
 		*reattached = 1u;
 	pool = &server->kv_pools[slot];
 	pool->owner_connection = (uint32_t)(connection - server->connections) + 1u;
+	pool->detached_ns = 0u;
 	connection->kv_pool_count++;
 	*slot_out = slot;
 	fprintf(stderr,"weightd kv pool attached label=%s generation=%llu reattached=%u bytes=%llu of %llu chunks=%u/%u chunk_bytes=%llu metadata_bytes=%llu kv_committed=%llu kv_reserve=%llu\n",
@@ -3733,6 +3735,7 @@ static SparkStatus SparkWeightdKvSharedAdmit(SparkWeightdServer *server,SparkWei
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	pool->holder_mask |= UINT64_C(1) << holder;
 	pool->holder_connection[holder] = (uint32_t)(connection - server->connections) + 1u;
+	pool->detached_ns = 0u;
 	connection->kv_pool_count++;
 	fprintf(stderr,"weightd kv shared pool attached label=%s generation=%llu holder=%u created=%u slots=%u bytes=%llu holders=%u kv_committed=%llu kv_reserve=%llu\n",pool->label,
 		(unsigned long long)pool->generation,holder,*created,slot_count,(unsigned long long)(pool->chunk_bytes * pool->chunk_count),(unsigned)__builtin_popcountll(pool->holder_mask),
@@ -4280,6 +4283,26 @@ static void SparkWeightdServerPublish(SparkWeightdServer *server)
     atomic_store_explicit(&server->published_kv_pool_count,server->kv_pool_count,memory_order_release);
 }
 
+uint32_t SparkWeightdServerExpireKv(SparkWeightdServer *server,uint64_t now_ns)
+{
+	const uint64_t limit_ns = SPARK_KV_DETACHED_POOL_SECONDS * UINT64_C(1000000000);
+	uint32_t index,released = 0u;
+	if ( server == 0 )
+		return(0u);
+	for (index=0u; index<SPARK_WEIGHTD_KV_POOL_COUNT_MAX; index++)
+	{
+		const SparkWeightdKvPool *pool = &server->kv_pools[index];
+		if ( pool->generation == 0u || pool->detached_ns == 0u || pool->owner_connection != 0u || (pool->shared != 0u && pool->holder_mask != 0u) ||
+			now_ns < pool->detached_ns + limit_ns )
+			continue;
+		SparkWeightdKvPoolRelease(server,index,"detached_retention");
+		released++;
+	}
+	if ( released != 0u )
+		SparkWeightdServerPublish(server);
+	return(released);
+}
+
 static void SparkWeightdServerCompleteWork(SparkWeightdServer *server)
 {
     if (atomic_load_explicit(&server->dispatch_state,memory_order_acquire) == 2u)
@@ -4551,6 +4574,8 @@ SparkStatus SparkWeightdServerStep(SparkWeightdServer *server)
 
     SparkWeightdServerCompleteWork(server);
     SparkWeightdMeshPoll();
+    if (atomic_load_explicit(&server->dispatch_state,memory_order_acquire) == 0u)
+        (void)SparkWeightdServerExpireKv(server,SparkWeightdMonotonicTimeNs());
 
     if (server->listen_fd >= 0)
     {

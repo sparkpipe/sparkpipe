@@ -67,6 +67,15 @@ DEVICE_HOST_SOURCES := runtime/device/device.c runtime/device/host/device_host.c
 DEVICE_CUDA_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_cuda.$(SHARED_LIBRARY_EXT)
 DEVICE_METAL_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_metal.$(SHARED_LIBRARY_EXT)
 DEVICE_HEADERS := include/sparkpipe/spark_device.h runtime/device/device_backend.h
+METAL_KERNEL_UNITS := inference/kernels/metal/norm.metal inference/kernels/metal/gemv.metal inference/kernels/metal/gemm.metal \
+	inference/kernels/metal/recurrent.metal inference/kernels/metal/attention.metal inference/kernels/metal/elementwise.metal
+METAL_KERNEL_INCLUDES := inference/kernels/metal/common.metal inference/kernels/metal/kernel_params.h inference/kernels/kernel_math.cuh
+METAL_KERNEL_LIBRARY := $(DEVICE_RUNTIME_DIR)/sparkpipe_kernels.metallib
+METAL_TEST_KERNEL_LIBRARY := build/metal/test_device_kernels.metallib
+METAL_FLAGS := -std=metal4.0 -O3 -fno-fast-math -Wall -Werror -I.
+METAL_TEST_FLAGS := -std=metal3.2 -O3 -fno-fast-math -Wall -Werror -I.
+METAL_TOOLCHAIN := $(if $(filter Darwin,$(UNAME_S)),$(shell xcrun --find metal 2>/dev/null))
+METAL4_TOOLCHAIN := $(if $(METAL_TOOLCHAIN),$(shell printf 'kernel void probe(){}' | xcrun -sdk macosx metal -std=metal4.0 -x metal -c - -o /dev/null 2>/dev/null && echo metal4))
 ifeq ($(UNAME_S),Darwin)
 DEVICE_LIBRARY_NAME_FLAGS = -install_name @rpath/$(notdir $@)
 DEVICE_RPATH_FLAGS := -Wl,-rpath,@loader_path/runtime_libs
@@ -165,6 +174,15 @@ GLM53_FULL_TP16_IDENTITY := $(shell python3 tools/glm52_model_contract.py --prin
 GLM53_FULL_TP16_REVISION := $(word 1,$(GLM53_FULL_TP16_IDENTITY))
 GLM53_FULL_TP16_CONTRACT_SHA256 := $(word 2,$(GLM53_FULL_TP16_IDENTITY))
 GLM53_FULL_TP16_SOURCES := modules/glm53_full_tp16_resident_decode_stage/source/spark_glm53_full_tp16_stage_serving.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/glm53_full_tp16_resident_decode_stage/source/spark_glm53_full_tp16_stage_model.cu
+AXK2_TP16_SERVING_ADAPTER := build/libaxk2_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)
+AXK2_TP16_CONTRACT := model_contracts/axk2_authoritative.json
+AXK2_TP16_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(AXK2_TP16_CONTRACT)"; else shasum -a 256 "$(AXK2_TP16_CONTRACT)"; fi | awk '{print $$1}')
+AXK2_TP16_REVISION ?= $(shell python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["revision"])' "$(AXK2_TP16_CONTRACT)" 2>/dev/null)
+AXK2_TP16_SOURCES := modules/axk2_tp16_resident_decode_stage/source/spark_axk2_tp16_stage_serving.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/axk2_tp16_resident_decode_stage/source/spark_axk2_tp16_stage_model.cu
+SOLAR_OPEN2_TP16_SERVING_ADAPTER := build/libsolar_open2_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)
+SOLAR_OPEN2_TP16_CONTRACT := model_contracts/solar_open2_authoritative.json
+SOLAR_OPEN2_TP16_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(SOLAR_OPEN2_TP16_CONTRACT)"; else shasum -a 256 "$(SOLAR_OPEN2_TP16_CONTRACT)"; fi | awk '{print $$1}')
+SOLAR_OPEN2_TP16_SOURCES := modules/solar_open2_tp16_resident_decode_stage/source/spark_solar_open2_tp16_stage_serving.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/solar_open2_tp16_resident_decode_stage/source/spark_solar_open2_tp16_stage_model.cu
 MUSE_TP16_SERVING_ADAPTER := build/libmuse_glimmer_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)
 MUSE_TP16_CONTRACT := model_contracts/muse_glimmer_authoritative.json
 MUSE_TP16_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(MUSE_TP16_CONTRACT)"; else shasum -a 256 "$(MUSE_TP16_CONTRACT)"; fi | awk '{print $$1}')
@@ -177,6 +195,10 @@ LAGUNA_TP16_SERVING_ADAPTER := build/liblaguna_tp16_serving_adapter.$(SHARED_LIB
 LAGUNA_TP16_CONTRACT := model_contracts/laguna_authoritative.json
 LAGUNA_TP16_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(LAGUNA_TP16_CONTRACT)"; else shasum -a 256 "$(LAGUNA_TP16_CONTRACT)"; fi | awk '{print $$1}')
 LAGUNA_TP16_SOURCES := modules/laguna_tp16_resident_decode_stage/source/spark_laguna_tp16_stage_serving.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/laguna_tp16_resident_decode_stage/source/spark_laguna_tp16_stage_model.cu
+KEXAONE2_TP16_SERVING_ADAPTER := build/libkexaone2_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)
+KEXAONE2_TP16_CONTRACT := model_contracts/kexaone2_authoritative.json
+KEXAONE2_TP16_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(KEXAONE2_TP16_CONTRACT)"; else shasum -a 256 "$(KEXAONE2_TP16_CONTRACT)"; fi | awk '{print $$1}')
+KEXAONE2_TP16_SOURCES := modules/kexaone2_tp16_resident_decode_stage/source/spark_kexaone2_tp16_stage_serving.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/kexaone2_tp16_resident_decode_stage/source/spark_kexaone2_tp16_stage_model.cu
 MIMO26_FLASH_TP16_SERVING_ADAPTER := build/libmimo26_flash_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)
 MIMO26_FLASH_TP16_CONTRACT := model_contracts/mimo26_flash_authoritative.json
 MIMO26_FLASH_TP16_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(MIMO26_FLASH_TP16_CONTRACT)"; else shasum -a 256 "$(MIMO26_FLASH_TP16_CONTRACT)"; fi | awk '{print $$1}')
@@ -329,7 +351,8 @@ TEST_NAMES := \
     test_mma_fragment_mapping \
     test_weight_codec \
     test_topology_switch \
-    test_stage_kv_layout_digest
+    test_stage_kv_layout_digest \
+    test_dsv41_flash_pack_directory
 
 ifneq ($(UNAME_S),Darwin)
 TEST_NAMES += test_stage_kv_binding test_stage_kv_pool_resize test_stage_kv_shared_prefix test_k3_kv_binding
@@ -383,6 +406,7 @@ PYTHON_TESTS := \
 	tests/test_device_neutral.py \
 	tests/test_device_contract_cuda.py \
 	tests/test_device_contract_metal.py \
+	tests/test_metal_kernels.py \
 	tests/test_dry_law.py \
 	tests/test_family_defines_single_source.py \
 	tests/test_no_source_comments.py \
@@ -484,6 +508,7 @@ PYTHON_TESTS := \
 	tests/test_staging_manifest.py \
 	tests/test_status_truth.py \
 	tests/test_site.py \
+	tests/test_chat_controls.py \
 	tests/test_weightd_manifest.py \
 	tests/test_weightd_spine_budget.py \
 	tests/test_glm5_next_range_manifest.py \
@@ -526,6 +551,8 @@ PYTHON_TESTS := \
 	tests/test_latent_attention_kernel_cuda.py \
 	tests/test_project_chain_cuda.py \
 	tests/test_topk_warp_cuda.py \
+	tests/test_topk_small_cuda.py \
+	tests/test_bf16_convert_cuda.py \
 	tests/test_rms_norm_cuda.py \
 	tests/test_quantise_rows_cuda.py \
 	tests/test_index_select_bound_cuda.py \
@@ -563,12 +590,16 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_pack_regions.py \
 	tests/test_tp_mesh_cancel_lifetime.py \
 	tests/test_clamped_up_gate.py \
+	tests/test_kernel_math_bf16.py \
 	tests/test_glm52_expert_graft.py \
 	tests/test_glm52_spine_source_verify.py \
 	tests/test_glm52_routed_parity.py \
 	tests/test_glm5_next_wset_from_trace.py \
 	tests/test_acc_parity_oracle.py \
 	tests/test_ds4_spark_brickproof.py \
+	tests/test_node_baseline_contract.py \
+	tests/test_node_baseline_audit.py \
+	tests/test_fleet_post_reboot.py \
 	tests/test_dsv41_flash_geometry.py \
 	tests/test_dsv41_flash_kernels.py \
 	tests/test_dsv41_flash_moe_slices.py \
@@ -611,9 +642,13 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_classes.py \
 	tests/test_litellm_queue_settings.py \
 	tests/test_fleet_gateway.py \
+	tests/test_ceph_canary.py \
 	tests/test_open_webui_fleet_tool.py \
 	tests/test_chat_memory_core.py \
 	tests/test_chat_memory_session.py \
+	tests/test_chat_memory_deployment.py \
+	tests/test_chat_memory_prune.py \
+	tests/test_open_webui_memory_off.py \
 	tests/test_chat_memory_frontend.py \
 	tests/test_chat_frontend_trace.py \
 	tests/test_chat_frontend_citations.py \
@@ -621,18 +656,26 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_tool_call_recovery.py \
 	tests/test_chat_frontend_tagged_calls.py \
 	tests/test_chat_frontend_function_xml_calls.py \
+	tests/test_chat_frontend_json_calls.py \
 	tests/test_model_swap_memory_guard.py \
 	tests/test_model_swap_shared_label.py \
 	tests/test_model_swap_failures.py \
 	tests/test_stage_lane_kv_labels.py \
 	tests/test_stage_lane_stop.py \
+	tests/test_stage_lane_setup.py \
+	tests/test_lane_tools.py \
 	tests/test_stage_lane_state_memory.py \
+	tests/test_lane_records.py \
+	tests/test_chat_commands.py \
+	tests/test_chat_api_keys.py \
+	tests/test_open_webui_chat_tools.py \
 	tests/test_chat_frontend_object_and_channel_calls.py \
 	tests/test_draftd_kernels.py \
 	tests/test_latent_block_drafter.py \
 	tests/test_block_drafter_context.py \
 	tests/test_tapstream_truncated.py \
 	tests/test_block_draftd_latent.py \
+	tests/test_block_draftd_retention.py \
 	tests/test_keyed_draft_capture.py \
 	tests/test_draftd_mtp_kv.py \
 	tests/test_k3_reshard_cells.py \
@@ -650,6 +693,7 @@ PYTHON_TESTS := \
 	tests/test_mimo26_stagepack_windows.py \
 	tests/test_model_api_queue_lifetime.py \
 	tests/test_model_api_accept.py \
+	tests/test_model_api_utf8.py \
 	tests/test_no_python_in_production.py \
 	tests/test_rtx5090_spec_node.py \
 	tests/test_safetensors_subset.py \
@@ -896,6 +940,13 @@ build/test_skinny_grouped_reference: tests/test_skinny_grouped_reference.cu infe
 .PHONY: test-skinny-grouped-reference
 test-skinny-grouped-reference: build/test_skinny_grouped_reference
 	./build/test_skinny_grouped_reference --run
+
+build/test_expert_tail_reference: tests/test_expert_tail_reference.cu inference/kernels/moe_experts.cuh inference/kernels/skinny.cuh inference/kernels/gemm.cuh runtime/gemm.cuh runtime/launch.h inference/kernels/route.cuh | build
+	$(KERNEL_TEST_NVCC) $< $(KERNEL_TEST_CUDA_LINK) -o $@
+
+.PHONY: test-expert-tail-reference
+test-expert-tail-reference: build/test_expert_tail_reference
+	./build/test_expert_tail_reference --run
 
 WORKING_SET_NVCC = $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude
 
@@ -1270,17 +1321,78 @@ $(DEVICE_CUDA_LIBRARY): runtime/device/device.c runtime/device/cuda/device_cuda.
 	@if [ -f "$(CUDA_HOME)/include/cuda_runtime.h" ]; then $(CC) $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) runtime/device/device.c runtime/device/cuda/device_cuda.c -L$(CUDA_HOME)/lib64 -lcudart $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no CUDA runtime headers on this host)"; fi
 
 build/test_device_contract_cuda: tests/test_device_contract.c $(DEVICE_CUDA_LIBRARY) | build
-	@if [ -f "$(DEVICE_CUDA_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_device_contract_cuda (no CUDA device library)"; fi
+	@if [ -f "$(DEVICE_CUDA_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_DEVICE_TEST_LIBRARY='"$(METAL_TEST_KERNEL_LIBRARY)"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_device_contract_cuda (no CUDA device library)"; fi
 
 $(DEVICE_METAL_LIBRARY): runtime/device/device.c runtime/device/metal/device_metal.m $(DEVICE_HEADERS) | build
 	@mkdir -p $(dir $@)
-	@if [ "$(UNAME_S)" = Darwin ] && xcrun --find metal >/dev/null 2>&1; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fobjc-arc -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) runtime/device/device.c runtime/device/metal/device_metal.m -framework Metal -framework Foundation $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no Metal toolchain on this host)"; fi
+	@if [ "$(UNAME_S)" = Darwin ] && xcrun --find metal >/dev/null 2>&1; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fobjc-arc -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) runtime/device/device.c runtime/device/metal/device_metal.m -framework Metal -framework Foundation -framework IOKit $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no Metal toolchain on this host)"; fi
 
-build/test_device_contract_metal: tests/test_device_contract.c $(DEVICE_METAL_LIBRARY) | build
-	@if [ -f "$(DEVICE_METAL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_device_contract_metal (no Metal device library)"; fi
+ifneq ($(METAL_TOOLCHAIN),)
+build/metal/%.air: %.metal $(METAL_KERNEL_INCLUDES) | build
+	@mkdir -p $(dir $@)
+	xcrun -sdk macosx metal $(METAL_FLAGS) -c $< -o $@
+
+ifneq ($(METAL4_TOOLCHAIN),)
+$(METAL_KERNEL_LIBRARY): $(addprefix build/metal/,$(METAL_KERNEL_UNITS:.metal=.air)) | build
+	@mkdir -p $(dir $@)
+	xcrun -sdk macosx metallib $^ -o $@
+else
+$(METAL_KERNEL_LIBRARY):
+	@echo "SKIP $(notdir $@) (the Metal toolchain on this host has no Metal 4.0)"
+endif
+
+build/metal/tests/device_contract_kernels.air: METAL_FLAGS := $(METAL_TEST_FLAGS)
+
+$(METAL_TEST_KERNEL_LIBRARY): build/metal/tests/device_contract_kernels.air | build
+	xcrun -sdk macosx metallib $^ -o $@
+else
+$(METAL_KERNEL_LIBRARY) $(METAL_TEST_KERNEL_LIBRARY):
+	@echo "SKIP $(notdir $@) (no Metal toolchain on this host)"
+endif
+
+build/metal/test_bf16_kernels.metallib: build/metal/tests/bf16_convert_kernels.air | build
+	@if [ -n "$(METAL4_TOOLCHAIN)" ]; then xcrun -sdk macosx metallib $^ -o $@; else echo "SKIP $(notdir $@) (the Metal toolchain on this host has no Metal 4.0)"; fi
+
+build/test_metal_bf16_convert: tests/test_metal_bf16_convert.c $(DEVICE_METAL_LIBRARY) build/metal/test_bf16_kernels.metallib | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f build/metal/test_bf16_kernels.metallib ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_BF16_TEST_LIBRARY='"build/metal/test_bf16_kernels.metallib"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_metal_bf16_convert (no Metal device or kernel library)"; fi
+
+build/test_device_contract_metal: tests/test_device_contract.c $(DEVICE_METAL_LIBRARY) $(METAL_TEST_KERNEL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_DEVICE_TEST_LIBRARY='"$(METAL_TEST_KERNEL_LIBRARY)"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_device_contract_metal (no Metal device library)"; fi
+
+DEVICE_OPS_SOURCES := inference/runner/device_ops.c
+DEVICE_OPS_HEADERS := inference/runner/device_ops.h inference/kernels/metal/kernel_params.h
+
+.PHONY: test-metal-kernels
+test-metal-kernels: build/test_metal_kernels
+	python3 tests/test_metal_kernels.py
+
+build/metal_linear_bench: tools/metal_linear_bench.c $(DEVICE_OPS_SOURCES) $(DEVICE_OPS_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) tools/metal_linear_bench.c $(DEVICE_OPS_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lm -o $@; else echo "SKIP metal_linear_bench (no Metal device or kernel library)"; fi
+
+build/test_metal_kernels: tests/test_metal_kernels.c $(DEVICE_OPS_SOURCES) $(DEVICE_OPS_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_KERNEL_LIBRARY='"$(METAL_KERNEL_LIBRARY)"' tests/test_metal_kernels.c $(DEVICE_OPS_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lm -o $@; else echo "SKIP test_metal_kernels (no Metal device or kernel library)"; fi
+
+DEVICE_RUNNER_SOURCES := inference/runner/device_stage_runner.c inference/runner/device_stage_model.c inference/runner/device_layers.c $(DEVICE_OPS_SOURCES) runtime/named_pack.c runtime/json.c runtime/filesystem.c src/spark_sha256.c
+DEVICE_RUNNER_HEADERS := inference/runner/device_stage_runner.h inference/runner/device_stage_model.h inference/runner/device_layers.h $(DEVICE_OPS_HEADERS) include/sparkpipe/spark_stage_runner_model.h
+QWEN38_DEVICE_SOURCES := model-families/qwen38/device/qwen38_device_stage.c
+QWEN38_DEVICE_INCLUDE_FLAGS := -Imodel-families/qwen38/include
+GEMMA4_DEVICE_SOURCES := model-families/gemma4/device/gemma4_26b_device_stage.c
+GEMMA4_DEVICE_INCLUDE_FLAGS := -Imodel-families/gemma4/include
+
+build/metal_stage_run: tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_SOURCES) $(GEMMA4_DEVICE_SOURCES) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(GEMMA4_DEVICE_INCLUDE_FLAGS) $(CFLAGS) tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_SOURCES) $(GEMMA4_DEVICE_SOURCES) $(DEVICE_RUNNER_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lm -o $@; else echo "SKIP metal_stage_run (no Metal device or kernel library)"; fi
+
+build/qwen38_27b_reference: tools/qwen38_27b_reference.c tools/token_prompts.c runtime/json.c runtime/filesystem.c | build
+	@if [ "$(UNAME_S)" = Darwin ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fblocks -DACCELERATE_NEW_LAPACK tools/qwen38_27b_reference.c tools/token_prompts.c runtime/json.c runtime/filesystem.c -framework Accelerate $(LDLIBS) -lm -o $@; else echo "SKIP qwen38_27b_reference (it uses the Accelerate BLAS)"; fi
+
+build/device_bandwidth: tools/device_bandwidth.c $(DEVICE_OPS_SOURCES) $(DEVICE_OPS_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) tools/device_bandwidth.c $(DEVICE_OPS_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP device_bandwidth (no Metal device or kernel library)"; fi
+
+build/logit_compare: tools/logit_compare.c tools/token_prompts.c runtime/json.c runtime/filesystem.c | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) tools/logit_compare.c tools/token_prompts.c runtime/json.c runtime/filesystem.c $(LDLIBS) -lm -o $@
 
 build/test_device_contract: tests/test_device_contract.c $(DEVICE_HOST_LIBRARY) | build
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_host $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_DEVICE_TEST_LIBRARY='"$(METAL_TEST_KERNEL_LIBRARY)"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_host $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
 build/test_device_instance_a.$(SHARED_LIBRARY_EXT) build/test_device_instance_b.$(SHARED_LIBRARY_EXT): tests/device_instance_module.c $(DEVICE_HOST_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_host $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
@@ -1294,8 +1406,8 @@ build/test_memory_buffer: tests/test_memory_buffer.c runtime/memory_buffer.c inc
 build/test_model_resident_session: tests/test_model_resident_session.c node/model_residentd.c node/weightd_spawn.c node/weightd_spawn.h runtime/model_resident_socket.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) tests/test_model_resident_session.c node/weightd_spawn.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
-build/test_model_pipeline_client: tests/test_model_pipeline_client.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/model_serving_adapter_config.json build/sparkpipe_model_residentd build/sparkpipe_model_batch $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_BATCH_PATH=\"build/sparkpipe_model_batch\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_pipeline_client.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/test_model_pipeline_client: tests/test_model_pipeline_client.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c tests/fixtures/model_serving_adapter_config.json build/sparkpipe_model_residentd build/sparkpipe_model_batch $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_BATCH_PATH=\"build/sparkpipe_model_batch\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_pipeline_client.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_model_batch_engine_mock: tests/test_model_batch_engine_mock.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_SERVING_ADAPTER_VARIANT_MODULES) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_PATH=\"$(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_INLINE_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_INLINE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_VERIFY_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_VERIFY_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_MODULE)\" -DTEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH=\"$(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_batch_engine_mock.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -1324,8 +1436,8 @@ build/test_model_pipeline_client_mock: tests/test_model_pipeline_client_mock.c t
 build/test_child_guard_thread: tests/test_child_guard_thread.c tests/fixtures/test_child_guard.c tests/fixtures/test_child_guard.h | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_child_guard_thread.c tests/fixtures/test_child_guard.c $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_steploop_admission: tests/test_steploop_admission.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/model_serving_adapter_config.json tests/fixtures/model_serving_adapter_config_hold.json build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_steploop_admission.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/test_steploop_admission: tests/test_steploop_admission.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c tests/fixtures/model_serving_adapter_config.json tests/fixtures/model_serving_adapter_config_hold.json build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_steploop_admission.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_pipeline_runtime: tests/test_pipeline_runtime.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_pipeline_runtime.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -1369,6 +1481,9 @@ $(GLM53_FLASH_TP16_SERVING_ADAPTER): $(GLM53_FLASH_TP16_SOURCES) $(GLM53_FLASH_T
 $(LAGUNA_TP16_SERVING_ADAPTER): $(LAGUNA_TP16_SOURCES) $(LAGUNA_TP16_CONTRACT) modules/laguna_tp16_resident_decode_stage/include/sparkpipe/spark_laguna_tp16_stage_model.h model-families/gemma4/source/gemma4_stage.cuh include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(wildcard inference/kernels/*.cuh inference/kernels/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DLAGUNA_TP16_CONTRACT_SHA256=\"$(LAGUNA_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/laguna_tp16_resident_decode_stage/include -Imodel-families/gemma4/source -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(LAGUNA_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
+$(KEXAONE2_TP16_SERVING_ADAPTER): $(KEXAONE2_TP16_SOURCES) $(KEXAONE2_TP16_CONTRACT) modules/kexaone2_tp16_resident_decode_stage/include/sparkpipe/spark_kexaone2_tp16_stage_model.h model-families/gemma4/source/gemma4_stage.cuh include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(wildcard inference/kernels/*.cuh inference/kernels/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DKEXAONE2_TP16_CONTRACT_SHA256=\"$(KEXAONE2_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/kexaone2_tp16_resident_decode_stage/include -Imodel-families/gemma4/source -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(KEXAONE2_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+
 $(MIMO26_FLASH_TP16_SERVING_ADAPTER): $(MIMO26_FLASH_TP16_SOURCES) $(MIMO26_FLASH_TP16_CONTRACT) modules/mimo26_flash_tp16_resident_decode_stage/include/sparkpipe/spark_mimo26_flash_tp16_stage_model.h model-families/mimo26/source/mimo26_stage.cuh include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(wildcard inference/kernels/*.cuh inference/kernels/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DMIMO26_FLASH_TP16_CONTRACT_SHA256=\"$(MIMO26_FLASH_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/mimo26_flash_tp16_resident_decode_stage/include -Imodel-families/mimo26/source -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(MIMO26_FLASH_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
@@ -1381,6 +1496,10 @@ $(HY4_TP16_SERVING_ADAPTER): $(HY4_TP16_SOURCES) $(HY4_TP16_CONTRACT) modules/hy
 $(GLM53_FULL_TP16_SERVING_ADAPTER): $(GLM53_FULL_TP16_SOURCES) model_contracts/glm52.json tools/glm52_model_contract.py modules/glm53_full_tp16_resident_decode_stage/include/sparkpipe/spark_glm53_full_tp16_stage_model.h model-families/glm52/source/glm52_stage.cuh model-families/glm52/source/glm52_row_shard.cuh model-families/glm52/include/sparkpipe/spark_glm52_stagepack.h model-families/glm52/include/sparkpipe/spark_glm52_model.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(wildcard inference/kernels/*.cuh inference/kernels/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	@test -n "$(GLM53_FULL_TP16_CONTRACT_SHA256)" || { echo "glm53_full: tools/glm52_model_contract.py gave no fp8 build identity" >&2; exit 1; }
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DGLM53_FULL_CONTRACT_SHA256=\"$(GLM53_FULL_TP16_CONTRACT_SHA256)\" -DGLM53_FULL_MODEL_REVISION=\"$(GLM53_FULL_TP16_REVISION)\" -I. -Iinclude -Isrc -Imodules/glm53_full_tp16_resident_decode_stage/include -Imodel-families/glm52/source -Imodel-families/glm52/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(GLM53_FULL_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+
+$(AXK2_TP16_SERVING_ADAPTER): $(AXK2_TP16_SOURCES) $(AXK2_TP16_CONTRACT) modules/axk2_tp16_resident_decode_stage/include/sparkpipe/spark_axk2_tp16_stage_model.h model-families/glm52/source/glm52_stage.cuh model-families/glm52/source/glm52_row_shard.cuh model-families/glm52/include/sparkpipe/spark_glm52_stagepack.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(wildcard inference/kernels/*.cuh inference/kernels/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+	@test -n "$(AXK2_TP16_REVISION)" || { echo "axk2: $(AXK2_TP16_CONTRACT) names no revision" >&2; exit 1; }
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DAXK2_CONTRACT_SHA256=\"$(AXK2_TP16_CONTRACT_SHA256)\" -DAXK2_MODEL_REVISION=\"$(AXK2_TP16_REVISION)\" -I. -Iinclude -Isrc -Imodules/axk2_tp16_resident_decode_stage/include -Imodel-families/glm52/source -Imodel-families/glm52/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(AXK2_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 $(GEMMA4_26B_TP16_SERVING_ADAPTER): $(GEMMA4_26B_TP16_SOURCES) $(GEMMA4_26B_TP16_CONTRACT) modules/gemma4_26b_resident_decode_stage/include/sparkpipe/spark_gemma4_26b_stage_model.h model-families/gemma4/source/gemma4_stage.cuh include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(wildcard inference/kernels/*.cuh inference/kernels/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DGEMMA4_26B_CONTRACT_SHA256=\"$(GEMMA4_26B_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/gemma4_26b_resident_decode_stage/include -Imodel-families/gemma4/source -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(GEMMA4_26B_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
@@ -1395,14 +1514,17 @@ $(LING3_FLASH_TP16_SERVING_ADAPTER): $(LING3_FLASH_TP16_CONTRACT) $(LING3_TP16_S
 $(LING3_FIN_TP16_SERVING_ADAPTER): $(LING3_FIN_TP16_CONTRACT) $(LING3_TP16_SOURCES) modules/ling3_resident_decode_stage/include/sparkpipe/spark_ling3_stage_model.h model-families/ling/source/ling_stage.cuh include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(wildcard inference/kernels/*.cuh inference/kernels/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	$(call LING3_TP16_LINK,-DLING3_FIN=1 -DLING3_CONTRACT_SHA256=\"$(LING3_FIN_TP16_CONTRACT_SHA256)\")
 
+$(SOLAR_OPEN2_TP16_SERVING_ADAPTER): $(SOLAR_OPEN2_TP16_CONTRACT) $(SOLAR_OPEN2_TP16_SOURCES) modules/solar_open2_tp16_resident_decode_stage/include/sparkpipe/spark_solar_open2_tp16_stage_model.h model-families/ling/source/ling_stage.cuh include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(wildcard inference/kernels/*.cuh inference/kernels/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DSOLAR_OPEN2_CONTRACT_SHA256=\"$(SOLAR_OPEN2_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/solar_open2_tp16_resident_decode_stage/include -Imodel-families/ling/source -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(SOLAR_OPEN2_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+
 $(DSV41_FLASH_TP16_SERVING_ADAPTER): $(DSV41_FLASH_TP16_SOURCES) $(DSV41_FLASH_TP16_CONTRACT) modules/dsv41_flash_resident_decode_stage/include/sparkpipe/spark_dsv41_flash_stage_model.h modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_kernels.cuh modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(wildcard inference/kernels/*.cuh inference/kernels/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DDSV41_FLASH_CONTRACT_SHA256=\"$(DSV41_FLASH_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/dsv41_flash_resident_decode_stage/include -Imodules/dsv41_flash_resident_decode_stage/source -Imodel-families/dsv41_flash/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(DSV41_FLASH_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
-build/test_model_resident_reconnect: tests/test_model_resident_reconnect.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_resident_reconnect.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/test_model_resident_reconnect: tests/test_model_resident_reconnect.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_resident_reconnect.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_model_resident_end_to_end: tests/test_model_resident_end_to_end.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_resident_end_to_end.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/test_model_resident_end_to_end: tests/test_model_resident_end_to_end.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_resident_end_to_end.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 runtime_completion_tests: build/test_runtime_completion build/test_model_runtime
 	./build/test_runtime_completion
@@ -1528,11 +1650,11 @@ build/test_tiktoken_compiled: tests/test_tiktoken_compiled.c $(MODEL_COMMON_LIBR
 build/test_tokenizer_sidecar: tests/test_tokenizer_sidecar.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_model_api_text: tests/test_model_api_text.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/model_serving_adapter_config.json build/sparkpipe_model_api build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) -DTEST_MODEL_API_PATH=\"build/sparkpipe_model_api\" -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_api_text.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/test_model_api_text: tests/test_model_api_text.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c tests/fixtures/model_serving_adapter_config.json build/sparkpipe_model_api build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_API_PATH=\"build/sparkpipe_model_api\" -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_api_text.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_system_loopback: tests/test_system_loopback.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/model_serving_adapter_config.json build/sparkpipe_model_api build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) -DTEST_MODEL_API_PATH=\"build/sparkpipe_model_api\" -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_system_loopback.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/test_system_loopback: tests/test_system_loopback.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c tests/fixtures/model_serving_adapter_config.json build/sparkpipe_model_api build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_API_PATH=\"build/sparkpipe_model_api\" -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_system_loopback.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_model_description: tests/test_model_description.c $(COMPILER_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CORE_INCLUDE_FLAGS) -Itests $(CFLAGS) $< $(COMPILER_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -1576,6 +1698,9 @@ build/dsv41_flash_experts_manifest: modules/dsv41_flash_resident_decode_stage/to
 
 build/test_dsv41_flash_pack_contract: tests/test_dsv41_flash_pack_contract.c src/spark_ck128.c $(DSV41_FLASH_PACK_FORMAT_HEADER) | build
 	$(CC) $(DSV41_FLASH_PACK_TOOL_FLAGS) $(CFLAGS) $< src/spark_ck128.c $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_dsv41_flash_pack_directory: tests/test_dsv41_flash_pack_directory.c $(DSV41_FLASH_PACK_FORMAT_HEADER) | build
+	$(CC) $(DSV41_FLASH_PACK_TOOL_FLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
 build/weightd_lazy_consumer: tools/weightd_lazy_consumer.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) | build
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) $(SPARKPIPE_CUDA_DRIVER_LINK) -o $@

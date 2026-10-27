@@ -1,0 +1,64 @@
+{
+ "hosts": [
+  "rtx5090"
+ ],
+ "local_host": "rtx5090",
+ "ssh": [
+  "ssh",
+  "-o",
+  "BatchMode=yes",
+  "-o",
+  "ConnectTimeout=8"
+ ],
+ "root": "/mnt/model-warm",
+ "subdir": ".ceph-canary",
+ "mounts": "/proc/mounts",
+ "size_bytes": 1048576,
+ "interval_seconds": 120,
+ "probe_seconds": 60,
+ "slow_seconds": 15,
+ "rounds_to_alert": 2,
+ "health_hosts": [
+  "spark0",
+  "sparkf",
+  "spark7"
+ ],
+ "health_command": "sudo -n timeout 20 ceph health detail --format json",
+ "health_seconds": 40,
+ "ignore_checks": {
+  "AUTH_INSECURE_CLIENT_KEY_TYPE": [
+   "entity client.ds4warm using insecure key type: aes"
+  ],
+  "AUTH_INSECURE_KEYS_ALLOWED": [
+   "insecure cipher aes allowed for auth"
+  ],
+  "AUTH_INSECURE_KEYS_CREATABLE": [
+   "Monitors are configured to allow creation of insecure key types"
+  ],
+  "CEPHADM_APPLY_SPEC_FAIL": [
+   "mds.ds4warm: Cannot place <MDSSpec for service_name=mds.ds4warm> on lima-mds-macstudio: Unknown hosts"
+  ],
+  "CEPHADM_STRAY_DAEMON": [
+   "stray daemon mds.ds4warm.rtx5090 on host rtx5090 not managed by cephadm",
+   "stray daemon mds.ds4warm.rtx5090b on host rtx5090 not managed by cephadm",
+   "stray daemon mgr.ds4warm.rtx5090 on host rtx5090 not managed by cephadm"
+  ],
+  "CEPHADM_STRAY_HOST": [
+   "stray host rtx5090 has 3 stray daemons: ['mds.ds4warm.rtx5090', 'mds.ds4warm.rtx5090b', 'mgr.ds4warm.rtx5090']"
+  ]
+ },
+ "entity_checks": [
+  "OSD_DOWN",
+  "OSD_HOST_DOWN",
+  "OSD_FLAGS",
+  "MON_DOWN",
+  "BLUESTORE_SLOW_OP_ALERT",
+  "OSD_NEARFULL",
+  "OSD_BACKFILLFULL",
+  "OSD_FULL",
+  "MDS_CLIENT_LATE_RELEASE",
+  "MDS_CLIENT_RECALL"
+ ],
+ "state_file": "/srv/workspace/sparkpipe/ceph-canary/state.json",
+ "event_log": "/srv/workspace/sparkpipe/logs/ceph-canary.jsonl"
+}

@@ -1,0 +1,9 @@
+[Unit]
+Description=Export the hashed Open WebUI chat list every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

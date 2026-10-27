@@ -30,7 +30,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "spec_offline"))
+from context_retention import EXPIRY_SWEEP_SECONDS, RETENTION_SECONDS, evict_contexts, expire_contexts
 from block_drafter import DraftGraph, open_drafter
 from latent_block_drafter import LatentBlockDrafter, LatentContext, LatentDraftGraph
 from tapstream import FRAME, HELLO, MAGIC, read_hello
@@ -254,23 +256,28 @@ class Server:
         self.stats["rows"] += len(tokens)
         self.evict()
 
+    def expire(self, now):
+        stale = expire_contexts(self.contexts, now)
+        if stale and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return stale
+
     def evict(self):
-        budget = self.args.context_bytes
-        evicted = False
-        while len(self.contexts) > 1 and sum(c.bytes() for c in self.contexts.values()) > budget:
-            sequence, _ = self.contexts.popitem(last=False)
-            print(f"CONTEXT-EVICTED sequence {sequence}", flush=True)
-            evicted = True
-        if evicted:
+        self.expire(time.monotonic())
+        if evict_contexts(self.contexts, self.args.context_bytes):
             torch.cuda.empty_cache()
 
     def gpu_loop(self):
         pending = None
+        next_sweep = time.monotonic() + EXPIRY_SWEEP_SECONDS
         while True:
             item = None
+            if time.monotonic() >= next_sweep:
+                self.expire(time.monotonic())
+                next_sweep = time.monotonic() + EXPIRY_SWEEP_SECONDS
             try:
                 if pending is None:
-                    item = self.work.get()
+                    item = self.work.get(timeout=max(0.0, next_sweep - time.monotonic()))
                 else:
                     item = self.work.get(timeout=max(0.0, pending[2] - time.monotonic()))
             except queue.Empty:

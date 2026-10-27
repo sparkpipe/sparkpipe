@@ -1,0 +1,72 @@
+{
+ "functions": [
+  {
+   "id": "sparkpipe_memory_off",
+   "file": "functions/memory_off.py",
+   "global": true
+  },
+  {
+   "id": "sparkpipe_context_status",
+   "file": "functions/context_status.py",
+   "global": true
+  },
+  {
+   "id": "sparkpipe_timer",
+   "file": "functions/timer_toggle.py",
+   "global": true
+  },
+  {
+   "id": "sparkpipe_chat_timer",
+   "file": "functions/chat_timer.py",
+   "global": true
+  }
+ ],
+ "tools": [
+  {
+   "id": "sparkpipe_chat_timer_tool",
+   "file": "tools/chat_timer.py"
+  }
+ ],
+ "prompts": [
+  {
+   "command": "context",
+   "name": "Context: what the prompt holds",
+   "content": "/context"
+  },
+  {
+   "command": "compact",
+   "name": "Compact: keep the most relevant half (memory off)",
+   "content": "/compact 50%"
+  },
+  {
+   "command": "compact-full",
+   "name": "Compact fully: keep only a summary (memory off)",
+   "content": "/compact full"
+  },
+  {
+   "command": "compact-undo",
+   "name": "Undo the compaction",
+   "content": "/compact undo"
+  },
+  {
+   "command": "memory-off",
+   "name": "Memory off: send the full chat",
+   "content": "/memory off"
+  },
+  {
+   "command": "memory-on",
+   "name": "Memory on",
+   "content": "/memory on"
+  },
+  {
+   "command": "target",
+   "name": "Context target for memory",
+   "content": "/target 64K"
+  },
+  {
+   "command": "timer",
+   "name": "Timer: run a prompt on a schedule",
+   "content": "/timer every 10m "
+  }
+ ]
+}

@@ -1,0 +1,30 @@
+== kimi-k3 first
+active: idle kimi-k3 None
+cold {'prompt_tokens': 15831, 'cached_tokens': 0, 'completion_tokens': 64, 'seconds': 28.62, 'finish': 'length'} ' The KV cache stores the complete computation state for each' 
+follow {'prompt_tokens': 15914, 'cached_tokens': 15894, 'completion_tokens': 64, 'seconds': 4.34, 'finish': 'length'} ' Speculation uses a unified seam per serving adapter where e' 
+== kimi-k3 away and back
+active: idle qwen3.8-max None
+active: idle kimi-k3 None
+cold_again {'prompt_tokens': 15831, 'cached_tokens': 15830, 'completion_tokens': 64, 'seconds': 4.32, 'finish': 'length'} ' The KV cache stores the complete computation state for each' 
+follow_restored {'prompt_tokens': 15914, 'cached_tokens': 15913, 'completion_tokens': 64, 'seconds': 4.17, 'finish': 'length'} ' Speculation uses a unified seam per serving adapter where e' 
+== glm-5.3-flash first
+active: idle glm-5.3-flash None
+cold {'prompt_tokens': 16106, 'cached_tokens': 0, 'completion_tokens': 64, 'seconds': 21.31, 'finish': 'length'} ' The KV cache is paged, with logical identity separated from' 
+follow {'prompt_tokens': 16189, 'cached_tokens': 16169, 'completion_tokens': 64, 'seconds': 1.32, 'finish': 'length'} ' Speculation goes through one seam per serving adapter, with' 
+== glm-5.3-flash away and back
+activate failed: failed None qwen3.8-max engines died on spark4
+== deepseek-v4.1-flash first
+active: idle deepseek-v4.1-flash None
+cold {'prompt_tokens': 16586, 'cached_tokens': 0, 'completion_tokens': 64, 'seconds': 12.19, 'finish': 'length'} ' The KV cache is described as holding the complete computati' 
+follow {'prompt_tokens': 16669, 'cached_tokens': 16649, 'completion_tokens': 64, 'seconds': 1.69, 'finish': 'length'} ' Speculation goes through one seam per serving adapter, with' 
+== deepseek-v4.1-flash away and back
+active: idle qwen3.8-max None
+active: idle deepseek-v4.1-flash None
+cold_again {'prompt_tokens': 16586, 'cached_tokens': 16585, 'completion_tokens': 64, 'seconds': 1.68, 'finish': 'length'} ' The KV cache is described as holding the complete computati' 
+follow_restored {'prompt_tokens': 16669, 'cached_tokens': 16668, 'completion_tokens': 64, 'seconds': 1.66, 'finish': 'length'} ' Speculation goes through one seam per serving adapter, with' 
+active: idle qwen3.8-max None
+== glm-5.3-flash restore only
+active: idle glm-5.3-flash None
+cold_again {'prompt_tokens': 16106, 'cached_tokens': 16064, 'completion_tokens': 64, 'seconds': 1.65, 'finish': 'length'} ' The KV cache is paged, with logical identity separated from' 
+follow_restored {'prompt_tokens': 16189, 'cached_tokens': 16169, 'completion_tokens': 64, 'seconds': 1.3, 'finish': 'length'} ' Speculation goes through one seam per serving adapter, with' 
+active: idle qwen3.8-max None

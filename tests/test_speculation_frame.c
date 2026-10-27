@@ -145,6 +145,63 @@ static void TestChoose(void)
 	assert(choice.probe == 1u);
 }
 
+static void TestBatch(void)
+{
+	SparkSpeculationFrameModel model;
+	SparkSpeculationFrameRequest request;
+	SparkSpeculationFrameChoice alone,shared,crowded;
+	uint32_t index;
+	memset(&model,0,sizeof(model));
+	assert(SparkSpeculationFrameBatchStepCost(&model,2u,2048u) == 0.0f && SparkSpeculationFrameBatchCost(&model,2u,8u,2048u) == 0.0f);
+	SparkSpeculationFrameObserveBatchStep(&model,1u,8u,2048u,8u * 35000000ull);
+	SparkSpeculationFrameObserveBatchStep(&model,17u,8u,2048u,8u * 35000000ull);
+	assert(SparkSpeculationFrameBatchStepCost(&model,2u,2048u) == 0.0f);
+	SparkSpeculationFrameObserveBatchStep(&model,4u,8u,2048u,8u * 50000000ull);
+	assert(fabsf(SparkSpeculationFrameBatchStepCost(&model,4u,2048u) - 50e6f) < 256.0f && fabsf(SparkSpeculationFrameBatchStepCost(&model,4u,600000u) - 50e6f) < 256.0f);
+	assert(fabsf(SparkSpeculationFrameBatchCost(&model,4u,12u,2048u) - 50e6f * 2.0f) < 256.0f && SparkSpeculationFrameBatchCost(&model,4u,3u,2048u) == 0.0f);
+	SparkSpeculationFrameObserveChain(&model,8u,2048u,8u * 35000000ull);
+	SparkSpeculationFrameObserveChain(&model,1u,2048u,57000000ull);
+	SparkSpeculationFrameObserveFrame(&model,2u,2048u,67000000ull);
+	SparkSpeculationFrameObserveFrame(&model,4u,2048u,40000000ull);
+	SparkSpeculationFrameObserveFrame(&model,33u,2048u,234000000ull);
+	SparkSpeculationFrameObserveFrame(&model,64u,2048u,308000000ull);
+	assert(fabsf(SparkSpeculationFrameBatchSpread(&model,4u,2048u) - 10e6f) < 256.0f && SparkSpeculationFrameBatchSpread(&model,1u,2048u) == 0.0f);
+	assert(fabsf(SparkSpeculationFrameBatchCost(&model,4u,33u,2048u) - SparkSpeculationFrameCost(&model,33u,2048u) - 10e6f) < 256.0f && SparkSpeculationFrameBatchCost(&model,1u,33u,2048u) == SparkSpeculationFrameCost(&model,33u,2048u));
+	for (index=0u; index<20u; index++)
+		SparkSpeculationHazardObserve(&model.classes[SparkSpeculationFrameClass(64u,0u)],255u,255u,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
+	memset(&request,0,sizeof(request));
+	request.feasible = 64u;
+	request.context = 2048u;
+	request.match_length = 64u;
+	SparkSpeculationFrameChoose(&model,0,&request,&alone);
+	request.lanes = 1u;
+	SparkSpeculationFrameChoose(&model,0,&request,&shared);
+	assert(alone.drafts != 0u && shared.drafts == alone.drafts && shared.frame_ns == alone.frame_ns);
+	request.lanes = 4u;
+	request.base_rows = 3u;
+	request.base_tokens = 3.0f;
+	SparkSpeculationFrameChoose(&model,0,&request,&shared);
+	assert(shared.drafts != 0u && shared.drafts + 3u + 1u <= 64u + 4u && fabsf(shared.frame_ns - SparkSpeculationFrameBatchCost(&model,4u,shared.drafts + 4u,2048u)) < 256.0f);
+	request.base_rows = 40u;
+	request.base_tokens = 3.0f;
+	SparkSpeculationFrameChoose(&model,0,&request,&crowded);
+	assert(crowded.drafts == 0u || (3.0f + crowded.expected_tokens) / crowded.frame_ns > 4.0f / SparkSpeculationFrameBatchCost(&model,4u,41u,2048u));
+	for (index=0u; index<40u; index++)
+		SparkSpeculationHazardObserve(&model.classes[SparkSpeculationFrameClass(3u,0u)],8u,0u,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
+	request.match_length = 3u;
+	request.base_rows = 3u;
+	SparkSpeculationFrameChoose(&model,0,&request,&crowded);
+	assert(crowded.drafts == 0u);
+	memset(&model,0,sizeof(model));
+	SparkSpeculationFrameObserveBatchStep(&model,2u,8u,2048u,8u * 40000000ull);
+	request.match_length = 64u;
+	request.lanes = 2u;
+	request.base_rows = 1u;
+	request.base_tokens = 1.0f;
+	SparkSpeculationFrameChoose(&model,0,&request,&shared);
+	assert(shared.drafts == SPARK_SPECULATION_FRAME_PROBE_DRAFTS && shared.probe == 1u && shared.frame_ns > 40e6f);
+}
+
 static void TestMinimum(void)
 {
 	SparkSpeculationFrameModel model;
@@ -188,6 +245,7 @@ int main(void)
 	TestCost();
 	TestMinimum();
 	TestChoose();
-	printf("speculation frame: hazards per match class, interpolated frame costs and the chain price decide every frame: ok\n");
+	TestBatch();
+	printf("speculation frame: hazards per match class, interpolated frame costs and the chain price decide every frame; a frame shared by several lanes prices drafts against the rows and tokens already in it, with the extra cost of separate sequences learned from batch steps: ok\n");
 	return(0);
 }

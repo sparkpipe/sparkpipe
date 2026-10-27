@@ -6,8 +6,7 @@ through this stack on the rtx5090 hub:
 | Port | Process | Protocol |
 | --- | --- | --- |
 | 4000 | LiteLLM proxy (`config/litellm-config.yaml`, user unit `sparkpipe-litellm`) | OpenAI `/v1/chat/completions` and Anthropic `/v1/messages`; any model name routes to `glm-5.3` |
-| 4001 | external LiteLLM (`~/sparkpipe-chat/litellm-external.yaml`, user unit `sparkpipe-litellm-external`, 127.0.0.1 only) | the 4000 door without Qwen models or the `*` route, behind a master key; the sparkpipe.ai tunnel (`sparkpipe-ai-door`) forwards here |
-| 8433 | chat layer (`tools/serving/chat_frontend.py`, user unit `sparkpipe-chat`, 127.0.0.1 only) | OpenAI `/v1/chat/completions`, `/v1/models`, `/health`; the tunnel forwards `/v1/sparkpipe/status` here |
+| 8433 | chat layer (`tools/serving/chat_frontend.py`, user unit `sparkpipe-chat`, 127.0.0.1 only) | OpenAI `/v1/chat/completions`, `/v1/models`, `/health`; the tunnel forwards sparkpipe.ai:8443/fleet here |
 | 8446 | `sparkpipe_model_api` (user unit `glmfull-api6`) | the engine endpoint: `prompt_token_ids` in, token ids, usage and `cached_tokens` out |
 
 Smoke receipts (2026-10-02, build de944ae): chat answered "Paris" with the
@@ -31,7 +30,10 @@ nothing more:
   `tokenizers` and sends `prompt_token_ids` to the engine endpoint;
 - it decodes the returned token ids incrementally and splits the model's
   reasoning and tool-call markup into standard `reasoning_content` and
-  `tool_calls` (tool arguments typed from the tool's JSON schema);
+  `tool_calls` (tool arguments typed from the tool's JSON schema). Content
+  keeps every character the model wrote, including the blank lines some
+  models put after a reasoning block, so the client's history re-renders to
+  the generated tokens and prefix reuse covers the whole reply;
 - it keeps no request state; prefix reuse happens in the engine;
 - while the engine is starting (its 503 says `"status":"starting"`) or is
   unreachable, a request waits in the model's `warm_queue` (`depth`,
@@ -102,7 +104,7 @@ another model waits while the fleet swaps.
 | Piece | Where | What |
 | --- | --- | --- |
 | Swap controller | `tools/serving/model_swap.py`, config `deployment/hub/model_swap.json`, hub unit `sparkpipe-swap` on 127.0.0.1:8440 | `GET /status`, `POST /activate {"model": id}`, `POST /force`; every call needs the controller token (see Control-plane access) |
-| Chat layer | `tools/serving/chat_frontend.py`, config `deployment/hub/chat_frontend.json`, hub unit `sparkpipe-chat` on 127.0.0.1:8433 | every model's `warm_queue.activation_url` is the controller; `GET /v1/sparkpipe/status` passes through to it; `/` serves the playground |
+| Chat layer | `tools/serving/chat_frontend.py`, config `deployment/hub/chat_frontend.json`, hub unit `sparkpipe-chat` on 127.0.0.1:8433 | every model's `warm_queue.activation_url` is the controller; `GET /v1/sparkpipe/status` passes through to it; `/` redirects to the fleet page |
 | LiteLLM | `config/litellm-config.yaml`, hub unit `sparkpipe-litellm` on 4000 | the three names, and `*` routes to `glm-5.3` |
 
 A swap to model T, in order:
@@ -171,6 +173,11 @@ work. `model_api` checks no API key and ignores the request's `model` field.
 | `POST /v1/chat/completions` | `messages`, or `prompt` or `prompt_token_ids` | `chat.completion` with `choices[0].message`, `finish_reason`, `usage`, `tokens` |
 | anything else | — | `404 {"error":"not found"}` |
 
+Reply text is always valid UTF-8. When the emitted tokens leave a byte
+sequence incomplete or invalid (a reply cut inside a character, a
+byte-fallback token), each maximal invalid subpart comes out as U+FFFD, as
+in a lossy UTF-8 decode; `tokens` keeps the exact ids.
+
 A request with `messages` and no `prompt` or `prompt_token_ids` is rendered
 with the chat template the deployment declares (`chat_template` in
 `model_resident.json`, see below). A deployment without one answers every
@@ -195,6 +202,7 @@ Optional request fields:
 | `top_p` | above 0 and at most 1, default 1; samples from the smallest set of top tokens whose probability at the request's temperature reaches `top_p` |
 | `top_k` | unsigned integer up to 1048576, default 0 (off); samples from the `top_k` most likely tokens, applied before `top_p` |
 | `logprobs` | unsigned integer up to 20: return each emitted token's log-probability and that many top alternatives. The response adds `token_logprobs`, one entry per token in `tokens`: an array of `[token_id, logprob]` pairs, the emitted token first and the alternatives in descending order. Logprobs are the model's log_softmax at temperature 1 (before truncation); `null` stands for a value too small for a float |
+| `speculation` | boolean, default `true`. `false` makes the engine draft nothing for this request, neither lookup nor model drafts, so every token is one plain decode step. Chained decode steps are unchanged, so this measures decode without speculation. A request that asks for `logprobs` never drafts either, but it also decodes one step per submission |
 | `chat_template_kwargs` | `messages` requests only, exactly `{"enable_thinking": bool}`; default `false` |
 
 ### Declared chat template
@@ -249,7 +257,7 @@ An older `model_api` refuses a `model_resident.json` that carries
 install as the API binary that reads it.
 
 A malformed `stream`, `priority`, `deadline_ms`, `temperature`, `seed`,
-`top_p`, `top_k`, `logprobs` or `chat_template_kwargs`, or
+`top_p`, `top_k`, `logprobs`, `speculation` or `chat_template_kwargs`, or
 `chat_template_kwargs` on a `prompt` or `prompt_token_ids` request, is a
 `400 invalid_option`, never a silent default. With `temperature` 0,
 `top_p` and `top_k` cannot change the greedy token and are not forwarded.
@@ -328,68 +336,104 @@ the markers itself. GLM 5.3 Flash IDs: `[gMASK]` 154822, `<sop>` 154824,
 Qwen's `<|im_start|>user\n` IDs (151644, 872, 198) are ordinary text pieces
 to GLM.
 
-## sparkpipe.ai (2026-10-14)
+## sparkpipe.ai
 
-`https://sparkpipe.ai/playground.html` is the chat interface for people
-outside the LAN. Apache on the VPS (62.112.9.102) asks for a login, and the
-hub holds a reverse tunnel to it:
+`https://sparkpipe.ai` is static, with no API and no login. It holds the home page, the Fleet List, the terms, the privacy policy and the checkout preview. They are copied from `site/` to `/var/www/html` on the KCInfra VPS (27.102.120.99). `tools/site_terms.py` generates the terms pages from `site/terms/`; `tests/test_site.py` fails when they differ.
 
-| VPS path | Login | Goes to |
-| --- | --- | --- |
-| `/playground.html` | yes | `site/playground.html`, copied to `/var/www/html` |
-| `/v1/` | yes | VPS 127.0.0.1:18080, then hub 127.0.0.1:4001 (external LiteLLM) |
-| `/v1/sparkpipe/status` | yes | VPS 127.0.0.1:18081, then hub 8433 (the playground's loaded-model line) |
-| other `/v1/sparkpipe/` paths | yes | refused (404); the page only loads models on demand there |
-| `/health/liveliness` | no | the external LiteLLM's liveliness check |
+Apache serves only these pages: no API, no login, no proxy. Fleet-hour customers will reach their fleet through the customer API that TECHDEBT lists under fleet-hours.
 
-- The tunnel is the hub system unit `sparkpipe-ai-door` (root, key
-  `/root/.ssh/sparkpipe_ai_tunnel_ed25519`). On the VPS that key may only
-  listen on 127.0.0.1:18080 and 127.0.0.1:18081 (`permitlisten` in
-  `/root/.ssh/authorized_keys`).
-- Apache replaces the browser's `Authorization` header with the external
-  master key, so browsers never see it. The key is defined in
-  `/etc/apache2/sparkpipe-gateway.conf` (mode 600) and kept on the hub in
-  `~/sparkpipe-chat/external.env` (mode 600), which the external unit reads.
-- Qwen models stay off this door, as `docs/MODEL_SUPPORT.md` requires. The
-  4000 door on the LAN still serves all 16 models.
-- A request for a model that is not loaded waits in the chat layer's warm
-  queue while the fleet swaps, as on the LAN.
+Every page with a Korean twin (`index`, `fleets`, `terms`, `privacy`, `hourly-terms`, `agreement`, each with a `-ko.html` page) carries the EN / 한국어 switch and `hreflang` alternates. `deployment/vps/sparkpipe-lang.conf`, included in the port-443 virtual host after the canonical-host rule, chooses the language:
 
-Accounts live in `/etc/apache2/sparkpipe-users.htpasswd` (bcrypt, owner
-root, group www-data, mode 640). On the VPS:
+- `?lang=ko` or `?lang=en` on any page sets the cookie `lang` (one year, Secure, HttpOnly, SameSite=Lax) and redirects to the same page without the query. The switch links carry it.
+- A request that does not come from one of our own pages (no `https://sparkpipe.ai/` referrer) for an English page with a Korean twin goes to the Korean twin when the cookie says `ko`, or when there is no `lang` cookie and the client's /24 is in the Korean map. Links between our pages are followed as written, so an English link on a Korean page stays English. This needs `Referrer-Policy: same-origin` on the virtual host: other sites still get no referrer.
+- The map `/etc/apache2/sparkpipe/kr24` (SDBM) holds every /24 that APNIC lists as allocated or assigned to KR, keyed `a.b.c`. Build it from APNIC's daily file and install it on the VPS:
 
 ```sh
-htpasswd -B -C 12 /etc/apache2/sparkpipe-users.htpasswd <user>
-htpasswd -D /etc/apache2/sparkpipe-users.htpasswd <user>
+curl -sSfO https://ftp.apnic.net/stats/apnic/delegated-apnic-latest
+curl -sSfO https://ftp.apnic.net/stats/apnic/delegated-apnic-latest.md5
+python3 tools/site_kr_networks.py delegated-apnic-latest kr24.txt
+sudo httxt2dbm -f SDBM -i kr24.txt -o /etc/apache2/sparkpipe/kr24.new
+sudo mv /etc/apache2/sparkpipe/kr24.new.pag /etc/apache2/sparkpipe/kr24.pag
+sudo mv /etc/apache2/sparkpipe/kr24.new.dir /etc/apache2/sparkpipe/kr24.dir
 ```
 
-The first command adds a user or changes a password; the second removes one.
-Apache reads the file on each request, so no reload is needed. The test
-account's password is in `~/.config/sparkpipe/sparkpipe-ai-accounts.txt`
-(mode 600) on the controller Mac.
+Check the md5 against the downloaded `.md5` first. The builder refuses a file with fewer than 100,000 Korean networks; APNIC lists about 440,000.
 
-Rebuild the external config whenever `litellm.yaml` changes, then restart
-`sparkpipe-litellm-external`:
+| VPS path | Goes to |
+| --- | --- |
+| `/` and the pages | `/var/www/html` |
+| `:8443/` | VPS 127.0.0.1:18082, then hub 8090 (Open WebUI, next section) |
+| `:8443/fleet`, `/fleet/status`, `/fleet/switch-now` | VPS 127.0.0.1:18081, then hub 8433 (the chat layer's admin page) |
+
+The tunnel is the hub system unit `sparkpipe-ai-door` (root, key `/root/.ssh/sparkpipe_ai_tunnel_ed25519`). It also forwards 127.0.0.1:18080 to the hub's port 4001, where nothing listens, and the VPS key may listen on 18080. Dropping 18080 from both is an SSH change, which the owner decides.
+
+### Public API keys (2026-10-24)
+
+The chat layer can serve the public API itself, with keys instead of
+logins. Its config's `public` block names a header, a keys file and the
+public models:
+
+```json
+"public": {"header": "X-SparkPipe-Public", "keys_file": "api_keys.json", "models": ["glm-5.3", "kimi-k3"]}
+```
+
+- A request that carries the header, with any value, is public. The door
+  that sets the header must also strip it from what the browser sends, so
+  only the door can mark a request.
+- A public request needs `Authorization: Bearer sk-sp-...` with a key that
+  is in the keys file, not revoked and not expired; otherwise it gets 401
+  `invalid_api_key`. `/health/liveliness` needs no key.
+- Public requests may use only `/v1/models`, `/v1/chat/completions`,
+  `/v1/sparkpipe/status` and `/health/liveliness`; every other path is 404.
+  `/v1/models` lists only the public models, and a request for any other
+  model gets 404 naming only the public ones. Leaving out `models` makes
+  every served model public.
+- A public request is planned without the caller's Open WebUI headers, so it
+  opens no chat memory, runs no chat command and keeps no conversation
+  state. Its trace line records the key's id, never the key.
+- A public `POST` needs a `Content-Length` (411 `length_required` otherwise)
+  of at most 16 bytes per token of the largest public context plus 1 MiB
+  (413 `request_too_large`), checked before the body is read.
+- Each key runs at most four requests at once; a fifth gets 429
+  `rate_limited` until one finishes. Other keys and internal requests are not
+  held by it.
+- `cached_tokens` in a public reply counts only prefixes that key itself sent
+  (a per-key ledger of 64-token blocks), so a key cannot test whether
+  someone else sent a prompt. Prefix reuse itself is shared.
+- A public request for a public model that is not loaded starts the swap, as
+  any request does, but it never cancels the owner's chat-memory jobs while
+  it waits (TECHDEBT, Serving API).
+- `/v1/sparkpipe/status` gives the controller's full status only to the
+  admin's SparkPipe Chat login. Public keys and everyone else get a view
+  without the controller's error text, its memory figures or the errors in
+  its history, and the view names only public models. The fleet page sends
+  the browser's login with its status poll, so the admin keeps the detail.
+- Requests without the header (SparkPipe Chat, LiteLLM, the LAN) are
+  unchanged.
+
+The keys file holds each key's SHA-256, an id, its creation and expiry
+times, whether it is revoked and a note. It is written with mode 600, and
+the chat layer rereads it when it changes, so a revoke applies from the next
+request with no restart. On the hub, `tools/serving/api_keys.py` sits next
+to `chat_frontend.py` in `~/sparkpipe-chat`:
 
 ```sh
-cd ~/sparkpipe-chat && ~/litellm-venv/bin/python - <<'PY'
-import pathlib, yaml
-source = yaml.safe_load(pathlib.Path("litellm.yaml").read_text())
-kept = [entry for entry in source["model_list"]
-        if entry["model_name"] != "*" and not entry["model_name"].startswith("qwen")]
-external = {"model_list": kept, "litellm_settings": source["litellm_settings"],
-            "general_settings": {"master_key": "os.environ/LITELLM_MASTER_KEY", "cancel_on_disconnect": True}}
-pathlib.Path("litellm-external.yaml").write_text(yaml.safe_dump(external, sort_keys=False))
-PY
-systemd-run --user --unit=sparkpipe-litellm-external \
-  -p WorkingDirectory=/home/spec/sparkpipe-chat \
-  -p EnvironmentFile=/home/spec/sparkpipe-chat/external.env \
-  -p LimitNOFILE=524288 \
-  /usr/bin/bash -c 'exec $HOME/litellm-venv/bin/litellm --config litellm-external.yaml --host 127.0.0.1 --port 4001 >> litellm-external.log 2>&1'
+cd ~/sparkpipe-chat
+python3 api_keys.py --file api_keys.json create --days 30 --note "who it is for"
+python3 api_keys.py --file api_keys.json list
+python3 api_keys.py --file api_keys.json revoke k_1a2b3c4d
 ```
 
-Like the other hub user units, it is transient: start it again after a hub
-reboot.
+`create` prints the id and the key once; only the hash is stored.
+`deployment/hub/chat_frontend.json` makes every model public except the
+Qwen models, as `docs/MODEL_SUPPORT.md` requires.
+
+`https://sparkpipe.ai/v1` is this door: `deployment/vps/sparkpipe-public-api.conf`,
+included in the port-443 virtual host after the language rules
+(`/etc/apache2/sparkpipe/public-api.conf`), strips the header from every
+request, sets it on `/v1/` and proxies `/v1/` to the chat layer through the
+hub tunnel's port 18081. The chat app on port 8443 and the LAN door are
+unchanged.
 
 ## SparkPipe Chat (Open WebUI, sparkpipe.ai:8443)
 
@@ -405,7 +449,24 @@ SearXNG (not enabled yet).
 | Open WebUI | hub Docker container `sparkpipe-chatui`, `127.0.0.1:8090` -> 8080, data `/srv/workspace/open-webui/data` | settings `deployment/hub/open_webui.env`, secrets `/srv/workspace/open-webui/secrets.env` (root, 600: `WEBUI_SECRET_KEY`, `OPENAI_API_KEYS`) |
 | Chat LiteLLM | hub user unit `sparkpipe-litellm-chatui` on `172.17.0.1:4002` (Docker bridge only), `~/sparkpipe-chat/litellm-chatui.yaml` (copy of `deployment/hub/litellm-chatui.yaml`), key in `~/sparkpipe-chat/chatui.env` | serves every fleet model; K3 is the default (owner 2026-10-14) |
 | Tunnel | hub `sparkpipe-ai-door`, `-R 127.0.0.1:18082:127.0.0.1:8090` | the VPS key may listen on 18082 |
-| Apache | VPS `/etc/apache2/sites-available/sparkpipe-chat-8443.conf` | TLS with the sparkpipe.ai certificate, websocket upgrade, no Basic auth |
+| Apache | VPS `/etc/apache2/sites-available/sparkpipe-chat-8443.conf` | TLS with the sparkpipe.ai certificate, websocket upgrade, no Basic auth; includes `/etc/apache2/sparkpipe/chat-local.conf` (copy of `deployment/vps/sparkpipe-chat-local.conf`) before its proxy lines |
+
+**Controls and languages.** `deployment/hub/open_webui_loader.js` is mounted
+as Open WebUI's `static/loader.js` (`open_webui_run.sh`; the hub copy is
+`/srv/workspace/open-webui/branding/loader.js`). It adds an EN / 한국어 switch,
+which sets Open WebUI's own locale in the browser, and above the message box
+the memory switch, the compaction slider with Compact and Undo, a Context
+button and the Local mode link. The buttons send the chat layer's commands
+(`/memory on|off`, `/compact N%|full|undo`, `/context`), which the chat layer
+answers itself and leaves out of every later prompt. A user who has not
+chosen a language gets the browser's (`ui.default_locale` is empty).
+
+**Local mode.** `https://sparkpipe.ai:8443/local/` (`deployment/vps/chat-local/`,
+served by the VPS from `/var/www/chat-local`) keeps chats in the browser's
+IndexedDB and sends each request to Open WebUI's `/api/chat/completions` with
+the user's Open WebUI session. The request carries no chat id, so Open WebUI
+saves no chat and the chat layer opens no memory; compaction runs in the
+page. `tests/test_chat_controls.py` checks that the page calls nothing else.
 
 Requests run browser -> Apache 8443 -> tunnel -> Open WebUI -> chat LiteLLM ->
 chat layer -> engine. The chat layer gives requests without sampling fields
@@ -416,11 +477,44 @@ and the prefix cache instead of retrieval chunks. Users cannot change
 sampling, see other models, share chats publicly, create API keys or add
 tools.
 
+SparkPipe Chat provides generative AI directly to its users, so it carries
+the notice and labelling duties of Article 31 of Korea's AI Basic Act. The
+`ai-notice` banner (`ui.banners`, `WEBUI_BANNERS`) tells users on every new
+chat, before their first message, that the replies come from generative AI;
+Open WebUI shows it in Korean when the interface language is Korean. It is
+not dismissible, so closing it hides it only until the next visit. Every
+reply copied with the copy button ends with the bilingual label in
+`ui.watermark` (`RESPONSE_WATERMARK`). A new account's waiting screen
+(`ui.pending_user_overlay_title` and `_content`, `PENDING_USER_OVERLAY_*`)
+says, in English and Korean, that the replies come from generative AI and
+links the privacy policy, before the account is approved or used. Customers who serve their own users
+with fleet-hours carry these duties themselves (agreement 8.10, Hourly Terms
+7.2).
+
 Start or replace the container with `sudo sh /srv/workspace/open-webui/run.sh`,
 a copy of `deployment/hub/open_webui_run.sh`. It pins v0.12.0 by digest,
 mounts the data directory and mounts the SparkPipe icons from
 `/srv/workspace/open-webui/branding` (a copy of
 `deployment/hub/open_webui_branding`) over Open WebUI's own.
+
+Visitors' IP addresses stay out of the hub. Open WebUI trusts forwarded
+addresses only from `127.0.0.1` (`FORWARDED_ALLOW_IPS`), and its requests
+arrive from the Docker bridge, so its log shows the bridge address. The
+Apache logs on the VPS are the only access logs with visitor addresses, kept
+92 days as the privacy policy states. The container log is capped at three
+10 MB files.
+
+Retention follows the privacy policy:
+
+- **Chat memory goes with its chat.**
+  - A root timer, `open-webui-chat-list.timer`, runs every 5 minutes. It reads `webui.db` read-only and writes Open WebUI's chats, as hashed (user, chat) names, to `/srv/workspace/sparkpipe/open-webui-chats.json`. The chat layer's user cannot read the database itself.
+  - Every 10 minutes the chat layer deletes the memory file of each chat not on that list and drops that chat from RAM. Files written in the last hour are kept, for chats whose row is not stored yet.
+  - It deletes nothing when the list is missing, older than 30 minutes, or names no users.
+  - Install:
+    1. Copy `tools/serving/open_webui_chat_list.py` to `/usr/local/lib/sparkpipe/` (root, 644).
+    2. Copy `deployment/hub/open-webui-chat-list.service` and `.timer` to `/etc/systemd/system/`.
+    3. Run `systemctl enable --now open-webui-chat-list.timer`.
+- **Operational records:** `chat.log`, the LiteLLM logs and the model APIs' logs rotate monthly under `/etc/logrotate.d/sparkpipe-hub` (`deployment/hub/logrotate-sparkpipe-hub`). A rotated file is deleted 334 days after its last write, so no record is older than a year.
 
 `open_webui.env` is copied from `deployment/hub/open_webui.env`. v0.12.0
 writes every persistent setting into the `config` table (`key`, JSON `value`)
@@ -463,11 +557,19 @@ against the chat layer). Each has an Open WebUI model entry from that file,
 applied inside the container with `tools/serving/open_webui/open_webui_models.py`: name,
 description (context window and switch time), text-only input, web search
 and the code interpreter on by default, the GitHub tool, the trimmed
-built-in tools, and a `compact_token_threshold` for context compaction.
+built-in tools. Open WebUI's own context compaction stays off: SparkPipe chat
+memory serves every model (docs/CHAT_MEMORY.md), and the chat layer refuses a
+memory session once a compaction summary appears. The global "Full context"
+filter (`tools/serving/open_webui/functions/memory_off.py`, installed with
+`open_webui_functions.py` from `deployment/hub/open_webui_functions.json`) is
+the user's switch to turn memory off for a chat.
 
-The 13 public models carry a public read grant. The three Qwen models carry
-none, so only the admin sees them (admins bypass grants): their license
-keeps them internal, and the owner's own use is internal.
+The 15 public models carry a public read grant. Qwen 3.8 Flash carries none,
+so only the admin sees it (admins bypass grants): its license requires a
+separate agreement with Qwen for any model-as-a-service business, and the
+owner's own use is internal. Qwen 3.8 27B (Apache 2.0) and Qwen 3.8 Max
+(whose license asks for a separate agreement only above US$50 million of
+yearly revenue) are public.
 `BYPASS_MODEL_ACCESS_CONTROL` is off again; a model with no entry or no grant
 stays hidden from users.
 
@@ -601,12 +703,9 @@ directory). Its callers:
 A request for a model that is not loaded still swaps the fleet through the
 warm queue: whoever can reach the chat layer can switch models. Only the hub
 reaches it now: `chat_frontend.py` refuses a `--host` that is not a loopback
-address. Its clients are LiteLLM 4000, 4001 and 4002 and the sparkpipe.ai
-tunnel (`-R 127.0.0.1:18081:127.0.0.1:8433`), all on the hub. The playground
-no longer pre-loads the model picked in the list; the first request loads it,
-and the admin's Load now on `/fleet` remains. Opening the playground from
-`http://rtx5090:8433/` on the LAN no longer works; use sparkpipe.ai or an
-ssh tunnel.
+address. Its clients are LiteLLM 4000 and 4002 and the sparkpipe.ai tunnel
+(`-R 127.0.0.1:18081:127.0.0.1:8433`, for `/fleet`), all on the hub. The
+admin's Load now on `/fleet` loads a model at once.
 
 Start or restart the two units (hub, as spec):
 
@@ -750,26 +849,6 @@ drop the branding mounts from `run.sh` first. The name is set to "SparkPipe
 Chat", which v0.12.0 shows as "SparkPipe Chat (Open WebUI)" because it adds
 the suffix in code. The repository holds only configuration and the icons, no
 Open WebUI code.
-
-## Browser clients (the sparkpipe.ai playground)
-
-`site/playground.html` calls the door from a browser. Checked on 2026-09-27
-against LiteLLM 1.74.0 and a mock upstream that speaks the chat contract
-above, with deployments as `tools/generate_litellm_config.py` writes them
-(`openai/` provider, `api_base` ending in `/v1`):
-
-- CORS allows any origin, and preflights pass for `authorization` and
-  `content-type`, so the page need not share the proxy's origin.
-- `GET /health/liveliness` needs no key; the page uses it for its status
-  light. `GET /v1/models` needs the key.
-- Streamed chat works. With `stream_options: {"include_usage": true}` the
-  last event before `[DONE]` carries `usage`, which the page uses for its
-  decode rate.
-- `seed`, `temperature`, `max_tokens` and `deadline_ms` reach the upstream.
-  `priority` does not: LiteLLM takes it for its own scheduler.
-- `vllm/` deployments fail the chat route with `No module named 'vllm'`:
-  LiteLLM's `vllm/` provider runs a local vLLM engine rather than calling
-  the upstream.
 
 ## Install (controller Mac)
 

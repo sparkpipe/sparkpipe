@@ -20,6 +20,7 @@
 #include "sparkpipe/spark_model_batch_engine.h"
 #include "sparkpipe/spark_model_pipeline_client.h"
 #include "fixtures/test_child_guard.h"
+#include "fixtures/test_tcp_port.h"
 
 #ifndef TEST_MODEL_RESIDENTD_PATH
 #define TEST_MODEL_RESIDENTD_PATH ""
@@ -796,28 +797,6 @@ static SparkStatus TestModelPipelineWaitForFailure(
 	return(status);
 }
 
-static uint32_t TestModelPipelineProbeFreeTcpPort(void)
-{
-	struct sockaddr_in address;
-	socklen_t address_length;
-	int32_t fd;
-	uint32_t port;
-	port = 0u;
-	fd = socket(AF_INET,SOCK_STREAM,0);
-	if ( fd >= 0 )
-	{
-		memset(&address,0,sizeof(address));
-		address.sin_family = AF_INET;
-		address.sin_addr.s_addr = htonl(0x7f000001u);
-		address.sin_port = htons(0u);
-		address_length = (socklen_t)sizeof(address);
-		if ( bind(fd,(const struct sockaddr *)&address,(socklen_t)sizeof(address)) == 0 && getsockname(fd,(struct sockaddr *)&address,&address_length) == 0 )
-			port = (uint32_t)ntohs(address.sin_port);
-		close(fd);
-	}
-	return(port);
-}
-
 static void TestModelPipelineWriteDeployment(
 	const char *path,
 	const SparkModelResidentEndpoint *endpoints)
@@ -855,9 +834,8 @@ static void TestModelPipelineWriteDeployment(
 	fixture.runtime_limits.resident_sequence_capacity = 32u;
 	fixture.runtime_limits.kv_logical_page_capacity = 128u;
 	fixture.runtime_limits.kv_physical_page_capacity = 64u;
-	fixture.control_port_base = TestModelPipelineProbeFreeTcpPort();
-	if ( fixture.control_port_base == 0u || fixture.control_port_base > UINT16_MAX - (TEST_MODEL_PIPELINE_RANK_COUNT - 1u) )
-		fixture.control_port_base = 59000u;
+	fixture.control_port_base = TestTcpPortRange(TEST_MODEL_PIPELINE_RANK_COUNT);
+	assert(fixture.control_port_base != 0u && "no free loopback port range below the ephemeral range");
 	fixture.node_count = TEST_MODEL_PIPELINE_RANK_COUNT;
 	fixture.coordinator_rank_index = 0u;
 	assert(TestModelResidentDeploymentWrite(path,&fixture) == 0);
@@ -1373,11 +1351,13 @@ static void TestModelBatchEngineCachePageBudget(
 {
 	SparkModelBatchEngine *engine;
 	TestModelBatchState state;
-	uint32_t index,lane,page_lanes,widest;
+	uint32_t index,lane,page_lanes,shared_lanes,full,own,widest;
 	uint32_t prompt[13] = {11u,12u,13u,14u,15u,16u,17u,18u,19u,20u,21u,22u,23u};
 	memset(&state,0,sizeof(state));
-	page_lanes = deployment->runtime_limits.kv_physical_page_capacity /
-		SparkModelBatchSchedulerRequestPageCount(4u,13u,2u);
+	full = SparkModelBatchSchedulerRequestPageCount(4u,13u,2u);
+	own = full - 12u / 4u;
+	page_lanes = deployment->runtime_limits.kv_physical_page_capacity / full;
+	shared_lanes = 1u + (deployment->runtime_limits.kv_physical_page_capacity - full) / own;
 	assert(page_lanes != 0u && page_lanes < deployment->runtime_limits.max_active_sequence_count);
 	engine = TestModelBatchConnectCapacity(deployment,&state,0u,0u,32u,32u);
 	for (lane=0u; lane<32u; lane++)
@@ -1389,7 +1369,8 @@ static void TestModelBatchEngineCachePageBudget(
 	for (index=0u; index<state.submission_count; index++)
 		if ( state.submission_lane_counts[index] > widest )
 			widest = state.submission_lane_counts[index];
-	assert(widest != 0u && widest <= page_lanes);
+	assert(widest != 0u && widest <= shared_lanes && widest <= deployment->runtime_limits.max_active_sequence_count);
+	assert(widest > page_lanes || shared_lanes <= page_lanes);
 	assert(state.completed_count == 32u);
 	assert(state.error_count == 0u);
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
@@ -1967,9 +1948,8 @@ int main(void)
 	pid_t children[TEST_MODEL_PIPELINE_RANK_COUNT];
 	uint32_t descriptor_count,rank,submission_index,tcp_port;
 	TestModelBatchSchedulerPolicy();
-	tcp_port = TestModelPipelineProbeFreeTcpPort();
-	if ( tcp_port == 0u )
-		tcp_port = 30000u + ((uint32_t)getpid() % 20000u);
+	tcp_port = TestTcpPortRange(1u);
+	assert(tcp_port != 0u && "no free loopback port below the ephemeral range");
 	memset(&state,0,sizeof(state));
 	memset(endpoints,0,sizeof(endpoints));
 	for (rank=0u; rank<TEST_MODEL_PIPELINE_RANK_COUNT; rank++)

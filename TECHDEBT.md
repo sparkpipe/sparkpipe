@@ -8,15 +8,7 @@ removed rather than retained as a progress diary.
 Required behaviour that is not implemented is recorded here as "Left out on
 purpose", with the date, what is missing, its consequence and the fleet proof
 that closes it; no other way of not implementing a required feature is
-accepted. The 2026-10-02 entries come from the JIT KV audit, the prefix-reuse
-audit and the production-code findings of the 2026-10-01 test-honesty audit,
-each verified against branch `kv/sequence-shard` at `b41ed891f`; their line
-citations refer to that commit.
-
-On 2026-10-14 every item was checked against the code on `sprint/integration`
-(`059e7eaab`), and each claim that an item was finished or obsolete was
-checked a second time. Finished and obsolete items were removed and partly
-finished ones rewritten to say what is left.
+accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Dual-fabric topology contract
 
@@ -270,6 +262,15 @@ finished ones rewritten to say what is left.
   with about 400 ms of compute. Overlap the collectives of a 1,024-row MoE
   wave without reading the expert weights twice.
 
+## Prefill
+
+- Prefill reaches at most 5% of the fleet's compute: Kimi K3 prefills an 8K
+  prompt at 590 tok/s and a 137,700-token prompt in 299 s
+  ([`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md#prefill)). The target is
+  80% of the first resource to saturate. The overlap of prefill-wave
+  collectives under Mesh collectives is part of it; the prefill accelerators
+  under Fleet-hours take the long prompts.
+
 ## Placement beyond TP16
 
 - GLM 5.3 Flash serves only at TP16. Measure B1 latency and aggregate
@@ -462,6 +463,16 @@ finished ones rewritten to say what is left.
     identical tokens.
 
 ## KV tiers
+
+- The 24-hour retention outside a running model (weightd's purge thread and
+  its release of detached KV pools, the draft servers' context expiry, the
+  batch engine's slot clearing and the prefix index's record expiry) has no
+  fleet proof yet. Proof: backdate an inactive model's snapshot store while
+  another model serves and see `weightd kv purge` empty it within a minute;
+  swap a model away and see `reason=detached_retention` an hour later; see
+  `CONTEXT-EXPIRED` and `prefix index expired` on a backdated hub. The
+  retired API directories on the hub keep prefix index files that no engine
+  opens; they need deleting by hand.
 
 - Left out on purpose (2026-10-04): JIT-KV W3
   (`docs/archive/JIT_KV_RESPONSE.md:47-49`) is partly done. The slot file, the
@@ -659,11 +670,12 @@ Related common-code debt:
 
 ## Dynamic batching
 
-- GLM Flash's shared batch scheduler already selects arbitrary counts up to
+- Kimi K3 and GLM 5.3 Full serve at most 8 sequences at once and GLM 5.3
+  Flash 16. GLM Flash's shared batch scheduler selects arbitrary counts up to
   its configured limit; a power-of-two kernel bucket is not an admission rule.
   The GLM deployments set active and resident capacity to 16 or less
-  (`deployment/glm5_next_tp16/model_resident.json`,
-  `deployment/glm53full_tp16_lane6/model_resident.json`), while the stage
+  (`deployment/glm5_next_tp16/model_resident.json` and the GLM records in
+  `deployment/lanes.json`), while the stage
   serving adapter allows up to `SPARK_STAGE_SERVING_MAX_LANES` (128). KV is
   paged from the weightd pool through `runtime/stage_kv_binding.c`, so a
   sequence no longer reserves its full context. Qualify explicit larger
@@ -732,9 +744,7 @@ Related common-code debt:
 
 - Add an exact checkpoint-derived contract for MiniMax H3; `model_contracts/`
   has none.
-- Remove legacy model names from operator surfaces: `site/index.html` still
-  lists DeepSeek V4 Pro, Qwen4 Flash and MiniMax H3, whose drivers are gone,
-  and `deployment/minimax_text_tp4` remains.
+- Remove `deployment/minimax_text_tp4`; the MiniMax driver is gone.
 - `model_contracts/glm53_full_authoritative.json` carries no rope theta or
   interleave flags, so `tools/generate_recipe.py` reads them for the GLM Full
   recipes from `spark_glm52_model.h`. Add them to the contract's geometry at
@@ -742,6 +752,15 @@ Related common-code debt:
   Full build pins) and read them from there.
 - Retain independent numerical, transport, memory, and performance gates for
   every model and precision route.
+- GLM 5.3 Full serves Z.ai's FP8 release (`glm53full.fp8lin.tp16`), and the
+  BF16 release fits one fleet. #1558 builds the stage with BF16 codecs on the
+  BF16 packs (`glm53full.bf16.tp16`) and scores both against the CT-short
+  corpus through the API; its result decides the served precision.
+- `model_contracts/glm53_full_authoritative.json`'s top-level `model_id` names
+  `RadixArk/GLM-5.3-NVFP4`, which no lane serves, and
+  `tools/glm52_model_contract.py --print-build-identity bf16` prints the FP8
+  revision. Re-freeze the contract with the served source on top and give each
+  codec its own source's revision.
 - K3's BF16-activation/MXFP4-weight expert paths run in production. Decode
   uses the skinny experts. Wide waves use `LmCellMmaExperts`
   (`inference/kernels/cell_mma.cuh`) and `LmGemmKernel<LmBf16Format, LmMxfp4>`
@@ -752,6 +771,49 @@ Related common-code debt:
   `LmCellMmaExperts`. Qualify the tensor-core expert paths and the full expert
   path (route, gate/up, down, combine) against a dequantised reference at
   prefill widths.
+- Two stages still bind pack tensors without checking each one's bytes against
+  the stage geometry, so a pack built for another geometry would bind and the
+  kernels would read past its tensors. The Qwen 3.8 hybrid stage
+  (`model-families/qwen38/source/qwen38_hybrid_stage.cuh`) checks name and
+  dtype only. K3 (`modules/k3_resident_decode_stage`) checks that each tensor
+  is present and reads its rank dimensions from one layer per kind. Every
+  other stage checks every tensor: GLM, glm5_next and DSV4.1 check the whole
+  pack directory at open, and Ling, Gemma, hy4 and mimo26 check each bind's
+  bytes.
+
+## Korean models
+
+The sources are pinned. All three serve.
+
+- **K-EXAONE 2.0** (`LGAI-EXAONE/K-EXAONE-2.0-750B-A37B@fec0c8dd`, BF16, 1.50 TB): 78 layers with 64 query and 8 KV heads of 128; 20 layers attend globally without position encoding, 57 a 128-token window and one a 4,096-token window; 256 routed experts (top 8) plus one shared, after two dense layers; one MTP layer. Its DSpark drafter is `model-dspark.safetensors` of `LGAI-EXAONE/K-EXAONE-2.0-750B-A37B-DSpark@e42409db`, whose other files are the base weights.
+  - **Serving:** contract, driver (`kexaone2` on the Gemma stage), packs and lane 11.
+  - **Measured:** 27.3 tok/s at B1 without speculation (median of eight runs) and 324 tok/s prefill at 6,850 tokens, with every expert split over the ranks by rows. It was 23.5 and 23.7 in the same hold before the grouped skinny kernel stopped launching a task per local expert: the down projection ran 24,576 blocks per layer, 768 of them with work, and took 158 us against 63 us for the gate and up projections, which move the same bytes. Giving each rank 16 whole experts measured 12.0 and 273: a token's 8 experts landed unevenly. Both layouts score the same on the A/B corpus (McNemar p 0.39).
+  - **Missing:**
+    - The numpy reference (`tools/kexaone2_reference.py`) agrees with the served tokens of the whole-expert layout at all 92 positions of six prompts (served logprobs within 0.11, median under 0.005). The rows layout agrees at 91 of 92 positions (logprobs within 0.153, median under 0.005). It flips one near tie, at `python_is_prime` token 4: the served margin there is 0.006. The reference itself is unstable at that position: with the same four preceding tokens, its margin was 0.107 when it scored the whole-expert capture and 0.28 when it scored the rows capture, which differs only in later tokens and so in matrix shapes. The position is sensitive to rounding in both implementations, so it is not a served-path error. With reasoning off the model answers 17 × 23 as 401 in the reference too, so the UI smoke's one miss is the model's answer.
+    - Speculation from the request's own context verifies drafts in frames: a whole-file rewrite runs at 190.9 tok/s against 19.4 without speculation, with identical output (3,703 of 4,186 drafts kept). Its MTP layer and the DSpark drafter are not wired.
+- **A.X K2** (`skt/A.X-K2@d0805cfd`, block-128 FP8, the precision it was trained in, 0.69 TB): 61 layers of latent attention (query rank 1,536, KV rank 512) with top-2,048 sparse attention through a 64-head indexer, a gated attention output and a gated norm; 256 routed experts (top 8) plus one shared; YaRN to 256K. Drafter `skt/A.X-K2-DSpark@0b278334`. GLM 5.3 Full has the same attention and expert design.
+  - **Serving:** contract, tokenizer split, driver (`axk2` on the GLM stage, with its options for the query gate, gated norms, index rope and ReLU, YaRN and grouped routing), FP8 packer, numpy reference and lane 3. Answers are right in English and Korean, including a 3,076-token passkey past the indexer's 2,048 tokens.
+  - **Measured (main fc764057b, 10-27):** 26.8 tok/s at B1 without speculation and 1,234 tok/s prefill at 8K, in one hold with the previous lane build (26.9 and 1,152). The low-rank gate split (#1597) and the expert top-k sized to the expert count (#1598) took B1 from 23.8; the hardware bf16 conversion (#1602) took back the 6.4% of prefill the NaN-safe software rounding had cost.
+  - **Expert routing masks unselected groups with −inf.**
+    - The publisher's `modeling_axk2.py` fills the experts of the unselected groups with 0.0 before the top-8, as the DeepSeek-V3 HF code does. At layers 24, 34 and 36 every routing bias is negative (layer 24: −1.64 to −1.50), so every allowed expert scores below zero. With 0.0-fill, the router then takes 8 experts from the unselected groups, tied at 0.0, in whatever order the top-k breaks ties.
+    - DeepSeek's own gate and Megatron mask with −inf.
+    - Teacher-forced on the A/B corpus (20 documents, 640 positions, the same engine and firmware but for the mask), −inf predicts the next token correctly at 63.9% of positions against 58.8% with 0.0-fill. Only −inf is right at 49 positions, only 0.0-fill at 16 (McNemar p = 5e-5), and −inf gives the true token 0.17 nats more log-probability per position.
+    - The lane serves −inf since 2026-10-26 14:55Z. The numpy reference masks the same way.
+  - **Reference:** with both masking with −inf, the served tokens agree with the numpy reference at all 122 positions, served logprobs within 0.31 (median under 0.005). Under 0.0-fill, the Korean contract prompt had disagreed at 3 to 5 of 48 positions, and which positions moved with how the reference batched its prompts.
+  - **Missing:**
+    - Speculation with the DSpark drafter is not wired.
+- **Solar Open 2** (`upstage/Solar-Open2-250B@9190fbe6`, BF16, 0.50 TB): 48 layers, three linear-attention layers (short convolution 4, 64 heads) for each GQA layer, no position encoding, 320 routed experts (top 8) plus one shared, 1M context. The Upstage Solar License asks that derivatives be named Solar and show "Built with Solar".
+  - **Serving:** contract, tokenizer (the C tokenizer matches HF on 306 mixed English, Korean, code and emoji texts), driver (`solar_open2` on the Ling stage, with its options for gated GQA without position encoding over position-sharded KV, the low-rank decay and output gates, the doubled write gate and 1e-5 norms), BF16 packer, numpy reference and lane 4. Answers are right in English and Korean, including a 3,076-token passkey; the UI smoke passes 6 of 6, tool calls included.
+  - **Measured:** 61.2 tok/s at B1 without speculation (median of eight runs), 1,025 tok/s prefill at 6K. The grouped expert kernel's routed-row grid (#1584) took it from 56.2 and 56.6 to 60.4 and 62.5 in one hold, capture unchanged. Every routed expert is split over the 16 ranks by rows, 80 real rows per rank. Same-hold A/B on 2026-10-26: 47.0 and 47.4 tok/s with the 80 rows zero-padded to 128 against 57.0 and 56.4 at 80 rows; prefill on an 8.1K prompt 972 and 973 against 1,003 and 994 tok/s. Earlier layouts measured 41.1 tok/s with 20 whole experts per rank. The 80-row pack is 31.5 GB per rank, against 49.6 GB padded.
+  - **Speculation:** drafts from the request's own context are verified in frames. The Ling stage saves each KDA layer's convolution input, decay and write gate during a verify step and replays them for the kept rows (`keep_rows`). A whole-file rewrite runs at 513.7 tok/s against 44.3 without speculation, both including prefill, with identical output. Without speculation the six reference prompts' tokens and logprobs are byte-identical to the reference-checked capture.
+  - The decay follows the fla kernel the publisher's fast path calls, lower bound × sigmoid(exp(A_log) · (g + dt_bias)); the publisher's torch fallback computes −exp(A_log) · softplus(g + dt_bias) clamped at the bound, which is a different function.
+  - **Missing:**
+    - The lane serves 256K; the model's 1M needs the max-context gate.
+    - The shared expert's 80 rows per rank are still zero-padded to 128: its prefill runs on the stream GEMM, which needs a whole number of 64-element k-tiles. The weight-only TMA GEMM takes a zero-filled tail and carries the routed experts at 80 rows; the stream GEMM has no tail path.
+    - The rest of the step is the per-layer fixed cost (collectives and latency-bound small kernels), not graph launches: a GB10 graph node costs 0.4 to 0.7 us, about 1 ms over the 1,708 nodes of a decode step.
+    - No drafter is wired.
+
+Each needs, in order: the checkpoint contract, the driver on the common stage runner, the packer emitter and packs, a lane record, the release gates and qualification, speculation with its drafter, then the perf climb that every core model gets.
 
 ## Speculation
 
@@ -766,34 +828,21 @@ Related common-code debt:
   `source_bit`. `SparkSpeculationDrafterMix`
   (`src/spark_speculation_drafter_mix.c`) only switches between a primary and
   a fallback source and has no production caller.
-- Context-lookup speculation has its engine half, but no model serves it. The
-  engine (`runtime/model_batch_engine.c`) keeps a 3-gram chain index over each
-  request's prompt and generated tokens (`SparkSpeculationLookupIndex`) and
-  drafts up to 8 tokens with the adaptive depth of
-  `spark_speculation_depth.h`. It sends a wave with drafts as one decode
-  submission flagged `SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY` and commits
-  the longest matching prefix plus the model's token at the first mismatch. It
-  counts verify lanes, drafted and accepted tokens in the API's
-  `engine_measurements` line. The page cache and stage binding keep the verify
-  rewind window (`cache/kv_page_cache.c`, `runtime/stage_kv_binding.c`). The
-  engine drafts only for an adapter that declares `SPECULATIVE_VERIFY`, and
-  none does. The glm52 adapter that ran verify frames with the certified head
-  on every row was deleted with the per-family modules. The stage serving
-  adapter (`inference/runner/stage_serving_adapter.c`) maps no verify frame.
+- Speculation serves on Kimi K3, GLM 5.3 Full and DeepSeek V4.1 Flash, whose
+  adapters declare `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`.
   Still to do:
-  - a verify wave on the stage runner with the certified head on every row,
-    declared by GLM Full, GLM Flash and K3, plus restoring recurrent state to
-    the accepted row for GLM Flash and K3 through the binding's
-    recurrent-state hook;
-  - verify waves on the graph path: the runner captures graphs only for one
-    row per sequence;
+  - verify frames for GLM 5.3 Flash and the twelve other models, with GLM 5.3
+    Flash's recurrent state restored to the accepted row through the
+    binding's recurrent-state hook;
+  - graphs for verify frames that carry several sequences: the runner
+    captures a graph for one row per sequence or for one sequence's verify
+    frame (`StageRunnerGraphEligible` in `inference/runner/stage_runner.cu`),
+    so shared verify frames run eager;
   - multi-row verify numerics differ from a 1-row decode by the reordering
     floor, so speculative output is judged against the floor like batched
-    output. Close it with a fleet session on GLM-5.3 Full of edit-style
-    requests (a long file re-emitted with small changes). Report the
-    acceptance-length distribution, verify-wave cost and tok/s against plain
-    decode, and the accuracy gate as excess over the floor. Plain prompts with
-    no matches must show no slowdown beyond noise.
+    output. Add the accuracy gate as excess over the floor for edit-style
+    requests, and show that plain prompts with no matches lose no speed
+    beyond noise.
 
 ## Packaging and provenance
 
@@ -823,6 +872,9 @@ Related common-code debt:
 
 ## Driver consolidation
 
+- Kimi K3's device code (its slices and unity kernels) lives in
+  `inference/llms/kimi_k3/`, outside `model-families/k3/` where every other
+  model's math lives. Move it there.
 - Every stage-runner model, K3 included, resets every runner slot and the KV
   binding on a client reset and refuses stale-generation submissions
   (`StageServingReset` and the `reset_generation` check in
@@ -930,18 +982,12 @@ Related common-code debt:
   outside the step's CUDA graph, because the certified screen prunes with
   un-noised bounds. Noise the screen bounds and capture the sampling pass in
   the step graph to lift both.
-- The chat layer silently turns a request for no reasoning into the lowest
-  effort for models whose template has no off switch. GLM-5.3 Full and Flash
-  map `minimal` to `reasoning_effort: low` and Muse Glimmer to
-  `reasoning_strength: low` (`deployment/hub/chat_frontend.json`). GLM Flash
-  and Muse Glimmer still reasoned with reasoning off, so `tools/ui_smoke.py
-  --reasoning both` fails that case for them; GLM Full happened to pass it.
-  Qwen 3.8 Max maps no `minimal` at all and answers it with a 400, and Laguna
-  returned no reasoning with reasoning on (release qualifications of
-  `e05394f94` and `1d89e0377`, 2026-10-14). Answer reasoning off with a clear
-  error, or a documented per-model capability in `/v1/models`, where the
-  template cannot turn it off, and find out why Laguna does not reason when
-  asked.
+- Laguna returned no reasoning with reasoning on (release qualifications of
+  `e05394f94` and `1d89e0377`, 2026-10-14); find out why it does not
+  reason when asked. GLM-5.3 Full, GLM-5.3 Flash, Muse Glimmer and Qwen 3.8
+  Max have no reasoning-off switch in their templates: the chat layer
+  refuses `reasoning_effort: minimal` for them with a 400 naming the efforts
+  they take, and `/v1/models` lists every model's `reasoning_efforts`.
 - Every stage-runner lane, GLM Flash included, is sized for every resident
   sequence at full length by default: `tools/stage_lane.py` sets
   `kv_physical_pages` to `sequences * kv_pages` (each sequence's
@@ -949,73 +995,53 @@ Related common-code debt:
   (`STAGE_KV_PHYSICAL_PAGES` in `tools/stage_lane.sh`) names a smaller pool,
   and it takes that pool as a page count. Size the physical pool from a byte
   budget the lanes share and let paged admission share it.
+- A public API key that asks for a public model that is not loaded starts
+  the swap, as any caller does. One key that alternates two models keeps the
+  fleet swapping and pushes the owner's model out after each reply. Each key
+  runs at most four requests at once, but nothing limits how often a key may
+  start a swap. Which public requests may swap the fleet is an owner
+  decision (serve only the loaded model to keys, or a lower activation
+  priority and a per-key swap rate).
 
-## Provider network
+## Fleet-hours
 
-Of the provider network in `README.md`, the tree has only the LiteLLM front
-door, the static pages in `site/` and the login-gated sparkpipe.ai playground
-(`docs/LITELLM_FRONTEND.md`, sparkpipe.ai).
+Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`, published by `tools/site_terms.py`), the Fleet List, the privacy policy, the price and rate table `site/pricing.js`, and a checkout preview (`site/buy.html`) that keeps everything in the browser. Nothing else exists. The business flow is settled by the legal review of the terms, so building waits for it.
 
-- **Tailnet.** No tailnet exists yet. It needs a control server that scales
-  to hundreds of providers at a sane cost (Tailscale or a self-hosted
-  Headscale), tagged auth keys issued at registration, access rules that
-  let only the router and the reference nodes reach a provider's model API
-  port (and providers nothing of each other), key rotation, and removal of
-  a provider whose bond is forfeited.
-- **Provider agent.** `sparkpipe provider register` and an agent that
-  joins the tailnet, publishes the provider's offers (models, prices,
-  limits, the resale switch) to the router and signs completion receipts.
-- **Owner-first scheduling.** The batch engine has priorities but no
-  preemptible class. Add a network class that runs only on capacity owner
-  traffic leaves idle, and that yields at frame boundaries.
-- **Hand-off.** A network request either finishes within the bound the
-  router set when it placed it, or resumes on another provider. Resuming
-  mid-request needs KV transfer between installations; until then, a
-  preempted network request restarts elsewhere.
-- **LiteLLM door limits.** Found with LiteLLM 1.74 and a mock upstream
-  (`docs/LITELLM_FRONTEND.md`, browser clients):
-  - LiteLLM consumes a request's `priority` for its own scheduler and does not
-    forward it, so the batch engine's priorities do not cross the door.
-    `seed`, `temperature` and `deadline_ms` do.
-  - `tools/generate_litellm_config.py` emits `num_retries: 1`, which retries a
-    failed upstream call once and can duplicate a generation on the fleet; the
-    hub's hand-written `config/litellm-config.yaml` uses 0.
-  - The LAN door has no accounts: `config/litellm-config.yaml` sets no
-    `master_key` or `database_url`, so anyone on the LAN who reaches port
-    4000 can use the fleet. sparkpipe.ai puts one Apache login file in
-    front of an external LiteLLM with a master key, but has no per-user
-    keys, quotas or spend logs. Those need LiteLLM's Postgres database
-    (`tools/generate_litellm_config.py --database-url --master-key`).
-- **Metering, billing, payouts and bonds.** Bill buyers from signed receipts
-  at the serving provider's price, pay providers 85% after the challenge
-  window, and hold and forfeit bonds.
-- **Audit service.** It needs:
-  - a cost-weighted secret sampler over real completed requests (about 2% of
-    tokens);
-  - a replay scheduler, and reference nodes for each hardware type and
-    driver build;
-  - a comparator: exact tokens for greedy traffic, logprobs within a stated
-    tolerance for sampled traffic;
-  - the challenge and dispute state machine;
-  - weight fingerprints.
-- **Exact replays need batch-invariant numerics.** Batched decode is not
-  bitwise equal to B1 (see Dynamic batching). Until the batch kernels agree
-  bitwise, replays of batched requests can only compare logprobs within a
-  tolerance, which is weaker against mild quantization.
-- **Every driver update splits audit cohorts.** Replays compare only against
-  the same driver hash, so the router must track each provider's build, and
-  releases need per-model cohort changeovers.
-- **sparkpipe.ai has no marketplace pages.** The VPS serves the landing page,
-  the provider page and the playground from `site/`. The playground and `/v1`
-  need a login, and the hub tunnel forwards `/v1` to an external LiteLLM
-  without the Qwen models and `/v1/sparkpipe/status` to the chat layer
-  (`docs/LITELLM_FRONTEND.md`, sparkpipe.ai). The catalog, the buyer console
-  and the provider dashboard need the router and the ledger behind them.
-- **Payments.** Provider identity checks, tax reporting and payout rails
-  (fiat, crypto or both) are undecided.
+- **Accounts.** Ethereum-address accounts; acceptance of the terms as an EIP-712 message signed over the text's hash; business details and automatic sanctions screening; the business check (company documents, owners of 25% or more) with its 720-hour holding limit; recovery addresses.
+- **Payments.** The payment processor's USDC invoices and confirmations, refunds of VAT that was not owed, USD wires from abroad for two-year customers, and VAT invoices: tax invoices for Korean businesses and zero-rating evidence for wires. The processor is not approved yet.
+- **Ledger.** An append-only, hash-chained file of every payment, issue of hours, reservation, displacement, credit and consumption; a published daily root; per-customer proofs. Balances must come only from replaying it.
+- **Reservations.** One writer, the per-fleet calendar and its API, the 7-day hourly horizon, displacement of hourly hours more than 6 hours ahead with an email, consumption and expiry, and the two-year tranches, gates and window elections.
+- **Fleet access.** Access tokens scoped to an account's reserved hours, the gate in front of the fleet that admits only the current hour's customer, the customer-facing API (sparkpipe.ai has no API today), and loading the reserved model before the hour starts.
+- **`availability.txt`.** Generated from the calendar and fleet state every 30 seconds.
+- **Credits.** Automatic credits for downtime over 15 minutes and for performance below the threshold, from the fleet's own records.
+- **Won payments.** Electronic tax invoices (세금계산서) issued for each won order, matching of incoming bank transfers to orders, and won amounts in the ledger beside the hours they buy.
+- **Korean site.** The checkout preview (`site/buy.html`) is English only; the console that replaces it needs Korean from the start. The Korean address list behind the language redirect (`tools/site_kr_networks.py`, `docs/LITELLM_FRONTEND.md`) is rebuilt by hand; APNIC changes it daily, so it needs a monthly refresh job.
+- **ESTIMATED values on sparkpipe.ai.** The site shows projections marked ESTIMATED (the home page Speed and Roadmap sections, `fleets.html#estimates`). Each is replaced by a fleet measurement, with its receipt in `PERFORMANCE_STATUS.md`:
+  - prefill accelerators: boxes of four RTX 5080 cards (PCIe reduce inside a box, 100 Gb/s per box over the 32-port 400 Gb/s switch) prefilling a 128K-token prompt, with 4 / 8 boxes: Kimi K3 37 / 18 s, Qwen 3.8 Max 4-bit 35 / 17 s, K-EXAONE 2.0 35 / 18 s, A.X K2 16 / 8 s; a 1M-token Kimi K3 prompt in about 17 / 9 minutes. Assumes weights streamed once per prompt at 85% of 50 / 100 GB/s, cards at 40% of dense peak (FP8 450, BF16 225 TFLOPS) including attention, and short prompts kept on the fleet. Needs the boxes, the switch and an accelerator prefill path;
+  - decode estimates take a token's time as each node's share of the weights at the measured 245 GB/s plus 0.44 ms per layer, the fixed cost Kimi K3 measures (GLM 5.3 measures 0.31 ms). Fleet 1: K-EXAONE 2.0 19 tok/s, A.X K2 28. Fleet 2 (eight M5 Ultra Mac Studios, 90% of 1.2 TB/s, the same cost per layer): Kimi K3 23 tok/s, K-EXAONE 2.0 23, A.X K2 33; it needs the Metal backend and the Thunderbolt 5 link class. Lowering the per-layer cost raises every figure, and the site follows each measurement;
+  - Qwen 3.8 Max's 4-bit build serves at 10.4 tok/s on Fleet 1, which the per-layer model does not explain, so it has no Fleet 2 estimate; FP8 across Fleets 1 and 2 needs a two-fleet pipeline;
+  - speculation at 1.5 times plain decode on agent coding turns, as measured on short edits; tree drafts carry no estimate until they are built and measured;
+  - each candidate model also needs a driver, qualification and a license check: K-EXAONE 2.0, A.X K2 and Solar Open 2 (see Korean models), Nemotron 3 Ultra, Mistral Large 3, Inkling (BF16 across two fleets, or an FP8 build that passes the accuracy A/B) and Muse Spark Open (gated license under review). Nemotron 3 Ultra and Muse Spark Open get site estimates once their layer counts and formats are checked against the per-layer model.
+- **LiteLLM door limits.** LiteLLM consumes a request's `priority` for its own scheduler and does not forward it, so the batch engine's priorities do not cross the door. `tools/generate_litellm_config.py` emits `num_retries: 1`, which can duplicate a generation; the hub's hand-written `config/litellm-config.yaml` uses 0. The LAN door on port 4000 has no accounts, keys, quotas or spend logs.
+
+## SparkPipe Chat
+
+- **AI label on downloaded chats.** Copied replies end with the bilingual AI label (`ui.watermark`); chats downloaded as files carry none, and Open WebUI v0.12.0 has no setting for it.
+- **Notice before sign-up.** Open WebUI's sign-up page cannot show text. The AI and privacy notice appears on the waiting screen right after sign-up, before the account is approved or used.
+- **Field search.** None of README's field search exists. Each field is an Open WebUI tool beside `tools/serving/open_webui/tools/github.py`, shown as a checkbox and attached per chat, and every answer cites the documents it used. Sources to evaluate first: Korean statutes and court decisions (the national law information center's open API), EU law (EUR-Lex), US federal law (eCFR and the Federal Register), medicine (PubMed), Korean company filings (Open DART) and patents (KIPRIS). A tool whose source is abroad sends the query out of Korea and must say so before the user ticks it.
+- **Memory switch state.** The toolbar shows the memory setting it last sent from this browser; a `/memory` typed by hand or sent from another device is not reflected. A chat-layer endpoint that reports a chat's memory settings would let the toolbar read the real state.
+- **Local mode needs an account.** Local mode reaches the models through the user's Open WebUI session; access by API key without an account is #1549.
+- **Tunnel port 18080.** `sparkpipe-ai-door` forwards VPS 127.0.0.1:18080 to the hub's port 4001, where nothing listens, and the VPS key may listen on 18080. Removing both is an SSH change for the owner.
 
 ## Production qualification
 
+- Fold the engine-evidence checks of the closed end-to-end suite (#1491) into the release qualification: assert `cached_prompt_tokens`, `stale_prefix_recomputes`, `status` and `finish_reason` from each request's `request_measurements` line, so prefix sharing, KV restore and park/resume pass only on engine evidence.
+- `scripts/release_rollout.sh` captures the old and the new build through the
+  live prefix cache, so a capture can be served from KV another build wrote:
+  in the 2026-10-25 release most old captures read their long prompts from
+  cache entries of earlier builds. Clear the model's cached state on every
+  node before each capture and fail the comparison unless every capture
+  reports `cached_tokens` 0.
 - `tools/sparkpipe_weightd_vmm_verify.sh` prints `SKIP` and exits 0 when CUDA
   or a GPU is missing, so a receipt run on the wrong host reads as a pass.
   Make both cases exit nonzero with the named reason.
@@ -1059,19 +1085,56 @@ and the multidev docs on 2026-09-28. Line numbers are in
   assume 8 lanes, and `lane_assignments.json` gives lane 0 to a GLM development
   lane while production GLM runs on lane 6. Replace both with the lane
   allocator of lane B04 (TD287/TD288).
+- The Ceph canary (`tools/hub/ceph_canary.py`) only records problems on the
+  hub. They reach a person only while a session runs its `watch` command
+  from the workstation. Nothing sends mail or a push on its own, and the
+  hub's own outage shows only as the watcher's stale-state exit.
 
 ## Hardware independence
 
-- The device layer exists only as `SparkMemoryBuffer`
-  (`include/sparkpipe/spark_memory_buffer.h`). Build the rest of the memory
-  interface (register, map_file, make_resident/evict) and then streams,
-  events and launch, per `docs/INFERENCE_OS_DESIGN.md`.
-- Modules call the CUDA runtime directly. Move them behind the device layer
-  so a module target can be `host.*`, `metal.*` or `rocm.*`.
+- The device API (`include/sparkpipe/spark_device.h`, `runtime/device/`)
+  has buffers in the five spaces, register and map_file, queues, events and
+  kernel launch, with host, CUDA and Metal backends built as one shared
+  library each. Only the contract tests and the Metal stage runner use it.
+  Production modules call the CUDA runtime directly and own their streams,
+  graphs and allocations; move them behind the device layer so a module
+  target can be `host.*`, `metal.*` or `rocm.*`. The CUDA backend then needs
+  kernel launch (it refuses kernel libraries today) and graph capture and
+  replay.
+- The stage-runner model interface
+  (`include/sparkpipe/spark_stage_runner_model.h`) still passes queues and
+  device addresses type-erased: `void *stream` in `step`, `recurrent_copy`,
+  `reset_slot` and `sideband`, and raw pointers in `SparkStageRunnerStep` and
+  `SparkStageRunnerKv`. The Metal model reads them as a `SparkDeviceQueue *`
+  and device addresses. Convert them to `SparkDeviceQueue *` and
+  `SparkDeviceAddress` in one ABI change with every consumer.
+- The Metal kernels (`inference/kernels/metal/`) implement the operations of
+  the CUDA kernels (`inference/kernels/`) a second time, in Metal. The
+  formulas they share are moving into `inference/kernels/kernel_math.cuh`
+  ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#shared-kernel-math)):
+  bf16 conversion, sigmoid and SiLU (29 CUDA copies), softplus with the
+  gated-delta decay, the tanh GeLU and the softcap are there. Still a copy
+  per kernel or per backend:
+  - RMSNorm scales, rotary angles and rotation, the delta-rule cell update,
+    online-softmax merges and the log-probability reduction;
+  - copies whose expression differs from the shared one, each a numerical
+    change that needs the affected model's gate: the experts' tanh GeLU in
+    `moe_local.cuh` computes `0.044715 * g * g * g`, while the shared one
+    (and PyTorch) cube first, so Gemma 4's dense and expert FFNs round
+    differently; the head-gate softplus uses `log1pf(__expf(x))`, the
+    gated delta `__logf(1 + __expf(x))`; the causal convolution's swish is
+    `x * sigmoid(x)` on CUDA and `x / (1 + exp(-x))` on Metal;
+  - exp flavor: CUDA kernels use `__expf` in some places and `expf` in
+    others, Metal the precise functions everywhere, so the backends differ
+    by the intrinsic's error until one policy is chosen and measured;
+  Kernel bodies (the schedules) stay per backend.
 - Add rank, island and link-class descriptors and derive collective
   decomposition from the link matrix instead of a configured backend.
-- Qualify the Metal backend on the Mac Studios and keep the host backend as
-  a CI oracle for common policy, not only for kernels.
+- Keep the host backend as a CI oracle for common policy, not only for
+  kernels. The Metal backend is qualified on one M5 Ultra for the device
+  contract, every kernel Qwen3.8-27B and Gemma 4 26B A4B use, and those two
+  models end to end ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)); no
+  other model and no multi-Studio topology is.
 - Left out on purpose (2026-10-02): KV and weights share weightd but not one
   budget. weightd maps KV device memory as KV pools that grow and shrink in
   chunks (`runtime/spark_weightd_kv_pool.c`, driven from
@@ -1080,9 +1143,8 @@ and the multidev docs on 2026-09-28. Line numbers are in
   (`node/weightd.c`, `runtime/spark_weightd.c`), so KV pressure cannot reclaim
   idle weight memory and the reverse. KV pages still enter the arena through
   `SparkKvCacheArenaMarkBlockResident` (`cache/kv_cache.c`), and the device
-  layer offers only allocate, free and copy
-  (`include/sparkpipe/spark_memory_buffer.h`), while
-  `docs/INFERENCE_OS_DESIGN.md` requires one `make_resident`/`evict` for both.
+  API (`include/sparkpipe/spark_device.h`) has no `make_resident`/`evict`,
+  while `docs/INFERENCE_OS_DESIGN.md` requires one for both.
   Close it by building `make_resident`/`evict` in the device layer and moving
   KV pool sizing and weightd lease eviction onto it, proven on the fleet by a
   run where KV growth and expert demand both resolve through that one
@@ -1091,8 +1153,154 @@ and the multidev docs on 2026-09-28. Line numbers are in
 ## Mac Studio deployment
 
 The design is in
-[`docs/HARDWARE_TOPOLOGY.md`](docs/HARDWARE_TOPOLOGY.md#mac-studio-pool).
+[`docs/HARDWARE_TOPOLOGY.md`](docs/HARDWARE_TOPOLOGY.md#mac-studio-pool); the
+Metal backend and the single-Studio stage are in
+[`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md).
 
+- Serve the single-Studio stage. `inference/runner/device_stage_runner.c`
+  runs Qwen3.8-27B on one M5 Ultra through the stage-runner model interface,
+  but no serving process hosts it: `model_residentd` and the stage serving
+  adapter are CUDA builds. A served Studio replica still needs:
+  - a device-backend serving adapter that drives the device runner from the
+    batch engine, with admission, continuous batching, cancellation and
+    release in common code (I02, I18-I20);
+  - JIT and prefix KV reuse (I23-I27): the runner holds one identity page
+    table over a fixed pool and no page store, so every request recomputes
+    its prompt. Its pages must come from the common page cache with
+    copy-on-write prefixes, and cached request state from the snapshot tiers
+    under the 24-hour retention rule;
+  - state save and restore: the model's `recurrent_copy` packs its recurrent
+    state in the CUDA model's order, but no runner path exports or restores a
+    sequence's KV pages and state, and decode after a restore has not been
+    compared with uninterrupted decode;
+  - generation policy: EOS from deployment metadata (I49), stop tokens and
+    sampling beyond greedy;
+  - weight residency: the runner maps the pack in its own process; weightd,
+    the arena that survives a code-only redeploy, is CUDA VMM only;
+  - a lane record, model description and swap-controller entry for the
+    Studio target (`metal.apple10`);
+  - one frame chooser. Until the batch engine drives the device runner,
+    `tools/metal_stage_run.c` chooses speculative frames itself on the
+    common cost model (`src/spark_speculation_frame.c`). That includes the
+    rule that a first probe frame may cost at most the cost model's margin
+    over a plain step (one draft where no frame is that cheap), which took
+    Metal prose from a 0.5% loss to a 0.4% gain. The batch engine (`runtime/model_batch_engine.c`) has its own
+    chooser. Fold both into one function in `src/` that the engine and every
+    backend call, and check whether the probe rule also helps the CUDA
+    lanes' prose speculation.
+- Map the numerics gate's resolution at BF16. The gate now judges the Studio
+  stage against the reference's own reduction-order floor (mean KL at most
+  2 times, top-1 disagreement at most 1.5 times, a paired block test at 3
+  standard errors, both reference variants), and it passes Metal while
+  failing two controls by wide margins: two output rows of `ffn_down`
+  swapped in all 64 layers (4.4 times the floor's KL, paired test at 95
+  standard errors) and a whole tensor offset by one row (15 times, 188).
+  What it cannot see: the same two-row swap in one layer only
+  (`layers.31.ffn_down`; 0.79 and 1.00 times the floor's KL, paired test at
+  -4.8 and +0.2 standard errors), a fault whose effect on the output is
+  smaller than BF16 rounding noise. Between those two sizes the threshold is
+  not measured; controls at 2, 8 and 32 layers, and more positions to shrink
+  the block standard error, would place it
+  ([`qualification/metal/qwen38_27b/`](qualification/metal/qwen38_27b/)).
+- Batch past the per-sequence state on a Studio. Decode reads the weights
+  once per step for up to 64 rows, but per-sequence work then dominates: at
+  B64 the gated delta rule reads and writes 3.1 MB of FP32 state per layer
+  and sequence (about 27 ms of a 145 ms step) and decode attention reads each
+  KV head once per query head (about 14 ms at 1,100 positions). A delta-rule
+  kernel near the state's streaming bound and a decode attention that serves
+  a KV head's query heads from one read raise B32 and B64; above 64 rows the
+  projections fall to the prefill GEMM, which reads the weights once per 128
+  rows. Prefill and decode mixed in one step are not measured (I18, I19,
+  I21), and speculative verify frames have no cost curve yet.
+- Long verify frames: each device model declares its projection family
+  (`SparkDeviceStageShape.projection`, owner decision 2026-10-27).
+  Qwen3.8-27B takes row tiles, so a 32-row verify frame costs 72 ms against
+  a 55 ms one-row step and every batch row has its solo bits, at a B1 cost
+  of 20.1 to 18.2 tok/s; Gemma 4 26B A4B keeps the GEMV (B1 92.7 tok/s,
+  32-row frame 68 ms in eight-row passes), since row tiles would cost it 18%
+  of B1 and 19% of its Korean summary for 13% on the rewrite
+  ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#decode-and-prefill-by-row-count)).
+  The row-tile kernel's one-row cost is the lever: 7 to 9% above the GEMV on
+  large matrices and 35 to 110% on small ones (6144 x 5120: 69 against 51
+  us; 5120 x 96: 59 against 28), the split reduce's second dispatch and the
+  threadgroup weight staging being most of it; an 8-row tile, other split
+  counts and weights read straight from device memory did not close it, and
+  an in-kernel reduce by the last split gave wrong sums. A one-row cost at
+  the GEMV's would let every model take row tiles. A GEMV holding 16 to 64
+  rows per pass in the one-row order is exact but capped at 6 to 7 TFLOPS
+  of SIMT FP32 (a 32-row Qwen frame of at least 230 ms).
+  Verify frames over several sequences in one step, and speculation through
+  a served request (the serving adapter is CUDA), are not built.
+- Close the B1 gap to the streaming roofline (81.8%, 18.12 of 22.16 tok/s on
+  row tiles; 90.4% with the one-row GEMV). The row tiles' one-row cost is
+  the first lever (above); with the GEMV the projections stream at about
+  1,100 GB/s, and the rest of the 49.8 ms step
+  is about 710 dependent dispatches with a floor of about 5 us each, the
+  residual RMSNorm (14 us a call, 128 calls; it loads 2 bytes per thread per
+  step), the two-kernel delta rule (33 us) and the convolution (9 us). The
+  levers are fewer dispatches: the norm in the next projection's prologue,
+  convolution, preparation and delta rule as one kernel, rotary embedding
+  with the KV store, and the gate projection in the same launch as the mix
+  projection (it has 96 outputs and runs at 105 GB/s on its own).
+- The kernel library builds with Metal 4.0 and its prefill GEMM uses the
+  Metal 4 tensor operations, so it loads only on Apple family 10 GPUs (M5).
+  Another Studio generation needs its own qualified kernel set.
+- Two models have device stages, Qwen3.8-27B and Gemma 4 26B A4B; each is a
+  shape, a tensor list and a layer schedule over the device stage and layer
+  kinds (`inference/runner/device_stage_model.c`, `device_layers.c`), plus a
+  TP1 pack and its own gates. Next, one at a time and each merged before the
+  next starts: Gemma 4 31B, Muse Glimmer 30B, MiMo V2.6 Flash, Qwen 3.8
+  Flash Next.
+- The NaN check in the shared BF16 conversion (abce321a5) costs Gemma 4
+  26B A4B's B1 decode about 0.9% on the Studio (91.5 to 91.6 tok/s against
+  92.2 to 92.5 without it, interleaved runs), since every BF16 store now
+  compares and selects. Metal's own `bfloat` conversion cannot replace it:
+  `build/test_metal_bf16_convert` runs all 2^32 FP32 inputs and finds the
+  shared conversion exact, but the hardware one differs on 16,711,678
+  non-NaN inputs (it flushes subnormals, from `0x00008001`) as well as on
+  the NaNs, so the software path stays. A cheaper exact formulation, or
+  fewer BF16 stores (the B1 dispatch work), is what is left.
+- Gemma 4 26B A4B on the Studio:
+  - experts run as one GEMV per route (`spark_gemv_routed`): a prefill chunk
+    or a batch reads an expert once for every row routed to it, not once per
+    step. Prefill (1,100 tok/s) and the batch ladder need routes grouped by
+    expert into one skinny or tensor-unit GEMM per expert;
+  - B1 decode runs at 63.9% of its 7.88 GB-per-token roofline (92.73 of
+    145.0 tok/s); the attention layers and the per-layer small kernels
+    (three per-head norms, the KV store, the router norm, top-k and combine)
+    are the rest, for the B1 dispatch work;
+  - the KV pool holds the full context for the 25 sliding-window layers,
+    which only ever read their last 1,024 positions: at 256K positions that
+    is 52 GB of the Studio's 256 GB for nothing. A windowed attention layer
+    should take its pages from a ring of `window / page + 1` pages per
+    sequence, indexed by position modulo the ring;
+  - the CUDA stage rounds the experts' tanh GeLU as `0.044715 * g * g * g`
+    and folds the route weight into the activation; the Metal stage and the
+    numpy reference follow the publisher's eager order (cube first, weight
+    after the down projection, BF16 sums in ascending expert order), so the
+    two backends differ by those rounding points. The CUDA stage should take
+    the shared GeLU and the publisher's order and pass this reference's
+    pinned-route gate;
+  - speculation is exact (every run's tokens equal plain decode's on six
+    prompts) and takes the rewrite from 92 to 323 tok/s, but a frame costs
+    more than a step from two rows on, so the first probe in a match class
+    is one draft and costs 0.1 to 0.3% on text the lookup cannot predict.
+    The cost model should price a probe by the expected acceptance of its
+    match length instead of capping it;
+  - the numerics gate checks the arithmetic with every layer's experts pinned
+    to reference A's choice, because FP32 reduction order alone flips the
+    BF16 router's top 8 at a growing share of rows (7 of 160 rows at layer 1,
+    63 at layer 29) and so moves free-route logits as far as a corrupted
+    tensor does. Metal's own top-k is checked by the kernel test only; how
+    often it agrees with the reference's choice in a pinned run, against
+    how often b's does, is not measured;
+  - at three to eight rows a Gemma batch takes the row tiles with their
+    split reduce, which are slower here than the row-exact GEMV passes: the
+    exact-rows ladder decodes B4 and B8 at 235.5 and 311.4 tok/s against
+    206.2 and 291.8 on the fast path, and its tokens are each sequence's
+    solo tokens. Taking the GEMV passes for three to eight rows in the GEMV
+    family would make B3 to B8 both faster and identical to solo decode;
+    it needs Gemma's ladder gate re-run.
 - Define hardware profiles for one to eight Studios: memory, bandwidth, the
   Thunderbolt 5 island wiring, the bridge to the Sparks, power, and storage.
 - Add Thunderbolt 5 RDMA as a link class. Apple's verbs API (TN3205) offers
@@ -1129,14 +1337,9 @@ The design is in
 
 ## Multi-model serving (parallel inference on shared Sparks)
 
-Assessed 2026-09-13 against the lane/mesh/weightd architecture
-(PRs #959-#973). Handled today: per-model lanes (weightd-assigned, fail-closed),
-weight arenas shared by content identity (same model never loads twice),
-per-connection collectives (two engines of one model get distinct mesh
-pathways), swap-in loads that run daemon-side (a serving model does not
-stop while another loads), and per-engine continuous batching at
-MAXBATCHSIZE=128 with per-request completion. The gaps below are required
-for seamless production multi-model.
+One model holds a fleet at a time, and loading another takes about a
+minute (79 s for Kimi K3). Several models sharing a fleet's Sparks need the
+items below.
 
 - Two lanes in two processes on one GPU stall each other. Each process's
   collective waits spin on the GPU, and the GPU time-slices between

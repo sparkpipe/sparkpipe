@@ -1,6 +1,8 @@
 #include "sparkpipe/spark_prefix_cache.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_sha256.h"
+#include "sparkpipe/spark_kv_snapshot.h"
+#include <time.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -832,6 +834,16 @@ static SparkPrefixCacheEntry *SparkPrefixCacheSelectVictim(
     return protected_victim;
 }
 
+static uint32_t SparkPrefixCacheNowSeconds(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_REALTIME, &now) != 0 || now.tv_sec <= 0)
+    {
+        return 0u;
+    }
+    return (uint32_t)now.tv_sec;
+}
+
 static SparkStatus SparkPrefixCacheInvalidateEntry(
     SparkPrefixCache *cache,
     SparkPrefixCacheEntry *entry)
@@ -959,6 +971,7 @@ static SparkStatus SparkPrefixCacheInstallEntry(
     entry->lookahead_protection_epoch = 0u;
     cache->tick += 1u;
     entry->last_used_tick = cache->tick;
+    entry->used_seconds = SparkPrefixCacheNowSeconds();
     cache->inserted_block_count += 1u;
     if ((entry_flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_LIVE_ONLY) != 0u)
     {
@@ -1355,6 +1368,7 @@ static SparkPrefixCacheEntry *SparkPrefixCacheWalkNextBounded(
             continue;
         cache->tick++;
         entry->last_used_tick = cache->tick;
+        entry->used_seconds = SparkPrefixCacheNowSeconds();
         walk->parent_hash = block_hash;
         walk->token_offset += count;
         walk->matched_block_count++;
@@ -2195,6 +2209,7 @@ static SparkStatus SparkPrefixCacheReservePromptInternal(
         }
         cache->tick += 1u;
         entry->last_used_tick = cache->tick;
+        entry->used_seconds = SparkPrefixCacheNowSeconds();
         parent_hash = block_hash;
         token_offset += block_token_count;
     }
@@ -3160,6 +3175,62 @@ SparkStatus SparkPrefixCacheClearResume(
     return SPARK_STATUS_OK;
 }
 
+SparkStatus SparkPrefixCacheSupersedeResume(
+    SparkPrefixCache *cache,
+    const uint32_t *token_ids,
+    uint32_t token_count,
+    uint32_t recent_count,
+    uint32_t anchor_token_count,
+    uint32_t *superseded_out)
+{
+    SparkPrefixCacheEntry *entry,*victim,*kept[SPARK_PREFIX_CACHE_RESUME_RECENT_MAXIMUM];
+    uint64_t parent_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH,block_hash;
+    uint32_t kept_end[SPARK_PREFIX_CACHE_RESUME_RECENT_MAXIMUM];
+    uint32_t token_offset,limit,window,held = 0u,head = 0u,victim_end,superseded = 0u;
+    SparkStatus status;
+
+    status = SparkPrefixCacheValidate(cache);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    if (token_ids == 0 || token_count == 0u || recent_count == 0u || recent_count > SPARK_PREFIX_CACHE_RESUME_RECENT_MAXIMUM ||
+        anchor_token_count == 0u || anchor_token_count % cache->block_token_count != 0u || superseded_out == 0)
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    window = recent_count - 1u;
+    limit = (token_count - 1u) / cache->block_token_count * cache->block_token_count;
+    for (token_offset = 0u; token_offset < limit; token_offset += cache->block_token_count)
+    {
+        entry = SparkPrefixCacheFindPromptBlock(cache, token_ids, token_offset, cache->block_token_count, parent_hash, &block_hash);
+        if (entry == 0)
+            break;
+        parent_hash = block_hash;
+        if ((entry->flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME) == 0u)
+            continue;
+        victim = entry;
+        victim_end = token_offset + cache->block_token_count;
+        if (window != 0u && held < window)
+        {
+            kept[held] = entry;
+            kept_end[held++] = victim_end;
+            continue;
+        }
+        if (window != 0u)
+        {
+            victim = kept[head];
+            victim_end = kept_end[head];
+            kept[head] = entry;
+            kept_end[head] = token_offset + cache->block_token_count;
+            head = (head + 1u) % window;
+        }
+        if (victim_end % anchor_token_count != 0u)
+        {
+            victim->flags &= ~SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME;
+            superseded++;
+        }
+    }
+    *superseded_out = superseded;
+    return SPARK_STATUS_OK;
+}
+
 static uint32_t SparkPrefixCacheResumeInBlock(
     SparkPrefixCache *cache,
     const uint32_t *token_ids,
@@ -3219,6 +3290,40 @@ uint32_t SparkPrefixCacheResumeTokenCount(
     return resume;
 }
 
+SparkStatus SparkPrefixCacheExpire(
+    SparkPrefixCache *cache,
+    uint64_t now_seconds,
+    uint32_t *expired_out)
+{
+    uint32_t entry_index;
+    uint32_t expired = 0u;
+    SparkStatus status;
+
+    if (cache == 0 || expired_out == 0)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    *expired_out = 0u;
+    for (entry_index = 0u; entry_index < cache->entry_count; ++entry_index)
+    {
+        SparkPrefixCacheEntry *entry = &cache->entries[entry_index];
+        if (!SparkPrefixCacheEntryIsEvictable(entry) ||
+            (uint64_t)entry->used_seconds + SPARK_KV_RETENTION_SECONDS > now_seconds)
+        {
+            continue;
+        }
+        status = SparkPrefixCacheInvalidateEntry(cache, entry);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        expired++;
+    }
+    cache->evicted_block_count += expired;
+    *expired_out = expired;
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkPrefixCacheExportCommitted(
     const SparkPrefixCache *cache,
     SparkPrefixCacheCommittedRecord *records,
@@ -3252,7 +3357,7 @@ SparkStatus SparkPrefixCacheExportCommitted(
         records[count].content_hash = entry->content_hash;
         memcpy(records[count].content_digest, entry->content_digest, SPARK_SHA256_DIGEST_BYTES);
         records[count].flags = entry->flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME;
-        records[count].reserved = 0u;
+        records[count].used_seconds = entry->used_seconds;
         count++;
     }
     if (count != 0u)
@@ -3294,6 +3399,7 @@ SparkStatus SparkPrefixCacheImportCommitted(
     uint32_t imported = 0u;
     uint32_t skipped = 0u;
     uint64_t epoch;
+    uint64_t now_seconds = SparkPrefixCacheNowSeconds();
     SparkStatus status;
 
     status = SparkPrefixCacheValidate(cache);
@@ -3312,7 +3418,8 @@ SparkStatus SparkPrefixCacheImportCommitted(
         parent = record->first_token_index == 0u ? 0 : SparkPrefixCacheFindParent(cache, record);
         if (record->token_count == 0u || record->token_count > cache->block_token_count ||
             record->first_token_index % cache->block_token_count != 0u ||
-            (record->flags & ~SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME) != 0u || record->reserved != 0u ||
+            (record->flags & ~SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME) != 0u || record->used_seconds == 0u ||
+            (uint64_t)record->used_seconds + SPARK_KV_RETENTION_SECONDS <= now_seconds ||
             SparkPrefixCacheFindEntry(cache, record->parent_hash, record->block_hash, record->content_hash,
                 record->content_digest, record->first_token_index, record->token_count, 0u) != 0 ||
             (record->first_token_index != 0u && parent == 0) ||
@@ -3332,6 +3439,7 @@ SparkStatus SparkPrefixCacheImportCommitted(
             continue;
         }
         entry->committed_epoch = epoch;
+        entry->used_seconds = record->used_seconds;
         if ((record->flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME) != 0u &&
             record->token_count < cache->block_token_count && parent != 0)
         {

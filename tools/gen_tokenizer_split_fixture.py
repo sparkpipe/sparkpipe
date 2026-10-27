@@ -20,6 +20,11 @@ PATTERNS = {
     "letters_possessive": "'(?i:[sdmt]|ll|ve|re)|[^\\r\\n\\p{L}\\p{N}]?+\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]++[\\r\\n]*|\\s*[\\r\\n]|\\s+(?!\\S)|\\s+",
     "byte_level_regex": {"byte_level": "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)|\\s+"},
     "cased_letters": "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
+    "ideograph_letters": [
+        "[\u4e00-\u9fa5\u3040-\u309f\u30a0-\u30ff]+",
+        "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
+    ],
+    "phrase_letters": "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?(?:\\p{L}\\p{M}*(?: \\p{L}\\p{M}*)*)+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]?|\\s*[\\r\\n]|\\s+(?!\\S)|\\s+",
 }
 
 HANDPICKED = [
@@ -57,6 +62,15 @@ HANDPICKED = [
     "\"Quoted\" (Paren) [Bracket] {x}: path/to/file.py\r\n/x a/\n/b //\r\n//",
     "x́Ý ́A ́a 'S 'Ab A'B a'BC",
     "東京Tokyo大阪 한국어Korean Ελληνικά",
+    "대한민국의 수도는 어디인가요? 한 단어로 답하세요.",
+    "계약서에서 '불가항력' 조항이 무엇인지 두 문장으로 설명하세요.\n\n",
+    "the capital of France is Paris.\nNew line  two spaces  here ",
+    "a b  c d\te f/g h\r\ni ?\n!\n\n/x ?/ a?/",
+    "x́ y ́z café über naïve ́ ́a  ́b",
+    "word's it'S I'M 's 'm a'll",
+    "서울 Seoul 부산 Busan 12 34abc def5 ghi",
+    "東京タワーは333メートル・高さ ひらがなabc漢字123 カタカナ・テスト",
+    "for i in range(10):\n    print(i)  \n\t\n",
 ]
 
 POOLS = [

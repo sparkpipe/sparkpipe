@@ -1,0 +1,14 @@
+opened /Users/m5u0/models/packs/qwen38_27b_tp1_bf16/qwen38_27b.tp1.rank00.pack on Apple M5 Ultra (metal.apple10) in 0.12 s: pack 53793417600 bytes, device state 625999700 bytes
+decode run 0 (warm-up): 20.155 tok/s (median step 49.625 ms)
+decode run 1: 20.124 tok/s (median step 49.693 ms)
+decode run 2: 20.119 tok/s (median step 49.702 ms)
+decode run 3: 20.094 tok/s (median step 49.772 ms)
+decode median of 3: 20.119 tok/s
+prefill 1024 run 0 (warm-up): 1427.51 tok/s
+prefill 1024 run 1: 1428.00 tok/s
+prefill 1024 run 2: 1428.84 tok/s
+prefill 1024 run 3: 1429.17 tok/s
+prefill 8192 run 0 (warm-up): 1500.57 tok/s
+prefill 8192 run 1: 1501.07 tok/s
+prefill 8192 run 2: 1501.30 tok/s
+prefill 8192 run 3: 1500.18 tok/s

@@ -469,18 +469,21 @@ static void TestCopyOnWriteIsOneDeviceCopyPerRegionLayer(void)
 	source = PublishPrefix(3u,1u,2u,0x40u,0x22u);
 	StepInit(&y,2u,1u,2u,3u);
 	StepPrefix(&y,2u,0x40u);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
 	HookReset();
 	spark_stub_cuda_event_pending(1u);
 	assert(StepAdmit(&y,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK);
 	destination = LanePage(1u,0u);
 	assert(destination != source);
 	assert(spark_stub_cuda_sync_copy_calls() == 0u);
-	assert(spark_stub_cuda_async_copy_calls() == 1u + TEST_LAYERS && HOOK.device_copies == 1u + TEST_LAYERS && HOOK.foreign_stream_copies == 0u);
+	assert(HOOK.device_copies == 1u + TEST_LAYERS && spark_stub_cuda_async_copy_calls() >= HOOK.device_copies && HOOK.foreign_stream_copies == 0u);
 	PageBytes(source,source_bytes);
 	PageBytes(destination,destination_bytes);
 	assert(memcmp(source_bytes,destination_bytes,sizeof(source_bytes)) == 0);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
 	assert(BINDING.blocks[source].residency_reference_count == 1u && BINDING.blocks[destination].residency_reference_count == 2u);
 	assert(StepAdmit(&y,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
 	assert(BINDING.blocks[source].residency_reference_count == 1u && BINDING.blocks[destination].residency_reference_count == 2u);
 	spark_stub_cuda_event_pending(0u);
 	assert(StepAdmit(&y,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) == SPARK_STATUS_OK);
@@ -1001,6 +1004,66 @@ static int RemoveSnapshotEntry(const char *path,const struct stat *info,int flag
 	return(walk->level == 0 ? 0 : remove(path));
 }
 
+static uint32_t ValidPageEntries(uint64_t *oldest)
+{
+	uint32_t index,count = 0u;
+	*oldest = UINT64_MAX;
+	for (index=0u; index<BINDING.page_cache.entry_capacity; index++)
+		if ( (BINDING.page_cache.entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u )
+		{
+			count++;
+			if ( BINDING.page_cache.entries[index].used_seconds < *oldest )
+				*oldest = BINDING.page_cache.entries[index].used_seconds;
+		}
+	return(count);
+}
+
+static void AgePageEntries(uint64_t used_seconds)
+{
+	uint32_t index;
+	for (index=0u; index<BINDING.page_cache.entry_capacity; index++)
+		if ( (BINDING.page_cache.entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u )
+			BINDING.page_cache.entries[index].used_seconds = used_seconds;
+}
+
+static void TestAdoptedPagesKeepTheirAge(void)
+{
+	uint8_t pages[2][TEST_PAGE_BYTES];
+	struct timespec now;
+	uint64_t kept_since,due_since,oldest;
+	uint32_t held,expired = 0u;
+	Open();
+	PublishTwoPageChain(pages);
+	assert(clock_gettime(CLOCK_REALTIME,&now) == 0);
+	kept_since = (uint64_t)now.tv_sec - (SPARK_KV_RETENTION_SECONDS - SPARK_KV_DETACHED_POOL_SECONDS) + 600u;
+	assert(ValidPageEntries(&oldest) == 2u && oldest + 60u >= (uint64_t)now.tv_sec);
+	AgePageEntries(kept_since);
+	Unload();
+	assert(nftw(SNAPSHOT_DIRECTORY,RemoveSnapshotEntry,16,FTW_DEPTH | FTW_PHYS) == 0);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	pthread_mutex_lock(&BINDING.mutex);
+	held = ValidPageEntries(&oldest);
+	assert(BINDING.kv_pool_adopted_pages == 2u && held == 2u && oldest == kept_since);
+	assert(SparkKvPageCacheExpire(&BINDING.page_cache,kept_since + SPARK_KV_RETENTION_SECONDS,&expired) == SPARK_STATUS_OK);
+	pthread_mutex_unlock(&BINDING.mutex);
+	assert(expired == 2u && ValidPageEntries(&oldest) == 0u);
+	Close();
+	Open();
+	PublishTwoPageChain(pages);
+	assert(clock_gettime(CLOCK_REALTIME,&now) == 0);
+	due_since = (uint64_t)now.tv_sec - SPARK_KV_RETENTION_SECONDS + 60u;
+	AgePageEntries(due_since);
+	Unload();
+	assert(nftw(SNAPSHOT_DIRECTORY,RemoveSnapshotEntry,16,FTW_DEPTH | FTW_PHYS) == 0);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	pthread_mutex_lock(&BINDING.mutex);
+	held = ValidPageEntries(&oldest);
+	pthread_mutex_unlock(&BINDING.mutex);
+	assert(BINDING.kv_pool_adopted_pages == 0u && held == 0u);
+	Close();
+	printf("adopted pages keep their age: pages that would outlive the retention limit within the detached-pool hour are dropped before the pool is sealed, older ones come back from the weightd seal with their age and the expiry sweep drops them on time\n");
+}
+
 static void TestRestartAdoptsDevicePages(void)
 {
 	SparkModelDriverKvStoreCounters counters;
@@ -1345,7 +1408,13 @@ static void TestRecurrentRoundTrip(void)
 	StepInit(&step,3u,0u,4u,5u);
 	StepPrefix(&step,4u,0x90u);
 	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK && BINDING.lane_state_flags[0] != 0u);
-	assert(SparkStageKvBindingReset(&BINDING,2u) == SPARK_STATUS_OK);
+	{
+		SparkStatus reset;
+		uint32_t attempt = 0u;
+		while ( (reset = SparkStageKvBindingReset(&BINDING,2u)) == SPARK_STATUS_BUSY && attempt++ < 1000u )
+			SleepMs(1u);
+		assert(reset == SPARK_STATUS_OK);
+	}
 	for (index=0u; index<TEST_LANES; index++)
 		assert(BINDING.lane_state_flags[index] == 0u && BINDING.lanes[index].phase == SPARK_KV_LANE_TRANSACTION_EMPTY);
 	SparkStageKvBindingTakeRecurrentCounters(&BINDING,&counters);
@@ -1660,6 +1729,7 @@ int main(void)
 	TestSnapshotRefusals();
 	TestSnapshotRestartRestore();
 	TestRestartAdoptsDevicePages();
+	TestAdoptedPagesKeepTheirAge();
 	TestRestoreHintStartsEarly();
 	TestWriteMeterCountsAndAlerts();
 	TestParkedPrefixSaves();

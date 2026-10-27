@@ -27,7 +27,7 @@ MANIFEST written last. Bare line references (`:NNN`) are to
 | Role | Host | What lives there |
 | --- | --- | --- |
 | Hub | `rtx5090`: x86_64, one RTX 5090 32 GB, user `spec`, tailscale `100.123.97.61` | `~/release/<root>/` served on `:8802` by the user unit `fleet-release` (`tools/fleet_release_serve.py`, installed as `~/fleet_release_serve.py`); `~/current/<host>.json` heartbeats; `~/release/qpn/<host>/` mesh records; the serving stack: swap controller, chat layer, LiteLLM and one model's engine API at a time (section 6) |
-| Build host | `BUILD_HOST` of `scripts/release_build.sh` (default `sparkd`): aarch64, `sm_121a`, also a fleet rank | `~/build-rp/fw-<sha>-src` build tree and `~/build-rp/fw-<sha>.out` log (section 4.1). The build host is not the hub: no agent reads its `~/release` |
+| Build host | `BUILD_HOST` of `scripts/release_build.sh` (default `lenovo7`): aarch64, `sm_121a`, not a fleet rank | `~/build-rp/fw-<sha>-src` build tree and `~/build-rp/fw-<sha>.out` log (section 4.1). The build host is not the hub: no agent reads its `~/release` |
 | Fleet | `spark0`-`spark9`, `sparka`-`sparkf` | `~/sparkdata/core/` core root, `~/sparkdata/weightd/` installed weightd, `~/sparkdata/<root>/` runtime root and packs, `~/current/<host>.json` local heartbeat |
 
 A node's rank is its position in `FLEET_HOSTS` (`:8-23`). Pack names use hex
@@ -250,13 +250,16 @@ directories it installs into.
 (default `/Users/mac/wf/integ`), named by its 9-character sha:
 
 1. `git archive` of the revision to `$HUB_WORK/src/rp-src-<sha>.tar` on the
-   hub and to `~/build-rp/` on the build host.
+   hub and to `~/build-rp/` on the build host. The adapters to build are the
+   firmware libraries of every record in that revision's
+   `deployment/lanes.json` (`tools/lane_config.py release-row`), so a new
+   lane record is built without editing the kit; the build stops if a record
+   does not resolve.
 2. On the hub, in the background: unpack into `$HUB_WORK/api-build-<sha>`
-   and build `sparkpipe_model_api`, `sparkpipe_tokenize_prompt` and every
-   TP16 serving adapter for x86 (log `$HUB_WORK/logs/api-<sha>.out`).
-3. On `BUILD_HOST` (default `sparkd`), holding a shared lock on
-   `/Users/mac/sparkpipe-coord/locks/tp16.lock` (it waits up to 3 h): unpack
-   into `~/build-rp/fw-<sha>-src` and build residentd, weightd,
+   and build `sparkpipe_model_api`, `sparkpipe_tokenize_prompt` and those
+   adapters for x86 (log `$HUB_WORK/logs/api-<sha>.out`).
+3. On `BUILD_HOST` (default `lenovo7`; every aarch64 build runs on a
+   Lenovo, never on a fleet node, so it takes no fleet lock): unpack into `~/build-rp/fw-<sha>-src` and build residentd, weightd,
    `weightd_warm`, `weightd_receipt`, `weightdctl`, `sparkpipe_model_batch`,
    the RDMA transport and the same adapters (log `~/build-rp/fw-<sha>.out`).
 4. It prints the first error lines of both logs and writes the firmware
@@ -277,8 +280,10 @@ sha, so set it, and `precheck` refuses unless the hub's `WEIGHTSD_BIN` is
 that value. The step state (the backup stamp, the
 staged tarball) is kept in `scripts/state-<sha>` (`STATE` overrides). The
 kit knows every served model by its swap id: lane root, adapter, hub API
-directory and port (`row` in the script, the ports of
-`deployment/hub/model_swap.json`). Captures, comparisons and perf receipts
+directory, port and KV label come from the model's record in
+`deployment/lanes.json` (`tools/lane_config.py release-row`, docs/LANES.md),
+and the script refuses to run when its `MODELS` and the records differ.
+Captures, comparisons and perf receipts
 go to `$HUB_WORK/release-<sha>/<model>/`; the published receipts of a
 release are committed under `qualification/releases/<sha>/`.
 
@@ -288,10 +293,10 @@ release are committed under `qualification/releases/<sha>/`.
 | `old` | serving, swapping | activates each model through the controller (`POST /activate` on `:8440`, with the controller token, through `swap` in `scripts/rollover_lib.sh`) and captures its reference outputs (`tools/release_capture.py`), plus logprob goldens for GLM Full, K3, the Qwen models and DeepSeek V4.1 Flash; it ends on `qwen3.8-max` |
 | `stage` | serving | copies `FW` to `~/rp-release-<sha>` on every node and checks `SHA256SUMS`: one result on all sixteen, or it fails |
 | `backup` | serving | stamps the backup (`STATE/utc`) and copies every lane root to `root.prev-<utc>` (without `kvsnapshot` and `kvcache`), every hub API directory to `$HUB_WORK/backups/<api>.prev-<utc>`, `weightd_warm` and the installed weightd to `.prev-<utc>` on every node, the production weightd to `~/release-staging/weightd-rollback/sparkpipe_weightd.<OLD_WD>` and `model_swap.json` to `.prev-<utc>` on the hub |
-| `down` | **down from here** | stops the active model's API and engines with the controller's own `api_stop` and `node_stop` commands, and fails unless no residentd runs anywhere |
+| `down` | **down from here** | runs the controller's own `node_stop` for every record, whether or not its API answers (a lane started outside the controller is stopped too), and `api_stop` for every model whose API answers; fails unless no residentd runs anywhere |
 | `weightd` | down | section 5.2; it changes nothing when `FW` carries the production weightd |
 | `install` | down | per model: residentd, `weightd_warm`, the spine budget, the batch client where the lane has one, the transport and the adapter into `~/<lane>/root`, each install one hash variant on all sixteen; the API, the tokenizer tool and the adapter into the hub's `~/<model>-kv-api`, dropping its `runtime/prefix_index.spi`; the shared `~/sparkdata/swap/weightd_warm`. This kit version also moves the GLM Full lane to the `glm53full.fp8lin.tp16` packs |
-| `qualify` | serving, swapping | per model (`ONLY=<ids>` limits it): activate, capture and compare against `old`; `tools/ui_smoke.py` through LiteLLM; COMPSEC-17 (`tools/compsec17_openai.py`) when the outputs are not exact 6/6 or `COMPSEC` is set; `api_serving_perf.py` cases `o256` and `ttft6000`; the count of error lines in the rank logs. It ends on `qwen3.8-max` |
+| `qualify` | serving, swapping | per model (`ONLY=<ids>` limits it): activate, capture and compare against `old`; `tools/ui_smoke.py` through LiteLLM; COMPSEC-17 (`tools/compsec17_openai.py`) unless `tools/release_compare.py` proves every prompt's tokens equal (it exits 0 only then, so a failed, missing or empty capture runs the gate) or `COMPSEC` is set; `api_serving_perf.py` cases `o256` and `ttft6000`; the count of error lines in the rank logs. It ends on `qwen3.8-max` |
 | `rollback` | down, then swapping | refuses unless every backup of the stamp exists; runs `down`; restores every lane root, hub API directory and `weightd_warm`; restores the production weightd and `WEIGHTSD_BIN` (section 5.2); then activates, captures and compares each model against `old` |
 
 Run `precheck`, `old`, `stage` and `backup` while production serves, then the
@@ -411,14 +416,21 @@ Since 2026-10-08 one model holds the fleet at a time. The hub runs:
   `deployment/hub/chat_frontend.json`) on `127.0.0.1:8433`, unit
   `sparkpipe-chat` from `~/sparkpipe-chat`;
 - LiteLLM on `:4000`, unit `sparkpipe-litellm`, configured from
-  `config/litellm-config.yaml`.
+  `config/litellm-config.yaml`;
+- the Ceph canary (`tools/hub/ceph_canary.py`, config
+  `deployment/hub/ceph_canary.json`, unit `sparkpipe-ceph-canary` from
+  `~/sparkpipe-ceph-canary`, installed and enabled on its own), which
+  probes CephFS on the hub and every Spark
+  ([INCIDENT_RECOVERY_PLAYBOOK.md](INCIDENT_RECOVERY_PLAYBOOK.md#ceph-canary)).
 
 [LITELLM_FRONTEND.md](LITELLM_FRONTEND.md) describes the APIs and the swap
 order. `tools/hub/install_units.sh` installs the versioned units in
-`tools/hub/systemd/` (the chat layer, LiteLLM and the DMA-guard listener)
-into `~/.config/systemd/user` and reloads; `--enable` also enables them and
-refuses if linger is off. The `sparkpipe-swap` unit is not versioned there
-yet. The engine APIs have no persistent unit: the
+`tools/hub/systemd/` (the chat layer, LiteLLM, the DMA-guard listener and
+the Ceph canary) into `~/.config/systemd/user` and reloads; `--enable` also
+enables them and refuses if linger is off. The chat layer and LiteLLM run as
+transient units today, so enabling their versioned units would start a
+second copy at the next boot. The `sparkpipe-swap` unit is not versioned
+there yet. The engine APIs have no persistent unit: the
 controller owns their lifecycle, and a release installs into their
 directories only while the fleet is down (section 4.2).
 
@@ -542,7 +554,7 @@ Each of these was paid for in an incident.
    instead. A 30.5 GB verifier livelocked in `mem_cgroup_handle_over_high` for
    hours (09-13 to 09-15). The user slice, where GLM serving also runs, is
    capped at MemoryHigh 100G and MemoryMax 108G
-   (`tools/devcycle/ds4_spark_brickproof.py:98-99`).
+   (`USER_SLICE` in `tools/devcycle/ds4_spark_brickproof.py`).
 10. Commit tool scripts with the exec bit (`git update-index --chmod=+x`). The
     agent restores `bin/*` modes itself (`:301`).
 11. `strings | grep -q` under `pipefail` exits 141 (SIGPIPE). Redirect to
@@ -553,9 +565,9 @@ Each of these was paid for in an incident.
     claim time, purpose; release right after the batch). Concurrent readers
     collapsed to kB/s (09-13 to 09-15: spark4 read at 64 KB/s); when one
     client crawls, dd-probe the candidates and move the read to an idle one
-    (spark5 read the same data in 69 s against spark4's 84 min). Whether Ceph
-    stays supported is an open question; see
-    [INCIDENT_RECOVERY_PLAYBOOK.md](INCIDENT_RECOVERY_PLAYBOOK.md).
+    (spark5 read the same data in 69 s against spark4's 84 min). Ceph runs under
+    cephadm on every node; the node policy is in
+    [NODE_BASELINE.md](NODE_BASELINE.md).
 13. Required configuration fails loudly: no silent fallbacks and no `#ifndef`
     defaults. Grade every claim MEASURED, DERIVED or ASSUMED, with its artifact
     (file, node, date, build sha).
