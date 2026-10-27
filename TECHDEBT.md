@@ -995,6 +995,13 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   (`STAGE_KV_PHYSICAL_PAGES` in `tools/stage_lane.sh`) names a smaller pool,
   and it takes that pool as a page count. Size the physical pool from a byte
   budget the lanes share and let paged admission share it.
+- A public API key that asks for a public model that is not loaded starts
+  the swap, as any caller does. One key that alternates two models keeps the
+  fleet swapping and pushes the owner's model out after each reply. Each key
+  runs at most four requests at once, but nothing limits how often a key may
+  start a swap. Which public requests may swap the fleet is an owner
+  decision (serve only the loaded model to keys, or a lower activation
+  priority and a per-key swap rate).
 
 ## Fleet-hours
 

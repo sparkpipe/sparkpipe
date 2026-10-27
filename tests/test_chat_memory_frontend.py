@@ -32,7 +32,7 @@ def model(directory, words, closing, opening):
     (directory / "tokenizer_config.json").write_text(json.dumps({}))
     renderer = chat_frontend.TemplateRenderer(directory, {}, words)
     return SimpleNamespace(renderer=renderer, vocabulary=words, template_defaults={}, reasoning={"start": THINK, "end": "close"},
-                           stop_token_ids=[words.token_id(END)], render=renderer.render)
+                           stop_token_ids=[words.token_id(END)], render=lambda messages, tools, kwargs: renderer.render(messages, tools, kwargs, 1 << 30))
 
 
 def check(condition, message):
