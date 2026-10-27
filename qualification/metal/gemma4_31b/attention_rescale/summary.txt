@@ -1,0 +1,68 @@
+Gemma 4 31B numerics follow-up on m5u0 (2026-10-27): attention rescaling, floor draws, cost.
+
+Kernels compared (all pass the 143 kernel tests):
+  eager    the online softmax at ff51be851: rescales at every new running maximum
+  margin   8b4836e52: the running maximum moves only past a margin of 8 (SPARK_ATTENTION_RESCALE_MARGIN)
+  two-pass branch metal/attention-two-pass (45626e53f): a max launch, then exp(score - M) once per key, compensated sums
+Order-only variants of each kernel reverse the sum across SIMD groups (simd) or across partitions in the combine (comb);
+they change nothing but FP32 summation order.
+
+1. Gate legs, all four prompts (KL ratio to the floor / top-1 disagreement ratio / paired sigma; limits 2 / 1.5 / 3)
+   kernel    variant  against A                against B
+   eager     base     1.32 / 1.18 / +4.8      1.42 / 1.07 / +4.3   (the 3759a9dc6 gate)
+   eager     simd     1.39 / 1.16 / +4.5      1.50 / 1.07 / +4.4
+   eager     comb     1.15 / 1.13 / +3.5      1.25 / 1.06 / +3.7
+   margin    base     0.85 / 0.97 / +0.9      1.04 / 0.95 / +1.6
+   margin    simd     0.96 / 1.05 / +1.8      1.20 / 0.99 / +2.3
+   margin    comb     1.16 / 1.06 / +3.5      1.19 / 0.98 / +2.1
+   two-pass  base     1.20 / 1.16 / +2.3      1.43 / 1.02 / +3.6
+   two-pass  simd     1.13 / 1.08 / +1.4      1.37 / 1.03 / +3.2
+   two-pass  comb     1.12 / 1.08 / +1.7      1.37 / 0.96 / +2.2
+   two-pass  P as two BF16 terms (dropped: matmul2d keeps FP32, see 5)
+                      1.06 / 0.96 / +1.5      1.29 / 0.95 / +2.6
+   Per prompt (paired sigma against A): design stays at +1.8 to +2.5 in every variant of every kernel; code goes from
+   +2.6..+4.0 (eager) to -2.0..+1.8; korean from +3.4..+3.8 (eager) to +2.8..+3.3 (two-pass) and -1.6..-0.4 (margin).
+
+2. The reference's own extra floor draws on design (tools/gemma4_reference.py variants c and d: the same numpy code and
+   BF16 rounding as a and b, other FP32 reduction orders), scored like Metal against A with B as the floor:
+   candidate    KL ratio   paired share   paired sigma   share 0-549   550-1023   1024+
+   reference c  1.55       0.580          +3.0           0.518         0.648      0.600
+   reference d  1.90       0.573          +2.0           0.509         0.639      0.627
+   eager gate   1.34       0.565          +2.0           0.493         0.648      0.573
+   two-pass     2.03       0.566          +2.0           0.498         0.648      0.547
+   Order-only variants on the all-decode design teacher (1 prefilled position) spread over 0.521-0.646 at 550-1023 and
+   0.533-0.707 at 1024+. The 550+ band and the per-layer onset at layers 37-40 (layers_design.txt) are the same for
+   reference draws c and d as for Metal: they are where draw b happens to sit close to a, not a Metal error. The band
+   criterion (0.49-0.52 at 550+) is not met by the reference itself. Only layer 0 is Metal's own (1.24-1.47x the
+   floor's hidden-state error, c and d 0.82-1.09x), washed out by layer 5.
+
+3. Cost, interleaved with the head they change, two rounds each (tok/s; B1 decode of 256 after 1,024, prefill 1K / 8K
+   in 2,048-row chunks)
+   model            kernel     before (B1, 1K, 8K)            after                          change
+   Qwen3.8-27B      margin     18.153 1425.5 1495.7           18.082 1417.7 1495.3           -0.4%  -0.5%  0.0%
+                               18.131 1420.1 1495.4           18.086 1419.3 1496.4           -0.2%  -0.1% +0.1%
+   Gemma 4 26B A4B  margin     91.687 1126.5 1112.1           91.887 1127.0 1112.2           +0.2%   0.0%  0.0%
+                               91.729 1127.0 1111.9           91.893 1127.0 1112.2           +0.2%   0.0%  0.0%
+   Gemma 4 31B      margin     15.428 1267.3 1218.3           15.404 1265.2 1218.2           -0.2%  -0.2%  0.0%
+                               15.324 1265.6 1218.4           15.375 1265.2 1217.7           +0.3%   0.0%  0.0%
+   Qwen3.8-27B      two-pass   18.107 1422.7 1496.8           18.100 1403.9 1389.8           -0.0%  -1.3% -7.1%
+                               18.097 1417.6 1496.7           18.030 1403.4 1390.8           -0.4%  -1.0% -7.1%
+   Gemma 4 26B A4B  two-pass   91.706 1127.0 1112.2           88.617 1111.2 1052.5           -3.4%  -1.4% -5.4%
+                               91.607 1127.0 1112.4           88.744 1111.2 1052.9           -3.1%  -1.4% -5.3%
+   Gemma 4 31B      two-pass   15.410 1266.9 1218.4           15.165 1184.6  974.1           -1.6%  -6.5% -20.0%
+                               15.335 1265.8 1218.5           15.140 1185.4  973.9           -1.3%  -6.4% -20.1%
+
+4. Partition-record accuracy on synthetic keys and values (record_accuracy.txt; scripts/attn_acc.py builds the harness
+   from tests/test_metal_kernels.c): error of the records' combined value against float64, in units of 2^-24 sum p|v|,
+   8,192 keys, 256- and 512-wide heads, decode and prefill, scores with and without a rising ramp. The three kernels are
+   equal within 0.15 RMS everywhere (largest: 512-wide prefill without ramp, eager 0.54, two-pass 0.41, margin 0.54), so
+   the eager kernel's gate excess comes from the model's own activations and is not reproduced by synthetic data.
+
+5. matmul2d precision (scripts/pv_probe.*): 32 x 64 FP32 probabilities from threadgroup memory times 64 x 256 BF16
+   values errs by at most 3.1, on average 0.29, units of 2^-24 sum |p v|: full FP32. The same probabilities split into
+   two BF16 terms err by 25.8 and 4.8. The earlier "P split" diagnosis variant (3759a9dc6) was therefore not a precision
+   fix and its change of the paired statistic was order noise.
+
+6. exp: Metal's exp on [-80, 0] at most 1.47 ulp (at -0.0088), mean +0.36 ulp, 62.0% correctly rounded
+   (build/test_metal_math_accuracy); numpy 2.5.2 float32 exp on the reference host at most 2.54 ulp, mean -0.07 ulp,
+   60.7% correctly rounded.

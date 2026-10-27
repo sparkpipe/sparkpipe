@@ -1,0 +1,23 @@
+Partition-record error against float64, units of 2^-24 sum p|v| (rms / max), 8,192 keys; ramp R adds R * position / context to every key's first component and sets every query's first component to 1, so the running maximum rises through the context.
+heads           path     ramp   eager (ff51be851)   two-pass (45626e53f)   margin (8b4836e52)
+32/16 x 256     decode   0      0.05 / 0.2           0.05 / 0.2             -
+32/16 x 256     prefill  0      0.23 / 2.2           0.10 / 1.1             -
+32/4 x 512      decode   0      0.13 / 1.2           0.12 / 1.1             -
+32/4 x 512      prefill  0      0.52 / 6.0           0.38 / 4.5             -
+32/16 x 256     decode   24     2.19 / 10.2          2.18 / 10.3            -
+32/16 x 256     prefill  24     5.81 / 63.7          5.79 / 63.6            -
+32/4 x 512      decode   24     3.94 / 24.6          3.94 / 24.9            -
+32/4 x 512      prefill  24     11.53 / 88.4         11.52 / 87.7           -
+32/16 x 256     decode   0.5    0.06 / 0.3           0.05 / 0.2             0.06 / 0.3
+32/16 x 256     prefill  0.5    0.24 / 2.5           0.11 / 1.0             0.24 / 2.3
+32/4 x 512      decode   0.5    0.16 / 3.0           0.15 / 3.1             0.17 / 2.9
+32/4 x 512      prefill  0.5    0.54 / 5.9           0.41 / 4.5             0.54 / 5.3
+32/16 x 256     decode   2      0.09 / 0.5           0.08 / 0.4             0.09 / 0.6
+32/16 x 256     prefill  2      0.31 / 2.1           0.21 / 1.6             0.31 / 2.9
+32/4 x 512      decode   2      0.20 / 2.5           0.19 / 2.6             0.20 / 1.8
+32/4 x 512      prefill  2      0.76 / 9.8           0.66 / 8.1             0.76 / 9.4
+32/16 x 256     decode   8      0.43 / 2.0           0.42 / 2.1             0.43 / 2.1
+32/16 x 256     prefill  8      1.45 / 10.4          1.40 / 10.3            1.44 / 10.4
+32/4 x 512      decode   8      0.85 / 5.7           0.85 / 5.6             0.86 / 6.2
+32/4 x 512      prefill  8      3.26 / 27.9          3.21 / 28.1            3.25 / 28.1
+The mean signed error is within +-0.016 in every case. With a ramp the score's own FP32 rounding dominates and is common to all three.
