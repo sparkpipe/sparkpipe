@@ -25,7 +25,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tapstream import frames  # noqa: E402
 
-DTYPES = {"BF16": (np.uint16, torch.bfloat16), "F32": (np.float32, torch.float32)}
+DTYPES = {"BF16": (np.uint16, torch.bfloat16), "F32": (np.float32, torch.float32), "I64": (np.int64, torch.int64)}
 
 
 SPLITMIX_INCREMENT = 0x9e3779b97f4a7c15 - (1 << 64)
@@ -69,15 +69,19 @@ def coupled_choice(logits, sampling, position):
 
 
 class SafeTensors:
-    def __init__(self, path):
+    def __init__(self, path, prefix=""):
         self.path = Path(path)
+        self.prefix = prefix
         with open(self.path, "rb") as handle:
             size = struct.unpack("<Q", handle.read(8))[0]
             self.header = json.loads(handle.read(size))
         self.base = 8 + size
 
+    def names(self):
+        return {name[len(self.prefix):] for name in self.header if name != "__metadata__" and name.startswith(self.prefix)}
+
     def load(self, name, device):
-        entry = self.header[name]
+        entry = self.header[self.prefix + name]
         numpy_type, torch_type = DTYPES[entry["dtype"]]
         begin, end = entry["data_offsets"]
         array = np.memmap(self.path, dtype=numpy_type, mode="r", offset=self.base + begin, shape=((end - begin) // np.dtype(numpy_type).itemsize,))
@@ -124,15 +128,42 @@ def rotate(x, positions, inv, scale):
     return x * cos[:, None, :] + rotated * sin[:, None, :]
 
 
+class TargetTensors:
+    """One target safetensors shard, or a model.safetensors.index.json whose shards sit beside it."""
+
+    def __init__(self, path):
+        path = Path(path)
+        if path.suffix == ".json":
+            self.shards = {name: path.parent / shard for name, shard in json.loads(path.read_text())["weight_map"].items()}
+        else:
+            self.shards = None
+            self.single = SafeTensors(path)
+        self.open = {}
+
+    def load(self, name, device):
+        if self.shards is None:
+            return self.single.load(name, device)
+        shard = self.shards[name]
+        if shard not in self.open:
+            self.open[shard] = SafeTensors(shard)
+        return self.open[shard].load(name, device)
+
+
 class BlockDrafter:
     convention = "shift"
 
     def __init__(self, directory, shard, names, device):
         self.device = device
-        self.config = json.load(open(Path(directory) / "config.json"))
-        c = self.config
-        weights = SafeTensors(Path(directory) / "model.safetensors")
-        target = SafeTensors(shard)
+        raw = json.load(open(Path(directory) / "config.json"))
+        if "dspark_target_layer_ids" in raw:
+            self.config = c = {**raw, "num_hidden_layers": raw["dspark_num_hidden_layers"], "block_size": raw["dspark_block_size"],
+                               "aux_hidden_state_layer_ids": raw["dspark_target_layer_ids"], "mask_token_id": raw["dspark_noise_token_id"],
+                               "use_sliding_window": False}
+            weights = SafeTensors(Path(directory) / "model-dspark.safetensors", "mtp.")
+        else:
+            self.config = c = {**raw.get("transformer_layer_config", {}), **{k: v for k, v in raw.items() if k != "transformer_layer_config"}}
+            weights = SafeTensors(Path(directory) / "model.safetensors")
+        target = TargetTensors(shard)
         self.eps = c["rms_norm_eps"]
         self.heads, self.kv_heads, self.head_dim = c["num_attention_heads"], c["num_key_value_heads"], c["head_dim"]
         dflash = c.get("dflash_config", {})
@@ -149,16 +180,30 @@ class BlockDrafter:
             self.layers.append({name: weights.load(prefix + name + ".weight", device) for name in (
                 "input_layernorm", "post_attention_layernorm", "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj",
                 "self_attn.o_proj", "self_attn.q_norm", "self_attn.k_norm", "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj")})
-        has = weights.header.keys()
+        has = weights.names()
         self.markov_w1 = weights.load("markov_head.markov_w1.weight", device) if "markov_head.markov_w1.weight" in has else None
         self.markov_w2 = weights.load("markov_head.markov_w2.weight", device) if "markov_head.markov_w2.weight" in has else None
         self.confidence = (weights.load("confidence_head.proj.weight", device), weights.load("confidence_head.proj.bias", device)) \
             if "confidence_head.proj.weight" in has else None
-        self.embed = target.load(names["embed"], device)
+        own = "lm_head.weight" in has and "embed_tokens.weight" in has
+        self.embed = weights.load("embed_tokens.weight", device) if own else target.load(names["embed"], device)
         self.head = target.load(names["head"], device)
         self.target_norm = target.load(names["norm"], device)
+        self.draft_head, self.targets = None, None
+        if "lm_head.weight" in has:
+            self.draft_head = weights.load("lm_head.weight", device)
+            self.targets = torch.arange(self.draft_head.shape[0], device=device) + weights.load("d2t", device)
         self.inv, self.attention = yarn_frequencies(c, device)
-        self.window = None
+        self.window = c.get("sliding_window") if c.get("use_sliding_window") else None
+
+    def logits(self, y):
+        return (y @ (self.draft_head if self.draft_head is not None else self.head).t()).float()
+
+    def expand(self, logits):
+        if self.targets is None:
+            return logits
+        full = torch.full((self.head.shape[0],), float("-inf"), device=logits.device)
+        return full.index_copy(0, self.targets, logits)
 
     def context(self, taps, positions, chunk=4096):
         keys, values = [[] for _ in self.layers], [[] for _ in self.layers]
@@ -198,8 +243,7 @@ class BlockDrafter:
             up = x @ layer["mlp.up_proj"].t()
             h = h + ((torch.nn.functional.silu(gate.float()) * up.float()).to(torch.bfloat16) @ layer["mlp.down_proj"].t()).float()
         y = rms(h, self.norm, self.eps).to(torch.bfloat16)
-        base = (y @ self.head.t()).float()
-        return y, base
+        return y, self.logits(y)
 
     def draft_range(self, anchor_token, anchor_position, keys, values, begin, end):
         block, heads, kv_heads, dim = self.block, self.heads, self.kv_heads, self.head_dim
@@ -226,7 +270,7 @@ class BlockDrafter:
             up = x @ layer["mlp.up_proj"].t()
             h = h + ((torch.nn.functional.silu(gate.float()) * up.float()).to(torch.bfloat16) @ layer["mlp.down_proj"].t()).float()
         y = rms(h, self.norm, self.eps).to(torch.bfloat16)
-        return y, (y @ self.head.t()).float()
+        return y, self.logits(y)
 
     def pre_attention(self, layer, h, positions):
         block, heads, kv_heads, dim = self.block, self.heads, self.kv_heads, self.head_dim
@@ -263,7 +307,7 @@ class BlockDrafter:
             q, kb, vb = self.pre_attention(layer, h, positions)
             h = self.post_attention(layer, h, self.attend_window(index, q, kb, vb, keys, values, start, block_at, mask))
         y = rms(h, self.norm, self.eps).to(torch.bfloat16)
-        return y, (y @ self.head.t()).float()
+        return y, self.logits(y)
 
     def heads32(self):
         if not hasattr(self, "_heads32"):
@@ -281,7 +325,7 @@ class BlockDrafter:
             if self.markov_w1 is not None:
                 latent = self.markov_w1[previous].float()
                 logits = logits + (markov_w2 @ latent)
-            token = int(torch.argmax(logits))
+            token = int(torch.argmax(self.expand(logits)))
             if confidence_head is not None:
                 feature = torch.cat([y[slot].float(), latent]) if latent is not None else y[slot].float()
                 confidence.append(float(torch.sigmoid(confidence_head[0] @ feature + confidence_head[1])))
@@ -298,6 +342,7 @@ class BlockDrafter:
             if self.markov_w1 is not None:
                 latent = torch.index_select(self.markov_w1, 0, previous.view(1))[0].float()
                 logits = logits + (markov_w2 @ latent)
+            logits = self.expand(logits)
             token = torch.argmax(logits)
             if sampling is not None:
                 token = torch.where(sampled, coupled_choice(logits, sampling, position + slot), token)
@@ -354,7 +399,7 @@ class DraftGraph:
             return d.pre_attention(d.layers[index], h, self.positions)
         y = rms(h, d.norm, d.eps).to(torch.bfloat16)
         sampling = (self.inputs[2], self.rates[0], self.rates[1], self.inputs[3])
-        return d.walk(y, (y @ d.head.t()).float(), self.inputs[0], d.block, sampling, self.inputs[1], self.inputs[4] != 0)
+        return d.walk(y, d.logits(y), self.inputs[0], d.block, sampling, self.inputs[1], self.inputs[4] != 0)
 
     def build(self, capturing):
         stream = torch.cuda.Stream()
@@ -444,7 +489,7 @@ def main():
     parser.add_argument("--taps", nargs="+", required=True)
     parser.add_argument("--delta", type=int, default=0)
     parser.add_argument("--convention", choices=("shift", "inplace"), help="defaults to the drafter's own")
-    parser.add_argument("--window", type=int, default=4096, help="context positions a block drafter attends to, as draftd keeps them; latent drafters use their own layer windows")
+    parser.add_argument("--window", type=int, help="context positions a block drafter attends to, as draftd keeps them (default: the drafter's sliding window, else 4096); latent drafters use their own layer windows")
     parser.add_argument("--donor-taps", nargs="*", default=[], help="recordings that only lend context: a request recorded from position s > 0 takes positions below s from the latest earlier request that holds them all and matches its recorded prompt rows")
     parser.add_argument("--max-anchors", type=int, default=400, help="per request, spread over the reply")
     parser.add_argument("--out", required=True)
@@ -458,7 +503,7 @@ def main():
     drafter = open_drafter(args.drafter, args.target_shard, {"embed": args.embed, "head": args.head, "norm": args.norm}, device)
     args.convention = args.convention or drafter.convention
     if hasattr(drafter, "window"):
-        drafter.window = args.window
+        drafter.window = args.window or drafter.window or 4096
     hello, streams = requests(args.taps, None)
     donors = dict(streams)
     if args.donor_taps:
@@ -488,6 +533,7 @@ def main():
     head_agree = head_total = 0
     reply_agree = reply_total = 0
     anchor_log = open(args.anchors_out, "w") if args.anchors_out else None
+    head32 = drafter.head.float()
     for key, item in sorted(streams.items()):
         end = max(item["positions"]) + 1
         start = end - 1
@@ -510,7 +556,8 @@ def main():
         pos = torch.arange(start, end, device=device)
         with torch.no_grad():
             keys, values = drafter.context(taps.reshape(len(records), -1), pos)
-            predicted = torch.cat([torch.argmax((rms(final[begin:begin + 2048].to(device), drafter.target_norm, drafter.eps).to(torch.bfloat16) @ drafter.head.t()).float(), -1)
+            predicted = torch.cat([torch.argmax(torch.nn.functional.linear(rms(final[begin:begin + 2048].to(device), drafter.target_norm, drafter.eps).to(torch.bfloat16).float(),
+                                                                           head32), -1)
                                    for begin in range(0, len(records), 2048)])
         del taps, final
         agree = (predicted[own:-1] == tokens[own + 1:]).sum().item()

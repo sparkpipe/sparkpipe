@@ -40,9 +40,9 @@ HUB_FILES = (
     ("config/litellm-config.yaml", "sparkpipe-chat/litellm.yaml"),
 )
 SSH = ("ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
-INFERENCE_ROOTS = ("/srv/workspace/", "/home/")
+CONTROLLER = {"token": "/srv/workspace/sparkpipe/swap-controller/token", "url": "http://127.0.0.1:8440/status"}
 READ = r'''
-import glob, json, os, re, subprocess, sys
+import glob, json, os, re, subprocess, sys, urllib.request
 request = json.load(sys.stdin)
 home = os.path.expanduser("~")
 files = {}
@@ -58,6 +58,14 @@ if request["weightd"]:
     line = subprocess.run("grep 'spark_weightd ready' ~/weightd.log | tail -1", shell=True, capture_output=True, text=True).stdout
     match = re.search(r"ceiling=(\d+) kv_reserve=(\d+)", line)
     weightd = {"device_bytes_max": int(match.group(1)), "kv_reserve_bytes": int(match.group(2))} if match else None
+active = None
+if request.get("controller"):
+    try:
+        token = open(request["controller"]["token"]).read().strip()
+        status = urllib.request.Request(request["controller"]["url"], headers={"Authorization": "Bearer " + token})
+        active = json.load(urllib.request.urlopen(status, timeout=5)).get("active")
+    except Exception as error:
+        active = {"unreachable": "%s: %s" % (type(error).__name__, error)}
 units = {}
 for unit in request.get("units", []):
     shown = subprocess.run(["systemctl", "--user", "show", unit, "-p", "ActiveState", "-p", "ExecStart", "--value"], capture_output=True, text=True).stdout
@@ -71,7 +79,7 @@ if request.get("prefix"):
             prefixes[record_id] = namespace["directory_prefix"](namespace["Path"](directory))
         except Exception as error:
             prefixes[record_id] = "%s: %s" % (type(error).__name__, error)
-print(json.dumps({"files": files, "roots": roots, "apis": apis, "weightd": weightd, "prefixes": prefixes, "units": units}))
+print(json.dumps({"files": files, "roots": roots, "apis": apis, "weightd": weightd, "prefixes": prefixes, "units": units, "active": active}))
 '''
 WRITE = r'''
 import json, os, sys
@@ -136,25 +144,7 @@ def render(record_id: str, directory: Path) -> None:
 
 
 def draftd_environment(record_id: str) -> tuple[str, dict[str, str]]:
-    lane = record(record_id)
-    spec, server = lane.get("draftd"), lane.get("draft_server")
-    if spec is None or server is None:
-        raise SystemExit(f"{record_id}: a draft server needs both a draft_server and a draftd record")
-    drafter = spec["drafter"]
-    paths = [spec["source"], drafter.split(":", 1)[1] if drafter.startswith("dspark:") else drafter, spec["log"]]
-    if spec.get("target_shard"):
-        paths.append(spec["target_shard"])
-    for path in paths:
-        if not path.startswith(INFERENCE_ROOTS) or ".." in path.split("/"):
-            raise SystemExit(f"{record_id}: draftd path {path} is not on the hub's local NVMe ({', '.join(INFERENCE_ROOTS)}); inference never reads CephFS or cold storage")
-    stream = (lane.get("taps") or {}).get("stream", "")
-    tap_host, _, tap_port = stream.rpartition(":")
-    if not tap_host or not tap_port.isdigit():
-        raise SystemExit(f"{record_id}: a draft server needs the record's taps.stream as host:port, the endpoint the rank streams to and draftd listens on")
-    environment = {"DRAFTD_UNIT": spec["unit"], "DRAFTD_LOG": spec["log"], "DRAFTD_DRAFTER": drafter, "DRAFTD_TARGET_SHARD": spec.get("target_shard", ""),
-                   "DRAFTD_TAP_HOST": tap_host, "DRAFTD_TAP_PORT": tap_port, "DRAFTD_DRAFT_PORT": str(server["port"]),
-                   "DRAFTD_WINDOW": str(spec["window"]), "DRAFTD_CONTEXT_BYTES": str(spec["context_bytes"]), "DRAFTD_RESTART": spec.get("restart", "no")}
-    return spec["source"], environment
+    return stage_lane.draft_environment(record_id, record(record_id))
 
 
 def draftd_flags(environment: dict[str, str]) -> list[str]:
@@ -162,6 +152,9 @@ def draftd_flags(environment: dict[str, str]) -> list[str]:
              f"--draft-port {environment['DRAFTD_DRAFT_PORT']}", f"--window {environment['DRAFTD_WINDOW']}", f"--context-bytes {environment['DRAFTD_CONTEXT_BYTES']}"]
     if environment["DRAFTD_TARGET_SHARD"]:
         flags.append(f"--target-shard {environment['DRAFTD_TARGET_SHARD']}")
+    for name, flag in (("DRAFTD_EMBED", "--embed"), ("DRAFTD_HEAD", "--head"), ("DRAFTD_NORM", "--norm"), ("DRAFTD_DELTA", "--delta")):
+        if environment.get(name):
+            flags.append(f"{flag} {environment[name]}")
     return flags
 
 
@@ -266,8 +259,10 @@ def audit(selected: list[str], fleet: bool = True) -> int:
                            for record_id in selected if stage_lane.MODELS[lanes[record_id]["model"]].get("tokenizer_json")}
             prefix = {"source": (HERE / "tokenizer_text_prefix.py").read_text(), "directories": directories}
             drafters = {record_id: draftd_environment(record_id)[1] for record_id in selected if lanes[record_id].get("draftd")}
+            scoped = {record_id for record_id in drafters if lanes[record_id]["draftd"].get("lifecycle") == "model"}
             hub_future = pool.submit(remote, HUB, READ, {"paths": sorted(expected_hub), "weightd": False, "prefix": prefix,
-                                                         "units": sorted(environment["DRAFTD_UNIT"] for environment in drafters.values())})
+                                                         "units": sorted(environment["DRAFTD_UNIT"] for environment in drafters.values()),
+                                                         "controller": CONTROLLER if scoped else None})
             for future in futures:
                 try:
                     host, live = future.result()
@@ -290,10 +285,17 @@ def audit(selected: list[str], fleet: bool = True) -> int:
                 for record_id, prefix in sorted(live.get("prefixes", {}).items()):
                     if prefix != lanes[record_id]["text_prompt_prefix_token_ids"]:
                         drift.append(f"DRIFT {record_id} text_prompt_prefix_token_ids {lanes[record_id]['text_prompt_prefix_token_ids']}, the publisher tokenizer gives {prefix}")
+                active = live.get("active")
+                if scoped and isinstance(active, dict):
+                    drift.append(f"UNREACHABLE the swap controller, so the model-scoped draft servers {sorted(scoped)} cannot be checked: {active['unreachable']}")
                 for record_id, environment in sorted(drafters.items()):
                     unit = environment["DRAFTD_UNIT"]
                     shown = live.get("units", {}).get(unit, "").replace("'", "")
                     missing = [flag for flag in draftd_flags(environment) if flag not in shown]
+                    if record_id in scoped and active != record_id:
+                        if shown.startswith("active") and not isinstance(active, dict):
+                            drift.append(f"DRIFT {record_id} {HUB}: draft server unit {unit} runs while {active} is the active model; its lifecycle is the model's")
+                        continue
                     if not shown.startswith("active"):
                         drift.append(f"DRIFT {record_id} {HUB}: draft server unit {unit} is not active")
                     elif missing or "/mnt/" in shown:

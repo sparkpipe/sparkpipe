@@ -261,6 +261,12 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   (`SparkTpMeshHardwareGuardKernel`, rank-15 profile, 2026-10-02) serially
   with about 400 ms of compute. Overlap the collectives of a 1,024-row MoE
   wave without reading the expert weights twice.
+- A wave does not split into lanes while a tap plan is set
+  (`StageRunnerLanesSplit`): the model writes its tap rows by step row, and a
+  lane's rows start at an offset the tap plan does not carry. A tapped lane
+  model (A.X K2 and GLM Full on the GLM stage; Gemma once its lanes land)
+  therefore prefills whole waves while a drafter is fed. Give each lane its
+  slab row offset so taps and lanes run together.
 
 ## Prefill
 
@@ -818,7 +824,7 @@ The sources are pinned. All three serve.
     - The lane serves −inf since 2026-10-26 14:55Z. The numpy reference masks the same way.
   - **Reference:** with both masking with −inf, the served tokens agree with the numpy reference at all 122 positions, served logprobs within 0.31 (median under 0.005). Under 0.0-fill, the Korean contract prompt had disagreed at 3 to 5 of 48 positions, and which positions moved with how the reference batched its prompts.
   - **Missing:**
-    - Speculation with the DSpark drafter is not wired.
+    - Speculation with the DSpark drafter is not wired. The GLM stage exports the drafter's taps (layer outputs, and the final hidden before the norm, since the stage norms its own output); its acceptance on our taps, the hub drafter and the fleet speculation A/B remain.
 - **Solar Open 2** (`upstage/Solar-Open2-250B@9190fbe6`, BF16, 0.50 TB): 48 layers, three linear-attention layers (short convolution 4, 64 heads) for each GQA layer, no position encoding, 320 routed experts (top 8) plus one shared, 1M context. The Upstage Solar License asks that derivatives be named Solar and show "Built with Solar".
   - **Serving:** contract, tokenizer (the C tokenizer matches HF on 306 mixed English, Korean, code and emoji texts), driver (`solar_open2` on the Ling stage, with its options for gated GQA without position encoding over position-sharded KV, the low-rank decay and output gates, the doubled write gate and 1e-5 norms), BF16 packer, numpy reference and lane 4. Answers are right in English and Korean, including a 3,076-token passkey; the UI smoke passes 6 of 6, tool calls included.
   - **Measured:** 61.2 tok/s at B1 without speculation (median of eight runs), 1,025 tok/s prefill at 6K. The grouped expert kernel's routed-row grid (#1584) took it from 56.2 and 56.6 to 60.4 and 62.5 in one hold, capture unchanged. The cp.async expert gather and grouped skinny batches (#1633) took prefill on an 8.1K prompt from 995 and 1,000 to 1,476 and 1,489 tok/s in one hold (16K needle 18.1 to 13.0 s, 64K 105.5 to 83.9 s), captures token-identical. Every routed expert is split over the 16 ranks by rows, 80 real rows per rank. Same-hold A/B on 2026-10-26: 47.0 and 47.4 tok/s with the 80 rows zero-padded to 128 against 57.0 and 56.4 at 80 rows; prefill on an 8.1K prompt 972 and 973 against 1,003 and 994 tok/s. Earlier layouts measured 41.1 tok/s with 20 whole experts per rank. The 80-row pack is 31.5 GB per rank, against 49.6 GB padded.

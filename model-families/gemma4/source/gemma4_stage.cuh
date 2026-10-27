@@ -195,6 +195,9 @@ struct GemmaState
 	LmKvShardView sliding_views[GemmaShape<G>::kSlidingLayers];
 	LmKvShardView full_views[GemmaShape<G>::kFullLayers];
 	uint32_t kv_attached;
+	int16_t tap_output[G::kLayers];
+	uint16_t *tap_slab;
+	uint64_t tap_stride;
 };
 
 __global__ static void GemmaScaleRowsKernel(uint16_t *rows, uint64_t elements, float scale)
@@ -628,6 +631,15 @@ struct GemmaModel
 		return Launched();
 	}
 
+	static SparkStatus Tap(const State *state, uint32_t index, const uint16_t *hidden, uint32_t rows, cudaStream_t stream)
+	{
+		if ( state->tap_slab == 0 || state->tap_output[index] < 0 )
+			return SPARK_STATUS_OK;
+		LM_LAUNCH((LmCopyRowsStridedKernel<GM_THREADS>), dim3((G::kHidden + GM_THREADS - 1u) / GM_THREADS, rows), GM_THREADS, 0, stream,
+			hidden, state->tap_slab + (uint64_t)state->tap_output[index] * G::kHidden, rows, G::kHidden, state->tap_stride);
+		return Launched();
+	}
+
 	static SparkStatus PreNormLayers(State *state, const SparkStageRunnerStep *step, cudaStream_t stream)
 	{
 		const uint32_t rows = step->rows;
@@ -662,6 +674,8 @@ struct GemmaModel
 			else
 				GemmaAddRowsKernel<<<Blocks(width), GM_THREADS, 0, stream>>>(hidden, ffn, width);
 			status = Launched();
+			if ( status == SPARK_STATUS_OK )
+				status = Tap(state, index, hidden, rows, stream);
 			if ( status == SPARK_STATUS_OK && state->services->layer_done != 0 )
 				state->services->layer_done(state->services->context, index);
 		}
@@ -715,6 +729,8 @@ struct GemmaModel
 				GemmaPostNormAddKernel<GM_THREADS><<<rows, GM_THREADS, 0, stream>>>(hidden, state->partial, layer->post_ff_norm,
 					G::kLayerScalar ? layer->layer_scalar : (const float *)0, G::kHidden, G::kPostEpsilon);
 			status = Launched();
+			if ( status == SPARK_STATUS_OK )
+				status = Tap(state, index, hidden, rows, stream);
 			if ( status == SPARK_STATUS_OK && state->services->layer_done != 0 )
 				state->services->layer_done(state->services->context, index);
 		}
@@ -1094,6 +1110,29 @@ struct GemmaModel
 			(unsigned long long)state->arena_bytes, state->slots, state->max_rows, state->ffn_rows, state->expert_first);
 	}
 
+	static SparkStatus TapPlan(void *model, const SparkStageRunnerTapPlan *plan)
+	{
+		State *state = (State *)model;
+		int16_t outputs[G::kLayers];
+		if ( state == 0 || plan == 0 )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		for ( uint32_t layer = 0u; layer < G::kLayers; layer++ )
+			outputs[layer] = -1;
+		for ( uint32_t index = 0u; index < plan->entry_count; index++ )
+		{
+			if ( plan->entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL )
+				continue;
+			if ( plan->entries[index].form != SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT || plan->entries[index].layer >= G::kLayers )
+				SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+			outputs[plan->entries[index].layer] = (int16_t)index;
+		}
+		memcpy(state->tap_output, outputs, sizeof(outputs));
+		state->tap_slab = plan->capture != 0u ? plan->slab : 0;
+		state->tap_stride = plan->row_stride_elements;
+		fprintf(stderr, "%s: taps entries=%u capture=%u\n", G::Tag(), plan->entry_count, plan->capture);
+		return SPARK_STATUS_OK;
+	}
+
 	static const SparkStageRunnerModelInterface *Interface(void)
 	{
 		static const SparkStageRunnerModelInterface interface_table =
@@ -1112,7 +1151,11 @@ struct GemmaModel
 			RecurrentCopy,
 			ResetSlot,
 			ProbeBuffers,
-			Report
+			Report,
+			0,
+			0,
+			0,
+			TapPlan
 		};
 		return &interface_table;
 	}
