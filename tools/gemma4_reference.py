@@ -23,7 +23,10 @@
              every layer's experts taken from a's choice instead of its own
              top-k (the weights are still b's probabilities of those
              experts, renormalised), so a against bp is that noise without
-             the discrete expert choice. MoE models also write
+             the discrete expert choice; c and d are two more draws of the
+             same noise, like b with 512-wide chunks and the attention
+             scores' inner dimension in four parts (c) or with 2,048-wide
+             chunks and the scores unsplit (d). MoE models also write
              <out>/<name>.ref_<variant>.routes for a and b, the chosen
              experts as little-endian uint16 [layer][position][rank];
              --hidden also writes <out>/<name>.ref_<variant>.hidden, every
@@ -89,13 +92,16 @@ def bf16(values):
 
 REVERSED = False
 CHUNK = 1024
+QK_SPLIT = 2
+FLOOR = {"a": (False, 1024, 2), "b": (True, 1024, 2), "c": (True, 512, 4), "d": (True, 2048, 1)}
 
 
 def reduce_sum(values, axis=-1, keepdims=False):
     return np.flip(values, axis=axis).sum(axis=axis, keepdims=keepdims) if REVERSED else values.sum(axis=axis, keepdims=keepdims)
 
 
-def matmul(left, right, chunk=CHUNK):
+def matmul(left, right, chunk=None):
+    chunk = CHUNK if chunk is None else chunk
     if not REVERSED or left.shape[-1] <= chunk:
         return left @ right
     total = None
@@ -167,7 +173,7 @@ class Reference:
         self.softcap = config["final_logit_softcapping"]
         self.inv_freq = {}
         self.sequence = 0
-        self.reversed_of = []
+        self.order_of = []
         self.pin_source = []
         self.head = None
         self.routes = {}
@@ -219,7 +225,7 @@ class Reference:
             causal &= positions[None, :] > positions[:, None] - window
         output = np.empty((rows, heads, value.shape[-1]), dtype=np.float32)
         for head in range(heads):
-            scores = matmul(query[:, head, :], key[:, head // group, :].T, query.shape[-1] // 2) * np.float32(scale)
+            scores = matmul(query[:, head, :], key[:, head // group, :].T, query.shape[-1] // QK_SPLIT) * np.float32(scale)
             scores = np.where(causal, scores, -np.inf)
             weights = np.exp(scores - scores.max(axis=-1, keepdims=True))
             weights /= reduce_sum(weights, keepdims=True)
@@ -307,15 +313,15 @@ class Reference:
         return residual
 
     def forward(self, sequences):
-        global REVERSED
+        global REVERSED, CHUNK, QK_SPLIT
         residuals = [self.embed(tokens) for tokens in sequences]
         positions = [np.arange(len(tokens), dtype=np.int64) for tokens in sequences]
         for layer in range(self.config["num_hidden_layers"]):
             self.checkpoint.cache.clear()
             for index, position in enumerate(positions):
                 self.sequence = index
-                if self.reversed_of:
-                    REVERSED = self.reversed_of[index]
+                if self.order_of:
+                    REVERSED, CHUNK, QK_SPLIT = self.order_of[index]
                 residuals[index] = self.layer(layer, residuals[index], position)
                 if self.layer_outputs is not None:
                     self.layer_outputs.setdefault(index, []).append((np.ascontiguousarray(residuals[index], dtype=np.float32).view(np.uint32) >> 16).astype(np.uint16))
@@ -324,8 +330,8 @@ class Reference:
         final = widen(self.checkpoint.raw(PREFIX + "norm.weight"))
         normed = []
         for index, residual in enumerate(residuals):
-            if self.reversed_of:
-                REVERSED = self.reversed_of[index]
+            if self.order_of:
+                REVERSED, CHUNK, QK_SPLIT = self.order_of[index]
             normed.append(bf16(rms(residual, final, self.epsilon)))
         return normed
 
@@ -445,17 +451,17 @@ def gate_prompts(args):
 
 
 def teacher(args):
-    global REVERSED
+    global REVERSED, CHUNK, QK_SPLIT
     variants = args.variants.split(",")
-    if not variants or any(label not in ("a", "b", "bp") for label in variants) or len(set(variants)) != len(variants):
-        raise ValueError("--variants takes distinct a, b and bp")
+    if not variants or any(label not in ("a", "b", "bp", "c", "d") for label in variants) or len(set(variants)) != len(variants):
+        raise ValueError("--variants takes distinct a, b, bp, c and d")
     reference = Reference(args.checkpoint)
     if "bp" in variants and ("a" not in variants or not reference.moe):
         raise ValueError("bp pins b to a's experts: it needs a in the same pass and an MoE model")
     prompts = json.loads(Path(args.prompts).read_text())["prompts"]
     runs = [(prompt, label) for label in variants for prompt in prompts]
     first_a = variants.index("a") * len(prompts) if "a" in variants else None
-    reference.reversed_of = [label != "a" for _, label in runs]
+    reference.order_of = [FLOOR["b" if label == "bp" else label] for _, label in runs]
     reference.pin_source = [first_a + index % len(prompts) if label == "bp" else None for index, (_, label) in enumerate(runs)]
     if "bp" in variants and variants.index("bp") < variants.index("a"):
         raise ValueError("list a before bp so a's experts are chosen first in every layer")
@@ -467,7 +473,7 @@ def teacher(args):
     for index, ((prompt, label), hidden) in enumerate(zip(runs, normed)):
         if args.hidden:
             np.ascontiguousarray(np.stack(reference.layer_outputs[index]), dtype="<u2").tofile(out / f"{prompt['name']}.ref_{label}.hidden")
-        REVERSED = label != "a"
+        REVERSED, CHUNK, QK_SPLIT = FLOOR["b" if label == "bp" else label]
         if reference.moe and label != "bp":
             np.ascontiguousarray(np.stack(reference.routes[index]), dtype="<u2").tofile(out / f"{prompt['name']}.ref_{label}.routes")
         with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
