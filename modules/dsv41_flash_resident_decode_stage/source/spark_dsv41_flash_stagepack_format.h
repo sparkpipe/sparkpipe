@@ -28,6 +28,18 @@
 #define SPARK_DSV41_FLASH_STAGEPACK_CHECK_SELF_OVERLAP (-6)
 #define SPARK_DSV41_FLASH_STAGEPACK_CHECK_GLOBALS (-7)
 #define SPARK_DSV41_FLASH_STAGEPACK_CHECK_LAYER_SET (-8)
+#define SPARK_DSV41_FLASH_STAGEPACK_CHECK_CONTRACT (-9)
+#define SPARK_DSV41_FLASH_STAGEPACK_CHECK_IDENTITY (-10)
+#define SPARK_DSV41_FLASH_STAGEPACK_CHECK_ENGRAM_HEADER (-11)
+#define SPARK_DSV41_FLASH_STAGEPACK_CHECK_ENGRAM_RANK (-12)
+#define SPARK_DSV41_FLASH_STAGEPACK_CHECK_ENGRAM_CHECKPOINT (-13)
+#define SPARK_DSV41_FLASH_STAGEPACK_CHECK_ENGRAM_ENTRY (-14)
+#define SPARK_DSV41_FLASH_ENGRAM_MAGIC UINT32_C(0x31474544)
+#define SPARK_DSV41_FLASH_ENGRAM_FORMAT_VERSION 1u
+#define SPARK_DSV41_FLASH_ENGRAM_TENSOR_COUNT 8u
+#define SPARK_DSV41_FLASH_ENGRAM_EMBED_COLUMNS \
+	((SPARK_DSV41_FLASH_MODEL_ENGRAM_MAX_NGRAM_SIZE - 1u) * SPARK_DSV41_FLASH_MODEL_ENGRAM_HEAD_COUNT * SPARK_DSV41_FLASH_MODEL_ENGRAM_HEAD_DIMENSION)
+#define SPARK_DSV41_FLASH_ENGRAM_KV_ROWS ((SPARK_DSV41_FLASH_MODEL_HC_MULT + 1u) * SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION)
 
 typedef enum SparkDsv41FlashStagePackPayloadType
 {
@@ -445,6 +457,96 @@ static inline int32_t SparkDsv41FlashStagePackDirectoryCheck(const SparkDsv41Fla
 		if ( layer_seen[layer] != expected )
 			return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_LAYER_SET);
 	}
+	*at = 0u;
+	return(0);
+}
+
+static inline uint32_t SparkDsv41FlashStagePackBytesZero(const uint8_t *bytes,uint32_t count)
+{
+	uint32_t index;
+	for ( index = 0u; index < count; index++ )
+		if ( bytes[index] != 0u )
+			return(0u);
+	return(1u);
+}
+
+static inline uint32_t SparkDsv41FlashStagePackHexDigit(char c)
+{
+	return(c >= '0' && c <= '9' ? (uint32_t)(c - '0') : c >= 'a' && c <= 'f' ? (uint32_t)(c - 'a' + 10) : 16u);
+}
+
+static inline int32_t SparkDsv41FlashStagePackIdentityCheck(const SparkDsv41FlashStagePackHeader *header,const char *contract_sha256_hex)
+{
+	uint32_t index,high,low;
+	if ( contract_sha256_hex == 0 || strlen(contract_sha256_hex) != 2u * SPARK_DSV41_FLASH_STAGEPACK_SHA256_BYTES )
+		return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_CONTRACT);
+	for ( index = 0u; index < SPARK_DSV41_FLASH_STAGEPACK_SHA256_BYTES; index++ )
+	{
+		high = SparkDsv41FlashStagePackHexDigit(contract_sha256_hex[2u * index]);
+		low = SparkDsv41FlashStagePackHexDigit(contract_sha256_hex[2u * index + 1u]);
+		if ( high > 15u || low > 15u || header->contract_sha256[index] != ((high << 4u) | low) )
+			return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_CONTRACT);
+	}
+	if ( header->model_revision[0] == '\0' || header->model_revision[SPARK_DSV41_FLASH_STAGEPACK_MODEL_REVISION_BYTES - 1u] != '\0' ||
+		SparkDsv41FlashStagePackBytesZero(header->source_config_sha256,SPARK_DSV41_FLASH_STAGEPACK_SHA256_BYTES) != 0u ||
+		SparkDsv41FlashStagePackBytesZero(header->pack_recipe_sha256,SPARK_DSV41_FLASH_STAGEPACK_SHA256_BYTES) != 0u )
+		return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_IDENTITY);
+	return(0);
+}
+
+static inline int32_t SparkDsv41FlashEngramHeaderCheck(const SparkDsv41FlashStagePackHeader *engram,const SparkDsv41FlashStagePackHeader *pack,uint32_t tp_rank,uint64_t file_bytes)
+{
+	const uint64_t directory_bytes = (uint64_t)SPARK_DSV41_FLASH_ENGRAM_TENSOR_COUNT * sizeof(SparkDsv41FlashStagePackEntry);
+	if ( engram->magic != SPARK_DSV41_FLASH_ENGRAM_MAGIC || engram->format_version != SPARK_DSV41_FLASH_ENGRAM_FORMAT_VERSION ||
+		engram->header_bytes != sizeof(SparkDsv41FlashStagePackHeader) || engram->directory_entry_bytes != sizeof(SparkDsv41FlashStagePackEntry) ||
+		engram->tensor_count != SPARK_DSV41_FLASH_ENGRAM_TENSOR_COUNT || engram->file_bytes != file_bytes || file_bytes < directory_bytes ||
+		engram->directory_offset < engram->header_bytes || engram->directory_offset > file_bytes - directory_bytes )
+		return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_ENGRAM_HEADER);
+	if ( engram->tp_degree != pack->tp_degree || engram->tp_rank != tp_rank )
+		return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_ENGRAM_RANK);
+	if ( memcmp(engram->model_revision,pack->model_revision,sizeof(engram->model_revision)) != 0 ||
+		memcmp(engram->source_config_sha256,pack->source_config_sha256,sizeof(engram->source_config_sha256)) != 0 )
+		return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_ENGRAM_CHECKPOINT);
+	return(0);
+}
+
+static inline uint32_t SparkDsv41FlashEngramEntryValid(const SparkDsv41FlashStagePackEntry *entry,uint32_t which,uint32_t slot,uint64_t file_bytes)
+{
+	const uint32_t layer = which == 0u ? SPARK_DSV41_FLASH_MODEL_ENGRAM_LAYER_0 : SPARK_DSV41_FLASH_MODEL_ENGRAM_LAYER_1;
+	const uint64_t elements = (uint64_t)entry->rows * entry->columns;
+	const uint32_t block = SPARK_DSV41_FLASH_STAGEPACK_FP8_BLOCK;
+	uint32_t shape;
+	uint64_t scale;
+	if ( entry->tensor_kind != 2u * slot + which || entry->layer_index != layer || entry->group_count != 1u || entry->rows == 0u )
+		return(0u);
+	if ( slot < 2u )
+	{
+		shape = slot == 0u ? entry->columns == SPARK_DSV41_FLASH_MODEL_ENGRAM_HEAD_DIMENSION :
+			entry->rows == SPARK_DSV41_FLASH_ENGRAM_KV_ROWS && entry->columns == SPARK_DSV41_FLASH_ENGRAM_EMBED_COLUMNS;
+		scale = slot == 0u ? (uint64_t)entry->rows * (entry->columns / block) :
+			(uint64_t)((entry->rows + block - 1u) / block) * ((entry->columns + block - 1u) / block);
+		if ( shape == 0u || entry->payload_type != SPARK_DSV41_FLASH_STAGEPACK_PAYLOAD_PACKED_WEIGHT || entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 ||
+			entry->scale_encoding != SPARK_WEIGHT_SCALE_ENCODING_E8M0 || entry->payload_bytes != elements || entry->scale_bytes != scale ||
+			entry->scale_offset > file_bytes || entry->scale_bytes > file_bytes - entry->scale_offset )
+			return(0u);
+	}
+	else if ( entry->rows != SPARK_DSV41_FLASH_MODEL_HC_MULT || entry->columns != SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION ||
+		entry->payload_type != SPARK_DSV41_FLASH_STAGEPACK_PAYLOAD_BF16 || entry->weight_codec != SPARK_WEIGHT_CODEC_BF16 ||
+		entry->scale_encoding != SPARK_WEIGHT_SCALE_ENCODING_NONE || entry->payload_bytes != elements * sizeof(uint16_t) || entry->scale_bytes != 0u )
+		return(0u);
+	return(entry->payload_offset <= file_bytes && entry->payload_bytes <= file_bytes - entry->payload_offset ? 1u : 0u);
+}
+
+static inline int32_t SparkDsv41FlashEngramDirectoryCheck(const SparkDsv41FlashStagePackEntry *entries,uint64_t file_bytes,uint32_t *at)
+{
+	uint32_t which,slot;
+	for ( which = 0u; which < 2u; which++ )
+		for ( slot = 0u; slot < 4u; slot++ )
+		{
+			*at = which * 4u + slot;
+			if ( SparkDsv41FlashEngramEntryValid(&entries[which * 4u + slot],which,slot,file_bytes) == 0u )
+				return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_ENGRAM_ENTRY);
+		}
 	*at = 0u;
 	return(0);
 }
