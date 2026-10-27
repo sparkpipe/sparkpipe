@@ -1725,6 +1725,15 @@ int main(int argc, char **argv)
 			for ( c = 0u; c < sizeof(row_counts) / sizeof(row_counts[0]); c++ )
 				TestLinear(row_counts[c],shapes[s][0],shapes[s][1],0u,SPARK_PROJECTION_GEMV,20000u);
 		TestLinear(1u,2816u,262144u,1u,SPARK_PROJECTION_GEMV,20000u);
+		{
+			static const uint32_t wide[][2] = { { 5376u, 16384u }, { 5376u, 18432u }, { 5376u, 43008u }, { 21504u, 5376u }, { 8192u, 5376u }, { 16384u, 5376u } };
+			for ( s = 0u; s < sizeof(wide) / sizeof(wide[0]); s++ )
+			{
+				TestLinear(1u,wide[s][0],wide[s][1],0u,SPARK_PROJECTION_GEMV,20000u);
+				TestLinear(64u,wide[s][0],wide[s][1],0u,SPARK_PROJECTION_GEMV,20000u);
+				TestLinear(1024u,wide[s][0],wide[s][1],0u,SPARK_PROJECTION_GEMV,20000u);
+			}
+		}
 		TestLinear(64u,2816u,262144u,1u,SPARK_PROJECTION_GEMV,20000u);
 	}
 	TestLinearRowIndependence(3u,64u,5120u,34816u,0u,SPARK_PROJECTION_GEMV,0u);
@@ -1750,13 +1759,20 @@ int main(int argc, char **argv)
 	TestAttention(300u,40u,1u);
 	TestAttention(2048u,64u,1u);
 	{
-		const AttentionCase qwen = att, sliding = { 16u, 8u, 256u, 8192u, 6144u, 1024u, 0u, 1.0f }, full = { 16u, 2u, 512u, 10240u, 9216u, 0u, 0u, 1.0f };
+		const AttentionCase qwen = att, sliding = { 16u, 8u, 256u, 8192u, 6144u, 1024u, 0u, 1.0f }, full = { 16u, 2u, 512u, 10240u, 9216u, 0u, 0u, 1.0f },
+			wide_sliding = { 32u, 16u, 256u, 16384u, 12288u, 1024u, 0u, 1.0f }, wide_full = { 32u, 4u, 512u, 20480u, 18432u, 0u, 0u, 1.0f };
 		att = sliding;
 		TestAttention(2048u,1u,0u);
 		TestAttention(2048u,64u,1u);
 		att = full;
 		TestAttention(1000u,1u,0u);
 		TestAttention(300u,40u,1u);
+		att = wide_sliding;
+		TestAttention(2048u,64u,1u);
+		TestAttention(1100u,300u,1u);
+		att = wide_full;
+		TestAttention(1000u,1u,0u);
+		TestAttention(1100u,300u,1u);
 		att = qwen;
 	}
 	TestGeluMul(2u);
