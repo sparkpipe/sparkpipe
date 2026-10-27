@@ -54,6 +54,7 @@ REQUIRED_WHERE_RUN = ("control_experts",)
 PROBE_CONTROLS = ("control",)
 CANDIDATES = ("metal", "metal_rows64")
 FLOOR_DRAWS = ("b", "c", "d")
+PINNED_FLOOR_DRAWS = ("bp", "cp", "dp")
 
 
 def aggregate(rows, label):
@@ -102,13 +103,14 @@ def row_paired(row):
     return -math.inf if share <= 0.5 else math.inf
 
 
-def floor_draws(rows, names):
-    draw_rows = {(row["label"], row["prompt"]): row for row in rows if row["label"].startswith("draw_")}
+def floor_draws(rows, names, prefix="", draws=FLOOR_DRAWS):
+    rows = [row for row in rows if row["label"].startswith(prefix) and (prefix or not row["label"].startswith("pinned_"))]
+    draw_rows = {(row["label"][len(prefix):], row["prompt"]): row for row in rows if row["label"].startswith(prefix + "draw_")}
     if not draw_rows:
         return None
     prompts = sorted({prompt for _, prompt in draw_rows})
-    pairs = [(x, y) for x in FLOOR_DRAWS for y in FLOOR_DRAWS if x != y]
-    by_label = {(row["label"], row["prompt"]): row for row in rows}
+    pairs = [(x, y) for x in draws for y in draws if x != y]
+    by_label = {(row["label"][len(prefix):], row["prompt"]): row for row in rows}
     noise = {}
     for prompt in prompts:
         missing = [f"draw_{x}_vs_floor_{y}" for x, y in pairs if (f"draw_{x}_vs_floor_{y}", prompt) not in draw_rows]
@@ -116,16 +118,17 @@ def floor_draws(rows, names):
             raise SystemExit(f"floor draws: {prompt} lacks {', '.join(missing)}")
         sigmas = {f"{x}_vs_{y}": row_paired(draw_rows[(f"draw_{x}_vs_floor_{y}", prompt)]) for x, y in pairs}
         noise[prompt] = {"paired_sigma": sigmas, "worst": max(sigmas.values())}
-    result = {"rule": "per prompt, the paired statistic against A of the candidate with each of draws B, C and D as the floor is no worse than "
-                      "the worst of one draw against another (every ordered pair of B, C and D); every prompt must pass",
+    named = ", ".join(draw.upper() for draw in draws)
+    result = {"rule": f"per prompt, the paired statistic against A of the candidate with each of draws {named} as the floor is no worse than "
+                      f"the worst of one draw against another (every ordered pair of {named}); every prompt must pass",
               "floor_noise": noise, "candidates": {}}
     for name in names:
         per_prompt = {}
         for prompt in prompts:
-            missing = [f"{name}_vs_floor_{y}" for y in FLOOR_DRAWS if (f"{name}_vs_floor_{y}", prompt) not in by_label]
+            missing = [f"{prefix}{name}_vs_floor_{y}" for y in draws if (f"{name}_vs_floor_{y}", prompt) not in by_label]
             if missing:
                 raise SystemExit(f"floor draws: {prompt} lacks {', '.join(missing)}")
-            sigmas = {y: row_paired(by_label[(f"{name}_vs_floor_{y}", prompt)]) for y in FLOOR_DRAWS}
+            sigmas = {y: row_paired(by_label[(f"{name}_vs_floor_{y}", prompt)]) for y in draws}
             worst = max(sigmas.values())
             per_prompt[prompt] = {"paired_sigma_by_floor": sigmas, "worst": worst, "floor_worst": noise[prompt]["worst"],
                                   "pass": worst <= noise[prompt]["worst"]}
@@ -226,7 +229,7 @@ def numerics_set(rows, prefix, out):
     floor = aggregate(rows, prefix + "floor")
     candidates = {name: (aggregate(rows, prefix + name), aggregate(rows, f"{prefix}{name}_vs_b")) for name in CANDIDATES + REQUIRED_CONTROLS + REQUIRED_WHERE_RUN + PROBE_CONTROLS
                   if prefix + name in labels and f"{prefix}{name}_vs_b" in labels}
-    draws = floor_draws([row for row in rows if not row["label"].startswith("pinned_")], list(candidates)) if prefix == "" else None
+    draws = floor_draws(rows, list(candidates), prefix, PINNED_FLOOR_DRAWS if prefix == "pinned_" else FLOOR_DRAWS)
     result = {"floor": floor, **({"floor_draws": {key: draws[key] for key in ("rule", "floor_noise")}} if draws is not None else {}),
               **{name: {"against_reference_a": pair[0], "against_reference_b": pair[1],
                         "verdict": verdict(pair[0], pair[1], floor, draws["candidates"][name] if draws is not None else None),
@@ -305,9 +308,14 @@ def main():
                                    if "floor_draws" in numerics[name]["verdict"] else {}),
                                 "pass": numerics[name]["verdict"]["pass"]}
                          for name in candidates},
-                      **{"pinned_" + name: {leg_name: {key: item[key] for key in ("kl_ratio_to_floor", "top1_disagreement_ratio_to_floor", "paired_sigma",
-                                                                                     "pass")}
-                                            for leg_name, item in pinned[name]["verdict"].items() if leg_name in ("reference_a", "reference_b")}
+                      **{"pinned_" + name: {**{leg_name: {key: item[key] for key in ("kl_ratio_to_floor", "top1_disagreement_ratio_to_floor", "paired_sigma",
+                                                                                        "pass")}
+                                               for leg_name, item in pinned[name]["verdict"].items() if leg_name in ("reference_a", "reference_b")},
+                                            "paired_rule": pinned[name]["verdict"]["paired_rule"],
+                                            **({"floor_draws": {prompt: {"worst": item["worst"], "floor_worst": item["floor_worst"], "pass": item["pass"]}
+                                                                for prompt, item in pinned[name]["verdict"]["floor_draws"]["per_prompt"].items()}}
+                                               if "floor_draws" in pinned[name]["verdict"] else {}),
+                                            "pass": pinned[name]["verdict"]["pass"]}
                          for name in pinned_candidates},
                       "decode": receipt["speed"]["decode"]["roofline"]}, indent=1))
     return 0 if numerics["pass"] and speculation_exact is not False and exact_identical is not False else 1
