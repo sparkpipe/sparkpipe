@@ -379,7 +379,7 @@
    "runtime_root": "/home/{host}/stage-lanes/kexaone2/lane11/root",
    "weightd_socket": "/tmp/spark_weightd.sock",
    "sequences": 4,
-   "rows": 1024,
+   "rows": 2048,
    "context_tokens": 262144,
    "kv_physical_pages": 4096,
    "kv_logical_pages": 16384,
