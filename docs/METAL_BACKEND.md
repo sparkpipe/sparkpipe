@@ -510,7 +510,7 @@ and a head tied to the embedding is read in full.
 
 ### Gemma 4 26B A4B
 
-`tools/gemma4_26b_metal_gates.sh PACK REFERENCE_DIR OUT REVISION` runs the
+`tools/gemma4_metal_gates.sh MODEL PACK REFERENCE_DIR OUT REVISION` runs the
 same gates on Gemma's four prompts (built by `tools/gemma4_reference.py
 gate-prompts`, 5,636 positions), with `tools/gemma4_reference.py teacher
 --variants a,b,bp` as the reference: numpy, the publisher's eager rounding,
