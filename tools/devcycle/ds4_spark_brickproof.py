@@ -23,8 +23,8 @@ SELF_SOURCE = "tools/devcycle/ds4_spark_brickproof.py"
 DEFAULT_NODES = tuple(f"spark{rank:x}" for rank in range(16))
 DEFAULT_SPARKPIPE_REPO = Path.home() / "sparkpipe"
 DEFAULT_RECOVERY_IDENTITY = Path.home() / ".ssh" / "sparkpipe_fleet_root"
-REMOTE_SCRIPT = "/tmp/ds4-spark-brickproof.py"
-REMOTE_PAYLOAD = "/tmp/ds4-spark-brickproof.json"
+REMOTE_BOOTSTRAP = ("import json,sys,types;d=json.load(sys.stdin);m=types.ModuleType('ds4_spark_brickproof');sys.modules[m.__name__]=m;"
+    "exec(compile(d['script'],'ds4_spark_brickproof.py','exec'),m.__dict__);print(json.dumps(getattr(m,'remote_'+sys.argv[1])(d['payload']),sort_keys=True))")
 MANAGEMENT_ADDRESS_BASE = 10
 MANAGEMENT_GATEWAY = "10.20.0.1"
 MANAGEMENT_INTERFACE = "enP7s7"
@@ -821,10 +821,9 @@ def decouple_optional_boot_work() -> None:
     atomic_write(Path("/etc/cloud/cloud-init.disabled"),"commissioned by ds4_spark_brickproof\n",0o644)
 
 
-def remote_apply(payload_path: Path) -> dict[str,object]:
+def remote_apply(payload: dict[str,object]) -> dict[str,object]:
     if os.geteuid() != 0:
         raise BrickproofError("remote apply must run as root")
-    payload = json.loads(payload_path.read_text())
     if not FIREWALL_RULESET.is_file():
         raise BrickproofError(f"{FIREWALL_RULESET} is missing; place the host firewall ruleset from the private coordination store before apply")
     memory_current = int(command(["systemctl","show","user-1000.slice","-p","MemoryCurrent","--value"]) or "0")
@@ -990,8 +989,7 @@ def asset_drift(assets: dict[str,dict[str,object]]) -> list[str]:
     return(drifted)
 
 
-def remote_audit(payload_path: Path) -> dict[str,object]:
-    payload = json.loads(payload_path.read_text())
+def remote_audit(payload: dict[str,object]) -> dict[str,object]:
     public_key = str(payload["fleet_public_key"])
     failures = []
     observations: dict[str,object] = {}
@@ -1327,27 +1325,17 @@ def ssh(host: str,*argv: str,input_bytes: bytes | None = None,timeout: int = 120
     return(run(["ssh","-T","-o","BatchMode=yes","-o","ConnectTimeout=8",host,*argv],input_bytes=input_bytes,timeout=timeout,check=check))
 
 
-def stage_remote(host: str,payload: dict[str,object]) -> None:
-    staged_payload = dict(payload)
-    script_data = str(staged_payload.pop("remote_script")).encode("utf-8")
-    payload_data = (json.dumps(staged_payload,sort_keys=True) + "\n").encode("utf-8")
-    ssh(host,"tee",REMOTE_SCRIPT,input_bytes=script_data)
-    ssh(host,"tee",REMOTE_PAYLOAD,input_bytes=payload_data)
-    ssh(host,"chmod","0700",REMOTE_SCRIPT)
-    ssh(host,"chmod","0600",REMOTE_PAYLOAD)
-
-
 def remote_action(host: str,action: str,payload: dict[str,object]) -> dict[str,object]:
+    if action not in ("apply","audit"):
+        raise BrickproofError(f"unknown remote action {action}")
     node_payload = dict(payload)
     node_payload["recovery_network"] = recovery_network_for_node(host)
-    stage_remote(host,node_payload)
-    try:
-        result = ssh(host,"sudo","-n","python3",REMOTE_SCRIPT,f"--remote-{action}",REMOTE_PAYLOAD,timeout=1200)
-        document = json.loads(result.stdout.decode("utf-8"))
-        document["node"] = host
-        return(document)
-    finally:
-        ssh(host,"rm","-f",REMOTE_SCRIPT,REMOTE_PAYLOAD,check=False)
+    script = str(node_payload.pop("remote_script"))
+    request = json.dumps({"payload":node_payload,"script":script},sort_keys=True).encode("utf-8")
+    result = ssh(host,"sudo","-n","python3","-I","-c",shlex.quote(REMOTE_BOOTSTRAP),action,input_bytes=request,timeout=1200)
+    document = json.loads(result.stdout.decode("utf-8"))
+    document["node"] = host
+    return(document)
 
 
 def emergency_probe(host: str,identity: Path) -> str:
@@ -1457,20 +1445,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sparkpipe-repo",type=Path,default=DEFAULT_SPARKPIPE_REPO)
     parser.add_argument("--source-ref",default="origin/main")
     parser.add_argument("--recovery-identity",type=Path,default=DEFAULT_RECOVERY_IDENTITY)
-    parser.add_argument("--remote-apply",type=Path,help=argparse.SUPPRESS)
-    parser.add_argument("--remote-audit",type=Path,help=argparse.SUPPRESS)
     return(parser.parse_args())
 
 
 def main() -> int:
-    args = parse_args()
-    if args.remote_apply is not None:
-        print(json.dumps(remote_apply(args.remote_apply),sort_keys=True))
-        return(0)
-    if args.remote_audit is not None:
-        print(json.dumps(remote_audit(args.remote_audit),sort_keys=True))
-        return(0)
-    return(controller_main(args))
+    return(controller_main(parse_args()))
 
 
 if __name__ == "__main__":
