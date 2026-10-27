@@ -915,10 +915,16 @@ static int32_t Glm5NextKda(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_
 	LM_LAUNCH((LmBoundedDecayKernel<G5N_THREADS, G5N_KDA_KEY>), dim3(rows, heads), G5N_THREADS, 0, stream, b->kda_decay_logit_bf16,
 		w->kda_decay_bias, w->kda_head_log_scale, b->kda_retention, heads, G5N_KDA_GATE_LOWER, rows);
 	LM_LAUNCH((LmBf16SigmoidRowsKernel<G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->kda_beta_logit, b->kda_write_gate, heads);
-	LM_LAUNCH((LmDeltaRuleKernel<G5N_THREADS, G5N_KDA_KEY, G5N_KDA_VALUE, float, G5N_KDA_DELTA_COLUMNS>),
-		dim3(sequences, heads, G5N_KDA_VALUE / G5N_KDA_DELTA_COLUMNS), G5N_THREADS, G5N_KDA_KEY * G5N_KDA_DELTA_COLUMNS * sizeof(float), stream,
-		b->kda_state_pool, b->kda_state_slot_bytes, b->kda_state_index, b->sequence_row_begin, (const uint32_t *)0, b->q_bf16, b->kv_slot_bf16,
-		b->gate_up_bf16, b->kda_retention, b->kda_write_gate, b->attention_out_bf16, heads, 1u, sequences, commit, b->sequence_row_indices);
+	if constexpr ( LM_WARP_LANES == 32u )
+		LM_LAUNCH((LmDeltaRuleColumnKernel<G5N_THREADS, G5N_KDA_KEY, G5N_KDA_VALUE, float>), dim3(sequences, heads, G5N_KDA_VALUE / LM_WARP_LANES),
+			LM_DELTA_COLUMN_THREADS, 0, stream, b->kda_state_pool, b->kda_state_slot_bytes, b->kda_state_index, b->sequence_row_begin, (const uint32_t *)0,
+			b->q_bf16, b->kv_slot_bf16, b->gate_up_bf16, b->kda_retention, b->kda_write_gate, b->attention_out_bf16, heads, 1u, sequences, commit,
+			b->sequence_row_indices);
+	else
+		LM_LAUNCH((LmDeltaRuleKernel<G5N_THREADS, G5N_KDA_KEY, G5N_KDA_VALUE, float, G5N_KDA_DELTA_COLUMNS>),
+			dim3(sequences, heads, G5N_KDA_VALUE / G5N_KDA_DELTA_COLUMNS), G5N_THREADS, G5N_KDA_KEY * G5N_KDA_DELTA_COLUMNS * sizeof(float), stream,
+			b->kda_state_pool, b->kda_state_slot_bytes, b->kda_state_index, b->sequence_row_begin, (const uint32_t *)0, b->q_bf16, b->kv_slot_bf16,
+			b->gate_up_bf16, b->kda_retention, b->kda_write_gate, b->attention_out_bf16, heads, 1u, sequences, commit, b->sequence_row_indices);
 	LM_LAUNCH((LmRmsNormSigmoidGateKernel<G5N_THREADS>), dim3((uint64_t)rows * heads), G5N_THREADS, 0, stream, b->attention_out_bf16,
 		b->kda_gate_bf16, (const float *)w->kda_out_norm, b->attention_out_bf16, G5N_KDA_VALUE, G5N_EPS);
 	LM_LAUNCH((LmCopyRowsKernel<G5N_THREADS>), dim3((rank_v + G5N_THREADS - 1u) / G5N_THREADS, rows), G5N_THREADS, 0, stream,
