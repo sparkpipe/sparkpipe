@@ -817,6 +817,8 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Speculation
 
+- Model drafts and their lookup extension stop at the same cost cap as lookup frames (2x a single step while a prefill waits, or the lower-priority chain cap). No mock scenario runs a waiting prefill beside a drafting request yet, so that path is covered only by its code; add one to tests/test_model_batch_engine_mock.c.
+
 - Tree verification is not wired. The policy engine resolves trees
   (`SparkSpeculationPolicyResolveVerifierTree`), but no caller passes one.
   Sequence state stores chains, the seam collapses DFT3 trees to one chain
