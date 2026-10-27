@@ -409,6 +409,7 @@ PYTHON_TESTS := \
 	tests/test_device_contract_cuda.py \
 	tests/test_device_contract_metal.py \
 	tests/test_metal_kernels.py \
+	tests/test_metal_bf16_convert.py \
 	tests/test_dry_law.py \
 	tests/test_family_defines_single_source.py \
 	tests/test_no_source_comments.py \
@@ -541,6 +542,7 @@ PYTHON_TESTS := \
 	tests/test_index_shard_host.py \
 	tests/test_kv_shard_cuda.py \
 	tests/test_gqa_shard_cuda.py \
+	tests/test_expert_tail_reference.py \
 	tests/test_head_certified_cuda.py \
 	tests/test_latent_gather_prefill_cuda.py \
 	tests/test_expanded_gather_prefill_cuda.py \
@@ -1352,8 +1354,13 @@ $(METAL_KERNEL_LIBRARY) $(METAL_TEST_KERNEL_LIBRARY):
 	@echo "SKIP $(notdir $@) (no Metal toolchain on this host)"
 endif
 
+ifneq ($(METAL4_TOOLCHAIN),)
 build/metal/test_bf16_kernels.metallib: build/metal/tests/bf16_convert_kernels.air | build
-	@if [ -n "$(METAL4_TOOLCHAIN)" ]; then xcrun -sdk macosx metallib $^ -o $@; else echo "SKIP $(notdir $@) (the Metal toolchain on this host has no Metal 4.0)"; fi
+	xcrun -sdk macosx metallib $^ -o $@
+else
+build/metal/test_bf16_kernels.metallib:
+	@echo "SKIP $(notdir $@) (the Metal toolchain on this host has no Metal 4.0)"
+endif
 
 build/test_metal_bf16_convert: tests/test_metal_bf16_convert.c $(DEVICE_METAL_LIBRARY) build/metal/test_bf16_kernels.metallib | build
 	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f build/metal/test_bf16_kernels.metallib ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_BF16_TEST_LIBRARY='"build/metal/test_bf16_kernels.metallib"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_metal_bf16_convert (no Metal device or kernel library)"; fi
