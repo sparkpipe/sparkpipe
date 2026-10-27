@@ -769,6 +769,14 @@ struct LingModel
 			Entry(state, "head_norm", "f32", &geometry->head_norm_offset, &geometry->head_norm_bytes, 0) != SPARK_STATUS_OK ||
 			Entry(state, "head", "bf16", &geometry->head_offset, &geometry->head_bytes, &geometry->head_rows) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+		if ( embed_rows * state->tp_degree != G::kVocab || geometry->head_rows * state->tp_degree != G::kVocab ||
+			geometry->embed_bytes != (uint64_t)embed_rows * G::kHidden * sizeof(uint16_t) ||
+			geometry->head_bytes != (uint64_t)geometry->head_rows * G::kHidden * sizeof(uint16_t) || geometry->head_norm_bytes != (uint64_t)G::kHidden * sizeof(float) )
+		{
+			fprintf(stderr, "%s: pack embed %u rows %llu bytes, head %u rows %llu bytes, head norm %llu bytes do not match the stage geometry\n", G::Tag(), embed_rows,
+				(unsigned long long)geometry->embed_bytes, geometry->head_rows, (unsigned long long)geometry->head_bytes, (unsigned long long)geometry->head_norm_bytes);
+			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
+		}
 		geometry->embed_rows = embed_rows;
 		return SPARK_STATUS_OK;
 	}
@@ -817,78 +825,78 @@ struct LingModel
 		for ( uint32_t index = 0u; index < G::kLayers; ++index )
 		{
 			LingLayer *layer = &state->layers[index];
-			SparkStatus status = Bind(state, lazy_pack, index, "input_norm", "f32", &layer->input_norm);
+			SparkStatus status = Bind(state, lazy_pack, index, "input_norm", "f32", &layer->input_norm, (uint64_t)G::kHidden * sizeof(float));
 			if ( status == SPARK_STATUS_OK )
-				status = Bind(state, lazy_pack, index, "post_norm", "f32", &layer->post_norm);
+				status = Bind(state, lazy_pack, index, "post_norm", "f32", &layer->post_norm, (uint64_t)G::kHidden * sizeof(float));
 			if ( index % G::kPeriod == G::kPhase )
 			{
 				if constexpr ( S::kGqa )
 				{
 					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "gqa_qkv", "bf16", &layer->gqa_qkv);
+						status = Bind(state, lazy_pack, index, "gqa_qkv", "bf16", &layer->gqa_qkv, (uint64_t)S::kGqaRankFused * G::kHidden * sizeof(uint16_t));
 					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "gqa_gate", "bf16", &layer->gqa_gate);
+						status = Bind(state, lazy_pack, index, "gqa_gate", "bf16", &layer->gqa_gate, (uint64_t)S::kGqaRankWidth * G::kHidden * sizeof(uint16_t));
 					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "gqa_out", "bf16", &layer->gqa_out);
+						status = Bind(state, lazy_pack, index, "gqa_out", "bf16", &layer->gqa_out, (uint64_t)G::kHidden * S::kGqaRankWidth * sizeof(uint16_t));
 				}
 				else
 				{
 					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "mla_q", "bf16", &layer->mla_q);
+						status = Bind(state, lazy_pack, index, "mla_q", "bf16", &layer->mla_q, (uint64_t)S::kMlaRankHeads * S::kQkDim * G::kHidden * sizeof(uint16_t));
 					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "mla_kv_a", "bf16", &layer->mla_kv_a);
+						status = Bind(state, lazy_pack, index, "mla_kv_a", "bf16", &layer->mla_kv_a, (uint64_t)S::kSlot * G::kHidden * sizeof(uint16_t));
 					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "mla_kv_norm", "f32", &layer->mla_kv_norm);
+						status = Bind(state, lazy_pack, index, "mla_kv_norm", "f32", &layer->mla_kv_norm, (uint64_t)G::kLatent * sizeof(float));
 					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "mla_uk", "bf16", &layer->mla_uk);
+						status = Bind(state, lazy_pack, index, "mla_uk", "bf16", &layer->mla_uk, (uint64_t)S::kMlaRankHeads * G::kLatent * G::kNope * sizeof(uint16_t));
 					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "mla_uv", "bf16", &layer->mla_uv);
+						status = Bind(state, lazy_pack, index, "mla_uv", "bf16", &layer->mla_uv, (uint64_t)S::kMlaRankHeads * G::kValueDim * G::kLatent * sizeof(uint16_t));
 					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "mla_gate", "bf16", &layer->mla_gate);
+						status = Bind(state, lazy_pack, index, "mla_gate", "bf16", &layer->mla_gate, (uint64_t)S::kMlaRankHeads * G::kHidden * sizeof(uint16_t));
 					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "mla_out", "bf16", &layer->mla_out);
+						status = Bind(state, lazy_pack, index, "mla_out", "bf16", &layer->mla_out, (uint64_t)G::kHidden * S::kMlaRankHeads * G::kValueDim * sizeof(uint16_t));
 				}
 				layer->kv_index = attention++;
 			}
 			else
 			{
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_qkv", "bf16", &layer->kda_qkv);
+					status = Bind(state, lazy_pack, index, "kda_qkv", "bf16", &layer->kda_qkv, (uint64_t)S::kKdaChannels * G::kHidden * sizeof(uint16_t));
 				if ( G::kKdaRank != 0u && status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_f_a", "bf16", &layer->kda_f_a);
+					status = Bind(state, lazy_pack, index, "kda_f_a", "bf16", &layer->kda_f_a, (uint64_t)G::kKdaRank * G::kHidden * sizeof(uint16_t));
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_f", "bf16", &layer->kda_f);
+					status = Bind(state, lazy_pack, index, "kda_f", "bf16", &layer->kda_f, (uint64_t)S::kKdaWidth * (G::kKdaRank != 0u ? G::kKdaRank : G::kHidden) * sizeof(uint16_t));
 				if ( G::kKdaRank != 0u && status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_g_a", "bf16", &layer->kda_g_a);
+					status = Bind(state, lazy_pack, index, "kda_g_a", "bf16", &layer->kda_g_a, (uint64_t)G::kKdaRank * G::kHidden * sizeof(uint16_t));
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_g", "bf16", &layer->kda_g);
+					status = Bind(state, lazy_pack, index, "kda_g", "bf16", &layer->kda_g, (uint64_t)S::kKdaWidth * (G::kKdaRank != 0u ? G::kKdaRank : G::kHidden) * sizeof(uint16_t));
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_beta", "bf16", &layer->kda_beta);
+					status = Bind(state, lazy_pack, index, "kda_beta", "bf16", &layer->kda_beta, (uint64_t)S::kKdaRankHeads * G::kHidden * sizeof(uint16_t));
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_conv", "bf16", &layer->kda_conv);
+					status = Bind(state, lazy_pack, index, "kda_conv", "bf16", &layer->kda_conv, (uint64_t)S::kKdaChannels * G::kConv * sizeof(uint16_t));
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_a_log", "f32", &layer->kda_a_log);
+					status = Bind(state, lazy_pack, index, "kda_a_log", "f32", &layer->kda_a_log, (uint64_t)S::kKdaRankHeads * sizeof(float));
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_dt_bias", "f32", &layer->kda_dt_bias);
+					status = Bind(state, lazy_pack, index, "kda_dt_bias", "f32", &layer->kda_dt_bias, (uint64_t)S::kKdaWidth * sizeof(float));
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_norm", "bf16", &layer->kda_norm);
+					status = Bind(state, lazy_pack, index, "kda_norm", "bf16", &layer->kda_norm, (uint64_t)G::kKdaDim * sizeof(uint16_t));
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_out", "bf16", &layer->kda_out);
+					status = Bind(state, lazy_pack, index, "kda_out", "bf16", &layer->kda_out, (uint64_t)G::kHidden * S::kKdaWidth * sizeof(uint16_t));
 				layer->recurrent_index = kda++;
 			}
 			if ( index < G::kDenseLayers )
 			{
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "ffn_gate_up", "bf16", &layer->ffn_gate_up);
+					status = Bind(state, lazy_pack, index, "ffn_gate_up", "bf16", &layer->ffn_gate_up, (uint64_t)2u * state->ffn_rows * G::kHidden * sizeof(uint16_t));
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "ffn_down", "bf16", &layer->ffn_down);
+					status = Bind(state, lazy_pack, index, "ffn_down", "bf16", &layer->ffn_down, (uint64_t)G::kHidden * state->ffn_rows * sizeof(uint16_t));
 			}
 			else
 			{
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "router", "bf16", &layer->router);
+					status = Bind(state, lazy_pack, index, "router", "bf16", &layer->router, (uint64_t)G::kExperts * G::kHidden * sizeof(uint16_t));
 				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "expert_bias", "f32", &layer->expert_bias);
+					status = Bind(state, lazy_pack, index, "expert_bias", "f32", &layer->expert_bias, (uint64_t)G::kExperts * sizeof(float));
 				if ( status == SPARK_STATUS_OK )
 					status = Bind(state, lazy_pack, index, "moe_w1", "bf16", &layer->moe_w1, (uint64_t)G::kLocalExperts * G::kMoeInter * G::kHidden * sizeof(uint16_t));
 				if ( status == SPARK_STATUS_OK )
