@@ -7,7 +7,7 @@
 
 #include "inference/runner/device_stage_model.h"
 #include "inference/runner/device_stage_runner.h"
-#include "sparkpipe/spark_gemma4_26b_device_stage.h"
+#include "sparkpipe/spark_gemma4_device_stage.h"
 #include "sparkpipe/spark_qwen38_device_stage.h"
 #include "sparkpipe/spark_speculation_frame.h"
 #include "sparkpipe/spark_speculation_lookup_draft.h"
@@ -56,7 +56,7 @@ static uint64_t NowNs(void)
 
 typedef const SparkStageRunnerModelInterface *(*RunModelGetter)(void);
 
-static const RunModelGetter run_models[] = { SparkQwen38_27bDeviceStageModel, SparkGemma4_26bDeviceStageModel };
+static const RunModelGetter run_models[] = { SparkQwen38_27bDeviceStageModel, SparkGemma4_26bDeviceStageModel, SparkGemma4_31bDeviceStageModel };
 
 static const SparkStageRunnerModelInterface *RunModel(const char *name)
 {

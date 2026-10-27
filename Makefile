@@ -1374,7 +1374,7 @@ DEVICE_RUNNER_SOURCES := inference/runner/device_stage_runner.c inference/runner
 DEVICE_RUNNER_HEADERS := inference/runner/device_stage_runner.h inference/runner/device_stage_model.h inference/runner/device_layers.h $(DEVICE_OPS_HEADERS) include/sparkpipe/spark_stage_runner_model.h
 QWEN38_DEVICE_SOURCES := model-families/qwen38/device/qwen38_device_stage.c
 QWEN38_DEVICE_INCLUDE_FLAGS := -Imodel-families/qwen38/include
-GEMMA4_DEVICE_SOURCES := model-families/gemma4/device/gemma4_26b_device_stage.c
+GEMMA4_DEVICE_SOURCES := model-families/gemma4/device/gemma4_device_stage.c
 GEMMA4_DEVICE_INCLUDE_FLAGS := -Imodel-families/gemma4/include
 
 build/metal_stage_run: tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_SOURCES) $(GEMMA4_DEVICE_SOURCES) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
