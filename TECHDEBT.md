@@ -311,6 +311,13 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   (576 wide), so each head and key pair costs 1,408 FLOPs where expanded
   keys (192 wide) would cost 640. At 250K positions MLA attention is about
   2.0 s of a 3.6 s wave.
+- Latent shard attention runs on tensor cores for every model whose head count
+  is a multiple of 32 (docs/KERNEL_PLAYBOOK.md, Latent shard attention).
+  DSV4.1 still runs the scalar kernel: its four-heads-per-rank landing path
+  must equal the all-heads records path bit for bit, and it was 22-24% of
+  DSV4.1's prefill at 16K and 131K (10-27 profiles). The fix is a tensor-core
+  landing kernel that unions a block's rows' selected keys, the way GLM 5.3
+  Full's gathered sparse prefill does, with both paths moved together.
 
 ## Placement beyond TP16
 

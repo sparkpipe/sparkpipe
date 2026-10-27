@@ -23,6 +23,7 @@
 #include "inference/kernels/attn_prefill.cuh"
 #include "inference/kernels/attn_rope_heads.cuh"
 #include "inference/kernels/attn_shard.cuh"
+#include "inference/kernels/attn_shard_prefill.cuh"
 #include "inference/kernels/attn_split.h"
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/head.cuh"
@@ -791,7 +792,7 @@ static int32_t GlmShardScatterMid(const GlmBuffers *b, uint32_t rows, uint32_t c
 				return LM_LAUNCH_ERR_LAUNCH;
 		}
 	}
-	return LmLatentShardPartialLaunch<GlmKv<S>,LmKvShardView,S::kLatent,S::kRope>(b->cache_shard, b->shard_received_bf16,
+	return LmLatentShardAttendLaunch<GlmKv<S>,LmKvShardView,S::kLatent,S::kRope>(b->cache_shard, b->shard_received_bf16,
 		b->shard_rank_stride_bytes / sizeof(uint16_t), b->attn_heads, b->sequence_of_row, b->context_length, b->row_positions,
 		context > S::kSelected ? b->selected_positions : 0, S::kSelected, S::kSelected, S::kQkScale, b->shard_partials, b->shard_partial_stride,
 		rows, stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;

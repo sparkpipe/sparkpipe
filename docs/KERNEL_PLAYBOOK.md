@@ -324,6 +324,45 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
   scores once) against 105 ms, and one decode row 0.32 ms against 2.2 ms.
   Splitting P into bf16 high and low parts (the previous version) cost 19% at
   the 128-wide shape; the whole-tile path is the other 1.28x.
+**Latent shard attention (`attn_shard.cuh`, `attn_shard_prefill.cuh`)**
+
+- A rank holds a share of every sequence's latent keys and computes, for
+  every head, a partial record (max, sum, unnormalized latent output) over
+  its own keys. `LmLatentShardMergeKernel` merges the ranks' records.
+- `LmLatentShardPartialKernel` is the scalar kernel: one block per row and
+  up to four heads, with every key re-read by each block.
+- `LmLatentShardPrefillKernel` runs the same records on tensor cores: one
+  row and 32 heads per block, 32-key tiles through a cp.async double buffer,
+  QK and PV on `mma.sync`, one bf16 copy of the probabilities.
+  - Rows past the dense limit read their selected positions, either from
+    a list compacted in shared memory or from the caller's split lists
+    (`LmLatentShardSplitLaunch`). The two orders are the same, so both
+    give the same records.
+  - Each block holds one row, so a row's record does not depend on the other
+    rows: decode, verify frames and prefill waves agree bit for bit.
+  - Pair-grouped records (`record_heads`, `record_copies`) are written as
+    the scalar kernel writes them, and a row at position `0xffffffff` has no
+    keys.
+- `LmLatentShardAttendLaunch` and `LmLatentShardAttendHeadsLaunch` take the
+  scalar launchers' arguments and use the tensor-core kernel when the width,
+  the head count (a multiple of 32) and the shared memory for the list fit;
+  otherwise they run the scalar kernel. GLM 5.3 Flash, GLM 5.3 Full's scatter
+  waves, A.X K2, Ling 3's MLA layers and Hy4 call them.
+- DSV4.1 keeps the scalar kernel: its own-heads landing path (four heads per
+  rank) must equal its all-heads records path bit for bit
+  (`tests/test_dsv41_flash_landing.cu`), and four heads cannot fill a 32-query
+  block with one row.
+- lenovo7 (GB10), 64 heads over 16 ranks, one rank:
+
+  | Shape | Scalar | Tensor cores |
+  |---|---|---|
+  | 4,096 rows, 16K context, 2,112 selected of each row, width 512 | 51.3 ms | 4.94 ms |
+  | Same, width 576 | 39.7 ms | 4.91 ms |
+  | 4,096 rows, 16K dense keys, width 576 | 161.5 ms | 12.9 ms |
+  | Decode rows: 1 / 4 / 16 at 131K, 2,112 selected | 0.047 / 0.078 / 0.218 ms | 0.027 / 0.026 / 0.027 ms |
+
+  The normalized outputs differ from the scalar kernel's by at most 0.3% of
+  each head's peak (`tests/cuda/latent_shard_sparse_cuda.cu`).
 
 **Projections (`project.cuh`)**
 
