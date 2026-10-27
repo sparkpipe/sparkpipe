@@ -1,0 +1,4 @@
+The gate ran at 8b4836e52 with that revision's summary (3-sigma paired test, both route sets; compare/compare.3sigma.jsonl, gate.log: pass).
+Reference draws C and D, free and pinned to A's experts (CP, DP), were then computed on the hub (tools/gemma4_reference.py --variants a,c,d,cp,dp as of d9aab13d8's
+reference; its A logits and routes are byte-identical to the 662c49da2 reference), the floor-draw rows appended to compare/compare.jsonl by logit_compare, and
+RECEIPT.json and summary_floor_draws.json rewritten by tools/metal_gate_summary.py with the multi-draw rule for both route sets. The kernel code is unchanged.

@@ -1309,11 +1309,19 @@ Metal backend and the single-Studio stage are in
   Make that change in `spark_attention_prefill_blocks`, measure its cost,
   and re-gate all three models; prefill positions are where Metal sits
   above the draws on the 31B code prompt and where the 64-row pass fails.
-- The Gemma 4 26B A4B gate still judges the paired test against one floor
-  draw at 3 sigma. It needs draws C and D, free and pinned to A's experts
-  (`tools/gemma4_reference.py --variants a,c,d,cp,dp`), and the multi-draw
-  rule over both route sets. One attention kernel has to pass all three
-  models; a kernel choice per model is not an option.
+- Gemma 4 26B A4B fails the multi-draw floor at 8b4836e52 (it passed the
+  3-sigma rule): free routes on rules (+2.7 against the draws' +1.7),
+  pinned routes on korean (+1.1 against +1.1, above by less than 0.1), and
+  the 64-row pinned pass on design (+2.2 against +1.1). One attention
+  kernel has to pass all three models; a kernel choice per model is not an
+  option.
+- The multi-draw rule rejects the reference's own draws: held out as the
+  candidate against the other two, 11 of 12 draws across the three models
+  fail on at least one prompt (qualification/metal/floor_rule_calibration.txt).
+  With no margin, a candidate whose error is distributed like the draws'
+  exceeds their worst on some prompt most of the time, so every model's
+  failure above is to be read against that pass rate. The rule stays as
+  written until that is decided.
 - The NaN check in the shared BF16 conversion (abce321a5) costs Gemma 4
   26B A4B's B1 decode about 0.9% on the Studio (91.5 to 91.6 tok/s against
   92.2 to 92.5 without it, interleaved runs), since every BF16 store now

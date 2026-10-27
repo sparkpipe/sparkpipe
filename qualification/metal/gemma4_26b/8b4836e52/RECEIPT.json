@@ -1232,6 +1232,55 @@
     }
    }
   },
+  "floor_draws": {
+   "rule": "per prompt, the paired statistic against A of the candidate with each of draws B, C, D as the floor is no worse than the worst of one draw against another (every ordered pair of B, C, D); every prompt must pass",
+   "floor_noise": {
+    "code": {
+     "paired_sigma": {
+      "b_vs_c": -1.5054065631251479,
+      "b_vs_d": -3.4469391894257932,
+      "c_vs_b": 1.5054065631251525,
+      "c_vs_d": -1.161882289481955,
+      "d_vs_b": 3.4469391894257972,
+      "d_vs_c": 1.1618822894819585
+     },
+     "worst": 3.4469391894257972
+    },
+    "design": {
+     "paired_sigma": {
+      "b_vs_c": -0.664743839782517,
+      "b_vs_d": -1.4098099001416575,
+      "c_vs_b": 0.6647438397825225,
+      "c_vs_d": 0.7318029756621987,
+      "d_vs_b": 1.4098099001416575,
+      "d_vs_c": -0.7318029756621987
+     },
+     "worst": 1.4098099001416575
+    },
+    "korean": {
+     "paired_sigma": {
+      "b_vs_c": -1.1433577624680789,
+      "b_vs_d": 0.8947214331615859,
+      "c_vs_b": 1.1433577624680806,
+      "c_vs_d": 1.01632534001249,
+      "d_vs_b": -0.8947214331615859,
+      "d_vs_c": -1.01632534001249
+     },
+     "worst": 1.1433577624680806
+    },
+    "rules": {
+     "paired_sigma": {
+      "b_vs_c": -1.6730841248199997,
+      "b_vs_d": -0.3401028187563884,
+      "c_vs_b": 1.6730841248199935,
+      "c_vs_d": 1.6929950796248616,
+      "d_vs_b": 0.34010281875639287,
+      "d_vs_c": -1.6929950796248616
+     },
+     "worst": 1.6929950796248616
+    }
+   }
+  },
   "metal": {
    "against_reference_a": {
     "positions": 5636,
@@ -1766,7 +1815,53 @@
      "paired_within_sigma": true,
      "pass": true
     },
-    "pass": true
+    "paired_rule": "floor draws",
+    "floor_draws": {
+     "per_prompt": {
+      "code": {
+       "paired_sigma_by_floor": {
+        "b": 1.6305029960216564,
+        "c": -0.08919021245922723,
+        "d": -1.691677320109231
+       },
+       "worst": 1.6305029960216564,
+       "floor_worst": 3.4469391894257972,
+       "pass": true
+      },
+      "design": {
+       "paired_sigma_by_floor": {
+        "b": -0.595943207101187,
+        "c": -1.2101144206913905,
+        "d": -0.9397154071699013
+       },
+       "worst": -0.595943207101187,
+       "floor_worst": 1.4098099001416575,
+       "pass": true
+      },
+      "korean": {
+       "paired_sigma_by_floor": {
+        "b": 0.8683837625909239,
+        "c": 0.31259707367421075,
+        "d": 0.9554263563228297
+       },
+       "worst": 0.9554263563228297,
+       "floor_worst": 1.1433577624680806,
+       "pass": true
+      },
+      "rules": {
+       "paired_sigma_by_floor": {
+        "b": 1.3246936132438316,
+        "c": 0.20179740874822308,
+        "d": 2.6919647177595576
+       },
+       "worst": 2.6919647177595576,
+       "floor_worst": 1.6929950796248616,
+       "pass": false
+      }
+     },
+     "pass": false
+    },
+    "pass": false
    },
    "corruption": null
   },
@@ -1837,6 +1932,55 @@
       "target_logprob_delta_max": 6.363431,
       "stable_positions": 0,
       "stable_top1_agree": 0
+     }
+    }
+   },
+   "floor_draws": {
+    "rule": "per prompt, the paired statistic against A of the candidate with each of draws BP, CP, DP as the floor is no worse than the worst of one draw against another (every ordered pair of BP, CP, DP); every prompt must pass",
+    "floor_noise": {
+     "code": {
+      "paired_sigma": {
+       "bp_vs_cp": 0.562788240424475,
+       "bp_vs_dp": -0.700375632611372,
+       "cp_vs_bp": -0.5627882404244784,
+       "cp_vs_dp": -0.9092456929118728,
+       "dp_vs_bp": 0.7003756326113688,
+       "dp_vs_cp": 0.9092456929118694
+      },
+      "worst": 0.9092456929118694
+     },
+     "design": {
+      "paired_sigma": {
+       "bp_vs_cp": 1.1305957111240883,
+       "bp_vs_dp": 0.4367657532942125,
+       "cp_vs_bp": -1.1305957111240943,
+       "cp_vs_dp": 0.07809629366702245,
+       "dp_vs_bp": -0.4367657532942125,
+       "dp_vs_cp": -0.07809629366702245
+      },
+      "worst": 1.1305957111240883
+     },
+     "korean": {
+      "paired_sigma": {
+       "bp_vs_cp": -0.9477764138448166,
+       "bp_vs_dp": 0.22650138548284127,
+       "cp_vs_bp": 0.9477764138448197,
+       "cp_vs_dp": 1.0777257572847265,
+       "dp_vs_bp": -0.22650138548284127,
+       "dp_vs_cp": -1.0777257572847265
+      },
+      "worst": 1.0777257572847265
+     },
+     "rules": {
+      "paired_sigma": {
+       "bp_vs_cp": -0.3335525389149385,
+       "bp_vs_dp": -2.45678533597329,
+       "cp_vs_bp": 0.33355253891494296,
+       "cp_vs_dp": -0.6726868980121264,
+       "dp_vs_bp": 2.456785335973295,
+       "dp_vs_cp": 0.6726868980121264
+      },
+      "worst": 2.456785335973295
      }
     }
    },
@@ -2374,7 +2518,53 @@
       "paired_within_sigma": true,
       "pass": true
      },
-     "pass": true
+     "paired_rule": "floor draws",
+     "floor_draws": {
+      "per_prompt": {
+       "code": {
+        "paired_sigma_by_floor": {
+         "bp": -2.0343403796403825,
+         "cp": -1.8244850494239215,
+         "dp": -1.6124049597570016
+        },
+        "worst": -1.6124049597570016,
+        "floor_worst": 0.9092456929118694,
+        "pass": true
+       },
+       "design": {
+        "paired_sigma_by_floor": {
+         "bp": -1.2907366814545822,
+         "cp": -0.12068799027976877,
+         "dp": -1.2879361434430334
+        },
+        "worst": -0.12068799027976877,
+        "floor_worst": 1.1305957111240883,
+        "pass": true
+       },
+       "korean": {
+        "paired_sigma_by_floor": {
+         "bp": 1.1474218522616715,
+         "cp": -1.4397081979891122,
+         "dp": 0.5458316459870466
+        },
+        "worst": 1.1474218522616715,
+        "floor_worst": 1.0777257572847265,
+        "pass": false
+       },
+       "rules": {
+        "paired_sigma_by_floor": {
+         "bp": -0.6391895027931903,
+         "cp": 0.11718725525947069,
+         "dp": -1.9723082966147307
+        },
+        "worst": 0.11718725525947069,
+        "floor_worst": 2.456785335973295,
+        "pass": true
+       }
+      },
+      "pass": false
+     },
+     "pass": false
     },
     "corruption": null
    },
@@ -2912,7 +3102,53 @@
       "paired_within_sigma": true,
       "pass": true
      },
-     "pass": true
+     "paired_rule": "floor draws",
+     "floor_draws": {
+      "per_prompt": {
+       "code": {
+        "paired_sigma_by_floor": {
+         "bp": -1.096080866919833,
+         "cp": -0.6971971906363238,
+         "dp": -0.8989805947384174
+        },
+        "worst": -0.6971971906363238,
+        "floor_worst": 0.9092456929118694,
+        "pass": true
+       },
+       "design": {
+        "paired_sigma_by_floor": {
+         "bp": 2.0429471465792384,
+         "cp": 1.2077132935880508,
+         "dp": 2.1740123593007095
+        },
+        "worst": 2.1740123593007095,
+        "floor_worst": 1.1305957111240883,
+        "pass": false
+       },
+       "korean": {
+        "paired_sigma_by_floor": {
+         "bp": -0.3175260991356283,
+         "cp": -0.5902673251237192,
+         "dp": 0.04696974114022795
+        },
+        "worst": 0.04696974114022795,
+        "floor_worst": 1.0777257572847265,
+        "pass": true
+       },
+       "rules": {
+        "paired_sigma_by_floor": {
+         "bp": 1.0411593537420842,
+         "cp": -0.11476243173508487,
+         "dp": -1.9601692259953534
+        },
+        "worst": 1.0411593537420842,
+        "floor_worst": 2.456785335973295,
+        "pass": true
+       }
+      },
+      "pass": false
+     },
+     "pass": false
     },
     "corruption": null
    },
@@ -3448,6 +3684,52 @@
       "kl_within_factor": false,
       "top1_within_factor": false,
       "paired_within_sigma": false,
+      "pass": false
+     },
+     "paired_rule": "floor draws",
+     "floor_draws": {
+      "per_prompt": {
+       "code": {
+        "paired_sigma_by_floor": {
+         "bp": 19.07488537928993,
+         "cp": 21.909804852723987,
+         "dp": 18.24146792387501
+        },
+        "worst": 21.909804852723987,
+        "floor_worst": 0.9092456929118694,
+        "pass": false
+       },
+       "design": {
+        "paired_sigma_by_floor": {
+         "bp": 15.333710877228182,
+         "cp": 21.60104285605391,
+         "dp": 16.94729617834433
+        },
+        "worst": 21.60104285605391,
+        "floor_worst": 1.1305957111240883,
+        "pass": false
+       },
+       "korean": {
+        "paired_sigma_by_floor": {
+         "bp": 21.26418700534345,
+         "cp": 17.79565682266011,
+         "dp": 15.816828395399332
+        },
+        "worst": 21.26418700534345,
+        "floor_worst": 1.0777257572847265,
+        "pass": false
+       },
+       "rules": {
+        "paired_sigma_by_floor": {
+         "bp": 52.17215075572751,
+         "cp": 39.73939015983938,
+         "dp": 30.90058272432756
+        },
+        "worst": 52.17215075572751,
+        "floor_worst": 2.456785335973295,
+        "pass": false
+       }
+      },
       "pass": false
      },
      "pass": false
@@ -4205,6 +4487,52 @@
       "paired_within_sigma": false,
       "pass": false
      },
+     "paired_rule": "floor draws",
+     "floor_draws": {
+      "per_prompt": {
+       "code": {
+        "paired_sigma_by_floor": {
+         "bp": 162.1214807975575,
+         "cp": 324.54880609037343,
+         "dp": 198.96427796320359
+        },
+        "worst": 324.54880609037343,
+        "floor_worst": 0.9092456929118694,
+        "pass": false
+       },
+       "design": {
+        "paired_sigma_by_floor": {
+         "bp": 371.6377059683731,
+         "cp": 163.32695212234472,
+         "dp": 176.83208081944133
+        },
+        "worst": 371.6377059683731,
+        "floor_worst": 1.1305957111240883,
+        "pass": false
+       },
+       "korean": {
+        "paired_sigma_by_floor": {
+         "bp": 140.74674240236848,
+         "cp": 102.07971806674736,
+         "dp": 72.47650205478729
+        },
+        "worst": 140.74674240236848,
+        "floor_worst": 1.0777257572847265,
+        "pass": false
+       },
+       "rules": {
+        "paired_sigma_by_floor": {
+         "bp": 347.0046205539389,
+         "cp": 348.2294208752269,
+         "dp": 311.396732880896
+        },
+        "worst": 348.2294208752269,
+        "floor_worst": 2.456785335973295,
+        "pass": false
+       }
+      },
+      "pass": false
+     },
      "pass": false
     },
     "corruption": {
@@ -4755,6 +5083,52 @@
       "kl_within_factor": false,
       "top1_within_factor": false,
       "paired_within_sigma": false,
+      "pass": false
+     },
+     "paired_rule": "floor draws",
+     "floor_draws": {
+      "per_prompt": {
+       "code": {
+        "paired_sigma_by_floor": {
+         "bp": 70.23144015543642,
+         "cp": 70.24385643952844,
+         "dp": 68.72605549195642
+        },
+        "worst": 70.24385643952844,
+        "floor_worst": 0.9092456929118694,
+        "pass": false
+       },
+       "design": {
+        "paired_sigma_by_floor": {
+         "bp": 63.99303337836952,
+         "cp": 47.1480544638661,
+         "dp": 41.97158673260529
+        },
+        "worst": 63.99303337836952,
+        "floor_worst": 1.1305957111240883,
+        "pass": false
+       },
+       "korean": {
+        "paired_sigma_by_floor": {
+         "bp": 124.32275993445205,
+         "cp": 104.46236710912385,
+         "dp": 89.50779961264881
+        },
+        "worst": 124.32275993445205,
+        "floor_worst": 1.0777257572847265,
+        "pass": false
+       },
+       "rules": {
+        "paired_sigma_by_floor": {
+         "bp": 81.13061728166441,
+         "cp": 47.42027474401966,
+         "dp": 54.20321686468987
+        },
+        "worst": 81.13061728166441,
+        "floor_worst": 2.456785335973295,
+        "pass": false
+       }
+      },
       "pass": false
      },
      "pass": false
@@ -5512,7 +5886,53 @@
       "paired_within_sigma": true,
       "pass": true
      },
-     "pass": true
+     "paired_rule": "floor draws",
+     "floor_draws": {
+      "per_prompt": {
+       "code": {
+        "paired_sigma_by_floor": {
+         "bp": -0.5146622246989346,
+         "cp": -1.376866457194928,
+         "dp": -2.1642658505991594
+        },
+        "worst": -0.5146622246989346,
+        "floor_worst": 0.9092456929118694,
+        "pass": true
+       },
+       "design": {
+        "paired_sigma_by_floor": {
+         "bp": -0.8150009520066442,
+         "cp": -0.09309351542159962,
+         "dp": 0.542727931695867
+        },
+        "worst": 0.542727931695867,
+        "floor_worst": 1.1305957111240883,
+        "pass": true
+       },
+       "korean": {
+        "paired_sigma_by_floor": {
+         "bp": 5.389948405404885,
+         "cp": 0.052789888379517064,
+         "dp": 1.2008214575670004
+        },
+        "worst": 5.389948405404885,
+        "floor_worst": 1.0777257572847265,
+        "pass": false
+       },
+       "rules": {
+        "paired_sigma_by_floor": {
+         "bp": 1.095673918524442,
+         "cp": -0.7934694277563611,
+         "dp": -1.2631000736591482
+        },
+        "worst": 1.095673918524442,
+        "floor_worst": 2.456785335973295,
+        "pass": true
+       }
+      },
+      "pass": false
+     },
+     "pass": false
     },
     "corruption": {
      "pack": "/Users/m5u0/models/packs/gemma4_26b_tp1_bf16/gemma4_26b.tp1.rank00.pack",
@@ -5532,7 +5952,7 @@
    }
   },
   "controls_fail_as_required": true,
-  "pass": true
+  "pass": false
  },
  "greedy": null,
  "speed": {

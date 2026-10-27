@@ -1,0 +1,2 @@
+Open failure: numerics fail the multi-draw floor. Free routes: rules +2.7 against the draws' +1.7. Pinned routes: korean +1.1 against +1.1 (above by
+less than 0.1), and the 64-row pass on design +2.2 against +1.1. Under the 3-sigma rule this gate passed.

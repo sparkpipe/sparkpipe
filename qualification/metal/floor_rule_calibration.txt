@@ -1,0 +1,9 @@
+The multi-draw rule (1c1546591) applied to the reference's own draws, one held out as the candidate against the other two as the floor
+(the rule uses three floor draws, so its bar is the worst of six ordered pairs instead of two):
+gemma4_31b:         b fails code (+1.1 > +0.3); c fails design (+3.0 > +2.0); d fails korean (+3.6 > +0.7) and rules (+3.8 > +1.0)
+qwen38_27b:         b fails code (+2.0 > +0.5); c fails korean (+8.0 > +1.7) and rules (+5.2 > +5.1); d fails design (+0.3 > +0.3)
+gemma4_26b free:    b passes; c fails korean (+1.1 > +0.9) and rules (+1.7 > +0.3); d fails code (+3.4 > +1.5) and design (+1.4 > +0.7)
+gemma4_26b pinned:  bp fails design (+1.1 > +0.1); cp fails korean (+1.1 > +0.2); dp fails code (+0.9 > +0.6) and rules (+2.5 > +0.3)
+11 of 12 held-out reference draws fail on at least one prompt: with no margin, a candidate whose error is distributed like the draws' exceeds the
+draws' own worst on some prompt most of the time, so the rule's pass rate for a correct implementation is low. Recorded, not acted on: the rule stays
+as written until it is decided otherwise.
