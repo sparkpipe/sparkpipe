@@ -278,6 +278,15 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   per-lane dot products are slow at the short input of a down projection
   (80 to 128). Moving the crossover changes those waves' rounding; a
   short-input skinny that matches the GEMM keeps it.
+- The context-split GQA attention runs tiled on tensor cores for key heads
+  up to 256 wide (Solar Open 2, K-EXAONE 2.0, Laguna, Muse Glimmer, MiMo,
+  Qwen 3.8 and Gemma 4's sliding layers). Gemma 4's global layers (512-wide
+  keys) still take the scalar kernel, which re-reads every key for every row
+  and reaches 1 to 2 TFLOP/s per node; a long Gemma 4 prompt is bound by it.
+- Kimi K3's prefill attention expands the values but keeps the keys latent
+  (576 wide), so each head and key pair costs 1,408 FLOPs where expanded
+  keys (192 wide) would cost 640. At 250K positions MLA attention is about
+  2.0 s of a 3.6 s wave.
 
 ## Placement beyond TP16
 
@@ -824,6 +833,8 @@ The sources are pinned. All three serve.
 Each needs, in order: the checkpoint contract, the driver on the common stage runner, the packer emitter and packs, a lane record, the release gates and qualification, speculation with its drafter, then the perf climb that every core model gets.
 
 ## Speculation
+
+- Model drafts and their lookup extension stop at the same cost cap as lookup frames (2x a single step while a prefill waits, or the lower-priority chain cap). No mock scenario runs a waiting prefill beside a drafting request yet, so that path is covered only by its code; add one to tests/test_model_batch_engine_mock.c.
 
 - Tree verification is not wired. The policy engine resolves trees
   (`SparkSpeculationPolicyResolveVerifierTree`), but no caller passes one.
