@@ -771,6 +771,15 @@ Related common-code debt:
   `LmCellMmaExperts`. Qualify the tensor-core expert paths and the full expert
   path (route, gate/up, down, combine) against a dequantised reference at
   prefill widths.
+- Two stages still bind pack tensors without checking each one's bytes against
+  the stage geometry, so a pack built for another geometry would bind and the
+  kernels would read past its tensors. The Qwen 3.8 hybrid stage
+  (`model-families/qwen38/source/qwen38_hybrid_stage.cuh`) checks name and
+  dtype only. K3 (`modules/k3_resident_decode_stage`) checks that each tensor
+  is present and reads its rank dimensions from one layer per kind. Every
+  other stage checks every tensor: GLM, glm5_next and DSV4.1 check the whole
+  pack directory at open, and Ling, Gemma, hy4 and mimo26 check each bind's
+  bytes.
 
 ## Korean models
 
@@ -780,7 +789,7 @@ The sources are pinned. All three serve.
   - **Serving:** contract, driver (`kexaone2` on the Gemma stage), packs and lane 11.
   - **Measured:** 27.3 tok/s at B1 without speculation (median of eight runs) and 324 tok/s prefill at 6,850 tokens, with every expert split over the ranks by rows. It was 23.5 and 23.7 in the same hold before the grouped skinny kernel stopped launching a task per local expert: the down projection ran 24,576 blocks per layer, 768 of them with work, and took 158 us against 63 us for the gate and up projections, which move the same bytes. Giving each rank 16 whole experts measured 12.0 and 273: a token's 8 experts landed unevenly. Both layouts score the same on the A/B corpus (McNemar p 0.39).
   - **Missing:**
-    - The numpy reference (`tools/kexaone2_reference.py`) agrees with the served tokens of the whole-expert layout at all 92 positions of six prompts (served logprobs within 0.11, median under 0.005). The rows layout flips one near tie in those prompts, at `python_is_prime` token 4 (served margin 0.006, reference margin 0.107). Its reference score is running. With reasoning off the model answers 17 × 23 as 401 in the reference too, so the UI smoke's one miss is the model's answer.
+    - The numpy reference (`tools/kexaone2_reference.py`) agrees with the served tokens of the whole-expert layout at all 92 positions of six prompts (served logprobs within 0.11, median under 0.005). The rows layout agrees at 91 of 92 positions (logprobs within 0.153, median under 0.005). It flips one near tie, at `python_is_prime` token 4: the served margin there is 0.006. The reference itself is unstable at that position: with the same four preceding tokens, its margin was 0.107 when it scored the whole-expert capture and 0.28 when it scored the rows capture, which differs only in later tokens and so in matrix shapes. The position is sensitive to rounding in both implementations, so it is not a served-path error. With reasoning off the model answers 17 × 23 as 401 in the reference too, so the UI smoke's one miss is the model's answer.
     - Speculation from the request's own context verifies drafts in frames: a whole-file rewrite runs at 190.9 tok/s against 19.4 without speculation, with identical output (3,703 of 4,186 drafts kept). Its MTP layer and the DSpark drafter are not wired.
 - **A.X K2** (`skt/A.X-K2@d0805cfd`, block-128 FP8, the precision it was trained in, 0.69 TB): 61 layers of latent attention (query rank 1,536, KV rank 512) with top-2,048 sparse attention through a 64-head indexer, a gated attention output and a gated norm; 256 routed experts (top 8) plus one shared; YaRN to 256K. Drafter `skt/A.X-K2-DSpark@0b278334`. GLM 5.3 Full has the same attention and expert design.
   - **Serving:** contract, tokenizer split, driver (`axk2` on the GLM stage, with its options for the query gate, gated norms, index rope and ReLU, YaRN and grouped routing), FP8 packer, numpy reference and lane 3. Answers are right in English and Korean, including a 3,076-token passkey past the indexer's 2,048 tokens.
