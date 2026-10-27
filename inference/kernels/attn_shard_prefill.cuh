@@ -7,6 +7,29 @@
 
 #define LM_LATENT_SHARD_QUERIES 32u
 
+typedef struct LmLatentShardSelection
+{
+	const uint32_t *selected_positions;
+	const uint32_t *split_positions;
+	const uint32_t *split_offsets;
+	uint32_t selected_count;
+	uint32_t dense_limit;
+	uint32_t record_heads;
+	uint32_t record_copies;
+	uint32_t empty_rows;
+} LmLatentShardSelection;
+
+static __host__ __device__ inline LmLatentShardSelection LmLatentShardDense(uint32_t heads_per_rank)
+{
+	LmLatentShardSelection selection = { 0, 0, 0, 0u, 0u, heads_per_rank, 1u, 0u };
+	return selection;
+}
+
+static __host__ __device__ constexpr uint64_t LmLatentShardListBytes(uint32_t selected_count)
+{
+	return ((uint64_t)selected_count + LM_LATENT_SHARD_THREADS) * sizeof(uint32_t);
+}
+
 template<uint32_t DIM>
 static __host__ __device__ constexpr uint32_t LmLatentShardPrefillSharedBytes(void)
 {
@@ -32,7 +55,8 @@ void LmLatentShardPrefillKernel(
 	uint64_t partial_rank_stride,
 	uint32_t rows,
 	uint32_t split_count,
-	uint64_t split_stride)
+	uint64_t split_stride,
+	LmLatentShardSelection selection)
 {
 	constexpr uint32_t DIM = LATENT + ROPE;
 	constexpr uint32_t ROW_BYTES = DIM * 2u;
@@ -62,6 +86,9 @@ void LmLatentShardPrefillKernel(
 	float *running_sum = running_max + QUERIES;
 	float *rescale = running_sum + QUERIES;
 	const uint8_t **slots = (const uint8_t **)(rescale + QUERIES);
+	uint32_t *list_shared = (uint32_t *)(slots + 2u * TILE);
+	uint32_t *list_scan = list_shared + selection.selected_count;
+	const uint32_t *list_global = 0;
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t matrix = lane >> 3u, within = lane & 7u;
 	const uint32_t row = blockIdx.x * ROWS, group = blockIdx.y;
@@ -70,7 +97,7 @@ void LmLatentShardPrefillKernel(
 	const uint32_t qk_tile = warp >> 2u, qk_half = (warp >> 1u) & 1u, qk_pair = warp & 1u;
 	uint32_t query_frag[HALF_STEPS][4];
 	float output[2][COLUMN_FRAGS][4];
-	uint32_t sequence, dense, count, window_begin, limit, tiles, tile_low, span, tile, tile_first, tile_end, index, chunk, step, frag, q, head, query_row, m, shift, warp_count[WARP_QUERIES];
+	uint32_t sequence, dense, count, window_begin, limit, tiles, tile_low, span, tile, tile_first, tile_end, index, chunk, step, frag, q, head, query_row, m, shift, warp_count[WARP_QUERIES], listed = 0u, copy_index;
 	uint64_t base;
 
 	partials += (uint64_t)blockIdx.z * split_stride;
@@ -85,17 +112,37 @@ void LmLatentShardPrefillKernel(
 			LmKvReportRequiredAccessFailure(cache.pages, !LmKvViewIsConfigured(cache.pages) ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence_of_row[row], 0xffffffffu, 0xffffffffu);
 		return;
 	}
-	count = 0u;
-	for (query_row = row; query_row <= last_row; query_row++)
+	if (ROWS == 1u && selection.selected_positions != 0)
 	{
 		dense = context_length[sequence];
-		if (row_position[query_row] < dense)
+		if (selection.empty_rows != 0u && row_position[row] == 0xffffffffu)
+			dense = 0u;
+		else if (row_position[row] < dense)
+			dense = row_position[row] + 1u;
+		listed = dense > selection.dense_limit ? 1u : 0u;
+	}
+	count = 0u;
+	if (listed != 0u && selection.split_positions != 0)
+	{
+		const uint32_t *offsets = selection.split_offsets + (uint64_t)row * (cache.shard.degree + 1u) + cache.shard.rank;
+		list_global = selection.split_positions + (uint64_t)row * selection.selected_count + offsets[0];
+		count = offsets[1] - offsets[0];
+	}
+	else if (listed != 0u)
+		count = LmLatentShardCompact(cache.shard, selection.selected_positions + (uint64_t)row * selection.selected_count, selection.selected_count,
+			row_position[row], 1u, list_shared, list_scan);
+	for (query_row = row; listed == 0u && query_row <= last_row; query_row++)
+	{
+		dense = context_length[sequence];
+		if (selection.empty_rows != 0u && row_position[query_row] == 0xffffffffu)
+			dense = 0u;
+		else if (row_position[query_row] < dense)
 			dense = row_position[query_row] + 1u;
 		dense = SparkKvShardLocalKeys(cache.shard, dense);
 		count = dense > count ? dense : count;
 	}
-	window_begin = LmKvKeyWindowBegin(cache);
-	limit = LmKvKeyWindowEnd(cache);
+	window_begin = listed != 0u ? 0u : LmKvKeyWindowBegin(cache);
+	limit = listed != 0u ? count : LmKvKeyWindowEnd(cache);
 	limit = count < limit ? count : limit;
 	tile_low = window_begin / TILE;
 	tiles = limit > window_begin ? (limit + TILE - 1u) / TILE : tile_low;
@@ -109,15 +156,20 @@ void LmLatentShardPrefillKernel(
 	{
 		query_row = row + (warp * WARP_QUERIES + index) / BLOCK_HEADS;
 		dense = context_length[sequence];
-		if (query_row <= last_row && row_position[query_row] < dense)
+		if (query_row <= last_row && selection.empty_rows != 0u && row_position[query_row] == 0xffffffffu)
+			dense = 0u;
+		else if (query_row <= last_row && row_position[query_row] < dense)
 			dense = row_position[query_row] + 1u;
-		warp_count[index] = query_row <= last_row ? SparkKvShardLocalKeys(cache.shard, dense) : 0u;
+		warp_count[index] = query_row > last_row ? 0u : listed != 0u ? count : SparkKvShardLocalKeys(cache.shard, dense);
 	}
 
 	auto lookup = [&](uint32_t which) -> const uint8_t *
 	{
 		const uint32_t local = which * TILE + threadIdx.x;
-		return local < limit && local >= window_begin ? LmKvShardSlotRequired<Geometry>(cache, sequence, SparkKvShardLocalPosition(cache.shard, local), row, LM_KV_ACCESS_READ) : 0;
+		if (local >= limit || local < window_begin)
+			return 0;
+		return LmKvShardSlotRequired<Geometry>(cache, sequence, listed == 0u ? SparkKvShardLocalPosition(cache.shard, local) :
+			list_global != 0 ? list_global[local] : list_shared[local], row, LM_KV_ACCESS_READ);
 	};
 	auto copy = [&](uint32_t which)
 	{
@@ -320,16 +372,24 @@ void LmLatentShardPrefillKernel(
 				query_row = row + q / BLOCK_HEADS;
 				if (query_row > last_row)
 					continue;
-				base = (uint64_t)(head / heads_per_rank) * partial_rank_stride + ((uint64_t)query_row * heads_per_rank + head % heads_per_rank) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
-				*(float2 *)(partials + base + 2u + warp * WARP_COLUMNS + frag * 8u + (lane & 3u) * 2u) = make_float2(output[m][frag][index], output[m][frag][index + 1u]);
+				for (copy_index = 0u; copy_index < selection.record_copies; copy_index++)
+				{
+					base = ((uint64_t)(head / selection.record_heads) * selection.record_copies + copy_index) * partial_rank_stride +
+						((uint64_t)query_row * selection.record_heads + head % selection.record_heads) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
+					*(float2 *)(partials + base + 2u + warp * WARP_COLUMNS + frag * 8u + (lane & 3u) * 2u) = make_float2(output[m][frag][index], output[m][frag][index + 1u]);
+				}
 			}
 	if (threadIdx.x < QUERIES && row + threadIdx.x / BLOCK_HEADS <= last_row)
 	{
 		head = group * BLOCK_HEADS + threadIdx.x % BLOCK_HEADS;
 		query_row = row + threadIdx.x / BLOCK_HEADS;
-		base = (uint64_t)(head / heads_per_rank) * partial_rank_stride + ((uint64_t)query_row * heads_per_rank + head % heads_per_rank) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
-		partials[base] = running_max[threadIdx.x];
-		partials[base + 1u] = running_sum[threadIdx.x];
+		for (copy_index = 0u; copy_index < selection.record_copies; copy_index++)
+		{
+			base = ((uint64_t)(head / selection.record_heads) * selection.record_copies + copy_index) * partial_rank_stride +
+				((uint64_t)query_row * selection.record_heads + head % selection.record_heads) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
+			partials[base] = running_max[threadIdx.x];
+			partials[base + 1u] = running_sum[threadIdx.x];
+		}
 	}
 }
 
@@ -349,28 +409,33 @@ static inline cudaError_t LmLatentShardPrefillRowsLaunch(
 	uint32_t rows,
 	uint32_t split_count,
 	uint64_t split_stride,
-	cudaStream_t stream)
+	cudaStream_t stream,
+	LmLatentShardSelection selection)
 {
-	constexpr uint32_t shared = LmLatentShardPrefillSharedBytes<LATENT + ROPE>();
 	constexpr uint32_t block_heads = LM_LATENT_SHARD_QUERIES / ROWS;
+	const uint64_t shared = LmLatentShardPrefillSharedBytes<LATENT + ROPE>() +
+		(selection.selected_positions != 0 && selection.split_positions == 0 ? LmLatentShardListBytes(selection.selected_count) : 0u);
 	static bool granted = false;
 	if (rows == 0u || heads_per_rank == 0u || query_bf16 == 0 || partials == 0 || row_position == 0 ||
 		total_heads == 0u || (total_heads % block_heads) != 0u ||
+		selection.record_heads == 0u || selection.record_copies == 0u || total_heads % selection.record_heads != 0u ||
+		(selection.selected_positions != 0 && (ROWS != 1u || split_count != 1u || (selection.split_positions == 0) != (selection.split_offsets == 0))) ||
+		shared > LM_PREFILL_ATTN_SHARED_LIMIT ||
 		SparkKvShardValid(cache.shard, Geometry::kPageSlots) == 0u ||
 		query_rank_stride < (uint64_t)rows * heads_per_rank * (LATENT + ROPE) ||
-		partial_rank_stride < (uint64_t)rows * heads_per_rank * LM_LATENT_SHARD_RECORD_FLOATS(LATENT) ||
+		partial_rank_stride < (uint64_t)rows * selection.record_heads * LM_LATENT_SHARD_RECORD_FLOATS(LATENT) ||
 		(partial_rank_stride % 2u) != 0u)
 		return cudaErrorInvalidValue;
 	if (!granted)
 	{
-		cudaError_t error = cudaFuncSetAttribute((const void *)LmLatentShardPrefillKernel<Geometry, Pages, LATENT, ROPE, ROWS>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
+		cudaError_t error = cudaFuncSetAttribute((const void *)LmLatentShardPrefillKernel<Geometry, Pages, LATENT, ROPE, ROWS>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)LM_PREFILL_ATTN_SHARED_LIMIT);
 		if (error != cudaSuccess)
 			return error;
 		granted = true;
 	}
 	LmLatentShardPrefillKernel<Geometry, Pages, LATENT, ROPE, ROWS><<<dim3((rows + ROWS - 1u) / ROWS, total_heads / block_heads, split_count), LM_PREFILL_ATTN_THREADS, shared, stream>>>(
 		cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows,
-		split_count, split_stride);
+		split_count, split_stride, selection);
 	return cudaPeekAtLastError();
 }
 
@@ -453,7 +518,7 @@ static inline cudaError_t LmLatentShardSplitLaunch(
 		return cudaErrorInvalidValue;
 	if (splits == 1u)
 		return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16, query_rank_stride, heads_per_rank, total_heads,
-			sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows, 1u, 0u, stream);
+			sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows, 1u, 0u, stream, LmLatentShardDense(heads_per_rank));
 	if (split_partials == 0 || split_capacity_floats < row_floats)
 		return cudaErrorInvalidValue;
 	chunk = split_capacity_floats / row_floats < rows ? (uint32_t)(split_capacity_floats / row_floats) : rows;
@@ -464,7 +529,7 @@ static inline cudaError_t LmLatentShardSplitLaunch(
 		const uint64_t split_stride = (uint64_t)cache.shard.degree * split_rank_stride;
 		const uint64_t records = (uint64_t)first * heads_per_rank;
 		error = LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16 + records * (LATENT + ROPE), query_rank_stride, heads_per_rank, total_heads,
-			sequence_of_row + first, context_length, row_position + first, qk_scale, split_partials, split_rank_stride, count, splits, split_stride, stream);
+			sequence_of_row + first, context_length, row_position + first, qk_scale, split_partials, split_rank_stride, count, splits, split_stride, stream, LmLatentShardDense(heads_per_rank));
 		if (error != cudaSuccess)
 			return error;
 		LmLatentShardSplitMergeKernel<LATENT><<<dim3(count, total_heads), LM_LATENT_SHARD_THREADS, 0, stream>>>(split_partials, split_rank_stride, split_stride, splits,
@@ -520,7 +585,7 @@ static inline cudaError_t LmLatentShardPrefillLaunch(
 	if ((heads_per_rank * cache.shard.degree) % LM_LATENT_SHARD_QUERIES != 0u)
 		return cudaErrorInvalidValue;
 	return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16, query_rank_stride, heads_per_rank,
-		heads_per_rank * cache.shard.degree, sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows, 1u, 0u, stream);
+		heads_per_rank * cache.shard.degree, sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows, 1u, 0u, stream, LmLatentShardDense(heads_per_rank));
 }
 
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
@@ -539,14 +604,84 @@ static inline cudaError_t LmLatentGatherPrefillLaunch(
 	const uint64_t query_stride = (uint64_t)rows * heads_per_rank * (LATENT + ROPE);
 	const uint64_t partial_stride = (uint64_t)rows * heads_per_rank * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
 	if (heads_per_rank % 32u == 0u)
-		return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16, query_stride, heads_per_rank, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, partial_stride, rows, 1u, 0u, stream);
+		return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16, query_stride, heads_per_rank, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, partial_stride, rows, 1u, 0u, stream, LmLatentShardDense(heads_per_rank));
 	if (heads_per_rank % 16u == 0u)
-		return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 2u>(cache, query_bf16, query_stride, heads_per_rank, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, partial_stride, rows, 1u, 0u, stream);
+		return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 2u>(cache, query_bf16, query_stride, heads_per_rank, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, partial_stride, rows, 1u, 0u, stream, LmLatentShardDense(heads_per_rank));
 	if (heads_per_rank % 8u == 0u)
-		return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 4u>(cache, query_bf16, query_stride, heads_per_rank, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, partial_stride, rows, 1u, 0u, stream);
+		return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 4u>(cache, query_bf16, query_stride, heads_per_rank, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, partial_stride, rows, 1u, 0u, stream, LmLatentShardDense(heads_per_rank));
 	if (heads_per_rank % 4u == 0u)
-		return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 8u>(cache, query_bf16, query_stride, heads_per_rank, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, partial_stride, rows, 1u, 0u, stream);
+		return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 8u>(cache, query_bf16, query_stride, heads_per_rank, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, partial_stride, rows, 1u, 0u, stream, LmLatentShardDense(heads_per_rank));
 	if (heads_per_rank % 2u == 0u)
-		return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 16u>(cache, query_bf16, query_stride, heads_per_rank, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, partial_stride, rows, 1u, 0u, stream);
-	return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 32u>(cache, query_bf16, query_stride, heads_per_rank, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, partial_stride, rows, 1u, 0u, stream);
+		return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 16u>(cache, query_bf16, query_stride, heads_per_rank, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, partial_stride, rows, 1u, 0u, stream, LmLatentShardDense(heads_per_rank));
+	return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 32u>(cache, query_bf16, query_stride, heads_per_rank, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, partial_stride, rows, 1u, 0u, stream, LmLatentShardDense(heads_per_rank));
+}
+
+template<class Geometry, uint32_t LATENT, uint32_t ROPE>
+static __host__ __device__ constexpr bool LmLatentShardTensorFits(void)
+{
+	return (LATENT + ROPE) % 64u == 0u && LATENT % (LM_PREFILL_ATTN_WARPS * 16u) == 0u && Geometry::kSlotBytes >= (LATENT + ROPE) * 2u &&
+		LmLatentShardPrefillSharedBytes<LATENT + ROPE>() <= LM_PREFILL_ATTN_SHARED_LIMIT;
+}
+
+template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
+static inline cudaError_t LmLatentShardAttendHeadsLaunch(
+	Pages cache,
+	const uint16_t *query_bf16,
+	uint64_t query_rank_stride,
+	uint32_t heads_per_rank,
+	uint32_t total_heads,
+	const uint32_t *sequence_of_row,
+	const uint32_t *context_length,
+	const uint32_t *row_position,
+	const uint32_t *selected_positions,
+	uint32_t selected_count,
+	uint32_t dense_limit,
+	float qk_scale,
+	float *partials,
+	uint64_t partial_rank_stride,
+	uint32_t record_heads,
+	uint32_t record_copies,
+	uint32_t rows,
+	cudaStream_t stream,
+	const uint32_t *split_positions = 0,
+	const uint32_t *split_offsets = 0,
+	uint32_t heads_per_block_limit = 4u)
+{
+	if constexpr (LmLatentShardTensorFits<Geometry, LATENT, ROPE>())
+	{
+		const uint64_t list = selected_positions != 0 && split_positions == 0 ? LmLatentShardListBytes(selected_count) : 0u;
+		if (total_heads % LM_LATENT_SHARD_QUERIES == 0u && row_position != 0 && (partial_rank_stride % 2u) == 0u &&
+			LmLatentShardPrefillSharedBytes<LATENT + ROPE>() + list <= LM_PREFILL_ATTN_SHARED_LIMIT)
+		{
+			const LmLatentShardSelection selection = { selected_positions, split_positions, split_offsets, selected_count, dense_limit, record_heads, record_copies, 1u };
+			return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16, query_rank_stride, heads_per_rank, total_heads,
+				sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows, 1u, 0u, stream, selection);
+		}
+	}
+	return LmLatentShardPartialHeadsLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, query_rank_stride, heads_per_rank, total_heads, sequence_of_row,
+		context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, rows,
+		stream, split_positions, split_offsets, heads_per_block_limit);
+}
+
+template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
+static inline cudaError_t LmLatentShardAttendLaunch(
+	Pages cache,
+	const uint16_t *query_bf16,
+	uint64_t query_rank_stride,
+	uint32_t heads_per_rank,
+	const uint32_t *sequence_of_row,
+	const uint32_t *context_length,
+	const uint32_t *row_position,
+	const uint32_t *selected_positions,
+	uint32_t selected_count,
+	uint32_t dense_limit,
+	float qk_scale,
+	float *partials,
+	uint64_t partial_rank_stride,
+	uint32_t rows,
+	cudaStream_t stream)
+{
+	return LmLatentShardAttendHeadsLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, query_rank_stride, heads_per_rank, heads_per_rank * cache.shard.degree,
+		sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, heads_per_rank, 1u,
+		rows, stream);
 }
