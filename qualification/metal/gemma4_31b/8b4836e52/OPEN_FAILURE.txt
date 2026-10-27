@@ -1,0 +1,1 @@
+Open failure: numerics fail the multi-draw floor of 1c1546591 on the code prompt (Metal +2.9 against the draws' +1.1; the 64-row pass +6.1 on code and +5.0 on korean). Recorded in TECHDEBT; localization per layer under way. The rule stays as written.

@@ -1,0 +1,1 @@
+Open failure: numerics fail the 3-sigma paired test on the reference-B leg (+3.8; the margin rescale moved it from +0.7..+1.3 with the eager kernel). Recorded in TECHDEBT; localization per layer under way.

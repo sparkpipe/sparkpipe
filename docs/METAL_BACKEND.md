@@ -478,7 +478,10 @@ itself: draw D scores +4.4 standard errors against B with A as the floor
 (+2.8 against A), and on single prompts C reaches +3.0 (design) and D +3.5
 (design), +2.8 (korean). The floor's noise per prompt is +3.0 (design), +1.1
 (code), +3.6 (korean) and +3.8 (rules); code is tight because the draws
-agree closely there.
+agree closely there. Two failures are open at 8b4836e52 (TECHDEBT): Gemma 4
+31B fails this rule on the code prompt (+2.9 against the floor's +1.1), and
+Qwen3.8-27B fails its 3-sigma reference-B leg (+3.8). One attention kernel
+has to pass both; a kernel choice per model is not an option.
 
 Metal must pass both legs. `tools/pack_tensor_control.py` writes APFS clones
 of the pack with tensors corrupted, and the gate runs each through the same
