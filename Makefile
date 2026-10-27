@@ -380,6 +380,7 @@ PYTHON_TESTS := \
 	tests/test_ab_corpus.py \
 	tests/test_ab_dry_run.py \
 	tests/test_pack_spine_sha.py \
+	tests/test_pack_resume_journal.py \
 	tests/test_glm5_next_compsec17.py \
 	tests/test_compsec17.py \
 	tests/test_ling_compsec17.py \

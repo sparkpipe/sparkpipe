@@ -45,7 +45,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gemma4_tp16_pack import EXPERTS_MAGIC, EXPERTS_VERSION, TP, Checkpoint, PackFailure, RankPacks, ffn_window  # noqa: E402
-from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, assemble  # noqa: E402
+from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, assemble, source_identity  # noqa: E402
 
 PREFIX = "model."
 SLIDING_PADDED_HEADS = 80
@@ -223,7 +223,7 @@ def main():
     if missing:
         raise PackFailure(f"checkpoint tensors differ from the Laguna layout: {sorted(missing)[:8]} ({len(missing)} names)")
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    packs = RankPacks(args.output_dir, args.resume, ranks, "laguna")
+    packs = RankPacks(args.output_dir, args.resume, ranks, "laguna", source_identity(args.checkpoint, "laguna", files=(args.contract,)))
     hidden, vocab_rows = config["hidden_size"], config["vocab_size"] // TP
     embed = checkpoint.array(PREFIX + "embed_tokens.weight", (config["vocab_size"], hidden))
     head = checkpoint.array("lm_head.weight", (config["vocab_size"], hidden))
