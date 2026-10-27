@@ -270,6 +270,15 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   80% of the first resource to saturate. The overlap of prefill-wave
   collectives under Mesh collectives is part of it; the prefill accelerators
   under Fleet-hours take the long prompts.
+- The context-split GQA attention runs tiled on tensor cores for key heads
+  up to 192 and value heads up to 128 wide (Solar Open 2, K-EXAONE 2.0,
+  Laguna, Muse Glimmer, MiMo). Qwen 3.8 (256) and Gemma 4 (256 and 512)
+  still take the scalar kernel, which re-reads every key for every row and
+  reaches about 1 TFLOP/s per node; a long prompt there is bound by it.
+- Kimi K3's prefill attention expands the values but keeps the keys latent
+  (576 wide), so each head and key pair costs 1,408 FLOPs where expanded
+  keys (192 wide) would cost 640. At 250K positions MLA attention is about
+  2.0 s of a 3.6 s wave.
 
 ## Placement beyond TP16
 
