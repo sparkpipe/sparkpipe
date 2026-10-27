@@ -1239,12 +1239,13 @@ Metal backend and the single-Studio stage are in
 - The kernel library builds with Metal 4.0 and its prefill GEMM uses the
   Metal 4 tensor operations, so it loads only on Apple family 10 GPUs (M5).
   Another Studio generation needs its own qualified kernel set.
-- Two models have device stages, Qwen3.8-27B and Gemma 4 26B A4B; each is a
-  shape, a tensor list and a layer schedule over the device stage and layer
-  kinds (`inference/runner/device_stage_model.c`, `device_layers.c`), plus a
-  TP1 pack and its own gates. Next, one at a time and each merged before the
-  next starts: Gemma 4 31B, Muse Glimmer 30B, MiMo V2.6 Flash, Qwen 3.8
-  Flash Next.
+- Three models have device stages, Qwen3.8-27B, Gemma 4 26B A4B and Gemma 4
+  31B; each is a shape, a tensor list and a layer schedule over the device
+  stage and layer kinds (`inference/runner/device_stage_model.c`,
+  `device_layers.c`), plus a TP1 pack and its own gates; the two Gemma 4
+  models are two geometries of one schedule. Every model gets a Metal port,
+  one at a time and each merged before the next starts: Muse Glimmer 30B,
+  MiMo V2.6 Flash, Qwen 3.8 Flash Next FP8, then the rest.
 - The NaN check in the shared BF16 conversion (abce321a5) costs Gemma 4
   26B A4B's B1 decode about 0.9% on the Studio (91.5 to 91.6 tok/s against
   92.2 to 92.5 without it, interleaved runs), since every BF16 store now

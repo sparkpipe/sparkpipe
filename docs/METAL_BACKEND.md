@@ -214,8 +214,10 @@ gated-delta projections sharing one scratch slice. The recurrent state is FP32,
 `[layer][slot][head][key][value]`, and `recurrent_copy` packs it in the same
 order as the CUDA model.
 
-`model-families/gemma4/device/gemma4_26b_device_stage.c` is Gemma 4 26B A4B
-(text only) on the same layers: 30 layers, every sixth one (from the sixth)
+`model-families/gemma4/device/gemma4_device_stage.c` is the Gemma 4 text
+schedule over a geometry (shape, the two attention kinds, the layer period,
+the FFN width, the embedding scale and optional experts), with two
+geometries. Gemma 4 26B A4B (text only) runs it on the same layers: 30 layers, every sixth one (from the sixth)
 full attention (16 query and 2 KV heads of 512, keys shared as values, rotary
 on the first 64 of 256 pairs with base 10^6) and the rest sliding-window
 attention (16 query and 8 KV heads of 256, window 1,024, the whole head
@@ -224,7 +226,13 @@ weightless, attention scale 1; then the tanh-GeLU dense FFN (2,112 wide) and
 128 experts (top 8, 704 wide) on the same residual, combined by the two-branch
 sandwich norm and the layer scalar. The embedding is multiplied by
 `bf16(sqrt(2816)) = 53`, the head is the embedding table and the logits are
-capped at 30. The pack is `tools/gemma4_tp16_pack.py --tp-degree 1`.
+capped at 30. Gemma 4 31B is the dense geometry of the same schedule, with no
+change to a kernel or a layer kind: 60 layers, hidden 5,376, 32 query heads
+(16 KV heads of 256 on the sliding layers, 4 of 512 with keys shared as
+values on the full ones), the tanh-GeLU FFN 21,504 wide and no experts, so
+each layer ends in the one-branch sandwich norm with the layer scalar; the
+embedding scale is `bf16(sqrt(5376)) = 73.5`. The packs are
+`tools/gemma4_tp16_pack.py --tp-degree 1`.
 
 ## Decode and prefill by row count
 
