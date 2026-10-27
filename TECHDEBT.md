@@ -977,18 +977,12 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   outside the step's CUDA graph, because the certified screen prunes with
   un-noised bounds. Noise the screen bounds and capture the sampling pass in
   the step graph to lift both.
-- The chat layer silently turns a request for no reasoning into the lowest
-  effort for models whose template has no off switch. GLM-5.3 Full and Flash
-  map `minimal` to `reasoning_effort: low` and Muse Glimmer to
-  `reasoning_strength: low` (`deployment/hub/chat_frontend.json`). GLM Flash
-  and Muse Glimmer still reasoned with reasoning off, so `tools/ui_smoke.py
-  --reasoning both` fails that case for them; GLM Full happened to pass it.
-  Qwen 3.8 Max maps no `minimal` at all and answers it with a 400, and Laguna
-  returned no reasoning with reasoning on (release qualifications of
-  `e05394f94` and `1d89e0377`, 2026-10-14). Answer reasoning off with a clear
-  error, or a documented per-model capability in `/v1/models`, where the
-  template cannot turn it off, and find out why Laguna does not reason when
-  asked.
+- Laguna returned no reasoning with reasoning on (release qualifications of
+  `e05394f94` and `1d89e0377`, 2026-10-14); find out why it does not
+  reason when asked. GLM-5.3 Full, GLM-5.3 Flash, Muse Glimmer and Qwen 3.8
+  Max have no reasoning-off switch in their templates: the chat layer
+  refuses `reasoning_effort: minimal` for them with a 400 naming the efforts
+  they take, and `/v1/models` lists every model's `reasoning_efforts`.
 - Every stage-runner lane, GLM Flash included, is sized for every resident
   sequence at full length by default: `tools/stage_lane.py` sets
   `kv_physical_pages` to `sequences * kv_pages` (each sequence's

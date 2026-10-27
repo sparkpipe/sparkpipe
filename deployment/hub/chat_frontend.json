@@ -46,9 +46,6 @@
     "clear_thinking"
    ],
    "reasoning_effort": {
-    "minimal": {
-     "reasoning_effort": "low"
-    },
     "low": {
      "reasoning_effort": "low"
     },
@@ -99,9 +96,6 @@
     "clear_thinking"
    ],
    "reasoning_effort": {
-    "minimal": {
-     "reasoning_effort": "low"
-    },
     "low": {
      "reasoning_effort": "low"
     },
@@ -664,9 +658,6 @@
     "reasoning_strength"
    ],
    "reasoning_effort": {
-    "minimal": {
-     "reasoning_strength": "low"
-    },
     "low": {
      "reasoning_strength": "low"
     },

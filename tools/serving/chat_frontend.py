@@ -1348,7 +1348,8 @@ class Frontend:
         created = int(time.time())
         public = request is not None and request.get("public_key") is not None
         return web.json_response({"object": "list", "data": [
-            {"id": name, "object": "model", "created": created, "owned_by": "sparkpipe", "max_model_len": model.context_tokens}
+            {"id": name, "object": "model", "created": created, "owned_by": "sparkpipe", "max_model_len": model.context_tokens,
+             "reasoning_efforts": sorted(model.reasoning_effort)}
             for model in self.models.values() if not public or model.id in self.public_models for name in (model.id, model.id + BULK_SUFFIX)]})
 
     def prefix_ledger(self, model):
