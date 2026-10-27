@@ -46,6 +46,7 @@ typedef struct SparkDeviceStageShape
 	float epsilon;
 	uint32_t tied_head;
 	float logit_softcap;
+	uint32_t projection;
 } SparkDeviceStageShape;
 
 #define SPARK_DEVICE_STAGE_KV_WINDOWS 4u

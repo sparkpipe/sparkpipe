@@ -469,86 +469,65 @@ static uint32_t SampleIndex(uint64_t index, uint64_t total, uint64_t samples)
 	return((uint32_t)((index * 2654435761ull + 12345u) % total));
 }
 
-static void TestLinear(uint32_t rows, uint32_t K, uint32_t N, uint32_t output_f32, uint32_t gated, uint64_t samples)
+static void TestLinear(uint32_t rows, uint32_t K, uint32_t N, uint32_t output_f32, uint32_t projection, uint64_t samples)
 {
-	const uint32_t width = gated != 0u ? 2u * K : K;
 	SparkDeviceBuffer x, w, y;
-	uint16_t *xv = (uint16_t *)Shared(&x,(uint64_t)rows * width * 2u,"linear x");
+	uint16_t *xv = (uint16_t *)Shared(&x,(uint64_t)rows * K * 2u,"linear x");
 	uint16_t *wv = (uint16_t *)Shared(&w,(uint64_t)N * K * 2u,"linear w");
 	void *yv = Shared(&y,(uint64_t)rows * N * (output_f32 != 0u ? 4u : 2u),"linear y");
-	double *xd = (double *)malloc((size_t)rows * K * sizeof(double)), *xs = (double *)calloc((size_t)rows * K,sizeof(double));
 	SparkGemvParams params;
 	Check clean, corrupted;
 	char shape[96];
 	uint64_t total = (uint64_t)rows * N, index;
-	uint32_t pass, r, k;
-	FillBf16(xv,(uint64_t)rows * width,1.0);
+	uint32_t pass, k;
+	FillBf16(xv,(uint64_t)rows * K,1.0);
 	FillBf16(wv,(uint64_t)N * K,1.0 / sqrt((double)K));
-	for ( r = 0u; r < rows; r++ )
-		for ( k = 0u; k < K; k++ )
-		{
-			const double act = Silu(Bf16(xv[(uint64_t)r * width + k])) * Bf16(xv[(uint64_t)r * width + K + k]);
-			xd[(uint64_t)r * K + k] = gated != 0u ? RoundBf16(act) : Bf16(xv[(uint64_t)r * width + k]);
-			xs[(uint64_t)r * K + k] = gated != 0u ? FlipSlack(act,3.0 * FUNCTION_ERROR + 2.0 * UNIT_F32) : 0.0;
-		}
 	memset(&params,0,sizeof(params));
 	params.rows = rows;
 	params.input_dimension = K;
 	params.output_dimension = N;
-	params.input_stride = width;
+	params.input_stride = K;
 	params.output_stride = N;
 	params.output_f32 = output_f32;
-	params.gated_input = gated;
+	params.projection = projection;
 	for ( pass = 0u; pass < 2u; pass++ )
 	{
 		Check *check = pass == 0u ? &clean : &corrupted;
-		const uint64_t poke = (uint64_t)(rows - 1u) * width + K / 2u, partner = gated != 0u ? poke + K : poke;
-		const uint16_t saved = xv[poke], saved_partner = xv[partner];
+		const uint64_t poke = (uint64_t)(rows - 1u) * K + K / 2u;
+		const uint16_t saved = xv[poke];
 		memset(check,0,sizeof(*check));
 		if ( pass == 1u )
-		{
 			xv[poke] = ToBf16(Bf16(saved) + (Bf16(saved) >= 0.0f ? -64.0f : 64.0f));
-			if ( gated != 0u )
-			{
-				xv[poke] = ToBf16(3.0f);
-				xv[partner] = ToBf16(Bf16(saved_partner) + 8.0f);
-			}
-		}
 		if ( !Run(SparkOpsLinear(&ops,queue,Whole(&x),Whole(&w),Whole(&y),&params),"linear") )
 			break;
 		xv[poke] = saved;
-		xv[partner] = saved_partner;
 		for ( index = 0u; index < (samples < total ? samples : total); index++ )
 		{
 			const uint64_t element = SampleIndex(index,total,samples);
 			const uint32_t row = (uint32_t)(element / N), n = (uint32_t)(element % N);
-			double sum = 0.0, magnitude = 0.0, slack = 0.0, got;
+			double sum = 0.0, magnitude = 0.0, got;
 			for ( k = 0u; k < K; k++ )
 			{
-				const double term = xd[(uint64_t)row * K + k] * Bf16(wv[(uint64_t)n * K + k]);
+				const double term = Bf16(xv[(uint64_t)row * K + k]) * Bf16(wv[(uint64_t)n * K + k]);
 				sum += term;
 				magnitude += fabs(term);
-				slack += xs[(uint64_t)row * K + k] * fabs((double)Bf16(wv[(uint64_t)n * K + k]));
 			}
 			got = output_f32 != 0u ? ((float *)yv)[element] : Bf16(((uint16_t *)yv)[element]);
-			Observe(check,got,sum,(output_f32 != 0u ? 0.0 : UNIT_BF16 * fabs(sum)) + (1.0 + UNIT_BF16) * (Gamma(K) * magnitude + slack));
+			Observe(check,got,sum,(output_f32 != 0u ? 0.0 : UNIT_BF16 * fabs(sum)) + (1.0 + UNIT_BF16) * Gamma(K) * magnitude);
 		}
 	}
-	snprintf(shape,sizeof(shape),"rows %u, K %u -> N %u%s%s%s",rows,K,N,output_f32 != 0u ? ", f32 out" : "",gated != 0u ? ", silu-gated input" : "",
-		samples < total ? ", sampled" : "");
-	Report(rows > SPARK_OPS_DECODE_MAX_ROWS ? "gemm" : rows > SPARK_OPS_GEMV_MAX_ROWS ? "gemm rows" : "gemv",shape,&clean,&corrupted,
-		output_f32 != 0u ? "gamma_K sum|x w|: fp32 accumulation of exact bf16 products" :
-		gated != 0u ? "u|y| + (1+u)(gamma_K sum|x w| + sum flip slack(x)|w|), x = bf16(silu(gate) up)" : "u|y| + (1+u) gamma_K sum|x w|, u = 2^-8");
-	free(xd);
-	free(xs);
+	snprintf(shape,sizeof(shape),"rows %u, K %u -> N %u%s%s",rows,K,N,output_f32 != 0u ? ", f32 out" : "",samples < total ? ", sampled" : "");
+	Report(rows > SPARK_OPS_DECODE_MAX_ROWS ? "gemm" : projection == SPARK_PROJECTION_ROW_TILES || rows > SPARK_OPS_GEMV_MAX_ROWS ? "gemm rows" : "gemv",shape,
+		&clean,&corrupted,output_f32 != 0u ? "gamma_K sum|x w|: fp32 accumulation of exact bf16 products" : "u|y| + (1+u) gamma_K sum|x w|, u = 2^-8");
 	SparkDeviceFree(&x);
 	SparkDeviceFree(&w);
 	SparkDeviceFree(&y);
 }
 
-static void TestLinearRowIndependence(uint32_t rows, uint32_t other_rows, uint32_t K, uint32_t N, uint32_t output_f32, uint32_t gated, uint32_t exact)
+static void TestLinearRowIndependence(uint32_t rows, uint32_t other_rows, uint32_t K, uint32_t N, uint32_t output_f32, uint32_t projection,
+	uint32_t exact)
 {
-	const uint32_t width = gated != 0u ? 2u * K : K, element = output_f32 != 0u ? (uint32_t)sizeof(float) : (uint32_t)sizeof(uint16_t);
+	const uint32_t width = K, element = output_f32 != 0u ? (uint32_t)sizeof(float) : (uint32_t)sizeof(uint16_t);
 	const uint32_t picks[3] = { 0u, rows / 2u, rows - 1u };
 	SparkDeviceBuffer x, w, y, ox, oy;
 	uint16_t *xv = (uint16_t *)Shared(&x,(uint64_t)rows * width * sizeof(uint16_t),"row independence x");
@@ -569,7 +548,7 @@ static void TestLinearRowIndependence(uint32_t rows, uint32_t other_rows, uint32
 	params.input_stride = width;
 	params.output_stride = N;
 	params.output_f32 = output_f32;
-	params.gated_input = gated;
+	params.projection = projection;
 	params.row_exact = exact;
 	other = params;
 	other.rows = other_rows;
@@ -592,7 +571,7 @@ static void TestLinearRowIndependence(uint32_t rows, uint32_t other_rows, uint32
 						0.0,0.0);
 			}
 	snprintf(shape,sizeof(shape),"rows %u vs %u, K %u -> N %u%s%s%s",rows,other_rows,K,N,output_f32 != 0u ? ", f32 out" : "",
-		gated != 0u ? ", silu-gated input" : "",exact != 0u ? ", row-exact" : "");
+		projection == SPARK_PROJECTION_ROW_TILES ? ", row tiles" : "",exact != 0u ? ", row-exact" : "");
 	Report("linear row independence",shape,&clean,&corrupted,"exact: a row's output bits do not depend on the other rows or the row count");
 	SparkDeviceFree(&x);
 	SparkDeviceFree(&w);
@@ -1714,53 +1693,55 @@ int main(int argc, char **argv)
 		TestHeadRopeCase(2u,2u,8192u,512u,&full,"2 heads x 512, 64 of 256 pairs rotated, bf16 terms, theta 1e6");
 		TestHeadRopeCase(2u,2u,8192u,512u,&value,"2 heads x 512, weightless norm, no rope");
 	}
-	TestLinear(1u,5120u,16384u,0u,0u,UINT64_MAX);
-	TestLinear(1u,5120u,96u,0u,0u,UINT64_MAX);
-	TestLinear(1u,5120u,14336u,0u,0u,UINT64_MAX);
-	TestLinear(1u,6144u,5120u,0u,0u,UINT64_MAX);
-	TestLinear(1u,5120u,34816u,0u,0u,UINT64_MAX);
-	TestLinear(1u,17408u,5120u,0u,1u,UINT64_MAX);
-	TestLinear(2u,17408u,5120u,0u,1u,UINT64_MAX);
-	TestLinear(3u,17408u,5120u,0u,0u,UINT64_MAX);
-	TestLinear(7u,5120u,1000u,0u,0u,UINT64_MAX);
-	TestLinear(8u,5120u,1000u,0u,0u,UINT64_MAX);
-	TestLinear(2u,6144u,5120u,0u,0u,UINT64_MAX);
-	TestLinear(4u,17408u,5120u,0u,0u,UINT64_MAX);
-	TestLinear(5u,17408u,5120u,0u,0u,UINT64_MAX);
-	TestLinear(16u,5120u,96u,0u,0u,UINT64_MAX);
-	TestLinear(17u,6144u,5120u,0u,0u,UINT64_MAX);
-	TestLinear(64u,5120u,34816u,0u,0u,20000u);
-	TestLinear(2u,5120u,248320u,1u,0u,UINT64_MAX);
-	TestLinear(1u,5120u,248320u,1u,0u,UINT64_MAX);
-	TestLinear(130u,5120u,200u,0u,0u,UINT64_MAX);
-	TestLinear(512u,5120u,16384u,0u,0u,20000u);
-	TestLinear(512u,5120u,96u,0u,0u,UINT64_MAX);
-	TestLinear(512u,6144u,5120u,0u,0u,20000u);
-	TestLinear(512u,17408u,5120u,0u,0u,20000u);
-	TestLinear(77u,17408u,5120u,0u,0u,20000u);
-	TestLinear(2048u,5120u,34816u,0u,0u,20000u);
-	TestLinear(64u,5120u,248320u,1u,0u,20000u);
+	TestLinear(1u,5120u,16384u,0u,SPARK_PROJECTION_GEMV,UINT64_MAX);
+	TestLinear(1u,5120u,96u,0u,SPARK_PROJECTION_GEMV,UINT64_MAX);
+	TestLinear(1u,5120u,14336u,0u,SPARK_PROJECTION_GEMV,UINT64_MAX);
+	TestLinear(1u,6144u,5120u,0u,SPARK_PROJECTION_GEMV,UINT64_MAX);
+	TestLinear(1u,5120u,34816u,0u,SPARK_PROJECTION_GEMV,UINT64_MAX);
+	TestLinear(3u,17408u,5120u,0u,SPARK_PROJECTION_GEMV,UINT64_MAX);
+	TestLinear(7u,5120u,1000u,0u,SPARK_PROJECTION_GEMV,UINT64_MAX);
+	TestLinear(8u,5120u,1000u,0u,SPARK_PROJECTION_GEMV,UINT64_MAX);
+	TestLinear(2u,6144u,5120u,0u,SPARK_PROJECTION_GEMV,UINT64_MAX);
+	TestLinear(4u,17408u,5120u,0u,SPARK_PROJECTION_GEMV,UINT64_MAX);
+	TestLinear(5u,17408u,5120u,0u,SPARK_PROJECTION_GEMV,UINT64_MAX);
+	TestLinear(16u,5120u,96u,0u,SPARK_PROJECTION_GEMV,UINT64_MAX);
+	TestLinear(17u,6144u,5120u,0u,SPARK_PROJECTION_GEMV,UINT64_MAX);
+	TestLinear(64u,5120u,34816u,0u,SPARK_PROJECTION_GEMV,20000u);
+	TestLinear(2u,5120u,248320u,1u,SPARK_PROJECTION_GEMV,UINT64_MAX);
+	TestLinear(1u,5120u,248320u,1u,SPARK_PROJECTION_GEMV,UINT64_MAX);
+	TestLinear(130u,5120u,200u,0u,SPARK_PROJECTION_GEMV,UINT64_MAX);
+	TestLinear(512u,5120u,16384u,0u,SPARK_PROJECTION_GEMV,20000u);
+	TestLinear(512u,5120u,96u,0u,SPARK_PROJECTION_GEMV,UINT64_MAX);
+	TestLinear(512u,6144u,5120u,0u,SPARK_PROJECTION_GEMV,20000u);
+	TestLinear(512u,17408u,5120u,0u,SPARK_PROJECTION_GEMV,20000u);
+	TestLinear(77u,17408u,5120u,0u,SPARK_PROJECTION_GEMV,20000u);
+	TestLinear(2048u,5120u,34816u,0u,SPARK_PROJECTION_GEMV,20000u);
+	TestLinear(64u,5120u,248320u,1u,SPARK_PROJECTION_GEMV,20000u);
 	{
 		static const uint32_t shapes[][2] = { { 2816u, 4224u }, { 2112u, 2816u }, { 2816u, 8192u }, { 4096u, 2816u }, { 8192u, 2816u },
 			{ 2816u, 1024u }, { 2816u, 128u }, { 704u, 2816u } }, row_counts[] = { 1u, 4u, 9u, 64u, 512u };
 		uint32_t s, c;
 		for ( s = 0u; s < sizeof(shapes) / sizeof(shapes[0]); s++ )
 			for ( c = 0u; c < sizeof(row_counts) / sizeof(row_counts[0]); c++ )
-				TestLinear(row_counts[c],shapes[s][0],shapes[s][1],0u,0u,20000u);
-		TestLinear(1u,2816u,262144u,1u,0u,20000u);
-		TestLinear(64u,2816u,262144u,1u,0u,20000u);
+				TestLinear(row_counts[c],shapes[s][0],shapes[s][1],0u,SPARK_PROJECTION_GEMV,20000u);
+		TestLinear(1u,2816u,262144u,1u,SPARK_PROJECTION_GEMV,20000u);
+		TestLinear(64u,2816u,262144u,1u,SPARK_PROJECTION_GEMV,20000u);
 	}
-	TestLinearRowIndependence(2u,1u,17408u,5120u,0u,1u,0u);
-	TestLinearRowIndependence(3u,64u,5120u,34816u,0u,0u,0u);
-	TestLinearRowIndependence(2u,1u,5120u,248320u,1u,0u,0u);
-	TestLinearRowIndependence(64u,5u,17408u,5120u,0u,0u,0u);
-	TestLinearRowIndependence(16u,9u,5120u,96u,0u,0u,0u);
-	TestLinearRowIndependence(32u,17u,5120u,16384u,0u,0u,0u);
-	TestLinearRowIndependence(32u,16u,6144u,5120u,0u,0u,0u);
-	TestLinearRowIndependence(40u,8u,5120u,248320u,1u,0u,0u);
-	TestLinearRowIndependence(8u,1u,17408u,5120u,0u,1u,1u);
-	TestLinearRowIndependence(23u,1u,5120u,248320u,1u,0u,1u);
-	TestLinearRowIndependence(13u,1u,5120u,34816u,0u,0u,1u);
+	TestLinearRowIndependence(3u,64u,5120u,34816u,0u,SPARK_PROJECTION_GEMV,0u);
+	TestLinearRowIndependence(2u,1u,5120u,248320u,1u,SPARK_PROJECTION_GEMV,0u);
+	TestLinearRowIndependence(64u,5u,17408u,5120u,0u,SPARK_PROJECTION_GEMV,0u);
+	TestLinearRowIndependence(16u,9u,5120u,96u,0u,SPARK_PROJECTION_GEMV,0u);
+	TestLinearRowIndependence(32u,17u,5120u,16384u,0u,SPARK_PROJECTION_GEMV,0u);
+	TestLinearRowIndependence(32u,16u,6144u,5120u,0u,SPARK_PROJECTION_GEMV,0u);
+	TestLinearRowIndependence(40u,8u,5120u,248320u,1u,SPARK_PROJECTION_GEMV,0u);
+	TestLinearRowIndependence(23u,1u,5120u,248320u,1u,SPARK_PROJECTION_GEMV,1u);
+	TestLinearRowIndependence(13u,1u,5120u,34816u,0u,SPARK_PROJECTION_GEMV,1u);
+	TestLinear(1u,5120u,34816u,0u,SPARK_PROJECTION_ROW_TILES,UINT64_MAX);
+	TestLinear(2u,6144u,5120u,0u,SPARK_PROJECTION_ROW_TILES,UINT64_MAX);
+	TestLinear(1u,5120u,248320u,1u,SPARK_PROJECTION_ROW_TILES,20000u);
+	TestLinearRowIndependence(64u,1u,17408u,5120u,0u,SPARK_PROJECTION_ROW_TILES,1u);
+	TestLinearRowIndependence(32u,1u,5120u,248320u,1u,SPARK_PROJECTION_ROW_TILES,1u);
+	TestLinearRowIndependence(13u,2u,6144u,5120u,0u,SPARK_PROJECTION_ROW_TILES,0u);
 	TestCausalConv();
 	TestGatedDelta();
 	TestAttention(1u,1u,0u);

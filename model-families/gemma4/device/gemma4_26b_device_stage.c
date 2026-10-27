@@ -23,7 +23,8 @@ static const SparkDeviceStageShape gemma_shape =
 	.pack_alignment = 128u,
 	.epsilon = 1e-6f,
 	.tied_head = 1u,
-	.logit_softcap = 30.0f
+	.logit_softcap = 30.0f,
+	.projection = SPARK_PROJECTION_GEMV
 };
 
 static const SparkDeviceAttentionShape gemma_sliding =

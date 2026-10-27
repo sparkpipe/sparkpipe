@@ -25,10 +25,10 @@ int main(int argc, char **argv)
 	SparkDeviceBuffer x, w, y;
 	SparkGemvParams params;
 	uint64_t times[16], index;
-	uint32_t K, N, rows, f32, run, launches = 8u;
-	if ( argc != 6 )
+	uint32_t K, N, rows, f32, projection, run, launches = 8u;
+	if ( argc != 7 )
 	{
-		fprintf(stderr,"usage: %s KERNEL_LIBRARY K N ROWS F32\n",argv[0]);
+		fprintf(stderr,"usage: %s KERNEL_LIBRARY K N ROWS F32 ROW_TILES\n",argv[0]);
 		return(2);
 	}
 	memset(&opened,0,sizeof(opened));
@@ -36,6 +36,7 @@ int main(int argc, char **argv)
 	N = (uint32_t)strtoul(argv[3],0,10);
 	rows = (uint32_t)strtoul(argv[4],0,10);
 	f32 = (uint32_t)strtoul(argv[5],0,10);
+	projection = strtoul(argv[6],0,10) != 0u ? SPARK_PROJECTION_ROW_TILES : SPARK_PROJECTION_GEMV;
 	if ( SparkDeviceInitialize(0) != SPARK_STATUS_OK || SparkDeviceQueueCreate(&queue,"linear bench") != SPARK_STATUS_OK ||
 		SparkDeviceOpsOpen(ops,argv[1]) != SPARK_STATUS_OK ||
 		SparkDeviceAllocate(&x,SPARK_DEVICE_SPACE_SHARED_COHERENT,(uint64_t)rows * K * 2u,"bench x") != SPARK_STATUS_OK ||
@@ -56,6 +57,7 @@ int main(int argc, char **argv)
 	params.input_stride = K;
 	params.output_stride = N;
 	params.output_f32 = f32;
+	params.projection = projection;
 	for ( run = 0u; run <= 15u; run++ )
 	{
 		const uint64_t start = NowNs();
@@ -71,7 +73,7 @@ int main(int argc, char **argv)
 		times[run] = (NowNs() - start) / launches;
 	}
 	qsort(times + 1,15u,sizeof(uint64_t),CompareU64);
-	printf("rows %u K %u N %u%s: %.1f us, %.0f GB/s weights, %.2f TFLOPS\n",rows,K,N,f32 != 0u ? " f32" : "",times[8] / 1e3,
+	printf("rows %u K %u N %u%s%s: %.1f us, %.0f GB/s weights, %.2f TFLOPS\n",rows,K,N,f32 != 0u ? " f32" : "",projection == SPARK_PROJECTION_ROW_TILES ? " row tiles" : "",times[8] / 1e3,
 		(double)N * K * 2.0 / times[8],2.0 * rows * N * K / times[8] / 1e3);
 	return(0);
 }
