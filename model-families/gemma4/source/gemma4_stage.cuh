@@ -34,24 +34,14 @@
 struct GemmaDefaults
 {
 	static constexpr bool kEmbedNorm = false;
-	static constexpr float kNormEpsilon = 1e-6f;
-	static constexpr float kPostEpsilon = 1e-6f;
-	static constexpr bool kQkNormWeighted = true;
-	static constexpr float kQueryMultiply = 1.0f;
-	static constexpr bool kValueNorm = true;
-	static constexpr float kAttentionScale = 1.0f;
-	static constexpr bool kFullRope = true;
 	static constexpr bool kOutputGate = false;
-	static constexpr bool kGeluMlp = true;
 	static constexpr bool kUntiedHead = false;
-	static constexpr bool kLayerScalar = true;
 	static constexpr float kLogitScale = 0.0f;
 	static constexpr bool kMoe = false;
 	static constexpr uint32_t kExperts = 0u;
 	static constexpr uint32_t kLocalExperts = 0u;
 	static constexpr uint32_t kTopK = 0u;
 	static constexpr uint32_t kMoeInter = 0u;
-	static constexpr bool kPreNorm = false;
 	static constexpr uint32_t kFullRopeDim = 0u;
 	static constexpr float kFullRopeScale = 1.0f;
 	static constexpr float kYarnFactor = 0.0f;
@@ -59,14 +49,11 @@ struct GemmaDefaults
 	static constexpr float kYarnBetaFast = 0.0f;
 	static constexpr float kYarnBetaSlow = 0.0f;
 	static constexpr bool kHeadGate = false;
-	static constexpr bool kSigmoidRouter = false;
 	static constexpr uint32_t kFirstMoeLayer = 0u;
-	static constexpr float kRoutedScale = 1.0f;
 	static constexpr uint32_t kEmbedAliasFirst = 0u;
 	static constexpr uint32_t kEmbedAliasCount = 0u;
 	static constexpr uint32_t kEmbedAliasRow = 0u;
 	static constexpr bool kLayerTable = false;
-	static constexpr bool kRouterFloat = false;
 };
 
 template<class G>
@@ -119,6 +106,8 @@ struct GemmaShape
 	static_assert(!G::kHeadGate || (G::kSlidingHeads % G::kTpDegree == 0u && G::kFullHeads % G::kTpDegree == 0u),
 		"a per-head gate needs whole heads on every rank");
 	static_assert(kFullRopeWidth % 2u == 0u && kFullRopeWidth <= G::kFullDim, "the full-layer rope rotates an even prefix of the head");
+	static_assert(G::kYarnFactor <= 1.0f || (G::kYarnOriginal > 0.0f && G::kYarnBetaFast > 0.0f && G::kYarnBetaSlow > 0.0f),
+		"a geometry that turns YaRN on chooses its betas and original positions");
 	using SlidingKvGeometry = LmKvHeads<16u, G::kSlidingKvHeads, G::kSlidingDim, G::kPageSlots>;
 	using FullKvGeometry = LmKvHeads<16u, G::kFullKvHeads, G::kFullDim, G::kPageSlots>;
 };

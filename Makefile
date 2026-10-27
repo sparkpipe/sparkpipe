@@ -408,6 +408,7 @@ PYTHON_TESTS := \
 	tests/test_device_contract_metal.py \
 	tests/test_metal_kernels.py \
 	tests/test_dry_law.py \
+	tests/test_geometry_required_switches.py \
 	tests/test_family_defines_single_source.py \
 	tests/test_no_source_comments.py \
 	tests/test_ci_supply_chain.py \

@@ -37,10 +37,7 @@
 
 struct LingDefaults
 {
-	static constexpr uint32_t kAttention = LING_ATTENTION_MLA;
-	static constexpr float kNormEpsilon = LG_EPSILON;
 	static constexpr uint32_t kKdaRank = 0u;
-	static constexpr bool kKdaDoubledBeta = false;
 	static constexpr uint32_t kMlaHeads = 0u;
 	static constexpr uint32_t kNope = 0u;
 	static constexpr uint32_t kRope = 0u;
