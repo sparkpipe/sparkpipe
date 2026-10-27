@@ -84,7 +84,7 @@ def main():
             elif hub["tokenizer"].get("text_prompt_prefix_token_ids", []) != prefix:
                 failures.append(f"{record_id}: the hub model_resident.json carries text prompt prefix {hub['tokenizer'].get('text_prompt_prefix_token_ids')}, the record {prefix}")
         if record["launcher"] == "stage_lane":
-            generated = stage_lane.swap_entry(record["model"], model, record["lane"])
+            generated = stage_lane.swap_entry(record["model"], model, record["lane"], stage_lane.draft_hooks(record_id, record))
             entry = swap.get(record_id, {})
             for key, value in generated.items():
                 if entry.get(key) != value:

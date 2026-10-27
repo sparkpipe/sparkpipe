@@ -22,6 +22,7 @@ import argparse
 import json
 import math
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -510,9 +511,50 @@ def deployment(model: dict, lane: int, args) -> dict:
 
 
 HUB_LOG_DIR = "/srv/workspace/sparkpipe/logs"
+INFERENCE_ROOTS = ("/srv/workspace/", "/home/")
+DRAFT_LIFECYCLES = (None, "model")
 
 
-def swap_entry(name: str, model: dict, lane: int) -> dict:
+def draft_lifecycle(record_id: str, spec: dict) -> str | None:
+    if spec.get("lifecycle") not in DRAFT_LIFECYCLES:
+        raise SystemExit(f"{record_id}: draftd lifecycle {spec['lifecycle']!r} is not one of {DRAFT_LIFECYCLES}; \"model\" runs the draft server only while its model is active")
+    return spec.get("lifecycle")
+
+
+def draft_environment(record_id: str, lane: dict) -> tuple[str, dict[str, str]]:
+    spec, server = lane.get("draftd"), lane.get("draft_server")
+    if spec is None or server is None:
+        raise SystemExit(f"{record_id}: a draft server needs both a draft_server and a draftd record")
+    draft_lifecycle(record_id, spec)
+    drafter = spec["drafter"]
+    paths = [spec["source"], drafter.split(":", 1)[1] if drafter.startswith("dspark:") else drafter, spec["log"]]
+    if spec.get("target_shard"):
+        paths.append(spec["target_shard"])
+    for path in paths:
+        if not path.startswith(INFERENCE_ROOTS) or ".." in path.split("/"):
+            raise SystemExit(f"{record_id}: draftd path {path} is not on the hub's local NVMe ({', '.join(INFERENCE_ROOTS)}); inference never reads CephFS or cold storage")
+    stream = (lane.get("taps") or {}).get("stream", "")
+    tap_host, _, tap_port = stream.rpartition(":")
+    if not tap_host or not tap_port.isdigit():
+        raise SystemExit(f"{record_id}: a draft server needs the record's taps.stream as host:port, the endpoint the rank streams to and draftd listens on")
+    environment = {"DRAFTD_UNIT": spec["unit"], "DRAFTD_LOG": spec["log"], "DRAFTD_DRAFTER": drafter, "DRAFTD_TARGET_SHARD": spec.get("target_shard", ""),
+                   "DRAFTD_TAP_HOST": tap_host, "DRAFTD_TAP_PORT": tap_port, "DRAFTD_DRAFT_PORT": str(server["port"]),
+                   "DRAFTD_WINDOW": str(spec["window"]), "DRAFTD_CONTEXT_BYTES": str(spec["context_bytes"]), "DRAFTD_RESTART": spec.get("restart", "no"),
+                   "DRAFTD_EMBED": spec.get("embed", ""), "DRAFTD_HEAD": spec.get("head", ""), "DRAFTD_NORM": spec.get("norm", ""),
+                   "DRAFTD_DELTA": str(spec["delta"]) if "delta" in spec else ""}
+    return spec["source"], environment
+
+
+def draft_hooks(record_id: str, lane: dict) -> dict:
+    if lane.get("draftd") is None or draft_lifecycle(record_id, lane["draftd"]) != "model":
+        return {}
+    source, environment = draft_environment(record_id, lane)
+    settings = " ".join(f"{key}={shlex.quote(value)}" for key, value in environment.items())
+    script = shlex.quote(f"{source}/hub_draftd.sh")
+    return {"draft_start": f"env {settings} bash {script} start {shlex.quote(source)}", "draft_stop": f"env {settings} bash {script} stop"}
+
+
+def swap_entry(name: str, model: dict, lane: int, hooks: dict) -> dict:
     root = f"$HOME/stage-lanes/{name}/lane{lane}/root"
     api = f"$HOME/{name}-kv-api"
     unit = f"kv-{name.replace('_', '-')}-api"
@@ -531,6 +573,7 @@ def swap_entry(name: str, model: dict, lane: int) -> dict:
         "api_stop": f"systemctl --user stop {unit} 2>/dev/null; systemctl --user reset-failed {unit} 2>/dev/null; true",
         "health": f"http://127.0.0.1:{model['api_port']}/health",
         **expert_warm(model, root),
+        **hooks,
     }
 
 
@@ -594,7 +637,7 @@ def record_arguments(swap_id: str) -> argparse.Namespace:
         state_budget_bytes=record["state_budget_bytes"], state_memory_bytes=record.get("state_memory_bytes"),
         taps=record.get("taps"), tokenizer_sha256=record["tokenizer_sha256"], tokenizer_dir=None,
         text_prompt_prefix=record["text_prompt_prefix_token_ids"],
-        draft_server=record.get("draft_server"), swap_entry=True, output_dir=None)
+        draft_server=record.get("draft_server"), draft_hooks=draft_hooks(swap_id, record), swap_entry=True, output_dir=None)
 
 
 def render(value: dict) -> str:
@@ -636,7 +679,7 @@ def write_lane(args, output_dir: Path) -> None:
     if args.record:
         (output_dir / "model_resident.json").write_text(render(hub_deployment(model, args.lane, args)))
     if args.swap_entry:
-        (output_dir / "swap_entry.json").write_text(render(swap_entry(args.model, model, args.lane)))
+        (output_dir / "swap_entry.json").write_text(render(swap_entry(args.model, model, args.lane, getattr(args, "draft_hooks", {}))))
 
 
 def main() -> int:
