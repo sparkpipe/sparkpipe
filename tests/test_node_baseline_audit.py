@@ -66,6 +66,10 @@ class Node:
         self.enabled_instances = ["osd.3"]
         self.missing_packages: set[str] = set()
         self.firewall = True
+        self.running_kernel = "6.17.0-1026-nvidia"
+        self.missing_module_trees: set[str] = set()
+        self.unloaded_modules: set[str] = set()
+        self.ceph_log_owner = f"{MODULE.CEPH_UID}:{MODULE.CEPH_UID}"
 
     def command(self,argv: list[str],timeout: int = 120,check: bool = True) -> str:
         key = " ".join(argv)
@@ -132,6 +136,10 @@ class Node:
                 mock.patch.object(MODULE,"package_installed",side_effect=lambda name: name not in self.missing_packages),
                 mock.patch.object(MODULE,"package_verification_lines",return_value=()),
                 mock.patch.object(MODULE,"boot_kernel_release",return_value="6.17.0-1026-nvidia"),
+                mock.patch.object(MODULE,"running_kernel_release",return_value=self.running_kernel),
+                mock.patch.object(MODULE,"module_tree_present",side_effect=lambda release: release not in self.missing_module_trees),
+                mock.patch.object(MODULE,"kernel_module_loaded",side_effect=lambda module: module not in self.unloaded_modules),
+                mock.patch.object(MODULE,"directory_owner",side_effect=lambda path: self.ceph_log_owner),
                 mock.patch.object(MODULE,"audit_fleet_hardware",return_value=([],{})),
                 mock.patch.object(MODULE,"ceph_unit_file_states",return_value=states),
                 mock.patch.object(MODULE,"ceph_fsids",return_value=[FSID]),
@@ -146,7 +154,7 @@ class Node:
             for patch in patches:
                 patch.start()
             try:
-                return(set(MODULE.remote_audit(payload)["failures"]))
+                return(set(MODULE.remote_audit(json.loads(payload.read_text()))["failures"]))
             finally:
                 for patch in patches:
                     patch.stop()
@@ -177,6 +185,23 @@ class RemoteAuditTest(unittest.TestCase):
             (lambda n: setattr(n,"enabled_instances",["osd.3","crash"]),{f"ceph-stray-unit:ceph-{FSID}@crash.service"}),
             (lambda n: n.unit_states.__setitem__("plymouth-quit-wait.service","static"),{"optional-boot-unit:plymouth-quit-wait.service=static"}),
             (lambda n: n.unit_states.__setitem__("sparkpipe-roce-qos.service","disabled"),{"sparkpipe-roce-qos.service:disabled:active"}),
+        )
+        for change,expected in cases:
+            with self.subTest(expected=sorted(expected)):
+                self.assert_adds(change,expected)
+
+    def test_a_healthy_node_audits_clean(self) -> None:
+        for node in ("spark0","spark3","sparkf"):
+            with self.subTest(node=node):
+                self.assertEqual(Node(node).audit(),set())
+
+    def test_host_kernel_and_ownership_rules_report_their_failures(self) -> None:
+        cases = (
+            (lambda n: n.missing_module_trees.add("6.17.0-1026-nvidia"),{"missing-module-tree:6.17.0-1026-nvidia"}),
+            (lambda n: (setattr(n,"running_kernel","6.17.0-1024-nvidia"),n.missing_module_trees.add("6.17.0-1024-nvidia")),{"missing-module-tree:6.17.0-1024-nvidia"}),
+            (lambda n: n.unloaded_modules.add("sch_fq_codel"),{"kernel-module-not-loaded:sch_fq_codel"}),
+            (lambda n: setattr(n,"ceph_log_owner","0:0"),{"ceph-log-dir:0:0"}),
+            (lambda n: setattr(n,"ceph_log_owner","missing"),{"ceph-log-dir:missing"}),
         )
         for change,expected in cases:
             with self.subTest(expected=sorted(expected)):

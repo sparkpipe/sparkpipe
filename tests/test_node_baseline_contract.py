@@ -179,7 +179,7 @@ class NodeBaselineContractTest(unittest.TestCase):
                 for patch in patches:
                     patch.start()
                 try:
-                    MODULE.remote_apply(payload)
+                    MODULE.remote_apply(json.loads(payload.read_text()))
                 finally:
                     for patch in patches:
                         patch.stop()

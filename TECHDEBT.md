@@ -270,6 +270,15 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   80% of the first resource to saturate. The overlap of prefill-wave
   collectives under Mesh collectives is part of it; the prefill accelerators
   under Fleet-hours take the long prompts.
+- The context-split GQA attention runs tiled on tensor cores for key heads
+  up to 256 wide (Solar Open 2, K-EXAONE 2.0, Laguna, Muse Glimmer, MiMo,
+  Qwen 3.8 and Gemma 4's sliding layers). Gemma 4's global layers (512-wide
+  keys) still take the scalar kernel, which re-reads every key for every row
+  and reaches 1 to 2 TFLOP/s per node; a long Gemma 4 prompt is bound by it.
+- Kimi K3's prefill attention expands the values but keeps the keys latent
+  (576 wide), so each head and key pair costs 1,408 FLOPs where expanded
+  keys (192 wide) would cost 640. At 250K positions MLA attention is about
+  2.0 s of a 3.6 s wave.
 
 ## Placement beyond TP16
 
@@ -789,7 +798,7 @@ The sources are pinned. All three serve.
   - **Serving:** contract, driver (`kexaone2` on the Gemma stage), packs and lane 11.
   - **Measured:** 27.3 tok/s at B1 without speculation (median of eight runs) and 324 tok/s prefill at 6,850 tokens, with every expert split over the ranks by rows. It was 23.5 and 23.7 in the same hold before the grouped skinny kernel stopped launching a task per local expert: the down projection ran 24,576 blocks per layer, 768 of them with work, and took 158 us against 63 us for the gate and up projections, which move the same bytes. Giving each rank 16 whole experts measured 12.0 and 273: a token's 8 experts landed unevenly. Both layouts score the same on the A/B corpus (McNemar p 0.39).
   - **Missing:**
-    - The numpy reference (`tools/kexaone2_reference.py`) agrees with the served tokens of the whole-expert layout at all 92 positions of six prompts (served logprobs within 0.11, median under 0.005). The rows layout agrees at 91 of 92 positions (logprobs within 0.153, median under 0.005). It flips one near tie, at `python_is_prime` token 4: the served margin there is 0.006. The reference itself is unstable at that position: with the same four preceding tokens, its margin was 0.107 when it scored the whole-expert capture and 0.28 when it scored the rows capture, which differs only in later tokens and so in matrix shapes. The position is sensitive to rounding in both implementations, so it is not a served-path error. With reasoning off the model answers 17 × 23 as 401 in the reference too, so the UI smoke's one miss is the model's answer.
+    - The numpy reference (`tools/kexaone2_reference.py`) agrees with the served tokens of the whole-expert layout at all 92 positions of six prompts (served logprobs within 0.11, median under 0.005). The rows layout agrees at 91 of 92 positions (logprobs within 0.153, median under 0.005). It flips one near tie, at `python_is_prime` token 4: the served margin there is 0.006. The reference itself is unstable at that position: with the same four preceding tokens, its margin was 0.107 when it scored the whole-expert capture and 0.28 when it scored the rows capture, which differs only in later tokens and so in matrix shapes. The position is sensitive to rounding in both implementations, so it is not a served-path error. That shape dependence was the reference's: BLAS picks its summation order by matrix shape. The K-EXAONE, A.X K2, Ling and Solar references now accumulate every product in f64 before rounding and round attention probabilities to bf16 as the publisher does, so a prompt's numbers no longer depend on the other prompts or on later tokens; the 92-position comparison has to be re-scored with them. With reasoning off the model answers 17 × 23 as 401 in the reference too, so the UI smoke's one miss is the model's answer.
     - Speculation from the request's own context verifies drafts in frames: a whole-file rewrite runs at 190.9 tok/s against 19.4 without speculation, with identical output (3,703 of 4,186 drafts kept). Its MTP layer and the DSpark drafter are not wired.
 - **A.X K2** (`skt/A.X-K2@d0805cfd`, block-128 FP8, the precision it was trained in, 0.69 TB): 61 layers of latent attention (query rank 1,536, KV rank 512) with top-2,048 sparse attention through a 64-head indexer, a gated attention output and a gated norm; 256 routed experts (top 8) plus one shared; YaRN to 256K. Drafter `skt/A.X-K2-DSpark@0b278334`. GLM 5.3 Full has the same attention and expert design.
   - **Serving:** contract, tokenizer split, driver (`axk2` on the GLM stage, with its options for the query gate, gated norms, index rope and ReLU, YaRN and grouped routing), FP8 packer, numpy reference and lane 3. Answers are right in English and Korean, including a 3,076-token passkey past the indexer's 2,048 tokens.
@@ -808,7 +817,6 @@ The sources are pinned. All three serve.
   - **Speculation:** drafts from the request's own context are verified in frames. The Ling stage saves each KDA layer's convolution input, decay and write gate during a verify step and replays them for the kept rows (`keep_rows`). A whole-file rewrite runs at 513.7 tok/s against 44.3 without speculation, both including prefill, with identical output. Without speculation the six reference prompts' tokens and logprobs are byte-identical to the reference-checked capture.
   - The decay follows the fla kernel the publisher's fast path calls, lower bound × sigmoid(exp(A_log) · (g + dt_bias)); the publisher's torch fallback computes −exp(A_log) · softplus(g + dt_bias) clamped at the bound, which is a different function.
   - **Missing:**
-    - The KDA short convolution rounds to bf16 before SiLU, as the publisher's F.conv1d then F.silu does (`LmCausalConvBody` with bf16 weights). Measured agreement: 123 of 123 positions against `tools/solar_open2_reference.py --conv-rounding fused` with experts split by rows (logprobs within 0.14); against the publisher mode, 120 of 122 with whole experts per rank (logprobs within 0.42). Score the rows layout against the publisher mode to close this item.
     - The lane serves 256K; the model's 1M needs the max-context gate.
     - The shared expert's 80 rows per rank are still zero-padded to 128: its prefill runs on the stream GEMM, which needs a whole number of 64-element k-tiles. The weight-only TMA GEMM takes a zero-filled tail and carries the routed experts at 80 rows; the stream GEMM has no tail path.
     - The rest of the step is the per-layer fixed cost (collectives and latency-bound small kernels), not graph launches: a GB10 graph node costs 0.4 to 0.7 us, about 1 ms over the 1,708 nodes of a decode step.
@@ -817,6 +825,8 @@ The sources are pinned. All three serve.
 Each needs, in order: the checkpoint contract, the driver on the common stage runner, the packer emitter and packs, a lane record, the release gates and qualification, speculation with its drafter, then the perf climb that every core model gets.
 
 ## Speculation
+
+- Model drafts and their lookup extension stop at the same cost cap as lookup frames (2x a single step while a prefill waits, or the lower-priority chain cap). No mock scenario runs a waiting prefill beside a drafting request yet, so that path is covered only by its code; add one to tests/test_model_batch_engine_mock.c.
 
 - Tree verification is not wired. The policy engine resolves trees
   (`SparkSpeculationPolicyResolveVerifierTree`), but no caller passes one.
@@ -996,6 +1006,13 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   (`STAGE_KV_PHYSICAL_PAGES` in `tools/stage_lane.sh`) names a smaller pool,
   and it takes that pool as a page count. Size the physical pool from a byte
   budget the lanes share and let paged admission share it.
+- A public API key that asks for a public model that is not loaded starts
+  the swap, as any caller does. One key that alternates two models keeps the
+  fleet swapping and pushes the owner's model out after each reply. Each key
+  runs at most four requests at once, but nothing limits how often a key may
+  start a swap. Which public requests may swap the fleet is an owner
+  decision (serve only the loaded model to keys, or a lower activation
+  priority and a per-key swap rate).
 
 ## Fleet-hours
 

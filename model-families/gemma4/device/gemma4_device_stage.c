@@ -245,7 +245,7 @@ static SparkStatus GemmaStep(void *opaque, const SparkStageRunnerStep *step, voi
 #define GEMMA_INTERFACE(open, tag, weightd_model) \
 	{ SPARK_STAGE_RUNNER_MODEL_ABI_VERSION, tag, weightd_model, "official", open, SparkDeviceStageManifestCheck, SparkDeviceStageBindWeightd, \
 		SparkDeviceStageClose, GemmaStep, SparkDeviceStageSideband, SparkDeviceStageAttachKv, SparkDeviceStageRecurrentCopy, SparkDeviceStageResetSlot, \
-		SparkDeviceStageProbeBuffers, SparkDeviceStageReport, 0, SparkDeviceStageLane, 0, 0, GemmaBindDevice }
+		SparkDeviceStageProbeBuffers, SparkDeviceStageReport, 0, SparkDeviceStageLane, 0, 0, GemmaBindDevice, 0 }
 
 const SparkStageRunnerModelInterface *SparkGemma4_26bDeviceStageModel(void)
 {

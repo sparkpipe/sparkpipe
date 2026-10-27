@@ -320,8 +320,12 @@ out of every later prompt. Settings and compactions are records in the chat's me
 `/compact` asks the model which exchanges matter for continuing the chat: it sees every exchange's size and an
 excerpt, keeps the newest exchange and what it chooses within the target (the oldest choices go first when the
 choice is over budget), and writes a summary of the rest (facts, decisions, names, numbers, paths, identifiers,
-open questions). Later prompts carry the kept exchanges, with the summary in front of the first, and every later
-exchange in full. A new compaction replaces the previous one and is computed from the whole chat, which Open
+open questions), each line marked with its exchange's id (e2). Later prompts carry the kept exchanges, each
+labeled with the same id ([e3]), with the summary in front of the first, and every later exchange in full; the
+summary's opening says the numbers give the order, so a summarized decision from e7 supersedes a kept e3. A
+compaction that would not fit the model's context with its answer, or that is asked while the model is loading
+or the fleet is switching, changes nothing and says why; a chat-layer error in a command comes back as the usual
+OpenAI error body. A new compaction replaces the previous one and is computed from the whole chat, which Open
 WebUI always sends, so summaries do not compound. With memory on, memory does this continuously.
 
 The timer is three pieces:
@@ -374,10 +378,15 @@ memory:
   the engine's cache (`--slack`, 512 tokens: two blocks of the largest KV
   block), and all turns together re-read at most 5% more prompt tokens than
   the Full context chats;
-- every background memory job finishes;
+- every background memory job finishes, and every chat has at least one
+  finished curator job (prewarm jobs alone do not count);
+- the probe turns' prompts average at most 0.9 of the Full context chats'
+  (`--smaller`), so the ledger actually replaced old turns;
 - user turns see no more stale prefix recomputes than with Full context.
 
-The Full context chats must start no memory job. Stale prefix recomputes are
+The Full context chats must start no memory job, and the same checks run with
+the Full context chats in the memory arm's place must fail: a gate a
+memory-off chat could pass would not show that memory engaged. Stale prefix recomputes are
 reported per arm for user turns and for background jobs: the engine recomputes
 a prefix its index still lists but the ranks no longer hold, which costs
 prefill but not correctness. Reports are kept under

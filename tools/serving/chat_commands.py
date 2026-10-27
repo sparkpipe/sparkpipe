@@ -19,7 +19,9 @@ import re
 COMMAND = re.compile(r"^\s*/(context|memory|target|compact|timer)(?:\s+(.*))?\s*$", re.S | re.I)
 SIZE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(k|m|%)?\s*$", re.I)
 TIMER = re.compile(r"^\s*every\s+(\d+)\s*(s|m|h|d)\s+(.+)$", re.S | re.I)
-SUMMARY_OPEN = "<summary>\nWhat the earlier part of this conversation established; its exchanges were compacted away.\n"
+SUMMARY_OPEN = ("<summary>\nWhat the compacted exchanges of this conversation established, each marked (eN) in conversation order. "
+                "The exchanges after this summary labeled [eN] were kept in full and share that numbering: a higher number is later, "
+                "so a line marked (e7) supersedes a kept [e3].\n")
 SUMMARY_CLOSE = "</summary>\n\n"
 EXCERPT_USER = 600
 EXCERPT_ASSISTANT = 400
@@ -118,8 +120,14 @@ class Commands:
         if not parts:
             return messages
         head, exchanges, current = parts
-        covered, keep = set(compaction["covered"]), set(compaction["keep"])
-        kept = [exchange for exchange in exchanges if self.module.exchange_key(exchange) not in covered or self.module.exchange_key(exchange) in keep]
+        number, keep = {key: index + 1 for index, key in enumerate(compaction["covered"])}, set(compaction["keep"])
+        kept = []
+        for exchange in exchanges:
+            key = self.module.exchange_key(exchange)
+            if key not in number:
+                kept.append(exchange)
+            elif key in keep:
+                kept.append([self.module.prefix_text(exchange[0], f"[e{number[key]}] ")] + exchange[1:])
         first = (kept[0] if kept else current)
         first[0] = self.module.prefix_text(first[0], SUMMARY_OPEN + compaction["summary"] + "\n" + SUMMARY_CLOSE) if compaction["summary"] else first[0]
         return head + [message for exchange in kept for message in exchange] + current
@@ -260,7 +268,14 @@ class Commands:
                     {"role": "user", "content": "\n\n".join(listing) + "\n\n" + instruction}]
         profile = self.memory.profile(model)
         prompt_ids, reasoning_open = self.frontend.memory_curator_ids(model, messages, None, {}, profile.curator_suffix)
-        text = await self.frontend.memory_complete(model, prompt_ids, max(1024, min(8192, total // 8)), reasoning_open, "compact", {"chat": identity[1][:12], "user_message": "compact"})
+        answer_tokens = max(1024, min(8192, total // 8))
+        if len(prompt_ids) + answer_tokens > model.context_tokens:
+            return (f"압축할 목록이 {len(prompt_ids):,} 토큰이라 이 모델의 {model.context_tokens:,} 토큰에 답과 함께 들어가지 않습니다. 아무것도 바뀌지 않았습니다." if ko else
+                    f"The compaction listing is {len(prompt_ids):,} tokens, which with its answer does not fit {model.id}'s {model.context_tokens:,}; nothing changed.")
+        if not await self.frontend.memory_model_ready(model):
+            return (f"{model.id}가 아직 로드 중이거나 다른 모델로 바뀌는 중이라 압축하지 않았습니다. 모델이 답하면 다시 시도하세요." if ko else
+                    f"{model.id} is loading or the fleet is switching models, so nothing was compacted; try again once it answers.")
+        text = await self.frontend.memory_complete(model, prompt_ids, answer_tokens, reasoning_open, "compact", {"chat": identity[1][:12], "user_message": "compact"})
         choice = parse_choice(text, ids)
         if choice is None:
             return ("모델의 압축 응답이 요청한 JSON이 아니어서 아무것도 바뀌지 않았습니다. 다시 시도하세요." if ko else

@@ -2367,7 +2367,9 @@ static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deploym
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioBatchVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root);
+static void TestScenarioModelDraftsYieldToPrefill(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioLongVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root);
+static void TestScenarioRejectedVerifyDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 
 static void TestScenarioAdapterCacheModes(const char *runtime_root)
 {
@@ -2398,6 +2400,7 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 		TestScenarioLookupVerifyMixedLanes(&deployment,runtime_root);
 		TestScenarioBatchVerify(&deployment,runtime_root);
 		TestScenarioModelDrafts(&deployment,runtime_root);
+		TestScenarioModelDraftsYieldToPrefill(&deployment,runtime_root);
 		SparkModelResidentDeploymentReset(&plain);
 		(void)unlink(plain_path);
 		SparkModelResidentDeploymentReset(&deployment);
@@ -2405,6 +2408,7 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 	}
 	TestLoadVariantDeployment(runtime_root,"speculative-long-verify",TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_PATH,path,sizeof(path),&deployment);
 	TestScenarioLongVerify(&deployment,runtime_root);
+	TestScenarioRejectedVerifyDrafts(&deployment,runtime_root);
 	SparkModelResidentDeploymentReset(&deployment);
 	(void)unlink(path);
 	TestLoadVariantDeployment(runtime_root,"recurrent-checkpoints",TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH,path,sizeof(path),&deployment);
@@ -2792,6 +2796,107 @@ static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployme
 		"model drafts: the carried continuation is accepted and only committed tokens become lane inputs");
 }
 
+static uint32_t TestVerifyFrameCount(void)
+{
+	uint32_t index,position,rows;
+	for (index=0u; MockResidentClientVerifyFrame(index,&position,&rows) != 0u; index++)
+		;
+	return(index);
+}
+
+static uint32_t TestPendingSubmissions(void)
+{
+	uint32_t rank,pending = 0u;
+	for (rank=0u; rank<TEST_RANKS; rank++)
+		pending += MockResidentClientPendingCount(rank);
+	return(pending);
+}
+
+static uint32_t TestModelDraftFrameAt(const SparkModelResidentDeployment *deployment,const char *runtime_root,const uint32_t *script,uint32_t trigger,uint32_t prefill_waits,
+	TestBatchState *state)
+{
+	SparkModelResidentDeployment drafted = *deployment;
+	static char host[] = "127.0.0.1";
+	static uint32_t other[100];
+	SparkModelBatchEngine *engine;
+	TestDraftServer server;
+	uint32_t steps,first,stride,position = 0u,rows = 0u;
+	for (steps=0u; steps<100u; steps++)
+		other[steps] = 7000u + steps;
+	CHECK(TestDraftStart(&server,TEST_DRAFT_CORRECT,script,256u) != 0u,"model drafts yield: a stub draft server listens");
+	drafted.draft_server.host = host;
+	drafted.draft_server.port = server.port;
+	strcpy(drafted.draft_server.target_model,"test-target");
+	drafted.draft_server.depth = 4u;
+	drafted.draft_server.wait_ms = 50u;
+	drafted.draft_server.min_confidence = 0.05f;
+	MockResidentClientReset();
+	memset(state,0,sizeof(*state));
+	engine = TestConnectFlags(&drafted,state,runtime_root,32u,8u,0u);
+	if ( engine == 0 )
+	{
+		TestDraftStop(&server);
+		return(0u);
+	}
+	MockResidentClientSetScript(script,256u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	MockResidentClientSetStepDelay(2000u);
+	MockResidentClientSetVerifyRowCost(3u);
+	TestSubmitPrompt(engine,1u,900u,60u,script,44u);
+	for (steps=0u; steps<2000u && state->token_events[1] < trigger; steps++)
+		TestDrive(engine,1u);
+	for (steps=0u; steps<200u && TestPendingSubmissions() != 0u; steps++)
+	{
+		(void)MockResidentClientDriveAll();
+		usleep(1000);
+	}
+	first = TestVerifyFrameCount();
+	(void)MockResidentClientTakeMaxTokensPerSequence();
+	(void)MockResidentClientTakeVerifyMaxStride();
+	if ( prefill_waits != 0u )
+	{
+		TestSubmitPrompt(engine,2u,901u,2u,other,100u);
+		TestSubmitPrompt(engine,3u,902u,2u,other + 50u,50u);
+	}
+	(void)SparkModelBatchEngineProgress(engine,8u);
+	rows = MockResidentClientTakeMaxTokensPerSequence();
+	stride = MockResidentClientTakeVerifyMaxStride();
+	if ( stride > rows )
+		rows = stride;
+	if ( TestVerifyFrameCount() > first )
+		(void)MockResidentClientVerifyFrame(first,&position,&rows);
+	TestDriveUntilTerminal(engine,state,prefill_waits != 0u ? 3u : 1u,4000u);
+	MockResidentClientSetStepDelay(0u);
+	MockResidentClientSetVerifyRowCost(1u);
+	SparkModelBatchEngineDestroy(engine);
+	TestDraftStop(&server);
+	return(rows);
+}
+
+static void TestScenarioModelDraftsYieldToPrefill(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	uint32_t script[256],index,trigger,alone = 0u,waiting = 0u;
+	TestBatchState state;
+	for (index=0u; index<40u; index++)
+		script[index] = 1000u + (index * 7u) % 97u;
+	for (index=40u; index<50u; index++)
+		script[index] = 6000u + index;
+	for (index=50u; index<80u; index++)
+		script[index] = script[index - 40u];
+	for (index=80u; index<256u; index++)
+		script[index] = 3000u + (index * 37u + index * index * 11u) % 4093u;
+	for (trigger=8u; trigger<16u && alone <= 3u; trigger++)
+		alone = TestModelDraftFrameAt(deployment,runtime_root,script,trigger,0u,&state);
+	trigger--;
+	CHECK(alone > 3u && TestScriptedOutputMatches(&state,1u,script,44u,60u) != 0u,
+		"model drafts yield: with nothing waiting, a model draft that completes an earlier passage runs a frame that costs more than two single steps");
+	waiting = TestModelDraftFrameAt(deployment,runtime_root,script,trigger,1u,&state);
+	CHECK(waiting != 0u && waiting <= 3u,
+		"model drafts yield: the decode planned while a second prefill waits behind the first one's chunk stays within twice a single step's cost");
+	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u && state.completed_events[3] == 1u && TestScriptedOutputMatches(&state,1u,script,44u,60u) != 0u,
+		"model drafts yield: every request completes and the drafted stream stays exact");
+}
+
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	uint32_t script[256],index,submissions,rows;
@@ -2917,6 +3022,102 @@ static void TestRunLongVerify(const SparkModelResidentDeployment *deployment,con
 	*stride = MockResidentClientTakeVerifyMaxStride();
 	*continues = MockResidentClientCalls(0u,MOCK_CALL_CONTINUE);
 	MockResidentClientSetVerifyCorrupt(0u);
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioRejectedVerifyDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	uint32_t script[512],step,position,rows,frames,rank,held = 0u;
+	uint64_t ids[TEST_RANKS];
+	SparkModelBatchSubmitRequest request;
+	SparkModelBatchRequestHandle handle = 0u;
+	SparkModelBatchEngineView view;
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane;
+	TestBatchState state;
+	struct timespec now;
+	TestLongVerifyScript(script,512u,120u,124u);
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	engine = TestConnectFlags(deployment,&state,runtime_root,32u,8u,0u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetScript(script,512u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,2u,951u,120u,script,124u);
+	for (step=0u; step<2000u && MockResidentClientVerifyFrame(0u,&position,&rows) == 0u; step++)
+		TestDrive(engine,1u);
+	TestDrive(engine,1u);
+	for (frames=0u; MockResidentClientVerifyFrame(frames,&position,&rows) != 0u; frames++)
+		;
+	CHECK(frames != 0u && state.completed_events[2] == 0u,"rejected verify: the first request drafts alone");
+	for (step=0u; step<20u && MockResidentClientVerifyFrame(frames,&position,&rows) == 0u; step++)
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		(void)MockResidentClientDriveResults();
+		(void)MockResidentClientDriveDecisions();
+	}
+	CHECK(MockResidentClientVerifyFrame(frames,&position,&rows) != 0u && rows > 1u,"rejected verify: its next verify frame carries drafts");
+	for (rank=0u; rank<TEST_RANKS; rank++)
+	{
+		ids[rank] = MockResidentClientPendingEvent(rank,MOCK_EVENT_COMPLETION,0u);
+		CHECK(ids[rank] != 0u,"rejected verify: every rank holds the verify frame");
+	}
+	for (rank=0u; rank<TEST_RANKS; rank++)
+		CHECK(MockResidentClientDeliverEvent(rank,ids[rank],MOCK_EVENT_COMPLETION,SPARK_STATUS_BUSY,1u) != 0u,"rejected verify: every rank answers the verify frame BUSY");
+	(void)SparkModelBatchEngineProgress(engine,8u);
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.rejected_submission_count_by_status[SPARK_STATUS_BUSY] == 1u,"rejected verify: the frame is rejected BUSY and requeued");
+	clock_gettime(CLOCK_MONOTONIC,&now);
+	memset(&request,0,sizeof(request));
+	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+	request.descriptor_bytes = sizeof(request);
+	request.top_p = 1.0f;
+	request.request_id = 1u;
+	request.sequence_id = 950u;
+	request.prompt_token_ids = script;
+	request.prompt_token_count = 154u;
+	request.output_token_budget = 100u;
+	request.deadline_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec + UINT64_C(600000000000);
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_OK,"rejected verify: a second request copying the passage, ordered first by its deadline");
+	(void)MockResidentClientTakeVerifyShared();
+	for (step=0u; step<200u && held == 0u; step++)
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		(void)MockResidentClientDriveResults();
+		(void)MockResidentClientDriveDecisions();
+		if ( MockResidentClientLastLane(0u,&lane) != 0u && lane.request_id == 1u && lane.context_token_count == 154u )
+			held = 1u;
+		else
+			(void)MockResidentClientDriveCompletions();
+	}
+	CHECK(held != 0u && state.token_events[1] == 0u,"rejected verify: the second request's last prefill wave is held inside the first request's backoff");
+	usleep(30000);
+	(void)MockResidentClientDriveCompletions();
+	for (frames=0u; MockResidentClientVerifyFrame(frames,&position,&rows) != 0u; frames++)
+		;
+	for (step=0u; step<20u && MockResidentClientVerifyFrame(frames,&position,&rows) == 0u; step++)
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		(void)MockResidentClientDriveResults();
+		(void)MockResidentClientDriveDecisions();
+	}
+	CHECK(MockResidentClientVerifyFrame(frames,&position,&rows) != 0u && MockResidentClientTakeVerifyShared() == 1u,"rejected verify: both requests share the next verify frame");
+	for (rank=0u; rank<TEST_RANKS; rank++)
+	{
+		ids[rank] = MockResidentClientPendingEvent(rank,MOCK_EVENT_COMPLETION,0u);
+		CHECK(ids[rank] != 0u && MockResidentClientPendingEvent(rank,MOCK_EVENT_COMPLETION,1u) == 0u,"rejected verify: every rank holds only the shared frame");
+	}
+	for (rank=0u; rank<TEST_RANKS; rank++)
+		CHECK(MockResidentClientDeliverEvent(rank,ids[rank],MOCK_EVENT_COMPLETION,SPARK_STATUS_BUSY,1u) != 0u,"rejected verify: every rank answers the shared frame BUSY");
+	(void)SparkModelBatchEngineProgress(engine,8u);
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.rejected_submission_count_by_status[SPARK_STATUS_BUSY] == 2u,"rejected verify: the shared frame is rejected BUSY and both requests are requeued");
+	usleep(30000);
+	TestDriveUntilTerminal(engine,&state,2u,4000u);
+	CHECK(MockResidentClientTakeVerifyShared() != 0u,"rejected verify: after the backoff both requests share verify frames");
+	memset(&view,0,sizeof(view));
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.failed_status == SPARK_STATUS_OK,"rejected verify: the engine is still serving");
+	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u && state.error_events[1] == 0u && state.error_events[2] == 0u,"rejected verify: both requests complete");
+	CHECK(TestScriptedOutputMatches(&state,1u,script,154u,100u) != 0u && TestScriptedOutputMatches(&state,2u,script,124u,120u) != 0u,"rejected verify: both emit exactly the greedy stream");
 	SparkModelBatchEngineDestroy(engine);
 }
 

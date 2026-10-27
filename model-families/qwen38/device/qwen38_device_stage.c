@@ -235,7 +235,8 @@ const SparkStageRunnerModelInterface *SparkQwen38_27bDeviceStageModel(void)
 		SparkDeviceStageLane,
 		QwenKeepRows,
 		0,
-		QwenBindDevice
+		QwenBindDevice,
+		0
 	};
 	return(&interface_table);
 }

@@ -9,6 +9,7 @@ import io
 import os
 import shlex
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Tuple
@@ -138,11 +139,6 @@ def summarize_node(rows: List[Dict[str,str]], error: str, fetch_error: str = "",
         return({"sample_count":0,"error":error})
     good = [r for r in rows if not r.get("error")]
     latest = rows[-1]
-    latest_gpu = latest
-    for row in reversed(good):
-        if telemetry.gpu_index(row) >= 0:
-            latest_gpu = row
-            break
     latest_age_s = max(0.0,time.time() - row_unix_ts(latest))
     gpu_vals = [telemetry.fnum(r,"gpu_util_pct") for r in good if telemetry.gpu_index(r) >= 0]
     gpu_temps = [telemetry.fnum(r,"gpu_temp_c") for r in good if telemetry.gpu_index(r) >= 0 and telemetry.fnum(r,"gpu_temp_c") > 0.0]
@@ -155,6 +151,7 @@ def summarize_node(rows: List[Dict[str,str]], error: str, fetch_error: str = "",
         "last_sample_age_s": round(latest_age_s,2),
         "stale_data": 1 if stale_data else 0,
         "fetch_error": fetch_error,
+        "last_sample_error": str(latest.get("error","")),
         "last_cpu_util_pct": telemetry.fnum(latest,"cpu_util_pct"),
         "last_mem_used_pct": telemetry.fnum(latest,"mem_used_pct"),
         "last_thermal_avg_c": telemetry.fnum(latest,"thermal_avg_c"),
@@ -213,18 +210,18 @@ def summarize_node(rows: List[Dict[str,str]], error: str, fetch_error: str = "",
         "last_vllm_pipeline_stage_models": latest.get("vllm_pipeline_stage_models",""),
         "last_vllm_pipeline_stage_pp_by_model": latest.get("vllm_pipeline_stage_pp_by_model",""),
         "last_vllm_pipeline_stage_rank_by_model": latest.get("vllm_pipeline_stage_rank_by_model",""),
-        "last_gpu_util_pct": telemetry.fnum(latest_gpu,"gpu_util_pct"),
-        "last_gpu_temp_c": telemetry.fnum(latest_gpu,"gpu_temp_c"),
-        "last_gpu_fan_pct": telemetry.fnum(latest_gpu,"gpu_fan_pct"),
-        "last_gpu_clock_sm_mhz": telemetry.fnum(latest_gpu,"gpu_clock_sm_mhz"),
-        "last_gpu_clock_mem_mhz": telemetry.fnum(latest_gpu,"gpu_clock_mem_mhz"),
-        "last_gpu_power_w": telemetry.fnum(latest_gpu,"gpu_power_w"),
-        "last_gpu_power_raw_w": telemetry.fnum(latest_gpu,"gpu_power_raw_w"),
-        "last_gpu_power_limit_w": telemetry.fnum(latest_gpu,"gpu_power_limit_w"),
-        "last_gpu_power_known": telemetry.fnum(latest_gpu,"gpu_power_known"),
-        "last_gpu_power_source": latest_gpu.get("gpu_power_source",""),
-        "last_gpu_power_reason": latest_gpu.get("gpu_power_reason",""),
-        "last_gpu_pstate": latest_gpu.get("gpu_pstate",""),
+        "last_gpu_util_pct": telemetry.fnum(latest,"gpu_util_pct"),
+        "last_gpu_temp_c": telemetry.fnum(latest,"gpu_temp_c"),
+        "last_gpu_fan_pct": telemetry.fnum(latest,"gpu_fan_pct"),
+        "last_gpu_clock_sm_mhz": telemetry.fnum(latest,"gpu_clock_sm_mhz"),
+        "last_gpu_clock_mem_mhz": telemetry.fnum(latest,"gpu_clock_mem_mhz"),
+        "last_gpu_power_w": telemetry.fnum(latest,"gpu_power_w"),
+        "last_gpu_power_raw_w": telemetry.fnum(latest,"gpu_power_raw_w"),
+        "last_gpu_power_limit_w": telemetry.fnum(latest,"gpu_power_limit_w"),
+        "last_gpu_power_known": telemetry.fnum(latest,"gpu_power_known"),
+        "last_gpu_power_source": latest.get("gpu_power_source",""),
+        "last_gpu_power_reason": latest.get("gpu_power_reason",""),
+        "last_gpu_pstate": latest.get("gpu_pstate",""),
         "cpu_util_pct": telemetry.stats(telemetry.fnum(r,"cpu_util_pct") for r in rows),
         "mem_used_pct": telemetry.stats(telemetry.fnum(r,"mem_used_pct") for r in rows),
         "thermal_max_c": telemetry.stats(telemetry.fnum(r,"thermal_max_c") for r in rows if telemetry.fnum(r,"thermal_max_c") > 0.0),
@@ -258,27 +255,10 @@ def write_combined(out_dir: str, all_rows: Dict[str,List[Dict[str,str]]], errors
     fetch_errors = fetch_errors or {}
     stale_nodes = stale_nodes or set()
     os.makedirs(out_dir,exist_ok=True)
-    combined_path = os.path.join(out_dir,"combined_latest.csv")
     summary_path = os.path.join(out_dir,"cluster_summary.json")
     md_path = os.path.join(out_dir,"cluster_summary.md")
-    fieldnames: List[str] = []
-    seen = set()
-    for rows in all_rows.values():
-        for row in rows:
-            for key in row.keys():
-                if key not in seen:
-                    seen.add(key)
-                    fieldnames.append(key)
-    with open(combined_path + ".tmp","w",encoding="utf-8",newline="") as f:
-        if fieldnames:
-            w = csv.DictWriter(f,fieldnames=fieldnames)
-            w.writeheader()
-            for node in sorted(all_rows):
-                for row in all_rows[node]:
-                    w.writerow({key:row.get(key,"") for key in fieldnames})
-    os.replace(combined_path + ".tmp",combined_path)
     summary = telemetry.summary_base()
-    summary.update({"combined_csv":combined_path,"queue":queue,"nodes":{}})
+    summary.update({"summary_json":summary_path,"queue":queue,"nodes":{}})
     for node in sorted(set(all_rows) | set(errors)):
         summary["nodes"][node] = summarize_node(all_rows.get(node,[]),errors.get(node,""),fetch_errors.get(node,""),node in stale_nodes)
     telemetry.write_json_atomic(summary_path,summary)
@@ -358,6 +338,31 @@ def write_combined(out_dir: str, all_rows: Dict[str,List[Dict[str,str]]], errors
     return(summary)
 
 
+NODE_FILES: Dict[str,Tuple[str,float,int]] = {}
+
+
+def write_node_rows(path: str, text: str, rows: List[Dict[str,str]], window: int) -> int:
+    fields = list(rows[0]) if rows else []
+    header = ",".join(fields)
+    state = NODE_FILES.get(path)
+    last_ts = row_unix_ts(rows[-1]) if rows else 0.0
+    fresh = [row for row in rows if state is not None and row_unix_ts(row) > state[1]]
+    if state is None or state[0] != header or not os.path.exists(path) or last_ts < state[1] or state[2] + len(fresh) > window:
+        telemetry.write_text_atomic(path,text)
+        NODE_FILES[path] = (header,last_ts,0)
+        return(len(text))
+    if not fresh:
+        return(0)
+    output = io.StringIO()
+    writer = csv.DictWriter(output,fieldnames=fields)
+    for row in fresh:
+        writer.writerow({key:row.get(key,"") for key in fields})
+    with open(path,"a",encoding="utf-8",newline="") as handle:
+        handle.write(output.getvalue())
+    NODE_FILES[path] = (header,last_ts,state[2] + len(fresh))
+    return(len(output.getvalue()))
+
+
 def collect_once(args: argparse.Namespace) -> Dict[str,object]:
     raw_dir = os.path.join(args.out_dir,"nodes")
     os.makedirs(raw_dir,exist_ok=True)
@@ -388,21 +393,25 @@ def collect_once(args: argparse.Namespace) -> Dict[str,object]:
                 all_rows[name] = []
             continue
         text = labelled_csv(text,name)
-        telemetry.write_text_atomic(os.path.join(raw_dir,name + ".csv"),text)
-        all_rows[name] = read_rows(text)
+        rows = read_rows(text)
+        write_node_rows(os.path.join(raw_dir,name + ".csv"),text,rows,args.tail_lines)
+        all_rows[name] = rows
     queue = telemetry.read_ds4_api_queue(args.ds4_api_url,args.ds4_api_timeout)
     return(write_combined(args.out_dir,all_rows,errors,queue,fetch_errors,stale_nodes))
 
 
 def main() -> int:
     args = parse_args()
-    while True:
+    if args.loop_interval <= 0.0:
         summary = collect_once(args)
-        print("wrote %s" % summary["combined_csv"],flush=True)
-        if args.loop_interval <= 0.0:
-            break
+        print("wrote %s" % summary["summary_json"],flush=True)
+        return(0)
+    while True:
+        try:
+            collect_once(args)
+        except Exception as exc:
+            print("collect failed: %s: %s" % (type(exc).__name__,exc),file=sys.stderr,flush=True)
         time.sleep(args.loop_interval)
-    return(0)
 
 
 if __name__ == "__main__":

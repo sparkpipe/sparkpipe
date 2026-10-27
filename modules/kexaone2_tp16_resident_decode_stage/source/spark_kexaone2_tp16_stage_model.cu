@@ -52,6 +52,9 @@ struct Kexaone2Geometry : GemmaDefaults
 	static const char *Tag(void) { return "sparkpipe_kexaone2"; }
 	static const char *Name(void) { return "k-exaone-2.0"; }
 	static const char *ReportTag(void) { return "KEXAONE2-STATE"; }
+	static constexpr float kPostEpsilon = 1e-6f;
+	static constexpr bool kQkNormWeighted = true;
+	static constexpr float kQueryMultiply = 1.0f;
 };
 
 static_assert(GemmaShape<Kexaone2Geometry>::kFullLayers == SPARK_KEXAONE2_TP16_STAGE_FULL_LAYERS &&

@@ -38,7 +38,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble
+from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble, source_identity
 
 SPQ8_MAGIC = 0x50533851
 TP = 16
@@ -187,7 +187,7 @@ def main():
     args.out_dir.mkdir(parents=True, exist_ok=True)
     final = args.out_dir / f"qwen38_max.tp16.rank{rank:02d}.pack"
     payload = Path(str(final) + ".payload")
-    writer = PayloadWriter(payload, resume=args.resume and payload.exists())
+    writer = PayloadWriter(payload, source_identity(args.source, rank), resume=args.resume and payload.exists())
     convert(source, writer, rank)
     writer.close()
     config = {"model": "qwen38_max", "tp_degree": TP, "tp_rank": rank, "hidden": HIDDEN, "layers": LAYERS, "vocab": VOCAB,
