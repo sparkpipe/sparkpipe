@@ -112,11 +112,12 @@ case "$step" in
     fan_all "backup weightd" "cp -p \$HOME/sparkdata/swap/weightd_warm \$HOME/sparkdata/swap/weightd_warm.prev-$U && cp -p \$HOME/sparkdata/weightd/sparkpipe_weightd \$HOME/sparkdata/weightd/sparkpipe_weightd.prev-$U" || exit 1
     hub "mkdir -p ~/release-staging/weightd-rollback && r=~/release-staging/weightd-rollback/sparkpipe_weightd.$OLD_WD && { [ -f \$r ] || cp ~/release/core/bin/sparkpipe_weightd \$r; } && test \"\$(sha256sum < \$r | cut -c1-16)\" = $OLD_WD && cp -p ~/sparkpipe-swap/model_swap.json ~/sparkpipe-swap/model_swap.json.prev-$U && echo hub backups ok" || { echo "BACKUP-FAILED hub"; exit 1; } ;;
   down)
-    stamp "down: stop the active model, no residentd anywhere"
+    stamp "down: stop every model's engines and any API that answers, no residentd anywhere"
     for id in $MODELS; do
       if hub "curl -s -m 3 http://127.0.0.1:$(field $id port)/health | grep -q connected_ranks"; then
-        stamp "stopping $id"; hub "$(swap_cmd $id api_stop)"; fan "$(swap_cmd $id node_stop) > /dev/null 2>&1; echo \$?" | awk '{print $2}' | sort | uniq -c
+        stamp "stopping $id"; hub "$(swap_cmd $id api_stop)"
       fi
+      fan "$(swap_cmd $id node_stop) > /dev/null 2>&1; echo \$?" | awk '{print $2}' | sort | uniq -c | sed "s/^/$id node_stop /"
     done
     n=$(residentds); echo "residentds left: $n"; [ "$n" = 0 ] || { echo "DOWN-FAILED"; exit 1; } ;;
   weightd)
