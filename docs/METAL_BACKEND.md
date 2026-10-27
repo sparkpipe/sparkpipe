@@ -462,11 +462,11 @@ when all three hold:
   blocks (`sqrt(n/(n-1) * sum (above_b - share * size_b)^2) / positions`),
   because neighbouring positions share context and are not independent.
 
-For Gemma 4 31B and Qwen3.8-27B the paired test uses a multi-draw floor
-instead. `tools/gemma4_reference.py` also writes draws C and D (the same
-code and BF16 rounding as B, other FP32 reduction orders: matmuls in
-512-wide chunks with the scores' inner dimension in four parts, and
-2,048-wide chunks with the scores unsplit), and
+Every Metal gate (Gemma 4 31B, Qwen3.8-27B, Gemma 4 26B A4B) judges the
+paired test with a multi-draw floor instead. `tools/gemma4_reference.py`
+also writes draws C and D (the same code and BF16 rounding as B, other FP32
+reduction orders: matmuls in 512-wide chunks with the scores' inner
+dimension in four parts, and 2,048-wide chunks with the scores unsplit), and
 `tools/qwen38_27b_reference.c ... draws` writes Qwen's (GEMMs in 512- and
 2,048-wide chunks, sums reversed). For each prompt the floor's own noise is
 the worst paired statistic, against A, of one draw with another as its
@@ -485,10 +485,14 @@ agree closely there. Qwen's floor noise is +0.3 (design), +2.0 (code), +8.0
 double; the same reference with float transcendentals (`float-math`, A's
 reduction order) scores +3.9 on design and +6.1 on rules under this rule,
 further from A than any Metal kernel, so on design the double-precision
-draws are the outlier. Two failures are open at 8b4836e52 (TECHDEBT): Gemma
-4 31B fails this rule on the code prompt (+2.9 against the floor's +1.1),
-and Qwen3.8-27B fails its 3-sigma reference-B leg (+3.8). One attention
-kernel has to pass both; a kernel choice per model is not an option.
+draws are the outlier. The routed 26B is judged on both route sets, its
+pinned set against draws BP, CP and DP pinned to A's experts. All three
+models fail this rule at 8b4836e52 (TECHDEBT): Gemma 4 31B on code (+2.9
+against the floor's +1.1), Qwen3.8-27B on design (+0.7 against +0.3), Gemma
+4 26B A4B on rules (free, +2.7 against +1.7) and korean (pinned). Held out
+as a candidate, 11 of 12 reference draws fail it as well
+(qualification/metal/floor_rule_calibration.txt). One attention kernel has
+to pass both; a kernel choice per model is not an option.
 
 Metal must pass both legs. `tools/pack_tensor_control.py` writes APFS clones
 of the pack with tensors corrupted, and the gate runs each through the same
