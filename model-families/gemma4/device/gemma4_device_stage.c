@@ -237,7 +237,7 @@ static SparkStatus GemmaStep(void *opaque, const SparkStageRunnerStep *step, voi
 		else if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceBranchNorm(stage,queue,&t,model->partial,0,0,0,layer->post_ff_norm,&layer->layer_scalar);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageLayerDone(stage,queue,&t,index);
+			status = SparkDeviceStageLayerDone(stage,queue,&t,index,0);
 	}
 	return(status);
 }

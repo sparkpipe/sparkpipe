@@ -1,0 +1,71 @@
+per layer: median over positions of |x - a| / |a| as a ratio to the largest median among the 3 draws; then the share of positions where x is further from a than every draw (a further draw would sit near 0.25)
+ 0 | prefill band 0.97..1.00 eager 1.18/0.75 margin 1.18/0.75 af 0.52/0.02 | decode band 0.99..1.00 eager 1.21/0.72 margin 1.21/0.72 af 0.58/0.03
+ 1 | prefill band 0.98..1.00 eager 1.05/0.55 margin 1.05/0.55 af 0.80/0.05 | decode band 0.99..1.00 eager 1.05/0.56 margin 1.05/0.56 af 0.83/0.04
+ 2 | prefill band 0.98..1.00 eager 1.04/0.40 margin 1.04/0.40 af 0.86/0.07 | decode band 0.98..1.00 eager 1.01/0.42 margin 1.01/0.42 af 0.91/0.10
+ 3 | prefill band 0.98..1.00 eager 1.03/0.35 margin 1.03/0.35 af 0.90/0.09 | decode band 0.99..1.00 eager 1.02/0.36 margin 1.02/0.36 af 0.93/0.13
+ 4 | prefill band 0.96..1.00 eager 1.00/0.33 margin 1.00/0.33 af 0.90/0.10 | decode band 0.99..1.00 eager 1.01/0.33 margin 1.02/0.34 af 0.94/0.12
+ 5 | prefill band 0.96..1.00 eager 1.00/0.32 margin 1.00/0.31 af 0.90/0.10 | decode band 0.99..1.00 eager 1.01/0.30 margin 1.01/0.29 af 0.95/0.15
+ 6 | prefill band 0.98..1.00 eager 1.02/0.29 margin 1.01/0.27 af 0.91/0.13 | decode band 0.98..1.00 eager 1.01/0.34 margin 1.01/0.30 af 0.95/0.18
+ 7 | prefill band 0.99..1.00 eager 1.01/0.29 margin 0.99/0.26 af 0.92/0.13 | decode band 0.98..1.00 eager 1.01/0.33 margin 1.00/0.30 af 0.96/0.19
+ 8 | prefill band 0.99..1.00 eager 1.00/0.29 margin 0.98/0.27 af 0.92/0.15 | decode band 0.99..1.00 eager 1.01/0.31 margin 1.00/0.29 af 0.97/0.20
+ 9 | prefill band 0.99..1.00 eager 1.00/0.29 margin 0.99/0.30 af 0.93/0.17 | decode band 0.98..1.00 eager 1.00/0.29 margin 1.00/0.29 af 0.98/0.20
+10 | prefill band 0.98..1.00 eager 0.98/0.28 margin 0.98/0.28 af 0.94/0.17 | decode band 0.98..1.00 eager 1.00/0.27 margin 1.00/0.29 af 0.97/0.20
+11 | prefill band 0.99..1.00 eager 0.99/0.26 margin 1.00/0.26 af 0.95/0.16 | decode band 0.98..1.00 eager 1.01/0.28 margin 1.01/0.29 af 0.98/0.20
+12 | prefill band 0.99..1.00 eager 1.00/0.26 margin 1.00/0.27 af 0.95/0.17 | decode band 0.98..1.00 eager 1.00/0.28 margin 0.99/0.29 af 0.97/0.19
+13 | prefill band 0.99..1.00 eager 1.00/0.27 margin 0.99/0.28 af 0.95/0.19 | decode band 0.98..1.00 eager 1.00/0.28 margin 0.98/0.29 af 0.97/0.19
+14 | prefill band 1.00..1.00 eager 1.02/0.27 margin 1.00/0.28 af 0.96/0.21 | decode band 0.98..1.00 eager 0.99/0.26 margin 1.00/0.26 af 0.97/0.19
+15 | prefill band 0.98..1.00 eager 1.01/0.29 margin 1.00/0.27 af 0.97/0.21 | decode band 0.98..1.00 eager 0.98/0.26 margin 0.99/0.28 af 0.97/0.19
+16 | prefill band 1.00..1.00 eager 1.01/0.28 margin 1.01/0.27 af 0.97/0.19 | decode band 0.99..1.00 eager 0.98/0.27 margin 0.99/0.28 af 0.98/0.21
+17 | prefill band 0.99..1.00 eager 1.00/0.28 margin 1.00/0.26 af 0.97/0.20 | decode band 0.98..1.00 eager 0.98/0.28 margin 0.99/0.28 af 0.97/0.21
+18 | prefill band 0.98..1.00 eager 1.00/0.28 margin 0.99/0.27 af 0.97/0.21 | decode band 0.97..1.00 eager 0.99/0.27 margin 0.99/0.28 af 0.97/0.21
+19 | prefill band 0.97..1.00 eager 0.99/0.30 margin 0.99/0.26 af 0.96/0.21 | decode band 0.96..1.00 eager 0.98/0.26 margin 0.99/0.28 af 0.98/0.22
+20 | prefill band 0.98..1.00 eager 0.99/0.30 margin 0.98/0.25 af 0.95/0.22 | decode band 0.95..1.00 eager 0.99/0.27 margin 1.01/0.29 af 0.98/0.26
+21 | prefill band 0.99..1.00 eager 1.00/0.30 margin 0.99/0.27 af 0.97/0.23 | decode band 0.97..1.00 eager 1.01/0.29 margin 1.01/0.26 af 1.00/0.23
+22 | prefill band 1.00..1.00 eager 1.00/0.31 margin 1.00/0.27 af 0.98/0.23 | decode band 0.99..1.00 eager 1.00/0.27 margin 1.00/0.26 af 1.00/0.24
+23 | prefill band 0.99..1.00 eager 0.99/0.30 margin 0.99/0.26 af 0.97/0.22 | decode band 0.98..1.00 eager 0.98/0.27 margin 0.99/0.27 af 0.99/0.24
+24 | prefill band 0.99..1.00 eager 0.98/0.30 margin 0.99/0.25 af 0.98/0.21 | decode band 0.98..1.00 eager 1.00/0.27 margin 1.00/0.28 af 0.98/0.24
+25 | prefill band 0.99..1.00 eager 0.99/0.30 margin 0.99/0.25 af 0.98/0.23 | decode band 0.99..1.00 eager 0.99/0.26 margin 1.01/0.29 af 0.99/0.24
+26 | prefill band 0.97..1.00 eager 0.99/0.29 margin 0.99/0.27 af 0.97/0.23 | decode band 1.00..1.00 eager 0.99/0.26 margin 1.00/0.28 af 1.00/0.24
+27 | prefill band 0.97..1.00 eager 0.98/0.30 margin 0.99/0.27 af 0.97/0.26 | decode band 1.00..1.00 eager 0.98/0.25 margin 1.01/0.28 af 1.00/0.26
+28 | prefill band 0.98..1.00 eager 0.98/0.30 margin 0.99/0.27 af 0.96/0.25 | decode band 0.99..1.00 eager 0.98/0.27 margin 1.00/0.27 af 0.98/0.24
+29 | prefill band 0.98..1.00 eager 0.98/0.28 margin 0.98/0.27 af 0.97/0.25 | decode band 0.99..1.00 eager 0.99/0.28 margin 1.00/0.29 af 0.99/0.25
+30 | prefill band 0.99..1.00 eager 0.98/0.27 margin 0.99/0.25 af 0.98/0.25 | decode band 0.96..1.00 eager 0.97/0.28 margin 0.99/0.30 af 0.96/0.24
+31 | prefill band 0.97..1.00 eager 1.00/0.28 margin 0.98/0.25 af 0.97/0.26 | decode band 0.99..1.00 eager 0.98/0.26 margin 1.00/0.29 af 0.97/0.25
+32 | prefill band 0.99..1.00 eager 1.01/0.28 margin 0.99/0.26 af 0.98/0.26 | decode band 1.00..1.00 eager 1.00/0.27 margin 1.01/0.27 af 0.97/0.25
+33 | prefill band 0.99..1.00 eager 1.01/0.28 margin 0.98/0.24 af 0.98/0.26 | decode band 0.99..1.00 eager 0.99/0.27 margin 0.99/0.27 af 0.98/0.25
+34 | prefill band 0.99..1.00 eager 1.00/0.28 margin 1.00/0.26 af 0.98/0.25 | decode band 0.98..1.00 eager 1.00/0.28 margin 1.00/0.28 af 1.01/0.23
+35 | prefill band 0.98..1.00 eager 1.00/0.29 margin 0.99/0.25 af 0.99/0.27 | decode band 0.98..1.00 eager 1.00/0.29 margin 0.99/0.28 af 1.00/0.24
+36 | prefill band 0.99..1.00 eager 1.00/0.27 margin 1.00/0.27 af 1.00/0.27 | decode band 0.98..1.00 eager 0.99/0.28 margin 0.98/0.27 af 0.98/0.25
+37 | prefill band 0.98..1.00 eager 1.00/0.29 margin 1.01/0.29 af 1.00/0.29 | decode band 0.99..1.00 eager 0.98/0.29 margin 1.00/0.27 af 0.98/0.23
+38 | prefill band 0.99..1.00 eager 1.00/0.26 margin 1.01/0.27 af 0.99/0.27 | decode band 1.00..1.00 eager 1.01/0.30 margin 1.00/0.28 af 0.99/0.25
+39 | prefill band 0.98..1.00 eager 1.00/0.29 margin 1.00/0.29 af 0.99/0.28 | decode band 0.99..1.00 eager 1.01/0.30 margin 1.00/0.28 af 0.99/0.27
+40 | prefill band 0.99..1.00 eager 1.00/0.28 margin 0.99/0.27 af 0.98/0.27 | decode band 0.99..1.00 eager 1.00/0.29 margin 0.99/0.25 af 0.99/0.24
+41 | prefill band 0.99..1.00 eager 1.00/0.27 margin 0.99/0.26 af 0.99/0.26 | decode band 0.99..1.00 eager 1.01/0.29 margin 1.00/0.27 af 0.99/0.26
+42 | prefill band 0.99..1.00 eager 1.00/0.26 margin 0.99/0.26 af 0.99/0.28 | decode band 0.99..1.00 eager 1.00/0.29 margin 0.99/0.28 af 0.99/0.26
+43 | prefill band 0.99..1.00 eager 1.00/0.25 margin 0.98/0.24 af 1.00/0.29 | decode band 0.98..1.00 eager 0.99/0.30 margin 0.99/0.27 af 0.99/0.28
+44 | prefill band 0.99..1.00 eager 0.99/0.25 margin 0.98/0.25 af 1.00/0.29 | decode band 0.99..1.00 eager 1.00/0.27 margin 0.99/0.26 af 1.00/0.27
+45 | prefill band 1.00..1.00 eager 1.01/0.23 margin 0.99/0.22 af 1.01/0.29 | decode band 0.98..1.00 eager 0.99/0.28 margin 0.99/0.25 af 1.00/0.27
+46 | prefill band 0.99..1.00 eager 1.00/0.24 margin 1.00/0.23 af 1.01/0.31 | decode band 0.98..1.00 eager 1.00/0.28 margin 0.99/0.24 af 0.99/0.28
+47 | prefill band 1.00..1.00 eager 1.00/0.23 margin 1.00/0.23 af 1.01/0.33 | decode band 0.99..1.00 eager 0.99/0.26 margin 0.98/0.25 af 0.99/0.29
+48 | prefill band 0.98..1.00 eager 0.98/0.22 margin 0.98/0.21 af 0.99/0.33 | decode band 0.99..1.00 eager 0.99/0.26 margin 0.98/0.24 af 1.00/0.30
+49 | prefill band 0.99..1.00 eager 0.99/0.21 margin 0.99/0.20 af 0.99/0.30 | decode band 0.99..1.00 eager 1.00/0.26 margin 0.98/0.23 af 1.00/0.29
+50 | prefill band 0.99..1.00 eager 0.98/0.23 margin 0.98/0.22 af 1.00/0.31 | decode band 1.00..1.00 eager 1.00/0.28 margin 0.99/0.22 af 1.02/0.29
+51 | prefill band 0.98..1.00 eager 0.98/0.24 margin 0.98/0.23 af 0.99/0.30 | decode band 0.99..1.00 eager 1.01/0.28 margin 1.00/0.21 af 1.02/0.30
+52 | prefill band 0.99..1.00 eager 0.98/0.23 margin 0.98/0.24 af 1.00/0.31 | decode band 0.99..1.00 eager 1.01/0.28 margin 1.00/0.22 af 1.02/0.31
+53 | prefill band 0.98..1.00 eager 1.00/0.26 margin 0.98/0.24 af 1.00/0.32 | decode band 0.99..1.00 eager 1.00/0.27 margin 0.99/0.21 af 1.01/0.31
+54 | prefill band 0.99..1.00 eager 0.99/0.26 margin 0.99/0.25 af 1.01/0.32 | decode band 1.00..1.00 eager 1.01/0.28 margin 0.98/0.21 af 1.02/0.30
+55 | prefill band 0.97..1.00 eager 0.98/0.25 margin 0.97/0.28 af 0.99/0.33 | decode band 0.99..1.00 eager 1.00/0.27 margin 0.98/0.20 af 1.01/0.31
+56 | prefill band 0.97..1.00 eager 0.99/0.26 margin 0.98/0.27 af 0.99/0.33 | decode band 0.99..1.00 eager 1.01/0.27 margin 0.99/0.20 af 1.03/0.31
+57 | prefill band 0.98..1.00 eager 0.98/0.26 margin 0.98/0.27 af 0.98/0.33 | decode band 0.99..1.00 eager 1.00/0.28 margin 0.99/0.22 af 1.02/0.29
+58 | prefill band 0.99..1.00 eager 0.99/0.26 margin 0.99/0.27 af 1.00/0.35 | decode band 0.98..1.00 eager 1.02/0.28 margin 1.00/0.23 af 1.02/0.27
+59 | prefill band 0.98..1.00 eager 0.99/0.27 margin 0.99/0.29 af 1.00/0.35 | decode band 0.99..1.00 eager 1.02/0.30 margin 0.99/0.21 af 1.00/0.31
+60 | prefill band 0.97..1.00 eager 0.98/0.25 margin 0.98/0.27 af 1.00/0.35 | decode band 1.00..1.00 eager 1.02/0.29 margin 0.99/0.22 af 1.01/0.32
+61 | prefill band 0.97..1.00 eager 0.97/0.24 margin 0.98/0.27 af 1.00/0.37 | decode band 0.99..1.00 eager 1.02/0.30 margin 0.98/0.23 af 1.01/0.33
+62 | prefill band 0.98..1.00 eager 0.98/0.24 margin 0.98/0.28 af 1.01/0.39 | decode band 0.99..1.00 eager 1.01/0.29 margin 0.98/0.21 af 1.01/0.33
+63 | prefill band 0.98..1.00 eager 0.99/0.25 margin 0.99/0.27 af 1.02/0.36 | decode band 0.97..1.00 eager 1.01/0.29 margin 0.98/0.24 af 1.01/0.34
+first prefill layer above the draws' band, eager: 0
+first prefill layer above the draws' band, margin: 0
+first prefill layer above the draws' band, af: 36
+first decode layer above the draws' band, eager: 0
+first decode layer above the draws' band, margin: 0
+first decode layer above the draws' band, af: 34

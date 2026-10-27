@@ -24,8 +24,15 @@ make -s build/test_device_contract_metal build/test_metal_bf16_convert build/tes
 ./build/device_bandwidth 16 "$pack" > "$out/bandwidth.json" 2> "$out/bandwidth.log"
 if [ ! -f "$out/ref/greedy.ref.json" ]; then
 	./build/qwen38_27b_reference "$checkpoint" "$prompts" "$out/ref" 128 2> "$out/ref.log"
-	./build/qwen38_27b_reference "$checkpoint" "$prompts" "$out/ref" 0 fp32-activations 2> "$out/ref_c.log"
+	./build/qwen38_27b_reference "$checkpoint" "$prompts" "$out/ref" 0 fp32-activations 2> "$out/ref_fp32act.log"
 fi
+draws="b c d"
+for name in $(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in json.load(open(sys.argv[1]))["prompts"]))' "$prompts"); do
+	if [ ! -f "$out/ref/$name.ref_c.logits" ] || [ ! -f "$out/ref/$name.ref_d.logits" ]; then
+		./build/qwen38_27b_reference "$checkpoint" "$prompts" "$out/ref" 0 draws 2> "$out/ref_draws.log"
+		break
+	fi
+done
 ./build/metal_stage_run --pack "$pack" --prompts "$prompts" --mode teacher --out "$out/metal" --verify-pack > "$out/metal_teacher.log"
 ./build/metal_stage_run --pack "$pack" --prompts "$prompts" --mode greedy --out "$out/metal" --new-tokens 128 > "$out/metal_greedy.log"
 set -f
@@ -44,13 +51,22 @@ rm -f "$out/compare/compare.jsonl"
 for name in $(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in json.load(open(sys.argv[1]))["prompts"]))' "$prompts"); do
 	split=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["prefill_positions"])' "$out/metal/$name.metal.json")
 	./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_a.logits" "$out/ref/$name.ref_b.logits" floor "$split" >> "$out/compare/compare.jsonl"
+	for draw in $draws; do
+		for floor in $draws; do
+			[ "$draw" = "$floor" ] && continue
+			./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_a.logits" "$out/ref/$name.ref_$draw.logits" "draw_${draw}_vs_floor_$floor" "$split" "$out/ref/$name.ref_$floor.logits" >> "$out/compare/compare.jsonl"
+		done
+	done
 	for label in metal control control_layers control_rotate; do
 		./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_a.logits" "$out/$label/$name.metal.logits" "$label" "$split" "$out/ref/$name.ref_b.logits" >> "$out/compare/compare.jsonl"
 		./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_b.logits" "$out/$label/$name.metal.logits" "${label}_vs_b" "$split" "$out/ref/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
+		for floor in $draws; do
+			./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_a.logits" "$out/$label/$name.metal.logits" "${label}_vs_floor_$floor" "$split" "$out/ref/$name.ref_$floor.logits" >> "$out/compare/compare.jsonl"
+		done
 	done
-	if [ -f "$out/ref/$name.ref_c.logits" ]; then
-		./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_c.logits" "$out/ref/$name.ref_a.logits" fp32_activations_vs_a "$split" >> "$out/compare/compare.jsonl"
-		./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_c.logits" "$out/metal/$name.metal.logits" fp32_activations_vs_metal "$split" >> "$out/compare/compare.jsonl"
+	if [ -f "$out/ref/$name.ref_fp32act.logits" ]; then
+		./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_fp32act.logits" "$out/ref/$name.ref_a.logits" fp32_activations_vs_a "$split" >> "$out/compare/compare.jsonl"
+		./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_fp32act.logits" "$out/metal/$name.metal.logits" fp32_activations_vs_metal "$split" >> "$out/compare/compare.jsonl"
 	fi
 done
 ./build/metal_stage_run --pack "$pack" --prompts "$prompts" --mode bench --out "$out/metal" --new-tokens 256 --prefill-rows 2048 --repeats 3 > "$out/metal_bench.log"

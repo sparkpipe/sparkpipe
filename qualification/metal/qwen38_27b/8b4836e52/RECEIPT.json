@@ -1371,6 +1371,55 @@
     }
    }
   },
+  "floor_draws": {
+   "rule": "per prompt, the paired statistic against A of the candidate with each of draws B, C and D as the floor is no worse than the worst of one draw against another (every ordered pair of B, C and D); every prompt must pass",
+   "floor_noise": {
+    "code": {
+     "paired_sigma": {
+      "b_vs_c": 1.957105851986273,
+      "b_vs_d": 0.3889607854056033,
+      "c_vs_b": -1.9571058519862752,
+      "c_vs_d": -0.4996862168951289,
+      "d_vs_b": -0.3889607854056033,
+      "d_vs_c": 0.4996862168951266
+     },
+     "worst": 1.957105851986273
+    },
+    "design": {
+     "paired_sigma": {
+      "b_vs_c": -0.2850906601206813,
+      "b_vs_d": -0.31092042337567577,
+      "c_vs_b": 0.2850906601206813,
+      "c_vs_d": -0.30586212114984046,
+      "d_vs_b": 0.3109204233756784,
+      "d_vs_c": 0.30586212114984046
+     },
+     "worst": 0.3109204233756784
+    },
+    "korean": {
+     "paired_sigma": {
+      "b_vs_c": -7.661059171506815,
+      "b_vs_d": -1.7363262229401488,
+      "c_vs_b": 7.66105917150682,
+      "c_vs_d": 8.000264599642659,
+      "d_vs_b": 1.7363262229401488,
+      "d_vs_c": -8.000264599642666
+     },
+     "worst": 8.000264599642659
+    },
+    "rules": {
+     "paired_sigma": {
+      "b_vs_c": 0.9995921196476893,
+      "b_vs_d": 5.050424549393689,
+      "c_vs_b": -0.9995921196476893,
+      "c_vs_d": 5.178849393744332,
+      "d_vs_b": -5.050424549393689,
+      "d_vs_c": -5.178849393744332
+     },
+     "worst": 5.178849393744332
+    }
+   }
+  },
   "metal": {
    "against_reference_a": {
     "positions": 5636,
@@ -1903,6 +1952,52 @@
      "kl_within_factor": true,
      "top1_within_factor": true,
      "paired_within_sigma": false,
+     "pass": true
+    },
+    "paired_rule": "floor draws",
+    "floor_draws": {
+     "per_prompt": {
+      "code": {
+       "paired_sigma_by_floor": {
+        "b": -3.4672596130932933,
+        "c": -2.2418800437811486,
+        "d": -2.7303263851264794
+       },
+       "worst": -2.2418800437811486,
+       "floor_worst": 1.957105851986273,
+       "pass": true
+      },
+      "design": {
+       "paired_sigma_by_floor": {
+        "b": 0.3479148742408103,
+        "c": 0.7243770975324006,
+        "d": 0.1817095187266585
+       },
+       "worst": 0.7243770975324006,
+       "floor_worst": 0.3109204233756784,
+       "pass": false
+      },
+      "korean": {
+       "paired_sigma_by_floor": {
+        "b": 0.22909717311838224,
+        "c": -2.3336836784520982,
+        "d": -0.2360680571111721
+       },
+       "worst": 0.22909717311838224,
+       "floor_worst": 8.000264599642659,
+       "pass": true
+      },
+      "rules": {
+       "paired_sigma_by_floor": {
+        "b": -1.0295683386960086,
+        "c": -0.02213799650905059,
+        "d": 4.0473931817414925
+       },
+       "worst": 4.0473931817414925,
+       "floor_worst": 5.178849393744332,
+       "pass": true
+      }
+     },
      "pass": false
     },
     "pass": false
@@ -2441,6 +2536,52 @@
      "kl_within_factor": false,
      "top1_within_factor": false,
      "paired_within_sigma": false,
+     "pass": false
+    },
+    "paired_rule": "floor draws",
+    "floor_draws": {
+     "per_prompt": {
+      "code": {
+       "paired_sigma_by_floor": {
+        "b": 37.18029673501434,
+        "c": 52.78771480910919,
+        "d": 35.20498379081935
+       },
+       "worst": 52.78771480910919,
+       "floor_worst": 1.957105851986273,
+       "pass": false
+      },
+      "design": {
+       "paired_sigma_by_floor": {
+        "b": 119.82011035534721,
+        "c": 69.0460547195231,
+        "d": 186.10024091330965
+       },
+       "worst": 186.10024091330965,
+       "floor_worst": 0.3109204233756784,
+       "pass": false
+      },
+      "korean": {
+       "paired_sigma_by_floor": {
+        "b": 68.21298921735894,
+        "c": 82.48136402630408,
+        "d": 102.89017133816972
+       },
+       "worst": 102.89017133816972,
+       "floor_worst": 8.000264599642659,
+       "pass": false
+      },
+      "rules": {
+       "paired_sigma_by_floor": {
+        "b": 111.65410922418799,
+        "c": 83.41218158465577,
+        "d": 146.0452540395512
+       },
+       "worst": 146.0452540395512,
+       "floor_worst": 5.178849393744332,
+       "pass": false
+      }
+     },
      "pass": false
     },
     "pass": false
@@ -3436,6 +3577,52 @@
      "paired_within_sigma": false,
      "pass": false
     },
+    "paired_rule": "floor draws",
+    "floor_draws": {
+     "per_prompt": {
+      "code": {
+       "paired_sigma_by_floor": {
+        "b": 114.163126629096,
+        "c": 133.64939630279412,
+        "d": 84.9138795122115
+       },
+       "worst": 133.64939630279412,
+       "floor_worst": 1.957105851986273,
+       "pass": false
+      },
+      "design": {
+       "paired_sigma_by_floor": {
+        "b": 551.1882797800275,
+        "c": 362.4581287615309,
+        "d": 254.49817025085554
+       },
+       "worst": 551.1882797800275,
+       "floor_worst": 0.3109204233756784,
+       "pass": false
+      },
+      "korean": {
+       "paired_sigma_by_floor": {
+        "b": 123.75482453315045,
+        "c": 110.39854394906206,
+        "d": 57.746685561817756
+       },
+       "worst": 123.75482453315045,
+       "floor_worst": 8.000264599642659,
+       "pass": false
+      },
+      "rules": {
+       "paired_sigma_by_floor": {
+        "b": 164.28993082527163,
+        "c": 118.89997183999854,
+        "d": 322.0653958264373
+       },
+       "worst": 322.0653958264373,
+       "floor_worst": 5.178849393744332,
+       "pass": false
+      }
+     },
+     "pass": false
+    },
     "pass": false
    },
    "corruption": {
@@ -3986,6 +4173,52 @@
      "kl_within_factor": true,
      "top1_within_factor": true,
      "paired_within_sigma": true,
+     "pass": true
+    },
+    "paired_rule": "floor draws",
+    "floor_draws": {
+     "per_prompt": {
+      "code": {
+       "paired_sigma_by_floor": {
+        "b": -3.6727635599139554,
+        "c": -0.7606904353476144,
+        "d": -1.2576072426561107
+       },
+       "worst": -0.7606904353476144,
+       "floor_worst": 1.957105851986273,
+       "pass": true
+      },
+      "design": {
+       "paired_sigma_by_floor": {
+        "b": -1.3444057558970903,
+        "c": -0.8970374037993569,
+        "d": -1.9134453614790252
+       },
+       "worst": -0.8970374037993569,
+       "floor_worst": 0.3109204233756784,
+       "pass": true
+      },
+      "korean": {
+       "paired_sigma_by_floor": {
+        "b": 0.8629411929896164,
+        "c": -4.0934984566294075,
+        "d": 0.24219417356976847
+       },
+       "worst": 0.8629411929896164,
+       "floor_worst": 8.000264599642659,
+       "pass": true
+      },
+      "rules": {
+       "paired_sigma_by_floor": {
+        "b": -0.5406604135892029,
+        "c": 0.17744774039075964,
+        "d": 4.655858902179171
+       },
+       "worst": 4.655858902179171,
+       "floor_worst": 5.178849393744332,
+       "pass": true
+      }
+     },
      "pass": true
     },
     "pass": true

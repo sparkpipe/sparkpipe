@@ -1,0 +1,3 @@
+reference c   against A (floor B): 1.34 / 1.08 / -0.5 True per prompt {'design': 0.3, 'code': -2.0, 'korean': 7.7, 'rules': -1.0} | against B (floor A): 1.67 / 1.09 / +0.1 True per prompt {'design': -2.7, 'code': -3.0, 'korean': 1.8, 'rules': 2.9}
+reference d   against A (floor B): 0.80 / 1.00 / -2.9 True per prompt {'design': 0.3, 'code': -0.4, 'korean': 1.7, 'rules': -5.1} | against B (floor A): 1.00 / 0.91 / -3.6 True per prompt {'design': -1.0, 'code': -2.9, 'korean': -2.7, 'rules': -1.3}
+reference af  against A (floor B): 0.98 / 1.01 / -0.5 True per prompt {'design': 3.9, 'code': -2.5, 'korean': 0.2, 'rules': -0.3} | against B (floor A): 1.15 / 1.06 / -2.3 True per prompt {'design': -2.1, 'code': -3.1, 'korean': -0.6, 'rules': -0.5}

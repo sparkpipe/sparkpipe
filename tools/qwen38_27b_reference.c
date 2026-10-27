@@ -37,6 +37,7 @@
 #define REF_CONV 4u
 #define REF_MAX_CONTEXT 4096u
 #define REF_SPLIT 1024u
+#define REF_VARIANTS 4u
 #define REF_PREFIX "model.language_model."
 
 typedef struct RefShard
@@ -91,6 +92,23 @@ static float Bf16(uint16_t bits)
 }
 
 static uint32_t ref_round_activations = 1u;
+static uint32_t ref_float_math = 0u;
+static uint16_t *ref_hidden_record = 0;
+
+static double RefExp(double x)
+{
+	return(ref_float_math != 0u ? (double)expf((float)x) : exp(x));
+}
+
+static double RefLog1p(double x)
+{
+	return(ref_float_math != 0u ? (double)log1pf((float)x) : log1p(x));
+}
+
+static double RefInverseSqrt(double x)
+{
+	return(ref_float_math != 0u ? (double)(1.0f / sqrtf((float)x)) : 1.0 / sqrt(x));
+}
 
 static float RoundBf16(float value)
 {
@@ -107,12 +125,12 @@ static float RoundBf16(float value)
 
 static float Silu(float x)
 {
-	return((float)((double)x / (1.0 + exp(-(double)x))));
+	return((float)((double)x / (1.0 + RefExp(-(double)x))));
 }
 
 static float Sigmoid(float x)
 {
-	return((float)(1.0 / (1.0 + exp(-(double)x))));
+	return((float)(1.0 / (1.0 + RefExp(-(double)x))));
 }
 
 static double Seconds(void)
@@ -258,15 +276,17 @@ static void RefLoadModel(RefCheckpoint *checkpoint, RefModel *model)
 
 static void RefGemm(uint32_t variant, const float *x, uint32_t rows, uint32_t input, const float *w, uint32_t output, float *y, uint32_t y_stride)
 {
+	static const uint32_t splits[REF_VARIANTS] = { 0u, REF_SPLIT, REF_SPLIT / 2u, REF_SPLIT * 2u };
+	const uint32_t split = splits[variant];
 	uint32_t first, count;
-	if ( variant == 0u )
+	if ( split == 0u )
 	{
 		cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasTrans,(int)rows,(int)output,(int)input,1.0f,x,(int)input,w,(int)input,0.0f,y,(int)y_stride);
 		return;
 	}
-	for ( first = (input - 1u) / REF_SPLIT * REF_SPLIT, count = 0u;; first -= REF_SPLIT, count++ )
+	for ( first = (input - 1u) / split * split, count = 0u;; first -= split, count++ )
 	{
-		const uint32_t width = input - first < REF_SPLIT ? input - first : REF_SPLIT;
+		const uint32_t width = input - first < split ? input - first : split;
 		cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasTrans,(int)rows,(int)output,(int)width,1.0f,x + first,(int)input,w + first,(int)input,
 			count == 0u ? 0.0f : 1.0f,y,(int)y_stride);
 		if ( first == 0u )
@@ -298,7 +318,7 @@ static void RefNorm(uint32_t variant, const float *x, uint32_t rows, const float
 		float squares[REF_HIDDEN];
 		for ( uint32_t i = 0u; i < REF_HIDDEN; i++ )
 			squares[i] = in[i] * in[i];
-		const float scale = (float)(1.0 / sqrt((double)(RefSum(variant,squares,REF_HIDDEN,1u) / (float)REF_HIDDEN + REF_EPSILON)));
+		const float scale = (float)RefInverseSqrt((double)(RefSum(variant,squares,REF_HIDDEN,1u) / (float)REF_HIDDEN + REF_EPSILON));
 		for ( uint32_t i = 0u; i < REF_HIDDEN; i++ )
 			y[row * REF_HIDDEN + i] = RoundBf16(in[i] * scale * weight[i]);
 	});
@@ -349,8 +369,8 @@ static void RefGdn(uint32_t variant, const RefLayer *layer, uint32_t index, RefS
 			qs[i] = qin[i] * qin[i];
 			ks[i] = kin[i] * kin[i];
 		}
-		const float qscale = (float)(1.0 / sqrt((double)(RefSum(variant,qs,REF_DIM,1u) + REF_EPSILON)) / sqrt((double)REF_DIM));
-		const float kscale = (float)(1.0 / sqrt((double)(RefSum(variant,ks,REF_DIM,1u) + REF_EPSILON)));
+		const float qscale = (float)(RefInverseSqrt((double)(RefSum(variant,qs,REF_DIM,1u) + REF_EPSILON)) / sqrt((double)REF_DIM));
+		const float kscale = (float)RefInverseSqrt((double)(RefSum(variant,ks,REF_DIM,1u) + REF_EPSILON));
 		for ( uint32_t i = 0u; i < REF_DIM; i++ )
 		{
 			q[(uint64_t)row * REF_QK + head * REF_DIM + i] = qin[i] * qscale;
@@ -367,8 +387,8 @@ static void RefGdn(uint32_t variant, const RefLayer *layer, uint32_t index, RefS
 		{
 			const float *kv = k + (uint64_t)row * REF_QK + key_head * REF_DIM, *qv = q + (uint64_t)row * REF_QK + key_head * REF_DIM;
 			const float shifted = a[(uint64_t)row * REF_VALUE_HEADS + head] + layer->dt_bias[head];
-			const double softplus = shifted > 20.0f ? (double)shifted : log1p(exp((double)shifted));
-			const float decay = (float)exp(-exp((double)layer->a_log[head]) * softplus);
+			const double softplus = shifted > 20.0f ? (double)shifted : RefLog1p(RefExp((double)shifted));
+			const float decay = (float)RefExp(-RefExp((double)layer->a_log[head]) * softplus);
 			const float beta = Sigmoid(b[(uint64_t)row * REF_VALUE_HEADS + head]);
 			const float value = mix[(uint64_t)row * REF_CHANNELS + 2u * REF_QK + head * REF_DIM + column];
 			for ( uint32_t i = 0u; i < REF_DIM; i++ )
@@ -394,7 +414,7 @@ static void RefGdn(uint32_t variant, const RefLayer *layer, uint32_t index, RefS
 		float squares[REF_DIM];
 		for ( uint32_t i = 0u; i < REF_DIM; i++ )
 			squares[i] = o[i] * o[i];
-		const float scale = (float)(1.0 / sqrt((double)(RefSum(variant,squares,REF_DIM,1u) / (float)REF_DIM + REF_EPSILON)));
+		const float scale = (float)RefInverseSqrt((double)(RefSum(variant,squares,REF_DIM,1u) / (float)REF_DIM + REF_EPSILON));
 		for ( uint32_t i = 0u; i < REF_DIM; i++ )
 		{
 			const float normed = RoundBf16(RoundBf16(o[i] * scale) * layer->gdn_norm[i]);
@@ -422,7 +442,7 @@ static void RefHeadNormRope(uint32_t variant, const float *in, uint32_t in_strid
 		float squares[REF_HEAD_DIM], normed[REF_HEAD_DIM];
 		for ( uint32_t i = 0u; i < REF_HEAD_DIM; i++ )
 			squares[i] = x[i] * x[i];
-		const float scale = (float)(1.0 / sqrt((double)(RefSum(variant,squares,REF_HEAD_DIM,1u) / (float)REF_HEAD_DIM + REF_EPSILON)));
+		const float scale = (float)RefInverseSqrt((double)(RefSum(variant,squares,REF_HEAD_DIM,1u) / (float)REF_HEAD_DIM + REF_EPSILON));
 		for ( uint32_t i = 0u; i < REF_HEAD_DIM; i++ )
 			normed[i] = RoundBf16(x[i] * scale * weight[i]);
 		for ( uint32_t i = 0u; i < REF_HEAD_DIM; i++ )
@@ -434,7 +454,8 @@ static void RefHeadNormRope(uint32_t variant, const float *in, uint32_t in_strid
 				const float frequency = (float)(1.0 / pow(REF_THETA,(double)(2u * pair) / (double)REF_ROPE));
 				const float angle = (float)(first_position + row) * frequency;
 				const float partner = i < REF_ROPE / 2u ? -normed[i + REF_ROPE / 2u] : normed[i - REF_ROPE / 2u];
-				value = (float)((double)normed[i] * cos((double)angle) + (double)partner * sin((double)angle));
+				value = ref_float_math != 0u ? normed[i] * cosf(angle) + partner * sinf(angle) :
+					(float)((double)normed[i] * cos((double)angle) + (double)partner * sin((double)angle));
 			}
 			out[((uint64_t)row * heads + head) * REF_HEAD_DIM + i] = RoundBf16(value);
 		}
@@ -470,7 +491,7 @@ static void RefAttention(uint32_t variant, const RefLayer *layer, uint32_t index
 			for ( uint32_t j = 0u; j < visible; j++ )
 				best = line[j] > best ? line[j] : best;
 			for ( uint32_t j = 0u; j < length; j++ )
-				line[j] = j < visible ? (float)exp((double)(line[j] - best)) : 0.0f;
+				line[j] = j < visible ? (float)RefExp((double)(line[j] - best)) : 0.0f;
 			const float total = RefSum(variant,line,visible,1u);
 			for ( uint32_t j = 0u; j < visible; j++ )
 				line[j] /= total;
@@ -530,6 +551,13 @@ static void RefForward(uint32_t variant, const RefModel *model, RefState *state,
 				act[(uint64_t)row * REF_FFN + i] = RoundBf16(Silu(gate_up[(uint64_t)row * 2u * REF_FFN + i]) * gate_up[(uint64_t)row * 2u * REF_FFN + REF_FFN + i]);
 		RefLinearRows(variant,act,rows,REF_FFN,layer->down,REF_HIDDEN,partial);
 		RefAdd(hidden,partial,(uint64_t)rows * REF_HIDDEN);
+		if ( ref_hidden_record != 0 )
+			for ( uint64_t at = 0u; at < (uint64_t)rows * REF_HIDDEN; at++ )
+			{
+				uint32_t bits;
+				memcpy(&bits,&hidden[at],sizeof(bits));
+				ref_hidden_record[(uint64_t)index * rows * REF_HIDDEN + at] = (uint16_t)(bits >> 16);
+			}
 	}
 	RefNorm(variant,hidden,rows,model->final_norm,normed);
 	RefGemm(variant,normed,rows,REF_HIDDEN,model->head,REF_VOCAB,logits,REF_VOCAB);
@@ -625,6 +653,38 @@ static void RefPrompt(const RefModel *model, RefState *state, const SparkTokenPr
 	free(generated);
 }
 
+static void RefTeacher(const RefModel *model, RefState *state, const SparkTokenPrompt *prompt, const char *out, uint32_t variant, const char *label,
+	uint32_t hidden)
+{
+	float *logits = (float *)malloc((size_t)prompt->count * REF_VOCAB * sizeof(float));
+	const uint64_t hidden_words = (uint64_t)REF_LAYERS * prompt->count * REF_HIDDEN;
+	char path[4096];
+	FILE *file;
+	if ( logits == 0 || prompt->count > REF_MAX_CONTEXT || prompt->count < 2u )
+		Die("a prompt does not fit the reference",prompt->name);
+	ref_hidden_record = hidden != 0u ? (uint16_t *)malloc(hidden_words * sizeof(uint16_t)) : 0;
+	if ( hidden != 0u && ref_hidden_record == 0 )
+		Die("out of memory for the hidden-state record",prompt->name);
+	RefStateReset(state);
+	RefForward(variant,model,state,prompt->tokens,prompt->count,logits);
+	snprintf(path,sizeof(path),"%s/%s.ref_%s.logits",out,prompt->name,label);
+	file = fopen(path,"wb");
+	if ( file == 0 || fwrite(logits,sizeof(float),(size_t)(prompt->count - 1u) * REF_VOCAB,file) != (size_t)(prompt->count - 1u) * REF_VOCAB ||
+		fclose(file) != 0 )
+		Die("cannot write",path);
+	if ( hidden != 0u )
+	{
+		snprintf(path,sizeof(path),"%s/%s.ref_%s.hidden",out,prompt->name,label);
+		file = fopen(path,"wb");
+		if ( file == 0 || fwrite(ref_hidden_record,sizeof(uint16_t),(size_t)hidden_words,file) != (size_t)hidden_words || fclose(file) != 0 )
+			Die("cannot write",path);
+		free(ref_hidden_record);
+		ref_hidden_record = 0;
+	}
+	fprintf(stderr,"%s: variant %s teacher-forced%s\n",prompt->name,label,hidden != 0u ? ", with every layer's output" : "");
+	free(logits);
+}
+
 int main(int argc, char **argv)
 {
 	RefCheckpoint checkpoint;
@@ -635,9 +695,10 @@ int main(int argc, char **argv)
 	FILE *greedy;
 	uint32_t index, new_tokens;
 	double start = Seconds();
-	if ( argc != 5 && !(argc == 6 && strcmp(argv[5],"fp32-activations") == 0) )
+	if ( argc != 5 && !(argc == 6 && (strcmp(argv[5],"fp32-activations") == 0 || strcmp(argv[5],"draws") == 0 || strcmp(argv[5],"float-math") == 0 ||
+		strcmp(argv[5],"hidden") == 0)) )
 	{
-		fprintf(stderr,"usage: %s CHECKPOINT_DIR PROMPTS.json OUT_DIR NEW_TOKENS [fp32-activations]\n",argv[0]);
+		fprintf(stderr,"usage: %s CHECKPOINT_DIR PROMPTS.json OUT_DIR NEW_TOKENS [fp32-activations|draws|float-math|hidden]\n",argv[0]);
 		return(2);
 	}
 	memset(&checkpoint,0,sizeof(checkpoint));
@@ -655,22 +716,34 @@ int main(int argc, char **argv)
 	fprintf(stderr,"weights converted to f32 in %.1f s\n",Seconds() - start);
 	if ( argc == 6 )
 	{
-		float *logits = (float *)malloc((size_t)REF_MAX_CONTEXT * REF_VOCAB * sizeof(float));
-		ref_round_activations = 0u;
-		for ( index = 0u; logits != 0 && index < prompts.count; index++ )
+		const uint32_t hidden = strcmp(argv[5],"hidden") == 0 ? 1u : 0u;
+		for ( index = 0u; index < prompts.count; index++ )
 		{
 			const SparkTokenPrompt *prompt = &prompts.prompts[index];
-			FILE *file;
-			RefStateReset(&state);
-			RefForward(0u,&model,&state,prompt->tokens,prompt->count,logits);
-			snprintf(path,sizeof(path),"%s/%s.ref_c.logits",argv[3],prompt->name);
-			file = fopen(path,"wb");
-			if ( file == 0 || fwrite(logits,sizeof(float),(size_t)(prompt->count - 1u) * REF_VOCAB,file) != (size_t)(prompt->count - 1u) * REF_VOCAB ||
-				fclose(file) != 0 )
-				Die("cannot write",path);
-			fprintf(stderr,"%s: FP32-activation forward written\n",prompt->name);
+			if ( strcmp(argv[5],"fp32-activations") == 0 )
+			{
+				ref_round_activations = 0u;
+				RefTeacher(&model,&state,prompt,argv[3],0u,"fp32act",0u);
+				ref_round_activations = 1u;
+				continue;
+			}
+			if ( hidden != 0u )
+			{
+				RefTeacher(&model,&state,prompt,argv[3],0u,"a",1u);
+				RefTeacher(&model,&state,prompt,argv[3],1u,"b",1u);
+			}
+			if ( hidden != 0u || strcmp(argv[5],"draws") == 0 )
+			{
+				RefTeacher(&model,&state,prompt,argv[3],2u,"c",hidden);
+				RefTeacher(&model,&state,prompt,argv[3],3u,"d",hidden);
+			}
+			if ( hidden != 0u || strcmp(argv[5],"float-math") == 0 )
+			{
+				ref_float_math = 1u;
+				RefTeacher(&model,&state,prompt,argv[3],0u,"af",hidden);
+				ref_float_math = 0u;
+			}
 		}
-		free(logits);
 		return(0);
 	}
 	snprintf(path,sizeof(path),"%s/greedy.ref.json",argv[3]);

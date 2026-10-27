@@ -462,26 +462,33 @@ when all three hold:
   blocks (`sqrt(n/(n-1) * sum (above_b - share * size_b)^2) / positions`),
   because neighbouring positions share context and are not independent.
 
-For Gemma 4 31B the paired test uses a multi-draw floor instead.
-`tools/gemma4_reference.py` also writes draws C and D (the same code and
-BF16 rounding as B, other FP32 reduction orders: matmuls in 512-wide chunks
-with the scores' inner dimension in four parts, and 2,048-wide chunks with
-the scores unsplit). For each prompt the floor's own noise is the worst
-paired statistic, against A, of one draw with another as its floor, over
-every ordered pair of B, C and D. Metal passes a prompt when its paired
-statistic against A with each of B, C and D as the floor is no worse than
-that worst value, with no added margin, and it must pass every prompt; the
-KL and top-1 checks of both legs are unchanged, and A is the target of every
-leg. The rule was written down (1c1546591) before Metal was scored with it.
-The reason for it is that the reference fails the 3-sigma rule against
-itself: draw D scores +4.4 standard errors against B with A as the floor
-(+2.8 against A), and on single prompts C reaches +3.0 (design) and D +3.5
-(design), +2.8 (korean). The floor's noise per prompt is +3.0 (design), +1.1
-(code), +3.6 (korean) and +3.8 (rules); code is tight because the draws
-agree closely there. Two failures are open at 8b4836e52 (TECHDEBT): Gemma 4
-31B fails this rule on the code prompt (+2.9 against the floor's +1.1), and
-Qwen3.8-27B fails its 3-sigma reference-B leg (+3.8). One attention kernel
-has to pass both; a kernel choice per model is not an option.
+For Gemma 4 31B and Qwen3.8-27B the paired test uses a multi-draw floor
+instead. `tools/gemma4_reference.py` also writes draws C and D (the same
+code and BF16 rounding as B, other FP32 reduction orders: matmuls in
+512-wide chunks with the scores' inner dimension in four parts, and
+2,048-wide chunks with the scores unsplit), and
+`tools/qwen38_27b_reference.c ... draws` writes Qwen's (GEMMs in 512- and
+2,048-wide chunks, sums reversed). For each prompt the floor's own noise is
+the worst paired statistic, against A, of one draw with another as its
+floor, over every ordered pair of B, C and D. Metal passes a prompt when its
+paired statistic against A with each of B, C and D as the floor is no worse
+than that worst value, with no added margin, and it must pass every prompt;
+the KL and top-1 checks of both legs are unchanged, and A is the target of
+every leg. The rule was written down (1c1546591) before Metal was scored
+with it. The reason for it is that the reference fails the 3-sigma rule
+against itself: draw D scores +4.4 standard errors against B with A as the
+floor (+2.8 against A), and on single prompts C reaches +3.0 (design) and D
++3.5 (design), +2.8 (korean). The floor's noise per prompt is +3.0 (design),
++1.1 (code), +3.6 (korean) and +3.8 (rules); code is tight because the draws
+agree closely there. Qwen's floor noise is +0.3 (design), +2.0 (code), +8.0
+(korean) and +5.2 (rules). Qwen's reference computes every transcendental in
+double; the same reference with float transcendentals (`float-math`, A's
+reduction order) scores +3.9 on design and +6.1 on rules under this rule,
+further from A than any Metal kernel, so on design the double-precision
+draws are the outlier. Two failures are open at 8b4836e52 (TECHDEBT): Gemma
+4 31B fails this rule on the code prompt (+2.9 against the floor's +1.1),
+and Qwen3.8-27B fails its 3-sigma reference-B leg (+3.8). One attention
+kernel has to pass both; a kernel choice per model is not an option.
 
 Metal must pass both legs. `tools/pack_tensor_control.py` writes APFS clones
 of the pack with tensors corrupted, and the gate runs each through the same

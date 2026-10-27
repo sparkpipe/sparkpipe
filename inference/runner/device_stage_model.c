@@ -389,14 +389,20 @@ SparkOpsPaged SparkDeviceStagePaged(const SparkDeviceStage *stage, const SparkDe
 	return(paged);
 }
 
-SparkStatus SparkDeviceStageLayerDone(const SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceStepTensors *tensors, uint32_t layer)
+SparkStatus SparkDeviceStageLayerDone(const SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceStepTensors *tensors, uint32_t layer,
+	const SparkTensor *pending)
 {
 	const uint64_t bytes = (uint64_t)tensors->rows * stage->shape->hidden * sizeof(uint16_t);
+	const SparkTensor record = SparkTensorSlice(tensors->hidden_record,(uint64_t)layer * bytes,bytes);
+	SparkStatus status;
 	if ( stage->services != 0 && stage->services->layer_done != 0 )
 		stage->services->layer_done(stage->services->context,layer);
 	if ( tensors->record_hidden == 0u )
 		return(SPARK_STATUS_OK);
-	return(SparkDeviceCopy(queue,SparkTensorSlice(tensors->hidden_record,(uint64_t)layer * bytes,bytes).range,tensors->hidden.range,bytes));
+	status = SparkDeviceCopy(queue,record.range,tensors->hidden.range,bytes);
+	if ( status == SPARK_STATUS_OK && pending != 0 )
+		status = SparkOpsAddRows(stage->ops,queue,record,*pending,tensors->rows,stage->shape->hidden,stage->shape->hidden,stage->shape->hidden);
+	return(status);
 }
 
 void SparkDeviceStageClose(void *model)

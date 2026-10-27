@@ -1,0 +1,2 @@
+The gate ran at 8b4836e52 with that revision's summary (3-sigma paired test; compare/compare.3sigma.jsonl, gate.log: the reference-B leg fails at +3.8).
+Reference draws C and D (tools/qwen38_27b_reference.c, mode draws) were then added, the floor-draw rows appended to compare/compare.jsonl by logit_compare, and RECEIPT.json and summary_floor_draws.json rewritten by tools/metal_gate_summary.py with the multi-draw rule of 1c1546591. The kernel code is unchanged.

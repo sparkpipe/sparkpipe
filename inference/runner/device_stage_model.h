@@ -132,7 +132,8 @@ uint64_t SparkDeviceStageStateBytes(const SparkDeviceStage *stage, uint32_t cont
 SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, SparkDeviceStepTensors *tensors);
 SparkStatus SparkDeviceStageKeepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, const uint32_t *kept, SparkDeviceKeepTensors *keep);
 SparkOpsPaged SparkDeviceStagePaged(const SparkDeviceStage *stage, const SparkDeviceStepTensors *tensors, uint32_t kv_layer);
-SparkStatus SparkDeviceStageLayerDone(const SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceStepTensors *tensors, uint32_t layer);
+SparkStatus SparkDeviceStageLayerDone(const SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceStepTensors *tensors, uint32_t layer,
+	const SparkTensor *pending);
 
 void SparkDeviceStageClose(void *model);
 SparkStatus SparkDeviceStageManifestCheck(void *model, const struct SparkWeightdManifest *manifest);

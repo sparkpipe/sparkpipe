@@ -1267,28 +1267,38 @@ Metal backend and the single-Studio stage are in
   8b4836e52 on the code prompt: Metal's worst paired statistic against
   draws B, C and D is +2.9 standard errors where the draws' own worst is
   +1.1 (design, korean and rules pass), and the 64-row prefill pass fails
-  code (+6.1) and korean (+5.0 against +3.6). The order-only variants of
-  the shipped margin kernel fail code too (+1.3 and +4.5); the eager
-  kernel fails code and korean by more (+6.7 to +7.5, +6.1 to +6.4); the
-  two-pass kernel (branch metal/attention-two-pass, 20% slower 8K
-  prefill) passes in two of three order variants and misses korean by 0.1
-  in the third. What separates Metal from the draws on code, and the
-  64-row path from the 1,024-row one, is not found yet.
-- Qwen3.8-27B fails its 3-sigma gate at 8b4836e52 (reference B leg, paired
-  +3.8): the margin rescale that brought Gemma 4 31B closer to its floor
-  moves Qwen away. Over three order-only variants each (Qwen gate legs,
-  qualification/metal/qwen38_27b/8b4836e52/kernel_variants.txt) the eager
-  kernel gives KL ratios 0.82-1.04 / 0.97-1.28 and paired +0.7 to +1.3 on
-  the B leg (all pass), the margin kernel 1.10-1.30 / 1.37-1.55 and +2.2
-  to +4.6 (two of three fail), the two-pass kernel 1.09-1.19 / 1.35-1.52
-  and +4.9 to +5.6 (all fail). The kernels' partition records are equally
-  accurate on synthetic data, so why rescaling helps one model's agreement
-  with its reference and hurts the other's is not isolated.
-- The other Metal gates (Qwen3.8-27B, Gemma 4 26B A4B) still judge the
-  paired test against one floor draw at 3 sigma; on Gemma 4 31B the
-  reference itself fails that rule (draw D at +4.4 against B). They need
-  draws C and D from their references (the Qwen reference is C, the Gemma
-  26B one needs pinned-route draws) and the multi-draw rule.
+  code (+6.1) and korean (+5.0 against +3.6). The margin kernel's order
+  variants fail code too (+1.3, +4.5); the eager kernel fails code and
+  korean by more; the two-pass kernel passes two of three variants. Per
+  layer on code (qualification/metal/gemma4_31b/8b4836e52/localization),
+  every kernel is about 2 times the draws' distance at layer 0 (gone by
+  layer 8), the eager kernel leaves the draws' band from layer 24 and stays
+  out, the margin kernel stays in it on decode positions and sits slightly
+  above it on prefill positions from layer 23 (a fourth draw would be
+  further than every draw at 25% of positions; margin 27 to 33%), the
+  two-pass kernel stays inside. Layer 23's attention alone on reference A's
+  inputs is as accurate with margin as with eager; the prefill attention
+  kernel is the less accurate path for all three (about 3 times the decode
+  kernel's error, BF16 outputs off the correctly rounded value at 0.064%
+  against the reference's 0.042%), the likely source of the prefill
+  excess.
+- Qwen3.8-27B fails the multi-draw floor at 8b4836e52 on design (+0.7
+  against the draws' +0.3; it failed the 3-sigma reference-B leg at +3.8).
+  The eager kernel fails design in all three order variants (+1.0 to +1.4),
+  the margin kernel passes one of three, the two-pass kernel fails all
+  three (+3.9 to +7.8). The floor is narrow on design because the
+  reference computes every transcendental in double: the reference itself
+  with float transcendentals scores +3.9 on design and +6.1 on rules,
+  further from A than any Metal kernel. Per layer on rules, the margin
+  kernel separates from the eager one from attention layer 31, yet that
+  layer's attention alone on reference B's inputs is equally accurate with
+  both kernels (and more accurate than reference B's own), so the gap is
+  how equal rounding propagates, not the rescale.
+- The Gemma 4 26B A4B gate still judges the paired test against one floor
+  draw at 3 sigma. It needs draws C and D, free and pinned to A's experts
+  (`tools/gemma4_reference.py --variants a,c,d,cp,dp`), and the multi-draw
+  rule over both route sets. One attention kernel has to pass all three
+  models; a kernel choice per model is not an option.
 - The NaN check in the shared BF16 conversion (abce321a5) costs Gemma 4
   26B A4B's B1 decode about 0.9% on the Studio (91.5 to 91.6 tok/s against
   92.2 to 92.5 without it, interleaved runs), since every BF16 store now

@@ -26,7 +26,8 @@
              the discrete expert choice; c and d are two more draws of the
              same noise, like b with 512-wide chunks and the attention
              scores' inner dimension in four parts (c) or with 2,048-wide
-             chunks and the scores unsplit (d). MoE models also write
+             chunks and the scores unsplit (d); cp and dp pin c and d to
+             a's experts as bp pins b. MoE models also write
              <out>/<name>.ref_<variant>.routes for a and b, the chosen
              experts as little-endian uint16 [layer][position][rank];
              --hidden also writes <out>/<name>.ref_<variant>.hidden, every
@@ -453,18 +454,19 @@ def gate_prompts(args):
 def teacher(args):
     global REVERSED, CHUNK, QK_SPLIT
     variants = args.variants.split(",")
-    if not variants or any(label not in ("a", "b", "bp", "c", "d") for label in variants) or len(set(variants)) != len(variants):
-        raise ValueError("--variants takes distinct a, b, bp, c and d")
+    pinned = [label for label in variants if label in ("bp", "cp", "dp")]
+    if not variants or any(label not in ("a", "b", "bp", "c", "d", "cp", "dp") for label in variants) or len(set(variants)) != len(variants):
+        raise ValueError("--variants takes distinct a, b, c, d, bp, cp and dp")
     reference = Reference(args.checkpoint)
-    if "bp" in variants and ("a" not in variants or not reference.moe):
-        raise ValueError("bp pins b to a's experts: it needs a in the same pass and an MoE model")
+    if pinned and ("a" not in variants or not reference.moe):
+        raise ValueError("bp, cp and dp pin a draw to a's experts: they need a in the same pass and an MoE model")
     prompts = json.loads(Path(args.prompts).read_text())["prompts"]
     runs = [(prompt, label) for label in variants for prompt in prompts]
     first_a = variants.index("a") * len(prompts) if "a" in variants else None
-    reference.order_of = [FLOOR["b" if label == "bp" else label] for _, label in runs]
-    reference.pin_source = [first_a + index % len(prompts) if label == "bp" else None for index, (_, label) in enumerate(runs)]
-    if "bp" in variants and variants.index("bp") < variants.index("a"):
-        raise ValueError("list a before bp so a's experts are chosen first in every layer")
+    reference.order_of = [FLOOR[label[0]] for _, label in runs]
+    reference.pin_source = [first_a + index % len(prompts) if label in pinned else None for index, (_, label) in enumerate(runs)]
+    if any(variants.index(label) < variants.index("a") for label in pinned):
+        raise ValueError("list a before bp, cp and dp so a's experts are chosen first in every layer")
     if args.hidden:
         reference.layer_outputs = {}
     normed = reference.forward([prompt["prompt_token_ids"] for prompt, _ in runs])
@@ -473,8 +475,8 @@ def teacher(args):
     for index, ((prompt, label), hidden) in enumerate(zip(runs, normed)):
         if args.hidden:
             np.ascontiguousarray(np.stack(reference.layer_outputs[index]), dtype="<u2").tofile(out / f"{prompt['name']}.ref_{label}.hidden")
-        REVERSED, CHUNK, QK_SPLIT = FLOOR["b" if label == "bp" else label]
-        if reference.moe and label != "bp":
+        REVERSED, CHUNK, QK_SPLIT = FLOOR[label[0]]
+        if reference.moe and label not in pinned:
             np.ascontiguousarray(np.stack(reference.routes[index]), dtype="<u2").tofile(out / f"{prompt['name']}.ref_{label}.routes")
         with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
             for first in range(0, len(prompt["prompt_token_ids"]) - 1, 128):
