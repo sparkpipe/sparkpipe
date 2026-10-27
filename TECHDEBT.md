@@ -1294,6 +1294,21 @@ Metal backend and the single-Studio stage are in
   layer's attention alone on reference B's inputs is equally accurate with
   both kernels (and more accurate than reference B's own), so the gap is
   how equal rounding propagates, not the rescale.
+- Next Metal item: the prefill attention kernel's scores. On the
+  reference's own inputs (Gemma 4 31B layer 23, Qwen3.8-27B layer 31) the
+  prefill kernel's weights err 2.2 to 2.4 times as much as the decode
+  kernel's on the same rows (weight sum 14.2 against 6.0, and 7.7 against
+  3.6, units of 2^-24), its outputs 2.5 times (8.4 against 3.4, 5.7 against
+  2.3 units of 2^-24 sum p|v|), and twice as many BF16 outputs miss the
+  correctly rounded value (0.064% against 0.029%; the reference's own is
+  0.042%). The cause is the tensor-unit score: one matmul2d over the head
+  dimension errs 2.4 times the decode kernel's lane sums on real
+  activations (rms 4.0e-7 against 1.7e-7 at 31B), and four D/4 runs added
+  pairwise bring it to 1.8e-7
+  (qualification/metal/gemma4_31b/8b4836e52/localization/prefill_accuracy.txt).
+  Make that change in `spark_attention_prefill_blocks`, measure its cost,
+  and re-gate all three models; prefill positions are where Metal sits
+  above the draws on the 31B code prompt and where the 64-row pass fails.
 - The Gemma 4 26B A4B gate still judges the paired test against one floor
   draw at 3 sigma. It needs draws C and D, free and pinned to A's experts
   (`tools/gemma4_reference.py --variants a,c,d,cp,dp`), and the multi-draw

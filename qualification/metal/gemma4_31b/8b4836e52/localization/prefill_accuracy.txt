@@ -1,0 +1,15 @@
+Prefill attention accuracy, measured on the reference's own inputs (Gemma 4 31B full layer 23 on code, reference A; Qwen3.8-27B layer 31 on rules, reference B).
+The same prefill rows (31B positions 0-899, Qwen 0-1019) through the prefill kernel and through the decode kernel (row_exact), margin kernel, against float64:
+                      weight sum / (2^-24 sum)   output record / (2^-24 sum p|v|)   BF16 outputs off the correctly rounded value
+31B   prefill kernel  14.24                       8.44                              0.064%
+31B   decode kernel    6.04                       3.35                              0.029%   (reference A's own: 0.042%)
+Qwen  prefill kernel   7.73                       5.70                              0.047%
+Qwen  decode kernel    3.58                       2.30                              0.021%
+The weights carry the difference (a weight's relative error is its score's absolute error). Scores on the same real Q and K (scripts/qk_real.c):
+                      tensor-unit matmul2d (one run over D)   decode kernel (per-lane sums, SIMD tree)   matmul2d in four D/4 runs summed pairwise
+31B (D 512, scale 1)  rms 4.02e-7, max 8.75e-6                  rms 1.68e-7, max 4.25e-6                   rms 1.83e-7, max 4.86e-6
+Qwen (D 256, raw)     rms 7.84e-6, max 1.14e-4                  rms 3.63e-6, max 5.18e-5                   rms 4.03e-6, max 6.2e-5
+On random normal data the one-run matmul2d is as accurate as a sequential FP32 sum (scripts/qk_probe.*), and its P x V is FP32-accurate over 16 tiles of
+multiply_accumulate (scripts/acc_probe.*: max 2.6, mean 0.28 units, the same as a sequential FMA sum); the excess appears on real activations, whose
+scores sum products of very different sizes. Proposed change (not made): compute each prefill tile's scores as four D/4 matmul2d runs added pairwise,
+then measure the cost and re-gate.
