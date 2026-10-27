@@ -533,6 +533,7 @@ def main():
     head_agree = head_total = 0
     reply_agree = reply_total = 0
     anchor_log = open(args.anchors_out, "w") if args.anchors_out else None
+    head32 = drafter.head.float()
     for key, item in sorted(streams.items()):
         end = max(item["positions"]) + 1
         start = end - 1
@@ -555,7 +556,8 @@ def main():
         pos = torch.arange(start, end, device=device)
         with torch.no_grad():
             keys, values = drafter.context(taps.reshape(len(records), -1), pos)
-            predicted = torch.cat([torch.argmax((rms(final[begin:begin + 2048].to(device), drafter.target_norm, drafter.eps).to(torch.bfloat16) @ drafter.head.t()).float(), -1)
+            predicted = torch.cat([torch.argmax(torch.nn.functional.linear(rms(final[begin:begin + 2048].to(device), drafter.target_norm, drafter.eps).to(torch.bfloat16).float(),
+                                                                           head32), -1)
                                    for begin in range(0, len(records), 2048)])
         del taps, final
         agree = (predicted[own:-1] == tokens[own + 1:]).sum().item()
