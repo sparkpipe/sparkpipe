@@ -74,7 +74,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from spark_named_pack import PayloadWriter, assemble  # noqa: E402
+from spark_named_pack import PayloadWriter, assemble, source_identity  # noqa: E402
 
 try:
     import numpy as np
@@ -556,7 +556,7 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None,
                                   tile_k=expert_tile_k)
 
     payload_path = Path(str(out_path) + ".payload")
-    pack = PayloadWriter(payload_path, resume=payload_path.exists(), align=ALIGN)
+    pack = PayloadWriter(payload_path, source_identity(model_dir, first_layer, layer_count), resume=payload_path.exists(), align=ALIGN)
     L = "model.layers.{}."
     SL = "language_model.model.layers.{}."
 

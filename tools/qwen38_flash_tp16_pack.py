@@ -45,7 +45,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble  # noqa: E402
+from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble, source_identity  # noqa: E402
 
 TP = 16
 HIDDEN = 2560
@@ -154,10 +154,10 @@ def scalar_f32(checkpoint, name):
 
 
 class RankPacks:
-    def __init__(self, out_dir, resume, ranks):
+    def __init__(self, out_dir, resume, ranks, identity):
         self.out_dir = Path(out_dir)
         self.ranks = ranks
-        self.writers = {rank: PayloadWriter(self.payload(rank), resume=resume and self.payload(rank).exists())
+        self.writers = {rank: PayloadWriter(self.payload(rank), identity, resume=resume and self.payload(rank).exists())
                         for rank in ranks}
 
     def payload(self, rank):
@@ -376,7 +376,7 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = Checkpoint(args.checkpoint)
     ple = ple_config(checkpoint, text)
-    packs = RankPacks(args.output_dir, args.resume, ranks)
+    packs = RankPacks(args.output_dir, args.resume, ranks, source_identity(args.checkpoint, "qwen38_flash_tp16_pack", files=(args.contract,)))
     pack_globals(checkpoint, packs)
     for layer in range(LAYERS):
         name = f"{PREFIX}layers.{layer}."
