@@ -15,6 +15,7 @@
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_stage_kv_binding.h"
 #include "sparkpipe/spark_weight_codec.h"
+#include "tests/test_stderr_capture.h"
 #include "tests/test_weightd_kv_server.h"
 
 #define TEST_BLOCK 4u
@@ -298,6 +299,42 @@ static void TestSecondEngineServesThePublishedPrefix(void)
 	printf("the second engine's prefix lane imports the first engine's published window page: its page table points at the same window slot, no private page holds the prefix\n");
 }
 
+static void TestNoWindowKeepsPrefixesPrivate(void)
+{
+	TestStderrCapture capture;
+	char *output;
+	TestKvServerSharedWindowBytes = 0u;
+	TestKvServerStart((uint64_t)TEST_RESERVE_CHUNKS * TEST_CHUNK_BYTES);
+	EngineConfigure(&ENGINE_A,"kvsharedoff");
+	TestStderrCaptureBegin(&capture);
+	assert(SparkStageKvBindingInitialize(&ENGINE_A.binding,&ENGINE_A.configuration) == SPARK_STATUS_OK);
+	output = TestStderrCaptureEnd(&capture);
+	assert(ENGINE_A.binding.shared_page_count == 0u && SparkStageKvBindingAddressablePageCount(&ENGINE_A.binding) == TEST_PHYSICAL);
+	assert(strstr(output,"kvsharedoff kv shared prefix off: weightd has no shared window") != 0 && strstr(output,"ERRSITE") == 0);
+	free(output);
+	EngineClose(&ENGINE_A);
+	TestKvServerFinish();
+	printf("without a weightd window an engine keeps every prefix private and says so once, with no error site: ok\n");
+}
+
+static void TestTooSmallWindowRefusesTheBinding(void)
+{
+	TestStderrCapture capture;
+	char *output;
+	SparkStatus status;
+	TestKvServerSharedWindowBytes = TEST_PAGE_BYTES / 2u;
+	TestKvServerStart((uint64_t)TEST_RESERVE_CHUNKS * TEST_CHUNK_BYTES);
+	EngineConfigure(&ENGINE_A,"kvsharedsmall");
+	TestStderrCaptureBegin(&capture);
+	status = SparkStageKvBindingInitialize(&ENGINE_A.binding,&ENGINE_A.configuration);
+	output = TestStderrCaptureEnd(&capture);
+	assert(status == SPARK_STATUS_CAPACITY_EXCEEDED && strstr(output,"kvsharedsmall kv binding refused: weightd shared prefix attach status=") != 0);
+	free(output);
+	EngineClose(&ENGINE_A);
+	TestKvServerFinish();
+	printf("a weightd window too small for one aligned group of the layout's pages refuses the binding loudly instead of serving without it: ok\n");
+}
+
 int main(void)
 {
 	TestKvServerSharedWindowBytes = (uint64_t)TEST_WINDOW_PAGES * TEST_PAGE_BYTES;
@@ -310,6 +347,8 @@ int main(void)
 	EngineClose(&ENGINE_A);
 	assert(SparkWeightdServerKvPoolCount(TestKvServer) >= 2u);
 	TestKvServerFinish();
+	TestNoWindowKeepsPrefixesPrivate();
+	TestTooSmallWindowRefusesTheBinding();
 	printf("stage kv shared prefix: ok\n");
 	return(0);
 }
