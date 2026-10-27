@@ -69,7 +69,9 @@ python3 tools/lane_config.py push kimi-k3
 `render` writes the node `deployment.json`, one `adapter.<host>.json` per
 rank, the hub `model_resident.json` (the node file plus the tokenizer and the
 draft server), the swap entry and, for stage lanes, one `lane.<host>.sh` per
-rank.
+rank. The files depend on the record alone: the lane scripts are rendered
+with only `PATH`, `HOME`, `SPARK_LANES` and `STAGE_RECORD` set, so nothing
+an operator's shell exports reaches a production `lane.sh`.
 
 `audit` renders every record and compares, on all 16 nodes and the hub:
 
@@ -97,7 +99,12 @@ not touch binaries, packs or KV, so a lane restart picks the change up.
 records, which is how a gate tries a raised record before it is committed.
 `tools/stage_lane.sh` with `STAGE_RECORD=<swap id>` and `tools/k3_lane.sh`
 with `K3_RECORD=kimi-k3` render from the record when they set a lane up;
-their flag form stays for experiment lanes in their own roots.
+their flag form stays for experiment lanes in their own roots. `stage_lane.sh
+setup` replaces the lane's binaries and rendered files and clears its pack
+links, KV cache and KV snapshots, so it refuses, before touching any node,
+while the lane's unit is active, starting or stopping on any rank: stop the
+lane first. Run `lane_config.py audit` before a setup to see what it will
+replace.
 
 ## Changing a lane
 

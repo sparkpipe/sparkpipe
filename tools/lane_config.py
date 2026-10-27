@@ -130,8 +130,9 @@ def render(record_id: str, directory: Path) -> None:
     args.swap_entry = lane["launcher"] == "stage_lane"
     stage_lane.write_lane(args, directory)
     if lane["launcher"] == "stage_lane":
+        environment = {name: os.environ[name] for name in ("PATH", "HOME", "SPARK_LANES") if name in os.environ}
         subprocess.run(["bash", str(HERE / "stage_lane.sh"), "lane-scripts", str(directory)],
-                       env={**os.environ, "STAGE_RECORD": record_id}, check=True)
+                       env=dict(environment, STAGE_RECORD=record_id), check=True)
 
 
 def draftd_environment(record_id: str) -> tuple[str, dict[str, str]]:

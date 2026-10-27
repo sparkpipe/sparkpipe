@@ -6,11 +6,14 @@ SHA=$(cd $REPO && git rev-parse --short=9 ${1:-HEAD})
 HOST=${BUILD_HOST:-lenovo7}
 OUT=/Users/mac/sparkpipe-coord/lanes/driver-sprint/fw-release-$SHA
 S=${RELEASE_WORK:-${TMPDIR:-/tmp}/sparkpipe-release}; mkdir -p "$S"
-ADAPTERS="dsv41_flash gemma4_26b gemma4_31b glm53_flash glm53_full hy4 k3 laguna ling3_fin ling3_flash mimo26_flash mimo26_pro muse_glimmer qwen38_27b qwen38_flash qwen38_max"
-SO="build/libk3_serving_adapter.so"; for a in $ADAPTERS; do SO="$SO build/lib${a}_tp16_serving_adapter.so"; done
 NODE="build/sparkpipe_model_residentd build/weightd_warm build/libhidden_transport_spark_host_rdma_verbs.so build/sparkpipe_weightd build/weightd_receipt build/weightdctl build/sparkpipe_model_batch"
 cd $REPO
 COPYFILE_DISABLE=1 git archive --format=tar $SHA > $S/src-$SHA.tar || exit 1
+rm -rf $S/tree-$SHA && mkdir -p $S/tree-$SHA && tar -C $S/tree-$SHA -xf $S/src-$SHA.tar || exit 1
+SO=$(cd $S/tree-$SHA && for id in $(python3 -c "import json; print(' '.join(sorted(json.load(open('deployment/lanes.json'))['lanes'])))"); do
+  set -- $(python3 tools/lane_config.py release-row "$id") && echo "build/$2" || echo "RELEASE-ROW-FAILED:$id"; done | sort -u | tr '\n' ' ')
+case "$SO" in ""|*RELEASE-ROW-FAILED*) echo "release_build: could not derive every adapter from deployment/lanes.json at $SHA: $SO" >&2; exit 1 ;; esac
+echo "release_build: adapters from deployment/lanes.json at $SHA: $SO"
 ssh -o BatchMode=yes rtx5090 "mkdir -p $HUB_WORK/src $HUB_WORK/logs" < /dev/null || exit 1
 scp -q $S/src-$SHA.tar rtx5090:$HUB_WORK/src/rp-src-$SHA.tar || exit 1
 ssh -o BatchMode=yes rtx5090 "rm -rf $HUB_WORK/api-build-$SHA && mkdir $HUB_WORK/api-build-$SHA && tar -C $HUB_WORK/api-build-$SHA -xf $HUB_WORK/src/rp-src-$SHA.tar && echo $SHA > $HUB_WORK/api-build-$SHA/SOURCE_COMMIT && cd $HUB_WORK/api-build-$SHA && export PATH=/usr/local/cuda/bin:\$PATH && make -j16 build/sparkpipe_model_api build/sparkpipe_tokenize_prompt $SO > $HUB_WORK/logs/api-$SHA.out 2>&1; echo API-RC=\$?" < /dev/null &
