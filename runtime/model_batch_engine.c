@@ -981,6 +981,8 @@ static void SparkModelBatchRestoreRejectedRequest(
 	SparkModelBatchRequestState *request,
 	uint32_t work_kind)
 {
+	request->draft_count = 0u;
+	request->model_draft_rows = 0u;
 	if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
 		request->state = SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL;
 	else if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
@@ -3240,7 +3242,11 @@ static uint32_t SparkModelBatchPlanDrafts(
 	float cost_cap_ns = 0.0f;
 	stride = 1u;
 	for (lane=0u; lane<lane_count; lane++)
+	{
 		engine->scratch_prefill_counts[lane] = 0u;
+		engine->requests[engine->scratch_request_slots[lane]].draft_count = 0u;
+		engine->requests[engine->scratch_request_slots[lane]].model_draft_rows = 0u;
+	}
 	if ( engine->verify_capable == 0u || lane_count > SPARK_MODEL_BATCH_VERIFY_LANES || engine->scratch_row_capacity < lane_count || SparkModelBatchNeedsSingleStep(engine,lane_count) != 0u )
 		return(stride);
 	if ( lane_count > 1u )
