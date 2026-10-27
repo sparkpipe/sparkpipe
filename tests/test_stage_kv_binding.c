@@ -480,8 +480,10 @@ static void TestCopyOnWriteIsOneDeviceCopyPerRegionLayer(void)
 	PageBytes(source,source_bytes);
 	PageBytes(destination,destination_bytes);
 	assert(memcmp(source_bytes,destination_bytes,sizeof(source_bytes)) == 0);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
 	assert(BINDING.blocks[source].residency_reference_count == 1u && BINDING.blocks[destination].residency_reference_count == 2u);
 	assert(StepAdmit(&y,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
 	assert(BINDING.blocks[source].residency_reference_count == 1u && BINDING.blocks[destination].residency_reference_count == 2u);
 	spark_stub_cuda_event_pending(0u);
 	assert(StepAdmit(&y,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) == SPARK_STATUS_OK);

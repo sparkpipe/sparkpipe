@@ -595,8 +595,6 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   read-only mid-run; requests should keep completing through recompute,
   and the log should show the degrade and the recovery.
 
-- **Binding test race.** `tests/test_stage_kv_binding.c` can fail on a busy host (1 of 300 runs in one loop, 0 of 300 in the next): a page's residency count reads one high right after a copy-on-write admit, while a save or spill still holds a reference. The test should read the count after the save settles without draining the copy it is checking.
-
 ## Prefix reuse (I23)
 
 Prefix reuse is required and non-compliant adapters are refused at load
