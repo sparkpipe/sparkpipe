@@ -85,6 +85,9 @@
 #define G5N_HC_SLICE (G5N_HC_FLAT / G5N_HC_CLUSTER)
 #define G5N_HC_PRE_SLICE (G5N_HIDDEN / G5N_HC_CLUSTER)
 #define G5N_HC_ROWS 8u
+#define G5N_POOL_BLOCK_POOLS 32u
+#define G5N_POOL_BLOCK_ROWS 16u
+#define G5N_POOL_ROWS_MIN 64u
 #define G5N_HC_VECTORS (G5N_HC_SLICE / 4u / LM_WARP_LANES)
 #define G5N_NO_ORDINAL 0xffffffffu
 
@@ -371,6 +374,135 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolScoreKernel(const uint
 	}
 	if ( threadIdx.x == 0u )
 		pool_scores[(uint64_t)row * local_stride + local] = total;
+}
+
+template<uint32_t THREADS, uint32_t DIM, uint32_t KPOOL, uint32_t HEADS, uint32_t POOLS, uint32_t ROWS>
+__global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolScoreRowsKernel(const uint16_t *__restrict__ query_bf16,
+	const uint16_t *__restrict__ head_weight_bf16, LmKvShardView index_cache, const uint32_t *__restrict__ sequence_of_row,
+	const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_positions, const float *__restrict__ compress_ape_f32,
+	uint32_t pools, uint32_t owner_rank, uint32_t owner_degree, uint32_t local_stride, float softmax_scale, float head_scale,
+	float *__restrict__ pool_scores, uint32_t rows)
+{
+	static_assert(THREADS == 8u * LM_WARP_LANES && DIM == 4u * LM_WARP_LANES, "the score tree replays an eight-warp block sum over 128 elements");
+	static_assert(HEADS % (THREADS / LM_WARP_LANES) == 0u, "every warp scores the same number of heads");
+	constexpr uint32_t WARPS = THREADS / LM_WARP_LANES, PER_WARP = HEADS / WARPS;
+	__shared__ float pool_key[POOLS][DIM];
+	__shared__ uint32_t pool_ready[POOLS];
+	__shared__ float contribution[POOLS][HEADS];
+	const uint32_t first_local = blockIdx.x * POOLS, first_row = blockIdx.y * ROWS, warp = threadIdx.x / LM_WARP_LANES;
+	const uint32_t lane = threadIdx.x % LM_WARP_LANES, part = lane / 8u, member = lane % 8u;
+	uint32_t cached = 0xffffffffu;
+	for ( uint32_t offset = 0u; offset < ROWS && first_row + offset < rows; ++offset )
+	{
+		const uint32_t row = first_row + offset, sequence = sequence_of_row[row];
+		if ( sequence != cached )
+		{
+			__syncthreads();
+			for ( uint32_t local = threadIdx.x; local < POOLS; local += THREADS )
+			{
+				const uint32_t pool = SparkGlm5NextIndexCpGlobalPool(first_local + local, owner_rank, owner_degree);
+				pool_ready[local] = first_local + local < local_stride && pool < pools && pool * KPOOL + KPOOL <= context_length[sequence] ? 1u : 0u;
+			}
+			__syncthreads();
+			for ( uint32_t item = threadIdx.x; item < POOLS * DIM; item += THREADS )
+			{
+				const uint32_t local = item / DIM, index = item % DIM, first = SparkGlm5NextIndexCpGlobalPool(first_local + local, owner_rank, owner_degree) * KPOOL;
+				float maximum = -INFINITY, sum = 0.0f, logits[KPOOL], mix[KPOOL], key = 0.0f;
+				uint32_t slot_in_pool, failed = 0u;
+				if ( pool_ready[local] == 0u )
+					continue;
+				for ( slot_in_pool = 0u; slot_in_pool < KPOOL && failed == 0u; ++slot_in_pool )
+				{
+					const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(index_cache, sequence, first + slot_in_pool, row, LM_KV_ACCESS_READ);
+					if ( slot == 0 )
+					{
+						failed = 1u;
+						break;
+					}
+					logits[slot_in_pool] = LmBf16ToFloat(slot[DIM + index]) + compress_ape_f32[slot_in_pool * DIM + index];
+					maximum = fmaxf(maximum, logits[slot_in_pool]);
+				}
+				if ( failed == 0u )
+				{
+					for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
+						if ( logits[slot_in_pool] != -INFINITY )
+							sum += __expf(logits[slot_in_pool] - maximum);
+					for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
+						mix[slot_in_pool] = logits[slot_in_pool] == -INFINITY ? 0.0f : __expf(logits[slot_in_pool] - maximum) / fmaxf(sum, 1.0e-20f);
+					for ( slot_in_pool = 0u; slot_in_pool < KPOOL && failed == 0u; ++slot_in_pool )
+					{
+						if ( mix[slot_in_pool] == 0.0f )
+							continue;
+						const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(index_cache, sequence, first + slot_in_pool, row, LM_KV_ACCESS_READ);
+						if ( slot == 0 )
+							failed = 1u;
+						else
+							key += mix[slot_in_pool] * LmBf16ToFloat(slot[index]);
+					}
+				}
+				if ( failed != 0u )
+					pool_ready[local] = 0u;
+				pool_key[local][index] = key;
+			}
+			__syncthreads();
+			cached = sequence;
+		}
+		const uint32_t context = context_length[sequence] < row_positions[row] + 1u ? context_length[sequence] : row_positions[row] + 1u;
+		float query[PER_WARP][4], weight[PER_WARP];
+		for ( uint32_t slot = 0u; slot < PER_WARP; ++slot )
+		{
+			const uint32_t head = warp + slot * WARPS;
+			for ( uint32_t k = 0u; k < 4u; ++k )
+				query[slot][k] = LmBf16ToFloat(query_bf16[((uint64_t)row * HEADS + head) * DIM + part * LM_WARP_LANES + member + 8u * k]);
+			weight[slot] = LmBf16ToFloat(head_weight_bf16[(uint64_t)row * HEADS + head]);
+		}
+		for ( uint32_t local = 0u; local < POOLS; ++local )
+		{
+			float key[4];
+			if ( pool_ready[local] == 0u )
+				continue;
+			for ( uint32_t k = 0u; k < 4u; ++k )
+				key[k] = pool_key[local][part * LM_WARP_LANES + member + 8u * k];
+			for ( uint32_t slot = 0u; slot < PER_WARP; ++slot )
+			{
+				float x[4], tree, score;
+				for ( uint32_t k = 0u; k < 4u; ++k )
+				{
+					x[k] = 0.0f;
+					x[k] += query[slot][k] * key[k];
+				}
+				tree = (x[0] + x[2]) + (x[1] + x[3]);
+				tree += __shfl_down_sync(0xffffffffu, tree, 4u, 8);
+				tree += __shfl_down_sync(0xffffffffu, tree, 2u, 8);
+				tree += __shfl_down_sync(0xffffffffu, tree, 1u, 8);
+				const float second = __shfl_sync(0xffffffffu, tree, 8u), third = __shfl_sync(0xffffffffu, tree, 16u), fourth = __shfl_sync(0xffffffffu, tree, 24u);
+				score = (((tree + 0.0f) + (third + 0.0f)) + ((second + 0.0f) + (fourth + 0.0f))) * softmax_scale;
+				if ( score < 0.0f )
+					score = 0.0f;
+				if ( lane == 0u )
+					contribution[local][warp + slot * WARPS] = score * weight[slot] * head_scale;
+			}
+		}
+		__syncthreads();
+		for ( uint32_t local = threadIdx.x; local < POOLS; local += THREADS )
+		{
+			const uint32_t pool = SparkGlm5NextIndexCpGlobalPool(first_local + local, owner_rank, owner_degree);
+			float total = 0.0f;
+			if ( first_local + local >= local_stride )
+				continue;
+			if ( pool >= pools || pool * KPOOL + KPOOL > context )
+			{
+				pool_scores[(uint64_t)row * local_stride + first_local + local] = -INFINITY;
+				continue;
+			}
+			if ( pool_ready[local] == 0u )
+				continue;
+			for ( uint32_t head = 0u; head < HEADS; ++head )
+				total += contribution[local][head];
+			pool_scores[(uint64_t)row * local_stride + first_local + local] = total;
+		}
+		__syncthreads();
+	}
 }
 
 template<uint32_t THREADS>
@@ -833,10 +965,17 @@ static int32_t Glm5NextIndexScore(const Glm5NextLayerBuffers *b, uint32_t rows, 
 		G5N_INDEX_DIM);
 	LM_LAUNCH((LmKvShardStoreKernel<Glm5NextIndexKv, G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->index_cache, b->index_packed_bf16,
 		b->sequence_of_row, b->positions, rows, G5N_INDEX_PACKED);
-	LM_LAUNCH((Glm5NextPoolScoreKernel<G5N_THREADS, G5N_INDEX_DIM, G5N_KPOOL, G5N_INDEX_HEADS>), dim3(local_stride, rows), G5N_THREADS, 0, stream,
-		b->index_query_bf16, b->index_head_weight_bf16, b->index_cache, b->sequence_of_row, b->context_length, b->positions,
-		(const float *)w->index_compress_ape, pools, b->index_owner_rank, degree, local_stride, SPARK_GLM5_NEXT_MODEL_INDEX_SOFTMAX_SCALE,
-		SPARK_GLM5_NEXT_MODEL_INDEX_HEAD_WEIGHT_SCALE, b->index_local_scores);
+	if ( rows >= G5N_POOL_ROWS_MIN )
+		LM_LAUNCH((Glm5NextPoolScoreRowsKernel<G5N_THREADS, G5N_INDEX_DIM, G5N_KPOOL, G5N_INDEX_HEADS, G5N_POOL_BLOCK_POOLS, G5N_POOL_BLOCK_ROWS>),
+			dim3((local_stride + G5N_POOL_BLOCK_POOLS - 1u) / G5N_POOL_BLOCK_POOLS, (rows + G5N_POOL_BLOCK_ROWS - 1u) / G5N_POOL_BLOCK_ROWS), G5N_THREADS, 0,
+			stream, b->index_query_bf16, b->index_head_weight_bf16, b->index_cache, b->sequence_of_row, b->context_length, b->positions,
+			(const float *)w->index_compress_ape, pools, b->index_owner_rank, degree, local_stride, SPARK_GLM5_NEXT_MODEL_INDEX_SOFTMAX_SCALE,
+			SPARK_GLM5_NEXT_MODEL_INDEX_HEAD_WEIGHT_SCALE, b->index_local_scores, rows);
+	else
+		LM_LAUNCH((Glm5NextPoolScoreKernel<G5N_THREADS, G5N_INDEX_DIM, G5N_KPOOL, G5N_INDEX_HEADS>), dim3(local_stride, rows), G5N_THREADS, 0, stream,
+			b->index_query_bf16, b->index_head_weight_bf16, b->index_cache, b->sequence_of_row, b->context_length, b->positions,
+			(const float *)w->index_compress_ape, pools, b->index_owner_rank, degree, local_stride, SPARK_GLM5_NEXT_MODEL_INDEX_SOFTMAX_SCALE,
+			SPARK_GLM5_NEXT_MODEL_INDEX_HEAD_WEIGHT_SCALE, b->index_local_scores);
 	return Glm5NextLaunched();
 }
 
