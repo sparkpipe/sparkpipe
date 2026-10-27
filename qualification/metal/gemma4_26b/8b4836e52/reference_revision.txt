@@ -1,0 +1,1 @@
+reference logits and routes: the same files as the 662c49da2 receipt (tools/gemma4_reference.py teacher --variants a,b,bp at 662c49da2 on the hub); this gate judges the paired test at 3 sigma (no floor draws C and D for this model yet)

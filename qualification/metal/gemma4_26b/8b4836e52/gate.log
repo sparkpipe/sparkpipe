@@ -1,0 +1,108 @@
+{"pattern": "layers.11.ffn_down", "tensors": 1, "corruption": "rows 0 and 1 swapped"}
+{"pattern": "layers.*.ffn_down", "tensors": 30, "corruption": "rows 0 and 1 swapped"}
+{"pattern": "layers.11.ffn_down", "tensors": 1, "corruption": "every row moved down by one"}
+{"pattern": "layers.*.moe_w2", "tensors": 30, "corruption": "rows 0 and 1 swapped"}
+{
+ "numerics_pass": true,
+ "speculation_exact": true,
+ "ladder_exact_rows_identical": true,
+ "metal": {
+  "reference_a": {
+   "kl_ratio_to_floor": 1.0937123197166934,
+   "top1_disagreement_ratio_to_floor": 1.024081115335868,
+   "paired_sigma": 1.6548760247746968,
+   "pass": true
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 1.0819924323776071,
+   "top1_disagreement_ratio_to_floor": 1.008871989860583,
+   "paired_sigma": 1.0440710422747472,
+   "pass": true
+  }
+ },
+ "pinned_metal": {
+  "reference_a": {
+   "kl_ratio_to_floor": 0.7559249743058162,
+   "top1_disagreement_ratio_to_floor": 0.9195046439628487,
+   "paired_sigma": -2.14442998139992,
+   "pass": true
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 0.918440416289134,
+   "top1_disagreement_ratio_to_floor": 0.9133126934984521,
+   "paired_sigma": -0.942927809491729,
+   "pass": true
+  }
+ },
+ "pinned_metal_rows64": {
+  "reference_a": {
+   "kl_ratio_to_floor": 1.060611684593605,
+   "top1_disagreement_ratio_to_floor": 1.0092879256965939,
+   "paired_sigma": 1.0771580579037143,
+   "pass": true
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 0.99097354536744,
+   "top1_disagreement_ratio_to_floor": 0.922600619195046,
+   "paired_sigma": 0.35212111010266306,
+   "pass": true
+  }
+ },
+ "pinned_control_layers": {
+  "reference_a": {
+   "kl_ratio_to_floor": 1.8196595657447079,
+   "top1_disagreement_ratio_to_floor": 1.5108359133126934,
+   "paired_sigma": 38.17709881892124,
+   "pass": false
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 2.0264299051045818,
+   "top1_disagreement_ratio_to_floor": 1.5077399380804943,
+   "paired_sigma": 45.355196291327324,
+   "pass": false
+  }
+ },
+ "pinned_control_rotate": {
+  "reference_a": {
+   "kl_ratio_to_floor": 54.881990562817975,
+   "top1_disagreement_ratio_to_floor": 8.250773993808044,
+   "paired_sigma": 395.2130838516517,
+   "pass": false
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 58.58038331041455,
+   "top1_disagreement_ratio_to_floor": 8.26006191950464,
+   "paired_sigma": 426.505674913837,
+   "pass": false
+  }
+ },
+ "pinned_control_experts": {
+  "reference_a": {
+   "kl_ratio_to_floor": 10.531391167677286,
+   "top1_disagreement_ratio_to_floor": 3.7739938080495326,
+   "paired_sigma": 103.34193796482874,
+   "pass": false
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 11.381747615179359,
+   "top1_disagreement_ratio_to_floor": 3.7770897832817316,
+   "paired_sigma": 81.79130951406316,
+   "pass": false
+  }
+ },
+ "pinned_control": {
+  "reference_a": {
+   "kl_ratio_to_floor": 0.7955706744401213,
+   "top1_disagreement_ratio_to_floor": 0.9504643962848295,
+   "paired_sigma": 0.4649495962745634,
+   "pass": true
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 0.932650091547638,
+   "top1_disagreement_ratio_to_floor": 0.9504643962848295,
+   "paired_sigma": 0.14064871568647114,
+   "pass": true
+  }
+ },
+ "decode": "7.88 GB read per token (7.65 GB of weights, the rest KV and recurrent state) / 1141.1 GB/s measured = 144.82 tok/s; measured 92.07 tok/s = 63.6%"
+}
