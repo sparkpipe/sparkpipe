@@ -1185,15 +1185,15 @@ static SparkStatus D41TailCompress(D41ModelState *state, const SparkStageRunnerS
 	return D41Compress(state, layer, D41_CANDIDATE_SOURCE, step, stream);
 }
 
-static void CUDART_CB D41KvErrorCheck(void *user)
+static SparkStatus D41Check(void *model)
 {
-	const D41ModelState *state = (const D41ModelState *)user;
-	const LmKvAccessError *error = state->host_error;
-	if ( error->error_code == 0u )
-		return;
+	const D41ModelState *state = (const D41ModelState *)model;
+	const volatile LmKvAccessError *error = state->host_error;
+	if ( error == 0 || error->error_code == 0u )
+		return SPARK_STATUS_OK;
 	fprintf(stderr, "sparkpipe_dsv41_flash: KV access error code=%u kind=%u row=%u sequence=%u position=%u page=%u\n", error->error_code,
 		error->access_kind, error->row, error->sequence, error->position, error->page);
-	state->services->fail(state->services->context, SPARK_STATUS_INTERNAL_ERROR);
+	SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 }
 
 static SparkStatus D41Step(void *model, const SparkStageRunnerStep *step, void *stream_void)
@@ -1213,8 +1213,6 @@ static SparkStatus D41Step(void *model, const SparkStageRunnerStep *step, void *
 		if ( status != SPARK_STATUS_OK )
 			return status;
 	}
-	if ( cudaMemsetAsync(state->kv_error, 0, sizeof(LmKvAccessError), stream) != cudaSuccess )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	state->row_invariant = step->commit == 0u ? 1u : 0u;
 	status = D41StepReach(state, step);
 	if ( status != SPARK_STATUS_OK )
@@ -1291,9 +1289,6 @@ static SparkStatus D41Step(void *model, const SparkStageRunnerStep *step, void *
 		step->sequence_row_indices, step->recurrent_index,
 		(int32_t *)(state->recurrent + state->ring_bytes + state->compressor_bytes), (uint32_t)(state->recurrent_bytes / sizeof(int32_t)),
 		step->sequences, D41_ENGRAM_ORDERS, step->commit, (const uint32_t *)0);
-	if ( cudaMemcpyAsync(state->host_error, state->kv_error, sizeof(LmKvAccessError), cudaMemcpyDeviceToHost, stream) != cudaSuccess ||
-		cudaLaunchHostFunc(stream, D41KvErrorCheck, state) != cudaSuccess )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	return D41Launched();
 }
 
@@ -1422,7 +1417,7 @@ static SparkStatus D41PlanArena(D41ModelState *state, uint64_t *bytes, uint8_t *
 		{ (void **)&state->engram_ids, r * D41_ENGRAM_COLUMNS * 8u }, { (void **)&state->engram_embed, engram_rows * D41_HIDDEN * 2u },
 		{ (void **)&state->engram_kv, r * D41_ENGRAM_KV_ROWS * 2u }, { (void **)&state->engram_kv_local, r * D41_ENGRAM_KV_LOCAL * 2u },
 		{ (void **)&state->engram_kv_gathered, r * D41_ENGRAM_KV_ROWS * 2u },
-		{ (void **)&state->recurrent, s * state->recurrent_bytes }, { (void **)&state->kv_error, sizeof(LmKvAccessError) },
+		{ (void **)&state->recurrent, s * state->recurrent_bytes },
 	};
 	uint64_t cursor = 0u;
 	for ( uint32_t index = 0u; index < sizeof(plan) / sizeof(plan[0]); ++index )
@@ -2035,11 +2030,14 @@ static SparkStatus D41Bind(void *model, SparkWeightdLazyPack *lazy_pack, SparkSt
 	status = D41PackCells(state, lazy_pack);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	if ( cudaHostAlloc((void **)&state->host_error, sizeof(LmKvAccessError), cudaHostAllocPortable) != cudaSuccess )
+	if ( cudaHostAlloc((void **)&state->host_error, sizeof(LmKvAccessError), cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess )
 	{
 		state->host_error = 0;
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
+	memset(state->host_error, 0, sizeof(LmKvAccessError));
+	if ( cudaHostGetDevicePointer((void **)&state->kv_error, state->host_error, 0u) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	if ( cudaDeviceSynchronize() != cudaSuccess || cudaMalloc(&state->arena, state->arena_bytes) != cudaSuccess )
 	{
 		state->arena = 0;
@@ -2201,7 +2199,9 @@ static const SparkStageRunnerModelInterface spark_dsv41_flash_stage_model =
 	D41GraphKey,
 	0,
 	D41KeepRows,
-	D41TapPlan
+	D41TapPlan,
+	0,
+	D41Check
 };
 
 const SparkStageRunnerModelInterface *SparkDsv41FlashStageModel(void)

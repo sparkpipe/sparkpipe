@@ -2537,6 +2537,15 @@ SparkStatus SparkStageRunnerKeepRows(SparkStageRunner *runner, const uint32_t *k
 	return state->model_interface->keep_rows(state->model, &state->verify_step, state->verify_kept, state->stream);
 }
 
+SparkStatus SparkStageRunnerCheck(SparkStageRunner *runner)
+{
+	SparkStageRunnerState *state;
+	if ( runner == 0 || runner->private_state == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	state = (SparkStageRunnerState *)runner->private_state;
+	return state->model_interface->check != 0 ? state->model_interface->check(state->model) : SPARK_STATUS_OK;
+}
+
 SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream)
 {
 	SparkStageRunnerState *state;
