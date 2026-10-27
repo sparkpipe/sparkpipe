@@ -1126,6 +1126,7 @@ struct GlmModel
 		uint64_t waves;
 		uint64_t gather_waves;
 		int16_t tap_output[S::kLayers];
+		int16_t tap_final;
 		uint16_t *tap_slab;
 		uint64_t tap_stride;
 		uint32_t tap_active;
@@ -2018,11 +2019,16 @@ struct GlmModel
 		return Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, row.share, 0u, state->row_normed, state->normed);
 	}
 
+	static uint32_t Tapped(const State *state, uint32_t layer)
+	{
+		return state->tap_active != 0u && (state->tap_output[layer] >= 0 || (layer + 1u == S::kLayers && state->tap_final >= 0)) ? 1u : 0u;
+	}
+
 	static SparkStatus Tap(State *state, const GlmWave *wave, uint32_t layer, const uint16_t *hidden, cudaStream_t stream)
 	{
-		const int16_t entry = state->tap_output[layer];
+		const int16_t entries[2] = { state->tap_output[layer], layer + 1u == S::kLayers ? state->tap_final : (int16_t)-1 };
 		const uint16_t *source = state->residual, *addend = hidden;
-		if ( state->tap_active == 0u || entry < 0 )
+		if ( Tapped(state, layer) == 0u )
 			return SPARK_STATUS_OK;
 		if ( RowSharded(wave) != 0u )
 		{
@@ -2036,10 +2042,12 @@ struct GlmModel
 		}
 		if ( state->tap_slab == 0 )
 			return SPARK_STATUS_OK;
-		LM_LAUNCH((LmSumRowsStridedKernel<GLM_THREADS>), dim3((S::kHidden + GLM_THREADS - 1u) / GLM_THREADS, wave->rows), GLM_THREADS, 0, stream,
-			source, addend, wave->ordered != 0u ? state->order + wave->first : (const uint32_t *)0,
-			state->tap_slab + (wave->ordered != 0u ? 0u : (uint64_t)wave->first * state->tap_stride) + (uint64_t)entry * S::kHidden, wave->rows, S::kHidden,
-			state->tap_stride);
+		for ( uint32_t index = 0u; index < 2u; index++ )
+			if ( entries[index] >= 0 )
+				LM_LAUNCH((LmSumRowsStridedKernel<GLM_THREADS>), dim3((S::kHidden + GLM_THREADS - 1u) / GLM_THREADS, wave->rows), GLM_THREADS, 0, stream,
+					source, addend, wave->ordered != 0u ? state->order + wave->first : (const uint32_t *)0,
+					state->tap_slab + (wave->ordered != 0u ? 0u : (uint64_t)wave->first * state->tap_stride) + (uint64_t)entries[index] * S::kHidden, wave->rows,
+					S::kHidden, state->tap_stride);
 		return GlmLaunched() != LM_LAUNCH_OK ? Fail("tap", layer, LM_LAUNCH_ERR_LAUNCH) : SPARK_STATUS_OK;
 	}
 
@@ -2125,7 +2133,7 @@ struct GlmModel
 		if ( code != LM_LAUNCH_OK )
 			return Fail("mlp", layer, code);
 		status = sharded != 0u ? RowShard(state, wave, layer, hidden, last != 0u ? state->final_norm : state->layers[layer + 1u].attn_norm,
-			last == 0u || (state->tap_active != 0u && state->tap_output[layer] >= 0) ? 1u : 0u,
+			last == 0u || Tapped(state, layer) != 0u ? 1u : 0u,
 			last != 0u ? 0 : state->layers[layer + 1u].attn_gate_down, last != 0u ? 0 : state->layers[layer + 1u].attn_gate_up, stream) : Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, hidden, hidden);
 		if ( status == SPARK_STATUS_OK )
 			status = Tap(state, wave, layer, hidden, stream);
@@ -2353,7 +2361,7 @@ struct GlmModel
 	static SparkStatus TapPlan(void *model, const SparkStageRunnerTapPlan *plan)
 	{
 		State *state = (State *)model;
-		int16_t outputs[S::kLayers];
+		int16_t outputs[S::kLayers], final = -1;
 		uint32_t active = 0u;
 		if ( state == 0 || plan == 0 )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -2362,18 +2370,20 @@ struct GlmModel
 		for ( uint32_t index = 0u; index < plan->entry_count; index++ )
 		{
 			if ( plan->entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL )
-				continue;
-			if ( plan->entries[index].form != SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT || plan->entries[index].layer >= S::kLayers )
+				final = (int16_t)index;
+			else if ( plan->entries[index].form != SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT || plan->entries[index].layer >= S::kLayers )
 				SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-			outputs[plan->entries[index].layer] = (int16_t)index;
+			else
+				outputs[plan->entries[index].layer] = (int16_t)index;
 			active = 1u;
 		}
 		memcpy(state->tap_output, outputs, sizeof(outputs));
+		state->tap_final = final;
 		state->tap_slab = plan->capture != 0u ? plan->slab : 0;
 		state->tap_stride = plan->row_stride_elements;
 		state->tap_active = active;
-		fprintf(stderr, "%s: taps entries=%u capture=%u; a tapped layer of a row-sharded wave all-gathers its residual rows\n", G::Tag(), plan->entry_count,
-			plan->capture);
+		fprintf(stderr, "%s: taps entries=%u capture=%u; final is the last layer's output before the norm; a tapped layer of a row-sharded wave all-gathers "
+			"its residual rows\n", G::Tag(), plan->entry_count, plan->capture);
 		return SPARK_STATUS_OK;
 	}
 

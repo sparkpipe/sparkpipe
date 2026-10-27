@@ -2412,16 +2412,18 @@ SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRu
 		for ( other = 0u; other < index; ++other )
 			if ( entries[other].form == entries[index].form && entries[other].layer == entries[index].layer )
 				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL )
+		if ( entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL && state->geometry.head_prenormed == 0u )
 			final_entry = index;
-		else if ( entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT && entries[index].layer < state->geometry.total_layers )
+		else if ( entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL ||
+			(entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT && entries[index].layer < state->geometry.total_layers) )
 			model_entries++;
 		else
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	if ( model_entries != 0u && state->model_interface->tap_plan == 0 )
 	{
-		fprintf(stderr, "sparkpipe_stage_runner: taps refused: %s exports no layer outputs\n", state->model_interface->tag);
+		fprintf(stderr, "sparkpipe_stage_runner: taps refused: %s exports no layer outputs%s\n", state->model_interface->tag,
+			state->geometry.head_prenormed != 0u ? "; its stage output is already normed, so the final hidden before the norm is one of them" : "");
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	}
 	stride = (uint64_t)entry_count * state->geometry.hidden;
