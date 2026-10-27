@@ -51,7 +51,6 @@ struct QwenHybridDefaults
 	static constexpr uint32_t kPleConv = 1u;
 	static constexpr uint32_t kPleDilation = 1u;
 	static constexpr uint32_t kPleEos = 0u;
-	static constexpr bool kGdnSigmoidGate = false;
 	static constexpr uint32_t kIndexHeads = 0u;
 	static constexpr uint32_t kIndexDim = 0u;
 	static constexpr uint32_t kIndexBudget = 0u;
