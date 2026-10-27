@@ -76,6 +76,16 @@
 #define D41_PAGE_TOKENS SPARK_DSV41_FLASH_STAGE_PAGE_TOKENS
 #define D41_GRAIN SPARK_DSV41_FLASH_STAGE_SHARD_GRAIN
 static_assert(D41_GRAIN == 8u, "a DSV4.1 candidate block is one context shard grain, so each block lives on one rank");
+static_assert(D41_FP8_BLOCK == SPARK_DSV41_FLASH_STAGEPACK_FP8_BLOCK, "the stage reads fp8 scales in the pack's blocks");
+static_assert(D41_HIDDEN == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && D41_LAYERS == SPARK_DSV41_FLASH_MODEL_LAYER_COUNT &&
+	D41_VOCAB == SPARK_DSV41_FLASH_MODEL_OUTPUT_VOCAB_COUNT && D41_HEADS == SPARK_DSV41_FLASH_MODEL_ATTENTION_HEAD_COUNT &&
+	D41_HEAD_DIM == SPARK_DSV41_FLASH_MODEL_HEAD_DIMENSION && D41_HEAD_DIM == SPARK_DSV41_FLASH_MODEL_KV_LATENT_DIMENSION &&
+	D41_ROPE == SPARK_DSV41_FLASH_MODEL_QK_ROPE_HEAD_DIMENSION && D41_QLORA == SPARK_DSV41_FLASH_MODEL_QUERY_LORA_RANK &&
+	D41_OLORA == SPARK_DSV41_FLASH_MODEL_OUTPUT_LORA_RANK && D41_OGROUPS == SPARK_DSV41_FLASH_MODEL_OUTPUT_GROUP_COUNT &&
+	D41_INDEX_HEADS == SPARK_DSV41_FLASH_MODEL_INDEX_HEAD_COUNT && D41_INDEX_DIM == SPARK_DSV41_FLASH_MODEL_INDEX_HEAD_DIMENSION &&
+	D41_EXPERTS == SPARK_DSV41_FLASH_MODEL_ROUTED_EXPERT_COUNT && D41_TOPK == SPARK_DSV41_FLASH_MODEL_EXPERTS_PER_TOKEN &&
+	D41_MOE_INTER == SPARK_DSV41_FLASH_MODEL_MOE_INTERMEDIATE_DIMENSION,
+	"the stage reads the tensors the pack contract shapes");
 #define D41_A2A_HEADS SPARK_DSV41_FLASH_STAGE_A2A_HEADS
 #define D41_LOCAL_HEADS (D41_HEADS / D41_TP)
 #define D41_LOCAL_INDEX_HEADS (D41_INDEX_HEADS / D41_TP)
@@ -1305,6 +1315,29 @@ static const D41PackEntry *D41Find(const D41ModelState *state, uint32_t kind, ui
 	return 0;
 }
 
+static SparkStatus D41PackDirectoryCheck(const D41ModelState *state, const char *path)
+{
+	static const char *const reasons[] = { "", "has a kind or shape this stage does not read", "holds bytes or offsets that do not match its shape",
+		"is a global tensor with a layer or a duplicate", "is not a tensor of its layer, or a duplicate", "overlaps another tensor",
+		"overlaps its own scales" };
+	uint32_t at = 0u;
+	const int32_t check = SparkDsv41FlashStagePackDirectoryCheck(&state->header, state->entries, &at);
+	if ( check == 0 )
+		return SPARK_STATUS_OK;
+	if ( check == SPARK_DSV41_FLASH_STAGEPACK_CHECK_GLOBALS )
+		fprintf(stderr, "sparkpipe_dsv41_flash: %s lacks the embedding, final norm or head, or holds another global tensor\n", path);
+	else if ( check == SPARK_DSV41_FLASH_STAGEPACK_CHECK_LAYER_SET )
+		fprintf(stderr, "sparkpipe_dsv41_flash: %s layer %u does not hold exactly the tensor kinds the stage reads\n", path, at);
+	else
+	{
+		const D41PackEntry *entry = &state->entries[at];
+		fprintf(stderr, "sparkpipe_dsv41_flash: %s entry %u (kind %u layer %u, %u x %u x %u, %llu + %llu bytes) %s\n", path, at, entry->tensor_kind,
+			entry->layer_index, entry->group_count, entry->rows, entry->columns, (unsigned long long)entry->payload_bytes,
+			(unsigned long long)entry->scale_bytes, -check < (int32_t)(sizeof(reasons) / sizeof(reasons[0])) ? reasons[-check] : "fails the pack contract");
+	}
+	SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+}
+
 static SparkStatus D41PlanArena(D41ModelState *state, uint64_t *bytes, uint8_t *base)
 {
 	const uint64_t r = state->max_rows, s = state->slots, routes = r * D41_TOPK;
@@ -1556,7 +1589,14 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 	if ( status != SPARK_STATUS_OK || state->header.magic != SPARK_DSV41_FLASH_STAGEPACK_MAGIC ||
 		state->header.format_version != SPARK_DSV41_FLASH_STAGEPACK_FORMAT_VERSION || state->header.tp_degree != D41_TP ||
 		state->header.tp_rank != configuration->tp_rank || state->header.hidden_dimension != D41_HIDDEN || state->header.layer_count != D41_LAYERS ||
-		state->header.vocab_count != D41_VOCAB || state->header.file_bytes != pack_bytes || state->header.tensor_count == 0u )
+		state->header.vocab_count != D41_VOCAB || state->header.file_bytes != pack_bytes || state->header.tensor_count == 0u ||
+		state->header.header_bytes != sizeof(state->header) || state->header.directory_entry_bytes != sizeof(D41PackEntry) ||
+		state->header.codec_abi_version != SPARK_WEIGHT_CODEC_ABI_VERSION || (state->header.flags & ~SPARK_DSV41_FLASH_STAGEPACK_KNOWN_FLAGS) != 0u ||
+		state->header.stage_count != 1u || state->header.stage_index != 0u || state->header.first_layer_index != 0u ||
+		state->header.total_layer_count != D41_LAYERS || state->header.routed_expert_count != D41_EXPERTS ||
+		state->header.linear_weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 || state->header.expert_weight_codec != SPARK_WEIGHT_CODEC_MXFP4_E2M1 ||
+		state->header.directory_offset < state->header.header_bytes || state->header.directory_offset > pack_bytes ||
+		state->header.tensor_count > (pack_bytes - state->header.directory_offset) / sizeof(D41PackEntry) )
 	{
 		fprintf(stderr, "sparkpipe_dsv41_flash: %s is not this rank's TP16 DSV4.1 stage pack of format %u (expert slices)\n",
 			configuration->rank_pack_path, SPARK_DSV41_FLASH_STAGEPACK_FORMAT_VERSION);
@@ -1567,6 +1607,8 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = D41ReadFile(configuration->rank_pack_path, state->header.directory_offset, state->entries,
 		(uint64_t)state->header.tensor_count * sizeof(D41PackEntry));
+	if ( status == SPARK_STATUS_OK )
+		status = D41PackDirectoryCheck(state, configuration->rank_pack_path);
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	status = D41OpenEngramTables(state, configuration->rank_pack_path);
