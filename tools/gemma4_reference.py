@@ -12,6 +12,26 @@
              with, for every served token, the served top logprobs, the
              reference top-5 (token, logprob), the reference logprob of the
              served token and the top-1/top-2 logit margin
+  teacher    teacher-forced FP32 logits for every position but the last of
+             each prompt (--prompts prompts.json) to
+             <out>/<name>.ref_<variant>.logits for each of --variants
+             (comma-separated, one pass): a sums every reduction in numpy's
+             order, b splits every matmul's inner dimension into 1,024-wide
+             chunks summed last chunk first and reverses every other
+             reduction, so a against b is the noise of FP32 reduction order
+             under the same bf16 rounding; bp (MoE models, with a) is b with
+             every layer's experts taken from a's choice instead of its own
+             top-k (the weights are still b's probabilities of those
+             experts, renormalised), so a against bp is that noise without
+             the discrete expert choice. MoE models also write
+             <out>/<name>.ref_<variant>.routes for a and b, the chosen
+             experts as little-endian uint16 [layer][position][rank]
+  gate-prompts  the Metal gate prompts (the same instructions and repository
+             files as the Qwen3.8-27B gate) in this model's chat framing,
+             each file cut to the target token count -> --out prompts.json
+  spec-prompts  the Metal speculation prompts (the same as the Qwen3.8-27B
+             gate's: a whole-file rewrite of tools/token_prompts.c and a prose
+             request) in this model's chat framing -> --out prompts.json
   summary    --report report.json -> a per-prompt markdown table: top-1
              agreement, mismatches whose reference top-1/top-2 margin is at
              least --tie (default 0.1 nat; smaller margins are near ties),
@@ -65,13 +85,33 @@ def bf16(values):
     return rounded.astype(np.uint32).view(np.float32)
 
 
+REVERSED = False
+CHUNK = 1024
+
+
+def reduce_sum(values, axis=-1, keepdims=False):
+    return np.flip(values, axis=axis).sum(axis=axis, keepdims=keepdims) if REVERSED else values.sum(axis=axis, keepdims=keepdims)
+
+
+def matmul(left, right, chunk=CHUNK):
+    if not REVERSED or left.shape[-1] <= chunk:
+        return left @ right
+    total = None
+    for first in reversed(range(0, left.shape[-1], chunk)):
+        part = left[..., first:first + chunk] @ right[first:first + chunk]
+        total = part if total is None else total + part
+    return total
+
+
 def rms(values, weight=None, epsilon=1e-6):
-    normed = values * np.power((values * values).mean(axis=-1, keepdims=True) + np.float32(epsilon), np.float32(-0.5))
+    mean = reduce_sum(values * values, keepdims=True) / np.float32(values.shape[-1])
+    normed = values * np.power(mean + np.float32(epsilon), np.float32(-0.5))
     return normed * weight if weight is not None else normed
 
 
 def gelu_tanh(values):
-    return 0.5 * values * (1.0 + np.tanh(np.float32(0.7978845608028654) * (values + np.float32(0.044715) * values * values * values)))
+    cube = values * values * values
+    return 0.5 * values * (1.0 + np.tanh(np.float32(0.7978845608028654) * (values + np.float32(0.044715) * cube)))
 
 
 def sigmoid(values):
@@ -83,6 +123,7 @@ class Checkpoint:
         self.directory = Path(directory)
         self.weight_map = json.loads((self.directory / "model.safetensors.index.json").read_text())["weight_map"]
         self.headers = {}
+        self.cache = {}
 
     def raw(self, name):
         shard = self.weight_map[name]
@@ -98,8 +139,11 @@ class Checkpoint:
         return np.memmap(self.directory / shard, dtype=np.uint16, mode="r", offset=base + begin,
                          shape=((end - begin) // 2,)).reshape(meta["shape"])
 
-    def f32(self, name):
-        return widen(self.raw(name))
+    def f32(self, name, index=None):
+        key = (name, index)
+        if key not in self.cache:
+            self.cache[key] = widen(self.raw(name) if index is None else self.raw(name)[index])
+        return self.cache[key]
 
 
 def widen(raw):
@@ -120,6 +164,11 @@ class Reference:
         self.epsilon = config["rms_norm_eps"]
         self.softcap = config["final_logit_softcapping"]
         self.inv_freq = {}
+        self.sequence = 0
+        self.reversed_of = []
+        self.pin_source = []
+        self.head = None
+        self.routes = {}
         if self.muse:
             self.post_epsilon = config["post_norm_eps"]
             self.qk_scale = np.float32(config["qk_scale_factor"])
@@ -137,14 +186,14 @@ class Reference:
             rope = config["rope_parameters"]
             sliding_dim, full_dim = config["head_dim"], config["global_head_dim"]
             self.inv_freq["sliding"] = (1.0 / rope["sliding_attention"]["rope_theta"] **
-                                        (np.arange(0, sliding_dim, 2, dtype=np.int64).astype(np.float32) / sliding_dim)).astype(np.float32)
+                                        (np.arange(0, sliding_dim, 2, dtype=np.float64) / sliding_dim)).astype(np.float32)
             pairs = int(rope["full_attention"]["partial_rotary_factor"] * full_dim // 2)
             rotated = (1.0 / rope["full_attention"]["rope_theta"] **
-                       (np.arange(0, 2 * pairs, 2, dtype=np.int64).astype(np.float32) / full_dim)).astype(np.float32)
+                       (np.arange(0, 2 * pairs, 2, dtype=np.float64) / full_dim)).astype(np.float32)
             self.inv_freq["full"] = np.concatenate([rotated, np.zeros(full_dim // 2 - pairs, dtype=np.float32)])
 
     def linear(self, values, name):
-        return bf16(values @ self.checkpoint.f32(name).T)
+        return bf16(matmul(values, self.checkpoint.f32(name).T))
 
     def norm(self, values, name, epsilon=None):
         epsilon = self.epsilon if epsilon is None else epsilon
@@ -167,11 +216,11 @@ class Reference:
             causal &= positions[None, :] > positions[:, None] - window
         output = np.empty((rows, heads, value.shape[-1]), dtype=np.float32)
         for head in range(heads):
-            scores = (query[:, head, :] @ key[:, head // group, :].T) * np.float32(scale)
+            scores = matmul(query[:, head, :], key[:, head // group, :].T, query.shape[-1] // 2) * np.float32(scale)
             scores = np.where(causal, scores, -np.inf)
             weights = np.exp(scores - scores.max(axis=-1, keepdims=True))
-            weights /= weights.sum(axis=-1, keepdims=True)
-            output[:, head, :] = bf16(weights @ value[:, head // group, :])
+            weights /= reduce_sum(weights, keepdims=True)
+            output[:, head, :] = bf16(matmul(weights, value[:, head // group, :]))
         return output.reshape(rows, -1)
 
     def attention(self, layer, normed, positions):
@@ -216,18 +265,20 @@ class Reference:
         routed = bf16(bf16(routed * self.checkpoint.f32(p + "router.scale")) * np.float32(self.hidden ** -0.5))
         logits = self.linear(routed, p + "router.proj.weight")
         probabilities = np.exp(logits - logits.max(axis=-1, keepdims=True))
-        probabilities /= probabilities.sum(axis=-1, keepdims=True)
+        probabilities /= reduce_sum(probabilities, keepdims=True)
         chosen = np.argsort(-probabilities, axis=-1, kind="stable")[:, :top_k]
+        if self.pin_source and self.pin_source[self.sequence] is not None:
+            chosen = self.routes[self.pin_source[self.sequence]][layer].astype(np.int64)
+        self.routes.setdefault(self.sequence, []).append(chosen.astype(np.uint16))
         weights = np.take_along_axis(probabilities, chosen, axis=-1)
-        weights = (weights / weights.sum(axis=-1, keepdims=True)) * self.checkpoint.f32(p + "router.per_expert_scale")[chosen]
+        weights = (weights / reduce_sum(weights, keepdims=True)) * self.checkpoint.f32(p + "router.per_expert_scale")[chosen]
         source = self.norm(residual, p + "pre_feedforward_layernorm_2.weight")
-        gate_up, down = self.checkpoint.raw(p + "experts.gate_up_proj"), self.checkpoint.raw(p + "experts.down_proj")
         output = np.zeros_like(residual)
         for expert in np.unique(chosen):
             rows, slots = np.nonzero(chosen == expert)
-            projected = bf16(source[rows] @ widen(gate_up[expert]).T)
+            projected = bf16(matmul(source[rows], self.checkpoint.f32(p + "experts.gate_up_proj", expert).T))
             activated = bf16(bf16(gelu_tanh(projected[:, :inter])) * projected[:, inter:])
-            contribution = bf16(bf16(activated @ widen(down[expert]).T) * weights[rows, slots][:, None])
+            contribution = bf16(bf16(matmul(activated, self.checkpoint.f32(p + "experts.down_proj", expert).T)) * weights[rows, slots][:, None])
             output[rows] = bf16(output[rows] + contribution)
         return output
 
@@ -253,17 +304,31 @@ class Reference:
         return residual
 
     def forward(self, sequences):
+        global REVERSED
         residuals = [self.embed(tokens) for tokens in sequences]
         positions = [np.arange(len(tokens), dtype=np.int64) for tokens in sequences]
         for layer in range(self.config["num_hidden_layers"]):
-            residuals = [self.layer(layer, residual, position) for residual, position in zip(residuals, positions)]
+            self.checkpoint.cache.clear()
+            for index, position in enumerate(positions):
+                self.sequence = index
+                if self.reversed_of:
+                    REVERSED = self.reversed_of[index]
+                residuals[index] = self.layer(layer, residuals[index], position)
             print(f"layer {layer} done", file=sys.stderr, flush=True)
+        self.checkpoint.cache.clear()
         final = widen(self.checkpoint.raw(PREFIX + "norm.weight"))
-        return [bf16(rms(residual, final, self.epsilon)) for residual in residuals]
+        normed = []
+        for index, residual in enumerate(residuals):
+            if self.reversed_of:
+                REVERSED = self.reversed_of[index]
+            normed.append(bf16(rms(residual, final, self.epsilon)))
+        return normed
 
     def logits(self, normed, chunk=16384):
-        head = self.checkpoint.raw("lm_head.weight" if self.muse else PREFIX + "embed_tokens.weight")
-        logits = np.concatenate([normed @ widen(head[first:first + chunk]).T for first in range(0, head.shape[0], chunk)], axis=-1)
+        if self.head is None:
+            self.head = widen(self.checkpoint.raw("lm_head.weight" if self.muse else PREFIX + "embed_tokens.weight"))
+        head = self.head
+        logits = np.concatenate([matmul(normed, head[first:first + chunk].T) for first in range(0, head.shape[0], chunk)], axis=-1)
         if self.muse:
             logits = logits * self.output_multiplier
         return np.float32(self.softcap) * np.tanh(logits / np.float32(self.softcap))
@@ -309,6 +374,100 @@ def score(args):
     Path(args.out).write_text(json.dumps(report))
 
 
+GATE_PROMPTS = (
+    ("design", "docs/INFERENCE_OS_DESIGN.md", "Summarize the design described below in five short bullet points.\n\n", 1100),
+    ("code", "inference/kernels/linear_attn.cuh", "Review this CUDA header. Explain what it does and name one risk in it.\n\n", 1800),
+    ("korean", "site/index-ko.html", "다음 글을 세 문장으로 요약해 주세요.\n\n", 700),
+    ("rules", "sparkpipe_invariants.md", "Read these engineering rules, then say which two matter most for a new driver and why.\n\n", 2040),
+)
+
+
+SPEC_PROMPTS = (
+    ("rewrite", "tools/token_prompts.c",
+     "Rewrite this C file in full. Rename SparkTokenPrompt to SparkPromptTokens everywhere and change nothing else. Output only the file.\n\n"),
+    ("prose", None,
+     "Write a short essay, about four hundred words, on why lighthouses were built where they were and what their keepers' days were like."),
+)
+
+
+def spec_prompts(args):
+    import hashlib
+    from tokenizers import Tokenizer
+    root = Path(__file__).resolve().parents[1]
+    template = json.loads(Path(args.template).read_text())
+    tokenizer = Tokenizer.from_file(str(Path(args.checkpoint) / "tokenizer.json"))
+    encode = lambda text: tokenizer.encode(text, add_special_tokens=False).ids
+    head, tail = encode(template["prefix"] + template["user"]), encode(template["turn_suffix"] + template["generation"])
+    prompts = []
+    for name, source, instruction in SPEC_PROMPTS:
+        path = root / source if source else None
+        tokens = head + encode(instruction + (path.read_text(encoding="utf-8") if path else "")) + tail
+        prompts.append({"name": name, "source": source, "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest() if path else None,
+                        "instruction": instruction, "tokens": len(tokens), "prompt_token_ids": tokens})
+        print(f"{name}: {len(tokens)} tokens", flush=True)
+    Path(args.out).write_text(json.dumps({"tokenizer_sha256": hashlib.sha256((Path(args.checkpoint) / "tokenizer.json").read_bytes()).hexdigest(),
+                                          "prompts": prompts}, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def gate_prompts(args):
+    import hashlib
+    import html
+    import re
+    from tokenizers import Tokenizer
+    root = Path(__file__).resolve().parents[1]
+    template = json.loads(Path(args.template).read_text())
+    tokenizer = Tokenizer.from_file(str(Path(args.checkpoint) / "tokenizer.json"))
+    encode = lambda text: tokenizer.encode(text, add_special_tokens=False).ids
+    head, tail = encode(template["prefix"] + template["user"]), encode(template["turn_suffix"] + template["generation"])
+    prompts = []
+    for name, source, instruction, target in GATE_PROMPTS:
+        path = root / source
+        text = path.read_text(encoding="utf-8")
+        if path.suffix == ".html":
+            text = re.sub(r"(?s)<(script|style)[^>]*>.*?</\1>", " ", text)
+            text = html.unescape(re.sub(r"<[^>]+>", " ", text))
+            text = re.sub(r"\n\s*\n+", "\n\n", re.sub(r"[ \t\r\f\v]+", " ", text)).strip()
+        body = encode(instruction + text)
+        keep = target - len(head) - len(tail)
+        if len(body) < keep:
+            raise ValueError(f"{source} yields {len(body)} tokens, fewer than the {keep} the prompt needs")
+        tokens = head + body[:keep] + tail
+        prompts.append({"name": name, "source": source, "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                        "instruction": instruction, "tokens": len(tokens), "prompt_token_ids": tokens})
+        print(f"{name}: {len(tokens)} tokens from {source}", flush=True)
+    Path(args.out).write_text(json.dumps({"tokenizer_sha256": hashlib.sha256((Path(args.checkpoint) / "tokenizer.json").read_bytes()).hexdigest(),
+                                          "prompts": prompts}, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def teacher(args):
+    global REVERSED
+    variants = args.variants.split(",")
+    if not variants or any(label not in ("a", "b", "bp") for label in variants) or len(set(variants)) != len(variants):
+        raise ValueError("--variants takes distinct a, b and bp")
+    reference = Reference(args.checkpoint)
+    if "bp" in variants and ("a" not in variants or not reference.moe):
+        raise ValueError("bp pins b to a's experts: it needs a in the same pass and an MoE model")
+    prompts = json.loads(Path(args.prompts).read_text())["prompts"]
+    runs = [(prompt, label) for label in variants for prompt in prompts]
+    first_a = variants.index("a") * len(prompts) if "a" in variants else None
+    reference.reversed_of = [label != "a" for _, label in runs]
+    reference.pin_source = [first_a + index % len(prompts) if label == "bp" else None for index, (_, label) in enumerate(runs)]
+    if "bp" in variants and variants.index("bp") < variants.index("a"):
+        raise ValueError("list a before bp so a's experts are chosen first in every layer")
+    normed = reference.forward([prompt["prompt_token_ids"] for prompt, _ in runs])
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    for index, ((prompt, label), hidden) in enumerate(zip(runs, normed)):
+        REVERSED = label != "a"
+        if reference.moe and label != "bp":
+            np.ascontiguousarray(np.stack(reference.routes[index]), dtype="<u2").tofile(out / f"{prompt['name']}.ref_{label}.routes")
+        with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
+            for first in range(0, len(prompt["prompt_token_ids"]) - 1, 128):
+                last = min(first + 128, len(prompt["prompt_token_ids"]) - 1)
+                handle.write(np.ascontiguousarray(reference.logits(hidden[first:last]), dtype=np.float32).tobytes())
+        print(f"{prompt['name']}: {len(prompt['prompt_token_ids']) - 1} positions, variant {label}", flush=True)
+
+
 def summary(args):
     report = json.loads(Path(args.report).read_text())
     print("| prompt | tokens | top-1 agree | mismatches at margin >= %.2f | first divergence (margin) | served-token logprob delta median / max |" % args.tie)
@@ -343,13 +502,26 @@ def main():
     s.add_argument("--prompts", required=True)
     s.add_argument("--capture", required=True)
     s.add_argument("--out", required=True)
+    g = sub.add_parser("gate-prompts")
+    g.add_argument("--checkpoint", required=True)
+    g.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/gemma4/chat_template.json"))
+    g.add_argument("--out", required=True)
+    sp = sub.add_parser("spec-prompts")
+    sp.add_argument("--checkpoint", required=True)
+    sp.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/gemma4/chat_template.json"))
+    sp.add_argument("--out", required=True)
+    r = sub.add_parser("teacher")
+    r.add_argument("--checkpoint", required=True)
+    r.add_argument("--prompts", required=True)
+    r.add_argument("--out", required=True)
+    r.add_argument("--variants", default="a")
     m = sub.add_parser("summary")
     m.add_argument("--report", required=True)
     m.add_argument("--tie", type=float, default=0.1)
     args = parser.parse_args()
     if args.command == "summary":
         return summary(args)
-    tokenize(args) if args.command == "tokenize" else score(args)
+    {"tokenize": tokenize, "score": score, "gate-prompts": gate_prompts, "spec-prompts": spec_prompts, "teacher": teacher}[args.command](args)
     return 0
 
 

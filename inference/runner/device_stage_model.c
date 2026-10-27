@@ -138,10 +138,17 @@ SparkStatus SparkDeviceStageGeometry(SparkDeviceStage *stage, SparkStageRunnerMo
 	status = SparkDeviceStageEntry(stage,"embed","bf16",&geometry->embed_offset,&geometry->embed_bytes,&embed_rows);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceStageEntry(stage,"head_norm","f32",&geometry->head_norm_offset,&geometry->head_norm_bytes,0);
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && shape->tied_head != 0u )
+	{
+		geometry->head_offset = geometry->embed_offset;
+		geometry->head_bytes = geometry->embed_bytes;
+		head_rows = embed_rows;
+	}
+	else if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceStageEntry(stage,"head","bf16",&geometry->head_offset,&geometry->head_bytes,&head_rows);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	geometry->logit_softcap = shape->logit_softcap;
 	if ( embed_rows != shape->vocab || head_rows != shape->vocab || geometry->embed_bytes != table_bytes || geometry->head_bytes != table_bytes ||
 		geometry->head_norm_bytes != (uint64_t)shape->hidden * 4u )
 		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_SCHEMA_ERROR,"the pack's embedding, head or head norm has the wrong shape"));
@@ -249,6 +256,35 @@ static SparkStatus StageResolve(const SparkDeviceStage *stage, const void *addre
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkDeviceStageNoteKvRead(SparkDeviceStage *stage, uint32_t window, uint64_t position_bytes)
+{
+	uint32_t index;
+	for ( index = 0u; index < stage->kv_read_count && stage->kv_reads[index].window != window; index++ )
+		continue;
+	if ( index == SPARK_DEVICE_STAGE_KV_WINDOWS )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_UNSUPPORTED,"a stage's attention layers use at most four distinct windows"));
+	if ( index == stage->kv_read_count )
+	{
+		stage->kv_reads[index].window = window;
+		stage->kv_reads[index].position_bytes = 0u;
+		stage->kv_read_count++;
+	}
+	stage->kv_reads[index].position_bytes += position_bytes;
+	return(SPARK_STATUS_OK);
+}
+
+uint64_t SparkDeviceStageStateBytes(const SparkDeviceStage *stage, uint32_t context)
+{
+	uint64_t bytes = 2u * SparkDeviceStageRecurrentBytes(stage);
+	uint32_t index;
+	for ( index = 0u; index < stage->kv_read_count; index++ )
+	{
+		const uint32_t window = stage->kv_reads[index].window;
+		bytes += (uint64_t)(window != 0u && window < context ? window : context) * stage->kv_reads[index].position_bytes;
+	}
+	return(bytes);
+}
+
 SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, SparkDeviceStepTensors *tensors)
 {
 	SparkStatus status;
@@ -283,6 +319,15 @@ SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStage
 		status = StageResolve(stage,step->sequence_row_begin,((uint64_t)step->sequences + 1u) * 4u,&tensors->sequences.row_begin);
 	tensors->sequences.sequences = step->sequences;
 	tensors->sequences.commit = step->commit;
+	tensors->route_override_width = 0u;
+	if ( status == SPARK_STATUS_OK && step->route_override != 0 )
+	{
+		if ( step->route_override_width == 0u || step->route_override_width > SPARK_ROUTE_MAX_TOP_K )
+			return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"a route override needs between 1 and 16 experts per row"));
+		status = StageResolve(stage,step->route_override,(uint64_t)stage->shape->layers * step->rows * step->route_override_width * sizeof(uint32_t),
+			&tensors->route_override);
+		tensors->route_override_width = step->route_override_width;
+	}
 	return(status);
 }
 

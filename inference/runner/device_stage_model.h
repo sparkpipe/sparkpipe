@@ -44,7 +44,17 @@ typedef struct SparkDeviceStageShape
 	uint32_t kv_head_dimension;
 	uint32_t pack_alignment;
 	float epsilon;
+	uint32_t tied_head;
+	float logit_softcap;
 } SparkDeviceStageShape;
+
+#define SPARK_DEVICE_STAGE_KV_WINDOWS 4u
+
+typedef struct SparkDeviceStageKvRead
+{
+	uint32_t window;
+	uint64_t position_bytes;
+} SparkDeviceStageKvRead;
 
 typedef struct SparkDeviceStage
 {
@@ -71,6 +81,10 @@ typedef struct SparkDeviceStage
 	uint32_t step_exact;
 	uint32_t verify_rows;
 	SparkDeviceBuffer keep_tables;
+	uint64_t routed_bytes;
+	uint64_t routed_bytes_per_token;
+	SparkDeviceStageKvRead kv_reads[SPARK_DEVICE_STAGE_KV_WINDOWS];
+	uint32_t kv_read_count;
 } SparkDeviceStage;
 
 typedef struct SparkDeviceStepTensors
@@ -83,6 +97,8 @@ typedef struct SparkDeviceStepTensors
 	const uint32_t *host_sequence_of_row;
 	uint32_t rows;
 	SparkTensor row_identity;
+	SparkTensor route_override;
+	uint32_t route_override_width;
 } SparkDeviceStepTensors;
 
 typedef struct SparkDeviceKeepTensors
@@ -108,6 +124,8 @@ uint64_t SparkDeviceStagePlan(const SparkDeviceBuffer *buffer, const SparkDevice
 SparkStatus SparkDeviceStageAllocate(SparkDeviceStage *stage, const SparkDeviceStageSlice *slices, uint32_t count);
 SparkTensor SparkDeviceStageRecurrent(const SparkDeviceStage *stage, uint32_t pool, uint32_t layer);
 uint64_t SparkDeviceStageRecurrentBytes(const SparkDeviceStage *stage);
+SparkStatus SparkDeviceStageNoteKvRead(SparkDeviceStage *stage, uint32_t window, uint64_t position_bytes);
+uint64_t SparkDeviceStageStateBytes(const SparkDeviceStage *stage, uint32_t context);
 SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, SparkDeviceStepTensors *tensors);
 SparkStatus SparkDeviceStageKeepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, const uint32_t *kept, SparkDeviceKeepTensors *keep);
 SparkOpsPaged SparkDeviceStagePaged(const SparkDeviceStage *stage, const SparkDeviceStepTensors *tensors, uint32_t kv_layer);

@@ -228,7 +228,7 @@ It is not served yet (TECHDEBT, Mac Studio deployment). Receipts:
 | --- | --- |
 | Streaming read | 1,141 GB/s from a 16 GiB GPU buffer (median of seven) |
 | Decode, B1 | 20.12 tok/s: 256 tokens after a 1,024-token prompt, median of three after a warm-up (main at 09f224b93: 19.26) |
-| Decode roofline | 51.25 GB read per token / 1,141 GB/s = 22.27 tok/s; measured 90.4% of it |
+| Decode roofline | 51.25 GB of weights plus 0.38 GB of KV and recurrent state per token at the bench's mean context = 51.63 GB / 1,141 GB/s = 22.10 tok/s; measured 91.0% of it |
 | Prefill, 1,024 tokens | 1,429 tok/s, one 1,024-row chunk (main: 1,372) |
 | Prefill, 8,192 tokens | 1,501 tok/s, four 2,048-row chunks, attention on the tensor operations (main: 1,139) |
 | Prefill roofline | compute-bound: the projections run on the M5 tensor operations at 95 TFLOPS in isolation (2048 x 5120 x 16384); the weights are read once per chunk |
@@ -323,6 +323,89 @@ reference than the other variant at most 0.5 plus 3 block standard errors
 - Every Metal kernel matches a float64 reference within its derived
   tolerance at the model's shapes, each one's corrupted-input control fails,
   and the projections' rows are bit-independent of the batch (54 cases).
+
+### Gemma 4 26B A4B on one Mac Studio
+
+Gemma 4 26B A4B (text, TP1, the publisher's BF16 weights, 50.5 GB pack) on
+the same Studio through the same runner. Receipt:
+[`qualification/metal/gemma4_26b/662c49da2/`](qualification/metal/gemma4_26b/662c49da2/).
+
+| | |
+| --- | --- |
+| Decode, B1 | 92.73 tok/s: 256 tokens after a 1,024-token prompt, median of three after a warm-up; with main's NaN-preserving BF16 conversion (abce321a5) 91.5 to 91.6 against 92.2 to 92.5, interleaved (TECHDEBT) |
+| Decode roofline | 7.65 GB of active weights (8 of 128 experts per layer, and the tied head) plus 0.23 GB of KV per token at the bench's mean context = 7.88 GB / 1,143 GB/s = 145.0 tok/s; measured 63.9% of it |
+| Prefill, 1,024 tokens | 1,128 tok/s, one chunk |
+| Prefill, 8,192 tokens | 1,113 tok/s, 2,048-row chunks; the experts run one GEMV per route, so a chunk reads an expert once for every row routed to it (TECHDEBT) |
+
+Decode by batch size, 128 tokens per sequence after its own 1,024-token
+prompt, median of three runs after a warm-up; the single-sequence roofline is
+the weight stream alone, 149.5 tok/s:
+
+| Sequences | Step | Per sequence | Aggregate | Identical to solo | Exact rows: step, aggregate, identical |
+| ---: | ---: | ---: | ---: | --- | --- |
+| 1 | 10.83 ms | 92.36 tok/s | 92.4 tok/s | 1 of 1 | 10.82 ms, 92.4 tok/s, 1 of 1 |
+| 2 | 13.31 | 75.13 | 150.3 | 2 of 2 | 13.28, 150.6, 2 of 2 |
+| 4 | 19.40 | 51.56 | 206.2 | 0 of 4 | 16.99, 235.5, 4 of 4 |
+| 8 | 27.42 | 36.47 | 291.8 | 1 of 8 | 25.69, 311.4, 8 of 8 |
+| 16 | 42.68 | 23.43 | 374.9 | 3 of 16 | 45.74, 349.8, 16 of 16 |
+| 32 | 76.44 | 13.08 | 418.6 | 7 of 32 | 88.00, 363.7, 32 of 32 |
+| 64 | 136.40 | 7.33 | 469.2 | 13 of 64 | 162.94, 392.8, 64 of 64 |
+
+- From three rows the fast path runs the tensor-unit projection, whose
+  rounding differs from the solo GEMV's, and here that changes the tokens of
+  most sequences, with first differing tokens up to 5.6 nats apart: a
+  rounding difference flips one of the BF16 router's near-tied experts, and
+  the output follows the other expert. The exact-rows ladder decodes every
+  step as a verify frame (every row in the GEMV passes that compute it as a
+  one-row step does) and gives every sequence its solo tokens at every batch
+  size, which shows the batch itself is exact. It is also faster at four and
+  eight rows (TECHDEBT). Repeated runs give identical tokens.
+
+Speculation from the request's own context, greedy, 256 tokens, median of
+three runs after a warm-up; with speculation every run's tokens are
+identical to those without it:
+
+| Prompt | Without speculation | With speculation | Frames | Drafts accepted |
+| --- | ---: | ---: | ---: | --- |
+| Whole-file rewrite (`tools/token_prompts.c`, 1,072 tokens) | 92.25 tok/s | 322.97 tok/s | 25 | 254 of 263 |
+| Prose (42-token request) | 93.94 | 93.87 | 2 | 1 of 8 |
+| `design` (summary) | 92.26 | 93.59 | 11 | 9 of 31 |
+| `code` (review) | 90.92 | 90.75 | 3 | 0 of 3 |
+| `korean` (summary) | 93.07 | 103.07 | 21 | 34 of 63 |
+| `rules` (analysis) | 90.68 | 90.43 | 4 | 1 of 10 |
+
+A frame costs more than a step from two rows on (10.8 ms for one row, 13.0
+for two, 16.2 for four, 23.4 for eight, 39.3 for 16, 68.1 for 32), since every
+extra row reads eight more experts per layer, so the chooser's first probe in
+a match class is one draft; on text the lookup cannot predict the probes
+cost 0.1 to 0.3%.
+
+Numerics, teacher-forced over the 5,636 positions of four prompts against a
+numpy reference of the publisher's eager BF16 rounding, run in two reduction
+orders (a, b) and with b's experts pinned to a's (bp)
+([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#gemma-4-26b-a4b)). The
+reduction order alone changes the router's choice at 18.3% of the layer and
+position decisions, so with free routes the floor is 0.31 nats and a
+corrupted run hides in it; pinned, the floor is 0.063:
+
+| Comparison (against reference a) | Mean KL | Top-1 | Leg a: KL and top-1 ratio to floor, paired sigma | Leg b: same | Verdict |
+| --- | ---: | ---: | --- | --- | --- |
+| Free routes: reference b (the floor) | 0.3065 | 86.00% | | | |
+| Free routes: Metal | 0.3530 | 85.27% | 1.15 / 1.05, +0.3 | 1.18 / 1.03, +1.6 | pass |
+| Pinned: reference bp (the floor) | 0.0627 | 94.27% | | | |
+| Pinned: Metal | 0.0585 | 94.46% | 0.93 / 0.97, +1.1 | 0.96 / 0.92, +0.3 | pass |
+| Pinned: Metal, 64-row prefill chunks | 0.0557 | 94.38% | 0.89 / 0.98, -0.8 | 0.99 / 1.00, +0.4 | pass |
+| Pinned probe: rows 0 and 1 of `layers.11.ffn_down` swapped | 0.0572 | 94.36% | 0.91 / 0.98, +1.0 | 0.95 / 0.91, +0.5 | passes: inside the BF16 noise |
+| Pinned control: rows 0 and 1 of every layer's `ffn_down` swapped | 0.1049 | 91.08% | 1.67 / 1.56, +36 | 1.88 / 1.54, +41 | fails, as required |
+| Pinned control: every row of `layers.11.ffn_down` moved by one | 3.439 | 52.79% | 55 / 8.2, +425 | 59 / 8.2, +443 | fails, as required |
+| Pinned control: experts 0 and 1 of every layer's `moe_w2` swapped | 0.6665 | 78.55% | 10.6 / 3.7, +99 | 11.4 / 3.7, +84 | fails, as required |
+
+- Every Metal kernel matches a float64 reference within its derived
+  tolerance at the model's shapes (including every Gemma projection shape at
+  1, 4, 9, 64 and 512 rows), and each one's corrupted-input control fails.
+- Qwen3.8-27B on this revision gives byte-identical teacher logits and
+  greedy output to its receipt and the same speculative frames
+  ([`qualification/metal/qwen38_27b/662c49da2_unchanged/`](qualification/metal/qwen38_27b/662c49da2_unchanged/)).
 
 ## Accuracy
 

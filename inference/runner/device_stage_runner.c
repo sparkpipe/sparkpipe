@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include "inference/runner/device_ops.h"
+#include "inference/runner/device_stage_model.h"
 #include "inference/runner/device_stage_runner.h"
 #include "sparkpipe/spark_sha256.h"
 
@@ -312,12 +313,22 @@ SparkStatus SparkDeviceStageRunnerOpen(SparkDeviceStageRunner **out, const Spark
 	runner->info.vocab = runner->geometry.vocab;
 	runner->info.layers = runner->geometry.total_layers;
 	runner->info.pack_bytes = runner->weights.bytes;
-	runner->info.streamed_bytes_per_token = runner->weights.bytes - runner->geometry.embed_bytes;
+	{
+		const SparkDeviceStage *stage = (const SparkDeviceStage *)runner->model;
+		const uint64_t tied_head = runner->geometry.head_offset == runner->geometry.embed_offset ? runner->geometry.head_bytes : 0u;
+		runner->info.streamed_bytes_per_chunk = runner->weights.bytes - runner->geometry.embed_bytes + tied_head;
+		runner->info.streamed_bytes_per_token = runner->info.streamed_bytes_per_chunk - stage->routed_bytes + stage->routed_bytes_per_token;
+	}
 	runner->info.device_state_bytes = total;
 	snprintf(runner->info.device,sizeof(runner->info.device),"%s",SparkDeviceGetProperties()->name);
 	snprintf(runner->info.target,sizeof(runner->info.target),"%s",SparkDeviceGetProperties()->target);
 	*out = runner;
 	return(SPARK_STATUS_OK);
+}
+
+uint64_t SparkDeviceStageRunnerDecodeBytes(const SparkDeviceStageRunner *runner, uint32_t context)
+{
+	return(runner->info.streamed_bytes_per_token + SparkDeviceStageStateBytes((const SparkDeviceStage *)runner->model,context));
 }
 
 static SparkStatus RunnerValidate(SparkDeviceStageRunner *runner, const SparkDeviceStageRunnerBatch *batch, uint32_t *sequences)
@@ -415,6 +426,9 @@ static SparkStatus RunnerHead(SparkDeviceStageRunner *runner, const SparkDeviceS
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsLinear(runner->ops,runner->queue,SparkTensorAt(&runner->head_normed,0u,(uint64_t)rows * g->hidden * 2u),
 			SparkTensorAt(&runner->weights,g->head_offset,g->head_bytes),SparkTensorAt(&runner->logits,0u,(uint64_t)rows * g->vocab * 4u),&head);
+	if ( status == SPARK_STATUS_OK && g->logit_softcap != 0.0f )
+		status = SparkOpsSoftcap(runner->ops,runner->queue,SparkTensorAt(&runner->logits,0u,(uint64_t)rows * g->vocab * sizeof(float)),(uint64_t)rows * g->vocab,
+			g->logit_softcap);
 	memset(&logprob,0,sizeof(logprob));
 	logprob.rows = rows;
 	logprob.vocabulary = g->vocab;
@@ -451,6 +465,8 @@ SparkStatus SparkDeviceStageRunnerStep(SparkDeviceStageRunner *runner, const Spa
 	step.commit = batch->verify != 0u ? 0u : 1u;
 	step.host_positions = runner->table.positions;
 	step.host_sequence_of_row = runner->table.sequence_of_row;
+	step.route_override = batch->route_override;
+	step.route_override_width = batch->route_override != 0 ? batch->route_override_width : 0u;
 	if ( status == SPARK_STATUS_OK )
 		status = runner->config.model->step(runner->model,&step,runner->queue);
 	if ( status == SPARK_STATUS_OK )
@@ -489,17 +505,20 @@ SparkStatus SparkDeviceStageRunnerKeepRows(SparkDeviceStageRunner *runner, const
 	for ( sequence = 0u; sequence < sequences; sequence++ )
 		if ( kept[sequence] > t->row_begin[sequence + 1u] - t->row_begin[sequence] )
 			return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"a sequence keeps more rows than its verify step held"));
+	if ( runner->config.model->keep_rows == 0 && runner->geometry.recurrent_bytes != 0u )
+		return(RunnerFail(SPARK_STATUS_UNSUPPORTED,"the model keeps no verified rows"));
 	runner->verify_pending = 0u;
 	memcpy(t->kept,kept,(size_t)sequences * sizeof(*t->kept));
-	if ( runner->config.model->keep_rows == 0 )
-		return(runner->geometry.recurrent_bytes == 0u ? SPARK_STATUS_OK : RunnerFail(SPARK_STATUS_UNSUPPORTED,"the model keeps no verified rows"));
-	status = runner->config.model->keep_rows(runner->model,&runner->verify_step,RunnerDeviceTable(runner,9u),runner->queue);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkDeviceQueueWait(runner->queue,SPARK_DEVICE_WAIT_FOREVER);
-	if ( status == SPARK_STATUS_OK && SparkDeviceOpsTakeError(runner->ops,&error) != SPARK_STATUS_OK )
-		status = SPARK_STATUS_IO_ERROR;
-	if ( status != SPARK_STATUS_OK )
-		return(RunnerFail(status,"keep_rows failed"));
+	if ( runner->config.model->keep_rows != 0 )
+	{
+		status = runner->config.model->keep_rows(runner->model,&runner->verify_step,RunnerDeviceTable(runner,9u),runner->queue);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceQueueWait(runner->queue,SPARK_DEVICE_WAIT_FOREVER);
+		if ( status == SPARK_STATUS_OK && SparkDeviceOpsTakeError(runner->ops,&error) != SPARK_STATUS_OK )
+			status = SPARK_STATUS_IO_ERROR;
+		if ( status != SPARK_STATUS_OK )
+			return(RunnerFail(status,"keep_rows failed"));
+	}
 	for ( sequence = 0u; sequence < sequences; sequence++ )
 		runner->next_position[t->recurrent_index[sequence]] = t->positions[t->row_begin[sequence]] + kept[sequence];
 	return(SPARK_STATUS_OK);

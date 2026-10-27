@@ -7,6 +7,7 @@
 
 #include "inference/runner/device_stage_model.h"
 #include "inference/runner/device_stage_runner.h"
+#include "sparkpipe/spark_gemma4_26b_device_stage.h"
 #include "sparkpipe/spark_qwen38_device_stage.h"
 #include "sparkpipe/spark_speculation_frame.h"
 #include "sparkpipe/spark_speculation_lookup_draft.h"
@@ -40,7 +41,10 @@ typedef struct RunOptions
 	uint32_t batch_count;
 	uint32_t max_batch;
 	const char *spec_prompts;
+	const char *model;
 	uint32_t draft_max;
+	const char *pin_routes;
+	uint32_t exact_rows;
 } RunOptions;
 
 static uint64_t NowNs(void)
@@ -50,10 +54,25 @@ static uint64_t NowNs(void)
 	return((uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec);
 }
 
+typedef const SparkStageRunnerModelInterface *(*RunModelGetter)(void);
+
+static const RunModelGetter run_models[] = { SparkQwen38_27bDeviceStageModel, SparkGemma4_26bDeviceStageModel };
+
+static const SparkStageRunnerModelInterface *RunModel(const char *name)
+{
+	uint32_t index;
+	if ( name == 0 )
+		return(run_models[0]());
+	for ( index = 0u; index < sizeof(run_models) / sizeof(run_models[0]); index++ )
+		if ( strcmp(name,run_models[index]()->weightd_model) == 0 )
+			return(run_models[index]());
+	return(0);
+}
+
 static int Usage(const char *program)
 {
 	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|pairs|bench|ladder|spec --out DIR [--prefill-rows N] [--new-tokens N] "
-		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N]\n",program);
+		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|gemma4-26b-a4b] [--pin-routes DIR] [--exact-rows]\n",program);
 	return(2);
 }
 
@@ -72,6 +91,11 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 		if ( strcmp(flag,"--verify-pack") == 0 )
 		{
 			options->verify = 1u;
+			continue;
+		}
+		if ( strcmp(flag,"--exact-rows") == 0 )
+		{
+			options->exact_rows = 1u;
 			continue;
 		}
 		if ( value == 0 )
@@ -93,10 +117,14 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 			options->new_tokens = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--repeats") == 0 )
 			options->repeats = (uint32_t)strtoul(value,0,10);
+		else if ( strcmp(flag,"--model") == 0 )
+			options->model = value;
 		else if ( strcmp(flag,"--spec-prompts") == 0 )
 			options->spec_prompts = value;
 		else if ( strcmp(flag,"--draft-max") == 0 )
 			options->draft_max = (uint32_t)strtoul(value,0,10);
+		else if ( strcmp(flag,"--pin-routes") == 0 )
+			options->pin_routes = value;
 		else if ( strcmp(flag,"--prompt-tokens") == 0 )
 			options->prompt_tokens = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--batches") == 0 )
@@ -139,7 +167,13 @@ typedef struct Session
 	uint32_t *positions;
 	uint32_t *sequence;
 	uint32_t *targets;
+	uint32_t *kept;
 	uint32_t capacity;
+	uint32_t layers;
+	SparkDeviceBuffer routes;
+	uint16_t *pinned;
+	uint32_t pinned_positions;
+	uint32_t pinned_width;
 } Session;
 
 static SparkStatus SessionStepSequence(Session *session, uint32_t sequence, const uint32_t *tokens, uint32_t first, uint32_t count,
@@ -162,6 +196,19 @@ static SparkStatus SessionStepSequence(Session *session, uint32_t sequence, cons
 	batch.head_rows = head_all != 0u ? count : 1u;
 	batch.head_row_index = head_all != 0u ? session->rows : session->rows + (count - 1u);
 	batch.targets = targets != 0 ? session->targets : 0;
+	if ( session->pinned != 0 )
+	{
+		uint32_t *routes = (uint32_t *)session->routes.host, layer, k;
+		if ( first + count > session->pinned_positions )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		for ( layer = 0u; layer < session->layers; layer++ )
+			for ( row = 0u; row < count; row++ )
+				for ( k = 0u; k < session->pinned_width; k++ )
+					routes[((uint64_t)layer * count + row) * session->pinned_width + k] =
+						session->pinned[((uint64_t)layer * session->pinned_positions + first + row) * session->pinned_width + k];
+		batch.route_override = (const uint32_t *)(uintptr_t)session->routes.device;
+		batch.route_override_width = session->pinned_width;
+	}
 	return(SparkDeviceStageRunnerStep(session->runner,&batch,result));
 }
 
@@ -216,6 +263,46 @@ static FILE *OpenOut(const RunOptions *options, const char *name, const char *su
 	return(file);
 }
 
+static int LoadPinnedRoutes(Session *session, const RunOptions *options, const SparkTokenPrompt *prompt)
+{
+	char path[4096];
+	FILE *file;
+	long bytes;
+	uint64_t per_width;
+	free(session->pinned);
+	session->pinned = 0;
+	if ( options->pin_routes == 0 )
+		return(0);
+	snprintf(path,sizeof(path),"%s/%s.ref_a.routes",options->pin_routes,prompt->name);
+	file = fopen(path,"rb");
+	if ( file == 0 || fseek(file,0,SEEK_END) != 0 || (bytes = ftell(file)) <= 0 || fseek(file,0,SEEK_SET) != 0 )
+	{
+		fprintf(stderr,"cannot read routes %s\n",path);
+		if ( file != 0 )
+			fclose(file);
+		return(1);
+	}
+	per_width = (uint64_t)session->layers * prompt->count * sizeof(uint16_t);
+	session->pinned_width = (uint32_t)((uint64_t)bytes / per_width);
+	session->pinned_positions = prompt->count;
+	session->pinned = (uint16_t *)malloc((size_t)bytes);
+	if ( (uint64_t)bytes % per_width != 0u || session->pinned_width == 0u || session->pinned_width > SPARK_ROUTE_MAX_TOP_K || session->pinned == 0 ||
+		fread(session->pinned,1u,(size_t)bytes,file) != (size_t)bytes )
+	{
+		fprintf(stderr,"routes %s: %ld bytes is not %u layers x %u positions x top-k uint16\n",path,bytes,session->layers,prompt->count);
+		fclose(file);
+		free(session->pinned);
+		session->pinned = 0;
+		return(1);
+	}
+	fclose(file);
+	if ( session->routes.host == 0 && SparkDeviceAllocate(&session->routes,SPARK_DEVICE_SPACE_SHARED_COHERENT,
+		(uint64_t)session->layers * session->capacity * SPARK_ROUTE_MAX_TOP_K * sizeof(uint32_t),"pinned routes") != SPARK_STATUS_OK )
+		return(1);
+	printf("teacher %s: experts pinned from %s (top %u)\n",prompt->name,path,session->pinned_width);
+	return(0);
+}
+
 static int RunTeacher(Session *session, const RunOptions *options, const SparkTokenPrompt *prompt, uint32_t vocab)
 {
 	const uint32_t positions = prompt->count - 1u, prefill = (positions + 1u) / 2u;
@@ -223,7 +310,8 @@ static int RunTeacher(Session *session, const RunOptions *options, const SparkTo
 	FILE *logits = OpenOut(options,prompt->name,".metal.logits","wb"), *json = OpenOut(options,prompt->name,".metal.json","w");
 	float *logprob = (float *)calloc(positions,sizeof(float));
 	uint32_t *argmax = (uint32_t *)calloc(positions,sizeof(uint32_t)), first, row;
-	SparkStatus status = logits != 0 && json != 0 && logprob != 0 && argmax != 0 ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+	SparkStatus status = logits != 0 && json != 0 && logprob != 0 && argmax != 0 && LoadPinnedRoutes(session,options,prompt) == 0 ? SPARK_STATUS_OK :
+		SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceStageRunnerResetSequence(session->runner,0u);
 	for ( first = 0u; status == SPARK_STATUS_OK && first < positions; )
@@ -396,9 +484,12 @@ static int BenchDecode(Session *session, const RunOptions *options, const uint32
 	}
 	if ( status == SPARK_STATUS_OK )
 	{
+		double bytes = 0.0;
 		qsort(totals + 1,options->repeats,sizeof(uint64_t),CompareU64);
 		median = totals[1u + options->repeats / 2u];
-		fprintf(json,"],\"median_tokens_per_second\":%.4f}",steps / (median / 1e9));
+		for ( index = 0u; index < steps; index++ )
+			bytes += (double)SparkDeviceStageRunnerDecodeBytes(session->runner,prompt_tokens + index + 1u) / steps;
+		fprintf(json,"],\"median_tokens_per_second\":%.4f,\"bytes_per_token_mean\":%.0f}",steps / (median / 1e9),bytes);
 		printf("decode median of %u: %.3f tok/s\n",options->repeats,steps / (median / 1e9));
 	}
 	free(totals);
@@ -453,8 +544,9 @@ static int RunBench(Session *session, const RunOptions *options, const SparkToke
 	int failed = json == 0 || decode_prompt == 0 || short_prompt == 0 || long_prompt == 0;
 	if ( !failed )
 	{
-		fprintf(json,"{\"device\":\"%s\",\"target\":\"%s\",\"pack_bytes\":%llu,\"streamed_bytes_per_token\":%llu,",info->device,info->target,
-			(unsigned long long)info->pack_bytes,(unsigned long long)info->streamed_bytes_per_token);
+		fprintf(json,"{\"device\":\"%s\",\"target\":\"%s\",\"pack_bytes\":%llu,\"streamed_bytes_per_token\":%llu,\"streamed_bytes_per_chunk\":%llu,",
+			info->device,info->target,(unsigned long long)info->pack_bytes,(unsigned long long)info->streamed_bytes_per_token,
+			(unsigned long long)info->streamed_bytes_per_chunk);
 		failed = BenchDecode(session,options,decode_prompt,1024u,json) != 0;
 	}
 	if ( !failed )
@@ -525,7 +617,7 @@ typedef struct LadderTrace
 	float *gap;
 } LadderTrace;
 
-static SparkStatus LadderDecode(Session *session, uint32_t batch, uint32_t prompt_tokens, uint32_t steps, uint32_t vocab, uint32_t *token,
+static SparkStatus LadderDecode(Session *session, uint32_t batch, uint32_t prompt_tokens, uint32_t steps, uint32_t vocab, uint32_t exact, uint32_t *token,
 	LadderTrace *trace, uint64_t *ns)
 {
 	SparkDeviceStageRunnerBatch step;
@@ -548,9 +640,11 @@ static SparkStatus LadderDecode(Session *session, uint32_t batch, uint32_t promp
 		step.sequence_of_row = session->sequence;
 		step.head_rows = batch;
 		step.head_row_index = session->rows;
+		step.verify = exact;
 		status = SparkDeviceStageRunnerStep(session->runner,&step,&result);
 		for ( lane = 0u; status == SPARK_STATUS_OK && lane < batch; lane++ )
 		{
+			session->kept[lane] = 1u;
 			token[lane] = result.argmax[lane];
 			if ( trace != 0 )
 			{
@@ -561,6 +655,8 @@ static SparkStatus LadderDecode(Session *session, uint32_t batch, uint32_t promp
 					trace->gap[at] = 0.0f;
 			}
 		}
+		if ( status == SPARK_STATUS_OK && exact != 0u )
+			status = SparkDeviceStageRunnerKeepRows(session->runner,session->kept,batch);
 	}
 	*ns = NowNs() - start;
 	return(status);
@@ -601,8 +697,8 @@ static int RunLadder(Session *session, const RunOptions *options, const SparkTok
 		if ( (prompt[lane] = SynthesizeAt(prompts,length,(uint64_t)lane * RUN_PROMPT_STRIDE)) == 0 )
 			status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status == SPARK_STATUS_OK )
-		fprintf(json,"{\"device\":\"%s\",\"streamed_bytes_per_token\":%llu,\"prompt_tokens\":%u,\"decode_steps\":%u,\"repeats\":%u,\"batches\":[",
-			info->device,(unsigned long long)info->streamed_bytes_per_token,length,steps,options->repeats);
+		fprintf(json,"{\"device\":\"%s\",\"streamed_bytes_per_token\":%llu,\"prompt_tokens\":%u,\"decode_steps\":%u,\"repeats\":%u,\"exact_rows\":%s,"
+			"\"batches\":[",info->device,(unsigned long long)info->streamed_bytes_per_token,length,steps,options->repeats,options->exact_rows != 0u ? "true" : "false");
 	for ( lane = 0u; status == SPARK_STATUS_OK && lane < most; lane++ )
 	{
 		LadderTrace view;
@@ -615,7 +711,7 @@ static int RunLadder(Session *session, const RunOptions *options, const SparkTok
 			status = SessionPrefillSequence(session,0u,prompt[lane],length,options->prefill_rows,&token[0]);
 		first[lane] = token[0];
 		if ( status == SPARK_STATUS_OK )
-			status = LadderDecode(session,1u,length,steps,info->vocab,token,&view,&elapsed);
+			status = LadderDecode(session,1u,length,steps,info->vocab,options->exact_rows,token,&view,&elapsed);
 		solo_ns += elapsed;
 	}
 	if ( status == SPARK_STATUS_OK )
@@ -632,10 +728,10 @@ static int RunLadder(Session *session, const RunOptions *options, const SparkTok
 				if ( token[lane] != first[lane] )
 					nondeterministic++;
 			if ( status == SPARK_STATUS_OK && repeat == 0u )
-				status = LadderDecode(session,batch,length,steps,info->vocab,token,&run,&ns[repeat]);
+				status = LadderDecode(session,batch,length,steps,info->vocab,options->exact_rows,token,&run,&ns[repeat]);
 			else if ( status == SPARK_STATUS_OK )
 			{
-				status = LadderDecode(session,batch,length,steps,info->vocab,token,0,&ns[repeat]);
+				status = LadderDecode(session,batch,length,steps,info->vocab,options->exact_rows,token,0,&ns[repeat]);
 				for ( lane = 0u; status == SPARK_STATUS_OK && lane < batch; lane++ )
 					if ( token[lane] != run.token[(size_t)lane * steps + steps - 1u] )
 						nondeterministic++;
@@ -741,9 +837,7 @@ static uint32_t SpecChoose(SpecRun *run, SparkSpeculationHazard *hazards, const 
 			if ( cost > 0.0f && cost <= SPARK_SPECULATION_FRAME_MARGIN * step )
 				free_drafts = drafts;
 		}
-		feasible = free_drafts;
-		if ( feasible == 0u )
-			return(0u);
+		feasible = free_drafts != 0u ? free_drafts : 1u;
 	}
 	request.feasible = feasible;
 	request.context = context;
@@ -955,14 +1049,13 @@ int main(int argc, char **argv)
 	uint32_t index;
 	int failed = 0;
 	setvbuf(stdout,0,_IOLBF,0);
-	if ( ParseOptions(argc,argv,&options) != 0 )
+	memset(&config,0,sizeof(config));
+	if ( ParseOptions(argc,argv,&options) != 0 || (config.model = RunModel(options.model)) == 0 )
 		return(Usage(argv[0]));
 	if ( SparkTokenPromptsLoad(options.prompts,&prompts) != SPARK_STATUS_OK )
 		return(1);
 	mkdir(options.out,0755);
-	memset(&config,0,sizeof(config));
 	config.pack_path = options.pack;
-	config.model = SparkQwen38_27bDeviceStageModel();
 	config.max_rows = options.prefill_rows;
 	config.sequences = strcmp(options.mode,"pairs") == 0 ? 2u : 1u;
 	config.max_context = RUN_MAX_CONTEXT;
@@ -987,11 +1080,15 @@ int main(int argc, char **argv)
 	session.positions = (uint32_t *)calloc(session.capacity,sizeof(uint32_t));
 	session.sequence = (uint32_t *)calloc(session.capacity,sizeof(uint32_t));
 	session.targets = (uint32_t *)calloc(session.capacity,sizeof(uint32_t));
+	session.kept = (uint32_t *)calloc(session.capacity,sizeof(uint32_t));
+	if ( session.rows == 0 || session.positions == 0 || session.sequence == 0 || session.targets == 0 || session.kept == 0 )
+		return(1);
 	{
 		const uint64_t start = NowNs();
 		if ( SparkDeviceStageRunnerOpen(&session.runner,&config) != SPARK_STATUS_OK )
 			return(1);
 		SparkDeviceStageRunnerInfoGet(session.runner,&info);
+		session.layers = info.layers;
 		printf("opened %s on %s (%s) in %.2f s: pack %llu bytes%s%s, device state %llu bytes\n",options.pack,info.device,info.target,
 			(NowNs() - start) / 1e9,(unsigned long long)info.pack_bytes,options.verify != 0u ? ", sha256 " : "",options.verify != 0u ? info.pack_sha256 : "",
 			(unsigned long long)info.device_state_bytes);
@@ -1049,5 +1146,9 @@ int main(int argc, char **argv)
 	free(session.positions);
 	free(session.sequence);
 	free(session.targets);
+	free(session.kept);
+	free(session.pinned);
+	if ( session.routes.host != 0 )
+		SparkDeviceFree(&session.routes);
 	return(failed ? 1 : 0);
 }

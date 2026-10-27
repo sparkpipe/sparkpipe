@@ -1,0 +1,4 @@
+{"device":"Apple M5 Ultra","target":"metal.apple10","compute_units":64,"runs":[
+{"buffer":"device_private","bytes":17179869184,"groups":4096,"threads_per_group":1024,"repeats":7,"warmup_discarded":true,"median_gb_per_s":1142.89,"best_gb_per_s":1146.70},
+{"buffer":"file_mapping","bytes":50467750912,"groups":4096,"threads_per_group":1024,"repeats":7,"warmup_discarded":true,"median_gb_per_s":1150.29,"best_gb_per_s":1153.44}
+]}

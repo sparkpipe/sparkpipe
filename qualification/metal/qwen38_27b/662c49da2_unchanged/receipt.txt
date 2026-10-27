@@ -1,0 +1,1 @@
+Qwen3.8-27B at 662c49da2 (the Gemma 4 26B A4B branch): teacher-forced logits on the four gate prompts and the 128-token greedy continuations are byte-identical to the 76576307c receipt (cmp_76576307c.txt), and speculation chooses the same frames and accepts the same drafts on all six prompts as 07e0c1e00/speculation_2670f0d58 (metal_spec.log).

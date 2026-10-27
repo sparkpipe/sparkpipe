@@ -16,13 +16,10 @@ static inline float4 SparkGated4(float4 gate, float4 up)
 }
 
 template <uint R, uint O, bool F32, bool GATED>
-kernel void spark_gemv(constant SparkGemvParams &p [[buffer(0)]], device const ushort *x [[buffer(1)]], device const ushort *w [[buffer(2)]],
-	device void *out [[buffer(3)]], uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
-	uint simd [[simdgroup_index_in_threadgroup]])
+static inline void SparkGemvRows(constant SparkGemvParams &p, device const ushort *x, device const ushort *w, device void *out, uint first,
+	uint lane, uint simd, threadgroup float *partial)
 {
-	threadgroup float partial[SPARK_GEMV_SIMDS][O][R];
 	const uint K = p.input_dimension, N = p.output_dimension;
-	const uint first = group * O;
 	float acc[O][R];
 	device const ushort *rows[O];
 	for ( uint i = 0u; i < O; i++ )
@@ -59,15 +56,15 @@ kernel void spark_gemv(constant SparkGemvParams &p [[buffer(0)]], device const u
 		{
 			const float total = simd_sum(acc[i][r]);
 			if ( lane == 0u )
-				partial[simd][i][r] = total;
+				partial[(simd * O + i) * R + r] = total;
 		}
 	threadgroup_barrier(mem_flags::mem_threadgroup);
 	if ( simd != 0u || lane >= O * R )
 		return;
 	const uint i = lane / R, r = lane % R;
-	float total = partial[0][i][r];
+	float total = partial[i * R + r];
 	for ( uint s = 1u; s < SPARK_GEMV_SIMDS; s++ )
-		total += partial[s][i][r];
+		total += partial[(s * O + i) * R + r];
 	if ( first + i < N )
 	{
 		const ulong at = (ulong)r * p.output_stride + first + i;
@@ -76,6 +73,27 @@ kernel void spark_gemv(constant SparkGemvParams &p [[buffer(0)]], device const u
 		else
 			((device ushort *)out)[at] = SparkMathFloatToBf16(total);
 	}
+}
+
+template <uint R, uint O, bool F32, bool GATED>
+kernel void spark_gemv(constant SparkGemvParams &p [[buffer(0)]], device const ushort *x [[buffer(1)]], device const ushort *w [[buffer(2)]],
+	device void *out [[buffer(3)]], uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
+	uint simd [[simdgroup_index_in_threadgroup]])
+{
+	threadgroup float partial[SPARK_GEMV_SIMDS * O * R];
+	SparkGemvRows<R, O, F32, GATED>(p, x, w, out, group * O, lane, simd, partial);
+}
+
+kernel void spark_gemv_routed(constant SparkGemvParams &p [[buffer(0)]], device const ushort *x [[buffer(1)]], device const ushort *w [[buffer(2)]],
+	device ushort *out [[buffer(3)]], device const uint *experts [[buffer(4)]], uint2 group [[threadgroup_position_in_grid]],
+	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]])
+{
+	threadgroup float partial[SPARK_GEMV_SIMDS * SPARK_GEMV_OUTPUTS];
+	const uint route = group.y;
+	device const ushort *row = x + (ulong)(route / p.route_divisor) * p.input_stride;
+	device const ushort *weights = w + (ulong)experts[route] * p.output_dimension * p.input_dimension;
+	SparkGemvRows<1u, SPARK_GEMV_OUTPUTS, false, false>(p, row, weights, out + (ulong)route * p.output_stride, group.x * SPARK_GEMV_OUTPUTS, lane, simd,
+		partial);
 }
 
 #define SPARK_GEMV_INSTANCE(rows, f32, gated, name) \

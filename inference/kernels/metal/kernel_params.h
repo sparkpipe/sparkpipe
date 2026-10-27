@@ -1,13 +1,19 @@
 #ifndef SPARKPIPE_INFERENCE_KERNELS_METAL_KERNEL_PARAMS_H
 #define SPARKPIPE_INFERENCE_KERNELS_METAL_KERNEL_PARAMS_H
 
-#define SPARK_KERNEL_ROPE_PAIRS 64u
+#define SPARK_KERNEL_ROPE_PAIRS 256u
 #define SPARK_GEMV_OUTPUTS 4u
 #define SPARK_GEMV_ROW_OUTPUTS(rows) ((rows) >= 8u ? 1u : (rows) >= 4u ? 2u : SPARK_GEMV_OUTPUTS)
+#define SPARK_ATTENTION_BLOCK_ROWS(dim) ((dim) > 256u ? 16u : 32u)
 #define SPARK_GEMM_ROWS_OUTPUTS 128u
 #define SPARK_GEMM_ROWS_DEPTH 64u
 #define SPARK_GEMM_ROWS_THREADS 128u
 #define SPARK_KERNEL_SEQUENCE_NONE 0xffffffffu
+#define SPARK_BRANCH_NORM_MAX_DIMENSION 7680u
+#define SPARK_ROUTE_MAX_EXPERTS 256u
+#define SPARK_ROUTE_MAX_TOP_K 16u
+#define SPARK_GATED_SILU 0u
+#define SPARK_GATED_GELU_TANH 1u
 
 typedef struct SparkGatherParams
 {
@@ -41,6 +47,35 @@ typedef struct SparkGatedNormParams
 	float epsilon;
 } SparkGatedNormParams;
 
+typedef struct SparkBranchNormParams
+{
+	uint32_t rows;
+	uint32_t dimension;
+	uint32_t branch_stride;
+	uint32_t hidden_stride;
+	uint32_t branches;
+	uint32_t has_scalar;
+	float epsilon;
+	float output_scale;
+} SparkBranchNormParams;
+
+typedef struct SparkRouteParams
+{
+	uint32_t rows;
+	uint32_t experts;
+	uint32_t top_k;
+	uint32_t width;
+	uint32_t logit_stride;
+	uint32_t pad[3];
+} SparkRouteParams;
+
+typedef struct SparkScaleParams
+{
+	uint64_t count;
+	float scale;
+	uint32_t pad;
+} SparkScaleParams;
+
 typedef struct SparkHeadRopeParams
 {
 	uint32_t rows;
@@ -52,7 +87,9 @@ typedef struct SparkHeadRopeParams
 	uint32_t output_stride;
 	uint32_t rope_dimension;
 	float epsilon;
-	uint32_t pad[3];
+	uint32_t has_weight;
+	uint32_t rope_rounded_terms;
+	uint32_t pad;
 	float inverse_frequency[SPARK_KERNEL_ROPE_PAIRS];
 } SparkHeadRopeParams;
 
@@ -68,7 +105,8 @@ typedef struct SparkGemvParams
 	uint32_t splits;
 	uint32_t split_span;
 	uint32_t row_exact;
-	uint32_t pad[2];
+	uint32_t route_divisor;
+	uint32_t pad;
 } SparkGemvParams;
 
 typedef struct SparkConvParams
@@ -134,7 +172,9 @@ typedef struct SparkAttentionParams
 	float scale;
 	uint32_t row_offset;
 	uint32_t row_exact;
-	uint32_t pad[3];
+	uint32_t window;
+	uint32_t output_gate;
+	uint32_t pad;
 } SparkAttentionParams;
 
 typedef struct SparkSiluMulParams

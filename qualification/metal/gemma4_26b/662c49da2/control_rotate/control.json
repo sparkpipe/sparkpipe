@@ -1,0 +1,15 @@
+{
+  "pack": "/Users/m5u0/models/packs/gemma4_26b_tp1_bf16/gemma4_26b.tp1.rank00.pack",
+  "control_pack": "/Users/m5u0/gates/gemma-662c49da2/control.pack",
+  "pattern": "layers.11.ffn_down",
+  "corruption": "every row moved down by one",
+  "tensors": [
+    {
+      "tensor": "layers.11.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "b7c16d5f0dedd74dad5647768d3d9b09b18a2915c3fe425cab53e5c376d597e5",
+      "sha256_after": "9d32d376fc85ac6c14e17f4a0a7592f9abec42ebce3c334c689754262530682a"
+    }
+  ]
+}

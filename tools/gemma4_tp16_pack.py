@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Gemma 4 (31B dense, 26B A4B MoE) or Muse Glimmer 30B BF16 checkpoint -> sixteen TP16 named stage packs.
+"""Gemma 4 (31B dense, 26B A4B MoE) or Muse Glimmer 30B BF16 checkpoint -> TP named stage packs (sixteen by default).
 
-Output per rank: <out>/<prefix>.tp16.rank<NN>.pack (tools/spark_named_pack.py
+--tp-degree sets the rank count (16 for the Sparks, 1 for a single device;
+the per-rank splits below are of 1/degree each). Output per rank:
+<out>/<prefix>.tp<degree>.rank<NN>.pack (tools/spark_named_pack.py
 container; prefix gemma4 for the 31B, gemma4_26b for the 26B), plus
 <pack>.sha256 and the empty-range <pack>.experts (experts are plain tensors).
 
@@ -85,10 +87,10 @@ class RankPacks:
         self.writers = {rank: PayloadWriter(self.payload(rank), resume=resume and self.payload(rank).exists()) for rank in ranks}
 
     def payload(self, rank):
-        return self.out_dir / f"{self.prefix}.tp16.rank{rank:02d}.pack.payload"
+        return self.out_dir / f"{self.prefix}.tp{TP}.rank{rank:02d}.pack.payload"
 
     def final(self, rank):
-        return self.out_dir / f"{self.prefix}.tp16.rank{rank:02d}.pack"
+        return self.out_dir / f"{self.prefix}.tp{TP}.rank{rank:02d}.pack"
 
     def add(self, rank, name, array, kind):
         if rank in self.writers:
@@ -206,8 +208,12 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--contract", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--ranks", default=",".join(str(rank) for rank in range(TP)))
+    parser.add_argument("--tp-degree", type=int, choices=(1, 2, 4, 8, 16), default=16)
+    parser.add_argument("--ranks")
     args = parser.parse_args()
+    global TP
+    TP = args.tp_degree
+    args.ranks = args.ranks or ",".join(str(rank) for rank in range(TP))
     ranks = sorted({int(rank) for rank in args.ranks.split(",")})
     if not ranks or ranks[0] < 0 or ranks[-1] >= TP:
         raise PackFailure(f"--ranks must name ranks in 0..{TP - 1}")
@@ -218,7 +224,7 @@ def main():
     expected = ["full_attention" if index % period == period - 1 else "sliding_attention" for index in range(text["num_hidden_layers"])]
     if text["layer_types"] != expected or text["vocab_size"] % TP or text["intermediate_size"] % 64 or \
             (text.get("enable_moe_block") and (text["num_experts"] % TP or text["moe_intermediate_size"] % 64)):
-        raise PackFailure("layer pattern, vocab, intermediate or expert sizes differ from the packer's TP16 layout")
+        raise PackFailure(f"layer pattern, vocab, intermediate or expert sizes differ from the packer's TP{TP} layout")
     receipt = args.checkpoint / "DOWNLOAD-RECEIPT.json"
     revision = json.loads(receipt.read_text()).get("revision", "unknown") if receipt.exists() else "unknown"
     contract_sha256 = hashlib.sha256(args.contract.read_bytes()).hexdigest()

@@ -1,13 +1,14 @@
-# Metal backend and the single-Studio Qwen3.8-27B stage
+# Metal backend and the single-Studio stages
 
 This is the authority for how SparkPipe runs on an Apple GPU: the kernel
 launch part of the device API, the Metal backend's queue model, the Metal
 kernel library, the single-device stage runner, the precision policy those
-kernels and the reference share, and how the Qwen3.8-27B stage is qualified
-on one M5 Ultra Mac Studio. Measured results are in
+kernels and the references share, and how the Qwen3.8-27B and Gemma 4 26B
+A4B stages are qualified on one M5 Ultra Mac Studio. Measured results are in
 [`PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md#mac-studio) and the
 receipts under
-[`qualification/metal/qwen38_27b/`](../qualification/metal/qwen38_27b/).
+[`qualification/metal/qwen38_27b/`](../qualification/metal/qwen38_27b/) and
+[`qualification/metal/gemma4_26b/`](../qualification/metal/gemma4_26b/).
 Open work is in [`TECHDEBT.md`](../TECHDEBT.md#mac-studio-deployment).
 
 ## Kernel launch in the device API
@@ -85,15 +86,19 @@ tensor sizes before each launch.
 | `spark_gather_rows` | embedding rows by id; an id outside the table raises the device error word |
 | `spark_rmsnorm_residual` | `h = bf16(h + r)` written back, then `bf16(rmsnorm(h) * w)` with an FP32 gain |
 | `spark_rmsnorm_gate` | per-head RMSNorm with a BF16 gain and a SiLU output gate read from a fused row |
-| `spark_head_rmsnorm_rope` | per-head RMSNorm with an FP32 gain, then rotary embedding on the head's first dimensions (rotate-half pairs) |
+| `spark_head_rmsnorm_rope` | per-head RMSNorm with an optional FP32 gain, then rotary embedding with rotate-half pairs over the head's first `rope_dimension` dimensions, a table of up to 256 inverse frequencies (a zero frequency leaves its pair as it is), and either one FP32 rotation rounded once or the publisher's eager rounding (`bf16(bf16(x bf16(cos)) + bf16(p bf16(sin)))`) |
+| `spark_rmsnorm_branches` | sandwich norms: `h = bf16(h + bf16(rms(a) w))`, or with two branches `c = bf16(bf16(rms(a) w1) + bf16(rms(b) w2))` and `h = bf16(h + bf16(rms(c) w))`, then optionally `bf16(h * scalar)` |
+| `spark_rmsnorm_scaled` | `bf16(bf16(bf16(rms(x)) s) c)`: a weightless norm, a per-channel scale and a constant, each rounded (an expert router's input) |
 | `spark_gemv_r{1,2,4,8}`, `spark_gemv_f32_r*`, `spark_gemv_gated_r*` | decode projections for one or two rows, and verify frames in passes of up to eight rows: BF16 weights `[N, K]`, 4, 4, 2 and 1 outputs per threadgroup at 1, 2, 4 and 8 rows, the inner dimension split across the threadgroup's four SIMD groups, FP32 accumulation, BF16 or FP32 out, and the gated form that computes `bf16(silu(gate) * up)` from a fused input row |
 | `spark_gemm_rows16`, `spark_gemm_rows32`, `spark_gemm_reduce` | decode projections for 3 to 64 rows on the tensor operations: 128 outputs per threadgroup, the weights staged through threadgroup memory 64 inputs at a time with the next slice prefetched into registers, the inner dimension split so the launch has about 1,024 threadgroups, FP32 partials summed in split order by the reduce kernel |
 | `spark_gemm`, `spark_gemm_f32` | prefill projections on the Metal 4 tensor operations (`matmul2d`, 128 x 64 tiles, FP32 accumulation, relaxed precision off) |
 | `spark_causal_conv_silu` | depthwise causal convolution over a per-sequence window, BF16 sum, SiLU |
 | `spark_gated_delta_prepare`, `spark_gated_delta_rule` | L2-normalised query and key, decay and write strength, then the gated delta rule over FP32 state, one SIMD group per value column |
 | `spark_kv_store_paged` | key and value rows into 64-slot pages through a page table |
-| `spark_attention_decode`, `spark_attention_prefill_blocks`, `spark_attention_combine` | causal grouped-query attention over paged KV, split into key partitions and merged, with the sigmoid output gate; decode walks 128-key partitions one key per SIMD group, prefill computes 32 query rows against 64-key pages on the tensor operations (scores and the FP32 probability-times-value product in `matmul2d`, the online softmax in FP32 between them) |
-| `spark_silu_mul`, `spark_add_rows` | the FFN activation and the final residual add |
+| `spark_attention_{decode,prefill_blocks,combine}_d{256,512}` | causal grouped-query attention over paged KV for 256- and 512-wide heads, split into key partitions and merged, with an optional sliding window (a row sees its last `window` positions) and an optional sigmoid output gate; decode walks 128-key partitions one key per SIMD group, prefill computes 32 (16 for 512-wide heads) query rows against 64-key pages on the tensor operations (scores and the FP32 probability-times-value product in `matmul2d`, the online softmax in FP32 between them) |
+| `spark_silu_mul`, `spark_gelu_tanh_mul`, `spark_add_rows` | the gated activations (`bf16(silu(g) u)`, `bf16(bf16(gelu_tanh(g)) u)` with `SparkMathGeluTanh`) and the final residual add |
+| `spark_route_topk`, `spark_route_pinned`, `spark_gemv_routed`, `spark_route_combine` | expert routing: softmax over the router's BF16 logits, the top k (lowest index on ties) or, pinned, the experts a route override names, renormalised and times a per-expert scale; the GEMV of each route's expert on its row (the same per-row arithmetic as `spark_gemv_r1`); and the routes' outputs times their weights, summed in BF16 in ascending expert order |
+| `spark_scale_rows`, `spark_softcap_rows` | a BF16 row scale (an embedding multiplier) and the FP32 logit softcap `cap tanh(z / cap)` (`SparkMathSoftcap`) |
 | `spark_logprob_rows` | argmax (lowest index on ties), log-normaliser and a target's log-probability over FP32 logits |
 | `spark_stream_read` | the streaming-read bandwidth probe |
 
@@ -188,13 +193,19 @@ models' gates are re-run to show their output is unchanged.
 | Layer kind | Shape | Pack tensors (`layers.N.`) |
 | --- | --- | --- |
 | gated delta rule (`SparkDeviceGatedDelta`) | key and value heads and dimensions, convolution taps; recurrent pools 0 (FP32 state) and 1 (BF16 convolution window) | `gdn_qkvz`, `gdn_ba`, `gdn_conv`, `gdn_a_log`, `gdn_dt_bias`, `gdn_norm`, `gdn_out` |
-| attention with a sigmoid output gate (`SparkDeviceAttention`) | heads, KV heads, head dimension, rotary width and base, scale; queries and gates interleaved per head, then keys, then values in one fused projection | `attn_qkv`, `attn_q_norm`, `attn_k_norm`, `attn_out` |
-| SwiGLU FFN (`SparkDeviceGatedFfn`) | intermediate width; at the GEMV row counts the down projection takes the gated input directly | `ffn_gate_up`, `ffn_down` |
+| attention (`SparkDeviceAttention`) | heads, KV heads, head dimension, rotary span, base and the number of rotated pairs, eager or fused rotary rounding, scale; options: a sigmoid output gate (queries and gates interleaved per head in the fused projection), a sliding window, a weightless value norm, and keys shared as values (the fused projection then holds queries and keys only) | `attn_qkv`, `attn_q_norm`, `attn_k_norm`, `attn_out` |
+| gated FFN (`SparkDeviceGatedFfn`) | intermediate width and activation (SiLU, or tanh GeLU); with SiLU at the GEMV row counts the down projection takes the gated input directly | `ffn_gate_up`, `ffn_down` |
+| experts (`SparkDeviceExperts`) | experts, top k, expert width, activation; the router reads the residual through `spark_rmsnorm_scaled`, the experts read it through their own norm; a step's route override replaces the top k (qualification only) | `router_proj`, `router_scale`, `expert_scale`, `pre_ff_norm_2`, `moe_w1` (gate), `moe_w3` (up), `moe_w2` (down) |
 | residual RMSNorm (`SparkDeviceResidualNorm`) | the stage's hidden width and epsilon | the model names its norm weights |
+| branch norms (`SparkDeviceBranchNorm`) | one or two branches, an optional layer scalar | the model names its norm weights |
 
-Attention without an output gate, sliding-window attention, other norm
-placements, other activations and experts have no layer kind yet; the model
-that needs one adds it here.
+A stage's KV pool holds the widest slot any of its attention layers needs
+(`kv_heads x head_dimension` of the stage shape); a layer with narrower slots
+uses its pages at that layer's own slot stride. A stage shape can tie the
+head to the embedding table and soft-cap the logits, which the runner applies
+before the log-probabilities. Other norm placements, other activations and
+attention without query and key norms have no option yet; the model that
+needs one adds it here.
 
 `model-families/qwen38/device/qwen38_device_stage.c` is Qwen3.8-27B on these
 layers: 64 layers, every fourth one (from the fourth) attention and the rest
@@ -202,6 +213,18 @@ gated delta, each followed by the SwiGLU FFN, with the attention and
 gated-delta projections sharing one scratch slice. The recurrent state is FP32,
 `[layer][slot][head][key][value]`, and `recurrent_copy` packs it in the same
 order as the CUDA model.
+
+`model-families/gemma4/device/gemma4_26b_device_stage.c` is Gemma 4 26B A4B
+(text only) on the same layers: 30 layers, every sixth one (from the sixth)
+full attention (16 query and 2 KV heads of 512, keys shared as values, rotary
+on the first 64 of 256 pairs with base 10^6) and the rest sliding-window
+attention (16 query and 8 KV heads of 256, window 1,024, the whole head
+rotated with base 10^4), q and k norms weighted and the value norm
+weightless, attention scale 1; then the tanh-GeLU dense FFN (2,112 wide) and
+128 experts (top 8, 704 wide) on the same residual, combined by the two-branch
+sandwich norm and the layer scalar. The embedding is multiplied by
+`bf16(sqrt(2816)) = 53`, the head is the embedding table and the logits are
+capped at 30. The pack is `tools/gemma4_tp16_pack.py --tp-degree 1`.
 
 ## Decode and prefill by row count
 
@@ -271,7 +294,7 @@ overwritten when the sequence reaches them again.
   KV rows are already in place.
 
 Drafts come from the request's own context, as in the CUDA serving path:
-`qwen38_27b_metal_run --mode spec` indexes the prompt and the generated
+`metal_stage_run --mode spec` indexes the prompt and the generated
 tokens with the common lookup index (`src/spark_speculation_lookup_draft.c`,
 3-token grams, matches up to 64 tokens, 64 candidates) and sizes each frame
 with the serving path's frame chooser (`src/spark_speculation_frame.c`),
@@ -280,6 +303,9 @@ class as it goes; a step with no useful draft is an ordinary one-row step.
 The chooser's first frame in a match class probes; the tool caps a probe at
 the largest frame whose measured cost is within the chooser's margin of a
 one-row step, so text the lookup cannot predict pays nothing for the probe.
+Where no frame is that cheap (a mixture-of-experts step, where every extra
+row reads more experts) the probe is one draft, about a fifth of a step
+once per match class.
 The accepted prefix plus the model's next token are emitted, so greedy
 output with speculation is exactly greedy output without it.
 
@@ -290,13 +316,6 @@ rounds its output to BF16; the head projection keeps FP32 logits. Rounding to
 BF16 is round-to-nearest-even and happens at these points, the same in the
 Metal kernels and in the reference:
 
-The batch work moved no rounding point. The K-split GEMV, the split-K
-tensor-unit projection with its ordered reduce, the 128-key decode
-partitions and the block prefill attention (FP32 scores, FP32
-probabilities times BF16 values with FP32 accumulation on the tensor
-operations) only reorder FP32 sums; every value in the table below is
-rounded where it was before.
-
 | Step | Value rounded to BF16 |
 | --- | --- |
 | residual | `h + attention`, `h + ffn` |
@@ -305,16 +324,36 @@ rounded where it was before.
 | attention | every projection; the normed query and key, then the rotated query and key; the attention output, then `* sigmoid(gate)` |
 | FFN | gate and up; `silu(gate) * up` |
 
+The batch work moved no rounding point. The K-split GEMV, the split-K
+tensor-unit projection with its ordered reduce, the 128-key decode
+partitions and the block prefill attention (FP32 scores, FP32
+probabilities times BF16 values with FP32 accumulation on the tensor
+operations) only reorder FP32 sums; every value in the table above is
+rounded where it was before.
+
 The delta-rule state, the L2-normalised query and key, the decay and write
 strength, the attention scores and softmax stay FP32. Rotary angles are
 `float(position) * inverse_frequency` in FP32, with the inverse frequencies
 computed in double and rounded once.
 
+Gemma 4 26B A4B follows the publisher's eager PyTorch rounding, which
+`tools/gemma4_reference.py` reproduces in numpy: the embedding times
+`bf16(sqrt(hidden))`; every norm `bf16(x rsqrt(mean(x^2) + eps) w)` with plain
+FP32 `w`; every projection; the per-head query and key norms, then the
+rotation as `bf16(bf16(x bf16(cos)) + bf16(p bf16(sin)))`; the weightless
+value norm; the attention output (FP32 scores, softmax and probability times
+value); the sandwich norms and residual sums as in `spark_rmsnorm_branches`;
+`bf16(gelu_tanh(g))`, then `* up`, for the dense FFN and each expert; the
+router input `bf16(bf16(bf16(rms(x)) s) / sqrt(hidden))` and its BF16
+logits (softmax, top 8 and the weights in FP32); each expert's down
+projection, then `* weight`, then the BF16 sum over the routes in ascending
+expert order; the FP32 logits, soft-capped at 30.
+
 ## Qualification on one M5 Ultra
 
 The gates run on the Studio from a committed revision shipped with
 `git archive`; `tools/qwen38_27b_metal_gates.sh PACK CHECKPOINT OUT REVISION`
-runs all of them and `tools/qwen38_27b_metal_summary.py` writes the receipt.
+runs all of them and `tools/metal_gate_summary.py` writes the receipt.
 
 **Device contract.** `build/test_device_contract_metal`: the backend-neutral
 contract plus the kernel tests (refusals, kernel-copy-kernel ordering on one
@@ -406,7 +445,7 @@ largest change in the target token's log-probability and, given the other
 variant, the paired counts per block. Both implementations also continue each
 prompt greedily for 128 tokens.
 
-**Batches.** `qwen38_27b_metal_run --mode ladder --batches 1,2,4,...,64`
+**Batches.** `metal_stage_run --mode ladder --batches 1,2,4,...,64`
 decodes 128 tokens for each of 64 sequences alone, then for each batch size
 prefills that many sequences (1,024-token prompts cut from the gate prompts
 at different offsets) and decodes them together, three timed runs after a
@@ -415,7 +454,7 @@ for token with its solo run; at the first token that differs, both runs'
 top-1 and top-2 tokens and margins are recorded, so a divergence can be
 shown to be a near tie. Repeated runs must give the same tokens.
 
-**Speculation.** `qwen38_27b_metal_run --mode spec` measures the verify
+**Speculation.** `metal_stage_run --mode spec` measures the verify
 cost curve (one sequence after a 933-token prompt, frames of 1 to 64 rows,
 and the replay that keeps all of them, median of three after a warm-up),
 then decodes 256 tokens greedily with and without speculation on the four
@@ -427,7 +466,7 @@ separately, as the median with the lowest and highest.
 
 **Speed.** `build/device_bandwidth 16 PACK` measures streaming reads of a
 16 GiB device-private buffer and of the mapped pack (seven timed passes after
-a warm-up, the median kept). `qwen38_27b_metal_run --mode bench` measures B1
+a warm-up, the median kept). `metal_stage_run --mode bench` measures B1
 decode of 256 tokens after a 1,024-token prompt and prefill of 1,024 and
 8,192 tokens in 2,048-row chunks, three timed runs after a discarded warm-up,
 the median kept. Decode reads every weight but the embedding table once per
@@ -436,4 +475,51 @@ measured bandwidth per sequence at B1, and the batch multiplies it until the
 per-sequence state (the recurrent state, read and written each step, and the
 KV) and the tensor operations' compute take over;
 prefill reads the weights once per chunk and is bounded by the tensor
-operations, not memory.
+operations, not memory. A mixture-of-experts step reads top-k of each
+layer's experts (the stage counts its expert tensors when it binds them),
+and a head tied to the embedding is read in full.
+
+### Gemma 4 26B A4B
+
+`tools/gemma4_26b_metal_gates.sh PACK REFERENCE_DIR OUT REVISION` runs the
+same gates on Gemma's four prompts (built by `tools/gemma4_reference.py
+gate-prompts`, 5,636 positions), with `tools/gemma4_reference.py teacher
+--variants a,b,bp` as the reference: numpy, the publisher's eager rounding,
+a and b in the two reduction orders.
+
+The router makes the free-route floor useless as a gate. Its logits are
+BF16, so the eighth and ninth experts of a row are often a rounding step
+apart, and the reduction order alone changes the choice: in a 160-token
+pass, b chose different experts than a for 7 rows at layer 1 and 63 at layer
+29, and its logits sat 0.31 nats of KL from a's with 82.5% top-1 agreement.
+Over the gate's 5,636 positions a and b differ at 18.3% of the layer and
+position decisions (0.2% at layer 0, 36% at layer 29), and the free-route
+floor is 0.31 nats. A misplaced output in every layer's FFN moves the logits
+less than that, so no rule relative to this floor can see it. The gate therefore has a second
+set in which every layer's experts are pinned to a's choice: the reference
+writes a's experts per layer and position (`<name>.ref_a.routes`), bp is b
+with those experts (its own probabilities of them, renormalised, as the
+weights), and the Metal tool's teacher mode takes `--pin-routes DIR`, which
+fills a route override for every step (`SparkStageRunnerStep.route_override`,
+`[layer][row][rank]`) that the experts layer kind uses instead of its top-k
+(`spark_route_pinned`). Pinned, a against bp is 0.063 nats.
+
+The receipt applies the rule to both sets. Free routes: Metal against a
+and b with b and a as the floor; it must pass, which shows the end-to-end
+noise is that of a correct implementation. Pinned routes: Metal, the same
+pass prefilled in 64-row chunks (`metal_rows64`, the skinny tensor-unit
+projection the batches use) and the controls (run pinned), against a and bp
+with each other as the floor; the Metal runs must pass and
+`control_layers`, `control_rotate` and `control_experts` (experts 0 and 1 of
+every layer's `moe_w2` swapped, the reach of a misindexed expert) must fail. Metal's own top-k is
+checked by the kernel test (exact experts at 128 experts, top 8).
+
+The fast batch ladder is not identical to solo decode for most sequences,
+and its first differing tokens are not near ties, because a rounding
+difference from the batch's projection kernel flips a route upstream. The
+gate runs the ladder a second time with `--exact-rows`: every decode step is
+a verify frame whose rows all are kept, so each row takes the row-exact
+kernels, and every sequence at every batch size must reproduce its solo
+tokens (`batch_ladder_exact_rows.identical_to_solo`). That shows the batch
+itself (row tables, KV pages, per-sequence attention, routed GEMV) is exact,
+and the fast path differs only by rounding.
