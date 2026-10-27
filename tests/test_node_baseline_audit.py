@@ -146,7 +146,7 @@ class Node:
             for patch in patches:
                 patch.start()
             try:
-                return(set(MODULE.remote_audit(payload)["failures"]))
+                return(set(MODULE.remote_audit(json.loads(payload.read_text()))["failures"]))
             finally:
                 for patch in patches:
                     patch.stop()
