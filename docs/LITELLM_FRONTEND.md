@@ -391,6 +391,23 @@ public models:
 - A public request is planned without the caller's Open WebUI headers, so it
   opens no chat memory, runs no chat command and keeps no conversation
   state. Its trace line records the key's id, never the key.
+- A public `POST` needs a `Content-Length` (411 `length_required` otherwise)
+  of at most 16 bytes per token of the largest public context plus 1 MiB
+  (413 `request_too_large`), checked before the body is read.
+- Each key runs at most four requests at once; a fifth gets 429
+  `rate_limited` until one finishes. Other keys and internal requests are not
+  held by it.
+- `cached_tokens` in a public reply counts only prefixes that key itself sent
+  (a per-key ledger of 64-token blocks), so a key cannot test whether
+  someone else sent a prompt. Prefix reuse itself is shared.
+- A public request for a public model that is not loaded starts the swap, as
+  any request does, but it never cancels the owner's chat-memory jobs while
+  it waits (TECHDEBT, Serving API).
+- `/v1/sparkpipe/status` gives the controller's full status only to the
+  admin's SparkPipe Chat login. Public keys and everyone else get a view
+  without the controller's error text, its memory figures or the errors in
+  its history, and the view names only public models. The fleet page sends
+  the browser's login with its status poll, so the admin keeps the detail.
 - Requests without the header (SparkPipe Chat, LiteLLM, the LAN) are
   unchanged.
 
