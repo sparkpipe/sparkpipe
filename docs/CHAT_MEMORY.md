@@ -320,8 +320,12 @@ out of every later prompt. Settings and compactions are records in the chat's me
 `/compact` asks the model which exchanges matter for continuing the chat: it sees every exchange's size and an
 excerpt, keeps the newest exchange and what it chooses within the target (the oldest choices go first when the
 choice is over budget), and writes a summary of the rest (facts, decisions, names, numbers, paths, identifiers,
-open questions). Later prompts carry the kept exchanges, with the summary in front of the first, and every later
-exchange in full. A new compaction replaces the previous one and is computed from the whole chat, which Open
+open questions), each line marked with its exchange's id (e2). Later prompts carry the kept exchanges, each
+labeled with the same id ([e3]), with the summary in front of the first, and every later exchange in full; the
+summary's opening says the numbers give the order, so a summarized decision from e7 supersedes a kept e3. A
+compaction that would not fit the model's context with its answer, or that is asked while the model is loading
+or the fleet is switching, changes nothing and says why; a chat-layer error in a command comes back as the usual
+OpenAI error body. A new compaction replaces the previous one and is computed from the whole chat, which Open
 WebUI always sends, so summaries do not compound. With memory on, memory does this continuously.
 
 The timer is three pieces:

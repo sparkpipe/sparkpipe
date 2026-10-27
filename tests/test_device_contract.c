@@ -171,6 +171,30 @@ static void TestCopies(SparkDeviceQueue *queue)
 	CHECK(SparkDeviceFree(&shared) == SPARK_STATUS_OK,"free the copy buffers: shared");
 }
 
+static void TestFreshUpload(SparkDeviceQueue *queue)
+{
+	enum { TAIL = 4096, ROUNDS = 4 };
+	const uint64_t bytes = UINT64_C(1) << 30;
+	SparkDeviceBuffer source, back;
+	CHECK(SparkDeviceAllocate(&source,SPARK_DEVICE_SPACE_HOST_PAGEABLE,TAIL,"fresh source") == SPARK_STATUS_OK,"allocate the fresh-upload source");
+	CHECK(SparkDeviceAllocate(&back,SPARK_DEVICE_SPACE_HOST_PAGEABLE,TAIL,"fresh back") == SPARK_STATUS_OK,"allocate the fresh-upload readback");
+	Pattern((uint8_t *)source.host,TAIL,3u);
+	for ( uint32_t round = 0u; round < ROUNDS; ++round )
+	{
+		SparkDeviceBuffer device;
+		CHECK(SparkDeviceAllocate(&device,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,bytes,"fresh device") == SPARK_STATUS_OK,"allocate a fresh 1 GiB device buffer");
+		CHECK(SparkDeviceCopy(queue,At(&device,bytes - TAIL),At(&source,0u),TAIL) == SPARK_STATUS_OK,"upload into its last bytes at once");
+		CHECK(SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"wait for the upload");
+		CHECK(SparkDeviceSynchronize(SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"wait for all device work, the allocation's own included");
+		CHECK(SparkDeviceCopy(queue,At(&back,0u),At(&device,bytes - TAIL),TAIL) == SPARK_STATUS_OK,"read the last bytes back");
+		CHECK(SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"wait for the readback");
+		CHECK(memcmp(back.host,source.host,TAIL) == 0,"an upload right after allocation keeps its bytes: the allocation's zero fill finished before the buffer was returned");
+		CHECK(SparkDeviceFree(&device) == SPARK_STATUS_OK,"free the fresh device buffer");
+	}
+	CHECK(SparkDeviceFree(&source) == SPARK_STATUS_OK,"free the fresh-upload source");
+	CHECK(SparkDeviceFree(&back) == SPARK_STATUS_OK,"free the fresh-upload readback");
+}
+
 static void TestOrdering(void)
 {
 	enum { BYTES = 4096, ROUNDS = 64 };
@@ -573,6 +597,7 @@ int main(void)
 	CHECK(SparkDeviceQueueCreate(&queue,"contract") == SPARK_STATUS_OK,"create a queue");
 	TestSpaces();
 	TestCopies(queue);
+	TestFreshUpload(queue);
 	TestOrdering();
 	TestBusy(queue);
 	TestTiming(queue);

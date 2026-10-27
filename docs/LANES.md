@@ -20,8 +20,8 @@ whether the fleet still matches.
 | `kv_logical_pages` | pages including those parked on the node's NVMe; at least `sequences` full-length sequences |
 | `kv_backing_bytes`, `kv_snapshot_bytes` | per-node NVMe caps for parked pages and prefix snapshots |
 | `state_budget_bytes`, `state_memory_bytes` | rank state budget; recurrent checkpoint memory (default twice the minimum) |
-| `taps` | layer taps a hub drafter reads, passed to every rank's adapter |
-| `expert_pool_bytes`, `memory_max` | `lane.sh` residentd environment for stage lanes |
+| `taps` | layer taps a hub drafter reads, passed to every rank's adapter; `taps.stream` is also where the draft server listens, so the endpoint is written once |
+| `expert_pool_bytes`, `memory_max` | the residentd unit's expert pool and MemoryMax: rendered into `lane.sh` for stage lanes; for K3, `tools/k3_lane.sh` with `K3_RECORD` takes them (and the socket and state budget) from the record and refuses a conflicting `K3_*` value, and the test requires the kimi-k3 swap entry's start and warm commands to carry them |
 | `tokenizer_sha256` | the compiled tokenizer the hub API loads |
 | `text_prompt_prefix_token_ids` | the token ids the publisher tokenizer puts before a raw text prompt, as Hugging Face and vLLM do for `/v1/completions` (`tools/tokenizer_text_prefix.py`); `[]` for none. Gemma 4 and Laguna start with BOS `[2]`, Muse Glimmer with `[200000]` |
 | `draft_server` | the hub drafter the API asks for drafts |
@@ -69,7 +69,9 @@ python3 tools/lane_config.py push kimi-k3
 `render` writes the node `deployment.json`, one `adapter.<host>.json` per
 rank, the hub `model_resident.json` (the node file plus the tokenizer and the
 draft server), the swap entry and, for stage lanes, one `lane.<host>.sh` per
-rank.
+rank. The files depend on the record alone: the lane scripts are rendered
+with only `PATH`, `HOME`, `SPARK_LANES` and `STAGE_RECORD` set, so nothing
+an operator's shell exports reaches a production `lane.sh`.
 
 `audit` renders every record and compares, on all 16 nodes and the hub:
 
@@ -97,7 +99,12 @@ not touch binaries, packs or KV, so a lane restart picks the change up.
 records, which is how a gate tries a raised record before it is committed.
 `tools/stage_lane.sh` with `STAGE_RECORD=<swap id>` and `tools/k3_lane.sh`
 with `K3_RECORD=kimi-k3` render from the record when they set a lane up;
-their flag form stays for experiment lanes in their own roots.
+their flag form stays for experiment lanes in their own roots. `stage_lane.sh
+setup` replaces the lane's binaries and rendered files and clears its pack
+links, KV cache and KV snapshots, so it refuses, before touching any node,
+while the lane's unit is active, starting or stopping on any rank: stop the
+lane first. Run `lane_config.py audit` before a setup to see what it will
+replace.
 
 ## Changing a lane
 
