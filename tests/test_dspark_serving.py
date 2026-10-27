@@ -77,11 +77,12 @@ class GateDrafter:
         return {}
 
 
-def gate_run(score, torch, tokens, wrong_at, minimum):
+def gate_run(score, torch, tokens, wrong_at, minimum, sampled=False, eager_wrong_at=()):
     drafter = GateDrafter()
 
     def eager(context, token, position, rule):
-        return list(tokens[position + 1: position + 1 + drafter.block]) + [0] * max(0, position + 1 + drafter.block - len(tokens)), [0.5] * drafter.block
+        drafts = list(tokens[position + 1: position + 1 + drafter.block]) + [0] * max(0, position + 1 + drafter.block - len(tokens))
+        return ([drafts[0] + 2] + drafts[1:] if position in eager_wrong_at else drafts), [0.5] * drafter.block
 
     def fast(context, token, position, rule):
         drafts, confidence = eager(context, token, position, rule)
@@ -94,7 +95,7 @@ def gate_run(score, torch, tokens, wrong_at, minimum):
     score.drafters = lambda args: (drafter, [("eager", lambda *a: None, eager), ("fast", lambda *a: None, fast)])
     with tempfile.TemporaryDirectory() as scratch:
         out = Path(scratch) / "gate.json"
-        sys.argv = ["dspark_score.py", "--checkpoint", "-", "--taps", "-", "--gate", "--gate-anchors", str(minimum), "--out", str(out)]
+        sys.argv = ["dspark_score.py", "--checkpoint", "-", "--taps", "-", "--gate", "--gate-anchors", str(minimum), "--out", str(out)] + (["--temperature", "1.0"] if sampled else [])
         status = score.main()
         return status, json.loads(out.read_text())
 
@@ -112,6 +113,15 @@ def gate_failures(torch):
     status, report = gate_run(score, torch, tokens, {9}, 20)
     if status != 1 or not any("agreement" in reason for reason in report["gate"]["failed"]) or report["fast"]["tokens_per_round"] >= report["eager"]["tokens_per_round"]:
         failures.append(f"one first-draft disagreement in 24 anchors (95.8%) fails the 99% agreement bar: {status} {report.get('gate')}")
+    status, report = gate_run(score, torch, tokens, {9}, 20, sampled=True, eager_wrong_at={9})
+    if status != 0 or report["gate"]["first_draft_agreement"] >= 1.0 or report["gate"]["tokens_per_round_gap"] != 0.0 or report["gate"]["failed"]:
+        failures.append(f"a sampled run reports a first-draft disagreement where both drafts miss, but gates only on tokens per round: {status} {report.get('gate')}")
+    status, report = gate_run(score, torch, tokens, {9}, 20, eager_wrong_at={9})
+    if status != 1 or report["gate"]["failed"] != ["first-draft agreement 0.9583, below 0.99"]:
+        failures.append(f"the same disagreement fails a greedy run: {status} {report.get('gate')}")
+    status, report = gate_run(score, torch, tokens, set(range(5, 15)), 20, sampled=True)
+    if status != 1 or not any("tokens/round gap" in reason for reason in report["gate"]["failed"]):
+        failures.append(f"a sampled run whose fast drafter loses ten first drafts in 24 fails on the tokens per round gap: {status} {report.get('gate')}")
     status, report = gate_run(score, torch, tokens, set(), 25)
     if status != 1 or report["gate"]["failed"] != ["24 anchors, below 25"]:
         failures.append(f"fewer anchors than the gate needs fail it even when the drafters agree: {status} {report.get('gate')}")
@@ -199,7 +209,7 @@ def main():
         return 1
     print("PASS DSpark serving path: the ring drops stale slots in both its tables, keeps the last window of a long write, takes donor slots with their keys "
           "and tokens; the sampling rule wraps seeds and maps nucleus 1.0; drafts are depth-capped; a token mismatch answers unavailable without drafting; donors fill only matching positions and a gap shrinks the window; "
-          "the negative control (stale drafter slots) fails; the fast/eager gate passes agreeing drafters and fails a disagreement or too few anchors")
+          "the negative control (stale drafter slots) fails; the fast/eager gate passes agreeing drafters and fails a greedy disagreement, a sampled tokens-per-round gap or too few anchors")
     return 0
 
 

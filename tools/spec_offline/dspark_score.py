@@ -13,10 +13,13 @@ it, the one covering most positions per file, is scored, so one recording can ho
 corpora. Verify rows past the committed reply (drafts the target rejected at the end) are dropped.
 --fast scores the CUDA-graph drafter (dspark_fast.DsparkFast) instead of the eager reference.
 --gate scores both on the same anchors in one process and is the gate the fast drafter must pass before it
-serves: it exits 1 unless at least --gate-anchors anchors were scored, the fast drafter's first draft equals
-the reference's on at least --gate-agreement of them, and the two tokens per round differ by at most
---gate-rate-gap (relative). Random taps cannot gate it: the drafter is chaotic on them, so
-dspark_fast.compare only reports times.
+serves: it exits 1 unless at least --gate-anchors anchors were scored and the two tokens per round differ by
+at most --gate-rate-gap (relative); a greedy run also needs the fast drafter's first draft to equal the
+reference's on at least --gate-agreement of them. A sampled run reports that agreement without gating on it:
+the keyed noise turns rounding-level logit differences into different draws at near-ties (10-21 recording:
+97.6% first-draft agreement at T=1, top-p 0.95, with tokens per round 0.8% apart, and the side that wins
+varies by subsample). Random taps cannot gate it: the drafter is chaotic on them, so dspark_fast.compare
+only reports times.
 """
 import argparse
 import json
@@ -148,7 +151,7 @@ def main():
         agreement = agreed / max(compared, 1)
         failed = [reason for reason, bad in (
             (f"{compared} anchors, below {args.gate_anchors}", compared < args.gate_anchors),
-            (f"first-draft agreement {agreement:.4f}, below {args.gate_agreement}", agreement < args.gate_agreement),
+            (f"first-draft agreement {agreement:.4f}, below {args.gate_agreement}", rule is None and agreement < args.gate_agreement),
             (f"tokens/round gap {gap:.4f}, above {args.gate_rate_gap}", gap > args.gate_rate_gap)) if bad]
         report["gate"] = {"anchors": compared, "first_draft_agreement": round(agreement, 4), "tokens_per_round_gap": round(gap, 4), "failed": failed}
         print("DSPARK-GATE %s anchors %d first-draft agreement %.4f tokens/round eager %.3f fast %.3f gap %.4f%s"
