@@ -270,6 +270,14 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   80% of the first resource to saturate. The overlap of prefill-wave
   collectives under Mesh collectives is part of it; the prefill accelerators
   under Fleet-hours take the long prompts.
+- Routed expert down projections on the grouped skinny path run 1.2 to 2.0
+  times slower than the tensor-core GEMM between 128 and 512 rows a wave
+  (one GB10, `build/expert_gemm_bench`: K-EXAONE's shape at 512 rows takes
+  3.8 ms against 1.9 ms, Solar Open 2's 2.0 ms against 1.2 ms).
+  `LmSkinnyGroupedExperts` takes waves of up to 16 rows per expert, and its
+  per-lane dot products are slow at the short input of a down projection
+  (80 to 128). Moving the crossover changes those waves' rounding; a
+  short-input skinny that matches the GEMM keeps it.
 
 ## Placement beyond TP16
 

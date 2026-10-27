@@ -194,6 +194,15 @@ which could be mistaken for the qualified route.
     bytes and the MMA order are unchanged, so outputs are bit-identical.
     `build/expert_gemm_bench ROWS [gemm]` measures it; set the geometry
     with `-DBENCH_EXPERTS`, `-DBENCH_HIDDEN` and `-DBENCH_INTER`.
+- **Grouped skinny tasks cover real row batches.** `LmSkinnyGroupedKernel`
+  scans `ceil(rows / ROWS)` per expert into a shared batch prefix
+  (`LmSkinnyGroupedBatchScan`) and maps each task to one batch and one neuron
+  group, so no launched task idles. Groups averaging more than eight rows
+  take 16-row batches with two neurons per task, which reads each expert's
+  weights once. A row's dot product depends only on `LANES`, which the input
+  width fixes, so outputs do not depend on `ROWS` or `NPG`. On K-EXAONE's
+  down projection at 512 rows this took the kernel from 8.9 to 3.8 ms, and
+  at 256 rows from 4.9 to 2.8 ms, with identical digests.
   - Ragged tail rows are clamped to `row_base`.
   - A source row at or past `source_row_count` does not trap. The kernel
     reports `LM_FRAME_ERROR_ROUTE_MAP_OUT_OF_RANGE` through
