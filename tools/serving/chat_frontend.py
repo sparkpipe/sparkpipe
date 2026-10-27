@@ -239,6 +239,7 @@ VOCABULARIES = {"tokenizers": TokenizersVocabulary, "tiktoken": TiktokenVocabula
 
 CARRIED = re.compile("\ue000([0-9]+)\ue001")
 PIECE_CACHE_BYTES = 512 << 20
+TEMPLATE_PIECE_CACHE_BYTES = 0
 INTERACTIVE_PRIORITY = 2
 BULK_PRIORITY = 1
 BACKGROUND_PRIORITY = 0
@@ -364,7 +365,7 @@ class TemplateRenderer:
         tokenizer_config = json.loads((directory / spec.get("tokenizer_config", "tokenizer_config.json")).read_text())
         self.template_tokens = {name: tokenizer_config[name] for name in ("bos_token", "eos_token", "pad_token", "unk_token") if isinstance(tokenizer_config.get(name), str)}
         self.vocabulary = vocabulary
-        self.cache = PieceCache(vocabulary, PIECE_CACHE_BYTES)
+        self.cache = PieceCache(vocabulary, TEMPLATE_PIECE_CACHE_BYTES)
 
     def render_text(self, messages, tools, context):
         try:
@@ -1867,7 +1868,10 @@ class Frontend:
                     del self.public_inflight[public["id"]]
         if "command" in plan:
             name, argument = plan["command"]
-            text = await self.commands.run(model, plan["identity"], plan["messages"], name, argument, plan["memory_off"])
+            try:
+                text = await self.commands.run(model, plan["identity"], plan["messages"], name, argument, plan["memory_off"])
+            except RequestError as error:
+                return error_response(error)
             print(json.dumps(dict(plan["trace"], event="chat_command", model=model.id, command=name)), file=sys.stderr, flush=True)
             return await self.reply_text(request, model, body, text)
         if self.memory is not None:

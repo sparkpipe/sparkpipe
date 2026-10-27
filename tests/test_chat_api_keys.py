@@ -176,6 +176,18 @@ async def run(tmp):
             check(all(status == 200 for status, _ in results) and frontend.public_inflight == {}, f"every admitted request completes and the counts return to zero: {results} {frontend.public_inflight}")
             check(await send(with_key) == (200, None), "the key is admitted again once its requests finish")
 
+            class FailingCommands:
+                async def run(self, model, identity, messages, name, argument, memory_off):
+                    raise chat_frontend.RequestError(503, "engine_unavailable", "the engine is switching")
+            frontend.commands = FailingCommands()
+            frontend.plan = lambda model, body, headers: {"trace": {}, "command": ("compact", "50%"), "identity": None, "messages": [], "memory_off": True}
+            async with session.post(base + "/v1/chat/completions", json={"model": "open", "messages": [{"role": "user", "content": "/compact 50%"}]}) as response:
+                text = await response.text()
+                failed = json.loads(text) if response.content_type == "application/json" else {"error": {"code": text[:60]}}
+                check(response.status == 503 and response.content_type == "application/json" and failed["error"]["code"] == "engine_unavailable",
+                      f"a command that hits an engine error answers with the OpenAI error body, not a text 500: {response.status} {failed}")
+            frontend.commands, frontend.plan = None, plan_ok
+
             prompt = list(range(256))
             engine_usage = {"prompt_tokens": 256, "completion_tokens": 4, "prompt_tokens_details": {"cached_tokens": 192}}
             entry, other_entry = {"id": good_id}, {"id": second_id}
