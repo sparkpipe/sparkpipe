@@ -258,6 +258,7 @@ typedef struct GlmBuffers
 	uint16_t *shared_out_bf16;
 	float *router_logits;
 	float *selection_scores;
+	float *gate_bottleneck;
 	uint32_t *route_expert;
 	float *route_weight;
 	uint32_t *route_source_token;
@@ -621,11 +622,17 @@ static int32_t GlmIndexerScoreSelect(const GlmBuffers *b, uint32_t rows, uint32_
 }
 
 template<class S>
-static int32_t GlmNormGate(uint16_t *rows_bf16, const uint16_t *down, const uint16_t *up, uint32_t rows, cudaStream_t stream)
+static int32_t GlmNormGate(uint16_t *rows_bf16, const uint16_t *down, const uint16_t *up, float *bottleneck, uint32_t rows, cudaStream_t stream)
 {
 	if constexpr ( S::kNormGateRank != 0u )
 		if ( down != 0 && up != 0 && rows != 0u )
-			LM_LAUNCH((LmLowRankSigmoidGateKernel<GLM_THREADS,S::kNormGateRank>), rows, GLM_THREADS, S::kHidden * sizeof(float), stream, rows_bf16, down, up, S::kHidden);
+		{
+			if ( bottleneck == 0 )
+				return LM_LAUNCH_ERR_SHAPE;
+			LM_LAUNCH((LmLowRankGateDownKernel<GLM_THREADS,S::kNormGateRank>), dim3(S::kNormGateRank, rows), GLM_THREADS, 0, stream, rows_bf16, down, bottleneck, S::kHidden);
+			LM_LAUNCH((LmLowRankGateApplyKernel<GLM_THREADS,S::kNormGateRank>), dim3((S::kHidden + GLM_THREADS - 1u) / GLM_THREADS, rows), GLM_THREADS, 0, stream,
+				rows_bf16, bottleneck, up, S::kHidden);
+		}
 	return GlmLaunched();
 }
 
@@ -638,7 +645,7 @@ static int32_t GlmAttentionProject(const GlmBuffers *b, uint32_t rows, uint32_t 
 	{
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_THREADS,uint16_t>), rows, GLM_THREADS, (S::kHidden + 8u) * sizeof(float), stream,
 			b->hidden_bf16, b->residual_bf16, b->weights->attn_norm, b->residual_bf16, b->normed_bf16, S::kHidden, S::kHidden, S::kRmsEpsilon);
-		if ( GlmNormGate<S>(b->normed_bf16, b->weights->attn_gate_down, b->weights->attn_gate_up, rows, stream) != LM_LAUNCH_OK )
+		if ( GlmNormGate<S>(b->normed_bf16, b->weights->attn_gate_down, b->weights->attn_gate_up, b->gate_bottleneck, rows, stream) != LM_LAUNCH_OK )
 			return LM_LAUNCH_ERR_LAUNCH;
 	}
 	GlmProjectionSlice(S::kQueryA, b->tp_degree, b->tp_rank, &q_first, &q_count);
@@ -856,7 +863,7 @@ static int32_t GlmMoeRoute(const GlmBuffers *b, uint32_t rows, uint32_t packed_r
 	{
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_THREADS,uint16_t>), rows, GLM_THREADS, (S::kHidden + 8u) * sizeof(float), stream,
 			b->attention_out_bf16, b->residual_bf16, b->weights->post_norm, b->residual_bf16, b->normed_bf16, S::kHidden, S::kHidden, S::kRmsEpsilon);
-		if ( GlmNormGate<S>(b->normed_bf16, b->weights->post_gate_down, b->weights->post_gate_up, rows, stream) != LM_LAUNCH_OK )
+		if ( GlmNormGate<S>(b->normed_bf16, b->weights->post_gate_down, b->weights->post_gate_up, b->gate_bottleneck, rows, stream) != LM_LAUNCH_OK )
 			return LM_LAUNCH_ERR_LAUNCH;
 	}
 	status = rows <= LM_SKINNY_ROWS_WIDE
@@ -1060,6 +1067,7 @@ struct GlmModel
 		uint16_t *shared_out;
 		float *router_logits;
 		float *selection_scores;
+	float *gate_bottleneck;
 		float *split_partials;
 		uint32_t *selected;
 		float *topk_values;
@@ -1198,6 +1206,7 @@ struct GlmModel
 			{ (void **)&state->shared_out, hidden },
 			{ (void **)&state->router_logits, rows * S::kExperts * sizeof(float) },
 			{ (void **)&state->selection_scores, (uint64_t)state->selection_rows * state->max_positions * sizeof(float) },
+			{ (void **)&state->gate_bottleneck, rows * S::kNormGateRank * sizeof(float) },
 			{ (void **)&state->split_partials, rows * heads * GLM_SPLIT_PARTITIONS * S::kPartialFloats * sizeof(float) },
 			{ (void **)&state->selected, rows * S::kSelected * sizeof(uint32_t) },
 			{ (void **)&state->topk_values, state->topk_entries * sizeof(float) },
@@ -1866,6 +1875,7 @@ struct GlmModel
 		b->shared_out_bf16 = state->shared_out;
 		b->router_logits = state->router_logits;
 		b->selection_scores = state->selection_scores;
+		b->gate_bottleneck = state->gate_bottleneck;
 		b->route_expert = state->route_expert;
 		b->route_weight = state->route_weight;
 		b->route_source_token = state->route_source;
@@ -1996,7 +2006,7 @@ struct GlmModel
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		GlmRowShareNorm<GLM_THREADS>(&row, state->row_share, state->residual, weight, keep_residual, state->row_normed, S::kHidden, S::kRmsEpsilon, stream);
-		if ( GlmLaunched() != LM_LAUNCH_OK || GlmNormGate<S>(state->row_normed, gate_down, gate_up, row.count, stream) != LM_LAUNCH_OK )
+		if ( GlmLaunched() != LM_LAUNCH_OK || GlmNormGate<S>(state->row_normed, gate_down, gate_up, state->gate_bottleneck, row.count, stream) != LM_LAUNCH_OK )
 			return Fail("row shard norm", layer, LM_LAUNCH_ERR_LAUNCH);
 		return Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, row.share, 0u, state->row_normed, state->normed);
 	}
