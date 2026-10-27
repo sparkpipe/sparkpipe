@@ -576,12 +576,14 @@ static __device__ __forceinline__ void LmSkinnyGroupedBatchScan(const uint32_t *
 template<class Format, uint32_t LANES, uint32_t ROWS, uint32_t NPG>
 __global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnyGroupedKernel(const __grid_constant__ LmSkinnyArguments args)
 {
+	constexpr bool kBatched = ROWS > LM_SKINNY_ROWS_MID;
 	__shared__ uint32_t offset[LM_SKINNY_GROUPED_MAX_GROUPS + 1u];
-	__shared__ uint32_t batch_first[LM_SKINNY_GROUPED_MAX_GROUPS + 1u];
+	__shared__ uint32_t batch_first[kBatched ? LM_SKINNY_GROUPED_MAX_GROUPS + 1u : 1u];
 	__shared__ uint32_t warp_total[LM_SKINNY_THREADS / 32u];
 	const uint32_t sub = threadIdx.x % LANES, task = (blockIdx.x * LM_SKINNY_THREADS + threadIdx.x) / LANES, per_group = (args.output_dimension + NPG - 1u) / NPG;
-	const uint32_t batch = task / per_group, neuron = (task % per_group) * NPG;
+	const uint32_t item = task / per_group, neuron = (task % per_group) * NPG;
 	const uint32_t chunks = args.input_dimension / LmSkinnyFormat<Format>::kElements;
+	const uint32_t *first = kBatched ? batch_first : offset;
 	uint32_t index, group, high, middle, count, row;
 	float accumulator[NPG][ROWS];
 	const uint4 *weights[NPG];
@@ -590,20 +592,23 @@ __global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnyGroupedKernel(const
 	for ( index = threadIdx.x; index <= args.groups; index += LM_SKINNY_THREADS )
 		offset[index] = args.group_row_offset[index];
 	__syncthreads();
-	LmSkinnyGroupedBatchScan<ROWS>(offset,args.groups,batch_first,warp_total);
-	if ( batch >= batch_first[args.groups] )
+	if constexpr ( kBatched )
+		LmSkinnyGroupedBatchScan<ROWS>(offset,args.groups,batch_first,warp_total);
+	if ( item >= first[args.groups] )
 		return;
 	group = 0u;
 	high = args.groups - 1u;
 	while ( group < high )
 	{
 		middle = (group + high + 1u) / 2u;
-		if ( batch_first[middle] <= batch )
+		if ( first[middle] <= item )
 			group = middle;
 		else
 			high = middle - 1u;
 	}
-	row = offset[group] + (batch - batch_first[group]) * ROWS;
+	if ( !kBatched && (item - offset[group]) % ROWS != 0u )
+		return;
+	row = kBatched ? offset[group] + (item - batch_first[group]) * ROWS : item;
 	count = offset[group + 1u] - row < ROWS ? offset[group + 1u] - row : ROWS;
 	LmSkinnyWeightRows<Format,NPG>(args,group,neuron,weights);
 	LmSkinnyGroupedActivation<ROWS>(args,row,count,activation);
@@ -625,7 +630,7 @@ static int32_t LmSkinnyGroupedShape(const LmSkinnyArguments *args, cudaStream_t 
 {
 	const uint32_t per_group = (args->output_dimension + NPG - 1u) / NPG;
 	const uint64_t batches = (args->pairs + ROWS - 1u) / ROWS + (uint64_t)args->groups;
-	uint64_t tasks = (batches < args->pairs ? batches : (uint64_t)args->pairs) * per_group;
+	uint64_t tasks = (ROWS > LM_SKINNY_ROWS_MID && batches < args->pairs ? batches : (uint64_t)args->pairs) * per_group;
 	if ( (per_group % (32u / LANES)) != 0u || args->groups > LM_SKINNY_GROUPED_MAX_GROUPS )
 		return(LM_LAUNCH_ERR_SHAPE);
 	LM_LAUNCH_DEPENDENT((LmSkinnyGroupedKernel<Format,LANES,ROWS,NPG>),(uint32_t)((tasks * LANES + LM_SKINNY_THREADS - 1u) / LM_SKINNY_THREADS),LM_SKINNY_THREADS,0u,stream,*args);
