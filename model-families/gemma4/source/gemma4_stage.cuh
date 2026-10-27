@@ -169,6 +169,9 @@ struct GemmaState
 	GemmaLayer layers[G::kLayers];
 	void *arena;
 	uint64_t arena_bytes;
+	void *lane_arena;
+	uint64_t lane_bytes;
+	GemmaState *lane_states[SPARK_STAGE_RUNNER_LANES];
 	uint16_t *normed;
 	uint16_t *partial;
 	uint16_t *attn_local;
@@ -442,6 +445,12 @@ struct GemmaModel
 		return cudaPeekAtLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 	}
 
+	static void RowState(const State *state, uint32_t layer, uint32_t phase)
+	{
+		if ( state->services->row_state != 0 )
+			state->services->row_state(state->services->context, layer, phase);
+	}
+
 	template<bool FULL>
 	static SparkStatus Attention(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
 	{
@@ -484,8 +493,10 @@ struct GemmaModel
 				FULL ? state->full_inv_freq : (const float *)0, FULL ? G::kFullRopeScale : 1.0f, 0u);
 		}
 		GemmaPackSlotKernel<<<dim3(Blocks(2u * KVW), rows), GM_THREADS, 0, stream>>>(state->key, state->value, state->slot, KVW);
+		RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		LM_LAUNCH((LmKvShardStoreKernel<Kv,GM_THREADS>), rows, GM_THREADS, 0, stream, *view, state->slot, step->sequence_of_row, step->positions,
 			rows, 2u * KVW);
+		RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( Launched() != SPARK_STATUS_OK ||
 			LmGqaShardPartialLaunch<Kv,LmKvShardView,KVH,HD,HD>(*view, state->query, HEADS, step->sequence_of_row, step->context_length,
 				step->positions, G::kAttentionScale, state->send, stride, rows, stream, (const uint32_t *)0, 0u, 1u, FULL ? 0u : layer->window) != cudaSuccess )
@@ -746,7 +757,7 @@ struct GemmaModel
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Plan(State *state, uint64_t *bytes, uint8_t *base)
+	static SparkStatus Plan(State *state, uint64_t *bytes, uint8_t *base, uint32_t lane)
 	{
 		const uint64_t rows = state->max_rows, width = rows * G::kHidden * sizeof(uint16_t), routes = rows * G::kTopK;
 		const uint64_t groups = G::kMoe ? G::kLocalExperts + 2u : 0u;
@@ -767,7 +778,7 @@ struct GemmaModel
 			{ (void **)&state->gate_logits, G::kOutputGate ? rows * (S::kMaxQ / state->tp_degree) * sizeof(uint16_t) : G::kHeadGate ? rows * S::kMaxGateRows * sizeof(uint16_t) : 0u },
 			{ (void **)&state->gate_up, rows * 2u * state->ffn_rows * sizeof(uint16_t) },
 			{ (void **)&state->intermediate, rows * state->ffn_rows * sizeof(uint16_t) },
-			{ (void **)&state->full_inv_freq, (G::kFullDim / 2u) * sizeof(float) },
+			{ (void **)&state->full_inv_freq, lane == 0u ? (G::kFullDim / 2u) * sizeof(float) : 0u },
 			{ (void **)&state->moe_normed, G::kMoe ? width : 0u },
 			{ (void **)&state->router_logits, rows * G::kExperts * sizeof(uint16_t) },
 			{ (void **)&state->router_probs, rows * G::kExperts * sizeof(float) },
@@ -784,7 +795,7 @@ struct GemmaModel
 			{ (void **)&state->expert_up, routes * G::kMoeInter * sizeof(uint16_t) },
 			{ (void **)&state->expert_act, routes * G::kMoeInter * sizeof(uint16_t) },
 			{ (void **)&state->expert_out, routes * G::kHidden * sizeof(uint16_t) },
-			{ (void **)&state->kv_error, sizeof(LmKvAccessError) },
+			{ (void **)&state->kv_error, lane == 0u ? sizeof(LmKvAccessError) : 0u },
 		};
 		uint64_t cursor = 0u;
 		for ( uint32_t index = 0u; index < sizeof(plan) / sizeof(plan[0]); ++index )
@@ -805,6 +816,10 @@ struct GemmaModel
 			return;
 		if ( state->arena != 0 )
 			(void)cudaFree(state->arena);
+		if ( state->lane_arena != 0 )
+			(void)cudaFree(state->lane_arena);
+		for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
+			free(state->lane_states[lane]);
 		if ( state->pack_open != 0u )
 			SparkNamedPackClose(&state->pack);
 		free(state);
@@ -869,12 +884,15 @@ struct GemmaModel
 			LmGqaShardRecordFloats(G::kFullHeads, G::kFullDim, state->tp_degree) : LmGqaShardRecordFloats(G::kSlidingHeads, G::kSlidingDim, state->tp_degree);
 		state->record_stride = (((uint64_t)state->max_rows * record_floats * sizeof(float) + G::kHidden * sizeof(uint16_t) - 1u) /
 			(G::kHidden * sizeof(uint16_t))) * G::kHidden * sizeof(uint16_t) / sizeof(float);
-		status = Plan(state, &state->arena_bytes, 0);
+		status = Plan(state, &state->arena_bytes, 0, 0u);
+		if ( status == SPARK_STATUS_OK )
+			status = Plan(state, &state->lane_bytes, 0, 1u);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( state->arena_bytes > configuration->state_budget_bytes )
+		if ( state->arena_bytes + state->lane_bytes > configuration->state_budget_bytes )
 		{
-			fprintf(stderr, "%s: rank state %llu bytes is over the %llu-byte budget\n", G::Tag(), (unsigned long long)state->arena_bytes,
+			fprintf(stderr, "%s: rank state %llu bytes (%llu for the second prefill lane) is over the %llu-byte budget\n", G::Tag(),
+				(unsigned long long)(state->arena_bytes + state->lane_bytes), (unsigned long long)state->lane_bytes,
 				(unsigned long long)configuration->state_budget_bytes);
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
@@ -1058,8 +1076,19 @@ struct GemmaModel
 			state->arena = 0;
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
-		if ( cudaMemset(state->arena, 0, state->arena_bytes) != cudaSuccess || Plan(state, &state->arena_bytes, (uint8_t *)state->arena) != SPARK_STATUS_OK )
+		if ( cudaMemset(state->arena, 0, state->arena_bytes) != cudaSuccess || Plan(state, &state->arena_bytes, (uint8_t *)state->arena, 0u) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		if ( cudaMalloc(&state->lane_arena, state->lane_bytes) != cudaSuccess )
+		{
+			state->lane_arena = 0;
+			fprintf(stderr, "%s: the %llu-byte second lane state could not be allocated\n", G::Tag(), (unsigned long long)state->lane_bytes);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		}
+		if ( cudaMemset(state->lane_arena, 0, state->lane_bytes) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
+			if ( (state->lane_states[lane] = (State *)calloc(1u, sizeof(State))) == 0 )
+				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		for ( uint32_t pair = 0u; pair < G::kFullDim / 2u; ++pair )
 			inv_freq[pair] = pair < G::kFullRopePairs ? (float)(1.0 / pow((double)G::kFullTheta, 2.0 * pair / (double)G::kFullDim)) : 0.0f;
 		if constexpr ( G::kYarnFactor > 1.0f )
@@ -1127,6 +1156,29 @@ struct GemmaModel
 			(unsigned long long)state->arena_bytes, state->slots, state->max_rows, state->ffn_rows, state->expert_first);
 	}
 
+	static SparkStatus Lane(void *model, uint32_t lane, const SparkStageRunnerStep *step, const SparkStageRunnerServices *services, void **lane_model)
+	{
+		State *state = (State *)model;
+		State *copy;
+		uint64_t bytes = 0u;
+		if ( lane >= SPARK_STAGE_RUNNER_LANES || step == 0 || services == 0 || lane_model == 0 || state->lane_states[lane] == 0 || state->lane_arena == 0 )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		if ( step->commit == 0u )
+			return SPARK_STATUS_UNSUPPORTED;
+		copy = state->lane_states[lane];
+		memcpy(copy, state, sizeof(*copy));
+		copy->services = services;
+		if ( lane != 0u )
+		{
+			if ( Plan(copy, &bytes, (uint8_t *)state->lane_arena, lane) != SPARK_STATUS_OK || bytes != state->lane_bytes )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			copy->full_inv_freq = state->full_inv_freq;
+			copy->kv_error = state->kv_error;
+		}
+		*lane_model = copy;
+		return SPARK_STATUS_OK;
+	}
+
 	static const SparkStageRunnerModelInterface *Interface(void)
 	{
 		static const SparkStageRunnerModelInterface interface_table =
@@ -1145,7 +1197,9 @@ struct GemmaModel
 			RecurrentCopy,
 			ResetSlot,
 			ProbeBuffers,
-			Report
+			Report,
+			0,
+			Lane
 		};
 		return &interface_table;
 	}
