@@ -69,15 +69,19 @@ def coupled_choice(logits, sampling, position):
 
 
 class SafeTensors:
-    def __init__(self, path):
+    def __init__(self, path, prefix=""):
         self.path = Path(path)
+        self.prefix = prefix
         with open(self.path, "rb") as handle:
             size = struct.unpack("<Q", handle.read(8))[0]
             self.header = json.loads(handle.read(size))
         self.base = 8 + size
 
+    def names(self):
+        return {name[len(self.prefix):] for name in self.header if name != "__metadata__" and name.startswith(self.prefix)}
+
     def load(self, name, device):
-        entry = self.header[name]
+        entry = self.header[self.prefix + name]
         numpy_type, torch_type = DTYPES[entry["dtype"]]
         begin, end = entry["data_offsets"]
         array = np.memmap(self.path, dtype=numpy_type, mode="r", offset=self.base + begin, shape=((end - begin) // np.dtype(numpy_type).itemsize,))
@@ -151,8 +155,14 @@ class BlockDrafter:
     def __init__(self, directory, shard, names, device):
         self.device = device
         raw = json.load(open(Path(directory) / "config.json"))
-        self.config = c = {**raw.get("transformer_layer_config", {}), **{k: v for k, v in raw.items() if k != "transformer_layer_config"}}
-        weights = SafeTensors(Path(directory) / "model.safetensors")
+        if "dspark_target_layer_ids" in raw:
+            self.config = c = {**raw, "num_hidden_layers": raw["dspark_num_hidden_layers"], "block_size": raw["dspark_block_size"],
+                               "aux_hidden_state_layer_ids": raw["dspark_target_layer_ids"], "mask_token_id": raw["dspark_noise_token_id"],
+                               "use_sliding_window": False}
+            weights = SafeTensors(Path(directory) / "model-dspark.safetensors", "mtp.")
+        else:
+            self.config = c = {**raw.get("transformer_layer_config", {}), **{k: v for k, v in raw.items() if k != "transformer_layer_config"}}
+            weights = SafeTensors(Path(directory) / "model.safetensors")
         target = TargetTensors(shard)
         self.eps = c["rms_norm_eps"]
         self.heads, self.kv_heads, self.head_dim = c["num_attention_heads"], c["num_key_value_heads"], c["head_dim"]
@@ -170,7 +180,7 @@ class BlockDrafter:
             self.layers.append({name: weights.load(prefix + name + ".weight", device) for name in (
                 "input_layernorm", "post_attention_layernorm", "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj",
                 "self_attn.o_proj", "self_attn.q_norm", "self_attn.k_norm", "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj")})
-        has = weights.header.keys()
+        has = weights.names()
         self.markov_w1 = weights.load("markov_head.markov_w1.weight", device) if "markov_head.markov_w1.weight" in has else None
         self.markov_w2 = weights.load("markov_head.markov_w2.weight", device) if "markov_head.markov_w2.weight" in has else None
         self.confidence = (weights.load("confidence_head.proj.weight", device), weights.load("confidence_head.proj.bias", device)) \
