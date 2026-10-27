@@ -378,10 +378,15 @@ memory:
   the engine's cache (`--slack`, 512 tokens: two blocks of the largest KV
   block), and all turns together re-read at most 5% more prompt tokens than
   the Full context chats;
-- every background memory job finishes;
+- every background memory job finishes, and every chat has at least one
+  finished curator job (prewarm jobs alone do not count);
+- the probe turns' prompts average at most 0.9 of the Full context chats'
+  (`--smaller`), so the ledger actually replaced old turns;
 - user turns see no more stale prefix recomputes than with Full context.
 
-The Full context chats must start no memory job. Stale prefix recomputes are
+The Full context chats must start no memory job, and the same checks run with
+the Full context chats in the memory arm's place must fail: a gate a
+memory-off chat could pass would not show that memory engaged. Stale prefix recomputes are
 reported per arm for user turns and for background jobs: the engine recomputes
 a prefix its index still lists but the ranks no longer hold, which costs
 prefill but not correctness. Reports are kept under

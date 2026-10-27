@@ -181,6 +181,34 @@ def run_chat(args, secret, marker, turns, probes, arm):
             "jobs": [{k: job.get(k) for k in ("kind", "outcome", "prompt_tokens", "cached_tokens", "seconds")} for job in jobs]}
 
 
+def qualify(results, memory, full, slack, smaller):
+    arms = (memory, full)
+    recall = {arm: sum(p["correct"] for r in results if r["arm"] == arm for p in r["probes"]) for arm in arms}
+    probes = sum(len(r["probes"]) for r in results if r["arm"] == memory)
+    misses = [dict(miss, chat=r["chat"]) for r in results if r["arm"] == memory for miss in kept_previous(r["rows"], slack)]
+    uncached = {arm: sum(row["prompt_tokens"] - row["cached_tokens"] for r in results if r["arm"] == arm for row in r["rows"]) for arm in arms}
+    memory_jobs_done = [r for r in results if r["arm"] == memory]
+    failed_jobs = [job for r in memory_jobs_done for job in r["jobs"] if job["outcome"] != "done"]
+    full_jobs = [job for r in results if r["arm"] == "full" for job in r["jobs"]]
+    stale = {arm: {kind: sum(r["stale"][kind] for r in results if r["arm"] == arm) for kind in ("turns", "background")} for arm in arms}
+    prompt = {arm: round(sum(row["prompt_tokens"] for r in results if r["arm"] == arm for row in r["rows"]) / max(1, sum(len(r["rows"]) for r in results if r["arm"] == arm))) for arm in arms}
+    probe_prompt = {arm: sum(row["prompt_tokens"] for r in results if r["arm"] == arm for row in r["rows"] if row["kind"] == "probe") /
+                    max(1, sum(1 for r in results if r["arm"] == arm for row in r["rows"] if row["kind"] == "probe")) for arm in arms}
+    checks = {
+        "recall": recall[memory] >= recall[full] - 1,
+        "keeps_previous_prompt": not misses,
+        "rereads_no_more_than_full": uncached[memory] <= uncached[full] * 1.05,
+        "memory_jobs": not failed_jobs,
+        "memory_curated_every_chat": bool(memory_jobs_done) and all(any(job["kind"] == "curator" and job["outcome"] == "done" for job in r["jobs"]) for r in memory_jobs_done),
+        "memory_prompt_clearly_smaller": probe_prompt[memory] <= smaller * probe_prompt[full],
+        "full_context_has_no_memory_jobs": not full_jobs,
+        "no_stale_recomputes_from_memory": stale[memory]["turns"] <= stale[full]["turns"],
+    }
+    measured = {"recall": recall, "probes": probes, "misses": misses, "uncached": uncached, "failed_jobs": failed_jobs, "stale": stale, "prompt": prompt,
+                "probe_prompt": {arm: round(value) for arm, value in probe_prompt.items()}}
+    return checks, measured
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", required=True)
@@ -190,6 +218,7 @@ def main():
     parser.add_argument("--quiet", type=float, default=8.0)
     parser.add_argument("--slack", type=int, default=512, help="tokens a turn may recompute of the previous prompt: two KV blocks of the largest block size")
     parser.add_argument("--note-words", type=int, default=1800)
+    parser.add_argument("--smaller", type=float, default=0.9, help="the memory arm's mean probe prompt may be at most this share of the full arm's")
     parser.add_argument("--url", default="http://127.0.0.1:8433/v1/chat/completions")
     parser.add_argument("--layer", type=Path, default=Path.home() / "sparkpipe-chat")
     parser.add_argument("--chat-log", type=Path, default=Path.home() / "sparkpipe-chat" / "chat.log")
@@ -206,28 +235,16 @@ def main():
             result = run_chat(args, secret, memory.MEMORY_OFF, turns, probes, arm)
             results.append(result)
             print(json.dumps({"chat": index, "arm": arm, "correct": sum(p["correct"] for p in result["probes"]), "probes": len(result["probes"])}), flush=True)
-    recall = {arm: sum(p["correct"] for r in results if r["arm"] == arm for p in r["probes"]) for arm in ("memory", "full")}
-    probes = sum(len(r["probes"]) for r in results if r["arm"] == "memory")
-    misses = [dict(miss, chat=r["chat"]) for r in results if r["arm"] == "memory" for miss in kept_previous(r["rows"], args.slack)]
-    uncached = {arm: sum(row["prompt_tokens"] - row["cached_tokens"] for r in results if r["arm"] == arm for row in r["rows"]) for arm in ("memory", "full")}
-    failed_jobs = [job for r in results if r["arm"] == "memory" for job in r["jobs"] if job["outcome"] != "done"]
-    full_jobs = [job for r in results if r["arm"] == "full" for job in r["jobs"]]
-    stale = {arm: {kind: sum(r["stale"][kind] for r in results if r["arm"] == arm) for kind in ("turns", "background")} for arm in ("memory", "full")}
-    prompt = {arm: round(sum(row["prompt_tokens"] for r in results if r["arm"] == arm for row in r["rows"]) / max(1, sum(len(r["rows"]) for r in results if r["arm"] == arm))) for arm in ("memory", "full")}
-    checks = {
-        "recall": recall["memory"] >= recall["full"] - 1,
-        "keeps_previous_prompt": not misses,
-        "rereads_no_more_than_full": uncached["memory"] <= uncached["full"] * 1.05,
-        "memory_jobs": not failed_jobs,
-        "full_context_has_no_memory_jobs": not full_jobs,
-        "no_stale_recomputes_from_memory": stale["memory"]["turns"] <= stale["full"]["turns"],
-    }
+    checks, measured = qualify(results, "memory", "full", args.slack, args.smaller)
+    control, _ = qualify(results, "full", "full", args.slack, args.smaller)
+    checks["memory_off_control_fails"] = not all(control.values())
+    recall, probes, misses, uncached, failed_jobs, stale, prompt = (measured[key] for key in ("recall", "probes", "misses", "uncached", "failed_jobs", "stale", "prompt"))
     report = {"model": args.model, "chats": args.chats, "seed": args.seed, "effort": args.effort, "recall": recall, "probes_per_arm": probes,
-              "mean_prompt_tokens": prompt, "uncached_prompt_tokens": uncached, "previous_prompt_misses": misses, "failed_jobs": failed_jobs,
+              "mean_prompt_tokens": prompt, "mean_probe_prompt_tokens": measured["probe_prompt"], "uncached_prompt_tokens": uncached, "previous_prompt_misses": misses, "failed_jobs": failed_jobs,
               "stale_prefix_recomputes": stale, "checks": checks, "qualified": all(checks.values()), "results": results}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=1) + "\n")
-    print(json.dumps({k: report[k] for k in ("model", "recall", "probes_per_arm", "mean_prompt_tokens", "uncached_prompt_tokens", "previous_prompt_misses", "stale_prefix_recomputes", "checks", "qualified")}))
+    print(json.dumps({k: report[k] for k in ("model", "recall", "probes_per_arm", "mean_prompt_tokens", "mean_probe_prompt_tokens", "uncached_prompt_tokens", "previous_prompt_misses", "stale_prefix_recomputes", "checks", "qualified")}))
     sys.exit(0 if report["qualified"] else 1)
 
 
