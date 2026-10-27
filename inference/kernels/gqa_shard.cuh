@@ -12,7 +12,7 @@
 #define LM_GQA_SHARD_TILED_WARPS 8u
 #define LM_GQA_SHARD_TILED_THREADS (LM_GQA_SHARD_TILED_WARPS * 32u)
 #define LM_GQA_SHARD_TILED_QUERIES (LM_GQA_SHARD_TILED_WARPS * 16u)
-#define LM_GQA_SHARD_TILED_TILE 64u
+#define LM_GQA_SHARD_TILED_VALUE_PART 128u
 
 static __host__ __device__ __forceinline__ uint32_t LmGqaShardWidth(uint32_t heads, uint32_t value_dim, uint32_t degree)
 {
@@ -154,16 +154,28 @@ void LmGqaShardPartialKernel(
 	}
 }
 
+template<uint32_t HEAD_DIM>
+static __host__ __device__ constexpr uint32_t LmGqaShardTiledTile(void)
+{
+	return(HEAD_DIM <= 192u ? 64u : 32u);
+}
+
+template<uint32_t VALUE_DIM>
+static __host__ __device__ constexpr uint32_t LmGqaShardTiledValuePart(void)
+{
+	return(VALUE_DIM < LM_GQA_SHARD_TILED_VALUE_PART ? VALUE_DIM : LM_GQA_SHARD_TILED_VALUE_PART);
+}
+
 template<uint32_t HEAD_DIM, uint32_t VALUE_DIM>
 static __host__ __device__ constexpr bool LmGqaShardTiledFits(void)
 {
-	return(HEAD_DIM % 64u == 0u && VALUE_DIM % 64u == 0u && HEAD_DIM <= 192u && VALUE_DIM <= 128u);
+	return(HEAD_DIM % 64u == 0u && VALUE_DIM % 64u == 0u && HEAD_DIM <= 256u && VALUE_DIM % LmGqaShardTiledValuePart<VALUE_DIM>() == 0u);
 }
 
 template<uint32_t HEAD_DIM, uint32_t VALUE_DIM>
 static __host__ __device__ constexpr uint32_t LmGqaShardTiledSharedBytes(void)
 {
-	return(2u * LM_GQA_SHARD_TILED_TILE * (HEAD_DIM + VALUE_DIM) * 2u + 2u * LM_GQA_SHARD_TILED_TILE * 8u + 4u * 4u);
+	return(2u * LmGqaShardTiledTile<HEAD_DIM>() * (HEAD_DIM + LmGqaShardTiledValuePart<VALUE_DIM>()) * 2u + 2u * LmGqaShardTiledTile<HEAD_DIM>() * 8u + 4u * 4u);
 }
 
 template<class Geometry, class Pages, uint32_t KV_HEADS, uint32_t HEAD_DIM, uint32_t VALUE_DIM>
@@ -184,11 +196,11 @@ void LmGqaShardTiledKernel(
 	uint32_t block_tokens,
 	uint32_t window)
 {
-	constexpr uint32_t TILE = LM_GQA_SHARD_TILED_TILE;
-	constexpr uint32_t KEY_BYTES = HEAD_DIM * 2u, VALUE_BYTES = VALUE_DIM * 2u;
-	constexpr uint32_t KEY_CHUNKS = HEAD_DIM / 8u, VALUE_CHUNKS = VALUE_DIM / 8u;
-	constexpr uint32_t K_STEPS = HEAD_DIM / 16u, KEY_FRAGS = TILE / 8u, P_STEPS = TILE / 16u, VALUE_FRAGS = VALUE_DIM / 8u;
-	static_assert(LmGqaShardTiledFits<HEAD_DIM,VALUE_DIM>(), "a warp holds its 16 queries, a 64-key score tile and the value accumulators in registers");
+	constexpr uint32_t TILE = LmGqaShardTiledTile<HEAD_DIM>(), PART = LmGqaShardTiledValuePart<VALUE_DIM>();
+	constexpr uint32_t KEY_BYTES = HEAD_DIM * 2u, VALUE_BYTES = PART * 2u;
+	constexpr uint32_t KEY_CHUNKS = HEAD_DIM / 8u, VALUE_CHUNKS = PART / 8u;
+	constexpr uint32_t K_STEPS = HEAD_DIM / 16u, KEY_FRAGS = TILE / 8u, P_STEPS = TILE / 16u, VALUE_FRAGS = PART / 8u;
+	static_assert(LmGqaShardTiledFits<HEAD_DIM,VALUE_DIM>(), "a warp holds its 16 queries, a score tile and the accumulators of one value part in registers");
 	static_assert(Geometry::kSlotBytes == KV_HEADS * (HEAD_DIM + VALUE_DIM) * 2u,
 		"a slot is [K: kv heads x head_dim][V: kv heads x value_dim] bf16 and nothing else");
 	static_assert(LmGqaShardTiledSharedBytes<HEAD_DIM,VALUE_DIM>() <= LM_PREFILL_ATTN_SHARED_LIMIT, "the key and value tiles exceed the shared memory an SM has");
@@ -198,7 +210,7 @@ void LmGqaShardTiledKernel(
 	const uint8_t **slots = (const uint8_t **)(values + 2u * TILE * VALUE_BYTES);
 	uint32_t *run = (uint32_t *)(slots + 2u * TILE);
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, matrix = lane >> 3u, within = lane & 7u;
-	const uint32_t kv_head = blockIdx.y, group = heads / KV_HEADS, degree = cache.shard.degree;
+	const uint32_t kv_head = blockIdx.y, part = blockIdx.z, group = heads / KV_HEADS, degree = cache.shard.degree;
 	const uint32_t vectors = rows * group, block_first = blockIdx.x * LM_GQA_SHARD_TILED_QUERIES;
 	const uint32_t block_last = (block_first + LM_GQA_SHARD_TILED_QUERIES < vectors ? block_first + LM_GQA_SHARD_TILED_QUERIES : vectors) - 1u;
 	const uint32_t row_last = block_last / group;
@@ -252,7 +264,7 @@ void LmGqaShardTiledKernel(
 					slot != 0 ? (const void *)(slot + (kv_head * HEAD_DIM + piece * 8u) * 2u) : (const void *)query_bf16, slot != 0 ? 16u : 0u);
 			else
 				LmPrefillCopy(value_base + (buffer * TILE + key) * VALUE_BYTES + LmPrefillSwizzle(key,piece - KEY_CHUNKS) * 16u,
-					slot != 0 ? (const void *)(slot + (KV_HEADS * HEAD_DIM + kv_head * VALUE_DIM + (piece - KEY_CHUNKS) * 8u) * 2u) : (const void *)query_bf16,
+					slot != 0 ? (const void *)(slot + (KV_HEADS * HEAD_DIM + kv_head * VALUE_DIM + part * PART + (piece - KEY_CHUNKS) * 8u) * 2u) : (const void *)query_bf16,
 					slot != 0 ? 16u : 0u);
 		}
 		asm volatile("cp.async.commit_group;\n" ::: "memory");
@@ -429,13 +441,13 @@ void LmGqaShardTiledKernel(
 	for (side = 0u; side < 2u; ++side)
 	{
 		uint32_t destination, element;
-		const uint32_t start = head[side] * VALUE_DIM, finish = start + VALUE_DIM;
+		const uint32_t start = head[side] * VALUE_DIM, finish = start + VALUE_DIM, columns = start + part * PART;
 		if ( !valid[side] )
 			continue;
 		for (destination = start / width; destination < degree && destination * width < finish; ++destination)
 		{
 			float *base = send + (uint64_t)destination * destination_stride + (uint64_t)row[side] * record;
-			if ( (lane & 3u) == 0u )
+			if ( part == 0u && (lane & 3u) == 0u )
 			{
 				base[width + 2u * (head[side] - (destination * width) / VALUE_DIM)] = running_max[side];
 				base[width + 2u * (head[side] - (destination * width) / VALUE_DIM) + 1u] = running_sum[side];
@@ -445,7 +457,7 @@ void LmGqaShardTiledKernel(
 				#pragma unroll
 				for (entry = 0u; entry < 2u; ++entry)
 				{
-					element = start + frag * 8u + 2u * (lane & 3u) + entry;
+					element = columns + frag * 8u + 2u * (lane & 3u) + entry;
 					if ( element >= destination * width && element < (destination + 1u) * width )
 						base[element - destination * width] = output[frag][2u * side + entry];
 				}
@@ -542,7 +554,7 @@ static inline cudaError_t LmGqaShardPartialLaunch(
 			granted = true;
 		}
 		LmGqaShardTiledKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM><<<dim3((rows * (heads / KV_HEADS) + LM_GQA_SHARD_TILED_QUERIES - 1u) /
-			LM_GQA_SHARD_TILED_QUERIES,KV_HEADS),LM_GQA_SHARD_TILED_THREADS,shared,stream>>>(
+			LM_GQA_SHARD_TILED_QUERIES,KV_HEADS,VALUE_DIM / LmGqaShardTiledValuePart<VALUE_DIM>()),LM_GQA_SHARD_TILED_THREADS,shared,stream>>>(
 			cache,query_bf16,heads,sequence_of_row,context_length,row_position,qk_scale,send,destination_stride,rows,block_mask,mask_words,block_tokens,window);
 		return(cudaPeekAtLastError());
 	}

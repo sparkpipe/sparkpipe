@@ -276,11 +276,18 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
 - Tile bounds are absolute and a fully masked tile leaves the state exact,
   so a row's result does not depend on the rows beside it. The launch
   therefore uses the tiled kernel for every row count of a geometry it
-  fits (key heads up to 192, value heads up to 128): decode, verify and
-  prefill rows compute the same bits.
+  fits (key heads up to 256 wide, value heads any multiple of 64): decode,
+  verify and prefill rows compute the same bits.
+- Keys up to 192 wide take 64-key tiles, wider keys 32-key tiles. Value
+  heads wider than 128 split into 128-column parts over the grid's third
+  dimension; each part recomputes the scores and only part 0 writes the
+  running max and sum.
 - On GB10, 64 heads over 8 KV heads of 128 and 8,192 local keys: 2,048 rows
   take 14.6 ms (37.8 TFLOP/s) against 470 ms for the scalar kernel, and one
-  decode row at 128K positions 0.54 ms against 6.4 ms.
+  decode row at 128K positions 0.54 ms against 6.4 ms. With 24 heads over 4
+  KV heads of 256 and 4,096 local keys: 2,048 rows take 7.5 ms (27.6 TFLOP/s
+  counting each part's scores once) against 105 ms, and one decode row 0.36
+  ms against 2.8 ms.
 
 **Projections (`project.cuh`)**
 

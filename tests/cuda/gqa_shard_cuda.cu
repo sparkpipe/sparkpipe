@@ -438,6 +438,12 @@ int main(void)
 	ProbeTiled<8u,128u,128u>(64u,2u,200u,9000u,4u,1u,1u,4096u,0u,false);
 	ProbeTiled<4u,128u,128u>(24u,3u,41u,3000u,16u,2u,1u,0u,64u,false);
 	ProbeTiled<8u,192u,128u>(64u,2u,90u,4000u,16u,7u,1u,128u,0u,false);
+	ProbeTiled<4u,256u,256u>(24u,3u,41u,3000u,16u,6u,1u,0u,0u,false);
+	ProbeTiled<16u,256u,256u>(32u,2u,70u,5000u,16u,9u,1u,1024u,0u,false);
+	ProbeTiled<4u,256u,256u>(24u,2u,40u,3000u,16u,1u,1u,0u,64u,false);
+	ProbeTiled<4u,128u,512u>(32u,2u,33u,2048u,16u,4u,1u,0u,0u,false);
+	ProbeTiled<4u,256u,256u>(24u,1u,1u,65536u,16u,0u,1u,0u,0u,true);
+	ProbeTiled<4u,256u,256u>(24u,1u,2048u,65536u,16u,0u,1u,0u,0u,true);
 	ProbeTiled<8u,128u,128u>(64u,1u,2048u,131072u,16u,0u,1u,0u,0u,true);
 	ProbeTiled<8u,128u,128u>(64u,1u,1u,131072u,16u,0u,1u,0u,0u,true);
 	if ( probe_failures != 0 )
