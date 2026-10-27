@@ -27,10 +27,6 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_gemv_f32_r2",
 	"spark_gemv_f32_r4",
 	"spark_gemv_f32_r8",
-	"spark_gemv_gated_r1",
-	"spark_gemv_gated_r2",
-	"spark_gemv_gated_r4",
-	"spark_gemv_gated_r8",
 	"spark_gemm",
 	"spark_gemm_f32",
 	"spark_gemm_rows16",
@@ -329,8 +325,6 @@ SparkStatus SparkOpsHeadRmsNormRope(SparkDeviceOps *ops, SparkDeviceQueue *queue
 static SparkOpsKernel OpsGemvKernel(const SparkGemvParams *params, uint32_t rows)
 {
 	const uint32_t slot = rows == 8u ? 3u : rows == 4u ? 2u : rows == 2u ? 1u : 0u;
-	if ( params->gated_input != 0u )
-		return((SparkOpsKernel)(SPARK_OPS_GEMV_GATED_R1 + slot));
 	if ( params->output_f32 != 0u )
 		return((SparkOpsKernel)(SPARK_OPS_GEMV_F32_R1 + slot));
 	return((SparkOpsKernel)(SPARK_OPS_GEMV_R1 + slot));
@@ -374,17 +368,17 @@ SparkStatus SparkOpsLinear(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTe
 {
 	const uint32_t K = params->input_dimension, N = params->output_dimension;
 	const uint32_t element = params->output_f32 != 0u ? (uint32_t)sizeof(float) : (uint32_t)sizeof(uint16_t);
-	const uint32_t input_width = params->gated_input != 0u ? 2u * K : K;
 	SparkDeviceBinding bindings[3];
 	SparkGemvParams chunk;
 	SparkStatus status;
 	uint32_t done;
-	const uint32_t gemv = params->rows <= SPARK_OPS_GEMV_MAX_ROWS || params->row_exact != 0u ? 1u : 0u;
-	if ( params->rows == 0u || K == 0u || N == 0u || K % 8u != 0u || params->input_stride % 8u != 0u || params->input_stride < input_width ||
-		(gemv == 0u && (K % SPARK_GEMM_ROWS_DEPTH != 0u || params->gated_input != 0u)) || (params->output_f32 != 0u && params->gated_input != 0u) )
-		return(OpsRefuse("linear","an input width that is a multiple of 8 (of the row-tile depth above the GEMV rows), a stride that covers it, "
-			"and a gated input only on the GEMV"));
-	status = OpsNeed("linear","input",x,OpsRowsBytes(params->rows,params->input_stride,input_width,2u));
+	const uint32_t gemv = params->projection == SPARK_PROJECTION_GEMV && (params->rows <= SPARK_OPS_GEMV_MAX_ROWS || params->row_exact != 0u) ? 1u : 0u;
+	if ( params->rows == 0u || K == 0u || N == 0u || K % 8u != 0u || params->input_stride % 8u != 0u || params->input_stride < K ||
+		(gemv == 0u && K % SPARK_GEMM_ROWS_DEPTH != 0u) || (params->projection != SPARK_PROJECTION_GEMV && params->projection != SPARK_PROJECTION_ROW_TILES) ||
+		(params->projection == SPARK_PROJECTION_ROW_TILES && params->row_exact != 0u && params->rows > SPARK_OPS_DECODE_MAX_ROWS) )
+		return(OpsRefuse("linear","a known projection family, an input width that is a multiple of 8 (of the row-tile depth above the GEMV rows), "
+			"a stride that covers it, and row-exact frames of at most the decode rows on row tiles"));
+	status = OpsNeed("linear","input",x,OpsRowsBytes(params->rows,params->input_stride,K,2u));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("linear","weight",w,(uint64_t)N * K * sizeof(uint16_t));
 	if ( status == SPARK_STATUS_OK )
@@ -405,7 +399,7 @@ SparkStatus SparkOpsLinear(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTe
 		chunk = *params;
 		chunk.rows = left >= SPARK_OPS_GEMV_PASS_ROWS ? SPARK_OPS_GEMV_PASS_ROWS : left >= 4u ? 4u : left >= 2u ? 2u : 1u;
 		bindings[0] = OpsBind(SparkTensorSlice(x,(uint64_t)done * params->input_stride * sizeof(uint16_t),
-			OpsRowsBytes(chunk.rows,params->input_stride,input_width,2u)),SPARK_DEVICE_BIND_READ);
+			OpsRowsBytes(chunk.rows,params->input_stride,K,2u)),SPARK_DEVICE_BIND_READ);
 		bindings[2] = OpsBind(SparkTensorSlice(y,(uint64_t)done * params->output_stride * element,OpsRowsBytes(chunk.rows,params->output_stride,N,element)),
 			SPARK_DEVICE_BIND_WRITE);
 		const uint32_t outputs = SPARK_GEMV_ROW_OUTPUTS(chunk.rows);
@@ -791,7 +785,7 @@ SparkStatus SparkOpsLinearRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	SparkDeviceBinding bindings[4];
 	SparkStatus status;
 	if ( params->rows == 0u || K == 0u || N == 0u || K % 8u != 0u || params->input_stride % 8u != 0u || params->input_stride < K ||
-		params->route_divisor == 0u || params->output_f32 != 0u || params->gated_input != 0u || expert_count == 0u )
+		params->route_divisor == 0u || params->output_f32 != 0u || expert_count == 0u )
 		return(OpsRefuse("linear_routed","routes, an input width that is a multiple of 8, a source row per route divisor and BF16 output are required"));
 	status = OpsNeed("linear_routed","input",x,OpsRowsBytes(sources,params->input_stride,K,2u));
 	if ( status == SPARK_STATUS_OK )

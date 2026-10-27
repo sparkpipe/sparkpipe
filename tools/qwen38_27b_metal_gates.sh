@@ -16,8 +16,9 @@ control_pack=$out/control.pack
 batches=${SPARK_LADDER_BATCHES:-1,2,4,8,16,32,64}
 mkdir -p "$out/ref" "$out/metal" "$out/compare"
 cd "$root"
-make -s build/test_device_contract_metal build/test_metal_kernels build/device_bandwidth build/qwen38_27b_reference build/metal_stage_run build/logit_compare
+make -s build/test_device_contract_metal build/test_metal_bf16_convert build/test_metal_kernels build/device_bandwidth build/qwen38_27b_reference build/metal_stage_run build/logit_compare
 ./build/test_device_contract_metal > "$out/device_contract.txt"
+./build/test_metal_bf16_convert > "$out/bf16_convert.txt"
 ./build/test_metal_kernels "$out/kernels.json" > "$out/kernels.txt"
 ./build/device_bandwidth 16 "$pack" > "$out/bandwidth.json" 2> "$out/bandwidth.log"
 if [ ! -f "$out/ref/greedy.ref.json" ]; then

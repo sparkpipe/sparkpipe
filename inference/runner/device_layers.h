@@ -171,7 +171,7 @@ SparkStatus SparkDeviceBranchNorm(SparkDeviceStage *stage, SparkDeviceQueue *que
 SparkStatus SparkDeviceResidualNorm(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceStepTensors *tensors,
 	const SparkTensor *addend, SparkTensor weight, SparkTensor normed);
 SparkStatus SparkDeviceLinear(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor x, uint32_t x_stride, SparkTensor w, SparkTensor y,
-	uint32_t y_stride, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t gated);
+	uint32_t y_stride, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension);
 
 #ifdef __cplusplus
 }

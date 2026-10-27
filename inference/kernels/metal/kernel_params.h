@@ -3,6 +3,8 @@
 
 #define SPARK_KERNEL_ROPE_PAIRS 256u
 #define SPARK_GEMV_OUTPUTS 4u
+#define SPARK_PROJECTION_GEMV 0u
+#define SPARK_PROJECTION_ROW_TILES 1u
 #define SPARK_GEMV_ROW_OUTPUTS(rows) ((rows) >= 8u ? 1u : (rows) >= 4u ? 2u : SPARK_GEMV_OUTPUTS)
 #define SPARK_ATTENTION_BLOCK_ROWS(dim) ((dim) > 256u ? 16u : 32u)
 #define SPARK_GEMM_ROWS_OUTPUTS 128u
@@ -101,7 +103,7 @@ typedef struct SparkGemvParams
 	uint32_t input_stride;
 	uint32_t output_stride;
 	uint32_t output_f32;
-	uint32_t gated_input;
+	uint32_t projection;
 	uint32_t splits;
 	uint32_t split_span;
 	uint32_t row_exact;

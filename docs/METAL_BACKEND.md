@@ -89,7 +89,7 @@ tensor sizes before each launch.
 | `spark_head_rmsnorm_rope` | per-head RMSNorm with an optional FP32 gain, then rotary embedding with rotate-half pairs over the head's first `rope_dimension` dimensions, a table of up to 256 inverse frequencies (a zero frequency leaves its pair as it is), and either one FP32 rotation rounded once or the publisher's eager rounding (`bf16(bf16(x bf16(cos)) + bf16(p bf16(sin)))`) |
 | `spark_rmsnorm_branches` | sandwich norms: `h = bf16(h + bf16(rms(a) w))`, or with two branches `c = bf16(bf16(rms(a) w1) + bf16(rms(b) w2))` and `h = bf16(h + bf16(rms(c) w))`, then optionally `bf16(h * scalar)` |
 | `spark_rmsnorm_scaled` | `bf16(bf16(bf16(rms(x)) s) c)`: a weightless norm, a per-channel scale and a constant, each rounded (an expert router's input) |
-| `spark_gemv_r{1,2,4,8}`, `spark_gemv_f32_r*`, `spark_gemv_gated_r*` | decode projections for one or two rows, and verify frames in passes of up to eight rows: BF16 weights `[N, K]`, 4, 4, 2 and 1 outputs per threadgroup at 1, 2, 4 and 8 rows, the inner dimension split across the threadgroup's four SIMD groups, FP32 accumulation, BF16 or FP32 out, and the gated form that computes `bf16(silu(gate) * up)` from a fused input row |
+| `spark_gemv_r{1,2,4,8}`, `spark_gemv_f32_r*` | the GEMV family's projections for one or two rows, and its verify frames in passes of up to eight rows: BF16 weights `[N, K]`, 4, 4, 2 and 1 outputs per threadgroup at 1, 2, 4 and 8 rows, the inner dimension split across the threadgroup's four SIMD groups, FP32 accumulation, BF16 or FP32 out |
 | `spark_gemm_rows16`, `spark_gemm_rows32`, `spark_gemm_reduce` | decode projections for 3 to 64 rows on the tensor operations: 128 outputs per threadgroup, the weights staged through threadgroup memory 64 inputs at a time with the next slice prefetched into registers, the inner dimension split so the launch has about 1,024 threadgroups, FP32 partials summed in split order by the reduce kernel |
 | `spark_gemm`, `spark_gemm_f32` | prefill projections on the Metal 4 tensor operations (`matmul2d`, 128 x 64 tiles, FP32 accumulation, relaxed precision off) |
 | `spark_causal_conv_silu` | depthwise causal convolution over a per-sequence window, BF16 sum, SiLU |
@@ -194,7 +194,7 @@ models' gates are re-run to show their output is unchanged.
 | --- | --- | --- |
 | gated delta rule (`SparkDeviceGatedDelta`) | key and value heads and dimensions, convolution taps; recurrent pools 0 (FP32 state) and 1 (BF16 convolution window) | `gdn_qkvz`, `gdn_ba`, `gdn_conv`, `gdn_a_log`, `gdn_dt_bias`, `gdn_norm`, `gdn_out` |
 | attention (`SparkDeviceAttention`) | heads, KV heads, head dimension, rotary span, base and the number of rotated pairs, eager or fused rotary rounding, scale; options: a sigmoid output gate (queries and gates interleaved per head in the fused projection), a sliding window, a weightless value norm, and keys shared as values (the fused projection then holds queries and keys only) | `attn_qkv`, `attn_q_norm`, `attn_k_norm`, `attn_out` |
-| gated FFN (`SparkDeviceGatedFfn`) | intermediate width and activation (SiLU, or tanh GeLU); with SiLU at the GEMV row counts the down projection takes the gated input directly | `ffn_gate_up`, `ffn_down` |
+| gated FFN (`SparkDeviceGatedFfn`) | intermediate width and activation (SiLU, or tanh GeLU), applied by `spark_gated_mul` before the down projection | `ffn_gate_up`, `ffn_down` |
 | experts (`SparkDeviceExperts`) | experts, top k, expert width, activation; the router reads the residual through `spark_rmsnorm_scaled`, the experts read it through their own norm; a step's route override replaces the top k (qualification only) | `router_proj`, `router_scale`, `expert_scale`, `pre_ff_norm_2`, `moe_w1` (gate), `moe_w3` (up), `moe_w2` (down) |
 | residual RMSNorm (`SparkDeviceResidualNorm`) | the stage's hidden width and epsilon | the model names its norm weights |
 | branch norms (`SparkDeviceBranchNorm`) | one or two branches, an optional layer scalar | the model names its norm weights |
@@ -228,40 +228,61 @@ capped at 30. The pack is `tools/gemma4_tp16_pack.py --tp-degree 1`.
 
 ## Decode and prefill by row count
 
-`SparkOpsLinear` picks the projection kernel from the step's row count, and
-`SparkOpsAttention` the attention kernel from the longest run of rows any one
-sequence has in the step:
+A device model declares its projection family in its stage shape
+(`SparkDeviceStageShape.projection`); `SparkOpsLinear` then picks the kernel
+from the family and the step's row count, and `SparkOpsAttention` the
+attention kernel from the longest run of rows any one sequence has:
 
-| Rows in the step | Projection | Weight reads per step |
-| --- | --- | --- |
-| 1 or 2 | `spark_gemv_r1`/`_r2`; the FFN down projection takes the gated input directly | once |
-| 3 to 64 | `spark_gemm_rows16` (up to 16 rows) or `spark_gemm_rows32`, then `spark_gemm_reduce`; the FFN computes `silu(gate) * up` first | once |
-| above 64 | `spark_gemm` (prefill) | once per 128 rows |
+| Rows in the step | `SPARK_PROJECTION_GEMV` (Gemma 4 26B A4B) | `SPARK_PROJECTION_ROW_TILES` (Qwen3.8-27B) | Weight reads per step |
+| --- | --- | --- | --- |
+| 1 or 2 | `spark_gemv_r1`/`_r2` | `spark_gemm_rows16`, then `spark_gemm_reduce` | once |
+| 3 to 64 | `spark_gemm_rows16` (up to 16 rows) or `spark_gemm_rows32`, then `spark_gemm_reduce` | the same | once |
+| a verify frame of up to 64 rows | the GEMV in passes of 8, 4, 2 and 1 rows | the same row tiles | once per 8 rows (GEMV), once (row tiles) |
+| above 64 | `spark_gemm` (prefill) | the same | once per 128 rows |
 
 | Rows per sequence | Attention |
 | --- | --- |
-| at most 8 | `spark_attention_decode`, every row independent |
+| at most 8, or any verify frame | `spark_attention_decode`, every row independent |
 | more | `spark_attention_prefill_blocks` |
 
-A row's result depends only on its own inputs and on which projection
-kernel ran, never on the other rows or on the row count inside one kernel
-class: the GEMV computes every row with the same sequence of operations, the
-tensor-unit kernel tiles rows in 16 or 32 with identical arithmetic for each
-row (the two tile heights give the same bits), and its split count depends
-only on the projection's shape. `tests/test_metal_kernels.c` checks this bit
-for bit (`linear row independence`). Decoding one or two sequences therefore
-gives exactly the tokens of decoding each alone; three to 64 sequences give
-exactly the same tokens as one another, and differ from the solo GEMV only
-where FP32 rounding in a different reduction order flips a near tie. The
-batch ladder records each such divergence with both runs' top-two margins.
+A row's result depends only on its own inputs and on which projection kernel
+ran, never on the other rows or on the row count inside one kernel class:
+the GEMV computes every row with the same sequence of operations whatever
+its pass size, the tensor-unit kernel tiles rows in 16 or 32 with identical
+arithmetic for each row (the two tile heights give the same bits), and its
+split count depends only on the projection's shape.
+`tests/test_metal_kernels.c` checks this bit for bit (`linear row
+independence`, with and without row tiles and row-exact frames). So with row
+tiles every row of every step up to 64 rows has the bits of a one-row step:
+every batched sequence decodes exactly its solo tokens, and a verify frame
+computes each row exactly as plain decode does while reading the weights
+once. With the GEMV family one or two sequences give exactly the solo
+tokens, three to 64 give the same tokens as one another but not the solo
+GEMV's where a rounding difference flips a near tie, and a verify frame
+(`row_exact`) runs the GEMV passes so that it stays exact.
 
-A verify step (below) sets `row_exact` on its projections and attention, and
-then every row is computed exactly as a one-row decode step would compute it:
-the GEMV in passes of 8, 4, 2 and 1 rows whatever the frame's length, and
-the decode attention for every row. Every GEMV row count runs the same
-per-row operations (the outputs per threadgroup change, the order of each
-output's sums does not), which `linear row independence ... row-exact`
-checks bit for bit.
+Which family a model takes is measured, both being exact for speculation:
+row tiles cost one-row steps 7 to 9% on large matrices and 35 to 110% on
+small ones, and make long verify frames close to one step. For Qwen3.8-27B
+that trades B1 20.1 tok/s for 18.2 and the whole-file rewrite's 103.7 tok/s
+for 222.9; for Gemma 4 26B A4B it would trade B1 92.7 for 76.3 and the
+Korean summary's 103.1 for 83.6 against a rewrite gain of 13%, so Gemma keeps
+the GEMV:
+
+| | GEMV family | Row tiles |
+| --- | --- | --- |
+| Qwen3.8-27B B1 | 20.1 tok/s | 18.2 tok/s |
+| Qwen frame of 8 / 16 / 32 rows | 62.9 / 121.5 / 238.8 ms | 58.4 / 61.8 / 72.2 ms |
+| Qwen rewrite / Korean, with speculation | 103.7 / 21.07 tok/s | 222.9 / 19.14 tok/s |
+| Gemma 4 26B A4B B1 | 92.7 tok/s | 76.3 tok/s |
+| Gemma frame of 8 / 16 / 32 rows | 23.4 / 39.3 / 68.1 ms | 25.3 / 36.5 / 57.0 ms |
+| Gemma rewrite / Korean, with speculation | 323 / 103.1 tok/s | 366.0 / 83.6 tok/s |
+
+A GEMV that holds 16 to 64 rows per pass in the one-row order of sums is
+bit-exact but SIMT FP32 tops out at 6 to 7 TFLOPS here, so a 32-row Qwen
+frame (1.64 TFLOP) cannot go below about 230 ms; the tensor units reach 27
+TFLOPS at 32 rows. `build/metal_linear_bench LIB K N ROWS F32 ROW_TILES`
+times one projection.
 
 The split-K partials live in a 64 MiB buffer the ops instance owns; the first
 queue that runs a split projection owns it, and a split projection on another

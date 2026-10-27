@@ -20,7 +20,8 @@ static const SparkDeviceStageShape qwen_shape =
 	.kv_heads = 4u,
 	.kv_head_dimension = 256u,
 	.pack_alignment = 128u,
-	.epsilon = 1e-6f
+	.epsilon = 1e-6f,
+	.projection = SPARK_PROJECTION_ROW_TILES
 };
 
 static const SparkDeviceGatedDeltaShape qwen_delta =

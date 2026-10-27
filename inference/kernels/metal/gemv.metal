@@ -9,13 +9,7 @@ static inline void SparkUnpack8(uint4 bits, thread float4 &low, thread float4 &h
 	high = float4(as_type<float>(bits.z << 16), as_type<float>(bits.z & 0xffff0000u), as_type<float>(bits.w << 16), as_type<float>(bits.w & 0xffff0000u));
 }
 
-static inline float4 SparkGated4(float4 gate, float4 up)
-{
-	return float4(SparkMathRoundBf16(SparkMathSilu(gate.x) * up.x), SparkMathRoundBf16(SparkMathSilu(gate.y) * up.y),
-		SparkMathRoundBf16(SparkMathSilu(gate.z) * up.z), SparkMathRoundBf16(SparkMathSilu(gate.w) * up.w));
-}
-
-template <uint R, uint O, bool F32, bool GATED>
+template <uint R, uint O, bool F32>
 static inline void SparkGemvRows(constant SparkGemvParams &p, device const ushort *x, device const ushort *w, device void *out, uint first,
 	uint lane, uint simd, threadgroup float *partial)
 {
@@ -32,17 +26,7 @@ static inline void SparkGemvRows(constant SparkGemvParams &p, device const ushor
 	{
 		float4 xl[R], xh[R];
 		for ( uint r = 0u; r < R; r++ )
-		{
-			device const ushort *source = x + (ulong)r * p.input_stride + k;
-			SparkUnpack8(*(device const uint4 *)source, xl[r], xh[r]);
-			if ( GATED )
-			{
-				float4 ul, uh;
-				SparkUnpack8(*(device const uint4 *)(source + K), ul, uh);
-				xl[r] = SparkGated4(xl[r], ul);
-				xh[r] = SparkGated4(xh[r], uh);
-			}
-		}
+			SparkUnpack8(*(device const uint4 *)(x + (ulong)r * p.input_stride + k), xl[r], xh[r]);
 		for ( uint i = 0u; i < O; i++ )
 		{
 			float4 wl, wh;
@@ -75,13 +59,13 @@ static inline void SparkGemvRows(constant SparkGemvParams &p, device const ushor
 	}
 }
 
-template <uint R, uint O, bool F32, bool GATED>
+template <uint R, uint O, bool F32>
 kernel void spark_gemv(constant SparkGemvParams &p [[buffer(0)]], device const ushort *x [[buffer(1)]], device const ushort *w [[buffer(2)]],
 	device void *out [[buffer(3)]], uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
 	uint simd [[simdgroup_index_in_threadgroup]])
 {
 	threadgroup float partial[SPARK_GEMV_SIMDS * O * R];
-	SparkGemvRows<R, O, F32, GATED>(p, x, w, out, group * O, lane, simd, partial);
+	SparkGemvRows<R, O, F32>(p, x, w, out, group * O, lane, simd, partial);
 }
 
 kernel void spark_gemv_routed(constant SparkGemvParams &p [[buffer(0)]], device const ushort *x [[buffer(1)]], device const ushort *w [[buffer(2)]],
@@ -92,24 +76,20 @@ kernel void spark_gemv_routed(constant SparkGemvParams &p [[buffer(0)]], device 
 	const uint route = group.y;
 	device const ushort *row = x + (ulong)(route / p.route_divisor) * p.input_stride;
 	device const ushort *weights = w + (ulong)experts[route] * p.output_dimension * p.input_dimension;
-	SparkGemvRows<1u, SPARK_GEMV_OUTPUTS, false, false>(p, row, weights, out + (ulong)route * p.output_stride, group.x * SPARK_GEMV_OUTPUTS, lane, simd,
+	SparkGemvRows<1u, SPARK_GEMV_OUTPUTS, false>(p, row, weights, out + (ulong)route * p.output_stride, group.x * SPARK_GEMV_OUTPUTS, lane, simd,
 		partial);
 }
 
-#define SPARK_GEMV_INSTANCE(rows, f32, gated, name) \
-	template [[host_name(name)]] kernel void spark_gemv<rows, SPARK_GEMV_ROW_OUTPUTS(rows), f32, gated>(constant SparkGemvParams &p [[buffer(0)]], \
+#define SPARK_GEMV_INSTANCE(rows, f32, name) \
+	template [[host_name(name)]] kernel void spark_gemv<rows, SPARK_GEMV_ROW_OUTPUTS(rows), f32>(constant SparkGemvParams &p [[buffer(0)]], \
 		device const ushort *x [[buffer(1)]], device const ushort *w [[buffer(2)]], device void *out [[buffer(3)]], \
 		uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]]);
 
-SPARK_GEMV_INSTANCE(1u, false, false, "spark_gemv_r1")
-SPARK_GEMV_INSTANCE(2u, false, false, "spark_gemv_r2")
-SPARK_GEMV_INSTANCE(4u, false, false, "spark_gemv_r4")
-SPARK_GEMV_INSTANCE(8u, false, false, "spark_gemv_r8")
-SPARK_GEMV_INSTANCE(1u, true, false, "spark_gemv_f32_r1")
-SPARK_GEMV_INSTANCE(2u, true, false, "spark_gemv_f32_r2")
-SPARK_GEMV_INSTANCE(4u, true, false, "spark_gemv_f32_r4")
-SPARK_GEMV_INSTANCE(8u, true, false, "spark_gemv_f32_r8")
-SPARK_GEMV_INSTANCE(1u, false, true, "spark_gemv_gated_r1")
-SPARK_GEMV_INSTANCE(2u, false, true, "spark_gemv_gated_r2")
-SPARK_GEMV_INSTANCE(4u, false, true, "spark_gemv_gated_r4")
-SPARK_GEMV_INSTANCE(8u, false, true, "spark_gemv_gated_r8")
+SPARK_GEMV_INSTANCE(1u, false, "spark_gemv_r1")
+SPARK_GEMV_INSTANCE(2u, false, "spark_gemv_r2")
+SPARK_GEMV_INSTANCE(4u, false, "spark_gemv_r4")
+SPARK_GEMV_INSTANCE(8u, false, "spark_gemv_r8")
+SPARK_GEMV_INSTANCE(1u, true, "spark_gemv_f32_r1")
+SPARK_GEMV_INSTANCE(2u, true, "spark_gemv_f32_r2")
+SPARK_GEMV_INSTANCE(4u, true, "spark_gemv_f32_r4")
+SPARK_GEMV_INSTANCE(8u, true, "spark_gemv_f32_r8")

@@ -1348,6 +1348,12 @@ $(METAL_KERNEL_LIBRARY) $(METAL_TEST_KERNEL_LIBRARY):
 	@echo "SKIP $(notdir $@) (no Metal toolchain on this host)"
 endif
 
+build/metal/test_bf16_kernels.metallib: build/metal/tests/bf16_convert_kernels.air | build
+	@if [ -n "$(METAL4_TOOLCHAIN)" ]; then xcrun -sdk macosx metallib $^ -o $@; else echo "SKIP $(notdir $@) (the Metal toolchain on this host has no Metal 4.0)"; fi
+
+build/test_metal_bf16_convert: tests/test_metal_bf16_convert.c $(DEVICE_METAL_LIBRARY) build/metal/test_bf16_kernels.metallib | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f build/metal/test_bf16_kernels.metallib ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_BF16_TEST_LIBRARY='"build/metal/test_bf16_kernels.metallib"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_metal_bf16_convert (no Metal device or kernel library)"; fi
+
 build/test_device_contract_metal: tests/test_device_contract.c $(DEVICE_METAL_LIBRARY) $(METAL_TEST_KERNEL_LIBRARY) | build
 	@if [ -f "$(DEVICE_METAL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_DEVICE_TEST_LIBRARY='"$(METAL_TEST_KERNEL_LIBRARY)"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_device_contract_metal (no Metal device library)"; fi
 
@@ -1357,6 +1363,9 @@ DEVICE_OPS_HEADERS := inference/runner/device_ops.h inference/kernels/metal/kern
 .PHONY: test-metal-kernels
 test-metal-kernels: build/test_metal_kernels
 	python3 tests/test_metal_kernels.py
+
+build/metal_linear_bench: tools/metal_linear_bench.c $(DEVICE_OPS_SOURCES) $(DEVICE_OPS_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) tools/metal_linear_bench.c $(DEVICE_OPS_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lm -o $@; else echo "SKIP metal_linear_bench (no Metal device or kernel library)"; fi
 
 build/test_metal_kernels: tests/test_metal_kernels.c $(DEVICE_OPS_SOURCES) $(DEVICE_OPS_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
 	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_KERNEL_LIBRARY='"$(METAL_KERNEL_LIBRARY)"' tests/test_metal_kernels.c $(DEVICE_OPS_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lm -o $@; else echo "SKIP test_metal_kernels (no Metal device or kernel library)"; fi

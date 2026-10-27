@@ -422,6 +422,7 @@ static SparkStatus RunnerHead(SparkDeviceStageRunner *runner, const SparkDeviceS
 	head.input_stride = g->hidden;
 	head.output_stride = g->vocab;
 	head.output_f32 = 1u;
+	head.projection = ((const SparkDeviceStage *)runner->model)->shape->projection;
 	head.row_exact = batch->verify;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsLinear(runner->ops,runner->queue,SparkTensorAt(&runner->head_normed,0u,(uint64_t)rows * g->hidden * 2u),

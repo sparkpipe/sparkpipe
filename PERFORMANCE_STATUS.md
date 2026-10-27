@@ -218,82 +218,71 @@ Ideal floors, from the active parameters each rank reads per token (K3:
 One Mac Studio, Apple M5 Ultra with 256 GB, runs Qwen3.8-27B whole (TP1, the
 publisher's BF16 weights, 53.8 GB pack) through the Metal backend and the
 single-device stage runner ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)).
-It is not served yet (TECHDEBT, Mac Studio deployment). Receipts:
-[`qualification/metal/qwen38_27b/76576307c/`](qualification/metal/qwen38_27b/76576307c/)
-(decode, prefill, batches and numerics) and
-[`qualification/metal/qwen38_27b/07e0c1e00/`](qualification/metal/qwen38_27b/07e0c1e00/)
-(speculation, which reproduces them).
+It is not served yet (TECHDEBT, Mac Studio deployment). Qwen3.8-27B runs
+every projection of up to 64 rows on the row-independent tensor-unit tile
+(owner decision 2026-10-27), so B1, every batch row and every verify frame
+share one set of bits. Receipt:
+[`qualification/metal/qwen38_27b/3b09cd778/`](qualification/metal/qwen38_27b/3b09cd778/)
+(decode, prefill, batches, speculation and numerics).
 
 | | |
 | --- | --- |
-| Streaming read | 1,141 GB/s from a 16 GiB GPU buffer (median of seven) |
-| Decode, B1 | 20.12 tok/s: 256 tokens after a 1,024-token prompt, median of three after a warm-up (main at 09f224b93: 19.26) |
-| Decode roofline | 51.25 GB of weights plus 0.38 GB of KV and recurrent state per token at the bench's mean context = 51.63 GB / 1,141 GB/s = 22.10 tok/s; measured 91.0% of it |
-| Prefill, 1,024 tokens | 1,429 tok/s, one 1,024-row chunk (main: 1,372) |
-| Prefill, 8,192 tokens | 1,501 tok/s, four 2,048-row chunks, attention on the tensor operations (main: 1,139) |
+| Streaming read | 1,144 GB/s from a 16 GiB GPU buffer (median of seven) |
+| Decode, B1 | 18.12 tok/s: 256 tokens after a 1,024-token prompt, median of three after a warm-up (20.12 with the one-row GEMV, which verify frames could not match) |
+| Decode roofline | 51.25 GB of weights plus 0.39 GB of KV and recurrent state per token at the bench's mean context = 51.64 GB / 1,144 GB/s = 22.16 tok/s; measured 81.8% of it |
+| Prefill, 1,024 tokens | 1,424 tok/s, one 1,024-row chunk |
+| Prefill, 8,192 tokens | 1,498 tok/s, four 2,048-row chunks, attention on the tensor operations |
 | Prefill roofline | compute-bound: the projections run on the M5 tensor operations at 95 TFLOPS in isolation (2048 x 5120 x 16384); the weights are read once per chunk |
 
 Decode by batch size: each sequence decodes 128 tokens after its own
 1,024-token prompt, median of three runs after a warm-up. The roofline is the
 weight stream alone, 22.27 tok/s per sequence at any batch, since the weights
-are read once per step for up to 64 rows. Main at 09f224b93, measured the
-same way over 64 tokens, ran 19.27, 33.1, 54.6, 64.0, 97.3 and 145.2 tok/s
-aggregate at B1 to B32:
+are read once per step for up to 64 rows:
 
-| Sequences | Step | Per sequence | Aggregate | Of the roofline | Identical to solo decode | Margins at the first differing token |
-| ---: | ---: | ---: | ---: | ---: | --- | --- |
-| 1 | 49.8 ms | 20.07 tok/s | 20.1 tok/s | 90.1% | 1 of 1 | |
-| 2 | 51.3 ms | 19.50 | 39.0 | 87.6% | 2 of 2 | |
-| 4 | 58.2 ms | 17.20 | 68.8 | 77.2% | 3 of 4 | 0.099 (swap) |
-| 8 | 61.7 ms | 16.21 | 129.7 | 72.8% | 6 of 8 | 0.039, 0.099 (both swaps) |
-| 16 | 69.2 ms | 14.45 | 231.1 | 64.9% | 14 of 16 | the same two |
-| 32 | 87.5 ms | 11.43 | 365.7 | 51.3% | 23 of 32 | 9 between 0.003 and 0.099, 8 swaps |
-| 64 | 144.7 ms | 6.91 | 442.4 | 31.0% | 42 of 64 | 22 between 0.003 and 0.383, 20 swaps |
+| Sequences | Step | Per sequence | Aggregate | Of the roofline | Identical to solo decode |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 1 | 55.1 ms | 18.15 tok/s | 18.2 tok/s | 81.3% | 1 of 1 |
+| 2 | 56.1 | 17.81 | 35.6 | 79.8% | 2 of 2 |
+| 4 | 58.2 | 17.17 | 68.7 | 76.9% | 4 of 4 |
+| 8 | 61.7 | 16.21 | 129.6 | 72.6% | 8 of 8 |
+| 16 | 69.2 | 14.45 | 231.1 | 64.7% | 16 of 16 |
+| 32 | 87.6 | 11.42 | 365.3 | 51.1% | 32 of 32 |
+| 64 | 144.8 | 6.91 | 441.9 | 30.9% | 64 of 64 |
 
-- One and two sequences run the GEMV and give exactly the solo tokens. Three
-  to 64 run the tensor-unit projection, whose rows do not depend on one
-  another or on the batch, so a sequence's tokens are the same at every batch
-  size from 3 to 64 (the divergent sequences at B8 are among those at B16,
-  B32 and B64, at the same token); they differ from the solo GEMV only where
-  a rounding difference flips a near tie. A margin above is the larger of the
-  two runs' top-1 minus top-2 log-probability at the first differing token; a
-  swap means each run's second choice is the other's first. Repeated runs
-  give identical tokens.
+- Every row of every step runs the same row-tile arithmetic, so every
+  batched sequence decodes exactly its solo tokens at every batch size, and
+  repeated runs give identical tokens. B4 to B64 cost what they did with
+  the one-row GEMV at B1 and B2 (the same kernels ran them); B1 and B2 are
+  5 ms slower.
 - Above 16 sequences the per-sequence work takes over: at B64 the gated delta
   rule's FP32 state (3.1 MB per layer and sequence, read and written each
   step) costs about 27 ms of the step and decode attention about 14 ms.
 
-Speculation from the request's own context (receipt
-[`qualification/metal/qwen38_27b/07e0c1e00/speculation_2670f0d58/`](qualification/metal/qwen38_27b/07e0c1e00/speculation_2670f0d58/)):
-lookup drafts over the prompt and the generated text, sized by the serving
-path's frame chooser, verified in one frame and kept with the recurrent
-replay. Greedy, 256 tokens, median of three runs after a warm-up with the
-lowest and highest; the tokens with speculation are identical to those
-without it in every run of every prompt.
+Speculation from the request's own context: lookup drafts over the prompt
+and the generated text, sized by the serving path's frame chooser, verified
+in one frame and kept with the recurrent replay. Greedy, 256 tokens, median
+of three runs after a warm-up; the tokens with speculation are identical to
+those without it in every run of every prompt:
 
 | Prompt | Without speculation | With speculation | Frames | Drafts accepted |
 | --- | ---: | ---: | ---: | --- |
-| Whole-file rewrite (`tools/token_prompts.c`, 933 tokens) | 20.10 tok/s (20.09-20.10) | 103.95 tok/s (103.93-103.97) | 24 | 237 of 252 |
-| Prose (42-token request) | 20.13 (20.13-20.14) | 20.21 (20.21-20.21) | 1 | 1 of 3 |
-| `design` (summary) | 20.15 (20.09-20.16) | 21.53 (21.47-21.54) | 15 | 17 of 49 |
-| `code` (review) | 20.09 (20.08-20.10) | 21.67 (21.66-21.67) | 12 | 19 of 36 |
-| `korean` (summary) | 20.14 (20.13-20.16) | 21.09 (21.08-21.11) | 17 | 12 of 51 |
-| `rules` (analysis) | 19.98 (19.98-19.99) | 22.57 (22.56-22.57) | 23 | 30 of 69 |
-
-The chooser's first frame in a match class is a probe. A probe is capped at
-the largest frame whose measured cost is within the chooser's margin of a
-one-row step (three drafts here, since four rows cost what one does); an
-uncapped 16-draft probe cost prose about 70 ms (20.04 against 20.14 tok/s).
+| Whole-file rewrite (`tools/token_prompts.c`, 933 tokens) | 18.11 tok/s | 222.69 tok/s | 13 | 258 of 297 |
+| Prose (42-token request) | 18.15 | 18.14 | 3 | 0 of 12 |
+| `design` (summary) | 18.11 | 19.37 | 16 | 18 of 88 |
+| `code` (review) | 18.04 | 19.48 | 11 | 20 of 75 |
+| `korean` (summary) | 18.12 | 19.14 | 18 | 15 of 119 |
+| `rules` (analysis) | 18.02 | 20.28 | 22 | 31 of 167 |
 
 | Verify frame rows | 1 | 2 | 4 | 8 | 16 | 32 | 64 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Frame | 49.7 ms | 50.3 ms | 49.2 ms | 62.8 ms | 121.5 ms | 238.8 ms | 474.3 ms |
-| Keeping every row | 1.4 ms | 1.4 ms | 1.6 ms | 2.0 ms | 2.7 ms | 4.2 ms | 7.1 ms |
+| Frame | 54.9 ms | 55.5 ms | 56.6 ms | 58.3 ms | 61.8 ms | 72.2 ms | 114.2 ms |
+| Keeping every row | 1.4 ms | 1.5 ms | 1.6 ms | 2.0 ms | 2.7 ms | 4.2 ms | 7.3 ms |
 
-A frame computes each row exactly as a one-row step does, in GEMV passes of
-up to eight rows, so frames longer than eight rows cost one pass per eight.
-The non-speculative outputs of this revision are byte-identical to the
-ladder receipt's.
+A frame computes each row with the same row tiles as a one-row step and
+reads the weights once, so a 32-row frame costs 1.32 one-row steps (with
+the one-row GEMV it ran eight-row GEMV passes: 238.8 ms, and the rewrite
+reached 103.7 tok/s). The comparison of both designs is in
+[`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#decode-and-prefill-by-row-count).
 
 Numerics, teacher-forced over 5,636 positions of four prompts (700 to 2,040
 tokens; the first half of each prompt by prefill, the rest by decode),
@@ -307,22 +296,24 @@ reference than the other variant at most 0.5 plus 3 block standard errors
 | Comparison (against reference A) | Mean KL | Top-1 | Target log-prob change, mean / max | Leg A: KL and top-1 ratio to floor, paired sigma | Leg B: same | Verdict |
 | --- | ---: | ---: | --- | --- | --- | --- |
 | Reference B (the floor) | 0.0395 | 97.75% | 0.145 / 16.4 | | | |
-| Metal | 0.0320 | 98.01% | 0.131 / 17.3 | 0.81 / 0.88, -3.6 | 1.00 / 1.13, +2.0 | pass |
-| Probe: rows 0 and 1 of `layers.31.ffn_down` swapped | 0.0312 | 97.82% | 0.131 / 17.3 | 0.79 / 0.97, -4.8 | 1.00 / 1.08, +0.2 | passes: inside the BF16 noise |
-| Control: rows 0 and 1 of every layer's `ffn_down` swapped | 0.172 | 91.31% | 0.597 / 18.4 | 4.36 / 3.86, +95 | 4.78 / 3.94, +124 | fails, as required |
-| Control: every row of `layers.31.ffn_down` moved by one | 0.599 | 85.63% | 1.08 / 27.1 | 15.2 / 6.38, +188 | 17.5 / 6.35, +197 | fails, as required |
+| Metal | 0.0332 | 97.96% | 0.135 / 20.6 | 0.84 / 0.91, -3.4 | 0.98 / 1.13, +0.7 | pass |
+| Probe: rows 0 and 1 of `layers.31.ffn_down` swapped | 0.0327 | 97.78% | 0.135 / 22.0 | 0.83 / 0.98, -4.1 | 0.98 / 1.09, -0.5 | passes: inside the BF16 noise |
+| Control: rows 0 and 1 of every layer's `ffn_down` swapped | 0.177 | 91.41% | 0.597 / 18.3 | 4.49 / 3.81, +96 | 5.01 / 3.87, +108 | fails, as required |
+| Control: every row of `layers.31.ffn_down` moved by one | 0.599 | 85.65% | 1.08 / 27.1 | 15.2 / 6.37, +188 | 17.5 / 6.34, +197 | fails, as required |
 | FP32 activations (diagnostic) | 0.0568 | 97.37% | | | | |
 
-- Metal agrees with reference A on 98.93% of the positions where A and B
-  agree with each other. Its paired share against A is 0.449: it is closer to
+- Metal agrees with reference A on 98.87% of the positions where A and B
+  agree with each other. Its paired share against A is 0.454: it is closer to
   A than B is.
 - Greedy continuations of 128 tokens match both reference variants token
   for token on `code` and `rules`. On `design` the variants part after 45
   tokens and Metal follows B to the end; on `korean` they part after 55 and
-  Metal follows A to the end.
+  Metal follows A for 100 tokens.
 - Every Metal kernel matches a float64 reference within its derived
   tolerance at the model's shapes, each one's corrupted-input control fails,
-  and the projections' rows are bit-independent of the batch (54 cases).
+  and the projections' rows are bit-independent of the batch, with and
+  without row tiles (119 cases). The shared BF16 conversion matches its
+  contract on all 2^32 FP32 inputs (`bf16_convert.txt`).
 
 ### Gemma 4 26B A4B on one Mac Studio
 
@@ -403,9 +394,12 @@ corrupted run hides in it; pinned, the floor is 0.063:
 - Every Metal kernel matches a float64 reference within its derived
   tolerance at the model's shapes (including every Gemma projection shape at
   1, 4, 9, 64 and 512 rows), and each one's corrupted-input control fails.
-- Qwen3.8-27B on this revision gives byte-identical teacher logits and
-  greedy output to its receipt and the same speculative frames
+- Qwen3.8-27B on that revision gave byte-identical teacher logits and
+  greedy output to its GEMV receipt and the same speculative frames
   ([`qualification/metal/qwen38_27b/662c49da2_unchanged/`](qualification/metal/qwen38_27b/662c49da2_unchanged/)).
+  Gemma's teacher logits (free and pinned) and greedy output at 3b09cd778,
+  after the projection family was introduced, are byte-identical to this
+  receipt ([`qualification/metal/gemma4_26b/3b09cd778_unchanged/`](qualification/metal/gemma4_26b/3b09cd778_unchanged/)).
 
 ## Accuracy
 

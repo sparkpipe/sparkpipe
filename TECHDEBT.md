@@ -1206,17 +1206,29 @@ Metal backend and the single-Studio stage are in
   projections fall to the prefill GEMM, which reads the weights once per 128
   rows. Prefill and decode mixed in one step are not measured (I18, I19,
   I21), and speculative verify frames have no cost curve yet.
-- Make long verify frames cheaper. A verify frame must compute its rows
-  exactly as one-row decode does, so it runs the GEMV in passes of at most
-  eight rows: on one M5 Ultra 1 to 4 rows cost the same 49-50 ms as a decode
-  step, 8 rows 63 ms, and every further 8 rows another pass (16 rows 122 ms,
-  64 rows 474 ms). A 16-row GEMV pass spills registers (over 1 s). A GEMV
-  that holds more rows per pass without changing each row's order of sums
-  would let whole-file rewrites run frames of 16 to 32 drafts. Verify frames
-  over several sequences in one step, and speculation through a served
-  request (the serving adapter is CUDA), are not built.
-- Close the B1 gap to the streaming roofline (90.4%, 20.12 of 22.27 tok/s).
-  The projections stream at about 1,100 GB/s; the rest of the 49.8 ms step
+- Long verify frames: each device model declares its projection family
+  (`SparkDeviceStageShape.projection`, owner decision 2026-10-27).
+  Qwen3.8-27B takes row tiles, so a 32-row verify frame costs 72 ms against
+  a 55 ms one-row step and every batch row has its solo bits, at a B1 cost
+  of 20.1 to 18.2 tok/s; Gemma 4 26B A4B keeps the GEMV (B1 92.7 tok/s,
+  32-row frame 68 ms in eight-row passes), since row tiles would cost it 18%
+  of B1 and 19% of its Korean summary for 13% on the rewrite
+  ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#decode-and-prefill-by-row-count)).
+  The row-tile kernel's one-row cost is the lever: 7 to 9% above the GEMV on
+  large matrices and 35 to 110% on small ones (6144 x 5120: 69 against 51
+  us; 5120 x 96: 59 against 28), the split reduce's second dispatch and the
+  threadgroup weight staging being most of it; an 8-row tile, other split
+  counts and weights read straight from device memory did not close it, and
+  an in-kernel reduce by the last split gave wrong sums. A one-row cost at
+  the GEMV's would let every model take row tiles. A GEMV holding 16 to 64
+  rows per pass in the one-row order is exact but capped at 6 to 7 TFLOPS
+  of SIMT FP32 (a 32-row Qwen frame of at least 230 ms).
+  Verify frames over several sequences in one step, and speculation through
+  a served request (the serving adapter is CUDA), are not built.
+- Close the B1 gap to the streaming roofline (81.8%, 18.12 of 22.16 tok/s on
+  row tiles; 90.4% with the one-row GEMV). The row tiles' one-row cost is
+  the first lever (above); with the GEMV the projections stream at about
+  1,100 GB/s, and the rest of the 49.8 ms step
   is about 710 dependent dispatches with a floor of about 5 us each, the
   residual RMSNorm (14 us a call, 128 calls; it loads 2 bytes per thread per
   step), the two-kernel delta rule (33 us) and the convolution (9 us). The
@@ -1236,11 +1248,12 @@ Metal backend and the single-Studio stage are in
 - The NaN check in the shared BF16 conversion (abce321a5) costs Gemma 4
   26B A4B's B1 decode about 0.9% on the Studio (91.5 to 91.6 tok/s against
   92.2 to 92.5 without it, interleaved runs), since every BF16 store now
-  compares and selects. Metal's own `bfloat` conversion rounds to nearest
-  even in one instruction; if an exhaustive test over all 2^32 FP32 inputs
-  shows it gives the shared conversion's bits for every non-NaN value, the
-  Metal branch of `kernel_math.cuh` should use it, with the Qwen and Gemma
-  gates re-run.
+  compares and selects. Metal's own `bfloat` conversion cannot replace it:
+  `build/test_metal_bf16_convert` runs all 2^32 FP32 inputs and finds the
+  shared conversion exact, but the hardware one differs on 16,711,678
+  non-NaN inputs (it flushes subnormals, from `0x00008001`) as well as on
+  the NaNs, so the software path stays. A cheaper exact formulation, or
+  fewer BF16 stores (the B1 dispatch work), is what is left.
 - Gemma 4 26B A4B on the Studio:
   - experts run as one GEMV per route (`spark_gemv_routed`): a prefill chunk
     or a batch reads an expert once for every row routed to it, not once per
@@ -1275,15 +1288,13 @@ Metal backend and the single-Studio stage are in
     tensor does. Metal's own top-k is checked by the kernel test only; how
     often it agrees with the reference's choice in a pinned run, against
     how often b's does, is not measured;
-  - at three to eight rows a batch takes the skinny tensor-unit projection
-    with its split-K reduce, which is slower than the row-exact GEMV passes
-    for both models: Gemma's exact-rows ladder (every row bit-identical to
-    its solo run) decodes B4 and B8 at 235.5 and 311.4 tok/s against 206.2
-    and 291.8 on the fast path, and Qwen3.8-27B's four-row verify frame costs
-    49.2 ms against a 58.2 ms B4 step. GEMV passes up to eight rows would
-    make B3 to B8 both faster and identical to solo decode; it changes Qwen's
-    ladder receipt, so it goes with the exact multi-row verify kernel and
-    its gate.
+  - at three to eight rows a Gemma batch takes the row tiles with their
+    split reduce, which are slower here than the row-exact GEMV passes: the
+    exact-rows ladder decodes B4 and B8 at 235.5 and 311.4 tok/s against
+    206.2 and 291.8 on the fast path, and its tokens are each sequence's
+    solo tokens. Taking the GEMV passes for three to eight rows in the GEMV
+    family would make B3 to B8 both faster and identical to solo decode;
+    it needs Gemma's ladder gate re-run.
 - Define hardware profiles for one to eight Studios: memory, bandwidth, the
   Thunderbolt 5 island wiring, the bridge to the Sparks, power, and storage.
 - Add Thunderbolt 5 RDMA as a link class. Apple's verbs API (TN3205) offers
