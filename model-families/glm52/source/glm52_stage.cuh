@@ -76,7 +76,6 @@ struct GlmDefaults
 	static constexpr bool kQueryConcat = false;
 	static constexpr uint32_t kNormGateRank = 0u;
 	static constexpr LmRopePairing kIndexPairing = LM_ROPE_INTERLEAVED;
-	static constexpr bool kIndexRelu = false;
 	static constexpr uint32_t kExpertGroups = 1u;
 	static constexpr uint32_t kTopGroups = 1u;
 	static constexpr float kRopeFactor = 1.0f;
@@ -590,7 +589,7 @@ static int32_t GlmIndexerScore(const GlmBuffers *b, LmKvShardView pages, uint32_
 	for ( uint32_t first = 0u; first < rows; first += chunk_rows )
 	{
 		const uint32_t count = rows - first < chunk_rows ? rows - first : chunk_rows;
-		if ( LmWeightedSparseScoreLaunch<GlmIndexKv<S>,S::kIndexHeads,S::kIndexDim,LmKvShardView,S::kIndexRelu>(b->index_query_bf16 + (uint64_t)first * S::kIndexQuery,
+		if ( LmWeightedSparseScoreLaunch<GlmIndexKv<S>,S::kIndexHeads,S::kIndexDim,LmKvShardView>(b->index_query_bf16 + (uint64_t)first * S::kIndexQuery,
 				b->index_head_weight_bf16 + (uint64_t)first * S::kIndexHeads, pages, b->sequence_of_row + first, b->context_length,
 				b->row_positions != 0 ? b->row_positions + first : 0, count, score_stride, S::kIndexScale / sqrtf((float)S::kIndexHeads),
 				b->selection_scores, stream) != cudaSuccess ||
@@ -611,7 +610,7 @@ static int32_t GlmIndexerScoreSelect(const GlmBuffers *b, uint32_t rows, uint32_
 	for ( uint32_t first = 0u; first < rows; first += chunk_rows )
 	{
 		const uint32_t count = rows - first < chunk_rows ? rows - first : chunk_rows;
-		if ( LmWeightedSparseScoreLaunch<GlmIndexKv<S>,S::kIndexHeads,S::kIndexDim,LmKvShardView,S::kIndexRelu>(b->index_query_bf16 + (uint64_t)first * S::kIndexQuery,
+		if ( LmWeightedSparseScoreLaunch<GlmIndexKv<S>,S::kIndexHeads,S::kIndexDim,LmKvShardView>(b->index_query_bf16 + (uint64_t)first * S::kIndexQuery,
 				b->index_head_weight_bf16 + (uint64_t)first * S::kIndexHeads, b->index_shard, b->sequence_of_row + first, b->context_length,
 				b->row_positions + first, count, score_stride, S::kIndexScale / sqrtf((float)S::kIndexHeads), b->selection_scores, stream) != cudaSuccess ||
 			LmIndexSelectLocalLaunch<LM_INDEX_SELECT_THREADS>(b->kv_shard, b->selection_scores, score_stride, b->sequence_of_row + first, b->context_length,

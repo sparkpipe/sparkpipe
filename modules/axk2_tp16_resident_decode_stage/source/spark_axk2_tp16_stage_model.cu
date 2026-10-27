@@ -45,7 +45,6 @@ struct Axk2Geometry : GlmDefaults
 	static constexpr bool kQueryConcat = true;
 	static constexpr uint32_t kNormGateRank = 16u;
 	static constexpr LmRopePairing kIndexPairing = LM_ROPE_HALF_SPLIT;
-	static constexpr bool kIndexRelu = true;
 	static constexpr uint32_t kExpertGroups = 8u;
 	static constexpr uint32_t kTopGroups = 4u;
 	static constexpr float kRopeFactor = 2.0f;
