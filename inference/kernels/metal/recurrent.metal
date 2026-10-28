@@ -10,30 +10,30 @@ kernel void spark_causal_conv_silu(constant SparkConvParams &p [[buffer(0)]], de
 {
 	const uint threads = group_size.x;
 	const uint channel = group.x * threads + tid, sequence = group.y, taps_count = p.kernel_taps;
-	float taps[SPARK_CONV_TAPS_MAX];
+	const uint dilation = p.dilation != 0u ? p.dilation : 1u, span = SPARK_CONV_SPAN(taps_count, dilation);
+	float taps[SPARK_CONV_SPAN_MAX];
 	float weights[SPARK_CONV_TAPS_MAX];
-	if ( channel >= p.channels || sequence >= p.sequences || taps_count > SPARK_CONV_TAPS_MAX )
+	if ( channel >= p.channels || sequence >= p.sequences || taps_count > SPARK_CONV_TAPS_MAX || span > SPARK_CONV_SPAN_MAX )
 		return;
-	device ushort *slot = window + ((ulong)state_index[sequence] * p.channels + channel) * taps_count;
+	device ushort *slot = window + ((ulong)state_index[sequence] * p.channels + channel) * span;
+	for ( uint entry = 0u; entry < span; entry++ )
+		taps[entry] = SparkMathBf16ToFloat(slot[entry]);
 	for ( uint tap = 0u; tap < taps_count; tap++ )
-	{
-		taps[tap] = SparkMathBf16ToFloat(slot[tap]);
 		weights[tap] = SparkMathBf16ToFloat(weight[channel * taps_count + tap]);
-	}
 	for ( uint row = row_begin[sequence]; row < row_begin[sequence + 1u]; row++ )
 	{
 		float total = 0.0f;
-		for ( uint tap = 0u; tap + 1u < taps_count; tap++ )
-			taps[tap] = taps[tap + 1u];
-		taps[taps_count - 1u] = SparkMathBf16ToFloat(input[(ulong)row * p.row_stride + channel]);
+		for ( uint entry = 0u; entry + 1u < span; entry++ )
+			taps[entry] = taps[entry + 1u];
+		taps[span - 1u] = SparkMathBf16ToFloat(input[(ulong)row * p.row_stride + channel]);
 		for ( uint tap = 0u; tap < taps_count; tap++ )
-			total += taps[tap] * weights[tap];
+			total += taps[tap * dilation] * weights[tap];
 		total = SparkMathRoundBf16(total);
 		output[(ulong)row * p.row_stride + channel] = SparkMathFloatToBf16(SparkMathSwishFast(total));
 	}
 	if ( p.commit != 0u )
-		for ( uint tap = 0u; tap < taps_count; tap++ )
-			slot[tap] = SparkMathFloatToBf16(taps[tap]);
+		for ( uint entry = 0u; entry < span; entry++ )
+			slot[entry] = SparkMathFloatToBf16(taps[entry]);
 }
 
 kernel void spark_gated_delta_prepare(constant SparkDeltaParams &p [[buffer(0)]], device const ushort *mix [[buffer(1)]],

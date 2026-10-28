@@ -92,6 +92,11 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_HYPER_KEY_GATE,
 	SPARK_OPS_HYPER_ADD,
 	SPARK_OPS_GEMV_NVFP4_ROUTED,
+	SPARK_OPS_ROUTE_COMBINE_SHARED,
+	SPARK_OPS_SIGMOID_GATE_ROWS,
+	SPARK_OPS_NGRAM_HASH,
+	SPARK_OPS_NGRAM_GATHER_FP8,
+	SPARK_OPS_NGRAM_HISTORY,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -175,6 +180,9 @@ SparkStatus SparkOpsRouteTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spar
 	SparkTensor experts, SparkTensor weights, const SparkRouteParams *params);
 SparkStatus SparkOpsRouteCombineWeighted(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor weights, SparkTensor output,
 	const SparkRouteParams *params);
+SparkStatus SparkOpsRouteCombineShared(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor shared, SparkTensor output,
+	const SparkRouteParams *params);
+SparkStatus SparkOpsSigmoidGateRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, SparkTensor logits, const SparkRouteParams *params);
 SparkStatus SparkOpsRouteSigmoid(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor bias, SparkTensor experts, SparkTensor weights,
 	const SparkRouteParams *params);
 SparkStatus SparkOpsRmsNormBf16(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor weight, SparkTensor output,
@@ -193,6 +201,12 @@ SparkStatus SparkOpsHyperKeyGate(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	const SparkHyperParams *params);
 SparkStatus SparkOpsHyperAdd(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor gated, SparkTensor conv,
 	const SparkHyperParams *params);
+SparkStatus SparkOpsNgramHash(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor token_ids, SparkTensor positions, const SparkOpsSequences *sequences,
+	SparkTensor history, SparkTensor multipliers, SparkTensor primes, SparkTensor offsets, SparkTensor ids, const SparkNgramParams *params);
+SparkStatus SparkOpsNgramGatherFp8(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor ids, SparkTensor payload, SparkTensor scale, SparkTensor embed,
+	const SparkNgramParams *params);
+SparkStatus SparkOpsNgramHistory(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor token_ids, const SparkOpsSequences *sequences, SparkTensor history,
+	const SparkNgramParams *params);
 SparkStatus SparkOpsRouteCombine(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor output,
 	const SparkRouteParams *params);
 SparkStatus SparkOpsLinearRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor y, SparkTensor experts,

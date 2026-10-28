@@ -75,7 +75,8 @@ kernel void spark_rmsnorm_gate(constant SparkGatedNormParams &p [[buffer(0)]], d
 	{
 		float value = SparkMathRoundBf16(SparkMathBf16ToFloat(x[i]) * scale);
 		value = SparkMathRoundBf16(value * SparkMathBf16ToFloat(weight[i]));
-		y[i] = SparkMathFloatToBf16(value * SparkMathSilu(SparkMathBf16ToFloat(g[i])));
+		const float g_value = SparkMathBf16ToFloat(g[i]);
+		y[i] = SparkMathFloatToBf16(value * (p.sigmoid_gate != 0u ? SparkMathSigmoidFast(g_value) : SparkMathSiluFast(g_value)));
 	}
 }
 

@@ -141,6 +141,7 @@ SparkStatus SparkDeviceGatedDelta(SparkDeviceStage *stage, SparkDeviceQueue *que
 	gate.gate_offset = SparkDeviceGatedDeltaChannels(shape);
 	gate.output_stride = values;
 	gate.epsilon = shape->epsilon;
+	gate.sigmoid_gate = shape->sigmoid_gate;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsRmsNormGate(stage->ops,queue,scratch->core,scratch->mix,weights->norm,scratch->gated,&gate);
 	if ( status == SPARK_STATUS_OK )

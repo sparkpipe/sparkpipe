@@ -81,7 +81,12 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_hyper_inject",
 	"spark_hyper_key_gate",
 	"spark_hyper_add",
-	"spark_gemv_nvfp4_routed"
+	"spark_gemv_nvfp4_routed",
+	"spark_route_combine_shared",
+	"spark_sigmoid_gate_rows",
+	"spark_ngram_hash",
+	"spark_ngram_gather_fp8",
+	"spark_ngram_history"
 };
 
 static SparkStatus OpsRefuse(const char *operation, const char *reason)
@@ -490,15 +495,16 @@ SparkStatus SparkOpsCausalConv(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spa
 	SparkDeviceBinding bindings[6];
 	SparkStatus status;
 	if ( params->channels == 0u || params->sequences == 0u || params->kernel_taps == 0u || params->kernel_taps > 8u ||
-		params->sequences != sequences->sequences || params->commit != sequences->commit )
-		return(OpsRefuse("causal_conv","channels, one to eight taps and matching sequence tables are required"));
+		SPARK_CONV_SPAN(params->kernel_taps,params->dilation) > SPARK_CONV_SPAN_MAX || params->sequences != sequences->sequences ||
+		params->commit != sequences->commit )
+		return(OpsRefuse("causal_conv","channels, one to eight taps spanning at most 16 entries and matching sequence tables are required"));
 	status = OpsNeed("causal_conv","state_index",sequences->state_index,(uint64_t)params->sequences * 4u);
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("causal_conv","row_begin",sequences->row_begin,((uint64_t)params->sequences + 1u) * 4u);
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("causal_conv","weight",weight,(uint64_t)params->channels * params->kernel_taps * 2u);
 	if ( status == SPARK_STATUS_OK )
-		status = OpsNeed("causal_conv","window",window,(uint64_t)params->channels * params->kernel_taps * 2u);
+		status = OpsNeed("causal_conv","window",window,(uint64_t)params->channels * SPARK_CONV_SPAN(params->kernel_taps,params->dilation) * 2u);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	bindings[0] = OpsBind(window,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
@@ -898,6 +904,42 @@ SparkStatus SparkOpsRouteCombineWeighted(SparkDeviceOps *ops, SparkDeviceQueue *
 	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE_WEIGHTED,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,3u));
 }
 
+SparkStatus SparkOpsRouteCombineShared(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor shared, SparkTensor output,
+	const SparkRouteParams *params)
+{
+	SparkDeviceBinding bindings[3];
+	SparkStatus status;
+	if ( params->rows == 0u || params->top_k == 0u || params->top_k > SPARK_ROUTE_MAX_TOP_K || params->width == 0u )
+		return(OpsRefuse("route_combine_shared","rows, a top-k of at most 16 and a width are required"));
+	status = OpsNeed("route_combine_shared","expert outputs",expert_out,(uint64_t)params->rows * params->top_k * params->width * sizeof(uint16_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("route_combine_shared","shared",shared,(uint64_t)params->rows * params->width * sizeof(uint16_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("route_combine_shared","output",output,(uint64_t)params->rows * params->width * sizeof(uint16_t));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(expert_out,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(shared,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE_SHARED,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,3u));
+}
+
+SparkStatus SparkOpsSigmoidGateRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, SparkTensor logits, const SparkRouteParams *params)
+{
+	SparkDeviceBinding bindings[2];
+	SparkStatus status;
+	if ( params->rows == 0u || params->width == 0u || params->logit_stride == 0u )
+		return(OpsRefuse("sigmoid_gate_rows","rows, a width and a logit stride are required"));
+	status = OpsNeed("sigmoid_gate_rows","values",values,(uint64_t)params->rows * params->width * sizeof(uint16_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("sigmoid_gate_rows","logits",logits,OpsRowsBytes(params->rows,params->logit_stride,1u,2u));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(values,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
+	bindings[1] = OpsBind(logits,SPARK_DEVICE_BIND_READ);
+	return(OpsLaunch(ops,queue,SPARK_OPS_SIGMOID_GATE_ROWS,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,2u));
+}
+
 SparkStatus SparkOpsRouteSigmoid(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor bias, SparkTensor experts, SparkTensor weights,
 	const SparkRouteParams *params)
 {
@@ -1177,6 +1219,100 @@ SparkStatus SparkOpsLinearRoutedMxfp4(SparkDeviceOps *ops, SparkDeviceQueue *que
 	bindings[4] = OpsBind(experts,SPARK_DEVICE_BIND_READ);
 	return(OpsLaunch(ops,queue,SPARK_OPS_GEMV_MXFP4_ROUTED,(N + SPARK_GEMV_OUTPUTS - 1u) / SPARK_GEMV_OUTPUTS,params->rows,1u,128u,params,sizeof(*params),
 		bindings,5u));
+}
+
+static SparkStatus OpsNgramShape(const char *operation, const SparkNgramParams *params, const SparkOpsSequences *sequences)
+{
+	if ( params->sequences == 0u || params->orders == 0u || params->orders > SPARK_NGRAM_MAX_ORDERS || params->heads == 0u ||
+		params->history_stride < params->orders || (sequences != 0 && (params->sequences != sequences->sequences || params->commit != sequences->commit)) )
+		return(OpsRefuse(operation,"sequences, one to three orders, heads, a history that holds them and matching sequence tables are required"));
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkOpsNgramHash(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor token_ids, SparkTensor positions, const SparkOpsSequences *sequences,
+	SparkTensor history, SparkTensor multipliers, SparkTensor primes, SparkTensor offsets, SparkTensor ids, const SparkNgramParams *params)
+{
+	const uint64_t columns = (uint64_t)params->orders * params->heads;
+	SparkDeviceBinding bindings[9];
+	SparkStatus status = OpsNgramShape("ngram_hash",params,sequences);
+	if ( status == SPARK_STATUS_OK && params->rows == 0u )
+		status = OpsRefuse("ngram_hash","rows are required");
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("ngram_hash","token ids",token_ids,(uint64_t)params->rows * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("ngram_hash","positions",positions,(uint64_t)params->rows * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("ngram_hash","row_begin",sequences->row_begin,((uint64_t)params->sequences + 1u) * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("ngram_hash","state_index",sequences->state_index,(uint64_t)params->sequences * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("ngram_hash","multipliers",multipliers,((uint64_t)params->orders + 1u) * 8u);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("ngram_hash","primes",primes,columns * 8u);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("ngram_hash","offsets",offsets,columns * 8u);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("ngram_hash","ids",ids,(uint64_t)params->rows * columns * 8u);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(token_ids,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(positions,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(sequences->row_begin,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(sequences->state_index,SPARK_DEVICE_BIND_READ);
+	bindings[4] = OpsBind(history,SPARK_DEVICE_BIND_READ);
+	bindings[5] = OpsBind(multipliers,SPARK_DEVICE_BIND_READ);
+	bindings[6] = OpsBind(primes,SPARK_DEVICE_BIND_READ);
+	bindings[7] = OpsBind(offsets,SPARK_DEVICE_BIND_READ);
+	bindings[8] = OpsBind(ids,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_NGRAM_HASH,(params->rows + 63u) / 64u,1u,1u,64u,params,sizeof(*params),bindings,9u));
+}
+
+SparkStatus SparkOpsNgramGatherFp8(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor ids, SparkTensor payload, SparkTensor scale, SparkTensor embed,
+	const SparkNgramParams *params)
+{
+	const uint64_t columns = (uint64_t)params->orders * params->heads;
+	SparkDeviceBinding bindings[4];
+	SparkStatus status = OpsNgramShape("ngram_gather_fp8",params,0);
+	if ( status == SPARK_STATUS_OK && (params->rows == 0u || params->head_dimension == 0u || params->table_rows == 0u) )
+		status = OpsRefuse("ngram_gather_fp8","rows, a head dimension and table rows are required");
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("ngram_gather_fp8","ids",ids,(uint64_t)params->rows * columns * 8u);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("ngram_gather_fp8","payload",payload,params->table_rows * params->head_dimension);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("ngram_gather_fp8","scale",scale,4u);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("ngram_gather_fp8","embed",embed,(uint64_t)params->rows * columns * params->head_dimension * 2u);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(ids,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(payload,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(scale,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(embed,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_NGRAM_GATHER_FP8,params->rows,(uint32_t)columns,1u,OpsThreads(params->head_dimension,256u),params,sizeof(*params),
+		bindings,4u));
+}
+
+SparkStatus SparkOpsNgramHistory(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor token_ids, const SparkOpsSequences *sequences, SparkTensor history,
+	const SparkNgramParams *params)
+{
+	SparkDeviceBinding bindings[4];
+	SparkStatus status = OpsNgramShape("ngram_history",params,sequences);
+	if ( status == SPARK_STATUS_OK && params->rows == 0u )
+		status = OpsRefuse("ngram_history","rows are required");
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("ngram_history","token ids",token_ids,(uint64_t)params->rows * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("ngram_history","row_begin",sequences->row_begin,((uint64_t)params->sequences + 1u) * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("ngram_history","state_index",sequences->state_index,(uint64_t)params->sequences * 4u);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(token_ids,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(sequences->row_begin,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(sequences->state_index,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(history,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_NGRAM_HISTORY,(params->sequences + 63u) / 64u,1u,1u,64u,params,sizeof(*params),bindings,4u));
 }
 
 SparkStatus SparkOpsLinearRoutedNvfp4(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor scale, SparkTensor global_scale,

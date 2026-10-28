@@ -21,6 +21,7 @@ typedef struct SparkDeviceGatedDeltaShape
 	uint32_t value_dimension;
 	uint32_t conv_taps;
 	float epsilon;
+	uint32_t sigmoid_gate;
 } SparkDeviceGatedDeltaShape;
 
 typedef struct SparkDeviceGatedDeltaWeights

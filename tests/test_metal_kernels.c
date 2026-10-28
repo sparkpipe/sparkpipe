@@ -332,7 +332,7 @@ static void TestRmsNormWeightless(uint32_t rows)
 	SparkDeviceFree(&hidden);
 }
 
-static void TestRmsNormGate(uint32_t rows)
+static void TestRmsNormGate(uint32_t rows, uint32_t sigmoid_gate)
 {
 	enum { HEADS = 48, HEAD = 128, STRIDE = 6144, GATE_STRIDE = 16384, GATE_OFFSET = 10240 };
 	SparkDeviceBuffer input, gate, weight, out;
@@ -356,6 +356,7 @@ static void TestRmsNormGate(uint32_t rows)
 	params.gate_stride = GATE_STRIDE;
 	params.gate_offset = GATE_OFFSET;
 	params.epsilon = 1e-6f;
+	params.sigmoid_gate = sigmoid_gate;
 	for ( pass = 0u; pass < 2u; pass++ )
 	{
 		Check *check = pass == 0u ? &clean : &corrupted;
@@ -382,14 +383,14 @@ static void TestRmsNormGate(uint32_t rows)
 					const double weighted = RoundBf16(normed * Bf16(w[i]));
 					const double second = first != 0.0 ? fabs((double)Bf16(w[i])) * first + 2.0 * UNIT_BF16 * (fabs(weighted) + fabs((double)Bf16(w[i])) * first) : 0.0;
 					const double z = Bf16(g[(uint64_t)row * GATE_STRIDE + GATE_OFFSET + head * HEAD + i]);
-					const double y = weighted * Silu(z);
-					const double tolerance = UNIT_BF16 * fabs(y) + fabs(Silu(z)) * second + (2.0 * FUNCTION_ERROR + 2.0 * UNIT_F32) * fabs(y);
+					const double activation = sigmoid_gate != 0u ? Sigmoid(z) : Silu(z), y = weighted * activation;
+					const double tolerance = UNIT_BF16 * fabs(y) + fabs(activation) * second + (2.0 * FUNCTION_ERROR + 2.0 * UNIT_F32) * fabs(y);
 					Observe(check,Bf16(o[(uint64_t)row * STRIDE + head * HEAD + i]),y,tolerance);
 				}
 			}
 	}
-	snprintf(shape,sizeof(shape),"rows %u, 48 heads x 128, gate in fused row",rows);
-	Report("rmsnorm_gate",shape,&clean,&corrupted,"u|y| + |silu(z)| (flip slack of both bf16 roundings, propagated) + (2*16 + 2) eps32 |y|");
+	snprintf(shape,sizeof(shape),"rows %u, 48 heads x 128, %s gate in fused row",rows,sigmoid_gate != 0u ? "sigmoid" : "silu");
+	Report("rmsnorm_gate",shape,&clean,&corrupted,"u|y| + |act(z)| (flip slack of both bf16 roundings, propagated) + (2*16 + 2) eps32 |y|");
 	SparkDeviceFree(&input);
 	SparkDeviceFree(&gate);
 	SparkDeviceFree(&weight);
@@ -1357,6 +1358,221 @@ static void TestLinearRoutedNvfp4(uint32_t rows, uint32_t K, uint32_t N)
 	SparkDeviceFree(&experts);
 }
 
+static void TestSharedExpert(uint32_t rows)
+{
+	enum { WIDTH = 2560u, TOP = 10u };
+	static const double factors[3] = { 1.0 - 2.0 * FUNCTION_ERROR, 1.0, 1.0 + 2.0 * FUNCTION_ERROR };
+	SparkDeviceBuffer outs, shared, combined, logits;
+	uint16_t *ov = (uint16_t *)Shared(&outs,(uint64_t)rows * TOP * WIDTH * 2u,"shared expert routes");
+	uint16_t *sv = (uint16_t *)Shared(&shared,(uint64_t)rows * WIDTH * 2u,"shared expert rows");
+	uint16_t *cv = (uint16_t *)Shared(&combined,(uint64_t)rows * WIDTH * 2u,"shared expert combined");
+	uint16_t *lv = (uint16_t *)Shared(&logits,(uint64_t)rows * 2u,"shared expert gate logits");
+	uint16_t *original = (uint16_t *)malloc((uint64_t)rows * WIDTH * 2u);
+	SparkRouteParams route;
+	Check clean, corrupted;
+	char shape[64];
+	uint32_t pass, row, i, k;
+	if ( original == 0 )
+	{
+		printf("FAIL shared expert: test buffer\n");
+		failures++;
+		return;
+	}
+	FillBf16(ov,(uint64_t)rows * TOP * WIDTH,1.0);
+	FillBf16(sv,(uint64_t)rows * WIDTH,1.0);
+	FillBf16(lv,rows,2.0);
+	memcpy(original,sv,(size_t)rows * WIDTH * 2u);
+	memset(&route,0,sizeof(route));
+	route.rows = rows;
+	route.top_k = TOP;
+	route.width = WIDTH;
+	route.logit_stride = 1u;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		memset(check,0,sizeof(*check));
+		memcpy(sv,original,(size_t)rows * WIDTH * 2u);
+		if ( pass == 1u )
+			lv[rows - 1u] = ToBf16(Bf16(lv[rows - 1u]) + 3.0f);
+		if ( !Run(SparkOpsSigmoidGateRows(&ops,queue,Whole(&shared),Whole(&logits),&route),"sigmoid_gate_rows") )
+			break;
+		if ( pass == 1u )
+			lv[rows - 1u] = ToBf16(Bf16(lv[rows - 1u]) - 3.0f);
+		for ( row = 0u; row < rows; row++ )
+			for ( i = 0u; i < WIDTH; i++ )
+			{
+				const double v = Bf16(original[(uint64_t)row * WIDTH + i]), sigma = Sigmoid(Bf16(lv[row])), expected = RoundBf16(v * sigma);
+				double tolerance = 0.0;
+				for ( uint32_t f = 0u; f < 3u; f++ )
+					tolerance = fmax(tolerance,fabs(RoundBf16(v * sigma * factors[f]) - expected));
+				Observe(check,Bf16(sv[(uint64_t)row * WIDTH + i]),expected,tolerance);
+			}
+	}
+	snprintf(shape,sizeof(shape),"rows %u x 2560",rows);
+	Report("sigmoid_gate_rows",shape,&clean,&corrupted,"bf16(v sigmoid(bf16 logit)): sigmoid to 2*16 eps32");
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint16_t saved = sv[(uint64_t)(rows - 1u) * WIDTH + 13u];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			sv[(uint64_t)(rows - 1u) * WIDTH + 13u] = ToBf16(Bf16(saved) + 2.0f);
+		if ( !Run(SparkOpsRouteCombineShared(&ops,queue,Whole(&outs),Whole(&shared),Whole(&combined),&route),"route_combine_shared") )
+			break;
+		sv[(uint64_t)(rows - 1u) * WIDTH + 13u] = saved;
+		for ( row = 0u; row < rows; row++ )
+			for ( i = 0u; i < WIDTH; i++ )
+			{
+				float total = 0.0f;
+				for ( k = 0u; k < TOP; k++ )
+					total += Bf16(ov[((uint64_t)row * TOP + k) * WIDTH + i]);
+				total += Bf16(sv[(uint64_t)row * WIDTH + i]);
+				Observe(check,Bf16(cv[(uint64_t)row * WIDTH + i]),Bf16(ToBf16(total)),0.0);
+			}
+	}
+	snprintf(shape,sizeof(shape),"rows %u x top 10 + shared, width 2560",rows);
+	Report("route_combine_shared",shape,&clean,&corrupted,"exact: routes in order, then the shared row, in FP32, rounded once");
+	free(original);
+	SparkDeviceFree(&outs);
+	SparkDeviceFree(&shared);
+	SparkDeviceFree(&combined);
+	SparkDeviceFree(&logits);
+}
+
+static int64_t NgramWrapMul(int64_t a, int64_t b)
+{
+	return((int64_t)((uint64_t)a * (uint64_t)b));
+}
+
+static void TestNgram(void)
+{
+	enum { ROWS = 8u, SEQUENCES = 2u, ORDERS = 2u, HEADS = 8u, COLUMNS = ORDERS * HEADS, DIM = 160u, STRIDE = 4u, PRIME = 1009u, EOS = 7u };
+	static const uint32_t tokens_init[ROWS] = { 11u, 12u, 7u, 13u, 14u, 21u, 22u, 23u };
+	static const uint32_t positions_init[ROWS] = { 0u, 1u, 2u, 3u, 4u, 10u, 11u, 12u };
+	SparkDeviceBuffer tokens, positions, begin, state, history, multipliers, primes, offsets, ids, payload, scale, embed;
+	uint32_t *tv = (uint32_t *)Shared(&tokens,ROWS * 4u,"ngram tokens");
+	uint32_t *pv = (uint32_t *)Shared(&positions,ROWS * 4u,"ngram positions");
+	uint32_t *bv = (uint32_t *)Shared(&begin,(SEQUENCES + 1u) * 4u,"ngram row begin");
+	uint32_t *sv = (uint32_t *)Shared(&state,SEQUENCES * 4u,"ngram slots");
+	int32_t *hv = (int32_t *)Shared(&history,2u * STRIDE * 4u,"ngram history");
+	int64_t *mv = (int64_t *)Shared(&multipliers,(ORDERS + 1u) * 8u,"ngram multipliers");
+	int64_t *qv = (int64_t *)Shared(&primes,COLUMNS * 8u,"ngram primes");
+	int64_t *ov = (int64_t *)Shared(&offsets,COLUMNS * 8u,"ngram offsets");
+	int64_t *iv = (int64_t *)Shared(&ids,ROWS * COLUMNS * 8u,"ngram ids");
+	uint8_t *yv = (uint8_t *)Shared(&payload,(uint64_t)COLUMNS * PRIME * DIM,"ngram table");
+	float *fv = (float *)Shared(&scale,4u,"ngram scale");
+	uint16_t *ev = (uint16_t *)Shared(&embed,ROWS * COLUMNS * DIM * 2u,"ngram embed");
+	SparkOpsSequences sequences;
+	SparkNgramParams params;
+	Check clean, corrupted;
+	int64_t expected[ROWS][COLUMNS];
+	uint32_t pass, row, column, c;
+	uint64_t index;
+	memcpy(tv,tokens_init,sizeof(tokens_init));
+	memcpy(pv,positions_init,sizeof(positions_init));
+	bv[0] = 0u;
+	bv[1] = 5u;
+	bv[2] = ROWS;
+	sv[0] = 1u;
+	sv[1] = 0u;
+	for ( index = 0u; index <= ORDERS; index++ )
+		mv[index] = (int64_t)(NextRandom() | 1u);
+	for ( column = 0u; column < COLUMNS; column++ )
+	{
+		qv[column] = PRIME - 2u * column;
+		ov[column] = (int64_t)column * PRIME;
+	}
+	for ( index = 0u; index < (uint64_t)COLUMNS * PRIME * DIM; index++ )
+		yv[index] = (uint8_t)(NextRandom() & 0x7eu);
+	fv[0] = 0.375f;
+	for ( row = 0u; row < ROWS; row++ )
+	{
+		const uint32_t lane = row < 5u ? 0u : 1u, begin_row = lane == 0u ? 0u : 5u, into = row - begin_row, slot = lane == 0u ? 1u : 0u;
+		const int32_t carried[2] = { 31, 32 };
+		int64_t shifted[ORDERS + 1u];
+		uint32_t blocked = 0u, shift, order;
+		for ( shift = 0u; shift <= ORDERS; shift++ )
+		{
+			int32_t source = -1;
+			if ( positions_init[row] >= shift )
+				source = shift <= into ? (int32_t)tokens_init[begin_row + into - shift] : (slot == 0u ? carried[shift - into - 1u] : 0);
+			if ( positions_init[row] < shift || (shift >= 1u && source == (int32_t)EOS) )
+				blocked = 1u;
+			shifted[shift] = blocked != 0u ? (int64_t)EOS : source;
+		}
+		int64_t rolling = NgramWrapMul(shifted[0],mv[0]);
+		for ( order = 1u; order <= ORDERS; order++ )
+		{
+			rolling ^= NgramWrapMul(shifted[order],mv[order]);
+			for ( uint32_t head = 0u; head < HEADS; head++ )
+				expected[row][(order - 1u) * HEADS + head] = rolling % qv[(order - 1u) * HEADS + head] + ov[(order - 1u) * HEADS + head];
+		}
+	}
+	memset(&params,0,sizeof(params));
+	params.rows = ROWS;
+	params.sequences = SEQUENCES;
+	params.orders = ORDERS;
+	params.heads = HEADS;
+	params.pad_token = EOS;
+	params.block_token = EOS;
+	params.block_from = 1u;
+	params.history_stride = STRIDE;
+	params.head_dimension = DIM;
+	params.commit = 1u;
+	params.table_rows = (uint64_t)COLUMNS * PRIME;
+	sequences.state_index = Whole(&state);
+	sequences.row_begin = Whole(&begin);
+	sequences.sequences = SEQUENCES;
+	sequences.commit = 1u;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		memset(check,0,sizeof(*check));
+		memset(hv,0,2u * STRIDE * 4u);
+		hv[0] = 31;
+		hv[1] = 32;
+		if ( pass == 1u )
+			tv[6] = tokens_init[6] + 1u;
+		if ( !Run(SparkOpsNgramHash(&ops,queue,Whole(&tokens),Whole(&positions),&sequences,Whole(&history),Whole(&multipliers),Whole(&primes),Whole(&offsets),
+			Whole(&ids),&params),"ngram_hash") )
+			break;
+		if ( !Run(SparkOpsNgramGatherFp8(&ops,queue,Whole(&ids),Whole(&payload),Whole(&scale),Whole(&embed),&params),"ngram_gather_fp8") )
+			break;
+		if ( !Run(SparkOpsNgramHistory(&ops,queue,Whole(&tokens),&sequences,Whole(&history),&params),"ngram_history") )
+			break;
+		tv[6] = tokens_init[6];
+		for ( row = 0u; row < ROWS; row++ )
+			for ( column = 0u; column < COLUMNS; column++ )
+			{
+				const int64_t id = expected[row][column];
+				Observe(check,(double)iv[row * COLUMNS + column],(double)id,0.0);
+				for ( c = 0u; c < DIM; c++ )
+				{
+					const double value = id >= 0 && (uint64_t)id < params.table_rows ? Bf16(ToBf16((float)E4m3(yv[(uint64_t)id * DIM + c]) * fv[0])) : 0.0;
+					Observe(check,Bf16(ev[((uint64_t)row * COLUMNS + column) * DIM + c]),value,0.0);
+				}
+			}
+		Observe(check,hv[STRIDE],14.0,0.0);
+		Observe(check,hv[STRIDE + 1u],13.0,0.0);
+		Observe(check,hv[0],23.0,0.0);
+		Observe(check,hv[1],22.0,0.0);
+	}
+	Report("ngram_hash_gather_history","2 sequences, 8 rows, 2 orders x 8 heads, fp8 rows of 160",&clean,&corrupted,
+		"exact: CUDA's hash (int64 wrap, C remainder, EOS blocking, carried history), e4m3 x scale rows, last tokens kept");
+	SparkDeviceFree(&tokens);
+	SparkDeviceFree(&positions);
+	SparkDeviceFree(&begin);
+	SparkDeviceFree(&state);
+	SparkDeviceFree(&history);
+	SparkDeviceFree(&multipliers);
+	SparkDeviceFree(&primes);
+	SparkDeviceFree(&offsets);
+	SparkDeviceFree(&ids);
+	SparkDeviceFree(&payload);
+	SparkDeviceFree(&scale);
+	SparkDeviceFree(&embed);
+}
+
 static void TestMimoKernels(uint32_t rows)
 {
 	enum { DIM = 4096u, FFN = 2048u, EXPERTS = 256u, TOP = 8u };
@@ -2030,6 +2246,74 @@ static void TestCausalConv(void)
 	free(ref_window);
 	free(ref);
 	free(original);
+	SparkDeviceFree(&window);
+	SparkDeviceFree(&index);
+	SparkDeviceFree(&begin);
+	SparkDeviceFree(&input);
+	SparkDeviceFree(&weight);
+	SparkDeviceFree(&output);
+}
+
+static void TestCausalConvDilated(void)
+{
+	enum { CHANNELS = 10240, TAPS = 4, DILATION = 3, SPAN = (TAPS - 1) * DILATION + 1, FIRST = 7, SECOND = 4, ROWS = FIRST + SECOND };
+	SparkDeviceBuffer window, index, begin, input, weight, output;
+	uint16_t *win = (uint16_t *)Shared(&window,(uint64_t)CHANNELS * SPAN * 2u,"dilated conv window");
+	uint32_t *slot = (uint32_t *)Shared(&index,4u,"dilated conv slot");
+	uint32_t *rb = (uint32_t *)Shared(&begin,8u,"dilated conv begin");
+	uint16_t *in = (uint16_t *)Shared(&input,(uint64_t)ROWS * CHANNELS * 2u,"dilated conv input");
+	uint16_t *w = (uint16_t *)Shared(&weight,CHANNELS * TAPS * 2u,"dilated conv weight");
+	uint16_t *out = (uint16_t *)Shared(&output,(uint64_t)ROWS * CHANNELS * 2u,"dilated conv output");
+	SparkOpsSequences sequences;
+	SparkConvParams params;
+	Check clean, corrupted;
+	uint32_t pass, row, c, tap;
+	FillBf16(in,(uint64_t)ROWS * CHANNELS,1.0);
+	FillBf16(w,CHANNELS * TAPS,0.5);
+	memset(&params,0,sizeof(params));
+	params.channels = CHANNELS;
+	params.row_stride = CHANNELS;
+	params.sequences = 1u;
+	params.kernel_taps = TAPS;
+	params.dilation = DILATION;
+	params.commit = 1u;
+	sequences.state_index = Whole(&index);
+	sequences.row_begin = Whole(&begin);
+	sequences.sequences = 1u;
+	sequences.commit = 1u;
+	slot[0] = 0u;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint16_t saved = w[77u * TAPS];
+		memset(check,0,sizeof(*check));
+		memset(win,0,(size_t)CHANNELS * SPAN * 2u);
+		if ( pass == 1u )
+			w[77u * TAPS] = ToBf16(Bf16(saved) + 2.0f);
+		rb[0] = 0u;
+		rb[1] = FIRST;
+		if ( !Run(SparkOpsCausalConv(&ops,queue,Whole(&window),&sequences,Whole(&input),Whole(&weight),Whole(&output),&params),"causal_conv dilated first") )
+			break;
+		rb[0] = FIRST;
+		rb[1] = ROWS;
+		if ( !Run(SparkOpsCausalConv(&ops,queue,Whole(&window),&sequences,Whole(&input),Whole(&weight),Whole(&output),&params),"causal_conv dilated second") )
+			break;
+		w[77u * TAPS] = saved;
+		for ( row = 0u; row < ROWS; row++ )
+			for ( c = 0u; c < CHANNELS; c++ )
+			{
+				float total = 0.0f;
+				for ( tap = 0u; tap < TAPS; tap++ )
+				{
+					const int32_t source = (int32_t)row - (int32_t)((TAPS - 1u - tap) * DILATION);
+					total += (source >= 0 ? Bf16(in[(uint64_t)source * CHANNELS + c]) : 0.0f) * Bf16(w[c * TAPS + tap]);
+				}
+				const double rounded = RoundBf16(total), y = rounded * Sigmoid(rounded);
+				Observe(check,Bf16(out[(uint64_t)row * CHANNELS + c]),y,UNIT_BF16 * fabs(y) + 2.0 * FUNCTION_ERROR * fabs(y));
+			}
+	}
+	Report("causal_conv_dilated","10240 channels, 4 taps dilation 3, 7 rows then 4",&clean,&corrupted,
+		"u|y| + 2*16 eps32 |y|: taps x[t-9], x[t-6], x[t-3], x[t] summed in fp32 oldest first, rounded to bf16, then swish; the window carries over");
 	SparkDeviceFree(&window);
 	SparkDeviceFree(&index);
 	SparkDeviceFree(&begin);
@@ -2764,8 +3048,9 @@ int main(int argc, char **argv)
 	TestGather();
 	TestRmsNormResidual(1u);
 	TestRmsNormResidual(64u);
-	TestRmsNormGate(1u);
-	TestRmsNormGate(33u);
+	TestRmsNormGate(1u,0u);
+	TestRmsNormGate(33u,0u);
+	TestRmsNormGate(3u,1u);
 	TestHeadRope(1u,24u,0u,512u,"24 query heads in the fused row");
 	TestHeadRope(17u,4u,12288u,256u,"4 key heads in the fused row");
 	{
@@ -2839,6 +3124,7 @@ int main(int argc, char **argv)
 	TestLinearFp8(17u,5120u,512u,0u,20000u);
 	TestLinearFp8(130u,5120u,512u,0u,20000u);
 	TestCausalConv();
+	TestCausalConvDilated();
 	TestGatedDelta();
 	TestAttention(1u,1u,0u);
 	TestAttention(1000u,1u,0u);
@@ -2883,6 +3169,8 @@ int main(int argc, char **argv)
 	TestLinearRoutedMxfp4(2u,4096u,512u);
 	TestMimoKernels(3u);
 	TestHyperKernels(3u);
+	TestSharedExpert(3u);
+	TestNgram();
 	TestLinearRoutedNvfp4(2u,2560u,96u);
 	TestLinearRoutedNvfp4(2u,640u,160u);
 	TestLinearRoutedNvfp4(1u,256u,64u);

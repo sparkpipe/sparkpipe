@@ -334,3 +334,29 @@ kernel void spark_stream_read(constant SparkStreamParams &p [[buffer(0)]], devic
 	if ( folded == 0x9e3779b9u )
 		sink[group] = folded;
 }
+
+kernel void spark_route_combine_shared(constant SparkRouteParams &p [[buffer(0)]], device const ushort *expert_out [[buffer(1)]],
+	device const ushort *shared [[buffer(2)]], device ushort *output [[buffer(3)]], uint2 group [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint row = group.y, index = group.x * group_size.x + tid;
+	if ( index >= p.width )
+		return;
+	float total = 0.0f;
+	for ( uint k = 0u; k < p.top_k; k++ )
+		total += SparkMathBf16ToFloat(expert_out[((ulong)row * p.top_k + k) * p.width + index]);
+	total += SparkMathBf16ToFloat(shared[(ulong)row * p.width + index]);
+	output[(ulong)row * p.width + index] = SparkMathFloatToBf16(total);
+}
+
+kernel void spark_sigmoid_gate_rows(constant SparkRouteParams &p [[buffer(0)]], device ushort *values [[buffer(1)]],
+	device const ushort *logits [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+	uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint row = group.y, index = group.x * group_size.x + tid;
+	if ( index >= p.width )
+		return;
+	const float gate = SparkMathSigmoid(SparkMathBf16ToFloat(logits[(ulong)row * p.logit_stride]));
+	const ulong at = (ulong)row * p.width + index;
+	values[at] = SparkMathFloatToBf16(SparkMathBf16ToFloat(values[at]) * gate);
+}

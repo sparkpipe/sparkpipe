@@ -26,6 +26,9 @@
 #define SPARK_ATTENTION_GATE_SIGMOID 1u
 #define SPARK_ATTENTION_GATE_SIGMOID_BF16 2u
 #define SPARK_HYPER_MAX_STREAMS 8u
+#define SPARK_CONV_SPAN_MAX 16u
+#define SPARK_NGRAM_MAX_ORDERS 3u
+#define SPARK_CONV_SPAN(taps, dilation) (((taps) - 1u) * ((dilation) != 0u ? (dilation) : 1u) + 1u)
 
 typedef struct SparkGatherParams
 {
@@ -57,6 +60,8 @@ typedef struct SparkGatedNormParams
 	uint32_t gate_offset;
 	uint32_t output_stride;
 	float epsilon;
+	uint32_t sigmoid_gate;
+	uint32_t pad[3];
 } SparkGatedNormParams;
 
 typedef struct SparkBranchNormParams
@@ -130,7 +135,8 @@ typedef struct SparkConvParams
 	uint32_t sequences;
 	uint32_t kernel_taps;
 	uint32_t commit;
-	uint32_t pad[3];
+	uint32_t dilation;
+	uint32_t pad[2];
 } SparkConvParams;
 
 typedef struct SparkDeltaParams
@@ -216,6 +222,23 @@ typedef struct SparkStreamParams
 	uint32_t groups;
 	uint32_t pad;
 } SparkStreamParams;
+
+typedef struct SparkNgramParams
+{
+	uint32_t rows;
+	uint32_t sequences;
+	uint32_t orders;
+	uint32_t heads;
+	int32_t pad_token;
+	int32_t block_token;
+	uint32_t block_from;
+	uint32_t history_stride;
+	uint32_t head_dimension;
+	uint32_t commit;
+	uint32_t pad[2];
+	uint64_t first_row;
+	uint64_t table_rows;
+} SparkNgramParams;
 
 typedef struct SparkHyperParams
 {
