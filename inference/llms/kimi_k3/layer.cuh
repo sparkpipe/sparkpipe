@@ -97,6 +97,9 @@ struct K3LayerBuffers
 	const void *mla_kv_a_scale;
 	const void *mla_kv_a_norm_weight;
 	const void *mla_kv_b_value_weight;
+	const void *mla_q_b_weight;
+	const void *mla_kv_b_key_full_weight;
+	const void *mla_kv_b_value_full_weight;
 	const void *mla_kv_b_scale;
 	const void *mla_gate_weight;
 	const void *mla_out_weight;

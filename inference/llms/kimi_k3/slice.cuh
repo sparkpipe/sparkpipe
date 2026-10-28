@@ -31,6 +31,9 @@ struct K3LayerWeights
 	const void *mla_kv_a_scale;
 	const void *mla_kv_a_norm_weight;
 	const void *mla_kv_b_value_weight;
+	const void *mla_q_b_weight;
+	const void *mla_kv_b_key_full_weight;
+	const void *mla_kv_b_value_full_weight;
 	const void *mla_kv_b_scale;
 	const void *mla_gate_weight;
 	const void *mla_out_weight;
@@ -140,6 +143,9 @@ static void K3BindLayer(const K3LayerWeights *weights, K3LayerBuffers *buffers)
 	buffers->mla_kv_a_scale = weights->mla_kv_a_scale;
 	buffers->mla_kv_a_norm_weight = weights->mla_kv_a_norm_weight;
 	buffers->mla_kv_b_value_weight = weights->mla_kv_b_value_weight;
+	buffers->mla_q_b_weight = weights->mla_q_b_weight;
+	buffers->mla_kv_b_key_full_weight = weights->mla_kv_b_key_full_weight;
+	buffers->mla_kv_b_value_full_weight = weights->mla_kv_b_value_full_weight;
 	buffers->mla_kv_b_scale = weights->mla_kv_b_scale;
 	buffers->mla_gate_weight = weights->mla_gate_weight;
 	buffers->mla_out_weight = weights->mla_out_weight;
