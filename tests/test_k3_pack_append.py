@@ -16,13 +16,19 @@ from spark_named_pack import PayloadWriter, assemble  # noqa: E402
 EXPERTS_MAGIC = 0x58504557
 
 
-def build(path, tensors):
+def build(path, tensors, reserve=0):
     payload = Path(str(path) + ".payload")
     writer = PayloadWriter(payload, json.dumps({"test": str(path)}), align=ALIGN)
     for name, data in tensors:
         writer.add(name, data, KIND_BF16, [len(data) // 2])
     writer.close()
-    assemble(path, payload, MAGIC, VERSION, ALIGN, {"name": "test"}, {"layers": 1}, writer.manifest)
+    if reserve == 0:
+        assemble(path, payload, MAGIC, VERSION, ALIGN, {"name": "test"}, {"layers": 1}, writer.manifest)
+        return writer.manifest
+    text = json.dumps({"format": {"name": "test"}, "config": {"layers": 1}, "tensors": writer.manifest}).encode()
+    text += b" " * (reserve - 16 - len(text))
+    Path(path).write_bytes(struct.pack("<IIQ", MAGIC, VERSION, len(text)) + text + payload.read_bytes())
+    payload.unlink()
     return writer.manifest
 
 
@@ -36,11 +42,22 @@ def base_of(path):
 
 def main():
     failures = []
+    for reserve in (0, 1 << 16):
+        check(reserve, failures)
+    for failure in failures:
+        print("FAIL", failure)
+    if failures:
+        raise SystemExit(1)
+    print("PASS k3_pack_append: existing tensors keep their payload offsets and bytes, a reserved header keeps the payload base and expert offsets, "
+          "a grown header moves the expert ranges with it, the added tensors read back, the digest matches, and a second append is refused")
+
+
+def check(reserve, failures):
     with tempfile.TemporaryDirectory() as scratch:
         directory = Path(scratch)
         pack, additions = directory / "k3.stage0.rank00.pack", directory / "k3.additions.rank00.pack"
         old = [("model.layers.0.attn_norm_weight", bytes(range(256)) * 3), ("model.layers.1.expert_w1_weight", bytes(reversed(range(256))) * 40)]
-        manifest = build(pack, old)
+        manifest = build(pack, old, reserve)
         added = [(f"model.layers.1.mla_q_b_weight", b"\x11\x22" * 700), (f"model.layers.1.mla_kv_b_key_full_weight", b"\x33\x44" * 900),
                  (f"model.layers.1.mla_kv_b_value_full_weight", b"\x55\x66" * 300)]
         build(additions, added)
@@ -67,18 +84,17 @@ def main():
         offset, length = struct.unpack_from("<QQ", experts, 16 + 16)
         original = pack.read_bytes()
         if blob[offset:offset + length] != original[old_base + expert["offset"] + 256:old_base + expert["offset"] + 256 + length]:
-            failures.append("the expert range does not point at the same bytes after the manifest grew")
+            failures.append(f"reserve {reserve}: the expert range does not point at the same bytes after the append")
+        if reserve != 0 and (new_base != old_base or experts != Path(str(pack) + ".experts").read_bytes()):
+            failures.append(f"reserve {reserve}: the payload base moved from {old_base} to {new_base} although the new manifest fits the reserved header")
+        if reserve == 0 and new_base == old_base:
+            failures.append("an unreserved header must grow with the manifest")
         if Path(str(staged) + ".sha256").read_text().split()[0] != hashlib.sha256(blob).hexdigest():
             failures.append("the digest file does not match the appended pack")
         again = subprocess.run([sys.executable, str(ROOT / "tools" / "k3_pack_append.py"), "apply", "--pack", str(staged), "--additions", str(additions)],
                                capture_output=True, text=True, timeout=120)
         if again.returncode == 0:
-            failures.append("a pack that already carries the tensors must be refused")
-    for failure in failures:
-        print("FAIL", failure)
-    if failures:
-        raise SystemExit(1)
-    print("PASS k3_pack_append: existing tensors keep their payload offsets and bytes, expert ranges follow the grown manifest, the added tensors read back, the digest matches, and a second append is refused")
+            failures.append(f"reserve {reserve}: a pack that already carries the tensors must be refused")
 
 
 if __name__ == "__main__":

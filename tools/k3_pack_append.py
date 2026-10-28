@@ -13,9 +13,11 @@ and the key and value halves of kv_b_proj, which the K3 pack does not carry
 extract: read the checkpoint once and write one small named pack of these
 tensors per rank. apply: rewrite one rank pack with the tensors appended to
 its payload. Tensor offsets are payload-relative, so existing entries keep
-their offsets; the .experts sidecar holds absolute file offsets, so its
-ranges move by the growth of header plus manifest. The digest file next to
-the pack is rewritten.
+their offsets. When the new manifest fits the space the old header reserved
+(rank packs pad theirs to a 1 MiB payload base), it is space-padded into it
+and the payload base and the .experts sidecar's absolute offsets stay as
+they were; otherwise the sidecar ranges move by the growth of header plus
+manifest. The digest file next to the pack is rewritten.
 """
 
 import argparse
@@ -110,6 +112,9 @@ def apply(args):
         tensors[name] = moved
         cursor += entry["bytes"] + (-entry["bytes"]) % ALIGN
     text = json.dumps({"format": manifest["format"], "config": manifest["config"], "tensors": tensors}, separators=(",", ":")).encode()
+    reserved = base - 16
+    if len(text) <= reserved:
+        text += b" " * (reserved - len(text))
     new_base = 16 + len(text)
     new_base += (-new_base) % ALIGN
     shift = new_base - base
