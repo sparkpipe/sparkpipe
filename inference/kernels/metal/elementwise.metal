@@ -82,7 +82,10 @@ kernel void spark_scale_rows(constant SparkScaleParams &p [[buffer(0)]], device 
 kernel void spark_softcap_rows(constant SparkScaleParams &p [[buffer(0)]], device float *values [[buffer(1)]], uint index [[thread_position_in_grid]])
 {
 	if ( index < p.count )
-		values[index] = SparkMathSoftcap(values[index], p.scale);
+	{
+		const float value = p.multiply != 0.0f ? values[index] * p.multiply : values[index];
+		values[index] = p.scale != 0.0f ? SparkMathSoftcap(value, p.scale) : value;
+	}
 }
 
 static inline void SparkRouteProbabilities(constant SparkRouteParams &p, device const ushort *values, threadgroup float *probability,

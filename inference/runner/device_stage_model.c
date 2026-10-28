@@ -149,6 +149,13 @@ SparkStatus SparkDeviceStageGeometry(SparkDeviceStage *stage, SparkStageRunnerMo
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	geometry->logit_softcap = shape->logit_softcap;
+	geometry->logit_scale = shape->logit_scale;
+	geometry->embed_alias_first = shape->embed_alias_first;
+	geometry->embed_alias_count = shape->embed_alias_count;
+	geometry->embed_alias_row = shape->embed_alias_row;
+	if ( shape->embed_alias_count != 0u && (shape->embed_alias_first >= shape->vocab || shape->embed_alias_count > shape->vocab - shape->embed_alias_first ||
+		shape->embed_alias_row >= shape->vocab || shape->embed_alias_row - shape->embed_alias_first < shape->embed_alias_count) )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_SCHEMA_ERROR,"the embedding alias must name tokens and a row of the vocabulary, the row outside the aliased tokens"));
 	if ( embed_rows != shape->vocab || head_rows != shape->vocab || geometry->embed_bytes != table_bytes || geometry->head_bytes != table_bytes ||
 		geometry->head_norm_bytes != (uint64_t)shape->hidden * 4u )
 		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_SCHEMA_ERROR,"the pack's embedding, head or head norm has the wrong shape"));

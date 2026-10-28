@@ -46,6 +46,22 @@ static inline void SparkLoad8(device const ushort *source, thread float *values)
 	values[7] = as_type<float>(bits.w & 0xffff0000u);
 }
 
+template <uint LANE>
+static inline void SparkLoadLane(device const ushort *source, thread float *values)
+{
+	if constexpr ( LANE % 8u == 0u )
+		for ( uint chunk = 0u; chunk < LANE; chunk += 8u )
+			SparkLoad8(source + chunk, values + chunk);
+	else
+	{
+		const uint2 bits = *(device const uint2 *)source;
+		values[0] = as_type<float>(bits.x << 16);
+		values[1] = as_type<float>(bits.x & 0xffff0000u);
+		values[2] = as_type<float>(bits.y << 16);
+		values[3] = as_type<float>(bits.y & 0xffff0000u);
+	}
+}
+
 kernel void spark_kv_store_paged(constant SparkKvParams &p [[buffer(0)]], device const ushort *key [[buffer(1)]],
 	device const ushort *value [[buffer(2)]], device const uint *sequence_of_row [[buffer(3)]], device const uint *positions [[buffer(4)]],
 	device const uint *page_table [[buffer(5)]], device ushort *pool [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
@@ -79,8 +95,7 @@ kernel void spark_attention_decode(constant SparkAttentionParams &p [[buffer(0)]
 	const uint begin = max(part * p.partition_keys, SparkAttentionFirstKey(p, positions[row])), end = min(length, part * p.partition_keys + p.partition_keys);
 	float q[LANE], acc[LANE];
 	float running_max = -INFINITY, running_sum = 0.0f;
-	for ( uint chunk = 0u; chunk < LANE; chunk += 8u )
-		SparkLoad8(query + (ulong)row * p.query_stride + head * D + lane * LANE + chunk, q + chunk);
+	SparkLoadLane<LANE>(query + (ulong)row * p.query_stride + head * D + lane * LANE, q);
 	for ( uint d = 0u; d < LANE; d++ )
 		acc[d] = 0.0f;
 	for ( uint key = begin + simd; key < end; key += SPARK_ATTENTION_SIMDS )
@@ -89,11 +104,8 @@ kernel void spark_attention_decode(constant SparkAttentionParams &p [[buffer(0)]
 		float k[LANE], v[LANE], score = 0.0f;
 		if ( slot == (device const ushort *)0 )
 			continue;
-		for ( uint chunk = 0u; chunk < LANE; chunk += 8u )
-		{
-			SparkLoad8(slot + kv_head * D + lane * LANE + chunk, k + chunk);
-			SparkLoad8(slot + (p.kv_heads + kv_head) * D + lane * LANE + chunk, v + chunk);
-		}
+		SparkLoadLane<LANE>(slot + kv_head * D + lane * LANE, k);
+		SparkLoadLane<LANE>(slot + (p.kv_heads + kv_head) * D + lane * LANE, v);
 		for ( uint d = 0u; d < LANE; d++ )
 			score += q[d] * k[d];
 		score = simd_sum(score) * p.scale;
@@ -160,7 +172,8 @@ kernel void spark_attention_combine(constant SparkAttentionParams &p [[buffer(0)
 			value += record[2u + d] * factor;
 		}
 		const float attended = SparkMathRoundBf16(value / sum);
-		const float g = p.output_gate != 0u ? SparkMathSigmoid(SparkMathBf16ToFloat(gate[(ulong)row * p.gate_stride + p.gate_offset + head * p.gate_head_stride + d])) : 1.0f;
+		const float sigmoid = p.output_gate != 0u ? SparkMathSigmoid(SparkMathBf16ToFloat(gate[(ulong)row * p.gate_stride + p.gate_offset + head * p.gate_head_stride + d])) : 1.0f;
+		const float g = p.output_gate == SPARK_ATTENTION_GATE_SIGMOID_BF16 ? SparkMathRoundBf16(sigmoid) : sigmoid;
 		output[(ulong)row * p.output_stride + head * D + d] = SparkMathFloatToBf16(p.output_gate != 0u ? attended * g : attended);
 	}
 }
@@ -290,3 +303,4 @@ kernel void spark_attention_prefill_blocks(constant SparkAttentionParams &p [[bu
 
 SPARK_ATTENTION_INSTANCES(256)
 SPARK_ATTENTION_INSTANCES(512)
+SPARK_ATTENTION_INSTANCES(128)

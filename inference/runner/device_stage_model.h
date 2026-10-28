@@ -44,8 +44,13 @@ typedef struct SparkDeviceStageShape
 	uint32_t kv_head_dimension;
 	uint32_t pack_alignment;
 	float epsilon;
+	float post_epsilon;
 	uint32_t tied_head;
 	float logit_softcap;
+	float logit_scale;
+	uint32_t embed_alias_first;
+	uint32_t embed_alias_count;
+	uint32_t embed_alias_row;
 	uint32_t projection;
 } SparkDeviceStageShape;
 

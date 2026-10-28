@@ -285,6 +285,53 @@ static void TestRmsNormResidual(uint32_t rows)
 	SparkDeviceFree(&out);
 }
 
+static void TestRmsNormWeightless(uint32_t rows)
+{
+	enum { DIM = 6656 };
+	SparkDeviceBuffer hidden;
+	uint16_t *h = (uint16_t *)Shared(&hidden,(uint64_t)rows * DIM * 2u,"weightless norm hidden");
+	uint16_t *original = (uint16_t *)malloc((size_t)rows * DIM * 2u);
+	SparkNormParams params;
+	Check clean, corrupted;
+	char shape[64];
+	uint32_t pass, row, i;
+	FillBf16(h,(uint64_t)rows * DIM,3.0);
+	memcpy(original,h,(size_t)rows * DIM * 2u);
+	memset(&params,0,sizeof(params));
+	params.rows = rows;
+	params.dimension = DIM;
+	params.input_stride = params.output_stride = DIM;
+	params.epsilon = 1e-5f;
+	params.weightless = 1u;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		memset(check,0,sizeof(*check));
+		memcpy(h,original,(size_t)rows * DIM * 2u);
+		if ( pass == 1u )
+			h[(uint64_t)(rows - 1u) * DIM + 9u] = ToBf16(Bf16(original[(uint64_t)(rows - 1u) * DIM + 9u]) * -4.0f);
+		if ( !Run(SparkOpsRmsNormResidual(&ops,queue,Whole(&hidden),0,Whole(&hidden),Whole(&hidden),&params),"rmsnorm_residual weightless") )
+			break;
+		for ( row = 0u; row < rows; row++ )
+		{
+			double square = 0.0;
+			for ( i = 0u; i < DIM; i++ )
+				square += (double)Bf16(original[(uint64_t)row * DIM + i]) * Bf16(original[(uint64_t)row * DIM + i]);
+			const double scale = 1.0 / sqrt(square / DIM + 1e-5);
+			const double scale_error = Gamma(DIM) + FUNCTION_ERROR;
+			for ( i = 0u; i < DIM; i++ )
+			{
+				const double y = Bf16(original[(uint64_t)row * DIM + i]) * scale;
+				Observe(check,Bf16(h[(uint64_t)row * DIM + i]),y,UNIT_BF16 * fabs(y) + (1.0 + UNIT_BF16) * (scale_error + 2.0 * UNIT_F32) * fabs(y));
+			}
+		}
+	}
+	snprintf(shape,sizeof(shape),"rows %u, dim 6656, in place, no weight",rows);
+	Report("rmsnorm_weightless",shape,&clean,&corrupted,"u|y| + (1+u)(gamma_6656 + 16 eps32 + 2 eps32)|y|, u = 2^-8, eps32 = 2^-24");
+	free(original);
+	SparkDeviceFree(&hidden);
+}
+
 static void TestRmsNormGate(uint32_t rows)
 {
 	enum { HEADS = 48, HEAD = 128, STRIDE = 6144, GATE_STRIDE = 16384, GATE_OFFSET = 10240 };
@@ -357,6 +404,7 @@ typedef struct RopeCase
 	double theta;
 	uint32_t weighted;
 	uint32_t rounded;
+	double multiply;
 } RopeCase;
 
 static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uint32_t head_stride, const RopeCase *c, const char *label)
@@ -389,6 +437,7 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 	params.epsilon = 1e-6f;
 	params.has_weight = c->weighted;
 	params.rope_rounded_terms = c->rounded;
+	params.multiply = (float)c->multiply;
 	for ( i = 0u; i < c->pairs; i++ )
 		params.inverse_frequency[i] = (float)(1.0 / pow(c->theta,(double)(2u * i) / ROPE));
 	for ( pass = 0u; pass < 2u; pass++ )
@@ -412,9 +461,12 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 				const double scale = 1.0 / sqrt(square / HEAD + 1e-6);
 				for ( i = 0u; i < HEAD; i++ )
 				{
-					const double gain = c->weighted != 0u ? w[i] : 1.0;
-					normed[i] = RoundBf16(Bf16(v[i]) * scale * gain);
-					slack[i] = FlipSlack(Bf16(v[i]) * scale * gain,Gamma(HEAD) + FUNCTION_ERROR + 3.0 * UNIT_F32);
+					const double gain = c->weighted != 0u ? w[i] : 1.0, multiply = params.multiply;
+					const double first = RoundBf16(Bf16(v[i]) * scale * gain);
+					const double first_slack = FlipSlack(Bf16(v[i]) * scale * gain,Gamma(HEAD) + FUNCTION_ERROR + 3.0 * UNIT_F32);
+					normed[i] = multiply != 0.0 ? RoundBf16(first * multiply) : first;
+					slack[i] = multiply != 0.0 ? fabs(multiply) * first_slack + FlipSlack(first * multiply,2.0 * UNIT_F32) +
+						(first_slack != 0.0 ? UNIT_BF16 * fabs(normed[i]) : 0.0) : first_slack;
 				}
 				for ( i = 0u; i < HEAD; i++ )
 				{
@@ -456,7 +508,7 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 
 static void TestHeadRope(uint32_t rows, uint32_t heads, uint32_t offset, uint32_t head_stride, const char *label)
 {
-	static const RopeCase qwen = { 256u, 64u, 32u, 10000000.0, 1u, 0u };
+	static const RopeCase qwen = { 256u, 64u, 32u, 10000000.0, 1u, 0u, 0.0 };
 	char text[96];
 	snprintf(text,sizeof(text),"%s, rope 64, theta 1e7",label);
 	TestHeadRopeCase(rows,heads,offset,head_stride,&qwen,text);
@@ -720,7 +772,7 @@ static void TestScaleAndSoftcap(void)
 		memcpy(z,saved_logits,LOGITS * sizeof(float));
 		if ( pass == 1u )
 			z[77] += 9.0f;
-		if ( !Run(SparkOpsSoftcap(&ops,queue,Whole(&logits),LOGITS,30.0f),"softcap") )
+		if ( !Run(SparkOpsSoftcap(&ops,queue,Whole(&logits),LOGITS,30.0f,0.0f),"softcap") )
 			break;
 		for ( i = 0u; i < LOGITS; i++ )
 		{
@@ -729,6 +781,23 @@ static void TestScaleAndSoftcap(void)
 		}
 	}
 	Report("softcap_rows","4096 fp32 logits, cap 30",&clean,&corrupted,"(2*16+2) eps32 |y| + 30 eps32");
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const float multiply = 0.19611613513818404f;
+		memset(check,0,sizeof(*check));
+		memcpy(z,saved_logits,LOGITS * sizeof(float));
+		if ( pass == 1u )
+			z[77] += 9.0f;
+		if ( !Run(SparkOpsSoftcap(&ops,queue,Whole(&logits),LOGITS,20.0f,multiply),"softcap scaled") )
+			break;
+		for ( i = 0u; i < LOGITS; i++ )
+		{
+			const double scaled = (double)saved_logits[i] * multiply, y = 20.0 * tanh(scaled / 20.0);
+			Observe(check,z[i],y,(2.0 * FUNCTION_ERROR + 2.0 * UNIT_F32) * fabs(y) + UNIT_F32 * fabs(scaled) + 20.0 * UNIT_F32);
+		}
+	}
+	Report("softcap_rows","4096 fp32 logits, times 0.196, cap 20",&clean,&corrupted,"(2*16+2) eps32 |y| + eps32 |z m| + 20 eps32");
 	free(saved);
 	free(saved_logits);
 	SparkDeviceFree(&rows);
@@ -1417,9 +1486,10 @@ typedef struct AttentionCase
 	uint32_t window;
 	uint32_t gate;
 	float scale;
+	uint32_t separate;
 } AttentionCase;
 
-static AttentionCase att = { 24u, 4u, 256u, 14336u, 13312u, 0u, 1u, 1.0f / 16.0f };
+static AttentionCase att = { 24u, 4u, 256u, 14336u, 13312u, 0u, 1u, 1.0f / 16.0f, 0u };
 
 static void AttentionFill(AttentionFixture *f, uint32_t context, uint32_t sequences)
 {
@@ -1510,12 +1580,14 @@ static void AttentionReference(const AttentionFixture *f, const uint16_t *query,
 			magnitude += score[j] / total * fabs(v);
 			spread += score[j] / total * fabs(v) * 2.0 * slack[j];
 		}
-		const double attended = RoundBf16(value), g = att.gate != 0u ? Sigmoid(Bf16(gate[head * 2u * att.dim + att.dim + d])) : 1.0;
+		const double sigmoid = att.gate != 0u ? Sigmoid(Bf16(gate[att.separate != 0u ? head * att.dim + d : head * 2u * att.dim + att.dim + d])) : 1.0;
+		const double attended = RoundBf16(value), g = att.gate == SPARK_ATTENTION_GATE_SIGMOID_BF16 ? RoundBf16(sigmoid) : sigmoid;
+		const double gate_slack = att.gate == SPARK_ATTENTION_GATE_SIGMOID_BF16 ? FlipSlack(sigmoid,2.0 * FUNCTION_ERROR) : 0.0;
 		const double absolute = 2.0 * spread + Gamma(length + 8.0) * magnitude + 4.0 * FUNCTION_ERROR * fabs(value);
 		const double slack = fabs(RoundBf16(value - absolute) - attended) > fabs(RoundBf16(value + absolute) - attended) ?
 			fabs(RoundBf16(value - absolute) - attended) : fabs(RoundBf16(value + absolute) - attended);
 		out[d] = attended * g;
-		tolerance[d] = (att.gate != 0u ? UNIT_BF16 * fabs(out[d]) : 0.0) + g * slack + 4.0 * FUNCTION_ERROR * fabs(out[d]);
+		tolerance[d] = (att.gate != 0u ? UNIT_BF16 * fabs(out[d]) : 0.0) + g * slack + fabs(attended) * gate_slack + 4.0 * FUNCTION_ERROR * fabs(out[d]);
 	}
 	free(score);
 	free(slack);
@@ -1533,13 +1605,13 @@ static SparkAttentionParams AttentionParamsFor(const AttentionFixture *f, uint32
 	params.pages_per_sequence = f->pages;
 	params.pool_pages = sequences * f->pages;
 	params.query_stride = att.heads * att.dim;
-	params.gate_stride = att.qkv;
 	params.output_stride = att.heads * att.dim;
 	params.scale = att.scale;
 	params.output_gate = att.gate;
 	params.window = att.window;
-	params.gate_offset = att.dim;
-	params.gate_head_stride = 2u * att.dim;
+	params.gate_stride = att.separate != 0u ? att.heads * att.dim : att.qkv;
+	params.gate_offset = att.separate != 0u ? 0u : att.dim;
+	params.gate_head_stride = (att.separate != 0u ? 1u : 2u) * att.dim;
 	return(params);
 }
 
@@ -1551,7 +1623,7 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 	uint32_t *sequence, *position, row, head, d, pass;
 	double ref[ATT_MAX_DIM], tolerance[ATT_MAX_DIM];
 	Check clean, corrupted;
-	char shape[96];
+	char shape[96], window[24];
 	const uint32_t sequences = prefill != 0u ? 2u : 1u;
 	memset(&f,0,sizeof(f));
 	AttentionFill(&f,context,sequences);
@@ -1626,15 +1698,19 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 		for ( row = 0u; row < rows; row++ )
 			for ( head = 0u; head < att.heads; head++ )
 			{
-				AttentionReference(&f,query + (uint64_t)row * att.heads * att.dim,gate + (uint64_t)row * att.qkv,sequence[row],position[row],head,ref,tolerance);
+				AttentionReference(&f,query + (uint64_t)row * att.heads * att.dim,gate + (uint64_t)row * params.gate_stride,sequence[row],position[row],head,ref,
+					tolerance);
 				for ( d = 0u; d < att.dim; d++ )
 					Observe(check,Bf16(output[((uint64_t)row * att.heads + head) * att.dim + d]),ref[d],tolerance[d]);
 			}
 	}
+	window[0] = 0;
+	if ( att.window != 0u )
+		snprintf(window,sizeof(window),", window %u",att.window);
 	snprintf(shape,sizeof(shape),"%s rows %u, context %u, %u q / %u kv heads x %u%s%s",prefill != 0u ? "prefill" : "decode",rows,context,att.heads,att.kv,
-		att.dim,att.window != 0u ? ", window 1024" : "",att.gate != 0u ? "" : ", no gate");
+		att.dim,window,att.gate == SPARK_ATTENTION_GATE_SIGMOID_BF16 ? ", bf16 gate" : att.gate != 0u ? "" : ", no gate");
 	Report(prefill != 0u ? "attention_prefill" : "attention_decode",shape,&clean,&corrupted,
-		"u|y| + sigmoid(g) bf16 flip slack of o within e + 4*16 eps32 |y|; e = 2 sum p|v| 2 ds + gamma_L sum p|v|, ds = gamma_258 sum|q k|/16 + 2*16 eps32 (1+|s|)");
+		"u|y| + sigmoid(g) bf16 flip slack of o within e + |o| flip slack of a bf16 gate + 4*16 eps32 |y|; e = 2 sum p|v| 2 ds + gamma_L sum p|v|, ds = gamma_258 sum|q k|/16 + 2*16 eps32 (1+|s|)");
 	AttentionFree(&f);
 	SparkDeviceFree(&f.query);
 	SparkDeviceFree(&f.gate);
@@ -1936,12 +2012,19 @@ int main(int argc, char **argv)
 	TestHeadRope(1u,24u,0u,512u,"24 query heads in the fused row");
 	TestHeadRope(17u,4u,12288u,256u,"4 key heads in the fused row");
 	{
-		static const RopeCase sliding = { 256u, 256u, 128u, 10000.0, 1u, 1u }, full = { 512u, 512u, 64u, 1000000.0, 1u, 1u },
-			value = { 512u, 0u, 0u, 1.0, 0u, 0u };
+		static const RopeCase sliding = { 256u, 256u, 128u, 10000.0, 1u, 1u, 0.0 }, full = { 512u, 512u, 64u, 1000000.0, 1u, 1u, 0.0 },
+			value = { 512u, 0u, 0u, 1.0, 0u, 0u, 0.0 };
 		TestHeadRopeCase(3u,16u,0u,256u,&sliding,"16 heads x 256, whole-head rope with bf16 terms, theta 1e4");
 		TestHeadRopeCase(2u,2u,8192u,512u,&full,"2 heads x 512, 64 of 256 pairs rotated, bf16 terms, theta 1e6");
 		TestHeadRopeCase(2u,2u,8192u,512u,&value,"2 heads x 512, weightless norm, no rope");
 	}
+	{
+		static const RopeCase sliding = { 128u, 128u, 64u, 500000.0, 0u, 1u, 3.87 }, full = { 128u, 0u, 0u, 1.0, 0u, 0u, 3.87 };
+		TestHeadRopeCase(3u,32u,0u,128u,&sliding,"32 heads x 128, weightless, times 3.87, bf16-term rope, theta 5e5");
+		TestHeadRopeCase(2u,32u,0u,128u,&full,"32 heads x 128, weightless, times 3.87, no rope");
+	}
+	TestRmsNormWeightless(1u);
+	TestRmsNormWeightless(9u);
 	TestLinear(1u,5120u,16384u,0u,SPARK_PROJECTION_GEMV,UINT64_MAX);
 	TestLinear(1u,5120u,96u,0u,SPARK_PROJECTION_GEMV,UINT64_MAX);
 	TestLinear(1u,5120u,14336u,0u,SPARK_PROJECTION_GEMV,UINT64_MAX);
@@ -1999,13 +2082,21 @@ int main(int argc, char **argv)
 	TestAttention(300u,40u,1u);
 	TestAttention(2048u,64u,1u);
 	{
-		const AttentionCase qwen = att, sliding = { 16u, 8u, 256u, 8192u, 6144u, 1024u, 0u, 1.0f }, full = { 16u, 2u, 512u, 10240u, 9216u, 0u, 0u, 1.0f };
+		const AttentionCase qwen = att, sliding = { 16u, 8u, 256u, 8192u, 6144u, 1024u, 0u, 1.0f, 0u }, full = { 16u, 2u, 512u, 10240u, 9216u, 0u, 0u, 1.0f, 0u },
+			muse_sliding = { 32u, 2u, 128u, 4608u, 4352u, 2048u, SPARK_ATTENTION_GATE_SIGMOID_BF16, 0.08838834764831845f, 1u },
+			muse_full = { 32u, 2u, 128u, 4608u, 4352u, 0u, SPARK_ATTENTION_GATE_SIGMOID_BF16, 0.08838834764831845f, 1u };
 		att = sliding;
 		TestAttention(2048u,1u,0u);
 		TestAttention(2048u,64u,1u);
 		att = full;
 		TestAttention(1000u,1u,0u);
 		TestAttention(300u,40u,1u);
+		att = muse_sliding;
+		TestAttention(3000u,1u,0u);
+		TestAttention(300u,40u,1u);
+		att = muse_full;
+		TestAttention(1000u,4u,0u);
+		TestAttention(2048u,64u,1u);
 		att = qwen;
 	}
 	TestAttentionPages();

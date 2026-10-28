@@ -83,7 +83,7 @@ struct QwenDevice
 		attention->rope_theta = G::kRopeTheta;
 		attention->epsilon = QH_EPSILON;
 		attention->scale = (float)(1.0 / sqrt((double)G::kHeadDim));
-		attention->output_gate = 1u;
+		attention->output_gate = SPARK_ATTENTION_GATE_SIGMOID;
 	}
 
 	static uint32_t MixWidth(const State *state)

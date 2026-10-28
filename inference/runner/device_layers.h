@@ -54,8 +54,11 @@ typedef struct SparkDeviceAttentionShape
 	float epsilon;
 	float scale;
 	uint32_t output_gate;
+	uint32_t gate_projection;
 	uint32_t key_is_value;
 	uint32_t value_norm;
+	uint32_t qk_weightless;
+	float query_multiply;
 	uint32_t window;
 	uint32_t rope_pairs;
 	uint32_t rope_rounded_terms;
@@ -71,6 +74,7 @@ typedef struct SparkDeviceAttentionRope
 typedef struct SparkDeviceAttentionWeights
 {
 	SparkTensor qkv;
+	SparkTensor gate;
 	SparkTensor out;
 	SparkTensor q_norm;
 	SparkTensor k_norm;
@@ -83,6 +87,7 @@ typedef struct SparkDeviceAttentionScratch
 	SparkTensor key;
 	SparkTensor value;
 	SparkTensor records;
+	SparkTensor gate;
 	SparkTensor gated;
 } SparkDeviceAttentionScratch;
 

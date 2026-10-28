@@ -2,7 +2,7 @@
 set -eu
 
 if [ "$#" -ne 5 ]; then
-	echo "usage: $0 gemma4-26b-a4b|gemma4-31b PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
+	echo "usage: $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
 	exit 2
 fi
 model=$1
@@ -11,13 +11,14 @@ reference=$3
 out=$4
 revision=$5
 case $model in
-	gemma4-26b-a4b) routed=1;;
-	gemma4-31b) routed=0;;
-	*) echo "unknown Gemma 4 model $model" >&2; exit 2;;
+	gemma4-26b-a4b) routed=1 prompt_dir=gemma4 vocab=262144;;
+	gemma4-31b) routed=0 prompt_dir=gemma4 vocab=262144;;
+	muse-glimmer-30b) routed=0 prompt_dir=muse_glimmer vocab=202048;;
+	*) echo "unknown Gemma-family model $model" >&2; exit 2;;
 esac
 root=$(cd "$(dirname "$0")/.." && pwd)
-prompts=$root/qualification/metal/gemma4/gate_prompts.json
-spec_prompts=$root/qualification/metal/gemma4/spec_prompts.json
+prompts=$root/qualification/metal/$prompt_dir/gate_prompts.json
+spec_prompts=$root/qualification/metal/$prompt_dir/spec_prompts.json
 control_pack=$out/control.pack
 batches=${SPARK_LADDER_BATCHES:-1,2,4,8,16,32,64}
 run="./build/metal_stage_run --model $model --prompts $prompts"
@@ -55,21 +56,21 @@ $run --pack "$pack" --mode ladder --batches "$batches" --new-tokens 128 --repeat
 rm -f "$out/compare/compare.jsonl"
 for name in $(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in json.load(open(sys.argv[1]))["prompts"]))' "$prompts"); do
 	split=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["prefill_positions"])' "$out/metal/$name.metal.json")
-	./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_a.logits" "$out/ref/$name.ref_b.logits" floor "$split" >> "$out/compare/compare.jsonl"
+	./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_a.logits" "$out/ref/$name.ref_b.logits" floor "$split" >> "$out/compare/compare.jsonl"
 	if [ "$routed" = 1 ]; then
-		./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_a.logits" "$out/metal/$name.metal.logits" metal "$split" "$out/ref/$name.ref_b.logits" >> "$out/compare/compare.jsonl"
-		./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_b.logits" "$out/metal/$name.metal.logits" metal_vs_b "$split" "$out/ref/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
-		./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_a.logits" "$out/ref/$name.ref_bp.logits" pinned_floor "$split" >> "$out/compare/compare.jsonl"
+		./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_a.logits" "$out/metal/$name.metal.logits" metal "$split" "$out/ref/$name.ref_b.logits" >> "$out/compare/compare.jsonl"
+		./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_b.logits" "$out/metal/$name.metal.logits" metal_vs_b "$split" "$out/ref/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
+		./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_a.logits" "$out/ref/$name.ref_bp.logits" pinned_floor "$split" >> "$out/compare/compare.jsonl"
 		for pass in pinned:metal pinned64:metal_rows64 control:control control_layers:control_layers control_rotate:control_rotate control_experts:control_experts; do
 			dir=${pass%%:*}
 			tag=pinned_${pass#*:}
-			./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_a.logits" "$out/$dir/$name.metal.logits" "$tag" "$split" "$out/ref/$name.ref_bp.logits" >> "$out/compare/compare.jsonl"
-			./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_bp.logits" "$out/$dir/$name.metal.logits" "${tag}_vs_b" "$split" "$out/ref/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
+			./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_a.logits" "$out/$dir/$name.metal.logits" "$tag" "$split" "$out/ref/$name.ref_bp.logits" >> "$out/compare/compare.jsonl"
+			./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_bp.logits" "$out/$dir/$name.metal.logits" "${tag}_vs_b" "$split" "$out/ref/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
 		done
 	else
 		for label in metal control control_layers control_rotate; do
-			./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_a.logits" "$out/$label/$name.metal.logits" "$label" "$split" "$out/ref/$name.ref_b.logits" >> "$out/compare/compare.jsonl"
-			./build/logit_compare "$prompts" "$name" 262144 "$out/ref/$name.ref_b.logits" "$out/$label/$name.metal.logits" "${label}_vs_b" "$split" "$out/ref/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
+			./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_a.logits" "$out/$label/$name.metal.logits" "$label" "$split" "$out/ref/$name.ref_b.logits" >> "$out/compare/compare.jsonl"
+			./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_b.logits" "$out/$label/$name.metal.logits" "${label}_vs_b" "$split" "$out/ref/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
 		done
 	fi
 done

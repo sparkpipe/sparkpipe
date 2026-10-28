@@ -28,7 +28,7 @@ kernel void spark_rmsnorm_residual(constant SparkNormParams &p [[buffer(0)]], de
 			if ( p.write_sum != 0u )
 				x[i] = SparkMathFloatToBf16(value);
 		}
-		y[i] = SparkMathFloatToBf16(value * scale * weight[i]);
+		y[i] = SparkMathFloatToBf16(p.weightless != 0u ? value * scale : value * scale * weight[i]);
 	}
 }
 
@@ -79,7 +79,10 @@ kernel void spark_head_rmsnorm_rope(constant SparkHeadRopeParams &p [[buffer(0)]
 	total = SparkGroupSum(total, scratch, lane, simd, simds);
 	const float scale = rsqrt(total / float(p.head_dimension) + p.epsilon);
 	for ( uint i = tid; i < p.head_dimension; i += threads )
-		normed[i] = SparkMathRoundBf16(p.has_weight != 0u ? SparkMathBf16ToFloat(x[i]) * scale * weight[i] : SparkMathBf16ToFloat(x[i]) * scale);
+	{
+		const float value = SparkMathRoundBf16(p.has_weight != 0u ? SparkMathBf16ToFloat(x[i]) * scale * weight[i] : SparkMathBf16ToFloat(x[i]) * scale);
+		normed[i] = p.multiply != 0.0f ? SparkMathRoundBf16(value * p.multiply) : value;
+	}
 	threadgroup_barrier(mem_flags::mem_threadgroup);
 	const float position = float(positions[row]);
 	for ( uint i = tid; i < p.head_dimension; i += threads )

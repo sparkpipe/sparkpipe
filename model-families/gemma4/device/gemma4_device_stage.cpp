@@ -6,6 +6,7 @@
 #include "sparkpipe/spark_gemma4_31b_stage_model.h"
 #include "sparkpipe/spark_gemma4_device_stage.h"
 #include "sparkpipe/spark_gemma4_family.h"
+#include "sparkpipe/spark_muse_tp16_stage_model.h"
 
 #define GD_SLICES 24u
 
@@ -16,9 +17,8 @@ struct GemmaDevice
 	using L = GemmaLayout<G>;
 
 	static_assert(G::kTpDegree == 1u, "a device stage is one whole rank");
-	static_assert(!G::kEmbedNorm && !G::kPreNorm && !G::kOutputGate && !G::kHeadGate && !G::kSigmoidRouter && !G::kRouterFloat && !G::kLayerTable &&
-		!G::kUntiedHead && G::kFullRope && G::kQkNormWeighted && G::kQueryMultiply == 1.0f && G::kYarnFactor <= 1.0f && G::kEmbedAliasCount == 0u &&
-		G::kLogitScale == 0.0f && G::kNormEpsilon == G::kPostEpsilon, "the device layers do not cover this Gemma variant yet");
+	static_assert(!G::kPreNorm && !G::kHeadGate && !G::kSigmoidRouter && !G::kRouterFloat && !G::kLayerTable && G::kYarnFactor <= 1.0f &&
+		(!G::kEmbedNorm || G::kEmbedScale == 1.0f), "the device layers do not cover this Gemma variant yet");
 
 	struct Layer
 	{
@@ -81,8 +81,13 @@ struct GemmaDevice
 		shape->kv_head_dimension = sliding_slot ? G::kSlidingDim : G::kFullDim;
 		shape->pack_alignment = GEMMA_PACK_ALIGNMENT;
 		shape->epsilon = G::kNormEpsilon;
-		shape->tied_head = 1u;
+		shape->post_epsilon = G::kPostEpsilon;
+		shape->tied_head = G::kUntiedHead ? 0u : 1u;
 		shape->logit_softcap = G::kLogitSoftcap;
+		shape->logit_scale = G::kLogitScale;
+		shape->embed_alias_first = G::kEmbedAliasFirst;
+		shape->embed_alias_count = G::kEmbedAliasCount;
+		shape->embed_alias_row = G::kEmbedAliasRow;
 		shape->projection = P::kProjection;
 		memset(sliding, 0, sizeof(*sliding));
 		sliding->heads = G::kSlidingHeads;
@@ -93,18 +98,26 @@ struct GemmaDevice
 		sliding->epsilon = G::kNormEpsilon;
 		sliding->scale = G::kAttentionScale;
 		sliding->value_norm = G::kValueNorm ? 1u : 0u;
+		sliding->output_gate = G::kOutputGate ? SPARK_ATTENTION_GATE_SIGMOID_BF16 : 0u;
+		sliding->gate_projection = G::kOutputGate ? 1u : 0u;
+		sliding->qk_weightless = G::kQkNormWeighted ? 0u : 1u;
+		sliding->query_multiply = G::kQueryMultiply == 1.0f ? 0.0f : G::kQueryMultiply;
 		sliding->window = G::kWindow;
 		sliding->rope_rounded_terms = 1u;
 		memset(full, 0, sizeof(*full));
 		full->heads = G::kFullHeads;
 		full->kv_heads = G::kFullKvHeads;
 		full->head_dimension = G::kFullDim;
-		full->rope_dimension = L::kFullRopeWidth;
+		full->rope_dimension = G::kFullRope ? L::kFullRopeWidth : 0u;
 		full->rope_theta = G::kFullTheta;
 		full->epsilon = G::kNormEpsilon;
 		full->scale = G::kAttentionScale;
 		full->key_is_value = G::kKeyIsValue ? 1u : 0u;
 		full->value_norm = G::kValueNorm ? 1u : 0u;
+		full->output_gate = sliding->output_gate;
+		full->gate_projection = sliding->gate_projection;
+		full->qk_weightless = sliding->qk_weightless;
+		full->query_multiply = sliding->query_multiply;
 		full->rope_pairs = G::kFullRopePairs;
 		full->rope_rounded_terms = 1u;
 		memset(experts, 0, sizeof(*experts));
@@ -135,13 +148,14 @@ struct GemmaDevice
 			{ Max(SparkOpsAttentionScratchBytes(state->stage.max_rows, state->full.heads, state->full.head_dimension, state->stage.max_positions),
 				SparkOpsAttentionScratchBytes(state->stage.max_rows, state->sliding.heads, state->sliding.head_dimension, state->stage.max_positions)),
 				&state->attention.records },
+			{ rows * query * 2u, &state->attention.gate },
 			{ rows * query * 2u, &state->attention.gated },
 			{ rows * 2u * state->ffn * 2u, &state->ffn_scratch.gate_up },
 			{ rows * state->ffn * 2u, &state->ffn_scratch.act }
 		};
 		uint32_t count = 0u;
 		for ( uint32_t index = 0u; index < sizeof(plan) / sizeof(plan[0]); index++ )
-			if ( G::kMoe || plan[index].target != &state->expert_out )
+			if ( (G::kMoe || plan[index].target != &state->expert_out) && (G::kOutputGate || plan[index].target != &state->attention.gate) )
 				slices[count++] = plan[index];
 		if constexpr ( G::kMoe )
 			for ( uint32_t index = 0u; index < sizeof(experts) / sizeof(experts[0]); index++ )
@@ -227,6 +241,17 @@ struct GemmaDevice
 	{
 		frame->queue = (SparkDeviceQueue *)queue;
 		return SparkDeviceStageStepTables(&state->stage, step, &frame->t);
+	}
+
+	static SparkStatus EmbedNorm(State *state, const Frame &frame)
+	{
+		SparkNormParams params;
+		memset(&params, 0, sizeof(params));
+		params.rows = frame.t.rows;
+		params.dimension = params.input_stride = params.output_stride = G::kHidden;
+		params.epsilon = G::kNormEpsilon;
+		params.weightless = 1u;
+		return SparkOpsRmsNormResidual(state->stage.ops, frame.queue, frame.t.hidden, 0, frame.t.hidden, frame.t.hidden, &params);
 	}
 
 	static SparkStatus EmbedScale(State *state, const Frame &frame, float scale)
@@ -348,6 +373,14 @@ struct Gemma4_31bDevice
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
 };
 
+struct MuseGlimmerDevice
+{
+	using Geometry = MuseGlimmerGeometry<1u>;
+	static constexpr const char *kTag = "sparkpipe_muse_glimmer_device";
+	static constexpr const char *kName = "muse-glimmer-30b";
+	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
+};
+
 const SparkStageRunnerModelInterface *SparkGemma4_26bDeviceStageModel(void)
 {
 	return GemmaDevice<Gemma4_26bDevice>::Interface();
@@ -356,4 +389,9 @@ const SparkStageRunnerModelInterface *SparkGemma4_26bDeviceStageModel(void)
 const SparkStageRunnerModelInterface *SparkGemma4_31bDeviceStageModel(void)
 {
 	return GemmaDevice<Gemma4_31bDevice>::Interface();
+}
+
+const SparkStageRunnerModelInterface *SparkMuseGlimmerDeviceStageModel(void)
+{
+	return GemmaDevice<MuseGlimmerDevice>::Interface();
 }

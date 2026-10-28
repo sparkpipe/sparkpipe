@@ -9,6 +9,7 @@ extern "C" {
 
 const SparkStageRunnerModelInterface *SparkGemma4_26bDeviceStageModel(void);
 const SparkStageRunnerModelInterface *SparkGemma4_31bDeviceStageModel(void);
+const SparkStageRunnerModelInterface *SparkMuseGlimmerDeviceStageModel(void);
 
 #ifdef __cplusplus
 }

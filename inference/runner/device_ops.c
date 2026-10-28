@@ -38,10 +38,13 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_kv_store_paged",
 	"spark_attention_decode_d256",
 	"spark_attention_decode_d512",
+	"spark_attention_decode_d128",
 	"spark_attention_prefill_blocks_d256",
 	"spark_attention_prefill_blocks_d512",
+	"spark_attention_prefill_blocks_d128",
 	"spark_attention_combine_d256",
 	"spark_attention_combine_d512",
+	"spark_attention_combine_d128",
 	"spark_silu_mul",
 	"spark_gelu_tanh_mul",
 	"spark_silu_mul_routed",
@@ -259,7 +262,7 @@ SparkStatus SparkOpsRmsNormResidual(SparkDeviceOps *ops, SparkDeviceQueue *queue
 	status = OpsNeed("rmsnorm_residual","hidden",hidden,OpsRowsBytes(params->rows,params->input_stride,params->dimension,2u));
 	if ( status == SPARK_STATUS_OK && addend != 0 )
 		status = OpsNeed("rmsnorm_residual","addend",*addend,OpsRowsBytes(params->rows,params->input_stride,params->dimension,2u));
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && params->weightless == 0u )
 		status = OpsNeed("rmsnorm_residual","weight",weight,(uint64_t)params->dimension * 4u);
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("rmsnorm_residual","output",output,OpsRowsBytes(params->rows,params->output_stride,params->dimension,2u));
@@ -267,7 +270,7 @@ SparkStatus SparkOpsRmsNormResidual(SparkDeviceOps *ops, SparkDeviceQueue *queue
 		return(status);
 	bindings[0] = OpsBind(hidden,params->write_sum != 0u ? SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE : SPARK_DEVICE_BIND_READ);
 	bindings[1] = OpsBind(addend != 0 ? *addend : hidden,SPARK_DEVICE_BIND_READ);
-	bindings[2] = OpsBind(weight,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(params->weightless != 0u ? hidden : weight,SPARK_DEVICE_BIND_READ);
 	bindings[3] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,SPARK_OPS_RMSNORM_RESIDUAL,params->rows,1u,1u,OpsThreads(params->dimension,1024u),params,sizeof(*params),bindings,4u));
 }
@@ -521,7 +524,7 @@ SparkStatus SparkOpsKvStore(SparkDeviceOps *ops, SparkDeviceQueue *queue, const 
 
 static uint32_t OpsAttentionWidth(const SparkAttentionParams *params)
 {
-	return(params->head_dimension == SPARK_OPS_ATTENTION_WIDE_HEAD_DIM ? 1u : 0u);
+	return(params->head_dimension == SPARK_OPS_ATTENTION_WIDE_HEAD_DIM ? 1u : params->head_dimension == SPARK_OPS_ATTENTION_NARROW_HEAD_DIM ? 2u : 0u);
 }
 
 static SparkStatus OpsAttentionPrefill(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkDeviceBinding *bindings,
@@ -558,11 +561,12 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 	SparkStatus status;
 	uint32_t row, longest = 0u, run = 0u, widest = 0u, decode;
 	if ( params->rows == 0u || params->heads == 0u || params->kv_heads != paged->kv_heads || params->heads % params->kv_heads != 0u ||
-		(params->head_dimension != SPARK_OPS_ATTENTION_HEAD_DIM && params->head_dimension != SPARK_OPS_ATTENTION_WIDE_HEAD_DIM) ||
+		(params->head_dimension != SPARK_OPS_ATTENTION_HEAD_DIM && params->head_dimension != SPARK_OPS_ATTENTION_WIDE_HEAD_DIM &&
+		params->head_dimension != SPARK_OPS_ATTENTION_NARROW_HEAD_DIM) ||
 		params->page_slots != paged->page_slots ||
 		params->pages_per_sequence != paged->pages_per_sequence || params->pool_pages != paged->pool_pages || host_positions == 0 ||
 		host_sequence_of_row == 0 )
-		return(OpsRefuse("attention","256- or 512-dimensional heads, whole query groups per key head and the host row tables are required"));
+		return(OpsRefuse("attention","128-, 256- or 512-dimensional heads, whole query groups per key head and the host row tables are required"));
 	for ( row = 0u; row < params->rows; row++ )
 	{
 		run = row != 0u && host_sequence_of_row[row] == host_sequence_of_row[row - 1u] ? run + 1u : 1u;
@@ -728,7 +732,7 @@ SparkStatus SparkOpsRmsNormScaled(SparkDeviceOps *ops, SparkDeviceQueue *queue, 
 }
 
 static SparkStatus OpsScale(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkOpsKernel kernel, SparkTensor values, uint64_t count, uint32_t element,
-	float scale, const char *operation)
+	float scale, float multiply, const char *operation)
 {
 	SparkScaleParams params;
 	SparkDeviceBinding bindings[1];
@@ -738,18 +742,19 @@ static SparkStatus OpsScale(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkO
 	memset(&params,0,sizeof(params));
 	params.count = count;
 	params.scale = scale;
+	params.multiply = multiply;
 	bindings[0] = OpsBind(values,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,kernel,(uint32_t)((count + 255u) / 256u),1u,1u,256u,&params,sizeof(params),bindings,1u));
 }
 
 SparkStatus SparkOpsScaleRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, uint64_t count, float scale)
 {
-	return(OpsScale(ops,queue,SPARK_OPS_SCALE_ROWS,values,count,(uint32_t)sizeof(uint16_t),scale,"scale_rows"));
+	return(OpsScale(ops,queue,SPARK_OPS_SCALE_ROWS,values,count,(uint32_t)sizeof(uint16_t),scale,0.0f,"scale_rows"));
 }
 
-SparkStatus SparkOpsSoftcap(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, uint64_t count, float cap)
+SparkStatus SparkOpsSoftcap(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, uint64_t count, float cap, float multiply)
 {
-	return(OpsScale(ops,queue,SPARK_OPS_SOFTCAP_ROWS,values,count,(uint32_t)sizeof(float),cap,"softcap"));
+	return(OpsScale(ops,queue,SPARK_OPS_SOFTCAP_ROWS,values,count,(uint32_t)sizeof(float),cap,multiply,"softcap"));
 }
 
 SparkStatus SparkOpsRouteTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor expert_scale, const SparkTensor *pinned,

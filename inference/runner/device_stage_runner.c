@@ -11,7 +11,7 @@
 #include "inference/runner/device_stage_runner.h"
 #include "sparkpipe/spark_sha256.h"
 
-#define RUNNER_TABLE_ARRAYS 10u
+#define RUNNER_TABLE_ARRAYS 11u
 
 typedef struct RunnerTables
 {
@@ -25,6 +25,7 @@ typedef struct RunnerTables
 	uint32_t *head_rows;
 	uint32_t *targets;
 	uint32_t *kept;
+	uint32_t *embed_rows;
 	uint64_t offsets[RUNNER_TABLE_ARRAYS];
 } RunnerTables;
 
@@ -157,10 +158,10 @@ static SparkStatus RunnerTablesCreate(SparkDeviceStageRunner *runner, uint64_t *
 {
 	const uint64_t counts[RUNNER_TABLE_ARRAYS] = { runner->config.max_rows, runner->config.max_rows, runner->config.max_rows,
 		runner->config.max_rows, (uint64_t)runner->config.sequences + 1u, runner->config.sequences, runner->config.sequences,
-		runner->config.head_rows, runner->config.head_rows, runner->config.sequences };
+		runner->config.head_rows, runner->config.head_rows, runner->config.sequences, runner->config.max_rows };
 	uint32_t **arrays[RUNNER_TABLE_ARRAYS] = { &runner->table.token_ids, &runner->table.positions, &runner->table.sequence_of_row,
 		&runner->table.row_indices, &runner->table.row_begin, &runner->table.recurrent_index, &runner->table.context_length,
-		&runner->table.head_rows, &runner->table.targets, &runner->table.kept };
+		&runner->table.head_rows, &runner->table.targets, &runner->table.kept, &runner->table.embed_rows };
 	uint64_t cursor = 0u;
 	uint32_t index;
 	SparkStatus status;
@@ -367,12 +368,14 @@ static void RunnerWriteTables(SparkDeviceStageRunner *runner, const SparkDeviceS
 {
 	RunnerTables *t = &runner->table;
 	uint32_t row, lane = 0u;
+	const SparkStageRunnerModelGeometry *g = &runner->geometry;
 	memcpy(t->token_ids,batch->token_ids,(size_t)batch->rows * sizeof(*t->token_ids));
 	memcpy(t->positions,batch->positions,(size_t)batch->rows * sizeof(*t->positions));
 	memcpy(t->sequence_of_row,batch->sequence_of_row,(size_t)batch->rows * sizeof(*t->sequence_of_row));
 	for ( row = 0u; row < batch->rows; row++ )
 	{
 		t->row_indices[row] = row;
+		t->embed_rows[row] = batch->token_ids[row] - g->embed_alias_first < g->embed_alias_count ? g->embed_alias_row : batch->token_ids[row];
 		if ( row == 0u || batch->sequence_of_row[row] != batch->sequence_of_row[row - 1u] )
 		{
 			t->row_begin[lane] = row;
@@ -427,9 +430,9 @@ static SparkStatus RunnerHead(SparkDeviceStageRunner *runner, const SparkDeviceS
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsLinear(runner->ops,runner->queue,SparkTensorAt(&runner->head_normed,0u,(uint64_t)rows * g->hidden * 2u),
 			SparkTensorAt(&runner->weights,g->head_offset,g->head_bytes),SparkTensorAt(&runner->logits,0u,(uint64_t)rows * g->vocab * 4u),&head);
-	if ( status == SPARK_STATUS_OK && g->logit_softcap != 0.0f )
+	if ( status == SPARK_STATUS_OK && (g->logit_softcap != 0.0f || g->logit_scale != 0.0f) )
 		status = SparkOpsSoftcap(runner->ops,runner->queue,SparkTensorAt(&runner->logits,0u,(uint64_t)rows * g->vocab * sizeof(float)),(uint64_t)rows * g->vocab,
-			g->logit_softcap);
+			g->logit_softcap,g->logit_scale);
 	memset(&logprob,0,sizeof(logprob));
 	logprob.rows = rows;
 	logprob.vocabulary = g->vocab;
@@ -450,7 +453,7 @@ SparkStatus SparkDeviceStageRunnerStep(SparkDeviceStageRunner *runner, const Spa
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	RunnerWriteTables(runner,batch,sequences);
-	status = SparkOpsGather(runner->ops,runner->queue,SparkTensorAt(&runner->weights,g->embed_offset,g->embed_bytes),RunnerTable(runner,0u,batch->rows),
+	status = SparkOpsGather(runner->ops,runner->queue,SparkTensorAt(&runner->weights,g->embed_offset,g->embed_bytes),RunnerTable(runner,10u,batch->rows),
 		SparkTensorAt(&runner->hidden,0u,(uint64_t)batch->rows * g->hidden * 2u),batch->rows,g->hidden,g->embed_rows);
 	memset(&step,0,sizeof(step));
 	step.hidden_bf16 = (uint16_t *)(uintptr_t)runner->hidden.device;

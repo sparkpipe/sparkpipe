@@ -17,6 +17,7 @@ extern "C" {
 #define SPARK_OPS_PARTIAL_BYTES ((uint64_t)SPARK_OPS_DECODE_MAX_ROWS * 2u * SPARK_OPS_SPLIT_TARGET_GROUPS * SPARK_GEMM_ROWS_OUTPUTS * sizeof(float))
 #define SPARK_OPS_ATTENTION_HEAD_DIM 256u
 #define SPARK_OPS_ATTENTION_WIDE_HEAD_DIM 512u
+#define SPARK_OPS_ATTENTION_NARROW_HEAD_DIM 128u
 #define SPARK_OPS_DELTA_KEY_DIM 128u
 
 typedef enum SparkOpsKernel
@@ -44,10 +45,13 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_KV_STORE,
 	SPARK_OPS_ATTENTION_DECODE,
 	SPARK_OPS_ATTENTION_DECODE_WIDE,
+	SPARK_OPS_ATTENTION_DECODE_NARROW,
 	SPARK_OPS_ATTENTION_PREFILL,
 	SPARK_OPS_ATTENTION_PREFILL_WIDE,
+	SPARK_OPS_ATTENTION_PREFILL_NARROW,
 	SPARK_OPS_ATTENTION_COMBINE,
 	SPARK_OPS_ATTENTION_COMBINE_WIDE,
+	SPARK_OPS_ATTENTION_COMBINE_NARROW,
 	SPARK_OPS_SILU_MUL,
 	SPARK_OPS_GELU_TANH_MUL,
 	SPARK_OPS_SILU_MUL_ROUTED,
@@ -138,7 +142,7 @@ SparkStatus SparkOpsRmsNormBranches(SparkDeviceOps *ops, SparkDeviceQueue *queue
 SparkStatus SparkOpsRmsNormScaled(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor scale, SparkTensor output,
 	const SparkBranchNormParams *params);
 SparkStatus SparkOpsScaleRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, uint64_t count, float scale);
-SparkStatus SparkOpsSoftcap(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, uint64_t count, float cap);
+SparkStatus SparkOpsSoftcap(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, uint64_t count, float cap, float multiply);
 SparkStatus SparkOpsRouteTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor expert_scale, const SparkTensor *pinned,
 	SparkTensor experts, SparkTensor weights, const SparkRouteParams *params);
 SparkStatus SparkOpsRouteCombine(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor output,

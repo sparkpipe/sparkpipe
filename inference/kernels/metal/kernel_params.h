@@ -16,6 +16,8 @@
 #define SPARK_ROUTE_MAX_TOP_K 16u
 #define SPARK_GATED_SILU 0u
 #define SPARK_GATED_GELU_TANH 1u
+#define SPARK_ATTENTION_GATE_SIGMOID 1u
+#define SPARK_ATTENTION_GATE_SIGMOID_BF16 2u
 
 typedef struct SparkGatherParams
 {
@@ -34,7 +36,7 @@ typedef struct SparkNormParams
 	uint32_t has_addend;
 	uint32_t write_sum;
 	float epsilon;
-	uint32_t pad;
+	uint32_t weightless;
 } SparkNormParams;
 
 typedef struct SparkGatedNormParams
@@ -75,7 +77,7 @@ typedef struct SparkScaleParams
 {
 	uint64_t count;
 	float scale;
-	uint32_t pad;
+	float multiply;
 } SparkScaleParams;
 
 typedef struct SparkHeadRopeParams
@@ -91,7 +93,7 @@ typedef struct SparkHeadRopeParams
 	float epsilon;
 	uint32_t has_weight;
 	uint32_t rope_rounded_terms;
-	uint32_t pad;
+	float multiply;
 	float inverse_frequency[SPARK_KERNEL_ROPE_PAIRS];
 } SparkHeadRopeParams;
 

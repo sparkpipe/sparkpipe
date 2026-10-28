@@ -84,9 +84,9 @@ tensor sizes before each launch.
 | Kernel | Operation |
 | --- | --- |
 | `spark_gather_rows` | embedding rows by id; an id outside the table raises the device error word |
-| `spark_rmsnorm_residual` | `h = bf16(h + r)` written back, then `bf16(rmsnorm(h) * w)` with an FP32 gain |
+| `spark_rmsnorm_residual` | `h = bf16(h + r)` written back, then `bf16(rmsnorm(h) * w)` with an FP32 gain, or weightless `bf16(rmsnorm(h))`, which may write in place (Muse Glimmer's embedding norm, CUDA's one-head `LmHeadRmsNormKernel`) |
 | `spark_rmsnorm_gate` | per-head RMSNorm with a BF16 gain and a SiLU output gate read from a fused row |
-| `spark_head_rmsnorm_rope` | per-head RMSNorm with an optional FP32 gain, then rotary embedding with rotate-half pairs over the head's first `rope_dimension` dimensions, a table of up to 256 inverse frequencies (a zero frequency leaves its pair as it is), and either one FP32 rotation rounded once or the publisher's eager rounding (`bf16(bf16(x bf16(cos)) + bf16(p bf16(sin)))`) |
+| `spark_head_rmsnorm_rope` | per-head RMSNorm with an optional FP32 gain and an optional multiplier applied after the norm's BF16 rounding and rounded again (CUDA's `head_multiply`), then rotary embedding with rotate-half pairs over the head's first `rope_dimension` dimensions, a table of up to 256 inverse frequencies (a zero frequency leaves its pair as it is), and either one FP32 rotation rounded once or the publisher's eager rounding (`bf16(bf16(x bf16(cos)) + bf16(p bf16(sin)))`) |
 | `spark_rmsnorm_branches` | sandwich norms: `h = bf16(h + bf16(rms(a) w))`, or with two branches `c = bf16(bf16(rms(a) w1) + bf16(rms(b) w2))` and `h = bf16(h + bf16(rms(c) w))`, then optionally `bf16(h * scalar)` |
 | `spark_rmsnorm_scaled` | `bf16(bf16(bf16(rms(x)) s) c)`: a weightless norm, a per-channel scale and a constant, each rounded (an expert router's input) |
 | `spark_gemv_r{1,2,4,8}`, `spark_gemv_f32_r*` | the GEMV family's projections for one or two rows, and its verify frames in passes of up to eight rows: BF16 weights `[N, K]`, 4, 4, 2 and 1 outputs per threadgroup at 1, 2, 4 and 8 rows, the inner dimension split across the threadgroup's four SIMD groups, FP32 accumulation, BF16 or FP32 out |
@@ -95,11 +95,11 @@ tensor sizes before each launch.
 | `spark_causal_conv_silu` | depthwise causal convolution over a per-sequence window, BF16 sum, then `SparkMathSwishFast` (`x * sigmoid(x)`, CUDA's `LM_CONV_SWISH`) |
 | `spark_gated_delta_prepare`, `spark_gated_delta_rule` | L2-normalised query and key, decay and write strength, then the gated delta rule over FP32 state, one SIMD group per value column |
 | `spark_kv_store_paged` | key and value rows into 64-slot pages through a page table; a position outside its sequence's pages or a page outside the pool raises the device error word (`SparkKvPage`, shared with the attention kernels) |
-| `spark_attention_{decode,prefill_blocks,combine}_d{256,512}` | causal grouped-query attention over paged KV for 256- and 512-wide heads, split into key partitions and merged, with an optional sliding window (a row sees its last `window` positions) and an optional sigmoid output gate; a key on a page `SparkKvPage` rejects raises the device error word and is skipped (decode per key, prefill per 64-key tile); decode walks 128-key partitions one key per SIMD group, prefill computes 32 (16 for 512-wide heads) query rows against 64-key pages on the tensor operations (scores and the FP32 probability-times-value product in `matmul2d`, the online softmax in FP32 between them) |
+| `spark_attention_{decode,prefill_blocks,combine}_d{128,256,512}` | causal grouped-query attention over paged KV for 128-, 256- and 512-wide heads, split into key partitions and merged, with an optional sliding window (a row sees its last `window` positions) and an optional sigmoid output gate, the sigmoid in FP32 (`SPARK_ATTENTION_GATE_SIGMOID`, Qwen's `LmOutputGateKernel`) or rounded to BF16 first (`SPARK_ATTENTION_GATE_SIGMOID_BF16`, Gemma's `GemmaSigmoidGateKernel`), read from the fused projection or from a separate gate projection; a key on a page `SparkKvPage` rejects raises the device error word and is skipped (decode per key, prefill per 64-key tile); decode walks 128-key partitions one key per SIMD group, prefill computes 32 (16 for 512-wide heads) query rows against 64-key pages on the tensor operations (scores and the FP32 probability-times-value product in `matmul2d`, the online softmax in FP32 between them) |
 | `spark_silu_mul`, `spark_gelu_tanh_mul`, `spark_add_rows` | the gated activations (`bf16(silu(g) u)`, `bf16(bf16(gelu_tanh(g)) u)` with `SparkMathGeluTanh`) and the final residual add |
 | `spark_silu_mul_routed`, `spark_gelu_tanh_mul_routed` | the experts' gated activations with the route weight folded in before the down projection, as CUDA's `LmSwigluPackedKernel` and `LmGeluTanhPackedKernel` do: `bf16(silu(g) u w)` and `bf16(bf16(gelu_tanh(g)) u w)` with `SparkMathGeluTanhScaleFirst` |
 | `spark_route_topk`, `spark_route_pinned`, `spark_gemv_routed`, `spark_route_combine` | expert routing: softmax over the router's BF16 logits (a NaN or infinite logit raises the device error word), the top k in a total order (NaN below every probability, lowest index on ties) or, pinned, the experts a route override names, renormalised over a pairwise sum tree plus 1e-20 (the order of CUDA's warp top-k) and times a per-expert scale; the GEMV of each route's expert on its row (the same per-row arithmetic as `spark_gemv_r1`); and the routes' already weighted outputs summed in FP32 in route order and rounded once to BF16, as CUDA's `LmMoeLocalFinalizeKernel` does |
-| `spark_scale_rows`, `spark_softcap_rows` | a BF16 row scale (an embedding multiplier) and the FP32 logit softcap `cap tanh(z / cap)` (`SparkMathSoftcap`) |
+| `spark_scale_rows`, `spark_softcap_rows` | a BF16 row scale (an embedding multiplier) and the FP32 logit softcap `cap tanh(m z / cap)` (`SparkMathSoftcap`) with an optional logit multiplier `m`, as CUDA's `LmStageSoftcapKernel` |
 | `spark_logprob_rows` | argmax (lowest index on ties), log-normaliser and a target's log-probability over FP32 logits |
 | `spark_stream_read` | the streaming-read bandwidth probe |
 
@@ -198,7 +198,7 @@ models' gates are re-run to show their output is unchanged.
 | Layer kind | Shape | Pack tensors (`layers.N.`) |
 | --- | --- | --- |
 | gated delta rule (`SparkDeviceGatedDelta`) | key and value heads and dimensions, convolution taps; recurrent pools 0 (FP32 state) and 1 (BF16 convolution window) | `gdn_qkvz`, `gdn_ba`, `gdn_conv`, `gdn_a_log`, `gdn_dt_bias`, `gdn_norm`, `gdn_out` |
-| attention (`SparkDeviceAttention`) | heads, KV heads, head dimension, rotary span, base and the number of rotated pairs, eager or fused rotary rounding, scale; options: a sigmoid output gate (queries and gates interleaved per head in the fused projection), a sliding window, a weightless value norm, and keys shared as values (the fused projection then holds queries and keys only) | `attn_qkv`, `attn_q_norm`, `attn_k_norm`, `attn_out` |
+| attention (`SparkDeviceAttention`) | heads, KV heads, head dimension, rotary span, base and the number of rotated pairs, eager or fused rotary rounding, scale; options: a sigmoid output gate (queries and gates interleaved per head in the fused projection, or a separate `attn_gate` projection), weightless query and key norms, a query multiplier, a sliding window, a weightless value norm, and keys shared as values (the fused projection then holds queries and keys only) | `attn_qkv`, `attn_gate`, `attn_q_norm`, `attn_k_norm`, `attn_out` |
 | gated FFN (`SparkDeviceGatedFfn`) | intermediate width and activation (SiLU, or tanh GeLU), applied by `spark_gated_mul` before the down projection | `ffn_gate_up`, `ffn_down` |
 | experts (`SparkDeviceExperts`) | experts, top k, expert width, activation; the router reads the residual through `spark_rmsnorm_scaled`, the experts read it through their own norm; a step's route override replaces the top k (qualification only) | `router_proj`, `router_scale`, `expert_scale`, `pre_ff_norm_2`, `moe_w1` (gate), `moe_w3` (up), `moe_w2` (down) |
 | residual RMSNorm (`SparkDeviceResidualNorm`) | the stage's hidden width and epsilon | the model names its norm weights |
@@ -207,10 +207,12 @@ models' gates are re-run to show their output is unchanged.
 A stage's KV pool holds the widest slot any of its attention layers needs
 (`kv_heads x head_dimension` of the stage shape); a layer with narrower slots
 uses its pages at that layer's own slot stride. A stage shape can tie the
-head to the embedding table and soft-cap the logits, which the runner applies
-before the log-probabilities. Other norm placements, other activations and
-attention without query and key norms have no option yet; the model that
-needs one adds it here.
+head to the embedding table, scale and soft-cap the logits, which the runner
+applies before the log-probabilities, give the post-branch norms their own
+epsilon, and alias a range of token ids to one embedding row (the runner
+gathers through its own row table, so the step's token ids are untouched).
+Other norm placements and other activations have no option yet; the model
+that needs one adds it here.
 
 A device model is a family's Metal backend running the family schedule
 ([`FAMILY_SCHEDULES.md`](FAMILY_SCHEDULES.md)) on the model's TP1 geometry; the
@@ -233,6 +235,17 @@ weightless, attention scale 1; then the tanh-GeLU dense FFN (2,112 wide) and
 sandwich norm and the layer scalar. The embedding is multiplied by
 `bf16(sqrt(2816)) = 53`, the head is the embedding table and the logits are
 capped at 30. The pack is `tools/gemma4_tp16_pack.py --tp-degree 1`.
+
+The same backend places Gemma 4 31B (dense, 60 layers) and Muse Glimmer 30B.
+Muse is dense too: 52 layers, every fourth one (from the fourth) full
+attention without rotary and the rest sliding-window attention (window 2,048,
+the whole head rotated with base 5 x 10^5), all with 32 query and 2 KV heads
+of 128, weightless q and k norms with the queries times 3.87, a separate
+sigmoid output gate rounded to BF16, attention scale 1/sqrt(128); then the
+SiLU FFN. The embedding goes through a weightless RMSNorm, token ids 200,091
+and 200,092 read embedding row 0, the post-branch norms use epsilon 10^-8,
+the head is its own table and the logits are multiplied by 0.196 and capped
+at 20. Its pack is the same packer's TP1 output.
 
 ## Decode and prefill by row count
 
@@ -509,16 +522,19 @@ operations, not memory. A mixture-of-experts step reads top-k of each
 layer's experts (the stage counts its expert tensors when it binds them),
 and a head tied to the embedding is read in full.
 
-### Gemma 4 26B A4B and 31B
+### Gemma 4 26B A4B, Gemma 4 31B and Muse Glimmer 30B
 
 `tools/gemma4_metal_gates.sh MODEL PACK REFERENCE_DIR OUT REVISION` runs the
-same gates for either Gemma 4 model on the family's four prompts
-(`qualification/metal/gemma4/`, built by `tools/gemma4_reference.py
-gate-prompts`, 5,636 positions; both models share the tokenizer). Gemma 4
-31B is dense, so its gate is the Qwen gate's set: free decode against a
-with b as the floor, and the three weight controls. The reference is
-`tools/gemma4_reference.py teacher --variants a,b,bp` (a and b for 31B):
-numpy, the publisher's eager rounding, a and b in the two reduction orders.
+same gates for any of the family's Metal models on four prompts built by
+`tools/gemma4_reference.py gate-prompts` from the same sources: the Gemma 4
+models share a tokenizer and `qualification/metal/gemma4/` (5,636
+positions); Muse Glimmer has its own tokenizer and chat template and
+`qualification/metal/muse_glimmer/` (5,640 positions). Gemma 4 31B and Muse
+are dense, so their gate is the Qwen gate's set: free decode against a with
+b as the floor, and the three weight controls. The reference is
+`tools/gemma4_reference.py teacher --variants a,b,bp` (a and b for the dense
+models): numpy, the publisher's eager rounding, a and b in the two reduction
+orders.
 
 The router makes the free-route floor useless as a gate. Its logits are
 BF16, so the eighth and ninth experts of a row are often a rounding step
