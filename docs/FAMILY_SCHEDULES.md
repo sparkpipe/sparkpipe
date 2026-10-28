@@ -24,6 +24,8 @@ The backends:
 | --- | --- | --- |
 | Gemma 4 (Gemma 4 26B and 31B, K-EXAONE 2.0, Laguna S 2.1, Muse Glimmer 30B) | `GemmaModel<G>` in `model-families/gemma4/source/gemma4_stage.cuh` | `GemmaDevice<P>` in `model-families/gemma4/device/gemma4_device_stage.cpp` |
 | Qwen 3.8 hybrid (27B, Flash, Max) | `QwenHybridModel<G>` in `model-families/qwen38/source/qwen38_hybrid_stage.cuh` | `QwenDevice<P>` in `model-families/qwen38/device/qwen38_device_stage.cpp` |
+| MiMo 2.6 (Flash, Pro) | `MimoModel<G>` in `model-families/mimo26/source/mimo26_stage.cuh` | not yet |
+| Ling 3 (Ling 3 Flash and Fin, Solar Open 2) | `LingModel<G>` in `model-families/ling/source/ling_stage.cuh` | not yet |
 
 A backend defines `State`, `Frame` (the per-step handles: the CUDA stream and
 step, or the Metal queue and step tables), `Layer` (the bound weights of one
