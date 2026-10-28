@@ -1028,7 +1028,7 @@ static SparkStatus SparkStageKvBindingAttachShared(SparkStageKvBinding *binding,
 	status = SparkWeightdKvSharedAttach(&request,SPARK_WEIGHTD_KV_POOL_ATTACH_TIMEOUT_NS,&binding->kv_shared);
 	if ( status == SPARK_STATUS_UNSUPPORTED )
 	{
-		fprintf(stderr,"%s kv shared prefix off: weightd has no shared window for %u-page groups of %llu bytes\n",binding->module_tag,(uint32_t)alignment,(unsigned long long)binding->page_bytes);
+		fprintf(stderr,"%s kv shared prefix off: weightd has no shared window, so every prefix stays private\n",binding->module_tag);
 		return(SPARK_STATUS_OK);
 	}
 	if ( status != SPARK_STATUS_OK )
@@ -1676,6 +1676,8 @@ SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkMod
 			atomic_store_explicit(&binding->lane_bound[request->cache_lanes[lane].resident_sequence_slot],0u,memory_order_release);
 	SparkStageKvBindingWakeSaver(binding);
 	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_ADMIT,held);
+	if ( status == SPARK_STATUS_PENDING )
+		return(status);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	decision->accepted = 1u;

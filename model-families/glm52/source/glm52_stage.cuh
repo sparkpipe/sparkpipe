@@ -70,17 +70,14 @@
 
 struct GlmDefaults
 {
-	static constexpr uint32_t kExpertCodec = SPARK_WEIGHT_CODEC_FP8_E4M3;
-	static constexpr uint32_t kLinearCodec = SPARK_WEIGHT_CODEC_FP8_E4M3;
 	static constexpr uint32_t kQueryGate = 0u;
 	static constexpr bool kQueryConcat = false;
 	static constexpr uint32_t kNormGateRank = 0u;
-	static constexpr LmRopePairing kIndexPairing = LM_ROPE_INTERLEAVED;
 	static constexpr uint32_t kExpertGroups = 1u;
 	static constexpr uint32_t kTopGroups = 1u;
 	static constexpr float kRopeFactor = 1.0f;
-	static constexpr float kRopeBetaFast = 32.0f;
-	static constexpr float kRopeBetaSlow = 1.0f;
+	static constexpr float kRopeBetaFast = 0.0f;
+	static constexpr float kRopeBetaSlow = 0.0f;
 	static constexpr uint32_t kRopeOriginalPositions = 0u;
 };
 
@@ -101,6 +98,8 @@ struct GlmShape : G
 	static_assert(G::kQueryA % GLM_GRANULE == 0u && kSlot % GLM_GRANULE == 0u, "projection slices start on 16-byte columns");
 	static_assert(G::kQueryGate == 0u || G::kQueryGate == G::kValue, "the attention output gate covers each head's value");
 	static_assert(G::kExpertGroups >= 1u && G::kExperts % G::kExpertGroups == 0u && G::kTopGroups <= G::kExpertGroups, "expert groups split the experts evenly");
+	static_assert(G::kRopeFactor <= 1.0f || (G::kRopeBetaFast > 0.0f && G::kRopeBetaSlow > 0.0f && G::kRopeOriginalPositions != 0u),
+		"a geometry that turns YaRN on chooses its betas and original positions");
 };
 
 struct Glm52Dimensions : GlmDefaults
@@ -131,6 +130,9 @@ struct Glm52Dimensions : GlmDefaults
 	static constexpr float kRoutedScale = SPARK_GLM52_MODEL_MOE_ROUTED_SCALING_FACTOR;
 	static uint32_t FullIndexer(uint32_t layer) { return SparkGlm52StagePackLayerHasFullIndexer(layer); }
 	static const SparkGlm52StagePackGeometry *PackGeometry(void) { return SparkGlm52StagePackGeometryGlm52(); }
+	static constexpr uint32_t kExpertCodec = SPARK_WEIGHT_CODEC_FP8_E4M3;
+	static constexpr uint32_t kLinearCodec = SPARK_WEIGHT_CODEC_FP8_E4M3;
+	static constexpr LmRopePairing kIndexPairing = LM_ROPE_INTERLEAVED;
 };
 
 static inline void GlmYarnFrequencies(float *table, uint32_t rope, float theta, float factor, float beta_fast, float beta_slow, uint32_t original_positions)

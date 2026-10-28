@@ -34,6 +34,9 @@ struct Ling3Geometry : LingDefaults
 	static const char *Tag(void) { return "sparkpipe_ling3"; }
 	static const char *Name(void) { return "ling-3.0-flash"; }
 	static const char *ReportTag(void) { return "LING3-STATE"; }
+	static constexpr uint32_t kAttention = LING_ATTENTION_MLA;
+	static constexpr float kNormEpsilon = LG_EPSILON;
+	static constexpr bool kKdaDoubledBeta = false;
 };
 
 static_assert(LingShape<Ling3Geometry>::Kv::kSlotBytes == SPARK_LING3_STAGE_KV_SLOT_BYTES, "an MLA slot is the normed latent and its rope part");

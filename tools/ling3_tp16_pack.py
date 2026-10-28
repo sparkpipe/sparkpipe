@@ -38,7 +38,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble  # noqa: E402
+from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble, source_identity  # noqa: E402
 
 TP = 16
 SHARED_ROWS = 64
@@ -84,11 +84,11 @@ class Checkpoint:
 
 
 class RankPacks:
-    def __init__(self, out_dir, resume, ranks, prefix):
+    def __init__(self, out_dir, resume, ranks, prefix, identity):
         self.out_dir = Path(out_dir)
         self.ranks = ranks
         self.prefix = prefix
-        self.writers = {rank: PayloadWriter(self.payload(rank), resume=resume and self.payload(rank).exists()) for rank in ranks}
+        self.writers = {rank: PayloadWriter(self.payload(rank), identity, resume=resume and self.payload(rank).exists()) for rank in ranks}
 
     def payload(self, rank):
         return self.out_dir / f"{self.prefix}.tp16.rank{rank:02d}.pack.payload"
@@ -231,7 +231,7 @@ def main():
     contract_sha256 = hashlib.sha256(args.contract.read_bytes()).hexdigest()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = Checkpoint(args.checkpoint)
-    packs = RankPacks(args.output_dir, args.resume, ranks, args.model)
+    packs = RankPacks(args.output_dir, args.resume, ranks, args.model, source_identity(args.checkpoint, args.model, files=(args.contract,)))
     hidden, vocab_rows = config["hidden_size"], config["vocab_size"] // TP
     embed = checkpoint.bf16("model.word_embeddings.weight", (config["vocab_size"], hidden))
     head = checkpoint.bf16("lm_head.weight", (config["vocab_size"], hidden))

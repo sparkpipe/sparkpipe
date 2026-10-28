@@ -379,8 +379,24 @@ def boot_kernel_release() -> str:
     return(kernel_release_from_vmlinuz(Path("/boot/vmlinuz")))
 
 
+def running_kernel_release() -> str:
+    return(os.uname().release)
+
+
+def module_tree_present(release: str) -> bool:
+    return(Path(f"/lib/modules/{release}").is_dir())
+
+
+def kernel_module_loaded(module: str) -> bool:
+    return((Path("/sys/module") / module).is_dir())
+
+
+def directory_owner(path: Path) -> str:
+    return(f"{path.stat().st_uid}:{path.stat().st_gid}" if path.is_dir() else "missing")
+
+
 def kernel_releases() -> tuple[str,...]:
-    return(tuple(dict.fromkeys((os.uname().release,boot_kernel_release()))))
+    return(tuple(dict.fromkeys((running_kernel_release(),boot_kernel_release()))))
 
 
 def kernel_packages(kernel_release: str) -> tuple[str,...]:
@@ -999,7 +1015,7 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
     rank = spark_rank(node_id)
     observations["swappiness"] = command(["sysctl","-n","vm.swappiness"],check=False)
     observations["panic"] = command(["sysctl","-n","kernel.panic"],check=False)
-    running_kernel = os.uname().release
+    running_kernel = running_kernel_release()
     try:
         boot_kernel = boot_kernel_release()
     except BrickproofError as error:
@@ -1011,7 +1027,7 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
     for release in dict.fromkeys((running_kernel,boot_kernel)):
         if not release:
             continue
-        release_state: dict[str,object] = {"module_tree":Path(f"/lib/modules/{release}").is_dir()}
+        release_state: dict[str,object] = {"module_tree":module_tree_present(release)}
         if not release_state["module_tree"]:
             failures.append(f"missing-module-tree:{release}")
         for package in kernel_packages(release):
@@ -1029,7 +1045,7 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
         failures.append("kernel-modules-load-config")
     for module in REQUIRED_KERNEL_MODULES:
         available = command(["modinfo","-F","filename",module],check=False)
-        loaded = (Path("/sys/module") / module).is_dir()
+        loaded = kernel_module_loaded(module)
         required_module_state[module] = {"available":available,"loaded":loaded}
         if not available:
             failures.append(f"kernel-module-unavailable:{module}")
@@ -1252,7 +1268,7 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
                 failures.append(f"ceph-daemon:{daemon}:{state[0]}:{state[1]}")
         failures.extend(f"ceph-stray-unit:{unit}" for unit in ceph_stray_units(fsid,daemons,enabled_instances))
         log_dir = CEPH_LOG_ROOT / fsid
-        owner = f"{log_dir.stat().st_uid}:{log_dir.stat().st_gid}" if log_dir.is_dir() else "missing"
+        owner = directory_owner(log_dir)
         if owner != f"{CEPH_UID}:{CEPH_UID}":
             failures.append(f"ceph-log-dir:{owner}")
     for path in (*retired_paths(),*(Path("/etc/systemd/system") / unit for unit in OBSOLETE_CEPH_STARTUP_UNITS),LEGACY_CEPH_WARM_STORAGE_MARKER):

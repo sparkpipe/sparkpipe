@@ -56,6 +56,7 @@ struct SparkDeviceEvent
 	uint64_t sequence;
 	uint32_t recorded;
 	void *backend;
+	SparkDeviceStamp stamps[SPARK_DEVICE_STAMPS];
 };
 
 struct SparkDeviceLibrary

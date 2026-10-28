@@ -94,10 +94,10 @@ tensor sizes before each launch.
 | `spark_gemm`, `spark_gemm_f32` | prefill projections on the Metal 4 tensor operations (`matmul2d`, 128 x 64 tiles, FP32 accumulation, relaxed precision off) |
 | `spark_causal_conv_silu` | depthwise causal convolution over a per-sequence window, BF16 sum, SiLU |
 | `spark_gated_delta_prepare`, `spark_gated_delta_rule` | L2-normalised query and key, decay and write strength, then the gated delta rule over FP32 state, one SIMD group per value column |
-| `spark_kv_store_paged` | key and value rows into 64-slot pages through a page table |
-| `spark_attention_{decode,prefill_blocks,combine}_d{256,512}` | causal grouped-query attention over paged KV for 256- and 512-wide heads, split into key partitions and merged, with an optional sliding window (a row sees its last `window` positions) and an optional sigmoid output gate; decode walks 128-key partitions one key per SIMD group, prefill computes 32 (16 for 512-wide heads) query rows against 64-key pages on the tensor operations (scores and the FP32 probability-times-value product in `matmul2d`, the online softmax in FP32 between them) |
+| `spark_kv_store_paged` | key and value rows into 64-slot pages through a page table; a position outside its sequence's pages or a page outside the pool raises the device error word (`SparkKvPage`, shared with the attention kernels) |
+| `spark_attention_{decode,prefill_blocks,combine}_d{256,512}` | causal grouped-query attention over paged KV for 256- and 512-wide heads, split into key partitions and merged, with an optional sliding window (a row sees its last `window` positions) and an optional sigmoid output gate; a key on a page `SparkKvPage` rejects raises the device error word and is skipped (decode per key, prefill per 64-key tile); decode walks 128-key partitions one key per SIMD group, prefill computes 32 (16 for 512-wide heads) query rows against 64-key pages on the tensor operations (scores and the FP32 probability-times-value product in `matmul2d`, the online softmax in FP32 between them) |
 | `spark_silu_mul`, `spark_gelu_tanh_mul`, `spark_add_rows` | the gated activations (`bf16(silu(g) u)`, `bf16(bf16(gelu_tanh(g)) u)` with `SparkMathGeluTanh`) and the final residual add |
-| `spark_route_topk`, `spark_route_pinned`, `spark_gemv_routed`, `spark_route_combine` | expert routing: softmax over the router's BF16 logits, the top k (lowest index on ties) or, pinned, the experts a route override names, renormalised and times a per-expert scale; the GEMV of each route's expert on its row (the same per-row arithmetic as `spark_gemv_r1`); and the routes' outputs times their weights, summed in BF16 in ascending expert order |
+| `spark_route_topk`, `spark_route_pinned`, `spark_gemv_routed`, `spark_route_combine` | expert routing: softmax over the router's BF16 logits (a NaN or infinite logit raises the device error word), the top k in a total order (NaN below every probability, lowest index on ties) or, pinned, the experts a route override names, renormalised and times a per-expert scale; the GEMV of each route's expert on its row (the same per-row arithmetic as `spark_gemv_r1`); and the routes' outputs times their weights, summed in BF16 in ascending expert order |
 | `spark_scale_rows`, `spark_softcap_rows` | a BF16 row scale (an embedding multiplier) and the FP32 logit softcap `cap tanh(z / cap)` (`SparkMathSoftcap`) |
 | `spark_logprob_rows` | argmax (lowest index on ties), log-normaliser and a target's log-probability over FP32 logits |
 | `spark_stream_read` | the streaming-read bandwidth probe |
@@ -473,7 +473,8 @@ at different offsets) and decodes them together, three timed runs after a
 discarded warm-up, the median kept. Every batched sequence is compared token
 for token with its solo run; at the first token that differs, both runs'
 top-1 and top-2 tokens and margins are recorded, so a divergence can be
-shown to be a near tie. Repeated runs must give the same tokens.
+shown to be a near tie. Repeated runs must give the same tokens: a batch
+whose repeats differ fails the gate (`batch_ladder.deterministic`).
 
 **Speculation.** `metal_stage_run --mode spec` measures the verify
 cost curve (one sequence after a 933-token prompt, frames of 1 to 64 rows,
@@ -541,6 +542,7 @@ difference from the batch's projection kernel flips a route upstream. The
 gate runs the ladder a second time with `--exact-rows`: every decode step is
 a verify frame whose rows all are kept, so each row takes the row-exact
 kernels, and every sequence at every batch size must reproduce its solo
-tokens (`batch_ladder_exact_rows.identical_to_solo`). That shows the batch
+tokens (`batch_ladder_exact_rows.identical_to_solo`); the Qwen3.8-27B gate
+runs the same exact-rows ladder. That shows the batch
 itself (row tables, KV pages, per-sequence attention, routed GEMV) is exact,
 and the fast path differs only by rounding.

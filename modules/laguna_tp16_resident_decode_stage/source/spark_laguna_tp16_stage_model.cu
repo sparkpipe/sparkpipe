@@ -48,6 +48,11 @@ struct LagunaGeometry : GemmaDefaults
 	static const char *Tag(void) { return "sparkpipe_laguna"; }
 	static const char *Name(void) { return "laguna-s-2.1"; }
 	static const char *ReportTag(void) { return "LAGUNA-STATE"; }
+	static constexpr float kPostEpsilon = 1e-6f;
+	static constexpr bool kQkNormWeighted = true;
+	static constexpr float kQueryMultiply = 1.0f;
+	static constexpr bool kFullRope = true;
+	static constexpr bool kRouterFloat = false;
 };
 
 static_assert(GemmaShape<LagunaGeometry>::SlidingKvGeometry::kSlotBytes == SPARK_LAGUNA_TP16_STAGE_SLOT_BYTES &&

@@ -328,6 +328,7 @@ static void SnapTestTreeEviction(const char *directory)
 	CHECK(SnapTreeWrite(&store,&last,0) == SPARK_STATUS_OK && SparkKvSnapshotContains(&store,&child) == 0u && SparkKvSnapshotContains(&store,&root) == 1u);
 	CHECK(SnapTreeWrite(&store,&grandchild,0) == SPARK_STATUS_OK && SparkKvSnapshotContains(&store,&root) == 0u);
 	CHECK(SparkKvSnapshotContains(&store,&other) == 1u && SparkKvSnapshotContains(&store,&state) == 1u && SparkKvSnapshotContains(&store,&later) == 1u && SparkKvSnapshotContains(&store,&last) == 1u);
+	SparkKvSnapshotStoreClose(&store);
 }
 
 static uint64_t SnapNow(void)
@@ -403,6 +404,31 @@ static void SnapTestRetention(const char *directory)
 	CHECK(SparkKvSnapshotExpire(0,now) == SPARK_STATUS_INVALID_ARGUMENT);
 	SparkKvSnapshotStoreClose(&store);
 	printf("kv snapshot: a file unused for 24 hours is deleted, at open by its mtime and while open by the sweep; a read stamps its use and a child write stamps its parent, in the file's mtime so a restart keeps it\n");
+}
+
+static void SnapTestChainExpiry(const char *directory)
+{
+	enum { depth = 2500 };
+	SparkKvSnapshotStore store;
+	SparkKvSnapshotKey keys[2];
+	const uint64_t file_bytes = 2u * SPARK_KV_SNAPSHOT_ALIGNMENT;
+	uint32_t index;
+	uint64_t now;
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,(depth + 4u) * file_bytes,1u << 20u) == SPARK_STATUS_OK);
+	for (index=0u; index<depth; index++)
+	{
+		SnapKey(&keys[index & 1u],0x61u,0x07u,4u * (index + 1u));
+		CHECK(SnapTreeWrite(&store,&keys[index & 1u],index == 0u ? 0 : &keys[(index + 1u) & 1u]) == SPARK_STATUS_OK);
+	}
+	CHECK(SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK && store.file_count == depth);
+	now = SnapNow();
+	CHECK(SparkKvSnapshotExpire(&store,now + SPARK_KV_RETENTION_SECONDS - 60u) == SPARK_STATUS_OK && store.file_count == depth && store.expired_count == 0u);
+	CHECK(SparkKvSnapshotExpire(&store,now + SPARK_KV_RETENTION_SECONDS + 60u) == SPARK_STATUS_OK);
+	CHECK(store.file_count == 0u && store.used_bytes == 0u && store.expired_count == depth && store.orphan_count == 0u);
+	SnapKey(&keys[0],0x61u,0x07u,4u);
+	CHECK(SparkKvSnapshotContains(&store,&keys[0]) == 0u && SnapAgeOf(directory,&keys[0],0) == UINT64_MAX);
+	SparkKvSnapshotStoreClose(&store);
+	printf("kv snapshot: a %u-file chain idle for 24 hours expires completely in one call, more than one sweep batch, leaving no orphan\n",(unsigned)depth);
 }
 
 static int32_t SnapStoreOpen(SparkKvPageStore *store,char *path,void *staging,uint64_t page_bytes)
@@ -1348,6 +1374,10 @@ int main(void)
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);
 	SnapTestRetention(directory);
+	SnapRemoveTree(directory);
+	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
+		return(2);
+	SnapTestChainExpiry(directory);
 	SnapRemoveTree(directory);
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);

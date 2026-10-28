@@ -1,3 +1,6 @@
+#ifndef DSV41_FLASH_CONTRACT_SHA256
+#error "DSV41_FLASH_CONTRACT_SHA256 must identify the model contract"
+#endif
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -128,6 +131,8 @@ static_assert(D41_MOE_ROW_ELEMENTS <= D41_HIDDEN && D41_MOE_ROW_ELEMENTS % 8u ==
 	"the MoE exchange rows fit a collective row and keep 16-byte copies");
 static_assert(D41_MOE_INTER % D41_THREADS == 0u, "the activation assembly covers whole fp8 groups with full warps");
 static_assert(D41_ENGRAM_KV_ROWS % (D41_TP * D41_FP8_BLOCK) == 0u, "the engram key/value rows split into whole fp8 blocks per rank");
+static_assert(D41_ENGRAM_KV_ROWS == SPARK_DSV41_FLASH_ENGRAM_KV_ROWS && D41_ENGRAM_EMBED == SPARK_DSV41_FLASH_ENGRAM_EMBED_COLUMNS &&
+	D41_ENGRAM_HEAD_DIM == SPARK_DSV41_FLASH_MODEL_ENGRAM_HEAD_DIMENSION && D41K_HC == SPARK_DSV41_FLASH_MODEL_HC_MULT, "the stage reads the engram shard the format check accepts");
 static_assert(D41_MOE_INTER % D41_SHARED_GRANULE == 0u && D41_SHARED_GRANULE % D41_FP8_BLOCK == 0u,
 	"the shared expert width splits into whole fp8 blocks and whole dense GEMM k tiles");
 
@@ -230,6 +235,7 @@ typedef struct D41ModelState
 	uint8_t *recurrent;
 	uint64_t ring_bytes, compressor_bytes, history_bytes, recurrent_bytes;
 	LmKvAccessError *kv_error;
+	LmKvAccessError *host_error;
 	LmKvShardView latent_views[4], index_views[4];
 	FILE *dump;
 	uint16_t *dump_streams;
@@ -1179,6 +1185,17 @@ static SparkStatus D41TailCompress(D41ModelState *state, const SparkStageRunnerS
 	return D41Compress(state, layer, D41_CANDIDATE_SOURCE, step, stream);
 }
 
+static SparkStatus D41Check(void *model)
+{
+	const D41ModelState *state = (const D41ModelState *)model;
+	const volatile LmKvAccessError *error = state->host_error;
+	if ( error == 0 || error->error_code == 0u )
+		return SPARK_STATUS_OK;
+	fprintf(stderr, "sparkpipe_dsv41_flash: KV access error code=%u kind=%u row=%u sequence=%u position=%u page=%u\n", error->error_code,
+		error->access_kind, error->row, error->sequence, error->position, error->page);
+	SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+}
+
 static SparkStatus D41Step(void *model, const SparkStageRunnerStep *step, void *stream_void)
 {
 	D41ModelState *state = (D41ModelState *)model;
@@ -1400,7 +1417,7 @@ static SparkStatus D41PlanArena(D41ModelState *state, uint64_t *bytes, uint8_t *
 		{ (void **)&state->engram_ids, r * D41_ENGRAM_COLUMNS * 8u }, { (void **)&state->engram_embed, engram_rows * D41_HIDDEN * 2u },
 		{ (void **)&state->engram_kv, r * D41_ENGRAM_KV_ROWS * 2u }, { (void **)&state->engram_kv_local, r * D41_ENGRAM_KV_LOCAL * 2u },
 		{ (void **)&state->engram_kv_gathered, r * D41_ENGRAM_KV_ROWS * 2u },
-		{ (void **)&state->recurrent, s * state->recurrent_bytes }, { (void **)&state->kv_error, sizeof(LmKvAccessError) },
+		{ (void **)&state->recurrent, s * state->recurrent_bytes },
 	};
 	uint64_t cursor = 0u;
 	for ( uint32_t index = 0u; index < sizeof(plan) / sizeof(plan[0]); ++index )
@@ -1496,7 +1513,7 @@ static SparkStatus D41OpenEngramShard(D41ModelState *state, const char *pack_pat
 {
 	char sha_path[1100];
 	FILE *file;
-	uint32_t magic = 0u;
+	D41PackHeader header;
 	D41Sibling(pack_path, "engram.spengram", state->engram_path, sizeof(state->engram_path));
 	snprintf(sha_path, sizeof(sha_path), "%s.digest", state->engram_path);
 	state->engram_bytes = D41FileBytes(state->engram_path);
@@ -1508,17 +1525,27 @@ static SparkStatus D41OpenEngramShard(D41ModelState *state, const char *pack_pat
 			state->engram_sha256[0] = 0;
 		fclose(file);
 	}
+	memset(&header, 0, sizeof(header));
 	if ( state->engram_bytes == 0u || strlen(state->engram_sha256) != 64u ||
-		D41ReadFile(state->engram_path, 0u, &magic, sizeof(magic)) != SPARK_STATUS_OK || magic != 0x31474544u ||
-		D41ReadFile(state->engram_path, 512u, state->engram_entries, sizeof(state->engram_entries)) != SPARK_STATUS_OK )
+		D41ReadFile(state->engram_path, 0u, &header, sizeof(header)) != SPARK_STATUS_OK || header.magic != 0x31474544u )
 	{
 		fprintf(stderr, "sparkpipe_dsv41_flash: the engram shard %s (with its .digest) is missing or not an engram shard\n", state->engram_path);
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	}
-	for ( uint32_t index = 0u; index < 8u; ++index )
-		if ( state->engram_entries[index].payload_offset > state->engram_bytes ||
-			state->engram_entries[index].payload_bytes > state->engram_bytes - state->engram_entries[index].payload_offset )
-			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+	const int32_t check = SparkDsv41FlashEngramHeaderCheck(&header, &state->header, state->tp_rank, state->engram_bytes);
+	if ( check != 0 || D41ReadFile(state->engram_path, header.directory_offset, state->engram_entries, sizeof(state->engram_entries)) != SPARK_STATUS_OK )
+	{
+		fprintf(stderr, "sparkpipe_dsv41_flash: the engram shard %s is not this rank's (%u of %u) shard of the rank pack's checkpoint "
+			"(check %d; shard: format %u, rank %u of %u, %u tensors)\n", state->engram_path, state->tp_rank, D41_TP, check, header.format_version, header.tp_rank,
+			header.tp_degree, header.tensor_count);
+		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
+	}
+	uint32_t at = 0u;
+	if ( SparkDsv41FlashEngramDirectoryCheck(state->engram_entries, state->engram_bytes, &at) != 0 )
+	{
+		fprintf(stderr, "sparkpipe_dsv41_flash: engram shard %s entry %u has the wrong kind, layer, codec, shape or bytes\n", state->engram_path, at);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
 	return SPARK_STATUS_OK;
 }
 
@@ -1531,6 +1558,8 @@ static void D41Close(void *model)
 		SparkWeightdLazyPackDestroy(state->engram_pack);
 	if ( state->arena != 0 )
 		(void)cudaFree(state->arena);
+	if ( state->host_error != 0 )
+		(void)cudaFreeHost(state->host_error);
 	if ( state->fp8_side != 0 )
 		(void)cudaFree(state->fp8_side);
 	if ( state->cells != 0 )
@@ -1600,6 +1629,12 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 	{
 		fprintf(stderr, "sparkpipe_dsv41_flash: %s is not this rank's TP16 DSV4.1 stage pack of format %u (expert slices)\n",
 			configuration->rank_pack_path, SPARK_DSV41_FLASH_STAGEPACK_FORMAT_VERSION);
+		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
+	}
+	if ( SparkDsv41FlashStagePackIdentityCheck(&state->header, DSV41_FLASH_CONTRACT_SHA256) != 0 )
+	{
+		fprintf(stderr, "sparkpipe_dsv41_flash: %s was not packed from this build's contract (%s) or carries no model revision or source identity (check %d)\n",
+			configuration->rank_pack_path, DSV41_FLASH_CONTRACT_SHA256, SparkDsv41FlashStagePackIdentityCheck(&state->header, DSV41_FLASH_CONTRACT_SHA256));
 		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 	}
 	state->entries = (D41PackEntry *)malloc((size_t)state->header.tensor_count * sizeof(D41PackEntry));
@@ -1995,6 +2030,14 @@ static SparkStatus D41Bind(void *model, SparkWeightdLazyPack *lazy_pack, SparkSt
 	status = D41PackCells(state, lazy_pack);
 	if ( status != SPARK_STATUS_OK )
 		return status;
+	if ( cudaHostAlloc((void **)&state->host_error, sizeof(LmKvAccessError), cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess )
+	{
+		state->host_error = 0;
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	memset(state->host_error, 0, sizeof(LmKvAccessError));
+	if ( cudaHostGetDevicePointer((void **)&state->kv_error, state->host_error, 0u) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	if ( cudaDeviceSynchronize() != cudaSuccess || cudaMalloc(&state->arena, state->arena_bytes) != cudaSuccess )
 	{
 		state->arena = 0;
@@ -2156,7 +2199,9 @@ static const SparkStageRunnerModelInterface spark_dsv41_flash_stage_model =
 	D41GraphKey,
 	0,
 	D41KeepRows,
-	D41TapPlan
+	D41TapPlan,
+	0,
+	D41Check
 };
 
 const SparkStageRunnerModelInterface *SparkDsv41FlashStageModel(void)

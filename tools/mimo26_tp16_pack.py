@@ -42,7 +42,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble  # noqa: E402
+from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble, source_identity  # noqa: E402
 
 TP = 16
 BLOCK = 128
@@ -194,11 +194,11 @@ def verify_interleave(weight, scale, geometry, layer, segment, blocks):
 
 
 class RankPacks:
-    def __init__(self, out_dir, resume, ranks, prefix):
+    def __init__(self, out_dir, resume, ranks, prefix, identity):
         self.out_dir = Path(out_dir)
         self.ranks = ranks
         self.prefix = prefix
-        self.writers = {rank: PayloadWriter(self.payload(rank), resume=resume and self.payload(rank).exists()) for rank in ranks}
+        self.writers = {rank: PayloadWriter(self.payload(rank), identity, resume=resume and self.payload(rank).exists()) for rank in ranks}
 
     def payload(self, rank):
         return self.out_dir / f"{self.prefix}.tp16.rank{rank:02d}.pack.payload"
@@ -340,7 +340,7 @@ def main():
         raise PackFailure(f"index metadata tp_size {checkpoint.metadata.get('tp_size')} is not a qkv interleave this packer knows")
     geometry = Geometry(config, args.model, interleave)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    packs = RankPacks(args.output_dir, args.resume, ranks, f"mimo26_{args.model}")
+    packs = RankPacks(args.output_dir, args.resume, ranks, f"mimo26_{args.model}", source_identity(args.checkpoint, f"mimo26_{args.model}", files=(args.contract,)))
     hidden, vocab_rows = geometry.hidden, geometry.vocab_rows
     embed = checkpoint.raw("model.embed_tokens.weight", "BF16", (geometry.vocab, hidden))
     head = checkpoint.raw("lm_head.weight", "BF16", (geometry.vocab, hidden))
