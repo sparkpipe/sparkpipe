@@ -2,8 +2,9 @@
 #include <string.h>
 
 #include "inference/runner/device_layers.h"
-#include "sparkpipe/spark_gemma4_26b_device_stage.h"
 #include "sparkpipe/spark_gemma4_26b_stage_model.h"
+#include "sparkpipe/spark_gemma4_31b_stage_model.h"
+#include "sparkpipe/spark_gemma4_device_stage.h"
 #include "sparkpipe/spark_gemma4_family.h"
 
 #define GD_SLICES 24u
@@ -126,7 +127,7 @@ struct GemmaDevice
 		{
 			{ rows * hidden * 2u, &state->normed },
 			{ rows * hidden * 2u, &state->partial },
-			{ G::kMoe ? rows * hidden * 2u : 0u, &state->expert_out },
+			{ rows * hidden * 2u, &state->expert_out },
 			{ rows * fused * 2u, &state->attention.qkv },
 			{ rows * query * 2u, &state->attention.query },
 			{ rows * kv * 2u, &state->attention.key },
@@ -138,9 +139,10 @@ struct GemmaDevice
 			{ rows * 2u * state->ffn * 2u, &state->ffn_scratch.gate_up },
 			{ rows * state->ffn * 2u, &state->ffn_scratch.act }
 		};
-		uint32_t count = sizeof(plan) / sizeof(plan[0]);
-		for ( uint32_t index = 0u; index < count; index++ )
-			slices[index] = plan[index];
+		uint32_t count = 0u;
+		for ( uint32_t index = 0u; index < sizeof(plan) / sizeof(plan[0]); index++ )
+			if ( G::kMoe || plan[index].target != &state->expert_out )
+				slices[count++] = plan[index];
 		if constexpr ( G::kMoe )
 			for ( uint32_t index = 0u; index < sizeof(experts) / sizeof(experts[0]); index++ )
 			{
@@ -338,7 +340,20 @@ struct Gemma4_26bDevice
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_GEMV;
 };
 
+struct Gemma4_31bDevice
+{
+	using Geometry = Gemma4_31bGeometry<1u>;
+	static constexpr const char *kTag = "sparkpipe_gemma4_31b_device";
+	static constexpr const char *kName = "gemma4-31b";
+	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
+};
+
 const SparkStageRunnerModelInterface *SparkGemma4_26bDeviceStageModel(void)
 {
 	return GemmaDevice<Gemma4_26bDevice>::Interface();
+}
+
+const SparkStageRunnerModelInterface *SparkGemma4_31bDeviceStageModel(void)
+{
+	return GemmaDevice<Gemma4_31bDevice>::Interface();
 }

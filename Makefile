@@ -1412,9 +1412,11 @@ $(QWEN38_DEVICE_OBJECT): $(QWEN38_DEVICE_SOURCES) $(QWEN38_DEVICE_HEADERS) $(DEV
 	@mkdir -p $(dir $@)
 	$(CXX) $(CORE_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(CXXFLAGS) -c $(QWEN38_DEVICE_SOURCES) -o $@
 GEMMA4_DEVICE_SOURCES := model-families/gemma4/device/gemma4_device_stage.cpp
-GEMMA4_DEVICE_HEADERS := model-families/gemma4/include/sparkpipe/spark_gemma4_family.h model-families/gemma4/include/sparkpipe/spark_gemma4_26b_device_stage.h \
-	modules/gemma4_26b_resident_decode_stage/include/sparkpipe/spark_gemma4_26b_stage_model.h
-GEMMA4_DEVICE_INCLUDE_FLAGS := -Imodel-families/gemma4/include -Imodules/gemma4_26b_resident_decode_stage/include
+GEMMA4_DEVICE_HEADERS := model-families/gemma4/include/sparkpipe/spark_gemma4_family.h model-families/gemma4/include/sparkpipe/spark_gemma4_device_stage.h \
+	modules/gemma4_26b_resident_decode_stage/include/sparkpipe/spark_gemma4_26b_stage_model.h \
+	modules/gemma4_31b_resident_decode_stage/include/sparkpipe/spark_gemma4_31b_stage_model.h
+GEMMA4_DEVICE_INCLUDE_FLAGS := -Imodel-families/gemma4/include -Imodules/gemma4_26b_resident_decode_stage/include \
+	-Imodules/gemma4_31b_resident_decode_stage/include
 GEMMA4_DEVICE_OBJECT := build/metal/gemma4_device_stage.o
 
 $(GEMMA4_DEVICE_OBJECT): $(GEMMA4_DEVICE_SOURCES) $(GEMMA4_DEVICE_HEADERS) $(DEVICE_RUNNER_HEADERS) | build

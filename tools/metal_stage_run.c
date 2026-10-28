@@ -7,7 +7,7 @@
 
 #include "inference/runner/device_stage_model.h"
 #include "inference/runner/device_stage_runner.h"
-#include "sparkpipe/spark_gemma4_26b_device_stage.h"
+#include "sparkpipe/spark_gemma4_device_stage.h"
 #include "sparkpipe/spark_qwen38_device_stage.h"
 #include "sparkpipe/spark_speculation_frame.h"
 #include "sparkpipe/spark_speculation_lookup_draft.h"
@@ -58,7 +58,7 @@ static uint64_t NowNs(void)
 
 typedef const SparkStageRunnerModelInterface *(*RunModelGetter)(void);
 
-static const RunModelGetter run_models[] = { SparkQwen38_27bDeviceStageModel, SparkGemma4_26bDeviceStageModel };
+static const RunModelGetter run_models[] = { SparkQwen38_27bDeviceStageModel, SparkGemma4_26bDeviceStageModel, SparkGemma4_31bDeviceStageModel };
 
 static const SparkStageRunnerModelInterface *RunModel(const char *name)
 {
@@ -74,7 +74,7 @@ static const SparkStageRunnerModelInterface *RunModel(const char *name)
 static int Usage(const char *program)
 {
 	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|pairs|bench|ladder|spec --out DIR [--prefill-rows N] [--new-tokens N] "
-		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|gemma4-26b-a4b] [--pin-routes DIR] [--exact-rows]\n",program);
+		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|gemma4-26b-a4b|gemma4-31b] [--pin-routes DIR] [--exact-rows]\n",program);
 	return(2);
 }
 

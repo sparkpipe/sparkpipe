@@ -509,13 +509,16 @@ operations, not memory. A mixture-of-experts step reads top-k of each
 layer's experts (the stage counts its expert tensors when it binds them),
 and a head tied to the embedding is read in full.
 
-### Gemma 4 26B A4B
+### Gemma 4 26B A4B and 31B
 
-`tools/gemma4_26b_metal_gates.sh PACK REFERENCE_DIR OUT REVISION` runs the
-same gates on Gemma's four prompts (built by `tools/gemma4_reference.py
-gate-prompts`, 5,636 positions), with `tools/gemma4_reference.py teacher
---variants a,b,bp` as the reference: numpy, the publisher's eager rounding,
-a and b in the two reduction orders.
+`tools/gemma4_metal_gates.sh MODEL PACK REFERENCE_DIR OUT REVISION` runs the
+same gates for either Gemma 4 model on the family's four prompts
+(`qualification/metal/gemma4/`, built by `tools/gemma4_reference.py
+gate-prompts`, 5,636 positions; both models share the tokenizer). Gemma 4
+31B is dense, so its gate is the Qwen gate's set: free decode against a
+with b as the floor, and the three weight controls. The reference is
+`tools/gemma4_reference.py teacher --variants a,b,bp` (a and b for 31B):
+numpy, the publisher's eager rounding, a and b in the two reduction orders.
 
 The router makes the free-route floor useless as a gate. Its logits are
 BF16, so the eighth and ninth experts of a row are often a rounding step
