@@ -18,6 +18,7 @@
 #include <unistd.h>
 
 #include "fixtures/test_child_guard.h"
+#include "tests/test_stderr_capture.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_kv_snapshot.h"
@@ -1469,6 +1470,8 @@ static void SparkTestKvSharedPools(void)
     void *owner_map,*member_map;
     uint64_t generation;
     uint32_t ready,writing;
+    TestStderrCapture capture;
+    char *output;
 
     memset(layout,0x6c,sizeof(layout));
     memset(identity,0x21,sizeof(identity));
@@ -1476,7 +1479,11 @@ static void SparkTestKvSharedPools(void)
     spark_test_kv_shared_window_bytes = 0u;
     SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,4u * SPARK_TEST_KV_CHUNK_BYTES);
     SparkTestConnect(&first,socket_path,0ull);
+    TestStderrCaptureBegin(&capture);
     assert(SparkTestKvSharedAttach(first,0x51,0x6c,page_bytes,&refused) == SPARK_STATUS_UNSUPPORTED && SparkWeightdServerKvPoolCount(context.server) == 0u);
+    output = TestStderrCaptureEnd(&capture);
+    assert(strstr(output,"weightd kv shared pool off label=kvshared-test") != 0 && strstr(output,"ERRSITE") == 0);
+    free(output);
     SparkWeightdClientClose(first);
     first = 0;
     SparkTestStopServer(&context,thread);
@@ -1486,7 +1493,7 @@ static void SparkTestKvSharedPools(void)
     SparkTestConnect(&first,socket_path,0ull);
     SparkTestConnect(&second,socket_path,0ull);
     SparkTestConnect(&third,socket_path,0ull);
-    assert(SparkTestKvSharedAttach(first,0x51,0x6c,4u * SPARK_TEST_KV_CHUNK_BYTES,&refused) == SPARK_STATUS_UNSUPPORTED);
+    assert(SparkTestKvSharedAttach(first,0x51,0x6c,4u * SPARK_TEST_KV_CHUNK_BYTES,&refused) == SPARK_STATUS_CAPACITY_EXCEEDED);
     assert(SparkTestKvSharedAttach(first,0x51,0x6c,page_bytes,&grant) == SPARK_STATUS_OK);
     assert(grant.created == 1u && grant.holder == 0u && grant.slot_count == 8u && grant.chunk_count == 2u && grant.device_bytes == 2u * SPARK_TEST_KV_CHUNK_BYTES);
     assert(grant.metadata_bytes == SparkKvSharedIndexBytes(8u) && grant.metadata_fd >= 0);
@@ -1543,7 +1550,7 @@ static void SparkTestKvSharedPools(void)
     SparkTestStopServer(&context,thread);
     spark_test_kv_shared_window_bytes = 0u;
     (void)unlink(socket_path);
-    printf("weightd kv shared pools: no window refuses, the window is sized in whole alignment groups, the first holder creates the whole pool and formats the index, later holders join with the same page and layout only, holders export but never resize, a private key cannot collide, a leaving holder's bits and writing slots are cleared, the pool outlives its last holder with its published slots for the next attach, and a private pool that needs the room evicts it\n");
+    printf("weightd kv shared pools: no window answers UNSUPPORTED as the documented off outcome with no error site, a window too small for one alignment group refuses with CAPACITY_EXCEEDED, the window is sized in whole alignment groups, the first holder creates the whole pool and formats the index, later holders join with the same page and layout only, holders export but never resize, a private key cannot collide, a leaving holder's bits and writing slots are cleared, the pool outlives its last holder with its published slots for the next attach, and a private pool that needs the room evicts it\n");
 }
 
 int main(void)

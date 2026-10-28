@@ -1695,11 +1695,11 @@ build/test_stage_kv_layout_digest: $(STAGE_KV_LAYOUT_DIGEST_TEST_SOURCES) $(MODE
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(STAGE_KV_LAYOUT_DIGEST_TEST_SOURCES) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 STAGE_KV_BINDING_TEST_SOURCES := tests/test_stage_kv_binding.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_common.c cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c $(SPARKPIPE_WEIGHTD_SOURCES)
-build/test_stage_kv_binding: $(STAGE_KV_BINDING_TEST_SOURCES) tests/test_weightd_kv_server.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
+build/test_stage_kv_binding: $(STAGE_KV_BINDING_TEST_SOURCES) tests/test_weightd_kv_server.h tests/test_stderr_capture.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include $(CFLAGS) $(STAGE_KV_BINDING_TEST_SOURCES) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 STAGE_KV_SHARED_PREFIX_TEST_SOURCES := tests/test_stage_kv_shared_prefix.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_common.c cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c $(SPARKPIPE_WEIGHTD_SOURCES)
-build/test_stage_kv_shared_prefix: $(STAGE_KV_SHARED_PREFIX_TEST_SOURCES) tests/test_weightd_kv_server.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
+build/test_stage_kv_shared_prefix: $(STAGE_KV_SHARED_PREFIX_TEST_SOURCES) tests/test_weightd_kv_server.h tests/test_stderr_capture.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include $(CFLAGS) $(STAGE_KV_SHARED_PREFIX_TEST_SOURCES) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 STAGE_KV_POOL_RESIZE_TEST_SOURCES := tests/test_stage_kv_pool_resize.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_common.c cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c $(SPARKPIPE_WEIGHTD_SOURCES)
@@ -1775,8 +1775,8 @@ build/test_weightd_expert_stress: tests/test_weightd_expert_stress.c tests/fixtu
 build/test_weightd_fd_frames: tests/test_weightd_fd_frames.c runtime/spark_weightd_spine.c runtime/spark_weightd_direct.c runtime/spark_weightd_receipt.c runtime/spark_weightd.c runtime/spark_weightd_worker.c runtime/spark_weightd_pacer.c runtime/spark_weightd_manifest.c runtime/spark_weightd_lease.c include/sparkpipe/spark_weightd.h include/sparkpipe/spark_weightd_manifest.h include/sparkpipe/spark_weightd_lease.h $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(filter %.c %.a,$(filter-out runtime/spark_weightd.c runtime/spark_weightd_direct.c,$^)) $(LDFLAGS) -o $@
 
-build/test_weightd: tests/test_weightd.c tests/fixtures/test_child_guard.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build build/sparkpipe_weightd
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -DSPARK_TEST_WEIGHTD_BINARY=\"build/sparkpipe_weightd\" $(CFLAGS) $^ $(LDFLAGS) -o $@
+build/test_weightd: tests/test_weightd.c tests/fixtures/test_child_guard.c tests/test_stderr_capture.h $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build build/sparkpipe_weightd
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -DSPARK_TEST_WEIGHTD_BINARY=\"build/sparkpipe_weightd\" $(CFLAGS) $(filter-out %.h,$^) $(LDFLAGS) -o $@
 
 build/test_weightd_receipt: tests/test_weightd_receipt.c runtime/spark_weightd_receipt.c $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
