@@ -202,6 +202,48 @@ static inline cudaError_t LmLatentValueExpandLaunch(
 	return cudaPeekAtLastError();
 }
 
+template<uint32_t LATENT, uint32_t ROW_DIM>
+__global__ __launch_bounds__(256, 1)
+void LmLatentRopeBroadcastKernel(
+	const uint8_t *__restrict__ keys,
+	uint32_t key_count,
+	uint32_t heads,
+	uint8_t *__restrict__ output,
+	uint64_t key_pitch,
+	uint64_t head_pitch,
+	uint64_t rope_offset)
+{
+	constexpr uint32_t ROPE_WORDS = (ROW_DIM - LATENT) / 2u;
+	const uint32_t key = blockIdx.x;
+	const uint32_t *rope = (const uint32_t *)(keys + ((uint64_t)key * ROW_DIM + LATENT) * 2u);
+	uint32_t item;
+	if (key >= key_count)
+		return;
+	for (item = threadIdx.x; item < heads * ROPE_WORDS; item += blockDim.x)
+		*(uint32_t *)(output + ((uint64_t)key * key_pitch + (uint64_t)(item / ROPE_WORDS) * head_pitch + rope_offset) * 2u + (item % ROPE_WORDS) * 4u) = rope[item % ROPE_WORDS];
+}
+
+template<uint32_t LATENT, uint32_t ROW_DIM>
+static inline cudaError_t LmLatentRopeBroadcastLaunch(
+	const uint8_t *keys,
+	uint32_t key_count,
+	uint32_t heads,
+	uint8_t *output,
+	uint64_t key_pitch,
+	uint64_t head_pitch,
+	uint64_t rope_offset,
+	cudaStream_t stream)
+{
+	static_assert(ROW_DIM > LATENT && (ROW_DIM - LATENT) % 2u == 0u, "the rope part follows the latent and is whole bf16 pairs");
+	if (keys == 0 || output == 0 || heads == 0u || (uintptr_t)output % 4u != 0u || rope_offset % 2u != 0u || head_pitch % 2u != 0u || key_pitch % 2u != 0u ||
+		head_pitch < rope_offset + (ROW_DIM - LATENT) || key_pitch < (uint64_t)(heads - 1u) * head_pitch + rope_offset + (ROW_DIM - LATENT))
+		return cudaErrorInvalidValue;
+	if (key_count == 0u)
+		return cudaSuccess;
+	LmLatentRopeBroadcastKernel<LATENT, ROW_DIM><<<key_count, 256, 0, stream>>>(keys, key_count, heads, output, key_pitch, head_pitch, rope_offset);
+	return cudaPeekAtLastError();
+}
+
 template<uint32_t LATENT, uint32_t ROW_DIM, uint32_t VALUE>
 static inline cudaError_t LmLatentExpandPitchedLaunch(
 	const uint8_t *keys,

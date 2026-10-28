@@ -58,6 +58,30 @@ static inline cudaError_t LmLatentValueExpandLaunch(
 	return cudaSuccess;
 }
 
+template<uint32_t LATENT, uint32_t ROW_DIM>
+static inline cudaError_t LmLatentRopeBroadcastLaunch(
+	const uint8_t *keys,
+	uint32_t key_count,
+	uint32_t heads,
+	uint8_t *output,
+	uint64_t key_pitch,
+	uint64_t head_pitch,
+	uint64_t rope_offset,
+	cudaStream_t stream)
+{
+	uint32_t key,head,element;
+	(void)stream;
+	if (keys == 0 || output == 0 || heads == 0u || (uintptr_t)output % 4u != 0u || rope_offset % 2u != 0u || head_pitch % 2u != 0u || key_pitch % 2u != 0u ||
+		head_pitch < rope_offset + (ROW_DIM - LATENT) || key_pitch < (uint64_t)(heads - 1u) * head_pitch + rope_offset + (ROW_DIM - LATENT))
+		return cudaErrorInvalidValue;
+	for (key = 0u; key < key_count; key++)
+		for (head = 0u; head < heads; head++)
+			for (element = 0u; element < ROW_DIM - LATENT; element++)
+				((uint16_t *)output)[(uint64_t)key * key_pitch + (uint64_t)head * head_pitch + rope_offset + element] =
+					((const uint16_t *)keys)[(uint64_t)key * ROW_DIM + LATENT + element];
+	return cudaSuccess;
+}
+
 template<uint32_t LATENT, uint32_t ROW_DIM, uint32_t VALUE>
 static inline cudaError_t LmLatentExpandPitchedLaunch(
 	const uint8_t *keys,
