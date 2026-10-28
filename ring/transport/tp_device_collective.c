@@ -878,7 +878,7 @@ static SparkStatus SparkTpDeviceCollectivePhases(const SparkTpDeviceCollectiveIm
         if ( SparkTpMeshDirectPipelined(elements,implementation->tp_degree,operation,implementation->slot_bytes) != 0u &&
              (slice_routes & SPARK_TP_MESH_ROUTES_PAIR) == 0u )
             chunks = SparkTpMeshPipelineChunks(SparkTpMeshDirectLocalElements(elements,implementation->tp_degree,operation),
-                SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) + ((slice_routes & SPARK_TP_MESH_ROUTES_PAIR_FIRST) != 0u ? 2u : 0u);
+                SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) + ((slice_routes & SPARK_TP_MESH_ROUTES_PAIR_FIRST) != 0u ? SPARK_TP_MESH_PAIR_FIRST_GATHER_EXTRA_ROUNDS : 0u);
         if ( phases == 2u && (slice_routes & SPARK_TP_MESH_ROUTES_PEER) != 0u )
             chunks = (SparkTpMeshDirectLocalElements(elements,implementation->tp_degree,operation) - 1u) /
                 SparkTpMeshDirectPeerCapacity(implementation->tp_degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) + 1u;

@@ -158,6 +158,7 @@ static inline uint64_t SparkTpMeshAllToAllChunks(uint64_t per_peer_elements,uint
 #define SPARK_TP_MESH_ROUTES_PEER 2u
 #define SPARK_TP_MESH_ROUTES_PAIR 4u
 #define SPARK_TP_MESH_ROUTES_PAIR_FIRST 8u
+#define SPARK_TP_MESH_PAIR_FIRST_GATHER_EXTRA_ROUNDS 4u
 #define SPARK_TP_MESH_OPERATION_PAIR_GATHER 8u
 
 #if defined(__CUDACC__)
