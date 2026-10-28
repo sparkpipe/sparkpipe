@@ -62,6 +62,10 @@ def main():
         candidate.write_text(json.dumps(edited))
         if render(record, changed, dict(clean, SPARK_LANES=str(candidate))) == baseline:
             failures.append(f"{record}: a record with another memory_max must render differently (the comparison above must see changes)")
+        direct = subprocess.run([sys.executable, str(ROOT / "tools" / "stage_lane.py"), "--record", record, "--output-dir", str(directory / "direct")],
+                                cwd=ROOT, env=dict(clean, SPARK_LANES=str(candidate)), capture_output=True, text=True)
+        if direct.returncode != 0 or not (directory / "direct" / "deployment.json").is_file():
+            failures.append(f"{record}: tools/stage_lane.py must render a candidate lanes file outside the repository (SPARK_LANES), as stage_lane.sh setup does: {direct.stderr.strip()[-200:]}")
         if any(b"-E SPARK_REQUIRED_CHECK" in data for data in baseline.values()):
             failures.append(f"{record}: a rendered lane.sh carries extra residentd environment")
     sys.path.insert(0, str(ROOT / "tools"))
