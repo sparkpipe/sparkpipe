@@ -916,7 +916,7 @@ static int32_t K3LayerMhaMerge(const K3LayerBuffers *b, uint32_t rows, cudaStrea
 	if ( K3LayerMhaReady(b,rows) == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(LmGqaShardMergeLaunch<K3_V_HEAD_DIM>(b->shard_partials_received_f32,K3LayerMhaPartialStride(b,rows),b->kv_shard.degree,K3_MLA_HEADS,
-		b->kv_shard.rank,b->attention_out_bf16,rows,stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+		b->kv_shard.rank,b->value_bf16,rows,stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 static int32_t K3LayerMlaGatherMerge(const K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)
