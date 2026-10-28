@@ -49,6 +49,8 @@ typedef struct RunOptions
 	uint32_t teacher_prefill;
 } RunOptions;
 
+static const uint32_t run_frame_sizes[RUN_FRAME_SIZES] = { 1u, 2u, 4u, 8u, 16u, 32u, 64u };
+
 static uint64_t NowNs(void)
 {
 	struct timespec now;
@@ -163,6 +165,12 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 	}
 	if ( options->max_batch > options->prefill_rows || options->draft_max == 0u || options->draft_max >= SPARK_DEVICE_STAGE_VERIFY_ROWS )
 		return(-1);
+	if ( strcmp(options->mode,"spec") == 0 && options->prefill_rows < run_frame_sizes[RUN_FRAME_SIZES - 1u] )
+	{
+		fprintf(stderr,"metal_stage_run: spec mode times verify frames of up to %u rows, so --prefill-rows must be at least %u (it is %u)\n",
+			run_frame_sizes[RUN_FRAME_SIZES - 1u],run_frame_sizes[RUN_FRAME_SIZES - 1u],options->prefill_rows);
+		return(-1);
+	}
 	return(0);
 }
 
@@ -979,7 +987,6 @@ static int CompareDoubles(const void *a, const void *b)
 static SparkStatus SpecCostCurve(Session *session, const RunOptions *options, const uint32_t *prompt, uint32_t length, SparkSpeculationFrameModel *model,
 	FILE *json)
 {
-	static const uint32_t sizes[RUN_FRAME_SIZES] = { 1u, 2u, 4u, 8u, 16u, 32u, 64u };
 	double *verify = (double *)calloc(options->repeats + 1u,sizeof(double)), *keep = (double *)calloc(options->repeats + 1u,sizeof(double));
 	SparkDeviceStageRunnerResult result;
 	uint32_t size, repeat, next = 0u;
@@ -990,13 +997,13 @@ static SparkStatus SpecCostCurve(Session *session, const RunOptions *options, co
 		for ( repeat = 0u; status == SPARK_STATUS_OK && repeat <= options->repeats; repeat++ )
 		{
 			uint64_t before;
-			uint32_t kept = sizes[size];
+			uint32_t kept = run_frame_sizes[size];
 			status = SparkDeviceStageRunnerResetSequence(session->runner,0u);
 			if ( status == SPARK_STATUS_OK )
 				status = SessionPrefill(session,prompt,length,options->prefill_rows,&next,0);
 			before = NowNs();
 			if ( status == SPARK_STATUS_OK )
-				status = SpecFrame(session,prompt,sizes[size],length,&result);
+				status = SpecFrame(session,prompt,run_frame_sizes[size],length,&result);
 			verify[repeat] = (NowNs() - before) / 1e6;
 			before = NowNs();
 			if ( status == SPARK_STATUS_OK )
@@ -1006,15 +1013,15 @@ static SparkStatus SpecCostCurve(Session *session, const RunOptions *options, co
 		if ( status != SPARK_STATUS_OK )
 			break;
 		for ( repeat = 1u; repeat <= options->repeats; repeat++ )
-			if ( sizes[size] == 1u )
+			if ( run_frame_sizes[size] == 1u )
 				SparkSpeculationFrameObserveChain(model,1u,length,(uint64_t)(verify[repeat] * 1e6));
 			else
-				SparkSpeculationFrameObserveFrame(model,sizes[size],length,(uint64_t)((verify[repeat] + keep[repeat]) * 1e6));
+				SparkSpeculationFrameObserveFrame(model,run_frame_sizes[size],length,(uint64_t)((verify[repeat] + keep[repeat]) * 1e6));
 		qsort(verify + 1,options->repeats,sizeof(double),CompareDoubles);
 		qsort(keep + 1,options->repeats,sizeof(double),CompareDoubles);
-		fprintf(json,"%s{\"rows\":%u,\"verify_ms\":%.4f,\"keep_all_ms\":%.4f}",size != 0u ? "," : "",sizes[size],verify[1u + options->repeats / 2u],
+		fprintf(json,"%s{\"rows\":%u,\"verify_ms\":%.4f,\"keep_all_ms\":%.4f}",size != 0u ? "," : "",run_frame_sizes[size],verify[1u + options->repeats / 2u],
 			keep[1u + options->repeats / 2u]);
-		printf("verify frame %2u rows: %.3f ms, keeping all rows %.3f ms\n",sizes[size],verify[1u + options->repeats / 2u],keep[1u + options->repeats / 2u]);
+		printf("verify frame %2u rows: %.3f ms, keeping all rows %.3f ms\n",run_frame_sizes[size],verify[1u + options->repeats / 2u],keep[1u + options->repeats / 2u]);
 	}
 	fprintf(json,"]");
 	free(verify);
@@ -1088,7 +1095,7 @@ static int RunSpec(Session *session, const RunOptions *options, const SparkToken
 int main(int argc, char **argv)
 {
 	RunOptions options;
-	SparkTokenPrompts prompts;
+	SparkTokenPrompts prompts, extra;
 	SparkDeviceStageRunnerConfig config;
 	SparkDeviceStageRunnerInfo info;
 	Session session;
@@ -1100,6 +1107,21 @@ int main(int argc, char **argv)
 		return(Usage(argv[0]));
 	if ( SparkTokenPromptsLoad(options.prompts,&prompts) != SPARK_STATUS_OK )
 		return(1);
+	memset(&extra,0,sizeof(extra));
+	if ( strcmp(options.mode,"spec") == 0 )
+	{
+		if ( options.spec_prompts == 0 || SparkTokenPromptsLoad(options.spec_prompts,&extra) != SPARK_STATUS_OK )
+		{
+			fprintf(stderr,"metal_stage_run: spec mode needs --spec-prompts\n");
+			return(1);
+		}
+		if ( extra.prompts[0].count < run_frame_sizes[RUN_FRAME_SIZES - 1u] )
+		{
+			fprintf(stderr,"metal_stage_run: the verify frames are built from the first speculation prompt, %s, which has %u tokens; it needs at least %u\n",
+				extra.prompts[0].name,extra.prompts[0].count,run_frame_sizes[RUN_FRAME_SIZES - 1u]);
+			return(1);
+		}
+	}
 	mkdir(options.out,0755);
 	config.pack_path = options.pack;
 	config.max_rows = options.prefill_rows;
@@ -1177,13 +1199,8 @@ int main(int argc, char **argv)
 		failed = RunLadder(&session,&options,&prompts,&info);
 	else if ( strcmp(options.mode,"spec") == 0 )
 	{
-		SparkTokenPrompts extra;
-		failed = options.spec_prompts == 0 || SparkTokenPromptsLoad(options.spec_prompts,&extra) != SPARK_STATUS_OK;
-		if ( !failed )
-		{
-			failed = RunSpec(&session,&options,&prompts,&extra);
-			SparkTokenPromptsFree(&extra);
-		}
+		failed = RunSpec(&session,&options,&prompts,&extra);
+		SparkTokenPromptsFree(&extra);
 	}
 	else
 		failed = Usage(argv[0]);

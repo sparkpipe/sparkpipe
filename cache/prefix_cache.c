@@ -3414,19 +3414,26 @@ SparkStatus SparkPrefixCacheImportCommitted(
     for (index = 0u; index < record_count; ++index)
     {
         const SparkPrefixCacheCommittedRecord *record = &records[index];
-        SparkPrefixCacheEntry *entry,*parent;
-        parent = record->first_token_index == 0u ? 0 : SparkPrefixCacheFindParent(cache, record);
+        SparkPrefixCacheEntry *entry,*parent = 0;
         if (record->token_count == 0u || record->token_count > cache->block_token_count ||
             record->first_token_index % cache->block_token_count != 0u ||
             (record->flags & ~SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME) != 0u || record->used_seconds == 0u ||
             (uint64_t)record->used_seconds + SPARK_KV_RETENTION_SECONDS <= now_seconds ||
             SparkPrefixCacheFindEntry(cache, record->parent_hash, record->block_hash, record->content_hash,
                 record->content_digest, record->first_token_index, record->token_count, 0u) != 0 ||
-            (record->first_token_index != 0u && parent == 0) ||
             cache->free_entry_head == SPARK_PREFIX_CACHE_NO_ENTRY)
         {
             skipped++;
             continue;
+        }
+        if (record->first_token_index != 0u)
+        {
+            parent = SparkPrefixCacheFindParent(cache, record);
+            if (parent == 0)
+            {
+                skipped++;
+                continue;
+            }
         }
         entry = &cache->entries[cache->free_entry_head];
         epoch = ++cache->operation_epoch;

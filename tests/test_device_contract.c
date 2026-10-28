@@ -265,6 +265,36 @@ static void TestBusy(SparkDeviceQueue *queue)
 	CHECK(SparkDeviceEventDestroy(event) == SPARK_STATUS_OK,"destroy the completed event");
 }
 
+static void TestEventLifetime(void)
+{
+	SparkDeviceQueue *slow = 0, *fast = 0;
+	SparkDeviceEvent *event = 0;
+	Gate gate;
+	CHECK(SparkDeviceQueueCreate(&slow,"event lifetime slow") == SPARK_STATUS_OK && SparkDeviceQueueCreate(&fast,"event lifetime fast") == SPARK_STATUS_OK,
+		"create two queues");
+	CHECK(SparkDeviceEventCreate(&event) == SPARK_STATUS_OK,"create an event");
+	GateInit(&gate);
+	CHECK(SparkDeviceQueueHostCallback(slow,GateWaitCallback,&gate) == SPARK_STATUS_OK,"block the waiting queue");
+	CHECK(SparkDeviceEventRecord(event,fast) == SPARK_STATUS_OK,"record on the idle queue");
+	CHECK(SparkDeviceQueueWait(fast,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"the recording queue completes");
+	CHECK(SparkDeviceQueueWaitEvent(slow,event) == SPARK_STATUS_OK,"queue a wait on the event behind the block");
+	CHECK(SparkDeviceEventDestroy(event) == SPARK_STATUS_BUSY,"an event a blocked queue still waits on cannot be destroyed, though its record completed");
+	GateOpen(&gate);
+	CHECK(SparkDeviceQueueWait(slow,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"the waiting queue passes the wait");
+	CHECK(SparkDeviceEventDestroy(event) == SPARK_STATUS_OK,"destroy once the waiting queue has passed");
+	CHECK(SparkDeviceEventCreate(&event) == SPARK_STATUS_OK,"create a second event");
+	GateInit(&gate);
+	CHECK(SparkDeviceQueueHostCallback(slow,GateWaitCallback,&gate) == SPARK_STATUS_OK,"block the first recording queue");
+	CHECK(SparkDeviceEventRecord(event,slow) == SPARK_STATUS_OK,"record behind the block");
+	CHECK(SparkDeviceEventRecord(event,fast) == SPARK_STATUS_OK,"record again on the idle queue");
+	CHECK(SparkDeviceQueueWait(fast,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"the later record completes first");
+	CHECK(SparkDeviceEventDestroy(event) == SPARK_STATUS_BUSY,"an event whose earlier record is still queued cannot be destroyed");
+	GateOpen(&gate);
+	CHECK(SparkDeviceQueueWait(slow,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"the earlier record completes");
+	CHECK(SparkDeviceEventDestroy(event) == SPARK_STATUS_OK,"destroy once both records have completed");
+	CHECK(SparkDeviceQueueDestroy(slow) == SPARK_STATUS_OK && SparkDeviceQueueDestroy(fast) == SPARK_STATUS_OK,"destroy the queues");
+}
+
 static void TestTiming(SparkDeviceQueue *queue)
 {
 	SparkDeviceEvent *start = 0, *stop = 0, *unused = 0;
@@ -600,6 +630,7 @@ int main(void)
 	TestFreshUpload(queue);
 	TestOrdering();
 	TestBusy(queue);
+	TestEventLifetime();
 	TestTiming(queue);
 	TestResolve();
 	TestFileAndRegister(queue);

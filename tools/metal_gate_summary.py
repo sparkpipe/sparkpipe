@@ -24,7 +24,8 @@ A against bp as the floor. The same rule applies to it; the Metal runs
 (metal, and metal_rows64 when present: the same pass prefilled in 64-row
 chunks) must pass every set present, and a required control must fail in
 every set it appears in. A batch ladder run with --exact-rows (exact/) must
-give every batched sequence the tokens of its solo run.
+give every batched sequence the tokens of its solo run, and no ladder (plain
+or exact rows) may give one batch different tokens across its repeats.
 
 Where the gate also scores reference draws C and D (the same reference code
 and BF16 rounding as B, other FP32 reduction orders; rows labelled
@@ -83,13 +84,23 @@ def aggregate(rows, label):
     }
 
 
+def ratio(value, floor):
+    if floor > 0.0:
+        return value / floor
+    return 0.0 if value <= 0.0 else math.inf
+
+
 def paired(candidate):
     blocks = candidate["above_floor_blocks"]
     positions = candidate["positions"]
+    if len(blocks) < 2:
+        raise SystemExit(f"paired test: {len(blocks)} block(s) of positions; the block standard error needs at least two")
     share = candidate["above_floor_positions"] / positions
     spread = sum((above - share * count) ** 2 for above, count in blocks)
     error = math.sqrt(len(blocks) / (len(blocks) - 1) * spread) / positions
-    return share, error, (share - 0.5) / error if error > 0.0 else math.inf
+    if error > 0.0:
+        return share, error, (share - 0.5) / error
+    return share, error, -math.inf if share <= 0.5 else math.inf
 
 
 def row_paired(row):
@@ -137,8 +148,10 @@ def floor_draws(rows, names, prefix="", draws=FLOOR_DRAWS):
 
 
 def leg(candidate, floor_top1):
-    kl_ratio = candidate["kl_mean"] / candidate["floor_kl_mean"]
-    top1_ratio = (1.0 - candidate["top1_agreement"]) / (1.0 - floor_top1)
+    if candidate["floor_kl_mean"] is None:
+        raise SystemExit("gate legs: a candidate compare row has no floor KL (the second reference variant was not passed)")
+    kl_ratio = ratio(candidate["kl_mean"], candidate["floor_kl_mean"])
+    top1_ratio = ratio(1.0 - candidate["top1_agreement"], 1.0 - floor_top1)
     share, error, sigma = paired(candidate)
     checks = {"kl_within_factor": kl_ratio <= KL_FACTOR, "top1_within_factor": top1_ratio <= TOP1_FACTOR,
               "paired_within_sigma": sigma <= PAIRED_SIGMA}
@@ -275,6 +288,8 @@ def main():
         "speed": speed(out),
     }
     receipt["batch_ladder"] = ladder_table(out, receipt["speed"]["bandwidth"]["device_private"]["median_gb_per_s"] * 1e9)
+    ladder_deterministic = all(row["nondeterministic"] == 0 for row in receipt["batch_ladder"]["rows"])
+    receipt["batch_ladder"]["deterministic"] = ladder_deterministic
     exact_identical = None
     if (out / "exact" / "ladder.metal.json").exists():
         receipt["batch_ladder_exact_rows"] = ladder_table(out, receipt["speed"]["bandwidth"]["device_private"]["median_gb_per_s"] * 1e9, "exact")
@@ -299,7 +314,8 @@ def main():
         numerics["controls_fail_as_required"]
     (out / "RECEIPT.json").write_text(json.dumps(receipt, indent=1) + "\n")
     speculation_exact = receipt["speculation"]["exact"] if "speculation" in receipt else None
-    print(json.dumps({"numerics_pass": numerics["pass"], "speculation_exact": speculation_exact, "ladder_exact_rows_identical": exact_identical,
+    print(json.dumps({"numerics_pass": numerics["pass"], "speculation_exact": speculation_exact, "ladder_deterministic": ladder_deterministic,
+                      "ladder_exact_rows_identical": exact_identical,
                       **{name: {**{leg_name: {key: item[key] for key in ("kl_ratio_to_floor", "top1_disagreement_ratio_to_floor", "paired_sigma", "pass")}
                                    for leg_name, item in numerics[name]["verdict"].items() if leg_name in ("reference_a", "reference_b")},
                                 "paired_rule": numerics[name]["verdict"]["paired_rule"],
@@ -318,7 +334,7 @@ def main():
                                             "pass": pinned[name]["verdict"]["pass"]}
                          for name in pinned_candidates},
                       "decode": receipt["speed"]["decode"]["roofline"]}, indent=1))
-    return 0 if numerics["pass"] and speculation_exact is not False and exact_identical is not False else 1
+    return 0 if numerics["pass"] and speculation_exact is not False and ladder_deterministic and exact_identical is not False else 1
 
 if __name__ == "__main__":
     sys.exit(main())

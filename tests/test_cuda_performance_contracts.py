@@ -177,7 +177,8 @@ def validate_tma_contract() -> None:
     tma_code = strip_comments_and_literals(tma)
     forbid(tma_code, "elect.sync", "TMA producer election")
     require(tile, "threadIdx.x == 0u", "CTA-wide producer selection")
-    require(gemm, "LmPipelineInitialise<STAGES>(barrier, 1u)", "single-producer mbarrier")
+    require(gemm, "LmPipelineInitialise<STAGES>(barrier, INDIRECT_A && ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_NONE ? 1u + blockDim.x : 1u)",
+            "single TMA producer, plus one gather arrival per thread on the indirect path")
     require(gemm, "__grid_constant__ const CUtensorMap tensor_map_a", "by-value activation tensor map")
     require(gemm, "__grid_constant__ const CUtensorMap tensor_map_b", "by-value weight tensor map")
     require(runtime, "alignas(64) CUtensorMap activation_map;", "activation tensor-map lifetime")
