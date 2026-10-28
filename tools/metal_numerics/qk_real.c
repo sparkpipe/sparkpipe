@@ -4,8 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "sparkpipe/spark_device.h"
-static uint16_t ToBf16(float value) { uint32_t b; memcpy(&b, &value, 4); return (uint16_t)((b + 0x7fffu + ((b >> 16) & 1u)) >> 16); }
-static double Bf16(uint16_t x) { uint32_t w = (uint32_t)x << 16; float f; memcpy(&f, &w, 4); return f; }
+static uint16_t ToBf16(float value) { uint32_t b; memcpy(&b, &value, sizeof(b)); return (uint16_t)((b + 0x7fffu + ((b >> 16) & 1u)) >> 16); }
+static double Bf16(uint16_t x) { uint32_t w = (uint32_t)x << 16; float f; memcpy(&f, &w, sizeof(f)); return f; }
 int main(int argc, char **argv)
 {
 	const char *library_path = argv[1], *prefix = argv[2];
@@ -13,17 +13,17 @@ int main(int argc, char **argv)
 	const uint32_t rows = dim == 512u ? 16u : 32u;
 	const char *kernel_name = getenv("QK_SPLIT") != 0 ? (dim == 512u ? "probe_qk512_split" : "probe_qk256_split") : (dim == 512u ? "probe_qk512" : "probe_qk256");
 	char path[1024];
-	float *q = (float *)malloc((size_t)total * heads * dim * 4u), *k = (float *)malloc((size_t)total * kvh * dim * 4u);
+	float *q = (float *)malloc((size_t)total * heads * dim * sizeof(float)), *k = (float *)malloc((size_t)total * kvh * dim * sizeof(float));
 	FILE *f;
-	snprintf(path, sizeof(path), "%s.q", prefix); f = fopen(path, "rb"); fread(q, 4u, (size_t)total * heads * dim, f); fclose(f);
-	snprintf(path, sizeof(path), "%s.k", prefix); f = fopen(path, "rb"); fread(k, 4u, (size_t)total * kvh * dim, f); fclose(f);
+	snprintf(path, sizeof(path), "%s.q", prefix); f = fopen(path, "rb"); fread(q, sizeof(float), (size_t)total * heads * dim, f); fclose(f);
+	snprintf(path, sizeof(path), "%s.k", prefix); f = fopen(path, "rb"); fread(k, sizeof(float), (size_t)total * kvh * dim, f); fclose(f);
 	SparkDeviceQueue *queue = 0; SparkDeviceLibrary *library = 0; SparkDeviceKernel *kernel = 0;
 	SparkDeviceBuffer qb, kb, ob; SparkDeviceBinding b[3]; SparkDeviceLaunch launch;
 	if ( SparkDeviceInitialize(0) != SPARK_STATUS_OK || SparkDeviceQueueCreate(&queue, "qk") != SPARK_STATUS_OK ||
 		SparkDeviceLibraryLoad(&library, library_path, "qk") != SPARK_STATUS_OK || SparkDeviceKernelCreate(&kernel, library, kernel_name) != SPARK_STATUS_OK ||
-		SparkDeviceAllocate(&qb, SPARK_DEVICE_SPACE_SHARED_COHERENT, rows * dim * 2u, "q") != SPARK_STATUS_OK ||
-		SparkDeviceAllocate(&kb, SPARK_DEVICE_SPACE_SHARED_COHERENT, 64u * dim * 2u, "k") != SPARK_STATUS_OK ||
-		SparkDeviceAllocate(&ob, SPARK_DEVICE_SPACE_SHARED_COHERENT, rows * 64u * 4u, "o") != SPARK_STATUS_OK )
+		SparkDeviceAllocate(&qb, SPARK_DEVICE_SPACE_SHARED_COHERENT, rows * dim * sizeof(uint16_t), "q") != SPARK_STATUS_OK ||
+		SparkDeviceAllocate(&kb, SPARK_DEVICE_SPACE_SHARED_COHERENT, 64u * dim * sizeof(uint16_t), "k") != SPARK_STATUS_OK ||
+		SparkDeviceAllocate(&ob, SPARK_DEVICE_SPACE_SHARED_COHERENT, rows * 64u * sizeof(float), "o") != SPARK_STATUS_OK )
 		return 1;
 	double tensor_sq = 0, lane_sq = 0, n = 0, tensor_worst = 0, lane_worst = 0;
 	for ( uint32_t head = 0; head < heads; head++ )

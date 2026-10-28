@@ -12,7 +12,7 @@ int main(int argc, char **argv)
 		double kk = 0, rr = 0, kr = 0, dd = 0, n = 0;
 		for ( long i = lo * width; i < hi * width; i++ )
 		{
-			if ( fread(triple, sizeof(float), 3, kernel) != 3 || fread(&r, sizeof(float), 1, ref) != 1 )
+			if ( fread(triple, sizeof(float), sizeof(triple) / sizeof(triple[0]), kernel) != sizeof(triple) / sizeof(triple[0]) || fread(&r, sizeof(float), 1, ref) != 1 )
 				return 1;
 			const double scale = triple[2] > 0 ? 16777216.0 / triple[2] : 0, ek = (triple[0] - triple[1]) * scale, er = (r - triple[1]) * scale;
 			kk += ek * ek; rr += er * er; kr += ek * er; dd += (ek - er) * (ek - er); n++;

@@ -18,9 +18,9 @@ int main(int argc, char **argv)
 	uint32_t i, r, d, k;
 	if ( argc != 2 || SparkDeviceInitialize(0) != SPARK_STATUS_OK || SparkDeviceQueueCreate(&queue,"probe") != SPARK_STATUS_OK ||
 		SparkDeviceLibraryLoad(&library,argv[1],"probe") != SPARK_STATUS_OK || SparkDeviceKernelCreate(&kernel,library,"probe_pv") != SPARK_STATUS_OK ||
-		SparkDeviceAllocate(&p,SPARK_DEVICE_SPACE_SHARED_COHERENT,32u * 64u * 4u,"p") != SPARK_STATUS_OK ||
-		SparkDeviceAllocate(&v,SPARK_DEVICE_SPACE_SHARED_COHERENT,64u * 256u * 2u,"v") != SPARK_STATUS_OK ||
-		SparkDeviceAllocate(&out,SPARK_DEVICE_SPACE_SHARED_COHERENT,2u * 32u * 256u * 4u,"out") != SPARK_STATUS_OK )
+		SparkDeviceAllocate(&p,SPARK_DEVICE_SPACE_SHARED_COHERENT,32u * 64u * sizeof(float),"p") != SPARK_STATUS_OK ||
+		SparkDeviceAllocate(&v,SPARK_DEVICE_SPACE_SHARED_COHERENT,64u * 256u * sizeof(uint16_t),"v") != SPARK_STATUS_OK ||
+		SparkDeviceAllocate(&out,SPARK_DEVICE_SPACE_SHARED_COHERENT,2u * 32u * 256u * sizeof(float),"out") != SPARK_STATUS_OK )
 	{
 		printf("setup failed: %s\n",SparkDeviceLastError()->text);
 		return(1);
@@ -30,7 +30,7 @@ int main(int argc, char **argv)
 		P[i] = (float)(0.001 + Uniform());
 	for ( i = 0u; i < 64u * 256u; i++ )
 	{
-		float f = (float)(Uniform() * 2.0 - 1.0); uint32_t bits; memcpy(&bits,&f,4); V[i] = (uint16_t)(bits >> 16);
+		float f = (float)(Uniform() * 2.0 - 1.0); uint32_t bits; memcpy(&bits,&f,sizeof(bits)); V[i] = (uint16_t)(bits >> 16);
 	}
 	b[0].range.buffer = &p; b[0].range.offset = 0; b[0].bytes = p.bytes; b[0].access = SPARK_DEVICE_BIND_READ;
 	b[1].range.buffer = &v; b[1].range.offset = 0; b[1].bytes = v.bytes; b[1].access = SPARK_DEVICE_BIND_READ;
@@ -53,7 +53,7 @@ int main(int argc, char **argv)
 				double exact = 0.0, magnitude = 0.0;
 				for ( i = 0u; i < 64u; i++ )
 				{
-					uint32_t bits = (uint32_t)V[i * 256u + d] << 16; float vf; memcpy(&vf,&bits,4);
+					uint32_t bits = (uint32_t)V[i * 256u + d] << 16; float vf; memcpy(&vf,&bits,sizeof(vf));
 					exact += (double)P[r * 64u + i] * vf;
 					magnitude += fabs((double)P[r * 64u + i] * vf);
 				}

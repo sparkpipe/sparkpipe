@@ -19,7 +19,7 @@ int main(int argc, char **argv)
 		long n = 0, ref_off = 0, kernel_off = 0, differ = 0;
 		for ( long i = lo * width; i < hi * width; i++ )
 		{
-			if ( fread(triple, sizeof(float), 3, kernel) != 3 || fread(&r, sizeof(float), 1, ref) != 1 )
+			if ( fread(triple, sizeof(float), sizeof(triple) / sizeof(triple[0]), kernel) != sizeof(triple) / sizeof(triple[0]) || fread(&r, sizeof(float), 1, ref) != 1 )
 				return 1;
 			const uint16_t exact = ToBf16(triple[1]), mine = ToBf16(triple[0]), theirs = ToBf16(r);
 			ref_off += theirs != exact; kernel_off += mine != exact; differ += mine != theirs; n++;

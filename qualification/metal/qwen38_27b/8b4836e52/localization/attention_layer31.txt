@@ -1,6 +1,6 @@
 Qwen3.8-27B attention layer 31 (the first layer where the margin kernel's rules-prompt hidden states leave eager's) run alone on the reference's own inputs:
 Q, K and V of reference B on the rules prompt (tools/qwen38_27b_reference.c with an attention dump at attention index 7), rows 0-1019 through the prefill kernel in one call and rows 1020-2039 through the decode kernel (row_exact), no output gate.
-Errors of the reconstructed FP32 output against float64 attention, in units of 2^-24 sum p|v| (scripts/realattn.c, scripts/errcorr.c):
+Errors of the reconstructed FP32 output against float64 attention, in units of 2^-24 sum p|v| (tools/metal_numerics/realattn.c, tools/metal_numerics/errcorr.c):
 kernel    prefill rms / max   decode rms / max   bf16 outputs not correctly rounded (prefill / decode)   correlation with reference B's own error (prefill / decode)
 eager     5.72 / 99.2         2.09 / 34.9        0.047% / 0.021%                                            0.110 / 0.006
 margin    5.71 / 99.2         2.10 / 34.8        0.047% / 0.021%                                            0.110 / 0.006

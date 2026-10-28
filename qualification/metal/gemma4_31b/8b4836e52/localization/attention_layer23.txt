@@ -1,5 +1,5 @@
 Gemma 4 31B full-attention layer 23 run alone on reference A's own inputs on the code prompt (the reference with a dump at layer 23,
-scripts/gdump.py), rows 0-899 through the prefill kernel in one call and rows 900-1799 through the decode kernel (row_exact), 32 query
+tools/metal_numerics/gdump.py), rows 0-899 through the prefill kernel in one call and rows 900-1799 through the decode kernel (row_exact), 32 query
 and 4 KV heads of 512, scale 1.
 Reconstructed FP32 output against float64, units of 2^-24 sum p|v| (rms / max), and BF16 outputs that are not the correctly rounded value:
 kernel    prefill            decode            not correctly rounded (prefill / decode)

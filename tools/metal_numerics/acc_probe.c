@@ -5,8 +5,8 @@
 #include "sparkpipe/spark_device.h"
 static uint64_t state = 0x2545F4914F6CDD1Dull;
 static double Uniform(void) { state ^= state << 13; state ^= state >> 7; state ^= state << 17; return (double)(state >> 11) / 9007199254740992.0; }
-static uint16_t ToBf16(float value) { uint32_t b; memcpy(&b, &value, 4); return (uint16_t)((b + 0x7fffu + ((b >> 16) & 1u)) >> 16); }
-static double Bf16(uint16_t x) { uint32_t w = (uint32_t)x << 16; float f; memcpy(&f, &w, 4); return f; }
+static uint16_t ToBf16(float value) { uint32_t b; memcpy(&b, &value, sizeof(b)); return (uint16_t)((b + 0x7fffu + ((b >> 16) & 1u)) >> 16); }
+static double Bf16(uint16_t x) { uint32_t w = (uint32_t)x << 16; float f; memcpy(&f, &w, sizeof(f)); return f; }
 int main(int argc, char **argv)
 {
 	enum { ROWS = 16, D = 512, KEYS = 1024 };
@@ -14,9 +14,9 @@ int main(int argc, char **argv)
 	SparkDeviceBuffer p, v, out; SparkDeviceBinding b[3]; SparkDeviceLaunch launch;
 	if ( SparkDeviceInitialize(0) != SPARK_STATUS_OK || SparkDeviceQueueCreate(&queue, "acc") != SPARK_STATUS_OK ||
 		SparkDeviceLibraryLoad(&library, argv[1], "acc") != SPARK_STATUS_OK || SparkDeviceKernelCreate(&kernel, library, "probe_pv_tiles") != SPARK_STATUS_OK ||
-		SparkDeviceAllocate(&p, SPARK_DEVICE_SPACE_SHARED_COHERENT, ROWS * KEYS * 4u, "p") != SPARK_STATUS_OK ||
-		SparkDeviceAllocate(&v, SPARK_DEVICE_SPACE_SHARED_COHERENT, (uint64_t)KEYS * D * 2u, "v") != SPARK_STATUS_OK ||
-		SparkDeviceAllocate(&out, SPARK_DEVICE_SPACE_SHARED_COHERENT, ROWS * D * 4u, "o") != SPARK_STATUS_OK )
+		SparkDeviceAllocate(&p, SPARK_DEVICE_SPACE_SHARED_COHERENT, ROWS * KEYS * sizeof(float), "p") != SPARK_STATUS_OK ||
+		SparkDeviceAllocate(&v, SPARK_DEVICE_SPACE_SHARED_COHERENT, (uint64_t)KEYS * D * sizeof(uint16_t), "v") != SPARK_STATUS_OK ||
+		SparkDeviceAllocate(&out, SPARK_DEVICE_SPACE_SHARED_COHERENT, ROWS * D * sizeof(float), "o") != SPARK_STATUS_OK )
 		return 1;
 	float *P = (float *)p.host, *O = (float *)out.host; uint16_t *V = (uint16_t *)v.host;
 	for ( int i = 0; i < ROWS * KEYS; i++ ) P[i] = (float)Uniform();
