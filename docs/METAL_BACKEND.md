@@ -129,6 +129,16 @@ Metal kernels (through `common.metal`) and the host CUDA shim of the host
 tests include. A formula is defined once, so a change to it reaches both
 backends.
 
+The header also holds the weight-format decoders: E4M3, UE4M3 and UE8M0
+(block scales) to FP32, and an E2M1 nibble to FP32. CUDA's
+`LmUe4m3ToFloat`, `LmUe8m0ToFloat` and `LmE2m1ToFloatPure` call them. CUDA
+decodes E4M3 and E2M1 data with the hardware conversions
+(`cvt.rn.f16x2.e4m3x2`, `cvt.rn.f16x2.e2m1x2`); `test_bf16_convert_cuda`
+checks every code of the shared decoders against those conversions, and
+`test_metal_bf16_convert` checks every code on Metal against the formats.
+A Metal projection over FP8 or FP4 weights therefore reads the same values
+as the CUDA one.
+
 - The header shares formulas, not schedules. Tiling, data movement, matrix
   units, reductions and launch shapes stay per backend, because that is
   where each backend's speed is.

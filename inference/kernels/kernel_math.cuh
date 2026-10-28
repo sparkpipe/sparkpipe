@@ -6,6 +6,7 @@
 #define SPARK_MATH_FN static inline
 typedef uint SparkMathU32;
 typedef ushort SparkMathU16;
+typedef uchar SparkMathU8;
 #define SPARK_MATH_AS_FLOAT(bits) as_type<float>(bits)
 #define SPARK_MATH_AS_BITS(value) as_type<uint>(value)
 #define SPARK_MATH_EXP(x) metal::exp(x)
@@ -13,6 +14,7 @@ typedef ushort SparkMathU16;
 #define SPARK_MATH_LOG(x) metal::log(x)
 #define SPARK_MATH_LOG_FAST(x) metal::log(x)
 #define SPARK_MATH_TANH(x) metal::tanh(x)
+#define SPARK_MATH_LDEXP(x, e) metal::ldexp(x, e)
 #elif defined(__CUDACC__) || defined(LM_HOST_CUDA_PRELUDE)
 #include <stdint.h>
 #if defined(__CUDACC__)
@@ -21,6 +23,7 @@ typedef ushort SparkMathU16;
 #define SPARK_MATH_FN static __device__ __forceinline__
 typedef uint32_t SparkMathU32;
 typedef uint16_t SparkMathU16;
+typedef uint8_t SparkMathU8;
 #define SPARK_MATH_AS_FLOAT(bits) __uint_as_float(bits)
 #define SPARK_MATH_AS_BITS(value) __float_as_uint(value)
 #define SPARK_MATH_EXP(x) expf(x)
@@ -28,6 +31,7 @@ typedef uint16_t SparkMathU16;
 #define SPARK_MATH_LOG(x) logf(x)
 #define SPARK_MATH_LOG_FAST(x) __logf(x)
 #define SPARK_MATH_TANH(x) tanhf(x)
+#define SPARK_MATH_LDEXP(x, e) ldexpf(x, e)
 #else
 #error "kernel_math.cuh is kernel code for the CUDA and Metal compilers"
 #endif
@@ -123,6 +127,41 @@ SPARK_MATH_FN float SparkMathGeluTanhScaleFirst(float value)
 SPARK_MATH_FN float SparkMathSoftcap(float value, float cap)
 {
 	return(cap * SPARK_MATH_TANH(value / cap));
+}
+
+SPARK_MATH_FN float SparkMathE4m3ToFloat(SparkMathU32 value)
+{
+	const SparkMathU32 sign = (value & 0x80u) << 24u, exponent = (value >> 3u) & 15u, mantissa = value & 7u;
+	if ( (value & 0x7fu) == 0x7fu )
+		return(SPARK_MATH_AS_FLOAT(sign | 0x7fc00000u));
+	if ( exponent == 0u )
+		return(SPARK_MATH_AS_FLOAT(sign | SPARK_MATH_AS_BITS((float)mantissa * 0.001953125f)));
+	return(SPARK_MATH_AS_FLOAT(sign | ((exponent + 120u) << 23u) | (mantissa << 20u)));
+}
+
+SPARK_MATH_FN float SparkMathE2m1ToFloat(SparkMathU32 nibble)
+{
+	SparkMathU32 exponent = (nibble >> 1u) & 3u, sign = (nibble & 8u) << 28u;
+	SparkMathU32 magnitude = exponent != 0u ? ((exponent + 126u) << 23u) | ((nibble & 1u) << 22u) : ((nibble & 1u) != 0u ? 0x3f000000u : 0u);
+	return(SPARK_MATH_AS_FLOAT(sign | magnitude));
+}
+
+SPARK_MATH_FN float SparkMathUe8m0ToFloat(SparkMathU8 value)
+{
+	return(SPARK_MATH_AS_FLOAT(value == 0u ? 0x00400000u : (value == 0xffu ? 0x7fffffffu : (SparkMathU32)value << 23u)));
+}
+
+SPARK_MATH_FN float SparkMathUe4m3ToFloat(SparkMathU8 value)
+{
+	SparkMathU32 biased,mantissa;
+	value &= 0x7fu;
+	biased = (SparkMathU32)value >> 3u;
+	mantissa = (SparkMathU32)value & 7u;
+	if ( biased == 0u )
+		return(SPARK_MATH_LDEXP((float)mantissa,-9));
+	if ( biased == 15u && mantissa == 7u )
+		return(448.0f);
+	return(SPARK_MATH_LDEXP(1.0f + ((float)mantissa / 8.0f),(int)biased - 7));
 }
 
 #endif

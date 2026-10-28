@@ -24,7 +24,8 @@ def main():
     print(result.stdout + result.stderr, end="")
     if result.returncode == 0 and result.stdout.startswith("SKIP test_metal_bf16_convert"):
         return 0
-    return 0 if result.returncode == 0 and "PASS the shared bf16 conversion" in result.stdout else 1
+    passed = "PASS the shared bf16 conversion" in result.stdout and "PASS the shared FP8 and FP4 decoders" in result.stdout
+    return 0 if result.returncode == 0 and passed else 1
 
 
 if __name__ == "__main__":
