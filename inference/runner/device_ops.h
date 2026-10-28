@@ -19,6 +19,8 @@ extern "C" {
 #define SPARK_OPS_ATTENTION_HEAD_DIM 256u
 #define SPARK_OPS_ATTENTION_WIDE_HEAD_DIM 512u
 #define SPARK_OPS_ATTENTION_NARROW_HEAD_DIM 128u
+#define SPARK_OPS_ATTENTION_SPLIT_KEY_DIM 192u
+#define SPARK_OPS_ATTENTION_SPLIT_VALUE_DIM 128u
 #define SPARK_OPS_DELTA_KEY_DIM 128u
 
 typedef enum SparkOpsKernel
@@ -52,12 +54,15 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_ATTENTION_DECODE,
 	SPARK_OPS_ATTENTION_DECODE_WIDE,
 	SPARK_OPS_ATTENTION_DECODE_NARROW,
+	SPARK_OPS_ATTENTION_DECODE_SPLIT,
 	SPARK_OPS_ATTENTION_PREFILL,
 	SPARK_OPS_ATTENTION_PREFILL_WIDE,
 	SPARK_OPS_ATTENTION_PREFILL_NARROW,
+	SPARK_OPS_ATTENTION_PREFILL_SPLIT,
 	SPARK_OPS_ATTENTION_COMBINE,
 	SPARK_OPS_ATTENTION_COMBINE_WIDE,
 	SPARK_OPS_ATTENTION_COMBINE_NARROW,
+	SPARK_OPS_ATTENTION_COMBINE_SPLIT,
 	SPARK_OPS_SILU_MUL,
 	SPARK_OPS_GELU_TANH_MUL,
 	SPARK_OPS_SILU_MUL_ROUTED,
@@ -139,7 +144,8 @@ SparkStatus SparkOpsGatedDelta(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spa
 SparkStatus SparkOpsKvStore(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor key, SparkTensor value,
 	const SparkKvParams *params);
 SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor query, SparkTensor gate,
-	SparkTensor partial, SparkTensor output, const SparkAttentionParams *params, const uint32_t *host_positions, const uint32_t *host_sequence_of_row);
+	const SparkTensor *sinks, SparkTensor partial, SparkTensor output, const SparkAttentionParams *params, const uint32_t *host_positions,
+	const uint32_t *host_sequence_of_row);
 SparkStatus SparkOpsAddRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor hidden, SparkTensor addend, uint32_t rows,
 	uint32_t dimension, uint32_t hidden_stride, uint32_t addend_stride);
 SparkStatus SparkOpsGatedMul(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor output, const SparkSiluMulParams *params,

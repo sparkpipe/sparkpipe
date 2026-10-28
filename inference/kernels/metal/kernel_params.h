@@ -97,6 +97,8 @@ typedef struct SparkHeadRopeParams
 	uint32_t has_weight;
 	uint32_t rope_rounded_terms;
 	float multiply;
+	uint32_t plain;
+	uint32_t pad[3];
 	float inverse_frequency[SPARK_KERNEL_ROPE_PAIRS];
 } SparkHeadRopeParams;
 
@@ -157,7 +159,8 @@ typedef struct SparkKvParams
 	uint32_t value_stride;
 	uint32_t value_offset;
 	uint32_t pool_pages;
-	uint32_t pad[3];
+	uint32_t value_dimension;
+	uint32_t pad[2];
 } SparkKvParams;
 
 typedef struct SparkAttentionParams
@@ -181,7 +184,9 @@ typedef struct SparkAttentionParams
 	uint32_t row_exact;
 	uint32_t window;
 	uint32_t output_gate;
-	uint32_t pad;
+	uint32_t value_dimension;
+	uint32_t has_sinks;
+	uint32_t pad[2];
 } SparkAttentionParams;
 
 typedef struct SparkSiluMulParams

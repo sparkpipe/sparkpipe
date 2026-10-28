@@ -44,12 +44,15 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_attention_decode_d256",
 	"spark_attention_decode_d512",
 	"spark_attention_decode_d128",
+	"spark_attention_decode_d192v128",
 	"spark_attention_prefill_blocks_d256",
 	"spark_attention_prefill_blocks_d512",
 	"spark_attention_prefill_blocks_d128",
+	"spark_attention_prefill_blocks_d192v128",
 	"spark_attention_combine_d256",
 	"spark_attention_combine_d512",
 	"spark_attention_combine_d128",
+	"spark_attention_combine_d192v128",
 	"spark_silu_mul",
 	"spark_gelu_tanh_mul",
 	"spark_silu_mul_routed",
@@ -559,11 +562,12 @@ SparkStatus SparkOpsKvStore(SparkDeviceOps *ops, SparkDeviceQueue *queue, const 
 	if ( params->rows == 0u || params->kv_heads != paged->kv_heads || params->page_slots != paged->page_slots ||
 		params->pages_per_sequence != paged->pages_per_sequence || params->pool_pages != paged->pool_pages || params->head_dimension == 0u )
 		return(OpsRefuse("kv_store","the store geometry must match the paged pool"));
-	status = OpsNeed("kv_store","pool",paged->pool,(uint64_t)paged->pool_pages * paged->page_slots * 2u * paged->kv_heads * params->head_dimension * 2u);
+	const uint32_t values = params->value_dimension != 0u ? params->value_dimension : params->head_dimension;
+	status = OpsNeed("kv_store","pool",paged->pool,(uint64_t)paged->pool_pages * paged->page_slots * paged->kv_heads * (params->head_dimension + values) * 2u);
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("kv_store","key",key,OpsRowsBytes(params->rows,params->key_stride,params->kv_heads * params->head_dimension,2u));
 	if ( status == SPARK_STATUS_OK )
-		status = OpsNeed("kv_store","value",value,OpsRowsBytes(params->rows,params->value_stride,params->value_offset + params->kv_heads * params->head_dimension,2u));
+		status = OpsNeed("kv_store","value",value,OpsRowsBytes(params->rows,params->value_stride,params->value_offset + params->kv_heads * values,2u));
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	bindings[0] = OpsBind(key,SPARK_DEVICE_BIND_READ);
@@ -579,7 +583,21 @@ SparkStatus SparkOpsKvStore(SparkDeviceOps *ops, SparkDeviceQueue *queue, const 
 
 static uint32_t OpsAttentionWidth(const SparkAttentionParams *params)
 {
-	return(params->head_dimension == SPARK_OPS_ATTENTION_WIDE_HEAD_DIM ? 1u : params->head_dimension == SPARK_OPS_ATTENTION_NARROW_HEAD_DIM ? 2u : 0u);
+	return(params->head_dimension == SPARK_OPS_ATTENTION_WIDE_HEAD_DIM ? 1u : params->head_dimension == SPARK_OPS_ATTENTION_NARROW_HEAD_DIM ? 2u :
+		params->head_dimension == SPARK_OPS_ATTENTION_SPLIT_KEY_DIM ? 3u : 0u);
+}
+
+static uint32_t OpsAttentionValueDimension(const SparkAttentionParams *params)
+{
+	return(params->value_dimension != 0u ? params->value_dimension : params->head_dimension);
+}
+
+static uint32_t OpsAttentionShapeKnown(const SparkAttentionParams *params)
+{
+	const uint32_t key = params->head_dimension, value = OpsAttentionValueDimension(params);
+	if ( key == SPARK_OPS_ATTENTION_SPLIT_KEY_DIM )
+		return(value == SPARK_OPS_ATTENTION_SPLIT_VALUE_DIM ? 1u : 0u);
+	return(value == key && (key == SPARK_OPS_ATTENTION_HEAD_DIM || key == SPARK_OPS_ATTENTION_WIDE_HEAD_DIM || key == SPARK_OPS_ATTENTION_NARROW_HEAD_DIM) ? 1u : 0u);
 }
 
 static SparkStatus OpsAttentionPrefill(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkDeviceBinding *bindings,
@@ -609,19 +627,20 @@ uint64_t SparkOpsAttentionScratchBytes(uint32_t rows, uint32_t heads, uint32_t h
 }
 
 SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor query, SparkTensor gate,
-	SparkTensor partial, SparkTensor output, const SparkAttentionParams *params, const uint32_t *host_positions, const uint32_t *host_sequence_of_row)
+	const SparkTensor *sinks, SparkTensor partial, SparkTensor output, const SparkAttentionParams *params, const uint32_t *host_positions,
+	const uint32_t *host_sequence_of_row)
 {
 	SparkAttentionParams launch = *params;
 	SparkDeviceBinding bindings[7];
 	SparkStatus status;
 	uint32_t row, longest = 0u, run = 0u, widest = 0u, decode;
 	if ( params->rows == 0u || params->heads == 0u || params->kv_heads != paged->kv_heads || params->heads % params->kv_heads != 0u ||
-		(params->head_dimension != SPARK_OPS_ATTENTION_HEAD_DIM && params->head_dimension != SPARK_OPS_ATTENTION_WIDE_HEAD_DIM &&
-		params->head_dimension != SPARK_OPS_ATTENTION_NARROW_HEAD_DIM) ||
+		OpsAttentionShapeKnown(params) == 0u || (sinks != 0) != (params->has_sinks != 0u) ||
 		params->page_slots != paged->page_slots ||
 		params->pages_per_sequence != paged->pages_per_sequence || params->pool_pages != paged->pool_pages || host_positions == 0 ||
 		host_sequence_of_row == 0 )
-		return(OpsRefuse("attention","128-, 256- or 512-dimensional heads, whole query groups per key head and the host row tables are required"));
+		return(OpsRefuse("attention","128-, 256- or 512-dimensional heads (or 192-wide keys with 128-wide values), whole query groups per key head, "
+			"a sink tensor exactly when the parameters ask for sinks and the host row tables are required"));
 	for ( row = 0u; row < params->rows; row++ )
 	{
 		run = row != 0u && host_sequence_of_row[row] == host_sequence_of_row[row - 1u] ? run + 1u : 1u;
@@ -636,14 +655,16 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 	launch.partition_keys = decode != 0u ? OPS_DECODE_PARTITION_KEYS : OPS_PREFILL_PARTITION_KEYS;
 	launch.partitions = (longest + launch.partition_keys - 1u) / launch.partition_keys;
 	launch.row_offset = 0u;
-	status = OpsNeed("attention","partial",partial,(uint64_t)params->rows * params->heads * launch.partitions * (params->head_dimension + 2u) * sizeof(float));
+	status = OpsNeed("attention","partial",partial,(uint64_t)params->rows * params->heads * launch.partitions * (OpsAttentionValueDimension(params) + 2u) * sizeof(float));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("attention","query",query,OpsRowsBytes(params->rows,params->query_stride,params->heads * params->head_dimension,2u));
 	if ( status == SPARK_STATUS_OK && params->output_gate != 0u )
 		status = OpsNeed("attention","gate",gate,
 			OpsRowsBytes(params->rows,params->gate_stride,params->gate_offset + (params->heads - 1u) * params->gate_head_stride + params->head_dimension,2u));
 	if ( status == SPARK_STATUS_OK )
-		status = OpsNeed("attention","output",output,OpsRowsBytes(params->rows,params->output_stride,params->heads * params->head_dimension,2u));
+		status = OpsNeed("attention","output",output,OpsRowsBytes(params->rows,params->output_stride,params->heads * OpsAttentionValueDimension(params),2u));
+	if ( status == SPARK_STATUS_OK && sinks != 0 )
+		status = OpsNeed("attention","sinks",*sinks,(uint64_t)params->heads * sizeof(float));
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	bindings[0] = OpsBind(query,SPARK_DEVICE_BIND_READ);
@@ -664,8 +685,9 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 	bindings[1] = OpsBind(params->output_gate != 0u ? gate : query,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(paged->positions,SPARK_DEVICE_BIND_READ);
 	bindings[3] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
+	bindings[4] = OpsBind(sinks != 0 ? *sinks : partial,SPARK_DEVICE_BIND_READ);
 	return(OpsLaunch(ops,queue,(SparkOpsKernel)(SPARK_OPS_ATTENTION_COMBINE + OpsAttentionWidth(params)),params->heads,params->rows,1u,256u,&launch,
-		sizeof(launch),bindings,4u));
+		sizeof(launch),bindings,5u));
 }
 
 SparkStatus SparkOpsAddRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor hidden, SparkTensor addend, uint32_t rows,

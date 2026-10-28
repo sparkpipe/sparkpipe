@@ -58,7 +58,11 @@ typedef struct SparkDeviceAttentionShape
 	uint32_t key_is_value;
 	uint32_t value_norm;
 	uint32_t qk_weightless;
+	uint32_t qk_plain;
 	float query_multiply;
+	uint32_t value_dimension;
+	float value_scale;
+	uint32_t sinks;
 	uint32_t window;
 	uint32_t rope_pairs;
 	uint32_t rope_rounded_terms;
@@ -78,6 +82,7 @@ typedef struct SparkDeviceAttentionWeights
 	SparkDeviceWeight out;
 	SparkTensor q_norm;
 	SparkTensor k_norm;
+	SparkTensor sinks;
 } SparkDeviceAttentionWeights;
 
 typedef struct SparkDeviceAttentionScratch
@@ -154,6 +159,8 @@ SparkStatus SparkDeviceGatedDeltaKeep(SparkDeviceStage *stage, SparkDeviceQueue 
 uint32_t SparkDeviceAttentionQueryWidth(const SparkDeviceAttentionShape *shape);
 uint32_t SparkDeviceAttentionKvWidth(const SparkDeviceAttentionShape *shape);
 uint32_t SparkDeviceAttentionFusedWidth(const SparkDeviceAttentionShape *shape);
+uint32_t SparkDeviceAttentionValueWidth(const SparkDeviceAttentionShape *shape);
+uint32_t SparkDeviceAttentionOutputWidth(const SparkDeviceAttentionShape *shape);
 void SparkDeviceAttentionRopePrepare(const SparkDeviceAttentionShape *shape, SparkDeviceAttentionRope *rope);
 SparkStatus SparkDeviceAttentionBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer,
 	const SparkDeviceAttentionShape *shape, SparkDeviceAttentionWeights *bound);

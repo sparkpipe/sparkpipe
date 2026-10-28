@@ -1628,7 +1628,7 @@ static void TestGatedDelta(void)
 
 typedef struct AttentionFixture
 {
-	SparkDeviceBuffer pool, table, sequence, positions, keys, values, query, gate, partial, output;
+	SparkDeviceBuffer pool, table, sequence, positions, keys, values, query, gate, partial, output, sinks;
 	SparkOpsPaged paged;
 	uint32_t context;
 	uint32_t pages;
@@ -1647,9 +1647,16 @@ typedef struct AttentionCase
 	uint32_t gate;
 	float scale;
 	uint32_t separate;
+	uint32_t vdim;
+	uint32_t sinks;
 } AttentionCase;
 
-static AttentionCase att = { 24u, 4u, 256u, 14336u, 13312u, 0u, 1u, 1.0f / 16.0f, 0u };
+static AttentionCase att = { 24u, 4u, 256u, 14336u, 13312u, 0u, 1u, 1.0f / 16.0f, 0u, 0u, 0u };
+
+static uint32_t AttVdim(void)
+{
+	return(att.vdim != 0u ? att.vdim : att.dim);
+}
 
 static void AttentionFill(AttentionFixture *f, uint32_t context, uint32_t sequences)
 {
@@ -1657,7 +1664,13 @@ static void AttentionFill(AttentionFixture *f, uint32_t context, uint32_t sequen
 	uint32_t *table, *sequence, *position, row, s, p;
 	f->context = context;
 	f->pages = (context + ATT_SLOTS - 1u) / ATT_SLOTS;
-	Shared(&f->pool,(uint64_t)sequences * f->pages * ATT_SLOTS * 2u * att.kv * att.dim * 2u,"attention pool");
+	Shared(&f->pool,(uint64_t)sequences * f->pages * ATT_SLOTS * att.kv * (att.dim + AttVdim()) * 2u,"attention pool");
+	if ( att.sinks != 0u )
+	{
+		float *sink = (float *)Shared(&f->sinks,att.heads * sizeof(float),"attention sinks");
+		for ( s = 0u; s < att.heads; s++ )
+			sink[s] = (float)(2.0 * Normal());
+	}
 	table = (uint32_t *)Shared(&f->table,(uint64_t)sequences * f->pages * 4u,"attention table");
 	for ( s = 0u; s < sequences; s++ )
 		for ( p = 0u; p < f->pages; p++ )
@@ -1688,6 +1701,7 @@ static void AttentionFill(AttentionFixture *f, uint32_t context, uint32_t sequen
 	params.key_stride = att.kv * att.dim;
 	params.value_stride = att.qkv;
 	params.value_offset = att.value_offset;
+	params.value_dimension = att.vdim;
 	params.pool_pages = sequences * f->pages;
 	Run(SparkOpsKvStore(&ops,queue,&f->paged,Whole(&f->keys),Whole(&f->values),&params),"kv_store");
 }
@@ -1700,6 +1714,8 @@ static void AttentionFree(AttentionFixture *f)
 	SparkDeviceFree(&f->positions);
 	SparkDeviceFree(&f->keys);
 	SparkDeviceFree(&f->values);
+	if ( f->sinks.bytes != 0u )
+		SparkDeviceFree(&f->sinks);
 }
 
 static void AttentionReference(const AttentionFixture *f, const uint16_t *query, const uint16_t *gate, uint32_t sequence, uint32_t position,
@@ -1708,6 +1724,8 @@ static void AttentionReference(const AttentionFixture *f, const uint16_t *query,
 	const uint16_t *keys = (const uint16_t *)f->keys.host, *values = (const uint16_t *)f->values.host;
 	const uint32_t kv = head / (att.heads / att.kv), length = position + 1u, low = att.window != 0u && length > att.window ? length - att.window : 0u;
 	double *score = (double *)malloc(length * sizeof(double)), *slack = (double *)malloc(length * sizeof(double)), best = -INFINITY, total = 0.0;
+	const uint32_t vdim = AttVdim();
+	const double sink = att.sinks != 0u ? ((const float *)f->sinks.host)[head] : -INFINITY;
 	uint32_t j, d;
 	for ( j = 0u; j < low; j++ )
 		score[j] = slack[j] = 0.0;
@@ -1725,17 +1743,21 @@ static void AttentionReference(const AttentionFixture *f, const uint16_t *query,
 		if ( score[j] > best )
 			best = score[j];
 	}
+	if ( sink > best )
+		best = sink;
 	for ( j = low; j < length; j++ )
 	{
 		score[j] = exp(score[j] - best);
 		total += score[j];
 	}
-	for ( d = 0u; d < att.dim; d++ )
+	if ( att.sinks != 0u )
+		total += exp(sink - best);
+	for ( d = 0u; d < vdim; d++ )
 	{
 		double value = 0.0, spread = 0.0, magnitude = 0.0;
 		for ( j = low; j < length; j++ )
 		{
-			const double v = Bf16(values[((uint64_t)sequence * f->context + j) * att.qkv + att.value_offset + kv * att.dim + d]);
+			const double v = Bf16(values[((uint64_t)sequence * f->context + j) * att.qkv + att.value_offset + kv * vdim + d]);
 			value += score[j] / total * v;
 			magnitude += score[j] / total * fabs(v);
 			spread += score[j] / total * fabs(v) * 2.0 * slack[j];
@@ -1765,8 +1787,10 @@ static SparkAttentionParams AttentionParamsFor(const AttentionFixture *f, uint32
 	params.pages_per_sequence = f->pages;
 	params.pool_pages = sequences * f->pages;
 	params.query_stride = att.heads * att.dim;
-	params.output_stride = att.heads * att.dim;
+	params.output_stride = att.heads * AttVdim();
 	params.scale = att.scale;
+	params.value_dimension = att.vdim;
+	params.has_sinks = att.sinks;
 	params.output_gate = att.gate;
 	params.window = att.window;
 	params.gate_stride = att.separate != 0u ? att.heads * att.dim : att.qkv;
@@ -1789,8 +1813,9 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 	AttentionFill(&f,context,sequences);
 	query = (uint16_t *)Shared(&f.query,(uint64_t)rows * att.heads * att.dim * 2u,"attention query");
 	gate = (uint16_t *)Shared(&f.gate,(uint64_t)rows * att.qkv * 2u,"attention gate");
-	output = (uint16_t *)Shared(&f.output,(uint64_t)rows * att.heads * att.dim * 2u,"attention output");
-	Shared(&f.partial,SparkOpsAttentionScratchBytes(rows,att.heads,att.dim,context),"attention partial");
+	output = (uint16_t *)Shared(&f.output,(uint64_t)rows * att.heads * AttVdim() * 2u,"attention output");
+	Shared(&f.partial,SparkOpsAttentionScratchBytes(rows,att.heads,AttVdim(),context),"attention partial");
+	const SparkTensor sinks = Whole(&f.sinks);
 	FillBf16(query,(uint64_t)rows * att.heads * att.dim,att.scale < 0.5f ? 1.0 : 1.0 / 16.0);
 	FillBf16(gate,(uint64_t)rows * att.qkv,1.0);
 	SparkDeviceFree(&f.sequence);
@@ -1817,7 +1842,7 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 		SparkKvParams store;
 		memset(check,0,sizeof(*check));
 		uint16_t *values = (uint16_t *)f.values.host;
-		const uint64_t value_poke = ((uint64_t)(sequences - 1u) * f.context + value_position) * att.qkv + att.value_offset + (att.kv - 1u) * att.dim + 17u;
+		const uint64_t value_poke = ((uint64_t)(sequences - 1u) * f.context + value_position) * att.qkv + att.value_offset + (att.kv - 1u) * AttVdim() + 17u;
 		const uint16_t value_saved = values[value_poke];
 		if ( pass == 1u )
 		{
@@ -1832,6 +1857,7 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 			store.key_stride = att.kv * att.dim;
 			store.value_stride = att.qkv;
 			store.value_offset = att.value_offset;
+			store.value_dimension = att.vdim;
 			store.pool_pages = sequences * f.pages;
 			{
 				SparkDeviceBuffer one_sequence, one_position;
@@ -1852,7 +1878,7 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 			keys[poke] = saved;
 			values[value_poke] = value_saved;
 		}
-		if ( !Run(SparkOpsAttention(&ops,queue,&f.paged,Whole(&f.query),Whole(&f.gate),Whole(&f.partial),Whole(&f.output),&params,position,sequence),
+		if ( !Run(SparkOpsAttention(&ops,queue,&f.paged,Whole(&f.query),Whole(&f.gate),att.sinks != 0u ? &sinks : 0,Whole(&f.partial),Whole(&f.output),&params,position,sequence),
 			"attention") )
 			break;
 		for ( row = 0u; row < rows; row++ )
@@ -1860,15 +1886,16 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 			{
 				AttentionReference(&f,query + (uint64_t)row * att.heads * att.dim,gate + (uint64_t)row * params.gate_stride,sequence[row],position[row],head,ref,
 					tolerance);
-				for ( d = 0u; d < att.dim; d++ )
-					Observe(check,Bf16(output[((uint64_t)row * att.heads + head) * att.dim + d]),ref[d],tolerance[d]);
+				for ( d = 0u; d < AttVdim(); d++ )
+					Observe(check,Bf16(output[((uint64_t)row * att.heads + head) * AttVdim() + d]),ref[d],tolerance[d]);
 			}
 	}
 	window[0] = 0;
 	if ( att.window != 0u )
 		snprintf(window,sizeof(window),", window %u",att.window);
 	snprintf(shape,sizeof(shape),"%s rows %u, context %u, %u q / %u kv heads x %u%s%s",prefill != 0u ? "prefill" : "decode",rows,context,att.heads,att.kv,
-		att.dim,window,att.gate == SPARK_ATTENTION_GATE_SIGMOID_BF16 ? ", bf16 gate" : att.gate != 0u ? "" : ", no gate");
+		att.dim,window,att.vdim != 0u ? (att.sinks != 0u ? ", values 128, sinks" : ", values 128") : att.gate == SPARK_ATTENTION_GATE_SIGMOID_BF16 ? ", bf16 gate" :
+		att.gate != 0u ? "" : ", no gate");
 	Report(prefill != 0u ? "attention_prefill" : "attention_decode",shape,&clean,&corrupted,
 		"u|y| + sigmoid(g) bf16 flip slack of o within e + |o| flip slack of a bf16 gate + 4*16 eps32 |y|; e = 2 sum p|v| 2 ds + gamma_L sum p|v|, ds = gamma_258 sum|q k|/16 + 2*16 eps32 (1+|s|)");
 	AttentionFree(&f);
@@ -1883,7 +1910,7 @@ static int AttentionPagesRun(AttentionFixture *f, uint32_t rows, const uint32_t 
 {
 	const SparkAttentionParams params = AttentionParamsFor(f,rows,sequences);
 	SparkDeviceOpsTakeError(&ops,error);
-	if ( !Run(SparkOpsAttention(&ops,queue,&f->paged,Whole(&f->query),Whole(&f->gate),Whole(&f->partial),Whole(&f->output),&params,position,sequence),
+	if ( !Run(SparkOpsAttention(&ops,queue,&f->paged,Whole(&f->query),Whole(&f->gate),0,Whole(&f->partial),Whole(&f->output),&params,position,sequence),
 		"attention pages") )
 		return(0);
 	SparkDeviceOpsTakeError(&ops,error);
@@ -1987,7 +2014,7 @@ static void TestAttentionPages(void)
 	decode_rows[1][0] = f.pages * ATT_SLOTS;
 	{
 		const SparkAttentionParams params = AttentionParamsFor(&f,SEQUENCES,SEQUENCES);
-		const SparkStatus status = SparkOpsAttention(&ops,queue,&f.paged,Whole(&f.query),Whole(&f.gate),Whole(&f.partial),Whole(&f.output),&params,
+		const SparkStatus status = SparkOpsAttention(&ops,queue,&f.paged,Whole(&f.query),Whole(&f.gate),0,Whole(&f.partial),Whole(&f.output),&params,
 			decode_rows[1],decode_rows[0]);
 		if ( status == SPARK_STATUS_OK )
 		{
@@ -2249,9 +2276,11 @@ int main(int argc, char **argv)
 	TestAttention(300u,40u,1u);
 	TestAttention(2048u,64u,1u);
 	{
-		const AttentionCase qwen = att, sliding = { 16u, 8u, 256u, 8192u, 6144u, 1024u, 0u, 1.0f, 0u }, full = { 16u, 2u, 512u, 10240u, 9216u, 0u, 0u, 1.0f, 0u },
-			muse_sliding = { 32u, 2u, 128u, 4608u, 4352u, 2048u, SPARK_ATTENTION_GATE_SIGMOID_BF16, 0.08838834764831845f, 1u },
-			muse_full = { 32u, 2u, 128u, 4608u, 4352u, 0u, SPARK_ATTENTION_GATE_SIGMOID_BF16, 0.08838834764831845f, 1u };
+		const AttentionCase qwen = att, sliding = { 16u, 8u, 256u, 8192u, 6144u, 1024u, 0u, 1.0f, 0u, 0u, 0u }, full = { 16u, 2u, 512u, 10240u, 9216u, 0u, 0u, 1.0f, 0u, 0u, 0u },
+			muse_sliding = { 32u, 2u, 128u, 4608u, 4352u, 2048u, SPARK_ATTENTION_GATE_SIGMOID_BF16, 0.08838834764831845f, 1u, 0u, 0u },
+			muse_full = { 32u, 2u, 128u, 4608u, 4352u, 0u, SPARK_ATTENTION_GATE_SIGMOID_BF16, 0.08838834764831845f, 1u, 0u, 0u },
+			mimo_sliding = { 16u, 4u, 192u, 512u, 0u, 128u, 0u, 0.07216878364870322f, 0u, 128u, 1u },
+			mimo_full = { 16u, 4u, 192u, 512u, 0u, 0u, 0u, 0.07216878364870322f, 0u, 128u, 0u };
 		att = sliding;
 		TestAttention(2048u,1u,0u);
 		TestAttention(2048u,64u,1u);
@@ -2264,6 +2293,12 @@ int main(int argc, char **argv)
 		att = muse_full;
 		TestAttention(1000u,4u,0u);
 		TestAttention(2048u,64u,1u);
+		att = mimo_sliding;
+		TestAttention(1000u,2u,0u);
+		TestAttention(300u,40u,1u);
+		att = mimo_full;
+		TestAttention(1000u,4u,0u);
+		TestAttention(300u,40u,1u);
 		att = qwen;
 	}
 	TestAttentionPages();

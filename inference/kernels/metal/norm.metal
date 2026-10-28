@@ -77,7 +77,7 @@ kernel void spark_head_rmsnorm_rope(constant SparkHeadRopeParams &p [[buffer(0)]
 		total += value * value;
 	}
 	total = SparkGroupSum(total, scratch, lane, simd, simds);
-	const float scale = rsqrt(total / float(p.head_dimension) + p.epsilon);
+	const float scale = p.plain != 0u ? 1.0f : rsqrt(total / float(p.head_dimension) + p.epsilon);
 	for ( uint i = tid; i < p.head_dimension; i += threads )
 	{
 		const float value = SparkMathRoundBf16(p.has_weight != 0u ? SparkMathBf16ToFloat(x[i]) * scale * weight[i] : SparkMathBf16ToFloat(x[i]) * scale);
