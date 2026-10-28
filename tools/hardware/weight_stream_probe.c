@@ -372,7 +372,7 @@ static void StreamCompletion(const struct ibv_wc *done,uint32_t layer)
 
 int main(int argc,char **argv)
 {
-	StreamOptions options = { 0u,16u,681574400ull,48u,4194304u,32u,0u,3u,3u,0u,47200u,1u,"rocep1s0f1","roceP2p1s0f0","10.10.100.10" };
+	StreamOptions options = { 0u,16u,681574400ull,48u,4194304u,32u,0u,3u,3u,106u,47200u,1u,"rocep1s0f1","roceP2p1s0f0","10.10.100.10" };
 	StreamEndpoint *table;
 	StreamLink fabric,pair;
 	StreamRelay *relays;
@@ -400,7 +400,7 @@ int main(int argc,char **argv)
 		else if ( strcmp(argv[index],"--coordinator") == 0 ) options.coordinator = argv[index + 1];
 		else
 		{
-			fprintf(stderr,"usage: %s --rank R [--ranks N] [--shard-bytes B] [--layers L] [--chunk-bytes C] [--depth D] [--pair 0|1 (relay the other parity through rank ^ 1 on --pair-device)] [--verify 0 stamps|1 stamps+last layer|2 every layer] [--device D] [--pair-device D] [--gid-index G] [--pair-gid-index G] [--traffic-class T] [--coordinator IP] [--port P]\n",argv[0]);
+			fprintf(stderr,"usage: %s --rank R [--ranks N] [--shard-bytes B] [--layers L] [--chunk-bytes C] [--depth D] [--pair 0|1 (relay the other parity through rank ^ 1 on --pair-device)] [--verify 0 stamps|1 stamps+last layer|2 every layer] [--device D] [--pair-device D] [--gid-index G] [--pair-gid-index G] [--traffic-class T (DSCP << 2 | ECN; 106 = DSCP 26 lossless, ECT(0), as weightd)] [--coordinator IP] [--port P]\n",argv[0]);
 			return 2;
 		}
 	}
