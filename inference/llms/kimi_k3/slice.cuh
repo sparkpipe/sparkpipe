@@ -677,25 +677,25 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 		}
 		else if ( a->shard_mha != 0u )
 		{
+			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,0,layer,K3_COLLECTIVE_MLA_MHA_QUERY,1u));
 			K3PairPre(b,layer,rows_b,row_shard,sb);
 			K3_PAIR_DO((K3LayerMhaQuery<Format,Geometry>(b,rows_b,multiprocessors,sb)));
-			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,0,layer,K3_COLLECTIVE_MLA_MHA_QUERY,1u));
-			K3_PAIR_DO(K3LayerMlaGate(a,rows_a,multiprocessors,sa));
 			K3_PAIR_DO(K3PairRound(state,lane_b,stream,sb,0,layer,K3_COLLECTIVE_MLA_MHA_QUERY,1u));
-			K3_PAIR_DO(K3LayerMhaExpand<Geometry>(a,rows_a,sb));
-			K3_PAIR_DO(K3PairFence(state,sa,sb));
 			K3_PAIR_DO(K3LayerMlaGate(b,rows_b,multiprocessors,sb));
+			K3_PAIR_DO(K3LayerMlaGate(a,rows_a,multiprocessors,sa));
+			K3_PAIR_DO(K3PairFence(state,sa,sb));
+			K3_PAIR_DO(K3LayerMhaExpand<Geometry>(a,rows_a,sa));
 			K3_PAIR_DO(K3PairFence(state,sa,stream));
-			K3_PAIR_DO(K3PairFence(state,sb,stream));
 			K3_PAIR_DO(K3LayerMhaAttend<Geometry>(a,rows_a,sa));
+			K3_PAIR_DO(K3PairFence(state,sb,sa));
 			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,0,layer,K3_COLLECTIVE_MLA_MHA_PARTIALS,0u));
-			K3_PAIR_DO(K3PairFence(state,sa,stream));
 			K3_PAIR_DO(K3LayerMhaAttend<Geometry>(b,rows_b,sb));
-			K3_PAIR_DO(K3PairRound(state,lane_b,stream,sb,0,layer,K3_COLLECTIVE_MLA_MHA_PARTIALS,0u));
-			K3_PAIR_DO(K3PairFence(state,sb,stream));
+			K3_PAIR_DO(K3PairFence(state,sa,stream));
 			K3_PAIR_DO(K3LayerMhaMerge(a,rows_a,sa));
 			K3_PAIR_DO(K3LayerMlaOutput<Format>(a,rows_a,(uint16_t *)0,1u,multiprocessors,sa));
 			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,row_shard,0u));
+			K3_PAIR_DO(K3PairRound(state,lane_b,stream,sb,0,layer,K3_COLLECTIVE_MLA_MHA_PARTIALS,0u));
+			K3_PAIR_DO(K3PairFence(state,sb,stream));
 			K3_PAIR_DO(K3LayerMhaMerge(b,rows_b,sb));
 			K3_PAIR_DO(K3LayerMlaOutput<Format>(b,rows_b,(uint16_t *)0,1u,multiprocessors,sb));
 		}
