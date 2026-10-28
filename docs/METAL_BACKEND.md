@@ -207,14 +207,17 @@ before the log-probabilities. Other norm placements, other activations and
 attention without query and key norms have no option yet; the model that
 needs one adds it here.
 
-`model-families/qwen38/device/qwen38_device_stage.c` is Qwen3.8-27B on these
+A device model is a family's Metal backend running the family schedule
+([`FAMILY_SCHEDULES.md`](FAMILY_SCHEDULES.md)) on the model's TP1 geometry; the
+schedule and the geometry are the ones the CUDA module runs.
+`model-families/qwen38/device/qwen38_device_stage.cpp` is Qwen3.8-27B on these
 layers: 64 layers, every fourth one (from the fourth) attention and the rest
 gated delta, each followed by the SwiGLU FFN, with the attention and
 gated-delta projections sharing one scratch slice. The recurrent state is FP32,
 `[layer][slot][head][key][value]`, and `recurrent_copy` packs it in the same
 order as the CUDA model.
 
-`model-families/gemma4/device/gemma4_26b_device_stage.c` is Gemma 4 26B A4B
+`model-families/gemma4/device/gemma4_device_stage.cpp` is Gemma 4 26B A4B
 (text only) on the same layers: 30 layers, every sixth one (from the sixth)
 full attention (16 query and 2 KV heads of 512, keys shared as values, rotary
 on the first 64 of 256 pairs with base 10^6) and the rest sliding-window

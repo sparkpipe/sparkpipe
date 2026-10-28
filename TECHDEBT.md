@@ -1149,6 +1149,18 @@ and the multidev docs on 2026-09-28. Line numbers are in
     others, Metal the precise functions everywhere, so the backends differ
     by the intrinsic's error until one policy is chosen and measured;
   Kernel bodies (the schedules) stay per backend.
+- Move every family onto one schedule for all backends
+  ([`docs/FAMILY_SCHEDULES.md`](docs/FAMILY_SCHEDULES.md)). Gemma 4 and the
+  Qwen 3.8 hybrid run theirs on CUDA and Metal. Still a CUDA-only `Step`:
+  MiMo 2.6 (`mimo26_stage.cuh`), Ling 3 with Solar Open 2 (`ling_stage.cuh`),
+  HY4 (`hy4_stage.cuh`), GLM 5.3 Flash (`glm5_next_stage_model.cuh`), GLM 5.3
+  Full with A.X K2 (`glm52_stage.cuh`), and the two stages outside the family
+  templates, K3 (`inference/llms/kimi_k3/`) and DeepSeek V4.1 Flash
+  (`spark_dsv41_flash_stage_model.cu`). A Metal port of one of these starts
+  with its family schedule, never with a device copy of its `Step`. The CUDA
+  backends still carry one copy of an operation per family: GQA attention
+  with its gather, split and pack-slot kernels in Gemma, MiMo, Ling and Qwen,
+  and the routed experts in six families.
 - Add rank, island and link-class descriptors and derive collective
   decomposition from the link matrix instead of a configured backend.
 - Keep the host backend as a CI oracle for common policy, not only for
