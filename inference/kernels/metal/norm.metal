@@ -32,6 +32,26 @@ kernel void spark_rmsnorm_residual(constant SparkNormParams &p [[buffer(0)]], de
 	}
 }
 
+kernel void spark_rmsnorm_bf16(constant SparkNormParams &p [[buffer(0)]], device const ushort *input [[buffer(1)]],
+	device const ushort *weight [[buffer(2)]], device ushort *output [[buffer(3)]], uint row [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]],
+	uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
+{
+	threadgroup float scratch[32];
+	device const ushort *x = input + (ulong)row * p.input_stride;
+	device ushort *y = output + (ulong)row * p.output_stride;
+	float total = 0.0f;
+	for ( uint i = tid; i < p.dimension; i += threads )
+	{
+		const float value = SparkMathBf16ToFloat(x[i]);
+		total += value * value;
+	}
+	total = SparkGroupSum(total, scratch, lane, simd, simds);
+	const float scale = rsqrt(total / float(p.dimension) + p.epsilon);
+	for ( uint i = tid; i < p.dimension; i += threads )
+		y[i] = SparkMathFloatToBf16(SparkMathRoundBf16(SparkMathBf16ToFloat(x[i]) * scale) * SparkMathBf16ToFloat(weight[i]));
+}
+
 kernel void spark_rmsnorm_gate(constant SparkGatedNormParams &p [[buffer(0)]], device const ushort *input [[buffer(1)]],
 	device const ushort *gate [[buffer(2)]], device const ushort *weight [[buffer(3)]], device ushort *output [[buffer(4)]],
 	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]],

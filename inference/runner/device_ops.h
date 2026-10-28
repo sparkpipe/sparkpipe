@@ -79,6 +79,10 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_ADD_ROWS,
 	SPARK_OPS_LOGPROB,
 	SPARK_OPS_STREAM_READ,
+	SPARK_OPS_SILU_ROUNDED_MUL,
+	SPARK_OPS_ROUTE_COMBINE_WEIGHTED,
+	SPARK_OPS_ROUTE_SIGMOID,
+	SPARK_OPS_RMSNORM_BF16,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -160,6 +164,12 @@ SparkStatus SparkOpsScaleRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spar
 SparkStatus SparkOpsSoftcap(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, uint64_t count, float cap, float multiply);
 SparkStatus SparkOpsRouteTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor expert_scale, const SparkTensor *pinned,
 	SparkTensor experts, SparkTensor weights, const SparkRouteParams *params);
+SparkStatus SparkOpsRouteCombineWeighted(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor weights, SparkTensor output,
+	const SparkRouteParams *params);
+SparkStatus SparkOpsRouteSigmoid(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor bias, SparkTensor experts, SparkTensor weights,
+	const SparkRouteParams *params);
+SparkStatus SparkOpsRmsNormBf16(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor weight, SparkTensor output,
+	const SparkNormParams *params);
 SparkStatus SparkOpsRouteCombine(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor output,
 	const SparkRouteParams *params);
 SparkStatus SparkOpsLinearRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor y, SparkTensor experts,

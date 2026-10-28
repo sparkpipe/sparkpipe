@@ -1258,6 +1258,172 @@ static void TestLinearRoutedMxfp4(uint32_t rows, uint32_t K, uint32_t N)
 	SparkDeviceFree(&experts);
 }
 
+static void TestMimoKernels(uint32_t rows)
+{
+	enum { DIM = 4096u, FFN = 2048u, EXPERTS = 256u, TOP = 8u };
+	const uint32_t routes = rows * TOP;
+	SparkDeviceBuffer gate_up, act, outs, weights, combined, logits, bias, experts, route_weights, hidden, norm_weight, normed;
+	uint16_t *gv = (uint16_t *)Shared(&gate_up,(uint64_t)rows * 2u * FFN * 2u,"mimo gate up");
+	uint16_t *av = (uint16_t *)Shared(&act,(uint64_t)rows * FFN * 2u,"mimo act");
+	uint16_t *ov = (uint16_t *)Shared(&outs,(uint64_t)routes * DIM * 2u,"mimo expert outputs");
+	float *wv = (float *)Shared(&weights,(uint64_t)routes * sizeof(float),"mimo route weights in");
+	uint16_t *cv = (uint16_t *)Shared(&combined,(uint64_t)rows * DIM * 2u,"mimo combined");
+	float *lv = (float *)Shared(&logits,(uint64_t)rows * EXPERTS * sizeof(float),"mimo router logits");
+	float *bv = (float *)Shared(&bias,EXPERTS * sizeof(float),"mimo router bias");
+	uint32_t *ev = (uint32_t *)Shared(&experts,(uint64_t)routes * sizeof(uint32_t),"mimo chosen experts");
+	float *rv = (float *)Shared(&route_weights,(uint64_t)routes * sizeof(float),"mimo chosen weights");
+	uint16_t *hv = (uint16_t *)Shared(&hidden,(uint64_t)rows * DIM * 2u,"mimo hidden");
+	uint16_t *nw = (uint16_t *)Shared(&norm_weight,DIM * 2u,"mimo norm weight");
+	uint16_t *nv = (uint16_t *)Shared(&normed,(uint64_t)rows * DIM * 2u,"mimo normed");
+	SparkSiluMulParams silu;
+	SparkRouteParams route;
+	SparkNormParams norm;
+	Check clean, corrupted;
+	char shape[64];
+	uint32_t pass, row, i, k;
+	FillBf16(gv,(uint64_t)rows * 2u * FFN,2.0);
+	FillBf16(ov,(uint64_t)routes * DIM,1.0);
+	FillBf16(hv,(uint64_t)rows * DIM,2.0);
+	FillBf16(nw,DIM,1.0);
+	for ( i = 0u; i < routes; i++ )
+		wv[i] = (float)fabs(Normal()) / (float)TOP;
+	for ( i = 0u; i < rows * EXPERTS; i++ )
+		lv[i] = (float)(2.0 * Normal());
+	for ( i = 0u; i < EXPERTS; i++ )
+		bv[i] = (float)(0.1 * Normal());
+	memset(&silu,0,sizeof(silu));
+	silu.rows = rows;
+	silu.dimension = FFN;
+	silu.input_stride = 2u * FFN;
+	silu.output_stride = FFN;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint16_t saved = gv[(uint64_t)(rows - 1u) * 2u * FFN + 7u];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			gv[(uint64_t)(rows - 1u) * 2u * FFN + 7u] = ToBf16(Bf16(saved) + 4.0f);
+		if ( !Run(SparkOpsGatedMul(&ops,queue,Whole(&gate_up),Whole(&act),&silu,SPARK_GATED_SILU_ROUNDED),"silu_rounded_mul") )
+			break;
+		gv[(uint64_t)(rows - 1u) * 2u * FFN + 7u] = saved;
+		for ( row = 0u; row < rows; row++ )
+			for ( i = 0u; i < FFN; i++ )
+			{
+				const double g = Bf16(gv[(uint64_t)row * 2u * FFN + i]), u = Bf16(gv[(uint64_t)row * 2u * FFN + FFN + i]);
+				const double activated = RoundBf16(Silu(g)), y = RoundBf16(activated * u);
+				Observe(check,Bf16(av[(uint64_t)row * FFN + i]),y,UNIT_BF16 * fabs(y) + fabs(u) * FlipSlack(Silu(g),2.0 * FUNCTION_ERROR));
+			}
+	}
+	snprintf(shape,sizeof(shape),"rows %u, ffn 2048",rows);
+	Report("silu_rounded_mul",shape,&clean,&corrupted,"bf16(bf16(silu(g)) u): u|y| + |u| flip slack of the silu rounding");
+	memset(&route,0,sizeof(route));
+	route.rows = rows;
+	route.top_k = TOP;
+	route.width = DIM;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const float saved = wv[routes - 1u];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			wv[routes - 1u] = saved + 1.0f;
+		if ( !Run(SparkOpsRouteCombineWeighted(&ops,queue,Whole(&outs),Whole(&weights),Whole(&combined),&route),"route_combine_weighted") )
+			break;
+		wv[routes - 1u] = saved;
+		for ( row = 0u; row < rows; row++ )
+			for ( i = 0u; i < DIM; i++ )
+			{
+				float total = 0.0f;
+				for ( k = 0u; k < TOP; k++ )
+					total = fmaf(Bf16(ov[((uint64_t)row * TOP + k) * DIM + i]),wv[row * TOP + k],total);
+				Observe(check,Bf16(cv[(uint64_t)row * DIM + i]),Bf16(ToBf16(total)),0.0);
+			}
+	}
+	snprintf(shape,sizeof(shape),"rows %u x top 8, width 4096",rows);
+	Report("route_combine_weighted",shape,&clean,&corrupted,"exact: an FP32 FMA chain in route order, one bf16 rounding");
+	route.experts = EXPERTS;
+	route.logit_stride = EXPERTS;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		memset(check,0,sizeof(*check));
+		if ( !Run(SparkOpsRouteSigmoid(&ops,queue,Whole(&logits),Whole(&bias),Whole(&experts),Whole(&route_weights),&route),"route_sigmoid") )
+			break;
+		for ( row = 0u; row < rows; row++ )
+		{
+			double score[EXPERTS], selection[EXPERTS], total = 0.0;
+			uint32_t chosen[TOP], pick, expert;
+			for ( expert = 0u; expert < EXPERTS; expert++ )
+			{
+				score[expert] = Sigmoid(lv[row * EXPERTS + expert]);
+				selection[expert] = (double)(float)score[expert] + bv[expert];
+			}
+			for ( pick = 0u; pick < TOP; pick++ )
+			{
+				uint32_t best = 0u;
+				for ( expert = 1u; expert < EXPERTS; expert++ )
+					if ( selection[expert] > selection[best] )
+						best = expert;
+				chosen[pick] = best;
+				selection[best] = -INFINITY;
+				total += score[best];
+			}
+			for ( pick = 0u; pick < TOP; pick++ )
+			{
+				const uint32_t got = pass == 1u && pick == TOP - 1u ? (ev[row * TOP + pick] + 1u) % EXPERTS : ev[row * TOP + pick];
+				const double weight = score[chosen[pick]] / total;
+				Observe(check,(double)got,(double)chosen[pick],0.0);
+				Observe(check,rv[row * TOP + pick],weight,8.0 * FUNCTION_ERROR * weight);
+			}
+		}
+	}
+	snprintf(shape,sizeof(shape),"rows %u, 256 experts, top 8, bias",rows);
+	Report("route_sigmoid",shape,&clean,&corrupted,"experts exact; weights to 8*16 eps32 relative");
+	memset(&norm,0,sizeof(norm));
+	norm.rows = rows;
+	norm.dimension = DIM;
+	norm.input_stride = norm.output_stride = DIM;
+	norm.epsilon = 1e-6f;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint16_t saved = hv[(uint64_t)(rows - 1u) * DIM + 11u];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			hv[(uint64_t)(rows - 1u) * DIM + 11u] = ToBf16(Bf16(saved) * -4.0f);
+		if ( !Run(SparkOpsRmsNormBf16(&ops,queue,Whole(&hidden),Whole(&norm_weight),Whole(&normed),&norm),"rmsnorm_bf16") )
+			break;
+		hv[(uint64_t)(rows - 1u) * DIM + 11u] = saved;
+		for ( row = 0u; row < rows; row++ )
+		{
+			double square = 0.0;
+			for ( i = 0u; i < DIM; i++ )
+				square += (double)Bf16(hv[(uint64_t)row * DIM + i]) * Bf16(hv[(uint64_t)row * DIM + i]);
+			const double scale = 1.0 / sqrt(square / DIM + 1e-6);
+			for ( i = 0u; i < DIM; i++ )
+			{
+				const double exact = Bf16(hv[(uint64_t)row * DIM + i]) * scale, w = Bf16(nw[i]), y = RoundBf16(RoundBf16(exact) * w);
+				const double slack = fabs(w) * FlipSlack(exact,Gamma(DIM) + FUNCTION_ERROR + 3.0 * UNIT_F32);
+				Observe(check,Bf16(nv[(uint64_t)row * DIM + i]),y,UNIT_BF16 * fabs(y) + slack + (slack != 0.0 ? UNIT_BF16 * fabs(y) : 0.0));
+			}
+		}
+	}
+	snprintf(shape,sizeof(shape),"rows %u, dim 4096, bf16 weight",rows);
+	Report("rmsnorm_bf16",shape,&clean,&corrupted,"bf16(bf16(x s) w): u|y| + |w| flip slack of the first rounding");
+	SparkDeviceFree(&gate_up);
+	SparkDeviceFree(&act);
+	SparkDeviceFree(&outs);
+	SparkDeviceFree(&weights);
+	SparkDeviceFree(&combined);
+	SparkDeviceFree(&logits);
+	SparkDeviceFree(&bias);
+	SparkDeviceFree(&experts);
+	SparkDeviceFree(&route_weights);
+	SparkDeviceFree(&hidden);
+	SparkDeviceFree(&norm_weight);
+	SparkDeviceFree(&normed);
+}
+
 static void TestBranchNorms(uint32_t rows, uint32_t branches)
 {
 	enum { DIM = 2816u };
@@ -2311,6 +2477,7 @@ int main(int argc, char **argv)
 	TestRoutesNonFinite();
 	TestLinearRouted(2u);
 	TestLinearRoutedMxfp4(2u,4096u,512u);
+	TestMimoKernels(3u);
 	TestLinearRoutedMxfp4(1u,2048u,1024u);
 	TestBranchNorms(2u,1u);
 	TestBranchNorms(3u,2u);
