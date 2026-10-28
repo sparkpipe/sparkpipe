@@ -38,7 +38,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ling3_tp16_pack import EXPERTS_MAGIC, EXPERTS_VERSION, Checkpoint, PackFailure, RankPacks, pad_rows  # noqa: E402
-from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, assemble  # noqa: E402
+from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, assemble, source_identity  # noqa: E402
 
 TP = 16
 SHARED_ROWS = 128
@@ -185,7 +185,7 @@ def main():
     contract_sha256 = hashlib.sha256(args.contract.read_bytes()).hexdigest()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = Checkpoint(args.checkpoint)
-    packs = RankPacks(args.output_dir, args.resume, ranks, PREFIX)
+    packs = RankPacks(args.output_dir, args.resume, ranks, PREFIX, source_identity(args.checkpoint, PREFIX, files=(args.contract,)))
     hidden, vocab_rows = config["hidden_size"], config["vocab_size"] // TP
     embed = checkpoint.bf16("model.embed_tokens.weight", (config["vocab_size"], hidden))
     head = checkpoint.bf16("lm_head.weight", (config["vocab_size"], hidden))

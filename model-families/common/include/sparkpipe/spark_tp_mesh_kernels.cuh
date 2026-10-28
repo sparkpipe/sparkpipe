@@ -1034,7 +1034,6 @@ static __global__ void SparkTpMeshHardwareArrivalKernel(
     const volatile uint64_t *tail,*cancel;
     uint64_t tag,ring,expected,started,seen = 0u,fault = 0u,diag = 0u,landed = UINT64_MAX,other,position = 0u,extent = 0u,base;
     uint32_t missing,first,step,spans = 0u,issuer,issuers;
-    LmDependentRelease();
     if ( blockIdx.x != 0u || lane >= 32u || SparkTpLdcvU64(&control->error_word) != 0u ) return;
     if ( prefetch != 0 )
     {
@@ -1080,6 +1079,7 @@ static __global__ void SparkTpMeshHardwareArrivalKernel(
         if ( fault == tag ) diag = seen;
         break;
     }
+    LmDependentRelease();
     if ( prefetch != 0 && issuer == 0u )
         prefetch->progress = position < extent ? position : extent;
     if ( fault == 0u && lane < SPARK_TP_MESH_ROUND_CONTROL_PEERS && landed != UINT64_MAX && landed > base )

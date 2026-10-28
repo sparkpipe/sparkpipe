@@ -137,6 +137,7 @@ struct SparkStageRunnerModelInterface
 	SparkStatus (*keep_rows)(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream);
 	SparkStatus (*tap_plan)(void *model, const SparkStageRunnerTapPlan *plan);
 	SparkStatus (*bind_device)(void *model, const SparkStageRunnerDeviceWeights *weights, SparkStageRunnerModelGeometry *geometry);
+	SparkStatus (*check)(void *model);
 };
 
 #ifdef __cplusplus

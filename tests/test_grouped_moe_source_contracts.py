@@ -68,8 +68,9 @@ def main() -> None:
 
     # -- the kernel half of the gather deletion (route.cuh's contract) --------
     # These pins hold what the drivers wire against: the row-map words, the
-    # ragged-tail clamp, source-following scales, and byte-identical barrier
-    # accounting between the TMA and the indirect staging paths.
+    # ragged-tail clamp, source-following scales, and the barrier accounting
+    # of the indirect path: the producer expects only the weight bytes and
+    # every gathering thread arrives once when its 16-byte copies land.
     gemm = read("inference/kernels/gemm.cuh")
     tile = read("inference/kernels/tile.cuh")
     tma = read("inference/kernels/tma.cuh")
@@ -82,8 +83,12 @@ def main() -> None:
             "ragged tail clamp")
     require(tile, "LmRouteSourceRow(source_row_map,packed_row)",
             "staged row through the route map")
-    require(tma, "cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes",
-            "tx-accounted bulk chunk copy")
+    require(tma, "cp.async.cg.shared.global [%0], [%1], 16;", "16-byte gather copy")
+    require(tma, "cp.async.mbarrier.arrive.noinc.shared::cta.b64",
+            "gather completion arrives on the stage barrier")
+    require(tile, "LmCopyAsyncArrive(barrier);", "one gather arrival per thread and stage")
+    require(gemm, "INDIRECT_A && ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_NONE ? 1u + blockDim.x : 1u",
+            "the stage barrier counts the producer and every gathering thread")
     # both staging paths declare the same bytes through the one helper, or the
     # barrier's expected count can drift between them and deadlock one path
     produce = tile[tile.index("static __device__ __forceinline__ void LmPipelineProduce("):]

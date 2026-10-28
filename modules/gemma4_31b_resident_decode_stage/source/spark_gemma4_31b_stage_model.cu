@@ -26,6 +26,19 @@ struct Gemma4_31bGeometry : GemmaDefaults
 	static const char *Tag(void) { return "sparkpipe_gemma4_31b"; }
 	static const char *Name(void) { return "gemma4-31b"; }
 	static const char *ReportTag(void) { return "GEMMA4_31B-STATE"; }
+	static constexpr float kNormEpsilon = 1e-6f;
+	static constexpr float kPostEpsilon = 1e-6f;
+	static constexpr bool kQkNormWeighted = true;
+	static constexpr float kQueryMultiply = 1.0f;
+	static constexpr bool kValueNorm = true;
+	static constexpr float kAttentionScale = 1.0f;
+	static constexpr bool kFullRope = true;
+	static constexpr bool kGeluMlp = true;
+	static constexpr bool kLayerScalar = true;
+	static constexpr bool kPreNorm = false;
+	static constexpr bool kSigmoidRouter = false;
+	static constexpr float kRoutedScale = 1.0f;
+	static constexpr bool kRouterFloat = false;
 };
 
 static_assert(GemmaShape<Gemma4_31bGeometry>::SlidingKvGeometry::kSlotBytes == SPARK_GEMMA4_31B_STAGE_SLIDING_SLOT_BYTES,

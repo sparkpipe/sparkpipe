@@ -63,11 +63,16 @@ kernel void spark_softcap_rows(constant SparkScaleParams &p [[buffer(0)]], devic
 }
 
 static inline void SparkRouteProbabilities(constant SparkRouteParams &p, device const ushort *values, threadgroup float *probability,
-	threadgroup float *scratch, uint tid, uint threads, uint lane, uint simd, uint simds)
+	threadgroup float *scratch, device atomic_uint *error, uint row, uint tid, uint threads, uint lane, uint simd, uint simds)
 {
 	float best = -INFINITY;
 	for ( uint i = tid; i < p.experts; i += threads )
-		best = max(best, SparkMathBf16ToFloat(values[i]));
+	{
+		const float logit = SparkMathBf16ToFloat(values[i]);
+		if ( !isfinite(logit) )
+			atomic_store_explicit(error, 1u + row, memory_order_relaxed);
+		best = max(best, logit);
+	}
 	best = SparkGroupMax(best, scratch, lane, simd, simds);
 	float total = 0.0f;
 	for ( uint i = tid; i < p.experts; i += threads )
@@ -94,20 +99,29 @@ static inline void SparkRouteWeights(constant SparkRouteParams &p, threadgroup c
 	}
 }
 
+static inline bool SparkRouteAbove(float first, uint first_index, float second, uint second_index)
+{
+	if ( isnan(first) != isnan(second) )
+		return isnan(second);
+	if ( !isnan(first) && first != second )
+		return first > second;
+	return first_index < second_index;
+}
+
 kernel void spark_route_topk(constant SparkRouteParams &p [[buffer(0)]], device const ushort *logits [[buffer(1)]],
 	device const float *expert_scale [[buffer(2)]], device uint *experts [[buffer(3)]], device float *weights [[buffer(4)]],
-	uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]],
+	device atomic_uint *error [[buffer(5)]], uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]],
 	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
 {
 	threadgroup float scratch[32];
 	threadgroup float probability[SPARK_ROUTE_MAX_EXPERTS];
 	threadgroup uint chosen[SPARK_ROUTE_MAX_TOP_K];
-	SparkRouteProbabilities(p, logits + (ulong)row * p.logit_stride, probability, scratch, tid, threads, lane, simd, simds);
+	SparkRouteProbabilities(p, logits + (ulong)row * p.logit_stride, probability, scratch, error, row, tid, threads, lane, simd, simds);
 	for ( uint i = tid; i < p.experts; i += threads )
 	{
 		uint rank = 0u;
 		for ( uint j = 0u; j < p.experts; j++ )
-			rank += probability[j] > probability[i] || (probability[j] == probability[i] && j < i) ? 1u : 0u;
+			rank += SparkRouteAbove(probability[j], j, probability[i], i) ? 1u : 0u;
 		if ( rank < p.top_k )
 			chosen[rank] = i;
 	}
@@ -118,14 +132,15 @@ kernel void spark_route_topk(constant SparkRouteParams &p [[buffer(0)]], device 
 
 kernel void spark_route_pinned(constant SparkRouteParams &p [[buffer(0)]], device const ushort *logits [[buffer(1)]],
 	device const float *expert_scale [[buffer(2)]], device uint *experts [[buffer(3)]], device float *weights [[buffer(4)]],
-	device const uint *pinned [[buffer(5)]], uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+	device const uint *pinned [[buffer(5)]], device atomic_uint *error [[buffer(6)]], uint row [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]],
 	uint threads [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]],
 	uint simds [[simdgroups_per_threadgroup]])
 {
 	threadgroup float scratch[32];
 	threadgroup float probability[SPARK_ROUTE_MAX_EXPERTS];
 	threadgroup uint chosen[SPARK_ROUTE_MAX_TOP_K];
-	SparkRouteProbabilities(p, logits + (ulong)row * p.logit_stride, probability, scratch, tid, threads, lane, simd, simds);
+	SparkRouteProbabilities(p, logits + (ulong)row * p.logit_stride, probability, scratch, error, row, tid, threads, lane, simd, simds);
 	if ( tid < p.top_k )
 		chosen[tid] = pinned[(ulong)row * p.top_k + tid];
 	threadgroup_barrier(mem_flags::mem_threadgroup);

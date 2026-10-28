@@ -66,13 +66,13 @@ static __device__ __forceinline__ void LmPipelineProduceWeight(
     uint32_t k_byte_b,
     uint32_t neuron_base,
     uint32_t group_index,
-    bool grouped)
+    bool grouped,
+    uint32_t activation_bytes)
 {
 	if ( threadIdx.x != 0u )
 		return;
 	LmMbarrierArriveExpect(barrier,
-		LmTileBytes(a->rows,a->depth,a->element_bits)
-		+ LmTileBytes(b->rows,b->depth,b->element_bits));
+		activation_bytes + LmTileBytes(b->rows,b->depth,b->element_bits));
 	if ( grouped )
 		LmTmaLoad3d(stage_b,tensor_map_b,barrier,(int32_t)k_byte_b,(int32_t)neuron_base,(int32_t)group_index);
 	else
@@ -88,13 +88,13 @@ static __device__ __forceinline__ void LmPipelineProduceWeightInterleaved(
     uint32_t k_tile,
     uint32_t cells_total,
     uint32_t neuron_base,
-    uint32_t group_index)
+    uint32_t group_index,
+    uint32_t activation_bytes)
 {
 	if ( threadIdx.x != 0u )
 		return;
 	LmMbarrierArriveExpect(barrier,
-		LmTileBytes(a->rows,a->depth,a->element_bits)
-		+ LmTileBytes(b->rows,b->depth,b->element_bits));
+		activation_bytes + LmTileBytes(b->rows,b->depth,b->element_bits));
 	LmTmaLoad3d(stage_b,tensor_map_b,barrier,0,
 		(int32_t)(((k_tile * cells_total) + (neuron_base / 16u)) * 17u),
 		(int32_t)group_index);
@@ -119,11 +119,12 @@ static __device__ __forceinline__ void LmPipelineProduce(
 {
 	uint32_t k_byte_a = k_tile * LmTileBytes(1u,a->depth,a->element_bits);
 	uint32_t k_byte_b = k_tile * LmTileBytes(1u,b->depth,b->element_bits);
+	uint32_t a_bytes = LmTileBytes(a->rows,a->depth,a->element_bits);
 	if ( interleaved_b )
 		LmPipelineProduceWeightInterleaved(a,b,tensor_map_b,stage_b,barrier,
-			k_tile,cells_total,neuron_base,group_index);
+			k_tile,cells_total,neuron_base,group_index,a_bytes);
 	else
-		LmPipelineProduceWeight(a,b,tensor_map_b,stage_b,barrier,k_byte_b,neuron_base,group_index,grouped);
+		LmPipelineProduceWeight(a,b,tensor_map_b,stage_b,barrier,k_byte_b,neuron_base,group_index,grouped,a_bytes);
 	if ( threadIdx.x != 0u )
 		return;
 	if ( interleaved_b && TILE_K == 128u )
@@ -169,10 +170,10 @@ static __device__ __forceinline__ void LmPipelineProduceIndirectA(
 		"indirect activation staging requires complete 16-byte chunks");
 	if constexpr ( INTERLEAVED_B )
 		LmPipelineProduceWeightInterleaved(a,b,tensor_map_b,stage_b,barrier,
-			k_tile,cells_total,neuron_base,group_index);
+			k_tile,cells_total,neuron_base,group_index,0u);
 	else
 		LmPipelineProduceWeight(a,b,tensor_map_b,stage_b,barrier,
-			k_tile * LmTileBytes(1u,b->depth,b->element_bits),neuron_base,group_index,grouped);
+			k_tile * LmTileBytes(1u,b->depth,b->element_bits),neuron_base,group_index,grouped,0u);
 	for (index=threadIdx.x; index<a->rows * chunk_count; index+=blockDim.x)
 	{
 		local_row = index / chunk_count;
@@ -202,12 +203,9 @@ static __device__ __forceinline__ void LmPipelineProduceIndirectA(
 				? LmSwizzledOffset(local_row,chunk * LM_SWIZZLE_CHUNK_BYTES,row_pitch,LmSwizzleSpanFor(row_pitch))
 				: (local_row * row_pitch) + (chunk * LM_SWIZZLE_CHUNK_BYTES);
 		}
-		LmTmaLoadBulk1d(
-			(uint8_t *)stage_a + destination_offset,
-			activation_bytes + source_offset,
-			barrier,
-			LM_SWIZZLE_CHUNK_BYTES);
+		LmCopyAsync16((uint8_t *)stage_a + destination_offset,activation_bytes + source_offset);
 	}
+	LmCopyAsyncArrive(barrier);
 }
 
 template<class FormatA,uint32_t TILE_ROWS,uint32_t TILE_K,uint32_t ACTIVATION_CODEC>

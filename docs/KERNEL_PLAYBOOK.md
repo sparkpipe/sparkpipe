@@ -137,9 +137,11 @@ which could be mistaken for the qualified route.
 - **Tensor boxes.** Tensor-map loads (`LmTmaLoad2d`, `LmTmaLoad3d`) are
   bounds-checked and zero-fill out-of-range elements. In `LmTmaLoad3d`,
   coordinate 2 selects the expert, so one descriptor covers every expert.
-- **Linear bulk copies.** `LmTmaLoadBulk1d` copies linear addresses for
-  indirect rows. It has no hardware bounds check, so the caller must clamp
-  the index.
+- **Linear bulk copies.** `LmTmaLoadBulk1d` copies a linear address range
+  with no hardware bounds check, so the caller must clamp the index. Do not
+  use it for many small chunks: one CTA's bulk copies queue on the SM's TMA
+  unit. The indirect A gather below implies about 20 ns per 16-byte copy,
+  derived from kernel time rather than measured per copy.
 - **Store side.** Stores use `LmTmaStore2d`, then `LmTmaStoreCommit`, then
   `LmTmaStoreWait<KEEP>`. The wait uses `wait_group.read`, which only
   guarantees that the staging buffer can be reused.
@@ -176,8 +178,34 @@ which could be mistaken for the qualified route.
   for 128-255.
 - **Indirect A replaces the MoE gather.** `LmPipelineProduceIndirectA`
   stages packed row `p` straight from source row
-  `LmRouteSourceRow(source_row_map, p)`, one `LmTmaLoadBulk1d` per 16-byte
-  chunk, so no packed activation tensor is ever written.
+  `LmRouteSourceRow(source_row_map, p)`, so no packed activation tensor is
+  ever written.
+  - Each thread copies its 16-byte chunks with `LmCopyAsync16`
+    (`cp.async.cg`) and then calls `LmCopyAsyncArrive`
+    (`cp.async.mbarrier.arrive.noinc`) once per stage. The producer thread
+    expects only the weight bytes, and `LmGemmKernel` initialises the stage
+    barriers with `1 + blockDim.x` arrivals on this path.
+  - Before 2026-10-27 each chunk was its own `LmTmaLoadBulk1d`. A 64-row
+    tile then issued 512 TMA copies per k-step, and the TMA unit serialised
+    them. At 2048 rows the Solar Open 2 expert up projection took 5.7 ms
+    on one GB10 (1.9 TFLOP/s, 60 GB/s). With `cp.async` it takes 1.4 ms
+    (249 GB/s, near the memory roofline). K-EXAONE's shape (256 experts,
+    hidden 6144, 128 rows per rank) went from 11.5 to 2.7 ms. The staged
+    bytes and the MMA order are unchanged, so outputs are bit-identical.
+    `build/expert_gemm_bench ROWS [gemm]` measures it. Its make target
+    names the geometry in `EXPERT_GEMM_BENCH_SHAPE` (Solar's by default;
+    `make EXPERT_GEMM_BENCH_SHAPE="-DBENCH_EXPERTS=256u -DBENCH_TOP_K=8u
+    -DBENCH_HIDDEN=6144u -DBENCH_INTER=128u" build/expert_gemm_bench` for
+    K-EXAONE).
+- **Grouped skinny tasks cover real row batches.** `LmSkinnyGroupedKernel`
+  scans `ceil(rows / ROWS)` per expert into a shared batch prefix
+  (`LmSkinnyGroupedBatchScan`) and maps each task to one batch and one neuron
+  group, so no launched task idles. Groups averaging more than eight rows
+  take 16-row batches with two neurons per task, which reads each expert's
+  weights once. A row's dot product depends only on `LANES`, which the input
+  width fixes, so outputs do not depend on `ROWS` or `NPG`. On K-EXAONE's
+  down projection at 512 rows this took the kernel from 8.9 to 3.8 ms, and
+  at 256 rows from 4.9 to 2.8 ms, with identical digests.
   - Ragged tail rows are clamped to `row_base`.
   - A source row at or past `source_row_count` does not trap. The kernel
     reports `LM_FRAME_ERROR_ROUTE_MAP_OUT_OF_RANGE` through
@@ -262,6 +290,32 @@ which could be mistaken for the qualified route.
 `LmGqaKvStoreKernel` and `LmGqaAttentionDecodeKernel` both
 `static_assert` the same slot layout, `[K: heads × head_dim][V: heads ×
 value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
+
+**Context-split GQA (`gqa_shard.cuh`)**
+
+- Each rank attends over its own share of the positions and sends every
+  destination rank a partial record (unnormalized values, running max and
+  sum per head); `LmGqaShardMergeKernel` combines them.
+- `LmGqaShardTiledKernel` takes 128 query vectors of one KV head per block,
+  flattened as (row, head) so any group size fills it, 16 per warp. 64-key
+  K and V tiles stream through cp.async double buffers; scores and the
+  online softmax stay in registers, and P·V runs on the bf16 high and low
+  parts of P, so values match the f32 scalar kernel up to summation order.
+- Tile bounds are absolute and a fully masked tile leaves the state exact,
+  so a row's result does not depend on the rows beside it. The launch
+  therefore uses the tiled kernel for every row count of a geometry it
+  fits (key heads up to 256 wide, value heads any multiple of 64): decode,
+  verify and prefill rows compute the same bits.
+- Keys up to 192 wide take 64-key tiles, wider keys 32-key tiles. Value
+  heads wider than 128 split into 128-column parts over the grid's third
+  dimension; each part recomputes the scores and only part 0 writes the
+  running max and sum.
+- On GB10, 64 heads over 8 KV heads of 128 and 8,192 local keys: 2,048 rows
+  take 14.6 ms (37.8 TFLOP/s) against 470 ms for the scalar kernel, and one
+  decode row at 128K positions 0.54 ms against 6.4 ms. With 24 heads over 4
+  KV heads of 256 and 4,096 local keys: 2,048 rows take 7.5 ms (27.6 TFLOP/s
+  counting each part's scores once) against 105 ms, and one decode row 0.36
+  ms against 2.8 ms.
 
 **Projections (`project.cuh`)**
 

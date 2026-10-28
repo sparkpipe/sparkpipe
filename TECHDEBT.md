@@ -95,7 +95,9 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   with compute. Single-sequence prefill waves of 512 rows or more run as two
   half-wave lanes on their own streams, whose collectives overlap the other
   half's compute: `StageRunnerLanesSplit` (`inference/runner/stage_runner.cu`)
-  for GLM Full, GLM Flash and the Qwen 3.8 hybrid, and `K3LaunchSlicePair`
+  for GLM Full, GLM Flash, the Qwen 3.8 hybrid and the Ling and Gemma stages
+  (Solar Open 2 +12% and K-EXAONE 2.0 +8% short-prompt prefill on the fleet,
+  tokens identical), and `K3LaunchSlicePair`
   (`inference/llms/kimi_k3/slice.cuh`) for K3. K3 also splits some rounds into
   Begin and Finish. Every other decode step and multi-sequence wave is still
   one serial chain (compute, all-reduce, compute), so every collective wait is
@@ -270,6 +272,23 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   80% of the first resource to saturate. The overlap of prefill-wave
   collectives under Mesh collectives is part of it; the prefill accelerators
   under Fleet-hours take the long prompts.
+- Routed expert down projections on the grouped skinny path run 1.2 to 2.0
+  times slower than the tensor-core GEMM between 128 and 512 rows a wave
+  (one GB10, `build/expert_gemm_bench`: K-EXAONE's shape at 512 rows takes
+  3.8 ms against 1.9 ms, Solar Open 2's 2.0 ms against 1.2 ms).
+  `LmSkinnyGroupedExperts` takes waves of up to 16 rows per expert, and its
+  per-lane dot products are slow at the short input of a down projection
+  (80 to 128). Moving the crossover changes those waves' rounding; a
+  short-input skinny that matches the GEMM keeps it.
+- The context-split GQA attention runs tiled on tensor cores for key heads
+  up to 256 wide (Solar Open 2, K-EXAONE 2.0, Laguna, Muse Glimmer, MiMo,
+  Qwen 3.8 and Gemma 4's sliding layers). Gemma 4's global layers (512-wide
+  keys) still take the scalar kernel, which re-reads every key for every row
+  and reaches 1 to 2 TFLOP/s per node; a long Gemma 4 prompt is bound by it.
+- Kimi K3's prefill attention expands the values but keeps the keys latent
+  (576 wide), so each head and key pair costs 1,408 FLOPs where expanded
+  keys (192 wide) would cost 640. At 250K positions MLA attention is about
+  2.0 s of a 3.6 s wave.
 
 ## Placement beyond TP16
 
@@ -787,9 +806,9 @@ The sources are pinned. All three serve.
 
 - **K-EXAONE 2.0** (`LGAI-EXAONE/K-EXAONE-2.0-750B-A37B@fec0c8dd`, BF16, 1.50 TB): 78 layers with 64 query and 8 KV heads of 128; 20 layers attend globally without position encoding, 57 a 128-token window and one a 4,096-token window; 256 routed experts (top 8) plus one shared, after two dense layers; one MTP layer. Its DSpark drafter is `model-dspark.safetensors` of `LGAI-EXAONE/K-EXAONE-2.0-750B-A37B-DSpark@e42409db`, whose other files are the base weights.
   - **Serving:** contract, driver (`kexaone2` on the Gemma stage), packs and lane 11.
-  - **Measured:** 27.3 tok/s at B1 without speculation (median of eight runs) and 324 tok/s prefill at 6,850 tokens, with every expert split over the ranks by rows. It was 23.5 and 23.7 in the same hold before the grouped skinny kernel stopped launching a task per local expert: the down projection ran 24,576 blocks per layer, 768 of them with work, and took 158 us against 63 us for the gate and up projections, which move the same bytes. Giving each rank 16 whole experts measured 12.0 and 273: a token's 8 experts landed unevenly. Both layouts score the same on the A/B corpus (McNemar p 0.39).
+  - **Measured:** 27.3 tok/s at B1 without speculation (median of eight runs) and 324 tok/s prefill at 6,850 tokens, with every expert split over the ranks by rows. It was 23.5 and 23.7 in the same hold before the grouped skinny kernel stopped launching a task per local expert: the down projection ran 24,576 blocks per layer, 768 of them with work, and took 158 us against 63 us for the gate and up projections, which move the same bytes. Giving each rank 16 whole experts measured 12.0 and 273: a token's 8 experts landed unevenly. Both layouts score the same on the A/B corpus (McNemar p 0.39). The cp.async expert gather and grouped skinny batches (#1633) took prefill on a 7.7K prompt from 364 to 539 tok/s in both rounds of one hold (16K needle 43.4 to 30.2 s, 64K 223.6 to 170.4 s), captures token-identical.
   - **Missing:**
-    - The numpy reference (`tools/kexaone2_reference.py`) agrees with the served tokens of the whole-expert layout at all 92 positions of six prompts (served logprobs within 0.11, median under 0.005). The rows layout agrees at 91 of 92 positions (logprobs within 0.153, median under 0.005). It flips one near tie, at `python_is_prime` token 4: the served margin there is 0.006. The reference itself is unstable at that position: with the same four preceding tokens, its margin was 0.107 when it scored the whole-expert capture and 0.28 when it scored the rows capture, which differs only in later tokens and so in matrix shapes. The position is sensitive to rounding in both implementations, so it is not a served-path error. With reasoning off the model answers 17 × 23 as 401 in the reference too, so the UI smoke's one miss is the model's answer.
+    - The numpy reference (`tools/kexaone2_reference.py`) agrees with the served tokens of the whole-expert layout at all 92 positions of six prompts (served logprobs within 0.11, median under 0.005). The rows layout agrees at 91 of 92 positions (logprobs within 0.153, median under 0.005). It flips one near tie, at `python_is_prime` token 4: the served margin there is 0.006. The reference itself is unstable at that position: with the same four preceding tokens, its margin was 0.107 when it scored the whole-expert capture and 0.28 when it scored the rows capture, which differs only in later tokens and so in matrix shapes. The position is sensitive to rounding in both implementations, so it is not a served-path error. That shape dependence was the reference's: BLAS picks its summation order by matrix shape. The K-EXAONE, A.X K2, Ling and Solar references now accumulate every product in f64 before rounding and round attention probabilities to bf16 as the publisher does, so a prompt's numbers no longer depend on the other prompts or on later tokens; the 92-position comparison has to be re-scored with them. With reasoning off the model answers 17 × 23 as 401 in the reference too, so the UI smoke's one miss is the model's answer.
     - Speculation from the request's own context verifies drafts in frames: a whole-file rewrite runs at 190.9 tok/s against 19.4 without speculation, with identical output (3,703 of 4,186 drafts kept). Its MTP layer and the DSpark drafter are not wired.
 - **A.X K2** (`skt/A.X-K2@d0805cfd`, block-128 FP8, the precision it was trained in, 0.69 TB): 61 layers of latent attention (query rank 1,536, KV rank 512) with top-2,048 sparse attention through a 64-head indexer, a gated attention output and a gated norm; 256 routed experts (top 8) plus one shared; YaRN to 256K. Drafter `skt/A.X-K2-DSpark@0b278334`. GLM 5.3 Full has the same attention and expert design.
   - **Serving:** contract, tokenizer split, driver (`axk2` on the GLM stage, with its options for the query gate, gated norms, index rope and ReLU, YaRN and grouped routing), FP8 packer, numpy reference and lane 3. Answers are right in English and Korean, including a 3,076-token passkey past the indexer's 2,048 tokens.
@@ -804,7 +823,7 @@ The sources are pinned. All three serve.
     - Speculation with the DSpark drafter is not wired.
 - **Solar Open 2** (`upstage/Solar-Open2-250B@9190fbe6`, BF16, 0.50 TB): 48 layers, three linear-attention layers (short convolution 4, 64 heads) for each GQA layer, no position encoding, 320 routed experts (top 8) plus one shared, 1M context. The Upstage Solar License asks that derivatives be named Solar and show "Built with Solar".
   - **Serving:** contract, tokenizer (the C tokenizer matches HF on 306 mixed English, Korean, code and emoji texts), driver (`solar_open2` on the Ling stage, with its options for gated GQA without position encoding over position-sharded KV, the low-rank decay and output gates, the doubled write gate and 1e-5 norms), BF16 packer, numpy reference and lane 4. Answers are right in English and Korean, including a 3,076-token passkey; the UI smoke passes 6 of 6, tool calls included.
-  - **Measured:** 61.2 tok/s at B1 without speculation (median of eight runs), 1,025 tok/s prefill at 6K. The grouped expert kernel's routed-row grid (#1584) took it from 56.2 and 56.6 to 60.4 and 62.5 in one hold, capture unchanged. Every routed expert is split over the 16 ranks by rows, 80 real rows per rank. Same-hold A/B on 2026-10-26: 47.0 and 47.4 tok/s with the 80 rows zero-padded to 128 against 57.0 and 56.4 at 80 rows; prefill on an 8.1K prompt 972 and 973 against 1,003 and 994 tok/s. Earlier layouts measured 41.1 tok/s with 20 whole experts per rank. The 80-row pack is 31.5 GB per rank, against 49.6 GB padded.
+  - **Measured:** 61.2 tok/s at B1 without speculation (median of eight runs), 1,025 tok/s prefill at 6K. The grouped expert kernel's routed-row grid (#1584) took it from 56.2 and 56.6 to 60.4 and 62.5 in one hold, capture unchanged. The cp.async expert gather and grouped skinny batches (#1633) took prefill on an 8.1K prompt from 995 and 1,000 to 1,476 and 1,489 tok/s in one hold (16K needle 18.1 to 13.0 s, 64K 105.5 to 83.9 s), captures token-identical. Every routed expert is split over the 16 ranks by rows, 80 real rows per rank. Same-hold A/B on 2026-10-26: 47.0 and 47.4 tok/s with the 80 rows zero-padded to 128 against 57.0 and 56.4 at 80 rows; prefill on an 8.1K prompt 972 and 973 against 1,003 and 994 tok/s. Earlier layouts measured 41.1 tok/s with 20 whole experts per rank. The 80-row pack is 31.5 GB per rank, against 49.6 GB padded.
   - **Speculation:** drafts from the request's own context are verified in frames. The Ling stage saves each KDA layer's convolution input, decay and write gate during a verify step and replays them for the kept rows (`keep_rows`). A whole-file rewrite runs at 513.7 tok/s against 44.3 without speculation, both including prefill, with identical output. Without speculation the six reference prompts' tokens and logprobs are byte-identical to the reference-checked capture.
   - The decay follows the fla kernel the publisher's fast path calls, lower bound × sigmoid(exp(A_log) · (g + dt_bias)); the publisher's torch fallback computes −exp(A_log) · softplus(g + dt_bias) clamped at the bound, which is a different function.
   - **Missing:**
@@ -816,6 +835,8 @@ The sources are pinned. All three serve.
 Each needs, in order: the checkpoint contract, the driver on the common stage runner, the packer emitter and packs, a lane record, the release gates and qualification, speculation with its drafter, then the perf climb that every core model gets.
 
 ## Speculation
+
+- Model drafts and their lookup extension stop at the same cost cap as lookup frames (2x a single step while a prefill waits, or the lower-priority chain cap). No mock scenario runs a waiting prefill beside a drafting request yet, so that path is covered only by its code; add one to tests/test_model_batch_engine_mock.c.
 
 - Tree verification is not wired. The policy engine resolves trees
   (`SparkSpeculationPolicyResolveVerifierTree`), but no caller passes one.

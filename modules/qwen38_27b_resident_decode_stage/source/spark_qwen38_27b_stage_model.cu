@@ -28,6 +28,7 @@ struct Qwen38_27bGeometry : QwenHybridDefaults
 	static const char *Name(void) { return "qwen3.8-27b"; }
 	static const char *DumpEnv(void) { return "SPARK_QWEN38_27B_LAYER_DUMP"; }
 	static const char *ReportTag(void) { return "QWEN38_27B-STATE"; }
+	static constexpr bool kGdnSigmoidGate = false;
 };
 
 static_assert(QwenHybridShape<Qwen38_27bGeometry>::Kv::kSlotBytes == SPARK_QWEN38_27B_STAGE_KV_SLOT_BYTES, "a KV slot is [K: 4 x 256][V: 4 x 256] bf16");

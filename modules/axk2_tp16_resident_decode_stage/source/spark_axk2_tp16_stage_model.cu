@@ -66,6 +66,8 @@ struct Axk2Geometry : GlmDefaults
 	static const char *WeightdModel(void) { return "axk2_stage"; }
 	static const char *Revision(void) { return AXK2_MODEL_REVISION; }
 	static const char *Contract(void) { return AXK2_CONTRACT_SHA256; }
+	static constexpr uint32_t kExpertCodec = SPARK_WEIGHT_CODEC_FP8_E4M3;
+	static constexpr uint32_t kLinearCodec = SPARK_WEIGHT_CODEC_FP8_E4M3;
 };
 
 typedef GlmShape<Axk2Geometry> Axk2Shape;
