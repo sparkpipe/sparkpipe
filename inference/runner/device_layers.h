@@ -25,13 +25,13 @@ typedef struct SparkDeviceGatedDeltaShape
 
 typedef struct SparkDeviceGatedDeltaWeights
 {
-	SparkTensor mix;
-	SparkTensor gates;
+	SparkDeviceWeight mix;
+	SparkDeviceWeight gates;
 	SparkTensor conv;
 	SparkTensor log_scale;
 	SparkTensor bias;
 	SparkTensor norm;
-	SparkTensor out;
+	SparkDeviceWeight out;
 } SparkDeviceGatedDeltaWeights;
 
 typedef struct SparkDeviceGatedDeltaScratch
@@ -73,9 +73,9 @@ typedef struct SparkDeviceAttentionRope
 
 typedef struct SparkDeviceAttentionWeights
 {
-	SparkTensor qkv;
-	SparkTensor gate;
-	SparkTensor out;
+	SparkDeviceWeight qkv;
+	SparkDeviceWeight gate;
+	SparkDeviceWeight out;
 	SparkTensor q_norm;
 	SparkTensor k_norm;
 } SparkDeviceAttentionWeights;
@@ -93,8 +93,8 @@ typedef struct SparkDeviceAttentionScratch
 
 typedef struct SparkDeviceFfnWeights
 {
-	SparkTensor gate_up;
-	SparkTensor down;
+	SparkDeviceWeight gate_up;
+	SparkDeviceWeight down;
 } SparkDeviceFfnWeights;
 
 typedef struct SparkDeviceExpertsShape
@@ -177,6 +177,8 @@ SparkStatus SparkDeviceResidualNorm(SparkDeviceStage *stage, SparkDeviceQueue *q
 	const SparkTensor *addend, SparkTensor weight, SparkTensor normed);
 SparkStatus SparkDeviceLinear(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor x, uint32_t x_stride, SparkTensor w, SparkTensor y,
 	uint32_t y_stride, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension);
+SparkStatus SparkDeviceLinearWeight(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor x, uint32_t x_stride, const SparkDeviceWeight *w,
+	SparkTensor y, uint32_t y_stride, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension);
 
 #ifdef __cplusplus
 }

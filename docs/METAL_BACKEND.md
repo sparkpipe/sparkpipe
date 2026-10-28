@@ -235,6 +235,26 @@ gated-delta projections sharing one scratch slice. The recurrent state is FP32,
 `[layer][slot][head][key][value]`, and `recurrent_copy` packs it in the same
 order as the CUDA model.
 
+The same backend runs Qwen3.8-27B's official FP8 checkpoint
+(`tools/qwen38_27b_tp16_pack.py --codec fp8 --tp-degree 1`, 30.2 GB against
+the BF16 pack's 54 GB). The layer kinds bind each projection through
+`SparkDeviceStageLayerWeight`, which reads the tensor's kind from the pack: a
+`bf16` tensor as before, or an `fp8_e4m3` tensor with its `<name>.scale`
+sibling (an FP32 scale per row and 128 inputs, the checkpoint's 128 x 128
+block scale repeated over its rows). `SparkDeviceLinearWeight` then runs FP8
+weights on `SparkOpsLinearFp8`, with a dequantisation scratch the model
+reserves when its pack is FP8 (`layers.0.ffn_gate_up` of kind `fp8_e4m3`).
+The GDN gates and the head stay BF16, as in the checkpoint.
+`tools/qwen38_27b_reference.c` reads the FP8 checkpoint by dequantising each
+FP8 projection exactly (E4M3 times the BF16 block scale, held in FP32), so the
+gate measures the Metal FP8 stage against the FP8 model, not the BF16 one.
+Its gate passes (KL 0.78 and 1.14 times the floor against references A and
+B; the all-layer and rotated controls fail at 26 to 68 standard errors;
+the exact-rows ladder reproduces solo decode), and B1 decode runs at 27.1
+tok/s against the BF16 pack's 18.1. Between 3 and 16 rows the FP8
+projection still loops the GEMV in passes of eight rows, so B16 and
+speculative verify frames are slower than at B1 (TECHDEBT).
+
 `model-families/gemma4/device/gemma4_device_stage.cpp` is Gemma 4 26B A4B
 (text only) on the same layers: 30 layers, every sixth one (from the sixth)
 full attention (16 query and 2 KV heads of 512, keys shared as values, rotary

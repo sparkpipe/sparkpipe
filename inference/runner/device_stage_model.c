@@ -186,6 +186,24 @@ SparkStatus SparkDeviceStageTensor(SparkDeviceStage *stage, const SparkStageRunn
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkDeviceStageLayerWeight(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer, const char *name,
+	uint64_t rows, uint64_t columns, SparkDeviceWeight *weight)
+{
+	char key[SPARK_NAMED_PACK_MAX_NAME_BYTES], scale_key[SPARK_NAMED_PACK_MAX_NAME_BYTES + 8u];
+	SparkNamedPackEntry entry;
+	SparkStatus status;
+	memset(weight,0,sizeof(*weight));
+	snprintf(key,sizeof(key),"layers.%u.%s",layer,name);
+	if ( SparkNamedPackEntryLoad(&stage->pack,key,&entry) != SPARK_STATUS_OK || strcmp(entry.kind,"fp8_e4m3") != 0 )
+		return(SparkDeviceStageTensor(stage,weights,key,"bf16",rows * columns * 2u,&weight->values));
+	snprintf(scale_key,sizeof(scale_key),"%s.scale",key);
+	status = SparkDeviceStageTensor(stage,weights,key,"fp8_e4m3",rows * columns,&weight->values);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceStageTensor(stage,weights,scale_key,"f32",rows * ((columns + SPARK_FP8_SCALE_K - 1u) / SPARK_FP8_SCALE_K) * sizeof(float),
+			&weight->scale);
+	return(status);
+}
+
 SparkStatus SparkDeviceStageLayerTensor(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer, const char *name,
 	const char *kind, uint64_t expected_bytes, SparkTensor *tensor)
 {

@@ -62,6 +62,12 @@ typedef struct SparkDeviceStageKvRead
 	uint64_t position_bytes;
 } SparkDeviceStageKvRead;
 
+typedef struct SparkDeviceWeight
+{
+	SparkTensor values;
+	SparkTensor scale;
+} SparkDeviceWeight;
+
 typedef struct SparkDeviceStage
 {
 	const SparkDeviceStageShape *shape;
@@ -91,6 +97,7 @@ typedef struct SparkDeviceStage
 	uint64_t routed_bytes_per_token;
 	SparkDeviceStageKvRead kv_reads[SPARK_DEVICE_STAGE_KV_WINDOWS];
 	uint32_t kv_read_count;
+	SparkTensor dequant;
 } SparkDeviceStage;
 
 typedef struct SparkDeviceStepTensors
@@ -124,6 +131,8 @@ SparkStatus SparkDeviceStageGeometry(SparkDeviceStage *stage, SparkStageRunnerMo
 SparkStatus SparkDeviceStageEntry(SparkDeviceStage *stage, const char *name, const char *kind, uint64_t *offset, uint64_t *bytes, uint32_t *rows);
 SparkStatus SparkDeviceStageTensor(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, const char *name, const char *kind,
 	uint64_t expected_bytes, SparkTensor *tensor);
+SparkStatus SparkDeviceStageLayerWeight(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer, const char *name,
+	uint64_t rows, uint64_t columns, SparkDeviceWeight *weight);
 SparkStatus SparkDeviceStageLayerTensor(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer, const char *name,
 	const char *kind, uint64_t expected_bytes, SparkTensor *tensor);
 uint64_t SparkDeviceStagePlan(const SparkDeviceBuffer *buffer, const SparkDeviceStageSlice *slices, uint32_t count);

@@ -37,6 +37,7 @@ struct QwenDevice
 		SparkDeviceGatedDeltaShape delta_shape;
 		SparkDeviceAttentionShape attention_shape;
 		uint32_t ffn;
+		uint32_t fp8;
 		Layer layers[G::kLayers];
 		SparkTensor normed;
 		SparkTensor partial;
@@ -86,6 +87,11 @@ struct QwenDevice
 		attention->output_gate = SPARK_ATTENTION_GATE_SIGMOID;
 	}
 
+	static uint64_t Max(uint64_t a, uint64_t b)
+	{
+		return a > b ? a : b;
+	}
+
 	static uint32_t MixWidth(const State *state)
 	{
 		const uint32_t delta = SparkDeviceGatedDeltaMix(&state->delta_shape), attention = SparkDeviceAttentionFusedWidth(&state->attention_shape);
@@ -118,7 +124,9 @@ struct QwenDevice
 				&state->attention.records },
 			{ rows * 2u * state->ffn * 2u, &state->ffn_scratch.gate_up },
 			{ rows * state->ffn * 2u, &state->ffn_scratch.act },
-			{ SparkDeviceGatedDeltaKeepBytes(delta, state->stage.verify_rows, L::kGdnLayers), &state->delta.keep }
+			{ SparkDeviceGatedDeltaKeepBytes(delta, state->stage.verify_rows, L::kGdnLayers), &state->delta.keep },
+			{ state->fp8 != 0u ? Max(Max(2u * (uint64_t)state->ffn, MixWidth(state)), Max(GatedWidth(state), state->ffn)) * hidden * 2u : 0u,
+				&state->stage.dequant }
 		};
 		const uint32_t count = sizeof(plan) / sizeof(plan[0]);
 		for ( uint32_t index = 0u; index < count; index++ )
@@ -141,6 +149,11 @@ struct QwenDevice
 		status = SparkDeviceStageOpen(&state->stage, &state->shape, request);
 		if ( status == SPARK_STATUS_OK && SparkNamedPackConfigU32(&state->stage.pack, "ffn_rows", &state->ffn) != SPARK_STATUS_OK )
 			status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_PARSE_ERROR, "the pack configuration lacks ffn_rows");
+		if ( status == SPARK_STATUS_OK )
+		{
+			SparkNamedPackEntry entry;
+			state->fp8 = SparkNamedPackEntryLoad(&state->stage.pack, "layers.0.ffn_gate_up", &entry) == SPARK_STATUS_OK && strcmp(entry.kind, "fp8_e4m3") == 0 ? 1u : 0u;
+		}
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageExpectConfig(&state->stage, config, sizeof(config) / sizeof(config[0]));
 		if ( status == SPARK_STATUS_OK )

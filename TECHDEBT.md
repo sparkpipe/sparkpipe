@@ -1277,12 +1277,19 @@ Metal backend and the single-Studio stage are in
 - The kernel library builds with Metal 4.0 and its prefill GEMM uses the
   Metal 4 tensor operations, so it loads only on Apple family 10 GPUs (M5).
   Another Studio generation needs its own qualified kernel set.
-- Four models have device stages: Qwen3.8-27B, Gemma 4 26B A4B, Gemma 4 31B
-  and Muse Glimmer 30B. Each is its family's Metal backend placed on the
+- Four models have device stages: Qwen3.8-27B (BF16 and FP8), Gemma 4 26B
+  A4B, Gemma 4 31B and Muse Glimmer 30B. Each is its family's Metal backend placed on the
   model's TP1 geometry (`model-families/<family>/device/`, over the device
   stage and layer kinds in `inference/runner/device_stage_model.c` and
   `device_layers.c`), plus a TP1 pack and its own gates. Next, one at a time:
   MiMo V2.6 Flash, Qwen 3.8 Flash Next.
+- FP8 projections between 3 and 16 rows. `SparkOpsLinearFp8` keeps CUDA's
+  skinny arithmetic up to 16 rows (`LM_SKINNY_ROWS_WIDE`) by looping the FP8
+  GEMV in passes of eight rows, one output per threadgroup at eight rows.
+  Qwen3.8-27B FP8 runs B1 at 27.1 tok/s but B16 at 23.8 tok/s aggregate, and
+  speculative verify frames gain almost nothing (rewrite 65 tok/s). An FP8
+  row-tile kernel that keeps the per-chunk scale, as the BF16 row tiles
+  serve 3 to 64 rows, would restore the batch and speculation speedups.
 - The NaN check in the shared BF16 conversion (abce321a5) costs Gemma 4
   26B A4B's B1 decode about 0.9% on the Studio (91.5 to 91.6 tok/s against
   92.2 to 92.5 without it, interleaved runs), since every BF16 store now
