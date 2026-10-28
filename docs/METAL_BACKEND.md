@@ -91,7 +91,7 @@ tensor sizes before each launch.
 | `spark_rmsnorm_scaled` | `bf16(bf16(bf16(rms(x)) s) c)`: a weightless norm, a per-channel scale and a constant, each rounded (an expert router's input) |
 | `spark_gemv_r{1,2,4,8}`, `spark_gemv_f32_r*` | the GEMV family's projections for one or two rows, and its verify frames in passes of up to eight rows: BF16 weights `[N, K]`, 4, 4, 2 and 1 outputs per threadgroup at 1, 2, 4 and 8 rows, the inner dimension split across the threadgroup's four SIMD groups, FP32 accumulation, BF16 or FP32 out |
 | `spark_gemm_rows16`, `spark_gemm_rows32`, `spark_gemm_reduce` | decode projections for 3 to 64 rows on the tensor operations: 128 outputs per threadgroup, the weights staged through threadgroup memory 64 inputs at a time with the next slice prefetched into registers, the inner dimension split so the launch has about 1,024 threadgroups, FP32 partials summed in split order by the reduce kernel |
-| `spark_gemv_fp8_r{1,2,4,8}`, `spark_dequant_fp8` | E4M3 projections with an FP32 scale per row and 128 inputs (`SparkOpsLinearFp8`), the two forms CUDA uses: up to 16 rows, and for any row-exact frame, CUDA's skinny arithmetic (each 16-weight chunk summed by a sequential FMA chain from `SparkMathE4m3ToFloat`, then added to the FP32 accumulator by one FMA with its block scale); above 16 rows the weights are first dequantised to `bf16(e4m3 x scale)`, CUDA's GEMM operand, and the BF16 projection runs on them |
+| `spark_gemv_fp8_r{1,2,4,8}`, `spark_dequant_fp8` | E4M3 projections with an FP32 scale per row and 128 inputs (`SparkOpsLinearFp8`), the two forms CUDA uses: up to 16 rows, and for any row-exact frame, CUDA's skinny arithmetic (each 16-weight chunk decoded once through a 256-entry threadgroup table filled from `SparkMathE4m3ToFloat`, summed per row by a sequential FMA chain, then added to the FP32 accumulator by one FMA with its block scale); above 16 rows the weights are first dequantised to `bf16(e4m3 x scale)`, CUDA's GEMM operand, and the BF16 projection runs on them |
 | `spark_gemm`, `spark_gemm_f32` | prefill projections on the Metal 4 tensor operations (`matmul2d`, 128 x 64 tiles, FP32 accumulation, relaxed precision off) |
 | `spark_causal_conv_silu` | depthwise causal convolution over a per-sequence window, BF16 sum, then `SparkMathSwishFast` (`x * sigmoid(x)`, CUDA's `LM_CONV_SWISH`) |
 | `spark_gated_delta_prepare`, `spark_gated_delta_rule` | L2-normalised query and key, decay and write strength, then the gated delta rule over FP32 state, one SIMD group per value column |
@@ -251,9 +251,10 @@ gate measures the Metal FP8 stage against the FP8 model, not the BF16 one.
 Its gate passes (KL 0.78 and 1.14 times the floor against references A and
 B; the all-layer and rotated controls fail at 26 to 68 standard errors;
 the exact-rows ladder reproduces solo decode), and B1 decode runs at 27.1
-tok/s against the BF16 pack's 18.1. Between 3 and 16 rows the FP8
-projection still loops the GEMV in passes of eight rows, so B16 and
-speculative verify frames are slower than at B1 (TECHDEBT).
+tok/s against the BF16 pack's 18.1 (30.2 after the decode table below).
+Between 3 and 16 rows the FP8 projection loops the GEMV in passes of eight
+rows, which beats BF16 up to B4 but trails its tensor-operation row tiles at
+B16 (TECHDEBT).
 
 `model-families/gemma4/device/gemma4_device_stage.cpp` is Gemma 4 26B A4B
 (text only) on the same layers: 30 layers, every sixth one (from the sixth)

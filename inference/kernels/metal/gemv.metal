@@ -68,14 +68,22 @@ kernel void spark_gemv(constant SparkGemvParams &p [[buffer(0)]], device const u
 	SparkGemvRows<R, O, F32>(p, x, w, out, group * O, lane, simd, partial);
 }
 
-static inline float SparkFp8Chunk(uint4 bits, float4 x0, float4 x1, float4 x2, float4 x3)
+static inline void SparkFp8Decode(uint4 bits, threadgroup const float *table, thread float *w)
 {
 	const uint words[4] = { bits.x, bits.y, bits.z, bits.w };
-	const float4 xs[4] = { x0, x1, x2, x3 };
-	float sum = 0.0f;
 	for ( uint word = 0u; word < 4u; word++ )
 		for ( uint j = 0u; j < 4u; j++ )
-			sum = fma(SparkMathE4m3ToFloat((words[word] >> (8u * j)) & 0xffu), xs[word][j], sum);
+			w[word * 4u + j] = table[(words[word] >> (8u * j)) & 0xffu];
+}
+
+static inline float SparkFp8Chunk(thread const float *w, device const ushort *x)
+{
+	float4 xs[4];
+	float sum = 0.0f;
+	SparkUnpack8(*(device const uint4 *)x, xs[0], xs[1]);
+	SparkUnpack8(*(device const uint4 *)(x + 8u), xs[2], xs[3]);
+	for ( uint j = 0u; j < 16u; j++ )
+		sum = fma(w[j], xs[j / 4u][j % 4u], sum);
 	return(sum);
 }
 
@@ -85,9 +93,13 @@ kernel void spark_gemv_fp8(constant SparkGemvParams &p [[buffer(0)]], device con
 	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]])
 {
 	threadgroup float partial[SPARK_GEMV_SIMDS * O * R];
+	threadgroup float table[256];
 	const uint K = p.input_dimension, N = p.output_dimension, first = group * O;
 	float acc[O][R];
 	device const uchar *rows[O];
+	for ( uint code = simd * 32u + lane; code < 256u; code += SPARK_GEMV_SIMDS * 32u )
+		table[code] = SparkMathE4m3ToFloat(code);
+	threadgroup_barrier(mem_flags::mem_threadgroup);
 	device const float *scales[O];
 	for ( uint i = 0u; i < O; i++ )
 	{
@@ -98,21 +110,14 @@ kernel void spark_gemv_fp8(constant SparkGemvParams &p [[buffer(0)]], device con
 			acc[i][r] = 0.0f;
 	}
 	for ( uint k = (simd * 32u + lane) * SPARK_FP8_CHUNK; k < K; k += SPARK_GEMV_SIMDS * 32u * SPARK_FP8_CHUNK )
-	{
-		float4 x0[R], x1[R], x2[R], x3[R];
-		for ( uint r = 0u; r < R; r++ )
-		{
-			SparkUnpack8(*(device const uint4 *)(x + (ulong)r * p.input_stride + k), x0[r], x1[r]);
-			SparkUnpack8(*(device const uint4 *)(x + (ulong)r * p.input_stride + k + 8u), x2[r], x3[r]);
-		}
 		for ( uint i = 0u; i < O; i++ )
 		{
-			const uint4 bits = *(device const uint4 *)(rows[i] + k);
+			float weights[SPARK_FP8_CHUNK];
 			const float block = scales[i][k / SPARK_FP8_SCALE_K];
+			SparkFp8Decode(*(device const uint4 *)(rows[i] + k), table, weights);
 			for ( uint r = 0u; r < R; r++ )
-				acc[i][r] = fma(block, SparkFp8Chunk(bits, x0[r], x1[r], x2[r], x3[r]), acc[i][r]);
+				acc[i][r] = fma(block, SparkFp8Chunk(weights, x + (ulong)r * p.input_stride + k), acc[i][r]);
 		}
-	}
 	for ( uint i = 0u; i < O; i++ )
 		for ( uint r = 0u; r < R; r++ )
 		{
