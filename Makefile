@@ -1048,7 +1048,11 @@ build/rdma_alltoall_probe: tools/hardware/rdma_alltoall_probe.c
 	@mkdir -p build
 	$(CC) $(CFLAGS) $< $(LDFLAGS) -libverbs -o $@
 
-hardware_tools: build/spark_model_kernel_characterize build/spark_transport_characterize build/spark_topology_characterize build/spark_pmtu_characterize build/rdma_alltoall_probe
+build/weight_stream_probe: tools/hardware/weight_stream_probe.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $< $(LDFLAGS) -libverbs -o $@
+
+hardware_tools: build/spark_model_kernel_characterize build/spark_transport_characterize build/spark_topology_characterize build/spark_pmtu_characterize build/rdma_alltoall_probe build/weight_stream_probe
 
 hardware_cuda_tools: $(CUDA_HEADER_DEPS)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
@@ -1075,7 +1079,7 @@ build/tp_f32_arithmetic: tools/hardware/tp_f32_arithmetic.cu inference/kernels/t
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. $< -o $@
 
 build/mesh_round_bench: tools/mesh_round_bench.cu runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $^ -L$(CUDA_HOME)/lib64 -lcuda -ldl -lcudart -o $@
+	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $(filter-out $(CUDA_HEADER_DEPS),$^) -L$(CUDA_HOME)/lib64 -lcuda -ldl -lcudart -o $@
 
 build/spark_tp_device_collective_characterize: tools/hardware/spark_tp_device_collective_characterize.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -lcuda -ldl -lpthread -o $@
