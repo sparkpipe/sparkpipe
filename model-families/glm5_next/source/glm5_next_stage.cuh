@@ -29,6 +29,7 @@
 #include "sparkpipe/spark_expert_planes.h"
 #include "sparkpipe/spark_glm5_next_index_cp.h"
 #include "sparkpipe/spark_glm5_next_kv_shard.h"
+#include "sparkpipe/spark_glm5_next_family.h"
 #include "sparkpipe/spark_glm5_next_model.h"
 #include "sparkpipe/spark_glm5_next_stagepack.h"
 #include "sparkpipe/spark_stage_runner_model.h"
