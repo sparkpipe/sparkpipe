@@ -642,7 +642,7 @@ def write_lane(args, output_dir: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--record", default=None,
-                        help=f"render the production lane of this swap id from {LANES.relative_to(ROOT)}; no other lane flag applies")
+                        help=f"render the production lane of this swap id from {LANES.relative_to(ROOT) if LANES.is_relative_to(ROOT) else LANES}; no other lane flag applies")
     parser.add_argument("--model", choices=sorted(MODELS))
     parser.add_argument("--lane", type=int)
     parser.add_argument("--runtime-root", help="per-node root, {host} is substituted")
