@@ -1187,6 +1187,77 @@ static void TestLinearRouted(uint32_t rows)
 	SparkDeviceFree(&single);
 }
 
+static double E2m1(uint32_t nibble)
+{
+	static const double magnitude[8] = { 0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0 };
+	return((nibble & 8u) != 0u ? -magnitude[nibble & 7u] : magnitude[nibble & 7u]);
+}
+
+static void TestLinearRoutedMxfp4(uint32_t rows, uint32_t K, uint32_t N)
+{
+	enum { EXPERTS = 16u, TOP = 8u };
+	const uint32_t routes = rows * TOP, groups = K / SPARK_MXFP4_GROUP;
+	SparkDeviceBuffer x, w, scale, y, experts;
+	uint16_t *xv = (uint16_t *)Shared(&x,(uint64_t)rows * K * sizeof(uint16_t),"mxfp4 routed x");
+	uint8_t *wv = (uint8_t *)Shared(&w,(uint64_t)EXPERTS * N * (K / 2u),"mxfp4 routed w");
+	uint8_t *sv = (uint8_t *)Shared(&scale,(uint64_t)EXPERTS * N * groups,"mxfp4 routed scale");
+	uint16_t *yv = (uint16_t *)Shared(&y,(uint64_t)routes * N * sizeof(uint16_t),"mxfp4 routed y");
+	uint32_t *ev = (uint32_t *)Shared(&experts,routes * sizeof(uint32_t),"mxfp4 routed experts");
+	SparkGemvParams params;
+	Check clean, corrupted;
+	char shape[80];
+	uint64_t index;
+	uint32_t pass, route, n, k;
+	FillBf16(xv,(uint64_t)rows * K,1.0);
+	for ( index = 0u; index < (uint64_t)EXPERTS * N * (K / 2u); index++ )
+		wv[index] = (uint8_t)(NextRandom() & 0xffu);
+	for ( index = 0u; index < (uint64_t)EXPERTS * N * groups; index++ )
+		sv[index] = (uint8_t)(120u + NextRandom() % 6u);
+	for ( route = 0u; route < routes; route++ )
+		ev[route] = (route * 7u + 3u) % EXPERTS;
+	memset(&params,0,sizeof(params));
+	params.rows = routes;
+	params.input_dimension = K;
+	params.output_dimension = N;
+	params.input_stride = K;
+	params.output_stride = N;
+	params.route_divisor = TOP;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint32_t victim = routes - 1u;
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			ev[victim] = (ev[victim] + 1u) % EXPERTS;
+		if ( !Run(SparkOpsLinearRoutedMxfp4(&ops,queue,Whole(&x),Whole(&w),Whole(&scale),Whole(&y),Whole(&experts),EXPERTS,&params),"linear_routed_mxfp4") )
+			break;
+		if ( pass == 1u )
+			ev[victim] = (ev[victim] + EXPERTS - 1u) % EXPERTS;
+		for ( route = 0u; route < routes; route++ )
+			for ( n = 0u; n < N; n++ )
+			{
+				const uint64_t neuron = (uint64_t)ev[route] * N + n;
+				double sum = 0.0, magnitude = 0.0;
+				for ( k = 0u; k < K; k++ )
+				{
+					const uint8_t byte = wv[neuron * (K / 2u) + k / 2u];
+					const double weight = E2m1((k % 2u) == 0u ? byte & 15u : byte >> 4u) * ldexp(1.0,(int)sv[neuron * groups + k / SPARK_MXFP4_GROUP] - 127);
+					const double term = weight * Bf16(xv[(uint64_t)(route / TOP) * K + k]);
+					sum += term;
+					magnitude += fabs(term);
+				}
+				Observe(check,Bf16(yv[(uint64_t)route * N + n]),sum,UNIT_BF16 * fabs(sum) + (1.0 + UNIT_BF16) * Gamma(K + K / SPARK_MXFP4_GROUP + 2u) * magnitude);
+			}
+	}
+	snprintf(shape,sizeof(shape),"rows %u x top 8, K %u -> N %u, 16 experts",rows,K,N);
+	Report("linear_routed_mxfp4",shape,&clean,&corrupted,"u|y| + (1+u) gamma_(K + K/32 + 2) sum|x w s|, u = 2^-8");
+	SparkDeviceFree(&x);
+	SparkDeviceFree(&w);
+	SparkDeviceFree(&scale);
+	SparkDeviceFree(&y);
+	SparkDeviceFree(&experts);
+}
+
 static void TestBranchNorms(uint32_t rows, uint32_t branches)
 {
 	enum { DIM = 2816u };
@@ -2204,6 +2275,8 @@ int main(int argc, char **argv)
 	TestRoutesPinned(3u);
 	TestRoutesNonFinite();
 	TestLinearRouted(2u);
+	TestLinearRoutedMxfp4(2u,4096u,512u);
+	TestLinearRoutedMxfp4(1u,2048u,1024u);
 	TestBranchNorms(2u,1u);
 	TestBranchNorms(3u,2u);
 	TestSiluMul(1u);

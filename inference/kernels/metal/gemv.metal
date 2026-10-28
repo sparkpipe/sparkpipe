@@ -149,6 +149,55 @@ kernel void spark_dequant_fp8(constant SparkGemvParams &p [[buffer(0)]], device 
 		y[j] = SparkMathFloatToBf16(SparkMathE4m3ToFloat((bits >> (8u * j)) & 0xffu) * block);
 }
 
+kernel void spark_gemv_mxfp4_routed(constant SparkGemvParams &p [[buffer(0)]], device const ushort *x [[buffer(1)]], device const uchar *w [[buffer(2)]],
+	device const uchar *scale [[buffer(3)]], device ushort *out [[buffer(4)]], device const uint *experts [[buffer(5)]],
+	uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]])
+{
+	threadgroup float partial[SPARK_GEMV_SIMDS * SPARK_GEMV_OUTPUTS];
+	const uint K = p.input_dimension, N = p.output_dimension, route = group.y, first = group.x * SPARK_GEMV_OUTPUTS;
+	const ulong expert = experts[route];
+	device const ushort *row = x + (ulong)(route / p.route_divisor) * p.input_stride;
+	float acc[SPARK_GEMV_OUTPUTS];
+	device const uchar *weights[SPARK_GEMV_OUTPUTS];
+	device const uchar *scales[SPARK_GEMV_OUTPUTS];
+	for ( uint i = 0u; i < SPARK_GEMV_OUTPUTS; i++ )
+	{
+		const ulong neuron = expert * N + min(first + i, N - 1u);
+		weights[i] = w + neuron * (K / 2u);
+		scales[i] = scale + neuron * (K / SPARK_MXFP4_GROUP);
+		acc[i] = 0.0f;
+	}
+	for ( uint k = (simd * 32u + lane) * SPARK_MXFP4_GROUP; k < K; k += SPARK_GEMV_SIMDS * 32u * SPARK_MXFP4_GROUP )
+	{
+		float4 xs[8];
+		for ( uint part = 0u; part < 4u; part++ )
+			SparkUnpack8(*(device const uint4 *)(row + k + 8u * part), xs[2u * part], xs[2u * part + 1u]);
+		for ( uint i = 0u; i < SPARK_GEMV_OUTPUTS; i++ )
+		{
+			const uint4 bits = *(device const uint4 *)(weights[i] + k / 2u);
+			const uint words[4] = { bits.x, bits.y, bits.z, bits.w };
+			float sum = 0.0f;
+			for ( uint j = 0u; j < SPARK_MXFP4_GROUP; j++ )
+				sum = fma(SparkMathE2m1ToFloat((words[j / 8u] >> (4u * (j % 8u))) & 15u), xs[j / 4u][j % 4u], sum);
+			acc[i] = fma(SparkMathUe8m0ToFloat(scales[i][k / SPARK_MXFP4_GROUP]), sum, acc[i]);
+		}
+	}
+	for ( uint i = 0u; i < SPARK_GEMV_OUTPUTS; i++ )
+	{
+		const float total = simd_sum(acc[i]);
+		if ( lane == 0u )
+			partial[simd * SPARK_GEMV_OUTPUTS + i] = total;
+	}
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	if ( simd != 0u || lane >= SPARK_GEMV_OUTPUTS )
+		return;
+	float total = partial[lane];
+	for ( uint s = 1u; s < SPARK_GEMV_SIMDS; s++ )
+		total += partial[s * SPARK_GEMV_OUTPUTS + lane];
+	if ( first + lane < N )
+		out[(ulong)route * p.output_stride + first + lane] = SparkMathFloatToBf16(total);
+}
+
 kernel void spark_gemv_routed(constant SparkGemvParams &p [[buffer(0)]], device const ushort *x [[buffer(1)]], device const ushort *w [[buffer(2)]],
 	device ushort *out [[buffer(3)]], device const uint *experts [[buffer(4)]], uint2 group [[threadgroup_position_in_grid]],
 	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]])

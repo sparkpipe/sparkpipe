@@ -62,6 +62,7 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_route_pinned",
 	"spark_route_combine",
 	"spark_gemv_routed",
+	"spark_gemv_mxfp4_routed",
 	"spark_add_rows",
 	"spark_logprob_rows",
 	"spark_stream_read"
@@ -883,6 +884,36 @@ SparkStatus SparkOpsLinearRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	bindings[3] = OpsBind(experts,SPARK_DEVICE_BIND_READ);
 	return(OpsLaunch(ops,queue,SPARK_OPS_GEMV_ROUTED,(N + SPARK_GEMV_OUTPUTS - 1u) / SPARK_GEMV_OUTPUTS,params->rows,1u,128u,params,sizeof(*params),
 		bindings,4u));
+}
+
+SparkStatus SparkOpsLinearRoutedMxfp4(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor scale, SparkTensor y,
+	SparkTensor experts, uint32_t expert_count, const SparkGemvParams *params)
+{
+	const uint32_t K = params->input_dimension, N = params->output_dimension, sources = (params->rows + params->route_divisor - 1u) /
+		(params->route_divisor != 0u ? params->route_divisor : 1u);
+	SparkDeviceBinding bindings[5];
+	SparkStatus status;
+	if ( params->rows == 0u || K == 0u || N == 0u || K % SPARK_MXFP4_GROUP != 0u || params->input_stride % 8u != 0u || params->input_stride < K ||
+		params->route_divisor == 0u || params->output_f32 != 0u || expert_count == 0u )
+		return(OpsRefuse("linear_routed_mxfp4","routes, an input width that is a multiple of 32, a source row per route divisor and BF16 output are required"));
+	status = OpsNeed("linear_routed_mxfp4","input",x,OpsRowsBytes(sources,params->input_stride,K,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("linear_routed_mxfp4","weight",w,(uint64_t)expert_count * N * (K / 2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("linear_routed_mxfp4","scale",scale,(uint64_t)expert_count * N * (K / SPARK_MXFP4_GROUP));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("linear_routed_mxfp4","output",y,OpsRowsBytes(params->rows,params->output_stride,N,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("linear_routed_mxfp4","experts",experts,(uint64_t)params->rows * sizeof(uint32_t));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(x,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(w,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(scale,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(y,SPARK_DEVICE_BIND_WRITE);
+	bindings[4] = OpsBind(experts,SPARK_DEVICE_BIND_READ);
+	return(OpsLaunch(ops,queue,SPARK_OPS_GEMV_MXFP4_ROUTED,(N + SPARK_GEMV_OUTPUTS - 1u) / SPARK_GEMV_OUTPUTS,params->rows,1u,128u,params,sizeof(*params),
+		bindings,5u));
 }
 
 SparkStatus SparkOpsLogprob(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor targets, SparkTensor result,

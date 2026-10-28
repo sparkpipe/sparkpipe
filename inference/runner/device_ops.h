@@ -70,6 +70,7 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_ROUTE_PINNED,
 	SPARK_OPS_ROUTE_COMBINE,
 	SPARK_OPS_GEMV_ROUTED,
+	SPARK_OPS_GEMV_MXFP4_ROUTED,
 	SPARK_OPS_ADD_ROWS,
 	SPARK_OPS_LOGPROB,
 	SPARK_OPS_STREAM_READ,
@@ -157,6 +158,8 @@ SparkStatus SparkOpsRouteCombine(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	const SparkRouteParams *params);
 SparkStatus SparkOpsLinearRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor y, SparkTensor experts,
 	uint32_t expert_count, const SparkGemvParams *params);
+SparkStatus SparkOpsLinearRoutedMxfp4(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor scale, SparkTensor y,
+	SparkTensor experts, uint32_t expert_count, const SparkGemvParams *params);
 SparkStatus SparkOpsLogprob(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor targets, SparkTensor result,
 	SparkTensor argmax, const SparkLogprobParams *params);
 SparkStatus SparkOpsStreamRead(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor words, SparkTensor sink, uint32_t groups);
