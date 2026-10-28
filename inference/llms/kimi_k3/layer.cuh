@@ -885,44 +885,30 @@ static int32_t K3LayerMhaUp(const K3LayerBuffers *b, uint32_t rows, uint32_t mul
 }
 
 template<class Geometry>
-static int32_t K3LayerMhaExpand(const K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)
-{
-	const uint64_t key_pitch = K3_MHA_KEY_ELEMENTS;
-	if ( K3LayerMhaReady(b,rows) == 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
-	return(LmKvShardGatherPackLaunch<Geometry,K3_LAYER_THREADS>(b->cache_shard,b->shard_gather_list,b->shard_gather_offset,b->shard_gather_context,1u,
-			b->shard_gather_most_keys,b->shard_gather_send,stream) == cudaSuccess &&
-		LmLatentExpandPitchedLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_QK_NOPE_DIM>(b->shard_gather_send,b->shard_gather_most_keys,
-			(const uint16_t *)b->mla_kv_b_key_full_weight,K3_MLA_HEADS,b->shard_mha_keys,key_pitch,K3_MHA_QK,stream) == cudaSuccess &&
-		LmLatentRopeBroadcastLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM>(b->shard_gather_send,b->shard_gather_most_keys,K3_MLA_HEADS,b->shard_mha_keys,
-			key_pitch,K3_MHA_QK,K3_QK_NOPE_DIM,stream) == cudaSuccess &&
-		LmLatentExpandPitchedLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_V_HEAD_DIM>(b->shard_gather_send,b->shard_gather_most_keys,
-			(const uint16_t *)b->mla_kv_b_value_full_weight,K3_MLA_HEADS,b->shard_mha_keys + (uint64_t)K3_MLA_HEADS * K3_MHA_QK * 2u,key_pitch,K3_V_HEAD_DIM,stream) == cudaSuccess
-		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
-}
-
-template<class Geometry>
-static int32_t K3LayerMhaAttend(const K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)
+static int32_t K3LayerMhaPartials(const K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)
 {
 	typedef K3MhaExpandedKv<Geometry> Expanded;
 	const uint32_t heads = K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS);
+	const uint64_t key_pitch = K3_MHA_KEY_ELEMENTS;
 	LmKvShardGatherView view;
 	if ( K3LayerMhaReady(b,rows) == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	LM_LAUNCH((LmRankMajorRowsKernel<K3_LAYER_THREADS>), dim3((K3_MLA_HEADS * K3_MHA_QK + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS, rows), K3_LAYER_THREADS, 0, stream,
 		b->shard_query_gathered_bf16,b->shard_mha_query_bf16,rows,heads * K3_MHA_QK,b->kv_shard.degree);
+	if ( LmKvShardGatherPackLaunch<Geometry,K3_LAYER_THREADS>(b->cache_shard,b->shard_gather_list,b->shard_gather_offset,b->shard_gather_context,1u,
+			b->shard_gather_most_keys,b->shard_gather_send,stream) != cudaSuccess ||
+		LmLatentExpandPitchedLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_QK_NOPE_DIM>(b->shard_gather_send,b->shard_gather_most_keys,
+			(const uint16_t *)b->mla_kv_b_key_full_weight,K3_MLA_HEADS,b->shard_mha_keys,key_pitch,K3_MHA_QK,stream) != cudaSuccess ||
+		LmLatentRopeBroadcastLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM>(b->shard_gather_send,b->shard_gather_most_keys,K3_MLA_HEADS,b->shard_mha_keys,
+			key_pitch,K3_MHA_QK,K3_QK_NOPE_DIM,stream) != cudaSuccess ||
+		LmLatentExpandPitchedLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_V_HEAD_DIM>(b->shard_gather_send,b->shard_gather_most_keys,
+			(const uint16_t *)b->mla_kv_b_value_full_weight,K3_MLA_HEADS,b->shard_mha_keys + (uint64_t)K3_MLA_HEADS * K3_MHA_QK * 2u,key_pitch,K3_V_HEAD_DIM,stream) != cudaSuccess )
+		return(LM_LAUNCH_ERR_LAUNCH);
 	if ( LmKvShardGatherViewInitialize<Expanded>(&view,b->cache_shard.pages,b->kv_shard,b->shard_mha_keys,b->shard_gather_offset,b->shard_gather_context) != 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(LmGqaShardPartialLaunch<Expanded,LmKvShardGatherView,K3_MLA_HEADS,K3_MHA_QK,K3_V_HEAD_DIM>(view,b->shard_mha_query_bf16,K3_MLA_HEADS,
 		b->sequence_of_row,b->context_length,b->positions,K3_MLA_QK_SCALE,b->shard_partials_f32,K3LayerMhaPartialStride(b,rows),rows,stream) == cudaSuccess
 		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
-}
-
-template<class Format, class Geometry>
-static int32_t K3LayerMhaQuery(const K3LayerBuffers *b, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
-{
-	const int32_t status = K3LayerMlaDown<Format>(b,rows,multiprocessors,stream);
-	return(status == LM_LAUNCH_OK ? K3LayerMhaUp<Format,Geometry>(b,rows,multiprocessors,stream) : status);
 }
 
 static int32_t K3LayerMhaMerge(const K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)
