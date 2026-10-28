@@ -91,7 +91,7 @@ void LmLatentValueExpandKernel(
 	extern __shared__ __align__(128) uint8_t lm_expand_shared[];
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t matrix = lane >> 3u, within = lane & 7u;
-	const uint32_t first_key = blockIdx.x * LM_LATENT_EXPAND_KEYS, head = blockIdx.y, source = blockIdx.z;
+	const uint32_t first_key = blockIdx.y * LM_LATENT_EXPAND_KEYS, head = blockIdx.x, source = blockIdx.z;
 	const uint32_t base = (uint32_t)__cvta_generic_to_shared(lm_expand_shared);
 	const uint8_t *source_keys = keys + (uint64_t)source * key_source_stride;
 	const uint16_t *head_weight = weight_bf16 + (uint64_t)head * VALUE * LATENT;
@@ -197,7 +197,9 @@ static inline cudaError_t LmLatentValueExpandLaunch(
 			return error;
 		granted = true;
 	}
-	LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE><<<dim3((keys_per_source + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS, heads, sources), LM_LATENT_EXPAND_THREADS, shared, stream>>>(
+	if ((keys_per_source + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS > 65535u)
+		return cudaErrorInvalidValue;
+	LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE><<<dim3(heads, (keys_per_source + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS, sources), LM_LATENT_EXPAND_THREADS, shared, stream>>>(
 		keys, key_source_stride, keys_per_source, weight_bf16, heads, values, value_source_stride, (uint64_t)heads * VALUE, VALUE);
 	return cudaPeekAtLastError();
 }
@@ -269,7 +271,9 @@ static inline cudaError_t LmLatentExpandPitchedLaunch(
 			return error;
 		granted = true;
 	}
-	LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE><<<dim3((key_count + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS, heads, 1u), LM_LATENT_EXPAND_THREADS, shared, stream>>>(
+	if ((key_count + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS > 65535u)
+		return cudaErrorInvalidValue;
+	LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE><<<dim3(heads, (key_count + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS, 1u), LM_LATENT_EXPAND_THREADS, shared, stream>>>(
 		keys, 0u, key_count, weight_bf16, heads, output, 0u, key_pitch, head_pitch);
 	return cudaPeekAtLastError();
 }
