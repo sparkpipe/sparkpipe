@@ -2,7 +2,7 @@
 """Summarize a Metal stage gate run into one receipt with verdicts.
 
 Reads the outputs a model's gate script (tools/qwen38_27b_metal_gates.sh,
-tools/gemma4_metal_gates.sh) writes and applies the
+tools/metal_gates.sh) writes and applies the
 gate rule against both reference variants (A and B, the same reference with
 different reduction orders), each leg measured against the other variant as
 its floor: the position-weighted mean KL at most KL_FACTOR times the floor's,

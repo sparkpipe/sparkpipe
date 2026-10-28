@@ -2,7 +2,7 @@
 set -eu
 
 if [ "$#" -ne 5 ]; then
-	echo "usage: $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
+	echo "usage: $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
 	exit 2
 fi
 model=$1
@@ -11,10 +11,11 @@ reference=$3
 out=$4
 revision=$5
 case $model in
-	gemma4-26b-a4b) routed=1 prompt_dir=gemma4 vocab=262144;;
-	gemma4-31b) routed=0 prompt_dir=gemma4 vocab=262144;;
-	muse-glimmer-30b) routed=0 prompt_dir=muse_glimmer vocab=202048;;
-	*) echo "unknown Gemma-family model $model" >&2; exit 2;;
+	gemma4-26b-a4b) routed=1 prompt_dir=gemma4 vocab=262144 probe=ffn_down layer=11;;
+	gemma4-31b) routed=0 prompt_dir=gemma4 vocab=262144 probe=ffn_down layer=11;;
+	muse-glimmer-30b) routed=0 prompt_dir=muse_glimmer vocab=202048 probe=ffn_down layer=11;;
+	mimo-v2.6-flash) routed=0 prompt_dir=mimo26_flash vocab=152576 probe=attn_out layer=11;;
+	*) echo "unknown Metal model $model" >&2; exit 2;;
 esac
 root=$(cd "$(dirname "$0")/.." && pwd)
 prompts=$root/qualification/metal/$prompt_dir/gate_prompts.json
@@ -31,7 +32,7 @@ make -s build/test_device_contract_metal build/test_metal_bf16_convert build/tes
 ./build/test_metal_kernels "$out/kernels.json" > "$out/kernels.txt"
 ./build/device_bandwidth 16 "$pack" > "$out/bandwidth.json" 2> "$out/bandwidth.log"
 $run --pack "$pack" --mode teacher --out "$out/metal" --verify-pack > "$out/metal_teacher.log"
-controls="control:layers.11.ffn_down:swap-rows control_layers:layers.*.ffn_down:swap-rows control_rotate:layers.11.ffn_down:rotate-rows"
+controls="control:layers.$layer.$probe:swap-rows control_layers:layers.*.$probe:swap-rows control_rotate:layers.$layer.$probe:rotate-rows"
 pin=""
 if [ "$routed" = 1 ]; then
 	mkdir -p "$out/pinned" "$out/pinned64"
