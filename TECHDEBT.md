@@ -95,7 +95,9 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   with compute. Single-sequence prefill waves of 512 rows or more run as two
   half-wave lanes on their own streams, whose collectives overlap the other
   half's compute: `StageRunnerLanesSplit` (`inference/runner/stage_runner.cu`)
-  for GLM Full, GLM Flash and the Qwen 3.8 hybrid, and `K3LaunchSlicePair`
+  for GLM Full, GLM Flash, the Qwen 3.8 hybrid and the Ling and Gemma stages
+  (Solar Open 2 +12% and K-EXAONE 2.0 +8% short-prompt prefill on the fleet,
+  tokens identical), and `K3LaunchSlicePair`
   (`inference/llms/kimi_k3/slice.cuh`) for K3. K3 also splits some rounds into
   Begin and Finish. Every other decode step and multi-sequence wave is still
   one serial chain (compute, all-reduce, compute), so every collective wait is
