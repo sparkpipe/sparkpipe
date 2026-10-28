@@ -9,7 +9,7 @@ REQUIRED = {
     ("model-families/ling/source/ling_stage.cuh", "LingDefaults"): ("kAttention", "kNormEpsilon", "kKdaDoubledBeta"),
     ("model-families/gemma4/include/sparkpipe/spark_gemma4_family.h", "GemmaDefaults"): ("kNormEpsilon", "kPostEpsilon", "kQkNormWeighted", "kQueryMultiply",
         "kValueNorm", "kAttentionScale", "kFullRope", "kGeluMlp", "kLayerScalar", "kPreNorm", "kSigmoidRouter", "kRoutedScale", "kRouterFloat"),
-    ("model-families/qwen38/source/qwen38_hybrid_stage.cuh", "QwenHybridDefaults"): ("kGdnSigmoidGate",),
+    ("model-families/qwen38/include/sparkpipe/spark_qwen38_family.h", "QwenHybridDefaults"): ("kGdnSigmoidGate",),
 }
 SOURCES = (sorted(ROOT.glob("modules/*/source/*.cu")) + sorted(ROOT.glob("modules/*/include/sparkpipe/*.h")) +
            sorted(ROOT.glob("model-families/*/source/*.cuh")))
