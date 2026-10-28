@@ -295,6 +295,33 @@ static void TestEventLifetime(void)
 	CHECK(SparkDeviceQueueDestroy(slow) == SPARK_STATUS_OK && SparkDeviceQueueDestroy(fast) == SPARK_STATUS_OK,"destroy the queues");
 }
 
+static void TestRecordedEventDestroy(SparkDeviceQueue *queue)
+{
+	SparkDeviceBuffer buffer = {0};
+	SparkDeviceEvent *event = 0;
+	uint32_t round,refused = 0u,failed = 0u;
+	CHECK(SparkDeviceAllocate(&buffer,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,4096u,"record-destroy") == SPARK_STATUS_OK,"allocate the record-destroy buffer");
+	for (round=0u; round<20000u; round++)
+	{
+		if ( SparkDeviceEventCreate(&event) != SPARK_STATUS_OK || SparkDeviceFill(queue,At(&buffer,0u),(uint8_t)round,4096u) != SPARK_STATUS_OK ||
+			SparkDeviceEventRecord(event,queue) != SPARK_STATUS_OK || SparkDeviceEventWait(event,SPARK_DEVICE_WAIT_FOREVER) != SPARK_STATUS_OK )
+		{
+			failed++;
+			break;
+		}
+		if ( SparkDeviceEventDestroy(event) != SPARK_STATUS_OK )
+		{
+			refused++;
+			SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER);
+			SparkDeviceEventDestroy(event);
+		}
+	}
+	CHECK(failed == 0u,"record and wait on a fresh event every round");
+	CHECK(refused == 0u,"an event whose record has completed can be destroyed as soon as a wait on it returns");
+	SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER);
+	CHECK(SparkDeviceFree(&buffer) == SPARK_STATUS_OK,"free the record-destroy buffer");
+}
+
 static void TestTiming(SparkDeviceQueue *queue)
 {
 	SparkDeviceEvent *start = 0, *stop = 0, *unused = 0;
@@ -631,6 +658,7 @@ int main(void)
 	TestOrdering();
 	TestBusy(queue);
 	TestEventLifetime();
+	TestRecordedEventDestroy(queue);
 	TestTiming(queue);
 	TestResolve();
 	TestFileAndRegister(queue);
