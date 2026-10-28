@@ -31,6 +31,7 @@
 
 #define GM_THREADS 256u
 #define GM_PACK_ALIGNMENT 128u
+#define GM_PAIR_FIRST_MIN_ROWS 256u
 
 struct GemmaDefaults
 {
@@ -164,6 +165,7 @@ struct GemmaState
 	GemmaState *lane_states[SPARK_STAGE_RUNNER_LANES];
 	uint16_t *normed;
 	uint16_t *partial;
+	uint16_t *share;
 	uint16_t *attn_local;
 	uint16_t *attn_gathered;
 	uint16_t *attn_full;
@@ -435,6 +437,26 @@ struct GemmaModel
 		return cudaPeekAtLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 	}
 
+	static uint32_t PairFirst(const State *state, const SparkStageRunnerStep *step)
+	{
+		const uint32_t degree = state->tp_degree;
+		return step->commit != 0u && degree >= 4u && degree % 2u == 0u && step->rows >= GM_PAIR_FIRST_MIN_ROWS && step->rows % degree == 0u ? 1u : 0u;
+	}
+
+	static SparkStatus PairResidual(State *state, cudaStream_t stream, uint32_t rows, const uint16_t *partial, uint16_t *hidden)
+	{
+		const uint32_t share = rows / state->tp_degree;
+		SparkStatus status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16, rows, 0u, partial, state->share);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		LmAddRowsKernel<GM_THREADS><<<dim3(Blocks(G::kHidden), share), GM_THREADS, 0, stream>>>(hidden + (uint64_t)state->tp_rank * share * G::kHidden,
+			state->share, state->share, share, G::kHidden);
+		status = Launched();
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		return Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, share, 0u, state->share, hidden);
+	}
+
 	static void RowState(const State *state, uint32_t layer, uint32_t phase)
 	{
 		if ( state->services->row_state != 0 )
@@ -645,6 +667,7 @@ struct GemmaModel
 		const uint64_t width = (uint64_t)rows * G::kHidden;
 		uint16_t *hidden = step->hidden_bf16;
 		SparkStatus status = SPARK_STATUS_OK;
+		const uint32_t pair = PairFirst(state, step);
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
 			hidden, (const uint16_t *)0, state->layers[0].input_norm, (uint16_t *)0, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
 		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
@@ -654,23 +677,27 @@ struct GemmaModel
 			uint16_t *ffn = moe ? state->partial + width : state->partial;
 			status = S::Full(index) ? Attention<true>(state, layer, step, stream) : Attention<false>(state, layer, step, stream);
 			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
+				status = pair != 0u ? PairResidual(state, stream, rows, state->partial, hidden) :
+					Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
 			if ( status != SPARK_STATUS_OK )
 				break;
 			LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
-				state->partial, hidden, layer->pre_ff_norm, hidden, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
+				pair != 0u ? hidden : state->partial, pair != 0u ? (const uint16_t *)0 : hidden, layer->pre_ff_norm, pair != 0u ? (uint16_t *)0 : hidden,
+				state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
 			status = Mlp(state, layer, step, stream);
 			if constexpr ( G::kMoe && G::kSigmoidRouter )
 				if ( status == SPARK_STATUS_OK && moe )
 					status = MoeSigmoid(state, layer, step, stream);
 			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, ffn, ffn);
+				status = pair != 0u ? PairResidual(state, stream, rows, ffn, hidden) :
+					Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, ffn, ffn);
 			if ( status != SPARK_STATUS_OK )
 				break;
 			if ( index + 1u < G::kLayers )
 				LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
-					ffn, hidden, state->layers[index + 1u].input_norm, hidden, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
-			else
+					pair != 0u ? hidden : ffn, pair != 0u ? (const uint16_t *)0 : hidden, state->layers[index + 1u].input_norm,
+					pair != 0u ? (uint16_t *)0 : hidden, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
+			else if ( pair == 0u )
 				GemmaAddRowsKernel<<<Blocks(width), GM_THREADS, 0, stream>>>(hidden, ffn, width);
 			status = Launched();
 			if ( status == SPARK_STATUS_OK && state->services->layer_done != 0 )
@@ -740,6 +767,7 @@ struct GemmaModel
 		{
 			{ (void **)&state->normed, width },
 			{ (void **)&state->partial, G::kMoe ? 2u * width : width },
+			{ (void **)&state->share, (rows + state->tp_degree - 1u) / state->tp_degree * G::kHidden * sizeof(uint16_t) },
 			{ (void **)&state->attn_local, rows * (S::kMaxFused / state->tp_degree) * sizeof(uint16_t) },
 			{ (void **)&state->attn_gathered, rows * S::kMaxFused * sizeof(uint16_t) },
 			{ (void **)&state->attn_full, rows * S::kMaxFused * sizeof(uint16_t) },

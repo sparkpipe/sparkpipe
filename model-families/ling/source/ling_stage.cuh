@@ -33,6 +33,7 @@
 #define LG_THREADS 256u
 #define LG_EPSILON 1e-6f
 #define LG_PACK_ALIGNMENT 128u
+#define LG_PAIR_FIRST_MIN_ROWS 256u
 #define LING_ATTENTION_MLA 0u
 #define LING_ATTENTION_GQA 1u
 
@@ -141,6 +142,7 @@ struct LingState
 	LingState *lane_states[SPARK_STAGE_RUNNER_LANES];
 	uint16_t *normed;
 	uint16_t *partial;
+	uint16_t *share;
 	uint16_t *qkv;
 	uint16_t *kda_low_f;
 	uint16_t *kda_low_g;
@@ -292,6 +294,26 @@ struct LingModel
 	static SparkStatus Launched(void)
 	{
 		return cudaPeekAtLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+	}
+
+	static uint32_t PairFirst(const State *state, const SparkStageRunnerStep *step)
+	{
+		const uint32_t degree = state->tp_degree;
+		return step->commit != 0u && degree >= 4u && degree % 2u == 0u && step->rows >= LG_PAIR_FIRST_MIN_ROWS && step->rows % degree == 0u ? 1u : 0u;
+	}
+
+	static SparkStatus PairResidual(State *state, cudaStream_t stream, uint32_t rows, uint16_t *hidden)
+	{
+		const uint32_t share = rows / state->tp_degree;
+		SparkStatus status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16, rows, 0u, state->partial, state->share);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		LmAddRowsKernel<LG_THREADS><<<dim3(Blocks(G::kHidden), share), LG_THREADS, 0, stream>>>(hidden + (uint64_t)state->tp_rank * share * G::kHidden,
+			state->share, state->share, share, G::kHidden);
+		status = Launched();
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		return Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, share, 0u, state->share, hidden);
 	}
 
 	static void RowState(const State *state, uint32_t layer, uint32_t phase)
@@ -548,28 +570,34 @@ struct LingModel
 		SparkStatus status = SPARK_STATUS_OK;
 		if ( rows == 0u || rows > state->max_rows || step->sequences > state->slots )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		const uint32_t pair = PairFirst(state, step);
 		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
 		{
 			const LingLayer *layer = &state->layers[index];
+			const uint32_t pending = index != 0u && pair == 0u ? 1u : 0u;
 			LM_LAUNCH((LmFusedResidualRmsNormKernel<LG_THREADS,float>), rows, LG_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
-				hidden, index == 0u ? (const uint16_t *)0 : state->partial, layer->input_norm, index == 0u ? (uint16_t *)0 : hidden,
+				hidden, pending != 0u ? state->partial : (const uint16_t *)0, layer->input_norm, pending != 0u ? hidden : (uint16_t *)0,
 				state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
 			status = index % G::kPeriod == G::kPhase ? Attention(state, layer, step, stream) : Kda(state, layer, step, stream);
 			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
+				status = pair != 0u ? PairResidual(state, stream, rows, hidden) :
+					Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
 			if ( status != SPARK_STATUS_OK )
 				break;
 			LM_LAUNCH((LmFusedResidualRmsNormKernel<LG_THREADS,float>), rows, LG_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
-				hidden, state->partial, layer->post_norm, hidden, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
+				hidden, pair != 0u ? (const uint16_t *)0 : state->partial, layer->post_norm, pair != 0u ? (uint16_t *)0 : hidden, state->normed,
+				G::kHidden, G::kHidden, G::kNormEpsilon);
 			status = index < G::kDenseLayers ? Dense(state, layer, step, stream) : Moe(state, layer, index, step, stream);
 			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
+				status = pair != 0u ? PairResidual(state, stream, rows, hidden) :
+					Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
 			if ( status == SPARK_STATUS_OK && state->services->layer_done != 0 )
 				state->services->layer_done(state->services->context, index);
 		}
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		LmAddRowsKernel<LG_THREADS><<<dim3(Blocks(G::kHidden), rows), LG_THREADS, 0, stream>>>(hidden, state->partial, hidden, rows, G::kHidden);
+		if ( pair == 0u )
+			LmAddRowsKernel<LG_THREADS><<<dim3(Blocks(G::kHidden), rows), LG_THREADS, 0, stream>>>(hidden, state->partial, hidden, rows, G::kHidden);
 		return Launched();
 	}
 
@@ -608,6 +636,7 @@ struct LingModel
 		{
 			{ (void **)&state->normed, width },
 			{ (void **)&state->partial, width },
+			{ (void **)&state->share, (rows + degree - 1u) / degree * G::kHidden * sizeof(uint16_t) },
 			{ (void **)&state->qkv, rows * S::kKdaChannels * sizeof(uint16_t) },
 			{ (void **)&state->kda_low_f, rows * G::kKdaRank * sizeof(uint16_t) },
 			{ (void **)&state->kda_low_g, rows * G::kKdaRank * sizeof(uint16_t) },

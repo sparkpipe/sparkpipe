@@ -2004,8 +2004,9 @@ struct GlmModel
 		const uint16_t *gate_down, const uint16_t *gate_up, cudaStream_t stream)
 	{
 		const GlmRowShare row = GlmRowShareOf(wave->rows, state->tp_degree, state->tp_rank);
-		SparkStatus status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16, row.share * state->tp_degree, 0u, partial,
-			state->row_share);
+		const uint32_t operation = state->tp_degree >= 4u && state->tp_degree % 2u == 0u ? SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16 :
+			SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16;
+		SparkStatus status = Round(state, stream, operation, row.share * state->tp_degree, 0u, partial, state->row_share);
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		GlmRowShareNorm<GLM_THREADS>(&row, state->row_share, state->residual, weight, keep_residual, state->row_normed, S::kHidden, S::kRmsEpsilon, stream);
