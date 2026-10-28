@@ -1048,7 +1048,11 @@ build/rdma_alltoall_probe: tools/hardware/rdma_alltoall_probe.c
 	@mkdir -p build
 	$(CC) $(CFLAGS) $< $(LDFLAGS) -libverbs -o $@
 
-hardware_tools: build/spark_model_kernel_characterize build/spark_transport_characterize build/spark_topology_characterize build/spark_pmtu_characterize build/rdma_alltoall_probe
+build/weight_stream_probe: tools/hardware/weight_stream_probe.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $< $(LDFLAGS) -libverbs -o $@
+
+hardware_tools: build/spark_model_kernel_characterize build/spark_transport_characterize build/spark_topology_characterize build/spark_pmtu_characterize build/rdma_alltoall_probe build/weight_stream_probe
 
 hardware_cuda_tools: $(CUDA_HEADER_DEPS)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
