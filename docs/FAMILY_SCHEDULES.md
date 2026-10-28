@@ -29,6 +29,8 @@ The backends:
 | HY4 | `HyModel<G>` in `model-families/hy4/source/hy4_stage.cuh` | not yet |
 | GLM 5.3 Flash | `Glm5NextStage<G>` in `model-families/glm5_next/source/glm5_next_stage_model.cuh` | not yet |
 | GLM 5.3 Full (GLM 5.3 Full, A.X K2) | `GlmModel<G>` in `model-families/glm52/source/glm52_stage.cuh` | not yet |
+| K3 | `K3Cuda<Format, Geometry>` in `inference/llms/kimi_k3/slice.cuh` | not yet |
+| DeepSeek V4.1 Flash | `D41Cuda` in `modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_model.cu` | not yet |
 
 A backend defines `State`, `Frame` (the per-step handles: the CUDA stream and
 step, or the Metal queue and step tables), `Layer` (the bound weights of one
@@ -52,6 +54,19 @@ K2 geometries stay in their `.cu` files until the rope pairing
 (`LmRopePairing`, in `attn.cuh`) and the stagepack geometry hooks have a
 device-neutral home. The GLM 5.3 Full schedule walks the waves its backend
 chooses; wave choice, gather or scatter attention and row sharding are the
+CUDA backend's way of running a step.
+
+K3 has three orderings in one `K3Schedule<B>`: `Slice` (one lane), `SlicePair`
+(two row halves on two streams, the long-prefill path) and `SliceHalf` (one
+layer phase). All three take the layer kind, the dense or routed MLP, the
+attention-residual sources and the block boundary from `K3Layout`; the
+paired ordering adds fences and collective rounds, which are backend
+operations, and keeps the enqueue order the pipelining depends on. A
+backend without streams runs `Slice` and never instantiates `SlicePair`.
+
+DeepSeek V4.1 Flash's layer map (compression ratio, KV and index sources,
+cache owners, engram layers) lives in its family header; the rows that
+later layers skip ("tail" rows) and the candidate-source compress are the
 CUDA backend's way of running a step.
 
 Both backends bind the same pack tensor names (`layers.N.attn_qkv`,

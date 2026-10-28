@@ -1149,20 +1149,16 @@ and the multidev docs on 2026-09-28. Line numbers are in
     others, Metal the precise functions everywhere, so the backends differ
     by the intrinsic's error until one policy is chosen and measured;
   Kernel bodies (the schedules) stay per backend.
-- Move every family onto one schedule for all backends
-  ([`docs/FAMILY_SCHEDULES.md`](docs/FAMILY_SCHEDULES.md)). Gemma 4 and the
-  Qwen 3.8 hybrid run theirs on CUDA and Metal; MiMo 2.6, Ling 3 (with
-  Solar Open 2), HY4, GLM 5.3 Flash and GLM 5.3 Full (with A.X K2) have
-  theirs, with a CUDA backend only. Still a CUDA-only `Step`: the two stages
-  outside the family templates, K3 (`inference/llms/kimi_k3/slice.cuh`, three
-  layer loops: single, paired halves and one layer) and DeepSeek V4.1 Flash
-  (`spark_dsv41_flash_stage_model.cu`). The GLM 5.3 Full and A.X K2
-  geometries stay in their `.cu` files until `LmRopePairing` and the
-  stagepack geometry hooks have a device-neutral home. A Metal port of one of these starts
-  with its family schedule, never with a device copy of its `Step`. The CUDA
-  backends still carry one copy of an operation per family: GQA attention
-  with its gather, split and pack-slot kernels in Gemma, MiMo, Ling and Qwen,
-  and the routed experts in six families.
+- Every family runs one schedule for all backends
+  ([`docs/FAMILY_SCHEDULES.md`](docs/FAMILY_SCHEDULES.md)); Gemma 4 and the
+  Qwen 3.8 hybrid have a Metal backend. Still open: the GLM 5.3 Full and A.X
+  K2 geometries stay in their `.cu` files until `LmRopePairing` and the
+  stagepack geometry hooks have a device-neutral home, and K3 and DeepSeek
+  V4.1 Flash keep their geometry as macros (`inference/llms/kimi_k3/config.h`,
+  the `D41_*` defines) rather than a geometry struct. The CUDA backends still
+  carry one copy of an operation per family: GQA attention with its gather,
+  split and pack-slot kernels in Gemma, MiMo, Ling and Qwen, and the routed
+  experts in six families.
 - Add rank, island and link-class descriptors and derive collective
   decomposition from the link matrix instead of a configured backend.
 - Keep the host backend as a CI oracle for common policy, not only for
