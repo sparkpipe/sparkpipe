@@ -27,6 +27,11 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_gemv_f32_r2",
 	"spark_gemv_f32_r4",
 	"spark_gemv_f32_r8",
+	"spark_gemv_fp8_r1",
+	"spark_gemv_fp8_r2",
+	"spark_gemv_fp8_r4",
+	"spark_gemv_fp8_r8",
+	"spark_dequant_fp8",
 	"spark_gemm",
 	"spark_gemm_f32",
 	"spark_gemm_rows16",
@@ -409,6 +414,55 @@ SparkStatus SparkOpsLinear(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTe
 			SPARK_DEVICE_BIND_WRITE);
 		const uint32_t outputs = SPARK_GEMV_ROW_OUTPUTS(chunk.rows);
 		status = OpsLaunch(ops,queue,OpsGemvKernel(params,chunk.rows),(N + outputs - 1u) / outputs,1u,1u,128u,&chunk,sizeof(chunk),bindings,3u);
+	}
+	return(status);
+}
+
+SparkStatus SparkOpsLinearFp8(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor scale, SparkTensor dequant,
+	SparkTensor y, const SparkGemvParams *params)
+{
+	const uint32_t K = params->input_dimension, N = params->output_dimension;
+	SparkDeviceBinding bindings[5];
+	SparkGemvParams chunk;
+	SparkStatus status;
+	uint32_t done;
+	if ( params->rows == 0u || K == 0u || N == 0u || K % SPARK_FP8_CHUNK != 0u || params->input_stride % 8u != 0u || params->input_stride < K ||
+		params->output_f32 != 0u || params->scale_stride < (K + SPARK_FP8_SCALE_K - 1u) / SPARK_FP8_SCALE_K )
+		return(OpsRefuse("linear_fp8","an input width that is a multiple of 16, a stride that covers it, BF16 output and a scale row per 128 inputs"));
+	status = OpsNeed("linear_fp8","input",x,OpsRowsBytes(params->rows,params->input_stride,K,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("linear_fp8","weight",w,(uint64_t)N * K);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("linear_fp8","scale",scale,(uint64_t)N * params->scale_stride * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("linear_fp8","output",y,OpsRowsBytes(params->rows,params->output_stride,N,2u));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( params->rows > SPARK_OPS_FP8_GEMV_ROWS && params->row_exact == 0u )
+	{
+		status = OpsNeed("linear_fp8","dequant",dequant,(uint64_t)N * K * sizeof(uint16_t));
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		bindings[0] = OpsBind(w,SPARK_DEVICE_BIND_READ);
+		bindings[1] = OpsBind(scale,SPARK_DEVICE_BIND_READ);
+		bindings[2] = OpsBind(dequant,SPARK_DEVICE_BIND_WRITE);
+		status = OpsLaunch(ops,queue,SPARK_OPS_DEQUANT_FP8,(K / 4u + 255u) / 256u,N,1u,256u,params,sizeof(*params),bindings,3u);
+		return(status == SPARK_STATUS_OK ? SparkOpsLinear(ops,queue,x,dequant,y,params) : status);
+	}
+	bindings[1] = OpsBind(w,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(scale,SPARK_DEVICE_BIND_READ);
+	for ( done = 0u; status == SPARK_STATUS_OK && done < params->rows; done += chunk.rows )
+	{
+		const uint32_t left = params->rows - done;
+		chunk = *params;
+		chunk.rows = left >= SPARK_OPS_GEMV_PASS_ROWS ? SPARK_OPS_GEMV_PASS_ROWS : left >= 4u ? 4u : left >= 2u ? 2u : 1u;
+		bindings[0] = OpsBind(SparkTensorSlice(x,(uint64_t)done * params->input_stride * sizeof(uint16_t),
+			OpsRowsBytes(chunk.rows,params->input_stride,K,2u)),SPARK_DEVICE_BIND_READ);
+		bindings[3] = OpsBind(SparkTensorSlice(y,(uint64_t)done * params->output_stride * sizeof(uint16_t),OpsRowsBytes(chunk.rows,params->output_stride,N,2u)),
+			SPARK_DEVICE_BIND_WRITE);
+		const uint32_t outputs = SPARK_GEMV_ROW_OUTPUTS(chunk.rows);
+		const uint32_t slot = chunk.rows == 8u ? 3u : chunk.rows == 4u ? 2u : chunk.rows == 2u ? 1u : 0u;
+		status = OpsLaunch(ops,queue,(SparkOpsKernel)(SPARK_OPS_GEMV_FP8_R1 + slot),(N + outputs - 1u) / outputs,1u,1u,128u,&chunk,sizeof(chunk),bindings,4u);
 	}
 	return(status);
 }

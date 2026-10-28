@@ -12,6 +12,7 @@ extern "C" {
 
 #define SPARK_OPS_GEMV_MAX_ROWS 2u
 #define SPARK_OPS_GEMV_PASS_ROWS 8u
+#define SPARK_OPS_FP8_GEMV_ROWS 16u
 #define SPARK_OPS_DECODE_MAX_ROWS 64u
 #define SPARK_OPS_SPLIT_TARGET_GROUPS 1024u
 #define SPARK_OPS_PARTIAL_BYTES ((uint64_t)SPARK_OPS_DECODE_MAX_ROWS * 2u * SPARK_OPS_SPLIT_TARGET_GROUPS * SPARK_GEMM_ROWS_OUTPUTS * sizeof(float))
@@ -34,6 +35,11 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_GEMV_F32_R2,
 	SPARK_OPS_GEMV_F32_R4,
 	SPARK_OPS_GEMV_F32_R8,
+	SPARK_OPS_GEMV_FP8_R1,
+	SPARK_OPS_GEMV_FP8_R2,
+	SPARK_OPS_GEMV_FP8_R4,
+	SPARK_OPS_GEMV_FP8_R8,
+	SPARK_OPS_DEQUANT_FP8,
 	SPARK_OPS_GEMM,
 	SPARK_OPS_GEMM_F32,
 	SPARK_OPS_GEMM_ROWS16,
@@ -122,6 +128,8 @@ SparkStatus SparkOpsRmsNormGate(SparkDeviceOps *ops, SparkDeviceQueue *queue, Sp
 SparkStatus SparkOpsHeadRmsNormRope(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor weight, SparkTensor positions,
 	SparkTensor output, const SparkHeadRopeParams *params);
 SparkStatus SparkOpsLinear(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor y, const SparkGemvParams *params);
+SparkStatus SparkOpsLinearFp8(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor scale, SparkTensor dequant,
+	SparkTensor y, const SparkGemvParams *params);
 SparkStatus SparkOpsCausalConv(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor window, const SparkOpsSequences *sequences,
 	SparkTensor input, SparkTensor weight, SparkTensor output, const SparkConvParams *params);
 SparkStatus SparkOpsGatedDelta(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor state, const SparkOpsSequences *sequences,

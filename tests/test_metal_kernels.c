@@ -576,6 +576,95 @@ static void TestLinear(uint32_t rows, uint32_t K, uint32_t N, uint32_t output_f3
 	SparkDeviceFree(&y);
 }
 
+static double E4m3(uint8_t code)
+{
+	const uint32_t exponent = (code >> 3u) & 15u, mantissa = code & 7u;
+	const double magnitude = exponent == 0u ? ldexp((double)mantissa,-9) : ldexp(1.0 + (double)mantissa / 8.0,(int)exponent - 7);
+	return((code & 0x80u) != 0u ? -magnitude : magnitude);
+}
+
+static void TestLinearFp8(uint32_t rows, uint32_t K, uint32_t N, uint32_t row_exact, uint64_t samples)
+{
+	const uint32_t blocks = (K + SPARK_FP8_SCALE_K - 1u) / SPARK_FP8_SCALE_K;
+	const uint32_t rounded = rows > SPARK_OPS_FP8_GEMV_ROWS && row_exact == 0u ? 1u : 0u;
+	SparkDeviceBuffer x, w, scale, dequant, y;
+	uint16_t *xv = (uint16_t *)Shared(&x,(uint64_t)rows * K * 2u,"fp8 linear x");
+	uint8_t *wv = (uint8_t *)Shared(&w,(uint64_t)N * K,"fp8 linear w");
+	float *sv = (float *)Shared(&scale,(uint64_t)N * blocks * sizeof(float),"fp8 linear scale");
+	uint16_t *yv = (uint16_t *)Shared(&y,(uint64_t)rows * N * 2u,"fp8 linear y");
+	SparkGemvParams params;
+	Check clean, corrupted;
+	char shape[96];
+	uint64_t total = (uint64_t)rows * N, index;
+	uint32_t pass, k;
+	Shared(&dequant,(uint64_t)N * K * 2u,"fp8 linear dequant");
+	FillBf16(xv,(uint64_t)rows * K,1.0);
+	for ( index = 0u; index < (uint64_t)N * K; index++ )
+	{
+		uint8_t code = (uint8_t)(NextRandom() & 0xffu);
+		wv[index] = (code & 0x7fu) == 0x7fu ? (uint8_t)(code ^ 1u) : code;
+	}
+	for ( index = 0u; index < (uint64_t)N * blocks; index++ )
+		sv[index] = (float)ldexp(1.0 + 0.5 * (double)(NextRandom() % 1024u) / 1024.0,-8 - (int)(NextRandom() % 4u));
+	memset(&params,0,sizeof(params));
+	params.rows = rows;
+	params.input_dimension = K;
+	params.output_dimension = N;
+	params.input_stride = K;
+	params.output_stride = N;
+	params.projection = SPARK_PROJECTION_ROW_TILES;
+	params.row_exact = row_exact;
+	params.scale_stride = blocks;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint64_t poke = (uint64_t)(rows - 1u) * K + K / 2u;
+		const uint16_t saved = xv[poke];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			xv[poke] = ToBf16(Bf16(saved) + (Bf16(saved) >= 0.0f ? -64.0f : 64.0f));
+		if ( !Run(SparkOpsLinearFp8(&ops,queue,Whole(&x),Whole(&w),Whole(&scale),Whole(&dequant),Whole(&y),&params),"linear fp8") )
+			break;
+		xv[poke] = saved;
+		if ( pass == 0u && rounded != 0u )
+		{
+			uint64_t wrong = 0u;
+			for ( index = 0u; index < (uint64_t)N * K; index++ )
+				if ( ((const uint16_t *)dequant.host)[index] != ToBf16((float)E4m3(wv[index]) * sv[(index / K) * blocks + (index % K) / SPARK_FP8_SCALE_K]) )
+					wrong++;
+			if ( wrong != 0u )
+			{
+				printf("FAIL linear_fp8 dequant: %llu of %llu weights are not bf16(e4m3 x scale)\n",(unsigned long long)wrong,(unsigned long long)N * K);
+				failures++;
+			}
+		}
+		for ( index = 0u; index < (samples < total ? samples : total); index++ )
+		{
+			const uint64_t element = SampleIndex(index,total,samples);
+			const uint32_t row = (uint32_t)(element / N), n = (uint32_t)(element % N);
+			double sum = 0.0, magnitude = 0.0;
+			for ( k = 0u; k < K; k++ )
+			{
+				const float block = sv[(uint64_t)n * blocks + k / SPARK_FP8_SCALE_K];
+				const double weight = rounded != 0u ? RoundBf16((double)(float)((float)E4m3(wv[(uint64_t)n * K + k]) * block)) : E4m3(wv[(uint64_t)n * K + k]) * block;
+				const double term = Bf16(xv[(uint64_t)row * K + k]) * weight;
+				sum += term;
+				magnitude += fabs(term);
+			}
+			Observe(check,Bf16(yv[element]),sum,UNIT_BF16 * fabs(sum) + (1.0 + UNIT_BF16) * Gamma(K + K / SPARK_FP8_CHUNK + 2u) * magnitude);
+		}
+	}
+	snprintf(shape,sizeof(shape),"rows %u, K %u -> N %u%s%s",rows,K,N,rounded != 0u ? ", bf16 dequant" : ", per-chunk scale",
+		samples < total ? ", sampled" : "");
+	Report(rounded != 0u ? "linear_fp8 dequant" : row_exact != 0u ? "linear_fp8 exact" : "linear_fp8 gemv",shape,&clean,&corrupted,
+		rounded != 0u ? "u|y| + (1+u) gamma_K sum|x bf16(w s)|" : "u|y| + (1+u) gamma_(K + K/16 + 2) sum|x w s|, u = 2^-8");
+	SparkDeviceFree(&x);
+	SparkDeviceFree(&w);
+	SparkDeviceFree(&scale);
+	SparkDeviceFree(&dequant);
+	SparkDeviceFree(&y);
+}
+
 static void TestLinearRowIndependence(uint32_t rows, uint32_t other_rows, uint32_t K, uint32_t N, uint32_t output_f32, uint32_t projection,
 	uint32_t exact)
 {
@@ -2074,6 +2163,13 @@ int main(int argc, char **argv)
 	TestLinearRowIndependence(64u,1u,17408u,5120u,0u,SPARK_PROJECTION_ROW_TILES,1u);
 	TestLinearRowIndependence(32u,1u,5120u,248320u,1u,SPARK_PROJECTION_ROW_TILES,1u);
 	TestLinearRowIndependence(13u,2u,6144u,5120u,0u,SPARK_PROJECTION_ROW_TILES,0u);
+	TestLinearFp8(1u,5120u,1000u,0u,UINT64_MAX);
+	TestLinearFp8(3u,17408u,512u,0u,20000u);
+	TestLinearFp8(8u,5120u,2048u,0u,20000u);
+	TestLinearFp8(16u,5120u,1000u,0u,20000u);
+	TestLinearFp8(64u,5120u,1000u,1u,20000u);
+	TestLinearFp8(17u,5120u,512u,0u,20000u);
+	TestLinearFp8(130u,5120u,512u,0u,20000u);
 	TestCausalConv();
 	TestGatedDelta();
 	TestAttention(1u,1u,0u);
