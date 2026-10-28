@@ -328,6 +328,7 @@ static void SnapTestTreeEviction(const char *directory)
 	CHECK(SnapTreeWrite(&store,&last,0) == SPARK_STATUS_OK && SparkKvSnapshotContains(&store,&child) == 0u && SparkKvSnapshotContains(&store,&root) == 1u);
 	CHECK(SnapTreeWrite(&store,&grandchild,0) == SPARK_STATUS_OK && SparkKvSnapshotContains(&store,&root) == 0u);
 	CHECK(SparkKvSnapshotContains(&store,&other) == 1u && SparkKvSnapshotContains(&store,&state) == 1u && SparkKvSnapshotContains(&store,&later) == 1u && SparkKvSnapshotContains(&store,&last) == 1u);
+	SparkKvSnapshotStoreClose(&store);
 }
 
 static uint64_t SnapNow(void)
