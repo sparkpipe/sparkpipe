@@ -1103,8 +1103,9 @@ static const void *K3ModelProbeBuffers(void *model)
 static void K3ModelReport(void *model, uint32_t rank)
 {
 	const SparkK3ModelState *state = (const SparkK3ModelState *)model;
-	fprintf(stderr, "K3-STEP-TIMING rank=%u mla_gather_waves=%llu mla_scatter_waves=%llu pair_waves=%llu\n", rank,
+	fprintf(stderr, "K3-STEP-TIMING rank=%u mla_gather_waves=%llu mla_scatter_waves=%llu mla_mha_waves=%llu pair_waves=%llu\n", rank,
 		(unsigned long long)state->dispatch.mla_gather_waves, (unsigned long long)state->dispatch.mla_scatter_waves,
+		(unsigned long long)state->dispatch.mla_mha_waves,
 		(unsigned long long)state->dispatch.pair_waves);
 }
 
