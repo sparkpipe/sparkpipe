@@ -26,6 +26,9 @@ The backends:
 | Qwen 3.8 hybrid (27B, Flash, Max) | `QwenHybridModel<G>` in `model-families/qwen38/source/qwen38_hybrid_stage.cuh` | `QwenDevice<P>` in `model-families/qwen38/device/qwen38_device_stage.cpp` |
 | MiMo 2.6 (Flash, Pro) | `MimoModel<G>` in `model-families/mimo26/source/mimo26_stage.cuh` | not yet |
 | Ling 3 (Ling 3 Flash and Fin, Solar Open 2) | `LingModel<G>` in `model-families/ling/source/ling_stage.cuh` | not yet |
+| HY4 | `HyModel<G>` in `model-families/hy4/source/hy4_stage.cuh` | not yet |
+| GLM 5.3 Flash | `Glm5NextStage<G>` in `model-families/glm5_next/source/glm5_next_stage_model.cuh` | not yet |
+| GLM 5.3 Full (GLM 5.3 Full, A.X K2) | `GlmModel<G>` in `model-families/glm52/source/glm52_stage.cuh` | not yet |
 
 A backend defines `State`, `Frame` (the per-step handles: the CUDA stream and
 step, or the Metal queue and step tables), `Layer` (the bound weights of one
@@ -42,6 +45,14 @@ model that needs a missing operation does not compile for that device.
   mapped rank pack on Metal), KV views, lanes and graphs.
 - Collectives. `B::AllReduce` is the mesh round on CUDA and nothing at TP1
   on Metal; a Metal tensor-parallel stage implements it over Thunderbolt.
+
+GLM 5.3 Flash's numbers come from the contract-generated
+`spark_glm5_next_model.h`, which both backends read. The GLM 5.3 Full and A.X
+K2 geometries stay in their `.cu` files until the rope pairing
+(`LmRopePairing`, in `attn.cuh`) and the stagepack geometry hooks have a
+device-neutral home. The GLM 5.3 Full schedule walks the waves its backend
+chooses; wave choice, gather or scatter attention and row sharding are the
+CUDA backend's way of running a step.
 
 Both backends bind the same pack tensor names (`layers.N.attn_qkv`,
 `layers.N.ffn_gate_up`, ...), and the Metal packs are the CUDA packers run

@@ -1151,12 +1151,14 @@ and the multidev docs on 2026-09-28. Line numbers are in
   Kernel bodies (the schedules) stay per backend.
 - Move every family onto one schedule for all backends
   ([`docs/FAMILY_SCHEDULES.md`](docs/FAMILY_SCHEDULES.md)). Gemma 4 and the
-  Qwen 3.8 hybrid run theirs on CUDA and Metal; MiMo 2.6 and Ling 3 (with
-  Solar Open 2) have theirs, with a CUDA backend only. Still a CUDA-only
-  `Step`: HY4 (`hy4_stage.cuh`), GLM 5.3 Flash (`glm5_next_stage_model.cuh`), GLM 5.3
-  Full with A.X K2 (`glm52_stage.cuh`), and the two stages outside the family
-  templates, K3 (`inference/llms/kimi_k3/`) and DeepSeek V4.1 Flash
-  (`spark_dsv41_flash_stage_model.cu`). A Metal port of one of these starts
+  Qwen 3.8 hybrid run theirs on CUDA and Metal; MiMo 2.6, Ling 3 (with
+  Solar Open 2), HY4, GLM 5.3 Flash and GLM 5.3 Full (with A.X K2) have
+  theirs, with a CUDA backend only. Still a CUDA-only `Step`: the two stages
+  outside the family templates, K3 (`inference/llms/kimi_k3/slice.cuh`, three
+  layer loops: single, paired halves and one layer) and DeepSeek V4.1 Flash
+  (`spark_dsv41_flash_stage_model.cu`). The GLM 5.3 Full and A.X K2
+  geometries stay in their `.cu` files until `LmRopePairing` and the
+  stagepack geometry hooks have a device-neutral home. A Metal port of one of these starts
   with its family schedule, never with a device copy of its `Step`. The CUDA
   backends still carry one copy of an operation per family: GQA attention
   with its gather, split and pack-slot kernels in Gemma, MiMo, Ling and Qwen,
