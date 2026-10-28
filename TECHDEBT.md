@@ -1362,6 +1362,29 @@ One model holds a fleet at a time, and loading another takes about a
 minute (79 s for Kimi K3). Several models sharing a fleet's Sparks need the
 items below.
 
+- Two lanes in two processes on one GPU stall each other. Each process's
+  collective waits spin on the GPU, and the GPU time-slices between
+  processes, so a 1024 x 7168 reduce-scatter round that takes 1.47 ms on one
+  lane takes 10.97 ms on each of two concurrent lanes, for the production
+  pipelined reduce-scatter and for pair-first alike. Under a per-user MPS
+  daemon the two lanes take 2.53 ms (pipelined) and 2.12 ms (pair-first)
+  per round, and one lane is unchanged at 1.47 ms (2026-10-26, 16 ranks,
+  interleaved plain and MPS arms, no AER). The mesh is not the cause: the
+  nodes logged no repairs and no completion errors. Fix by starting MPS with
+  each lane launch (runtime only; one client's fault ends every client of
+  that daemon) or by hosting the lanes in one process, and gate it with two
+  concurrent lanes of one model and with two co-resident models.
+
+- Pair-first all-gather wins wherever it applies. On link A with 16 ranks
+  (2026-10-26, two interleaved passes agreeing within 0.2%), a 7168-element
+  row all-gather per round went from 707 to 568 us at 32 rows (-20%), 2776
+  to 2108 us at 128 rows and 43276 to 32696 us at 2048 rows (-24%); at 16
+  rows it is not pipelined and both arms take 366 us. At the production slot
+  size a pipelined all-gather always has three or more chunks, so
+  `SparkTpMeshGatherPairFirst` picks pair-first at every size that gains.
+  K3 speculative decode never reaches it: a 256-row verify frame gathers
+  114,688 elements per rank, below the pipelining threshold.
+
 - Lane-priority over-subscription policy: the explicit `EVICT` request
   enforces lane order (`SparkWeightdServerOnEvict` in
   `runtime/spark_weightd.c` denies a requester lane that is not below the

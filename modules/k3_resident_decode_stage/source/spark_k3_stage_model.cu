@@ -391,7 +391,7 @@ static void K3RunnerRowShard(SparkK3ModelState *state, K3LayerBuffers *b, cudaSt
 		return;
 	}
 	K3RunnerRound(state, stream, share * degree, state->fused_device, state->row_share_device, 0u,
-		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16, K3_RUNNER_STAGE_ALL);
+		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16, K3_RUNNER_STAGE_ALL);
 	if ( count != 0u )
 	{
 		K3PartialRows(b, state->row_share_device, first, count, base == 0u && (layer % K3_ATTNRES_BLOCK_SIZE) == 0u, stream);
@@ -405,6 +405,21 @@ static void K3RunnerRowShard(SparkK3ModelState *state, K3LayerBuffers *b, cudaSt
 		K3ModelFail(state);
 	if ( base == 1u )
 		K3RunnerRowShardTap(state, b, stream, rows, layer, row_offset, share, first, count);
+}
+
+static void K3RunnerLatentPairReduce(SparkK3ModelState *state, K3LayerBuffers *b, cudaStream_t stream, uint32_t rows)
+{
+	const uint32_t share = K3_ROUTED_EXPERT_HIDDEN / state->tp_degree;
+	if ( state->row_share_device == 0 ||
+		(uint64_t)rows * share > (uint64_t)((state->dispatch.max_rows + state->tp_degree - 1u) / state->tp_degree) * K3_HIDDEN )
+	{
+		K3ModelFail(state);
+		return;
+	}
+	K3RunnerRound(state, stream, rows, b->latent_bf16, state->row_share_device, K3_ROUTED_EXPERT_HIDDEN,
+		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16, K3_RUNNER_STAGE_ALL);
+	K3RunnerRound(state, stream, rows, state->row_share_device, b->latent_full_bf16, share,
+		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
 }
 
 static void K3RunnerLayerCollective(void *context, void *stream_void,
@@ -446,6 +461,13 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	{
 		K3RunnerGatherLatent(state, b, stream, rows, 1u,
 			stage == K3_RUNNER_STAGE_FINISH ? K3_RUNNER_STAGE_FINISH : K3_RUNNER_STAGE_BEGIN);
+		return;
+	}
+	if ( K3_EXPERT_CELLS(b) && base == 3u && state->dispatch.pair_active != 0u &&
+		K3_ROUTED_EXPERT_HIDDEN % state->tp_degree == 0u && (uint64_t)rows * K3_ROUTED_EXPERT_HIDDEN % (4u * state->tp_degree) == 0u )
+	{
+		if ( stage != K3_RUNNER_STAGE_FINISH )
+			K3RunnerLatentPairReduce(state, b, stream, rows);
 		return;
 	}
 	if ( K3_EXPERT_CELLS(b) && base == 3u )
