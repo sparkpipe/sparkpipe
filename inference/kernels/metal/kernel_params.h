@@ -12,7 +12,7 @@
 #define SPARK_GEMM_ROWS_THREADS 128u
 #define SPARK_KERNEL_SEQUENCE_NONE 0xffffffffu
 #define SPARK_BRANCH_NORM_MAX_DIMENSION 7680u
-#define SPARK_ROUTE_MAX_EXPERTS 256u
+#define SPARK_ROUTE_MAX_EXPERTS 512u
 #define SPARK_ROUTE_MAX_TOP_K 16u
 #define SPARK_GATED_SILU 0u
 #define SPARK_GATED_GELU_TANH 1u
@@ -20,8 +20,12 @@
 #define SPARK_FP8_SCALE_K 128u
 #define SPARK_FP8_CHUNK 16u
 #define SPARK_MXFP4_GROUP 32u
+#define SPARK_NVFP4_GROUP 16u
+#define SPARK_NVFP4_CHUNK 32u
+#define SPARK_NVFP4_LANES(chunks) ((chunks) >= 32u ? 32u : (chunks) >= 16u ? 16u : 8u)
 #define SPARK_ATTENTION_GATE_SIGMOID 1u
 #define SPARK_ATTENTION_GATE_SIGMOID_BF16 2u
+#define SPARK_HYPER_MAX_STREAMS 8u
 
 typedef struct SparkGatherParams
 {
@@ -212,5 +216,15 @@ typedef struct SparkStreamParams
 	uint32_t groups;
 	uint32_t pad;
 } SparkStreamParams;
+
+typedef struct SparkHyperParams
+{
+	uint32_t rows;
+	uint32_t streams;
+	uint32_t width;
+	float epsilon;
+	float divisor;
+	uint32_t pad[3];
+} SparkHyperParams;
 
 #endif

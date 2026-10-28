@@ -233,3 +233,38 @@ SPARK_GEMV_FP8_INSTANCE(1u, "spark_gemv_fp8_r1")
 SPARK_GEMV_FP8_INSTANCE(2u, "spark_gemv_fp8_r2")
 SPARK_GEMV_FP8_INSTANCE(4u, "spark_gemv_fp8_r4")
 SPARK_GEMV_FP8_INSTANCE(8u, "spark_gemv_fp8_r8")
+
+kernel void spark_gemv_nvfp4_routed(constant SparkGemvParams &p [[buffer(0)]], device const ushort *x [[buffer(1)]], device const uchar *w [[buffer(2)]],
+	device const uchar *scale [[buffer(3)]], device const float *global_scale [[buffer(4)]], device ushort *out [[buffer(5)]],
+	device const uint *experts [[buffer(6)]], uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
+	uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
+{
+	const uint K = p.input_dimension, N = p.output_dimension, route = group.y, chunks = K / SPARK_NVFP4_CHUNK;
+	const uint lanes = SPARK_NVFP4_LANES(chunks), sub = lane % lanes;
+	const uint neuron = (group.x * simds + simd) * (32u / lanes) + lane / lanes;
+	const ulong expert = experts[route], at = expert * N + min(neuron, N - 1u);
+	device const ushort *row = x + (ulong)(route / p.route_divisor) * p.input_stride;
+	device const uchar *weights = w + at * (K / 2u);
+	device const uchar *scales = scale + at * (K / SPARK_NVFP4_GROUP);
+	const float global = global_scale[expert];
+	float acc = 0.0f;
+	for ( uint c = sub; c < chunks; c += lanes )
+	{
+		const uint4 bits = *(device const uint4 *)(weights + c * (SPARK_NVFP4_CHUNK / 2u));
+		const uint words[4] = { bits.x, bits.y, bits.z, bits.w };
+		float4 xs[8];
+		for ( uint part = 0u; part < 4u; part++ )
+			SparkUnpack8(*(device const uint4 *)(row + c * SPARK_NVFP4_CHUNK + 8u * part), xs[2u * part], xs[2u * part + 1u]);
+		float low = 0.0f, high = 0.0f;
+		for ( uint j = 0u; j < SPARK_NVFP4_GROUP; j++ )
+			low = fma(SparkMathE2m1ToFloat((words[j / 8u] >> (4u * (j % 8u))) & 15u), xs[j / 4u][j % 4u], low);
+		for ( uint j = SPARK_NVFP4_GROUP; j < SPARK_NVFP4_CHUNK; j++ )
+			high = fma(SparkMathE2m1ToFloat((words[j / 8u] >> (4u * (j % 8u))) & 15u), xs[j / 4u][j % 4u], high);
+		const float low_scale = SparkMathUe4m3ToFloat(scales[2u * c]) * global, high_scale = SparkMathUe4m3ToFloat(scales[2u * c + 1u]) * global;
+		acc = fma(high_scale, high, fma(low_scale, low, acc));
+	}
+	for ( uint step = lanes / 2u; step > 0u; step >>= 1u )
+		acc += simd_shuffle_xor(acc, step);
+	if ( sub == 0u && neuron < N )
+		out[(ulong)route * p.output_stride + neuron] = SparkMathFloatToBf16(acc);
+}

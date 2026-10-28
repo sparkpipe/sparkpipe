@@ -15,6 +15,9 @@ typedef uchar SparkMathU8;
 #define SPARK_MATH_LOG_FAST(x) metal::log(x)
 #define SPARK_MATH_TANH(x) metal::tanh(x)
 #define SPARK_MATH_LDEXP(x, e) metal::ldexp(x, e)
+#define SPARK_MATH_SQRT(x) metal::sqrt(x)
+#define SPARK_MATH_FABS(x) metal::fabs(x)
+#define SPARK_MATH_FMAX(a, b) metal::fmax(a, b)
 #elif defined(__CUDACC__) || defined(LM_HOST_CUDA_PRELUDE)
 #include <stdint.h>
 #if defined(__CUDACC__)
@@ -32,6 +35,9 @@ typedef uint8_t SparkMathU8;
 #define SPARK_MATH_LOG_FAST(x) __logf(x)
 #define SPARK_MATH_TANH(x) tanhf(x)
 #define SPARK_MATH_LDEXP(x, e) ldexpf(x, e)
+#define SPARK_MATH_SQRT(x) sqrtf(x)
+#define SPARK_MATH_FABS(x) fabsf(x)
+#define SPARK_MATH_FMAX(a, b) fmaxf(a, b)
 #else
 #error "kernel_math.cuh is kernel code for the CUDA and Metal compilers"
 #endif
@@ -127,6 +133,44 @@ SPARK_MATH_FN float SparkMathGeluTanhScaleFirst(float value)
 SPARK_MATH_FN float SparkMathSoftcap(float value, float cap)
 {
 	return(cap * SPARK_MATH_TANH(value / cap));
+}
+
+SPARK_MATH_FN float SparkMathHyperGate(float value, float divisor)
+{
+	const float scaled = SparkMathRoundBf16(value / divisor);
+	return(scaled * SparkMathSigmoid(scaled));
+}
+
+SPARK_MATH_FN float SparkMathHyperMixGate(float up)
+{
+	return(SparkMathRoundBf16(SparkMathSigmoid(up)));
+}
+
+SPARK_MATH_FN float SparkMathHyperMixTerm(float gate, float normed)
+{
+	return(SparkMathRoundBf16(gate * normed));
+}
+
+SPARK_MATH_FN float SparkMathHyperInjectWeight(float logit, float streams)
+{
+	return(SparkMathRoundBf16(2.0f * SparkMathRoundBf16(SparkMathSigmoid(SparkMathRoundBf16(logit / streams)))));
+}
+
+SPARK_MATH_FN float SparkMathHyperInjected(float output, float weight)
+{
+	return(SparkMathRoundBf16(output * weight));
+}
+
+SPARK_MATH_FN float SparkMathHyperKeyGate(float total, SparkMathU32 width)
+{
+	const float score = SparkMathRoundBf16(SparkMathRoundBf16(total) / SPARK_MATH_SQRT((float)width));
+	const float magnitude = SparkMathRoundBf16(SPARK_MATH_SQRT(SPARK_MATH_FMAX(SPARK_MATH_FABS(score),1e-6f)));
+	return(SparkMathRoundBf16(SparkMathSigmoid(score < 0.0f ? -magnitude : (score > 0.0f ? magnitude : 0.0f))));
+}
+
+SPARK_MATH_FN float SparkMathHyperAddend(float gated, float conv)
+{
+	return(SparkMathRoundBf16(gated + conv));
 }
 
 SPARK_MATH_FN float SparkMathE4m3ToFloat(SparkMathU32 value)

@@ -72,7 +72,16 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_silu_rounded_mul",
 	"spark_route_combine_weighted",
 	"spark_route_sigmoid_topk",
-	"spark_rmsnorm_bf16"
+	"spark_rmsnorm_bf16",
+	"spark_hyper_expand",
+	"spark_group_rmsnorm",
+	"spark_hyper_gate",
+	"spark_hyper_mix",
+	"spark_hyper_inject_weights",
+	"spark_hyper_inject",
+	"spark_hyper_key_gate",
+	"spark_hyper_add",
+	"spark_gemv_nvfp4_routed"
 };
 
 static SparkStatus OpsRefuse(const char *operation, const char *reason)
@@ -846,7 +855,7 @@ SparkStatus SparkOpsRouteTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spar
 	SparkStatus status;
 	if ( params->rows == 0u || params->experts == 0u || params->experts > SPARK_ROUTE_MAX_EXPERTS || params->top_k == 0u ||
 		params->top_k > SPARK_ROUTE_MAX_TOP_K || params->top_k > params->experts || params->logit_stride < params->experts )
-		return(OpsRefuse("route_topk","rows, at most 256 experts, a top-k of at most 16 within them and a logit stride that holds them"));
+		return(OpsRefuse("route_topk","rows, at most 512 experts, a top-k of at most 16 within them and a logit stride that holds them"));
 	status = OpsNeed("route_topk","logits",logits,OpsRowsBytes(params->rows,params->logit_stride,params->experts,2u));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("route_topk","expert scale",expert_scale,(uint64_t)params->experts * sizeof(float));
@@ -896,7 +905,7 @@ SparkStatus SparkOpsRouteSigmoid(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	SparkStatus status;
 	if ( params->rows == 0u || params->experts == 0u || params->experts > SPARK_ROUTE_MAX_EXPERTS || params->top_k == 0u ||
 		params->top_k > SPARK_ROUTE_MAX_TOP_K || params->top_k > params->experts || params->logit_stride < params->experts )
-		return(OpsRefuse("route_sigmoid","rows, at most 256 experts, a top-k of at most 16 within them and a logit stride that holds them"));
+		return(OpsRefuse("route_sigmoid","rows, at most 512 experts, a top-k of at most 16 within them and a logit stride that holds them"));
 	status = OpsNeed("route_sigmoid","logits",logits,OpsRowsBytes(params->rows,params->logit_stride,params->experts,4u));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("route_sigmoid","bias",bias,(uint64_t)params->experts * sizeof(float));
@@ -931,6 +940,169 @@ SparkStatus SparkOpsRmsNormBf16(SparkDeviceOps *ops, SparkDeviceQueue *queue, Sp
 	bindings[1] = OpsBind(weight,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,SPARK_OPS_RMSNORM_BF16,params->rows,1u,1u,OpsThreads(params->dimension,1024u),params,sizeof(*params),bindings,3u));
+}
+
+static SparkStatus OpsHyperShape(const char *operation, const SparkHyperParams *params)
+{
+	if ( params->rows == 0u || params->streams == 0u || params->streams > SPARK_HYPER_MAX_STREAMS || params->width == 0u )
+		return(OpsRefuse(operation,"rows, one to eight streams and a width are required"));
+	return(SPARK_STATUS_OK);
+}
+
+static uint64_t OpsHyperBytes(const SparkHyperParams *params, uint32_t streams, uint32_t element)
+{
+	return((uint64_t)params->rows * streams * params->width * element);
+}
+
+SparkStatus SparkOpsHyperExpand(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor hidden, SparkTensor streams, const SparkHyperParams *params)
+{
+	SparkDeviceBinding bindings[2];
+	SparkStatus status = OpsHyperShape("hyper_expand",params);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_expand","hidden",hidden,OpsHyperBytes(params,1u,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_expand","streams",streams,OpsHyperBytes(params,params->streams,2u));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(hidden,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(streams,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_HYPER_EXPAND,(params->streams * params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),
+		bindings,2u));
+}
+
+SparkStatus SparkOpsGroupRmsNorm(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor weight, SparkTensor output,
+	const SparkHyperParams *params)
+{
+	SparkDeviceBinding bindings[3];
+	SparkStatus status = OpsHyperShape("group_rmsnorm",params);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("group_rmsnorm","input",input,OpsHyperBytes(params,params->streams,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("group_rmsnorm","weight",weight,(uint64_t)params->streams * params->width * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("group_rmsnorm","output",output,OpsHyperBytes(params,params->streams,2u));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(input,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(weight,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_GROUP_RMSNORM,params->streams,params->rows,1u,OpsThreads(params->width,1024u),params,sizeof(*params),
+		bindings,3u));
+}
+
+SparkStatus SparkOpsHyperGate(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, const SparkHyperParams *params)
+{
+	SparkDeviceBinding bindings[1];
+	SparkStatus status = OpsHyperShape("hyper_gate",params);
+	if ( status == SPARK_STATUS_OK && params->divisor == 0.0f )
+		status = OpsRefuse("hyper_gate","a nonzero divisor is required");
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_gate","values",values,OpsHyperBytes(params,1u,2u));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(values,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_HYPER_GATE,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,1u));
+}
+
+SparkStatus SparkOpsHyperMix(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor up, SparkTensor normed, SparkTensor mixed,
+	const SparkHyperParams *params)
+{
+	SparkDeviceBinding bindings[3];
+	SparkStatus status = OpsHyperShape("hyper_mix",params);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_mix","up",up,OpsHyperBytes(params,params->streams,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_mix","normed",normed,OpsHyperBytes(params,params->streams,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_mix","mixed",mixed,OpsHyperBytes(params,1u,2u));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(up,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(normed,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(mixed,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_HYPER_MIX,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,3u));
+}
+
+SparkStatus SparkOpsHyperInjectWeights(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor normed, SparkTensor weight, SparkTensor inject,
+	const SparkHyperParams *params)
+{
+	SparkDeviceBinding bindings[3];
+	SparkStatus status = OpsHyperShape("hyper_inject_weights",params);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_inject_weights","normed",normed,OpsHyperBytes(params,params->streams,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_inject_weights","weight",weight,(uint64_t)params->streams * params->streams * params->width * sizeof(uint16_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_inject_weights","inject",inject,(uint64_t)params->rows * params->streams * sizeof(float));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(normed,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(weight,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(inject,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_HYPER_INJECT_WEIGHTS,params->rows,1u,1u,256u,params,sizeof(*params),bindings,3u));
+}
+
+SparkStatus SparkOpsHyperInject(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor output, SparkTensor inject,
+	const SparkHyperParams *params)
+{
+	SparkDeviceBinding bindings[3];
+	SparkStatus status = OpsHyperShape("hyper_inject",params);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_inject","streams",streams,OpsHyperBytes(params,params->streams,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_inject","output",output,OpsHyperBytes(params,1u,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_inject","inject",inject,(uint64_t)params->rows * params->streams * sizeof(float));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(streams,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
+	bindings[1] = OpsBind(output,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(inject,SPARK_DEVICE_BIND_READ);
+	return(OpsLaunch(ops,queue,SPARK_OPS_HYPER_INJECT,(params->streams * params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),
+		bindings,3u));
+}
+
+SparkStatus SparkOpsHyperKeyGate(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor key, SparkTensor query, SparkTensor value, SparkTensor gated,
+	const SparkHyperParams *params)
+{
+	SparkDeviceBinding bindings[4];
+	SparkStatus status = OpsHyperShape("hyper_key_gate",params);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_key_gate","key",key,OpsHyperBytes(params,params->streams,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_key_gate","query",query,OpsHyperBytes(params,params->streams,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_key_gate","value",value,OpsHyperBytes(params,1u,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_key_gate","gated",gated,OpsHyperBytes(params,params->streams,2u));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(key,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(query,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(value,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(gated,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_HYPER_KEY_GATE,params->streams,params->rows,1u,OpsThreads(params->width,1024u),params,sizeof(*params),
+		bindings,4u));
+}
+
+SparkStatus SparkOpsHyperAdd(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor gated, SparkTensor conv,
+	const SparkHyperParams *params)
+{
+	SparkDeviceBinding bindings[3];
+	SparkStatus status = OpsHyperShape("hyper_add",params);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_add","streams",streams,OpsHyperBytes(params,params->streams,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_add","gated",gated,OpsHyperBytes(params,params->streams,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("hyper_add","conv",conv,OpsHyperBytes(params,params->streams,2u));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(streams,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
+	bindings[1] = OpsBind(gated,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(conv,SPARK_DEVICE_BIND_READ);
+	return(OpsLaunch(ops,queue,SPARK_OPS_HYPER_ADD,(params->streams * params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),
+		bindings,3u));
 }
 
 SparkStatus SparkOpsRouteCombine(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor output,
@@ -1005,6 +1177,39 @@ SparkStatus SparkOpsLinearRoutedMxfp4(SparkDeviceOps *ops, SparkDeviceQueue *que
 	bindings[4] = OpsBind(experts,SPARK_DEVICE_BIND_READ);
 	return(OpsLaunch(ops,queue,SPARK_OPS_GEMV_MXFP4_ROUTED,(N + SPARK_GEMV_OUTPUTS - 1u) / SPARK_GEMV_OUTPUTS,params->rows,1u,128u,params,sizeof(*params),
 		bindings,5u));
+}
+
+SparkStatus SparkOpsLinearRoutedNvfp4(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor scale, SparkTensor global_scale,
+	SparkTensor y, SparkTensor experts, uint32_t expert_count, const SparkGemvParams *params)
+{
+	const uint32_t K = params->input_dimension, N = params->output_dimension, sources = (params->rows + params->route_divisor - 1u) /
+		(params->route_divisor != 0u ? params->route_divisor : 1u);
+	const uint32_t neurons = 4u * (32u / SPARK_NVFP4_LANES(K / SPARK_NVFP4_CHUNK));
+	SparkDeviceBinding bindings[6];
+	SparkStatus status;
+	if ( params->rows == 0u || K == 0u || N == 0u || K % SPARK_NVFP4_CHUNK != 0u || params->input_stride % 8u != 0u || params->input_stride < K ||
+		params->route_divisor == 0u || params->output_f32 != 0u || expert_count == 0u )
+		return(OpsRefuse("linear_routed_nvfp4","routes, an input width that is a multiple of 32, a source row per route divisor and BF16 output are required"));
+	status = OpsNeed("linear_routed_nvfp4","input",x,OpsRowsBytes(sources,params->input_stride,K,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("linear_routed_nvfp4","weight",w,(uint64_t)expert_count * N * (K / 2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("linear_routed_nvfp4","scale",scale,(uint64_t)expert_count * N * (K / SPARK_NVFP4_GROUP));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("linear_routed_nvfp4","global scale",global_scale,(uint64_t)expert_count * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("linear_routed_nvfp4","output",y,OpsRowsBytes(params->rows,params->output_stride,N,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("linear_routed_nvfp4","experts",experts,(uint64_t)params->rows * sizeof(uint32_t));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(x,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(w,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(scale,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(global_scale,SPARK_DEVICE_BIND_READ);
+	bindings[4] = OpsBind(y,SPARK_DEVICE_BIND_WRITE);
+	bindings[5] = OpsBind(experts,SPARK_DEVICE_BIND_READ);
+	return(OpsLaunch(ops,queue,SPARK_OPS_GEMV_NVFP4_ROUTED,(N + neurons - 1u) / neurons,params->rows,1u,128u,params,sizeof(*params),bindings,6u));
 }
 
 SparkStatus SparkOpsLogprob(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor targets, SparkTensor result,

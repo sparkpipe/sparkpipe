@@ -83,6 +83,15 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_ROUTE_COMBINE_WEIGHTED,
 	SPARK_OPS_ROUTE_SIGMOID,
 	SPARK_OPS_RMSNORM_BF16,
+	SPARK_OPS_HYPER_EXPAND,
+	SPARK_OPS_GROUP_RMSNORM,
+	SPARK_OPS_HYPER_GATE,
+	SPARK_OPS_HYPER_MIX,
+	SPARK_OPS_HYPER_INJECT_WEIGHTS,
+	SPARK_OPS_HYPER_INJECT,
+	SPARK_OPS_HYPER_KEY_GATE,
+	SPARK_OPS_HYPER_ADD,
+	SPARK_OPS_GEMV_NVFP4_ROUTED,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -170,12 +179,28 @@ SparkStatus SparkOpsRouteSigmoid(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	const SparkRouteParams *params);
 SparkStatus SparkOpsRmsNormBf16(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor weight, SparkTensor output,
 	const SparkNormParams *params);
+SparkStatus SparkOpsHyperExpand(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor hidden, SparkTensor streams, const SparkHyperParams *params);
+SparkStatus SparkOpsGroupRmsNorm(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor weight, SparkTensor output,
+	const SparkHyperParams *params);
+SparkStatus SparkOpsHyperGate(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, const SparkHyperParams *params);
+SparkStatus SparkOpsHyperMix(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor up, SparkTensor normed, SparkTensor mixed,
+	const SparkHyperParams *params);
+SparkStatus SparkOpsHyperInjectWeights(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor normed, SparkTensor weight, SparkTensor inject,
+	const SparkHyperParams *params);
+SparkStatus SparkOpsHyperInject(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor output, SparkTensor inject,
+	const SparkHyperParams *params);
+SparkStatus SparkOpsHyperKeyGate(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor key, SparkTensor query, SparkTensor value, SparkTensor gated,
+	const SparkHyperParams *params);
+SparkStatus SparkOpsHyperAdd(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor gated, SparkTensor conv,
+	const SparkHyperParams *params);
 SparkStatus SparkOpsRouteCombine(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor output,
 	const SparkRouteParams *params);
 SparkStatus SparkOpsLinearRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor y, SparkTensor experts,
 	uint32_t expert_count, const SparkGemvParams *params);
 SparkStatus SparkOpsLinearRoutedMxfp4(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor scale, SparkTensor y,
 	SparkTensor experts, uint32_t expert_count, const SparkGemvParams *params);
+SparkStatus SparkOpsLinearRoutedNvfp4(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor scale, SparkTensor global_scale,
+	SparkTensor y, SparkTensor experts, uint32_t expert_count, const SparkGemvParams *params);
 SparkStatus SparkOpsLogprob(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor targets, SparkTensor result,
 	SparkTensor argmax, const SparkLogprobParams *params);
 SparkStatus SparkOpsStreamRead(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor words, SparkTensor sink, uint32_t groups);

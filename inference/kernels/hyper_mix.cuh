@@ -12,16 +12,6 @@
 #define LM_HYPER_INJECT_CLUSTER_ROWS 8u
 #define LM_HYPER_INJECT_BATCH 16u
 
-static __device__ __forceinline__ float LmHyperRound(float value)
-{
-	return LmBf16ToFloat(LmFloatToBf16(value));
-}
-
-static __device__ __forceinline__ float LmHyperSigmoid(float value)
-{
-	return SparkMathSigmoid(value);
-}
-
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmGroupRmsNormKernel(const uint16_t *__restrict__ input_bf16, const float *__restrict__ weight, uint16_t *__restrict__ output_bf16,
@@ -80,8 +70,7 @@ void LmHyperGateKernel(uint16_t *__restrict__ values_bf16, uint64_t elements, fl
 {
 	for ( uint64_t index = (uint64_t)blockIdx.x * THREADS + threadIdx.x; index < elements; index += (uint64_t)gridDim.x * THREADS )
 	{
-		const float value = LmHyperRound(LmBf16ToFloat(values_bf16[index]) / divisor);
-		values_bf16[index] = LmFloatToBf16(value * LmHyperSigmoid(value));
+		values_bf16[index] = LmFloatToBf16(SparkMathHyperGate(LmBf16ToFloat(values_bf16[index]),divisor));
 	}
 }
 
@@ -98,7 +87,8 @@ void LmHyperMixKernel(const uint16_t *__restrict__ up_bf16, const uint16_t *__re
 		for ( uint32_t stream = 0u; stream < streams; ++stream )
 		{
 			const uint64_t at = base + (uint64_t)stream * width + element;
-			total += LmHyperRound(LmHyperRound(LmHyperSigmoid(LmBf16ToFloat(up_bf16[at]))) * LmBf16ToFloat(normed_bf16[at]));
+			const float gate = SparkMathHyperMixGate(LmBf16ToFloat(up_bf16[at]));
+			total += SparkMathHyperMixTerm(gate,LmBf16ToFloat(normed_bf16[at]));
 		}
 		mixed_bf16[(uint64_t)row * width + element] = LmFloatToBf16(total / (float)streams);
 	}
@@ -123,9 +113,9 @@ void LmHyperInjectWeightsKernel(const uint16_t *__restrict__ normed_bf16, const 
 	}
 	for ( uint32_t stream = 0u; stream < STREAMS; ++stream )
 	{
-		const float logit = LmHyperRound(LmBlockSum<THREADS>(sums[stream], reduction));
+		const float logit = SparkMathRoundBf16(LmBlockSum<THREADS>(sums[stream], reduction));
 		if ( threadIdx.x == 0u )
-			inject[(uint64_t)row * STREAMS + stream] = LmHyperRound(2.0f * LmHyperRound(LmHyperSigmoid(LmHyperRound(logit / (float)STREAMS))));
+			inject[(uint64_t)row * STREAMS + stream] = SparkMathHyperInjectWeight(logit,(float)STREAMS);
 	}
 }
 
@@ -182,9 +172,9 @@ void LmHyperInjectWeightsClusterKernel(const uint16_t *__restrict__ normed_bf16,
 			float value = threadIdx.x < WARPS ? cluster.map_shared_rank(warp_sums, threadIdx.x)[stream] : 0.0f;
 			for ( uint32_t offset = WARPS / 2u; offset > 0u; offset >>= 1u )
 				value += __shfl_down_sync(0xffffffffu, value, offset);
-			const float logit = LmHyperRound(value);
+			const float logit = SparkMathRoundBf16(value);
 			if ( threadIdx.x == 0u )
-				inject[(uint64_t)row * STREAMS + stream] = LmHyperRound(2.0f * LmHyperRound(LmHyperSigmoid(LmHyperRound(logit / (float)STREAMS))));
+				inject[(uint64_t)row * STREAMS + stream] = SparkMathHyperInjectWeight(logit,(float)STREAMS);
 		}
 	LmClusterBarrier();
 }
@@ -210,11 +200,9 @@ void LmHyperKeyGateKernel(const uint16_t *__restrict__ key_bf16, const uint16_t 
 	const uint64_t base = ((uint64_t)row * streams + stream) * width;
 	float total = 0.0f;
 	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
-		total += LmHyperRound(LmBf16ToFloat(key_bf16[base + index]) * LmBf16ToFloat(query_bf16[base + index]));
+		total += SparkMathRoundBf16(LmBf16ToFloat(key_bf16[base + index]) * LmBf16ToFloat(query_bf16[base + index]));
 	total = LmBlockSum<THREADS>(total, reduction);
-	const float score = LmHyperRound(LmHyperRound(total) / sqrtf((float)width));
-	const float magnitude = LmHyperRound(sqrtf(fmaxf(fabsf(score), 1e-6f)));
-	const float gate = LmHyperRound(LmHyperSigmoid(score < 0.0f ? -magnitude : (score > 0.0f ? magnitude : 0.0f)));
+	const float gate = SparkMathHyperKeyGate(total,width);
 	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
 		gated_bf16[base + index] = LmFloatToBf16(gate * LmBf16ToFloat(value_bf16[(uint64_t)row * width + index]));
 }
@@ -226,7 +214,7 @@ void LmHyperAddKernel(uint16_t *__restrict__ streams_bf16, const uint16_t *__res
 {
 	for ( uint64_t index = (uint64_t)blockIdx.x * THREADS + threadIdx.x; index < elements; index += (uint64_t)gridDim.x * THREADS )
 	{
-		const float added = LmHyperRound(LmBf16ToFloat(gated_bf16[index]) + LmBf16ToFloat(conv_bf16[index]));
+		const float added = SparkMathHyperAddend(LmBf16ToFloat(gated_bf16[index]),LmBf16ToFloat(conv_bf16[index]));
 		streams_bf16[index] = LmFloatToBf16(LmBf16ToFloat(streams_bf16[index]) + added);
 	}
 }
@@ -240,7 +228,7 @@ void LmHyperInjectKernel(uint16_t *__restrict__ streams_bf16, const uint16_t *__
 	for ( uint32_t index = blockIdx.x * THREADS + threadIdx.x; index < streams * width; index += gridDim.x * THREADS )
 	{
 		const uint64_t at = (uint64_t)row * streams * width + index;
-		const float injected = LmHyperRound(LmBf16ToFloat(output_bf16[(uint64_t)row * width + index % width]) * inject[(uint64_t)row * streams + index / width]);
+		const float injected = SparkMathHyperInjected(LmBf16ToFloat(output_bf16[(uint64_t)row * width + index % width]),inject[(uint64_t)row * streams + index / width]);
 		streams_bf16[at] = LmFloatToBf16(LmBf16ToFloat(streams_bf16[at]) + injected);
 	}
 }

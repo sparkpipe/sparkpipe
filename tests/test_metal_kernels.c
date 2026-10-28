@@ -1258,6 +1258,105 @@ static void TestLinearRoutedMxfp4(uint32_t rows, uint32_t K, uint32_t N)
 	SparkDeviceFree(&experts);
 }
 
+static float Ue4m3(uint8_t code)
+{
+	const uint32_t value = code & 0x7fu, exponent = value >> 3, mantissa = value & 7u;
+	if ( value == 0x7fu )
+		return(448.0f);
+	if ( exponent == 0u )
+		return((float)ldexp((double)mantissa / 8.0,-6));
+	return((float)ldexp(1.0 + (double)mantissa / 8.0,(int)exponent - 7));
+}
+
+static void TestLinearRoutedNvfp4(uint32_t rows, uint32_t K, uint32_t N)
+{
+	enum { EXPERTS = 16u, TOP = 10u };
+	const uint32_t routes = rows * TOP, groups = K / SPARK_NVFP4_GROUP, chunks = K / SPARK_NVFP4_CHUNK, lanes = SPARK_NVFP4_LANES(chunks);
+	SparkDeviceBuffer x, w, scale, global, y, experts;
+	uint16_t *xv = (uint16_t *)Shared(&x,(uint64_t)rows * K * sizeof(uint16_t),"nvfp4 routed x");
+	uint8_t *wv = (uint8_t *)Shared(&w,(uint64_t)EXPERTS * N * (K / 2u),"nvfp4 routed w");
+	uint8_t *sv = (uint8_t *)Shared(&scale,(uint64_t)EXPERTS * N * groups,"nvfp4 routed scale");
+	float *gv = (float *)Shared(&global,EXPERTS * sizeof(float),"nvfp4 routed global scale");
+	uint16_t *yv = (uint16_t *)Shared(&y,(uint64_t)routes * N * sizeof(uint16_t),"nvfp4 routed y");
+	uint32_t *ev = (uint32_t *)Shared(&experts,routes * sizeof(uint32_t),"nvfp4 routed experts");
+	SparkGemvParams params;
+	Check clean, corrupted;
+	char shape[80];
+	uint64_t index;
+	uint32_t pass, route, n, sub, c, j, step;
+	FillBf16(xv,(uint64_t)rows * K,1.0);
+	for ( index = 0u; index < (uint64_t)EXPERTS * N * (K / 2u); index++ )
+		wv[index] = (uint8_t)(NextRandom() & 0xffu);
+	for ( index = 0u; index < (uint64_t)EXPERTS * N * groups; index++ )
+		sv[index] = (uint8_t)(40u + NextRandom() % 48u);
+	for ( index = 0u; index < EXPERTS; index++ )
+		gv[index] = (float)(1e-3 * (1.0 + Uniform()));
+	for ( route = 0u; route < routes; route++ )
+		ev[route] = (route * 7u + 3u) % EXPERTS;
+	memset(&params,0,sizeof(params));
+	params.rows = routes;
+	params.input_dimension = K;
+	params.output_dimension = N;
+	params.input_stride = K;
+	params.output_stride = N;
+	params.route_divisor = TOP;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint32_t victim = routes - 1u;
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			ev[victim] = (ev[victim] + 1u) % EXPERTS;
+		if ( !Run(SparkOpsLinearRoutedNvfp4(&ops,queue,Whole(&x),Whole(&w),Whole(&scale),Whole(&global),Whole(&y),Whole(&experts),EXPERTS,&params),
+			"linear_routed_nvfp4") )
+			break;
+		if ( pass == 1u )
+			ev[victim] = (ev[victim] + EXPERTS - 1u) % EXPERTS;
+		for ( route = 0u; route < routes; route++ )
+			for ( n = 0u; n < N; n++ )
+			{
+				const uint64_t neuron = (uint64_t)ev[route] * N + n;
+				const uint16_t *row = xv + (uint64_t)(route / TOP) * K;
+				float acc[32], next[32];
+				for ( sub = 0u; sub < lanes; sub++ )
+				{
+					acc[sub] = 0.0f;
+					for ( c = sub; c < chunks; c += lanes )
+					{
+						float low = 0.0f, high = 0.0f;
+						for ( j = 0u; j < SPARK_NVFP4_CHUNK; j++ )
+						{
+							const uint8_t byte = wv[neuron * (K / 2u) + c * (SPARK_NVFP4_CHUNK / 2u) + j / 2u];
+							const float weight = (float)E2m1((j % 2u) == 0u ? byte & 15u : byte >> 4u), value = Bf16(row[c * SPARK_NVFP4_CHUNK + j]);
+							if ( j < SPARK_NVFP4_GROUP )
+								low = fmaf(weight,value,low);
+							else
+								high = fmaf(weight,value,high);
+						}
+						const float low_scale = Ue4m3(sv[neuron * groups + 2u * c]) * gv[ev[route]];
+						const float high_scale = Ue4m3(sv[neuron * groups + 2u * c + 1u]) * gv[ev[route]];
+						acc[sub] = fmaf(high_scale,high,fmaf(low_scale,low,acc[sub]));
+					}
+				}
+				for ( step = lanes / 2u; step > 0u; step >>= 1u )
+				{
+					for ( sub = 0u; sub < lanes; sub++ )
+						next[sub] = acc[sub] + acc[sub ^ step];
+					memcpy(acc,next,lanes * sizeof(float));
+				}
+				Observe(check,Bf16(yv[(uint64_t)route * N + n]),Bf16(ToBf16(acc[0])),0.0);
+			}
+	}
+	snprintf(shape,sizeof(shape),"rows %u x top 10, K %u -> N %u, %u lanes",rows,K,N,lanes);
+	Report("linear_routed_nvfp4",shape,&clean,&corrupted,"exact: CUDA's skinny lanes, chunk order, fma chain and xor reduction");
+	SparkDeviceFree(&x);
+	SparkDeviceFree(&w);
+	SparkDeviceFree(&scale);
+	SparkDeviceFree(&global);
+	SparkDeviceFree(&y);
+	SparkDeviceFree(&experts);
+}
+
 static void TestMimoKernels(uint32_t rows)
 {
 	enum { DIM = 4096u, FFN = 2048u, EXPERTS = 256u, TOP = 8u };
@@ -1422,6 +1521,311 @@ static void TestMimoKernels(uint32_t rows)
 	SparkDeviceFree(&hidden);
 	SparkDeviceFree(&norm_weight);
 	SparkDeviceFree(&normed);
+}
+
+static double HyperGate(double value, double sigmoid_factor)
+{
+	const double scaled = RoundBf16(value / 4.0);
+	return(RoundBf16(scaled * Sigmoid(scaled) * sigmoid_factor));
+}
+
+static double HyperInjectWeight(double logit, double sigmoid_factor)
+{
+	return(RoundBf16(2.0 * RoundBf16(Sigmoid(RoundBf16(logit / 4.0)) * sigmoid_factor)));
+}
+
+static double HyperKeyGate(double total, double sigmoid_factor)
+{
+	const double score = RoundBf16(RoundBf16(total) / sqrt(2560.0));
+	const double magnitude = RoundBf16(sqrt(fmax(fabs(score),1e-6)));
+	return(RoundBf16(Sigmoid(score < 0.0 ? -magnitude : (score > 0.0 ? magnitude : 0.0)) * sigmoid_factor));
+}
+
+static void TestHyperKernels(uint32_t rows)
+{
+	enum { STREAMS = 4u, WIDTH = 2560u, LOW = 320u, TOTAL = STREAMS * WIDTH };
+	static const double factors[3] = { 1.0 - 2.0 * FUNCTION_ERROR, 1.0, 1.0 + 2.0 * FUNCTION_ERROR };
+	SparkDeviceBuffer hidden, streams, gain, normed, low, up, mixed, inject_weight, inject, output, key, query, value, gated, conv;
+	uint16_t *hv = (uint16_t *)Shared(&hidden,(uint64_t)rows * WIDTH * 2u,"hyper hidden");
+	uint16_t *sv = (uint16_t *)Shared(&streams,(uint64_t)rows * TOTAL * 2u,"hyper streams");
+	float *gv = (float *)Shared(&gain,TOTAL * sizeof(float),"hyper group gain");
+	uint16_t *nv = (uint16_t *)Shared(&normed,(uint64_t)rows * TOTAL * 2u,"hyper normed");
+	uint16_t *lv = (uint16_t *)Shared(&low,(uint64_t)rows * LOW * 2u,"hyper low rank");
+	uint16_t *uv = (uint16_t *)Shared(&up,(uint64_t)rows * TOTAL * 2u,"hyper up");
+	uint16_t *mv = (uint16_t *)Shared(&mixed,(uint64_t)rows * WIDTH * 2u,"hyper mixed");
+	uint16_t *wv = (uint16_t *)Shared(&inject_weight,(uint64_t)STREAMS * TOTAL * 2u,"hyper inject weight");
+	float *iv = (float *)Shared(&inject,(uint64_t)rows * STREAMS * sizeof(float),"hyper inject");
+	uint16_t *ov = (uint16_t *)Shared(&output,(uint64_t)rows * WIDTH * 2u,"hyper sublayer output");
+	uint16_t *kv = (uint16_t *)Shared(&key,(uint64_t)rows * TOTAL * 2u,"hyper key");
+	uint16_t *qv = (uint16_t *)Shared(&query,(uint64_t)rows * TOTAL * 2u,"hyper query");
+	uint16_t *vv = (uint16_t *)Shared(&value,(uint64_t)rows * WIDTH * 2u,"hyper value");
+	uint16_t *xv = (uint16_t *)Shared(&gated,(uint64_t)rows * TOTAL * 2u,"hyper gated");
+	uint16_t *cv = (uint16_t *)Shared(&conv,(uint64_t)rows * TOTAL * 2u,"hyper conv");
+	uint16_t *original = (uint16_t *)malloc((uint64_t)rows * TOTAL * 2u);
+	float inject_values[64];
+	SparkHyperParams hyper;
+	Check clean, corrupted;
+	char shape[64];
+	uint32_t pass, row, stream, i;
+	if ( original == 0 || rows * STREAMS > 64u )
+	{
+		printf("FAIL hyper: test buffers\n");
+		failures++;
+		return;
+	}
+	FillBf16(hv,(uint64_t)rows * WIDTH,1.0);
+	FillBf16(nv,(uint64_t)rows * TOTAL,1.0);
+	FillBf16(uv,(uint64_t)rows * TOTAL,2.0);
+	FillBf16(wv,(uint64_t)STREAMS * TOTAL,0.02);
+	FillBf16(ov,(uint64_t)rows * WIDTH,1.0);
+	FillBf16(kv,(uint64_t)rows * TOTAL,1.0);
+	FillBf16(qv,(uint64_t)rows * TOTAL,1.0);
+	FillBf16(vv,(uint64_t)rows * WIDTH,1.0);
+	FillBf16(xv,(uint64_t)rows * TOTAL,1.0);
+	FillBf16(cv,(uint64_t)rows * TOTAL,1.0);
+	for ( i = 0u; i < TOTAL; i++ )
+		gv[i] = (float)(1.0 + 0.1 * Normal());
+	for ( i = 0u; i < rows * STREAMS; i++ )
+		inject_values[i] = (float)(2.0 * Uniform());
+	memset(&hyper,0,sizeof(hyper));
+	hyper.rows = rows;
+	hyper.streams = STREAMS;
+	hyper.width = WIDTH;
+	hyper.epsilon = 1e-6f;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint16_t saved = hv[(uint64_t)(rows - 1u) * WIDTH + 5u];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			hv[(uint64_t)(rows - 1u) * WIDTH + 5u] = ToBf16(Bf16(saved) + 1.0f);
+		if ( !Run(SparkOpsHyperExpand(&ops,queue,Whole(&hidden),Whole(&streams),&hyper),"hyper_expand") )
+			break;
+		hv[(uint64_t)(rows - 1u) * WIDTH + 5u] = saved;
+		for ( row = 0u; row < rows; row++ )
+			for ( i = 0u; i < TOTAL; i++ )
+				Observe(check,Bf16(sv[(uint64_t)row * TOTAL + i]),Bf16(hv[(uint64_t)row * WIDTH + i % WIDTH]),0.0);
+	}
+	snprintf(shape,sizeof(shape),"rows %u, 4 streams x 2560",rows);
+	Report("hyper_expand",shape,&clean,&corrupted,"exact copy into every stream");
+	FillBf16(sv,(uint64_t)rows * TOTAL,1.5);
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint16_t saved = sv[(uint64_t)(rows - 1u) * TOTAL + 3u * WIDTH + 9u];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			sv[(uint64_t)(rows - 1u) * TOTAL + 3u * WIDTH + 9u] = ToBf16(Bf16(saved) * -4.0f);
+		if ( !Run(SparkOpsGroupRmsNorm(&ops,queue,Whole(&streams),Whole(&gain),Whole(&normed),&hyper),"group_rmsnorm") )
+			break;
+		sv[(uint64_t)(rows - 1u) * TOTAL + 3u * WIDTH + 9u] = saved;
+		for ( row = 0u; row < rows; row++ )
+			for ( stream = 0u; stream < STREAMS; stream++ )
+			{
+				const uint16_t *x = sv + (uint64_t)row * TOTAL + stream * WIDTH;
+				double square = 0.0;
+				for ( i = 0u; i < WIDTH; i++ )
+					square += (double)Bf16(x[i]) * Bf16(x[i]);
+				const double scale = 1.0 / sqrt(square / WIDTH + 1e-6);
+				for ( i = 0u; i < WIDTH; i++ )
+				{
+					const double exact = Bf16(x[i]) * scale * gv[stream * WIDTH + i];
+					Observe(check,Bf16(nv[(uint64_t)row * TOTAL + stream * WIDTH + i]),RoundBf16(exact),
+						FlipSlack(exact,Gamma(WIDTH) + FUNCTION_ERROR + 3.0 * UNIT_F32));
+				}
+			}
+	}
+	snprintf(shape,sizeof(shape),"rows %u, 4 groups x 2560, f32 gain",rows);
+	Report("group_rmsnorm",shape,&clean,&corrupted,"bf16(x s w): flip slack of the one rounding");
+	FillBf16(lv,(uint64_t)rows * LOW,4.0);
+	memcpy(original,lv,(size_t)rows * LOW * 2u);
+	hyper.width = LOW;
+	hyper.streams = 1u;
+	hyper.divisor = 4.0f;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		memset(check,0,sizeof(*check));
+		memcpy(lv,original,(size_t)rows * LOW * 2u);
+		if ( pass == 1u )
+			lv[(uint64_t)(rows - 1u) * LOW + 17u] = ToBf16(Bf16(lv[(uint64_t)(rows - 1u) * LOW + 17u]) + 2.0f);
+		if ( !Run(SparkOpsHyperGate(&ops,queue,Whole(&low),&hyper),"hyper_gate") )
+			break;
+		for ( i = 0u; i < rows * LOW; i++ )
+		{
+			const double expected = HyperGate(Bf16(original[i]),1.0);
+			double tolerance = 0.0;
+			for ( uint32_t f = 0u; f < 3u; f++ )
+				tolerance = fmax(tolerance,fabs(HyperGate(Bf16(original[i]),factors[f]) - expected));
+			Observe(check,Bf16(lv[i]),expected,tolerance);
+		}
+	}
+	snprintf(shape,sizeof(shape),"rows %u x 320, divisor 4",rows);
+	Report("hyper_gate",shape,&clean,&corrupted,"v = bf16(x / 4), bf16(v sigmoid(v)): exp to 2*16 eps32");
+	hyper.width = WIDTH;
+	hyper.streams = STREAMS;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint16_t saved = uv[(uint64_t)(rows - 1u) * TOTAL + 2u * WIDTH + 33u];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			uv[(uint64_t)(rows - 1u) * TOTAL + 2u * WIDTH + 33u] = ToBf16(Bf16(saved) - 6.0f);
+		if ( !Run(SparkOpsHyperMix(&ops,queue,Whole(&up),Whole(&normed),Whole(&mixed),&hyper),"hyper_mix") )
+			break;
+		uv[(uint64_t)(rows - 1u) * TOTAL + 2u * WIDTH + 33u] = saved;
+		for ( row = 0u; row < rows; row++ )
+			for ( i = 0u; i < WIDTH; i++ )
+			{
+				float total = 0.0f, low_total = 0.0f, high_total = 0.0f;
+				for ( stream = 0u; stream < STREAMS; stream++ )
+				{
+					const uint64_t at = (uint64_t)row * TOTAL + stream * WIDTH + i;
+					const double n = Bf16(nv[at]), sigma = Sigmoid(Bf16(uv[at]));
+					double lowest = INFINITY, highest = -INFINITY;
+					for ( uint32_t f = 0u; f < 3u; f++ )
+					{
+						const double term = RoundBf16(RoundBf16(sigma * factors[f]) * n);
+						lowest = fmin(lowest,term);
+						highest = fmax(highest,term);
+					}
+					total += (float)RoundBf16(RoundBf16(sigma) * n);
+					low_total += (float)lowest;
+					high_total += (float)highest;
+				}
+				const double expected = RoundBf16(total / 4.0f);
+				Observe(check,Bf16(mv[(uint64_t)row * WIDTH + i]),expected,
+					fmax(fabs(RoundBf16(low_total / 4.0f) - expected),fabs(RoundBf16(high_total / 4.0f) - expected)));
+			}
+	}
+	snprintf(shape,sizeof(shape),"rows %u, 4 streams x 2560",rows);
+	Report("hyper_mix",shape,&clean,&corrupted,"bf16(sum bf16(bf16(sigmoid(u)) n) / 4) in stream order: sigmoid to 2*16 eps32");
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint16_t saved = wv[2u * TOTAL + 100u];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			wv[2u * TOTAL + 100u] = ToBf16(Bf16(saved) + 50.0f);
+		if ( !Run(SparkOpsHyperInjectWeights(&ops,queue,Whole(&normed),Whole(&inject_weight),Whole(&inject),&hyper),"hyper_inject_weights") )
+			break;
+		wv[2u * TOTAL + 100u] = saved;
+		for ( row = 0u; row < rows; row++ )
+			for ( stream = 0u; stream < STREAMS; stream++ )
+			{
+				double sum = 0.0, magnitude = 0.0, tolerance = 0.0;
+				for ( i = 0u; i < TOTAL; i++ )
+				{
+					const double product = (double)Bf16(nv[(uint64_t)row * TOTAL + i]) * Bf16(wv[(uint64_t)stream * TOTAL + i]);
+					sum += product;
+					magnitude += fabs(product);
+				}
+				const double bound = Gamma(TOTAL) * magnitude, expected = HyperInjectWeight(RoundBf16(sum),1.0);
+				for ( uint32_t edge = 0u; edge < 3u; edge++ )
+					for ( uint32_t f = 0u; f < 3u; f++ )
+						tolerance = fmax(tolerance,fabs(HyperInjectWeight(RoundBf16(sum + ((double)edge - 1.0) * bound),factors[f]) - expected));
+				Observe(check,iv[row * STREAMS + stream],expected,tolerance);
+			}
+	}
+	snprintf(shape,sizeof(shape),"rows %u, 4 x 10240 dot",rows);
+	Report("hyper_inject_weights",shape,&clean,&corrupted,"bf16(2 bf16(sigmoid(bf16(bf16(n.w) / 4)))): sum to gamma(10240), sigmoid 2*16 eps32");
+	for ( i = 0u; i < rows * STREAMS; i++ )
+		iv[i] = inject_values[i];
+	FillBf16(sv,(uint64_t)rows * TOTAL,1.0);
+	memcpy(original,sv,(size_t)rows * TOTAL * 2u);
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		memset(check,0,sizeof(*check));
+		memcpy(sv,original,(size_t)rows * TOTAL * 2u);
+		if ( pass == 1u )
+			iv[rows * STREAMS - 1u] = inject_values[rows * STREAMS - 1u] + 1.0f;
+		if ( !Run(SparkOpsHyperInject(&ops,queue,Whole(&streams),Whole(&output),Whole(&inject),&hyper),"hyper_inject") )
+			break;
+		iv[rows * STREAMS - 1u] = inject_values[rows * STREAMS - 1u];
+		for ( row = 0u; row < rows; row++ )
+			for ( i = 0u; i < TOTAL; i++ )
+			{
+				const float injected = (float)RoundBf16(Bf16(ov[(uint64_t)row * WIDTH + i % WIDTH]) * inject_values[row * STREAMS + i / WIDTH]);
+				Observe(check,Bf16(sv[(uint64_t)row * TOTAL + i]),Bf16(ToBf16(Bf16(original[(uint64_t)row * TOTAL + i]) + injected)),0.0);
+			}
+	}
+	snprintf(shape,sizeof(shape),"rows %u, 4 streams x 2560",rows);
+	Report("hyper_inject",shape,&clean,&corrupted,"exact: bf16(r + bf16(out w))");
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint16_t saved = qv[(uint64_t)(rows - 1u) * TOTAL + WIDTH + 7u];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			qv[(uint64_t)(rows - 1u) * TOTAL + WIDTH + 7u] = ToBf16(Bf16(saved) + 300.0f);
+		if ( !Run(SparkOpsHyperKeyGate(&ops,queue,Whole(&key),Whole(&query),Whole(&value),Whole(&gated),&hyper),"hyper_key_gate") )
+			break;
+		qv[(uint64_t)(rows - 1u) * TOTAL + WIDTH + 7u] = saved;
+		for ( row = 0u; row < rows; row++ )
+			for ( stream = 0u; stream < STREAMS; stream++ )
+			{
+				const uint64_t base = (uint64_t)row * TOTAL + stream * WIDTH;
+				double sum = 0.0, magnitude = 0.0, gates[9];
+				for ( i = 0u; i < WIDTH; i++ )
+				{
+					const double product = RoundBf16((double)Bf16(kv[base + i]) * Bf16(qv[base + i]));
+					sum += product;
+					magnitude += fabs(product);
+				}
+				const double bound = Gamma(WIDTH) * magnitude, gate = HyperKeyGate(sum,1.0);
+				for ( uint32_t edge = 0u; edge < 3u; edge++ )
+					for ( uint32_t f = 0u; f < 3u; f++ )
+						gates[edge * 3u + f] = HyperKeyGate(sum + ((double)edge - 1.0) * bound,factors[f]);
+				for ( i = 0u; i < WIDTH; i++ )
+				{
+					const double v = Bf16(vv[(uint64_t)row * WIDTH + i]), expected = RoundBf16(gate * v);
+					double tolerance = 0.0;
+					for ( uint32_t g = 0u; g < 9u; g++ )
+						tolerance = fmax(tolerance,fabs(RoundBf16(gates[g] * v) - expected));
+					Observe(check,Bf16(xv[base + i]),expected,tolerance);
+				}
+			}
+	}
+	snprintf(shape,sizeof(shape),"rows %u, 4 streams x 2560",rows);
+	Report("hyper_key_gate",shape,&clean,&corrupted,"bf16(gate v), gate from bf16(sum bf16(k q)): sum to gamma(2560), sigmoid 2*16 eps32");
+	FillBf16(cv,(uint64_t)rows * TOTAL,1.0);
+	memcpy(original,sv,(size_t)rows * TOTAL * 2u);
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint16_t saved = cv[(uint64_t)(rows - 1u) * TOTAL + 21u];
+		memset(check,0,sizeof(*check));
+		memcpy(sv,original,(size_t)rows * TOTAL * 2u);
+		if ( pass == 1u )
+			cv[(uint64_t)(rows - 1u) * TOTAL + 21u] = ToBf16(Bf16(saved) + 3.0f);
+		if ( !Run(SparkOpsHyperAdd(&ops,queue,Whole(&streams),Whole(&gated),Whole(&conv),&hyper),"hyper_add") )
+			break;
+		cv[(uint64_t)(rows - 1u) * TOTAL + 21u] = saved;
+		for ( i = 0u; i < rows * TOTAL; i++ )
+		{
+			const float added = (float)RoundBf16(Bf16(xv[i]) + Bf16(cv[i]));
+			Observe(check,Bf16(sv[i]),Bf16(ToBf16(Bf16(original[i]) + added)),0.0);
+		}
+	}
+	snprintf(shape,sizeof(shape),"rows %u, 4 streams x 2560",rows);
+	Report("hyper_add",shape,&clean,&corrupted,"exact: bf16(r + bf16(g + c))");
+	free(original);
+	SparkDeviceFree(&hidden);
+	SparkDeviceFree(&streams);
+	SparkDeviceFree(&gain);
+	SparkDeviceFree(&normed);
+	SparkDeviceFree(&low);
+	SparkDeviceFree(&up);
+	SparkDeviceFree(&mixed);
+	SparkDeviceFree(&inject_weight);
+	SparkDeviceFree(&inject);
+	SparkDeviceFree(&output);
+	SparkDeviceFree(&key);
+	SparkDeviceFree(&query);
+	SparkDeviceFree(&value);
+	SparkDeviceFree(&gated);
+	SparkDeviceFree(&conv);
 }
 
 static void TestBranchNorms(uint32_t rows, uint32_t branches)
@@ -2478,6 +2882,10 @@ int main(int argc, char **argv)
 	TestLinearRouted(2u);
 	TestLinearRoutedMxfp4(2u,4096u,512u);
 	TestMimoKernels(3u);
+	TestHyperKernels(3u);
+	TestLinearRoutedNvfp4(2u,2560u,96u);
+	TestLinearRoutedNvfp4(2u,640u,160u);
+	TestLinearRoutedNvfp4(1u,256u,64u);
 	TestLinearRoutedMxfp4(1u,2048u,1024u);
 	TestBranchNorms(2u,1u);
 	TestBranchNorms(3u,2u);
