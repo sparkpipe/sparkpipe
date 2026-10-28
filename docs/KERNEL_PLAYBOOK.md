@@ -525,6 +525,34 @@ that disagrees on it fails to build. The consumers are:
   - A window that starts at tile 0, as rank 0's does, cannot show this
     fault.
 
+## 2.7 Dependent launch around mesh waits (`spark_tp_mesh_kernels.cuh`)
+
+A mesh round runs publish, then arrival (one warp spinning on the peers'
+tails while it prefetches the next weights), then combine. The combine is
+the arrival's programmatic dependent, and it waits on the tails itself
+(`own_wait`).
+
+- **A spinning kernel releases its dependents only when they are small.**
+  A released dependent becomes resident at once and spins in its own wait.
+  - Large combines (up to 192 blocks) pinned the GPU this way: every rank
+    of `tp_mesh_hardware_probe` shares one GPU, and from degree 8 the
+    publish kernels could no longer run (#1630).
+  - `SparkTpMeshHardwareDirectKernel` uses 128 registers per thread, so a
+    GB10 holds only 2 of its 256-thread blocks per SM, 96 in all.
+- **Decode-size combines are released before the wait.** A combine of at
+  most `SPARK_TP_MESH_EARLY_ELEMENTS` (16,384) elements launches with at most
+  `SPARK_TP_MESH_EARLY_BLOCKS` (4) blocks of 256 threads, and the arrival
+  releases it before it spins (`SparkTpMeshCombineEarly`, `SparkTpMeshEarlyGrid`).
+  - It reacts as soon as the data lands, instead of paying a block dispatch
+    after the arrival exits on each of the ~300 collectives of a decode
+    step.
+  - Gathers loop over peers inside a block, so four blocks cover all sixteen.
+  - The block width matters. With 128-thread blocks, a 7,168-element sum
+    gives each thread two 8-element quads, and that cost as much as the early
+    release saved. With 256 threads each thread sums one quad.
+- **Larger combines are released after the wait**, so a resident dependent
+  never holds more than four blocks while it waits.
+
 # Part 3 — Finding kernels and their numbers
 
 - **Kernel inventory.** Generate it instead of keeping a list by hand:
