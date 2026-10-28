@@ -299,8 +299,14 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
 - `LmGqaShardTiledKernel` takes 128 query vectors of one KV head per block,
   flattened as (row, head) so any group size fills it, 16 per warp. 64-key
   K and V tiles stream through cp.async double buffers; scores and the
-  online softmax stay in registers, and P·V runs on the bf16 high and low
-  parts of P, so values match the f32 scalar kernel up to summation order.
+  online softmax stay in registers. P·V multiplies the bf16-rounded weights,
+  as the reference models do (fp32 softmax, then bf16 before the matmul),
+  while the denominator sums the f32 weights. Normalized values therefore
+  stay within 2^-9 of the f32 scalar kernel for values in [-1, 1).
+- A tile every query of the warp sees whole (no block mask) skips the
+  per-key visibility test and only scales its scores. That gives the same
+  bits as the masked path, so a row's result still does not depend on the
+  rows beside it.
 - Tile bounds are absolute and a fully masked tile leaves the state exact,
   so a row's result does not depend on the rows beside it. The launch
   therefore uses the tiled kernel for every row count of a geometry it
@@ -311,11 +317,13 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
   dimension; each part recomputes the scores and only part 0 writes the
   running max and sum.
 - On GB10, 64 heads over 8 KV heads of 128 and 8,192 local keys: 2,048 rows
-  take 14.6 ms (37.8 TFLOP/s) against 470 ms for the scalar kernel, and one
-  decode row at 128K positions 0.54 ms against 6.4 ms. With 24 heads over 4
-  KV heads of 256 and 4,096 local keys: 2,048 rows take 7.5 ms (27.6 TFLOP/s
-  counting each part's scores once) against 105 ms, and one decode row 0.36
-  ms against 2.8 ms.
+  take 9.3 ms (58.9 TFLOP/s, about 65% of the measured 90 TFLOP/s BF16 peak)
+  against 470 ms for the scalar kernel, and one decode row at 128K positions
+  0.47 ms against 5.9 ms. With 24 heads over 4 KV heads of 256 and 4,096
+  local keys: 2,048 rows take 5.6 ms (37.0 TFLOP/s counting each part's
+  scores once) against 105 ms, and one decode row 0.32 ms against 2.2 ms.
+  Splitting P into bf16 high and low parts (the previous version) cost 19% at
+  the 128-wide shape; the whole-tile path is the other 1.28x.
 
 **Projections (`project.cuh`)**
 
