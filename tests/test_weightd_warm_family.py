@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WARM = ROOT / "tools" / "weightd_warm.c"
 MODULE_TAGS = {
     None: (ROOT / "modules" / "glm53_flash_tp16_resident_decode_stage" /
-           "source" / "spark_glm53_flash_tp16_stage_model.cu",
+           "include" / "sparkpipe" / "spark_glm53_flash_tp16_stage_model.h",
            r'WeightdModel\(void\) \{ return "([^"]+)"'),
     "glm52": (ROOT / "modules" / "glm53_full_tp16_resident_decode_stage" /
               "source" / "spark_glm53_full_tp16_stage_model.cu",
