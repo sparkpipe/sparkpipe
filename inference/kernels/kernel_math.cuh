@@ -82,6 +82,11 @@ SPARK_MATH_FN float SparkMathSiluFast(float value)
 	return(SparkMathScaledSigmoidFast(value,value));
 }
 
+SPARK_MATH_FN float SparkMathSwishFast(float value)
+{
+	return(value * SparkMathSigmoidFast(value));
+}
+
 SPARK_MATH_FN float SparkMathSoftplus(float value)
 {
 	return(value > 20.0f ? value : SPARK_MATH_LOG(1.0f + SPARK_MATH_EXP(value)));
@@ -108,6 +113,11 @@ SPARK_MATH_FN float SparkMathGeluTanh(float value)
 {
 	const float cube = value * value * value;
 	return(0.5f * value * (1.0f + SPARK_MATH_TANH(0.7978845608028654f * (value + 0.044715f * cube))));
+}
+
+SPARK_MATH_FN float SparkMathGeluTanhScaleFirst(float value)
+{
+	return(0.5f * value * (1.0f + SPARK_MATH_TANH(0.7978845608028654f * (value + 0.044715f * value * value * value))));
 }
 
 SPARK_MATH_FN float SparkMathSoftcap(float value, float cap)

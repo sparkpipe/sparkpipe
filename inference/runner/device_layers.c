@@ -459,11 +459,11 @@ SparkStatus SparkDeviceExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue,
 	gated.input_stride = 2u * inter;
 	gated.output_stride = inter;
 	if ( status == SPARK_STATUS_OK )
-		status = SparkOpsGatedMul(stage->ops,queue,scratch->gate_up,scratch->act,&gated,shape->activation);
+		status = SparkOpsGatedMulRouted(stage->ops,queue,scratch->gate_up,scratch->weights,scratch->act,&gated,shape->activation);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsLinearRouted(stage->ops,queue,scratch->act,weights->down,scratch->out,scratch->experts,shape->experts,&down);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkOpsRouteCombine(stage->ops,queue,scratch->out,scratch->experts,scratch->weights,output,&route);
+		status = SparkOpsRouteCombine(stage->ops,queue,scratch->out,output,&route);
 	return(status);
 }
 

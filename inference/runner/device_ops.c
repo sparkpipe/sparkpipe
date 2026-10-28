@@ -44,6 +44,8 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_attention_combine_d512",
 	"spark_silu_mul",
 	"spark_gelu_tanh_mul",
+	"spark_silu_mul_routed",
+	"spark_gelu_tanh_mul_routed",
 	"spark_rmsnorm_branches",
 	"spark_rmsnorm_scaled",
 	"spark_scale_rows",
@@ -648,6 +650,28 @@ SparkStatus SparkOpsGatedMul(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spark
 		params->rows,1u,256u,params,sizeof(*params),bindings,2u));
 }
 
+SparkStatus SparkOpsGatedMulRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor weights, SparkTensor output,
+	const SparkSiluMulParams *params, uint32_t activation)
+{
+	SparkDeviceBinding bindings[3];
+	SparkStatus status;
+	if ( params->rows == 0u || params->dimension == 0u || params->input_stride < 2u * params->dimension ||
+		(activation != SPARK_GATED_SILU && activation != SPARK_GATED_GELU_TANH) )
+		return(OpsRefuse("gated_mul_routed","routes, an input stride that holds the gate and up halves and a known activation are required"));
+	status = OpsNeed("gated_mul_routed","input",input,OpsRowsBytes(params->rows,params->input_stride,2u * params->dimension,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("gated_mul_routed","weights",weights,(uint64_t)params->rows * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("gated_mul_routed","output",output,OpsRowsBytes(params->rows,params->output_stride,params->dimension,2u));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(input,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(weights,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,activation == SPARK_GATED_GELU_TANH ? SPARK_OPS_GELU_TANH_MUL_ROUTED : SPARK_OPS_SILU_MUL_ROUTED,
+		(params->dimension + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,3u));
+}
+
 SparkStatus SparkOpsRmsNormBranches(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor hidden, SparkTensor first, const SparkTensor *second,
 	const SparkTensor *first_weight, const SparkTensor *second_weight, SparkTensor output_weight, const SparkTensor *scalar, const SparkBranchNormParams *params)
 {
@@ -758,27 +782,21 @@ SparkStatus SparkOpsRouteTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spar
 		sizeof(*params),bindings,pinned != 0 ? 6u : 5u));
 }
 
-SparkStatus SparkOpsRouteCombine(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor experts, SparkTensor weights,
-	SparkTensor output, const SparkRouteParams *params)
+SparkStatus SparkOpsRouteCombine(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor output,
+	const SparkRouteParams *params)
 {
-	SparkDeviceBinding bindings[4];
+	SparkDeviceBinding bindings[2];
 	SparkStatus status;
 	if ( params->rows == 0u || params->top_k == 0u || params->top_k > SPARK_ROUTE_MAX_TOP_K || params->width == 0u )
 		return(OpsRefuse("route_combine","rows, a top-k of at most 16 and a width are required"));
 	status = OpsNeed("route_combine","expert outputs",expert_out,(uint64_t)params->rows * params->top_k * params->width * sizeof(uint16_t));
 	if ( status == SPARK_STATUS_OK )
-		status = OpsNeed("route_combine","experts",experts,(uint64_t)params->rows * params->top_k * sizeof(uint32_t));
-	if ( status == SPARK_STATUS_OK )
-		status = OpsNeed("route_combine","weights",weights,(uint64_t)params->rows * params->top_k * sizeof(float));
-	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("route_combine","output",output,(uint64_t)params->rows * params->width * sizeof(uint16_t));
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	bindings[0] = OpsBind(expert_out,SPARK_DEVICE_BIND_READ);
-	bindings[1] = OpsBind(experts,SPARK_DEVICE_BIND_READ);
-	bindings[2] = OpsBind(weights,SPARK_DEVICE_BIND_READ);
-	bindings[3] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
-	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,4u));
+	bindings[1] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,2u));
 }
 
 SparkStatus SparkOpsLinearRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor y, SparkTensor experts,

@@ -50,6 +50,8 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_ATTENTION_COMBINE_WIDE,
 	SPARK_OPS_SILU_MUL,
 	SPARK_OPS_GELU_TANH_MUL,
+	SPARK_OPS_SILU_MUL_ROUTED,
+	SPARK_OPS_GELU_TANH_MUL_ROUTED,
 	SPARK_OPS_RMSNORM_BRANCHES,
 	SPARK_OPS_RMSNORM_SCALED,
 	SPARK_OPS_SCALE_ROWS,
@@ -129,6 +131,8 @@ SparkStatus SparkOpsAddRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkT
 	uint32_t dimension, uint32_t hidden_stride, uint32_t addend_stride);
 SparkStatus SparkOpsGatedMul(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor output, const SparkSiluMulParams *params,
 	uint32_t activation);
+SparkStatus SparkOpsGatedMulRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor weights, SparkTensor output,
+	const SparkSiluMulParams *params, uint32_t activation);
 SparkStatus SparkOpsRmsNormBranches(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor hidden, SparkTensor first, const SparkTensor *second,
 	const SparkTensor *first_weight, const SparkTensor *second_weight, SparkTensor output_weight, const SparkTensor *scalar, const SparkBranchNormParams *params);
 SparkStatus SparkOpsRmsNormScaled(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor scale, SparkTensor output,
@@ -137,8 +141,8 @@ SparkStatus SparkOpsScaleRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spar
 SparkStatus SparkOpsSoftcap(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, uint64_t count, float cap);
 SparkStatus SparkOpsRouteTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor expert_scale, const SparkTensor *pinned,
 	SparkTensor experts, SparkTensor weights, const SparkRouteParams *params);
-SparkStatus SparkOpsRouteCombine(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor experts, SparkTensor weights,
-	SparkTensor output, const SparkRouteParams *params);
+SparkStatus SparkOpsRouteCombine(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor output,
+	const SparkRouteParams *params);
 SparkStatus SparkOpsLinearRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor y, SparkTensor experts,
 	uint32_t expert_count, const SparkGemvParams *params);
 SparkStatus SparkOpsLogprob(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor targets, SparkTensor result,

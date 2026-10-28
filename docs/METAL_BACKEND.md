@@ -92,12 +92,13 @@ tensor sizes before each launch.
 | `spark_gemv_r{1,2,4,8}`, `spark_gemv_f32_r*` | the GEMV family's projections for one or two rows, and its verify frames in passes of up to eight rows: BF16 weights `[N, K]`, 4, 4, 2 and 1 outputs per threadgroup at 1, 2, 4 and 8 rows, the inner dimension split across the threadgroup's four SIMD groups, FP32 accumulation, BF16 or FP32 out |
 | `spark_gemm_rows16`, `spark_gemm_rows32`, `spark_gemm_reduce` | decode projections for 3 to 64 rows on the tensor operations: 128 outputs per threadgroup, the weights staged through threadgroup memory 64 inputs at a time with the next slice prefetched into registers, the inner dimension split so the launch has about 1,024 threadgroups, FP32 partials summed in split order by the reduce kernel |
 | `spark_gemm`, `spark_gemm_f32` | prefill projections on the Metal 4 tensor operations (`matmul2d`, 128 x 64 tiles, FP32 accumulation, relaxed precision off) |
-| `spark_causal_conv_silu` | depthwise causal convolution over a per-sequence window, BF16 sum, SiLU |
+| `spark_causal_conv_silu` | depthwise causal convolution over a per-sequence window, BF16 sum, then `SparkMathSwishFast` (`x * sigmoid(x)`, CUDA's `LM_CONV_SWISH`) |
 | `spark_gated_delta_prepare`, `spark_gated_delta_rule` | L2-normalised query and key, decay and write strength, then the gated delta rule over FP32 state, one SIMD group per value column |
 | `spark_kv_store_paged` | key and value rows into 64-slot pages through a page table; a position outside its sequence's pages or a page outside the pool raises the device error word (`SparkKvPage`, shared with the attention kernels) |
 | `spark_attention_{decode,prefill_blocks,combine}_d{256,512}` | causal grouped-query attention over paged KV for 256- and 512-wide heads, split into key partitions and merged, with an optional sliding window (a row sees its last `window` positions) and an optional sigmoid output gate; a key on a page `SparkKvPage` rejects raises the device error word and is skipped (decode per key, prefill per 64-key tile); decode walks 128-key partitions one key per SIMD group, prefill computes 32 (16 for 512-wide heads) query rows against 64-key pages on the tensor operations (scores and the FP32 probability-times-value product in `matmul2d`, the online softmax in FP32 between them) |
 | `spark_silu_mul`, `spark_gelu_tanh_mul`, `spark_add_rows` | the gated activations (`bf16(silu(g) u)`, `bf16(bf16(gelu_tanh(g)) u)` with `SparkMathGeluTanh`) and the final residual add |
-| `spark_route_topk`, `spark_route_pinned`, `spark_gemv_routed`, `spark_route_combine` | expert routing: softmax over the router's BF16 logits (a NaN or infinite logit raises the device error word), the top k in a total order (NaN below every probability, lowest index on ties) or, pinned, the experts a route override names, renormalised and times a per-expert scale; the GEMV of each route's expert on its row (the same per-row arithmetic as `spark_gemv_r1`); and the routes' outputs times their weights, summed in BF16 in ascending expert order |
+| `spark_silu_mul_routed`, `spark_gelu_tanh_mul_routed` | the experts' gated activations with the route weight folded in before the down projection, as CUDA's `LmSwigluPackedKernel` and `LmGeluTanhPackedKernel` do: `bf16(silu(g) u w)` and `bf16(bf16(gelu_tanh(g)) u w)` with `SparkMathGeluTanhScaleFirst` |
+| `spark_route_topk`, `spark_route_pinned`, `spark_gemv_routed`, `spark_route_combine` | expert routing: softmax over the router's BF16 logits (a NaN or infinite logit raises the device error word), the top k in a total order (NaN below every probability, lowest index on ties) or, pinned, the experts a route override names, renormalised over a pairwise sum tree plus 1e-20 (the order of CUDA's warp top-k) and times a per-expert scale; the GEMV of each route's expert on its row (the same per-row arithmetic as `spark_gemv_r1`); and the routes' already weighted outputs summed in FP32 in route order and rounded once to BF16, as CUDA's `LmMoeLocalFinalizeKernel` does |
 | `spark_scale_rows`, `spark_softcap_rows` | a BF16 row scale (an embedding multiplier) and the FP32 logit softcap `cap tanh(z / cap)` (`SparkMathSoftcap`) |
 | `spark_logprob_rows` | argmax (lowest index on ties), log-normaliser and a target's log-probability over FP32 logits |
 | `spark_stream_read` | the streaming-read bandwidth probe |
@@ -119,6 +120,10 @@ They implement the same operations as the CUDA kernels in
 `inference/kernels/kernel_math.cuh` holds the formulas both compilers build:
 bf16 conversion and rounding, the scaled sigmoid with sigmoid and SiLU as
 its cases, softplus, the gated-delta decay, the tanh GeLU and the softcap.
+The experts' tanh GeLU is `SparkMathGeluTanhScaleFirst`, which multiplies
+`0.044715 g g g` from the left as CUDA's expert kernels always have; the
+dense GeLU cubes first. Both backends use the same two, so the choice
+between them is made in one place.
 Each is an inline function that the CUDA kernels (through `dtype.cuh`), the
 Metal kernels (through `common.metal`) and the host CUDA shim of the host
 tests include. A formula is defined once, so a change to it reaches both

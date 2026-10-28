@@ -629,6 +629,62 @@ static void TestGeluMul(uint32_t rows)
 	SparkDeviceFree(&output);
 }
 
+static void TestGatedMulRouted(uint32_t routes, uint32_t activation)
+{
+	enum { DIM = 704 };
+	const char *label = activation == SPARK_GATED_GELU_TANH ? "gelu_tanh_mul_routed" : "silu_mul_routed";
+	SparkDeviceBuffer input, weights, output;
+	uint16_t *in = (uint16_t *)Shared(&input,(uint64_t)routes * 2u * DIM * sizeof(uint16_t),"routed gate | up");
+	float *w = (float *)Shared(&weights,(uint64_t)routes * sizeof(float),"route weights");
+	uint16_t *out = (uint16_t *)Shared(&output,(uint64_t)routes * DIM * sizeof(uint16_t),"routed activation");
+	SparkSiluMulParams params;
+	Check clean, corrupted;
+	char shape[64];
+	uint32_t pass, row, i;
+	FillBf16(in,(uint64_t)routes * 2u * DIM,2.0);
+	for ( row = 0u; row < routes; row++ )
+		w[row] = (float)(0.05 + 0.3 * Uniform());
+	params.rows = routes;
+	params.dimension = DIM;
+	params.input_stride = 2u * DIM;
+	params.output_stride = DIM;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint32_t poke = routes - 1u;
+		const float saved = w[poke];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			w[poke] = saved * 3.0f;
+		if ( !Run(SparkOpsGatedMulRouted(&ops,queue,Whole(&input),Whole(&weights),Whole(&output),&params,activation),label) )
+			break;
+		w[poke] = saved;
+		for ( row = 0u; row < routes; row++ )
+			for ( i = 0u; i < DIM; i++ )
+			{
+				const double gate = Bf16(in[(uint64_t)row * 2u * DIM + i]), up = Bf16(in[(uint64_t)row * 2u * DIM + DIM + i]), weight = w[row];
+				if ( activation == SPARK_GATED_GELU_TANH )
+				{
+					const double activated = GeluTanh(gate), y = RoundBf16(activated) * up * weight;
+					const double error = 0.5 * fabs(gate) * (FUNCTION_ERROR + 8.0 * UNIT_F32) + 8.0 * UNIT_F32 * fabs(activated);
+					const double flip = fmax(fabs(RoundBf16(activated - error) - RoundBf16(activated)),fabs(RoundBf16(activated + error) - RoundBf16(activated)));
+					Observe(check,Bf16(out[(uint64_t)row * DIM + i]),y,UNIT_BF16 * fabs(y) + fabs(up * weight) * flip + 4.0 * UNIT_F32 * fabs(y));
+				}
+				else
+				{
+					const double y = Silu(gate) * up * weight;
+					Observe(check,Bf16(out[(uint64_t)row * DIM + i]),y,UNIT_BF16 * fabs(y) + (3.0 * FUNCTION_ERROR + 2.0 * UNIT_F32) * fabs(y));
+				}
+			}
+	}
+	snprintf(shape,sizeof(shape),"%u routes, 704 gate | 704 up, route weights",routes);
+	Report(label,shape,&clean,&corrupted,activation == SPARK_GATED_GELU_TANH ?
+		"the gelu_tanh_mul bound with the route weight folded in: u|y| + |up w| flip slack + 4 eps32 |y|" : "u|y| + (3*16 + 2) eps32 |y|");
+	SparkDeviceFree(&input);
+	SparkDeviceFree(&weights);
+	SparkDeviceFree(&output);
+}
+
 static void TestScaleAndSoftcap(void)
 {
 	enum { COUNT = 3u * 2816u, LOGITS = 4096u };
@@ -888,37 +944,24 @@ static void TestRoutes(uint32_t rows)
 		memset(check,0,sizeof(*check));
 		if ( pass == 1u )
 			eo[poke] = ToBf16(Bf16(saved) + 5.0f);
-		if ( !Run(SparkOpsRouteCombine(&ops,queue,Whole(&outputs),Whole(&experts),Whole(&weights),Whole(&combined),&params),"route_combine") )
+		if ( !Run(SparkOpsRouteCombine(&ops,queue,Whole(&outputs),Whole(&combined),&params),"route_combine") )
 			break;
 		eo[poke] = saved;
 		for ( row = 0u; row < rows; row++ )
-		{
-			uint32_t order[TOP], a, b;
-			for ( k = 0u; k < TOP; k++ )
-				order[k] = k;
-			for ( a = 1u; a < TOP; a++ )
-				for ( b = a; b > 0u && e[row * TOP + order[b - 1u]] > e[row * TOP + order[b]]; b-- )
-				{
-					const uint32_t swap = order[b];
-					order[b] = order[b - 1u];
-					order[b - 1u] = swap;
-				}
 			for ( i = 0u; i < WIDTH; i++ )
 			{
-				double total = 0.0, magnitude = 0.0;
+				float total = 0.0f;
+				double magnitude = 0.0;
 				for ( k = 0u; k < TOP; k++ )
 				{
-					const uint64_t route = (uint64_t)row * TOP + order[k];
-					const double term = RoundBf16((double)(float)((double)Bf16(eo[route * WIDTH + i]) * wt[route]));
-					total = RoundBf16((double)(float)(total + term));
-					magnitude += fabs(term);
+					total += (float)Bf16(eo[((uint64_t)row * TOP + k) * WIDTH + i]);
+					magnitude += fabs(Bf16(eo[((uint64_t)row * TOP + k) * WIDTH + i]));
 				}
-				Observe(check,Bf16(co[(uint64_t)row * WIDTH + i]),total,UNIT_BF16 * 1e-3 * magnitude);
+				Observe(check,Bf16(co[(uint64_t)row * WIDTH + i]),RoundBf16((double)total),UNIT_BF16 * 1e-3 * magnitude);
 			}
-		}
 	}
-	snprintf(shape,sizeof(shape),"rows %u, top 8 x 2816 in expert order",rows);
-	Report("route_combine",shape,&clean,&corrupted,"exact: the same fp32 products and bf16 sums in ascending expert order");
+	snprintf(shape,sizeof(shape),"rows %u, top 8 x 2816 in route order",rows);
+	Report("route_combine",shape,&clean,&corrupted,"exact: the fp32 sum of the routes' bf16 outputs in route order, rounded once to bf16");
 	SparkDeviceFree(&logits);
 	SparkDeviceFree(&scale);
 	SparkDeviceFree(&experts);
@@ -1967,6 +2010,8 @@ int main(int argc, char **argv)
 	}
 	TestAttentionPages();
 	TestGeluMul(2u);
+	TestGatedMulRouted(24u,SPARK_GATED_GELU_TANH);
+	TestGatedMulRouted(24u,SPARK_GATED_SILU);
 	TestScaleAndSoftcap();
 	TestRoutes(3u);
 	TestRoutesPinned(3u);

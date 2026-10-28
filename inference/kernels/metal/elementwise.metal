@@ -50,6 +50,29 @@ template [[host_name("spark_gelu_tanh_mul")]] kernel void spark_gated_mul<SPARK_
 	device const ushort *input [[buffer(1)]], device ushort *output [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]],
 	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
 
+template <uint ACTIVATION>
+kernel void spark_gated_mul_routed(constant SparkSiluMulParams &p [[buffer(0)]], device const ushort *input [[buffer(1)]],
+	device const float *weights [[buffer(2)]], device ushort *output [[buffer(3)]], uint2 group [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint threads = group_size.x;
+	const uint row = group.y, index = group.x * threads + tid;
+	if ( index >= p.dimension )
+		return;
+	device const ushort *source = input + (ulong)row * p.input_stride;
+	const float gate = SparkMathBf16ToFloat(source[index]), up = SparkMathBf16ToFloat(source[p.dimension + index]), weight = weights[row];
+	const float activated = ACTIVATION == SPARK_GATED_GELU_TANH ? SparkMathRoundBf16(SparkMathGeluTanhScaleFirst(gate)) * up * weight :
+		SparkMathSilu(gate) * up * weight;
+	output[(ulong)row * p.output_stride + index] = SparkMathFloatToBf16(activated);
+}
+
+template [[host_name("spark_silu_mul_routed")]] kernel void spark_gated_mul_routed<SPARK_GATED_SILU>(constant SparkSiluMulParams &p [[buffer(0)]],
+	device const ushort *input [[buffer(1)]], device const float *weights [[buffer(2)]], device ushort *output [[buffer(3)]],
+	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
+template [[host_name("spark_gelu_tanh_mul_routed")]] kernel void spark_gated_mul_routed<SPARK_GATED_GELU_TANH>(constant SparkSiluMulParams &p [[buffer(0)]],
+	device const ushort *input [[buffer(1)]], device const float *weights [[buffer(2)]], device ushort *output [[buffer(3)]],
+	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
+
 kernel void spark_scale_rows(constant SparkScaleParams &p [[buffer(0)]], device ushort *values [[buffer(1)]], uint index [[thread_position_in_grid]])
 {
 	if ( index < p.count )
@@ -89,13 +112,18 @@ static inline void SparkRouteProbabilities(constant SparkRouteParams &p, device 
 static inline void SparkRouteWeights(constant SparkRouteParams &p, threadgroup const float *probability, threadgroup const uint *chosen,
 	device const float *expert_scale, device uint *experts, device float *weights, uint row)
 {
-	float sum = 0.0f;
-	for ( uint k = 0u; k < p.top_k; k++ )
-		sum += probability[chosen[k]];
+	const uint width = p.top_k <= 1u ? 1u : p.top_k <= 2u ? 2u : p.top_k <= 4u ? 4u : p.top_k <= 8u ? 8u : 16u;
+	float tree[SPARK_ROUTE_MAX_TOP_K];
+	for ( uint k = 0u; k < width; k++ )
+		tree[k] = k < p.top_k ? probability[chosen[k]] : 0.0f;
+	for ( uint step = width / 2u; step > 0u; step >>= 1u )
+		for ( uint k = 0u; k < step; k++ )
+			tree[k] = tree[k] + tree[k + step];
+	const float total = tree[0] + 1e-20f;
 	for ( uint k = 0u; k < p.top_k; k++ )
 	{
 		experts[(ulong)row * p.top_k + k] = chosen[k];
-		weights[(ulong)row * p.top_k + k] = probability[chosen[k]] / sum * expert_scale[chosen[k]];
+		weights[(ulong)row * p.top_k + k] = probability[chosen[k]] / total * expert_scale[chosen[k]];
 	}
 }
 
@@ -149,29 +177,15 @@ kernel void spark_route_pinned(constant SparkRouteParams &p [[buffer(0)]], devic
 }
 
 kernel void spark_route_combine(constant SparkRouteParams &p [[buffer(0)]], device const ushort *expert_out [[buffer(1)]],
-	device const uint *experts [[buffer(2)]], device const float *weights [[buffer(3)]], device ushort *output [[buffer(4)]],
-	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
+	device ushort *output [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+	uint2 group_size [[threads_per_threadgroup]])
 {
 	const uint row = group.y, index = group.x * group_size.x + tid;
 	if ( index >= p.width )
 		return;
-	uint order[SPARK_ROUTE_MAX_TOP_K];
-	for ( uint k = 0u; k < p.top_k; k++ )
-	{
-		uint at = k;
-		while ( at > 0u && experts[(ulong)row * p.top_k + order[at - 1u]] > experts[(ulong)row * p.top_k + k] )
-		{
-			order[at] = order[at - 1u];
-			at--;
-		}
-		order[at] = k;
-	}
 	float total = 0.0f;
 	for ( uint k = 0u; k < p.top_k; k++ )
-	{
-		const ulong route = (ulong)row * p.top_k + order[k];
-		total = SparkMathRoundBf16(total + SparkMathRoundBf16(SparkMathBf16ToFloat(expert_out[route * p.width + index]) * weights[route]));
-	}
+		total += SparkMathBf16ToFloat(expert_out[((ulong)row * p.top_k + k) * p.width + index]);
 	output[(ulong)row * p.width + index] = SparkMathFloatToBf16(total);
 }
 
