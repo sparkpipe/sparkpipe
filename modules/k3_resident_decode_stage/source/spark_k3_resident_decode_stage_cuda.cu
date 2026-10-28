@@ -23,7 +23,7 @@ static_assert(K3_DISPATCH_GATHER_WINDOW_GRAIN % LM_EXPANDED_PREFILL_TILE == 0u, 
 
 #define K3_DISPATCH_EXPANDED_MIN_ROWS 256u
 #define K3_DISPATCH_MHA_MIN_ROWS 256u
-#define K3_DISPATCH_MHA_MIN_CONTEXT 16384u
+#define K3_DISPATCH_MHA_MIN_CONTEXT 262144u
 
 static uint64_t K3DispatchGatherWindowKeys(uint32_t max_rows, uint32_t degree)
 {
