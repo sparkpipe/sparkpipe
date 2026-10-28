@@ -4,6 +4,8 @@
 
 #include "sparkpipe/spark_stage_runner_model.h"
 
+#define MM_PACK_ALIGNMENT 128u
+
 template<class G>
 struct MimoLayout
 {

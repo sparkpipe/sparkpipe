@@ -31,7 +31,6 @@
 #include "sparkpipe/spark_mimo26_family.h"
 
 #define MM_THREADS 256u
-#define MM_PACK_ALIGNMENT 128u
 #define MM_FP8_GROUP 128u
 
 template<class G>
