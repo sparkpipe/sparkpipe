@@ -848,9 +848,12 @@ struct K3MhaExpandedKv
 	static __host__ __device__ constexpr uint64_t PagesForTokens(uint64_t tokens) { return Geometry::PagesForTokens(tokens); }
 };
 
+#define K3_MHA_PARTIAL_UNIT_FLOATS ((uint64_t)K3_HIDDEN * sizeof(uint16_t) / sizeof(float))
+
 static uint64_t K3LayerMhaPartialStride(const K3LayerBuffers *b, uint32_t rows)
 {
-	return((uint64_t)rows * LmGqaShardRecordFloats(K3_MLA_HEADS,K3_V_HEAD_DIM,b->kv_shard.degree));
+	const uint64_t floats = (uint64_t)rows * LmGqaShardRecordFloats(K3_MLA_HEADS,K3_V_HEAD_DIM,b->kv_shard.degree);
+	return((floats + K3_MHA_PARTIAL_UNIT_FLOATS - 1u) / K3_MHA_PARTIAL_UNIT_FLOATS * K3_MHA_PARTIAL_UNIT_FLOATS);
 }
 
 static uint32_t K3LayerMhaReady(const K3LayerBuffers *b, uint32_t rows)

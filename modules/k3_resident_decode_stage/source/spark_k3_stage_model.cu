@@ -310,6 +310,19 @@ static void K3RunnerShardExchange(SparkK3ModelState *state, K3LayerBuffers *b,
 		K3ModelFail(state);
 		return;
 	}
+	if ( (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_MHA_QUERY )
+	{
+		K3RunnerRound(state, stream, rows, b->query_bf16, b->shard_query_gathered_bf16,
+			K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS) * K3_MHA_QK, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,
+			(phase & K3_COLLECTIVE_FINISH) != 0u ? K3_RUNNER_STAGE_FINISH : K3_RUNNER_STAGE_BEGIN);
+		return;
+	}
+	if ( (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_MHA_PARTIALS )
+	{
+		K3RunnerRound(state, stream, (uint32_t)(K3LayerMhaPartialStride(b, rows) / K3_MHA_PARTIAL_UNIT_FLOATS),
+			b->shard_partials_f32, b->shard_partials_received_f32, 0u, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, K3_RUNNER_STAGE_ALL);
+		return;
+	}
 	if ( (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_KEYS )
 	{
 		const uint64_t stride = K3LayerMlaWindowStride(b, b->shard_gather_window);
@@ -426,7 +439,8 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			? b->hidden_bf16 : b->attention_out_bf16;
 	if ( b->tp_sharded == 0u )
 		return;
-	if ( base == K3_COLLECTIVE_MLA_QUERY || base == K3_COLLECTIVE_MLA_PARTIALS || base == K3_COLLECTIVE_MLA_KEYS )
+	if ( base == K3_COLLECTIVE_MLA_QUERY || base == K3_COLLECTIVE_MLA_PARTIALS || base == K3_COLLECTIVE_MLA_KEYS ||
+		base == K3_COLLECTIVE_MLA_MHA_QUERY || base == K3_COLLECTIVE_MLA_MHA_PARTIALS )
 	{
 		K3RunnerShardExchange(state, b, stream, rows, phase);
 		return;
