@@ -28,6 +28,7 @@ struct Qwen38MaxGeometry : QwenHybridDefaults
 	static const char *Name(void) { return "qwen3.8-max"; }
 	static const char *DumpEnv(void) { return "SPARK_QWEN38_MAX_LAYER_DUMP"; }
 	static const char *ReportTag(void) { return "QWEN38_MAX-STATE"; }
+	static constexpr bool kGdnSigmoidGate = false;
 };
 
 static_assert(QwenHybridShape<Qwen38MaxGeometry>::Kv::kSlotBytes == SPARK_QWEN38_MAX_STAGE_KV_SLOT_BYTES, "a KV slot is [K: 4 x 256][V: 4 x 256] bf16");

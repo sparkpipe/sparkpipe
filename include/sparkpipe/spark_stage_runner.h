@@ -181,6 +181,7 @@ uint64_t SparkStageRunnerRecurrentBytes(const SparkStageRunner *runner);
 uint32_t SparkStageRunnerVerifyCapable(const SparkStageRunner *runner);
 uint64_t SparkStageRunnerTakeCaptureNs(SparkStageRunner *runner);
 SparkStatus SparkStageRunnerKeepRows(SparkStageRunner *runner, const uint32_t *kept, uint32_t sequences);
+SparkStatus SparkStageRunnerCheck(SparkStageRunner *runner);
 SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRunnerTapEntry *entries, uint32_t entry_count, uint32_t capture);
 SparkStatus SparkStageRunnerTapShape(const SparkStageRunner *runner, uint32_t *hidden, uint32_t *total_layers);
 const uint16_t *SparkStageRunnerTapRows(const SparkStageRunner *runner, uint32_t step, uint32_t rows, uint64_t *row_stride_elements);

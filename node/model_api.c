@@ -48,6 +48,7 @@
 #define API_BUSY_RETRY_MS 5
 #define API_SEQUENCE_SAVE_MS 60000u
 #define API_HEALTH_REFRESH_MS 1000u
+#define API_STOP_DRAIN_MS 10000u
 
 typedef struct ApiOptions
 {
@@ -220,14 +221,24 @@ static int api_accept(int srv)
 	}
 }
 
+static volatile sig_atomic_t api_stop_requested;
+static volatile sig_atomic_t api_worker_started;
+
 static void api_term_signal(int signal_number)
 {
 	const char line[] = "model_api api_exit reason=signal\n";
+	uint8_t value = 1u;
 	ssize_t written;
 	(void)signal_number;
-	written = write(2, line, sizeof(line) - 1u);
+	if ( api_worker_started == 0 || api_stop_requested != 0 )
+	{
+		written = write(2, line, sizeof(line) - 1u);
+		(void)written;
+		_exit(0);
+	}
+	api_stop_requested = 1;
+	written = write(S.wake_fds[1], &value, sizeof(value));
 	(void)written;
-	_exit(0);
 }
 
 static const char *api_finish_reason(const ApiRequest *req)
@@ -716,12 +727,42 @@ static void api_publish_health(void)
 	}
 }
 
+static void api_stop(void)
+{
+	const uint64_t deadline_ms = api_now_ms() + API_STOP_DRAIN_MS;
+	SparkStatus status = SparkModelBatchEngineBeginShutdown(S.engine);
+	api_logf("api_stop reason=signal: admission closed, %s", status == SPARK_STATUS_OK ? "no live requests" : "cancelling the live requests");
+	for (;;)
+	{
+		status = SparkModelBatchEngineBeginShutdown(S.engine);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkModelBatchEngineDestroy(S.engine);
+		if ( status == SPARK_STATUS_OK )
+		{
+			api_logf("api_exit reason=signal drained=1");
+			_exit(0);
+		}
+		if ( api_now_ms() >= deadline_ms )
+		{
+			api_logf("api_exit reason=signal drained=0 drain_timeout_ms=%u status=%s: live work did not finish, so the prefix index keeps its last save",
+				API_STOP_DRAIN_MS, SparkStatusToString(status));
+			_exit(0);
+		}
+		api_drain_worker_wake();
+		(void)SparkModelBatchEngineProgress(S.engine,4u);
+		api_poll_engine(1u);
+	}
+}
+
 static void *api_worker(void *arg)
 {
 	uint32_t busy;
 	(void)arg;
+	api_worker_started = 1;
 	while (S.running)
 	{
+		if ( api_stop_requested != 0 )
+			api_stop();
 		api_drain_worker_wake();
 		api_cancel_queued();
 		api_reap_orphans();

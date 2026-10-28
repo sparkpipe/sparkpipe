@@ -8,6 +8,7 @@
 #include "runtime/launch.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_named_pack.h"
+#include "sparkpipe/spark_named_pack_bind.h"
 #include "sparkpipe/spark_stage_runner_model.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_weight_codec.h"
@@ -37,10 +38,7 @@
 
 struct LingDefaults
 {
-	static constexpr uint32_t kAttention = LING_ATTENTION_MLA;
-	static constexpr float kNormEpsilon = LG_EPSILON;
 	static constexpr uint32_t kKdaRank = 0u;
-	static constexpr bool kKdaDoubledBeta = false;
 	static constexpr uint32_t kMlaHeads = 0u;
 	static constexpr uint32_t kNope = 0u;
 	static constexpr uint32_t kRope = 0u;
@@ -343,9 +341,8 @@ struct LingModel
 			stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		RowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-		LM_LAUNCH((LmCausalConvKernel<LG_THREADS,G::kConv,LM_CONV_SWISH,uint16_t>), dim3(sequences,(S::kKdaChannels + LG_THREADS - 1u) / LG_THREADS),
-			LG_THREADS, 0, stream, window, step->recurrent_index, step->sequence_row_begin, (const uint32_t *)0, state->qkv, layer->kda_conv,
-			state->qkv, S::kKdaChannels, sequences, step->commit, step->sequence_row_indices);
+		LmCausalConvLaunch<G::kConv,LM_CONV_SWISH,uint16_t>(window, step->recurrent_index, step->sequence_row_begin, (const uint32_t *)0, state->qkv, layer->kda_conv,
+			state->qkv, S::kKdaChannels, sequences, step->commit, step->sequence_row_indices, rows, stream);
 		LingSplitRowsKernel<<<dim3(Blocks(S::kKdaChannels), rows), LG_THREADS, 0, stream>>>(state->qkv, state->query, state->key, state->value,
 			S::kKdaWidth);
 		LM_LAUNCH((LmBoundedDecayKernel<LG_THREADS,G::kKdaDim>), dim3(rows,S::kKdaRankHeads), LG_THREADS, 0, stream,
@@ -590,9 +587,8 @@ struct LingModel
 				continue;
 			uint8_t *state_pool = state->kda_state + (uint64_t)layer->recurrent_index * state->slots * state->kda_state_bytes;
 			uint16_t *window = state->kda_window + (uint64_t)layer->recurrent_index * state->slots * (state->kda_window_bytes / sizeof(uint16_t));
-			LM_LAUNCH((LmCausalConvKernel<LG_THREADS,G::kConv,LM_CONV_SWISH,uint16_t>), dim3(sequences,(S::kKdaChannels + LG_THREADS - 1u) / LG_THREADS),
-				LG_THREADS, 0, stream, window, step->recurrent_index, step->sequence_row_begin, kept, ReplayQkv(state, layer), layer->kda_conv,
-				state->qkv, S::kKdaChannels, sequences, 1u, step->sequence_row_indices);
+			LmCausalConvLaunch<G::kConv,LM_CONV_SWISH,uint16_t>(window, step->recurrent_index, step->sequence_row_begin, kept, ReplayQkv(state, layer), layer->kda_conv,
+				state->qkv, S::kKdaChannels, sequences, 1u, step->sequence_row_indices, rows, stream);
 			LingSplitRowsKernel<<<dim3(Blocks(S::kKdaChannels), rows), LG_THREADS, 0, stream>>>(state->qkv, state->query, state->key, state->value,
 				S::kKdaWidth);
 			LM_LAUNCH((LmDeltaRuleColumnKernel<LG_THREADS,G::kKdaDim,G::kKdaDim,float>), dim3(sequences,S::kKdaRankHeads,G::kKdaDim / LM_WARP_LANES),
@@ -601,21 +597,6 @@ struct LingModel
 				S::kKdaRankHeads, 1u, sequences, 1u, step->sequence_row_indices);
 		}
 		return Launched();
-	}
-
-	static SparkStatus Entry(State *state, const char *name, const char *kind, uint64_t *offset, uint64_t *bytes, uint32_t *rows)
-	{
-		SparkNamedPackEntry entry;
-		if ( SparkNamedPackEntryLoad(&state->pack, name, &entry) != SPARK_STATUS_OK || strcmp(entry.kind, kind) != 0 || entry.shape_count < 1u )
-		{
-			fprintf(stderr, "%s: pack tensor %s missing or not %s\n", G::Tag(), name, kind);
-			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-		}
-		*offset = state->pack.payload_base + entry.payload_offset;
-		*bytes = entry.bytes;
-		if ( rows != 0 )
-			*rows = entry.shape[0];
-		return SPARK_STATUS_OK;
 	}
 
 	static SparkStatus Plan(State *state, uint64_t *bytes, uint8_t *base, uint32_t lane)
@@ -788,9 +769,9 @@ struct LingModel
 		geometry->kv_shard.grain = 1u;
 		geometry->recurrent_bytes = RecurrentBytes(state);
 		geometry->head_norm_f32 = 1u;
-		if ( Entry(state, "embed", "bf16", &geometry->embed_offset, &geometry->embed_bytes, &embed_rows) != SPARK_STATUS_OK ||
-			Entry(state, "head_norm", "f32", &geometry->head_norm_offset, &geometry->head_norm_bytes, 0) != SPARK_STATUS_OK ||
-			Entry(state, "head", "bf16", &geometry->head_offset, &geometry->head_bytes, &geometry->head_rows) != SPARK_STATUS_OK )
+		if ( SparkNamedPackTensorRange(&state->pack, G::Tag(), "embed", "bf16", &geometry->embed_offset, &geometry->embed_bytes, &embed_rows) != SPARK_STATUS_OK ||
+			SparkNamedPackTensorRange(&state->pack, G::Tag(), "head_norm", "f32", &geometry->head_norm_offset, &geometry->head_norm_bytes, 0) != SPARK_STATUS_OK ||
+			SparkNamedPackTensorRange(&state->pack, G::Tag(), "head", "bf16", &geometry->head_offset, &geometry->head_bytes, &geometry->head_rows) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 		if ( embed_rows * state->tp_degree != G::kVocab || geometry->head_rows * state->tp_degree != G::kVocab ||
 			geometry->embed_bytes != (uint64_t)embed_rows * G::kHidden * sizeof(uint16_t) ||
@@ -817,27 +798,14 @@ struct LingModel
 
 	template<class T>
 	static SparkStatus Bind(State *state, SparkWeightdLazyPack *lazy_pack, uint32_t index, const char *name, const char *kind, T **field,
-		uint64_t expected_bytes = 0u)
+		uint64_t expected_bytes)
 	{
 		char key[SPARK_NAMED_PACK_MAX_NAME_BYTES];
-		uint64_t offset, bytes;
 		const void *bound = 0;
 		snprintf(key, sizeof(key), "layers.%u.%s", index, name);
-		if ( Entry(state, key, kind, &offset, &bytes, 0) != SPARK_STATUS_OK )
-			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-		if ( expected_bytes != 0u && bytes != expected_bytes )
-		{
-			fprintf(stderr, "%s: pack tensor %s is %llu bytes, the stage geometry needs %llu\n", G::Tag(), key, (unsigned long long)bytes,
-				(unsigned long long)expected_bytes);
-			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
-		}
-		if ( SparkWeightdLazyPackSlice(lazy_pack, offset, bytes, &bound) != SPARK_STATUS_OK || bound == 0 )
-		{
-			fprintf(stderr, "%s: weightd has no resident bytes for %s\n", G::Tag(), key);
-			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-		}
+		const SparkStatus status = SparkNamedPackBindSized(&state->pack, lazy_pack, G::Tag(), key, kind, expected_bytes, &bound);
 		*field = (T *)bound;
-		return SPARK_STATUS_OK;
+		return status;
 	}
 
 	static SparkStatus BindModel(void *model, SparkWeightdLazyPack *lazy_pack, SparkStageRunnerModelGeometry *geometry)

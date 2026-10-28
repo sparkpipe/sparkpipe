@@ -8,6 +8,8 @@ from pathlib import Path
 
 import numpy as np
 
+from t1_reference_common import matmul
+
 PREFIX = "model."
 
 
@@ -139,12 +141,12 @@ class Reference:
 
     def gated_norm(self, values, prefix):
         normed = self.norm(values, prefix + "norm.weight")
-        hidden = bf16(silu(bf16(normed @ self.weight(prefix + "W_down.weight").T)))
-        gate = bf16(hidden @ self.weight(prefix + "W_up.weight").T)
+        hidden = bf16(silu(bf16(matmul(normed, self.weight(prefix + "W_down.weight").T))))
+        gate = bf16(matmul(hidden, self.weight(prefix + "W_up.weight").T))
         return bf16(normed * sigmoid(gate))
 
     def linear(self, values, name):
-        return bf16(values @ self.weight(name).T)
+        return bf16(matmul(values, self.weight(name).T))
 
     def angles(self, positions):
         freqs = positions[:, None].astype(np.float32) * self.inv_freq[None, :]
@@ -171,12 +173,12 @@ class Reference:
         r = self.rope_dim
         query = np.concatenate([self.rope_half(query[..., :r], cos[:, None, :], sin[:, None, :]), query[..., r:]], axis=-1)
         key = np.concatenate([self.rope_half(key[..., :r], cos, sin), key[..., r:]], axis=-1)
-        weights = bf16(normed @ self.weight(p + "indexer.weights_proj.weight").T) * np.float32(self.index_heads ** -0.5)
+        weights = bf16(matmul(normed, self.weight(p + "indexer.weights_proj.weight").T)) * np.float32(self.index_heads ** -0.5)
         selected = []
         for row in range(rows):
             visible = positions <= positions[row]
-            scores = np.maximum((query[row] @ key.T) * np.float32(self.index_dim ** -0.5), 0)
-            total = weights[row] @ scores
+            scores = np.maximum(matmul(query[row], key.T) * np.float32(self.index_dim ** -0.5), 0)
+            total = matmul(weights[row], scores)
             total = np.where(visible, total, -np.inf)
             keep = min(self.index_topk, rows)
             selected.append(np.argsort(-total, kind="stable")[:keep])
@@ -204,11 +206,11 @@ class Reference:
             visible &= mask
         output = np.empty((rows, heads, self.value), dtype=np.float32)
         for head in range(heads):
-            scores = (query[:, head, :self.nope] @ k_nope[:, head, :].T + q_rot[:, head, :] @ k_rot.T) * self.scale
+            scores = (matmul(query[:, head, :self.nope], k_nope[:, head, :].T) + matmul(q_rot[:, head, :], k_rot.T)) * self.scale
             scores = np.where(visible, scores, -np.inf)
             weights = np.exp(scores - scores.max(axis=-1, keepdims=True))
             weights /= weights.sum(axis=-1, keepdims=True)
-            output[:, head, :] = bf16(bf16(weights) @ value[:, head, :])
+            output[:, head, :] = bf16(matmul(bf16(weights), value[:, head, :]))
         output = bf16(output * sigmoid(gate))
         return self.linear(output.reshape(rows, heads * self.value), p + "o_proj.weight")
 
@@ -218,7 +220,7 @@ class Reference:
         return self.linear(bf16(bf16(silu(gate)) * up), prefix + "down_proj.weight")
 
     def route(self, normed, p):
-        logits = (normed @ self.weight(p + "gate.weight").T).astype(np.float32)
+        logits = matmul(normed, self.weight(p + "gate.weight").T)
         scores = sigmoid(logits).astype(np.float32)
         choice = scores + self.weight(p + "gate.e_score_correction_bias")[None, :]
         rows, per_group = choice.shape[0], self.experts // self.groups
@@ -249,9 +251,9 @@ class Reference:
             rows, slots = np.nonzero(chosen == expert)
             e = f"{p}experts.{int(expert)}."
             x = normed[rows]
-            gate = bf16(x @ self.checkpoint.f32(e + "gate_proj.weight").T)
-            up = bf16(x @ self.checkpoint.f32(e + "up_proj.weight").T)
-            out = bf16(bf16(bf16(silu(gate)) * up) @ self.checkpoint.f32(e + "down_proj.weight").T)
+            gate = bf16(matmul(x, self.checkpoint.f32(e + "gate_proj.weight").T))
+            up = bf16(matmul(x, self.checkpoint.f32(e + "up_proj.weight").T))
+            out = bf16(matmul(bf16(bf16(silu(gate)) * up), self.checkpoint.f32(e + "down_proj.weight").T))
             routed[rows] = bf16(routed[rows] + bf16(out * weights[rows, slots][:, None]))
         return bf16(routed + shared)
 
@@ -284,7 +286,7 @@ class Reference:
         parts = []
         for first in range(0, head.shape[0], chunk):
             rows = (np.asarray(head[first:first + chunk]).astype(np.uint32) << 16).view(np.float32)
-            parts.append(normed @ rows.T)
+            parts.append(matmul(normed, rows.T))
         return np.concatenate(parts, axis=-1)
 
 

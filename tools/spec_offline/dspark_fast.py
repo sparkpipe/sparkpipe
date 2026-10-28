@@ -10,7 +10,9 @@ reference only at rounding level:
 
 draft() replays one captured graph per sampling mode; ingest() replays one graph per row count up to
 INGEST_GRAPH_ROWS, in chunks of that many rows; warm() captures them all. `python3 dspark_fast.py --checkpoint DIR` compares the fast
-rounds with the eager ones on random taps and prints the round times.
+rounds with the eager ones on random taps and prints the round times. The drafter is chaotic on random taps (keys one ulp
+apart move the hidden state by tens of percent), so this comparison only reports times; the agreement gate is
+`dspark_score.py --gate` on a tap recording.
 """
 import argparse
 import sys

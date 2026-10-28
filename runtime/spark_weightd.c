@@ -3668,8 +3668,8 @@ static SparkStatus SparkWeightdKvSharedAdmit(SparkWeightdServer *server,SparkWei
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( server->config.kv_shared_window_bytes == 0u )
 	{
-		fprintf(stderr,"weightd kv shared pool refused label=%s: weightd runs without --kv-shared-window-bytes\n",request->label);
-		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		fprintf(stderr,"weightd kv shared pool off label=%s: weightd runs without --kv-shared-window-bytes, so the engine keeps its prefixes private\n",request->label);
+		return(SPARK_STATUS_UNSUPPORTED);
 	}
 	window_pages = server->config.kv_shared_window_bytes / request->page_bytes / request->alignment_pages * request->alignment_pages;
 	if ( window_pages > SPARK_KV_SHARED_INDEX_SLOTS_MAX )
@@ -3678,7 +3678,7 @@ static SparkStatus SparkWeightdKvSharedAdmit(SparkWeightdServer *server,SparkWei
 	{
 		fprintf(stderr,"weightd kv shared pool refused label=%s: a window of %llu bytes holds no aligned group of %u pages of %llu bytes\n",request->label,
 			(unsigned long long)server->config.kv_shared_window_bytes,request->alignment_pages,(unsigned long long)request->page_bytes);
-		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	slot_count = (uint32_t)window_pages;
 	device_bytes = window_pages * request->page_bytes;
@@ -6226,6 +6226,8 @@ SparkStatus SparkWeightdClientKvSharedAttach(SparkWeightdClient *client,const Sp
 	{
 		while ( received != 0u )
 			(void)close(fds[--received]);
+		if ( status == SPARK_STATUS_UNSUPPORTED )
+			return(status);
 		SPARK_RETURN(status);
 	}
 	grant->pool_generation = response.pool_generation;

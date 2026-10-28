@@ -16,6 +16,7 @@
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_stage_kv_binding.h"
 #include "sparkpipe/spark_weight_codec.h"
+#include "tests/test_stderr_capture.h"
 #include "tests/test_weightd_kv_server.h"
 
 #define TEST_BLOCK 4u
@@ -979,6 +980,8 @@ static void TestSnapshotRestartRestore(void)
 {
 	SparkModelDriverKvStoreCounters counters;
 	uint8_t pages[2][TEST_PAGE_BYTES];
+	TestStderrCapture capture;
+	char *output;
 	Open();
 	PublishTwoPageChain(pages);
 	Unload();
@@ -986,8 +989,12 @@ static void TestSnapshotRestartRestore(void)
 	TestKvServerStart(64ull << 20);
 	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
 	assert(BINDING.kv_pool.reattached == 0u && BINDING.kv_pool_adopted_pages == 0u);
+	TestStderrCaptureBegin(&capture);
 	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_OK);
+	output = TestStderrCaptureEnd(&capture);
 	assert(BINDING.restore_jobs == 1u && BINDING.restore_pending_answers >= 1u && BINDING.restore_imported_pages == 2u && BINDING.transactions.restore_async == 1u);
+	assert(strstr(output,"ERRSITE runtime/stage_kv_binding.c") == 0);
+	free(output);
 	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
 	assert(counters.attached == 1u && counters.restore_count == 1u && counters.restore_page_count == 2u && counters.restore_failure_count == 0u);
 	assert(counters.store_file_count == 2u && counters.store_foreign_layout_file_count == 0u && counters.store_used_bytes != 0u);

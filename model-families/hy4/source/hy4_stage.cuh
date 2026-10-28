@@ -8,6 +8,7 @@
 #include "runtime/launch.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_named_pack.h"
+#include "sparkpipe/spark_named_pack_bind.h"
 #include "sparkpipe/spark_stage_runner_model.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_weight_codec.h"
@@ -757,21 +758,6 @@ struct HyModel
 		return Launched();
 	}
 
-	static SparkStatus Entry(State *state, const char *name, const char *kind, uint64_t *offset, uint64_t *bytes, uint32_t *rows)
-	{
-		SparkNamedPackEntry entry;
-		if ( SparkNamedPackEntryLoad(&state->pack, name, &entry) != SPARK_STATUS_OK || strcmp(entry.kind, kind) != 0 || entry.shape_count < 1u )
-		{
-			fprintf(stderr, "%s: pack tensor %s missing or not %s\n", G::Tag(), name, kind);
-			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-		}
-		*offset = state->pack.payload_base + entry.payload_offset;
-		*bytes = entry.bytes;
-		if ( rows != 0 )
-			*rows = entry.shape[0];
-		return SPARK_STATUS_OK;
-	}
-
 	static SparkStatus Plan(State *state, uint64_t *bytes, uint8_t *base)
 	{
 		const uint64_t rows = state->max_rows, routes = rows * G::kTopK, groups = G::kLocalExperts + 2u;
@@ -930,9 +916,9 @@ struct HyModel
 		geometry->kv_shard.rank = state->tp_rank;
 		geometry->kv_shard.grain = 1u;
 		geometry->head_norm_f32 = 1u;
-		if ( Entry(state, "embed", "bf16", &geometry->embed_offset, &geometry->embed_bytes, &embed_rows) != SPARK_STATUS_OK ||
-			Entry(state, "head_norm", "f32", &geometry->head_norm_offset, &geometry->head_norm_bytes, 0) != SPARK_STATUS_OK ||
-			Entry(state, "head", "bf16", &geometry->head_offset, &geometry->head_bytes, &geometry->head_rows) != SPARK_STATUS_OK )
+		if ( SparkNamedPackTensorRange(&state->pack, G::Tag(), "embed", "bf16", &geometry->embed_offset, &geometry->embed_bytes, &embed_rows) != SPARK_STATUS_OK ||
+			SparkNamedPackTensorRange(&state->pack, G::Tag(), "head_norm", "f32", &geometry->head_norm_offset, &geometry->head_norm_bytes, 0) != SPARK_STATUS_OK ||
+			SparkNamedPackTensorRange(&state->pack, G::Tag(), "head", "bf16", &geometry->head_offset, &geometry->head_bytes, &geometry->head_rows) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 		if ( embed_rows != vocab_rows || geometry->head_rows != vocab_rows || geometry->embed_bytes != (uint64_t)vocab_rows * G::kHidden * sizeof(uint16_t) ||
 			geometry->head_bytes != (uint64_t)vocab_rows * G::kHidden * sizeof(uint16_t) || geometry->head_norm_bytes != (uint64_t)G::kHidden * sizeof(float) )
@@ -959,23 +945,7 @@ struct HyModel
 
 	static SparkStatus Slice(State *state, SparkWeightdLazyPack *lazy_pack, const char *key, const char *kind, uint64_t expected_bytes, const void **field)
 	{
-		uint64_t offset, bytes;
-		const void *bound = 0;
-		if ( Entry(state, key, kind, &offset, &bytes, 0) != SPARK_STATUS_OK )
-			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-		if ( expected_bytes == 0u || bytes != expected_bytes )
-		{
-			fprintf(stderr, "%s: pack tensor %s is %llu bytes, the stage geometry needs %llu\n", G::Tag(), key, (unsigned long long)bytes,
-				(unsigned long long)expected_bytes);
-			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
-		}
-		if ( SparkWeightdLazyPackSlice(lazy_pack, offset, bytes, &bound) != SPARK_STATUS_OK || bound == 0 )
-		{
-			fprintf(stderr, "%s: weightd has no resident bytes for %s\n", G::Tag(), key);
-			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-		}
-		*field = bound;
-		return SPARK_STATUS_OK;
+		return SparkNamedPackBindSized(&state->pack, lazy_pack, G::Tag(), key, kind, expected_bytes, field);
 	}
 
 	template<class T>

@@ -1559,6 +1559,8 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	marks[3] = StageServingNowNs();
 	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageRunnerCheck(&state->runner);
 	marks[4] = StageServingNowNs();
 	if ( status == SPARK_STATUS_OK && state->runner.owns_final_head != 0u )
 		status = StageServingReadTokens(state, rows, steps);
@@ -1569,6 +1571,8 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		status = SparkStageRunnerKeepRows(&state->runner, kept, active);
 		if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
 			status = SPARK_STATUS_IO_ERROR;
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageRunnerCheck(&state->runner);
 		keep_ns = StageServingNowNs() - keep_started;
 	}
 	for ( uint32_t lane = 0u; status == SPARK_STATUS_OK && lane < active; ++lane )

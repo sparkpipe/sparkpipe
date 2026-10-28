@@ -99,6 +99,7 @@ static inline float __fmaf_rn(float a, float b, float c) { return fmaf(a, b, c);
 static inline float __fadd_rn(float a, float b) { return a + b; }
 static inline float __shfl_sync(unsigned, float value, int, int = 32) { return value; }
 static inline float __shfl_xor_sync(unsigned, float value, int, int = 32) { return value; }
+static inline unsigned __shfl_up_sync(unsigned, unsigned value, unsigned, int = 32) { return value; }
 static inline unsigned __ballot_sync(unsigned, int predicate) { return predicate != 0 ? 1u : 0u; }
 static inline int __popc(unsigned value) { return __builtin_popcount(value); }
 static inline unsigned __reduce_max_sync(unsigned, unsigned value) { return value; }

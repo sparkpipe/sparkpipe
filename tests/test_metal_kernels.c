@@ -679,6 +679,72 @@ static void TestScaleAndSoftcap(void)
 	SparkDeviceFree(&logits);
 }
 
+static void TestRoutesNonFinite(void)
+{
+	enum { EXPERTS = 128u, TOP = 8u, ROWS = 3u };
+	SparkDeviceBuffer logits, scale, experts, weights, pinned;
+	uint16_t *l = (uint16_t *)Shared(&logits,(uint64_t)ROWS * EXPERTS * sizeof(uint16_t),"non-finite route logits");
+	float *sc = (float *)Shared(&scale,EXPERTS * sizeof(float),"non-finite expert scale");
+	uint32_t *e = (uint32_t *)Shared(&experts,(uint64_t)ROWS * TOP * sizeof(uint32_t),"non-finite route experts");
+	uint32_t *pin = (uint32_t *)Shared(&pinned,(uint64_t)ROWS * TOP * sizeof(uint32_t),"non-finite pinned experts");
+	SparkTensor pinned_tensor = Whole(&pinned);
+	SparkRouteParams params;
+	uint32_t row, k, j, error, valid = 1u, mode;
+	Shared(&weights,(uint64_t)ROWS * TOP * sizeof(float),"non-finite route weights");
+	FillBf16(l,(uint64_t)ROWS * EXPERTS,2.0);
+	for ( k = 0u; k < EXPERTS; k++ )
+		sc[k] = 1.0f;
+	for ( row = 0u; row < ROWS; row++ )
+		for ( k = 0u; k < TOP; k++ )
+			pin[row * TOP + k] = (row * 11u + k * 5u) % EXPERTS;
+	l[1u * EXPERTS + 5u] = 0x7fc0u;
+	l[2u * EXPERTS + 9u] = 0x7f80u;
+	memset(&params,0,sizeof(params));
+	params.experts = EXPERTS;
+	params.top_k = TOP;
+	params.logit_stride = EXPERTS;
+	for ( mode = 0u; mode < 2u; mode++ )
+	{
+		const char *name = mode == 0u ? "route_topk" : "route_pinned";
+		params.rows = 1u;
+		SparkDeviceOpsTakeError(&ops,&error);
+		if ( !Run(SparkOpsRouteTopk(&ops,queue,Whole(&logits),Whole(&scale),mode != 0u ? &pinned_tensor : 0,Whole(&experts),Whole(&weights),&params),name) )
+			continue;
+		SparkDeviceOpsTakeError(&ops,&error);
+		if ( error != 0u )
+		{
+			printf("FAIL %-22s finite logits raised the device error word (%u)\n",name,error);
+			failures++;
+		}
+		params.rows = ROWS;
+		memset(e,0xff,(size_t)ROWS * TOP * sizeof(uint32_t));
+		if ( !Run(SparkOpsRouteTopk(&ops,queue,Whole(&logits),Whole(&scale),mode != 0u ? &pinned_tensor : 0,Whole(&experts),Whole(&weights),&params),name) )
+			continue;
+		SparkDeviceOpsTakeError(&ops,&error);
+		for ( row = 0u; row < ROWS; row++ )
+			for ( k = 0u; k < TOP; k++ )
+			{
+				valid &= e[row * TOP + k] < EXPERTS ? 1u : 0u;
+				for ( j = 0u; j < k; j++ )
+					valid &= e[row * TOP + k] != e[row * TOP + j] ? 1u : 0u;
+			}
+		if ( error < 2u || error > ROWS || valid == 0u )
+		{
+			printf("FAIL %-22s a NaN or +Inf logit: error word %u (expected row 1 or 2), experts %s\n",name,error,
+				valid != 0u ? "distinct and in range" : "OUT OF RANGE OR REPEATED");
+			failures++;
+		}
+		else
+			printf("PASS %-22s a NaN or +Inf logit raises the device error word for row %u; every row still picks %u distinct experts in range\n",name,
+				error - 1u,TOP);
+	}
+	SparkDeviceFree(&logits);
+	SparkDeviceFree(&scale);
+	SparkDeviceFree(&experts);
+	SparkDeviceFree(&weights);
+	SparkDeviceFree(&pinned);
+}
+
 static void TestRoutesPinned(uint32_t rows)
 {
 	enum { EXPERTS = 128u, TOP = 8u };
@@ -1412,6 +1478,28 @@ static void AttentionReference(const AttentionFixture *f, const uint16_t *query,
 	free(slack);
 }
 
+static SparkAttentionParams AttentionParamsFor(const AttentionFixture *f, uint32_t rows, uint32_t sequences)
+{
+	SparkAttentionParams params;
+	memset(&params,0,sizeof(params));
+	params.rows = rows;
+	params.heads = att.heads;
+	params.kv_heads = att.kv;
+	params.head_dimension = att.dim;
+	params.page_slots = ATT_SLOTS;
+	params.pages_per_sequence = f->pages;
+	params.pool_pages = sequences * f->pages;
+	params.query_stride = att.heads * att.dim;
+	params.gate_stride = att.qkv;
+	params.output_stride = att.heads * att.dim;
+	params.scale = att.scale;
+	params.output_gate = att.gate;
+	params.window = att.window;
+	params.gate_offset = att.dim;
+	params.gate_head_stride = 2u * att.dim;
+	return(params);
+}
+
 static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 {
 	AttentionFixture f;
@@ -1441,42 +1529,27 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 	}
 	f.paged.sequence_of_row = Whole(&f.sequence);
 	f.paged.positions = Whole(&f.positions);
-	memset(&params,0,sizeof(params));
-	params.rows = rows;
-	params.heads = att.heads;
-	params.kv_heads = att.kv;
-	params.head_dimension = att.dim;
-	params.page_slots = ATT_SLOTS;
-	params.pages_per_sequence = f.pages;
-	params.pool_pages = sequences * f.pages;
-	params.query_stride = att.heads * att.dim;
-	params.gate_stride = att.qkv;
-	params.gate_offset = 256u;
-	params.gate_head_stride = 512u;
-	params.output_stride = att.heads * att.dim;
-	params.scale = att.scale;
-	params.output_gate = att.gate;
-	params.window = att.window;
-	params.gate_offset = att.dim;
-	params.gate_head_stride = 2u * att.dim;
+	params = AttentionParamsFor(&f,rows,sequences);
 	for ( pass = 0u; pass < 2u; pass++ )
 	{
 		Check *check = pass == 0u ? &clean : &corrupted;
 		uint16_t *keys = (uint16_t *)f.keys.host;
 		const uint32_t poke_position = att.window != 0u && context > att.window ? context - 1u - att.window / 2u : (context - 1u) / 2u;
+		const uint32_t poked_rows = context > 1u ? 2u : 1u, value_position = poke_position + poked_rows - 1u;
 		const uint64_t poke = ((uint64_t)(sequences - 1u) * f.context + poke_position) * att.kv * att.dim + (att.kv - 1u) * att.dim + 17u;
 		const uint16_t saved = keys[poke];
+		const float probe = Bf16(query[((uint64_t)(prefill != 0u ? rows / 2u : 0u) * att.heads + (att.heads / att.kv) * (att.kv - 1u)) * att.dim + 17u]);
 		SparkKvParams store;
 		memset(check,0,sizeof(*check));
 		uint16_t *values = (uint16_t *)f.values.host;
-		const uint64_t value_poke = (poke / (att.kv * att.dim)) * att.qkv + att.value_offset + (att.kv - 1u) * att.dim + 17u;
+		const uint64_t value_poke = ((uint64_t)(sequences - 1u) * f.context + value_position) * att.qkv + att.value_offset + (att.kv - 1u) * att.dim + 17u;
 		const uint16_t value_saved = values[value_poke];
 		if ( pass == 1u )
 		{
-			keys[poke] = ToBf16(Bf16(saved) + 64.0f);
+			keys[poke] = ToBf16(Bf16(saved) + (probe < 0.0f ? -64.0f : 64.0f));
 			values[value_poke] = ToBf16(Bf16(value_saved) + 4.0f);
 			memset(&store,0,sizeof(store));
-			store.rows = 1u;
+			store.rows = poked_rows;
 			store.kv_heads = att.kv;
 			store.head_dimension = att.dim;
 			store.page_slots = ATT_SLOTS;
@@ -1488,12 +1561,16 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 			{
 				SparkDeviceBuffer one_sequence, one_position;
 				SparkOpsPaged single = f.paged;
-				*(uint32_t *)Shared(&one_sequence,4u,"poke sequence") = sequences - 1u;
-				*(uint32_t *)Shared(&one_position,4u,"poke position") = poke_position;
+				const uint64_t first_row = (uint64_t)(sequences - 1u) * f.context + poke_position;
+				uint32_t *poke_sequences = (uint32_t *)Shared(&one_sequence,2u * 4u,"poke sequence");
+				uint32_t *poke_positions = (uint32_t *)Shared(&one_position,2u * 4u,"poke position");
+				poke_sequences[0] = poke_sequences[1] = sequences - 1u;
+				poke_positions[0] = poke_position;
+				poke_positions[1] = poke_position + 1u;
 				single.sequence_of_row = Whole(&one_sequence);
 				single.positions = Whole(&one_position);
-				Run(SparkOpsKvStore(&ops,queue,&single,SparkTensorSlice(Whole(&f.keys),(poke / (att.kv * att.dim)) * att.kv * att.dim * 2u,att.kv * att.dim * 2u),
-					SparkTensorSlice(Whole(&f.values),(poke / (att.kv * att.dim)) * att.qkv * 2u,att.qkv * 2u),&store),"kv_store poke");
+				Run(SparkOpsKvStore(&ops,queue,&single,SparkTensorSlice(Whole(&f.keys),first_row * att.kv * att.dim * 2u,(uint64_t)poked_rows * att.kv * att.dim * 2u),
+					SparkTensorSlice(Whole(&f.values),first_row * att.qkv * 2u,(uint64_t)poked_rows * att.qkv * 2u),&store),"kv_store poke");
 				SparkDeviceFree(&one_sequence);
 				SparkDeviceFree(&one_position);
 			}
@@ -1520,6 +1597,135 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 	SparkDeviceFree(&f.gate);
 	SparkDeviceFree(&f.partial);
 	SparkDeviceFree(&f.output);
+}
+
+static int AttentionPagesRun(AttentionFixture *f, uint32_t rows, const uint32_t *position, const uint32_t *sequence, uint32_t sequences,
+	uint32_t *error)
+{
+	const SparkAttentionParams params = AttentionParamsFor(f,rows,sequences);
+	SparkDeviceOpsTakeError(&ops,error);
+	if ( !Run(SparkOpsAttention(&ops,queue,&f->paged,Whole(&f->query),Whole(&f->gate),Whole(&f->partial),Whole(&f->output),&params,position,sequence),
+		"attention pages") )
+		return(0);
+	SparkDeviceOpsTakeError(&ops,error);
+	return(1);
+}
+
+static void AttentionPagesExpect(const char *what, int ran, uint32_t error, uint32_t first, uint32_t last)
+{
+	if ( ran && error != 0u && error - 1u >= first && error - 1u <= last )
+		printf("PASS attention_pages        %s raises the device error word for row %u\n",what,error - 1u);
+	else
+	{
+		printf("FAIL attention_pages        %s: error word %u, expected a row in %u..%u\n",what,error,first,last);
+		failures++;
+	}
+}
+
+static void TestAttentionPages(void)
+{
+	enum { CONTEXT = 300, SEQUENCES = 2, PREFILL_ROWS = 64, BAD_PAGE = 2 };
+	AttentionFixture f;
+	SparkKvParams store;
+	SparkDeviceBuffer one_sequence, one_position, decode_sequence, decode_position;
+	uint32_t *sequence, *position, *table, row, error, saved;
+	uint32_t *decode_rows[2];
+	int ran;
+	memset(&f,0,sizeof(f));
+	AttentionFill(&f,CONTEXT,SEQUENCES);
+	Shared(&f.query,(uint64_t)PREFILL_ROWS * att.heads * att.dim * 2u,"pages query");
+	Shared(&f.gate,(uint64_t)PREFILL_ROWS * att.qkv * 2u,"pages gate");
+	Shared(&f.output,(uint64_t)PREFILL_ROWS * att.heads * att.dim * 2u,"pages output");
+	Shared(&f.partial,SparkOpsAttentionScratchBytes(PREFILL_ROWS,att.heads,att.dim,CONTEXT),"pages partial");
+	FillBf16((uint16_t *)f.query.host,(uint64_t)PREFILL_ROWS * att.heads * att.dim,att.scale < 0.5f ? 1.0 : 1.0 / 16.0);
+	FillBf16((uint16_t *)f.gate.host,(uint64_t)PREFILL_ROWS * att.qkv,1.0);
+	SparkDeviceFree(&f.sequence);
+	SparkDeviceFree(&f.positions);
+	sequence = (uint32_t *)Shared(&f.sequence,PREFILL_ROWS * 4u,"pages sequence");
+	position = (uint32_t *)Shared(&f.positions,PREFILL_ROWS * 4u,"pages positions");
+	for ( row = 0u; row < PREFILL_ROWS; row++ )
+	{
+		sequence[row] = row < PREFILL_ROWS / 2u ? 0u : 1u;
+		position[row] = CONTEXT - PREFILL_ROWS / 2u + row % (PREFILL_ROWS / 2u);
+	}
+	decode_rows[0] = (uint32_t *)Shared(&decode_sequence,SEQUENCES * 4u,"pages decode sequence");
+	decode_rows[1] = (uint32_t *)Shared(&decode_position,SEQUENCES * 4u,"pages decode positions");
+	for ( row = 0u; row < SEQUENCES; row++ )
+	{
+		decode_rows[0][row] = row;
+		decode_rows[1][row] = CONTEXT - 1u;
+	}
+	table = (uint32_t *)f.table.host;
+	f.paged.sequence_of_row = Whole(&f.sequence);
+	f.paged.positions = Whole(&f.positions);
+	ran = AttentionPagesRun(&f,PREFILL_ROWS,position,sequence,SEQUENCES,&error);
+	if ( !ran || error != 0u )
+	{
+		printf("FAIL attention_pages        mapped pages raised the device error word (%u)\n",error);
+		failures++;
+	}
+	saved = table[(SEQUENCES - 1u) * f.pages + BAD_PAGE];
+	table[(SEQUENCES - 1u) * f.pages + BAD_PAGE] = SEQUENCES * f.pages;
+	ran = AttentionPagesRun(&f,PREFILL_ROWS,position,sequence,SEQUENCES,&error);
+	AttentionPagesExpect("prefill over an unmapped page",ran,error,PREFILL_ROWS / 2u,PREFILL_ROWS - 1u);
+	f.paged.sequence_of_row = Whole(&decode_sequence);
+	f.paged.positions = Whole(&decode_position);
+	ran = AttentionPagesRun(&f,SEQUENCES,decode_rows[1],decode_rows[0],SEQUENCES,&error);
+	AttentionPagesExpect("decode over an unmapped page",ran,error,SEQUENCES - 1u,SEQUENCES - 1u);
+	memset(&store,0,sizeof(store));
+	store.rows = 1u;
+	store.kv_heads = att.kv;
+	store.head_dimension = att.dim;
+	store.page_slots = ATT_SLOTS;
+	store.pages_per_sequence = f.pages;
+	store.key_stride = att.kv * att.dim;
+	store.value_stride = att.qkv;
+	store.value_offset = att.value_offset;
+	store.pool_pages = SEQUENCES * f.pages;
+	{
+		SparkOpsPaged single = f.paged;
+		*(uint32_t *)Shared(&one_sequence,4u,"pages store sequence") = SEQUENCES - 1u;
+		*(uint32_t *)Shared(&one_position,4u,"pages store position") = BAD_PAGE * ATT_SLOTS + 5u;
+		single.sequence_of_row = Whole(&one_sequence);
+		single.positions = Whole(&one_position);
+		SparkDeviceOpsTakeError(&ops,&error);
+		ran = Run(SparkOpsKvStore(&ops,queue,&single,SparkTensorSlice(Whole(&f.keys),0u,att.kv * att.dim * 2u),
+			SparkTensorSlice(Whole(&f.values),0u,att.qkv * 2u),&store),"kv_store unmapped page");
+		SparkDeviceOpsTakeError(&ops,&error);
+		AttentionPagesExpect("a KV store into an unmapped page",ran,error,0u,0u);
+		SparkDeviceFree(&one_sequence);
+		SparkDeviceFree(&one_position);
+	}
+	table[(SEQUENCES - 1u) * f.pages + BAD_PAGE] = saved;
+	ran = AttentionPagesRun(&f,SEQUENCES,decode_rows[1],decode_rows[0],SEQUENCES,&error);
+	if ( !ran || error != 0u )
+	{
+		printf("FAIL attention_pages        the restored page table still raised the device error word (%u)\n",error);
+		failures++;
+	}
+	else
+		printf("PASS attention_pages        mapped pages raise nothing before and after the unmapped-page controls\n");
+	decode_rows[1][0] = f.pages * ATT_SLOTS;
+	{
+		const SparkAttentionParams params = AttentionParamsFor(&f,SEQUENCES,SEQUENCES);
+		const SparkStatus status = SparkOpsAttention(&ops,queue,&f.paged,Whole(&f.query),Whole(&f.gate),Whole(&f.partial),Whole(&f.output),&params,
+			decode_rows[1],decode_rows[0]);
+		if ( status == SPARK_STATUS_OK )
+		{
+			printf("FAIL attention_pages        a position past the sequence's pages was not refused\n");
+			failures++;
+			SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER);
+		}
+		else
+			printf("PASS attention_pages        a position past the sequence's pages is refused before launch\n");
+	}
+	AttentionFree(&f);
+	SparkDeviceFree(&f.query);
+	SparkDeviceFree(&f.gate);
+	SparkDeviceFree(&f.partial);
+	SparkDeviceFree(&f.output);
+	SparkDeviceFree(&decode_sequence);
+	SparkDeviceFree(&decode_position);
 }
 
 static void TestSiluMul(uint32_t rows)
@@ -1759,10 +1965,12 @@ int main(int argc, char **argv)
 		TestAttention(300u,40u,1u);
 		att = qwen;
 	}
+	TestAttentionPages();
 	TestGeluMul(2u);
 	TestScaleAndSoftcap();
 	TestRoutes(3u);
 	TestRoutesPinned(3u);
+	TestRoutesNonFinite();
 	TestLinearRouted(2u);
 	TestBranchNorms(2u,1u);
 	TestBranchNorms(3u,2u);

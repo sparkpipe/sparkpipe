@@ -234,8 +234,19 @@ static void TestK3PrefillDecodeRelease(void)
 	assert(SparkStageKvBindingResidentCount(&state->kv) == 0u && atomic_load(&state->lane_states[3]) == SPARK_STAGE_MODULE_SLOT_FREE);
 	Release(state, 5u, 3u);
 	assert(state->kv.lanes[3].phase == SPARK_KV_LANE_TRANSACTION_EMPTY && SparkStageKvBindingResidentCount(&state->kv) == 0u);
+	assert(test_check_calls >= 2u);
+	test_check_status = SPARK_STATUS_INTERNAL_ERROR;
+	dispatches = test_dispatch_calls;
+	WorkInit(&work, SPARK_MODEL_SERVING_WORK_KIND_PREFILL);
+	WorkLane(&work, 6u, 3u, 0u, 2u);
+	WorkRows(&work, 0u, 0u, 2u);
+	assert(Run(state, &work) == SPARK_STATUS_INTERNAL_ERROR && test_dispatch_calls == dispatches + 1u && COMPLETIONS == 4u);
+	test_check_status = SPARK_STATUS_OK;
+	assert(state->kv.lanes[3].phase == SPARK_KV_LANE_TRANSACTION_EMPTY && atomic_load(&state->kv.lane_bound[3]) == 0u);
+	assert(SparkStageKvBindingResidentCount(&state->kv) == 0u && atomic_load(&state->lane_states[3]) == SPARK_STAGE_MODULE_SLOT_FREE);
+	Release(state, 6u, 3u);
 	Close(state);
-	printf("K3 on the KV binding: prefill publishes and captures KDA state, decode continues, a position jump or a failed run binds nothing, release resets the slot and succeeds after a failed run: ok\n");
+	printf("K3 on the KV binding: prefill publishes and captures KDA state, decode continues, a position jump, a failed run or a failed model check binds nothing, release resets the slot and succeeds after a failed run: ok\n");
 }
 
 static void TestK3PrefixRestore(void)
