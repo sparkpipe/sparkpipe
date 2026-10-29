@@ -430,3 +430,138 @@ static int32_t K3StreamedKdaSegmented(K3LayerBuffers *b, const K3LayerWeights *s
 		K3PartialAdd(b,partial,rows,stream);
 	return(LM_LAUNCH_OK);
 }
+
+#define K3_STREAMED_KDA_TAILS 1u
+#define K3_STREAMED_KDA_SUMMARIES 2u
+
+__global__ static void K3StreamedConvTailKernel(uint16_t *window, const uint16_t *input, uint32_t rows, uint32_t channels)
+{
+	const uint32_t channel = (blockIdx.x * blockDim.x) + threadIdx.x;
+	if ( channel >= channels )
+		return;
+	for (uint32_t tap = 0u; tap < K3_KDA_CONV_KERNEL; tap++)
+		window[(uint64_t)channel * K3_KDA_CONV_KERNEL + tap] = input[((uint64_t)rows - K3_KDA_CONV_KERNEL + tap) * channels + channel];
+}
+
+struct K3StreamedKdaExchange
+{
+	uint32_t node;
+	uint32_t nodes;
+	uint16_t *tails;
+	uint8_t *summaries;
+	float *incoming;
+	float *running;
+	uint16_t *q_window;
+	uint16_t *k_window;
+	uint16_t *v_window;
+	const uint32_t *row_begin;
+	const uint32_t *slot;
+	const uint16_t *zeros;
+	uint16_t *base;
+	uint16_t *correction;
+	void (*exchange)(void *context, void *stream, uint32_t phase, uint32_t shard);
+	void *context;
+};
+
+template<class Format>
+static int32_t K3StreamedKdaNode(K3LayerBuffers *b, const K3LayerWeights *shards, const K3StreamedKdaState *states, uint32_t shard_count,
+	const K3StreamedKdaExchange *x, uint16_t *partial, float *hidden_accumulator, uint32_t boundary, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
+{
+	const uint64_t hidden_elements = (uint64_t)rows * K3_HIDDEN;
+	const uint32_t heads = K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS);
+	const uint32_t channels[3] = {heads * K3_KDA_KEY_DIM,heads * K3_KDA_KEY_DIM,heads * K3_KDA_VALUE_DIM};
+	const uint64_t window_offset[3] = {0u,(uint64_t)channels[0] * K3_KDA_CONV_KERNEL,(uint64_t)(channels[0] + channels[1]) * K3_KDA_CONV_KERNEL};
+	const uint64_t tail_elements = (uint64_t)(channels[0] + channels[1] + channels[2]) * K3_KDA_CONV_KERNEL;
+	const uint64_t slot_floats = (uint64_t)heads * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM, slot_bytes = slot_floats * sizeof(float);
+	const uint32_t *row_begin = b->sequence_row_begin, *state_index = b->kda_state_index;
+	uint32_t shard;
+	int32_t status = LM_LAUNCH_OK;
+	if ( shards == 0 || states == 0 || x == 0 || x->exchange == 0 || x->nodes == 0u || x->node >= x->nodes || rows < K3_KDA_CONV_KERNEL ||
+		partial == 0 || hidden_accumulator == 0 || b->tp_sharded == 0u || heads * shard_count != K3_KDA_HEADS || K3_KDA_KEY_DIM != K3_KDA_VALUE_DIM ||
+		x->tails == 0 || x->summaries == 0 || x->incoming == 0 || x->running == 0 || x->zeros == 0 || x->base == 0 || x->correction == 0 ||
+		x->row_begin == 0 || x->slot == 0 || x->q_window == 0 || x->k_window == 0 || x->v_window == 0 )
+		return(LM_LAUNCH_ERR_SHAPE);
+	K3BindLayer(&shards[0],b);
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
+		b->hidden_bf16,0,(const uint16_t *)b->attn_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
+	for (shard = 0u; shard < shard_count && status == LM_LAUNCH_OK; shard++)
+	{
+		uint16_t *const windows[3] = {x->q_window,x->k_window,x->v_window};
+		uint16_t *const carried[3] = {states[shard].q_window,states[shard].k_window,states[shard].v_window};
+		uint16_t *const own_tail = x->tails + ((uint64_t)x->node * shard_count + shard) * tail_elements;
+		const uint16_t *const last_tail = x->tails + ((uint64_t)(x->nodes - 1u) * shard_count + shard) * tail_elements;
+		float *const own = (float *)x->summaries + ((uint64_t)x->node * shard_count + shard) * 2u * slot_floats;
+		uint32_t which, node, current = 0u;
+		K3BindLayer(&shards[shard],b);
+		b->tp_rank = shard;
+		b->sequence_row_begin = x->row_begin;
+		b->kda_state_index = x->slot;
+		status = K3LayerKdaProject<Format>(b,rows,multiprocessors,stream);
+		if ( status != LM_LAUNCH_OK )
+			break;
+		{
+			const uint16_t *const inputs[3] = {b->query_bf16,b->key_bf16,b->value_bf16};
+			for (which = 0u; which < 3u; which++)
+				K3StreamedConvTailKernel<<<(channels[which] + 255u) / 256u,256u,0,stream>>>(own_tail + window_offset[which],inputs[which],rows,channels[which]);
+		}
+		x->exchange(x->context,(void *)(uintptr_t)stream,K3_STREAMED_KDA_TAILS,shard);
+		for (which = 0u; which < 3u; which++)
+		{
+			const uint16_t *seed = x->node == 0u ? carried[which] : x->tails + ((uint64_t)(x->node - 1u) * shard_count + shard) * tail_elements + window_offset[which];
+			if ( cudaMemcpyAsync(windows[which],seed,(size_t)channels[which] * K3_KDA_CONV_KERNEL * sizeof(uint16_t),cudaMemcpyDeviceToDevice,stream) != cudaSuccess )
+				return(LM_LAUNCH_ERR_LAUNCH);
+		}
+		b->kda_q_window = windows[0];
+		b->kda_k_window = windows[1];
+		b->kda_v_window = windows[2];
+		status = K3LayerKdaPrepare<Format>(b,rows,1u,1u,multiprocessors,stream);
+		if ( status != LM_LAUNCH_OK || cudaMemsetAsync(own,0,(size_t)slot_bytes,stream) != cudaSuccess )
+			return(status != LM_LAUNCH_OK ? status : LM_LAUNCH_ERR_LAUNCH);
+		b->kda_state_pool = (uint8_t *)own;
+		status = K3LayerKdaRecur(b,b->value_bf16,x->base,1u,1u,stream);
+		K3StreamedStateIdentityKernel<<<(uint32_t)((slot_floats + 255u) / 256u),256u,0,stream>>>(own + slot_floats,heads);
+		b->kda_state_pool = (uint8_t *)(own + slot_floats);
+		if ( status == LM_LAUNCH_OK )
+			status = K3LayerKdaRecur(b,x->zeros,x->correction,1u,1u,stream);
+		if ( status != LM_LAUNCH_OK )
+			break;
+		x->exchange(x->context,(void *)(uintptr_t)stream,K3_STREAMED_KDA_SUMMARIES,shard);
+		if ( cudaMemcpyAsync(x->running,states[shard].state_pool,(size_t)slot_bytes,cudaMemcpyDeviceToDevice,stream) != cudaSuccess )
+			return(LM_LAUNCH_ERR_LAUNCH);
+		for (node = 0u; node < x->nodes; node++)
+		{
+			const float *summary = (const float *)x->summaries + ((uint64_t)node * shard_count + shard) * 2u * slot_floats;
+			if ( node == x->node && cudaMemcpyAsync(x->incoming,x->running + current * slot_floats,(size_t)slot_bytes,cudaMemcpyDeviceToDevice,stream) != cudaSuccess )
+				return(LM_LAUNCH_ERR_LAUNCH);
+			K3StreamedStateComposeKernel<<<dim3(heads,K3_KDA_KEY_DIM),K3_KDA_VALUE_DIM,0,stream>>>(summary + slot_floats,x->running + current * slot_floats,summary,
+				x->running + (current ^ 1u) * slot_floats);
+			current ^= 1u;
+		}
+		if ( cudaMemcpyAsync(states[shard].state_pool,x->running + current * slot_floats,(size_t)slot_bytes,cudaMemcpyDeviceToDevice,stream) != cudaSuccess )
+			return(LM_LAUNCH_ERR_LAUNCH);
+		for (which = 0u; which < 3u; which++)
+			if ( cudaMemcpyAsync(carried[which],last_tail + window_offset[which],(size_t)channels[which] * K3_KDA_CONV_KERNEL * sizeof(uint16_t),
+					cudaMemcpyDeviceToDevice,stream) != cudaSuccess )
+				return(LM_LAUNCH_ERR_LAUNCH);
+		b->kda_state_pool = (uint8_t *)x->incoming;
+		status = K3LayerKdaRecur(b,x->zeros,x->correction,1u,0u,stream);
+		if ( status != LM_LAUNCH_OK )
+			break;
+		LM_LAUNCH((LmAddRowsKernel<K3_LAYER_THREADS>),dim3((channels[2] + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),K3_LAYER_THREADS,0,stream,
+			x->base,x->correction,b->attention_out_bf16,rows,channels[2]);
+		status = K3LayerKdaFinish<Format>(b,rows,partial,(uint16_t *)0,multiprocessors,stream);
+		if ( status == LM_LAUNCH_OK )
+			status = K3StreamedAccumulate(hidden_accumulator,partial,hidden_elements,shard == 0u ? 1u : 0u,stream);
+	}
+	b->sequence_row_begin = row_begin;
+	b->kda_state_index = state_index;
+	if ( status == LM_LAUNCH_OK )
+		status = K3StreamedRound(partial,hidden_accumulator,hidden_elements,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	if ( boundary != 0u )
+		K3PartialSet(b,partial,rows,stream);
+	else
+		K3PartialAdd(b,partial,rows,stream);
+	return(LM_LAUNCH_OK);
+}
