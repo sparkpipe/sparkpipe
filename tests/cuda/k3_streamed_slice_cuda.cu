@@ -24,6 +24,11 @@
 #define SL_DENSE_ROWS (2u * K3_DENSE_INTERMEDIATE / SL_SHARDS)
 #define SL_DENSE_IN (K3_DENSE_INTERMEDIATE / SL_SHARDS)
 #define SL_SLOT_BYTES K3_KDA_RANK_STATE_SLOT_BYTES(SL_HEADS,0u)
+#define SL_MLA_HEADS (K3_MLA_HEADS / SL_SHARDS)
+#define SL_NODES 4u
+#define SL_PASSES 2u
+#define SL_NODE_ROWS (SL_ROWS / (SL_NODES * SL_PASSES))
+#define SL_TAIL (2u * SL_QK + SL_V) * K3_KDA_CONV_KERNEL
 
 #define SL_CUDA(call) do { cudaError_t sl_error = (call); if ( sl_error != cudaSuccess ) { printf("FAIL cuda %s: %s\n",#call,cudaGetErrorString(sl_error)); exit(1); } } while (0)
 
@@ -98,9 +103,9 @@ static float *SlF32(uint64_t count,uint32_t salt,float scale,float offset)
 	return data;
 }
 
-static void SlBuffers(K3LayerBuffers *b,uint32_t rank,const uint32_t *state_index,const uint32_t *row_begin)
+static void SlBuffers(K3LayerBuffers *b,uint32_t rank,const uint32_t *state_index,const uint32_t *row_begin,uint32_t rows)
 {
-	uint32_t *dense_offsets = SlAlloc<uint32_t>(2u),offsets[2] = {0u,SL_ROWS};
+	uint32_t *dense_offsets = SlAlloc<uint32_t>(2u),offsets[2] = {0u,rows};
 	memset(b,0,sizeof(*b));
 	b->hidden_bf16 = SlAlloc<uint16_t>((uint64_t)SL_ROWS * K3_HIDDEN);
 	b->normed_bf16 = SlAlloc<uint16_t>((uint64_t)SL_ROWS * K3_HIDDEN);
@@ -233,6 +238,52 @@ static void *SlRankThread(void *argument)
 	return 0;
 }
 
+
+struct SlNode
+{
+	uint32_t node;
+	const K3LayerWeights *weights;
+	K3StreamedKdaState *states;
+	K3StreamedKdaExchange exchange;
+	K3LayerBuffers buffers;
+	uint16_t *partial;
+	float *latent_accumulator;
+	float *hidden_accumulator;
+	const uint16_t *hidden;
+	uint16_t *gathered;
+	int32_t status;
+	cudaStream_t stream;
+};
+
+static SlNode sl_nodes[SL_NODES];
+static pthread_barrier_t sl_node_barrier;
+
+static void SlNodeExchange(void *context,void *stream,uint32_t phase,uint32_t shard)
+{
+	(void)context;
+	(void)phase;
+	(void)shard;
+	SL_CUDA(cudaStreamSynchronize((cudaStream_t)(uintptr_t)stream));
+	pthread_barrier_wait(&sl_node_barrier);
+}
+
+static void *SlNodeThread(void *argument)
+{
+	SlNode *n = (SlNode *)argument;
+	const uint64_t row_bytes = (uint64_t)K3_HIDDEN * 2u;
+	n->status = LM_LAUNCH_OK;
+	for (uint32_t pass = 0u; pass < SL_PASSES && n->status == LM_LAUNCH_OK; pass++)
+	{
+		const uint64_t first = (uint64_t)pass * SL_NODES * SL_NODE_ROWS + (uint64_t)n->node * SL_NODE_ROWS;
+		SL_CUDA(cudaMemcpyAsync(n->buffers.hidden_bf16,n->hidden + first * K3_HIDDEN,SL_NODE_ROWS * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
+		n->status = K3StreamedSlice<LmMxfp4,K3GlobalKv,SL_MLA_HEADS>(&n->buffers,n->weights,n->states,SL_SHARDS,&n->exchange,0,0u,SL_LAYERS,n->partial,
+			n->latent_accumulator,n->hidden_accumulator,SL_NODE_ROWS,SL_NODE_ROWS * K3_TOP_K,48u,n->stream);
+		SL_CUDA(cudaMemcpyAsync(n->gathered + first * K3_HIDDEN,n->buffers.hidden_bf16,SL_NODE_ROWS * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
+		SL_CUDA(cudaStreamSynchronize(n->stream));
+	}
+	return 0;
+}
+
 int main(void)
 {
 	const uint64_t w1_bytes = (uint64_t)K3_EXPERTS * (K3_ROUTED_EXPERT_HIDDEN / 32u) * (SL_W1_OUT / 16u) * LM_SKINNY_CELL_ROWS * LM_SKINNY_CHUNK_BYTES;
@@ -309,7 +360,7 @@ int main(void)
 	for (uint32_t rank = 0u; rank < SL_SHARDS; rank++)
 	{
 		SlRank *r = &sl_ranks[rank];
-		SlBuffers(&r->buffers,rank,state_index,row_begin);
+		SlBuffers(&r->buffers,rank,state_index,row_begin,SL_ROWS);
 		for (uint32_t layer = 0u; layer < SL_LAYERS; layer++)
 			r->weights[layer] = shard_weights[(uint64_t)layer * SL_SHARDS + rank];
 		SL_CUDA(cudaMemcpy(r->buffers.hidden_bf16,hidden,(uint64_t)SL_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
@@ -337,10 +388,10 @@ int main(void)
 	}
 	for (uint32_t rank = 0u; rank < SL_SHARDS; rank++)
 		SlCheck(sl_ranks[rank].status == LM_LAUNCH_OK,"every TP16 rank runs the two-layer slice");
-	SlBuffers(&streamed,0u,state_index,row_begin);
+	SlBuffers(&streamed,0u,state_index,row_begin,SL_ROWS);
 	SL_CUDA(cudaMemcpy(streamed.hidden_bf16,hidden,(uint64_t)SL_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
 	SL_CUDA(cudaStreamCreate(&stream));
-	SlCheck(K3StreamedSlice<LmMxfp4>(&streamed,shard_weights.data(),states.data(),SL_SHARDS,0u,SL_LAYERS,partial,latent_accumulator,hidden_accumulator,
+	SlCheck(K3StreamedSlice<LmMxfp4,K3GlobalKv,SL_MLA_HEADS>(&streamed,shard_weights.data(),states.data(),SL_SHARDS,0,0,0u,SL_LAYERS,partial,latent_accumulator,hidden_accumulator,
 		SL_ROWS,SL_PACKED,48u,stream) == LM_LAUNCH_OK,"the streamed slice runs both layers' sixteen shards on one device");
 	SL_CUDA(cudaStreamSynchronize(stream));
 	{
@@ -367,6 +418,82 @@ int main(void)
 		SlCheck(sqrt(error / (squared > 0.0 ? squared : 1.0)) <= 0.01,"the streamed slice matches TP16 within 1% relative RMS");
 		printf("%s streamed two-layer slice vs TP16: worst |diff| %.4g, largest output %.4g, relative RMS %.3g, nonfinite %llu\n",
 			sl_failures == 0 ? "PASS" : "FAIL",worst,scale,sqrt(error / (squared > 0.0 ? squared : 1.0)),(unsigned long long)nonfinite);
+	}
+	{
+		uint16_t *tails = SlAlloc<uint16_t>((uint64_t)SL_NODES * SL_SHARDS * SL_TAIL),*gathered = SlAlloc<uint16_t>((uint64_t)SL_ROWS * K3_HIDDEN);
+		uint8_t *summaries = SlAlloc<uint8_t>((uint64_t)SL_NODES * SL_SHARDS * 2u * SL_SLOT_BYTES);
+		uint32_t *node_begin = SlAlloc<uint32_t>(2u),node_rows[2] = {0u,SL_NODE_ROWS};
+		std::vector<uint16_t> want((uint64_t)SL_ROWS * K3_HIDDEN),got(want.size());
+		double squared = 0.0,error = 0.0,worst = 0.0;
+		uint64_t nonfinite = 0u;
+		SL_CUDA(cudaMemcpy(node_begin,node_rows,sizeof(node_rows),cudaMemcpyHostToDevice));
+		for (uint32_t node = 0u; node < SL_NODES; node++)
+		{
+			SlNode *n = &sl_nodes[node];
+			K3StreamedKdaExchange *x = &n->exchange;
+			n->node = node;
+			n->weights = shard_weights.data();
+			n->states = new K3StreamedKdaState[(uint64_t)SL_LAYERS * SL_SHARDS];
+			for (uint64_t index = 0u; index < (uint64_t)SL_LAYERS * SL_SHARDS; index++)
+			{
+				n->states[index].state_pool = SlAlloc<uint8_t>(SL_SLOT_BYTES);
+				n->states[index].q_window = SlAlloc<uint16_t>((uint64_t)SL_QK * K3_KDA_CONV_KERNEL);
+				n->states[index].k_window = SlAlloc<uint16_t>((uint64_t)SL_QK * K3_KDA_CONV_KERNEL);
+				n->states[index].v_window = SlAlloc<uint16_t>((uint64_t)SL_V * K3_KDA_CONV_KERNEL);
+			}
+			SlBuffers(&n->buffers,0u,state_index,node_begin,SL_NODE_ROWS);
+			n->partial = SlAlloc<uint16_t>((uint64_t)SL_NODE_ROWS * K3_HIDDEN);
+			n->latent_accumulator = SlAlloc<float>((uint64_t)SL_NODE_ROWS * K3_ROUTED_EXPERT_HIDDEN);
+			n->hidden_accumulator = SlAlloc<float>((uint64_t)SL_NODE_ROWS * K3_HIDDEN);
+			n->hidden = hidden;
+			n->gathered = gathered;
+			memset(x,0,sizeof(*x));
+			x->node = node;
+			x->nodes = SL_NODES;
+			x->tails = tails;
+			x->summaries = summaries;
+			x->incoming = SlAlloc<float>(SL_SLOT_BYTES / 4u);
+			x->running = SlAlloc<float>(2u * SL_SLOT_BYTES / 4u);
+			x->q_window = SlAlloc<uint16_t>((uint64_t)SL_QK * K3_KDA_CONV_KERNEL);
+			x->k_window = SlAlloc<uint16_t>((uint64_t)SL_QK * K3_KDA_CONV_KERNEL);
+			x->v_window = SlAlloc<uint16_t>((uint64_t)SL_V * K3_KDA_CONV_KERNEL);
+			x->row_begin = node_begin;
+			x->slot = state_index;
+			x->zeros = SlAlloc<uint16_t>((uint64_t)SL_NODE_ROWS * SL_V);
+			x->base = SlAlloc<uint16_t>((uint64_t)SL_NODE_ROWS * SL_V);
+			x->correction = SlAlloc<uint16_t>((uint64_t)SL_NODE_ROWS * SL_V);
+			x->exchange = SlNodeExchange;
+			SL_CUDA(cudaStreamCreate(&n->stream));
+		}
+		SL_CUDA(cudaDeviceSynchronize());
+		pthread_barrier_init(&sl_node_barrier,0,SL_NODES);
+		{
+			pthread_t threads[SL_NODES];
+			for (uint32_t node = 0u; node < SL_NODES; node++)
+				pthread_create(&threads[node],0,SlNodeThread,&sl_nodes[node]);
+			for (uint32_t node = 0u; node < SL_NODES; node++)
+				pthread_join(threads[node],0);
+		}
+		for (uint32_t node = 0u; node < SL_NODES; node++)
+			SlCheck(sl_nodes[node].status == LM_LAUNCH_OK,"every node runs the two-layer slice for both passes");
+		SL_CUDA(cudaMemcpy(want.data(),streamed.hidden_bf16,want.size() * 2u,cudaMemcpyDeviceToHost));
+		SL_CUDA(cudaMemcpy(got.data(),gathered,got.size() * 2u,cudaMemcpyDeviceToHost));
+		for (uint64_t index = 0u; index < want.size(); index++)
+		{
+			const double r = SlHostFloat(want[index]),c = SlHostFloat(got[index]);
+			if ( !isfinite(r) || !isfinite(c) )
+			{
+				nonfinite++;
+				continue;
+			}
+			worst = fmax(worst,fabs(r - c));
+			squared += r * r;
+			error += (r - c) * (r - c);
+		}
+		SlCheck(nonfinite == 0u,"every node output element is finite");
+		SlCheck(sqrt(error / (squared > 0.0 ? squared : 1.0)) <= 0.01,"the slice on four nodes over two passes matches the one-device streamed slice within 1% relative RMS");
+		printf("%s streamed two-layer slice on %u nodes x %u passes vs one device: worst |diff| %.4g, relative RMS %.3g, nonfinite %llu\n",
+			sl_failures == 0 ? "PASS" : "FAIL",SL_NODES,SL_PASSES,worst,sqrt(error / (squared > 0.0 ? squared : 1.0)),(unsigned long long)nonfinite);
 	}
 	return sl_failures != 0;
 }
