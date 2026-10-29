@@ -21,6 +21,7 @@ typedef uchar SparkMathU8;
 #define SPARK_MATH_RSQRT(x) metal::rsqrt(x)
 #define SPARK_MATH_FABS(x) metal::fabs(x)
 #define SPARK_MATH_FMAX(a, b) metal::fmax(a, b)
+#define SPARK_MATH_FMIN(a, b) metal::fmin(a, b)
 #elif defined(__CUDACC__) || defined(LM_HOST_CUDA_PRELUDE)
 #include <stdint.h>
 #if defined(__CUDACC__)
@@ -44,6 +45,7 @@ typedef uint8_t SparkMathU8;
 #define SPARK_MATH_RSQRT(x) rsqrtf(x)
 #define SPARK_MATH_FABS(x) fabsf(x)
 #define SPARK_MATH_FMAX(a, b) fmaxf(a, b)
+#define SPARK_MATH_FMIN(a, b) fminf(a, b)
 #else
 #error "kernel_math.cuh is kernel code for the CUDA and Metal compilers"
 #endif
@@ -163,6 +165,17 @@ SPARK_MATH_FN float SparkMathGatedDeltaDecayFast(float log_scale, float shifted)
 {
 	const float softplus = SparkMathSoftplusFast(shifted);
 	return(SPARK_MATH_EXP_FAST(-SPARK_MATH_EXP_FAST(log_scale) * softplus));
+}
+
+SPARK_MATH_FN float SparkMathBoundedDecay(float logit, float bias, float log_scale, float minimum_log_decay)
+{
+	const float scaled = SPARK_MATH_EXP_FAST(log_scale) * (logit + bias);
+	return(SPARK_MATH_EXP_FAST(minimum_log_decay * SparkMathSigmoidFast(scaled)));
+}
+
+SPARK_MATH_FN float SparkMathClampedGlu(float activated, float up, float limit)
+{
+	return(SPARK_MATH_FMIN(activated, limit) * SPARK_MATH_FMIN(SPARK_MATH_FMAX(up, -limit), limit));
 }
 
 SPARK_MATH_FN float SparkMathGeluTanh(float value)

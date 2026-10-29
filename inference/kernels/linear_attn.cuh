@@ -8,9 +8,7 @@
 
 static __device__ __forceinline__ float LmBoundedDecay(float logit, float bias, float head_log_scale, float minimum_log_decay)
 {
-	float scaled = __expf(head_log_scale) * (logit + bias);
-	float log_decay = minimum_log_decay * SparkMathSigmoidFast(scaled);
-	return(__expf(log_decay));
+	return(SparkMathBoundedDecay(logit,bias,head_log_scale,minimum_log_decay));
 }
 
 template<uint32_t THREADS, uint32_t KEY_DIM>

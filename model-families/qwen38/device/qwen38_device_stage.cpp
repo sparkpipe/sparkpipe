@@ -673,7 +673,7 @@ struct QwenDevice
 		if constexpr ( G::kMoe )
 			return Moe(state, frame, layer);
 		else
-			return SparkDeviceGatedFfn(&state->stage, frame.queue, state->ffn, SPARK_GATED_SILU, &frame.t, &layer.ffn, &state->ffn_scratch, state->normed,
+			return SparkDeviceGatedFfn(&state->stage, frame.queue, state->ffn, SPARK_GATED_SILU, 0.0f, &frame.t, &layer.ffn, &state->ffn_scratch, state->normed,
 				state->partial);
 	}
 

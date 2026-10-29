@@ -13,6 +13,17 @@
              reference logprob of the served token and the top-1/top-2
              logit margin; per prompt the top-1 agreement, the near-tie
              disagreements and the served-token logprob deltas
+  gate-prompts  the Metal gate prompts (tools/gemma4_reference.py's set) in
+             Ling's chat turn (thinking off) -> --out prompts.json
+  teacher    FP32 logits of every prompt position but the last for the
+             Metal gate: --prompts prompts.json -> --out
+             DIR/<name>.ref_<v>.logits for --variants a,b. Both variants
+             multiply in FP32 rather than the score mode's f64: a in numpy's
+             order; b splits every matmul's inner dimension into 1,024-wide
+             chunks summed last chunk first, reverses the other reductions
+             (norms, the recurrent dot products, softmax sums) and combines
+             the routed experts in descending order, so a against b is the
+             noise of FP32 reduction order (the gate's floor)
 
 Semantics follow the publisher modeling_bailing_moe_v3.py and the fla
 kernels it calls (fla 0.5.2):
@@ -40,9 +51,9 @@ residual sums round to bf16; recurrent state, gates, softmax and router in
 f32. Two deliberate f32 choices: attention scores (the HF eager path rounds
 QK^T to bf16, the serving flash kernels do not) and the final logits.
 
-Every matrix product accumulates in f64 before it is rounded
-(t1_reference_common.matmul), so a prompt's numbers do not depend on the other
-prompts in the run or on how many served tokens follow.
+In the score mode every matrix product accumulates in f64 before it is
+rounded (t1_reference_common.matmul), so a prompt's numbers do not depend on
+the other prompts in the run or on how many served tokens follow.
 
 The checkpoint is memmapped; dense tensors and each routed expert are
 converted one at a time. All prompts run together layer by layer so a
@@ -60,7 +71,34 @@ from pathlib import Path
 
 import numpy as np
 
-from t1_reference_common import matmul
+from t1_reference_common import matmul as matmul_f64
+
+FP32 = False
+REVERSED = False
+CHUNK = 1024
+
+
+def matmul(left, right):
+    if not FP32:
+        return matmul_f64(left, right)
+    if not REVERSED or left.shape[-1] <= CHUNK:
+        return left @ right
+    total = None
+    for first in reversed(range(0, left.shape[-1], CHUNK)):
+        part = left[..., first:first + CHUNK] @ right[first:first + CHUNK]
+        total = part if total is None else total + part
+    return total
+
+
+def reduce_sum(values, axis=-1, keepdims=True):
+    return np.flip(values, axis=axis).sum(axis=axis, keepdims=keepdims) if REVERSED else values.sum(axis=axis, keepdims=keepdims)
+
+
+def dot_last(state, vector):
+    if REVERSED:
+        return np.einsum("hkv,hk->hv", state[:, ::-1], vector[:, ::-1])
+    return np.einsum("hkv,hk->hv", state, vector)
+
 
 
 def bf16(values):
@@ -179,7 +217,7 @@ class Reference:
 
     def norm(self, values, name, dim):
         weight = self.checkpoint.bf16(name, dim)
-        normed = bf16(values * np.power((values * values).mean(axis=-1, keepdims=True) + self.epsilon, np.float32(-0.5)))
+        normed = bf16(values * np.power(reduce_sum(values * values) / np.float32(dim) + self.epsilon, np.float32(-0.5)))
         return bf16(normed * weight)
 
     def linear(self, values, name, out_dim, in_dim):
@@ -208,20 +246,20 @@ class Reference:
         dt_bias = self.checkpoint.f32(a + "dt_bias", width).reshape(heads, dim)
         log_decay = self.lower_bound * sigmoid(np.exp(a_log)[None, :, None] * (f + dt_bias[None]))
         beta = sigmoid(self.linear(normed, a + "b_proj.weight", heads, self.hidden))
-        q = q / np.sqrt((q * q).sum(axis=-1, keepdims=True) + np.float32(1e-6)) * np.float32(dim ** -0.5)
-        k = k / np.sqrt((k * k).sum(axis=-1, keepdims=True) + np.float32(1e-6))
+        q = q / np.sqrt(reduce_sum(q * q) + np.float32(1e-6)) * np.float32(dim ** -0.5)
+        k = k / np.sqrt(reduce_sum(k * k) + np.float32(1e-6))
         state = np.zeros((heads, dim, dim), dtype=np.float32)
         output = np.empty((rows, heads, dim), dtype=np.float32)
         decay = np.exp(log_decay)
         for t in range(rows):
             state *= decay[t][:, :, None]
-            delta = (v[t] - np.einsum("hkv,hk->hv", state, k[t])) * beta[t][:, None]
+            delta = (v[t] - dot_last(state, k[t])) * beta[t][:, None]
             state += k[t][:, :, None] * delta[:, None, :]
-            output[t] = np.einsum("hkv,hk->hv", state, q[t])
+            output[t] = dot_last(state, q[t])
         output = bf16(output)
         gate = self.linear(normed, a + "g_proj.weight", width, self.hidden).reshape(rows, heads, dim)
         weight = self.checkpoint.bf16(a + "o_norm.weight", dim)
-        mixed = output * np.power((output * output).mean(axis=-1, keepdims=True) + self.epsilon, np.float32(-0.5)) * weight * sigmoid(gate)
+        mixed = output * np.power(reduce_sum(output * output) / np.float32(dim) + self.epsilon, np.float32(-0.5)) * weight * sigmoid(gate)
         return self.output(bf16(mixed).reshape(rows, width), a + "o_proj.weight", self.hidden, width)
 
     def rope(self, values, positions):
@@ -252,7 +290,7 @@ class Reference:
             scores = matmul(query[:, head, :], key[:, head, :].T) * scale
             scores = np.where(causal, scores, -np.inf)
             weights = np.exp(scores - scores.max(axis=-1, keepdims=True))
-            weights = bf16(weights / weights.sum(axis=-1, keepdims=True))
+            weights = bf16(weights / reduce_sum(weights))
             output[:, head, :] = bf16(matmul(weights, value[:, head, :]))
         gate = bf16(sigmoid(self.linear(normed, a + "g_proj.weight", heads, self.hidden)))
         output = bf16(output * gate[:, :, None])
@@ -298,7 +336,7 @@ class Reference:
         chosen, weights = self.route(layer, normed)
         combined = np.zeros((normed.shape[0], self.hidden), dtype=np.float32)
         limit = self.routed_limits[layer]
-        experts = [int(expert) for expert in np.unique(chosen)]
+        experts = [int(expert) for expert in (np.unique(chosen)[::-1] if REVERSED else np.unique(chosen))]
         window = 16
         with ThreadPoolExecutor(8) as pool:
             pending = {expert: pool.submit(self.mlp_weights, m + f"experts.{expert}.", self.moe_inter) for expert in experts[:window]}
@@ -411,19 +449,54 @@ def score(args, reference):
     Path(args.out).write_text(json.dumps(report))
 
 
+def teacher(args):
+    global FP32, REVERSED
+    variants = args.variants.split(",")
+    if not variants or any(label not in ("a", "b") for label in variants) or len(set(variants)) != len(variants):
+        raise SystemExit("--variants takes distinct a and b")
+    reference = Reference(args.checkpoint, args.swiglu_limits)
+    prompts = json.loads(Path(args.prompts).read_text())["prompts"]
+    bounds = np.cumsum([0] + [len(prompt["prompt_token_ids"]) for prompt in prompts])
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    FP32 = True
+    for label in variants:
+        REVERSED = label == "b"
+        normed, _ = reference.forward([prompt["prompt_token_ids"] for prompt in prompts])
+        for index, prompt in enumerate(prompts):
+            first, count = bounds[index], len(prompt["prompt_token_ids"])
+            with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
+                for row in range(0, count - 1, 128):
+                    handle.write(np.ascontiguousarray(reference.logits(normed[first + row:first + min(row + 128, count - 1)]), dtype=np.float32).tobytes())
+            print(f"{prompt['name']}: {count - 1} positions, variant {label}", flush=True)
+
+
+def gate_prompts(args):
+    import gemma4_reference
+    gemma4_reference.gate_prompts(args, ("prefix", "plain_prefix", "user"), ("turn_suffix", "generation"))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("mode", choices=("tokenize", "score"))
+    parser.add_argument("mode", choices=("tokenize", "score", "gate-prompts", "teacher"))
     parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--prompts", required=True)
+    parser.add_argument("--prompts")
+    parser.add_argument("--variants", default="a,b")
+    parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/ling/chat_template.json"))
     parser.add_argument("--capture")
     parser.add_argument("--swiglu-limits", choices=("serving", "modeling"), default="serving")
     parser.add_argument("--tie-margin", type=float, default=0.1)
     parser.add_argument("--dump", help="write the embedding and every layer's post-attention and post-MLP residual for all rows to this .npz")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
-    if args.mode == "tokenize":
+    if args.mode == "gate-prompts":
+        gate_prompts(args)
+    elif not args.prompts:
+        parser.error(f"{args.mode} needs --prompts")
+    elif args.mode == "tokenize":
         tokenize(args)
+    elif args.mode == "teacher":
+        teacher(args)
     else:
         if not args.capture:
             parser.error("score needs --capture")

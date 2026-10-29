@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Ling 3.0 flash (BailingMoeV3) BF16 checkpoint -> sixteen TP16 named stage packs.
+"""Ling 3.0 flash (BailingMoeV3) BF16 checkpoint -> TP16 (or --tp-degree N) named stage packs.
 
-Output per rank: <out>/<prefix>.tp16.rank<NN>.pack (tools/spark_named_pack.py
+Output per rank: <out>/<prefix>.tp<N>.rank<NN>.pack (tools/spark_named_pack.py
 container) plus <pack>.sha256 and the empty-range <pack>.experts (experts are
 plain tensors). The MTP layer is not packed.
 
@@ -41,7 +41,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble, source_identity  # noqa: E402
 
 TP = 16
-SHARED_ROWS = 64
 EXPERTS_MAGIC = 0x58504557
 EXPERTS_VERSION = 2
 
@@ -91,10 +90,10 @@ class RankPacks:
         self.writers = {rank: PayloadWriter(self.payload(rank), identity, resume=resume and self.payload(rank).exists()) for rank in ranks}
 
     def payload(self, rank):
-        return self.out_dir / f"{self.prefix}.tp16.rank{rank:02d}.pack.payload"
+        return self.out_dir / f"{self.prefix}.tp{TP}.rank{rank:02d}.pack.payload"
 
     def final(self, rank):
-        return self.out_dir / f"{self.prefix}.tp16.rank{rank:02d}.pack"
+        return self.out_dir / f"{self.prefix}.tp{TP}.rank{rank:02d}.pack"
 
     def add(self, rank, name, array, kind):
         if rank in self.writers:
@@ -104,6 +103,10 @@ class RankPacks:
     def replicated(self, name, array, kind):
         for rank in self.ranks:
             self.add(rank, name, array, kind)
+
+
+def shared_rows(config):
+    return (config["moe_shared_expert_intermediate_size"] // TP + 63) // 64 * 64
 
 
 def pad_rows(array, rows):
@@ -168,7 +171,7 @@ def pack_layer(checkpoint, packs, config, layer):
             packs.add(rank, name + "ffn_down", down[:, window], "bf16")
         return
     experts, inter, shared = config["num_experts"], config["moe_intermediate_size"], config["moe_shared_expert_intermediate_size"]
-    local, shared_rows = experts // TP, shared // TP
+    local, rank_shared = experts // TP, shared // TP
     packs.replicated(name + "router", checkpoint.bf16(m + "gate.weight", (experts, hidden)), "bf16")
     packs.replicated(name + "expert_bias", checkpoint.f32(m + "gate.expert_bias", (experts,)), "f32")
     shared_gate = checkpoint.bf16(m + "shared_experts.gate_proj.weight", (shared, hidden))
@@ -178,9 +181,10 @@ def pack_layer(checkpoint, packs, config, layer):
         owned = range(rank * local, (rank + 1) * local)
         for key, target, shape in (("gate", "moe_w1", (inter, hidden)), ("up", "moe_w3", (inter, hidden)), ("down", "moe_w2", (hidden, inter))):
             packs.add(rank, name + target, np.stack([checkpoint.bf16(m + f"experts.{expert}.{key}_proj.weight", shape) for expert in owned]), "bf16")
-        window = slice(rank * shared_rows, (rank + 1) * shared_rows)
-        packs.add(rank, name + "shared_gate_up", np.concatenate((pad_rows(shared_gate[window], SHARED_ROWS), pad_rows(shared_up[window], SHARED_ROWS))), "bf16")
-        packs.add(rank, name + "shared_down", pad_rows(np.ascontiguousarray(shared_down[:, window].T), SHARED_ROWS).T, "bf16")
+        window = slice(rank * rank_shared, (rank + 1) * rank_shared)
+        padded = shared_rows(config)
+        packs.add(rank, name + "shared_gate_up", np.concatenate((pad_rows(shared_gate[window], padded), pad_rows(shared_up[window], padded))), "bf16")
+        packs.add(rank, name + "shared_down", pad_rows(np.ascontiguousarray(shared_down[:, window].T), padded).T, "bf16")
 
 
 def finish(packs, config, model, revision, contract_sha256):
@@ -191,7 +195,7 @@ def finish(packs, config, model, revision, contract_sha256):
         layout = {"model": model, "tp_degree": TP, "tp_rank": rank, "hidden": config["hidden_size"], "layers": config["num_hidden_layers"],
                   "vocab": config["vocab_size"], "vocab_first": rank * vocab_rows, "vocab_rows": vocab_rows,
                   "ffn_rows": config["intermediate_size"] // TP, "experts": config["num_experts"], "local_experts": local,
-                  "expert_first": rank * local, "top_k": config["num_experts_per_tok"], "shared_rows": SHARED_ROWS}
+                  "expert_first": rank * local, "top_k": config["num_experts_per_tok"], "shared_rows": shared_rows(config)}
         fmt = {"container": "spark_named_pack", "version": NAMED_PACK_VERSION, "alignment": NAMED_PACK_ALIGN,
                "linear_codec": "bf16", "expert_codec": "bf16", "revision": revision, "contract_sha256": contract_sha256}
         final = packs.final(rank)
@@ -213,8 +217,13 @@ def main():
     parser.add_argument("--contract", type=Path, required=True)
     parser.add_argument("--model", choices=("ling3_flash", "ling3_fin"), required=True)
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--ranks", default=",".join(str(rank) for rank in range(TP)))
+    parser.add_argument("--tp-degree", type=int, choices=(1, 2, 4, 8, 16), default=16)
+    parser.add_argument("--ranks")
     args = parser.parse_args()
+    global TP
+    TP = args.tp_degree
+    if args.ranks is None:
+        args.ranks = ",".join(str(rank) for rank in range(TP))
     ranks = sorted({int(rank) for rank in args.ranks.split(",")})
     if not ranks or ranks[0] < 0 or ranks[-1] >= TP:
         raise PackFailure(f"--ranks must name ranks in 0..{TP - 1}")
@@ -223,8 +232,8 @@ def main():
             config.get("gated_attention_proj_granularity_type") != "head_wise" or config.get("num_shared_experts") != 1:
         raise PackFailure("this packer handles the Ling 3.0 flash layout: no q LoRA, no KDA LoRA, interleaved rope, head-wise gate, one shared expert")
     if config["num_attention_heads"] % TP or config["num_experts"] % TP or config["vocab_size"] % TP or \
-            config["intermediate_size"] % (TP * 64) or config["moe_shared_expert_intermediate_size"] // TP > SHARED_ROWS:
-        raise PackFailure("heads, experts, vocab or intermediate sizes do not fit the TP16 layout")
+            config["intermediate_size"] % (TP * 64) or config["moe_shared_expert_intermediate_size"] % TP:
+        raise PackFailure(f"heads, experts, vocab or intermediate sizes do not fit the TP{TP} layout")
     receipt = args.checkpoint / "DOWNLOAD-RECEIPT.json"
     revision = json.loads(receipt.read_text()).get("revision", "unknown") if receipt.exists() else "unknown"
     contract = json.loads(args.contract.read_text())

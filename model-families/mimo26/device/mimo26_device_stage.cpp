@@ -258,7 +258,7 @@ struct MimoDevice
 
 	static SparkStatus Dense(State *state, const Frame &frame, const Layer &layer)
 	{
-		return SparkDeviceGatedFfn(&state->stage, frame.queue, L::kDenseRows, SPARK_GATED_SILU_ROUNDED, &frame.t, &layer.ffn, &state->ffn_scratch,
+		return SparkDeviceGatedFfn(&state->stage, frame.queue, L::kDenseRows, SPARK_GATED_SILU_ROUNDED, 0.0f, &frame.t, &layer.ffn, &state->ffn_scratch,
 			state->normed, state->partial);
 	}
 

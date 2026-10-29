@@ -90,7 +90,7 @@ kernel void spark_head_rmsnorm_rope(constant SparkHeadRopeParams &p [[buffer(0)]
 	threadgroup float normed[1024];
 	const uint head = group.x, row = group.y, half_rope = p.rope_dimension / 2u;
 	device const ushort *x = input + (ulong)row * p.input_stride + p.input_offset + head * p.input_head_stride;
-	device ushort *y = output + (ulong)row * p.output_stride + head * p.head_dimension;
+	device ushort *y = output + (ulong)row * p.output_stride + head * (p.output_head_stride != 0u ? p.output_head_stride : p.head_dimension);
 	float total = 0.0f;
 	for ( uint i = tid; i < p.head_dimension; i += threads )
 	{
@@ -111,15 +111,17 @@ kernel void spark_head_rmsnorm_rope(constant SparkHeadRopeParams &p [[buffer(0)]
 		float value = normed[i];
 		if ( i < p.rope_dimension )
 		{
-			const float angle = position * p.inverse_frequency[i % half_rope];
+			const bool low = p.interleaved != 0u ? i % 2u == 0u : i < half_rope;
+			const uint mate = p.interleaved != 0u ? (low ? i + 1u : i - 1u) : (low ? i + half_rope : i - half_rope);
+			const float angle = position * p.inverse_frequency[p.interleaved != 0u ? i / 2u : i % half_rope];
 			const float c = SparkMathRopeCos(angle, p.scale), s = SparkMathRopeSin(angle, p.scale);
 			if ( p.rope_rounded_terms != 0u )
 			{
-				const float partner = i < half_rope ? -normed[i + half_rope] : normed[i - half_rope];
+				const float partner = low ? -normed[mate] : normed[mate];
 				value = SparkMathRoundBf16(SparkMathRoundBf16(value * SparkMathRoundBf16(c)) + SparkMathRoundBf16(partner * SparkMathRoundBf16(s)));
 			}
 			else
-				value = i < half_rope ? SparkMathRopeLow(value, normed[i + half_rope], c, s) : SparkMathRopeHigh(normed[i - half_rope], value, c, s);
+				value = low ? SparkMathRopeLow(value, normed[mate], c, s) : SparkMathRopeHigh(normed[mate], value, c, s);
 		}
 		y[i] = SparkMathFloatToBf16(value);
 	}

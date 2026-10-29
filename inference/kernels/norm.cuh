@@ -194,9 +194,7 @@ void LmSiluMulLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *_
 	{
 		float gate = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? index : dimension + index)]);
 		float up = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? dimension + index : index)]);
-		float activated = fminf(SparkMathSiluFast(gate), limit);
-		output_bf16[out_base + index] =
-			LmFloatToBf16(activated * fminf(fmaxf(up, -limit), limit));
+		output_bf16[out_base + index] = LmFloatToBf16(SparkMathClampedGlu(SparkMathSiluFast(gate), up, limit));
 	}
 }
 

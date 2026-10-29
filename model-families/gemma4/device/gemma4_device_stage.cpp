@@ -315,7 +315,7 @@ struct GemmaDevice
 
 	static SparkStatus Mlp(State *state, const Frame &frame, const Layer &layer)
 	{
-		return SparkDeviceGatedFfn(&state->stage, frame.queue, layer.ffn, G::kGeluMlp ? SPARK_GATED_GELU_TANH : SPARK_GATED_SILU, &frame.t,
+		return SparkDeviceGatedFfn(&state->stage, frame.queue, layer.ffn, G::kGeluMlp ? SPARK_GATED_GELU_TANH : SPARK_GATED_SILU, 0.0f, &frame.t,
 			&layer.ffn_weights, &state->ffn_scratch, state->normed, state->partial);
 	}
 

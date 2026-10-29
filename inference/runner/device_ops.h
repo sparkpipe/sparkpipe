@@ -21,6 +21,9 @@ extern "C" {
 #define SPARK_OPS_ATTENTION_NARROW_HEAD_DIM 128u
 #define SPARK_OPS_ATTENTION_SPLIT_KEY_DIM 192u
 #define SPARK_OPS_ATTENTION_SPLIT_VALUE_DIM 128u
+#define SPARK_OPS_ATTENTION_LATENT_VALUE_DIM 512u
+#define SPARK_OPS_ATTENTION_LATENT_ROPE_DIM 64u
+#define SPARK_OPS_ATTENTION_LATENT_KEY_DIM (SPARK_OPS_ATTENTION_LATENT_VALUE_DIM + SPARK_OPS_ATTENTION_LATENT_ROPE_DIM)
 #define SPARK_OPS_DELTA_KEY_DIM 128u
 #define SPARK_OPS_MAX_LANES 16u
 
@@ -56,14 +59,17 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_ATTENTION_DECODE_WIDE,
 	SPARK_OPS_ATTENTION_DECODE_NARROW,
 	SPARK_OPS_ATTENTION_DECODE_SPLIT,
+	SPARK_OPS_ATTENTION_DECODE_LATENT,
 	SPARK_OPS_ATTENTION_PREFILL,
 	SPARK_OPS_ATTENTION_PREFILL_WIDE,
 	SPARK_OPS_ATTENTION_PREFILL_NARROW,
 	SPARK_OPS_ATTENTION_PREFILL_SPLIT,
+	SPARK_OPS_ATTENTION_PREFILL_LATENT,
 	SPARK_OPS_ATTENTION_COMBINE,
 	SPARK_OPS_ATTENTION_COMBINE_WIDE,
 	SPARK_OPS_ATTENTION_COMBINE_NARROW,
 	SPARK_OPS_ATTENTION_COMBINE_SPLIT,
+	SPARK_OPS_ATTENTION_COMBINE_LATENT,
 	SPARK_OPS_SILU_MUL,
 	SPARK_OPS_GELU_TANH_MUL,
 	SPARK_OPS_SILU_MUL_ROUTED,
@@ -102,7 +108,10 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_RANK_SUM_BF16,
 	SPARK_OPS_RANK_MAX_U64,
 	SPARK_OPS_RANK_ROWS,
-	SPARK_OPS_HEAD_GATE_SOFTPLUS,
+	SPARK_OPS_HEAD_GATE,
+	SPARK_OPS_CHANNEL_DELTA_PREPARE,
+	SPARK_OPS_SILU_CLAMP_MUL,
+	SPARK_OPS_SILU_CLAMP_MUL_ROUTED,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -156,7 +165,7 @@ SparkStatus SparkOpsGather(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTe
 SparkStatus SparkOpsGatherSlice(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor table, SparkTensor ids, SparkTensor output,
 	uint32_t rows, uint32_t width, uint32_t table_rows, uint32_t first_row);
 SparkStatus SparkOpsRouteLocal(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor experts, const SparkRouteParams *params);
-SparkStatus SparkOpsHeadGateSoftplus(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, SparkTensor logits, const SparkHeadGateParams *params);
+SparkStatus SparkOpsHeadGate(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, SparkTensor logits, const SparkHeadGateParams *params);
 SparkStatus SparkOpsRankSumBf16(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements);
 SparkStatus SparkOpsRankMaxU64(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements);
 SparkStatus SparkOpsRankRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor gathered, SparkTensor rows, uint32_t ranks, uint32_t row_count,
@@ -174,6 +183,9 @@ SparkStatus SparkOpsCausalConv(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spa
 	SparkTensor input, SparkTensor weight, SparkTensor output, const SparkConvParams *params);
 SparkStatus SparkOpsGatedDelta(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor state, const SparkOpsSequences *sequences,
 	SparkTensor mix, SparkTensor gates, SparkTensor log_scale, SparkTensor bias, SparkTensor scratch, SparkTensor output,
+	const SparkDeltaParams *params);
+SparkStatus SparkOpsChannelDelta(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor state, const SparkOpsSequences *sequences,
+	SparkTensor mix, SparkTensor decay_logits, SparkTensor beta_logits, SparkTensor log_scale, SparkTensor bias, SparkTensor scratch, SparkTensor output,
 	const SparkDeltaParams *params);
 SparkStatus SparkOpsKvStore(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor key, SparkTensor value,
 	const SparkKvParams *params);
@@ -235,6 +247,7 @@ SparkStatus SparkOpsLogprob(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkT
 	SparkTensor argmax, const SparkLogprobParams *params);
 SparkStatus SparkOpsStreamRead(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor words, SparkTensor sink, uint32_t groups);
 uint64_t SparkOpsDeltaScratchBytes(uint32_t rows, uint32_t key_heads, uint32_t value_heads, uint32_t key_dimension);
+uint64_t SparkOpsChannelDeltaScratchBytes(uint32_t rows, uint32_t heads, uint32_t key_dimension);
 uint64_t SparkOpsAttentionScratchBytes(uint32_t rows, uint32_t heads, uint32_t head_dimension, uint32_t positions);
 
 #ifdef __cplusplus

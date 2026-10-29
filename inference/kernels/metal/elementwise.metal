@@ -45,7 +45,8 @@ kernel void spark_gated_mul(constant SparkSiluMulParams &p [[buffer(0)]], device
 	device const ushort *source = input + (ulong)row * p.input_stride;
 	const float gate = SparkMathBf16ToFloat(source[index]), up = SparkMathBf16ToFloat(source[p.dimension + index]);
 	const float activated = ACTIVATION == SPARK_GATED_GELU_TANH ? SparkMathRoundBf16(SparkMathGeluTanh(gate)) * up :
-		ACTIVATION == SPARK_GATED_SILU_ROUNDED ? SparkMathRoundBf16(SparkMathSilu(gate)) * up : SparkMathSilu(gate) * up;
+		ACTIVATION == SPARK_GATED_SILU_ROUNDED ? SparkMathRoundBf16(SparkMathSilu(gate)) * up :
+		ACTIVATION == SPARK_GATED_SILU_CLAMP ? SparkMathClampedGlu(SparkMathSiluFast(gate), up, p.limit) : SparkMathSilu(gate) * up;
 	output[(ulong)row * p.output_stride + index] = SparkMathFloatToBf16(activated);
 }
 
@@ -56,6 +57,9 @@ template [[host_name("spark_gelu_tanh_mul")]] kernel void spark_gated_mul<SPARK_
 	device const ushort *input [[buffer(1)]], device ushort *output [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]],
 	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
 template [[host_name("spark_silu_rounded_mul")]] kernel void spark_gated_mul<SPARK_GATED_SILU_ROUNDED>(constant SparkSiluMulParams &p [[buffer(0)]],
+	device const ushort *input [[buffer(1)]], device ushort *output [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
+template [[host_name("spark_silu_clamp_mul")]] kernel void spark_gated_mul<SPARK_GATED_SILU_CLAMP>(constant SparkSiluMulParams &p [[buffer(0)]],
 	device const ushort *input [[buffer(1)]], device ushort *output [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]],
 	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
 
@@ -71,7 +75,7 @@ kernel void spark_gated_mul_routed(constant SparkSiluMulParams &p [[buffer(0)]],
 	device const ushort *source = input + (ulong)row * p.input_stride;
 	const float gate = SparkMathBf16ToFloat(source[index]), up = SparkMathBf16ToFloat(source[p.dimension + index]), weight = weights[row];
 	const float activated = ACTIVATION == SPARK_GATED_GELU_TANH ? SparkMathRoundBf16(SparkMathGeluTanhScaleFirst(gate)) * up * weight :
-		SparkMathSilu(gate) * up * weight;
+		ACTIVATION == SPARK_GATED_SILU_CLAMP ? SparkMathClampedGlu(SparkMathSilu(gate), up, p.limit) * weight : SparkMathSilu(gate) * up * weight;
 	output[(ulong)row * p.output_stride + index] = SparkMathFloatToBf16(activated);
 }
 
@@ -79,6 +83,9 @@ template [[host_name("spark_silu_mul_routed")]] kernel void spark_gated_mul_rout
 	device const ushort *input [[buffer(1)]], device const float *weights [[buffer(2)]], device ushort *output [[buffer(3)]],
 	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
 template [[host_name("spark_gelu_tanh_mul_routed")]] kernel void spark_gated_mul_routed<SPARK_GATED_GELU_TANH>(constant SparkSiluMulParams &p [[buffer(0)]],
+	device const ushort *input [[buffer(1)]], device const float *weights [[buffer(2)]], device ushort *output [[buffer(3)]],
+	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
+template [[host_name("spark_silu_clamp_mul_routed")]] kernel void spark_gated_mul_routed<SPARK_GATED_SILU_CLAMP>(constant SparkSiluMulParams &p [[buffer(0)]],
 	device const ushort *input [[buffer(1)]], device const float *weights [[buffer(2)]], device ushort *output [[buffer(3)]],
 	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
 
@@ -188,12 +195,13 @@ kernel void spark_route_pinned(constant SparkRouteParams &p [[buffer(0)]], devic
 		SparkRouteWeights(p, probability, chosen, expert_scale, experts, weights, row);
 }
 
-kernel void spark_head_gate_softplus(constant SparkHeadGateParams &p [[buffer(0)]], device ushort *values [[buffer(1)]],
+kernel void spark_head_gate(constant SparkHeadGateParams &p [[buffer(0)]], device ushort *values [[buffer(1)]],
 	device const ushort *logits [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
 	uint2 group_size [[threads_per_threadgroup]])
 {
 	const uint head = group.x, row = group.y;
-	const float gate = SparkMathSoftplusGate(SparkMathBf16ToFloat(logits[(ulong)row * p.gate_stride + head]));
+	const float logit = SparkMathBf16ToFloat(logits[(ulong)row * p.gate_stride + head]);
+	const float gate = p.activation == SPARK_HEAD_GATE_SIGMOID_BF16 ? SparkMathRoundBf16(SparkMathSigmoid(logit)) : SparkMathSoftplusGate(logit);
 	device ushort *base = values + ((ulong)row * p.heads + head) * p.head_dimension;
 	for ( uint index = tid; index < p.head_dimension; index += group_size.x )
 		base[index] = SparkMathFloatToBf16(SparkMathBf16ToFloat(base[index]) * gate);
@@ -246,6 +254,8 @@ kernel void spark_route_sigmoid_topk(constant SparkRouteParams &p [[buffer(0)]],
 	threadgroup float simd_value[32];
 	threadgroup uint simd_index[32];
 	threadgroup uint chosen[SPARK_ROUTE_MAX_TOP_K];
+	threadgroup float group_score[SPARK_ROUTE_MAX_GROUPS];
+	threadgroup uint group_open[SPARK_ROUTE_MAX_GROUPS];
 	for ( uint expert = tid; expert < p.experts; expert += threads )
 	{
 		const float logit = logits[(ulong)row * p.logit_stride + expert];
@@ -254,6 +264,42 @@ kernel void spark_route_sigmoid_topk(constant SparkRouteParams &p [[buffer(0)]],
 		selection[expert] = value + bias[expert];
 	}
 	threadgroup_barrier(mem_flags::mem_threadgroup);
+	if ( p.groups > 1u )
+	{
+		const uint per_group = p.experts / p.groups;
+		if ( tid < p.groups )
+		{
+			float first = -INFINITY, second = -INFINITY;
+			for ( uint index = 0u; index < per_group; index++ )
+			{
+				const float value = selection[tid * per_group + index];
+				if ( value > first )
+				{
+					second = first;
+					first = value;
+				}
+				else if ( value > second )
+					second = value;
+			}
+			group_score[tid] = first + second;
+			group_open[tid] = 0u;
+		}
+		threadgroup_barrier(mem_flags::mem_threadgroup);
+		if ( tid == 0u )
+			for ( uint pick = 0u; pick < p.topk_groups; pick++ )
+			{
+				uint best = p.groups;
+				for ( uint candidate = 0u; candidate < p.groups; candidate++ )
+					if ( group_open[candidate] == 0u && (best == p.groups || group_score[candidate] > group_score[best]) )
+						best = candidate;
+				group_open[best] = 1u;
+			}
+		threadgroup_barrier(mem_flags::mem_threadgroup);
+		for ( uint expert = tid; expert < p.experts; expert += threads )
+			if ( group_open[expert / per_group] == 0u )
+				selection[expert] = -INFINITY;
+		threadgroup_barrier(mem_flags::mem_threadgroup);
+	}
 	for ( uint pick = 0u; pick < p.top_k; pick++ )
 	{
 		float value = -INFINITY;

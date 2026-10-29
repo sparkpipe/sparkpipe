@@ -409,16 +409,20 @@ typedef struct RopeCase
 	uint32_t rounded;
 	double scale;
 	double multiply;
+	uint32_t interleaved;
+	uint32_t output_head_stride;
+	uint32_t plain;
 } RopeCase;
 
 static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uint32_t head_stride, const RopeCase *c, const char *label)
 {
 	const uint32_t HEAD = c->head, ROPE = c->rope, HALF = c->rope / 2u, STRIDE = offset + heads * head_stride;
+	const uint32_t OUT = c->output_head_stride != 0u ? c->output_head_stride : HEAD;
 	SparkDeviceBuffer input, weight, positions, out;
 	uint16_t *x = (uint16_t *)Shared(&input,(uint64_t)rows * STRIDE * sizeof(uint16_t),"rope input");
 	float *w = (float *)Shared(&weight,HEAD * sizeof(float),"rope weight");
 	uint32_t *pos = (uint32_t *)Shared(&positions,rows * sizeof(uint32_t),"rope positions");
-	uint16_t *o = (uint16_t *)Shared(&out,(uint64_t)rows * heads * HEAD * sizeof(uint16_t),"rope out");
+	uint16_t *o = (uint16_t *)Shared(&out,(uint64_t)rows * heads * OUT * sizeof(uint16_t),"rope out");
 	double *normed = (double *)malloc(HEAD * sizeof(double)), *slack = (double *)malloc(HEAD * sizeof(double));
 	SparkHeadRopeParams params;
 	Check clean, corrupted;
@@ -436,7 +440,10 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 	params.input_stride = STRIDE;
 	params.input_offset = offset;
 	params.input_head_stride = head_stride;
-	params.output_stride = heads * HEAD;
+	params.output_stride = heads * OUT;
+	params.output_head_stride = c->output_head_stride;
+	params.interleaved = c->interleaved;
+	params.plain = c->plain;
 	params.rope_dimension = ROPE;
 	params.epsilon = 1e-6f;
 	params.has_weight = c->weighted;
@@ -463,7 +470,7 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 				double square = 0.0;
 				for ( i = 0u; i < HEAD; i++ )
 					square += (double)Bf16(v[i]) * Bf16(v[i]);
-				const double scale = 1.0 / sqrt(square / HEAD + 1e-6);
+				const double scale = c->plain != 0u ? 1.0 : 1.0 / sqrt(square / HEAD + 1e-6);
 				for ( i = 0u; i < HEAD; i++ )
 				{
 					const double gain = c->weighted != 0u ? w[i] : 1.0, multiply = params.multiply;
@@ -478,9 +485,10 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 					double y = normed[i], tolerance = slack[i];
 					if ( i < ROPE )
 					{
-						const uint32_t pair = i % HALF, other = i < HALF ? i + HALF : i - HALF;
+						const uint32_t low = c->interleaved != 0u ? i % 2u == 0u : i < HALF, pair = c->interleaved != 0u ? i / 2u : i % HALF;
+						const uint32_t other = c->interleaved != 0u ? (low ? i + 1u : i - 1u) : (low ? i + HALF : i - HALF);
 						const double angle = (double)(float)((float)pos[row] * params.inverse_frequency[pair]);
-						const double partner = i < HALF ? -normed[other] : normed[other];
+						const double partner = low ? -normed[other] : normed[other];
 						const double scale = c->scale != 0.0 ? c->scale : 1.0;
 						if ( c->rounded != 0u )
 						{
@@ -496,7 +504,7 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 								(4.0 * FUNCTION_ERROR + 4.0 * UNIT_F32) * (fabs(normed[i]) + fabs(partner))) * scale;
 						}
 					}
-					Observe(check,Bf16(o[(uint64_t)row * heads * HEAD + head * HEAD + i]),y,tolerance);
+					Observe(check,Bf16(o[(uint64_t)row * heads * OUT + head * OUT + i]),y,tolerance);
 				}
 			}
 	}
@@ -515,7 +523,7 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 
 static void TestHeadRope(uint32_t rows, uint32_t heads, uint32_t offset, uint32_t head_stride, const char *label)
 {
-	static const RopeCase qwen = { 256u, 64u, 32u, 10000000.0, 1u, 0u, 0.0, 0.0 };
+	static const RopeCase qwen = { 256u, 64u, 32u, 10000000.0, 1u, 0u, 0.0, 0.0, 0u, 0u, 0u };
 	char text[96];
 	snprintf(text,sizeof(text),"%s, rope 64, theta 1e7",label);
 	TestHeadRopeCase(rows,heads,offset,head_stride,&qwen,text);
@@ -780,7 +788,8 @@ static void TestGeluMul(uint32_t rows)
 static void TestGatedMulRouted(uint32_t routes, uint32_t activation)
 {
 	enum { DIM = 704 };
-	const char *label = activation == SPARK_GATED_GELU_TANH ? "gelu_tanh_mul_routed" : "silu_mul_routed";
+	const char *label = activation == SPARK_GATED_GELU_TANH ? "gelu_tanh_mul_routed" : activation == SPARK_GATED_SILU_CLAMP ? "silu_clamp_mul_routed" : "silu_mul_routed";
+	const double limit = activation == SPARK_GATED_SILU_CLAMP ? 4.0 : INFINITY;
 	SparkDeviceBuffer input, weights, output;
 	uint16_t *in = (uint16_t *)Shared(&input,(uint64_t)routes * 2u * DIM * sizeof(uint16_t),"routed gate | up");
 	float *w = (float *)Shared(&weights,(uint64_t)routes * sizeof(float),"route weights");
@@ -789,13 +798,15 @@ static void TestGatedMulRouted(uint32_t routes, uint32_t activation)
 	Check clean, corrupted;
 	char shape[64];
 	uint32_t pass, row, i;
-	FillBf16(in,(uint64_t)routes * 2u * DIM,2.0);
+	FillBf16(in,(uint64_t)routes * 2u * DIM,activation == SPARK_GATED_SILU_CLAMP ? 3.0 : 2.0);
 	for ( row = 0u; row < routes; row++ )
 		w[row] = (float)(0.05 + 0.3 * Uniform());
+	memset(&params,0,sizeof(params));
 	params.rows = routes;
 	params.dimension = DIM;
 	params.input_stride = 2u * DIM;
 	params.output_stride = DIM;
+	params.limit = (float)limit;
 	for ( pass = 0u; pass < 2u; pass++ )
 	{
 		Check *check = pass == 0u ? &clean : &corrupted;
@@ -820,12 +831,12 @@ static void TestGatedMulRouted(uint32_t routes, uint32_t activation)
 				}
 				else
 				{
-					const double y = Silu(gate) * up * weight;
+					const double y = fmin(Silu(gate),limit) * fmin(fmax(up,-limit),limit) * weight;
 					Observe(check,Bf16(out[(uint64_t)row * DIM + i]),y,UNIT_BF16 * fabs(y) + (3.0 * FUNCTION_ERROR + 2.0 * UNIT_F32) * fabs(y));
 				}
 			}
 	}
-	snprintf(shape,sizeof(shape),"%u routes, 704 gate | 704 up, route weights",routes);
+	snprintf(shape,sizeof(shape),"%u routes, 704 gate | 704 up, route weights%s",routes,activation == SPARK_GATED_SILU_CLAMP ? ", limit 4" : "");
 	Report(label,shape,&clean,&corrupted,activation == SPARK_GATED_GELU_TANH ?
 		"the gelu_tanh_mul bound with the route weight folded in: u|y| + |up w| flip slack + 4 eps32 |y|" : "u|y| + (3*16 + 2) eps32 |y|");
 	SparkDeviceFree(&input);
@@ -1259,7 +1270,7 @@ static void TestLinearRoutedSkip(uint32_t rows)
 	SparkDeviceFree(&single);
 }
 
-static void TestHeadGateSoftplus(uint32_t rows, uint32_t heads)
+static void TestHeadGate(uint32_t rows, uint32_t heads, uint32_t activation)
 {
 	enum { DIM = 128u };
 	const uint32_t stride = heads + (heads & 1u);
@@ -1281,6 +1292,7 @@ static void TestHeadGateSoftplus(uint32_t rows, uint32_t heads)
 	params.heads = heads;
 	params.head_dimension = DIM;
 	params.gate_stride = stride;
+	params.activation = activation;
 	for ( pass = 0u; pass < 2u; pass++ )
 	{
 		Check *check = pass == 0u ? &clean : &corrupted;
@@ -1289,24 +1301,26 @@ static void TestHeadGateSoftplus(uint32_t rows, uint32_t heads)
 		memcpy(v,original,(size_t)rows * heads * DIM * 2u);
 		if ( pass == 1u )
 			g[(rows - 1u) * stride + heads - 1u] = ToBf16(Bf16(saved) + 4.0f);
-		if ( !Run(SparkOpsHeadGateSoftplus(&ops,queue,Whole(&values),Whole(&logits),&params),"head_gate_softplus") )
+		if ( !Run(SparkOpsHeadGate(&ops,queue,Whole(&values),Whole(&logits),&params),"head_gate") )
 			break;
 		g[(rows - 1u) * stride + heads - 1u] = saved;
 		for ( row = 0u; row < rows; row++ )
 			for ( head = 0u; head < heads; head++ )
 			{
 				const float logit = Bf16(g[row * stride + head]);
-				const float gate = Bf16(ToBf16(logit > 20.0f ? logit : log1pf(expf(logit))));
+				const double raw = activation == SPARK_HEAD_GATE_SIGMOID_BF16 ? Sigmoid(logit) : (logit > 20.0f ? logit : log1p(exp((double)logit)));
+				const double gate = RoundBf16(raw), gate_slack = FlipSlack(raw,4.0 * FUNCTION_ERROR);
 				for ( i = 0u; i < DIM; i++ )
 				{
 					const uint64_t at = ((uint64_t)row * heads + head) * DIM + i;
-					const double expected = Bf16(ToBf16(Bf16(original[at]) * gate));
-					Observe(check,Bf16(v[at]),expected,fabs(expected) * 2.0 * UNIT_BF16 + 1e-30);
+					const double expected = RoundBf16(Bf16(original[at]) * gate);
+					Observe(check,Bf16(v[at]),expected,fabs(expected) * UNIT_BF16 + fabs(Bf16(original[at])) * gate_slack * (1.0 + UNIT_BF16) + 1e-30);
 				}
 			}
 	}
 	snprintf(shape,sizeof(shape),"rows %u, %u heads x 128",rows,heads);
-	Report("head_gate_softplus",shape,&clean,&corrupted,"one bf16 ulp of the gate: bf16(softplus) with log1p(exp) as CUDA's log1pf, Metal's log1p emulated");
+	Report(activation == SPARK_HEAD_GATE_SIGMOID_BF16 ? "head_gate_sigmoid" : "head_gate_softplus",shape,&clean,&corrupted,
+		"bf16(v bf16(gate)), gate softplus (log1p(exp), Metal's log1p emulated) or sigmoid: u|y| + |v| flip slack of the gate within 4*16 eps32");
 	free(original);
 	SparkDeviceFree(&values);
 	SparkDeviceFree(&logits);
@@ -2833,6 +2847,287 @@ static void TestGatedDelta(void)
 	SparkDeviceFree(&out);
 }
 
+static void RouteGroupsReference(const float *logits, const float *bias, uint32_t grouped, uint32_t *chosen, double *weight)
+{
+	enum { EXPERTS = 512u, GROUPS = 8u, OPEN = 4u, TOP = 8u, PER = EXPERTS / GROUPS };
+	float score[EXPERTS], selection[EXPERTS], group_score[GROUPS], total = 0.0f;
+	uint32_t open[GROUPS], expert, group, pick;
+	for ( expert = 0u; expert < EXPERTS; expert++ )
+	{
+		score[expert] = (float)Sigmoid(logits[expert]);
+		selection[expert] = score[expert] + bias[expert];
+	}
+	for ( group = 0u; group < GROUPS; group++ )
+	{
+		float first = -INFINITY, second = -INFINITY;
+		for ( expert = group * PER; expert < (group + 1u) * PER; expert++ )
+			if ( selection[expert] > first )
+			{
+				second = first;
+				first = selection[expert];
+			}
+			else if ( selection[expert] > second )
+				second = selection[expert];
+		group_score[group] = first + second;
+		open[group] = grouped != 0u ? 0u : 1u;
+	}
+	for ( pick = 0u; grouped != 0u && pick < OPEN; pick++ )
+	{
+		uint32_t best = GROUPS;
+		for ( group = 0u; group < GROUPS; group++ )
+			if ( open[group] == 0u && (best == GROUPS || group_score[group] > group_score[best]) )
+				best = group;
+		open[best] = 1u;
+	}
+	for ( pick = 0u; pick < TOP; pick++ )
+	{
+		uint32_t best = EXPERTS;
+		for ( expert = 0u; expert < EXPERTS; expert++ )
+			if ( open[expert / PER] != 0u && (best == EXPERTS || selection[expert] > selection[best]) )
+				best = expert;
+		chosen[pick] = best;
+		selection[best] = -INFINITY;
+		total += score[best];
+	}
+	for ( pick = 0u; pick < TOP; pick++ )
+		weight[pick] = score[chosen[pick]] / (total + 1e-20f) * 2.5;
+}
+
+static void TestRouteGroups(uint32_t rows)
+{
+	enum { EXPERTS = 512u, TOP = 8u };
+	SparkDeviceBuffer logits, bias, experts, weights;
+	float *lv = (float *)Shared(&logits,(uint64_t)rows * EXPERTS * 4u,"group route logits");
+	float *bv = (float *)Shared(&bias,EXPERTS * 4u,"group route bias");
+	uint32_t *ev = (uint32_t *)Shared(&experts,(uint64_t)rows * TOP * 4u,"group route experts");
+	float *wv = (float *)Shared(&weights,(uint64_t)rows * TOP * 4u,"group route weights");
+	SparkRouteParams route;
+	Check clean, corrupted;
+	char shape[64];
+	uint32_t pass, row, pick, chosen[TOP];
+	double weight[TOP];
+	for ( row = 0u; row < rows * EXPERTS; row++ )
+		lv[row] = (float)(Normal() * 2.0);
+	for ( row = 0u; row < EXPERTS; row++ )
+		bv[row] = (float)(Normal() * 0.05);
+	memset(&route,0,sizeof(route));
+	route.rows = rows;
+	route.experts = EXPERTS;
+	route.top_k = TOP;
+	route.width = 1u;
+	route.logit_stride = EXPERTS;
+	route.scale = 2.5f;
+	route.groups = 8u;
+	route.topk_groups = 4u;
+	if ( Run(SparkOpsRouteSigmoid(&ops,queue,Whole(&logits),Whole(&bias),Whole(&experts),Whole(&weights),&route),"route_sigmoid groups") )
+		for ( pass = 0u; pass < 2u; pass++ )
+		{
+			Check *check = pass == 0u ? &clean : &corrupted;
+			memset(check,0,sizeof(*check));
+			for ( row = 0u; row < rows; row++ )
+			{
+				RouteGroupsReference(lv + (uint64_t)row * EXPERTS,bv,pass == 0u ? 1u : 0u,chosen,weight);
+				for ( pick = 0u; pick < TOP; pick++ )
+				{
+					Observe(check,(double)ev[row * TOP + pick],(double)chosen[pick],0.0);
+					Observe(check,wv[row * TOP + pick],weight[pick],8.0 * FUNCTION_ERROR * weight[pick]);
+				}
+			}
+		}
+	snprintf(shape,sizeof(shape),"rows %u, 512 experts in 8 groups, 4 open, top 8",rows);
+	Report("route_sigmoid_groups",shape,&clean,&corrupted,"experts exact, weights to 8*16 eps32 relative; the control routes without the groups");
+	SparkDeviceFree(&logits);
+	SparkDeviceFree(&bias);
+	SparkDeviceFree(&experts);
+	SparkDeviceFree(&weights);
+}
+
+static void ChannelDeltaStep(DeltaReference *ref, const uint16_t *mix, const uint16_t *decay_logits, const uint16_t *beta_logits, const float *a_log,
+	const float *dt_bias, uint32_t row, double *out, double *tolerance)
+{
+	enum { H = 4, D = 128, W = H * D, MIX = 3 * W };
+	const uint16_t *m = mix + (uint64_t)row * MIX;
+	uint32_t head, i, v;
+	for ( head = 0u; head < H; head++ )
+	{
+		double q[D], k[D], decay[D], qs = 0.0, ks = 0.0, largest = 0.0;
+		for ( i = 0u; i < D; i++ )
+		{
+			q[i] = Bf16(m[head * D + i]);
+			k[i] = Bf16(m[W + head * D + i]);
+			qs += q[i] * q[i];
+			ks += k[i] * k[i];
+			decay[i] = exp(-5.0 * Sigmoid(exp((double)a_log[head]) * ((double)Bf16(decay_logits[(uint64_t)row * W + head * D + i]) + dt_bias[head * D + i])));
+			if ( decay[i] > largest )
+				largest = decay[i];
+		}
+		for ( i = 0u; i < D; i++ )
+		{
+			q[i] *= 1.0 / sqrt(qs + 1e-6) / sqrt((double)D);
+			k[i] *= 1.0 / sqrt(ks + 1e-6);
+		}
+		const double beta = Sigmoid(Bf16(beta_logits[(uint64_t)row * H + head]));
+		for ( v = 0u; v < D; v++ )
+		{
+			double *s = ref->state + ((uint64_t)head * D) * D + v;
+			double predicted = 0.0, result = 0.0, magnitude = 0.0, qnorm = 0.0, smax = 0.0;
+			const double value = Bf16(m[2u * W + head * D + v]);
+			for ( i = 0u; i < D; i++ )
+			{
+				s[(uint64_t)i * D] *= decay[i];
+				predicted += s[(uint64_t)i * D] * k[i];
+			}
+			for ( i = 0u; i < D; i++ )
+				s[(uint64_t)i * D] += beta * (value - predicted) * k[i];
+			for ( i = 0u; i < D; i++ )
+			{
+				result += s[(uint64_t)i * D] * q[i];
+				magnitude += fabs(s[(uint64_t)i * D] * q[i]);
+				qnorm += fabs(q[i]);
+				if ( fabs(s[(uint64_t)i * D]) > smax )
+					smax = fabs(s[(uint64_t)i * D]);
+			}
+			double *b = ref->bound + (uint64_t)head * D + v;
+			*b = largest * *b + (4.0 * Gamma(D) + 64.0 * FUNCTION_ERROR) * (smax + fabs(value));
+			out[head * D + v] = result;
+			tolerance[head * D + v] = UNIT_BF16 * fabs(result) + (1.0 + UNIT_BF16) * (Gamma(D) * magnitude + *b * qnorm + 4.0 * FUNCTION_ERROR * magnitude);
+		}
+	}
+}
+
+static void TestChannelDelta(void)
+{
+	enum { H = 4, D = 128, W = H * D, MIX = 3 * W, FIRST = 200, SECOND = 3, ROWS = FIRST + SECOND };
+	SparkDeviceBuffer state, index, begin, mix, decays, betas, alog, bias, scratch, out;
+	float *s = (float *)Shared(&state,(uint64_t)2u * H * D * D * 4u,"channel delta state");
+	uint32_t *slot = (uint32_t *)Shared(&index,4u,"channel delta slot");
+	uint32_t *rb = (uint32_t *)Shared(&begin,8u,"channel delta begin");
+	uint16_t *m = (uint16_t *)Shared(&mix,(uint64_t)ROWS * MIX * 2u,"channel delta qkv");
+	uint16_t *f = (uint16_t *)Shared(&decays,(uint64_t)ROWS * W * 2u,"channel delta decay logits");
+	uint16_t *bl = (uint16_t *)Shared(&betas,(uint64_t)ROWS * H * 2u,"channel delta beta logits");
+	float *al = (float *)Shared(&alog,H * 4u,"channel delta a_log");
+	float *db = (float *)Shared(&bias,W * 4u,"channel delta dt_bias");
+	uint16_t *o = (uint16_t *)Shared(&out,(uint64_t)ROWS * W * 2u,"channel delta out");
+	const float *prepared = (const float *)Shared(&scratch,SparkOpsChannelDeltaScratchBytes(ROWS,H,D),"channel delta scratch");
+	DeltaReference ref;
+	double *ref_out = (double *)malloc(W * sizeof(double)), *ref_tol = (double *)malloc(W * sizeof(double));
+	SparkOpsSequences sequences;
+	SparkDeltaParams params;
+	Check clean, corrupted;
+	uint32_t pass, row, i;
+	FillBf16(m,(uint64_t)ROWS * MIX,1.0);
+	FillBf16(f,(uint64_t)ROWS * W,2.0);
+	FillBf16(bl,(uint64_t)ROWS * H,2.0);
+	for ( i = 0u; i < H; i++ )
+		al[i] = (float)(Normal() * 0.5);
+	for ( i = 0u; i < W; i++ )
+		db[i] = (float)(Normal() * 0.5);
+	ref.state = (double *)malloc((size_t)H * D * D * sizeof(double));
+	ref.bound = (double *)malloc((size_t)H * D * sizeof(double));
+	memset(&params,0,sizeof(params));
+	params.sequences = 1u;
+	params.key_heads = params.value_heads = H;
+	params.key_dimension = params.value_dimension = D;
+	params.mix_stride = MIX;
+	params.key_offset = W;
+	params.value_offset = 2u * W;
+	params.gate_stride = W;
+	params.beta_stride = H;
+	params.output_stride = W;
+	params.commit = 1u;
+	params.epsilon = 1e-6f;
+	params.minimum_log_decay = -5.0f;
+	sequences.state_index = Whole(&index);
+	sequences.row_begin = Whole(&begin);
+	sequences.sequences = 1u;
+	sequences.commit = 1u;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		float saved[D];
+		memcpy(saved,db + 3u * D,sizeof(saved));
+		memset(check,0,sizeof(*check));
+		memset(s,0,(size_t)2u * H * D * D * 4u);
+		memset(ref.state,0,(size_t)H * D * D * sizeof(double));
+		memset(ref.bound,0,(size_t)H * D * sizeof(double));
+		slot[0] = 1u;
+		for ( i = 0u; pass == 1u && i < D; i++ )
+			db[3u * D + i] = saved[i] - 8.0f;
+		params.rows = FIRST;
+		rb[0] = 0u;
+		rb[1] = FIRST;
+		if ( !Run(SparkOpsChannelDelta(&ops,queue,Whole(&state),&sequences,Whole(&mix),Whole(&decays),Whole(&betas),Whole(&alog),Whole(&bias),Whole(&scratch),
+			Whole(&out),&params),"channel_delta first") )
+			break;
+		params.rows = SECOND;
+		rb[0] = 0u;
+		rb[1] = SECOND;
+		if ( !Run(SparkOpsChannelDelta(&ops,queue,Whole(&state),&sequences,SparkTensorSlice(Whole(&mix),(uint64_t)FIRST * MIX * 2u,(uint64_t)SECOND * MIX * 2u),
+			SparkTensorSlice(Whole(&decays),(uint64_t)FIRST * W * 2u,(uint64_t)SECOND * W * 2u),SparkTensorSlice(Whole(&betas),(uint64_t)FIRST * H * 2u,
+			(uint64_t)SECOND * H * 2u),Whole(&alog),Whole(&bias),Whole(&scratch),SparkTensorSlice(Whole(&out),(uint64_t)FIRST * W * 2u,(uint64_t)SECOND * W * 2u),
+			&params),"channel_delta second") )
+			break;
+		memcpy(db + 3u * D,saved,sizeof(saved));
+		for ( row = 0u; row < ROWS; row++ )
+		{
+			ChannelDeltaStep(&ref,m,f,bl,al,db,row,ref_out,ref_tol);
+			for ( i = 0u; i < W; i++ )
+				Observe(check,Bf16(o[(uint64_t)row * W + i]),ref_out[i],ref_tol[i]);
+		}
+	}
+	Report("channel_delta_rule","4 heads x 128, per-channel decay, 200 rows then 3",&clean,&corrupted,
+		"the gated_delta_rule bound with B_t = max(decay) B_{t-1} + (4 gamma_128 + 64*16 eps32)(max|S| + |v|)");
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint64_t poke = (uint64_t)FIRST * W + 2u * D + 77u;
+		const uint16_t saved = f[poke];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			f[poke] = ToBf16(Bf16(saved) + 3.0f);
+		params.rows = SECOND;
+		params.commit = sequences.commit = 0u;
+		params.doubled_beta = 1u;
+		rb[0] = 0u;
+		rb[1] = SECOND;
+		if ( !Run(SparkOpsChannelDelta(&ops,queue,Whole(&state),&sequences,SparkTensorSlice(Whole(&mix),(uint64_t)FIRST * MIX * 2u,(uint64_t)SECOND * MIX * 2u),
+			SparkTensorSlice(Whole(&decays),(uint64_t)FIRST * W * 2u,(uint64_t)SECOND * W * 2u),SparkTensorSlice(Whole(&betas),(uint64_t)FIRST * H * 2u,
+			(uint64_t)SECOND * H * 2u),Whole(&alog),Whole(&bias),Whole(&scratch),SparkTensorSlice(Whole(&out),(uint64_t)FIRST * W * 2u,(uint64_t)SECOND * W * 2u),
+			&params),"channel_delta prepare") )
+			break;
+		f[poke] = saved;
+		for ( row = 0u; row < SECOND; row++ )
+		{
+			for ( i = 0u; i < W; i++ )
+			{
+				const double expected = exp(-5.0 * Sigmoid(exp((double)al[i / D]) * ((double)Bf16(f[(uint64_t)(FIRST + row) * W + i]) + db[i])));
+				Observe(check,prepared[(uint64_t)2u * SECOND * W + (uint64_t)row * W + i],expected,64.0 * FUNCTION_ERROR * expected);
+			}
+			for ( i = 0u; i < H; i++ )
+			{
+				const double sigmoid = Sigmoid(Bf16(bl[(uint64_t)(FIRST + row) * H + i]));
+				Observe(check,prepared[(uint64_t)3u * SECOND * W + (uint64_t)row * H + i],2.0 * RoundBf16(sigmoid),2.0 * FlipSlack(sigmoid,4.0 * FUNCTION_ERROR));
+			}
+		}
+	}
+	Report("channel_delta_prepare","3 rows, 4 heads x 128, doubled beta",&clean,&corrupted,
+		"decay exp(lower sigmoid(exp(a) (f + b))) to 64*16 eps32 relative; beta 2 bf16(sigmoid) to its flip slack within 4*16 eps32");
+	free(ref.state);
+	free(ref.bound);
+	free(ref_out);
+	free(ref_tol);
+	SparkDeviceFree(&state);
+	SparkDeviceFree(&index);
+	SparkDeviceFree(&begin);
+	SparkDeviceFree(&mix);
+	SparkDeviceFree(&decays);
+	SparkDeviceFree(&betas);
+	SparkDeviceFree(&alog);
+	SparkDeviceFree(&bias);
+	SparkDeviceFree(&scratch);
+	SparkDeviceFree(&out);
+}
+
 typedef struct AttentionFixture
 {
 	SparkDeviceBuffer pool, table, sequence, positions, keys, values, query, gate, partial, output, sinks;
@@ -3014,7 +3309,7 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 	uint32_t *sequence, *position, row, head, d, pass;
 	double ref[ATT_MAX_DIM], tolerance[ATT_MAX_DIM];
 	Check clean, corrupted;
-	char shape[96], window[24];
+	char shape[128], window[24], values_text[32];
 	const uint32_t sequences = prefill != 0u ? 2u : 1u;
 	memset(&f,0,sizeof(f));
 	AttentionFill(&f,context,sequences);
@@ -3100,8 +3395,9 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 	window[0] = 0;
 	if ( att.window != 0u )
 		snprintf(window,sizeof(window),", window %u",att.window);
+	snprintf(values_text,sizeof(values_text),", values %u%s",att.vdim,att.sinks != 0u ? ", sinks" : "");
 	snprintf(shape,sizeof(shape),"%s rows %u, context %u, %u q / %u kv heads x %u%s%s",prefill != 0u ? "prefill" : "decode",rows,context,att.heads,att.kv,
-		att.dim,window,att.vdim != 0u ? (att.sinks != 0u ? ", values 128, sinks" : ", values 128") : att.gate == SPARK_ATTENTION_GATE_SIGMOID_BF16 ? ", bf16 gate" :
+		att.dim,window,att.vdim != 0u ? values_text : att.gate == SPARK_ATTENTION_GATE_SIGMOID_BF16 ? ", bf16 gate" :
 		att.gate != 0u ? "" : ", no gate");
 	Report(prefill != 0u ? "attention_prefill" : "attention_decode",shape,&clean,&corrupted,
 		"u|y| + sigmoid(g) bf16 flip slack of o within e + |o| flip slack of a bf16 gate + 4*16 eps32 |y|; e = 2 sum p|v| 2 ds + gamma_L sum p|v|, ds = gamma_258 sum|q k|/16 + 2*16 eps32 (1+|s|)");
@@ -3241,8 +3537,9 @@ static void TestAttentionPages(void)
 	SparkDeviceFree(&decode_position);
 }
 
-static void TestSiluMul(uint32_t rows)
+static void TestSiluMul(uint32_t rows, double limit)
 {
+	const uint32_t activation = isfinite(limit) ? SPARK_GATED_SILU_CLAMP : SPARK_GATED_SILU;
 	enum { DIM = 17408 };
 	SparkDeviceBuffer input, output;
 	uint16_t *in = (uint16_t *)Shared(&input,(uint64_t)rows * 2u * DIM * 2u,"silu input");
@@ -3251,11 +3548,13 @@ static void TestSiluMul(uint32_t rows)
 	Check clean, corrupted;
 	char shape[64];
 	uint32_t pass, row, i;
-	FillBf16(in,(uint64_t)rows * 2u * DIM,2.0);
+	FillBf16(in,(uint64_t)rows * 2u * DIM,isfinite(limit) ? 3.0 : 2.0);
+	memset(&params,0,sizeof(params));
 	params.rows = rows;
 	params.dimension = DIM;
 	params.input_stride = 2u * DIM;
 	params.output_stride = DIM;
+	params.limit = (float)limit;
 	for ( pass = 0u; pass < 2u; pass++ )
 	{
 		Check *check = pass == 0u ? &clean : &corrupted;
@@ -3264,18 +3563,18 @@ static void TestSiluMul(uint32_t rows)
 		memset(check,0,sizeof(*check));
 		if ( pass == 1u )
 			in[poke] = ToBf16(Bf16(saved) * -1.0f + 1.0f);
-		if ( !Run(SparkOpsGatedMul(&ops,queue,Whole(&input),Whole(&output),&params,SPARK_GATED_SILU),"silu_mul") )
+		if ( !Run(SparkOpsGatedMul(&ops,queue,Whole(&input),Whole(&output),&params,activation),"silu_mul") )
 			break;
 		in[poke] = saved;
 		for ( row = 0u; row < rows; row++ )
 			for ( i = 0u; i < DIM; i++ )
 			{
-				const double y = Silu(Bf16(in[(uint64_t)row * 2u * DIM + i])) * Bf16(in[(uint64_t)row * 2u * DIM + DIM + i]);
+				const double y = fmin(Silu(Bf16(in[(uint64_t)row * 2u * DIM + i])),limit) * fmin(fmax(Bf16(in[(uint64_t)row * 2u * DIM + DIM + i]),-limit),limit);
 				Observe(check,Bf16(out[(uint64_t)row * DIM + i]),y,UNIT_BF16 * fabs(y) + 3.0 * FUNCTION_ERROR * fabs(y));
 			}
 	}
-	snprintf(shape,sizeof(shape),"rows %u, 17408 gate | 17408 up",rows);
-	Report("silu_mul",shape,&clean,&corrupted,"u|y| + 3*16 eps32 |y|");
+	snprintf(shape,sizeof(shape),"rows %u, 17408 gate | 17408 up%s",rows,isfinite(limit) ? ", limit 5" : "");
+	Report(isfinite(limit) ? "silu_clamp_mul" : "silu_mul",shape,&clean,&corrupted,"u|y| + 3*16 eps32 |y|");
 	SparkDeviceFree(&input);
 	SparkDeviceFree(&output);
 }
@@ -3405,8 +3704,9 @@ int main(int argc, char **argv)
 	TestRankKernels(2u,17u,1024u);
 	TestRankKernels(8u,2u,65536u);
 	TestRouteLocal();
-	TestHeadGateSoftplus(3u,10u);
-	TestHeadGateSoftplus(17u,5u);
+	TestHeadGate(3u,10u,SPARK_HEAD_GATE_SOFTPLUS);
+	TestHeadGate(17u,5u,SPARK_HEAD_GATE_SOFTPLUS);
+	TestHeadGate(5u,4u,SPARK_HEAD_GATE_SIGMOID_BF16);
 	TestLinearRoutedSkip(3u);
 	TestRmsNormResidual(1u);
 	TestRmsNormResidual(64u);
@@ -3416,17 +3716,21 @@ int main(int argc, char **argv)
 	TestHeadRope(1u,24u,0u,512u,"24 query heads in the fused row");
 	TestHeadRope(17u,4u,12288u,256u,"4 key heads in the fused row");
 	{
-		static const RopeCase sliding = { 256u, 256u, 128u, 10000.0, 1u, 1u, 0.0, 0.0 }, full = { 512u, 512u, 64u, 1000000.0, 1u, 1u, 0.0, 0.0 },
-			value = { 512u, 0u, 0u, 1.0, 0u, 0u, 0.0, 0.0 }, yarn = { 128u, 64u, 32u, 500000.0, 1u, 1u, 1.4852030263919618, 0.0 },
-			plain = { 128u, 64u, 32u, 500000.0, 1u, 0u, 1.4852030263919618, 0.0 };
+		static const RopeCase sliding = { 256u, 256u, 128u, 10000.0, 1u, 1u, 0.0, 0.0, 0u, 0u, 0u }, full = { 512u, 512u, 64u, 1000000.0, 1u, 1u, 0.0, 0.0, 0u, 0u, 0u },
+			value = { 512u, 0u, 0u, 1.0, 0u, 0u, 0.0, 0.0, 0u, 0u, 0u }, yarn = { 128u, 64u, 32u, 500000.0, 1u, 1u, 1.4852030263919618, 0.0, 0u, 0u, 0u },
+			plain = { 128u, 64u, 32u, 500000.0, 1u, 0u, 1.4852030263919618, 0.0, 0u, 0u, 0u };
 		TestHeadRopeCase(3u,16u,0u,256u,&sliding,"16 heads x 256, whole-head rope with bf16 terms, theta 1e4");
 		TestHeadRopeCase(2u,2u,8192u,512u,&full,"2 heads x 512, 64 of 256 pairs rotated, bf16 terms, theta 1e6");
 		TestHeadRopeCase(3u,10u,0u,128u,&yarn,"10 heads x 128, 64 dims rotated, bf16 terms of cos and sin times 1.485");
 		TestHeadRopeCase(3u,10u,0u,128u,&plain,"10 heads x 128, 64 dims rotated in FP32, cos and sin times 1.485");
 		TestHeadRopeCase(2u,2u,8192u,512u,&value,"2 heads x 512, weightless norm, no rope");
+		{
+			static const RopeCase latent = { 64u, 64u, 32u, 6000000.0, 0u, 0u, 0.0, 0.0, 1u, 576u, 1u };
+			TestHeadRopeCase(3u,8u,128u,192u,&latent,"8 heads, 64 interleaved dims of 192-wide heads into 576-wide rows, plain, theta 6e6");
+		}
 	}
 	{
-		static const RopeCase sliding = { 128u, 128u, 64u, 500000.0, 0u, 1u, 0.0, 3.87 }, full = { 128u, 0u, 0u, 1.0, 0u, 0u, 0.0, 3.87 };
+		static const RopeCase sliding = { 128u, 128u, 64u, 500000.0, 0u, 1u, 0.0, 3.87, 0u, 0u, 0u }, full = { 128u, 0u, 0u, 1.0, 0u, 0u, 0.0, 3.87, 0u, 0u, 0u };
 		TestHeadRopeCase(3u,32u,0u,128u,&sliding,"32 heads x 128, weightless, times 3.87, bf16-term rope, theta 5e5");
 		TestHeadRopeCase(2u,32u,0u,128u,&full,"32 heads x 128, weightless, times 3.87, no rope");
 	}
@@ -3491,6 +3795,7 @@ int main(int argc, char **argv)
 	TestCausalConv();
 	TestCausalConvDilated();
 	TestGatedDelta();
+	TestChannelDelta();
 	TestAttention(1u,1u,0u);
 	TestAttention(1000u,1u,0u);
 	TestAttention(8192u,4u,0u);
@@ -3501,7 +3806,8 @@ int main(int argc, char **argv)
 			muse_sliding = { 32u, 2u, 128u, 4608u, 4352u, 2048u, SPARK_ATTENTION_GATE_SIGMOID_BF16, 0.08838834764831845f, 1u, 0u, 0u },
 			muse_full = { 32u, 2u, 128u, 4608u, 4352u, 0u, SPARK_ATTENTION_GATE_SIGMOID_BF16, 0.08838834764831845f, 1u, 0u, 0u },
 			mimo_sliding = { 16u, 4u, 192u, 512u, 0u, 128u, 0u, 0.07216878364870322f, 0u, 128u, 1u },
-			mimo_full = { 16u, 4u, 192u, 512u, 0u, 0u, 0u, 0.07216878364870322f, 0u, 128u, 0u };
+			mimo_full = { 16u, 4u, 192u, 512u, 0u, 0u, 0u, 0.07216878364870322f, 0u, 128u, 0u },
+			latent = { 8u, 1u, 576u, 512u, 0u, 0u, 0u, 0.07216878364870322f, 0u, 512u, 0u };
 		att = sliding;
 		TestAttention(2048u,1u,0u);
 		TestAttention(2048u,64u,1u);
@@ -3520,12 +3826,16 @@ int main(int argc, char **argv)
 		att = mimo_full;
 		TestAttention(1000u,4u,0u);
 		TestAttention(300u,40u,1u);
+		att = latent;
+		TestAttention(1000u,2u,0u);
+		TestAttention(300u,40u,1u);
 		att = qwen;
 	}
 	TestAttentionPages();
 	TestGeluMul(2u);
 	TestGatedMulRouted(24u,SPARK_GATED_GELU_TANH);
 	TestGatedMulRouted(24u,SPARK_GATED_SILU);
+	TestGatedMulRouted(24u,SPARK_GATED_SILU_CLAMP);
 	TestScaleAndSoftcap();
 	TestRoutes(3u);
 	TestRoutesPinned(3u);
@@ -3535,6 +3845,7 @@ int main(int argc, char **argv)
 	TestMimoKernels(3u);
 	TestHyperKernels(3u);
 	TestSharedExpert(3u);
+	TestRouteGroups(5u);
 	TestNgram();
 	TestLinearRoutedNvfp4(2u,2560u,96u);
 	TestLinearRoutedNvfp4(2u,640u,160u);
@@ -3542,8 +3853,9 @@ int main(int argc, char **argv)
 	TestLinearRoutedMxfp4(1u,2048u,1024u);
 	TestBranchNorms(2u,1u);
 	TestBranchNorms(3u,2u);
-	TestSiluMul(1u);
-	TestSiluMul(10u);
+	TestSiluMul(1u,INFINITY);
+	TestSiluMul(10u,INFINITY);
+	TestSiluMul(3u,5.0);
 	TestAddRows(1u);
 	TestAddRows(9u);
 	TestLogprob(1u);

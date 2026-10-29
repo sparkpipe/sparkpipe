@@ -1135,8 +1135,13 @@ and the multidev docs on 2026-09-28. Line numbers are in
   ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#shared-kernel-math)):
   bf16 conversion, sigmoid and SiLU (29 CUDA copies), softplus with the
   gated-delta decay, the head-gate softplus, the tanh GeLU, the softcap,
-  the RMS scale and the rotary rotation are there. Still a copy per kernel
-  or per backend:
+  the RMS scale, the rotary rotation, the KDA layers' bounded decay
+  (`SparkMathBoundedDecay`) and the clamped GLU (`SparkMathClampedGlu`,
+  `LmSiluMulLimitKernel`) are there. Still a copy per kernel or per backend:
+  - `LingSiluClampPackedKernel` writes the clamped GLU out: it clamps the up
+    value before the SiLU, and calling `SparkMathClampedGlu` reorders those
+    instructions (same values, different code), so it keeps its text until
+    a CUDA change with its own qualification takes the shared one;
   - rotary angles (CUDA's `__powf(theta, -2i/d)` in the kernel against
     Metal's host table in double), the delta-rule cell update,
     online-softmax merges and the log-probability reduction;
@@ -1169,8 +1174,9 @@ and the multidev docs on 2026-09-28. Line numbers are in
     by the intrinsic's error until one policy is chosen and measured;
   Kernel bodies (the schedules) stay per backend.
 - Every family runs one schedule for all backends
-  ([`docs/FAMILY_SCHEDULES.md`](docs/FAMILY_SCHEDULES.md)); Gemma 4 and the
-  Qwen 3.8 hybrid have a Metal backend. Still open: the GLM 5.3 Full and A.X
+  ([`docs/FAMILY_SCHEDULES.md`](docs/FAMILY_SCHEDULES.md)); Gemma 4 (with
+  Laguna S 2.1 on its pre-norm path), the Qwen 3.8 hybrid, MiMo 2.6 and Ling 3
+  have a Metal backend. Still open: the GLM 5.3 Full and A.X
   K2 geometries stay in their `.cu` files until `LmRopePairing` and the
   stagepack geometry hooks have a device-neutral home, and K3 and DeepSeek
   V4.1 Flash keep their geometry as macros (`inference/llms/kimi_k3/config.h`,

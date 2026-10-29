@@ -45,6 +45,85 @@ typedef struct SparkDeviceGatedDeltaScratch
 	SparkTensor keep;
 } SparkDeviceGatedDeltaScratch;
 
+typedef struct SparkDeviceChannelDeltaShape
+{
+	uint32_t heads;
+	uint32_t dimension;
+	uint32_t conv_taps;
+	uint32_t low_rank;
+	float epsilon;
+	float minimum_log_decay;
+	uint32_t doubled_beta;
+} SparkDeviceChannelDeltaShape;
+
+typedef struct SparkDeviceChannelDeltaWeights
+{
+	SparkDeviceWeight qkv;
+	SparkDeviceWeight beta;
+	SparkDeviceWeight decay_down;
+	SparkDeviceWeight decay;
+	SparkDeviceWeight gate_down;
+	SparkDeviceWeight gate;
+	SparkTensor conv;
+	SparkTensor log_scale;
+	SparkTensor bias;
+	SparkTensor norm;
+	SparkDeviceWeight out;
+} SparkDeviceChannelDeltaWeights;
+
+typedef struct SparkDeviceChannelDeltaScratch
+{
+	SparkTensor qkv;
+	SparkTensor beta;
+	SparkTensor low;
+	SparkTensor decay;
+	SparkTensor gate;
+	SparkTensor delta;
+	SparkTensor core;
+	SparkTensor gated;
+} SparkDeviceChannelDeltaScratch;
+
+typedef struct SparkDeviceLatentAttentionShape
+{
+	uint32_t heads;
+	uint32_t nope;
+	uint32_t rope;
+	uint32_t latent;
+	uint32_t value_dimension;
+	double rope_theta;
+	float epsilon;
+	float scale;
+	uint32_t head_gate;
+} SparkDeviceLatentAttentionShape;
+
+typedef struct SparkDeviceLatentAttentionRope
+{
+	SparkHeadRopeParams query;
+	SparkHeadRopeParams key;
+} SparkDeviceLatentAttentionRope;
+
+typedef struct SparkDeviceLatentAttentionWeights
+{
+	SparkDeviceWeight query;
+	SparkDeviceWeight kv;
+	SparkTensor kv_norm;
+	SparkTensor key_up;
+	SparkTensor value_up;
+	SparkDeviceWeight gate;
+	SparkDeviceWeight out;
+} SparkDeviceLatentAttentionWeights;
+
+typedef struct SparkDeviceLatentAttentionScratch
+{
+	SparkTensor query;
+	SparkTensor kv;
+	SparkTensor gate;
+	SparkTensor packed;
+	SparkTensor records;
+	SparkTensor latent;
+	SparkTensor value;
+} SparkDeviceLatentAttentionScratch;
+
 typedef struct SparkDeviceAttentionShape
 {
 	uint32_t heads;
@@ -120,6 +199,10 @@ typedef struct SparkDeviceExpertsShape
 	float epsilon;
 	float routed_scale;
 	uint32_t round_logits;
+	uint32_t groups;
+	uint32_t topk_groups;
+	float limit;
+	const char *router;
 } SparkDeviceExpertsShape;
 
 typedef struct SparkDeviceExpertsWeights
@@ -169,6 +252,23 @@ SparkStatus SparkDeviceGatedDelta(SparkDeviceStage *stage, SparkDeviceQueue *que
 SparkStatus SparkDeviceGatedDeltaKeep(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceGatedDeltaShape *shape,
 	const SparkDeviceKeepTensors *keep, const SparkDeviceGatedDeltaWeights *weights, uint32_t recurrent_layer, const SparkDeviceGatedDeltaScratch *scratch);
 
+uint32_t SparkDeviceChannelDeltaWidth(const SparkDeviceChannelDeltaShape *shape);
+uint64_t SparkDeviceChannelDeltaStateBytes(const SparkDeviceChannelDeltaShape *shape);
+uint64_t SparkDeviceChannelDeltaWindowBytes(const SparkDeviceChannelDeltaShape *shape);
+SparkStatus SparkDeviceChannelDeltaBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer,
+	const SparkDeviceChannelDeltaShape *shape, SparkDeviceChannelDeltaWeights *bound);
+SparkStatus SparkDeviceChannelDelta(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceChannelDeltaShape *shape,
+	const SparkDeviceStepTensors *tensors, const SparkDeviceChannelDeltaWeights *weights, uint32_t recurrent_layer,
+	const SparkDeviceChannelDeltaScratch *scratch, SparkTensor normed, SparkTensor output);
+
+uint32_t SparkDeviceLatentAttentionSlot(const SparkDeviceLatentAttentionShape *shape);
+void SparkDeviceLatentAttentionRopePrepare(const SparkDeviceLatentAttentionShape *shape, uint32_t local_heads, SparkDeviceLatentAttentionRope *rope);
+SparkStatus SparkDeviceLatentAttentionBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer,
+	const SparkDeviceLatentAttentionShape *shape, SparkDeviceLatentAttentionWeights *bound);
+SparkStatus SparkDeviceLatentAttention(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceLatentAttentionShape *shape,
+	const SparkDeviceLatentAttentionRope *rope, const SparkDeviceStepTensors *tensors, const SparkDeviceLatentAttentionWeights *weights, uint32_t kv_layer,
+	const SparkDeviceLatentAttentionScratch *scratch, SparkTensor normed, SparkTensor output);
+
 uint32_t SparkDeviceAttentionQueryWidth(const SparkDeviceAttentionShape *shape);
 uint32_t SparkDeviceAttentionKvWidth(const SparkDeviceAttentionShape *shape);
 uint32_t SparkDeviceAttentionFusedWidth(const SparkDeviceAttentionShape *shape);
@@ -184,7 +284,9 @@ SparkStatus SparkDeviceAttention(SparkDeviceStage *stage, SparkDeviceQueue *queu
 
 SparkStatus SparkDeviceFfnBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer, uint32_t ffn,
 	SparkDeviceFfnWeights *bound);
-SparkStatus SparkDeviceGatedFfn(SparkDeviceStage *stage, SparkDeviceQueue *queue, uint32_t ffn, uint32_t activation, const SparkDeviceStepTensors *tensors,
+SparkStatus SparkDeviceFfnBindNamed(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer, const char *gate_up,
+	const char *down, uint32_t ffn, SparkDeviceFfnWeights *bound);
+SparkStatus SparkDeviceGatedFfn(SparkDeviceStage *stage, SparkDeviceQueue *queue, uint32_t ffn, uint32_t activation, float limit, const SparkDeviceStepTensors *tensors,
 	const SparkDeviceFfnWeights *weights, const SparkDeviceFfnScratch *scratch, SparkTensor normed, SparkTensor output);
 
 uint64_t SparkDeviceExpertsScratchBytes(const SparkDeviceStage *stage, const SparkDeviceExpertsShape *shape, uint32_t part);

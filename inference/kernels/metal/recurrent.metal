@@ -36,15 +36,10 @@ kernel void spark_causal_conv_silu(constant SparkConvParams &p [[buffer(0)]], de
 			slot[entry] = SparkMathFloatToBf16(taps[entry]);
 }
 
-kernel void spark_gated_delta_prepare(constant SparkDeltaParams &p [[buffer(0)]], device const ushort *mix [[buffer(1)]],
-	device const ushort *gates [[buffer(2)]], device const float *log_scale [[buffer(3)]], device const float *bias [[buffer(4)]],
-	device float *query [[buffer(5)]], device float *key [[buffer(6)]], device float *decay [[buffer(7)]], device float *beta [[buffer(8)]],
-	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]],
-	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
+static inline void SparkDeltaNormalize(constant SparkDeltaParams &p, device const ushort *mix, device float *query, device float *key, uint head,
+	uint row, uint tid, uint threads, threadgroup float *scratch, uint lane, uint simd, uint simds)
 {
-	const uint threads = group_size.x;
-	threadgroup float scratch[32];
-	const uint head = group.x, row = group.y, D = p.key_dimension, per_key = p.value_heads / p.key_heads;
+	const uint D = p.key_dimension;
 	device const ushort *row_mix = mix + (ulong)row * p.mix_stride;
 	float q_sum = 0.0f, k_sum = 0.0f;
 	for ( uint i = tid; i < D; i += threads )
@@ -64,6 +59,17 @@ kernel void spark_gated_delta_prepare(constant SparkDeltaParams &p [[buffer(0)]]
 		q_out[i] = SparkMathBf16ToFloat(row_mix[p.query_offset + head * D + i]) * q_scale;
 		k_out[i] = SparkMathBf16ToFloat(row_mix[p.key_offset + head * D + i]) * k_scale;
 	}
+}
+
+kernel void spark_gated_delta_prepare(constant SparkDeltaParams &p [[buffer(0)]], device const ushort *mix [[buffer(1)]],
+	device const ushort *gates [[buffer(2)]], device const float *log_scale [[buffer(3)]], device const float *bias [[buffer(4)]],
+	device float *query [[buffer(5)]], device float *key [[buffer(6)]], device float *decay [[buffer(7)]], device float *beta [[buffer(8)]],
+	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]],
+	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
+{
+	threadgroup float scratch[32];
+	const uint head = group.x, row = group.y, per_key = p.value_heads / p.key_heads;
+	SparkDeltaNormalize(p, mix, query, key, head, row, tid, group_size.x, scratch, lane, simd, simds);
 	if ( tid < per_key )
 	{
 		const uint value_head = head * per_key + tid;
@@ -71,6 +77,26 @@ kernel void spark_gated_delta_prepare(constant SparkDeltaParams &p [[buffer(0)]]
 		const float shifted = SparkMathBf16ToFloat(row_gates[p.decay_offset + value_head]) + bias[value_head];
 		decay[(ulong)row * p.value_heads + value_head] = SparkMathGatedDeltaDecay(log_scale[value_head],shifted);
 		beta[(ulong)row * p.value_heads + value_head] = SparkMathSigmoid(SparkMathBf16ToFloat(row_gates[p.beta_offset + value_head]));
+	}
+}
+
+kernel void spark_channel_delta_prepare(constant SparkDeltaParams &p [[buffer(0)]], device const ushort *mix [[buffer(1)]],
+	device const ushort *decay_logits [[buffer(2)]], device const ushort *beta_logits [[buffer(3)]], device const float *log_scale [[buffer(4)]],
+	device const float *bias [[buffer(5)]], device float *query [[buffer(6)]], device float *key [[buffer(7)]], device float *decay [[buffer(8)]],
+	device float *beta [[buffer(9)]], uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+	uint2 group_size [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]],
+	uint simds [[simdgroups_per_threadgroup]])
+{
+	threadgroup float scratch[32];
+	const uint head = group.x, row = group.y, D = p.key_dimension;
+	SparkDeltaNormalize(p, mix, query, key, head, row, tid, group_size.x, scratch, lane, simd, simds);
+	for ( uint i = tid; i < D; i += group_size.x )
+		decay[((ulong)row * p.key_heads + head) * D + i] = SparkMathBoundedDecay(SparkMathBf16ToFloat(decay_logits[(ulong)row * p.gate_stride + head * D + i]),
+			bias[head * D + i], log_scale[head], p.minimum_log_decay);
+	if ( tid == 0u )
+	{
+		const float strength = SparkMathSigmoidFast(SparkMathBf16ToFloat(beta_logits[(ulong)row * p.beta_stride + head]));
+		beta[(ulong)row * p.value_heads + head] = p.doubled_beta != 0u ? 2.0f * SparkMathRoundBf16(strength) : strength;
 	}
 }
 
@@ -91,10 +117,12 @@ kernel void spark_gated_delta_rule(constant SparkDeltaParams &p [[buffer(0)]], d
 		const ulong vector = ((ulong)row * p.key_heads + key_head) * K + lane * 4u;
 		const float4 k = *(device const float4 *)(key + vector);
 		const float4 q = *(device const float4 *)(query + vector);
-		const float factor = decay[(ulong)row * p.value_heads + head];
 		const float strength = beta[(ulong)row * p.value_heads + head];
 		const float value = SparkMathBf16ToFloat(mix[(ulong)row * p.mix_stride + p.value_offset + head * V + column]);
-		cell *= factor;
+		if ( p.channel_decay != 0u )
+			cell *= *(device const float4 *)(decay + ((ulong)row * p.value_heads + head) * K + lane * 4u);
+		else
+			cell *= decay[(ulong)row * p.value_heads + head];
 		const float predicted = simd_sum(dot(cell, k));
 		cell += (strength * (value - predicted)) * k;
 		const float result = simd_sum(dot(cell, q));

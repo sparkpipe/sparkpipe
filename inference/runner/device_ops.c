@@ -45,14 +45,17 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_attention_decode_d512",
 	"spark_attention_decode_d128",
 	"spark_attention_decode_d192v128",
+	"spark_attention_decode_d576v512",
 	"spark_attention_prefill_blocks_d256",
 	"spark_attention_prefill_blocks_d512",
 	"spark_attention_prefill_blocks_d128",
 	"spark_attention_prefill_blocks_d192v128",
+	"spark_attention_prefill_blocks_d576v512",
 	"spark_attention_combine_d256",
 	"spark_attention_combine_d512",
 	"spark_attention_combine_d128",
 	"spark_attention_combine_d192v128",
+	"spark_attention_combine_d576v512",
 	"spark_silu_mul",
 	"spark_gelu_tanh_mul",
 	"spark_silu_mul_routed",
@@ -91,7 +94,10 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_rank_sum_bf16",
 	"spark_rank_max_u64",
 	"spark_rank_rows",
-	"spark_head_gate_softplus"
+	"spark_head_gate",
+	"spark_channel_delta_prepare",
+	"spark_silu_clamp_mul",
+	"spark_silu_clamp_mul_routed"
 };
 
 static SparkStatus OpsRefuse(const char *operation, const char *reason)
@@ -425,20 +431,21 @@ static uint32_t OpsThreads(uint32_t width, uint32_t limit)
 	return(threads > limit ? limit : threads);
 }
 
-SparkStatus SparkOpsHeadGateSoftplus(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, SparkTensor logits, const SparkHeadGateParams *params)
+SparkStatus SparkOpsHeadGate(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, SparkTensor logits, const SparkHeadGateParams *params)
 {
 	SparkDeviceBinding bindings[2];
 	SparkStatus status;
-	if ( params->rows == 0u || params->heads == 0u || params->head_dimension == 0u || params->gate_stride < params->heads )
-		return(OpsRefuse("head_gate_softplus","rows, heads, a head width and a gate row holding every head are required"));
-	status = OpsNeed("head_gate_softplus","values",values,(uint64_t)params->rows * params->heads * params->head_dimension * sizeof(uint16_t));
+	if ( params->rows == 0u || params->heads == 0u || params->head_dimension == 0u || params->gate_stride < params->heads ||
+		(params->activation != SPARK_HEAD_GATE_SOFTPLUS && params->activation != SPARK_HEAD_GATE_SIGMOID_BF16) )
+		return(OpsRefuse("head_gate","rows, heads, a head width, a gate row holding every head and a known activation are required"));
+	status = OpsNeed("head_gate","values",values,(uint64_t)params->rows * params->heads * params->head_dimension * sizeof(uint16_t));
 	if ( status == SPARK_STATUS_OK )
-		status = OpsNeed("head_gate_softplus","logits",logits,OpsRowsBytes(params->rows,params->gate_stride,params->heads,2u));
+		status = OpsNeed("head_gate","logits",logits,OpsRowsBytes(params->rows,params->gate_stride,params->heads,2u));
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	bindings[0] = OpsBind(values,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
 	bindings[1] = OpsBind(logits,SPARK_DEVICE_BIND_READ);
-	return(OpsLaunch(ops,queue,SPARK_OPS_HEAD_GATE_SOFTPLUS,params->heads,params->rows,1u,OpsThreads(params->head_dimension,256u),params,sizeof(*params),
+	return(OpsLaunch(ops,queue,SPARK_OPS_HEAD_GATE,params->heads,params->rows,1u,OpsThreads(params->head_dimension,256u),params,sizeof(*params),
 		bindings,2u));
 }
 
@@ -499,8 +506,8 @@ SparkStatus SparkOpsHeadRmsNormRope(SparkDeviceOps *ops, SparkDeviceQueue *queue
 	SparkStatus status;
 	if ( params->rows == 0u || params->heads == 0u || params->head_dimension == 0u || params->head_dimension > 1024u ||
 		params->rope_dimension % 2u != 0u || params->rope_dimension > params->head_dimension ||
-		params->rope_dimension / 2u > SPARK_KERNEL_ROPE_PAIRS )
-		return(OpsRefuse("head_rmsnorm_rope","heads of at most 1024 dimensions and an even rotary width inside the head are required"));
+		params->rope_dimension / 2u > SPARK_KERNEL_ROPE_PAIRS || (params->output_head_stride != 0u && params->output_head_stride < params->head_dimension) )
+		return(OpsRefuse("head_rmsnorm_rope","heads of at most 1024 dimensions, an even rotary width inside the head and output heads that do not overlap are required"));
 	if ( launch.scale == 0.0f )
 		launch.scale = 1.0f;
 	status = OpsNeed("head_rmsnorm_rope","input",input,
@@ -510,7 +517,8 @@ SparkStatus SparkOpsHeadRmsNormRope(SparkDeviceOps *ops, SparkDeviceQueue *queue
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("head_rmsnorm_rope","positions",positions,(uint64_t)params->rows * 4u);
 	if ( status == SPARK_STATUS_OK )
-		status = OpsNeed("head_rmsnorm_rope","output",output,OpsRowsBytes(params->rows,params->output_stride,params->heads * params->head_dimension,2u));
+		status = OpsNeed("head_rmsnorm_rope","output",output,OpsRowsBytes(params->rows,params->output_stride,
+			(params->heads - 1u) * (params->output_head_stride != 0u ? params->output_head_stride : params->head_dimension) + params->head_dimension,2u));
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	bindings[0] = OpsBind(input,SPARK_DEVICE_BIND_READ);
@@ -740,6 +748,69 @@ SparkStatus SparkOpsGatedDelta(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spa
 		bindings,9u));
 }
 
+uint64_t SparkOpsChannelDeltaScratchBytes(uint32_t rows, uint32_t heads, uint32_t key_dimension)
+{
+	return(((uint64_t)rows * heads * key_dimension * 3u + (uint64_t)rows * heads) * 4u);
+}
+
+SparkStatus SparkOpsChannelDelta(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor state, const SparkOpsSequences *sequences,
+	SparkTensor mix, SparkTensor decay_logits, SparkTensor beta_logits, SparkTensor log_scale, SparkTensor bias, SparkTensor scratch, SparkTensor output,
+	const SparkDeltaParams *params)
+{
+	const uint64_t vectors = (uint64_t)params->rows * params->key_heads * params->key_dimension * 4u;
+	SparkDeltaParams launch = *params;
+	SparkTensor query, key, decay, beta;
+	SparkDeviceBinding bindings[10];
+	SparkStatus status;
+	if ( params->rows == 0u || params->key_heads == 0u || params->value_heads != params->key_heads || params->key_dimension != SPARK_OPS_DELTA_KEY_DIM ||
+		params->value_dimension % 4u != 0u || params->value_dimension == 0u || params->sequences != sequences->sequences ||
+		params->commit != sequences->commit || params->gate_stride < params->key_heads * params->key_dimension || params->beta_stride < params->key_heads )
+		return(OpsRefuse("channel_delta","128-dimensional keys, one value head per key head, per-channel decay rows and matching sequence tables are required"));
+	launch.channel_decay = 1u;
+	status = OpsNeed("channel_delta","scratch",scratch,SparkOpsChannelDeltaScratchBytes(params->rows,params->key_heads,params->key_dimension));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("channel_delta","state",state,(uint64_t)params->value_heads * params->key_dimension * params->value_dimension * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("channel_delta","decay_logits",decay_logits,OpsRowsBytes(params->rows,params->gate_stride,params->key_heads * params->key_dimension,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("channel_delta","beta_logits",beta_logits,OpsRowsBytes(params->rows,params->beta_stride,params->key_heads,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("channel_delta","log_scale",log_scale,(uint64_t)params->key_heads * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("channel_delta","bias",bias,(uint64_t)params->key_heads * params->key_dimension * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("channel_delta","output",output,OpsRowsBytes(params->rows,params->output_stride,params->value_heads * params->value_dimension,2u));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	query = SparkTensorSlice(scratch,0u,vectors);
+	key = SparkTensorSlice(scratch,vectors,vectors);
+	decay = SparkTensorSlice(scratch,2u * vectors,vectors);
+	beta = SparkTensorSlice(scratch,3u * vectors,(uint64_t)params->rows * params->key_heads * 4u);
+	bindings[0] = OpsBind(mix,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(decay_logits,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(beta_logits,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(log_scale,SPARK_DEVICE_BIND_READ);
+	bindings[4] = OpsBind(bias,SPARK_DEVICE_BIND_READ);
+	bindings[5] = OpsBind(query,SPARK_DEVICE_BIND_WRITE);
+	bindings[6] = OpsBind(key,SPARK_DEVICE_BIND_WRITE);
+	bindings[7] = OpsBind(decay,SPARK_DEVICE_BIND_WRITE);
+	bindings[8] = OpsBind(beta,SPARK_DEVICE_BIND_WRITE);
+	status = OpsLaunch(ops,queue,SPARK_OPS_CHANNEL_DELTA_PREPARE,params->key_heads,params->rows,1u,params->key_dimension,&launch,sizeof(launch),bindings,9u);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(state,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
+	bindings[1] = OpsBind(sequences->state_index,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(sequences->row_begin,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(query,SPARK_DEVICE_BIND_READ);
+	bindings[4] = OpsBind(key,SPARK_DEVICE_BIND_READ);
+	bindings[5] = OpsBind(decay,SPARK_DEVICE_BIND_READ);
+	bindings[6] = OpsBind(beta,SPARK_DEVICE_BIND_READ);
+	bindings[7] = OpsBind(mix,SPARK_DEVICE_BIND_READ);
+	bindings[8] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_DELTA_RULE,params->value_dimension / 4u,params->value_heads,params->sequences,128u,&launch,sizeof(launch),
+		bindings,9u));
+}
+
 SparkStatus SparkOpsKvStore(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor key, SparkTensor value,
 	const SparkKvParams *params)
 {
@@ -770,7 +841,7 @@ SparkStatus SparkOpsKvStore(SparkDeviceOps *ops, SparkDeviceQueue *queue, const 
 static uint32_t OpsAttentionWidth(const SparkAttentionParams *params)
 {
 	return(params->head_dimension == SPARK_OPS_ATTENTION_WIDE_HEAD_DIM ? 1u : params->head_dimension == SPARK_OPS_ATTENTION_NARROW_HEAD_DIM ? 2u :
-		params->head_dimension == SPARK_OPS_ATTENTION_SPLIT_KEY_DIM ? 3u : 0u);
+		params->head_dimension == SPARK_OPS_ATTENTION_SPLIT_KEY_DIM ? 3u : params->head_dimension == SPARK_OPS_ATTENTION_LATENT_KEY_DIM ? 4u : 0u);
 }
 
 static uint32_t OpsAttentionValueDimension(const SparkAttentionParams *params)
@@ -783,6 +854,8 @@ static uint32_t OpsAttentionShapeKnown(const SparkAttentionParams *params)
 	const uint32_t key = params->head_dimension, value = OpsAttentionValueDimension(params);
 	if ( key == SPARK_OPS_ATTENTION_SPLIT_KEY_DIM )
 		return(value == SPARK_OPS_ATTENTION_SPLIT_VALUE_DIM ? 1u : 0u);
+	if ( key == SPARK_OPS_ATTENTION_LATENT_KEY_DIM )
+		return(value == SPARK_OPS_ATTENTION_LATENT_VALUE_DIM ? 1u : 0u);
 	return(value == key && (key == SPARK_OPS_ATTENTION_HEAD_DIM || key == SPARK_OPS_ATTENTION_WIDE_HEAD_DIM || key == SPARK_OPS_ATTENTION_NARROW_HEAD_DIM) ? 1u : 0u);
 }
 
@@ -827,7 +900,7 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 		params->page_slots != paged->page_slots ||
 		params->pages_per_sequence != paged->pages_per_sequence || params->pool_pages != paged->pool_pages || host_positions == 0 ||
 		host_sequence_of_row == 0 )
-		return(OpsRefuse("attention","128-, 256- or 512-dimensional heads (or 192-wide keys with 128-wide values), whole query groups per key head, "
+		return(OpsRefuse("attention","128-, 256- or 512-dimensional heads (or 192-wide keys with 128-wide values, or 576-wide latent keys with 512-wide values), whole query groups per key head, "
 			"a sink tensor exactly when the parameters ask for sinks and the host row tables are required"));
 	for ( row = 0u; row < params->rows; row++ )
 	{
@@ -906,7 +979,8 @@ SparkStatus SparkOpsGatedMul(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spark
 	SparkDeviceBinding bindings[2];
 	SparkStatus status;
 	if ( params->rows == 0u || params->dimension == 0u || params->input_stride < 2u * params->dimension ||
-		(activation != SPARK_GATED_SILU && activation != SPARK_GATED_GELU_TANH && activation != SPARK_GATED_SILU_ROUNDED) )
+		(activation != SPARK_GATED_SILU && activation != SPARK_GATED_GELU_TANH && activation != SPARK_GATED_SILU_ROUNDED && activation != SPARK_GATED_SILU_CLAMP) ||
+		(activation == SPARK_GATED_SILU_CLAMP && !(params->limit > 0.0f)) )
 		return(OpsRefuse("gated_mul","rows, an input stride that holds the gate and up halves and a known activation are required"));
 	status = OpsNeed("gated_mul","input",input,OpsRowsBytes(params->rows,params->input_stride,2u * params->dimension,2u));
 	if ( status == SPARK_STATUS_OK )
@@ -916,7 +990,7 @@ SparkStatus SparkOpsGatedMul(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spark
 	bindings[0] = OpsBind(input,SPARK_DEVICE_BIND_READ);
 	bindings[1] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,activation == SPARK_GATED_GELU_TANH ? SPARK_OPS_GELU_TANH_MUL : activation == SPARK_GATED_SILU_ROUNDED ? SPARK_OPS_SILU_ROUNDED_MUL :
-		SPARK_OPS_SILU_MUL,(params->dimension + 255u) / 256u,
+		activation == SPARK_GATED_SILU_CLAMP ? SPARK_OPS_SILU_CLAMP_MUL : SPARK_OPS_SILU_MUL,(params->dimension + 255u) / 256u,
 		params->rows,1u,256u,params,sizeof(*params),bindings,2u));
 }
 
@@ -926,7 +1000,8 @@ SparkStatus SparkOpsGatedMulRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue,
 	SparkDeviceBinding bindings[3];
 	SparkStatus status;
 	if ( params->rows == 0u || params->dimension == 0u || params->input_stride < 2u * params->dimension ||
-		(activation != SPARK_GATED_SILU && activation != SPARK_GATED_GELU_TANH) )
+		(activation != SPARK_GATED_SILU && activation != SPARK_GATED_GELU_TANH && activation != SPARK_GATED_SILU_CLAMP) ||
+		(activation == SPARK_GATED_SILU_CLAMP && !(params->limit > 0.0f)) )
 		return(OpsRefuse("gated_mul_routed","routes, an input stride that holds the gate and up halves and a known activation are required"));
 	status = OpsNeed("gated_mul_routed","input",input,OpsRowsBytes(params->rows,params->input_stride,2u * params->dimension,2u));
 	if ( status == SPARK_STATUS_OK )
@@ -938,7 +1013,8 @@ SparkStatus SparkOpsGatedMulRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue,
 	bindings[0] = OpsBind(input,SPARK_DEVICE_BIND_READ);
 	bindings[1] = OpsBind(weights,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
-	return(OpsLaunch(ops,queue,activation == SPARK_GATED_GELU_TANH ? SPARK_OPS_GELU_TANH_MUL_ROUTED : SPARK_OPS_SILU_MUL_ROUTED,
+	return(OpsLaunch(ops,queue,activation == SPARK_GATED_GELU_TANH ? SPARK_OPS_GELU_TANH_MUL_ROUTED : activation == SPARK_GATED_SILU_CLAMP ? SPARK_OPS_SILU_CLAMP_MUL_ROUTED :
+		SPARK_OPS_SILU_MUL_ROUTED,
 		(params->dimension + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,3u));
 }
 
@@ -1116,8 +1192,11 @@ SparkStatus SparkOpsRouteSigmoid(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	SparkDeviceBinding bindings[4];
 	SparkStatus status;
 	if ( params->rows == 0u || params->experts == 0u || params->experts > SPARK_ROUTE_MAX_EXPERTS || params->top_k == 0u ||
-		params->top_k > SPARK_ROUTE_MAX_TOP_K || params->top_k > params->experts || params->logit_stride < params->experts )
-		return(OpsRefuse("route_sigmoid","rows, at most 512 experts, a top-k of at most 16 within them and a logit stride that holds them"));
+		params->top_k > SPARK_ROUTE_MAX_TOP_K || params->top_k > params->experts || params->logit_stride < params->experts ||
+		(params->groups > 1u && (params->groups > SPARK_ROUTE_MAX_GROUPS || params->experts % params->groups != 0u || params->experts / params->groups < 2u ||
+		params->topk_groups == 0u || params->topk_groups > params->groups || params->top_k > params->topk_groups * (params->experts / params->groups))) )
+		return(OpsRefuse("route_sigmoid","rows, at most 512 experts, a top-k of at most 16 within them, a logit stride that holds them, and expert groups "
+			"of at least two that tile the experts and leave the open groups enough candidates"));
 	if ( launch.scale == 0.0f )
 		launch.scale = 1.0f;
 	status = OpsNeed("route_sigmoid","logits",logits,OpsRowsBytes(params->rows,params->logit_stride,params->experts,4u));
