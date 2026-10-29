@@ -25,7 +25,7 @@
 #define K3_STREAMED_CHUNKS 8u
 #define K3_STREAMED_STREAM_CHUNK (4u << 20)
 #define K3_STREAMED_STREAM_DEPTH 32u
-#define K3_STREAMED_MAX_ALLOCATIONS 64u
+#define K3_STREAMED_MAX_ALLOCATIONS 128u
 #define K3_STREAMED_GATHER_BYTES 4096u
 #define K3_STREAMED_KEY_BLOCK 262144u
 
@@ -367,7 +367,11 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 	if ( cudaMallocHost((void **)&s->host_staging, (size_t)(pass + K3_STREAMED_CHUNKS + 8u) * sizeof(uint32_t)) != cudaSuccess )
 		s->host_staging = 0;
 	if ( s->allocation_count == K3_STREAMED_MAX_ALLOCATIONS || s->host_staging == 0 || state_memory == 0 || window_memory == 0 || s->mla.older_context == 0 )
+	{
+		fprintf(stderr, "sparkpipe_k3: streamed prefill engine buffers did not fit (%u allocations, %llu bytes placed)\n", s->allocation_count,
+			(unsigned long long)s->engine_bytes);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
 	for (uint32_t index = 0u; index < s->allocation_count; index++)
 		if ( s->allocations[index] == 0 )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
