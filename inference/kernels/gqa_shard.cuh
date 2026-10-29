@@ -105,7 +105,9 @@ void LmGqaShardPartialKernel(
 	for (index = 0u; index < VALUES; ++index)
 		accumulator[index] = 0.0f;
 	count = SparkKvShardLocalKeys(cache.shard,limit);
-	for (local = window != 0u && limit > window ? SparkKvShardLocalKeys(cache.shard,limit - window) : 0u; local < count; ++local)
+	count = count < LmKvKeyWindowEnd(cache) ? count : LmKvKeyWindowEnd(cache);
+	for (local = window != 0u && limit > window ? SparkKvShardLocalKeys(cache.shard,limit - window) : 0u, local = local > LmKvKeyWindowBegin(cache) ? local : LmKvKeyWindowBegin(cache);
+		local < count; ++local)
 	{
 		position = SparkKvShardLocalPosition(cache.shard,local);
 		if ( block_mask != 0 && position / block_tokens < limit / block_tokens &&
@@ -302,7 +304,9 @@ void LmGqaShardTiledKernel(
 			if ( row_position != 0 && row_position[row[side]] != LM_KV_POSITION_UNUSED && row_position[row[side]] + 1u < limit[side] )
 				limit[side] = row_position[row[side]] + 1u;
 			count[side] = SparkKvShardLocalKeys(cache.shard,limit[side]);
+			count[side] = count[side] < LmKvKeyWindowEnd(cache) ? count[side] : LmKvKeyWindowEnd(cache);
 			begin[side] = window != 0u && limit[side] > window ? SparkKvShardLocalKeys(cache.shard,limit[side] - window) : 0u;
+			begin[side] = begin[side] > LmKvKeyWindowBegin(cache) ? begin[side] : LmKvKeyWindowBegin(cache);
 			if ( (lane & 3u) == 0u && begin[side] < count[side] )
 			{
 				atomicMin(&run[2],begin[side]);

@@ -233,7 +233,13 @@ static void MlSetup(MlNode *n,uint32_t node,uint32_t nodes,NodeEmulationWorld *w
 			x->older_context = MlDevice(std::vector<uint32_t>{pass * ML_PASS_ROWS});
 			x->older_send = MlAlloc<uint8_t>((uint64_t)ML_ROWS * K3GlobalKv::kSlotBytes);
 			x->older_receive = expanded;
-			x->older_capacity = (uint64_t)ML_ROWS * K3StreamedHeadKv<ML_HEADS,K3GlobalKv>::kSlotBytes;
+			x->older_capacity = stored > 1u ? (uint64_t)nodes * 5u * K3GlobalKv::kSlotBytes : (uint64_t)ML_ROWS * K3StreamedHeadKv<ML_HEADS,K3GlobalKv>::kSlotBytes;
+		}
+		if ( stored > 1u )
+		{
+			x->key_block = 48u;
+			x->expanded_keys = 48u;
+			x->running = MlAlloc<float>((uint64_t)ML_PASS_ROWS * LmGqaShardRecordFloats(ML_HEADS,K3_V_HEAD_DIM,1u));
 		}
 	}
 	ML_CUDA(cudaStreamCreate(&n->stream));
@@ -243,8 +249,8 @@ int main(void)
 {
 	std::vector<K3LayerWeights> shards(ML_SHARDS);
 	std::vector<uint32_t> table(ML_PAGES),positions(ML_ROWS);
-	static MlNode nodes[ML_NODES],stored[ML_NODES];
-	static NodeEmulationWorld ml_stored_world;
+	static MlNode nodes[ML_NODES],stored[ML_NODES],blocked[ML_NODES];
+	static NodeEmulationWorld ml_stored_world,ml_blocked_world;
 	uint16_t *hidden = MlBf16((uint64_t)ML_ROWS * K3_HIDDEN,1u,1.0f,0.0f),*partial_in = MlBf16((uint64_t)ML_ROWS * K3_HIDDEN,2u,1.0f,0.0f);
 	uint16_t *attn_norm = MlBf16(K3_HIDDEN,3u,0.1f,1.0f),*q_norm = MlBf16(K3_Q_LORA_RANK,4u,0.1f,1.0f),*kv_norm = MlBf16(K3_KV_LORA_RANK,5u,0.1f,1.0f);
 	uint16_t *q_down = MlBf16((uint64_t)K3_Q_LORA_RANK * K3_HIDDEN,6u,0.02f,0.0f),*kv_a = MlBf16((uint64_t)K3_MLA_KV_A_DIM * K3_HIDDEN,7u,0.02f,0.0f);
@@ -303,6 +309,9 @@ int main(void)
 	uint16_t *stored_gathered = MlAlloc<uint16_t>((uint64_t)ML_ROWS * K3_HIDDEN);
 	for (uint32_t node = 0u; node < ML_NODES; node++)
 		MlSetup(&stored[node],node,ML_NODES,&ml_stored_world,shards.data(),table_device,error_device,hidden,partial_in,stored_gathered,1u);
+	uint16_t *blocked_gathered = MlAlloc<uint16_t>((uint64_t)ML_ROWS * K3_HIDDEN);
+	for (uint32_t node = 0u; node < ML_NODES; node++)
+		MlSetup(&blocked[node],node,ML_NODES,&ml_blocked_world,shards.data(),table_device,error_device,hidden,partial_in,blocked_gathered,2u);
 	static MlNode single;
 	uint16_t *single_gathered = MlAlloc<uint16_t>((uint64_t)ML_ROWS * K3_HIDDEN);
 	MlSetup(&single,0u,1u,&ml_alone_world,shards.data(),table_device,error_device,hidden,partial_in,single_gathered,0u);
@@ -330,6 +339,16 @@ int main(void)
 	}
 	for (uint32_t node = 0u; node < ML_NODES; node++)
 		MlCheck(stored[node].status == LM_LAUNCH_OK,"every node runs both passes with keys in the decode store");
+	NodeEmulationStart(&ml_blocked_world,ML_NODES);
+	{
+		pthread_t threads[ML_NODES];
+		for (uint32_t node = 0u; node < ML_NODES; node++)
+			pthread_create(&threads[node],0,MlNodeThread,&blocked[node]);
+		for (uint32_t node = 0u; node < ML_NODES; node++)
+			pthread_join(threads[node],0);
+	}
+	for (uint32_t node = 0u; node < ML_NODES; node++)
+		MlCheck(blocked[node].status == LM_LAUNCH_OK,"every node runs both passes expanding keys in blocks of 48 and gathering older keys in chunks of 5");
 	{
 		std::vector<uint16_t> want((uint64_t)ML_ROWS * K3_HIDDEN),got(want.size()),before(want.size());
 		double worst = 0.0,squared = 0.0,error = 0.0;
@@ -367,13 +386,29 @@ int main(void)
 		ML_CUDA(cudaMemcpy(from_store.data(),stored_gathered,from_store.size() * 2u,cudaMemcpyDeviceToHost));
 		MlCheck(memcmp(from_store.data(),got.data(),got.size() * 2u) == 0,
 			"nodes that keep no keys between passes (older keys gathered back from the owners' decode store, every node's key buffer wiped) give bit-identical output");
+		std::vector<uint16_t> from_blocks(want.size());
+		double block_squared = 0.0,block_error = 0.0;
+		ML_CUDA(cudaMemcpy(from_blocks.data(),blocked_gathered,from_blocks.size() * 2u,cudaMemcpyDeviceToHost));
+		for (uint64_t index = 0u; index < got.size(); index++)
+		{
+			const double r = MlHostFloat(got[index]),c = MlHostFloat(from_blocks[index]),b = MlHostFloat(before[index]);
+			if ( isfinite(r) && isfinite(c) )
+			{
+				block_squared += (r - b) * (r - b);
+				block_error += (r - c) * (r - c);
+			}
+			else
+				nonfinite++;
+		}
+		const double block_rms = sqrt(block_error / (block_squared > 0.0 ? block_squared : 1.0));
+		MlCheck(block_rms <= 0.01,"expanding keys in blocks with the running softmax fold matches one expansion of all keys within 1% relative RMS of the attention contribution (probabilities enter the value product in bf16 against each block's own maximum)");
 		MlCheck(node_rms <= 0.002,"four nodes over two passes match the same MLA run as one node within 0.2% relative RMS of the attention contribution");
 		MlCheck(error_host.error_code == LM_FRAME_ERROR_NONE,"no KV access errors");
 		MlCheck(nonfinite == 0u,"every output element is finite");
 		MlCheck(squared > 0.0,"the MLA layer changes the residual");
 		MlCheck(rms <= 0.01,"four nodes over two passes, gathering latents and returning head-group values, match the one-device streamed MLA (sixteen bf16-rounded output partials) within 1% relative RMS of the attention contribution");
-		printf("%s MLA on %u nodes x %u passes vs one node: relative RMS %.3g; vs one-device streamed MLA: %.3g (worst %.4g), nonfinite %llu; keys from the decode store bit-identical\n",
-			ml_failures == 0 ? "PASS" : "FAIL",ML_NODES,ML_PASSES,node_rms,rms,worst,(unsigned long long)nonfinite);
+		printf("%s MLA on %u nodes x %u passes vs one node: relative RMS %.3g; vs one-device streamed MLA: %.3g (worst %.4g), nonfinite %llu; keys from the decode store bit-identical; key blocks %.3g\n",
+			ml_failures == 0 ? "PASS" : "FAIL",ML_NODES,ML_PASSES,node_rms,rms,worst,(unsigned long long)nonfinite,block_rms);
 	}
 	return ml_failures != 0;
 }

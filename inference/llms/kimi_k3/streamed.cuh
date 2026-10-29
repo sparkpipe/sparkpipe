@@ -502,20 +502,53 @@ struct K3StreamedMlaExchange
 	uint8_t *older_send;
 	uint8_t *older_receive;
 	uint64_t older_capacity;
+	uint32_t expanded_keys;
+	uint32_t key_block;
+	float *running;
 	K3StreamedCollective collective;
 	void *context;
 };
 
 template<uint32_t SLOT_BYTES>
-__global__ static void K3StreamedOlderKeysKernel(SparkKvShard shard, const uint8_t *gathered, uint32_t rows_per_rank, uint32_t keys, uint8_t *latent_keys)
+__global__ static void K3StreamedOlderKeysKernel(SparkKvShard shard, const uint8_t *gathered, uint32_t first_local, uint32_t rows_per_rank, uint32_t keys, uint8_t *latent_keys)
 {
 	static_assert(SLOT_BYTES % 16u == 0u, "a key moves as whole 16-byte words");
-	for (uint32_t position = blockIdx.x; position < keys; position += gridDim.x)
+	for (uint64_t slot = blockIdx.x; slot < (uint64_t)shard.degree * rows_per_rank; slot += gridDim.x)
 	{
-		const uint4 *source = (const uint4 *)(gathered + ((uint64_t)SparkKvShardOwner(shard,position) * rows_per_rank + SparkKvShardLocalIndex(shard,position)) * SLOT_BYTES);
-		uint4 *target = (uint4 *)(latent_keys + (uint64_t)position * SLOT_BYTES);
+		SparkKvShard owner = shard;
+		uint32_t position;
+		owner.rank = (uint32_t)(slot / rows_per_rank);
+		position = SparkKvShardLocalPosition(owner,first_local + (uint32_t)(slot % rows_per_rank));
+		if ( position >= keys )
+			continue;
 		for (uint32_t index = threadIdx.x; index < SLOT_BYTES / 16u; index += blockDim.x)
-			target[index] = source[index];
+			((uint4 *)(latent_keys + (uint64_t)position * SLOT_BYTES))[index] = ((const uint4 *)(gathered + slot * SLOT_BYTES))[index];
+	}
+}
+
+template<uint32_t VALUE_DIM>
+__global__ static void K3StreamedFoldRecordsKernel(float *running, const float *block, uint32_t heads, uint32_t rows, uint32_t first)
+{
+	const uint32_t width = heads * VALUE_DIM, record = LmGqaShardRecordFloats(heads,VALUE_DIM,1u);
+	float *r = running + (uint64_t)blockIdx.x * record;
+	const float *b = block + (uint64_t)blockIdx.x * record;
+	uint32_t index;
+	if ( blockIdx.x >= rows )
+		return;
+	for (index = threadIdx.x; index < width; index += blockDim.x)
+	{
+		const uint32_t head = index / VALUE_DIM;
+		const float old_max = first != 0u ? -INFINITY : r[width + 2u * head], new_max = b[width + 2u * head], top = fmaxf(old_max,new_max);
+		const float keep = old_max == -INFINITY ? 0.0f : __expf(old_max - top), take = new_max == -INFINITY ? 0.0f : __expf(new_max - top);
+		r[index] = (first != 0u ? 0.0f : r[index] * keep) + b[index] * take;
+	}
+	__syncthreads();
+	for (index = threadIdx.x; index < heads; index += blockDim.x)
+	{
+		const float old_max = first != 0u ? -INFINITY : r[width + 2u * index], new_max = b[width + 2u * index], top = fmaxf(old_max,new_max);
+		const float keep = old_max == -INFINITY ? 0.0f : __expf(old_max - top), take = new_max == -INFINITY ? 0.0f : __expf(new_max - top);
+		r[width + 2u * index + 1u] = (first != 0u ? 0.0f : r[width + 2u * index + 1u] * keep) + b[width + 2u * index + 1u] * take;
+		r[width + 2u * index] = top;
 	}
 }
 
@@ -523,7 +556,7 @@ template<class Geometry>
 static int32_t K3StreamedMlaKeys(const K3StreamedMlaExchange *x, cudaStream_t stream)
 {
 	const uint32_t degree = x->store.shard.degree;
-	uint32_t older_rows;
+	uint32_t older_rows, chunk_rows, first_local;
 	if ( degree == 0u )
 		return(LM_LAUNCH_OK);
 	if ( x->store_sequence_of_row == 0 )
@@ -534,14 +567,20 @@ static int32_t K3StreamedMlaKeys(const K3StreamedMlaExchange *x, cudaStream_t st
 	if ( x->first_key == 0u )
 		return(LM_LAUNCH_OK);
 	older_rows = SparkKvShardGatherKeys(x->store.shard,x->first_key);
-	if ( x->older_sequence == 0 || x->older_offset == 0 || x->older_context == 0 || x->older_send == 0 || x->older_receive == 0 ||
-		(uint64_t)degree * older_rows * Geometry::kSlotBytes > x->older_capacity )
+	chunk_rows = (uint32_t)(x->older_capacity / ((uint64_t)degree * Geometry::kSlotBytes));
+	chunk_rows = chunk_rows < older_rows ? chunk_rows : older_rows;
+	if ( x->older_sequence == 0 || x->older_offset == 0 || x->older_context == 0 || x->older_send == 0 || x->older_receive == 0 || chunk_rows == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
-	if ( LmKvShardGatherPackRangeLaunch<Geometry,K3_LAYER_THREADS>(x->store,x->older_sequence,x->older_offset,x->older_context,1u,0u,older_rows,x->older_send,stream) != cudaSuccess )
-		return(LM_LAUNCH_ERR_LAUNCH);
-	x->collective(x->context,(void *)(uintptr_t)stream,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,older_rows,Geometry::kSlotBytes / 2u,x->older_send,x->older_receive);
-	LM_LAUNCH((K3StreamedOlderKeysKernel<Geometry::kSlotBytes>), x->first_key < LM_KV_SHARD_UNPACK_BLOCKS ? x->first_key : LM_KV_SHARD_UNPACK_BLOCKS, K3_LAYER_THREADS, 0, stream,
-		x->store.shard,x->older_receive,older_rows,x->first_key,x->latent_keys);
+	for (first_local = 0u; first_local < older_rows; first_local += chunk_rows)
+	{
+		const uint32_t count = older_rows - first_local < chunk_rows ? older_rows - first_local : chunk_rows;
+		if ( LmKvShardGatherPackRangeLaunch<Geometry,K3_LAYER_THREADS>(x->store,x->older_sequence,x->older_offset,x->older_context,1u,first_local,first_local + count,
+				x->older_send - (uint64_t)first_local * Geometry::kSlotBytes,stream) != cudaSuccess )
+			return(LM_LAUNCH_ERR_LAUNCH);
+		x->collective(x->context,(void *)(uintptr_t)stream,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,count,Geometry::kSlotBytes / 2u,x->older_send,x->older_receive);
+		LM_LAUNCH((K3StreamedOlderKeysKernel<Geometry::kSlotBytes>), LM_KV_SHARD_UNPACK_BLOCKS, K3_LAYER_THREADS, 0, stream,
+			x->store.shard,x->older_receive,first_local,count,x->first_key,x->latent_keys);
+	}
 	return(LM_LAUNCH_OK);
 }
 
@@ -556,7 +595,7 @@ static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 	const uint32_t *const own_row_offset = b->dense_row_offset;
 	uint32_t *const own_tile_prefix = b->dense_tile_prefix;
 	LmKvShardGatherView view;
-	uint64_t stride, key_count;
+	uint64_t stride, key_count, key_first, block, blocks;
 	uint32_t shard, groups;
 	int32_t status;
 	if ( shards == 0 || x == 0 || x->collective == 0 || x->nodes == 0u || x->node >= x->nodes || shard_count * HEADS != K3_MLA_HEADS || shard_count % x->nodes != 0u ||
@@ -569,7 +608,9 @@ static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 	groups = shard_count / x->nodes;
 	key_count = (uint64_t)x->first_key + x->pass_rows;
 	stride = (uint64_t)x->pass_rows * LmGqaShardRecordFloats(HEADS,K3_V_HEAD_DIM,1u);
-	if ( key_count > x->key_capacity )
+	block = x->key_block != 0u && x->key_block < key_count ? x->key_block : key_count;
+	blocks = (key_count + block - 1u) / block;
+	if ( key_count > x->key_capacity || (x->expanded_keys != 0u && block > x->expanded_keys) || (blocks > 1u && x->running == 0) )
 		return(LM_LAUNCH_ERR_SHAPE);
 	K3BindLayer(&shards[0],b);
 	status = K3LayerMlaDown<Format>(b,rows,multiprocessors,stream);
@@ -595,18 +636,29 @@ static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 		status = K3Project<LmBf16Format>(b,x->q_latents,b->mla_q_b_weight,0,x->query,x->pass_rows,K3_Q_LORA_RANK,HEADS * K3_MHA_QK,multiprocessors,stream);
 		if ( status != LM_LAUNCH_OK )
 			break;
-		if ( LmLatentExpandPitchedLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_QK_NOPE_DIM>(x->latent_keys,(uint32_t)key_count,
-				(const uint16_t *)shards[x->node].mla_kv_b_key_full_weight + key_rows * K3_KV_LORA_RANK,HEADS,x->expanded,key_pitch,K3_MHA_QK,stream) != cudaSuccess ||
-			LmLatentRopeBroadcastLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM>(x->latent_keys,(uint32_t)key_count,HEADS,x->expanded,key_pitch,K3_MHA_QK,K3_QK_NOPE_DIM,stream) != cudaSuccess ||
-			LmLatentExpandPitchedLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_V_HEAD_DIM>(x->latent_keys,(uint32_t)key_count,
-				(const uint16_t *)shards[x->node].mla_kv_b_value_full_weight + value_rows * K3_KV_LORA_RANK,HEADS,x->expanded + (uint64_t)HEADS * K3_MHA_QK * 2u,
-				key_pitch,K3_V_HEAD_DIM,stream) != cudaSuccess )
-			status = LM_LAUNCH_ERR_LAUNCH;
-		else if ( LmKvShardGatherViewInitialize<Expanded>(&view,b->cache_shard.pages,b->kv_shard,x->expanded,x->key_offset,x->key_context) != 0 )
-			status = LM_LAUNCH_ERR_SHAPE;
-		else if ( LmGqaShardPartialLaunch<Expanded,LmKvShardGatherView,HEADS,K3_MHA_QK,K3_V_HEAD_DIM>(view,x->query,HEADS,x->pass_sequence_of_row,
-				x->key_context,x->pass_positions,K3_MLA_QK_SCALE,x->partials,stride,x->pass_rows,stream) != cudaSuccess ||
-			LmGqaShardMergeLaunch<K3_V_HEAD_DIM>(x->partials,stride,1u,HEADS,0u,x->merged,x->pass_rows,stream) != cudaSuccess ||
+		for (key_first = 0u; key_first < key_count && status == LM_LAUNCH_OK; key_first += block)
+		{
+			const uint32_t keys = (uint32_t)(key_count - key_first < block ? key_count - key_first : block);
+			const uint8_t *latent = x->latent_keys + key_first * Geometry::kSlotBytes;
+			if ( LmLatentExpandPitchedLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_QK_NOPE_DIM>(latent,keys,
+					(const uint16_t *)shards[x->node].mla_kv_b_key_full_weight + key_rows * K3_KV_LORA_RANK,HEADS,x->expanded,key_pitch,K3_MHA_QK,stream) != cudaSuccess ||
+				LmLatentRopeBroadcastLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM>(latent,keys,HEADS,x->expanded,key_pitch,K3_MHA_QK,K3_QK_NOPE_DIM,stream) != cudaSuccess ||
+				LmLatentExpandPitchedLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_V_HEAD_DIM>(latent,keys,
+					(const uint16_t *)shards[x->node].mla_kv_b_value_full_weight + value_rows * K3_KV_LORA_RANK,HEADS,x->expanded + (uint64_t)HEADS * K3_MHA_QK * 2u,
+					key_pitch,K3_V_HEAD_DIM,stream) != cudaSuccess )
+				status = LM_LAUNCH_ERR_LAUNCH;
+			else if ( LmKvShardGatherViewInitialize<Expanded>(&view,b->cache_shard.pages,b->kv_shard,x->expanded,x->key_offset,x->key_context) != 0 ||
+				LmKvShardGatherViewWindow(&view,(uint32_t)key_first,(uint32_t)key_first + keys) != 0 )
+				status = LM_LAUNCH_ERR_SHAPE;
+			else if ( LmGqaShardPartialLaunch<Expanded,LmKvShardGatherView,HEADS,K3_MHA_QK,K3_V_HEAD_DIM>(view,x->query,HEADS,x->pass_sequence_of_row,
+					x->key_context,x->pass_positions,K3_MLA_QK_SCALE,x->partials,stride,x->pass_rows,stream) != cudaSuccess )
+				status = LM_LAUNCH_ERR_LAUNCH;
+			else if ( blocks > 1u )
+				LM_LAUNCH((K3StreamedFoldRecordsKernel<K3_V_HEAD_DIM>), x->pass_rows, 256u, 0, stream, x->running,x->partials,HEADS,x->pass_rows,key_first == 0u ? 1u : 0u);
+		}
+		if ( status != LM_LAUNCH_OK )
+			break;
+		if ( LmGqaShardMergeLaunch<K3_V_HEAD_DIM>(blocks > 1u ? x->running : x->partials,stride,1u,HEADS,0u,x->merged,x->pass_rows,stream) != cudaSuccess ||
 			cudaMemcpy2DAsync(x->value_send + (uint64_t)(shard / x->nodes) * rows * value_elements,(size_t)groups * rows * value_elements * sizeof(uint16_t),x->merged,
 				(size_t)rows * value_elements * sizeof(uint16_t),(size_t)rows * value_elements * sizeof(uint16_t),x->nodes,cudaMemcpyDeviceToDevice,stream) != cudaSuccess )
 			status = LM_LAUNCH_ERR_LAUNCH;

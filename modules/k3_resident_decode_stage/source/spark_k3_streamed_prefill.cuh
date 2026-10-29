@@ -27,6 +27,7 @@
 #define K3_STREAMED_STREAM_DEPTH 32u
 #define K3_STREAMED_MAX_ALLOCATIONS 64u
 #define K3_STREAMED_GATHER_BYTES 4096u
+#define K3_STREAMED_KEY_BLOCK 262144u
 
 typedef struct K3StreamedRoundContext
 {
@@ -347,6 +348,7 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 	s->mla.q_latents = K3StreamedAlloc<uint16_t>(s, pass * K3_Q_LORA_RANK);
 	s->mla.query = K3StreamedAlloc<uint16_t>(s, pass * K3_STREAMED_HEADS * K3_MHA_QK);
 	s->mla.partials = K3StreamedAlloc<float>(s, pass * LmGqaShardRecordFloats(K3_STREAMED_HEADS, K3_V_HEAD_DIM, 1u));
+	s->mla.running = K3StreamedAlloc<float>(s, pass * LmGqaShardRecordFloats(K3_STREAMED_HEADS, K3_V_HEAD_DIM, 1u));
 	s->mla.merged = K3StreamedAlloc<uint16_t>(s, pass * K3_STREAMED_HEADS * K3_V_HEAD_DIM);
 	s->mla.value_send = K3StreamedAlloc<uint16_t>(s, pass * K3_STREAMED_HEADS * K3_V_HEAD_DIM);
 	s->mla.values = K3StreamedAlloc<uint16_t>(s, pass * K3_STREAMED_HEADS * K3_V_HEAD_DIM);
@@ -536,7 +538,8 @@ static SparkStatus K3StreamedOpen(K3Streamed *s, const SparkStageRunnerServices 
 static SparkStatus K3StreamedKeys(K3Streamed *s, uint64_t keys)
 {
 	const uint64_t older = (uint64_t)SparkKvShardGatherKeys(s->dispatch->buffers_host->kv_shard, (uint32_t)keys) * K3GlobalKv::kSlotBytes;
-	const uint64_t latent = keys * K3GlobalKv::kSlotBytes, expanded = keys * K3StreamedHeadKv<K3_STREAMED_HEADS,K3GlobalKv>::kSlotBytes;
+	const uint64_t block = keys < K3_STREAMED_KEY_BLOCK ? keys : K3_STREAMED_KEY_BLOCK;
+	const uint64_t latent = keys * K3GlobalKv::kSlotBytes, expanded = block * K3StreamedHeadKv<K3_STREAMED_HEADS,K3GlobalKv>::kSlotBytes;
 	if ( keys <= s->key_capacity )
 		return SPARK_STATUS_OK;
 	cudaFree(s->mla_keys);
@@ -554,6 +557,8 @@ static SparkStatus K3StreamedKeys(K3Streamed *s, uint64_t keys)
 	s->mla.older_send = s->mla.expanded + ((expanded + 255u) & ~(uint64_t)255u);
 	s->mla.older_receive = s->mla.expanded;
 	s->mla.older_capacity = expanded;
+	s->mla.expanded_keys = (uint32_t)block;
+	s->mla.key_block = K3_STREAMED_KEY_BLOCK;
 	s->mla.key_capacity = (uint32_t)keys;
 	s->key_capacity = keys;
 	return SPARK_STATUS_OK;
