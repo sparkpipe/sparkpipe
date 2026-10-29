@@ -377,7 +377,7 @@ void D41RmsNormQdqKernel(const uint16_t *input, const uint16_t *__restrict__ str
 		total += value * value;
 	}
 	total = LmBlockSum<THREADS>(total, reduction);
-	scale = rsqrtf((total / (float)dimension) + epsilon);
+	scale = SparkMathRmsScale(total, (float)dimension, epsilon);
 	for ( index = begin + threadIdx.x; index < begin + span; index += THREADS )
 	{
 		const uint16_t normed = LmFloatToBf16(row[index] * scale * LmScalarToFloat(weight[index]));
@@ -415,7 +415,7 @@ void D41KvNormRopeQdqKernel(const uint16_t *__restrict__ input, const uint16_t *
 		total += value * value;
 	}
 	total = LmBlockSum<THREADS>(total, reduction);
-	scale = rsqrtf((total / (float)dimension) + epsilon);
+	scale = SparkMathRmsScale(total, (float)dimension, epsilon);
 	for ( index = threadIdx.x; index < dimension; index += THREADS )
 	{
 		uint16_t value = LmFloatToBf16(row[index] * scale * LmScalarToFloat(weight[index]));

@@ -37,7 +37,7 @@ void LmGroupRmsNormKernel(const uint16_t *__restrict__ input_bf16, const float *
 			if ( threadIdx.x + slot * THREADS < dimension )
 				total += staged_input[slot] * staged_input[slot];
 		total = LmBlockSum<THREADS>(total, reduction);
-		const float scale = rsqrtf(total / (float)dimension + epsilon);
+		const float scale = SparkMathRmsScale(total, (float)dimension, epsilon);
 #pragma unroll
 		for ( uint32_t slot = 0u; slot < LM_RMS_NORM_STAGED; ++slot )
 			if ( threadIdx.x + slot * THREADS < dimension )
@@ -50,7 +50,7 @@ void LmGroupRmsNormKernel(const uint16_t *__restrict__ input_bf16, const float *
 		total += value * value;
 	}
 	total = LmBlockSum<THREADS>(total, reduction);
-	const float scale = rsqrtf(total / (float)dimension + epsilon);
+	const float scale = SparkMathRmsScale(total, (float)dimension, epsilon);
 	for ( uint32_t index = threadIdx.x; index < dimension; index += THREADS )
 		output_bf16[base + index] = LmFloatToBf16(LmBf16ToFloat(input_bf16[base + index]) * scale * group_weight[index]);
 }

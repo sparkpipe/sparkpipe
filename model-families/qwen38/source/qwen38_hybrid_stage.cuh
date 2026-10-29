@@ -336,7 +336,7 @@ __global__ static void QwenIndexBlockKeysKernel(const uint16_t *raw, const uint1
 		sum += LmBf16ToFloat(at >= first ? raw[(uint64_t)lane_rows[ordinal - (position - at)] * D + d] : carried[(uint64_t)(at - tail_base) * D + d]);
 	}
 	const float pooled = LmBf16ToFloat(LmFloatToBf16(sum / (float)R));
-	const float scale = rsqrtf(LmBlockSum<D>(pooled * pooled, reduction) / (float)D + QH_EPSILON);
+	const float scale = SparkMathRmsScale(LmBlockSum<D>(pooled * pooled, reduction), (float)D, QH_EPSILON);
 	normed[d] = LmBf16ToFloat(LmFloatToBf16(pooled * scale * norm[d]));
 	__syncthreads();
 	float out = normed[d];

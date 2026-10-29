@@ -608,7 +608,7 @@ static __device__ void Glm5NextHcFinish(Glm5NextHcShared *shared, const float *s
 	__syncthreads();
 	if ( threadIdx.x < LM_WARP_LANES )
 	{
-		const float inverse = rsqrtf(shared->mixes[G5N_HC_MIX] / (float)G5N_HC_FLAT + G5N_EPS);
+		const float inverse = SparkMathRmsScale(shared->mixes[G5N_HC_MIX], (float)G5N_HC_FLAT, G5N_EPS);
 		if ( threadIdx.x < G5N_HC_MIX )
 		{
 			const float value = shared->mixes[threadIdx.x] * inverse;

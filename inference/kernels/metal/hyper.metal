@@ -26,7 +26,7 @@ kernel void spark_group_rmsnorm(constant SparkHyperParams &p [[buffer(0)]], devi
 		total += value * value;
 	}
 	total = SparkGroupSum(total, scratch, lane, simd, simds);
-	const float scale = rsqrt(total / float(p.width) + p.epsilon);
+	const float scale = SparkMathRmsScale(total, float(p.width), p.epsilon);
 	for ( uint i = tid; i < p.width; i += group_size.x )
 		output[base + i] = SparkMathFloatToBf16(SparkMathBf16ToFloat(input[base + i]) * scale * gain[i]);
 }

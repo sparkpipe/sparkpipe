@@ -16,6 +16,7 @@ typedef uchar SparkMathU8;
 #define SPARK_MATH_TANH(x) metal::tanh(x)
 #define SPARK_MATH_LDEXP(x, e) metal::ldexp(x, e)
 #define SPARK_MATH_SQRT(x) metal::sqrt(x)
+#define SPARK_MATH_RSQRT(x) metal::rsqrt(x)
 #define SPARK_MATH_FABS(x) metal::fabs(x)
 #define SPARK_MATH_FMAX(a, b) metal::fmax(a, b)
 #elif defined(__CUDACC__) || defined(LM_HOST_CUDA_PRELUDE)
@@ -36,6 +37,7 @@ typedef uint8_t SparkMathU8;
 #define SPARK_MATH_TANH(x) tanhf(x)
 #define SPARK_MATH_LDEXP(x, e) ldexpf(x, e)
 #define SPARK_MATH_SQRT(x) sqrtf(x)
+#define SPARK_MATH_RSQRT(x) rsqrtf(x)
 #define SPARK_MATH_FABS(x) fabsf(x)
 #define SPARK_MATH_FMAX(a, b) fmaxf(a, b)
 #else
@@ -60,6 +62,11 @@ SPARK_MATH_FN SparkMathU16 SparkMathFloatToBf16(float value)
 SPARK_MATH_FN float SparkMathRoundBf16(float value)
 {
 	return(SparkMathBf16ToFloat(SparkMathFloatToBf16(value)));
+}
+
+SPARK_MATH_FN float SparkMathRmsScale(float total, float count, float epsilon)
+{
+	return(SPARK_MATH_RSQRT(total / count + epsilon));
 }
 
 SPARK_MATH_FN float SparkMathScaledSigmoid(float scale, float value)

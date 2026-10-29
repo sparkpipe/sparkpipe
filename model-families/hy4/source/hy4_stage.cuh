@@ -182,7 +182,7 @@ template<uint32_t STREAMS, uint32_t MIXES>
 static __device__ __forceinline__ void HyHcWeights(const float *total, uint32_t flat, const float *base, const float *scale, float norm_epsilon,
 	float hc_epsilon, float post_magnitude, float *weights, float *post)
 {
-	const float inverse = rsqrtf(total[MIXES] / (float)flat + norm_epsilon);
+	const float inverse = SparkMathRmsScale(total[MIXES], (float)flat, norm_epsilon);
 	for ( uint32_t s = 0u; s < STREAMS; ++s )
 	{
 		weights[s] = SparkMathSigmoid(total[s] * inverse * scale[0] + base[s]) + hc_epsilon;
@@ -358,7 +358,7 @@ void HyRmsNormKernel(const uint16_t *input, const uint16_t *weight, uint16_t *ou
 	for ( uint32_t step = 0u; step < PER_THREAD; ++step )
 		if ( threadIdx.x + step * THREADS < WIDTH )
 			total += values[step] * values[step];
-	const float inverse = rsqrtf(LmBlockSum<THREADS>(total, reduction) / (float)WIDTH + epsilon);
+	const float inverse = SparkMathRmsScale(LmBlockSum<THREADS>(total, reduction), (float)WIDTH, epsilon);
 #pragma unroll
 	for ( uint32_t step = 0u; step < PER_THREAD; ++step )
 	{
@@ -383,7 +383,7 @@ void HyLayerNormKernel(uint16_t *rows, const float *weight, const float *bias, u
 		const float centred = LmBf16ToFloat(row[index]) - mean;
 		squares += centred * centred;
 	}
-	const float inverse = rsqrtf(LmBlockSum<THREADS>(squares, reduction) / (float)width + epsilon);
+	const float inverse = SparkMathRmsScale(LmBlockSum<THREADS>(squares, reduction), (float)width, epsilon);
 	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
 		row[index] = LmFloatToBf16((LmBf16ToFloat(row[index]) - mean) * inverse * weight[index] + bias[index]);
 }

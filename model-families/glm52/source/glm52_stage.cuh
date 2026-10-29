@@ -381,7 +381,7 @@ static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmProjectionNormKernel
 		total += value * value;
 	}
 	total = LmBlockSum<GLM_THREADS>(total, reduction);
-	scale = rsqrtf((total / (float)S::kQueryA) + epsilon);
+	scale = SparkMathRmsScale(total, (float)S::kQueryA, epsilon);
 	for ( index = threadIdx.x; index < S::kQueryA; index += GLM_THREADS )
 		query_row[index] = LmFloatToBf16(query[index] * scale * LmScalarToFloat(query_norm[index]));
 	if constexpr ( S::kQueryConcat )
@@ -400,7 +400,7 @@ static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmProjectionNormKernel
 			total += value * value;
 	}
 	total = LmBlockSum<GLM_THREADS>(total, reduction);
-	scale = rsqrtf((total / (float)S::kLatent) + epsilon);
+	scale = SparkMathRmsScale(total, (float)S::kLatent, epsilon);
 	for ( index = threadIdx.x; index < S::kSlot; index += GLM_THREADS )
 		slot_out[(uint64_t)row * S::kSlot + index] = index < S::kLatent ? LmFloatToBf16(latent[index] * scale * LmScalarToFloat(latent_norm[index])) :
 			LmFloatToBf16(latent[index]);

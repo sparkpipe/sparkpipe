@@ -207,7 +207,7 @@ void GemmaPostNormAddKernel(uint16_t *residual, const uint16_t *partial, const f
 		const float value = LmBf16ToFloat(source[index]);
 		total += value * value;
 	}
-	const float scale = rsqrtf(LmBlockSum<THREADS>(total, reduction) / (float)width + epsilon);
+	const float scale = SparkMathRmsScale(LmBlockSum<THREADS>(total, reduction), (float)width, epsilon);
 	const float multiplier = scalar != 0 ? scalar[0] : 1.0f;
 	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
 	{
@@ -243,7 +243,7 @@ void GemmaRouterInputKernel(const uint16_t *residual, const float *scale, uint16
 		const float value = LmBf16ToFloat(residual[base + index]);
 		total += value * value;
 	}
-	const float inverse = rsqrtf(LmBlockSum<THREADS>(total, reduction) / (float)width + epsilon);
+	const float inverse = SparkMathRmsScale(LmBlockSum<THREADS>(total, reduction), (float)width, epsilon);
 	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
 	{
 		const float normed = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(residual[base + index]) * inverse));
@@ -273,8 +273,8 @@ void GemmaMoeCombineKernel(uint16_t *residual, const uint16_t *dense, const uint
 		dense_total += d * d;
 		moe_total += m * m;
 	}
-	const float dense_scale = rsqrtf(LmBlockSum<THREADS>(dense_total, reduction) / (float)width + epsilon);
-	const float moe_scale = rsqrtf(LmBlockSum<THREADS>(moe_total, reduction) / (float)width + epsilon);
+	const float dense_scale = SparkMathRmsScale(LmBlockSum<THREADS>(dense_total, reduction), (float)width, epsilon);
+	const float moe_scale = SparkMathRmsScale(LmBlockSum<THREADS>(moe_total, reduction), (float)width, epsilon);
 	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
 	{
 		const float d = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(dense[base + index]) * dense_scale * dense_norm[index]));
@@ -283,7 +283,7 @@ void GemmaMoeCombineKernel(uint16_t *residual, const uint16_t *dense, const uint
 		gemma_combined[index] = combined;
 		total += combined * combined;
 	}
-	const float scale = rsqrtf(LmBlockSum<THREADS>(total, reduction) / (float)width + epsilon);
+	const float scale = SparkMathRmsScale(LmBlockSum<THREADS>(total, reduction), (float)width, epsilon);
 	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
 	{
 		const float normed = LmBf16ToFloat(LmFloatToBf16(gemma_combined[index] * scale * post_norm[index]));
