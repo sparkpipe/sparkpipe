@@ -144,6 +144,7 @@ typedef struct SparkDeviceExpertsScratch
 	SparkTensor gate_up;
 	SparkTensor act;
 	SparkTensor out;
+	SparkTensor sorted;
 } SparkDeviceExpertsScratch;
 
 typedef struct SparkDeviceFfnScratch

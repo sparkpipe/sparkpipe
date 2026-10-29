@@ -1286,6 +1286,15 @@ Metal backend and the single-Studio stage are in
 - The kernel library builds with Metal 4.0 and its prefill GEMM uses the
   Metal 4 tensor operations, so it loads only on Apple family 10 GPUs (M5).
   Another Studio generation needs its own qualified kernel set.
+- Routed FP4 experts (MXFP4 in MiMo V2.6 Flash, NVFP4 in Qwen 3.8 Flash)
+  still take one GEMV per route in prefill, re-reading the expert for every
+  row: MiMo prefills at about 50 tokens per second, and its gate's B64 ladder
+  spends most of an hour in batched prefill. BF16 experts group their routes
+  by expert above 64 rows (`ExpertsGroupedFfn`); the FP4 formats need a
+  grouped GEMM with the block-scaled operand (CUDA dequantizes the tile to
+  BF16 before the MMA). The grouping also reads the step's routes back to the
+  host after a queue wait; a device-side sort and a grouped GEMM over an
+  offset table would drop that sync.
 - Four models have device stages: Qwen3.8-27B (BF16 and FP8), Gemma 4 26B
   A4B, Gemma 4 31B and Muse Glimmer 30B. Each is its family's Metal backend placed on the
   model's TP1 geometry (`model-families/<family>/device/`, over the device

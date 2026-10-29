@@ -146,7 +146,7 @@ struct GemmaDevice
 		const uint64_t query = Max(SparkDeviceAttentionQueryWidth(&state->sliding), SparkDeviceAttentionQueryWidth(&state->full));
 		const uint64_t kv = Max(SparkDeviceAttentionKvWidth(&state->sliding), SparkDeviceAttentionKvWidth(&state->full));
 		SparkTensor *experts[] = { &state->experts.routed, &state->experts.logits, &state->experts.experts, &state->experts.weights,
-			&state->experts.normed, &state->experts.gate_up, &state->experts.act, &state->experts.out };
+			&state->experts.normed, &state->experts.gate_up, &state->experts.act, &state->experts.out, &state->experts.sorted };
 		const SparkDeviceStageSlice plan[] =
 		{
 			{ rows * hidden * 2u, &state->normed },

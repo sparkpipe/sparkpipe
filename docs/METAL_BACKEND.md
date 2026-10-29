@@ -270,7 +270,6 @@ allocation takes a device address of its own outside the GPU's range, used
 only to resolve tensors. The host and CUDA backends keep one mapping, which
 already covers every range.
 
-
 ## Device stage models
 
 A device model is a shape, a tensor list and a layer schedule over two
@@ -433,7 +432,22 @@ times one projection.
 
 The split-K partials live in a 64 MiB buffer the ops instance owns; the first
 queue that runs a split projection owns it, and a split projection on another
-queue is refused.
+queue is refused. Each rank of a TP group has its own ops lane, so its own
+partials.
+
+Routed BF16 experts take the same split. Up to 64 rows (decode and verify
+frames, and every row-exact step) each route is one GEMV over its expert, so
+a row's result does not depend on the rows around it. A larger step groups
+its routes by expert, CUDA's prefill shape (`LmLocalExpertsUp` /
+`LmLocalExpertsDown`): the stage reads the step's routes back after one
+queue wait, sorts them by local expert, gathers each expert's rows, runs one
+projection per expert for gate, up and down (the row tiles or the GEMM by its
+row count), folds the route weights in the sorted order and scatters the
+outputs back into route order, skipped routes of other ranks taking a zero
+row. A route's GEMV re-reads its expert's weights for every row, so before
+the grouping MiMo V2.6 Flash prefilled at about 50 tokens per second; grouped,
+each expert is read once per step. The FP4 experts (MiMo, Qwen 3.8 Flash)
+still take the per-route GEMV.
 
 ## Speculation
 

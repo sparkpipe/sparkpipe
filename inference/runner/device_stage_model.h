@@ -100,6 +100,7 @@ typedef struct SparkDeviceStage
 	uint32_t step_exact;
 	uint32_t verify_rows;
 	SparkDeviceBuffer keep_tables;
+	SparkDeviceBuffer route_tables;
 	uint64_t routed_bytes;
 	uint64_t routed_bytes_per_token;
 	SparkDeviceStageKvRead kv_reads[SPARK_DEVICE_STAGE_KV_WINDOWS];

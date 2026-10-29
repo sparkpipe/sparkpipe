@@ -530,6 +530,8 @@ void SparkDeviceStageClose(void *model)
 		(void)SparkDeviceFree(&stage->scratch_buffer);
 	if ( stage->keep_tables.handle != 0u )
 		(void)SparkDeviceFree(&stage->keep_tables);
+	if ( stage->route_tables.handle != 0u )
+		(void)SparkDeviceFree(&stage->route_tables);
 	for ( pool = 0u; pool < stage->recurrent_pool_count; pool++ )
 		if ( stage->recurrent_pools[pool].buffer.handle != 0u )
 			(void)SparkDeviceFree(&stage->recurrent_pools[pool].buffer);
