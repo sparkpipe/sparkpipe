@@ -434,6 +434,12 @@ SparkOpsPaged SparkDeviceStagePaged(const SparkDeviceStage *stage, const SparkDe
 	return(paged);
 }
 
+void SparkDeviceStageNoteRouted(SparkDeviceStage *stage, uint64_t bytes, uint32_t experts, uint32_t top_k)
+{
+	stage->routed_bytes += bytes;
+	stage->routed_bytes_per_token += bytes / experts * top_k / stage->tp_degree;
+}
+
 void SparkDeviceStageLayerDone(const SparkDeviceStage *stage, uint32_t layer)
 {
 	if ( stage->services != 0 && stage->services->layer_done != 0 )

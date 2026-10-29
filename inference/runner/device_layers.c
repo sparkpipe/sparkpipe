@@ -431,10 +431,7 @@ static SparkStatus ExpertsLocalBind(SparkDeviceStage *stage, const SparkStageRun
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceStageLayerTensor(stage,weights,layer,"moe_w2","bf16",expert_bytes,&bound->down);
 	if ( status == SPARK_STATUS_OK )
-	{
-		stage->routed_bytes += 3u * expert_bytes;
-		stage->routed_bytes_per_token += 3u * expert_bytes / local * shape->top_k / stage->tp_degree;
-	}
+		SparkDeviceStageNoteRouted(stage,3u * expert_bytes,local,shape->top_k);
 	return(status);
 }
 

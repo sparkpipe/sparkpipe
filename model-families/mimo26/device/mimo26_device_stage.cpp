@@ -171,6 +171,8 @@ struct MimoDevice
 		snprintf(scale_name, sizeof(scale_name), "%s.scale", name);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, scale_name, "e8m0", G::kExperts * rows * (columns / SPARK_MXFP4_GROUP), scale);
+		if ( status == SPARK_STATUS_OK )
+			SparkDeviceStageNoteRouted(&state->stage, values->bytes + scale->bytes, G::kExperts, G::kTopK);
 		return status;
 	}
 

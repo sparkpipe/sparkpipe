@@ -318,6 +318,7 @@ struct QwenDevice
 		{
 			bound->global = SparkTensorSlice(scale, 0u, experts * sizeof(float));
 			bound->scale = SparkTensorSlice(scale, experts * sizeof(float), plane);
+			SparkDeviceStageNoteRouted(&state->stage, bound->values.bytes + scale.bytes, G::kExperts, G::kTopK);
 		}
 		return status;
 	}

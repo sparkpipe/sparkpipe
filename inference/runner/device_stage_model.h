@@ -160,6 +160,7 @@ SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStage
 SparkStatus SparkDeviceStageKeepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, const uint32_t *kept, SparkDeviceKeepTensors *keep);
 SparkOpsPaged SparkDeviceStagePaged(const SparkDeviceStage *stage, const SparkDeviceStepTensors *tensors, uint32_t kv_layer);
 void SparkDeviceStageLayerDone(const SparkDeviceStage *stage, uint32_t layer);
+void SparkDeviceStageNoteRouted(SparkDeviceStage *stage, uint64_t bytes, uint32_t experts, uint32_t top_k);
 SparkStatus SparkDeviceStageAllReduce(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor rows, uint32_t count);
 SparkStatus SparkDeviceStageGatherRows(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor local, SparkTensor gathered, SparkTensor rows,
 	uint32_t count, uint32_t width);
