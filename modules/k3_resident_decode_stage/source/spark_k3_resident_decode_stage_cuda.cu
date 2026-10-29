@@ -46,52 +46,7 @@ extern "C" int32_t K3StageSlicePair(const void *layer_weights, const void *slice
 	void *buffers_a, void *buffers_b, uint32_t first_layer, uint32_t layer_count, uint32_t rows_a,
 	uint32_t rows_b, uint32_t commit, uint32_t multiprocessors, void *stream);
 
-#define WF(field, name) { offsetof(K3LayerWeights, field), name }
-static const struct SparkK3WeightBind
-{
-	size_t offset;
-	const char *name;
-} k3_weight_binds[] =
-{
-	WF(attn_norm_weight, "attn_norm_weight"),
-	WF(mlp_norm_weight, "mlp_norm_weight"),
-	WF(kda_qkv_beta_weight, "kda_qkv_beta_weight"),
-	WF(kda_decay_down_weight, "kda_decay_down_weight"),
-	WF(kda_q_conv_weight, "kda_q_conv_weight"),
-	WF(kda_k_conv_weight, "kda_k_conv_weight"),
-	WF(kda_v_conv_weight, "kda_v_conv_weight"),
-	WF(kda_decay_up_weight, "kda_decay_up_weight"),
-	WF(kda_decay_bias, "kda_decay_bias"),
-	WF(kda_head_log_scale, "kda_head_log_scale"),
-	WF(kda_gate_weight, "kda_gate_weight"),
-	WF(kda_out_norm_weight, "kda_out_norm_weight"),
-	WF(kda_out_weight, "kda_out_weight"),
-	WF(mla_q_down_weight, "mla_q_down_weight"),
-	WF(mla_q_norm_weight, "mla_q_norm_weight"),
-	WF(mla_q_up_weight, "mla_q_up_weight"),
-	WF(mla_kv_a_weight, "mla_kv_a_weight"),
-	WF(mla_kv_a_norm_weight, "mla_kv_a_norm_weight"),
-	WF(mla_kv_b_value_weight, "mla_kv_b_value_weight"),
-	WF(mla_q_b_weight, "mla_q_b_weight"),
-	WF(mla_kv_b_key_full_weight, "mla_kv_b_key_full_weight"),
-	WF(mla_kv_b_value_full_weight, "mla_kv_b_value_full_weight"),
-	WF(mla_gate_weight, "mla_gate_weight"),
-	WF(mla_out_weight, "mla_out_weight"),
-	WF(router_weight, "router_weight"),
-	WF(router_bias, "router_bias"),
-	WF(routed_down_weight, "routed_down_weight"),
-	WF(routed_up_weight, "routed_up_weight"),
-	WF(routed_norm_weight, "routed_norm_weight"),
-	WF(expert_w1_weight, "expert_w1_weight"),
-	WF(expert_w2_weight, "expert_w2_weight"),
-	WF(shared_w1_weight, "shared_w1_weight"),
-	WF(shared_w2_weight, "shared_w2_weight"),
-	WF(dense_gate_up_weight, "dense_gate_up_weight"),
-	WF(dense_down_weight, "dense_down_weight"),
-	WF(attnres_attn_weight, "attnres_attn_weight"),
-	WF(attnres_mlp_weight, "attnres_mlp_weight"),
-};
-#undef WF
+#include "spark_k3_weight_binds.cuh"
 
 static const char *const k3_required_every[] =
 {

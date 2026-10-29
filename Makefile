@@ -566,6 +566,7 @@ PYTHON_TESTS := \
 	tests/test_k3_streamed_kda_segments_cuda.py \
 	tests/test_k3_streamed_kda_nodes_cuda.py \
 	tests/test_k3_streamed_mla_nodes_cuda.py \
+	tests/test_k3_shard_weights_cuda.py \
 	tests/test_weight_stream_loopback.py \
 	tests/test_pack_window_loopback.py \
 	tests/test_index_shard_cuda.py \
