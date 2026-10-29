@@ -53,6 +53,9 @@ typedef struct SparkStageServingState
 	uint64_t state_memory_bytes;
 	char *device_backend_path;
 	char *device_local_host;
+	char *streamed_partner_pack;
+	char *streamed_fabric_device;
+	char *streamed_pair_device;
 	uint32_t max_rows;
 	uint32_t max_shared_rows;
 	SparkTpDeviceCollectiveConfig device_config;
@@ -164,6 +167,29 @@ static SparkStatus StageServingCopyMember(SparkJsonDocument *doc, int32_t object
 	if ( token < 0 )
 		return SPARK_STATUS_OK;
 	return SparkJsonCopyString(doc, token, out) == SPARK_STATUS_OK ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR;
+}
+
+static SparkStatus StageServingParseStreamed(SparkStageServingState *state, SparkJsonDocument *doc, int32_t object)
+{
+	SparkStageRunnerStreamedPrefillConfig *streamed = &state->runner_config.streamed_prefill;
+	if ( !SparkJsonTokenIsType(doc, object, SPARK_JSON_TOKEN_OBJECT) ||
+		StageServingCopyMember(doc, object, "partner_pack", &state->streamed_partner_pack) != SPARK_STATUS_OK ||
+		StageServingCopyMember(doc, object, "fabric_device", &state->streamed_fabric_device) != SPARK_STATUS_OK ||
+		StageServingCopyMember(doc, object, "pair_device", &state->streamed_pair_device) != SPARK_STATUS_OK )
+		return SPARK_STATUS_SCHEMA_ERROR;
+	streamed->node_rows = StageServingJsonU32(doc, object, "node_rows", 0u);
+	streamed->gid_index = StageServingJsonU32(doc, object, "gid_index", 3u);
+	streamed->pair_gid_index = StageServingJsonU32(doc, object, "pair_gid_index", streamed->gid_index);
+	streamed->traffic_class = StageServingJsonU32(doc, object, "traffic_class", 106u);
+	streamed->partner_pack_path = state->streamed_partner_pack;
+	streamed->fabric_device = state->streamed_fabric_device;
+	streamed->pair_device = state->streamed_pair_device;
+	if ( streamed->node_rows == 0u || streamed->partner_pack_path == 0 || streamed->fabric_device == 0 || streamed->pair_device == 0 )
+	{
+		fprintf(stderr, "%s adapter: streamed_prefill needs node_rows, partner_pack, fabric_device and pair_device\n", state->model->module_tag);
+		return SPARK_STATUS_SCHEMA_ERROR;
+	}
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus StageServingLoadSessionPorts(SparkStageServingState *state, SparkJsonDocument *doc, int32_t dev,
@@ -661,6 +687,9 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 	token = SparkJsonFindObjectMember(doc, root, "taps");
 	if ( token >= 0 && StageServingParseTaps(state, doc, token) != SPARK_STATUS_OK )
 		return SPARK_STATUS_SCHEMA_ERROR;
+	token = SparkJsonFindObjectMember(doc, root, "streamed_prefill");
+	if ( token >= 0 && StageServingParseStreamed(state, doc, token) != SPARK_STATUS_OK )
+		return SPARK_STATUS_SCHEMA_ERROR;
 	token = SparkJsonFindObjectMember(doc, root, "device_collective");
 	if ( token >= 0 )
 		return StageServingLoadDeviceCollective(state, doc, token);
@@ -1052,6 +1081,9 @@ static void StageServingDestroy(void *adapter_state)
 	free(state->stray_working_set_path);
 	free(state->device_backend_path);
 	free(state->device_local_host);
+	free(state->streamed_partner_pack);
+	free(state->streamed_fabric_device);
+	free(state->streamed_pair_device);
 	free(state);
 }
 

@@ -2274,9 +2274,6 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 		}
 		return SPARK_STATUS_OK;
 	}
-	exchange_status = StageRunnerRunDeferred(state, dispatch);
-	if ( exchange_status != SPARK_STATUS_OK )
-		return exchange_status;
 	state->verify_pending = 0u;
 	if ( (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY) != 0u &&
 		(steps != 1u || (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) != 0u || runner->owns_embedding == 0u ||
@@ -2301,6 +2298,9 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	if ( exchange_status != SPARK_STATUS_OK )
 		return exchange_status;
 	exchange_status = StageRunnerChainBegin(state, dispatch->request_id);
+	if ( exchange_status != SPARK_STATUS_OK )
+		return exchange_status;
+	exchange_status = StageRunnerRunDeferred(state, dispatch);
 	if ( exchange_status != SPARK_STATUS_OK )
 		return exchange_status;
 	state->rows = rows;
