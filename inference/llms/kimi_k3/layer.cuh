@@ -1235,11 +1235,9 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 }
 
 template<class Format>
-static int32_t K3LayerDenseMlp(const K3LayerBuffers *b, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LayerDenseMlpBody(const K3LayerBuffers *b, uint32_t rows, uint16_t *destination, uint32_t multiprocessors, cudaStream_t stream)
 {
 	int32_t status;
-	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
-		b->hidden_bf16,0,(const uint16_t *)b->mlp_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->dense_gate_up_weight,
 		b->dense_gate_up_scale,b->gate_up_bf16,rows,K3_HIDDEN,
 		K3_RANK_DIM(b,dense_gate_up_rows,K3_DENSE_INTERMEDIATE * 2u),multiprocessors,stream);
@@ -1250,9 +1248,17 @@ static int32_t K3LayerDenseMlp(const K3LayerBuffers *b, uint32_t rows, uint32_t 
 		K3_RANK_DIM(b,dense_down_input,K3_DENSE_INTERMEDIATE),
 		K3_SITU_BETA,K3_SITU_LINEAR_BETA);
 	return(K3Project<LmBf16Format>(b,b->intermediate_bf16,b->dense_down_weight,
-		b->dense_down_scale,b->hidden_bf16,
+		b->dense_down_scale,destination,
 		b->tp_sharded != 0u ? (uint16_t *)0 : b->attnres_partial_bf16,
 		rows,K3_RANK_DIM(b,dense_down_input,K3_DENSE_INTERMEDIATE),K3_HIDDEN,multiprocessors,stream));
+}
+
+template<class Format>
+static int32_t K3LayerDenseMlp(const K3LayerBuffers *b, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
+{
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
+		b->hidden_bf16,0,(const uint16_t *)b->mlp_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
+	return(K3LayerDenseMlpBody<Format>(b,rows,b->hidden_bf16,multiprocessors,stream));
 }
 
 static int32_t K3Head(const K3LayerBuffers *b, const void *head_norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t vocabulary, uint32_t rows, cudaStream_t stream)

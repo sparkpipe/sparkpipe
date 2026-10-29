@@ -561,6 +561,7 @@ PYTHON_TESTS := \
 	tests/test_expanded_mha_shard_cuda.py \
 	tests/test_k3_streamed_moe_cuda.py \
 	tests/test_k3_streamed_kda_cuda.py \
+	tests/test_k3_streamed_slice_cuda.py \
 	tests/test_index_shard_cuda.py \
 	tests/test_latent_rope_heads_cuda.py \
 	tests/test_latent_attention_kernel_cuda.py \
