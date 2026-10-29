@@ -95,6 +95,7 @@ static SparkModelResidentClient *mock_registry[MOCK_RESIDENT_MAX_RANKS];
 static uint32_t mock_registry_count;
 static uint32_t mock_auto_tokens;
 static SparkModelServingLane mock_lane_log[256];
+static uint32_t mock_lane_submission_flags[256];
 static uint32_t mock_lane_log_count;
 static uint32_t mock_max_decode_lanes;
 static SparkModelServingCacheIdentity mock_identity_log[256];
@@ -182,6 +183,11 @@ uint32_t MockResidentClientLaneLog(uint32_t index,SparkModelServingLane *lane)
 		return(0u);
 	*lane = mock_lane_log[index];
 	return(1u);
+}
+
+uint32_t MockResidentClientLaneSubmissionFlags(uint32_t index)
+{
+	return(index < mock_lane_log_count ? mock_lane_submission_flags[index] : 0u);
 }
 
 uint32_t MockResidentClientLastLane(uint32_t stage_index,SparkModelServingLane *lane)
@@ -599,6 +605,7 @@ static SparkStatus MockResidentClientEnqueue(
 		uint32_t identity;
 		mock_lane_log[mock_lane_log_count] = submission->lanes[lane];
 		mock_lane_log[mock_lane_log_count].cache_block_identity_first = mock_identity_log_count;
+		mock_lane_submission_flags[mock_lane_log_count] = submission->flags;
 		for (identity=0u; identity<submission->lanes[lane].cache_block_identity_count && mock_identity_log_count<256u; identity++)
 			mock_identity_log[mock_identity_log_count++] = submission->cache_block_identities[submission->lanes[lane].cache_block_identity_first + identity];
 		mock_lane_log_count++;

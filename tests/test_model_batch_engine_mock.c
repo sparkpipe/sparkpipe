@@ -957,6 +957,56 @@ static void TestScenarioSharedPrefillRows(const SparkModelResidentDeployment *de
 	CHECK(submissions[1] != 0u && rows[1] <= 4u,"shared rows: a wave carrying several prompts stays within the shared limit, while one prompt alone may use the full budget");
 }
 
+static void TestScenarioStreamedPrefillDefers(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	SparkModelResidentDeployment streamed = *deployment;
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane;
+	uint32_t prompt[11] = {61u,62u,63u,64u,65u,66u,67u,68u,69u,70u,71u};
+	uint32_t other[3] = {81u,82u,83u};
+	uint32_t index,deferred_rows = 0u,deferred_publish = 0u,deferred_shared = 0u,final_seen = 0u,final_index = 0u,interleaved = 0u,first_index = UINT32_MAX;
+	streamed.streamed_prefill_quantum = 4u;
+	streamed.streamed_prefill_min_tokens = 8u;
+	MockResidentClientReset();
+	engine = TestConnectRows(&streamed,&state,runtime_root,6u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,690u,1u,prompt,11u);
+	TestSubmitPrompt(engine,2u,691u,1u,other,3u);
+	TestDriveUntilTerminal(engine,&state,2u,800u);
+	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u,"streamed prefill: the long prompt and a short one both complete");
+	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
+	{
+		const uint32_t deferred = (MockResidentClientLaneSubmissionFlags(index) & SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER) != 0u ? 1u : 0u;
+		if ( lane.request_id == 1u && deferred != 0u )
+		{
+			first_index = first_index == UINT32_MAX ? index : first_index;
+			deferred_rows += lane.context_token_count - (uint32_t)lane.sequence_position;
+			deferred_publish += (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u ? 1u : 0u;
+			continue;
+		}
+		if ( lane.request_id == 1u && lane.sequence_position == 8u && final_seen == 0u )
+		{
+			final_seen = 1u;
+			final_index = index;
+			CHECK((lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u && lane.cache_publish_token_count == 11u,
+				"streamed prefill: the first wave after the deferred tokens publishes the whole prompt");
+		}
+		if ( lane.request_id == 2u && first_index != UINT32_MAX && final_seen == 0u )
+			interleaved++;
+		if ( lane.request_id != 1u && deferred != 0u )
+			deferred_shared++;
+	}
+	CHECK(deferred_rows == 8u,"streamed prefill: positions 0..8 go out as deferred waves (the last quantum boundary before the prompt end)");
+	CHECK(deferred_publish == 0u,"streamed prefill: deferred waves publish nothing, since their pages are written later by the streamed prefill");
+	CHECK(deferred_shared == 0u && interleaved == 0u,"streamed prefill: no other request's rows ride in or between the deferred waves");
+	CHECK(final_seen != 0u && final_index > first_index,"streamed prefill: the final wave runs normally after the deferred ones");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static uint32_t TestCoordinatorFrames(void)
 {
 	return(MockResidentClientCalls(0u,MOCK_CALL_SUBMIT) + MockResidentClientCalls(0u,MOCK_CALL_PREPARE) + MockResidentClientCalls(0u,MOCK_CALL_CONTINUE));
@@ -3322,6 +3372,7 @@ int main(void)
 	TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,3u);
 	TestScenarioCanonicalPrefillChunks(&deployment,runtime_root);
 	TestScenarioSharedPrefillRows(&deployment,runtime_root);
+	TestScenarioStreamedPrefillDefers(&deployment,runtime_root);
 	TestScenarioDecodeAfterPrefill(&deployment,runtime_root);
 	TestScenarioPartialCopyCapacity(&deployment,runtime_root);
 	TestScenarioSamplingValidation(&deployment,runtime_root);
