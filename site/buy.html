@@ -95,7 +95,7 @@
   </div>
   <div class="sec-body">
     <h2>Try it by the hour.</h2>
-    <p class="prose">Prepaid hours for any business, with no business check: hold up to <b id="p-hourly-max-2">168</b> hours at a time, or <b id="p-verified-max-2">720</b> (30 days) once we have approved your business. A two-year customer may take an hourly reservation until <b id="p-displace">6</b> hours before it begins, and the hour comes back to you.</p>
+    <p class="prose">Prepaid hours for any business, with no business check: hold up to <b id="p-hourly-max-2">168</b> hours at a time, or <b id="p-verified-max-2">720</b> (30 days) once we have approved your business. From Monday to Saturday, a two-year customer may take an hourly reservation for its guaranteed daily hours until <b id="p-displace">6</b> hours before it begins, and the hour comes back to you. Sunday reservations are never taken.</p>
     <div class="split">
       <form class="form" id="hourly-form" novalidate>
         <label>Company<input id="h-company" autocomplete="organization" placeholder="Legal name"></label>
@@ -123,11 +123,11 @@
 <section id="reserved" class="sec">
   <div class="sec-rail">
     <p class="label">Two-year</p>
-    <p class="label">Every hour of the term</p>
+    <p class="label">Monday to Saturday</p>
   </div>
   <div class="sec-body">
-    <h2 id="r-title">Every hour of two years, at the lower price.</h2>
-    <p class="prose">For businesses we approve. The two-year term starts the day you sign and covers every hour of it on one fleet's capacity: 17,520 hours, or 17,544 when it includes 29 February. After signing you can pay any amount at any time, up to the whole term, and meet each deadline at your own pace. Hours exist only once paid, and you choose when to use them; hours that pass before they are paid for are lost. Nothing is due in the first 30 days (Phase A), and if you pay nothing by then the agreement ends with nothing owed. Once the last gate is paid, every tranche is released: either window within your election, and spending ahead. The models you name in the agreement stay available for the whole term.</p>
+    <h2 id="r-title">Six days a week for two years, at the lower price.</h2>
+    <p class="prose">For businesses we approve. The two-year term starts the day you sign and covers every hour of it from Monday to Saturday on one fleet's capacity: 15,000 to 15,048 hours, depending on the Sundays and 29 February in the term. Sundays are kept for our maintenance; you may still use your hours on a Sunday when a fleet is free. After signing you can pay any amount at any time, up to the whole term, and meet each deadline at your own pace. Hours exist only once paid, and you choose when to use them; hours that pass before they are paid for are lost. Nothing is due in the first 30 days (Phase A), and if you pay nothing by then the agreement ends with nothing owed. Once the last gate is paid, every tranche is released: your election's daily hours are guaranteed for any day of the term, you may use more on free fleets up to 30 days ahead, and you may spend ahead into later months. The models you name in the agreement stay available for the whole term.</p>
     <div class="panel" id="kyb-panel">
       <p><b>Business check:</b> <span id="kyb-state" class="state">not approved</span></p>
       <p class="hint">In the live service this is a manual review of company documents, owners and sanctions screening. Approval raises your hourly cap to 30 days of hours and opens the two-year agreement.</p>
@@ -160,7 +160,7 @@
     </table></div>
     <h3>Monthly tranches</h3>
     <div class="table-wrap scroll"><table>
-      <thead><tr><th>Tranche</th><th>Period</th><th>Days</th><th>East hours</th><th>West hours</th></tr></thead>
+      <thead><tr><th>Tranche</th><th>Period</th><th>Days, Mon–Sat</th><th>East hours</th><th>West hours</th></tr></thead>
       <tbody id="r-tranches"></tbody>
     </table></div>
   </div>
@@ -285,12 +285,17 @@
   };
 
   const vatApplies = (korea, method) => korea || method === 'usdc';
+  const servedDays = (from, to) => {
+    let n = 0;
+    for (let t = from; t < to; t += DAY) if (new Date(t).getUTCDay() !== 0) n += 1;
+    return n;
+  };
   const plan = (start, election) => {
     const end = termEnd(start, P.termMonths), tranches = [];
     let cursor = parse(start);
     while (cursor <= end) {
       const d = new Date(cursor), monthEnd = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0), to = Math.min(monthEnd, end);
-      const days = Math.round((to - cursor) / DAY) + 1, hours = 24 * days;
+      const days = servedDays(cursor, to + DAY), hours = 24 * days;
       const east = election === 'east' ? hours : election === 'west' ? 0 : hours / 2;
       tranches.push({ key: ymd(cursor).slice(0, 7), from: ymd(cursor), to: ymd(to), days, hours, east, west: hours - east });
       cursor = to + DAY;
@@ -315,7 +320,7 @@
     ['p-hourly-max', 'p-hourly-max-2'].forEach((id) => { $(id).textContent = whole(P.hourlyMaxHours); });
     ['p-verified-max', 'p-verified-max-2'].forEach((id) => { $(id).textContent = whole(P.verifiedMaxHours); });
     $('p-displace').textContent = P.displaceNoticeHours;
-    $('r-title').textContent = 'Every hour of two years, at ' + short(P.committedPrice) + ' an hour.';
+    $('r-title').textContent = 'Six days a week for two years, at ' + short(P.committedPrice) + ' an hour.';
     $('h-start').min = minStart(); if (!$('h-start').value || $('h-start').value < minStart()) $('h-start').value = minStart();
     if (!S.contract) { $('r-start').min = minSign(); if (!$('r-start').value || $('r-start').value < minSign()) $('r-start').value = minSign(); }
   };
@@ -380,7 +385,7 @@
     const start = parse(c.signedOn);
     let cursor = 0;
     return S.payments.map((p) => {
-      const a = cursor, b = Math.min(c.hours, cursor + p.net / c.price), cut = Math.round((parse(p.date) - start) / DAY) * 24;
+      const a = cursor, b = Math.min(c.hours, cursor + p.net / c.price), cut = servedDays(start, parse(p.date)) * 24;
       cursor = b;
       return { p, a, b, usableFrom: Math.max(a, Math.min(b, cut)) };
     });
