@@ -2013,6 +2013,8 @@ static SparkStatus SparkStageKvStateWrite(SparkStageKvBinding *binding,const Spa
 			SPARK_RETURN(wait);
 		status = SparkKvPageStoreWriteback(&binding->state_store,job->page,job->slot,job->generation,(uintptr_t)SparkStageKvLaneState(binding,job->slot),binding->recurrent.lane_bytes,0u,0u);
 	}
+	if ( status == SPARK_STATUS_CAPACITY_EXCEEDED )
+		return(status);
 	SPARK_RETURN(status);
 }
 

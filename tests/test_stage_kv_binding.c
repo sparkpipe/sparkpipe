@@ -1515,6 +1515,8 @@ static void TestRecurrentCheckpoints(void)
 	const uint32_t slots = 2u * TEST_LANES + 2u;
 	uint32_t index,saved,unsaved,ineligible;
 	uint64_t restores;
+	TestStderrCapture capture;
+	char *output;
 	MakeDirectories();
 	ConfigureRecurrent(&configuration);
 	configuration.recurrent.memory_bytes = (uint64_t)slots * TEST_RECURRENT_BYTES;
@@ -1525,7 +1527,11 @@ static void TestRecurrentCheckpoints(void)
 	for (index=0u; index<slots; index++)
 		PublishCheckpoint(10u + index,(uint8_t)(0x40u + index),0u);
 	assert(SparkStageKvBindingSaveAll(&BINDING,NowNs() + 5000000000ull,&saved,&unsaved,&ineligible) == SPARK_STATUS_OK && unsaved == 0u);
+	TestStderrCaptureBegin(&capture);
 	PublishCheckpoint(10u + slots,(uint8_t)(0x40u + slots),0u);
+	output = TestStderrCaptureEnd(&capture);
+	assert(output != 0 && strstr(output,"status=2 ") == 0);
+	free(output);
 	assert(BINDING.page_cache.state_demoted_count == 1u && BINDING.page_cache.state_pressure_demoted_count == 1u && BINDING.state_store.backing_page_count == slots);
 	assert(ResumeCheckpoint(4u,(uint8_t)(0x40u + slots)) == SPARK_STATUS_OK);
 	restores = BINDING.snapshot.restore_count;
@@ -1533,7 +1539,7 @@ static void TestRecurrentCheckpoints(void)
 	assert(BINDING.page_cache.state_pressure_demoted_count == 2u && BINDING.state_store.backing_page_count == slots);
 	assert(ResumeCheckpoint(5u,0x42u) == SPARK_STATUS_OK && BINDING.snapshot.restore_count == restores + 1u);
 	Close();
-	printf("A11 recurrent checkpoints: a stateless publish captures nothing and is never a resume point, a full state store demotes the oldest checkpoint and keeps the newer ones resumable, and a demoted checkpoint saved with its state restores from the snapshot tier by demoting the next oldest: ok\n");
+	printf("A11 recurrent checkpoints: a stateless publish captures nothing and is never a resume point, a full state store demotes the oldest checkpoint without recording an error and keeps the newer ones resumable, and a demoted checkpoint saved with its state restores from the snapshot tier by demoting the next oldest: ok\n");
 }
 
 static void PublishRecurrentStep(uint64_t sequence,uint32_t position,uint32_t context,uint8_t identity,uint8_t seed,uint32_t stateless,uint8_t *bytes)
