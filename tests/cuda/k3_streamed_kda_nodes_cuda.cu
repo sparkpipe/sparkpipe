@@ -243,8 +243,7 @@ int main(void)
 		x->row_begin = node_begin;
 		x->slot = state_index;
 		x->zeros = KdaAlloc<uint16_t>((uint64_t)KDA_NODE_ROWS * KDA_RANK_V);
-		x->base = KdaAlloc<uint16_t>((uint64_t)KDA_NODE_ROWS * KDA_RANK_V);
-		x->correction = KdaAlloc<uint16_t>((uint64_t)KDA_NODE_ROWS * KDA_RANK_V);
+		x->scratch = KdaAlloc<uint16_t>((uint64_t)KDA_NODE_ROWS * KDA_RANK_V);
 		x->exchange = KdaExchange;
 		KDA_CUDA(cudaStreamCreate(&n->stream));
 	}

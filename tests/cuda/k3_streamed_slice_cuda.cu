@@ -460,8 +460,7 @@ int main(void)
 			x->row_begin = node_begin;
 			x->slot = state_index;
 			x->zeros = SlAlloc<uint16_t>((uint64_t)SL_NODE_ROWS * SL_V);
-			x->base = SlAlloc<uint16_t>((uint64_t)SL_NODE_ROWS * SL_V);
-			x->correction = SlAlloc<uint16_t>((uint64_t)SL_NODE_ROWS * SL_V);
+			x->scratch = SlAlloc<uint16_t>((uint64_t)SL_NODE_ROWS * SL_V);
 			x->exchange = SlNodeExchange;
 			SL_CUDA(cudaStreamCreate(&n->stream));
 		}

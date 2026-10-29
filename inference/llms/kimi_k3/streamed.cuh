@@ -276,8 +276,7 @@ struct K3StreamedKdaSegments
 	uint8_t *const *transforms;
 	uint8_t *const *incoming;
 	const uint16_t *zeros;
-	uint16_t *base;
-	uint16_t *correction;
+	uint16_t *scratch;
 };
 
 template<class Format>
@@ -291,7 +290,7 @@ static int32_t K3StreamedKdaSegmented(K3LayerBuffers *b, const K3LayerWeights *s
 	uint32_t shard, chunk;
 	int32_t status = LM_LAUNCH_OK;
 	if ( shards == 0 || states == 0 || segments == 0 || segments->chunks < 2u || partial == 0 || hidden_accumulator == 0 || b->tp_sharded == 0u ||
-		heads * shard_count != K3_KDA_HEADS || segments->zeros == 0 || segments->base == 0 || segments->correction == 0 )
+		heads * shard_count != K3_KDA_HEADS || segments->zeros == 0 || segments->scratch == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
 	K3BindLayer(&shards[0],b);
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
@@ -342,11 +341,11 @@ static int32_t K3StreamedKdaSegmented(K3LayerBuffers *b, const K3LayerWeights *s
 		if ( cudaMemsetAsync(ends,0,(size_t)(slot_bytes * segments->chunks),stream) != cudaSuccess )
 			return(LM_LAUNCH_ERR_LAUNCH);
 		b->kda_state_pool = (uint8_t *)ends;
-		status = K3LayerKdaRecur(b,b->value_bf16,segments->base,segments->chunks,1u,stream);
+		status = K3LayerKdaRecur(b,b->value_bf16,segments->scratch,segments->chunks,1u,stream);
 		K3StreamedStateIdentityKernel<<<(uint32_t)((matrices * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM + 255u) / 256u),256u,0,stream>>>(transforms,matrices);
 		b->kda_state_pool = (uint8_t *)transforms;
 		if ( status == LM_LAUNCH_OK )
-			status = K3LayerKdaRecur(b,segments->zeros,segments->correction,segments->chunks,1u,stream);
+			status = K3LayerKdaRecur(b,segments->zeros,segments->scratch,segments->chunks,1u,stream);
 		if ( status != LM_LAUNCH_OK || cudaMemcpyAsync(incoming,states[shard].state_pool,(size_t)slot_bytes,cudaMemcpyDeviceToDevice,stream) != cudaSuccess )
 			return(status != LM_LAUNCH_OK ? status : LM_LAUNCH_ERR_LAUNCH);
 		for (chunk = 1u; chunk < segments->chunks; chunk++)
@@ -361,11 +360,9 @@ static int32_t K3StreamedKdaSegmented(K3LayerBuffers *b, const K3LayerWeights *s
 			ends + (uint64_t)(segments->chunks - 1u) * heads * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM,
 			(float *)states[shard].state_pool);
 		b->kda_state_pool = (uint8_t *)incoming;
-		status = K3LayerKdaRecur(b,segments->zeros,segments->correction,segments->chunks,0u,stream);
+		status = K3LayerKdaRecur(b,b->value_bf16,b->attention_out_bf16,segments->chunks,0u,stream);
 		if ( status != LM_LAUNCH_OK )
 			break;
-		LM_LAUNCH((LmAddRowsKernel<K3_LAYER_THREADS>),dim3((heads * K3_KDA_VALUE_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),K3_LAYER_THREADS,0,stream,
-			segments->base,segments->correction,b->attention_out_bf16,rows,heads * K3_KDA_VALUE_DIM);
 		status = K3LayerKdaFinish<Format>(b,rows,partial,(uint16_t *)0,multiprocessors,stream);
 		if ( status == LM_LAUNCH_OK )
 			status = K3StreamedAccumulate(hidden_accumulator,partial,hidden_elements,shard == 0u ? 1u : 0u,stream);
@@ -409,8 +406,7 @@ struct K3StreamedKdaExchange
 	const uint32_t *row_begin;
 	const uint32_t *slot;
 	const uint16_t *zeros;
-	uint16_t *base;
-	uint16_t *correction;
+	uint16_t *scratch;
 	void (*exchange)(void *context, void *stream, uint32_t phase, uint32_t shard);
 	void *context;
 };
@@ -430,7 +426,7 @@ static int32_t K3StreamedKdaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 	int32_t status = LM_LAUNCH_OK;
 	if ( shards == 0 || states == 0 || x == 0 || x->exchange == 0 || x->nodes == 0u || x->node >= x->nodes || rows < K3_KDA_CONV_KERNEL ||
 		partial == 0 || hidden_accumulator == 0 || b->tp_sharded == 0u || heads * shard_count != K3_KDA_HEADS || K3_KDA_KEY_DIM != K3_KDA_VALUE_DIM ||
-		x->tails == 0 || x->summaries == 0 || x->incoming == 0 || x->running == 0 || x->zeros == 0 || x->base == 0 || x->correction == 0 ||
+		x->tails == 0 || x->summaries == 0 || x->incoming == 0 || x->running == 0 || x->zeros == 0 || x->scratch == 0 ||
 		x->row_begin == 0 || x->slot == 0 || x->q_window == 0 || x->k_window == 0 || x->v_window == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
 	K3BindLayer(&shards[0],b);
@@ -470,11 +466,11 @@ static int32_t K3StreamedKdaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 		if ( status != LM_LAUNCH_OK || cudaMemsetAsync(own,0,(size_t)slot_bytes,stream) != cudaSuccess )
 			return(status != LM_LAUNCH_OK ? status : LM_LAUNCH_ERR_LAUNCH);
 		b->kda_state_pool = (uint8_t *)own;
-		status = K3LayerKdaRecur(b,b->value_bf16,x->base,1u,1u,stream);
+		status = K3LayerKdaRecur(b,b->value_bf16,x->scratch,1u,1u,stream);
 		K3StreamedStateIdentityKernel<<<(uint32_t)((slot_floats + 255u) / 256u),256u,0,stream>>>(own + slot_floats,heads);
 		b->kda_state_pool = (uint8_t *)(own + slot_floats);
 		if ( status == LM_LAUNCH_OK )
-			status = K3LayerKdaRecur(b,x->zeros,x->correction,1u,1u,stream);
+			status = K3LayerKdaRecur(b,x->zeros,x->scratch,1u,1u,stream);
 		if ( status != LM_LAUNCH_OK )
 			break;
 		x->exchange(x->context,(void *)(uintptr_t)stream,K3_STREAMED_KDA_SUMMARIES,shard);
@@ -496,11 +492,9 @@ static int32_t K3StreamedKdaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 					cudaMemcpyDeviceToDevice,stream) != cudaSuccess )
 				return(LM_LAUNCH_ERR_LAUNCH);
 		b->kda_state_pool = (uint8_t *)x->incoming;
-		status = K3LayerKdaRecur(b,x->zeros,x->correction,1u,0u,stream);
+		status = K3LayerKdaRecur(b,b->value_bf16,b->attention_out_bf16,1u,0u,stream);
 		if ( status != LM_LAUNCH_OK )
 			break;
-		LM_LAUNCH((LmAddRowsKernel<K3_LAYER_THREADS>),dim3((channels[2] + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),K3_LAYER_THREADS,0,stream,
-			x->base,x->correction,b->attention_out_bf16,rows,channels[2]);
 		status = K3LayerKdaFinish<Format>(b,rows,partial,(uint16_t *)0,multiprocessors,stream);
 		if ( status == LM_LAUNCH_OK )
 			status = K3StreamedAccumulate(hidden_accumulator,partial,hidden_elements,shard == 0u ? 1u : 0u,stream);

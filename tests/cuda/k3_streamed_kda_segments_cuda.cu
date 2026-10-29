@@ -190,8 +190,7 @@ int main(void)
 	segments.transforms = transforms.data();
 	segments.incoming = incoming.data();
 	segments.zeros = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * KDA_RANK_V);
-	segments.base = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * KDA_RANK_V);
-	segments.correction = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * KDA_RANK_V);
+	segments.scratch = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * KDA_RANK_V);
 	KDA_CUDA(cudaDeviceSynchronize());
 	KDA_CUDA(cudaStreamCreate(&stream));
 	KdaBuffers(&sequential,0u,state_index,row_begin,0);
