@@ -1365,6 +1365,8 @@ static void StageServingDispatch(const SparkStageServingState *state, const Spar
 	dispatch->descriptor_bytes = (uint32_t)sizeof(*dispatch);
 	dispatch->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL :
 		(submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY : 0u;
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER) != 0u )
+		dispatch->flags |= SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER;
 	dispatch->request_id = submission->request_id;
 	dispatch->sequence_id = submission->sequence_id;
 	dispatch->sequence_position = submission->sequence_position;
@@ -1554,7 +1556,7 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		status = SparkStageRunnerSubmit(&state->runner, &dispatch);
 	}
 	marks[2] = StageServingNowNs();
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && (dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u )
 		status = SparkStageKvBindingRecurrentCapture(&state->kv, row_slots, active, stream);
 	marks[3] = StageServingNowNs();
 	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
