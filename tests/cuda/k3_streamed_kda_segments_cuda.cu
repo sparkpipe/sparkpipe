@@ -140,7 +140,7 @@ int main(void)
 	KdaFillBf16<<<512,256>>>(decay_down,(uint64_t)K3_KDA_KEY_DIM * K3_HIDDEN,2u,0.02f,0.0f);
 	KdaFillBf16<<<512,256>>>(hidden,(uint64_t)KDA_ROWS * K3_HIDDEN,3u,1.0f,0.0f);
 	KdaFillBf16<<<512,256>>>(partial,(uint64_t)KDA_ROWS * K3_HIDDEN,4u,1.0f,0.0f);
-	KdaFillF32<<<64,256>>>(decay_bias,(uint64_t)K3_KDA_HEADS * K3_KDA_KEY_DIM,5u,0.5f,0.0f);
+	KdaFillF32<<<64,256>>>(decay_bias,(uint64_t)K3_KDA_HEADS * K3_KDA_KEY_DIM,5u,0.5f,-8.0f);
 	KdaFillF32<<<8,128>>>(log_scale,K3_KDA_HEADS,6u,0.5f,0.0f);
 	KdaFillF32<<<8,128>>>(out_norm,K3_KDA_VALUE_DIM,7u,0.1f,1.0f);
 	for (uint32_t shard = 0u; shard < KDA_SHARDS; shard++)
