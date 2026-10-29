@@ -1134,18 +1134,27 @@ and the multidev docs on 2026-09-28. Line numbers are in
   formulas they share are moving into `inference/kernels/kernel_math.cuh`
   ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#shared-kernel-math)):
   bf16 conversion, sigmoid and SiLU (29 CUDA copies), softplus with the
-  gated-delta decay, the head-gate softplus, the tanh GeLU, the softcap and
-  the RMS scale are there. Still a copy
-  per kernel or per backend:
-  - rotary angles and rotation, the delta-rule cell update, online-softmax
-    merges and the log-probability reduction;
+  gated-delta decay, the head-gate softplus, the tanh GeLU, the softcap,
+  the RMS scale and the rotary rotation are there. Still a copy per kernel
+  or per backend:
+  - rotary angles (CUDA's `__powf(theta, -2i/d)` in the kernel against
+    Metal's host table in double), the delta-rule cell update,
+    online-softmax merges and the log-probability reduction;
+  - the Gemma family's rotation: Metal keeps the publisher's eager rounding
+    of the rotary terms, which the reference follows, while CUDA rotates in
+    FP32 (`SparkMathRopeLow`). On Metal, CUDA's rotation took Gemma 4 26B's
+    gate from passing to paired +3.80 / +3.78 sigma, Muse Glimmer's from
+    +3.37 / passing to +5.81 / +4.33, and moved 31B only from +4.8 / +4.3
+    to +3.48 / +3.86, so the two backends differ here until
+    CUDA's Gemma path takes the eager rounding (a CUDA change with its own
+    qualification);
   - expressions that differ inside a backend, each a numerical change that
     needs the affected model's gate: the experts' tanh GeLU
     (`SparkMathGeluTanhScaleFirst`, shared by both backends) multiplies
     `0.044715 * g * g * g` from the left, while the dense one (and PyTorch)
     cube first, so Gemma 4's dense and expert FFNs round differently; the
-    head-gate softplus (`SparkMathSoftplusGate`) uses `log1p(exp(x))`, the gated delta
-    `__logf(1 + __expf(x))`. The causal convolution's swish is
+    head-gate softplus (`SparkMathSoftplusGate`) uses `log1p(exp(x))`, the
+    gated delta `__logf(1 + __expf(x))`. The causal convolution's swish is
     `SparkMathSwishFast` (`x * sigmoid(x)`) on both backends;
   - attention softmax: both backends rescale at every new maximum. A
     Metal-only margin of 8 (from #1605, tried as 9daff83ca and reverted)

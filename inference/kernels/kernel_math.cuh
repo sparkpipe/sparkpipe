@@ -13,6 +13,8 @@ typedef uchar SparkMathU8;
 #define SPARK_MATH_EXP_FAST(x) metal::exp(x)
 #define SPARK_MATH_LOG(x) metal::log(x)
 #define SPARK_MATH_LOG_FAST(x) metal::log(x)
+#define SPARK_MATH_COS_FAST(x) metal::cos(x)
+#define SPARK_MATH_SIN_FAST(x) metal::sin(x)
 #define SPARK_MATH_TANH(x) metal::tanh(x)
 #define SPARK_MATH_LDEXP(x, e) metal::ldexp(x, e)
 #define SPARK_MATH_SQRT(x) metal::sqrt(x)
@@ -34,6 +36,8 @@ typedef uint8_t SparkMathU8;
 #define SPARK_MATH_EXP_FAST(x) __expf(x)
 #define SPARK_MATH_LOG(x) logf(x)
 #define SPARK_MATH_LOG_FAST(x) __logf(x)
+#define SPARK_MATH_COS_FAST(x) __cosf(x)
+#define SPARK_MATH_SIN_FAST(x) __sinf(x)
 #define SPARK_MATH_TANH(x) tanhf(x)
 #define SPARK_MATH_LDEXP(x, e) ldexpf(x, e)
 #define SPARK_MATH_SQRT(x) sqrtf(x)
@@ -107,6 +111,26 @@ SPARK_MATH_FN float SparkMathSwishFast(float value)
 SPARK_MATH_FN float SparkMathSoftplus(float value)
 {
 	return(value > 20.0f ? value : SPARK_MATH_LOG(1.0f + SPARK_MATH_EXP(value)));
+}
+
+SPARK_MATH_FN float SparkMathRopeCos(float angle, float scale)
+{
+	return(SPARK_MATH_COS_FAST(angle) * scale);
+}
+
+SPARK_MATH_FN float SparkMathRopeSin(float angle, float scale)
+{
+	return(SPARK_MATH_SIN_FAST(angle) * scale);
+}
+
+SPARK_MATH_FN float SparkMathRopeLow(float low, float high, float cosine, float sine)
+{
+	return((low * cosine) - (high * sine));
+}
+
+SPARK_MATH_FN float SparkMathRopeHigh(float low, float high, float cosine, float sine)
+{
+	return((low * sine) + (high * cosine));
 }
 
 SPARK_MATH_FN float SparkMathLog1p(float value)

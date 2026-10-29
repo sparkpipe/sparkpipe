@@ -8,10 +8,10 @@
 
 static __device__ __forceinline__ void LmRopePair(float *low, float *high, float angle, float scale = 1.0f)
 {
-	float c = __cosf(angle) * scale,s = __sinf(angle) * scale;
-	float a = *low,b = *high;
-	*low = (a * c) - (b * s);
-	*high = (a * s) + (b * c);
+	const float c = SparkMathRopeCos(angle,scale),s = SparkMathRopeSin(angle,scale);
+	const float a = *low,b = *high;
+	*low = SparkMathRopeLow(a,b,c,s);
+	*high = SparkMathRopeHigh(a,b,c,s);
 }
 
 enum LmRopePairing

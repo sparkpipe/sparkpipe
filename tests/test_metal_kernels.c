@@ -407,6 +407,7 @@ typedef struct RopeCase
 	double theta;
 	uint32_t weighted;
 	uint32_t rounded;
+	double scale;
 	double multiply;
 } RopeCase;
 
@@ -440,6 +441,7 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 	params.epsilon = 1e-6f;
 	params.has_weight = c->weighted;
 	params.rope_rounded_terms = c->rounded;
+	params.scale = (float)c->scale;
 	params.multiply = (float)c->multiply;
 	for ( i = 0u; i < c->pairs; i++ )
 		params.inverse_frequency[i] = (float)(1.0 / pow(c->theta,(double)(2u * i) / ROPE));
@@ -479,18 +481,19 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 						const uint32_t pair = i % HALF, other = i < HALF ? i + HALF : i - HALF;
 						const double angle = (double)(float)((float)pos[row] * params.inverse_frequency[pair]);
 						const double partner = i < HALF ? -normed[other] : normed[other];
+						const double scale = c->scale != 0.0 ? c->scale : 1.0;
 						if ( c->rounded != 0u )
 						{
-							const double cosine = RoundBf16(cos(angle)), sine = RoundBf16(sin(angle));
+							const double cosine = RoundBf16(cos(angle) * scale), sine = RoundBf16(sin(angle) * scale);
 							y = RoundBf16(RoundBf16(normed[i] * cosine) + RoundBf16(partner * sine));
 							tolerance = UNIT_BF16 * (fabs(y) + fabs(normed[i] * cosine) + fabs(partner * sine) + fabs(normed[i]) + fabs(partner)) +
 								slack[i] + slack[other];
 						}
 						else
 						{
-							y = normed[i] * cos(angle) + partner * sin(angle);
-							tolerance = UNIT_BF16 * fabs(y) + slack[i] * fabs(cos(angle)) + slack[other] * fabs(sin(angle)) +
-								(4.0 * FUNCTION_ERROR + 4.0 * UNIT_F32) * (fabs(normed[i]) + fabs(partner));
+							y = (normed[i] * cos(angle) + partner * sin(angle)) * scale;
+							tolerance = UNIT_BF16 * fabs(y) + (slack[i] * fabs(cos(angle)) + slack[other] * fabs(sin(angle)) +
+								(4.0 * FUNCTION_ERROR + 4.0 * UNIT_F32) * (fabs(normed[i]) + fabs(partner))) * scale;
 						}
 					}
 					Observe(check,Bf16(o[(uint64_t)row * heads * HEAD + head * HEAD + i]),y,tolerance);
@@ -500,7 +503,8 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 	snprintf(shape,sizeof(shape),"rows %u, %s",rows,label);
 	Report("head_rmsnorm_rope",shape,&clean,&corrupted,c->rounded != 0u ?
 		"bf16 cos, sin and products: u (|y| + |x cos| + |p sin| + |x| + |p|) + flip slack of both normed elements" :
-		"rotary span: u|y| + flip slack of the normed bf16 rounding (both elements) + (4*16+4) eps32 (|x|+|partner|); elsewhere the flip slack only");
+		"rotary span: u|y| + flip slack of the normed bf16 rounding (both elements) + (4*16+4) eps32 (|x|+|partner|), times the rope scale; "
+		"elsewhere the flip slack only");
 	free(normed);
 	free(slack);
 	SparkDeviceFree(&input);
@@ -511,7 +515,7 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 
 static void TestHeadRope(uint32_t rows, uint32_t heads, uint32_t offset, uint32_t head_stride, const char *label)
 {
-	static const RopeCase qwen = { 256u, 64u, 32u, 10000000.0, 1u, 0u, 0.0 };
+	static const RopeCase qwen = { 256u, 64u, 32u, 10000000.0, 1u, 0u, 0.0, 0.0 };
 	char text[96];
 	snprintf(text,sizeof(text),"%s, rope 64, theta 1e7",label);
 	TestHeadRopeCase(rows,heads,offset,head_stride,&qwen,text);
@@ -3412,14 +3416,17 @@ int main(int argc, char **argv)
 	TestHeadRope(1u,24u,0u,512u,"24 query heads in the fused row");
 	TestHeadRope(17u,4u,12288u,256u,"4 key heads in the fused row");
 	{
-		static const RopeCase sliding = { 256u, 256u, 128u, 10000.0, 1u, 1u, 0.0 }, full = { 512u, 512u, 64u, 1000000.0, 1u, 1u, 0.0 },
-			value = { 512u, 0u, 0u, 1.0, 0u, 0u, 0.0 };
+		static const RopeCase sliding = { 256u, 256u, 128u, 10000.0, 1u, 1u, 0.0, 0.0 }, full = { 512u, 512u, 64u, 1000000.0, 1u, 1u, 0.0, 0.0 },
+			value = { 512u, 0u, 0u, 1.0, 0u, 0u, 0.0, 0.0 }, yarn = { 128u, 64u, 32u, 500000.0, 1u, 1u, 1.4852030263919618, 0.0 },
+			plain = { 128u, 64u, 32u, 500000.0, 1u, 0u, 1.4852030263919618, 0.0 };
 		TestHeadRopeCase(3u,16u,0u,256u,&sliding,"16 heads x 256, whole-head rope with bf16 terms, theta 1e4");
 		TestHeadRopeCase(2u,2u,8192u,512u,&full,"2 heads x 512, 64 of 256 pairs rotated, bf16 terms, theta 1e6");
+		TestHeadRopeCase(3u,10u,0u,128u,&yarn,"10 heads x 128, 64 dims rotated, bf16 terms of cos and sin times 1.485");
+		TestHeadRopeCase(3u,10u,0u,128u,&plain,"10 heads x 128, 64 dims rotated in FP32, cos and sin times 1.485");
 		TestHeadRopeCase(2u,2u,8192u,512u,&value,"2 heads x 512, weightless norm, no rope");
 	}
 	{
-		static const RopeCase sliding = { 128u, 128u, 64u, 500000.0, 0u, 1u, 3.87 }, full = { 128u, 0u, 0u, 1.0, 0u, 0u, 3.87 };
+		static const RopeCase sliding = { 128u, 128u, 64u, 500000.0, 0u, 1u, 0.0, 3.87 }, full = { 128u, 0u, 0u, 1.0, 0u, 0u, 0.0, 3.87 };
 		TestHeadRopeCase(3u,32u,0u,128u,&sliding,"32 heads x 128, weightless, times 3.87, bf16-term rope, theta 5e5");
 		TestHeadRopeCase(2u,32u,0u,128u,&full,"32 heads x 128, weightless, times 3.87, no rope");
 	}

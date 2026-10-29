@@ -111,14 +111,15 @@ kernel void spark_head_rmsnorm_rope(constant SparkHeadRopeParams &p [[buffer(0)]
 		float value = normed[i];
 		if ( i < p.rope_dimension )
 		{
-			const uint pair = i % half_rope;
-			const float angle = position * p.inverse_frequency[pair];
-			const float partner = i < half_rope ? -normed[i + half_rope] : normed[i - half_rope];
-			const float c = cos(angle) * p.scale, s = sin(angle) * p.scale;
+			const float angle = position * p.inverse_frequency[i % half_rope];
+			const float c = SparkMathRopeCos(angle, p.scale), s = SparkMathRopeSin(angle, p.scale);
 			if ( p.rope_rounded_terms != 0u )
+			{
+				const float partner = i < half_rope ? -normed[i + half_rope] : normed[i - half_rope];
 				value = SparkMathRoundBf16(SparkMathRoundBf16(value * SparkMathRoundBf16(c)) + SparkMathRoundBf16(partner * SparkMathRoundBf16(s)));
+			}
 			else
-				value = value * c + partner * s;
+				value = i < half_rope ? SparkMathRopeLow(value, normed[i + half_rope], c, s) : SparkMathRopeHigh(normed[i - half_rope], value, c, s);
 		}
 		y[i] = SparkMathFloatToBf16(value);
 	}
