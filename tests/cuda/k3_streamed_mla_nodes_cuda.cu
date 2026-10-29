@@ -110,6 +110,8 @@ static LmKvShardView MlCache(uint32_t *table,LmKvAccessError *error)
 struct MlNode
 {
 	uint32_t node;
+	uint32_t nodes;
+	uint32_t rows;
 	const K3LayerWeights *shards;
 	K3StreamedMlaExchange exchange[ML_PASSES];
 	K3LayerBuffers buffers[ML_PASSES];
@@ -123,7 +125,7 @@ struct MlNode
 	cudaStream_t stream;
 };
 
-static NodeEmulationWorld ml_world;
+static NodeEmulationWorld ml_world,ml_alone_world;
 
 static void *MlNodeThread(void *argument)
 {
@@ -133,14 +135,82 @@ static void *MlNodeThread(void *argument)
 	for (uint32_t pass = 0u; pass < ML_PASSES && n->status == LM_LAUNCH_OK; pass++)
 	{
 		K3LayerBuffers *b = &n->buffers[pass];
-		const uint64_t first = (uint64_t)pass * ML_PASS_ROWS + (uint64_t)n->node * ML_NODE_ROWS;
-		ML_CUDA(cudaMemcpyAsync(b->hidden_bf16,n->hidden + first * K3_HIDDEN,ML_NODE_ROWS * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
-		ML_CUDA(cudaMemcpyAsync(b->attnres_partial_bf16,n->residual + first * K3_HIDDEN,ML_NODE_ROWS * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
-		n->status = K3StreamedMlaNode<LmMxfp4,K3GlobalKv,ML_HEADS>(b,n->shards,ML_SHARDS,&n->exchange[pass],n->partial,&n->join,0u,ML_NODE_ROWS,48u,n->stream);
-		ML_CUDA(cudaMemcpyAsync(n->gathered + first * K3_HIDDEN,b->attnres_partial_bf16,ML_NODE_ROWS * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
+		const uint64_t first = (uint64_t)pass * ML_PASS_ROWS + (uint64_t)n->node * n->rows;
+		ML_CUDA(cudaMemcpyAsync(b->hidden_bf16,n->hidden + first * K3_HIDDEN,n->rows * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
+		ML_CUDA(cudaMemcpyAsync(b->attnres_partial_bf16,n->residual + first * K3_HIDDEN,n->rows * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
+		n->status = K3StreamedMlaNode<LmMxfp4,K3GlobalKv,ML_HEADS>(b,n->shards,ML_SHARDS,&n->exchange[pass],n->partial,&n->join,0u,n->rows,48u,n->stream);
+		ML_CUDA(cudaMemcpyAsync(n->gathered + first * K3_HIDDEN,b->attnres_partial_bf16,n->rows * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
 		ML_CUDA(cudaStreamSynchronize(n->stream));
 	}
 	return 0;
+}
+
+static void MlSetup(MlNode *n,uint32_t node,uint32_t nodes,NodeEmulationWorld *world,const K3LayerWeights *shards,uint32_t *table_device,
+	LmKvAccessError *error_device,const uint16_t *hidden,const uint16_t *partial_in,uint16_t *gathered)
+{
+	const uint32_t rows = ML_PASS_ROWS / nodes;
+	n->nodes = nodes;
+	n->rows = rows;
+	uint16_t *query = MlAlloc<uint16_t>((uint64_t)ML_PASS_ROWS * ML_HEADS * K3_MHA_QK);
+	uint8_t *expanded = MlAlloc<uint8_t>((uint64_t)ML_ROWS * K3StreamedHeadKv<ML_HEADS,K3GlobalKv>::kSlotBytes);
+	float *partials = MlAlloc<float>((uint64_t)ML_PASS_ROWS * LmGqaShardRecordFloats(ML_HEADS,K3_V_HEAD_DIM,1u));
+	const uint32_t *pass_row_offset = MlDevice(std::vector<uint32_t>{0u,ML_PASS_ROWS});
+	uint32_t *pass_tile_prefix = MlAlloc<uint32_t>(2u);
+	const uint32_t *pass_sequence = MlDevice(std::vector<uint32_t>(ML_PASS_ROWS,0u)),*node_sequence = MlDevice(std::vector<uint32_t>(rows,0u));
+	const uint32_t *key_offset = MlDevice(std::vector<uint32_t>{0u});
+	LmKvShardView cache = MlCache(table_device,error_device);
+	uint16_t *q_latents = MlAlloc<uint16_t>((uint64_t)ML_PASS_ROWS * K3_Q_LORA_RANK);
+	uint8_t *latent_keys = MlAlloc<uint8_t>((uint64_t)ML_ROWS * K3GlobalKv::kSlotBytes);
+	uint16_t *merged = MlAlloc<uint16_t>((uint64_t)ML_PASS_ROWS * ML_HEADS * K3_V_HEAD_DIM);
+	uint16_t *value_send = MlAlloc<uint16_t>((uint64_t)ML_PASS_ROWS * (ML_SHARDS / nodes) * ML_HEADS * K3_V_HEAD_DIM);
+	uint16_t *values = MlAlloc<uint16_t>((uint64_t)ML_SHARDS * rows * ML_HEADS * K3_V_HEAD_DIM);
+	n->node = node;
+	n->peer.world = world;
+	n->peer.node = node;
+	n->shards = shards;
+	n->partial = MlAlloc<uint16_t>((uint64_t)rows * K3_HIDDEN);
+	n->join.weight = MlAlloc<uint16_t>((uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM);
+	n->join.weight_capacity = (uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM;
+	n->join.activation = MlAlloc<uint16_t>((uint64_t)(rows) * K3_MLA_HEADS * K3_V_HEAD_DIM);
+	n->join.activation_capacity = (uint64_t)(rows) * K3_MLA_HEADS * K3_V_HEAD_DIM;
+	n->hidden = hidden;
+	n->residual = partial_in;
+	n->gathered = gathered;
+	for (uint32_t pass = 0u; pass < ML_PASSES; pass++)
+	{
+		K3StreamedMlaExchange *x = &n->exchange[pass];
+		std::vector<uint32_t> pass_positions(ML_PASS_ROWS),node_positions(rows);
+		for (uint32_t row = 0u; row < ML_PASS_ROWS; row++)
+			pass_positions[row] = pass * ML_PASS_ROWS + row;
+		for (uint32_t row = 0u; row < rows; row++)
+			node_positions[row] = pass * ML_PASS_ROWS + node * rows + row;
+		MlBuffers(&n->buffers[pass],rows,node_sequence,MlDevice(std::vector<uint32_t>{(pass + 1u) * ML_PASS_ROWS}),MlDevice(node_positions));
+		n->buffers[pass].cache_shard = cache;
+		n->buffers[pass].kv_shard = cache.shard;
+		memset(x,0,sizeof(*x));
+		x->node = node;
+		x->nodes = nodes;
+		x->pass_rows = ML_PASS_ROWS;
+		x->first_key = pass * ML_PASS_ROWS;
+		x->key_capacity = ML_ROWS;
+		x->q_latents = q_latents;
+		x->latent_keys = latent_keys;
+		x->query = query;
+		x->expanded = expanded;
+		x->partials = partials;
+		x->merged = merged;
+		x->value_send = value_send;
+		x->values = values;
+		x->pass_positions = MlDevice(pass_positions);
+		x->pass_sequence_of_row = pass_sequence;
+		x->pass_row_offset = pass_row_offset;
+		x->pass_tile_prefix = pass_tile_prefix;
+		x->key_offset = key_offset;
+		x->key_context = MlDevice(std::vector<uint32_t>{(pass + 1u) * ML_PASS_ROWS});
+		x->collective = NodeEmulationCollective;
+		x->context = &n->peer;
+	}
+	ML_CUDA(cudaStreamCreate(&n->stream));
 }
 
 int main(void)
@@ -202,70 +272,14 @@ int main(void)
 		"the one-device streamed MLA runs all rows");
 	ML_CUDA(cudaStreamSynchronize(stream));
 	for (uint32_t node = 0u; node < ML_NODES; node++)
-	{
-		MlNode *n = &nodes[node];
-		uint16_t *query = MlAlloc<uint16_t>((uint64_t)ML_PASS_ROWS * ML_HEADS * K3_MHA_QK);
-		uint8_t *expanded = MlAlloc<uint8_t>((uint64_t)ML_ROWS * K3StreamedHeadKv<ML_HEADS,K3GlobalKv>::kSlotBytes);
-		float *partials = MlAlloc<float>((uint64_t)ML_PASS_ROWS * LmGqaShardRecordFloats(ML_HEADS,K3_V_HEAD_DIM,1u));
-		const uint32_t *pass_row_offset = MlDevice(std::vector<uint32_t>{0u,ML_PASS_ROWS});
-		uint32_t *pass_tile_prefix = MlAlloc<uint32_t>(2u);
-		const uint32_t *pass_sequence = MlDevice(std::vector<uint32_t>(ML_PASS_ROWS,0u)),*node_sequence = MlDevice(std::vector<uint32_t>(ML_NODE_ROWS,0u));
-		const uint32_t *key_offset = MlDevice(std::vector<uint32_t>{0u});
-		LmKvShardView cache = MlCache(table_device,error_device);
-		uint16_t *q_latents = MlAlloc<uint16_t>((uint64_t)ML_PASS_ROWS * K3_Q_LORA_RANK);
-		uint8_t *latent_keys = MlAlloc<uint8_t>((uint64_t)ML_ROWS * K3GlobalKv::kSlotBytes);
-		uint16_t *merged = MlAlloc<uint16_t>((uint64_t)ML_PASS_ROWS * ML_HEADS * K3_V_HEAD_DIM);
-		uint16_t *value_send = MlAlloc<uint16_t>((uint64_t)ML_PASS_ROWS * (ML_SHARDS / ML_NODES) * ML_HEADS * K3_V_HEAD_DIM);
-		uint16_t *values = MlAlloc<uint16_t>((uint64_t)ML_SHARDS * ML_NODE_ROWS * ML_HEADS * K3_V_HEAD_DIM);
-		n->node = node;
-		n->peer.world = &ml_world;
-		n->peer.node = node;
-		n->shards = shards.data();
-		n->partial = MlAlloc<uint16_t>((uint64_t)ML_NODE_ROWS * K3_HIDDEN);
-		n->join.weight = MlAlloc<uint16_t>((uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM);
-		n->join.weight_capacity = (uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM;
-		n->join.activation = MlAlloc<uint16_t>((uint64_t)(ML_NODE_ROWS) * K3_MLA_HEADS * K3_V_HEAD_DIM);
-		n->join.activation_capacity = (uint64_t)(ML_NODE_ROWS) * K3_MLA_HEADS * K3_V_HEAD_DIM;
-		n->hidden = hidden;
-		n->residual = partial_in;
-		n->gathered = gathered;
-		for (uint32_t pass = 0u; pass < ML_PASSES; pass++)
-		{
-			K3StreamedMlaExchange *x = &n->exchange[pass];
-			std::vector<uint32_t> pass_positions(ML_PASS_ROWS),node_positions(ML_NODE_ROWS);
-			for (uint32_t row = 0u; row < ML_PASS_ROWS; row++)
-				pass_positions[row] = pass * ML_PASS_ROWS + row;
-			for (uint32_t row = 0u; row < ML_NODE_ROWS; row++)
-				node_positions[row] = pass * ML_PASS_ROWS + node * ML_NODE_ROWS + row;
-			MlBuffers(&n->buffers[pass],ML_NODE_ROWS,node_sequence,MlDevice(std::vector<uint32_t>{(pass + 1u) * ML_PASS_ROWS}),MlDevice(node_positions));
-			n->buffers[pass].cache_shard = cache;
-			n->buffers[pass].kv_shard = cache.shard;
-			memset(x,0,sizeof(*x));
-			x->node = node;
-			x->nodes = ML_NODES;
-			x->pass_rows = ML_PASS_ROWS;
-			x->first_key = pass * ML_PASS_ROWS;
-			x->key_capacity = ML_ROWS;
-			x->q_latents = q_latents;
-			x->latent_keys = latent_keys;
-			x->query = query;
-			x->expanded = expanded;
-			x->partials = partials;
-			x->merged = merged;
-			x->value_send = value_send;
-			x->values = values;
-			x->pass_positions = MlDevice(pass_positions);
-			x->pass_sequence_of_row = pass_sequence;
-			x->pass_row_offset = pass_row_offset;
-			x->pass_tile_prefix = pass_tile_prefix;
-			x->key_offset = key_offset;
-			x->key_context = MlDevice(std::vector<uint32_t>{(pass + 1u) * ML_PASS_ROWS});
-			x->collective = NodeEmulationCollective;
-			x->context = &n->peer;
-		}
-		ML_CUDA(cudaStreamCreate(&n->stream));
-	}
+		MlSetup(&nodes[node],node,ML_NODES,&ml_world,shards.data(),table_device,error_device,hidden,partial_in,gathered);
+	static MlNode single;
+	uint16_t *single_gathered = MlAlloc<uint16_t>((uint64_t)ML_ROWS * K3_HIDDEN);
+	MlSetup(&single,0u,1u,&ml_alone_world,shards.data(),table_device,error_device,hidden,partial_in,single_gathered);
 	ML_CUDA(cudaDeviceSynchronize());
+	NodeEmulationStart(&ml_alone_world,1u);
+	MlNodeThread(&single);
+	MlCheck(single.status == LM_LAUNCH_OK,"one node runs both passes");
 	NodeEmulationStart(&ml_world,ML_NODES);
 	{
 		pthread_t threads[ML_NODES];
@@ -297,12 +311,25 @@ int main(void)
 			error += (r - c) * (r - c);
 		}
 		const double rms = sqrt(error / (squared > 0.0 ? squared : 1.0));
+		double node_squared = 0.0,node_error = 0.0;
+		ML_CUDA(cudaMemcpy(want.data(),single_gathered,want.size() * 2u,cudaMemcpyDeviceToHost));
+		for (uint64_t index = 0u; index < want.size(); index++)
+		{
+			const double r = MlHostFloat(want[index]),c = MlHostFloat(got[index]),b = MlHostFloat(before[index]);
+			if ( isfinite(r) && isfinite(c) )
+			{
+				node_squared += (r - b) * (r - b);
+				node_error += (r - c) * (r - c);
+			}
+		}
+		const double node_rms = sqrt(node_error / (node_squared > 0.0 ? node_squared : 1.0));
+		MlCheck(node_rms <= 0.002,"four nodes over two passes match the same MLA run as one node within 0.2% relative RMS of the attention contribution");
 		MlCheck(error_host.error_code == LM_FRAME_ERROR_NONE,"no KV access errors");
 		MlCheck(nonfinite == 0u,"every output element is finite");
 		MlCheck(squared > 0.0,"the MLA layer changes the residual");
-		MlCheck(rms <= 0.01,"four nodes over two passes, gathering latents and returning head-group values, match the one-device streamed MLA within 1% relative RMS of the attention contribution");
-		printf("%s MLA on %u nodes x %u passes vs one device: worst |diff| %.4g, relative RMS %.3g, nonfinite %llu\n",
-			ml_failures == 0 ? "PASS" : "FAIL",ML_NODES,ML_PASSES,worst,rms,(unsigned long long)nonfinite);
+		MlCheck(rms <= 0.01,"four nodes over two passes, gathering latents and returning head-group values, match the one-device streamed MLA (sixteen bf16-rounded output partials) within 1% relative RMS of the attention contribution");
+		printf("%s MLA on %u nodes x %u passes vs one node: relative RMS %.3g; vs one-device streamed MLA: %.3g (worst %.4g), nonfinite %llu\n",
+			ml_failures == 0 ? "PASS" : "FAIL",ML_NODES,ML_PASSES,node_rms,rms,worst,(unsigned long long)nonfinite);
 	}
 	return ml_failures != 0;
 }
