@@ -118,6 +118,7 @@ int main(void)
 	std::vector<K3LayerWeights> shards(KDA_SHARDS);
 	std::vector<K3StreamedKdaState> sequential_states(KDA_SHARDS),segmented_states(KDA_SHARDS);
 	std::vector<uint8_t *> ends(KDA_SHARDS),transforms(KDA_SHARDS),incoming(KDA_SHARDS);
+	std::vector<uint16_t *> q_windows(KDA_SHARDS),k_windows(KDA_SHARDS),v_windows(KDA_SHARDS);
 	uint16_t *attn_norm = KdaAlloc<uint16_t>(K3_HIDDEN),*decay_down = KdaAlloc<uint16_t>((uint64_t)K3_KDA_KEY_DIM * K3_HIDDEN);
 	uint16_t *hidden = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * K3_HIDDEN),*partial = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * K3_HIDDEN);
 	uint16_t *scratch = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * K3_HIDDEN);
@@ -175,7 +176,13 @@ int main(void)
 		ends[shard] = KdaAlloc<uint8_t>(slot_bytes * chunks);
 		transforms[shard] = KdaAlloc<uint8_t>(slot_bytes * chunks);
 		incoming[shard] = KdaAlloc<uint8_t>(slot_bytes * chunks);
+		q_windows[shard] = KdaAlloc<uint16_t>((uint64_t)chunks * KDA_RANK_QK * K3_KDA_CONV_KERNEL);
+		k_windows[shard] = KdaAlloc<uint16_t>((uint64_t)chunks * KDA_RANK_QK * K3_KDA_CONV_KERNEL);
+		v_windows[shard] = KdaAlloc<uint16_t>((uint64_t)chunks * KDA_RANK_V * K3_KDA_CONV_KERNEL);
 	}
+	segments.q_windows = q_windows.data();
+	segments.k_windows = k_windows.data();
+	segments.v_windows = v_windows.data();
 	segments.chunks = chunks;
 	segments.chunk_row_begin = chunk_begin;
 	segments.chunk_slots = chunk_slots;
@@ -234,7 +241,7 @@ int main(void)
 		const double output_rms = sqrt(error / (squared > 0.0 ? squared : 1.0)),state_rms = sqrt(state_error / (state_squared > 0.0 ? state_squared : 1.0));
 		KdaCheck(nonfinite == 0u,"every output and state element is finite");
 		KdaCheck(squared > 0.0 && state_squared > 0.0,"the layer changes the residual and the recurrent state");
-		KdaCheck(output_rms <= 0.01,"four chunks scanned separately and joined by their transforms match the sequential recurrence within 1% of the attention contribution");
+		KdaCheck(output_rms <= 0.01,"four chunks, each with its own conv window seeded from the previous chunk's last rows and its own scan joined by the transforms, match the sequential layer within 1% of the attention contribution");
 		KdaCheck(state_rms <= 1e-4,"the joined end state matches the sequential end state within 1e-4 relative RMS");
 		printf("%s segmented KDA (4 chunks) vs sequential: output relative RMS %.3g (worst %.4g), end state relative RMS %.3g, nonfinite %llu\n",
 			kda_failures == 0 ? "PASS" : "FAIL",output_rms,worst,state_rms,(unsigned long long)nonfinite);
