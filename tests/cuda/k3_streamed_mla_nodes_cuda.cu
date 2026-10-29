@@ -121,6 +121,8 @@ struct MlNode
 	const uint16_t *hidden;
 	const uint16_t *residual;
 	uint16_t *gathered;
+	uint8_t *latent_keys;
+	uint32_t stored;
 	int32_t status;
 	cudaStream_t stream;
 };
@@ -138,6 +140,8 @@ static void *MlNodeThread(void *argument)
 		const uint64_t first = (uint64_t)pass * ML_PASS_ROWS + (uint64_t)n->node * n->rows;
 		ML_CUDA(cudaMemcpyAsync(b->hidden_bf16,n->hidden + first * K3_HIDDEN,n->rows * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
 		ML_CUDA(cudaMemcpyAsync(b->attnres_partial_bf16,n->residual + first * K3_HIDDEN,n->rows * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
+		if ( n->stored != 0u )
+			ML_CUDA(cudaMemsetAsync(n->latent_keys,0xff,(uint64_t)ML_ROWS * K3GlobalKv::kSlotBytes,n->stream));
 		n->status = K3StreamedMlaNode<LmMxfp4,K3GlobalKv,ML_HEADS>(b,n->shards,ML_SHARDS,&n->exchange[pass],n->partial,&n->join,0u,n->rows,48u,n->stream);
 		ML_CUDA(cudaMemcpyAsync(n->gathered + first * K3_HIDDEN,b->attnres_partial_bf16,n->rows * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
 		ML_CUDA(cudaStreamSynchronize(n->stream));
@@ -146,8 +150,10 @@ static void *MlNodeThread(void *argument)
 }
 
 static void MlSetup(MlNode *n,uint32_t node,uint32_t nodes,NodeEmulationWorld *world,const K3LayerWeights *shards,uint32_t *table_device,
-	LmKvAccessError *error_device,const uint16_t *hidden,const uint16_t *partial_in,uint16_t *gathered)
+	LmKvAccessError *error_device,const uint16_t *hidden,const uint16_t *partial_in,uint16_t *gathered,uint32_t stored)
 {
+	const SparkKvShard store_shard = {nodes,node,4u};
+	LmKvShardView store;
 	const uint32_t rows = ML_PASS_ROWS / nodes;
 	n->nodes = nodes;
 	n->rows = rows;
@@ -176,6 +182,15 @@ static void MlSetup(MlNode *n,uint32_t node,uint32_t nodes,NodeEmulationWorld *w
 	n->hidden = hidden;
 	n->residual = partial_in;
 	n->gathered = gathered;
+	n->latent_keys = latent_keys;
+	n->stored = stored;
+	memset(&store,0,sizeof(store));
+	if ( stored != 0u && LmKvShardViewInitialize<K3GlobalKv>(&store,MlAlloc<uint8_t>(SparkKvShardPoolBytes(store_shard,K3GlobalKv::kPageSlots,K3GlobalKv::kSlotBytes,ML_PAGES)),
+			table_device,ML_PAGES,1u,ML_PAGES,error_device,store_shard) != 0 )
+	{
+		printf("FAIL store view\n");
+		exit(1);
+	}
 	for (uint32_t pass = 0u; pass < ML_PASSES; pass++)
 	{
 		K3StreamedMlaExchange *x = &n->exchange[pass];
@@ -209,6 +224,17 @@ static void MlSetup(MlNode *n,uint32_t node,uint32_t nodes,NodeEmulationWorld *w
 		x->key_context = MlDevice(std::vector<uint32_t>{(pass + 1u) * ML_PASS_ROWS});
 		x->collective = NodeEmulationCollective;
 		x->context = &n->peer;
+		if ( stored != 0u )
+		{
+			x->store = store;
+			x->store_sequence_of_row = pass_sequence;
+			x->older_sequence = key_offset;
+			x->older_offset = key_offset;
+			x->older_context = MlDevice(std::vector<uint32_t>{pass * ML_PASS_ROWS});
+			x->older_send = MlAlloc<uint8_t>((uint64_t)ML_ROWS * K3GlobalKv::kSlotBytes);
+			x->older_receive = expanded;
+			x->older_capacity = (uint64_t)ML_ROWS * K3StreamedHeadKv<ML_HEADS,K3GlobalKv>::kSlotBytes;
+		}
 	}
 	ML_CUDA(cudaStreamCreate(&n->stream));
 }
@@ -217,7 +243,8 @@ int main(void)
 {
 	std::vector<K3LayerWeights> shards(ML_SHARDS);
 	std::vector<uint32_t> table(ML_PAGES),positions(ML_ROWS);
-	static MlNode nodes[ML_NODES];
+	static MlNode nodes[ML_NODES],stored[ML_NODES];
+	static NodeEmulationWorld ml_stored_world;
 	uint16_t *hidden = MlBf16((uint64_t)ML_ROWS * K3_HIDDEN,1u,1.0f,0.0f),*partial_in = MlBf16((uint64_t)ML_ROWS * K3_HIDDEN,2u,1.0f,0.0f);
 	uint16_t *attn_norm = MlBf16(K3_HIDDEN,3u,0.1f,1.0f),*q_norm = MlBf16(K3_Q_LORA_RANK,4u,0.1f,1.0f),*kv_norm = MlBf16(K3_KV_LORA_RANK,5u,0.1f,1.0f);
 	uint16_t *q_down = MlBf16((uint64_t)K3_Q_LORA_RANK * K3_HIDDEN,6u,0.02f,0.0f),*kv_a = MlBf16((uint64_t)K3_MLA_KV_A_DIM * K3_HIDDEN,7u,0.02f,0.0f);
@@ -272,10 +299,13 @@ int main(void)
 		"the one-device streamed MLA runs all rows");
 	ML_CUDA(cudaStreamSynchronize(stream));
 	for (uint32_t node = 0u; node < ML_NODES; node++)
-		MlSetup(&nodes[node],node,ML_NODES,&ml_world,shards.data(),table_device,error_device,hidden,partial_in,gathered);
+		MlSetup(&nodes[node],node,ML_NODES,&ml_world,shards.data(),table_device,error_device,hidden,partial_in,gathered,0u);
+	uint16_t *stored_gathered = MlAlloc<uint16_t>((uint64_t)ML_ROWS * K3_HIDDEN);
+	for (uint32_t node = 0u; node < ML_NODES; node++)
+		MlSetup(&stored[node],node,ML_NODES,&ml_stored_world,shards.data(),table_device,error_device,hidden,partial_in,stored_gathered,1u);
 	static MlNode single;
 	uint16_t *single_gathered = MlAlloc<uint16_t>((uint64_t)ML_ROWS * K3_HIDDEN);
-	MlSetup(&single,0u,1u,&ml_alone_world,shards.data(),table_device,error_device,hidden,partial_in,single_gathered);
+	MlSetup(&single,0u,1u,&ml_alone_world,shards.data(),table_device,error_device,hidden,partial_in,single_gathered,0u);
 	ML_CUDA(cudaDeviceSynchronize());
 	NodeEmulationStart(&ml_alone_world,1u);
 	MlNodeThread(&single);
@@ -290,6 +320,16 @@ int main(void)
 	}
 	for (uint32_t node = 0u; node < ML_NODES; node++)
 		MlCheck(nodes[node].status == LM_LAUNCH_OK,"every node runs both passes");
+	NodeEmulationStart(&ml_stored_world,ML_NODES);
+	{
+		pthread_t threads[ML_NODES];
+		for (uint32_t node = 0u; node < ML_NODES; node++)
+			pthread_create(&threads[node],0,MlNodeThread,&stored[node]);
+		for (uint32_t node = 0u; node < ML_NODES; node++)
+			pthread_join(threads[node],0);
+	}
+	for (uint32_t node = 0u; node < ML_NODES; node++)
+		MlCheck(stored[node].status == LM_LAUNCH_OK,"every node runs both passes with keys in the decode store");
 	{
 		std::vector<uint16_t> want((uint64_t)ML_ROWS * K3_HIDDEN),got(want.size()),before(want.size());
 		double worst = 0.0,squared = 0.0,error = 0.0;
@@ -323,12 +363,16 @@ int main(void)
 			}
 		}
 		const double node_rms = sqrt(node_error / (node_squared > 0.0 ? node_squared : 1.0));
+		std::vector<uint16_t> from_store(want.size());
+		ML_CUDA(cudaMemcpy(from_store.data(),stored_gathered,from_store.size() * 2u,cudaMemcpyDeviceToHost));
+		MlCheck(memcmp(from_store.data(),got.data(),got.size() * 2u) == 0,
+			"nodes that keep no keys between passes (older keys gathered back from the owners' decode store, every node's key buffer wiped) give bit-identical output");
 		MlCheck(node_rms <= 0.002,"four nodes over two passes match the same MLA run as one node within 0.2% relative RMS of the attention contribution");
 		MlCheck(error_host.error_code == LM_FRAME_ERROR_NONE,"no KV access errors");
 		MlCheck(nonfinite == 0u,"every output element is finite");
 		MlCheck(squared > 0.0,"the MLA layer changes the residual");
 		MlCheck(rms <= 0.01,"four nodes over two passes, gathering latents and returning head-group values, match the one-device streamed MLA (sixteen bf16-rounded output partials) within 1% relative RMS of the attention contribution");
-		printf("%s MLA on %u nodes x %u passes vs one node: relative RMS %.3g; vs one-device streamed MLA: %.3g (worst %.4g), nonfinite %llu\n",
+		printf("%s MLA on %u nodes x %u passes vs one node: relative RMS %.3g; vs one-device streamed MLA: %.3g (worst %.4g), nonfinite %llu; keys from the decode store bit-identical\n",
 			ml_failures == 0 ? "PASS" : "FAIL",ML_NODES,ML_PASSES,node_rms,rms,worst,(unsigned long long)nonfinite);
 	}
 	return ml_failures != 0;

@@ -3,26 +3,27 @@
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_pack_window.h"
 
-uint64_t SparkPackWindowRegionBytes(uint32_t ranks, uint64_t dense_capacity, uint64_t expert_capacity)
+uint64_t SparkPackWindowRegionBytes(uint32_t ranks, uint32_t dense_buffers, uint64_t dense_capacity, uint64_t expert_capacity)
 {
-	return (2u * (uint64_t)ranks + 1u) * dense_capacity + 3u * expert_capacity;
+	return (uint64_t)dense_buffers * ranks * dense_capacity + 3u * expert_capacity;
 }
 
 SparkStatus SparkPackWindowInitialize(SparkPackWindow *window, const SparkPackWindowConfig *config)
 {
 	uint64_t cursor = 0u;
+	uint32_t buffer;
 	if ( window == 0 || config == 0 || config->stream == 0 || config->region == 0 || config->ranks < 2u || config->rank >= config->ranks ||
+		config->dense_buffers == 0u || config->dense_buffers > SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS ||
 		config->dense_capacity == 0u || config->expert_capacity == 0u || (config->expert_capacity % 2u) != 0u || config->read_own == 0 ||
-		config->read_partner == 0 || config->region_bytes < SparkPackWindowRegionBytes(config->ranks,config->dense_capacity,config->expert_capacity) )
+		config->read_partner == 0 || config->region_bytes < SparkPackWindowRegionBytes(config->ranks,config->dense_buffers,config->dense_capacity,config->expert_capacity) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(window,0,sizeof(*window));
 	window->config = *config;
-	window->dense_base[0] = cursor;
-	cursor += (uint64_t)config->ranks * config->dense_capacity;
-	window->dense_base[1] = cursor;
-	cursor += (uint64_t)config->ranks * config->dense_capacity;
-	window->dense_staging = cursor;
-	cursor += config->dense_capacity;
+	for (buffer=0u; buffer<config->dense_buffers; buffer++)
+	{
+		window->dense_base[buffer] = cursor;
+		cursor += (uint64_t)config->ranks * config->dense_capacity;
+	}
 	window->expert_slot[0] = cursor;
 	cursor += config->expert_capacity;
 	window->expert_slot[1] = cursor;
@@ -45,21 +46,22 @@ uint64_t SparkPackWindowDenseBytes(const SparkPackWindowLayer *layer)
 SparkStatus SparkPackWindowDense(SparkPackWindow *window, const SparkPackWindowLayer *layer, uint32_t buffer, uint32_t tag, uint8_t **rank_base)
 {
 	const uint64_t bytes = SparkPackWindowDenseBytes(layer);
-	uint64_t placed = 0u;
+	uint64_t placed = 0u,own;
 	uint32_t range,rank;
 	SparkStatus status;
-	if ( window == 0 || layer == 0 || rank_base == 0 || buffer > 1u || layer->dense_count == 0u || layer->dense_count > SPARK_PACK_WINDOW_MAX_DENSE_RANGES ||
+	if ( window == 0 || layer == 0 || rank_base == 0 || buffer >= window->config.dense_buffers || layer->dense_count == 0u || layer->dense_count > SPARK_PACK_WINDOW_MAX_DENSE_RANGES ||
 		bytes == 0u || bytes > window->config.dense_capacity )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	own = window->dense_base[buffer] + (uint64_t)window->config.rank * bytes;
 	for (range=0u; range<layer->dense_count; range++)
 	{
 		status = window->config.read_own(window->config.own_context,layer->dense[range].offset,layer->dense[range].bytes,
-			window->config.region + window->dense_staging + placed);
+			window->config.region + own + placed);
 		if ( status != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
 		placed += layer->dense[range].bytes;
 	}
-	status = SparkWeightStreamBroadcast(window->config.stream,window->dense_staging,bytes,window->dense_base[buffer],tag);
+	status = SparkWeightStreamBroadcast(window->config.stream,own,bytes,window->dense_base[buffer],tag);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	for (rank=0u; rank<window->config.ranks; rank++)

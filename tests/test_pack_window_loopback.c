@@ -95,7 +95,7 @@ static void PwLayer(uint32_t layer, SparkPackWindowLayer *out)
 static void *PwRun(void *argument)
 {
 	PwRank *self = (PwRank *)argument;
-	const uint64_t region_bytes = SparkPackWindowRegionBytes(PW_RANKS,PW_DENSE_CAPACITY,PW_EXPERT_CAPACITY);
+	const uint64_t region_bytes = SparkPackWindowRegionBytes(PW_RANKS,2u,PW_DENSE_CAPACITY,PW_EXPERT_CAPACITY);
 	uint8_t *region = (uint8_t *)aligned_alloc(4096u,(size_t)(region_bytes + 4095u) & ~(size_t)4095u);
 	SparkWeightStreamConfig stream_config;
 	SparkPackWindowConfig window_config;
@@ -128,6 +128,7 @@ static void *PwRun(void *argument)
 	window_config.region_bytes = region_bytes;
 	window_config.rank = self->rank;
 	window_config.ranks = PW_RANKS;
+	window_config.dense_buffers = 2u;
 	window_config.dense_capacity = PW_DENSE_CAPACITY;
 	window_config.expert_capacity = PW_EXPERT_CAPACITY;
 	window_config.read_own = PwReadOwn;
