@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sparkpipe/spark_tp_device_collective.h"
 #include "inference/kernels/tp_reduce.cuh"
 #include "inference/llms/kimi_k3/slice.cuh"
 
@@ -278,8 +279,7 @@ __global__ static void K3StreamedConvSeedKernel(uint16_t *window, const uint16_t
 			input[((uint64_t)chunk_row_begin[chunk] - K3_KDA_CONV_KERNEL + tap) * channels + channel];
 }
 
-#define K3_STREAMED_KDA_TAILS 1u
-#define K3_STREAMED_KDA_SUMMARIES 2u
+typedef void (*K3StreamedCollective)(void *context, void *stream, uint32_t operation, uint32_t rows, uint32_t row_elements, const void *send, void *receive);
 
 __global__ static void K3StreamedConvTailKernel(uint16_t *window, const uint16_t *input, uint32_t rows, uint32_t channels)
 {
@@ -297,8 +297,10 @@ struct K3StreamedKdaExchange
 	uint32_t chunks;
 	const uint32_t *chunk_row_begin;
 	const uint32_t *chunk_slots;
+	uint16_t *tail_send;
 	uint16_t *tails;
-	uint8_t *summaries;
+	float *summary_send;
+	float *summaries;
 	float *ends;
 	float *transforms;
 	float *incoming;
@@ -308,7 +310,7 @@ struct K3StreamedKdaExchange
 	uint16_t *v_windows;
 	const uint16_t *zeros;
 	uint16_t *scratch;
-	void (*exchange)(void *context, void *stream, uint32_t phase, uint32_t shard);
+	K3StreamedCollective collective;
 	void *context;
 };
 
@@ -341,9 +343,9 @@ static int32_t K3StreamedKdaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 	const uint32_t *row_begin = b->sequence_row_begin, *state_index = b->kda_state_index;
 	uint32_t shard;
 	int32_t status = LM_LAUNCH_OK;
-	if ( shards == 0 || states == 0 || x == 0 || x->exchange == 0 || x->nodes == 0u || x->node >= x->nodes || x->chunks == 0u ||
+	if ( shards == 0 || states == 0 || x == 0 || x->collective == 0 || x->nodes == 0u || x->node >= x->nodes || x->chunks == 0u ||
 		rows < (uint64_t)x->chunks * K3_KDA_CONV_KERNEL || partial == 0 || join == 0 || join->weight == 0 || join->activation == 0 || b->tp_sharded == 0u || heads * shard_count != K3_KDA_HEADS ||
-		K3_KDA_KEY_DIM != K3_KDA_VALUE_DIM || x->chunk_row_begin == 0 || x->chunk_slots == 0 || x->tails == 0 || x->summaries == 0 || x->ends == 0 ||
+		K3_KDA_KEY_DIM != K3_KDA_VALUE_DIM || x->chunk_row_begin == 0 || x->chunk_slots == 0 || x->tail_send == 0 || x->tails == 0 || x->summary_send == 0 || x->summaries == 0 || x->ends == 0 ||
 		x->transforms == 0 || x->incoming == 0 || x->running == 0 || x->zeros == 0 || x->scratch == 0 || x->q_windows == 0 || x->k_windows == 0 || x->v_windows == 0 ||
 		join->weight_capacity < (uint64_t)K3_HIDDEN * shard_count * channels[2] || join->activation_capacity < (uint64_t)rows * shard_count * channels[2] )
 		return(LM_LAUNCH_ERR_SHAPE);
@@ -354,9 +356,7 @@ static int32_t K3StreamedKdaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 	{
 		uint16_t *const windows[3] = {x->q_windows,x->k_windows,x->v_windows};
 		uint16_t *const carried[3] = {states[shard].q_window,states[shard].k_window,states[shard].v_window};
-		uint16_t *const own_tail = x->tails + ((uint64_t)x->node * shard_count + shard) * tail_elements;
-		const uint16_t *const last_tail = x->tails + ((uint64_t)(x->nodes - 1u) * shard_count + shard) * tail_elements;
-		float *const own = (float *)x->summaries + ((uint64_t)x->node * shard_count + shard) * 2u * slot_floats;
+		const uint16_t *const last_tail = x->tails + (uint64_t)(x->nodes - 1u) * tail_elements;
 		uint32_t which, node, chunk, current = 0u;
 		K3BindLayer(&shards[shard],b);
 		b->tp_rank = shard;
@@ -368,12 +368,12 @@ static int32_t K3StreamedKdaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 		{
 			const uint16_t *const inputs[3] = {b->query_bf16,b->key_bf16,b->value_bf16};
 			for (which = 0u; which < 3u; which++)
-				K3StreamedConvTailKernel<<<(channels[which] + 255u) / 256u,256u,0,stream>>>(own_tail + window_offset[which],inputs[which],rows,channels[which]);
-			x->exchange(x->context,(void *)(uintptr_t)stream,K3_STREAMED_KDA_TAILS,shard);
+				K3StreamedConvTailKernel<<<(channels[which] + 255u) / 256u,256u,0,stream>>>(x->tail_send + window_offset[which],inputs[which],rows,channels[which]);
+			x->collective(x->context,(void *)(uintptr_t)stream,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,1u,(uint32_t)tail_elements,x->tail_send,x->tails);
 			for (which = 0u; which < 3u; which++)
 			{
 				const uint64_t window_elements = (uint64_t)channels[which] * K3_KDA_CONV_KERNEL;
-				const uint16_t *seed = x->node == 0u ? carried[which] : x->tails + ((uint64_t)(x->node - 1u) * shard_count + shard) * tail_elements + window_offset[which];
+				const uint16_t *seed = x->node == 0u ? carried[which] : x->tails + (uint64_t)(x->node - 1u) * tail_elements + window_offset[which];
 				if ( cudaMemcpyAsync(windows[which],seed,(size_t)window_elements * sizeof(uint16_t),cudaMemcpyDeviceToDevice,stream) != cudaSuccess )
 					return(LM_LAUNCH_ERR_LAUNCH);
 				if ( x->chunks > 1u )
@@ -394,17 +394,17 @@ static int32_t K3StreamedKdaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 		if ( status == LM_LAUNCH_OK )
 			status = K3LayerKdaRecur(b,x->zeros,x->scratch,x->chunks,1u,stream);
 		if ( status == LM_LAUNCH_OK )
-			status = K3StreamedFold(x->transforms,x->ends,x->running,own,heads,x->chunks,slot_floats,stream);
+			status = K3StreamedFold(x->transforms,x->ends,x->running,x->summary_send,heads,x->chunks,slot_floats,stream);
 		if ( status == LM_LAUNCH_OK )
-			status = K3StreamedFold(x->transforms,(const float *)0,x->running,own + slot_floats,heads,x->chunks,slot_floats,stream);
+			status = K3StreamedFold(x->transforms,(const float *)0,x->running,x->summary_send + slot_floats,heads,x->chunks,slot_floats,stream);
 		if ( status != LM_LAUNCH_OK )
 			break;
-		x->exchange(x->context,(void *)(uintptr_t)stream,K3_STREAMED_KDA_SUMMARIES,shard);
+		x->collective(x->context,(void *)(uintptr_t)stream,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,1u,(uint32_t)slot_bytes,x->summary_send,x->summaries);
 		if ( cudaMemcpyAsync(x->running,states[shard].state_pool,(size_t)slot_bytes,cudaMemcpyDeviceToDevice,stream) != cudaSuccess )
 			return(LM_LAUNCH_ERR_LAUNCH);
 		for (node = 0u; node < x->nodes; node++)
 		{
-			const float *summary = (const float *)x->summaries + ((uint64_t)node * shard_count + shard) * 2u * slot_floats;
+			const float *summary = x->summaries + (uint64_t)node * 2u * slot_floats;
 			if ( node == x->node && cudaMemcpyAsync(x->incoming,x->running + current * slot_floats,(size_t)slot_bytes,cudaMemcpyDeviceToDevice,stream) != cudaSuccess )
 				return(LM_LAUNCH_ERR_LAUNCH);
 			K3StreamedStateComposeKernel<<<dim3(heads,K3_KDA_KEY_DIM),K3_KDA_VALUE_DIM,0,stream>>>(summary + slot_floats,x->running + current * slot_floats,summary,
@@ -443,15 +443,11 @@ static int32_t K3StreamedKdaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 	return(LM_LAUNCH_OK);
 }
 
-#define K3_STREAMED_MLA_LATENTS 3u
-#define K3_STREAMED_MLA_VALUES 4u
-
 struct K3StreamedMlaExchange
 {
 	uint32_t node;
 	uint32_t nodes;
 	uint32_t pass_rows;
-	uint32_t first_row;
 	uint32_t first_key;
 	uint32_t key_capacity;
 	uint16_t *q_latents;
@@ -459,6 +455,8 @@ struct K3StreamedMlaExchange
 	uint16_t *query;
 	uint8_t *expanded;
 	float *partials;
+	uint16_t *merged;
+	uint16_t *value_send;
 	uint16_t *values;
 	const uint32_t *pass_positions;
 	const uint32_t *pass_sequence_of_row;
@@ -466,7 +464,7 @@ struct K3StreamedMlaExchange
 	uint32_t *pass_tile_prefix;
 	const uint32_t *key_offset;
 	const uint32_t *key_context;
-	void (*exchange)(void *context, void *stream, uint32_t phase, uint32_t shard);
+	K3StreamedCollective collective;
 	void *context;
 };
 
@@ -482,15 +480,16 @@ static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 	uint32_t *const own_tile_prefix = b->dense_tile_prefix;
 	LmKvShardGatherView view;
 	uint64_t stride, key_count;
-	uint32_t shard;
+	uint32_t shard, groups;
 	int32_t status;
-	if ( shards == 0 || x == 0 || x->exchange == 0 || x->nodes == 0u || x->node >= x->nodes || shard_count * HEADS != K3_MLA_HEADS ||
+	if ( shards == 0 || x == 0 || x->collective == 0 || x->nodes == 0u || x->node >= x->nodes || shard_count * HEADS != K3_MLA_HEADS || shard_count % x->nodes != 0u ||
 		partial == 0 || join == 0 || join->weight == 0 || join->activation == 0 || join->weight_capacity < (uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM ||
-		join->activation_capacity < (uint64_t)rows * K3_MLA_HEADS * K3_V_HEAD_DIM || b->tp_sharded == 0u || b->kv_shard.degree != 1u || rows == 0u || x->first_row + rows > x->pass_rows ||
-		x->q_latents == 0 || x->latent_keys == 0 || x->query == 0 || x->expanded == 0 || x->partials == 0 || x->values == 0 ||
+		join->activation_capacity < (uint64_t)rows * K3_MLA_HEADS * K3_V_HEAD_DIM || b->tp_sharded == 0u || b->kv_shard.degree != 1u || rows == 0u || (uint64_t)rows * x->nodes != x->pass_rows ||
+		x->q_latents == 0 || x->latent_keys == 0 || x->query == 0 || x->expanded == 0 || x->partials == 0 || x->merged == 0 || x->value_send == 0 || x->values == 0 ||
 		x->pass_positions == 0 || x->pass_sequence_of_row == 0 || x->pass_row_offset == 0 || x->pass_tile_prefix == 0 || x->key_offset == 0 || x->key_context == 0 ||
 		shards[0].mla_kv_b_key_full_weight == 0 || shards[0].mla_kv_b_value_full_weight == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
+	groups = shard_count / x->nodes;
 	key_count = (uint64_t)x->first_key + x->pass_rows;
 	stride = (uint64_t)x->pass_rows * LmGqaShardRecordFloats(HEADS,K3_V_HEAD_DIM,1u);
 	if ( key_count > x->key_capacity )
@@ -503,12 +502,9 @@ static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 		b->latent_bf16,0,(const uint16_t *)b->mla_q_norm_weight, 0,b->latent_bf16,K3_Q_LORA_RANK,K3_Q_LORA_RANK,K3_LORA_RMS_EPSILON);
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_KV_LORA_RANK + 8u) * sizeof(float), stream,
 		b->kv_slot_bf16,0,(const uint16_t *)b->mla_kv_a_norm_weight, 0,b->kv_slot_bf16,K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_LORA_RMS_EPSILON);
-	if ( cudaMemcpyAsync(x->q_latents + (uint64_t)x->first_row * K3_Q_LORA_RANK,b->latent_bf16,(size_t)rows * K3_Q_LORA_RANK * sizeof(uint16_t),
-			cudaMemcpyDeviceToDevice,stream) != cudaSuccess ||
-		cudaMemcpyAsync(x->latent_keys + ((uint64_t)x->first_key + x->first_row) * Geometry::kSlotBytes,b->kv_slot_bf16,(size_t)rows * Geometry::kSlotBytes,
-			cudaMemcpyDeviceToDevice,stream) != cudaSuccess )
-		return(LM_LAUNCH_ERR_LAUNCH);
-	x->exchange(x->context,(void *)(uintptr_t)stream,K3_STREAMED_MLA_LATENTS,0u);
+	x->collective(x->context,(void *)(uintptr_t)stream,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,rows,K3_Q_LORA_RANK,b->latent_bf16,x->q_latents);
+	x->collective(x->context,(void *)(uintptr_t)stream,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,rows,Geometry::kSlotBytes / 2u,b->kv_slot_bf16,
+		x->latent_keys + (uint64_t)x->first_key * Geometry::kSlotBytes);
 	b->dense_row_offset = x->pass_row_offset;
 	b->dense_tile_prefix = x->pass_tile_prefix;
 	for (shard = x->node; shard < shard_count && status == LM_LAUNCH_OK; shard += x->nodes)
@@ -530,20 +526,22 @@ static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 			status = LM_LAUNCH_ERR_SHAPE;
 		else if ( LmGqaShardPartialLaunch<Expanded,LmKvShardGatherView,HEADS,K3_MHA_QK,K3_V_HEAD_DIM>(view,x->query,HEADS,x->pass_sequence_of_row,
 				x->key_context,x->pass_positions,K3_MLA_QK_SCALE,x->partials,stride,x->pass_rows,stream) != cudaSuccess ||
-			LmGqaShardMergeLaunch<K3_V_HEAD_DIM>(x->partials,stride,1u,HEADS,0u,x->values + (uint64_t)shard * x->pass_rows * value_elements,x->pass_rows,stream) != cudaSuccess )
+			LmGqaShardMergeLaunch<K3_V_HEAD_DIM>(x->partials,stride,1u,HEADS,0u,x->merged,x->pass_rows,stream) != cudaSuccess ||
+			cudaMemcpy2DAsync(x->value_send + (uint64_t)(shard / x->nodes) * rows * value_elements,(size_t)groups * rows * value_elements * sizeof(uint16_t),x->merged,
+				(size_t)rows * value_elements * sizeof(uint16_t),(size_t)rows * value_elements * sizeof(uint16_t),x->nodes,cudaMemcpyDeviceToDevice,stream) != cudaSuccess )
 			status = LM_LAUNCH_ERR_LAUNCH;
 	}
 	b->dense_row_offset = own_row_offset;
 	b->dense_tile_prefix = own_tile_prefix;
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	x->exchange(x->context,(void *)(uintptr_t)stream,K3_STREAMED_MLA_VALUES,0u);
+	x->collective(x->context,(void *)(uintptr_t)stream,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL,groups * rows,(uint32_t)value_elements,x->value_send,x->values);
 	b->shard_mha = 1u;
 	for (shard = 0u; shard < shard_count && status == LM_LAUNCH_OK; shard++)
 	{
 		K3BindLayer(&shards[shard],b);
 		b->tp_rank = shard;
-		b->value_bf16 = x->values + ((uint64_t)shard * x->pass_rows + x->first_row) * value_elements;
+		b->value_bf16 = x->values + ((uint64_t)(shard % x->nodes) * groups + shard / x->nodes) * rows * value_elements;
 		status = K3LayerMlaGated<Format>(b,rows,0u,multiprocessors,stream);
 		if ( status == LM_LAUNCH_OK )
 			status = K3StreamedJoinColumns(join->activation,K3_MLA_HEADS * K3_V_HEAD_DIM,shard * (uint32_t)value_elements,b->value_bf16,(uint32_t)value_elements,rows,stream);

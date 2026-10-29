@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "inference/llms/kimi_k3/streamed.cuh"
+#include "tests/cuda/node_collective_emulation.cuh"
 
 #define SL_SHARDS 16u
 #define SL_ROWS 256u
@@ -245,6 +246,7 @@ struct SlNode
 	const K3LayerWeights *weights;
 	K3StreamedKdaState *states;
 	K3StreamedKdaExchange exchange;
+	NodeEmulationNode peer;
 	K3StreamedJoin join;
 	K3LayerBuffers buffers;
 	uint16_t *partial;
@@ -257,16 +259,8 @@ struct SlNode
 };
 
 static SlNode sl_nodes[SL_NODES];
-static pthread_barrier_t sl_node_barrier;
-
-static void SlNodeExchange(void *context,void *stream,uint32_t phase,uint32_t shard)
-{
-	(void)context;
-	(void)phase;
-	(void)shard;
-	SL_CUDA(cudaStreamSynchronize((cudaStream_t)(uintptr_t)stream));
-	pthread_barrier_wait(&sl_node_barrier);
-}
+static NodeEmulationWorld sl_world,sl_alone_world;
+static NodeEmulationNode sl_alone = {&sl_alone_world,0u};
 
 static void *SlNodeThread(void *argument)
 {
@@ -426,8 +420,7 @@ int main(void)
 			sl_failures == 0 ? "PASS" : "FAIL",worst,scale,sqrt(error / (squared > 0.0 ? squared : 1.0)),(unsigned long long)nonfinite);
 	}
 	{
-		uint16_t *tails = SlAlloc<uint16_t>((uint64_t)SL_NODES * SL_SHARDS * SL_TAIL),*gathered = SlAlloc<uint16_t>((uint64_t)SL_ROWS * K3_HIDDEN);
-		uint8_t *summaries = SlAlloc<uint8_t>((uint64_t)SL_NODES * SL_SHARDS * 2u * SL_SLOT_BYTES);
+		uint16_t *gathered = SlAlloc<uint16_t>((uint64_t)SL_ROWS * K3_HIDDEN);
 		uint32_t *node_begin = SlAlloc<uint32_t>(2u),node_rows[2] = {0u,SL_NODE_ROWS};
 		std::vector<uint16_t> want((uint64_t)SL_ROWS * K3_HIDDEN),got(want.size());
 		double squared = 0.0,error = 0.0,worst = 0.0;
@@ -460,8 +453,13 @@ int main(void)
 			memset(x,0,sizeof(*x));
 			x->node = node;
 			x->nodes = SL_NODES;
-			x->tails = tails;
-			x->summaries = summaries;
+			x->tail_send = SlAlloc<uint16_t>(SL_TAIL);
+			x->tails = SlAlloc<uint16_t>((uint64_t)SL_NODES * SL_TAIL);
+			x->summary_send = SlAlloc<float>(2u * SL_SLOT_BYTES / 4u);
+			x->summaries = SlAlloc<float>((uint64_t)SL_NODES * 2u * SL_SLOT_BYTES / 4u);
+			n->peer.world = &sl_world;
+			n->peer.node = node;
+			x->context = &n->peer;
 			x->chunks = 1u;
 			x->chunk_row_begin = node_begin;
 			x->chunk_slots = state_index;
@@ -474,7 +472,7 @@ int main(void)
 			x->v_windows = SlAlloc<uint16_t>((uint64_t)SL_V * K3_KDA_CONV_KERNEL);
 			x->zeros = SlAlloc<uint16_t>((uint64_t)SL_NODE_ROWS * SL_V);
 			x->scratch = SlAlloc<uint16_t>((uint64_t)SL_NODE_ROWS * SL_V);
-			x->exchange = SlNodeExchange;
+			x->collective = NodeEmulationCollective;
 			SL_CUDA(cudaStreamCreate(&n->stream));
 		}
 		K3LayerBuffers single;
@@ -490,19 +488,21 @@ int main(void)
 		single_x.node = 0u;
 		single_x.nodes = 1u;
 		single_x.chunk_row_begin = row_begin;
-		single_x.tails = SlAlloc<uint16_t>((uint64_t)SL_SHARDS * SL_TAIL);
-		single_x.summaries = SlAlloc<uint8_t>((uint64_t)SL_SHARDS * 2u * SL_SLOT_BYTES);
+		single_x.tail_send = SlAlloc<uint16_t>(SL_TAIL);
+		single_x.tails = SlAlloc<uint16_t>(SL_TAIL);
+		single_x.summary_send = SlAlloc<float>(2u * SL_SLOT_BYTES / 4u);
+		single_x.summaries = SlAlloc<float>(2u * SL_SLOT_BYTES / 4u);
+		single_x.context = &sl_alone;
 		single_x.zeros = SlAlloc<uint16_t>((uint64_t)SL_ROWS * SL_V);
 		single_x.scratch = SlAlloc<uint16_t>((uint64_t)SL_ROWS * SL_V);
 		SlBuffers(&single,0u,state_index,row_begin,SL_ROWS);
 		SL_CUDA(cudaMemcpy(single.hidden_bf16,hidden,(uint64_t)SL_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
 		SL_CUDA(cudaDeviceSynchronize());
-		pthread_barrier_init(&sl_node_barrier,0,1u);
+		NodeEmulationStart(&sl_alone_world,1u);
 		SlCheck(K3StreamedSlice<LmMxfp4,K3GlobalKv,SL_MLA_HEADS>(&single,shard_weights.data(),single_states,SL_SHARDS,&single_x,0,&join,0u,SL_LAYERS,partial,
 			latent_accumulator,hidden_accumulator,SL_ROWS,SL_PACKED,48u,stream) == LM_LAUNCH_OK,"the node slice runs all rows as one node");
 		SL_CUDA(cudaStreamSynchronize(stream));
-		pthread_barrier_destroy(&sl_node_barrier);
-		pthread_barrier_init(&sl_node_barrier,0,SL_NODES);
+		NodeEmulationStart(&sl_world,SL_NODES);
 		{
 			pthread_t threads[SL_NODES];
 			for (uint32_t node = 0u; node < SL_NODES; node++)

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "inference/llms/kimi_k3/streamed.cuh"
+#include "tests/cuda/node_collective_emulation.cuh"
 
 #define KDA_SHARDS 16u
 #define KDA_ROWS 256u
@@ -130,14 +131,6 @@ static double KdaContributionRms(const uint16_t *want_device,const uint16_t *got
 	return sqrt(error / (squared > 0.0 ? squared : 1.0));
 }
 
-static void KdaNoExchange(void *context,void *stream,uint32_t phase,uint32_t shard)
-{
-	(void)context;
-	(void)stream;
-	(void)phase;
-	(void)shard;
-}
-
 int main(void)
 {
 	const uint32_t chunks = 4u,chunk_rows = KDA_ROWS / chunks;
@@ -207,8 +200,10 @@ int main(void)
 	segments.chunks = chunks;
 	segments.chunk_row_begin = chunk_begin;
 	segments.chunk_slots = chunk_slots;
-	segments.tails = KdaAlloc<uint16_t>((uint64_t)KDA_SHARDS * (2u * KDA_RANK_QK + KDA_RANK_V) * K3_KDA_CONV_KERNEL);
-	segments.summaries = KdaAlloc<uint8_t>((uint64_t)KDA_SHARDS * 2u * slot_bytes);
+	segments.tail_send = KdaAlloc<uint16_t>((uint64_t)(2u * KDA_RANK_QK + KDA_RANK_V) * K3_KDA_CONV_KERNEL);
+	segments.tails = KdaAlloc<uint16_t>((uint64_t)(2u * KDA_RANK_QK + KDA_RANK_V) * K3_KDA_CONV_KERNEL);
+	segments.summary_send = KdaAlloc<float>(2u * slot_bytes / 4u);
+	segments.summaries = KdaAlloc<float>(2u * slot_bytes / 4u);
 	segments.ends = KdaAlloc<float>(slot_bytes * chunks / 4u);
 	segments.transforms = KdaAlloc<float>(slot_bytes * chunks / 4u);
 	segments.incoming = KdaAlloc<float>(slot_bytes * chunks / 4u);
@@ -217,7 +212,11 @@ int main(void)
 	segments.k_windows = KdaAlloc<uint16_t>((uint64_t)chunks * KDA_RANK_QK * K3_KDA_CONV_KERNEL);
 	segments.v_windows = KdaAlloc<uint16_t>((uint64_t)chunks * KDA_RANK_V * K3_KDA_CONV_KERNEL);
 	segments.zeros = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * KDA_RANK_V);
-	segments.exchange = KdaNoExchange;
+	static NodeEmulationWorld world;
+	static NodeEmulationNode alone = {&world,0u};
+	NodeEmulationStart(&world,1u);
+	segments.collective = NodeEmulationCollective;
+	segments.context = &alone;
 	join.weight = KdaAlloc<uint16_t>((uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM);
 	join.weight_capacity = (uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM;
 	join.activation = KdaAlloc<uint16_t>((uint64_t)(KDA_ROWS) * K3_MLA_HEADS * K3_V_HEAD_DIM);

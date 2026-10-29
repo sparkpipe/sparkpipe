@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "inference/llms/kimi_k3/streamed.cuh"
+#include "tests/cuda/node_collective_emulation.cuh"
 
 #define KDA_SHARDS 16u
 #define KDA_ROWS 256u
@@ -123,6 +124,7 @@ struct KdaNode
 	const K3LayerWeights *shards;
 	K3StreamedKdaState states[KDA_SHARDS];
 	K3StreamedKdaExchange exchange;
+	NodeEmulationNode peer;
 	K3StreamedJoin join;
 	K3LayerBuffers buffers;
 	uint16_t *partial;
@@ -133,16 +135,8 @@ struct KdaNode
 	cudaStream_t stream;
 };
 
-static pthread_barrier_t kda_barrier;
-
-static void KdaExchange(void *context,void *stream,uint32_t phase,uint32_t shard)
-{
-	(void)context;
-	(void)phase;
-	(void)shard;
-	KDA_CUDA(cudaStreamSynchronize((cudaStream_t)(uintptr_t)stream));
-	pthread_barrier_wait(&kda_barrier);
-}
+static NodeEmulationWorld kda_world,kda_alone_world;
+static NodeEmulationNode kda_alone = {&kda_alone_world,0u};
 
 static double KdaContributionRms(const uint16_t *want_device,const uint16_t *got_device,const uint16_t *before_device,uint64_t count)
 {
@@ -190,8 +184,6 @@ int main(void)
 	uint16_t *attn_norm = KdaAlloc<uint16_t>(K3_HIDDEN),*decay_down = KdaAlloc<uint16_t>((uint64_t)K3_KDA_KEY_DIM * K3_HIDDEN);
 	uint16_t *hidden = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * K3_HIDDEN),*partial = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * K3_HIDDEN);
 	uint16_t *scratch = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * K3_HIDDEN),*gathered = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * K3_HIDDEN);
-	uint16_t *tails = KdaAlloc<uint16_t>((uint64_t)KDA_NODES * KDA_SHARDS * tail_elements);
-	uint8_t *summaries = KdaAlloc<uint8_t>((uint64_t)KDA_NODES * KDA_SHARDS * 2u * slot_bytes);
 	float *decay_bias = KdaAlloc<float>((uint64_t)K3_KDA_HEADS * K3_KDA_KEY_DIM),*log_scale = KdaAlloc<float>(K3_KDA_HEADS);
 	float *out_norm = KdaAlloc<float>(K3_KDA_VALUE_DIM),*accumulator = KdaAlloc<float>((uint64_t)KDA_ROWS * K3_HIDDEN);
 	uint32_t *state_index = KdaAlloc<uint32_t>(1u),*row_begin = KdaAlloc<uint32_t>(2u),*node_begin = KdaAlloc<uint32_t>(KDA_NODE_CHUNKS + 1u);
@@ -261,8 +253,13 @@ int main(void)
 		memset(x,0,sizeof(*x));
 		x->node = node;
 		x->nodes = KDA_NODES;
-		x->tails = tails;
-		x->summaries = summaries;
+		x->tail_send = KdaAlloc<uint16_t>(tail_elements);
+		x->tails = KdaAlloc<uint16_t>((uint64_t)KDA_NODES * tail_elements);
+		x->summary_send = KdaAlloc<float>(2u * slot_bytes / 4u);
+		x->summaries = KdaAlloc<float>((uint64_t)KDA_NODES * 2u * slot_bytes / 4u);
+		n->peer.world = &kda_world;
+		n->peer.node = node;
+		x->context = &n->peer;
 		x->chunks = KDA_NODE_CHUNKS;
 		x->chunk_row_begin = node_begin;
 		x->chunk_slots = chunk_slots;
@@ -275,7 +272,7 @@ int main(void)
 		x->v_windows = KdaAlloc<uint16_t>((uint64_t)KDA_NODE_CHUNKS * KDA_RANK_V * K3_KDA_CONV_KERNEL);
 		x->zeros = KdaAlloc<uint16_t>((uint64_t)KDA_NODE_ROWS * KDA_RANK_V);
 		x->scratch = KdaAlloc<uint16_t>((uint64_t)KDA_NODE_ROWS * KDA_RANK_V);
-		x->exchange = KdaExchange;
+		x->collective = NodeEmulationCollective;
 		KDA_CUDA(cudaStreamCreate(&n->stream));
 	}
 	KDA_CUDA(cudaDeviceSynchronize());
@@ -292,8 +289,10 @@ int main(void)
 	single_x.chunks = 1u;
 	single_x.chunk_row_begin = row_begin;
 	single_x.chunk_slots = state_index;
-	single_x.tails = KdaAlloc<uint16_t>((uint64_t)KDA_SHARDS * tail_elements);
-	single_x.summaries = KdaAlloc<uint8_t>((uint64_t)KDA_SHARDS * 2u * slot_bytes);
+	single_x.tail_send = KdaAlloc<uint16_t>(tail_elements);
+	single_x.tails = KdaAlloc<uint16_t>(tail_elements);
+	single_x.summary_send = KdaAlloc<float>(2u * slot_bytes / 4u);
+	single_x.summaries = KdaAlloc<float>(2u * slot_bytes / 4u);
 	single_x.ends = KdaAlloc<float>(slot_bytes / 4u);
 	single_x.transforms = KdaAlloc<float>(slot_bytes / 4u);
 	single_x.incoming = KdaAlloc<float>(slot_bytes / 4u);
@@ -303,7 +302,8 @@ int main(void)
 	single_x.v_windows = KdaAlloc<uint16_t>((uint64_t)KDA_RANK_V * K3_KDA_CONV_KERNEL);
 	single_x.zeros = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * KDA_RANK_V);
 	single_x.scratch = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * KDA_RANK_V);
-	single_x.exchange = KdaExchange;
+	single_x.collective = NodeEmulationCollective;
+	single_x.context = &kda_alone;
 	single_join.weight = KdaAlloc<uint16_t>((uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM);
 	single_join.weight_capacity = (uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM;
 	single_join.activation = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * K3_MLA_HEADS * K3_V_HEAD_DIM);
@@ -311,12 +311,11 @@ int main(void)
 	KdaBuffers(&single,0u,state_index,row_begin,0);
 	KDA_CUDA(cudaMemcpy(single.hidden_bf16,hidden,(uint64_t)KDA_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
 	KDA_CUDA(cudaMemcpy(single.attnres_partial_bf16,partial,(uint64_t)KDA_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
-	pthread_barrier_init(&kda_barrier,0,1u);
+	NodeEmulationStart(&kda_alone_world,1u);
 	KdaCheck(K3StreamedKdaNode<LmMxfp4>(&single,shards.data(),single_states.data(),KDA_SHARDS,&single_x,scratch,&single_join,0u,KDA_ROWS,48u,stream) == LM_LAUNCH_OK,
 		"the streamed KDA runs all rows as one node of one chunk");
 	KDA_CUDA(cudaStreamSynchronize(stream));
-	pthread_barrier_destroy(&kda_barrier);
-	pthread_barrier_init(&kda_barrier,0,KDA_NODES);
+	NodeEmulationStart(&kda_world,KDA_NODES);
 	{
 		pthread_t threads[KDA_NODES];
 		for (uint32_t node = 0u; node < KDA_NODES; node++)

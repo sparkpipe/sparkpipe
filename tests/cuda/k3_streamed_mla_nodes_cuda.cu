@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "inference/llms/kimi_k3/streamed.cuh"
+#include "tests/cuda/node_collective_emulation.cuh"
 
 #define ML_SHARDS 16u
 #define ML_ROWS 256u
@@ -113,6 +114,7 @@ struct MlNode
 	K3StreamedMlaExchange exchange[ML_PASSES];
 	K3LayerBuffers buffers[ML_PASSES];
 	K3StreamedJoin join;
+	NodeEmulationNode peer;
 	uint16_t *partial;
 	const uint16_t *hidden;
 	const uint16_t *residual;
@@ -121,16 +123,7 @@ struct MlNode
 	cudaStream_t stream;
 };
 
-static pthread_barrier_t ml_barrier;
-
-static void MlExchange(void *context,void *stream,uint32_t phase,uint32_t shard)
-{
-	(void)context;
-	(void)phase;
-	(void)shard;
-	ML_CUDA(cudaStreamSynchronize((cudaStream_t)(uintptr_t)stream));
-	pthread_barrier_wait(&ml_barrier);
-}
+static NodeEmulationWorld ml_world;
 
 static void *MlNodeThread(void *argument)
 {
@@ -162,9 +155,6 @@ int main(void)
 	uint16_t *kv_b_key = MlBf16((uint64_t)K3_MLA_HEADS * K3_QK_NOPE_DIM * K3_KV_LORA_RANK,9u,0.05f,0.0f);
 	uint16_t *kv_b_value = MlBf16((uint64_t)K3_MLA_HEADS * K3_V_HEAD_DIM * K3_KV_LORA_RANK,10u,0.05f,0.0f);
 	uint16_t *scratch = MlAlloc<uint16_t>((uint64_t)ML_ROWS * K3_HIDDEN),*gathered = MlAlloc<uint16_t>((uint64_t)ML_ROWS * K3_HIDDEN);
-	uint16_t *q_latents = MlAlloc<uint16_t>((uint64_t)ML_PASS_ROWS * K3_Q_LORA_RANK);
-	uint16_t *values = MlAlloc<uint16_t>((uint64_t)ML_SHARDS * ML_PASS_ROWS * ML_HEADS * K3_V_HEAD_DIM);
-	uint8_t *latent_keys = MlAlloc<uint8_t>((uint64_t)ML_ROWS * K3GlobalKv::kSlotBytes);
 	float *accumulator = MlAlloc<float>((uint64_t)ML_ROWS * K3_HIDDEN);
 	LmKvAccessError *error_device = MlAlloc<LmKvAccessError>(1u),error_host;
 	uint32_t *table_device,*plan_device;
@@ -222,7 +212,14 @@ int main(void)
 		const uint32_t *pass_sequence = MlDevice(std::vector<uint32_t>(ML_PASS_ROWS,0u)),*node_sequence = MlDevice(std::vector<uint32_t>(ML_NODE_ROWS,0u));
 		const uint32_t *key_offset = MlDevice(std::vector<uint32_t>{0u});
 		LmKvShardView cache = MlCache(table_device,error_device);
+		uint16_t *q_latents = MlAlloc<uint16_t>((uint64_t)ML_PASS_ROWS * K3_Q_LORA_RANK);
+		uint8_t *latent_keys = MlAlloc<uint8_t>((uint64_t)ML_ROWS * K3GlobalKv::kSlotBytes);
+		uint16_t *merged = MlAlloc<uint16_t>((uint64_t)ML_PASS_ROWS * ML_HEADS * K3_V_HEAD_DIM);
+		uint16_t *value_send = MlAlloc<uint16_t>((uint64_t)ML_PASS_ROWS * (ML_SHARDS / ML_NODES) * ML_HEADS * K3_V_HEAD_DIM);
+		uint16_t *values = MlAlloc<uint16_t>((uint64_t)ML_SHARDS * ML_NODE_ROWS * ML_HEADS * K3_V_HEAD_DIM);
 		n->node = node;
+		n->peer.world = &ml_world;
+		n->peer.node = node;
 		n->shards = shards.data();
 		n->partial = MlAlloc<uint16_t>((uint64_t)ML_NODE_ROWS * K3_HIDDEN);
 		n->join.weight = MlAlloc<uint16_t>((uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM);
@@ -247,7 +244,6 @@ int main(void)
 			x->node = node;
 			x->nodes = ML_NODES;
 			x->pass_rows = ML_PASS_ROWS;
-			x->first_row = node * ML_NODE_ROWS;
 			x->first_key = pass * ML_PASS_ROWS;
 			x->key_capacity = ML_ROWS;
 			x->q_latents = q_latents;
@@ -255,6 +251,8 @@ int main(void)
 			x->query = query;
 			x->expanded = expanded;
 			x->partials = partials;
+			x->merged = merged;
+			x->value_send = value_send;
 			x->values = values;
 			x->pass_positions = MlDevice(pass_positions);
 			x->pass_sequence_of_row = pass_sequence;
@@ -262,12 +260,13 @@ int main(void)
 			x->pass_tile_prefix = pass_tile_prefix;
 			x->key_offset = key_offset;
 			x->key_context = MlDevice(std::vector<uint32_t>{(pass + 1u) * ML_PASS_ROWS});
-			x->exchange = MlExchange;
+			x->collective = NodeEmulationCollective;
+			x->context = &n->peer;
 		}
 		ML_CUDA(cudaStreamCreate(&n->stream));
 	}
 	ML_CUDA(cudaDeviceSynchronize());
-	pthread_barrier_init(&ml_barrier,0,ML_NODES);
+	NodeEmulationStart(&ml_world,ML_NODES);
 	{
 		pthread_t threads[ML_NODES];
 		for (uint32_t node = 0u; node < ML_NODES; node++)
