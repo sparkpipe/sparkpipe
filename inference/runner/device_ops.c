@@ -1293,15 +1293,18 @@ SparkStatus SparkOpsNgramGatherFp8(SparkDeviceOps *ops, SparkDeviceQueue *queue,
 		bindings,4u));
 }
 
-SparkStatus SparkOpsNgramHistory(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor token_ids, const SparkOpsSequences *sequences, SparkTensor history,
-	const SparkNgramParams *params)
+SparkStatus SparkOpsNgramHistory(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor token_ids, const SparkTensor *row_map, const SparkOpsSequences *sequences,
+	SparkTensor history, const SparkNgramParams *params)
 {
-	SparkDeviceBinding bindings[4];
+	SparkNgramParams mapped = *params;
+	SparkDeviceBinding bindings[5];
 	SparkStatus status = OpsNgramShape("ngram_history",params,sequences);
 	if ( status == SPARK_STATUS_OK && params->rows == 0u )
 		status = OpsRefuse("ngram_history","rows are required");
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && row_map == 0 )
 		status = OpsNeed("ngram_history","token ids",token_ids,(uint64_t)params->rows * 4u);
+	if ( status == SPARK_STATUS_OK && row_map != 0 )
+		status = OpsNeed("ngram_history","row map",*row_map,(uint64_t)params->rows * 4u);
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("ngram_history","row_begin",sequences->row_begin,((uint64_t)params->sequences + 1u) * 4u);
 	if ( status == SPARK_STATUS_OK )
@@ -1312,7 +1315,9 @@ SparkStatus SparkOpsNgramHistory(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	bindings[1] = OpsBind(sequences->row_begin,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(sequences->state_index,SPARK_DEVICE_BIND_READ);
 	bindings[3] = OpsBind(history,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
-	return(OpsLaunch(ops,queue,SPARK_OPS_NGRAM_HISTORY,(params->sequences + 63u) / 64u,1u,1u,64u,params,sizeof(*params),bindings,4u));
+	bindings[4] = OpsBind(row_map != 0 ? *row_map : token_ids,SPARK_DEVICE_BIND_READ);
+	mapped.mapped = row_map != 0 ? 1u : 0u;
+	return(OpsLaunch(ops,queue,SPARK_OPS_NGRAM_HISTORY,(params->sequences + 63u) / 64u,1u,1u,64u,&mapped,sizeof(mapped),bindings,5u));
 }
 
 SparkStatus SparkOpsLinearRoutedNvfp4(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor scale, SparkTensor global_scale,

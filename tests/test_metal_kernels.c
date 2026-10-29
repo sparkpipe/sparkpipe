@@ -1538,7 +1538,7 @@ static void TestNgram(void)
 			break;
 		if ( !Run(SparkOpsNgramGatherFp8(&ops,queue,Whole(&ids),Whole(&payload),Whole(&scale),Whole(&embed),&params),"ngram_gather_fp8") )
 			break;
-		if ( !Run(SparkOpsNgramHistory(&ops,queue,Whole(&tokens),&sequences,Whole(&history),&params),"ngram_history") )
+		if ( !Run(SparkOpsNgramHistory(&ops,queue,Whole(&tokens),0,&sequences,Whole(&history),&params),"ngram_history") )
 			break;
 		tv[6] = tokens_init[6];
 		for ( row = 0u; row < ROWS; row++ )

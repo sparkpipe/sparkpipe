@@ -415,7 +415,7 @@ static SparkStatus RunnerHead(SparkDeviceStageRunner *runner, const SparkDeviceS
 	norm.dimension = g->hidden;
 	norm.input_stride = norm.output_stride = g->hidden;
 	norm.epsilon = g->rms_epsilon;
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && g->head_prenormed == 0u )
 		status = SparkOpsRmsNormResidual(runner->ops,runner->queue,SparkTensorAt(&runner->head_hidden,0u,(uint64_t)rows * g->hidden * 2u),0,
 			SparkTensorAt(&runner->weights,g->head_norm_offset,g->head_norm_bytes),SparkTensorAt(&runner->head_normed,0u,(uint64_t)rows * g->hidden * 2u),&norm);
 	memset(&head,0,sizeof(head));
@@ -428,7 +428,8 @@ static SparkStatus RunnerHead(SparkDeviceStageRunner *runner, const SparkDeviceS
 	head.projection = ((const SparkDeviceStage *)runner->model)->shape->projection;
 	head.row_exact = batch->verify;
 	if ( status == SPARK_STATUS_OK )
-		status = SparkOpsLinear(runner->ops,runner->queue,SparkTensorAt(&runner->head_normed,0u,(uint64_t)rows * g->hidden * 2u),
+		status = SparkOpsLinear(runner->ops,runner->queue,SparkTensorAt(g->head_prenormed != 0u ? &runner->head_hidden : &runner->head_normed,0u,
+			(uint64_t)rows * g->hidden * 2u),
 			SparkTensorAt(&runner->weights,g->head_offset,g->head_bytes),SparkTensorAt(&runner->logits,0u,(uint64_t)rows * g->vocab * 4u),&head);
 	if ( status == SPARK_STATUS_OK && (g->logit_softcap != 0.0f || g->logit_scale != 0.0f) )
 		status = SparkOpsSoftcap(runner->ops,runner->queue,SparkTensorAt(&runner->logits,0u,(uint64_t)rows * g->vocab * sizeof(float)),(uint64_t)rows * g->vocab,

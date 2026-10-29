@@ -1405,8 +1405,10 @@ DEVICE_RUNNER_SOURCES := inference/runner/device_stage_runner.c inference/runner
 DEVICE_RUNNER_HEADERS := inference/runner/device_stage_runner.h inference/runner/device_stage_model.h inference/runner/device_layers.h $(DEVICE_OPS_HEADERS) include/sparkpipe/spark_stage_runner_model.h
 QWEN38_DEVICE_SOURCES := model-families/qwen38/device/qwen38_device_stage.cpp
 QWEN38_DEVICE_HEADERS := model-families/qwen38/include/sparkpipe/spark_qwen38_family.h model-families/qwen38/include/sparkpipe/spark_qwen38_device_stage.h \
-	modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_stage_model.h
-QWEN38_DEVICE_INCLUDE_FLAGS := -Imodel-families/qwen38/include -Imodules/qwen38_27b_resident_decode_stage/include
+	modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_stage_model.h \
+	modules/qwen38_flash_resident_decode_stage/include/sparkpipe/spark_qwen38_flash_stage_model.h
+QWEN38_DEVICE_INCLUDE_FLAGS := -Imodel-families/qwen38/include -Imodules/qwen38_27b_resident_decode_stage/include \
+	-Imodules/qwen38_flash_resident_decode_stage/include
 QWEN38_DEVICE_OBJECT := build/metal/qwen38_device_stage.o
 
 $(QWEN38_DEVICE_OBJECT): $(QWEN38_DEVICE_SOURCES) $(QWEN38_DEVICE_HEADERS) $(DEVICE_RUNNER_HEADERS) | build

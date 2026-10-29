@@ -51,7 +51,7 @@ kernel void spark_ngram_gather_fp8(constant SparkNgramParams &p [[buffer(0)]], d
 
 kernel void spark_ngram_history(constant SparkNgramParams &p [[buffer(0)]], device const uint *token_ids [[buffer(1)]],
 	device const uint *row_begin [[buffer(2)]], device const uint *state_index [[buffer(3)]], device int *history [[buffer(4)]],
-	uint sequence [[thread_position_in_grid]])
+	device const uint *row_map [[buffer(5)]], uint sequence [[thread_position_in_grid]])
 {
 	if ( p.commit == 0u || sequence >= p.sequences )
 		return;
@@ -64,7 +64,10 @@ kernel void spark_ngram_history(constant SparkNgramParams &p [[buffer(0)]], devi
 	for ( uint shift = 0u; shift < p.orders; shift++ )
 		carried[shift] = slot[shift];
 	for ( uint shift = 0u; shift < p.orders; shift++ )
-		updated[shift] = shift <= into_wave ? int(token_ids[begin + into_wave - shift]) : carried[shift - into_wave - 1u];
+	{
+		const uint row = begin + into_wave - shift;
+		updated[shift] = shift <= into_wave ? int(token_ids[p.mapped != 0u ? row_map[row] : row]) : carried[shift - into_wave - 1u];
+	}
 	for ( uint shift = 0u; shift < p.orders; shift++ )
 		slot[shift] = updated[shift];
 }

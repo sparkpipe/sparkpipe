@@ -76,18 +76,23 @@ SparkStatus SparkDeviceStageExpectConfig(SparkDeviceStage *stage, const SparkDev
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkDeviceStageReserve(SparkDeviceStage *stage, uint64_t scratch_bytes, uint32_t recurrent_layers, const uint64_t *recurrent_widths,
+SparkStatus SparkDeviceStageReserve(SparkDeviceStage *stage, uint64_t scratch_bytes, const SparkDeviceStageRecurrentPlan *recurrent_pools,
 	uint32_t recurrent_pool_count, uint64_t state_budget_bytes)
 {
 	uint64_t state_bytes;
 	uint32_t pool;
-	if ( recurrent_pool_count > SPARK_DEVICE_STAGE_MAX_RECURRENT_POOLS || (recurrent_pool_count != 0u && recurrent_layers == 0u) )
-		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"the recurrent state needs layers and at most four pools"));
+	if ( recurrent_pool_count > SPARK_DEVICE_STAGE_MAX_RECURRENT_POOLS )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"the recurrent state has at most eight pools"));
+	for ( pool = 0u; pool < recurrent_pool_count; pool++ )
+		if ( recurrent_pools[pool].layers == 0u || recurrent_pools[pool].width == 0u )
+			return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"each recurrent pool needs layers and a width"));
 	stage->scratch_bytes = scratch_bytes;
-	stage->recurrent_layers = recurrent_layers;
 	stage->recurrent_pool_count = recurrent_pool_count;
 	for ( pool = 0u; pool < recurrent_pool_count; pool++ )
-		stage->recurrent_pools[pool].width = recurrent_widths[pool];
+	{
+		stage->recurrent_pools[pool].layers = recurrent_pools[pool].layers;
+		stage->recurrent_pools[pool].width = recurrent_pools[pool].width;
+	}
 	state_bytes = (uint64_t)stage->slots * SparkDeviceStageRecurrentBytes(stage);
 	if ( scratch_bytes + state_bytes > state_budget_bytes )
 	{
@@ -134,9 +139,9 @@ SparkStatus SparkDeviceStageGeometry(SparkDeviceStage *stage, SparkStageRunnerMo
 	geometry->kv_shard.grain = 1u;
 	geometry->recurrent_bytes = SparkDeviceStageRecurrentBytes(stage);
 	geometry->head_norm_f32 = 1u;
-	geometry->head_prenormed = 0u;
+	geometry->head_prenormed = shape->prenormed_head != 0u ? 1u : 0u;
 	status = SparkDeviceStageEntry(stage,"embed","bf16",&geometry->embed_offset,&geometry->embed_bytes,&embed_rows);
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && shape->prenormed_head == 0u )
 		status = SparkDeviceStageEntry(stage,"head_norm","f32",&geometry->head_norm_offset,&geometry->head_norm_bytes,0);
 	if ( status == SPARK_STATUS_OK && shape->tied_head != 0u )
 	{
@@ -157,7 +162,7 @@ SparkStatus SparkDeviceStageGeometry(SparkDeviceStage *stage, SparkStageRunnerMo
 		shape->embed_alias_row >= shape->vocab || shape->embed_alias_row - shape->embed_alias_first < shape->embed_alias_count) )
 		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_SCHEMA_ERROR,"the embedding alias must name tokens and a row of the vocabulary, the row outside the aliased tokens"));
 	if ( embed_rows != shape->vocab || head_rows != shape->vocab || geometry->embed_bytes != table_bytes || geometry->head_bytes != table_bytes ||
-		geometry->head_norm_bytes != (uint64_t)shape->hidden * 4u )
+		geometry->head_norm_bytes != (shape->prenormed_head != 0u ? 0u : (uint64_t)shape->hidden * 4u) )
 		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_SCHEMA_ERROR,"the pack's embedding, head or head norm has the wrong shape"));
 	geometry->embed_rows = embed_rows;
 	geometry->head_rows = head_rows;
@@ -226,6 +231,16 @@ uint64_t SparkDeviceStagePlan(const SparkDeviceBuffer *buffer, const SparkDevice
 	return(cursor);
 }
 
+static uint64_t StageUnitScaleOffset(const SparkDeviceStage *stage)
+{
+	return(((uint64_t)2u * stage->verify_rows + stage->slots + 1u) * sizeof(uint32_t));
+}
+
+SparkTensor SparkDeviceStageUnitScale(const SparkDeviceStage *stage)
+{
+	return(SparkTensorAt(&stage->keep_tables,StageUnitScaleOffset(stage),SPARK_ROUTE_MAX_EXPERTS * sizeof(float)));
+}
+
 SparkStatus SparkDeviceStageAllocate(SparkDeviceStage *stage, const SparkDeviceStageSlice *slices, uint32_t count)
 {
 	char label[96];
@@ -239,18 +254,20 @@ SparkStatus SparkDeviceStageAllocate(SparkDeviceStage *stage, const SparkDeviceS
 	{
 		snprintf(label,sizeof(label),"%s recurrent pool %u",stage->shape->tag,pool);
 		status = SparkDeviceAllocate(&stage->recurrent_pools[pool].buffer,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,
-			(uint64_t)stage->recurrent_layers * stage->slots * stage->recurrent_pools[pool].width,label);
+			(uint64_t)stage->recurrent_pools[pool].layers * stage->slots * stage->recurrent_pools[pool].width,label);
 	}
 	if ( status == SPARK_STATUS_OK )
 	{
 		snprintf(label,sizeof(label),"%s keep tables",stage->shape->tag);
 		status = SparkDeviceAllocate(&stage->keep_tables,SPARK_DEVICE_SPACE_SHARED_COHERENT,
-			((uint64_t)2u * stage->verify_rows + stage->slots + 1u) * sizeof(uint32_t),label);
+			StageUnitScaleOffset(stage) + SPARK_ROUTE_MAX_EXPERTS * sizeof(float),label);
 	}
 	if ( status != SPARK_STATUS_OK )
 		return(SparkDeviceStageRefuse(stage,status,"cannot allocate the device scratch and recurrent state"));
 	for ( pool = 0u; pool < stage->verify_rows; pool++ )
 		((uint32_t *)stage->keep_tables.host)[pool] = pool;
+	for ( pool = 0u; pool < SPARK_ROUTE_MAX_EXPERTS; pool++ )
+		((float *)((uint8_t *)stage->keep_tables.host + StageUnitScaleOffset(stage)))[pool] = 1.0f;
 	SparkDeviceStagePlan(&stage->scratch_buffer,slices,count);
 	return(SPARK_STATUS_OK);
 }
@@ -263,11 +280,11 @@ SparkTensor SparkDeviceStageRecurrent(const SparkDeviceStage *stage, uint32_t po
 
 uint64_t SparkDeviceStageRecurrentBytes(const SparkDeviceStage *stage)
 {
-	uint64_t width = 0u;
+	uint64_t bytes = 0u;
 	uint32_t pool;
 	for ( pool = 0u; pool < stage->recurrent_pool_count; pool++ )
-		width += stage->recurrent_pools[pool].width;
-	return((uint64_t)stage->recurrent_layers * width);
+		bytes += (uint64_t)stage->recurrent_pools[pool].layers * stage->recurrent_pools[pool].width;
+	return(bytes);
 }
 
 static SparkStatus StageResolve(const SparkDeviceStage *stage, const void *address, uint64_t bytes, SparkTensor *tensor)
@@ -338,6 +355,9 @@ SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStage
 		status = StageResolve(stage,step->positions,(uint64_t)step->rows * 4u,&tensors->positions);
 	if ( status == SPARK_STATUS_OK )
 		status = StageResolve(stage,step->sequence_of_row,(uint64_t)step->rows * 4u,&tensors->sequence_of_row);
+	memset(&tensors->token_ids,0,sizeof(tensors->token_ids));
+	if ( status == SPARK_STATUS_OK && step->token_ids != 0 )
+		status = StageResolve(stage,step->token_ids,(uint64_t)step->rows * 4u,&tensors->token_ids);
 	if ( status == SPARK_STATUS_OK )
 		status = StageResolve(stage,step->recurrent_index,(uint64_t)step->sequences * 4u,&tensors->sequences.state_index);
 	if ( status == SPARK_STATUS_OK )
@@ -413,12 +433,53 @@ void SparkDeviceStageLayerDone(const SparkDeviceStage *stage, uint32_t layer)
 		stage->services->layer_done(stage->services->context,layer);
 }
 
+SparkStatus SparkDeviceStageDumpRows(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceStepTensors *tensors, SparkTensor rows,
+	uint32_t width, uint32_t layer)
+{
+	const uint64_t bytes = (uint64_t)tensors->rows * width * sizeof(uint16_t);
+	const uint32_t header[4] = { 0x4c445344u, layer, tensors->rows, width };
+	SparkStatus status;
+	if ( stage->dump_checked == 0u )
+	{
+		const char *path = getenv("SPARK_DEVICE_LAYER_DUMP");
+		stage->dump_checked = 1u;
+		if ( path != 0 && path[0] != 0 && (stage->dump = fopen(path,"wb")) == 0 )
+			return(SparkDeviceStageRefuse(stage,SPARK_STATUS_IO_ERROR,"cannot open SPARK_DEVICE_LAYER_DUMP"));
+	}
+	if ( stage->dump == 0 )
+		return(SPARK_STATUS_OK);
+	if ( rows.bytes < bytes || tensors->host_positions == 0 )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"a layer dump needs the step's rows and host positions"));
+	if ( stage->dump_buffer.bytes < bytes )
+	{
+		if ( stage->dump_buffer.handle != 0u )
+			(void)SparkDeviceFree(&stage->dump_buffer);
+		status = SparkDeviceAllocate(&stage->dump_buffer,SPARK_DEVICE_SPACE_SHARED_COHERENT,bytes,"device layer dump");
+		if ( status != SPARK_STATUS_OK )
+			return(SparkDeviceStageRefuse(stage,status,"cannot allocate the layer dump buffer"));
+	}
+	status = SparkDeviceCopy(queue,SparkTensorAt(&stage->dump_buffer,0u,bytes).range,rows.range,bytes);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER);
+	if ( status != SPARK_STATUS_OK )
+		return(SparkDeviceStageRefuse(stage,status,"cannot read a layer back for the dump"));
+	if ( fwrite(header,sizeof(header),1u,(FILE *)stage->dump) != 1u ||
+		fwrite(tensors->host_positions,sizeof(uint32_t),tensors->rows,(FILE *)stage->dump) != tensors->rows ||
+		fwrite(stage->dump_buffer.host,1u,(size_t)bytes,(FILE *)stage->dump) != (size_t)bytes || fflush((FILE *)stage->dump) != 0 )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_IO_ERROR,"cannot write the layer dump"));
+	return(SPARK_STATUS_OK);
+}
+
 void SparkDeviceStageClose(void *model)
 {
 	SparkDeviceStage *stage = (SparkDeviceStage *)model;
 	uint32_t pool;
 	if ( stage == 0 )
 		return;
+	if ( stage->dump != 0 )
+		fclose((FILE *)stage->dump);
+	if ( stage->dump_buffer.handle != 0u )
+		(void)SparkDeviceFree(&stage->dump_buffer);
 	if ( stage->scratch_buffer.handle != 0u )
 		(void)SparkDeviceFree(&stage->scratch_buffer);
 	if ( stage->keep_tables.handle != 0u )
@@ -493,7 +554,7 @@ SparkStatus SparkDeviceStageRecurrentCopy(void *model, uint32_t to_buffer, uint3
 	for ( pool = 0u; pool < stage->recurrent_pool_count && status == SPARK_STATUS_OK; pool++ )
 	{
 		const uint64_t width = stage->recurrent_pools[pool].width;
-		for ( layer = 0u; layer < stage->recurrent_layers && status == SPARK_STATUS_OK; layer++ )
+		for ( layer = 0u; layer < stage->recurrent_pools[pool].layers && status == SPARK_STATUS_OK; layer++ )
 		{
 			SparkDeviceRange resident, staged;
 			resident.buffer = &stage->recurrent_pools[pool].buffer;
@@ -515,8 +576,8 @@ SparkStatus SparkDeviceStageResetSlot(void *model, uint32_t slot, void *device_q
 	SparkStatus status = SPARK_STATUS_OK;
 	if ( slot >= stage->slots || queue == 0 )
 		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"reset needs a slot and a queue"));
-	for ( layer = 0u; layer < stage->recurrent_layers && status == SPARK_STATUS_OK; layer++ )
-		for ( pool = 0u; pool < stage->recurrent_pool_count && status == SPARK_STATUS_OK; pool++ )
+	for ( pool = 0u; pool < stage->recurrent_pool_count && status == SPARK_STATUS_OK; pool++ )
+		for ( layer = 0u; layer < stage->recurrent_pools[pool].layers && status == SPARK_STATUS_OK; layer++ )
 		{
 			SparkDeviceRange resident;
 			resident.buffer = &stage->recurrent_pools[pool].buffer;

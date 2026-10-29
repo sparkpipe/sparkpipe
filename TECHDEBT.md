@@ -1289,8 +1289,24 @@ Metal backend and the single-Studio stage are in
   A4B, Gemma 4 31B and Muse Glimmer 30B. Each is its family's Metal backend placed on the
   model's TP1 geometry (`model-families/<family>/device/`, over the device
   stage and layer kinds in `inference/runner/device_stage_model.c` and
-  `device_layers.c`), plus a TP1 pack and its own gates. Next, one at a time:
-  MiMo V2.6 Flash, Qwen 3.8 Flash Next.
+  `device_layers.c`), plus a TP1 pack and its own gates. In progress: MiMo
+  V2.6 Flash and Qwen 3.8 Flash Next, whose device stages are built but not
+  yet gated.
+- Qwen 3.8 Flash Next on the Studio (`QwenDevice<Qwen38FlashDevice>`):
+  - the QSA indexer is not built, so the stage refuses contexts past 2,048
+    positions. Below 2,052 the indexer keeps every block and attention is
+    dense, so nothing is lost there; longer contexts need the index key pool,
+    the block-key and tail kernels, the score and top-512 selection and a
+    block mask in the attention kernels;
+  - speculation replays the n-gram conv window and token history for the
+    kept rows from the verify step's saved conv input; it is exact only if
+    a speculative run's tokens equal plain decoding's, which the gate checks
+    once the indexer lets speculation prompts run past 2,050 positions;
+  - route overrides (pinned routes) are refused for its experts;
+  - the NVFP4 experts take CUDA's skinny decode arithmetic at every row
+    count; CUDA switches to a BF16-dequantised GEMM once a step routes more
+    than 16 rows per expert (820 rows at TP1), so long prefill chunks differ
+    from CUDA by that operand rounding, and run slower than a grouped GEMM.
 - FP8 projections between 3 and 16 rows. `SparkOpsLinearFp8` keeps CUDA's
   skinny arithmetic up to 16 rows (`LM_SKINNY_ROWS_WIDE`) on the FP8 GEMV,
   in passes of eight rows. Qwen3.8-27B FP8 beats its BF16 pack up to B4 (30.2

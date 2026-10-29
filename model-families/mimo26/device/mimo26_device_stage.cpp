@@ -154,7 +154,7 @@ struct MimoDevice
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageExpectConfig(&state->stage, config, sizeof(config) / sizeof(config[0]));
 		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageReserve(&state->stage, SparkDeviceStagePlan(0, slices, ScratchSlices(state, slices)), 0u, 0, 0u,
+			status = SparkDeviceStageReserve(&state->stage, SparkDeviceStagePlan(0, slices, ScratchSlices(state, slices)), 0, 0u,
 				request->configuration->state_budget_bytes);
 		if ( status != SPARK_STATUS_OK )
 			return status;
@@ -319,9 +319,8 @@ struct MimoDevice
 
 	static SparkStatus LayerDone(State *state, const Frame &frame, uint32_t index)
 	{
-		(void)frame;
 		SparkDeviceStageLayerDone(&state->stage, index);
-		return SPARK_STATUS_OK;
+		return SparkDeviceStageDumpRows(&state->stage, frame.queue, &frame.t, frame.t.hidden, G::kHidden, index);
 	}
 
 	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *queue)

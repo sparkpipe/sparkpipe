@@ -186,7 +186,7 @@ struct GemmaDevice
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageExpectConfig(&state->stage, config, G::kMoe ? 7u : 5u);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageReserve(&state->stage, SparkDeviceStagePlan(0, slices, ScratchSlices(state, slices)), 0u, 0, 0u,
+			status = SparkDeviceStageReserve(&state->stage, SparkDeviceStagePlan(0, slices, ScratchSlices(state, slices)), 0, 0u,
 				request->configuration->state_budget_bytes);
 		if ( status != SPARK_STATUS_OK )
 			return status;

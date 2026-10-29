@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_DEVICE_STAGE_MAX_RECURRENT_POOLS 4u
+#define SPARK_DEVICE_STAGE_MAX_RECURRENT_POOLS 8u
 #define SPARK_DEVICE_STAGE_VERIFY_ROWS SPARK_OPS_DECODE_MAX_ROWS
 
 typedef struct SparkDeviceStageConfigValue
@@ -27,9 +27,16 @@ typedef struct SparkDeviceStageSlice
 	SparkTensor *target;
 } SparkDeviceStageSlice;
 
+typedef struct SparkDeviceStageRecurrentPlan
+{
+	uint32_t layers;
+	uint64_t width;
+} SparkDeviceStageRecurrentPlan;
+
 typedef struct SparkDeviceStageRecurrentPool
 {
 	SparkDeviceBuffer buffer;
+	uint32_t layers;
 	uint64_t width;
 } SparkDeviceStageRecurrentPool;
 
@@ -52,6 +59,7 @@ typedef struct SparkDeviceStageShape
 	uint32_t embed_alias_count;
 	uint32_t embed_alias_row;
 	uint32_t projection;
+	uint32_t prenormed_head;
 } SparkDeviceStageShape;
 
 #define SPARK_DEVICE_STAGE_KV_WINDOWS 4u
@@ -82,7 +90,6 @@ typedef struct SparkDeviceStage
 	uint64_t pack_bytes;
 	uint64_t scratch_bytes;
 	SparkDeviceBuffer scratch_buffer;
-	uint32_t recurrent_layers;
 	uint32_t recurrent_pool_count;
 	SparkDeviceStageRecurrentPool recurrent_pools[SPARK_DEVICE_STAGE_MAX_RECURRENT_POOLS];
 	SparkTensor kv_pool;
@@ -98,6 +105,9 @@ typedef struct SparkDeviceStage
 	SparkDeviceStageKvRead kv_reads[SPARK_DEVICE_STAGE_KV_WINDOWS];
 	uint32_t kv_read_count;
 	SparkTensor dequant;
+	void *dump;
+	uint32_t dump_checked;
+	SparkDeviceBuffer dump_buffer;
 } SparkDeviceStage;
 
 typedef struct SparkDeviceStepTensors
@@ -105,6 +115,7 @@ typedef struct SparkDeviceStepTensors
 	SparkTensor hidden;
 	SparkTensor positions;
 	SparkTensor sequence_of_row;
+	SparkTensor token_ids;
 	SparkOpsSequences sequences;
 	const uint32_t *host_positions;
 	const uint32_t *host_sequence_of_row;
@@ -125,7 +136,7 @@ typedef struct SparkDeviceKeepTensors
 SparkStatus SparkDeviceStageRefuse(const SparkDeviceStage *stage, SparkStatus status, const char *what);
 SparkStatus SparkDeviceStageOpen(SparkDeviceStage *stage, const SparkDeviceStageShape *shape, const SparkStageRunnerModelOpen *request);
 SparkStatus SparkDeviceStageExpectConfig(SparkDeviceStage *stage, const SparkDeviceStageConfigValue *values, uint32_t count);
-SparkStatus SparkDeviceStageReserve(SparkDeviceStage *stage, uint64_t scratch_bytes, uint32_t recurrent_layers, const uint64_t *recurrent_widths,
+SparkStatus SparkDeviceStageReserve(SparkDeviceStage *stage, uint64_t scratch_bytes, const SparkDeviceStageRecurrentPlan *recurrent_pools,
 	uint32_t recurrent_pool_count, uint64_t state_budget_bytes);
 SparkStatus SparkDeviceStageGeometry(SparkDeviceStage *stage, SparkStageRunnerModelGeometry *geometry);
 SparkStatus SparkDeviceStageEntry(SparkDeviceStage *stage, const char *name, const char *kind, uint64_t *offset, uint64_t *bytes, uint32_t *rows);
@@ -138,6 +149,7 @@ SparkStatus SparkDeviceStageLayerTensor(SparkDeviceStage *stage, const SparkStag
 uint64_t SparkDeviceStagePlan(const SparkDeviceBuffer *buffer, const SparkDeviceStageSlice *slices, uint32_t count);
 SparkStatus SparkDeviceStageAllocate(SparkDeviceStage *stage, const SparkDeviceStageSlice *slices, uint32_t count);
 SparkTensor SparkDeviceStageRecurrent(const SparkDeviceStage *stage, uint32_t pool, uint32_t layer);
+SparkTensor SparkDeviceStageUnitScale(const SparkDeviceStage *stage);
 uint64_t SparkDeviceStageRecurrentBytes(const SparkDeviceStage *stage);
 SparkStatus SparkDeviceStageNoteKvRead(SparkDeviceStage *stage, uint32_t window, uint64_t position_bytes);
 uint64_t SparkDeviceStageStateBytes(const SparkDeviceStage *stage, uint32_t context);
@@ -145,6 +157,8 @@ SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStage
 SparkStatus SparkDeviceStageKeepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, const uint32_t *kept, SparkDeviceKeepTensors *keep);
 SparkOpsPaged SparkDeviceStagePaged(const SparkDeviceStage *stage, const SparkDeviceStepTensors *tensors, uint32_t kv_layer);
 void SparkDeviceStageLayerDone(const SparkDeviceStage *stage, uint32_t layer);
+SparkStatus SparkDeviceStageDumpRows(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceStepTensors *tensors, SparkTensor rows,
+	uint32_t width, uint32_t layer);
 
 void SparkDeviceStageClose(void *model);
 SparkStatus SparkDeviceStageManifestCheck(void *model, const struct SparkWeightdManifest *manifest);

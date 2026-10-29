@@ -2,7 +2,7 @@
 set -eu
 
 if [ "$#" -ne 5 ]; then
-	echo "usage: $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
+	echo "usage: $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|qwen3.8-flash PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
 	exit 2
 fi
 model=$1
@@ -15,8 +15,12 @@ case $model in
 	gemma4-31b) routed=0 prompt_dir=gemma4 vocab=262144 probe=ffn_down layer=11;;
 	muse-glimmer-30b) routed=0 prompt_dir=muse_glimmer vocab=202048 probe=ffn_down layer=11;;
 	mimo-v2.6-flash) routed=0 prompt_dir=mimo26_flash vocab=152576 probe=attn_out layer=11;;
+	qwen3.8-flash) routed=0 prompt_dir=qwen38_27b vocab=248320 probe=attn_out layer=11 greedy_tokens=8 bench_prompt=design spec=0;;
 	*) echo "unknown Metal model $model" >&2; exit 2;;
 esac
+greedy_tokens=${greedy_tokens:-128}
+bench_prompt=${bench_prompt:-}
+spec=${spec:-1}
 root=$(cd "$(dirname "$0")/.." && pwd)
 prompts=$root/qualification/metal/$prompt_dir/gate_prompts.json
 spec_prompts=$root/qualification/metal/$prompt_dir/spec_prompts.json
@@ -41,7 +45,7 @@ if [ "$routed" = 1 ]; then
 	$run --pack "$pack" --mode teacher --out "$out/pinned64" $pin --prefill-rows 64 > "$out/pinned64_teacher.log"
 	controls="$controls control_experts:layers.*.moe_w2:swap-rows"
 fi
-$run --pack "$pack" --mode greedy --out "$out/metal" --new-tokens 128 > "$out/metal_greedy.log"
+$run --pack "$pack" --mode greedy --out "$out/metal" --new-tokens "$greedy_tokens" > "$out/metal_greedy.log"
 set -f
 for control in $controls; do
 	label=${control%%:*}
@@ -75,6 +79,8 @@ for name in $(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in 
 		done
 	fi
 done
-$run --pack "$pack" --mode bench --out "$out/metal" --new-tokens 256 --prefill-rows 2048 --repeats 3 > "$out/metal_bench.log"
-$run --pack "$pack" --spec-prompts "$spec_prompts" --mode spec --new-tokens 256 --repeats 3 --draft-max 31 --out "$out/metal" > "$out/metal_spec.log"
+$run --pack "$pack" --mode bench --out "$out/metal" --new-tokens 256 --prefill-rows 2048 --repeats 3 ${bench_prompt:+--bench-prompt "$bench_prompt"} > "$out/metal_bench.log"
+if [ "$spec" = 1 ]; then
+	$run --pack "$pack" --spec-prompts "$spec_prompts" --mode spec --new-tokens 256 --repeats 3 --draft-max 31 --out "$out/metal" > "$out/metal_spec.log"
+fi
 python3 -I tools/metal_gate_summary.py --out "$out" --revision "$revision" --prompts "$prompts"

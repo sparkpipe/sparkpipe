@@ -235,7 +235,8 @@ typedef struct SparkNgramParams
 	uint32_t history_stride;
 	uint32_t head_dimension;
 	uint32_t commit;
-	uint32_t pad[2];
+	uint32_t mapped;
+	uint32_t pad;
 	uint64_t first_row;
 	uint64_t table_rows;
 } SparkNgramParams;
