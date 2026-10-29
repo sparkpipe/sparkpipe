@@ -15,12 +15,13 @@ case $model in
 	gemma4-31b) routed=0 prompt_dir=gemma4 vocab=262144 probe=ffn_down layer=11;;
 	muse-glimmer-30b) routed=0 prompt_dir=muse_glimmer vocab=202048 probe=ffn_down layer=11;;
 	mimo-v2.6-flash) routed=0 prompt_dir=mimo26_flash vocab=152576 probe=attn_out layer=11;;
-	qwen3.8-flash) routed=0 prompt_dir=qwen38_27b vocab=248320 probe=attn_out layer=11 greedy_tokens=8 bench_prompt=design spec=0;;
+	qwen3.8-flash) routed=0 prompt_dir=qwen38_27b vocab=248320 probe=moe_shared_down layer=11 greedy_tokens=8 bench_prompt=design spec=0 bench_long=2048;;
 	laguna-s-2.1) routed=0 prompt_dir=laguna vocab=100352 probe=attn_out layer=11;;
 	*) echo "unknown Metal model $model" >&2; exit 2;;
 esac
 greedy_tokens=${greedy_tokens:-128}
 bench_prompt=${bench_prompt:-}
+bench_long=${bench_long:-8192}
 spec=${spec:-1}
 root=$(cd "$(dirname "$0")/.." && pwd)
 prompts=$root/qualification/metal/$prompt_dir/gate_prompts.json
@@ -97,7 +98,8 @@ for name in $(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in 
 	fi
 done
 if [ "$tp" = 1 ]; then
-	$run --pack "$pack" --mode bench --out "$out/metal" --new-tokens 256 --prefill-rows 2048 --repeats 3 ${bench_prompt:+--bench-prompt "$bench_prompt"} > "$out/metal_bench.log"
+	$run --pack "$pack" --mode bench --out "$out/metal" --new-tokens 256 --prefill-rows 2048 --repeats 3 ${bench_prompt:+--bench-prompt "$bench_prompt"} \
+		--bench-long-tokens "$bench_long" > "$out/metal_bench.log"
 fi
 if [ "$spec" = 1 ]; then
 	$run --pack "$pack" --spec-prompts "$spec_prompts" --mode spec --new-tokens 256 --repeats 3 --draft-max 31 --out "$out/metal" > "$out/metal_spec.log"

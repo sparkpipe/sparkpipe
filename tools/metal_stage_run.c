@@ -53,6 +53,7 @@ typedef struct RunOptions
 	const char *tp_hosts;
 	uint32_t tp_port;
 	uint32_t stream_weights;
+	uint32_t bench_long_tokens;
 } RunOptions;
 
 static const uint32_t run_frame_sizes[RUN_FRAME_SIZES] = { 1u, 2u, 4u, 8u, 16u, 32u, 64u };
@@ -93,7 +94,7 @@ static const SparkStageRunnerModelInterface *RunModel(const char *name, uint32_t
 static int Usage(const char *program)
 {
 	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|pairs|bench|ladder|spec --out DIR [--prefill-rows N] [--new-tokens N] "
-		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|qwen3.8-flash|gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|laguna-s-2.1] [--pin-routes DIR] [--exact-rows] [--tp 2|4|8, the pack named for rank 00] [--rank R [--tp-hosts H0,H1,...] [--tp-port P]: one rank process over TCP] [--stream-weights]\n",program);
+		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|qwen3.8-flash|gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|laguna-s-2.1] [--pin-routes DIR] [--exact-rows] [--tp 2|4|8, the pack named for rank 00] [--rank R [--tp-hosts H0,H1,...] [--tp-port P]: one rank process over TCP] [--stream-weights] [--bench-long-tokens N]\n",program);
 	return(2);
 }
 
@@ -102,6 +103,7 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 	int index;
 	memset(options,0,sizeof(*options));
 	options->prefill_rows = 1024u;
+	options->bench_long_tokens = 8192u;
 	options->new_tokens = 128u;
 	options->repeats = 3u;
 	options->prompt_tokens = 1024u;
@@ -162,6 +164,8 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 			options->tp_hosts = value;
 		else if ( strcmp(flag,"--tp-port") == 0 )
 			options->tp_port = (uint32_t)strtoul(value,0,10);
+		else if ( strcmp(flag,"--bench-long-tokens") == 0 )
+			options->bench_long_tokens = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--prompt-tokens") == 0 )
 			options->prompt_tokens = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--batches") == 0 )
@@ -185,7 +189,8 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 			return(-1);
 	}
 	if ( options->pack == 0 || options->prompts == 0 || options->mode == 0 || options->out == 0 || options->prefill_rows == 0u ||
-		options->prefill_rows > 2048u || options->repeats == 0u || options->prompt_tokens == 0u )
+		options->prefill_rows > 2048u || options->repeats == 0u || options->prompt_tokens == 0u || options->bench_long_tokens == 0u ||
+		options->bench_long_tokens >= RUN_MAX_CONTEXT )
 		return(-1);
 	if ( options->batch_count == 0u )
 	{
@@ -583,7 +588,7 @@ static uint32_t *Synthesize(const SparkTokenPrompts *prompts, uint32_t count)
 static int RunBench(Session *session, const RunOptions *options, const SparkTokenPrompts *prompts, const SparkDeviceStageRunnerInfo *info)
 {
 	FILE *json = OpenOut(options,"bench",".metal.json","w");
-	uint32_t *decode_prompt = Synthesize(prompts,1024u), *short_prompt = Synthesize(prompts,1024u), *long_prompt = Synthesize(prompts,8192u);
+	uint32_t *decode_prompt = Synthesize(prompts,1024u), *short_prompt = Synthesize(prompts,1024u), *long_prompt = Synthesize(prompts,options->bench_long_tokens);
 	int failed = json == 0 || decode_prompt == 0 || short_prompt == 0 || long_prompt == 0;
 	if ( !failed )
 	{
@@ -595,7 +600,7 @@ static int RunBench(Session *session, const RunOptions *options, const SparkToke
 	if ( !failed )
 		failed = BenchPrefill(session,options,short_prompt,1024u,json) != 0;
 	if ( !failed )
-		failed = BenchPrefill(session,options,long_prompt,8192u,json) != 0;
+		failed = BenchPrefill(session,options,long_prompt,options->bench_long_tokens,json) != 0;
 	if ( json != 0 )
 	{
 		fprintf(json,"}\n");

@@ -161,7 +161,7 @@ def speed(out):
                          "roofline": f"{streamed / 1e9:.2f} GB read per token ({weights / 1e9:.2f} GB of weights, the rest KV and recurrent state) / "
                                      f"{peak / 1e9:.1f} GB/s measured = "
                                      f"{decode_ceiling:.2f} tok/s; measured {decode:.2f} tok/s = {100.0 * decode / decode_ceiling:.1f}%"}}
-    for key in ("prefill_1024", "prefill_8192"):
+    for key in sorted((key for key in bench if key.startswith("prefill_")), key=lambda key: int(key.split("_")[1])):
         item = bench[key]
         rows = min(item["chunk_rows"], int(key.split("_")[1]))
         chunk = bench.get("streamed_bytes_per_chunk", weights)
