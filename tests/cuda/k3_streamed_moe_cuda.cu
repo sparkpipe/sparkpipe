@@ -268,7 +268,12 @@ int main(void)
 	MOE_CUDA(cudaMemcpy(streamed.hidden_bf16,hidden,(uint64_t)MOE_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
 	MOE_CUDA(cudaMemcpy(streamed.attnres_partial_bf16,partial,(uint64_t)MOE_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
 	MOE_CUDA(cudaStreamCreate(&stream));
-	MoeCheck(K3StreamedMoe<LmMxfp4>(&streamed,shards.data(),MOE_SHARDS,latent_accumulator,hidden_accumulator,MOE_ROWS,MOE_PACKED,48u,stream) == LM_LAUNCH_OK,
+	K3StreamedJoin join;
+	join.weight = MoeAlloc<uint16_t>((uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM);
+	join.weight_capacity = (uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM;
+	join.activation = MoeAlloc<uint16_t>((uint64_t)MOE_ROWS * K3_MLA_HEADS * K3_V_HEAD_DIM);
+	join.activation_capacity = (uint64_t)MOE_ROWS * K3_MLA_HEADS * K3_V_HEAD_DIM;
+	MoeCheck(K3StreamedMoe<LmMxfp4>(&streamed,shards.data(),MOE_SHARDS,&join,latent_accumulator,MOE_ROWS,MOE_PACKED,48u,stream) == LM_LAUNCH_OK,
 		"the streamed MoE runs all sixteen shards on one device");
 	MOE_CUDA(cudaStreamSynchronize(stream));
 	{

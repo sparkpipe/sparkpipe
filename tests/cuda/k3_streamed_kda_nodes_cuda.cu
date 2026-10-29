@@ -123,9 +123,9 @@ struct KdaNode
 	const K3LayerWeights *shards;
 	K3StreamedKdaState states[KDA_SHARDS];
 	K3StreamedKdaExchange exchange;
+	K3StreamedJoin join;
 	K3LayerBuffers buffers;
 	uint16_t *partial;
-	float *accumulator;
 	const uint16_t *hidden;
 	const uint16_t *residual;
 	uint16_t *gathered;
@@ -154,7 +154,7 @@ static void *KdaNodeThread(void *argument)
 		const uint64_t first = (uint64_t)pass * KDA_NODES * KDA_NODE_ROWS + (uint64_t)n->node * KDA_NODE_ROWS;
 		KDA_CUDA(cudaMemcpyAsync(n->buffers.hidden_bf16,n->hidden + first * K3_HIDDEN,KDA_NODE_ROWS * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
 		KDA_CUDA(cudaMemcpyAsync(n->buffers.attnres_partial_bf16,n->residual + first * K3_HIDDEN,KDA_NODE_ROWS * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
-		n->status = K3StreamedKdaNode<LmMxfp4>(&n->buffers,n->shards,n->states,KDA_SHARDS,&n->exchange,n->partial,n->accumulator,0u,KDA_NODE_ROWS,48u,n->stream);
+		n->status = K3StreamedKdaNode<LmMxfp4>(&n->buffers,n->shards,n->states,KDA_SHARDS,&n->exchange,n->partial,&n->join,0u,KDA_NODE_ROWS,48u,n->stream);
 		KDA_CUDA(cudaMemcpyAsync(n->gathered + first * K3_HIDDEN,n->buffers.attnres_partial_bf16,KDA_NODE_ROWS * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
 		KDA_CUDA(cudaStreamSynchronize(n->stream));
 	}
@@ -229,7 +229,10 @@ int main(void)
 			n->states[shard] = KdaState();
 		KdaBuffers(&n->buffers,0u,state_index,node_begin,0);
 		n->partial = KdaAlloc<uint16_t>((uint64_t)KDA_NODE_ROWS * K3_HIDDEN);
-		n->accumulator = KdaAlloc<float>((uint64_t)KDA_NODE_ROWS * K3_HIDDEN);
+		n->join.weight = KdaAlloc<uint16_t>((uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM);
+		n->join.weight_capacity = (uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM;
+		n->join.activation = KdaAlloc<uint16_t>((uint64_t)(KDA_NODE_ROWS) * K3_MLA_HEADS * K3_V_HEAD_DIM);
+		n->join.activation_capacity = (uint64_t)(KDA_NODE_ROWS) * K3_MLA_HEADS * K3_V_HEAD_DIM;
 		n->hidden = hidden;
 		n->residual = partial;
 		n->gathered = gathered;

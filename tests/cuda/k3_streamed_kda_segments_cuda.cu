@@ -135,6 +135,7 @@ int main(void)
 	std::vector<uint32_t> chunk_begin_host(chunks + 1u),chunk_slots_host(chunks);
 	K3LayerBuffers sequential,segmented;
 	K3StreamedKdaExchange segments;
+	K3StreamedJoin join;
 	cudaStream_t stream;
 	for (uint32_t chunk = 0u; chunk <= chunks; chunk++)
 		chunk_begin_host[chunk] = chunk * chunk_rows;
@@ -197,6 +198,10 @@ int main(void)
 	segments.v_windows = KdaAlloc<uint16_t>((uint64_t)chunks * KDA_RANK_V * K3_KDA_CONV_KERNEL);
 	segments.zeros = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * KDA_RANK_V);
 	segments.exchange = KdaNoExchange;
+	join.weight = KdaAlloc<uint16_t>((uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM);
+	join.weight_capacity = (uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM;
+	join.activation = KdaAlloc<uint16_t>((uint64_t)(KDA_ROWS) * K3_MLA_HEADS * K3_V_HEAD_DIM);
+	join.activation_capacity = (uint64_t)(KDA_ROWS) * K3_MLA_HEADS * K3_V_HEAD_DIM;
 	segments.scratch = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * KDA_RANK_V);
 	KDA_CUDA(cudaDeviceSynchronize());
 	KDA_CUDA(cudaStreamCreate(&stream));
@@ -209,7 +214,7 @@ int main(void)
 	KdaBuffers(&segmented,0u,state_index,row_begin,0);
 	KDA_CUDA(cudaMemcpy(segmented.hidden_bf16,hidden,(uint64_t)KDA_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
 	KDA_CUDA(cudaMemcpy(segmented.attnres_partial_bf16,partial,(uint64_t)KDA_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
-	KdaCheck(K3StreamedKdaNode<LmMxfp4>(&segmented,shards.data(),segmented_states.data(),KDA_SHARDS,&segments,scratch,accumulator,0u,KDA_ROWS,48u,stream) == LM_LAUNCH_OK,
+	KdaCheck(K3StreamedKdaNode<LmMxfp4>(&segmented,shards.data(),segmented_states.data(),KDA_SHARDS,&segments,scratch,&join,0u,KDA_ROWS,48u,stream) == LM_LAUNCH_OK,
 		"the streamed KDA runs one node as four chunks");
 	KDA_CUDA(cudaStreamSynchronize(stream));
 	{

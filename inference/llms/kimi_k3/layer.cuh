@@ -534,14 +534,22 @@ static int32_t K3LayerKdaRecur(const K3LayerBuffers *b, const uint16_t *value_bf
 	return(LM_LAUNCH_OK);
 }
 
-template<class Format>
-static int32_t K3LayerKdaFinish(const K3LayerBuffers *b, uint32_t rows, uint16_t *destination, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LayerKdaGate(const K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)
 {
 	const uint32_t rank_v = K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS) * K3_KDA_VALUE_DIM;
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,float>), dim3(rows * K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS)), K3_LAYER_THREADS, (K3_KDA_VALUE_DIM + 8u) * sizeof(float), stream,
 		b->attention_out_bf16,0,b->kda_out_norm_weight,0,b->attention_out_bf16,K3_KDA_VALUE_DIM,K3_KDA_VALUE_DIM,K3_RMS_EPSILON);
 	LM_LAUNCH((LmOutputGateKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		b->attention_out_bf16,b->gate_bf16,rank_v);
+	return(LM_LAUNCH_OK);
+}
+
+template<class Format>
+static int32_t K3LayerKdaFinish(const K3LayerBuffers *b, uint32_t rows, uint16_t *destination, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
+{
+	const int32_t status = K3LayerKdaGate(b,rows,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
 	return(K3Project<LmBf16Format>(b,b->attention_out_bf16,b->kda_out_weight,b->kda_out_scale,
 		destination,b->tp_sharded != 0u ? (uint16_t *)0 : partial_accumulate,
 		rows,K3_RANK_DIM(b,kda_out_input,K3_KDA_V_DIM),K3_HIDDEN,multiprocessors,stream));
@@ -646,7 +654,7 @@ static int32_t K3LayerMlaGate(const K3LayerBuffers *b, uint32_t rows, uint32_t m
 }
 
 template<class Format>
-static int32_t K3LayerMlaOutput(const K3LayerBuffers *b, uint32_t rows, uint16_t *partial_accumulate, uint32_t gate_ready, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LayerMlaGated(const K3LayerBuffers *b, uint32_t rows, uint32_t gate_ready, uint32_t multiprocessors, cudaStream_t stream)
 {
 	int32_t status;
 	if ( b->shard_mha == 0u && (b->shard_gather == 0u || b->shard_gather_expanded == 0u) )
@@ -657,6 +665,15 @@ static int32_t K3LayerMlaOutput(const K3LayerBuffers *b, uint32_t rows, uint16_t
 		return(status);
 	LM_LAUNCH((LmOutputGateKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		b->value_bf16,b->gate_bf16,K3_RANK_DIM(b,mla_gate_rows,K3_MLA_OUT_DIM));
+	return(LM_LAUNCH_OK);
+}
+
+template<class Format>
+static int32_t K3LayerMlaOutput(const K3LayerBuffers *b, uint32_t rows, uint16_t *partial_accumulate, uint32_t gate_ready, uint32_t multiprocessors, cudaStream_t stream)
+{
+	const int32_t status = K3LayerMlaGated<Format>(b,rows,gate_ready,multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
 	return(K3Project<LmBf16Format>(b,b->value_bf16,b->mla_out_weight,b->mla_out_scale,
 		b->attention_out_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : partial_accumulate,
 		rows,K3_RANK_DIM(b,mla_out_input,K3_MLA_OUT_DIM),K3_HIDDEN,multiprocessors,stream));

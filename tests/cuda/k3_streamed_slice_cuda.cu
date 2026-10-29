@@ -245,6 +245,7 @@ struct SlNode
 	const K3LayerWeights *weights;
 	K3StreamedKdaState *states;
 	K3StreamedKdaExchange exchange;
+	K3StreamedJoin join;
 	K3LayerBuffers buffers;
 	uint16_t *partial;
 	float *latent_accumulator;
@@ -276,7 +277,7 @@ static void *SlNodeThread(void *argument)
 	{
 		const uint64_t first = (uint64_t)pass * SL_NODES * SL_NODE_ROWS + (uint64_t)n->node * SL_NODE_ROWS;
 		SL_CUDA(cudaMemcpyAsync(n->buffers.hidden_bf16,n->hidden + first * K3_HIDDEN,SL_NODE_ROWS * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
-		n->status = K3StreamedSlice<LmMxfp4,K3GlobalKv,SL_MLA_HEADS>(&n->buffers,n->weights,n->states,SL_SHARDS,&n->exchange,0,0u,SL_LAYERS,n->partial,
+		n->status = K3StreamedSlice<LmMxfp4,K3GlobalKv,SL_MLA_HEADS>(&n->buffers,n->weights,n->states,SL_SHARDS,&n->exchange,0,&n->join,0u,SL_LAYERS,n->partial,
 			n->latent_accumulator,n->hidden_accumulator,SL_NODE_ROWS,SL_NODE_ROWS * K3_TOP_K,48u,n->stream);
 		SL_CUDA(cudaMemcpyAsync(n->gathered + first * K3_HIDDEN,n->buffers.hidden_bf16,SL_NODE_ROWS * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
 		SL_CUDA(cudaStreamSynchronize(n->stream));
@@ -389,9 +390,14 @@ int main(void)
 	for (uint32_t rank = 0u; rank < SL_SHARDS; rank++)
 		SlCheck(sl_ranks[rank].status == LM_LAUNCH_OK,"every TP16 rank runs the two-layer slice");
 	SlBuffers(&streamed,0u,state_index,row_begin,SL_ROWS);
+	K3StreamedJoin join;
+	join.weight = SlAlloc<uint16_t>((uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM);
+	join.weight_capacity = (uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM;
+	join.activation = SlAlloc<uint16_t>((uint64_t)SL_ROWS * K3_MLA_HEADS * K3_V_HEAD_DIM);
+	join.activation_capacity = (uint64_t)SL_ROWS * K3_MLA_HEADS * K3_V_HEAD_DIM;
 	SL_CUDA(cudaMemcpy(streamed.hidden_bf16,hidden,(uint64_t)SL_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
 	SL_CUDA(cudaStreamCreate(&stream));
-	SlCheck(K3StreamedSlice<LmMxfp4,K3GlobalKv,SL_MLA_HEADS>(&streamed,shard_weights.data(),states.data(),SL_SHARDS,0,0,0u,SL_LAYERS,partial,latent_accumulator,hidden_accumulator,
+	SlCheck(K3StreamedSlice<LmMxfp4,K3GlobalKv,SL_MLA_HEADS>(&streamed,shard_weights.data(),states.data(),SL_SHARDS,0,0,&join,0u,SL_LAYERS,partial,latent_accumulator,hidden_accumulator,
 		SL_ROWS,SL_PACKED,48u,stream) == LM_LAUNCH_OK,"the streamed slice runs both layers' sixteen shards on one device");
 	SL_CUDA(cudaStreamSynchronize(stream));
 	{
@@ -443,6 +449,10 @@ int main(void)
 			}
 			SlBuffers(&n->buffers,0u,state_index,node_begin,SL_NODE_ROWS);
 			n->partial = SlAlloc<uint16_t>((uint64_t)SL_NODE_ROWS * K3_HIDDEN);
+			n->join.weight = SlAlloc<uint16_t>((uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM);
+			n->join.weight_capacity = (uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM;
+			n->join.activation = SlAlloc<uint16_t>((uint64_t)SL_NODE_ROWS * K3_MLA_HEADS * K3_V_HEAD_DIM);
+			n->join.activation_capacity = (uint64_t)SL_NODE_ROWS * K3_MLA_HEADS * K3_V_HEAD_DIM;
 			n->latent_accumulator = SlAlloc<float>((uint64_t)SL_NODE_ROWS * K3_ROUTED_EXPERT_HIDDEN);
 			n->hidden_accumulator = SlAlloc<float>((uint64_t)SL_NODE_ROWS * K3_HIDDEN);
 			n->hidden = hidden;

@@ -19,16 +19,33 @@ static int32_t K3StreamedRound(uint16_t *destination, const float *accumulator, 
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
-template<class Format>
-static int32_t K3StreamedMoe(K3LayerBuffers *b, const K3LayerWeights *shards, uint32_t shard_count, float *latent_accumulator,
-	float *hidden_accumulator, uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
+struct K3StreamedJoin
 {
-	const uint32_t slice = K3_RANK_DIM(b,routed_down_rows,K3_ROUTED_EXPERT_HIDDEN);
-	const uint64_t latent_elements = (uint64_t)rows * K3_ROUTED_EXPERT_HIDDEN, hidden_elements = (uint64_t)rows * K3_HIDDEN;
+	uint16_t *weight;
+	uint16_t *activation;
+	uint64_t weight_capacity;
+	uint64_t activation_capacity;
+};
+
+static int32_t K3StreamedJoinColumns(uint16_t *destination, uint32_t destination_columns, uint32_t first_column, const void *part, uint32_t part_columns,
+	uint32_t rows, cudaStream_t stream)
+{
+	return(cudaMemcpy2DAsync(destination + first_column,(size_t)destination_columns * sizeof(uint16_t),part,(size_t)part_columns * sizeof(uint16_t),
+		(size_t)part_columns * sizeof(uint16_t),rows,cudaMemcpyDeviceToDevice,stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+template<class Format>
+static int32_t K3StreamedMoe(K3LayerBuffers *b, const K3LayerWeights *shards, uint32_t shard_count, const K3StreamedJoin *join, float *latent_accumulator,
+	uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
+{
+	const uint32_t slice = K3_RANK_DIM(b,routed_down_rows,K3_ROUTED_EXPERT_HIDDEN), shared = K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE);
+	const uint64_t latent_elements = (uint64_t)rows * K3_ROUTED_EXPERT_HIDDEN;
 	uint32_t shard;
 	int32_t status;
 	if ( shards == 0 || shard_count == 0u || slice * shard_count != K3_ROUTED_EXPERT_HIDDEN || !K3_EXPERT_CELLS(b) || b->tp_sharded == 0u ||
-		latent_accumulator == 0 || hidden_accumulator == 0 || rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u )
+		latent_accumulator == 0 || rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u || join == 0 || join->weight == 0 || join->activation == 0 ||
+		join->weight_capacity < (uint64_t)K3_HIDDEN * shard_count * shared || join->weight_capacity < (uint64_t)K3_HIDDEN * K3_ROUTED_EXPERT_HIDDEN ||
+		join->activation_capacity < (uint64_t)rows * shard_count * shared )
 		return(LM_LAUNCH_ERR_SHAPE);
 	K3BindLayer(&shards[0],b);
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
@@ -50,10 +67,12 @@ static int32_t K3StreamedMoe(K3LayerBuffers *b, const K3LayerWeights *shards, ui
 		if ( status == LM_LAUNCH_OK )
 			status = K3LayerSharedUp<Format>(b,rows,b->shared_mid_bf16,multiprocessors,stream);
 		if ( status == LM_LAUNCH_OK )
-			status = K3LayerSharedDown<Format>(b,rows,b->shared_mid_bf16,multiprocessors,stream);
+			status = K3StreamedJoinColumns(join->activation,shard_count * shared,shard * shared,b->shared_mid_bf16,shared,rows,stream);
 		if ( status == LM_LAUNCH_OK )
-			status = K3StreamedAccumulate(hidden_accumulator,b->shared_out_bf16,hidden_elements,shard == 0u ? 1u : 0u,stream);
+			status = K3StreamedJoinColumns(join->weight,shard_count * shared,shard * shared,b->shared_w2_weight,shared,K3_HIDDEN,stream);
 	}
+	if ( status == LM_LAUNCH_OK )
+		status = K3Project<LmBf16Format>(b,join->activation,join->weight,0,b->shared_out_bf16,rows,shard_count * shared,K3_HIDDEN,multiprocessors,stream);
 	if ( status == LM_LAUNCH_OK )
 		status = K3StreamedRound(b->latent_full_bf16,latent_accumulator,latent_elements,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -61,20 +80,15 @@ static int32_t K3StreamedMoe(K3LayerBuffers *b, const K3LayerWeights *shards, ui
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_ROUTED_EXPERT_HIDDEN + 8u) * sizeof(float), stream,
 		b->latent_full_bf16,0,(const uint16_t *)b->routed_norm_weight, 0,b->latent_full_bf16,K3_ROUTED_EXPERT_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,K3_RMS_EPSILON);
 	for (shard = 0u; shard < shard_count && status == LM_LAUNCH_OK; shard++)
-	{
-		K3BindLayer(&shards[shard],b);
-		b->tp_rank = shard;
-		LM_LAUNCH((K3LatentSliceKernel<K3_LAYER_THREADS>), dim3((slice + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
-			b->latent_full_bf16,b->latent_bf16,slice,shard * slice,K3_ROUTED_EXPERT_HIDDEN);
-		status = K3LayerMoeOutput<Format>(b,rows,multiprocessors,stream);
-		if ( status == LM_LAUNCH_OK )
-			status = K3StreamedAccumulate(hidden_accumulator,b->hidden_bf16,hidden_elements,0u,stream);
-	}
+		status = K3StreamedJoinColumns(join->weight,K3_ROUTED_EXPERT_HIDDEN,shard * slice,shards[shard].routed_up_weight,slice,K3_HIDDEN,stream);
 	if ( status == LM_LAUNCH_OK )
-		status = K3StreamedRound(b->hidden_bf16,hidden_accumulator,hidden_elements,stream);
-	if ( status == LM_LAUNCH_OK )
-		K3PartialAdd(b,b->hidden_bf16,rows,stream);
-	return(status);
+		status = K3Project<LmBf16Format>(b,b->latent_full_bf16,join->weight,0,b->hidden_bf16,rows,K3_ROUTED_EXPERT_HIDDEN,K3_HIDDEN,multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LM_LAUNCH((LmAddRowsKernel<K3_LAYER_THREADS>),dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),K3_LAYER_THREADS,0,stream,
+		b->hidden_bf16,b->shared_out_bf16,b->hidden_bf16,rows,K3_HIDDEN);
+	K3PartialAdd(b,b->hidden_bf16,rows,stream);
+	return(LM_LAUNCH_OK);
 }
 
 struct K3StreamedKdaState
@@ -317,9 +331,8 @@ static int32_t K3StreamedFold(const float *transforms, const float *starts, floa
 
 template<class Format>
 static int32_t K3StreamedKdaNode(K3LayerBuffers *b, const K3LayerWeights *shards, const K3StreamedKdaState *states, uint32_t shard_count,
-	const K3StreamedKdaExchange *x, uint16_t *partial, float *hidden_accumulator, uint32_t boundary, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
+	const K3StreamedKdaExchange *x, uint16_t *partial, const K3StreamedJoin *join, uint32_t boundary, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
 {
-	const uint64_t hidden_elements = (uint64_t)rows * K3_HIDDEN;
 	const uint32_t heads = K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS);
 	const uint32_t channels[3] = {heads * K3_KDA_KEY_DIM,heads * K3_KDA_KEY_DIM,heads * K3_KDA_VALUE_DIM};
 	const uint64_t window_offset[3] = {0u,(uint64_t)channels[0] * K3_KDA_CONV_KERNEL,(uint64_t)(channels[0] + channels[1]) * K3_KDA_CONV_KERNEL};
@@ -329,9 +342,10 @@ static int32_t K3StreamedKdaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 	uint32_t shard;
 	int32_t status = LM_LAUNCH_OK;
 	if ( shards == 0 || states == 0 || x == 0 || x->exchange == 0 || x->nodes == 0u || x->node >= x->nodes || x->chunks == 0u ||
-		rows < (uint64_t)x->chunks * K3_KDA_CONV_KERNEL || partial == 0 || hidden_accumulator == 0 || b->tp_sharded == 0u || heads * shard_count != K3_KDA_HEADS ||
+		rows < (uint64_t)x->chunks * K3_KDA_CONV_KERNEL || partial == 0 || join == 0 || join->weight == 0 || join->activation == 0 || b->tp_sharded == 0u || heads * shard_count != K3_KDA_HEADS ||
 		K3_KDA_KEY_DIM != K3_KDA_VALUE_DIM || x->chunk_row_begin == 0 || x->chunk_slots == 0 || x->tails == 0 || x->summaries == 0 || x->ends == 0 ||
-		x->transforms == 0 || x->incoming == 0 || x->running == 0 || x->zeros == 0 || x->scratch == 0 || x->q_windows == 0 || x->k_windows == 0 || x->v_windows == 0 )
+		x->transforms == 0 || x->incoming == 0 || x->running == 0 || x->zeros == 0 || x->scratch == 0 || x->q_windows == 0 || x->k_windows == 0 || x->v_windows == 0 ||
+		join->weight_capacity < (uint64_t)K3_HIDDEN * shard_count * channels[2] || join->activation_capacity < (uint64_t)rows * shard_count * channels[2] )
 		return(LM_LAUNCH_ERR_SHAPE);
 	K3BindLayer(&shards[0],b);
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
@@ -410,14 +424,16 @@ static int32_t K3StreamedKdaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 		status = K3LayerKdaRecur(b,b->value_bf16,b->attention_out_bf16,x->chunks,0u,stream);
 		if ( status != LM_LAUNCH_OK )
 			break;
-		status = K3LayerKdaFinish<Format>(b,rows,partial,(uint16_t *)0,multiprocessors,stream);
+		status = K3LayerKdaGate(b,rows,stream);
 		if ( status == LM_LAUNCH_OK )
-			status = K3StreamedAccumulate(hidden_accumulator,partial,hidden_elements,shard == 0u ? 1u : 0u,stream);
+			status = K3StreamedJoinColumns(join->activation,shard_count * channels[2],shard * channels[2],b->attention_out_bf16,channels[2],rows,stream);
+		if ( status == LM_LAUNCH_OK )
+			status = K3StreamedJoinColumns(join->weight,shard_count * channels[2],shard * channels[2],b->kda_out_weight,channels[2],K3_HIDDEN,stream);
 	}
 	b->sequence_row_begin = row_begin;
 	b->kda_state_index = state_index;
 	if ( status == LM_LAUNCH_OK )
-		status = K3StreamedRound(partial,hidden_accumulator,hidden_elements,stream);
+		status = K3Project<LmBf16Format>(b,join->activation,join->weight,0,partial,rows,shard_count * channels[2],K3_HIDDEN,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	if ( boundary != 0u )
@@ -456,10 +472,10 @@ struct K3StreamedMlaExchange
 
 template<class Format, class Geometry, uint32_t HEADS>
 static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards, uint32_t shard_count, const K3StreamedMlaExchange *x,
-	uint16_t *partial, float *hidden_accumulator, uint32_t boundary, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
+	uint16_t *partial, const K3StreamedJoin *join, uint32_t boundary, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
 {
 	typedef K3StreamedHeadKv<HEADS,Geometry> Expanded;
-	const uint64_t hidden_elements = (uint64_t)rows * K3_HIDDEN, key_pitch = (uint64_t)HEADS * (K3_MHA_QK + K3_V_HEAD_DIM);
+	const uint64_t key_pitch = (uint64_t)HEADS * (K3_MHA_QK + K3_V_HEAD_DIM);
 	const uint64_t value_elements = (uint64_t)HEADS * K3_V_HEAD_DIM;
 	uint16_t *const own_value = b->value_bf16;
 	const uint32_t *const own_row_offset = b->dense_row_offset;
@@ -469,7 +485,8 @@ static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 	uint32_t shard;
 	int32_t status;
 	if ( shards == 0 || x == 0 || x->exchange == 0 || x->nodes == 0u || x->node >= x->nodes || shard_count * HEADS != K3_MLA_HEADS ||
-		partial == 0 || hidden_accumulator == 0 || b->tp_sharded == 0u || b->kv_shard.degree != 1u || rows == 0u || x->first_row + rows > x->pass_rows ||
+		partial == 0 || join == 0 || join->weight == 0 || join->activation == 0 || join->weight_capacity < (uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM ||
+		join->activation_capacity < (uint64_t)rows * K3_MLA_HEADS * K3_V_HEAD_DIM || b->tp_sharded == 0u || b->kv_shard.degree != 1u || rows == 0u || x->first_row + rows > x->pass_rows ||
 		x->q_latents == 0 || x->latent_keys == 0 || x->query == 0 || x->expanded == 0 || x->partials == 0 || x->values == 0 ||
 		x->pass_positions == 0 || x->pass_sequence_of_row == 0 || x->pass_row_offset == 0 || x->pass_tile_prefix == 0 || x->key_offset == 0 || x->key_context == 0 ||
 		shards[0].mla_kv_b_key_full_weight == 0 || shards[0].mla_kv_b_value_full_weight == 0 )
@@ -527,14 +544,16 @@ static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 		K3BindLayer(&shards[shard],b);
 		b->tp_rank = shard;
 		b->value_bf16 = x->values + ((uint64_t)shard * x->pass_rows + x->first_row) * value_elements;
-		status = K3LayerMlaOutput<Format>(b,rows,(uint16_t *)0,0u,multiprocessors,stream);
+		status = K3LayerMlaGated<Format>(b,rows,0u,multiprocessors,stream);
 		if ( status == LM_LAUNCH_OK )
-			status = K3StreamedAccumulate(hidden_accumulator,b->attention_out_bf16,hidden_elements,shard == 0u ? 1u : 0u,stream);
+			status = K3StreamedJoinColumns(join->activation,K3_MLA_HEADS * K3_V_HEAD_DIM,shard * (uint32_t)value_elements,b->value_bf16,(uint32_t)value_elements,rows,stream);
+		if ( status == LM_LAUNCH_OK )
+			status = K3StreamedJoinColumns(join->weight,K3_MLA_HEADS * K3_V_HEAD_DIM,shard * (uint32_t)value_elements,b->mla_out_weight,(uint32_t)value_elements,K3_HIDDEN,stream);
 	}
 	b->shard_mha = 0u;
 	b->value_bf16 = own_value;
 	if ( status == LM_LAUNCH_OK )
-		status = K3StreamedRound(partial,hidden_accumulator,hidden_elements,stream);
+		status = K3Project<LmBf16Format>(b,join->activation,join->weight,0,partial,rows,K3_MLA_HEADS * K3_V_HEAD_DIM,K3_HIDDEN,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	if ( boundary != 0u )
@@ -546,7 +565,7 @@ static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 
 template<class Format, class Geometry, uint32_t HEADS>
 static int32_t K3StreamedSlice(K3LayerBuffers *b, const K3LayerWeights *weights, const K3StreamedKdaState *states, uint32_t shard_count,
-	const K3StreamedKdaExchange *kda, const K3StreamedMlaExchange *mla,
+	const K3StreamedKdaExchange *kda, const K3StreamedMlaExchange *mla, const K3StreamedJoin *join,
 	uint32_t first_layer, uint32_t layer_count, uint16_t *partial, float *latent_accumulator, float *hidden_accumulator,
 	uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
 {
@@ -569,9 +588,9 @@ static int32_t K3StreamedSlice(K3LayerBuffers *b, const K3LayerWeights *weights,
 			K3BankStore(b,layer / K3_ATTNRES_BLOCK_SIZE,rows,stream);
 		}
 		if ( K3_LAYER_KIND(layer) != LM_LAYER_RECURRENT )
-			status = K3StreamedMlaNode<Format,Geometry,HEADS>(b,shards,shard_count,mla + attention++,partial,hidden_accumulator,boundary,rows,multiprocessors,stream);
+			status = K3StreamedMlaNode<Format,Geometry,HEADS>(b,shards,shard_count,mla + attention++,partial,join,boundary,rows,multiprocessors,stream);
 		else if ( kda != 0 )
-			status = K3StreamedKdaNode<Format>(b,shards,states + (uint64_t)recurrent++ * shard_count,shard_count,kda,partial,hidden_accumulator,boundary,rows,
+			status = K3StreamedKdaNode<Format>(b,shards,states + (uint64_t)recurrent++ * shard_count,shard_count,kda,partial,join,boundary,rows,
 				multiprocessors,stream);
 		else
 			status = K3StreamedKda<Format>(b,shards,states + (uint64_t)recurrent++ * shard_count,shard_count,partial,hidden_accumulator,boundary,rows,1u,
@@ -582,7 +601,7 @@ static int32_t K3StreamedSlice(K3LayerBuffers *b, const K3LayerWeights *weights,
 		K3AttnRes(b,b->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
 		status = layer < K3_FIRST_ROUTED_LAYER
 			? K3StreamedDenseMlp<Format>(b,shards,shard_count,partial,hidden_accumulator,rows,multiprocessors,stream)
-			: K3StreamedMoe<Format>(b,shards,shard_count,latent_accumulator,hidden_accumulator,rows,packed_rows,multiprocessors,stream);
+			: K3StreamedMoe<Format>(b,shards,shard_count,join,latent_accumulator,rows,packed_rows,multiprocessors,stream);
 	}
 	if ( status != LM_LAUNCH_OK )
 		return(status);
