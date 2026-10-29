@@ -428,7 +428,7 @@ void K3SplitFusedProjectionsKernel(const uint16_t *__restrict__ qkvb_bf16, uint1
 }
 
 template<class Format>
-static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t sequences, uint32_t commit, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LayerKdaBody(const K3LayerBuffers *b, uint32_t rows, uint32_t sequences, uint32_t commit, uint16_t *destination, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
 {
 	int32_t status;
 	uint32_t state_slot_bytes;
@@ -441,8 +441,6 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	if ( head_base + rank_heads > K3_KDA_HEADS )
 		return(LM_LAUNCH_ERR_SHAPE);
 	state_slot_bytes = (uint32_t)K3_KDA_RANK_STATE_SLOT_BYTES(rank_heads, 0u);
-	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
-		b->hidden_bf16,0,(const uint16_t *)b->attn_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_qkv_beta_weight,0,
 		b->fused_qkvb_bf16,rows,K3_HIDDEN,
 		K3_RANK_DIM(b,kda_qkvb_rows,K3_KDA_QKVB_FUSED_ROWS),multiprocessors,stream);
@@ -502,8 +500,19 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	LM_LAUNCH((LmOutputGateKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		b->attention_out_bf16,b->gate_bf16,rank_v);
 	return(K3Project<LmBf16Format>(b,b->attention_out_bf16,b->kda_out_weight,b->kda_out_scale,
-		b->hidden_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : partial_accumulate,
+		destination,b->tp_sharded != 0u ? (uint16_t *)0 : partial_accumulate,
 		rows,K3_RANK_DIM(b,kda_out_input,K3_KDA_V_DIM),K3_HIDDEN,multiprocessors,stream));
+}
+
+template<class Format>
+static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t sequences, uint32_t commit, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
+{
+	const uint32_t rank_heads = K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS);
+	if ( b->kda_state_bf16 != 0u || b->tp_rank * rank_heads + rank_heads > K3_KDA_HEADS )
+		return(LM_LAUNCH_ERR_SHAPE);
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
+		b->hidden_bf16,0,(const uint16_t *)b->attn_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
+	return(K3LayerKdaBody<Format>(b,rows,sequences,commit,b->hidden_bf16,partial_accumulate,multiprocessors,stream));
 }
 
 #define K3_MLA_DOWN_SLICED(b, rows) \

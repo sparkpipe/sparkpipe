@@ -76,3 +76,47 @@ static int32_t K3StreamedMoe(K3LayerBuffers *b, const K3LayerWeights *shards, ui
 		K3PartialAdd(b,b->hidden_bf16,rows,stream);
 	return(status);
 }
+
+struct K3StreamedKdaState
+{
+	uint8_t *state_pool;
+	uint16_t *q_window;
+	uint16_t *k_window;
+	uint16_t *v_window;
+};
+
+template<class Format>
+static int32_t K3StreamedKda(K3LayerBuffers *b, const K3LayerWeights *shards, const K3StreamedKdaState *states, uint32_t shard_count, uint16_t *partial,
+	float *hidden_accumulator, uint32_t boundary, uint32_t rows, uint32_t sequences, uint32_t multiprocessors, cudaStream_t stream)
+{
+	const uint64_t hidden_elements = (uint64_t)rows * K3_HIDDEN;
+	uint32_t shard;
+	int32_t status = LM_LAUNCH_OK;
+	if ( shards == 0 || states == 0 || shard_count == 0u || partial == 0 || hidden_accumulator == 0 || b->tp_sharded == 0u ||
+		K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS) * shard_count != K3_KDA_HEADS )
+		return(LM_LAUNCH_ERR_SHAPE);
+	K3BindLayer(&shards[0],b);
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
+		b->hidden_bf16,0,(const uint16_t *)b->attn_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
+	for (shard = 0u; shard < shard_count && status == LM_LAUNCH_OK; shard++)
+	{
+		K3BindLayer(&shards[shard],b);
+		b->tp_rank = shard;
+		b->kda_state_pool = states[shard].state_pool;
+		b->kda_q_window = states[shard].q_window;
+		b->kda_k_window = states[shard].k_window;
+		b->kda_v_window = states[shard].v_window;
+		status = K3LayerKdaBody<Format>(b,rows,sequences,1u,partial,(uint16_t *)0,multiprocessors,stream);
+		if ( status == LM_LAUNCH_OK )
+			status = K3StreamedAccumulate(hidden_accumulator,partial,hidden_elements,shard == 0u ? 1u : 0u,stream);
+	}
+	if ( status == LM_LAUNCH_OK )
+		status = K3StreamedRound(partial,hidden_accumulator,hidden_elements,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	if ( boundary != 0u )
+		K3PartialSet(b,partial,rows,stream);
+	else
+		K3PartialAdd(b,partial,rows,stream);
+	return(LM_LAUNCH_OK);
+}
