@@ -904,6 +904,7 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 	SparkK3ModelState *state = (SparkK3ModelState *)model;
 	const uint32_t max_rows = state->dispatch.max_rows;
 	const uint64_t routes = (uint64_t)max_rows * K3_TOP_K;
+	state->dispatch.streamed_prefill = state->streamed_config.node_rows != 0u ? 1u : 0u;
 	if ( SparkK3DispatchBindWeights(&state->dispatch, &state->module.pack, state->module.bound, state->module.bound_count,
 		lazy_pack) != SPARK_K3_DISPATCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);

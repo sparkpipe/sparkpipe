@@ -480,9 +480,10 @@ static int32_t K3DispatchMhaPrepare(SparkK3Dispatch *d, const K3LayerWeights *ho
 		if ( host[index].mla_q_b_weight != 0 && host[index].mla_kv_b_key_full_weight != 0 && host[index].mla_kv_b_value_full_weight != 0 )
 			expanded++;
 	}
-	if ( expanded == 0u || d->tp_degree < 2u )
+	if ( expanded == 0u || d->tp_degree < 2u || d->streamed_prefill != 0u )
 	{
-		fprintf(stderr, "sparkpipe_k3: expanded MHA attention off (%s)\n", expanded == 0u ? "the packs carry no expanded attention tensors" : "single rank");
+		fprintf(stderr, "sparkpipe_k3: expanded MHA attention off (%s)\n", expanded == 0u ? "the packs carry no expanded attention tensors" :
+			d->tp_degree < 2u ? "single rank" : "long prompts go to the streamed prefill");
 		return SPARK_K3_DISPATCH_OK;
 	}
 	if ( expanded != latent )

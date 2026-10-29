@@ -102,6 +102,7 @@ typedef struct SparkK3Dispatch
 	uint64_t pair_waves;
 	uint32_t tp_degree;
 	uint32_t kda_rank_heads;
+	uint32_t streamed_prefill;
 	SparkK3RankStateBytes state_bytes;
 	uint32_t kv_attached;
 	uint8_t *replay_pool;
