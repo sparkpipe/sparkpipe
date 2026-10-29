@@ -30,5 +30,5 @@ with tempfile.TemporaryDirectory(prefix="k3-streamed-moe-cuda-") as directory:
     binary = str(pathlib.Path(directory) / "probe")
     subprocess.run([NVCC, "-O3", "-std=c++17", "-gencode", "arch=compute_121a,code=sm_121a",
                     "-I.", "-Iinclude", "-Imodel-families/common/include", "-Imodel-families/k3/include",
-                    "tests/cuda/k3_streamed_moe_cuda.cu", "-o", binary, "-lpthread"], cwd=ROOT, check=True)
+                    "tests/cuda/k3_streamed_moe_cuda.cu", "-o", binary, "-lpthread", "-lcuda"], cwd=ROOT, check=True)
     subprocess.run([binary], check=True, timeout=900)
