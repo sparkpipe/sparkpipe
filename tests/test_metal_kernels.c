@@ -1188,6 +1188,236 @@ static void TestLinearRouted(uint32_t rows)
 	SparkDeviceFree(&single);
 }
 
+static void TestLinearRoutedSkip(uint32_t rows)
+{
+	enum { K = 2816u, N = 704u, EXPERTS = 16u, TOP = 8u };
+	const uint32_t routes = rows * TOP;
+	SparkDeviceBuffer x, w, y, experts, single;
+	uint16_t *xv = (uint16_t *)Shared(&x,(uint64_t)rows * K * sizeof(uint16_t),"skip x");
+	uint16_t *wv = (uint16_t *)Shared(&w,(uint64_t)EXPERTS * N * K * sizeof(uint16_t),"skip w");
+	uint16_t *yv = (uint16_t *)Shared(&y,(uint64_t)routes * N * sizeof(uint16_t),"skip y");
+	uint32_t *ev = (uint32_t *)Shared(&experts,routes * sizeof(uint32_t),"skip experts");
+	uint16_t *sv = (uint16_t *)Shared(&single,(uint64_t)N * sizeof(uint16_t),"skip single");
+	SparkGemvParams params, alone;
+	Check clean, corrupted;
+	char shape[64];
+	uint32_t pass, route, n;
+	FillBf16(xv,(uint64_t)rows * K,1.0);
+	FillBf16(wv,(uint64_t)EXPERTS * N * K,1.0 / sqrt((double)K));
+	for ( route = 0u; route < routes; route++ )
+		ev[route] = route % 3u == 1u ? SPARK_ROUTE_SKIP : (route * 7u + 3u) % EXPERTS;
+	memset(&params,0,sizeof(params));
+	params.rows = routes;
+	params.input_dimension = K;
+	params.output_dimension = N;
+	params.input_stride = K;
+	params.output_stride = N;
+	params.route_divisor = TOP;
+	memset(&clean,0,sizeof(clean));
+	memset(&corrupted,0,sizeof(corrupted));
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		FillBf16(yv,(uint64_t)routes * N,1.0);
+		if ( pass == 1u )
+			ev[1] = 5u;
+		if ( !Run(SparkOpsLinearRouted(&ops,queue,Whole(&x),Whole(&w),Whole(&y),Whole(&experts),EXPERTS,&params),"linear_routed skip") )
+			break;
+		if ( pass == 1u )
+			ev[1] = SPARK_ROUTE_SKIP;
+		for ( route = 0u; route < routes; route++ )
+		{
+			if ( ev[route] == SPARK_ROUTE_SKIP )
+			{
+				for ( n = 0u; n < N; n++ )
+					Observe(check,yv[(uint64_t)route * N + n] == 0u ? 0.0 : 1.0,0.0,0.0);
+				continue;
+			}
+			alone = params;
+			alone.rows = 1u;
+			alone.route_divisor = 0u;
+			if ( !Run(SparkOpsLinear(&ops,queue,SparkTensorSlice(Whole(&x),(uint64_t)(route / TOP) * K * sizeof(uint16_t),K * sizeof(uint16_t)),
+				SparkTensorSlice(Whole(&w),(uint64_t)ev[route] * N * K * sizeof(uint16_t),(uint64_t)N * K * sizeof(uint16_t)),Whole(&single),&alone),
+				"linear for one expert") )
+				break;
+			for ( n = 0u; n < N; n++ )
+				Observe(check,yv[(uint64_t)route * N + n] == sv[n] ? 0.0 : 1.0,0.0,0.0);
+		}
+	}
+	snprintf(shape,sizeof(shape),"rows %u x top 8, every third route skipped",rows);
+	Report("linear_routed_skip",shape,&clean,&corrupted,"exact: a skipped route writes +0 rows, the others equal their expert's one-row GEMV");
+	SparkDeviceFree(&x);
+	SparkDeviceFree(&w);
+	SparkDeviceFree(&y);
+	SparkDeviceFree(&experts);
+	SparkDeviceFree(&single);
+}
+
+static void TestRouteLocal(void)
+{
+	enum { ROWS = 37u, TOP = 8u, EXPERTS = 128u, FIRST = 48u, LOCAL = 16u };
+	SparkDeviceBuffer experts;
+	uint32_t *ev = (uint32_t *)Shared(&experts,ROWS * TOP * sizeof(uint32_t),"local experts");
+	uint32_t original[ROWS * TOP];
+	SparkRouteParams params;
+	Check clean, corrupted;
+	uint32_t pass, i;
+	for ( i = 0u; i < ROWS * TOP; i++ )
+		original[i] = (uint32_t)(NextRandom() % EXPERTS);
+	original[0] = FIRST;
+	original[1] = FIRST + LOCAL - 1u;
+	original[2] = FIRST + LOCAL;
+	original[3] = FIRST - 1u;
+	memset(&params,0,sizeof(params));
+	params.rows = ROWS;
+	params.experts = EXPERTS;
+	params.top_k = TOP;
+	params.first_expert = FIRST;
+	params.local_experts = LOCAL;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		memset(check,0,sizeof(*check));
+		memcpy(ev,original,sizeof(original));
+		if ( pass == 1u )
+			ev[0] = FIRST + 1u;
+		if ( !Run(SparkOpsRouteLocal(&ops,queue,Whole(&experts),&params),"route_local") )
+			break;
+		for ( i = 0u; i < ROWS * TOP; i++ )
+		{
+			const uint32_t expected = original[i] - FIRST < LOCAL ? original[i] - FIRST : SPARK_ROUTE_SKIP;
+			Observe(check,ev[i] == expected ? 0.0 : 1.0,0.0,0.0);
+		}
+	}
+	Report("route_local","rows 37 x top 8, experts 48..63 of 128",&clean,&corrupted,"exact: local experts renumbered from 0, the rest skipped");
+	SparkDeviceFree(&experts);
+}
+
+static void TestGatherSlice(void)
+{
+	enum { SLICE = 512u, RANKS = 8u, RANK = 3u, WIDTH = 2816u, ROWS = 24u };
+	SparkDeviceBuffer table, ids, out;
+	uint16_t *t = (uint16_t *)Shared(&table,(uint64_t)SLICE * WIDTH * 2u,"slice table");
+	uint32_t *id = (uint32_t *)Shared(&ids,ROWS * 4u,"slice ids");
+	uint16_t *o = (uint16_t *)Shared(&out,(uint64_t)ROWS * WIDTH * 2u,"slice out");
+	Check clean, corrupted;
+	uint32_t pass, row, i, error = 0u;
+	FillBf16(t,(uint64_t)SLICE * WIDTH,1.0);
+	for ( row = 0u; row < ROWS; row++ )
+		id[row] = row % 2u == 0u ? RANK * SLICE + (uint32_t)(NextRandom() % SLICE) : (uint32_t)(NextRandom() % (SLICE * RANKS));
+	id[1] = RANK * SLICE - 1u;
+	id[3] = (RANK + 1u) * SLICE;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint64_t victim = (uint64_t)(id[0] - RANK * SLICE) * WIDTH + 9u;
+		const uint16_t saved = t[victim];
+		memset(check,0,sizeof(*check));
+		FillBf16(o,(uint64_t)ROWS * WIDTH,1.0);
+		if ( pass == 1u )
+			t[victim] = ToBf16(Bf16(saved) + 1.0f);
+		if ( !Run(SparkOpsGatherSlice(&ops,queue,Whole(&table),Whole(&ids),Whole(&out),ROWS,WIDTH,SLICE,RANK * SLICE),"gather_slice") )
+			break;
+		t[victim] = saved;
+		for ( row = 0u; row < ROWS; row++ )
+			for ( i = 0u; i < WIDTH; i++ )
+			{
+				const uint32_t local = id[row] - RANK * SLICE;
+				Observe(check,o[(uint64_t)row * WIDTH + i] == (local < SLICE ? t[(uint64_t)local * WIDTH + i] : 0u) ? 0.0 : 1.0,0.0,0.0);
+			}
+	}
+	if ( SparkDeviceOpsTakeError(&ops,&error) != SPARK_STATUS_OK )
+	{
+		printf("FAIL gather_slice: a sliced gather raised the device error word (row %u)\n",error - 1u);
+		failures++;
+	}
+	Report("gather_slice","rows 24, width 2816, rank 3 of 8 holding 512 rows",&clean,&corrupted,
+		"exact: rows in the rank's slice are copied, every other row is +0");
+	SparkDeviceFree(&table);
+	SparkDeviceFree(&ids);
+	SparkDeviceFree(&out);
+}
+
+static void TestRankKernels(uint32_t ranks, uint32_t rows, uint32_t width)
+{
+	const uint64_t elements = (uint64_t)rows * width;
+	SparkDeviceBuffer lanes, full, wide, wide_full, ordered;
+	uint16_t *lv = (uint16_t *)Shared(&lanes,(uint64_t)ranks * elements * 2u,"rank lanes");
+	uint16_t *fv = (uint16_t *)Shared(&full,elements * 2u,"rank sum");
+	uint64_t *wv = (uint64_t *)Shared(&wide,(uint64_t)ranks * rows * 8u,"rank max lanes");
+	uint64_t *mv = (uint64_t *)Shared(&wide_full,(uint64_t)rows * 8u,"rank max");
+	uint16_t *ov = (uint16_t *)Shared(&ordered,(uint64_t)ranks * elements * 2u,"rank rows");
+	Check clean, corrupted;
+	char shape[96];
+	uint64_t i;
+	uint32_t pass, rank, row, column;
+	for ( i = 0u; i < (uint64_t)ranks * elements; i++ )
+		lv[i] = ToBf16((float)ldexp(Normal(),(int)(NextRandom() % 24u) - 12));
+	for ( i = 0u; i < (uint64_t)ranks * rows; i++ )
+		wv[i] = NextRandom();
+	snprintf(shape,sizeof(shape),"%u ranks, rows %u, width %u",ranks,rows,width);
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint64_t victim = (uint64_t)(ranks - 1u) * elements + 5u;
+		const uint16_t saved = lv[victim];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			lv[victim] = ToBf16(Bf16(saved) + 64.0f);
+		if ( !Run(SparkOpsRankSumBf16(&ops,queue,Whole(&lanes),Whole(&full),ranks,elements),"rank_sum_bf16") )
+			break;
+		lv[victim] = saved;
+		for ( i = 0u; i < elements; i++ )
+		{
+			float total = 0.0f;
+			for ( rank = 0u; rank < ranks; rank++ )
+				total += Bf16(lv[(uint64_t)rank * elements + i]);
+			Observe(check,fv[i] == ToBf16(total) ? 0.0 : 1.0,0.0,0.0);
+		}
+	}
+	Report("rank_sum_bf16",shape,&clean,&corrupted,"exact: an f32 sum from +0 over ranks 0..N-1 and one rounding to bf16, CUDA's all-reduce order");
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint64_t saved = wv[(uint64_t)(ranks - 1u) * rows];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			wv[(uint64_t)(ranks - 1u) * rows] = UINT64_MAX;
+		if ( !Run(SparkOpsRankMaxU64(&ops,queue,Whole(&wide),Whole(&wide_full),ranks,rows),"rank_max_u64") )
+			break;
+		wv[(uint64_t)(ranks - 1u) * rows] = saved;
+		for ( row = 0u; row < rows; row++ )
+		{
+			uint64_t best = 0u;
+			for ( rank = 0u; rank < ranks; rank++ )
+				best = wv[(uint64_t)rank * rows + row] > best ? wv[(uint64_t)rank * rows + row] : best;
+			Observe(check,mv[row] == best ? 0.0 : 1.0,0.0,0.0);
+		}
+	}
+	Report("rank_max_u64",shape,&clean,&corrupted,"exact: the largest packed (score, token) word of every rank");
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint16_t saved = lv[elements + 3u];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			lv[elements + 3u] = (uint16_t)(saved ^ 0x0100u);
+		if ( !Run(SparkOpsRankRows(&ops,queue,Whole(&lanes),Whole(&ordered),ranks,rows,width),"rank_rows") )
+			break;
+		lv[elements + 3u] = saved;
+		for ( row = 0u; row < rows; row++ )
+			for ( rank = 0u; rank < ranks; rank++ )
+				for ( column = 0u; column < width; column++ )
+					Observe(check,ov[((uint64_t)row * ranks + rank) * width + column] == lv[((uint64_t)rank * rows + row) * width + column] ? 0.0 : 1.0,0.0,0.0);
+	}
+	Report("rank_rows",shape,&clean,&corrupted,"exact: rank-major gathered rows become rows of every rank's columns in rank order");
+	SparkDeviceFree(&lanes);
+	SparkDeviceFree(&full);
+	SparkDeviceFree(&wide);
+	SparkDeviceFree(&wide_full);
+	SparkDeviceFree(&ordered);
+}
+
 static double E2m1(uint32_t nibble)
 {
 	static const double magnitude[8] = { 0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0 };
@@ -3046,6 +3276,12 @@ int main(int argc, char **argv)
 	}
 	printf("device %s (%s), %u compute units\n",SparkDeviceGetProperties()->name,SparkDeviceGetProperties()->target,SparkDeviceGetProperties()->compute_units);
 	TestGather();
+	TestGatherSlice();
+	TestRankKernels(8u,3u,2816u);
+	TestRankKernels(2u,17u,1024u);
+	TestRankKernels(8u,2u,65536u);
+	TestRouteLocal();
+	TestLinearRoutedSkip(3u);
 	TestRmsNormResidual(1u);
 	TestRmsNormResidual(64u);
 	TestRmsNormGate(1u,0u);

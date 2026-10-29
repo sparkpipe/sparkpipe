@@ -5,9 +5,14 @@ kernel void spark_gather_rows(constant SparkGatherParams &p [[buffer(0)]], devic
 	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
 {
 	const uint threads = group_size.x;
-	const uint row = group.y, chunk = group.x * threads + tid, id = ids[row];
+	const uint row = group.y, chunk = group.x * threads + tid, id = ids[row] - p.first_row;
 	if ( chunk * 8u >= p.width )
 		return;
+	if ( id >= p.table_rows && p.sliced != 0u )
+	{
+		*(device uint4 *)(output + (ulong)row * p.width + chunk * 8u) = uint4(0u);
+		return;
+	}
 	if ( id >= p.table_rows )
 	{
 		atomic_store_explicit(error, 1u + row, memory_order_relaxed);
@@ -181,6 +186,14 @@ kernel void spark_route_pinned(constant SparkRouteParams &p [[buffer(0)]], devic
 	threadgroup_barrier(mem_flags::mem_threadgroup);
 	if ( tid == 0u )
 		SparkRouteWeights(p, probability, chosen, expert_scale, experts, weights, row);
+}
+
+kernel void spark_route_local(constant SparkRouteParams &p [[buffer(0)]], device uint *experts [[buffer(1)]], uint index [[thread_position_in_grid]])
+{
+	if ( index >= p.rows * p.top_k )
+		return;
+	const uint local = experts[index] - p.first_expert;
+	experts[index] = local < p.local_experts ? local : SPARK_ROUTE_SKIP;
 }
 
 kernel void spark_route_combine(constant SparkRouteParams &p [[buffer(0)]], device const ushort *expert_out [[buffer(1)]],

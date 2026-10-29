@@ -14,6 +14,7 @@
 #define SPARK_BRANCH_NORM_MAX_DIMENSION 7680u
 #define SPARK_ROUTE_MAX_EXPERTS 512u
 #define SPARK_ROUTE_MAX_TOP_K 16u
+#define SPARK_ROUTE_SKIP 0xffffffffu
 #define SPARK_GATED_SILU 0u
 #define SPARK_GATED_GELU_TANH 1u
 #define SPARK_GATED_SILU_ROUNDED 2u
@@ -35,8 +36,19 @@ typedef struct SparkGatherParams
 	uint32_t rows;
 	uint32_t width;
 	uint32_t table_rows;
-	uint32_t pad;
+	uint32_t first_row;
+	uint32_t sliced;
+	uint32_t pad[3];
 } SparkGatherParams;
+
+typedef struct SparkRankParams
+{
+	uint64_t elements;
+	uint32_t ranks;
+	uint32_t rows;
+	uint32_t width;
+	uint32_t pad[3];
+} SparkRankParams;
 
 typedef struct SparkNormParams
 {
@@ -83,7 +95,9 @@ typedef struct SparkRouteParams
 	uint32_t top_k;
 	uint32_t width;
 	uint32_t logit_stride;
-	uint32_t pad[3];
+	uint32_t first_expert;
+	uint32_t local_experts;
+	uint32_t pad;
 } SparkRouteParams;
 
 typedef struct SparkScaleParams
@@ -197,7 +211,8 @@ typedef struct SparkAttentionParams
 	uint32_t output_gate;
 	uint32_t value_dimension;
 	uint32_t has_sinks;
-	uint32_t pad[2];
+	uint32_t first_head;
+	uint32_t group;
 } SparkAttentionParams;
 
 typedef struct SparkSiluMulParams

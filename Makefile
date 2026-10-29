@@ -69,7 +69,7 @@ DEVICE_METAL_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_metal.$(SHARED
 DEVICE_HEADERS := include/sparkpipe/spark_device.h runtime/device/device_backend.h
 METAL_KERNEL_UNITS := inference/kernels/metal/norm.metal inference/kernels/metal/gemv.metal inference/kernels/metal/gemm.metal \
 	inference/kernels/metal/recurrent.metal inference/kernels/metal/attention.metal inference/kernels/metal/elementwise.metal \
-	inference/kernels/metal/hyper.metal inference/kernels/metal/ngram.metal
+	inference/kernels/metal/hyper.metal inference/kernels/metal/ngram.metal inference/kernels/metal/collective.metal
 METAL_KERNEL_INCLUDES := inference/kernels/metal/common.metal inference/kernels/metal/kernel_params.h inference/kernels/kernel_math.cuh
 METAL_KERNEL_LIBRARY := $(DEVICE_RUNTIME_DIR)/sparkpipe_kernels.metallib
 METAL_TEST_KERNEL_LIBRARY := build/metal/test_device_kernels.metallib

@@ -86,7 +86,11 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_sigmoid_gate_rows",
 	"spark_ngram_hash",
 	"spark_ngram_gather_fp8",
-	"spark_ngram_history"
+	"spark_ngram_history",
+	"spark_route_local",
+	"spark_rank_sum_bf16",
+	"spark_rank_max_u64",
+	"spark_rank_rows"
 };
 
 static SparkStatus OpsRefuse(const char *operation, const char *reason)
@@ -196,15 +200,15 @@ void SparkDeviceOpsClose(SparkDeviceOps *ops)
 static pthread_mutex_t ops_shared_mutex = PTHREAD_MUTEX_INITIALIZER;
 static SparkDeviceOps ops_shared;
 static uint32_t ops_shared_users;
+static SparkDeviceOps ops_lanes[SPARK_OPS_MAX_LANES];
+static uint32_t ops_lane_users[SPARK_OPS_MAX_LANES];
 
-SparkStatus SparkDeviceOpsAcquire(SparkDeviceOps **ops)
+static SparkStatus OpsSharedAcquireLocked(void)
 {
 	char path[PATH_MAX];
 	Dl_info info;
 	const char *slash;
 	SparkStatus status = SPARK_STATUS_OK;
-	*ops = 0;
-	pthread_mutex_lock(&ops_shared_mutex);
 	if ( ops_shared_users == 0u )
 	{
 		if ( dladdr((const void *)SparkDeviceInitialize,&info) == 0 || info.dli_fname == 0 || (slash = strrchr(info.dli_fname,'/')) == 0 ||
@@ -218,9 +222,65 @@ SparkStatus SparkDeviceOpsAcquire(SparkDeviceOps **ops)
 		}
 	}
 	if ( status == SPARK_STATUS_OK )
-	{
 		ops_shared_users++;
+	return(status);
+}
+
+static void OpsSharedReleaseLocked(void)
+{
+	if ( ops_shared_users != 0u && --ops_shared_users == 0u )
+		SparkDeviceOpsClose(&ops_shared);
+}
+
+static void OpsLaneFree(SparkDeviceOps *lane)
+{
+	if ( lane->error.handle != 0u )
+		(void)SparkDeviceFree(&lane->error);
+	if ( lane->partial.handle != 0u )
+		(void)SparkDeviceFree(&lane->partial);
+	memset(lane,0,sizeof(*lane));
+}
+
+SparkStatus SparkDeviceOpsAcquire(SparkDeviceOps **ops)
+{
+	return(SparkDeviceOpsAcquireLane(ops,0u));
+}
+
+SparkStatus SparkDeviceOpsAcquireLane(SparkDeviceOps **ops, uint32_t lane)
+{
+	SparkDeviceOps *instance = lane < SPARK_OPS_MAX_LANES ? &ops_lanes[lane] : 0;
+	SparkStatus status;
+	*ops = 0;
+	if ( instance == 0 )
+		return(OpsRefuse("acquire","an ops lane is below SPARK_OPS_MAX_LANES"));
+	pthread_mutex_lock(&ops_shared_mutex);
+	status = OpsSharedAcquireLocked();
+	if ( status == SPARK_STATUS_OK && lane == 0u )
 		*ops = &ops_shared;
+	else if ( status == SPARK_STATUS_OK && ops_lane_users[lane] != 0u )
+	{
+		ops_lane_users[lane]++;
+		*ops = instance;
+	}
+	else if ( status == SPARK_STATUS_OK )
+	{
+		memset(instance,0,sizeof(*instance));
+		instance->library = ops_shared.library;
+		memcpy(instance->kernels,ops_shared.kernels,sizeof(instance->kernels));
+		instance->lane = lane;
+		status = SparkDeviceAllocate(&instance->error,SPARK_DEVICE_SPACE_SHARED_COHERENT,16u,"device ops lane error word");
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceAllocate(&instance->partial,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,SPARK_OPS_PARTIAL_BYTES,"device ops lane split partials");
+		if ( status == SPARK_STATUS_OK )
+		{
+			ops_lane_users[lane] = 1u;
+			*ops = instance;
+		}
+		else
+		{
+			OpsLaneFree(instance);
+			OpsSharedReleaseLocked();
+		}
 	}
 	pthread_mutex_unlock(&ops_shared_mutex);
 	return(status);
@@ -229,8 +289,11 @@ SparkStatus SparkDeviceOpsAcquire(SparkDeviceOps **ops)
 void SparkDeviceOpsRelease(SparkDeviceOps *ops)
 {
 	pthread_mutex_lock(&ops_shared_mutex);
-	if ( ops == &ops_shared && ops_shared_users != 0u && --ops_shared_users == 0u )
-		SparkDeviceOpsClose(&ops_shared);
+	if ( ops != 0 && ops != &ops_shared && ops >= ops_lanes && ops < ops_lanes + SPARK_OPS_MAX_LANES && ops_lane_users[ops->lane] != 0u &&
+		--ops_lane_users[ops->lane] == 0u )
+		OpsLaneFree(ops);
+	if ( ops == &ops_shared || (ops >= ops_lanes && ops < ops_lanes + SPARK_OPS_MAX_LANES) )
+		OpsSharedReleaseLocked();
 	pthread_mutex_unlock(&ops_shared_mutex);
 }
 
@@ -246,8 +309,8 @@ static SparkTensor OpsErrorWord(SparkDeviceOps *ops)
 	return(SparkTensorAt(&ops->error,0u,4u));
 }
 
-SparkStatus SparkOpsGather(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor table, SparkTensor ids, SparkTensor output,
-	uint32_t rows, uint32_t width, uint32_t table_rows)
+static SparkStatus OpsGather(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor table, SparkTensor ids, SparkTensor output,
+	uint32_t rows, uint32_t width, uint32_t table_rows, uint32_t first_row, uint32_t sliced)
 {
 	SparkGatherParams params;
 	SparkDeviceBinding bindings[4];
@@ -265,11 +328,94 @@ SparkStatus SparkOpsGather(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTe
 	params.rows = rows;
 	params.width = width;
 	params.table_rows = table_rows;
+	params.first_row = first_row;
+	params.sliced = sliced;
 	bindings[0] = OpsBind(table,SPARK_DEVICE_BIND_READ);
 	bindings[1] = OpsBind(ids,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
 	bindings[3] = OpsBind(OpsErrorWord(ops),SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,SPARK_OPS_GATHER,(width / 8u + 255u) / 256u,rows,1u,256u,&params,sizeof(params),bindings,4u));
+}
+
+SparkStatus SparkOpsGather(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor table, SparkTensor ids, SparkTensor output,
+	uint32_t rows, uint32_t width, uint32_t table_rows)
+{
+	return(OpsGather(ops,queue,table,ids,output,rows,width,table_rows,0u,0u));
+}
+
+SparkStatus SparkOpsGatherSlice(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor table, SparkTensor ids, SparkTensor output,
+	uint32_t rows, uint32_t width, uint32_t table_rows, uint32_t first_row)
+{
+	return(OpsGather(ops,queue,table,ids,output,rows,width,table_rows,first_row,1u));
+}
+
+SparkStatus SparkOpsRouteLocal(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor experts, const SparkRouteParams *params)
+{
+	const uint64_t routes = (uint64_t)params->rows * params->top_k;
+	SparkDeviceBinding binding;
+	SparkStatus status;
+	if ( params->rows == 0u || params->top_k == 0u || params->local_experts == 0u || params->first_expert + params->local_experts > params->experts )
+		return(OpsRefuse("route_local","rows, a top-k and a local expert range inside the layer's experts are required"));
+	status = OpsNeed("route_local","experts",experts,routes * sizeof(uint32_t));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	binding = OpsBind(experts,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_LOCAL,(uint32_t)((routes + 255u) / 256u),1u,1u,256u,params,sizeof(*params),&binding,1u));
+}
+
+static SparkStatus OpsRankCombine(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkOpsKernel kernel, const char *operation, SparkTensor lanes,
+	SparkTensor full, uint32_t ranks, uint64_t elements, uint32_t element_bytes)
+{
+	SparkRankParams params;
+	SparkDeviceBinding bindings[2];
+	SparkStatus status;
+	if ( ranks == 0u || elements == 0u || elements > UINT32_MAX )
+		return(OpsRefuse(operation,"ranks and at most 2^32 elements are required"));
+	status = OpsNeed(operation,"lanes",lanes,(uint64_t)ranks * elements * element_bytes);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed(operation,"full",full,elements * element_bytes);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	memset(&params,0,sizeof(params));
+	params.elements = elements;
+	params.ranks = ranks;
+	bindings[0] = OpsBind(lanes,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(full,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,kernel,(uint32_t)((elements + 255u) / 256u),1u,1u,256u,&params,sizeof(params),bindings,2u));
+}
+
+SparkStatus SparkOpsRankSumBf16(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements)
+{
+	return(OpsRankCombine(ops,queue,SPARK_OPS_RANK_SUM_BF16,"rank_sum_bf16",lanes,full,ranks,elements,2u));
+}
+
+SparkStatus SparkOpsRankMaxU64(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements)
+{
+	return(OpsRankCombine(ops,queue,SPARK_OPS_RANK_MAX_U64,"rank_max_u64",lanes,full,ranks,elements,8u));
+}
+
+SparkStatus SparkOpsRankRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor gathered, SparkTensor rows, uint32_t ranks, uint32_t row_count,
+	uint32_t width)
+{
+	const uint64_t bytes = (uint64_t)ranks * row_count * width * sizeof(uint16_t);
+	SparkRankParams params;
+	SparkDeviceBinding bindings[2];
+	SparkStatus status;
+	if ( ranks == 0u || row_count == 0u || width == 0u || (uint64_t)ranks * width > UINT32_MAX )
+		return(OpsRefuse("rank_rows","ranks, rows and a width are required"));
+	status = OpsNeed("rank_rows","gathered",gathered,bytes);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("rank_rows","rows",rows,bytes);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	memset(&params,0,sizeof(params));
+	params.elements = (uint64_t)row_count * width;
+	params.ranks = ranks;
+	params.rows = row_count;
+	params.width = width;
+	bindings[0] = OpsBind(gathered,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(rows,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_RANK_ROWS,(ranks * width + 255u) / 256u,row_count,1u,256u,&params,sizeof(params),bindings,2u));
 }
 
 static uint32_t OpsThreads(uint32_t width, uint32_t limit)
@@ -653,8 +799,10 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 	SparkDeviceBinding bindings[7];
 	SparkStatus status;
 	uint32_t row, longest = 0u, run = 0u, widest = 0u, decode;
-	if ( params->rows == 0u || params->heads == 0u || params->kv_heads != paged->kv_heads || params->heads % params->kv_heads != 0u ||
-		OpsAttentionShapeKnown(params) == 0u || (sinks != 0) != (params->has_sinks != 0u) ||
+	if ( launch.group == 0u && params->kv_heads != 0u && params->heads % params->kv_heads == 0u )
+		launch.group = params->heads / params->kv_heads;
+	if ( params->rows == 0u || params->heads == 0u || params->kv_heads != paged->kv_heads || launch.group == 0u ||
+		(uint64_t)params->first_head + params->heads > (uint64_t)launch.group * params->kv_heads || OpsAttentionShapeKnown(params) == 0u || (sinks != 0) != (params->has_sinks != 0u) ||
 		params->page_slots != paged->page_slots ||
 		params->pages_per_sequence != paged->pages_per_sequence || params->pool_pages != paged->pool_pages || host_positions == 0 ||
 		host_sequence_of_row == 0 )

@@ -95,7 +95,7 @@ kernel void spark_attention_decode(constant SparkAttentionParams &p [[buffer(0)]
 	threadgroup float shared_sum[SPARK_ATTENTION_SIMDS];
 	threadgroup float shared_out[SPARK_ATTENTION_SIMDS][DV];
 	const uint part = group.x, head = group.y, row = group.z;
-	const uint kv_head = head / (p.heads / p.kv_heads), sequence = sequence_of_row[row], length = positions[row] + 1u;
+	const uint kv_head = (p.first_head + head) / p.group, sequence = sequence_of_row[row], length = positions[row] + 1u;
 	const uint begin = max(part * p.partition_keys, SparkAttentionFirstKey(p, positions[row])), end = min(length, part * p.partition_keys + p.partition_keys);
 	float q[LANE], acc[VLANE];
 	float running_max = -INFINITY, running_sum = 0.0f;
@@ -197,7 +197,7 @@ kernel void spark_attention_prefill_blocks(constant SparkAttentionParams &p [[bu
 	threadgroup float row_max[ROWS];
 	threadgroup float row_sum[ROWS];
 	threadgroup float row_scale[ROWS];
-	const uint part = group.x, head = group.y, kv_head = head / (p.heads / p.kv_heads);
+	const uint part = group.x, head = group.y, kv_head = (p.first_head + head) / p.group;
 	const uint first_row = p.row_offset + group.z * ROWS;
 	if ( first_row >= p.rows )
 		return;

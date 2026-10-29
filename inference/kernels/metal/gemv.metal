@@ -155,6 +155,12 @@ kernel void spark_gemv_mxfp4_routed(constant SparkGemvParams &p [[buffer(0)]], d
 {
 	threadgroup float partial[SPARK_GEMV_SIMDS * SPARK_GEMV_OUTPUTS];
 	const uint K = p.input_dimension, N = p.output_dimension, route = group.y, first = group.x * SPARK_GEMV_OUTPUTS;
+	if ( experts[route] == SPARK_ROUTE_SKIP )
+	{
+		if ( simd == 0u && lane < SPARK_GEMV_OUTPUTS && first + lane < N )
+			out[(ulong)route * p.output_stride + first + lane] = 0u;
+		return;
+	}
 	const ulong expert = experts[route];
 	device const ushort *row = x + (ulong)(route / p.route_divisor) * p.input_stride;
 	float acc[SPARK_GEMV_OUTPUTS];
@@ -204,6 +210,12 @@ kernel void spark_gemv_routed(constant SparkGemvParams &p [[buffer(0)]], device 
 {
 	threadgroup float partial[SPARK_GEMV_SIMDS * SPARK_GEMV_OUTPUTS];
 	const uint route = group.y;
+	if ( experts[route] == SPARK_ROUTE_SKIP )
+	{
+		if ( simd == 0u && lane < SPARK_GEMV_OUTPUTS && group.x * SPARK_GEMV_OUTPUTS + lane < p.output_dimension )
+			out[(ulong)route * p.output_stride + group.x * SPARK_GEMV_OUTPUTS + lane] = 0u;
+		return;
+	}
 	device const ushort *row = x + (ulong)(route / p.route_divisor) * p.input_stride;
 	device const ushort *weights = w + (ulong)experts[route] * p.output_dimension * p.input_dimension;
 	SparkGemvRows<1u, SPARK_GEMV_OUTPUTS, false>(p, row, weights, out + (ulong)route * p.output_stride, group.x * SPARK_GEMV_OUTPUTS, lane, simd,
@@ -242,6 +254,12 @@ kernel void spark_gemv_nvfp4_routed(constant SparkGemvParams &p [[buffer(0)]], d
 	const uint K = p.input_dimension, N = p.output_dimension, route = group.y, chunks = K / SPARK_NVFP4_CHUNK;
 	const uint lanes = SPARK_NVFP4_LANES(chunks), sub = lane % lanes;
 	const uint neuron = (group.x * simds + simd) * (32u / lanes) + lane / lanes;
+	if ( experts[route] == SPARK_ROUTE_SKIP )
+	{
+		if ( sub == 0u && neuron < N )
+			out[(ulong)route * p.output_stride + neuron] = 0u;
+		return;
+	}
 	const ulong expert = experts[route], at = expert * N + min(neuron, N - 1u);
 	device const ushort *row = x + (ulong)(route / p.route_divisor) * p.input_stride;
 	device const uchar *weights = w + at * (K / 2u);

@@ -22,6 +22,7 @@ extern "C" {
 #define SPARK_OPS_ATTENTION_SPLIT_KEY_DIM 192u
 #define SPARK_OPS_ATTENTION_SPLIT_VALUE_DIM 128u
 #define SPARK_OPS_DELTA_KEY_DIM 128u
+#define SPARK_OPS_MAX_LANES 16u
 
 typedef enum SparkOpsKernel
 {
@@ -97,6 +98,10 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_NGRAM_HASH,
 	SPARK_OPS_NGRAM_GATHER_FP8,
 	SPARK_OPS_NGRAM_HISTORY,
+	SPARK_OPS_ROUTE_LOCAL,
+	SPARK_OPS_RANK_SUM_BF16,
+	SPARK_OPS_RANK_MAX_U64,
+	SPARK_OPS_RANK_ROWS,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -113,6 +118,7 @@ typedef struct SparkDeviceOps
 	SparkDeviceBuffer error;
 	SparkDeviceBuffer partial;
 	SparkDeviceQueue *partial_queue;
+	uint32_t lane;
 } SparkDeviceOps;
 
 typedef struct SparkOpsSequences
@@ -138,6 +144,7 @@ typedef struct SparkOpsPaged
 SparkStatus SparkDeviceOpsOpen(SparkDeviceOps *ops, const char *library_path);
 void SparkDeviceOpsClose(SparkDeviceOps *ops);
 SparkStatus SparkDeviceOpsAcquire(SparkDeviceOps **ops);
+SparkStatus SparkDeviceOpsAcquireLane(SparkDeviceOps **ops, uint32_t lane);
 void SparkDeviceOpsRelease(SparkDeviceOps *ops);
 SparkStatus SparkDeviceOpsTakeError(SparkDeviceOps *ops, uint32_t *error);
 SparkTensor SparkTensorAt(const SparkDeviceBuffer *buffer, uint64_t offset, uint64_t bytes);
@@ -145,6 +152,13 @@ SparkTensor SparkTensorSlice(SparkTensor tensor, uint64_t offset, uint64_t bytes
 
 SparkStatus SparkOpsGather(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor table, SparkTensor ids, SparkTensor output,
 	uint32_t rows, uint32_t width, uint32_t table_rows);
+SparkStatus SparkOpsGatherSlice(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor table, SparkTensor ids, SparkTensor output,
+	uint32_t rows, uint32_t width, uint32_t table_rows, uint32_t first_row);
+SparkStatus SparkOpsRouteLocal(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor experts, const SparkRouteParams *params);
+SparkStatus SparkOpsRankSumBf16(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements);
+SparkStatus SparkOpsRankMaxU64(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements);
+SparkStatus SparkOpsRankRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor gathered, SparkTensor rows, uint32_t ranks, uint32_t row_count,
+	uint32_t width);
 SparkStatus SparkOpsRmsNormResidual(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor hidden, const SparkTensor *addend,
 	SparkTensor weight, SparkTensor output, const SparkNormParams *params);
 SparkStatus SparkOpsRmsNormGate(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor gate, SparkTensor weight,
