@@ -59,6 +59,14 @@ __global__ void MoeFillCells(uint8_t *data,uint64_t count,uint32_t salt)
 	}
 }
 
+static double MoeHostFloat(uint16_t value)
+{
+	uint32_t bits = (uint32_t)value << 16u;
+	float result;
+	memcpy(&result,&bits,4u);
+	return result;
+}
+
 template<class T>
 static T *MoeAlloc(uint64_t count)
 {
@@ -88,10 +96,10 @@ static void MoeBuffers(K3LayerBuffers *b,uint32_t rank)
 	b->shared_mid_bf16 = MoeAlloc<uint16_t>((uint64_t)MOE_ROWS * MOE_SHARED_IN);
 	b->shared_out_bf16 = MoeAlloc<uint16_t>((uint64_t)MOE_ROWS * K3_HIDDEN);
 	b->attnres_partial_bf16 = MoeAlloc<uint16_t>((uint64_t)MOE_ROWS * K3_HIDDEN);
-	b->dense_row_offset = MoeAlloc<uint32_t>(2u);
+	uint32_t *dense_offsets = MoeAlloc<uint32_t>(2u),offsets[2] = {0u,MOE_ROWS};
+	MOE_CUDA(cudaMemcpy(dense_offsets,offsets,sizeof(offsets),cudaMemcpyHostToDevice));
+	b->dense_row_offset = dense_offsets;
 	b->dense_tile_prefix = MoeAlloc<uint32_t>(2u);
-	uint32_t offsets[2] = {0u,MOE_ROWS};
-	MOE_CUDA(cudaMemcpy(b->dense_row_offset,offsets,sizeof(offsets),cudaMemcpyHostToDevice));
 	b->tp_sharded = 1u;
 	b->tp_rank = rank;
 	b->expert_w1_output = MOE_W1_OUT;
@@ -275,7 +283,7 @@ int main(void)
 		MOE_CUDA(cudaMemcpy(routes_candidate.data(),streamed.route_expert,MOE_PACKED * 4u,cudaMemcpyDeviceToHost));
 		for (index = 0u; index < reference.size(); index++)
 		{
-			const double r = LmBf16ToFloat(reference[index]),c = LmBf16ToFloat(candidate[index]),b = LmBf16ToFloat(before[index]);
+			const double r = MoeHostFloat(reference[index]),c = MoeHostFloat(candidate[index]),b = MoeHostFloat(before[index]);
 			if ( !isfinite(r) || !isfinite(c) )
 			{
 				nonfinite++;
