@@ -285,6 +285,14 @@ typedef struct SparkStageRunnerState
 	float *output_score_host;
 	uint32_t *positions;
 	uint32_t *token_ids_device;
+	uint32_t *deferred_tokens;
+	uint64_t deferred_sequence;
+	uint32_t deferred_capacity;
+	uint32_t deferred_count;
+	uint32_t deferred_first;
+	uint32_t deferred_slot;
+	uint32_t deferred_state_target;
+	uint32_t deferred_active;
 	uint32_t *context_length;
 	uint32_t *sequence_of_row;
 	uint32_t *recurrent_index;
@@ -2111,6 +2119,89 @@ static SparkStatus StageRunnerStageInput(SparkStageRunnerState *state, const Spa
 		dispatch->sideband_input != 0 ? (uint64_t)rows * state->geometry.sideband_bytes_per_row : 0u, rows, stream);
 }
 
+static SparkStatus StageRunnerDefer(SparkStageRunner *runner, SparkStageRunnerState *state, const SparkStageRunnerDispatch *dispatch, uint32_t rows)
+{
+	uint32_t row;
+	if ( state->model_interface->streamed_prefill == 0 || runner->owns_embedding == 0u || dispatch->token_ids == 0 || dispatch->host_positions == 0 ||
+		dispatch->host_sequence_of_row == 0 || dispatch->host_state_target == 0 || dispatch->active_sequence_count != 1u ||
+		(dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) == 0u || (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY) != 0u ||
+		dispatch->chain_steps > 1u )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: deferred prefill refused: the model has no streamed prefill or the wave is not one sequence's prefill (flags=0x%x sequences=%u)\n",
+			dispatch->flags, dispatch->active_sequence_count);
+		return SPARK_STATUS_UNSUPPORTED;
+	}
+	if ( state->deferred_tokens == 0 )
+	{
+		state->deferred_capacity = state->max_context;
+		state->deferred_tokens = (uint32_t *)malloc((size_t)state->deferred_capacity * sizeof(uint32_t));
+		if ( state->deferred_tokens == 0 )
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
+	if ( state->deferred_active == 0u )
+	{
+		state->deferred_active = 1u;
+		state->deferred_sequence = dispatch->sequence_id;
+		state->deferred_first = dispatch->host_positions[0];
+		state->deferred_count = 0u;
+		state->deferred_slot = dispatch->host_sequence_of_row[0];
+		state->deferred_state_target = dispatch->host_state_target[0];
+	}
+	if ( dispatch->sequence_id != state->deferred_sequence || dispatch->host_sequence_of_row[0] != state->deferred_slot ||
+		dispatch->host_state_target[0] != state->deferred_state_target )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: deferred prefill refused: sequence %llu arrived while sequence %llu holds the deferred buffer\n",
+			(unsigned long long)dispatch->sequence_id, (unsigned long long)state->deferred_sequence);
+		return SPARK_STATUS_BUSY;
+	}
+	if ( (uint64_t)state->deferred_count + rows > state->deferred_capacity )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: deferred prefill refused: %u + %u tokens exceed the %u-position context\n",
+			state->deferred_count, rows, state->deferred_capacity);
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
+	for ( row = 0u; row < rows; ++row )
+		if ( dispatch->host_positions[row] != state->deferred_first + state->deferred_count + row || dispatch->host_sequence_of_row[row] != state->deferred_slot )
+		{
+			fprintf(stderr, "sparkpipe_stage_runner: deferred prefill refused: row %u is position %u, the deferred run continues at %u\n",
+				row, dispatch->host_positions[row], state->deferred_first + state->deferred_count + row);
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		}
+	memcpy(state->deferred_tokens + state->deferred_count, dispatch->token_ids, (size_t)rows * sizeof(uint32_t));
+	state->deferred_count += rows;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus StageRunnerRunDeferred(SparkStageRunnerState *state, const SparkStageRunnerDispatch *dispatch)
+{
+	SparkStageRunnerStreamedPrefill request;
+	SparkStatus status;
+	if ( state->deferred_active == 0u )
+		return SPARK_STATUS_OK;
+	if ( dispatch->sequence_id != state->deferred_sequence || dispatch->host_positions == 0 ||
+		dispatch->host_positions[0] != state->deferred_first + state->deferred_count )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: submit refused: sequence %llu holds %u deferred prefill tokens and this wave does not continue it\n",
+			(unsigned long long)state->deferred_sequence, state->deferred_count);
+		return SPARK_STATUS_BUSY;
+	}
+	memset(&request, 0, sizeof(request));
+	request.sequence_id = state->deferred_sequence;
+	request.first_position = state->deferred_first;
+	request.token_count = state->deferred_count;
+	request.token_ids = state->deferred_tokens;
+	request.sequence_slot = state->deferred_slot;
+	request.state_target = state->deferred_state_target;
+	request.multiprocessors = state->multiprocessors;
+	status = state->model_interface->streamed_prefill(state->model, &request, &state->services, state->stream);
+	state->deferred_active = 0u;
+	state->deferred_count = 0u;
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr, "sparkpipe_stage_runner: streamed prefill of %u tokens for sequence %llu failed status=%d; the request fails, no wave fallback\n",
+			request.token_count, (unsigned long long)request.sequence_id, (int)status);
+	return status;
+}
+
 SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRunnerDispatch *dispatch)
 {
 	SparkStageRunnerState *state;
@@ -2162,6 +2253,30 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 		fprintf(stderr, "sparkpipe_stage_runner: submit refused: unknown dispatch flags 0x%x\n", dispatch->flags);
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	}
+	if ( (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) != 0u )
+	{
+		exchange_status = StageRunnerDefer(runner, state, dispatch, rows);
+		if ( exchange_status != SPARK_STATUS_OK )
+			return exchange_status;
+		runner->stats.submitted_count++;
+		runner->stats.completed_count++;
+		if ( dispatch->completion_function != 0 )
+		{
+			memset(&completion, 0, sizeof(completion));
+			completion.request_id = dispatch->request_id;
+			completion.sequence_id = dispatch->sequence_id;
+			completion.sequence_position = dispatch->sequence_position;
+			completion.accepted_token_count = rows;
+			completion.token_count = rows;
+			completion.tokens_per_sequence = 1u;
+			completion.status = SPARK_STATUS_OK;
+			dispatch->completion_function(dispatch->completion_context, &completion);
+		}
+		return SPARK_STATUS_OK;
+	}
+	exchange_status = StageRunnerRunDeferred(state, dispatch);
+	if ( exchange_status != SPARK_STATUS_OK )
+		return exchange_status;
 	state->verify_pending = 0u;
 	if ( (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY) != 0u &&
 		(steps != 1u || (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) != 0u || runner->owns_embedding == 0u ||
@@ -2325,6 +2440,11 @@ SparkStatus SparkStageRunnerResetSlots(SparkStageRunner *runner, const uint32_t 
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	for ( uint32_t i = 0u; i < count; ++i )
 	{
+		if ( state->deferred_active != 0u && slots[i] == state->deferred_state_target )
+		{
+			state->deferred_active = 0u;
+			state->deferred_count = 0u;
+		}
 		status = state->model_interface->reset_slot(state->model, slots[i], state->stream);
 		if ( status != SPARK_STATUS_OK )
 			return status;
@@ -2596,6 +2716,7 @@ void SparkStageRunnerDestroy(SparkStageRunner *runner)
 	StageRunnerGraphPrefetchFree(state);
 	StageRunnerTapFree(state);
 	SparkStageRunnerStrayReport(state);
+	free(state->deferred_tokens);
 	free(state->stray_head_bits);
 	free(state->stray_seen_bits);
 	state->stray_head_bits = 0;
