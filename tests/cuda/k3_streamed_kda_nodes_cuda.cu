@@ -306,7 +306,7 @@ int main(void)
 		const double output_rms = sqrt(error / (squared > 0.0 ? squared : 1.0)),state_rms = sqrt(state_error / (state_squared > 0.0 ? state_squared : 1.0));
 		KdaCheck(nonfinite == 0u,"every output and state element is finite");
 		KdaCheck(squared > 0.0 && state_squared > 0.0,"the layer changes the residual and the recurrent state");
-		KdaCheck(output_rms <= 0.01,"four nodes over two passes, exchanging conv tails and chunk transforms per shard, match the sequential layer within 1% of the attention contribution");
+		KdaCheck(output_rms <= 0.002,"four nodes over two passes, exchanging conv tails and chunk transforms per shard, match the sequential layer within 0.2% of the attention contribution");
 		KdaCheck(state_rms <= 1e-4,"every node's replicated end state matches the sequential end state within 1e-4 relative RMS");
 		KdaCheck(window_mismatches == 0u,"every node carries the sequential conv window into the next pass");
 		printf("%s KDA on %u nodes x %u passes vs sequential: output relative RMS %.3g (worst %.4g), end state relative RMS %.3g, window mismatches %llu, nonfinite %llu\n",

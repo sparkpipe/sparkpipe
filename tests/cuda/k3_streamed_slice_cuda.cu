@@ -490,7 +490,7 @@ int main(void)
 			error += (r - c) * (r - c);
 		}
 		SlCheck(nonfinite == 0u,"every node output element is finite");
-		SlCheck(sqrt(error / (squared > 0.0 ? squared : 1.0)) <= 0.01,"the slice on four nodes over two passes matches the one-device streamed slice within 1% relative RMS");
+		SlCheck(sqrt(error / (squared > 0.0 ? squared : 1.0)) <= 0.002,"the slice on four nodes over two passes matches the one-device streamed slice within 0.2% relative RMS");
 		printf("%s streamed two-layer slice on %u nodes x %u passes vs one device: worst |diff| %.4g, relative RMS %.3g, nonfinite %llu\n",
 			sl_failures == 0 ? "PASS" : "FAIL",SL_NODES,SL_PASSES,worst,sqrt(error / (squared > 0.0 ? squared : 1.0)),(unsigned long long)nonfinite);
 	}

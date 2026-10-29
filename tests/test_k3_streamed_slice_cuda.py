@@ -1,4 +1,4 @@
-"""Run the streamed K3 slice (layers 0-1: KDA with dense then routed MLP, AttnRes and the residual bank, all sixteen shards per layer on one device) against sixteen TP16 ranks running K3LaunchSlice with emulated collectives on an sm_121 device."""
+"""Run the streamed K3 slice (layers 0-1: KDA with dense then routed MLP, AttnRes and the residual bank, all sixteen shards per layer on one device) against sixteen TP16 ranks running K3LaunchSlice with emulated collectives, then the same slice on four emulated nodes over two passes against the one-device result, on an sm_121 device."""
 import os
 import pathlib
 import shutil

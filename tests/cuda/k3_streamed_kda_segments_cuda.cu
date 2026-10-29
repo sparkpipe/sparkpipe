@@ -240,7 +240,7 @@ int main(void)
 		const double output_rms = sqrt(error / (squared > 0.0 ? squared : 1.0)),state_rms = sqrt(state_error / (state_squared > 0.0 ? state_squared : 1.0));
 		KdaCheck(nonfinite == 0u,"every output and state element is finite");
 		KdaCheck(squared > 0.0 && state_squared > 0.0,"the layer changes the residual and the recurrent state");
-		KdaCheck(output_rms <= 0.01,"four chunks, each with its own conv window seeded from the previous chunk's last rows and its own scan joined by the transforms, match the sequential layer within 1% of the attention contribution");
+		KdaCheck(output_rms <= 0.002,"four chunks, each with its own conv window seeded from the previous chunk's last rows and rerun from its joined incoming state, match the sequential layer within 0.2% of the attention contribution");
 		KdaCheck(state_rms <= 1e-4,"the joined end state matches the sequential end state within 1e-4 relative RMS");
 		printf("%s segmented KDA (4 chunks) vs sequential: output relative RMS %.3g (worst %.4g), end state relative RMS %.3g, nonfinite %llu\n",
 			kda_failures == 0 ? "PASS" : "FAIL",output_rms,worst,state_rms,(unsigned long long)nonfinite);
