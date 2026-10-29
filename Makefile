@@ -1063,7 +1063,11 @@ build/weight_stream_probe: tools/hardware/weight_stream_probe.c
 	@mkdir -p build
 	$(CC) $(CFLAGS) $< $(LDFLAGS) -libverbs -o $@
 
-hardware_tools: build/spark_model_kernel_characterize build/spark_transport_characterize build/spark_topology_characterize build/spark_pmtu_characterize build/rdma_alltoall_probe build/weight_stream_probe
+build/pack_window_check: tools/hardware/pack_window_check.c ring/transport/pack_window.c ring/transport/weight_stream.c include/sparkpipe/spark_pack_window.h include/sparkpipe/spark_weight_stream.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -I. -Iinclude tools/hardware/pack_window_check.c ring/transport/pack_window.c ring/transport/weight_stream.c $(LDFLAGS) -libverbs -o $@
+
+hardware_tools: build/spark_model_kernel_characterize build/spark_transport_characterize build/spark_topology_characterize build/spark_pmtu_characterize build/rdma_alltoall_probe build/weight_stream_probe build/pack_window_check
 
 hardware_cuda_tools: $(CUDA_HEADER_DEPS)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
