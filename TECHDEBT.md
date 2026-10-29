@@ -1146,11 +1146,14 @@ and the multidev docs on 2026-09-28. Line numbers are in
     head-gate softplus uses `log1pf(__expf(x))`, the gated delta
     `__logf(1 + __expf(x))`. The causal convolution's swish is
     `SparkMathSwishFast` (`x * sigmoid(x)`) on both backends;
-  - attention softmax: Metal's online softmax moves a row's running maximum
-    only past a margin of 8 (`SPARK_ATTENTION_RESCALE_MARGIN`), which takes
-    Gemma 4 31B and Muse Glimmer through the gate's paired test at no
-    measured cost; CUDA's GQA softmax (`gqa_shard.cuh`) still rescales at
-    every new maximum. The margin is a candidate shared formula for both;
+  - attention softmax: both backends rescale at every new maximum. A
+    Metal-only margin of 8 (from #1605, tried as 9daff83ca and reverted)
+    moved the running maximum only past it: Gemma 4 31B then passed the
+    paired test (+0.92 / +1.65 sigma), but Gemma 4 26B (+3.86 against A) and
+    Qwen3.8-27B (+3.79 against B) fell outside it and Muse Glimmer stayed
+    outside (+3.14 against A). With CUDA's rescale, 31B (+4.8 / +4.3) and Muse
+    (+3.37 against A) fail the paired test; the attention arithmetic that
+    takes all four through, on both backends, is still open;
   - exp flavor: CUDA kernels use `__expf` in some places and `expf` in
     others, Metal the precise functions everywhere, so the backends differ
     by the intrinsic's error until one policy is chosen and measured;

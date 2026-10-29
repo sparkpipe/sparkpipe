@@ -7,7 +7,6 @@ using namespace mpp::tensor_ops;
 #define SPARK_ATTENTION_SIMDS 8u
 #define SPARK_ATTENTION_BLOCK_KEYS 64u
 #define SPARK_ATTENTION_BLOCK_SIMDS 4u
-#define SPARK_ATTENTION_RESCALE_MARGIN 8.0f
 
 static inline bool SparkKvPage(device const uint *page_table, uint pages_per_sequence, uint page_slots, uint pool_pages, uint sequence,
 	uint position, device atomic_uint *error, uint row, thread uint &page)
@@ -114,8 +113,8 @@ kernel void spark_attention_decode(constant SparkAttentionParams &p [[buffer(0)]
 		for ( uint d = 0u; d < LANE; d++ )
 			score += q[d] * k[d];
 		score = simd_sum(score) * p.scale;
-		const float next_max = score > running_max + SPARK_ATTENTION_RESCALE_MARGIN ? score : running_max;
-		const float correction = next_max == running_max ? 1.0f : exp(running_max - next_max), weight = exp(score - next_max);
+		const float next_max = max(running_max, score);
+		const float correction = exp(running_max - next_max), weight = exp(score - next_max);
 		running_sum = running_sum * correction + weight;
 		for ( uint d = 0u; d < VLANE; d++ )
 			acc[d] = acc[d] * correction + weight * v[d];
@@ -257,9 +256,8 @@ kernel void spark_attention_prefill_blocks(constant SparkAttentionParams &p [[bu
 			const uint low_key = tile + lane, high_key = tile + lane + 32u;
 			float low_value = low_key < limit && low_key >= low && lane < keys ? block[r * SPARK_ATTENTION_BLOCK_KEYS + lane] * scale : -INFINITY;
 			float high_value = high_key < limit && high_key >= low && lane + 32u < keys ? block[r * SPARK_ATTENTION_BLOCK_KEYS + lane + 32u] * scale : -INFINITY;
-			const float previous = row_max[r], tile_max = simd_max(max(low_value, high_value));
-			const float next = tile_max > previous + SPARK_ATTENTION_RESCALE_MARGIN ? tile_max : previous;
-			const float correction = next == previous ? 1.0f : exp(previous - next);
+			const float previous = row_max[r], next = max(previous, simd_max(max(low_value, high_value)));
+			const float correction = next == -INFINITY ? 1.0f : exp(previous - next);
 			low_value = next == -INFINITY ? 0.0f : exp(low_value - next);
 			high_value = next == -INFINITY ? 0.0f : exp(high_value - next);
 			const float total = simd_sum(low_value + high_value);
