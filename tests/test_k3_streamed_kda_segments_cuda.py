@@ -1,4 +1,4 @@
-"""Run the segmented streamed K3 KDA layer (chunks scanned from zero and from identity, joined by their state transforms, rerun from each incoming state) against the sequential recurrence on an sm_121 device."""
+"""Run the streamed K3 KDA layer as one node of four chunks (each chunk scanned from zero and from identity, joined by its transforms, rerun from its incoming state) against the sequential recurrence on an sm_121 device."""
 import os
 import pathlib
 import shutil

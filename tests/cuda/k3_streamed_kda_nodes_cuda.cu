@@ -115,6 +115,7 @@ static void KdaBuffers(K3LayerBuffers *b,uint32_t rank,const uint32_t *state_ind
 #define KDA_NODES 4u
 #define KDA_PASSES 2u
 #define KDA_NODE_ROWS (KDA_ROWS / (KDA_NODES * KDA_PASSES))
+#define KDA_NODE_CHUNKS 2u
 
 struct KdaNode
 {
@@ -174,12 +175,14 @@ int main(void)
 	uint8_t *summaries = KdaAlloc<uint8_t>((uint64_t)KDA_NODES * KDA_SHARDS * 2u * slot_bytes);
 	float *decay_bias = KdaAlloc<float>((uint64_t)K3_KDA_HEADS * K3_KDA_KEY_DIM),*log_scale = KdaAlloc<float>(K3_KDA_HEADS);
 	float *out_norm = KdaAlloc<float>(K3_KDA_VALUE_DIM),*accumulator = KdaAlloc<float>((uint64_t)KDA_ROWS * K3_HIDDEN);
-	uint32_t *state_index = KdaAlloc<uint32_t>(1u),*row_begin = KdaAlloc<uint32_t>(2u),*node_begin = KdaAlloc<uint32_t>(2u);
-	uint32_t begin[2] = {0u,KDA_ROWS},node_rows[2] = {0u,KDA_NODE_ROWS};
+	uint32_t *state_index = KdaAlloc<uint32_t>(1u),*row_begin = KdaAlloc<uint32_t>(2u),*node_begin = KdaAlloc<uint32_t>(KDA_NODE_CHUNKS + 1u);
+	uint32_t begin[2] = {0u,KDA_ROWS},node_rows[KDA_NODE_CHUNKS + 1u] = {0u,KDA_NODE_ROWS / 2u,KDA_NODE_ROWS},chunk_slots_host[KDA_NODE_CHUNKS] = {0u,1u};
+	uint32_t *chunk_slots = KdaAlloc<uint32_t>(KDA_NODE_CHUNKS);
 	K3LayerBuffers sequential;
 	cudaStream_t stream;
 	KDA_CUDA(cudaMemcpy(row_begin,begin,sizeof(begin),cudaMemcpyHostToDevice));
 	KDA_CUDA(cudaMemcpy(node_begin,node_rows,sizeof(node_rows),cudaMemcpyHostToDevice));
+	KDA_CUDA(cudaMemcpy(chunk_slots,chunk_slots_host,sizeof(chunk_slots_host),cudaMemcpyHostToDevice));
 	KdaFillBf16<<<64,256>>>(attn_norm,K3_HIDDEN,1u,0.1f,1.0f);
 	KdaFillBf16<<<512,256>>>(decay_down,(uint64_t)K3_KDA_KEY_DIM * K3_HIDDEN,2u,0.02f,0.0f);
 	KdaFillBf16<<<512,256>>>(hidden,(uint64_t)KDA_ROWS * K3_HIDDEN,3u,1.0f,0.0f);
@@ -235,13 +238,16 @@ int main(void)
 		x->nodes = KDA_NODES;
 		x->tails = tails;
 		x->summaries = summaries;
-		x->incoming = KdaAlloc<float>(slot_bytes / 4u);
+		x->chunks = KDA_NODE_CHUNKS;
+		x->chunk_row_begin = node_begin;
+		x->chunk_slots = chunk_slots;
+		x->ends = KdaAlloc<float>(KDA_NODE_CHUNKS * slot_bytes / 4u);
+		x->transforms = KdaAlloc<float>(KDA_NODE_CHUNKS * slot_bytes / 4u);
+		x->incoming = KdaAlloc<float>(KDA_NODE_CHUNKS * slot_bytes / 4u);
 		x->running = KdaAlloc<float>(2u * slot_bytes / 4u);
-		x->q_window = KdaAlloc<uint16_t>((uint64_t)KDA_RANK_QK * K3_KDA_CONV_KERNEL);
-		x->k_window = KdaAlloc<uint16_t>((uint64_t)KDA_RANK_QK * K3_KDA_CONV_KERNEL);
-		x->v_window = KdaAlloc<uint16_t>((uint64_t)KDA_RANK_V * K3_KDA_CONV_KERNEL);
-		x->row_begin = node_begin;
-		x->slot = state_index;
+		x->q_windows = KdaAlloc<uint16_t>((uint64_t)KDA_NODE_CHUNKS * KDA_RANK_QK * K3_KDA_CONV_KERNEL);
+		x->k_windows = KdaAlloc<uint16_t>((uint64_t)KDA_NODE_CHUNKS * KDA_RANK_QK * K3_KDA_CONV_KERNEL);
+		x->v_windows = KdaAlloc<uint16_t>((uint64_t)KDA_NODE_CHUNKS * KDA_RANK_V * K3_KDA_CONV_KERNEL);
 		x->zeros = KdaAlloc<uint16_t>((uint64_t)KDA_NODE_ROWS * KDA_RANK_V);
 		x->scratch = KdaAlloc<uint16_t>((uint64_t)KDA_NODE_ROWS * KDA_RANK_V);
 		x->exchange = KdaExchange;
@@ -306,7 +312,7 @@ int main(void)
 		const double output_rms = sqrt(error / (squared > 0.0 ? squared : 1.0)),state_rms = sqrt(state_error / (state_squared > 0.0 ? state_squared : 1.0));
 		KdaCheck(nonfinite == 0u,"every output and state element is finite");
 		KdaCheck(squared > 0.0 && state_squared > 0.0,"the layer changes the residual and the recurrent state");
-		KdaCheck(output_rms <= 0.002,"four nodes over two passes, exchanging conv tails and chunk transforms per shard, match the sequential layer within 0.2% of the attention contribution");
+		KdaCheck(output_rms <= 0.002,"four nodes of two chunks over two passes, exchanging conv tails and chunk transforms per shard, match the sequential layer within 0.2% of the attention contribution");
 		KdaCheck(state_rms <= 1e-4,"every node's replicated end state matches the sequential end state within 1e-4 relative RMS");
 		KdaCheck(window_mismatches == 0u,"every node carries the sequential conv window into the next pass");
 		printf("%s KDA on %u nodes x %u passes vs sequential: output relative RMS %.3g (worst %.4g), end state relative RMS %.3g, window mismatches %llu, nonfinite %llu\n",

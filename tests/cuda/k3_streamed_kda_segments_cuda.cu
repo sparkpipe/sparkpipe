@@ -111,14 +111,20 @@ static void KdaBuffers(K3LayerBuffers *b,uint32_t rank,const uint32_t *state_ind
 	b->kda_out_input = KDA_RANK_V;
 }
 
+static void KdaNoExchange(void *context,void *stream,uint32_t phase,uint32_t shard)
+{
+	(void)context;
+	(void)stream;
+	(void)phase;
+	(void)shard;
+}
+
 int main(void)
 {
 	const uint32_t chunks = 4u,chunk_rows = KDA_ROWS / chunks;
 	const uint64_t slot_bytes = K3_KDA_RANK_STATE_SLOT_BYTES(KDA_RANK_HEADS,0u);
 	std::vector<K3LayerWeights> shards(KDA_SHARDS);
 	std::vector<K3StreamedKdaState> sequential_states(KDA_SHARDS),segmented_states(KDA_SHARDS);
-	std::vector<uint8_t *> ends(KDA_SHARDS),transforms(KDA_SHARDS),incoming(KDA_SHARDS);
-	std::vector<uint16_t *> q_windows(KDA_SHARDS),k_windows(KDA_SHARDS),v_windows(KDA_SHARDS);
 	uint16_t *attn_norm = KdaAlloc<uint16_t>(K3_HIDDEN),*decay_down = KdaAlloc<uint16_t>((uint64_t)K3_KDA_KEY_DIM * K3_HIDDEN);
 	uint16_t *hidden = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * K3_HIDDEN),*partial = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * K3_HIDDEN);
 	uint16_t *scratch = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * K3_HIDDEN);
@@ -128,7 +134,7 @@ int main(void)
 	uint32_t *chunk_begin = KdaAlloc<uint32_t>(chunks + 1u),*chunk_slots = KdaAlloc<uint32_t>(chunks);
 	std::vector<uint32_t> chunk_begin_host(chunks + 1u),chunk_slots_host(chunks);
 	K3LayerBuffers sequential,segmented;
-	K3StreamedKdaSegments segments;
+	K3StreamedKdaExchange segments;
 	cudaStream_t stream;
 	for (uint32_t chunk = 0u; chunk <= chunks; chunk++)
 		chunk_begin_host[chunk] = chunk * chunk_rows;
@@ -173,23 +179,24 @@ int main(void)
 		w->kda_v_conv_weight = v_conv;
 		sequential_states[shard] = KdaState();
 		segmented_states[shard] = KdaState();
-		ends[shard] = KdaAlloc<uint8_t>(slot_bytes * chunks);
-		transforms[shard] = KdaAlloc<uint8_t>(slot_bytes * chunks);
-		incoming[shard] = KdaAlloc<uint8_t>(slot_bytes * chunks);
-		q_windows[shard] = KdaAlloc<uint16_t>((uint64_t)chunks * KDA_RANK_QK * K3_KDA_CONV_KERNEL);
-		k_windows[shard] = KdaAlloc<uint16_t>((uint64_t)chunks * KDA_RANK_QK * K3_KDA_CONV_KERNEL);
-		v_windows[shard] = KdaAlloc<uint16_t>((uint64_t)chunks * KDA_RANK_V * K3_KDA_CONV_KERNEL);
 	}
-	segments.q_windows = q_windows.data();
-	segments.k_windows = k_windows.data();
-	segments.v_windows = v_windows.data();
+	memset(&segments,0,sizeof(segments));
+	segments.node = 0u;
+	segments.nodes = 1u;
 	segments.chunks = chunks;
 	segments.chunk_row_begin = chunk_begin;
 	segments.chunk_slots = chunk_slots;
-	segments.ends = ends.data();
-	segments.transforms = transforms.data();
-	segments.incoming = incoming.data();
+	segments.tails = KdaAlloc<uint16_t>((uint64_t)KDA_SHARDS * (2u * KDA_RANK_QK + KDA_RANK_V) * K3_KDA_CONV_KERNEL);
+	segments.summaries = KdaAlloc<uint8_t>((uint64_t)KDA_SHARDS * 2u * slot_bytes);
+	segments.ends = KdaAlloc<float>(slot_bytes * chunks / 4u);
+	segments.transforms = KdaAlloc<float>(slot_bytes * chunks / 4u);
+	segments.incoming = KdaAlloc<float>(slot_bytes * chunks / 4u);
+	segments.running = KdaAlloc<float>(2u * slot_bytes / 4u);
+	segments.q_windows = KdaAlloc<uint16_t>((uint64_t)chunks * KDA_RANK_QK * K3_KDA_CONV_KERNEL);
+	segments.k_windows = KdaAlloc<uint16_t>((uint64_t)chunks * KDA_RANK_QK * K3_KDA_CONV_KERNEL);
+	segments.v_windows = KdaAlloc<uint16_t>((uint64_t)chunks * KDA_RANK_V * K3_KDA_CONV_KERNEL);
 	segments.zeros = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * KDA_RANK_V);
+	segments.exchange = KdaNoExchange;
 	segments.scratch = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * KDA_RANK_V);
 	KDA_CUDA(cudaDeviceSynchronize());
 	KDA_CUDA(cudaStreamCreate(&stream));
@@ -202,8 +209,8 @@ int main(void)
 	KdaBuffers(&segmented,0u,state_index,row_begin,0);
 	KDA_CUDA(cudaMemcpy(segmented.hidden_bf16,hidden,(uint64_t)KDA_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
 	KDA_CUDA(cudaMemcpy(segmented.attnres_partial_bf16,partial,(uint64_t)KDA_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
-	KdaCheck(K3StreamedKdaSegmented<LmMxfp4>(&segmented,shards.data(),segmented_states.data(),KDA_SHARDS,&segments,scratch,accumulator,0u,KDA_ROWS,48u,stream) == LM_LAUNCH_OK,
-		"the segmented streamed KDA runs four chunks");
+	KdaCheck(K3StreamedKdaNode<LmMxfp4>(&segmented,shards.data(),segmented_states.data(),KDA_SHARDS,&segments,scratch,accumulator,0u,KDA_ROWS,48u,stream) == LM_LAUNCH_OK,
+		"the streamed KDA runs one node as four chunks");
 	KDA_CUDA(cudaStreamSynchronize(stream));
 	{
 		std::vector<uint16_t> want((uint64_t)KDA_ROWS * K3_HIDDEN),got(want.size()),before(want.size());
