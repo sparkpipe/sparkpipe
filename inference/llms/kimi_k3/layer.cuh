@@ -428,7 +428,7 @@ void K3SplitFusedProjectionsKernel(const uint16_t *__restrict__ qkvb_bf16, uint1
 }
 
 template<class Format>
-static int32_t K3LayerKdaBody(const K3LayerBuffers *b, uint32_t rows, uint32_t sequences, uint32_t commit, uint16_t *destination, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LayerKdaInputs(const K3LayerBuffers *b, uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t multiprocessors, cudaStream_t stream)
 {
 	int32_t status;
 	uint32_t state_slot_bytes;
@@ -489,12 +489,30 @@ static int32_t K3LayerKdaBody(const K3LayerBuffers *b, uint32_t rows, uint32_t s
 		? b->replay_write_gate : b->kda_write_gate_out;
 	LM_LAUNCH((LmSigmoidRowsKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		(const uint16_t *)b->kda_beta_logit,write_gate,K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS));
+	(void)state_slot_bytes;
+	return(LM_LAUNCH_OK);
+}
+
+static int32_t K3LayerKdaRecur(const K3LayerBuffers *b, const uint16_t *value_bf16, uint16_t *output_bf16, uint32_t sequences, uint32_t commit, cudaStream_t stream)
+{
+	const uint32_t state_slot_bytes = (uint32_t)K3_KDA_RANK_STATE_SLOT_BYTES(K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS), 0u);
+	const float *retention = b->replay_retention != 0 ? b->replay_retention : b->kda_retention;
+	const float *write_gate = b->replay_write_gate != 0 ? b->replay_write_gate : b->kda_write_gate_out;
+	if ( b->kda_state_bf16 != 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
 	if constexpr ( LM_WARP_LANES == 32u )
 		LM_LAUNCH((LmDeltaRuleColumnKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM,float>), dim3(sequences,K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),K3_KDA_VALUE_DIM / LM_WARP_LANES), LM_DELTA_COLUMN_THREADS, 0, stream,
-			b->kda_state_pool,state_slot_bytes,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->key_bf16, b->value_bf16,retention,write_gate,b->attention_out_bf16, K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),1u,sequences,commit,b->sequence_row_indices);
+			b->kda_state_pool,state_slot_bytes,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->key_bf16, value_bf16,retention,write_gate,output_bf16, K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),1u,sequences,commit,b->sequence_row_indices);
 	else
 		LM_LAUNCH((LmDeltaRuleKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM,float,K3_KDA_DELTA_COLUMNS>), dim3(sequences,K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),K3_KDA_VALUE_DIM / K3_KDA_DELTA_COLUMNS), K3_LAYER_THREADS, (uint32_t)(K3_KDA_KEY_DIM * K3_KDA_DELTA_COLUMNS * sizeof(float)), stream,
-			b->kda_state_pool,state_slot_bytes,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->key_bf16, b->value_bf16,retention,write_gate,b->attention_out_bf16, K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),1u,sequences,commit,b->sequence_row_indices);
+			b->kda_state_pool,state_slot_bytes,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->key_bf16, value_bf16,retention,write_gate,output_bf16, K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),1u,sequences,commit,b->sequence_row_indices);
+	return(LM_LAUNCH_OK);
+}
+
+template<class Format>
+static int32_t K3LayerKdaFinish(const K3LayerBuffers *b, uint32_t rows, uint16_t *destination, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
+{
+	const uint32_t rank_v = K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS) * K3_KDA_VALUE_DIM;
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,float>), dim3(rows * K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS)), K3_LAYER_THREADS, (K3_KDA_VALUE_DIM + 8u) * sizeof(float), stream,
 		b->attention_out_bf16,0,b->kda_out_norm_weight,0,b->attention_out_bf16,K3_KDA_VALUE_DIM,K3_KDA_VALUE_DIM,K3_RMS_EPSILON);
 	LM_LAUNCH((LmOutputGateKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
@@ -502,6 +520,15 @@ static int32_t K3LayerKdaBody(const K3LayerBuffers *b, uint32_t rows, uint32_t s
 	return(K3Project<LmBf16Format>(b,b->attention_out_bf16,b->kda_out_weight,b->kda_out_scale,
 		destination,b->tp_sharded != 0u ? (uint16_t *)0 : partial_accumulate,
 		rows,K3_RANK_DIM(b,kda_out_input,K3_KDA_V_DIM),K3_HIDDEN,multiprocessors,stream));
+}
+
+template<class Format>
+static int32_t K3LayerKdaBody(const K3LayerBuffers *b, uint32_t rows, uint32_t sequences, uint32_t commit, uint16_t *destination, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
+{
+	int32_t status = K3LayerKdaInputs<Format>(b,rows,sequences,commit,multiprocessors,stream);
+	if ( status == LM_LAUNCH_OK )
+		status = K3LayerKdaRecur(b,b->value_bf16,b->attention_out_bf16,sequences,commit,stream);
+	return(status == LM_LAUNCH_OK ? K3LayerKdaFinish<Format>(b,rows,destination,partial_accumulate,multiprocessors,stream) : status);
 }
 
 template<class Format>
