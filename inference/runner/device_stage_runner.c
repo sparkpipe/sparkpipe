@@ -1,4 +1,5 @@
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,8 +11,15 @@
 #include "inference/runner/device_stage_model.h"
 #include "inference/runner/device_stage_runner.h"
 #include "sparkpipe/spark_sha256.h"
+#include "sparkpipe/spark_tp_device_collective.h"
 
 #define RUNNER_TABLE_ARRAYS 11u
+#define RUNNER_GROUP_STEP 1u
+#define RUNNER_GROUP_KEEP 2u
+#define RUNNER_GROUP_RESET 3u
+#define RUNNER_GROUP_QUIT 4u
+
+typedef struct RunnerGroup RunnerGroup;
 
 typedef struct RunnerTables
 {
@@ -58,6 +66,35 @@ struct SparkDeviceStageRunner
 	uint32_t verify_pending;
 	uint32_t device_open;
 	SparkDeviceStageRunnerInfo info;
+	uint32_t tp_degree;
+	uint32_t tp_rank;
+	uint32_t vocab_slice;
+	SparkDeviceBuffer lanes;
+	SparkDeviceBuffer logits_local;
+	SparkDeviceBuffer logits_gathered;
+	RunnerGroup *group;
+};
+
+struct RunnerGroup
+{
+	SparkDeviceCollective collective;
+	SparkDeviceStageRunner *ranks[SPARK_DEVICE_COLLECTIVE_MAX_RANKS];
+	pthread_t threads[SPARK_DEVICE_COLLECTIVE_MAX_RANKS];
+	uint32_t degree;
+	uint32_t threads_started;
+	pthread_mutex_t mutex;
+	pthread_cond_t posted;
+	pthread_cond_t finished;
+	uint64_t serial;
+	uint32_t command;
+	uint32_t pending;
+	SparkStatus status;
+	const SparkDeviceStageRunnerBatch *batch;
+	const uint32_t *kept;
+	uint32_t sequences;
+	uint32_t sequence;
+	SparkDeviceStageRunnerResult results[SPARK_DEVICE_COLLECTIVE_MAX_RANKS];
+	char paths[SPARK_DEVICE_COLLECTIVE_MAX_RANKS][4096];
 };
 
 static SparkStatus RunnerFail(SparkStatus status, const char *what)
@@ -73,12 +110,63 @@ static uint64_t RunnerNowNs(void)
 	return((uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec);
 }
 
+static SparkStatus RunnerLanes(SparkDeviceStageRunner *runner, uint64_t bytes)
+{
+	SparkStatus status;
+	if ( runner->lanes.handle != 0u && runner->lanes.bytes >= bytes )
+		return(SPARK_STATUS_OK);
+	status = SparkDeviceQueueWait(runner->queue,SPARK_DEVICE_WAIT_FOREVER);
+	if ( status == SPARK_STATUS_OK && runner->lanes.handle != 0u )
+		status = SparkDeviceFree(&runner->lanes);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceAllocate(&runner->lanes,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,(bytes + 0xfffffu) & ~(uint64_t)0xfffffu,"runner collective lanes");
+	return(status);
+}
+
 static SparkStatus RunnerRound(void *context, void *device_queue, uint32_t operation, uint32_t stage, uint32_t rows, uint32_t row_elements,
 	const void *local, void *full)
 {
-	(void)context; (void)device_queue; (void)operation; (void)stage; (void)rows; (void)row_elements; (void)local; (void)full;
-	fprintf(stderr,"device_stage_runner: a single-device stage has no collective round; the model asked for one\n");
-	return(SPARK_STATUS_UNSUPPORTED);
+	SparkDeviceStageRunner *runner = (SparkDeviceStageRunner *)context;
+	SparkDeviceQueue *queue = (SparkDeviceQueue *)device_queue;
+	const uint32_t degree = runner->tp_degree;
+	const uint64_t elements = (uint64_t)rows * (row_elements != 0u ? row_elements : runner->geometry.hidden);
+	const uint64_t lane_bytes = operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 ? (uint64_t)rows * 8u :
+		operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 ? elements / degree * 2u : elements * 2u;
+	const uint64_t local_bytes = operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ||
+		operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 ? (uint64_t)degree * lane_bytes : lane_bytes;
+	const uint64_t full_bytes = operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER ||
+		operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ? (uint64_t)degree * lane_bytes : lane_bytes;
+	SparkDeviceRange source, destination;
+	SparkTensor lanes, out;
+	SparkStatus status;
+	if ( degree < 2u || runner->config.collective == 0 || stage != SPARK_STAGE_RUNNER_ROUND_ALL || rows == 0u || queue != runner->queue ||
+		(operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 && elements % degree != 0u) ||
+		operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER || operation > SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER )
+	{
+		fprintf(stderr,"device_stage_runner: rank %u cannot run collective %u (degree %u, stage %u, %u rows); a device round is a whole round on the "
+			"rank's queue\n",runner->tp_rank,operation,degree,stage,rows);
+		return(SPARK_STATUS_UNSUPPORTED);
+	}
+	status = SparkDeviceResolve((SparkDeviceAddress)(uintptr_t)local,local_bytes,&source);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceResolve((SparkDeviceAddress)(uintptr_t)full,full_bytes,&destination);
+	if ( status != SPARK_STATUS_OK )
+		return(RunnerFail(status,"a collective names memory outside the device"));
+	if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER || operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL )
+		return(runner->config.collective->exchange(runner->config.collective->context,runner->tp_rank,queue,source,
+			operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ? lane_bytes : 0u,lane_bytes,destination));
+	status = RunnerLanes(runner,(uint64_t)degree * lane_bytes);
+	if ( status == SPARK_STATUS_OK )
+		status = runner->config.collective->exchange(runner->config.collective->context,runner->tp_rank,queue,source,
+			operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 ? lane_bytes : 0u,lane_bytes,SparkTensorAt(&runner->lanes,0u,0u).range);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	lanes = SparkTensorAt(&runner->lanes,0u,(uint64_t)degree * lane_bytes);
+	out.range = destination;
+	out.bytes = full_bytes;
+	if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 )
+		return(SparkOpsRankMaxU64(runner->ops,queue,lanes,out,degree,rows));
+	return(SparkOpsRankSumBf16(runner->ops,queue,lanes,out,degree,lane_bytes / 2u));
 }
 
 static uint32_t RunnerPublished(void *context)
@@ -137,7 +225,7 @@ static SparkStatus RunnerMapPack(SparkDeviceStageRunner *runner)
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
-	status = SparkDeviceMapFile(&runner->weights,runner->pack_fd,0u,(uint64_t)stat_buffer.st_size,"rank pack");
+	status = SparkDeviceMapFileSegments(&runner->weights,runner->pack_fd,0u,(uint64_t)stat_buffer.st_size,runner->config.weight_segment_bytes,"rank pack");
 	if ( status != SPARK_STATUS_OK )
 		return(RunnerFail(status,"cannot map the rank pack into device memory"));
 	runner->device_weights.pack_address = runner->weights.device;
@@ -224,6 +312,10 @@ static SparkStatus RunnerBuffers(SparkDeviceStageRunner *runner, uint64_t *total
 		status = RunnerAllocate(&runner->head_normed,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,head * hidden * sizeof(uint16_t),"runner head normed rows",total);
 	if ( status == SPARK_STATUS_OK )
 		status = RunnerAllocate(&runner->logits,SPARK_DEVICE_SPACE_SHARED_COHERENT,head * vocab * sizeof(float),"runner logits",total);
+	if ( status == SPARK_STATUS_OK && runner->tp_degree > 1u )
+		status = RunnerAllocate(&runner->logits_local,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,head * runner->vocab_slice * sizeof(float),"runner logit slice",total);
+	if ( status == SPARK_STATUS_OK && runner->tp_degree > 1u )
+		status = RunnerAllocate(&runner->logits_gathered,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,head * vocab * sizeof(float),"runner gathered logits",total);
 	if ( status == SPARK_STATUS_OK )
 		status = RunnerAllocate(&runner->logprob,SPARK_DEVICE_SPACE_SHARED_COHERENT,head * 16u,"runner log-probabilities",total);
 	if ( status == SPARK_STATUS_OK )
@@ -244,8 +336,8 @@ static SparkStatus RunnerOpenModel(SparkDeviceStageRunner *runner)
 	c->descriptor_bytes = SPARK_STAGE_RUNNER_CONFIGURATION_BYTES;
 	c->stage_index = 0u;
 	c->stage_count = 1u;
-	c->tp_degree = 1u;
-	c->tp_rank = 0u;
+	c->tp_degree = runner->tp_degree;
+	c->tp_rank = runner->tp_rank;
 	c->max_active_sequence_count = runner->config.sequences;
 	c->resident_sequence_capacity = runner->config.sequences;
 	c->max_input_row_count = runner->config.max_rows;
@@ -255,6 +347,7 @@ static SparkStatus RunnerOpenModel(SparkDeviceStageRunner *runner)
 	c->execution_stream = runner->queue;
 	c->linear_weight_codec = runner->config.linear_weight_codec;
 	c->head_row_capacity = runner->config.head_rows;
+	runner->services.context = runner;
 	runner->services.round = RunnerRound;
 	runner->services.published = RunnerPublished;
 	runner->services.fail = RunnerFailService;
@@ -269,40 +362,40 @@ static SparkStatus RunnerOpenModel(SparkDeviceStageRunner *runner)
 	return(status == SPARK_STATUS_OK ? SPARK_STATUS_OK : RunnerFail(status,"the model could not bind its tensors"));
 }
 
-SparkStatus SparkDeviceStageRunnerOpen(SparkDeviceStageRunner **out, const SparkDeviceStageRunnerConfig *config)
+static SparkStatus RunnerOpenRank(SparkDeviceStageRunner **out, const SparkDeviceStageRunnerConfig *config, uint32_t own_device)
 {
 	SparkDeviceStageRunner *runner;
-	const SparkStageRunnerModelInterface *model = config != 0 ? config->model : 0;
 	uint64_t total = 0u;
 	SparkStatus status;
 	*out = 0;
-	if ( config == 0 || model == 0 || model->abi_version != SPARK_STAGE_RUNNER_MODEL_ABI_VERSION || model->open == 0 || model->bind_device == 0 ||
-		model->close == 0 || model->step == 0 || model->attach_kv == 0 || model->reset_slot == 0 || config->pack_path == 0 ||
-		config->max_rows == 0u || config->sequences == 0u || config->max_context == 0u || config->head_rows == 0u ||
-		config->head_rows > config->max_rows )
-	{
-		fprintf(stderr,"device_stage_runner: needs a model with open, bind_device, close, step, attach_kv and reset_slot, a pack, and nonzero rows, "
-			"sequences, context and head rows\n");
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	}
 	runner = (SparkDeviceStageRunner *)calloc(1u,sizeof(*runner));
 	if ( runner == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	runner->config = *config;
+	runner->tp_degree = config->tp_degree > 1u ? config->tp_degree : 1u;
+	runner->tp_rank = runner->tp_degree > 1u ? config->tp_rank : 0u;
 	runner->pack_fd = -1;
 	runner->pages_per_sequence = (config->max_context + SPARK_DEVICE_RUNNER_PAGE_SLOTS - 1u) / SPARK_DEVICE_RUNNER_PAGE_SLOTS;
 	runner->next_position = (uint32_t *)calloc(config->sequences,sizeof(uint32_t));
 	runner->seen = (uint8_t *)calloc(config->sequences,1u);
-	status = runner->next_position != 0 && runner->seen != 0 ? SparkDeviceInitialize(0) : SPARK_STATUS_CAPACITY_EXCEEDED;
-	runner->device_open = status == SPARK_STATUS_OK ? 1u : 0u;
+	status = runner->next_position != 0 && runner->seen != 0 ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED;
+	if ( status == SPARK_STATUS_OK && own_device != 0u )
+	{
+		status = SparkDeviceInitialize(0);
+		runner->device_open = status == SPARK_STATUS_OK ? 1u : 0u;
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceQueueCreate(&runner->queue,"device stage runner");
 	if ( status == SPARK_STATUS_OK )
-		status = SparkDeviceOpsAcquire(&runner->ops);
+		status = SparkDeviceOpsAcquireLane(&runner->ops,runner->tp_rank);
 	if ( status == SPARK_STATUS_OK )
 		status = RunnerMapPack(runner);
 	if ( status == SPARK_STATUS_OK )
 		status = RunnerOpenModel(runner);
+	if ( status == SPARK_STATUS_OK && (runner->geometry.vocab % runner->tp_degree != 0u ||
+		runner->geometry.embed_rows != runner->geometry.vocab / runner->tp_degree) )
+		status = RunnerFail(SPARK_STATUS_SCHEMA_ERROR,"each rank holds an equal slice of the vocabulary");
+	runner->vocab_slice = runner->geometry.vocab / runner->tp_degree;
 	if ( status == SPARK_STATUS_OK )
 		status = RunnerBuffers(runner,&total);
 	if ( status != SPARK_STATUS_OK )
@@ -314,6 +407,7 @@ SparkStatus SparkDeviceStageRunnerOpen(SparkDeviceStageRunner **out, const Spark
 	runner->info.vocab = runner->geometry.vocab;
 	runner->info.layers = runner->geometry.total_layers;
 	runner->info.pack_bytes = runner->weights.bytes;
+	runner->info.tp_degree = runner->tp_degree;
 	{
 		const SparkDeviceStage *stage = (const SparkDeviceStage *)runner->model;
 		const uint64_t tied_head = runner->geometry.head_offset == runner->geometry.embed_offset ? runner->geometry.head_bytes : 0u;
@@ -327,9 +421,203 @@ SparkStatus SparkDeviceStageRunnerOpen(SparkDeviceStageRunner **out, const Spark
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus RunnerGroupRun(RunnerGroup *group, uint32_t rank, uint32_t command)
+{
+	if ( command == RUNNER_GROUP_STEP )
+		return(SparkDeviceStageRunnerStep(group->ranks[rank],group->batch,&group->results[rank]));
+	if ( command == RUNNER_GROUP_KEEP )
+		return(SparkDeviceStageRunnerKeepRows(group->ranks[rank],group->kept,group->sequences));
+	if ( command == RUNNER_GROUP_RESET )
+		return(SparkDeviceStageRunnerResetSequence(group->ranks[rank],group->sequence));
+	return(SPARK_STATUS_OK);
+}
+
+typedef struct RunnerWorker
+{
+	RunnerGroup *group;
+	uint32_t rank;
+} RunnerWorker;
+
+static RunnerWorker runner_workers[SPARK_DEVICE_COLLECTIVE_MAX_RANKS * 4u];
+static pthread_mutex_t runner_workers_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void *RunnerGroupWorker(void *argument)
+{
+	RunnerGroup *group = ((RunnerWorker *)argument)->group;
+	const uint32_t rank = ((RunnerWorker *)argument)->rank;
+	uint64_t seen = 0u;
+	uint32_t command;
+	SparkStatus status;
+	for ( ;; )
+	{
+		pthread_mutex_lock(&group->mutex);
+		while ( group->serial == seen )
+			pthread_cond_wait(&group->posted,&group->mutex);
+		seen = group->serial;
+		command = group->command;
+		pthread_mutex_unlock(&group->mutex);
+		if ( command == RUNNER_GROUP_QUIT )
+			return(0);
+		status = RunnerGroupRun(group,rank,command);
+		pthread_mutex_lock(&group->mutex);
+		if ( status != SPARK_STATUS_OK && group->status == SPARK_STATUS_OK )
+		{
+			group->status = status;
+			group->collective.abort(group->collective.context);
+		}
+		if ( --group->pending == 0u )
+			pthread_cond_signal(&group->finished);
+		pthread_mutex_unlock(&group->mutex);
+	}
+}
+
+static SparkStatus RunnerGroupDispatch(RunnerGroup *group, uint32_t command)
+{
+	SparkStatus status, leader;
+	pthread_mutex_lock(&group->mutex);
+	group->command = command;
+	group->pending = group->threads_started;
+	group->status = SPARK_STATUS_OK;
+	group->serial++;
+	pthread_cond_broadcast(&group->posted);
+	pthread_mutex_unlock(&group->mutex);
+	if ( command == RUNNER_GROUP_QUIT )
+		return(SPARK_STATUS_OK);
+	leader = RunnerGroupRun(group,0u,command);
+	if ( leader != SPARK_STATUS_OK )
+		group->collective.abort(group->collective.context);
+	pthread_mutex_lock(&group->mutex);
+	while ( group->pending != 0u )
+		pthread_cond_wait(&group->finished,&group->mutex);
+	status = group->status;
+	pthread_mutex_unlock(&group->mutex);
+	return(leader != SPARK_STATUS_OK ? leader : status);
+}
+
+static SparkStatus RunnerGroupOpen(SparkDeviceStageRunner **out, const SparkDeviceStageRunnerConfig *config)
+{
+	const char *mark = strstr(config->pack_path,"rank00");
+	SparkDeviceStageRunner *leader;
+	RunnerGroup *group;
+	uint32_t rank;
+	SparkStatus status;
+	*out = 0;
+	if ( mark == 0 || strlen(config->pack_path) >= sizeof(((RunnerGroup *)0)->paths[0]) )
+	{
+		fprintf(stderr,"device_stage_runner: a TP%u group names rank 00's pack; the path holds rank00 where each rank's number goes\n",config->tp_degree);
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	leader = (SparkDeviceStageRunner *)calloc(1u,sizeof(*leader));
+	group = (RunnerGroup *)calloc(1u,sizeof(*group));
+	if ( leader == 0 || group == 0 )
+	{
+		free(leader);
+		free(group);
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	leader->config = *config;
+	leader->pack_fd = -1;
+	leader->tp_degree = config->tp_degree;
+	leader->group = group;
+	group->degree = config->tp_degree;
+	pthread_mutex_init(&group->mutex,0);
+	pthread_cond_init(&group->posted,0);
+	pthread_cond_init(&group->finished,0);
+	status = SparkDeviceInitialize(0);
+	leader->device_open = status == SPARK_STATUS_OK ? 1u : 0u;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceCollectiveLocalCreate(&group->collective,group->degree);
+	for ( rank = 0u; status == SPARK_STATUS_OK && rank < group->degree; rank++ )
+	{
+		SparkDeviceStageRunnerConfig member = *config;
+		char *path = group->paths[rank];
+		memcpy(path,config->pack_path,strlen(config->pack_path) + 1u);
+		path[mark - config->pack_path + 4] = (char)('0' + rank / 10u);
+		path[mark - config->pack_path + 5] = (char)('0' + rank % 10u);
+		member.pack_path = path;
+		member.tp_rank = rank;
+		member.collective = &group->collective;
+		status = RunnerOpenRank(&group->ranks[rank],&member,0u);
+		if ( status != SPARK_STATUS_OK )
+			fprintf(stderr,"device_stage_runner: rank %u of the TP%u group did not open (%s)\n",rank,group->degree,group->paths[rank]);
+	}
+	pthread_mutex_lock(&runner_workers_mutex);
+	for ( rank = 1u; status == SPARK_STATUS_OK && rank < group->degree; rank++ )
+	{
+		RunnerWorker *worker = 0;
+		uint32_t index;
+		for ( index = 0u; worker == 0 && index < sizeof(runner_workers) / sizeof(runner_workers[0]); index++ )
+			if ( runner_workers[index].group == 0 )
+				worker = &runner_workers[index];
+		if ( worker == 0 )
+			status = SPARK_STATUS_CAPACITY_EXCEEDED;
+		else
+		{
+			worker->group = group;
+			worker->rank = rank;
+			if ( pthread_create(&group->threads[rank],0,RunnerGroupWorker,worker) != 0 )
+			{
+				worker->group = 0;
+				status = SPARK_STATUS_CAPACITY_EXCEEDED;
+			}
+			else
+				group->threads_started++;
+		}
+	}
+	pthread_mutex_unlock(&runner_workers_mutex);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkDeviceStageRunnerClose(leader);
+		return(status);
+	}
+	leader->info = group->ranks[0]->info;
+	leader->geometry = group->ranks[0]->geometry;
+	leader->model = group->ranks[0]->model;
+	for ( rank = 1u; rank < group->degree; rank++ )
+	{
+		leader->info.pack_bytes += group->ranks[rank]->info.pack_bytes;
+		leader->info.streamed_bytes_per_token += group->ranks[rank]->info.streamed_bytes_per_token;
+		leader->info.streamed_bytes_per_chunk += group->ranks[rank]->info.streamed_bytes_per_chunk;
+		leader->info.device_state_bytes += group->ranks[rank]->info.device_state_bytes;
+	}
+	*out = leader;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceStageRunnerOpen(SparkDeviceStageRunner **out, const SparkDeviceStageRunnerConfig *config)
+{
+	const SparkStageRunnerModelInterface *model = config != 0 ? config->model : 0;
+	*out = 0;
+	if ( config == 0 || model == 0 || model->abi_version != SPARK_STAGE_RUNNER_MODEL_ABI_VERSION || model->open == 0 || model->bind_device == 0 ||
+		model->close == 0 || model->step == 0 || model->attach_kv == 0 || model->reset_slot == 0 || config->pack_path == 0 ||
+		config->max_rows == 0u || config->sequences == 0u || config->max_context == 0u || config->head_rows == 0u ||
+		config->head_rows > config->max_rows )
+	{
+		fprintf(stderr,"device_stage_runner: needs a model with open, bind_device, close, step, attach_kv and reset_slot, a pack, and nonzero rows, "
+			"sequences, context and head rows\n");
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( config->tp_degree > SPARK_DEVICE_COLLECTIVE_MAX_RANKS || (config->tp_degree > 1u && config->collective != 0 &&
+		(config->tp_rank >= config->tp_degree || config->collective->degree != config->tp_degree || config->collective->exchange == 0)) )
+	{
+		fprintf(stderr,"device_stage_runner: a TP rank names its rank below the degree (at most %u) and a collective of that degree\n",
+			SPARK_DEVICE_COLLECTIVE_MAX_RANKS);
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( config->tp_degree > 1u && config->collective == 0 )
+		return(RunnerGroupOpen(out,config));
+	return(RunnerOpenRank(out,config,1u));
+}
+
 uint64_t SparkDeviceStageRunnerDecodeBytes(const SparkDeviceStageRunner *runner, uint32_t context)
 {
-	return(runner->info.streamed_bytes_per_token + SparkDeviceStageStateBytes((const SparkDeviceStage *)runner->model,context));
+	uint64_t total = 0u;
+	uint32_t rank;
+	if ( runner->group == 0 )
+		return(runner->info.streamed_bytes_per_token + SparkDeviceStageStateBytes((const SparkDeviceStage *)runner->model,context));
+	for ( rank = 0u; rank < runner->group->degree; rank++ )
+		total += SparkDeviceStageRunnerDecodeBytes(runner->group->ranks[rank],context);
+	return(total);
 }
 
 static SparkStatus RunnerValidate(SparkDeviceStageRunner *runner, const SparkDeviceStageRunnerBatch *batch, uint32_t *sequences)
@@ -421,16 +709,22 @@ static SparkStatus RunnerHead(SparkDeviceStageRunner *runner, const SparkDeviceS
 	memset(&head,0,sizeof(head));
 	head.rows = rows;
 	head.input_dimension = g->hidden;
-	head.output_dimension = g->vocab;
+	head.output_dimension = runner->vocab_slice;
 	head.input_stride = g->hidden;
-	head.output_stride = g->vocab;
+	head.output_stride = runner->vocab_slice;
 	head.output_f32 = 1u;
 	head.projection = ((const SparkDeviceStage *)runner->model)->shape->projection;
 	head.row_exact = batch->verify;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsLinear(runner->ops,runner->queue,SparkTensorAt(g->head_prenormed != 0u ? &runner->head_hidden : &runner->head_normed,0u,
-			(uint64_t)rows * g->hidden * 2u),
-			SparkTensorAt(&runner->weights,g->head_offset,g->head_bytes),SparkTensorAt(&runner->logits,0u,(uint64_t)rows * g->vocab * 4u),&head);
+			(uint64_t)rows * g->hidden * 2u),SparkTensorAt(&runner->weights,g->head_offset,g->head_bytes),
+			SparkTensorAt(runner->tp_degree > 1u ? &runner->logits_local : &runner->logits,0u,(uint64_t)rows * runner->vocab_slice * 4u),&head);
+	if ( status == SPARK_STATUS_OK && runner->tp_degree > 1u )
+		status = RunnerRound(runner,runner->queue,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,SPARK_STAGE_RUNNER_ROUND_ALL,rows,
+			2u * runner->vocab_slice,(const void *)(uintptr_t)runner->logits_local.device,(void *)(uintptr_t)runner->logits_gathered.device);
+	if ( status == SPARK_STATUS_OK && runner->tp_degree > 1u )
+		status = SparkOpsRankRows(runner->ops,runner->queue,SparkTensorAt(&runner->logits_gathered,0u,(uint64_t)rows * g->vocab * 4u),
+			SparkTensorAt(&runner->logits,0u,(uint64_t)rows * g->vocab * 4u),runner->tp_degree,rows,2u * runner->vocab_slice);
 	if ( status == SPARK_STATUS_OK && (g->logit_softcap != 0.0f || g->logit_scale != 0.0f) )
 		status = SparkOpsSoftcap(runner->ops,runner->queue,SparkTensorAt(&runner->logits,0u,(uint64_t)rows * g->vocab * sizeof(float)),(uint64_t)rows * g->vocab,
 			g->logit_softcap,g->logit_scale);
@@ -450,12 +744,34 @@ SparkStatus SparkDeviceStageRunnerStep(SparkDeviceStageRunner *runner, const Spa
 	SparkStageRunnerStep step;
 	uint32_t sequences = 0u, row, error = 0u;
 	const uint64_t start = RunnerNowNs();
-	SparkStatus status = RunnerValidate(runner,batch,&sequences);
+	SparkStatus status;
+	if ( runner->group != 0 )
+	{
+		runner->group->batch = batch;
+		status = RunnerGroupDispatch(runner->group,RUNNER_GROUP_STEP);
+		if ( status == SPARK_STATUS_OK )
+		{
+			*result = runner->group->results[0];
+			result->step_ns = RunnerNowNs() - start;
+		}
+		return(status);
+	}
+	status = RunnerValidate(runner,batch,&sequences);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	RunnerWriteTables(runner,batch,sequences);
-	status = SparkOpsGather(runner->ops,runner->queue,SparkTensorAt(&runner->weights,g->embed_offset,g->embed_bytes),RunnerTable(runner,10u,batch->rows),
-		SparkTensorAt(&runner->hidden,0u,(uint64_t)batch->rows * g->hidden * 2u),batch->rows,g->hidden,g->embed_rows);
+	if ( runner->tp_degree > 1u )
+	{
+		status = SparkOpsGatherSlice(runner->ops,runner->queue,SparkTensorAt(&runner->weights,g->embed_offset,g->embed_bytes),
+			RunnerTable(runner,10u,batch->rows),SparkTensorAt(&runner->hidden,0u,(uint64_t)batch->rows * g->hidden * 2u),batch->rows,g->hidden,
+			g->embed_rows,runner->tp_rank * g->embed_rows);
+		if ( status == SPARK_STATUS_OK )
+			status = RunnerRound(runner,runner->queue,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16,SPARK_STAGE_RUNNER_ROUND_ALL,batch->rows,0u,
+				(const void *)(uintptr_t)runner->hidden.device,(void *)(uintptr_t)runner->hidden.device);
+	}
+	else
+		status = SparkOpsGather(runner->ops,runner->queue,SparkTensorAt(&runner->weights,g->embed_offset,g->embed_bytes),RunnerTable(runner,10u,batch->rows),
+			SparkTensorAt(&runner->hidden,0u,(uint64_t)batch->rows * g->hidden * 2u),batch->rows,g->hidden,g->embed_rows);
 	memset(&step,0,sizeof(step));
 	step.hidden_bf16 = (uint16_t *)(uintptr_t)runner->hidden.device;
 	step.positions = RunnerDeviceTable(runner,1u);
@@ -505,6 +821,12 @@ SparkStatus SparkDeviceStageRunnerKeepRows(SparkDeviceStageRunner *runner, const
 	const RunnerTables *t = &runner->table;
 	uint32_t sequence, error = 0u;
 	SparkStatus status;
+	if ( runner->group != 0 )
+	{
+		runner->group->kept = kept;
+		runner->group->sequences = sequences;
+		return(RunnerGroupDispatch(runner->group,RUNNER_GROUP_KEEP));
+	}
 	if ( runner->verify_pending == 0u || kept == 0 || sequences != runner->verify_step.sequences )
 		return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"keep_rows follows a verify step and names a count for each of its sequences"));
 	for ( sequence = 0u; sequence < sequences; sequence++ )
@@ -532,6 +854,11 @@ SparkStatus SparkDeviceStageRunnerKeepRows(SparkDeviceStageRunner *runner, const
 SparkStatus SparkDeviceStageRunnerResetSequence(SparkDeviceStageRunner *runner, uint32_t sequence)
 {
 	SparkStatus status;
+	if ( runner->group != 0 )
+	{
+		runner->group->sequence = sequence;
+		return(RunnerGroupDispatch(runner->group,RUNNER_GROUP_RESET));
+	}
 	if ( sequence >= runner->config.sequences )
 		return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"reset names a sequence outside the runner"));
 	status = runner->config.model->reset_slot(runner->model,sequence,runner->queue);
@@ -556,10 +883,34 @@ void *SparkDeviceStageRunnerModel(const SparkDeviceStageRunner *runner)
 void SparkDeviceStageRunnerClose(SparkDeviceStageRunner *runner)
 {
 	SparkDeviceBuffer *buffers[] = { &runner->tables, &runner->hidden, &runner->head_hidden, &runner->head_normed, &runner->logits, &runner->logprob,
-		&runner->argmax, &runner->kv_pool, &runner->page_table };
+		&runner->argmax, &runner->kv_pool, &runner->page_table, &runner->lanes, &runner->logits_local, &runner->logits_gathered };
 	uint32_t index;
 	if ( runner == 0 )
 		return;
+	if ( runner->group != 0 )
+	{
+		RunnerGroup *group = runner->group;
+		(void)RunnerGroupDispatch(group,RUNNER_GROUP_QUIT);
+		for ( index = 1u; index <= group->threads_started; index++ )
+			pthread_join(group->threads[index],0);
+		pthread_mutex_lock(&runner_workers_mutex);
+		for ( index = 0u; index < sizeof(runner_workers) / sizeof(runner_workers[0]); index++ )
+			if ( runner_workers[index].group == group )
+				runner_workers[index].group = 0;
+		pthread_mutex_unlock(&runner_workers_mutex);
+		for ( index = 0u; index < group->degree; index++ )
+			SparkDeviceStageRunnerClose(group->ranks[index]);
+		if ( group->collective.context != 0 )
+			SparkDeviceCollectiveLocalDestroy(&group->collective);
+		pthread_cond_destroy(&group->finished);
+		pthread_cond_destroy(&group->posted);
+		pthread_mutex_destroy(&group->mutex);
+		free(group);
+		if ( runner->device_open != 0u )
+			(void)SparkDeviceShutdown();
+		free(runner);
+		return;
+	}
 	if ( runner->queue != 0 )
 		(void)SparkDeviceQueueWait(runner->queue,SPARK_DEVICE_WAIT_FOREVER);
 	if ( runner->model != 0 )

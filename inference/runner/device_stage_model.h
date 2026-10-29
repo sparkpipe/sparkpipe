@@ -108,6 +108,8 @@ typedef struct SparkDeviceStage
 	void *dump;
 	uint32_t dump_checked;
 	SparkDeviceBuffer dump_buffer;
+	uint32_t tp_degree;
+	uint32_t tp_rank;
 } SparkDeviceStage;
 
 typedef struct SparkDeviceStepTensors
@@ -157,6 +159,9 @@ SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStage
 SparkStatus SparkDeviceStageKeepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, const uint32_t *kept, SparkDeviceKeepTensors *keep);
 SparkOpsPaged SparkDeviceStagePaged(const SparkDeviceStage *stage, const SparkDeviceStepTensors *tensors, uint32_t kv_layer);
 void SparkDeviceStageLayerDone(const SparkDeviceStage *stage, uint32_t layer);
+SparkStatus SparkDeviceStageAllReduce(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor rows, uint32_t count);
+SparkStatus SparkDeviceStageGatherRows(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor local, SparkTensor gathered, SparkTensor rows,
+	uint32_t count, uint32_t width);
 SparkStatus SparkDeviceStageDumpRows(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceStepTensors *tensors, SparkTensor rows,
 	uint32_t width, uint32_t layer);
 

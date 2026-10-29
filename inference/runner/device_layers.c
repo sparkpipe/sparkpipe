@@ -247,7 +247,7 @@ SparkStatus SparkDeviceAttentionBind(SparkDeviceStage *stage, const SparkStageRu
 	const SparkDeviceAttentionShape *shape, SparkDeviceAttentionWeights *bound)
 {
 	const uint64_t hidden = stage->shape->hidden;
-	const uint32_t pairs = shape->rope_pairs != 0u ? shape->rope_pairs : shape->rope_dimension / 2u;
+	const uint32_t pairs = shape->rope_pairs != 0u ? shape->rope_pairs : shape->rope_dimension / 2u, degree = stage->tp_degree;
 	SparkStatus status;
 	if ( shape->rope_dimension % 2u != 0u || shape->rope_dimension > shape->head_dimension || pairs > shape->rope_dimension / 2u ||
 		pairs > SPARK_KERNEL_ROPE_PAIRS || (shape->key_is_value != 0u && (shape->value_norm == 0u || shape->value_dimension != 0u)) ||
@@ -256,11 +256,13 @@ SparkStatus SparkDeviceAttentionBind(SparkDeviceStage *stage, const SparkStageRu
 		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_UNSUPPORTED,
 			"device attention needs an even rotary span within the head and the kernel's table, a normed value when keys are values, "
 			"and a KV slot within the stage's"));
-	status = SparkDeviceStageLayerWeight(stage,weights,layer,"attn_qkv",SparkDeviceAttentionFusedWidth(shape),hidden,&bound->qkv);
+	if ( SparkDeviceAttentionFusedWidth(shape) % degree != 0u || shape->heads % degree != 0u )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_UNSUPPORTED,"device attention splits the fused projection rows and whole heads evenly over the ranks"));
+	status = SparkDeviceStageLayerWeight(stage,weights,layer,"attn_qkv",SparkDeviceAttentionFusedWidth(shape) / degree,hidden,&bound->qkv);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkDeviceStageLayerWeight(stage,weights,layer,"attn_out",hidden,SparkDeviceAttentionOutputWidth(shape),&bound->out);
+		status = SparkDeviceStageLayerWeight(stage,weights,layer,"attn_out",hidden,SparkDeviceAttentionOutputWidth(shape) / degree,&bound->out);
 	if ( status == SPARK_STATUS_OK && shape->gate_projection != 0u )
-		status = SparkDeviceStageLayerWeight(stage,weights,layer,"attn_gate",SparkDeviceAttentionQueryWidth(shape),hidden,&bound->gate);
+		status = SparkDeviceStageLayerWeight(stage,weights,layer,"attn_gate",SparkDeviceAttentionQueryWidth(shape) / degree,hidden,&bound->gate);
 	if ( status == SPARK_STATUS_OK && shape->qk_weightless == 0u && shape->qk_plain == 0u )
 		status = SparkDeviceStageLayerTensor(stage,weights,layer,"attn_q_norm","f32",(uint64_t)shape->head_dimension * 4u,&bound->q_norm);
 	if ( status == SPARK_STATUS_OK && shape->qk_weightless == 0u && shape->qk_plain == 0u )
@@ -278,14 +280,25 @@ SparkStatus SparkDeviceAttention(SparkDeviceStage *stage, SparkDeviceQueue *queu
 {
 	const uint32_t hidden = stage->shape->hidden, rows = tensors->rows, fused = SparkDeviceAttentionFusedWidth(shape);
 	const uint32_t q = SparkDeviceAttentionQueryWidth(shape), kv = SparkDeviceAttentionKvWidth(shape), values = SparkDeviceAttentionValueWidth(shape);
-	const uint32_t heads_out = SparkDeviceAttentionOutputWidth(shape), separate_value = shape->value_norm != 0u || shape->value_scale != 0.0f ? 1u : 0u;
+	const uint32_t separate_value = shape->value_norm != 0u || shape->value_scale != 0.0f ? 1u : 0u, degree = stage->tp_degree;
+	const uint32_t heads_out = SparkDeviceAttentionOutputWidth(shape) / degree, local_heads = shape->heads / degree, first_head = stage->tp_rank * local_heads;
+	const uint32_t gate_width = shape->gate_projection != 0u ? q / degree : 0u;
 	SparkOpsPaged paged = SparkDeviceStagePaged(stage,tensors,kv_layer);
 	SparkHeadRopeParams query = rope->query, key = rope->key, value = rope->value;
+	SparkTensor sinks = weights->sinks;
 	SparkKvParams store;
 	SparkAttentionParams attention;
-	SparkStatus status = SparkDeviceLinearWeight(stage,queue,normed,hidden,&weights->qkv,scratch->qkv,fused,rows,hidden,fused);
+	SparkStatus status;
+	if ( degree > 1u )
+	{
+		status = SparkDeviceLinearWeight(stage,queue,normed,hidden,&weights->qkv,scratch->qkv_local,fused / degree,rows,hidden,fused / degree);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageGatherRows(stage,queue,scratch->qkv_local,scratch->qkv_gathered,scratch->qkv,rows,fused / degree);
+	}
+	else
+		status = SparkDeviceLinearWeight(stage,queue,normed,hidden,&weights->qkv,scratch->qkv,fused,rows,hidden,fused);
 	if ( status == SPARK_STATUS_OK && shape->gate_projection != 0u )
-		status = SparkDeviceLinearWeight(stage,queue,normed,hidden,&weights->gate,scratch->gate,q,rows,hidden,q);
+		status = SparkDeviceLinearWeight(stage,queue,normed,hidden,&weights->gate,scratch->gate,gate_width,rows,hidden,gate_width);
 	paged.kv_heads = shape->kv_heads;
 	query.rows = key.rows = value.rows = rows;
 	if ( status == SPARK_STATUS_OK )
@@ -309,7 +322,9 @@ SparkStatus SparkDeviceAttention(SparkDeviceStage *stage, SparkDeviceQueue *queu
 		status = SparkOpsKvStore(stage->ops,queue,&paged,scratch->key,separate_value != 0u ? scratch->value : scratch->qkv,&store);
 	memset(&attention,0,sizeof(attention));
 	attention.rows = rows;
-	attention.heads = shape->heads;
+	attention.heads = local_heads;
+	attention.first_head = first_head;
+	attention.group = shape->heads / shape->kv_heads;
 	attention.kv_heads = shape->kv_heads;
 	attention.head_dimension = shape->head_dimension;
 	attention.value_dimension = shape->value_dimension;
@@ -318,17 +333,20 @@ SparkStatus SparkDeviceAttention(SparkDeviceStage *stage, SparkDeviceQueue *queu
 	attention.pages_per_sequence = stage->pages_per_sequence;
 	attention.pool_pages = stage->pool_pages;
 	attention.query_stride = q;
-	attention.gate_stride = shape->gate_projection != 0u ? q : fused;
-	attention.gate_offset = shape->gate_projection != 0u ? 0u : shape->head_dimension;
+	attention.gate_stride = shape->gate_projection != 0u ? gate_width : fused;
 	attention.gate_head_stride = (shape->gate_projection != 0u ? 1u : 2u) * shape->head_dimension;
+	attention.gate_offset = shape->gate_projection != 0u ? 0u : shape->head_dimension + first_head * attention.gate_head_stride;
 	attention.output_stride = heads_out;
 	attention.scale = shape->scale;
 	attention.row_exact = stage->step_exact;
 	attention.window = shape->window;
 	attention.output_gate = shape->output_gate;
+	if ( shape->sinks != 0u )
+		sinks = SparkTensorSlice(weights->sinks,(uint64_t)first_head * sizeof(float),(uint64_t)local_heads * sizeof(float));
 	if ( status == SPARK_STATUS_OK )
-		status = SparkOpsAttention(stage->ops,queue,&paged,scratch->query,shape->gate_projection != 0u ? scratch->gate : scratch->qkv,
-			shape->sinks != 0u ? &weights->sinks : 0,scratch->records,scratch->gated,&attention,tensors->host_positions,tensors->host_sequence_of_row);
+		status = SparkOpsAttention(stage->ops,queue,&paged,SparkTensorSlice(scratch->query,(uint64_t)first_head * shape->head_dimension * sizeof(uint16_t),
+			scratch->query.bytes - (uint64_t)first_head * shape->head_dimension * sizeof(uint16_t)),shape->gate_projection != 0u ? scratch->gate : scratch->qkv,
+			shape->sinks != 0u ? &sinks : 0,scratch->records,scratch->gated,&attention,tensors->host_positions,tensors->host_sequence_of_row);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceLinearWeight(stage,queue,scratch->gated,heads_out,&weights->out,output,hidden,rows,heads_out,hidden);
 	return(status);
@@ -375,10 +393,13 @@ uint64_t SparkDeviceExpertsScratchBytes(const SparkDeviceStage *stage, const Spa
 SparkStatus SparkDeviceExpertsBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer,
 	const SparkDeviceExpertsShape *shape, SparkDeviceExpertsWeights *bound)
 {
-	const uint64_t hidden = stage->shape->hidden, expert_bytes = (uint64_t)shape->experts * shape->intermediate * hidden * sizeof(uint16_t);
+	const uint32_t local = shape->experts / stage->tp_degree;
+	const uint64_t hidden = stage->shape->hidden, expert_bytes = (uint64_t)local * shape->intermediate * hidden * sizeof(uint16_t);
 	SparkStatus status;
-	if ( shape->top_k == 0u || shape->top_k > SPARK_ROUTE_MAX_TOP_K || shape->experts > SPARK_ROUTE_MAX_EXPERTS || shape->intermediate % 8u != 0u )
-		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_UNSUPPORTED,"device experts need at most 256 experts, a top-k of at most 16 and an 8-aligned width"));
+	if ( shape->top_k == 0u || shape->top_k > SPARK_ROUTE_MAX_TOP_K || shape->experts > SPARK_ROUTE_MAX_EXPERTS || shape->intermediate % 8u != 0u ||
+		shape->experts % stage->tp_degree != 0u )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_UNSUPPORTED,
+			"device experts need at most 512 experts split evenly over the ranks, a top-k of at most 16 and an 8-aligned width"));
 	status = SparkDeviceStageLayerTensor(stage,weights,layer,"router_proj","bf16",(uint64_t)shape->experts * hidden * sizeof(uint16_t),&bound->router);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceStageLayerTensor(stage,weights,layer,"router_scale","f32",hidden * sizeof(float),&bound->router_scale);
@@ -395,7 +416,7 @@ SparkStatus SparkDeviceExpertsBind(SparkDeviceStage *stage, const SparkStageRunn
 	if ( status == SPARK_STATUS_OK )
 	{
 		stage->routed_bytes += 3u * expert_bytes;
-		stage->routed_bytes_per_token += 3u * expert_bytes / shape->experts * shape->top_k;
+		stage->routed_bytes_per_token += 3u * expert_bytes / local * shape->top_k / stage->tp_degree;
 	}
 	return(status);
 }
@@ -470,6 +491,10 @@ SparkStatus SparkDeviceExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue,
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsRouteTopk(stage->ops,queue,scratch->logits,weights->expert_scale,tensors->route_override_width != 0u ? &pinned : 0,scratch->experts,
 			scratch->weights,&route);
+	route.local_experts = shape->experts / stage->tp_degree;
+	route.first_expert = stage->tp_rank * route.local_experts;
+	if ( status == SPARK_STATUS_OK && stage->tp_degree > 1u )
+		status = SparkOpsRouteLocal(stage->ops,queue,scratch->experts,&route);
 	memset(&norm,0,sizeof(norm));
 	norm.rows = rows;
 	norm.dimension = hidden;
@@ -478,11 +503,11 @@ SparkStatus SparkDeviceExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue,
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsRmsNormResidual(stage->ops,queue,tensors->hidden,0,weights->input_norm,scratch->normed,&norm);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkOpsLinearRouted(stage->ops,queue,scratch->normed,weights->gate,scratch->gate_up,scratch->experts,shape->experts,&gate);
+		status = SparkOpsLinearRouted(stage->ops,queue,scratch->normed,weights->gate,scratch->gate_up,scratch->experts,route.local_experts,&gate);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsLinearRouted(stage->ops,queue,scratch->normed,weights->up,
 			SparkTensorSlice(scratch->gate_up,(uint64_t)inter * sizeof(uint16_t),scratch->gate_up.bytes - (uint64_t)inter * sizeof(uint16_t)),scratch->experts,
-			shape->experts,&gate);
+			route.local_experts,&gate);
 	memset(&gated,0,sizeof(gated));
 	gated.rows = routes;
 	gated.dimension = inter;
@@ -491,7 +516,7 @@ SparkStatus SparkDeviceExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue,
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsGatedMulRouted(stage->ops,queue,scratch->gate_up,scratch->weights,scratch->act,&gated,shape->activation);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkOpsLinearRouted(stage->ops,queue,scratch->act,weights->down,scratch->out,scratch->experts,shape->experts,&down);
+		status = SparkOpsLinearRouted(stage->ops,queue,scratch->act,weights->down,scratch->out,scratch->experts,route.local_experts,&down);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsRouteCombine(stage->ops,queue,scratch->out,output,&route);
 	return(status);

@@ -45,8 +45,13 @@ model that needs a missing operation does not compile for that device.
 - The kernels and their launch shapes, as `METAL_BACKEND.md` sets out.
 - Memory: arena planning, weight binding (weightd lazy packs on CUDA, the
   mapped rank pack on Metal), KV views, lanes and graphs.
-- Collectives. `B::AllReduce` is the mesh round on CUDA and nothing at TP1
-  on Metal; a Metal tensor-parallel stage implements it over Thunderbolt.
+- Collectives. `B::AllReduce` is the mesh round on CUDA and the runner's
+  `round` on Metal (`SparkDeviceStageAllReduce`, nothing on one rank); both
+  reduce in rank order with one BF16 rounding. The transport between Metal
+  ranks is the runner's `SparkDeviceCollective` (in-process today,
+  Thunderbolt between Studios). How a backend splits attention over ranks is
+  its own choice: CUDA is context-parallel, Metal head-parallel
+  (`METAL_BACKEND.md`, "Tensor parallel ranks").
 
 GLM 5.3 Flash's numbers come from the contract-generated
 `spark_glm5_next_model.h`, which both backends read. The GLM 5.3 Full and A.X

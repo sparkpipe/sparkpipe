@@ -1,8 +1,10 @@
+#include <fcntl.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "sparkpipe/spark_device.h"
 #include "inference/runner/device_ops.h"
@@ -1336,6 +1338,70 @@ static void TestGatherSlice(void)
 	SparkDeviceFree(&table);
 	SparkDeviceFree(&ids);
 	SparkDeviceFree(&out);
+}
+
+static void TestSegmentedMap(void)
+{
+	enum { WIDTH = 4096u, ROWS = 640u, STRIDE = 1u << 20, GATHERED = 9u };
+	const uint64_t bytes = (uint64_t)ROWS * WIDTH * sizeof(uint16_t);
+	char path[] = "/tmp/spark_segmented_map_XXXXXX";
+	uint16_t *values = (uint16_t *)malloc((size_t)bytes);
+	SparkDeviceBuffer mapped, ids, out;
+	uint32_t *id = (uint32_t *)Shared(&ids,GATHERED * 4u,"segment ids");
+	uint16_t *o = (uint16_t *)Shared(&out,(uint64_t)GATHERED * WIDTH * 2u,"segment out");
+	Check clean, corrupted;
+	uint32_t pass, row, i, first;
+	int fd = mkstemp(path);
+	FillBf16(values,(uint64_t)ROWS * WIDTH,1.0);
+	if ( fd < 0 || write(fd,values,(size_t)bytes) != (ssize_t)bytes ||
+		SparkDeviceMapFileSegments(&mapped,fd,0u,bytes,STRIDE,"segmented file") != SPARK_STATUS_OK )
+	{
+		printf("FAIL segmented_map: cannot write or map %s in 1 MiB segments\n",path);
+		failures++;
+		if ( fd >= 0 )
+			close(fd);
+		unlink(path);
+		free(values);
+		return;
+	}
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		memset(check,0,sizeof(*check));
+		for ( first = 0u; first + STRIDE / (WIDTH * 2u) <= ROWS; first += 61u )
+		{
+			const uint32_t window = STRIDE / (WIDTH * 2u);
+			for ( row = 0u; row < GATHERED; row++ )
+				id[row] = (row * 13u) % window;
+			if ( pass == 1u && first == 61u )
+				id[2] = (id[2] + 1u) % window;
+			if ( !Run(SparkOpsGather(&ops,queue,SparkTensorAt(&mapped,(uint64_t)first * WIDTH * 2u,(uint64_t)window * WIDTH * 2u),Whole(&ids),Whole(&out),
+				GATHERED,WIDTH,window),"segmented gather") )
+				break;
+			if ( pass == 1u && first == 61u )
+				id[2] = (id[2] + window - 1u) % window;
+			for ( row = 0u; row < GATHERED; row++ )
+				for ( i = 0u; i < WIDTH; i++ )
+					Observe(check,o[(uint64_t)row * WIDTH + i] == values[(uint64_t)(first + id[row]) * WIDTH + i] ? 0.0 : 1.0,0.0,0.0);
+		}
+	}
+	Report("segmented_map","640 rows of 8 KiB in 1 MiB segments, windows of 1 MiB at every 61st row",&clean,&corrupted,
+		"exact: a tensor read through its segment equals the file bytes");
+	id[0] = 0u;
+	if ( SparkOpsGather(&ops,queue,SparkTensorAt(&mapped,(uint64_t)STRIDE - 8192u,(uint64_t)STRIDE + 16384u),Whole(&ids),Whole(&out),1u,WIDTH,
+		(STRIDE + 16384u) / (WIDTH * 2u)) == SPARK_STATUS_OK )
+	{
+		printf("FAIL segmented_map: a binding wider than its segment window was accepted\n");
+		failures++;
+	}
+	else
+		printf("PASS segmented_map          a binding wider than its segment window is refused\n");
+	SparkDeviceFree(&mapped);
+	SparkDeviceFree(&ids);
+	SparkDeviceFree(&out);
+	close(fd);
+	unlink(path);
+	free(values);
 }
 
 static void TestRankKernels(uint32_t ranks, uint32_t rows, uint32_t width)
@@ -3277,6 +3343,7 @@ int main(int argc, char **argv)
 	printf("device %s (%s), %u compute units\n",SparkDeviceGetProperties()->name,SparkDeviceGetProperties()->target,SparkDeviceGetProperties()->compute_units);
 	TestGather();
 	TestGatherSlice();
+	TestSegmentedMap();
 	TestRankKernels(8u,3u,2816u);
 	TestRankKernels(2u,17u,1024u);
 	TestRankKernels(8u,2u,65536u);

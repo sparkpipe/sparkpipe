@@ -95,6 +95,8 @@ typedef struct SparkDeviceAttentionScratch
 	SparkTensor records;
 	SparkTensor gate;
 	SparkTensor gated;
+	SparkTensor qkv_local;
+	SparkTensor qkv_gathered;
 } SparkDeviceAttentionScratch;
 
 typedef struct SparkDeviceFfnWeights

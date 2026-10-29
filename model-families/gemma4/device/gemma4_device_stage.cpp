@@ -16,7 +16,6 @@ struct GemmaDevice
 	using G = typename P::Geometry;
 	using L = GemmaLayout<G>;
 
-	static_assert(G::kTpDegree == 1u, "a device stage is one whole rank");
 	static_assert(!G::kPreNorm && !G::kHeadGate && !G::kSigmoidRouter && !G::kRouterFloat && !G::kLayerTable && G::kYarnFactor <= 1.0f &&
 		(!G::kEmbedNorm || G::kEmbedScale == 1.0f), "the device layers do not cover this Gemma variant yet");
 
@@ -150,12 +149,15 @@ struct GemmaDevice
 				&state->attention.records },
 			{ rows * query * 2u, &state->attention.gate },
 			{ rows * query * 2u, &state->attention.gated },
+			{ rows * fused / G::kTpDegree * 2u, &state->attention.qkv_local },
+			{ rows * fused * 2u, &state->attention.qkv_gathered },
 			{ rows * 2u * state->ffn * 2u, &state->ffn_scratch.gate_up },
 			{ rows * state->ffn * 2u, &state->ffn_scratch.act }
 		};
 		uint32_t count = 0u;
 		for ( uint32_t index = 0u; index < sizeof(plan) / sizeof(plan[0]); index++ )
-			if ( (G::kMoe || plan[index].target != &state->expert_out) && (G::kOutputGate || plan[index].target != &state->attention.gate) )
+			if ( (G::kMoe || plan[index].target != &state->expert_out) && (G::kOutputGate || plan[index].target != &state->attention.gate) &&
+				(G::kTpDegree > 1u || (plan[index].target != &state->attention.qkv_local && plan[index].target != &state->attention.qkv_gathered)) )
 				slices[count++] = plan[index];
 		if constexpr ( G::kMoe )
 			for ( uint32_t index = 0u; index < sizeof(experts) / sizeof(experts[0]); index++ )
@@ -180,11 +182,11 @@ struct GemmaDevice
 			status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_PARSE_ERROR, "the pack configuration lacks ffn_rows");
 		const SparkDeviceStageConfigValue config[] =
 		{
-			{ "hidden", G::kHidden }, { "layers", G::kLayers }, { "vocab_rows", G::kVocab }, { "full_period", G::kPeriod },
-			{ "sliding_window", G::kWindow }, { "experts", G::kExperts }, { "top_k", G::kTopK }
+			{ "hidden", G::kHidden }, { "layers", G::kLayers }, { "vocab", G::kVocab }, { "vocab_rows", G::kVocab / G::kTpDegree },
+			{ "full_period", G::kPeriod }, { "sliding_window", G::kWindow }, { "experts", G::kExperts }, { "top_k", G::kTopK }
 		};
 		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageExpectConfig(&state->stage, config, G::kMoe ? 7u : 5u);
+			status = SparkDeviceStageExpectConfig(&state->stage, config, G::kMoe ? 8u : 6u);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageReserve(&state->stage, SparkDeviceStagePlan(0, slices, ScratchSlices(state, slices)), 0, 0u,
 				request->configuration->state_budget_bytes);
@@ -301,11 +303,11 @@ struct GemmaDevice
 
 	static SparkStatus AllReduce(State *state, const Frame &frame, GemmaBranch branch, uint32_t blocks)
 	{
-		(void)state;
-		(void)frame;
 		(void)branch;
-		(void)blocks;
-		return SPARK_STATUS_OK;
+		SparkStatus status = SparkDeviceStageAllReduce(&state->stage, frame.queue, state->partial, frame.t.rows);
+		if ( status == SPARK_STATUS_OK && blocks > 1u )
+			status = SparkDeviceStageAllReduce(&state->stage, frame.queue, state->expert_out, frame.t.rows);
+		return status;
 	}
 
 	static SparkStatus Check(State *state, const Frame &frame)
@@ -357,41 +359,77 @@ struct GemmaDevice
 	}
 };
 
+template<uint32_t TP>
 struct Gemma4_26bDevice
 {
-	using Geometry = Gemma4_26bGeometry<1u>;
+	using Geometry = Gemma4_26bGeometry<TP>;
 	static constexpr const char *kTag = "sparkpipe_gemma4_26b_device";
 	static constexpr const char *kName = "gemma4-26b-a4b";
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_GEMV;
 };
 
+template<uint32_t TP>
 struct Gemma4_31bDevice
 {
-	using Geometry = Gemma4_31bGeometry<1u>;
+	using Geometry = Gemma4_31bGeometry<TP>;
 	static constexpr const char *kTag = "sparkpipe_gemma4_31b_device";
 	static constexpr const char *kName = "gemma4-31b";
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
 };
 
+template<uint32_t TP>
 struct MuseGlimmerDevice
 {
-	using Geometry = MuseGlimmerGeometry<1u>;
+	using Geometry = MuseGlimmerGeometry<TP>;
 	static constexpr const char *kTag = "sparkpipe_muse_glimmer_device";
 	static constexpr const char *kName = "muse-glimmer-30b";
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
 };
 
+template<template<uint32_t> class P>
+static const SparkStageRunnerModelInterface *GemmaDeviceAt(uint32_t tp_degree)
+{
+	switch ( tp_degree )
+	{
+	case 1u:
+		return GemmaDevice<P<1u>>::Interface();
+	case 2u:
+		return GemmaDevice<P<2u>>::Interface();
+	case 4u:
+		return GemmaDevice<P<4u>>::Interface();
+	case 8u:
+		return GemmaDevice<P<8u>>::Interface();
+	default:
+		return 0;
+	}
+}
+
 const SparkStageRunnerModelInterface *SparkGemma4_26bDeviceStageModel(void)
 {
-	return GemmaDevice<Gemma4_26bDevice>::Interface();
+	return GemmaDeviceAt<Gemma4_26bDevice>(1u);
 }
 
 const SparkStageRunnerModelInterface *SparkGemma4_31bDeviceStageModel(void)
 {
-	return GemmaDevice<Gemma4_31bDevice>::Interface();
+	return GemmaDeviceAt<Gemma4_31bDevice>(1u);
 }
 
 const SparkStageRunnerModelInterface *SparkMuseGlimmerDeviceStageModel(void)
 {
-	return GemmaDevice<MuseGlimmerDevice>::Interface();
+	return GemmaDeviceAt<MuseGlimmerDevice>(1u);
+}
+
+const SparkStageRunnerModelInterface *SparkGemma4_26bDeviceStageModelAt(uint32_t tp_degree)
+{
+	return GemmaDeviceAt<Gemma4_26bDevice>(tp_degree);
+}
+
+const SparkStageRunnerModelInterface *SparkGemma4_31bDeviceStageModelAt(uint32_t tp_degree)
+{
+	return GemmaDeviceAt<Gemma4_31bDevice>(tp_degree);
+}
+
+const SparkStageRunnerModelInterface *SparkMuseGlimmerDeviceStageModelAt(uint32_t tp_degree)
+{
+	return GemmaDeviceAt<MuseGlimmerDevice>(tp_degree);
 }

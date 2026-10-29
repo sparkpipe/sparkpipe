@@ -182,8 +182,91 @@ The model interface is used with these meanings on a device backend:
   and size of the mapped rank pack; the model resolves each tensor by its pack
   offset. weightd's lazy pack is a CUDA VMM arena, so a device model's `bind`
   refuses (`UNSUPPORTED`).
-- The runner has one execution lane and no collectives; a model's `round` or
-  `lane` call is refused.
+- The runner has one execution lane; a model's `lane` call is refused.
+- `round` is the collective of a tensor-parallel rank (below). A TP1 runner
+  never sees one: `SparkDeviceStageAllReduce` returns at once on one rank.
+
+## Tensor parallel ranks
+
+A runner opened with `tp_degree` N > 1 is one rank of N. It reads its own
+rank pack (the same `tp{N}.rank{NN}` packs the CUDA packers write), holds one
+vocabulary slice of the embedding and head, and runs the model's collectives
+through `round`, with the operations and meanings of
+`spark_tp_device_collective.h`:
+
+- The embedding gathers the rank's slice (`SparkOpsGatherSlice`: tokens of
+  other ranks become +0 rows) and all-reduces, as CUDA's `StageRunnerEmbed`.
+- The head projects the rank's vocabulary slice to FP32, all-gathers the
+  slices and reorders them into whole rows (`SparkOpsRankRows`); every rank
+  then holds the full logits, log-probabilities and argmax.
+- A round moves bytes and computes nothing: the transport
+  (`SparkDeviceCollective.exchange`) leaves every rank's contribution in the
+  rank's lane buffer, rank-major, and a combine kernel in
+  `inference/kernels/metal/collective.metal` reduces it. The sum is CUDA's
+  mesh sum: an FP32 accumulator from +0 over ranks 0..N-1 in order and one
+  rounding to BF16 (`SparkMathBf16ToFloat`, `SparkMathFloatToBf16`), so a
+  reduction does not depend on the transport. ALL_GATHER and ALL_TO_ALL land
+  in the destination directly; REDUCE_SCATTER sums the rank's segment;
+  PAIR_GATHER is refused.
+- Attention is head-parallel. The packers split the fused QKV rows evenly
+  over the ranks, not by head, so each rank projects its rows, the ranks
+  all-gather them (`SparkDeviceStageGatherRows`) and every rank stores keys and
+  values for all KV heads. A rank attends with its own query heads
+  (`first_head`, and `group` query heads per KV head, in
+  `SparkAttentionParams`) and projects them through its `attn_out` columns;
+  the partial output is all-reduced. Per head, the attention arithmetic is
+  the TP1 arithmetic. CUDA's TP attention is context-parallel instead (each
+  rank holds a slice of positions for every head and merges partial softmax
+  records by all-to-all): its KV is 1/N per rank, Metal's is whole per rank.
+- Experts: the router runs on every rank; `SparkOpsRouteLocal` renumbers the
+  rank's experts from 0 and marks the rest `SPARK_ROUTE_SKIP`, for which the
+  routed GEMVs write +0 rows, so the route-order combine sums only local
+  experts, exactly like CUDA's `LmMoeLocalFinalizeKernel`. The dense MLP uses
+  the rank's `ffn_rows`. Both partial outputs are all-reduced.
+
+Each rank has its own queue and its own ops lane (`SparkDeviceOpsAcquireLane`:
+the kernels are shared, the device error word and split-K partials are the
+rank's), so ranks run concurrently on one device.
+
+`SparkDeviceStageRunnerOpen` with `tp_degree` N and no collective opens an
+in-process group: one device, N rank runners named from the rank 00 pack path,
+a thread per rank, and `SparkDeviceCollectiveLocalCreate` as the transport
+(each rank drains its queue, the ranks meet, each copies every rank's
+contribution into its lanes and they meet again). The group answers the
+ordinary runner calls (step, keep rows, reset), so `metal_stage_run --tp N`
+runs every mode on N ranks of one Studio: a slow but exact model of N Studios,
+whose only difference is the transport. A rank of a multi-Studio group passes
+its own `SparkDeviceCollective` and `tp_rank`.
+
+`SparkDeviceCollectiveTcpCreate` is that transport between processes: a full
+mesh of TCP connections (rank r listens on base port + r and dials the lower
+ranks), each round staged through shared memory, every message tagged with
+its round and size so ranks that diverge fail at once instead of mixing
+rounds. `metal_stage_run --tp N --rank R [--tp-hosts H0,...] [--tp-port P]`
+runs one rank per process; the ranks run the same deterministic schedule
+(SPMD) and only rank 0 writes outputs. N processes on one Studio over
+loopback must reproduce the in-process group's logits bit for bit, and N
+Studios over Thunderbolt IP run the same command with their addresses.
+Speculation chooses draft lengths from measured timings, so its ranks can
+diverge; it needs rank 0 to broadcast its choices before it runs as rank
+processes.
+
+### Packs larger than memory
+
+A Metal command buffer makes every buffer it binds resident, so a pack mapped
+as one buffer is pinned whole while any of its kernels run, and N rank packs
+on one Studio need N packs of memory at once. With `weight_segment_bytes`
+(`metal_stage_run --stream-weights`, 1 GiB) the runner maps the pack through
+`SparkDeviceMapFileSegments`: one file mapping, wrapped as overlapping Metal
+buffers that start every stride and span two strides, so every tensor of at
+most a stride lies inside one of them. A binding resolves to the segment
+that holds it (and is refused if none does), so a command buffer pins only
+the segments its kernels touch and the operating system pages the rest of
+the pack in from the SSD and out again as the layers go by. The segmented
+allocation takes a device address of its own outside the GPU's range, used
+only to resolve tensors. The host and CUDA backends keep one mapping, which
+already covers every range.
+
 
 ## Device stage models
 

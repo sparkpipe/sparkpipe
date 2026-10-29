@@ -417,6 +417,11 @@ SparkStatus SparkDeviceRegister(SparkDeviceBuffer *buffer, void *host, uint64_t 
 
 SparkStatus SparkDeviceMapFile(SparkDeviceBuffer *buffer, int fd, uint64_t offset, uint64_t bytes, const char *owner)
 {
+	return(SparkDeviceMapFileSegments(buffer,fd,offset,bytes,0u,owner));
+}
+
+SparkStatus SparkDeviceMapFileSegments(SparkDeviceBuffer *buffer, int fd, uint64_t offset, uint64_t bytes, uint64_t segment_stride, const char *owner)
+{
 	SparkDeviceAllocation *allocation = 0;
 	SparkStatus status;
 	if ( buffer == 0 || fd < 0 || bytes == 0u )
@@ -435,6 +440,7 @@ SparkStatus SparkDeviceMapFile(SparkDeviceBuffer *buffer, int fd, uint64_t offse
 		pthread_mutex_unlock(&device_mutex);
 		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"map_file",owner,0,"out of host memory for the allocation record"));
 	}
+	allocation->segment_stride = segment_stride;
 	status = SparkDeviceBackendMapFile(allocation,fd,offset);
 	if ( status != SPARK_STATUS_OK )
 		free(allocation);
