@@ -67,6 +67,12 @@ typedef struct SparkDeviceAttentionShape
 	uint32_t window;
 	uint32_t rope_pairs;
 	uint32_t rope_rounded_terms;
+	float rope_scale;
+	float yarn_factor;
+	float yarn_original;
+	float yarn_beta_fast;
+	float yarn_beta_slow;
+	uint32_t head_gate;
 } SparkDeviceAttentionShape;
 
 typedef struct SparkDeviceAttentionRope
@@ -112,6 +118,8 @@ typedef struct SparkDeviceExpertsShape
 	uint32_t intermediate;
 	uint32_t activation;
 	float epsilon;
+	float routed_scale;
+	uint32_t round_logits;
 } SparkDeviceExpertsShape;
 
 typedef struct SparkDeviceExpertsWeights
@@ -119,6 +127,7 @@ typedef struct SparkDeviceExpertsWeights
 	SparkTensor router;
 	SparkTensor router_scale;
 	SparkTensor expert_scale;
+	SparkTensor bias;
 	SparkTensor input_norm;
 	SparkTensor gate;
 	SparkTensor up;
@@ -164,6 +173,7 @@ uint32_t SparkDeviceAttentionKvWidth(const SparkDeviceAttentionShape *shape);
 uint32_t SparkDeviceAttentionFusedWidth(const SparkDeviceAttentionShape *shape);
 uint32_t SparkDeviceAttentionValueWidth(const SparkDeviceAttentionShape *shape);
 uint32_t SparkDeviceAttentionOutputWidth(const SparkDeviceAttentionShape *shape);
+uint32_t SparkDeviceAttentionHeadGateRows(const SparkDeviceAttentionShape *shape, uint32_t degree);
 void SparkDeviceAttentionRopePrepare(const SparkDeviceAttentionShape *shape, SparkDeviceAttentionRope *rope);
 SparkStatus SparkDeviceAttentionBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer,
 	const SparkDeviceAttentionShape *shape, SparkDeviceAttentionWeights *bound);
@@ -181,6 +191,11 @@ SparkStatus SparkDeviceExpertsBind(SparkDeviceStage *stage, const SparkStageRunn
 	const SparkDeviceExpertsShape *shape, SparkDeviceExpertsWeights *bound);
 SparkStatus SparkDeviceExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceExpertsShape *shape, const SparkDeviceStepTensors *tensors,
 	uint32_t layer, const SparkDeviceExpertsWeights *weights, const SparkDeviceExpertsScratch *scratch, SparkTensor output);
+SparkStatus SparkDeviceSigmoidExpertsBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer,
+	const SparkDeviceExpertsShape *shape, SparkDeviceExpertsWeights *bound);
+SparkStatus SparkDeviceSigmoidExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceExpertsShape *shape,
+	const SparkDeviceStepTensors *tensors, const SparkDeviceExpertsWeights *weights, const SparkDeviceExpertsScratch *scratch, SparkTensor normed,
+	SparkTensor shared, SparkTensor output);
 SparkStatus SparkDeviceBranchNorm(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceStepTensors *tensors, SparkTensor first,
 	const SparkTensor *second, const SparkTensor *first_weight, const SparkTensor *second_weight, SparkTensor output_weight, const SparkTensor *scalar);
 SparkStatus SparkDeviceResidualNorm(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceStepTensors *tensors,

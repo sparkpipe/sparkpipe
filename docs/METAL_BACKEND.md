@@ -86,7 +86,7 @@ tensor sizes before each launch.
 | `spark_gather_rows` | embedding rows by id; an id outside the table raises the device error word |
 | `spark_rmsnorm_residual` | `h = bf16(h + r)` written back, then `bf16(rmsnorm(h) * w)` with an FP32 gain, or weightless `bf16(rmsnorm(h))`, which may write in place (Muse Glimmer's embedding norm, CUDA's one-head `LmHeadRmsNormKernel`) |
 | `spark_rmsnorm_gate` | per-head RMSNorm with a BF16 gain and an output gate read from a fused row: SiLU, or sigmoid when `sigmoid_gate` is set (Qwen 3.8 Flash), as CUDA's `LmHeadRmsNormSiluGateKernel` / `LmHeadRmsNormSigmoidGateKernel` |
-| `spark_head_rmsnorm_rope` | per-head RMSNorm (or, `plain`, no norm at all) with an optional FP32 gain and an optional multiplier applied after the norm's BF16 rounding and rounded again (CUDA's `head_multiply`), then rotary embedding with rotate-half pairs over the head's first `rope_dimension` dimensions, a table of up to 256 inverse frequencies (a zero frequency leaves its pair as it is), and either one FP32 rotation rounded once or the publisher's eager rounding (`bf16(bf16(x bf16(cos)) + bf16(p bf16(sin)))`) |
+| `spark_head_rmsnorm_rope` | per-head RMSNorm (or, `plain`, no norm at all) with an optional FP32 gain and an optional multiplier applied after the norm's BF16 rounding and rounded again (CUDA's `head_multiply`), then rotary embedding with rotate-half pairs over the head's first `rope_dimension` dimensions, a table of up to 256 inverse frequencies (a zero frequency leaves its pair as it is; YaRN fills it from `SparkRopePlanBuildYarnInvFrequency`), cos and sin times the rope scale, and either one FP32 rotation rounded once or the publisher's eager rounding (`bf16(bf16(x bf16(cos)) + bf16(p bf16(sin)))`) |
 | `spark_rmsnorm_branches` | sandwich norms: `h = bf16(h + bf16(rms(a) w))`, or with two branches `c = bf16(bf16(rms(a) w1) + bf16(rms(b) w2))` and `h = bf16(h + bf16(rms(c) w))`, then optionally `bf16(h * scalar)` |
 | `spark_rmsnorm_scaled` | `bf16(bf16(bf16(rms(x)) s) c)`: a weightless norm, a per-channel scale and a constant, each rounded (an expert router's input) |
 | `spark_gemv_r{1,2,4,8}`, `spark_gemv_f32_r*` | the GEMV family's projections for one or two rows, and its verify frames in passes of up to eight rows: BF16 weights `[N, K]`, 4, 4, 2 and 1 outputs per threadgroup at 1, 2, 4 and 8 rows, the inner dimension split across the threadgroup's four SIMD groups, FP32 accumulation, BF16 or FP32 out |
@@ -128,7 +128,8 @@ They implement the same operations as the CUDA kernels in
 
 `inference/kernels/kernel_math.cuh` holds the formulas both compilers build:
 bf16 conversion and rounding, the scaled sigmoid with sigmoid and SiLU as
-its cases, softplus, the gated-delta decay, the tanh GeLU and the softcap.
+its cases, softplus, the head-gate softplus (`SparkMathSoftplusGate`), the
+gated-delta decay, the tanh GeLU, the softcap and the RMS scale.
 The experts' tanh GeLU is `SparkMathGeluTanhScaleFirst`, which multiplies
 `0.044715 g g g` from the left as CUDA's expert kernels always have; the
 dense GeLU cubes first. Both backends use the same two, so the choice
@@ -154,7 +155,9 @@ as the CUDA one.
 - The macros at the top of the header pick each backend's intrinsics:
   bit casts, `exp`, `log` and `tanh`. A `Fast` variant is CUDA's `__expf`
   and `__logf`. Metal builds with `-fno-fast-math`, so both variants are the
-  precise functions there.
+  precise functions there. Metal has no `log1p`: `SparkMathLog1p` is `log1pf`
+  on CUDA and `log(u) * (x / (u - 1))` with `u = 1 + x` on Metal, within a
+  few FP32 ulps of it.
 - A CUDA kernel that moves to the header keeps its machine code: every
   conversion reproduces the replaced expression and its exp flavor, and the
   `cuobjdump -sass` of every serving adapter is compared before and after.
@@ -696,3 +699,37 @@ tokens (`batch_ladder_exact_rows.identical_to_solo`); the Qwen3.8-27B gate
 runs the same exact-rows ladder. That shows the batch
 itself (row tables, KV pages, per-sequence attention, routed GEMV) is exact,
 and the fast path differs only by rounding.
+### Laguna S 2.1 on eight ranks
+
+Laguna runs on the Gemma family schedule (its pre-norm path) and the Gemma
+Metal backend, which covers the switches it sets: pre-norm blocks
+(`AddRmsNorm`, `AddRows`), a per-head softplus gate before `attn_out`
+(`spark_head_gate_softplus`: `bf16(v * bf16(softplus(g)))`, CUDA's
+`GemmaHeadSoftplusGateKernel` through `SparkMathSoftplusGate`), YaRN on the
+first 64 dimensions of the full layers (the inverse frequencies from
+`SparkRopePlanBuildYarnInvFrequency`, cos and sin times the attention
+factor), a dense SwiGLU in layer 0, and from layer 1 a sigmoid router
+(`SparkDeviceSigmoidExperts`: BF16-rounded logits, top 10 on score plus
+`expert_bias`, weights normalised and times 2.5) whose routed experts and
+the shared expert are summed in route order and rounded once
+(`spark_route_combine_shared`, CUDA's `LmMoeLocalFinalizeKernel` with the
+shared rows). A layer's MLP width comes from its own `ffn_gate_up` (the dense
+layer and the shared expert differ).
+
+The BF16 checkpoint is 235 GB, so it runs as eight ranks
+(`tools/laguna_tp16_pack.py --tp-degree 8`, which pads the sliding layers to
+80 heads at every degree, as the geometry does) with the packs paged from
+the SSD:
+
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 sh tools/metal_gates.sh laguna-s-2.1 \
+        PACKS/laguna.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+
+The gate prompts are `qualification/metal/laguna/` (the Gemma set rendered
+with Laguna's full chat turn by `tools/laguna_reference.py gate-prompts`);
+`tools/laguna_reference.py teacher` writes references a and b, b summing each
+row's routed experts in descending instead of ascending expert order. With
+`SPARK_GATE_TP` the gate runs the teacher, greedy and control passes on the
+rank group (a control corrupts rank 0's pack, the other ranks' packs are
+linked beside it) and leaves out the timing ladders, the benchmark and
+speculation.
+

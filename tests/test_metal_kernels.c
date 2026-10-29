@@ -1255,6 +1255,59 @@ static void TestLinearRoutedSkip(uint32_t rows)
 	SparkDeviceFree(&single);
 }
 
+static void TestHeadGateSoftplus(uint32_t rows, uint32_t heads)
+{
+	enum { DIM = 128u };
+	const uint32_t stride = heads + (heads & 1u);
+	SparkDeviceBuffer values, logits;
+	uint16_t *v = (uint16_t *)Shared(&values,(uint64_t)rows * heads * DIM * 2u,"head gate values");
+	uint16_t *g = (uint16_t *)Shared(&logits,(uint64_t)rows * stride * 2u,"head gate logits");
+	uint16_t *original = (uint16_t *)malloc((size_t)rows * heads * DIM * 2u);
+	SparkHeadGateParams params;
+	Check clean, corrupted;
+	char shape[64];
+	uint32_t pass, row, head, i;
+	FillBf16(original,(uint64_t)rows * heads * DIM,2.0);
+	for ( i = 0u; i < rows * stride; i++ )
+		g[i] = ToBf16((float)(Normal() * 8.0));
+	g[0] = ToBf16(25.0f);
+	g[1] = ToBf16(-30.0f);
+	memset(&params,0,sizeof(params));
+	params.rows = rows;
+	params.heads = heads;
+	params.head_dimension = DIM;
+	params.gate_stride = stride;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint16_t saved = g[(rows - 1u) * stride + heads - 1u];
+		memset(check,0,sizeof(*check));
+		memcpy(v,original,(size_t)rows * heads * DIM * 2u);
+		if ( pass == 1u )
+			g[(rows - 1u) * stride + heads - 1u] = ToBf16(Bf16(saved) + 4.0f);
+		if ( !Run(SparkOpsHeadGateSoftplus(&ops,queue,Whole(&values),Whole(&logits),&params),"head_gate_softplus") )
+			break;
+		g[(rows - 1u) * stride + heads - 1u] = saved;
+		for ( row = 0u; row < rows; row++ )
+			for ( head = 0u; head < heads; head++ )
+			{
+				const float logit = Bf16(g[row * stride + head]);
+				const float gate = Bf16(ToBf16(logit > 20.0f ? logit : log1pf(expf(logit))));
+				for ( i = 0u; i < DIM; i++ )
+				{
+					const uint64_t at = ((uint64_t)row * heads + head) * DIM + i;
+					const double expected = Bf16(ToBf16(Bf16(original[at]) * gate));
+					Observe(check,Bf16(v[at]),expected,fabs(expected) * 2.0 * UNIT_BF16 + 1e-30);
+				}
+			}
+	}
+	snprintf(shape,sizeof(shape),"rows %u, %u heads x 128",rows,heads);
+	Report("head_gate_softplus",shape,&clean,&corrupted,"one bf16 ulp of the gate: bf16(softplus) with log1p(exp) as CUDA's log1pf, Metal's log1p emulated");
+	free(original);
+	SparkDeviceFree(&values);
+	SparkDeviceFree(&logits);
+}
+
 static void TestRouteLocal(void)
 {
 	enum { ROWS = 37u, TOP = 8u, EXPERTS = 128u, FIRST = 48u, LOCAL = 16u };
@@ -3348,6 +3401,8 @@ int main(int argc, char **argv)
 	TestRankKernels(2u,17u,1024u);
 	TestRankKernels(8u,2u,65536u);
 	TestRouteLocal();
+	TestHeadGateSoftplus(3u,10u);
+	TestHeadGateSoftplus(17u,5u);
 	TestLinearRoutedSkip(3u);
 	TestRmsNormResidual(1u);
 	TestRmsNormResidual(64u);

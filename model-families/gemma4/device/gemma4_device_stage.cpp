@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -6,6 +7,7 @@
 #include "sparkpipe/spark_gemma4_31b_stage_model.h"
 #include "sparkpipe/spark_gemma4_device_stage.h"
 #include "sparkpipe/spark_gemma4_family.h"
+#include "sparkpipe/spark_laguna_tp16_stage_model.h"
 #include "sparkpipe/spark_muse_tp16_stage_model.h"
 
 #define GD_SLICES 24u
@@ -16,8 +18,8 @@ struct GemmaDevice
 	using G = typename P::Geometry;
 	using L = GemmaLayout<G>;
 
-	static_assert(!G::kPreNorm && !G::kHeadGate && !G::kSigmoidRouter && !G::kRouterFloat && !G::kLayerTable && G::kYarnFactor <= 1.0f &&
-		(!G::kEmbedNorm || G::kEmbedScale == 1.0f), "the device layers do not cover this Gemma variant yet");
+	static_assert(!G::kRouterFloat && !G::kLayerTable && (!G::kEmbedNorm || G::kEmbedScale == 1.0f),
+		"the device layers do not cover this Gemma variant yet");
 
 	struct Layer
 	{
@@ -29,9 +31,10 @@ struct GemmaDevice
 		SparkTensor post_ff_norm_2;
 		SparkTensor layer_scalar;
 		SparkDeviceAttentionWeights attention;
-		SparkDeviceFfnWeights ffn;
+		SparkDeviceFfnWeights ffn_weights;
 		SparkDeviceExpertsWeights experts;
 		uint32_t index;
+		uint32_t ffn;
 	};
 
 	struct State
@@ -119,12 +122,21 @@ struct GemmaDevice
 		full->query_multiply = sliding->query_multiply;
 		full->rope_pairs = G::kFullRopePairs;
 		full->rope_rounded_terms = 1u;
+		full->rope_scale = G::kFullRopeScale;
+		full->yarn_factor = G::kYarnFactor;
+		full->yarn_original = G::kYarnOriginal;
+		full->yarn_beta_fast = G::kYarnBetaFast;
+		full->yarn_beta_slow = G::kYarnBetaSlow;
+		sliding->head_gate = full->head_gate = G::kHeadGate ? 1u : 0u;
 		memset(experts, 0, sizeof(*experts));
 		experts->experts = G::kExperts;
 		experts->top_k = G::kTopK;
 		experts->intermediate = G::kMoeInter;
 		experts->activation = G::kGeluMlp ? SPARK_GATED_GELU_TANH : SPARK_GATED_SILU;
 		experts->epsilon = G::kNormEpsilon;
+		if constexpr ( G::kSigmoidRouter )
+			experts->routed_scale = G::kRoutedScale;
+		experts->round_logits = G::kRouterFloat ? 0u : 1u;
 	}
 
 	static uint32_t ScratchSlices(State *state, SparkDeviceStageSlice *slices)
@@ -147,7 +159,8 @@ struct GemmaDevice
 			{ Max(SparkOpsAttentionScratchBytes(state->stage.max_rows, state->full.heads, state->full.head_dimension, state->stage.max_positions),
 				SparkOpsAttentionScratchBytes(state->stage.max_rows, state->sliding.heads, state->sliding.head_dimension, state->stage.max_positions)),
 				&state->attention.records },
-			{ rows * query * 2u, &state->attention.gate },
+			{ rows * Max(query, Max(SparkDeviceAttentionHeadGateRows(&state->sliding, G::kTpDegree), SparkDeviceAttentionHeadGateRows(&state->full,
+				G::kTpDegree))) * 2u, &state->attention.gate },
 			{ rows * query * 2u, &state->attention.gated },
 			{ rows * fused / G::kTpDegree * 2u, &state->attention.qkv_local },
 			{ rows * fused * 2u, &state->attention.qkv_gathered },
@@ -156,7 +169,7 @@ struct GemmaDevice
 		};
 		uint32_t count = 0u;
 		for ( uint32_t index = 0u; index < sizeof(plan) / sizeof(plan[0]); index++ )
-			if ( (G::kMoe || plan[index].target != &state->expert_out) && (G::kOutputGate || plan[index].target != &state->attention.gate) &&
+			if ( (G::kMoe || plan[index].target != &state->expert_out) && (G::kOutputGate || G::kHeadGate || plan[index].target != &state->attention.gate) &&
 				(G::kTpDegree > 1u || (plan[index].target != &state->attention.qkv_local && plan[index].target != &state->attention.qkv_gathered)) )
 				slices[count++] = plan[index];
 		if constexpr ( G::kMoe )
@@ -199,23 +212,34 @@ struct GemmaDevice
 
 	static SparkStatus BindLayer(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index)
 	{
-		static const char *const norms[] = { "input_norm", "post_attn_norm", "pre_ff_norm", "post_ff_norm", "post_ff_norm_1", "post_ff_norm_2" };
+		static const char *const norms[] = { "input_norm", "pre_ff_norm", "post_attn_norm", "post_ff_norm", "post_ff_norm_1", "post_ff_norm_2" };
 		Layer *layer = &state->layers[index];
-		SparkTensor *targets[] = { &layer->input_norm, &layer->post_attn_norm, &layer->pre_ff_norm, &layer->post_ff_norm, &layer->post_ff_norm_1,
+		SparkTensor *targets[] = { &layer->input_norm, &layer->pre_ff_norm, &layer->post_attn_norm, &layer->post_ff_norm, &layer->post_ff_norm_1,
 			&layer->post_ff_norm_2 };
-		const uint32_t norm_count = G::kMoe ? 6u : 4u;
+		const bool moe = G::kMoe && index >= G::kFirstMoeLayer;
+		const uint32_t norm_count = G::kPreNorm ? 2u : G::kMoe ? 6u : 4u;
+		char key[64];
+		uint64_t offset = 0u, bytes = 0u;
+		uint32_t gate_up_rows = 0u;
 		SparkStatus status = SPARK_STATUS_OK;
 		layer->index = index;
 		for ( uint32_t norm = 0u; norm < norm_count && status == SPARK_STATUS_OK; norm++ )
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, norms[norm], "f32", G::kHidden * sizeof(float), targets[norm]);
+		snprintf(key, sizeof(key), "layers.%u.ffn_gate_up", index);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageEntry(&state->stage, key, "bf16", &offset, &bytes, &gate_up_rows);
+		layer->ffn = gate_up_rows / 2u;
+		if ( status == SPARK_STATUS_OK && (gate_up_rows % 2u != 0u || layer->ffn > state->ffn) )
+			status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_SCHEMA_ERROR, "a layer's MLP is wider than the pack's ffn_rows");
 		if ( G::kLayerScalar && status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "layer_scalar", "f32", sizeof(float), &layer->layer_scalar);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceAttentionBind(&state->stage, weights, index, L::Full(index) ? &state->full : &state->sliding, &layer->attention);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceFfnBind(&state->stage, weights, index, state->ffn, &layer->ffn);
-		if ( G::kMoe && status == SPARK_STATUS_OK )
-			status = SparkDeviceExpertsBind(&state->stage, weights, index, &state->experts_shape, &layer->experts);
+			status = SparkDeviceFfnBind(&state->stage, weights, index, layer->ffn, &layer->ffn_weights);
+		if ( moe && status == SPARK_STATUS_OK )
+			status = G::kSigmoidRouter ? SparkDeviceSigmoidExpertsBind(&state->stage, weights, index, &state->experts_shape, &layer->experts) :
+				SparkDeviceExpertsBind(&state->stage, weights, index, &state->experts_shape, &layer->experts);
 		return status;
 	}
 
@@ -291,8 +315,30 @@ struct GemmaDevice
 
 	static SparkStatus Mlp(State *state, const Frame &frame, const Layer &layer)
 	{
-		return SparkDeviceGatedFfn(&state->stage, frame.queue, state->ffn, G::kGeluMlp ? SPARK_GATED_GELU_TANH : SPARK_GATED_SILU, &frame.t, &layer.ffn,
-			&state->ffn_scratch, state->normed, state->partial);
+		return SparkDeviceGatedFfn(&state->stage, frame.queue, layer.ffn, G::kGeluMlp ? SPARK_GATED_GELU_TANH : SPARK_GATED_SILU, &frame.t,
+			&layer.ffn_weights, &state->ffn_scratch, state->normed, state->partial);
+	}
+
+	static SparkTensor Branch(State *state, GemmaBranch branch)
+	{
+		return branch == GEMMA_EXPERT_BRANCH ? state->expert_out : state->partial;
+	}
+
+	static SparkStatus AddRmsNorm(State *state, const Frame &frame, GemmaBranch branch, SparkTensor weight)
+	{
+		const SparkTensor addend = Branch(state, branch);
+		return SparkDeviceResidualNorm(&state->stage, frame.queue, &frame.t, &addend, weight, state->normed);
+	}
+
+	static SparkStatus AddRows(State *state, const Frame &frame, GemmaBranch branch)
+	{
+		return SparkOpsAddRows(state->stage.ops, frame.queue, frame.t.hidden, Branch(state, branch), frame.t.rows, G::kHidden, G::kHidden, G::kHidden);
+	}
+
+	static SparkStatus SigmoidExperts(State *state, const Frame &frame, const Layer &layer)
+	{
+		return SparkDeviceSigmoidExperts(&state->stage, frame.queue, &state->experts_shape, &frame.t, &layer.experts, &state->experts, state->normed,
+			state->partial, state->expert_out);
 	}
 
 	static SparkStatus Experts(State *state, const Frame &frame, const Layer &layer)
@@ -303,8 +349,7 @@ struct GemmaDevice
 
 	static SparkStatus AllReduce(State *state, const Frame &frame, GemmaBranch branch, uint32_t blocks)
 	{
-		(void)branch;
-		SparkStatus status = SparkDeviceStageAllReduce(&state->stage, frame.queue, state->partial, frame.t.rows);
+		SparkStatus status = SparkDeviceStageAllReduce(&state->stage, frame.queue, Branch(state, branch), frame.t.rows);
 		if ( status == SPARK_STATUS_OK && blocks > 1u )
 			status = SparkDeviceStageAllReduce(&state->stage, frame.queue, state->expert_out, frame.t.rows);
 		return status;
@@ -386,6 +431,15 @@ struct MuseGlimmerDevice
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
 };
 
+template<uint32_t TP>
+struct LagunaDevice
+{
+	using Geometry = LagunaGeometry<TP>;
+	static constexpr const char *kTag = "sparkpipe_laguna_device";
+	static constexpr const char *kName = "laguna-s-2.1";
+	static constexpr uint32_t kProjection = SPARK_PROJECTION_GEMV;
+};
+
 template<template<uint32_t> class P>
 static const SparkStageRunnerModelInterface *GemmaDeviceAt(uint32_t tp_degree)
 {
@@ -432,4 +486,9 @@ const SparkStageRunnerModelInterface *SparkGemma4_31bDeviceStageModelAt(uint32_t
 const SparkStageRunnerModelInterface *SparkMuseGlimmerDeviceStageModelAt(uint32_t tp_degree)
 {
 	return GemmaDeviceAt<MuseGlimmerDevice>(tp_degree);
+}
+
+const SparkStageRunnerModelInterface *SparkLagunaDeviceStageModelAt(uint32_t tp_degree)
+{
+	return GemmaDeviceAt<LagunaDevice>(tp_degree);
 }

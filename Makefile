@@ -1402,7 +1402,8 @@ build/test_metal_kernels: tests/test_metal_kernels.c $(DEVICE_OPS_SOURCES) $(DEV
 	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_KERNEL_LIBRARY='"$(METAL_KERNEL_LIBRARY)"' tests/test_metal_kernels.c $(DEVICE_OPS_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lm -o $@; else echo "SKIP test_metal_kernels (no Metal device or kernel library)"; fi
 
 DEVICE_RUNNER_SOURCES := inference/runner/device_stage_runner.c inference/runner/device_stage_model.c inference/runner/device_layers.c inference/runner/device_collective.c inference/runner/device_collective_tcp.c $(DEVICE_OPS_SOURCES) runtime/named_pack.c runtime/json.c runtime/filesystem.c src/spark_sha256.c
-DEVICE_RUNNER_HEADERS := inference/runner/device_stage_runner.h inference/runner/device_stage_model.h inference/runner/device_layers.h inference/runner/device_collective.h $(DEVICE_OPS_HEADERS) include/sparkpipe/spark_stage_runner_model.h
+DEVICE_RUNNER_INCLUDE_FLAGS := -Imodel-families/common/include
+DEVICE_RUNNER_HEADERS := inference/runner/device_stage_runner.h inference/runner/device_stage_model.h inference/runner/device_layers.h inference/runner/device_collective.h $(DEVICE_OPS_HEADERS) include/sparkpipe/spark_stage_runner_model.h model-families/common/include/sparkpipe/spark_rope_plan.h
 QWEN38_DEVICE_SOURCES := model-families/qwen38/device/qwen38_device_stage.cpp
 QWEN38_DEVICE_HEADERS := model-families/qwen38/include/sparkpipe/spark_qwen38_family.h model-families/qwen38/include/sparkpipe/spark_qwen38_device_stage.h \
 	modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_stage_model.h \
@@ -1418,9 +1419,11 @@ GEMMA4_DEVICE_SOURCES := model-families/gemma4/device/gemma4_device_stage.cpp
 GEMMA4_DEVICE_HEADERS := model-families/gemma4/include/sparkpipe/spark_gemma4_family.h model-families/gemma4/include/sparkpipe/spark_gemma4_device_stage.h \
 	modules/gemma4_26b_resident_decode_stage/include/sparkpipe/spark_gemma4_26b_stage_model.h \
 	modules/gemma4_31b_resident_decode_stage/include/sparkpipe/spark_gemma4_31b_stage_model.h \
-	modules/muse_glimmer_tp16_resident_decode_stage/include/sparkpipe/spark_muse_tp16_stage_model.h
+	modules/muse_glimmer_tp16_resident_decode_stage/include/sparkpipe/spark_muse_tp16_stage_model.h \
+	modules/laguna_tp16_resident_decode_stage/include/sparkpipe/spark_laguna_tp16_stage_model.h
 GEMMA4_DEVICE_INCLUDE_FLAGS := -Imodel-families/gemma4/include -Imodules/gemma4_26b_resident_decode_stage/include \
-	-Imodules/gemma4_31b_resident_decode_stage/include -Imodules/muse_glimmer_tp16_resident_decode_stage/include
+	-Imodules/gemma4_31b_resident_decode_stage/include -Imodules/muse_glimmer_tp16_resident_decode_stage/include \
+	-Imodules/laguna_tp16_resident_decode_stage/include
 GEMMA4_DEVICE_OBJECT := build/metal/gemma4_device_stage.o
 
 $(GEMMA4_DEVICE_OBJECT): $(GEMMA4_DEVICE_SOURCES) $(GEMMA4_DEVICE_HEADERS) $(DEVICE_RUNNER_HEADERS) | build
@@ -1438,7 +1441,7 @@ $(MIMO26_DEVICE_OBJECT): $(MIMO26_DEVICE_SOURCES) $(MIMO26_DEVICE_HEADERS) $(DEV
 	$(CXX) $(CORE_INCLUDE_FLAGS) $(MIMO26_DEVICE_INCLUDE_FLAGS) $(CXXFLAGS) -c $(MIMO26_DEVICE_SOURCES) -o $@
 
 build/metal_stage_run: tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
-	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(GEMMA4_DEVICE_INCLUDE_FLAGS) $(MIMO26_DEVICE_INCLUDE_FLAGS) $(CFLAGS) tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lc++ -lm -o $@; else echo "SKIP metal_stage_run (no Metal device or kernel library)"; fi
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(GEMMA4_DEVICE_INCLUDE_FLAGS) $(MIMO26_DEVICE_INCLUDE_FLAGS) $(CFLAGS) tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lc++ -lm -o $@; else echo "SKIP metal_stage_run (no Metal device or kernel library)"; fi
 
 build/qwen38_27b_reference: tools/qwen38_27b_reference.c tools/token_prompts.c runtime/json.c runtime/filesystem.c | build
 	@if [ "$(UNAME_S)" = Darwin ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fblocks -DACCELERATE_NEW_LAPACK tools/qwen38_27b_reference.c tools/token_prompts.c runtime/json.c runtime/filesystem.c -framework Accelerate $(LDLIBS) -lm -o $@; else echo "SKIP qwen38_27b_reference (it uses the Accelerate BLAS)"; fi

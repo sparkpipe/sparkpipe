@@ -109,6 +109,21 @@ SPARK_MATH_FN float SparkMathSoftplus(float value)
 	return(value > 20.0f ? value : SPARK_MATH_LOG(1.0f + SPARK_MATH_EXP(value)));
 }
 
+SPARK_MATH_FN float SparkMathLog1p(float value)
+{
+#if defined(__METAL_VERSION__)
+	const float shifted = 1.0f + value;
+	return(shifted == 1.0f ? value : metal::log(shifted) * (value / (shifted - 1.0f)));
+#else
+	return(log1pf(value));
+#endif
+}
+
+SPARK_MATH_FN float SparkMathSoftplusGate(float logit)
+{
+	return(SparkMathRoundBf16(logit > 20.0f ? logit : SparkMathLog1p(SPARK_MATH_EXP(logit))));
+}
+
 SPARK_MATH_FN float SparkMathSoftplusFast(float value)
 {
 	return(value > 20.0f ? value : SPARK_MATH_LOG_FAST(1.0f + SPARK_MATH_EXP_FAST(value)));

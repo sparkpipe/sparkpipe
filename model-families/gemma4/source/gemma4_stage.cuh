@@ -165,8 +165,7 @@ __global__ static void GemmaPackSlotKernel(const uint16_t *key, const uint16_t *
 __global__ static void GemmaHeadSoftplusGateKernel(uint16_t *values, const uint16_t *gate_logits, uint32_t heads, uint32_t head_dim, uint32_t gate_stride)
 {
 	const uint32_t row = blockIdx.y, head = blockIdx.x;
-	const float logit = LmBf16ToFloat(gate_logits[(uint64_t)row * gate_stride + head]);
-	const float gate = LmBf16ToFloat(LmFloatToBf16(logit > 20.0f ? logit : log1pf(expf(logit))));
+	const float gate = SparkMathSoftplusGate(LmBf16ToFloat(gate_logits[(uint64_t)row * gate_stride + head]));
 	uint16_t *base = values + ((uint64_t)row * heads + head) * head_dim;
 	for ( uint32_t index = threadIdx.x; index < head_dim; index += blockDim.x )
 		base[index] = LmFloatToBf16(LmBf16ToFloat(base[index]) * gate);

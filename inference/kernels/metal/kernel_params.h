@@ -97,7 +97,9 @@ typedef struct SparkRouteParams
 	uint32_t logit_stride;
 	uint32_t first_expert;
 	uint32_t local_experts;
-	uint32_t pad;
+	float scale;
+	uint32_t round_logits;
+	uint32_t pad[3];
 } SparkRouteParams;
 
 typedef struct SparkScaleParams
@@ -122,9 +124,18 @@ typedef struct SparkHeadRopeParams
 	uint32_t rope_rounded_terms;
 	float multiply;
 	uint32_t plain;
-	uint32_t pad[3];
+	float scale;
+	uint32_t pad[2];
 	float inverse_frequency[SPARK_KERNEL_ROPE_PAIRS];
 } SparkHeadRopeParams;
+
+typedef struct SparkHeadGateParams
+{
+	uint32_t rows;
+	uint32_t heads;
+	uint32_t head_dimension;
+	uint32_t gate_stride;
+} SparkHeadGateParams;
 
 typedef struct SparkGemvParams
 {

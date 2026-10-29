@@ -1134,16 +1134,17 @@ and the multidev docs on 2026-09-28. Line numbers are in
   formulas they share are moving into `inference/kernels/kernel_math.cuh`
   ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#shared-kernel-math)):
   bf16 conversion, sigmoid and SiLU (29 CUDA copies), softplus with the
-  gated-delta decay, the tanh GeLU and the softcap are there. Still a copy
+  gated-delta decay, the head-gate softplus, the tanh GeLU, the softcap and
+  the RMS scale are there. Still a copy
   per kernel or per backend:
-  - RMSNorm scales, rotary angles and rotation, the delta-rule cell update,
-    online-softmax merges and the log-probability reduction;
+  - rotary angles and rotation, the delta-rule cell update, online-softmax
+    merges and the log-probability reduction;
   - expressions that differ inside a backend, each a numerical change that
     needs the affected model's gate: the experts' tanh GeLU
     (`SparkMathGeluTanhScaleFirst`, shared by both backends) multiplies
     `0.044715 * g * g * g` from the left, while the dense one (and PyTorch)
     cube first, so Gemma 4's dense and expert FFNs round differently; the
-    head-gate softplus uses `log1pf(__expf(x))`, the gated delta
+    head-gate softplus (`SparkMathSoftplusGate`) uses `log1p(exp(x))`, the gated delta
     `__logf(1 + __expf(x))`. The causal convolution's swish is
     `SparkMathSwishFast` (`x * sigmoid(x)`) on both backends;
   - attention softmax: both backends rescale at every new maximum. A

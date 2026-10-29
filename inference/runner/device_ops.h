@@ -102,6 +102,7 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_RANK_SUM_BF16,
 	SPARK_OPS_RANK_MAX_U64,
 	SPARK_OPS_RANK_ROWS,
+	SPARK_OPS_HEAD_GATE_SOFTPLUS,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -155,6 +156,7 @@ SparkStatus SparkOpsGather(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTe
 SparkStatus SparkOpsGatherSlice(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor table, SparkTensor ids, SparkTensor output,
 	uint32_t rows, uint32_t width, uint32_t table_rows, uint32_t first_row);
 SparkStatus SparkOpsRouteLocal(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor experts, const SparkRouteParams *params);
+SparkStatus SparkOpsHeadGateSoftplus(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, SparkTensor logits, const SparkHeadGateParams *params);
 SparkStatus SparkOpsRankSumBf16(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements);
 SparkStatus SparkOpsRankMaxU64(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements);
 SparkStatus SparkOpsRankRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor gathered, SparkTensor rows, uint32_t ranks, uint32_t row_count,

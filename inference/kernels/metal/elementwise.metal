@@ -188,6 +188,17 @@ kernel void spark_route_pinned(constant SparkRouteParams &p [[buffer(0)]], devic
 		SparkRouteWeights(p, probability, chosen, expert_scale, experts, weights, row);
 }
 
+kernel void spark_head_gate_softplus(constant SparkHeadGateParams &p [[buffer(0)]], device ushort *values [[buffer(1)]],
+	device const ushort *logits [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+	uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint head = group.x, row = group.y;
+	const float gate = SparkMathSoftplusGate(SparkMathBf16ToFloat(logits[(ulong)row * p.gate_stride + head]));
+	device ushort *base = values + ((ulong)row * p.heads + head) * p.head_dimension;
+	for ( uint index = tid; index < p.head_dimension; index += group_size.x )
+		base[index] = SparkMathFloatToBf16(SparkMathBf16ToFloat(base[index]) * gate);
+}
+
 kernel void spark_route_local(constant SparkRouteParams &p [[buffer(0)]], device uint *experts [[buffer(1)]], uint index [[thread_position_in_grid]])
 {
 	if ( index >= p.rows * p.top_k )
@@ -237,7 +248,8 @@ kernel void spark_route_sigmoid_topk(constant SparkRouteParams &p [[buffer(0)]],
 	threadgroup uint chosen[SPARK_ROUTE_MAX_TOP_K];
 	for ( uint expert = tid; expert < p.experts; expert += threads )
 	{
-		const float value = SparkMathSigmoid(logits[(ulong)row * p.logit_stride + expert]);
+		const float logit = logits[(ulong)row * p.logit_stride + expert];
+		const float value = SparkMathSigmoid(p.round_logits != 0u ? SparkMathRoundBf16(logit) : logit);
 		score[expert] = value;
 		selection[expert] = value + bias[expert];
 	}
@@ -291,7 +303,7 @@ kernel void spark_route_sigmoid_topk(constant SparkRouteParams &p [[buffer(0)]],
 	for ( uint pick = 0u; pick < p.top_k; pick++ )
 	{
 		experts[(ulong)row * p.top_k + pick] = chosen[pick];
-		weights[(ulong)row * p.top_k + pick] = score[chosen[pick]] / (total + 1e-20f);
+		weights[(ulong)row * p.top_k + pick] = score[chosen[pick]] / (total + 1e-20f) * p.scale;
 	}
 }
 

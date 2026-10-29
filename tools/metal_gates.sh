@@ -2,7 +2,7 @@
 set -eu
 
 if [ "$#" -ne 5 ]; then
-	echo "usage: $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|qwen3.8-flash PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
+	echo "usage: [SPARK_GATE_TP=N [SPARK_GATE_STREAM=1]] $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|qwen3.8-flash|laguna-s-2.1 PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
 	exit 2
 fi
 model=$1
@@ -16,6 +16,7 @@ case $model in
 	muse-glimmer-30b) routed=0 prompt_dir=muse_glimmer vocab=202048 probe=ffn_down layer=11;;
 	mimo-v2.6-flash) routed=0 prompt_dir=mimo26_flash vocab=152576 probe=attn_out layer=11;;
 	qwen3.8-flash) routed=0 prompt_dir=qwen38_27b vocab=248320 probe=attn_out layer=11 greedy_tokens=8 bench_prompt=design spec=0;;
+	laguna-s-2.1) routed=0 prompt_dir=laguna vocab=100352 probe=attn_out layer=11;;
 	*) echo "unknown Metal model $model" >&2; exit 2;;
 esac
 greedy_tokens=${greedy_tokens:-128}
@@ -27,6 +28,20 @@ spec_prompts=$root/qualification/metal/$prompt_dir/spec_prompts.json
 control_pack=$out/control.pack
 batches=${SPARK_LADDER_BATCHES:-1,2,4,8,16,32,64}
 run="./build/metal_stage_run --model $model --prompts $prompts"
+tp=${SPARK_GATE_TP:-1}
+if [ "$tp" -gt 1 ]; then
+	run="$run --tp $tp"
+	[ "${SPARK_GATE_STREAM:-0}" = 1 ] && run="$run --stream-weights"
+	spec=0
+	mkdir -p "$out/controlpack"
+	control_pack=$out/controlpack/$(basename "$pack")
+	rank=1
+	while [ "$rank" -lt "$tp" ]; do
+		peer=$(dirname "$pack")/$(basename "$pack" | sed "s/rank00/rank$(printf %02d "$rank")/")
+		ln -sfn "$peer" "$out/controlpack/$(basename "$peer")"
+		rank=$((rank + 1))
+	done
+fi
 mkdir -p "$out/metal" "$out/exact" "$out/compare"
 ln -sfn "$reference" "$out/ref"
 cd "$root"
@@ -56,8 +71,10 @@ for control in $controls; do
 	rm -f "$control_pack"
 done
 set +f
-$run --pack "$pack" --mode ladder --batches "$batches" --new-tokens 128 --repeats 3 --out "$out/metal" > "$out/metal_ladder.log"
-$run --pack "$pack" --mode ladder --batches "$batches" --new-tokens 128 --repeats 1 --exact-rows --out "$out/exact" > "$out/exact_ladder.log"
+if [ "$tp" = 1 ]; then
+	$run --pack "$pack" --mode ladder --batches "$batches" --new-tokens 128 --repeats 3 --out "$out/metal" > "$out/metal_ladder.log"
+	$run --pack "$pack" --mode ladder --batches "$batches" --new-tokens 128 --repeats 1 --exact-rows --out "$out/exact" > "$out/exact_ladder.log"
+fi
 rm -f "$out/compare/compare.jsonl"
 for name in $(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in json.load(open(sys.argv[1]))["prompts"]))' "$prompts"); do
 	split=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["prefill_positions"])' "$out/metal/$name.metal.json")
@@ -79,8 +96,10 @@ for name in $(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in 
 		done
 	fi
 done
-$run --pack "$pack" --mode bench --out "$out/metal" --new-tokens 256 --prefill-rows 2048 --repeats 3 ${bench_prompt:+--bench-prompt "$bench_prompt"} > "$out/metal_bench.log"
+if [ "$tp" = 1 ]; then
+	$run --pack "$pack" --mode bench --out "$out/metal" --new-tokens 256 --prefill-rows 2048 --repeats 3 ${bench_prompt:+--bench-prompt "$bench_prompt"} > "$out/metal_bench.log"
+fi
 if [ "$spec" = 1 ]; then
 	$run --pack "$pack" --spec-prompts "$spec_prompts" --mode spec --new-tokens 256 --repeats 3 --draft-max 31 --out "$out/metal" > "$out/metal_spec.log"
 fi
-python3 -I tools/metal_gate_summary.py --out "$out" --revision "$revision" --prompts "$prompts"
+python3 -I tools/metal_gate_summary.py --out "$out" --revision "$revision" --prompts "$prompts" --tp-degree "$tp"
