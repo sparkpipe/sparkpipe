@@ -965,7 +965,7 @@ static void TestScenarioStreamedPrefillDefers(const SparkModelResidentDeployment
 	SparkModelServingLane lane;
 	uint32_t prompt[11] = {61u,62u,63u,64u,65u,66u,67u,68u,69u,70u,71u};
 	uint32_t other[3] = {81u,82u,83u};
-	uint32_t index,deferred_rows = 0u,deferred_publish = 0u,deferred_shared = 0u,final_seen = 0u,final_index = 0u,interleaved = 0u,first_index = UINT32_MAX;
+	uint32_t index,deferred_rows = 0u,deferred_publish = 0u,deferred_stateful = 0u,deferred_shared = 0u,final_seen = 0u,final_index = 0u,interleaved = 0u,first_index = UINT32_MAX;
 	streamed.streamed_prefill_quantum = 4u;
 	streamed.streamed_prefill_min_tokens = 8u;
 	MockResidentClientReset();
@@ -986,6 +986,7 @@ static void TestScenarioStreamedPrefillDefers(const SparkModelResidentDeployment
 			first_index = first_index == UINT32_MAX ? index : first_index;
 			deferred_rows += lane.context_token_count - (uint32_t)lane.sequence_position;
 			deferred_publish += (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u ? 1u : 0u;
+			deferred_stateful += (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u && (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS) == 0u ? 1u : 0u;
 			continue;
 		}
 		if ( lane.request_id == 1u && lane.sequence_position == 8u && final_seen == 0u )
@@ -1001,7 +1002,7 @@ static void TestScenarioStreamedPrefillDefers(const SparkModelResidentDeployment
 			deferred_shared++;
 	}
 	CHECK(deferred_rows == 8u,"streamed prefill: positions 0..8 go out as deferred waves (the last quantum boundary before the prompt end)");
-	CHECK(deferred_publish == 0u,"streamed prefill: deferred waves publish nothing, since their pages are written later by the streamed prefill");
+	CHECK(deferred_publish != 0u && deferred_stateful == 0u,"streamed prefill: deferred waves seal and publish their blocks without state (the streamed prefill writes the pages before any other request may run)");
 	CHECK(deferred_shared == 0u && interleaved == 0u,"streamed prefill: no other request's rows ride in or between the deferred waves");
 	CHECK(final_seen != 0u && final_index > first_index,"streamed prefill: the final wave runs normally after the deferred ones");
 	SparkModelBatchEngineDestroy(engine);

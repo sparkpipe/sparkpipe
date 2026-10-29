@@ -53,6 +53,8 @@ typedef struct SparkStageServingState
 	uint64_t state_memory_bytes;
 	char *device_backend_path;
 	char *device_local_host;
+	uint32_t saves_held;
+	uint32_t streamed_failed;
 	char *streamed_partner_pack;
 	char *streamed_fabric_device;
 	char *streamed_pair_device;
@@ -1558,6 +1560,12 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	continuity.bound = bound;
 	continuity.sequence_ids = sequence_ids;
 	continuity.next_positions = next_positions;
+	if ( state->streamed_failed != 0u )
+	{
+		fprintf(stderr, "%s adapter: submit refused: a streamed prefill failed and left published blocks without KV; restart the lane with its KV wiped\n",
+			state->model->module_tag);
+		return SPARK_STATUS_INTERNAL_ERROR;
+	}
 	status = SparkStageModuleIndexSetClaimAndPrepare(state->lane_states, SPARK_STAGE_SERVING_MAX_LANES,
 		row_slots, active, StageServingPrepareContinuity, &continuity);
 	if ( status != SPARK_STATUS_OK )
@@ -1588,6 +1596,11 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		status = SparkStageRunnerSubmit(&state->runner, &dispatch);
 	}
 	marks[2] = StageServingNowNs();
+	if ( status == SPARK_STATUS_OK && (dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) != 0u && state->saves_held == 0u )
+	{
+		status = SparkStageKvBindingHoldSaves(&state->kv, 1u);
+		state->saves_held = status == SPARK_STATUS_OK ? 1u : 0u;
+	}
 	if ( status == SPARK_STATUS_OK && (dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u )
 		status = SparkStageKvBindingRecurrentCapture(&state->kv, row_slots, active, stream);
 	marks[3] = StageServingNowNs();
@@ -1617,6 +1630,17 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	if ( status == SPARK_STATUS_OK && StageServingTapOpen(state) != 0u && state->tap_full == 0u )
 		StageServingTapEmit(state, submission, rows, active, steps, verify != 0u ? kept : 0);
 	finished = StageServingFinish(state, active, row_slots, bound, sequence_ids, next_positions, steps - 1u, verify, status);
+	if ( state->saves_held != 0u && (dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u )
+	{
+		if ( status == SPARK_STATUS_OK && finished == SPARK_STATUS_OK && SparkStageKvBindingHoldSaves(&state->kv, 0u) == SPARK_STATUS_OK )
+			state->saves_held = 0u;
+		else
+		{
+			state->streamed_failed = 1u;
+			fprintf(stderr, "%s adapter: the wave after deferred prefill tokens failed status=%d; their published blocks hold no KV, so this lane refuses work until it restarts with its KV wiped\n",
+				state->model->module_tag, (int)(status != SPARK_STATUS_OK ? status : finished));
+		}
+	}
 	marks[5] = StageServingNowNs();
 	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
 		StageServingWaveHost(state, marks);

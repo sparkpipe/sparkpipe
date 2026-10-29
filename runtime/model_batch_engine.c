@@ -2921,8 +2921,6 @@ static void SparkModelBatchInitializeLane(
 		lane->cache_prefix_token_count = request->cache_prefix_token_count;
 		lane->cache_prefix_identity = request->cache_prefix_identity;
 	}
-	if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && sequence_position < request->defer_end )
-		return;
 	if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && (context_token_count > sequence_position + 1u || engine->building_verify_frame != 0u) )
 	{
 		SparkModelBatchVerifyIdentities(engine,request,request_slot,lane);
@@ -2948,7 +2946,8 @@ static void SparkModelBatchInitializeLane(
 	}
 	SparkModelBatchDigestTokens(&publish_context,&tokens[digested],publish_token_count - digested);
 	lane->flags |= SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
-	if ( SparkModelBatchPublishKeepsState(engine,request,publish_token_count,work_kind) == 0u )
+	if ( SparkModelBatchPublishKeepsState(engine,request,publish_token_count,work_kind) == 0u ||
+		(work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && sequence_position < request->defer_end) )
 		lane->flags |= SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS |
 			(work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED : 0u);
 	lane->cache_publish_token_count = publish_token_count;

@@ -2711,6 +2711,22 @@ static void *SparkStageKvBindingCompletionMain(void *context)
 	return(0);
 }
 
+SparkStatus SparkStageKvBindingHoldSaves(SparkStageKvBinding *binding,uint32_t hold)
+{
+	SparkStatus status;
+	uint64_t held;
+	if ( binding == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkStageKvBindingLock(binding,&held);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	binding->save_held = hold != 0u ? 1u : 0u;
+	if ( binding->save_held == 0u )
+		(void)pthread_cond_broadcast(&binding->save_ready);
+	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_SAVE,held);
+	return(SPARK_STATUS_OK);
+}
+
 static void SparkStageKvBindingSaveOne(SparkStageKvBinding *binding,uint64_t *held)
 {
 	SparkKvPageCacheSaveWork work;
@@ -2766,7 +2782,7 @@ static void *SparkStageKvBindingSaveMain(void *context)
 	for (;;)
 	{
 		SparkStageKvBindingExpire(binding);
-		while ( binding->save_stop == 0u && (binding->page_cache.snapshot == 0 || SparkKvPageCacheSavePending(&binding->page_cache) == 0u) )
+		while ( binding->save_stop == 0u && (binding->page_cache.snapshot == 0 || SparkKvPageCacheSavePending(&binding->page_cache) == 0u || binding->save_held != 0u) )
 		{
 			(void)pthread_cond_broadcast(&binding->save_idle);
 			SparkStageKvBindingAccount(binding,SPARK_STAGE_KV_LOCK_SITE_SAVE,held);
