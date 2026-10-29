@@ -20,6 +20,7 @@
 
 #define SPARK_MODEL_BATCH_VERIFY_LANES 4u
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_LANES 2u
+#define SPARK_MODEL_BATCH_DEFER_POLL_NS UINT64_C(20000000)
 #define SPARK_MODEL_BATCH_REQUEST_FREE 0u
 #define SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL 1u
 #define SPARK_MODEL_BATCH_REQUEST_PREFILL_INFLIGHT 2u
@@ -2623,8 +2624,14 @@ static uint32_t SparkModelBatchSelectRequestPass(
 	{
 		slot = engine->scratch_request_order[index];
 		request = &engine->requests[slot];
-		if ( request->state != state || SparkModelBatchDeferHolds(engine,slot) != 0u )
+		if ( request->state != state )
 			continue;
+		if ( SparkModelBatchDeferHolds(engine,slot) != 0u )
+		{
+			if ( now_ns != 0u && (engine->next_progress_ns == 0u || engine->next_progress_ns > now_ns + SPARK_MODEL_BATCH_DEFER_POLL_NS) )
+				engine->next_progress_ns = now_ns + SPARK_MODEL_BATCH_DEFER_POLL_NS;
+			continue;
+		}
 		if ( request->busy_retry_not_before_ns != 0u && now_ns != 0u &&
 		     now_ns < request->busy_retry_not_before_ns )
 		{

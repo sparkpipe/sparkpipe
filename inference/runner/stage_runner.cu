@@ -286,7 +286,6 @@ typedef struct SparkStageRunnerState
 	uint32_t *positions;
 	uint32_t *token_ids_device;
 	uint32_t *deferred_tokens;
-	uint64_t deferred_sequence;
 	uint32_t deferred_capacity;
 	uint32_t deferred_count;
 	uint32_t deferred_first;
@@ -2131,34 +2130,34 @@ static SparkStatus StageRunnerDefer(SparkStageRunner *runner, SparkStageRunnerSt
 			dispatch->flags, dispatch->active_sequence_count);
 		return SPARK_STATUS_UNSUPPORTED;
 	}
-	if ( state->deferred_tokens == 0 )
-	{
-		state->deferred_capacity = state->max_context;
-		state->deferred_tokens = (uint32_t *)malloc((size_t)state->deferred_capacity * sizeof(uint32_t));
-		if ( state->deferred_tokens == 0 )
-			return SPARK_STATUS_CAPACITY_EXCEEDED;
-	}
 	if ( state->deferred_active == 0u )
 	{
 		state->deferred_active = 1u;
-		state->deferred_sequence = dispatch->sequence_id;
 		state->deferred_first = dispatch->host_positions[0];
 		state->deferred_count = 0u;
 		state->deferred_slot = dispatch->host_sequence_of_row[0];
 		state->deferred_state_target = dispatch->host_state_target[0];
 	}
-	if ( dispatch->sequence_id != state->deferred_sequence || dispatch->host_sequence_of_row[0] != state->deferred_slot ||
-		dispatch->host_state_target[0] != state->deferred_state_target )
+	if ( dispatch->host_sequence_of_row[0] != state->deferred_slot || dispatch->host_state_target[0] != state->deferred_state_target )
 	{
-		fprintf(stderr, "sparkpipe_stage_runner: deferred prefill refused: sequence %llu arrived while sequence %llu holds the deferred buffer\n",
-			(unsigned long long)dispatch->sequence_id, (unsigned long long)state->deferred_sequence);
+		fprintf(stderr, "sparkpipe_stage_runner: deferred prefill refused: slot %u arrived while slot %u holds %u deferred tokens\n",
+			dispatch->host_sequence_of_row[0], state->deferred_slot, state->deferred_count);
 		return SPARK_STATUS_BUSY;
 	}
 	if ( (uint64_t)state->deferred_count + rows > state->deferred_capacity )
 	{
-		fprintf(stderr, "sparkpipe_stage_runner: deferred prefill refused: %u + %u tokens exceed the %u-position context\n",
-			state->deferred_count, rows, state->deferred_capacity);
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
+		uint64_t capacity = state->deferred_capacity != 0u ? state->deferred_capacity : 65536u;
+		uint32_t *grown;
+		while ( capacity < (uint64_t)state->deferred_count + rows )
+			capacity *= 2u;
+		grown = capacity <= UINT32_MAX ? (uint32_t *)realloc(state->deferred_tokens, (size_t)capacity * sizeof(uint32_t)) : 0;
+		if ( grown == 0 )
+		{
+			fprintf(stderr, "sparkpipe_stage_runner: deferred prefill refused: %u + %u tokens do not fit in host memory\n", state->deferred_count, rows);
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		}
+		state->deferred_tokens = grown;
+		state->deferred_capacity = (uint32_t)capacity;
 	}
 	for ( row = 0u; row < rows; ++row )
 		if ( dispatch->host_positions[row] != state->deferred_first + state->deferred_count + row || dispatch->host_sequence_of_row[row] != state->deferred_slot )
@@ -2178,15 +2177,15 @@ static SparkStatus StageRunnerRunDeferred(SparkStageRunnerState *state, const Sp
 	SparkStatus status;
 	if ( state->deferred_active == 0u )
 		return SPARK_STATUS_OK;
-	if ( dispatch->sequence_id != state->deferred_sequence || dispatch->host_positions == 0 ||
+	if ( dispatch->host_positions == 0 || dispatch->host_sequence_of_row == 0 || dispatch->host_sequence_of_row[0] != state->deferred_slot ||
 		dispatch->host_positions[0] != state->deferred_first + state->deferred_count )
 	{
-		fprintf(stderr, "sparkpipe_stage_runner: submit refused: sequence %llu holds %u deferred prefill tokens and this wave does not continue it\n",
-			(unsigned long long)state->deferred_sequence, state->deferred_count);
+		fprintf(stderr, "sparkpipe_stage_runner: submit refused: slot %u holds %u deferred prefill tokens from position %u and this wave does not continue it\n",
+			state->deferred_slot, state->deferred_count, state->deferred_first);
 		return SPARK_STATUS_BUSY;
 	}
 	memset(&request, 0, sizeof(request));
-	request.sequence_id = state->deferred_sequence;
+	request.sequence_id = dispatch->sequence_id;
 	request.first_position = state->deferred_first;
 	request.token_count = state->deferred_count;
 	request.token_ids = state->deferred_tokens;
