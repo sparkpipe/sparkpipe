@@ -735,8 +735,18 @@ The BF16 checkpoint is 235 GB, so it runs as eight ranks
 80 heads at every degree, as the geometry does) with the packs paged from
 the SSD:
 
-    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 sh tools/metal_gates.sh laguna-s-2.1 \
-        PACKS/laguna.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh laguna-s-2.1 PACKS/laguna.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+
+The eight packs and their device state come to 258 GB on a 256 GB Studio,
+and every step reads every layer in the same order, so the page cache
+(about 166 GB beside 80 GB of wired memory) drops each page just before it
+is needed again: a decode step pages in about 130 GB at 8.8 GB/s, 15 s per
+token, while a 1,024-row prefill chunk reads the weights once for all its
+rows. `SPARK_GATE_DECODE=N` (`metal_stage_run --decode-positions N`) has
+the teacher passes decode only each prompt's last N positions and prefill
+the rest, and `SPARK_GATE_GREEDY` shortens greedy decoding, so a gate takes
+hours instead of days; the decode path is still exercised at every layer.
 
 The gate prompts are `qualification/metal/laguna/` (the Gemma set rendered
 with Laguna's full chat turn by `tools/laguna_reference.py gate-prompts`);

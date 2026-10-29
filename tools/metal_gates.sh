@@ -2,7 +2,7 @@
 set -eu
 
 if [ "$#" -ne 5 ]; then
-	echo "usage: [SPARK_GATE_TP=N [SPARK_GATE_STREAM=1]] $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|qwen3.8-flash|laguna-s-2.1 PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
+	echo "usage: [SPARK_GATE_TP=N [SPARK_GATE_STREAM=1]] [SPARK_GATE_DECODE=N] [SPARK_GATE_GREEDY=N] $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|qwen3.8-flash|laguna-s-2.1 PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
 	exit 2
 fi
 model=$1
@@ -19,7 +19,8 @@ case $model in
 	laguna-s-2.1) routed=0 prompt_dir=laguna vocab=100352 probe=attn_out layer=11;;
 	*) echo "unknown Metal model $model" >&2; exit 2;;
 esac
-greedy_tokens=${greedy_tokens:-128}
+greedy_tokens=${SPARK_GATE_GREEDY:-${greedy_tokens:-128}}
+teacher_flags=${SPARK_GATE_DECODE:+--decode-positions $SPARK_GATE_DECODE}
 bench_prompt=${bench_prompt:-}
 bench_long=${bench_long:-8192}
 spec=${spec:-1}
@@ -51,14 +52,14 @@ make -s build/test_device_contract_metal build/test_metal_bf16_convert build/tes
 ./build/test_metal_bf16_convert > "$out/bf16_convert.txt"
 ./build/test_metal_kernels "$out/kernels.json" > "$out/kernels.txt"
 ./build/device_bandwidth 16 "$pack" > "$out/bandwidth.json" 2> "$out/bandwidth.log"
-$run --pack "$pack" --mode teacher --out "$out/metal" --verify-pack > "$out/metal_teacher.log"
+$run --pack "$pack" --mode teacher --out "$out/metal" --verify-pack $teacher_flags > "$out/metal_teacher.log"
 controls="control:layers.$layer.$probe:swap-rows control_layers:layers.*.$probe:swap-rows control_rotate:layers.$layer.$probe:rotate-rows"
 pin=""
 if [ "$routed" = 1 ]; then
 	mkdir -p "$out/pinned" "$out/pinned64"
 	pin="--pin-routes $out/ref"
-	$run --pack "$pack" --mode teacher --out "$out/pinned" $pin > "$out/pinned_teacher.log"
-	$run --pack "$pack" --mode teacher --out "$out/pinned64" $pin --prefill-rows 64 > "$out/pinned64_teacher.log"
+	$run --pack "$pack" --mode teacher --out "$out/pinned" $pin $teacher_flags > "$out/pinned_teacher.log"
+	$run --pack "$pack" --mode teacher --out "$out/pinned64" $pin --prefill-rows 64 $teacher_flags > "$out/pinned64_teacher.log"
 	controls="$controls control_experts:layers.*.moe_w2:swap-rows"
 fi
 $run --pack "$pack" --mode greedy --out "$out/metal" --new-tokens "$greedy_tokens" > "$out/metal_greedy.log"
@@ -68,7 +69,7 @@ for control in $controls; do
 	rest=${control#*:}
 	mkdir -p "$out/$label"
 	python3 -I tools/pack_tensor_control.py --pack "$pack" --tensor "${rest%:*}" --corruption "${rest##*:}" --output "$control_pack" --receipt "$out/$label/control.json"
-	$run --pack "$control_pack" --mode teacher --out "$out/$label" $pin > "$out/${label}_teacher.log"
+	$run --pack "$control_pack" --mode teacher --out "$out/$label" $pin $teacher_flags > "$out/${label}_teacher.log"
 	rm -f "$control_pack"
 done
 set +f

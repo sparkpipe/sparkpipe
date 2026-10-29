@@ -54,6 +54,7 @@ typedef struct RunOptions
 	uint32_t tp_port;
 	uint32_t stream_weights;
 	uint32_t bench_long_tokens;
+	uint32_t decode_positions;
 } RunOptions;
 
 static const uint32_t run_frame_sizes[RUN_FRAME_SIZES] = { 1u, 2u, 4u, 8u, 16u, 32u, 64u };
@@ -94,7 +95,7 @@ static const SparkStageRunnerModelInterface *RunModel(const char *name, uint32_t
 static int Usage(const char *program)
 {
 	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|pairs|bench|ladder|spec --out DIR [--prefill-rows N] [--new-tokens N] "
-		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|qwen3.8-flash|gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|laguna-s-2.1] [--pin-routes DIR] [--exact-rows] [--tp 2|4|8, the pack named for rank 00] [--rank R [--tp-hosts H0,H1,...] [--tp-port P]: one rank process over TCP] [--stream-weights] [--bench-long-tokens N]\n",program);
+		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|qwen3.8-flash|gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|laguna-s-2.1] [--pin-routes DIR] [--exact-rows] [--tp 2|4|8, the pack named for rank 00] [--rank R [--tp-hosts H0,H1,...] [--tp-port P]: one rank process over TCP] [--stream-weights] [--bench-long-tokens N] [--decode-positions N, teacher: decode only the last N positions]\n",program);
 	return(2);
 }
 
@@ -166,6 +167,8 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 			options->tp_port = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--bench-long-tokens") == 0 )
 			options->bench_long_tokens = (uint32_t)strtoul(value,0,10);
+		else if ( strcmp(flag,"--decode-positions") == 0 )
+			options->decode_positions = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--prompt-tokens") == 0 )
 			options->prompt_tokens = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--batches") == 0 )
@@ -353,7 +356,8 @@ static int LoadPinnedRoutes(Session *session, const RunOptions *options, const S
 
 static int RunTeacher(Session *session, const RunOptions *options, const SparkTokenPrompt *prompt, uint32_t vocab)
 {
-	const uint32_t positions = prompt->count - 1u, prefill = (positions + 1u) / 2u;
+	const uint32_t positions = prompt->count - 1u;
+	const uint32_t prefill = options->decode_positions != 0u && options->decode_positions < positions ? positions - options->decode_positions : (positions + 1u) / 2u;
 	SparkDeviceStageRunnerResult result;
 	FILE *logits = OpenOut(options,prompt->name,".metal.logits","wb"), *json = OpenOut(options,prompt->name,".metal.json","w");
 	float *logprob = (float *)calloc(positions,sizeof(float));

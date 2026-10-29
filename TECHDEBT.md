@@ -1286,6 +1286,13 @@ Metal backend and the single-Studio stage are in
 - The kernel library builds with Metal 4.0 and its prefill GEMM uses the
   Metal 4 tensor operations, so it loads only on Apple family 10 GPUs (M5).
   Another Studio generation needs its own qualified kernel set.
+- A model larger than the Studio's memory (Laguna's eight TP8 packs on one
+  M5 Ultra) pages from the SSD, and the cyclic layer order defeats the
+  page cache: a decode step pages in about 130 GB, 15 s per token. Pinning
+  a fixed share of the layers resident (wired, or kept by `madvise`) and
+  streaming only the rest would read about the overflow per step; until
+  then a simulation decodes a sample of positions
+  (`--decode-positions`).
 - Routed FP4 experts (MXFP4 in MiMo V2.6 Flash, NVFP4 in Qwen 3.8 Flash)
   still take one GEMV per route in prefill, re-reading the expert for every
   row: MiMo prefills at about 50 tokens per second, and its gate's B64 ladder
