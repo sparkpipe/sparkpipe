@@ -111,6 +111,25 @@ static void KdaBuffers(K3LayerBuffers *b,uint32_t rank,const uint32_t *state_ind
 	b->kda_out_input = KDA_RANK_V;
 }
 
+static double KdaContributionRms(const uint16_t *want_device,const uint16_t *got_device,const uint16_t *before_device,uint64_t count)
+{
+	std::vector<uint16_t> want(count),got(count),before(count);
+	double squared = 0.0,error = 0.0;
+	KDA_CUDA(cudaMemcpy(want.data(),want_device,count * 2u,cudaMemcpyDeviceToHost));
+	KDA_CUDA(cudaMemcpy(got.data(),got_device,count * 2u,cudaMemcpyDeviceToHost));
+	KDA_CUDA(cudaMemcpy(before.data(),before_device,count * 2u,cudaMemcpyDeviceToHost));
+	for (uint64_t index = 0u; index < count; index++)
+	{
+		const double r = KdaHostFloat(want[index]),c = KdaHostFloat(got[index]),b = KdaHostFloat(before[index]);
+		if ( isfinite(r) && isfinite(c) )
+		{
+			squared += (r - b) * (r - b);
+			error += (r - c) * (r - c);
+		}
+	}
+	return sqrt(error / (squared > 0.0 ? squared : 1.0));
+}
+
 static void KdaNoExchange(void *context,void *stream,uint32_t phase,uint32_t shard)
 {
 	(void)context;
@@ -124,7 +143,7 @@ int main(void)
 	const uint32_t chunks = 4u,chunk_rows = KDA_ROWS / chunks;
 	const uint64_t slot_bytes = K3_KDA_RANK_STATE_SLOT_BYTES(KDA_RANK_HEADS,0u);
 	std::vector<K3LayerWeights> shards(KDA_SHARDS);
-	std::vector<K3StreamedKdaState> sequential_states(KDA_SHARDS),segmented_states(KDA_SHARDS);
+	std::vector<K3StreamedKdaState> sequential_states(KDA_SHARDS),segmented_states(KDA_SHARDS),single_states(KDA_SHARDS);
 	uint16_t *attn_norm = KdaAlloc<uint16_t>(K3_HIDDEN),*decay_down = KdaAlloc<uint16_t>((uint64_t)K3_KDA_KEY_DIM * K3_HIDDEN);
 	uint16_t *hidden = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * K3_HIDDEN),*partial = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * K3_HIDDEN);
 	uint16_t *scratch = KdaAlloc<uint16_t>((uint64_t)KDA_ROWS * K3_HIDDEN);
@@ -133,8 +152,8 @@ int main(void)
 	uint32_t *state_index = KdaAlloc<uint32_t>(1u),*row_begin = KdaAlloc<uint32_t>(2u),begin[2] = {0u,KDA_ROWS};
 	uint32_t *chunk_begin = KdaAlloc<uint32_t>(chunks + 1u),*chunk_slots = KdaAlloc<uint32_t>(chunks);
 	std::vector<uint32_t> chunk_begin_host(chunks + 1u),chunk_slots_host(chunks);
-	K3LayerBuffers sequential,segmented;
-	K3StreamedKdaExchange segments;
+	K3LayerBuffers sequential,segmented,single;
+	K3StreamedKdaExchange segments,single_chunk;
 	K3StreamedJoin join;
 	cudaStream_t stream;
 	for (uint32_t chunk = 0u; chunk <= chunks; chunk++)
@@ -180,6 +199,7 @@ int main(void)
 		w->kda_v_conv_weight = v_conv;
 		sequential_states[shard] = KdaState();
 		segmented_states[shard] = KdaState();
+		single_states[shard] = KdaState();
 	}
 	memset(&segments,0,sizeof(segments));
 	segments.node = 0u;
@@ -217,6 +237,16 @@ int main(void)
 	KdaCheck(K3StreamedKdaNode<LmMxfp4>(&segmented,shards.data(),segmented_states.data(),KDA_SHARDS,&segments,scratch,&join,0u,KDA_ROWS,48u,stream) == LM_LAUNCH_OK,
 		"the streamed KDA runs one node as four chunks");
 	KDA_CUDA(cudaStreamSynchronize(stream));
+	single_chunk = segments;
+	single_chunk.chunks = 1u;
+	single_chunk.chunk_row_begin = row_begin;
+	single_chunk.chunk_slots = state_index;
+	KdaBuffers(&single,0u,state_index,row_begin,0);
+	KDA_CUDA(cudaMemcpy(single.hidden_bf16,hidden,(uint64_t)KDA_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
+	KDA_CUDA(cudaMemcpy(single.attnres_partial_bf16,partial,(uint64_t)KDA_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
+	KdaCheck(K3StreamedKdaNode<LmMxfp4>(&single,shards.data(),single_states.data(),KDA_SHARDS,&single_chunk,scratch,&join,0u,KDA_ROWS,48u,stream) == LM_LAUNCH_OK,
+		"the streamed KDA runs one node as one chunk");
+	KDA_CUDA(cudaStreamSynchronize(stream));
 	{
 		std::vector<uint16_t> want((uint64_t)KDA_ROWS * K3_HIDDEN),got(want.size()),before(want.size());
 		std::vector<float> state_want(slot_bytes / 4u),state_got(state_want.size());
@@ -252,10 +282,12 @@ int main(void)
 		const double output_rms = sqrt(error / (squared > 0.0 ? squared : 1.0)),state_rms = sqrt(state_error / (state_squared > 0.0 ? state_squared : 1.0));
 		KdaCheck(nonfinite == 0u,"every output and state element is finite");
 		KdaCheck(squared > 0.0 && state_squared > 0.0,"the layer changes the residual and the recurrent state");
-		KdaCheck(output_rms <= 0.002,"four chunks, each with its own conv window seeded from the previous chunk's last rows and rerun from its joined incoming state, match the sequential layer within 0.2% of the attention contribution");
+		const double chunk_rms = KdaContributionRms(single.attnres_partial_bf16,segmented.attnres_partial_bf16,partial,(uint64_t)KDA_ROWS * K3_HIDDEN);
+		KdaCheck(chunk_rms <= 0.002,"four chunks, each with its own conv window seeded from the previous chunk's last rows and rerun from its joined incoming state, match the same node run as one chunk within 0.2% of the attention contribution");
+		KdaCheck(output_rms <= 0.005,"four chunks match the TP16-equivalent sequential layer (sixteen bf16-rounded output partials instead of one joined projection) within 0.5%");
 		KdaCheck(state_rms <= 1e-4,"the joined end state matches the sequential end state within 1e-4 relative RMS");
-		printf("%s segmented KDA (4 chunks) vs sequential: output relative RMS %.3g (worst %.4g), end state relative RMS %.3g, nonfinite %llu\n",
-			kda_failures == 0 ? "PASS" : "FAIL",output_rms,worst,state_rms,(unsigned long long)nonfinite);
+		printf("%s KDA as 4 chunks vs 1 chunk: relative RMS %.3g; vs TP16-equivalent sequential: %.3g (worst %.4g), end state relative RMS %.3g, nonfinite %llu\n",
+			kda_failures == 0 ? "PASS" : "FAIL",chunk_rms,output_rms,worst,state_rms,(unsigned long long)nonfinite);
 	}
 	return kda_failures != 0;
 }

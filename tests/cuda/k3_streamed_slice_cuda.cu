@@ -477,7 +477,31 @@ int main(void)
 			x->exchange = SlNodeExchange;
 			SL_CUDA(cudaStreamCreate(&n->stream));
 		}
+		K3LayerBuffers single;
+		K3StreamedKdaExchange single_x = sl_nodes[0].exchange;
+		K3StreamedKdaState *single_states = new K3StreamedKdaState[(uint64_t)SL_LAYERS * SL_SHARDS];
+		for (uint64_t index = 0u; index < (uint64_t)SL_LAYERS * SL_SHARDS; index++)
+		{
+			single_states[index].state_pool = SlAlloc<uint8_t>(SL_SLOT_BYTES);
+			single_states[index].q_window = SlAlloc<uint16_t>((uint64_t)SL_QK * K3_KDA_CONV_KERNEL);
+			single_states[index].k_window = SlAlloc<uint16_t>((uint64_t)SL_QK * K3_KDA_CONV_KERNEL);
+			single_states[index].v_window = SlAlloc<uint16_t>((uint64_t)SL_V * K3_KDA_CONV_KERNEL);
+		}
+		single_x.node = 0u;
+		single_x.nodes = 1u;
+		single_x.chunk_row_begin = row_begin;
+		single_x.tails = SlAlloc<uint16_t>((uint64_t)SL_SHARDS * SL_TAIL);
+		single_x.summaries = SlAlloc<uint8_t>((uint64_t)SL_SHARDS * 2u * SL_SLOT_BYTES);
+		single_x.zeros = SlAlloc<uint16_t>((uint64_t)SL_ROWS * SL_V);
+		single_x.scratch = SlAlloc<uint16_t>((uint64_t)SL_ROWS * SL_V);
+		SlBuffers(&single,0u,state_index,row_begin,SL_ROWS);
+		SL_CUDA(cudaMemcpy(single.hidden_bf16,hidden,(uint64_t)SL_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
 		SL_CUDA(cudaDeviceSynchronize());
+		pthread_barrier_init(&sl_node_barrier,0,1u);
+		SlCheck(K3StreamedSlice<LmMxfp4,K3GlobalKv,SL_MLA_HEADS>(&single,shard_weights.data(),single_states,SL_SHARDS,&single_x,0,&join,0u,SL_LAYERS,partial,
+			latent_accumulator,hidden_accumulator,SL_ROWS,SL_PACKED,48u,stream) == LM_LAUNCH_OK,"the node slice runs all rows as one node");
+		SL_CUDA(cudaStreamSynchronize(stream));
+		pthread_barrier_destroy(&sl_node_barrier);
 		pthread_barrier_init(&sl_node_barrier,0,SL_NODES);
 		{
 			pthread_t threads[SL_NODES];
@@ -488,7 +512,7 @@ int main(void)
 		}
 		for (uint32_t node = 0u; node < SL_NODES; node++)
 			SlCheck(sl_nodes[node].status == LM_LAUNCH_OK,"every node runs the two-layer slice for both passes");
-		SL_CUDA(cudaMemcpy(want.data(),streamed.hidden_bf16,want.size() * 2u,cudaMemcpyDeviceToHost));
+		SL_CUDA(cudaMemcpy(want.data(),single.hidden_bf16,want.size() * 2u,cudaMemcpyDeviceToHost));
 		SL_CUDA(cudaMemcpy(got.data(),gathered,got.size() * 2u,cudaMemcpyDeviceToHost));
 		for (uint64_t index = 0u; index < want.size(); index++)
 		{
@@ -503,8 +527,8 @@ int main(void)
 			error += (r - c) * (r - c);
 		}
 		SlCheck(nonfinite == 0u,"every node output element is finite");
-		SlCheck(sqrt(error / (squared > 0.0 ? squared : 1.0)) <= 0.002,"the slice on four nodes over two passes matches the one-device streamed slice within 0.2% relative RMS");
-		printf("%s streamed two-layer slice on %u nodes x %u passes vs one device: worst |diff| %.4g, relative RMS %.3g, nonfinite %llu\n",
+		SlCheck(sqrt(error / (squared > 0.0 ? squared : 1.0)) <= 0.002,"the slice on four nodes over two passes matches the same slice run as one node within 0.2% relative RMS");
+		printf("%s streamed two-layer slice on %u nodes x %u passes vs one node: worst |diff| %.4g, relative RMS %.3g, nonfinite %llu\n",
 			sl_failures == 0 ? "PASS" : "FAIL",SL_NODES,SL_PASSES,worst,sqrt(error / (squared > 0.0 ? squared : 1.0)),(unsigned long long)nonfinite);
 	}
 	return sl_failures != 0;
