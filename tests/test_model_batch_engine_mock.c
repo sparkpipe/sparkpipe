@@ -1008,6 +1008,45 @@ static void TestScenarioStreamedPrefillDefers(const SparkModelResidentDeployment
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioStreamedSpanBudget(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	SparkModelResidentDeployment streamed = *deployment;
+	SparkModelBatchEngineConfiguration configuration;
+	TestBatchState state;
+	SparkModelBatchEngine *engine = 0;
+	struct timespec start,now;
+	uint64_t elapsed_ns = 0u;
+	uint32_t prompt[104],index;
+	for (index=0u; index<104u; index++)
+		prompt[index] = 100u + index;
+	streamed.streamed_prefill_quantum = 4u;
+	streamed.streamed_prefill_min_tokens = 8u;
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	TestConfigure(&configuration,&streamed,&state,runtime_root,6u,8u,0u);
+	configuration.inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_MIN_INFLIGHT_BUDGET_NS;
+	CHECK(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_OK,"streamed span budget: connect");
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	MockResidentClientSetPrefillDelay(1500000u);
+	TestSubmitPrompt(engine,1u,692u,1u,prompt,104u);
+	clock_gettime(CLOCK_MONOTONIC,&start);
+	while ( state.total_terminals == 0u && elapsed_ns < UINT64_C(8000000000) )
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		(void)MockResidentClientDriveAll();
+		usleep(2000);
+		clock_gettime(CLOCK_MONOTONIC,&now);
+		elapsed_ns = (uint64_t)(now.tv_sec - start.tv_sec) * UINT64_C(1000000000) + (uint64_t)now.tv_nsec - (uint64_t)start.tv_nsec;
+	}
+	MockResidentClientSetPrefillDelay(0u);
+	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && elapsed_ns >= SPARK_MODEL_BATCH_ENGINE_MIN_INFLIGHT_BUDGET_NS,
+		"streamed span budget: the wave that runs a 100-token streamed span may stay in flight past the 1 s budget (it gets 10 ms per streamed token on top) and completes");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static uint32_t TestCoordinatorFrames(void)
 {
 	return(MockResidentClientCalls(0u,MOCK_CALL_SUBMIT) + MockResidentClientCalls(0u,MOCK_CALL_PREPARE) + MockResidentClientCalls(0u,MOCK_CALL_CONTINUE));
@@ -3374,6 +3413,7 @@ int main(void)
 	TestScenarioCanonicalPrefillChunks(&deployment,runtime_root);
 	TestScenarioSharedPrefillRows(&deployment,runtime_root);
 	TestScenarioStreamedPrefillDefers(&deployment,runtime_root);
+	TestScenarioStreamedSpanBudget(&deployment,runtime_root);
 	TestScenarioDecodeAfterPrefill(&deployment,runtime_root);
 	TestScenarioPartialCopyCapacity(&deployment,runtime_root);
 	TestScenarioSamplingValidation(&deployment,runtime_root);

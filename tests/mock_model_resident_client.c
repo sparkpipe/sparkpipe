@@ -108,6 +108,7 @@ static uint32_t mock_max_tokens_per_sequence;
 static uint32_t mock_script[MOCK_SCRIPT_TOKENS];
 static uint32_t mock_script_count;
 static uint32_t mock_step_delay_us;
+static uint32_t mock_prefill_delay_us;
 static uint32_t mock_verify_row_sevenths = 1u;
 static uint32_t mock_verify_submissions;
 static uint32_t mock_verify_rows;
@@ -593,6 +594,11 @@ static SparkStatus MockResidentClientEnqueue(
 		slot->ready_ns = MockResidentClientNowNs() + us * 1000u;
 		slot->service_ns = us * 1000u;
 	}
+	if ( mock_prefill_delay_us != 0u && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER) == 0u )
+	{
+		slot->ready_ns = MockResidentClientNowNs() + (uint64_t)mock_prefill_delay_us * 1000u;
+		slot->service_ns = (uint64_t)mock_prefill_delay_us * 1000u;
+	}
 	slot->committed = kind == MOCK_CALL_CONTINUE || kind == MOCK_CALL_SUBMIT;
 	slot->requires_decision = kind == MOCK_CALL_PREPARE;
 	client->last_submission_id = submission->submission_id;
@@ -855,6 +861,11 @@ static void MockScriptCompletion(const MockInflight *saved,SparkModelServingComp
 void MockResidentClientSetStepDelay(uint32_t microseconds)
 {
 	mock_step_delay_us = microseconds;
+}
+
+void MockResidentClientSetPrefillDelay(uint32_t microseconds)
+{
+	mock_prefill_delay_us = microseconds;
 }
 
 void MockResidentClientSetVerifyRowCost(uint32_t sevenths)

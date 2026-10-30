@@ -3749,6 +3749,15 @@ static uint32_t SparkModelBatchChooseWorkKind(
 	return(SparkModelBatchSchedulerChooseWorkKind(available_by_kind,minimum_by_kind,engine->admission_open,engine->inflight_submission_count,engine->submission_capacity,&engine->next_work_kind,engine->work_kind_bypass_counts));
 }
 
+static uint64_t SparkModelBatchInflightBudget(
+	const SparkModelBatchEngine *engine,
+	const SparkModelBatchRequestState *request)
+{
+	if ( request->defer_end == 0u || request->computed_prompt_token_count > request->defer_end )
+		return(engine->inflight_budget_ns);
+	return(engine->inflight_budget_ns + (uint64_t)request->defer_end * SPARK_MODEL_BATCH_ENGINE_STREAMED_INFLIGHT_NS_PER_TOKEN);
+}
+
 static void SparkModelBatchExpireStalledRequests(
 	SparkModelBatchEngine *engine)
 {
@@ -3770,7 +3779,7 @@ static void SparkModelBatchExpireStalledRequests(
 			engine->requests[index].inflight_since_ns = now;
 		else if ( engine->requests[index].expired == 0u &&
 		          now - engine->requests[index].inflight_since_ns >
-		          engine->inflight_budget_ns )
+		          SparkModelBatchInflightBudget(engine,&engine->requests[index]) )
 		{
 			fprintf(stderr,
 			    "batch request expired id=%llu state=%u; the client gets BUSY now, the slot is released when its in-flight submission completes\n",
@@ -4265,13 +4274,13 @@ uint64_t SparkModelBatchEngineNextProgressNs(
 	if ( engine->failed_status != SPARK_STATUS_OK )
 		return(0u);
 	deadline = engine->next_progress_ns;
-	budget = engine->inflight_budget_ns;
 	for (index=0u; index<engine->request_capacity; index++)
 	{
 		const SparkModelBatchRequestState *request = &engine->requests[index];
 		if ( request->state != SPARK_MODEL_BATCH_REQUEST_PREFILL_INFLIGHT &&
 		     request->state != SPARK_MODEL_BATCH_REQUEST_DECODE_INFLIGHT )
 			continue;
+		budget = SparkModelBatchInflightBudget(engine,request);
 		candidate = budget < UINT64_MAX - request->inflight_since_ns ? request->inflight_since_ns + budget + 1u : UINT64_MAX;
 		if ( deadline == 0u || candidate < deadline )
 			deadline = candidate;
