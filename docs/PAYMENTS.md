@@ -122,8 +122,10 @@ that cannot be sent is an error on the page; a receipt that cannot be sent
 is logged.
 
 The VPS's rspamd signs that mail with DKIM for sparkpipe.ai, selector
-`s202608` (`/etc/rspamd/local.d/dkim_signing.conf`, key
-`/var/lib/rspamd/dkim/sparkpipe.ai.s202608.key`). Its public key is the
+`s202608` (`deployment/vps/rspamd-dkim_signing.conf`, installed as
+`/etc/rspamd/local.d/dkim_signing.conf`; key
+`/var/lib/rspamd/dkim/sparkpipe.ai.s202608.key`), and for hyor.io with
+selector `s202610`. Its public key is the
 TXT record `s202608._domainkey.sparkpipe.ai` at the domain's DNS host
 (GoDaddy), and rspamd signs only while the two match (`check_pubkey`).
 `sign_local = true` signs mail submitted from the VPS itself, as the
@@ -164,13 +166,15 @@ sudo install -m 640 -g sparkpipe-pay deployment/vps/sparkpipe-pay.env.example /e
 sudo install -m 640 -g sparkpipe-pay /dev/null /etc/sparkpipe-pay/client_secret
 sudo install -m 644 deployment/vps/sparkpipe-pay.service /etc/systemd/system/
 sudo install -m 644 deployment/vps/sparkpipe-pay.conf /etc/apache2/sparkpipe/
+sudo install -m 644 deployment/vps/sparkpipe-ai-ssl.conf /etc/apache2/sites-available/000-default-le-ssl.conf
+sudo install -m 644 deployment/vps/rspamd-dkim_signing.conf /etc/rspamd/local.d/dkim_signing.conf
 ```
 
 Fill `COINPAYMENTS_CLIENT_ID` in `/etc/sparkpipe-pay/env` and put the
 client secret into `/etc/sparkpipe-pay/client_secret` by copying a file,
-never on a command line. Include `sparkpipe-pay.conf` in the port-443
-virtual host beside the other `deployment/vps` includes; `mod_proxy_http`
-must be on. Copy `site/` to `/var/www/html` as usual, including
+never on a command line. `sparkpipe-ai-ssl.conf` is sparkpipe.ai's port-443
+virtual host and includes `sparkpipe-pay.conf` beside the other
+`deployment/vps` includes; `mod_proxy_http` must be on. Copy `site/` to `/var/www/html` as usual, including
 `site/terms/`: the acceptance names `https://sparkpipe.ai/terms/hourly-ko.md`
 and `hourly-en.md`, and the service hashes the copies under
 `/var/www/html/terms`. Then:
@@ -179,11 +183,31 @@ and `hourly-en.md`, and the service hashes the copies under
 sudo systemctl daemon-reload
 sudo systemctl enable --now sparkpipe-pay
 sudo apachectl configtest && sudo systemctl reload apache2
+sudo rspamadm configtest && sudo systemctl reload rspamd
 curl -s https://sparkpipe.ai/pay/api/health
 ```
 
 The service needs Python 3.8 or later and nothing outside its standard
 library.
+
+## Deploying a change
+
+Only what is merged to `main` goes to the VPS: commit to a PR, run the
+tests, merge, then deploy `main`. Pages, the service and the host
+configuration in `deployment/vps` all go the same way; nothing is edited
+on the host alone.
+
+```sh
+git fetch origin main
+git archive --format=tar.gz -o pay-main.tgz origin/main site tools/sparkpipe_pay.py deployment/vps
+```
+
+On the VPS, back up `/var/www/html`, `/opt/sparkpipe-pay/sparkpipe_pay.py`
+and any configuration file being replaced, copy `site/.` over
+`/var/www/html`, install the service and changed configuration as in the
+install steps, check the configuration, then restart `sparkpipe-pay` and
+reload Apache or rspamd. The live pages, the service and the configuration
+must then match `origin/main` byte for byte.
 
 ## Operating it
 
