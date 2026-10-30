@@ -180,6 +180,7 @@ struct SparkK3ModelState
 	void *layer_collective_context;
 	SparkStageRunnerStreamedPrefillConfig streamed_config;
 	K3Streamed *streamed;
+	char *rank_pack_path;
 };
 
 static void K3ModelFail(SparkK3ModelState *state)
@@ -827,6 +828,7 @@ static void K3ModelClose(void *model)
 	cudaFree(state->dense_row_offset);
 	cudaFree(state->dense_tile_prefix);
 	K3StreamedDestroy(state->streamed);
+	free(state->rank_pack_path);
 	if ( state->dispatch.buffers != 0 )
 		SparkK3DispatchDestroy(&state->dispatch);
 	SparkK3ModuleDestroy(&state->module);
@@ -855,6 +857,8 @@ static SparkStatus K3ModelOpen(const SparkStageRunnerModelOpen *request, void **
 	state->layer_collective_override = configuration->layer_collective_override;
 	state->layer_collective_context = configuration->layer_collective_context;
 	state->streamed_config = configuration->streamed_prefill;
+	if ( state->streamed_config.node_rows != 0u && (configuration->rank_pack_path == 0 || (state->rank_pack_path = strdup(configuration->rank_pack_path)) == 0) )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->kv_page_bytes = configuration->kv_page_bytes != 0u ? configuration->kv_page_bytes :
 		K3GlobalKv::kPageBytes / (configuration->tp_degree > 1u ? configuration->tp_degree : 1u);
 	for ( pool_index = 0u; pool_index < K3_RUNNER_TP_CONTEXT_POOL_DEPTH; ++pool_index )
@@ -984,7 +988,7 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 		uint32_t vocab_rows = 0u;
 		SparkStatus status = K3ModelEntry(state, "model.embed_tokens.weight", &vocab_offset, &vocab_bytes, &vocab_rows);
 		if ( status == SPARK_STATUS_OK )
-			status = K3StreamedCreate(&state->streamed_config, &state->dispatch, &state->module, lazy_pack, state->tp_rank, vocab_offset, vocab_bytes, vocab_rows,
+			status = K3StreamedCreate(&state->streamed_config, &state->dispatch, &state->module, state->rank_pack_path, lazy_pack, state->tp_rank, vocab_offset, vocab_bytes, vocab_rows,
 				&state->streamed);
 		if ( status != SPARK_STATUS_OK )
 			return status;

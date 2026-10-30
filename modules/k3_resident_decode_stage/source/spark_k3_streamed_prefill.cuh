@@ -240,6 +240,7 @@ struct K3Streamed
 	uint32_t opened;
 	uint64_t key_capacity;
 	int partner_fd;
+	int own_fd;
 	const uint8_t *pool;
 	uint8_t *region;
 	uint64_t region_bytes;
@@ -308,18 +309,34 @@ static SparkStatus K3StreamedCopyTensor(const K3Streamed *s, uint64_t start, uin
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus K3StreamedPread(int fd, uint64_t pack_offset, uint64_t bytes, uint8_t *destination)
+{
+	uint64_t done = 0u;
+	while ( done < bytes )
+	{
+		const ssize_t got = pread(fd, destination + done, (size_t)(bytes - done < (1ull << 30) ? bytes - done : (1ull << 30)), (off_t)(pack_offset + done));
+		if ( got <= 0 )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		done += (uint64_t)got;
+	}
+	(void)posix_fadvise(fd, (off_t)pack_offset, (off_t)bytes, POSIX_FADV_DONTNEED);
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus K3StreamedReadOwn(void *context, uint64_t pack_offset, uint64_t bytes, uint8_t *destination)
 {
 	const K3Streamed *s = (const K3Streamed *)context;
 	const uint64_t base = s->module->pack.payload_base;
 	uint32_t layer, index;
 	SparkStatus status = SPARK_STATUS_OK;
-	if ( s->pool == 0 || pack_offset + bytes > s->module->pack.file_bytes )
+	if ( pack_offset + bytes > s->module->pack.file_bytes )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for (layer = 0u; layer < K3_LAYERS; layer++)
 		if ( s->ranges[layer].experts.bytes != 0u && pack_offset >= s->ranges[layer].experts.offset &&
 			pack_offset + bytes <= s->ranges[layer].experts.offset + s->ranges[layer].experts.bytes )
 		{
+			if ( s->pool == 0 )
+				return K3StreamedPread(s->own_fd, pack_offset, bytes, destination);
 			if ( cudaMemcpy(destination, s->pool + pack_offset, (size_t)bytes, cudaMemcpyDefault) != cudaSuccess )
 				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 			return SPARK_STATUS_OK;
@@ -342,16 +359,7 @@ static SparkStatus K3StreamedReadOwn(void *context, uint64_t pack_offset, uint64
 static SparkStatus K3StreamedReadPartner(void *context, uint64_t pack_offset, uint64_t bytes, uint8_t *destination)
 {
 	const K3Streamed *s = (const K3Streamed *)context;
-	uint64_t done = 0u;
-	while ( done < bytes )
-	{
-		const ssize_t got = pread(s->partner_fd, destination + done, (size_t)(bytes - done < (1ull << 30) ? bytes - done : (1ull << 30)), (off_t)(pack_offset + done));
-		if ( got <= 0 )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		done += (uint64_t)got;
-	}
-	(void)posix_fadvise(s->partner_fd, (off_t)pack_offset, (off_t)bytes, POSIX_FADV_DONTNEED);
-	return SPARK_STATUS_OK;
+	return K3StreamedPread(s->partner_fd, pack_offset, bytes, destination);
 }
 
 static SparkStatus K3StreamedGather(void *context, const void *mine, void *all, uint64_t bytes_per_rank)
@@ -384,6 +392,8 @@ static void K3StreamedDestroy(K3Streamed *s)
 	}
 	if ( s->partner_fd >= 0 )
 		close(s->partner_fd);
+	if ( s->own_fd >= 0 )
+		close(s->own_fd);
 	for (index = 0u; index < 2u; index++)
 		if ( s->slot_done[index] != 0 )
 			(void)cudaEventDestroy(s->slot_done[index]);
@@ -565,7 +575,7 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 }
 
 static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig *config, SparkK3Dispatch *dispatch, const SparkK3ModuleState *module,
-	SparkWeightdLazyPack *lazy_pack, uint32_t rank, uint64_t vocab_offset, uint64_t vocab_bytes, uint32_t vocab_rows, K3Streamed **out)
+	const char *own_pack_path, SparkWeightdLazyPack *lazy_pack, uint32_t rank, uint64_t vocab_offset, uint64_t vocab_bytes, uint32_t vocab_rows, K3Streamed **out)
 {
 	K3Streamed *s;
 	uint64_t dense_capacity = vocab_bytes, expert_capacity = 0u;
@@ -590,6 +600,7 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 	s = new K3Streamed;
 	memset(s, 0, sizeof(*s));
 	s->partner_fd = -1;
+	s->own_fd = -1;
 	s->config = *config;
 	s->dispatch = dispatch;
 	s->module = module;
@@ -632,7 +643,8 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 	s->window.config.dense_capacity = dense_capacity;
 	s->window.config.expert_capacity = expert_capacity;
 	s->partner_fd = open(config->partner_pack_path, O_RDONLY | O_CLOEXEC);
-	status = s->partner_fd >= 0 ? K3StreamedBuffers(s) : SPARK_STATUS_IO_ERROR;
+	s->own_fd = own_pack_path != 0 ? open(own_pack_path, O_RDONLY | O_CLOEXEC) : -1;
+	status = s->partner_fd >= 0 && s->own_fd >= 0 ? K3StreamedBuffers(s) : SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK && (cudaStreamCreateWithFlags(&s->gather_stream, cudaStreamNonBlocking) != cudaSuccess ||
 		cudaEventCreateWithFlags(&s->slot_done[0], cudaEventDisableTiming) != cudaSuccess ||
 		cudaEventCreateWithFlags(&s->slot_done[1], cudaEventDisableTiming) != cudaSuccess ||
@@ -640,7 +652,8 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 		status = SPARK_STATUS_IO_ERROR;
 	if ( status != SPARK_STATUS_OK )
 	{
-		fprintf(stderr, "sparkpipe_k3: streamed prefill resources failed status=%d (partner pack %s)\n", (int)status, config->partner_pack_path);
+		fprintf(stderr, "sparkpipe_k3: streamed prefill resources failed status=%d (own pack %s, partner pack %s)\n", (int)status,
+			own_pack_path != 0 ? own_pack_path : "(none)", config->partner_pack_path);
 		K3StreamedDestroy(s);
 		return status;
 	}
@@ -665,12 +678,13 @@ static SparkStatus K3StreamedOpen(K3Streamed *s, const SparkStageRunnerServices 
 	status = s->lazy_pack != 0 && s->lazy_pack->map != 0 ? SparkWeightdMapResident(s->lazy_pack->map, SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS, &resident) : SPARK_STATUS_INVALID_ARGUMENT;
 	if ( status == SPARK_STATUS_OK && resident != 0u )
 		status = SparkWeightdMapPool(s->lazy_pack->map, &pool);
-	if ( status != SPARK_STATUS_OK || resident == 0u || pool == 0 )
+	if ( status != SPARK_STATUS_OK )
 	{
-		fprintf(stderr, "sparkpipe_k3: streamed prefill reads the own shard from the resident pool, which is not present (status=%d resident=%u)\n", (int)status, resident);
-		SPARK_FAIL(status != SPARK_STATUS_OK ? status : SPARK_STATUS_UNSUPPORTED);
+		fprintf(stderr, "sparkpipe_k3: streamed prefill cannot ask weightd whether the own shard is resident (status=%d)\n", (int)status);
+		return status;
 	}
-	s->pool = (const uint8_t *)pool;
+	s->pool = resident != 0u ? (const uint8_t *)pool : 0;
+	fprintf(stderr, "sparkpipe_k3: streamed prefill reads the own shard's experts from %s\n", s->pool != 0 ? "the resident pool" : "the own pack on local NVMe");
 	memset(&stream_config, 0, sizeof(stream_config));
 	stream_config.rank = s->rank;
 	stream_config.ranks = K3_STREAMED_SHARDS;
@@ -752,7 +766,7 @@ static SparkStatus K3StreamedCheck(K3Streamed *s, int32_t launched, const char *
 static SparkStatus K3StreamedShard(K3Streamed *s, uint32_t layer, uint32_t shard, uint8_t *const *rank_base, const uint8_t *block)
 {
 	const K3LayerWeights *own = &s->dispatch->weights[layer];
-	if ( shard == s->rank )
+	if ( shard == s->rank && s->pool != 0 )
 		block = s->pool + s->ranges[layer].experts.offset;
 	if ( SparkK3ShardWeights(own, s->module->pack.payload_base, s->bound[layer], &s->ranges[layer], rank_base[shard], block, &s->shards[shard]) != SPARK_K3_DISPATCH_OK )
 	{
@@ -760,6 +774,15 @@ static SparkStatus K3StreamedShard(K3Streamed *s, uint32_t layer, uint32_t shard
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	}
 	return SPARK_STATUS_OK;
+}
+
+static SparkStatus K3StreamedOwnBlock(K3Streamed *s, uint32_t layer, uint32_t step, const uint8_t **block)
+{
+	const uint64_t half = s->ranges[layer].experts.bytes / 2u;
+	uint8_t *slot = s->region + s->window.expert_slot[step & 1u];
+	memcpy(slot, s->region + s->window.own_staging, (size_t)half);
+	*block = slot;
+	return K3StreamedPread(s->own_fd, s->ranges[layer].experts.offset + half, half, slot + half);
 }
 
 static SparkStatus K3StreamedLayer(K3Streamed *s, uint32_t layer, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
@@ -811,6 +834,10 @@ static SparkStatus K3StreamedLayer(K3Streamed *s, uint32_t layer, uint32_t rows,
 			}
 			if ( source >= K3_STREAMED_SHARDS || (source != s->rank && block == 0) )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			if ( source == s->rank && s->pool == 0 )
+				status = K3StreamedOwnBlock(s, layer, step, &block);
+			if ( status != SPARK_STATUS_OK )
+				return status;
 			status = K3StreamedShard(s, layer, source, rank_base, block);
 			if ( status == SPARK_STATUS_OK )
 				status = K3StreamedCheck(s, K3StreamedMoeShard<LmMxfp4>(&s->b, &s->shards[source], source, step == 0u ? 1u : 0u, K3_STREAMED_SHARDS, &s->join,
