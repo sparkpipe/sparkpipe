@@ -273,14 +273,13 @@ status; that ownership boundary remains a concrete item for the deeper review.
 
 ## HC site and skinny GEMV GPU regressions
 
-`make test-glm-hc-mix` runs the fused HC site kernel (`Glm5NextHcSiteKernel`:
-mix, Sinkhorn and pre-reduce in one eight-CTA cluster launch). Mixes are
-checked against an f64 host reference, bounded by 1e-5 of the L1 magnitude
-of the dot product, because the split over eight CTAs reassociates the sum.
-Sinkhorn, pre-reduce, collapsed and snapshot outputs must be bitwise equal to
-the frozen pre-fusion kernels fed the fused kernel's own mixes. It also times
-90 B1 sites against the frozen three-kernel sequence, with one reused weight
-matrix and with 90 distinct matrices.
+`tests/test_glm5_next_hc_site_cuda.py` runs the fused HC site kernel
+(`Glm5NextHcSiteKernel`: mix, Sinkhorn and pre-reduce in one eight-CTA cluster
+launch) on an sm_121 device. A cluster takes eight rows for prefill and one
+row for decode. Every output (mixes, pre, post, comb, collapsed and snapshot
+rows) must be bitwise equal between the two, at 1 to 2,049 rows including
+partial clusters. The f64 reference and the frozen pre-fusion comparison of
+the earlier `test-glm-hc-mix` target are gone.
 
 `make test-skinny-gemv` checks the decode GEMV (`inference/kernels/skinny.cuh`)
 against f64 references for every GLM 5.3 Flash TP16 dense BF16 projection

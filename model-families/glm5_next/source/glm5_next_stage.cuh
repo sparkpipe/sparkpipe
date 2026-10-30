@@ -84,6 +84,10 @@
 #define G5N_HC_CLUSTER 8u
 #define G5N_HC_SLICE (G5N_HC_FLAT / G5N_HC_CLUSTER)
 #define G5N_HC_PRE_SLICE (G5N_HIDDEN / G5N_HC_CLUSTER)
+#define G5N_HC_ROWS 8u
+#define G5N_POOL_BLOCK_POOLS 32u
+#define G5N_POOL_BLOCK_ROWS 16u
+#define G5N_POOL_ROWS_MIN 64u
 #define G5N_HC_VECTORS (G5N_HC_SLICE / 4u / LM_WARP_LANES)
 #define G5N_NO_ORDINAL 0xffffffffu
 
@@ -372,6 +376,135 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolScoreKernel(const uint
 		pool_scores[(uint64_t)row * local_stride + local] = total;
 }
 
+template<uint32_t THREADS, uint32_t DIM, uint32_t KPOOL, uint32_t HEADS, uint32_t POOLS, uint32_t ROWS>
+__global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolScoreRowsKernel(const uint16_t *__restrict__ query_bf16,
+	const uint16_t *__restrict__ head_weight_bf16, LmKvShardView index_cache, const uint32_t *__restrict__ sequence_of_row,
+	const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_positions, const float *__restrict__ compress_ape_f32,
+	uint32_t pools, uint32_t owner_rank, uint32_t owner_degree, uint32_t local_stride, float softmax_scale, float head_scale,
+	float *__restrict__ pool_scores, uint32_t rows)
+{
+	static_assert(THREADS == 8u * LM_WARP_LANES && DIM == 4u * LM_WARP_LANES, "the score tree replays an eight-warp block sum over 128 elements");
+	static_assert(HEADS % (THREADS / LM_WARP_LANES) == 0u, "every warp scores the same number of heads");
+	constexpr uint32_t WARPS = THREADS / LM_WARP_LANES, PER_WARP = HEADS / WARPS;
+	__shared__ float pool_key[POOLS][DIM];
+	__shared__ uint32_t pool_ready[POOLS];
+	__shared__ float contribution[POOLS][HEADS];
+	const uint32_t first_local = blockIdx.x * POOLS, first_row = blockIdx.y * ROWS, warp = threadIdx.x / LM_WARP_LANES;
+	const uint32_t lane = threadIdx.x % LM_WARP_LANES, part = lane / 8u, member = lane % 8u;
+	uint32_t cached = 0xffffffffu;
+	for ( uint32_t offset = 0u; offset < ROWS && first_row + offset < rows; ++offset )
+	{
+		const uint32_t row = first_row + offset, sequence = sequence_of_row[row];
+		if ( sequence != cached )
+		{
+			__syncthreads();
+			for ( uint32_t local = threadIdx.x; local < POOLS; local += THREADS )
+			{
+				const uint32_t pool = SparkGlm5NextIndexCpGlobalPool(first_local + local, owner_rank, owner_degree);
+				pool_ready[local] = first_local + local < local_stride && pool < pools && pool * KPOOL + KPOOL <= context_length[sequence] ? 1u : 0u;
+			}
+			__syncthreads();
+			for ( uint32_t item = threadIdx.x; item < POOLS * DIM; item += THREADS )
+			{
+				const uint32_t local = item / DIM, index = item % DIM, first = SparkGlm5NextIndexCpGlobalPool(first_local + local, owner_rank, owner_degree) * KPOOL;
+				float maximum = -INFINITY, sum = 0.0f, logits[KPOOL], mix[KPOOL], key = 0.0f;
+				uint32_t slot_in_pool, failed = 0u;
+				if ( pool_ready[local] == 0u )
+					continue;
+				for ( slot_in_pool = 0u; slot_in_pool < KPOOL && failed == 0u; ++slot_in_pool )
+				{
+					const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(index_cache, sequence, first + slot_in_pool, row, LM_KV_ACCESS_READ);
+					if ( slot == 0 )
+					{
+						failed = 1u;
+						break;
+					}
+					logits[slot_in_pool] = LmBf16ToFloat(slot[DIM + index]) + compress_ape_f32[slot_in_pool * DIM + index];
+					maximum = fmaxf(maximum, logits[slot_in_pool]);
+				}
+				if ( failed == 0u )
+				{
+					for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
+						if ( logits[slot_in_pool] != -INFINITY )
+							sum += __expf(logits[slot_in_pool] - maximum);
+					for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
+						mix[slot_in_pool] = logits[slot_in_pool] == -INFINITY ? 0.0f : __expf(logits[slot_in_pool] - maximum) / fmaxf(sum, 1.0e-20f);
+					for ( slot_in_pool = 0u; slot_in_pool < KPOOL && failed == 0u; ++slot_in_pool )
+					{
+						if ( mix[slot_in_pool] == 0.0f )
+							continue;
+						const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(index_cache, sequence, first + slot_in_pool, row, LM_KV_ACCESS_READ);
+						if ( slot == 0 )
+							failed = 1u;
+						else
+							key += mix[slot_in_pool] * LmBf16ToFloat(slot[index]);
+					}
+				}
+				if ( failed != 0u )
+					pool_ready[local] = 0u;
+				pool_key[local][index] = key;
+			}
+			__syncthreads();
+			cached = sequence;
+		}
+		const uint32_t context = context_length[sequence] < row_positions[row] + 1u ? context_length[sequence] : row_positions[row] + 1u;
+		float query[PER_WARP][4], weight[PER_WARP];
+		for ( uint32_t slot = 0u; slot < PER_WARP; ++slot )
+		{
+			const uint32_t head = warp + slot * WARPS;
+			for ( uint32_t k = 0u; k < 4u; ++k )
+				query[slot][k] = LmBf16ToFloat(query_bf16[((uint64_t)row * HEADS + head) * DIM + part * LM_WARP_LANES + member + 8u * k]);
+			weight[slot] = LmBf16ToFloat(head_weight_bf16[(uint64_t)row * HEADS + head]);
+		}
+		for ( uint32_t local = 0u; local < POOLS; ++local )
+		{
+			float key[4];
+			if ( pool_ready[local] == 0u )
+				continue;
+			for ( uint32_t k = 0u; k < 4u; ++k )
+				key[k] = pool_key[local][part * LM_WARP_LANES + member + 8u * k];
+			for ( uint32_t slot = 0u; slot < PER_WARP; ++slot )
+			{
+				float x[4], tree, score;
+				for ( uint32_t k = 0u; k < 4u; ++k )
+				{
+					x[k] = 0.0f;
+					x[k] += query[slot][k] * key[k];
+				}
+				tree = (x[0] + x[2]) + (x[1] + x[3]);
+				tree += __shfl_down_sync(0xffffffffu, tree, 4u, 8);
+				tree += __shfl_down_sync(0xffffffffu, tree, 2u, 8);
+				tree += __shfl_down_sync(0xffffffffu, tree, 1u, 8);
+				const float second = __shfl_sync(0xffffffffu, tree, 8u), third = __shfl_sync(0xffffffffu, tree, 16u), fourth = __shfl_sync(0xffffffffu, tree, 24u);
+				score = (((tree + 0.0f) + (third + 0.0f)) + ((second + 0.0f) + (fourth + 0.0f))) * softmax_scale;
+				if ( score < 0.0f )
+					score = 0.0f;
+				if ( lane == 0u )
+					contribution[local][warp + slot * WARPS] = score * weight[slot] * head_scale;
+			}
+		}
+		__syncthreads();
+		for ( uint32_t local = threadIdx.x; local < POOLS; local += THREADS )
+		{
+			const uint32_t pool = SparkGlm5NextIndexCpGlobalPool(first_local + local, owner_rank, owner_degree);
+			float total = 0.0f;
+			if ( first_local + local >= local_stride )
+				continue;
+			if ( pool >= pools || pool * KPOOL + KPOOL > context )
+			{
+				pool_scores[(uint64_t)row * local_stride + first_local + local] = -INFINITY;
+				continue;
+			}
+			if ( pool_ready[local] == 0u )
+				continue;
+			for ( uint32_t head = 0u; head < HEADS; ++head )
+				total += contribution[local][head];
+			pool_scores[(uint64_t)row * local_stride + first_local + local] = total;
+		}
+		__syncthreads();
+	}
+}
+
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolPermuteKernel(const float *__restrict__ gathered, float *__restrict__ pool_scores,
 	uint32_t pools, uint32_t local_stride, uint64_t peer_stride, uint32_t degree)
@@ -475,15 +608,16 @@ __global__ static void Glm5NextDenseOffsetsKernel(uint32_t *offsets, uint32_t ro
 	}
 }
 
-typedef struct Glm5NextHcShared
+template<uint32_t ROWS>
+struct __align__(16) Glm5NextHcShared
 {
-	float staged[G5N_HC_SLICE];
-	float partial[G5N_HC_CLUSTER][G5N_HC_MIX + 1u];
-	float mixes[G5N_HC_MIX + 1u];
+	uint16_t staged[ROWS][G5N_HC_SLICE];
+	float partial[ROWS][G5N_HC_CLUSTER][G5N_HC_MIX + 1u];
+	float mixes[ROWS][G5N_HC_MIX + 1u];
 	float reduction[G5N_THREADS / LM_WARP_LANES];
-	float pre[G5N_HC];
-	float post[G5N_HC];
-} Glm5NextHcShared;
+	float pre[ROWS][G5N_HC];
+	float post[ROWS][G5N_HC];
+};
 
 static __device__ __forceinline__ float Glm5NextHcRowSum(float value, uint32_t lane)
 {
@@ -547,79 +681,96 @@ static __device__ void Glm5NextHcCombWarp(const float *mixes, const float *scale
 		comb_out[cell] = value;
 }
 
-static __device__ float Glm5NextHcStage(Glm5NextHcShared *shared, const uint16_t *slice)
+template<uint32_t ROWS>
+static __device__ float Glm5NextHcStage(Glm5NextHcShared<ROWS> *shared, uint32_t row, const uint16_t *slice)
 {
 	float total = 0.0f;
 	for ( uint32_t element = threadIdx.x; element < G5N_HC_SLICE; element += G5N_THREADS )
 	{
-		const float value = LmBf16ToFloat(slice[element]);
-		shared->staged[element] = value;
+		const uint16_t raw = slice[element];
+		const float value = LmBf16ToFloat(raw);
+		shared->staged[row][element] = raw;
 		total += value * value;
 	}
 	return LmBlockSum<G5N_THREADS>(total, shared->reduction);
 }
 
-static __device__ void Glm5NextHcDot(Glm5NextHcShared *shared, const float *fn, uint32_t offset, uint32_t slice)
+template<uint32_t ROWS>
+static __device__ void Glm5NextHcDot(Glm5NextHcShared<ROWS> *shared, const float *fn, uint32_t offset, uint32_t slice, uint32_t live)
 {
 	const uint32_t warp = threadIdx.x / LM_WARP_LANES, lane = threadIdx.x % LM_WARP_LANES;
 	float4 weight[G5N_HC_VECTORS], value;
+	uint2 packed;
 	for ( uint32_t mix = warp; mix < G5N_HC_MIX; mix += G5N_THREADS / LM_WARP_LANES )
 	{
-		float accumulator = 0.0f;
 #pragma unroll
 		for ( uint32_t vector = 0u; vector < G5N_HC_VECTORS; vector++ )
 			weight[vector] = __ldcs((const float4 *)(fn + (uint64_t)mix * G5N_HC_FLAT + offset) + lane + vector * LM_WARP_LANES);
-#pragma unroll
-		for ( uint32_t vector = 0u; vector < G5N_HC_VECTORS; vector++ )
+		for ( uint32_t row = 0u; row < live; ++row )
 		{
-			value = ((const float4 *)shared->staged)[lane + vector * LM_WARP_LANES];
-			accumulator = fmaf(weight[vector].x, value.x, accumulator);
-			accumulator = fmaf(weight[vector].y, value.y, accumulator);
-			accumulator = fmaf(weight[vector].z, value.z, accumulator);
-			accumulator = fmaf(weight[vector].w, value.w, accumulator);
+			float accumulator = 0.0f;
+#pragma unroll
+			for ( uint32_t vector = 0u; vector < G5N_HC_VECTORS; vector++ )
+			{
+				packed = ((const uint2 *)shared->staged[row])[lane + vector * LM_WARP_LANES];
+				value.x = __uint_as_float(packed.x << 16u);
+				value.y = __uint_as_float(packed.x & 0xffff0000u);
+				value.z = __uint_as_float(packed.y << 16u);
+				value.w = __uint_as_float(packed.y & 0xffff0000u);
+				accumulator = fmaf(weight[vector].x, value.x, accumulator);
+				accumulator = fmaf(weight[vector].y, value.y, accumulator);
+				accumulator = fmaf(weight[vector].z, value.z, accumulator);
+				accumulator = fmaf(weight[vector].w, value.w, accumulator);
+			}
+			for ( uint32_t step = LM_WARP_LANES / 2u; step > 0u; step >>= 1u )
+				accumulator += __shfl_xor_sync(0xffffffffu, accumulator, step);
+			if ( lane == 0u )
+				shared->partial[row][slice][mix] = accumulator;
 		}
-		for ( uint32_t step = LM_WARP_LANES / 2u; step > 0u; step >>= 1u )
-			accumulator += __shfl_xor_sync(0xffffffffu, accumulator, step);
-		if ( lane == 0u )
-			shared->partial[slice][mix] = accumulator;
 	}
 }
 
-static __device__ void Glm5NextHcScatter(cooperative_groups::cluster_group &cluster, Glm5NextHcShared *shared, uint32_t slice)
+template<uint32_t ROWS>
+static __device__ void Glm5NextHcScatter(cooperative_groups::cluster_group &cluster, Glm5NextHcShared<ROWS> *shared, uint32_t slice, uint32_t live)
 {
-	for ( uint32_t index = threadIdx.x; index < G5N_HC_CLUSTER * (G5N_HC_MIX + 1u); index += G5N_THREADS )
+	for ( uint32_t index = threadIdx.x; index < live * G5N_HC_CLUSTER * (G5N_HC_MIX + 1u); index += G5N_THREADS )
 	{
-		const uint32_t rank = index / (G5N_HC_MIX + 1u), mix = index % (G5N_HC_MIX + 1u);
+		const uint32_t row = index / (G5N_HC_CLUSTER * (G5N_HC_MIX + 1u)), rank = index / (G5N_HC_MIX + 1u) % G5N_HC_CLUSTER;
+		const uint32_t mix = index % (G5N_HC_MIX + 1u);
 		if ( rank != slice )
-			cluster.map_shared_rank(shared->partial[slice], rank)[mix] = shared->partial[slice][mix];
+			cluster.map_shared_rank(shared->partial[row][slice], rank)[mix] = shared->partial[row][slice][mix];
 	}
 }
 
-static __device__ void Glm5NextHcFinish(Glm5NextHcShared *shared, const float *scale3, const float *base, float *mixes, float *pre, float *post, uint32_t slice)
+template<uint32_t ROWS>
+static __device__ void Glm5NextHcFinish(Glm5NextHcShared<ROWS> *shared, const float *scale3, const float *base, float *mixes, float *pre, float *post,
+	uint32_t slice, uint32_t live)
 {
-	if ( threadIdx.x <= G5N_HC_MIX )
+	const uint32_t warp = threadIdx.x / LM_WARP_LANES, lane = threadIdx.x % LM_WARP_LANES;
+	for ( uint32_t index = threadIdx.x; index < live * (G5N_HC_MIX + 1u); index += G5N_THREADS )
 	{
+		const uint32_t row = index / (G5N_HC_MIX + 1u), mix = index % (G5N_HC_MIX + 1u);
 		float total = 0.0f;
 		for ( uint32_t rank = 0u; rank < G5N_HC_CLUSTER; rank++ )
-			total += shared->partial[rank][threadIdx.x];
-		shared->mixes[threadIdx.x] = total;
+			total += shared->partial[row][rank][mix];
+		shared->mixes[row][mix] = total;
 	}
 	__syncthreads();
-	if ( threadIdx.x < LM_WARP_LANES )
+	if ( warp < live )
 	{
-		const float inverse = rsqrtf(shared->mixes[G5N_HC_MIX] / (float)G5N_HC_FLAT + G5N_EPS);
-		if ( threadIdx.x < G5N_HC_MIX )
+		const float inverse = rsqrtf(shared->mixes[warp][G5N_HC_MIX] / (float)G5N_HC_FLAT + G5N_EPS);
+		if ( lane < G5N_HC_MIX )
 		{
-			const float value = shared->mixes[threadIdx.x] * inverse;
-			shared->mixes[threadIdx.x] = value;
+			const float value = shared->mixes[warp][lane] * inverse;
+			shared->mixes[warp][lane] = value;
 			if ( slice == 0u )
-				mixes[threadIdx.x] = value;
+				mixes[(uint64_t)warp * G5N_HC_MIX + lane] = value;
 		}
 		__syncwarp();
-		Glm5NextHcGatesWarp(shared->mixes, scale3, base, shared->pre, slice == 0u ? post : shared->post);
+		Glm5NextHcGatesWarp(shared->mixes[warp], scale3, base, shared->pre[warp], slice == 0u ? post + (uint64_t)warp * G5N_HC : shared->post[warp]);
 		__syncwarp();
-		if ( slice == 0u && threadIdx.x < G5N_HC )
-			pre[threadIdx.x] = shared->pre[threadIdx.x];
+		if ( slice == 0u && lane < G5N_HC )
+			pre[(uint64_t)warp * G5N_HC + lane] = shared->pre[warp][lane];
 	}
 	__syncthreads();
 }
@@ -642,48 +793,58 @@ static __device__ void Glm5NextHcCollapse(const float *pre, const uint16_t *stre
 	}
 }
 
+template<uint32_t ROWS>
 __global__ void __cluster_dims__(G5N_HC_CLUSTER, 1, 1) __launch_bounds__(G5N_THREADS) Glm5NextHcSiteKernel(const uint16_t *__restrict__ streams_bf16,
 	const float *__restrict__ fn_f32, const float *__restrict__ scale3_f32, const float *__restrict__ base_f32, float *__restrict__ mixes_f32,
 	float *__restrict__ pre_f32, float *__restrict__ post_f32, float *__restrict__ comb_f32, uint16_t *__restrict__ collapsed_bf16,
-	uint16_t *__restrict__ snapshot_bf16)
+	uint16_t *__restrict__ snapshot_bf16, uint32_t rows)
 {
-	__shared__ Glm5NextHcShared shared;
+	__shared__ Glm5NextHcShared<ROWS> shared;
 	cooperative_groups::cluster_group cluster = cooperative_groups::this_cluster();
-	const uint32_t slice = cluster.block_rank(), row = blockIdx.x / G5N_HC_CLUSTER;
-	const uint16_t *streams = streams_bf16 + (uint64_t)row * G5N_HC_FLAT;
+	const uint32_t slice = cluster.block_rank(), first = blockIdx.x / G5N_HC_CLUSTER * ROWS, warp = threadIdx.x / LM_WARP_LANES;
+	const uint32_t live = rows - first < ROWS ? rows - first : ROWS;
+	const uint16_t *streams = streams_bf16 + (uint64_t)first * G5N_HC_FLAT;
 	float total;
 	asm volatile("barrier.cluster.arrive.relaxed.aligned;" ::: "memory");
 	if ( threadIdx.x % LM_WARP_LANES == 0u )
 		for ( uint32_t mix = threadIdx.x / LM_WARP_LANES; mix < G5N_HC_MIX; mix += G5N_THREADS / LM_WARP_LANES )
 			LmPrefetchL2(fn_f32 + (uint64_t)mix * G5N_HC_FLAT + slice * G5N_HC_SLICE, G5N_HC_SLICE * sizeof(float));
 	LmDependentWait();
-	total = Glm5NextHcStage(&shared, streams + slice * G5N_HC_SLICE);
-	Glm5NextHcDot(&shared, fn_f32, slice * G5N_HC_SLICE, slice);
-	if ( threadIdx.x == 0u )
-		shared.partial[slice][G5N_HC_MIX] = total;
+	for ( uint32_t row = 0u; row < live; ++row )
+	{
+		total = Glm5NextHcStage(&shared, row, streams + (uint64_t)row * G5N_HC_FLAT + slice * G5N_HC_SLICE);
+		if ( threadIdx.x == 0u )
+			shared.partial[row][slice][G5N_HC_MIX] = total;
+	}
+	Glm5NextHcDot(&shared, fn_f32, slice * G5N_HC_SLICE, slice, live);
 	__syncthreads();
 	asm volatile("barrier.cluster.wait.aligned;" ::: "memory");
-	Glm5NextHcScatter(cluster, &shared, slice);
+	Glm5NextHcScatter(cluster, &shared, slice, live);
 	cluster.sync();
-	Glm5NextHcFinish(&shared, scale3_f32, base_f32, mixes_f32 + (uint64_t)row * G5N_HC_MIX, pre_f32 + (uint64_t)row * G5N_HC,
-		post_f32 + (uint64_t)row * G5N_HC, slice);
-	if ( slice != 0u )
-		Glm5NextHcCollapse(shared.pre, streams, collapsed_bf16 + (uint64_t)row * G5N_HIDDEN, snapshot_bf16 + (uint64_t)row * G5N_HC_FLAT,
-			slice * G5N_HC_PRE_SLICE, threadIdx.x, G5N_THREADS);
-	else if ( threadIdx.x >= LM_WARP_LANES )
-		Glm5NextHcCollapse(shared.pre, streams, collapsed_bf16 + (uint64_t)row * G5N_HIDDEN, snapshot_bf16 + (uint64_t)row * G5N_HC_FLAT,
-			0u, threadIdx.x - LM_WARP_LANES, G5N_THREADS - LM_WARP_LANES);
-	else
-		Glm5NextHcCombWarp(shared.mixes, scale3_f32, base_f32, comb_f32 + (uint64_t)row * G5N_HC * G5N_HC);
+	Glm5NextHcFinish(&shared, scale3_f32, base_f32, mixes_f32 + (uint64_t)first * G5N_HC_MIX, pre_f32 + (uint64_t)first * G5N_HC,
+		post_f32 + (uint64_t)first * G5N_HC, slice, live);
+	if ( slice == 0u && warp < live )
+		Glm5NextHcCombWarp(shared.mixes[warp], scale3_f32, base_f32, comb_f32 + (uint64_t)(first + warp) * G5N_HC * G5N_HC);
+	for ( uint32_t row = 0u; row < live; ++row )
+		Glm5NextHcCollapse(shared.pre[row], streams + (uint64_t)row * G5N_HC_FLAT, collapsed_bf16 + (uint64_t)(first + row) * G5N_HIDDEN,
+			snapshot_bf16 + (uint64_t)(first + row) * G5N_HC_FLAT, slice * G5N_HC_PRE_SLICE, threadIdx.x, G5N_THREADS);
+}
+
+template<uint32_t ROWS>
+static cudaError_t Glm5NextHcSiteLaunch(const uint16_t *streams, const float *fn, const float *scale, const float *base, float *mixes, float *pre,
+	float *post, float *comb, uint16_t *collapsed, uint16_t *snapshot, uint32_t rows, cudaStream_t stream)
+{
+	return LM_LAUNCH_DEPENDENT((Glm5NextHcSiteKernel<ROWS>), (rows + ROWS - 1u) / ROWS * G5N_HC_CLUSTER, G5N_THREADS, 0, stream, streams, fn, scale,
+		base, mixes, pre, post, comb, collapsed, snapshot, rows);
 }
 
 static int32_t Glm5NextHcSite(const Glm5NextLayerBuffers *b, const void *fn, const void *base, const void *scale, uint32_t rows, cudaStream_t stream)
 {
 	if ( fn == 0 || base == 0 || scale == 0 || ((uintptr_t)fn % 16u) != 0u )
 		return LM_LAUNCH_ERR_SHAPE;
-	if ( LM_LAUNCH_DEPENDENT((Glm5NextHcSiteKernel), rows * G5N_HC_CLUSTER, G5N_THREADS, 0, stream, (const uint16_t *)b->hidden_bf16,
-		(const float *)fn, (const float *)scale, (const float *)base, b->hc_mixes_f32, b->hc_pre_f32, b->hc_post_f32, b->hc_comb_f32,
-		b->hc_collapsed_bf16, b->hc_snapshot_bf16) != cudaSuccess )
+	if ( (rows >= G5N_HC_ROWS ? Glm5NextHcSiteLaunch<G5N_HC_ROWS> : Glm5NextHcSiteLaunch<1u>)((const uint16_t *)b->hidden_bf16, (const float *)fn,
+			(const float *)scale, (const float *)base, b->hc_mixes_f32, b->hc_pre_f32, b->hc_post_f32, b->hc_comb_f32, b->hc_collapsed_bf16,
+			b->hc_snapshot_bf16, rows, stream) != cudaSuccess )
 		return LM_LAUNCH_ERR_LAUNCH;
 	return LM_LAUNCH_OK;
 }
@@ -753,10 +914,16 @@ static int32_t Glm5NextKda(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_
 	LM_LAUNCH((LmBoundedDecayKernel<G5N_THREADS, G5N_KDA_KEY>), dim3(rows, heads), G5N_THREADS, 0, stream, b->kda_decay_logit_bf16,
 		w->kda_decay_bias, w->kda_head_log_scale, b->kda_retention, heads, G5N_KDA_GATE_LOWER, rows);
 	LM_LAUNCH((LmBf16SigmoidRowsKernel<G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->kda_beta_logit, b->kda_write_gate, heads);
-	LM_LAUNCH((LmDeltaRuleKernel<G5N_THREADS, G5N_KDA_KEY, G5N_KDA_VALUE, float, G5N_KDA_DELTA_COLUMNS>),
-		dim3(sequences, heads, G5N_KDA_VALUE / G5N_KDA_DELTA_COLUMNS), G5N_THREADS, G5N_KDA_KEY * G5N_KDA_DELTA_COLUMNS * sizeof(float), stream,
-		b->kda_state_pool, b->kda_state_slot_bytes, b->kda_state_index, b->sequence_row_begin, (const uint32_t *)0, b->q_bf16, b->kv_slot_bf16,
-		b->gate_up_bf16, b->kda_retention, b->kda_write_gate, b->attention_out_bf16, heads, 1u, sequences, commit, b->sequence_row_indices);
+	if constexpr ( LM_WARP_LANES == 32u )
+		LM_LAUNCH((LmDeltaRuleColumnKernel<G5N_THREADS, G5N_KDA_KEY, G5N_KDA_VALUE, float>), dim3(sequences, heads, G5N_KDA_VALUE / LM_WARP_LANES),
+			LM_DELTA_COLUMN_THREADS, 0, stream, b->kda_state_pool, b->kda_state_slot_bytes, b->kda_state_index, b->sequence_row_begin, (const uint32_t *)0,
+			b->q_bf16, b->kv_slot_bf16, b->gate_up_bf16, b->kda_retention, b->kda_write_gate, b->attention_out_bf16, heads, 1u, sequences, commit,
+			b->sequence_row_indices);
+	else
+		LM_LAUNCH((LmDeltaRuleKernel<G5N_THREADS, G5N_KDA_KEY, G5N_KDA_VALUE, float, G5N_KDA_DELTA_COLUMNS>),
+			dim3(sequences, heads, G5N_KDA_VALUE / G5N_KDA_DELTA_COLUMNS), G5N_THREADS, G5N_KDA_KEY * G5N_KDA_DELTA_COLUMNS * sizeof(float), stream,
+			b->kda_state_pool, b->kda_state_slot_bytes, b->kda_state_index, b->sequence_row_begin, (const uint32_t *)0, b->q_bf16, b->kv_slot_bf16,
+			b->gate_up_bf16, b->kda_retention, b->kda_write_gate, b->attention_out_bf16, heads, 1u, sequences, commit, b->sequence_row_indices);
 	LM_LAUNCH((LmRmsNormSigmoidGateKernel<G5N_THREADS>), dim3((uint64_t)rows * heads), G5N_THREADS, 0, stream, b->attention_out_bf16,
 		b->kda_gate_bf16, (const float *)w->kda_out_norm, b->attention_out_bf16, G5N_KDA_VALUE, G5N_EPS);
 	LM_LAUNCH((LmCopyRowsKernel<G5N_THREADS>), dim3((rank_v + G5N_THREADS - 1u) / G5N_THREADS, rows), G5N_THREADS, 0, stream,
@@ -803,10 +970,17 @@ static int32_t Glm5NextIndexScore(const Glm5NextLayerBuffers *b, uint32_t rows, 
 		G5N_INDEX_DIM);
 	LM_LAUNCH((LmKvShardStoreKernel<Glm5NextIndexKv, G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->index_cache, b->index_packed_bf16,
 		b->sequence_of_row, b->positions, rows, G5N_INDEX_PACKED);
-	LM_LAUNCH((Glm5NextPoolScoreKernel<G5N_THREADS, G5N_INDEX_DIM, G5N_KPOOL, G5N_INDEX_HEADS>), dim3(local_stride, rows), G5N_THREADS, 0, stream,
-		b->index_query_bf16, b->index_head_weight_bf16, b->index_cache, b->sequence_of_row, b->context_length, b->positions,
-		(const float *)w->index_compress_ape, pools, b->index_owner_rank, degree, local_stride, SPARK_GLM5_NEXT_MODEL_INDEX_SOFTMAX_SCALE,
-		SPARK_GLM5_NEXT_MODEL_INDEX_HEAD_WEIGHT_SCALE, b->index_local_scores);
+	if ( rows >= G5N_POOL_ROWS_MIN )
+		LM_LAUNCH((Glm5NextPoolScoreRowsKernel<G5N_THREADS, G5N_INDEX_DIM, G5N_KPOOL, G5N_INDEX_HEADS, G5N_POOL_BLOCK_POOLS, G5N_POOL_BLOCK_ROWS>),
+			dim3((local_stride + G5N_POOL_BLOCK_POOLS - 1u) / G5N_POOL_BLOCK_POOLS, (rows + G5N_POOL_BLOCK_ROWS - 1u) / G5N_POOL_BLOCK_ROWS), G5N_THREADS, 0,
+			stream, b->index_query_bf16, b->index_head_weight_bf16, b->index_cache, b->sequence_of_row, b->context_length, b->positions,
+			(const float *)w->index_compress_ape, pools, b->index_owner_rank, degree, local_stride, SPARK_GLM5_NEXT_MODEL_INDEX_SOFTMAX_SCALE,
+			SPARK_GLM5_NEXT_MODEL_INDEX_HEAD_WEIGHT_SCALE, b->index_local_scores, rows);
+	else
+		LM_LAUNCH((Glm5NextPoolScoreKernel<G5N_THREADS, G5N_INDEX_DIM, G5N_KPOOL, G5N_INDEX_HEADS>), dim3(local_stride, rows), G5N_THREADS, 0, stream,
+			b->index_query_bf16, b->index_head_weight_bf16, b->index_cache, b->sequence_of_row, b->context_length, b->positions,
+			(const float *)w->index_compress_ape, pools, b->index_owner_rank, degree, local_stride, SPARK_GLM5_NEXT_MODEL_INDEX_SOFTMAX_SCALE,
+			SPARK_GLM5_NEXT_MODEL_INDEX_HEAD_WEIGHT_SCALE, b->index_local_scores);
 	return Glm5NextLaunched();
 }
 
