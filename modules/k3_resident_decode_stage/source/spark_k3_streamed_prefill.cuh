@@ -31,13 +31,15 @@
 #define K3_STREAMED_KEY_BLOCK 262144u
 
 #define K3_STREAMED_ROUND_BLOCK_BYTES (2u << 20)
+#define K3_STREAMED_ROUND_RING 4u
 
 typedef struct K3StreamedRoundContext
 {
 	const SparkStageRunnerServices *services;
 	SparkStatus status;
-	uint8_t *send_stage;
-	uint8_t *receive_stage;
+	uint8_t *send_stage[K3_STREAMED_ROUND_RING];
+	uint8_t *receive_stage[K3_STREAMED_ROUND_RING];
+	uint32_t next_stage;
 } K3StreamedRoundContext;
 
 static void K3StreamedRound(void *context, void *stream, uint32_t operation, uint32_t rows, uint32_t row_elements, const void *send, void *receive)
@@ -60,40 +62,34 @@ static void K3StreamedRound(void *context, void *stream, uint32_t operation, uin
 	{
 		const uint64_t row_bytes = (uint64_t)row_elements * sizeof(uint16_t);
 		const uint32_t block = (uint32_t)(K3_STREAMED_ROUND_BLOCK_BYTES / row_bytes != 0u ? K3_STREAMED_ROUND_BLOCK_BYTES / row_bytes : 1u);
+		const uint32_t peers = operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ? K3_STREAMED_SHARDS : 1u;
 		uint32_t first;
-		if ( rows <= block || round->send_stage == 0 || round->receive_stage == 0 || row_bytes > K3_STREAMED_ROUND_BLOCK_BYTES )
+		if ( round->send_stage[K3_STREAMED_ROUND_RING - 1u] == 0 || round->receive_stage[K3_STREAMED_ROUND_RING - 1u] == 0 || row_bytes > K3_STREAMED_ROUND_BLOCK_BYTES )
 		{
-			status = round->services->round(round->services->context, stream, operation, SPARK_STAGE_RUNNER_ROUND_ALL, rows, row_elements, send, receive);
-			if ( status != SPARK_STATUS_OK && round->status == SPARK_STATUS_OK )
-				round->status = status;
+			if ( round->status == SPARK_STATUS_OK )
+				round->status = SPARK_STATUS_CAPACITY_EXCEEDED;
 			return;
 		}
 		for (first = 0u; first < rows && round->status == SPARK_STATUS_OK; first += block)
 		{
 			const uint32_t count = rows - first < block ? rows - first : block;
 			const uint64_t width = (uint64_t)count * row_bytes, pitch = (uint64_t)rows * row_bytes;
-			const void *chunk = (const uint8_t *)send + (uint64_t)first * row_bytes;
-			if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL )
+			const uint32_t ring = round->next_stage++ % K3_STREAMED_ROUND_RING;
+			uint8_t *stage = round->send_stage[ring], *landing = round->receive_stage[ring];
+			if ( cudaMemcpy2DAsync(stage, (size_t)width, (const uint8_t *)send + (uint64_t)first * row_bytes, (size_t)pitch, (size_t)width, peers,
+					cudaMemcpyDeviceToDevice, (cudaStream_t)stream) != cudaSuccess )
 			{
-				if ( cudaMemcpy2DAsync(round->send_stage, (size_t)width, chunk, (size_t)pitch, (size_t)width, K3_STREAMED_SHARDS, cudaMemcpyDeviceToDevice,
-						(cudaStream_t)stream) != cudaSuccess )
-				{
-					round->status = SPARK_STATUS_IO_ERROR;
-					return;
-				}
-				chunk = round->send_stage;
+				round->status = SPARK_STATUS_IO_ERROR;
+				return;
 			}
-			status = round->services->round(round->services->context, stream, operation, SPARK_STAGE_RUNNER_ROUND_ALL, count, row_elements, chunk, round->receive_stage);
-			if ( status == SPARK_STATUS_OK && cudaMemcpy2DAsync((uint8_t *)receive + (uint64_t)first * row_bytes, (size_t)pitch, round->receive_stage, (size_t)width,
+			status = round->services->round(round->services->context, stream, operation, SPARK_STAGE_RUNNER_ROUND_ALL, count, row_elements, stage, landing);
+			if ( status == SPARK_STATUS_OK && cudaMemcpy2DAsync((uint8_t *)receive + (uint64_t)first * row_bytes, (size_t)pitch, landing, (size_t)width,
 					(size_t)width, K3_STREAMED_SHARDS, cudaMemcpyDeviceToDevice, (cudaStream_t)stream) != cudaSuccess )
 				status = SPARK_STATUS_IO_ERROR;
 			if ( status != SPARK_STATUS_OK && round->status == SPARK_STATUS_OK )
 				round->status = status;
 		}
-		return;
 	}
-	if ( status != SPARK_STATUS_OK && round->status == SPARK_STATUS_OK )
-		round->status = status;
 }
 
 static int32_t K3StreamedLayerRanges(uint64_t payload_base, const SparkK3BoundLayer *bound, SparkPackWindowLayer *ranges)
@@ -425,8 +421,11 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 	s->join.weight = K3StreamedAlloc<uint16_t>(s, s->join.weight_capacity);
 	s->join.activation = K3StreamedAlloc<uint16_t>(s, s->join.activation_capacity);
 	s->gather_device = K3StreamedAlloc<uint8_t>(s, (uint64_t)(K3_STREAMED_SHARDS + 1u) * K3_STREAMED_GATHER_BYTES);
-	s->round.send_stage = K3StreamedAlloc<uint8_t>(s, (uint64_t)K3_STREAMED_SHARDS * K3_STREAMED_ROUND_BLOCK_BYTES);
-	s->round.receive_stage = K3StreamedAlloc<uint8_t>(s, (uint64_t)K3_STREAMED_SHARDS * K3_STREAMED_ROUND_BLOCK_BYTES);
+	for (uint32_t stage = 0u; stage < K3_STREAMED_ROUND_RING; stage++)
+	{
+		s->round.send_stage[stage] = K3StreamedAlloc<uint8_t>(s, (uint64_t)K3_STREAMED_SHARDS * K3_STREAMED_ROUND_BLOCK_BYTES);
+		s->round.receive_stage[stage] = K3StreamedAlloc<uint8_t>(s, (uint64_t)K3_STREAMED_SHARDS * K3_STREAMED_ROUND_BLOCK_BYTES);
+	}
 	memset(&s->kda, 0, sizeof(s->kda));
 	s->kda.node = s->rank;
 	s->kda.nodes = K3_STREAMED_SHARDS;
