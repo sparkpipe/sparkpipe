@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The Ceph canary writes, reads back and deletes a file with direct I/O on every host's CephFS mount and reads cluster health: a host that is not mounted, fails a stage, hangs past the probe limit, still has an earlier probe stuck, cannot be reached or is slow becomes a problem; a probe that hangs is cut at the limit; problems alert only after the configured number of consecutive rounds and clear in the first round without them; known Ceph warnings are ignored only by their exact messages, so a new entry of the same check alerts; OSDs and hosts that go down are separate problems; health falls back to the next monitor host; and the watcher exits on a new or cleared problem and on a stale canary."""
+"""The Ceph canary writes, reads back and deletes a file with direct I/O on each probed host's CephFS mount, checks the Sparks only passively (their mount table, their kernel log, their MDS session and the OSD blocklist, never their mount), and reads cluster health: a host that is not mounted, fails a stage, hangs past the probe limit, still has an earlier probe stuck, cannot be reached or is slow becomes a problem; a probe that hangs is cut at the limit; problems alert only after the configured number of consecutive rounds and clear in the first round without them; known Ceph warnings are ignored only by their exact messages, so a new entry of the same check alerts; OSDs and hosts that go down are separate problems; health falls back to the next monitor host; a Spark that is unmounted, logs an eviction or hung task, cannot be reached, hangs, has no open MDS session or has its exact client address blocklisted becomes a problem, and a remount with a new address clears the blocklist problem; no Spark is probed with I/O; and the watcher exits on a new or cleared problem and on a stale canary."""
 import asyncio
 import importlib.util
 import json
@@ -25,6 +25,26 @@ open(os.environ["FAKE_LOG"], "a").write(json.dumps([host, command]) + "\n")
 def stages(names, last):
     for index, name in enumerate(names):
         print(json.dumps({"event": "stage", "stage": name, "t": index * last / max(1, len(names))}), flush=True)
+if "session ls" in command:
+    if not plan.get("sessions_up", True):
+        sys.exit(1)
+    print(json.dumps([{"inst": f"client.{index} v1:{address}", "state": state, "client_metadata": {"hostname": name}}
+                      for index, (name, state, address) in enumerate(plan["sessions"])]), end="")
+    print()
+    print("@@")
+    print(json.dumps([{"addr": address, "until": "2026-10-30T06:00:00"} for address in plan.get("blocklist", [])]) + "[]")
+    sys.exit(0)
+if "journalctl -k" in command:
+    kind = plan.get("clients", {}).get(host, "ok")
+    if kind == "down":
+        print("ssh: connect to host " + host + " port 22: No route to host", file=sys.stderr)
+        sys.exit(255)
+    if kind == "hang":
+        time.sleep(60)
+    print("mount=" + ("" if kind == "unmounted" else "ceph"))
+    if kind == "kernel":
+        print("log=2026-10-30T05:00:00+09:00 " + host + " kernel: ceph: [cd87 client.4]: mds0 reconnect denied")
+    sys.exit(0)
 if "ceph health" in command:
     health = plan["health"].get(host)
     if health is None:
@@ -120,12 +140,13 @@ def hub_logic(failures, tmp):
     os.environ["FAKE_LOG"] = str(tmp / "ssh.log")
     hosts = ["spark0", "spark1", "spark2", "spark3", "spark4", "spark5", "spark6"]
     config = dict(SHIPPED, hosts=hosts, local_host="hub-not-probed", ssh=[sys.executable, str(tmp / "fake_ssh.py")],
-                  probe_seconds=2, health_seconds=5, health_hosts=["mon0", "mon1"], interval_seconds=1,
+                  probe_seconds=2, health_seconds=5, health_hosts=["mon0", "mon1"], interval_seconds=1, client_hosts=["sparka", "sparkb"],
                   state_file=str(tmp / "state" / "state.json"), event_log=str(tmp / "logs" / "events.jsonl"))
     canary = ceph_canary.Canary(config)
 
     def plan(hosts_plan, health_plan):
-        plan_path.write_text(json.dumps({"hosts": hosts_plan, "health": health_plan}))
+        sessions = [[name, "open", f"10.0.0.{index}:0/{index}"] for index, name in enumerate(hosts + config["client_hosts"])]
+        plan_path.write_text(json.dumps({"hosts": hosts_plan, "health": health_plan, "sessions": sessions}))
 
     def events():
         return [json.loads(line) for line in Path(config["event_log"]).read_text().splitlines()] if Path(config["event_log"]).exists() else []
@@ -197,6 +218,85 @@ def hub_logic(failures, tmp):
         pass
 
 
+def passive_clients(failures, tmp):
+    def check(condition, name):
+        if not condition:
+            failures.append(name)
+
+    tmp.mkdir(parents=True, exist_ok=True)
+    (tmp / "fake_ssh.py").write_text(FAKE_SSH)
+    plan_path = tmp / "plan.json"
+    log = tmp / "ssh.log"
+    os.environ["FAKE_PLAN"] = str(plan_path)
+    os.environ["FAKE_LOG"] = str(log)
+    clients = ["sparka", "sparkb", "sparkc", "sparkd", "sparke", "sparkf"]
+    config = dict(SHIPPED, hosts=["spark0"], local_host="hub-not-probed", ssh=[sys.executable, str(tmp / "fake_ssh.py")],
+                  probe_seconds=2, health_seconds=5, health_hosts=["mon0"], interval_seconds=1, client_hosts=clients,
+                  state_file=str(tmp / "state.json"), event_log=str(tmp / "events.jsonl"))
+    canary = ceph_canary.Canary(config)
+    addresses = {name: f"10.0.1.{index}:0/{1000 + index}" for index, name in enumerate(["spark0"] + clients)}
+
+    def plan(clients_plan=None, sessions=None, blocklist=(), sessions_up=True):
+        sessions = sessions if sessions is not None else [[name, "open", address] for name, address in addresses.items()]
+        plan_path.write_text(json.dumps({"hosts": {}, "health": {"mon0": health([])}, "clients": clients_plan or {}, "sessions": sessions,
+                                         "blocklist": list(blocklist), "sessions_up": sessions_up}))
+
+    plan()
+    state = asyncio.run(canary.tick())
+    check(state["ok"] and not state["pending"] and set(state["clients"]) == set(clients) and state["cluster"]["sessions"]["sessions"] == 7,
+          f"healthy clients raise nothing: {state['pending']} {state['cluster']}")
+    evicted = addresses["sparke"]
+    sessions = [[name, "stale" if name == "sparkf" else "open", address] for name, address in addresses.items() if name != "sparke"]
+    bad = {"sparka": "unmounted", "sparkb": "kernel", "sparkc": "down", "sparkd": "hang"}
+    expected = {"client:sparka:mount", "client:sparkb:kernel", "client:sparkc:unreachable", "client:sparkd:hang",
+                "client:sparke:session", "client:sparke:blocklisted", "client:sparkf:session"}
+    plan(bad, sessions, [evicted])
+    started = time.monotonic()
+    state = asyncio.run(canary.tick())
+    check(time.monotonic() - started < config["probe_seconds"] + 4, "a client that hangs is cut at the probe limit")
+    check(set(state["pending"]) == expected and not state["active"], f"one round makes client problems pending: {sorted(state['pending'])}")
+    state = asyncio.run(canary.tick())
+    check(set(state["active"]) == expected, f"the second round alerts on each client problem: {sorted(state['active'])}")
+    check("reconnect denied" in state["active"]["client:sparkb:kernel"]["message"] and evicted in state["active"]["client:sparke:blocklisted"]["message"],
+          f"alerts carry the kernel line and the blocklisted address: {state['active']}")
+    remounted = dict(addresses, sparke="10.0.1.5:0/9999")
+    plan(None, [[name, "open", address] for name, address in remounted.items()], [evicted])
+    state = asyncio.run(canary.tick())
+    check(not state["active"] and not state["pending"], f"a remount with a new address clears the eviction although the old address stays blocklisted: {state['pending']}")
+    plan(sessions_up=False)
+    asyncio.run(canary.tick())
+    state = asyncio.run(canary.tick())
+    check(set(state["active"]) == {"cluster:sessions_unavailable"}, f"an unavailable session list is a problem: {sorted(state['active'])}")
+
+    root = SHIPPED["root"]
+    commands = [json.loads(line) for line in log.read_text().splitlines()]
+    passive = [command for name, command in commands if name in clients]
+    check(passive and all("/proc/mounts" in command and "journalctl -k" in command for command in passive), "clients get the passive command")
+    forbidden = ("python3", ceph_canary.MARKER, SHIPPED["subdir"], "fsync", "touch", "mkdir", "stat ", " ls", "dd ", "sync")
+    check(all(command.count(root) == 1 and f"-v m={root}" in command and not any(word in command for word in forbidden) for command in passive),
+          f"the passive command names the mount only as an awk value and runs nothing that touches it: {passive[0]}")
+    check(set(SHIPPED["client_hosts"]) == {f"spark{index}" for index in "0123456789abcdef"} and not any(name.startswith("spark") for name in SHIPPED["hosts"]),
+          "the shipped config checks every Spark passively and probes none with I/O")
+
+    samples = {"2026-10-30T05:00:00+09:00 sparkb kernel: ceph: [cd87 client.4]: mds0 reconnect denied": True,
+               "2026-10-30T05:00:00+09:00 sparkb kernel: libceph: osd3 (1)10.10.100.13:6801 client blocklisted": True,
+               "2026-10-30T05:00:00+09:00 sparkb kernel: INFO: task kworker/2:1:77 blocked for more than 122 seconds.": True,
+               "2026-10-30T05:00:00+09:00 sparkb kernel: ceph: [cd87 client.4]: mds0 hung": True,
+               "2026-10-30T05:00:00+09:00 sparkb kernel: libceph: mon2 (1)10.10.100.25:6789 session lost, hunting for new mon": False,
+               "2026-10-30T05:00:00+09:00 sparkb kernel: ceph: [cd87 client.4]: mds0 caps stale": False,
+               "2026-10-30T05:00:00+09:00 sparkb kernel: libceph: connect (1)10.10.100.10:6789 error -101": False}
+    grep = subprocess.run(["grep", "-E", canary.kernel_pattern], input="\n".join(samples) + "\n", capture_output=True, text=True)
+    matched = set(grep.stdout.splitlines())
+    check(matched == {line for line, alert in samples.items() if alert}, f"grep -E matches evictions and hung tasks and not mon failover or boot errors: {sorted(matched)}")
+    for broken, reason in ((dict(config, client_hosts=["spark0"]), "a host both probed and checked passively"),
+                           (dict(config, kernel_patterns=["mds\\d+ hung"]), "a pattern grep -E cannot read")):
+        try:
+            ceph_canary.Canary(broken)
+            failures.append(f"{reason} is refused")
+        except SystemExit:
+            pass
+
+
 def main():
     failures = []
     with tempfile.TemporaryDirectory() as directory:
@@ -205,12 +305,13 @@ def main():
         if ran_probe:
             real_probe(failures, tmp / "real")
         hub_logic(failures, tmp / "hub")
+        passive_clients(failures, tmp / "passive")
     for failure in failures:
         print("FAIL", failure)
     if failures:
         raise SystemExit(1)
     probe = "the real direct-I/O probe passed" if ran_probe else "the real probe needs Linux and did not run here"
-    print(f"PASS test_ceph_canary: {probe}; stage failures, hangs, stuck probes, unreachable and slow hosts, down OSDs and new warnings alert after consecutive rounds and clear; exact-message noise only; health fallback; watcher exits on change and on a stale canary")
+    print(f"PASS test_ceph_canary: {probe}; stage failures, hangs, stuck probes, unreachable and slow hosts, down OSDs and new warnings alert after consecutive rounds and clear; exact-message noise only; health fallback; Sparks checked passively only (mount table, kernel log, MDS session, exact-address blocklist); watcher exits on change and on a stale canary")
 
 
 if __name__ == "__main__":

@@ -60,5 +60,31 @@
   "MDS_CLIENT_RECALL"
  ],
  "state_file": "/srv/workspace/sparkpipe/ceph-canary/state.json",
- "event_log": "/srv/workspace/sparkpipe/logs/ceph-canary.jsonl"
+ "event_log": "/srv/workspace/sparkpipe/logs/ceph-canary.jsonl",
+ "client_hosts": [
+  "spark0",
+  "spark1",
+  "spark2",
+  "spark3",
+  "spark4",
+  "spark5",
+  "spark6",
+  "spark7",
+  "spark8",
+  "spark9",
+  "sparka",
+  "sparkb",
+  "sparkc",
+  "sparkd",
+  "sparke",
+  "sparkf"
+ ],
+ "sessions_command": "sudo -n timeout 20 ceph tell mds.ds4warm:0 session ls --format json",
+ "blocklist_command": "sudo -n timeout 20 ceph osd blocklist ls --format json",
+ "kernel_patterns": [
+  "ceph: .*(evicted|reconnect denied|rejected session|blocklisted|blacklisted)",
+  "libceph: .*(blocklisted|blacklisted)",
+  "ceph: .*mds[0-9]+ hung",
+  "blocked for more than [0-9]+ seconds"
+ ]
 }
