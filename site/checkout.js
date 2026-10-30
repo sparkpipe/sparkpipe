@@ -23,20 +23,20 @@
   const say = (el, text, kind) => { el.textContent = text || ''; el.className = 'flash' + (kind ? ' ' + kind : ''); el.hidden = !text; };
   const COINS = {
     USDC: [
-      { id: 'USDC.BASE', name: 'Base', note: 'Lowest fees', tag: 'Cheapest' },
-      { id: 'USDC.SOL', name: 'Solana', note: 'Low fees, fast' },
-      { id: 'USDC.ARB', name: 'Arbitrum', note: 'Low fees' },
-      { id: 'USDC.POL', name: 'Polygon', note: 'Low fees' },
-      { id: 'USDC.BEP20', name: 'BNB Chain', note: 'Low fees' },
-      { id: 'USDC.ERC20', name: 'Ethereum', note: 'Highest network fees' },
+      { id: 'USDC.ERC20', name: 'Ethereum', note: 'ERC20' },
+      { id: 'USDC.BASE', name: 'Base', note: 'Base' },
+      { id: 'USDC.SOL', name: 'Solana', note: 'SOL' },
+      { id: 'USDC.ARB', name: 'Arbitrum', note: 'Arbitrum One' },
+      { id: 'USDC.POL', name: 'Polygon', note: 'Polygon PoS' },
+      { id: 'USDC.BEP20', name: 'BNB Chain', note: 'BEP20' },
     ],
     USDT: [
-      { id: 'USDT.TRC20', name: 'Tron', note: 'Most used for USDT', tag: 'Popular' },
-      { id: 'USDT.SOL', name: 'Solana', note: 'Lowest fees, fast' },
-      { id: 'USDT.BEP20', name: 'BNB Chain', note: 'Low fees' },
-      { id: 'USDT.ARB', name: 'Arbitrum', note: 'Low fees' },
-      { id: 'USDT.POL', name: 'Polygon', note: 'Low fees' },
-      { id: 'USDT.ERC20', name: 'Ethereum', note: 'Highest network fees' },
+      { id: 'USDT.ERC20', name: 'Ethereum', note: 'ERC20' },
+      { id: 'USDT.TRC20', name: 'Tron', note: 'TRC20' },
+      { id: 'USDT.SOL', name: 'Solana', note: 'SOL' },
+      { id: 'USDT.BEP20', name: 'BNB Chain', note: 'BEP20' },
+      { id: 'USDT.ARB', name: 'Arbitrum', note: 'Arbitrum One' },
+      { id: 'USDT.POL', name: 'Polygon', note: 'Polygon PoS' },
     ],
   };
   const STATES = {
@@ -50,7 +50,7 @@
   };
   const radio = (name, value, checked) => { const input = document.createElement('input'); Object.assign(input, { type: 'radio', name, value, checked }); return input; };
   const coinPicker = (box, name, chosen, onChange) => {
-    let current = COINS[coinOf(chosen)] ? chosen : 'USDC.BASE';
+    let current = (COINS[coinOf(chosen)] || []).some((n) => n.id === chosen) ? chosen : COINS.USDC[0].id;
     const coins = document.createElement('div');
     coins.className = 'coins';
     coins.setAttribute('role', 'radiogroup');

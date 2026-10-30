@@ -228,10 +228,10 @@
     k('left').textContent = SP.usd(a.remaining);
     k('gate').textContent = a.ended ? 'Closed' : a.nextGate ? SP.usd(a.nextGate.amount) + ' by ' + nice(a.nextGate.due) : 'All gates met';
     const form = node.querySelector('form'), amount = form.elements.amount, note = form.querySelector('.flash'), button = form.querySelector('button');
-    SP.coinPicker(k('coins'), 'coin-' + a.agreement, 'USDC.BASE', () => update());
+    SP.coinPicker(k('coins'), 'coin-' + a.agreement, 'USDC.ERC20', () => update());
     if (a.nextGate) amount.value = a.nextGate.amount;
     const update = () => {
-      const net = Math.round((+amount.value || 0) * 100) / 100, vat = Math.round(net * P.vatRate * 100) / 100, coin = SP.coinOf(SP.chosen(form, 'coin-' + a.agreement) || 'USDC.BASE');
+      const net = Math.round((+amount.value || 0) * 100) / 100, vat = Math.round(net * P.vatRate * 100) / 100, coin = SP.coinOf(SP.chosen(form, 'coin-' + a.agreement) || 'USDC.ERC20');
       k('issues').textContent = net >= 1 ? 'Issues ' + SP.whole(Math.floor(net / +a.price * 10000) / 10000) + ' hours. Total with VAT: ' + SP.usd(net + vat) + ' in ' + coin + '.' : '';
       button.textContent = net >= 1 ? 'Pay ' + SP.usd(net + vat) + ' in ' + coin : 'Pay in ' + coin;
       button.disabled = Boolean(a.ended) || net < 1 || net > +a.remaining;
