@@ -2294,10 +2294,17 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	exchange_status = StageRunnerCheckResident(state);
 	if ( exchange_status != SPARK_STATUS_OK )
 		return exchange_status;
+	if ( state->deferred_active != 0u )
+	{
+		exchange_status = StageRunnerChainBegin(state, dispatch->request_id);
+		if ( exchange_status == SPARK_STATUS_OK )
+			exchange_status = StageRunnerRunDeferred(state, dispatch);
+		if ( exchange_status == SPARK_STATUS_OK )
+			exchange_status = StageRunnerChainEnd(state, stream);
+		if ( exchange_status != SPARK_STATUS_OK )
+			return exchange_status;
+	}
 	exchange_status = StageRunnerChainBegin(state, dispatch->request_id);
-	if ( exchange_status != SPARK_STATUS_OK )
-		return exchange_status;
-	exchange_status = StageRunnerRunDeferred(state, dispatch);
 	if ( exchange_status != SPARK_STATUS_OK )
 		return exchange_status;
 	state->rows = rows;
