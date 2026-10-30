@@ -230,6 +230,8 @@ __global__ static void K3StreamedHealthKernel(const uint16_t *hidden, uint64_t e
 	atomicMax(&health[1], top);
 }
 
+static_assert(K3_STREAMED_SHARDS <= LM_CELL_MMA_MAX_SEGMENTS, "one expert down projection can take every shard's weights");
+
 struct K3Streamed
 {
 	SparkStageRunnerStreamedPrefillConfig config;
@@ -238,6 +240,7 @@ struct K3Streamed
 	SparkWeightdLazyPack *lazy_pack;
 	uint32_t rank;
 	uint32_t node_rows;
+	uint32_t moe_members;
 	uint32_t vocab_rows;
 	uint32_t tag;
 	uint32_t opened;
@@ -545,7 +548,8 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 	b->kda_beta_logit = K3StreamedAlloc<uint16_t>(s, rows * K3_KDA_HEADS);
 	b->kda_write_gate_out = K3StreamedAlloc<float>(s, rows * K3_KDA_HEADS);
 	b->gate_up_bf16 = K3StreamedAlloc<uint16_t>(s, rows * w->gate_up);
-	b->intermediate_bf16 = K3StreamedAlloc<uint16_t>(s, rows * w->intermediate);
+	b->intermediate_bf16 = K3StreamedAlloc<uint16_t>(s, rows * (w->intermediate > (uint64_t)K3_TOP_K * s->moe_members * own->expert_w2_input
+		? w->intermediate : (uint64_t)K3_TOP_K * s->moe_members * own->expert_w2_input));
 	b->kda_retention = K3StreamedAlloc<float>(s, rows * w->retention);
 	b->router_logits = K3StreamedAlloc<float>(s, rows * K3_EXPERTS);
 	b->attnres_score_f32 = K3StreamedAlloc<float>(s, rows * K3_ATTNRES_MAX_SOURCES);
@@ -698,6 +702,9 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 	s->rank = rank;
 	s->node_rows = config->node_rows;
 	s->vocab_rows = vocab_rows;
+	for (s->moe_members = K3_STREAMED_SHARDS; s->moe_members > 1u && 2u * s->moe_members > config->expert_slots; s->moe_members /= 2u)
+	{
+	}
 	s->vocab.dense_count = 1u;
 	s->vocab.dense[0].offset = vocab_offset;
 	s->vocab.dense[0].bytes = vocab_bytes;
@@ -769,9 +776,9 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 		K3StreamedDestroy(s);
 		return status;
 	}
-	fprintf(stderr, "sparkpipe_k3: streamed prefill node_rows=%u window=%llu (%u x dense %llu x %u ranks, %u x experts %llu) engine=%llu partner=%s\n",
+	fprintf(stderr, "sparkpipe_k3: streamed prefill node_rows=%u window=%llu (%u x dense %llu x %u ranks, %u x experts %llu) engine=%llu, expert down projections of %u shards at once, partner=%s\n",
 		s->node_rows, (unsigned long long)s->region_bytes, s->config.dense_buffers, (unsigned long long)dense_capacity, K3_STREAMED_SHARDS, s->config.expert_slots,
-		(unsigned long long)expert_capacity, (unsigned long long)s->engine_bytes, config->partner_pack_path);
+		(unsigned long long)expert_capacity, (unsigned long long)s->engine_bytes, s->moe_members, config->partner_pack_path);
 	*out = s;
 	return SPARK_STATUS_OK;
 }
@@ -1023,6 +1030,8 @@ static SparkStatus K3StreamedLayer(K3Streamed *s, uint32_t layer, uint64_t dense
 {
 	const uint32_t kind = K3_LAYER_KIND(layer), kda_index = layer - layer / 4u, buffer = (uint32_t)(dense_item % s->config.dense_buffers);
 	uint8_t *rank_base[K3_STREAMED_SHARDS];
+	const void *down_weights[K3_STREAMED_SHARDS];
+	uint64_t held;
 	uint32_t shard, step;
 	SparkStatus status = K3StreamedAwaitPublished(s, &s->dense_published, dense_item, 1u);
 	if ( status != SPARK_STATUS_OK )
@@ -1054,7 +1063,7 @@ static SparkStatus K3StreamedLayer(K3Streamed *s, uint32_t layer, uint64_t dense
 		for (step = 0u; step < K3_STREAMED_SHARDS && status == SPARK_STATUS_OK; step++)
 		{
 			const uint64_t item = (*expert_item)++;
-			const uint32_t slot = (uint32_t)(item % s->config.expert_slots);
+			const uint32_t slot = (uint32_t)(item % s->config.expert_slots), member = step % s->moe_members;
 			uint32_t source;
 			status = K3StreamedAwaitPublished(s, &s->expert_published, item, 2u);
 			if ( status != SPARK_STATUS_OK )
@@ -1062,10 +1071,17 @@ static SparkStatus K3StreamedLayer(K3Streamed *s, uint32_t layer, uint64_t dense
 			source = s->slot_source[slot];
 			status = K3StreamedShard(s, layer, source, rank_base, s->slot_block[slot]);
 			if ( status == SPARK_STATUS_OK )
-				status = K3StreamedCheck(s, K3StreamedMoeShard<LmMxfp4>(&s->b, &s->shards[source], source, step == 0u ? 1u : 0u, K3_STREAMED_SHARDS, &s->join,
-					s->latent_accumulator, rows, rows * K3_TOP_K, multiprocessors, stream), "experts", layer);
-			if ( status == SPARK_STATUS_OK )
-				status = K3StreamedRelease(s, &s->expert_released, s->slot_done[slot], stream);
+			{
+				down_weights[member] = s->shards[source].expert_w2_weight;
+				status = K3StreamedCheck(s, K3StreamedMoeShard<LmMxfp4>(&s->b, &s->shards[source], source, member, s->moe_members, K3_STREAMED_SHARDS, &s->join,
+					rows, rows * K3_TOP_K, multiprocessors, stream), "experts", layer);
+			}
+			if ( status != SPARK_STATUS_OK || member + 1u < s->moe_members )
+				continue;
+			status = K3StreamedCheck(s, K3StreamedMoeDown(&s->b, down_weights, s->moe_members, step + 1u == s->moe_members ? 1u : 0u, s->latent_accumulator, rows,
+				rows * K3_TOP_K, stream), "expert down projection", layer);
+			for (held = item + 1u - s->moe_members; held <= item && status == SPARK_STATUS_OK; held++)
+				status = K3StreamedRelease(s, &s->expert_released, s->slot_done[held % s->config.expert_slots], stream);
 		}
 		if ( status == SPARK_STATUS_OK )
 			status = K3StreamedCheck(s, K3StreamedMoeEnd<LmMxfp4>(&s->b, s->shards, K3_STREAMED_SHARDS, &s->join, s->latent_accumulator, rows, multiprocessors, stream),

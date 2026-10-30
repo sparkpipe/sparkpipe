@@ -96,6 +96,37 @@ static void Compare(const char *label, const uint16_t *a, const uint16_t *b, uin
 		(unsigned long long)elements, (double)same / (double)elements, max_abs, max_ref, rel);
 }
 
+static void Segmented(const char *label, const Matrix *m, uint32_t parts, const uint16_t *activation, const uint32_t *offsets, const uint32_t *source,
+	uint32_t routes, uint32_t packed, uint64_t rows, uint16_t *whole, uint16_t *split)
+{
+	const uint64_t tile_bytes = (uint64_t)(m->n / LM_SKINNY_CELL_NEURONS) * LM_SKINNY_CELL_ROWS * LM_SKINNY_CHUNK_BYTES;
+	const uint64_t group_bytes = (uint64_t)(m->k / LM_SKINNY_CELL_TILE_K) * tile_bytes, part_bytes = group_bytes / parts;
+	std::vector<uint8_t *> owned(parts);
+	std::vector<uint16_t> x(rows * m->n), y(rows * m->n);
+	const void *pieces[LM_CELL_MMA_MAX_SEGMENTS];
+	uint64_t differ = 0u;
+	for ( uint32_t p = 0; p < parts; ++p )
+	{
+		CHECK(cudaMalloc(&owned[p], part_bytes * LOCAL));
+		CHECK(cudaMemcpy2D(owned[p], part_bytes, (const uint8_t *)m->cells + p * part_bytes, group_bytes, part_bytes, LOCAL, cudaMemcpyDeviceToDevice));
+		pieces[p] = owned[p];
+	}
+	CHECK(cudaMemset(whole, 0, rows * m->n * 2u));
+	CHECK(cudaMemset(split, 0xff, rows * m->n * 2u));
+	LAUNCH(LmCellMmaExperts(m->cells, activation, whole, offsets, source, LOCAL, routes, packed, m->k, m->n, 32u, 0));
+	LAUNCH(LmCellMmaExpertsSegmented(pieces, parts, activation, split, offsets, source, LOCAL, routes, packed, m->k, m->n, 32u, 0));
+	CHECK(cudaDeviceSynchronize());
+	CHECK(cudaMemcpy(x.data(), whole, x.size() * 2u, cudaMemcpyDeviceToHost));
+	CHECK(cudaMemcpy(y.data(), split, y.size() * 2u, cudaMemcpyDeviceToHost));
+	for ( uint64_t i = 0; i < x.size(); ++i )
+		differ += x[i] != y[i] ? 1u : 0u;
+	failures += differ == 0u ? 0 : 1;
+	printf("%s %s: %u K segments in separate buffers equal one packed weight, %llu of %llu outputs differ\n", differ == 0u ? "PASS" : "FAIL", label, parts,
+		(unsigned long long)differ, (unsigned long long)x.size());
+	for ( uint32_t p = 0; p < parts; ++p )
+		cudaFree(owned[p]);
+}
+
 static void Run(uint32_t tokens)
 {
 	const uint32_t routes = tokens * TOPK;
@@ -195,6 +226,11 @@ static void Run(uint32_t tokens)
 		CHECK(cudaDeviceSynchronize());
 		if ( a % 2u == 1u )
 			Compare(a == 1u ? "up cells vs verbatim" : "down cells vs verbatim", arms[a - 1].out, arms[a].out, (uint64_t)local_rows * arms[a].n);
+	}
+	if ( tokens > 16u )
+	{
+		Segmented("up", &w1, 4u, d_act, offsets, source, routes, 0u, local_rows, out_a, out_b);
+		Segmented("down", &w2, 4u, d_inter, offsets, 0, routes, 1u, local_rows, out_a, out_b);
 	}
 	cudaFree(w1.payload); cudaFree(w1.scale); cudaFree(w1.cells); cudaFree(w2.payload); cudaFree(w2.scale); cudaFree(w2.cells);
 	cudaFree(route_expert); cudaFree(route_global); cudaFree(route_weight); cudaFree(offsets); cudaFree(packed_row); cudaFree(source);
