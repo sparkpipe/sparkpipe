@@ -591,10 +591,7 @@ static SparkStatus K3StreamedShard(K3Streamed *s, uint32_t layer, uint32_t shard
 {
 	const K3LayerWeights *own = &s->dispatch->weights[layer];
 	if ( shard == s->rank )
-	{
-		s->shards[shard] = *own;
-		return SPARK_STATUS_OK;
-	}
+		block = s->pool + s->ranges[layer].experts.offset;
 	if ( SparkK3ShardWeights(own, s->module->pack.payload_base, s->bound[layer], &s->ranges[layer], rank_base[shard], block, &s->shards[shard]) != SPARK_K3_DISPATCH_OK )
 	{
 		fprintf(stderr, "sparkpipe_k3: streamed prefill cannot place shard %u of layer %u in the window\n", shard, layer);
