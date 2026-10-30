@@ -180,14 +180,51 @@ static T *K3StreamedAlloc(K3Streamed *s, uint64_t count)
 	return (T *)pointer;
 }
 
+static SparkStatus K3StreamedCopyTensor(const K3Streamed *s, uint64_t start, uint64_t bytes, uint64_t offset, uint64_t length, uint8_t *destination)
+{
+	const uint64_t first = start > offset ? start : offset, last = start + bytes < offset + length ? start + bytes : offset + length;
+	const void *slice = 0;
+	if ( first >= last )
+		return SPARK_STATUS_OK;
+	if ( SparkWeightdLazyPackSlice(s->lazy_pack, start, bytes, &slice) != SPARK_STATUS_OK || slice == 0 ||
+		cudaMemcpy(destination + (first - offset), (const uint8_t *)slice + (first - start), (size_t)(last - first), cudaMemcpyDefault) != cudaSuccess )
+	{
+		fprintf(stderr, "sparkpipe_k3: streamed prefill cannot read the own tensor at %llu (%llu bytes) from the spine\n", (unsigned long long)start,
+			(unsigned long long)bytes);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus K3StreamedReadOwn(void *context, uint64_t pack_offset, uint64_t bytes, uint8_t *destination)
 {
 	const K3Streamed *s = (const K3Streamed *)context;
+	const uint64_t base = s->module->pack.payload_base;
+	uint32_t layer, index;
+	SparkStatus status = SPARK_STATUS_OK;
 	if ( s->pool == 0 || pack_offset + bytes > s->module->pack.file_bytes )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( cudaMemcpy(destination, s->pool + pack_offset, (size_t)bytes, cudaMemcpyDefault) != cudaSuccess )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	return SPARK_STATUS_OK;
+	for (layer = 0u; layer < K3_LAYERS; layer++)
+		if ( s->ranges[layer].experts.bytes != 0u && pack_offset >= s->ranges[layer].experts.offset &&
+			pack_offset + bytes <= s->ranges[layer].experts.offset + s->ranges[layer].experts.bytes )
+		{
+			if ( cudaMemcpy(destination, s->pool + pack_offset, (size_t)bytes, cudaMemcpyDefault) != cudaSuccess )
+				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+			return SPARK_STATUS_OK;
+		}
+	if ( pack_offset == s->vocab.dense[0].offset && bytes == s->vocab.dense[0].bytes )
+		return K3StreamedCopyTensor(s, pack_offset, bytes, pack_offset, bytes, destination);
+	for (layer = 0u; layer < K3_LAYERS && status == SPARK_STATUS_OK; layer++)
+		for (index = 0u; index < s->bound[layer]->tensor_count && status == SPARK_STATUS_OK; index++)
+		{
+			const SparkK3PackEntry *entry = &s->bound[layer]->tensors[index].entry;
+			const uint64_t start = base + entry->payload_offset;
+			if ( start < pack_offset + bytes && start + entry->bytes > pack_offset &&
+				!(s->ranges[layer].experts.bytes != 0u && start >= s->ranges[layer].experts.offset &&
+				  start < s->ranges[layer].experts.offset + s->ranges[layer].experts.bytes) )
+				status = K3StreamedCopyTensor(s, start, entry->bytes, pack_offset, bytes, destination);
+		}
+	return status;
 }
 
 static SparkStatus K3StreamedReadPartner(void *context, uint64_t pack_offset, uint64_t bytes, uint8_t *destination)
