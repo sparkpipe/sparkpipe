@@ -1629,7 +1629,7 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	if ( status == SPARK_STATUS_OK && state->tap_stream != 0 && state->tap_socket < 0 && state->tap_count != 0u &&
 		state->runner_config.tp_rank == state->tap_rank && StageServingNowNs() >= state->tap_retry_ns )
 		(void)StageServingTapStreamConnect(state, STAGE_SERVING_TAP_RECONNECT_MS);
-	if ( status == SPARK_STATUS_OK && StageServingTapOpen(state) != 0u && state->tap_full == 0u )
+	if ( status == SPARK_STATUS_OK && StageServingTapOpen(state) != 0u && state->tap_full == 0u && (dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u )
 		StageServingTapEmit(state, submission, rows, active, steps, verify != 0u ? kept : 0);
 	finished = StageServingFinish(state, active, row_slots, bound, sequence_ids, next_positions, steps - 1u, verify, status);
 	if ( state->saves_held != 0u && (dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u )

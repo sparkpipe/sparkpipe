@@ -92,7 +92,7 @@ static void MoeBuffers(K3LayerBuffers *b,uint32_t rank)
 	b->group_tile_prefix_w1 = MoeAlloc<uint32_t>(K3_EXPERTS + 1u);
 	b->group_tile_prefix_w2 = MoeAlloc<uint32_t>(K3_EXPERTS + 1u);
 	b->gate_up_bf16 = MoeAlloc<uint16_t>((uint64_t)MOE_PACKED * K3_ROUTED_EXPERT_HIDDEN);
-	b->intermediate_bf16 = MoeAlloc<uint16_t>((uint64_t)MOE_PACKED * MOE_CHANNELS);
+	b->intermediate_bf16 = MoeAlloc<uint16_t>((uint64_t)MOE_PACKED * MOE_CHANNELS * MOE_SHARDS);
 	b->shared_mid_bf16 = MoeAlloc<uint16_t>((uint64_t)MOE_ROWS * MOE_SHARED_IN);
 	b->shared_out_bf16 = MoeAlloc<uint16_t>((uint64_t)MOE_ROWS * K3_HIDDEN);
 	b->attnres_partial_bf16 = MoeAlloc<uint16_t>((uint64_t)MOE_ROWS * K3_HIDDEN);
@@ -265,18 +265,20 @@ int main(void)
 		MOE_CUDA(cudaDeviceSynchronize());
 	}
 	MoeBuffers(&streamed,0u);
-	MOE_CUDA(cudaMemcpy(streamed.hidden_bf16,hidden,(uint64_t)MOE_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
-	MOE_CUDA(cudaMemcpy(streamed.attnres_partial_bf16,partial,(uint64_t)MOE_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
 	MOE_CUDA(cudaStreamCreate(&stream));
 	K3StreamedJoin join;
 	join.weight = MoeAlloc<uint16_t>((uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM);
 	join.weight_capacity = (uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM;
 	join.activation = MoeAlloc<uint16_t>((uint64_t)MOE_ROWS * K3_MLA_HEADS * K3_V_HEAD_DIM);
 	join.activation_capacity = (uint64_t)MOE_ROWS * K3_MLA_HEADS * K3_V_HEAD_DIM;
-	MoeCheck(K3StreamedMoe<LmMxfp4>(&streamed,shards.data(),MOE_SHARDS,&join,latent_accumulator,MOE_ROWS,MOE_PACKED,48u,stream) == LM_LAUNCH_OK,
-		"the streamed MoE runs all sixteen shards on one device");
-	MOE_CUDA(cudaStreamSynchronize(stream));
+	for (uint32_t members = 1u; members <= MOE_SHARDS; members *= 4u)
 	{
+		char what[160];
+		MOE_CUDA(cudaMemcpy(streamed.hidden_bf16,hidden,(uint64_t)MOE_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
+		MOE_CUDA(cudaMemcpy(streamed.attnres_partial_bf16,partial,(uint64_t)MOE_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
+		snprintf(what,sizeof(what),"the streamed MoE runs all sixteen shards on one device, %u shards per expert down projection",members);
+		MoeCheck(K3StreamedMoe<LmMxfp4>(&streamed,shards.data(),MOE_SHARDS,members,&join,latent_accumulator,MOE_ROWS,MOE_PACKED,48u,stream) == LM_LAUNCH_OK,what);
+		MOE_CUDA(cudaStreamSynchronize(stream));
 		std::vector<uint16_t> reference((uint64_t)MOE_ROWS * K3_HIDDEN),candidate(reference.size()),before(reference.size());
 		std::vector<uint32_t> routes_reference(MOE_PACKED),routes_candidate(MOE_PACKED);
 		double worst = 0.0,scale = 0.0,delta_scale = 0.0;
@@ -302,8 +304,8 @@ int main(void)
 		MoeCheck(memcmp(routes_reference.data(),routes_candidate.data(),MOE_PACKED * 4u) == 0,"both paths route every token to the same sixteen experts");
 		MoeCheck(delta_scale > 0.0,"the MoE changes the residual");
 		MoeCheck(worst <= 0.02 * delta_scale,"the streamed MoE matches TP16 within 2% of the largest MoE contribution");
-		printf("%s streamed MoE vs TP16: worst |diff| %.4g, largest MoE contribution %.4g, largest output %.4g, nonfinite %llu\n",
-			moe_failures == 0 ? "PASS" : "FAIL",worst,delta_scale,scale,(unsigned long long)nonfinite);
+		printf("%s streamed MoE vs TP16, %u shards per down projection: worst |diff| %.4g, largest MoE contribution %.4g, largest output %.4g, nonfinite %llu\n",
+			moe_failures == 0 ? "PASS" : "FAIL",members,worst,delta_scale,scale,(unsigned long long)nonfinite);
 	}
 	return moe_failures != 0;
 }

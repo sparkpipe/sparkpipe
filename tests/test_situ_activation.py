@@ -73,7 +73,7 @@ int main(int argc, char **argv)
 	blockDim.x = 32;
 	for (blockIdx.x = 0; blockIdx.x < count; blockIdx.x++)
 		for (threadIdx.x = 0; threadIdx.x < 32; threadIdx.x++)
-			LmSituMulKernel<32>(rows_bf16,output_bf16,1u,beta,linear_beta);
+			LmSituMulKernel<32>(rows_bf16,output_bf16,1u,1u,beta,linear_beta);
 	return(fwrite(output_bf16,2,count,stdout) == count ? 0 : 2);
 }
 """

@@ -61,25 +61,46 @@ static int32_t K3StreamedMoeBegin(K3LayerBuffers *b, const K3LayerWeights *shard
 }
 
 template<class Format>
-static int32_t K3StreamedMoeShard(K3LayerBuffers *b, const K3LayerWeights *weights, uint32_t shard, uint32_t first, uint32_t shard_count, const K3StreamedJoin *join,
-	float *latent_accumulator, uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3StreamedMoeShard(K3LayerBuffers *b, const K3LayerWeights *weights, uint32_t shard, uint32_t member, uint32_t members, uint32_t shard_count,
+	const K3StreamedJoin *join, uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
 {
 	const uint32_t shared = K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE);
+	uint32_t channels;
 	int32_t status;
-	if ( weights == 0 || shard >= shard_count || join == 0 || latent_accumulator == 0 || weights->expert_w1_weight == 0 || weights->expert_w2_weight == 0 )
+	if ( weights == 0 || shard >= shard_count || member >= members || join == 0 || weights->expert_w1_weight == 0 || weights->expert_w2_weight == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
 	K3BindLayer(weights,b);
 	b->tp_rank = shard;
-	status = K3LayerMoeCells<Format>(b,rows,packed_rows,multiprocessors,stream,1u);
-	if ( status == LM_LAUNCH_OK )
-		status = K3StreamedAccumulate(latent_accumulator,b->latent_bf16,(uint64_t)rows * K3_ROUTED_EXPERT_HIDDEN,first,stream);
-	if ( status == LM_LAUNCH_OK )
-		status = K3LayerSharedUp<Format>(b,rows,b->shared_mid_bf16,multiprocessors,stream);
+	channels = b->expert_w1_output / 2u;
+	if ( b->tp_sharded == 0u || b->expert_interleave == 0u || b->expert_w2_input != channels )
+		return(LM_LAUNCH_ERR_SHAPE);
+	status = LmCellMmaExperts(b->expert_w1_weight,b->latent_full_bf16,b->gate_up_bf16,b->group_row_offset,b->route_source_token,K3_EXPERTS,packed_rows,0u,
+		K3_ROUTED_EXPERT_HIDDEN,b->expert_w1_output,b->expert_tile_k,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), packed_rows, K3_LAYER_THREADS, 0, stream,
+		b->gate_up_bf16,b->intermediate_bf16 + (uint64_t)member * channels,channels,(uint64_t)members * channels,K3_SITU_BETA,K3_SITU_LINEAR_BETA);
+	status = K3LayerSharedUp<Format>(b,rows,b->shared_mid_bf16,multiprocessors,stream);
 	if ( status == LM_LAUNCH_OK )
 		status = K3StreamedJoinColumns(join->activation,shard_count * shared,shard * shared,b->shared_mid_bf16,shared,rows,stream);
 	if ( status == LM_LAUNCH_OK )
 		status = K3StreamedJoinColumns(join->weight,shard_count * shared,shard * shared,b->shared_w2_weight,shared,K3_HIDDEN,stream);
 	return(status);
+}
+
+static int32_t K3StreamedMoeDown(K3LayerBuffers *b, const void *const *down_weights, uint32_t members, uint32_t first, float *latent_accumulator, uint32_t rows,
+	uint32_t packed_rows, cudaStream_t stream)
+{
+	int32_t status;
+	if ( down_weights == 0 || members == 0u || members > LM_CELL_MMA_MAX_SEGMENTS || latent_accumulator == 0 )
+		return(LM_LAUNCH_ERR_SHAPE);
+	status = LmCellMmaExpertsSegmented(down_weights,members,b->intermediate_bf16,b->gate_up_bf16,b->group_row_offset,0,K3_EXPERTS,packed_rows,1u,
+		members * b->expert_w2_input,K3_ROUTED_EXPERT_HIDDEN,b->expert_tile_k,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LM_LAUNCH((LmMoeFinalizeKernel<K3_LAYER_THREADS>), dim3((K3_ROUTED_EXPERT_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows)), K3_LAYER_THREADS, 0, stream,
+		b->gate_up_bf16,b->route_packed_row,b->route_weight,b->latent_bf16,rows,K3_TOP_K,K3_ROUTED_EXPERT_HIDDEN);
+	return(K3StreamedAccumulate(latent_accumulator,b->latent_bf16,(uint64_t)rows * K3_ROUTED_EXPERT_HIDDEN,first,stream));
 }
 
 template<class Format>
@@ -110,13 +131,22 @@ static int32_t K3StreamedMoeEnd(K3LayerBuffers *b, const K3LayerWeights *shards,
 }
 
 template<class Format>
-static int32_t K3StreamedMoe(K3LayerBuffers *b, const K3LayerWeights *shards, uint32_t shard_count, const K3StreamedJoin *join, float *latent_accumulator,
-	uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3StreamedMoe(K3LayerBuffers *b, const K3LayerWeights *shards, uint32_t shard_count, uint32_t members, const K3StreamedJoin *join,
+	float *latent_accumulator, uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
 {
+	const void *down_weights[LM_CELL_MMA_MAX_SEGMENTS];
 	uint32_t shard;
-	int32_t status = K3StreamedMoeBegin<Format>(b,shards,shard_count,join,latent_accumulator,rows,packed_rows,multiprocessors,stream);
+	int32_t status;
+	if ( members == 0u || members > LM_CELL_MMA_MAX_SEGMENTS || shard_count % members != 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	status = K3StreamedMoeBegin<Format>(b,shards,shard_count,join,latent_accumulator,rows,packed_rows,multiprocessors,stream);
 	for (shard = 0u; shard < shard_count && status == LM_LAUNCH_OK; shard++)
-		status = K3StreamedMoeShard<Format>(b,&shards[shard],shard,shard == 0u ? 1u : 0u,shard_count,join,latent_accumulator,rows,packed_rows,multiprocessors,stream);
+	{
+		down_weights[shard % members] = shards[shard].expert_w2_weight;
+		status = K3StreamedMoeShard<Format>(b,&shards[shard],shard,shard % members,members,shard_count,join,rows,packed_rows,multiprocessors,stream);
+		if ( status == LM_LAUNCH_OK && shard % members == members - 1u )
+			status = K3StreamedMoeDown(b,down_weights,members,shard + 1u == members ? 1u : 0u,latent_accumulator,rows,packed_rows,stream);
+	}
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	return(K3StreamedMoeEnd<Format>(b,shards,shard_count,join,latent_accumulator,rows,multiprocessors,stream));
@@ -747,7 +777,7 @@ static int32_t K3StreamedSlice(K3LayerBuffers *b, const K3LayerWeights *weights,
 			break;
 		status = layer < K3_FIRST_ROUTED_LAYER
 			? K3StreamedDenseMlp<Format>(b,shards,shard_count,partial,hidden_accumulator,rows,multiprocessors,stream)
-			: K3StreamedMoe<Format>(b,shards,shard_count,join,latent_accumulator,rows,packed_rows,multiprocessors,stream);
+			: K3StreamedMoe<Format>(b,shards,shard_count,1u,join,latent_accumulator,rows,packed_rows,multiprocessors,stream);
 	}
 	if ( status != LM_LAUNCH_OK )
 		return(status);

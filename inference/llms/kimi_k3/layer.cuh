@@ -1103,7 +1103,7 @@ static int32_t K3LayerSharedUp(const K3LayerBuffers *b, uint32_t rows, uint16_t 
 		return(status);
 	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		b->gate_up_bf16,intermediate,
-		K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE),
+		K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE),(uint64_t)K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE),
 		K3_SITU_BETA,K3_SITU_LINEAR_BETA);
 	return(LM_LAUNCH_OK);
 }
@@ -1157,7 +1157,7 @@ static int32_t K3LayerMoeCells(const K3LayerBuffers *b, uint32_t rows,
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), packed_rows, K3_LAYER_THREADS, 0, stream,
-		b->gate_up_bf16,b->intermediate_bf16,channels,K3_SITU_BETA,K3_SITU_LINEAR_BETA);
+		b->gate_up_bf16,b->intermediate_bf16,channels,(uint64_t)channels,K3_SITU_BETA,K3_SITU_LINEAR_BETA);
 	status = rows > LM_SKINNY_ROWS_WIDE && b->row_invariant == 0u ?
 		LmCellMmaExperts(b->expert_w2_weight,b->intermediate_bf16,b->gate_up_bf16,
 			b->group_row_offset,0,K3_EXPERTS,packed_rows,1u,channels,
@@ -1239,7 +1239,7 @@ static int32_t K3LayerMoeWeighted(const K3LayerBuffers *b, uint32_t rows,
 	}
 	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), packed_rows, K3_LAYER_THREADS, 0, stream,
 		b->gate_up_bf16,b->intermediate_bf16,
-		K3_EXPERT_INTERMEDIATE,
+		K3_EXPERT_INTERMEDIATE,(uint64_t)K3_EXPERT_INTERMEDIATE,
 		K3_SITU_BETA,K3_SITU_LINEAR_BETA);
 	memset(&gemm, 0, sizeof(gemm));
 	gemm.scale_a = LmScaleTensorNone();
@@ -1314,7 +1314,7 @@ static int32_t K3LayerDenseMlpBody(const K3LayerBuffers *b, uint32_t rows, uint1
 		return(status);
 	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		b->gate_up_bf16,b->intermediate_bf16,
-		K3_RANK_DIM(b,dense_down_input,K3_DENSE_INTERMEDIATE),
+		K3_RANK_DIM(b,dense_down_input,K3_DENSE_INTERMEDIATE),(uint64_t)K3_RANK_DIM(b,dense_down_input,K3_DENSE_INTERMEDIATE),
 		K3_SITU_BETA,K3_SITU_LINEAR_BETA);
 	return(K3Project<LmBf16Format>(b,b->intermediate_bf16,b->dense_down_weight,
 		b->dense_down_scale,destination,
