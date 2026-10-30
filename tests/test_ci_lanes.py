@@ -8,7 +8,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import ci_lanes
 
-LANE_TOKENS = re.compile(r"""(?<![\w.-])site(?:/|["']\s*[,)/])|sparkpipe_pay|site_terms|site_kr_networks|brand_logo|hyor-io\.conf|hyor\.io|sparkpipe-ai-ssl|sparkpipe-lang\.conf|sparkpipe-pay\.|rspamd-dkim_signing|PAYMENTS\.md|LITELLM_FRONTEND|docs/brand""")
+LANE_TOKENS = re.compile(r"""(?<![\w.-])site(?:/|["']\s*[,)/])|sparkpipe_pay|site_terms|site_kr_networks|brand_logo|hyor-io\.conf|hyor\.io|sparkpipe-ai-ssl|sparkpipe-lang\.conf|sparkpipe-pay\.|rspamd-(?:dkim_signing|actions|redis)|postfix-ma(?:in|ster)\.cf|dovecot-(?:10-auth|99-sparkpipe)|certbot-reload-mail|PAYMENTS\.md|LITELLM_FRONTEND|docs/brand""")
 WHOLE_TREE = re.compile(r"""\bROOT\s*\.rglob\(|os\.walk\(\s*ROOT\b|["']ls-files["']|\(\s*["']tests["']\s*,\s*["']tools["']""")
 
 
@@ -16,6 +16,7 @@ def check_classification(failures):
     cases = [
         (["site/buy.html", "site/terms/hourly-en.md", "tools/sparkpipe_pay.py", "tests/test_pay.py", "docs/PAYMENTS.md"], False),
         (["deployment/vps/hyor.io/index.html", "deployment/vps/sparkpipe-pay.service", "docs/brand/hyor-ai/README.md"], False),
+        (["deployment/vps/postfix-main.cf", "deployment/vps/dovecot-99-sparkpipe.conf", "deployment/vps/certbot-reload-mail-services.sh", "docs/VPS_MAIL.md"], False),
         ([], False),
         (["site/buy.html", "inference/kernels/x.cu"], True),
         (["README.md"], False),
