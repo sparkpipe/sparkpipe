@@ -178,6 +178,13 @@ SPARK_MATH_FN float SparkMathClampedGlu(float activated, float up, float limit)
 	return(SPARK_MATH_FMIN(activated, limit) * SPARK_MATH_FMIN(SPARK_MATH_FMAX(up, -limit), limit));
 }
 
+SPARK_MATH_FN float SparkMathGateLimitedGlu(float gate, float up, float limit)
+{
+	const float limited = SPARK_MATH_FMIN(gate, limit);
+	const float clamped = SPARK_MATH_FMIN(SPARK_MATH_FMAX(up, -limit), limit);
+	return(SparkMathSilu(limited) * clamped);
+}
+
 SPARK_MATH_FN float SparkMathGeluTanh(float value)
 {
 	const float cube = value * value * value;

@@ -20,11 +20,13 @@
 #define SPARK_GATED_GELU_TANH 1u
 #define SPARK_GATED_SILU_ROUNDED 2u
 #define SPARK_GATED_SILU_CLAMP 3u
+#define SPARK_GATED_SILU_GATE_LIMIT 4u
 #define SPARK_HEAD_GATE_SOFTPLUS 0u
 #define SPARK_HEAD_GATE_SIGMOID_BF16 1u
 #define SPARK_FP8_SCALE_K 128u
 #define SPARK_FP8_CHUNK 16u
 #define SPARK_MXFP4_GROUP 32u
+#define SPARK_MXFP8_GROUP 32u
 #define SPARK_NVFP4_GROUP 16u
 #define SPARK_NVFP4_CHUNK 32u
 #define SPARK_NVFP4_LANES(chunks) ((chunks) >= 32u ? 32u : (chunks) >= 16u ? 16u : 8u)
@@ -160,6 +162,7 @@ typedef struct SparkGemvParams
 	uint32_t row_exact;
 	uint32_t route_divisor;
 	uint32_t scale_stride;
+	uint32_t scale_group;
 } SparkGemvParams;
 
 typedef struct SparkConvParams
@@ -291,5 +294,19 @@ typedef struct SparkHyperParams
 	float divisor;
 	uint32_t pad[3];
 } SparkHyperParams;
+
+#define SPARK_HC_MAX_STREAMS 4u
+
+typedef struct SparkHcParams
+{
+	uint32_t rows;
+	uint32_t streams;
+	uint32_t width;
+	uint32_t mixes;
+	float norm_epsilon;
+	float hc_epsilon;
+	float post_magnitude;
+	uint32_t pad;
+} SparkHcParams;
 
 #endif

@@ -74,6 +74,7 @@ typedef struct SparkDeviceWeight
 {
 	SparkTensor values;
 	SparkTensor scale;
+	uint32_t scale_group;
 } SparkDeviceWeight;
 
 typedef struct SparkDeviceStage

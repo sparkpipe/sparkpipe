@@ -206,6 +206,17 @@ SparkStatus SparkDeviceStageLayerWeight(SparkDeviceStage *stage, const SparkStag
 	SparkStatus status;
 	memset(weight,0,sizeof(*weight));
 	snprintf(key,sizeof(key),"layers.%u.%s",layer,name);
+	if ( SparkNamedPackEntryLoad(&stage->pack,key,&entry) == SPARK_STATUS_OK && strcmp(entry.kind,"fp8") == 0 )
+	{
+		if ( columns % SPARK_MXFP8_GROUP != 0u )
+			return(SparkDeviceStageRefuse(stage,SPARK_STATUS_SCHEMA_ERROR,"an MXFP8 weight's inputs are whole groups of 32"));
+		snprintf(scale_key,sizeof(scale_key),"%s_scale",key);
+		weight->scale_group = SPARK_MXFP8_GROUP;
+		status = SparkDeviceStageTensor(stage,weights,key,"fp8",rows * columns,&weight->values);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageTensor(stage,weights,scale_key,"u8",rows * (columns / SPARK_MXFP8_GROUP),&weight->scale);
+		return(status);
+	}
 	if ( SparkNamedPackEntryLoad(&stage->pack,key,&entry) != SPARK_STATUS_OK || strcmp(entry.kind,"fp8_e4m3") != 0 )
 		return(SparkDeviceStageTensor(stage,weights,key,"bf16",rows * columns * 2u,&weight->values));
 	snprintf(scale_key,sizeof(scale_key),"%s.scale",key);

@@ -125,3 +125,81 @@ kernel void spark_hyper_add(constant SparkHyperParams &p [[buffer(0)]], device u
 	const float added = SparkMathHyperAddend(SparkMathBf16ToFloat(gated[at]), SparkMathBf16ToFloat(conv[at]));
 	streams[at] = SparkMathFloatToBf16(SparkMathBf16ToFloat(streams[at]) + added);
 }
+
+template <uint MIXES>
+kernel void spark_hc_mix(constant SparkHcParams &p [[buffer(0)]], device const ushort *streams [[buffer(1)]], device const float *fn [[buffer(2)]],
+	device const float *base [[buffer(3)]], device const float *scale [[buffer(4)]], device float *post [[buffer(5)]], device ushort *mixed [[buffer(6)]],
+	uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]],
+	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
+{
+	threadgroup float reduction[(MIXES + 1u) * 32u];
+	threadgroup float weights[SPARK_HC_MAX_STREAMS];
+	const uint flat = p.streams * p.width;
+	device const ushort *source = streams + (ulong)row * flat;
+	float dot[MIXES + 1u];
+	for ( uint m = 0u; m <= MIXES; m++ )
+		dot[m] = 0.0f;
+	for ( uint k = tid; k < flat; k += threads )
+	{
+		const float x = SparkMathBf16ToFloat(source[k]);
+		for ( uint m = 0u; m < MIXES; m++ )
+			dot[m] = fma(x, fn[(ulong)m * flat + k], dot[m]);
+		dot[MIXES] = fma(x, x, dot[MIXES]);
+	}
+	for ( uint m = 0u; m <= MIXES; m++ )
+	{
+		const float value = simd_sum(dot[m]);
+		if ( lane == 0u )
+			reduction[m * 32u + simd] = value;
+	}
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	if ( tid == 0u )
+	{
+		float total[MIXES + 1u];
+		for ( uint m = 0u; m <= MIXES; m++ )
+		{
+			total[m] = 0.0f;
+			for ( uint w = 0u; w < simds; w++ )
+				total[m] += reduction[m * 32u + w];
+		}
+		const float inverse = SparkMathRmsScale(total[MIXES], float(flat), p.norm_epsilon);
+		for ( uint s = 0u; s < p.streams; s++ )
+		{
+			weights[s] = SparkMathSigmoid(total[s] * inverse * scale[0] + base[s]) + p.hc_epsilon;
+			if ( MIXES > p.streams )
+				post[(ulong)row * p.streams + s] = SparkMathScaledSigmoid(p.post_magnitude, total[p.streams + s] * inverse * scale[1] + base[p.streams + s]) +
+					p.hc_epsilon;
+		}
+	}
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	for ( uint d = tid; d < p.width; d += threads )
+	{
+		float total = 0.0f;
+		for ( uint s = 0u; s < p.streams; s++ )
+			total = fma(weights[s], SparkMathBf16ToFloat(source[s * p.width + d]), total);
+		mixed[(ulong)row * p.width + d] = SparkMathFloatToBf16(total);
+	}
+}
+
+template [[host_name("spark_hc_mix8")]] kernel void spark_hc_mix<8u>(constant SparkHcParams &p [[buffer(0)]], device const ushort *streams [[buffer(1)]],
+	device const float *fn [[buffer(2)]], device const float *base [[buffer(3)]], device const float *scale [[buffer(4)]], device float *post [[buffer(5)]],
+	device ushort *mixed [[buffer(6)]], uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+	uint threads [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]],
+	uint simds [[simdgroups_per_threadgroup]]);
+template [[host_name("spark_hc_mix4")]] kernel void spark_hc_mix<4u>(constant SparkHcParams &p [[buffer(0)]], device const ushort *streams [[buffer(1)]],
+	device const float *fn [[buffer(2)]], device const float *base [[buffer(3)]], device const float *scale [[buffer(4)]], device float *post [[buffer(5)]],
+	device ushort *mixed [[buffer(6)]], uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+	uint threads [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]],
+	uint simds [[simdgroups_per_threadgroup]]);
+
+kernel void spark_hc_post(constant SparkHcParams &p [[buffer(0)]], device ushort *streams [[buffer(1)]], device const float *post [[buffer(2)]],
+	device const ushort *output [[buffer(3)]], uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+	uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint row = group.y, index = group.x * group_size.x + tid;
+	if ( index >= p.streams * p.width )
+		return;
+	const ulong at = (ulong)row * p.streams * p.width + index;
+	streams[at] = SparkMathFloatToBf16(fma(post[(ulong)row * p.streams + index / p.width], SparkMathBf16ToFloat(output[(ulong)row * p.width + index % p.width]),
+		SparkMathBf16ToFloat(streams[at])));
+}

@@ -1142,6 +1142,12 @@ and the multidev docs on 2026-09-28. Line numbers are in
     value before the SiLU, and calling `SparkMathClampedGlu` reorders those
     instructions (same values, different code), so it keeps its text until
     a CUDA change with its own qualification takes the shared one;
+  - the gate-limited GLU (`SparkMathGateLimitedGlu`, K-EXAONE's last 16
+    layers: the gate clamped above before the SiLU, the up value to
+    `+-limit`) is Metal's; CUDA's `LmSiluMulGateLimitKernel` and
+    `LmSwigluPackedValue` (every MoE stage) compute the same values, but
+    calling the shared function loads the up value before the gate's clamp
+    and changes their PTX, so they keep their text the same way;
   - rotary angles (CUDA's `__powf(theta, -2i/d)` in the kernel against
     Metal's host table in double), the delta-rule cell update,
     online-softmax merges and the log-probability reduction;

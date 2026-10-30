@@ -46,7 +46,8 @@ kernel void spark_gated_mul(constant SparkSiluMulParams &p [[buffer(0)]], device
 	const float gate = SparkMathBf16ToFloat(source[index]), up = SparkMathBf16ToFloat(source[p.dimension + index]);
 	const float activated = ACTIVATION == SPARK_GATED_GELU_TANH ? SparkMathRoundBf16(SparkMathGeluTanh(gate)) * up :
 		ACTIVATION == SPARK_GATED_SILU_ROUNDED ? SparkMathRoundBf16(SparkMathSilu(gate)) * up :
-		ACTIVATION == SPARK_GATED_SILU_CLAMP ? SparkMathClampedGlu(SparkMathSiluFast(gate), up, p.limit) : SparkMathSilu(gate) * up;
+		ACTIVATION == SPARK_GATED_SILU_CLAMP ? SparkMathClampedGlu(SparkMathSiluFast(gate), up, p.limit) :
+		ACTIVATION == SPARK_GATED_SILU_GATE_LIMIT ? SparkMathGateLimitedGlu(gate, up, p.limit) : SparkMathSilu(gate) * up;
 	output[(ulong)row * p.output_stride + index] = SparkMathFloatToBf16(activated);
 }
 
@@ -62,6 +63,9 @@ template [[host_name("spark_silu_rounded_mul")]] kernel void spark_gated_mul<SPA
 template [[host_name("spark_silu_clamp_mul")]] kernel void spark_gated_mul<SPARK_GATED_SILU_CLAMP>(constant SparkSiluMulParams &p [[buffer(0)]],
 	device const ushort *input [[buffer(1)]], device ushort *output [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]],
 	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
+template [[host_name("spark_silu_gate_limit_mul")]] kernel void spark_gated_mul<SPARK_GATED_SILU_GATE_LIMIT>(constant SparkSiluMulParams &p [[buffer(0)]],
+	device const ushort *input [[buffer(1)]], device ushort *output [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
 
 template <uint ACTIVATION>
 kernel void spark_gated_mul_routed(constant SparkSiluMulParams &p [[buffer(0)]], device const ushort *input [[buffer(1)]],
@@ -75,7 +79,8 @@ kernel void spark_gated_mul_routed(constant SparkSiluMulParams &p [[buffer(0)]],
 	device const ushort *source = input + (ulong)row * p.input_stride;
 	const float gate = SparkMathBf16ToFloat(source[index]), up = SparkMathBf16ToFloat(source[p.dimension + index]), weight = weights[row];
 	const float activated = ACTIVATION == SPARK_GATED_GELU_TANH ? SparkMathRoundBf16(SparkMathGeluTanhScaleFirst(gate)) * up * weight :
-		ACTIVATION == SPARK_GATED_SILU_CLAMP ? SparkMathClampedGlu(SparkMathSilu(gate), up, p.limit) * weight : SparkMathSilu(gate) * up * weight;
+		ACTIVATION == SPARK_GATED_SILU_CLAMP ? SparkMathClampedGlu(SparkMathSilu(gate), up, p.limit) * weight :
+		ACTIVATION == SPARK_GATED_SILU_GATE_LIMIT ? SparkMathGateLimitedGlu(gate, up, p.limit) * weight : SparkMathSilu(gate) * up * weight;
 	output[(ulong)row * p.output_stride + index] = SparkMathFloatToBf16(activated);
 }
 
@@ -88,6 +93,10 @@ template [[host_name("spark_gelu_tanh_mul_routed")]] kernel void spark_gated_mul
 template [[host_name("spark_silu_clamp_mul_routed")]] kernel void spark_gated_mul_routed<SPARK_GATED_SILU_CLAMP>(constant SparkSiluMulParams &p [[buffer(0)]],
 	device const ushort *input [[buffer(1)]], device const float *weights [[buffer(2)]], device ushort *output [[buffer(3)]],
 	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
+template [[host_name("spark_silu_gate_limit_mul_routed")]] kernel void spark_gated_mul_routed<SPARK_GATED_SILU_GATE_LIMIT>(
+	constant SparkSiluMulParams &p [[buffer(0)]], device const ushort *input [[buffer(1)]], device const float *weights [[buffer(2)]],
+	device ushort *output [[buffer(3)]], uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+	uint2 group_size [[threads_per_threadgroup]]);
 
 kernel void spark_scale_rows(constant SparkScaleParams &p [[buffer(0)]], device ushort *values [[buffer(1)]], uint index [[thread_position_in_grid]])
 {

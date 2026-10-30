@@ -942,7 +942,9 @@ static SparkStatus RoutedLinear(SparkDeviceStage *stage, SparkDeviceQueue *queue
 		return(SparkOpsLinearRoutedNvfp4(stage->ops,queue,x,matrix->values,matrix->scale,matrix->global,y,experts,count,params));
 	if ( matrix->codec == SPARK_WEIGHT_CODEC_BF16 )
 		return(SparkOpsLinearRouted(stage->ops,queue,x,matrix->values,y,experts,count,params));
-	return(SparkDeviceStageRefuse(stage,SPARK_STATUS_UNSUPPORTED,"routed experts take BF16, MXFP4 or NVFP4 weights"));
+	if ( matrix->codec == SPARK_WEIGHT_CODEC_FP8_E4M3 )
+		return(SparkOpsLinearRoutedMxfp8(stage->ops,queue,x,matrix->values,matrix->scale,y,experts,count,params));
+	return(SparkDeviceStageRefuse(stage,SPARK_STATUS_UNSUPPORTED,"routed experts take BF16, MXFP8, MXFP4 or NVFP4 weights"));
 }
 
 static SparkTensor ExpertPart(SparkTensor tensor, uint32_t experts, uint32_t expert)
@@ -1196,6 +1198,7 @@ SparkStatus SparkDeviceLinearWeight(SparkDeviceStage *stage, SparkDeviceQueue *q
 	params.output_stride = y_stride;
 	params.projection = stage->shape->projection;
 	params.row_exact = stage->step_exact;
-	params.scale_stride = (input_dimension + SPARK_FP8_SCALE_K - 1u) / SPARK_FP8_SCALE_K;
+	params.scale_group = w->scale_group;
+	params.scale_stride = w->scale_group != 0u ? input_dimension / w->scale_group : (input_dimension + SPARK_FP8_SCALE_K - 1u) / SPARK_FP8_SCALE_K;
 	return(SparkOpsLinearFp8(stage->ops,queue,x,w->values,w->scale,stage->dequant,y,&params));
 }
