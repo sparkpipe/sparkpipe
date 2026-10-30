@@ -33,6 +33,7 @@
 
 #define K3_STREAMED_ROUND_BLOCK_BYTES (2u << 20)
 #define K3_STREAMED_ROUND_RING 4u
+#define K3_STREAMED_DIRECT_ALIGN 4096u
 
 __global__ static void K3StreamedSumKernel(const uint8_t *blocks, uint64_t block_bytes, uint64_t pitch, uint64_t *sums)
 {
@@ -242,6 +243,8 @@ struct K3Streamed
 	uint64_t key_capacity;
 	int partner_fd;
 	int own_fd;
+	int partner_direct_fd;
+	int own_direct_fd;
 	const uint8_t *pool;
 	uint8_t *region;
 	uint64_t region_bytes;
@@ -325,7 +328,7 @@ static SparkStatus K3StreamedCopyTensor(const K3Streamed *s, uint64_t start, uin
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus K3StreamedPread(int fd, uint64_t pack_offset, uint64_t bytes, uint8_t *destination)
+static SparkStatus K3StreamedPreadSpan(int fd, uint64_t pack_offset, uint64_t bytes, uint8_t *destination)
 {
 	uint64_t done = 0u;
 	while ( done < bytes )
@@ -335,8 +338,28 @@ static SparkStatus K3StreamedPread(int fd, uint64_t pack_offset, uint64_t bytes,
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		done += (uint64_t)got;
 	}
-	(void)posix_fadvise(fd, (off_t)pack_offset, (off_t)bytes, POSIX_FADV_DONTNEED);
 	return SPARK_STATUS_OK;
+}
+
+static SparkStatus K3StreamedPread(int fd, int direct_fd, uint64_t pack_offset, uint64_t bytes, uint8_t *destination)
+{
+	const uint64_t head = (K3_STREAMED_DIRECT_ALIGN - pack_offset % K3_STREAMED_DIRECT_ALIGN) % K3_STREAMED_DIRECT_ALIGN;
+	uint64_t middle = 0u;
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( direct_fd >= 0 && head < bytes && ((uintptr_t)(destination + head) % K3_STREAMED_DIRECT_ALIGN) == 0u )
+		middle = (bytes - head) / K3_STREAMED_DIRECT_ALIGN * K3_STREAMED_DIRECT_ALIGN;
+	if ( middle == 0u )
+		status = K3StreamedPreadSpan(fd, pack_offset, bytes, destination);
+	else
+	{
+		status = K3StreamedPreadSpan(fd, pack_offset, head, destination);
+		if ( status == SPARK_STATUS_OK )
+			status = K3StreamedPreadSpan(direct_fd, pack_offset + head, middle, destination + head);
+		if ( status == SPARK_STATUS_OK )
+			status = K3StreamedPreadSpan(fd, pack_offset + head + middle, bytes - head - middle, destination + head + middle);
+	}
+	(void)posix_fadvise(fd, (off_t)pack_offset, (off_t)bytes, POSIX_FADV_DONTNEED);
+	return status;
 }
 
 static SparkStatus K3StreamedReadOwn(void *context, uint64_t pack_offset, uint64_t bytes, uint8_t *destination)
@@ -352,7 +375,7 @@ static SparkStatus K3StreamedReadOwn(void *context, uint64_t pack_offset, uint64
 			pack_offset + bytes <= s->ranges[layer].experts.offset + s->ranges[layer].experts.bytes )
 		{
 			if ( s->pool == 0 )
-				return K3StreamedPread(s->own_fd, pack_offset, bytes, destination);
+				return K3StreamedPread(s->own_fd, s->own_direct_fd, pack_offset, bytes, destination);
 			if ( cudaMemcpyAsync(destination, s->pool + pack_offset, (size_t)bytes, cudaMemcpyDefault, s->copy_stream) != cudaSuccess ||
 				cudaStreamSynchronize(s->copy_stream) != cudaSuccess )
 				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
@@ -376,7 +399,7 @@ static SparkStatus K3StreamedReadOwn(void *context, uint64_t pack_offset, uint64
 static SparkStatus K3StreamedReadPartner(void *context, uint64_t pack_offset, uint64_t bytes, uint8_t *destination)
 {
 	const K3Streamed *s = (const K3Streamed *)context;
-	return K3StreamedPread(s->partner_fd, pack_offset, bytes, destination);
+	return K3StreamedPread(s->partner_fd, s->partner_direct_fd, pack_offset, bytes, destination);
 }
 
 static SparkStatus K3StreamedGather(void *context, const void *mine, void *all, uint64_t bytes_per_rank)
@@ -411,6 +434,10 @@ static void K3StreamedDestroy(K3Streamed *s)
 		close(s->partner_fd);
 	if ( s->own_fd >= 0 )
 		close(s->own_fd);
+	if ( s->partner_direct_fd >= 0 )
+		close(s->partner_direct_fd);
+	if ( s->own_direct_fd >= 0 )
+		close(s->own_direct_fd);
 	for (index = 0u; index < SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS; index++)
 		if ( s->slot_done[index] != 0 )
 			(void)cudaEventDestroy(s->slot_done[index]);
@@ -633,6 +660,8 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 	memset(s, 0, sizeof(*s));
 	s->partner_fd = -1;
 	s->own_fd = -1;
+	s->partner_direct_fd = -1;
+	s->own_direct_fd = -1;
 	s->config = *config;
 	s->dispatch = dispatch;
 	s->module = module;
@@ -676,6 +705,8 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 	s->window.config.expert_capacity = expert_capacity;
 	s->partner_fd = open(config->partner_pack_path, O_RDONLY | O_CLOEXEC);
 	s->own_fd = own_pack_path != 0 ? open(own_pack_path, O_RDONLY | O_CLOEXEC) : -1;
+	s->partner_direct_fd = open(config->partner_pack_path, O_RDONLY | O_CLOEXEC | O_DIRECT);
+	s->own_direct_fd = own_pack_path != 0 ? open(own_pack_path, O_RDONLY | O_CLOEXEC | O_DIRECT) : -1;
 	status = s->partner_fd >= 0 && s->own_fd >= 0 ? K3StreamedBuffers(s) : SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK && (cudaStreamCreateWithFlags(&s->gather_stream, cudaStreamNonBlocking) != cudaSuccess ||
 		cudaStreamCreateWithFlags(&s->copy_stream, cudaStreamNonBlocking) != cudaSuccess) )
@@ -918,7 +949,7 @@ static SparkStatus K3StreamedStreamStep(K3Streamed *s, uint32_t layer, uint32_t 
 		uint8_t *landing = s->region + s->window.expert_slot[slot];
 		const uint64_t mark = K3StreamedNowNs();
 		memcpy(landing, s->region + s->window.own_staging, (size_t)half);
-		status = K3StreamedPread(s->own_fd, s->ranges[layer].experts.offset + half, half, landing + half);
+		status = K3StreamedPread(s->own_fd, s->own_direct_fd, s->ranges[layer].experts.offset + half, half, landing + half);
 		block = landing;
 		s->spent[3] += K3StreamedNowNs() - mark;
 	}
