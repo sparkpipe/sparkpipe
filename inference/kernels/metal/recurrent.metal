@@ -19,7 +19,7 @@ kernel void spark_causal_conv_silu(constant SparkConvParams &p [[buffer(0)]], de
 	for ( uint entry = 0u; entry < span; entry++ )
 		taps[entry] = SparkMathBf16ToFloat(slot[entry]);
 	for ( uint tap = 0u; tap < taps_count; tap++ )
-		weights[tap] = SparkMathBf16ToFloat(weight[channel * taps_count + tap]);
+		weights[tap] = p.weight_f32 != 0u ? ((device const float *)weight)[channel * taps_count + tap] : SparkMathBf16ToFloat(weight[channel * taps_count + tap]);
 	for ( uint row = row_begin[sequence]; row < row_begin[sequence + 1u]; row++ )
 	{
 		float total = 0.0f;
@@ -28,7 +28,8 @@ kernel void spark_causal_conv_silu(constant SparkConvParams &p [[buffer(0)]], de
 		taps[span - 1u] = SparkMathBf16ToFloat(input[(ulong)row * p.row_stride + channel]);
 		for ( uint tap = 0u; tap < taps_count; tap++ )
 			total += taps[tap * dilation] * weights[tap];
-		total = SparkMathRoundBf16(total);
+		if ( p.weight_f32 == 0u )
+			total = SparkMathRoundBf16(total);
 		output[(ulong)row * p.row_stride + channel] = SparkMathFloatToBf16(SparkMathSwishFast(total));
 	}
 	if ( p.commit != 0u )
@@ -36,16 +37,38 @@ kernel void spark_causal_conv_silu(constant SparkConvParams &p [[buffer(0)]], de
 			slot[entry] = SparkMathFloatToBf16(taps[entry]);
 }
 
+static inline float SparkDeltaPrenormed(constant SparkDeltaParams &p, ushort value, float inverse)
+{
+	return p.prenorm_epsilon != 0.0f ? SparkMathRoundBf16(SparkMathBf16ToFloat(value) * inverse) : SparkMathBf16ToFloat(value);
+}
+
 static inline void SparkDeltaNormalize(constant SparkDeltaParams &p, device const ushort *mix, device float *query, device float *key, uint head,
 	uint row, uint tid, uint threads, threadgroup float *scratch, uint lane, uint simd, uint simds)
 {
 	const uint D = p.key_dimension;
 	device const ushort *row_mix = mix + (ulong)row * p.mix_stride;
-	float q_sum = 0.0f, k_sum = 0.0f;
+	float q_sum = 0.0f, k_sum = 0.0f, q_first = 1.0f, k_first = 1.0f;
+	if ( p.prenorm_epsilon != 0.0f )
+	{
+		for ( uint i = tid; i < D; i += threads )
+		{
+			const float q = SparkMathBf16ToFloat(row_mix[p.query_offset + head * D + i]);
+			const float k = SparkMathBf16ToFloat(row_mix[p.key_offset + head * D + i]);
+			q_sum += q * q;
+			k_sum += k * k;
+		}
+		q_sum = SparkGroupSum(q_sum, scratch, lane, simd, simds);
+		k_sum = SparkGroupSum(k_sum, scratch, lane, simd, simds);
+		q_first = rsqrt(q_sum + p.prenorm_epsilon);
+		k_first = rsqrt(k_sum + p.prenorm_epsilon);
+		q_sum = 0.0f;
+		k_sum = 0.0f;
+		threadgroup_barrier(mem_flags::mem_threadgroup);
+	}
 	for ( uint i = tid; i < D; i += threads )
 	{
-		const float q = SparkMathBf16ToFloat(row_mix[p.query_offset + head * D + i]);
-		const float k = SparkMathBf16ToFloat(row_mix[p.key_offset + head * D + i]);
+		const float q = SparkDeltaPrenormed(p, row_mix[p.query_offset + head * D + i], q_first);
+		const float k = SparkDeltaPrenormed(p, row_mix[p.key_offset + head * D + i], k_first);
 		q_sum += q * q;
 		k_sum += k * k;
 	}
@@ -56,8 +79,8 @@ static inline void SparkDeltaNormalize(constant SparkDeltaParams &p, device cons
 	device float *k_out = key + ((ulong)row * p.key_heads + head) * D;
 	for ( uint i = tid; i < D; i += threads )
 	{
-		q_out[i] = SparkMathBf16ToFloat(row_mix[p.query_offset + head * D + i]) * q_scale;
-		k_out[i] = SparkMathBf16ToFloat(row_mix[p.key_offset + head * D + i]) * k_scale;
+		q_out[i] = SparkDeltaPrenormed(p, row_mix[p.query_offset + head * D + i], q_first) * q_scale;
+		k_out[i] = SparkDeltaPrenormed(p, row_mix[p.key_offset + head * D + i], k_first) * k_scale;
 	}
 }
 

@@ -12,7 +12,7 @@
 #define SPARK_GEMM_ROWS_THREADS 128u
 #define SPARK_KERNEL_SEQUENCE_NONE 0xffffffffu
 #define SPARK_BRANCH_NORM_MAX_DIMENSION 7680u
-#define SPARK_ROUTE_MAX_EXPERTS 512u
+#define SPARK_ROUTE_MAX_EXPERTS 1024u
 #define SPARK_ROUTE_MAX_TOP_K 16u
 #define SPARK_ROUTE_MAX_GROUPS 32u
 #define SPARK_ROUTE_SKIP 0xffffffffu
@@ -21,8 +21,10 @@
 #define SPARK_GATED_SILU_ROUNDED 2u
 #define SPARK_GATED_SILU_CLAMP 3u
 #define SPARK_GATED_SILU_GATE_LIMIT 4u
+#define SPARK_GATED_SITU 5u
 #define SPARK_HEAD_GATE_SOFTPLUS 0u
 #define SPARK_HEAD_GATE_SIGMOID_BF16 1u
+#define SPARK_HEAD_GATE_SIGMOID 2u
 #define SPARK_FP8_SCALE_K 128u
 #define SPARK_FP8_CHUNK 16u
 #define SPARK_MXFP4_GROUP 32u
@@ -68,6 +70,18 @@ typedef struct SparkNormParams
 	uint32_t weightless;
 } SparkNormParams;
 
+#define SPARK_ATTNRES_MAX_SOURCES 16u
+
+typedef struct SparkAttnResParams
+{
+	uint32_t rows;
+	uint32_t sources;
+	uint32_t dimension;
+	uint32_t score_stride;
+	float epsilon;
+	uint32_t pad[3];
+} SparkAttnResParams;
+
 typedef struct SparkGatedNormParams
 {
 	uint32_t rows;
@@ -80,7 +94,8 @@ typedef struct SparkGatedNormParams
 	float epsilon;
 	uint32_t sigmoid_gate;
 	uint32_t weight_f32;
-	uint32_t pad[2];
+	uint32_t round_norm;
+	uint32_t pad;
 } SparkGatedNormParams;
 
 typedef struct SparkBranchNormParams
@@ -146,7 +161,9 @@ typedef struct SparkHeadGateParams
 	uint32_t head_dimension;
 	uint32_t gate_stride;
 	uint32_t activation;
-	uint32_t pad[3];
+	uint32_t gate_head_stride;
+	uint32_t gate_offset;
+	uint32_t pad;
 } SparkHeadGateParams;
 
 typedef struct SparkGemvParams
@@ -174,7 +191,8 @@ typedef struct SparkConvParams
 	uint32_t kernel_taps;
 	uint32_t commit;
 	uint32_t dilation;
-	uint32_t pad[2];
+	uint32_t weight_f32;
+	uint32_t pad;
 } SparkConvParams;
 
 typedef struct SparkDeltaParams
@@ -199,6 +217,7 @@ typedef struct SparkDeltaParams
 	uint32_t beta_stride;
 	float minimum_log_decay;
 	uint32_t beta_mode;
+	float prenorm_epsilon;
 } SparkDeltaParams;
 
 #define SPARK_DELTA_BETA_SIGMOID 0u
@@ -254,7 +273,8 @@ typedef struct SparkSiluMulParams
 	uint32_t input_stride;
 	uint32_t output_stride;
 	float limit;
-	uint32_t pad[3];
+	float up_limit;
+	uint32_t pad[2];
 } SparkSiluMulParams;
 
 typedef struct SparkLogprobParams

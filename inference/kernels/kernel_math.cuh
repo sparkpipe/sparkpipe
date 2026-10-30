@@ -196,6 +196,12 @@ SPARK_MATH_FN float SparkMathGeluTanhScaleFirst(float value)
 	return(0.5f * value * (1.0f + SPARK_MATH_TANH(0.7978845608028654f * (value + 0.044715f * value * value * value))));
 }
 
+SPARK_MATH_FN float SparkMathSitu(float gate, float up, float beta, float linear_beta)
+{
+	const float activated = beta * SPARK_MATH_TANH(gate / beta) * SparkMathSigmoidFast(gate);
+	return(activated * (linear_beta > 0.0f ? linear_beta * SPARK_MATH_TANH(up / linear_beta) : up));
+}
+
 SPARK_MATH_FN float SparkMathSoftcap(float value, float cap)
 {
 	return(cap * SPARK_MATH_TANH(value / cap));

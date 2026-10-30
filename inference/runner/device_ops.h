@@ -127,6 +127,9 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_HC_POST_COMB,
 	SPARK_OPS_STREAM_MEAN,
 	SPARK_OPS_GEMV_FP8_ROUTED,
+	SPARK_OPS_SITU_MUL,
+	SPARK_OPS_ATTNRES_SCORE,
+	SPARK_OPS_ATTNRES_MIX,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -228,6 +231,10 @@ SparkStatus SparkOpsRouteCombineShared(SparkDeviceOps *ops, SparkDeviceQueue *qu
 SparkStatus SparkOpsSigmoidGateRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, SparkTensor logits, const SparkRouteParams *params);
 SparkStatus SparkOpsRouteSigmoid(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor bias, SparkTensor experts, SparkTensor weights,
 	const SparkRouteParams *params);
+SparkStatus SparkOpsAttnResScore(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor bank, SparkTensor partial, SparkTensor weight, SparkTensor scores,
+	const SparkAttnResParams *params);
+SparkStatus SparkOpsAttnResMix(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor bank, SparkTensor partial, SparkTensor scores, SparkTensor output,
+	const SparkAttnResParams *params);
 SparkStatus SparkOpsRmsNormBf16(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor weight, SparkTensor output,
 	const SparkNormParams *params);
 SparkStatus SparkOpsHcMix(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor fn, SparkTensor base, SparkTensor scale,

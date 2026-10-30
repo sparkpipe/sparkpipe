@@ -353,13 +353,9 @@ void LmSituMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__rest
 	uint32_t index;
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 	{
-		float gate = LmBf16ToFloat(gate_up_bf16[base + index]);
-		float up = LmBf16ToFloat(gate_up_bf16[base + dimension + index]);
-		float activated = beta * tanhf(gate / beta) *
-			SparkMathSigmoidFast(gate);
-		if (linear_beta > 0.0f)
-			up = linear_beta * tanhf(up / linear_beta);
-		output_bf16[out_base + index] = LmFloatToBf16(activated * up);
+		const float gate = LmBf16ToFloat(gate_up_bf16[base + index]);
+		const float up = LmBf16ToFloat(gate_up_bf16[base + dimension + index]);
+		output_bf16[out_base + index] = LmFloatToBf16(SparkMathSitu(gate, up, beta, linear_beta));
 	}
 }
 

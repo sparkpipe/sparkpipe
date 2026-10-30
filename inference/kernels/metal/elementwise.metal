@@ -47,7 +47,8 @@ kernel void spark_gated_mul(constant SparkSiluMulParams &p [[buffer(0)]], device
 	const float activated = ACTIVATION == SPARK_GATED_GELU_TANH ? SparkMathRoundBf16(SparkMathGeluTanh(gate)) * up :
 		ACTIVATION == SPARK_GATED_SILU_ROUNDED ? SparkMathRoundBf16(SparkMathSilu(gate)) * up :
 		ACTIVATION == SPARK_GATED_SILU_CLAMP ? SparkMathClampedGlu(SparkMathSiluFast(gate), up, p.limit) :
-		ACTIVATION == SPARK_GATED_SILU_GATE_LIMIT ? SparkMathGateLimitedGlu(gate, up, p.limit) : SparkMathSilu(gate) * up;
+		ACTIVATION == SPARK_GATED_SILU_GATE_LIMIT ? SparkMathGateLimitedGlu(gate, up, p.limit) :
+		ACTIVATION == SPARK_GATED_SITU ? SparkMathSitu(gate, up, p.limit, p.up_limit) : SparkMathSilu(gate) * up;
 	output[(ulong)row * p.output_stride + index] = SparkMathFloatToBf16(activated);
 }
 
@@ -64,6 +65,9 @@ template [[host_name("spark_silu_clamp_mul")]] kernel void spark_gated_mul<SPARK
 	device const ushort *input [[buffer(1)]], device ushort *output [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]],
 	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
 template [[host_name("spark_silu_gate_limit_mul")]] kernel void spark_gated_mul<SPARK_GATED_SILU_GATE_LIMIT>(constant SparkSiluMulParams &p [[buffer(0)]],
+	device const ushort *input [[buffer(1)]], device ushort *output [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
+template [[host_name("spark_situ_mul")]] kernel void spark_gated_mul<SPARK_GATED_SITU>(constant SparkSiluMulParams &p [[buffer(0)]],
 	device const ushort *input [[buffer(1)]], device ushort *output [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]],
 	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
 
@@ -204,14 +208,26 @@ kernel void spark_route_pinned(constant SparkRouteParams &p [[buffer(0)]], devic
 		SparkRouteWeights(p, probability, chosen, expert_scale, experts, weights, row);
 }
 
+static inline float SparkHeadGateActivation(uint activation, float logit)
+{
+	return activation == SPARK_HEAD_GATE_SIGMOID_BF16 ? SparkMathRoundBf16(SparkMathSigmoid(logit)) :
+		activation == SPARK_HEAD_GATE_SIGMOID ? SparkMathSigmoidFast(logit) : SparkMathSoftplusGate(logit);
+}
+
 kernel void spark_head_gate(constant SparkHeadGateParams &p [[buffer(0)]], device ushort *values [[buffer(1)]],
 	device const ushort *logits [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
 	uint2 group_size [[threads_per_threadgroup]])
 {
 	const uint head = group.x, row = group.y;
-	const float logit = SparkMathBf16ToFloat(logits[(ulong)row * p.gate_stride + head]);
-	const float gate = p.activation == SPARK_HEAD_GATE_SIGMOID_BF16 ? SparkMathRoundBf16(SparkMathSigmoid(logit)) : SparkMathSoftplusGate(logit);
 	device ushort *base = values + ((ulong)row * p.heads + head) * p.head_dimension;
+	if ( p.gate_head_stride != 0u )
+	{
+		device const ushort *gates = logits + (ulong)row * p.gate_stride + (ulong)head * p.gate_head_stride + p.gate_offset;
+		for ( uint index = tid; index < p.head_dimension; index += group_size.x )
+			base[index] = SparkMathFloatToBf16(SparkMathBf16ToFloat(base[index]) * SparkHeadGateActivation(p.activation, SparkMathBf16ToFloat(gates[index])));
+		return;
+	}
+	const float gate = SparkHeadGateActivation(p.activation, SparkMathBf16ToFloat(logits[(ulong)row * p.gate_stride + head]));
 	for ( uint index = tid; index < p.head_dimension; index += group_size.x )
 		base[index] = SparkMathFloatToBf16(SparkMathBf16ToFloat(base[index]) * gate);
 }

@@ -112,7 +112,10 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_hc_site",
 	"spark_hc_post_comb",
 	"spark_stream_mean",
-	"spark_gemv_fp8_routed"
+	"spark_gemv_fp8_routed",
+	"spark_situ_mul",
+	"spark_attnres_score",
+	"spark_attnres_mix"
 };
 
 static SparkStatus OpsRefuse(const char *operation, const char *reason)
@@ -448,14 +451,17 @@ static uint32_t OpsThreads(uint32_t width, uint32_t limit)
 
 SparkStatus SparkOpsHeadGate(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, SparkTensor logits, const SparkHeadGateParams *params)
 {
+	const uint64_t gate_width = params->gate_head_stride != 0u ? (uint64_t)(params->heads - 1u) * params->gate_head_stride + params->gate_offset +
+		params->head_dimension : params->heads;
 	SparkDeviceBinding bindings[2];
 	SparkStatus status;
-	if ( params->rows == 0u || params->heads == 0u || params->head_dimension == 0u || params->gate_stride < params->heads ||
-		(params->activation != SPARK_HEAD_GATE_SOFTPLUS && params->activation != SPARK_HEAD_GATE_SIGMOID_BF16) )
-		return(OpsRefuse("head_gate","rows, heads, a head width, a gate row holding every head and a known activation are required"));
+	if ( params->rows == 0u || params->heads == 0u || params->head_dimension == 0u || params->gate_stride < gate_width ||
+		(params->gate_head_stride != 0u && params->gate_head_stride < params->head_dimension) ||
+		(params->activation != SPARK_HEAD_GATE_SOFTPLUS && params->activation != SPARK_HEAD_GATE_SIGMOID_BF16 && params->activation != SPARK_HEAD_GATE_SIGMOID) )
+		return(OpsRefuse("head_gate","rows, heads, a head width, a gate row holding every head's gate and a known activation are required"));
 	status = OpsNeed("head_gate","values",values,(uint64_t)params->rows * params->heads * params->head_dimension * sizeof(uint16_t));
 	if ( status == SPARK_STATUS_OK )
-		status = OpsNeed("head_gate","logits",logits,OpsRowsBytes(params->rows,params->gate_stride,params->heads,2u));
+		status = OpsNeed("head_gate","logits",logits,OpsRowsBytes(params->rows,params->gate_stride,(uint32_t)gate_width,2u));
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	bindings[0] = OpsBind(values,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
@@ -697,7 +703,7 @@ SparkStatus SparkOpsCausalConv(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spa
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("causal_conv","row_begin",sequences->row_begin,((uint64_t)params->sequences + 1u) * 4u);
 	if ( status == SPARK_STATUS_OK )
-		status = OpsNeed("causal_conv","weight",weight,(uint64_t)params->channels * params->kernel_taps * 2u);
+		status = OpsNeed("causal_conv","weight",weight,(uint64_t)params->channels * params->kernel_taps * (params->weight_f32 != 0u ? 4u : 2u));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("causal_conv","window",window,(uint64_t)params->channels * SPARK_CONV_SPAN(params->kernel_taps,params->dilation) * 2u);
 	if ( status != SPARK_STATUS_OK )
@@ -1000,8 +1006,9 @@ SparkStatus SparkOpsGatedMul(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spark
 	SparkStatus status;
 	if ( params->rows == 0u || params->dimension == 0u || params->input_stride < 2u * params->dimension ||
 		(activation != SPARK_GATED_SILU && activation != SPARK_GATED_GELU_TANH && activation != SPARK_GATED_SILU_ROUNDED && activation != SPARK_GATED_SILU_CLAMP &&
-		activation != SPARK_GATED_SILU_GATE_LIMIT) || ((activation == SPARK_GATED_SILU_CLAMP || activation == SPARK_GATED_SILU_GATE_LIMIT) && !(params->limit > 0.0f)) )
-		return(OpsRefuse("gated_mul","rows, an input stride that holds the gate and up halves and a known activation are required"));
+		activation != SPARK_GATED_SILU_GATE_LIMIT && activation != SPARK_GATED_SITU) ||
+		((activation == SPARK_GATED_SILU_CLAMP || activation == SPARK_GATED_SILU_GATE_LIMIT || activation == SPARK_GATED_SITU) && !(params->limit > 0.0f)) )
+		return(OpsRefuse("gated_mul","rows, an input stride that holds the gate and up halves, a known activation and its positive limit are required"));
 	status = OpsNeed("gated_mul","input",input,OpsRowsBytes(params->rows,params->input_stride,2u * params->dimension,2u));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("gated_mul","output",output,OpsRowsBytes(params->rows,params->output_stride,params->dimension,2u));
@@ -1011,7 +1018,7 @@ SparkStatus SparkOpsGatedMul(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spark
 	bindings[1] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,activation == SPARK_GATED_GELU_TANH ? SPARK_OPS_GELU_TANH_MUL : activation == SPARK_GATED_SILU_ROUNDED ? SPARK_OPS_SILU_ROUNDED_MUL :
 		activation == SPARK_GATED_SILU_CLAMP ? SPARK_OPS_SILU_CLAMP_MUL : activation == SPARK_GATED_SILU_GATE_LIMIT ? SPARK_OPS_SILU_GATE_LIMIT_MUL :
-		SPARK_OPS_SILU_MUL,(params->dimension + 255u) / 256u,
+		activation == SPARK_GATED_SITU ? SPARK_OPS_SITU_MUL : SPARK_OPS_SILU_MUL,(params->dimension + 255u) / 256u,
 		params->rows,1u,256u,params,sizeof(*params),bindings,2u));
 }
 
@@ -1127,7 +1134,7 @@ SparkStatus SparkOpsRouteTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spar
 	SparkStatus status;
 	if ( params->rows == 0u || params->experts == 0u || params->experts > SPARK_ROUTE_MAX_EXPERTS || params->top_k == 0u ||
 		params->top_k > SPARK_ROUTE_MAX_TOP_K || params->top_k > params->experts || params->logit_stride < params->experts )
-		return(OpsRefuse("route_topk","rows, at most 512 experts, a top-k of at most 16 within them and a logit stride that holds them"));
+		return(OpsRefuse("route_topk","rows, at most 1,024 experts, a top-k of at most 16 within them and a logit stride that holds them"));
 	status = OpsNeed("route_topk","logits",logits,OpsRowsBytes(params->rows,params->logit_stride,params->experts,2u));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("route_topk","expert scale",expert_scale,(uint64_t)params->experts * sizeof(float));
@@ -1216,7 +1223,7 @@ SparkStatus SparkOpsRouteSigmoid(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 		params->top_k > SPARK_ROUTE_MAX_TOP_K || params->top_k > params->experts || params->logit_stride < params->experts ||
 		(params->groups > 1u && (params->groups > SPARK_ROUTE_MAX_GROUPS || params->experts % params->groups != 0u || params->experts / params->groups < 2u ||
 		params->topk_groups == 0u || params->topk_groups > params->groups || params->top_k > params->topk_groups * (params->experts / params->groups))) )
-		return(OpsRefuse("route_sigmoid","rows, at most 512 experts, a top-k of at most 16 within them, a logit stride that holds them, and expert groups "
+		return(OpsRefuse("route_sigmoid","rows, at most 1,024 experts, a top-k of at most 16 within them, a logit stride that holds them, and expert groups "
 			"of at least two that tile the experts and leave the open groups enough candidates"));
 	if ( launch.scale == 0.0f )
 		launch.scale = 1.0f;
@@ -1254,6 +1261,53 @@ SparkStatus SparkOpsRmsNormBf16(SparkDeviceOps *ops, SparkDeviceQueue *queue, Sp
 	bindings[1] = OpsBind(weight,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,SPARK_OPS_RMSNORM_BF16,params->rows,1u,1u,OpsThreads(params->dimension,1024u),params,sizeof(*params),bindings,3u));
+}
+
+static SparkStatus OpsAttnResShape(const char *operation, const SparkAttnResParams *params, SparkTensor bank, SparkTensor partial, SparkTensor scores)
+{
+	SparkStatus status;
+	if ( params->rows == 0u || params->dimension == 0u || params->sources == 0u || params->sources > SPARK_ATTNRES_MAX_SOURCES ||
+		params->score_stride < params->sources )
+		return(OpsRefuse(operation,"rows, a width and one to sixteen sources with a score row that holds them are required"));
+	status = params->sources > 1u ? OpsNeed(operation,"bank",bank,(uint64_t)(params->sources - 1u) * params->rows * params->dimension * sizeof(uint16_t)) :
+		SPARK_STATUS_OK;
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed(operation,"partial",partial,(uint64_t)params->rows * params->dimension * sizeof(uint16_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed(operation,"scores",scores,(uint64_t)params->rows * params->score_stride * sizeof(float));
+	return(status);
+}
+
+SparkStatus SparkOpsAttnResScore(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor bank, SparkTensor partial, SparkTensor weight, SparkTensor scores,
+	const SparkAttnResParams *params)
+{
+	SparkDeviceBinding bindings[4];
+	SparkStatus status = OpsAttnResShape("attnres_score",params,bank,partial,scores);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("attnres_score","weight",weight,(uint64_t)params->dimension * sizeof(uint16_t));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(params->sources > 1u ? bank : partial,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(partial,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(weight,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(scores,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_ATTNRES_SCORE,params->rows,params->sources,1u,OpsThreads(params->dimension,1024u),params,sizeof(*params),bindings,4u));
+}
+
+SparkStatus SparkOpsAttnResMix(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor bank, SparkTensor partial, SparkTensor scores, SparkTensor output,
+	const SparkAttnResParams *params)
+{
+	SparkDeviceBinding bindings[4];
+	SparkStatus status = OpsAttnResShape("attnres_mix",params,bank,partial,scores);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("attnres_mix","output",output,(uint64_t)params->rows * params->dimension * sizeof(uint16_t));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(params->sources > 1u ? bank : partial,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(partial,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(scores,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_ATTNRES_MIX,(params->dimension + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,4u));
 }
 
 static SparkStatus OpsHyperShape(const char *operation, const SparkHyperParams *params)

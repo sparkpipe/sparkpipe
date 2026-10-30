@@ -75,7 +75,11 @@ kernel void spark_rmsnorm_gate(constant SparkGatedNormParams &p [[buffer(0)]], d
 	{
 		float value;
 		if ( p.weight_f32 != 0u )
+		{
 			value = SparkMathBf16ToFloat(x[i]) * scale * ((device const float *)weight)[i];
+			if ( p.round_norm != 0u )
+				value = SparkMathRoundBf16(value);
+		}
 		else
 			value = SparkMathRoundBf16(SparkMathRoundBf16(SparkMathBf16ToFloat(x[i]) * scale) * SparkMathBf16ToFloat(weight[i]));
 		const float g_value = SparkMathBf16ToFloat(g[i]);
@@ -194,4 +198,63 @@ kernel void spark_rmsnorm_scaled(constant SparkBranchNormParams &p [[buffer(0)]]
 		const float normed = SparkMathRoundBf16(SparkMathBf16ToFloat(x[i]) * inverse);
 		output[(ulong)row * p.hidden_stride + i] = SparkMathFloatToBf16(SparkMathRoundBf16(normed * scale[i]) * p.output_scale);
 	}
+}
+
+static inline device const ushort *SparkAttnResSource(constant SparkAttnResParams &p, device const ushort *bank, device const ushort *partial, uint source,
+	uint row)
+{
+	return source + 1u == p.sources ? partial + (ulong)row * p.dimension : bank + ((ulong)source * p.rows + row) * p.dimension;
+}
+
+kernel void spark_attnres_score(constant SparkAttnResParams &p [[buffer(0)]], device const ushort *bank [[buffer(1)]],
+	device const ushort *partial [[buffer(2)]], device const ushort *weight [[buffer(3)]], device float *scores [[buffer(4)]],
+	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]],
+	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
+{
+	threadgroup float scratch[32];
+	const uint row = group.x, source = group.y, threads = group_size.x;
+	device const ushort *values = SparkAttnResSource(p, bank, partial, source, row);
+	float square = 0.0f, dot = 0.0f;
+	for ( uint i = tid; i < p.dimension; i += threads )
+	{
+		const float value = SparkMathBf16ToFloat(values[i]);
+		square += value * value;
+	}
+	square = SparkGroupSum(square, scratch, lane, simd, simds);
+	const float inverse = SparkMathRmsScale(square, float(p.dimension), p.epsilon);
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	for ( uint i = tid; i < p.dimension; i += threads )
+		dot = fma(SparkMathBf16ToFloat(values[i]) * inverse, SparkMathBf16ToFloat(weight[i]), dot);
+	dot = SparkGroupSum(dot, scratch, lane, simd, simds);
+	if ( tid == 0u )
+		scores[(ulong)row * p.score_stride + source] = dot;
+}
+
+kernel void spark_attnres_mix(constant SparkAttnResParams &p [[buffer(0)]], device const ushort *bank [[buffer(1)]],
+	device const ushort *partial [[buffer(2)]], device const float *scores [[buffer(3)]], device ushort *output [[buffer(4)]],
+	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
+{
+	threadgroup float weights[SPARK_ATTNRES_MAX_SOURCES];
+	const uint row = group.y, index = group.x * group_size.x + tid;
+	if ( tid == 0u )
+	{
+		device const float *score = scores + (ulong)row * p.score_stride;
+		float running_max = -INFINITY, running_sum = 0.0f;
+		for ( uint source = 0u; source < p.sources; source++ )
+			running_max = max(running_max, score[source]);
+		for ( uint source = 0u; source < p.sources; source++ )
+		{
+			weights[source] = SPARK_MATH_EXP_FAST(score[source] - running_max);
+			running_sum += weights[source];
+		}
+		for ( uint source = 0u; source < p.sources; source++ )
+			weights[source] /= running_sum;
+	}
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	if ( index >= p.dimension )
+		return;
+	float total = 0.0f;
+	for ( uint source = 0u; source < p.sources; source++ )
+		total = fma(weights[source], SparkMathBf16ToFloat(SparkAttnResSource(p, bank, partial, source, row)[index]), total);
+	output[(ulong)row * p.dimension + index] = SparkMathFloatToBf16(total);
 }
