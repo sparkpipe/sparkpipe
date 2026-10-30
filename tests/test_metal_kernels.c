@@ -1458,15 +1458,34 @@ static void TestSegmentedMap(void)
 	}
 	Report("segmented_map","640 rows of 8 KiB in 1 MiB segments, windows of 1 MiB at every 61st row",&clean,&corrupted,
 		"exact: a tensor read through its segment equals the file bytes");
-	id[0] = 0u;
-	if ( SparkOpsGather(&ops,queue,SparkTensorAt(&mapped,(uint64_t)STRIDE - 8192u,(uint64_t)STRIDE + 16384u),Whole(&ids),Whole(&out),1u,WIDTH,
-		(STRIDE + 16384u) / (WIDTH * 2u)) == SPARK_STATUS_OK )
+	for ( pass = 0u; pass < 2u; pass++ )
 	{
-		printf("FAIL segmented_map: a binding wider than its segment window was accepted\n");
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint32_t window = (2u * STRIDE + 16384u) / (WIDTH * 2u);
+		const uint64_t start = (uint64_t)STRIDE - 8192u;
+		memset(check,0,sizeof(*check));
+		for ( row = 0u; row < GATHERED; row++ )
+			id[row] = (row * 71u) % window;
+		if ( pass == 1u )
+			id[4] = (id[4] + 1u) % window;
+		if ( !Run(SparkOpsGather(&ops,queue,SparkTensorAt(&mapped,start,(uint64_t)window * WIDTH * 2u),Whole(&ids),Whole(&out),GATHERED,WIDTH,window),
+			"wide segmented gather") )
+			break;
+		if ( pass == 1u )
+			id[4] = (id[4] + window - 1u) % window;
+		for ( row = 0u; row < GATHERED; row++ )
+			for ( i = 0u; i < WIDTH; i++ )
+				Observe(check,o[(uint64_t)row * WIDTH + i] == values[start / 2u + (uint64_t)id[row] * WIDTH + i] ? 0.0 : 1.0,0.0,0.0);
+	}
+	Report("segmented_map","a binding of two strides and 16 KiB that starts 8 KiB before a stride boundary",&clean,&corrupted,
+		"exact: a binding wider than a stride reads the file bytes across both boundaries");
+	if ( SparkDeviceSegmented(SparkTensorAt(&mapped,0u,8192u).range) != 1u || SparkDeviceSegmented(Whole(&ids).range) != 0u )
+	{
+		printf("FAIL segmented_map: the segmented query does not tell the mapped file from a shared buffer\n");
 		failures++;
 	}
 	else
-		printf("PASS segmented_map          a binding wider than its segment window is refused\n");
+		printf("PASS segmented_map          the segmented query names the mapped file and not a shared buffer\n");
 	SparkDeviceFree(&mapped);
 	SparkDeviceFree(&ids);
 	SparkDeviceFree(&out);

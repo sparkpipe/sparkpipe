@@ -266,15 +266,20 @@ A Metal command buffer makes every buffer it binds resident, so a pack mapped
 as one buffer is pinned whole while any of its kernels run, and N rank packs
 on one Studio need N packs of memory at once. With `weight_segment_bytes`
 (`metal_stage_run --stream-weights`, 1 GiB) the runner maps the pack through
-`SparkDeviceMapFileSegments`: one file mapping, wrapped as overlapping Metal
-buffers that start every stride and span two strides, so every tensor of at
-most a stride lies inside one of them. A binding resolves to the segment
-that holds it (and is refused if none does), so a command buffer pins only
-the segments its kernels touch and the operating system pages the rest of
-the pack in from the SSD and out again as the layers go by. The segmented
-allocation takes a device address of its own outside the GPU's range, used
-only to resolve tensors. The host and CUDA backends keep one mapping, which
-already covers every range.
+`SparkDeviceMapFileSegments`: one file mapping, with no Metal buffer over
+it. Each binding, copy or fill on it wraps the pages it covers as a Metal
+buffer of its own (about 2 us), which the command buffer's batch holds until
+the GPU has finished with it, so a command buffer pins only the pages its
+kernels bind and the operating system pages the rest of the pack in from the
+SSD and out again as the layers go by. Residency is per buffer: on the M5
+Ultra a kernel that reads one page of a 2 GiB file-backed buffer pages in all
+2 GiB, so the earlier windows of two strides made a streamed decode step read
+the whole pack (Solar Open 2 at TP8, 502 GB from the external SSD at about
+4.6 GB/s, near two minutes per token). `SparkDeviceSegmented` tells the
+layers a tensor is in such a mapping, and the routed experts then bind only
+their routes' experts. The segmented allocation takes a device address of
+its own outside the GPU's range, used only to resolve tensors. The host and
+CUDA backends keep one mapping, which already covers every range.
 
 ## Device stage models
 
@@ -452,8 +457,11 @@ row count), folds the route weights in the sorted order and scatters the
 outputs back into route order, skipped routes of other ranks taking a zero
 row. A route's GEMV re-reads its expert's weights for every row, so before
 the grouping MiMo V2.6 Flash prefilled at about 50 tokens per second; grouped,
-each expert is read once per step. The FP4 experts (MiMo, Qwen 3.8 Flash)
-still take the per-route GEMV.
+each expert is read once per step. Experts in a segmented pack (below) take
+the grouped path at every row count, so a step binds only the experts its
+routes name; up to 64 rows, and in row-exact steps, the grouped projections
+are row-exact GEMVs, the per-route GEMV's arithmetic for every output. The
+FP4 experts (MiMo, Qwen 3.8 Flash) still take the per-route GEMV.
 
 ## Speculation
 

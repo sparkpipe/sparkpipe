@@ -29,8 +29,6 @@ typedef struct MetalAllocation
 	uint64_t offset;
 	void *memory;
 	uint64_t memory_bytes;
-	void **segments;
-	uint32_t segment_count;
 	uint64_t segment_stride;
 } MetalAllocation;
 
@@ -73,6 +71,7 @@ typedef struct MetalBatch
 	int32_t code;
 	uint64_t end_ns;
 	char error[METAL_ERROR_BYTES];
+	void *spans;
 	struct MetalBatch *next;
 } MetalBatch;
 
@@ -92,6 +91,7 @@ typedef struct MetalQueue
 	void *commands;
 	void *open;
 	void *compute;
+	void *spans;
 	uint32_t open_operations;
 	uint64_t open_sequence;
 	void *gate;
@@ -189,11 +189,6 @@ static id<MTLBuffer> MetalBuffer(const MetalAllocation *metal)
 
 static void MetalReleaseRecord(MetalAllocation *metal)
 {
-	uint32_t index;
-	for ( index = 0u; index < metal->segment_count; index++ )
-		if ( metal->segments[index] != 0 )
-			CFRelease(metal->segments[index]);
-	free(metal->segments);
 	if ( metal->buffer != 0 )
 		CFRelease(metal->buffer);
 	if ( metal->kind == METAL_MEMORY_HEAP )
@@ -214,39 +209,33 @@ static SparkStatus MetalWrap(SparkDeviceAllocation *allocation, MetalAllocation 
 
 static SparkStatus MetalWrapSegments(SparkDeviceAllocation *allocation, MetalAllocation *metal, uint64_t stride)
 {
-	uint32_t index;
 	if ( stride % metal_page_bytes != 0u )
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"map_file",allocation->owner,0,"a segment stride is a whole number of pages"));
 	metal->segment_stride = stride;
-	metal->segment_count = (uint32_t)((metal->memory_bytes + stride - 1u) / stride);
-	metal->segments = (void **)calloc(metal->segment_count,sizeof(void *));
-	if ( metal->segments == 0 )
-		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"map_file",allocation->owner,ENOMEM,"out of host memory"));
-	for ( index = 0u; index < metal->segment_count; index++ )
-	{
-		const uint64_t first = (uint64_t)index * stride, length = metal->memory_bytes - first < 2u * stride ? metal->memory_bytes - first : 2u * stride;
-		id<MTLBuffer> buffer = [metal_device newBufferWithBytesNoCopy:(uint8_t *)metal->memory + first length:(NSUInteger)length
-			options:MTLResourceStorageModeShared deallocator:nil];
-		if ( buffer == nil )
-			return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"map_file",allocation->owner,0,"Metal cannot wrap a segment of the file pages"));
-		metal->segments[index] = (__bridge_retained void *)buffer;
-	}
 	return(SPARK_STATUS_OK);
 }
 
-static id<MTLBuffer> MetalRange(const MetalAllocation *metal, uint64_t offset, uint64_t bytes, NSUInteger *at)
+static id<MTLBuffer> MetalRange(MetalQueue *queue, const MetalAllocation *metal, uint64_t offset, uint64_t bytes, NSUInteger *at)
 {
-	uint64_t position = metal->offset + offset, index;
-	if ( metal->segment_count == 0u )
+	const uint64_t position = metal->offset + offset, first = position / metal_page_bytes * metal_page_bytes,
+		last = MetalRound(position + (bytes != 0u ? bytes : 1u));
+	id<MTLBuffer> span;
+	if ( metal->segment_stride == 0u )
 	{
 		*at = (NSUInteger)position;
 		return((__bridge id<MTLBuffer>)metal->buffer);
 	}
-	index = position / metal->segment_stride;
-	if ( index >= metal->segment_count || position + bytes > index * metal->segment_stride + 2u * metal->segment_stride )
+	if ( last > metal->memory_bytes )
 		return(nil);
-	*at = (NSUInteger)(position - index * metal->segment_stride);
-	return((__bridge id<MTLBuffer>)metal->segments[index]);
+	span = [metal_device newBufferWithBytesNoCopy:(uint8_t *)metal->memory + first length:(NSUInteger)(last - first) options:MTLResourceStorageModeShared
+		deallocator:nil];
+	if ( span == nil )
+		return(nil);
+	if ( queue->spans == 0 )
+		queue->spans = (__bridge_retained void *)[NSMutableArray array];
+	[(__bridge NSMutableArray *)queue->spans addObject:span];
+	*at = (NSUInteger)(position - first);
+	return(span);
 }
 
 static SparkStatus MetalZero(SparkDeviceAllocation *allocation, id<MTLBuffer> buffer)
@@ -377,7 +366,7 @@ SparkStatus SparkDeviceBackendMapFile(SparkDeviceAllocation *allocation, int fd,
 		return(status);
 	}
 	allocation->host = (uint8_t *)metal->memory + metal->offset;
-	if ( metal->segment_count != 0u )
+	if ( metal->segment_stride != 0u )
 	{
 		allocation->device = (SparkDeviceAddress)metal_segmented_next + metal->offset;
 		metal_segmented_next += (metal->memory_bytes + (1ull << 30) - 1u) / (1ull << 30) * (1ull << 30) + (1ull << 30);
@@ -463,6 +452,7 @@ static void *MetalWorker(void *argument)
 		@autoreleasepool
 		{
 			MetalFinishMark(queue,batch);
+			MetalReleaseObject(&batch->spans);
 		}
 		pthread_mutex_lock(&queue->mutex);
 		queue->completed = batch->sequence;
@@ -511,6 +501,8 @@ static SparkStatus MetalCommit(MetalQueue *queue, const MetalMark *mark, const c
 	}
 	MetalEndCompute(queue);
 	batch->sequence = queue->open_sequence;
+	batch->spans = queue->spans;
+	queue->spans = 0;
 	if ( mark != 0 )
 		batch->mark = *mark;
 	if ( mark != 0 && mark->kind == METAL_MARK_EVENT )
@@ -588,6 +580,7 @@ void SparkDeviceBackendQueueDestroy(SparkDeviceQueue *queue)
 	pthread_join(metal->thread,0);
 	MetalEndCompute(metal);
 	MetalReleaseObject(&metal->open);
+	MetalReleaseObject(&metal->spans);
 	pthread_cond_destroy(&metal->progress);
 	pthread_cond_destroy(&metal->wake);
 	pthread_mutex_destroy(&metal->encode);
@@ -618,9 +611,9 @@ SparkStatus SparkDeviceBackendCopy(SparkDeviceQueue *queue, SparkDeviceDirection
 		else
 		{
 			NSUInteger from = 0u, to = 0u;
-			id<MTLBuffer> source_buffer = MetalRange(origin,source_offset,bytes,&from), target_buffer = MetalRange(target,destination_offset,bytes,&to);
+			id<MTLBuffer> source_buffer = MetalRange(metal,origin,source_offset,bytes,&from), target_buffer = MetalRange(metal,target,destination_offset,bytes,&to);
 			if ( source_buffer == nil || target_buffer == nil )
-				status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"copy",queue->owner,0,"a copy spans more than one segment of a mapped file");
+				status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"copy",queue->owner,0,"Metal cannot wrap the pages of a mapped file the copy touches");
 			else
 				[blit copyFromBuffer:source_buffer sourceOffset:from toBuffer:target_buffer destinationOffset:to size:(NSUInteger)bytes];
 			[blit endEncoding];
@@ -649,9 +642,9 @@ SparkStatus SparkDeviceBackendFill(SparkDeviceQueue *queue, const SparkDeviceAll
 		else
 		{
 			NSUInteger at = 0u;
-			id<MTLBuffer> target_buffer = MetalRange(target,offset,bytes,&at);
+			id<MTLBuffer> target_buffer = MetalRange(metal,target,offset,bytes,&at);
 			if ( target_buffer == nil )
-				status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"fill",queue->owner,0,"a fill spans more than one segment of a mapped file");
+				status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"fill",queue->owner,0,"Metal cannot wrap the pages of a mapped file the fill touches");
 			else
 				[blit fillBuffer:target_buffer range:NSMakeRange(at,(NSUInteger)bytes) value:value];
 			[blit endEncoding];
@@ -927,11 +920,11 @@ SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkD
 			for ( index = 0u; status == SPARK_STATUS_OK && index < launch->binding_count; index++ )
 			{
 				NSUInteger at = 0u;
-				id<MTLBuffer> bound = MetalRange((const MetalAllocation *)allocations[index]->backend,launch->bindings[index].range.offset,
+				id<MTLBuffer> bound = MetalRange(metal,(const MetalAllocation *)allocations[index]->backend,launch->bindings[index].range.offset,
 					launch->bindings[index].bytes,&at);
 				if ( bound == nil )
 					status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",kernel->name,(int32_t)index,
-						"a binding spans more than one segment of a mapped file");
+						"Metal cannot wrap the pages of a mapped file the binding touches");
 				else
 					[encoder setBuffer:bound offset:at atIndex:index + 1u];
 			}

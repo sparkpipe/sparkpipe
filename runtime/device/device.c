@@ -555,6 +555,17 @@ SparkStatus SparkDeviceHostOf(SparkDeviceRange range, uint64_t bytes, void **hos
 	return(status);
 }
 
+uint32_t SparkDeviceSegmented(SparkDeviceRange range)
+{
+	SparkDeviceAllocation *allocation;
+	uint32_t segmented;
+	pthread_mutex_lock(&device_mutex);
+	allocation = DeviceAllocationOf(range.buffer);
+	segmented = allocation != 0 && allocation->segment_stride != 0u ? 1u : 0u;
+	pthread_mutex_unlock(&device_mutex);
+	return(segmented);
+}
+
 static uint32_t DeviceDeviceSide(const SparkDeviceAllocation *allocation)
 {
 	return(allocation->space == SPARK_DEVICE_SPACE_DEVICE_PRIVATE ? 1u : 0u);

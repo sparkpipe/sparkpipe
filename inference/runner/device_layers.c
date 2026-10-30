@@ -821,7 +821,8 @@ static SparkStatus ExpertsGroupedFfn(SparkDeviceStage *stage, SparkDeviceQueue *
 		status = SparkOpsGather(stage->ops,queue,input,SparkTensorAt(&stage->route_tables,2u * table,(uint64_t)total * sizeof(uint32_t)),scratch->sorted,
 			total,hidden,rows);
 	memset(&projection,0,sizeof(projection));
-	projection.projection = stage->shape->projection;
+	projection.row_exact = rows <= SPARK_OPS_DECODE_MAX_ROWS || stage->step_exact != 0u ? 1u : 0u;
+	projection.projection = projection.row_exact != 0u ? SPARK_PROJECTION_GEMV : stage->shape->projection;
 	for ( expert = 0u; status == SPARK_STATUS_OK && expert < local; expert++ )
 	{
 		const uint32_t first = offsets[expert], count = offsets[expert + 1u] - first;
@@ -880,7 +881,8 @@ static SparkStatus ExpertsRoutedFfn(SparkDeviceStage *stage, SparkDeviceQueue *q
 	route->first_expert = stage->tp_rank * route->local_experts;
 	if ( stage->tp_degree > 1u )
 		status = SparkOpsRouteLocal(stage->ops,queue,scratch->experts,route);
-	if ( status == SPARK_STATUS_OK && rows > SPARK_OPS_DECODE_MAX_ROWS && stage->step_exact == 0u && scratch->sorted.bytes != 0u )
+	if ( status == SPARK_STATUS_OK && scratch->sorted.bytes != 0u &&
+		((rows > SPARK_OPS_DECODE_MAX_ROWS && stage->step_exact == 0u) || SparkDeviceSegmented(weights->gate.range) != 0u) )
 		return(ExpertsGroupedFfn(stage,queue,shape,rows,weights,scratch,input,route));
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsLinearRouted(stage->ops,queue,input,weights->gate,scratch->gate_up,scratch->experts,route->local_experts,&gate);
