@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "sparkpipe/spark_weight_stream.h"
 
@@ -12,6 +13,8 @@
 #define LOOP_BLOCK ((uint64_t)6u * LOOP_CHUNK + 8192u)
 #define LOOP_BROADCASTS 4u
 #define LOOP_ROUNDS 3u
+#define LOOP_SLOW_RANK (LOOP_RANKS - 1u)
+#define LOOP_SLOW_NS 150000000L
 
 typedef struct LoopShared
 {
@@ -26,6 +29,7 @@ typedef struct LoopRank
 	LoopShared *shared;
 	uint32_t rank;
 	uint64_t bad;
+	uint64_t held_bad;
 	int status;
 } LoopRank;
 
@@ -50,6 +54,12 @@ static uint64_t LoopCheck(const uint8_t *data, uint64_t bytes, uint64_t first_wo
 	for (index=0u; index<bytes / 8u; index++)
 		bad += words[index] != LoopPattern(seed,source,first_word + index);
 	return bad;
+}
+
+static void LoopHold(void)
+{
+	struct timespec pause = {0, LOOP_SLOW_NS};
+	nanosleep(&pause,0);
 }
 
 static SparkStatus LoopGather(void *context, const void *mine, void *all, uint64_t bytes_per_rank)
@@ -126,6 +136,40 @@ static void *LoopRun(void *argument)
 		self->bad += LoopCheck(region + block.half_offset[1],LOOP_BLOCK / 2u,LOOP_BLOCK / 16u,7u,block.source);
 		pthread_barrier_wait(&self->shared->barrier);
 	}
+	for (call=0u; call<LOOP_BROADCASTS; call++)
+	{
+		LoopFill(region + source_offset,LOOP_DENSE,200u + call,self->rank);
+		if ( SparkWeightStreamBroadcast(stream,source_offset,LOOP_DENSE,0u,60u + call) != SPARK_STATUS_OK )
+		{
+			SparkWeightStreamClose(stream);
+			return 0;
+		}
+		for (source=0u; source<LOOP_RANKS; source++)
+			self->bad += LoopCheck(region + (uint64_t)source * LOOP_DENSE,LOOP_DENSE,0u,200u + call,source);
+		if ( self->rank == LOOP_SLOW_RANK )
+		{
+			LoopHold();
+			for (source=0u; source<LOOP_RANKS; source++)
+				self->held_bad += LoopCheck(region + (uint64_t)source * LOOP_DENSE,LOOP_DENSE,0u,200u + call,source);
+		}
+	}
+	for (step=0u; step<LOOP_ROUNDS * LOOP_RANKS; step++)
+	{
+		SparkWeightStreamBlock block;
+		if ( SparkWeightStreamRotate(stream,step,own,partner,LOOP_BLOCK,landing + (uint64_t)(step & 1u) * LOOP_BLOCK,70u + step,&block) != SPARK_STATUS_OK )
+		{
+			SparkWeightStreamClose(stream);
+			return 0;
+		}
+		self->bad += LoopCheck(region + block.half_offset[0],LOOP_BLOCK / 2u,0u,7u,block.source);
+		self->bad += LoopCheck(region + block.half_offset[1],LOOP_BLOCK / 2u,LOOP_BLOCK / 16u,7u,block.source);
+		if ( self->rank == LOOP_SLOW_RANK )
+		{
+			LoopHold();
+			self->held_bad += LoopCheck(region + block.half_offset[0],LOOP_BLOCK / 2u,0u,7u,block.source);
+			self->held_bad += LoopCheck(region + block.half_offset[1],LOOP_BLOCK / 2u,LOOP_BLOCK / 16u,7u,block.source);
+		}
+	}
 	SparkWeightStreamClose(stream);
 	free(region);
 	self->status = 0;
@@ -137,7 +181,7 @@ int main(int argc, char **argv)
 	static LoopShared shared;
 	LoopRank ranks[LOOP_RANKS];
 	pthread_t threads[LOOP_RANKS];
-	uint64_t bad = 0u;
+	uint64_t bad = 0u,held_bad = 0u;
 	uint32_t rank;
 	int failed = 0;
 	if ( argc != 3 )
@@ -153,6 +197,7 @@ int main(int argc, char **argv)
 		ranks[rank].shared = &shared;
 		ranks[rank].rank = rank;
 		ranks[rank].bad = 0u;
+		ranks[rank].held_bad = 0u;
 		ranks[rank].status = 1;
 		pthread_create(&threads[rank],0,LoopRun,&ranks[rank]);
 	}
@@ -161,13 +206,16 @@ int main(int argc, char **argv)
 		pthread_join(threads[rank],0);
 		failed |= ranks[rank].status;
 		bad += ranks[rank].bad;
+		held_bad += ranks[rank].held_bad;
 	}
-	if ( failed != 0 || bad != 0u )
+	if ( failed != 0 || bad != 0u || held_bad != 0u )
 	{
-		printf("FAIL weight stream loopback: %s, %llu bad words\n",failed != 0 ? "a rank failed" : "every rank finished",(unsigned long long)bad);
+		printf("FAIL weight stream loopback: %s, %llu bad words, %llu words of a slow rank's landing overwritten before it entered the next call\n",
+			failed != 0 ? "a rank failed" : "every rank finished",(unsigned long long)bad,(unsigned long long)held_bad);
 		return 1;
 	}
-	printf("PASS weight stream loopback: %u ranks, %u back-to-back broadcasts of %llu bytes (pair relay, partial last chunk), %u rotation steps of %llu-byte blocks in halves, every byte checked\n",
-		LOOP_RANKS,LOOP_BROADCASTS,(unsigned long long)LOOP_DENSE,LOOP_ROUNDS * LOOP_RANKS,(unsigned long long)LOOP_BLOCK);
+	printf("PASS weight stream loopback: %u ranks, %u back-to-back broadcasts of %llu bytes (pair relay, partial last chunk), %u rotation steps of %llu-byte blocks in halves, every byte checked; "
+		"then one reused landing with no barriers while rank %u holds each landing %ld ms: nothing written before it entered the next call\n",
+		LOOP_RANKS,LOOP_BROADCASTS,(unsigned long long)LOOP_DENSE,LOOP_ROUNDS * LOOP_RANKS,(unsigned long long)LOOP_BLOCK,LOOP_SLOW_RANK,LOOP_SLOW_NS / 1000000L);
 	return 0;
 }
