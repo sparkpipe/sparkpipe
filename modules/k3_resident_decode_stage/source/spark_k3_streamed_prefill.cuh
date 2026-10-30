@@ -108,7 +108,7 @@ static void K3StreamedRound(void *context, void *stream, uint32_t operation, uin
 				return;
 			}
 			K3StreamedSumKernel<<<peers, 256u, 0, (cudaStream_t)stream>>>(stage, width, width, round->sums);
-			status = round->services->round(round->services->context, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, 1u, 4u * K3_STREAMED_SHARDS,
+			status = round->services->round(round->services->context, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, SPARK_STAGE_RUNNER_ROUND_ALL, 1u, 4u * K3_STREAMED_SHARDS,
 				round->sums, round->sums + K3_STREAMED_SHARDS);
 			if ( status == SPARK_STATUS_OK )
 				status = round->services->round(round->services->context, stream, operation, SPARK_STAGE_RUNNER_ROUND_ALL, count, row_elements, stage, landing);
