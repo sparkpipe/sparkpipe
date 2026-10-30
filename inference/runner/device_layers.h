@@ -57,6 +57,10 @@ typedef struct SparkDeviceChannelDeltaShape
 	float minimum_log_decay;
 	uint32_t beta_mode;
 	uint32_t norm_f32;
+	uint32_t norm_round;
+	uint32_t conv_f32;
+	uint32_t gate_full_rank;
+	float prenorm_epsilon;
 } SparkDeviceChannelDeltaShape;
 
 typedef struct SparkDeviceChannelDeltaWeights
@@ -86,6 +90,9 @@ typedef struct SparkDeviceChannelDeltaScratch
 	SparkTensor gated;
 } SparkDeviceChannelDeltaScratch;
 
+#define SPARK_LATENT_GATE_HEAD 1u
+#define SPARK_LATENT_GATE_ELEMENT 2u
+
 typedef struct SparkDeviceLatentAttentionShape
 {
 	uint32_t heads;
@@ -97,6 +104,18 @@ typedef struct SparkDeviceLatentAttentionShape
 	float epsilon;
 	float scale;
 	uint32_t head_gate;
+	uint32_t query_lora;
+	uint32_t norm_bf16;
+	uint32_t sinks;
+	const char *tensor_prefix;
+	uint32_t query_concat;
+	uint32_t query_gate;
+	float rope_factor;
+	float rope_beta_fast;
+	float rope_beta_slow;
+	uint32_t rope_original;
+	uint32_t rope_unrotated;
+	uint32_t gate_unrounded;
 } SparkDeviceLatentAttentionShape;
 
 typedef struct SparkDeviceLatentAttentionRope
@@ -107,6 +126,9 @@ typedef struct SparkDeviceLatentAttentionRope
 
 typedef struct SparkDeviceLatentAttentionWeights
 {
+	SparkDeviceWeight query_down;
+	SparkTensor query_norm;
+	SparkTensor sinks;
 	SparkDeviceWeight query;
 	SparkDeviceWeight kv;
 	SparkTensor kv_norm;
@@ -118,6 +140,7 @@ typedef struct SparkDeviceLatentAttentionWeights
 
 typedef struct SparkDeviceLatentAttentionScratch
 {
+	SparkTensor query_lora;
 	SparkTensor query;
 	SparkTensor kv;
 	SparkTensor gate;
@@ -235,6 +258,18 @@ typedef struct SparkDeviceExpertsScratch
 	SparkTensor sorted;
 } SparkDeviceExpertsScratch;
 
+typedef struct SparkDeviceLowRankGateWeights
+{
+	SparkDeviceWeight down;
+	SparkDeviceWeight up;
+} SparkDeviceLowRankGateWeights;
+
+typedef struct SparkDeviceLowRankGateScratch
+{
+	SparkTensor bottleneck;
+	SparkTensor gate;
+} SparkDeviceLowRankGateScratch;
+
 typedef struct SparkDeviceExpertMatrix
 {
 	uint32_t codec;
@@ -252,6 +287,8 @@ typedef struct SparkDeviceRoutedFfnShape
 	uint32_t activation;
 	uint32_t weighted;
 	float limit;
+	float up_limit;
+	uint32_t width;
 } SparkDeviceRoutedFfnShape;
 
 typedef struct SparkDeviceFfnScratch
@@ -312,6 +349,8 @@ SparkStatus SparkDeviceFfnBindNamed(SparkDeviceStage *stage, const SparkStageRun
 	const char *down, uint32_t ffn, SparkDeviceFfnWeights *bound);
 SparkStatus SparkDeviceGatedFfn(SparkDeviceStage *stage, SparkDeviceQueue *queue, uint32_t ffn, uint32_t activation, float limit, const SparkDeviceStepTensors *tensors,
 	const SparkDeviceFfnWeights *weights, const SparkDeviceFfnScratch *scratch, SparkTensor normed, SparkTensor output);
+SparkStatus SparkDeviceGatedFfnLimits(SparkDeviceStage *stage, SparkDeviceQueue *queue, uint32_t ffn, uint32_t activation, float limit, float up_limit,
+	const SparkDeviceStepTensors *tensors, const SparkDeviceFfnWeights *weights, const SparkDeviceFfnScratch *scratch, SparkTensor normed, SparkTensor output);
 
 uint64_t SparkDeviceExpertsScratchBytes(const SparkDeviceStage *stage, const SparkDeviceExpertsShape *shape, uint32_t part);
 SparkStatus SparkDeviceExpertsBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer,
@@ -332,6 +371,10 @@ SparkStatus SparkDeviceResidualNorm(SparkDeviceStage *stage, SparkDeviceQueue *q
 	const SparkTensor *addend, SparkTensor weight, SparkTensor normed);
 SparkStatus SparkDeviceLinear(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor x, uint32_t x_stride, SparkTensor w, SparkTensor y,
 	uint32_t y_stride, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension);
+SparkStatus SparkDeviceLowRankGateBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer, const char *prefix,
+	uint32_t rank, SparkDeviceLowRankGateWeights *bound);
+SparkStatus SparkDeviceLowRankGate(SparkDeviceStage *stage, SparkDeviceQueue *queue, uint32_t rows, uint32_t rank, const SparkDeviceLowRankGateWeights *weights,
+	const SparkDeviceLowRankGateScratch *scratch, SparkTensor values);
 SparkStatus SparkDeviceLinearWeight(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor x, uint32_t x_stride, const SparkDeviceWeight *w,
 	SparkTensor y, uint32_t y_stride, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension);
 

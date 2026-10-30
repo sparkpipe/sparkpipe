@@ -475,11 +475,16 @@ static SparkStatus StageRound(SparkDeviceStage *stage, SparkDeviceQueue *queue, 
 
 SparkStatus SparkDeviceStageAllReduce(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor rows, uint32_t count)
 {
+	return(SparkDeviceStageAllReduceWidth(stage,queue,rows,count,stage->shape->hidden));
+}
+
+SparkStatus SparkDeviceStageAllReduceWidth(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor rows, uint32_t count, uint32_t width)
+{
 	if ( stage->tp_degree <= 1u )
 		return(SPARK_STATUS_OK);
-	if ( rows.bytes < (uint64_t)count * stage->shape->hidden * sizeof(uint16_t) )
-		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"an all-reduce covers whole hidden rows inside its tensor"));
-	return(StageRound(stage,queue,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16,count,0u,rows,rows));
+	if ( width == 0u || rows.bytes < (uint64_t)count * width * sizeof(uint16_t) )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"an all-reduce covers whole rows of its width inside its tensor"));
+	return(StageRound(stage,queue,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16,count,width == stage->shape->hidden ? 0u : width,rows,rows));
 }
 
 SparkStatus SparkDeviceStageGatherRows(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor local, SparkTensor gathered, SparkTensor rows,

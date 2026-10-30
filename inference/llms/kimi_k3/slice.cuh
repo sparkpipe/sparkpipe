@@ -287,6 +287,9 @@ struct K3Cuda
 {
 	static constexpr int32_t kOk = LM_LAUNCH_OK;
 	static constexpr int32_t kShapeError = LM_LAUNCH_ERR_SHAPE;
+	static constexpr bool kShardedMla = true;
+	static constexpr bool kExpertCells = true;
+	static constexpr bool kLazyExperts = true;
 
 	struct Context
 	{

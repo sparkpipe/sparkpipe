@@ -595,7 +595,7 @@ struct QwenDevice
 	{
 		const uint32_t rows = frame.t.rows, hidden = G::kHidden, shared = state->shared_rows;
 		SparkDeviceOps *ops = state->stage.ops;
-		const SparkDeviceRoutedFfnShape ffn = { G::kExperts, G::kTopK, G::kMoeInter, SPARK_GATED_SILU, 1u, 0.0f };
+		const SparkDeviceRoutedFfnShape ffn = { G::kExperts, G::kTopK, G::kMoeInter, SPARK_GATED_SILU, 1u, 0.0f, 0.0f, 0u };
 		SparkRouteParams route;
 		SparkSiluMulParams act;
 		memset(&route, 0, sizeof(route));

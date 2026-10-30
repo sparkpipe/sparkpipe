@@ -261,7 +261,7 @@ struct MimoDevice
 	static SparkStatus Experts(State *state, const Frame &frame, const Layer &layer)
 	{
 		const uint32_t rows = frame.t.rows;
-		const SparkDeviceRoutedFfnShape ffn = { G::kExperts, G::kTopK, G::kMoeInter, SPARK_GATED_SILU_ROUNDED, 0u, 0.0f };
+		const SparkDeviceRoutedFfnShape ffn = { G::kExperts, G::kTopK, G::kMoeInter, SPARK_GATED_SILU_ROUNDED, 0u, 0.0f, 0.0f, 0u };
 		SparkGemvParams router;
 		SparkRouteParams route;
 		SparkStatus status;

@@ -163,8 +163,9 @@ struct K3Schedule
 			return B::Kda(c, K3_LANE_A, B::Sequences(c), accumulate, K3_STREAM_MAIN);
 		if ( L::Mla(layer) )
 		{
-			if ( B::KvSharded(c, K3_LANE_A) )
-				return MlaShard(c, layer, accumulate);
+			if constexpr ( B::kShardedMla )
+				if ( B::KvSharded(c, K3_LANE_A) )
+					return MlaShard(c, layer, accumulate);
 			return B::MlaLocal(c, K3_LANE_A, accumulate, K3_STREAM_MAIN);
 		}
 		return B::kShapeError;
@@ -247,10 +248,12 @@ struct K3Schedule
 	{
 		if ( !L::Routed(layer) )
 			return B::Dense(c, K3_LANE_A, K3_STREAM_MAIN);
-		if ( B::ExpertCells(c, K3_LANE_A) )
-			return CellsMoe(c, layer);
-		if ( B::HasLazy(c) )
-			return LazyMoe(c, layer);
+		if constexpr ( B::kExpertCells )
+			if ( B::ExpertCells(c, K3_LANE_A) )
+				return CellsMoe(c, layer);
+		if constexpr ( B::kLazyExperts )
+			if ( B::HasLazy(c) )
+				return LazyMoe(c, layer);
 		return ResidentMoe(c, layer);
 	}
 

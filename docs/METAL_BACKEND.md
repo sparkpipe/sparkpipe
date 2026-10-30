@@ -813,6 +813,19 @@ layers serve them:
   slices, one per head. At TP the latent slot is replicated (`mla_kv_a` is
   in every rank's pack) and each rank attends its own heads, where CUDA
   shards the context.
+  The shape's switches cover HY4's and the GLM variants: `query_lora` (`q_a`,
+  `q_norm`, then `q_b`), `norm_bf16` (both norms with BF16 gains as
+  `bf16(w bf16(x r))`, `spark_rmsnorm_bf16`; without it both take FP32 gains
+  and round once, `bf16(x r w)`, as GLM 5.3 Full's CUDA projection norm
+  does), `rope` 0 (a rope-free 512-wide latent that is both key and value,
+  GLM 5.3 Flash), `query_concat` and `query_gate` (A.X K2: q_b reads the
+  normed and raw query, and each head's query rows carry a gate for its
+  values), `rope_factor` with its betas and original positions (YaRN through
+  `SparkRopeYarnRampTable`), `head_gate` set to
+  `SPARK_LATENT_GATE_ELEMENT` (a sigmoid gate per value element through
+  `spark_head_gate` with one-wide heads), `sinks` (the attention's per-head
+  sinks, sliced to the rank's heads) and `tensor_prefix` (`mla_` by default,
+  none for HY4's names).
 
 The experts are `SparkDeviceSigmoidExperts` with the router named `router`,
 8 groups of 64 experts of which 4 stay open (`spark_route_sigmoid_topk`),
