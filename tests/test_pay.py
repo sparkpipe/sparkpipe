@@ -45,6 +45,15 @@ def check_dates(failures):
         failures.append("served_days counts a Sunday")
 
 
+def check_covered(failures):
+    hourly = {"product": "hourly", "hours": 168, "net": "3360.00", "total": "3696.00"}
+    if sp.covered(hourly, sp.money("22.99")) != (1, "20.00") or sp.covered(hourly, sp.money("3696.00")) != (168, "3360.00") or sp.covered(hourly, sp.money("21.99"))[0] != 0:
+        failures.append(f"hours covered by a part payment: {sp.covered(hourly, sp.money('22.99'))}")
+    prepay = {"product": "two-year", "hours": "6.6666", "net": "100.00", "total": "110.00", "price": "15.00"}
+    if sp.covered(prepay, sp.money("55.00")) != ("3.3333", "50.00"):
+        failures.append(f"prepayment covered by a part payment: {sp.covered(prepay, sp.money('55.00'))}")
+
+
 def check_sessions(failures):
     key = b"k" * 32
     token = sp.session_token(key, "ACX", 2000)
@@ -92,7 +101,8 @@ class FakeCoinPayments(http.server.BaseHTTPRequestHandler):
             return self.answer(401, {"error": "signature"})
         key = self.path.rsplit("/", 1)[1]
         invoice = self.server.invoices[key]
-        self.answer(200, {"id": key, "status": invoice["status"], "amount": {"breakdown": {}, "total": invoice["total"]}, "currency": {"id": "5057", "symbol": "USD"}, "payments": [{"paymentCurrencySymbol": "USDC.BASE"}]})
+        arrived = invoice.get("received", invoice["total"] if invoice["status"] in ("paid", "completed") else "0")
+        self.answer(200, {"id": key, "status": invoice["status"], "amount": {"breakdown": {}, "total": invoice["total"]}, "currency": {"id": "5057", "symbol": "USD"}, "payments": [{"paymentCurrencySymbol": "USDC.BASE", "nativeActualAmount": arrived}]})
 
 
 class FakeSMTP(socketserver.StreamRequestHandler):
@@ -212,6 +222,7 @@ def check_service(failures):
         buyer = Client(port, origin="https://sparkpipe.ai")
         account_flow(failures, cfg, app, buyer, mailbox, port)
         hourly_flow(failures, cfg, app, fake, buyer, mailbox)
+        part_payment_flow(failures, cfg, app, fake, buyer, mailbox)
         prepayment_flow(failures, cfg, app, fake, buyer, mailbox, port)
         lead_flow(failures, app, buyer, mailbox, work)
         book = sp.Book(cfg.path("ledger.jsonl"))
@@ -365,6 +376,42 @@ def hourly_flow(failures, cfg, app, fake, buyer, mailbox):
         failures.append("accepting changed terms at the order does not record it")
 
 
+def part_payment_flow(failures, cfg, app, fake, buyer, mailbox):
+    status, placed = buyer("POST", "/order", {"product": "hourly", "hours": 4, "start": "2026-12-01", "coin": "USDC.ERC20"})
+    if status != 200:
+        failures.append(f"part payment order: {status} {placed}")
+        return
+    key = max(fake.invoices, key=lambda k: int(k[3:]))
+    fake.invoices[key].update(status="pending", received="22.99")
+    webhook(buyer, cfg, key, "InvoicePending")
+    app.jobs.join()
+    app.mails.join()
+    shown = buyer("GET", "/order/" + placed["order"])[1]
+    if shown["state"] != "pending" or shown["received"] != "22.99":
+        failures.append(f"a part payment is not shown: {shown}")
+    if not any(m["Subject"] == f"Part payment: {placed['order']}" for _, m in mailbox.mail):
+        failures.append("we are not told of a part payment")
+    fake.invoices[key]["status"] = "completed"
+    webhook(buyer, cfg, key)
+    app.jobs.join()
+    shown = buyer("GET", "/order/" + placed["order"])[1]
+    if shown["state"] != "mismatch" or shown["issued"]:
+        failures.append(f"an accepted part payment issues the whole order: {shown}")
+    account = app.book.orders[placed["order"]]["account"]
+    held = app.book.held(account, sp.clock())
+    before = buyer("GET", "/account")[1]["hours"]
+    issued = app.settle(placed["order"], {"status": "completed", "amount": {"total": "88.00"}, "currency": {"id": "5057"}, "payments": [{"nativeActualAmount": "22.99"}]}, released=True)
+    app.mails.join()
+    after = buyer("GET", "/account")[1]
+    if not issued or issued["hours"] != 1 or issued["net"] != "20.00" or after["hours"] != before + 1:
+        failures.append(f"releasing a part payment does not issue the hour it covers: {issued} {before} {after['hours']}")
+    note = [m for rcpt, m in mailbox.mail if "ops@acme.example" in rcpt and placed["order"] in m["Subject"]]
+    if not note or "22.99 USD arrived" not in note[-1].get_content():
+        failures.append("the receipt for a part payment does not say what arrived")
+    if app.book.held(account, sp.clock()) != held - 3:
+        failures.append("the holding limit counts the ordered hours of a part payment, not the issued ones")
+
+
 def prepayment_flow(failures, cfg, app, fake, buyer, mailbox, port):
     agreements = [
         {"id": "SP2Y-TEST-0001", "email": "ops@acme.example", "company": "Acme", "signed": "2026-11-01", "hourPrice": "15.00"},
@@ -424,12 +471,13 @@ def main():
     failures = []
     check_dates(failures)
     check_sessions(failures)
+    check_covered(failures)
     check_service(failures)
     for failure in failures:
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("pay: tranches match the agreement; email codes, sessions, terms acceptance, USDC and USDT invoices on the chosen network, signed webhooks, receipts, reconciliation, the holding limit, gates, quote requests and the hash-chained ledger behave")
+    print("pay: tranches match the agreement; email codes, sessions, terms acceptance, USDC and USDT invoices on the chosen network, signed webhooks, receipts, part payments, reconciliation, the holding limit, gates, quote requests and the hash-chained ledger behave")
     return 0
 
 

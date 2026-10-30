@@ -155,7 +155,10 @@
   const cell = (content, cls) => { const td = document.createElement('td'); if (content instanceof Node) td.append(content); else td.textContent = content; if (cls) td.className = cls; return td; };
   const row = (cells) => { const tr = document.createElement('tr'); tr.append(...cells); return tr; };
   const link = (href, text, cls) => { const a = document.createElement('a'); a.href = href; a.textContent = text; if (cls) a.className = cls; return a; };
-  const what = (o) => (o.product === 'hourly' ? SP.whole(o.hours) + ' hours from ' + nice(o.start) : 'Prepayment ' + o.agreement + ': ' + SP.whole(o.hours) + ' hours');
+  const what = (o) => {
+    const hours = o.issued && +o.issuedHours < +o.hours ? SP.whole(o.issuedHours) + ' of ' + SP.whole(o.hours) : SP.whole(o.hours);
+    return o.product === 'hourly' ? hours + ' hours from ' + nice(o.start) : 'Prepayment ' + o.agreement + ': ' + hours + ' hours';
+  };
   let me = null, watching = new URLSearchParams(window.location.search).get('order'), timer = null;
 
   const renderStatus = (o) => {
@@ -165,9 +168,14 @@
     [...$('st-line').children].forEach((li, i) => { li.className = i < reached ? 'done' : i === reached && OPEN.has(o.state) ? 'now' : ''; });
     const actions = [];
     let title, text, kind;
+    const part = o.received && +o.received > 0 && +o.received < +o.total;
     if (o.state === 'completed' && o.issued) {
-      title = 'Paid. Your hours are in.'; kind = 'ok';
-      text = SP.whole(o.hours) + ' fleet-hours are in your account' + (o.product === 'hourly' ? ', usable from ' + nice(o.start) + ' to ' + nice(o.last) : '') + '. The receipt is on its way to your email.';
+      title = +o.issuedHours < +o.hours ? 'Paid in part. Your hours are in.' : 'Paid. Your hours are in.'; kind = 'ok';
+      text = SP.whole(o.issuedHours) + ' fleet-hours are in your account' + (o.product === 'hourly' ? ', usable from ' + nice(o.start) + ' to ' + nice(o.last) : '') + (part ? ', for the ' + SP.usd(o.received) + ' that arrived' : '') + '. The receipt is on its way to your email.';
+    } else if (part && OPEN.has(o.state)) {
+      title = 'Part of the payment arrived.'; kind = 'error';
+      text = 'We received ' + SP.usd(o.received) + ' of ' + SP.usd(o.total) + ' in ' + SP.coinName(o.coin) + '. Send the remaining ' + SP.usd(+o.total - +o.received) + ' from the payment page while it is open, or write to hyor@sparkpipe.ai with order ' + o.order + ': we can credit what arrived as hours or refund it.';
+      if (o.checkout && /^https:\/\//.test(o.checkout)) actions.push(link(o.checkout, 'Open the payment page', 'btn solid'));
     } else if (o.state === 'created' || o.state === 'unpaid') {
       title = 'Waiting for your payment.';
       text = 'Send ' + SP.usd(o.total) + ' in ' + SP.coinName(o.coin) + ' from the payment page. If you have sent it, stay here: this page updates by itself.';
@@ -180,7 +188,7 @@
       text = 'CoinPayments has confirmed the payment; the hours appear in a moment.';
     } else if (o.state === 'mismatch') {
       title = 'We are checking this payment.'; kind = 'error';
-      text = 'The amount we received differs from the order, so no hours were issued automatically. We will email you; you can also write to hyor@sparkpipe.ai with order ' + o.order + '.';
+      text = (o.received ? 'We received ' + SP.usd(o.received) + ' of ' + SP.usd(o.total) + ', so' : 'The amount we received differs from the order, so') + ' no hours were issued automatically. We will email you; you can also write to hyor@sparkpipe.ai with order ' + o.order + '.';
     } else {
       title = o.state === 'failed' ? 'The invoice was not created.' : 'This invoice ' + (o.state === 'timedout' ? 'expired' : 'was cancelled') + ' unpaid.';
       text = 'Nothing was charged.';
@@ -262,7 +270,7 @@
       const action = o.checkout && /^https:\/\//.test(o.checkout) ? link(o.checkout, 'Pay', 'btn small solid') : '';
       const state = document.createElement('span');
       state.className = 'state' + (o.state === 'completed' ? ' live' : OPEN.has(o.state) ? ' building' : '');
-      state.textContent = SP.STATES[o.state] || o.state;
+      state.textContent = o.received && +o.received > 0 && +o.received < +o.total && OPEN.has(o.state) ? 'Part paid: ' + SP.usd(o.received) : SP.STATES[o.state] || o.state;
       return row([cell(o.order), cell(what(o)), cell(SP.usd(o.total), 'figure'), cell(SP.coinName(o.coin)), cell(state), cell(action)]);
     }));
   };

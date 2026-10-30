@@ -299,10 +299,12 @@ class Book:
             self.orders[data["order"]]["state"] = "failed"
         elif kind == "invoice_state":
             self.orders[data["order"]]["state"] = data["state"]
+            if "received" in data:
+                self.orders[data["order"]]["received"] = data["received"]
         elif kind == "payment":
             self.orders[data["order"]].update(state="completed", paid=line["at"])
         elif kind == "hours_issued":
-            self.orders[data["order"]]["issued"] = True
+            self.orders[data["order"]].update(issued=True, issued_hours=data["hours"], paid_net=data.get("net", self.orders[data["order"]]["net"]))
 
     def waiting(self, order, now):
         return order["state"] not in CLOSED and order["state"] != "completed" and not order["issued"] and (now - stamp_time(order["created"])).total_seconds() < PENDING_SECONDS
@@ -314,13 +316,13 @@ class Book:
                 continue
             if order["issued"] or order["state"] == "mismatch":
                 if date.fromisoformat(order["last"]) >= local_day(now):
-                    total += order["hours"]
+                    total += order["issued_hours"] if order["issued"] else order["hours"]
             elif self.waiting(order, now):
                 total += order["hours"]
         return total
 
     def prepaid(self, agreement):
-        return sorted((stamp_time(order["paid"]), Decimal(order["net"])) for order in self.orders.values() if order.get("agreement") == agreement and order["issued"])
+        return sorted((stamp_time(order["paid"]), Decimal(order["paid_net"])) for order in self.orders.values() if order.get("agreement") == agreement and order["issued"])
 
     def pending(self, agreement, now):
         return sum((Decimal(order["net"]) for order in self.orders.values() if order.get("agreement") == agreement and self.waiting(order, now)), Decimal(0))
@@ -461,22 +463,52 @@ def remote_fields(remote):
     return state, total, None if currency is None else str(currency)
 
 
+def received_of(remote):
+    if isinstance(remote.get("invoice"), dict):
+        remote = remote["invoice"]
+    payments = remote.get("payments")
+    if not isinstance(payments, list):
+        return None
+    try:
+        return money(sum((Decimal(str(p.get("nativeActualAmount") or "0")) for p in payments if isinstance(p, dict)), Decimal(0)))
+    except InvalidOperation:
+        return None
+
+
+def covered(order, paid):
+    share = min(Decimal(1), paid / Decimal(order["total"]))
+    if order["product"] == "hourly":
+        hours = int((Decimal(order["hours"]) * share).to_integral_value(rounding=ROUND_DOWN))
+        return hours, text_money(Decimal(order["net"]) * hours / order["hours"])
+    net = (Decimal(order["net"]) * share).quantize(CENT, rounding=ROUND_DOWN)
+    return format((net / Decimal(order["price"])).quantize(HOUR_STEP, rounding=ROUND_DOWN), "f"), text_money(net)
+
+
 def paid_with(remote):
     payments = remote.get("payments") if isinstance(remote.get("payments"), list) else []
     return sorted({str(p.get("paymentCurrencySymbol")) for p in payments if isinstance(p, dict) and p.get("paymentCurrencySymbol")})
 
 
-def receipt(cfg, order):
+def receipt(cfg, order, issued, received):
     if order["product"] == "hourly":
-        what = f"{order['hours']} fleet-hours, usable from {order['start']} to {order['last']}"
+        what = f"{issued['hours']} fleet-hours, usable from {order['start']} to {order['last']}"
     else:
-        what = f"a prepayment of {order['net']} USD under agreement {order['agreement']}: {order['hours']} fleet-hours"
-    return "\n".join([
-        f"We received your payment for order {order['order']}: {what}.",
-        "",
-        f"Subtotal: {order['net']} USD",
-        f"VAT: {order['vat']} USD",
-        f"Total paid in {order['coin'].split('.')[0]}: {order['total']} USD",
+        what = f"a prepayment of {issued['net']} USD under agreement {order['agreement']}: {issued['hours']} fleet-hours"
+    if issued.get("short"):
+        lines = [
+            f"Order {order['order']} was for {order['total']} USD; {received} USD arrived. We issued what it covers: {what}.",
+            "",
+            f"Received in {order['coin'].split('.')[0]}: {received} USD, VAT included",
+        ]
+    else:
+        lines = [
+            f"We received your payment for order {order['order']}: {what}.",
+            "",
+            f"Subtotal: {order['net']} USD",
+            f"VAT: {order['vat']} USD",
+            f"Total paid in {order['coin'].split('.')[0]}: {order['total']} USD",
+        ]
+    return "\n".join(lines + [
         "",
         f"The hours are in your account: {cfg.public}/account.html",
         "We will email you when the fleet calendar opens for reservations.",
@@ -616,7 +648,7 @@ class App:
         with self.book.lock:
             record = self.book.accounts[account]
             mine = [o for o in reversed(list(self.book.orders.values())) if o["account"] == account]
-            blocks = [{"order": o["order"], "hours": o["hours"], "start": o["start"], "last": o["last"]} for o in mine if o["product"] == "hourly" and o["issued"] and date.fromisoformat(o["last"]) >= local_day(now)]
+            blocks = [{"order": o["order"], "hours": o["issued_hours"], "start": o["start"], "last": o["last"]} for o in mine if o["product"] == "hourly" and o["issued"] and date.fromisoformat(o["last"]) >= local_day(now)]
             limit = self.limit(pricing, account)
             held = self.book.held(account, now)
             return {
@@ -705,8 +737,9 @@ class App:
         return {"order": quote["order"], "checkout": link}
 
     def shown(self, order):
-        shown = {key: order.get(key) for key in ("order", "product", "hours", "net", "vat", "total", "start", "last", "agreement", "coin", "state", "issued", "created", "paid")}
-        shown["checkout"] = order["link"] if order["state"] == "unpaid" else None
+        shown = {key: order.get(key) for key in ("order", "product", "hours", "net", "vat", "total", "start", "last", "agreement", "coin", "state", "issued", "created", "paid", "received")}
+        shown["issuedHours"] = order.get("issued_hours")
+        shown["checkout"] = order["link"] if order["state"] in ("unpaid", "pending") else None
         return shown
 
     def status(self, order_id):
@@ -749,30 +782,45 @@ class App:
 
     def settle(self, order_id, remote, released=False):
         state, total, currency = remote_fields(remote)
+        received = received_of(remote)
         with self.book.lock:
             order = self.book.orders[order_id]
             if order["issued"] or not state or (order["state"] == "mismatch" and not released):
-                return
+                return None
+            due = money(order["total"])
+            arrived = None if received is None else text_money(received)
             if state != "completed":
-                if state != order["state"] and order["state"] != "completed":
-                    self.book.append("invoice_state", {"order": order_id, "invoice": order["invoice"], "state": state})
-                return
-            if not released and (total is None or currency != USD or money(total) != money(order["total"])):
-                self.book.append("invoice_state", {"order": order_id, "invoice": order["invoice"], "state": "mismatch", "total": str(total), "currency": currency})
-                log(f"order {order_id}: completed invoice does not match the order ({total} {currency}, fields {sorted(remote)}); hours not issued")
-                self.mail(self.cfg.notify, f"Payment to review: {order_id}", f"Order {order_id} for {order['total']} USD completed at CoinPayments as {total} {currency}. No hours were issued; check it and run release if it is right.")
-                return
+                moved = arrived is not None and arrived != order.get("received", "0.00")
+                if (state != order["state"] and order["state"] != "completed") or moved:
+                    change = {"order": order_id, "invoice": order["invoice"], "state": state}
+                    if arrived is not None:
+                        change["received"] = arrived
+                    self.book.append("invoice_state", change)
+                if moved and Decimal(0) < received < due:
+                    self.mail(self.cfg.notify, f"Part payment: {order_id}", f"Order {order_id} for {order['total']} USD has received {arrived} USD at CoinPayments ({order['company']} <{order['email']}>). It completes only if the rest arrives, you accept the part payment in CoinPayments, or you refund it.")
+                return None
+            full = total is not None and currency == USD and money(total) == due and (received is None or received + CENT >= due)
+            if not full and not released:
+                self.book.append("invoice_state", {"order": order_id, "invoice": order["invoice"], "state": "mismatch", "total": str(total), "currency": currency, "received": arrived})
+                log(f"order {order_id}: completed invoice does not match the order ({total} {currency}, {arrived} received); hours not issued")
+                self.mail(self.cfg.notify, f"Payment to review: {order_id}", f"Order {order_id} for {order['total']} USD completed at CoinPayments as {total} {currency} with {arrived} USD received. No hours were issued. If it is right, `sparkpipe_pay.py release {order_id}` issues the hours the amount received covers.")
+                return None
+            hours, net = (order["hours"], order["net"]) if full else covered(order, received if received is not None else money(total))
+            if not Decimal(hours) > 0:
+                log(f"order {order_id}: {arrived} USD received covers no hours; refund it in CoinPayments")
+                return None
             if order["state"] != "completed":
-                self.book.append("payment", {"order": order_id, "invoice": order["invoice"], "total": order["total"], "currency": currency, "paidWith": paid_with(remote)})
-            issued = {"order": order_id, "account": order["account"], "product": order["product"], "hours": order["hours"], "released": released}
+                self.book.append("payment", {"order": order_id, "invoice": order["invoice"], "total": order["total"], "received": arrived, "currency": currency, "paidWith": paid_with(remote)})
+            issued = {"order": order_id, "account": order["account"], "product": order["product"], "hours": hours, "net": net, "released": released, "short": not full}
             if order["product"] == "hourly":
                 issued.update(start=order["start"], last=order["last"])
             else:
-                issued.update(agreement=order["agreement"], net=order["net"])
+                issued.update(agreement=order["agreement"])
             self.book.append("hours_issued", issued)
-            log(f"order {order_id}: paid, {order['hours']} hours issued to {order['account']}")
-            self.mail(order["email"], f"Payment received: SparkPipe order {order_id}", receipt(self.cfg, order))
-            self.mail(self.cfg.notify, f"Paid: {order['company']}, {order['total']} USD", f"Order {order_id}: {order['hours']} hours for {order['company']} <{order['email']}>, {order['total']} USD in {order['coin']}.")
+            log(f"order {order_id}: paid, {hours} hours issued to {order['account']}")
+            self.mail(order["email"], f"Payment received: SparkPipe order {order_id}", receipt(self.cfg, order, issued, arrived))
+            self.mail(self.cfg.notify, f"Paid: {order['company']}, {arrived or order['total']} USD", f"Order {order_id}: {hours} of {order['hours']} hours for {order['company']} <{order['email']}>, {arrived or order['total']} USD received of {order['total']} USD in {order['coin']}.")
+            return issued
 
     def work(self):
         while True:
@@ -911,15 +959,15 @@ def main(argv):
             return 1
         remote = call(cfg, "GET", "/merchant/invoices/" + order["invoice"])
         state, total, currency = remote_fields(remote)
-        print(f"{argv[2]}: CoinPayments says {state}, {total} {currency}; the order is {order['total']} USD")
+        print(f"{argv[2]}: CoinPayments says {state}, {total} {currency}, {received_of(remote)} USD received; the order is {order['total']} USD for {order['hours']} hours")
         if state != "completed":
-            print("not completed at CoinPayments: nothing issued", file=sys.stderr)
+            print("not completed at CoinPayments: nothing issued. Accept the part payment there first, or refund it.", file=sys.stderr)
             return 1
         threading.Thread(target=app.deliver, daemon=True).start()
-        app.settle(argv[2], remote, released=True)
+        issued = app.settle(argv[2], remote, released=True)
         app.mails.join()
-        print(f"{argv[2]}: issued {app.book.orders[argv[2]]['issued']}")
-        return 0
+        print(f"{argv[2]}: " + (f"issued {issued['hours']} hours for {issued['net']} USD before VAT" if issued else "nothing issued"))
+        return 0 if issued else 1
     if argv[1:] not in ([], ["serve"]):
         print("usage: sparkpipe_pay.py [serve|verify|release ORDER]", file=sys.stderr)
         return 2
