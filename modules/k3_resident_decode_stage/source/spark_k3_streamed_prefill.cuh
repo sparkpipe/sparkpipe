@@ -30,10 +30,14 @@
 #define K3_STREAMED_GATHER_BYTES 4096u
 #define K3_STREAMED_KEY_BLOCK 262144u
 
+#define K3_STREAMED_ROUND_BLOCK_BYTES (2u << 20)
+
 typedef struct K3StreamedRoundContext
 {
 	const SparkStageRunnerServices *services;
 	SparkStatus status;
+	uint8_t *send_stage;
+	uint8_t *receive_stage;
 } K3StreamedRoundContext;
 
 static void K3StreamedRound(void *context, void *stream, uint32_t operation, uint32_t rows, uint32_t row_elements, const void *send, void *receive)
@@ -51,7 +55,43 @@ static void K3StreamedRound(void *context, void *stream, uint32_t operation, uin
 			round->status = SPARK_STATUS_CAPACITY_EXCEEDED;
 		return;
 	}
-	status = round->services->round(round->services->context, stream, operation, SPARK_STAGE_RUNNER_ROUND_ALL, rows * split, row_elements / split, send, receive);
+	rows *= split;
+	row_elements /= split;
+	{
+		const uint64_t row_bytes = (uint64_t)row_elements * sizeof(uint16_t);
+		const uint32_t block = (uint32_t)(K3_STREAMED_ROUND_BLOCK_BYTES / row_bytes != 0u ? K3_STREAMED_ROUND_BLOCK_BYTES / row_bytes : 1u);
+		uint32_t first;
+		if ( rows <= block || round->send_stage == 0 || round->receive_stage == 0 || row_bytes > K3_STREAMED_ROUND_BLOCK_BYTES )
+		{
+			status = round->services->round(round->services->context, stream, operation, SPARK_STAGE_RUNNER_ROUND_ALL, rows, row_elements, send, receive);
+			if ( status != SPARK_STATUS_OK && round->status == SPARK_STATUS_OK )
+				round->status = status;
+			return;
+		}
+		for (first = 0u; first < rows && round->status == SPARK_STATUS_OK; first += block)
+		{
+			const uint32_t count = rows - first < block ? rows - first : block;
+			const uint64_t width = (uint64_t)count * row_bytes, pitch = (uint64_t)rows * row_bytes;
+			const void *chunk = (const uint8_t *)send + (uint64_t)first * row_bytes;
+			if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL )
+			{
+				if ( cudaMemcpy2DAsync(round->send_stage, (size_t)width, chunk, (size_t)pitch, (size_t)width, K3_STREAMED_SHARDS, cudaMemcpyDeviceToDevice,
+						(cudaStream_t)stream) != cudaSuccess )
+				{
+					round->status = SPARK_STATUS_IO_ERROR;
+					return;
+				}
+				chunk = round->send_stage;
+			}
+			status = round->services->round(round->services->context, stream, operation, SPARK_STAGE_RUNNER_ROUND_ALL, count, row_elements, chunk, round->receive_stage);
+			if ( status == SPARK_STATUS_OK && cudaMemcpy2DAsync((uint8_t *)receive + (uint64_t)first * row_bytes, (size_t)pitch, round->receive_stage, (size_t)width,
+					(size_t)width, K3_STREAMED_SHARDS, cudaMemcpyDeviceToDevice, (cudaStream_t)stream) != cudaSuccess )
+				status = SPARK_STATUS_IO_ERROR;
+			if ( status != SPARK_STATUS_OK && round->status == SPARK_STATUS_OK )
+				round->status = status;
+		}
+		return;
+	}
 	if ( status != SPARK_STATUS_OK && round->status == SPARK_STATUS_OK )
 		round->status = status;
 }
@@ -385,6 +425,8 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 	s->join.weight = K3StreamedAlloc<uint16_t>(s, s->join.weight_capacity);
 	s->join.activation = K3StreamedAlloc<uint16_t>(s, s->join.activation_capacity);
 	s->gather_device = K3StreamedAlloc<uint8_t>(s, (uint64_t)(K3_STREAMED_SHARDS + 1u) * K3_STREAMED_GATHER_BYTES);
+	s->round.send_stage = K3StreamedAlloc<uint8_t>(s, (uint64_t)K3_STREAMED_SHARDS * K3_STREAMED_ROUND_BLOCK_BYTES);
+	s->round.receive_stage = K3StreamedAlloc<uint8_t>(s, (uint64_t)K3_STREAMED_SHARDS * K3_STREAMED_ROUND_BLOCK_BYTES);
 	memset(&s->kda, 0, sizeof(s->kda));
 	s->kda.node = s->rank;
 	s->kda.nodes = K3_STREAMED_SHARDS;

@@ -9,7 +9,9 @@
 #include "tests/cuda/node_collective_emulation.cuh"
 
 #define ML_SHARDS 16u
+#ifndef ML_ROWS
 #define ML_ROWS 256u
+#endif
 #define ML_NODES 4u
 #define ML_PASSES 2u
 #define ML_PASS_ROWS (ML_ROWS / ML_PASSES)
