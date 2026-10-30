@@ -141,7 +141,7 @@ NOTICE = {
     "en": "<b>Published for review. Not in force.</b> Fleet-hours go on sale on 1 December 2026, and nobody can buy or pay before then. This text may still change. Send comments to <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>.",
     "ko": "<b>검토용 공개 문안이며 아직 효력이 없습니다.</b> 플릿시간 판매는 2026년 12월 1일에 시작되며, 그 전에는 누구도 구매하거나 결제할 수 없습니다. 문안은 바뀔 수 있습니다. 의견은 <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>로 보내 주십시오.",
 }
-VERSION = {"en": "Version of 25 October 2026", "ko": "2026년 10월 25일 판"}
+VERSION = {"en": "Version of 30 October 2026", "ko": "2026년 10월 30일 판"}
 NAV = {
     "en": ('<a href="terms.html">All terms</a>', '<a href="privacy.html">Privacy</a>', '<a href="index.html">Home</a>'),
     "ko": ('<a href="terms-ko.html">약관 목록</a>', '<a href="privacy-ko.html">개인정보처리방침</a>', '<a href="index-ko.html">홈</a>'),

@@ -42,7 +42,7 @@ These Terms are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 5.1. Customer reserves hours through our website or API by a message signed with its Key, naming the Fleet, the start hour, the number of hours and the model. Reservations may be made up to 7 days ahead. A Reservation exists once our system confirms it and is then final: it cannot be cancelled or moved.
 
-5.2. **Displacement.** A customer under our 2-Year Reserved Fleet Service Agreement may take an hour Customer has reserved, if that hour starts more than 6 hours later. The hour returns to Customer's balance at once, outside the holding limit, and expires at the later of its original expiry or 30 days later; we tell Customer by email. A Reservation is not displaced within 6 hours of its start.
+5.2. **Displacement.** A customer under our 2-Year Reserved Fleet Service Agreement may take an hour Customer has reserved from Monday to Saturday, within that customer's guaranteed daily limit, if that hour starts more than 6 hours later. The hour returns to Customer's balance at once, outside the holding limit, and expires at the later of its original expiry or 30 days later; we tell Customer by email. A Reservation is not displaced within 6 hours of its start, and a Reservation on a Sunday is never displaced. Days in these Terms are in Korea Standard Time (UTC+9).
 
 5.3. A reserved hour is consumed when it occurs, whether or not it is used. Requests still running at its end have 30 seconds to finish. Loading the reserved model counts as part of the hour.
 
@@ -52,7 +52,7 @@ These Terms are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 6.2. Credits are made in hours, never in cash, and are Customer's only remedy for any failure of performance, subject to clause 9.5.
 
-6.3. We publish live capacity at https://sparkpipe.ai/availability.txt, regenerated at least every 30 seconds; availability means what it shows when Customer reserves. Maintenance is announced at least 7 days ahead, and those hours cannot be reserved.
+6.3. We publish live capacity at https://sparkpipe.ai/availability.txt, regenerated at least every 30 seconds; availability means what it shows when Customer reserves. Scheduled maintenance takes place only on Sundays and is announced at least 7 days ahead, and those hours cannot be reserved.
 
 ## 7. Use and responsibility
 

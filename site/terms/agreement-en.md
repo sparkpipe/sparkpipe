@@ -34,7 +34,7 @@ In this Agreement:
 
 2.2. The Hour Price is a single all-in price. It covers the Fleet and its interconnect, the models in clause 10, and operation and support. No other fee, surcharge or charge applies during the Term. The Hour Price is exclusive of value-added tax (VAT). We charge VAT at the statutory rate (10% at the Signature Date) on every payment and show it separately on our invoice, except a payment that the Schedule states is zero-rated and that Customer makes in the way the Schedule states. Any amount charged as VAT that is not owed is an overpayment, and we refund it to Customer. If a payment Customer made as zero-rated is held subject to VAT because Customer's information was incorrect or Customer did not pay in the way the Schedule states, Customer pays us that VAT, with any additional tax and penalty, on demand.
 
-2.3. The Term contains 24 hours for every day in it: **17,520 hours**, or **17,544 hours** where 29 February falls within the Term. The price of the Term is the Hour Price multiplied by those hours.
+2.3. The Term contains 24 hours for every day in it other than a Sunday: **15,000 to 15,048 hours**, depending on how many Sundays fall within the Term and whether 29 February does. The Schedule states the number. The price of the Term is the Hour Price multiplied by those hours.
 
 2.4. All balances, refunds and claims are counted in hours, valued at the Hour Price.
 
@@ -46,17 +46,17 @@ In this Agreement:
 
 3.2. Each calendar month within the Term is one Tranche. Tranche 1 runs from the Signature Date to the end of that month. The final Tranche runs from the first day of its month to the end of the Term. There are 24 Tranches where the Signature Date is the first day of a month, and 25 otherwise.
 
-3.3. Each Tranche holds 24 hours for each of its days within the Term: 672 hours for February (696 in a leap year), 720 for a 30-day month, 744 for a 31-day month, and proportionally fewer for a partial first or final Tranche.
+3.3. Each Tranche holds 24 hours for each of its days within the Term other than a Sunday. A whole month holds 576 to 648 hours, depending on its length and how many Sundays it has. A partial first or final Tranche counts only its days within the Term.
 
 3.4. Example, signed on 15 December 2026:
 
 | Tranche | Period | Hours |
 | --- | --- | --- |
-| 1 | 15–31 Dec 2026 | 408 |
-| 2 | Jan 2027 | 744 |
-| 16 | Feb 2028 (leap) | 696 |
-| 25 | 1–14 Dec 2028 | 336 |
-| **All** | **15 Dec 2026 – 14 Dec 2028** | **17,544** |
+| 1 | 15–31 Dec 2026 | 360 |
+| 2 | Jan 2027 | 624 |
+| 15 | Feb 2028 (leap) | 600 |
+| 25 | 1–14 Dec 2028 | 288 |
+| **All** | **15 Dec 2026 – 14 Dec 2028** | **15,048** |
 
 3.5. An hour expires at 23:59:59 on the last day of its Tranche unless consumed. Expired hours do not carry forward, convert, accumulate or have any cash value.
 
@@ -66,9 +66,9 @@ In this Agreement:
 
 4.2. Customer makes one timezone election in the Schedule at signing: **50/50**, **100% East** or **100% West**. The election is fixed for the Term and may be changed only on renewal.
 
-4.3. A 100% election needs our written approval and is subject to availability. We allocate 100% capacity in each window in the order customers sign. Where 100% capacity in a window is fully allocated on a Fleet, Customer reserves on another Fleet where it is available. Availability is decided at each Reservation, from the live capacity in clause 8.8.
+4.3. A 100% election needs our written approval. We give it in the order customers sign, and only where we can keep the capacity that clause 4.6 guarantees.
 
-4.4. The election sets how many of Customer's hours may fall in each window each day:
+4.4. The election sets Customer's **Guaranteed Limit**: the hours Customer may reserve in each window on each day from Monday to Saturday:
 
 | Election | East hours per day | West hours per day | Rate |
 | --- | --: | --: | --- |
@@ -78,7 +78,11 @@ In this Agreement:
 
 "2×" means twice as many hours per day in the elected window as a 50/50 election gives. It does not change the price per hour or the total hours in clause 2.3.
 
-4.5. The election applies only from Full Prepayment (clause 7). Until then Customer reserves its paid hours within the daily limits of a 50/50 election.
+4.5. The election applies only from Full Prepayment (clause 7). Until then Customer's Guaranteed Limit is that of a 50/50 election.
+
+4.6. **Guarantee.** We keep enough capacity, on Fleets that serve Customer's Chosen Models, for Customer to reserve hours up to its Guaranteed Limit on every day from Monday to Saturday in the Term. Customer may make such Reservations for any time in the Term, subject to clauses 5.4 and 8.2. The guarantee is for capacity, not for a particular Fleet: where one Fleet is fully reserved, Customer reserves on another. If Customer asks for a Reservation within its Guaranteed Limit more than 6 hours before it starts and we cannot confirm it on any such Fleet, we credit Customer one hour under clause 9.3 for each hour asked for, in addition to its balance.
+
+4.7. **Sundays.** Sundays are kept for our own use, including scheduled maintenance. The Term holds no hours for them (clause 2.3), and the Guaranteed Limit does not apply on them. Customer may still reserve its hours on a Sunday where capacity is available, at most 30 days before they start: within the daily limits of a 50/50 election before Full Prepayment, and as Extra Hours (clause 7.1) after it. We carry out scheduled maintenance only on Sundays. Hours we set aside for it are not open for Reservation, and a Sunday Reservation already confirmed is never displaced (clause 8.4).
 
 ## 5. Phase A and withdrawal
 
@@ -88,7 +92,7 @@ In this Agreement:
 
 5.3. Once Customer pays any amount under this Agreement, the withdrawal right in clause 5.2 ends.
 
-5.4. There are no unpaid hours: until Customer pays, no hour is issued or served under this Agreement. Until Full Prepayment, Customer reserves its paid hours at times of its choosing under clause 8, within the Tranche each hour belongs to and the daily limits of a 50/50 election (12 East Window and 12 West Window hours per day).
+5.4. There are no unpaid hours: until Customer pays, no hour is issued or served under this Agreement. Until Full Prepayment, Customer reserves its paid hours at times of its choosing under clause 8, within the Tranche each hour belongs to and its Guaranteed Limit (12 East Window and 12 West Window hours per day), and on Sundays under clause 4.7.
 
 5.5. Each cleared payment issues hours equal to the amount paid, net of VAT, divided by the Hour Price, to the earliest Tranches not yet fully paid. Hours that occur before they are paid for are counted as consumed: the price of the Term does not change.
 
@@ -102,7 +106,7 @@ In this Agreement:
 | 2 | end of Day 60 | 1–12 | paid hours used at Customer's choice |
 | 3 | end of Day 90 | all | Full Prepayment (clause 7) |
 
-6.2. Customer may pay any amount early, including Full Prepayment at signing. Fungibility and the elected rate start only on Full Prepayment. The Term runs from the Signature Date regardless, so hours that occur before they are paid for are consumed under clause 5.5 and are not restored.
+6.2. Customer may pay any amount early, including Full Prepayment at signing. Fungibility, the elected rate and Extra Hours start only on Full Prepayment. The Term runs from the Signature Date regardless, so hours that occur before they are paid for are consumed under clause 5.5 and are not restored.
 
 6.3. Paying a gate does not oblige Customer to pay the next gate. No unpaid amount is ever overdue: there is no interest, acceleration, suspension or default for a missed gate.
 
@@ -118,19 +122,20 @@ In this Agreement:
 
 | Gate | Deadline | Hours paid in total | Hours due at the gate |
 | --- | --- | --: | --: |
-| 1 | 13 Jan 2027 | 4,032 | 4,032 |
-| 2 | 12 Feb 2027 | 8,424 | 4,392 |
-| 3 | 14 Mar 2027 | 17,544 | 9,120 |
-| **Total** |  |  | **17,544** |
+| 1 | 13 Jan 2027 | 3,456 | 3,456 |
+| 2 | 12 Feb 2027 | 7,224 | 3,768 |
+| 3 | 14 Mar 2027 | 15,048 | 7,824 |
+| **Total** |  |  | **15,048** |
 
 ## 7. Full Prepayment
 
 7.1. On Full Prepayment, for all hours remaining in the Term:
 
-- **Fungibility.** Hours may be reserved in either window up to the daily limits of Customer's election in clause 4.4.
-- **Elected rate.** A 100% election takes effect, giving up to 24 hours per day in the elected window.
+- **Fungibility.** Hours may be reserved in either window up to Customer's Guaranteed Limit (clause 4.4).
+- **Elected rate.** A 100% election takes effect, giving a Guaranteed Limit of 24 hours per day in the elected window.
+- **Extra Hours.** Customer may reserve hours beyond its Guaranteed Limit from Monday to Saturday, and without a daily limit on Sundays (the **Extra Hours**). Extra Hours are subject to availability, may be reserved at most 30 days before they start, and are never displaced once confirmed (clause 8.4). They never take an hour held under our hourly terms (clause 8.13).
 - **Spending ahead.** Customer may reserve more hours in a period than its current Tranche holds. As each reserved hour occurs it is drawn from the unexpired Tranche nearest to expiry, so the excess comes from future Tranches. Hours of a future Tranche consumed early do not reappear in their own month.
-- **Concurrency.** Customer may hold Reservations on several Fleets at the same time, limited only by the Fleets we operate and their availability.
+- **Concurrency.** Customer may hold Reservations on several Fleets at the same time.
 
 7.2. Customer's hours may be reserved on any Fleet we operate, current or future, subject to availability. This Agreement does not set the price of any further capacity Customer buys later.
 
@@ -138,7 +143,7 @@ In this Agreement:
 
 8.1. Customer reserves hours through our website or API by a message signed with its Key, naming the Fleet, the start time and the number of hours. A Reservation exists once our system confirms it. A reserved hour on a Fleet consumes as many hours as that Fleet's Rate.
 
-8.2. A Reservation is final once confirmed: it cannot be cancelled, moved or refunded, except under clause 11.3. Customer may not reserve more hours than its paid balance not already consumed or reserved. A reserved hour is consumed when that hour occurs, whether or not it is used, and not before. Our technical records of payments, Reservations and consumption are kept in an append-only, hash-chained ledger whose daily roots we publish, and Customer may obtain its own entries with proof that they were recorded and not altered. These records are conclusive, except for manifest error.
+8.2. A Reservation is final once confirmed: it cannot be cancelled, moved or refunded, except under clause 11.3. Customer may not make a Reservation unless its paid hours can cover it together with every Reservation it already holds, each from hours that have not expired when it occurs. A reserved hour is consumed when that hour occurs, whether or not it is used, and not before. Our technical records of payments, Reservations and consumption are kept in an append-only, hash-chained ledger whose daily roots we publish, and Customer may obtain its own entries with proof that they were recorded and not altered. These records are conclusive, except for manifest error.
 
 8.3. **Customer has the exclusive right to use each reserved hour.** Customer may use it, or let others use it by resale, transfer or gift through its Key and the access it controls, and may run any lawful workload on it, subject to clauses 8.9 to 8.12. Any such arrangement is made outside our system and is out of our control (clause 8.6).
 
@@ -160,7 +165,7 @@ In this Agreement:
 
 8.12. **Customer data.** Customer keeps all rights in its data and outputs. We access them only as needed to operate and secure the service, or where the law requires. Customer is responsible for the lawfulness of any personal data it processes and for keeping its own copies: we keep no backups of Customer data. We handle Customer data as stated in our published privacy policy. The Fleets and our servers are located in Seoul, Republic of Korea. We hold no Customer data beyond transient caches, which we delete within 24 hours, so nothing is returned when this Agreement ends. We tell Customer without delay of any intrusion, any leak of its information and any unannounced interruption of the service.
 
-8.13. **Priority over hourly use.** Customer may reserve an hour that another customer holds under our hourly terms, if that hour starts more than 6 hours later; the hour then becomes Customer's Reservation. Customer's own Reservations are never displaced (clause 8.4).
+8.13. **Priority over hourly use.** Within its Guaranteed Limit, Customer may reserve an hour that another customer holds under our hourly terms, if that hour starts more than 6 hours later; the hour then becomes Customer's Reservation. Extra Hours and hours on a Sunday never take an hour held under our hourly terms. Customer's own Reservations are never displaced (clause 8.4).
 
 ## 9. Delivery obligation
 
@@ -248,6 +253,7 @@ Where this Agreement ends under clause 11.2 or 11.3:
 | --- | --- |
 | Customer legal name and jurisdiction | \[ \] |
 | Signature Date | \[ \] |
+| Hours in the Term (clause 2.3) | \[ \] |
 | Hour Price (clause 2) | KRW \[ \] or USD \[ \] per fleet-hour, in the currency of payment below, exclusive of VAT, fixed for the Term |
 | Customer VAT status (clause 2.2) | \[No place of business in the Republic of Korea / Korean business registration number \[ \]\] |
 | Timezone election | \[50/50 / 100% East / 100% West\], subject to clause 4.3 |
