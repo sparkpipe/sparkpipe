@@ -69,32 +69,40 @@ static int32_t K3StreamedMoeBegin(K3LayerBuffers *b, const K3LayerWeights *shard
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), rows * shard_count, K3_LAYER_THREADS, 0, stream,
-		b->gate_up_bf16,join->activation,shared,(uint64_t)shared,K3_SITU_BETA,K3_SITU_LINEAR_BETA);
+		b->gate_up_bf16,join->activation,shared,(uint64_t)shared,K3_SITU_BETA,K3_SITU_LINEAR_BETA,1u);
 	for (shard = 0u; shard < shard_count && status == LM_LAUNCH_OK; shard++)
 		status = K3StreamedJoinColumns(join->weight,shard_count * shared,shard * shared,shards[shard].shared_w2_weight,shared,K3_HIDDEN,stream);
 	return(status);
 }
 
-template<class Format>
-static int32_t K3StreamedMoeShard(K3LayerBuffers *b, const K3LayerWeights *weights, uint32_t shard, uint32_t member, uint32_t members, uint32_t shard_count,
-	const K3StreamedJoin *join, uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3StreamedMoeShard(K3LayerBuffers *b, const K3LayerWeights *weights, uint32_t shard, uint32_t member, uint32_t members, uint32_t shard_count)
 {
-	uint32_t channels;
-	int32_t status;
-	if ( weights == 0 || shard >= shard_count || member >= members || join == 0 || weights->expert_w1_weight == 0 || weights->expert_w2_weight == 0 )
+	if ( weights == 0 || shard >= shard_count || member >= members || weights->expert_w1_weight == 0 || weights->expert_w2_weight == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
 	K3BindLayer(weights,b);
 	b->tp_rank = shard;
-	channels = b->expert_w1_output / 2u;
-	if ( b->tp_sharded == 0u || b->expert_interleave == 0u || b->expert_w2_input != channels )
+	return(b->tp_sharded == 0u || b->expert_interleave == 0u || b->expert_w2_input != b->expert_w1_output / 2u ? LM_LAUNCH_ERR_SHAPE : LM_LAUNCH_OK);
+}
+
+static int32_t K3StreamedMoeUp(K3LayerBuffers *b, const void *const *up_weights, uint32_t members, uint32_t packed_rows, cudaStream_t stream)
+{
+	const uint32_t channels = b->expert_w2_input, width = b->expert_w1_output;
+	uint32_t batch = width != 0u ? K3_ROUTED_EXPERT_HIDDEN / width : 0u, first;
+	int32_t status = LM_LAUNCH_OK;
+	if ( up_weights == 0 || members == 0u || members > LM_CELL_MMA_MAX_SEGMENTS || width != 2u * channels || batch == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
-	status = LmCellMmaExperts(b->expert_w1_weight,b->latent_full_bf16,b->gate_up_bf16,b->group_row_offset,b->route_source_token,K3_EXPERTS,packed_rows,0u,
-		K3_ROUTED_EXPERT_HIDDEN,b->expert_w1_output,b->expert_tile_k,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), packed_rows, K3_LAYER_THREADS, 0, stream,
-		b->gate_up_bf16,b->intermediate_bf16 + (uint64_t)member * channels,channels,(uint64_t)members * channels,K3_SITU_BETA,K3_SITU_LINEAR_BETA);
-	return(LM_LAUNCH_OK);
+	batch = batch < members ? batch : members;
+	while ( members % batch != 0u )
+		batch--;
+	for (first = 0u; first < members && status == LM_LAUNCH_OK; first += batch)
+	{
+		status = LmCellMmaExpertsColumns(up_weights + first,batch,b->latent_full_bf16,b->gate_up_bf16,b->group_row_offset,b->route_source_token,K3_EXPERTS,packed_rows,0u,
+			K3_ROUTED_EXPERT_HIDDEN,batch * width,b->expert_tile_k,stream);
+		if ( status == LM_LAUNCH_OK )
+			LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), packed_rows * batch, K3_LAYER_THREADS, 0, stream,
+				b->gate_up_bf16,b->intermediate_bf16 + (uint64_t)first * channels,channels,(uint64_t)members * channels,K3_SITU_BETA,K3_SITU_LINEAR_BETA,batch);
+	}
+	return(status);
 }
 
 static int32_t K3StreamedMoeDown(K3LayerBuffers *b, const void *const *down_weights, uint32_t members, uint32_t first, float *latent_accumulator, uint32_t rows,
@@ -143,7 +151,7 @@ template<class Format>
 static int32_t K3StreamedMoe(K3LayerBuffers *b, const K3LayerWeights *shards, uint32_t shard_count, uint32_t members, const K3StreamedJoin *join,
 	float *latent_accumulator, uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
 {
-	const void *down_weights[LM_CELL_MMA_MAX_SEGMENTS];
+	const void *down_weights[LM_CELL_MMA_MAX_SEGMENTS], *up_weights[LM_CELL_MMA_MAX_SEGMENTS];
 	uint32_t shard;
 	int32_t status;
 	if ( members == 0u || members > LM_CELL_MMA_MAX_SEGMENTS || shard_count % members != 0u )
@@ -151,8 +159,11 @@ static int32_t K3StreamedMoe(K3LayerBuffers *b, const K3LayerWeights *shards, ui
 	status = K3StreamedMoeBegin<Format>(b,shards,shard_count,join,latent_accumulator,rows,packed_rows,multiprocessors,stream);
 	for (shard = 0u; shard < shard_count && status == LM_LAUNCH_OK; shard++)
 	{
+		up_weights[shard % members] = shards[shard].expert_w1_weight;
 		down_weights[shard % members] = shards[shard].expert_w2_weight;
-		status = K3StreamedMoeShard<Format>(b,&shards[shard],shard,shard % members,members,shard_count,join,rows,packed_rows,multiprocessors,stream);
+		status = K3StreamedMoeShard(b,&shards[shard],shard,shard % members,members,shard_count);
+		if ( status == LM_LAUNCH_OK && shard % members == members - 1u )
+			status = K3StreamedMoeUp(b,up_weights,members,packed_rows,stream);
 		if ( status == LM_LAUNCH_OK && shard % members == members - 1u )
 			status = K3StreamedMoeDown(b,down_weights,members,shard + 1u == members ? 1u : 0u,latent_accumulator,rows,packed_rows,stream);
 	}

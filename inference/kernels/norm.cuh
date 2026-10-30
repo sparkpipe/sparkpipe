@@ -348,10 +348,10 @@ void LmClampedUpGateKernel(const uint16_t *__restrict__ up_gate_bf16,uint16_t *_
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
-void LmSituMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, uint64_t output_pitch, float beta, float linear_beta)
+void LmSituMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, uint64_t output_pitch, float beta, float linear_beta, uint32_t row_groups)
 {
 	uint64_t base = (uint64_t)blockIdx.x * dimension * 2u;
-	uint64_t out_base = (uint64_t)blockIdx.x * output_pitch;
+	uint64_t out_base = (uint64_t)(blockIdx.x / row_groups) * output_pitch + (uint64_t)(blockIdx.x % row_groups) * dimension;
 	uint32_t index;
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 	{

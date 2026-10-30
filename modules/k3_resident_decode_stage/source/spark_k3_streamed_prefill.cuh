@@ -1031,7 +1031,7 @@ static SparkStatus K3StreamedLayer(K3Streamed *s, uint32_t layer, uint64_t dense
 {
 	const uint32_t kind = K3_LAYER_KIND(layer), kda_index = layer - layer / 4u, buffer = (uint32_t)(dense_item % s->config.dense_buffers);
 	uint8_t *rank_base[K3_STREAMED_SHARDS];
-	const void *down_weights[K3_STREAMED_SHARDS];
+	const void *down_weights[K3_STREAMED_SHARDS], *up_weights[K3_STREAMED_SHARDS];
 	uint64_t held;
 	uint32_t shard, step;
 	SparkStatus status = K3StreamedAwaitPublished(s, &s->dense_published, dense_item, 1u);
@@ -1073,14 +1073,16 @@ static SparkStatus K3StreamedLayer(K3Streamed *s, uint32_t layer, uint64_t dense
 			status = K3StreamedShard(s, layer, source, rank_base, s->slot_block[slot]);
 			if ( status == SPARK_STATUS_OK )
 			{
+				up_weights[member] = s->shards[source].expert_w1_weight;
 				down_weights[member] = s->shards[source].expert_w2_weight;
-				status = K3StreamedCheck(s, K3StreamedMoeShard<LmMxfp4>(&s->b, &s->shards[source], source, member, s->moe_members, K3_STREAMED_SHARDS, &s->join,
-					rows, rows * K3_TOP_K, multiprocessors, stream), "experts", layer);
+				status = K3StreamedCheck(s, K3StreamedMoeShard(&s->b, &s->shards[source], source, member, s->moe_members, K3_STREAMED_SHARDS), "experts", layer);
 			}
 			if ( status != SPARK_STATUS_OK || member + 1u < s->moe_members )
 				continue;
-			status = K3StreamedCheck(s, K3StreamedMoeDown(&s->b, down_weights, s->moe_members, step + 1u == s->moe_members ? 1u : 0u, s->latent_accumulator, rows,
-				rows * K3_TOP_K, stream), "expert down projection", layer);
+			status = K3StreamedCheck(s, K3StreamedMoeUp(&s->b, up_weights, s->moe_members, rows * K3_TOP_K, stream), "expert up projection", layer);
+			if ( status == SPARK_STATUS_OK )
+				status = K3StreamedCheck(s, K3StreamedMoeDown(&s->b, down_weights, s->moe_members, step + 1u == s->moe_members ? 1u : 0u, s->latent_accumulator, rows,
+					rows * K3_TOP_K, stream), "expert down projection", layer);
 			for (held = item + 1u - s->moe_members; held <= item && status == SPARK_STATUS_OK; held++)
 				status = K3StreamedRelease(s, &s->expert_released, s->slot_done[held % s->config.expert_slots], stream);
 		}

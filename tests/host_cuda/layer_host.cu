@@ -139,7 +139,7 @@ int main(void)
 	Emit("l2out", l2_in, ROWS * CHANNELS);
 
 	LM_HOST_LAUNCH(dim3(ROWS),
-		(LmSituMulKernel<THREADS>(gate_up, situ_out, INTERMEDIATE, INTERMEDIATE, 4.0f, 25.0f)));
+		(LmSituMulKernel<THREADS>(gate_up, situ_out, INTERMEDIATE, INTERMEDIATE, 4.0f, 25.0f, 1u)));
 	Emit("situout", situ_out, ROWS * INTERMEDIATE);
 
 	LM_HOST_LAUNCH(dim3(ROWS),

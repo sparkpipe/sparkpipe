@@ -33,6 +33,7 @@ typedef struct LmCellMmaSegments
 	const uint8_t *weight[LM_CELL_MMA_MAX_SEGMENTS];
 	uint64_t group_bytes;
 	uint32_t tiles;
+	uint32_t column_cells;
 }
 LmCellMmaSegments;
 
@@ -54,9 +55,9 @@ static __device__ __forceinline__ void LmCellMmaWait(void)
 }
 
 template<uint32_t COPIES>
-static __device__ __forceinline__ void LmCellMmaStage(uint16_t *buffer, uint8_t *weights, const uint16_t *const source[COPIES], const uint16_t *fallback, const LmCellMmaSegments &segments, uint64_t cells_offset, uint64_t tile_stride, uint32_t t, uint32_t row, uint32_t vector, uint32_t weight_vectors)
+static __device__ __forceinline__ void LmCellMmaStage(uint16_t *buffer, uint8_t *weights, const uint16_t *const source[COPIES], const uint16_t *fallback, const LmCellMmaSegments &segments, uint32_t column_segment, uint64_t cells_offset, uint64_t tile_stride, uint32_t t, uint32_t row, uint32_t vector, uint32_t weight_vectors)
 {
-	const uint8_t *cells = segments.weight[t / segments.tiles] + cells_offset + (uint64_t)(t % segments.tiles) * tile_stride;
+	const uint8_t *cells = segments.weight[column_segment + t / segments.tiles] + cells_offset + (uint64_t)(t % segments.tiles) * tile_stride;
 	#pragma unroll
 	for ( uint32_t m = 0u; m < COPIES; m++ )
 		LmCellMmaCopy(buffer + (row + m * LM_CELL_MMA_STAGE_ROW_STEP) * LM_CELL_MMA_STAGE_PITCH + vector * 8u,
@@ -85,7 +86,7 @@ static __device__ __forceinline__ void LmCellMmaLoad(const uint8_t *tile, uint32
 }
 
 template<uint32_t CHUNKS>
-static __device__ __forceinline__ void LmCellMmaRows(const LmSkinnyCellArguments &args, const LmCellMmaSegments &segments, uint64_t cells_offset, uint64_t tile_stride, uint32_t cell_first, uint32_t block_first, uint32_t active, uint32_t first, uint32_t end, uint16_t *stage, uint8_t *weights)
+static __device__ __forceinline__ void LmCellMmaRows(const LmSkinnyCellArguments &args, const LmCellMmaSegments &segments, uint32_t column_segment, uint64_t cells_offset, uint64_t tile_stride, uint32_t cell_first, uint32_t block_first, uint32_t active, uint32_t first, uint32_t end, uint16_t *stage, uint8_t *weights)
 {
 	constexpr uint32_t COPIES = (CHUNKS * 16u + LM_CELL_MMA_STAGE_ROW_STEP - 1u) / LM_CELL_MMA_STAGE_ROW_STEP;
 	const uint32_t lane = threadIdx.x % LM_WARP_LANES, g = lane / 4u, c = lane % 4u;
@@ -114,7 +115,7 @@ static __device__ __forceinline__ void LmCellMmaRows(const LmSkinnyCellArguments
 	for ( t = 0u; t + 1u < LM_CELL_MMA_STAGES; t++ )
 	{
 		if ( t < args.k_tiles )
-			LmCellMmaStage<COPIES>(stage + t * LM_CELL_MMA_STAGE_ELEMENTS,weights + t * LM_CELL_MMA_WEIGHT_TILE_BYTES,source,args.activation,segments,cells_offset,tile_stride,t,row,vector,weight_vectors);
+			LmCellMmaStage<COPIES>(stage + t * LM_CELL_MMA_STAGE_ELEMENTS,weights + t * LM_CELL_MMA_WEIGHT_TILE_BYTES,source,args.activation,segments,column_segment,cells_offset,tile_stride,t,row,vector,weight_vectors);
 		LmCellMmaCommit();
 	}
 	for ( t = 0u; t < args.k_tiles; t++ )
@@ -124,7 +125,7 @@ static __device__ __forceinline__ void LmCellMmaRows(const LmSkinnyCellArguments
 		LmCellMmaWait<LM_CELL_MMA_STAGES - 2u>();
 		__syncthreads();
 		if ( ahead < args.k_tiles )
-			LmCellMmaStage<COPIES>(stage + (ahead % LM_CELL_MMA_STAGES) * LM_CELL_MMA_STAGE_ELEMENTS,weights + (ahead % LM_CELL_MMA_STAGES) * LM_CELL_MMA_WEIGHT_TILE_BYTES,source,args.activation,segments,cells_offset,tile_stride,ahead,row,vector,weight_vectors);
+			LmCellMmaStage<COPIES>(stage + (ahead % LM_CELL_MMA_STAGES) * LM_CELL_MMA_STAGE_ELEMENTS,weights + (ahead % LM_CELL_MMA_STAGES) * LM_CELL_MMA_WEIGHT_TILE_BYTES,source,args.activation,segments,column_segment,cells_offset,tile_stride,ahead,row,vector,weight_vectors);
 		LmCellMmaCommit();
 		if ( active != 0u )
 		{
@@ -194,8 +195,10 @@ static __global__ __launch_bounds__(LM_CELL_MMA_THREADS) void LmCellMmaKernel(co
 	const uint32_t active = pair < pairs ? 1u : 0u;
 	const uint32_t cell_first = (active != 0u ? pair : 0u) * LM_CELL_MMA_CELLS;
 	const uint32_t block_first = (blockIdx.x % blocks) * LM_CELL_MMA_BLOCK_CELLS;
-	const uint64_t tile_stride = (uint64_t)args.cells * LM_SKINNY_CELL_ROWS * LM_SKINNY_CHUNK_BYTES;
-	const uint64_t cells_offset = (uint64_t)group * segments.group_bytes + (uint64_t)block_first * LM_CELL_MMA_CELL_BYTES;
+	const uint32_t segment_cells = segments.column_cells != 0u ? segments.column_cells : args.cells;
+	const uint32_t column_segment = block_first / segment_cells;
+	const uint64_t tile_stride = (uint64_t)segment_cells * LM_CELL_MMA_CELL_BYTES;
+	const uint64_t cells_offset = (uint64_t)group * segments.group_bytes + (uint64_t)(block_first - column_segment * segment_cells) * LM_CELL_MMA_CELL_BYTES;
 	uint32_t first, end, last;
 	LmDependentWait();
 	if ( group >= args.groups )
@@ -205,27 +208,24 @@ static __global__ __launch_bounds__(LM_CELL_MMA_THREADS) void LmCellMmaKernel(co
 	{
 		last = end - first < LM_CELL_MMA_ROWS ? end : first + LM_CELL_MMA_ROWS;
 		if ( last - first > 4u * 16u )
-			LmCellMmaRows<LM_CELL_MMA_CHUNKS>(args,segments,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights);
+			LmCellMmaRows<LM_CELL_MMA_CHUNKS>(args,segments,column_segment,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights);
 		else if ( last - first > 3u * 16u )
-			LmCellMmaRows<4u>(args,segments,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights);
+			LmCellMmaRows<4u>(args,segments,column_segment,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights);
 		else if ( last - first > 2u * 16u )
-			LmCellMmaRows<3u>(args,segments,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights);
+			LmCellMmaRows<3u>(args,segments,column_segment,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights);
 		else if ( last - first > 16u )
-			LmCellMmaRows<2u>(args,segments,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights);
+			LmCellMmaRows<2u>(args,segments,column_segment,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights);
 		else
-			LmCellMmaRows<1u>(args,segments,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights);
+			LmCellMmaRows<1u>(args,segments,column_segment,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights);
 	}
 }
 
-static int32_t LmCellMmaExpertsSegmented(const void *const *weight, uint32_t segment_count, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t tile_k, cudaStream_t stream)
+static int32_t LmCellMmaLaunchSegments(LmSkinnyCellArguments &args, LmCellMmaSegments &segments, const void *const *weight, uint32_t segment_count, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t tile_k)
 {
-	LmSkinnyCellArguments args;
-	LmCellMmaSegments segments;
-	uint64_t blocks, slots;
 	uint32_t segment;
 	if ( tile_k != LM_SKINNY_CELL_TILE_K || weight == 0 || segment_count == 0u || segment_count > LM_CELL_MMA_MAX_SEGMENTS || activation == 0 || output_bf16 == 0 ||
 		group_row_offset == 0 || (activation_packed == 0u && route_source_token == 0) || groups == 0u || packed_rows == 0u ||
-		input_dimension == 0u || (input_dimension % (LM_SKINNY_CELL_TILE_K * segment_count)) != 0u ||
+		input_dimension == 0u || (input_dimension % LM_SKINNY_CELL_TILE_K) != 0u ||
 		output_dimension == 0u || (output_dimension % (LM_SKINNY_CELL_NEURONS * LM_CELL_MMA_CELLS)) != 0u || LmSkinnyAligned(activation) == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	memset(&segments,0,sizeof(segments));
@@ -248,14 +248,45 @@ static int32_t LmCellMmaExpertsSegmented(const void *const *weight, uint32_t seg
 	args.output_dimension = output_dimension;
 	args.k_tiles = input_dimension / LM_SKINNY_CELL_TILE_K;
 	args.cells = output_dimension / LM_SKINNY_CELL_NEURONS;
-	segments.tiles = args.k_tiles / segment_count;
-	segments.group_bytes = (uint64_t)segments.tiles * args.cells * LM_SKINNY_CELL_ROWS * LM_SKINNY_CHUNK_BYTES;
+	return(LM_LAUNCH_OK);
+}
+
+static int32_t LmCellMmaLaunchKernel(LmSkinnyCellArguments &args, LmCellMmaSegments &segments, cudaStream_t stream)
+{
+	uint64_t blocks, slots;
 	args.group_bytes = segments.group_bytes;
-	slots = ((uint64_t)packed_rows + (uint64_t)groups * LM_CELL_MMA_ROWS - 1u) / ((uint64_t)groups * LM_CELL_MMA_ROWS);
+	slots = ((uint64_t)args.packed_rows + (uint64_t)args.groups * LM_CELL_MMA_ROWS - 1u) / ((uint64_t)args.groups * LM_CELL_MMA_ROWS);
 	slots = args.k_tiles < LM_CELL_MMA_SLOT_MIN_K_TILES ? 1u : slots < LM_CELL_MMA_ROW_SLOTS ? slots : LM_CELL_MMA_ROW_SLOTS;
-	blocks = (uint64_t)groups * slots * ((args.cells / LM_CELL_MMA_CELLS + LM_CELL_MMA_WARPS - 1u) / LM_CELL_MMA_WARPS);
+	blocks = (uint64_t)args.groups * slots * ((args.cells / LM_CELL_MMA_CELLS + LM_CELL_MMA_WARPS - 1u) / LM_CELL_MMA_WARPS);
 	LM_LAUNCH_DEPENDENT((LmCellMmaKernel),(uint32_t)blocks,LM_CELL_MMA_THREADS,0u,stream,args,segments);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+static int32_t LmCellMmaExpertsSegmented(const void *const *weight, uint32_t segment_count, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t tile_k, cudaStream_t stream)
+{
+	LmSkinnyCellArguments args;
+	LmCellMmaSegments segments;
+	int32_t status = LmCellMmaLaunchSegments(args,segments,weight,segment_count,activation,output_bf16,group_row_offset,route_source_token,groups,packed_rows,activation_packed,
+		input_dimension,output_dimension,tile_k);
+	if ( status != LM_LAUNCH_OK || (args.k_tiles % segment_count) != 0u )
+		return(status != LM_LAUNCH_OK ? status : LM_LAUNCH_ERR_SHAPE);
+	segments.tiles = args.k_tiles / segment_count;
+	segments.group_bytes = (uint64_t)segments.tiles * args.cells * LM_CELL_MMA_CELL_BYTES;
+	return(LmCellMmaLaunchKernel(args,segments,stream));
+}
+
+static int32_t LmCellMmaExpertsColumns(const void *const *weight, uint32_t segment_count, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t tile_k, cudaStream_t stream)
+{
+	LmSkinnyCellArguments args;
+	LmCellMmaSegments segments;
+	int32_t status = LmCellMmaLaunchSegments(args,segments,weight,segment_count,activation,output_bf16,group_row_offset,route_source_token,groups,packed_rows,activation_packed,
+		input_dimension,output_dimension,tile_k);
+	if ( status != LM_LAUNCH_OK || (args.cells % (segment_count * LM_CELL_MMA_BLOCK_CELLS)) != 0u )
+		return(status != LM_LAUNCH_OK ? status : LM_LAUNCH_ERR_SHAPE);
+	segments.tiles = args.k_tiles;
+	segments.column_cells = args.cells / segment_count;
+	segments.group_bytes = (uint64_t)args.k_tiles * segments.column_cells * LM_CELL_MMA_CELL_BYTES;
+	return(LmCellMmaLaunchKernel(args,segments,stream));
 }
 
 static int32_t LmCellMmaExperts(const void *weight, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t tile_k, cudaStream_t stream)
