@@ -295,7 +295,10 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   the full resident pack a node has about 11 GB free and runs 2,048 to 4,096
   rows a pass; 16,384 to 32,768 rows a pass (two passes for 1M tokens) need a
   prefill-only lane whose weightd leases experts from a bounded pool, so a
-  1M prompt on one 16-node fleet cannot share it with decode.
+  1M prompt on one 16-node fleet cannot share it with decode. The drafter tap
+  stream gets no hidden states for the deferred span, only for the waves
+  after it, so a drafter that builds its context from taps drafts without
+  the span.
 - Kimi K3's prefill attention expands the values but keeps the keys latent
   (576 wide), so each head and key pair costs 1,408 FLOPs where expanded
   keys (192 wide) would cost 640. At 250K positions MLA attention is about
