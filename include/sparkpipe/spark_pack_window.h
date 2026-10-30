@@ -10,8 +10,8 @@ extern "C" {
 #endif
 
 #define SPARK_PACK_WINDOW_MAX_DENSE_RANGES 4u
-#define SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS 2u
-#define SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS 32u
+#define SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS 4u
+#define SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS 64u
 
 typedef SparkStatus (*SparkPackWindowRead)(void *context, uint64_t pack_offset, uint64_t bytes, uint8_t *destination);
 
