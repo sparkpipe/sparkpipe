@@ -116,6 +116,22 @@ static int32_t K3StreamedLayerRanges(uint64_t payload_base, const SparkK3BoundLa
 	return dense != 0u ? 0 : -1;
 }
 
+__global__ static void K3StreamedHealthKernel(const uint16_t *hidden, uint64_t elements, uint32_t *health)
+{
+	uint32_t nonfinite = 0u, top = 0u;
+	for (uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < elements; index += (uint64_t)gridDim.x * blockDim.x)
+	{
+		const uint32_t bits = (uint32_t)hidden[index] & 0x7fffu;
+		if ( bits >= 0x7f80u )
+			nonfinite++;
+		else
+			top = bits > top ? bits : top;
+	}
+	if ( nonfinite != 0u )
+		atomicAdd(&health[0], nonfinite);
+	atomicMax(&health[1], top);
+}
+
 struct K3Streamed
 {
 	SparkStageRunnerStreamedPrefillConfig config;
@@ -154,6 +170,7 @@ struct K3Streamed
 	uint32_t *store_sequence_device;
 	uint8_t *gather_device;
 	uint32_t *host_staging;
+	uint32_t *health;
 	uint8_t *mla_keys;
 	cudaStream_t gather_stream;
 	cudaEvent_t slot_done[2];
@@ -281,6 +298,7 @@ static void K3StreamedDestroy(K3Streamed *s)
 		(void)cudaStreamDestroy(s->gather_stream);
 	cudaFree(s->mla_keys);
 	cudaFreeHost(s->host_staging);
+	cudaFreeHost(s->health);
 	for (index = 0u; index < s->allocation_count; index++)
 		cudaFree(s->allocations[index]);
 	delete s;
@@ -414,7 +432,9 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 	s->mla.context = &s->round;
 	if ( cudaMallocHost((void **)&s->host_staging, (size_t)(pass + K3_STREAMED_CHUNKS + 8u) * sizeof(uint32_t)) != cudaSuccess )
 		s->host_staging = 0;
-	if ( s->allocation_count == K3_STREAMED_MAX_ALLOCATIONS || s->host_staging == 0 || state_memory == 0 || window_memory == 0 || s->mla.older_context == 0 )
+	if ( cudaHostAlloc((void **)&s->health, (size_t)(K3_LAYERS + 1u) * 2u * sizeof(uint32_t), cudaHostAllocMapped) != cudaSuccess )
+		s->health = 0;
+	if ( s->allocation_count == K3_STREAMED_MAX_ALLOCATIONS || s->host_staging == 0 || s->health == 0 || state_memory == 0 || window_memory == 0 || s->mla.older_context == 0 )
 	{
 		fprintf(stderr, "sparkpipe_k3: streamed prefill engine buffers did not fit (%u allocations, %llu bytes placed)\n", s->allocation_count,
 			(unsigned long long)s->engine_bytes);
@@ -697,9 +717,38 @@ static SparkStatus K3StreamedLayer(K3Streamed *s, uint32_t layer, uint32_t rows,
 			status = K3StreamedCheck(s, K3StreamedMoeEnd<LmMxfp4>(&s->b, s->shards, K3_STREAMED_SHARDS, &s->join, s->latent_accumulator, rows, multiprocessors, stream),
 				"expert combine", layer);
 	}
+	if ( status == SPARK_STATUS_OK )
+		K3StreamedHealthKernel<<<256u, 256u, 0, stream>>>(s->b.hidden_bf16, (uint64_t)rows * K3_HIDDEN, s->health + 2u * (layer + 1u));
 	if ( status == SPARK_STATUS_OK && cudaEventRecord(s->layer_done, stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
 	return status;
+}
+
+static float K3StreamedBf16(uint32_t bits)
+{
+	const uint32_t word = bits << 16u;
+	float value;
+	memcpy(&value, &word, sizeof(value));
+	return value;
+}
+
+static SparkStatus K3StreamedHealth(K3Streamed *s, uint32_t pass)
+{
+	char line[4096];
+	uint32_t layer, length = 0u, first_bad = UINT32_MAX;
+	for (layer = 0u; layer <= K3_LAYERS; layer++)
+	{
+		if ( s->health[2u * layer] != 0u && first_bad == UINT32_MAX )
+			first_bad = layer;
+		if ( length + 16u < sizeof(line) && (layer < 8u || layer % 8u == 0u || layer == K3_LAYERS || layer == first_bad) )
+			length += (uint32_t)snprintf(line + length, sizeof(line) - length, " %d:%.3g", (int)layer - 1, K3StreamedBf16(s->health[2u * layer + 1u]));
+	}
+	fprintf(stderr, "sparkpipe_k3: streamed prefill pass %u rank %u hidden absmax by layer (-1 = embedding):%s\n", pass, s->rank, line);
+	if ( first_bad == UINT32_MAX )
+		return SPARK_STATUS_OK;
+	fprintf(stderr, "sparkpipe_k3: streamed prefill pass %u rank %u: %u non-finite hidden values after layer %d; the prefill fails before its KV reaches decode\n",
+		pass, s->rank, s->health[2u * first_bad], (int)first_bad - 1);
+	SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 }
 
 static SparkStatus K3StreamedStates(K3Streamed *s, uint32_t target, uint32_t to_slot, cudaStream_t stream)
@@ -831,11 +880,16 @@ static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPr
 			vocab.slice[row] = (const uint16_t *)vocab_base[row];
 		vocab.slice_rows = s->vocab_rows;
 		vocab.slices = K3_STREAMED_SHARDS;
+		memset(s->health, 0, (size_t)(K3_LAYERS + 1u) * 2u * sizeof(uint32_t));
 		status = K3StreamedCheck(s, K3StreamedEmbed(&vocab, s->tokens_device, s->b.hidden_bf16, rows, stream), "embedding", 0u);
+		if ( status == SPARK_STATUS_OK )
+			K3StreamedHealthKernel<<<256u, 256u, 0, stream>>>(s->b.hidden_bf16, (uint64_t)rows * K3_HIDDEN, s->health);
 		if ( status == SPARK_STATUS_OK && cudaEventRecord(s->layer_done, stream) != cudaSuccess )
 			status = SPARK_STATUS_IO_ERROR;
 		for (layer = 0u; layer < K3_LAYERS && status == SPARK_STATUS_OK; layer++)
 			status = K3StreamedLayer(s, layer, rows, request->multiprocessors, stream);
+		if ( status == SPARK_STATUS_OK )
+			status = cudaStreamSynchronize(stream) == cudaSuccess ? K3StreamedHealth(s, pass) : SPARK_STATUS_IO_ERROR;
 		fprintf(stderr, "sparkpipe_k3: streamed prefill pass %u/%u rows %u x %u keys to %llu status=%d at %.1f s\n", pass + 1u, passes, rows, K3_STREAMED_SHARDS,
 			(unsigned long long)(base + pass_rows), (int)status, (double)(K3StreamedNowNs() - started) / 1e9);
 	}
