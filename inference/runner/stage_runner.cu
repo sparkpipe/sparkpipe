@@ -290,7 +290,6 @@ typedef struct SparkStageRunnerState
 	uint32_t deferred_count;
 	uint32_t deferred_first;
 	uint32_t deferred_slot;
-	uint32_t deferred_state_target;
 	uint32_t deferred_active;
 	uint32_t *context_length;
 	uint32_t *sequence_of_row;
@@ -2122,7 +2121,7 @@ static SparkStatus StageRunnerDefer(SparkStageRunner *runner, SparkStageRunnerSt
 {
 	uint32_t row;
 	if ( state->model_interface->streamed_prefill == 0 || runner->owns_embedding == 0u || dispatch->token_ids == 0 || dispatch->host_positions == 0 ||
-		dispatch->host_sequence_of_row == 0 || dispatch->host_state_target == 0 || dispatch->active_sequence_count != 1u ||
+		dispatch->host_sequence_of_row == 0 || dispatch->active_sequence_count != 1u ||
 		(dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) == 0u || (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY) != 0u ||
 		dispatch->chain_steps > 1u )
 	{
@@ -2136,9 +2135,8 @@ static SparkStatus StageRunnerDefer(SparkStageRunner *runner, SparkStageRunnerSt
 		state->deferred_first = dispatch->host_positions[0];
 		state->deferred_count = 0u;
 		state->deferred_slot = dispatch->host_sequence_of_row[0];
-		state->deferred_state_target = dispatch->host_state_target[0];
 	}
-	if ( dispatch->host_sequence_of_row[0] != state->deferred_slot || dispatch->host_state_target[0] != state->deferred_state_target )
+	if ( dispatch->host_sequence_of_row[0] != state->deferred_slot )
 	{
 		fprintf(stderr, "sparkpipe_stage_runner: deferred prefill refused: slot %u arrived while slot %u holds %u deferred tokens\n",
 			dispatch->host_sequence_of_row[0], state->deferred_slot, state->deferred_count);
@@ -2190,7 +2188,7 @@ static SparkStatus StageRunnerRunDeferred(SparkStageRunnerState *state, const Sp
 	request.token_count = state->deferred_count;
 	request.token_ids = state->deferred_tokens;
 	request.sequence_slot = state->deferred_slot;
-	request.state_target = state->deferred_state_target;
+	request.state_target = state->deferred_slot;
 	request.multiprocessors = state->multiprocessors;
 	status = state->model_interface->streamed_prefill(state->model, &request, &state->services, state->stream);
 	state->deferred_active = 0u;
@@ -2439,7 +2437,7 @@ SparkStatus SparkStageRunnerResetSlots(SparkStageRunner *runner, const uint32_t 
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	for ( uint32_t i = 0u; i < count; ++i )
 	{
-		if ( state->deferred_active != 0u && slots[i] == state->deferred_state_target )
+		if ( state->deferred_active != 0u && slots[i] == state->deferred_slot )
 		{
 			state->deferred_active = 0u;
 			state->deferred_count = 0u;
