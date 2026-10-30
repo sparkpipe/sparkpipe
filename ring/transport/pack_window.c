@@ -3,19 +3,20 @@
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_pack_window.h"
 
-uint64_t SparkPackWindowRegionBytes(uint32_t ranks, uint32_t dense_buffers, uint64_t dense_capacity, uint64_t expert_capacity)
+uint64_t SparkPackWindowRegionBytes(uint32_t ranks, uint32_t dense_buffers, uint64_t dense_capacity, uint32_t expert_slots, uint64_t expert_capacity)
 {
-	return (uint64_t)dense_buffers * ranks * dense_capacity + 3u * expert_capacity;
+	return (uint64_t)dense_buffers * ranks * dense_capacity + ((uint64_t)expert_slots + 1u) * expert_capacity;
 }
 
 SparkStatus SparkPackWindowInitialize(SparkPackWindow *window, const SparkPackWindowConfig *config)
 {
 	uint64_t cursor = 0u;
-	uint32_t buffer;
+	uint32_t buffer,slot;
 	if ( window == 0 || config == 0 || config->stream == 0 || config->region == 0 || config->ranks < 2u || config->rank >= config->ranks ||
-		config->dense_buffers == 0u || config->dense_buffers > SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS ||
+		config->dense_buffers == 0u || config->dense_buffers > SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS || config->expert_slots < 2u ||
+		config->expert_slots > SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS ||
 		config->dense_capacity == 0u || config->expert_capacity == 0u || (config->expert_capacity % 2u) != 0u || config->read_own == 0 ||
-		config->read_partner == 0 || config->region_bytes < SparkPackWindowRegionBytes(config->ranks,config->dense_buffers,config->dense_capacity,config->expert_capacity) )
+		config->read_partner == 0 || config->region_bytes < SparkPackWindowRegionBytes(config->ranks,config->dense_buffers,config->dense_capacity,config->expert_slots,config->expert_capacity) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(window,0,sizeof(*window));
 	window->config = *config;
@@ -24,10 +25,11 @@ SparkStatus SparkPackWindowInitialize(SparkPackWindow *window, const SparkPackWi
 		window->dense_base[buffer] = cursor;
 		cursor += (uint64_t)config->ranks * config->dense_capacity;
 	}
-	window->expert_slot[0] = cursor;
-	cursor += config->expert_capacity;
-	window->expert_slot[1] = cursor;
-	cursor += config->expert_capacity;
+	for (slot=0u; slot<config->expert_slots; slot++)
+	{
+		window->expert_slot[slot] = cursor;
+		cursor += config->expert_capacity;
+	}
 	window->own_staging = cursor;
 	cursor += config->expert_capacity / 2u;
 	window->partner_staging = cursor;
@@ -69,13 +71,13 @@ SparkStatus SparkPackWindowDense(SparkPackWindow *window, const SparkPackWindowL
 	return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkPackWindowExpertStep(SparkPackWindow *window, const SparkPackWindowLayer *layer, uint32_t step, uint32_t tag, uint32_t *source,
+SparkStatus SparkPackWindowExpertStep(SparkPackWindow *window, const SparkPackWindowLayer *layer, uint32_t step, uint32_t slot_index, uint32_t tag, uint32_t *source,
 	const uint8_t **block)
 {
 	SparkWeightStreamBlock arrived;
 	uint64_t half,slot;
 	SparkStatus status;
-	if ( window == 0 || layer == 0 || source == 0 || block == 0 || layer->experts.bytes == 0u || (layer->experts.bytes % 2u) != 0u ||
+	if ( window == 0 || layer == 0 || source == 0 || block == 0 || slot_index >= window->config.expert_slots || layer->experts.bytes == 0u || (layer->experts.bytes % 2u) != 0u ||
 		layer->experts.bytes > window->config.expert_capacity )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	half = layer->experts.bytes / 2u;
@@ -93,7 +95,7 @@ SparkStatus SparkPackWindowExpertStep(SparkPackWindow *window, const SparkPackWi
 		window->staged = 1u;
 		window->staged_layer_offset = layer->experts.offset;
 	}
-	slot = window->expert_slot[step & 1u];
+	slot = window->expert_slot[slot_index];
 	status = SparkWeightStreamRotate(window->config.stream,step,window->own_staging,window->partner_staging - half,layer->experts.bytes,slot,tag,&arrived);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);

@@ -6,6 +6,7 @@
 #include <cstring>
 #include <ctime>
 #include <fcntl.h>
+#include <pthread.h>
 #include <unistd.h>
 
 #include "sparkpipe/spark_k3_bind.h"
@@ -269,8 +270,21 @@ struct K3Streamed
 	uint32_t *health;
 	uint8_t *mla_keys;
 	cudaStream_t gather_stream;
-	cudaEvent_t slot_done[2];
-	cudaEvent_t layer_done;
+	cudaStream_t copy_stream;
+	cudaEvent_t dense_done[SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS];
+	cudaEvent_t slot_done[SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS];
+	pthread_mutex_t lock;
+	pthread_cond_t changed;
+	uint32_t synchronization;
+	uint32_t stream_passes;
+	SparkStatus stream_status;
+	uint64_t dense_published;
+	uint64_t dense_released;
+	uint64_t expert_published;
+	uint64_t expert_released;
+	uint8_t *dense_base[SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS][K3_STREAMED_SHARDS];
+	uint32_t slot_source[SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS];
+	const uint8_t *slot_block[SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS];
 	K3StreamedRoundContext round;
 	uint64_t spent[4];
 	void *allocations[K3_STREAMED_MAX_ALLOCATIONS];
@@ -301,7 +315,8 @@ static SparkStatus K3StreamedCopyTensor(const K3Streamed *s, uint64_t start, uin
 	if ( first >= last )
 		return SPARK_STATUS_OK;
 	if ( SparkWeightdLazyPackSlice(s->lazy_pack, start, bytes, &slice) != SPARK_STATUS_OK || slice == 0 ||
-		cudaMemcpy(destination + (first - offset), (const uint8_t *)slice + (first - start), (size_t)(last - first), cudaMemcpyDefault) != cudaSuccess )
+		cudaMemcpyAsync(destination + (first - offset), (const uint8_t *)slice + (first - start), (size_t)(last - first), cudaMemcpyDefault, s->copy_stream) != cudaSuccess ||
+		cudaStreamSynchronize(s->copy_stream) != cudaSuccess )
 	{
 		fprintf(stderr, "sparkpipe_k3: streamed prefill cannot read the own tensor at %llu (%llu bytes) from the spine\n", (unsigned long long)start,
 			(unsigned long long)bytes);
@@ -338,7 +353,8 @@ static SparkStatus K3StreamedReadOwn(void *context, uint64_t pack_offset, uint64
 		{
 			if ( s->pool == 0 )
 				return K3StreamedPread(s->own_fd, pack_offset, bytes, destination);
-			if ( cudaMemcpy(destination, s->pool + pack_offset, (size_t)bytes, cudaMemcpyDefault) != cudaSuccess )
+			if ( cudaMemcpyAsync(destination, s->pool + pack_offset, (size_t)bytes, cudaMemcpyDefault, s->copy_stream) != cudaSuccess ||
+				cudaStreamSynchronize(s->copy_stream) != cudaSuccess )
 				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 			return SPARK_STATUS_OK;
 		}
@@ -395,11 +411,19 @@ static void K3StreamedDestroy(K3Streamed *s)
 		close(s->partner_fd);
 	if ( s->own_fd >= 0 )
 		close(s->own_fd);
-	for (index = 0u; index < 2u; index++)
+	for (index = 0u; index < SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS; index++)
 		if ( s->slot_done[index] != 0 )
 			(void)cudaEventDestroy(s->slot_done[index]);
-	if ( s->layer_done != 0 )
-		(void)cudaEventDestroy(s->layer_done);
+	for (index = 0u; index < SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS; index++)
+		if ( s->dense_done[index] != 0 )
+			(void)cudaEventDestroy(s->dense_done[index]);
+	if ( s->copy_stream != 0 )
+		(void)cudaStreamDestroy(s->copy_stream);
+	if ( s->synchronization != 0u )
+	{
+		(void)pthread_cond_destroy(&s->changed);
+		(void)pthread_mutex_destroy(&s->lock);
+	}
 	if ( s->gather_stream != 0 )
 		(void)cudaStreamDestroy(s->gather_stream);
 	cudaFree(s->mla_keys);
@@ -593,6 +617,13 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 			K3_STREAMED_ROW_ALIGN, K3_LAYERS, K3_STREAMED_SHARDS, K3_VOCAB / K3_STREAMED_SHARDS);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
+	if ( config->dense_buffers == 0u || config->dense_buffers > SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS || config->expert_slots < 2u ||
+		config->expert_slots > SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS )
+	{
+		fprintf(stderr, "sparkpipe_k3: streamed prefill takes 1..%u dense buffers and 2..%u expert slots (got %u and %u)\n", SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS,
+			SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS, config->dense_buffers, config->expert_slots);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	if ( cudaDeviceGetAttribute(&usable, cudaDevAttrCanUseHostPointerForRegisteredMem, dispatch->device) != cudaSuccess || usable == 0 )
 	{
 		fprintf(stderr, "sparkpipe_k3: streamed prefill needs a device that reads registered host memory at the host address\n");
@@ -627,7 +658,7 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 		dense_capacity = SparkPackWindowDenseBytes(&s->ranges[layer]) > dense_capacity ? SparkPackWindowDenseBytes(&s->ranges[layer]) : dense_capacity;
 		expert_capacity = s->ranges[layer].experts.bytes > expert_capacity ? s->ranges[layer].experts.bytes : expert_capacity;
 	}
-	s->region_bytes = SparkPackWindowRegionBytes(K3_STREAMED_SHARDS, 1u, dense_capacity, expert_capacity);
+	s->region_bytes = SparkPackWindowRegionBytes(K3_STREAMED_SHARDS, s->config.dense_buffers, dense_capacity, s->config.expert_slots, expert_capacity);
 	s->region_bytes = (s->region_bytes + (2ull << 20) - 1u) & ~((2ull << 20) - 1u);
 	s->region = (uint8_t *)aligned_alloc(2ull << 20, (size_t)s->region_bytes);
 	if ( s->region == 0 || cudaHostRegister(s->region, (size_t)s->region_bytes, cudaHostRegisterDefault) != cudaSuccess )
@@ -647,10 +678,26 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 	s->own_fd = own_pack_path != 0 ? open(own_pack_path, O_RDONLY | O_CLOEXEC) : -1;
 	status = s->partner_fd >= 0 && s->own_fd >= 0 ? K3StreamedBuffers(s) : SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK && (cudaStreamCreateWithFlags(&s->gather_stream, cudaStreamNonBlocking) != cudaSuccess ||
-		cudaEventCreateWithFlags(&s->slot_done[0], cudaEventDisableTiming) != cudaSuccess ||
-		cudaEventCreateWithFlags(&s->slot_done[1], cudaEventDisableTiming) != cudaSuccess ||
-		cudaEventCreateWithFlags(&s->layer_done, cudaEventDisableTiming) != cudaSuccess) )
+		cudaStreamCreateWithFlags(&s->copy_stream, cudaStreamNonBlocking) != cudaSuccess) )
 		status = SPARK_STATUS_IO_ERROR;
+	for (index = 0u; status == SPARK_STATUS_OK && index < s->config.dense_buffers; index++)
+		if ( cudaEventCreateWithFlags(&s->dense_done[index], cudaEventDisableTiming) != cudaSuccess )
+			status = SPARK_STATUS_IO_ERROR;
+	for (index = 0u; status == SPARK_STATUS_OK && index < s->config.expert_slots; index++)
+		if ( cudaEventCreateWithFlags(&s->slot_done[index], cudaEventDisableTiming) != cudaSuccess )
+			status = SPARK_STATUS_IO_ERROR;
+	if ( status == SPARK_STATUS_OK )
+	{
+		if ( pthread_mutex_init(&s->lock, 0) != 0 )
+			status = SPARK_STATUS_INTERNAL_ERROR;
+		else if ( pthread_cond_init(&s->changed, 0) != 0 )
+		{
+			(void)pthread_mutex_destroy(&s->lock);
+			status = SPARK_STATUS_INTERNAL_ERROR;
+		}
+		else
+			s->synchronization = 1u;
+	}
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr, "sparkpipe_k3: streamed prefill resources failed status=%d (own pack %s, partner pack %s)\n", (int)status,
@@ -658,9 +705,9 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 		K3StreamedDestroy(s);
 		return status;
 	}
-	fprintf(stderr, "sparkpipe_k3: streamed prefill node_rows=%u window=%llu (dense %llu x %u ranks, experts %llu) engine=%llu partner=%s\n",
-		s->node_rows, (unsigned long long)s->region_bytes, (unsigned long long)dense_capacity, K3_STREAMED_SHARDS, (unsigned long long)expert_capacity,
-		(unsigned long long)s->engine_bytes, config->partner_pack_path);
+	fprintf(stderr, "sparkpipe_k3: streamed prefill node_rows=%u window=%llu (%u x dense %llu x %u ranks, %u x experts %llu) engine=%llu partner=%s\n",
+		s->node_rows, (unsigned long long)s->region_bytes, s->config.dense_buffers, (unsigned long long)dense_capacity, K3_STREAMED_SHARDS, s->config.expert_slots,
+		(unsigned long long)expert_capacity, (unsigned long long)s->engine_bytes, config->partner_pack_path);
 	*out = s;
 	return SPARK_STATUS_OK;
 }
@@ -713,7 +760,8 @@ static SparkStatus K3StreamedOpen(K3Streamed *s, const SparkStageRunnerServices 
 	window_config.region_bytes = s->region_bytes;
 	window_config.rank = s->rank;
 	window_config.ranks = K3_STREAMED_SHARDS;
-	window_config.dense_buffers = 1u;
+	window_config.dense_buffers = s->config.dense_buffers;
+	window_config.expert_slots = s->config.expert_slots;
 	window_config.dense_capacity = s->window.config.dense_capacity;
 	window_config.expert_capacity = s->window.config.expert_capacity;
 	window_config.read_own = K3StreamedReadOwn;
@@ -784,33 +832,141 @@ static uint64_t K3StreamedNowNs(void)
 	return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
 }
 
-static SparkStatus K3StreamedOwnBlock(K3Streamed *s, uint32_t layer, uint32_t step, const uint8_t **block)
+static void K3StreamedStreamFail(K3Streamed *s, SparkStatus status)
 {
-	const uint64_t half = s->ranges[layer].experts.bytes / 2u;
-	uint8_t *slot = s->region + s->window.expert_slot[step & 1u];
-	memcpy(slot, s->region + s->window.own_staging, (size_t)half);
-	*block = slot;
-	return K3StreamedPread(s->own_fd, s->ranges[layer].experts.offset + half, half, slot + half);
+	pthread_mutex_lock(&s->lock);
+	if ( s->stream_status == SPARK_STATUS_OK )
+		s->stream_status = status;
+	pthread_cond_broadcast(&s->changed);
+	pthread_mutex_unlock(&s->lock);
 }
 
-static SparkStatus K3StreamedLayer(K3Streamed *s, uint32_t layer, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
+static SparkStatus K3StreamedAwaitRelease(K3Streamed *s, const uint64_t *released, uint64_t item, uint32_t depth, cudaEvent_t event)
 {
-	const uint32_t kind = K3_LAYER_KIND(layer), kda_index = layer - layer / 4u;
-	uint8_t *rank_base[K3_STREAMED_SHARDS];
-	uint32_t shard, step;
-	uint64_t mark = K3StreamedNowNs();
 	SparkStatus status;
-	if ( cudaEventSynchronize(s->layer_done) != cudaSuccess )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	const uint64_t mark = K3StreamedNowNs();
+	if ( item < depth )
+		return SPARK_STATUS_OK;
+	pthread_mutex_lock(&s->lock);
+	while ( *released < item - depth + 1u && s->stream_status == SPARK_STATUS_OK )
+		pthread_cond_wait(&s->changed, &s->lock);
+	status = s->stream_status;
+	pthread_mutex_unlock(&s->lock);
+	if ( status == SPARK_STATUS_OK && cudaEventSynchronize(event) != cudaSuccess )
+		status = SPARK_STATUS_IO_ERROR;
 	s->spent[0] += K3StreamedNowNs() - mark;
-	mark = K3StreamedNowNs();
-	status = SparkPackWindowDense(&s->window, &s->ranges[layer], 0u, s->tag++, rank_base);
-	s->spent[1] += K3StreamedNowNs() - mark;
+	return status;
+}
+
+static SparkStatus K3StreamedAwaitPublished(K3Streamed *s, const uint64_t *published, uint64_t item, uint32_t which)
+{
+	SparkStatus status;
+	const uint64_t mark = K3StreamedNowNs();
+	pthread_mutex_lock(&s->lock);
+	while ( *published <= item && s->stream_status == SPARK_STATUS_OK )
+		pthread_cond_wait(&s->changed, &s->lock);
+	status = *published > item ? SPARK_STATUS_OK : s->stream_status;
+	pthread_mutex_unlock(&s->lock);
+	s->spent[which] += K3StreamedNowNs() - mark;
+	return status;
+}
+
+static SparkStatus K3StreamedRelease(K3Streamed *s, uint64_t *released, cudaEvent_t event, cudaStream_t stream)
+{
+	if ( cudaEventRecord(event, stream) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	pthread_mutex_lock(&s->lock);
+	(*released)++;
+	pthread_cond_broadcast(&s->changed);
+	pthread_mutex_unlock(&s->lock);
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus K3StreamedStreamDense(K3Streamed *s, const SparkPackWindowLayer *range, uint64_t item)
+{
+	const uint32_t buffer = (uint32_t)(item % s->config.dense_buffers);
+	uint8_t *base[K3_STREAMED_SHARDS];
+	SparkStatus status = K3StreamedAwaitRelease(s, &s->dense_released, item, s->config.dense_buffers, s->dense_done[buffer]);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkPackWindowDense(&s->window, range, buffer, s->tag++, base);
 	if ( status != SPARK_STATUS_OK )
 	{
-		fprintf(stderr, "sparkpipe_k3: streamed prefill dense broadcast failed at layer %u status=%d\n", layer, (int)status);
+		fprintf(stderr, "sparkpipe_k3: streamed prefill dense broadcast %llu failed status=%d\n", (unsigned long long)item, (int)status);
 		return status;
 	}
+	pthread_mutex_lock(&s->lock);
+	memcpy(s->dense_base[buffer], base, sizeof(base));
+	s->dense_published = item + 1u;
+	pthread_cond_broadcast(&s->changed);
+	pthread_mutex_unlock(&s->lock);
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus K3StreamedStreamStep(K3Streamed *s, uint32_t layer, uint32_t step, uint64_t item)
+{
+	const uint32_t slot = (uint32_t)(item % s->config.expert_slots);
+	const uint64_t half = s->ranges[layer].experts.bytes / 2u;
+	const uint8_t *block = 0;
+	uint32_t source = UINT32_MAX;
+	SparkStatus status = K3StreamedAwaitRelease(s, &s->expert_released, item, s->config.expert_slots, s->slot_done[slot]);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkPackWindowExpertStep(&s->window, &s->ranges[layer], step, slot, s->tag++, &source, &block);
+	if ( status == SPARK_STATUS_OK && (source >= K3_STREAMED_SHARDS || (source != s->rank && block == 0)) )
+		status = SPARK_STATUS_INTERNAL_ERROR;
+	if ( status == SPARK_STATUS_OK && source == s->rank && s->pool == 0 )
+	{
+		uint8_t *landing = s->region + s->window.expert_slot[slot];
+		const uint64_t mark = K3StreamedNowNs();
+		memcpy(landing, s->region + s->window.own_staging, (size_t)half);
+		status = K3StreamedPread(s->own_fd, s->ranges[layer].experts.offset + half, half, landing + half);
+		block = landing;
+		s->spent[3] += K3StreamedNowNs() - mark;
+	}
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr, "sparkpipe_k3: streamed prefill expert step %u failed at layer %u status=%d\n", step, layer, (int)status);
+		return status;
+	}
+	pthread_mutex_lock(&s->lock);
+	s->slot_source[slot] = source;
+	s->slot_block[slot] = block;
+	s->expert_published = item + 1u;
+	pthread_cond_broadcast(&s->changed);
+	pthread_mutex_unlock(&s->lock);
+	return SPARK_STATUS_OK;
+}
+
+static void *K3StreamedStreamer(void *argument)
+{
+	K3Streamed *s = (K3Streamed *)argument;
+	uint64_t dense = 0u, experts = 0u;
+	uint32_t pass, layer, step;
+	SparkStatus status = cudaSetDevice(s->dispatch->device) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+	for (pass = 0u; pass < s->stream_passes && status == SPARK_STATUS_OK; pass++)
+	{
+		status = K3StreamedStreamDense(s, &s->vocab, dense++);
+		for (layer = 0u; layer < K3_LAYERS && status == SPARK_STATUS_OK; layer++)
+		{
+			status = K3StreamedStreamDense(s, &s->ranges[layer], dense++);
+			for (step = 0u; layer >= K3_FIRST_ROUTED_LAYER && step < K3_STREAMED_SHARDS && status == SPARK_STATUS_OK; step++)
+				status = K3StreamedStreamStep(s, layer, step, experts++);
+		}
+	}
+	if ( status != SPARK_STATUS_OK )
+		K3StreamedStreamFail(s, status);
+	return 0;
+}
+
+static SparkStatus K3StreamedLayer(K3Streamed *s, uint32_t layer, uint64_t dense_item, uint64_t *expert_item, uint32_t rows, uint32_t multiprocessors,
+	cudaStream_t stream)
+{
+	const uint32_t kind = K3_LAYER_KIND(layer), kda_index = layer - layer / 4u, buffer = (uint32_t)(dense_item % s->config.dense_buffers);
+	uint8_t *rank_base[K3_STREAMED_SHARDS];
+	uint32_t shard, step;
+	SparkStatus status = K3StreamedAwaitPublished(s, &s->dense_published, dense_item, 1u);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	memcpy(rank_base, s->dense_base[buffer], sizeof(rank_base));
 	for (shard = 0u; shard < K3_STREAMED_SHARDS && status == SPARK_STATUS_OK; shard++)
 		status = K3StreamedShard(s, layer, shard, rank_base, s->region + s->window.expert_slot[0]);
 	if ( status != SPARK_STATUS_OK )
@@ -834,34 +990,19 @@ static SparkStatus K3StreamedLayer(K3Streamed *s, uint32_t layer, uint32_t rows,
 			multiprocessors, stream), "router", layer);
 		for (step = 0u; step < K3_STREAMED_SHARDS && status == SPARK_STATUS_OK; step++)
 		{
-			const uint8_t *block = 0;
-			uint32_t source = UINT32_MAX;
-			uint64_t mark = K3StreamedNowNs();
-			if ( step >= 2u && cudaEventSynchronize(s->slot_done[step & 1u]) != cudaSuccess )
-				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-			s->spent[0] += K3StreamedNowNs() - mark;
-			mark = K3StreamedNowNs();
-			status = SparkPackWindowExpertStep(&s->window, &s->ranges[layer], step, s->tag++, &source, &block);
-			s->spent[2] += K3StreamedNowNs() - mark;
-			if ( status != SPARK_STATUS_OK )
-			{
-				fprintf(stderr, "sparkpipe_k3: streamed prefill expert step %u failed at layer %u status=%d\n", step, layer, (int)status);
-				return status;
-			}
-			if ( source >= K3_STREAMED_SHARDS || (source != s->rank && block == 0) )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			mark = K3StreamedNowNs();
-			if ( source == s->rank && s->pool == 0 )
-				status = K3StreamedOwnBlock(s, layer, step, &block);
-			s->spent[3] += K3StreamedNowNs() - mark;
+			const uint64_t item = (*expert_item)++;
+			const uint32_t slot = (uint32_t)(item % s->config.expert_slots);
+			uint32_t source;
+			status = K3StreamedAwaitPublished(s, &s->expert_published, item, 2u);
 			if ( status != SPARK_STATUS_OK )
 				return status;
-			status = K3StreamedShard(s, layer, source, rank_base, block);
+			source = s->slot_source[slot];
+			status = K3StreamedShard(s, layer, source, rank_base, s->slot_block[slot]);
 			if ( status == SPARK_STATUS_OK )
 				status = K3StreamedCheck(s, K3StreamedMoeShard<LmMxfp4>(&s->b, &s->shards[source], source, step == 0u ? 1u : 0u, K3_STREAMED_SHARDS, &s->join,
 					s->latent_accumulator, rows, rows * K3_TOP_K, multiprocessors, stream), "experts", layer);
-			if ( status == SPARK_STATUS_OK && cudaEventRecord(s->slot_done[step & 1u], stream) != cudaSuccess )
-				status = SPARK_STATUS_IO_ERROR;
+			if ( status == SPARK_STATUS_OK )
+				status = K3StreamedRelease(s, &s->expert_released, s->slot_done[slot], stream);
 		}
 		if ( status == SPARK_STATUS_OK )
 			status = K3StreamedCheck(s, K3StreamedMoeEnd<LmMxfp4>(&s->b, s->shards, K3_STREAMED_SHARDS, &s->join, s->latent_accumulator, rows, multiprocessors, stream),
@@ -869,8 +1010,8 @@ static SparkStatus K3StreamedLayer(K3Streamed *s, uint32_t layer, uint32_t rows,
 	}
 	if ( status == SPARK_STATUS_OK )
 		K3StreamedHealthKernel<<<256u, 256u, 0, stream>>>(s->b.hidden_bf16, (uint64_t)rows * K3_HIDDEN, s->health + 2u * (layer + 1u));
-	if ( status == SPARK_STATUS_OK && cudaEventRecord(s->layer_done, stream) != cudaSuccess )
-		status = SPARK_STATUS_IO_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = K3StreamedRelease(s, &s->dense_released, s->dense_done[buffer], stream);
 	return status;
 }
 
@@ -940,7 +1081,8 @@ static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPr
 	const uint64_t keys = request != 0 ? (uint64_t)request->first_position + request->token_count : 0u;
 	const uint64_t started = K3StreamedNowNs();
 	uint32_t pass, passes, layer, row, rows, chunk;
-	uint8_t *vocab_base[K3_STREAMED_SHARDS];
+	uint64_t dense_item = 0u, expert_item = 0u;
+	pthread_t streamer;
 	K3StreamedVocab vocab;
 	SparkStatus status;
 	if ( request == 0 || request->token_ids == 0 || request->token_count == 0u || (request->token_count % (K3_STREAMED_SHARDS * K3_STREAMED_ROW_ALIGN)) != 0u ||
@@ -958,9 +1100,17 @@ static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPr
 		return status;
 	s->b.cache_shard.pages = s->dispatch->mla_cache[0];
 	passes = (uint32_t)((request->token_count + pass_max - 1u) / pass_max);
-	if ( cudaEventRecord(s->layer_done, stream) != cudaSuccess )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	status = K3StreamedStates(s, request->state_target, 0u, stream);
+	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize(stream) != cudaSuccess )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	s->stream_passes = passes;
+	s->stream_status = SPARK_STATUS_OK;
+	s->dense_published = s->dense_released = s->expert_published = s->expert_released = 0u;
+	memset(s->spent, 0, sizeof(s->spent));
+	if ( pthread_create(&streamer, 0, K3StreamedStreamer, s) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	for (pass = 0u; pass < passes && status == SPARK_STATUS_OK; pass++)
 	{
 		const uint64_t base = (uint64_t)request->first_position + (uint64_t)pass * pass_max;
@@ -971,7 +1121,10 @@ static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPr
 		pass_rows = (uint64_t)K3_STREAMED_SHARDS * rows;
 		node_first = base + (uint64_t)s->rank * rows;
 		if ( cudaStreamSynchronize(stream) != cudaSuccess )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		{
+			status = SPARK_STATUS_IO_ERROR;
+			break;
+		}
 		for (row = 0u; row < pass_rows; row++)
 			host[row] = (uint32_t)(base + row);
 		small = host + pass_rows;
@@ -1013,32 +1166,36 @@ static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPr
 			break;
 		s->mla.pass_rows = (uint32_t)pass_rows;
 		s->mla.first_key = (uint32_t)base;
-		if ( cudaEventSynchronize(s->layer_done) != cudaSuccess )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		status = SparkPackWindowDense(&s->window, &s->vocab, 0u, s->tag++, vocab_base);
+		status = K3StreamedAwaitPublished(s, &s->dense_published, dense_item, 1u);
 		if ( status != SPARK_STATUS_OK )
 			break;
 		memset(&vocab, 0, sizeof(vocab));
 		for (row = 0u; row < K3_STREAMED_SHARDS; row++)
-			vocab.slice[row] = (const uint16_t *)vocab_base[row];
+			vocab.slice[row] = (const uint16_t *)s->dense_base[dense_item % s->config.dense_buffers][row];
 		vocab.slice_rows = s->vocab_rows;
 		vocab.slices = K3_STREAMED_SHARDS;
 		memset(s->health, 0, (size_t)(K3_LAYERS + 1u) * 2u * sizeof(uint32_t));
 		status = K3StreamedCheck(s, K3StreamedEmbed(&vocab, s->tokens_device, s->b.hidden_bf16, rows, stream), "embedding", 0u);
 		if ( status == SPARK_STATUS_OK )
 			K3StreamedHealthKernel<<<256u, 256u, 0, stream>>>(s->b.hidden_bf16, (uint64_t)rows * K3_HIDDEN, s->health);
-		if ( status == SPARK_STATUS_OK && cudaEventRecord(s->layer_done, stream) != cudaSuccess )
-			status = SPARK_STATUS_IO_ERROR;
+		if ( status == SPARK_STATUS_OK )
+			status = K3StreamedRelease(s, &s->dense_released, s->dense_done[dense_item % s->config.dense_buffers], stream);
+		dense_item++;
 		for (layer = 0u; layer < K3_LAYERS && status == SPARK_STATUS_OK; layer++)
-			status = K3StreamedLayer(s, layer, rows, request->multiprocessors, stream);
+			status = K3StreamedLayer(s, layer, dense_item++, &expert_item, rows, request->multiprocessors, stream);
 		if ( status == SPARK_STATUS_OK )
 			status = cudaStreamSynchronize(stream) == cudaSuccess ? K3StreamedHealth(s, pass) : SPARK_STATUS_IO_ERROR;
-		fprintf(stderr, "sparkpipe_k3: streamed prefill pass %u/%u rows %u x %u keys to %llu status=%d at %.1f s; host waited %.1f s on the GPU, %.1f s in dense "
-			"broadcasts, %.1f s in expert rotations, %.1f s assembling the own block\n", pass + 1u, passes, rows, K3_STREAMED_SHARDS,
+		fprintf(stderr, "sparkpipe_k3: streamed prefill pass %u/%u rows %u x %u keys to %llu status=%d at %.1f s; streamer waited %.1f s for the GPU to release buffers, "
+			"compute waited %.1f s for dense and %.1f s for expert blocks, own blocks took %.1f s\n", pass + 1u, passes, rows, K3_STREAMED_SHARDS,
 			(unsigned long long)(base + pass_rows), (int)status, (double)(K3StreamedNowNs() - started) / 1e9, (double)s->spent[0] / 1e9, (double)s->spent[1] / 1e9,
 			(double)s->spent[2] / 1e9, (double)s->spent[3] / 1e9);
 		memset(s->spent, 0, sizeof(s->spent));
 	}
+	if ( status != SPARK_STATUS_OK )
+		K3StreamedStreamFail(s, status);
+	(void)pthread_join(streamer, 0);
+	if ( status == SPARK_STATUS_OK && s->stream_status != SPARK_STATUS_OK )
+		status = s->stream_status;
 	if ( status == SPARK_STATUS_OK )
 		status = cudaStreamSynchronize(stream) == cudaSuccess ? s->round.status : SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK )

@@ -294,7 +294,7 @@ int main(int argc, char **argv)
 	partner.fd = open(options.partner,O_RDONLY);
 	if ( own.fd < 0 || partner.fd < 0 )
 		CheckFail("open packs");
-	region_bytes = SparkPackWindowRegionBytes(options.ranks,2u,options.dense_capacity,options.expert_capacity);
+	region_bytes = SparkPackWindowRegionBytes(options.ranks,2u,options.dense_capacity,2u,options.expert_capacity);
 	region = (uint8_t *)aligned_alloc(2097152u,(size_t)(region_bytes + 2097151u) & ~(size_t)2097151u);
 	if ( region == 0 )
 		CheckFail("allocate");
@@ -324,6 +324,7 @@ int main(int argc, char **argv)
 	window_config.rank = options.rank;
 	window_config.ranks = options.ranks;
 	window_config.dense_buffers = 2u;
+	window_config.expert_slots = 2u;
 	window_config.dense_capacity = options.dense_capacity;
 	window_config.expert_capacity = options.expert_capacity;
 	window_config.read_own = CheckRead;
@@ -383,7 +384,7 @@ int main(int argc, char **argv)
 			uint32_t source = UINT32_MAX;
 			const uint64_t step_start = CheckNowNs();
 			uint64_t step_ns;
-			if ( SparkPackWindowExpertStep(&window,layer,index * options.ranks + step,tag++,&source,&block) != SPARK_STATUS_OK )
+			if ( SparkPackWindowExpertStep(&window,layer,index * options.ranks + step,(index * options.ranks + step) & 1u,tag++,&source,&block) != SPARK_STATUS_OK )
 				CheckFail("expert step");
 			step_ns = CheckNowNs() - step_start;
 			if ( step > 0u )

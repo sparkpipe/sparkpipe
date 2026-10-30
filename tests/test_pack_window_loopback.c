@@ -11,6 +11,7 @@
 #define PW_CHUNK (1024u * 1024u)
 #define PW_DENSE_CAPACITY ((uint64_t)6u * PW_CHUNK)
 #define PW_EXPERT_CAPACITY ((uint64_t)8u * PW_CHUNK)
+#define PW_SLOTS 5u
 
 typedef struct PwShared
 {
@@ -95,7 +96,7 @@ static void PwLayer(uint32_t layer, SparkPackWindowLayer *out)
 static void *PwRun(void *argument)
 {
 	PwRank *self = (PwRank *)argument;
-	const uint64_t region_bytes = SparkPackWindowRegionBytes(PW_RANKS,2u,PW_DENSE_CAPACITY,PW_EXPERT_CAPACITY);
+	const uint64_t region_bytes = SparkPackWindowRegionBytes(PW_RANKS,2u,PW_DENSE_CAPACITY,PW_SLOTS,PW_EXPERT_CAPACITY);
 	uint8_t *region = (uint8_t *)aligned_alloc(4096u,(size_t)(region_bytes + 4095u) & ~(size_t)4095u);
 	SparkWeightStreamConfig stream_config;
 	SparkPackWindowConfig window_config;
@@ -129,6 +130,7 @@ static void *PwRun(void *argument)
 	window_config.rank = self->rank;
 	window_config.ranks = PW_RANKS;
 	window_config.dense_buffers = 2u;
+	window_config.expert_slots = PW_SLOTS;
 	window_config.dense_capacity = PW_DENSE_CAPACITY;
 	window_config.expert_capacity = PW_EXPERT_CAPACITY;
 	window_config.read_own = PwReadOwn;
@@ -157,7 +159,7 @@ static void *PwRun(void *argument)
 		{
 			const uint8_t *block = 0;
 			uint32_t source = UINT32_MAX;
-			if ( SparkPackWindowExpertStep(&window,&ranges,layer * PW_RANKS + step,tag++,&source,&block) != SPARK_STATUS_OK )
+			if ( SparkPackWindowExpertStep(&window,&ranges,layer * PW_RANKS + step,(layer * PW_RANKS + step) % PW_SLOTS,tag++,&source,&block) != SPARK_STATUS_OK )
 			{
 				SparkWeightStreamClose(stream);
 				return 0;

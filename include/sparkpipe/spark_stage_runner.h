@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-#define SPARK_STAGE_RUNNER_ABI_VERSION 3u
+#define SPARK_STAGE_RUNNER_ABI_VERSION 4u
 #define SPARK_STAGE_RUNNER_CONFIGURATION_BYTES ((uint32_t)sizeof(SparkStageRunnerConfiguration))
 #define SPARK_STAGE_RUNNER_DISPATCH_BYTES ((uint32_t)sizeof(SparkStageRunnerDispatch))
 #define SPARK_STAGE_RUNNER_BYTES ((uint32_t)sizeof(SparkStageRunner))
@@ -63,6 +63,8 @@ typedef struct SparkStageRunnerStreamedPrefillConfig
 	uint32_t gid_index;
 	uint32_t pair_gid_index;
 	uint32_t traffic_class;
+	uint32_t dense_buffers;
+	uint32_t expert_slots;
 	const char *partner_pack_path;
 	const char *fabric_device;
 	const char *pair_device;

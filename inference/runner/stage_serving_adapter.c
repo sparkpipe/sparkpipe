@@ -183,6 +183,8 @@ static SparkStatus StageServingParseStreamed(SparkStageServingState *state, Spar
 	streamed->gid_index = StageServingJsonU32(doc, object, "gid_index", 3u);
 	streamed->pair_gid_index = StageServingJsonU32(doc, object, "pair_gid_index", streamed->gid_index);
 	streamed->traffic_class = StageServingJsonU32(doc, object, "traffic_class", 106u);
+	streamed->dense_buffers = StageServingJsonU32(doc, object, "dense_buffers", 1u);
+	streamed->expert_slots = StageServingJsonU32(doc, object, "expert_slots", 2u);
 	streamed->partner_pack_path = state->streamed_partner_pack;
 	streamed->fabric_device = state->streamed_fabric_device;
 	streamed->pair_device = state->streamed_pair_device;
