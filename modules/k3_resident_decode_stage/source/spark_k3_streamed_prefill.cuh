@@ -19,6 +19,7 @@
 #include "spark_k3_weight_binds.cuh"
 
 #define K3_STREAMED_RANGE_GAP 4096u
+#define K3_STREAMED_ROW_ELEMENTS K3_HIDDEN
 #define K3_STREAMED_SHARDS 16u
 #define K3_STREAMED_HEADS (K3_MLA_HEADS / K3_STREAMED_SHARDS)
 #define K3_STREAMED_ROW_ALIGN 256u
@@ -38,10 +39,19 @@ typedef struct K3StreamedRoundContext
 static void K3StreamedRound(void *context, void *stream, uint32_t operation, uint32_t rows, uint32_t row_elements, const void *send, void *receive)
 {
 	K3StreamedRoundContext *round = (K3StreamedRoundContext *)context;
+	uint32_t split = 1u;
 	SparkStatus status;
 	if ( round == 0 || round->services == 0 || round->services->round == 0 )
 		return;
-	status = round->services->round(round->services->context, stream, operation, SPARK_STAGE_RUNNER_ROUND_ALL, rows, row_elements, send, receive);
+	while ( row_elements / split > K3_STREAMED_ROW_ELEMENTS || row_elements % split != 0u )
+		split++;
+	if ( (uint64_t)rows * split > UINT32_MAX )
+	{
+		if ( round->status == SPARK_STATUS_OK )
+			round->status = SPARK_STATUS_CAPACITY_EXCEEDED;
+		return;
+	}
+	status = round->services->round(round->services->context, stream, operation, SPARK_STAGE_RUNNER_ROUND_ALL, rows * split, row_elements / split, send, receive);
 	if ( status != SPARK_STATUS_OK && round->status == SPARK_STATUS_OK )
 		round->status = status;
 }
