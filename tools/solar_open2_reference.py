@@ -180,7 +180,8 @@ def main():
     parser.add_argument("--tie-margin", type=float, default=0.1)
     parser.add_argument("--conv-rounding", choices=("publisher", "fused"), default="publisher",
                         help="publisher rounds the short convolution to bf16 before SiLU as F.conv1d then F.silu do; fused rounds once after SiLU")
-    parser.add_argument("--dump", help="write the embedding and every layer's post-attention and post-MLP residual for all rows to this .npz")
+    parser.add_argument("--dump", help="write the embedding and every layer's post-attention and post-MLP residual for all rows to this .npz "
+                        "(teacher: one PATH.a.npz / PATH.b.npz per variant)")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     if args.mode == "gate-prompts":

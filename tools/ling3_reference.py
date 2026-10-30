@@ -462,7 +462,10 @@ def teacher(args, reference=None):
     FP32 = True
     for label in variants:
         REVERSED = label == "b"
-        normed, _ = reference.forward([prompt["prompt_token_ids"] for prompt in prompts])
+        dump = {} if getattr(args, "dump", None) else None
+        normed, _ = reference.forward([prompt["prompt_token_ids"] for prompt in prompts], dump)
+        if dump is not None:
+            np.savez(f"{args.dump}.{label}.npz", names=np.array([prompt["name"] for prompt in prompts]), bounds=bounds, **dump)
         for index, prompt in enumerate(prompts):
             first, count = bounds[index], len(prompt["prompt_token_ids"])
             with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
@@ -486,7 +489,8 @@ def main():
     parser.add_argument("--capture")
     parser.add_argument("--swiglu-limits", choices=("serving", "modeling"), default="serving")
     parser.add_argument("--tie-margin", type=float, default=0.1)
-    parser.add_argument("--dump", help="write the embedding and every layer's post-attention and post-MLP residual for all rows to this .npz")
+    parser.add_argument("--dump", help="write the embedding and every layer's post-attention and post-MLP residual for all rows to this .npz "
+                        "(teacher: one PATH.a.npz / PATH.b.npz per variant)")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     if args.mode == "gate-prompts":
