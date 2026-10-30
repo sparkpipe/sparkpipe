@@ -291,12 +291,11 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   cache blocks are not published, so a later request does not reuse that
   part of the prompt and no mid-prompt checkpoint is kept; publishing them
   needs a sealed-page publish after the streamed prefill writes the pages.
-  Other requests on the lane wait while one prompt defers and streams. Each
-  node holds the weight window (about 5.5 GB) and per-row engine buffers
-  (about 460 KB a row) beside the resident pack, so with about 11 GB free a
-  node runs 2,048 to 4,096 rows a pass; 16,384 rows (four passes for 1M
-  tokens) needs row sub-batching in the expert and attention steps and keys
-  expanded in blocks.
+  Other requests on the lane wait while one prompt defers and streams. Beside
+  the full resident pack a node has about 11 GB free and runs 2,048 to 4,096
+  rows a pass; 16,384 to 32,768 rows a pass (two passes for 1M tokens) need a
+  prefill-only lane whose weightd leases experts from a bounded pool, so a
+  1M prompt on one 16-node fleet cannot share it with decode.
 - Kimi K3's prefill attention expands the values but keeps the keys latent
   (576 wide), so each head and key pair costs 1,408 FLOPs where expanded
   keys (192 wide) would cost 640. At 250K positions MLA attention is about
