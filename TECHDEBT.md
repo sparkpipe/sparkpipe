@@ -1320,10 +1320,9 @@ Metal backend and the single-Studio stage are in
   (`--decode-positions`). A segmented pack now binds page spans and its
   BF16 experts only their routes' experts; with the earlier 2 GiB windows
   Solar Open 2's decode step read the whole 502 GB pack (about 110 s per
-  token at 4.6 GB/s). The FP4 routed experts (MiMo, Qwen 3.8 Flash; MiMo Pro
-  and Qwen 3.8 Max at TP8) still bind the whole expert tensor in each
-  per-route GEMV, so a streamed FP4 decode still pages every expert per
-  step; they need the grouped per-expert path too.
+  token at 4.6 GB/s). The FP4 routed experts bind one expert per launch in
+  a segmented pack (`SparkDeviceRoutedFfn`), so they page only their routes'
+  experts too.
 - Routed FP4 experts (MXFP4 in MiMo V2.6 Flash, NVFP4 in Qwen 3.8 Flash)
   still take one GEMV per route in prefill, re-reading the expert for every
   row: MiMo prefills at about 50 tokens per second, and its gate's B64 ladder

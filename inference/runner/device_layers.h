@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "inference/runner/device_stage_model.h"
+#include "sparkpipe/spark_weight_codec.h"
 
 #define SPARK_DEVICE_GATED_DELTA_STATE_POOL 0u
 #define SPARK_DEVICE_GATED_DELTA_WINDOW_POOL 1u
@@ -233,6 +234,24 @@ typedef struct SparkDeviceExpertsScratch
 	SparkTensor sorted;
 } SparkDeviceExpertsScratch;
 
+typedef struct SparkDeviceExpertMatrix
+{
+	uint32_t codec;
+	SparkTensor values;
+	SparkTensor scale;
+	SparkTensor global;
+} SparkDeviceExpertMatrix;
+
+typedef struct SparkDeviceRoutedFfnShape
+{
+	uint32_t experts;
+	uint32_t top_k;
+	uint32_t intermediate;
+	uint32_t activation;
+	uint32_t weighted;
+	float limit;
+} SparkDeviceRoutedFfnShape;
+
 typedef struct SparkDeviceFfnScratch
 {
 	SparkTensor gate_up;
@@ -297,6 +316,9 @@ SparkStatus SparkDeviceExpertsBind(SparkDeviceStage *stage, const SparkStageRunn
 	const SparkDeviceExpertsShape *shape, SparkDeviceExpertsWeights *bound);
 SparkStatus SparkDeviceExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceExpertsShape *shape, const SparkDeviceStepTensors *tensors,
 	uint32_t layer, const SparkDeviceExpertsWeights *weights, const SparkDeviceExpertsScratch *scratch, SparkTensor output);
+SparkStatus SparkDeviceRoutedFfn(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceRoutedFfnShape *shape, uint32_t rows,
+	const SparkDeviceExpertMatrix *gate, const SparkDeviceExpertMatrix *up, const SparkDeviceExpertMatrix *down, const SparkDeviceExpertsScratch *scratch,
+	SparkTensor input);
 SparkStatus SparkDeviceSigmoidExpertsBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer,
 	const SparkDeviceExpertsShape *shape, SparkDeviceExpertsWeights *bound);
 SparkStatus SparkDeviceSigmoidExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceExpertsShape *shape,

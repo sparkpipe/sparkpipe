@@ -777,19 +777,25 @@ static SparkStatus ExpertsOverride(SparkDeviceStage *stage, const SparkDeviceExp
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus ExpertsGroupedFfn(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceExpertsShape *shape, uint32_t rows,
-	const SparkDeviceExpertsWeights *weights, const SparkDeviceExpertsScratch *scratch, SparkTensor input, const SparkRouteParams *route)
+static uint64_t ExpertsZerosAt(const SparkDeviceStage *stage)
 {
-	const uint32_t hidden = stage->shape->hidden, routes = rows * shape->top_k, inter = shape->intermediate, local = route->local_experts;
-	const uint64_t table = (uint64_t)routes * sizeof(uint32_t), expert_bytes = (uint64_t)inter * hidden * sizeof(uint16_t);
+	return((uint64_t)stage->max_rows * SPARK_ROUTE_MAX_TOP_K * 5u * sizeof(uint32_t) + (SPARK_ROUTE_MAX_EXPERTS + 1u) * sizeof(uint32_t));
+}
+
+static SparkStatus ExpertsSort(SparkDeviceStage *stage, SparkDeviceQueue *queue, uint32_t rows, uint32_t top_k, uint32_t local,
+	const SparkDeviceExpertsScratch *scratch, SparkTensor input, uint32_t **offsets_out, uint32_t *total_out)
+{
+	const uint32_t hidden = stage->shape->hidden, routes = rows * top_k;
+	const uint64_t table = (uint64_t)routes * sizeof(uint32_t), zeros = (uint64_t)stage->max_rows * SPARK_ROUTE_MAX_TOP_K * sizeof(uint32_t);
 	uint32_t *experts, *ids, *inverse, *offsets, index, expert, total = 0u;
 	float *weights_routed, *weights_sorted;
-	SparkSiluMulParams gated;
-	SparkGemvParams projection;
 	SparkStatus status = SPARK_STATUS_OK;
 	if ( stage->route_tables.handle == 0u )
-		status = SparkDeviceAllocate(&stage->route_tables,SPARK_DEVICE_SPACE_SHARED_COHERENT,
-			(uint64_t)stage->max_rows * SPARK_ROUTE_MAX_TOP_K * 5u * sizeof(uint32_t) + (SPARK_ROUTE_MAX_EXPERTS + 1u) * sizeof(uint32_t),"grouped expert routes");
+	{
+		status = SparkDeviceAllocate(&stage->route_tables,SPARK_DEVICE_SPACE_SHARED_COHERENT,ExpertsZerosAt(stage) + zeros,"grouped expert routes");
+		if ( status == SPARK_STATUS_OK )
+			memset((uint8_t *)stage->route_tables.host + ExpertsZerosAt(stage),0,(size_t)zeros);
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceCopy(queue,SparkTensorAt(&stage->route_tables,0u,table).range,scratch->experts.range,table);
 	if ( status == SPARK_STATUS_OK )
@@ -817,7 +823,7 @@ static SparkStatus ExpertsGroupedFfn(SparkDeviceStage *stage, SparkDeviceQueue *
 		if ( experts[index] < local )
 		{
 			const uint32_t slot = offsets[experts[index]]++;
-			ids[slot] = index / shape->top_k;
+			ids[slot] = index / top_k;
 			weights_sorted[slot] = weights_routed[index];
 			inverse[index] = slot;
 		}
@@ -828,6 +834,22 @@ static SparkStatus ExpertsGroupedFfn(SparkDeviceStage *stage, SparkDeviceQueue *
 	if ( total != 0u )
 		status = SparkOpsGather(stage->ops,queue,input,SparkTensorAt(&stage->route_tables,2u * table,(uint64_t)total * sizeof(uint32_t)),scratch->sorted,
 			total,hidden,rows);
+	*offsets_out = offsets;
+	*total_out = total;
+	return(status);
+}
+
+static SparkStatus ExpertsGroupedFfn(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceExpertsShape *shape, uint32_t rows,
+	const SparkDeviceExpertsWeights *weights, const SparkDeviceExpertsScratch *scratch, SparkTensor input, const SparkRouteParams *route)
+{
+	const uint32_t hidden = stage->shape->hidden, routes = rows * shape->top_k, inter = shape->intermediate, local = route->local_experts;
+	const uint64_t table = (uint64_t)routes * sizeof(uint32_t), expert_bytes = (uint64_t)inter * hidden * sizeof(uint16_t);
+	uint32_t *offsets, expert, total = 0u;
+	SparkSiluMulParams gated;
+	SparkGemvParams projection;
+	SparkStatus status = ExpertsSort(stage,queue,rows,shape->top_k,local,scratch,input,&offsets,&total);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	memset(&projection,0,sizeof(projection));
 	projection.row_exact = rows <= SPARK_OPS_DECODE_MAX_ROWS || stage->step_exact != 0u ? 1u : 0u;
 	projection.projection = projection.row_exact != 0u ? SPARK_PROJECTION_GEMV : stage->shape->projection;
@@ -908,6 +930,116 @@ static SparkStatus ExpertsRoutedFfn(SparkDeviceStage *stage, SparkDeviceQueue *q
 		status = SparkOpsGatedMulRouted(stage->ops,queue,scratch->gate_up,scratch->weights,scratch->act,&gated,shape->activation);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsLinearRouted(stage->ops,queue,scratch->act,weights->down,scratch->out,scratch->experts,route->local_experts,&down);
+	return(status);
+}
+
+static SparkStatus RoutedLinear(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceExpertMatrix *matrix, SparkTensor x, SparkTensor y,
+	SparkTensor experts, uint32_t count, const SparkGemvParams *params)
+{
+	if ( matrix->codec == SPARK_WEIGHT_CODEC_MXFP4_E2M1 )
+		return(SparkOpsLinearRoutedMxfp4(stage->ops,queue,x,matrix->values,matrix->scale,y,experts,count,params));
+	if ( matrix->codec == SPARK_WEIGHT_CODEC_NVFP4_E2M1 )
+		return(SparkOpsLinearRoutedNvfp4(stage->ops,queue,x,matrix->values,matrix->scale,matrix->global,y,experts,count,params));
+	if ( matrix->codec == SPARK_WEIGHT_CODEC_BF16 )
+		return(SparkOpsLinearRouted(stage->ops,queue,x,matrix->values,y,experts,count,params));
+	return(SparkDeviceStageRefuse(stage,SPARK_STATUS_UNSUPPORTED,"routed experts take BF16, MXFP4 or NVFP4 weights"));
+}
+
+static SparkTensor ExpertPart(SparkTensor tensor, uint32_t experts, uint32_t expert)
+{
+	const uint64_t bytes = tensor.bytes / experts;
+	return(tensor.bytes != 0u ? SparkTensorSlice(tensor,(uint64_t)expert * bytes,bytes) : tensor);
+}
+
+static SparkDeviceExpertMatrix ExpertMatrixPart(const SparkDeviceExpertMatrix *matrix, uint32_t experts, uint32_t expert)
+{
+	SparkDeviceExpertMatrix part = *matrix;
+	part.values = ExpertPart(matrix->values,experts,expert);
+	part.scale = ExpertPart(matrix->scale,experts,expert);
+	part.global = ExpertPart(matrix->global,experts,expert);
+	return(part);
+}
+
+static SparkStatus RoutedGated(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceRoutedFfnShape *shape, SparkTensor gate_up,
+	SparkTensor weights, SparkTensor act, uint32_t rows)
+{
+	SparkSiluMulParams gated;
+	memset(&gated,0,sizeof(gated));
+	gated.rows = rows;
+	gated.dimension = shape->intermediate;
+	gated.input_stride = 2u * shape->intermediate;
+	gated.output_stride = shape->intermediate;
+	gated.limit = shape->limit;
+	if ( shape->weighted != 0u )
+		return(SparkOpsGatedMulRouted(stage->ops,queue,gate_up,weights,act,&gated,shape->activation));
+	return(SparkOpsGatedMul(stage->ops,queue,gate_up,act,&gated,shape->activation));
+}
+
+static SparkStatus RoutedFfnGrouped(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceRoutedFfnShape *shape, uint32_t rows,
+	const SparkDeviceExpertMatrix *gate, const SparkDeviceExpertMatrix *up, const SparkDeviceExpertMatrix *down, const SparkDeviceExpertsScratch *scratch,
+	SparkTensor input)
+{
+	const uint32_t hidden = stage->shape->hidden, routes = rows * shape->top_k, inter = shape->intermediate, local = shape->experts;
+	const uint64_t table = (uint64_t)routes * sizeof(uint32_t);
+	uint32_t *offsets, expert, total = 0u;
+	SparkStatus status = ExpertsSort(stage,queue,rows,shape->top_k,local,scratch,input,&offsets,&total);
+	for ( expert = 0u; status == SPARK_STATUS_OK && expert < local; expert++ )
+	{
+		const uint32_t first = offsets[expert], count = offsets[expert + 1u] - first;
+		const SparkTensor zeros = SparkTensorAt(&stage->route_tables,ExpertsZerosAt(stage),(uint64_t)count * sizeof(uint32_t));
+		const SparkTensor x = SparkTensorSlice(scratch->sorted,(uint64_t)first * hidden * sizeof(uint16_t),(uint64_t)count * hidden * sizeof(uint16_t));
+		const SparkGemvParams params = ExpertsRouted(count,1u,hidden,hidden,inter,2u * inter);
+		SparkDeviceExpertMatrix part;
+		if ( count == 0u )
+			continue;
+		part = ExpertMatrixPart(gate,local,expert);
+		status = RoutedLinear(stage,queue,&part,x,SparkTensorSlice(scratch->gate_up,(uint64_t)first * 2u * inter * sizeof(uint16_t),
+			(uint64_t)count * 2u * inter * sizeof(uint16_t)),zeros,1u,&params);
+		part = ExpertMatrixPart(up,local,expert);
+		if ( status == SPARK_STATUS_OK )
+			status = RoutedLinear(stage,queue,&part,x,SparkTensorSlice(scratch->gate_up,((uint64_t)first * 2u + 1u) * inter * sizeof(uint16_t),
+				((uint64_t)count * 2u - 1u) * inter * sizeof(uint16_t)),zeros,1u,&params);
+	}
+	if ( status == SPARK_STATUS_OK && total != 0u )
+		status = RoutedGated(stage,queue,shape,scratch->gate_up,SparkTensorAt(&stage->route_tables,3u * table,(uint64_t)total * sizeof(float)),scratch->act,
+			total);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceFill(queue,SparkTensorSlice(scratch->sorted,(uint64_t)total * hidden * sizeof(uint16_t),(uint64_t)hidden * sizeof(uint16_t)).range,0u,
+			(uint64_t)hidden * sizeof(uint16_t));
+	for ( expert = 0u; status == SPARK_STATUS_OK && expert < local; expert++ )
+	{
+		const uint32_t first = offsets[expert], count = offsets[expert + 1u] - first;
+		const SparkGemvParams params = ExpertsRouted(count,1u,inter,inter,hidden,hidden);
+		SparkDeviceExpertMatrix part;
+		if ( count == 0u )
+			continue;
+		part = ExpertMatrixPart(down,local,expert);
+		status = RoutedLinear(stage,queue,&part,SparkTensorSlice(scratch->act,(uint64_t)first * inter * sizeof(uint16_t),(uint64_t)count * inter * sizeof(uint16_t)),
+			SparkTensorSlice(scratch->sorted,(uint64_t)first * hidden * sizeof(uint16_t),(uint64_t)count * hidden * sizeof(uint16_t)),
+			SparkTensorAt(&stage->route_tables,ExpertsZerosAt(stage),(uint64_t)count * sizeof(uint32_t)),1u,&params);
+	}
+	if ( status == SPARK_STATUS_OK )
+		status = SparkOpsGather(stage->ops,queue,scratch->sorted,SparkTensorAt(&stage->route_tables,4u * table,table),scratch->out,routes,hidden,total + 1u);
+	return(status);
+}
+
+SparkStatus SparkDeviceRoutedFfn(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceRoutedFfnShape *shape, uint32_t rows,
+	const SparkDeviceExpertMatrix *gate, const SparkDeviceExpertMatrix *up, const SparkDeviceExpertMatrix *down, const SparkDeviceExpertsScratch *scratch,
+	SparkTensor input)
+{
+	const uint32_t hidden = stage->shape->hidden, routes = rows * shape->top_k, inter = shape->intermediate;
+	const SparkGemvParams first = ExpertsRouted(routes,shape->top_k,hidden,hidden,inter,2u * inter), second = ExpertsRouted(routes,1u,inter,inter,hidden,hidden);
+	SparkStatus status;
+	if ( scratch->sorted.bytes != 0u && SparkDeviceSegmented(gate->values.range) != 0u )
+		return(RoutedFfnGrouped(stage,queue,shape,rows,gate,up,down,scratch,input));
+	status = RoutedLinear(stage,queue,gate,input,scratch->gate_up,scratch->experts,shape->experts,&first);
+	if ( status == SPARK_STATUS_OK )
+		status = RoutedLinear(stage,queue,up,input,SparkTensorSlice(scratch->gate_up,(uint64_t)inter * sizeof(uint16_t),
+			scratch->gate_up.bytes - (uint64_t)inter * sizeof(uint16_t)),scratch->experts,shape->experts,&first);
+	if ( status == SPARK_STATUS_OK )
+		status = RoutedGated(stage,queue,shape,scratch->gate_up,scratch->weights,scratch->act,routes);
+	if ( status == SPARK_STATUS_OK )
+		status = RoutedLinear(stage,queue,down,scratch->act,scratch->out,scratch->experts,shape->experts,&second);
 	return(status);
 }
 

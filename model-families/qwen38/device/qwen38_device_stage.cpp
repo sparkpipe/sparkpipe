@@ -32,13 +32,6 @@ struct QwenDevice
 		SparkTensor inject;
 	};
 
-	struct Nvfp4
-	{
-		SparkTensor values;
-		SparkTensor scale;
-		SparkTensor global;
-	};
-
 	struct Layer
 	{
 		SparkTensor input_norm;
@@ -51,9 +44,9 @@ struct QwenDevice
 		SparkTensor shared_gate;
 		SparkTensor shared_gate_up;
 		SparkTensor shared_down;
-		Nvfp4 gate;
-		Nvfp4 up;
-		Nvfp4 down;
+		SparkDeviceExpertMatrix gate;
+		SparkDeviceExpertMatrix up;
+		SparkDeviceExpertMatrix down;
 		uint32_t recurrent_index;
 		uint32_t kv_index;
 	};
@@ -98,11 +91,7 @@ struct QwenDevice
 		SparkTensor hc_up;
 		SparkTensor hc_inject;
 		SparkTensor router_logits;
-		SparkTensor route_experts;
-		SparkTensor route_weights;
-		SparkTensor expert_gate_up;
-		SparkTensor expert_act;
-		SparkTensor expert_out;
+		SparkDeviceExpertsScratch experts;
 		SparkTensor shared_gate_up;
 		SparkTensor shared_act;
 		SparkTensor shared_out;
@@ -207,11 +196,12 @@ struct QwenDevice
 			{ residual, &state->hc_up },
 			{ L::kHyper ? rows * G::kStreams * sizeof(float) : 0u, &state->hc_inject },
 			{ G::kMoe ? rows * G::kExperts * 2u : 0u, &state->router_logits },
-			{ routes * sizeof(uint32_t), &state->route_experts },
-			{ routes * sizeof(float), &state->route_weights },
-			{ routes * 2u * G::kMoeInter * 2u, &state->expert_gate_up },
-			{ routes * G::kMoeInter * 2u, &state->expert_act },
-			{ routes * hidden * 2u, &state->expert_out },
+			{ routes * sizeof(uint32_t), &state->experts.experts },
+			{ routes * sizeof(float), &state->experts.weights },
+			{ routes * 2u * G::kMoeInter * 2u, &state->experts.gate_up },
+			{ routes * G::kMoeInter * 2u, &state->experts.act },
+			{ routes * hidden * 2u, &state->experts.out },
+			{ G::kMoe ? (routes + 1u) * hidden * 2u : 0u, &state->experts.sorted },
 			{ rows * 2u * state->shared_rows * 2u, &state->shared_gate_up },
 			{ rows * state->shared_rows * 2u, &state->shared_act },
 			{ G::kMoe ? rows * hidden * 2u : 0u, &state->shared_out },
@@ -305,12 +295,13 @@ struct QwenDevice
 	}
 
 	static SparkStatus BindNvfp4(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index, const char *name, uint64_t rows, uint64_t columns,
-		Nvfp4 *bound)
+		SparkDeviceExpertMatrix *bound)
 	{
 		char scale_name[64];
 		const uint64_t experts = G::kExperts, plane = experts * rows * (columns / SPARK_NVFP4_GROUP);
 		SparkTensor scale;
 		SparkStatus status = SparkDeviceStageLayerTensor(&state->stage, weights, index, name, "nvfp4_e2m1", experts * rows * (columns / 2u), &bound->values);
+		bound->codec = SPARK_WEIGHT_CODEC_NVFP4_E2M1;
 		snprintf(scale_name, sizeof(scale_name), "%s.scale", name);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, scale_name, "ue4m3_f32_global", experts * sizeof(float) + plane, &scale);
@@ -602,10 +593,10 @@ struct QwenDevice
 
 	static SparkStatus Moe(State *state, const Frame &frame, const Layer &layer)
 	{
-		const uint32_t rows = frame.t.rows, routes = rows * G::kTopK, inter = G::kMoeInter, hidden = G::kHidden, shared = state->shared_rows;
+		const uint32_t rows = frame.t.rows, hidden = G::kHidden, shared = state->shared_rows;
 		SparkDeviceOps *ops = state->stage.ops;
+		const SparkDeviceRoutedFfnShape ffn = { G::kExperts, G::kTopK, G::kMoeInter, SPARK_GATED_SILU, 1u, 0.0f };
 		SparkRouteParams route;
-		SparkGemvParams up, down;
 		SparkSiluMulParams act;
 		memset(&route, 0, sizeof(route));
 		route.rows = rows;
@@ -616,36 +607,10 @@ struct QwenDevice
 		SparkStatus status = SparkDeviceLinear(&state->stage, frame.queue, state->normed, hidden, layer.router, state->router_logits, G::kExperts, rows, hidden,
 			G::kExperts);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkOpsRouteTopk(ops, frame.queue, state->router_logits, SparkDeviceStageUnitScale(&state->stage), 0, state->route_experts,
-				state->route_weights, &route);
-		memset(&up, 0, sizeof(up));
-		up.rows = routes;
-		up.input_dimension = up.input_stride = hidden;
-		up.output_dimension = inter;
-		up.output_stride = 2u * inter;
-		up.route_divisor = G::kTopK;
+			status = SparkOpsRouteTopk(ops, frame.queue, state->router_logits, SparkDeviceStageUnitScale(&state->stage), 0, state->experts.experts,
+				state->experts.weights, &route);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkOpsLinearRoutedNvfp4(ops, frame.queue, state->normed, layer.gate.values, layer.gate.scale, layer.gate.global, state->expert_gate_up,
-				state->route_experts, G::kExperts, &up);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkOpsLinearRoutedNvfp4(ops, frame.queue, state->normed, layer.up.values, layer.up.scale, layer.up.global,
-				SparkTensorSlice(state->expert_gate_up, (uint64_t)inter * 2u, state->expert_gate_up.bytes - (uint64_t)inter * 2u), state->route_experts,
-				G::kExperts, &up);
-		memset(&act, 0, sizeof(act));
-		act.rows = routes;
-		act.dimension = inter;
-		act.input_stride = 2u * inter;
-		act.output_stride = inter;
-		if ( status == SPARK_STATUS_OK )
-			status = SparkOpsGatedMulRouted(ops, frame.queue, state->expert_gate_up, state->route_weights, state->expert_act, &act, SPARK_GATED_SILU);
-		memset(&down, 0, sizeof(down));
-		down.rows = routes;
-		down.input_dimension = down.input_stride = inter;
-		down.output_dimension = down.output_stride = hidden;
-		down.route_divisor = 1u;
-		if ( status == SPARK_STATUS_OK )
-			status = SparkOpsLinearRoutedNvfp4(ops, frame.queue, state->expert_act, layer.down.values, layer.down.scale, layer.down.global, state->expert_out,
-				state->route_experts, G::kExperts, &down);
+			status = SparkDeviceRoutedFfn(&state->stage, frame.queue, &ffn, rows, &layer.gate, &layer.up, &layer.down, &state->experts, state->normed);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceLinear(&state->stage, frame.queue, state->normed, hidden, layer.shared_gate_up, state->shared_gate_up, 2u * shared, rows, hidden,
 				2u * shared);
@@ -664,7 +629,7 @@ struct QwenDevice
 		if ( status == SPARK_STATUS_OK )
 			status = SparkOpsSigmoidGateRows(ops, frame.queue, state->shared_out, state->shared_logit, &route);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkOpsRouteCombineShared(ops, frame.queue, state->expert_out, state->shared_out, state->partial, &route);
+			status = SparkOpsRouteCombineShared(ops, frame.queue, state->experts.out, state->shared_out, state->partial, &route);
 		return status;
 	}
 

@@ -461,7 +461,13 @@ each expert is read once per step. Experts in a segmented pack (below) take
 the grouped path at every row count, so a step binds only the experts its
 routes name; up to 64 rows, and in row-exact steps, the grouped projections
 are row-exact GEMVs, the per-route GEMV's arithmetic for every output. The
-FP4 experts (MiMo, Qwen 3.8 Flash) still take the per-route GEMV.
+FP4 experts (MiMo's MXFP4, Qwen 3.8 Flash's NVFP4) take the per-route GEMV
+through `SparkDeviceRoutedFfn`, which takes BF16, MXFP4 or NVFP4 matrices
+(`SparkDeviceExpertMatrix`). In a segmented pack it sorts the routes the same
+way and runs the same routed kernel once per expert over that expert's
+gathered rows, bound to the expert's own values and scales with an all-zero
+route table, so every route's output is the per-route launch's and only the
+routed experts are paged in.
 
 ## Speculation
 

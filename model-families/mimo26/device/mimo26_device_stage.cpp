@@ -25,12 +25,9 @@ struct MimoDevice
 		SparkDeviceFfnWeights ffn;
 		SparkTensor router;
 		SparkTensor router_bias;
-		SparkTensor moe_w1;
-		SparkTensor moe_w1_scale;
-		SparkTensor moe_w3;
-		SparkTensor moe_w3_scale;
-		SparkTensor moe_w2;
-		SparkTensor moe_w2_scale;
+		SparkDeviceExpertMatrix gate;
+		SparkDeviceExpertMatrix up;
+		SparkDeviceExpertMatrix down;
 		uint32_t index;
 	};
 
@@ -46,11 +43,7 @@ struct MimoDevice
 		SparkDeviceAttentionScratch attention;
 		SparkDeviceFfnScratch ffn_scratch;
 		SparkTensor router_logits;
-		SparkTensor route_experts;
-		SparkTensor route_weights;
-		SparkTensor expert_gate_up;
-		SparkTensor expert_act;
-		SparkTensor expert_out;
+		SparkDeviceExpertsScratch experts;
 		SparkDeviceAttentionRope sliding_rope;
 		SparkDeviceAttentionRope full_rope;
 	};
@@ -123,11 +116,12 @@ struct MimoDevice
 			{ rows * 2u * L::kDenseRows * 2u, &state->ffn_scratch.gate_up },
 			{ rows * L::kDenseRows * 2u, &state->ffn_scratch.act },
 			{ rows * G::kExperts * sizeof(float), &state->router_logits },
-			{ routes * sizeof(uint32_t), &state->route_experts },
-			{ routes * sizeof(float), &state->route_weights },
-			{ routes * 2u * G::kMoeInter * 2u, &state->expert_gate_up },
-			{ routes * G::kMoeInter * 2u, &state->expert_act },
-			{ routes * hidden * 2u, &state->expert_out },
+			{ routes * sizeof(uint32_t), &state->experts.experts },
+			{ routes * sizeof(float), &state->experts.weights },
+			{ routes * 2u * G::kMoeInter * 2u, &state->experts.gate_up },
+			{ routes * G::kMoeInter * 2u, &state->experts.act },
+			{ routes * hidden * 2u, &state->experts.out },
+			{ (routes + 1u) * hidden * 2u, &state->experts.sorted },
 			{ Max(fused, 2u * L::kDenseRows) * hidden * 2u, &state->stage.dequant }
 		};
 		const uint32_t count = sizeof(plan) / sizeof(plan[0]);
@@ -164,15 +158,17 @@ struct MimoDevice
 	}
 
 	static SparkStatus BindExpert(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index, const char *name, uint64_t rows,
-		uint64_t columns, SparkTensor *values, SparkTensor *scale)
+		uint64_t columns, SparkDeviceExpertMatrix *matrix)
 	{
 		char scale_name[64];
-		SparkStatus status = SparkDeviceStageLayerTensor(&state->stage, weights, index, name, "mxfp4_e2m1", G::kExperts * rows * (columns / 2u), values);
+		SparkStatus status = SparkDeviceStageLayerTensor(&state->stage, weights, index, name, "mxfp4_e2m1", G::kExperts * rows * (columns / 2u), &matrix->values);
+		matrix->codec = SPARK_WEIGHT_CODEC_MXFP4_E2M1;
 		snprintf(scale_name, sizeof(scale_name), "%s.scale", name);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, scale_name, "e8m0", G::kExperts * rows * (columns / SPARK_MXFP4_GROUP), scale);
+			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, scale_name, "e8m0", G::kExperts * rows * (columns / SPARK_MXFP4_GROUP),
+				&matrix->scale);
 		if ( status == SPARK_STATUS_OK )
-			SparkDeviceStageNoteRouted(&state->stage, values->bytes + scale->bytes, G::kExperts, G::kTopK);
+			SparkDeviceStageNoteRouted(&state->stage, matrix->values.bytes + matrix->scale.bytes, G::kExperts, G::kTopK);
 		return status;
 	}
 
@@ -193,11 +189,11 @@ struct MimoDevice
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "router_bias", "f32", (uint64_t)G::kExperts * sizeof(float), &layer->router_bias);
 		if ( status == SPARK_STATUS_OK )
-			status = BindExpert(state, weights, index, "moe_w1", G::kMoeInter, G::kHidden, &layer->moe_w1, &layer->moe_w1_scale);
+			status = BindExpert(state, weights, index, "moe_w1", G::kMoeInter, G::kHidden, &layer->gate);
 		if ( status == SPARK_STATUS_OK )
-			status = BindExpert(state, weights, index, "moe_w3", G::kMoeInter, G::kHidden, &layer->moe_w3, &layer->moe_w3_scale);
+			status = BindExpert(state, weights, index, "moe_w3", G::kMoeInter, G::kHidden, &layer->up);
 		if ( status == SPARK_STATUS_OK )
-			status = BindExpert(state, weights, index, "moe_w2", G::kHidden, G::kMoeInter, &layer->moe_w2, &layer->moe_w2_scale);
+			status = BindExpert(state, weights, index, "moe_w2", G::kHidden, G::kMoeInter, &layer->down);
 		return status;
 	}
 
@@ -264,10 +260,10 @@ struct MimoDevice
 
 	static SparkStatus Experts(State *state, const Frame &frame, const Layer &layer)
 	{
-		const uint32_t rows = frame.t.rows, routes = rows * G::kTopK, inter = G::kMoeInter;
-		SparkGemvParams router, up, down;
+		const uint32_t rows = frame.t.rows;
+		const SparkDeviceRoutedFfnShape ffn = { G::kExperts, G::kTopK, G::kMoeInter, SPARK_GATED_SILU_ROUNDED, 0u, 0.0f };
+		SparkGemvParams router;
 		SparkRouteParams route;
-		SparkSiluMulParams act;
 		SparkStatus status;
 		memset(&router, 0, sizeof(router));
 		router.rows = rows;
@@ -284,38 +280,12 @@ struct MimoDevice
 		route.width = G::kHidden;
 		route.logit_stride = G::kExperts;
 		if ( status == SPARK_STATUS_OK )
-			status = SparkOpsRouteSigmoid(state->stage.ops, frame.queue, state->router_logits, layer.router_bias, state->route_experts,
-				state->route_weights, &route);
-		memset(&up, 0, sizeof(up));
-		up.rows = routes;
-		up.input_dimension = up.input_stride = G::kHidden;
-		up.output_dimension = inter;
-		up.output_stride = 2u * inter;
-		up.route_divisor = G::kTopK;
+			status = SparkOpsRouteSigmoid(state->stage.ops, frame.queue, state->router_logits, layer.router_bias, state->experts.experts,
+				state->experts.weights, &route);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkOpsLinearRoutedMxfp4(state->stage.ops, frame.queue, state->normed, layer.moe_w1, layer.moe_w1_scale, state->expert_gate_up,
-				state->route_experts, G::kExperts, &up);
+			status = SparkDeviceRoutedFfn(&state->stage, frame.queue, &ffn, rows, &layer.gate, &layer.up, &layer.down, &state->experts, state->normed);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkOpsLinearRoutedMxfp4(state->stage.ops, frame.queue, state->normed, layer.moe_w3, layer.moe_w3_scale,
-				SparkTensorSlice(state->expert_gate_up, (uint64_t)inter * 2u, state->expert_gate_up.bytes - (uint64_t)inter * 2u), state->route_experts,
-				G::kExperts, &up);
-		memset(&act, 0, sizeof(act));
-		act.rows = routes;
-		act.dimension = inter;
-		act.input_stride = 2u * inter;
-		act.output_stride = inter;
-		if ( status == SPARK_STATUS_OK )
-			status = SparkOpsGatedMul(state->stage.ops, frame.queue, state->expert_gate_up, state->expert_act, &act, SPARK_GATED_SILU_ROUNDED);
-		memset(&down, 0, sizeof(down));
-		down.rows = routes;
-		down.input_dimension = down.input_stride = inter;
-		down.output_dimension = down.output_stride = G::kHidden;
-		down.route_divisor = 1u;
-		if ( status == SPARK_STATUS_OK )
-			status = SparkOpsLinearRoutedMxfp4(state->stage.ops, frame.queue, state->expert_act, layer.moe_w2, layer.moe_w2_scale, state->expert_out,
-				state->route_experts, G::kExperts, &down);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkOpsRouteCombineWeighted(state->stage.ops, frame.queue, state->expert_out, state->route_weights, state->partial, &route);
+			status = SparkOpsRouteCombineWeighted(state->stage.ops, frame.queue, state->experts.out, state->experts.weights, state->partial, &route);
 		return status;
 	}
 
