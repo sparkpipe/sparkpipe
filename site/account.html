@@ -155,8 +155,27 @@
   const cell = (content, cls) => { const td = document.createElement('td'); if (content instanceof Node) td.append(content); else td.textContent = content; if (cls) td.className = cls; return td; };
   const row = (cells) => { const tr = document.createElement('tr'); tr.append(...cells); return tr; };
   const link = (href, text, cls) => { const a = document.createElement('a'); a.href = href; a.textContent = text; if (cls) a.className = cls; return a; };
+  const payRest = (o, label, cls) => {
+    const button = document.createElement('button');
+    Object.assign(button, { type: 'button', className: cls, textContent: label });
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        const placed = await SP.call('/order', { product: 'rest', parent: o.order, coin: o.coin });
+        if (!/^https:\/\//.test(placed.checkout)) throw new Error('The checkout link is not secure. Your order ' + placed.order + ' is listed below.');
+        window.location.assign(placed.checkout);
+      } catch (error) {
+        button.disabled = false;
+        SP.say($('st-text'), error.status === 401 ? 'Sign in below to pay the rest of this order.' : error.message, 'error');
+        $('status').hidden = false;
+        $('status').scrollIntoView({ behavior: 'smooth' });
+      }
+    });
+    return button;
+  };
   const what = (o) => {
     const hours = o.issued && +o.issuedHours < +o.hours ? SP.whole(o.issuedHours) + ' of ' + SP.whole(o.hours) : SP.whole(o.hours);
+    if (o.parent) return 'Rest of ' + o.parent + ': ' + hours + ' hours';
     return o.product === 'hourly' ? hours + ' hours from ' + nice(o.start) : 'Prepayment ' + o.agreement + ': ' + hours + ' hours';
   };
   let me = null, watching = new URLSearchParams(window.location.search).get('order'), timer = null;
@@ -171,7 +190,8 @@
     const part = o.received && +o.received > 0 && +o.received < +o.total;
     if (o.state === 'completed' && o.issued) {
       title = +o.issuedHours < +o.hours ? 'Paid in part. Your hours are in.' : 'Paid. Your hours are in.'; kind = 'ok';
-      text = SP.whole(o.issuedHours) + ' fleet-hours are in your account' + (o.product === 'hourly' ? ', usable from ' + nice(o.start) + ' to ' + nice(o.last) : '') + (part ? ', for the ' + SP.usd(o.received) + ' that arrived' : '') + '. The receipt is on its way to your email.';
+      text = SP.whole(o.issuedHours) + ' fleet-hours are in your account' + (o.product === 'hourly' ? ', usable from ' + nice(o.start) + ' to ' + nice(o.last) : '') + (part ? ', for the ' + SP.usd(o.received) + ' that arrived' : '') + '. The receipt is on its way to your email.' + (o.left ? ' The other ' + SP.whole(o.leftHours) + ' hours of this order are yours at the same price when you pay the remaining ' + SP.usd(o.left) + '.' : '');
+      if (o.left) actions.push(payRest(o, 'Pay the remaining ' + SP.usd(o.left) + ' in ' + SP.coinName(o.coin), 'btn solid'));
     } else if (part && OPEN.has(o.state)) {
       title = 'Part of the payment arrived.'; kind = 'error';
       text = 'We received ' + SP.usd(o.received) + ' of ' + SP.usd(o.total) + ' in ' + SP.coinName(o.coin) + '. While the payment page is open you can send the remaining ' + SP.usd(+o.total - +o.received) + ' to the same address. Otherwise, if CoinPayments completes the payment with what arrived, it buys ' + SP.whole(Math.floor(+o.received / +o.total * +o.hours * 10000) / 10000) + ' hours, in proportion; if it does not, CoinPayments refunds it when the payment page closes and emails you a link to claim it.';
@@ -271,7 +291,7 @@
     $('no-orders').hidden = me.orders.length > 0;
     $('orders-wrap').hidden = me.orders.length === 0;
     $('orders').replaceChildren(...me.orders.map((o) => {
-      const action = o.checkout && /^https:\/\//.test(o.checkout) ? link(o.checkout, 'Pay', 'btn small solid') : '';
+      const action = o.checkout && /^https:\/\//.test(o.checkout) ? link(o.checkout, 'Pay', 'btn small solid') : o.left ? payRest(o, 'Pay rest ' + SP.usd(o.left), 'btn small solid') : '';
       const state = document.createElement('span');
       state.className = 'state' + (o.state === 'completed' ? ' live' : OPEN.has(o.state) ? ' building' : '');
       const part = o.received && +o.received > 0 && +o.received < +o.total;
