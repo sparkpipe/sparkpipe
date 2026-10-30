@@ -174,7 +174,7 @@
       text = SP.whole(o.issuedHours) + ' fleet-hours are in your account' + (o.product === 'hourly' ? ', usable from ' + nice(o.start) + ' to ' + nice(o.last) : '') + (part ? ', for the ' + SP.usd(o.received) + ' that arrived' : '') + '. The receipt is on its way to your email.';
     } else if (part && OPEN.has(o.state)) {
       title = 'Part of the payment arrived.'; kind = 'error';
-      text = 'We received ' + SP.usd(o.received) + ' of ' + SP.usd(o.total) + ' in ' + SP.coinName(o.coin) + '. Send the remaining ' + SP.usd(+o.total - +o.received) + ' from the payment page while it is open, or write to hyor@sparkpipe.ai with order ' + o.order + ': we can credit what arrived as hours or refund it.';
+      text = 'We received ' + SP.usd(o.received) + ' of ' + SP.usd(o.total) + ' in ' + SP.coinName(o.coin) + '. While the payment page is open you can send the remaining ' + SP.usd(+o.total - +o.received) + ' to the same address. Otherwise, if CoinPayments completes the payment with what arrived, it buys ' + SP.whole(Math.floor(+o.received / +o.total * +o.hours * 10000) / 10000) + ' hours, in proportion; if it does not, CoinPayments refunds it when the payment page closes and emails you a link to claim it.';
       if (o.checkout && /^https:\/\//.test(o.checkout)) actions.push(link(o.checkout, 'Open the payment page', 'btn solid'));
     } else if (o.state === 'created' || o.state === 'unpaid') {
       title = 'Waiting for your payment.';

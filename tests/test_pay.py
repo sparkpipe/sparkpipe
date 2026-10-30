@@ -47,7 +47,7 @@ def check_dates(failures):
 
 def check_covered(failures):
     hourly = {"product": "hourly", "hours": 168, "net": "3360.00", "total": "3696.00"}
-    if sp.covered(hourly, sp.money("22.99")) != (1, "20.00") or sp.covered(hourly, sp.money("3696.00")) != (168, "3360.00") or sp.covered(hourly, sp.money("21.99"))[0] != 0:
+    if sp.covered(hourly, sp.money("22.99")) != ("1.0450", "20.90") or sp.covered(hourly, sp.money("0.01")) != ("0.0004", "0.00") or sp.covered(hourly, sp.money("9999.00")) != ("168.0000", "3360.00"):
         failures.append(f"hours covered by a part payment: {sp.covered(hourly, sp.money('22.99'))}")
     prepay = {"product": "two-year", "hours": "6.6666", "net": "100.00", "total": "110.00", "price": "15.00"}
     if sp.covered(prepay, sp.money("55.00")) != ("3.3333", "50.00"):
@@ -389,35 +389,34 @@ def part_payment_flow(failures, cfg, app, fake, buyer, mailbox):
     shown = buyer("GET", "/order/" + placed["order"])[1]
     if shown["state"] != "pending" or shown["received"] != "22.99":
         failures.append(f"a part payment is not shown: {shown}")
-    if not any(m["Subject"] == f"Part payment: {placed['order']}" for _, m in mailbox.mail):
-        failures.append("we are not told of a part payment")
     lines = app.book.count
     for value in ("22.97", "22.99", "22.98"):
         fake.invoices[key]["received"] = value
         app.reconcile()
         app.jobs.join()
     app.mails.join()
-    if app.book.count != lines or sum(m["Subject"] == f"Part payment: {placed['order']}" for _, m in mailbox.mail) != 1:
-        failures.append("a part payment revalued by cents writes ledger lines or mails us again")
+    if app.book.count != lines:
+        failures.append("a part payment revalued by cents writes ledger lines")
+    account = app.book.orders[placed["order"]]["account"]
+    held = app.book.held(account, sp.clock())
+    before = sp.Decimal(str(buyer("GET", "/account")[1]["hours"]))
     fake.invoices[key]["status"] = "completed"
     webhook(buyer, cfg, key)
     app.jobs.join()
-    shown = buyer("GET", "/order/" + placed["order"])[1]
-    if shown["state"] != "mismatch" or shown["issued"]:
-        failures.append(f"an accepted part payment issues the whole order: {shown}")
-    account = app.book.orders[placed["order"]]["account"]
-    held = app.book.held(account, sp.clock())
-    before = buyer("GET", "/account")[1]["hours"]
-    issued = app.settle(placed["order"], {"status": "completed", "amount": {"total": "88.00"}, "currency": {"id": "5057"}, "payments": [{"nativeActualAmount": "22.99"}]}, released=True)
     app.mails.join()
+    shown = buyer("GET", "/order/" + placed["order"])[1]
     after = buyer("GET", "/account")[1]
-    if not issued or issued["hours"] != 1 or issued["net"] != "20.00" or after["hours"] != before + 1:
-        failures.append(f"releasing a part payment does not issue the hour it covers: {issued} {before} {after['hours']}")
+    if shown["state"] != "completed" or not shown["issued"] or shown["issuedHours"] != "1.0445" or sp.Decimal(str(after["hours"])) != before + sp.Decimal("1.0445"):
+        failures.append(f"a completed part payment does not issue its hours in proportion: {shown} {before} {after['hours']}")
     note = [m for rcpt, m in mailbox.mail if "ops@acme.example" in rcpt and placed["order"] in m["Subject"]]
-    if not note or "22.99 USD arrived" not in note[-1].get_content():
-        failures.append("the receipt for a part payment does not say what arrived")
-    if app.book.held(account, sp.clock()) != held - 3:
-        failures.append("the holding limit counts the ordered hours of a part payment, not the issued ones")
+    if not note or "22.98 USD arrived" not in note[-1].get_content() or "1.0445 fleet-hours" not in note[-1].get_content():
+        failures.append("the receipt for a part payment does not say what arrived and what it bought")
+    if not any(cfg.notify in rcpt and m["Subject"].startswith("Paid in part:") for rcpt, m in mailbox.mail):
+        failures.append("we are not told of a part payment that settled")
+    if app.book.held(account, sp.clock()) != held - sp.Decimal("2.9555"):
+        failures.append(f"the holding limit counts the ordered hours of a part payment, not the issued ones: {app.book.held(account, sp.clock())} vs {held}")
+    if buyer("POST", "/order", {"product": "hourly", "hours": 1, "start": "2026-12-01", "coin": "USDC.ERC20"})[0] != 200:
+        failures.append("an account with fractional hours cannot order whole hours")
 
 
 def prepayment_flow(failures, cfg, app, fake, buyer, mailbox, port):
