@@ -753,7 +753,7 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 			}
 			K3_PAIR_DO(K3LayerMoeSelect(a,total,total * K3_TOP_K,sa));
 			if ( status == LM_LAUNCH_OK && state->lazy_acquire != 0 )
-				status = state->lazy_acquire(state->lazy_context,layer,(void *)a);
+				status = cudaStreamSynchronize(sa) == cudaSuccess ? state->lazy_acquire(state->lazy_context,layer,(void *)a) : LM_LAUNCH_ERR_LAUNCH;
 			K3_PAIR_DO(K3LayerLatentMoe<Format>(a,total,total * K3_TOP_K,multiprocessors,sa,1u));
 			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,3u,1u));
 			K3_PAIR_DO(K3LayerSharedDown<Format>(b,rows_b,b->shared_mid_bf16,multiprocessors,sb));
