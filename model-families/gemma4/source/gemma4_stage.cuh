@@ -28,87 +28,13 @@
 #include "inference/kernels/topk_warp.cuh"
 #include "runtime/gemm.cuh"
 #include "sparkpipe/spark_rope_plan.h"
+#include "sparkpipe/spark_gemma4_family.h"
 
 #define GM_THREADS 256u
-#define GM_PACK_ALIGNMENT 128u
-
-struct GemmaDefaults
-{
-	static constexpr bool kEmbedNorm = false;
-	static constexpr bool kOutputGate = false;
-	static constexpr bool kUntiedHead = false;
-	static constexpr float kLogitScale = 0.0f;
-	static constexpr bool kMoe = false;
-	static constexpr uint32_t kExperts = 0u;
-	static constexpr uint32_t kLocalExperts = 0u;
-	static constexpr uint32_t kTopK = 0u;
-	static constexpr uint32_t kMoeInter = 0u;
-	static constexpr uint32_t kFullRopeDim = 0u;
-	static constexpr float kFullRopeScale = 1.0f;
-	static constexpr float kYarnFactor = 0.0f;
-	static constexpr float kYarnOriginal = 0.0f;
-	static constexpr float kYarnBetaFast = 0.0f;
-	static constexpr float kYarnBetaSlow = 0.0f;
-	static constexpr bool kHeadGate = false;
-	static constexpr uint32_t kFirstMoeLayer = 0u;
-	static constexpr uint32_t kEmbedAliasFirst = 0u;
-	static constexpr uint32_t kEmbedAliasCount = 0u;
-	static constexpr uint32_t kEmbedAliasRow = 0u;
-	static constexpr bool kLayerTable = false;
-};
 
 template<class G>
-struct GemmaShape
+struct GemmaShape : GemmaLayout<G>
 {
-	static constexpr bool Full(uint32_t index)
-	{
-		if constexpr ( G::kLayerTable )
-			return G::LayerWindow(index) == 0u;
-		else
-			return index % G::kPeriod == G::kPhase;
-	}
-	static constexpr uint32_t Window(uint32_t index)
-	{
-		if constexpr ( G::kLayerTable )
-			return G::LayerWindow(index);
-		else
-			return Full(index) ? 0u : G::kWindow;
-	}
-	static constexpr float SwigluLimit(uint32_t index)
-	{
-		if constexpr ( G::kLayerTable )
-			return G::LayerSwigluLimit(index);
-		else
-			return INFINITY;
-	}
-	static constexpr uint32_t CountFull(void)
-	{
-		uint32_t count = 0u;
-		for ( uint32_t index = 0u; index < G::kLayers; ++index )
-			count += Full(index) ? 1u : 0u;
-		return count;
-	}
-	static constexpr uint32_t kFullLayers = CountFull();
-	static_assert(G::kLayerTable || kFullLayers == G::kLayers / G::kPeriod, "a periodic layout has one full layer per period");
-	static constexpr uint32_t kSlidingLayers = G::kLayers - kFullLayers;
-	static constexpr uint32_t kSlidingQ = G::kSlidingHeads * G::kSlidingDim;
-	static constexpr uint32_t kSlidingKv = G::kSlidingKvHeads * G::kSlidingDim;
-	static constexpr uint32_t kSlidingFused = kSlidingQ + 2u * kSlidingKv;
-	static constexpr uint32_t kFullQ = G::kFullHeads * G::kFullDim;
-	static constexpr uint32_t kFullKv = G::kFullKvHeads * G::kFullDim;
-	static constexpr uint32_t kFullFused = kFullQ + (G::kKeyIsValue ? 1u : 2u) * kFullKv;
-	static constexpr uint32_t kMaxFused = kSlidingFused > kFullFused ? kSlidingFused : kFullFused;
-	static constexpr uint32_t kMaxQ = kSlidingQ > kFullQ ? kSlidingQ : kFullQ;
-	static constexpr uint32_t kMaxKv = kSlidingKv > kFullKv ? kSlidingKv : kFullKv;
-	static constexpr uint32_t kFullRopeWidth = G::kFullRopeDim != 0u ? G::kFullRopeDim : G::kFullDim;
-	static constexpr uint32_t kSlidingGateRows = (G::kSlidingHeads / G::kTpDegree + 1u) & ~1u;
-	static constexpr uint32_t kFullGateRows = (G::kFullHeads / G::kTpDegree + 1u) & ~1u;
-	static constexpr uint32_t kMaxGateRows = kSlidingGateRows > kFullGateRows ? kSlidingGateRows : kFullGateRows;
-	static_assert(!G::kHeadGate || (G::kSlidingHeads % G::kTpDegree == 0u && G::kFullHeads % G::kTpDegree == 0u),
-		"a per-head gate needs whole heads on every rank");
-	static_assert(kFullRopeWidth % 2u == 0u && kFullRopeWidth <= G::kFullDim, "the full-layer rope rotates an even prefix of the head");
-	static_assert(G::kYarnFactor <= 1.0f || (G::kYarnOriginal > 0.0f && G::kYarnBetaFast > 0.0f && G::kYarnBetaSlow > 0.0f),
-		"a geometry that turns YaRN on chooses its betas and original positions");
 	using SlidingKvGeometry = LmKvHeads<16u, G::kSlidingKvHeads, G::kSlidingDim, G::kPageSlots>;
 	using FullKvGeometry = LmKvHeads<16u, G::kFullKvHeads, G::kFullDim, G::kPageSlots>;
 };
@@ -239,8 +165,7 @@ __global__ static void GemmaPackSlotKernel(const uint16_t *key, const uint16_t *
 __global__ static void GemmaHeadSoftplusGateKernel(uint16_t *values, const uint16_t *gate_logits, uint32_t heads, uint32_t head_dim, uint32_t gate_stride)
 {
 	const uint32_t row = blockIdx.y, head = blockIdx.x;
-	const float logit = LmBf16ToFloat(gate_logits[(uint64_t)row * gate_stride + head]);
-	const float gate = LmBf16ToFloat(LmFloatToBf16(logit > 20.0f ? logit : log1pf(expf(logit))));
+	const float gate = SparkMathSoftplusGate(LmBf16ToFloat(gate_logits[(uint64_t)row * gate_stride + head]));
 	uint16_t *base = values + ((uint64_t)row * heads + head) * head_dim;
 	for ( uint32_t index = threadIdx.x; index < head_dim; index += blockDim.x )
 		base[index] = LmFloatToBf16(LmBf16ToFloat(base[index]) * gate);
@@ -281,7 +206,7 @@ void GemmaPostNormAddKernel(uint16_t *residual, const uint16_t *partial, const f
 		const float value = LmBf16ToFloat(source[index]);
 		total += value * value;
 	}
-	const float scale = rsqrtf(LmBlockSum<THREADS>(total, reduction) / (float)width + epsilon);
+	const float scale = SparkMathRmsScale(LmBlockSum<THREADS>(total, reduction), (float)width, epsilon);
 	const float multiplier = scalar != 0 ? scalar[0] : 1.0f;
 	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
 	{
@@ -317,7 +242,7 @@ void GemmaRouterInputKernel(const uint16_t *residual, const float *scale, uint16
 		const float value = LmBf16ToFloat(residual[base + index]);
 		total += value * value;
 	}
-	const float inverse = rsqrtf(LmBlockSum<THREADS>(total, reduction) / (float)width + epsilon);
+	const float inverse = SparkMathRmsScale(LmBlockSum<THREADS>(total, reduction), (float)width, epsilon);
 	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
 	{
 		const float normed = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(residual[base + index]) * inverse));
@@ -347,8 +272,8 @@ void GemmaMoeCombineKernel(uint16_t *residual, const uint16_t *dense, const uint
 		dense_total += d * d;
 		moe_total += m * m;
 	}
-	const float dense_scale = rsqrtf(LmBlockSum<THREADS>(dense_total, reduction) / (float)width + epsilon);
-	const float moe_scale = rsqrtf(LmBlockSum<THREADS>(moe_total, reduction) / (float)width + epsilon);
+	const float dense_scale = SparkMathRmsScale(LmBlockSum<THREADS>(dense_total, reduction), (float)width, epsilon);
+	const float moe_scale = SparkMathRmsScale(LmBlockSum<THREADS>(moe_total, reduction), (float)width, epsilon);
 	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
 	{
 		const float d = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(dense[base + index]) * dense_scale * dense_norm[index]));
@@ -357,7 +282,7 @@ void GemmaMoeCombineKernel(uint16_t *residual, const uint16_t *dense, const uint
 		gemma_combined[index] = combined;
 		total += combined * combined;
 	}
-	const float scale = rsqrtf(LmBlockSum<THREADS>(total, reduction) / (float)width + epsilon);
+	const float scale = SparkMathRmsScale(LmBlockSum<THREADS>(total, reduction), (float)width, epsilon);
 	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
 	{
 		const float normed = LmBf16ToFloat(LmFloatToBf16(gemma_combined[index] * scale * post_norm[index]));
@@ -371,6 +296,13 @@ struct GemmaModel
 {
 	using S = GemmaShape<G>;
 	using State = GemmaState<G>;
+	using Layer = GemmaLayer;
+
+	struct Frame
+	{
+		const SparkStageRunnerStep *step;
+		cudaStream_t stream;
+	};
 
 	static uint32_t Blocks(uint64_t elements)
 	{
@@ -442,8 +374,11 @@ struct GemmaModel
 	}
 
 	template<bool FULL>
-	static SparkStatus Attention(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Attention(State *state, const Frame &frame, const GemmaLayer &entry)
 	{
+		const GemmaLayer *layer = &entry;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
 		using Kv = typename std::conditional<FULL, typename S::FullKvGeometry, typename S::SlidingKvGeometry>::type;
 		constexpr uint32_t HD = FULL ? G::kFullDim : G::kSlidingDim, KVH = FULL ? G::kFullKvHeads : G::kSlidingKvHeads;
 		constexpr uint32_t QW = FULL ? S::kFullQ : S::kSlidingQ, KVW = FULL ? S::kFullKv : S::kSlidingKv;
@@ -518,8 +453,11 @@ struct GemmaModel
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Mlp(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Mlp(State *state, const Frame &frame, const GemmaLayer &entry)
 	{
+		const GemmaLayer *layer = &entry;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
 		const uint32_t rows = step->rows, sms = step->multiprocessors, ffn_rows = layer->ffn_rows;
 		if ( Linear(layer->gate_up, state->normed, state->gate_up, rows, G::kHidden, 2u * ffn_rows, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -536,8 +474,11 @@ struct GemmaModel
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Moe(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Experts(State *state, const Frame &frame, const GemmaLayer &entry)
 	{
+		const GemmaLayer *layer = &entry;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
 		const uint32_t rows = step->rows, sms = step->multiprocessors, routes = rows * G::kTopK;
 		const uint16_t *hidden = step->hidden_bf16;
 		LmLocalExpertRoutes expert_routes;
@@ -586,8 +527,11 @@ struct GemmaModel
 		return Launched();
 	}
 
-	static SparkStatus MoeSigmoid(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus SigmoidExperts(State *state, const Frame &frame, const GemmaLayer &entry)
 	{
+		const GemmaLayer *layer = &entry;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
 		const uint32_t rows = step->rows, sms = step->multiprocessors, routes = rows * G::kTopK;
 		LmLocalExpertRoutes expert_routes;
 		if constexpr ( G::kRouterFloat )
@@ -639,97 +583,111 @@ struct GemmaModel
 		return Launched();
 	}
 
-	static SparkStatus PreNormLayers(State *state, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static const GemmaLayer &LayerOf(State *state, uint32_t index)
 	{
-		const uint32_t rows = step->rows;
-		const uint64_t width = (uint64_t)rows * G::kHidden;
-		uint16_t *hidden = step->hidden_bf16;
-		SparkStatus status = SPARK_STATUS_OK;
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
-			hidden, (const uint16_t *)0, state->layers[0].input_norm, (uint16_t *)0, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
-		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
-		{
-			const GemmaLayer *layer = &state->layers[index];
-			const bool moe = G::kMoe && index >= G::kFirstMoeLayer;
-			uint16_t *ffn = moe ? state->partial + width : state->partial;
-			status = S::Full(index) ? Attention<true>(state, layer, step, stream) : Attention<false>(state, layer, step, stream);
-			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
-			if ( status != SPARK_STATUS_OK )
-				break;
-			LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
-				state->partial, hidden, layer->pre_ff_norm, hidden, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
-			status = Mlp(state, layer, step, stream);
-			if constexpr ( G::kMoe && G::kSigmoidRouter )
-				if ( status == SPARK_STATUS_OK && moe )
-					status = MoeSigmoid(state, layer, step, stream);
-			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, ffn, ffn);
-			if ( status != SPARK_STATUS_OK )
-				break;
-			if ( index + 1u < G::kLayers )
-				LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
-					ffn, hidden, state->layers[index + 1u].input_norm, hidden, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
-			else
-				GemmaAddRowsKernel<<<Blocks(width), GM_THREADS, 0, stream>>>(hidden, ffn, width);
-			status = Launched();
-			if ( status == SPARK_STATUS_OK && state->services->layer_done != 0 )
-				state->services->layer_done(state->services->context, index);
-		}
-		return status;
+		return state->layers[index];
 	}
 
-	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream_void)
+	static uint16_t *BranchRows(State *state, const Frame &frame, GemmaBranch branch)
 	{
-		State *state = (State *)model;
-		cudaStream_t stream = (cudaStream_t)stream_void;
-		const uint32_t rows = step->rows;
-		uint16_t *hidden = step->hidden_bf16;
-		SparkStatus status = SPARK_STATUS_OK;
-		if ( rows == 0u || rows > state->max_rows || step->sequences > state->slots )
+		return state->partial + (uint64_t)branch * frame.step->rows * G::kHidden;
+	}
+
+	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *stream, Frame *frame)
+	{
+		if ( step->rows == 0u || step->rows > state->max_rows || step->sequences > state->slots )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		if constexpr ( G::kEmbedNorm )
-			LM_LAUNCH((LmHeadRmsNormKernel<GM_THREADS,float>), dim3(1u,rows), GM_THREADS, 0, stream,
-				hidden, (const float *)0, hidden, rows, 1u, G::kHidden, G::kNormEpsilon, 1.0f);
-		else if constexpr ( G::kEmbedScale != 1.0f )
-			GemmaScaleRowsKernel<<<Blocks((uint64_t)rows * G::kHidden), GM_THREADS, 0, stream>>>(hidden, (uint64_t)rows * G::kHidden, G::kEmbedScale);
-		if constexpr ( G::kPreNorm )
-			return PreNormLayers(state, step, stream);
-		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
-		{
-			const GemmaLayer *layer = &state->layers[index];
-			LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
-				hidden, (const uint16_t *)0, layer->input_norm, (uint16_t *)0, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
-			status = S::Full(index) ? Attention<true>(state, layer, step, stream) : Attention<false>(state, layer, step, stream);
-			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
-			if ( status != SPARK_STATUS_OK )
-				break;
-			GemmaPostNormAddKernel<GM_THREADS><<<rows, GM_THREADS, 0, stream>>>(hidden, state->partial, layer->post_attn_norm, (const float *)0,
-				G::kHidden, G::kPostEpsilon);
-			LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
-				hidden, (const uint16_t *)0, layer->pre_ff_norm, (uint16_t *)0, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
-			status = Mlp(state, layer, step, stream);
-			if constexpr ( G::kMoe )
-				if ( status == SPARK_STATUS_OK )
-					status = Moe(state, layer, step, stream);
-			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, G::kMoe ? 2u * rows : rows, 0u, state->partial,
-					state->partial);
-			if ( status != SPARK_STATUS_OK )
-				break;
-			if ( G::kMoe )
-				GemmaMoeCombineKernel<GM_THREADS><<<rows, GM_THREADS, G::kHidden * sizeof(float), stream>>>(hidden, state->partial,
-					state->partial + (uint64_t)rows * G::kHidden, layer->post_ff_norm_1, layer->post_ff_norm_2, layer->post_ff_norm, layer->layer_scalar,
-					G::kHidden, G::kPostEpsilon);
-			else
-				GemmaPostNormAddKernel<GM_THREADS><<<rows, GM_THREADS, 0, stream>>>(hidden, state->partial, layer->post_ff_norm,
-					G::kLayerScalar ? layer->layer_scalar : (const float *)0, G::kHidden, G::kPostEpsilon);
-			status = Launched();
-			if ( status == SPARK_STATUS_OK && state->services->layer_done != 0 )
-				state->services->layer_done(state->services->context, index);
-		}
-		return status;
+		frame->step = step;
+		frame->stream = (cudaStream_t)stream;
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus EmbedNorm(State *state, const Frame &frame)
+	{
+		uint16_t *hidden = frame.step->hidden_bf16;
+		(void)state;
+		LM_LAUNCH((LmHeadRmsNormKernel<GM_THREADS,float>), dim3(1u,frame.step->rows), GM_THREADS, 0, frame.stream,
+			hidden, (const float *)0, hidden, frame.step->rows, 1u, G::kHidden, G::kNormEpsilon, 1.0f);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus EmbedScale(State *state, const Frame &frame, float scale)
+	{
+		const uint64_t width = (uint64_t)frame.step->rows * G::kHidden;
+		(void)state;
+		GemmaScaleRowsKernel<<<Blocks(width), GM_THREADS, 0, frame.stream>>>(frame.step->hidden_bf16, width, scale);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus RmsNorm(State *state, const Frame &frame, const float *weight)
+	{
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), frame.step->rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), frame.stream,
+			frame.step->hidden_bf16, (const uint16_t *)0, weight, (uint16_t *)0, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus AddRmsNorm(State *state, const Frame &frame, GemmaBranch branch, const float *weight)
+	{
+		uint16_t *hidden = frame.step->hidden_bf16;
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), frame.step->rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), frame.stream,
+			BranchRows(state, frame, branch), hidden, weight, hidden, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus NormAdd(State *state, const Frame &frame, const float *weight)
+	{
+		GemmaPostNormAddKernel<GM_THREADS><<<frame.step->rows, GM_THREADS, 0, frame.stream>>>(frame.step->hidden_bf16, state->partial, weight,
+			(const float *)0, G::kHidden, G::kPostEpsilon);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus NormAddScaled(State *state, const Frame &frame, const float *weight, const float *scalar)
+	{
+		GemmaPostNormAddKernel<GM_THREADS><<<frame.step->rows, GM_THREADS, 0, frame.stream>>>(frame.step->hidden_bf16, state->partial, weight,
+			scalar, G::kHidden, G::kPostEpsilon);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus BranchNormAdd(State *state, const Frame &frame, const float *first_norm, const float *second_norm, const float *norm,
+		const float *scalar)
+	{
+		const uint32_t rows = frame.step->rows;
+		GemmaMoeCombineKernel<GM_THREADS><<<rows, GM_THREADS, G::kHidden * sizeof(float), frame.stream>>>(frame.step->hidden_bf16, state->partial,
+			state->partial + (uint64_t)rows * G::kHidden, first_norm, second_norm, norm, scalar, G::kHidden, G::kPostEpsilon);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus AddRows(State *state, const Frame &frame, GemmaBranch branch)
+	{
+		const uint64_t width = (uint64_t)frame.step->rows * G::kHidden;
+		GemmaAddRowsKernel<<<Blocks(width), GM_THREADS, 0, frame.stream>>>(frame.step->hidden_bf16, BranchRows(state, frame, branch), width);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus AllReduce(State *state, const Frame &frame, GemmaBranch branch, uint32_t blocks)
+	{
+		uint16_t *rows = BranchRows(state, frame, branch);
+		return Round(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, blocks * frame.step->rows, 0u, rows, rows);
+	}
+
+	static SparkStatus Check(State *state, const Frame &frame)
+	{
+		(void)state;
+		(void)frame;
+		return Launched();
+	}
+
+	static SparkStatus LayerDone(State *state, const Frame &frame, uint32_t index)
+	{
+		(void)frame;
+		if ( state->services->layer_done != 0 )
+			state->services->layer_done(state->services->context, index);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream)
+	{
+		return GemmaSchedule<G, GemmaModel>::Step((State *)model, step, stream);
 	}
 
 	static SparkStatus Plan(State *state, uint64_t *bytes, uint8_t *base, uint32_t lane)
@@ -820,7 +778,7 @@ struct GemmaModel
 		state->max_rows = configuration->max_input_row_count;
 		state->slots = configuration->resident_sequence_capacity > configuration->max_active_sequence_count ?
 			configuration->resident_sequence_capacity : configuration->max_active_sequence_count;
-		status = SparkNamedPackOpen(configuration->rank_pack_path, SPARK_NAMED_PACK_MAGIC, SPARK_NAMED_PACK_VERSION, GM_PACK_ALIGNMENT, &state->pack);
+		status = SparkNamedPackOpen(configuration->rank_pack_path, SPARK_NAMED_PACK_MAGIC, SPARK_NAMED_PACK_VERSION, GEMMA_PACK_ALIGNMENT, &state->pack);
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		state->pack_open = 1u;

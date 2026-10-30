@@ -2,7 +2,7 @@
 """Summarize a Metal stage gate run into one receipt with verdicts.
 
 Reads the outputs a model's gate script (tools/qwen38_27b_metal_gates.sh,
-tools/gemma4_26b_metal_gates.sh) writes and applies the
+tools/metal_gates.sh) writes and applies the
 gate rule against both reference variants (A and B, the same reference with
 different reduction orders), each leg measured against the other variant as
 its floor: the position-weighted mean KL at most KL_FACTOR times the floor's,
@@ -161,7 +161,7 @@ def speed(out):
                          "roofline": f"{streamed / 1e9:.2f} GB read per token ({weights / 1e9:.2f} GB of weights, the rest KV and recurrent state) / "
                                      f"{peak / 1e9:.1f} GB/s measured = "
                                      f"{decode_ceiling:.2f} tok/s; measured {decode:.2f} tok/s = {100.0 * decode / decode_ceiling:.1f}%"}}
-    for key in ("prefill_1024", "prefill_8192"):
+    for key in sorted((key for key in bench if key.startswith("prefill_")), key=lambda key: int(key.split("_")[1])):
         item = bench[key]
         rows = min(item["chunk_rows"], int(key.split("_")[1]))
         chunk = bench.get("streamed_bytes_per_chunk", weights)
@@ -195,6 +195,7 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--prompts", type=Path, required=True)
+    parser.add_argument("--tp-degree", type=int, default=1)
     arguments = parser.parse_args()
     out = arguments.out
     rows = [json.loads(line) for line in (out / "compare" / "compare.jsonl").read_text().splitlines() if line.strip()]
@@ -209,6 +210,7 @@ def main():
     prompts = json.loads(arguments.prompts.read_text())
     receipt = {
         "revision": arguments.revision,
+        "tp_degree": arguments.tp_degree,
         "pack_sha256": sha.group(1) if sha else None,
         "prompts": {item["name"]: {"tokens": item["tokens"], "source": item["source"], "source_sha256": item["source_sha256"]}
                     for item in prompts["prompts"]},
@@ -223,13 +225,15 @@ def main():
                               f"{' and '.join(REQUIRED_CONTROLS)} fail"),
                      "diagnostics": diagnostics, **free},
         "greedy": greedy_table(out) if (out / "ref" / "greedy.ref.json").exists() else None,
-        "speed": speed(out),
+        "speed": speed(out) if (out / "metal" / "bench.metal.json").exists() else None,
     }
-    receipt["batch_ladder"] = ladder_table(out, receipt["speed"]["bandwidth"]["device_private"]["median_gb_per_s"] * 1e9)
-    ladder_deterministic = all(row["nondeterministic"] == 0 for row in receipt["batch_ladder"]["rows"])
-    receipt["batch_ladder"]["deterministic"] = ladder_deterministic
+    ladder_deterministic = None
+    if (out / "metal" / "ladder.metal.json").exists() and receipt["speed"] is not None:
+        receipt["batch_ladder"] = ladder_table(out, receipt["speed"]["bandwidth"]["device_private"]["median_gb_per_s"] * 1e9)
+        ladder_deterministic = all(row["nondeterministic"] == 0 for row in receipt["batch_ladder"]["rows"])
+        receipt["batch_ladder"]["deterministic"] = ladder_deterministic
     exact_identical = None
-    if (out / "exact" / "ladder.metal.json").exists():
+    if (out / "exact" / "ladder.metal.json").exists() and receipt["speed"] is not None:
         receipt["batch_ladder_exact_rows"] = ladder_table(out, receipt["speed"]["bandwidth"]["device_private"]["median_gb_per_s"] * 1e9, "exact")
         exact_identical = all(row["sequences_identical_to_solo"] == row["batch"] and row["nondeterministic"] == 0
                               for row in receipt["batch_ladder_exact_rows"]["rows"])
@@ -261,8 +265,8 @@ def main():
                                                                                      "pass")}
                                             for leg_name, item in pinned[name]["verdict"].items() if leg_name != "pass"}
                          for name in pinned_candidates},
-                      "decode": receipt["speed"]["decode"]["roofline"]}, indent=1))
-    return 0 if numerics["pass"] and speculation_exact is not False and ladder_deterministic and exact_identical is not False else 1
+                      "decode": receipt["speed"]["decode"]["roofline"] if receipt["speed"] is not None else None}, indent=1))
+    return 0 if numerics["pass"] and speculation_exact is not False and ladder_deterministic is not False and exact_identical is not False else 1
 
 if __name__ == "__main__":
     sys.exit(main())

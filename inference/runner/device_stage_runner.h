@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 
+#include "inference/runner/device_collective.h"
 #include "sparkpipe/spark_device.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_stage_runner_model.h"
@@ -26,6 +27,10 @@ typedef struct SparkDeviceStageRunnerConfig
 	uint64_t state_budget_bytes;
 	uint32_t linear_weight_codec;
 	uint32_t verify_pack;
+	uint32_t tp_degree;
+	uint32_t tp_rank;
+	const SparkDeviceCollective *collective;
+	uint64_t weight_segment_bytes;
 } SparkDeviceStageRunnerConfig;
 
 typedef struct SparkDeviceStageRunnerBatch
@@ -63,6 +68,7 @@ typedef struct SparkDeviceStageRunnerInfo
 	char pack_sha256[SPARK_SHA256_HEX_BYTES];
 	char device[64];
 	char target[64];
+	uint32_t tp_degree;
 } SparkDeviceStageRunnerInfo;
 
 SparkStatus SparkDeviceStageRunnerOpen(SparkDeviceStageRunner **runner, const SparkDeviceStageRunnerConfig *config);

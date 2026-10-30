@@ -7,7 +7,9 @@
 
 #include "inference/runner/device_stage_model.h"
 #include "inference/runner/device_stage_runner.h"
-#include "sparkpipe/spark_gemma4_26b_device_stage.h"
+#include "sparkpipe/spark_gemma4_device_stage.h"
+#include "sparkpipe/spark_ling_device_stage.h"
+#include "sparkpipe/spark_mimo26_device_stage.h"
 #include "sparkpipe/spark_qwen38_device_stage.h"
 #include "sparkpipe/spark_speculation_frame.h"
 #include "sparkpipe/spark_speculation_lookup_draft.h"
@@ -24,6 +26,7 @@
 #define RUN_LOOKUP_BUCKETS 4096u
 #define RUN_LOOKUP_CANDIDATES 64u
 #define RUN_FRAME_SIZES 7u
+#define RUN_WEIGHT_SEGMENT_BYTES (1ull << 30)
 
 typedef struct RunOptions
 {
@@ -45,6 +48,14 @@ typedef struct RunOptions
 	uint32_t draft_max;
 	const char *pin_routes;
 	uint32_t exact_rows;
+	uint32_t tp_degree;
+	uint32_t tp_rank;
+	uint32_t tp_process;
+	const char *tp_hosts;
+	uint32_t tp_port;
+	uint32_t stream_weights;
+	uint32_t bench_long_tokens;
+	uint32_t decode_positions;
 } RunOptions;
 
 static const uint32_t run_frame_sizes[RUN_FRAME_SIZES] = { 1u, 2u, 4u, 8u, 16u, 32u, 64u };
@@ -57,12 +68,21 @@ static uint64_t NowNs(void)
 }
 
 typedef const SparkStageRunnerModelInterface *(*RunModelGetter)(void);
+typedef const SparkStageRunnerModelInterface *(*RunModelAt)(uint32_t tp_degree);
 
-static const RunModelGetter run_models[] = { SparkQwen38_27bDeviceStageModel, SparkGemma4_26bDeviceStageModel };
+static const RunModelGetter run_models[] = { SparkQwen38_27bDeviceStageModel, SparkGemma4_26bDeviceStageModel, SparkGemma4_31bDeviceStageModel,
+	SparkMuseGlimmerDeviceStageModel, SparkMimo26FlashDeviceStageModel, SparkQwen38FlashDeviceStageModel };
+static const RunModelAt run_models_at[] = { SparkGemma4_26bDeviceStageModelAt, SparkGemma4_31bDeviceStageModelAt, SparkMuseGlimmerDeviceStageModelAt,
+	SparkLagunaDeviceStageModelAt, SparkLing3FlashDeviceStageModelAt, SparkLing3FinDeviceStageModelAt, SparkSolarOpen2DeviceStageModelAt };
 
-static const SparkStageRunnerModelInterface *RunModel(const char *name)
+static const SparkStageRunnerModelInterface *RunModel(const char *name, uint32_t tp_degree)
 {
 	uint32_t index;
+	for ( index = 0u; name != 0 && index < sizeof(run_models_at) / sizeof(run_models_at[0]); index++ )
+		if ( strcmp(name,run_models_at[index](1u)->weightd_model) == 0 )
+			return(run_models_at[index](tp_degree > 1u ? tp_degree : 1u));
+	if ( tp_degree > 1u )
+		return(0);
 	if ( name == 0 )
 		return(run_models[0]());
 	for ( index = 0u; index < sizeof(run_models) / sizeof(run_models[0]); index++ )
@@ -74,7 +94,7 @@ static const SparkStageRunnerModelInterface *RunModel(const char *name)
 static int Usage(const char *program)
 {
 	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|pairs|bench|ladder|spec --out DIR [--prefill-rows N] [--new-tokens N] "
-		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|gemma4-26b-a4b] [--pin-routes DIR] [--exact-rows]\n",program);
+		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|qwen3.8-flash|gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|laguna-s-2.1|ling-3.0-flash|ling-3.0-flash-fin|solar-open-2] [--pin-routes DIR] [--exact-rows] [--tp 2|4|8, the pack named for rank 00] [--rank R [--tp-hosts H0,H1,...] [--tp-port P]: one rank process over TCP] [--stream-weights] [--bench-long-tokens N] [--decode-positions N, teacher: decode only the last N positions]\n",program);
 	return(2);
 }
 
@@ -83,6 +103,7 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 	int index;
 	memset(options,0,sizeof(*options));
 	options->prefill_rows = 1024u;
+	options->bench_long_tokens = 8192u;
 	options->new_tokens = 128u;
 	options->repeats = 3u;
 	options->prompt_tokens = 1024u;
@@ -98,6 +119,11 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 		if ( strcmp(flag,"--exact-rows") == 0 )
 		{
 			options->exact_rows = 1u;
+			continue;
+		}
+		if ( strcmp(flag,"--stream-weights") == 0 )
+		{
+			options->stream_weights = 1u;
 			continue;
 		}
 		if ( value == 0 )
@@ -127,6 +153,21 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 			options->draft_max = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--pin-routes") == 0 )
 			options->pin_routes = value;
+		else if ( strcmp(flag,"--tp") == 0 )
+			options->tp_degree = (uint32_t)strtoul(value,0,10);
+		else if ( strcmp(flag,"--rank") == 0 )
+		{
+			options->tp_rank = (uint32_t)strtoul(value,0,10);
+			options->tp_process = 1u;
+		}
+		else if ( strcmp(flag,"--tp-hosts") == 0 )
+			options->tp_hosts = value;
+		else if ( strcmp(flag,"--tp-port") == 0 )
+			options->tp_port = (uint32_t)strtoul(value,0,10);
+		else if ( strcmp(flag,"--bench-long-tokens") == 0 )
+			options->bench_long_tokens = (uint32_t)strtoul(value,0,10);
+		else if ( strcmp(flag,"--decode-positions") == 0 )
+			options->decode_positions = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--prompt-tokens") == 0 )
 			options->prompt_tokens = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--batches") == 0 )
@@ -150,7 +191,8 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 			return(-1);
 	}
 	if ( options->pack == 0 || options->prompts == 0 || options->mode == 0 || options->out == 0 || options->prefill_rows == 0u ||
-		options->prefill_rows > 2048u || options->repeats == 0u || options->prompt_tokens == 0u )
+		options->prefill_rows > 2048u || options->repeats == 0u || options->prompt_tokens == 0u || options->bench_long_tokens == 0u ||
+		options->bench_long_tokens >= RUN_MAX_CONTEXT )
 		return(-1);
 	if ( options->batch_count == 0u )
 	{
@@ -265,7 +307,7 @@ static FILE *OpenOut(const RunOptions *options, const char *name, const char *su
 	char path[4096];
 	FILE *file;
 	snprintf(path,sizeof(path),"%s/%s%s",options->out,name,suffix);
-	file = fopen(path,mode);
+	file = fopen(options->tp_rank != 0u ? "/dev/null" : path,mode);
 	if ( file == 0 )
 		fprintf(stderr,"cannot write %s: %s\n",path,strerror(errno));
 	return(file);
@@ -313,7 +355,8 @@ static int LoadPinnedRoutes(Session *session, const RunOptions *options, const S
 
 static int RunTeacher(Session *session, const RunOptions *options, const SparkTokenPrompt *prompt, uint32_t vocab)
 {
-	const uint32_t positions = prompt->count - 1u, prefill = (positions + 1u) / 2u;
+	const uint32_t positions = prompt->count - 1u;
+	const uint32_t prefill = options->decode_positions != 0u && options->decode_positions < positions ? positions - options->decode_positions : (positions + 1u) / 2u;
 	SparkDeviceStageRunnerResult result;
 	FILE *logits = OpenOut(options,prompt->name,".metal.logits","wb"), *json = OpenOut(options,prompt->name,".metal.json","w");
 	float *logprob = (float *)calloc(positions,sizeof(float));
@@ -548,7 +591,7 @@ static uint32_t *Synthesize(const SparkTokenPrompts *prompts, uint32_t count)
 static int RunBench(Session *session, const RunOptions *options, const SparkTokenPrompts *prompts, const SparkDeviceStageRunnerInfo *info)
 {
 	FILE *json = OpenOut(options,"bench",".metal.json","w");
-	uint32_t *decode_prompt = Synthesize(prompts,1024u), *short_prompt = Synthesize(prompts,1024u), *long_prompt = Synthesize(prompts,8192u);
+	uint32_t *decode_prompt = Synthesize(prompts,1024u), *short_prompt = Synthesize(prompts,1024u), *long_prompt = Synthesize(prompts,options->bench_long_tokens);
 	int failed = json == 0 || decode_prompt == 0 || short_prompt == 0 || long_prompt == 0;
 	if ( !failed )
 	{
@@ -560,7 +603,7 @@ static int RunBench(Session *session, const RunOptions *options, const SparkToke
 	if ( !failed )
 		failed = BenchPrefill(session,options,short_prompt,1024u,json) != 0;
 	if ( !failed )
-		failed = BenchPrefill(session,options,long_prompt,8192u,json) != 0;
+		failed = BenchPrefill(session,options,long_prompt,options->bench_long_tokens,json) != 0;
 	if ( json != 0 )
 	{
 		fprintf(json,"}\n");
@@ -1046,6 +1089,46 @@ static int RunSpec(Session *session, const RunOptions *options, const SparkToken
 	return(status == SPARK_STATUS_OK && identical == total ? 0 : 1);
 }
 
+static int RunRankProcess(const RunOptions *options, SparkDeviceStageRunnerConfig *config, SparkDeviceCollective *collective, char *pack, size_t pack_bytes)
+{
+	char hosts_text[4096];
+	const char *hosts[SPARK_DEVICE_COLLECTIVE_MAX_RANKS];
+	const char *mark = strstr(options->pack,"rank00");
+	char *cursor = hosts_text;
+	uint32_t index;
+	if ( options->tp_degree < 2u || options->tp_rank >= options->tp_degree || options->tp_degree > SPARK_DEVICE_COLLECTIVE_MAX_RANKS ||
+		strlen(options->pack) >= pack_bytes )
+	{
+		fprintf(stderr,"metal_stage_run: --rank needs --tp N with the rank below N\n");
+		return(1);
+	}
+	snprintf(hosts_text,sizeof(hosts_text),"%s",options->tp_hosts != 0 ? options->tp_hosts : "");
+	for ( index = 0u; index < options->tp_degree; index++ )
+	{
+		char *comma = cursor != 0 ? strchr(cursor,',') : 0;
+		hosts[index] = cursor != 0 && *cursor != 0 ? cursor : "127.0.0.1";
+		if ( comma != 0 )
+			*comma = 0;
+		cursor = comma != 0 ? comma + 1 : 0;
+	}
+	memcpy(pack,options->pack,strlen(options->pack) + 1u);
+	if ( mark != 0 )
+	{
+		pack[mark - options->pack + 4] = (char)('0' + options->tp_rank / 10u);
+		pack[mark - options->pack + 5] = (char)('0' + options->tp_rank % 10u);
+	}
+	if ( SparkDeviceCollectiveTcpCreate(collective,options->tp_degree,options->tp_rank,hosts,(uint16_t)(options->tp_port != 0u ? options->tp_port : 47100u)) !=
+		SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"metal_stage_run: rank %u could not connect to its %u peers\n",options->tp_rank,options->tp_degree - 1u);
+		return(1);
+	}
+	config->pack_path = pack;
+	config->tp_rank = options->tp_rank;
+	config->collective = collective;
+	return(0);
+}
+
 int main(int argc, char **argv)
 {
 	RunOptions options;
@@ -1053,11 +1136,14 @@ int main(int argc, char **argv)
 	SparkDeviceStageRunnerConfig config;
 	SparkDeviceStageRunnerInfo info;
 	Session session;
+	SparkDeviceCollective collective;
+	char rank_pack[4096];
 	uint32_t index;
 	int failed = 0;
 	setvbuf(stdout,0,_IOLBF,0);
+	memset(&collective,0,sizeof(collective));
 	memset(&config,0,sizeof(config));
-	if ( ParseOptions(argc,argv,&options) != 0 || (config.model = RunModel(options.model)) == 0 )
+	if ( ParseOptions(argc,argv,&options) != 0 || (config.model = RunModel(options.model,options.tp_degree)) == 0 )
 		return(Usage(argv[0]));
 	if ( SparkTokenPromptsLoad(options.prompts,&prompts) != SPARK_STATUS_OK )
 		return(1);
@@ -1096,6 +1182,10 @@ int main(int argc, char **argv)
 	}
 	config.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16;
 	config.verify_pack = options.verify;
+	config.tp_degree = options.tp_degree;
+	config.weight_segment_bytes = options.stream_weights != 0u ? RUN_WEIGHT_SEGMENT_BYTES : 0u;
+	if ( options.tp_process != 0u && RunRankProcess(&options,&config,&collective,rank_pack,sizeof(rank_pack)) != 0 )
+		return(1);
 	memset(&session,0,sizeof(session));
 	session.capacity = options.prefill_rows;
 	session.rows = (uint32_t *)calloc(session.capacity,sizeof(uint32_t));
@@ -1158,6 +1248,8 @@ int main(int argc, char **argv)
 	else
 		failed = Usage(argv[0]);
 	SparkDeviceStageRunnerClose(session.runner);
+	if ( collective.context != 0 )
+		SparkDeviceCollectiveTcpDestroy(&collective);
 	SparkTokenPromptsFree(&prompts);
 	free(session.rows);
 	free(session.positions);

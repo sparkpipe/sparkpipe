@@ -54,7 +54,7 @@ static __global__ void LmGeluTanhPackedKernel(const uint16_t *__restrict__ gate,
 	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < width; element += gridDim.x * blockDim.x )
 	{
 		const float g = LmBf16ToFloat(gate[(uint64_t)row * width + element]);
-		const float activated = LmBf16ToFloat(LmFloatToBf16(0.5f * g * (1.0f + tanhf(0.7978845608028654f * (g + 0.044715f * g * g * g)))));
+		const float activated = LmBf16ToFloat(LmFloatToBf16(SparkMathGeluTanhScaleFirst(g)));
 		output[(uint64_t)row * width + element] = LmFloatToBf16(activated * LmBf16ToFloat(up[(uint64_t)row * width + element]) * weight[row]);
 	}
 }

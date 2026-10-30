@@ -3,6 +3,7 @@
 #include "inference/llms/kimi_k3/layer.cuh"
 #include "inference/llms/kimi_k3/dspark.h"
 #include "inference/kernels/l2_load.cuh"
+#include "sparkpipe/spark_k3_family.h"
 
 struct K3LayerWeights
 {
@@ -59,13 +60,6 @@ struct K3LayerWeights
 	const void *attnres_mlp_weight;
 };
 
-#define K3_COLLECTIVE_MLA_QUERY 4u
-#define K3_COLLECTIVE_MLA_PARTIALS 5u
-#define K3_COLLECTIVE_MLA_DOWN 6u
-#define K3_COLLECTIVE_MLA_KEYS 7u
-#define K3_COLLECTIVE_FINISH 0x100u
-#define K3_COLLECTIVE_BEGIN 0x200u
-#define K3_COLLECTIVE_ROWS 0x400u
 #define K3_L2_LOAD_BYTES (8u << 20)
 #define K3_L2_LOAD_BLOCKS 48u
 
@@ -203,113 +197,6 @@ static void K3BindLayerState(const K3SliceState *state, uint32_t layer, K3LayerB
 	}
 }
 
-template<class Format, class Geometry>
-static int32_t K3LaunchMlaGather(const K3SliceState *state, K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
-{
-	uint32_t window;
-	int32_t status = K3LayerMlaQuery<Format,Geometry>(buffers,rows,multiprocessors,stream);
-	if ( status == LM_LAUNCH_OK )
-		status = K3LayerMlaGatherPack<Geometry>(buffers,rows,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	buffers->shard_gather_window = 0u;
-	state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_KEYS);
-	status = K3LayerMlaGate(buffers,rows,multiprocessors,stream);
-	state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_KEYS | K3_COLLECTIVE_FINISH);
-	if ( K3LayerMlaPasses(buffers) <= 1u )
-	{
-		if ( status == LM_LAUNCH_OK && buffers->shard_gather_expanded != 0u )
-			status = K3LayerMlaExpandValues(buffers,rows,0u,stream);
-		if ( status == LM_LAUNCH_OK )
-			status = K3LayerMlaGatherPartials<Geometry>(buffers,rows,0u,stream);
-		if ( status == LM_LAUNCH_OK )
-			status = K3LayerMlaGatherMerge(buffers,rows,stream);
-	}
-	else
-	{
-		for (window = 0u; window < K3LayerMlaPasses(buffers) && status == LM_LAUNCH_OK; window++)
-		{
-			if ( window > 0u && buffers->shard_gather_windows > 1u )
-			{
-				buffers->shard_gather_window = window;
-				state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_KEYS);
-				state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_KEYS | K3_COLLECTIVE_FINISH);
-			}
-			if ( buffers->shard_gather_expanded != 0u )
-				status = K3LayerMlaExpandValues(buffers,rows,window,stream);
-			if ( status == LM_LAUNCH_OK )
-				status = K3LayerMlaGatherPartials<Geometry>(buffers,rows,window,stream);
-			if ( status == LM_LAUNCH_OK )
-				status = K3LayerMlaShardFold(buffers,rows,window,stream);
-		}
-		if ( status == LM_LAUNCH_OK )
-			status = K3LayerMlaShardFinish(buffers,rows,stream);
-	}
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	return(K3LayerMlaOutput<Format>(buffers,rows,partial_accumulate,1u,multiprocessors,stream));
-}
-
-template<class Format, class Geometry>
-static int32_t K3LaunchMlaShard(const K3SliceState *state, K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
-{
-	int32_t status;
-	if ( state->layer_collective == 0 )
-		return(LM_LAUNCH_ERR_SHAPE);
-	if ( buffers->shard_gather != 0u )
-		return(K3LaunchMlaGather<Format,Geometry>(state,buffers,layer,rows,partial_accumulate,multiprocessors,stream));
-	if ( K3_MLA_DOWN_SLICED(buffers,rows) )
-	{
-		status = K3LayerMlaDownSlice(buffers,rows,stream);
-		if ( status != LM_LAUNCH_OK )
-			return(status);
-		state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_DOWN);
-	}
-	else
-		status = K3LayerMlaDown<Format>(buffers,rows,multiprocessors,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	status = K3LayerMlaUp<Format,Geometry>(buffers,rows,multiprocessors,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_QUERY);
-	status = K3LayerMlaGate(buffers,rows,multiprocessors,stream);
-	state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_QUERY | K3_COLLECTIVE_FINISH);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	status = K3LayerMlaShardPartials<Geometry>(buffers,rows,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_PARTIALS);
-	status = K3LayerMlaShardMerge(buffers,rows,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	return(K3LayerMlaOutput<Format>(buffers,rows,partial_accumulate,1u,multiprocessors,stream));
-}
-
-template<class Format, class Geometry>
-static int32_t K3LaunchAttentionHalf(const K3SliceState *state, K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t sequences, uint32_t commit, uint16_t *partial_accumulate, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
-{
-	enum LmLayerKind kind = (enum LmLayerKind)K3_LAYER_KIND(layer);
-	switch (kind)
-	{
-	case LM_LAYER_RECURRENT:
-		return(K3LayerKda<Format>(buffers,rows,sequences,commit,partial_accumulate,multiprocessors,stream));
-	case LM_LAYER_LATENT:
-		if ( buffers->kv_shard.degree > 1u )
-			return(K3LaunchMlaShard<Format,Geometry>(state,buffers,layer,rows,partial_accumulate,multiprocessors,stream));
-		return(K3LayerMla<Format,Geometry>(buffers,rows,context,partial_accumulate,multiprocessors,stream));
-	case LM_LAYER_FULL:
-	case LM_LAYER_WINDOW:
-	case LM_LAYER_SPARSE:
-	case LM_LAYER_COMPRESSED:
-	case LM_LAYER_KIND_COUNT:
-	default:
-		return(LM_LAUNCH_ERR_SHAPE);
-	}
-}
-
-
 static void K3L2PlanMoe(const K3LayerBuffers *b, uint32_t layer, LmL2LoadPlan *plan)
 {
 	const uint64_t row = (uint64_t)K3_HIDDEN * sizeof(uint16_t);
@@ -363,169 +250,10 @@ static int32_t K3L2LoadRound(const K3SliceState *state, uint32_t layer, uint32_t
 	return(error == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
-template<class Format>
-static int32_t K3LaunchCellsMoe(const K3SliceState *state, K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
-{
-	void *stream_word = (void *)(uintptr_t)stream;
-	int32_t status;
-	if ( state->layer_collective == 0 || buffers->tp_sharded == 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
-	status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,0u);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	state->layer_collective(state->collective_context,stream_word,layer,2u);
-	status = K3LayerSharedUp<Format>(buffers,rows,buffers->shared_mid_bf16,multiprocessors,stream);
-	state->layer_collective(state->collective_context,stream_word,layer,2u | K3_COLLECTIVE_FINISH);
-	if ( status == LM_LAUNCH_OK )
-		status = K3LayerMoeSelect(buffers,rows,packed_rows,stream);
-	if ( status == LM_LAUNCH_OK && state->lazy_acquire != 0 )
-		status = state->lazy_acquire(state->lazy_context,layer,(void *)buffers);
-	if ( status == LM_LAUNCH_OK )
-		status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	state->layer_collective(state->collective_context,stream_word,layer,3u);
-	status = K3LayerSharedDown<Format>(buffers,rows,buffers->shared_mid_bf16,multiprocessors,stream);
-	state->layer_collective(state->collective_context,stream_word,layer,3u | K3_COLLECTIVE_FINISH);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	return(K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,2u));
-}
-
 static int32_t K3SliceFailure(uint32_t layer,const char *phase,int32_t status)
 {
 	fprintf(stderr,"k3 slice failed layer=%u phase=%s status=%d\n",layer,phase,status);
 	return(status);
-}
-
-template<class Format, class Geometry>
-static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
-{
-	uint32_t offset,layer,boundary;
-	int32_t status;
-	LmL2LoadPlan load;
-	for (offset = 0u; offset < layer_count; ++offset)
-	{
-		layer = first_layer + offset;
-		if ( layer >= K3_LAYERS )
-			return(K3SliceFailure(layer,"shape",LM_LAUNCH_ERR_SHAPE));
-		K3BindLayer(&weights[offset],buffers);
-		K3BindLayerState(state,layer,buffers);
-		boundary = (layer % K3_ATTNRES_BLOCK_SIZE) == 0u ? 1u : 0u;
-		if ( layer > 0u )
-			K3AttnRes(buffers,buffers->attnres_attn_weight,
-				((layer - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
-		if ( boundary != 0u )
-		{
-			if ( layer == 0u )
-				K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
-			K3BankStore(buffers,layer / K3_ATTNRES_BLOCK_SIZE,rows,stream);
-		}
-		status = K3LaunchAttentionHalf<Format,Geometry>(state,buffers,layer,rows,sequences,commit,
-			boundary != 0u ? (uint16_t *)0 : buffers->attnres_partial_bf16,context,
-			multiprocessors,stream);
-		if ( status != LM_LAUNCH_OK )
-			return(K3SliceFailure(layer,"attention",status));
-		if ( boundary != 0u && buffers->tp_sharded == 0u )
-			K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
-		if ( state->layer_collective != 0 )
-		{
-			K3L2PlanMoe(buffers,layer,&load);
-			status = K3L2LoadRound(state,layer,0u,&load,stream);
-			if ( status != LM_LAUNCH_OK )
-				return(K3SliceFailure(layer,"attention-round",status));
-		}
-		K3AttnRes(buffers,buffers->attnres_mlp_weight,
-			(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
-		if ( layer < K3_FIRST_ROUTED_LAYER )
-			status = K3LayerDenseMlp<Format>(buffers,rows,multiprocessors,stream);
-		else if ( K3_EXPERT_CELLS(buffers) )
-			status = K3LaunchCellsMoe<Format>(state,buffers,layer,rows,packed_rows,multiprocessors,stream);
-		else if ( state->lazy_acquire != 0 )
-		{
-			status = K3LayerMoeRoute<Format>(buffers,rows,packed_rows,multiprocessors,stream);
-			if ( status == LM_LAUNCH_OK )
-				status = state->lazy_acquire(state->lazy_context,layer,(void *)buffers);
-			if ( status == LM_LAUNCH_OK )
-				status = K3LayerMoeWeighted<Format>(buffers,rows,packed_rows,multiprocessors,stream,0u);
-			if ( status == LM_LAUNCH_OK && state->layer_collective != 0 )
-				state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,2u);
-			if ( status == LM_LAUNCH_OK )
-				status = K3LayerMoeWeighted<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u);
-			if ( status == LM_LAUNCH_OK && buffers->tp_sharded != 0u )
-			{
-				if ( state->layer_collective == 0 )
-					status = LM_LAUNCH_ERR_SHAPE;
-				else
-				{
-					state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,3u);
-					status = K3LayerMoeWeighted<Format>(buffers,rows,packed_rows,multiprocessors,stream,2u);
-				}
-			}
-		}
-		else
-		{
-			status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,0u);
-			if ( status == LM_LAUNCH_OK && state->layer_collective != 0 )
-				state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,2u);
-			if ( status == LM_LAUNCH_OK )
-				status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u);
-			if ( status == LM_LAUNCH_OK && buffers->tp_sharded != 0u )
-			{
-				if ( state->layer_collective == 0 )
-					status = LM_LAUNCH_ERR_SHAPE;
-				else
-				{
-					state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,3u);
-					status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,2u);
-				}
-			}
-		}
-		if ( status != LM_LAUNCH_OK )
-			return(K3SliceFailure(layer,layer < K3_FIRST_ROUTED_LAYER ? "dense" : state->lazy_acquire != 0 ? "routed-lazy" : "routed",status));
-		if ( state->layer_collective != 0 )
-		{
-			load.count = 0u;
-			if ( offset + 1u < layer_count )
-			{
-				K3LayerBuffers next = *buffers;
-				K3BindLayer(&weights[offset + 1u],&next);
-				K3L2PlanAttention(&next,layer + 1u,&load);
-			}
-			status = K3L2LoadRound(state,layer,1u,&load,stream);
-			if ( status != LM_LAUNCH_OK )
-				return(K3SliceFailure(layer,"mlp-round",status));
-		}
-		if ( state->lazy_release != 0 )
-			state->lazy_release(state->lazy_context,layer);
-		if ( state->tap_slab != 0 && state->tap_output[layer] >= 0 )
-			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
-				buffers->attnres_partial_bf16,state->tap_slab + ((uint64_t)state->tap_output[layer] * K3_HIDDEN),rows,K3_HIDDEN,state->tap_row_stride);
-	}
-	if ( first_layer + layer_count == K3_LAYERS )
-	{
-		K3AttnRes(buffers,buffers->attnres_out_weight,
-			((K3_LAYERS - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
-		return(LM_LAUNCH_OK);
-	}
-	LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>),
-		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),
-		K3_LAYER_THREADS, 0, stream,
-		buffers->attnres_partial_bf16,buffers->hidden_bf16,rows,K3_HIDDEN);
-	return(LM_LAUNCH_OK);
-}
-
-static void K3PairPre(K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t row_shard, cudaStream_t stream)
-{
-	if ( layer > 0u && row_shard == 0u )
-		K3AttnRes(buffers,buffers->attnres_attn_weight,
-			((layer - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
-	if ( (layer % K3_ATTNRES_BLOCK_SIZE) == 0u )
-	{
-		if ( layer == 0u )
-			K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
-		K3BankStore(buffers,layer / K3_ATTNRES_BLOCK_SIZE,rows,stream);
-	}
 }
 
 static uint32_t K3PairReady(const K3SliceState *state, const K3LayerBuffers *a, const K3LayerBuffers *b, uint32_t rows_a, uint32_t rows_b)
@@ -554,219 +282,354 @@ static int32_t K3PairRound(const K3SliceState *state, void *lane, cudaStream_t m
 	return(consumer != 0 ? K3PairFence(state,consumer,main) : LM_LAUNCH_OK);
 }
 
-template<class Geometry>
-static int32_t K3PairMlaWindows(const K3SliceState *state, void *lane_a, K3LayerBuffers *a, K3LayerBuffers *b, uint32_t layer, uint32_t rows_a, uint32_t rows_b, cudaStream_t stream, cudaStream_t sa, cudaStream_t sb)
+template<class Format, class Geometry>
+struct K3Cuda
 {
-	void *const word = (void *)(uintptr_t)stream;
-	const uint32_t windows = K3LayerMlaPasses(a), landing = a->shard_gather_windows > 1u ? 1u : 0u;
-	uint32_t window;
-	int32_t status = LM_LAUNCH_OK;
-	if ( windows < 2u || K3LayerMlaPasses(b) != windows || b->shard_gather_windows != a->shard_gather_windows ||
-		b->shard_gather_expanded != a->shard_gather_expanded )
-		return(LM_LAUNCH_ERR_SHAPE);
-	if ( landing != 0u )
+	static constexpr int32_t kOk = LM_LAUNCH_OK;
+	static constexpr int32_t kShapeError = LM_LAUNCH_ERR_SHAPE;
+
+	struct Context
 	{
-		a->shard_gather_window = 1u;
-		state->layer_collective(lane_a,word,layer,K3_COLLECTIVE_MLA_KEYS);
-		state->layer_collective(lane_a,word,layer,K3_COLLECTIVE_MLA_KEYS | K3_COLLECTIVE_FINISH);
-	}
-	for (window = 0u; window < windows && status == LM_LAUNCH_OK; window++)
+		const K3LayerWeights *weights;
+		const K3SliceState *state;
+		K3LayerBuffers *buffers[2];
+		cudaStream_t streams[3];
+		uint32_t rows[2];
+		uint32_t sequences;
+		uint32_t commit;
+		uint32_t packed_rows;
+		uint32_t context;
+		uint32_t multiprocessors;
+		LmL2LoadPlan load;
+	};
+
+	static K3LayerBuffers *Lane(const Context &c, uint32_t lane)
 	{
-		if ( a->shard_gather_expanded != 0u )
-			status = K3LayerMlaExpandValues(a,rows_a,window,sa);
-		if ( status == LM_LAUNCH_OK )
-			status = K3LayerMlaGatherPartials<Geometry>(a,rows_a,window,sa);
-		if ( status == LM_LAUNCH_OK )
-			status = K3LayerMlaShardFold(a,rows_a,window,sa);
-		if ( status == LM_LAUNCH_OK )
-			status = K3PairFence(state,sb,sa);
-		if ( status == LM_LAUNCH_OK )
-			status = K3LayerMlaGatherPartials<Geometry>(b,rows_b,window,sb);
-		if ( status == LM_LAUNCH_OK )
-			status = K3LayerMlaShardFold(b,rows_b,window,sb);
-		if ( status == LM_LAUNCH_OK && window + 1u < windows )
-		{
-			status = K3PairFence(state,sa,stream);
-			if ( status == LM_LAUNCH_OK )
-				status = K3PairFence(state,sa,sb);
-		}
-		if ( status == LM_LAUNCH_OK && landing != 0u && window + 2u < windows )
-		{
-			status = K3PairFence(state,stream,sb);
-			a->shard_gather_window = window + 2u;
-			state->layer_collective(lane_a,word,layer,K3_COLLECTIVE_MLA_KEYS);
-			state->layer_collective(lane_a,word,layer,K3_COLLECTIVE_MLA_KEYS | K3_COLLECTIVE_FINISH);
-		}
+		return c.buffers[lane];
 	}
-	return(status);
+
+	static cudaStream_t Stream(const Context &c, uint32_t stream)
+	{
+		return stream == K3_STREAM_NONE ? (cudaStream_t)0 : c.streams[stream];
+	}
+
+	static void *CollectiveLane(const Context &c, uint32_t lane)
+	{
+		return lane == K3_LANE_A ? c.state->collective_context : c.state->collective_pair_context;
+	}
+
+	static uint16_t *Accumulate(const K3LayerBuffers *b, uint32_t accumulate)
+	{
+		return accumulate != 0u ? b->attnres_partial_bf16 : (uint16_t *)0;
+	}
+
+	static uint32_t Rows(const Context &c, uint32_t lane) { return c.rows[lane]; }
+	static uint32_t Sequences(const Context &c) { return c.sequences; }
+	static uint32_t PackedRows(const Context &c) { return c.packed_rows; }
+	static bool HasCollective(const Context &c) { return c.state->layer_collective != 0; }
+	static bool HasLazy(const Context &c) { return c.state->lazy_acquire != 0; }
+	static uint32_t TpSharded(const Context &c, uint32_t lane) { return Lane(c, lane)->tp_sharded; }
+	static bool KvSharded(const Context &c, uint32_t lane) { return Lane(c, lane)->kv_shard.degree > 1u; }
+	static uint32_t ShardGather(const Context &c, uint32_t lane) { return Lane(c, lane)->shard_gather; }
+	static uint32_t GatherWindows(const Context &c, uint32_t lane) { return Lane(c, lane)->shard_gather_windows; }
+	static uint32_t GatherExpanded(const Context &c, uint32_t lane) { return Lane(c, lane)->shard_gather_expanded; }
+	static uint32_t GatherHistory(const Context &c, uint32_t lane) { return Lane(c, lane)->shard_gather_history; }
+	static uint32_t GatherPrefetched(const Context &c, uint32_t lane) { return Lane(c, lane)->shard_gather_prefetched; }
+	static void SetGatherWindow(Context &c, uint32_t lane, uint32_t window) { Lane(c, lane)->shard_gather_window = window; }
+	static void SetGatherPrefetched(Context &c, uint32_t lane, uint32_t value) { Lane(c, lane)->shard_gather_prefetched = value; }
+	static uint32_t MlaPasses(const Context &c, uint32_t lane) { return K3LayerMlaPasses(Lane(c, lane)); }
+
+	static bool ExpertCells(const Context &c, uint32_t lane)
+	{
+		const K3LayerBuffers *b = Lane(c, lane);
+		return K3_EXPERT_CELLS(b);
+	}
+
+	static bool MlaDownSliced(const Context &c, uint32_t lane)
+	{
+		const K3LayerBuffers *b = Lane(c, lane);
+		return K3_MLA_DOWN_SLICED(b, c.rows[lane]);
+	}
+
+	static uint32_t RowShard(const Context &c, uint32_t first_layer, uint32_t layer_count)
+	{
+		const K3LayerBuffers *a = c.buffers[K3_LANE_A], *b = c.buffers[K3_LANE_B];
+		return first_layer == 0u && layer_count == K3_LAYERS && a->attnres_score_f32 != 0 && b->attnres_score_f32 != 0 ? K3_COLLECTIVE_ROWS : 0u;
+	}
+
+	static bool PairReady(const Context &c)
+	{
+		return K3PairReady(c.state, c.buffers[K3_LANE_A], c.buffers[K3_LANE_B], c.rows[K3_LANE_A], c.rows[K3_LANE_B]) != 0u;
+	}
+
+	static int32_t Failure(uint32_t layer, const char *phase, int32_t status)
+	{
+		return K3SliceFailure(layer, phase, status);
+	}
+
+	static void Bind(Context &c, uint32_t lane, uint32_t offset, uint32_t layer)
+	{
+		K3BindLayer(&c.weights[offset], Lane(c, lane));
+		K3BindLayerState(c.state, layer, Lane(c, lane));
+	}
+
+	static void SetNextAttnRes(Context &c, uint32_t lane, uint32_t offset, uint32_t layer_count)
+	{
+		K3LayerBuffers *b = Lane(c, lane);
+		b->attnres_next_weight = offset + 1u < layer_count ? c.weights[offset + 1u].attnres_attn_weight : b->attnres_out_weight;
+	}
+
+	static void AttnRes(Context &c, uint32_t lane, uint32_t site, uint32_t sources, uint32_t stream)
+	{
+		const K3LayerBuffers *b = Lane(c, lane);
+		const void *weight = site == K3_ATTNRES_ATTENTION ? b->attnres_attn_weight : site == K3_ATTNRES_MLP ? b->attnres_mlp_weight : b->attnres_out_weight;
+		K3AttnRes(b, weight, sources, c.rows[lane], Stream(c, stream));
+	}
+
+	static void PartialSet(Context &c, uint32_t lane, uint32_t stream)
+	{
+		const K3LayerBuffers *b = Lane(c, lane);
+		K3PartialSet(b, b->hidden_bf16, c.rows[lane], Stream(c, stream));
+	}
+
+	static void PartialSetUnsharded(Context &c, uint32_t lane, uint32_t stream)
+	{
+		if ( Lane(c, lane)->tp_sharded == 0u )
+			PartialSet(c, lane, stream);
+	}
+
+	static void BankStore(Context &c, uint32_t lane, uint32_t bank, uint32_t stream)
+	{
+		K3BankStore(Lane(c, lane), bank, c.rows[lane], Stream(c, stream));
+	}
+
+	static int32_t Kda(Context &c, uint32_t lane, uint32_t sequences, uint32_t accumulate, uint32_t stream)
+	{
+		const K3LayerBuffers *b = Lane(c, lane);
+		return K3LayerKda<Format>(b, c.rows[lane], sequences, c.commit, Accumulate(b, accumulate), c.multiprocessors, Stream(c, stream));
+	}
+
+	static int32_t MlaLocal(Context &c, uint32_t lane, uint32_t accumulate, uint32_t stream)
+	{
+		const K3LayerBuffers *b = Lane(c, lane);
+		return K3LayerMla<Format,Geometry>(b, c.rows[lane], c.context, Accumulate(b, accumulate), c.multiprocessors, Stream(c, stream));
+	}
+
+	static int32_t MlaQuery(Context &c, uint32_t lane, uint32_t stream)
+	{
+		return K3LayerMlaQuery<Format,Geometry>(Lane(c, lane), c.rows[lane], c.multiprocessors, Stream(c, stream));
+	}
+
+	static int32_t MlaGatherPack(Context &c, uint32_t lane, uint32_t stream)
+	{
+		return K3LayerMlaGatherPack<Geometry>(Lane(c, lane), c.rows[lane], Stream(c, stream));
+	}
+
+	static int32_t MlaPrefetchPack(Context &c, uint32_t lane, uint32_t next_layer, uint32_t stream)
+	{
+		return K3LayerMlaPrefetchPack<Geometry>(Lane(c, lane), c.rows[lane], c.state->mla_cache[(next_layer / 4u) - c.state->first_mla_index], 1u,
+			Stream(c, stream));
+	}
+
+	static int32_t MlaGate(Context &c, uint32_t lane, uint32_t stream)
+	{
+		return K3LayerMlaGate(Lane(c, lane), c.rows[lane], c.multiprocessors, Stream(c, stream));
+	}
+
+	static int32_t MlaExpandValues(Context &c, uint32_t lane, uint32_t window, uint32_t stream)
+	{
+		return K3LayerMlaExpandValues(Lane(c, lane), c.rows[lane], window, Stream(c, stream));
+	}
+
+	static int32_t MlaGatherPartials(Context &c, uint32_t lane, uint32_t window, uint32_t stream)
+	{
+		return K3LayerMlaGatherPartials<Geometry>(Lane(c, lane), c.rows[lane], window, Stream(c, stream));
+	}
+
+	static int32_t MlaGatherMerge(Context &c, uint32_t lane, uint32_t stream)
+	{
+		return K3LayerMlaGatherMerge(Lane(c, lane), c.rows[lane], Stream(c, stream));
+	}
+
+	static int32_t MlaShardFold(Context &c, uint32_t lane, uint32_t window, uint32_t stream)
+	{
+		return K3LayerMlaShardFold(Lane(c, lane), c.rows[lane], window, Stream(c, stream));
+	}
+
+	static int32_t MlaShardFinish(Context &c, uint32_t lane, uint32_t stream)
+	{
+		return K3LayerMlaShardFinish(Lane(c, lane), c.rows[lane], Stream(c, stream));
+	}
+
+	static int32_t MlaOutput(Context &c, uint32_t lane, uint32_t accumulate, uint32_t stream)
+	{
+		const K3LayerBuffers *b = Lane(c, lane);
+		return K3LayerMlaOutput<Format>(b, c.rows[lane], Accumulate(b, accumulate), 1u, c.multiprocessors, Stream(c, stream));
+	}
+
+	static int32_t MlaDownSlice(Context &c, uint32_t lane, uint32_t stream)
+	{
+		return K3LayerMlaDownSlice(Lane(c, lane), c.rows[lane], Stream(c, stream));
+	}
+
+	static int32_t MlaDown(Context &c, uint32_t lane, uint32_t stream)
+	{
+		return K3LayerMlaDown<Format>(Lane(c, lane), c.rows[lane], c.multiprocessors, Stream(c, stream));
+	}
+
+	static int32_t MlaUp(Context &c, uint32_t lane, uint32_t stream)
+	{
+		return K3LayerMlaUp<Format,Geometry>(Lane(c, lane), c.rows[lane], c.multiprocessors, Stream(c, stream));
+	}
+
+	static int32_t MlaShardPartials(Context &c, uint32_t lane, uint32_t stream)
+	{
+		return K3LayerMlaShardPartials<Geometry>(Lane(c, lane), c.rows[lane], Stream(c, stream));
+	}
+
+	static int32_t MlaShardMerge(Context &c, uint32_t lane, uint32_t stream)
+	{
+		return K3LayerMlaShardMerge(Lane(c, lane), c.rows[lane], Stream(c, stream));
+	}
+
+	static int32_t Dense(Context &c, uint32_t lane, uint32_t stream)
+	{
+		return K3LayerDenseMlp<Format>(Lane(c, lane), c.rows[lane], c.multiprocessors, Stream(c, stream));
+	}
+
+	static int32_t LatentMoe(Context &c, uint32_t lane, uint32_t rows, uint32_t packed_rows, uint32_t phase, uint32_t stream)
+	{
+		return K3LayerLatentMoe<Format>(Lane(c, lane), rows, packed_rows, c.multiprocessors, Stream(c, stream), phase);
+	}
+
+	static int32_t SharedUp(Context &c, uint32_t lane, uint32_t stream)
+	{
+		const K3LayerBuffers *b = Lane(c, lane);
+		return K3LayerSharedUp<Format>(b, c.rows[lane], b->shared_mid_bf16, c.multiprocessors, Stream(c, stream));
+	}
+
+	static int32_t SharedDown(Context &c, uint32_t lane, uint32_t stream)
+	{
+		const K3LayerBuffers *b = Lane(c, lane);
+		return K3LayerSharedDown<Format>(b, c.rows[lane], b->shared_mid_bf16, c.multiprocessors, Stream(c, stream));
+	}
+
+	static int32_t MoeSelect(Context &c, uint32_t lane, uint32_t rows, uint32_t packed_rows, uint32_t stream)
+	{
+		return K3LayerMoeSelect(Lane(c, lane), rows, packed_rows, Stream(c, stream));
+	}
+
+	static int32_t MoeRoute(Context &c, uint32_t lane, uint32_t stream)
+	{
+		return K3LayerMoeRoute<Format>(Lane(c, lane), c.rows[lane], c.packed_rows, c.multiprocessors, Stream(c, stream));
+	}
+
+	static int32_t MoeWeighted(Context &c, uint32_t lane, uint32_t phase, uint32_t stream)
+	{
+		return K3LayerMoeWeighted<Format>(Lane(c, lane), c.rows[lane], c.packed_rows, c.multiprocessors, Stream(c, stream), phase);
+	}
+
+	static int32_t Acquire(Context &c, uint32_t lane, uint32_t layer)
+	{
+		return c.state->lazy_acquire(c.state->lazy_context, layer, (void *)Lane(c, lane));
+	}
+
+	static void Release(Context &c, uint32_t layer)
+	{
+		if ( c.state->lazy_release != 0 )
+			c.state->lazy_release(c.state->lazy_context, layer);
+	}
+
+	static void Collective(Context &c, uint32_t lane, uint32_t stream, uint32_t layer, uint32_t phase)
+	{
+		c.state->layer_collective(CollectiveLane(c, lane), (void *)(uintptr_t)Stream(c, stream), layer, phase);
+	}
+
+	static int32_t Fence(Context &c, uint32_t waiter, uint32_t signaler)
+	{
+		return K3PairFence(c.state, Stream(c, waiter), Stream(c, signaler));
+	}
+
+	static int32_t PairRound(Context &c, uint32_t lane, uint32_t producer, uint32_t consumer, uint32_t layer, uint32_t phase, uint32_t split)
+	{
+		return K3PairRound(c.state, CollectiveLane(c, lane), Stream(c, K3_STREAM_MAIN), Stream(c, producer), Stream(c, consumer), layer, phase, split);
+	}
+
+	static int32_t MlpPrefetchRound(Context &c, uint32_t layer)
+	{
+		K3L2PlanMoe(Lane(c, K3_LANE_A), layer, &c.load);
+		return K3L2LoadRound(c.state, layer, 0u, &c.load, Stream(c, K3_STREAM_MAIN));
+	}
+
+	static int32_t AttentionPrefetchRound(Context &c, uint32_t offset, uint32_t layer, uint32_t layer_count)
+	{
+		c.load.count = 0u;
+		if ( offset + 1u < layer_count )
+		{
+			K3LayerBuffers next = *Lane(c, K3_LANE_A);
+			K3BindLayer(&c.weights[offset + 1u], &next);
+			K3L2PlanAttention(&next, layer + 1u, &c.load);
+		}
+		return K3L2LoadRound(c.state, layer, 1u, &c.load, Stream(c, K3_STREAM_MAIN));
+	}
+
+	static void Tap(Context &c, uint32_t lane, uint32_t layer, uint32_t row_offset, uint32_t stream)
+	{
+		const K3SliceState *state = c.state;
+		const K3LayerBuffers *b = Lane(c, lane);
+		const uint32_t rows = c.rows[lane];
+		if ( state->tap_slab != 0 && state->tap_output[layer] >= 0 )
+			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0,
+				Stream(c, stream), b->attnres_partial_bf16, state->tap_slab + (uint64_t)row_offset * state->tap_row_stride +
+				((uint64_t)state->tap_output[layer] * K3_HIDDEN), rows, K3_HIDDEN, state->tap_row_stride);
+	}
+
+	static void CopyRows(Context &c, uint32_t lane, uint32_t stream)
+	{
+		const K3LayerBuffers *b = Lane(c, lane);
+		const uint32_t rows = c.rows[lane];
+		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0,
+			Stream(c, stream), b->attnres_partial_bf16, b->hidden_bf16, rows, K3_HIDDEN);
+	}
+};
+
+template<class Format, class Geometry>
+static void K3CudaContext(typename K3Cuda<Format,Geometry>::Context *c, const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *a,
+	K3LayerBuffers *b, uint32_t rows_a, uint32_t rows_b, uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context,
+	uint32_t multiprocessors, cudaStream_t stream)
+{
+	memset(c, 0, sizeof(*c));
+	c->weights = weights;
+	c->state = state;
+	c->buffers[K3_LANE_A] = a;
+	c->buffers[K3_LANE_B] = b;
+	c->streams[K3_STREAM_MAIN] = stream;
+	c->rows[K3_LANE_A] = rows_a;
+	c->rows[K3_LANE_B] = rows_b;
+	c->sequences = sequences;
+	c->commit = commit;
+	c->packed_rows = packed_rows;
+	c->context = context;
+	c->multiprocessors = multiprocessors;
+}
+
+template<class Format, class Geometry>
+static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
+{
+	typename K3Cuda<Format,Geometry>::Context c;
+	K3CudaContext<Format,Geometry>(&c, weights, state, buffers, (K3LayerBuffers *)0, rows, 0u, sequences, commit, packed_rows, context, multiprocessors,
+		stream);
+	return(K3Schedule<K3Cuda<Format,Geometry>>::Slice(c, first_layer, layer_count));
 }
 
 template<class Format, class Geometry>
 static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *a, K3LayerBuffers *b, uint32_t first_layer, uint32_t layer_count, uint32_t rows_a, uint32_t rows_b, uint32_t commit, uint32_t multiprocessors, cudaStream_t stream)
 {
-	void *const lane_a = state->collective_context;
-	void *const lane_b = state->collective_pair_context;
-	const cudaStream_t sa = (cudaStream_t)state->pair_stream_a;
-	const cudaStream_t sb = (cudaStream_t)state->pair_stream_b;
-	const uint32_t total = rows_a + rows_b;
-	const uint32_t row_shard = first_layer == 0u && layer_count == K3_LAYERS && a->attnres_score_f32 != 0 && b->attnres_score_f32 != 0 ? K3_COLLECTIVE_ROWS : 0u;
-	uint32_t offset, layer = first_layer;
-	int32_t status = LM_LAUNCH_OK;
-	if ( K3PairReady(state,a,b,rows_a,rows_b) == 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
-#define K3_PAIR_DO(call) do { if ( status == LM_LAUNCH_OK ) status = (call); } while ( 0 )
-	K3_PAIR_DO(K3PairFence(state,sa,stream));
-	K3_PAIR_DO(K3PairFence(state,sb,stream));
-	for (offset = 0u; offset < layer_count && status == LM_LAUNCH_OK; ++offset)
-	{
-		layer = first_layer + offset;
-		if ( layer >= K3_LAYERS )
-			return(K3SliceFailure(layer,"shape",LM_LAUNCH_ERR_SHAPE));
-		K3BindLayer(&weights[offset],a);
-		K3BindLayerState(state,layer,a);
-		K3BindLayer(&weights[offset],b);
-		K3BindLayerState(state,layer,b);
-		K3PairPre(a,layer,rows_a,row_shard,sa);
-		if ( K3_LAYER_KIND(layer) == LM_LAYER_RECURRENT )
-			K3_PAIR_DO(K3LayerKda<Format>(a,rows_a,1u,commit,(uint16_t *)0,multiprocessors,sa));
-		else
-			K3_PAIR_DO((K3LayerMlaQuery<Format,Geometry>(a,rows_a,multiprocessors,sa)));
-		K3_PAIR_DO(K3PairFence(state,sb,sa));
-		if ( K3_LAYER_KIND(layer) == LM_LAYER_RECURRENT )
-		{
-			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,row_shard,0u));
-			K3PairPre(b,layer,rows_b,row_shard,sb);
-			K3_PAIR_DO(K3LayerKda<Format>(b,rows_b,1u,commit,(uint16_t *)0,multiprocessors,sb));
-		}
-		else
-		{
-			K3PairPre(b,layer,rows_b,row_shard,sb);
-			K3_PAIR_DO((K3LayerMlaQuery<Format,Geometry>(b,rows_b,multiprocessors,sb)));
-			K3_PAIR_DO(K3LayerMlaGatherPack<Geometry>(a,rows_a,sb));
-			a->shard_gather_window = 0u;
-			if ( a->shard_gather_prefetched != 0u )
-				K3_PAIR_DO(K3PairFence(state,stream,sb));
-			else
-				K3_PAIR_DO(K3PairRound(state,lane_a,stream,sb,0,layer,K3_COLLECTIVE_MLA_KEYS,1u));
-			a->shard_gather_prefetched = 0u;
-			K3_PAIR_DO(K3LayerMlaGate(a,rows_a,multiprocessors,sa));
-			K3_PAIR_DO(K3PairFence(state,sa,stream));
-			K3_PAIR_DO(K3LayerMlaGate(b,rows_b,multiprocessors,sb));
-			if ( K3LayerMlaPasses(a) <= 1u )
-			{
-				K3_PAIR_DO(K3PairFence(state,sb,stream));
-				if ( a->shard_gather_expanded != 0u )
-					K3_PAIR_DO(K3LayerMlaExpandValues(a,rows_a,0u,sa));
-				K3_PAIR_DO(K3LayerMlaGatherPartials<Geometry>(a,rows_a,0u,sa));
-				K3_PAIR_DO(K3LayerMlaGatherMerge(a,rows_a,sa));
-				K3_PAIR_DO(K3LayerMlaOutput<Format>(a,rows_a,(uint16_t *)0,1u,multiprocessors,sa));
-				K3_PAIR_DO(K3PairFence(state,sb,sa));
-				K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,row_shard,0u));
-				K3_PAIR_DO(K3LayerMlaGatherPartials<Geometry>(b,rows_b,0u,sb));
-				K3_PAIR_DO(K3LayerMlaGatherMerge(b,rows_b,sb));
-				K3_PAIR_DO(K3LayerMlaOutput<Format>(b,rows_b,(uint16_t *)0,1u,multiprocessors,sb));
-			}
-			else
-			{
-				K3_PAIR_DO(K3PairMlaWindows<Geometry>(state,lane_a,a,b,layer,rows_a,rows_b,stream,sa,sb));
-				K3_PAIR_DO(K3LayerMlaShardFinish(a,rows_a,sa));
-				K3_PAIR_DO(K3LayerMlaOutput<Format>(a,rows_a,(uint16_t *)0,1u,multiprocessors,sa));
-				K3_PAIR_DO(K3PairFence(state,sb,sa));
-				K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,row_shard,0u));
-				K3_PAIR_DO(K3LayerMlaShardFinish(b,rows_b,sb));
-				K3_PAIR_DO(K3LayerMlaOutput<Format>(b,rows_b,(uint16_t *)0,1u,multiprocessors,sb));
-			}
-		}
-		K3_PAIR_DO(K3PairRound(state,lane_b,stream,sb,sb,layer,row_shard,0u));
-		if ( status != LM_LAUNCH_OK )
-			return(K3SliceFailure(layer,"pair-attention",status));
-		a->attnres_next_weight = offset + 1u < layer_count ? weights[offset + 1u].attnres_attn_weight : a->attnres_out_weight;
-		b->attnres_next_weight = offset + 1u < layer_count ? weights[offset + 1u].attnres_attn_weight : b->attnres_out_weight;
-		if ( row_shard == 0u )
-			K3AttnRes(a,a->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_a,sa);
-		if ( layer < K3_FIRST_ROUTED_LAYER )
-		{
-			K3_PAIR_DO(K3LayerDenseMlp<Format>(a,rows_a,multiprocessors,sa));
-			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,1u | row_shard,0u));
-			if ( row_shard == 0u )
-				K3AttnRes(b,b->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_b,sb);
-			K3_PAIR_DO(K3LayerDenseMlp<Format>(b,rows_b,multiprocessors,sb));
-			K3_PAIR_DO(K3PairRound(state,lane_b,stream,sb,sb,layer,1u | row_shard,0u));
-			if ( status != LM_LAUNCH_OK )
-				return(K3SliceFailure(layer,"pair-dense",status));
-		}
-		else
-		{
-			K3_PAIR_DO(K3LayerLatentMoe<Format>(a,rows_a,rows_a * K3_TOP_K,multiprocessors,sa,0u));
-			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,0,layer,2u,1u));
-			K3_PAIR_DO(K3LayerSharedUp<Format>(a,rows_a,a->shared_mid_bf16,multiprocessors,sa));
-			K3_PAIR_DO(K3PairFence(state,sa,stream));
-			if ( row_shard == 0u )
-				K3AttnRes(b,b->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_b,sb);
-			K3_PAIR_DO(K3LayerLatentMoe<Format>(b,rows_b,rows_b * K3_TOP_K,multiprocessors,sb,0u));
-			K3_PAIR_DO(K3PairRound(state,lane_b,stream,sb,0,layer,2u,1u));
-			K3_PAIR_DO(K3LayerSharedUp<Format>(b,rows_b,b->shared_mid_bf16,multiprocessors,sb));
-			K3_PAIR_DO(K3PairFence(state,sa,stream));
-			K3_PAIR_DO(K3PairFence(state,sa,sb));
-			if ( status == LM_LAUNCH_OK && offset + 1u < layer_count && K3_LAYER_KIND(layer + 1u) == LM_LAYER_LATENT &&
-				a->shard_gather != 0u && a->shard_gather_windows > 1u && a->shard_gather_history != 0u )
-			{
-				K3_PAIR_DO(K3LayerMlaPrefetchPack<Geometry>(a,rows_a,state->mla_cache[((layer + 1u) / 4u) - state->first_mla_index],1u,sb));
-				a->shard_gather_window = 0u;
-				K3_PAIR_DO(K3PairRound(state,lane_a,stream,sb,0,layer + 1u,K3_COLLECTIVE_MLA_KEYS,1u));
-				if ( status == LM_LAUNCH_OK )
-					a->shard_gather_prefetched = 1u;
-			}
-			K3_PAIR_DO(K3LayerMoeSelect(a,total,total * K3_TOP_K,sa));
-			if ( status == LM_LAUNCH_OK && state->lazy_acquire != 0 )
-				status = state->lazy_acquire(state->lazy_context,layer,(void *)a);
-			K3_PAIR_DO(K3LayerLatentMoe<Format>(a,total,total * K3_TOP_K,multiprocessors,sa,1u));
-			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,3u,1u));
-			K3_PAIR_DO(K3LayerSharedDown<Format>(b,rows_b,b->shared_mid_bf16,multiprocessors,sb));
-			K3_PAIR_DO(K3PairRound(state,lane_b,stream,sa,sb,layer,3u,1u));
-			K3_PAIR_DO(K3LayerSharedDown<Format>(a,rows_a,a->shared_mid_bf16,multiprocessors,sa));
-			K3_PAIR_DO(K3LayerLatentMoe<Format>(a,rows_a,rows_a * K3_TOP_K,multiprocessors,sa,2u));
-			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,1u | row_shard,0u));
-			K3_PAIR_DO(K3LayerLatentMoe<Format>(b,rows_b,rows_b * K3_TOP_K,multiprocessors,sb,2u));
-			K3_PAIR_DO(K3PairRound(state,lane_b,stream,sb,sb,layer,1u | row_shard,0u));
-			if ( status != LM_LAUNCH_OK )
-				return(K3SliceFailure(layer,"pair-routed",status));
-		}
-		if ( state->lazy_release != 0 )
-			state->lazy_release(state->lazy_context,layer);
-		if ( row_shard == 0u && state->tap_slab != 0 && state->tap_output[layer] >= 0 )
-		{
-			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows_a), K3_LAYER_THREADS, 0, sa,
-				a->attnres_partial_bf16,state->tap_slab + ((uint64_t)state->tap_output[layer] * K3_HIDDEN),rows_a,K3_HIDDEN,state->tap_row_stride);
-			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows_b), K3_LAYER_THREADS, 0, sb,
-				b->attnres_partial_bf16,state->tap_slab + (uint64_t)rows_a * state->tap_row_stride + ((uint64_t)state->tap_output[layer] * K3_HIDDEN),rows_b,K3_HIDDEN,state->tap_row_stride);
-		}
-	}
-	if ( status != LM_LAUNCH_OK )
-		return(K3SliceFailure(layer,"pair",status));
-	if ( first_layer + layer_count == K3_LAYERS )
-	{
-		if ( row_shard == 0u )
-		{
-			K3AttnRes(a,a->attnres_out_weight,((K3_LAYERS - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_a,sa);
-			K3AttnRes(b,b->attnres_out_weight,((K3_LAYERS - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_b,sb);
-		}
-	}
-	else
-	{
-		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>),
-			dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows_a),
-			K3_LAYER_THREADS, 0, sa,
-			a->attnres_partial_bf16,a->hidden_bf16,rows_a,K3_HIDDEN);
-		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>),
-			dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows_b),
-			K3_LAYER_THREADS, 0, sb,
-			b->attnres_partial_bf16,b->hidden_bf16,rows_b,K3_HIDDEN);
-	}
-	K3_PAIR_DO(K3PairFence(state,stream,sa));
-	K3_PAIR_DO(K3PairFence(state,stream,sb));
-#undef K3_PAIR_DO
-	return(status);
+	typename K3Cuda<Format,Geometry>::Context c;
+	K3CudaContext<Format,Geometry>(&c, weights, state, a, b, rows_a, rows_b, 1u, commit, 0u, 0u, multiprocessors, stream);
+	c.streams[K3_STREAM_A] = (cudaStream_t)state->pair_stream_a;
+	c.streams[K3_STREAM_B] = (cudaStream_t)state->pair_stream_b;
+	return(K3Schedule<K3Cuda<Format,Geometry>>::SlicePair(c, first_layer, layer_count));
 }
 
 template<class Format, class Geometry>
@@ -775,45 +638,10 @@ static int32_t K3LaunchSliceHalf(const K3LayerWeights *weights, const K3SliceSta
 	uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context,
 	uint32_t multiprocessors, cudaStream_t stream)
 {
-	int32_t status;
-	uint32_t boundary = (layer % K3_ATTNRES_BLOCK_SIZE) == 0u ? 1u : 0u;
-	if ( phase == 0u )
-	{
-		K3BindLayer(weights,buffers);
-		K3BindLayerState(state,layer,buffers);
-		if ( layer > 0u )
-			K3AttnRes(buffers,buffers->attnres_attn_weight,
-				((layer - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
-		if ( boundary != 0u )
-		{
-			if ( layer == 0u )
-				K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
-			K3BankStore(buffers,layer / K3_ATTNRES_BLOCK_SIZE,rows,stream);
-		}
-		status = K3LaunchAttentionHalf<Format,Geometry>(state,buffers,layer,rows,sequences,commit,
-			boundary != 0u ? (uint16_t *)0 : buffers->attnres_partial_bf16,context,
-			multiprocessors,stream);
-		if ( status != LM_LAUNCH_OK )
-			return(status);
-		if ( boundary != 0u && buffers->tp_sharded == 0u )
-			K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
-		return(LM_LAUNCH_OK);
-	}
-	if ( layer < K3_FIRST_ROUTED_LAYER )
-	{
-		K3AttnRes(buffers,buffers->attnres_mlp_weight,
-			(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
-		return(K3LayerDenseMlp<Format>(buffers,rows,multiprocessors,stream));
-	}
-	if ( phase == 1u )
-	{
-		K3AttnRes(buffers,buffers->attnres_mlp_weight,
-			(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
-		return(K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,0u));
-	}
-	if ( phase == 2u )
-		return(K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u));
-	return(K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,2u));
+	typename K3Cuda<Format,Geometry>::Context c;
+	K3CudaContext<Format,Geometry>(&c, weights, state, buffers, (K3LayerBuffers *)0, rows, 0u, sequences, commit, packed_rows, context, multiprocessors,
+		stream);
+	return(K3Schedule<K3Cuda<Format,Geometry>>::SliceHalf(c, layer, phase));
 }
 
 template<class Format>
@@ -836,7 +664,7 @@ static int32_t K3FoldAccepted(const K3LayerWeights *weights, const K3SliceState 
 		return(LM_LAUNCH_ERR_SHAPE);
 	for (layer = first_layer; layer < first_layer + layer_count; ++layer)
 	{
-		if ( K3_LAYER_KIND(layer) != LM_LAYER_RECURRENT )
+		if ( !K3Layout::Kda(layer) )
 			continue;
 		K3BindLayer(&weights[layer - first_layer],buffers);
 		K3BindLayerState(state,layer,buffers);

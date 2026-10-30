@@ -1134,21 +1134,72 @@ and the multidev docs on 2026-09-28. Line numbers are in
   formulas they share are moving into `inference/kernels/kernel_math.cuh`
   ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#shared-kernel-math)):
   bf16 conversion, sigmoid and SiLU (29 CUDA copies), softplus with the
-  gated-delta decay, the tanh GeLU and the softcap are there. Still a copy
-  per kernel or per backend:
-  - RMSNorm scales, rotary angles and rotation, the delta-rule cell update,
+  gated-delta decay, the head-gate softplus, the tanh GeLU, the softcap,
+  the RMS scale, the rotary rotation, the KDA layers' bounded decay
+  (`SparkMathBoundedDecay`) and the clamped GLU (`SparkMathClampedGlu`,
+  `LmSiluMulLimitKernel`) are there. Still a copy per kernel or per backend:
+  - `LingSiluClampPackedKernel` writes the clamped GLU out: it clamps the up
+    value before the SiLU, and calling `SparkMathClampedGlu` reorders those
+    instructions (same values, different code), so it keeps its text until
+    a CUDA change with its own qualification takes the shared one;
+  - the gate-limited GLU (`SparkMathGateLimitedGlu`, K-EXAONE's last 16
+    layers: the gate clamped above before the SiLU, the up value to
+    `+-limit`) is Metal's; CUDA's `LmSiluMulGateLimitKernel` and
+    `LmSwigluPackedValue` (every MoE stage) compute the same values, but
+    calling the shared function loads the up value before the gate's clamp
+    and changes their PTX, so they keep their text the same way;
+  - rotary angles (CUDA's `__powf(theta, -2i/d)` in the kernel against
+    Metal's host table in double), the delta-rule cell update,
     online-softmax merges and the log-probability reduction;
-  - copies whose expression differs from the shared one, each a numerical
-    change that needs the affected model's gate: the experts' tanh GeLU in
-    `moe_local.cuh` computes `0.044715 * g * g * g`, while the shared one
-    (and PyTorch) cube first, so Gemma 4's dense and expert FFNs round
-    differently; the head-gate softplus uses `log1pf(__expf(x))`, the
-    gated delta `__logf(1 + __expf(x))`; the causal convolution's swish is
-    `x * sigmoid(x)` on CUDA and `x / (1 + exp(-x))` on Metal;
+  - the Gemma family's rotation: Metal keeps the publisher's eager rounding
+    of the rotary terms, which the reference follows, while CUDA rotates in
+    FP32 (`SparkMathRopeLow`). On Metal, CUDA's rotation took Gemma 4 26B's
+    gate from passing to paired +3.80 / +3.78 sigma, Muse Glimmer's from
+    +3.37 / passing to +5.81 / +4.33, and moved 31B only from +4.8 / +4.3
+    to +3.48 / +3.86, so the two backends differ here until
+    CUDA's Gemma path takes the eager rounding (a CUDA change with its own
+    qualification);
+  - expressions that differ inside a backend, each a numerical change that
+    needs the affected model's gate: the experts' tanh GeLU
+    (`SparkMathGeluTanhScaleFirst`, shared by both backends) multiplies
+    `0.044715 * g * g * g` from the left, while the dense one (and PyTorch)
+    cube first, so Gemma 4's dense and expert FFNs round differently; the
+    head-gate softplus (`SparkMathSoftplusGate`) uses `log1p(exp(x))`, the
+    gated delta `__logf(1 + __expf(x))`. The causal convolution's swish is
+    `SparkMathSwishFast` (`x * sigmoid(x)`) on both backends;
+  - attention softmax: both backends rescale at every new maximum. A
+    Metal-only margin of 8 (from #1605, tried as 9daff83ca and reverted)
+    moved the running maximum only past it: Gemma 4 31B then passed the
+    paired test (+0.92 / +1.65 sigma), but Gemma 4 26B (+3.86 against A) and
+    Qwen3.8-27B (+3.79 against B) fell outside it and Muse Glimmer stayed
+    outside (+3.14 against A). With CUDA's rescale, 31B (+4.8 / +4.3) and Muse
+    (+3.37 against A) fail the paired test; the attention arithmetic that
+    takes all four through, on both backends, is still open;
   - exp flavor: CUDA kernels use `__expf` in some places and `expf` in
-    others, Metal the precise functions everywhere, so the backends differ
-    by the intrinsic's error until one policy is chosen and measured;
+    others. On the M5 Ultra GPU, `metal::exp` and `metal::fast::exp` are the
+    same hardware approximation: bitwise identical over the float range and
+    on every special value, up to 3.9e-6 relative from the exact value on
+    [-87, 10), denormals flushed. So Metal already computes the fast flavor
+    everywhere. Swapping the attention softmax to `fast::exp` changes only the
+    AIR intrinsic (`air.exp.f32` to `air.fast_exp.f32`) and with it how the
+    compiler schedules the arithmetic around it, and that alone moved the
+    paired test by 2 to 4 sigma: Gemma 4 31B +4.8 to +2.0, Muse Glimmer +3.37
+    to -1.3, MiMo +3.49 to +2.23 (all to passing), Gemma 4 26B with free
+    routing +0.85 to +5.1 and Qwen3.8-27B +2.0 to +4.0 (both to failing). The
+    paired test of the models near its limit is within reach of
+    reduction-order noise; the code keeps `exp`;
   Kernel bodies (the schedules) stay per backend.
+- Every family runs one schedule for all backends
+  ([`docs/FAMILY_SCHEDULES.md`](docs/FAMILY_SCHEDULES.md)); Gemma 4 (with
+  Laguna S 2.1 on its pre-norm path), the Qwen 3.8 hybrid, MiMo 2.6 and Ling 3
+  have a Metal backend. Still open: the GLM 5.3 Full and A.X
+  K2 geometries stay in their `.cu` files until `LmRopePairing` and the
+  stagepack geometry hooks have a device-neutral home, and K3 and DeepSeek
+  V4.1 Flash keep their geometry as macros (`inference/llms/kimi_k3/config.h`,
+  the `D41_*` defines) rather than a geometry struct. The CUDA backends still
+  carry one copy of an operation per family: GQA attention with its gather,
+  split and pack-slot kernels in Gemma, MiMo, Ling and Qwen, and the routed
+  experts in six families.
 - Add rank, island and link-class descriptors and derive collective
   decomposition from the link matrix instead of a configured backend.
 - Keep the host backend as a CI oracle for common policy, not only for
@@ -1266,12 +1317,56 @@ Metal backend and the single-Studio stage are in
 - The kernel library builds with Metal 4.0 and its prefill GEMM uses the
   Metal 4 tensor operations, so it loads only on Apple family 10 GPUs (M5).
   Another Studio generation needs its own qualified kernel set.
-- Two models have device stages, Qwen3.8-27B and Gemma 4 26B A4B; each is a
-  shape, a tensor list and a layer schedule over the device stage and layer
-  kinds (`inference/runner/device_stage_model.c`, `device_layers.c`), plus a
-  TP1 pack and its own gates. Next, one at a time and each merged before the
-  next starts: Gemma 4 31B, Muse Glimmer 30B, MiMo V2.6 Flash, Qwen 3.8
-  Flash Next.
+- A model larger than the Studio's memory (Laguna's eight TP8 packs on one
+  M5 Ultra) pages from the SSD, and the cyclic layer order defeats the
+  page cache: a decode step pages in about 130 GB, 15 s per token. Pinning
+  a fixed share of the layers resident (wired, or kept by `madvise`) and
+  streaming only the rest would read about the overflow per step; until
+  then a simulation decodes a sample of positions
+  (`--decode-positions`). A segmented pack now binds page spans and its
+  BF16 experts only their routes' experts; with the earlier 2 GiB windows
+  Solar Open 2's decode step read the whole 502 GB pack (about 110 s per
+  token at 4.6 GB/s). The FP4 routed experts bind one expert per launch in
+  a segmented pack (`SparkDeviceRoutedFfn`), so they page only their routes'
+  experts too.
+- Routed FP4 experts (MXFP4 in MiMo V2.6 Flash, NVFP4 in Qwen 3.8 Flash)
+  still take one GEMV per route in prefill, re-reading the expert for every
+  row: MiMo prefills at about 50 tokens per second, and its gate's B64 ladder
+  spends most of an hour in batched prefill. BF16 experts group their routes
+  by expert above 64 rows (`ExpertsGroupedFfn`); the FP4 formats need a
+  grouped GEMM with the block-scaled operand (CUDA dequantizes the tile to
+  BF16 before the MMA). The grouping also reads the step's routes back to the
+  host after a queue wait; a device-side sort and a grouped GEMM over an
+  offset table would drop that sync.
+- Four models have device stages: Qwen3.8-27B (BF16 and FP8), Gemma 4 26B
+  A4B, Gemma 4 31B and Muse Glimmer 30B. Each is its family's Metal backend placed on the
+  model's TP1 geometry (`model-families/<family>/device/`, over the device
+  stage and layer kinds in `inference/runner/device_stage_model.c` and
+  `device_layers.c`), plus a TP1 pack and its own gates. In progress: MiMo
+  V2.6 Flash and Qwen 3.8 Flash Next, whose device stages are built but not
+  yet gated.
+- Qwen 3.8 Flash Next on the Studio (`QwenDevice<Qwen38FlashDevice>`):
+  - the QSA indexer is not built, so the stage refuses contexts past 2,048
+    positions. Below 2,052 the indexer keeps every block and attention is
+    dense, so nothing is lost there; longer contexts need the index key pool,
+    the block-key and tail kernels, the score and top-512 selection and a
+    block mask in the attention kernels;
+  - speculation replays the n-gram conv window and token history for the
+    kept rows from the verify step's saved conv input; it is exact only if
+    a speculative run's tokens equal plain decoding's, which the gate checks
+    once the indexer lets speculation prompts run past 2,050 positions;
+  - route overrides (pinned routes) are refused for its experts;
+  - the NVFP4 experts take CUDA's skinny decode arithmetic at every row
+    count; CUDA switches to a BF16-dequantised GEMM once a step routes more
+    than 16 rows per expert (820 rows at TP1), so long prefill chunks differ
+    from CUDA by that operand rounding, and run slower than a grouped GEMM.
+- FP8 projections between 3 and 16 rows. `SparkOpsLinearFp8` keeps CUDA's
+  skinny arithmetic up to 16 rows (`LM_SKINNY_ROWS_WIDE`) on the FP8 GEMV,
+  in passes of eight rows. Qwen3.8-27B FP8 beats its BF16 pack up to B4 (30.2
+  against 18.1 tok/s at B1, 90.7 against 68.5 at B4) but trails at B16 (123
+  against 230), where the BF16 row tiles run on the tensor operations, and
+  speculative verify frames gain less than on BF16. An FP8 row-tile kernel
+  on the tensor operations that keeps the per-chunk scale would close it.
 - The NaN check in the shared BF16 conversion (abce321a5) costs Gemma 4
   26B A4B's B1 decode about 0.9% on the Studio (91.5 to 91.6 tok/s against
   92.2 to 92.5 without it, interleaved runs), since every BF16 store now

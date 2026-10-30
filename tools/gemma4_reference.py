@@ -409,7 +409,7 @@ def spec_prompts(args):
                                           "prompts": prompts}, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def gate_prompts(args):
+def gate_prompts(args, head_keys=("prefix", "user"), tail_keys=("turn_suffix", "generation")):
     import hashlib
     import html
     import re
@@ -418,7 +418,8 @@ def gate_prompts(args):
     template = json.loads(Path(args.template).read_text())
     tokenizer = Tokenizer.from_file(str(Path(args.checkpoint) / "tokenizer.json"))
     encode = lambda text: tokenizer.encode(text, add_special_tokens=False).ids
-    head, tail = encode(template["prefix"] + template["user"]), encode(template["turn_suffix"] + template["generation"])
+    head = encode("".join(template[key] for key in head_keys))
+    tail = encode("".join(template[key] for key in tail_keys))
     prompts = []
     for name, source, instruction, target in GATE_PROMPTS:
         path = root / source

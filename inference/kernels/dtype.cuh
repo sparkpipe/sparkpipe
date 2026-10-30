@@ -140,14 +140,12 @@ static __device__ __forceinline__ uint8_t LmFloatToUe8m0(float value)
 
 static __device__ __forceinline__ float LmUe8m0ToFloat(uint8_t value)
 {
-	return(__uint_as_float(value == 0u ? 0x00400000u : (value == 0xffu ? 0x7fffffffu : (uint32_t)value << 23u)));
+	return(SparkMathUe8m0ToFloat(value));
 }
 
 static __device__ __forceinline__ float LmE2m1ToFloatPure(uint32_t nibble)
 {
-	uint32_t exponent = (nibble >> 1u) & 3u, sign = (nibble & 8u) << 28u;
-	uint32_t magnitude = exponent != 0u ? ((exponent + 126u) << 23u) | ((nibble & 1u) << 22u) : ((nibble & 1u) != 0u ? 0x3f000000u : 0u);
-	return(__uint_as_float(sign | magnitude));
+	return(SparkMathE2m1ToFloat(nibble));
 }
 
 static __device__ __forceinline__ uint32_t LmRoundPositiveToNearestEven(
@@ -188,15 +186,7 @@ static __device__ __forceinline__ uint8_t LmFloatToUe4m3(float value)
 
 static __device__ __forceinline__ float LmUe4m3ToFloat(uint8_t value)
 {
-	uint32_t biased,mantissa;
-	value &= 0x7fu;
-	biased = (uint32_t)value >> 3u;
-	mantissa = (uint32_t)value & 7u;
-	if ( biased == 0u )
-		return(ldexpf((float)mantissa,-9));
-	if ( biased == 15u && mantissa == 7u )
-		return(LM_E4M3_MAX);
-	return(ldexpf(1.0f + ((float)mantissa / 8.0f),(int32_t)biased - 7));
+	return(SparkMathUe4m3ToFloat(value));
 }
 
 template<class T>
