@@ -7,7 +7,7 @@
 #define LM_CELL_MMA_FRAGS (LM_CELL_MMA_CELLS * 2u)
 #define LM_CELL_MMA_WARPS 4u
 #define LM_CELL_MMA_THREADS (LM_CELL_MMA_WARPS * LM_WARP_LANES)
-#define LM_CELL_MMA_CHUNKS 4u
+#define LM_CELL_MMA_CHUNKS 8u
 #define LM_CELL_MMA_ROWS (LM_CELL_MMA_CHUNKS * 16u)
 #define LM_CELL_MMA_STAGE_TILES 2u
 #define LM_CELL_MMA_STAGE_K (LM_CELL_MMA_STAGE_TILES * LM_SKINNY_CELL_TILE_K)
@@ -193,11 +193,13 @@ static __global__ __launch_bounds__(LM_CELL_MMA_THREADS) void LmCellMmaKernel(co
 	for ( ; first < end; first += count )
 	{
 		count = end - first;
-		if ( count > 3u * 16u )
+		if ( count > 4u * 16u )
 		{
-			LmCellMmaRows<4u>(args,base,tile_stride,cell_first,active,first,end < first + LM_CELL_MMA_ROWS ? end : first + LM_CELL_MMA_ROWS,stage);
-			count = LM_CELL_MMA_ROWS;
+			LmCellMmaRows<LM_CELL_MMA_CHUNKS>(args,base,tile_stride,cell_first,active,first,end < first + LM_CELL_MMA_ROWS ? end : first + LM_CELL_MMA_ROWS,stage);
+			count = count < LM_CELL_MMA_ROWS ? count : LM_CELL_MMA_ROWS;
 		}
+		else if ( count > 3u * 16u )
+			LmCellMmaRows<4u>(args,base,tile_stride,cell_first,active,first,end,stage);
 		else if ( count > 2u * 16u )
 			LmCellMmaRows<3u>(args,base,tile_stride,cell_first,active,first,end,stage);
 		else if ( count > 16u )

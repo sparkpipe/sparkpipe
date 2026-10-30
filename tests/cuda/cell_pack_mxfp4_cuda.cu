@@ -203,7 +203,7 @@ static void Run(uint32_t tokens)
 
 int main(void)
 {
-	const uint32_t rows[] = {1u, 8u, 16u, 64u, 512u};
+	const uint32_t rows[] = {1u, 8u, 16u, 64u, 512u, 2731u, 4096u};
 	for ( uint32_t i = 0; i < sizeof(rows) / sizeof(rows[0]); ++i )
 		Run(rows[i]);
 	printf("%s cell_pack_mxfp4 failures=%d\n", failures == 0 ? "PASS" : "FAIL", failures);
