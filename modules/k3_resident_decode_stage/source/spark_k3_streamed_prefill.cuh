@@ -1221,12 +1221,14 @@ static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPr
 			status = K3StreamedUpload(s->older_context_device + request->sequence_slot, small + K3_STREAMED_CHUNKS + 6u, sizeof(uint32_t), stream);
 		if ( status == SPARK_STATUS_OK )
 			status = K3StreamedUpload((void *)s->mla.older_sequence, small + K3_STREAMED_CHUNKS + 7u, sizeof(uint32_t), stream);
-		for (row = 0u; row < pass_rows && status == SPARK_STATUS_OK; row++)
-			host[row] = request->sequence_slot;
 		if ( status == SPARK_STATUS_OK && cudaStreamSynchronize(stream) != cudaSuccess )
 			status = SPARK_STATUS_IO_ERROR;
+		for (row = 0u; row < pass_rows && status == SPARK_STATUS_OK; row++)
+			host[row] = request->sequence_slot;
 		if ( status == SPARK_STATUS_OK )
 			status = K3StreamedUpload(s->store_sequence_device, host, pass_rows * sizeof(uint32_t), stream);
+		if ( status == SPARK_STATUS_OK && cudaStreamSynchronize(stream) != cudaSuccess )
+			status = SPARK_STATUS_IO_ERROR;
 		if ( status != SPARK_STATUS_OK )
 			break;
 		s->mla.pass_rows = (uint32_t)pass_rows;

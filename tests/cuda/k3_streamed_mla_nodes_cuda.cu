@@ -9,6 +9,9 @@
 #include "tests/cuda/node_collective_emulation.cuh"
 
 #define ML_SHARDS 16u
+#ifndef ML_KEY_BLOCK
+#define ML_KEY_BLOCK 48u
+#endif
 #ifndef ML_ROWS
 #define ML_ROWS 256u
 #endif
@@ -239,8 +242,8 @@ static void MlSetup(MlNode *n,uint32_t node,uint32_t nodes,NodeEmulationWorld *w
 		}
 		if ( stored > 1u )
 		{
-			x->key_block = 48u;
-			x->expanded_keys = 48u;
+			x->key_block = ML_KEY_BLOCK;
+			x->expanded_keys = ML_KEY_BLOCK;
 			x->running = MlAlloc<float>((uint64_t)ML_PASS_ROWS * LmGqaShardRecordFloats(ML_HEADS,K3_V_HEAD_DIM,1u));
 		}
 	}
