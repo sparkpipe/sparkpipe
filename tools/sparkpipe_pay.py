@@ -790,13 +790,15 @@ class App:
             due = money(order["total"])
             arrived = None if received is None else text_money(received)
             if state != "completed":
-                moved = arrived is not None and arrived != order.get("received", "0.00")
+                before = Decimal(order.get("received") or "0")
+                first = received is not None and before == 0 and received > 0
+                moved = first or (received is not None and abs(received - before) >= Decimal(1))
                 if (state != order["state"] and order["state"] != "completed") or moved:
                     change = {"order": order_id, "invoice": order["invoice"], "state": state}
                     if arrived is not None:
                         change["received"] = arrived
                     self.book.append("invoice_state", change)
-                if moved and Decimal(0) < received < due:
+                if first and received < due:
                     self.mail(self.cfg.notify, f"Part payment: {order_id}", f"Order {order_id} for {order['total']} USD has received {arrived} USD at CoinPayments ({order['company']} <{order['email']}>). It completes only if the rest arrives, you accept the part payment in CoinPayments, or you refund it.")
                 return None
             full = total is not None and currency == USD and money(total) == due and (received is None or received + CENT >= due)

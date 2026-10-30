@@ -391,6 +391,14 @@ def part_payment_flow(failures, cfg, app, fake, buyer, mailbox):
         failures.append(f"a part payment is not shown: {shown}")
     if not any(m["Subject"] == f"Part payment: {placed['order']}" for _, m in mailbox.mail):
         failures.append("we are not told of a part payment")
+    lines = app.book.count
+    for value in ("22.97", "22.99", "22.98"):
+        fake.invoices[key]["received"] = value
+        app.reconcile()
+        app.jobs.join()
+    app.mails.join()
+    if app.book.count != lines or sum(m["Subject"] == f"Part payment: {placed['order']}" for _, m in mailbox.mail) != 1:
+        failures.append("a part payment revalued by cents writes ledger lines or mails us again")
     fake.invoices[key]["status"] = "completed"
     webhook(buyer, cfg, key)
     app.jobs.join()

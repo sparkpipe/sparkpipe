@@ -189,6 +189,10 @@
     } else if (o.state === 'mismatch') {
       title = 'We are checking this payment.'; kind = 'error';
       text = (o.received ? 'We received ' + SP.usd(o.received) + ' of ' + SP.usd(o.total) + ', so' : 'The amount we received differs from the order, so') + ' no hours were issued automatically. We will email you; you can also write to hyor@sparkpipe.ai with order ' + o.order + '.';
+    } else if (o.received && +o.received > 0) {
+      title = 'This invoice ' + (o.state === 'timedout' ? 'expired' : 'was cancelled') + '. The payment goes back to you.';
+      text = 'The ' + SP.usd(o.received) + ' that arrived is refunded: CoinPayments emails the order\u2019s address a link to claim it, and the refund reaches the wallet you give there, less the network fee. No hours were issued.';
+      actions.push(link('buy.html', 'Buy hours', 'btn solid'));
     } else {
       title = o.state === 'failed' ? 'The invoice was not created.' : 'This invoice ' + (o.state === 'timedout' ? 'expired' : 'was cancelled') + ' unpaid.';
       text = 'Nothing was charged.';
@@ -270,7 +274,8 @@
       const action = o.checkout && /^https:\/\//.test(o.checkout) ? link(o.checkout, 'Pay', 'btn small solid') : '';
       const state = document.createElement('span');
       state.className = 'state' + (o.state === 'completed' ? ' live' : OPEN.has(o.state) ? ' building' : '');
-      state.textContent = o.received && +o.received > 0 && +o.received < +o.total && OPEN.has(o.state) ? 'Part paid: ' + SP.usd(o.received) : SP.STATES[o.state] || o.state;
+      const part = o.received && +o.received > 0 && +o.received < +o.total;
+      state.textContent = part && OPEN.has(o.state) ? 'Part paid: ' + SP.usd(o.received) : part && !o.issued && (o.state === 'cancelled' || o.state === 'timedout') ? (SP.STATES[o.state] || o.state) + ', refunded' : SP.STATES[o.state] || o.state;
       return row([cell(o.order), cell(what(o)), cell(SP.usd(o.total), 'figure'), cell(SP.coinName(o.coin)), cell(state), cell(action)]);
     }));
   };
