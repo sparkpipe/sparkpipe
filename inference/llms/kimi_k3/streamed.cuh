@@ -359,6 +359,17 @@ __global__ static void K3StreamedConvTailKernel(uint16_t *window, const uint16_t
 		window[(uint64_t)channel * K3_KDA_CONV_KERNEL + tap] = input[((uint64_t)rows - K3_KDA_CONV_KERNEL + tap) * channels + channel];
 }
 
+static int32_t K3StreamedKdaRecur(const K3LayerBuffers *b, const uint16_t *value_bf16, uint16_t *output_bf16, uint32_t sequences, uint32_t commit, cudaStream_t stream)
+{
+	const uint32_t heads = K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS);
+	if ( b->kda_state_bf16 != 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	return(LmDeltaRuleChunkLaunch<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM,float>(b->kda_state_pool,(uint32_t)K3_KDA_RANK_STATE_SLOT_BYTES(heads,0u),
+		b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->key_bf16,value_bf16,b->replay_retention != 0 ? b->replay_retention : b->kda_retention,
+		b->replay_write_gate != 0 ? b->replay_write_gate : b->kda_write_gate_out,output_bf16,heads,1u,sequences,commit,b->sequence_row_indices,stream) == cudaSuccess ?
+		LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
 struct K3StreamedKdaExchange
 {
 	uint32_t node;
@@ -457,11 +468,11 @@ static int32_t K3StreamedKdaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 		if ( status != LM_LAUNCH_OK || cudaMemsetAsync(x->ends,0,(size_t)(slot_bytes * x->chunks),stream) != cudaSuccess )
 			return(status != LM_LAUNCH_OK ? status : LM_LAUNCH_ERR_LAUNCH);
 		b->kda_state_pool = (uint8_t *)x->ends;
-		status = K3LayerKdaRecur(b,b->value_bf16,x->scratch,x->chunks,1u,stream);
+		status = K3StreamedKdaRecur(b,b->value_bf16,x->scratch,x->chunks,1u,stream);
 		K3StreamedStateIdentityKernel<<<(uint32_t)((slot_floats * x->chunks + 255u) / 256u),256u,0,stream>>>(x->transforms,(uint64_t)heads * x->chunks);
 		b->kda_state_pool = (uint8_t *)x->transforms;
 		if ( status == LM_LAUNCH_OK )
-			status = K3LayerKdaRecur(b,x->zeros,x->scratch,x->chunks,1u,stream);
+			status = K3StreamedKdaRecur(b,x->zeros,x->scratch,x->chunks,1u,stream);
 		if ( status == LM_LAUNCH_OK )
 			status = K3StreamedFold(x->transforms,x->ends,x->running,x->summary_send,heads,x->chunks,slot_floats,stream);
 		if ( status == LM_LAUNCH_OK )
@@ -490,7 +501,7 @@ static int32_t K3StreamedKdaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 			K3StreamedStateComposeKernel<<<dim3(heads,K3_KDA_KEY_DIM),K3_KDA_VALUE_DIM,0,stream>>>(x->transforms + (uint64_t)(chunk - 1u) * slot_floats,
 				x->incoming + (uint64_t)(chunk - 1u) * slot_floats,x->ends + (uint64_t)(chunk - 1u) * slot_floats,x->incoming + (uint64_t)chunk * slot_floats);
 		b->kda_state_pool = (uint8_t *)x->incoming;
-		status = K3LayerKdaRecur(b,b->value_bf16,b->attention_out_bf16,x->chunks,0u,stream);
+		status = K3StreamedKdaRecur(b,b->value_bf16,b->attention_out_bf16,x->chunks,0u,stream);
 		if ( status != LM_LAUNCH_OK )
 			break;
 		status = K3LayerKdaGate(b,rows,stream);
