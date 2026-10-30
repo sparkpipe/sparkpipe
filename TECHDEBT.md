@@ -298,7 +298,9 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   1M prompt on one 16-node fleet cannot share it with decode. The drafter tap
   stream gets no hidden states for the deferred span, only for the waves
   after it, so a drafter that builds its context from taps drafts without
-  the span.
+  the span. The waves after the span (up to 2,048 tokens) lease the experts
+  of every layer from weightd one layer at a time with no read-ahead, about
+  36 s a wave at 1M context.
 - Kimi K3's prefill attention expands the values but keeps the keys latent
   (576 wide), so each head and key pair costs 1,408 FLOPs where expanded
   keys (192 wide) would cost 640. At 250K positions MLA attention is about

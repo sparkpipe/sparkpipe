@@ -432,7 +432,7 @@ corrupted run hides in it; pinned, the floor is 0.063:
 | --- | --- |
 | Sharding | each node holds 1/16 of a sequence's MLA latent, split by context |
 | Windows | K3 and GLM 5.3 Full 1,048,576 tokens on pools of 20,480 pages of 64 tokens per node (2.1 and 7.3 GiB); a needle at 998K (K3) and 1.01M (GLM 5.3 Full) is found after a cold prefill of 66 and 55 minutes |
-| K3 1M prompt, prefill-only fleet | 990,879 tokens with a needle at the middle: streamed prefill 19.8 minutes (1,188.7 s, two passes of 32,768 rows a node), answer found 23.4 minutes after the request; the 16 nodes serve no decode meanwhile |
+| K3 1M prompt, prefill-only fleet | 990,879 tokens with a needle at the middle: streamed prefill 18.4 minutes (1,105.9 s, two passes of 32,768 rows a node), then the last 1,695 tokens as one 36 s wave; answer found 19.4 minutes after the request; the 16 nodes serve no decode meanwhile |
 | Pages | lanes share one physical page pool; pages beyond it park on NVMe |
 | K3 follow-up turn, cached prefix | 4.7-5.1 s at 137.7K (299-316 s cold); 8.0 s for 1,872 new tokens at 337K (982 s cold) |
 | Prefix restored after a model swap | 137,600 tokens in 2.7 s |
