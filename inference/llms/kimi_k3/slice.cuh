@@ -109,7 +109,7 @@ struct K3SliceState
 	void *load_fork;
 	void *load_join;
 	void *lazy_context;
-	int32_t (*lazy_acquire)(void *context, uint32_t layer, void *buffers);
+	int32_t (*lazy_acquire)(void *context, uint32_t layer, void *buffers, void *stream);
 	void (*lazy_release)(void *context, uint32_t layer);
 };
 
@@ -413,7 +413,7 @@ static int32_t K3LaunchCellsMoe(const K3SliceState *state, K3LayerBuffers *buffe
 	if ( status == LM_LAUNCH_OK )
 		status = K3LayerMoeSelect(buffers,rows,packed_rows,stream);
 	if ( status == LM_LAUNCH_OK && state->lazy_acquire != 0 )
-		status = state->lazy_acquire(state->lazy_context,layer,(void *)buffers);
+		status = state->lazy_acquire(state->lazy_context,layer,(void *)buffers,(void *)stream);
 	if ( status == LM_LAUNCH_OK )
 		status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u);
 	if ( status != LM_LAUNCH_OK )
@@ -479,7 +479,7 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		{
 			status = K3LayerMoeRoute<Format>(buffers,rows,packed_rows,multiprocessors,stream);
 			if ( status == LM_LAUNCH_OK )
-				status = state->lazy_acquire(state->lazy_context,layer,(void *)buffers);
+				status = state->lazy_acquire(state->lazy_context,layer,(void *)buffers,(void *)stream);
 			if ( status == LM_LAUNCH_OK )
 				status = K3LayerMoeWeighted<Format>(buffers,rows,packed_rows,multiprocessors,stream,0u);
 			if ( status == LM_LAUNCH_OK && state->layer_collective != 0 )
@@ -753,7 +753,7 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 			}
 			K3_PAIR_DO(K3LayerMoeSelect(a,total,total * K3_TOP_K,sa));
 			if ( status == LM_LAUNCH_OK && state->lazy_acquire != 0 )
-				status = cudaStreamSynchronize(sa) == cudaSuccess ? state->lazy_acquire(state->lazy_context,layer,(void *)a) : LM_LAUNCH_ERR_LAUNCH;
+				status = state->lazy_acquire(state->lazy_context,layer,(void *)a,(void *)sa);
 			K3_PAIR_DO(K3LayerLatentMoe<Format>(a,total,total * K3_TOP_K,multiprocessors,sa,1u));
 			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,3u,1u));
 			K3_PAIR_DO(K3LayerSharedDown<Format>(b,rows_b,b->shared_mid_bf16,multiprocessors,sb));

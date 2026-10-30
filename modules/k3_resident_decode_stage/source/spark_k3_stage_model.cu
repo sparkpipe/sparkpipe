@@ -742,7 +742,7 @@ static uint32_t K3ModelPublished(void *context)
 	return state->services->published(state->services->context);
 }
 
-static int32_t K3ModelLazyAcquire(void *context, uint32_t layer, void *buffers_void)
+static int32_t K3ModelLazyAcquire(void *context, uint32_t layer, void *buffers_void, void *stream)
 {
 	SparkK3ModelState *state = (SparkK3ModelState *)context;
 	K3LayerBuffers *buffers = (K3LayerBuffers *)buffers_void;
@@ -750,6 +750,8 @@ static int32_t K3ModelLazyAcquire(void *context, uint32_t layer, void *buffers_v
 	SparkStatus status;
 	if ( state == 0 || buffers == 0 || layer >= K3_LAYERS )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	status = state->services->expert_weights(state->services->context, layer, buffers->group_row_offset,
 		state->rows * K3_TOP_K, &w1, &w2);
 	if ( status != SPARK_STATUS_OK )
