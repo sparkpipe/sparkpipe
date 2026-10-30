@@ -115,8 +115,8 @@ request, so edits need no restart.
 ## Mail
 
 The service sends the sign-in codes, receipts and notes through
-`SPARKPIPE_PAY_SMTP` (default `127.0.0.1:25`, the VPS's own mail server,
-which the SPF record for sparkpipe.ai already names) as
+`SPARKPIPE_PAY_SMTP` (default `127.0.0.1:25`, the VPS's own mail server
+in `docs/VPS_MAIL.md`, which the SPF record for sparkpipe.ai already names) as
 `SPARKPIPE_PAY_MAIL_FROM` with replies to `SPARKPIPE_PAY_NOTIFY`. A code
 that cannot be sent is an error on the page; a receipt that cannot be sent
 is logged.
@@ -195,7 +195,8 @@ library.
 Only what is merged to `main` goes to the VPS: commit to a PR, run the
 tests, merge, then deploy `main`. Pages, the service and the host
 configuration in `deployment/vps` all go the same way; nothing is edited
-on the host alone.
+on the host alone except the mail address lists, passwords and keys that
+`docs/VPS_MAIL.md` keeps out of the public repository.
 
 ```sh
 git fetch origin main
