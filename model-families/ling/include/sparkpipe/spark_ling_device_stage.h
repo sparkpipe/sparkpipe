@@ -8,6 +8,7 @@ extern "C" {
 #endif
 
 const SparkStageRunnerModelInterface *SparkLing3FlashDeviceStageModelAt(uint32_t tp_degree);
+const SparkStageRunnerModelInterface *SparkSolarOpen2DeviceStageModelAt(uint32_t tp_degree);
 
 #ifdef __cplusplus
 }

@@ -579,12 +579,13 @@ SparkStatus SparkOpsLinear(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTe
 	SparkGemvParams chunk;
 	SparkStatus status;
 	uint32_t done;
-	const uint32_t gemv = params->projection == SPARK_PROJECTION_GEMV && (params->rows <= SPARK_OPS_GEMV_MAX_ROWS || params->row_exact != 0u) ? 1u : 0u;
+	const uint32_t gemv = (params->projection == SPARK_PROJECTION_GEMV && (params->rows <= SPARK_OPS_GEMV_MAX_ROWS || params->row_exact != 0u)) ||
+		K % SPARK_GEMM_ROWS_DEPTH != 0u ? 1u : 0u;
 	if ( params->rows == 0u || K == 0u || N == 0u || K % 8u != 0u || params->input_stride % 8u != 0u || params->input_stride < K ||
-		(gemv == 0u && K % SPARK_GEMM_ROWS_DEPTH != 0u) || (params->projection != SPARK_PROJECTION_GEMV && params->projection != SPARK_PROJECTION_ROW_TILES) ||
+		(params->projection != SPARK_PROJECTION_GEMV && params->projection != SPARK_PROJECTION_ROW_TILES) ||
 		(params->projection == SPARK_PROJECTION_ROW_TILES && params->row_exact != 0u && params->rows > SPARK_OPS_DECODE_MAX_ROWS) )
-		return(OpsRefuse("linear","a known projection family, an input width that is a multiple of 8 (of the row-tile depth above the GEMV rows), "
-			"a stride that covers it, and row-exact frames of at most the decode rows on row tiles"));
+		return(OpsRefuse("linear","a known projection family, an input width that is a multiple of 8, a stride that covers it, "
+			"and row-exact frames of at most the decode rows on row tiles"));
 	status = OpsNeed("linear","input",x,OpsRowsBytes(params->rows,params->input_stride,K,2u));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("linear","weight",w,(uint64_t)N * K * sizeof(uint16_t));

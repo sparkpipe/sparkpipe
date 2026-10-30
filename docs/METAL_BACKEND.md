@@ -89,7 +89,7 @@ tensor sizes before each launch.
 | `spark_head_rmsnorm_rope` | per-head RMSNorm (or, `plain`, no norm at all) with an optional FP32 gain and an optional multiplier applied after the norm's BF16 rounding and rounded again (CUDA's `head_multiply`), then rotary embedding over the head's first `rope_dimension` dimensions with rotate-half pairs or, `interleaved`, adjacent pairs `(2i, 2i + 1)` (CUDA's `LM_ROPE_INTERLEAVED`), written at `output_head_stride` per head when that is set (latent attention ropes 64 dimensions of each 192-wide query head straight into its 576-wide packed row), a table of up to 256 inverse frequencies (a zero frequency leaves its pair as it is; YaRN fills it from `SparkRopePlanBuildYarnInvFrequency`), cos and sin times the rope scale, and either one FP32 rotation rounded once, CUDA's `LmRopePair` (`SparkMathRopeLow`, `SparkMathRopeHigh`), or the publisher's eager rounding (`bf16(bf16(x bf16(cos)) + bf16(p bf16(sin)))`), which the Gemma family keeps |
 | `spark_rmsnorm_branches` | sandwich norms: `h = bf16(h + bf16(rms(a) w))`, or with two branches `c = bf16(bf16(rms(a) w1) + bf16(rms(b) w2))` and `h = bf16(h + bf16(rms(c) w))`, then optionally `bf16(h * scalar)` |
 | `spark_rmsnorm_scaled` | `bf16(bf16(bf16(rms(x)) s) c)`: a weightless norm, a per-channel scale and a constant, each rounded (an expert router's input) |
-| `spark_gemv_r{1,2,4,8}`, `spark_gemv_f32_r*` | the GEMV family's projections for one or two rows, and its verify frames in passes of up to eight rows: BF16 weights `[N, K]`, 4, 4, 2 and 1 outputs per threadgroup at 1, 2, 4 and 8 rows, the inner dimension split across the threadgroup's four SIMD groups, FP32 accumulation, BF16 or FP32 out |
+| `spark_gemv_r{1,2,4,8}`, `spark_gemv_f32_r*` | the GEMV family's projections for one or two rows, its verify frames, and any projection whose inner dimension is not a multiple of the 64-wide row-tile depth (Solar Open 2's 160-wide expert slices at TP8), in passes of up to eight rows: BF16 weights `[N, K]`, 4, 4, 2 and 1 outputs per threadgroup at 1, 2, 4 and 8 rows, the inner dimension split across the threadgroup's four SIMD groups, FP32 accumulation, BF16 or FP32 out |
 | `spark_gemm_rows16`, `spark_gemm_rows32`, `spark_gemm_reduce` | decode projections for 3 to 64 rows on the tensor operations: 128 outputs per threadgroup, the weights staged through threadgroup memory 64 inputs at a time with the next slice prefetched into registers, the inner dimension split so the launch has about 1,024 threadgroups, FP32 partials summed in split order by the reduce kernel |
 | `spark_gemv_fp8_r{1,2,4,8}`, `spark_dequant_fp8` | E4M3 projections with an FP32 scale per row and 128 inputs (`SparkOpsLinearFp8`), the two forms CUDA uses: up to 16 rows, and for any row-exact frame, CUDA's skinny arithmetic (each 16-weight chunk decoded once through a 256-entry threadgroup table filled from `SparkMathE4m3ToFloat`, summed per row by a sequential FMA chain, then added to the FP32 accumulator by one FMA with its block scale); above 16 rows the weights are first dequantised to `bf16(e4m3 x scale)`, CUDA's GEMM operand, and the BF16 projection runs on them |
 | `spark_gemm`, `spark_gemm_f32` | prefill projections on the Metal 4 tensor operations (`matmul2d`, 128 x 64 tiles, FP32 accumulation, relaxed precision off) |
@@ -825,3 +825,25 @@ chat turn with thinking off, by `tools/ling3_reference.py gate-prompts`).
 splits every matmul into 1,024-wide chunks summed last first, reverses the
 norms', recurrent dot products' and softmax sums, and combines the routed
 experts in descending order. The controls corrupt `kda_out`.
+
+### Solar Open 2 on eight ranks
+
+Solar Open 2 is the Ling family schedule's GQA layout, and the Ling Metal
+backend serves it (`SolarOpen2Device`). Every fourth layer from 0 is NoPE
+grouped-query attention, through `SparkDeviceAttention` with no rope, no
+query or key norm, a separate gate projection whose sigmoid multiplies the
+output element by element (CUDA's `LmOutputGateKernel`), and the pack's
+`gqa_*` tensor names (`tensor_prefix`). The other layers are KDA with
+low-rank decay and gate projections (rank 128) and a doubled write strength
+(`2 bf16(sigmoid(beta))`). The query and key L2 norm keeps CUDA's fixed
+`1e-6` while the gate norm takes the model's `1e-5` (`l2_epsilon`). Each
+rank holds every one of the 320 experts, split by their intermediate width
+(`tensor_parallel` in the experts shape: no routes are skipped, and the
+ranks' partial sums meet in the all-reduce). The geometry's expert and shared
+widths follow the TP degree (80 and 128 at TP16 as before, 160 and 192 at
+TP8), and `tools/solar_open2_tp16_pack.py --tp-degree` writes the packs.
+`tools/solar_open2_reference.py` gains the Ling reference's `gate-prompts` and
+FP32 `teacher` modes:
+
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh solar-open-2 PACKS/solar_open2.tp8.rank00.pack REFERENCE_DIR OUT REVISION

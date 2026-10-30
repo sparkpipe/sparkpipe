@@ -55,8 +55,9 @@ struct SolarOpen2Geometry : LingDefaults
 	static constexpr uint32_t kTopK = 8u;
 	static constexpr uint32_t kGroups = 1u;
 	static constexpr uint32_t kTopkGroups = 1u;
-	static constexpr uint32_t kMoeInter = 80u;
-	static constexpr uint32_t kSharedRows = 128u;
+	static constexpr uint32_t kMoeFullInter = 1280u;
+	static constexpr uint32_t kMoeInter = kMoeFullInter / TP;
+	static constexpr uint32_t kSharedRows = (kMoeFullInter / TP + 63u) / 64u * 64u;
 	static constexpr uint32_t kVerifyRows = SPARK_SOLAR_OPEN2_TP16_VERIFY_ROWS;
 	static constexpr float kRouteScale = 1.0f;
 	static constexpr uint32_t kPageSlots = SPARK_SOLAR_OPEN2_TP16_STAGE_PAGE_SLOTS;

@@ -449,12 +449,12 @@ def score(args, reference):
     Path(args.out).write_text(json.dumps(report))
 
 
-def teacher(args):
+def teacher(args, reference=None):
     global FP32, REVERSED
     variants = args.variants.split(",")
     if not variants or any(label not in ("a", "b") for label in variants) or len(set(variants)) != len(variants):
         raise SystemExit("--variants takes distinct a and b")
-    reference = Reference(args.checkpoint, args.swiglu_limits)
+    reference = reference if reference is not None else Reference(args.checkpoint, args.swiglu_limits)
     prompts = json.loads(Path(args.prompts).read_text())["prompts"]
     bounds = np.cumsum([0] + [len(prompt["prompt_token_ids"]) for prompt in prompts])
     out = Path(args.out)
@@ -471,9 +471,9 @@ def teacher(args):
             print(f"{prompt['name']}: {count - 1} positions, variant {label}", flush=True)
 
 
-def gate_prompts(args):
+def gate_prompts(args, head_keys=("prefix", "plain_prefix", "user"), tail_keys=("turn_suffix", "generation")):
     import gemma4_reference
-    gemma4_reference.gate_prompts(args, ("prefix", "plain_prefix", "user"), ("turn_suffix", "generation"))
+    gemma4_reference.gate_prompts(args, head_keys, tail_keys)
 
 
 def main():

@@ -7,6 +7,7 @@
 #include "sparkpipe/spark_ling_device_stage.h"
 #include "sparkpipe/spark_ling_family.h"
 #include "sparkpipe/spark_ling3_stage_model.h"
+#include "sparkpipe/spark_solar_open2_tp16_stage_model.h"
 
 #define LD_SLICES 40u
 
@@ -16,14 +17,13 @@ struct LingDevice
 	using G = typename P::Geometry;
 	using L = LingLayout<G>;
 
-	static_assert(!L::kGqa, "the device stage serves the latent-attention layout");
-
 	struct Layer
 	{
 		SparkTensor input_norm;
 		SparkTensor post_norm;
 		SparkDeviceChannelDeltaWeights delta;
 		SparkDeviceLatentAttentionWeights attention;
+		SparkDeviceAttentionWeights gqa;
 		SparkDeviceFfnWeights ffn;
 		SparkDeviceFfnWeights shared;
 		SparkDeviceExpertsWeights experts;
@@ -39,6 +39,8 @@ struct LingDevice
 		SparkDeviceChannelDeltaShape delta_shape;
 		SparkDeviceLatentAttentionShape attention_shape;
 		SparkDeviceLatentAttentionRope rope;
+		SparkDeviceAttentionShape gqa_shape;
+		SparkDeviceAttentionRope gqa_rope;
 		SparkDeviceExpertsShape experts_shape;
 		Layer layers[G::kLayers];
 		uint32_t ffn;
@@ -47,6 +49,7 @@ struct LingDevice
 		SparkTensor shared_out;
 		SparkDeviceChannelDeltaScratch delta;
 		SparkDeviceLatentAttentionScratch attention;
+		SparkDeviceAttentionScratch gqa;
 		SparkDeviceFfnScratch ffn_scratch;
 		SparkDeviceExpertsScratch experts;
 	};
@@ -74,8 +77,8 @@ struct LingDevice
 		shape->vocab = G::kVocab;
 		shape->layers = G::kLayers;
 		shape->kv_layers = L::kAttnLayers;
-		shape->kv_heads = 1u;
-		shape->kv_head_dimension = (G::kLatent + G::kRope + G::kLatent) / 2u;
+		shape->kv_heads = L::kGqa ? G::kGqaKvHeads : 1u;
+		shape->kv_head_dimension = L::kGqa ? G::kGqaHeadDim : (G::kLatent + G::kRope + G::kLatent) / 2u;
 		shape->pack_alignment = LG_PACK_ALIGNMENT;
 		shape->epsilon = G::kNormEpsilon;
 		shape->projection = P::kProjection;
@@ -85,6 +88,7 @@ struct LingDevice
 		delta->conv_taps = G::kConv;
 		delta->low_rank = G::kKdaRank;
 		delta->epsilon = G::kNormEpsilon;
+		delta->l2_epsilon = 1e-6f;
 		delta->minimum_log_decay = G::kKdaLowerBound;
 		delta->doubled_beta = G::kKdaDoubledBeta ? 1u : 0u;
 		memset(attention, 0, sizeof(*attention));
@@ -97,6 +101,16 @@ struct LingDevice
 		attention->epsilon = G::kNormEpsilon;
 		attention->scale = 1.0f / sqrtf((float)L::kQkDim);
 		attention->head_gate = 1u;
+		memset(&state->gqa_shape, 0, sizeof(state->gqa_shape));
+		state->gqa_shape.heads = G::kGqaHeads;
+		state->gqa_shape.kv_heads = G::kGqaKvHeads;
+		state->gqa_shape.head_dimension = G::kGqaHeadDim;
+		state->gqa_shape.epsilon = G::kNormEpsilon;
+		state->gqa_shape.scale = L::kGqa ? 1.0f / sqrtf((float)G::kGqaHeadDim) : 0.0f;
+		state->gqa_shape.qk_plain = 1u;
+		state->gqa_shape.output_gate = SPARK_ATTENTION_GATE_SIGMOID;
+		state->gqa_shape.gate_projection = 1u;
+		state->gqa_shape.tensor_prefix = "gqa";
 		memset(experts, 0, sizeof(*experts));
 		experts->experts = G::kExperts;
 		experts->top_k = G::kTopK;
@@ -107,6 +121,7 @@ struct LingDevice
 		experts->groups = G::kGroups;
 		experts->topk_groups = G::kTopkGroups;
 		experts->router = "router";
+		experts->tensor_parallel = G::kLocalExperts == G::kExperts ? 1u : 0u;
 	}
 
 	static uint32_t ScratchSlices(State *state, SparkDeviceStageSlice *slices)
@@ -115,6 +130,30 @@ struct LingDevice
 		const uint64_t slot = G::kLatent + G::kRope, ffn = Max(state->ffn, G::kSharedRows);
 		SparkTensor *experts[] = { &state->experts.routed, &state->experts.logits, &state->experts.experts, &state->experts.weights,
 			&state->experts.normed, &state->experts.gate_up, &state->experts.act, &state->experts.out, &state->experts.sorted };
+		const uint64_t fused = SparkDeviceAttentionFusedWidth(&state->gqa_shape), query = SparkDeviceAttentionQueryWidth(&state->gqa_shape);
+		const uint64_t kv = SparkDeviceAttentionKvWidth(&state->gqa_shape);
+		const SparkDeviceStageSlice latent[] =
+		{
+			{ rows * heads * L::kQkDim * 2u, &state->attention.query },
+			{ rows * slot * 2u, &state->attention.kv },
+			{ rows * heads * 2u, &state->attention.gate },
+			{ rows * heads * slot * 2u, &state->attention.packed },
+			{ SparkOpsAttentionScratchBytes(state->stage.max_rows, L::kMlaRankHeads, G::kLatent, state->stage.max_positions), &state->attention.records },
+			{ rows * heads * G::kLatent * 2u, &state->attention.latent },
+			{ rows * heads * G::kValueDim * 2u, &state->attention.value }
+		};
+		const SparkDeviceStageSlice grouped[] =
+		{
+			{ rows * fused * 2u, &state->gqa.qkv },
+			{ rows * query * 2u, &state->gqa.query },
+			{ rows * kv * 2u, &state->gqa.key },
+			{ rows * kv * 2u, &state->gqa.value },
+			{ SparkOpsAttentionScratchBytes(state->stage.max_rows, G::kGqaHeads, G::kGqaHeadDim, state->stage.max_positions), &state->gqa.records },
+			{ rows * query * 2u, &state->gqa.gate },
+			{ rows * query * 2u, &state->gqa.gated },
+			{ rows * fused * 2u, &state->gqa.qkv_local },
+			{ rows * fused * 2u, &state->gqa.qkv_gathered }
+		};
 		const SparkDeviceStageSlice plan[] =
 		{
 			{ rows * hidden * 2u, &state->normed },
@@ -128,19 +167,18 @@ struct LingDevice
 			{ SparkOpsChannelDeltaScratchBytes(state->stage.max_rows, L::kKdaRankHeads, G::kKdaDim), &state->delta.delta },
 			{ rows * width * 2u, &state->delta.core },
 			{ rows * width * 2u, &state->delta.gated },
-			{ rows * heads * L::kQkDim * 2u, &state->attention.query },
-			{ rows * slot * 2u, &state->attention.kv },
-			{ rows * heads * 2u, &state->attention.gate },
-			{ rows * heads * slot * 2u, &state->attention.packed },
-			{ SparkOpsAttentionScratchBytes(state->stage.max_rows, L::kMlaRankHeads, G::kLatent, state->stage.max_positions), &state->attention.records },
-			{ rows * heads * G::kLatent * 2u, &state->attention.latent },
-			{ rows * heads * G::kValueDim * 2u, &state->attention.value },
 			{ rows * 2u * ffn * 2u, &state->ffn_scratch.gate_up },
 			{ rows * ffn * 2u, &state->ffn_scratch.act }
 		};
 		uint32_t count = 0u;
 		for ( uint32_t index = 0u; index < sizeof(plan) / sizeof(plan[0]); index++ )
 			slices[count++] = plan[index];
+		if constexpr ( L::kGqa )
+			for ( uint32_t index = 0u; index < sizeof(grouped) / sizeof(grouped[0]); index++ )
+				slices[count++] = grouped[index];
+		else
+			for ( uint32_t index = 0u; index < sizeof(latent) / sizeof(latent[0]); index++ )
+				slices[count++] = latent[index];
 		for ( uint32_t index = 0u; index < sizeof(experts) / sizeof(experts[0]); index++ )
 		{
 			slices[count].bytes = SparkDeviceExpertsScratchBytes(&state->stage, &state->experts_shape, index);
@@ -175,7 +213,10 @@ struct LingDevice
 				SPARK_DEVICE_GATED_DELTA_POOLS, request->configuration->state_budget_bytes);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		SparkDeviceLatentAttentionRopePrepare(&state->attention_shape, L::kMlaRankHeads, &state->rope);
+		if constexpr ( L::kGqa )
+			SparkDeviceAttentionRopePrepare(&state->gqa_shape, &state->gqa_rope);
+		else
+			SparkDeviceLatentAttentionRopePrepare(&state->attention_shape, L::kMlaRankHeads, &state->rope);
 		return SparkDeviceStageGeometry(&state->stage, geometry);
 	}
 
@@ -190,7 +231,10 @@ struct LingDevice
 		if ( status == SPARK_STATUS_OK && L::Attention(index) )
 		{
 			layer->kv_index = (*kv)++;
-			status = SparkDeviceLatentAttentionBind(&state->stage, weights, index, &state->attention_shape, &layer->attention);
+			if constexpr ( L::kGqa )
+				status = SparkDeviceAttentionBind(&state->stage, weights, index, &state->gqa_shape, &layer->gqa);
+			else
+				status = SparkDeviceLatentAttentionBind(&state->stage, weights, index, &state->attention_shape, &layer->attention);
 		}
 		else if ( status == SPARK_STATUS_OK )
 		{
@@ -246,6 +290,9 @@ struct LingDevice
 
 	static SparkStatus Attention(State *state, const Frame &frame, const Layer &layer)
 	{
+		if constexpr ( L::kGqa )
+			return SparkDeviceAttention(&state->stage, frame.queue, &state->gqa_shape, &state->gqa_rope, &frame.t, &layer.gqa, layer.kv_index, &state->gqa,
+				state->normed, state->partial);
 		return SparkDeviceLatentAttention(&state->stage, frame.queue, &state->attention_shape, &state->rope, &frame.t, &layer.attention, layer.kv_index,
 			&state->attention, state->normed, state->partial);
 	}
@@ -342,6 +389,15 @@ struct Ling3FlashDevice
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_GEMV;
 };
 
+template<uint32_t TP>
+struct SolarOpen2Device
+{
+	using Geometry = SolarOpen2Geometry<TP>;
+	static constexpr const char *kTag = "sparkpipe_solar_open2_device";
+	static constexpr const char *kName = "solar-open-2";
+	static constexpr uint32_t kProjection = SPARK_PROJECTION_GEMV;
+};
+
 template<template<uint32_t> class P>
 static const SparkStageRunnerModelInterface *LingDeviceAt(uint32_t tp_degree)
 {
@@ -363,4 +419,9 @@ static const SparkStageRunnerModelInterface *LingDeviceAt(uint32_t tp_degree)
 const SparkStageRunnerModelInterface *SparkLing3FlashDeviceStageModelAt(uint32_t tp_degree)
 {
 	return LingDeviceAt<Ling3FlashDevice>(tp_degree);
+}
+
+const SparkStageRunnerModelInterface *SparkSolarOpen2DeviceStageModelAt(uint32_t tp_degree)
+{
+	return LingDeviceAt<SolarOpen2Device>(tp_degree);
 }

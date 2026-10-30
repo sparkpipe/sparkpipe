@@ -8,6 +8,8 @@
              -> --out prompts.json ({"prompts": [{name, prompt_token_ids}]})
   score      as tools/ling3_reference.py score: one forward over prompt +
              served tokens per prompt against --capture capture.json
+  gate-prompts, teacher  as tools/ling3_reference.py: the Metal gate prompts
+             in Solar's chat turn, and FP32 references a and b
 
 Semantics follow the publisher modular_solar_open2.py and the fla kernels its
 fast path calls (model_contracts/references/fla_kda_gate.py):
@@ -30,9 +32,10 @@ fast path calls (model_contracts/references/fla_kda_gate.py):
   expert outputs combined in f32; the shared expert added in bf16.
 Rounding otherwise follows tools/ling3_reference.py.
 
-Every matrix product accumulates in f64 before it is rounded
-(t1_reference_common.matmul), so a prompt's numbers do not depend on the other
-prompts in the run or on how many served tokens follow.
+In the score mode every matrix product accumulates in f64 before it is
+rounded (t1_reference_common.matmul), so a prompt's numbers do not depend on
+the other prompts in the run or on how many served tokens follow; the teacher
+mode multiplies and reduces as tools/ling3_reference.py teacher does.
 """
 
 import argparse
@@ -44,8 +47,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ling3_reference  # noqa: E402
-from ling3_reference import bf16, sigmoid, silu  # noqa: E402
-from t1_reference_common import matmul  # noqa: E402
+from ling3_reference import bf16, dot_last, matmul, reduce_sum, sigmoid, silu  # noqa: E402
 
 
 class Reference(ling3_reference.Reference):
@@ -117,20 +119,20 @@ class Reference(ling3_reference.Reference):
         dt_bias = self.checkpoint.bf16(a + "dt_bias", width).reshape(heads, dim)
         log_decay = self.lower_bound * sigmoid(np.exp(a_log)[None, :, None] * (f + dt_bias[None]))
         beta = bf16(sigmoid(self.linear(normed, a + "b_proj.weight", heads, self.hidden))) * np.float32(2.0)
-        q = q / np.sqrt((q * q).sum(axis=-1, keepdims=True) + np.float32(1e-6)) * np.float32(dim ** -0.5)
-        k = k / np.sqrt((k * k).sum(axis=-1, keepdims=True) + np.float32(1e-6))
+        q = q / np.sqrt(reduce_sum(q * q) + np.float32(1e-6)) * np.float32(dim ** -0.5)
+        k = k / np.sqrt(reduce_sum(k * k) + np.float32(1e-6))
         state = np.zeros((heads, dim, dim), dtype=np.float32)
         output = np.empty((rows, heads, dim), dtype=np.float32)
         decay = np.exp(log_decay)
         for t in range(rows):
             state *= decay[t][:, :, None]
-            delta = (v[t] - np.einsum("hkv,hk->hv", state, k[t])) * beta[t][:, None]
+            delta = (v[t] - dot_last(state, k[t])) * beta[t][:, None]
             state += k[t][:, :, None] * delta[:, None, :]
-            output[t] = np.einsum("hkv,hk->hv", state, q[t])
+            output[t] = dot_last(state, q[t])
         output = bf16(output)
         gate = self.low_rank(normed, a + "g", width).reshape(rows, heads, dim)
         weight = self.checkpoint.bf16(a + "o_norm.weight", dim)
-        mixed = output * np.power((output * output).mean(axis=-1, keepdims=True) + self.epsilon, np.float32(-0.5)) * weight * sigmoid(gate)
+        mixed = output * np.power(reduce_sum(output * output) / np.float32(dim) + self.epsilon, np.float32(-0.5)) * weight * sigmoid(gate)
         return self.output(bf16(mixed).reshape(rows, width), a + "o_proj.weight", self.hidden, width)
 
     def attention(self, layer, normed, positions):
@@ -147,7 +149,7 @@ class Reference(ling3_reference.Reference):
             scores = matmul(q[:, head, :], k[:, head // group, :].T) * scale
             scores = np.where(causal, scores, -np.inf)
             weights = np.exp(scores - scores.max(axis=-1, keepdims=True))
-            weights = bf16(weights / weights.sum(axis=-1, keepdims=True))
+            weights = bf16(weights / reduce_sum(weights))
             output[:, head, :] = bf16(matmul(weights, v[:, head // group, :]))
         gate = bf16(sigmoid(self.linear(normed, a + "g_proj.weight", heads * dim, self.hidden)))
         output = bf16(output.reshape(rows, heads * dim) * gate)
@@ -169,9 +171,11 @@ def tokenize(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("mode", choices=("tokenize", "score"))
+    parser.add_argument("mode", choices=("tokenize", "score", "gate-prompts", "teacher"))
     parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--prompts", required=True)
+    parser.add_argument("--prompts")
+    parser.add_argument("--variants", default="a,b")
+    parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/solar_open2/chat_template.json"))
     parser.add_argument("--capture")
     parser.add_argument("--tie-margin", type=float, default=0.1)
     parser.add_argument("--conv-rounding", choices=("publisher", "fused"), default="publisher",
@@ -179,8 +183,14 @@ def main():
     parser.add_argument("--dump", help="write the embedding and every layer's post-attention and post-MLP residual for all rows to this .npz")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
-    if args.mode == "tokenize":
+    if args.mode == "gate-prompts":
+        ling3_reference.gate_prompts(args, ("prefix", "plain_prefix", "user"), ("user_suffix", "turn_suffix", "generation"))
+    elif not args.prompts:
+        parser.error(f"{args.mode} needs --prompts")
+    elif args.mode == "tokenize":
         tokenize(args)
+    elif args.mode == "teacher":
+        ling3_reference.teacher(args, Reference(args.checkpoint, args.conv_rounding))
     else:
         if not args.capture:
             parser.error("score needs --capture")

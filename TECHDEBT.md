@@ -1170,8 +1170,18 @@ and the multidev docs on 2026-09-28. Line numbers are in
     (+3.37 against A) fail the paired test; the attention arithmetic that
     takes all four through, on both backends, is still open;
   - exp flavor: CUDA kernels use `__expf` in some places and `expf` in
-    others, Metal the precise functions everywhere, so the backends differ
-    by the intrinsic's error until one policy is chosen and measured;
+    others. On the M5 Ultra GPU, `metal::exp` and `metal::fast::exp` are the
+    same hardware approximation: bitwise identical over the float range and
+    on every special value, up to 3.9e-6 relative from the exact value on
+    [-87, 10), denormals flushed. So Metal already computes the fast flavor
+    everywhere. Swapping the attention softmax to `fast::exp` changes only the
+    AIR intrinsic (`air.exp.f32` to `air.fast_exp.f32`) and with it how the
+    compiler schedules the arithmetic around it, and that alone moved the
+    paired test by 2 to 4 sigma: Gemma 4 31B +4.8 to +2.0, Muse Glimmer +3.37
+    to -1.3, MiMo +3.49 to +2.23 (all to passing), Gemma 4 26B with free
+    routing +0.85 to +5.1 and Qwen3.8-27B +2.0 to +4.0 (both to failing). The
+    paired test of the models near its limit is within reach of
+    reduction-order noise; the code keeps `exp`;
   Kernel bodies (the schedules) stay per backend.
 - Every family runs one schedule for all backends
   ([`docs/FAMILY_SCHEDULES.md`](docs/FAMILY_SCHEDULES.md)); Gemma 4 (with

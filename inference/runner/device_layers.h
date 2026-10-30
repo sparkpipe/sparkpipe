@@ -52,6 +52,7 @@ typedef struct SparkDeviceChannelDeltaShape
 	uint32_t conv_taps;
 	uint32_t low_rank;
 	float epsilon;
+	float l2_epsilon;
 	float minimum_log_decay;
 	uint32_t doubled_beta;
 } SparkDeviceChannelDeltaShape;
@@ -152,6 +153,7 @@ typedef struct SparkDeviceAttentionShape
 	float yarn_beta_fast;
 	float yarn_beta_slow;
 	uint32_t head_gate;
+	const char *tensor_prefix;
 } SparkDeviceAttentionShape;
 
 typedef struct SparkDeviceAttentionRope
@@ -203,6 +205,7 @@ typedef struct SparkDeviceExpertsShape
 	uint32_t topk_groups;
 	float limit;
 	const char *router;
+	uint32_t tensor_parallel;
 } SparkDeviceExpertsShape;
 
 typedef struct SparkDeviceExpertsWeights

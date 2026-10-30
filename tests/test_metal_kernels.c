@@ -3779,6 +3779,8 @@ int main(int argc, char **argv)
 	TestLinear(77u,17408u,5120u,0u,SPARK_PROJECTION_GEMV,20000u);
 	TestLinear(2048u,5120u,34816u,0u,SPARK_PROJECTION_GEMV,20000u);
 	TestLinear(64u,5120u,248320u,1u,SPARK_PROJECTION_GEMV,20000u);
+	TestLinear(37u,160u,4096u,0u,SPARK_PROJECTION_GEMV,20000u);
+	TestLinear(300u,160u,4096u,0u,SPARK_PROJECTION_ROW_TILES,20000u);
 	{
 		static const uint32_t shapes[][2] = { { 2816u, 4224u }, { 2112u, 2816u }, { 2816u, 8192u }, { 4096u, 2816u }, { 8192u, 2816u },
 			{ 2816u, 1024u }, { 2816u, 128u }, { 704u, 2816u } }, row_counts[] = { 1u, 4u, 9u, 64u, 512u };

@@ -1442,8 +1442,9 @@ $(MIMO26_DEVICE_OBJECT): $(MIMO26_DEVICE_SOURCES) $(MIMO26_DEVICE_HEADERS) $(DEV
 
 LING_DEVICE_SOURCES := model-families/ling/device/ling_device_stage.cpp
 LING_DEVICE_HEADERS := model-families/ling/include/sparkpipe/spark_ling_family.h model-families/ling/include/sparkpipe/spark_ling_device_stage.h \
-	modules/ling3_resident_decode_stage/include/sparkpipe/spark_ling3_stage_model.h
-LING_DEVICE_INCLUDE_FLAGS := -Imodel-families/ling/include -Imodules/ling3_resident_decode_stage/include
+	modules/ling3_resident_decode_stage/include/sparkpipe/spark_ling3_stage_model.h \
+	modules/solar_open2_tp16_resident_decode_stage/include/sparkpipe/spark_solar_open2_tp16_stage_model.h
+LING_DEVICE_INCLUDE_FLAGS := -Imodel-families/ling/include -Imodules/ling3_resident_decode_stage/include -Imodules/solar_open2_tp16_resident_decode_stage/include
 LING_DEVICE_OBJECT := build/metal/ling_device_stage.o
 
 $(LING_DEVICE_OBJECT): $(LING_DEVICE_SOURCES) $(LING_DEVICE_HEADERS) $(DEVICE_RUNNER_HEADERS) | build
