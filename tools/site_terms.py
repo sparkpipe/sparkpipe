@@ -115,13 +115,13 @@ PAGES = [
         "src": "hourly-en.md", "out": "hourly-terms.html", "lang": "en", "tag": "terms",
         "title": "SparkPipe Hourly Terms", "other": "hourly-terms-ko.html",
         "desc": "Draft Hourly Terms for prepaid SparkPipe fleet-hours, published for review.",
-        "lead": "These Terms are accepted online: Customer signs their exact text with its Key at sign-up. The Korean text prevails (clause 12.3).",
+        "lead": "These Terms are accepted online: Customer signs, with its Key, each order stating the hashes of their exact text. The Korean text prevails (clause 12.3).",
     },
     {
         "src": "hourly-ko.md", "out": "hourly-terms-ko.html", "lang": "ko", "tag": "약관",
         "title": "SparkPipe 시간제 이용약관", "other": "hourly-terms.html",
         "desc": "선불 SparkPipe 플릿시간 시간제 이용약관 검토용 공개 문안.",
-        "lead": "본 약관은 온라인으로 체결되며, 고객은 가입 시 자신의 키로 본 약관의 정확한 문안에 서명한다. 국문본이 우선한다(제12.3조).",
+        "lead": "본 약관은 온라인으로 체결되며, 고객은 본 약관의 정확한 문안의 해시를 적은 각 주문에 자신의 키로 서명한다. 국문본이 우선한다(제12.3조).",
     },
     {
         "src": "agreement-en.md", "out": "agreement.html", "lang": "en", "tag": "terms",

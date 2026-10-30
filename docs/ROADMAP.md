@@ -187,7 +187,7 @@ Exit: a business rents a whole fleet without our help.
 Work:
 
 - the account service: signed acceptance, business details, sanctions screening, the business check and the 720-hour limit;
-- invoices, the processor integration and VAT invoices;
+- VAT invoices (USDC invoices through CoinPayments are built: `docs/PAYMENTS.md`);
 - the ledger and its daily root;
 - the reservation writer, the calendar, displacement and expiry;
 - access tokens scoped to reserved hours, and the gate in front of the fleet;

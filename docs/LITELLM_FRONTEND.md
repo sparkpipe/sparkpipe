@@ -338,9 +338,9 @@ to GLM.
 
 ## sparkpipe.ai
 
-`https://sparkpipe.ai` is static, with no API and no login. It holds the home page, the Fleet List, the terms, the privacy policy and the checkout preview. They are copied from `site/` to `/var/www/html` on the KCInfra VPS (27.102.120.99). `tools/site_terms.py` generates the terms pages from `site/terms/`; `tests/test_site.py` fails when they differ.
+`https://sparkpipe.ai` is static apart from the payment service, with no login. It holds the home page, the Fleet List, the terms, the privacy policy and the USDC checkout. They are copied from `site/` to `/var/www/html` on the KCInfra VPS (27.102.120.99). `tools/site_terms.py` generates the terms pages from `site/terms/`; `tests/test_site.py` fails when they differ.
 
-Apache serves only these pages: no API, no login, no proxy. Fleet-hour customers will reach their fleet through the customer API that TECHDEBT lists under fleet-hours.
+Apache serves these pages and proxies `/pay/api/` to the payment service on 127.0.0.1:18090 (`deployment/vps/sparkpipe-pay.conf`, `docs/PAYMENTS.md`); nothing else. Fleet-hour customers will reach their fleet through the customer API that TECHDEBT lists under fleet-hours.
 
 Every page with a Korean twin (`index`, `fleets`, `terms`, `privacy`, `hourly-terms`, `agreement`, each with a `-ko.html` page) carries the EN / 한국어 switch and `hreflang` alternates. `deployment/vps/sparkpipe-lang.conf`, included in the port-443 virtual host after the canonical-host rule, chooses the language:
 
@@ -362,6 +362,7 @@ Check the md5 against the downloaded `.md5` first. The builder refuses a file wi
 | VPS path | Goes to |
 | --- | --- |
 | `/` and the pages | `/var/www/html` |
+| `/pay/api/` | VPS 127.0.0.1:18090, the payment service (`docs/PAYMENTS.md`) |
 | `:8443/` | VPS 127.0.0.1:18082, then hub 8090 (Open WebUI, next section) |
 | `:8443/fleet`, `/fleet/status`, `/fleet/switch-now` | VPS 127.0.0.1:18081, then hub 8433 (the chat layer's admin page) |
 

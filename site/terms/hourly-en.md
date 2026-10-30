@@ -26,9 +26,9 @@ These Terms are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 3.2. The Hourly Price is exclusive of value-added tax (VAT). We charge VAT at the statutory rate (10% today) on every payment and show it separately on our invoice. Any amount charged as VAT that is not owed is an overpayment, and we refund it to Customer.
 
-3.3. Customer pays in full and in advance, in one of two ways: (a) if Customer has a Korean business registration number, in Korean won, by bank transfer to the account named on the electronic tax invoice (세금계산서) we issue; or (b) in USDC, through the payment invoice our system issues. Customer bears the payment service's fees, network fees, bank charges and any tax a law requires it to withhold, so that we receive the full amount invoiced.
+3.3. Customer pays in full and in advance, in one of two ways: (a) if Customer has a Korean business registration number, in Korean won, by bank transfer to the account named on the electronic tax invoice (세금계산서) we issue; or (b) in USDC, on any network our payment processor CoinPayments accepts, through the invoice it issues for us. Customer bears network fees, bank charges and any tax a law requires it to withhold, so that the full amount invoiced is paid. We bear the payment processor's own fees.
 
-3.4. Hours are issued once we have verified the full payment: for a won transfer when it reaches our account, and for USDC when the payment service confirms it.
+3.4. Hours are issued once we have verified the full payment: for a won transfer when it reaches our account, and for USDC when our payment processor reports the payment completed.
 
 ## 4. Hours
 
@@ -108,4 +108,4 @@ We may change these Terms by publishing a new version and emailing Customer. A n
 
 12.3. These Terms are published in English and Korean. The Korean text prevails.
 
-12.4. Customer accepts these Terms by signing the hash of their exact text with its Key. That signature has the same effect as a handwritten signature.
+12.4. Customer accepts these Terms by signing with its Key an order that states the SHA-256 hashes of their exact Korean and English texts. That signature has the same effect as a handwritten signature.

@@ -38,7 +38,7 @@ In this Agreement:
 
 2.4. All balances, refunds and claims are counted in hours, valued at the Hour Price.
 
-2.5. Customer pays every amount in full, in cleared funds, without set-off, deduction or withholding. If a law requires Customer to withhold or deduct any tax from a payment, Customer pays an additional amount so that we receive what we would have received without the withholding or deduction. Customer bears its own and any intermediary bank, transfer and currency conversion charges, so that we receive the full amount invoiced.
+2.5. Customer pays every amount in full, in cleared funds, without set-off, deduction or withholding. If a law requires Customer to withhold or deduct any tax from a payment, Customer pays an additional amount so that we receive what we would have received without the withholding or deduction. Customer bears its own and any intermediary bank, transfer, network and currency conversion charges, so that the full amount invoiced is paid. We bear our payment processor's own fees.
 
 ## 3. Term and Tranches
 
@@ -263,7 +263,7 @@ Where this Agreement ends under clause 11.2 or 11.3:
 | Live capacity address (clause 8.8) | https://sparkpipe.ai/availability.txt |
 | Chosen Models (clause 10.2) | \[models from the Fleet List\] |
 | Customer Ethereum address (for the Key) | \[ \] |
-| Payment currency and account | Either (a) KRW, by bank transfer from Customer's account at a Korean bank to our won account named on our electronic tax invoice (세금계산서), with VAT charged under clause 2.2; or (b) USD, by bank transfer from Customer's own account outside the Republic of Korea to our USD account at a Korean foreign exchange bank, zero-rated where Customer has no place of business in the Republic of Korea: \[bank, account holder, account number, SWIFT\], confirmed by both parties before payment; or (c) USDC, through the payment invoice our system issues, with VAT charged under clause 2.2 |
+| Payment currency and account | Either (a) KRW, by bank transfer from Customer's account at a Korean bank to our won account named on our electronic tax invoice (세금계산서), with VAT charged under clause 2.2; or (b) USD, by bank transfer from Customer's own account outside the Republic of Korea to our USD account at a Korean foreign exchange bank, zero-rated where Customer has no place of business in the Republic of Korea: \[bank, account holder, account number, SWIFT\], confirmed by both parties before payment; or (c) USDC, on any network our payment processor CoinPayments accepts, through the invoice it issues for us, with VAT charged under clause 2.2 |
 | Supplier notice address and email | \[ \] |
 | Customer notice address and email | \[ \] |
 | Fleet Rates at the Signature Date | As published on the Fleet List at signing: \[Fleet 1 (16 Sparks): 1.00; Fleet 2 (M5U): 1.00; Fleet 3 (16 Sparks): 1.00\] |
