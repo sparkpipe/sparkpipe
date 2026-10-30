@@ -834,6 +834,16 @@ splits every matmul into 1,024-wide chunks summed last first, reverses the
 norms', recurrent dot products' and softmax sums, and combines the routed
 experts in descending order. The controls corrupt `kda_out`.
 
+Ling 3.0 Flash Fin has Ling 3.0 Flash's configuration and tokenizer with its
+own weights, as CUDA builds it from the same source with its own contract
+(`LING3_FIN`), so `Ling3FinDevice` places `Ling3Geometry` under its own name
+and tag, and its gate uses Ling's prompts (the chat templates differ only in
+how they spell the thinking switch):
+
+    tools/ling3_tp16_pack.py --model ling3_fin --tp-degree 8 ...
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh ling-3.0-flash-fin PACKS/ling3_fin.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+
 ### Solar Open 2 on eight ranks
 
 Solar Open 2 is the Ling family schedule's GQA layout, and the Ling Metal

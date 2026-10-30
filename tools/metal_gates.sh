@@ -2,7 +2,7 @@
 set -eu
 
 if [ "$#" -ne 5 ]; then
-	echo "usage: [SPARK_GATE_TP=N [SPARK_GATE_STREAM=1]] [SPARK_GATE_DECODE=N] [SPARK_GATE_GREEDY=N] $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|qwen3.8-flash|laguna-s-2.1|ling-3.0-flash|solar-open-2 PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
+	echo "usage: [SPARK_GATE_TP=N [SPARK_GATE_STREAM=1]] [SPARK_GATE_DECODE=N] [SPARK_GATE_GREEDY=N] $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|qwen3.8-flash|laguna-s-2.1|ling-3.0-flash|ling-3.0-flash-fin|solar-open-2 PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
 	exit 2
 fi
 model=$1
@@ -17,7 +17,7 @@ case $model in
 	mimo-v2.6-flash) routed=0 prompt_dir=mimo26_flash vocab=152576 probe=attn_out layer=11;;
 	qwen3.8-flash) routed=0 prompt_dir=qwen38_27b vocab=248320 probe=moe_shared_down layer=11 greedy_tokens=8 bench_prompt=design spec=0 bench_long=2048;;
 	laguna-s-2.1) routed=0 prompt_dir=laguna vocab=100352 probe=attn_out layer=11;;
-	ling-3.0-flash) routed=0 prompt_dir=ling vocab=157184 probe=kda_out layer=12;;
+	ling-3.0-flash|ling-3.0-flash-fin) routed=0 prompt_dir=ling vocab=157184 probe=kda_out layer=12;;
 	solar-open-2) routed=0 prompt_dir=solar_open2 vocab=196608 probe=kda_out layer=13;;
 	*) echo "unknown Metal model $model" >&2; exit 2;;
 esac

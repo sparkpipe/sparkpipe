@@ -390,6 +390,15 @@ struct Ling3FlashDevice
 };
 
 template<uint32_t TP>
+struct Ling3FinDevice
+{
+	using Geometry = Ling3Geometry<TP>;
+	static constexpr const char *kTag = "sparkpipe_ling3_fin_device";
+	static constexpr const char *kName = "ling-3.0-flash-fin";
+	static constexpr uint32_t kProjection = SPARK_PROJECTION_GEMV;
+};
+
+template<uint32_t TP>
 struct SolarOpen2Device
 {
 	using Geometry = SolarOpen2Geometry<TP>;
@@ -419,6 +428,11 @@ static const SparkStageRunnerModelInterface *LingDeviceAt(uint32_t tp_degree)
 const SparkStageRunnerModelInterface *SparkLing3FlashDeviceStageModelAt(uint32_t tp_degree)
 {
 	return LingDeviceAt<Ling3FlashDevice>(tp_degree);
+}
+
+const SparkStageRunnerModelInterface *SparkLing3FinDeviceStageModelAt(uint32_t tp_degree)
+{
+	return LingDeviceAt<Ling3FinDevice>(tp_degree);
 }
 
 const SparkStageRunnerModelInterface *SparkSolarOpen2DeviceStageModelAt(uint32_t tp_degree)
