@@ -618,6 +618,20 @@ Hardware qualification requires CUDA, transport, numerical and service
 receipts from an exact committed revision. Host or simulator results cannot
 stand in for them.
 
+GitHub CI picks its lanes from the files a pull request or a push to `main`
+changes (`tools/ci_lanes.py`):
+
+- The site lane (`site-and-repository-rules`) always runs, in about two
+  minutes: the website and payment tests, plus every test that scans the
+  whole tree, from code size and source comments to the source package gate.
+- The engine lane (`compile-sm121a` and `host-tests`, about 40 minutes) runs
+  unless every changed file is a site path in `SITE_PATHS`: the website, its
+  tools and tests, its VPS configuration and its docs. No engine test or
+  build rule reads those files, and `tests/test_ci_lanes.py` fails when one
+  starts to, or when a whole-tree test is missing from the site lane.
+- A new push to a pull request cancels its older run. `workflow_dispatch`
+  always runs both lanes.
+
 ## License
 
 SparkPipe is licensed under the [Apache License, Version 2.0](LICENSE).
