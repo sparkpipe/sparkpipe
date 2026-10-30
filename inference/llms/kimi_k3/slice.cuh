@@ -533,7 +533,7 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		if ( state->lazy_release != 0 )
 			state->lazy_release(state->lazy_context,layer);
 		if ( state->tap_slab != 0 && state->tap_output[layer] >= 0 )
-			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows)), K3_LAYER_THREADS, 0, stream,
 				buffers->attnres_partial_bf16,state->tap_slab + ((uint64_t)state->tap_output[layer] * K3_HIDDEN),rows,K3_HIDDEN,state->tap_row_stride);
 	}
 	if ( first_layer + layer_count == K3_LAYERS )
@@ -543,7 +543,7 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		return(LM_LAUNCH_OK);
 	}
 	LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>),
-		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),
+		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows)),
 		K3_LAYER_THREADS, 0, stream,
 		buffers->attnres_partial_bf16,buffers->hidden_bf16,rows,K3_HIDDEN);
 	return(LM_LAUNCH_OK);
@@ -770,9 +770,9 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 			state->lazy_release(state->lazy_context,layer);
 		if ( row_shard == 0u && state->tap_slab != 0 && state->tap_output[layer] >= 0 )
 		{
-			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows_a), K3_LAYER_THREADS, 0, sa,
+			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows_a)), K3_LAYER_THREADS, 0, sa,
 				a->attnres_partial_bf16,state->tap_slab + ((uint64_t)state->tap_output[layer] * K3_HIDDEN),rows_a,K3_HIDDEN,state->tap_row_stride);
-			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows_b), K3_LAYER_THREADS, 0, sb,
+			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows_b)), K3_LAYER_THREADS, 0, sb,
 				b->attnres_partial_bf16,state->tap_slab + (uint64_t)rows_a * state->tap_row_stride + ((uint64_t)state->tap_output[layer] * K3_HIDDEN),rows_b,K3_HIDDEN,state->tap_row_stride);
 		}
 	}
@@ -789,11 +789,11 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 	else
 	{
 		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>),
-			dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows_a),
+			dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows_a)),
 			K3_LAYER_THREADS, 0, sa,
 			a->attnres_partial_bf16,a->hidden_bf16,rows_a,K3_HIDDEN);
 		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>),
-			dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows_b),
+			dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows_b)),
 			K3_LAYER_THREADS, 0, sb,
 			b->attnres_partial_bf16,b->hidden_bf16,rows_b,K3_HIDDEN);
 	}

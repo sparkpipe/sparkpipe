@@ -9,7 +9,9 @@
 #include "tests/cuda/node_collective_emulation.cuh"
 
 #define KDA_SHARDS 16u
+#ifndef KDA_ROWS
 #define KDA_ROWS 256u
+#endif
 #define KDA_RANK_HEADS (K3_KDA_HEADS / KDA_SHARDS)
 #define KDA_RANK_QK (KDA_RANK_HEADS * K3_KDA_KEY_DIM)
 #define KDA_RANK_V (KDA_RANK_HEADS * K3_KDA_VALUE_DIM)
@@ -113,7 +115,9 @@ static void KdaBuffers(K3LayerBuffers *b,uint32_t rank,const uint32_t *state_ind
 	b->kda_out_input = KDA_RANK_V;
 }
 
+#ifndef KDA_NODES
 #define KDA_NODES 4u
+#endif
 #define KDA_PASSES 2u
 #define KDA_NODE_ROWS (KDA_ROWS / (KDA_NODES * KDA_PASSES))
 #define KDA_NODE_CHUNKS 2u

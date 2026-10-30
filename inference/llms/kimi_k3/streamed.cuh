@@ -103,7 +103,7 @@ static int32_t K3StreamedMoeEnd(K3LayerBuffers *b, const K3LayerWeights *shards,
 		status = K3Project<LmBf16Format>(b,b->latent_full_bf16,join->weight,0,b->hidden_bf16,rows,K3_ROUTED_EXPERT_HIDDEN,K3_HIDDEN,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	LM_LAUNCH((LmAddRowsKernel<K3_LAYER_THREADS>),dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),K3_LAYER_THREADS,0,stream,
+	LM_LAUNCH((LmAddRowsKernel<K3_LAYER_THREADS>),dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows)),K3_LAYER_THREADS,0,stream,
 		b->hidden_bf16,b->shared_out_bf16,b->hidden_bf16,rows,K3_HIDDEN);
 	K3PartialAdd(b,b->hidden_bf16,rows,stream);
 	return(LM_LAUNCH_OK);
@@ -757,7 +757,7 @@ static int32_t K3StreamedSlice(K3LayerBuffers *b, const K3LayerWeights *weights,
 		return(LM_LAUNCH_OK);
 	}
 	LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>),
-		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),
+		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows)),
 		K3_LAYER_THREADS, 0, stream,
 		b->attnres_partial_bf16,b->hidden_bf16,rows,K3_HIDDEN);
 	return(LM_LAUNCH_OK);
