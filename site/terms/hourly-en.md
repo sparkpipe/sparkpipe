@@ -28,7 +28,9 @@ These Terms are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 3.3. Customer pays in full and in advance, in one of two ways: (a) if Customer has a Korean business registration number, in Korean won, by bank transfer to the account named on the electronic tax invoice (세금계산서) we issue; or (b) in USDC or USDT, on any network our payment processor CoinPayments accepts for them, through the invoice it issues for us. Customer bears network fees, bank charges and any tax a law requires it to withhold, so that the full amount invoiced is paid. We bear the payment processor's own fees.
 
-3.4. Hours are issued once we have verified the full payment: for a won transfer when it reaches our account, and for USDC or USDT when our payment processor reports the payment completed.
+3.4. Hours are issued once we have verified the payment: for a won transfer when it reaches our account, and for USDC or USDT when our payment processor reports the payment completed.
+
+3.5. If our payment processor completes a USDC or USDT payment for less than the invoice total, we issue hours in proportion to the amount received, rounded down to four decimal places and usable for the period the order states; fractions of an hour count toward the account's balance like whole hours. A payment the processor does not complete, an amount above the invoice total, and a payment that arrives after the processor's payment window are returned through the processor's refund procedure.
 
 ## 4. Hours
 

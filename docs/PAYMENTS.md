@@ -28,7 +28,10 @@ invoice and USD wires under a two-year agreement are still arranged by hand.
    service checks the HMAC and the timestamp, then fetches the invoice from
    the CoinPayments API and acts on that answer, not on the webhook body.
    Hours are issued only when the invoice is `completed` and its total and
-   currency match the order. The customer gets a receipt by email, and
+   currency match the order: all the order's hours when the amount received
+   covers the total, or, when CoinPayments completes it for less, hours in
+   proportion to the amount received, to four decimals (Hourly Terms 3.5,
+   agreement clause 5.5). The customer gets a receipt by email, and
    `SPARKPIPE_PAY_NOTIFY` gets a note of each new account, payment and
    mismatch.
 5. CoinPayments sends the customer back to `account.html?order=…`, which
@@ -146,7 +149,8 @@ DKIM and DMARC pass.
    `USDC.ERC20`, `USDC.BASE`, `USDC.ARB`, `USDC.POL`, `USDC.SOL`,
    `USDC.BEP20`, `USDT.TRC20`, `USDT.ERC20`, `USDT.BEP20`, `USDT.SOL`,
    `USDT.POL` and `USDT.ARB`, and turn every other coin and LTCT off, so no
-   payment arrives in a coin whose price moves. Payment Settings lists
+   payment arrives in a coin whose price moves. Set the underpayment limit
+   to 50% with no fixed amount (see Operating it). Payment Settings lists
    every currency; open each one that is not in that list and disable it.
    A disabled currency is no longer offered at checkout.
 3. Choose the payout wallet or conversion there too; the service does not
@@ -217,16 +221,20 @@ must then match `origin/main` byte for byte.
 - `sparkpipe_pay.py verify` checks the ledger chain and prints its head and
   counts. Run the admin commands as the service user with its environment:
   `sudo -u sparkpipe-pay sh -c 'set -a; . /etc/sparkpipe-pay/env; python3 /opt/sparkpipe-pay/sparkpipe_pay.py verify'`.
-- A part payment (less than the invoice arrived) leaves the invoice
-  `pending` at CoinPayments and Partially Paid in its dashboard. The
-  account page shows what arrived and what is left, and
-  `SPARKPIPE_PAY_NOTIFY` gets a mail. Either the buyer sends the rest while
-  the payment page is open, or you refund it in CoinPayments, or you click
-  Accept Partial Payment on the transaction (Payment Settings, its
-  details), which completes the invoice with what arrived.
-- A completed invoice whose total, currency or amount received does not
-  match the order (state `mismatch`) issues no hours and mails
-  `SPARKPIPE_PAY_NOTIFY`. Check the invoice in the dashboard; if it is
+- Part payments settle without anyone. CoinPayments completes an
+  underpaid invoice when the shortfall is within the underpayment limit in
+  Payment Settings: a percentage of the invoice (at most 50%), a fixed
+  amount, or both, in which case the smaller wins. Set only the percentage,
+  at 50%, so any payment that covers at least half completes. The service
+  then issues hours in proportion to what arrived, mails the customer a
+  receipt that says so, and mails `SPARKPIPE_PAY_NOTIFY` "Paid in part". A
+  part payment CoinPayments does not complete stays `pending` until the
+  payment window closes, when CoinPayments refunds it and emails the
+  customer a claim link; the account page explains both outcomes while it
+  waits. Overpayments and late payments are refunded by CoinPayments the
+  same way.
+- A completed invoice whose total or currency does not match the order
+  (state `mismatch`) issues no hours and mails `SPARKPIPE_PAY_NOTIFY`. Check the invoice in the dashboard; if it is
   right, `sparkpipe_pay.py release <order>` fetches the invoice again and,
   once CoinPayments says `completed`, issues the hours the amount received
   covers: whole hours at the order's price for an hourly order, the amount
