@@ -278,6 +278,7 @@ struct K3Streamed
 	cudaStream_t copy_stream;
 	cudaEvent_t dense_done[SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS];
 	cudaEvent_t slot_done[SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS];
+	cudaEvent_t marks[K3_LAYERS][3];
 	pthread_mutex_t lock;
 	pthread_cond_t changed;
 	uint32_t synchronization;
@@ -469,6 +470,9 @@ static void K3StreamedDestroy(K3Streamed *s)
 	for (index = 0u; index < SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS; index++)
 		if ( s->dense_done[index] != 0 )
 			(void)cudaEventDestroy(s->dense_done[index]);
+	for (index = 0u; index < K3_LAYERS * 3u; index++)
+		if ( s->marks[index / 3u][index % 3u] != 0 )
+			(void)cudaEventDestroy(s->marks[index / 3u][index % 3u]);
 	if ( s->copy_stream != 0 )
 		(void)cudaStreamDestroy(s->copy_stream);
 	if ( s->synchronization != 0u )
@@ -742,6 +746,9 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 			status = SPARK_STATUS_IO_ERROR;
 	for (index = 0u; status == SPARK_STATUS_OK && index < s->config.expert_slots; index++)
 		if ( cudaEventCreateWithFlags(&s->slot_done[index], cudaEventDisableTiming) != cudaSuccess )
+			status = SPARK_STATUS_IO_ERROR;
+	for (index = 0u; status == SPARK_STATUS_OK && index < K3_LAYERS * 3u; index++)
+		if ( cudaEventCreate(&s->marks[index / 3u][index % 3u]) != cudaSuccess )
 			status = SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK )
 	{
@@ -1030,11 +1037,13 @@ static SparkStatus K3StreamedLayer(K3Streamed *s, uint32_t layer, uint64_t dense
 		s->mla.store.pages = s->dispatch->mla_cache[layer / 4u];
 		s->mla.store.shard = s->dispatch->buffers_host->kv_shard;
 	}
+	if ( cudaEventRecord(s->marks[layer][0], stream) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	status = K3StreamedCheck(s, K3StreamedLayerAttention<LmMxfp4,K3GlobalKv,K3_STREAMED_HEADS>(&s->b, s->shards,
 		kind == LM_LAYER_RECURRENT ? &s->states[(uint64_t)kda_index * K3_STREAMED_SHARDS] : 0, K3_STREAMED_SHARDS, &s->kda, kind != LM_LAYER_RECURRENT ? &s->mla : 0,
 		&s->join, layer, s->partial, s->hidden_accumulator, rows, multiprocessors, stream), "attention", layer);
-	if ( status != SPARK_STATUS_OK )
-		return status;
+	if ( status != SPARK_STATUS_OK || cudaEventRecord(s->marks[layer][1], stream) != cudaSuccess )
+		return status != SPARK_STATUS_OK ? status : SPARK_STATUS_IO_ERROR;
 	if ( layer < K3_FIRST_ROUTED_LAYER )
 		status = K3StreamedCheck(s, K3StreamedDenseMlp<LmMxfp4>(&s->b, s->shards, K3_STREAMED_SHARDS, s->partial, s->hidden_accumulator, rows, multiprocessors, stream),
 			"dense MLP", layer);
@@ -1062,6 +1071,8 @@ static SparkStatus K3StreamedLayer(K3Streamed *s, uint32_t layer, uint64_t dense
 			status = K3StreamedCheck(s, K3StreamedMoeEnd<LmMxfp4>(&s->b, s->shards, K3_STREAMED_SHARDS, &s->join, s->latent_accumulator, rows, multiprocessors, stream),
 				"expert combine", layer);
 	}
+	if ( status == SPARK_STATUS_OK && cudaEventRecord(s->marks[layer][2], stream) != cudaSuccess )
+		status = SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		K3StreamedHealthKernel<<<256u, 256u, 0, stream>>>(s->b.hidden_bf16, (uint64_t)rows * K3_HIDDEN, s->health + 2u * (layer + 1u));
 	if ( status == SPARK_STATUS_OK )
@@ -1239,6 +1250,21 @@ static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPr
 			status = K3StreamedLayer(s, layer, dense_item++, &expert_item, rows, request->multiprocessors, stream);
 		if ( status == SPARK_STATUS_OK )
 			status = cudaStreamSynchronize(stream) == cudaSuccess ? K3StreamedHealth(s, pass) : SPARK_STATUS_IO_ERROR;
+		if ( status == SPARK_STATUS_OK )
+		{
+			float gpu[4] = {0.0f, 0.0f, 0.0f, 0.0f}, part;
+			for (layer = 0u; layer < K3_LAYERS; layer++)
+			{
+				if ( cudaEventElapsedTime(&part, s->marks[layer][0], s->marks[layer][1]) == cudaSuccess )
+					gpu[K3_LAYER_KIND(layer) == LM_LAYER_RECURRENT ? 1u : 0u] += part;
+				if ( cudaEventElapsedTime(&part, s->marks[layer][1], s->marks[layer][2]) == cudaSuccess )
+					gpu[2] += part;
+				if ( layer + 1u < K3_LAYERS && cudaEventElapsedTime(&part, s->marks[layer][2], s->marks[layer + 1u][0]) == cudaSuccess )
+					gpu[3] += part;
+			}
+			fprintf(stderr, "sparkpipe_k3: streamed prefill pass %u GPU: MLA attention %.1f s, KDA attention %.1f s, MLP and experts %.1f s, between layers %.1f s\n", pass + 1u,
+				gpu[0] / 1e3, gpu[1] / 1e3, gpu[2] / 1e3, gpu[3] / 1e3);
+		}
 		fprintf(stderr, "sparkpipe_k3: streamed prefill pass %u/%u rows %u x %u keys to %llu status=%d at %.1f s; streamer waited %.1f s for the GPU to release buffers, "
 			"compute waited %.1f s for dense and %.1f s for expert blocks, own blocks took %.1f s; streamer spent %.1f s in dense broadcasts and %.1f s in expert steps, "
 			"%.1f s of them reading the packs\n", pass + 1u, passes, rows, K3_STREAMED_SHARDS,
