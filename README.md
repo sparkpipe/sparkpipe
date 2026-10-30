@@ -621,16 +621,22 @@ stand in for them.
 GitHub CI picks its lanes from the files a pull request or a push to `main`
 changes (`tools/ci_lanes.py`):
 
-- The site lane (`site-and-repository-rules`) always runs, in about two
-  minutes: the website and payment tests, plus every test that scans the
-  whole tree, from code size and source comments to the source package gate.
+- `light-tests` always runs, in about two minutes: the website and payment
+  tests, plus every test that scans the whole tree, from code size and
+  source comments to the source package gate. When a Markdown file outside
+  the site changes, it also builds the host targets and runs every test that
+  can read Markdown: tests that name a `.md` file, `docs/`, README or
+  TECHDEBT, and tests that import a tool that does, directly or through
+  other tools (about three minutes more).
 - The engine lane (`compile-sm121a` and `host-tests`, about 40 minutes) runs
-  unless every changed file is a site path in `SITE_PATHS`: the website, its
-  tools and tests, its VPS configuration and its docs. No engine test or
-  build rule reads those files, and `tests/test_ci_lanes.py` fails when one
-  starts to, or when a whole-tree test is missing from the site lane.
+  unless every changed file is a site path in `SITE_PATHS` (the website, its
+  tools and tests, its VPS configuration and its docs) or Markdown. No engine
+  test or build rule reads the site paths, no Makefile rule uses Markdown,
+  and `tests/test_ci_lanes.py` fails when either starts to, or when a
+  whole-tree test is missing from `light-tests`.
 - A new push to a pull request cancels its older run. `workflow_dispatch`
-  always runs both lanes.
+  and a nightly run on `main` (18:00 UTC) run every lane, so anything the
+  lane rules miss still shows up within a day.
 
 ## License
 

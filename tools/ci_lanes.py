@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import fnmatch
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -45,18 +46,51 @@ FAST_TESTS = (
     "tests/test_package_manifest.py",
 )
 
+MARKDOWN = re.compile(r"""["'/]docs["'/]|[A-Za-z0-9_./-]+\.md\b|\bREADME\b|\bTECHDEBT\b""")
+
 
 def site_path(path):
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in SITE_PATHS)
 
 
-def fast_tests():
-    site_tests = [path.relative_to(ROOT).as_posix() for path in sorted((ROOT / "tests").iterdir()) if path.is_file() and site_path(path.relative_to(ROOT).as_posix())]
-    return site_tests + list(FAST_TESTS)
+def markdown_path(path):
+    return path.endswith(".md") and not site_path(path)
 
 
 def engine_needed(paths):
-    return paths is None or not all(site_path(path) for path in paths)
+    return paths is None or not all(site_path(path) or markdown_path(path) for path in paths)
+
+
+def tests_in(directory):
+    return sorted(path for path in (ROOT / directory).iterdir() if path.is_file() and path.suffix in (".py", ".sh"))
+
+
+def uses(text, module):
+    return re.search(rf"\b(?:import|from)\s+{re.escape(module)}\b|\b{re.escape(module)}\.py\b", text)
+
+
+def markdown_tests():
+    tools = {path.stem: path.read_text(encoding="utf-8", errors="replace") for path in tests_in("tools")}
+    readers = {name for name, text in tools.items() if MARKDOWN.search(text)}
+    while True:
+        more = {name for name, text in tools.items() if name not in readers and any(uses(text, module) for module in readers)}
+        if not more:
+            break
+        readers |= more
+    found = []
+    for path in tests_in("tests"):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if MARKDOWN.search(text) or any(uses(text, module) for module in readers):
+            found.append(path.relative_to(ROOT).as_posix())
+    return found
+
+
+def light_tests(paths):
+    chosen = [path.relative_to(ROOT).as_posix() for path in tests_in("tests") if site_path(path.relative_to(ROOT).as_posix())]
+    chosen += list(FAST_TESTS)
+    if paths and any(markdown_path(path) for path in paths):
+        chosen += markdown_tests()
+    return list(dict.fromkeys(chosen))
 
 
 def changed(base, head):
@@ -69,17 +103,19 @@ def changed(base, head):
 
 
 def main(argv):
-    if argv[1:] == ["fast-tests"]:
-        print("\n".join(fast_tests()))
-        return 0
-    if len(argv) != 3:
-        print("usage: ci_lanes.py BASE HEAD | fast-tests", file=sys.stderr)
+    if argv[1:] == ["full"]:
+        paths = None
+    elif len(argv) == 3:
+        paths = changed(argv[1], argv[2])
+    else:
+        print("usage: ci_lanes.py BASE HEAD | full", file=sys.stderr)
         return 2
-    paths = changed(argv[1], argv[2])
-    if paths is not None:
-        for path in paths:
-            print(f"{'site  ' if site_path(path) else 'engine'} {path}", file=sys.stderr)
+    for path in paths or []:
+        lane = "site" if site_path(path) else "markdown" if markdown_path(path) else "engine"
+        print(f"{lane:8} {path}", file=sys.stderr)
     print(f"engine={'true' if engine_needed(paths) else 'false'}")
+    print(f"build={'true' if paths and any(markdown_path(path) for path in paths) else 'false'}")
+    print(f"tests={' '.join(light_tests(paths))}")
     return 0
 
 

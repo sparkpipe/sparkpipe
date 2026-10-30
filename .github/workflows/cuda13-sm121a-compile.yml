@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - main
+  schedule:
+    - cron: "0 18 * * *"
   workflow_dispatch:
 
 permissions:
@@ -19,6 +21,8 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       engine: ${{ steps.lanes.outputs.engine }}
+      build: ${{ steps.lanes.outputs.build }}
+      tests: ${{ steps.lanes.outputs.tests }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -31,21 +35,22 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          if [ "$EVENT" = workflow_dispatch ]; then
-            echo engine=true >> "$GITHUB_OUTPUT"
+          if [ "$EVENT" = workflow_dispatch ] || [ "$EVENT" = schedule ]; then
+            python3 tools/ci_lanes.py full >> "$GITHUB_OUTPUT"
           else
             python3 tools/ci_lanes.py "$BASE" "$HEAD" >> "$GITHUB_OUTPUT"
           fi
           cat "$GITHUB_OUTPUT"
 
-  site-and-repository-rules:
+  light-tests:
+    needs: lanes
     runs-on: ubuntu-24.04
     steps:
       - name: Install host dependencies
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            git python3 python3-numpy python3-pip
+            build-essential git python3 python3-numpy python3-pip libibverbs-dev
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
@@ -53,11 +58,19 @@ jobs:
         run: |
           python3 -m pip install --user --break-system-packages --no-deps --require-hashes --only-binary :all: \
             -r tools/ci/host-tests-requirements.txt
-      - name: Run the site tests and the repository-wide rules
+      - name: Build every host target for the Markdown readers
+        if: needs.lanes.outputs.build == 'true'
+        run: make -j"$(nproc)" all
+      - name: Run the site, repository-wide and Markdown tests the change can reach
+        env:
+          TESTS: ${{ needs.lanes.outputs.tests }}
         run: |
-          for test in $(python3 tools/ci_lanes.py fast-tests); do
+          for test in $TESTS; do
             echo "RUN $test"
-            python3 "$test"
+            case "$test" in
+              *.sh) bash "$test" ;;
+              *) python3 "$test" ;;
+            esac
           done
 
   compile-sm121a:
