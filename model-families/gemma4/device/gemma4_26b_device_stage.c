@@ -257,6 +257,7 @@ const SparkStageRunnerModelInterface *SparkGemma4_26bDeviceStageModel(void)
 		0,
 		0,
 		GemmaBindDevice,
+		0,
 		0
 	};
 	return(&interface_table);

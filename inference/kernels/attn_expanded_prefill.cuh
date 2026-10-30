@@ -72,7 +72,9 @@ void LmLatentValueExpandKernel(
 	const uint16_t *__restrict__ weight_bf16,
 	uint32_t heads,
 	uint8_t *__restrict__ values,
-	uint64_t value_source_stride)
+	uint64_t value_source_stride,
+	uint64_t key_pitch,
+	uint64_t head_pitch)
 {
 	constexpr uint32_t ROW_BYTES = ROW_DIM * 2u;
 	constexpr uint32_t CHUNKS = LM_LATENT_EXPAND_CHUNK / 8u;
@@ -89,7 +91,7 @@ void LmLatentValueExpandKernel(
 	extern __shared__ __align__(128) uint8_t lm_expand_shared[];
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t matrix = lane >> 3u, within = lane & 7u;
-	const uint32_t first_key = blockIdx.x * LM_LATENT_EXPAND_KEYS, head = blockIdx.y, source = blockIdx.z;
+	const uint32_t first_key = blockIdx.y * LM_LATENT_EXPAND_KEYS, head = blockIdx.x, source = blockIdx.z;
 	const uint32_t base = (uint32_t)__cvta_generic_to_shared(lm_expand_shared);
 	const uint8_t *source_keys = keys + (uint64_t)source * key_source_stride;
 	const uint16_t *head_weight = weight_bf16 + (uint64_t)head * VALUE * LATENT;
@@ -158,10 +160,10 @@ void LmLatentValueExpandKernel(
 		{
 			const uint32_t column = frag * 8u + (lane & 3u) * 2u;
 			if (key_low < keys_per_source)
-				*(uint32_t *)(target + (((uint64_t)key_low * heads + head) * VALUE + column) * 2u) =
+				*(uint32_t *)(target + ((uint64_t)key_low * key_pitch + (uint64_t)head * head_pitch + column) * 2u) =
 					LmExpandedPackBf16(LmFloatToBf16(output[frag][0]), LmFloatToBf16(output[frag][1]));
 			if (key_high < keys_per_source)
-				*(uint32_t *)(target + (((uint64_t)key_high * heads + head) * VALUE + column) * 2u) =
+				*(uint32_t *)(target + ((uint64_t)key_high * key_pitch + (uint64_t)head * head_pitch + column) * 2u) =
 					LmExpandedPackBf16(LmFloatToBf16(output[frag][2]), LmFloatToBf16(output[frag][3]));
 		}
 	}
@@ -195,8 +197,84 @@ static inline cudaError_t LmLatentValueExpandLaunch(
 			return error;
 		granted = true;
 	}
-	LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE><<<dim3((keys_per_source + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS, heads, sources), LM_LATENT_EXPAND_THREADS, shared, stream>>>(
-		keys, key_source_stride, keys_per_source, weight_bf16, heads, values, value_source_stride);
+	if ((keys_per_source + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS > 65535u)
+		return cudaErrorInvalidValue;
+	LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE><<<dim3(heads, (keys_per_source + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS, sources), LM_LATENT_EXPAND_THREADS, shared, stream>>>(
+		keys, key_source_stride, keys_per_source, weight_bf16, heads, values, value_source_stride, (uint64_t)heads * VALUE, VALUE);
+	return cudaPeekAtLastError();
+}
+
+template<uint32_t LATENT, uint32_t ROW_DIM>
+__global__ __launch_bounds__(256, 1)
+void LmLatentRopeBroadcastKernel(
+	const uint8_t *__restrict__ keys,
+	uint32_t key_count,
+	uint32_t heads,
+	uint8_t *__restrict__ output,
+	uint64_t key_pitch,
+	uint64_t head_pitch,
+	uint64_t rope_offset)
+{
+	constexpr uint32_t ROPE_WORDS = (ROW_DIM - LATENT) / 2u;
+	const uint32_t key = blockIdx.x;
+	const uint32_t *rope = (const uint32_t *)(keys + ((uint64_t)key * ROW_DIM + LATENT) * 2u);
+	uint32_t item;
+	if (key >= key_count)
+		return;
+	for (item = threadIdx.x; item < heads * ROPE_WORDS; item += blockDim.x)
+		*(uint32_t *)(output + ((uint64_t)key * key_pitch + (uint64_t)(item / ROPE_WORDS) * head_pitch + rope_offset) * 2u + (item % ROPE_WORDS) * 4u) = rope[item % ROPE_WORDS];
+}
+
+template<uint32_t LATENT, uint32_t ROW_DIM>
+static inline cudaError_t LmLatentRopeBroadcastLaunch(
+	const uint8_t *keys,
+	uint32_t key_count,
+	uint32_t heads,
+	uint8_t *output,
+	uint64_t key_pitch,
+	uint64_t head_pitch,
+	uint64_t rope_offset,
+	cudaStream_t stream)
+{
+	static_assert(ROW_DIM > LATENT && (ROW_DIM - LATENT) % 2u == 0u, "the rope part follows the latent and is whole bf16 pairs");
+	if (keys == 0 || output == 0 || heads == 0u || (uintptr_t)output % 4u != 0u || rope_offset % 2u != 0u || head_pitch % 2u != 0u || key_pitch % 2u != 0u ||
+		head_pitch < rope_offset + (ROW_DIM - LATENT) || key_pitch < (uint64_t)(heads - 1u) * head_pitch + rope_offset + (ROW_DIM - LATENT))
+		return cudaErrorInvalidValue;
+	if (key_count == 0u)
+		return cudaSuccess;
+	LmLatentRopeBroadcastKernel<LATENT, ROW_DIM><<<key_count, 256, 0, stream>>>(keys, key_count, heads, output, key_pitch, head_pitch, rope_offset);
+	return cudaPeekAtLastError();
+}
+
+template<uint32_t LATENT, uint32_t ROW_DIM, uint32_t VALUE>
+static inline cudaError_t LmLatentExpandPitchedLaunch(
+	const uint8_t *keys,
+	uint32_t key_count,
+	const uint16_t *weight_bf16,
+	uint32_t heads,
+	uint8_t *output,
+	uint64_t key_pitch,
+	uint64_t head_pitch,
+	cudaStream_t stream)
+{
+	constexpr uint32_t shared = LmLatentExpandSharedBytes<VALUE>();
+	static bool granted = false;
+	if (keys == 0 || weight_bf16 == 0 || output == 0 || heads == 0u || (uintptr_t)output % 4u != 0u || head_pitch < VALUE ||
+		key_pitch < (uint64_t)(heads - 1u) * head_pitch + VALUE || key_pitch % 2u != 0u || head_pitch % 2u != 0u)
+		return cudaErrorInvalidValue;
+	if (key_count == 0u)
+		return cudaSuccess;
+	if (!granted)
+	{
+		cudaError_t error = cudaFuncSetAttribute((const void *)LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
+		if (error != cudaSuccess)
+			return error;
+		granted = true;
+	}
+	if ((key_count + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS > 65535u)
+		return cudaErrorInvalidValue;
+	LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE><<<dim3(heads, (key_count + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS, 1u), LM_LATENT_EXPAND_THREADS, shared, stream>>>(
+		keys, 0u, key_count, weight_bf16, heads, output, 0u, key_pitch, head_pitch);
 	return cudaPeekAtLastError();
 }
 

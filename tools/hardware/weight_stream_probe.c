@@ -39,6 +39,7 @@ typedef struct StreamOptions
 	uint32_t traffic_class;
 	uint32_t port;
 	uint32_t verify;
+	uint32_t rotate;
 	const char *device;
 	const char *pair_device;
 	const char *coordinator;
@@ -358,6 +359,46 @@ static uint64_t StreamCheck(const StreamOptions *options,const uint8_t *region,u
 	return bad;
 }
 
+static void StreamWriteAt(StreamLink *link,uint32_t peer,const StreamEndpoint *remote,uint8_t *region,uint64_t local_offset,uint64_t remote_offset,
+	uint32_t length,uint32_t immediate)
+{
+	struct ibv_sge scatter;
+	struct ibv_send_wr request,*bad;
+	memset(&scatter,0,sizeof(scatter));
+	scatter.addr = (uint64_t)(uintptr_t)(region + local_offset);
+	scatter.length = length;
+	scatter.lkey = link->mr->lkey;
+	memset(&request,0,sizeof(request));
+	request.wr_id = peer;
+	request.sg_list = &scatter;
+	request.num_sge = 1;
+	request.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+	request.send_flags = IBV_SEND_SIGNALED;
+	request.imm_data = htonl(immediate);
+	request.wr.rdma.remote_addr = remote->address + remote_offset;
+	request.wr.rdma.rkey = remote->rkey;
+	if ( ibv_post_send(link->qps[peer],&request,&bad) != 0 )
+		StreamFail("post send");
+	link->outstanding[peer]++;
+}
+
+static void StreamFillBlock(uint8_t *block,uint64_t bytes,uint32_t source)
+{
+	uint64_t *words = (uint64_t *)block,index;
+	for (index=0u; index<bytes / sizeof(uint64_t); index++)
+		words[index] = StreamPattern(source,index);
+}
+
+static uint64_t StreamCheckBlock(const uint8_t *block,uint64_t bytes,uint32_t source)
+{
+	const uint64_t *words = (const uint64_t *)block;
+	uint64_t index,bad = 0u;
+	for (index=0u; index<bytes / sizeof(uint64_t); index+=STREAM_STAMP_BYTES / sizeof(uint64_t) / 4u)
+		bad += words[index] != StreamPattern(source,index);
+	bad += words[bytes / sizeof(uint64_t) - 1u] != StreamPattern(source,bytes / sizeof(uint64_t) - 1u);
+	return bad;
+}
+
 static int StreamCompare(const void *left,const void *right)
 {
 	uint64_t a = *(const uint64_t *)left,b = *(const uint64_t *)right;
@@ -370,9 +411,159 @@ static void StreamCompletion(const struct ibv_wc *done,uint32_t layer)
 	exit(3);
 }
 
+static int StreamRotate(const StreamOptions *options,StreamLink *fabric,StreamLink *pair,uint8_t *region,const StreamEndpoint *table,size_t row_bytes,
+	const int *clients,int server_fd)
+{
+	const uint64_t block = options->shard_bytes,half = block / 2u;
+	const uint32_t ranks = options->ranks,rank = options->rank,partner = rank ^ 1u,own_pair = rank / 2u;
+	const uint32_t per_half = (uint32_t)(half / options->chunk_bytes),steps = options->layers * ranks;
+	const StreamEndpoint *partner_remote = (const StreamEndpoint *)((const uint8_t *)table + partner * row_bytes);
+	uint64_t *samples = (uint64_t *)calloc(steps,sizeof(uint64_t)),bad_total = 0u,total_ns,flag = 0u;
+	uint32_t *relay = (uint32_t *)calloc(per_half,sizeof(uint32_t)),step,index;
+	if ( samples == 0 || relay == 0 )
+		StreamFail("rotate tables");
+	StreamFillBlock(region,block,rank);
+	StreamFillBlock(region + block,block,partner);
+	total_ns = StreamNowNs();
+	for (step=0u; step<steps; step++)
+	{
+		const uint32_t k = step % ranks,shard = (2u * own_pair + k) % ranks,slot_index = step & 1u;
+		const uint64_t slot = 2u * block + (uint64_t)slot_index * block;
+		uint32_t send_peer = UINT32_MAX,send_half = 0u,pair_own = 0u,receive_fabric = 0u,receive_pair = 0u,sent = 0u,relay_head = 0u,relay_tail = 0u,own_sent = 0u;
+		uint32_t done_fabric = 0u,done_pair = 0u,got_fabric = 0u,got_pair = 0u,expect_fabric_done,expect_pair_done;
+		uint64_t start,send_base = 0u;
+		if ( (rank & 1u) == (k & 1u) )
+		{
+			const uint32_t target = ((rank + ranks - k) % ranks) / 2u;
+			if ( target == own_pair )
+				pair_own = 1u;
+			else
+			{
+				send_peer = 2u * target;
+				send_half = 0u;
+				send_base = 0u;
+			}
+		}
+		else
+		{
+			const uint32_t target = ((partner + ranks - k) % ranks) / 2u;
+			if ( target != own_pair )
+			{
+				send_peer = 2u * target + 1u;
+				send_half = 1u;
+				send_base = block + half;
+			}
+		}
+		if ( shard == partner )
+			receive_pair = per_half;
+		else if ( shard != rank )
+		{
+			receive_fabric = per_half;
+			receive_pair = per_half;
+		}
+		expect_fabric_done = send_peer != UINT32_MAX ? per_half : 0u;
+		expect_pair_done = (pair_own != 0u ? per_half : 0u) + receive_fabric;
+		StreamBarrier(options,clients,server_fd,&flag);
+		start = StreamNowNs();
+		while ( done_fabric < expect_fabric_done || done_pair < expect_pair_done || got_fabric < receive_fabric || got_pair < receive_pair )
+		{
+			struct ibv_wc done[64];
+			int count,item;
+			while ( send_peer != UINT32_MAX && sent < per_half && fabric->outstanding[send_peer] < options->depth )
+			{
+				const StreamEndpoint *remote = (const StreamEndpoint *)((const uint8_t *)table + send_peer * row_bytes);
+				StreamWriteAt(fabric,send_peer,&remote[rank],region,send_base + (uint64_t)sent * options->chunk_bytes,
+					slot + (uint64_t)send_half * half + (uint64_t)sent * options->chunk_bytes,options->chunk_bytes,((step & 0xffu) << 24) | (send_half << 23) | sent);
+				sent++;
+			}
+			while ( pair->outstanding[partner] < options->depth && ((pair_own != 0u && own_sent < per_half) || relay_head != relay_tail) )
+			{
+				if ( relay_head != relay_tail )
+				{
+					const uint32_t chunk = relay[relay_head++];
+					const uint64_t offset = slot + (uint64_t)(rank & 1u) * half + (uint64_t)chunk * options->chunk_bytes;
+					StreamWriteAt(pair,partner,&partner_remote[STREAM_MAX_RANKS + rank],region,offset,offset,options->chunk_bytes,((step & 0xffu) << 24) | ((rank & 1u) << 23) | chunk);
+				}
+				else
+				{
+					StreamWriteAt(pair,partner,&partner_remote[STREAM_MAX_RANKS + rank],region,(uint64_t)own_sent * options->chunk_bytes,
+						slot + (uint64_t)own_sent * options->chunk_bytes,options->chunk_bytes,((step & 0xffu) << 24) | own_sent);
+					own_sent++;
+				}
+			}
+			if ( StreamNowNs() - start > 300000000000ull )
+			{
+				fprintf(stderr,"STREAM-FAIL rotate stall step=%u shard=%u sent=%u done=%u/%u pair_done=%u/%u got=%u/%u pair_got=%u/%u\n",step,shard,sent,done_fabric,expect_fabric_done,
+					done_pair,expect_pair_done,got_fabric,receive_fabric,got_pair,receive_pair);
+				return 5;
+			}
+			count = ibv_poll_cq(fabric->cq,64,done);
+			for (item=0; item<count; item++)
+			{
+				if ( done[item].status != IBV_WC_SUCCESS )
+					StreamCompletion(&done[item],step);
+				if ( done[item].opcode == IBV_WC_RECV_RDMA_WITH_IMM )
+				{
+					const uint32_t immediate = ntohl(done[item].imm_data);
+					if ( (immediate >> 24) != (step & 0xffu) || ((immediate >> 23) & 1u) != (rank & 1u) )
+						StreamCompletion(&done[item],step);
+					relay[relay_tail++] = immediate & 0x7fffffu;
+					got_fabric++;
+					for (index=0u; index<ranks; index++)
+						if ( fabric->qps[index] != 0 && fabric->qps[index]->qp_num == done[item].qp_num )
+							StreamPostReceive(fabric->qps[index],1u);
+				}
+				else
+				{
+					fabric->outstanding[done[item].wr_id]--;
+					done_fabric++;
+				}
+			}
+			count = ibv_poll_cq(pair->cq,64,done);
+			for (item=0; item<count; item++)
+			{
+				if ( done[item].status != IBV_WC_SUCCESS )
+					StreamCompletion(&done[item],step);
+				if ( done[item].opcode == IBV_WC_RECV_RDMA_WITH_IMM )
+				{
+					if ( (ntohl(done[item].imm_data) >> 24) != (step & 0xffu) )
+						StreamCompletion(&done[item],step);
+					got_pair++;
+					StreamPostReceive(pair->qps[partner],1u);
+				}
+				else
+				{
+					pair->outstanding[partner]--;
+					done_pair++;
+				}
+			}
+		}
+		samples[step] = StreamNowNs() - start;
+		if ( shard != rank )
+		{
+			if ( shard == partner )
+				memcpy(region + slot + half,region + block + half,half);
+			bad_total += StreamCheckBlock(region + slot,block,shard);
+		}
+	}
+	flag = bad_total != 0u ? 1u : 0u;
+	StreamBarrier(options,clients,server_fd,&flag);
+	total_ns = StreamNowNs() - total_ns;
+	qsort(samples,steps,sizeof(uint64_t),StreamCompare);
+	printf("STREAM rotate rank=%u ranks=%u block_bytes=%llu chunk_bytes=%u depth=%u steps=%u total_s=%.2f p50_ms=%.1f p90_ms=%.1f max_ms=%.1f block_gbps_p50=%.1f bad_words=%llu any_rank_bad=%llu",
+		rank,ranks,(unsigned long long)block,options->chunk_bytes,options->depth,steps,total_ns / 1e9,samples[steps / 2u] / 1e6,samples[(steps * 9u) / 10u] / 1e6,
+		samples[steps - 1u] / 1e6,(double)block * 8.0 / (double)samples[steps / 2u],(unsigned long long)bad_total,(unsigned long long)flag);
+	for (index=0u; index<STREAM_COUNTERS; index++)
+		printf(" %s=%llu",stream_counter_names[index],(unsigned long long)(StreamCounter(options->device,stream_counter_names[index]) - fabric->counters[index]));
+	for (index=0u; index<STREAM_COUNTERS; index++)
+		printf(" pair_%s=%llu",stream_counter_names[index],(unsigned long long)(StreamCounter(options->pair_device,stream_counter_names[index]) - pair->counters[index]));
+	printf("\n");
+	return flag != 0u ? 4 : 0;
+}
+
 int main(int argc,char **argv)
 {
-	StreamOptions options = { 0u,16u,681574400ull,48u,4194304u,32u,0u,3u,3u,106u,47200u,1u,"rocep1s0f1","roceP2p1s0f0","10.10.100.10" };
+	StreamOptions options = { 0u,16u,681574400ull,48u,4194304u,32u,0u,3u,3u,106u,47200u,1u,0u,"rocep1s0f1","roceP2p1s0f0","10.10.100.10" };
 	StreamEndpoint *table;
 	StreamLink fabric,pair;
 	StreamRelay *relays;
@@ -395,28 +586,32 @@ int main(int argc,char **argv)
 		else if ( strcmp(argv[index],"--traffic-class") == 0 ) options.traffic_class = (uint32_t)atoi(argv[index + 1]);
 		else if ( strcmp(argv[index],"--port") == 0 ) options.port = (uint32_t)atoi(argv[index + 1]);
 		else if ( strcmp(argv[index],"--verify") == 0 ) options.verify = (uint32_t)atoi(argv[index + 1]);
+		else if ( strcmp(argv[index],"--rotate") == 0 ) options.rotate = (uint32_t)atoi(argv[index + 1]);
 		else if ( strcmp(argv[index],"--device") == 0 ) options.device = argv[index + 1];
 		else if ( strcmp(argv[index],"--pair-device") == 0 ) options.pair_device = argv[index + 1];
 		else if ( strcmp(argv[index],"--coordinator") == 0 ) options.coordinator = argv[index + 1];
 		else
 		{
-			fprintf(stderr,"usage: %s --rank R [--ranks N] [--shard-bytes B] [--layers L] [--chunk-bytes C] [--depth D] [--pair 0|1 (relay the other parity through rank ^ 1 on --pair-device)] [--verify 0 stamps|1 stamps+last layer|2 every layer] [--device D] [--pair-device D] [--gid-index G] [--pair-gid-index G] [--traffic-class T (DSCP << 2 | ECN; 106 = DSCP 26 lossless, ECT(0), as weightd)] [--coordinator IP] [--port P]\n",argv[0]);
+			fprintf(stderr,"usage: %s --rank R [--ranks N] [--shard-bytes B] [--layers L] [--chunk-bytes C] [--depth D] [--pair 0|1 (relay the other parity through rank ^ 1 on --pair-device)] [--verify 0 stamps|1 stamps+last layer|2 every layer] [--rotate 1 (expert rotation: pairs take one block per step in halves from its owner and the owner's partner, swap halves over --pair-device; --layers counts rounds of N steps)] [--device D] [--pair-device D] [--gid-index G] [--pair-gid-index G] [--traffic-class T (DSCP << 2 | ECN; 106 = DSCP 26 lossless, ECT(0), as weightd)] [--coordinator IP] [--port P]\n",argv[0]);
 			return 2;
 		}
 	}
 	chunks = options.chunk_bytes == 0u ? 0u : (options.shard_bytes + options.chunk_bytes - 1u) / options.chunk_bytes;
 	if ( options.ranks < 2u || options.ranks > STREAM_MAX_RANKS || options.rank >= options.ranks || options.layers == 0u || options.layers > 255u || options.depth == 0u || options.traffic_class > 255u ||
 	    options.shard_bytes == 0u || options.shard_bytes % sizeof(uint64_t) != 0u || options.chunk_bytes == 0u || options.chunk_bytes % 4096u != 0u || chunks > 65536u || options.verify > 2u ||
-	    (options.pair != 0u && ((options.ranks & 1u) != 0u || options.ranks < 4u)) )
+	    (options.pair != 0u && ((options.ranks & 1u) != 0u || options.ranks < 4u)) ||
+	    (options.rotate != 0u && (options.pair == 0u || options.shard_bytes % (2ull * options.chunk_bytes) != 0u || options.shard_bytes / 2u / options.chunk_bytes > 0x7fffffu ||
+	     options.layers * options.ranks > 65536u)) )
 		return 2;
 	partner = options.rank ^ 1u;
-	region_bytes = 2u * options.ranks * options.shard_bytes;
+	region_bytes = (options.rotate != 0u ? 4u : 2u * options.ranks) * options.shard_bytes;
 	region = (uint8_t *)aligned_alloc(2097152u,(region_bytes + 2097151u) & ~(uint64_t)2097151u);
 	if ( region == 0 )
 		StreamFail("allocate");
 	madvise(region,region_bytes,MADV_HUGEPAGE);
 	memset(region,0,region_bytes);
-	StreamFillShard(&options,region);
+	if ( options.rotate == 0u )
+		StreamFillShard(&options,region);
 	row_bytes = 2u * STREAM_MAX_RANKS * sizeof(StreamEndpoint);
 	table = (StreamEndpoint *)calloc(options.ranks,row_bytes);
 	relays = (StreamRelay *)calloc((size_t)options.ranks * chunks,sizeof(StreamRelay));
@@ -432,7 +627,7 @@ int main(int argc,char **argv)
 		clients[rank] = -1;
 		if ( rank == options.rank )
 			continue;
-		if ( options.pair == 0u || (rank != partner && (rank & 1u) == (options.rank & 1u)) )
+		if ( options.pair == 0u || (rank != partner && (options.rotate != 0u || (rank & 1u) == (options.rank & 1u))) )
 			StreamCreateQp(&fabric,rank,options.depth,&row[rank],region);
 		if ( options.pair != 0u && rank == partner )
 			StreamCreateQp(&pair,rank,options.depth,&row[STREAM_MAX_RANKS + rank],region);
@@ -452,6 +647,8 @@ int main(int argc,char **argv)
 			StreamPostReceive(pair.qps[rank],STREAM_RECV_DEPTH);
 		}
 	}
+	if ( options.rotate != 0u )
+		return StreamRotate(&options,&fabric,&pair,region,table,row_bytes,clients,server_fd);
 	for (rank=1u; rank<options.ranks; rank++)
 		if ( fabric.qps[(options.rank + rank) % options.ranks] != 0 )
 			fabric_list[fabric_peers++] = (options.rank + rank) % options.ranks;

@@ -285,6 +285,18 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   Qwen 3.8 and Gemma 4's sliding layers). Gemma 4's global layers (512-wide
   keys) still take the scalar kernel, which re-reads every key for every row
   and reaches 1 to 2 TFLOP/s per node; a long Gemma 4 prompt is bound by it.
+- Kimi K3's streamed prefill (lanes whose stage config names
+  `streamed_prefill` and whose deployment names `streamed_prefill_quantum`
+  and `streamed_prefill_min_tokens`) has three gaps. The deferred span's
+  cache blocks are not published, so a later request does not reuse that
+  part of the prompt and no mid-prompt checkpoint is kept; publishing them
+  needs a sealed-page publish after the streamed prefill writes the pages.
+  Other requests on the lane wait while one prompt defers and streams. Each
+  node holds the weight window (about 5.5 GB) and per-row engine buffers
+  (about 460 KB a row) beside the resident pack, so with about 11 GB free a
+  node runs 2,048 to 4,096 rows a pass; 16,384 rows (four passes for 1M
+  tokens) needs row sub-batching in the expert and attention steps and keys
+  expanded in blocks.
 - Kimi K3's prefill attention expands the values but keeps the keys latent
   (576 wide), so each head and key pair costs 1,408 FLOPs where expanded
   keys (192 wide) would cost 640. At 250K positions MLA attention is about

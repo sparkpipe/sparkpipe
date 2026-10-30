@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 4u
+#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 5u
 #define SPARK_STAGE_RUNNER_ROUND_ALL 0u
 #define SPARK_STAGE_RUNNER_ROUND_BEGIN 1u
 #define SPARK_STAGE_RUNNER_ROUND_FINISH 2u
@@ -115,6 +115,18 @@ typedef struct SparkStageRunnerModelOpen
 	void *stream;
 } SparkStageRunnerModelOpen;
 
+typedef struct SparkStageRunnerStreamedPrefill
+{
+	uint64_t sequence_id;
+	uint32_t first_position;
+	uint32_t token_count;
+	const uint32_t *token_ids;
+	uint32_t sequence_slot;
+	uint32_t state_target;
+	uint32_t multiprocessors;
+	uint32_t reserved0;
+} SparkStageRunnerStreamedPrefill;
+
 struct SparkStageRunnerModelInterface
 {
 	uint32_t abi_version;
@@ -138,6 +150,7 @@ struct SparkStageRunnerModelInterface
 	SparkStatus (*tap_plan)(void *model, const SparkStageRunnerTapPlan *plan);
 	SparkStatus (*bind_device)(void *model, const SparkStageRunnerDeviceWeights *weights, SparkStageRunnerModelGeometry *geometry);
 	SparkStatus (*check)(void *model);
+	SparkStatus (*streamed_prefill)(void *model, const SparkStageRunnerStreamedPrefill *request, const SparkStageRunnerServices *services);
 };
 
 #ifdef __cplusplus

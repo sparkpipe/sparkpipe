@@ -31,6 +31,9 @@ struct K3LayerWeights
 	const void *mla_kv_a_scale;
 	const void *mla_kv_a_norm_weight;
 	const void *mla_kv_b_value_weight;
+	const void *mla_q_b_weight;
+	const void *mla_kv_b_key_full_weight;
+	const void *mla_kv_b_value_full_weight;
 	const void *mla_kv_b_scale;
 	const void *mla_gate_weight;
 	const void *mla_out_weight;
@@ -63,6 +66,8 @@ struct K3LayerWeights
 #define K3_COLLECTIVE_MLA_PARTIALS 5u
 #define K3_COLLECTIVE_MLA_DOWN 6u
 #define K3_COLLECTIVE_MLA_KEYS 7u
+#define K3_COLLECTIVE_MLA_MHA_QUERY 8u
+#define K3_COLLECTIVE_MLA_MHA_PARTIALS 9u
 #define K3_COLLECTIVE_FINISH 0x100u
 #define K3_COLLECTIVE_BEGIN 0x200u
 #define K3_COLLECTIVE_ROWS 0x400u
@@ -104,7 +109,7 @@ struct K3SliceState
 	void *load_fork;
 	void *load_join;
 	void *lazy_context;
-	int32_t (*lazy_acquire)(void *context, uint32_t layer, void *buffers);
+	int32_t (*lazy_acquire)(void *context, uint32_t layer, void *buffers, void *stream);
 	void (*lazy_release)(void *context, uint32_t layer);
 };
 
@@ -140,6 +145,9 @@ static void K3BindLayer(const K3LayerWeights *weights, K3LayerBuffers *buffers)
 	buffers->mla_kv_a_scale = weights->mla_kv_a_scale;
 	buffers->mla_kv_a_norm_weight = weights->mla_kv_a_norm_weight;
 	buffers->mla_kv_b_value_weight = weights->mla_kv_b_value_weight;
+	buffers->mla_q_b_weight = weights->mla_q_b_weight;
+	buffers->mla_kv_b_key_full_weight = weights->mla_kv_b_key_full_weight;
+	buffers->mla_kv_b_value_full_weight = weights->mla_kv_b_value_full_weight;
 	buffers->mla_kv_b_scale = weights->mla_kv_b_scale;
 	buffers->mla_gate_weight = weights->mla_gate_weight;
 	buffers->mla_out_weight = weights->mla_out_weight;
@@ -288,6 +296,30 @@ static int32_t K3LaunchMlaShard(const K3SliceState *state, K3LayerBuffers *buffe
 }
 
 template<class Format, class Geometry>
+static int32_t K3LaunchMlaMha(const K3SliceState *state, K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
+{
+	void *stream_word = (void *)(uintptr_t)stream;
+	int32_t status = K3LayerMlaDown<Format>(buffers,rows,multiprocessors,stream);
+	if ( status == LM_LAUNCH_OK )
+		status = K3LayerMhaUp<Format,Geometry>(buffers,rows,multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	state->layer_collective(state->collective_context,stream_word,layer,K3_COLLECTIVE_MLA_MHA_QUERY);
+	status = K3LayerMlaGate(buffers,rows,multiprocessors,stream);
+	state->layer_collective(state->collective_context,stream_word,layer,K3_COLLECTIVE_MLA_MHA_QUERY | K3_COLLECTIVE_FINISH);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	status = K3LayerMhaPartials<Geometry>(buffers,rows,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	state->layer_collective(state->collective_context,stream_word,layer,K3_COLLECTIVE_MLA_MHA_PARTIALS);
+	status = K3LayerMhaMerge(buffers,rows,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	return(K3LayerMlaOutput<Format>(buffers,rows,partial_accumulate,1u,multiprocessors,stream));
+}
+
+template<class Format, class Geometry>
 static int32_t K3LaunchAttentionHalf(const K3SliceState *state, K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t sequences, uint32_t commit, uint16_t *partial_accumulate, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
 {
 	enum LmLayerKind kind = (enum LmLayerKind)K3_LAYER_KIND(layer);
@@ -296,6 +328,8 @@ static int32_t K3LaunchAttentionHalf(const K3SliceState *state, K3LayerBuffers *
 	case LM_LAYER_RECURRENT:
 		return(K3LayerKda<Format>(buffers,rows,sequences,commit,partial_accumulate,multiprocessors,stream));
 	case LM_LAYER_LATENT:
+		if ( buffers->kv_shard.degree > 1u && buffers->shard_mha != 0u )
+			return(K3LaunchMlaMha<Format,Geometry>(state,buffers,layer,rows,partial_accumulate,multiprocessors,stream));
 		if ( buffers->kv_shard.degree > 1u )
 			return(K3LaunchMlaShard<Format,Geometry>(state,buffers,layer,rows,partial_accumulate,multiprocessors,stream));
 		return(K3LayerMla<Format,Geometry>(buffers,rows,context,partial_accumulate,multiprocessors,stream));
@@ -379,7 +413,7 @@ static int32_t K3LaunchCellsMoe(const K3SliceState *state, K3LayerBuffers *buffe
 	if ( status == LM_LAUNCH_OK )
 		status = K3LayerMoeSelect(buffers,rows,packed_rows,stream);
 	if ( status == LM_LAUNCH_OK && state->lazy_acquire != 0 )
-		status = state->lazy_acquire(state->lazy_context,layer,(void *)buffers);
+		status = state->lazy_acquire(state->lazy_context,layer,(void *)buffers,(void *)stream);
 	if ( status == LM_LAUNCH_OK )
 		status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u);
 	if ( status != LM_LAUNCH_OK )
@@ -445,7 +479,7 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		{
 			status = K3LayerMoeRoute<Format>(buffers,rows,packed_rows,multiprocessors,stream);
 			if ( status == LM_LAUNCH_OK )
-				status = state->lazy_acquire(state->lazy_context,layer,(void *)buffers);
+				status = state->lazy_acquire(state->lazy_context,layer,(void *)buffers,(void *)stream);
 			if ( status == LM_LAUNCH_OK )
 				status = K3LayerMoeWeighted<Format>(buffers,rows,packed_rows,multiprocessors,stream,0u);
 			if ( status == LM_LAUNCH_OK && state->layer_collective != 0 )
@@ -499,7 +533,7 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		if ( state->lazy_release != 0 )
 			state->lazy_release(state->lazy_context,layer);
 		if ( state->tap_slab != 0 && state->tap_output[layer] >= 0 )
-			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows)), K3_LAYER_THREADS, 0, stream,
 				buffers->attnres_partial_bf16,state->tap_slab + ((uint64_t)state->tap_output[layer] * K3_HIDDEN),rows,K3_HIDDEN,state->tap_row_stride);
 	}
 	if ( first_layer + layer_count == K3_LAYERS )
@@ -509,7 +543,7 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		return(LM_LAUNCH_OK);
 	}
 	LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>),
-		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),
+		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows)),
 		K3_LAYER_THREADS, 0, stream,
 		buffers->attnres_partial_bf16,buffers->hidden_bf16,rows,K3_HIDDEN);
 	return(LM_LAUNCH_OK);
@@ -719,7 +753,7 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 			}
 			K3_PAIR_DO(K3LayerMoeSelect(a,total,total * K3_TOP_K,sa));
 			if ( status == LM_LAUNCH_OK && state->lazy_acquire != 0 )
-				status = state->lazy_acquire(state->lazy_context,layer,(void *)a);
+				status = state->lazy_acquire(state->lazy_context,layer,(void *)a,(void *)sa);
 			K3_PAIR_DO(K3LayerLatentMoe<Format>(a,total,total * K3_TOP_K,multiprocessors,sa,1u));
 			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,3u,1u));
 			K3_PAIR_DO(K3LayerSharedDown<Format>(b,rows_b,b->shared_mid_bf16,multiprocessors,sb));
@@ -736,9 +770,9 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 			state->lazy_release(state->lazy_context,layer);
 		if ( row_shard == 0u && state->tap_slab != 0 && state->tap_output[layer] >= 0 )
 		{
-			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows_a), K3_LAYER_THREADS, 0, sa,
+			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows_a)), K3_LAYER_THREADS, 0, sa,
 				a->attnres_partial_bf16,state->tap_slab + ((uint64_t)state->tap_output[layer] * K3_HIDDEN),rows_a,K3_HIDDEN,state->tap_row_stride);
-			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows_b), K3_LAYER_THREADS, 0, sb,
+			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows_b)), K3_LAYER_THREADS, 0, sb,
 				b->attnres_partial_bf16,state->tap_slab + (uint64_t)rows_a * state->tap_row_stride + ((uint64_t)state->tap_output[layer] * K3_HIDDEN),rows_b,K3_HIDDEN,state->tap_row_stride);
 		}
 	}
@@ -755,11 +789,11 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 	else
 	{
 		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>),
-			dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows_a),
+			dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows_a)),
 			K3_LAYER_THREADS, 0, sa,
 			a->attnres_partial_bf16,a->hidden_bf16,rows_a,K3_HIDDEN);
 		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>),
-			dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows_b),
+			dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows_b)),
 			K3_LAYER_THREADS, 0, sb,
 			b->attnres_partial_bf16,b->hidden_bf16,rows_b,K3_HIDDEN);
 	}

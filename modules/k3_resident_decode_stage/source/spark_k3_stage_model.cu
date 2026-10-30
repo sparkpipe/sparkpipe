@@ -10,6 +10,7 @@
 #include "sparkpipe/spark_stage_runner_model.h"
 #include "sparkpipe/spark_error_site.h"
 #include "inference/llms/kimi_k3/layer.cuh"
+#include "spark_k3_streamed_prefill.cuh"
 
 #define K3_RUNNER_STAGE_ALL SPARK_STAGE_RUNNER_ROUND_ALL
 #define K3_RUNNER_STAGE_BEGIN SPARK_STAGE_RUNNER_ROUND_BEGIN
@@ -177,6 +178,10 @@ struct SparkK3ModelState
 	SparkK3RunnerLane lanes[2];
 	void (*layer_collective_override)(void *context, void *stream, uint32_t layer, uint32_t phase);
 	void *layer_collective_context;
+	SparkStageRunnerStreamedPrefillConfig streamed_config;
+	K3Streamed *streamed;
+	char *rank_pack_path;
+	cudaStream_t execution_stream;
 };
 
 static void K3ModelFail(SparkK3ModelState *state)
@@ -310,6 +315,19 @@ static void K3RunnerShardExchange(SparkK3ModelState *state, K3LayerBuffers *b,
 		K3ModelFail(state);
 		return;
 	}
+	if ( (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_MHA_QUERY )
+	{
+		K3RunnerRound(state, stream, rows, b->query_bf16, b->shard_query_gathered_bf16,
+			K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS) * K3_MHA_QK, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,
+			(phase & K3_COLLECTIVE_FINISH) != 0u ? K3_RUNNER_STAGE_FINISH : K3_RUNNER_STAGE_BEGIN);
+		return;
+	}
+	if ( (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_MHA_PARTIALS )
+	{
+		K3RunnerRound(state, stream, (uint32_t)(K3LayerMhaPartialStride(b, rows) / K3_MHA_PARTIAL_UNIT_FLOATS),
+			b->shard_partials_f32, b->shard_partials_received_f32, 0u, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, K3_RUNNER_STAGE_ALL);
+		return;
+	}
 	if ( (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_KEYS )
 	{
 		const uint64_t stride = K3LayerMlaWindowStride(b, b->shard_gather_window);
@@ -426,7 +444,8 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			? b->hidden_bf16 : b->attention_out_bf16;
 	if ( b->tp_sharded == 0u )
 		return;
-	if ( base == K3_COLLECTIVE_MLA_QUERY || base == K3_COLLECTIVE_MLA_PARTIALS || base == K3_COLLECTIVE_MLA_KEYS )
+	if ( base == K3_COLLECTIVE_MLA_QUERY || base == K3_COLLECTIVE_MLA_PARTIALS || base == K3_COLLECTIVE_MLA_KEYS ||
+		base == K3_COLLECTIVE_MLA_MHA_QUERY || base == K3_COLLECTIVE_MLA_MHA_PARTIALS )
 	{
 		K3RunnerShardExchange(state, b, stream, rows, phase);
 		return;
@@ -723,7 +742,7 @@ static uint32_t K3ModelPublished(void *context)
 	return state->services->published(state->services->context);
 }
 
-static int32_t K3ModelLazyAcquire(void *context, uint32_t layer, void *buffers_void)
+static int32_t K3ModelLazyAcquire(void *context, uint32_t layer, void *buffers_void, void *stream)
 {
 	SparkK3ModelState *state = (SparkK3ModelState *)context;
 	K3LayerBuffers *buffers = (K3LayerBuffers *)buffers_void;
@@ -731,6 +750,8 @@ static int32_t K3ModelLazyAcquire(void *context, uint32_t layer, void *buffers_v
 	SparkStatus status;
 	if ( state == 0 || buffers == 0 || layer >= K3_LAYERS )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	status = state->services->expert_weights(state->services->context, layer, buffers->group_row_offset,
 		state->rows * K3_TOP_K, &w1, &w2);
 	if ( status != SPARK_STATUS_OK )
@@ -809,6 +830,8 @@ static void K3ModelClose(void *model)
 	cudaFree(state->group_tile_prefix_w2);
 	cudaFree(state->dense_row_offset);
 	cudaFree(state->dense_tile_prefix);
+	K3StreamedDestroy(state->streamed);
+	free(state->rank_pack_path);
 	if ( state->dispatch.buffers != 0 )
 		SparkK3DispatchDestroy(&state->dispatch);
 	SparkK3ModuleDestroy(&state->module);
@@ -836,6 +859,10 @@ static SparkStatus K3ModelOpen(const SparkStageRunnerModelOpen *request, void **
 		configuration->device_collective->wait_mode == SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE ? 1u : 0u;
 	state->layer_collective_override = configuration->layer_collective_override;
 	state->layer_collective_context = configuration->layer_collective_context;
+	state->streamed_config = configuration->streamed_prefill;
+	state->execution_stream = (cudaStream_t)request->stream;
+	if ( state->streamed_config.node_rows != 0u && (configuration->rank_pack_path == 0 || (state->rank_pack_path = strdup(configuration->rank_pack_path)) == 0) )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->kv_page_bytes = configuration->kv_page_bytes != 0u ? configuration->kv_page_bytes :
 		K3GlobalKv::kPageBytes / (configuration->tp_degree > 1u ? configuration->tp_degree : 1u);
 	for ( pool_index = 0u; pool_index < K3_RUNNER_TP_CONTEXT_POOL_DEPTH; ++pool_index )
@@ -885,6 +912,7 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 	SparkK3ModelState *state = (SparkK3ModelState *)model;
 	const uint32_t max_rows = state->dispatch.max_rows;
 	const uint64_t routes = (uint64_t)max_rows * K3_TOP_K;
+	state->dispatch.streamed_prefill = state->streamed_config.node_rows != 0u ? 1u : 0u;
 	if ( SparkK3DispatchBindWeights(&state->dispatch, &state->module.pack, state->module.bound, state->module.bound_count,
 		lazy_pack) != SPARK_K3_DISPATCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -958,7 +986,29 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 		cudaMalloc(&state->dense_row_offset, 2u * sizeof(*state->dense_row_offset)) != cudaSuccess ||
 		cudaMalloc(&state->dense_tile_prefix, 2u * sizeof(*state->dense_tile_prefix)) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( state->streamed_config.node_rows != 0u )
+	{
+		uint64_t vocab_offset = 0u, vocab_bytes = 0u;
+		uint32_t vocab_rows = 0u;
+		SparkStatus status = K3ModelEntry(state, "model.embed_tokens.weight", &vocab_offset, &vocab_bytes, &vocab_rows);
+		if ( status == SPARK_STATUS_OK )
+			status = K3StreamedCreate(&state->streamed_config, &state->dispatch, &state->module, state->rank_pack_path, lazy_pack, state->tp_rank, vocab_offset, vocab_bytes, vocab_rows,
+				&state->streamed);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+	}
 	return SPARK_STATUS_OK;
+}
+
+static SparkStatus K3ModelStreamedPrefill(void *model, const SparkStageRunnerStreamedPrefill *request, const SparkStageRunnerServices *services)
+{
+	SparkK3ModelState *state = (SparkK3ModelState *)model;
+	if ( state->streamed == 0 )
+	{
+		fprintf(stderr, "sparkpipe_k3: streamed prefill is not configured for this lane (stage config streamed_prefill)\n");
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	return K3StreamedRun(state->streamed, request, services, state->execution_stream);
 }
 
 static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, void *stream_void)
@@ -1089,8 +1139,9 @@ static const void *K3ModelProbeBuffers(void *model)
 static void K3ModelReport(void *model, uint32_t rank)
 {
 	const SparkK3ModelState *state = (const SparkK3ModelState *)model;
-	fprintf(stderr, "K3-STEP-TIMING rank=%u mla_gather_waves=%llu mla_scatter_waves=%llu pair_waves=%llu\n", rank,
+	fprintf(stderr, "K3-STEP-TIMING rank=%u mla_gather_waves=%llu mla_scatter_waves=%llu mla_mha_waves=%llu pair_waves=%llu\n", rank,
 		(unsigned long long)state->dispatch.mla_gather_waves, (unsigned long long)state->dispatch.mla_scatter_waves,
+		(unsigned long long)state->dispatch.mla_mha_waves,
 		(unsigned long long)state->dispatch.pair_waves);
 }
 
@@ -1166,11 +1217,14 @@ static const SparkStageRunnerModelInterface spark_k3_stage_model =
 	0,
 #if SPARK_K3_SERVING_TOPOLOGY == 16
 	K3ModelKeepRows,
-	K3ModelTapPlan
+	K3ModelTapPlan,
 #else
 	0,
-	0
+	0,
 #endif
+	0,
+	0,
+	K3ModelStreamedPrefill
 };
 
 const SparkStageRunnerModelInterface *SparkK3StageModel(void)

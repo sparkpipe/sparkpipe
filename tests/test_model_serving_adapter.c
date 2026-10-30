@@ -1062,7 +1062,7 @@ static void TestVerifySubmission(void)
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	row_lanes[0] = 0u;
 	row_lanes[1] = 1u;
-	submission.flags = UINT32_C(0x00000002);
+	submission.flags = UINT32_C(0x80000000);
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	submission.flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY;
 	submission.tokens_per_sequence = 5u;
