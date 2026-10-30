@@ -33,6 +33,25 @@
 #define K3_STREAMED_ROUND_BLOCK_BYTES (2u << 20)
 #define K3_STREAMED_ROUND_RING 4u
 
+__global__ static void K3StreamedSumKernel(const uint8_t *blocks, uint64_t block_bytes, uint64_t pitch, uint64_t *sums)
+{
+	__shared__ unsigned long long partial[256];
+	const uint32_t *words = (const uint32_t *)(blocks + (uint64_t)blockIdx.x * pitch);
+	unsigned long long sum = 0ull;
+	for (uint64_t index = threadIdx.x; index < block_bytes / 4u; index += blockDim.x)
+		sum += (unsigned long long)words[index] * (2u * (uint32_t)index + 1u);
+	partial[threadIdx.x] = sum;
+	__syncthreads();
+	for (uint32_t half = blockDim.x / 2u; half != 0u; half /= 2u)
+	{
+		if ( threadIdx.x < half )
+			partial[threadIdx.x] += partial[threadIdx.x + half];
+		__syncthreads();
+	}
+	if ( threadIdx.x == 0u )
+		sums[blockIdx.x] = partial[0];
+}
+
 typedef struct K3StreamedRoundContext
 {
 	const SparkStageRunnerServices *services;
@@ -40,6 +59,11 @@ typedef struct K3StreamedRoundContext
 	uint8_t *send_stage[K3_STREAMED_ROUND_RING];
 	uint8_t *receive_stage[K3_STREAMED_ROUND_RING];
 	uint32_t next_stage;
+	uint32_t rank;
+	uint64_t *sums;
+	uint64_t *sums_host;
+	uint64_t mismatches;
+	uint64_t late;
 } K3StreamedRoundContext;
 
 static void K3StreamedRound(void *context, void *stream, uint32_t operation, uint32_t rows, uint32_t row_elements, const void *send, void *receive)
@@ -64,7 +88,8 @@ static void K3StreamedRound(void *context, void *stream, uint32_t operation, uin
 		const uint32_t block = (uint32_t)(K3_STREAMED_ROUND_BLOCK_BYTES / row_bytes != 0u ? K3_STREAMED_ROUND_BLOCK_BYTES / row_bytes : 1u);
 		const uint32_t peers = operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ? K3_STREAMED_SHARDS : 1u;
 		uint32_t first;
-		if ( round->send_stage[K3_STREAMED_ROUND_RING - 1u] == 0 || round->receive_stage[K3_STREAMED_ROUND_RING - 1u] == 0 || row_bytes > K3_STREAMED_ROUND_BLOCK_BYTES )
+		if ( round->send_stage[K3_STREAMED_ROUND_RING - 1u] == 0 || round->receive_stage[K3_STREAMED_ROUND_RING - 1u] == 0 || round->sums_host == 0 ||
+			row_bytes > K3_STREAMED_ROUND_BLOCK_BYTES )
 		{
 			if ( round->status == SPARK_STATUS_OK )
 				round->status = SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -82,7 +107,41 @@ static void K3StreamedRound(void *context, void *stream, uint32_t operation, uin
 				round->status = SPARK_STATUS_IO_ERROR;
 				return;
 			}
-			status = round->services->round(round->services->context, stream, operation, SPARK_STAGE_RUNNER_ROUND_ALL, count, row_elements, stage, landing);
+			K3StreamedSumKernel<<<peers, 256u, 0, (cudaStream_t)stream>>>(stage, width, width, round->sums);
+			status = round->services->round(round->services->context, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, 1u, 4u * K3_STREAMED_SHARDS,
+				round->sums, round->sums + K3_STREAMED_SHARDS);
+			if ( status == SPARK_STATUS_OK )
+				status = round->services->round(round->services->context, stream, operation, SPARK_STAGE_RUNNER_ROUND_ALL, count, row_elements, stage, landing);
+			for (uint32_t attempt = 0u; status == SPARK_STATUS_OK; attempt++)
+			{
+				uint32_t peer, bad = UINT32_MAX;
+				K3StreamedSumKernel<<<K3_STREAMED_SHARDS, 256u, 0, (cudaStream_t)stream>>>(landing, width, width,
+					round->sums + K3_STREAMED_SHARDS + K3_STREAMED_SHARDS * K3_STREAMED_SHARDS);
+				if ( cudaMemcpyAsync(round->sums_host, round->sums, (size_t)(2u * K3_STREAMED_SHARDS + K3_STREAMED_SHARDS * K3_STREAMED_SHARDS) * sizeof(uint64_t),
+						cudaMemcpyDeviceToHost, (cudaStream_t)stream) != cudaSuccess || cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
+				{
+					status = SPARK_STATUS_IO_ERROR;
+					break;
+				}
+				for (peer = 0u; peer < K3_STREAMED_SHARDS && bad == UINT32_MAX; peer++)
+					if ( round->sums_host[K3_STREAMED_SHARDS + K3_STREAMED_SHARDS * K3_STREAMED_SHARDS + peer] !=
+						round->sums_host[K3_STREAMED_SHARDS + (uint64_t)peer * K3_STREAMED_SHARDS + (peers == 1u ? 0u : round->rank)] )
+						bad = peer;
+				if ( bad == UINT32_MAX )
+				{
+					round->late += attempt != 0u ? 1u : 0u;
+					break;
+				}
+				if ( attempt == 0u )
+					round->mismatches++;
+				if ( attempt >= 2000u )
+				{
+					fprintf(stderr, "sparkpipe_k3: streamed exchange op=%u rows=%u: the block from rank %u does not match its sender's checksum after 2 s\n", operation, count, bad);
+					status = SPARK_STATUS_VALIDATION_FAILED;
+					break;
+				}
+				usleep(1000u);
+			}
 			if ( status == SPARK_STATUS_OK && cudaMemcpy2DAsync((uint8_t *)receive + (uint64_t)first * row_bytes, (size_t)pitch, landing, (size_t)width,
 					(size_t)width, K3_STREAMED_SHARDS, cudaMemcpyDeviceToDevice, (cudaStream_t)stream) != cudaSuccess )
 				status = SPARK_STATUS_IO_ERROR;
@@ -335,6 +394,7 @@ static void K3StreamedDestroy(K3Streamed *s)
 	cudaFree(s->mla_keys);
 	cudaFreeHost(s->host_staging);
 	cudaFreeHost(s->health);
+	cudaFreeHost(s->round.sums_host);
 	for (index = 0u; index < s->allocation_count; index++)
 		cudaFree(s->allocations[index]);
 	delete s;
@@ -426,6 +486,10 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 		s->round.send_stage[stage] = K3StreamedAlloc<uint8_t>(s, (uint64_t)K3_STREAMED_SHARDS * K3_STREAMED_ROUND_BLOCK_BYTES);
 		s->round.receive_stage[stage] = K3StreamedAlloc<uint8_t>(s, (uint64_t)K3_STREAMED_SHARDS * K3_STREAMED_ROUND_BLOCK_BYTES);
 	}
+	s->round.rank = s->rank;
+	s->round.sums = K3StreamedAlloc<uint64_t>(s, 2u * K3_STREAMED_SHARDS + K3_STREAMED_SHARDS * K3_STREAMED_SHARDS);
+	if ( cudaMallocHost((void **)&s->round.sums_host, (size_t)(2u * K3_STREAMED_SHARDS + K3_STREAMED_SHARDS * K3_STREAMED_SHARDS) * sizeof(uint64_t)) != cudaSuccess )
+		s->round.sums_host = 0;
 	memset(&s->kda, 0, sizeof(s->kda));
 	s->kda.node = s->rank;
 	s->kda.nodes = K3_STREAMED_SHARDS;
@@ -940,7 +1004,8 @@ static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPr
 		status = K3StreamedStates(s, request->state_target, 1u, stream);
 	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize(stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
-	fprintf(stderr, "sparkpipe_k3: streamed prefill sequence %llu positions %u..%llu in %u passes status=%d %.1f s\n", (unsigned long long)request->sequence_id,
-		request->first_position, (unsigned long long)keys, passes, (int)status, (double)(K3StreamedNowNs() - started) / 1e9);
+	fprintf(stderr, "sparkpipe_k3: streamed prefill sequence %llu positions %u..%llu in %u passes status=%d %.1f s; exchanges with a block late or wrong at first check %llu, settled after waiting %llu\n",
+		(unsigned long long)request->sequence_id, request->first_position, (unsigned long long)keys, passes, (int)status, (double)(K3StreamedNowNs() - started) / 1e9,
+		(unsigned long long)s->round.mismatches, (unsigned long long)s->round.late);
 	return status;
 }
