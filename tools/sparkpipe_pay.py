@@ -291,7 +291,9 @@ class Book:
         elif kind == "acceptance":
             self.accounts[data["account"]]["accepted"] = {"ko": data["ko"], "en": data["en"], "at": line["at"]}
         elif kind == "order":
-            self.orders[data["order"]] = dict(data, created=line["at"], state="created", invoice=None, link=None, issued=False, paid=None)
+            self.orders[data["order"]] = dict(data, created=line["at"], state="created", invoice=None, link=None, issued=False, paid=None, child=None)
+            if data.get("parent") in self.orders:
+                self.orders[data["parent"]]["child"] = data["order"]
         elif kind == "invoice":
             self.orders[data["order"]].update(invoice=data["invoice"], link=data["link"], state="unpaid")
             self.invoices[data["invoice"]] = data["order"]
@@ -303,6 +305,8 @@ class Book:
                 self.orders[data["order"]]["received"] = data["received"]
         elif kind == "payment":
             self.orders[data["order"]].update(state="completed", paid=line["at"])
+            if data.get("received"):
+                self.orders[data["order"]]["received"] = data["received"]
         elif kind == "hours_issued":
             self.orders[data["order"]].update(issued=True, issued_hours=data["hours"], paid_net=data.get("net", self.orders[data["order"]]["net"]))
 
@@ -318,7 +322,7 @@ class Book:
                 if date.fromisoformat(order["last"]) >= local_day(now):
                     total += Decimal(str(order["issued_hours"] if order["issued"] else order["hours"]))
             elif self.waiting(order, now):
-                total += order["hours"]
+                total += Decimal(str(order["hours"]))
         return total
 
     def prepaid(self, agreement):
@@ -427,7 +431,11 @@ def statement(cfg, company, terms):
 
 
 def invoice_body(cfg, quote):
-    if quote["product"] == "hourly":
+    if quote.get("parent"):
+        name = f"Remaining {quote['hours']} SparkPipe fleet-hours of order {quote['parent']}"
+        detail = f"Hourly Terms 3.5; usable {quote['start']} to {quote['last']}"
+        quantity = {"value": 1, "type": "quantity"}
+    elif quote["product"] == "hourly":
         name = f"{quote['hours']} SparkPipe fleet-hours"
         detail = f"Hourly Terms; usable {quote['start']} to {quote['last']}"
         quantity = {"value": quote["hours"], "type": "hours"}
@@ -493,6 +501,19 @@ def paid_with(remote):
     return sorted({str(p.get("paymentCurrencySymbol")) for p in payments if isinstance(p, dict) and p.get("paymentCurrencySymbol")})
 
 
+def left_of(order):
+    if order["product"] != "hourly" or not order["issued"]:
+        return None
+    hours = Decimal(str(order["hours"])) - Decimal(str(order["issued_hours"]))
+    if hours <= 0:
+        return None
+    total = money(order["total"]) - money(order.get("received") or order["total"])
+    net = money(order["net"]) - money(order["paid_net"])
+    if total <= 0:
+        return None
+    return {"hours": hours, "total": total, "net": net, "vat": total - net}
+
+
 def receipt(cfg, order, issued, received):
     if order["product"] == "hourly":
         what = f"{issued['hours']} fleet-hours, usable from {order['start']} to {order['last']}"
@@ -503,6 +524,8 @@ def receipt(cfg, order, issued, received):
             f"Order {order['order']} was for {order['total']} USD; {received} USD arrived. We issued what it covers: {what}.",
             "",
             f"Received in {order['coin'].split('.')[0]}: {received} USD, VAT included",
+            "",
+            f"To get the other hours of this order at the same price, pay the remaining amount from your account: {cfg.public}/account.html?order={order['order']}",
         ]
     else:
         lines = [
@@ -710,6 +733,27 @@ class App:
             "net": text_money(net), "vat": text_money(vat), "total": text_money(net + vat),
         }
 
+    def rest_terms(self, pricing, body, account, now):
+        parent = self.book.orders.get(body.get("parent")) if isinstance(body.get("parent"), str) else None
+        if not parent or parent["account"] != account:
+            raise Refusal("No such order belongs to your account.", 404)
+        child = self.book.orders.get(parent["child"]) if parent["child"] else None
+        if child and (child["issued"] or self.book.waiting(child, now)):
+            raise Refusal("A payment for the rest of this order is already open or paid; see your orders.", 409)
+        left = left_of(parent)
+        if not left:
+            raise Refusal("Nothing is left to pay on this order.", 409)
+        if date.fromisoformat(parent["last"]) < local_day(now):
+            raise Refusal("The hours of this order have expired.", 409)
+        limit = self.limit(pricing, account)
+        if left["hours"] > limit - self.book.held(account, now):
+            raise Refusal(f"The rest of this order would take the account over its holding limit of {limit} hours (clause 4.1). Use some hours first, or write to us.", 409)
+        return {
+            "product": "hourly", "parent": parent["order"], "hours": format(left["hours"], "f"),
+            "start": parent["start"], "last": parent["last"],
+            "net": text_money(left["net"]), "vat": text_money(left["vat"]), "total": text_money(left["total"]),
+        }
+
     def order(self, body, account, ip, agent):
         self.throttle("order", ip)
         now = clock()
@@ -717,8 +761,8 @@ class App:
         pricing = self.cfg.pricing()
         with self.book.lock:
             record = self.book.accounts[account]
-            if body.get("product") == "hourly":
-                quote = self.hourly_terms(pricing, body, account, now)
+            if body.get("product") in ("hourly", "rest"):
+                quote = self.hourly_terms(pricing, body, account, now) if body["product"] == "hourly" else self.rest_terms(pricing, body, account, now)
                 if not self.accepted(account, self.current_terms()):
                     if body.get("accept") is not True:
                         raise Refusal("The Hourly Terms have changed since you accepted them. Accept the current text to continue.", 409, "terms")
@@ -743,6 +787,11 @@ class App:
     def shown(self, order):
         shown = {key: order.get(key) for key in ("order", "product", "hours", "net", "vat", "total", "start", "last", "agreement", "coin", "state", "issued", "created", "paid", "received")}
         shown["issuedHours"] = None if order.get("issued_hours") is None else hours_number(order["issued_hours"])
+        shown["parent"] = order.get("parent")
+        child = self.book.orders.get(order["child"]) if order.get("child") else None
+        left = left_of(order) if not child or not (child["issued"] or self.book.waiting(child, clock())) else None
+        shown["left"] = text_money(left["total"]) if left else None
+        shown["leftHours"] = hours_number(left["hours"]) if left else None
         shown["checkout"] = order["link"] if order["state"] in ("unpaid", "pending") else None
         return shown
 

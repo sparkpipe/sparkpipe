@@ -57,7 +57,7 @@ quote request to `POST /pay/api/lead`.
 | `POST /pay/api/verify` | `email`, `code`, and for a new account `company` and `accept: true`: signs in, sets the cookie `sp_session` and returns the account |
 | `POST /pay/api/signout` | Clears the cookie |
 | `GET /pay/api/account` | The signed-in account: hours, limit, blocks, orders, agreements and whether it accepted the current Hourly Terms |
-| `POST /pay/api/order` | Signed in. `product: "hourly"` with `hours`, `start`, `coin` (and `accept: true` when the terms changed since the account accepted them), or `product: "two-year"` with `agreement`, `amount` before VAT and `coin`: returns the checkout link. `coin` is one of the twelve CoinPayments symbols in `COINS`, such as `USDC.BASE` or `USDT.TRC20` |
+| `POST /pay/api/order` | Signed in. `product: "hourly"` with `hours`, `start`, `coin` (and `accept: true` when the terms changed since the account accepted them); `product: "rest"` with `parent` (a part-paid hourly order) and `coin`, for what is left of it at the same price; or `product: "two-year"` with `agreement`, `amount` before VAT and `coin`: returns the checkout link. `coin` is one of the twelve CoinPayments symbols in `COINS`, such as `USDC.BASE` or `USDT.TRC20` |
 | `GET /pay/api/order/<order>` | The order's state, amounts and hours; the checkout link while unpaid. The order number is 80 random bits |
 | `POST /pay/api/lead` | A two-year quote request: `company`, `email`, `name`, `fleets`, `start`, `message` |
 | `POST /pay/api/coinpayments` | CoinPayments webhooks |
@@ -150,7 +150,7 @@ DKIM and DMARC pass.
    `USDC.BEP20`, `USDT.TRC20`, `USDT.ERC20`, `USDT.BEP20`, `USDT.SOL`,
    `USDT.POL` and `USDT.ARB`, and turn every other coin and LTCT off, so no
    payment arrives in a coin whose price moves. Set the underpayment limit
-   to 50% with no fixed amount (see Operating it). Payment Settings lists
+   to a fixed $100,000 with no percentage (see Operating it). Payment Settings lists
    every currency; open each one that is not in that list and disable it.
    A disabled currency is no longer offered at checkout.
 3. Choose the payout wallet or conversion there too; the service does not
@@ -224,15 +224,20 @@ must then match `origin/main` byte for byte.
 - Part payments settle without anyone. CoinPayments completes an
   underpaid invoice when the shortfall is within the underpayment limit in
   Payment Settings: a percentage of the invoice (at most 50%), a fixed
-  amount, or both, in which case the smaller wins. Set only the percentage,
-  at 50%, so any payment that covers at least half completes. The service
-  then issues hours in proportion to what arrived, mails the customer a
-  receipt that says so, and mails `SPARKPIPE_PAY_NOTIFY` "Paid in part". A
-  part payment CoinPayments does not complete stays `pending` until the
-  payment window closes, when CoinPayments refunds it and emails the
-  customer a claim link; the account page explains both outcomes while it
-  waits. Overpayments and late payments are refunded by CoinPayments the
-  same way.
+  amount, or both, in which case the smaller wins. Set only a fixed
+  $100,000, with no percentage, so every part payment of an invoice under
+  $100,000 completes with what arrived. The service then issues hours in
+  proportion to what arrived, mails the customer a receipt that says so and
+  links to paying the rest, and mails `SPARKPIPE_PAY_NOTIFY` "Paid in part".
+  The order keeps what is left (`left`, `leftHours`): the account page
+  offers "Pay the remaining" for it, which places a `rest` order at the
+  same price, dates and coin, as often as the customer likes, until the
+  hours issued across the orders equal the hours ordered. A part payment
+  CoinPayments does not complete stays `pending` until the payment window
+  closes, when CoinPayments refunds it and emails the customer a claim
+  link. Overpayments and late payments are refunded the same way: once a
+  part payment completes its invoice, money sent again to that address is
+  an overpayment, which is why the rest goes through a new order.
 - A completed invoice whose total or currency does not match the order
   (state `mismatch`) issues no hours and mails `SPARKPIPE_PAY_NOTIFY`. Check the invoice in the dashboard; if it is
   right, `sparkpipe_pay.py release <order>` fetches the invoice again and,

@@ -417,6 +417,47 @@ def part_payment_flow(failures, cfg, app, fake, buyer, mailbox):
         failures.append(f"the holding limit counts the ordered hours of a part payment, not the issued ones: {app.book.held(account, sp.clock())} vs {held}")
     if buyer("POST", "/order", {"product": "hourly", "hours": 1, "start": "2026-12-01", "coin": "USDC.ERC20"})[0] != 200:
         failures.append("an account with fractional hours cannot order whole hours")
+    rest_flow(failures, cfg, app, fake, buyer, mailbox, placed["order"], account)
+
+
+def rest_flow(failures, cfg, app, fake, buyer, mailbox, parent, account):
+    shown = buyer("GET", "/order/" + parent)[1]
+    if shown["left"] != "65.02" or shown["leftHours"] != "2.9555":
+        failures.append(f"what is left of a part-paid order: {shown}")
+    note = [m for rcpt, m in mailbox.mail if "ops@acme.example" in rcpt and parent in m["Subject"]][-1].get_content()
+    if f"account.html?order={parent}" not in note:
+        failures.append("the part-payment receipt does not link to paying the rest")
+    stranger = Client(buyer.port, origin="https://sparkpipe.ai")
+    sign_in(stranger, mailbox, "else@other.example", company="Other Co", accept=True)
+    if stranger("POST", "/order", {"product": "rest", "parent": parent, "coin": "USDC.ERC20"})[0] != 404:
+        failures.append("another account can pay the rest of an order")
+    held = app.book.held(account, sp.clock())
+    status, rest = buyer("POST", "/order", {"product": "rest", "parent": parent, "coin": "USDT.TRC20"})
+    if status != 200:
+        failures.append(f"paying the rest: {status} {rest}")
+        return
+    key = max(fake.invoices, key=lambda k: int(k[3:]))
+    body = fake.invoices[key]["body"]
+    if body["amount"] != {"breakdown": {"subtotal": "59.11", "taxTotal": "5.91"}, "total": "65.02"} or body["items"][0]["quantity"] != {"value": 1, "type": "quantity"} or body["payment"]["paymentCurrency"] != sp.COINS["USDT.TRC20"]:
+        failures.append(f"rest invoice: {body['amount']} {body['items'][0]['quantity']} {body['payment']}")
+    if app.book.held(account, sp.clock()) != held + sp.Decimal("2.9555"):
+        failures.append("an unpaid rest order does not count toward the holding limit")
+    if buyer("POST", "/order", {"product": "rest", "parent": parent, "coin": "USDC.ERC20"})[0] != 409 or buyer("GET", "/order/" + parent)[1]["left"] is not None:
+        failures.append("the rest of an order can be ordered twice")
+    before = sp.Decimal(str(buyer("GET", "/account")[1]["hours"]))
+    fake.invoices[key]["status"] = "completed"
+    webhook(buyer, cfg, key)
+    app.jobs.join()
+    app.mails.join()
+    child = buyer("GET", "/order/" + rest["order"])[1]
+    after = sp.Decimal(str(buyer("GET", "/account")[1]["hours"]))
+    if child["parent"] != parent or child["issuedHours"] != "2.9555" or child["left"] is not None or after != before + sp.Decimal("2.9555"):
+        failures.append(f"a paid rest does not issue the remaining hours: {child} {before} {after}")
+    issued = sum(sp.Decimal(str(o["issued_hours"])) for o in app.book.orders.values() if o["order"] in (parent, rest["order"]))
+    if issued != 4 or buyer("GET", "/order/" + parent)[1]["left"] is not None:
+        failures.append(f"an order paid in two parts does not total its hours: {issued}")
+    if buyer("POST", "/order", {"product": "rest", "parent": rest["order"], "coin": "USDC.ERC20"})[0] != 409:
+        failures.append("a fully paid rest can be paid again")
 
 
 def prepayment_flow(failures, cfg, app, fake, buyer, mailbox, port):
@@ -484,7 +525,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("pay: tranches match the agreement; email codes, sessions, terms acceptance, USDC and USDT invoices on the chosen network, signed webhooks, receipts, part payments, reconciliation, the holding limit, gates, quote requests and the hash-chained ledger behave")
+    print("pay: tranches match the agreement; email codes, sessions, terms acceptance, USDC and USDT invoices on the chosen network, signed webhooks, receipts, part payments and paying the rest, reconciliation, the holding limit, gates, quote requests and the hash-chained ledger behave")
     return 0
 
 

@@ -30,7 +30,7 @@ These Terms are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 3.4. Hours are issued once we have verified the payment: for a won transfer when it reaches our account, and for USDC or USDT when our payment processor reports the payment completed.
 
-3.5. If our payment processor completes a USDC or USDT payment for less than the invoice total, we issue hours in proportion to the amount received, rounded down to four decimal places and usable for the period the order states; fractions of an hour count toward the account's balance like whole hours. A payment the processor does not complete, an amount above the invoice total, and a payment that arrives after the processor's payment window are returned through the processor's refund procedure.
+3.5. If our payment processor completes a USDC or USDT payment for less than the invoice total, we issue hours in proportion to the amount received, rounded down to four decimal places and usable for the period the order states; fractions of an hour count toward the account's balance like whole hours. Customer may pay the rest of that order later, in one or more payments at the same price, for the hours not yet issued. A payment the processor does not complete, an amount above the invoice total, and a payment that arrives after the processor's payment window are returned through the processor's refund procedure.
 
 ## 4. Hours
 
