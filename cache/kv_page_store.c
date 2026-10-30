@@ -841,7 +841,7 @@ SparkStatus SparkKvPageStoreWriteback(
 		{
 			memset(job,0,sizeof(*job));
 			(void)pthread_mutex_unlock(&worker->mutex);
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
 		job->reserves_backing_page = 1u;
 		worker->backing_slots_by_logical_page[logical_page_index] =

@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Your Account · SparkPipe</title>
+<meta name="description" content="Your SparkPipe fleet-hours: balance, orders, payments and two-year prepayments.">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
+<link rel="stylesheet" href="site.css?v=dcbd7de8">
+<link rel="stylesheet" href="checkout.css?v=1">
+</head>
+<body>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">fleet-hours</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="index.html#fleets">Fleets</a>
+      <a href="index.html#prices">Prices</a>
+      <a href="two-year.html">Two-year</a>
+    </nav>
+    <div class="nav-actions">
+      <div class="lang" role="group" aria-label="Language / 언어"><a href="account.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
+      <a class="btn small solid" href="buy.html">Buy hours</a>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+<section class="co-head">
+  <p class="label">Account</p>
+  <h1 id="title">Your fleet-hours.</h1>
+</section>
+
+<div class="stack">
+  <section class="card" id="status" hidden aria-live="polite">
+    <p class="label">Order <span id="st-order"></span></p>
+    <h2 id="st-title">Checking your payment…</h2>
+    <ol class="timeline" id="st-line"><li>Invoice</li><li>Payment seen</li><li>Confirmed</li><li>Hours issued</li></ol>
+    <p class="flash" id="st-text"></p>
+    <div class="actions" id="st-actions"></div>
+  </section>
+
+  <section class="card narrow" id="signin" hidden>
+    <h2>Sign in</h2>
+    <form class="form" id="f-email" novalidate>
+      <label>Email<input id="email" type="email" autocomplete="email" maxlength="254" placeholder="you@company.com"></label>
+      <p class="flash" id="m-email" hidden></p>
+      <button class="btn solid big" type="submit" id="send">Email me a 6-digit code</button>
+      <p class="hint">No password. New here? <a href="buy.html">Buy hours</a> to open an account.</p>
+    </form>
+    <form class="form" id="f-code" hidden novalidate>
+      <p>We sent a code to <b id="sent-to"></b>. It expires in 10 minutes.</p>
+      <label>Code<input id="code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="······"></label>
+      <p class="flash" id="m-code" hidden></p>
+      <button class="btn solid big" type="submit">Sign in</button>
+      <p class="hint"><button class="linkish" type="button" id="resend">Send a new code</button> · <button class="linkish" type="button" id="change">Change the email</button></p>
+    </form>
+  </section>
+
+  <div id="home" class="stack" hidden>
+    <section class="card">
+      <div class="who">
+        <div><h2 id="company"></h2><p class="hint"><span id="who-email"></span> · customer since <span id="since"></span></p></div>
+        <button class="btn small" type="button" id="signout">Sign out</button>
+      </div>
+      <div class="stats">
+        <div><span>Hours available</span><strong id="s-hours">0</strong></div>
+        <div><span>You can still buy</span><strong id="s-room">0</strong></div>
+        <div><span>Awaiting payment</span><strong id="s-open">0</strong></div>
+      </div>
+      <p class="hint" id="s-limit"></p>
+      <div class="actions"><a class="btn solid" href="buy.html">Buy hours</a><a class="btn" href="two-year.html">Two-year price</a></div>
+    </section>
+
+    <section class="card" id="next">
+      <p class="label">What happens next</p>
+      <ul class="perks">
+        <li>Your hours are usable from the first day you chose, for 12 months. The fleets open to customers on <span data-start>1 December 2026</span>.</li>
+        <li>You reserve hours on a fleet's calendar, up to 7 days ahead, and use them through the SparkPipe API in the OpenAI chat format. We email <b class="email-here"></b> when the calendar opens for your account.</li>
+        <li>Receipts go to the same email. For a won tax invoice, a business check (to hold up to 720 hours) or anything else, write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</li>
+      </ul>
+    </section>
+
+    <section class="card" id="blocks-card" hidden>
+      <p class="label">Your hours</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Hours</th><th>Usable from</th><th>Until</th><th>Order</th></tr></thead>
+        <tbody id="blocks"></tbody>
+      </table></div>
+    </section>
+
+    <div id="agreements" class="stack" hidden></div>
+
+    <section class="card">
+      <p class="label">Orders</p>
+      <p class="flash" id="no-orders">No orders yet. <a href="buy.html">Buy your first hours.</a></p>
+      <div class="table-wrap" id="orders-wrap"><table>
+        <thead><tr><th>Order</th><th>What</th><th>Total</th><th>Paid with</th><th>State</th><th></th></tr></thead>
+        <tbody id="orders"></tbody>
+      </table></div>
+    </section>
+  </div>
+</div>
+</main>
+
+<template id="agreement-card">
+  <section class="card">
+    <p class="label">Two-year agreement <span data-k="agreement"></span></p>
+    <div class="calc">
+      <div class="readout">
+        <div><span>Term</span><strong data-k="term"></strong></div>
+        <div><span>Hours in the term</span><strong data-k="hours"></strong></div>
+        <div><span>Paid, before VAT</span><strong data-k="paid"></strong></div>
+        <div><span>Left to prepay</span><strong data-k="left"></strong></div>
+        <div class="you"><span>Next gate</span><strong data-k="gate"></strong></div>
+      </div>
+      <form class="form" novalidate>
+        <label>Amount, before VAT (USD)<input name="amount" type="number" inputmode="decimal" min="1" step="0.01"></label>
+        <p class="hint" data-k="issues"></p>
+        <div data-k="coins"></div>
+        <p class="flash" hidden></p>
+        <button class="btn solid big" type="submit">Pay</button>
+        <p class="hint">Each payment issues hours equal to the amount before VAT divided by your hour price, to the earliest tranches not yet paid (clause 5.5). For a USD wire or a won transfer, write to us.</p>
+      </form>
+    </div>
+  </section>
+</template>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="fleets.html">Fleet List</a><a href="hourly-terms.html">Hourly Terms</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <span>USDC and USDT payments are processed by CoinPayments.</span>
+  </div>
+</footer>
+
+<script src="pricing.js"></script>
+<script src="checkout.js?v=1"></script>
+<script>
+(() => {
+  const P = window.SP_PRICING, SP = window.SP;
+  const $ = (id) => document.getElementById(id);
+  const OPEN = new Set(['created', 'unpaid', 'pending', 'paid']);
+  const STEPS = { created: 0, unpaid: 1, pending: 2, paid: 3, completed: 4 };
+  const ORDER = /^SP[A-Z2-7]{16}$/;
+  const nice = (day) => (day ? new Date(day.slice(0, 10) + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) : '-');
+  const cell = (content, cls) => { const td = document.createElement('td'); if (content instanceof Node) td.append(content); else td.textContent = content; if (cls) td.className = cls; return td; };
+  const row = (cells) => { const tr = document.createElement('tr'); tr.append(...cells); return tr; };
+  const link = (href, text, cls) => { const a = document.createElement('a'); a.href = href; a.textContent = text; if (cls) a.className = cls; return a; };
+  const what = (o) => {
+    const hours = o.issued && +o.issuedHours < +o.hours ? SP.whole(o.issuedHours) + ' of ' + SP.whole(o.hours) : SP.whole(o.hours);
+    return o.product === 'hourly' ? hours + ' hours from ' + nice(o.start) : 'Prepayment ' + o.agreement + ': ' + hours + ' hours';
+  };
+  let me = null, watching = new URLSearchParams(window.location.search).get('order'), timer = null;
+
+  const renderStatus = (o) => {
+    $('status').hidden = false;
+    $('st-order').textContent = o.order;
+    const reached = o.state === 'completed' && !o.issued ? 3 : (STEPS[o.state] ?? 0);
+    [...$('st-line').children].forEach((li, i) => { li.className = i < reached ? 'done' : i === reached && OPEN.has(o.state) ? 'now' : ''; });
+    const actions = [];
+    let title, text, kind;
+    const part = o.received && +o.received > 0 && +o.received < +o.total;
+    if (o.state === 'completed' && o.issued) {
+      title = +o.issuedHours < +o.hours ? 'Paid in part. Your hours are in.' : 'Paid. Your hours are in.'; kind = 'ok';
+      text = SP.whole(o.issuedHours) + ' fleet-hours are in your account' + (o.product === 'hourly' ? ', usable from ' + nice(o.start) + ' to ' + nice(o.last) : '') + (part ? ', for the ' + SP.usd(o.received) + ' that arrived' : '') + '. The receipt is on its way to your email.';
+    } else if (part && OPEN.has(o.state)) {
+      title = 'Part of the payment arrived.'; kind = 'error';
+      text = 'We received ' + SP.usd(o.received) + ' of ' + SP.usd(o.total) + ' in ' + SP.coinName(o.coin) + '. Send the remaining ' + SP.usd(+o.total - +o.received) + ' from the payment page while it is open, or write to hyor@sparkpipe.ai with order ' + o.order + ': we can credit what arrived as hours or refund it.';
+      if (o.checkout && /^https:\/\//.test(o.checkout)) actions.push(link(o.checkout, 'Open the payment page', 'btn solid'));
+    } else if (o.state === 'created' || o.state === 'unpaid') {
+      title = 'Waiting for your payment.';
+      text = 'Send ' + SP.usd(o.total) + ' in ' + SP.coinName(o.coin) + ' from the payment page. If you have sent it, stay here: this page updates by itself.';
+      if (o.checkout && /^https:\/\//.test(o.checkout)) actions.push(link(o.checkout, 'Open the payment page', 'btn solid'));
+    } else if (o.state === 'pending') {
+      title = 'Payment seen. Confirming…';
+      text = 'The network is confirming your payment. This usually takes a few minutes.';
+    } else if (o.state === 'paid' || o.state === 'completed') {
+      title = 'Confirmed. Issuing your hours…';
+      text = 'CoinPayments has confirmed the payment; the hours appear in a moment.';
+    } else if (o.state === 'mismatch') {
+      title = 'We are checking this payment.'; kind = 'error';
+      text = (o.received ? 'We received ' + SP.usd(o.received) + ' of ' + SP.usd(o.total) + ', so' : 'The amount we received differs from the order, so') + ' no hours were issued automatically. We will email you; you can also write to hyor@sparkpipe.ai with order ' + o.order + '.';
+    } else if (o.received && +o.received > 0) {
+      title = 'This invoice ' + (o.state === 'timedout' ? 'expired' : 'was cancelled') + '. The payment goes back to you.';
+      text = 'The ' + SP.usd(o.received) + ' that arrived is refunded: CoinPayments emails the order\u2019s address a link to claim it, and the refund reaches the wallet you give there, less the network fee. No hours were issued.';
+      actions.push(link('buy.html', 'Buy hours', 'btn solid'));
+    } else {
+      title = o.state === 'failed' ? 'The invoice was not created.' : 'This invoice ' + (o.state === 'timedout' ? 'expired' : 'was cancelled') + ' unpaid.';
+      text = 'Nothing was charged.';
+      actions.push(link('buy.html', 'Buy hours', 'btn solid'));
+    }
+    $('st-title').textContent = title;
+    SP.say($('st-text'), text, kind);
+    $('st-actions').replaceChildren(...actions);
+  };
+
+  const watch = async () => {
+    clearTimeout(timer);
+    if (!watching || !ORDER.test(watching)) return;
+    try {
+      const o = await SP.call('/order/' + watching);
+      renderStatus(o);
+      if (OPEN.has(o.state) || (o.state === 'completed' && !o.issued)) timer = setTimeout(watch, 6000);
+      else if (me) load();
+    } catch (error) {
+      $('status').hidden = false;
+      $('st-title').textContent = 'We could not find that order.';
+      SP.say($('st-text'), error.message, 'error');
+    }
+  };
+
+  const renderAgreement = (a) => {
+    const node = $('agreement-card').content.firstElementChild.cloneNode(true);
+    const k = (name) => node.querySelector('[data-k="' + name + '"]');
+    k('agreement').textContent = a.agreement;
+    k('term').textContent = nice(a.signed) + ' – ' + nice(a.end);
+    k('hours').textContent = SP.whole(a.hours);
+    k('paid').textContent = SP.usd(a.paid) + (+a.pending ? ' (+' + SP.usd(a.pending) + ' unpaid)' : '');
+    k('left').textContent = SP.usd(a.remaining);
+    k('gate').textContent = a.ended ? 'Closed' : a.nextGate ? SP.usd(a.nextGate.amount) + ' by ' + nice(a.nextGate.due) : 'All gates met';
+    const form = node.querySelector('form'), amount = form.elements.amount, note = form.querySelector('.flash'), button = form.querySelector('button');
+    SP.coinPicker(k('coins'), 'coin-' + a.agreement, 'USDC.ERC20', () => update());
+    if (a.nextGate) amount.value = a.nextGate.amount;
+    const update = () => {
+      const net = Math.round((+amount.value || 0) * 100) / 100, vat = Math.round(net * P.vatRate * 100) / 100, coin = SP.coinOf(SP.chosen(form, 'coin-' + a.agreement) || 'USDC.ERC20');
+      k('issues').textContent = net >= 1 ? 'Issues ' + SP.whole(Math.floor(net / +a.price * 10000) / 10000) + ' hours. Total with VAT: ' + SP.usd(net + vat) + ' in ' + coin + '.' : '';
+      button.textContent = net >= 1 ? 'Pay ' + SP.usd(net + vat) + ' in ' + coin : 'Pay in ' + coin;
+      button.disabled = Boolean(a.ended) || net < 1 || net > +a.remaining;
+    };
+    amount.addEventListener('input', update);
+    update();
+    if (a.ended) { form.hidden = true; const p = document.createElement('p'); p.className = 'flash'; p.textContent = a.ended; node.querySelector('.calc').append(p); }
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      button.disabled = true;
+      SP.say(note, '');
+      try {
+        const placed = await SP.call('/order', { product: 'two-year', agreement: a.agreement, amount: (+amount.value).toFixed(2), coin: SP.chosen(form, 'coin-' + a.agreement) });
+        if (!/^https:\/\//.test(placed.checkout)) throw new Error('The checkout link is not secure. Your order is listed below.');
+        window.location.assign(placed.checkout);
+      } catch (error) { SP.say(note, error.message, 'error'); update(); }
+    });
+    return node;
+  };
+
+  const renderHome = () => {
+    $('signin').hidden = true;
+    $('home').hidden = false;
+    $('title').textContent = 'Your fleet-hours.';
+    $('company').textContent = me.company;
+    $('who-email').textContent = me.email;
+    document.querySelectorAll('.email-here').forEach((el) => { el.textContent = me.email; });
+    $('since').textContent = nice(me.since);
+    $('s-hours').textContent = SP.whole(me.hours);
+    $('s-room').textContent = SP.whole(me.room);
+    $('s-open').textContent = me.orders.filter((o) => o.state === 'unpaid' || o.state === 'pending' || o.state === 'paid').length;
+    $('s-limit').textContent = 'You may hold up to ' + me.limit + ' hours at a time, counting unused hours and unpaid orders' + (me.limit < P.verifiedMaxHours ? '; ' + P.verifiedMaxHours + ' after a business check.' : '.');
+    $('blocks-card').hidden = me.blocks.length === 0;
+    $('blocks').replaceChildren(...me.blocks.map((b) => row([cell(SP.whole(b.hours), 'figure'), cell(nice(b.start)), cell(nice(b.last)), cell(b.order)])));
+    $('agreements').hidden = me.agreements.length === 0;
+    $('agreements').replaceChildren(...me.agreements.map(renderAgreement));
+    $('no-orders').hidden = me.orders.length > 0;
+    $('orders-wrap').hidden = me.orders.length === 0;
+    $('orders').replaceChildren(...me.orders.map((o) => {
+      const action = o.checkout && /^https:\/\//.test(o.checkout) ? link(o.checkout, 'Pay', 'btn small solid') : '';
+      const state = document.createElement('span');
+      state.className = 'state' + (o.state === 'completed' ? ' live' : OPEN.has(o.state) ? ' building' : '');
+      const part = o.received && +o.received > 0 && +o.received < +o.total;
+      state.textContent = part && OPEN.has(o.state) ? 'Part paid: ' + SP.usd(o.received) : part && !o.issued && (o.state === 'cancelled' || o.state === 'timedout') ? (SP.STATES[o.state] || o.state) + ', refunded' : SP.STATES[o.state] || o.state;
+      return row([cell(o.order), cell(what(o)), cell(SP.usd(o.total), 'figure'), cell(SP.coinName(o.coin)), cell(state), cell(action)]);
+    }));
+  };
+
+  const load = async () => {
+    me = await SP.me();
+    if (me) renderHome();
+    else { $('home').hidden = true; $('signin').hidden = false; $('title').textContent = 'Sign in to your account.'; }
+  };
+
+  const flow = SP.codeFlow({ codeForm: $('f-code'), code: $('code'), sentTo: $('sent-to'), autoSubmit: true });
+  $('f-email').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    $('send').disabled = true;
+    SP.say($('m-email'), '');
+    try { await flow.send($('email').value.trim()); $('f-email').hidden = true; } catch (error) { SP.say($('m-email'), error.message, 'error'); }
+    $('send').disabled = false;
+  });
+  $('f-code').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = $('f-code').querySelector('button[type=submit]');
+    button.disabled = true;
+    SP.say($('m-code'), '');
+    try {
+      me = await SP.call('/verify', { email: flow.email(), code: $('code').value });
+      $('f-code').hidden = true;
+      $('f-email').hidden = false;
+      renderHome();
+    } catch (error) {
+      if (error.reason === 'new') { SP.say($('m-code'), 'No account uses this email yet. Buy hours to open one: it takes two minutes.', 'error'); }
+      else SP.say($('m-code'), error.message, 'error');
+    }
+    button.disabled = false;
+  });
+  $('resend').addEventListener('click', async () => { try { await flow.send(flow.email()); SP.say($('m-code'), 'A new code is on its way.', 'ok'); } catch (error) { SP.say($('m-code'), error.message, 'error'); } });
+  $('change').addEventListener('click', () => { $('f-code').hidden = true; $('f-email').hidden = false; $('email').focus(); });
+  $('signout').addEventListener('click', async () => { await SP.call('/signout', {}).catch(() => {}); me = null; load(); });
+  document.querySelectorAll('[data-start]').forEach((el) => { el.textContent = nice(P.hourlyEarliestStart); });
+
+  load().catch((error) => { $('signin').hidden = false; SP.say($('m-email'), error.message, 'error'); });
+  watch();
+})();
+</script>
+</body>
+</html>

@@ -449,6 +449,13 @@ static void *MetalWorker(void *argument)
 		pthread_mutex_unlock(&queue->mutex);
 		if ( batch->code != 0 )
 			SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"queue_worker",queue->owner,batch->code,batch->error);
+		if ( batch->mark.kind == METAL_MARK_EVENT )
+		{
+			pthread_mutex_lock(&queue->mutex);
+			queue->completed = batch->sequence;
+			pthread_cond_broadcast(&queue->progress);
+			pthread_mutex_unlock(&queue->mutex);
+		}
 		@autoreleasepool
 		{
 			MetalFinishMark(queue,batch);

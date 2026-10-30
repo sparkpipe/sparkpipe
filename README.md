@@ -539,8 +539,8 @@ HYOR AI Tech Ltd. rents SparkPipe fleets to businesses whole, by the hour, from 
 - **Two ways to buy:**
   - **Hourly:** prepaid at the hourly price, with no commitment and no business check. A customer holds up to 168 hours (a week), or 720 after a business check. A two-year customer may take an hourly reservation until 6 hours before it starts, and the hour returns to the balance.
   - **The two-year agreement:** every hour of a two-year term at a lower price, after a business check, negotiated clause by clause. The models the customer names stay available for the term.
-- **Self-serve:** an account is an Ethereum address. The customer accepts the terms, reserves hours on each fleet's calendar and changes its account by messages signed with that key. `https://sparkpipe.ai/availability.txt` publishes live capacity every 30 seconds.
-- **Payment:** prepaid. Korean businesses pay in won by bank transfer against an electronic tax invoice (세금계산서); customers abroad pay in USDC through a payment processor, and two-year customers may also wire USD. Korean VAT applies except to a zero-rated wire from abroad.
+- **Self-serve:** an account is a verified email address, signed in to with one-time codes. The customer accepts the terms, reserves hours on each fleet's calendar and changes its account while signed in, or through the API with its access tokens. `https://sparkpipe.ai/availability.txt` publishes live capacity every 30 seconds.
+- **Payment:** prepaid. Korean businesses pay in won by bank transfer against an electronic tax invoice (세금계산서); any customer may pay in USDC or USDT through our payment processor, CoinPayments, and two-year customers may also wire USD. Korean VAT applies except to a zero-rated wire from abroad.
 - **Records:** every payment, issue of hours, reservation, displacement, credit and consumption is a line in an append-only, hash-chained ledger whose daily root is published. Downtime credits are issued automatically from the fleet's own records.
 - **Access:** during its hours, the access tokens a customer issues under its key reach its fleet through the SparkPipe API; outside them they reach nothing.
 - **Responsibility:** we provide capacity only. The customer decides what runs, answers for its users and anyone it passes hours to, and carries any AI-law duties toward its own users. Our system has no feature for transferring hours.
@@ -568,7 +568,7 @@ HYOR AI Tech Ltd. rents SparkPipe fleets to businesses whole, by the hour, from 
 | `tools/` | packers, recipe generator, harnesses, fleet tooling |
 | `tests/` | host, contract, host-shim kernel and GPU tests |
 | `experiments/` | research code outside the code-size ratchet; no serving path links it |
-| `site/` | sparkpipe.ai in Korean (`*-ko.html`) and English: home page, Fleet List, terms (generated from `site/terms/` by `tools/site_terms.py`), privacy policy and checkout preview |
+| `site/` | sparkpipe.ai in Korean (`*-ko.html`) and English: home page, Fleet List, terms (generated from `site/terms/` by `tools/site_terms.py`), privacy policy, the USDC and USDT checkout (`buy.html`), the customer account (`account.html`) and the two-year planner (`two-year.html`), served by `tools/sparkpipe_pay.py` (`docs/PAYMENTS.md`) |
 
 Common runtime code does not choose a model family, codec, topology, batch
 width or fallback implementation by name. A deployment package binds those

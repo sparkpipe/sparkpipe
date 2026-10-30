@@ -115,13 +115,13 @@ PAGES = [
         "src": "hourly-en.md", "out": "hourly-terms.html", "lang": "en", "tag": "terms",
         "title": "SparkPipe Hourly Terms", "other": "hourly-terms-ko.html",
         "desc": "Draft Hourly Terms for prepaid SparkPipe fleet-hours, published for review.",
-        "lead": "These Terms are accepted online: Customer signs their exact text with its Key at sign-up. The Korean text prevails (clause 12.3).",
+        "lead": "These Terms are accepted online: Customer signs, with its Key, each order stating the hashes of their exact text. The Korean text prevails (clause 12.3).",
     },
     {
         "src": "hourly-ko.md", "out": "hourly-terms-ko.html", "lang": "ko", "tag": "약관",
         "title": "SparkPipe 시간제 이용약관", "other": "hourly-terms.html",
         "desc": "선불 SparkPipe 플릿시간 시간제 이용약관 검토용 공개 문안.",
-        "lead": "본 약관은 온라인으로 체결되며, 고객은 가입 시 자신의 키로 본 약관의 정확한 문안에 서명한다. 국문본이 우선한다(제12.3조).",
+        "lead": "본 약관은 온라인으로 체결되며, 고객은 본 약관의 정확한 문안의 해시를 적은 각 주문에 자신의 키로 서명한다. 국문본이 우선한다(제12.3조).",
     },
     {
         "src": "agreement-en.md", "out": "agreement.html", "lang": "en", "tag": "terms",
@@ -141,12 +141,13 @@ NOTICE = {
     "en": "<b>Published for review. Not in force.</b> Fleet-hours go on sale on 1 December 2026, and nobody can buy or pay before then. This text may still change. Send comments to <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>.",
     "ko": "<b>검토용 공개 문안이며 아직 효력이 없습니다.</b> 플릿시간 판매는 2026년 12월 1일에 시작되며, 그 전에는 누구도 구매하거나 결제할 수 없습니다. 문안은 바뀔 수 있습니다. 의견은 <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>로 보내 주십시오.",
 }
-VERSION = {"en": "Version of 25 October 2026", "ko": "2026년 10월 25일 판"}
+VERSION = {"en": "Version of 30 October 2026", "ko": "2026년 10월 30일 판"}
 NAV = {
     "en": ('<a href="terms.html">All terms</a>', '<a href="privacy.html">Privacy</a>', '<a href="index.html">Home</a>'),
     "ko": ('<a href="terms-ko.html">약관 목록</a>', '<a href="privacy-ko.html">개인정보처리방침</a>', '<a href="index-ko.html">홈</a>'),
 }
 HOME = {"en": "index.html", "ko": "index-ko.html"}
+COMPANY = {"en": "https://hyor.io/", "ko": "https://hyor.io/index-ko.html"}
 GROUP = {"en": "Language / 언어", "ko": "언어 / Language"}
 
 
@@ -178,16 +179,18 @@ def page(p):
 <title>{html.escape(p['title'])}</title>
 <meta name="description" content="{html.escape(p['desc'])}">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
 {alternates(p)}
+<link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="site.css?v=2ebd53ca">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="site.css?v=dcbd7de8">
 {STYLE}
 </head>
 <body>
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="{HOME[p['lang']]}">SparkPipe<span class="tag">{p['tag']}</span></a>
+    <a class="brand" href="{HOME[p['lang']]}"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">{p['tag']}</span></a>
     <nav class="nav-links" aria-label="Sections">
       {nav}
     </nav>
@@ -209,7 +212,7 @@ def page(p):
 
 <footer class="foot">
   <div class="wrap">
-    <span>© 2026 HYOR AI Tech Ltd</span>
+    <a class="maker" href="{COMPANY[p['lang']]}"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
     <nav aria-label="Footer">{nav}<a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>

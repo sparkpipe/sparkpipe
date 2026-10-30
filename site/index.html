@@ -6,15 +6,17 @@
 <title>SparkPipe</title>
 <meta name="description" content="Rent a whole SparkPipe fleet by the hour: open frontier models such as Kimi K3, GLM 5.3 and DeepSeek V4.1, and Korea's K-EXAONE 2.0, A.X K2 and Solar Open 2, on sixteen NVIDIA DGX Sparks in Seoul. Sales open 1 December 2026.">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
 <link rel="alternate" hreflang="en" href="https://sparkpipe.ai/index.html">
 <link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/index-ko.html">
 <link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/index.html">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
-<link rel="stylesheet" href="site.css?v=2ebd53ca">
+<link rel="stylesheet" href="site.css?v=dcbd7de8">
 <style>
 h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
 .screen canvas { aspect-ratio: 16 / 7; }
@@ -30,11 +32,9 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
 </style>
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><mask id="logo-bore" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 3.5 11 16.5H21L10.5 28.5" stroke="#fff" stroke-width="5.6"/><path d="M21.5 3.5 11 16.5H21L10.5 28.5" stroke="#000" stroke-width="1.5"/></g></mask></defs><symbol id="logo" viewBox="0 0 32 32"><rect width="32" height="32" fill="currentColor" mask="url(#logo-bore)"/></symbol></svg>
-
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="index.html"><svg width="26" height="26"><use href="#logo"/></svg>SparkPipe<span class="tag">fleet-hours</span></a>
+    <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">fleet-hours</span></a>
     <nav class="nav-links" aria-label="Sections">
       <a href="#korea">Korea</a>
       <a href="#how">How it works</a>
@@ -60,10 +60,10 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
     <div class="hero-copy">
       <p class="lead">Rent a whole SparkPipe fleet and, for those hours, it serves only you. It runs Kimi K3 and other open models over a terabyte, too large for most GPU servers, with million-token context and speculation, and Korea's own large models: LG's K-EXAONE 2.0, SKT's A.X K2 and Upstage's Solar Open 2. Your data stays in Korea, there is no queue of other customers' requests, and the price is per hour, not per token.</p>
       <div class="actions">
-        <a class="btn solid" href="#prices">Prices and how to buy</a>
-        <a class="btn" href="terms.html">Read the terms</a>
+        <a class="btn solid" href="buy.html">Buy hours in USDC or USDT</a>
+        <a class="btn" href="#prices">Prices and terms</a>
       </div>
-      <p class="note">For businesses only. The terms are published for review and come into force on <span data-start>1 December 2026</span>; nothing can be bought or paid before then.</p>
+      <p class="note">For businesses only. The terms come into force, and the fleets open to customers, on <span data-start>1 December 2026</span>. Hours bought before then are usable from that day.</p>
     </div>
     <figure class="screen" role="img" aria-label="Animated diagram of Fleet 1: sixteen DGX Spark nodes on one switch with direct pair links. Each decode step, every node reads its sixteenth of the model, the nodes exchange partial results, and one token comes out.">
       <div class="screen-bar"><span><b>Fleet 1</b> · 16 × DGX Spark · Seoul</span><span id="phase">each node reads its 1/16 of the weights</span></div>
@@ -77,7 +77,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
   </div>
   <div class="specs">
     <div><strong data-krw="hourly">₩26,000</strong><span><span data-price="hourly">$20</span> per fleet-hour plus VAT, prepaid, no commitment</span></div>
-    <div><strong data-krw="committed">₩20,000</strong><span><span data-price="committed">$15</span> per fleet-hour plus VAT, for every hour of a two-year term</span></div>
+    <div><strong data-krw="committed">₩20,000</strong><span><span data-price="committed">$15</span> per fleet-hour plus VAT, Monday to Saturday over a two-year term</span></div>
     <div><strong><span data-cap="hourly">168</span> / <span data-cap="verified">720</span></strong><span>hours you may hold on hourly terms, before and after a business check</span></div>
     <div><strong>18 models</strong><span>offered, among them K-EXAONE 2.0, A.X K2, Solar Open 2, Kimi K3 and GLM 5.3, each under its publisher's open license</span></div>
   </div>
@@ -94,7 +94,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
     <div class="defs">
       <div><p class="label">Data stays in Korea</p><p>The fleets and our servers are in Seoul, and your requests go to no foreign AI service. Cached request state is deleted within 24 hours of its last use.</p></div>
       <div><p class="label">A Korean company</p><p>You contract with HYOR AI Tech Ltd., a Korean company, under Korean law. Both contracts are in Korean and English, and the Korean text prevails.</p></div>
-      <div><p class="label">Pay in won</p><p>Korean businesses pay by bank transfer against our electronic tax invoice (세금계산서), with 10% VAT. Customers abroad pay in USDC or by USD wire.</p></div>
+      <div><p class="label">Pay in won</p><p>Korean businesses pay by bank transfer against our electronic tax invoice (세금계산서), with 10% VAT. Customers abroad pay in USDC, USDT or by USD wire.</p></div>
       <div><p class="label">Korean models</p><p>LG's K-EXAONE 2.0 and SKT's A.X K2, both under Apache 2.0, and Upstage's Solar Open 2 serve on Fleet 1, each the whole model at its publisher's precision, beside Kimi K3, GLM 5.3 and the other open models. They are hard to get elsewhere: in October 2026 neither <a href="https://artificialanalysis.ai/models/solar-open2-250b/providers">Artificial Analysis</a> nor Hugging Face lists a public API provider for any of the three.</p></div>
       <div><p class="label">Dedicated, not shared</p><p>During your hours the whole fleet serves only your requests. Nobody else's traffic waits in front of yours, so answers start as soon as the fleet is free.</p></div>
       <div><p class="label">By the hour</p><p>You pay for the fleet's time, not for tokens: long prompts, million-token contexts and agents that re-read their history cost nothing extra.</p></div>
@@ -165,12 +165,12 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
   <div class="sec-body">
     <h2>Account, hours, reservation, use.</h2>
     <ol class="steps">
-      <li><h3>Open an account</h3><p>Give your company's details and connect an Ethereum wallet: its address identifies the account. Accept the Hourly Terms by signing their text with the wallet. Every business is screened against sanctions lists.</p></li>
-      <li><h3>Buy hours</h3><p>Pay in advance: Korean businesses in won, by bank transfer against our electronic tax invoice; customers abroad in USDC, through an invoice from our payment processor. Korean VAT of 10% is added. Your hours are issued once the payment has cleared.</p></li>
-      <li><h3>Reserve</h3><p>Choose a fleet, a model and the hours on the fleet's calendar, and sign; on hourly terms you reserve up to 7 days ahead. A confirmed reservation is final and is taken from your balance as the hour passes.</p></li>
+      <li><h3>Open an account</h3><p>Give your company's legal name and a work email, confirm the email with a 6-digit code, and accept the Hourly Terms. The email is your account: no password and no crypto wallet. Every business is screened against sanctions lists.</p></li>
+      <li><h3>Buy hours</h3><p>Pay in advance: Korean businesses in won, by bank transfer against our electronic tax invoice; customers abroad in USDC or USDT, through an invoice from our payment processor. Korean VAT of 10% is added. Your hours are issued once the payment has cleared.</p></li>
+      <li><h3>Reserve</h3><p>Choose a fleet, a model and the hours on the fleet's calendar, and confirm; on hourly terms you reserve up to 7 days ahead. A confirmed reservation is final and is taken from your balance as the hour passes.</p></li>
       <li><h3>Use</h3><p>During your hours the whole fleet serves only your requests, through the SparkPipe API, which follows the OpenAI chat format. You issue the access tokens, so you decide who uses your hours.</p></li>
     </ol>
-    <p class="caption">Won payments go straight to HYOR AI Tech Ltd.'s Korean bank account. USDC payments go through a payment processor. Our system has no feature for passing hours between accounts.</p>
+    <p class="caption">Won payments go straight to HYOR AI Tech Ltd.'s Korean bank account. USDC and USDT payments go through a payment processor. Our system has no feature for passing hours between accounts.</p>
   </div>
 </section>
 
@@ -181,24 +181,24 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
   </div>
   <div class="sec-body">
     <h2>Try it by the hour. Commit for less.</h2>
-    <p class="prose">Every business starts on hourly terms. A business that wants every hour for two years at the lower price passes our business check and signs the two-year agreement, which it may negotiate clause by clause.</p>
+    <p class="prose">Every business starts on hourly terms. A business that wants every hour from Monday to Saturday for two years at the lower price passes our business check and signs the two-year agreement, which it may negotiate clause by clause.</p>
     <div class="table-wrap"><table class="cmp">
       <thead><tr><th scope="col"></th><th scope="col">Hourly</th><th scope="col">Two years</th></tr></thead>
       <tbody>
         <tr><th scope="row">Price</th><td><span data-krw="hourly">₩26,000</span> or <span data-price="hourly">$20</span> per fleet-hour plus VAT</td><td><span data-krw="committed">₩20,000</span> or <span data-price="committed">$15</span> per fleet-hour plus VAT, fixed for the term</td></tr>
-        <tr><th scope="row">Commitment</th><td>None</td><td>Every hour of two years from signing: 17,520 hours, or 17,544 when the term contains 29 February</td></tr>
+        <tr><th scope="row">Commitment</th><td>None</td><td>Every hour of two years from signing except Sundays: 15,000 to 15,048 hours. Sundays are for our maintenance, and you may still use your hours on them when a fleet is free</td></tr>
         <tr><th scope="row">Models</th><td>Any offered model on the Fleet List, chosen for each reservation</td><td>The models you choose in the agreement stay available for the whole term; the others while they are listed</td></tr>
         <tr><th scope="row">Business check</th><td>Not needed</td><td>Required before signing</td></tr>
-        <tr><th scope="row">Hours held</th><td>Up to <span data-cap="hourly">168</span> at a time, or <span data-cap="verified">720</span> after a business check; each lasts 12 months</td><td>Each month's paid hours, reserved when you choose within that month: 12 in each 12-hour window a day until you have prepaid the whole term</td></tr>
-        <tr><th scope="row">Payment</th><td>Before use: a won bank transfer against our electronic tax invoice (세금계산서) for Korean businesses, or a USDC invoice</td><td>A won bank transfer against our electronic tax invoice, a USD wire from your own account abroad (zero-rated for VAT), or a USDC invoice. Nothing is due in the first 30 days; you pay any amounts up to three deadlines, on days 30, 60 and 90</td></tr>
-        <tr><th scope="row">Reservations</th><td>Final. A two-year customer may take your reserved hour until 6 hours before it starts; the hour goes back to your balance</td><td>Final, and never taken by anyone</td></tr>
+        <tr><th scope="row">Hours held</th><td>Up to <span data-cap="hourly">168</span> at a time, or <span data-cap="verified">720</span> after a business check; each lasts 12 months</td><td>Each month's paid hours, reserved when you choose within that month: 12 in each 12-hour window a day, guaranteed, until you have prepaid the whole term. Then your election's daily hours are guaranteed for any day of the term, and you may use more on free fleets up to 30 days ahead</td></tr>
+        <tr><th scope="row">Payment</th><td>Before use: a won bank transfer against our electronic tax invoice (세금계산서) for Korean businesses, or a USDC or USDT invoice</td><td>A won bank transfer against our electronic tax invoice, a USD wire from your own account abroad (zero-rated for VAT), or a USDC or USDT invoice. Nothing is due in the first 30 days; you pay any amounts up to three deadlines, on days 30, 60 and 90</td></tr>
+        <tr><th scope="row">Reservations</th><td>Final. From Monday to Saturday, a two-year customer may take your reserved hour for its guaranteed daily hours until 6 hours before it starts; the hour goes back to your balance. Sunday hours are never taken</td><td>Final, and never taken by anyone</td></tr>
         <tr><th scope="row">Downtime</th><td colspan="2">A reserved hour with more than 15 minutes of downtime comes back in full, automatically, from our own records</td></tr>
         <tr><th scope="row">Refunds</th><td>None, unless we stop hourly service or close your account through no fault of yours</td><td>None, except paid hours not yet used if the agreement ends early (clause 11.3). If no payment is made by day 30, it ends with nothing owed</td></tr>
         <tr><th scope="row">Terms</th><td><a href="hourly-terms.html">Hourly Terms</a><a href="hourly-terms-ko.html" hreflang="ko">시간제 이용약관</a></td><td><a href="agreement.html">Two-year agreement</a><a href="agreement-ko.html" hreflang="ko">2년 예약 계약서</a></td></tr>
       </tbody>
     </table></div>
     <p class="caption">VAT is charged at 10% on every payment except a zero-rated wire. Any amount charged as VAT that turns out not to be owed is an overpayment, and we refund it. The Korean text of each contract prevails.</p>
-    <div class="actions"><a class="btn" href="buy.html">Preview the checkout</a><a class="btn" href="mailto:hyor@sparkpipe.ai?subject=Two-year%20fleet-hours">Ask for a two-year quote</a></div>
+    <div class="actions"><a class="btn solid" href="buy.html">Buy hours with USDC or USDT</a><a class="btn" href="two-year.html">Plan a two-year term</a></div>
   </div>
 </section>
 
@@ -305,7 +305,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
 
 <footer class="foot">
   <div class="wrap">
-    <span>© 2026 HYOR AI Tech Ltd</span>
+    <a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
     <nav aria-label="Footer"><a href="buy.html">Fleet-hours</a><a href="fleets.html">Fleet List</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>

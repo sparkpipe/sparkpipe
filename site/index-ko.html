@@ -6,15 +6,17 @@
 <title>SparkPipe</title>
 <meta name="description" content="SparkPipe 플릿 전체를 시간 단위로 빌려 쓰십시오. 서울의 NVIDIA DGX Spark 16대에서 Kimi K3, GLM 5.3, DeepSeek V4.1 같은 오픈 프런티어 모델과 국산 K-EXAONE 2.0, A.X K2, Solar Open 2를 실행합니다. 2026년 12월 1일 판매 시작.">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
 <link rel="alternate" hreflang="en" href="https://sparkpipe.ai/index.html">
 <link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/index-ko.html">
 <link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/index.html">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&family=Noto+Sans+KR:wght@100..900&display=swap">
-<link rel="stylesheet" href="site.css?v=2ebd53ca">
+<link rel="stylesheet" href="site.css?v=dcbd7de8">
 <style>
 h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
 .screen canvas { aspect-ratio: 16 / 7; }
@@ -30,11 +32,9 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
 </style>
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><mask id="logo-bore" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 3.5 11 16.5H21L10.5 28.5" stroke="#fff" stroke-width="5.6"/><path d="M21.5 3.5 11 16.5H21L10.5 28.5" stroke="#000" stroke-width="1.5"/></g></mask></defs><symbol id="logo" viewBox="0 0 32 32"><rect width="32" height="32" fill="currentColor" mask="url(#logo-bore)"/></symbol></svg>
-
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="index-ko.html"><svg width="26" height="26"><use href="#logo"/></svg>SparkPipe<span class="tag">플릿시간</span></a>
+    <a class="brand" href="index-ko.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">플릿시간</span></a>
     <nav class="nav-links" aria-label="섹션">
       <a href="#korea">한국</a>
       <a href="#how">이용 방법</a>
@@ -60,10 +60,10 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
     <div class="hero-copy">
       <p class="lead">SparkPipe 플릿 하나를 통째로 빌리면, 그 시간 동안 플릿은 고객의 요청만 처리합니다. 대부분의 GPU 서버에는 담기지 않는 Kimi K3 등 1TB 이상의 오픈 모델을 100만 토큰 컨텍스트와 추측 디코딩으로 실행하며, LG의 K-EXAONE 2.0, SKT의 A.X K2, 업스테이지의 Solar Open 2 같은 국산 대형 모델도 실행합니다. 데이터는 국내에 머물고, 다른 고객의 요청 대기열이 없으며, 요금은 토큰이 아니라 시간 단위입니다.</p>
       <div class="actions">
-        <a class="btn solid" href="#prices">가격과 구매 방법</a>
-        <a class="btn" href="terms-ko.html">약관 보기</a>
+        <a class="btn solid" href="buy.html" hreflang="en">USDC·USDT로 시간 구매 (영문)</a>
+        <a class="btn" href="#prices">가격과 약관</a>
       </div>
-      <p class="note">사업자 전용입니다. 약관은 검토용으로 공개되어 있으며 <span data-start>2026년 12월 1일</span>부터 효력이 생깁니다. 그 전에는 구매하거나 결제할 수 없습니다.</p>
+      <p class="note">사업자 전용입니다. 약관은 <span data-start>2026년 12월 1일</span>부터 효력이 생기며, 플릿도 그날부터 고객에게 열립니다. 그 전에 구매한 시간은 그날부터 쓸 수 있습니다.</p>
     </div>
     <figure class="screen" role="img" aria-label="플릿 1 애니메이션: 스위치 하나와 노드 쌍 사이의 직결 링크로 연결된 DGX Spark 노드 16대. 디코드 단계마다 각 노드가 모델의 16분의 1을 읽고, 노드끼리 부분 결과를 주고받은 뒤 토큰 하나가 나옵니다.">
       <div class="screen-bar"><span><b>플릿 1</b> · DGX Spark 16대 · 서울</span><span id="phase">각 노드가 가중치의 1/16을 읽습니다</span></div>
@@ -77,7 +77,7 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
   </div>
   <div class="specs">
     <div><strong data-krw="hourly">₩26,000</strong><span>플릿시간당, 부가세 별도. 선불이며 약정이 없습니다 (<span data-price="hourly">$20</span>)</span></div>
-    <div><strong data-krw="committed">₩20,000</strong><span>2년 계약 기간의 모든 시간에 대해 플릿시간당, 부가세 별도 (<span data-price="committed">$15</span>)</span></div>
+    <div><strong data-krw="committed">₩20,000</strong><span>2년 계약 기간 중 월요일부터 토요일까지의 시간에 대해 플릿시간당, 부가세 별도 (<span data-price="committed">$15</span>)</span></div>
     <div><strong><span data-cap="hourly">168</span> / <span data-cap="verified">720</span></strong><span>시간제로 보유할 수 있는 시간. 사업자 확인 전과 후</span></div>
     <div><strong>모델 18종</strong><span>K-EXAONE 2.0, A.X K2, Solar Open 2, Kimi K3, GLM 5.3 등. 각 모델은 게시자의 오픈 라이선스를 따릅니다</span></div>
   </div>
@@ -94,7 +94,7 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
     <div class="defs">
       <div><p class="label">데이터는 국내에</p><p>플릿과 서버는 모두 서울에 있으며, 고객의 요청은 어떤 해외 AI 서비스로도 가지 않습니다. 캐시된 요청 상태는 마지막 사용 후 24시간 이내에 삭제됩니다.</p></div>
       <div><p class="label">한국 회사</p><p>계약 상대방은 한국 회사인 효르에이아이테크 유한회사이며, 한국법이 적용됩니다. 두 계약 모두 국문과 영문으로 되어 있고, 국문이 우선합니다.</p></div>
-      <div><p class="label">원화 결제</p><p>국내 사업자는 전자세금계산서를 받고 원화 계좌이체로 결제하며, 부가세 10%가 붙습니다. 해외 고객은 USDC 또는 USD 송금으로 결제합니다.</p></div>
+      <div><p class="label">원화 결제</p><p>국내 사업자는 전자세금계산서를 받고 원화 계좌이체로 결제하며, 부가세 10%가 붙습니다. 해외 고객은 USDC, USDT 또는 USD 송금으로 결제합니다.</p></div>
       <div><p class="label">국산 모델</p><p>LG의 K-EXAONE 2.0과 SKT의 A.X K2(모두 Apache 2.0), 업스테이지의 Solar Open 2가 플릿 1에서 Kimi K3, GLM 5.3 등 다른 오픈 모델과 함께 실행됩니다. 세 모델 모두 축소판이 아닌 원래 모델을 게시자의 정밀도 그대로 실행합니다. 다른 곳에서는 쓰기 어렵습니다. 2026년 10월 현재 <a href="https://artificialanalysis.ai/models/solar-open2-250b/providers">Artificial Analysis</a>와 Hugging Face 어디에도 세 모델의 공개 API 제공업체가 없습니다.</p></div>
       <div><p class="label">공유가 아닌 전용</p><p>고객의 시간 동안 플릿 전체가 고객의 요청만 처리합니다. 다른 사람의 트래픽이 앞에서 기다리지 않으므로, 플릿이 비는 즉시 응답이 시작됩니다.</p></div>
       <div><p class="label">시간 단위 요금</p><p>토큰이 아니라 플릿의 시간에 대해 지불합니다. 긴 프롬프트, 100만 토큰 컨텍스트, 대화 기록을 다시 읽는 에이전트에도 추가 비용이 없습니다.</p></div>
@@ -165,12 +165,12 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
   <div class="sec-body">
     <h2>계정, 시간, 예약, 사용.</h2>
     <ol class="steps">
-      <li><h3>계정 개설</h3><p>회사 정보를 입력하고 이더리움 지갑을 연결합니다. 지갑 주소가 계정을 식별합니다. 지갑으로 시간제 이용약관의 문안에 서명하여 약관에 동의합니다. 모든 사업자는 제재 대상 명단과 대조하여 심사합니다.</p></li>
-      <li><h3>시간 구매</h3><p>미리 결제합니다. 국내 사업자는 전자세금계산서를 받고 원화 계좌이체로, 해외 고객은 결제 대행사의 인보이스에 따라 USDC로 결제합니다. 한국 부가세 10%가 붙습니다. 결제가 확인되면 시간이 발급됩니다.</p></li>
-      <li><h3>예약</h3><p>플릿과 모델, 플릿 일정표의 시간을 고르고 서명합니다. 시간제에서는 7일 앞까지 예약할 수 있습니다. 확정된 예약은 바꿀 수 없으며, 그 시간이 지나가면서 잔액에서 차감됩니다.</p></li>
+      <li><h3>계정 개설</h3><p>회사의 법인명과 업무용 이메일을 입력하고, 이메일로 받은 6자리 코드로 이메일을 확인한 뒤 시간제 이용약관에 동의합니다. 이메일이 곧 계정이며, 비밀번호나 암호화폐 지갑은 필요 없습니다. 모든 사업자는 제재 대상 명단과 대조하여 심사합니다.</p></li>
+      <li><h3>시간 구매</h3><p>미리 결제합니다. 국내 사업자는 전자세금계산서를 받고 원화 계좌이체로, 해외 고객은 결제 대행사의 인보이스에 따라 USDC 또는 USDT로 결제합니다. 한국 부가세 10%가 붙습니다. 결제가 확인되면 시간이 발급됩니다.</p></li>
+      <li><h3>예약</h3><p>플릿과 모델, 플릿 일정표의 시간을 고르고 확정합니다. 시간제에서는 7일 앞까지 예약할 수 있습니다. 확정된 예약은 바꿀 수 없으며, 그 시간이 지나가면서 잔액에서 차감됩니다.</p></li>
       <li><h3>사용</h3><p>고객의 시간 동안 플릿 전체가 OpenAI 채팅 형식을 따르는 SparkPipe API로 고객의 요청만 처리합니다. 액세스 토큰은 고객이 직접 발급하므로, 누가 시간을 쓸지 고객이 정합니다.</p></li>
     </ol>
-    <p class="caption">원화 결제는 효르에이아이테크 유한회사의 국내 은행 계좌로 바로 입금됩니다. USDC 결제는 결제 대행사를 거칩니다. 저희 시스템에는 계정 사이에 시간을 넘기는 기능이 없습니다.</p>
+    <p class="caption">원화 결제는 효르에이아이테크 유한회사의 국내 은행 계좌로 바로 입금됩니다. USDC와 USDT 결제는 결제 대행사를 거칩니다. 저희 시스템에는 계정 사이에 시간을 넘기는 기능이 없습니다.</p>
   </div>
 </section>
 
@@ -181,24 +181,24 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
   </div>
   <div class="sec-body">
     <h2>시간 단위로 써 보고, 약정하면 더 저렴하게.</h2>
-    <p class="prose">모든 사업자는 시간제로 시작합니다. 2년 동안 모든 시간을 더 낮은 가격에 쓰려는 사업자는 사업자 확인을 거쳐 2년 계약서에 서명하며, 조항마다 협의할 수 있습니다.</p>
+    <p class="prose">모든 사업자는 시간제로 시작합니다. 2년 동안 월요일부터 토요일까지의 모든 시간을 더 낮은 가격에 쓰려는 사업자는 사업자 확인을 거쳐 2년 계약서에 서명하며, 조항마다 협의할 수 있습니다.</p>
     <div class="table-wrap"><table class="cmp">
       <thead><tr><th scope="col"></th><th scope="col">시간제</th><th scope="col">2년 계약</th></tr></thead>
       <tbody>
         <tr><th scope="row">가격</th><td>플릿시간당 <span data-krw="hourly">₩26,000</span> 또는 <span data-price="hourly">$20</span>, 부가세 별도</td><td>플릿시간당 <span data-krw="committed">₩20,000</span> 또는 <span data-price="committed">$15</span>, 부가세 별도, 계약 기간 동안 고정</td></tr>
-        <tr><th scope="row">약정</th><td>없음</td><td>서명일부터 2년간의 모든 시간: 17,520시간, 기간에 2월 29일이 있으면 17,544시간</td></tr>
+        <tr><th scope="row">약정</th><td>없음</td><td>서명일부터 2년간 일요일을 제외한 모든 시간: 15,000~15,048시간. 일요일은 저희 점검일이며, 비어 있는 플릿이 있으면 일요일에도 시간을 쓸 수 있습니다</td></tr>
         <tr><th scope="row">모델</th><td>플릿 목록에서 제공하는 모델 중 예약마다 선택</td><td>계약서에서 고른 모델은 계약 기간 내내 이용할 수 있고, 그 밖의 모델은 목록에 있는 동안 이용할 수 있습니다</td></tr>
         <tr><th scope="row">사업자 확인</th><td>필요 없음</td><td>서명 전에 필요</td></tr>
-        <tr><th scope="row">보유 시간</th><td>한 번에 최대 <span data-cap="hourly">168</span>시간, 사업자 확인 후 <span data-cap="verified">720</span>시간. 각 시간은 12개월 동안 유효합니다</td><td>매월 결제한 시간을 그달 안에서 원하는 때에 예약합니다. 계약 기간 전체를 선불하기 전까지는 하루의 12시간 구간마다 12시간입니다</td></tr>
-        <tr><th scope="row">결제</th><td>사용 전: 국내 사업자는 전자세금계산서에 따른 원화 계좌이체, 또는 USDC 인보이스</td><td>전자세금계산서에 따른 원화 계좌이체, 해외 본인 계좌에서의 USD 송금(부가세 영세율), 또는 USDC 인보이스. 처음 30일 동안은 낼 금액이 없으며, 30일·60일·90일의 세 기한까지 원하는 금액을 결제합니다</td></tr>
-        <tr><th scope="row">예약</th><td>확정. 2년 계약 고객이 시작 6시간 전까지 그 시간을 가져갈 수 있으며, 그 시간은 잔액으로 돌아옵니다</td><td>확정되며, 누구도 가져가지 않습니다</td></tr>
+        <tr><th scope="row">보유 시간</th><td>한 번에 최대 <span data-cap="hourly">168</span>시간, 사업자 확인 후 <span data-cap="verified">720</span>시간. 각 시간은 12개월 동안 유효합니다</td><td>매월 결제한 시간을 그달 안에서 원하는 때에 예약합니다. 계약 기간 전체를 선불하기 전까지는 하루의 12시간 구간마다 12시간이 보장됩니다. 전액 선불 후에는 선택한 1일 시간이 계약 기간의 어느 날에든 보장되며, 비어 있는 플릿에서 30일 앞까지 더 쓸 수 있습니다</td></tr>
+        <tr><th scope="row">결제</th><td>사용 전: 국내 사업자는 전자세금계산서에 따른 원화 계좌이체, 또는 USDC·USDT 인보이스</td><td>전자세금계산서에 따른 원화 계좌이체, 해외 본인 계좌에서의 USD 송금(부가세 영세율), 또는 USDC·USDT 인보이스. 처음 30일 동안은 낼 금액이 없으며, 30일·60일·90일의 세 기한까지 원하는 금액을 결제합니다</td></tr>
+        <tr><th scope="row">예약</th><td>확정. 월요일부터 토요일까지는 2년 계약 고객이 보장된 1일 시간을 위해 시작 6시간 전까지 그 시간을 가져갈 수 있으며, 그 시간은 잔액으로 돌아옵니다. 일요일의 시간은 가져가지 않습니다</td><td>확정되며, 누구도 가져가지 않습니다</td></tr>
         <tr><th scope="row">장애</th><td colspan="2">15분을 넘는 장애가 있었던 예약 시간은 저희 기록에 따라 자동으로 전부 돌려드립니다</td></tr>
         <tr><th scope="row">환불</th><td>저희가 시간제 서비스를 중단하거나 고객의 귀책 없이 계정을 닫는 경우 외에는 없음</td><td>계약이 일찍 끝날 때 아직 쓰지 않은 결제 시간 외에는 없음(제11.3조). 30일째까지 결제가 없으면 아무 금액 없이 종료</td></tr>
         <tr><th scope="row">약관</th><td><a href="hourly-terms-ko.html">시간제 이용약관</a><a href="hourly-terms.html" hreflang="en">Hourly Terms</a></td><td><a href="agreement-ko.html">2년 예약 계약서</a><a href="agreement.html" hreflang="en">Two-year agreement</a></td></tr>
       </tbody>
     </table></div>
     <p class="caption">부가세는 영세율 송금을 제외한 모든 결제에 10%가 붙습니다. 부가세로 받았으나 납부 의무가 없는 것으로 밝혀진 금액은 과오납이며, 돌려드립니다. 각 계약은 국문이 우선합니다.</p>
-    <div class="actions"><a class="btn" href="buy.html" hreflang="en">결제 화면 미리 보기 (영문)</a><a class="btn" href="mailto:hyor@sparkpipe.ai?subject=2%EB%85%84%20%ED%94%8C%EB%A6%BF%EC%8B%9C%EA%B0%84%20%EA%B2%AC%EC%A0%81">2년 견적 요청</a></div>
+    <div class="actions"><a class="btn solid" href="buy.html" hreflang="en">USDC·USDT로 시간 구매 (영문)</a><a class="btn" href="two-year.html" hreflang="en">2년 계약 계획 (영문)</a><a class="btn" href="mailto:hyor@sparkpipe.ai?subject=2%EB%85%84%20%ED%94%8C%EB%A6%BF%EC%8B%9C%EA%B0%84%20%EA%B2%AC%EC%A0%81">2년 견적 요청</a></div>
   </div>
 </section>
 
@@ -305,7 +305,7 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
 
 <footer class="foot">
   <div class="wrap">
-    <span>© 2026 HYOR AI Tech Ltd</span>
+    <a class="maker" href="https://hyor.io/index-ko.html"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
     <nav aria-label="바닥글"><a href="buy.html" hreflang="en">플릿시간 (영문)</a><a href="fleets-ko.html">플릿 목록</a><a href="terms-ko.html">약관</a><a href="privacy-ko.html">개인정보처리방침</a><a href="index.html?lang=en" hreflang="en">English</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
