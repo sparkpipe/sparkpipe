@@ -338,7 +338,7 @@ to GLM.
 
 ## sparkpipe.ai
 
-`https://sparkpipe.ai` is static, with no API and no login. It holds the home page, the Fleet List, the terms, the privacy policy and the checkout preview. They are copied from `site/` to `/var/www/html` on the KCInfra VPS (27.102.120.99). `tools/site_terms.py` generates the terms pages from `site/terms/`; `tests/test_site.py` fails when they differ.
+`https://sparkpipe.ai` is static, with no API and no login. It holds the home page, the Fleet List, the terms, the privacy policy and the checkout preview. They are copied from `site/` to `/var/www/html` on the KCInfra VPS (27.102.120.99). `tools/site_terms.py` generates the terms pages from `site/terms/`; `tests/test_site.py` fails when they differ. The pages carry the HYOR AI logo and colors; `tools/brand_logo.py` writes the logo, seal and icon files, and `docs/brand/hyor-ai/README.md` says which to use where.
 
 Apache serves only these pages: no API, no login, no proxy. Fleet-hour customers will reach their fleet through the customer API that TECHDEBT lists under fleet-hours.
 
@@ -843,7 +843,7 @@ of the v0.12.0 LICENSE) forbids altering or replacing its branding unless the
 deployment has at most 50 end users in any rolling 30-day period, or holds
 written permission or an enterprise license. The owner expects about six
 users (2026-10-14), so the icons, splash, logo and web manifest are the
-SparkPipe bolt from `site/favicon.svg`, rendered with `rsvg-convert`. Keep the
+SparkPipe bolt from `deployment/hub/open_webui_branding/favicon.svg`, rendered with `rsvg-convert`. Keep the
 user count (Admin Panel -> Users) at 50 or below; if it could pass that,
 drop the branding mounts from `run.sh` first. The name is set to "SparkPipe
 Chat", which v0.12.0 shows as "SparkPipe Chat (Open WebUI)" because it adds
