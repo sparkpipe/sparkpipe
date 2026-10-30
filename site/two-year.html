@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Two-Year Fleet-Hours · SparkPipe</title>
+<meta name="description" content="Every hour from Monday to Saturday for two years on a SparkPipe fleet in Seoul, at a fixed lower price. Plan a term and ask for a quote.">
+<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
+<link rel="stylesheet" href="site.css?v=dcbd7de8">
+<link rel="stylesheet" href="checkout.css?v=1">
+<style>
+.table-wrap.scroll { max-height: 440px; overflow-y: auto; }
+.table-wrap.scroll thead th { position: sticky; top: 0; background: var(--paper); }
+.pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 560px) { .pair { grid-template-columns: minmax(0, 1fr); } }
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">fleet-hours</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#plan">Plan a term</a>
+      <a href="#gates">Gates</a>
+      <a href="#quote">Ask for a quote</a>
+    </nav>
+    <div class="nav-actions">
+      <div class="lang" role="group" aria-label="Language / 언어"><a href="two-year.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
+      <a class="btn small" href="account.html">Account</a>
+      <a class="btn small solid" href="#quote">Ask for a quote</a>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+<section class="co-head">
+  <p class="label">Two-year agreement</p>
+  <h1 id="title">Six days a week for two years, at $15 an hour.</h1>
+  <p class="lead">Every hour from Monday to Saturday on one fleet's capacity, at a price fixed for the whole term. Your daily hours are guaranteed, you pay at your own pace, and nothing is due in the first 30 days.</p>
+  <div class="trust"><span>Price fixed for the term</span><span>Guaranteed daily hours</span><span>Sundays free for you when a fleet is free</span><span>Negotiable clause by clause</span></div>
+</section>
+
+<div class="co">
+  <div class="stack">
+    <section class="card" id="plan">
+      <p class="label">Plan a term</p>
+      <h2>What your term holds.</h2>
+      <div class="calc">
+        <form class="form" id="plan-form" novalidate>
+          <label>Signing date (the term starts that day)<input id="r-start" type="date"></label>
+          <label>Window election<select id="r-election"><option value="split">50/50 East and West</option><option value="east">100% East</option><option value="west">100% West</option></select></label>
+          <p class="hint">The term covers every hour from Monday to Saturday: 15,000 to 15,048 hours, depending on the Sundays and 29 February in it. Hours exist only once paid; hours that pass before they are paid for are lost.</p>
+        </form>
+        <div class="readout">
+          <div><span>Term</span><strong id="r-term">-</strong></div>
+          <div><span>Hours</span><strong id="r-hours">-</strong></div>
+          <div><span>Subtotal</span><strong id="r-net">-</strong></div>
+          <div class="you"><span>Total with 10% VAT</span><strong id="r-total">-</strong></div>
+          <div><span>Phase A, nothing due</span><strong id="r-phase">-</strong></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="gates">
+      <p class="label">Prepayment gates</p>
+      <p class="prose">After signing you pay any amounts, at any time, up to the whole term. Three deadlines set how much must be paid by when. If you pay nothing in the first 30 days, the agreement ends with nothing owed.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Gate</th><th>Due</th><th>Hours paid by then</th><th>Paid by then, with VAT</th></tr></thead>
+        <tbody id="r-gates"></tbody>
+      </table></div>
+      <details class="snippet"><summary>Monthly tranches</summary>
+        <div class="table-wrap scroll"><table>
+          <thead><tr><th>Tranche</th><th>Period</th><th>Days, Mon–Sat</th><th>East hours</th><th>West hours</th></tr></thead>
+          <tbody id="r-tranches"></tbody>
+        </table></div>
+      </details>
+    </section>
+  </div>
+
+  <aside class="summary" id="quote" aria-label="Ask for a quote">
+    <p class="label">Ask for a quote</p>
+    <form class="form" id="lead" novalidate>
+      <label>Company<input id="l-company" autocomplete="organization" maxlength="200" required></label>
+      <div class="pair">
+        <label>Your name<input id="l-name" autocomplete="name" maxlength="200"></label>
+        <label>Work email<input id="l-email" type="email" autocomplete="email" maxlength="254" required></label>
+      </div>
+      <div class="pair">
+        <label>Fleets<select id="l-fleets"><option>1</option><option>2</option><option>3</option><option value="4+">4 or more</option></select></label>
+        <label>Start<input id="l-start" type="month"></label>
+      </div>
+      <label>What you will run<textarea id="l-message" maxlength="4000" placeholder="Models, context lengths, East or West window, anything you want to negotiate."></textarea></label>
+      <p class="flash" id="l-msg" hidden></p>
+      <button class="btn solid big" type="submit" id="l-send">Send</button>
+      <p class="hint">We reply by email with the agreement and the business check. Or write to <a href="mailto:hyor@sparkpipe.ai?subject=Two-year%20fleet-hours">hyor@sparkpipe.ai</a>. Already signed? Pay toward your agreement from <a href="account.html">your account</a>.</p>
+    </form>
+    <p class="hint">Read <a href="agreement.html">the two-year agreement</a> (<a href="agreement-ko.html" hreflang="ko">한국어</a>, which prevails).</p>
+  </aside>
+</div>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Buy hours</a><a href="agreement.html">Agreement</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <span>USDC payments are processed by CoinPayments.</span>
+  </div>
+</footer>
+
+<script src="pricing.js"></script>
+<script src="checkout.js?v=1"></script>
+<script>
+(() => {
+  const P = window.SP_PRICING, SP = window.SP;
+  const $ = (id) => document.getElementById(id);
+  const DAY = 86400000;
+  const parse = (text) => { const [y, m, d] = text.split('-').map(Number); return Date.UTC(y, m - 1, d); };
+  const ymd = (t) => new Date(t).toISOString().slice(0, 10);
+  const nice = (day) => new Date(day + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+  const today = () => ymd(Date.now() + 9 * 3600000);
+  const minSign = () => (today() > P.committedEarliestStart ? today() : P.committedEarliestStart);
+  const termEnd = (start, months) => {
+    const [y, m, d] = start.split('-').map(Number), total = m - 1 + months;
+    const year = y + Math.floor(total / 12), month = total % 12, last = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+    return d <= last ? Date.UTC(year, month, d) - DAY : Date.UTC(year, month, last);
+  };
+  const served = (from, to) => { let n = 0; for (let t = from; t < to; t += DAY) if (new Date(t).getUTCDay() !== 0) n += 1; return n; };
+  const plan = (start, election) => {
+    const end = termEnd(start, P.termMonths), tranches = [];
+    let cursor = parse(start);
+    while (cursor <= end) {
+      const d = new Date(cursor), monthEnd = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0), to = Math.min(monthEnd, end);
+      const days = served(cursor, to + DAY), hours = 24 * days, east = election === 'east' ? hours : election === 'west' ? 0 : hours / 2;
+      tranches.push({ key: ymd(cursor).slice(0, 7), from: ymd(cursor), to: ymd(to), days, east, west: hours - east, hours });
+      cursor = to + DAY;
+    }
+    return { start, end: ymd(end), hours: tranches.reduce((a, t) => a + t.hours, 0), tranches };
+  };
+  const cell = (text, cls) => { const td = document.createElement('td'); td.textContent = text; if (cls) td.className = cls; return td; };
+  const row = (cells) => { const tr = document.createElement('tr'); tr.append(...cells); return tr; };
+  const render = () => {
+    const c = plan($('r-start').value || minSign(), $('r-election').value), net = c.hours * P.committedPrice;
+    $('r-term').textContent = nice(c.start) + ' – ' + nice(c.end);
+    $('r-hours').textContent = SP.whole(c.hours);
+    $('r-net').textContent = SP.usd(net);
+    $('r-total').textContent = SP.usd(net * (1 + P.vatRate));
+    $('r-phase').textContent = 'to ' + nice(ymd(parse(c.start) + (P.phaseADays - 1) * DAY));
+    $('r-gates').replaceChildren(...P.gates.map((g) => {
+      const n = g.tranches === null ? c.tranches.length : Math.min(g.tranches, c.tranches.length), hours = c.tranches.slice(0, n).reduce((a, t) => a + t.hours, 0);
+      return row([cell(g.name), cell(nice(ymd(parse(c.start) + (g.dueDay - 1) * DAY)) + ', day ' + g.dueDay), cell(SP.whole(hours), 'figure'), cell(SP.usd(hours * P.committedPrice * (1 + P.vatRate)), 'figure')]);
+    }));
+    $('r-tranches').replaceChildren(...c.tranches.map((t, i) => row([cell((i + 1) + ' · ' + t.key), cell(t.from + ' to ' + t.to), cell(String(t.days), 'figure'), cell(SP.whole(t.east), 'figure'), cell(SP.whole(t.west), 'figure')])));
+  };
+  $('title').textContent = 'Six days a week for two years, at ' + SP.usd(P.committedPrice).replace('.00', '') + ' an hour.';
+  $('r-start').min = minSign();
+  $('r-start').value = minSign();
+  $('plan-form').addEventListener('input', render);
+  render();
+  $('lead').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    $('l-send').disabled = true;
+    SP.say($('l-msg'), '');
+    try {
+      if (!$('l-company').value.trim()) throw new Error('Enter your company.');
+      await SP.call('/lead', { company: $('l-company').value.trim(), name: $('l-name').value.trim(), email: $('l-email').value.trim(), fleets: $('l-fleets').value, start: $('l-start').value, message: $('l-message').value.trim() });
+      $('lead').reset();
+      SP.say($('l-msg'), 'Thank you. We will reply by email.', 'ok');
+    } catch (error) { SP.say($('l-msg'), error.message, 'error'); }
+    $('l-send').disabled = false;
+  });
+})();
+</script>
+</body>
+</html>

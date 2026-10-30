@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 
 import base64
+import email
+import email.policy
 import hashlib
 import hmac
 import http.server
 import json
-import random
+import re
 import shutil
+import socketserver
 import sys
 import tempfile
 import threading
@@ -18,68 +21,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
-import eth_signature as es
 import sparkpipe_pay as sp
 
-ORACLE = [
-    ("hello", "0xa5d58782075bdf09490159d634d1aae66a8f6777c7247d2f233e9511cfd7c64c34f288cdbcea5370e4863fdbe9f4d86654c2ba1d86589e9ebb64494c649008591b"),
-    ("SparkPipe order SPX\nI buy 4 fleet-hours.\n한국어 본문 sha256 ab12", "0x818cda2ef8dc52d95920105b48dfa9284dc3e21b972d2a0b4afa1d52de61cb195dd379231b454cea57959ea50a317cccef2ccf99e04630ba1d00dbc274e6aaaa1b"),
-    ("", "0x8a68b4e66cd2b575338e16069d7b65f6f67c7ceae8945dccf8cb7bdb06278d933dd9c888f3444ca4698464079a067ad3cfffe96d493b8ecf56885169d0fdfe7d1b"),
-]
-ORACLE_ADDRESS = "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23"
 SECRET = b"test-client-secret"
 CLIENT = "test-client-id"
 NOW = [datetime(2026, 11, 2, 3, 0, 0, tzinfo=timezone.utc)]
 
 
-def personal_sign(key, text):
-    z = int.from_bytes(es.personal_digest(text), "big")
-    k = int.from_bytes(hashlib.sha256(key.to_bytes(32, "big") + text.encode()).digest(), "big") % es.N or 1
-    point = es.multiply(es.G, k)
-    r = point[0] % es.N
-    s = pow(k, -1, es.N) * (z + r * key) % es.N
-    parity = point[1] & 1
-    if s > es.N // 2:
-        s, parity = es.N - s, parity ^ 1
-    return "0x" + r.to_bytes(32, "big").hex() + s.to_bytes(32, "big").hex() + bytes([27 + parity]).hex()
-
-
 def docs_signature(method, url, stamp, body):
     message = "﻿" + method + url + CLIENT + stamp
     return base64.b64encode(hmac.new(SECRET, message.encode("utf-8") + body, hashlib.sha256).digest()).decode()
-
-
-def check_keccak(failures):
-    if es.keccak256(b"").hex() != "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470":
-        failures.append("keccak256 of the empty string")
-    if es.keccak256(b"abc").hex() != "4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45":
-        failures.append("keccak256 of abc")
-    rng = random.Random(3)
-    for size in list(range(0, 300)) + [1000]:
-        data = bytes(rng.getrandbits(8) for _ in range(size))
-        if es._sponge(data, 0x06) != hashlib.sha3_256(data).digest():
-            failures.append(f"the sponge with SHA3 padding differs from hashlib at {size} bytes")
-            break
-
-
-def check_recover(failures):
-    for text, signature in ORACLE:
-        if es.personal_recover(text, signature) != ORACLE_ADDRESS:
-            failures.append(f"eth-account signature over {text[:20]!r} does not recover its address")
-    text, signature = ORACLE[0]
-    if es.personal_recover(text + "!", signature) == ORACLE_ADDRESS:
-        failures.append("a changed message still recovers the signer")
-    raw = bytes.fromhex(signature[2:])
-    high = (es.N - int.from_bytes(raw[32:64], "big")).to_bytes(32, "big")
-    flipped = "0x" + (raw[:32] + high + bytes([raw[64] ^ 1])).hex()
-    if es.personal_recover(text, flipped) is not None:
-        failures.append("a high-s signature is accepted")
-    for bad in ("", "0x00", signature[:-2], signature[:-2] + "1d", None):
-        if es.personal_recover(text, bad) is not None:
-            failures.append(f"a malformed signature {bad!r} is accepted")
-    key = 0x1234567890ABCDEF
-    if es.personal_recover("order", personal_sign(key, "order")) != es.address_of(es.multiply(es.G, key)):
-        failures.append("the test signer does not round-trip")
 
 
 def check_dates(failures):
@@ -92,6 +43,20 @@ def check_dates(failures):
         failures.append("term_end differs from agreement clause 3.1")
     if sp.served_days(date(2026, 12, 15), date(2026, 12, 21)) != 6:
         failures.append("served_days counts a Sunday")
+
+
+def check_sessions(failures):
+    key = b"k" * 32
+    token = sp.session_token(key, "ACX", 2000)
+    if sp.session_account(key, token, 1999) != "ACX":
+        failures.append("a fresh session token is refused")
+    if sp.session_account(key, token, 2001) is not None:
+        failures.append("an expired session token is accepted")
+    if sp.session_account(b"j" * 32, token, 1999) is not None or sp.session_account(key, token.replace("ACX", "ACY"), 1999) is not None:
+        failures.append("a forged session token is accepted")
+    for bad in (None, "", "a.b", "ACX.x.y", "ACX.2000.00"):
+        if sp.session_account(key, bad, 1999) is not None:
+            failures.append(f"a malformed session token {bad!r} is accepted")
 
 
 class FakeCoinPayments(http.server.BaseHTTPRequestHandler):
@@ -115,6 +80,8 @@ class FakeCoinPayments(http.server.BaseHTTPRequestHandler):
         body = self.rfile.read(int(self.headers["Content-Length"]))
         if not self.signed(body):
             return self.answer(401, {"error": "signature"})
+        if self.server.down:
+            return self.answer(503, {"error": "down"})
         data = json.loads(body)
         key = f"inv{len(self.server.invoices) + 1}"
         self.server.invoices[key] = {"status": "unpaid", "total": data["amount"]["total"], "body": data}
@@ -125,25 +92,91 @@ class FakeCoinPayments(http.server.BaseHTTPRequestHandler):
             return self.answer(401, {"error": "signature"})
         key = self.path.rsplit("/", 1)[1]
         invoice = self.server.invoices[key]
-        self.answer(200, {"id": key, "status": invoice["status"], "amount": {"breakdown": {}, "total": invoice["total"]}, "currency": {"id": "5057", "symbol": "USD"}})
+        self.answer(200, {"id": key, "status": invoice["status"], "amount": {"breakdown": {}, "total": invoice["total"]}, "currency": {"id": "5057", "symbol": "USD"}, "payments": [{"paymentCurrencySymbol": "USDC.BASE"}]})
 
 
-def request(port, method, path, body=None, headers=None, raw=None):
-    data = raw if raw is not None else (None if body is None else json.dumps(body).encode())
-    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=data, method=method, headers=dict({"Content-Type": "application/json"}, **(headers or {})))
-    try:
-        with urllib.request.urlopen(req, timeout=20) as response:
-            return response.status, json.loads(response.read() or b"{}")
-    except urllib.error.HTTPError as error:
-        return error.code, json.loads(error.read() or b"{}")
+class FakeSMTP(socketserver.StreamRequestHandler):
+    def handle(self):
+        def say(text):
+            self.wfile.write((text + "\r\n").encode())
+        say("220 fake")
+        lines, rcpt = None, []
+        while True:
+            raw = self.rfile.readline()
+            if not raw:
+                return
+            text = raw.decode("utf-8", "replace").rstrip("\r\n")
+            if lines is not None:
+                if text == ".":
+                    self.server.mail.append((rcpt, email.message_from_string("\n".join(lines), policy=email.policy.default)))
+                    lines, rcpt = None, []
+                    say("250 queued")
+                else:
+                    lines.append(text[1:] if text.startswith("..") else text)
+                continue
+            verb = text.split(" ", 1)[0].upper()
+            if verb == "DATA":
+                lines = []
+                say("354 go on")
+            elif verb == "RCPT":
+                rcpt.append(text.split(":", 1)[1].strip(" <>"))
+                say("250 ok")
+            elif verb == "QUIT":
+                say("221 bye")
+                return
+            else:
+                say("250 ok")
 
 
-def webhook(port, cfg, invoice, kind="InvoiceCompleted", stamp=None, tamper=False):
+class Client:
+    def __init__(self, port, origin=None):
+        self.port = port
+        self.cookie = None
+        self.origin = origin
+
+    def __call__(self, method, path, body=None, headers=None, raw=None):
+        data = raw if raw is not None else (None if body is None else json.dumps(body).encode())
+        sent = {"Content-Type": "application/json"}
+        if self.cookie:
+            sent["Cookie"] = self.cookie
+        if self.origin:
+            sent["Origin"] = self.origin
+        sent.update(headers or {})
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=data, method=method, headers=sent)
+        try:
+            with urllib.request.urlopen(req, timeout=20) as response:
+                status, payload, given = response.status, response.read(), response.headers.get("Set-Cookie")
+        except urllib.error.HTTPError as error:
+            status, payload, given = error.code, error.read(), error.headers.get("Set-Cookie")
+        if given:
+            value = given.split(";", 1)[0]
+            self.cookie = None if value.endswith("=") else value
+            self.last_cookie = given
+        return status, json.loads(payload or b"{}")
+
+
+def last_code(mailbox, to):
+    for rcpt, message in reversed(mailbox.mail):
+        if to in rcpt:
+            found = re.search(r"\b(\d{6})\b", message["Subject"])
+            if found:
+                return found.group(1)
+    return None
+
+
+def sign_in(client, mailbox, address, **extra):
+    status, _ = client("POST", "/code", {"email": address})
+    if status != 200:
+        return status, {}
+    return client("POST", "/verify", dict({"email": address, "code": last_code(mailbox, address.lower())}, **extra))
+
+
+def webhook(client, cfg, invoice, kind="InvoiceCompleted", stamp=None, tamper=False):
     stamp = stamp or NOW[0].strftime("%Y-%m-%dT%H:%M:%S")
     raw = json.dumps({"id": invoice, "type": kind, "invoice": {"id": invoice, "state": kind[7:]}}).encode()
     signature = docs_signature("POST", cfg.webhook_url, stamp, raw)
     headers = {"X-CoinPayments-Client": CLIENT, "X-CoinPayments-Timestamp": stamp, "X-CoinPayments-Signature": signature}
-    return request(port, "POST", "/coinpayments", headers=headers, raw=raw + (b" " if tamper else b""))
+    return client("POST", "/coinpayments", headers=headers, raw=raw + (b" " if tamper else b""))
 
 
 def ledger_types(cfg):
@@ -159,23 +192,30 @@ def check_service(failures):
             shutil.copy(ROOT / "site" / "terms" / name, work / "site" / "terms" / name)
         (work / "secret").write_text("test-client-secret\n")
         fake = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeCoinPayments)
-        fake.invoices = {}
+        fake.invoices, fake.down = {}, False
         threading.Thread(target=fake.serve_forever, daemon=True).start()
+        mailbox = socketserver.ThreadingTCPServer(("127.0.0.1", 0), FakeSMTP)
+        mailbox.daemon_threads = True
+        mailbox.mail = []
+        threading.Thread(target=mailbox.serve_forever, daemon=True).start()
         cfg = sp.Config({
             "SPARKPIPE_PAY_DATA": str(work / "data"), "SPARKPIPE_PAY_SITE": str(work / "site"),
             "COINPAYMENTS_API": f"http://127.0.0.1:{fake.server_address[1]}/api/v2",
             "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
+            "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}",
         })
         sp.clock = lambda: NOW[0]
+        sp.LIMITS["order"] = (40, 600)
         server = sp.start(cfg, port=0)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         port, app = server.server_address[1], server.app
-        buyer, other = 0xB0B, 0xC0FFEE
-        account = es.address_of(es.multiply(es.G, buyer))
-        hourly_flow(failures, cfg, port, app, fake, buyer, other, account)
-        prepayment_flow(failures, cfg, port, app, fake, buyer, account)
+        buyer = Client(port, origin="https://sparkpipe.ai")
+        account_flow(failures, cfg, app, buyer, mailbox, port)
+        hourly_flow(failures, cfg, app, fake, buyer, mailbox)
+        prepayment_flow(failures, cfg, app, fake, buyer, mailbox, port)
+        lead_flow(failures, app, buyer, mailbox, work)
         book = sp.Book(cfg.path("ledger.jsonl"))
-        if book.count != app.book.count or book.head != app.book.head:
+        if book.count != app.book.count or book.head != app.book.head or book.emails != app.book.emails:
             failures.append("a reloaded ledger differs from the live one")
         second = sp.Book(cfg.path("ledger.jsonl"))
         second.append("note", {"by": "second writer"})
@@ -183,131 +223,208 @@ def check_service(failures):
         if sp.Book(cfg.path("ledger.jsonl")).count != second.count + 1:
             failures.append("two writers break the ledger chain")
         lines = open(cfg.path("ledger.jsonl"), encoding="utf-8").read().splitlines()
-        lines[0] = lines[0].replace('"hours":4', '"hours":40', 1)
+        index = next(i for i, line in enumerate(lines) if '"hours":4,' in line)
+        lines[index] = lines[index].replace('"hours":4,', '"hours":40,', 1)
         (work / "tampered.jsonl").write_text("\n".join(lines) + "\n")
         try:
             sp.Book(str(work / "tampered.jsonl"))
             failures.append("a tampered ledger loads")
         except ValueError:
             pass
+        if oct((work / "data" / "session_key").stat().st_mode & 0o777) != "0o600":
+            failures.append("the session key is readable by others")
         server.shutdown()
         fake.shutdown()
+        mailbox.shutdown()
     finally:
         shutil.rmtree(work)
 
 
-def hourly_flow(failures, cfg, port, app, fake, buyer, other, account):
-    status, quote = request(port, "POST", "/quote", {"product": "hourly", "account": account, "company": "Acme 주식회사", "email": "ops@acme.example", "hours": 4, "start": "2026-12-01"})
-    if status != 200 or (quote.get("net"), quote.get("vat"), quote.get("total"), quote.get("last")) != ("80.00", "8.00", "88.00", "2027-11-30"):
-        failures.append(f"hourly quote: {status} {quote}")
+def account_flow(failures, cfg, app, buyer, mailbox, port):
+    if buyer("GET", "/account")[0] != 401:
+        failures.append("the account is readable without signing in")
+    status, _ = buyer("POST", "/code", {"email": "Ops@Acme.example"})
+    code = last_code(mailbox, "ops@acme.example")
+    if status != 200 or not code:
+        failures.append(f"no sign-in code was emailed: {status} {[m[0] for m in mailbox.mail]}")
         return
-    if cfg.terms("hourly-ko.md") not in quote["message"] or "Korean, which prevails" not in quote["message"]:
-        failures.append("the order message does not carry the Korean terms hash")
-    status, early = request(port, "POST", "/quote", {"product": "hourly", "account": account, "company": "Acme", "email": "ops@acme.example", "hours": 1, "start": "2026-11-30"})
-    if status != 400:
-        failures.append(f"hours starting before the first sale date are quoted: {status}")
-    status, _ = request(port, "POST", "/order", {"order": quote["order"], "signature": personal_sign(other, quote["message"])})
-    if status != 403:
-        failures.append(f"an order signed by another key is accepted: {status}")
-    status, placed = request(port, "POST", "/order", {"order": quote["order"], "signature": personal_sign(buyer, quote["message"])})
+    wrong = "000000" if code != "000000" else "111111"
+    if buyer("POST", "/verify", {"email": "ops@acme.example", "code": wrong, "company": "Acme", "accept": True})[0] != 403:
+        failures.append("a wrong code signs in")
+    status, refused = buyer("POST", "/verify", {"email": "ops@acme.example", "code": code})
+    if status != 404 or refused.get("reason") != "new":
+        failures.append(f"a code for an unknown email without a company opens an account: {status} {refused}")
+    sign_in(buyer, mailbox, "ops@acme.example", company="Acme 주식회사")
+    if "ops@acme.example" in app.book.emails:
+        failures.append("an account opens without accepting the Hourly Terms")
+    status, summary = sign_in(buyer, mailbox, "Ops@Acme.example", company="Acme 주식회사", accept=True)
+    if status != 200 or summary.get("company") != "Acme 주식회사" or not summary.get("termsCurrent") or summary.get("room") != 168:
+        failures.append(f"opening an account: {status} {summary}")
+        return
+    if "HttpOnly" not in buyer.last_cookie or "SameSite=Lax" not in buyer.last_cookie or "Path=/pay/api" not in buyer.last_cookie:
+        failures.append(f"session cookie attributes: {buyer.last_cookie}")
+    record = [json.loads(line) for line in open(cfg.path("ledger.jsonl"), encoding="utf-8") if '"acceptance"' in line][-1]["data"]
+    if record["ko"] != cfg.terms("hourly-ko.md") or "Korean text, which prevails" not in record["statement"] or "Acme 주식회사" not in record["statement"]:
+        failures.append(f"acceptance record: {record}")
+    if buyer("GET", "/account")[0] != 200:
+        failures.append("a signed-in account cannot read itself")
+    if buyer("POST", "/verify", {"email": "ops@acme.example", "code": last_code(mailbox, "ops@acme.example")})[0] != 403:
+        failures.append("a sign-in code works twice")
+    stranger = Client(port, origin="https://evil.example")
+    if stranger("POST", "/code", {"email": "ops@acme.example"})[0] != 403:
+        failures.append("a cross-site POST is accepted")
+    forged = Client(port)
+    forged.cookie = buyer.cookie.replace(buyer.cookie.split("=", 1)[1].split(".")[0], "ACAAAAAAAAAAAAAAAA")
+    if forged("GET", "/account")[0] != 401:
+        failures.append("a forged session reads an account")
+    other = Client(port)
+    status, _ = sign_in(other, mailbox, "ops@acme.example")
+    if status != 200 or other("POST", "/signout", {})[0] != 200 or other.cookie is not None:
+        failures.append("signing in again or signing out fails")
+
+
+def hourly_flow(failures, cfg, app, fake, buyer, mailbox):
+    base = {"product": "hourly", "hours": 4, "start": "2026-12-01", "network": "base"}
+    if buyer("POST", "/order", dict(base, start="2026-11-30"))[0] != 400:
+        failures.append("hours starting before the first sale date are ordered")
+    if buyer("POST", "/order", dict(base, network="bitcoin"))[0] != 400:
+        failures.append("an order on a network that is not USDC is accepted")
+    anonymous = Client(buyer.port)
+    if anonymous("POST", "/order", base)[0] != 401:
+        failures.append("an order without signing in is accepted")
+    status, placed = buyer("POST", "/order", base)
     if status != 200 or not placed.get("checkout", "").startswith("https://pay.example/c/"):
         failures.append(f"hourly order: {status} {placed}")
         return
-    status, again = request(port, "POST", "/order", {"order": quote["order"], "signature": personal_sign(buyer, quote["message"])})
-    if status != 410:
-        failures.append(f"a quote can be ordered twice: {status}")
     invoice = fake.invoices["inv1"]["body"]
-    expected = {"currency": "5057", "invoiceId": quote["order"], "amount": {"breakdown": {"subtotal": "80.00", "taxTotal": "8.00"}, "total": "88.00"}}
+    expected = {"currency": "5057", "invoiceId": placed["order"], "amount": {"breakdown": {"subtotal": "80.00", "taxTotal": "8.00"}, "total": "88.00"}}
     if any(invoice.get(key) != value for key, value in expected.items()):
         failures.append(f"invoice body: {invoice}")
+    if invoice["payment"] != {"paymentCurrency": sp.NETWORKS["base"], "refundEmail": "ops@acme.example"} or invoice["buyer"] != {"companyName": "Acme 주식회사", "emailAddress": "ops@acme.example"}:
+        failures.append(f"invoice payment or buyer: {invoice['payment']} {invoice['buyer']}")
     if invoice["items"][0]["quantity"] != {"value": 4, "type": "hours"} or invoice["webhooks"][0]["notificationsUrl"] != "https://sparkpipe.ai/pay/api/coinpayments":
         failures.append(f"invoice items or webhooks: {invoice['items']} {invoice['webhooks']}")
-    status, shown = request(port, "GET", "/order/" + quote["order"])
-    if status != 200 or shown["state"] != "unpaid" or shown["checkout"] != placed["checkout"]:
+    if invoice["successUrl"] != f"https://sparkpipe.ai/account.html?order={placed['order']}":
+        failures.append(f"invoice return address: {invoice['successUrl']}")
+    status, shown = buyer("GET", "/order/" + placed["order"])
+    if status != 200 or shown["state"] != "unpaid" or shown["checkout"] != placed["checkout"] or "email" in shown:
         failures.append(f"unpaid order status: {status} {shown}")
-    status, _ = request(port, "POST", "/quote", {"product": "hourly", "account": account, "company": "Acme", "email": "ops@acme.example", "hours": 165, "start": "2026-12-01"})
-    if status != 409:
-        failures.append(f"an unpaid order does not count toward the 168-hour limit: {status}")
-    if webhook(port, cfg, "inv1", tamper=True)[0] != 401 or webhook(port, cfg, "inv1", stamp="2026-11-02T02:50:00")[0] != 401:
+    if buyer("POST", "/order", dict(base, hours=165))[0] != 409:
+        failures.append("an unpaid order does not count toward the 168-hour limit")
+    if webhook(buyer, cfg, "inv1", tamper=True)[0] != 401 or webhook(buyer, cfg, "inv1", stamp="2026-11-02T02:50:00")[0] != 401:
         failures.append("a tampered or stale webhook is accepted")
     fake.invoices["inv1"]["status"] = "paid"
-    webhook(port, cfg, "inv1", "InvoicePaid")
+    webhook(buyer, cfg, "inv1", "InvoicePaid")
     app.jobs.join()
-    if request(port, "GET", "/order/" + quote["order"])[1]["state"] != "paid":
+    if buyer("GET", "/order/" + placed["order"])[1]["state"] != "paid":
         failures.append("a paid invoice does not move the order to paid")
     fake.invoices["inv1"]["status"] = "completed"
-    if webhook(port, cfg, "inv1")[0] != 200:
+    if webhook(buyer, cfg, "inv1")[0] != 200:
         failures.append("a signed webhook is refused")
     app.jobs.join()
-    webhook(port, cfg, "inv1")
+    webhook(buyer, cfg, "inv1")
     app.jobs.join()
-    shown = request(port, "GET", "/order/" + quote["order"])[1]
-    if shown["state"] != "completed" or not shown["issued"] or ledger_types(cfg).count("hours_issued") != 1:
-        failures.append(f"completed order: {shown} {ledger_types(cfg)}")
-    status, _ = request(port, "POST", "/quote", {"product": "hourly", "account": account, "company": "Acme", "email": "ops@acme.example", "hours": 165, "start": "2026-12-01"})
-    status_ok, room = request(port, "POST", "/quote", {"product": "hourly", "account": account, "company": "Acme", "email": "ops@acme.example", "hours": 164, "start": "2026-12-01"})
-    if status != 409 or status_ok != 200:
-        failures.append(f"issued hours and the holding limit: {status} {status_ok}")
-    request(port, "POST", "/order", {"order": room["order"], "signature": personal_sign(buyer, room["message"])})
+    app.mails.join()
+    summary = buyer("GET", "/account")[1]
+    if summary["hours"] != 4 or summary["blocks"] != [{"order": placed["order"], "hours": 4, "start": "2026-12-01", "last": "2027-11-30"}] or ledger_types(cfg).count("hours_issued") != 1:
+        failures.append(f"completed order: {summary} {ledger_types(cfg)}")
+    receipts = [m for rcpt, m in mailbox.mail if "ops@acme.example" in rcpt and placed["order"] in m["Subject"]]
+    if len(receipts) != 1 or "88.00" not in receipts[0].get_content():
+        failures.append(f"receipt mail: {[m['Subject'] for _, m in mailbox.mail]}")
+    if not any(cfg.notify in rcpt and m["Subject"].startswith("Paid:") for rcpt, m in mailbox.mail):
+        failures.append("we are not told of a payment")
+    payment = [json.loads(line) for line in open(cfg.path("ledger.jsonl"), encoding="utf-8") if '"payment"' in line][-1]["data"]
+    if payment["paidWith"] != ["USDC.BASE"]:
+        failures.append(f"the payment line does not record the coin: {payment}")
+    if buyer("POST", "/order", dict(base, hours=165))[0] != 409 or buyer("POST", "/order", dict(base, hours=164, network="solana"))[0] != 200:
+        failures.append("issued hours and the holding limit")
     fake.invoices["inv2"]["status"] = "completed"
     fake.invoices["inv2"]["total"] = "1.00"
-    webhook(port, cfg, "inv2")
+    webhook(buyer, cfg, "inv2")
     app.jobs.join()
-    shown = request(port, "GET", "/order/" + room["order"])[1]
-    if shown["state"] != "mismatch" or shown["issued"]:
-        failures.append(f"an underpaid invoice issues hours: {shown}")
+    second = next(o for o in buyer("GET", "/account")[1]["orders"] if o["hours"] == 164)
+    if second["state"] != "mismatch" or second["issued"]:
+        failures.append(f"an underpaid invoice issues hours: {second}")
+    fake.down = True
+    Path(cfg.path("approved.json")).write_text(json.dumps(["OPS@acme.example"]))
+    status, refused = buyer("POST", "/order", dict(base, hours=1))
+    fake.down = False
+    if status != 502 or buyer("GET", "/account")[1]["orders"][0]["state"] != "failed":
+        failures.append(f"a failed invoice is not recorded: {status} {refused}")
+    terms = Path(cfg.site) / "terms" / "hourly-en.md"
+    terms.write_text(terms.read_text() + "\n")
+    status, refused = buyer("POST", "/order", dict(base, hours=1))
+    if status != 409 or refused.get("reason") != "terms":
+        failures.append(f"an order under changed terms does not ask to accept them again: {status} {refused}")
+    if buyer("POST", "/order", dict(base, hours=1, accept=True))[0] != 200 or not buyer("GET", "/account")[1]["termsCurrent"]:
+        failures.append("accepting changed terms at the order does not record it")
 
 
-def prepayment_flow(failures, cfg, port, app, fake, buyer, account):
+def prepayment_flow(failures, cfg, app, fake, buyer, mailbox, port):
     agreements = [
-        {"id": "SP2Y-TEST-0001", "account": account, "company": "Acme", "email": "ops@acme.example", "signed": "2026-11-01", "hourPrice": "15.00"},
-        {"id": "SP2Y-TEST-0002", "account": account, "company": "Acme", "email": "ops@acme.example", "signed": "2026-11-01", "hourPrice": "15.00"},
+        {"id": "SP2Y-TEST-0001", "email": "ops@acme.example", "company": "Acme", "signed": "2026-11-01", "hourPrice": "15.00"},
+        {"id": "SP2Y-TEST-0002", "email": "OPS@acme.example", "company": "Acme", "signed": "2026-11-01", "hourPrice": "15.00"},
+        {"id": "SP2Y-TEST-0003", "email": "else@other.example", "company": "Other", "signed": "2026-11-01", "hourPrice": "15.00"},
     ]
     Path(cfg.path("agreements.json")).write_text(json.dumps(agreements))
     plan = sp.tranches(date(2026, 11, 1), 24)
-    status, state = request(port, "POST", "/agreement", {"agreement": "SP2Y-TEST-0001", "account": account})
-    if status != 200 or state["hours"] != sum(plan) or state["nextGate"] != {"name": "Gate 1", "due": "2026-11-30", "amount": f"{15 * sum(plan[:6])}.00"}:
-        failures.append(f"agreement standing: {status} {state}")
-    if request(port, "POST", "/agreement", {"agreement": "SP2Y-TEST-0001", "account": "0x" + "1" * 40})[0] != 404:
-        failures.append("another account can read an agreement")
-    if request(port, "POST", "/quote", {"product": "two-year", "account": account, "agreement": "SP2Y-TEST-0001", "amount": "999999999.00"})[0] != 409:
-        failures.append("a prepayment above the remaining price is quoted")
-    status, quote = request(port, "POST", "/quote", {"product": "two-year", "account": account, "agreement": "SP2Y-TEST-0001", "amount": "100.00"})
-    if status != 200 or (quote["hours"], quote["vat"], quote["total"]) != ("6.6666", "10.00", "110.00"):
-        failures.append(f"prepayment quote: {status} {quote}")
+    found = buyer("GET", "/account")[1]["agreements"]
+    if [a["agreement"] for a in found] != ["SP2Y-TEST-0001", "SP2Y-TEST-0002"]:
+        failures.append(f"the account lists other agreements: {found}")
         return
-    status, placed = request(port, "POST", "/order", {"order": quote["order"], "signature": personal_sign(buyer, quote["message"])})
+    if found[0]["hours"] != sum(plan) or found[0]["nextGate"] != {"name": "Gate 1", "due": "2026-11-30", "amount": f"{15 * sum(plan[:6])}.00"}:
+        failures.append(f"agreement standing: {found[0]}")
+    pay = {"product": "two-year", "agreement": "SP2Y-TEST-0001", "network": "polygon"}
+    if buyer("POST", "/order", dict(pay, agreement="SP2Y-TEST-0003", amount="100.00"))[0] != 404:
+        failures.append("an account can prepay another account's agreement")
+    if buyer("POST", "/order", dict(pay, amount="999999999.00"))[0] != 409:
+        failures.append("a prepayment above the remaining price is ordered")
+    status, placed = buyer("POST", "/order", dict(pay, amount="100.00"))
     key = max(fake.invoices, key=lambda k: int(k[3:]))
-    if status != 200 or fake.invoices[key]["body"]["items"][0]["quantity"] != {"value": 1, "type": "quantity"}:
-        failures.append(f"prepayment order: {status} {placed}")
+    invoice = fake.invoices[key]["body"]
+    if status != 200 or invoice["items"][0]["quantity"] != {"value": 1, "type": "quantity"} or invoice["amount"]["total"] != "110.00":
+        failures.append(f"prepayment order: {status} {placed} {invoice['amount']}")
         return
     fake.invoices[key]["status"] = "completed"
     app.reconcile()
     app.jobs.join()
-    state = request(port, "POST", "/agreement", {"agreement": "SP2Y-TEST-0001", "account": account})[1]
-    if state["paid"] != "100.00" or not request(port, "GET", "/order/" + quote["order"])[1]["issued"]:
+    state = buyer("GET", "/account")[1]["agreements"][0]
+    if state["paid"] != "100.00" or not buyer("GET", "/order/" + placed["order"])[1]["issued"]:
         failures.append(f"reconciling a missed webhook does not issue the prepayment: {state}")
     NOW[0] = datetime(2026, 12, 1, 3, 0, 0, tzinfo=timezone.utc)
-    state = request(port, "POST", "/agreement", {"agreement": "SP2Y-TEST-0001", "account": account})[1]
-    status, refused = request(port, "POST", "/quote", {"product": "two-year", "account": account, "agreement": "SP2Y-TEST-0001", "amount": "100.00"})
-    if "Gate 1 was missed" not in (state["ended"] or "") or status != 409:
-        failures.append(f"a missed gate does not stop prepayment: {state} {status} {refused}")
-    state = request(port, "POST", "/agreement", {"agreement": "SP2Y-TEST-0002", "account": account})[1]
-    if "Phase A ended" not in (state["ended"] or ""):
-        failures.append(f"an unpaid agreement survives Phase A: {state}")
+    state = buyer("GET", "/account")[1]["agreements"]
+    status, _ = buyer("POST", "/order", dict(pay, amount="100.00"))
+    if "Gate 1 was missed" not in (state[0]["ended"] or "") or status != 409:
+        failures.append(f"a missed gate does not stop prepayment: {state[0]} {status}")
+    if "Phase A ended" not in (state[1]["ended"] or ""):
+        failures.append(f"an unpaid agreement survives Phase A: {state[1]}")
+
+
+def lead_flow(failures, app, buyer, mailbox, work):
+    status, _ = buyer("POST", "/lead", {"company": "Big Co", "email": "cto@big.example", "fleets": 2, "start": "2027-01", "message": "Two fleets, East window.\nCall me."})
+    app.mails.join()
+    saved = [json.loads(line) for line in open(work / "data" / "leads.jsonl", encoding="utf-8")]
+    if status != 200 or saved[-1]["company"] != "Big Co" or saved[-1]["fleets"] != "2":
+        failures.append(f"quote request: {status} {saved}")
+    if not any("Big Co" in m["Subject"] for _, m in mailbox.mail):
+        failures.append("we are not told of a quote request")
+    opened = next(m for _, m in mailbox.mail if m["Subject"].startswith("New SparkPipe account"))
+    if "Acme 주식회사 <ops@acme.example>" not in opened.get_content() or opened["Content-Transfer-Encoding"] != "quoted-printable":
+        failures.append(f"a Korean company name is garbled in mail: {opened.get_content()[:80]!r}")
+    if buyer("POST", "/lead", {"company": "", "email": "cto@big.example"})[0] != 400:
+        failures.append("a quote request without a company is accepted")
 
 
 def main():
     failures = []
-    check_keccak(failures)
-    check_recover(failures)
     check_dates(failures)
+    check_sessions(failures)
     check_service(failures)
     for failure in failures:
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("pay: keccak and signature recovery match eth-account, tranches match the agreement, quotes, signed orders, CoinPayments invoices, signed webhooks, reconciliation, the holding limit, gates and the hash-chained ledger behave")
+    print("pay: tranches match the agreement; email codes, sessions, terms acceptance, USDC invoices on the chosen network, signed webhooks, receipts, reconciliation, the holding limit, gates, quote requests and the hash-chained ledger behave")
     return 0
 
 

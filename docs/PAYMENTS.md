@@ -1,54 +1,79 @@
 # Payments
 
-Fleet-hours are paid in USDC through CoinPayments, on any USDC network the
-merchant account accepts. Won bank transfers against a tax invoice and USD
-wires under a two-year agreement are still arranged by hand.
+Fleet-hours are paid in USDC through CoinPayments, on Base, Solana,
+Arbitrum, Polygon, BNB Chain or Ethereum. Won bank transfers against a tax
+invoice and USD wires under a two-year agreement are still arranged by hand.
 
-## How a payment works
+## How a customer buys
 
-1. On `https://sparkpipe.ai/buy.html` the customer connects an Ethereum
-   wallet. The address is the account.
-2. The page sends the order to `POST /pay/api/quote`. The service prices it
-   from `site/pricing.js` (never from the browser), checks the holding limit
-   or the agreement's gates, and returns the exact text to sign.
-3. The wallet signs that text with `personal_sign` (EIP-191). For hourly
-   orders the text states the SHA-256 hashes of `terms/hourly-ko.md` and
-   `terms/hourly-en.md`, so the signature is the acceptance of the Hourly
-   Terms (clause 12.4). Signing moves no funds.
-4. `POST /pay/api/order` recovers the signer, records the order in the
-   ledger and creates a CoinPayments invoice in USD (currency `5057`): the
-   price, VAT at 10% as tax, and a per-invoice webhook. The page opens the
-   CoinPayments checkout, where the customer picks a USDC network and pays.
-5. CoinPayments posts signed webhooks to `/pay/api/coinpayments`. The
+1. `https://sparkpipe.ai/buy.html` asks three things, one step at a time:
+   how many hours (4, 24, 72, 168 or any number) and from which day; the
+   company's legal name and a work email, with a box accepting the Hourly
+   Terms; and the network the customer's USDC is on. The order total, with
+   VAT, stays in view.
+2. `POST /pay/api/code` emails a 6-digit code. `POST /pay/api/verify`
+   checks it, opens the account if the email is new, records the
+   acceptance of the Hourly Terms and sets the session cookie. The email is
+   the account: there is no password and no wallet.
+3. `POST /pay/api/order` prices the order from `site/pricing.js` (never
+   from the browser), checks the holding limit, records the order and
+   creates a CoinPayments invoice in USD (currency `5057`) with the price,
+   VAT at 10% as tax, a per-invoice webhook, and `payment.paymentCurrency`
+   set to USDC on the chosen network, so the checkout opens straight on the
+   address, amount and QR code. The page sends the customer there.
+4. CoinPayments posts signed webhooks to `/pay/api/coinpayments`. The
    service checks the HMAC and the timestamp, then fetches the invoice from
    the CoinPayments API and acts on that answer, not on the webhook body.
    Hours are issued only when the invoice is `completed` and its total and
-   currency match the order.
-6. CoinPayments sends the customer back to `buy.html?order=…`, which shows
-   the order's state from `GET /pay/api/order/<order>`.
+   currency match the order. The customer gets a receipt by email, and
+   `SPARKPIPE_PAY_NOTIFY` gets a note of each new account, payment and
+   mismatch.
+5. CoinPayments sends the customer back to `account.html?order=…`, which
+   follows the order (awaiting payment, payment seen, confirmed, hours
+   issued) every 6 seconds and then shows the account: hours available,
+   room under the holding limit, hour blocks, two-year agreements and
+   orders.
 
 Every five minutes the service also asks CoinPayments about each open
 invoice from the last 14 days, so a lost webhook only delays the hours.
+
+A two-year customer signs its agreement by hand. Once its entry is in
+`agreements.json`, the account page lists the agreement for the account
+with the same email, with what is paid, what is left and the next gate,
+and takes prepayments in USDC. `two-year.html` plans a term and sends a
+quote request to `POST /pay/api/lead`.
 
 ## Endpoints
 
 | Route | Does |
 | --- | --- |
-| `POST /pay/api/quote` | Price an hourly order (`company`, `email`, `hours`, `start`) or a two-year prepayment (`agreement`, `amount` before VAT) for an `account`; returns the order number and the text to sign. A quote lasts 15 minutes |
-| `POST /pay/api/order` | `order` and `signature`: creates the invoice and returns the checkout link |
-| `GET /pay/api/order/<order>` | The order's state, amounts and hours; the checkout link while unpaid |
-| `POST /pay/api/agreement` | `agreement` and `account`: the agreement's hours, price, amount paid, amount left and next gate |
+| `POST /pay/api/code` | `email`: emails a 6-digit sign-in code, valid 10 minutes for 5 tries |
+| `POST /pay/api/verify` | `email`, `code`, and for a new account `company` and `accept: true`: signs in, sets the cookie `sp_session` and returns the account |
+| `POST /pay/api/signout` | Clears the cookie |
+| `GET /pay/api/account` | The signed-in account: hours, limit, blocks, orders, agreements and whether it accepted the current Hourly Terms |
+| `POST /pay/api/order` | Signed in. `product: "hourly"` with `hours`, `start`, `network` (and `accept: true` when the terms changed since the account accepted them), or `product: "two-year"` with `agreement`, `amount` before VAT and `network`: returns the checkout link |
+| `GET /pay/api/order/<order>` | The order's state, amounts and hours; the checkout link while unpaid. The order number is 80 random bits |
+| `POST /pay/api/lead` | A two-year quote request: `company`, `email`, `name`, `fleets`, `start`, `message` |
 | `POST /pay/api/coinpayments` | CoinPayments webhooks |
 | `GET /pay/api/health` | `{"ok": true}` |
 
-Each client IP address may ask for 30 quotes, 10 orders and 30 agreement
-lookups in ten minutes.
+The session cookie is HttpOnly, SameSite=Lax, Secure and scoped to
+`/pay/api`. It holds the account number, its expiry and an HMAC under
+`session_key` in the data directory, made on first start. A POST whose
+`Origin` is not `SPARKPIPE_PAY_PUBLIC` is refused. Each client IP address
+may ask for 20 codes, 30 verifications, 10 orders and 5 quote requests in
+ten minutes (quote requests: an hour), and each email for 5 codes an hour.
 
 ## Rules the service enforces
 
+- An account opens only with the box ticked; the ledger keeps the
+  statement accepted, the SHA-256 hashes of `terms/hourly-ko.md` and
+  `terms/hourly-en.md`, the IP address and the browser (clause 12.4). When
+  those files change, the next hourly order asks the customer to accept
+  the new text.
 - Hourly hours start no earlier than `hourlyEarliestStart` and within a
   year, and last 12 months (clause 4.2).
-- The holding limit is 168 hours, or 720 for an address listed in
+- The holding limit is 168 hours, or 720 for an email listed in
   `approved.json` (clause 4.1). It counts unexpired issued hours and orders
   still awaiting payment for 24 hours. Until reservations record
   consumption, every unexpired hour issued counts as held.
@@ -64,23 +89,34 @@ lookups in ten minutes.
 
 `/var/lib/sparkpipe-pay`, owned by the service user:
 
-- `ledger.jsonl`: one JSON line per event (`order`, `invoice`,
-  `invoice_failed`, `invoice_state`, `payment`, `hours_issued`), each with
-  the SHA-256 of the line before it. The service refuses to start if the
-  chain is broken. An order line keeps the signed text, the signature, the
-  IP address and the browser, as the privacy policy's acceptance records
-  say.
-- `approved.json`: the addresses that passed the business check, for
-  example `["0xabc…"]`.
+- `ledger.jsonl`: one JSON line per event (`account`, `acceptance`,
+  `order`, `invoice`, `invoice_failed`, `invoice_state`, `payment`,
+  `hours_issued`), each with the SHA-256 of the line before it. The service
+  refuses to start if the chain is broken. An account or order line keeps
+  the IP address and the browser, as the privacy policy's acceptance
+  records say; a payment line keeps the coin CoinPayments reports.
+- `session_key`: 32 random bytes that sign the session cookies. Deleting
+  it signs everyone out.
+- `leads.jsonl`: the two-year quote requests.
+- `approved.json`: the emails that passed the business check, for example
+  `["cto@acme.example"]`.
 - `agreements.json`: one entry per signed two-year agreement:
 
 ```json
-[{"id": "SP2Y-7K3QD9", "account": "0xabc…", "company": "Acme Co., Ltd.", "email": "billing@acme.example", "signed": "2026-12-15", "hourPrice": "15.00"}]
+[{"id": "SP2Y-7K3QD9", "email": "billing@acme.example", "company": "Acme Co., Ltd.", "signed": "2026-12-15", "hourPrice": "15.00"}]
 ```
 
-Give agreements numbers that cannot be guessed: the number and the
-account together reveal the price. The service rereads both files on every
+The service rereads `approved.json` and `agreements.json` on every
 request, so edits need no restart.
+
+## Mail
+
+The service sends the sign-in codes, receipts and notes through
+`SPARKPIPE_PAY_SMTP` (default `127.0.0.1:25`, the VPS's own mail server,
+which the SPF record for sparkpipe.ai already names) as
+`SPARKPIPE_PAY_MAIL_FROM` with replies to `SPARKPIPE_PAY_NOTIFY`. A code
+that cannot be sent is an error on the page; a receipt that cannot be sent
+is logged.
 
 ## CoinPayments setup
 
@@ -90,10 +126,15 @@ request, so edits need no restart.
    `invoicePending`, `invoicePaid`, `invoiceCompleted`, `invoiceCancelled`
    and `invoiceTimedOut`. The webhook signature covers that exact URL, so
    it must not change behind the proxy.
-2. In Payment Settings, accept only USDC: `USDC.ERC20`, `USDC.BASE`,
-   `USDC.ARB`, `USDC.POL`, `USDC.SOL` and `USDC.BEP20`. Turn LTCT off.
+2. Every invoice pre-selects USDC on the customer's network, but the
+   checkout still offers a currency menu. In Payment Settings, accept only
+   `USDC.ERC20`, `USDC.BASE`, `USDC.ARB`, `USDC.POL`, `USDC.SOL` and
+   `USDC.BEP20`, and turn LTCT off.
 3. Choose the payout wallet or conversion there too; the service does not
    set payout overrides.
+
+CoinPayments emails the payment instructions to the invoice's refund
+email, which is the account email.
 
 ## Install on the VPS
 
@@ -101,21 +142,21 @@ request, so edits need no restart.
 sudo useradd --system --home /var/lib/sparkpipe-pay --shell /usr/sbin/nologin sparkpipe-pay
 sudo install -d -o sparkpipe-pay -g sparkpipe-pay -m 700 /var/lib/sparkpipe-pay
 sudo install -d -m 755 /opt/sparkpipe-pay /etc/sparkpipe-pay
-sudo install -m 644 tools/sparkpipe_pay.py tools/eth_signature.py /opt/sparkpipe-pay/
+sudo install -m 644 tools/sparkpipe_pay.py /opt/sparkpipe-pay/
 sudo install -m 640 -g sparkpipe-pay deployment/vps/sparkpipe-pay.env.example /etc/sparkpipe-pay/env
 sudo install -m 640 -g sparkpipe-pay /dev/null /etc/sparkpipe-pay/client_secret
 sudo install -m 644 deployment/vps/sparkpipe-pay.service /etc/systemd/system/
 sudo install -m 644 deployment/vps/sparkpipe-pay.conf /etc/apache2/sparkpipe/
 ```
 
-Fill `COINPAYMENTS_CLIENT_ID` in `/etc/sparkpipe-pay/env` and paste the
-client secret into `/etc/sparkpipe-pay/client_secret` with an editor, not
-on a command line. Include `sparkpipe-pay.conf` in the port-443 virtual
-host beside the other `deployment/vps` includes; `mod_proxy_http` is already
-on for the public API. Copy `site/` to `/var/www/html` as usual, including
-`site/terms/`: the signed text points customers at
-`https://sparkpipe.ai/terms/hourly-ko.md` and `hourly-en.md`, and the
-service hashes the copies under `/var/www/html/terms`. Then:
+Fill `COINPAYMENTS_CLIENT_ID` in `/etc/sparkpipe-pay/env` and put the
+client secret into `/etc/sparkpipe-pay/client_secret` by copying a file,
+never on a command line. Include `sparkpipe-pay.conf` in the port-443
+virtual host beside the other `deployment/vps` includes; `mod_proxy_http`
+must be on. Copy `site/` to `/var/www/html` as usual, including
+`site/terms/`: the acceptance names `https://sparkpipe.ai/terms/hourly-ko.md`
+and `hourly-en.md`, and the service hashes the copies under
+`/var/www/html/terms`. Then:
 
 ```sh
 sudo systemctl daemon-reload
@@ -129,24 +170,27 @@ library.
 
 ## Operating it
 
-- `journalctl -u sparkpipe-pay` logs each invoice, payment and issue of
-  hours, and every refused webhook signature, without payload contents.
-- `sparkpipe_pay.py verify` checks the ledger chain and prints its head. Run
-  the admin commands as the service user with its environment:
+- `journalctl -u sparkpipe-pay` logs each account, invoice, payment and
+  issue of hours, every refused webhook signature and every mail that
+  failed, without payload contents.
+- `sparkpipe_pay.py verify` checks the ledger chain and prints its head and
+  counts. Run the admin commands as the service user with its environment:
   `sudo -u sparkpipe-pay sh -c 'set -a; . /etc/sparkpipe-pay/env; python3 /opt/sparkpipe-pay/sparkpipe_pay.py verify'`.
 - An order whose completed invoice does not match (state `mismatch`) issues
-  no hours. Check the invoice in the dashboard; if the customer paid in
-  full, `sparkpipe_pay.py release <order>` fetches the invoice again and
-  issues the hours when CoinPayments says `completed`. It appends to the
-  same ledger safely while the service runs.
+  no hours and mails `SPARKPIPE_PAY_NOTIFY`. Check the invoice in the
+  dashboard; if the customer paid in full, `sparkpipe_pay.py release
+  <order>` fetches the invoice again and issues the hours when CoinPayments
+  says `completed`. It appends to the same ledger safely while the service
+  runs.
 - A customer whose payment fell short or arrived late is refunded through
   CoinPayments' own refund flow; the ledger records no hours for it.
 
 ## Tests
 
-`python3 tests/test_pay.py` checks Keccak-256 and signature recovery
-against vectors from eth-account, the Sunday-free tranches against
-agreement clause 6.6, and the whole service against a fake CoinPayments
-that verifies request signatures: quotes, signed orders, invoice bodies,
-signed and tampered webhooks, reconciliation, the holding limit, gates,
-mismatched totals and the ledger chain with two writers.
+`python3 tests/test_pay.py` checks the Sunday-free tranches against
+agreement clause 6.6, the session tokens, and the whole service against a
+fake CoinPayments that verifies request signatures and a fake mail server:
+codes, sign-in, terms acceptance and re-acceptance, cross-site refusal,
+invoice bodies on the chosen network, signed and tampered webhooks,
+receipts, reconciliation, the holding limit, gates, mismatched totals,
+failed invoices, quote requests and the ledger chain with two writers.

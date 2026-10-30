@@ -1,5 +1,5 @@
 [Unit]
-Description=SparkPipe payments: CoinPayments invoices, webhooks and the fleet-hour ledger
+Description=SparkPipe payments: email accounts, CoinPayments invoices, webhooks and the fleet-hour ledger
 After=network-online.target
 Wants=network-online.target
 

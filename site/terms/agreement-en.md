@@ -20,7 +20,7 @@ In this Agreement:
 - **Reservation** means the booking of one or more hours on a selected Fleet through our system under clause 8. **Reserve** has a matching meaning.
 - **Phase A** means Day 1 to Day 30 inclusive.
 - **Full Prepayment** means our receipt, in cleared funds, of the price of every Tranche in the Term.
-- **Key** means the private key held by Customer under clause 8.5.
+- **Account** means Customer's account with us under clause 8.5.
 
 ## 1. Subject
 
@@ -141,15 +141,15 @@ In this Agreement:
 
 ## 8. Reservation, consumption, use and responsibility
 
-8.1. Customer reserves hours through our website or API by a message signed with its Key, naming the Fleet, the start time and the number of hours. A Reservation exists once our system confirms it. A reserved hour on a Fleet consumes as many hours as that Fleet's Rate.
+8.1. Customer reserves hours through our website while signed in to its Account, or through our API with an access token issued under it, naming the Fleet, the start time and the number of hours. A Reservation exists once our system confirms it. A reserved hour on a Fleet consumes as many hours as that Fleet's Rate.
 
 8.2. A Reservation is final once confirmed: it cannot be cancelled, moved or refunded, except under clause 11.3. Customer may not make a Reservation unless its paid hours can cover it together with every Reservation it already holds, each from hours that have not expired when it occurs. A reserved hour is consumed when that hour occurs, whether or not it is used, and not before. Our technical records of payments, Reservations and consumption are kept in an append-only, hash-chained ledger whose daily roots we publish, and Customer may obtain its own entries with proof that they were recorded and not altered. These records are conclusive, except for manifest error.
 
-8.3. **Customer has the exclusive right to use each reserved hour.** Customer may use it, or let others use it by resale, transfer or gift through its Key and the access it controls, and may run any lawful workload on it, subject to clauses 8.9 to 8.12. Any such arrangement is made outside our system and is out of our control (clause 8.6).
+8.3. **Customer has the exclusive right to use each reserved hour.** Customer may use it, or let others use it by resale, transfer or gift through its Account and the access tokens it issues, and may run any lawful workload on it, subject to clauses 8.9 to 8.12. Any such arrangement is made outside our system and is out of our control (clause 8.6).
 
 8.4. We do not move, reassign, displace or interfere with a reserved hour, except under clause 8.11. A Reservation is delivered on the Fleet it was made on.
 
-8.5. Access is by a private key held by Customer: the key of the Ethereum address Customer registers with us. It authorises Reservations and the use of each reserved hour, and Customer may issue access tokens and add signers under it. Access is automated: no notice to us, approval or waiting period. We set the technical mechanism and may change it without amending this Agreement, provided equivalent access continues. Customer bears all risk of loss or compromise of its Key; any use under the Key is Customer's use.
+8.5. Access is through Customer's Account: the account on our website identified by the email address Customer registers with us, signed in to with one-time codes sent to that address. It authorises Reservations and the use of each reserved hour, and Customer may issue access tokens and add users under it. Access is automated: no notice to us, approval or waiting period. We set the technical mechanism and may change it without amending this Agreement, provided equivalent access continues. Customer bears all risk of loss or compromise of its Account email and access tokens; any use under the Account is Customer's use.
 
 8.6. We keep no register of, and are not a party to, any resale or transfer of hours. We do not match, price, clear or settle such transactions, have no liability for their price or counterparties, and are never obliged to buy any hour. We do not buy back, credit or pay cash for any expiring or unused hour, at any time, for any reason.
 
@@ -157,11 +157,11 @@ In this Agreement:
 
 8.8. We publish live capacity in machine-readable form at the address stated in the Schedule, regenerated at least every 30 seconds. It lists each Fleet we operate, whether it is serving, and the hours open for Reservation in each window. Wherever this Agreement makes anything subject to availability, availability means the capacity that publication shows when Customer makes the Reservation.
 
-8.9. **We provide capacity only.** Customer alone decides what runs on its hours. Customer is solely responsible for its workloads, the data and content it processes, the outputs it obtains, and every use made of them. We do not monitor, review or control workloads, data or outputs, and we are not responsible for them. Customer is responsible for every person who uses hours under its Key or this Agreement, including its end users, as if their acts were its own. Customer must bind anyone it resells or transfers hours to by terms no less protective of us than clauses 8.9 to 8.12, and remains responsible to us for that person's compliance.
+8.9. **We provide capacity only.** Customer alone decides what runs on its hours. Customer is solely responsible for its workloads, the data and content it processes, the outputs it obtains, and every use made of them. We do not monitor, review or control workloads, data or outputs, and we are not responsible for them. Customer is responsible for every person who uses hours under its Account or this Agreement, including its end users, as if their acts were its own. Customer must bind anyone it resells or transfers hours to by terms no less protective of us than clauses 8.9 to 8.12, and remains responsible to us for that person's compliance.
 
 8.10. **Lawful use.** Customer must comply, and must ensure that every user of its hours complies, with every law that applies to the use, including laws on export control and sanctions, personal data, intellectual property and computer misuse, and with the licence terms of any model it uses. In particular, no hour may be used to: (a) create, store or distribute unlawful content, including child sexual abuse material; (b) attack, probe or disrupt any system or network, or distribute malicious code; (c) infringe the rights of any person; (d) benefit any person, entity or country subject to sanctions of the United Nations, the Republic of Korea, the United States or the European Union, or serve any end use that export control laws prohibit, including weapons of mass destruction; or (e) interfere with a Fleet or with other customers. Customer represents that neither it nor any person that owns or controls it is subject to those sanctions. Where Customer uses its hours to provide generative AI products or services to others, Customer is their provider and bears the duties that apply to them, including the transparency and labelling duties of the Korean Framework Act on the Development of Artificial Intelligence and Establishment of Trust.
 
-8.11. **Suspension.** We may suspend a Reservation or access under the Key, at once and without prior notice, where (a) a law, court or competent authority requires it, (b) we reasonably believe clause 8.10 is being breached, or (c) the use threatens the security or integrity of a Fleet or of others. We tell Customer as soon as practicable and lift the suspension when its cause ends. Hours lost to a suspension caused by the use of Customer's hours are consumed and are not credited under clause 9.2.
+8.11. **Suspension.** We may suspend a Reservation or access under the Account, at once and without prior notice, where (a) a law, court or competent authority requires it, (b) we reasonably believe clause 8.10 is being breached, or (c) the use threatens the security or integrity of a Fleet or of others. We tell Customer as soon as practicable and lift the suspension when its cause ends. Hours lost to a suspension caused by the use of Customer's hours are consumed and are not credited under clause 9.2.
 
 8.12. **Customer data.** Customer keeps all rights in its data and outputs. We access them only as needed to operate and secure the service, or where the law requires. Customer is responsible for the lawfulness of any personal data it processes and for keeping its own copies: we keep no backups of Customer data. We handle Customer data as stated in our published privacy policy. The Fleets and our servers are located in Seoul, Republic of Korea. We hold no Customer data beyond transient caches, which we delete within 24 hours, so nothing is returned when this Agreement ends. We tell Customer without delay of any intrusion, any leak of its information and any unannounced interruption of the service.
 
@@ -237,7 +237,7 @@ Where this Agreement ends under clause 11.2 or 11.3:
 
 13.8. **Business use.** Customer enters into this Agreement in the course of its business and not as a consumer. Each party confirms that it has read every clause and had the opportunity to negotiate it.
 
-13.9. **Electronic signature.** Either party may sign this Agreement electronically, including by a signature made with the Key, or with our signing key, over the hash of the final text. Such a signature has the same effect as a handwritten signature. The record of any negotiation of this Agreement is kept with the signed text.
+13.9. **Electronic signature.** Either party may sign this Agreement electronically, including by Customer accepting the hash of the final text while signed in to its Account, or by a signature with our signing key over that hash. Such a signature has the same effect as a handwritten signature. The record of any negotiation of this Agreement is kept with the signed text.
 
 ## 14. Law, disputes and language
 
@@ -262,7 +262,7 @@ Where this Agreement ends under clause 11.2 or 11.3:
 | Performance Threshold (clause 9.2) | \[80\]% of the Baseline |
 | Live capacity address (clause 8.8) | https://sparkpipe.ai/availability.txt |
 | Chosen Models (clause 10.2) | \[models from the Fleet List\] |
-| Customer Ethereum address (for the Key) | \[ \] |
+| Customer Account email (clause 8.5) | \[ \] |
 | Payment currency and account | Either (a) KRW, by bank transfer from Customer's account at a Korean bank to our won account named on our electronic tax invoice (세금계산서), with VAT charged under clause 2.2; or (b) USD, by bank transfer from Customer's own account outside the Republic of Korea to our USD account at a Korean foreign exchange bank, zero-rated where Customer has no place of business in the Republic of Korea: \[bank, account holder, account number, SWIFT\], confirmed by both parties before payment; or (c) USDC, on any network our payment processor CoinPayments accepts, through the invoice it issues for us, with VAT charged under clause 2.2 |
 | Supplier notice address and email | \[ \] |
 | Customer notice address and email | \[ \] |

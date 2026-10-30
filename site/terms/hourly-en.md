@@ -12,11 +12,11 @@ These Terms are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 1.3. **Businesses only.** Customer confirms that it acts in the course of its business and not as a consumer, and that its account details are true and current. We may refuse or close an account that does not meet this.
 
-## 2. Account and Key
+## 2. Account
 
-2.1. Customer's account is identified by an Ethereum address. The **Key** is that address's private key. Acceptance of these Terms, Reservations and changes to the account are messages signed with the Key. Customer may issue access tokens and add signers under it.
+2.1. Customer's account is identified by the email address Customer verifies with us, and Customer signs in to it with one-time codes we send to that address. Acceptance of these Terms, orders, Reservations and changes to the account are made while signed in to the account, or through our API with an access token issued under it. Customer may issue access tokens and add users under the account.
 
-2.2. Customer bears all risk of loss or compromise of its Key and access tokens; any use under them is Customer's use. Customer may name a recovery address, which can replace the Key after a 72-hour delay with notice to the account email.
+2.2. Customer bears all risk of loss or compromise of its account email and access tokens; any use under them is Customer's use. Customer may name a recovery email address, which can replace the account email after a 72-hour delay with notice to the account email.
 
 2.3. We send notices to the email address verified on the account. Customer keeps it current.
 
@@ -40,7 +40,7 @@ These Terms are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 ## 5. Reservations
 
-5.1. Customer reserves hours through our website or API by a message signed with its Key, naming the Fleet, the start hour, the number of hours and the model. Reservations may be made up to 7 days ahead. A Reservation exists once our system confirms it and is then final: it cannot be cancelled or moved.
+5.1. Customer reserves hours through our website while signed in to its account, or through our API with an access token issued under it, naming the Fleet, the start hour, the number of hours and the model. Reservations may be made up to 7 days ahead. A Reservation exists once our system confirms it and is then final: it cannot be cancelled or moved.
 
 5.2. **Displacement.** A customer under our 2-Year Reserved Fleet Service Agreement may take an hour Customer has reserved from Monday to Saturday, within that customer's guaranteed daily limit, if that hour starts more than 6 hours later. The hour returns to Customer's balance at once, outside the holding limit, and expires at the later of its original expiry or 30 days later; we tell Customer by email. A Reservation is not displaced within 6 hours of its start, and a Reservation on a Sunday is never displaced. Days in these Terms are in Korea Standard Time (UTC+9).
 
@@ -56,7 +56,7 @@ These Terms are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 ## 7. Use and responsibility
 
-7.1. **We provide capacity only.** Customer alone decides what runs on its hours and is solely responsible for its workloads, the data and content it processes, the outputs it obtains and every use made of them. We do not monitor, review or control them. Customer is responsible for everyone who uses hours under its Key or access tokens, including its end users and anyone it resells, transfers or gives hours to. Such arrangements happen outside our system and are out of our control. Customer must bind those persons by terms no less protective of us than this clause 7.
+7.1. **We provide capacity only.** Customer alone decides what runs on its hours and is solely responsible for its workloads, the data and content it processes, the outputs it obtains and every use made of them. We do not monitor, review or control them. Customer is responsible for everyone who uses hours under its account or access tokens, including its end users and anyone it resells, transfers or gives hours to. Such arrangements happen outside our system and are out of our control. Customer must bind those persons by terms no less protective of us than this clause 7.
 
 7.2. **Lawful use.** Customer must comply, and ensure every user of its hours complies, with every law that applies, including laws on export control and sanctions, personal data, intellectual property and computer misuse, and with each model's licence. No hour may be used to: (a) create, store or distribute unlawful content, including child sexual abuse material; (b) attack, probe or disrupt any system, or distribute malicious code; (c) infringe anyone's rights; (d) benefit any person, entity or country subject to sanctions of the United Nations, the Republic of Korea, the United States or the European Union, or serve an end use that export control law prohibits; or (e) interfere with a Fleet or other customers. Customer represents that neither it nor anyone who owns or controls it is subject to those sanctions. Where Customer uses its hours to provide generative AI products or services to others, Customer is their provider and bears the duties that apply to them, including the transparency and labelling duties of the Korean Framework Act on the Development of Artificial Intelligence and Establishment of Trust.
 
@@ -108,4 +108,4 @@ We may change these Terms by publishing a new version and emailing Customer. A n
 
 12.3. These Terms are published in English and Korean. The Korean text prevails.
 
-12.4. Customer accepts these Terms by signing with its Key an order that states the SHA-256 hashes of their exact Korean and English texts. That signature has the same effect as a handwritten signature.
+12.4. Customer accepts these Terms by ticking the acceptance box while signed in to its account. We record the SHA-256 hashes of the exact Korean and English texts accepted, with the time, the IP address and the browser. That acceptance has the same effect as a handwritten signature.

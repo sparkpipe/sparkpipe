@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>SparkPipe Fleet-Hours</title>
-<meta name="description" content="Buy SparkPipe fleet-hours with USDC: prepaid by the hour, or prepayments under a two-year agreement.">
+<title>Buy Fleet-Hours · SparkPipe</title>
+<meta name="description" content="Rent a whole SparkPipe AI fleet in Seoul by the hour. Pay in USDC on Base, Solana, Arbitrum, Polygon, BNB Chain or Ethereum in about two minutes.">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
@@ -14,421 +14,314 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
 <link rel="stylesheet" href="site.css?v=dcbd7de8">
-<style>
-.panel { display: grid; gap: 18px; padding: 20px; border: 1px solid var(--rule); border-radius: 2px; background: var(--sheet); }
-[hidden] { display: none !important; }
-.ok { color: var(--live); }
-.split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(24px, 4vw, 48px); }
-.split .form { display: grid; gap: 14px; align-content: start; }
-.table-wrap.scroll { max-height: 440px; overflow-y: auto; }
-.table-wrap.scroll thead th { position: sticky; top: 0; background: var(--paper); }
-.note-line { font: 400 12px/1.6 var(--mono); font-variation-settings: 'wdth' 87.5; color: var(--faint); }
-.account { font: 500 13px/1.5 var(--mono); font-variation-settings: 'wdth' 87.5; overflow-wrap: anywhere; }
-.form .row { display: flex; gap: 10px; align-items: end; }
-.form .row label { flex: 1; }
-@media (max-width: 960px) { .split { grid-template-columns: minmax(0, 1fr); } }
-</style>
+<link rel="stylesheet" href="checkout.css?v=1">
 </head>
 <body>
 <header class="nav">
   <div class="wrap">
     <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">fleet-hours</span></a>
     <nav class="nav-links" aria-label="Sections">
-      <a href="#fleets">Fleets</a>
-      <a href="#account">Account</a>
-      <a href="#hourly">Hourly</a>
-      <a href="#reserved">Two-year</a>
-      <a href="#orders">Orders</a>
+      <a href="index.html#fleets">Fleets</a>
+      <a href="index.html#prices">Prices</a>
+      <a href="two-year.html">Two-year</a>
+      <a href="#faq">Questions</a>
     </nav>
     <div class="nav-actions">
       <div class="lang" role="group" aria-label="Language / 언어"><a href="buy.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
-      <a class="btn small" href="fleets.html">Fleet List</a>
-      <a class="btn small solid" href="#hourly">Buy hours</a>
+      <a class="btn small" id="nav-account" href="account.html">Sign in</a>
     </div>
   </div>
 </header>
 
-<main>
-<section class="wrap hero">
-  <p class="label hero-kicker">Fleet-hours · checkout</p>
-  <h1>A whole fleet, by the hour.</h1>
-  <div class="hero-grid">
-    <div class="hero-copy">
-      <p class="lead">One fleet-hour is an entire SparkPipe fleet for sixty minutes. Try it prepaid by the hour, or take every hour from Monday to Saturday of a two-year term at the lower price. Your hours start on the date you choose.</p>
-      <p class="note-line">You pay in USDC, on any network our payment processor CoinPayments accepts, on its checkout page. You sign each order with your Ethereum wallet; signing moves no funds.</p>
-      <p class="note-line">The <a href="terms.html">Hourly Terms and the two-year agreement</a> are published for review and come into force when sales open on 1 December 2026. How we handle customer data: <a href="privacy.html#data">privacy policy</a>.</p>
-    </div>
-    <div class="specs plate">
-      <div><strong id="p-hourly">$20</strong><span>per fleet-hour, prepaid, no commitment: up to <b id="p-hourly-max">168</b> hours held, or <b id="p-verified-max">720</b> after a business check</span></div>
-      <div><strong id="p-committed">$15</strong><span>per fleet-hour, Monday to Saturday over a two-year term, after a business check</span></div>
-      <div><strong id="p-vat">10%</strong><span>VAT added to won and USDC payments; a USD wire from abroad is zero-rated</span></div>
-      <div><strong id="p-start">2026-12-01</strong><span>earliest start for hourly hours and two-year agreements</span></div>
-    </div>
-  </div>
+<main class="wrap">
+<section class="co-head">
+  <p class="label">Buy fleet-hours · <span class="signal">USDC</span></p>
+  <h1>A whole AI fleet, by the hour.</h1>
+  <p class="lead">Sixteen DGX Sparks in Seoul serving only you: Kimi K3 and other open models over a terabyte, with million-token context. Pick your hours, confirm your email, pay in USDC. About two minutes, no wallet extension.</p>
+  <div class="trust"><span>No commitment</span><span>Pay from any wallet or exchange</span><span>Hours usable for 12 months</span><span>Data stays in Korea</span></div>
 </section>
 
-<div class="wrap">
-<section id="fleets" class="sec">
-  <div class="sec-rail">
-    <p class="label">Fleets</p>
-    <p class="label">Rates</p>
-  </div>
-  <div class="sec-body">
-    <h2>One balance, every fleet.</h2>
-    <p class="prose">Your hours work on every fleet. A fleet's rate is how many hours an hour on it takes from your balance, so its price per hour is the rate times the hour price.</p>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Fleet</th><th>State</th><th>Rate</th><th>Hourly price</th><th>Two-year price</th></tr></thead>
-      <tbody id="f-rows"></tbody>
-    </table></div>
-  </div>
-</section>
-
-<section id="account" class="sec">
-  <div class="sec-rail">
-    <p class="label">Account</p>
-    <p class="label">Your wallet</p>
-  </div>
-  <div class="sec-body">
-    <h2>Your account is your wallet.</h2>
-    <p class="prose">An account is an Ethereum address. You sign each order with its key: the signature accepts the terms and authorises the order, and it moves no funds. Hours are issued to that address.</p>
-    <div class="panel">
-      <p><b>Account:</b> <span class="account" id="w-account">not connected</span></p>
-      <div class="actions"><button class="btn solid" id="w-connect" type="button">Connect wallet</button></div>
-      <p class="note-line" id="w-msg" role="status"></p>
-    </div>
-  </div>
-</section>
-
-<section id="hourly" class="sec">
-  <div class="sec-rail">
-    <p class="label">Hourly</p>
-    <p class="label">No commitment</p>
-  </div>
-  <div class="sec-body">
-    <h2>Try it by the hour.</h2>
-    <p class="prose">Prepaid hours for any business, with no business check: hold up to <b id="p-hourly-max-2">168</b> hours at a time, or <b id="p-verified-max-2">720</b> (30 days) once we have approved your business. From Monday to Saturday, a two-year customer may take an hourly reservation for its guaranteed daily hours until <b id="p-displace">6</b> hours before it begins, and the hour comes back to you. Sunday reservations are never taken.</p>
-    <div class="split">
-      <form class="form" id="hourly-form" novalidate>
-        <label>Company<input id="h-company" autocomplete="organization" placeholder="Legal name" maxlength="200"></label>
-        <label>Email<input id="h-email" type="email" autocomplete="email" placeholder="billing@example.com" maxlength="254"></label>
-        <label>Hours<input id="h-hours" type="number" inputmode="numeric" min="1" step="1" value="4"></label>
-        <label>Start date<input id="h-start" type="date"></label>
-        <p class="hint">You pay the total in USDC on the CoinPayments checkout page; the invoice shows the VAT. Korean businesses may instead pay in won by bank transfer against our electronic tax invoice (세금계산서): write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</p>
-        <button class="btn solid" id="h-buy" type="submit">Sign and pay in USDC</button>
-        <p class="note-line" id="h-msg" role="status"></p>
-      </form>
-      <div class="readout">
-        <div><span>Hours</span><strong id="h-r-hours">4</strong></div>
-        <div><span>Price per hour</span><strong id="h-r-price">$20.00</strong></div>
-        <div><span>Subtotal</span><strong id="h-r-net">$80.00</strong></div>
-        <div><span>VAT</span><strong id="h-r-vat">$8.00</strong></div>
-        <div class="you"><span>Total, in USDC</span><strong id="h-r-total">$88.00</strong></div>
-        <div><span>Usable</span><strong id="h-r-valid">-</strong></div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section id="reserved" class="sec">
-  <div class="sec-rail">
-    <p class="label">Two-year</p>
-    <p class="label">Monday to Saturday</p>
-  </div>
-  <div class="sec-body">
-    <h2 id="r-title">Six days a week for two years, at the lower price.</h2>
-    <p class="prose">For businesses we approve, signed individually after our business check: write to <a href="mailto:hyor@sparkpipe.ai?subject=Two-year%20fleet-hours">hyor@sparkpipe.ai</a>. The term starts the day you sign and covers every hour of it from Monday to Saturday on one fleet's capacity: 15,000 to 15,048 hours, depending on the Sundays and 29 February in the term. Sundays are kept for our maintenance; you may still use your hours on a Sunday when a fleet is free. After signing you can pay any amount at any time, up to the whole term, and meet each deadline at your own pace. Hours exist only once paid; hours that pass before they are paid for are lost. Nothing is due in the first 30 days (Phase A), and if you pay nothing by then the agreement ends with nothing owed.</p>
-    <h3>Pay toward your agreement</h3>
-    <div class="split">
-      <form class="form" id="agreement-form" novalidate>
-        <div class="row">
-          <label>Agreement number<input id="a-number" autocomplete="off" placeholder="From your signed agreement" maxlength="64"></label>
-          <button class="btn" id="a-look" type="button">Look up</button>
+<div class="co">
+  <div>
+    <section class="step active" id="step-1" aria-labelledby="t-1">
+      <div class="step-head"><span class="step-num">1</span><span class="step-title" id="t-1">How many hours?</span><span class="step-sum" id="sum-1"></span></div>
+      <form class="step-body form" id="f-1" novalidate>
+        <div class="tiles" id="presets" role="radiogroup" aria-label="Hours"></div>
+        <div class="custom" id="custom-row" hidden>
+          <label>Hours<input id="custom" type="number" inputmode="numeric" min="1" step="1"></label>
         </div>
-        <label>Amount, before VAT (USD)<input id="a-amount" type="number" inputmode="decimal" min="1" step="0.01"></label>
-        <p class="hint">Each payment issues hours equal to the amount before VAT divided by your hour price, to the earliest tranches not yet paid (clause 5.5). Wires in USD and won transfers are arranged as your agreement's Schedule sets out.</p>
-        <button class="btn solid" id="a-pay" type="submit" disabled>Sign and pay in USDC</button>
-        <p class="note-line" id="a-msg" role="status"></p>
+        <label>First day you can use them<input id="start" type="date"></label>
+        <p class="hint" id="start-hint"></p>
+        <p class="flash" id="m-1" hidden></p>
+        <button class="btn solid big" type="submit" id="next-1">Continue</button>
       </form>
-      <div class="readout">
-        <div><span>Hours in the term</span><strong id="a-r-hours">-</strong></div>
-        <div><span>Price per hour</span><strong id="a-r-price">-</strong></div>
-        <div><span>Paid, before VAT</span><strong id="a-r-paid">-</strong></div>
-        <div><span>Left to prepay</span><strong id="a-r-left">-</strong></div>
-        <div><span>Next gate</span><strong id="a-r-gate">-</strong></div>
-        <div><span>This payment issues</span><strong id="a-r-issue">-</strong></div>
-        <div class="you"><span>Total with VAT, in USDC</span><strong id="a-r-total">-</strong></div>
-      </div>
-    </div>
-    <h3>Plan a term</h3>
-    <div class="split">
-      <form class="form" id="plan-form" novalidate>
-        <label>Signing date (the term starts that day)<input id="r-start" type="date"></label>
-        <label>Window election<select id="r-election"><option value="split">50/50 East and West</option><option value="east">100% East</option><option value="west">100% West</option></select></label>
-      </form>
-      <div class="readout">
-        <div><span>Term</span><strong id="r-r-term">-</strong></div>
-        <div><span>Hours</span><strong id="r-r-hours">-</strong></div>
-        <div><span>Price per hour</span><strong id="r-r-price">-</strong></div>
-        <div><span>Subtotal</span><strong id="r-r-net">-</strong></div>
-        <div class="you"><span>Total with 10% VAT</span><strong id="r-r-total">-</strong></div>
-        <div><span>Phase A</span><strong id="r-r-phase">-</strong></div>
-      </div>
-    </div>
-    <h3>Prepayment gates</h3>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Gate</th><th>Due</th><th>Hours paid by then</th><th>Paid by then, with VAT</th></tr></thead>
-      <tbody id="r-gates"></tbody>
-    </table></div>
-    <h3>Monthly tranches</h3>
-    <div class="table-wrap scroll"><table>
-      <thead><tr><th>Tranche</th><th>Period</th><th>Days, Mon–Sat</th><th>East hours</th><th>West hours</th></tr></thead>
-      <tbody id="r-tranches"></tbody>
-    </table></div>
-  </div>
-</section>
+    </section>
 
-<section id="orders" class="sec">
-  <div class="sec-rail">
-    <p class="label">Orders</p>
-    <p class="label">This browser</p>
+    <section class="step waiting" id="step-2" aria-labelledby="t-2">
+      <div class="step-head"><span class="step-num">2</span><span class="step-title" id="t-2">Your company</span><span class="step-sum" id="sum-2"></span></div>
+      <div class="step-body">
+        <div id="known" hidden class="form">
+          <p>Signed in as <b id="known-email"></b> for <b id="known-company"></b>. <button class="linkish" type="button" id="switch">Use another email</button></p>
+          <button class="btn solid big" type="button" id="known-go">Continue</button>
+        </div>
+        <form class="form" id="f-2" novalidate>
+          <label>Company (legal name)<input id="company" autocomplete="organization" maxlength="200" placeholder="Acme Co., Ltd."></label>
+          <label>Work email<input id="email" type="email" autocomplete="email" maxlength="254" placeholder="you@company.com"></label>
+          <label class="check"><input type="checkbox" id="accept"><span>I accept the <a href="hourly-terms.html" target="_blank" rel="noopener">Hourly Terms</a> on behalf of this company, a business. The <a href="hourly-terms-ko.html" target="_blank" rel="noopener" hreflang="ko">Korean text</a> prevails.</span></label>
+          <p class="flash" id="m-2" hidden></p>
+          <button class="btn solid big" type="submit" id="send">Email me a 6-digit code</button>
+          <p class="hint">The code confirms your email. It becomes your account: receipts, your hours and sign-in all use it. Already have an account? Use the same email.</p>
+        </form>
+        <form class="form" id="f-code" hidden novalidate>
+          <p>We sent a code to <b id="sent-to"></b>. It expires in 10 minutes.</p>
+          <label>Code<input id="code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="······"></label>
+          <p class="flash" id="m-code" hidden></p>
+          <button class="btn solid big" type="submit">Confirm</button>
+          <p class="hint"><button class="linkish" type="button" id="resend">Send a new code</button> · <button class="linkish" type="button" id="change">Change the email</button> · Check your spam folder if it has not arrived in a minute.</p>
+        </form>
+      </div>
+    </section>
+
+    <section class="step waiting" id="step-3" aria-labelledby="t-3">
+      <div class="step-head"><span class="step-num">3</span><span class="step-title" id="t-3">Pay in USDC</span><span class="step-sum"></span></div>
+      <form class="step-body form" id="f-3" novalidate>
+        <p>Which network is your USDC on?</p>
+        <div class="tiles" id="networks" role="radiogroup" aria-label="USDC network"></div>
+        <label class="check" id="reaccept" hidden><input type="checkbox" id="accept-again"><span>The Hourly Terms changed since you accepted them. I accept the current <a href="hourly-terms.html" target="_blank" rel="noopener">Hourly Terms</a> (<a href="hourly-terms-ko.html" target="_blank" rel="noopener" hreflang="ko">Korean text</a>, which prevails) on behalf of my company.</span></label>
+        <p class="flash" id="m-3" hidden></p>
+        <button class="btn solid big" type="submit" id="pay">Pay in USDC</button>
+        <p class="hint">Next you see CoinPayments' checkout with the exact USDC amount, an address and a QR code. Send only USDC, on the network you picked, within the hour. Any wallet or exchange works: Coinbase, Binance, OKX, Kraken, MetaMask, Phantom. We pay CoinPayments' fee; you pay only your network's fee. Your hours appear in your account as soon as the network confirms the payment, usually within minutes.</p>
+      </form>
+    </section>
   </div>
+
+  <aside class="summary" aria-label="Your order">
+    <p class="label">Your order</p>
+    <div class="lines">
+      <div><span id="o-hours">4 fleet-hours × $20.00</span><span id="o-net">$80.00</span></div>
+      <div><span>Korean VAT, 10%</span><span id="o-vat">$8.00</span></div>
+      <div><span>Usable</span><span id="o-valid">-</span></div>
+      <div class="grand"><span>Total in USDC</span><strong id="o-total">$88.00</strong></div>
+    </div>
+    <ul class="perks">
+      <li>Each hour is the whole fleet: 16 DGX Sparks in Seoul, no other customer's requests in the queue.</li>
+      <li>Kimi K3 and other open models over a terabyte, million-token context, and Korea's own models: K-EXAONE 2.0, A.X K2, Solar Open 2.</li>
+      <li>The SparkPipe API follows the OpenAI chat format; you issue the access tokens.</li>
+      <li>Reserve your hours on a fleet's calendar, up to 7 days ahead. A reserved hour with over 15 minutes of downtime comes back in full.</li>
+    </ul>
+    <p class="hint">Want every hour, Monday to Saturday, for two years? <a href="two-year.html">The two-year price is <span id="o-committed">$15</span> an hour</a>.</p>
+  </aside>
+</div>
+
+<section id="faq" class="sec">
+  <div class="sec-rail"><p class="label">Questions</p><p class="label">Before you pay</p></div>
   <div class="sec-body">
-    <h2>Your orders.</h2>
-    <p class="prose">Orders placed from this browser, with their state at CoinPayments. Hours are issued to your account once a payment completes, usually a few minutes after the network confirms it. Every order, payment and issue of hours is a line in our hash-chained ledger.</p>
-    <p class="note-line" id="o-empty">No orders from this browser yet.</p>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Order</th><th>What</th><th>Total</th><th>State</th><th></th></tr></thead>
-      <tbody id="o-rows"></tbody>
-    </table></div>
+    <h2>Good to know.</h2>
+    <div class="faq">
+      <details><summary>Do I need a crypto wallet extension?</summary><p>No. Your account is your email. You pay on CoinPayments' checkout page from any wallet or exchange account that can send USDC: copy the address, or scan the QR code with your phone.</p></details>
+      <details><summary>Which network should I choose?</summary><p>The one your USDC is on. Base and Solana have the lowest fees; Ethereum the highest. Send only USDC, only on the network you chose: the checkout page shows the exact amount and address for it.</p></details>
+      <details><summary>When can I use the hours?</summary><p>From the first day you choose, at the earliest <span data-start>1 December 2026</span>, for 12 months. You reserve hours on a fleet's calendar up to 7 days ahead; we email you when the calendar opens for your account.</p></details>
+      <details><summary>How many hours can I hold?</summary><p>Up to <span data-cap="hourly">168</span> hours at a time, counting unused hours and unpaid orders, or <span data-cap="verified">720</span> once we have checked your business. Write to us for the check.</p></details>
+      <details><summary>Why is VAT added?</summary><p>We are a Korean company, and Korean VAT of 10% applies to every USDC payment (Hourly Terms, clause 3.2). The invoice shows it separately.</p></details>
+      <details><summary>Can we pay in won against a tax invoice?</summary><p>Yes. Korean businesses can pay by bank transfer against our electronic tax invoice (세금계산서): write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</p></details>
+      <details><summary>What if I send the wrong amount, or too late?</summary><p>A short or late payment issues no hours automatically. Write to us with your order number: we check it, then either issue the hours or refund the payment through CoinPayments.</p></details>
+    </div>
   </div>
 </section>
-</div>
 </main>
 
 <footer class="foot">
   <div class="wrap">
-    <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · SparkPipe is open source, all C and CUDA</span>
-    <nav aria-label="Footer"><a href="index.html">Home</a><a href="fleets.html">Fleet List</a><a href="https://github.com/sparkpipe/sparkpipe" target="_blank" rel="noopener">GitHub</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a></nav>
+    <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="fleets.html">Fleet List</a><a href="hourly-terms.html">Hourly Terms</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
     <span>USDC payments are processed by CoinPayments.</span>
   </div>
 </footer>
 
 <script src="pricing.js"></script>
+<script src="checkout.js?v=1"></script>
 <script>
 (() => {
-  const P = window.SP_PRICING;
-  const API = '/pay/api';
-  const KEY = 'sparkpipe-orders';
-  const ORDER = /^SP[A-Z2-7]{16}$/;
-  const OPEN = new Set(['created', 'unpaid', 'pending', 'paid']);
-  const STATES = { created: 'Creating the invoice', unpaid: 'Awaiting payment', pending: 'Payment seen, confirming', paid: 'Confirmed, settling', completed: 'Paid, hours issued', cancelled: 'Cancelled', timedout: 'Expired unpaid', failed: 'No invoice created', mismatch: 'Under review: write to us' };
+  const P = window.SP_PRICING, SP = window.SP;
   const $ = (id) => document.getElementById(id);
+  const PRESETS = [
+    { hours: 4, note: 'Try it', tag: 'Start here' },
+    { hours: 24, note: 'A full day' },
+    { hours: 72, note: 'Three days' },
+    { hours: 168, note: 'A week' },
+  ];
+  const saved = SP.store.get('sparkpipe-cart') || {};
+  const S = { hours: saved.hours || 4, start: saved.start || null, network: saved.network || 'base', me: null, step: 1 };
   const DAY = 86400000;
-  const parse = (text) => { const [y, m, d] = text.split('-').map(Number); return Date.UTC(y, m - 1, d); };
   const ymd = (t) => new Date(t).toISOString().slice(0, 10);
-  const today = () => ymd(Date.now());
-  const monthsLater = (text, months) => {
-    const [y, m, d] = text.split('-').map(Number);
-    const total = (m - 1) + months, year = y + Math.floor(total / 12), month = total % 12;
-    const last = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-    return { time: Date.UTC(year, month, Math.min(d, last)), exists: d <= last };
+  const today = () => ymd(Date.now() + 9 * 3600000);
+  const earliest = () => (today() > P.hourlyEarliestStart ? today() : P.hourlyEarliestStart);
+  const lastDay = (start) => {
+    const [y, m, d] = start.split('-').map(Number), total = m - 1 + P.hourlyValidityMonths;
+    const year = y + Math.floor(total / 12), month = total % 12, last = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+    return d <= last ? ymd(Date.UTC(year, month, d) - DAY) : ymd(Date.UTC(year, month, last));
   };
-  const termEnd = (start, months) => { const next = monthsLater(start, months); return next.exists ? next.time - DAY : next.time; };
-  const dayN = (from, n) => ymd(parse(from) + (n - 1) * DAY);
-  const usd = (n) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const short = (n) => usd(n).replace('.00', '');
-  const whole = (n) => Math.round(n).toLocaleString('en-US');
-  const cell = (text, cls) => { const td = document.createElement('td'); td.textContent = text; if (cls) td.className = cls; return td; };
-  const row = (cells) => { const tr = document.createElement('tr'); cells.forEach((c) => tr.appendChild(c)); return tr; };
-  const fill = (id, rows) => { $(id).replaceChildren(...rows); };
+  const nice = (day) => new Date(day + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
   const cents = (n) => Math.round(n * 100) / 100;
-  const S = { account: null, agreement: null };
+  const money = () => { const net = S.hours * P.hourlyPrice, vat = cents(net * P.vatRate); return { net, vat, total: cents(net + vat) }; };
+  const limit = () => (S.me ? S.me.room : P.hourlyMaxHours);
+  const keep = () => SP.store.set('sparkpipe-cart', { hours: S.hours, start: S.start, network: S.network });
 
-  const servedDays = (from, to) => {
-    let n = 0;
-    for (let t = from; t < to; t += DAY) if (new Date(t).getUTCDay() !== 0) n += 1;
-    return n;
+  const renderPresets = () => {
+    const tiles = PRESETS.map((p) => {
+      const label = document.createElement('label');
+      label.className = 'tile';
+      label.innerHTML = '<input type="radio" name="preset"><b></b><span></span>';
+      const input = label.querySelector('input');
+      input.value = String(p.hours);
+      input.checked = S.hours === p.hours;
+      label.querySelector('b').textContent = p.hours + ' h';
+      label.querySelector('span').textContent = p.note + ' · ' + SP.usd(p.hours * P.hourlyPrice).replace('.00', '') + ' + VAT';
+      if (p.tag) { const em = document.createElement('em'); em.textContent = p.tag; label.append(em); }
+      return label;
+    });
+    const other = document.createElement('label');
+    other.className = 'tile';
+    other.innerHTML = '<input type="radio" name="preset" value="custom"><b>Other</b><span>Any number up to ' + P.hourlyMaxHours + '</span>';
+    other.querySelector('input').checked = !PRESETS.some((p) => p.hours === S.hours);
+    $('presets').replaceChildren(...tiles, other);
+    $('custom-row').hidden = !other.querySelector('input').checked;
+    if (!$('custom-row').hidden) $('custom').value = S.hours;
   };
-  const plan = (start, election) => {
-    const end = termEnd(start, P.termMonths), tranches = [];
-    let cursor = parse(start);
-    while (cursor <= end) {
-      const d = new Date(cursor), monthEnd = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0), to = Math.min(monthEnd, end);
-      const days = servedDays(cursor, to + DAY), hours = 24 * days;
-      const east = election === 'east' ? hours : election === 'west' ? 0 : hours / 2;
-      tranches.push({ key: ymd(cursor).slice(0, 7), from: ymd(cursor), to: ymd(to), days, hours, east, west: hours - east });
-      cursor = to + DAY;
+
+  const renderSummary = () => {
+    const m = money();
+    $('o-hours').textContent = SP.whole(S.hours) + ' fleet-hour' + (S.hours === 1 ? '' : 's') + ' × ' + SP.usd(P.hourlyPrice);
+    $('o-net').textContent = SP.usd(m.net);
+    $('o-vat').textContent = SP.usd(m.vat);
+    $('o-total').textContent = SP.usd(m.total);
+    $('o-valid').textContent = nice(S.start) + ' – ' + nice(lastDay(S.start));
+    $('pay').textContent = 'Pay ' + SP.usd(m.total) + ' in USDC';
+    $('next-1').textContent = 'Continue · ' + SP.usd(m.total) + ' with VAT';
+    $('sum-1').textContent = S.step > 1 ? S.hours + ' h from ' + nice(S.start) : '';
+    $('sum-2').textContent = S.step > 2 && S.me ? S.me.company + ' · ' + S.me.email : '';
+  };
+
+  const go = (step) => {
+    S.step = step;
+    [1, 2, 3].forEach((n) => {
+      const el = $('step-' + n);
+      el.classList.toggle('active', n === step);
+      el.classList.toggle('done', n < step);
+      el.classList.toggle('waiting', n > step);
+    });
+    renderSummary();
+    if (step === 2) {
+      $('known').hidden = !S.me;
+      $('f-2').hidden = Boolean(S.me) || !$('f-code').hidden;
+      if (S.me) { $('known-email').textContent = S.me.email; $('known-company').textContent = S.me.company; }
     }
-    return { start, end: ymd(end), hours: tranches.reduce((a, t) => a + t.hours, 0), tranches };
+    if (step === 3) $('reaccept').hidden = !S.me || S.me.termsCurrent;
+    const head = $('step-' + step);
+    if (head.getBoundingClientRect().top < 64) head.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
-  const gates = (c) => P.gates.map((g) => {
-    const n = g.tranches === null ? c.tranches.length : Math.min(g.tranches, c.tranches.length);
-    return { name: g.name, day: g.dueDay, due: dayN(c.start, g.dueDay), hours: c.tranches.slice(0, n).reduce((a, t) => a + t.hours, 0) };
-  });
-  const minStart = () => (today() > P.hourlyEarliestStart ? today() : P.hourlyEarliestStart);
-  const minSign = () => (today() > P.committedEarliestStart ? today() : P.committedEarliestStart);
+  [1, 2].forEach((n) => $('step-' + n).querySelector('.step-head').addEventListener('click', () => { if (S.step > n) go(n); }));
 
-  const stored = () => {
-    try { const list = JSON.parse(localStorage.getItem(KEY) || '[]'); return Array.isArray(list) ? list.filter((id) => ORDER.test(id)) : []; } catch (_) { return []; }
-  };
-  const remember = (id) => {
-    try { localStorage.setItem(KEY, JSON.stringify([id].concat(stored().filter((o) => o !== id)).slice(0, 50))); } catch (_) {}
-  };
-  const call = async (path, body) => {
-    const response = await fetch(API + path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { cache: 'no-store' });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || 'The payment service did not answer (' + response.status + '). Try again shortly.');
-    return data;
-  };
-  const wallet = () => {
-    if (!window.ethereum) throw new Error('No browser wallet found. Install one, such as MetaMask or Rabby, then reload this page.');
-    return window.ethereum;
-  };
-  const hex = (text) => '0x' + Array.from(new TextEncoder().encode(text), (b) => b.toString(16).padStart(2, '0')).join('');
-  const setAccount = (account) => {
-    const next = account ? account.toLowerCase() : null;
-    if (next !== S.account) S.agreement = null;
-    S.account = next;
-    renderAccount();
-    renderAgreement();
-  };
-  const connect = async () => { const accounts = await wallet().request({ method: 'eth_requestAccounts' }); setAccount(accounts[0]); };
-  const pay = async (body, note) => {
-    if (!S.account) await connect();
-    note.textContent = 'Preparing the order…';
-    const quote = await call('/quote', Object.assign({ account: S.account }, body));
-    note.textContent = 'Read the order in your wallet and sign it. Signing moves no funds.';
-    const signature = await wallet().request({ method: 'personal_sign', params: [hex(quote.message), S.account] });
-    note.textContent = 'Creating the CoinPayments invoice…';
-    const placed = await call('/order', { order: quote.order, signature });
-    remember(placed.order);
-    if (!/^https:\/\//.test(placed.checkout)) throw new Error('The checkout link is not secure; your order ' + placed.order + ' is listed below.');
-    note.textContent = 'Opening the CoinPayments checkout…';
-    window.location.assign(placed.checkout);
-  };
-  const guard = (button, note, task) => async (event) => {
-    if (event) event.preventDefault();
+  const busy = async (button, note, task) => {
     button.disabled = true;
-    try { await task(); } catch (error) { note.textContent = error && error.code === 4001 ? 'You declined in the wallet. Nothing was ordered.' : (error && error.message) || String(error); }
-    finally { button.disabled = false; renderAgreement(); }
+    SP.say(note, '');
+    try { await task(); } catch (error) { SP.say(note, error.message || String(error), 'error'); }
+    finally { button.disabled = false; }
   };
 
-  const renderPrices = () => {
-    $('p-hourly').textContent = short(P.hourlyPrice);
-    $('p-committed').textContent = short(P.committedPrice);
-    $('p-vat').textContent = Math.round(P.vatRate * 100) + '%';
-    $('p-start').textContent = P.committedEarliestStart < P.hourlyEarliestStart ? P.committedEarliestStart : P.hourlyEarliestStart;
-    ['p-hourly-max', 'p-hourly-max-2'].forEach((id) => { $(id).textContent = whole(P.hourlyMaxHours); });
-    ['p-verified-max', 'p-verified-max-2'].forEach((id) => { $(id).textContent = whole(P.verifiedMaxHours); });
-    $('p-displace').textContent = P.displaceNoticeHours;
-    $('r-title').textContent = 'Six days a week for two years, at ' + short(P.committedPrice) + ' an hour.';
-    $('h-hours').max = P.verifiedMaxHours;
-    $('h-start').min = minStart(); if (!$('h-start').value || $('h-start').value < minStart()) $('h-start').value = minStart();
-    $('r-start').min = minSign(); if (!$('r-start').value || $('r-start').value < minSign()) $('r-start').value = minSign();
-  };
+  $('f-1').addEventListener('change', (event) => {
+    if (event.target.name === 'preset') {
+      const custom = event.target.value === 'custom';
+      $('custom-row').hidden = !custom;
+      if (custom) { $('custom').value = S.hours; $('custom').focus(); } else S.hours = +event.target.value;
+    }
+    if (event.target.id === 'start') S.start = $('start').value || earliest();
+    keep();
+    renderSummary();
+  });
+  $('custom').addEventListener('input', () => { S.hours = Math.max(1, Math.round(+$('custom').value || 1)); keep(); renderSummary(); });
+  $('f-1').addEventListener('submit', (event) => {
+    event.preventDefault();
+    SP.say($('m-1'), '');
+    if (!(S.hours >= 1)) return SP.say($('m-1'), 'Choose how many hours.', 'error');
+    if (S.hours > limit()) return SP.say($('m-1'), S.me ? 'Your account can take ' + S.me.room + ' more hours now: you may hold ' + S.me.limit + ' at a time, counting unused hours and unpaid orders.' : 'You can hold up to ' + P.hourlyMaxHours + ' hours at a time, or ' + P.verifiedMaxHours + ' once we have checked your business.', 'error');
+    if (S.start < earliest()) return SP.say($('m-1'), 'The first day can be ' + nice(earliest()) + ' at the earliest.', 'error');
+    go(S.me ? 3 : 2);
+  });
 
-  const renderFleets = () => {
-    const rate = (n) => (Math.round(n * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
-    fill('f-rows', P.fleets.map((f) => {
-      const state = cell(''), tag = document.createElement('span');
-      tag.className = 'state ' + (f.state === 'serving' ? 'live' : 'building');
-      tag.textContent = f.state === 'serving' ? 'Serving' : 'Under construction';
-      state.appendChild(tag);
-      return row([cell(f.name + ' · ' + f.kind, 'model'), state, cell(rate(f.rate), 'figure'), cell(usd(f.rate * P.hourlyPrice), 'figure'), cell(usd(f.rate * P.committedPrice), 'figure')]);
-    }));
-  };
+  const flow = SP.codeFlow({ codeForm: $('f-code'), code: $('code'), sentTo: $('sent-to'), autoSubmit: true });
+  $('f-2').addEventListener('submit', (event) => {
+    event.preventDefault();
+    busy($('send'), $('m-2'), async () => {
+      if (!$('company').value.trim()) throw new Error('Enter your company’s legal name.');
+      if (!$('accept').checked) throw new Error('Accept the Hourly Terms to continue.');
+      await flow.send($('email').value.trim());
+      $('f-2').hidden = true;
+    });
+  });
+  $('f-code').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const button = $('f-code').querySelector('button[type=submit]');
+    busy(button, $('m-code'), async () => {
+      if ($('code').value.length !== 6) throw new Error('Enter the 6 digits from the email.');
+      S.me = await SP.call('/verify', { email: flow.email(), code: $('code').value, company: $('company').value.trim(), accept: $('accept').checked });
+      $('f-code').hidden = true;
+      $('nav-account').textContent = 'Account';
+      if (S.hours > S.me.room) { go(1); return SP.say($('m-1'), 'Your account can take ' + S.me.room + ' more hours now: you may hold ' + S.me.limit + ' at a time, counting unused hours and unpaid orders.', 'error'); }
+      go(3);
+    });
+  });
+  $('resend').addEventListener('click', () => busy($('resend'), $('m-code'), async () => { await flow.send(flow.email()); SP.say($('m-code'), 'A new code is on its way.', 'ok'); }));
+  $('change').addEventListener('click', () => { $('f-code').hidden = true; $('f-2').hidden = false; $('email').focus(); });
+  $('switch').addEventListener('click', async () => {
+    await SP.call('/signout', {}).catch(() => {});
+    S.me = null;
+    $('nav-account').textContent = 'Sign in';
+    go(2);
+  });
+  $('known-go').addEventListener('click', () => {
+    if (S.hours > S.me.room) { go(1); return SP.say($('m-1'), 'Your account can take ' + S.me.room + ' more hours now.', 'error'); }
+    go(3);
+  });
 
-  const renderAccount = () => {
-    $('w-account').textContent = S.account || 'not connected';
-    $('w-connect').textContent = S.account ? 'Use another account' : 'Connect wallet';
-  };
+  $('f-3').addEventListener('change', (event) => { if (event.target.name === 'network') { S.network = event.target.value; keep(); } });
+  $('f-3').addEventListener('submit', (event) => {
+    event.preventDefault();
+    busy($('pay'), $('m-3'), async () => {
+      const network = SP.chosen($('f-3'), 'network');
+      if (!network) throw new Error('Choose the network your USDC is on.');
+      if (!$('reaccept').hidden && !$('accept-again').checked) throw new Error('Accept the current Hourly Terms to continue.');
+      $('pay').textContent = 'Creating your invoice…';
+      let placed;
+      try {
+        placed = await SP.call('/order', { product: 'hourly', hours: S.hours, start: S.start, network, accept: $('accept-again').checked || undefined });
+      } catch (error) {
+        renderSummary();
+        if (error.status === 401) { S.me = null; go(2); }
+        if (error.reason === 'terms') { S.me.termsCurrent = false; $('reaccept').hidden = false; }
+        throw error;
+      }
+      if (!/^https:\/\//.test(placed.checkout)) throw new Error('The checkout link is not secure. Your order ' + placed.order + ' is in your account.');
+      SP.store.set('sparkpipe-cart', null);
+      window.location.assign(placed.checkout);
+    });
+  });
 
-  const renderHourly = () => {
-    const hours = Math.max(0, Math.min(P.verifiedMaxHours, Math.round(+$('h-hours').value || 0)));
-    const start = $('h-start').value || minStart();
-    const net = hours * P.hourlyPrice, vat = cents(net * P.vatRate);
-    $('h-r-hours').textContent = whole(hours);
-    $('h-r-price').textContent = usd(P.hourlyPrice);
-    $('h-r-net').textContent = usd(net);
-    $('h-r-vat').textContent = usd(vat);
-    $('h-r-total').textContent = usd(net + vat);
-    $('h-r-valid').textContent = start + ' to ' + ymd(termEnd(start, P.hourlyValidityMonths));
-  };
-
-  const renderAgreement = () => {
-    const a = S.agreement, amount = cents(+$('a-amount').value || 0);
-    $('a-r-hours').textContent = a ? whole(a.hours) : '-';
-    $('a-r-price').textContent = a ? usd(+a.price) : '-';
-    $('a-r-paid').textContent = a ? usd(+a.paid) + (+a.pending ? ' (' + usd(+a.pending) + ' awaiting payment)' : '') : '-';
-    $('a-r-left').textContent = a ? usd(+a.remaining) : '-';
-    $('a-r-gate').textContent = a ? (a.ended ? 'Closed' : a.nextGate ? a.nextGate.name + ': ' + usd(+a.nextGate.amount) + ' by ' + a.nextGate.due : 'All gates met') : '-';
-    $('a-r-issue').textContent = a && amount > 0 ? (Math.floor(amount / +a.price * 10000) / 10000).toLocaleString('en-US', { maximumFractionDigits: 4 }) + ' hours' : '-';
-    $('a-r-total').textContent = a && amount > 0 ? usd(amount + cents(amount * P.vatRate)) : '-';
-    $('a-pay').disabled = !a || Boolean(a.ended) || amount < 1 || amount > +a.remaining;
-  };
-
-  const lookUp = async () => {
-    if (!S.account) await connect();
-    const number = $('a-number').value.trim();
-    if (!number) throw new Error('Enter the agreement number from your signed agreement.');
-    S.agreement = await call('/agreement', { agreement: number, account: S.account });
-    if (S.agreement.nextGate) $('a-amount').value = S.agreement.nextGate.amount;
-    $('a-msg').textContent = S.agreement.ended || 'Agreement ' + S.agreement.agreement + ': term ' + S.agreement.signed + ' to ' + S.agreement.end + '.';
-  };
-
-  const renderPlan = () => {
-    const c = plan($('r-start').value || minSign(), $('r-election').value), net = c.hours * P.committedPrice;
-    $('r-r-term').textContent = c.start + ' to ' + c.end;
-    $('r-r-hours').textContent = whole(c.hours);
-    $('r-r-price').textContent = usd(P.committedPrice);
-    $('r-r-net').textContent = usd(net);
-    $('r-r-total').textContent = usd(net * (1 + P.vatRate));
-    $('r-r-phase').textContent = 'to ' + dayN(c.start, P.phaseADays);
-    fill('r-gates', gates(c).map((g) => row([cell(g.name), cell(g.due + ', end of day ' + g.day + ' after signing'), cell(whole(g.hours), 'figure'), cell(usd(g.hours * P.committedPrice * (1 + P.vatRate)), 'figure')])));
-    fill('r-tranches', c.tranches.map((t, i) => row([cell(String(i + 1) + ' · ' + t.key), cell(t.from + ' to ' + t.to), cell(String(t.days), 'figure'), cell(whole(t.east), 'figure'), cell(whole(t.west), 'figure')])));
-  };
-
-  let polling = null;
-  const renderOrders = async () => {
-    clearTimeout(polling);
-    const ids = stored();
-    $('o-empty').hidden = ids.length > 0;
-    const found = await Promise.all(ids.map((id) => call('/order/' + id).catch(() => null)));
-    fill('o-rows', found.map((o, i) => {
-      if (!o) return row([cell(ids[i]), cell('-'), cell('-'), cell('Not found'), cell('')]);
-      const what = o.product === 'hourly' ? o.hours + ' hours, usable ' + o.start + ' to ' + o.last : 'Agreement ' + o.agreement + ', ' + o.hours + ' hours';
-      const action = cell('');
-      if (o.checkout && /^https:\/\//.test(o.checkout)) { const link = document.createElement('a'); link.href = o.checkout; link.textContent = 'Pay'; action.appendChild(link); }
-      return row([cell(o.order), cell(what), cell(usd(+o.total), 'figure'), cell(STATES[o.state] || o.state, o.state === 'completed' ? 'ok' : ''), action]);
-    }));
-    if (found.some((o) => o && OPEN.has(o.state))) polling = setTimeout(renderOrders, 15000);
-  };
-
-  $('w-connect').addEventListener('click', guard($('w-connect'), $('w-msg'), async () => {
-    if (S.account) await wallet().request({ method: 'wallet_requestPermissions', params: [{ eth_accounts: {} }] });
-    await connect();
-    $('w-msg').textContent = '';
-  }));
-  $('hourly-form').addEventListener('input', renderHourly);
-  $('hourly-form').addEventListener('submit', guard($('h-buy'), $('h-msg'), () => pay({ product: 'hourly', company: $('h-company').value.trim(), email: $('h-email').value.trim(), hours: Math.round(+$('h-hours').value || 0), start: $('h-start').value }, $('h-msg'))));
-  $('a-look').addEventListener('click', guard($('a-look'), $('a-msg'), lookUp));
-  $('agreement-form').addEventListener('input', renderAgreement);
-  $('agreement-form').addEventListener('submit', guard($('a-pay'), $('a-msg'), () => pay({ product: 'two-year', agreement: S.agreement.agreement, amount: cents(+$('a-amount').value).toFixed(2) }, $('a-msg'))));
-  $('plan-form').addEventListener('input', renderPlan);
-
-  renderPrices();
-  renderFleets();
-  renderAccount();
-  renderHourly();
-  renderAgreement();
-  renderPlan();
-  const back = new URLSearchParams(window.location.search).get('order');
-  if (back && ORDER.test(back)) { remember(back); $('orders').scrollIntoView(); }
-  renderOrders();
-  if (window.ethereum) {
-    window.ethereum.request({ method: 'eth_accounts' }).then((accounts) => setAccount(accounts[0])).catch(() => {});
-    if (window.ethereum.on) window.ethereum.on('accountsChanged', (accounts) => setAccount(accounts[0]));
-  }
+  document.querySelectorAll('[data-cap="hourly"]').forEach((el) => { el.textContent = P.hourlyMaxHours; });
+  document.querySelectorAll('[data-cap="verified"]').forEach((el) => { el.textContent = P.verifiedMaxHours; });
+  document.querySelectorAll('[data-start]').forEach((el) => { el.textContent = nice(P.hourlyEarliestStart); });
+  $('o-committed').textContent = SP.usd(P.committedPrice).replace('.00', '');
+  if (!S.start || S.start < earliest()) S.start = earliest();
+  $('start').min = earliest();
+  $('start').value = S.start;
+  $('start-hint').textContent = 'Each hour stays usable for 12 months from this day. The fleets open to customers on ' + nice(P.hourlyEarliestStart) + '.';
+  SP.networkTiles($('networks'), 'network', S.network);
+  renderPresets();
+  renderSummary();
+  SP.me().then((me) => {
+    S.me = me;
+    if (me) $('nav-account').textContent = 'Account';
+  }).catch(() => {});
 })();
 </script>
 </body>
