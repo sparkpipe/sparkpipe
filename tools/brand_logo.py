@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BRAND = ROOT / "docs" / "brand" / "hyor-ai"
 SITE = ROOT / "site"
+COMPANY = ROOT / "deployment" / "vps" / "hyor.io"
 CHROME = os.environ.get("CHROME", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 
 INK = "#111522"
@@ -76,6 +77,10 @@ SVGS = {
     SITE / "hyor-ai-logo-reversed.svg": logo(TIGHT, WHITE, RED, WHITE),
     SITE / "hyor-seal.svg": doc(SQUARE, seal(RED)),
     SITE / "favicon.svg": doc(SQUARE, seal(RED, glyph=SOLID)),
+    COMPANY / "hyor-ai-logo.svg": logo(TIGHT, INK, RED, WHITE),
+    COMPANY / "hyor-ai-logo-reversed.svg": logo(TIGHT, WHITE, RED, WHITE),
+    COMPANY / "hyor-seal.svg": doc(SQUARE, seal(RED)),
+    COMPANY / "favicon.svg": doc(SQUARE, seal(RED, glyph=SOLID)),
 }
 
 PNGS = [
@@ -128,8 +133,9 @@ def main():
         for src, dst, width in PNGS:
             render(BRAND / src, BRAND / dst, width, work)
     ico(BRAND / "favicon/favicon.ico", (16, 32, 48))
-    ico(SITE / "favicon.ico", (16, 32, 48))
-    (SITE / "apple-touch-icon.png").write_bytes((BRAND / "seal/apple-touch-icon-180.png").read_bytes())
+    for site in (SITE, COMPANY):
+        ico(site / "favicon.ico", (16, 32, 48))
+        (site / "apple-touch-icon.png").write_bytes((BRAND / "seal/apple-touch-icon-180.png").read_bytes())
     return 0
 
 

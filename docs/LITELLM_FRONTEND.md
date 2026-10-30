@@ -340,7 +340,9 @@ to GLM.
 
 `https://sparkpipe.ai` is static, with no API and no login. It holds the home page, the Fleet List, the terms, the privacy policy and the checkout preview. They are copied from `site/` to `/var/www/html` on the KCInfra VPS (27.102.120.99). `tools/site_terms.py` generates the terms pages from `site/terms/`; `tests/test_site.py` fails when they differ. The pages carry the HYOR AI logo and colors; `tools/brand_logo.py` writes the logo, seal and icon files, and `docs/brand/hyor-ai/README.md` says which to use where.
 
-Apache serves only these pages: no API, no login, no proxy. Fleet-hour customers will reach their fleet through the customer API that TECHDEBT lists under fleet-hours.
+Apache serves only these pages: no API, no login, no proxy.
+
+`https://hyor.io` is the company's page: one page in English and Korean (`deployment/vps/hyor.io/`, copied to `/var/www/hyor` on the same VPS), linked from the seal in every sparkpipe.ai footer. `deployment/vps/hyor-io.conf` is its virtual host (`/etc/apache2/sites-available/hyor-io.conf`, enabled with `a2ensite hyor-io`). It sends `www.hyor.io` to `hyor.io`, chooses the language the way sparkpipe.ai does (the `lang` cookie, then the Korean /24 map), allows no scripts, and logs to the same Apache logs. The HTTPS virtual host and the port-80 redirect switch on by themselves once `/etc/letsencrypt/live/hyor.io/` exists. The certificate comes from `certbot certonly --webroot -w /var/www/hyor -d hyor.io -d www.hyor.io --deploy-hook 'systemctl reload apache2'`, so certbot never edits the virtual host. DNS for hyor.io is at Spaceship: `@` A `27.102.120.99`, `www` CNAME `hyor.io`. Fleet-hour customers will reach their fleet through the customer API that TECHDEBT lists under fleet-hours.
 
 Every page with a Korean twin (`index`, `fleets`, `terms`, `privacy`, `hourly-terms`, `agreement`, each with a `-ko.html` page) carries the EN / 한국어 switch and `hreflang` alternates. `deployment/vps/sparkpipe-lang.conf`, included in the port-443 virtual host after the canonical-host rule, chooses the language:
 
@@ -362,6 +364,7 @@ Check the md5 against the downloaded `.md5` first. The builder refuses a file wi
 | VPS path | Goes to |
 | --- | --- |
 | `/` and the pages | `/var/www/html` |
+| `https://hyor.io/` | `/var/www/hyor` |
 | `:8443/` | VPS 127.0.0.1:18082, then hub 8090 (Open WebUI, next section) |
 | `:8443/fleet`, `/fleet/status`, `/fleet/switch-now` | VPS 127.0.0.1:18081, then hub 8433 (the chat layer's admin page) |
 

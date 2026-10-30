@@ -51,11 +51,11 @@ The site's header carries the logo with no clear space (`site/hyor-ai-logo.svg`,
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 ```
 
-SparkPipe Chat keeps the SparkPipe bolt (`deployment/hub/open_webui_branding/`).
+The footer seal links to hyor.io, the company page in `deployment/vps/hyor.io/`, which uses the same colors and files. SparkPipe Chat keeps the SparkPipe bolt (`deployment/hub/open_webui_branding/`).
 
 ## Regenerating
 
-`tools/brand_logo.py` holds the letter and glyph geometry and writes every file here and in `site/`. It renders the PNGs with headless Google Chrome; set `CHROME` to its binary when it is not in `/Applications`.
+`tools/brand_logo.py` holds the letter and glyph geometry and writes every file here, in `site/` and in `deployment/vps/hyor.io/`. It renders the PNGs with headless Google Chrome; set `CHROME` to its binary when it is not in `/Applications`.
 
 ```sh
 python3 tools/brand_logo.py

@@ -147,6 +147,7 @@ NAV = {
     "ko": ('<a href="terms-ko.html">약관 목록</a>', '<a href="privacy-ko.html">개인정보처리방침</a>', '<a href="index-ko.html">홈</a>'),
 }
 HOME = {"en": "index.html", "ko": "index-ko.html"}
+COMPANY = {"en": "https://hyor.io/", "ko": "https://hyor.io/index-ko.html"}
 GROUP = {"en": "Language / 언어", "ko": "언어 / Language"}
 
 
@@ -211,7 +212,7 @@ def page(p):
 
 <footer class="foot">
   <div class="wrap">
-    <span class="maker"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</span>
+    <a class="maker" href="{COMPANY[p['lang']]}"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
     <nav aria-label="Footer">{nav}<a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
