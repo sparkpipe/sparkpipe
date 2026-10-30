@@ -2300,6 +2300,8 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 		if ( exchange_status == SPARK_STATUS_OK )
 			exchange_status = StageRunnerRunDeferred(state, dispatch);
 		if ( exchange_status == SPARK_STATUS_OK )
+			exchange_status = StageRunnerTakeFailure(state);
+		if ( exchange_status == SPARK_STATUS_OK )
 			exchange_status = StageRunnerChainEnd(state, stream);
 		if ( exchange_status != SPARK_STATUS_OK )
 			return exchange_status;
