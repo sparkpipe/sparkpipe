@@ -329,7 +329,8 @@ void LmGqaShardTiledKernel(
 			const uint32_t tile_keys = key_base + buffer * TILE * KEY_BYTES, tile_values = value_base + buffer * TILE * VALUE_BYTES;
 			const uint8_t *ahead = threadIdx.x < TILE && tile + 2u < tile_end ? lookup(tile + 2u) : 0;
 			float score[KEY_FRAGS][4], peak[2], next_max[2], rescale[2];
-			uint32_t b[4], first[2], second[2], high_bits[4], low_bits[4];
+			uint32_t b[4], first[2], second[2], weights[4];
+			bool whole;
 			if ( tile + 1u < tile_end )
 			{
 				copy(tile + 1u);
@@ -361,22 +362,38 @@ void LmGqaShardTiledKernel(
 					LmMmaBf16(score[frag + 1u],query[step],second);
 				}
 			peak[0] = peak[1] = -INFINITY;
-			#pragma unroll
-			for (frag = 0u; frag < KEY_FRAGS; ++frag)
+			whole = __all_sync(0xffffffffu,block_mask == 0 && member[0] && member[1] && begin[0] <= tile * TILE && begin[1] <= tile * TILE &&
+				tile * TILE + TILE <= count[0] && tile * TILE + TILE <= count[1]);
+			if ( whole )
+			{
 				#pragma unroll
-				for (entry = 0u; entry < 4u; ++entry)
-				{
-					const uint32_t local = tile * TILE + frag * 8u + 2u * (lane & 3u) + (entry & 1u), which = entry / 2u;
-					bool visible = member[which] && local >= begin[which] && local < count[which];
-					if ( visible && block_mask != 0 )
+				for (frag = 0u; frag < KEY_FRAGS; ++frag)
+					#pragma unroll
+					for (entry = 0u; entry < 4u; ++entry)
 					{
-						const uint32_t position = SparkKvShardLocalPosition(cache.shard,local);
-						visible = position / block_tokens >= limit[which] / block_tokens ||
-							((block_mask[(uint64_t)row[which] * mask_words + position / block_tokens / 32u] >> ((position / block_tokens) % 32u)) & 1u) != 0u;
+						score[frag][entry] *= qk_scale;
+						peak[entry / 2u] = fmaxf(peak[entry / 2u],score[frag][entry]);
 					}
-					score[frag][entry] = visible ? score[frag][entry] * qk_scale : -INFINITY;
-					peak[which] = fmaxf(peak[which],score[frag][entry]);
-				}
+			}
+			else
+			{
+				#pragma unroll
+				for (frag = 0u; frag < KEY_FRAGS; ++frag)
+					#pragma unroll
+					for (entry = 0u; entry < 4u; ++entry)
+					{
+						const uint32_t local = tile * TILE + frag * 8u + 2u * (lane & 3u) + (entry & 1u), which = entry / 2u;
+						bool visible = member[which] && local >= begin[which] && local < count[which];
+						if ( visible && block_mask != 0 )
+						{
+							const uint32_t position = SparkKvShardLocalPosition(cache.shard,local);
+							visible = position / block_tokens >= limit[which] / block_tokens ||
+								((block_mask[(uint64_t)row[which] * mask_words + position / block_tokens / 32u] >> ((position / block_tokens) % 32u)) & 1u) != 0u;
+						}
+						score[frag][entry] = visible ? score[frag][entry] * qk_scale : -INFINITY;
+						peak[which] = fmaxf(peak[which],score[frag][entry]);
+					}
+			}
 			for (side = 0u; side < 2u; ++side)
 			{
 				peak[side] = fmaxf(peak[side],__shfl_xor_sync(0xffffffffu,peak[side],1u));
@@ -410,9 +427,7 @@ void LmGqaShardTiledKernel(
 				for (index = 0u; index < 4u; ++index)
 				{
 					const float *pair = &score[2u * step + index / 2u][2u * (index % 2u)];
-					const uint16_t high_first = LmFloatToBf16(pair[0]), high_second = LmFloatToBf16(pair[1]);
-					high_bits[index] = (uint32_t)high_first | ((uint32_t)high_second << 16u);
-					low_bits[index] = LmPackBf16Pair(pair[0] - __uint_as_float((uint32_t)high_first << 16u),pair[1] - __uint_as_float((uint32_t)high_second << 16u));
+					weights[index] = LmPackBf16Pair(pair[0],pair[1]);
 				}
 				#pragma unroll
 				for (frag = 0u; frag < VALUE_FRAGS; frag += 2u)
@@ -421,10 +436,8 @@ void LmGqaShardTiledKernel(
 					LmPrefillLoadX4Trans(tile_values + b_row * VALUE_BYTES + LmPrefillSwizzle(b_row,b_chunk) * 16u,b);
 					first[0] = b[0]; first[1] = b[1];
 					second[0] = b[2]; second[1] = b[3];
-					LmMmaBf16(output[frag],high_bits,first);
-					LmMmaBf16(output[frag],low_bits,first);
-					LmMmaBf16(output[frag + 1u],high_bits,second);
-					LmMmaBf16(output[frag + 1u],low_bits,second);
+					LmMmaBf16(output[frag],weights,first);
+					LmMmaBf16(output[frag + 1u],weights,second);
 				}
 			}
 			if ( threadIdx.x < TILE && tile + 2u < tile_end )

@@ -374,6 +374,8 @@ PYTHON_TESTS := \
 	tests/test_kv_binding_async_source.py \
 	tests/test_kv_snapshot_law.py \
 	tests/test_ab_stats.py \
+	tests/test_metal_stage_run_inputs.py \
+	tests/test_metal_gate_summary.py \
 	tests/test_ab_verdict.py \
 	tests/test_ab_arm.py \
 	tests/test_ab_receipt.py \
@@ -551,6 +553,7 @@ PYTHON_TESTS := \
 	tests/test_latent_gather_prefill_cuda.py \
 	tests/test_expanded_gather_prefill_cuda.py \
 	tests/test_latent_shard_decode_cuda.py \
+	tests/test_causal_conv_tiled_cuda.py \
 	tests/test_glm5_next_hc_site_cuda.py \
 	tests/test_glm5_next_pool_score_cuda.py \
 	tests/test_skinny_split.py \
@@ -733,6 +736,7 @@ PYTHON_TESTS := \
 	tests/test_mesh_status_tool.py \
 	tests/test_weightd_warm_family.py
 PYTHON_TEST_BINARIES := build/test_tiktoken_compiled \
+	build/logit_compare \
 	build/test_child_guard_thread \
 	build/weightd_lazy_consumer \
 	build/sparkpipe_weightd \
@@ -962,6 +966,11 @@ build/test_expert_tail_reference: tests/test_expert_tail_reference.cu inference/
 test-expert-tail-reference: build/test_expert_tail_reference
 	./build/test_expert_tail_reference --run
 
+EXPERT_GEMM_BENCH_SHAPE := -DBENCH_EXPERTS=320u -DBENCH_TOP_K=8u -DBENCH_HIDDEN=4096u -DBENCH_INTER=80u
+
+build/expert_gemm_bench: tools/expert_gemm_bench.cu inference/kernels/moe_experts.cuh inference/kernels/skinny.cuh inference/kernels/gemm.cuh inference/kernels/tile.cuh inference/kernels/tma.cuh runtime/gemm.cuh runtime/launch.h inference/kernels/route.cuh | build
+	$(KERNEL_TEST_NVCC) $(EXPERT_GEMM_BENCH_SHAPE) $< $(KERNEL_TEST_CUDA_LINK) -o $@
+
 WORKING_SET_NVCC = $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude
 
 build/test_working_set_rollback: tests/test_working_set_rollback.cu runtime/spark_expert_working_set.c include/sparkpipe/spark_expert_working_set.h include/sparkpipe/spark_step_verdict.h inference/kernels/expert_cover.cuh inference/kernels/state_snapshot.cuh include/sparkpipe/spark_state_span.h | build
@@ -1039,7 +1048,11 @@ build/rdma_alltoall_probe: tools/hardware/rdma_alltoall_probe.c
 	@mkdir -p build
 	$(CC) $(CFLAGS) $< $(LDFLAGS) -libverbs -o $@
 
-hardware_tools: build/spark_model_kernel_characterize build/spark_transport_characterize build/spark_topology_characterize build/spark_pmtu_characterize build/rdma_alltoall_probe
+build/weight_stream_probe: tools/hardware/weight_stream_probe.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $< $(LDFLAGS) -libverbs -o $@
+
+hardware_tools: build/spark_model_kernel_characterize build/spark_transport_characterize build/spark_topology_characterize build/spark_pmtu_characterize build/rdma_alltoall_probe build/weight_stream_probe
 
 hardware_cuda_tools: $(CUDA_HEADER_DEPS)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
@@ -1066,7 +1079,7 @@ build/tp_f32_arithmetic: tools/hardware/tp_f32_arithmetic.cu inference/kernels/t
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. $< -o $@
 
 build/mesh_round_bench: tools/mesh_round_bench.cu runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $^ -L$(CUDA_HOME)/lib64 -lcuda -ldl -lcudart -o $@
+	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $(filter-out $(CUDA_HEADER_DEPS),$^) -L$(CUDA_HOME)/lib64 -lcuda -ldl -lcudart -o $@
 
 build/spark_tp_device_collective_characterize: tools/hardware/spark_tp_device_collective_characterize.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -lcuda -ldl -lpthread -o $@
@@ -1686,11 +1699,11 @@ build/test_stage_kv_layout_digest: $(STAGE_KV_LAYOUT_DIGEST_TEST_SOURCES) $(MODE
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(STAGE_KV_LAYOUT_DIGEST_TEST_SOURCES) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 STAGE_KV_BINDING_TEST_SOURCES := tests/test_stage_kv_binding.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_common.c cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c $(SPARKPIPE_WEIGHTD_SOURCES)
-build/test_stage_kv_binding: $(STAGE_KV_BINDING_TEST_SOURCES) tests/test_weightd_kv_server.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
+build/test_stage_kv_binding: $(STAGE_KV_BINDING_TEST_SOURCES) tests/test_weightd_kv_server.h tests/test_stderr_capture.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include $(CFLAGS) $(STAGE_KV_BINDING_TEST_SOURCES) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 STAGE_KV_SHARED_PREFIX_TEST_SOURCES := tests/test_stage_kv_shared_prefix.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_common.c cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c $(SPARKPIPE_WEIGHTD_SOURCES)
-build/test_stage_kv_shared_prefix: $(STAGE_KV_SHARED_PREFIX_TEST_SOURCES) tests/test_weightd_kv_server.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
+build/test_stage_kv_shared_prefix: $(STAGE_KV_SHARED_PREFIX_TEST_SOURCES) tests/test_weightd_kv_server.h tests/test_stderr_capture.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include $(CFLAGS) $(STAGE_KV_SHARED_PREFIX_TEST_SOURCES) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 STAGE_KV_POOL_RESIZE_TEST_SOURCES := tests/test_stage_kv_pool_resize.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_common.c cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c $(SPARKPIPE_WEIGHTD_SOURCES)
@@ -1766,8 +1779,8 @@ build/test_weightd_expert_stress: tests/test_weightd_expert_stress.c tests/fixtu
 build/test_weightd_fd_frames: tests/test_weightd_fd_frames.c runtime/spark_weightd_spine.c runtime/spark_weightd_direct.c runtime/spark_weightd_receipt.c runtime/spark_weightd.c runtime/spark_weightd_worker.c runtime/spark_weightd_pacer.c runtime/spark_weightd_manifest.c runtime/spark_weightd_lease.c include/sparkpipe/spark_weightd.h include/sparkpipe/spark_weightd_manifest.h include/sparkpipe/spark_weightd_lease.h $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(filter %.c %.a,$(filter-out runtime/spark_weightd.c runtime/spark_weightd_direct.c,$^)) $(LDFLAGS) -o $@
 
-build/test_weightd: tests/test_weightd.c tests/fixtures/test_child_guard.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build build/sparkpipe_weightd
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -DSPARK_TEST_WEIGHTD_BINARY=\"build/sparkpipe_weightd\" $(CFLAGS) $^ $(LDFLAGS) -o $@
+build/test_weightd: tests/test_weightd.c tests/fixtures/test_child_guard.c tests/test_stderr_capture.h $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build build/sparkpipe_weightd
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -DSPARK_TEST_WEIGHTD_BINARY=\"build/sparkpipe_weightd\" $(CFLAGS) $(filter-out %.h,$^) $(LDFLAGS) -o $@
 
 build/test_weightd_receipt: tests/test_weightd_receipt.c runtime/spark_weightd_receipt.c $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@

@@ -68,7 +68,7 @@ static double Quantile(double *values, uint32_t count, double q)
 static int ComparePosition(const float *reference, const float *test, uint32_t vocab, uint32_t target, double *ref_log, double *test_log,
 	CompareTotals *totals, uint32_t position, uint32_t split, const float *second)
 {
-	uint32_t ref_top, test_top, second_top, index;
+	uint32_t ref_top, test_top, second_top, index, stable = 0u;
 	double kl, delta;
 	for ( index = 0u; index < vocab; index++ )
 		if ( !isfinite(reference[index]) || !isfinite(test[index]) )
@@ -90,6 +90,7 @@ static int ComparePosition(const float *reference, const float *test, uint32_t v
 			if ( !isfinite(second[index]) )
 				return(-1);
 		LogSoftmax(second,vocab,test_log,&second_top);
+		stable = second_top == ref_top ? 1u : 0u;
 		totals->floor_kl[position] = Kl(ref_log,test_log,vocab);
 		totals->above_floor += kl > totals->floor_kl[position] ? 1u : 0u;
 	}
@@ -101,7 +102,7 @@ static int ComparePosition(const float *reference, const float *test, uint32_t v
 	}
 	else
 		totals->kl_decode += kl;
-	if ( second != 0 && second_top == ref_top )
+	if ( stable != 0u )
 	{
 		totals->stable_positions++;
 		totals->stable_agree += ref_top == test_top ? 1u : 0u;

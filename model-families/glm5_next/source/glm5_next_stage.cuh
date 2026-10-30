@@ -901,9 +901,8 @@ static int32_t Glm5NextKda(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_
 		conv.weight[2] = (const uint16_t *)w->kda_v_conv;
 		conv.channels[0] = conv.channels[1] = rank_qk;
 		conv.channels[2] = rank_v;
-		LM_LAUNCH((LmCausalConvStreamsKernel<G5N_THREADS, G5N_KDA_CONV, LM_CONV_SWISH, uint16_t>),
-			dim3(sequences, ((rank_qk > rank_v ? rank_qk : rank_v) + G5N_THREADS - 1u) / G5N_THREADS, LM_CAUSAL_CONV_STREAMS), G5N_THREADS, 0, stream,
-			conv, b->kda_state_index, b->sequence_row_begin, (const uint32_t *)0, sequences, commit, b->sequence_row_indices);
+		LmCausalConvStreamsLaunch<G5N_KDA_CONV, LM_CONV_SWISH, uint16_t>(conv, b->kda_state_index, b->sequence_row_begin, (const uint32_t *)0, sequences, commit,
+			b->sequence_row_indices, rows, stream);
 	}
 	status = Glm5NextLinear(b->kda_decay_latent_bf16, w->kda_decay_up, b->kda_decay_logit_bf16, b->dense_row_offset, b->dense_tile_prefix, rows,
 		G5N_KDA_LOW_RANK, rank_qk, rank_qk, 0u, sms, stream);

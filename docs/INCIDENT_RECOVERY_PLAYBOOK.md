@@ -241,6 +241,19 @@ for the MDS, so a probe on the Sparks would turn one MDS stall into a panic
 on all 16 at once. Inference reads no CephFS, so the Sparks' own mounts are
 not on the serving path.
 
+The Sparks are checked passively instead, by nothing that touches their mount:
+
+- **On each Spark**, over ssh: whether `/proc/mounts` lists `/mnt/model-warm`
+  as ceph, and the kernel log since the last rounds for Ceph evictions,
+  rejected reconnects, blocklisting, a hung MDS and hung tasks
+  (`kernel_patterns`, POSIX ERE for `grep -E`). An MDS failover, stale caps
+  and boot-time connect errors do not count.
+- **From spark0, sparkf or spark7**, through the userspace CLI: the MDS
+  session list (`ceph tell mds.ds4warm:0 session ls`). Every Spark and the
+  hub must have an open session. The OSD blocklist is also read: a client
+  whose exact last address (IP, port and nonce) is blocklisted was evicted,
+  and a remount with a new address clears it.
+
 - **What it does.** `tools/hub/ceph_canary.py run` (hub user unit
   `sparkpipe-ceph-canary`, enabled, config `deployment/hub/ceph_canary.json`
   copied to `~/sparkpipe-ceph-canary/`) probes the hub's mount every 120 s. Each probe checks that `/mnt/model-warm` is a ceph mount,
@@ -280,8 +293,14 @@ not on the serving path.
 | `host:H:write` or `read`, a hang there, or `host:H:slow` | `ceph health detail`; on H the in-flight requests in `/sys/kernel/debug/ceph/*/osdc` and the switch link `enp1s0f1np1` | follow the OSD or network fault the in-flight requests point at |
 | `host:H:stuck` | `ps -o pid,stat,wchan` and `/proc/PID/stack` of the old probe | as for a hang; the probe process stays in D state until the kernel client recovers |
 | `host:H:unreachable` | ping and ssh | `tools/fleet_post_reboot.sh H` once it is back |
+| `client:H:mount` | `findmnt /mnt/model-warm` on the Spark | `ssh H /usr/local/sbin/ds4-ceph-warm mount` |
+| `client:H:session` or `client:H:blocklisted` | `ceph tell mds.ds4warm:0 session ls` and `ceph osd blocklist ls` on spark0; the Spark's kernel log | an evicted client needs its mount replaced (`ds4-ceph-warm unmount`, then `mount`) once nothing uses it; never `sync` or touch the stuck mount on a Spark |
+| `client:H:kernel` | the logged line, `journalctl -k` on the Spark | follow the eviction or hung task it names |
+| `client:H:unreachable`, `client:H:hang` | ping and ssh; a hang reading `/proc/mounts` points at the host, not Ceph | `tools/fleet_post_reboot.sh H` once it is back |
+| `cluster:sessions_unavailable` | the MDS (`ceph fs status`) and the monitors | |
 | `cluster:OSD_DOWN:osd.N ...` | on the OSD's host: its unit, `lsusb -t` (the enclosure must run at 20000M), `ds4-extnvme-link.service` | a USB re-enumeration: `tools/fleet_post_reboot.sh H --fix-ceph`; an enclosure at 480M (USB 2) means a loose or wrong cable, so reseat it, then start the guard and the OSD and clear any `noout` flag left on it |
 | `cluster:unreachable` | the monitors (`ceph -s` from spark0, sparkf, spark7) | |
+| `cluster:PG_DAMAGED`, `cluster:OSD_SCRUB_ERRORS` | `ceph health detail` names the PG; `sudo cephadm shell -- rados list-inconsistent-obj PG --format=json` on spark0 names the object and the shard with the error (the host `rados` cannot fetch its config); on that OSD's host, `_verify_csum` lines in its log, `smartctl -a -d sntasmedia` on the enclosure and USB disconnects in the kernel log | with every other shard clean, `ceph pg repair PG` rebuilds the bad shard from the others (a full deep scrub of the PG, 10 minutes or more); a disk with media errors, or errors that come back, needs replacing |
 
 ## Fleet-duty acceptance
 

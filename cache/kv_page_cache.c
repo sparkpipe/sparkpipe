@@ -505,9 +505,11 @@ static uint32_t SparkKvPageCacheResidentVictim(const SparkKvPageCache *cache)
 	return(victim_index);
 }
 
-static SparkStatus SparkKvPageCacheEvictEntry(
+static SparkStatus SparkKvPageCacheEvictEntryInChain(
 	SparkKvPageCache *cache,
-	uint32_t entry_index)
+	uint32_t entry_index,
+	uint32_t on_lru,
+	uint32_t relink_parent)
 {
 	SparkKvPageCacheEntry *entry;
 	uint32_t parent;
@@ -521,16 +523,25 @@ static SparkStatus SparkKvPageCacheEvictEntry(
 	parent = entry->parent_entry_index;
 	status = SparkKvPageCacheDiscardLogicalPage(cache,entry->logical_page_index);
 	if ( status != SPARK_STATUS_OK )
+	{
+		if ( on_lru == 0u )
+			SparkKvPageCacheLruLinkAfter(cache,entry_index,SparkKvPageCacheLruPredecessor(cache,entry->last_used_epoch));
 		SPARK_RETURN(status);
+	}
 	cache->entry_indices_by_logical_page[entry->logical_page_index] =
 		SPARK_KV_PAGE_CACHE_NO_INDEX;
 	SparkKvPageCacheUnlinkEntry(cache,entry_index);
-	SparkKvPageCacheLruUnlink(cache,entry_index);
+	if ( on_lru != 0u )
+		SparkKvPageCacheLruUnlink(cache,entry_index);
 	if ( parent != SPARK_KV_PAGE_CACHE_NO_INDEX )
 	{
-		if ( parent >= cache->entry_capacity || cache->entries[parent].reference_count == 0u )
+		if ( parent >= cache->entry_capacity || cache->entries[parent].reference_count == 0u ||
+			(relink_parent == 0u && cache->entries[parent].reference_count != 1u) )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		SparkKvPageCacheDereference(cache,parent);
+		if ( relink_parent != 0u )
+			SparkKvPageCacheDereference(cache,parent);
+		else
+			cache->entries[parent].reference_count--;
 	}
 	memset(entry,0,sizeof(*entry));
 	entry->parent_entry_index = SPARK_KV_PAGE_CACHE_NO_INDEX;
@@ -542,6 +553,13 @@ static SparkStatus SparkKvPageCacheEvictEntry(
 	cache->free_entry_head = entry_index;
 	cache->evicted_entry_count++;
 	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkKvPageCacheEvictEntry(
+	SparkKvPageCache *cache,
+	uint32_t entry_index)
+{
+	return(SparkKvPageCacheEvictEntryInChain(cache,entry_index,1u,1u));
 }
 
 static SparkStatus SparkKvPageCacheVacatePage(SparkKvPageCache *cache,uint32_t page)
@@ -619,9 +637,15 @@ SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache)
 	return(SparkKvPageCacheEvictUnusedExcept(cache,0,0u));
 }
 
+static uint32_t SparkKvPageCacheExpiredDiscardable(const SparkKvPageCache *cache,uint32_t entry_index,uint64_t now_seconds)
+{
+	return(cache->entries[entry_index].used_seconds + SPARK_KV_RETENTION_SECONDS <= now_seconds &&
+		SparkKvPageCachePageCanDiscard(cache,cache->entries[entry_index].logical_page_index) != 0u ? 1u : 0u);
+}
+
 SparkStatus SparkKvPageCacheExpire(SparkKvPageCache *cache,uint64_t now_seconds,uint32_t *expired_entries)
 {
-	uint32_t entry,next,pass,total = 0u;
+	uint32_t entry,next,pass,total = 0u,link,parent,chain;
 	if ( expired_entries != 0 )
 		*expired_entries = 0u;
 	if ( SparkKvPageCacheIsValid(cache) == 0u )
@@ -632,11 +656,17 @@ SparkStatus SparkKvPageCacheExpire(SparkKvPageCache *cache,uint64_t now_seconds,
 		for (entry=cache->lru_head; entry != SPARK_KV_PAGE_CACHE_NO_INDEX; entry=next)
 		{
 			next = cache->entries[entry].lru_next;
-			if ( cache->entries[entry].used_seconds + SPARK_KV_RETENTION_SECONDS > now_seconds ||
-				SparkKvPageCachePageCanDiscard(cache,cache->entries[entry].logical_page_index) == 0u ||
-				SparkKvPageCacheEvictEntry(cache,entry) != SPARK_STATUS_OK )
+			if ( SparkKvPageCacheExpiredDiscardable(cache,entry,now_seconds) == 0u )
 				continue;
-			pass++;
+			for (link=entry, chain=1u; chain != 0u; link=parent)
+			{
+				parent = cache->entries[link].parent_entry_index;
+				chain = parent < cache->entry_capacity && cache->entries[parent].reference_count == 1u &&
+					SparkKvPageCacheExpiredDiscardable(cache,parent,now_seconds) != 0u ? 1u : 0u;
+				if ( SparkKvPageCacheEvictEntryInChain(cache,link,link == entry ? 1u : 0u,chain == 0u ? 1u : 0u) != SPARK_STATUS_OK )
+					break;
+				pass++;
+			}
 		}
 		total += pass;
 	} while ( pass != 0u );

@@ -23,6 +23,12 @@ references them from its page tables like any other page.
   - With the flag, every binding of the layout maps the window. A failure
     to map it fails the binding loudly; nothing falls back to private
     pages quietly.
+  - The window must hold at least one aligned group (`A` pages, see
+    *Alignment*) of every layout that runs on the node. A smaller window
+    refuses the attach with `CAPACITY_EXCEEDED`, and the binding fails with
+    `kv binding refused: weightd shared prefix attach status=...`.
+  - Running without the window is a configuration, not a fault: neither
+    weightd nor the engine reports an error site for it.
 
 ## Layout
 

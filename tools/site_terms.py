@@ -147,6 +147,7 @@ NAV = {
     "ko": ('<a href="terms-ko.html">약관 목록</a>', '<a href="privacy-ko.html">개인정보처리방침</a>', '<a href="index-ko.html">홈</a>'),
 }
 HOME = {"en": "index.html", "ko": "index-ko.html"}
+COMPANY = {"en": "https://hyor.io/", "ko": "https://hyor.io/index-ko.html"}
 GROUP = {"en": "Language / 언어", "ko": "언어 / Language"}
 
 
@@ -178,16 +179,18 @@ def page(p):
 <title>{html.escape(p['title'])}</title>
 <meta name="description" content="{html.escape(p['desc'])}">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
 {alternates(p)}
+<link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="site.css?v=2ebd53ca">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="site.css?v=dcbd7de8">
 {STYLE}
 </head>
 <body>
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="{HOME[p['lang']]}">SparkPipe<span class="tag">{p['tag']}</span></a>
+    <a class="brand" href="{HOME[p['lang']]}"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">{p['tag']}</span></a>
     <nav class="nav-links" aria-label="Sections">
       {nav}
     </nav>
@@ -209,7 +212,7 @@ def page(p):
 
 <footer class="foot">
   <div class="wrap">
-    <span>© 2026 HYOR AI Tech Ltd</span>
+    <a class="maker" href="{COMPANY[p['lang']]}"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
     <nav aria-label="Footer">{nav}<a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>

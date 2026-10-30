@@ -137,9 +137,11 @@ which could be mistaken for the qualified route.
 - **Tensor boxes.** Tensor-map loads (`LmTmaLoad2d`, `LmTmaLoad3d`) are
   bounds-checked and zero-fill out-of-range elements. In `LmTmaLoad3d`,
   coordinate 2 selects the expert, so one descriptor covers every expert.
-- **Linear bulk copies.** `LmTmaLoadBulk1d` copies linear addresses for
-  indirect rows. It has no hardware bounds check, so the caller must clamp
-  the index.
+- **Linear bulk copies.** `LmTmaLoadBulk1d` copies a linear address range
+  with no hardware bounds check, so the caller must clamp the index. Do not
+  use it for many small chunks: one CTA's bulk copies queue on the SM's TMA
+  unit. The indirect A gather below implies about 20 ns per 16-byte copy,
+  derived from kernel time rather than measured per copy.
 - **Store side.** Stores use `LmTmaStore2d`, then `LmTmaStoreCommit`, then
   `LmTmaStoreWait<KEEP>`. The wait uses `wait_group.read`, which only
   guarantees that the staging buffer can be reused.
@@ -176,8 +178,34 @@ which could be mistaken for the qualified route.
   for 128-255.
 - **Indirect A replaces the MoE gather.** `LmPipelineProduceIndirectA`
   stages packed row `p` straight from source row
-  `LmRouteSourceRow(source_row_map, p)`, one `LmTmaLoadBulk1d` per 16-byte
-  chunk, so no packed activation tensor is ever written.
+  `LmRouteSourceRow(source_row_map, p)`, so no packed activation tensor is
+  ever written.
+  - Each thread copies its 16-byte chunks with `LmCopyAsync16`
+    (`cp.async.cg`) and then calls `LmCopyAsyncArrive`
+    (`cp.async.mbarrier.arrive.noinc`) once per stage. The producer thread
+    expects only the weight bytes, and `LmGemmKernel` initialises the stage
+    barriers with `1 + blockDim.x` arrivals on this path.
+  - Before 2026-10-27 each chunk was its own `LmTmaLoadBulk1d`. A 64-row
+    tile then issued 512 TMA copies per k-step, and the TMA unit serialised
+    them. At 2048 rows the Solar Open 2 expert up projection took 5.7 ms
+    on one GB10 (1.9 TFLOP/s, 60 GB/s). With `cp.async` it takes 1.4 ms
+    (249 GB/s, near the memory roofline). K-EXAONE's shape (256 experts,
+    hidden 6144, 128 rows per rank) went from 11.5 to 2.7 ms. The staged
+    bytes and the MMA order are unchanged, so outputs are bit-identical.
+    `build/expert_gemm_bench ROWS [gemm]` measures it. Its make target
+    names the geometry in `EXPERT_GEMM_BENCH_SHAPE` (Solar's by default;
+    `make EXPERT_GEMM_BENCH_SHAPE="-DBENCH_EXPERTS=256u -DBENCH_TOP_K=8u
+    -DBENCH_HIDDEN=6144u -DBENCH_INTER=128u" build/expert_gemm_bench` for
+    K-EXAONE).
+- **Grouped skinny tasks cover real row batches.** `LmSkinnyGroupedKernel`
+  scans `ceil(rows / ROWS)` per expert into a shared batch prefix
+  (`LmSkinnyGroupedBatchScan`) and maps each task to one batch and one neuron
+  group, so no launched task idles. Groups averaging more than eight rows
+  take 16-row batches with two neurons per task, which reads each expert's
+  weights once. A row's dot product depends only on `LANES`, which the input
+  width fixes, so outputs do not depend on `ROWS` or `NPG`. On K-EXAONE's
+  down projection at 512 rows this took the kernel from 8.9 to 3.8 ms, and
+  at 256 rows from 4.9 to 2.8 ms, with identical digests.
   - Ragged tail rows are clamped to `row_base`.
   - A source row at or past `source_row_count` does not trap. The kernel
     reports `LM_FRAME_ERROR_ROUTE_MAP_OUT_OF_RANGE` through
@@ -271,8 +299,14 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
 - `LmGqaShardTiledKernel` takes 128 query vectors of one KV head per block,
   flattened as (row, head) so any group size fills it, 16 per warp. 64-key
   K and V tiles stream through cp.async double buffers; scores and the
-  online softmax stay in registers, and P·V runs on the bf16 high and low
-  parts of P, so values match the f32 scalar kernel up to summation order.
+  online softmax stay in registers. P·V multiplies the bf16-rounded weights,
+  as the reference models do (fp32 softmax, then bf16 before the matmul),
+  while the denominator sums the f32 weights. Normalized values therefore
+  stay within 2^-9 of the f32 scalar kernel for values in [-1, 1).
+- A tile every query of the warp sees whole (no block mask) skips the
+  per-key visibility test and only scales its scores. That gives the same
+  bits as the masked path, so a row's result still does not depend on the
+  rows beside it.
 - Tile bounds are absolute and a fully masked tile leaves the state exact,
   so a row's result does not depend on the rows beside it. The launch
   therefore uses the tiled kernel for every row count of a geometry it
@@ -283,11 +317,13 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
   dimension; each part recomputes the scores and only part 0 writes the
   running max and sum.
 - On GB10, 64 heads over 8 KV heads of 128 and 8,192 local keys: 2,048 rows
-  take 14.6 ms (37.8 TFLOP/s) against 470 ms for the scalar kernel, and one
-  decode row at 128K positions 0.54 ms against 6.4 ms. With 24 heads over 4
-  KV heads of 256 and 4,096 local keys: 2,048 rows take 7.5 ms (27.6 TFLOP/s
-  counting each part's scores once) against 105 ms, and one decode row 0.36
-  ms against 2.8 ms.
+  take 9.3 ms (58.9 TFLOP/s, about 65% of the measured 90 TFLOP/s BF16 peak)
+  against 470 ms for the scalar kernel, and one decode row at 128K positions
+  0.47 ms against 5.9 ms. With 24 heads over 4 KV heads of 256 and 4,096
+  local keys: 2,048 rows take 5.6 ms (37.0 TFLOP/s counting each part's
+  scores once) against 105 ms, and one decode row 0.32 ms against 2.2 ms.
+  Splitting P into bf16 high and low parts (the previous version) cost 19% at
+  the 128-wide shape; the whole-tile path is the other 1.28x.
 
 **Projections (`project.cuh`)**
 
@@ -488,6 +524,34 @@ that disagrees on it fails to build. The consumers are:
     rows outside the group.
   - A window that starts at tile 0, as rank 0's does, cannot show this
     fault.
+
+## 2.7 Dependent launch around mesh waits (`spark_tp_mesh_kernels.cuh`)
+
+A mesh round runs publish, then arrival (one warp spinning on the peers'
+tails while it prefetches the next weights), then combine. The combine is
+the arrival's programmatic dependent, and it waits on the tails itself
+(`own_wait`).
+
+- **A spinning kernel releases its dependents only when they are small.**
+  A released dependent becomes resident at once and spins in its own wait.
+  - Large combines (up to 192 blocks) pinned the GPU this way: every rank
+    of `tp_mesh_hardware_probe` shares one GPU, and from degree 8 the
+    publish kernels could no longer run (#1630).
+  - `SparkTpMeshHardwareDirectKernel` uses 128 registers per thread, so a
+    GB10 holds only 2 of its 256-thread blocks per SM, 96 in all.
+- **Decode-size combines are released before the wait.** A combine of at
+  most `SPARK_TP_MESH_EARLY_ELEMENTS` (16,384) elements launches with at most
+  `SPARK_TP_MESH_EARLY_BLOCKS` (4) blocks of 256 threads, and the arrival
+  releases it before it spins (`SparkTpMeshCombineEarly`, `SparkTpMeshEarlyGrid`).
+  - It reacts as soon as the data lands, instead of paying a block dispatch
+    after the arrival exits on each of the ~300 collectives of a decode
+    step.
+  - Gathers loop over peers inside a block, so four blocks cover all sixteen.
+  - The block width matters. With 128-thread blocks, a 7,168-element sum
+    gives each thread two 8-element quads, and that cost as much as the early
+    release saved. With 256 threads each thread sums one quad.
+- **Larger combines are released after the wait**, so a resident dependent
+  never holds more than four blocks while it waits.
 
 # Part 3 — Finding kernels and their numbers
 

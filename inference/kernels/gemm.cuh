@@ -344,7 +344,7 @@ void LmGemmKernel(
     uint32_t neuron_base, k, stage, ahead, total_tiles;
     uint32_t phase;
 
-    LmPipelineInitialise<STAGES>(barrier, 1u);
+    LmPipelineInitialise<STAGES>(barrier, INDIRECT_A && ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_NONE ? 1u + blockDim.x : 1u);
     phase = 0u;
     total_tiles = args.group_count == 1u
         ? dense_tiles
