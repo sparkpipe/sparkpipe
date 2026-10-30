@@ -185,7 +185,8 @@ static SparkStatus K3StreamedReadOwn(void *context, uint64_t pack_offset, uint64
 	const K3Streamed *s = (const K3Streamed *)context;
 	if ( s->pool == 0 || pack_offset + bytes > s->module->pack.file_bytes )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	memcpy(destination, s->pool + pack_offset, (size_t)bytes);
+	if ( cudaMemcpy(destination, s->pool + pack_offset, (size_t)bytes, cudaMemcpyDefault) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	return SPARK_STATUS_OK;
 }
 
