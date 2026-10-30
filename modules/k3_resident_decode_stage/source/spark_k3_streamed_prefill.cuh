@@ -23,7 +23,7 @@
 #define K3_STREAMED_ROW_ELEMENTS K3_HIDDEN
 #define K3_STREAMED_SHARDS 16u
 #define K3_STREAMED_HEADS (K3_MLA_HEADS / K3_STREAMED_SHARDS)
-#define K3_STREAMED_ROW_ALIGN 256u
+#define K3_STREAMED_ROW_ALIGN 128u
 #define K3_STREAMED_CHUNKS 8u
 #define K3_STREAMED_STREAM_CHUNK (4u << 20)
 #define K3_STREAMED_STREAM_DEPTH 32u
@@ -230,6 +230,7 @@ __global__ static void K3StreamedHealthKernel(const uint16_t *hidden, uint64_t e
 	atomicMax(&health[1], top);
 }
 
+static_assert(K3_STREAMED_ROW_ALIGN % K3_STREAMED_CHUNKS == 0u, "every node row of a pass belongs to one of the recurrent chunks");
 static_assert(K3_STREAMED_SHARDS <= LM_CELL_MMA_MAX_SEGMENTS, "one expert down projection can take every shard's weights");
 
 struct K3Streamed
