@@ -46,7 +46,7 @@ extern "C" int32_t K3StageSlicePair(const void *layer_weights, const void *slice
 	void *buffers_a, void *buffers_b, uint32_t first_layer, uint32_t layer_count, uint32_t rows_a,
 	uint32_t rows_b, uint32_t commit, uint32_t multiprocessors, void *stream);
 
-#include "spark_k3_weight_binds.cuh"
+#include "spark_k3_weight_binds.h"
 
 static const char *const k3_required_every[] =
 {

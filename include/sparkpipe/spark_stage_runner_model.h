@@ -150,7 +150,7 @@ struct SparkStageRunnerModelInterface
 	SparkStatus (*tap_plan)(void *model, const SparkStageRunnerTapPlan *plan);
 	SparkStatus (*bind_device)(void *model, const SparkStageRunnerDeviceWeights *weights, SparkStageRunnerModelGeometry *geometry);
 	SparkStatus (*check)(void *model);
-	SparkStatus (*streamed_prefill)(void *model, const SparkStageRunnerStreamedPrefill *request, const SparkStageRunnerServices *services, void *stream);
+	SparkStatus (*streamed_prefill)(void *model, const SparkStageRunnerStreamedPrefill *request, const SparkStageRunnerServices *services);
 };
 
 #ifdef __cplusplus

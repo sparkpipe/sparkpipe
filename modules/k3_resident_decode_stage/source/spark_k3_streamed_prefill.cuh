@@ -17,7 +17,7 @@
 #include "sparkpipe/spark_weightd_lazy_pack.h"
 #include "sparkpipe/spark_weightd_map.h"
 #include "inference/llms/kimi_k3/streamed.cuh"
-#include "spark_k3_weight_binds.cuh"
+#include "spark_k3_weight_binds.h"
 
 #define K3_STREAMED_RANGE_GAP 4096u
 #define K3_STREAMED_ROW_ELEMENTS K3_HIDDEN

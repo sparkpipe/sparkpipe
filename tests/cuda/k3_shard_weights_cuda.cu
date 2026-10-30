@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "spark_k3_weight_binds.cuh"
+#include "spark_k3_weight_binds.h"
 
 static int sw_failures;
 

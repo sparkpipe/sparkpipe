@@ -181,6 +181,7 @@ struct SparkK3ModelState
 	SparkStageRunnerStreamedPrefillConfig streamed_config;
 	K3Streamed *streamed;
 	char *rank_pack_path;
+	cudaStream_t execution_stream;
 };
 
 static void K3ModelFail(SparkK3ModelState *state)
@@ -857,6 +858,7 @@ static SparkStatus K3ModelOpen(const SparkStageRunnerModelOpen *request, void **
 	state->layer_collective_override = configuration->layer_collective_override;
 	state->layer_collective_context = configuration->layer_collective_context;
 	state->streamed_config = configuration->streamed_prefill;
+	state->execution_stream = (cudaStream_t)request->stream;
 	if ( state->streamed_config.node_rows != 0u && (configuration->rank_pack_path == 0 || (state->rank_pack_path = strdup(configuration->rank_pack_path)) == 0) )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->kv_page_bytes = configuration->kv_page_bytes != 0u ? configuration->kv_page_bytes :
@@ -996,7 +998,7 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus K3ModelStreamedPrefill(void *model, const SparkStageRunnerStreamedPrefill *request, const SparkStageRunnerServices *services, void *stream)
+static SparkStatus K3ModelStreamedPrefill(void *model, const SparkStageRunnerStreamedPrefill *request, const SparkStageRunnerServices *services)
 {
 	SparkK3ModelState *state = (SparkK3ModelState *)model;
 	if ( state->streamed == 0 )
@@ -1004,7 +1006,7 @@ static SparkStatus K3ModelStreamedPrefill(void *model, const SparkStageRunnerStr
 		fprintf(stderr, "sparkpipe_k3: streamed prefill is not configured for this lane (stage config streamed_prefill)\n");
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	}
-	return K3StreamedRun(state->streamed, request, services, (cudaStream_t)stream);
+	return K3StreamedRun(state->streamed, request, services, state->execution_stream);
 }
 
 static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, void *stream_void)

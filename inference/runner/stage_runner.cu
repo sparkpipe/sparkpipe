@@ -2190,7 +2190,7 @@ static SparkStatus StageRunnerRunDeferred(SparkStageRunnerState *state, const Sp
 	request.sequence_slot = state->deferred_slot;
 	request.state_target = state->deferred_slot;
 	request.multiprocessors = state->multiprocessors;
-	status = state->model_interface->streamed_prefill(state->model, &request, &state->services, state->stream);
+	status = state->model_interface->streamed_prefill(state->model, &request, &state->services);
 	state->deferred_active = 0u;
 	state->deferred_count = 0u;
 	if ( status != SPARK_STATUS_OK )
