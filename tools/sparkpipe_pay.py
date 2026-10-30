@@ -30,13 +30,19 @@ HOUR_STEP = Decimal("0.0001")
 EVENTS = ["invoicePending", "invoicePaid", "invoiceCompleted", "invoiceCancelled", "invoiceTimedOut"]
 OPEN = {"unpaid", "pending", "paid"}
 CLOSED = {"cancelled", "timedout", "deleted", "failed"}
-NETWORKS = {
-    "base": "51:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
-    "solana": "55:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-    "arbitrum": "64:0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-    "polygon": "54:0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
-    "bnb": "35:0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
-    "ethereum": "4:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+COINS = {
+    "USDC.BASE": "51:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    "USDC.SOL": "55:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "USDC.ARB": "64:0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "USDC.POL": "54:0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+    "USDC.BEP20": "35:0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+    "USDC.ERC20": "4:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "USDT.TRC20": "9:TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    "USDT.SOL": "55:Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+    "USDT.ARB": "64:0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "USDT.POL": "54:0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
+    "USDT.BEP20": "35:0x55d398326f99059ff775485246999027b3197955",
+    "USDT.ERC20": "4:0xdac17f958d2ee523a2206206994597c13d831ec7",
 }
 EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,189}\.[^@\s.]{2,}$")
 ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -406,9 +412,9 @@ def money_field(value):
     return money(amount)
 
 
-def network_field(value):
-    if value not in NETWORKS:
-        raise Refusal("Choose the network you will send USDC on.")
+def coin_field(value):
+    if value not in COINS:
+        raise Refusal("Choose USDC or USDT and the network you will pay on.")
     return value
 
 
@@ -438,7 +444,7 @@ def invoice_body(cfg, quote):
         "notesToRecipient": f"SparkPipe issues the hours to the account {quote['email']} once this payment completes.",
         "customData": {"order": quote["order"]},
         "webhooks": [{"notificationsUrl": cfg.webhook_url, "notifications": EVENTS}],
-        "payment": {"paymentCurrency": NETWORKS[quote["network"]], "refundEmail": quote["email"]},
+        "payment": {"paymentCurrency": COINS[quote["coin"]], "refundEmail": quote["email"]},
         "successUrl": back,
         "cancelUrl": back,
     }
@@ -470,7 +476,7 @@ def receipt(cfg, order):
         "",
         f"Subtotal: {order['net']} USD",
         f"VAT: {order['vat']} USD",
-        f"Total paid in USDC: {order['total']} USD",
+        f"Total paid in {order['coin'].split('.')[0]}: {order['total']} USD",
         "",
         f"The hours are in your account: {cfg.public}/account.html",
         "We will email you when the fleet calendar opens for reservations.",
@@ -671,7 +677,7 @@ class App:
     def order(self, body, account, ip, agent):
         self.throttle("order", ip)
         now = clock()
-        network = network_field(body.get("network"))
+        coin = coin_field(body.get("coin"))
         pricing = self.cfg.pricing()
         with self.book.lock:
             record = self.book.accounts[account]
@@ -685,7 +691,7 @@ class App:
                 quote = self.prepayment_terms(pricing, body, account, now)
             else:
                 raise Refusal("Choose hourly hours or a two-year prepayment.")
-            quote.update(order=new_id("SP"), account=account, email=record["email"], company=record["company"], network=network)
+            quote.update(order=new_id("SP"), account=account, email=record["email"], company=record["company"], coin=coin)
             self.book.append("order", dict(quote, ip=ip, agent=agent))
         try:
             invoice = call(self.cfg, "POST", "/merchant/invoices", invoice_body(self.cfg, quote))["invoices"][0]
@@ -695,11 +701,11 @@ class App:
             log(f"order {quote['order']}: invoice failed: {error}")
             raise Refusal("The payment processor did not create the invoice. Nothing was charged; try again in a minute.", 502)
         self.book.append("invoice", {"order": quote["order"], "invoice": str(invoice["id"]), "link": link})
-        log(f"order {quote['order']}: invoice {invoice['id']} for {quote['total']} USD on {network}")
+        log(f"order {quote['order']}: invoice {invoice['id']} for {quote['total']} USD in {coin}")
         return {"order": quote["order"], "checkout": link}
 
     def shown(self, order):
-        shown = {key: order.get(key) for key in ("order", "product", "hours", "net", "vat", "total", "start", "last", "agreement", "network", "state", "issued", "created", "paid")}
+        shown = {key: order.get(key) for key in ("order", "product", "hours", "net", "vat", "total", "start", "last", "agreement", "coin", "state", "issued", "created", "paid")}
         shown["checkout"] = order["link"] if order["state"] == "unpaid" else None
         return shown
 
@@ -766,7 +772,7 @@ class App:
             self.book.append("hours_issued", issued)
             log(f"order {order_id}: paid, {order['hours']} hours issued to {order['account']}")
             self.mail(order["email"], f"Payment received: SparkPipe order {order_id}", receipt(self.cfg, order))
-            self.mail(self.cfg.notify, f"Paid: {order['company']}, {order['total']} USD", f"Order {order_id}: {order['hours']} hours for {order['company']} <{order['email']}>, {order['total']} USD on {order['network']}.")
+            self.mail(self.cfg.notify, f"Paid: {order['company']}, {order['total']} USD", f"Order {order_id}: {order['hours']} hours for {order['company']} <{order['email']}>, {order['total']} USD in {order['coin']}.")
 
     def work(self):
         while True:

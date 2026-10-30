@@ -338,7 +338,7 @@ to GLM.
 
 ## sparkpipe.ai
 
-`https://sparkpipe.ai` is static apart from the payment service. It holds the home page, the Fleet List, the terms, the privacy policy, the USDC checkout and the customer account page. They are copied from `site/` to `/var/www/html` on the KCInfra VPS (27.102.120.99). `tools/site_terms.py` generates the terms pages from `site/terms/`; `tests/test_site.py` fails when they differ. The pages carry the HYOR AI logo and colors.
+`https://sparkpipe.ai` is static apart from the payment service. It holds the home page, the Fleet List, the terms, the privacy policy, the USDC and USDT checkout and the customer account page. They are copied from `site/` to `/var/www/html` on the KCInfra VPS (27.102.120.99). `tools/site_terms.py` generates the terms pages from `site/terms/`; `tests/test_site.py` fails when they differ. The pages carry the HYOR AI logo and colors.
 
 Apache serves these pages and proxies `/pay/api/` to the payment service on 127.0.0.1:18090 (`deployment/vps/sparkpipe-pay.conf`, `docs/PAYMENTS.md`), which also runs the email sign-in of customer accounts; nothing else. Fleet-hour customers will reach their fleet through the customer API that TECHDEBT lists under fleet-hours.
 

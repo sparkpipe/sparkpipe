@@ -1,7 +1,10 @@
 # Payments
 
-Fleet-hours are paid in USDC through CoinPayments, on Base, Solana,
-Arbitrum, Polygon, BNB Chain or Ethereum. Won bank transfers against a tax
+Fleet-hours are paid in USDC or USDT through CoinPayments: USDC on Base,
+Solana, Arbitrum, Polygon, BNB Chain or Ethereum, USDT on Tron, Solana, BNB
+Chain, Arbitrum, Polygon or Ethereum. Only these two US-dollar stablecoins
+are taken, so an invoice priced in dollars is paid in dollars and neither
+side carries crypto price risk. Won bank transfers against a tax
 invoice and USD wires under a two-year agreement are still arranged by hand.
 
 ## How a customer buys
@@ -9,7 +12,7 @@ invoice and USD wires under a two-year agreement are still arranged by hand.
 1. `https://sparkpipe.ai/buy.html` asks three things, one step at a time:
    how many hours (4, 24, 72, 168 or any number) and from which day; the
    company's legal name and a work email, with a box accepting the Hourly
-   Terms; and the network the customer's USDC is on. The order total, with
+   Terms; and the coin and network the customer pays with. The order total, with
    VAT, stays in view.
 2. `POST /pay/api/code` emails a 6-digit code. `POST /pay/api/verify`
    checks it, opens the account if the email is new, records the
@@ -19,8 +22,8 @@ invoice and USD wires under a two-year agreement are still arranged by hand.
    from the browser), checks the holding limit, records the order and
    creates a CoinPayments invoice in USD (currency `5057`) with the price,
    VAT at 10% as tax, a per-invoice webhook, and `payment.paymentCurrency`
-   set to USDC on the chosen network, so the checkout opens straight on the
-   address, amount and QR code. The page sends the customer there.
+   set to the chosen coin on the chosen network, so the checkout opens
+   straight on the address, amount and QR code. The page sends the customer there.
 4. CoinPayments posts signed webhooks to `/pay/api/coinpayments`. The
    service checks the HMAC and the timestamp, then fetches the invoice from
    the CoinPayments API and acts on that answer, not on the webhook body.
@@ -40,7 +43,7 @@ invoice from the last 14 days, so a lost webhook only delays the hours.
 A two-year customer signs its agreement by hand. Once its entry is in
 `agreements.json`, the account page lists the agreement for the account
 with the same email, with what is paid, what is left and the next gate,
-and takes prepayments in USDC. `two-year.html` plans a term and sends a
+and takes prepayments in USDC or USDT. `two-year.html` plans a term and sends a
 quote request to `POST /pay/api/lead`.
 
 ## Endpoints
@@ -51,7 +54,7 @@ quote request to `POST /pay/api/lead`.
 | `POST /pay/api/verify` | `email`, `code`, and for a new account `company` and `accept: true`: signs in, sets the cookie `sp_session` and returns the account |
 | `POST /pay/api/signout` | Clears the cookie |
 | `GET /pay/api/account` | The signed-in account: hours, limit, blocks, orders, agreements and whether it accepted the current Hourly Terms |
-| `POST /pay/api/order` | Signed in. `product: "hourly"` with `hours`, `start`, `network` (and `accept: true` when the terms changed since the account accepted them), or `product: "two-year"` with `agreement`, `amount` before VAT and `network`: returns the checkout link |
+| `POST /pay/api/order` | Signed in. `product: "hourly"` with `hours`, `start`, `coin` (and `accept: true` when the terms changed since the account accepted them), or `product: "two-year"` with `agreement`, `amount` before VAT and `coin`: returns the checkout link. `coin` is one of the twelve CoinPayments symbols in `COINS`, such as `USDC.BASE` or `USDT.TRC20` |
 | `GET /pay/api/order/<order>` | The order's state, amounts and hours; the checkout link while unpaid. The order number is 80 random bits |
 | `POST /pay/api/lead` | A two-year quote request: `company`, `email`, `name`, `fleets`, `start`, `message` |
 | `POST /pay/api/coinpayments` | CoinPayments webhooks |
@@ -82,7 +85,7 @@ ten minutes (quote requests: an hour), and each email for 5 codes an hour.
   with nothing paid (clause 5.2), after a missed gate (clause 6.4), and
   after the term ends. Each payment issues the amount before VAT divided by
   the hour price, to four decimals (clause 5.5).
-- VAT is charged on every USDC payment (Hourly Terms 3.2, Schedule (c)).
+- VAT is charged on every USDC or USDT payment (Hourly Terms 3.2, Schedule (c)).
   CoinPayments' own fee is ours; the customer pays the network fee.
 
 ## Data on the VPS
@@ -118,6 +121,16 @@ which the SPF record for sparkpipe.ai already names) as
 that cannot be sent is an error on the page; a receipt that cannot be sent
 is logged.
 
+The VPS's rspamd signs that mail with DKIM for sparkpipe.ai, selector
+`s202608` (`/etc/rspamd/local.d/dkim_signing.conf`, key
+`/var/lib/rspamd/dkim/sparkpipe.ai.s202608.key`). Its public key is the
+TXT record `s202608._domainkey.sparkpipe.ai` at the domain's DNS host
+(GoDaddy), and rspamd signs only while the two match (`check_pubkey`).
+`sign_local = true` signs mail submitted from the VPS itself, as the
+payment service's is; mailbox users are signed when they authenticate.
+With SPF naming the VPS and DMARC at `p=quarantine`, receivers see SPF,
+DKIM and DMARC pass.
+
 ## CoinPayments setup
 
 1. In the CoinPayments dashboard, create an API integration and keep its
@@ -126,10 +139,12 @@ is logged.
    `invoicePending`, `invoicePaid`, `invoiceCompleted`, `invoiceCancelled`
    and `invoiceTimedOut`. The webhook signature covers that exact URL, so
    it must not change behind the proxy.
-2. Every invoice pre-selects USDC on the customer's network, but the
+2. Every invoice pre-selects the customer's coin and network, but the
    checkout still offers a currency menu. In Payment Settings, accept only
-   `USDC.ERC20`, `USDC.BASE`, `USDC.ARB`, `USDC.POL`, `USDC.SOL` and
-   `USDC.BEP20`, and turn LTCT off.
+   `USDC.ERC20`, `USDC.BASE`, `USDC.ARB`, `USDC.POL`, `USDC.SOL`,
+   `USDC.BEP20`, `USDT.TRC20`, `USDT.ERC20`, `USDT.BEP20`, `USDT.SOL`,
+   `USDT.POL` and `USDT.ARB`, and turn every other coin and LTCT off, so no
+   payment arrives in a coin whose price moves.
 3. Choose the payout wallet or conversion there too; the service does not
    set payout overrides.
 
@@ -191,6 +206,7 @@ library.
 agreement clause 6.6, the session tokens, and the whole service against a
 fake CoinPayments that verifies request signatures and a fake mail server:
 codes, sign-in, terms acceptance and re-acceptance, cross-site refusal,
-invoice bodies on the chosen network, signed and tampered webhooks,
+refusal of coins that are not USDC or USDT, invoice bodies on the chosen
+coin and network, signed and tampered webhooks,
 receipts, reconciliation, the holding limit, gates, mismatched totals,
 failed invoices, quote requests and the ledger chain with two writers.

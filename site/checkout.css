@@ -22,13 +22,18 @@
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; }
 .tiles .tile { position: relative; display: grid; gap: 6px; text-transform: none; letter-spacing: 0; align-content: start; padding: 16px 14px 14px; border: 1px solid var(--rule); border-radius: 2px; background: var(--paper); cursor: pointer; min-height: 92px; }
 .tile:hover { border-color: var(--steel); }
-.tile input { position: absolute; opacity: 0; pointer-events: none; }
+.tile input { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; margin: 0; padding: 0; opacity: 0; pointer-events: none; }
 .tile:has(input:checked) { border-color: var(--signal); box-shadow: inset 0 0 0 1px var(--signal); }
 .tile:has(input:focus-visible) { outline: 2px solid var(--signal); outline-offset: 2px; }
 .tile b { font: 800 24px/1 var(--display); font-variation-settings: 'wdth' 118; font-variant-numeric: tabular-nums; }
 .tile span { font: 500 11px/1.4 var(--mono); font-variation-settings: 'wdth' 87.5; color: var(--steel); }
 .tile em { position: absolute; top: -9px; right: 10px; padding: 2px 7px; border-radius: 2px; background: var(--signal); color: var(--paper); font: 600 9px/1.4 var(--mono); font-style: normal; letter-spacing: .08em; text-transform: uppercase; }
 .tile.net b { font-size: 18px; }
+.coins { display: inline-flex; border: 1px solid var(--rule-strong); border-radius: 2px; overflow: hidden; margin-bottom: 12px; }
+.coins .coin { position: relative; display: inline-flex; align-items: center; min-height: 40px; padding: 0 22px; cursor: pointer; font: 700 15px/1 var(--display); font-variation-settings: 'wdth' 112; letter-spacing: .02em; text-transform: none; color: var(--steel); }
+.coins .coin input { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; margin: 0; padding: 0; opacity: 0; pointer-events: none; }
+.coins .coin:has(input:checked) { background: var(--ink); color: var(--paper); }
+.coins .coin:has(input:focus-visible) { outline: 2px solid var(--signal); outline-offset: -2px; }
 .custom { display: flex; gap: 10px; align-items: end; }
 .custom label { flex: 1; }
 .form { display: grid; gap: 14px; }

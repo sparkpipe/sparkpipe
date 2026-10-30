@@ -60,7 +60,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
     <div class="hero-copy">
       <p class="lead">Rent a whole SparkPipe fleet and, for those hours, it serves only you. It runs Kimi K3 and other open models over a terabyte, too large for most GPU servers, with million-token context and speculation, and Korea's own large models: LG's K-EXAONE 2.0, SKT's A.X K2 and Upstage's Solar Open 2. Your data stays in Korea, there is no queue of other customers' requests, and the price is per hour, not per token.</p>
       <div class="actions">
-        <a class="btn solid" href="buy.html">Buy hours in USDC</a>
+        <a class="btn solid" href="buy.html">Buy hours in USDC or USDT</a>
         <a class="btn" href="#prices">Prices and terms</a>
       </div>
       <p class="note">For businesses only. The terms come into force, and the fleets open to customers, on <span data-start>1 December 2026</span>. Hours bought before then are usable from that day.</p>
@@ -94,7 +94,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
     <div class="defs">
       <div><p class="label">Data stays in Korea</p><p>The fleets and our servers are in Seoul, and your requests go to no foreign AI service. Cached request state is deleted within 24 hours of its last use.</p></div>
       <div><p class="label">A Korean company</p><p>You contract with HYOR AI Tech Ltd., a Korean company, under Korean law. Both contracts are in Korean and English, and the Korean text prevails.</p></div>
-      <div><p class="label">Pay in won</p><p>Korean businesses pay by bank transfer against our electronic tax invoice (세금계산서), with 10% VAT. Customers abroad pay in USDC or by USD wire.</p></div>
+      <div><p class="label">Pay in won</p><p>Korean businesses pay by bank transfer against our electronic tax invoice (세금계산서), with 10% VAT. Customers abroad pay in USDC, USDT or by USD wire.</p></div>
       <div><p class="label">Korean models</p><p>LG's K-EXAONE 2.0 and SKT's A.X K2, both under Apache 2.0, and Upstage's Solar Open 2 serve on Fleet 1, each the whole model at its publisher's precision, beside Kimi K3, GLM 5.3 and the other open models. They are hard to get elsewhere: in October 2026 neither <a href="https://artificialanalysis.ai/models/solar-open2-250b/providers">Artificial Analysis</a> nor Hugging Face lists a public API provider for any of the three.</p></div>
       <div><p class="label">Dedicated, not shared</p><p>During your hours the whole fleet serves only your requests. Nobody else's traffic waits in front of yours, so answers start as soon as the fleet is free.</p></div>
       <div><p class="label">By the hour</p><p>You pay for the fleet's time, not for tokens: long prompts, million-token contexts and agents that re-read their history cost nothing extra.</p></div>
@@ -166,11 +166,11 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
     <h2>Account, hours, reservation, use.</h2>
     <ol class="steps">
       <li><h3>Open an account</h3><p>Give your company's legal name and a work email, confirm the email with a 6-digit code, and accept the Hourly Terms. The email is your account: no password and no crypto wallet. Every business is screened against sanctions lists.</p></li>
-      <li><h3>Buy hours</h3><p>Pay in advance: Korean businesses in won, by bank transfer against our electronic tax invoice; customers abroad in USDC, through an invoice from our payment processor. Korean VAT of 10% is added. Your hours are issued once the payment has cleared.</p></li>
+      <li><h3>Buy hours</h3><p>Pay in advance: Korean businesses in won, by bank transfer against our electronic tax invoice; customers abroad in USDC or USDT, through an invoice from our payment processor. Korean VAT of 10% is added. Your hours are issued once the payment has cleared.</p></li>
       <li><h3>Reserve</h3><p>Choose a fleet, a model and the hours on the fleet's calendar, and confirm; on hourly terms you reserve up to 7 days ahead. A confirmed reservation is final and is taken from your balance as the hour passes.</p></li>
       <li><h3>Use</h3><p>During your hours the whole fleet serves only your requests, through the SparkPipe API, which follows the OpenAI chat format. You issue the access tokens, so you decide who uses your hours.</p></li>
     </ol>
-    <p class="caption">Won payments go straight to HYOR AI Tech Ltd.'s Korean bank account. USDC payments go through a payment processor. Our system has no feature for passing hours between accounts.</p>
+    <p class="caption">Won payments go straight to HYOR AI Tech Ltd.'s Korean bank account. USDC and USDT payments go through a payment processor. Our system has no feature for passing hours between accounts.</p>
   </div>
 </section>
 
@@ -190,7 +190,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
         <tr><th scope="row">Models</th><td>Any offered model on the Fleet List, chosen for each reservation</td><td>The models you choose in the agreement stay available for the whole term; the others while they are listed</td></tr>
         <tr><th scope="row">Business check</th><td>Not needed</td><td>Required before signing</td></tr>
         <tr><th scope="row">Hours held</th><td>Up to <span data-cap="hourly">168</span> at a time, or <span data-cap="verified">720</span> after a business check; each lasts 12 months</td><td>Each month's paid hours, reserved when you choose within that month: 12 in each 12-hour window a day, guaranteed, until you have prepaid the whole term. Then your election's daily hours are guaranteed for any day of the term, and you may use more on free fleets up to 30 days ahead</td></tr>
-        <tr><th scope="row">Payment</th><td>Before use: a won bank transfer against our electronic tax invoice (세금계산서) for Korean businesses, or a USDC invoice</td><td>A won bank transfer against our electronic tax invoice, a USD wire from your own account abroad (zero-rated for VAT), or a USDC invoice. Nothing is due in the first 30 days; you pay any amounts up to three deadlines, on days 30, 60 and 90</td></tr>
+        <tr><th scope="row">Payment</th><td>Before use: a won bank transfer against our electronic tax invoice (세금계산서) for Korean businesses, or a USDC or USDT invoice</td><td>A won bank transfer against our electronic tax invoice, a USD wire from your own account abroad (zero-rated for VAT), or a USDC or USDT invoice. Nothing is due in the first 30 days; you pay any amounts up to three deadlines, on days 30, 60 and 90</td></tr>
         <tr><th scope="row">Reservations</th><td>Final. From Monday to Saturday, a two-year customer may take your reserved hour for its guaranteed daily hours until 6 hours before it starts; the hour goes back to your balance. Sunday hours are never taken</td><td>Final, and never taken by anyone</td></tr>
         <tr><th scope="row">Downtime</th><td colspan="2">A reserved hour with more than 15 minutes of downtime comes back in full, automatically, from our own records</td></tr>
         <tr><th scope="row">Refunds</th><td>None, unless we stop hourly service or close your account through no fault of yours</td><td>None, except paid hours not yet used if the agreement ends early (clause 11.3). If no payment is made by day 30, it ends with nothing owed</td></tr>
@@ -198,7 +198,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
       </tbody>
     </table></div>
     <p class="caption">VAT is charged at 10% on every payment except a zero-rated wire. Any amount charged as VAT that turns out not to be owed is an overpayment, and we refund it. The Korean text of each contract prevails.</p>
-    <div class="actions"><a class="btn solid" href="buy.html">Buy hours with USDC</a><a class="btn" href="two-year.html">Plan a two-year term</a></div>
+    <div class="actions"><a class="btn solid" href="buy.html">Buy hours with USDC or USDT</a><a class="btn" href="two-year.html">Plan a two-year term</a></div>
   </div>
 </section>
 

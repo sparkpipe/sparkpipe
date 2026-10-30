@@ -21,33 +21,72 @@
   const usd = (n) => '$' + (+n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const whole = (n) => (+n).toLocaleString('en-US', { maximumFractionDigits: 4 });
   const say = (el, text, kind) => { el.textContent = text || ''; el.className = 'flash' + (kind ? ' ' + kind : ''); el.hidden = !text; };
-  const NETWORKS = [
-    { id: 'base', name: 'Base', note: 'Lowest fees', tag: 'Cheapest' },
-    { id: 'solana', name: 'Solana', note: 'Low fees, fast' },
-    { id: 'arbitrum', name: 'Arbitrum', note: 'Low fees' },
-    { id: 'polygon', name: 'Polygon', note: 'Low fees' },
-    { id: 'bnb', name: 'BNB Chain', note: 'Low fees' },
-    { id: 'ethereum', name: 'Ethereum', note: 'Highest network fees' },
-  ];
+  const COINS = {
+    USDC: [
+      { id: 'USDC.BASE', name: 'Base', note: 'Lowest fees', tag: 'Cheapest' },
+      { id: 'USDC.SOL', name: 'Solana', note: 'Low fees, fast' },
+      { id: 'USDC.ARB', name: 'Arbitrum', note: 'Low fees' },
+      { id: 'USDC.POL', name: 'Polygon', note: 'Low fees' },
+      { id: 'USDC.BEP20', name: 'BNB Chain', note: 'Low fees' },
+      { id: 'USDC.ERC20', name: 'Ethereum', note: 'Highest network fees' },
+    ],
+    USDT: [
+      { id: 'USDT.TRC20', name: 'Tron', note: 'Most used for USDT', tag: 'Popular' },
+      { id: 'USDT.SOL', name: 'Solana', note: 'Lowest fees, fast' },
+      { id: 'USDT.BEP20', name: 'BNB Chain', note: 'Low fees' },
+      { id: 'USDT.ARB', name: 'Arbitrum', note: 'Low fees' },
+      { id: 'USDT.POL', name: 'Polygon', note: 'Low fees' },
+      { id: 'USDT.ERC20', name: 'Ethereum', note: 'Highest network fees' },
+    ],
+  };
   const STATES = {
     created: 'Creating the invoice', unpaid: 'Awaiting payment', pending: 'Payment seen', paid: 'Confirming',
     completed: 'Paid, hours issued', cancelled: 'Cancelled', timedout: 'Expired unpaid', failed: 'No invoice created', mismatch: 'Under review',
   };
-  const networkName = (id) => (NETWORKS.find((n) => n.id === id) || { name: id || '-' }).name;
-  const networkTiles = (box, name, chosen) => {
-    box.replaceChildren(...NETWORKS.map((n) => {
+  const coinOf = (id) => String(id || '').split('.')[0];
+  const coinName = (id) => {
+    const found = (COINS[coinOf(id)] || []).find((n) => n.id === id);
+    return found ? coinOf(id) + ' on ' + found.name : id || '-';
+  };
+  const radio = (name, value, checked) => { const input = document.createElement('input'); Object.assign(input, { type: 'radio', name, value, checked }); return input; };
+  const coinPicker = (box, name, chosen, onChange) => {
+    let current = COINS[coinOf(chosen)] ? chosen : 'USDC.BASE';
+    const coins = document.createElement('div');
+    coins.className = 'coins';
+    coins.setAttribute('role', 'radiogroup');
+    coins.setAttribute('aria-label', 'Stablecoin');
+    Object.keys(COINS).forEach((coin) => {
       const label = document.createElement('label');
-      label.className = 'tile net';
-      const input = document.createElement('input');
-      Object.assign(input, { type: 'radio', name, value: n.id, checked: n.id === chosen });
-      const b = document.createElement('b');
-      b.textContent = n.name;
-      const span = document.createElement('span');
-      span.textContent = 'USDC · ' + n.note;
-      label.append(input, b, span);
-      if (n.tag) { const em = document.createElement('em'); em.textContent = n.tag; label.append(em); }
-      return label;
-    }));
+      label.className = 'coin';
+      label.append(radio(name + '-coin', coin, coin === coinOf(current)), document.createTextNode(coin));
+      coins.append(label);
+    });
+    const tiles = document.createElement('div');
+    tiles.className = 'tiles';
+    tiles.setAttribute('role', 'radiogroup');
+    tiles.setAttribute('aria-label', 'Network');
+    const draw = () => {
+      tiles.replaceChildren(...COINS[coinOf(current)].map((n) => {
+        const label = document.createElement('label');
+        label.className = 'tile net';
+        const b = document.createElement('b');
+        b.textContent = n.name;
+        const span = document.createElement('span');
+        span.textContent = coinOf(n.id) + ' · ' + n.note;
+        label.append(radio(name, n.id, n.id === current), b, span);
+        if (n.tag) { const em = document.createElement('em'); em.textContent = n.tag; label.append(em); }
+        return label;
+      }));
+    };
+    box.addEventListener('change', (event) => {
+      if (event.target.name === name + '-coin') current = COINS[event.target.value][0].id;
+      else if (event.target.name === name) current = event.target.value;
+      else return;
+      draw();
+      if (onChange) onChange(current);
+    });
+    draw();
+    box.replaceChildren(coins, tiles);
   };
   const chosen = (form, name) => { const input = form.querySelector('input[name="' + name + '"]:checked'); return input ? input.value : null; };
   const store = {
@@ -70,5 +109,5 @@
     });
     return { send, email: () => email };
   };
-  window.SP = { call, me, usd, whole, say, NETWORKS, STATES, networkName, networkTiles, chosen, store, codeFlow };
+  window.SP = { call, me, usd, whole, say, COINS, STATES, coinOf, coinName, coinPicker, chosen, store, codeFlow };
 })();

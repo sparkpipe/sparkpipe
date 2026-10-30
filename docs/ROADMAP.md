@@ -177,7 +177,7 @@ expansion.
 Exit: a business rents a whole fleet without our help.
 
 - It opens an account with its company name and a work email confirmed by a one-time code, and accepts the Hourly Terms with a box recorded against the texts' hashes.
-- It pays a USDC invoice through the payment processor, and its hours appear once the payment clears.
+- It pays a USDC or USDT invoice through the payment processor, and its hours appear once the payment clears.
 - It reserves hours on a fleet's calendar while signed in, or through the API with an access token. A two-year customer can take an hourly reservation more than 6 hours ahead, and the hourly customer is told and gets the hour back.
 - During its hours its access tokens reach the fleet, and nobody else's do.
 - `sparkpipe.ai/availability.txt` shows live capacity, regenerated every 30 seconds.
@@ -187,7 +187,7 @@ Exit: a business rents a whole fleet without our help.
 Work:
 
 - the account service: signed acceptance, business details, sanctions screening, the business check and the 720-hour limit;
-- VAT invoices (USDC invoices through CoinPayments are built: `docs/PAYMENTS.md`);
+- VAT invoices (USDC and USDT invoices through CoinPayments are built: `docs/PAYMENTS.md`);
 - the ledger and its daily root;
 - the reservation writer, the calendar, displacement and expiry;
 - access tokens scoped to reserved hours, and the gate in front of the fleet;

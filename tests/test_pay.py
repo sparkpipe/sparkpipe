@@ -284,11 +284,12 @@ def account_flow(failures, cfg, app, buyer, mailbox, port):
 
 
 def hourly_flow(failures, cfg, app, fake, buyer, mailbox):
-    base = {"product": "hourly", "hours": 4, "start": "2026-12-01", "network": "base"}
+    base = {"product": "hourly", "hours": 4, "start": "2026-12-01", "coin": "USDC.BASE"}
     if buyer("POST", "/order", dict(base, start="2026-11-30"))[0] != 400:
         failures.append("hours starting before the first sale date are ordered")
-    if buyer("POST", "/order", dict(base, network="bitcoin"))[0] != 400:
-        failures.append("an order on a network that is not USDC is accepted")
+    for coin in ("BTC", "TUSD.TRC20", "base", None):
+        if buyer("POST", "/order", dict(base, coin=coin))[0] != 400:
+            failures.append(f"an order in {coin} is accepted")
     anonymous = Client(buyer.port)
     if anonymous("POST", "/order", base)[0] != 401:
         failures.append("an order without signing in is accepted")
@@ -300,7 +301,7 @@ def hourly_flow(failures, cfg, app, fake, buyer, mailbox):
     expected = {"currency": "5057", "invoiceId": placed["order"], "amount": {"breakdown": {"subtotal": "80.00", "taxTotal": "8.00"}, "total": "88.00"}}
     if any(invoice.get(key) != value for key, value in expected.items()):
         failures.append(f"invoice body: {invoice}")
-    if invoice["payment"] != {"paymentCurrency": sp.NETWORKS["base"], "refundEmail": "ops@acme.example"} or invoice["buyer"] != {"companyName": "Acme 주식회사", "emailAddress": "ops@acme.example"}:
+    if invoice["payment"] != {"paymentCurrency": sp.COINS["USDC.BASE"], "refundEmail": "ops@acme.example"} or invoice["buyer"] != {"companyName": "Acme 주식회사", "emailAddress": "ops@acme.example"}:
         failures.append(f"invoice payment or buyer: {invoice['payment']} {invoice['buyer']}")
     if invoice["items"][0]["quantity"] != {"value": 4, "type": "hours"} or invoice["webhooks"][0]["notificationsUrl"] != "https://sparkpipe.ai/pay/api/coinpayments":
         failures.append(f"invoice items or webhooks: {invoice['items']} {invoice['webhooks']}")
@@ -336,13 +337,17 @@ def hourly_flow(failures, cfg, app, fake, buyer, mailbox):
     payment = [json.loads(line) for line in open(cfg.path("ledger.jsonl"), encoding="utf-8") if '"payment"' in line][-1]["data"]
     if payment["paidWith"] != ["USDC.BASE"]:
         failures.append(f"the payment line does not record the coin: {payment}")
-    if buyer("POST", "/order", dict(base, hours=165))[0] != 409 or buyer("POST", "/order", dict(base, hours=164, network="solana"))[0] != 200:
+    if buyer("POST", "/order", dict(base, hours=165))[0] != 409 or buyer("POST", "/order", dict(base, hours=164, coin="USDT.TRC20"))[0] != 200:
         failures.append("issued hours and the holding limit")
     fake.invoices["inv2"]["status"] = "completed"
     fake.invoices["inv2"]["total"] = "1.00"
     webhook(buyer, cfg, "inv2")
     app.jobs.join()
+    if fake.invoices["inv2"]["body"]["payment"]["paymentCurrency"] != "9:TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t":
+        failures.append("a USDT order on Tron does not preset USDT on Tron")
     second = next(o for o in buyer("GET", "/account")[1]["orders"] if o["hours"] == 164)
+    if second["coin"] != "USDT.TRC20":
+        failures.append(f"the order does not show its coin: {second}")
     if second["state"] != "mismatch" or second["issued"]:
         failures.append(f"an underpaid invoice issues hours: {second}")
     fake.down = True
@@ -374,7 +379,7 @@ def prepayment_flow(failures, cfg, app, fake, buyer, mailbox, port):
         return
     if found[0]["hours"] != sum(plan) or found[0]["nextGate"] != {"name": "Gate 1", "due": "2026-11-30", "amount": f"{15 * sum(plan[:6])}.00"}:
         failures.append(f"agreement standing: {found[0]}")
-    pay = {"product": "two-year", "agreement": "SP2Y-TEST-0001", "network": "polygon"}
+    pay = {"product": "two-year", "agreement": "SP2Y-TEST-0001", "coin": "USDT.SOL"}
     if buyer("POST", "/order", dict(pay, agreement="SP2Y-TEST-0003", amount="100.00"))[0] != 404:
         failures.append("an account can prepay another account's agreement")
     if buyer("POST", "/order", dict(pay, amount="999999999.00"))[0] != 409:
@@ -424,7 +429,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("pay: tranches match the agreement; email codes, sessions, terms acceptance, USDC invoices on the chosen network, signed webhooks, receipts, reconciliation, the holding limit, gates, quote requests and the hash-chained ledger behave")
+    print("pay: tranches match the agreement; email codes, sessions, terms acceptance, USDC and USDT invoices on the chosen network, signed webhooks, receipts, reconciliation, the holding limit, gates, quote requests and the hash-chained ledger behave")
     return 0
 
 

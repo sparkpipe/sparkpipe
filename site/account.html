@@ -103,7 +103,7 @@
       <p class="label">Orders</p>
       <p class="flash" id="no-orders">No orders yet. <a href="buy.html">Buy your first hours.</a></p>
       <div class="table-wrap" id="orders-wrap"><table>
-        <thead><tr><th>Order</th><th>What</th><th>Total</th><th>Network</th><th>State</th><th></th></tr></thead>
+        <thead><tr><th>Order</th><th>What</th><th>Total</th><th>Paid with</th><th>State</th><th></th></tr></thead>
         <tbody id="orders"></tbody>
       </table></div>
     </section>
@@ -125,9 +125,9 @@
       <form class="form" novalidate>
         <label>Amount, before VAT (USD)<input name="amount" type="number" inputmode="decimal" min="1" step="0.01"></label>
         <p class="hint" data-k="issues"></p>
-        <div class="tiles" data-k="networks"></div>
+        <div data-k="coins"></div>
         <p class="flash" hidden></p>
-        <button class="btn solid big" type="submit">Pay in USDC</button>
+        <button class="btn solid big" type="submit">Pay</button>
         <p class="hint">Each payment issues hours equal to the amount before VAT divided by your hour price, to the earliest tranches not yet paid (clause 5.5). For a USD wire or a won transfer, write to us.</p>
       </form>
     </div>
@@ -138,7 +138,7 @@
   <div class="wrap">
     <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
     <nav aria-label="Footer"><a href="index.html">Home</a><a href="fleets.html">Fleet List</a><a href="hourly-terms.html">Hourly Terms</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
-    <span>USDC payments are processed by CoinPayments.</span>
+    <span>USDC and USDT payments are processed by CoinPayments.</span>
   </div>
 </footer>
 
@@ -170,7 +170,7 @@
       text = SP.whole(o.hours) + ' fleet-hours are in your account' + (o.product === 'hourly' ? ', usable from ' + nice(o.start) + ' to ' + nice(o.last) : '') + '. The receipt is on its way to your email.';
     } else if (o.state === 'created' || o.state === 'unpaid') {
       title = 'Waiting for your payment.';
-      text = 'Send ' + SP.usd(o.total) + ' in USDC on ' + SP.networkName(o.network) + ' from the payment page. If you have sent it, stay here: this page updates by itself.';
+      text = 'Send ' + SP.usd(o.total) + ' in ' + SP.coinName(o.coin) + ' from the payment page. If you have sent it, stay here: this page updates by itself.';
       if (o.checkout && /^https:\/\//.test(o.checkout)) actions.push(link(o.checkout, 'Open the payment page', 'btn solid'));
     } else if (o.state === 'pending') {
       title = 'Payment seen. Confirming…';
@@ -216,12 +216,12 @@
     k('left').textContent = SP.usd(a.remaining);
     k('gate').textContent = a.ended ? 'Closed' : a.nextGate ? SP.usd(a.nextGate.amount) + ' by ' + nice(a.nextGate.due) : 'All gates met';
     const form = node.querySelector('form'), amount = form.elements.amount, note = form.querySelector('.flash'), button = form.querySelector('button');
-    SP.networkTiles(k('networks'), 'net-' + a.agreement, 'base');
+    SP.coinPicker(k('coins'), 'coin-' + a.agreement, 'USDC.BASE', () => update());
     if (a.nextGate) amount.value = a.nextGate.amount;
     const update = () => {
-      const net = Math.round((+amount.value || 0) * 100) / 100, vat = Math.round(net * P.vatRate * 100) / 100;
-      k('issues').textContent = net >= 1 ? 'Issues ' + SP.whole(Math.floor(net / +a.price * 10000) / 10000) + ' hours. Total with VAT: ' + SP.usd(net + vat) + ' in USDC.' : '';
-      button.textContent = net >= 1 ? 'Pay ' + SP.usd(net + vat) + ' in USDC' : 'Pay in USDC';
+      const net = Math.round((+amount.value || 0) * 100) / 100, vat = Math.round(net * P.vatRate * 100) / 100, coin = SP.coinOf(SP.chosen(form, 'coin-' + a.agreement) || 'USDC.BASE');
+      k('issues').textContent = net >= 1 ? 'Issues ' + SP.whole(Math.floor(net / +a.price * 10000) / 10000) + ' hours. Total with VAT: ' + SP.usd(net + vat) + ' in ' + coin + '.' : '';
+      button.textContent = net >= 1 ? 'Pay ' + SP.usd(net + vat) + ' in ' + coin : 'Pay in ' + coin;
       button.disabled = Boolean(a.ended) || net < 1 || net > +a.remaining;
     };
     amount.addEventListener('input', update);
@@ -232,7 +232,7 @@
       button.disabled = true;
       SP.say(note, '');
       try {
-        const placed = await SP.call('/order', { product: 'two-year', agreement: a.agreement, amount: (+amount.value).toFixed(2), network: SP.chosen(form, 'net-' + a.agreement) });
+        const placed = await SP.call('/order', { product: 'two-year', agreement: a.agreement, amount: (+amount.value).toFixed(2), coin: SP.chosen(form, 'coin-' + a.agreement) });
         if (!/^https:\/\//.test(placed.checkout)) throw new Error('The checkout link is not secure. Your order is listed below.');
         window.location.assign(placed.checkout);
       } catch (error) { SP.say(note, error.message, 'error'); update(); }
@@ -263,7 +263,7 @@
       const state = document.createElement('span');
       state.className = 'state' + (o.state === 'completed' ? ' live' : OPEN.has(o.state) ? ' building' : '');
       state.textContent = SP.STATES[o.state] || o.state;
-      return row([cell(o.order), cell(what(o)), cell(SP.usd(o.total), 'figure'), cell(SP.networkName(o.network)), cell(state), cell(action)]);
+      return row([cell(o.order), cell(what(o)), cell(SP.usd(o.total), 'figure'), cell(SP.coinName(o.coin)), cell(state), cell(action)]);
     }));
   };
 
