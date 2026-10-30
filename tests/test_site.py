@@ -7,6 +7,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SITE = ROOT / "site"
 LANG_CONF = ROOT / "deployment" / "vps" / "sparkpipe-lang.conf"
+COMPANY = ROOT / "deployment" / "vps" / "hyor.io"
+COMPANY_CONF = ROOT / "deployment" / "vps" / "hyor-io.conf"
 EXTERNAL = ("https://", "http://", "mailto:")
 ALLOWED_STYLES = ("https://fonts.googleapis.com/",)
 CHAT_APP_PAGES = {"fleet.html": {"/", "/static/favicon.svg", "/static/favicon.png"}}
@@ -92,23 +94,66 @@ def check_languages(pages, failures):
             if name not in pages:
                 failures.append(f"{LANG_CONF.name}: {name} names no file in site/")
                 continue
-            source = pages[name].source
-            lang = "ko" if name == ko else "en"
-            if f'<html lang="{lang}">' not in source:
-                failures.append(f"{name}: html lang is not {lang}")
-            for code, target in (("en", en), ("ko", ko)):
-                if f'<link rel="alternate" hreflang="{code}" href="https://sparkpipe.ai/{target}">' not in source:
-                    failures.append(f"{name}: no hreflang {code} alternate for {target}")
-            toggle = re.search(r'<div class="lang" role="group"[^>]*>(.*?)</div>', source, re.S)
-            if not toggle:
-                failures.append(f"{name}: no language switch")
-                continue
-            links = re.findall(r'<a href="([^"]+)"([^>]*)>', toggle.group(1))
-            if [href for href, _ in links] != [f"{en}?lang=en", f"{ko}?lang=ko"]:
-                failures.append(f"{name}: language switch links {[href for href, _ in links]}")
-            current = [href for href, attrs in links if 'aria-current="true"' in attrs]
-            if current != [f"{name}?lang={lang}"]:
-                failures.append(f"{name}: language switch marks {current} as current")
+            check_twin(name, pages[name].source, en, ko, "sparkpipe.ai", failures)
+
+
+def check_twin(name, source, en, ko, host, failures):
+    import re
+    lang = "ko" if name == ko else "en"
+    if f'<html lang="{lang}">' not in source:
+        failures.append(f"{name}: html lang is not {lang}")
+    for code, target in (("en", en), ("ko", ko)):
+        if f'<link rel="alternate" hreflang="{code}" href="https://{host}/{target}">' not in source:
+            failures.append(f"{name}: no hreflang {code} alternate for {target}")
+    toggle = re.search(r'<div class="lang" role="group"[^>]*>(.*?)</div>', source, re.S)
+    if not toggle:
+        failures.append(f"{name}: no language switch")
+        return
+    links = re.findall(r'<a href="([^"]+)"([^>]*)>', toggle.group(1))
+    if [href for href, _ in links] != [f"{en}?lang=en", f"{ko}?lang=ko"]:
+        failures.append(f"{name}: language switch links {[href for href, _ in links]}")
+    current = [href for href, attrs in links if 'aria-current="true"' in attrs]
+    if current != [f"{name}?lang={lang}"]:
+        failures.append(f"{name}: language switch marks {current} as current")
+
+
+def check_links(name, page, pages, root, failures, skip=frozenset()):
+    for link in page.links:
+        target, _, fragment = link.partition("#")
+        if target in skip:
+            continue
+        if target and not (root / target.lstrip("/")).is_file():
+            failures.append(f"{name}: {link} names no file in {root.relative_to(ROOT)}/")
+        elif fragment and fragment not in pages.get(target or name, page).ids:
+            failures.append(f"{name}: {link} names no element")
+    failures += [f"{name}: external script {src}" for src in page.scripts if src.startswith(EXTERNAL)]
+    failures += [f"{name}: stylesheet {href}" for href in page.styles if href.startswith(EXTERNAL) and not href.startswith(ALLOWED_STYLES)]
+
+
+def check_company(failures):
+    pages = {path.name: parse(path) for path in sorted(COMPANY.glob("*.html"))}
+    if sorted(pages) != ["index-ko.html", "index.html"]:
+        failures.append(f"hyor.io: pages {sorted(pages)}, expected index.html and index-ko.html")
+        return 0
+    if "RewriteRule ^/(?:index\\.html)?$ /index-ko.html [R=302,L]" not in COMPANY_CONF.read_text(encoding="utf-8"):
+        failures.append(f"{COMPANY_CONF.name}: the home page has no Korean redirect")
+    for name, page in pages.items():
+        check_twin(name, page.source, "index.html", "index-ko.html", "hyor.io", failures)
+        check_links(name, page, pages, COMPANY, failures)
+        failures += [f"{name}: script {src}, but the hyor.io policy allows none" for src in page.scripts]
+        if "<script" in page.source:
+            failures.append(f"{name}: inline script, but the hyor.io policy allows none")
+    return len(pages)
+
+
+def check_brand(failures):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("brand_logo", ROOT / "tools" / "brand_logo.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for path, text in module.SVGS.items():
+        if not path.is_file() or path.read_text(encoding="utf-8") != text:
+            failures.append(f"{path.relative_to(ROOT)}: differs from tools/brand_logo.py; run python3 tools/brand_logo.py")
 
 
 def check_kr_networks(failures):
@@ -133,23 +178,17 @@ def main():
     check_terms(failures)
     check_languages(pages, failures)
     check_kr_networks(failures)
+    check_brand(failures)
     for name, page in pages.items():
-        for link in page.links:
-            target, _, fragment = link.partition("#")
-            if target in CHAT_APP_PAGES.get(name, set()):
-                continue
-            if target and not (SITE / target.lstrip("/")).is_file():
-                failures.append(f"{name}: {link} names no file in site/")
-            elif fragment and fragment not in pages.get(target or name, page).ids:
-                failures.append(f"{name}: {link} names no element")
-        failures += [f"{name}: external script {src}" for src in page.scripts if src.startswith(EXTERNAL)]
-        failures += [f"{name}: stylesheet {href}" for href in page.styles if href.startswith(EXTERNAL) and not href.startswith(ALLOWED_STYLES)]
+        check_links(name, page, pages, SITE, failures, CHAT_APP_PAGES.get(name, frozenset()))
         check_tables(name, page, failures)
+    company = check_company(failures)
     for failure in failures:
         print(f"  FAIL {failure}")
     if failures or not pages:
         return 1
     print(f"site: {len(pages)} pages, every local link and anchor resolves, no external scripts, the contract pages match site/terms/, every page with a Korean twin has the language switch and redirect")
+    print(f"hyor.io: {company} pages with the language switch and redirect, no scripts; the logo files match tools/brand_logo.py")
     return 0
 
 
