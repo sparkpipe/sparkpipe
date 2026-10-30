@@ -152,7 +152,8 @@ kernel void spark_gemv_fp8(constant SparkGemvParams &p [[buffer(0)]], device con
 	SparkFp8Rows<R, O, MX>(p, x, w, scale, out, group * O, lane, simd, partial, table);
 }
 
-kernel void spark_gemv_mxfp8_routed(constant SparkGemvParams &p [[buffer(0)]], device const ushort *x [[buffer(1)]], device const uchar *w [[buffer(2)]],
+template <bool MX>
+kernel void spark_gemv_fp8_routed(constant SparkGemvParams &p [[buffer(0)]], device const ushort *x [[buffer(1)]], device const uchar *w [[buffer(2)]],
 	device const uchar *scale [[buffer(3)]], device ushort *out [[buffer(4)]], device const uint *experts [[buffer(5)]],
 	uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]])
 {
@@ -167,9 +168,18 @@ kernel void spark_gemv_mxfp8_routed(constant SparkGemvParams &p [[buffer(0)]], d
 	}
 	const ulong expert = experts[route];
 	SparkFp8Table(table, lane, simd);
-	SparkFp8Rows<1u, SPARK_GEMV_OUTPUTS, true>(p, x + (ulong)(route / p.route_divisor) * p.input_stride, w + expert * N * K,
-		scale + expert * N * (K / SPARK_MXFP8_GROUP), out + (ulong)route * p.output_stride, first, lane, simd, partial, table);
+	SparkFp8Rows<1u, SPARK_GEMV_OUTPUTS, MX>(p, x + (ulong)(route / p.route_divisor) * p.input_stride, w + expert * N * K,
+		scale + expert * N * p.scale_stride * (MX ? 1u : 4u), out + (ulong)route * p.output_stride, first, lane, simd, partial, table);
 }
+
+template [[host_name("spark_gemv_fp8_routed")]] kernel void spark_gemv_fp8_routed<false>(constant SparkGemvParams &p [[buffer(0)]],
+	device const ushort *x [[buffer(1)]], device const uchar *w [[buffer(2)]], device const uchar *scale [[buffer(3)]], device ushort *out [[buffer(4)]],
+	device const uint *experts [[buffer(5)]], uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
+	uint simd [[simdgroup_index_in_threadgroup]]);
+template [[host_name("spark_gemv_mxfp8_routed")]] kernel void spark_gemv_fp8_routed<true>(constant SparkGemvParams &p [[buffer(0)]],
+	device const ushort *x [[buffer(1)]], device const uchar *w [[buffer(2)]], device const uchar *scale [[buffer(3)]], device ushort *out [[buffer(4)]],
+	device const uint *experts [[buffer(5)]], uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
+	uint simd [[simdgroup_index_in_threadgroup]]);
 
 template <bool MX>
 kernel void spark_dequant_fp8(constant SparkGemvParams &p [[buffer(0)]], device const uchar *w [[buffer(1)]], device const uchar *scale [[buffer(2)]],

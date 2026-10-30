@@ -96,7 +96,9 @@ kernel void spark_channel_delta_prepare(constant SparkDeltaParams &p [[buffer(0)
 	if ( tid == 0u )
 	{
 		const float strength = SparkMathSigmoidFast(SparkMathBf16ToFloat(beta_logits[(ulong)row * p.beta_stride + head]));
-		beta[(ulong)row * p.value_heads + head] = p.doubled_beta != 0u ? 2.0f * SparkMathRoundBf16(strength) : strength;
+		const float rounded = SparkMathRoundBf16(strength);
+		beta[(ulong)row * p.value_heads + head] = p.beta_mode == SPARK_DELTA_BETA_DOUBLED ? 2.0f * rounded :
+			p.beta_mode == SPARK_DELTA_BETA_ROUNDED ? rounded : strength;
 	}
 }
 

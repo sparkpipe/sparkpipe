@@ -353,8 +353,22 @@ kernel void spark_route_sigmoid_topk(constant SparkRouteParams &p [[buffer(0)]],
 	if ( tid != 0u )
 		return;
 	float total = 0.0f;
-	for ( uint pick = 0u; pick < p.top_k; pick++ )
-		total += score[chosen[pick]];
+	if ( p.tree_sum != 0u )
+	{
+		float tree[SPARK_ROUTE_MAX_TOP_K];
+		uint width = 1u;
+		while ( width < p.top_k )
+			width <<= 1u;
+		for ( uint pick = 0u; pick < width; pick++ )
+			tree[pick] = pick < p.top_k ? score[chosen[pick]] : 0.0f;
+		for ( uint step = width / 2u; step > 0u; step >>= 1u )
+			for ( uint pick = 0u; pick < step; pick++ )
+				tree[pick] = tree[pick] + tree[pick + step];
+		total = tree[0];
+	}
+	else
+		for ( uint pick = 0u; pick < p.top_k; pick++ )
+			total += score[chosen[pick]];
 	for ( uint pick = 0u; pick < p.top_k; pick++ )
 	{
 		experts[(ulong)row * p.top_k + pick] = chosen[pick];

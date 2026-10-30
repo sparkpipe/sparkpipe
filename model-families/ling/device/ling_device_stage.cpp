@@ -90,7 +90,7 @@ struct LingDevice
 		delta->epsilon = G::kNormEpsilon;
 		delta->l2_epsilon = 1e-6f;
 		delta->minimum_log_decay = G::kKdaLowerBound;
-		delta->doubled_beta = G::kKdaDoubledBeta ? 1u : 0u;
+		delta->beta_mode = G::kKdaDoubledBeta ? SPARK_DELTA_BETA_DOUBLED : SPARK_DELTA_BETA_SIGMOID;
 		memset(attention, 0, sizeof(*attention));
 		attention->heads = G::kMlaHeads;
 		attention->nope = G::kNope;

@@ -210,7 +210,8 @@ SparkStatus SparkDeviceChannelDeltaBind(SparkDeviceStage *stage, const SparkStag
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceStageLayerTensor(stage,weights,layer,"kda_dt_bias","f32",width * 4u,&bound->bias);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkDeviceStageLayerTensor(stage,weights,layer,"kda_norm","bf16",(uint64_t)shape->dimension * 2u,&bound->norm);
+		status = SparkDeviceStageLayerTensor(stage,weights,layer,"kda_norm",shape->norm_f32 != 0u ? "f32" : "bf16",
+			(uint64_t)shape->dimension * (shape->norm_f32 != 0u ? 4u : 2u),&bound->norm);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceStageLayerWeight(stage,weights,layer,"kda_out",hidden,width,&bound->out);
 	return(status);
@@ -266,7 +267,7 @@ SparkStatus SparkDeviceChannelDelta(SparkDeviceStage *stage, SparkDeviceQueue *q
 	delta.commit = tensors->sequences.commit;
 	delta.epsilon = shape->l2_epsilon != 0.0f ? shape->l2_epsilon : shape->epsilon;
 	delta.minimum_log_decay = shape->minimum_log_decay;
-	delta.doubled_beta = shape->doubled_beta;
+	delta.beta_mode = shape->beta_mode;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsChannelDelta(stage->ops,queue,SparkDeviceStageRecurrent(stage,SPARK_DEVICE_GATED_DELTA_STATE_POOL,recurrent_layer),&tensors->sequences,
 			scratch->qkv,scratch->decay,scratch->beta,weights->log_scale,weights->bias,scratch->delta,scratch->core,&delta);
@@ -277,6 +278,7 @@ SparkStatus SparkDeviceChannelDelta(SparkDeviceStage *stage, SparkDeviceQueue *q
 	gate.input_stride = gate.gate_stride = gate.output_stride = width;
 	gate.epsilon = shape->epsilon;
 	gate.sigmoid_gate = 1u;
+	gate.weight_f32 = shape->norm_f32;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsRmsNormGate(stage->ops,queue,scratch->core,scratch->gate,weights->norm,scratch->gated,&gate);
 	if ( status == SPARK_STATUS_OK )
@@ -943,8 +945,12 @@ static SparkStatus RoutedLinear(SparkDeviceStage *stage, SparkDeviceQueue *queue
 	if ( matrix->codec == SPARK_WEIGHT_CODEC_BF16 )
 		return(SparkOpsLinearRouted(stage->ops,queue,x,matrix->values,y,experts,count,params));
 	if ( matrix->codec == SPARK_WEIGHT_CODEC_FP8_E4M3 )
-		return(SparkOpsLinearRoutedMxfp8(stage->ops,queue,x,matrix->values,matrix->scale,y,experts,count,params));
-	return(SparkDeviceStageRefuse(stage,SPARK_STATUS_UNSUPPORTED,"routed experts take BF16, MXFP8, MXFP4 or NVFP4 weights"));
+	{
+		SparkGemvParams launch = *params;
+		launch.scale_group = matrix->scale_group;
+		return(SparkOpsLinearRoutedFp8(stage->ops,queue,x,matrix->values,matrix->scale,y,experts,count,&launch));
+	}
+	return(SparkDeviceStageRefuse(stage,SPARK_STATUS_UNSUPPORTED,"routed experts take BF16, FP8, MXFP8, MXFP4 or NVFP4 weights"));
 }
 
 static SparkTensor ExpertPart(SparkTensor tensor, uint32_t experts, uint32_t expert)

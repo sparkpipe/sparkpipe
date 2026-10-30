@@ -123,6 +123,10 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_HC_MIX8,
 	SPARK_OPS_HC_MIX4,
 	SPARK_OPS_HC_POST,
+	SPARK_OPS_HC_SITE,
+	SPARK_OPS_HC_POST_COMB,
+	SPARK_OPS_STREAM_MEAN,
+	SPARK_OPS_GEMV_FP8_ROUTED,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -229,6 +233,11 @@ SparkStatus SparkOpsRmsNormBf16(SparkDeviceOps *ops, SparkDeviceQueue *queue, Sp
 SparkStatus SparkOpsHcMix(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor fn, SparkTensor base, SparkTensor scale,
 	SparkTensor post, SparkTensor mixed, const SparkHcParams *params);
 SparkStatus SparkOpsHcPost(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor post, SparkTensor output, const SparkHcParams *params);
+SparkStatus SparkOpsHcSite(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor fn, SparkTensor base, SparkTensor scale,
+	SparkTensor post, SparkTensor comb, SparkTensor mixed, const SparkHcParams *params);
+SparkStatus SparkOpsHcPostComb(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor post, SparkTensor comb, SparkTensor output,
+	const SparkHcParams *params);
+SparkStatus SparkOpsStreamMean(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor output, const SparkHcParams *params);
 SparkStatus SparkOpsHyperExpand(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor hidden, SparkTensor streams, const SparkHyperParams *params);
 SparkStatus SparkOpsGroupRmsNorm(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor weight, SparkTensor output,
 	const SparkHyperParams *params);
@@ -253,7 +262,7 @@ SparkStatus SparkOpsRouteCombine(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	const SparkRouteParams *params);
 SparkStatus SparkOpsLinearRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor y, SparkTensor experts,
 	uint32_t expert_count, const SparkGemvParams *params);
-SparkStatus SparkOpsLinearRoutedMxfp8(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor scale, SparkTensor y,
+SparkStatus SparkOpsLinearRoutedFp8(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor scale, SparkTensor y,
 	SparkTensor experts, uint32_t expert_count, const SparkGemvParams *params);
 SparkStatus SparkOpsLinearRoutedMxfp4(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor scale, SparkTensor y,
 	SparkTensor experts, uint32_t expert_count, const SparkGemvParams *params);

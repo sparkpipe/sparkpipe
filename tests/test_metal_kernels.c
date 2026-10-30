@@ -334,13 +334,15 @@ static void TestRmsNormWeightless(uint32_t rows)
 	SparkDeviceFree(&hidden);
 }
 
-static void TestRmsNormGate(uint32_t rows, uint32_t sigmoid_gate)
+static void TestRmsNormGate(uint32_t rows, uint32_t sigmoid_gate, uint32_t weight_f32)
 {
 	enum { HEADS = 48, HEAD = 128, STRIDE = 6144, GATE_STRIDE = 16384, GATE_OFFSET = 10240 };
 	SparkDeviceBuffer input, gate, weight, out;
 	uint16_t *x = (uint16_t *)Shared(&input,(uint64_t)rows * STRIDE * 2u,"gate norm input");
 	uint16_t *g = (uint16_t *)Shared(&gate,(uint64_t)rows * GATE_STRIDE * 2u,"gate norm gate");
-	uint16_t *w = (uint16_t *)Shared(&weight,HEAD * 2u,"gate norm weight");
+	void *w_bytes = Shared(&weight,HEAD * (weight_f32 != 0u ? 4u : 2u),"gate norm weight");
+	uint16_t *w = (uint16_t *)w_bytes;
+	float *wf = (float *)w_bytes;
 	uint16_t *o = (uint16_t *)Shared(&out,(uint64_t)rows * STRIDE * 2u,"gate norm out");
 	SparkGatedNormParams params;
 	Check clean, corrupted;
@@ -349,7 +351,10 @@ static void TestRmsNormGate(uint32_t rows, uint32_t sigmoid_gate)
 	FillBf16(x,(uint64_t)rows * STRIDE,0.5);
 	FillBf16(g,(uint64_t)rows * GATE_STRIDE,1.5);
 	for ( i = 0u; i < HEAD; i++ )
-		w[i] = ToBf16((float)(1.0 + 0.2 * Normal()));
+		if ( weight_f32 != 0u )
+			wf[i] = (float)(1.0 + 0.2 * Normal());
+		else
+			w[i] = ToBf16((float)(1.0 + 0.2 * Normal()));
 	memset(&params,0,sizeof(params));
 	params.rows = rows;
 	params.heads = HEADS;
@@ -359,6 +364,7 @@ static void TestRmsNormGate(uint32_t rows, uint32_t sigmoid_gate)
 	params.gate_offset = GATE_OFFSET;
 	params.epsilon = 1e-6f;
 	params.sigmoid_gate = sigmoid_gate;
+	params.weight_f32 = weight_f32;
 	for ( pass = 0u; pass < 2u; pass++ )
 	{
 		Check *check = pass == 0u ? &clean : &corrupted;
@@ -380,19 +386,29 @@ static void TestRmsNormGate(uint32_t rows, uint32_t sigmoid_gate)
 				const double scale = 1.0 / sqrt(square / HEAD + 1e-6);
 				for ( i = 0u; i < HEAD; i++ )
 				{
+					const double z = Bf16(g[(uint64_t)row * GATE_STRIDE + GATE_OFFSET + head * HEAD + i]);
+					const double activation = sigmoid_gate != 0u ? Sigmoid(z) : Silu(z);
+					if ( weight_f32 != 0u )
+					{
+						const double y = Bf16(v[i]) * scale * wf[i] * activation;
+						const double tolerance = UNIT_BF16 * fabs(y) + (Gamma(HEAD) + 3.0 * FUNCTION_ERROR + 4.0 * UNIT_F32) * fabs(y);
+						Observe(check,Bf16(o[(uint64_t)row * STRIDE + head * HEAD + i]),y,tolerance);
+						continue;
+					}
 					const double exact = Bf16(v[i]) * scale, normed = RoundBf16(exact);
 					const double first = FlipSlack(exact,Gamma(HEAD) + FUNCTION_ERROR + 2.0 * UNIT_F32);
 					const double weighted = RoundBf16(normed * Bf16(w[i]));
 					const double second = first != 0.0 ? fabs((double)Bf16(w[i])) * first + 2.0 * UNIT_BF16 * (fabs(weighted) + fabs((double)Bf16(w[i])) * first) : 0.0;
-					const double z = Bf16(g[(uint64_t)row * GATE_STRIDE + GATE_OFFSET + head * HEAD + i]);
-					const double activation = sigmoid_gate != 0u ? Sigmoid(z) : Silu(z), y = weighted * activation;
+					const double y = weighted * activation;
 					const double tolerance = UNIT_BF16 * fabs(y) + fabs(activation) * second + (2.0 * FUNCTION_ERROR + 2.0 * UNIT_F32) * fabs(y);
 					Observe(check,Bf16(o[(uint64_t)row * STRIDE + head * HEAD + i]),y,tolerance);
 				}
 			}
 	}
-	snprintf(shape,sizeof(shape),"rows %u, 48 heads x 128, %s gate in fused row",rows,sigmoid_gate != 0u ? "sigmoid" : "silu");
-	Report("rmsnorm_gate",shape,&clean,&corrupted,"u|y| + |act(z)| (flip slack of both bf16 roundings, propagated) + (2*16 + 2) eps32 |y|");
+	snprintf(shape,sizeof(shape),"rows %u, 48 heads x 128, %s gate in fused row%s",rows,sigmoid_gate != 0u ? "sigmoid" : "silu",
+		weight_f32 != 0u ? ", f32 weight" : "");
+	Report("rmsnorm_gate",shape,&clean,&corrupted,weight_f32 != 0u ? "one bf16 rounding: u|y| + (gamma_128 + 3*16 + 4) eps32 |y|" :
+		"u|y| + |act(z)| (flip slack of both bf16 roundings, propagated) + (2*16 + 2) eps32 |y|");
 	SparkDeviceFree(&input);
 	SparkDeviceFree(&gate);
 	SparkDeviceFree(&weight);
@@ -1660,19 +1676,22 @@ static void TestLinearRoutedMxfp4(uint32_t rows, uint32_t K, uint32_t N)
 	SparkDeviceFree(&experts);
 }
 
-static void TestLinearRoutedMxfp8(uint32_t rows, uint32_t K, uint32_t N)
+static void TestLinearRoutedFp8(uint32_t rows, uint32_t K, uint32_t N, uint32_t mx)
 {
 	enum { EXPERTS = 16u, TOP = 8u };
-	const uint32_t routes = rows * TOP, groups = K / SPARK_MXFP8_GROUP;
+	const uint32_t routes = rows * TOP, group = mx != 0u ? SPARK_MXFP8_GROUP : SPARK_FP8_SCALE_K, groups = K / group;
 	SparkDeviceBuffer x, w, scale, y, experts;
-	uint16_t *xv = (uint16_t *)Shared(&x,(uint64_t)rows * K * sizeof(uint16_t),"mxfp8 routed x");
-	uint8_t *wv = (uint8_t *)Shared(&w,(uint64_t)EXPERTS * N * K,"mxfp8 routed w");
-	uint8_t *sv = (uint8_t *)Shared(&scale,(uint64_t)EXPERTS * N * groups,"mxfp8 routed scale");
-	uint16_t *yv = (uint16_t *)Shared(&y,(uint64_t)routes * N * sizeof(uint16_t),"mxfp8 routed y");
-	uint32_t *ev = (uint32_t *)Shared(&experts,routes * sizeof(uint32_t),"mxfp8 routed experts");
+	uint16_t *xv = (uint16_t *)Shared(&x,(uint64_t)rows * K * sizeof(uint16_t),"fp8 routed x");
+	uint8_t *wv = (uint8_t *)Shared(&w,(uint64_t)EXPERTS * N * K,"fp8 routed w");
+	void *scale_bytes = Shared(&scale,(uint64_t)EXPERTS * N * groups * (mx != 0u ? 1u : sizeof(float)),"fp8 routed scale");
+	uint8_t *sv = (uint8_t *)scale_bytes;
+	float *sf = (float *)scale_bytes;
+	uint16_t *yv = (uint16_t *)Shared(&y,(uint64_t)routes * N * sizeof(uint16_t),"fp8 routed y");
+	uint32_t *ev = (uint32_t *)Shared(&experts,routes * sizeof(uint32_t),"fp8 routed experts");
+	const char *name = mx != 0u ? "linear_routed_mxfp8" : "linear_routed_fp8";
 	SparkGemvParams params;
 	Check clean, corrupted;
-	char shape[80];
+	char shape[96];
 	uint64_t index;
 	uint32_t pass, route, n, k;
 	FillBf16(xv,(uint64_t)rows * K,1.0);
@@ -1682,7 +1701,10 @@ static void TestLinearRoutedMxfp8(uint32_t rows, uint32_t K, uint32_t N)
 		wv[index] = (code & 0x7fu) == 0x7fu ? (uint8_t)(code ^ 1u) : code;
 	}
 	for ( index = 0u; index < (uint64_t)EXPERTS * N * groups; index++ )
-		sv[index] = (uint8_t)(116u + NextRandom() % 4u);
+		if ( mx != 0u )
+			sv[index] = (uint8_t)(116u + NextRandom() % 4u);
+		else
+			sf[index] = (float)ldexp(0.75 + 0.5 * Uniform(),-10 - (int)(NextRandom() % 3u));
 	for ( route = 0u; route < routes; route++ )
 		ev[route] = route == 5u ? SPARK_ROUTE_SKIP : (route * 7u + 3u) % EXPERTS;
 	memset(&params,0,sizeof(params));
@@ -1692,6 +1714,7 @@ static void TestLinearRoutedMxfp8(uint32_t rows, uint32_t K, uint32_t N)
 	params.input_stride = K;
 	params.output_stride = N;
 	params.route_divisor = TOP;
+	params.scale_group = mx != 0u ? SPARK_MXFP8_GROUP : 0u;
 	for ( pass = 0u; pass < 2u; pass++ )
 	{
 		Check *check = pass == 0u ? &clean : &corrupted;
@@ -1699,7 +1722,7 @@ static void TestLinearRoutedMxfp8(uint32_t rows, uint32_t K, uint32_t N)
 		memset(check,0,sizeof(*check));
 		if ( pass == 1u )
 			ev[victim] = (ev[victim] + 1u) % EXPERTS;
-		if ( !Run(SparkOpsLinearRoutedMxfp8(&ops,queue,Whole(&x),Whole(&w),Whole(&scale),Whole(&y),Whole(&experts),EXPERTS,&params),"linear_routed_mxfp8") )
+		if ( !Run(SparkOpsLinearRoutedFp8(&ops,queue,Whole(&x),Whole(&w),Whole(&scale),Whole(&y),Whole(&experts),EXPERTS,&params),name) )
 			break;
 		if ( pass == 1u )
 			ev[victim] = (ev[victim] + EXPERTS - 1u) % EXPERTS;
@@ -1710,8 +1733,8 @@ static void TestLinearRoutedMxfp8(uint32_t rows, uint32_t K, uint32_t N)
 				if ( ev[route] != SPARK_ROUTE_SKIP )
 					for ( k = 0u; k < K; k++ )
 					{
-						const uint64_t neuron = (uint64_t)ev[route] * N + n;
-						const double weight = E4m3(wv[neuron * K + k]) * ldexp(1.0,(int)sv[neuron * groups + k / SPARK_MXFP8_GROUP] - 127);
+						const uint64_t neuron = (uint64_t)ev[route] * N + n, at = neuron * groups + k / group;
+						const double weight = E4m3(wv[neuron * K + k]) * (mx != 0u ? ldexp(1.0,(int)sv[at] - 127) : (double)sf[at]);
 						const double term = weight * Bf16(xv[(uint64_t)(route / TOP) * K + k]);
 						sum += term;
 						magnitude += fabs(term);
@@ -1719,8 +1742,8 @@ static void TestLinearRoutedMxfp8(uint32_t rows, uint32_t K, uint32_t N)
 				Observe(check,Bf16(yv[(uint64_t)route * N + n]),sum,UNIT_BF16 * fabs(sum) + (1.0 + UNIT_BF16) * Gamma(K + K / SPARK_FP8_CHUNK + 2u) * magnitude);
 			}
 	}
-	snprintf(shape,sizeof(shape),"rows %u x top 8, K %u -> N %u, 16 experts, one skipped route",rows,K,N);
-	Report("linear_routed_mxfp8",shape,&clean,&corrupted,"u|y| + (1+u) gamma_(K + K/16 + 2) sum|x w s|, u = 2^-8");
+	snprintf(shape,sizeof(shape),"rows %u x top 8, K %u -> N %u, 16 experts, one skipped route%s",rows,K,N,mx != 0u ? "" : ", f32 scale per 128");
+	Report(name,shape,&clean,&corrupted,"u|y| + (1+u) gamma_(K + K/16 + 2) sum|x w s|, u = 2^-8");
 	SparkDeviceFree(&x);
 	SparkDeviceFree(&w);
 	SparkDeviceFree(&scale);
@@ -2064,7 +2087,7 @@ static void TestMimoKernels(uint32_t rows)
 	SparkNormParams norm;
 	Check clean, corrupted;
 	char shape[64];
-	uint32_t pass, row, i, k;
+	uint32_t pass, row, i, k, tree;
 	FillBf16(gv,(uint64_t)rows * 2u * FFN,2.0);
 	FillBf16(ov,(uint64_t)routes * DIM,1.0);
 	FillBf16(hv,(uint64_t)rows * DIM,2.0);
@@ -2127,42 +2150,46 @@ static void TestMimoKernels(uint32_t rows)
 	Report("route_combine_weighted",shape,&clean,&corrupted,"exact: an FP32 FMA chain in route order, one bf16 rounding");
 	route.experts = EXPERTS;
 	route.logit_stride = EXPERTS;
-	for ( pass = 0u; pass < 2u; pass++ )
+	for ( tree = 0u; tree < 2u; tree++ )
 	{
-		Check *check = pass == 0u ? &clean : &corrupted;
-		memset(check,0,sizeof(*check));
-		if ( !Run(SparkOpsRouteSigmoid(&ops,queue,Whole(&logits),Whole(&bias),Whole(&experts),Whole(&route_weights),&route),"route_sigmoid") )
-			break;
-		for ( row = 0u; row < rows; row++ )
+		route.tree_sum = tree;
+		for ( pass = 0u; pass < 2u; pass++ )
 		{
-			double score[EXPERTS], selection[EXPERTS], total = 0.0;
-			uint32_t chosen[TOP], pick, expert;
-			for ( expert = 0u; expert < EXPERTS; expert++ )
+			Check *check = pass == 0u ? &clean : &corrupted;
+			memset(check,0,sizeof(*check));
+			if ( !Run(SparkOpsRouteSigmoid(&ops,queue,Whole(&logits),Whole(&bias),Whole(&experts),Whole(&route_weights),&route),"route_sigmoid") )
+				break;
+			for ( row = 0u; row < rows; row++ )
 			{
-				score[expert] = Sigmoid(lv[row * EXPERTS + expert]);
-				selection[expert] = (double)(float)score[expert] + bv[expert];
-			}
-			for ( pick = 0u; pick < TOP; pick++ )
-			{
-				uint32_t best = 0u;
-				for ( expert = 1u; expert < EXPERTS; expert++ )
-					if ( selection[expert] > selection[best] )
-						best = expert;
-				chosen[pick] = best;
-				selection[best] = -INFINITY;
-				total += score[best];
-			}
-			for ( pick = 0u; pick < TOP; pick++ )
-			{
-				const uint32_t got = pass == 1u && pick == TOP - 1u ? (ev[row * TOP + pick] + 1u) % EXPERTS : ev[row * TOP + pick];
-				const double weight = score[chosen[pick]] / total;
-				Observe(check,(double)got,(double)chosen[pick],0.0);
-				Observe(check,rv[row * TOP + pick],weight,8.0 * FUNCTION_ERROR * weight);
+				double score[EXPERTS], selection[EXPERTS], total = 0.0;
+				uint32_t chosen[TOP], pick, expert;
+				for ( expert = 0u; expert < EXPERTS; expert++ )
+				{
+					score[expert] = Sigmoid(lv[row * EXPERTS + expert]);
+					selection[expert] = (double)(float)score[expert] + bv[expert];
+				}
+				for ( pick = 0u; pick < TOP; pick++ )
+				{
+					uint32_t best = 0u;
+					for ( expert = 1u; expert < EXPERTS; expert++ )
+						if ( selection[expert] > selection[best] )
+							best = expert;
+					chosen[pick] = best;
+					selection[best] = -INFINITY;
+					total += score[best];
+				}
+				for ( pick = 0u; pick < TOP; pick++ )
+				{
+					const uint32_t got = pass == 1u && pick == TOP - 1u ? (ev[row * TOP + pick] + 1u) % EXPERTS : ev[row * TOP + pick];
+					const double weight = score[chosen[pick]] / total;
+					Observe(check,(double)got,(double)chosen[pick],0.0);
+					Observe(check,rv[row * TOP + pick],weight,8.0 * FUNCTION_ERROR * weight);
+				}
 			}
 		}
+		snprintf(shape,sizeof(shape),"rows %u, 256 experts, top 8, bias%s",rows,tree != 0u ? ", tree sum" : "");
+		Report("route_sigmoid",shape,&clean,&corrupted,"experts exact; weights to 8*16 eps32 relative");
 	}
-	snprintf(shape,sizeof(shape),"rows %u, 256 experts, top 8, bias",rows);
-	Report("route_sigmoid",shape,&clean,&corrupted,"experts exact; weights to 8*16 eps32 relative");
 	memset(&norm,0,sizeof(norm));
 	norm.rows = rows;
 	norm.dimension = DIM;
@@ -2358,6 +2385,203 @@ static void TestHcKernels(uint32_t rows, uint32_t mixes)
 	SparkDeviceFree(&post);
 	SparkDeviceFree(&mixed);
 	SparkDeviceFree(&output);
+}
+
+static void TestHcCombKernels(uint32_t rows)
+{
+	enum { STREAMS = 4u, WIDTH = 4096u, THREADS = 256u, MIXES = 24u, ITERATIONS = 20u };
+	const uint32_t flat = STREAMS * WIDTH, terms = flat / THREADS + 5u + THREADS / 32u;
+	const double norm_epsilon = 1e-5, hc_epsilon = 1e-6;
+	SparkDeviceBuffer streams, fn, base, scale, post, comb, mixed, output, mean;
+	uint16_t *sv = (uint16_t *)Shared(&streams,(uint64_t)rows * flat * 2u,"hc comb streams");
+	float *fv = (float *)Shared(&fn,(uint64_t)MIXES * flat * sizeof(float),"hc comb fn");
+	float *bv = (float *)Shared(&base,MIXES * sizeof(float),"hc comb base");
+	float *cv = (float *)Shared(&scale,3u * sizeof(float),"hc comb scale");
+	float *pv = (float *)Shared(&post,(uint64_t)rows * STREAMS * sizeof(float),"hc comb post");
+	float *kv = (float *)Shared(&comb,(uint64_t)rows * STREAMS * STREAMS * sizeof(float),"hc comb comb");
+	uint16_t *mv = (uint16_t *)Shared(&mixed,(uint64_t)rows * WIDTH * 2u,"hc comb mixed");
+	uint16_t *ov = (uint16_t *)Shared(&output,(uint64_t)rows * WIDTH * 2u,"hc comb output");
+	uint16_t *av = (uint16_t *)Shared(&mean,(uint64_t)rows * WIDTH * 2u,"hc comb mean");
+	SparkHcParams params;
+	Check clean, corrupted, weight_clean, weight_corrupted;
+	char shape[80];
+	uint64_t index;
+	uint32_t pass, row, s, t, d, m, c, iteration;
+	FillBf16(sv,(uint64_t)rows * flat,1.0);
+	for ( index = 0u; index < (uint64_t)MIXES * flat; index++ )
+		fv[index] = (float)(0.02 * Normal());
+	for ( m = 0u; m < MIXES; m++ )
+		bv[m] = (float)(0.5 * Normal());
+	cv[0] = 0.7f;
+	cv[1] = 1.3f;
+	cv[2] = 0.9f;
+	FillBf16(ov,(uint64_t)rows * WIDTH,1.0);
+	memset(&params,0,sizeof(params));
+	params.rows = rows;
+	params.streams = STREAMS;
+	params.width = WIDTH;
+	params.mixes = MIXES;
+	params.norm_epsilon = (float)norm_epsilon;
+	params.hc_epsilon = (float)hc_epsilon;
+	params.post_magnitude = 2.0f;
+	params.iterations = ITERATIONS;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted, *weight_check = pass == 0u ? &weight_clean : &weight_corrupted;
+		const uint64_t poke = (uint64_t)(rows - 1u) * flat + 3u * WIDTH + 555u;
+		const uint16_t saved = sv[poke];
+		memset(check,0,sizeof(*check));
+		memset(weight_check,0,sizeof(*weight_check));
+		if ( pass == 1u )
+			sv[poke] = ToBf16(Bf16(saved) + (Bf16(saved) >= 0.0f ? -8.0f : 8.0f));
+		if ( !Run(SparkOpsHcSite(&ops,queue,Whole(&streams),Whole(&fn),Whole(&base),Whole(&scale),Whole(&post),Whole(&comb),Whole(&mixed),&params),
+			"hc_site") )
+			break;
+		sv[poke] = saved;
+		for ( row = 0u; row < rows; row++ )
+		{
+			double dot[MIXES], magnitude[MIXES], square = 0.0, mix[MIXES], error[MIXES], weight[STREAMS], cell[16], sums[STREAMS], inverse, worst = 0.0;
+			for ( m = 0u; m < MIXES; m++ )
+				dot[m] = magnitude[m] = 0.0;
+			for ( index = 0u; index < flat; index++ )
+			{
+				const double x = Bf16(sv[(uint64_t)row * flat + index]);
+				for ( m = 0u; m < MIXES; m++ )
+				{
+					dot[m] += x * fv[(uint64_t)m * flat + index];
+					magnitude[m] += fabs(x * fv[(uint64_t)m * flat + index]);
+				}
+				square += x * x;
+			}
+			inverse = 1.0 / sqrt(square / flat + norm_epsilon);
+			for ( m = 0u; m < MIXES; m++ )
+			{
+				mix[m] = dot[m] * inverse;
+				error[m] = Gamma(terms) * magnitude[m] * inverse + 4.0 * UNIT_F32 * fabs(mix[m]);
+			}
+			for ( s = 0u; s < STREAMS; s++ )
+			{
+				const double pre = dot[s] * inverse * cv[0] + bv[s], post_argument = mix[STREAMS + s] * cv[1] + bv[STREAMS + s];
+				const double expected = 2.0 * Sigmoid(post_argument);
+				weight[s] = Sigmoid(pre) + hc_epsilon;
+				Observe(weight_check,pv[(uint64_t)row * STREAMS + s],expected,0.5 * (error[STREAMS + s] * cv[1] + 8.0 * UNIT_F32 * fabs(post_argument)) +
+					4.0 * FUNCTION_ERROR * expected);
+			}
+			for ( c = 0u; c < 16u; c++ )
+			{
+				cell[c] = mix[2u * STREAMS + c] * cv[2] + bv[2u * STREAMS + c];
+				worst = fmax(worst,error[2u * STREAMS + c] * cv[2] + 8.0 * UNIT_F32 * fabs(cell[c]));
+			}
+			for ( s = 0u; s < STREAMS; s++ )
+			{
+				double maximum = -3.0e38, total = 0.0;
+				for ( t = 0u; t < STREAMS; t++ )
+					maximum = fmax(maximum,cell[s * STREAMS + t]);
+				for ( t = 0u; t < STREAMS; t++ )
+					total += (cell[s * STREAMS + t] = exp(cell[s * STREAMS + t] - maximum));
+				for ( t = 0u; t < STREAMS; t++ )
+					cell[s * STREAMS + t] = cell[s * STREAMS + t] / total + hc_epsilon;
+			}
+			for ( iteration = 0u; iteration < ITERATIONS; iteration++ )
+			{
+				if ( iteration != 0u )
+					for ( s = 0u; s < STREAMS; s++ )
+					{
+						sums[s] = 0.0;
+						for ( t = 0u; t < STREAMS; t++ )
+							sums[s] += cell[s * STREAMS + t];
+						for ( t = 0u; t < STREAMS; t++ )
+							cell[s * STREAMS + t] /= sums[s] + hc_epsilon;
+					}
+				for ( t = 0u; t < STREAMS; t++ )
+				{
+					sums[t] = 0.0;
+					for ( s = 0u; s < STREAMS; s++ )
+						sums[t] += cell[s * STREAMS + t];
+				}
+				for ( c = 0u; c < 16u; c++ )
+					cell[c] /= sums[c % STREAMS] + hc_epsilon;
+			}
+			for ( c = 0u; c < 16u; c++ )
+				Observe(weight_check,kv[(uint64_t)row * 16u + c],cell[c],fabs(cell[c]) * (4.0 * worst + 2.0 * ITERATIONS * 8.0 * UNIT_F32 + 2.0 * FUNCTION_ERROR) + 1e-9);
+			for ( d = 0u; d < WIDTH; d++ )
+			{
+				double y = 0.0, slack = 0.0;
+				for ( s = 0u; s < STREAMS; s++ )
+				{
+					const double x = Bf16(sv[(uint64_t)row * flat + s * WIDTH + d]);
+					const double weight_error = 0.25 * (error[s] * cv[0] + 8.0 * UNIT_F32 * fabs(mix[s] * cv[0] + bv[s])) + 4.0 * FUNCTION_ERROR * weight[s];
+					y += weight[s] * x;
+					slack += fabs(x) * weight_error + Gamma(STREAMS) * fabs(weight[s] * x);
+				}
+				Observe(check,Bf16(mv[(uint64_t)row * WIDTH + d]),y,UNIT_BF16 * fabs(y) + slack);
+			}
+		}
+	}
+	snprintf(shape,sizeof(shape),"rows %u, 4 streams x 4096, 24 mixes, 20 Sinkhorn iterations",rows);
+	Report("hc_site",shape,&clean,&corrupted,"u|y| + sum_s |x_s| dw_s, dw from gamma_(flat/256 + 5 + 8) on the mix dots");
+	Report("hc_site post comb",shape,&weight_clean,&weight_corrupted,"the mix-dot bound through 2 sigmoid and the softmax, Sinkhorn 20 x 8 eps32");
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		uint16_t *before = (uint16_t *)malloc((size_t)rows * flat * 2u);
+		const uint64_t poke = (uint64_t)(rows - 1u) * WIDTH + 2222u;
+		const uint16_t saved = ov[poke];
+		memcpy(before,sv,(size_t)rows * flat * 2u);
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			ov[poke] = ToBf16(Bf16(saved) + (Bf16(saved) >= 0.0f ? -8.0f : 8.0f));
+		if ( !Run(SparkOpsHcPostComb(&ops,queue,Whole(&streams),Whole(&post),Whole(&comb),Whole(&output),&params),"hc_post_comb") )
+		{
+			free(before);
+			break;
+		}
+		ov[poke] = saved;
+		for ( row = 0u; row < rows; row++ )
+			for ( d = 0u; d < WIDTH; d++ )
+				for ( t = 0u; t < STREAMS; t++ )
+				{
+					float value = 0.0f;
+					for ( s = 0u; s < STREAMS; s++ )
+						value = fmaf((float)RoundBf16(kv[(uint64_t)row * 16u + s * STREAMS + t]),Bf16(before[(uint64_t)row * flat + s * WIDTH + d]),value);
+					const float contribution = (float)RoundBf16((float)RoundBf16(pv[(uint64_t)row * STREAMS + t]) * Bf16(ov[(uint64_t)row * WIDTH + d]));
+					const float y = (float)RoundBf16(contribution + (float)RoundBf16(value));
+					Observe(check,Bf16(sv[(uint64_t)row * flat + t * WIDTH + d]),y,0.0);
+				}
+		memcpy(sv,before,(size_t)rows * flat * 2u);
+		free(before);
+	}
+	Report("hc_post_comb",shape,&clean,&corrupted,"exact: bf16(bf16(bf16(P) out) + bf16(sum_s bf16(C[s,t]) x_s)), the fma chain in stream order");
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint64_t poke = (uint64_t)(rows - 1u) * flat + WIDTH + 99u;
+		const uint16_t saved = sv[poke];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			sv[poke] = ToBf16(Bf16(saved) + (Bf16(saved) >= 0.0f ? -8.0f : 8.0f));
+		if ( !Run(SparkOpsStreamMean(&ops,queue,Whole(&streams),Whole(&mean),&params),"stream_mean") )
+			break;
+		sv[poke] = saved;
+		for ( row = 0u; row < rows; row++ )
+			for ( d = 0u; d < WIDTH; d++ )
+			{
+				float total = 0.0f;
+				for ( s = 0u; s < STREAMS; s++ )
+					total += Bf16(sv[(uint64_t)row * flat + s * WIDTH + d]);
+				Observe(check,Bf16(av[(uint64_t)row * WIDTH + d]),RoundBf16(total / 4.0f),0.0);
+			}
+	}
+	Report("stream_mean",shape,&clean,&corrupted,"exact: bf16(sum_s x_s / 4) in stream order");
+	SparkDeviceFree(&streams);
+	SparkDeviceFree(&fn);
+	SparkDeviceFree(&base);
+	SparkDeviceFree(&scale);
+	SparkDeviceFree(&post);
+	SparkDeviceFree(&comb);
+	SparkDeviceFree(&mixed);
+	SparkDeviceFree(&output);
+	SparkDeviceFree(&mean);
 }
 
 static void TestHyperKernels(uint32_t rows)
@@ -3250,7 +3474,7 @@ static void TestChannelDelta(void)
 	SparkOpsSequences sequences;
 	SparkDeltaParams params;
 	Check clean, corrupted;
-	uint32_t pass, row, i;
+	uint32_t pass, row, i, mode;
 	FillBf16(m,(uint64_t)ROWS * MIX,1.0);
 	FillBf16(f,(uint64_t)ROWS * W,2.0);
 	FillBf16(bl,(uint64_t)ROWS * H,2.0);
@@ -3313,41 +3537,45 @@ static void TestChannelDelta(void)
 	}
 	Report("channel_delta_rule","4 heads x 128, per-channel decay, 200 rows then 3",&clean,&corrupted,
 		"the gated_delta_rule bound with B_t = max(decay) B_{t-1} + (4 gamma_128 + 64*16 eps32)(max|S| + |v|)");
-	for ( pass = 0u; pass < 2u; pass++ )
+	for ( mode = SPARK_DELTA_BETA_DOUBLED; mode <= SPARK_DELTA_BETA_ROUNDED; mode++ )
 	{
-		Check *check = pass == 0u ? &clean : &corrupted;
-		const uint64_t poke = (uint64_t)FIRST * W + 2u * D + 77u;
-		const uint16_t saved = f[poke];
-		memset(check,0,sizeof(*check));
-		if ( pass == 1u )
-			f[poke] = ToBf16(Bf16(saved) + 3.0f);
-		params.rows = SECOND;
-		params.commit = sequences.commit = 0u;
-		params.doubled_beta = 1u;
-		rb[0] = 0u;
-		rb[1] = SECOND;
-		if ( !Run(SparkOpsChannelDelta(&ops,queue,Whole(&state),&sequences,SparkTensorSlice(Whole(&mix),(uint64_t)FIRST * MIX * 2u,(uint64_t)SECOND * MIX * 2u),
-			SparkTensorSlice(Whole(&decays),(uint64_t)FIRST * W * 2u,(uint64_t)SECOND * W * 2u),SparkTensorSlice(Whole(&betas),(uint64_t)FIRST * H * 2u,
-			(uint64_t)SECOND * H * 2u),Whole(&alog),Whole(&bias),Whole(&scratch),SparkTensorSlice(Whole(&out),(uint64_t)FIRST * W * 2u,(uint64_t)SECOND * W * 2u),
-			&params),"channel_delta prepare") )
-			break;
-		f[poke] = saved;
-		for ( row = 0u; row < SECOND; row++ )
+		const double doubled = mode == SPARK_DELTA_BETA_DOUBLED ? 2.0 : 1.0;
+		for ( pass = 0u; pass < 2u; pass++ )
 		{
-			for ( i = 0u; i < W; i++ )
+			Check *check = pass == 0u ? &clean : &corrupted;
+			const uint64_t poke = (uint64_t)FIRST * W + 2u * D + 77u;
+			const uint16_t saved = f[poke];
+			memset(check,0,sizeof(*check));
+			if ( pass == 1u )
+				f[poke] = ToBf16(Bf16(saved) + 3.0f);
+			params.rows = SECOND;
+			params.commit = sequences.commit = 0u;
+			params.beta_mode = mode;
+			rb[0] = 0u;
+			rb[1] = SECOND;
+			if ( !Run(SparkOpsChannelDelta(&ops,queue,Whole(&state),&sequences,SparkTensorSlice(Whole(&mix),(uint64_t)FIRST * MIX * 2u,(uint64_t)SECOND * MIX * 2u),
+				SparkTensorSlice(Whole(&decays),(uint64_t)FIRST * W * 2u,(uint64_t)SECOND * W * 2u),SparkTensorSlice(Whole(&betas),(uint64_t)FIRST * H * 2u,
+				(uint64_t)SECOND * H * 2u),Whole(&alog),Whole(&bias),Whole(&scratch),SparkTensorSlice(Whole(&out),(uint64_t)FIRST * W * 2u,(uint64_t)SECOND * W * 2u),
+				&params),"channel_delta prepare") )
+				break;
+			f[poke] = saved;
+			for ( row = 0u; row < SECOND; row++ )
 			{
-				const double expected = exp(-5.0 * Sigmoid(exp((double)al[i / D]) * ((double)Bf16(f[(uint64_t)(FIRST + row) * W + i]) + db[i])));
-				Observe(check,prepared[(uint64_t)2u * SECOND * W + (uint64_t)row * W + i],expected,64.0 * FUNCTION_ERROR * expected);
-			}
-			for ( i = 0u; i < H; i++ )
-			{
-				const double sigmoid = Sigmoid(Bf16(bl[(uint64_t)(FIRST + row) * H + i]));
-				Observe(check,prepared[(uint64_t)3u * SECOND * W + (uint64_t)row * H + i],2.0 * RoundBf16(sigmoid),2.0 * FlipSlack(sigmoid,4.0 * FUNCTION_ERROR));
+				for ( i = 0u; i < W; i++ )
+				{
+					const double expected = exp(-5.0 * Sigmoid(exp((double)al[i / D]) * ((double)Bf16(f[(uint64_t)(FIRST + row) * W + i]) + db[i])));
+					Observe(check,prepared[(uint64_t)2u * SECOND * W + (uint64_t)row * W + i],expected,64.0 * FUNCTION_ERROR * expected);
+				}
+				for ( i = 0u; i < H; i++ )
+				{
+					const double sigmoid = Sigmoid(Bf16(bl[(uint64_t)(FIRST + row) * H + i]));
+					Observe(check,prepared[(uint64_t)3u * SECOND * W + (uint64_t)row * H + i],doubled * RoundBf16(sigmoid),doubled * FlipSlack(sigmoid,4.0 * FUNCTION_ERROR));
+				}
 			}
 		}
+		Report("channel_delta_prepare",mode == SPARK_DELTA_BETA_DOUBLED ? "3 rows, 4 heads x 128, doubled beta" : "3 rows, 4 heads x 128, rounded beta",&clean,&corrupted,
+			"decay exp(lower sigmoid(exp(a) (f + b))) to 64*16 eps32 relative; beta (2) bf16(sigmoid) to its flip slack within 4*16 eps32");
 	}
-	Report("channel_delta_prepare","3 rows, 4 heads x 128, doubled beta",&clean,&corrupted,
-		"decay exp(lower sigmoid(exp(a) (f + b))) to 64*16 eps32 relative; beta 2 bf16(sigmoid) to its flip slack within 4*16 eps32");
 	free(ref.state);
 	free(ref.bound);
 	free(ref_out);
@@ -3948,9 +4176,10 @@ int main(int argc, char **argv)
 	TestLinearRoutedSkip(3u);
 	TestRmsNormResidual(1u);
 	TestRmsNormResidual(64u);
-	TestRmsNormGate(1u,0u);
-	TestRmsNormGate(33u,0u);
-	TestRmsNormGate(3u,1u);
+	TestRmsNormGate(1u,0u,0u);
+	TestRmsNormGate(33u,0u,0u);
+	TestRmsNormGate(3u,1u,0u);
+	TestRmsNormGate(5u,1u,1u);
 	TestHeadRope(1u,24u,0u,512u,"24 query heads in the fused row");
 	TestHeadRope(17u,4u,12288u,256u,"4 key heads in the fused row");
 	{
@@ -4037,11 +4266,15 @@ int main(int argc, char **argv)
 	TestLinearFp8(9u,6144u,512u,0u,20000u,1u);
 	TestLinearFp8(64u,6144u,576u,1u,20000u,1u);
 	TestLinearFp8(70u,6144u,512u,0u,20000u,1u);
-	TestLinearRoutedMxfp8(2u,6144u,512u);
-	TestLinearRoutedMxfp8(1u,2048u,1024u);
+	TestLinearRoutedFp8(2u,6144u,512u,1u);
+	TestLinearRoutedFp8(1u,2048u,1024u,1u);
+	TestLinearRoutedFp8(3u,6144u,512u,0u);
+	TestLinearRoutedFp8(1u,2048u,6144u,0u);
 	TestHcKernels(3u,8u);
 	TestHcKernels(17u,8u);
 	TestHcKernels(2u,4u);
+	TestHcCombKernels(3u);
+	TestHcCombKernels(9u);
 	TestCausalConv();
 	TestCausalConvDilated();
 	TestGatedDelta();

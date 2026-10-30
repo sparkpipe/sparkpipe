@@ -79,7 +79,8 @@ typedef struct SparkGatedNormParams
 	uint32_t output_stride;
 	float epsilon;
 	uint32_t sigmoid_gate;
-	uint32_t pad[3];
+	uint32_t weight_f32;
+	uint32_t pad[2];
 } SparkGatedNormParams;
 
 typedef struct SparkBranchNormParams
@@ -107,7 +108,7 @@ typedef struct SparkRouteParams
 	uint32_t round_logits;
 	uint32_t groups;
 	uint32_t topk_groups;
-	uint32_t pad;
+	uint32_t tree_sum;
 } SparkRouteParams;
 
 typedef struct SparkScaleParams
@@ -197,8 +198,12 @@ typedef struct SparkDeltaParams
 	uint32_t channel_decay;
 	uint32_t beta_stride;
 	float minimum_log_decay;
-	uint32_t doubled_beta;
+	uint32_t beta_mode;
 } SparkDeltaParams;
+
+#define SPARK_DELTA_BETA_SIGMOID 0u
+#define SPARK_DELTA_BETA_DOUBLED 1u
+#define SPARK_DELTA_BETA_ROUNDED 2u
 
 typedef struct SparkKvParams
 {
@@ -306,7 +311,9 @@ typedef struct SparkHcParams
 	float norm_epsilon;
 	float hc_epsilon;
 	float post_magnitude;
-	uint32_t pad;
+	uint32_t iterations;
 } SparkHcParams;
+
+#define SPARK_HC_COMB_MIXES 24u
 
 #endif

@@ -55,7 +55,8 @@ typedef struct SparkDeviceChannelDeltaShape
 	float epsilon;
 	float l2_epsilon;
 	float minimum_log_decay;
-	uint32_t doubled_beta;
+	uint32_t beta_mode;
+	uint32_t norm_f32;
 } SparkDeviceChannelDeltaShape;
 
 typedef struct SparkDeviceChannelDeltaWeights
@@ -237,6 +238,7 @@ typedef struct SparkDeviceExpertsScratch
 typedef struct SparkDeviceExpertMatrix
 {
 	uint32_t codec;
+	uint32_t scale_group;
 	SparkTensor values;
 	SparkTensor scale;
 	SparkTensor global;

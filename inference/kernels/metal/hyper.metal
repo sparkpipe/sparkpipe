@@ -127,15 +127,9 @@ kernel void spark_hyper_add(constant SparkHyperParams &p [[buffer(0)]], device u
 }
 
 template <uint MIXES>
-kernel void spark_hc_mix(constant SparkHcParams &p [[buffer(0)]], device const ushort *streams [[buffer(1)]], device const float *fn [[buffer(2)]],
-	device const float *base [[buffer(3)]], device const float *scale [[buffer(4)]], device float *post [[buffer(5)]], device ushort *mixed [[buffer(6)]],
-	uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]],
-	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
+static inline void SparkHcTotals(device const ushort *source, device const float *fn, uint flat, uint tid, uint threads, uint lane, uint simd, uint simds,
+	threadgroup float *reduction, thread float *total)
 {
-	threadgroup float reduction[(MIXES + 1u) * 32u];
-	threadgroup float weights[SPARK_HC_MAX_STREAMS];
-	const uint flat = p.streams * p.width;
-	device const ushort *source = streams + (ulong)row * flat;
 	float dot[MIXES + 1u];
 	for ( uint m = 0u; m <= MIXES; m++ )
 		dot[m] = 0.0f;
@@ -153,15 +147,40 @@ kernel void spark_hc_mix(constant SparkHcParams &p [[buffer(0)]], device const u
 			reduction[m * 32u + simd] = value;
 	}
 	threadgroup_barrier(mem_flags::mem_threadgroup);
+	for ( uint m = 0u; m <= MIXES; m++ )
+	{
+		total[m] = 0.0f;
+		for ( uint w = 0u; w < simds; w++ )
+			total[m] += reduction[m * 32u + w];
+	}
+}
+
+static inline void SparkHcCollapse(constant SparkHcParams &p, device const ushort *source, threadgroup const float *weights, device ushort *mixed, uint tid,
+	uint threads)
+{
+	for ( uint d = tid; d < p.width; d += threads )
+	{
+		float total = 0.0f;
+		for ( uint s = 0u; s < p.streams; s++ )
+			total = fma(weights[s], SparkMathBf16ToFloat(source[s * p.width + d]), total);
+		mixed[d] = SparkMathFloatToBf16(total);
+	}
+}
+
+template <uint MIXES>
+kernel void spark_hc_mix(constant SparkHcParams &p [[buffer(0)]], device const ushort *streams [[buffer(1)]], device const float *fn [[buffer(2)]],
+	device const float *base [[buffer(3)]], device const float *scale [[buffer(4)]], device float *post [[buffer(5)]], device ushort *mixed [[buffer(6)]],
+	uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]],
+	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
+{
+	threadgroup float reduction[(MIXES + 1u) * 32u];
+	threadgroup float weights[SPARK_HC_MAX_STREAMS];
+	const uint flat = p.streams * p.width;
+	device const ushort *source = streams + (ulong)row * flat;
+	float total[MIXES + 1u];
+	SparkHcTotals<MIXES>(source, fn, flat, tid, threads, lane, simd, simds, reduction, total);
 	if ( tid == 0u )
 	{
-		float total[MIXES + 1u];
-		for ( uint m = 0u; m <= MIXES; m++ )
-		{
-			total[m] = 0.0f;
-			for ( uint w = 0u; w < simds; w++ )
-				total[m] += reduction[m * 32u + w];
-		}
 		const float inverse = SparkMathRmsScale(total[MIXES], float(flat), p.norm_epsilon);
 		for ( uint s = 0u; s < p.streams; s++ )
 		{
@@ -172,13 +191,7 @@ kernel void spark_hc_mix(constant SparkHcParams &p [[buffer(0)]], device const u
 		}
 	}
 	threadgroup_barrier(mem_flags::mem_threadgroup);
-	for ( uint d = tid; d < p.width; d += threads )
-	{
-		float total = 0.0f;
-		for ( uint s = 0u; s < p.streams; s++ )
-			total = fma(weights[s], SparkMathBf16ToFloat(source[s * p.width + d]), total);
-		mixed[(ulong)row * p.width + d] = SparkMathFloatToBf16(total);
-	}
+	SparkHcCollapse(p, source, weights, mixed + (ulong)row * p.width, tid, threads);
 }
 
 template [[host_name("spark_hc_mix8")]] kernel void spark_hc_mix<8u>(constant SparkHcParams &p [[buffer(0)]], device const ushort *streams [[buffer(1)]],
@@ -202,4 +215,105 @@ kernel void spark_hc_post(constant SparkHcParams &p [[buffer(0)]], device ushort
 	const ulong at = (ulong)row * p.streams * p.width + index;
 	streams[at] = SparkMathFloatToBf16(fma(post[(ulong)row * p.streams + index / p.width], SparkMathBf16ToFloat(output[(ulong)row * p.width + index % p.width]),
 		SparkMathBf16ToFloat(streams[at])));
+}
+
+kernel void spark_hc_site(constant SparkHcParams &p [[buffer(0)]], device const ushort *streams [[buffer(1)]], device const float *fn [[buffer(2)]],
+	device const float *base [[buffer(3)]], device const float *scale [[buffer(4)]], device float *post [[buffer(5)]], device float *comb [[buffer(6)]],
+	device ushort *mixed [[buffer(7)]], uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+	uint threads [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]],
+	uint simds [[simdgroups_per_threadgroup]])
+{
+	threadgroup float reduction[(SPARK_HC_COMB_MIXES + 1u) * 32u];
+	threadgroup float weights[SPARK_HC_MAX_STREAMS];
+	const uint flat = SPARK_HC_MAX_STREAMS * p.width;
+	device const ushort *source = streams + (ulong)row * flat;
+	float total[SPARK_HC_COMB_MIXES + 1u];
+	SparkHcTotals<SPARK_HC_COMB_MIXES>(source, fn, flat, tid, threads, lane, simd, simds, reduction, total);
+	if ( tid == 0u )
+	{
+		const float inverse = SparkMathRmsScale(total[SPARK_HC_COMB_MIXES], float(flat), p.norm_epsilon);
+		float cell[SPARK_HC_MAX_STREAMS * SPARK_HC_MAX_STREAMS], sums[SPARK_HC_MAX_STREAMS];
+		for ( uint s = 0u; s < SPARK_HC_MAX_STREAMS; s++ )
+		{
+			weights[s] = SparkMathSigmoidFast(total[s] * inverse * scale[0] + base[s]) + p.hc_epsilon;
+			post[(ulong)row * SPARK_HC_MAX_STREAMS + s] = SparkMathScaledSigmoidFast(p.post_magnitude,
+				total[SPARK_HC_MAX_STREAMS + s] * inverse * scale[1] + base[SPARK_HC_MAX_STREAMS + s]);
+		}
+		for ( uint c = 0u; c < SPARK_HC_MAX_STREAMS * SPARK_HC_MAX_STREAMS; c++ )
+			cell[c] = total[2u * SPARK_HC_MAX_STREAMS + c] * inverse * scale[2] + base[2u * SPARK_HC_MAX_STREAMS + c];
+		for ( uint i = 0u; i < SPARK_HC_MAX_STREAMS; i++ )
+		{
+			float maximum = -3.0e38f;
+			for ( uint j = 0u; j < SPARK_HC_MAX_STREAMS; j++ )
+				maximum = fmax(maximum, cell[i * SPARK_HC_MAX_STREAMS + j]);
+			for ( uint j = 0u; j < SPARK_HC_MAX_STREAMS; j++ )
+				cell[i * SPARK_HC_MAX_STREAMS + j] = SPARK_MATH_EXP_FAST(cell[i * SPARK_HC_MAX_STREAMS + j] - maximum);
+			sums[i] = 0.0f;
+			for ( uint j = 0u; j < SPARK_HC_MAX_STREAMS; j++ )
+				sums[i] += cell[i * SPARK_HC_MAX_STREAMS + j];
+		}
+		for ( uint c = 0u; c < SPARK_HC_MAX_STREAMS * SPARK_HC_MAX_STREAMS; c++ )
+			cell[c] = cell[c] / sums[c / SPARK_HC_MAX_STREAMS] + p.hc_epsilon;
+		for ( uint iteration = 0u; iteration < p.iterations; iteration++ )
+		{
+			if ( iteration != 0u )
+			{
+				for ( uint i = 0u; i < SPARK_HC_MAX_STREAMS; i++ )
+				{
+					sums[i] = 0.0f;
+					for ( uint j = 0u; j < SPARK_HC_MAX_STREAMS; j++ )
+						sums[i] += cell[i * SPARK_HC_MAX_STREAMS + j];
+				}
+				for ( uint c = 0u; c < SPARK_HC_MAX_STREAMS * SPARK_HC_MAX_STREAMS; c++ )
+					cell[c] /= sums[c / SPARK_HC_MAX_STREAMS] + p.hc_epsilon;
+			}
+			for ( uint j = 0u; j < SPARK_HC_MAX_STREAMS; j++ )
+			{
+				sums[j] = 0.0f;
+				for ( uint i = 0u; i < SPARK_HC_MAX_STREAMS; i++ )
+					sums[j] += cell[i * SPARK_HC_MAX_STREAMS + j];
+			}
+			for ( uint c = 0u; c < SPARK_HC_MAX_STREAMS * SPARK_HC_MAX_STREAMS; c++ )
+				cell[c] /= sums[c % SPARK_HC_MAX_STREAMS] + p.hc_epsilon;
+		}
+		for ( uint c = 0u; c < SPARK_HC_MAX_STREAMS * SPARK_HC_MAX_STREAMS; c++ )
+			comb[(ulong)row * SPARK_HC_MAX_STREAMS * SPARK_HC_MAX_STREAMS + c] = cell[c];
+	}
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	SparkHcCollapse(p, source, weights, mixed + (ulong)row * p.width, tid, threads);
+}
+
+kernel void spark_hc_post_comb(constant SparkHcParams &p [[buffer(0)]], device ushort *streams [[buffer(1)]], device const float *post [[buffer(2)]],
+	device const float *comb [[buffer(3)]], device const ushort *output [[buffer(4)]], uint2 group [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint row = group.y, d = group.x * group_size.x + tid;
+	if ( d >= p.width )
+		return;
+	device ushort *row_streams = streams + (ulong)row * SPARK_HC_MAX_STREAMS * p.width;
+	const float out = SparkMathBf16ToFloat(output[(ulong)row * p.width + d]);
+	float residual[SPARK_HC_MAX_STREAMS];
+	for ( uint s = 0u; s < SPARK_HC_MAX_STREAMS; s++ )
+		residual[s] = SparkMathBf16ToFloat(row_streams[s * p.width + d]);
+	for ( uint t = 0u; t < SPARK_HC_MAX_STREAMS; t++ )
+	{
+		float value = 0.0f;
+		for ( uint s = 0u; s < SPARK_HC_MAX_STREAMS; s++ )
+			value = fma(SparkMathRoundBf16(comb[((ulong)row * SPARK_HC_MAX_STREAMS + s) * SPARK_HC_MAX_STREAMS + t]), residual[s], value);
+		const float contribution = SparkMathRoundBf16(SparkMathRoundBf16(post[(ulong)row * SPARK_HC_MAX_STREAMS + t]) * out);
+		row_streams[t * p.width + d] = SparkMathFloatToBf16(contribution + SparkMathRoundBf16(value));
+	}
+}
+
+kernel void spark_stream_mean(constant SparkHcParams &p [[buffer(0)]], device const ushort *streams [[buffer(1)]], device ushort *output [[buffer(2)]],
+	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint row = group.y, d = group.x * group_size.x + tid;
+	if ( d >= p.width )
+		return;
+	device const ushort *source = streams + (ulong)row * p.streams * p.width + d;
+	float total = 0.0f;
+	for ( uint s = 0u; s < p.streams; s++ )
+		total += SparkMathBf16ToFloat(source[(ulong)s * p.width]);
+	output[(ulong)row * p.width + d] = SparkMathFloatToBf16(total / float(p.streams));
 }
