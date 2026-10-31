@@ -13,10 +13,11 @@ SparkStatus SparkPackWindowInitialize(SparkPackWindow *window, const SparkPackWi
 	uint64_t cursor = 0u;
 	uint32_t buffer,slot;
 	if ( window == 0 || config == 0 || config->stream == 0 || config->region == 0 || config->ranks < 2u || config->rank >= config->ranks ||
-		config->dense_buffers == 0u || config->dense_buffers > SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS || config->expert_slots < 2u ||
-		config->expert_slots > SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS ||
-		config->dense_capacity == 0u || config->expert_capacity == 0u || (config->expert_capacity % 2u) != 0u || config->read_own == 0 ||
-		config->read_partner == 0 || config->region_bytes < SparkPackWindowRegionBytes(config->ranks,config->dense_buffers,config->dense_capacity,config->expert_slots,config->expert_capacity) )
+		config->dense_buffers == 0u || config->dense_buffers > SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS ||
+		(config->expert_slots == 0u ? config->expert_capacity != 0u : config->expert_slots < 2u || config->expert_slots > SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS ||
+			config->expert_capacity == 0u || (config->expert_capacity % 2u) != 0u || config->read_partner == 0) ||
+		config->dense_capacity == 0u || config->read_own == 0 ||
+		config->region_bytes < SparkPackWindowRegionBytes(config->ranks,config->dense_buffers,config->dense_capacity,config->expert_slots,config->expert_capacity) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(window,0,sizeof(*window));
 	window->config = *config;

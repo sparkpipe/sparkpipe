@@ -4,6 +4,7 @@
 #include "inference/kernels/attention_block.cuh"
 #include "inference/kernels/tp_reduce.cuh"
 #include "inference/llms/kimi_k3/slice.cuh"
+#include "inference/runner/pass_keys.cuh"
 
 static int32_t K3StreamedAccumulate(float *accumulator, const uint16_t *value, uint64_t elements, uint32_t first, cudaStream_t stream)
 {
@@ -360,7 +361,7 @@ __global__ static void K3StreamedConvSeedKernel(uint16_t *window, const uint16_t
 			input[((uint64_t)chunk_row_begin[chunk] - K3_KDA_CONV_KERNEL + tap) * channels + channel];
 }
 
-typedef void (*K3StreamedCollective)(void *context, void *stream, uint32_t operation, uint32_t rows, uint32_t row_elements, const void *send, void *receive);
+typedef LmPassCollective K3StreamedCollective;
 
 __global__ static void K3StreamedConvTailKernel(uint16_t *window, const uint16_t *input, uint32_t rows, uint32_t channels)
 {
@@ -606,23 +607,6 @@ struct K3StreamedMlaExchange
 	void *context;
 };
 
-template<uint32_t SLOT_BYTES>
-__global__ static void K3StreamedOlderKeysKernel(SparkKvShard shard, const uint8_t *gathered, uint32_t first_local, uint32_t rows_per_rank, uint32_t keys, uint8_t *latent_keys)
-{
-	static_assert(SLOT_BYTES % 16u == 0u, "a key moves as whole 16-byte words");
-	for (uint64_t slot = blockIdx.x; slot < (uint64_t)shard.degree * rows_per_rank; slot += gridDim.x)
-	{
-		SparkKvShard owner = shard;
-		uint32_t position;
-		owner.rank = (uint32_t)(slot / rows_per_rank);
-		position = SparkKvShardLocalPosition(owner,first_local + (uint32_t)(slot % rows_per_rank));
-		if ( position >= keys )
-			continue;
-		for (uint32_t index = threadIdx.x; index < SLOT_BYTES / 16u; index += blockDim.x)
-			((uint4 *)(latent_keys + (uint64_t)position * SLOT_BYTES))[index] = ((const uint4 *)(gathered + slot * SLOT_BYTES))[index];
-	}
-}
-
 template<uint32_t VALUE_DIM>
 __global__ static void K3StreamedFoldRecordsKernel(float *running, const float *block, uint32_t heads, uint32_t rows, uint32_t first)
 {
@@ -652,33 +636,9 @@ __global__ static void K3StreamedFoldRecordsKernel(float *running, const float *
 template<class Geometry>
 static int32_t K3StreamedMlaKeys(const K3StreamedMlaExchange *x, cudaStream_t stream)
 {
-	const uint32_t degree = x->store.shard.degree;
-	uint32_t older_rows, chunk_rows, first_local;
-	if ( degree == 0u )
-		return(LM_LAUNCH_OK);
-	if ( x->store_sequence_of_row == 0 )
-		return(LM_LAUNCH_ERR_SHAPE);
-	LM_LAUNCH((LmKvShardStoreKernel<Geometry,K3_LAYER_THREADS>), x->pass_tokens, K3_LAYER_THREADS, 0, stream,
-		x->store,(const uint16_t *)(x->latent_keys + (uint64_t)x->first_key * Geometry::kSlotBytes),x->store_sequence_of_row,x->pass_positions,x->pass_tokens,
-		Geometry::kSlotBytes / 2u);
-	if ( x->first_key == 0u )
-		return(LM_LAUNCH_OK);
-	older_rows = SparkKvShardGatherKeys(x->store.shard,x->first_key);
-	chunk_rows = (uint32_t)(x->older_capacity / ((uint64_t)degree * Geometry::kSlotBytes));
-	chunk_rows = chunk_rows < older_rows ? chunk_rows : older_rows;
-	if ( x->older_sequence == 0 || x->older_offset == 0 || x->older_context == 0 || x->older_send == 0 || x->older_receive == 0 || chunk_rows == 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
-	for (first_local = 0u; first_local < older_rows; first_local += chunk_rows)
-	{
-		const uint32_t count = older_rows - first_local < chunk_rows ? older_rows - first_local : chunk_rows;
-		if ( LmKvShardGatherPackRangeLaunch<Geometry,K3_LAYER_THREADS>(x->store,x->older_sequence,x->older_offset,x->older_context,1u,first_local,first_local + count,
-				x->older_send - (uint64_t)first_local * Geometry::kSlotBytes,stream) != cudaSuccess )
-			return(LM_LAUNCH_ERR_LAUNCH);
-		x->collective(x->context,(void *)(uintptr_t)stream,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,count,Geometry::kSlotBytes / 2u,x->older_send,x->older_receive);
-		LM_LAUNCH((K3StreamedOlderKeysKernel<Geometry::kSlotBytes>), LM_KV_SHARD_UNPACK_BLOCKS, K3_LAYER_THREADS, 0, stream,
-			x->store.shard,x->older_receive,first_local,count,x->first_key,x->latent_keys);
-	}
-	return(LM_LAUNCH_OK);
+	const LmPassKeys keys = {x->store, x->store_sequence_of_row, x->pass_positions, x->pass_tokens, x->first_key, x->older_sequence, x->older_offset, x->older_context,
+		x->older_send, x->older_receive, x->older_capacity, x->collective, x->context};
+	return(LmPassKeysGather<Geometry,K3_LAYER_THREADS>(&keys,x->latent_keys,stream));
 }
 
 template<class Geometry, uint32_t HEADS>
@@ -926,31 +886,5 @@ static int32_t K3StreamedSlice(K3LayerBuffers *b, const K3LayerWeights *weights,
 		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows)),
 		K3_LAYER_THREADS, 0, stream,
 		b->attnres_partial_bf16,b->hidden_bf16,rows,K3_HIDDEN);
-	return(LM_LAUNCH_OK);
-}
-
-struct K3StreamedVocab
-{
-	const uint16_t *slice[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
-	uint32_t slice_rows;
-	uint32_t slices;
-};
-
-__global__ static void K3StreamedEmbedKernel(K3StreamedVocab vocab, const uint32_t *tokens, uint16_t *hidden, uint32_t rows)
-{
-	const uint32_t row = blockIdx.x, token = row < rows ? tokens[row] : 0u, slice = token / vocab.slice_rows;
-	const uint4 *source = slice < vocab.slices ? (const uint4 *)(vocab.slice[slice] + (uint64_t)(token % vocab.slice_rows) * K3_HIDDEN) : 0;
-	uint4 *target = (uint4 *)(hidden + (uint64_t)row * K3_HIDDEN), zero = {0u,0u,0u,0u};
-	if ( row >= rows )
-		return;
-	for (uint32_t index = threadIdx.x; index < K3_HIDDEN * sizeof(uint16_t) / 16u; index += blockDim.x)
-		target[index] = source != 0 ? source[index] : zero;
-}
-
-static int32_t K3StreamedEmbed(const K3StreamedVocab *vocab, const uint32_t *tokens, uint16_t *hidden, uint32_t rows, cudaStream_t stream)
-{
-	if ( vocab == 0 || vocab->slice_rows == 0u || vocab->slices == 0u || vocab->slices > SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE || tokens == 0 || hidden == 0 || rows == 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
-	LM_LAUNCH((K3StreamedEmbedKernel), rows, K3_LAYER_THREADS, 0, stream, *vocab,tokens,hidden,rows);
 	return(LM_LAUNCH_OK);
 }
