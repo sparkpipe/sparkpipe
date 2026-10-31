@@ -21,6 +21,7 @@
 #define SPARK_MODEL_BATCH_VERIFY_LANES 4u
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_LANES 2u
 #define SPARK_MODEL_BATCH_DEFER_POLL_NS UINT64_C(20000000)
+#define SPARK_MODEL_BATCH_CHAIN_BUDGET_NS 1000000000.0f
 #define SPARK_MODEL_BATCH_REQUEST_FREE 0u
 #define SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL 1u
 #define SPARK_MODEL_BATCH_REQUEST_PREFILL_INFLIGHT 2u
@@ -3347,7 +3348,8 @@ static void SparkModelBatchBuildDecodeRows(
 	SparkModelServingSubmission *submission,
 	uint32_t lane_count)
 {
-	uint32_t block_remaining,chain_tokens,lane,remaining,row,slot,position,stride,wave;
+	uint32_t block_remaining,chain_tokens,lane,remaining,row,slot,position,stride,wave,context = 0u;
+	float step_ns;
 	chain_tokens = 1u;
 	stride = SparkModelBatchPlanDrafts(engine,lane_count);
 	engine->building_verify_frame = stride > 1u ? 1u : 0u;
@@ -3368,6 +3370,8 @@ static void SparkModelBatchBuildDecodeRows(
 		request = &engine->requests[slot];
 		tokens = SparkModelBatchRequestTokens(engine,slot);
 		position = request->prompt_token_count + request->generated_token_count - 1u;
+		if ( position + 1u > context )
+			context = position + 1u;
 		remaining = request->output_token_budget -
 			request->generated_token_count;
 		if ( remaining < chain_tokens )
@@ -3390,6 +3394,10 @@ static void SparkModelBatchBuildDecodeRows(
 			memset(&engine->scratch_lanes[lane].cache_publish_identity,0,sizeof(engine->scratch_lanes[lane].cache_publish_identity));
 		}
 	}
+	step_ns = chain_tokens > 1u ? (lane_count > 1u ? SparkSpeculationFrameBatchStepCost(&engine->frame_model,lane_count,context) :
+		SparkSpeculationFrameTokenCost(&engine->frame_model,context)) : 0.0f;
+	if ( step_ns > 0.0f && (float)chain_tokens * step_ns > SPARK_MODEL_BATCH_CHAIN_BUDGET_NS )
+		chain_tokens = step_ns >= SPARK_MODEL_BATCH_CHAIN_BUDGET_NS ? 1u : (uint32_t)(SPARK_MODEL_BATCH_CHAIN_BUDGET_NS / step_ns);
 	row = 0u;
 	for (wave=0u; wave<stride; wave++)
 		for (lane=0u; lane<lane_count; lane++)
@@ -3524,7 +3532,7 @@ static void SparkModelBatchObserveCost(
 	const SparkModelServingCompletion *completion)
 {
 	const uint64_t ns = completion->service_time_ns;
-	if ( engine->verify_capable == 0u || ns == 0u )
+	if ( ns == 0u )
 		return;
 	if ( submission->lane_count != 1u )
 	{

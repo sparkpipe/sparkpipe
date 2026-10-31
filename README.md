@@ -208,7 +208,10 @@ running as a separate one-row chain.
 the resident stages. Each step's tokens feed the next step on the device, and
 cache blocks completed inside the chain are published from it, so the host
 protocol between submissions is paid once per chain rather than once per
-token.
+token. The engine shortens a chain to the steps that fit in one second of the
+decode step time it has measured at that context. A lane whose steps are slow
+(one that leases experts every step, for example) then wastes at most that
+second of steps after a stop token.
 
 **Expert-grouped MoE.** Routed rows are sorted by expert, and each expert's
 weights are read once per step for all of its rows. At 288 experts with
