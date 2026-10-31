@@ -483,7 +483,7 @@ class FakeUpstream(http.server.BaseHTTPRequestHandler):
             self.server.state = "swapping"
             time.sleep(1.5)
             self.server.active, self.server.state = body.get("model"), "ready"
-            time.sleep(0.3)
+            time.sleep(2.2)
         if body.get("stream"):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -551,8 +551,8 @@ def forwarded_flows(failures, work):
         status, raw = pool_call(port, key, {"model": "solar-open-2", "messages": [{"role": "user", "content": "switch"}]})
         waited = time.monotonic() - began
         note = json.loads(raw).get("sparkpipe", {}) if status == 200 else {}
-        if status != 200 or not note.get("switch") or note["switch"] < 1.4 or Decimal(note.get("seconds", "9")) > Decimal(str(waited)) - Decimal("1.4") or "Bearer sk-pool-test" not in upstream.polled:
-            failures.append(f"a live pool request for a model the fleet must switch to holds no seat until the fleet serves it: {status} {note} waited {waited:.1f} {upstream.polled[-1:]}")
+        if status != 200 or not note.get("switch") or not 1.4 <= note["switch"] <= 2.8 or not Decimal("1") <= Decimal(note.get("seconds", "0")) <= Decimal(str(waited)) - Decimal("1.4") or "Bearer sk-pool-test" not in upstream.polled:
+            failures.append(f"a live pool request for a model the fleet must switch to holds no seat until the fleet serves it, then pays from then on: {status} {note} waited {waited:.1f} {upstream.polled[-1:]}")
         status, raw = pool_call(port, key, {"model": "solar-open-2", "messages": [{"role": "user", "content": "stay"}]})
         if status != 200 or json.loads(raw).get("sparkpipe", {}).get("switch") is not None:
             failures.append(f"a live pool request for the loaded model waits for no switch: {raw[:200]}")
