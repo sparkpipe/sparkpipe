@@ -1366,6 +1366,15 @@ Metal backend and the single-Studio stage are in
   `device_layers.c`), plus a TP1 pack and its own gates. In progress: MiMo
   V2.6 Flash and Qwen 3.8 Flash Next, whose device stages are built but not
   yet gated.
+- HY4 on the Studio (`HyDevice<Hy4Device>`): the DSA indexer (`index_q`,
+  `index_k` with its LayerNorm, the ReLU-weighted head scores, the exact
+  top-2,048 per rank and over the gathered candidates, the second KV pool
+  of 128-wide keys) is not built, so the stage refuses a row past position
+  2,047; below that the indexer keeps every key and attention is dense. The
+  latent KV slot stores the 512-wide latent a second time as the value (1,088
+  elements per slot where CUDA keeps 576), and the rope's inverse
+  frequencies come from a double-precision table where CUDA's kernel
+  computes `__powf`.
 - GLM 5.3 Flash on the Studio (`Glm5NextDevice<Glm53FlashDevice>`): the DSA
   indexer (`index_q`, `index_k` with its LayerNorm, the pooled key scores
   with the compressor gate and position embedding, the top 512 of 4-key

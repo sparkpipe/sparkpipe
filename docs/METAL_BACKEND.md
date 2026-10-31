@@ -939,3 +939,30 @@ order):
 
     SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
         sh tools/metal_gates.sh k-exaone-2.0 PACKS/kexaone2.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+
+### HY4 on eight ranks
+
+HY4 (Hy4 preview, 78 layers of 6,144, MXFP8 weights) runs on its family
+schedule through `HyDevice` (`model-families/hy4/device/`): the embedding
+expanded into four hyper-connection streams (`spark_hyper_expand`); before
+each branch `spark_hc_mix8` mixes the streams with the layer's pre and post
+weights and `spark_rmsnorm_bf16` norms the branch input; the branch is
+`SparkDeviceLatentAttention` with HY4's switches (query LoRA 2,048, nope 192
+plus rope 64 at theta 1e7, value 256, scale `1/16`, elementwise gate, sinks)
+or the dense layer 0 or the experts: the BF16 router in FP32, sigmoid top 8
+times 2.827 over the bias-corrected scores (`spark_route_sigmoid_topk`),
+`SparkDeviceRoutedFfn` on the MXFP8 experts with the gate-limited SwiGLU at
+10 and the route weight before the down projection, and the shared expert
+joined in route order (`spark_route_combine_shared`); `spark_hc_post` adds
+the branch to each stream with its post weight, and `spark_hc_mix4` collapses
+the streams before the head norm and the head. The sparse-attention indexer is
+not built: a row that sees more than the indexer's 2,048 keys is refused,
+and below that the indexer keeps every key, so attention is exactly dense. The
+FP8 checkpoint is 766 GB, so it runs as eight ranks paged from the SSD
+(`tools/hy4_tp16_pack.py --tp-degree 8`); `tools/hy4_reference.py` gains the
+`gate-prompts` and `teacher` modes (variant b sums every product in
+1,024-wide chunks last first, reverses the norms' and softmax sums and adds
+the experts in descending order):
+
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh hy4-preview PACKS/hy4.tp8.rank00.pack REFERENCE_DIR OUT REVISION
