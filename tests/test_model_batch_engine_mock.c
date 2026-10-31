@@ -1177,6 +1177,32 @@ static void TestScenarioChainYieldsToPrefill(const SparkModelResidentDeployment 
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioChainTimeBound(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	uint32_t prompt[4] = {11u,12u,13u,14u},other[4] = {21u,22u,23u,24u},unmeasured,measured;
+	MockResidentClientReset();
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	MockResidentClientSetStepDelay(300000u);
+	TestSubmitPrompt(engine,1u,960u,10u,prompt,4u);
+	TestDriveUntilTerminal(engine,&state,1u,8000u);
+	unmeasured = MockResidentClientTakeMaxTokensPerSequence();
+	TestSubmitPrompt(engine,2u,961u,10u,other,4u);
+	TestDriveUntilTerminal(engine,&state,2u,8000u);
+	measured = MockResidentClientTakeMaxTokensPerSequence();
+	MockResidentClientSetStepDelay(0u);
+	printf("chain bound: longest chain %u steps before decode steps are measured, %u after they measure 300 ms\n",unmeasured,measured);
+	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u && state.token_events[2] == 10u,"chain bound: both requests complete with every token");
+	CHECK(unmeasured > 3u,"chain bound: before any decode step is measured, a lone request chains the adapter's full chain");
+	CHECK(measured > 1u && measured <= 3u,"chain bound: once decode steps measure 300 ms, a chain holds at most the 3 steps that fit in 1 s, so a stop token wastes at most 1 s of steps");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioAdapterContextLimit(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	TestBatchState state = {0};
@@ -3414,6 +3440,7 @@ int main(void)
 	TestScenarioSharedPrefillRows(&deployment,runtime_root);
 	TestScenarioStreamedPrefillDefers(&deployment,runtime_root);
 	TestScenarioStreamedSpanBudget(&deployment,runtime_root);
+	TestScenarioChainTimeBound(&deployment,runtime_root);
 	TestScenarioDecodeAfterPrefill(&deployment,runtime_root);
 	TestScenarioPartialCopyCapacity(&deployment,runtime_root);
 	TestScenarioSamplingValidation(&deployment,runtime_root);

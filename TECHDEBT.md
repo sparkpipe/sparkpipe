@@ -233,6 +233,11 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   that step's tokens and scores to the host (`StageRunnerStepOutputs`), and
   each step is a separate graph launch. Move those checks and copies to the
   end of the chain so K steps are one enqueue or one graph.
+- A decode chain runs all of its steps after a lane samples a stop token; the
+  engine only bounds a chain to one second of measured steps
+  (`SPARK_MODEL_BATCH_CHAIN_BUDGET_NS`, `runtime/model_batch_engine.c`). The
+  runner already copies each step's tokens to the host, so it could end the
+  chain at a stop token and remove the waste.
 - The batch engine ends a decode chain at the nearest block end of any lane in
   the batch (`SparkModelBatchBuildDecodeRows`,
   `runtime/model_batch_engine.c`), so chains shorten as the batch grows. A
