@@ -22,6 +22,8 @@ typedef uchar SparkMathU8;
 #define SPARK_MATH_FABS(x) metal::fabs(x)
 #define SPARK_MATH_FMAX(a, b) metal::fmax(a, b)
 #define SPARK_MATH_FMIN(a, b) metal::fmin(a, b)
+#define SPARK_MATH_RINT(x) metal::rint(x)
+#define SPARK_MATH_COPYSIGN(x, y) metal::copysign(x, y)
 #elif defined(__CUDACC__) || defined(LM_HOST_CUDA_PRELUDE)
 #include <stdint.h>
 #if defined(__CUDACC__)
@@ -46,6 +48,8 @@ typedef uint8_t SparkMathU8;
 #define SPARK_MATH_FABS(x) fabsf(x)
 #define SPARK_MATH_FMAX(a, b) fmaxf(a, b)
 #define SPARK_MATH_FMIN(a, b) fminf(a, b)
+#define SPARK_MATH_RINT(x) rintf(x)
+#define SPARK_MATH_COPYSIGN(x, y) copysignf(x, y)
 #else
 #error "kernel_math.cuh is kernel code for the CUDA and Metal compilers"
 #endif
@@ -278,6 +282,78 @@ SPARK_MATH_FN float SparkMathUe4m3ToFloat(SparkMathU8 value)
 	if ( biased == 15u && mantissa == 7u )
 		return(448.0f);
 	return(SPARK_MATH_LDEXP(1.0f + ((float)mantissa / 8.0f),(int)biased - 7));
+}
+
+SPARK_MATH_FN float SparkMathSqrtSoftplus(float value)
+{
+	const float softplus = value > 20.0f ? value : SparkMathLog1p(SPARK_MATH_EXP(value));
+	return(SPARK_MATH_SQRT(softplus > 0.0f ? softplus : 0.0f));
+}
+
+SPARK_MATH_FN float SparkMathSignedSqrtGate(float dot, float left_square, float right_square, SparkMathU32 dimension, float epsilon, float floor)
+{
+	const float rstd = (1.0f / SPARK_MATH_SQRT(left_square / (float)dimension + epsilon)) * (1.0f / SPARK_MATH_SQRT(right_square / (float)dimension + epsilon));
+	const float scaled = dot * rstd * (1.0f / SPARK_MATH_SQRT((float)dimension));
+	const float magnitude = SPARK_MATH_SQRT(SPARK_MATH_FMAX(SPARK_MATH_FABS(scaled),floor));
+	return(SparkMathSigmoid(SPARK_MATH_COPYSIGN(magnitude,scaled)));
+}
+
+SPARK_MATH_FN float SparkMathSoftmaxPool2(float first, float first_score, float second, float second_score)
+{
+	const float top = SPARK_MATH_FMAX(first_score,second_score);
+	const float e0 = SPARK_MATH_EXP(first_score - top), e1 = SPARK_MATH_EXP(second_score - top);
+	return((first * e0 + second * e1) / (e0 + e1));
+}
+
+SPARK_MATH_FN float SparkMathPow2CeilScale(float amax, float inverse_max)
+{
+	const SparkMathU32 bits = SPARK_MATH_AS_BITS(amax * inverse_max);
+	const int exponent = (int)((bits >> 23u) & 0xffu) - 127 + ((bits & 0x7fffffu) != 0u ? 1 : 0);
+	return(SPARK_MATH_AS_FLOAT((SparkMathU32)(exponent + 127) << 23u));
+}
+
+SPARK_MATH_FN float SparkMathRoundMinifloat(float value, int mantissa_bits, int minimum_exponent, float maximum)
+{
+	int exponent = (int)((SPARK_MATH_AS_BITS(value) >> 23u) & 0xffu) - 127;
+	exponent = exponent < minimum_exponent ? minimum_exponent : exponent;
+	const float step = SPARK_MATH_AS_FLOAT((SparkMathU32)(exponent - mantissa_bits + 127) << 23u);
+	const float inverse = SPARK_MATH_AS_FLOAT((SparkMathU32)(mantissa_bits - exponent + 127) << 23u);
+	return(SPARK_MATH_FMIN(SPARK_MATH_FMAX(SPARK_MATH_RINT(value * inverse) * step,-maximum),maximum));
+}
+
+SPARK_MATH_FN float SparkMathRoundE4m3(float value)
+{
+	return(SparkMathRoundMinifloat(value,3,-6,448.0f));
+}
+
+SPARK_MATH_FN float SparkMathRoundE2m1(float value)
+{
+	return(SparkMathRoundMinifloat(value,1,0,6.0f));
+}
+
+SPARK_MATH_FN float SparkMathFp8QdqScale(float amax)
+{
+	return(SparkMathPow2CeilScale(SPARK_MATH_FMAX(amax,1e-4f),1.0f / 448.0f));
+}
+
+SPARK_MATH_FN float SparkMathFp8Qdq(float value, float scale)
+{
+	return(SparkMathRoundE4m3(SPARK_MATH_FMIN(SPARK_MATH_FMAX(value / scale,-448.0f),448.0f)) * scale);
+}
+
+SPARK_MATH_FN float SparkMathFp4QdqScale(float amax)
+{
+	return(SparkMathRoundE4m3(SPARK_MATH_FMAX(amax,6.0f * 0.001953125f) / 6.0f));
+}
+
+SPARK_MATH_FN float SparkMathFp4Pow2QdqScale(float amax)
+{
+	return(SparkMathPow2CeilScale(SPARK_MATH_FMAX(amax,6.0f * 1.1754943508222875e-38f),1.0f / 6.0f));
+}
+
+SPARK_MATH_FN float SparkMathFp4Qdq(float value, float scale)
+{
+	return(SparkMathRoundE2m1(SPARK_MATH_FMIN(SPARK_MATH_FMAX(value / scale,-6.0f),6.0f)) * scale);
 }
 
 #endif

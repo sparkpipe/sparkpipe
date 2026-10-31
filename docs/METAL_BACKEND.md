@@ -116,6 +116,13 @@ tensor sizes before each launch.
 | `spark_ngram_hash`, `spark_ngram_gather_fp8`, `spark_ngram_history` | the n-gram embedding's ids, rows and carried tokens, as `LmNgramHashKernel`, `LmNgramGatherScaledKernel` and `LmNgramHistoryKernel`: each row's current and previous tokens (from the step, else the sequence's history), blocked from the first end-of-text token on, hashed by an int64 rolling XOR of token times multiplier with C's remainder per head; `bf16(e4m3 x scale)` table rows; the last tokens kept on a committed step |
 | `spark_scale_rows`, `spark_softcap_rows` | a BF16 row scale (an embedding multiplier) and the FP32 logit softcap `cap tanh(m z / cap)` (`SparkMathSoftcap`) with an optional logit multiplier `m`, as CUDA's `LmStageSoftcapKernel` |
 | `spark_logprob_rows` | argmax (lowest index on ties), log-normaliser and a target's log-probability over FP32 logits |
+| `spark_block_qdq` | an activation's quantise-dequantise round trip in place or into another buffer, one block per thread, as DeepSeek V4.1 Flash's CUDA kernels do before every FP8 or FP4 consumer: FP8 per 32 values with the power-of-two scale `SparkMathFp8QdqScale` (`2^ceil(log2(amax / 448))` from the FP32 product's bits, amax floored at 1e-4), FP4 per 16 with an E4M3 scale `SparkMathFp4QdqScale` (`e4m3(amax / 6)`, amax floored at `6 * 2^-9`, the compressed keys), and FP4 per 32 with a power-of-two scale; each value `bf16(round(clamp(x / s)) s)` onto the E4M3 or E2M1 grid, ties to even (`SparkMathRoundE4m3`, `SparkMathRoundE2m1`) |
+| `spark_route_sqrt_softplus_topk` | `spark_route_sigmoid_topk` with the score `sqrt(softplus(z))` (`SparkMathSqrtSoftplus`, CUDA's `LM_TOPK_SCORE_SQRT_SOFTPLUS`), selected by `SparkRouteParams.score` |
+| `spark_hc_site_lagged`, `spark_hc_post_comb_f32`, `spark_hc_collapse` | DeepSeek V4.1 Flash's hyper-connections (CUDA's `D41HcSinkhornRowsKernel`, `D41HcPostRowsKernel`, `D41HcPreRowsKernel`): `spark_hc_site`'s mixes, but the branch input collapses the streams with the pre weights the previous site computed (a per-row FP32 buffer the kernel reads and then overwrites with its own); the post update in FP32 with one rounding, `bf16(fma(P_t, out, sum_s C_st x_s))`; the head input `bf16(sum_s pre_s x_s)` |
+| `spark_stream_key_gate` | a value added to every stream through a signed square-root gate (DeepSeek's engram, CUDA's `SparkDsv41FlashEngramGateKernel`): per stream `d = (h . (q k) key) rsqrt(mean h^2 + e) rsqrt(mean key^2 + e) / sqrt(H)`, `g = sigmoid(copysign(sqrt(max(|d|, 1e-6)), d))` (`SparkMathSignedSqrtGate`), `h = bf16(h + g v)` |
+| `spark_kv_compress`, `spark_kv_compress_save`, `spark_compressed_positions` | the compressed-key pool's input: a row whose position closes a group of `ratio` (one or two) pools its FP32 projections softmax-gated over the group (`SparkMathSoftmaxPool2`, CUDA's `D41CompressorRowsKernel`), the group's earlier row taken from the step or from the sequence's carried FP32 state, which a committed step's last open row saves; and per row the store index (or `SPARK_KV_SKIP`), the group's first position for its rope and the last compressed key it sees |
+| `spark_kv_store_paged_skip`, `spark_attention_decode_extra_d512`, `spark_attention_combine_extra_d512` | the KV store that leaves a row whose position is `SPARK_KV_SKIP`; and 512-wide attention over two key ranges in one softmax: the window of the layer's own pages and a second paged range (`SparkOpsAttentionExtra`: the compressed keys up to each row's own last key), each decoded into its own partitions of one record buffer (`partition_base`), merged with the sinks by the combine (`extra_partitions`) |
+| `spark_ngram_hash_mapped`, `spark_ngram_history_mapped`, `spark_ngram_gather_e8m0` | the n-gram kernels with a token map applied to every token (CUDA's `LmNgramToken`; a token mapped to the block id blocks), and table rows with an E8M0 scale per 32 values (`LmNgramGatherE8m0Kernel`) |
 | `spark_stream_read` | the streaming-read bandwidth probe |
 
 The kernels are Metal sources written for this tree. The decode GEMV has the
@@ -158,6 +165,17 @@ checks every code of the shared decoders against those conversions, and
 `test_metal_bf16_convert` checks every code on Metal against the formats.
 A Metal projection over FP8 or FP4 weights therefore reads the same values
 as the CUDA one.
+
+DeepSeek V4.1 Flash's CUDA kernels take their block scales, the expert
+score, the compressor's pair pool and the engram gate from the header too
+(`SparkMathPow2CeilScale`, `SparkMathFp8QdqScale`, `SparkMathFp4Pow2QdqScale`,
+`SparkMathSqrtSoftplus`, `SparkMathSoftmaxPool2`, `SparkMathSignedSqrtGate`);
+the PTX of every CUDA stage model is byte-identical before and after (2,307
+entries over 18 stage models). CUDA rounds onto the E4M3 and E2M1 grids with
+the hardware conversions (`cvt.rn.satfinite`); `SparkMathRoundE4m3` and
+`SparkMathRoundE2m1` are the Metal side's software twins (round to nearest
+even by `rint` at the binade's step, saturating), checked in
+`test_metal_kernels` against an enumerated grid.
 
 - The header shares formulas, not schedules. Tiling, data movement, matrix
   units, reductions and launch shapes stay per backend, because that is

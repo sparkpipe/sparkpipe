@@ -1092,10 +1092,12 @@ static uint32_t RoutedWidth(const SparkDeviceStage *stage, const SparkDeviceRout
 	return(shape->width != 0u ? shape->width : stage->shape->hidden);
 }
 
-static SparkStatus RoutedGated(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceRoutedFfnShape *shape, SparkTensor gate_up,
-	SparkTensor weights, SparkTensor act, uint32_t rows)
+static SparkStatus RoutedGated(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceRoutedFfnShape *shape, uint32_t act_qdq,
+	SparkTensor gate_up, SparkTensor weights, SparkTensor act, uint32_t rows)
 {
 	SparkSiluMulParams gated;
+	SparkQdqParams qdq;
+	SparkStatus status;
 	memset(&gated,0,sizeof(gated));
 	gated.rows = rows;
 	gated.dimension = shape->intermediate;
@@ -1103,12 +1105,18 @@ static SparkStatus RoutedGated(SparkDeviceStage *stage, SparkDeviceQueue *queue,
 	gated.output_stride = shape->intermediate;
 	gated.limit = shape->limit;
 	gated.up_limit = shape->up_limit;
-	if ( shape->weighted != 0u )
-		return(SparkOpsGatedMulRouted(stage->ops,queue,gate_up,weights,act,&gated,shape->activation));
-	return(SparkOpsGatedMul(stage->ops,queue,gate_up,act,&gated,shape->activation));
+	status = shape->weighted != 0u ? SparkOpsGatedMulRouted(stage->ops,queue,gate_up,weights,act,&gated,shape->activation) :
+		SparkOpsGatedMul(stage->ops,queue,gate_up,act,&gated,shape->activation);
+	if ( status != SPARK_STATUS_OK || act_qdq == 0u )
+		return(status);
+	memset(&qdq,0,sizeof(qdq));
+	qdq.rows = rows;
+	qdq.width = qdq.input_stride = qdq.output_stride = shape->intermediate;
+	qdq.format = SPARK_QDQ_FP8;
+	return(SparkOpsBlockQdq(stage->ops,queue,act,act,&qdq));
 }
 
-static SparkStatus RoutedFfnGrouped(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceRoutedFfnShape *shape, uint32_t rows,
+static SparkStatus RoutedFfnGrouped(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceRoutedFfnShape *shape, uint32_t act_qdq, uint32_t rows,
 	const SparkDeviceExpertMatrix *gate, const SparkDeviceExpertMatrix *up, const SparkDeviceExpertMatrix *down, const SparkDeviceExpertsScratch *scratch,
 	SparkTensor input)
 {
@@ -1134,8 +1142,8 @@ static SparkStatus RoutedFfnGrouped(SparkDeviceStage *stage, SparkDeviceQueue *q
 				((uint64_t)count * 2u - 1u) * inter * sizeof(uint16_t)),zeros,1u,&params);
 	}
 	if ( status == SPARK_STATUS_OK && total != 0u )
-		status = RoutedGated(stage,queue,shape,scratch->gate_up,SparkTensorAt(&stage->route_tables,3u * table,(uint64_t)total * sizeof(float)),scratch->act,
-			total);
+		status = RoutedGated(stage,queue,shape,act_qdq,scratch->gate_up,SparkTensorAt(&stage->route_tables,3u * table,(uint64_t)total * sizeof(float)),
+			scratch->act,total);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceFill(queue,SparkTensorSlice(scratch->sorted,(uint64_t)total * hidden * sizeof(uint16_t),(uint64_t)hidden * sizeof(uint16_t)).range,0u,
 			(uint64_t)hidden * sizeof(uint16_t));
@@ -1156,7 +1164,7 @@ static SparkStatus RoutedFfnGrouped(SparkDeviceStage *stage, SparkDeviceQueue *q
 	return(status);
 }
 
-SparkStatus SparkDeviceRoutedFfn(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceRoutedFfnShape *shape, uint32_t rows,
+static SparkStatus RoutedFfn(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceRoutedFfnShape *shape, uint32_t act_qdq, uint32_t rows,
 	const SparkDeviceExpertMatrix *gate, const SparkDeviceExpertMatrix *up, const SparkDeviceExpertMatrix *down, const SparkDeviceExpertsScratch *scratch,
 	SparkTensor input)
 {
@@ -1164,16 +1172,30 @@ SparkStatus SparkDeviceRoutedFfn(SparkDeviceStage *stage, SparkDeviceQueue *queu
 	const SparkGemvParams first = ExpertsRouted(routes,shape->top_k,hidden,hidden,inter,2u * inter), second = ExpertsRouted(routes,1u,inter,inter,hidden,hidden);
 	SparkStatus status;
 	if ( scratch->sorted.bytes != 0u && SparkDeviceSegmented(gate->values.range) != 0u )
-		return(RoutedFfnGrouped(stage,queue,shape,rows,gate,up,down,scratch,input));
+		return(RoutedFfnGrouped(stage,queue,shape,act_qdq,rows,gate,up,down,scratch,input));
 	status = RoutedLinear(stage,queue,gate,input,scratch->gate_up,scratch->experts,shape->experts,&first);
 	if ( status == SPARK_STATUS_OK )
 		status = RoutedLinear(stage,queue,up,input,SparkTensorSlice(scratch->gate_up,(uint64_t)inter * sizeof(uint16_t),
 			scratch->gate_up.bytes - (uint64_t)inter * sizeof(uint16_t)),scratch->experts,shape->experts,&first);
 	if ( status == SPARK_STATUS_OK )
-		status = RoutedGated(stage,queue,shape,scratch->gate_up,scratch->weights,scratch->act,routes);
+		status = RoutedGated(stage,queue,shape,act_qdq,scratch->gate_up,scratch->weights,scratch->act,routes);
 	if ( status == SPARK_STATUS_OK )
 		status = RoutedLinear(stage,queue,down,scratch->act,scratch->out,scratch->experts,shape->experts,&second);
 	return(status);
+}
+
+SparkStatus SparkDeviceRoutedFfn(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceRoutedFfnShape *shape, uint32_t rows,
+	const SparkDeviceExpertMatrix *gate, const SparkDeviceExpertMatrix *up, const SparkDeviceExpertMatrix *down, const SparkDeviceExpertsScratch *scratch,
+	SparkTensor input)
+{
+	return(RoutedFfn(stage,queue,shape,0u,rows,gate,up,down,scratch,input));
+}
+
+SparkStatus SparkDeviceRoutedFfnQdq(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceRoutedFfnShape *shape, uint32_t rows,
+	const SparkDeviceExpertMatrix *gate, const SparkDeviceExpertMatrix *up, const SparkDeviceExpertMatrix *down, const SparkDeviceExpertsScratch *scratch,
+	SparkTensor input)
+{
+	return(RoutedFfn(stage,queue,shape,1u,rows,gate,up,down,scratch,input));
 }
 
 SparkStatus SparkDeviceExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceExpertsShape *shape, const SparkDeviceStepTensors *tensors,

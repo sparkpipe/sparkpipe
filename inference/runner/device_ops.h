@@ -130,6 +130,21 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_SITU_MUL,
 	SPARK_OPS_ATTNRES_SCORE,
 	SPARK_OPS_ATTNRES_MIX,
+	SPARK_OPS_ROUTE_SQRT_SOFTPLUS,
+	SPARK_OPS_BLOCK_QDQ,
+	SPARK_OPS_KV_COMPRESS,
+	SPARK_OPS_KV_COMPRESS_SAVE,
+	SPARK_OPS_COMPRESSED_POSITIONS,
+	SPARK_OPS_HC_SITE_LAGGED,
+	SPARK_OPS_HC_POST_COMB_F32,
+	SPARK_OPS_HC_COLLAPSE,
+	SPARK_OPS_STREAM_KEY_GATE,
+	SPARK_OPS_KV_STORE_SKIP,
+	SPARK_OPS_ATTENTION_DECODE_EXTRA,
+	SPARK_OPS_ATTENTION_COMBINE_EXTRA,
+	SPARK_OPS_NGRAM_HASH_MAPPED,
+	SPARK_OPS_NGRAM_GATHER_E8M0,
+	SPARK_OPS_NGRAM_HISTORY_MAPPED,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -278,6 +293,28 @@ SparkStatus SparkOpsLinearRoutedNvfp4(SparkDeviceOps *ops, SparkDeviceQueue *que
 SparkStatus SparkOpsLogprob(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor targets, SparkTensor result,
 	SparkTensor argmax, const SparkLogprobParams *params);
 SparkStatus SparkOpsStreamRead(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor words, SparkTensor sink, uint32_t groups);
+SparkStatus SparkOpsBlockQdq(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor output, const SparkQdqParams *params);
+SparkStatus SparkOpsHcSiteLagged(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor fn, SparkTensor base, SparkTensor scale,
+	SparkTensor pre, SparkTensor post, SparkTensor comb, SparkTensor mixed, const SparkHcParams *params);
+SparkStatus SparkOpsHcPostCombF32(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor post, SparkTensor comb, SparkTensor output,
+	const SparkHcParams *params);
+SparkStatus SparkOpsHcCollapse(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor pre, SparkTensor output, const SparkHcParams *params);
+SparkStatus SparkOpsStreamKeyGate(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor kv, SparkTensor query_weight,
+	SparkTensor key_weight, const SparkGateParams *params);
+SparkStatus SparkOpsKvCompress(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor kv, SparkTensor score, SparkTensor state, const SparkOpsSequences *sequences,
+	SparkTensor positions, SparkTensor pooled, const SparkCompressParams *params);
+SparkStatus SparkOpsCompressedPositions(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor positions, SparkTensor store, SparkTensor rope, SparkTensor last,
+	const SparkCompressParams *params);
+SparkStatus SparkOpsAttentionExtra(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, const SparkOpsPaged *extra, SparkTensor query,
+	const SparkTensor *sinks, SparkTensor partial, SparkTensor output, const SparkAttentionParams *params, const uint32_t *host_positions,
+	const uint32_t *host_extra_positions);
+SparkStatus SparkOpsNgramHashMapped(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor token_ids, SparkTensor token_map, SparkTensor positions,
+	const SparkOpsSequences *sequences, SparkTensor history, SparkTensor multipliers, SparkTensor primes, SparkTensor offsets, SparkTensor ids,
+	const SparkNgramParams *params);
+SparkStatus SparkOpsNgramGatherE8m0(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor ids, SparkTensor payload, SparkTensor scale, SparkTensor embed,
+	const SparkNgramParams *params);
+SparkStatus SparkOpsNgramHistoryMapped(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor token_ids, SparkTensor token_map, const SparkOpsSequences *sequences,
+	SparkTensor history, const SparkNgramParams *params);
 uint64_t SparkOpsDeltaScratchBytes(uint32_t rows, uint32_t key_heads, uint32_t value_heads, uint32_t key_dimension);
 uint64_t SparkOpsChannelDeltaScratchBytes(uint32_t rows, uint32_t heads, uint32_t key_dimension);
 uint64_t SparkOpsAttentionScratchBytes(uint32_t rows, uint32_t heads, uint32_t head_dimension, uint32_t positions);
