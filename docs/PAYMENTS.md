@@ -1,10 +1,14 @@
 # Payments
 
-Fleet-hours are paid in USDC or USDT through CoinPayments: USDC on Base,
-Solana, Arbitrum, Polygon, BNB Chain or Ethereum, USDT on Tron, Solana, BNB
-Chain, Arbitrum, Polygon or Ethereum. Only these two US-dollar stablecoins
-are taken, so an invoice priced in dollars is paid in dollars and neither
-side carries crypto price risk. Won bank transfers against a tax
+Fleet-hours are paid in US-dollar stablecoins through CoinPayments. The
+checkout offers USDC on Base, Solana, Arbitrum, Polygon, BNB Chain or
+Ethereum, and USDT on Tron, Solana, BNB Chain, Arbitrum, Polygon or
+Ethereum. CoinPayments' own currency menu also takes any other stablecoin
+enabled in Payment Settings (DAI and TUSD today). Only stablecoins are
+enabled, so an invoice priced in dollars is paid in dollars and neither side
+carries crypto price risk. Hours follow the US-dollar value CoinPayments
+reports for a payment (`nativeActualAmount`), whatever coin it came in, and
+the receipt names the coin that was paid (`paymentCurrencySymbol`). Won bank transfers against a tax
 invoice and USD wires under a two-year agreement are still arranged by hand.
 
 ## How a customer buys
@@ -88,7 +92,7 @@ ten minutes (quote requests: an hour), and each email for 5 codes an hour.
   with nothing paid (clause 5.2), after a missed gate (clause 6.4), and
   after the term ends. Each payment issues the amount before VAT divided by
   the hour price, to four decimals (clause 5.5).
-- VAT is charged on every USDC or USDT payment (Hourly Terms 3.2, Schedule (c)).
+- VAT is charged on every stablecoin payment (Hourly Terms 3.2, Schedule (c)).
   CoinPayments' own fee is ours; the customer pays the network fee.
 
 ## Data on the VPS
@@ -145,14 +149,18 @@ DKIM and DMARC pass.
    and `invoiceTimedOut`. The webhook signature covers that exact URL, so
    it must not change behind the proxy.
 2. Every invoice pre-selects the customer's coin and network, but the
-   checkout still offers a currency menu. In Payment Settings, accept only
-   `USDC.ERC20`, `USDC.BASE`, `USDC.ARB`, `USDC.POL`, `USDC.SOL`,
+   checkout still offers a menu of every coin enabled in Payment Settings.
+   Keep `USDC.ERC20`, `USDC.BASE`, `USDC.ARB`, `USDC.POL`, `USDC.SOL`,
    `USDC.BEP20`, `USDT.TRC20`, `USDT.ERC20`, `USDT.BEP20`, `USDT.SOL`,
-   `USDT.POL` and `USDT.ARB`, and turn every other coin and LTCT off, so no
-   payment arrives in a coin whose price moves. Set the underpayment limit
+   `USDT.POL` and `USDT.ARB` on. Other US-dollar stablecoins may stay on
+   (Hourly Terms 3.3 and Schedule (c) take any the processor accepts). Turn
+   every other coin off, LTCT included, so no payment arrives in a coin whose
+   price moves. Set the underpayment limit
    to a fixed $100,000 with no percentage (see Operating it). Payment Settings lists
-   every currency; open each one that is not in that list and disable it.
+   every currency; open each one that is not a stablecoin and disable it.
    A disabled currency is no longer offered at checkout.
+   `GET /api/v1/merchant/currencies` lists every currency, enabled or not;
+   one is on when its `switcherStatus` is `enabled`.
 3. Choose the payout wallet or conversion there too; the service does not
    set payout overrides.
 

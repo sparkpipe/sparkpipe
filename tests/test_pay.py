@@ -102,7 +102,7 @@ class FakeCoinPayments(http.server.BaseHTTPRequestHandler):
         key = self.path.rsplit("/", 1)[1]
         invoice = self.server.invoices[key]
         arrived = invoice.get("received", invoice["total"] if invoice["status"] in ("paid", "completed") else "0")
-        self.answer(200, {"id": key, "status": invoice["status"], "amount": {"breakdown": {}, "total": invoice["total"]}, "currency": {"id": "5057", "symbol": "USD"}, "payments": [{"paymentCurrencySymbol": "USDC.BASE", "nativeActualAmount": arrived}]})
+        self.answer(200, {"id": key, "status": invoice["status"], "amount": {"breakdown": {}, "total": invoice["total"]}, "currency": {"id": "5057", "symbol": "USD"}, "payments": [{"paymentCurrencySymbol": invoice.get("paidIn", "USDC.BASE"), "nativeActualAmount": arrived}]})
 
 
 class FakeSMTP(socketserver.StreamRequestHandler):
@@ -382,7 +382,7 @@ def part_payment_flow(failures, cfg, app, fake, buyer, mailbox):
         failures.append(f"part payment order: {status} {placed}")
         return
     key = max(fake.invoices, key=lambda k: int(k[3:]))
-    fake.invoices[key].update(status="pending", received="22.99")
+    fake.invoices[key].update(status="pending", received="22.99", paidIn="DAI.ERC20")
     webhook(buyer, cfg, key, "InvoicePending")
     app.jobs.join()
     app.mails.join()
@@ -411,6 +411,11 @@ def part_payment_flow(failures, cfg, app, fake, buyer, mailbox):
     note = [m for rcpt, m in mailbox.mail if "ops@acme.example" in rcpt and placed["order"] in m["Subject"]]
     if not note or "22.98 USD arrived" not in note[-1].get_content() or "1.0445 fleet-hours" not in note[-1].get_content():
         failures.append("the receipt for a part payment does not say what arrived and what it bought")
+    if not note or "Received in DAI: 22.98 USD" not in note[-1].get_content():
+        failures.append("the receipt for a payment in another stablecoin does not name the coin that was paid")
+    payments = [json.loads(line)["data"] for line in open(cfg.path("ledger.jsonl"), encoding="utf-8") if '"payment"' in line]
+    if [e["paidWith"] for e in payments if e["order"] == placed["order"]] != [["DAI.ERC20"]]:
+        failures.append("the ledger does not record the stablecoin that was paid")
     if not any(cfg.notify in rcpt and m["Subject"].startswith("Paid in part:") for rcpt, m in mailbox.mail):
         failures.append("we are not told of a part payment that settled")
     if app.book.held(account, sp.clock()) != held - sp.Decimal("2.9555"):
@@ -525,7 +530,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("pay: tranches match the agreement; email codes, sessions, terms acceptance, USDC and USDT invoices on the chosen network, signed webhooks, receipts, part payments and paying the rest, reconciliation, the holding limit, gates, quote requests and the hash-chained ledger behave")
+    print("pay: tranches match the agreement; email codes, sessions, terms acceptance, USDC and USDT invoices on the chosen network, payments in another stablecoin, signed webhooks, receipts, part payments and paying the rest, reconciliation, the holding limit, gates, quote requests and the hash-chained ledger behave")
     return 0
 
 
