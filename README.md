@@ -213,6 +213,18 @@ decode step time it has measured at that context. A lane whose steps are slow
 (one that leases experts every step, for example) then wastes at most that
 second of steps after a stop token.
 
+**Streamed prefill for long prompts.** On a lane whose stage config names
+`streamed_prefill` (Kimi K3 today), a prompt of at least
+`streamed_prefill_min_tokens` tokens takes a different path:
+- Every token but the last runs through the streamed prefill. The last token
+  then runs as a one-row wave that samples.
+- Each node takes a contiguous slice of every pass's tokens. The streamer
+  brings every layer's weights through a window, so a pass can hold
+  16,384–32,768 rows a node. The deferred tokens are split evenly over the
+  passes.
+- The last pass's padding rows change neither the recurrent state nor the
+  cache: they leave the KDA state unchanged, attend no key and write no KV.
+
 **Expert-grouped MoE.** Routed rows are sorted by expert, and each expert's
 weights are read once per step for all of its rows. At 288 experts with
 top-8 routing, B64 already touches 240 experts. From there, weight traffic
