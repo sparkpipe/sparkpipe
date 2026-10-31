@@ -1403,6 +1403,8 @@ static void StageServingDispatch(const SparkStageServingState *state, const Spar
 		(submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY : 0u;
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER) != 0u )
 		dispatch->flags |= SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER;
+	if ( (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) != 0u && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_FP8_ATTENTION) != 0u )
+		dispatch->flags |= SPARK_STAGE_RUNNER_DISPATCH_FLAG_FP8_ATTENTION;
 	dispatch->request_id = submission->request_id;
 	dispatch->sequence_id = submission->sequence_id;
 	dispatch->sequence_position = submission->sequence_position;

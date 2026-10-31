@@ -13,6 +13,7 @@
 #include "sparkpipe/spark_draft_bridge.h"
 #include "sparkpipe/spark_kv_page_cache.h"
 #include "sparkpipe/spark_prefix_cache.h"
+#include "sparkpipe/spark_precision.h"
 #include "sparkpipe/spark_prefix_index_file.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_speculation_frame.h"
@@ -131,6 +132,8 @@ typedef struct SparkModelBatchRequestState
 	SparkModelBatchRequestHandle handle;
 	uint32_t defer_end;
 	uint32_t defer_decided;
+	uint32_t precision;
+	uint32_t fp8_attention_token_count;
 } SparkModelBatchRequestState;
 
 typedef struct SparkModelBatchCacheDemand
@@ -493,6 +496,27 @@ static void SparkModelBatchDigestTokens(
 #endif
 }
 
+static void SparkModelBatchDigestBegin(
+	SparkSha256Context *context,
+	uint32_t precision)
+{
+	char tag[32];
+	SparkSha256Initialize(context);
+	if ( precision == SPARK_PRECISION_FULL )
+		return;
+	memset(tag,0,sizeof(tag));
+	(void)snprintf(tag,sizeof(tag),"sparkpipe precision %s",SparkPrecisionName(precision));
+	SparkSha256Update(context,tag,sizeof(tag));
+}
+
+static SparkPrefixCache *SparkModelBatchPrefixCache(
+	SparkModelBatchEngine *engine,
+	const SparkModelBatchRequestState *request)
+{
+	SparkPrefixCacheSelectNamespace(&engine->prefix_cache,request->precision);
+	return(&engine->prefix_cache);
+}
+
 static void SparkModelBatchFinalizeIdentity(
 	const SparkSha256Context *context,
 	SparkModelServingCacheIdentity *identity)
@@ -523,7 +547,7 @@ static void SparkModelBatchApplyPrefixLookup(
 	request->cache_prefix_token_count = lookup->matched_token_count;
 	request->cache_published_token_count = lookup->matched_token_count;
 	request->cache_lookup_epoch = engine->cache_publication_epoch;
-	SparkSha256Initialize(&request->cache_published_digest_context);
+	SparkModelBatchDigestBegin(&request->cache_published_digest_context,request->precision);
 	if ( lookup->matched_token_count == 0u )
 		return;
 	SparkModelBatchDigestTokens(&request->cache_published_digest_context,tokens,
@@ -640,6 +664,7 @@ static void SparkModelBatchEmit(
 	event.token_index = request->generated_token_count != 0u ? request->generated_token_count - 1u : 0u;
 	event.generated_token_count = request->generated_token_count;
 	event.cached_prompt_token_count = request->cache_prefix_token_count;
+	event.fp8_attention_token_count = request->fp8_attention_token_count;
 	event.request_id = request->request_id;
 	event.sequence_id = request->sequence_id;
 	event.request_handle = request->handle;
@@ -668,7 +693,7 @@ static uint32_t SparkModelBatchCollectSharedBlocks(
 		return(0u);
 	wanted = request->cache_prefix_token_count / engine->cache_block_token_count;
 	if ( wanted > engine->reserved_block_stride ||
-		SparkPrefixCacheBuildLogicalBlockTable(&engine->prefix_cache,request->sequence_id,wanted * engine->cache_block_token_count,
+		SparkPrefixCacheBuildLogicalBlockTable(SparkModelBatchPrefixCache(engine,request),request->sequence_id,wanted * engine->cache_block_token_count,
 			blocks,engine->reserved_block_stride,&count) != SPARK_STATUS_OK || count != wanted )
 		return(0u);
 	for (index=0u; index<count; index++)
@@ -834,7 +859,7 @@ static void SparkModelBatchFreeRequest(
 	slot = (uint32_t)(request - engine->requests);
 	generation = request->generation;
 	SparkModelBatchClearRequestTokens(engine,slot);
-	status = SparkPrefixCacheReleaseSequence(&engine->prefix_cache,request->sequence_id);
+	status = SparkPrefixCacheReleaseSequence(SparkModelBatchPrefixCache(engine,request),request->sequence_id);
 	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND )
 	{
 		fprintf(stderr,"batch engine prefix index release failed sequence=%llu status=%d: the index no longer matches the driver caches\n",
@@ -1029,15 +1054,15 @@ static SparkStatus SparkModelBatchRecomputeStalePrefix(SparkModelBatchEngine *en
 {
 	SparkStatus status;
 	const uint32_t *tokens = SparkModelBatchRequestTokens(engine,(uint32_t)(request - engine->requests));
-	status = SparkPrefixCacheReleaseSequence(&engine->prefix_cache,request->sequence_id);
+	status = SparkPrefixCacheReleaseSequence(SparkModelBatchPrefixCache(engine,request),request->sequence_id);
 	if ( status == SPARK_STATUS_OK && engine->adapter_descriptor->cache_checkpoint_token_count != 0u )
 	{
-		status = SparkPrefixCacheClearResume(&engine->prefix_cache,tokens,request->cache_prefix_token_count);
+		status = SparkPrefixCacheClearResume(SparkModelBatchPrefixCache(engine,request),tokens,request->cache_prefix_token_count);
 		fprintf(stderr,"batch_resume_cleared request=%llu tokens=%u status=%s: the ranks no longer hold this resume point, so the request resumes at an earlier one\n",
 			(unsigned long long)request->request_id,request->cache_prefix_token_count,SparkStatusToString(status));
 	}
 	else if ( status == SPARK_STATUS_OK )
-		status = SparkPrefixCacheTombstonePrompt(&engine->prefix_cache,tokens,request->cache_prefix_token_count);
+		status = SparkPrefixCacheTombstonePrompt(SparkModelBatchPrefixCache(engine,request),tokens,request->cache_prefix_token_count);
 	if ( status == SPARK_STATUS_OK )
 		engine->prefix_index_dirty = 1u;
 	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND )
@@ -1049,7 +1074,7 @@ static SparkStatus SparkModelBatchRecomputeStalePrefix(SparkModelBatchEngine *en
 	request->prefix_outcome_recorded = 0u;
 	memset(&request->cache_prefix_identity,0,sizeof(request->cache_prefix_identity));
 	memset(&request->cache_published_identity,0,sizeof(request->cache_published_identity));
-	SparkSha256Initialize(&request->cache_published_digest_context);
+	SparkModelBatchDigestBegin(&request->cache_published_digest_context,request->precision);
 	request->prefix_isolated = 0u;
 	request->restore_hint_sent = 0u;
 	request->stale_prefix_recompute_count++;
@@ -1229,9 +1254,9 @@ static SparkStatus SparkModelBatchMarkResume(
 {
 	uint32_t superseded = 0u;
 	SparkStatus status;
-	status = SparkPrefixCacheMarkResume(&engine->prefix_cache,tokens,token_count);
+	status = SparkPrefixCacheMarkResume(SparkModelBatchPrefixCache(engine,request),tokens,token_count);
 	if ( status == SPARK_STATUS_OK && engine->adapter_descriptor->cache_checkpoint_token_count != 0u )
-		status = SparkPrefixCacheSupersedeResume(&engine->prefix_cache,tokens,token_count,SPARK_KV_PAGE_CACHE_RECENT_STATES,
+		status = SparkPrefixCacheSupersedeResume(SparkModelBatchPrefixCache(engine,request),tokens,token_count,SPARK_KV_PAGE_CACHE_RECENT_STATES,
 			engine->adapter_descriptor->cache_checkpoint_token_count,&superseded);
 	if ( superseded != 0u )
 	{
@@ -1261,7 +1286,7 @@ static SparkStatus SparkModelBatchPublishCompletedPrefix(
 		&tokens[request->cache_published_token_count],
 		completed_token_count - request->cache_published_token_count);
 	status = SparkPrefixCacheCommitPrompt(
-		&engine->prefix_cache,
+		SparkModelBatchPrefixCache(engine,request),
 		request->sequence_id,
 		tokens,
 		completed_token_count,
@@ -2137,6 +2162,8 @@ static SparkStatus SparkModelBatchValidateSubmit(
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( request->logprobs != 0u && (engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS) == 0u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	if ( request->precision >= SPARK_PRECISION_MODES )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( request->prompt_token_count > engine->context_tokens || request->output_token_budget > engine->context_tokens - request->prompt_token_count )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( SparkModelBatchSchedulerRequestFitsPageCapacity(
@@ -2177,6 +2204,8 @@ SparkStatus SparkModelBatchEngineSubmit(
 	state->deadline_ns = request->deadline_ns;
 	state->sampling = SparkSamplingRuleWith(request->temperature,request->seed,request->top_p,request->top_k,request->logprobs);
 	state->drafts_disabled = request->drafts_disabled != 0u ? 1u : 0u;
+	state->precision = request->precision;
+	state->fp8_attention_token_count = 0u;
 	state->prompt_token_count = request->prompt_token_count;
 	state->output_token_budget = request->output_token_budget;
 	state->request_id = request->request_id;
@@ -2213,7 +2242,7 @@ SparkStatus SparkModelBatchEngineSubmit(
 			SPARK_RETURN(status);
 		}
 	}
-	SparkSha256Initialize(&state->cache_published_digest_context);
+	SparkModelBatchDigestBegin(&state->cache_published_digest_context,state->precision);
 	engine->live_request_count++;
 	engine->submitted_request_count++;
 	engine->next_progress_ns = 1u;
@@ -2279,7 +2308,7 @@ static void SparkModelBatchRefreshQueuedPrefix(
 		return;
 	slot = (uint32_t)(request - engine->requests);
 	memset(&lookup,0,sizeof(lookup));
-	status = SparkPrefixCacheLookupPrompt(&engine->prefix_cache,
+	status = SparkPrefixCacheLookupPrompt(SparkModelBatchPrefixCache(engine,request),
 		request->sequence_id,SparkModelBatchRequestTokens(engine,slot),
 		request->prompt_token_count,&lookup);
 	while ( status == SPARK_STATUS_OK && lookup.matched_token_count % engine->cache_block_token_count != 0u &&
@@ -2288,22 +2317,22 @@ static void SparkModelBatchRefreshQueuedPrefix(
 		aligned = lookup.matched_token_count - lookup.matched_token_count % engine->cache_block_token_count;
 		memset(&lookup,0,sizeof(lookup));
 		if ( aligned != 0u )
-			status = SparkPrefixCacheLookupPrompt(&engine->prefix_cache,
+			status = SparkPrefixCacheLookupPrompt(SparkModelBatchPrefixCache(engine,request),
 				request->sequence_id,SparkModelBatchRequestTokens(engine,slot),aligned,&lookup);
 	}
 	if ( status == SPARK_STATUS_OK && engine->adapter_descriptor->cache_checkpoint_token_count != 0u && lookup.matched_token_count != 0u )
 	{
-		resume = SparkPrefixCacheResumeTokenCount(&engine->prefix_cache,SparkModelBatchRequestTokens(engine,slot),lookup.matched_token_count);
+		resume = SparkPrefixCacheResumeTokenCount(SparkModelBatchPrefixCache(engine,request),SparkModelBatchRequestTokens(engine,slot),lookup.matched_token_count);
 		if ( resume != lookup.matched_token_count )
 		{
-			status = SparkPrefixCacheReleaseSequence(&engine->prefix_cache,request->sequence_id);
+			status = SparkPrefixCacheReleaseSequence(SparkModelBatchPrefixCache(engine,request),request->sequence_id);
 			memset(&lookup,0,sizeof(lookup));
 			if ( status == SPARK_STATUS_OK && resume != 0u )
-				status = SparkPrefixCacheLookupPrompt(&engine->prefix_cache,
+				status = SparkPrefixCacheLookupPrompt(SparkModelBatchPrefixCache(engine,request),
 					request->sequence_id,SparkModelBatchRequestTokens(engine,slot),resume + 1u,&lookup);
 			if ( status == SPARK_STATUS_OK && lookup.matched_token_count != resume )
 			{
-				status = SparkPrefixCacheReleaseSequence(&engine->prefix_cache,request->sequence_id);
+				status = SparkPrefixCacheReleaseSequence(SparkModelBatchPrefixCache(engine,request),request->sequence_id);
 				memset(&lookup,0,sizeof(lookup));
 			}
 		}
@@ -2576,10 +2605,11 @@ static void SparkModelBatchDecideDefer(SparkModelBatchEngine *engine,SparkModelB
 	if ( remaining < engine->streamed_min_tokens || remaining <= engine->streamed_quantum )
 		return;
 	request->defer_end = request->computed_prompt_token_count + (remaining - 1u) / engine->streamed_quantum * engine->streamed_quantum;
+	request->fp8_attention_token_count = request->precision == SPARK_PRECISION_FP8_ATTENTION ? request->defer_end - request->computed_prompt_token_count : 0u;
 	engine->deferring_slot = slot;
 	engine->deferring_generation = request->generation;
-	fprintf(stderr,"batch_streamed_prefill request=%llu positions %u..%u of %u go to the streamed prefill, the rest as waves\n",
-		(unsigned long long)request->request_id,request->computed_prompt_token_count,request->defer_end,request->prompt_token_count);
+	fprintf(stderr,"batch_streamed_prefill request=%llu positions %u..%u of %u go to the streamed prefill with %s attention, the rest as waves\n",
+		(unsigned long long)request->request_id,request->computed_prompt_token_count,request->defer_end,request->prompt_token_count,SparkPrecisionName(request->precision));
 }
 
 static uint32_t SparkModelBatchLogprobStride(
@@ -3474,7 +3504,11 @@ static uint32_t SparkModelBatchBuildSubmission(
 	{
 		SparkModelBatchBuildPrefillRows(engine,submission,lane_count);
 		if ( lane_count == 1u && SparkModelBatchDeferring(&engine->requests[engine->scratch_request_slots[0]]) != 0u )
+		{
 			submission->flags |= SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER;
+			if ( engine->requests[engine->scratch_request_slots[0]].precision == SPARK_PRECISION_FP8_ATTENTION )
+				submission->flags |= SPARK_MODEL_SERVING_SUBMISSION_FLAG_FP8_ATTENTION;
+		}
 	}
 	else if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 		SparkModelBatchBuildDecodeRows(engine,submission,lane_count);
@@ -3877,7 +3911,7 @@ static SparkStatus SparkModelBatchInvalidateEngineSession(SparkModelBatchEngine 
 		request->cache_published_token_count = 0u;
 		request->cache_lookup_epoch = 0u;
 		request->prefix_outcome_recorded = 0u;
-		SparkSha256Initialize(&request->cache_published_digest_context);
+		SparkModelBatchDigestBegin(&request->cache_published_digest_context,request->precision);
 		request->busy_restore_count = 0u;
 		request->inflight_since_ns = 0ull;
 		request->state = SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL;

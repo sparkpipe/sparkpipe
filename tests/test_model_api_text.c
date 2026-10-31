@@ -1287,8 +1287,23 @@ static void TestApiSamplingOptions(TestApiStack *stack)
 		response,sizeof(response));
 	assert(TestApiResponseStatus(response) == 200);
 	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"speculation\":0}");
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"sparkpipe\":{\"prefill\":\"fp8\"}}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	assert(strstr(TestApiResponseJsonBody(response),"\"precision\":{\"prefill\":\"fp8\",\"fp8_attention_tokens\":0}") != 0);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"sparkpipe\":{\"prefill\":\"full\"}}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	assert(strstr(TestApiResponseJsonBody(response),"\"precision\"") == 0);
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"sparkpipe\":{\"prefill\":\"fp4\"}}");
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"sparkpipe\":{\"prefill\":8}}");
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"sparkpipe\":{\"prefill\":\"fp8\",\"kv\":\"fp8\"}}");
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"sparkpipe\":\"fp8\"}");
 	printf("test_model_api_text: sampling options OK (logprobs return the emitted token and its top alternatives "
-		"in order, streamed or not; top-p and top-k reach a truncating adapter; speculation false is accepted; out-of-range options are 400)\n");
+		"in order, streamed or not; top-p and top-k reach a truncating adapter; speculation false is accepted; an fp8 prefill request reports "
+		"how many prompt tokens took fp8 attention; unknown precision modes or keys and out-of-range options are 400)\n");
 }
 
 static void TestApiRefusedStartup(const char *tokenizer_asset_path, const char *label)

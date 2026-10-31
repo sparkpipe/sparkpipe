@@ -190,7 +190,12 @@ typedef struct SparkPrefixCache
     uint64_t reuse_scored_lookahead_eviction_count;
     uint64_t reuse_scored_untracked_eviction_count;
     uint64_t reuse_scored_capacity_stall_count;
+    uint64_t root_hash;
 } SparkPrefixCache;
+
+void SparkPrefixCacheSelectNamespace(
+    SparkPrefixCache *cache,
+    uint32_t name_space);
 
 SparkStatus SparkPrefixCacheInitialize(
     SparkPrefixCache *cache,

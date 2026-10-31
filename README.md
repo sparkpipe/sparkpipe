@@ -511,6 +511,22 @@ Callers name a model, a priority and a deadline. SparkPipe chooses
 placement, batch width, microbatch geometry, speculation and collective
 algorithm.
 
+Every request runs at the publisher's precision unless it asks otherwise.
+`"sparkpipe": {"prefill": "fp8"}` (default `"full"`) runs the attention of
+the streamed prefill in FP8 e4m3: queries and keys scaled per row, values
+per channel, softmax weights scaled by 448 and summed after rounding. That
+covers the part of a long prompt that defers to the streamed prefill
+(16,384 tokens and up on Kimi K3's prefill lane). Waves, decode, recurrent
+layers, experts and the KV codec stay at full precision. KV pages and
+recurrent states an FP8 request writes live in their own cache namespace,
+so a full-precision request never reuses them. The response's usage reports
+`precision.fp8_attention_tokens`, the prompt tokens that took FP8
+attention (0 when the prompt did not defer). On real Kimi K3 activations
+the FP8 kernel runs at 110 TFLOP/s per node against about 74 for bf16, and
+its attention output differs from exact attention by 2.9e-2 to 3.4e-2
+relative RMS on early and middle MLA layers (8e-4 on the last), about 100
+times the bf16 kernel's error.
+
 A LiteLLM front door routes several islands behind one endpoint
 ([`docs/LITELLM_FRONTEND.md`](docs/LITELLM_FRONTEND.md)). Memory, tools,
 policy and user interfaces belong above the API.

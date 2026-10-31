@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_kv_shard.h"
+#include "sparkpipe/spark_precision.h"
 #include "sparkpipe/spark_stage_runner.h"
 #include "sparkpipe/spark_status.h"
 
@@ -124,7 +125,7 @@ typedef struct SparkStageRunnerStreamedPrefill
 	uint32_t sequence_slot;
 	uint32_t state_target;
 	uint32_t multiprocessors;
-	uint32_t reserved0;
+	uint32_t precision;
 } SparkStageRunnerStreamedPrefill;
 
 struct SparkStageRunnerModelInterface

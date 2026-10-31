@@ -278,6 +278,8 @@ struct K3Streamed
 	uint32_t *host_staging;
 	uint32_t *health;
 	uint8_t *mla_keys;
+	uint8_t *fp8_region;
+	uint64_t fp8_capacity;
 	cudaStream_t gather_stream;
 	cudaStream_t copy_stream;
 	cudaEvent_t dense_done[SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS];
@@ -487,6 +489,7 @@ static void K3StreamedDestroy(K3Streamed *s)
 	if ( s->gather_stream != 0 )
 		(void)cudaStreamDestroy(s->gather_stream);
 	cudaFree(s->mla_keys);
+	cudaFree(s->fp8_region);
 	cudaFreeHost(s->host_staging);
 	cudaFreeHost(s->health);
 	cudaFreeHost(s->round.sums_host);
@@ -876,6 +879,36 @@ static SparkStatus K3StreamedKeys(K3Streamed *s, uint64_t keys)
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus K3StreamedFp8(K3Streamed *s)
+{
+	const uint64_t block = s->mla.expanded_keys, keys = (uint64_t)K3_STREAMED_HEADS * block * K3_MHA_QK;
+	const uint64_t scales = (uint64_t)K3_STREAMED_HEADS * block * sizeof(float);
+	const uint64_t values = (uint64_t)K3_STREAMED_HEADS * LmFp8AttentionTiles(block) * K3_V_HEAD_DIM * LM_FP8_ATTENTION_TILE;
+	const uint64_t amax = (uint64_t)K3_STREAMED_HEADS * K3_V_HEAD_DIM * sizeof(uint32_t);
+	const uint64_t at_scales = (keys + 255u) & ~(uint64_t)255u, at_values = at_scales + ((scales + 255u) & ~(uint64_t)255u), at_amax = at_values + ((values + 255u) & ~(uint64_t)255u);
+	if ( block == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( block > s->fp8_capacity )
+	{
+		cudaFree(s->fp8_region);
+		s->fp8_region = 0;
+		s->fp8_capacity = 0u;
+		if ( cudaMalloc((void **)&s->fp8_region, (size_t)(at_amax + amax)) != cudaSuccess )
+		{
+			s->fp8_region = 0;
+			fprintf(stderr, "sparkpipe_k3: fp8 attention buffers for key blocks of %llu keys (%llu bytes) do not fit; the fp8 request fails\n",
+				(unsigned long long)block, (unsigned long long)(at_amax + amax));
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		}
+		s->fp8_capacity = block;
+	}
+	s->mla.fp8_keys = s->fp8_region;
+	s->mla.fp8_key_scale = (float *)(s->fp8_region + at_scales);
+	s->mla.fp8_values = s->fp8_region + at_values;
+	s->mla.fp8_value_amax = (uint32_t *)(s->fp8_region + at_amax);
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus K3StreamedCheck(K3Streamed *s, int32_t launched, const char *what, uint32_t layer)
 {
 	if ( launched == LM_LAUNCH_OK && s->round.status == SPARK_STATUS_OK )
@@ -1170,18 +1203,21 @@ static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPr
 	K3StreamedVocab vocab;
 	SparkStatus status;
 	if ( request == 0 || request->token_ids == 0 || request->token_count == 0u || (request->token_count % (K3_STREAMED_SHARDS * K3_STREAMED_ROW_ALIGN)) != 0u ||
-		request->sequence_slot >= s->dispatch->sequences || request->state_target >= s->dispatch->sequences || keys > UINT32_MAX )
+		request->sequence_slot >= s->dispatch->sequences || request->state_target >= s->dispatch->sequences || keys > UINT32_MAX || request->precision >= SPARK_PRECISION_MODES )
 	{
-		fprintf(stderr, "sparkpipe_k3: streamed prefill takes a multiple of %u tokens for a known slot (got %u tokens, slot %u, state %u)\n",
+		fprintf(stderr, "sparkpipe_k3: streamed prefill takes a multiple of %u tokens for a known slot in a known precision (got %u tokens, slot %u, state %u, precision %u)\n",
 			K3_STREAMED_SHARDS * K3_STREAMED_ROW_ALIGN, request != 0 ? request->token_count : 0u, request != 0 ? request->sequence_slot : 0u,
-			request != 0 ? request->state_target : 0u);
+			request != 0 ? request->state_target : 0u, request != 0 ? request->precision : 0u);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	status = K3StreamedOpen(s, services);
 	if ( status == SPARK_STATUS_OK )
 		status = K3StreamedKeys(s, keys);
+	if ( status == SPARK_STATUS_OK && request->precision == SPARK_PRECISION_FP8_ATTENTION )
+		status = K3StreamedFp8(s);
 	if ( status != SPARK_STATUS_OK )
 		return status;
+	s->mla.precision = request->precision;
 	s->b.cache_shard.pages = s->dispatch->mla_cache[0];
 	passes = (uint32_t)((request->token_count + pass_max - 1u) / pass_max);
 	status = K3StreamedStates(s, request->state_target, 0u, stream);
@@ -1304,8 +1340,9 @@ static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPr
 		status = K3StreamedStates(s, request->state_target, 1u, stream);
 	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize(stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
-	fprintf(stderr, "sparkpipe_k3: streamed prefill sequence %llu positions %u..%llu in %u passes status=%d %.1f s; exchanges with a block late or wrong at first check %llu, settled after waiting %llu\n",
-		(unsigned long long)request->sequence_id, request->first_position, (unsigned long long)keys, passes, (int)status, (double)(K3StreamedNowNs() - started) / 1e9,
+	fprintf(stderr, "sparkpipe_k3: streamed prefill sequence %llu positions %u..%llu in %u passes, %s attention, status=%d %.1f s; exchanges with a block late or wrong at first check %llu, settled after waiting %llu\n",
+		(unsigned long long)request->sequence_id, request->first_position, (unsigned long long)keys, passes, SparkPrecisionName(request->precision), (int)status,
+		(double)(K3StreamedNowNs() - started) / 1e9,
 		(unsigned long long)s->round.mismatches, (unsigned long long)s->round.late);
 	return status;
 }

@@ -155,7 +155,7 @@ static void *MlNodeThread(void *argument)
 }
 
 static void MlSetup(MlNode *n,uint32_t node,uint32_t nodes,NodeEmulationWorld *world,const K3LayerWeights *shards,uint32_t *table_device,
-	LmKvAccessError *error_device,const uint16_t *hidden,const uint16_t *partial_in,uint16_t *gathered,uint32_t stored)
+	LmKvAccessError *error_device,const uint16_t *hidden,const uint16_t *partial_in,uint16_t *gathered,uint32_t stored,uint32_t precision)
 {
 	const SparkKvShard store_shard = {nodes,node,4u};
 	LmKvShardView store;
@@ -246,6 +246,16 @@ static void MlSetup(MlNode *n,uint32_t node,uint32_t nodes,NodeEmulationWorld *w
 			x->expanded_keys = ML_KEY_BLOCK;
 			x->running = MlAlloc<float>((uint64_t)ML_PASS_ROWS * LmGqaShardRecordFloats(ML_HEADS,K3_V_HEAD_DIM,1u));
 		}
+		x->precision = precision;
+		if ( precision == SPARK_PRECISION_FP8_ATTENTION )
+		{
+			if ( x->expanded_keys == 0u )
+				x->expanded_keys = ML_ROWS;
+			x->fp8_keys = MlAlloc<uint8_t>((uint64_t)ML_HEADS * x->expanded_keys * K3_MHA_QK);
+			x->fp8_key_scale = MlAlloc<float>((uint64_t)ML_HEADS * x->expanded_keys);
+			x->fp8_values = MlAlloc<uint8_t>((uint64_t)ML_HEADS * LmFp8AttentionTiles(x->expanded_keys) * K3_V_HEAD_DIM * LM_FP8_ATTENTION_TILE);
+			x->fp8_value_amax = MlAlloc<uint32_t>((uint64_t)ML_HEADS * K3_V_HEAD_DIM);
+		}
 	}
 	ML_CUDA(cudaStreamCreate(&n->stream));
 }
@@ -254,8 +264,8 @@ int main(void)
 {
 	std::vector<K3LayerWeights> shards(ML_SHARDS);
 	std::vector<uint32_t> table(ML_PAGES),positions(ML_ROWS);
-	static MlNode nodes[ML_NODES],stored[ML_NODES],blocked[ML_NODES];
-	static NodeEmulationWorld ml_stored_world,ml_blocked_world;
+	static MlNode nodes[ML_NODES],stored[ML_NODES],blocked[ML_NODES],fp8[ML_NODES],fp8_blocked[ML_NODES];
+	static NodeEmulationWorld ml_stored_world,ml_blocked_world,ml_fp8_world,ml_fp8_blocked_world;
 	uint16_t *hidden = MlBf16((uint64_t)ML_ROWS * K3_HIDDEN,1u,1.0f,0.0f),*partial_in = MlBf16((uint64_t)ML_ROWS * K3_HIDDEN,2u,1.0f,0.0f);
 	uint16_t *attn_norm = MlBf16(K3_HIDDEN,3u,0.1f,1.0f),*q_norm = MlBf16(K3_Q_LORA_RANK,4u,0.1f,1.0f),*kv_norm = MlBf16(K3_KV_LORA_RANK,5u,0.1f,1.0f);
 	uint16_t *q_down = MlBf16((uint64_t)K3_Q_LORA_RANK * K3_HIDDEN,6u,0.02f,0.0f),*kv_a = MlBf16((uint64_t)K3_MLA_KV_A_DIM * K3_HIDDEN,7u,0.02f,0.0f);
@@ -310,16 +320,23 @@ int main(void)
 		"the one-device streamed MLA runs all rows");
 	ML_CUDA(cudaStreamSynchronize(stream));
 	for (uint32_t node = 0u; node < ML_NODES; node++)
-		MlSetup(&nodes[node],node,ML_NODES,&ml_world,shards.data(),table_device,error_device,hidden,partial_in,gathered,0u);
+		MlSetup(&nodes[node],node,ML_NODES,&ml_world,shards.data(),table_device,error_device,hidden,partial_in,gathered,0u,SPARK_PRECISION_FULL);
 	uint16_t *stored_gathered = MlAlloc<uint16_t>((uint64_t)ML_ROWS * K3_HIDDEN);
 	for (uint32_t node = 0u; node < ML_NODES; node++)
-		MlSetup(&stored[node],node,ML_NODES,&ml_stored_world,shards.data(),table_device,error_device,hidden,partial_in,stored_gathered,1u);
+		MlSetup(&stored[node],node,ML_NODES,&ml_stored_world,shards.data(),table_device,error_device,hidden,partial_in,stored_gathered,1u,SPARK_PRECISION_FULL);
 	uint16_t *blocked_gathered = MlAlloc<uint16_t>((uint64_t)ML_ROWS * K3_HIDDEN);
 	for (uint32_t node = 0u; node < ML_NODES; node++)
-		MlSetup(&blocked[node],node,ML_NODES,&ml_blocked_world,shards.data(),table_device,error_device,hidden,partial_in,blocked_gathered,2u);
+		MlSetup(&blocked[node],node,ML_NODES,&ml_blocked_world,shards.data(),table_device,error_device,hidden,partial_in,blocked_gathered,2u,SPARK_PRECISION_FULL);
+	uint16_t *fp8_gathered = MlAlloc<uint16_t>((uint64_t)ML_ROWS * K3_HIDDEN),*fp8_blocked_gathered = MlAlloc<uint16_t>((uint64_t)ML_ROWS * K3_HIDDEN);
+	for (uint32_t node = 0u; node < ML_NODES; node++)
+	{
+		MlSetup(&fp8[node],node,ML_NODES,&ml_fp8_world,shards.data(),table_device,error_device,hidden,partial_in,fp8_gathered,0u,SPARK_PRECISION_FP8_ATTENTION);
+		MlSetup(&fp8_blocked[node],node,ML_NODES,&ml_fp8_blocked_world,shards.data(),table_device,error_device,hidden,partial_in,fp8_blocked_gathered,2u,
+			SPARK_PRECISION_FP8_ATTENTION);
+	}
 	static MlNode single;
 	uint16_t *single_gathered = MlAlloc<uint16_t>((uint64_t)ML_ROWS * K3_HIDDEN);
-	MlSetup(&single,0u,1u,&ml_alone_world,shards.data(),table_device,error_device,hidden,partial_in,single_gathered,0u);
+	MlSetup(&single,0u,1u,&ml_alone_world,shards.data(),table_device,error_device,hidden,partial_in,single_gathered,0u,SPARK_PRECISION_FULL);
 	ML_CUDA(cudaDeviceSynchronize());
 	NodeEmulationStart(&ml_alone_world,1u);
 	MlNodeThread(&single);
@@ -354,6 +371,24 @@ int main(void)
 	}
 	for (uint32_t node = 0u; node < ML_NODES; node++)
 		MlCheck(blocked[node].status == LM_LAUNCH_OK,"every node runs both passes expanding keys in blocks of 48 and gathering older keys in chunks of 5");
+	NodeEmulationStart(&ml_fp8_world,ML_NODES);
+	{
+		pthread_t threads[ML_NODES];
+		for (uint32_t node = 0u; node < ML_NODES; node++)
+			pthread_create(&threads[node],0,MlNodeThread,&fp8[node]);
+		for (uint32_t node = 0u; node < ML_NODES; node++)
+			pthread_join(threads[node],0);
+	}
+	NodeEmulationStart(&ml_fp8_blocked_world,ML_NODES);
+	{
+		pthread_t threads[ML_NODES];
+		for (uint32_t node = 0u; node < ML_NODES; node++)
+			pthread_create(&threads[node],0,MlNodeThread,&fp8_blocked[node]);
+		for (uint32_t node = 0u; node < ML_NODES; node++)
+			pthread_join(threads[node],0);
+	}
+	for (uint32_t node = 0u; node < ML_NODES; node++)
+		MlCheck(fp8[node].status == LM_LAUNCH_OK && fp8_blocked[node].status == LM_LAUNCH_OK,"every node runs both passes with fp8 attention, in one key block and in blocks of 48");
 	{
 		std::vector<uint16_t> want((uint64_t)ML_ROWS * K3_HIDDEN),got(want.size()),before(want.size());
 		double worst = 0.0,squared = 0.0,error = 0.0;
@@ -412,6 +447,28 @@ int main(void)
 		MlCheck(nonfinite == 0u,"every output element is finite");
 		MlCheck(squared > 0.0,"the MLA layer changes the residual");
 		MlCheck(rms <= 0.01,"four nodes over two passes, gathering latents and returning head-group values, match the one-device streamed MLA (sixteen bf16-rounded output partials) within 1% relative RMS of the attention contribution");
+		std::vector<uint16_t> from_fp8(want.size()),from_fp8_blocks(want.size());
+		double fp8_squared = 0.0,fp8_error = 0.0,fp8_block_error = 0.0;
+		ML_CUDA(cudaMemcpy(from_fp8.data(),fp8_gathered,from_fp8.size() * 2u,cudaMemcpyDeviceToHost));
+		ML_CUDA(cudaMemcpy(from_fp8_blocks.data(),fp8_blocked_gathered,from_fp8_blocks.size() * 2u,cudaMemcpyDeviceToHost));
+		for (uint64_t index = 0u; index < got.size(); index++)
+		{
+			const double r = MlHostFloat(got[index]),c = MlHostFloat(from_fp8[index]),k = MlHostFloat(from_fp8_blocks[index]),b = MlHostFloat(before[index]);
+			if ( isfinite(r) && isfinite(c) && isfinite(k) )
+			{
+				fp8_squared += (r - b) * (r - b);
+				fp8_error += (r - c) * (r - c);
+				fp8_block_error += (c - k) * (c - k);
+			}
+			else
+				nonfinite++;
+		}
+		const double fp8_rms = sqrt(fp8_error / (fp8_squared > 0.0 ? fp8_squared : 1.0)),fp8_block_rms = sqrt(fp8_block_error / (fp8_squared > 0.0 ? fp8_squared : 1.0));
+		MlCheck(fp8_rms > 1e-3,"an fp8 attention request computes a different attention than full precision (the precision reaches the kernel)");
+		MlCheck(fp8_rms <= 0.1,"fp8 attention over four nodes and two passes stays within 10% relative RMS of the full-precision attention contribution on random weights");
+		MlCheck(fp8_block_rms <= 0.05,"fp8 attention in key blocks of 48 with the running fold matches fp8 attention over one block within 5% relative RMS");
+		MlCheck(nonfinite == 0u,"every fp8 output element is finite");
+		printf("fp8 attention vs full precision: relative RMS %.3g; fp8 key blocks vs one fp8 block: %.3g\n",fp8_rms,fp8_block_rms);
 		printf("%s MLA on %u nodes x %u passes vs one node: relative RMS %.3g; vs one-device streamed MLA: %.3g (worst %.4g), nonfinite %llu; keys from the decode store bit-identical; key blocks %.3g\n",
 			ml_failures == 0 ? "PASS" : "FAIL",ML_NODES,ML_PASSES,node_rms,rms,worst,(unsigned long long)nonfinite,block_rms);
 	}

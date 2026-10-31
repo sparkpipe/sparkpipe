@@ -982,6 +982,7 @@ static SparkStatus SparkPrefixCacheInstallEntry(
 }
 
 static void SparkPrefixCacheInitializeLookup(
+    const SparkPrefixCache *cache,
     SparkPrefixCacheLookup *lookup,
     uint64_t sequence_id,
     uint32_t requested_token_count)
@@ -992,10 +993,11 @@ static void SparkPrefixCacheInitializeLookup(
     lookup->requested_token_count = requested_token_count;
     lookup->logical_block_index = SPARK_PREFIX_CACHE_NO_LOGICAL_BLOCK;
     lookup->sequence_id = sequence_id;
-    lookup->last_block_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH;
+    lookup->last_block_hash = cache->root_hash;
 }
 
 static void SparkPrefixCachePrepareReservationOutput(
+    const SparkPrefixCache *cache,
     SparkPrefixCacheReservation *reservation,
     uint64_t sequence_id,
     uint32_t requested_token_count,
@@ -1012,7 +1014,7 @@ static void SparkPrefixCachePrepareReservationOutput(
     reservation->requested_token_count = requested_token_count;
     reservation->sequence_id = sequence_id;
     reservation->reservation_epoch = operation_epoch;
-    reservation->last_block_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH;
+    reservation->last_block_hash = cache->root_hash;
     reservation->logical_block_indices = logical_block_indices;
     reservation->logical_block_capacity = logical_block_capacity;
 }
@@ -1230,6 +1232,19 @@ static SparkStatus SparkPrefixCacheRollbackEpoch(
     return SPARK_STATUS_OK;
 }
 
+void SparkPrefixCacheSelectNamespace(
+    SparkPrefixCache *cache,
+    uint32_t name_space)
+{
+    if (cache == 0)
+    {
+        return;
+    }
+    cache->root_hash = name_space == 0u
+        ? SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH
+        : SparkPrefixCacheMixU64(SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH ^ UINT64_C(0x9e3779b97f4a7c15), name_space);
+}
+
 SparkStatus SparkPrefixCacheInitialize(
     SparkPrefixCache *cache,
     const SparkPrefixCacheConfiguration *configuration)
@@ -1272,6 +1287,7 @@ SparkStatus SparkPrefixCacheInitialize(
 
     memset(cache, 0, sizeof(*cache));
     cache->abi_version = SPARK_PREFIX_CACHE_ABI_VERSION;
+    cache->root_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH;
     cache->descriptor_bytes = SPARK_PREFIX_CACHE_DESCRIPTOR_BYTES;
     cache->block_token_count = configuration->block_token_count;
     cache->entry_count = configuration->entry_count;
@@ -1352,7 +1368,7 @@ static SparkPrefixCacheEntry *SparkPrefixCacheWalkNextBounded(
     if (walk->partial != 0u || walk->token_offset >= maximum)
         return 0;
     if (walk->matched_block_count == 0u)
-        walk->parent_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH;
+        walk->parent_hash = cache->root_hash;
     count = SparkPrefixCacheMinimumU32(cache->block_token_count,
         maximum - walk->token_offset);
     for (; count != 0u; count--)
@@ -1399,7 +1415,7 @@ SparkStatus SparkPrefixCacheProbePrompt(
         return status;
     if (token_ids == 0 || lookup == 0 || token_count == 0u || sequence_id == 0u)
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-    SparkPrefixCacheInitializeLookup(lookup,sequence_id,token_count);
+    SparkPrefixCacheInitializeLookup(cache,lookup,sequence_id,token_count);
     cache->lookup_count++;
     while ((entry = SparkPrefixCacheWalkNext(cache,token_ids,token_count,&walk)) != 0)
     {
@@ -1977,7 +1993,7 @@ SparkStatus SparkPrefixCacheLookupPrompt(
     }
     cache->operation_epoch += 1u;
     operation_epoch = cache->operation_epoch;
-    parent_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH;
+    parent_hash = cache->root_hash;
     for (token_offset = 0u;
          token_offset < probe.matched_token_count;
          token_offset += cache->block_token_count)
@@ -2079,11 +2095,12 @@ static SparkStatus SparkPrefixCacheReservePromptInternal(
     cache->operation_epoch += 1u;
     operation_epoch = cache->operation_epoch;
     SparkPrefixCachePrepareReservationOutput(
+        cache,
         reservation,
         sequence_id,
         token_count,
         operation_epoch);
-    parent_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH;
+    parent_hash = cache->root_hash;
     token_offset = 0u;
 
     for (block_index = 0u; block_index < block_count; ++block_index)
@@ -2405,7 +2422,7 @@ SparkStatus SparkPrefixCacheCommitPrompt(
     if (token_ids == 0 || token_count == 0u || sequence_id == 0u)
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     if (lookup != 0)
-        SparkPrefixCacheInitializeLookup(lookup,sequence_id,token_count);
+        SparkPrefixCacheInitializeLookup(cache,lookup,sequence_id,token_count);
     for (offset=0u; offset<token_count; offset+=cache->block_token_count)
     {
         binding = SparkPrefixCacheFindBindingAtTokenOffset(cache,sequence_id,offset);
@@ -2495,7 +2512,7 @@ SparkStatus SparkPrefixCacheEnsureSequenceTokenCapacity(
         cache->block_token_count);
     short_binding = 0;
     short_entry = 0;
-    parent_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH;
+    parent_hash = cache->root_hash;
     cache->operation_epoch += 1u;
     operation_epoch = cache->operation_epoch;
 
@@ -3122,13 +3139,14 @@ SparkStatus SparkPrefixCacheMarkResume(
     uint32_t token_count)
 {
     SparkPrefixCacheEntry *entry = 0,*parent = 0;
-    uint64_t parent_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH,block_hash;
+    uint64_t parent_hash,block_hash;
     uint32_t token_offset;
     SparkStatus status;
 
     status = SparkPrefixCacheValidate(cache);
     if (status != SPARK_STATUS_OK)
         return status;
+    parent_hash = cache->root_hash;
     if (token_ids == 0 || token_count == 0u)
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     for (token_offset = 0u; token_offset < token_count; token_offset += cache->block_token_count)
@@ -3153,13 +3171,14 @@ SparkStatus SparkPrefixCacheClearResume(
     uint32_t token_count)
 {
     SparkPrefixCacheEntry *entry = 0;
-    uint64_t parent_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH,block_hash;
+    uint64_t parent_hash,block_hash;
     uint32_t token_offset;
     SparkStatus status;
 
     status = SparkPrefixCacheValidate(cache);
     if (status != SPARK_STATUS_OK)
         return status;
+    parent_hash = cache->root_hash;
     if (token_ids == 0 || token_count == 0u)
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     for (token_offset = 0u; token_offset < token_count; token_offset += cache->block_token_count)
@@ -3184,7 +3203,7 @@ SparkStatus SparkPrefixCacheSupersedeResume(
     uint32_t *superseded_out)
 {
     SparkPrefixCacheEntry *entry,*victim,*kept[SPARK_PREFIX_CACHE_RESUME_RECENT_MAXIMUM];
-    uint64_t parent_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH,block_hash;
+    uint64_t parent_hash,block_hash;
     uint32_t kept_end[SPARK_PREFIX_CACHE_RESUME_RECENT_MAXIMUM];
     uint32_t token_offset,limit,window,held = 0u,head = 0u,victim_end,superseded = 0u;
     SparkStatus status;
@@ -3192,6 +3211,7 @@ SparkStatus SparkPrefixCacheSupersedeResume(
     status = SparkPrefixCacheValidate(cache);
     if (status != SPARK_STATUS_OK)
         return status;
+    parent_hash = cache->root_hash;
     if (token_ids == 0 || token_count == 0u || recent_count == 0u || recent_count > SPARK_PREFIX_CACHE_RESUME_RECENT_MAXIMUM ||
         anchor_token_count == 0u || anchor_token_count % cache->block_token_count != 0u || superseded_out == 0)
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -3257,11 +3277,12 @@ uint32_t SparkPrefixCacheResumeTokenCount(
     uint32_t matched_token_count)
 {
     SparkPrefixCacheEntry *entry;
-    uint64_t parent_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH,block_hash,last_parent = 0u;
+    uint64_t parent_hash,block_hash,last_parent = 0u;
     uint32_t token_offset,block_tokens,child_offset,found,resume = 0u,last_offset = 0u,last_tokens = 0u;
 
     if (SparkPrefixCacheValidate(cache) != SPARK_STATUS_OK || token_ids == 0)
         return 0u;
+    parent_hash = cache->root_hash;
     for (token_offset = 0u; token_offset < matched_token_count; token_offset += cache->block_token_count)
     {
         block_tokens = SparkPrefixCacheMinimumU32(cache->block_token_count, matched_token_count - token_offset);

@@ -1283,6 +1283,41 @@ static void SparkTestPrefixCacheResumeOpen(SparkTestKvFixture *fixture,SparkPref
 	assert(SparkPrefixCacheInitialize(cache,&configuration) == SPARK_STATUS_OK);
 }
 
+static void SparkTestPrefixCacheNamespacesIsolate(void)
+{
+	SparkTestKvFixture fixture;
+	SparkPrefixCache cache;
+	SparkPrefixCacheEntry entries[8u];
+	SparkPrefixCacheSequenceBinding bindings[16u];
+	SparkPrefixCacheLookup lookup;
+	uint32_t tokens[17u],index;
+	SparkTestPrefixCacheResumeOpen(&fixture,&cache,entries,bindings);
+	for (index=0u; index<17u; index++)
+		tokens[index] = 3000u + index;
+	SparkPrefixCacheSelectNamespace(&cache,1u);
+	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,8u,&lookup) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheMarkResume(&cache,tokens,8u) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,16u,&lookup) == SPARK_STATUS_OK);
+	SparkPrefixCacheSelectNamespace(&cache,0u);
+	assert(SparkPrefixCacheLookupPrompt(&cache,2u,tokens,16u,&lookup) == SPARK_STATUS_OK);
+	assert(lookup.matched_token_count == 0u);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,12u) == 0u);
+	assert(SparkPrefixCacheCommitPrompt(&cache,2u,tokens,16u,&lookup) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheLookupPrompt(&cache,3u,tokens,16u,&lookup) == SPARK_STATUS_OK);
+	assert(lookup.matched_token_count == 12u);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,lookup.matched_token_count) == 0u);
+	SparkPrefixCacheSelectNamespace(&cache,1u);
+	assert(SparkPrefixCacheLookupPrompt(&cache,4u,tokens,16u,&lookup) == SPARK_STATUS_OK);
+	assert(lookup.matched_token_count == 12u);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,lookup.matched_token_count) == 8u);
+	assert(SparkPrefixCacheProbePrompt(&cache,5u,tokens,17u,&lookup) == SPARK_STATUS_OK && lookup.matched_token_count == 16u);
+	assert(SparkPrefixCacheTombstonePrompt(&cache,tokens,16u) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheProbePrompt(&cache,5u,tokens,17u,&lookup) == SPARK_STATUS_OK && lookup.matched_token_count < 16u);
+	SparkPrefixCacheSelectNamespace(&cache,0u);
+	assert(SparkPrefixCacheProbePrompt(&cache,6u,tokens,17u,&lookup) == SPARK_STATUS_OK && lookup.matched_token_count == 16u);
+	printf("prefix cache namespaces: a prompt committed in one precision namespace is invisible to the other, resume points and tombstones stay in their namespace\n");
+}
+
 static void SparkTestPrefixCacheResumePoints(void)
 {
 	SparkTestKvFixture fixture,imported_fixture;
@@ -3417,6 +3452,7 @@ int main(void)
 	SparkTestKvPageStoreDirectIoContract();
 	SparkTestKvPageStoreFailedPrefetchCancelsReservation();
 	SparkTestPrefixCacheReusesCommittedLogicalBlocks();
+	SparkTestPrefixCacheNamespacesIsolate();
 	SparkTestPrefixCacheResumePoints();
 	SparkTestPrefixCacheResumeInsideLastBlock();
 	SparkTestPrefixCacheResumeInsideEarlierBlock();

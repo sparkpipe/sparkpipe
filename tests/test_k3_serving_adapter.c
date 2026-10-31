@@ -196,6 +196,36 @@ static int32_t TestK3SharedRows(void)
 	return(failures);
 }
 
+static int32_t TestK3DispatchPrecision(void)
+{
+	static const uint32_t kinds[2] = { SPARK_MODEL_SERVING_WORK_KIND_PREFILL, SPARK_MODEL_SERVING_WORK_KIND_DECODE };
+	SparkStageServingState state;
+	SparkModelServingSubmission submission;
+	SparkStageRunnerDispatch dispatch;
+	int32_t failures = 0;
+	memset(&state, 0, sizeof(state));
+	memset(&submission, 0, sizeof(submission));
+	submission.work_kind = kinds[0];
+	submission.flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER | SPARK_MODEL_SERVING_SUBMISSION_FLAG_FP8_ATTENTION;
+	StageServingDispatch(&state, &submission, 4u, 2u, 1u, &dispatch);
+	failures += TestK3Check((dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) != 0u && (dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_FP8_ATTENTION) != 0u,
+		"a deferred fp8 prefill reaches the runner as a deferred fp8 dispatch");
+	submission.flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER;
+	StageServingDispatch(&state, &submission, 4u, 2u, 1u, &dispatch);
+	failures += TestK3Check((dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_FP8_ATTENTION) == 0u,
+		"a deferred full-precision prefill carries no fp8 flag");
+	submission.flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_FP8_ATTENTION;
+	StageServingDispatch(&state, &submission, 4u, 2u, 1u, &dispatch);
+	failures += TestK3Check((dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_FP8_ATTENTION) == 0u,
+		"fp8 attention never reaches a wave that is not deferred");
+	submission.work_kind = kinds[1];
+	submission.flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER | SPARK_MODEL_SERVING_SUBMISSION_FLAG_FP8_ATTENTION;
+	StageServingDispatch(&state, &submission, 2u, 2u, 1u, &dispatch);
+	failures += TestK3Check((dispatch.flags & (SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER | SPARK_STAGE_RUNNER_DISPATCH_FLAG_FP8_ATTENTION)) == 0u,
+		"a decode wave carries neither the defer nor the fp8 flag");
+	return(failures);
+}
+
 static const uint32_t *TestK3Host(const SparkMemoryBuffer *buffer)
 {
 	return((const uint32_t *)buffer->pointer);
@@ -473,6 +503,7 @@ int main(int argc, char **argv)
 	int32_t failures = TestK3Descriptor();
 	failures += TestK3ReleaseValidation();
 	failures += TestK3SharedRows();
+	failures += TestK3DispatchPrecision();
 	failures += TestK3Grouping();
 	failures += TestK3TapStream();
 	int index;

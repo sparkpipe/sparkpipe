@@ -290,6 +290,7 @@ typedef struct SparkStageRunnerState
 	uint32_t deferred_count;
 	uint32_t deferred_first;
 	uint32_t deferred_slot;
+	uint32_t deferred_precision;
 	uint32_t deferred_active;
 	uint32_t *context_length;
 	uint32_t *sequence_of_row;
@@ -2135,6 +2136,14 @@ static SparkStatus StageRunnerDefer(SparkStageRunner *runner, SparkStageRunnerSt
 		state->deferred_first = dispatch->host_positions[0];
 		state->deferred_count = 0u;
 		state->deferred_slot = dispatch->host_sequence_of_row[0];
+		state->deferred_precision = (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_FP8_ATTENTION) != 0u ? SPARK_PRECISION_FP8_ATTENTION : SPARK_PRECISION_FULL;
+	}
+	if ( state->deferred_precision != ((dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_FP8_ATTENTION) != 0u ? SPARK_PRECISION_FP8_ATTENTION : SPARK_PRECISION_FULL) )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: deferred prefill refused: a %s wave arrived while slot %u holds %u deferred %s tokens\n",
+			(dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_FP8_ATTENTION) != 0u ? "fp8" : "full", state->deferred_slot, state->deferred_count,
+			SparkPrecisionName(state->deferred_precision));
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	}
 	if ( dispatch->host_sequence_of_row[0] != state->deferred_slot )
 	{
@@ -2190,6 +2199,7 @@ static SparkStatus StageRunnerRunDeferred(SparkStageRunnerState *state, const Sp
 	request.sequence_slot = state->deferred_slot;
 	request.state_target = state->deferred_slot;
 	request.multiprocessors = state->multiprocessors;
+	request.precision = state->deferred_precision;
 	status = state->model_interface->streamed_prefill(state->model, &request, &state->services);
 	state->deferred_active = 0u;
 	state->deferred_count = 0u;
@@ -2248,6 +2258,11 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	if ( (dispatch->flags & ~SPARK_STAGE_RUNNER_DISPATCH_KNOWN_FLAGS) != 0u )
 	{
 		fprintf(stderr, "sparkpipe_stage_runner: submit refused: unknown dispatch flags 0x%x\n", dispatch->flags);
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	if ( (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_FP8_ATTENTION) != 0u && (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: submit refused: fp8 attention applies to the streamed prefill only (flags=0x%x)\n", dispatch->flags);
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	}
 	if ( (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) != 0u )

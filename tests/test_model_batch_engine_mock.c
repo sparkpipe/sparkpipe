@@ -16,6 +16,7 @@
 #include "mock_model_resident_client.h"
 #include "sparkpipe/spark_speculation_frame.h"
 #include "sparkpipe/spark_model_batch_engine.h"
+#include "sparkpipe/spark_precision.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 
@@ -63,6 +64,7 @@ typedef struct TestBatchState
 	uint32_t cancelled_events[TEST_MAX_REQUESTS + 1u];
 	uint32_t total_terminals;
 	uint32_t cached_tokens[TEST_MAX_REQUESTS + 1u];
+	uint32_t fp8_tokens[TEST_MAX_REQUESTS + 1u];
 	uint32_t stale_recomputes[TEST_MAX_REQUESTS + 1u];
 	uint64_t accepted_ns[TEST_MAX_REQUESTS + 1u];
 	uint64_t first_dispatch_ns[TEST_MAX_REQUESTS + 1u];
@@ -95,6 +97,7 @@ static void TestBatchEvent(void *context, const SparkModelBatchEvent *event)
 		if ( s->token_events[id]++ == 0u )
 			s->first_token_ns[id] = event->monotonic_ns;
 		s->cached_tokens[id] = event->cached_prompt_token_count;
+		s->fp8_tokens[id] = event->fp8_attention_token_count;
 		s->first_dispatch_ns[id] = event->first_dispatch_ns;
 		if ( event->logprob_count != 0u )
 			s->logprob_events[id]++;
@@ -169,6 +172,7 @@ static void TestWriteDeployment(const char *path, const char *runtime_root, cons
 
 static uint32_t TestKeepPrefixIndex;
 static uint32_t TestDraftsDisabled;
+static uint32_t TestPrecision;
 static const char *TestPeerPrefixIndex;
 
 static const char *TestPrefixIndexPath(void)
@@ -247,6 +251,7 @@ static SparkStatus TestSubmitPromptStatus(SparkModelBatchEngine *engine,uint64_t
 	request.prompt_token_count = prompt_count;
 	request.output_token_budget = budget;
 	request.drafts_disabled = TestDraftsDisabled;
+	request.precision = TestPrecision;
 	handle = 0;
 	return(SparkModelBatchEngineSubmit(engine,&request,&handle));
 }
@@ -955,6 +960,70 @@ static void TestScenarioSharedPrefillRows(const SparkModelResidentDeployment *de
 	}
 	CHECK(submissions[0] != 0u && rows[0] > 4u,"shared rows: without a limit, one prefill wave carries several prompts past the shared size");
 	CHECK(submissions[1] != 0u && rows[1] <= 4u,"shared rows: a wave carrying several prompts stays within the shared limit, while one prompt alone may use the full budget");
+}
+
+static void TestScenarioStreamedPrefillPrecision(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	SparkModelResidentDeployment streamed = *deployment;
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane;
+	uint32_t prompt[11] = {161u,162u,163u,164u,165u,166u,167u,168u,169u,170u,171u};
+	uint32_t index,fp8_rows = 0u,fp8_outside = 0u,full_fp8 = 0u,full_deferred = 0u;
+	SparkModelServingCacheIdentity fp8_publish, full_publish;
+	uint32_t fp8_published = 0u,full_published = 0u;
+	streamed.streamed_prefill_quantum = 4u;
+	streamed.streamed_prefill_min_tokens = 8u;
+	MockResidentClientReset();
+	engine = TestConnectRows(&streamed,&state,runtime_root,6u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestPrecision = SPARK_PRECISION_FP8_ATTENTION;
+	TestSubmitPrompt(engine,1u,700u,1u,prompt,11u);
+	TestDriveUntilTerminal(engine,&state,1u,800u);
+	TestPrecision = SPARK_PRECISION_FULL;
+	TestSubmitPrompt(engine,2u,701u,1u,prompt,11u);
+	TestDriveUntilTerminal(engine,&state,2u,800u);
+	TestPrecision = SPARK_PRECISION_FP8_ATTENTION;
+	TestSubmitPrompt(engine,3u,702u,1u,prompt,11u);
+	TestDriveUntilTerminal(engine,&state,3u,800u);
+	TestPrecision = SPARK_PRECISION_FULL;
+	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u && state.completed_events[3] == 1u,"precision: fp8, full and fp8 requests for one prompt all complete");
+	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
+	{
+		const uint32_t flags = MockResidentClientLaneSubmissionFlags(index);
+		const uint32_t deferred = (flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER) != 0u ? 1u : 0u, fp8 = (flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_FP8_ATTENTION) != 0u ? 1u : 0u;
+		if ( lane.request_id == 1u && deferred != 0u && fp8 != 0u )
+			fp8_rows += lane.context_token_count - (uint32_t)lane.sequence_position;
+		if ( fp8 != 0u && deferred == 0u )
+			fp8_outside++;
+		if ( lane.request_id == 2u )
+		{
+			full_fp8 += fp8;
+			full_deferred += deferred;
+		}
+		if ( (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u && lane.cache_publish_token_count == 11u && lane.request_id == 1u && fp8_published == 0u )
+		{
+			fp8_publish = lane.cache_publish_identity;
+			fp8_published = 1u;
+		}
+		if ( (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u && lane.cache_publish_token_count == 11u && lane.request_id == 2u && full_published == 0u )
+		{
+			full_publish = lane.cache_publish_identity;
+			full_published = 1u;
+		}
+	}
+	CHECK(fp8_rows == 8u,"precision: every deferred wave of the fp8 request carries the fp8 attention flag");
+	CHECK(fp8_outside == 0u,"precision: the fp8 attention flag rides deferred prefill waves only");
+	CHECK(full_deferred != 0u && full_fp8 == 0u,"precision: the full-precision request defers without the fp8 attention flag");
+	CHECK(state.fp8_tokens[1] == 8u && state.fp8_tokens[2] == 0u,"precision: the fp8 request reports its 8 streamed positions as fp8 attention, the full one none");
+	CHECK(state.cached_tokens[2] == 0u,"precision: a full-precision request never reuses KV an fp8 request wrote for the same prompt");
+	CHECK(state.cached_tokens[3] != 0u,"precision: a second fp8 request reuses the first fp8 request's KV");
+	CHECK(fp8_published != 0u && full_published != 0u && memcmp(&fp8_publish,&full_publish,sizeof(fp8_publish)) != 0,
+		"precision: fp8 and full-precision KV for the same 11 tokens publish under different cache identities");
+	SparkModelBatchEngineDestroy(engine);
 }
 
 static void TestScenarioStreamedPrefillDefers(const SparkModelResidentDeployment *deployment,const char *runtime_root)
@@ -3413,6 +3482,7 @@ int main(void)
 	TestScenarioCanonicalPrefillChunks(&deployment,runtime_root);
 	TestScenarioSharedPrefillRows(&deployment,runtime_root);
 	TestScenarioStreamedPrefillDefers(&deployment,runtime_root);
+	TestScenarioStreamedPrefillPrecision(&deployment,runtime_root);
 	TestScenarioStreamedSpanBudget(&deployment,runtime_root);
 	TestScenarioDecodeAfterPrefill(&deployment,runtime_root);
 	TestScenarioPartialCopyCapacity(&deployment,runtime_root);

@@ -1,6 +1,8 @@
 #pragma once
 
+#include "sparkpipe/spark_precision.h"
 #include "sparkpipe/spark_tp_device_collective.h"
+#include "inference/kernels/attention_fp8.cuh"
 #include "inference/kernels/tp_reduce.cuh"
 #include "inference/llms/kimi_k3/slice.cuh"
 
@@ -565,6 +567,11 @@ struct K3StreamedMlaExchange
 	uint64_t older_capacity;
 	uint32_t expanded_keys;
 	uint32_t key_block;
+	uint32_t precision;
+	uint8_t *fp8_keys;
+	float *fp8_key_scale;
+	uint8_t *fp8_values;
+	uint32_t *fp8_value_amax;
 	float *running;
 	K3StreamedCollective collective;
 	void *context;
@@ -664,7 +671,9 @@ static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 		join->activation_capacity < (uint64_t)rows * K3_MLA_HEADS * K3_V_HEAD_DIM || b->tp_sharded == 0u || b->kv_shard.degree != 1u || rows == 0u || (uint64_t)rows * x->nodes != x->pass_rows ||
 		x->q_latents == 0 || x->latent_keys == 0 || x->query == 0 || x->expanded == 0 || x->partials == 0 || x->merged == 0 || x->value_send == 0 || x->values == 0 ||
 		x->pass_positions == 0 || x->pass_sequence_of_row == 0 || x->pass_row_offset == 0 || x->pass_tile_prefix == 0 || x->key_offset == 0 || x->key_context == 0 ||
-		shards[x->node].mla_kv_b_key_full_weight == 0 || shards[x->node].mla_kv_b_value_full_weight == 0 )
+		shards[x->node].mla_kv_b_key_full_weight == 0 || shards[x->node].mla_kv_b_value_full_weight == 0 ||
+		(x->precision != SPARK_PRECISION_FULL && (x->precision != SPARK_PRECISION_FP8_ATTENTION || x->fp8_keys == 0 || x->fp8_key_scale == 0 || x->fp8_values == 0 ||
+			x->fp8_value_amax == 0 || x->expanded_keys == 0u)) )
 		return(LM_LAUNCH_ERR_SHAPE);
 	groups = shard_count / x->nodes;
 	key_count = (uint64_t)x->first_key + x->pass_rows;
@@ -708,6 +717,16 @@ static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 					(const uint16_t *)shards[x->node].mla_kv_b_value_full_weight + value_rows * K3_KV_LORA_RANK,HEADS,x->expanded + (uint64_t)HEADS * K3_MHA_QK * 2u,
 					key_pitch,K3_V_HEAD_DIM,stream) != cudaSuccess )
 				status = LM_LAUNCH_ERR_LAUNCH;
+			else if ( x->precision == SPARK_PRECISION_FP8_ATTENTION )
+			{
+				if ( LmFp8AttentionQuantizeLaunch<K3_MHA_QK,K3_V_HEAD_DIM>((const uint16_t *)x->expanded,key_pitch,HEADS,keys,x->expanded_keys,x->fp8_keys,x->fp8_key_scale,
+						x->fp8_values,x->fp8_value_amax,stream) != cudaSuccess ||
+					LmFp8AttentionPartialLaunch<K3_MHA_QK,K3_V_HEAD_DIM>(x->query,HEADS,x->pass_positions,x->pass_rows,x->fp8_keys,x->fp8_key_scale,x->fp8_values,
+						x->fp8_value_amax,(uint32_t)key_first,keys,x->expanded_keys,K3_MLA_QK_SCALE,x->partials,stride,stream) != cudaSuccess )
+					status = LM_LAUNCH_ERR_LAUNCH;
+				else if ( blocks > 1u )
+					LM_LAUNCH((K3StreamedFoldRecordsKernel<K3_V_HEAD_DIM>), x->pass_rows, 256u, 0, stream, x->running,x->partials,HEADS,x->pass_rows,key_first == 0u ? 1u : 0u);
+			}
 			else if ( LmKvShardGatherViewInitialize<Expanded>(&view,b->cache_shard.pages,b->kv_shard,x->expanded,x->key_offset,x->key_context) != 0 ||
 				LmKvShardGatherViewWindow(&view,(uint32_t)key_first,(uint32_t)key_first + keys) != 0 )
 				status = LM_LAUNCH_ERR_SHAPE;
