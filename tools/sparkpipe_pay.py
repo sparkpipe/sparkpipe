@@ -514,7 +514,8 @@ def left_of(order):
     return {"hours": hours, "total": total, "net": net, "vat": total - net}
 
 
-def receipt(cfg, order, issued, received):
+def receipt(cfg, order, issued, received, paid):
+    coin = ", ".join(sorted({symbol.split(".")[0] for symbol in paid})) or order["coin"].split(".")[0]
     if order["product"] == "hourly":
         what = f"{issued['hours']} fleet-hours, usable from {order['start']} to {order['last']}"
     else:
@@ -523,7 +524,7 @@ def receipt(cfg, order, issued, received):
         lines = [
             f"Order {order['order']} was for {order['total']} USD; {received} USD arrived. We issued what it covers: {what}.",
             "",
-            f"Received in {order['coin'].split('.')[0]}: {received} USD, VAT included",
+            f"Received in {coin}: {received} USD, VAT included",
             "",
             f"To get the other hours of this order at the same price, pay the remaining amount from your account: {cfg.public}/account.html?order={order['order']}",
         ]
@@ -533,7 +534,7 @@ def receipt(cfg, order, issued, received):
             "",
             f"Subtotal: {order['net']} USD",
             f"VAT: {order['vat']} USD",
-            f"Total paid in {order['coin'].split('.')[0]}: {order['total']} USD",
+            f"Total paid in {coin}: {order['total']} USD",
         ]
     return "\n".join(lines + [
         "",
@@ -865,8 +866,9 @@ class App:
                 log(f"order {order_id}: {arrived} USD received covers no hours; refund it in CoinPayments")
                 self.mail(self.cfg.notify, f"Payment to review: {order_id}", f"Order {order_id} completed at CoinPayments with {arrived} USD received, which covers no hours. Refund it in CoinPayments.")
                 return None
+            paid = paid_with(remote)
             if order["state"] != "completed":
-                self.book.append("payment", {"order": order_id, "invoice": order["invoice"], "total": order["total"], "received": arrived, "currency": currency, "paidWith": paid_with(remote)})
+                self.book.append("payment", {"order": order_id, "invoice": order["invoice"], "total": order["total"], "received": arrived, "currency": currency, "paidWith": paid})
             issued = {"order": order_id, "account": order["account"], "product": order["product"], "hours": hours, "net": net, "released": released, "short": not full}
             if order["product"] == "hourly":
                 issued.update(start=order["start"], last=order["last"])
@@ -874,9 +876,9 @@ class App:
                 issued.update(agreement=order["agreement"])
             self.book.append("hours_issued", issued)
             log(f"order {order_id}: paid, {hours} hours issued to {order['account']}")
-            self.mail(order["email"], f"Payment received: SparkPipe order {order_id}", receipt(self.cfg, order, issued, arrived))
+            self.mail(order["email"], f"Payment received: SparkPipe order {order_id}", receipt(self.cfg, order, issued, arrived, paid))
             subject = f"Paid in part: {order['company']}, {arrived} of {order['total']} USD" if not full else f"Paid: {order['company']}, {order['total']} USD"
-            self.mail(self.cfg.notify, subject, f"Order {order_id}: {hours} of {order['hours']} hours for {order['company']} <{order['email']}>, {arrived or order['total']} USD received of {order['total']} USD in {order['coin']}.")
+            self.mail(self.cfg.notify, subject, f"Order {order_id}: {hours} of {order['hours']} hours for {order['company']} <{order['email']}>, {arrived or order['total']} USD received of {order['total']} USD in {', '.join(paid) or order['coin']}.")
             return issued
 
     def work(self):
