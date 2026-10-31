@@ -54,7 +54,7 @@
       <label>Email<input id="email" type="email" autocomplete="email" maxlength="254" placeholder="you@company.com"></label>
       <p class="flash" id="m-email" hidden></p>
       <button class="btn solid big" type="submit" id="send">Email me a 6-digit code</button>
-      <p class="hint">No password. New here? <a href="buy.html">Buy HC</a> to open an account, or try the <a href="market.html?sandbox">Hour Market sandbox</a> first.</p>
+      <p class="hint">No password. New here? <a href="buy.html">Buy HC</a> or <a href="plans.html">order a plan</a> to open an account, or try the <a href="market.html?sandbox">Hour Market sandbox</a> first.</p>
     </form>
     <form class="form" id="f-code" hidden novalidate>
       <p>We sent a code to <b id="sent-to"></b>. It expires in 10 minutes.</p>
@@ -81,9 +81,9 @@
     <section class="card" id="next">
       <p class="label">What happens next</p>
       <ul class="perks">
-        <li>Each purchase of HC lasts 12 months from the day it is issued, and the oldest is spent first. The <a href="market.html">Hour Market</a> shows every lot.</li>
-        <li>Spend HC in the shared pool at once, through an OpenAI-format API with keys you create in the Hour Market, or reserve whole fleet-hours from <span data-start>1 December 2026</span>, up to 7 days ahead at the fleet's Rate, or up to 31 days ahead at 1.25× on any day. No reservation is ever bumped.</li>
-        <li>Receipts go to <b class="email-here"></b>. For a won tax invoice or anything else, write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</li>
+        <li><span>Each purchase of HC lasts 12 months from the day it is issued, and the oldest is spent first. The <a href="market.html">Hour Market</a> shows every lot.</span></li>
+        <li><span>Spend HC in the shared pool at once, through an OpenAI-format API with keys you create in the Hour Market, or reserve whole fleet-hours from <span data-start>1 December 2026</span>, up to 7 days ahead at the fleet's Rate, or up to 31 days ahead at 1.25× on any day. No reservation is ever bumped.</span></li>
+        <li><span>Receipts go to <b class="email-here"></b>. For a won tax invoice or anything else, write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</span></li>
       </ul>
     </section>
 
@@ -106,6 +106,7 @@
   <section class="card">
     <p class="label">Plan <span data-k="plan"></span></p>
     <h3 data-k="summary"></h3>
+    <p class="hint" data-k="form-line" hidden><a data-k="form">Open the Plan Order</a>, ready to print, with its acceptance record and our signature.</p>
     <div class="calc">
       <div class="readout">
         <div><span>Term</span><strong data-k="term"></strong></div>
@@ -223,6 +224,8 @@
     const k = (name) => node.querySelector('[data-k="' + name + '"]');
     k('plan').textContent = a.plan;
     k('summary').textContent = summary(a);
+    k('form-line').hidden = !a.form;
+    k('form').href = 'plan-order.html?plan=' + encodeURIComponent(a.plan);
     k('term').textContent = nice(a.start) + ' – ' + nice(a.end);
     k('hours').textContent = SP.whole(a.hours);
     k('price').textContent = SP.usd(a.price);

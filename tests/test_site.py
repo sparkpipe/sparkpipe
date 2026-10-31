@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import json
+import re
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -172,6 +174,15 @@ def check_kr_networks(failures):
         failures.append(f"site_kr_networks: wrong /24 networks {len(keys)} {keys[:1]} {keys[-2:]}")
 
 
+def check_models(failures):
+    text = (SITE / "pricing.js").read_text()
+    listed = [(m["name"], m["id"]) for m in json.loads(text[text.index("{"):text.rindex("}") + 1])["models"]]
+    rows = re.findall(r'<tr><td><b>([^<]+)</b><br><span class="mono">([^<]+)</span></td>.*?<td>(Offered[^<]*|Not offered)</td></tr>', (SITE / "fleets.html").read_text())
+    offered = [(name, ident) for name, ident, state in rows if state.startswith("Offered")]
+    if not offered or listed != offered:
+        failures.append(f"the models a Plan Order can choose (pricing.js) differ from the Fleet List's offered models: {listed} {offered}")
+
+
 def main():
     pages = {path.name: parse(path) for path in sorted(SITE.glob("*.html"))}
     failures = []
@@ -179,6 +190,7 @@ def main():
     check_languages(pages, failures)
     check_kr_networks(failures)
     check_brand(failures)
+    check_models(failures)
     for name, page in pages.items():
         check_links(name, page, pages, SITE, failures, CHAT_APP_PAGES.get(name, frozenset()))
         check_tables(name, page, failures)

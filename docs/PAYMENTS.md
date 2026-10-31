@@ -9,7 +9,8 @@ enabled, so an invoice priced in dollars is paid in dollars and neither side
 carries crypto price risk. Hours follow the US-dollar value CoinPayments
 reports for a payment (`nativeActualAmount`), whatever coin it came in, and
 the receipt names the coin that was paid (`paymentCurrencySymbol`). Won bank transfers against a tax
-invoice and USD wires under a Plan Order are still arranged by hand.
+invoice and USD wires under a Plan Order are still arranged by hand, and
+those Plan Orders are recorded with `sparkpipe_pay.py plan` (below).
 
 ## How a customer buys
 
@@ -50,10 +51,42 @@ invoice from the last 14 days, so a lost webhook only delays the hours.
 
 Every customer is under one contract, the Customer Agreement
 (`site/terms/agreement-*.md`). A reserved plan is a Plan Order under it,
-signed by hand for now. Once its entry is in `plans.json`, the account page
-lists the plan for the account with the same email, with what is paid, what
-is left and the next payment, and takes prepayments in USDC or USDT.
-`plans.html` builds a plan from the published choices and sends a quote
+which the customer orders on `plans.html`:
+
+1. The page builds the plan from the published choices (term, windows, days,
+   fleets, fleet lock, Start Date) and, once the customer is signed in (the
+   same email-code sign-in, which opens an account with the company's legal
+   name or the person's own name and the acceptance box), asks what the
+   Order Form needs: company or individual; for a company, where it is
+   organised and its registration number; the address; a notice email; a
+   Korean business registration number if any; and the Chosen Models, from
+   `models` in `site/pricing.js`, which `tests/test_site.py` keeps equal to the
+   models the Fleet List offers.
+2. `POST /pay/api/plans/quote` prices it from `plans.terms` (plus
+   `lockPremium` for a lock), works out the hours, Tranches and gates,
+   checks that we can keep its capacity (below), picks the locked fleets,
+   and returns the whole Plan Order: one text, Korean first, then English,
+   following the Customer Agreement's Plan Order form, with its SHA-256.
+3. The customer reads it and ticks the box. `POST /pay/api/plans/order`
+   builds the text again; if anything moved (capacity, the locked fleets,
+   a published text or setting) the hash differs and the order is refused
+   with reason `changed`. Otherwise the service signs the hash with its
+   Ed25519 key and records the Plan Order in the ledger with the text, the
+   hash, the IP address, the browser and the signature: acceptance by both
+   parties in the account under clause 12.4.
+4. The customer is emailed the Plan Order with its hash and our signature,
+   `SPARKPIPE_PAY_NOTIFY` gets a note, and `plan-order.html?plan=…` shows
+   it, ready to print, with a download of the exact text.
+
+The account page lists each plan with what is paid, what is left and the
+next payment, links its Plan Order, and takes prepayments in USDC or USDT.
+Each payment issues its hours to the earliest Tranches not yet paid as
+Tranche hours the customer reserves in the Hour Market (`tranche_grant`
+lines). Plan hours that occurred before they were paid for count as
+consumed (clause 20.1), so a payment first covers the hours of its Tranche
+that have already passed and issues the rest. An upfront plan's Tranche
+hours are issued once it is paid in full. For more than `plans.maxFleets`
+fleets, or a plan paid by bank transfer, `plans.html` still sends a quote
 request to `POST /pay/api/lead`.
 
 ## Endpoints
@@ -67,6 +100,10 @@ request to `POST /pay/api/lead`.
 | `POST /pay/api/order` | Signed in. `product: "credits"` with `amount` before VAT and `coin` (and `accept: true` when the terms changed since the account accepted them); or `product: "plan"` with `plan`, `amount` before VAT and `coin`: returns the checkout link. `coin` is one of the twelve CoinPayments symbols in `COINS`, such as `USDC.BASE` or `USDT.TRC20` |
 | `GET /pay/api/order/<order>` | The order's state, amounts and hours; the checkout link while unpaid. The order number is 80 random bits |
 | `POST /pay/api/lead` | A plan quote request: `company`, `email`, `name`, `fleets`, `start`, `message` |
+| `POST /pay/api/plans/quote` | Signed in. `start`, `months`, `windows` (ids), `days`, `fleets`, `lock`, `models` (ids) and `customer` (`kind` `company` or `individual`, `address`, optional `notice` and `brn`; a company also `jurisdiction` and `registration`): returns the Plan Order's number, text, rows, SHA-256, hours, prices and schedule, or 409 `capacity` |
+| `POST /pay/api/plans/order` | Signed in. The same fields with the quoted `plan` and `hash` and `agree: true` (and `accept: true` when the Customer Agreement changed since the account accepted it): records and signs the Plan Order. 409 `changed` when the text no longer matches, `unpaid` while another of the account's Plan Orders has no payment |
+| `GET /pay/api/plan/<plan>` | Signed in, the account's own: the plan's standing, its Plan Order rows and text, the acceptance time, our signature and its Tranches |
+| `GET /pay/api/plans/key` | Our Ed25519 public key for Plan Orders |
 | `POST /pay/api/coinpayments` | CoinPayments webhooks |
 | `GET /pay/api/health` | `{"ok": true}` |
 
@@ -75,7 +112,8 @@ The session cookie is HttpOnly, SameSite=Lax, Secure and scoped to
 `session_key` in the data directory, made on first start. A POST whose
 `Origin` is not `SPARKPIPE_PAY_PUBLIC` is refused. Each client IP address
 may ask for 20 codes, 30 verifications, 10 orders and 5 quote requests in
-ten minutes (quote requests: an hour), and each email for 5 codes an hour.
+ten minutes (quote requests: an hour), and for 60 Plan Order quotes and
+orders an hour, and each email for 5 codes an hour.
 
 ## Rules the service enforces
 
@@ -89,6 +127,23 @@ ten minutes (quote requests: an hour), and each email for 5 codes an hour.
   lot lasts `market.validityMonths` (12) months from issue; there is no
   holding limit.
 
+- A Plan Order is taken online only when `SPARKPIPE_PAY_SUPPLIER_ADDRESS_KO`
+  and `SPARKPIPE_PAY_SUPPLIER_ADDRESS_EN` hold our full notice address,
+  which every Plan Order states, and never in the sandbox. Its Start Date
+  is from `plans.earliestStart` (or today) to `plans.startWithinDays` (60)
+  days ahead, its fleets at most `plans.maxFleets`, and a fleet lock only on
+  a full day every day. The published window times, release fee,
+  maintenance allowance and fleet Rates are copied into it and kept for its
+  term.
+- Clause 16.2: a Plan Order is made only if its set-aside fits on serving
+  fleets in every hour of its term with every earlier plan and every
+  reservation (`Cover.clash`), and only if the HC already sold, and the HC
+  in unpaid orders, stays covered with it (docs/HOUR_MARKET.md). A fleet
+  lock takes the first serving fleets that pass both checks.
+- An account may hold one Plan Order with no payment at a time. An unpaid
+  Plan Order keeps its capacity until it lapses: a gated plan at the end of
+  Phase A, an upfront plan at the end of its Start Date. After a missed
+  gate, a plan keeps capacity only to the end of its last paid Tranche.
 - A plan prepayment is at least 1.00 USD and at most what is left of the
   term's price, counting unpaid orders. A gated plan's prepayment is
   refused after Phase A with nothing paid, after a missed gate, and after
@@ -104,44 +159,46 @@ ten minutes (quote requests: an hour), and each email for 5 codes an hour.
 
 - `ledger.jsonl`: one JSON line per event (`account`, `acceptance`,
   `order`, `invoice`, `invoice_failed`, `invoice_state`, `payment`,
-  `hours_issued`), each with the SHA-256 of the line before it. The service
+  `hours_issued`, `plan_order`, `plan_end`, and the Hour Market's lines),
+  each with the SHA-256 of the line before it. The service
   refuses to start if the chain is broken. An account or order line keeps
   the IP address and the browser, as the privacy policy's acceptance
   records say; a payment line keeps the coin CoinPayments reports.
 - `session_key`: 32 random bytes that sign the session cookies. Deleting
   it signs everyone out.
+- `signing_key`: the 32-byte Ed25519 private key that signs Plan Orders,
+  made on first use. Back it up with the ledger: Plan Orders already
+  signed stay verifiable with the public key they record, but a new key
+  signs new ones.
 - `leads.jsonl`: the plan quote requests.
-- `approved.json`: the emails that passed the business check, for example
-  `["cto@acme.example"]`.
-- `plans.json`: one entry per Plan Order:
+
+A Plan Order line (`plan_order`) holds its number (`plan`), `account`,
+`email`, `company`, `start`, `months`, `windows` (with their KST hours as
+published when it was made), `days`, `fleets`, `lock` (fleet ids, one per
+fleet, only on a full day every day), `hourPrice` (lock premium included),
+`payment` (`upfront` or `gates`), `releaseFee` and
+`maintenanceHoursPerWeek` as published then, and, for one made in the
+account, `customer`, `models`, `threshold`, `currency`, `rates`, `hours`,
+`total`, `schedule`, `agreement` (the hashes and version of the texts it
+is made under), `supplier`, `text`, `hash`, `accepted` (IP address and
+browser) and `signature`. A plan's hours are each elected window's hours
+times `fleets` on every plan day, by calendar-month Tranche.
+
+A Plan Order signed on paper is recorded with
+`sparkpipe_pay.py plan FILE.json`, a JSON object or list with `id`, the
+account's `email` and the fields above from `start` to
+`maintenanceHoursPerWeek`:
 
 ```json
-[{"id": "SP-PLAN-7K3QD9", "email": "billing@acme.example", "company": "Acme Co., Ltd.", "start": "2026-12-15", "months": 24, "windows": [{"id": "asia", "from": 8, "to": 16, "localDay": 0}], "days": "every", "fleets": 1, "hourPrice": "15.00", "payment": "gates", "releaseFee": "0.10", "maintenanceHoursPerWeek": 3}]
+[{"id": "SP-PLAN-7K3QD9", "email": "billing@acme.example", "start": "2026-12-15", "months": 24, "windows": [{"id": "asia", "from": 8, "to": 16, "localDay": 0}], "days": "every", "fleets": 1, "hourPrice": "15.00", "payment": "gates", "releaseFee": "0.10", "maintenanceHoursPerWeek": 3}]
 ```
 
-  - `windows`: the Order's windows with their KST hours as published when
-    it was made (copy them from `windows` in `site/pricing.js`; all three is
-    a full day). A later change to the published times does not move them.
-  - `days`: `every` or `weekdays` (Monday to Friday in each window's own
-    region: `localDay` shifts the Americas Window back a day).
-  - `fleets`: how many fleets at once; `months`: the term.
-  - `hourPrice`: the Order's price per fleet-hour, lock premium included.
-  - `payment`: `upfront` (due in full on the Start Date) or `gates` (Phase A
-    and the gates in `site/pricing.js`).
-  - `releaseFee` and `maintenanceHoursPerWeek`: the published settings in
-    force when the Order was made, kept for its whole term.
-  - `lock`: optional, a list of fleet ids, one per fleet, only on a full-day
-    every-day plan. A locked fleet is never offered to anyone else, not even
-    6 hours before, and stays out of the shared pool.
-
-  A plan's hours are each elected window's hours times `fleets` on every
-  plan day, by calendar-month Tranche. Each active plan keeps capacity off
-  HC sale (docs/HOUR_MARKET.md, "No overselling, no bumping"), so check a
-  new entry with `sparkpipe_pay.py cover FILE` before adding it. A bad
-  entry stops the service with the reason.
-
-The service rereads `approved.json` and `plans.json` on every
-request, so edits need no restart.
+It refuses an unknown email, a number already used and a plan whose
+capacity we cannot keep (clause 16.2); `sparkpipe_pay.py cover FILE.json`
+shows the cover with the file's plans added, without recording them.
+`sparkpipe_pay.py end-plan PLAN YYYY-MM-DD REASON` records that a Plan
+Order holds no capacity from that day, such as one we end under clause
+10.2.
 
 ## Mail
 
@@ -194,6 +251,7 @@ email, which is the account email.
 ## Install on the VPS
 
 ```sh
+sudo apt-get install -y python3-cryptography
 sudo useradd --system --home /var/lib/sparkpipe-pay --shell /usr/sbin/nologin sparkpipe-pay
 sudo install -d -o sparkpipe-pay -g sparkpipe-pay -m 700 /var/lib/sparkpipe-pay
 sudo install -d -m 755 /opt/sparkpipe-pay /etc/sparkpipe-pay
@@ -208,7 +266,10 @@ sudo install -m 644 deployment/vps/rspamd-dkim_signing.conf /etc/rspamd/local.d/
 
 Fill `COINPAYMENTS_CLIENT_ID` in `/etc/sparkpipe-pay/env` and put the
 client secret into `/etc/sparkpipe-pay/client_secret` by copying a file,
-never on a command line. `sparkpipe-ai-ssl.conf` is sparkpipe.ai's port-443
+never on a command line. Put our full registered address, in Korean and in
+English, in `SPARKPIPE_PAY_SUPPLIER_ADDRESS_KO` and
+`SPARKPIPE_PAY_SUPPLIER_ADDRESS_EN`: every Plan Order states it as our
+notice address, and online Plan Orders stay closed until both are set. `sparkpipe-ai-ssl.conf` is sparkpipe.ai's port-443
 virtual host and includes `sparkpipe-pay.conf` beside the other
 `deployment/vps` includes; `mod_proxy_http` must be on. Copy `site/` to `/var/www/html` as usual, including
 `site/terms/`: the acceptance names `https://sparkpipe.ai/terms/agreement-ko.md`,
