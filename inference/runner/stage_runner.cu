@@ -5,7 +5,11 @@
 #include <cstring>
 #include <ctime>
 #include <pthread.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
+#include "sparkpipe/spark_clock_mode.h"
 #include "sparkpipe/spark_head_screen.h"
 #include "sparkpipe/spark_stage_runner.h"
 #include "sparkpipe/spark_stage_runner_model.h"
@@ -290,7 +294,10 @@ typedef struct SparkStageRunnerState
 	uint32_t deferred_count;
 	uint32_t deferred_first;
 	uint32_t deferred_slot;
+	uint32_t deferred_clock;
 	uint32_t deferred_active;
+	uint32_t clock_cap_mhz;
+	uint32_t clock_max_mhz;
 	uint32_t *context_length;
 	uint32_t *sequence_of_row;
 	uint32_t *recurrent_index;
@@ -990,6 +997,8 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	state->tp_degree = configuration->tp_degree;
 	state->stream = (cudaStream_t)configuration->execution_stream;
 	state->max_rows = configuration->max_input_row_count;
+	state->clock_cap_mhz = configuration->streamed_prefill.clock_cap_mhz;
+	state->clock_max_mhz = configuration->streamed_prefill.clock_max_mhz;
 	state->head_capacity = configuration->head_row_capacity != 0u && configuration->head_row_capacity < state->max_rows ?
 		configuration->head_row_capacity : state->max_rows;
 	state->max_context = configuration->resident_sequence_capacity;
@@ -2135,6 +2144,14 @@ static SparkStatus StageRunnerDefer(SparkStageRunner *runner, SparkStageRunnerSt
 		state->deferred_first = dispatch->host_positions[0];
 		state->deferred_count = 0u;
 		state->deferred_slot = dispatch->host_sequence_of_row[0];
+		state->deferred_clock = (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_CLOCK_MAX) != 0u ? SPARK_CLOCK_MAX : SPARK_CLOCK_CAP;
+	}
+	if ( state->deferred_clock != ((dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_CLOCK_MAX) != 0u ? SPARK_CLOCK_MAX : SPARK_CLOCK_CAP) )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: deferred prefill refused: a wave at the %s clock arrived while slot %u holds %u deferred tokens at the %s clock\n",
+			(dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_CLOCK_MAX) != 0u ? "max" : "cap", state->deferred_slot, state->deferred_count,
+			SparkClockModeName(state->deferred_clock));
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	}
 	if ( dispatch->host_sequence_of_row[0] != state->deferred_slot )
 	{
@@ -2169,6 +2186,23 @@ static SparkStatus StageRunnerDefer(SparkStageRunner *runner, SparkStageRunnerSt
 	return SPARK_STATUS_OK;
 }
 
+extern "C" char **environ;
+
+static SparkStatus StageRunnerLockClock(uint32_t mhz)
+{
+	char limit[32];
+	char *const arguments[] = { (char *)"sudo", (char *)"-n", (char *)"nvidia-smi", (char *)"-lgc", limit, 0 };
+	pid_t child;
+	int exit_status;
+	(void)snprintf(limit, sizeof(limit), "0,%u", mhz);
+	if ( posix_spawnp(&child, "sudo", 0, 0, arguments, environ) != 0 )
+		return SPARK_STATUS_IO_ERROR;
+	while ( waitpid(child, &exit_status, 0) < 0 )
+		if ( errno != EINTR )
+			return SPARK_STATUS_IO_ERROR;
+	return WIFEXITED(exit_status) && WEXITSTATUS(exit_status) == 0 ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+}
+
 static SparkStatus StageRunnerRunDeferred(SparkStageRunnerState *state, const SparkStageRunnerDispatch *dispatch)
 {
 	SparkStageRunnerStreamedPrefill request;
@@ -2190,7 +2224,23 @@ static SparkStatus StageRunnerRunDeferred(SparkStageRunnerState *state, const Sp
 	request.sequence_slot = state->deferred_slot;
 	request.state_target = state->deferred_slot;
 	request.multiprocessors = state->multiprocessors;
-	status = state->model_interface->streamed_prefill(state->model, &request, &state->services);
+	status = SPARK_STATUS_OK;
+	if ( state->deferred_clock == SPARK_CLOCK_MAX )
+	{
+		status = state->clock_max_mhz != 0u ? StageRunnerLockClock(state->clock_max_mhz) : SPARK_STATUS_UNSUPPORTED;
+		fprintf(stderr, "sparkpipe_stage_runner: streamed prefill of %u tokens asks for the max clock: %s (lock 0,%u MHz, cap %u MHz)\n", request.token_count,
+			status == SPARK_STATUS_OK ? "locked" : state->clock_max_mhz == 0u ? "refused, this lane names no clock_max_mhz" : "refused, the clock lock failed",
+			state->clock_max_mhz, state->clock_cap_mhz);
+	}
+	if ( status == SPARK_STATUS_OK )
+		status = state->model_interface->streamed_prefill(state->model, &request, &state->services);
+	if ( state->deferred_clock == SPARK_CLOCK_MAX && state->clock_max_mhz != 0u )
+	{
+		const SparkStatus restored = StageRunnerLockClock(state->clock_cap_mhz);
+		fprintf(stderr, "sparkpipe_stage_runner: streamed prefill clock back to the %u MHz cap: %s\n", state->clock_cap_mhz, restored == SPARK_STATUS_OK ? "ok" : "FAILED, the GPU stays above its cap");
+		if ( status == SPARK_STATUS_OK && restored != SPARK_STATUS_OK )
+			status = restored;
+	}
 	state->deferred_active = 0u;
 	state->deferred_count = 0u;
 	if ( status != SPARK_STATUS_OK )
@@ -2248,6 +2298,11 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	if ( (dispatch->flags & ~SPARK_STAGE_RUNNER_DISPATCH_KNOWN_FLAGS) != 0u )
 	{
 		fprintf(stderr, "sparkpipe_stage_runner: submit refused: unknown dispatch flags 0x%x\n", dispatch->flags);
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	if ( (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_CLOCK_MAX) != 0u && (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: submit refused: the max clock applies to the streamed prefill only (flags=0x%x)\n", dispatch->flags);
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	}
 	if ( (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) != 0u )

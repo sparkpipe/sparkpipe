@@ -20,6 +20,7 @@
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_chat_template.h"
 #include "sparkpipe/spark_json.h"
+#include "sparkpipe/spark_clock_mode.h"
 #include "sparkpipe/spark_model_batch_engine.h"
 #include "sparkpipe/spark_tp_chain_ordinal.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
@@ -62,6 +63,7 @@ typedef struct ApiOptions
 	uint32_t top_k;
 	uint32_t logprobs;
 	uint32_t drafts_disabled;
+	uint32_t clock;
 } ApiOptions;
 
 typedef struct ApiRequest
@@ -80,6 +82,7 @@ typedef struct ApiRequest
 	uint64_t first_dispatch_ns;
 	uint32_t stale_prefix_recompute_count;
 	uint32_t cached_prompt_token_count;
+	uint32_t clock_max_token_count;
 	uint32_t engine_completed;
 	volatile uint32_t output_token_count;
 	volatile int done;
@@ -103,6 +106,7 @@ typedef struct ApiRequest
 	uint32_t top_k;
 	uint32_t logprob_count;
 	uint32_t drafts_disabled;
+	uint32_t clock;
 	SparkSamplingLogprob *logprobs;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
@@ -259,7 +263,7 @@ static void api_log_request_measurements(const ApiRequest *request)
 	if (SparkSha256Bytes(request->prompt_tokens,(size_t)request->prompt_count * sizeof(uint32_t),prompt_sha256) != SPARK_STATUS_OK)
 		prompt_sha256[0] = '\0';
 	flockfile(stderr);
-	fprintf(stderr,"{\"event\":\"request_measurements\",\"boot_pid\":%d,\"request_id\":%llu,\"status\":%u,\"engine_completed\":%u,\"accepted_ns\":%llu,\"first_dispatch_ns\":%llu,\"stale_prefix_recomputes\":%u,\"prompt_tokens\":%u,\"cached_prompt_tokens\":%u,\"prompt_sha256\":\"%s\",\"adapter_id\":\"%s\",\"model_id\":\"%s\",\"model_revision\":\"%s\",\"driver_program\":\"%s\",\"driver_artifact_sha256\":\"%s\",\"session_fingerprint\":%llu,\"priority\":%u,\"deadline_expired\":%u,\"stream\":%u,\"temperature\":%.9g,\"seed\":%llu,\"top_p\":%.9g,\"top_k\":%u,\"logprobs\":%u,\"finish_reason\":\"%s\",\"tokens\":[",(int)getpid(),(unsigned long long)request->id,request->status,request->engine_completed,(unsigned long long)request->accepted_ns,(unsigned long long)request->first_dispatch_ns,request->stale_prefix_recompute_count,request->prompt_count,request->cached_prompt_token_count,prompt_sha256,api_identity(adapter != 0 ? adapter->adapter_id : 0),api_identity(adapter != 0 ? adapter->model_id : 0),api_identity(adapter != 0 ? adapter->model_revision : 0),api_identity(adapter != 0 ? adapter->driver_program_name : 0),api_identity(adapter != 0 ? adapter->artifact_sha256 : 0),(unsigned long long)(S.engine != 0 ? SparkModelBatchEngineSessionFingerprint(S.engine) : 0u),request->priority,request->deadline_expired,request->stream,(double)request->temperature,(unsigned long long)request->seed,(double)request->top_p,request->top_k,request->logprob_count,request->status == 0u && request->deadline_expired == 0u ? api_finish_reason(request) : "error");
+	fprintf(stderr,"{\"event\":\"request_measurements\",\"boot_pid\":%d,\"request_id\":%llu,\"status\":%u,\"engine_completed\":%u,\"accepted_ns\":%llu,\"first_dispatch_ns\":%llu,\"stale_prefix_recomputes\":%u,\"prompt_tokens\":%u,\"cached_prompt_tokens\":%u,\"clock\":\"%s\",\"max_clock_tokens\":%u,\"prompt_sha256\":\"%s\",\"adapter_id\":\"%s\",\"model_id\":\"%s\",\"model_revision\":\"%s\",\"driver_program\":\"%s\",\"driver_artifact_sha256\":\"%s\",\"session_fingerprint\":%llu,\"priority\":%u,\"deadline_expired\":%u,\"stream\":%u,\"temperature\":%.9g,\"seed\":%llu,\"top_p\":%.9g,\"top_k\":%u,\"logprobs\":%u,\"finish_reason\":\"%s\",\"tokens\":[",(int)getpid(),(unsigned long long)request->id,request->status,request->engine_completed,(unsigned long long)request->accepted_ns,(unsigned long long)request->first_dispatch_ns,request->stale_prefix_recompute_count,request->prompt_count,request->cached_prompt_token_count,SparkClockModeName(request->clock),request->clock_max_token_count,prompt_sha256,api_identity(adapter != 0 ? adapter->adapter_id : 0),api_identity(adapter != 0 ? adapter->model_id : 0),api_identity(adapter != 0 ? adapter->model_revision : 0),api_identity(adapter != 0 ? adapter->driver_program_name : 0),api_identity(adapter != 0 ? adapter->artifact_sha256 : 0),(unsigned long long)(S.engine != 0 ? SparkModelBatchEngineSessionFingerprint(S.engine) : 0u),request->priority,request->deadline_expired,request->stream,(double)request->temperature,(unsigned long long)request->seed,(double)request->top_p,request->top_k,request->logprob_count,request->status == 0u && request->deadline_expired == 0u ? api_finish_reason(request) : "error");
 	for (index=0u; index<request->output_token_count; index++)
 		fprintf(stderr,"%s[%u,%llu]",index == 0u ? "" : ",",request->output_token_ids[index],(unsigned long long)request->token_ready_ns[index]);
 	fputs("]",stderr);
@@ -320,6 +324,7 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 		if (r->id != ev->request_id)
 			continue;
 		r->cached_prompt_token_count = ev->cached_prompt_token_count;
+		r->clock_max_token_count = ev->clock_max_token_count;
 		r->first_dispatch_ns = ev->first_dispatch_ns;
 		r->stale_prefix_recompute_count = ev->stale_prefix_recompute_count;
 		if ( ev->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_ACCEPTED )
@@ -523,6 +528,7 @@ static uint32_t api_submit(ApiRequest *r)
 	sub.top_k = r->top_k;
 	sub.logprobs = r->logprob_count;
 	sub.drafts_disabled = r->drafts_disabled;
+	sub.clock = r->clock;
 	sub.output_token_budget = r->max_tokens;
 	sub.prompt_token_ids = r->prompt_tokens;
 	sub.prompt_token_count = r->prompt_count;
@@ -1122,6 +1128,21 @@ static int api_parse_sampling_options(const SparkJsonDocument *doc, int32_t root
 	if ( member >= 0 && SparkJsonGetBoolean(doc,member,&speculation) != SPARK_STATUS_OK )
 		return 0;
 	options->drafts_disabled = member >= 0 && speculation == false ? 1u : 0u;
+	member = SparkJsonFindObjectMember(doc,root,"sparkpipe");
+	if ( member >= 0 )
+	{
+		static const char *const known[] = { "clock" };
+		const int32_t clock = SparkJsonFindObjectMember(doc,member,"clock");
+		uint32_t mode;
+		if ( SparkJsonValidateObjectMembersExact(doc,member,known,1u) != SPARK_STATUS_OK || clock < 0 || !SparkJsonTokenIsType(doc,clock,SPARK_JSON_TOKEN_STRING) )
+			return 0;
+		for (mode = 0u; mode < SPARK_CLOCK_MODES && !SparkJsonStringEquals(doc,clock,SparkClockModeName(mode)); mode++)
+		{
+		}
+		if ( mode == SPARK_CLOCK_MODES )
+			return 0;
+		options->clock = mode;
+	}
 	if ( options->temperature == 0.0f )
 	{
 		options->top_p = 1.0f;
@@ -1177,8 +1198,11 @@ static uint32_t api_stop_list(const ApiRequest *req, uint32_t *stops)
 
 static void api_usage_json(char *buffer, size_t capacity, const ApiRequest *req)
 {
-	(void)snprintf(buffer,capacity,",\"usage\":{\"prompt_tokens\":%u,\"completion_tokens\":%u,\"total_tokens\":%u,\"prompt_tokens_details\":{\"cached_tokens\":%u}}",
-		req->prompt_count,req->output_token_count,req->prompt_count + req->output_token_count,req->cached_prompt_token_count);
+	char clock[96] = "";
+	if ( req->clock != SPARK_CLOCK_CAP )
+		(void)snprintf(clock,sizeof(clock),",\"clock\":{\"mode\":\"%s\",\"max_clock_tokens\":%u}",SparkClockModeName(req->clock),req->clock_max_token_count);
+	(void)snprintf(buffer,capacity,",\"usage\":{\"prompt_tokens\":%u,\"completion_tokens\":%u,\"total_tokens\":%u,\"prompt_tokens_details\":{\"cached_tokens\":%u}%s}",
+		req->prompt_count,req->output_token_count,req->prompt_count + req->output_token_count,req->cached_prompt_token_count,clock);
 }
 
 static uint32_t api_client_gone(int fd)
@@ -1350,7 +1374,7 @@ static int api_stream_text(ApiStream *stream, const uint32_t *tokens, uint32_t c
 
 static int api_stream_event(int fd, ApiStream *stream, int chat_format, const ApiRequest *req, uint32_t first_token, const uint32_t *tokens, uint32_t count, const ApiRequest *finished)
 {
-	char usage[160],reason[24];
+	char usage[256],reason[24];
 	size_t length;
 	uint32_t index;
 	int written;
@@ -1425,7 +1449,7 @@ static void api_stream_close(int fd, const ApiRequest *req, ApiStream *stream, i
 static void api_send_completion(int fd, const ApiRequest *req, int chat_format)
 {
 	uint32_t stops[API_MAX_STOP_TOKENS + SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT],stop_count,text_capacity = 1u,text_bytes = 0u;
-	char *text = 0,*escaped = 0,*response = 0,*logprobs = 0,usage[160],err[160];
+	char *text = 0,*escaped = 0,*response = 0,*logprobs = 0,usage[256],err[160];
 	size_t escaped_capacity,escaped_length = 0u,response_capacity,logprobs_capacity,logprobs_length = 0u;
 	SparkStatus status = SPARK_STATUS_OK;
 	stop_count = api_stop_list(req,stops);
@@ -1794,6 +1818,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	req->top_k = options.top_k;
 	req->logprob_count = options.logprobs;
 	req->drafts_disabled = options.drafts_disabled;
+	req->clock = options.clock;
 	pthread_mutex_lock(&S.queue_mutex);
 	req->id = ++S.next_id + 100000;
 	req->prompt_tokens = prompt;

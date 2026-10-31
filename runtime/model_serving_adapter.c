@@ -550,6 +550,9 @@ SparkStatus SparkModelServingAdapterValidateSubmission(
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH &&
 		(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) == 0u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	if ( (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_CLOCK_MAX) != 0u && (submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL ||
+		(submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER) == 0u) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	verify = (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? 1u : 0u;
 	if ( verify != 0u && submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);

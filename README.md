@@ -511,6 +511,15 @@ Callers name a model, a priority and a deadline. SparkPipe chooses
 placement, batch width, microbatch geometry, speculation and collective
 algorithm.
 
+`"sparkpipe": {"clock": "max"}` (default `"cap"`) lifts the GPU clock lock
+for the request's streamed prefill. Each node locks its clocks at the
+lane's `clock_max_mhz` before the span and back at its `clock_cap_mhz`
+after it, through `sudo -n nvidia-smi -lgc`, at run time only. The output
+is the same. A lane that names no clock limits refuses the request instead
+of running it at the cap. Usage reports `clock.max_clock_tokens`. On a GB10
+the uncapped clock settles near 2,500 MHz under tensor-core load, power
+bound, and attention runs about 8 to 10% faster than at the 2,200 MHz cap.
+
 A LiteLLM front door routes several islands behind one endpoint
 ([`docs/LITELLM_FRONTEND.md`](docs/LITELLM_FRONTEND.md)). Memory, tools,
 policy and user interfaces belong above the API.

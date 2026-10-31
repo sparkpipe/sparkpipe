@@ -285,6 +285,8 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   Qwen 3.8 and Gemma 4's sliding layers). Gemma 4's global layers (512-wide
   keys) still take the scalar kernel, which re-reads every key for every row
   and reaches 1 to 2 TFLOP/s per node; a long Gemma 4 prompt is bound by it.
+- The max-clock request option covers the streamed prefill only; the waves
+  after it and decode run at the lane's cap.
 - Kimi K3's streamed prefill (lanes whose stage config names
   `streamed_prefill` and whose deployment names `streamed_prefill_quantum`
   and `streamed_prefill_min_tokens`) has three gaps. The deferred span's

@@ -395,6 +395,15 @@ static void TestSubmissionValidation(void)
 	submission.row_positions = &row_position;
 	submission.row_sequence_ids = &row_sequence;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
+	submission.flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER | SPARK_MODEL_SERVING_SUBMISSION_FLAG_CLOCK_MAX;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
+	submission.flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_CLOCK_MAX;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	submission.flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER | SPARK_MODEL_SERVING_SUBMISSION_FLAG_CLOCK_MAX;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	submission.flags = 0u;
 	lane.sampling = SparkSamplingRule(0.7f,5u);
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_UNSUPPORTED);
 	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING;
