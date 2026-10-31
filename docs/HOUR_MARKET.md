@@ -19,10 +19,9 @@ describes what is built, how it runs and how to test it.
 - **Dated hour.** A reservation of one fleet for one hour, starting on the
   hour (UTC slots such as `2026-12-01T01:00Z`; the page shows KST). It is
   consumed when it occurs.
-- **Our capacity.** Every unreserved fleet-hour within `market.horizonDays`
-  (7) is for sale at the fleet's Rate, and up to `market.advanceDays` (31)
-  ahead at Rate × `market.advanceMultiplier` (1.25), on any day: the premium
-  buys lead time. Live, only fleets whose `state` is
+- **Our capacity.** Every unreserved fleet-hour up to `market.advanceDays`
+  (31) ahead is for sale at the fleet's Rate, on any day. Live, only fleets
+  whose `state` is
   `serving` sell, and not before `hourlyEarliestStart`. Capacity kept for
   plans and for earlier-lapsing HC (below) is not offered.
 - **Release.** The holder of a reservation that has not started may release
@@ -49,10 +48,23 @@ describes what is built, how it runs and how to test it.
   up to a fleet's seat-seconds; after the hour each released hour's seller is
   credited what it earned less the fee. An account that holds the current
   hour on a fleet pays no seat-seconds there.
+- **Every model.** The pool, reservations and bids take any model in
+  `pricing.js` `models` (the offered models of the Fleet List). Each entry
+  carries its measured one-request `decode` and 8K `prefill` speeds, from
+  which `/market/state` and `pool.txt` give ESTIMATED dollars per million
+  output and prompt tokens at the current seat price. A fleet holds one model
+  at a time. Before forwarding, the gateway reads the hub's
+  `/v1/sparkpipe/status` through the API door; a request for a model that is
+  not loaded, or while a swap runs, takes no seat (and pays nothing) until
+  the status shows that model serving or its reply starts. The reply's
+  `sparkpipe.switch` gives the seconds waited, or null. The sandbox
+  simulates a switch of `SPARKPIPE_PAY_SANDBOX_SWITCH_SECONDS` (20).
 - **Prefill accelerators.** Shared prefill hardware listed under
   `accelerators` in `pricing.js` (name, kind, state, `rate`,
-  `tokensPerSecond`). An accelerator's Rate is its size against a 16-Spark
-  fleet (48 Sparks: 3, 96 Sparks: 6). A pool request opts in with
+  `tokensPerSecond`). Every accelerator is a group of our own DGX Sparks in
+  Seoul; its Rate is its Sparks divided by 16 (48 Sparks: 3, 96 Sparks: 6).
+  The account page offers the bids as priorities: Standard 1, Priority 2,
+  Rush 5. A pool request opts in with
   `"sparkpipe": {"accelerator": {"bid", "maxWait", "pay", "fallback"}}`, or
   `true` for the defaults, and is charged `seconds × rate × bid / 3600`,
   rounded down to six places, whoever sends it: from the pool, in the
@@ -82,7 +94,7 @@ describes what is built, how it runs and how to test it.
     accelerator, its Rate, its speed and whether it is busy, and the queue
     (bid and estimated seconds per waiting prompt, no accounts).
 - **Tranche hours.** A plan holder's monthly hours reserve any free
-  hour of their month, beyond the 7-day horizon, at no HC; released, they
+  hour of their month, at no HC; released, they
   earn HC like any hour. Each plan payment issues them to the earliest
   Tranches not yet paid, less the plan hours of those Tranches that had
   already passed (docs/PAYMENTS.md); `sparkpipe_pay.py tranche EMAIL
@@ -206,7 +218,7 @@ same balances.
 | `POST /market/cancel` | signed in | `ask` or `bid` |
 | `POST /market/bid` | signed in | `fleet` (or none), `model`, `from`, `to`, `hours`, `max`, `consecutive`, `standing` |
 | `POST /market/keys`, `/market/keys/revoke` | signed in | Create a pool key (shown once) or revoke one |
-| `POST /pool/v1/chat/completions`, `GET /pool/v1/models` | pool key | OpenAI format, plus the optional `sparkpipe.accelerator` request field; replies carry `sparkpipe: {hc, seconds, dedicated, accelerator}`, where `accelerator` is null, `{used: false, reason}` or `{used: true, charge, accelerator, rate, bid, seconds, waited, pay, amount}` |
+| `POST /pool/v1/chat/completions`, `GET /pool/v1/models` | pool key | OpenAI format, plus the optional `sparkpipe.accelerator` request field; replies carry `sparkpipe: {hc, seconds, dedicated, accelerator, switch}`, where `accelerator` is null, `{used: false, reason}` or `{used: true, charge, accelerator, rate, bid, seconds, waited, pay, amount}` |
 | `POST /market/sandbox/clock`, `/tranche`, `/reset` | sandbox, signed in | Move the shared clock, take demo Tranche hours, clear the sandbox |
 
 ## The page, live and sandbox
@@ -270,8 +282,11 @@ Hour Market live pool", created 2026-10-31, expires 2036-10-28); revoke it
 there with `api_keys.py revoke k_dbfba343`. The door allows four concurrent
 requests per key, which caps the live pool at four requests at once until
 the hub gives the pool its own limit. A public request for a model the
-fleet has not loaded starts a swap, as any public request does, so a pool
-request for the other pool model moves the whole fleet.
+fleet has not loaded starts a swap, as any public request does: the swap
+controller drains the current model's live requests first (up to
+`drain_seconds`), and the waiting pool request pays nothing until the new
+model serves. Minimum residency and the fair queue (docs/LITELLM_FRONTEND.md)
+are still to build on the hub.
 
 
 Dedicated hours are recorded, billed and released here; keeping a fleet
