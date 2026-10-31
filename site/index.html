@@ -98,7 +98,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
       <div><p class="label">Pay in won</p><p>Korean businesses pay by bank transfer against our electronic tax invoice (세금계산서), with 10% VAT. Customers abroad pay in USDC, USDT or by USD wire.</p></div>
       <div><p class="label">Korean models</p><p>LG's K-EXAONE 2.0 and SKT's A.X K2, both under Apache 2.0, and Upstage's Solar Open 2 serve on Fleet 1, each the whole model at its publisher's precision, beside Kimi K3, GLM 5.3 and the other open models. They are hard to get elsewhere: in October 2026 neither <a href="https://artificialanalysis.ai/models/solar-open2-250b/providers">Artificial Analysis</a> nor Hugging Face lists a public API provider for any of the three.</p></div>
       <div><p class="label">Dedicated, not shared</p><p>During your hours the whole fleet serves only your requests. Nobody else's traffic waits in front of yours, so answers start as soon as the fleet is free.</p></div>
-      <div><p class="label">By the hour</p><p>You pay for the fleet's time, not for tokens: on your own fleet-hours, long prompts, million-token contexts and agents that re-read their history cost nothing extra. In the shared pool a request pays for the seconds it holds a seat, so re-reading a cached conversation costs little.</p></div>
+      <div><p class="label">By the hour</p><p>You pay for the fleet's time, not for tokens: on your own fleet-hours, long prompts, million-token contexts and agents that re-read their history cost nothing extra unless you send a prompt to a prefill accelerator. In the shared pool a request pays for the seconds it holds a seat, so re-reading a cached conversation costs little.</p></div>
     </div>
   </div>
 </section>
@@ -135,7 +135,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
       <div><strong class="mono">126 tok/s</strong><p>Kimi K3 rewriting whole files with speculation, measured; 15 tok/s without it. Search-and-replace edits run at 28 tok/s.</p></div>
       <div><strong class="mono">0.3–5 s</strong><p>to the first token of a follow-up turn whose conversation is cached, measured on Kimi K3 up to 137,700 tokens.</p></div>
       <div><strong class="mono">15.6 min</strong><p>to prefill a 1M-token Kimi K3 prompt from cold on one fleet, Fleet 1 alone, in our latest measurement: a coffee break, not a lunch. A 258K-token prompt takes 150 s.</p></div>
-      <div><strong class="mono">3–6 min</strong><p><b>ESTIMATED</b>: the same 1M-token prompt with our prefill accelerators, which cut prefill time sharply. They are shared by every fleet, so the time depends on what else is queued.</p></div>
+      <div><strong class="mono">3–6 min</strong><p><b>ESTIMATED</b>: the same 1M-token prompt on our prefill accelerators, shared by every fleet, depending on the queue. Their time is priced like fleet time in proportion to their size and charged by the second, and you can bid for a better place in the queue.</p></div>
     </div>
     <p class="prose"><b>ESTIMATED</b> for Kimi K3 on Fleet 2, eight M5 Ultra Mac Studios: 23 tok/s for one request without speculation, and about 35 tok/s with it on agent coding turns. SKT's A.X K2 is estimated at 33 and about 49 tok/s. Estimates are projections from our measurements and published hardware figures, published only where we expect to meet them; the <a href="fleets.html#estimates">Fleet List</a> shows how each is made, and each is replaced by a measurement once the hardware runs.</p>
   </div>
@@ -149,7 +149,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
   <div class="sec-body">
     <h2>What comes next.</h2>
     <div class="check-list">
-      <div><b>Prefill accelerators</b><span>Dedicated hardware, shared by every fleet, that computes long prompts and cuts prefill time sharply. ESTIMATED: a 1M-token Kimi K3 prompt in 3 to 6 minutes, depending on how busy they are. Fleet 1 alone already prefills it in 15.6 minutes, measured.</span></div>
+      <div><b>Prefill accelerators</b><span>Dedicated hardware, shared by every fleet, that computes a long prompt and hands it back to its fleet to write the reply. ESTIMATED: a 1M-token Kimi K3 prompt in 3 to 6 minutes, depending on the queue; Fleet 1 alone already prefills it in 15.6 minutes, measured. A request uses an accelerator only if it asks to. Accelerator time is priced like fleet time in proportion to size, 3 times a Rate-1 fleet for 48 Sparks and 6 times for 96, and charged by the second; bid up to 10 times that for a better place in the queue. Pay in HC, spending the HC that lapses first, or with Plan hours. The principle: at a bid of 1 you pay for about the same Spark-time as on your own fleet, finished sooner.</span></div>
       <div><b>Fleet 2</b><span>Eight M5 Ultra Mac Studios with 2.2 times Fleet 1's memory bandwidth, for faster decoding. Measured on one of its Studios: Qwen 3.8 27B at full BF16 precision decodes 20.1 tok/s for one request, 90% of what the Studio's memory bandwidth allows, and 442 tok/s in total for 64 requests at once. ESTIMATED: Kimi K3 at 23 tok/s without speculation.</span></div>
       <div><b>Better speculation</b><span>Tree drafts from several drafters at once, so more drafted tokens are accepted in each step.</span></div>
       <div><b>Field search</b><span>Checkboxes in the chat add search tools for law, medicine, finance, patents and more, so any model answers from current primary sources and cites them.</span></div>
@@ -212,7 +212,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
   </div>
   <div class="sec-body">
     <h2>One balance, every fleet.</h2>
-    <p class="prose">Your HC works on every fleet we operate, and in the shared pool. A fleet's Rate is the HC one hour on it costs. The <a href="fleets.html">Fleet List</a> is the list the terms refer to: fleets, Rates, models and their licenses.</p>
+    <p class="prose">Your HC works on every fleet we operate, and in the shared pool. A fleet's Rate is the HC one hour on it costs. The <a href="fleets.html">Fleet List</a> is the list the terms refer to: fleets, prefill accelerators, Rates, models and their licenses.</p>
     <div class="table-wrap"><table>
       <thead><tr><th>Fleet</th><th>Machines</th><th>State</th><th>Rate</th></tr></thead>
       <tbody>
