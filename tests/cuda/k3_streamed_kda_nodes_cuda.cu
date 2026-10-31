@@ -121,6 +121,11 @@ static void KdaBuffers(K3LayerBuffers *b,uint32_t rank,const uint32_t *state_ind
 #define KDA_PASSES 2u
 #define KDA_NODE_ROWS (KDA_ROWS / (KDA_NODES * KDA_PASSES))
 #define KDA_NODE_CHUNKS 2u
+#ifndef KDA_TOKENS
+#define KDA_TOKENS KDA_ROWS
+#endif
+#define KDA_PASS_ROWS (KDA_NODES * KDA_NODE_ROWS)
+static_assert(KDA_TOKENS > (KDA_PASSES - 1u) * KDA_PASS_ROWS && KDA_TOKENS <= KDA_ROWS, "the last pass carries at least one real token");
 
 struct KdaNode
 {
@@ -140,7 +145,7 @@ struct KdaNode
 };
 
 static NodeEmulationWorld kda_world,kda_alone_world;
-static NodeEmulationNode kda_alone = {&kda_alone_world,0u};
+
 
 static double KdaContributionRms(const uint16_t *want_device,const uint16_t *got_device,const uint16_t *before_device,uint64_t count)
 {
@@ -171,12 +176,59 @@ static void *KdaNodeThread(void *argument)
 		const uint64_t first = (uint64_t)pass * KDA_NODES * KDA_NODE_ROWS + (uint64_t)n->node * KDA_NODE_ROWS;
 		KDA_CUDA(cudaMemcpyAsync(n->buffers.hidden_bf16,n->hidden + first * K3_HIDDEN,KDA_NODE_ROWS * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
 		KDA_CUDA(cudaMemcpyAsync(n->buffers.attnres_partial_bf16,n->residual + first * K3_HIDDEN,KDA_NODE_ROWS * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
+		n->exchange.pass_tokens = pass + 1u < KDA_PASSES ? KDA_PASS_ROWS : KDA_TOKENS - (KDA_PASSES - 1u) * KDA_PASS_ROWS;
 		n->status = K3StreamedKdaNode<LmMxfp4>(&n->buffers,n->shards,n->states,KDA_SHARDS,&n->exchange,n->partial,&n->join,0u,KDA_NODE_ROWS,48u,n->stream);
 		KDA_CUDA(cudaMemcpyAsync(n->gathered + first * K3_HIDDEN,n->buffers.attnres_partial_bf16,KDA_NODE_ROWS * row_bytes,cudaMemcpyDeviceToDevice,n->stream));
 		KDA_CUDA(cudaStreamSynchronize(n->stream));
 	}
 	return 0;
 }
+
+static void KdaRunNodes(KdaNode *nodes)
+{
+	pthread_t threads[KDA_NODES];
+	NodeEmulationStart(&kda_world,KDA_NODES);
+	for (uint32_t node = 0u; node < KDA_NODES; node++)
+		pthread_create(&threads[node],0,KdaNodeThread,&nodes[node]);
+	for (uint32_t node = 0u; node < KDA_NODES; node++)
+		pthread_join(threads[node],0);
+}
+
+static std::vector<uint8_t> KdaSnapshot(const KdaNode *nodes,const uint16_t *gathered)
+{
+	const uint64_t slot_bytes = K3_KDA_RANK_STATE_SLOT_BYTES(KDA_RANK_HEADS,0u),qk = (uint64_t)KDA_RANK_QK * K3_KDA_CONV_KERNEL * 2u,v = (uint64_t)KDA_RANK_V * K3_KDA_CONV_KERNEL * 2u;
+	const uint64_t outputs = (uint64_t)KDA_TOKENS * K3_HIDDEN * 2u,per_state = slot_bytes + 2u * qk + v;
+	std::vector<uint8_t> snapshot(outputs + (uint64_t)KDA_NODES * KDA_SHARDS * per_state);
+	uint8_t *cursor = snapshot.data() + outputs;
+	KDA_CUDA(cudaMemcpy(snapshot.data(),gathered,outputs,cudaMemcpyDeviceToHost));
+	for (uint32_t node = 0u; node < KDA_NODES; node++)
+		for (uint32_t shard = 0u; shard < KDA_SHARDS; shard++)
+		{
+			const K3StreamedKdaState *state = &nodes[node].states[shard];
+			KDA_CUDA(cudaMemcpy(cursor,state->state_pool,slot_bytes,cudaMemcpyDeviceToHost));
+			KDA_CUDA(cudaMemcpy(cursor + slot_bytes,state->q_window,qk,cudaMemcpyDeviceToHost));
+			KDA_CUDA(cudaMemcpy(cursor + slot_bytes + qk,state->k_window,qk,cudaMemcpyDeviceToHost));
+			KDA_CUDA(cudaMemcpy(cursor + slot_bytes + 2u * qk,state->v_window,v,cudaMemcpyDeviceToHost));
+			cursor += per_state;
+		}
+	return snapshot;
+}
+
+static void KdaResetStates(KdaNode *nodes)
+{
+	const uint64_t slot_bytes = K3_KDA_RANK_STATE_SLOT_BYTES(KDA_RANK_HEADS,0u),qk = (uint64_t)KDA_RANK_QK * K3_KDA_CONV_KERNEL * 2u,v = (uint64_t)KDA_RANK_V * K3_KDA_CONV_KERNEL * 2u;
+	for (uint32_t node = 0u; node < KDA_NODES; node++)
+		for (uint32_t shard = 0u; shard < KDA_SHARDS; shard++)
+		{
+			const K3StreamedKdaState *state = &nodes[node].states[shard];
+			KDA_CUDA(cudaMemset(state->state_pool,0,slot_bytes));
+			KDA_CUDA(cudaMemset(state->q_window,0,qk));
+			KDA_CUDA(cudaMemset(state->k_window,0,qk));
+			KDA_CUDA(cudaMemset(state->v_window,0,v));
+		}
+	KDA_CUDA(cudaDeviceSynchronize());
+}
+static NodeEmulationNode kda_alone = {&kda_alone_world,0u};
 
 int main(void)
 {
@@ -191,7 +243,7 @@ int main(void)
 	float *decay_bias = KdaAlloc<float>((uint64_t)K3_KDA_HEADS * K3_KDA_KEY_DIM),*log_scale = KdaAlloc<float>(K3_KDA_HEADS);
 	float *out_norm = KdaAlloc<float>(K3_KDA_VALUE_DIM),*accumulator = KdaAlloc<float>((uint64_t)KDA_ROWS * K3_HIDDEN);
 	uint32_t *state_index = KdaAlloc<uint32_t>(1u),*row_begin = KdaAlloc<uint32_t>(2u),*node_begin = KdaAlloc<uint32_t>(KDA_NODE_CHUNKS + 1u);
-	uint32_t begin[2] = {0u,KDA_ROWS},node_rows[KDA_NODE_CHUNKS + 1u] = {0u,KDA_NODE_ROWS / 2u,KDA_NODE_ROWS},chunk_slots_host[KDA_NODE_CHUNKS] = {0u,1u};
+	uint32_t begin[2] = {0u,KDA_TOKENS},node_rows[KDA_NODE_CHUNKS + 1u] = {0u,KDA_NODE_ROWS / 2u,KDA_NODE_ROWS},chunk_slots_host[KDA_NODE_CHUNKS] = {0u,1u};
 	uint32_t *chunk_slots = KdaAlloc<uint32_t>(KDA_NODE_CHUNKS);
 	K3LayerBuffers sequential,single;
 	K3StreamedKdaExchange single_x;
@@ -284,13 +336,14 @@ int main(void)
 	KdaBuffers(&sequential,0u,state_index,row_begin,0);
 	KDA_CUDA(cudaMemcpy(sequential.hidden_bf16,hidden,(uint64_t)KDA_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
 	KDA_CUDA(cudaMemcpy(sequential.attnres_partial_bf16,partial,(uint64_t)KDA_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
-	KdaCheck(K3StreamedKda<LmMxfp4>(&sequential,shards.data(),sequential_states.data(),KDA_SHARDS,scratch,accumulator,0u,KDA_ROWS,1u,48u,stream) == LM_LAUNCH_OK,
+	KdaCheck(K3StreamedKda<LmMxfp4>(&sequential,shards.data(),sequential_states.data(),KDA_SHARDS,scratch,accumulator,0u,KDA_TOKENS,1u,48u,stream) == LM_LAUNCH_OK,
 		"the sequential streamed KDA runs");
 	KDA_CUDA(cudaStreamSynchronize(stream));
 	memset(&single_x,0,sizeof(single_x));
 	single_x.node = 0u;
 	single_x.nodes = 1u;
 	single_x.chunks = 1u;
+	single_x.pass_tokens = KDA_TOKENS;
 	single_x.chunk_row_begin = row_begin;
 	single_x.chunk_slots = state_index;
 	single_x.tail_send = KdaAlloc<uint16_t>(tail_elements);
@@ -316,23 +369,33 @@ int main(void)
 	KDA_CUDA(cudaMemcpy(single.hidden_bf16,hidden,(uint64_t)KDA_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
 	KDA_CUDA(cudaMemcpy(single.attnres_partial_bf16,partial,(uint64_t)KDA_ROWS * K3_HIDDEN * 2u,cudaMemcpyDeviceToDevice));
 	NodeEmulationStart(&kda_alone_world,1u);
-	KdaCheck(K3StreamedKdaNode<LmMxfp4>(&single,shards.data(),single_states.data(),KDA_SHARDS,&single_x,scratch,&single_join,0u,KDA_ROWS,48u,stream) == LM_LAUNCH_OK,
+	KdaCheck(K3StreamedKdaNode<LmMxfp4>(&single,shards.data(),single_states.data(),KDA_SHARDS,&single_x,scratch,&single_join,0u,KDA_TOKENS,48u,stream) == LM_LAUNCH_OK,
 		"the streamed KDA runs all rows as one node of one chunk");
 	KDA_CUDA(cudaStreamSynchronize(stream));
-	NodeEmulationStart(&kda_world,KDA_NODES);
-	{
-		pthread_t threads[KDA_NODES];
-		for (uint32_t node = 0u; node < KDA_NODES; node++)
-			pthread_create(&threads[node],0,KdaNodeThread,&nodes[node]);
-		for (uint32_t node = 0u; node < KDA_NODES; node++)
-			pthread_join(threads[node],0);
-	}
+	KdaRunNodes(nodes);
 	for (uint32_t node = 0u; node < KDA_NODES; node++)
 		KdaCheck(nodes[node].status == LM_LAUNCH_OK,"every node runs both passes");
+	if ( KDA_TOKENS < KDA_ROWS )
 	{
-		std::vector<uint16_t> want((uint64_t)KDA_ROWS * K3_HIDDEN),got(want.size()),before(want.size());
+		const std::vector<uint8_t> first = KdaSnapshot(nodes,gathered);
+		uint64_t differ = 0u;
+		KdaFillBf16<<<512,256>>>(hidden + (uint64_t)KDA_TOKENS * K3_HIDDEN,(uint64_t)(KDA_ROWS - KDA_TOKENS) * K3_HIDDEN,8u,3.0f,0.5f);
+		KdaFillBf16<<<512,256>>>(partial + (uint64_t)KDA_TOKENS * K3_HIDDEN,(uint64_t)(KDA_ROWS - KDA_TOKENS) * K3_HIDDEN,9u,2.0f,0.0f);
+		KdaResetStates(nodes);
+		KdaRunNodes(nodes);
+		const std::vector<uint8_t> second = KdaSnapshot(nodes,gathered);
+		for (uint64_t index = 0u; index < first.size(); index++)
+			differ += first[index] != second[index];
+		for (uint32_t node = 0u; node < KDA_NODES; node++)
+			KdaCheck(nodes[node].status == LM_LAUNCH_OK,"every node runs both passes again with other padding");
+		KdaCheck(differ == 0u,"the padding rows of a ragged last pass change no real output, recurrent state or conv window by a single bit");
+		printf("ragged last pass: %u real tokens of %u rows, %llu bytes differ after the padding changes\n",KDA_TOKENS,KDA_ROWS,(unsigned long long)differ);
+	}
+	{
+		std::vector<uint16_t> want((uint64_t)KDA_TOKENS * K3_HIDDEN),got(want.size()),before(want.size());
 		std::vector<float> state_want(slot_bytes / 4u),state_got(state_want.size());
 		std::vector<uint16_t> window_want((uint64_t)KDA_RANK_V * K3_KDA_CONV_KERNEL),window_got(window_want.size());
+		std::vector<uint16_t> qk_want((uint64_t)KDA_RANK_QK * K3_KDA_CONV_KERNEL),qk_got(qk_want.size());
 		double squared = 0.0,error = 0.0,state_squared = 0.0,state_error = 0.0,worst = 0.0;
 		uint64_t nonfinite = 0u,window_mismatches = 0u;
 		KDA_CUDA(cudaMemcpy(want.data(),sequential.attnres_partial_bf16,want.size() * 2u,cudaMemcpyDeviceToHost));
@@ -366,17 +429,25 @@ int main(void)
 				KDA_CUDA(cudaMemcpy(window_got.data(),nodes[node].states[shard].v_window,window_got.size() * 2u,cudaMemcpyDeviceToHost));
 				for (uint64_t index = 0u; index < window_want.size(); index++)
 					window_mismatches += window_want[index] != window_got[index];
+				KDA_CUDA(cudaMemcpy(qk_want.data(),sequential_states[shard].q_window,qk_want.size() * 2u,cudaMemcpyDeviceToHost));
+				KDA_CUDA(cudaMemcpy(qk_got.data(),nodes[node].states[shard].q_window,qk_got.size() * 2u,cudaMemcpyDeviceToHost));
+				for (uint64_t index = 0u; index < qk_want.size(); index++)
+					window_mismatches += qk_want[index] != qk_got[index];
+				KDA_CUDA(cudaMemcpy(qk_want.data(),sequential_states[shard].k_window,qk_want.size() * 2u,cudaMemcpyDeviceToHost));
+				KDA_CUDA(cudaMemcpy(qk_got.data(),nodes[node].states[shard].k_window,qk_got.size() * 2u,cudaMemcpyDeviceToHost));
+				for (uint64_t index = 0u; index < qk_want.size(); index++)
+					window_mismatches += qk_want[index] != qk_got[index];
 			}
 		const double output_rms = sqrt(error / (squared > 0.0 ? squared : 1.0)),state_rms = sqrt(state_error / (state_squared > 0.0 ? state_squared : 1.0));
 		KdaCheck(nonfinite == 0u,"every output and state element is finite");
 		KdaCheck(squared > 0.0 && state_squared > 0.0,"the layer changes the residual and the recurrent state");
-		const double node_rms = KdaContributionRms(single.attnres_partial_bf16,gathered,partial,(uint64_t)KDA_ROWS * K3_HIDDEN);
+		const double node_rms = KdaContributionRms(single.attnres_partial_bf16,gathered,partial,(uint64_t)KDA_TOKENS * K3_HIDDEN);
 		KdaCheck(node_rms <= 0.002,"four nodes of two chunks over two passes, exchanging conv tails and chunk transforms per shard, match the same layer run as one node of one chunk within 0.2% of the attention contribution");
 		KdaCheck(output_rms <= 0.005,"the nodes match the TP16-equivalent sequential layer (sixteen bf16-rounded output partials instead of one joined projection) within 0.5%");
 		KdaCheck(state_rms <= 1e-4,"every node's replicated end state matches the sequential end state within 1e-4 relative RMS");
-		KdaCheck(window_mismatches == 0u,"every node carries the sequential conv window into the next pass");
-		printf("%s KDA on %u nodes x %u passes vs one node: relative RMS %.3g; vs TP16-equivalent sequential: %.3g (worst %.4g), end state relative RMS %.3g, window mismatches %llu, nonfinite %llu\n",
-			kda_failures == 0 ? "PASS" : "FAIL",KDA_NODES,KDA_PASSES,node_rms,output_rms,worst,state_rms,(unsigned long long)window_mismatches,(unsigned long long)nonfinite);
+		KdaCheck(window_mismatches == 0u,"every node carries the sequential q, k and v conv windows, ending at the last real token");
+		printf("%s KDA on %u nodes x %u passes, %u real tokens, vs one node: relative RMS %.3g; vs TP16-equivalent sequential: %.3g (worst %.4g), end state relative RMS %.3g, window mismatches %llu, nonfinite %llu\n",
+			kda_failures == 0 ? "PASS" : "FAIL",KDA_NODES,KDA_PASSES,KDA_TOKENS,node_rms,output_rms,worst,state_rms,(unsigned long long)window_mismatches,(unsigned long long)nonfinite);
 	}
 	return kda_failures != 0;
 }

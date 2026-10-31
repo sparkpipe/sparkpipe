@@ -121,9 +121,9 @@ static void TestRuntimeMemberShared(const char *member,SparkStatus expected,uint
 	if ( expected == SPARK_STATUS_OK )
 		assert(deployment.max_sequence_positions == positions && deployment.max_shared_input_row_count == shared);
 	if ( expected == SPARK_STATUS_OK && strstr(member,"streamed_prefill") != 0 )
-		assert(deployment.streamed_prefill_quantum == 4096u && deployment.streamed_prefill_min_tokens == 32768u);
+		assert(deployment.streamed_prefill_min_tokens == 32768u);
 	if ( expected == SPARK_STATUS_OK && strstr(member,"streamed_prefill") == 0 )
-		assert(deployment.streamed_prefill_quantum == 0u && deployment.streamed_prefill_min_tokens == 0u);
+		assert(deployment.streamed_prefill_min_tokens == 0u);
 	SparkModelResidentDeploymentDestroy(&deployment);
 	assert(unlink(path) == 0);
 }
@@ -139,11 +139,11 @@ static void TestSharedInputRows(void)
 	TestRuntimeMemberShared("\"max_shared_input_rows\": 4",SPARK_STATUS_OK,0u,4u);
 	TestRuntimeMemberShared("\"max_shared_input_rows\": 5",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
 	TestRuntimeMemberShared("\"max_shared_input_rows\": 0",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
-	TestRuntimeMemberShared("\"streamed_prefill_min_tokens\": 32768, \"streamed_prefill_quantum\": 4096",SPARK_STATUS_OK,0u,0u);
-	TestRuntimeMemberShared("\"streamed_prefill_quantum\": 4096",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
-	TestRuntimeMemberShared("\"streamed_prefill_min_tokens\": 2048, \"streamed_prefill_quantum\": 4096",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
+	TestRuntimeMemberShared("\"streamed_prefill_min_tokens\": 32768",SPARK_STATUS_OK,0u,0u);
+	TestRuntimeMemberShared("\"streamed_prefill_min_tokens\": 32768, \"streamed_prefill_quantum\": 4096",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
+	TestRuntimeMemberShared("\"streamed_prefill_min_tokens\": 1",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
 	TestRuntimeMemberShared("\"max_shared_input_row\": 2",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
-	puts("test_model_resident_deployment: a shared-wave row limit within max_input_rows loads; zero, larger or misspelled is refused");
+	puts("test_model_resident_deployment: a shared-wave row limit within max_input_rows loads; zero, larger or misspelled is refused; a streamed prefill threshold loads, one token or the retired quantum member is refused");
 }
 
 static void TestDraftServerMember(const char *member,SparkStatus expected,SparkModelResidentDeployment *deployment)

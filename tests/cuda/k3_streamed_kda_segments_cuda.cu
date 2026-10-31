@@ -198,6 +198,7 @@ int main(void)
 	segments.node = 0u;
 	segments.nodes = 1u;
 	segments.chunks = chunks;
+	segments.pass_tokens = KDA_ROWS;
 	segments.chunk_row_begin = chunk_begin;
 	segments.chunk_slots = chunk_slots;
 	segments.tail_send = KdaAlloc<uint16_t>((uint64_t)(2u * KDA_RANK_QK + KDA_RANK_V) * K3_KDA_CONV_KERNEL);
