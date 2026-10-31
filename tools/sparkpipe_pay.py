@@ -30,6 +30,8 @@ KST = timezone(timedelta(hours=9))
 USD = "5057"
 CENT = Decimal("0.01")
 HOUR_STEP = Decimal("0.0001")
+LEDGER_IDS = ("order", "invoice", "reservation", "ask", "bid", "lot", "key", "ref")
+TERMS = {"ko": "hourly-ko.md", "en": "hourly-en.md", "rules_ko": "market-rules-ko.md", "rules_en": "market-rules-en.md"}
 EVENTS = ["invoicePending", "invoicePaid", "invoiceCompleted", "invoiceCancelled", "invoiceTimedOut"]
 OPEN = {"unpaid", "pending", "paid"}
 CLOSED = {"cancelled", "timedout", "deleted", "failed"}
@@ -48,7 +50,6 @@ COINS = {
     "USDT.ERC20": "4:0xdac17f958d2ee523a2206206994597c13d831ec7",
 }
 EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,189}\.[^@\s.]{2,}$")
-ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 CODE = re.compile(r"^\d{6}$")
 ORDER_PATH = re.compile(r"^/order/(SP[A-Z2-7]{16})$")
 COOKIE = "sp_session"
@@ -298,11 +299,9 @@ class Book:
             self.accounts[data["account"]] = dict(data, created=line["at"], accepted=None)
             self.emails[data["email"]] = data["account"]
         elif kind == "acceptance":
-            self.accounts[data["account"]]["accepted"] = {"ko": data["ko"], "en": data["en"], "at": line["at"]}
+            self.accounts[data["account"]]["accepted"] = dict({name: data.get(name) for name in TERMS}, at=line["at"])
         elif kind == "order":
-            self.orders[data["order"]] = dict(data, created=line["at"], state="created", invoice=None, link=None, issued=False, paid=None, child=None)
-            if "parent" in data:
-                self.orders[data["parent"]]["child"] = data["order"]
+            self.orders[data["order"]] = dict(data, created=line["at"], state="created", invoice=None, link=None, issued=False, paid=None)
         elif kind == "invoice":
             self.orders[data["order"]].update(invoice=data["invoice"], link=data["link"], state="unpaid")
             self.invoices[data["invoice"]] = data["order"]
@@ -321,18 +320,6 @@ class Book:
 
     def waiting(self, order, now):
         return order["state"] not in CLOSED and order["state"] != "completed" and not order["issued"] and (now - stamp_time(order["created"])).total_seconds() < PENDING_SECONDS
-
-    def held(self, account, now):
-        total = 0
-        for order in self.orders.values():
-            if order["account"] != account or order["product"] != "hourly":
-                continue
-            if order["issued"] or order["state"] == "mismatch":
-                if date.fromisoformat(order["last"]) >= local_day(now):
-                    total += Decimal(str(order["issued_hours"] if order["issued"] else order["hours"]))
-            elif self.waiting(order, now):
-                total += Decimal(str(order["hours"]))
-        return total
 
     def prepaid(self, agreement):
         return sorted((stamp_time(order["paid"]), Decimal(order["paid_net"])) for order in self.orders.values() if order.get("agreement") == agreement and order["issued"])
@@ -402,21 +389,6 @@ def email_field(value):
     return value.strip().lower()
 
 
-def whole_field(value):
-    if isinstance(value, bool) or not isinstance(value, (int, str)) or not str(value).isdigit():
-        raise Refusal("Enter a whole number of hours.")
-    return int(value)
-
-
-def day_field(value):
-    try:
-        if isinstance(value, str) and ISO_DAY.match(value):
-            return date.fromisoformat(value)
-    except ValueError:
-        pass
-    raise Refusal("Enter a start date.")
-
-
 def money_field(value):
     try:
         amount = Decimal(str(value))
@@ -434,24 +406,18 @@ def coin_field(value):
 
 
 def statement(cfg, company, terms):
-    return (f"On behalf of {company}, I accept the SparkPipe Hourly Terms. "
-            f"Korean text, which prevails: SHA-256 {terms['ko']} ({cfg.public}/terms/hourly-ko.md). "
-            f"English text: SHA-256 {terms['en']} ({cfg.public}/terms/hourly-en.md).")
+    return (f"On behalf of {company}, I accept the SparkPipe Hourly Terms, which include the Hour Market Rules. "
+            f"Hourly Terms, Korean text, which prevails: SHA-256 {terms['ko']} ({cfg.public}/terms/hourly-ko.md). "
+            f"English text: SHA-256 {terms['en']} ({cfg.public}/terms/hourly-en.md). "
+            f"Hour Market Rules, Korean text, which prevails: SHA-256 {terms['rules_ko']} ({cfg.public}/terms/market-rules-ko.md). "
+            f"English text: SHA-256 {terms['rules_en']} ({cfg.public}/terms/market-rules-en.md).")
 
 
 def invoice_body(cfg, quote):
-    if quote.get("parent"):
-        name = f"Remaining {quote['hours']} SparkPipe fleet-hours of order {quote['parent']}"
-        detail = f"Hourly Terms 3.5; usable {quote['start']} to {quote['last']}"
-        quantity = {"value": 1, "type": "quantity"}
-    elif quote["product"] == "credits":
+    if quote["product"] == "credits":
         name = f"{quote['hours']} SparkPipe hour-credits"
-        detail = f"Hour Market; {quote['price']} USD each, usable for 12 months"
+        detail = f"Hourly Terms; {quote['price']} USD each, usable for 12 months"
         quantity = {"value": 1, "type": "quantity"}
-    elif quote["product"] == "hourly":
-        name = f"{quote['hours']} SparkPipe fleet-hours"
-        detail = f"Hourly Terms; usable {quote['start']} to {quote['last']}"
-        quantity = {"value": quote["hours"], "type": "hours"}
     else:
         name = f"Prepayment, agreement {quote['agreement']}"
         detail = f"{quote['hours']} fleet-hours at {quote['price']} USD"
@@ -489,8 +455,6 @@ def hours_number(value):
 def covered(order, paid):
     share = min(Decimal(1), paid / Decimal(order["total"]))
     net = (Decimal(order["net"]) * share).quantize(CENT, rounding=ROUND_DOWN)
-    if order["product"] == "hourly":
-        return format((Decimal(order["hours"]) * share).quantize(HOUR_STEP, rounding=ROUND_DOWN), "f"), text_money(net)
     if order["product"] == "credits":
         return market.text_hc(net / Decimal(order["price"])), text_money(net)
     return format((net / Decimal(order["price"])).quantize(HOUR_STEP, rounding=ROUND_DOWN), "f"), text_money(net)
@@ -500,24 +464,9 @@ def paid_with(remote):
     return sorted({str(p["paymentCurrencySymbol"]) for p in remote["payments"]})
 
 
-def left_of(order):
-    if order["product"] != "hourly" or not order["issued"]:
-        return None
-    hours = Decimal(str(order["hours"])) - Decimal(str(order["issued_hours"]))
-    if hours <= 0:
-        return None
-    total = money(order["total"]) - money(order["received"])
-    net = money(order["net"]) - money(order["paid_net"])
-    if total <= 0:
-        return None
-    return {"hours": hours, "total": total, "net": net, "vat": total - net}
-
-
 def receipt(cfg, order, issued, received, paid):
     coin = ", ".join(sorted({symbol.split(".")[0] for symbol in paid}))
-    if order["product"] == "hourly":
-        what = f"{issued['hours']} fleet-hours, usable from {order['start']} to {order['last']}"
-    elif order["product"] == "credits":
+    if order["product"] == "credits":
         what = f"{issued['hours']} hour-credits, usable for 12 months"
     else:
         what = f"a prepayment of {issued['net']} USD under agreement {order['agreement']}: {issued['hours']} fleet-hours"
@@ -526,8 +475,6 @@ def receipt(cfg, order, issued, received, paid):
             f"Order {order['order']} was for {order['total']} USD; {received} USD arrived. We issued what it covers: {what}.",
             "",
             f"Received in {coin}: {received} USD, VAT included",
-            "",
-            f"To get the other hours of this order at the same price, pay the remaining amount from your account: {cfg.public}/account.html?order={order['order']}",
         ]
     else:
         lines = [
@@ -539,8 +486,7 @@ def receipt(cfg, order, issued, received, paid):
         ]
     return "\n".join(lines + [
         "",
-        f"The hours are in your account: {cfg.public}/account.html",
-        "We will email you when the fleet calendar opens for reservations.",
+        f"They are in your account: {cfg.public}/market.html" if order["product"] == "credits" else f"They are in your account: {cfg.public}/account.html",
         "",
         "HYOR AI Tech Ltd. (SparkPipe), Seoul. Reply to this email with any question.",
     ])
@@ -596,11 +542,11 @@ class App:
                 self.mails.task_done()
 
     def current_terms(self):
-        return {"ko": self.cfg.terms("hourly-ko.md"), "en": self.cfg.terms("hourly-en.md")}
+        return {name: self.cfg.terms(source) for name, source in TERMS.items()}
 
     def accepted(self, account, terms):
         found = self.book.accounts[account]["accepted"]
-        return bool(found) and found["ko"] == terms["ko"] and found["en"] == terms["en"]
+        return bool(found) and all(found[name] == terms[name] for name in TERMS)
 
     def accept(self, account, ip, agent):
         terms = self.current_terms()
@@ -663,7 +609,7 @@ class App:
             account = self.book.emails.get(email)
             if not account:
                 if not body.get("company"):
-                    raise Refusal("No account uses this email yet. Buy hours to open one.", 404, "new")
+                    raise Refusal("No account uses this email yet. Add your company's name to open one.", 404, "new")
                 company = text_field(body.get("company"), "company's legal name", 200)
                 if body.get("accept") is not True:
                     raise Refusal("Accept the Hourly Terms to open an account.", 409, "terms")
@@ -681,52 +627,22 @@ class App:
         email = self.book.accounts[account]["email"]
         return [a for a in self.cfg.listing("agreements.json") if str(a.get("email", "")).lower() == email]
 
-    def limit(self, pricing, account):
-        approved = {str(e).lower() for e in self.cfg.listing("approved.json")}
-        return pricing["verifiedMaxHours"] if self.book.accounts[account]["email"] in approved else pricing["hourlyMaxHours"]
-
     def summary(self, account):
         pricing = self.cfg.pricing()
         now = clock()
         with self.book.lock:
             record = self.book.accounts[account]
             mine = [o for o in reversed(list(self.book.orders.values())) if o["account"] == account]
-            blocks = [{"order": o["order"], "hours": hours_number(o["issued_hours"]), "start": o["start"], "last": o["last"]} for o in mine if o["product"] == "hourly" and o["issued"] and date.fromisoformat(o["last"]) >= local_day(now)]
-            limit = self.limit(pricing, account)
-            held = self.book.held(account, now)
             return {
                 "email": record["email"],
                 "company": record["company"],
                 "since": record["created"][:10],
                 "termsCurrent": self.accepted(account, self.current_terms()),
-                "limit": limit,
-                "held": hours_number(held),
-                "room": hours_number(max(0, limit - held)),
-                "hours": hours_number(sum((Decimal(str(b["hours"])) for b in blocks), Decimal(0))),
-                "blocks": blocks,
-                "orders": [self.shown(o) for o in mine[:50]],
+                "hc": market.text_hc(self.book.market.balance(account, market.stamp(self.market.now()))),
+                "orders"
+: [self.shown(o) for o in mine[:50]],
                 "agreements": [standing(pricing, self.book, a, now) for a in self.agreements(account)],
             }
-
-    def hourly_terms(self, pricing, body, account, now):
-        hours = whole_field(body.get("hours"))
-        start = day_field(body.get("start"))
-        earliest = max(local_day(now), date.fromisoformat(pricing["hourlyEarliestStart"]))
-        if start < earliest:
-            raise Refusal(f"Hours can start no earlier than {earliest.isoformat()}.")
-        if start > earliest + timedelta(days=365):
-            raise Refusal("Choose a start date within the next year.")
-        limit = self.limit(pricing, account)
-        room = limit - self.book.held(account, now)
-        if hours < 1 or hours > room:
-            raise Refusal(f"This account may buy at most {hours_number(max(0, int(room)))} more hours now: the holding limit is {limit} hours, counting unused hours and unpaid orders (clause 4.1).", 409)
-        net = money(Decimal(pricing["hourlyPrice"]) * hours)
-        vat = money(net * Decimal(str(pricing["vatRate"])))
-        return {
-            "product": "hourly", "hours": hours,
-            "start": start.isoformat(), "last": term_end(start, pricing["hourlyValidityMonths"]).isoformat(),
-            "net": text_money(net), "vat": text_money(vat), "total": text_money(net + vat),
-        }
 
     def prepayment_terms(self, pricing, body, account, now):
         number = body.get("agreement")
@@ -747,27 +663,6 @@ class App:
             "product": "two-year", "agreement": found["id"],
             "price": text_money(price), "hours": format((net / price).quantize(HOUR_STEP, rounding=ROUND_DOWN), "f"),
             "net": text_money(net), "vat": text_money(vat), "total": text_money(net + vat),
-        }
-
-    def rest_terms(self, pricing, body, account, now):
-        parent = self.book.orders.get(body.get("parent")) if isinstance(body.get("parent"), str) else None
-        if not parent or parent["account"] != account:
-            raise Refusal("No such order belongs to your account.", 404)
-        child = self.book.orders.get(parent["child"]) if parent["child"] else None
-        if child and (child["issued"] or self.book.waiting(child, now)):
-            raise Refusal("A payment for the rest of this order is already open or paid; see your orders.", 409)
-        left = left_of(parent)
-        if not left:
-            raise Refusal("Nothing is left to pay on this order.", 409)
-        if date.fromisoformat(parent["last"]) < local_day(now):
-            raise Refusal("The hours of this order have expired.", 409)
-        limit = self.limit(pricing, account)
-        if left["hours"] > limit - self.book.held(account, now):
-            raise Refusal(f"The rest of this order would take the account over its holding limit of {limit} hours (clause 4.1). Use some hours first, or write to us.", 409)
-        return {
-            "product": "hourly", "parent": parent["order"], "hours": format(left["hours"], "f"),
-            "start": parent["start"], "last": parent["last"],
-            "net": text_money(left["net"]), "vat": text_money(left["vat"]), "total": text_money(left["total"]),
         }
 
     def credit_terms(self, pricing, body):
@@ -796,13 +691,8 @@ class App:
         pricing = self.cfg.pricing()
         with self.book.lock:
             record = self.book.accounts[account]
-            if body.get("product") in ("hourly", "rest", "credits"):
-                if body["product"] == "credits":
-                    quote = self.credit_terms(pricing, body)
-                elif body["product"] == "hourly":
-                    quote = self.hourly_terms(pricing, body, account, now)
-                else:
-                    quote = self.rest_terms(pricing, body, account, now)
+            if body.get("product") == "credits":
+                quote = self.credit_terms(pricing, body)
                 if not self.accepted(account, self.current_terms()):
                     if body.get("accept") is not True:
                         raise Refusal("The Hourly Terms have changed since you accepted them. Accept the current text to continue.", 409, "terms")
@@ -810,7 +700,7 @@ class App:
             elif body.get("product") == "two-year":
                 quote = self.prepayment_terms(pricing, body, account, now)
             else:
-                raise Refusal("Choose hourly hours or a two-year prepayment.")
+                raise Refusal("Choose hour-credits or a two-year prepayment.")
             quote.update(order=new_id("SP"), account=account, email=record["email"], company=record["company"], coin=coin)
             self.book.append("order", dict(quote, ip=ip, agent=agent))
         try:
@@ -825,13 +715,8 @@ class App:
         return {"order": quote["order"], "checkout": link}
 
     def shown(self, order):
-        shown = {key: order.get(key) for key in ("order", "product", "hours", "net", "vat", "total", "start", "last", "agreement", "coin", "state", "issued", "created", "paid", "received")}
+        shown = {key: order.get(key) for key in ("order", "product", "hours", "net", "vat", "total", "agreement", "coin", "state", "issued", "created", "paid", "received")}
         shown["issuedHours"] = None if order.get("issued_hours") is None else hours_number(order["issued_hours"])
-        shown["parent"] = order.get("parent")
-        child = self.book.orders.get(order["child"]) if order.get("child") else None
-        left = left_of(order) if not child or not (child["issued"] or self.book.waiting(child, clock())) else None
-        shown["left"] = text_money(left["total"]) if left else None
-        shown["leftHours"] = hours_number(left["hours"]) if left else None
         shown["checkout"] = order["link"] if order["state"] in ("unpaid", "pending") else None
         return shown
 
@@ -872,12 +757,20 @@ class App:
         raise Refusal("Not found.", 404)
 
     def ledger(self, account):
-        lines = []
+        lines, mine = [], {account}
         with self.book.lock:
             if os.path.exists(self.book.path):
                 with open(self.book.path, encoding="utf-8") as handle:
-                    lines = [json.loads(raw) for raw in handle if account in raw]
-            return {"head": self.book.head, "count": self.book.count, "lines": lines[-300:]}
+                    for raw in handle:
+                        line = json.loads(raw)
+                        data = line["data"]
+                        owners = [data[name] for name in ("account", "seller") if name in data]
+                        ids = {data[name] for name in LEDGER_IDS if isinstance(data.get(name), str)}
+                        if (owners and account in owners) or (not owners and ids & mine):
+                            lines.append(line)
+                            mine |= ids
+            return {"head": self.book.head, "count": self.book.count, "lines": lines}
+
 
     def lead(self, body, ip, agent):
         self.throttle("lead", ip)
@@ -946,9 +839,8 @@ class App:
             if order["state"] != "completed":
                 self.book.append("payment", {"order": order_id, "invoice": order["invoice"], "total": order["total"], "received": arrived, "currency": currency, "paidWith": paid})
             issued = {"order": order_id, "account": order["account"], "product": order["product"], "hours": hours, "net": net, "released": released, "short": not full}
-            if order["product"] == "hourly":
-                issued.update(start=order["start"], last=order["last"])
-            elif order["product"] == "two-year":
+            if order["product"] == "two-year":
+
                 issued.update(agreement=order["agreement"])
             self.book.append("hours_issued", issued)
             if order["product"] == "credits":

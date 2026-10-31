@@ -114,14 +114,14 @@ PAGES = [
     {
         "src": "hourly-en.md", "out": "hourly-terms.html", "lang": "en", "tag": "terms",
         "title": "SparkPipe Hourly Terms", "other": "hourly-terms-ko.html",
-        "desc": "Draft Hourly Terms for prepaid SparkPipe fleet-hours, published for review.",
-        "lead": "These Terms are accepted online: Customer signs, with its Key, each order stating the hashes of their exact text. The Korean text prevails (clause 12.3).",
+        "desc": "Draft Hourly Terms for SparkPipe hour-credits, fleet-hours and the shared pool, published for review.",
+        "lead": "These Terms, with the Hour Market Rules, are accepted online while signed in to the account, and we record the hashes of their exact texts. The Korean text prevails (clause 12.3).",
     },
     {
         "src": "hourly-ko.md", "out": "hourly-terms-ko.html", "lang": "ko", "tag": "약관",
         "title": "SparkPipe 시간제 이용약관", "other": "hourly-terms.html",
-        "desc": "선불 SparkPipe 플릿시간 시간제 이용약관 검토용 공개 문안.",
-        "lead": "본 약관은 온라인으로 체결되며, 고객은 본 약관의 정확한 문안의 해시를 적은 각 주문에 자신의 키로 서명한다. 국문본이 우선한다(제12.3조).",
+        "desc": "SparkPipe 시간 크레딧, 플릿시간 및 공유 풀에 관한 시간제 이용약관 검토용 공개 문안.",
+        "lead": "본 약관은 시간 마켓 규칙과 함께 계정에 로그인한 상태에서 온라인으로 동의되며, 공급자는 그 정확한 문안의 해시를 기록한다. 국문본이 우선한다(제12.3조).",
     },
     {
         "src": "agreement-en.md", "out": "agreement.html", "lang": "en", "tag": "terms",
@@ -135,13 +135,26 @@ PAGES = [
         "desc": "SparkPipe 플릿시간 2년 예약 플릿 서비스 계약서 검토용 공개 문안.",
         "lead": "사업자 확인 후 개별적으로 체결하며, 각 조항은 협의할 수 있다. 국문본이 우선한다(제14.3조).",
     },
+    {
+        "src": "market-rules-en.md", "out": "market-rules.html", "lang": "en", "tag": "terms",
+        "title": "SparkPipe Hour Market Rules", "other": "market-rules-ko.html",
+        "desc": "Draft Hour Market Rules for releasing, bidding for and buying SparkPipe fleet-hours with hour-credits, published for review.",
+        "lead": "These Rules form part of the Hourly Terms and are accepted with them. The Korean text prevails (clause 13.3).",
+    },
+    {
+        "src": "market-rules-ko.md", "out": "market-rules-ko.html", "lang": "ko", "tag": "약관",
+        "title": "SparkPipe 시간 마켓 규칙", "other": "market-rules.html",
+        "desc": "시간 크레딧으로 SparkPipe 플릿시간을 반납, 매수 주문 및 구매하는 시간 마켓 규칙 검토용 공개 문안.",
+        "lead": "본 규칙은 시간제 약관의 일부를 이루며 그 약관과 함께 동의된다. 국문본이 우선한다(제13.3조).",
+    },
 ]
 
 NOTICE = {
-    "en": "<b>Published for review. Not in force.</b> Fleet-hours go on sale on 1 December 2026, and nobody can buy or pay before then. This text may still change. Send comments to <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>.",
-    "ko": "<b>검토용 공개 문안이며 아직 효력이 없습니다.</b> 플릿시간 판매는 2026년 12월 1일에 시작되며, 그 전에는 누구도 구매하거나 결제할 수 없습니다. 문안은 바뀔 수 있습니다. 의견은 <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>로 보내 주십시오.",
+    "en": "<b>Published for review.</b> Hour-credits are on sale now and work in the shared pool at once; our own fleet-hours can be reserved from 1 December 2026. This text may still change. Send comments to <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>.",
+    "ko": "<b>검토용으로 공개한 문안입니다.</b> 시간 크레딧은 지금 판매하며 공유 풀에서 바로 쓸 수 있고, 당사 플릿시간은 2026년 12월 1일부터 예약할 수 있습니다. 문안은 바뀔 수 있습니다. 의견은 <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>로 보내 주십시오.",
+
 }
-VERSION = {"en": "Version of 30 October 2026", "ko": "2026년 10월 30일 판"}
+VERSION = {"en": "Version of 31 October 2026", "ko": "2026년 10월 31일 판"}
 NAV = {
     "en": ('<a href="terms.html">All terms</a>', '<a href="privacy.html">Privacy</a>', '<a href="index.html">Home</a>'),
     "ko": ('<a href="terms-ko.html">약관 목록</a>', '<a href="privacy-ko.html">개인정보처리방침</a>', '<a href="index-ko.html">홈</a>'),

@@ -1,9 +1,15 @@
 (() => {
-  const API = '/pay/sandbox/api';
+  const SANDBOX = new URLSearchParams(location.search).has('sandbox');
+  const API = SANDBOX ? '/pay/sandbox/api' : '/pay/api';
   const HOUR = 3600000;
   const KST = 9 * HOUR;
   const $ = (id) => document.getElementById(id);
-  const S = { state: null, cal: null, book: null, pick: null, days: 7, lastKey: '' };
+  const S = { state: null, cal: null, book: null, pick: null, days: 7, lastKey: '', codeSent: false };
+  document.body.classList.toggle('sandbox', SANDBOX);
+  $(SANDBOX ? 'mode-sandbox' : 'mode-live').setAttribute('aria-current', 'true');
+  $('pool-base').textContent = location.origin + API + '/pool/v1';
+  const first = new Date(window.SP_PRICING.hourlyEarliestStart + 'T00:00:00Z');
+  document.querySelectorAll('[data-start]').forEach((el) => { el.textContent = first.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }); });
 
   const call = async (method, path, body) => {
     const response = await fetch(API + path, {
@@ -13,7 +19,7 @@
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || 'The sandbox did not answer (' + response.status + ').');
+    if (!response.ok) throw new Error(data.error || 'The service did not answer (' + response.status + ').');
     return data;
   };
 
@@ -122,6 +128,7 @@
     $('held').textContent = hc(me.held) + ' HC';
     fill('lots', me.lots.filter((l) => Number(l.hc) > 0 || !l.expired).map((l) => row([hc(l.hc), hc(l.first), l.source, (l.expired ? 'lapsed ' : '') + kstDate(l.expires)])), 'No HC yet. Buy some to start.');
     fill('tranches', me.tranche.map((t) => row([t.month, String(t.granted), String(t.used), String(t.left)])), 'No Tranche hours.');
+    $('tranche-box').hidden = !SANDBOX && !me.tranche.length;
     fill('hours', me.reservations.map(hourRow), 'No reservations. Pick an hour on the calendar.');
     fill('bids', me.bids.map((b) => row([`${kst(b.from)} → ${kst(b.to)}${b.standing ? ' weekly' : ''}${b.consecutive ? ', consecutive' : ''}`, b.fleet || 'any', `${b.filled} / ${b.hours}`, hc(b.max), hc(b.held), b.state, button('Cancel', () => act('m-bid', () => call('POST', '/market/cancel', { bid: b.bid }), () => 'Bid cancelled; its held HC is back.'))])), 'No open bids.');
     fill('keys', me.keys.map((k) => row([`…${k.hint}`, k.note || '', kst(k.created), k.revoked ? 'revoked' : button('Revoke', () => act('m-try', () => call('POST', '/market/keys/revoke', { id: k.key }), () => 'Key revoked.'))])), 'No keys yet.');
@@ -229,23 +236,49 @@
     e.preventDefault();
     act('m-signin', async () => {
       const email = $('email').value.trim();
-      const sent = await call('POST', '/code', { email });
-      const body = { email, code: sent.code, accept: true };
+      const body = { email, accept: $('accept').checked };
       if ($('company').value.trim()) body.company = $('company').value.trim();
+      if (S.codeSent) {
+        body.code = $('code').value.trim();
+      } else {
+        const sent = await call('POST', '/code', { email });
+        if (!sent.code) {
+          S.codeSent = true;
+          $('code-row').hidden = false;
+          $('signin-go').textContent = 'Sign in with the code';
+          $('code').focus();
+          return `We emailed a 6-digit code to ${email}.`;
+        }
+        body.code = sent.code;
+      }
       try {
-        return await call('POST', '/verify', body);
+        const done = await call('POST', '/verify', body);
+        S.codeSent = false;
+        $('code-row').hidden = true;
+        $('code').value = '';
+        $('signin-go').textContent = 'Sign in';
+        return done;
       } catch (error) {
-        if (!body.company) throw new Error('This email has no sandbox account yet: add a company name and sign in again.');
+        if (!SANDBOX && /expired|new one/.test(error.message)) {
+          S.codeSent = false;
+          $('code-row').hidden = true;
+          $('signin-go').textContent = 'Sign in';
+        }
         throw error;
       }
-    });
+    }, (r) => (typeof r === 'string' ? r : ''));
   });
   $('signout').addEventListener('click', () => act('m-signin', () => call('POST', '/signout', {})));
   $('amount').addEventListener('input', renderTop);
   $('buy').addEventListener('submit', (e) => {
     e.preventDefault();
+    if (!SANDBOX) {
+      location.href = 'buy.html?amount=' + encodeURIComponent($('amount').value);
+      return;
+    }
     act('m-buy', () => call('POST', '/market/buy', { amount: $('amount').value }), (r) => `Added ${hc(r.hc)} HC.`);
   });
+
   $('tranche').addEventListener('click', () => act('m-tranche', () => call('POST', '/market/sandbox/tranche', {}), (r) => `${r.hours} Tranche hours for each of ${r.months.join(' and ')}.`));
   $('days').addEventListener('change', () => { S.days = Number($('days').value); refresh().catch((error) => say('m-pick', error.message, 'error')); });
   $('reserve').addEventListener('click', () => {

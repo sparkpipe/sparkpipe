@@ -43,8 +43,8 @@
 <section class="co-head">
   <p class="label">Two-year agreement</p>
   <h1 id="title">Six days a week for two years, at $15 an hour.</h1>
-  <p class="lead">Every hour from Monday to Saturday on one fleet's capacity, at a price fixed for the whole term. Your daily hours are guaranteed, you pay at your own pace, and nothing is due in the first 30 days.</p>
-  <div class="trust"><span>Price fixed for the term</span><span>Guaranteed daily hours</span><span>Sundays free for you when a fleet is free</span><span>Negotiable clause by clause</span></div>
+  <p class="lead">Every hour from Monday to Saturday on one fleet's capacity, at a price fixed for the whole term. Your daily hours are guaranteed, you pay at your own pace, nothing is due in the first 30 days, and a reserved hour you won't use can be released for hour-credits.</p>
+  <div class="trust"><span>Price fixed for the term</span><span>Guaranteed daily hours</span><span>Sundays free for you when a fleet is free</span><span>Negotiable clause by clause</span><span>Unused hours released for HC</span></div>
 </section>
 
 <div class="co">
@@ -56,7 +56,7 @@
         <form class="form" id="plan-form" novalidate>
           <label>Signing date (the term starts that day)<input id="r-start" type="date"></label>
           <label>Window election<select id="r-election"><option value="split">50/50 East and West</option><option value="east">100% East</option><option value="west">100% West</option></select></label>
-          <p class="hint">The term covers every hour from Monday to Saturday: 15,000 to 15,048 hours, depending on the Sundays and 29 February in it. Hours exist only once paid; hours that pass before they are paid for are lost.</p>
+          <p class="hint">The term covers every hour from Monday to Saturday: 15,000 to 15,048 hours, depending on the Sundays and 29 February in it. Hours exist only once paid; hours that pass before they are paid for are lost. A paid Tranche hour you have reserved but won't use can be released on the <a href="market.html">Hour Market</a> before it starts: when it sells, or the shared pool uses it, you get hour-credits (HC) for what it earned, less a <span data-market="fee">10%</span> fee, usable for <span data-market="months">12</span> months.</p>
         </form>
         <div class="readout">
           <div><span>Term</span><strong id="r-term">-</strong></div>
@@ -109,7 +109,7 @@
 <footer class="foot">
   <div class="wrap">
     <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
-    <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Buy hours</a><a href="agreement.html">Agreement</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Buy HC</a><a href="market.html">Hour Market</a><a href="agreement.html">Agreement</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
     <span>Stablecoin payments are processed by CoinPayments.</span>
   </div>
 </footer>
@@ -158,6 +158,8 @@
     }));
     $('r-tranches').replaceChildren(...c.tranches.map((t, i) => row([cell((i + 1) + ' · ' + t.key), cell(t.from + ' to ' + t.to), cell(String(t.days), 'figure'), cell(SP.whole(t.east), 'figure'), cell(SP.whole(t.west), 'figure')])));
   };
+  const market = { fee: Math.round(P.market.releaseFee * 100) + '%', months: String(P.market.validityMonths) };
+  document.querySelectorAll('[data-market]').forEach((el) => { el.textContent = market[el.dataset.market]; });
   $('title').textContent = 'Six days a week for two years, at ' + SP.usd(P.committedPrice).replace('.00', '') + ' an hour.';
   $('r-start').min = minSign();
   $('r-start').value = minSign();

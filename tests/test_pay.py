@@ -46,9 +46,9 @@ def check_dates(failures):
 
 
 def check_covered(failures):
-    hourly = {"product": "hourly", "hours": 168, "net": "3360.00", "total": "3696.00"}
-    if sp.covered(hourly, sp.money("22.99")) != ("1.0450", "20.90") or sp.covered(hourly, sp.money("0.01")) != ("0.0004", "0.00") or sp.covered(hourly, sp.money("9999.00")) != ("168.0000", "3360.00"):
-        failures.append(f"hours covered by a part payment: {sp.covered(hourly, sp.money('22.99'))}")
+    credits = {"product": "credits", "hours": "168.000000", "price": "20.00", "net": "3360.00", "total": "3696.00"}
+    if sp.covered(credits, sp.money("22.99")) != ("1.045000", "20.90") or sp.covered(credits, sp.money("0.01")) != ("0.000000", "0.00") or sp.covered(credits, sp.money("9999.00")) != ("168.000000", "3360.00"):
+        failures.append(f"HC covered by a part payment: {sp.covered(credits, sp.money('22.99'))}")
     prepay = {"product": "two-year", "hours": "6.6666", "net": "100.00", "total": "110.00", "price": "15.00"}
     if sp.covered(prepay, sp.money("55.00")) != ("3.3333", "50.00"):
         failures.append(f"prepayment covered by a part payment: {sp.covered(prepay, sp.money('55.00'))}")
@@ -198,7 +198,7 @@ def check_service(failures):
     try:
         (work / "site" / "terms").mkdir(parents=True)
         shutil.copy(ROOT / "site" / "pricing.js", work / "site" / "pricing.js")
-        for name in ("hourly-en.md", "hourly-ko.md"):
+        for name in sp.TERMS.values():
             shutil.copy(ROOT / "site" / "terms" / name, work / "site" / "terms" / name)
         (work / "secret").write_text("test-client-secret\n")
         fake = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeCoinPayments)
@@ -221,7 +221,7 @@ def check_service(failures):
         port, app = server.server_address[1], server.app
         buyer = Client(port, origin="https://sparkpipe.ai")
         account_flow(failures, cfg, app, buyer, mailbox, port)
-        hourly_flow(failures, cfg, app, fake, buyer, mailbox)
+        credits_flow(failures, cfg, app, fake, buyer, mailbox)
         part_payment_flow(failures, cfg, app, fake, buyer, mailbox)
         prepayment_flow(failures, cfg, app, fake, buyer, mailbox, port)
         lead_flow(failures, app, buyer, mailbox, work)
@@ -234,8 +234,8 @@ def check_service(failures):
         if sp.Book(cfg.path("ledger.jsonl")).count != second.count + 1:
             failures.append("two writers break the ledger chain")
         lines = open(cfg.path("ledger.jsonl"), encoding="utf-8").read().splitlines()
-        index = next(i for i, line in enumerate(lines) if '"hours":4,' in line)
-        lines[index] = lines[index].replace('"hours":4,', '"hours":40,', 1)
+        index = next(i for i, line in enumerate(lines) if '"type":"account"' in line)
+        lines[index] = lines[index].replace('Acme', 'Acmf', 1)
         (work / "tampered.jsonl").write_text("\n".join(lines) + "\n")
         try:
             sp.Book(str(work / "tampered.jsonl"))
@@ -269,13 +269,13 @@ def account_flow(failures, cfg, app, buyer, mailbox, port):
     if "ops@acme.example" in app.book.emails:
         failures.append("an account opens without accepting the Hourly Terms")
     status, summary = sign_in(buyer, mailbox, "Ops@Acme.example", company="Acme 주식회사", accept=True)
-    if status != 200 or summary.get("company") != "Acme 주식회사" or not summary.get("termsCurrent") or summary.get("room") != 168:
+    if status != 200 or summary.get("company") != "Acme 주식회사" or not summary.get("termsCurrent") or summary.get("hc") != "0.000000":
         failures.append(f"opening an account: {status} {summary}")
         return
     if "HttpOnly" not in buyer.last_cookie or "SameSite=Lax" not in buyer.last_cookie or "Path=/pay/api" not in buyer.last_cookie:
         failures.append(f"session cookie attributes: {buyer.last_cookie}")
     record = [json.loads(line) for line in open(cfg.path("ledger.jsonl"), encoding="utf-8") if '"acceptance"' in line][-1]["data"]
-    if record["ko"] != cfg.terms("hourly-ko.md") or "Korean text, which prevails" not in record["statement"] or "Acme 주식회사" not in record["statement"]:
+    if record["ko"] != cfg.terms("hourly-ko.md") or record["rules_ko"] != cfg.terms("market-rules-ko.md") or record["rules_en"] != cfg.terms("market-rules-en.md") or "Hour Market Rules, Korean text, which prevails" not in record["statement"] or "Acme 주식회사" not in record["statement"]:
         failures.append(f"acceptance record: {record}")
     if buyer("GET", "/account")[0] != 200:
         failures.append("a signed-in account cannot read itself")
@@ -294,19 +294,22 @@ def account_flow(failures, cfg, app, buyer, mailbox, port):
         failures.append("signing in again or signing out fails")
 
 
-def hourly_flow(failures, cfg, app, fake, buyer, mailbox):
-    base = {"product": "hourly", "hours": 4, "start": "2026-12-01", "coin": "USDC.BASE"}
-    if buyer("POST", "/order", dict(base, start="2026-11-30"))[0] != 400:
-        failures.append("hours starting before the first sale date are ordered")
+def credits_flow(failures, cfg, app, fake, buyer, mailbox):
+    base = {"product": "credits", "amount": "80", "coin": "USDC.BASE"}
     for coin in ("BTC", "TUSD.TRC20", "base", None):
         if buyer("POST", "/order", dict(base, coin=coin))[0] != 400:
             failures.append(f"an order in {coin} is accepted")
+    for amount in ("9.99", "100000.01", "12.345", "ten"):
+        if buyer("POST", "/order", dict(base, amount=amount))[0] != 400:
+            failures.append(f"an HC order of {amount} USD is accepted")
+    if buyer("POST", "/order", {"product": "hourly", "hours": 4, "start": "2026-12-01", "coin": "USDC.BASE"})[0] != 400:
+        failures.append("fleet-hours are still sold by the hour")
     anonymous = Client(buyer.port)
     if anonymous("POST", "/order", base)[0] != 401:
         failures.append("an order without signing in is accepted")
     status, placed = buyer("POST", "/order", base)
     if status != 200 or not placed.get("checkout", "").startswith("https://pay.example/c/"):
-        failures.append(f"hourly order: {status} {placed}")
+        failures.append(f"HC order: {status} {placed}")
         return
     invoice = fake.invoices["inv1"]["body"]
     expected = {"currency": "5057", "invoiceId": placed["order"], "amount": {"breakdown": {"subtotal": "80.00", "taxTotal": "8.00"}, "total": "88.00"}}
@@ -314,15 +317,13 @@ def hourly_flow(failures, cfg, app, fake, buyer, mailbox):
         failures.append(f"invoice body: {invoice}")
     if invoice["payment"] != {"paymentCurrency": sp.COINS["USDC.BASE"], "refundEmail": "ops@acme.example"} or invoice["buyer"] != {"companyName": "Acme 주식회사", "emailAddress": "ops@acme.example"}:
         failures.append(f"invoice payment or buyer: {invoice['payment']} {invoice['buyer']}")
-    if invoice["items"][0]["quantity"] != {"value": 4, "type": "hours"} or invoice["webhooks"][0]["notificationsUrl"] != "https://sparkpipe.ai/pay/api/coinpayments":
+    if invoice["items"][0]["name"] != "4.000000 SparkPipe hour-credits" or invoice["webhooks"][0]["notificationsUrl"] != "https://sparkpipe.ai/pay/api/coinpayments":
         failures.append(f"invoice items or webhooks: {invoice['items']} {invoice['webhooks']}")
     if invoice["successUrl"] != f"https://sparkpipe.ai/account.html?order={placed['order']}":
         failures.append(f"invoice return address: {invoice['successUrl']}")
     status, shown = buyer("GET", "/order/" + placed["order"])
     if status != 200 or shown["state"] != "unpaid" or shown["checkout"] != placed["checkout"] or "email" in shown:
         failures.append(f"unpaid order status: {status} {shown}")
-    if buyer("POST", "/order", dict(base, hours=165))[0] != 409:
-        failures.append("an unpaid order does not count toward the 168-hour limit")
     if webhook(buyer, cfg, "inv1", tamper=True)[0] != 401 or webhook(buyer, cfg, "inv1", stamp="2026-11-02T02:50:00")[0] != 401:
         failures.append("a tampered or stale webhook is accepted")
     fake.invoices["inv1"]["status"] = "paid"
@@ -338,46 +339,46 @@ def hourly_flow(failures, cfg, app, fake, buyer, mailbox):
     app.jobs.join()
     app.mails.join()
     summary = buyer("GET", "/account")[1]
-    if summary["hours"] != 4 or summary["blocks"] != [{"order": placed["order"], "hours": 4, "start": "2026-12-01", "last": "2027-11-30"}] or ledger_types(cfg).count("hours_issued") != 1:
+    if summary["hc"] != "4.000000" or ledger_types(cfg).count("hours_issued") != 1 or ledger_types(cfg).count("hc_lot") != 1:
         failures.append(f"completed order: {summary} {ledger_types(cfg)}")
     receipts = [m for rcpt, m in mailbox.mail if "ops@acme.example" in rcpt and placed["order"] in m["Subject"]]
-    if len(receipts) != 1 or "88.00" not in receipts[0].get_content():
+    if len(receipts) != 1 or "88.00" not in receipts[0].get_content() or "4.000000 hour-credits" not in receipts[0].get_content() or "/market.html" not in receipts[0].get_content():
         failures.append(f"receipt mail: {[m['Subject'] for _, m in mailbox.mail]}")
     if not any(cfg.notify in rcpt and m["Subject"].startswith("Paid:") for rcpt, m in mailbox.mail):
         failures.append("we are not told of a payment")
     payment = [json.loads(line) for line in open(cfg.path("ledger.jsonl"), encoding="utf-8") if '"payment"' in line][-1]["data"]
     if payment["paidWith"] != ["USDC.BASE"]:
         failures.append(f"the payment line does not record the coin: {payment}")
-    if buyer("POST", "/order", dict(base, hours=165))[0] != 409 or buyer("POST", "/order", dict(base, hours=164, coin="USDT.TRC20"))[0] != 200:
-        failures.append("issued hours and the holding limit")
+    if buyer("POST", "/order", dict(base, amount="3280", coin="USDT.TRC20"))[0] != 200:
+        failures.append("a second HC order is refused")
     fake.invoices["inv2"]["status"] = "completed"
     fake.invoices["inv2"]["total"] = "1.00"
     webhook(buyer, cfg, "inv2")
     app.jobs.join()
     if fake.invoices["inv2"]["body"]["payment"]["paymentCurrency"] != "9:TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t":
         failures.append("a USDT order on Tron does not preset USDT on Tron")
-    second = next(o for o in buyer("GET", "/account")[1]["orders"] if o["hours"] == 164)
+    second = next(o for o in buyer("GET", "/account")[1]["orders"] if o["net"] == "3280.00")
     if second["coin"] != "USDT.TRC20":
         failures.append(f"the order does not show its coin: {second}")
-    if second["state"] != "mismatch" or second["issued"]:
-        failures.append(f"an underpaid invoice issues hours: {second}")
+    if second["state"] != "mismatch" or second["issued"] or buyer("GET", "/account")[1]["hc"] != "4.000000":
+        failures.append(f"an invoice that does not match its order issues HC: {second}")
     fake.down = True
-    Path(cfg.path("approved.json")).write_text(json.dumps(["OPS@acme.example"]))
-    status, refused = buyer("POST", "/order", dict(base, hours=1))
+    status, refused = buyer("POST", "/order", dict(base, amount="20"))
     fake.down = False
     if status != 502 or buyer("GET", "/account")[1]["orders"][0]["state"] != "failed":
         failures.append(f"a failed invoice is not recorded: {status} {refused}")
-    terms = Path(cfg.site) / "terms" / "hourly-en.md"
-    terms.write_text(terms.read_text() + "\n")
-    status, refused = buyer("POST", "/order", dict(base, hours=1))
-    if status != 409 or refused.get("reason") != "terms":
-        failures.append(f"an order under changed terms does not ask to accept them again: {status} {refused}")
-    if buyer("POST", "/order", dict(base, hours=1, accept=True))[0] != 200 or not buyer("GET", "/account")[1]["termsCurrent"]:
-        failures.append("accepting changed terms at the order does not record it")
+    for name in ("hourly-en.md", "market-rules-ko.md"):
+        terms = Path(cfg.site) / "terms" / name
+        terms.write_text(terms.read_text() + "\n")
+        status, refused = buyer("POST", "/order", dict(base, amount="20"))
+        if status != 409 or refused.get("reason") != "terms":
+            failures.append(f"an order after {name} changed does not ask to accept the terms again: {status} {refused}")
+        if buyer("POST", "/order", dict(base, amount="20", accept=True))[0] != 200 or not buyer("GET", "/account")[1]["termsCurrent"]:
+            failures.append(f"accepting the terms again after {name} changed is not recorded")
 
 
 def part_payment_flow(failures, cfg, app, fake, buyer, mailbox):
-    status, placed = buyer("POST", "/order", {"product": "hourly", "hours": 4, "start": "2026-12-01", "coin": "USDC.ERC20"})
+    status, placed = buyer("POST", "/order", {"product": "credits", "amount": "80", "coin": "USDC.ERC20"})
     if status != 200:
         failures.append(f"part payment order: {status} {placed}")
         return
@@ -397,72 +398,27 @@ def part_payment_flow(failures, cfg, app, fake, buyer, mailbox):
     app.mails.join()
     if app.book.count != lines:
         failures.append("a part payment revalued by cents writes ledger lines")
-    account = app.book.orders[placed["order"]]["account"]
-    held = app.book.held(account, sp.clock())
-    before = sp.Decimal(str(buyer("GET", "/account")[1]["hours"]))
+    before = sp.Decimal(buyer("GET", "/account")[1]["hc"])
     fake.invoices[key]["status"] = "completed"
     webhook(buyer, cfg, key)
     app.jobs.join()
     app.mails.join()
     shown = buyer("GET", "/order/" + placed["order"])[1]
-    after = buyer("GET", "/account")[1]
-    if shown["state"] != "completed" or not shown["issued"] or shown["issuedHours"] != "1.0445" or sp.Decimal(str(after["hours"])) != before + sp.Decimal("1.0445"):
-        failures.append(f"a completed part payment does not issue its hours in proportion: {shown} {before} {after['hours']}")
+    after = sp.Decimal(buyer("GET", "/account")[1]["hc"])
+    if shown["state"] != "completed" or not shown["issued"] or shown["issuedHours"] != "1.0445" or after != before + sp.Decimal("1.0445"):
+        failures.append(f"a completed part payment does not issue HC in proportion: {shown} {before} {after}")
     note = [m for rcpt, m in mailbox.mail if "ops@acme.example" in rcpt and placed["order"] in m["Subject"]]
-    if not note or "22.98 USD arrived" not in note[-1].get_content() or "1.0445 fleet-hours" not in note[-1].get_content():
+    if not note or "22.98 USD arrived" not in note[-1].get_content() or "1.044500 hour-credits" not in note[-1].get_content():
         failures.append("the receipt for a part payment does not say what arrived and what it bought")
-    if not note or "Received in DAI: 22.98 USD" not in note[-1].get_content():
-        failures.append("the receipt for a payment in another stablecoin does not name the coin that was paid")
+    if not note or "Received in DAI: 22.98 USD" not in note[-1].get_content() or "account.html?order=" in note[-1].get_content():
+        failures.append("the receipt for a part payment names the wrong coin or offers to pay the rest")
     payments = [json.loads(line)["data"] for line in open(cfg.path("ledger.jsonl"), encoding="utf-8") if '"payment"' in line]
     if [e["paidWith"] for e in payments if e["order"] == placed["order"]] != [["DAI.ERC20"]]:
         failures.append("the ledger does not record the stablecoin that was paid")
     if not any(cfg.notify in rcpt and m["Subject"].startswith("Paid in part:") for rcpt, m in mailbox.mail):
         failures.append("we are not told of a part payment that settled")
-    if app.book.held(account, sp.clock()) != held - sp.Decimal("2.9555"):
-        failures.append(f"the holding limit counts the ordered hours of a part payment, not the issued ones: {app.book.held(account, sp.clock())} vs {held}")
-    if buyer("POST", "/order", {"product": "hourly", "hours": 1, "start": "2026-12-01", "coin": "USDC.ERC20"})[0] != 200:
-        failures.append("an account with fractional hours cannot order whole hours")
-    rest_flow(failures, cfg, app, fake, buyer, mailbox, placed["order"], account)
-
-
-def rest_flow(failures, cfg, app, fake, buyer, mailbox, parent, account):
-    shown = buyer("GET", "/order/" + parent)[1]
-    if shown["left"] != "65.02" or shown["leftHours"] != "2.9555":
-        failures.append(f"what is left of a part-paid order: {shown}")
-    note = [m for rcpt, m in mailbox.mail if "ops@acme.example" in rcpt and parent in m["Subject"]][-1].get_content()
-    if f"account.html?order={parent}" not in note:
-        failures.append("the part-payment receipt does not link to paying the rest")
-    stranger = Client(buyer.port, origin="https://sparkpipe.ai")
-    sign_in(stranger, mailbox, "else@other.example", company="Other Co", accept=True)
-    if stranger("POST", "/order", {"product": "rest", "parent": parent, "coin": "USDC.ERC20"})[0] != 404:
-        failures.append("another account can pay the rest of an order")
-    held = app.book.held(account, sp.clock())
-    status, rest = buyer("POST", "/order", {"product": "rest", "parent": parent, "coin": "USDT.TRC20"})
-    if status != 200:
-        failures.append(f"paying the rest: {status} {rest}")
-        return
-    key = max(fake.invoices, key=lambda k: int(k[3:]))
-    body = fake.invoices[key]["body"]
-    if body["amount"] != {"breakdown": {"subtotal": "59.11", "taxTotal": "5.91"}, "total": "65.02"} or body["items"][0]["quantity"] != {"value": 1, "type": "quantity"} or body["payment"]["paymentCurrency"] != sp.COINS["USDT.TRC20"]:
-        failures.append(f"rest invoice: {body['amount']} {body['items'][0]['quantity']} {body['payment']}")
-    if app.book.held(account, sp.clock()) != held + sp.Decimal("2.9555"):
-        failures.append("an unpaid rest order does not count toward the holding limit")
-    if buyer("POST", "/order", {"product": "rest", "parent": parent, "coin": "USDC.ERC20"})[0] != 409 or buyer("GET", "/order/" + parent)[1]["left"] is not None:
-        failures.append("the rest of an order can be ordered twice")
-    before = sp.Decimal(str(buyer("GET", "/account")[1]["hours"]))
-    fake.invoices[key]["status"] = "completed"
-    webhook(buyer, cfg, key)
-    app.jobs.join()
-    app.mails.join()
-    child = buyer("GET", "/order/" + rest["order"])[1]
-    after = sp.Decimal(str(buyer("GET", "/account")[1]["hours"]))
-    if child["parent"] != parent or child["issuedHours"] != "2.9555" or child["left"] is not None or after != before + sp.Decimal("2.9555"):
-        failures.append(f"a paid rest does not issue the remaining hours: {child} {before} {after}")
-    issued = sum(sp.Decimal(str(o["issued_hours"])) for o in app.book.orders.values() if o["order"] in (parent, rest["order"]))
-    if issued != 4 or buyer("GET", "/order/" + parent)[1]["left"] is not None:
-        failures.append(f"an order paid in two parts does not total its hours: {issued}")
-    if buyer("POST", "/order", {"product": "rest", "parent": rest["order"], "coin": "USDC.ERC20"})[0] != 409:
-        failures.append("a fully paid rest can be paid again")
+    if buyer("POST", "/order", {"product": "rest", "parent": placed["order"], "coin": "USDC.ERC20"})[0] != 400:
+        failures.append("the rest of a part-paid order can still be ordered")
 
 
 def prepayment_flow(failures, cfg, app, fake, buyer, mailbox, port):
@@ -530,7 +486,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("pay: tranches match the agreement; email codes, sessions, terms acceptance, USDC and USDT invoices on the chosen network, payments in another stablecoin, signed webhooks, receipts, part payments and paying the rest, reconciliation, the holding limit, gates, quote requests and the hash-chained ledger behave")
+    print("pay: tranches match the agreement; email codes, sessions, terms acceptance, USDC and USDT invoices on the chosen network, payments in another stablecoin, signed webhooks, receipts, HC orders and part payments, reconciliation, gates, quote requests and the hash-chained ledger behave")
     return 0
 
 

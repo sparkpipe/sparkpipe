@@ -32,7 +32,7 @@ def at(hours):
 def site(work):
     (work / "site" / "terms").mkdir(parents=True)
     shutil.copy(ROOT / "site" / "pricing.js", work / "site" / "pricing.js")
-    for name in ("hourly-en.md", "hourly-ko.md"):
+    for name in sp.TERMS.values():
         shutil.copy(ROOT / "site" / "terms" / name, work / "site" / "terms" / name)
 
 
@@ -105,6 +105,7 @@ def sandbox_flows(failures, work):
         reserve_and_release(failures, seller, buyer)
         bids(failures, seller, buyer)
         pool(failures, app, port, seller, buyer)
+        fee_locked(failures, work, seller, buyer)
         replay = sp.Book(cfg.path("ledger.jsonl"))
         moment = market.stamp(app.market.now())
         accounts = list(app.book.accounts)
@@ -112,8 +113,14 @@ def sandbox_flows(failures, work):
             failures.append("a replayed ledger gives different HC balances")
         lines = buyer("GET", "/market/ledger")[1]["lines"]
         mine = app.book.emails["buyer@example.com"]
-        if not lines or any(mine not in json.dumps(line) for line in lines) or not all(line.get("hash") for line in lines):
-            failures.append("the ledger export holds the account's own hashed lines")
+        others = [line for line in lines if any(line["data"].get(name) not in (None, mine) for name in ("account", "seller"))]
+        kinds = {line["type"] for line in lines}
+        if not lines or others or not all(line.get("hash") for line in lines) or not {"bid_cancel", "hc_unhold", "hc_spend_hold"} <= kinds:
+            failures.append(f"the ledger export holds every line of the account and no other account's: {sorted(kinds)} {others[:2]}")
+        seller_lines = seller("GET", "/market/ledger")[1]["lines"]
+        if not {"ask_cancel", "pool_join", "pool_settle"} <= {line["type"] for line in seller_lines} or any(line["data"].get("account") not in (None, app.book.emails["seller@example.com"]) for line in seller_lines):
+            failures.append(f"the seller's ledger export misses its releases or shows the buyer's lines: {sorted({line['type'] for line in seller_lines})}")
+
         status, kind, text = text_get(port, "/market/market.txt")
         if status != 200 or not kind.startswith("text/plain") or not re.search(r"\n\d{4}-\d\d-\d\dT\d\d:00Z F1 1\.000000 hyor -\n", text) or "# last trades" not in text:
             failures.append(f"market.txt lists the best ask per fleet-hour: {text[:300]}")
@@ -126,7 +133,21 @@ def sandbox_flows(failures, work):
         server.shutdown()
 
 
+def fee_locked(failures, work, seller, buyer):
+    held = seller("POST", "/market/reserve", {"fleet": "F1", "start": at(60), "model": "kimi-k3", "max": "1"})[1]
+    seller("POST", "/market/release", {"reservation": held.get("reservation"), "min": "1"})
+    prices = work / "site" / "pricing.js"
+    text = prices.read_text()
+    prices.write_text(text.replace('"releaseFee": 0.10', '"releaseFee": 0.5'))
+    before = balance(seller)
+    status, bought = buyer("POST", "/market/reserve", {"fleet": "F1", "start": at(60), "model": "kimi-k3", "max": "1"})
+    prices.write_text(text)
+    if status != 200 or balance(seller) != before + Decimal("0.9"):
+        failures.append(f"a fee change applies to a release already on offer: {status} {bought} {before} {balance(seller)}")
+
+
 def reserve_and_release(failures, seller, buyer):
+
     status, held = seller("POST", "/market/reserve", {"fleet": "F1", "start": at(5), "model": "kimi-k3", "max": "1"})
     if status != 200 or held["price"] != "1.000000" or balance(seller) != 4:
         failures.append(f"reserving our hour at Rate: {status} {held}")
