@@ -598,6 +598,10 @@ struct K3StreamedMlaExchange
 	uint32_t expanded_keys;
 	uint32_t key_block;
 	float *running;
+	const uint32_t *help;
+	uint16_t *help_values;
+	uint64_t help_capacity;
+	cudaEvent_t *own_marks;
 	K3StreamedCollective collective;
 	void *context;
 };
@@ -677,6 +681,24 @@ static int32_t K3StreamedMlaKeys(const K3StreamedMlaExchange *x, cudaStream_t st
 	return(LM_LAUNCH_OK);
 }
 
+template<class Geometry, uint32_t HEADS>
+static int32_t K3StreamedMlaExpand(const K3StreamedMlaExchange *x, const K3LayerWeights *own, uint32_t shard, uint64_t key_first, uint32_t keys, cudaStream_t stream)
+{
+	const uint64_t key_pitch = (uint64_t)HEADS * (K3_MHA_QK + K3_V_HEAD_DIM);
+	const uint64_t key_rows = (uint64_t)shard * HEADS * K3_QK_NOPE_DIM, value_rows = (uint64_t)shard * HEADS * K3_V_HEAD_DIM;
+	const uint8_t *latent = x->latent_keys + key_first * Geometry::kSlotBytes;
+	return(LmLatentExpandPitchedLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_QK_NOPE_DIM>(latent,keys,(const uint16_t *)own->mla_kv_b_key_full_weight + key_rows * K3_KV_LORA_RANK,
+			HEADS,x->expanded,key_pitch,K3_MHA_QK,stream) == cudaSuccess &&
+		LmLatentRopeBroadcastLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM>(latent,keys,HEADS,x->expanded,key_pitch,K3_MHA_QK,K3_QK_NOPE_DIM,stream) == cudaSuccess &&
+		LmLatentExpandPitchedLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_V_HEAD_DIM>(latent,keys,(const uint16_t *)own->mla_kv_b_value_full_weight + value_rows * K3_KV_LORA_RANK,
+			HEADS,x->expanded + (uint64_t)HEADS * K3_MHA_QK * 2u,key_pitch,K3_V_HEAD_DIM,stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+static uint32_t K3StreamedMlaHelp(const K3StreamedMlaExchange *x, uint32_t giver, uint32_t helper)
+{
+	return(x->help != 0 && giver != helper ? x->help[giver * x->nodes + helper] : 0u);
+}
+
 template<class Format, class Geometry, uint32_t HEADS>
 static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards, uint32_t shard_count, const K3StreamedMlaExchange *x,
 	uint16_t *partial, const K3StreamedJoin *join, uint32_t boundary, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
@@ -686,8 +708,9 @@ static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 	uint16_t *const own_value = b->value_bf16;
 	const uint32_t *const own_row_offset = b->dense_row_offset;
 	uint32_t *const own_tile_prefix = b->dense_tile_prefix;
-	uint64_t stride, key_count, key_first, block, blocks;
-	uint32_t shard, groups;
+	const uint64_t record = LmGqaShardRecordFloats(HEADS,K3_V_HEAD_DIM,1u);
+	uint64_t stride, key_count, key_first, block, blocks, staged;
+	uint32_t shard, groups, node;
 	int32_t status;
 	if ( shards == 0 || x == 0 || x->collective == 0 || x->nodes == 0u || x->node >= x->nodes || shard_count * HEADS != K3_MLA_HEADS || shard_count % x->nodes != 0u ||
 		partial == 0 || join == 0 || join->weight == 0 || join->activation == 0 || join->weight_capacity < (uint64_t)K3_HIDDEN * K3_MLA_HEADS * K3_V_HEAD_DIM ||
@@ -704,6 +727,10 @@ static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 	blocks = (key_count + block - 1u) / block;
 	if ( (uint64_t)x->first_key + x->pass_rows > x->key_capacity || (x->expanded_keys != 0u && block > x->expanded_keys) || (blocks > 1u && x->running == 0) )
 		return(LM_LAUNCH_ERR_SHAPE);
+	for (shard = 0u; shard < x->nodes; shard++)
+		for (node = 0u; node < x->nodes; node++)
+			if ( K3StreamedMlaHelp(x,shard,node) > rows )
+				return(LM_LAUNCH_ERR_SHAPE);
 	K3BindLayer(&shards[0],b);
 	status = K3LayerMlaDown<Format>(b,rows,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -722,27 +749,26 @@ static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 	b->dense_tile_prefix = x->pass_tile_prefix;
 	for (shard = x->node; shard < shard_count && status == LM_LAUNCH_OK; shard += x->nodes)
 	{
-		const uint64_t key_rows = (uint64_t)shard * HEADS * K3_QK_NOPE_DIM, value_rows = (uint64_t)shard * HEADS * K3_V_HEAD_DIM;
 		K3BindLayer(&shards[shard],b);
 		b->tp_rank = shard;
-		status = K3Project<LmBf16Format>(b,x->q_latents,b->mla_q_b_weight,0,x->query,x->pass_rows,K3_Q_LORA_RANK,HEADS * K3_MHA_QK,multiprocessors,stream);
-		if ( status != LM_LAUNCH_OK )
-			break;
+		if ( shard == x->node && x->own_marks != 0 && cudaEventRecord(x->own_marks[0],stream) != cudaSuccess )
+			status = LM_LAUNCH_ERR_LAUNCH;
+		if ( status == LM_LAUNCH_OK )
+			status = K3Project<LmBf16Format>(b,x->q_latents,b->mla_q_b_weight,0,x->query,x->pass_rows,K3_Q_LORA_RANK,HEADS * K3_MHA_QK,multiprocessors,stream);
 		for (key_first = 0u; key_first < key_count && status == LM_LAUNCH_OK; key_first += block)
 		{
 			const uint32_t keys = (uint32_t)(key_count - key_first < block ? key_count - key_first : block);
-			const uint8_t *latent = x->latent_keys + key_first * Geometry::kSlotBytes;
-			if ( LmLatentExpandPitchedLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_QK_NOPE_DIM>(latent,keys,
-					(const uint16_t *)shards[x->node].mla_kv_b_key_full_weight + key_rows * K3_KV_LORA_RANK,HEADS,x->expanded,key_pitch,K3_MHA_QK,stream) != cudaSuccess ||
-				LmLatentRopeBroadcastLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM>(latent,keys,HEADS,x->expanded,key_pitch,K3_MHA_QK,K3_QK_NOPE_DIM,stream) != cudaSuccess ||
-				LmLatentExpandPitchedLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_V_HEAD_DIM>(latent,keys,
-					(const uint16_t *)shards[x->node].mla_kv_b_value_full_weight + value_rows * K3_KV_LORA_RANK,HEADS,x->expanded + (uint64_t)HEADS * K3_MHA_QK * 2u,
-					key_pitch,K3_V_HEAD_DIM,stream) != cudaSuccess )
-				status = LM_LAUNCH_ERR_LAUNCH;
-			else if ( LmAttentionBlockPartialLaunch<K3_MHA_QK,K3_V_HEAD_DIM>(x->query,HEADS,x->pass_positions,x->pass_rows,(const uint16_t *)x->expanded,key_pitch,
-					(uint32_t)key_first,keys,K3_MLA_QK_SCALE,x->partials,stride,stream) != cudaSuccess )
-				status = LM_LAUNCH_ERR_LAUNCH;
-			else if ( blocks > 1u )
+			status = K3StreamedMlaExpand<Geometry,HEADS>(x,&shards[x->node],shard,key_first,keys,stream);
+			for (node = 0u; node < x->nodes && status == LM_LAUNCH_OK; node++)
+			{
+				const uint64_t first = (uint64_t)node * rows, count = x->help != 0 ? rows - K3StreamedMlaHelp(x,x->node,node) : x->pass_rows;
+				if ( count != 0u && LmAttentionBlockPartialLaunch<K3_MHA_QK,K3_V_HEAD_DIM>(x->query + first * HEADS * K3_MHA_QK,HEADS,x->pass_positions + first,(uint32_t)count,
+						(const uint16_t *)x->expanded,key_pitch,(uint32_t)key_first,keys,K3_MLA_QK_SCALE,x->partials + first * record,stride,stream) != cudaSuccess )
+					status = LM_LAUNCH_ERR_LAUNCH;
+				if ( x->help == 0 )
+					break;
+			}
+			if ( status == LM_LAUNCH_OK && blocks > 1u )
 				LM_LAUNCH((K3StreamedFoldRecordsKernel<K3_V_HEAD_DIM>), x->pass_rows, 256u, 0, stream, x->running,x->partials,HEADS,x->pass_rows,key_first == 0u ? 1u : 0u);
 		}
 		if ( status != LM_LAUNCH_OK )
@@ -751,12 +777,63 @@ static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 			cudaMemcpy2DAsync(x->value_send + (uint64_t)(shard / x->nodes) * rows * value_elements,(size_t)groups * rows * value_elements * sizeof(uint16_t),x->merged,
 				(size_t)rows * value_elements * sizeof(uint16_t),(size_t)rows * value_elements * sizeof(uint16_t),x->nodes,cudaMemcpyDeviceToDevice,stream) != cudaSuccess )
 			status = LM_LAUNCH_ERR_LAUNCH;
+		if ( status == LM_LAUNCH_OK && shard + x->nodes >= shard_count && x->own_marks != 0 && cudaEventRecord(x->own_marks[1],stream) != cudaSuccess )
+			status = LM_LAUNCH_ERR_LAUNCH;
 	}
 	b->dense_row_offset = own_row_offset;
 	b->dense_tile_prefix = own_tile_prefix;
 	if ( status != LM_LAUNCH_OK )
 		return(status);
+	staged = 0u;
+	for (node = 0u; node < x->nodes && status == LM_LAUNCH_OK; node++)
+	{
+		const uint32_t help = K3StreamedMlaHelp(x,node,x->node);
+		const uint64_t first = (uint64_t)x->node * rows + rows - help, take_keys = first + help + x->first_key < key_count ? first + help + x->first_key : key_count;
+		const uint64_t take_stride = (uint64_t)help * record;
+		for (shard = node; help != 0u && shard < shard_count && status == LM_LAUNCH_OK; shard += x->nodes)
+		{
+			if ( x->help_values == 0 || staged + help > x->help_capacity )
+			{
+				status = LM_LAUNCH_ERR_SHAPE;
+				break;
+			}
+			K3BindLayer(&shards[shard],b);
+			b->tp_rank = shard;
+			status = K3Project<LmBf16Format>(b,x->q_latents + (uint64_t)x->node * rows * K3_Q_LORA_RANK,b->mla_q_b_weight,0,x->query,rows,K3_Q_LORA_RANK,HEADS * K3_MHA_QK,
+				multiprocessors,stream);
+			for (key_first = 0u; key_first < take_keys && status == LM_LAUNCH_OK; key_first += block)
+			{
+				const uint32_t keys = (uint32_t)(take_keys - key_first < block ? take_keys - key_first : block);
+				status = K3StreamedMlaExpand<Geometry,HEADS>(x,&shards[x->node],shard,key_first,keys,stream);
+				if ( status == LM_LAUNCH_OK && LmAttentionBlockPartialLaunch<K3_MHA_QK,K3_V_HEAD_DIM>(x->query + (uint64_t)(rows - help) * HEADS * K3_MHA_QK,HEADS,
+						x->pass_positions + first,help,(const uint16_t *)x->expanded,key_pitch,(uint32_t)key_first,keys,K3_MLA_QK_SCALE,x->partials,take_stride,stream) != cudaSuccess )
+					status = LM_LAUNCH_ERR_LAUNCH;
+				if ( status == LM_LAUNCH_OK && blocks > 1u )
+					LM_LAUNCH((K3StreamedFoldRecordsKernel<K3_V_HEAD_DIM>), help, 256u, 0, stream, x->running,x->partials,HEADS,help,key_first == 0u ? 1u : 0u);
+			}
+			if ( status == LM_LAUNCH_OK && LmGqaShardMergeLaunch<K3_V_HEAD_DIM>(blocks > 1u ? x->running : x->partials,take_stride,1u,HEADS,0u,
+					x->help_values + staged * value_elements,help,stream) != cudaSuccess )
+				status = LM_LAUNCH_ERR_LAUNCH;
+			staged += help;
+		}
+	}
+	if ( status != LM_LAUNCH_OK )
+		return(status);
 	x->collective(x->context,(void *)(uintptr_t)stream,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL,groups * rows,(uint32_t)value_elements,x->value_send,x->values);
+	staged = 0u;
+	for (node = 0u; node < x->nodes && status == LM_LAUNCH_OK; node++)
+	{
+		const uint32_t help = K3StreamedMlaHelp(x,node,x->node);
+		for (shard = node; help != 0u && shard < shard_count && status == LM_LAUNCH_OK; shard += x->nodes)
+		{
+			if ( cudaMemcpyAsync(x->values + (((uint64_t)(shard % x->nodes) * groups + shard / x->nodes) * rows + rows - help) * value_elements,
+					x->help_values + staged * value_elements,(size_t)help * value_elements * sizeof(uint16_t),cudaMemcpyDeviceToDevice,stream) != cudaSuccess )
+				status = LM_LAUNCH_ERR_LAUNCH;
+			staged += help;
+		}
+	}
+	if ( status != LM_LAUNCH_OK )
+		return(status);
 	b->shard_mha = 1u;
 	for (shard = 0u; shard < shard_count && status == LM_LAUNCH_OK; shard++)
 	{

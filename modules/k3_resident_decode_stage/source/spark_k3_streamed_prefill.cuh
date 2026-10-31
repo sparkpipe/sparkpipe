@@ -25,6 +25,8 @@
 #define K3_STREAMED_HEADS (K3_MLA_HEADS / K3_STREAMED_SHARDS)
 #define K3_STREAMED_ROW_ALIGN 128u
 #define K3_STREAMED_CHUNKS 8u
+#define K3_STREAMED_HELP_MIN_SHARE 0.005
+#define K3_STREAMED_HELP_LAYERS 6u
 #define K3_STREAMED_STREAM_CHUNK (4u << 20)
 #define K3_STREAMED_STREAM_DEPTH 32u
 #define K3_STREAMED_MAX_ALLOCATIONS 128u
@@ -283,6 +285,13 @@ struct K3Streamed
 	cudaEvent_t dense_done[SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS];
 	cudaEvent_t slot_done[SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS];
 	cudaEvent_t marks[K3_LAYERS][3];
+	cudaEvent_t own_marks[K3_LAYERS][2];
+	float *balance_device;
+	double node_speed[K3_STREAMED_SHARDS];
+	double pass_attention[K3_STREAMED_SHARDS];
+	uint64_t pass_helped;
+	uint32_t help[K3_STREAMED_SHARDS * K3_STREAMED_SHARDS];
+	uint32_t help_active;
 	pthread_mutex_t lock;
 	pthread_cond_t changed;
 	uint32_t synchronization;
@@ -477,6 +486,9 @@ static void K3StreamedDestroy(K3Streamed *s)
 	for (index = 0u; index < K3_LAYERS * 3u; index++)
 		if ( s->marks[index / 3u][index % 3u] != 0 )
 			(void)cudaEventDestroy(s->marks[index / 3u][index % 3u]);
+	for (index = 0u; index < K3_LAYERS * 2u; index++)
+		if ( s->own_marks[index / 2u][index % 2u] != 0 )
+			(void)cudaEventDestroy(s->own_marks[index / 2u][index % 2u]);
 	if ( s->copy_stream != 0 )
 		(void)cudaStreamDestroy(s->copy_stream);
 	if ( s->synchronization != 0u )
@@ -619,6 +631,8 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 	s->mla.merged = K3StreamedAlloc<uint16_t>(s, pass * K3_STREAMED_HEADS * K3_V_HEAD_DIM);
 	s->mla.value_send = K3StreamedAlloc<uint16_t>(s, pass * K3_STREAMED_HEADS * K3_V_HEAD_DIM);
 	s->mla.values = K3StreamedAlloc<uint16_t>(s, pass * K3_STREAMED_HEADS * K3_V_HEAD_DIM);
+	s->mla.help_values = K3StreamedAlloc<uint16_t>(s, pass / 4u * K3_STREAMED_HEADS * K3_V_HEAD_DIM);
+	s->mla.help_capacity = pass / 4u;
 	s->mla.pass_positions = K3StreamedAlloc<uint32_t>(s, pass);
 	s->mla.pass_sequence_of_row = K3StreamedAlloc<uint32_t>(s, pass);
 	s->mla.pass_row_offset = K3StreamedAlloc<uint32_t>(s, 2u);
@@ -631,11 +645,13 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 	s->mla.older_context = s->older_context_device = K3StreamedAlloc<uint32_t>(s, s->dispatch->sequences);
 	s->mla.collective = K3StreamedRound;
 	s->mla.context = &s->round;
+	s->balance_device = K3StreamedAlloc<float>(s, 4u + 4u * K3_STREAMED_SHARDS);
 	if ( cudaMallocHost((void **)&s->host_staging, (size_t)(pass + K3_STREAMED_CHUNKS + 8u) * sizeof(uint32_t)) != cudaSuccess )
 		s->host_staging = 0;
 	if ( cudaHostAlloc((void **)&s->health, (size_t)(K3_LAYERS + 1u) * 2u * sizeof(uint32_t), cudaHostAllocMapped) != cudaSuccess )
 		s->health = 0;
-	if ( s->allocation_count == K3_STREAMED_MAX_ALLOCATIONS || s->host_staging == 0 || s->health == 0 || state_memory == 0 || window_memory == 0 || s->mla.older_context == 0 )
+	if ( s->allocation_count == K3_STREAMED_MAX_ALLOCATIONS || s->host_staging == 0 || s->health == 0 || state_memory == 0 || window_memory == 0 || s->mla.older_context == 0 ||
+		s->balance_device == 0 || s->mla.help_values == 0 )
 	{
 		fprintf(stderr, "sparkpipe_k3: streamed prefill engine buffers did not fit (%u allocations, %llu bytes placed)\n", s->allocation_count,
 			(unsigned long long)s->engine_bytes);
@@ -757,6 +773,9 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 			status = SPARK_STATUS_IO_ERROR;
 	for (index = 0u; status == SPARK_STATUS_OK && index < K3_LAYERS * 3u; index++)
 		if ( cudaEventCreate(&s->marks[index / 3u][index % 3u]) != cudaSuccess )
+			status = SPARK_STATUS_IO_ERROR;
+	for (index = 0u; status == SPARK_STATUS_OK && index < K3_LAYERS * 2u; index++)
+		if ( cudaEventCreate(&s->own_marks[index / 2u][index % 2u]) != cudaSuccess )
 			status = SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK )
 	{
@@ -1159,6 +1178,114 @@ static SparkStatus K3StreamedUpload(void *device, const void *host, uint64_t byt
 	return cudaMemcpyAsync(device, host, (size_t)bytes, cudaMemcpyHostToDevice, stream) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
 }
 
+static double K3StreamedVisibleKeys(uint64_t first_key, uint64_t pass_tokens, uint64_t first, uint64_t end)
+{
+	const uint64_t real_end = end < pass_tokens ? end : pass_tokens;
+	double keys = 0.0;
+	if ( first < real_end )
+		keys += (double)(real_end - first) * (double)(first_key + 1u) + ((double)first + (double)real_end - 1.0) * (double)(real_end - first) / 2.0;
+	if ( end > (first > pass_tokens ? first : pass_tokens) )
+		keys += (double)(end - (first > pass_tokens ? first : pass_tokens)) * (double)(first_key + pass_tokens);
+	return keys;
+}
+
+static double K3StreamedOwnAttention(const K3Streamed *s, uint32_t node, uint64_t first_key, uint32_t rows, uint64_t pass_tokens)
+{
+	double keys = 0.0;
+	uint32_t slice;
+	for (slice = 0u; slice < K3_STREAMED_SHARDS; slice++)
+		keys += K3StreamedVisibleKeys(first_key, pass_tokens, (uint64_t)slice * rows,
+			(uint64_t)slice * rows + rows - (s->help_active != 0u && slice != node ? s->help[node * K3_STREAMED_SHARDS + slice] : 0u));
+	return keys;
+}
+
+static void K3StreamedPlanHelp(K3Streamed *s, uint64_t first_key, uint32_t rows, uint64_t pass_tokens)
+{
+	const double work = K3StreamedVisibleKeys(first_key, pass_tokens, 0u, (uint64_t)K3_STREAMED_SHARDS * rows);
+	double speed = 0.0, balanced, excess[K3_STREAMED_SHARDS], room[K3_STREAMED_SHARDS], room_total = 0.0;
+	uint32_t node, helper;
+	memset(s->help, 0, sizeof(s->help));
+	s->help_active = 0u;
+	for (node = 0u; node < K3_STREAMED_SHARDS; node++)
+	{
+		if ( !(s->node_speed[node] > 0.0) )
+			return;
+		speed += s->node_speed[node];
+	}
+	balanced = (double)K3_STREAMED_SHARDS * work / speed;
+	for (node = 0u; node < K3_STREAMED_SHARDS; node++)
+	{
+		excess[node] = work - balanced * s->node_speed[node];
+		room[node] = excess[node] < 0.0 ? -excess[node] : 0.0;
+		room_total += room[node];
+	}
+	for (node = 0u; node < K3_STREAMED_SHARDS && room_total > 0.0; node++)
+	{
+		if ( excess[node] <= K3_STREAMED_HELP_MIN_SHARE * work )
+			continue;
+		for (helper = 0u; helper < K3_STREAMED_SHARDS; helper++)
+		{
+			const double tail = K3StreamedVisibleKeys(first_key, pass_tokens, (uint64_t)(helper + 1u) * rows - 1u, (uint64_t)(helper + 1u) * rows);
+			const double share = room[helper] > 0.0 ? excess[node] * room[helper] / room_total : 0.0;
+			const double take = tail > 0.0 ? share / tail : 0.0;
+			s->help[node * K3_STREAMED_SHARDS + helper] = take >= (double)rows ? rows : (uint32_t)take;
+		}
+	}
+	for (helper = 0u; helper < K3_STREAMED_SHARDS; helper++)
+	{
+		uint64_t taken = 0u;
+		for (node = 0u; node < K3_STREAMED_SHARDS; node++)
+			taken += s->help[node * K3_STREAMED_SHARDS + helper];
+		for (node = 0u; node < K3_STREAMED_SHARDS && taken > s->mla.help_capacity; node++)
+			s->help[node * K3_STREAMED_SHARDS + helper] = (uint32_t)((uint64_t)s->help[node * K3_STREAMED_SHARDS + helper] * s->mla.help_capacity / taken);
+		for (node = 0u; node < K3_STREAMED_SHARDS; node++)
+			s->help_active |= s->help[node * K3_STREAMED_SHARDS + helper] != 0u ? 1u : 0u;
+	}
+}
+
+static SparkStatus K3StreamedMeasureHelp(K3Streamed *s, uint32_t first_layer, uint32_t end_layer, uint64_t first_key, uint32_t rows, uint64_t pass_tokens, cudaStream_t stream)
+{
+	float sent[4] = {0.0f, 0.0f, 0.0f, 0.0f}, received[4u * K3_STREAMED_SHARDS], part;
+	uint32_t layer, node, measured = 0u;
+	for (layer = first_layer; layer < end_layer; layer++)
+		if ( K3_LAYER_KIND(layer) != LM_LAYER_RECURRENT )
+		{
+			sent[0] = cudaEventElapsedTime(&part, s->own_marks[layer][0], s->own_marks[layer][1]) == cudaSuccess && sent[0] >= 0.0f ? sent[0] + part : -1.0f;
+			measured++;
+		}
+	if ( K3StreamedUpload(s->balance_device, sent, sizeof(sent), stream) != SPARK_STATUS_OK )
+		return SPARK_STATUS_IO_ERROR;
+	K3StreamedRound(&s->round, (void *)stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, 1u, (uint32_t)(sizeof(sent) / 2u), s->balance_device, s->balance_device + 4u);
+	if ( cudaMemcpyAsync(received, s->balance_device + 4u, sizeof(received), cudaMemcpyDeviceToHost, stream) != cudaSuccess || cudaStreamSynchronize(stream) != cudaSuccess )
+		return SPARK_STATUS_IO_ERROR;
+	if ( s->round.status != SPARK_STATUS_OK )
+		return s->round.status;
+	for (node = 0u; node < K3_STREAMED_SHARDS; node++)
+	{
+		const double done = (double)measured * K3StreamedOwnAttention(s, node, first_key, rows, pass_tokens);
+		s->node_speed[node] = received[4u * node] > 0.0f && measured != 0u ? done / (double)received[4u * node] : 0.0;
+		s->pass_attention[node] += received[4u * node] > 0.0f ? (double)received[4u * node] : 0.0;
+	}
+	for (node = 0u; node < K3_STREAMED_SHARDS * K3_STREAMED_SHARDS; node++)
+		s->pass_helped += s->help_active != 0u ? (uint64_t)s->help[node] * measured : 0u;
+	return SPARK_STATUS_OK;
+}
+
+static void K3StreamedReportHelp(K3Streamed *s, uint32_t pass)
+{
+	uint32_t node, slowest = 0u, fastest = 0u;
+	for (node = 1u; node < K3_STREAMED_SHARDS; node++)
+	{
+		slowest = s->pass_attention[node] > s->pass_attention[slowest] ? node : slowest;
+		fastest = s->pass_attention[node] < s->pass_attention[fastest] ? node : fastest;
+	}
+	if ( s->rank == 0u )
+		fprintf(stderr, "sparkpipe_k3: streamed prefill pass %u attention per node: slowest rank %u %.1f s, fastest rank %u %.1f s; helpers attended %llu head-group rows over the pass's layers\n",
+			pass + 1u, slowest, s->pass_attention[slowest] / 1e3, fastest, s->pass_attention[fastest] / 1e3, (unsigned long long)s->pass_helped);
+	memset(s->pass_attention, 0, sizeof(s->pass_attention));
+	s->pass_helped = 0u;
+}
+
 static uint32_t K3StreamedPassNodeRows(uint64_t tokens)
 {
 	const uint64_t rows = (tokens + K3_STREAMED_SHARDS - 1u) / K3_STREAMED_SHARDS;
@@ -1170,7 +1297,7 @@ static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPr
 	const uint64_t pass_max = (uint64_t)K3_STREAMED_SHARDS * s->node_rows;
 	const uint64_t keys = request != 0 ? (uint64_t)request->first_position + request->token_count : 0u;
 	const uint64_t started = K3StreamedNowNs();
-	uint32_t pass, passes, layer, row, rows, chunk;
+	uint32_t pass, passes, layer, row, rows, chunk, attention_layer, measured_from = 0u;
 	uint64_t dense_item = 0u, expert_item = 0u, pass_share, last_tokens, padded_keys;
 	pthread_t streamer;
 	K3StreamedVocab vocab;
@@ -1268,6 +1395,8 @@ static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPr
 			break;
 		s->mla.pass_rows = (uint32_t)pass_rows;
 		s->mla.pass_tokens = (uint32_t)pass_tokens;
+		K3StreamedPlanHelp(s, base, rows, pass_tokens);
+		s->mla.help = s->help_active != 0u ? s->help : 0;
 		s->kda.pass_tokens = (uint32_t)pass_tokens;
 		s->mla.first_key = (uint32_t)base;
 		status = K3StreamedAwaitPublished(s, &s->dense_published, dense_item, 1u);
@@ -1285,8 +1414,21 @@ static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPr
 		if ( status == SPARK_STATUS_OK )
 			status = K3StreamedRelease(s, &s->dense_released, s->dense_done[dense_item % s->config.dense_buffers], stream);
 		dense_item++;
-		for (layer = 0u; layer < K3_LAYERS && status == SPARK_STATUS_OK; layer++)
+		for (layer = 0u, attention_layer = 0u, measured_from = 0u; layer < K3_LAYERS && status == SPARK_STATUS_OK; layer++)
+		{
+			if ( K3_LAYER_KIND(layer) != LM_LAYER_RECURRENT && attention_layer != 0u && attention_layer % K3_STREAMED_HELP_LAYERS == 0u )
+			{
+				status = cudaStreamSynchronize(stream) == cudaSuccess ? K3StreamedMeasureHelp(s, measured_from, layer, base, rows, pass_tokens, stream) : SPARK_STATUS_IO_ERROR;
+				K3StreamedPlanHelp(s, base, rows, pass_tokens);
+				s->mla.help = s->help_active != 0u ? s->help : 0;
+				measured_from = layer;
+				if ( status != SPARK_STATUS_OK )
+					break;
+			}
+			s->mla.own_marks = s->own_marks[layer];
 			status = K3StreamedLayer(s, layer, dense_item++, &expert_item, rows, request->multiprocessors, stream);
+			attention_layer += K3_LAYER_KIND(layer) != LM_LAYER_RECURRENT ? 1u : 0u;
+		}
 		if ( status == SPARK_STATUS_OK )
 			status = cudaStreamSynchronize(stream) == cudaSuccess ? K3StreamedHealth(s, pass) : SPARK_STATUS_IO_ERROR;
 		if ( status == SPARK_STATUS_OK )
@@ -1303,6 +1445,8 @@ static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPr
 			}
 			fprintf(stderr, "sparkpipe_k3: streamed prefill pass %u GPU: MLA attention %.1f s, KDA attention %.1f s, MLP and experts %.1f s, between layers %.1f s\n", pass + 1u,
 				gpu[0] / 1e3, gpu[1] / 1e3, gpu[2] / 1e3, gpu[3] / 1e3);
+			status = K3StreamedMeasureHelp(s, measured_from, K3_LAYERS, base, rows, pass_tokens, stream);
+			K3StreamedReportHelp(s, pass);
 		}
 		fprintf(stderr, "sparkpipe_k3: streamed prefill pass %u/%u rows %u x %u keys to %llu status=%d at %.1f s; streamer waited %.1f s for the GPU to release buffers, "
 			"compute waited %.1f s for dense and %.1f s for expert blocks, own blocks took %.1f s; streamer spent %.1f s in dense broadcasts and %.1f s in expert steps, "

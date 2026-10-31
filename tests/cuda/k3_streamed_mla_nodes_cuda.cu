@@ -238,6 +238,8 @@ static void MlSetup(MlNode *n,uint32_t node,uint32_t nodes,NodeEmulationWorld *w
 		x->key_context = MlDevice(std::vector<uint32_t>{pass * ML_PASS_ROWS + ML_PASS_TOKENS(pass)});
 		x->collective = NodeEmulationCollective;
 		x->context = &n->peer;
+		x->help_values = MlAlloc<uint16_t>((uint64_t)ML_ROWS * ML_HEADS * K3_V_HEAD_DIM);
+		x->help_capacity = ML_ROWS;
 		if ( stored != 0u )
 		{
 			x->store = store;
@@ -363,6 +365,43 @@ int main(void)
 	}
 	for (uint32_t node = 0u; node < ML_NODES; node++)
 		MlCheck(blocked[node].status == LM_LAUNCH_OK,"every node runs both passes expanding keys in blocks of 48 and gathering older keys in chunks of 5");
+	{
+		static MlNode helped[ML_NODES],helped_stored[ML_NODES],helped_blocked[ML_NODES];
+		static NodeEmulationWorld ml_helped_world,ml_helped_stored_world,ml_helped_blocked_world;
+		static const uint32_t plan[ML_NODES * ML_NODES] = {0u,0u,0u,0u, 5u,0u,9u,13u, 0u,0u,0u,0u, 0u,0u,7u,0u};
+		MlNode *const runs[3] = {helped,helped_stored,helped_blocked};
+		NodeEmulationWorld *const run_worlds[3] = {&ml_helped_world,&ml_helped_stored_world,&ml_helped_blocked_world};
+		uint16_t *const run_out[3] = {MlAlloc<uint16_t>((uint64_t)ML_ROWS * K3_HIDDEN),MlAlloc<uint16_t>((uint64_t)ML_ROWS * K3_HIDDEN),MlAlloc<uint16_t>((uint64_t)ML_ROWS * K3_HIDDEN)};
+		const uint16_t *const want[3] = {gathered,stored_gathered,blocked_gathered};
+		const uint64_t output_bytes = (uint64_t)ML_TOKENS * K3_HIDDEN * 2u;
+		std::vector<uint8_t> a(output_bytes),c(output_bytes);
+		uint64_t differ = 0u;
+		for (uint32_t run = 0u; run < 3u; run++)
+			for (uint32_t node = 0u; node < ML_NODES; node++)
+			{
+				MlSetup(&runs[run][node],node,ML_NODES,run_worlds[run],shards.data(),table_device,error_device,hidden,partial_in,run_out[run],run);
+				for (uint32_t pass = 0u; pass < ML_PASSES; pass++)
+					runs[run][node].exchange[pass].help = plan;
+			}
+		ML_CUDA(cudaDeviceSynchronize());
+		for (uint32_t run = 0u; run < 3u; run++)
+		{
+			pthread_t threads[ML_NODES];
+			NodeEmulationStart(run_worlds[run],ML_NODES);
+			for (uint32_t node = 0u; node < ML_NODES; node++)
+				pthread_create(&threads[node],0,MlNodeThread,&runs[run][node]);
+			for (uint32_t node = 0u; node < ML_NODES; node++)
+				pthread_join(threads[node],0);
+			for (uint32_t node = 0u; node < ML_NODES; node++)
+				MlCheck(runs[run][node].status == LM_LAUNCH_OK,"every node runs both passes while other nodes attend some of its rows");
+			ML_CUDA(cudaMemcpy(a.data(),want[run],output_bytes,cudaMemcpyDeviceToHost));
+			ML_CUDA(cudaMemcpy(c.data(),run_out[run],output_bytes,cudaMemcpyDeviceToHost));
+			for (uint64_t index = 0u; index < output_bytes; index++)
+				differ += a[index] != c[index];
+		}
+		MlCheck(differ == 0u,"nodes that attend the last rows of their own slice for a slower node's head groups give bit-identical output, with keys kept, gathered back from the decode store or expanded in blocks");
+		printf("attention help: 34 rows a pass attended by other nodes for two givers, %llu bytes differ from the run without help\n",(unsigned long long)differ);
+	}
 	if ( ML_TOKENS < ML_ROWS )
 	{
 		MlNode *const groups[3] = {nodes,stored,blocked};

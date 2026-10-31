@@ -328,8 +328,8 @@ The same Plan Order on Weekdays holds 4,184 Plan hours.
 | Item | Entry |
 | --- | --- |
 | Order number | \[ \] |
-| Customer | \[legal name\], a company organised under the laws of \[jurisdiction\], registration number \[ \], registered address \[ \] |
-| Customer Agreement (clause 9.1) | Version of \[date\]; SHA-256 of the Korean text \[ \] and of the English text \[ \] |
+| Customer | \[legal name\], a company organised under the laws of \[jurisdiction\], registration number \[ \], registered address \[ \] / \[full name\], an individual, of \[address\] |
+| Customer Agreement (clause 9.1) | Version of \[date\]; SHA-256 of the Korean text \[ \] and of the English text \[ \]; Hour Market Rules, SHA-256 of the Korean text \[ \] and of the English text \[ \] |
 | Start Date (clause 16.3) | \[ \] |
 | Term (clause 16.3) | \[ \] months, ending on \[ \] |
 | Windows (clause 17.1) | \[Americas Window (00:00–08:00 KST) / Asia Window (08:00–16:00 KST) / Europe Window (16:00–24:00 KST) / Full day\] |

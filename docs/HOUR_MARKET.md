@@ -83,8 +83,10 @@ describes what is built, how it runs and how to test it.
     (bid and estimated seconds per waiting prompt, no accounts).
 - **Tranche hours.** A plan holder's monthly hours reserve any free
   hour of their month, beyond the 7-day horizon, at no HC; released, they
-  earn HC like any hour. Live, grant them with
-  `sparkpipe_pay.py tranche EMAIL YYYY-MM HOURS`.
+  earn HC like any hour. Each plan payment issues them to the earliest
+  Tranches not yet paid, less the plan hours of those Tranches that had
+  already passed (docs/PAYMENTS.md); `sparkpipe_pay.py tranche EMAIL
+  YYYY-MM HOURS` grants hours by hand.
 
 ## No overselling, no bumping
 
@@ -94,7 +96,8 @@ from its holder, and HC is sold only while it can be spent. Four rules in
 `Cover` (`tools/sparkpipe_market.py`) carry this:
 
 - **Set-aside instead of bumping.** A reserved plan is a Plan Order in
-  `plans.json` (docs/PAYMENTS.md): windows (Americas 00-08, Asia 08-16,
+  the ledger (docs/PAYMENTS.md), ordered in the account or recorded from a
+  signed one: windows (Americas 00-08, Asia 08-16,
   Europe 16-24 KST, `windows` in `site/pricing.js`; all three is a full
   day), days (every day, or weekdays in each window's own region), fleets,
   term and an optional fleet lock. Every active plan keeps its fleets off
@@ -158,14 +161,14 @@ the HC's 12-month life, not an oversale.
 
 Operations:
 
-- `sparkpipe_pay.py cover [AGREEMENTS.json]` prints the serving fleets, the
+- `sparkpipe_pay.py cover [PLANS.json]` prints the serving fleets, the
   free hours in the next 12 months after set-asides, unspent HC, HC on sale,
   the tightest lapse date and the hours where a set-aside cannot be kept.
   It exits 1 when a set-aside cannot be kept or HC is left without cover.
-  Before signing a Plan Order, run it with a copy of `plans.json` that
-  includes the new entry; sign only
-  when it exits 0, or move the start date, choose another window or wait for
-  a fleet.
+  With a file, it adds those plans to the ledger's, to try a Plan Order
+  before signing it. A Plan Order made online, or recorded with
+  `sparkpipe_pay.py plan`, passes the same checks first: its set-aside must
+  fit in every hour of its term, and the HC already sold must stay covered.
 - `sparkpipe_pay.py maintenance FLEET YYYY-MM-DD [HOURS]` schedules and
   announces maintenance, as above, and prints what it credited.
 - `sparkpipe_pay.py credit EMAIL HC NOTE` issues HC we owe, such as an
