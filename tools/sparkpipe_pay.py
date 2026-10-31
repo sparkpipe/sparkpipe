@@ -467,7 +467,7 @@ def paid_with(remote):
 def receipt(cfg, order, issued, received, paid):
     coin = ", ".join(sorted({symbol.split(".")[0] for symbol in paid}))
     if order["product"] == "credits":
-        what = f"{issued['hours']} hour-credits, usable for 12 months"
+        what = f"{issued['hours']} hour-credits, usable until {market.stamp_time(issued['expires']).astimezone(KST).strftime('%Y-%m-%d')}"
     else:
         what = f"a prepayment of {issued['net']} USD under agreement {order['agreement']}: {issued['hours']} fleet-hours"
     if issued.get("short"):
@@ -502,6 +502,7 @@ class App:
         self.hits = collections.defaultdict(collections.deque)
         self.jobs = queue.Queue()
         self.mails = queue.Queue()
+        self.committed = None
         self.market = market.Market(self, cfg.sandbox, lambda: clock())
 
     def throttle(self, kind, who):
@@ -627,6 +628,43 @@ class App:
         email = self.book.accounts[account]["email"]
         return [a for a in self.cfg.listing("agreements.json") if str(a.get("email", "")).lower() == email]
 
+    def commitments(self, now, listing=None):
+        today = local_day(now)
+        if listing is None:
+            path = self.cfg.path("agreements.json")
+            key = (os.path.getmtime(path) if os.path.exists(path) else None, today, self.book.count)
+            if self.committed and self.committed[0] == key:
+                return self.committed[1]
+        pricing, found = self.cfg.pricing(), []
+        windows = {w["id"]: w for w in pricing["windows"]}
+        for agreement in self.cfg.listing("agreements.json") if listing is None else listing:
+            signed = date.fromisoformat(agreement["signed"])
+            end = term_end(signed, pricing["termMonths"])
+            paid = self.book.prepaid(agreement["id"])
+            if today > end or (not paid and today > signed + timedelta(days=pricing["phaseADays"] - 1)):
+                continue
+            election = agreement.get("election", "thirds")
+            if election == "thirds":
+                pattern = (1,) * 24
+            elif election in windows:
+                window = windows[election]
+                elected = tuple(3 if window["from"] <= hour < window["to"] else 0 for hour in range(24))
+                full = sum((net for _, net in paid), Decimal(0)) >= money(agreement["hourPrice"]) * sum(tranches(signed, pricing["termMonths"]))
+                pattern = elected if full else tuple(max(1, n) for n in elected)
+            else:
+                raise ValueError(f"agreement {agreement['id']}: election must be thirds or one of {', '.join(windows)}")
+            after = end + timedelta(days=1)
+            found.append((
+                self.book.emails.get(str(agreement.get("email", "")).lower()),
+                datetime(signed.year, signed.month, signed.day, tzinfo=KST).astimezone(timezone.utc),
+                datetime(after.year, after.month, after.day, tzinfo=KST).astimezone(timezone.utc),
+                pattern,
+            ))
+        found = tuple(found)
+        if listing is None:
+            self.committed = (key, found)
+        return found
+
     def summary(self, account):
         pricing = self.cfg.pricing()
         now = clock()
@@ -679,7 +717,7 @@ class App:
             self.throttle("market", ip)
             pricing = self.cfg.pricing()
             quote = self.credit_terms(pricing, body)
-            return self.market.buy(account, Decimal(quote["net"]), pricing["market"])
+            return self.market.buy(account, Decimal(quote["net"]), pricing)
         return self.order(dict(body, product="credits"), account, ip, agent)
 
     def order(self, body, account, ip, agent):
@@ -693,6 +731,7 @@ class App:
             record = self.book.accounts[account]
             if body.get("product") == "credits":
                 quote = self.credit_terms(pricing, body)
+                self.market.check_cover(Decimal(quote["hours"]), self.market.now(), pricing)
                 if not self.accepted(account, self.current_terms()):
                     if body.get("accept") is not True:
                         raise Refusal("The Hourly Terms have changed since you accepted them. Accept the current text to continue.", 409, "terms")
@@ -844,7 +883,7 @@ class App:
                 issued.update(agreement=order["agreement"])
             self.book.append("hours_issued", issued)
             if order["product"] == "credits":
-                self.market.issue(order["account"], Decimal(hours), order_id)
+                issued["expires"] = self.market.issue(order["account"], Decimal(hours), order_id)["expires"]
             log(f"order {order_id}: paid, {hours} hours issued to {order['account']}")
             self.mail(order["email"], f"Payment received: SparkPipe order {order_id}", receipt(self.cfg, order, issued, arrived, paid))
             subject = f"Paid in part: {order['company']}, {arrived} of {order['total']} USD" if not full else f"Paid: {order['company']}, {order['total']} USD"
@@ -1151,8 +1190,36 @@ def main(argv):
             return 2
         print(app.market.grant_tranche(account, argv[3], int(argv[4])))
         return 0
+    if len(argv) in (2, 3) and argv[1] == "cover":
+        app = App(cfg, Book(cfg.path("ledger.jsonl")))
+        listing = None
+        if len(argv) == 3:
+            with open(argv[2], encoding="utf-8") as handle:
+                listing = json.load(handle)
+        found = app.market.report(None if listing is None else app.commitments(app.market.now(), listing))
+        tight = found["tightest"]
+        print(f"cover at {found['now']}: serving {', '.join(found['fleets']) or 'no fleet'} from {found['first']}, {found['agreements']} two-year agreements")
+        print(f"free fleet-hours in the next 12 months, Monday to Saturday, after set-asides: {found['free']} HC")
+        print(f"unspent HC: {found['unspent']}; in unpaid orders: {found['pending']}; HC on sale now: {found['onSale']}")
+        print("tightest lapse: none" if not tight else f"tightest lapse: {tight['lapse']}, {tight['slack']} HC of free hours to spare")
+        print(f"hours where a set-aside cannot be kept: {found['clashes']}" + (f", first {found['firstClash']}" if found["firstClash"] else ""))
+        return 1 if found["clashes"] or (tight and Decimal(tight["slack"]) < 0) else 0
+    if len(argv) == 5 and argv[1] == "credit":
+        app = App(cfg, Book(cfg.path("ledger.jsonl")))
+        account = app.book.emails.get(argv[2].lower())
+        try:
+            credits = market.hc_field(argv[3], "credit")
+        except Refusal as error:
+            print(error, file=sys.stderr)
+            return 2
+        if not account or not argv[4].strip():
+            print("usage: sparkpipe_pay.py credit EMAIL HC NOTE, for an existing account", file=sys.stderr)
+            return 2
+        lot = app.market.credit(account, credits, argv[4].strip()[:200])
+        print(f"credited {lot['hc']} HC to {argv[2]}, lot {lot['lot']}, lapsing {lot['expires']}")
+        return 0
     if argv[1:] not in ([], ["serve"]):
-        print("usage: sparkpipe_pay.py [serve|verify|release ORDER|tranche EMAIL YYYY-MM HOURS]", file=sys.stderr)
+        print("usage: sparkpipe_pay.py [serve|verify|cover [AGREEMENTS.json]|credit EMAIL HC NOTE|release ORDER|tranche EMAIL YYYY-MM HOURS]", file=sys.stderr)
         return 2
     server = start(cfg)
     app = server.app

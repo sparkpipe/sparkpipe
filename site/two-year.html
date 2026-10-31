@@ -55,7 +55,8 @@
       <div class="calc">
         <form class="form" id="plan-form" novalidate>
           <label>Signing date (the term starts that day)<input id="r-start" type="date"></label>
-          <label>Window election<select id="r-election"><option value="split">50/50 East and West</option><option value="east">100% East</option><option value="west">100% West</option></select></label>
+          <label>Window election<select id="r-election"><option value="thirds">Thirds: 8 hours in each window</option><option value="americas">100% Americas, 00:00–08:00 KST</option><option value="asia">100% Asia, 08:00–16:00 KST</option><option value="europe">100% Europe, 16:00–24:00 KST</option></select></label>
+          <p class="hint">Each day in Korean time has three 8-hour windows: Americas 00:00–08:00, which is the previous day's working hours in the Americas, Asia 08:00–16:00 and Europe 16:00–24:00. Thirds guarantees one fleet in every hour. A 100% election puts all 24 daily hours into your own window, on up to three fleets at once, subject to our approval, and applies once the whole term is prepaid. We keep your guaranteed capacity off sale to everyone else until 6 hours before each hour, so you never need to take anyone's reservation, and no reservation is ever bumped.</p>
           <p class="hint">The term covers every hour from Monday to Saturday: 15,000 to 15,048 hours, depending on the Sundays and 29 February in it. Hours exist only once paid; hours that pass before they are paid for are lost. A paid Tranche hour you have reserved but won't use can be released on the <a href="market.html">Hour Market</a> before it starts: when it sells, or the shared pool uses it, you get hour-credits (HC) for what it earned, less a <span data-market="fee">10%</span> fee, usable for <span data-market="months">12</span> months.</p>
         </form>
         <div class="readout">
@@ -77,7 +78,7 @@
       </table></div>
       <details class="snippet"><summary>Monthly tranches</summary>
         <div class="table-wrap scroll"><table>
-          <thead><tr><th>Tranche</th><th>Period</th><th>Days, Mon–Sat</th><th>East hours</th><th>West hours</th></tr></thead>
+          <thead><tr><th>Tranche</th><th>Period</th><th>Days, Mon–Sat</th><th>Americas hours</th><th>Asia hours</th><th>Europe hours</th></tr></thead>
           <tbody id="r-tranches"></tbody>
         </table></div>
       </details>
@@ -96,7 +97,7 @@
         <label>Fleets<select id="l-fleets"><option>1</option><option>2</option><option>3</option><option value="4+">4 or more</option></select></label>
         <label>Start<input id="l-start" type="month"></label>
       </div>
-      <label>What you will run<textarea id="l-message" maxlength="4000" placeholder="Models, context lengths, East or West window, anything you want to negotiate."></textarea></label>
+      <label>What you will run<textarea id="l-message" maxlength="4000" placeholder="Models, context lengths, Americas, Asia or Europe window, anything you want to negotiate."></textarea></label>
       <p class="flash" id="l-msg" hidden></p>
       <button class="btn solid big" type="submit" id="l-send">Send</button>
       <p class="hint">We reply by email with the agreement and the business check. Or write to <a href="mailto:hyor@sparkpipe.ai?subject=Two-year%20fleet-hours">hyor@sparkpipe.ai</a>. Already signed? Pay toward your agreement from <a href="account.html">your account</a>.</p>
@@ -137,8 +138,8 @@
     let cursor = parse(start);
     while (cursor <= end) {
       const d = new Date(cursor), monthEnd = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0), to = Math.min(monthEnd, end);
-      const days = served(cursor, to + DAY), hours = 24 * days, east = election === 'east' ? hours : election === 'west' ? 0 : hours / 2;
-      tranches.push({ key: ymd(cursor).slice(0, 7), from: ymd(cursor), to: ymd(to), days, east, west: hours - east, hours });
+      const days = served(cursor, to + DAY), hours = 24 * days, share = (id) => (election === 'thirds' ? hours / 3 : election === id ? hours : 0);
+      tranches.push({ key: ymd(cursor).slice(0, 7), from: ymd(cursor), to: ymd(to), days, americas: share('americas'), asia: share('asia'), europe: share('europe'), hours });
       cursor = to + DAY;
     }
     return { start, end: ymd(end), hours: tranches.reduce((a, t) => a + t.hours, 0), tranches };
@@ -156,7 +157,7 @@
       const n = g.tranches === null ? c.tranches.length : Math.min(g.tranches, c.tranches.length), hours = c.tranches.slice(0, n).reduce((a, t) => a + t.hours, 0);
       return row([cell(g.name), cell(nice(ymd(parse(c.start) + (g.dueDay - 1) * DAY)) + ', day ' + g.dueDay), cell(SP.whole(hours), 'figure'), cell(SP.usd(hours * P.committedPrice * (1 + P.vatRate)), 'figure')]);
     }));
-    $('r-tranches').replaceChildren(...c.tranches.map((t, i) => row([cell((i + 1) + ' · ' + t.key), cell(t.from + ' to ' + t.to), cell(String(t.days), 'figure'), cell(SP.whole(t.east), 'figure'), cell(SP.whole(t.west), 'figure')])));
+    $('r-tranches').replaceChildren(...c.tranches.map((t, i) => row([cell((i + 1) + ' · ' + t.key), cell(t.from + ' to ' + t.to), cell(String(t.days), 'figure'), cell(SP.whole(t.americas), 'figure'), cell(SP.whole(t.asia), 'figure'), cell(SP.whole(t.europe), 'figure')])));
   };
   const market = { fee: Math.round(P.market.releaseFee * 100) + '%', months: String(P.market.validityMonths) };
   document.querySelectorAll('[data-market]').forEach((el) => { el.textContent = market[el.dataset.market]; });

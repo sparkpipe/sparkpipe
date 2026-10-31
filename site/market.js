@@ -107,6 +107,7 @@
     const price = st.market.hcPrice;
     const amount = Number($('amount').value) || 0;
     $('buy-sum').textContent = amount ? `${hc(amount / price)} HC for $${amount.toFixed(2)} plus $${(amount * st.vatRate).toFixed(2)} VAT, lasting ${st.market.validityMonths} months` : '';
+    $('on-sale').textContent = Number(st.onSale) > 0 ? `On sale now: up to ${hc(st.onSale)} HC. We sell only the HC our free fleet-hours in the next 12 months can deliver.` : 'Sold out for now: every free fleet-hour in the next 12 months already backs HC sold.';
     const pool = st.pool;
     $('pool-status').textContent = `Price ${pool.hcPerSeatSecond} HC per seat-second ($${pool.usdPerSeatHour} per seat-hour${pool.usdPerMillionTokens ? `, about $${pool.usdPerMillionTokens} per million tokens` : ''}) · ${pool.active} of ${pool.seats} seats busy · pooled fleets: ${pool.fleets.join(', ') || 'none this hour'}`;
     $('feed-market').href = API + '/market/market.txt';
@@ -208,7 +209,7 @@
       release: `A released hour at ${hc(slot.price)} HC: the seller gets the price less the fee.`,
       mine: 'This hour is yours. Release it from Your hours.',
       'mine-release': 'You released this hour. Cancel the release from Your hours to keep it.',
-      closed: 'Our own hours sell up to 7 days ahead. Tranche hours can reserve any hour in their month.',
+      closed: 'Not for sale now: beyond 31 days, a Sunday more than 7 days ahead, kept for two-year customers until 6 hours before it starts, or kept for HC that lapses sooner. Tranche hours can reserve any hour in their month.',
     };
     $('pick-note').textContent = notes[slot.kind];
     $('reserve').disabled = slot.kind === 'mine' || slot.kind === 'mine-release';

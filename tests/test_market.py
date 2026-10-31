@@ -100,8 +100,8 @@ def sandbox_flows(failures, work):
             failures.append(f"HC bought by amount, lasting 12 months: {bought} {lots}")
         cal = buyer("GET", "/market/calendar?days=10")[1]
         cells = cal["fleets"][0]["cells"]
-        if cal["from"] != at(1) or len(cells) != 240 or cells[0] != ["hyor", "1.000000"] or cells[167] != ["hyor", "1.000000"] or cells[168] != ["closed", None]:
-            failures.append(f"the calendar sells our hours 7 days ahead: {cal['from']} {cells[0]} {cells[167]} {cells[168]}")
+        if cal["from"] != at(1) or len(cells) != 240 or cells[0] != ["hyor", "1.000000"] or cells[167] != ["hyor", "1.000000"] or cells[168] != ["hyor", "1.250000"]:
+            failures.append(f"the calendar sells our hours at Rate 7 days ahead and at the advance price after: {cal['from']} {cells[0]} {cells[167]} {cells[168]}")
         reserve_and_release(failures, seller, buyer)
         bids(failures, seller, buyer)
         pool(failures, app, port, seller, buyer)
@@ -259,6 +259,85 @@ def pool(failures, app, port, seller, buyer):
         failures.append("a revoked key still uses the pool")
 
 
+def agreement(number, email, election="thirds"):
+    return {"id": f"SP2Y-COVER-{number}", "email": email, "company": "Two-Year Co", "signed": "2026-11-02", "hourPrice": "15.00", "election": election}
+
+
+def cover_flows(failures, work):
+    cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(work / "cover"), "SPARKPIPE_PAY_SITE": str(work / "site"), "SPARKPIPE_PAY_SANDBOX": "1", "SPARKPIPE_PAY_PREFIX": "/pay/sandbox/api"})
+    server = sp.start(cfg, port=0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port, app = server.server_address[1], server.app
+    listing = Path(cfg.path("agreements.json"))
+    holder, early, late = tp.Client(port, origin="https://sparkpipe.ai"), tp.Client(port, origin="https://sparkpipe.ai"), tp.Client(port, origin="https://sparkpipe.ai")
+    try:
+        sandbox_in(holder, "holder@example.com", "Two-Year Co")
+        sandbox_in(early, "early@example.com", "Early Co")
+        sandbox_in(late, "late@example.com", "Late Co")
+        three = [agreement(1, "holder@example.com"), agreement(2, "b@example.com"), agreement(3, "c@example.com")]
+        listing.write_text(json.dumps(three))
+        cells = [f["cells"] for f in late("GET", "/market/calendar?days=14")[1]["fleets"]]
+        sunday = 132 - 1
+        if any(c[4] != ["hyor", "1.000000"] or c[5] != ["closed", None] or c[30] != ["closed", None] or c[sunday] != ["hyor", "1.000000"] or c[sunday + 168] != ["closed", None] for c in cells):
+            failures.append(f"three agreements keep every fleet off sale from Monday to Saturday until 6 hours before, Sundays sell within 7 days only: {[c[4:6] + [c[30], c[sunday], c[sunday + 168]] for c in cells]}")
+        status, refused = late("POST", "/market/buy", {"amount": "100"})
+        if status != 409 or refused.get("reason") != "cover" or late("GET", "/market/state")[1]["onSale"] != "0.000000":
+            failures.append(f"HC is sold although every Monday-to-Saturday hour is kept for agreements: {status} {refused}")
+        holder("POST", "/market/sandbox/tranche", {})
+        if holder("POST", "/market/reserve", {"fleet": "F1", "start": at(30), "model": "kimi-k3", "pay": "tranche"})[0] != 200:
+            failures.append("an agreement holder cannot reserve its kept capacity with Tranche hours")
+        if app.market.report(app.commitments(app.market.now(), three + [agreement(4, "d@example.com")]))["clashes"] == 0 or app.market.report()["clashes"] != 0:
+            failures.append("the cover report misses an agreement that the fleets cannot keep, or flags one they can")
+
+        listing.write_text(json.dumps([agreement(1, "holder@example.com", "asia")]))
+        asia, evening = 22, 32
+        before = [f["cells"][asia - 1] for f in late("GET", "/market/calendar?days=3")[1]["fleets"]]
+        if before != [["closed", None]] * 3:
+            failures.append(f"a 100% Asia election does not keep three fleets in the Asia Window: {before}")
+        late("POST", "/market/buy", {"amount": "100"})
+        for fleet in ("F1", "F2"):
+            late("POST", "/market/reserve", {"fleet": fleet, "start": at(evening), "model": "kimi-k3", "max": "1"})
+        if late("POST", "/market/reserve", {"fleet": "F3", "start": at(evening), "model": "kimi-k3", "max": "1"})[0] != 409:
+            failures.append("the last fleet of an hour that an agreement still needs is sold to HC")
+
+        listing.write_text(json.dumps(three[:2]))
+        pricing = cfg.pricing()
+        sale = Decimal(late("GET", "/market/state")[1]["onSale"])
+        if not 5000 < sale < 9000:
+            failures.append(f"with one fleet free from Monday to Saturday, HC on sale is not about a year of its hours: {sale}")
+        bought = late("POST", "/market/buy", {"amount": "100000"})[1]
+        left = Decimal(late("GET", "/market/state")[1]["onSale"])
+        if bought.get("hc") != "5000.000000" or left != sale - 5000:
+            failures.append(f"buying HC does not take it off sale: {bought} {sale} {left}")
+        if late("POST", "/market/buy", {"amount": str((left * 20 + 100).quantize(Decimal(1)))})[0] != 409:
+            failures.append("a purchase above the HC on sale goes through")
+        with app.book.lock:
+            now = app.market.now()
+            lapse = START + timedelta(days=3)
+            due = app.market.cover(now, pricing).supply(lapse)
+            app.book.append("hc_lot", {"lot": "LTEARLY", "account": app.book.emails["early@example.com"], "hc": market.text_hc(due), "expires": market.stamp(lapse), "source": "purchase", "ref": "test", "now": market.stamp(now)})
+        status, kept = late("POST", "/market/reserve", {"fleet": "F1", "start": at(48), "model": "kimi-k3", "max": "1"})
+        if status != 409 or kept.get("reason") != "kept":
+            failures.append(f"HC lapsing in a year takes an hour that HC lapsing sooner needs: {status} {kept}")
+        if late("POST", "/market/reserve", {"fleet": "F1", "start": at(3), "model": "kimi-k3", "max": "1"})[0] != 200:
+            failures.append("a kept hour does not open to any HC 6 hours before it starts")
+        if late("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 4), "model": "kimi-k3", "max": "1"})[0] != 200:
+            failures.append("an hour after the earlier HC lapses is kept from later HC")
+        if early("POST", "/market/reserve", {"fleet": "F1", "start": at(48), "model": "kimi-k3", "max": "1"})[0] != 200:
+            failures.append("HC lapsing sooner cannot reserve the hour kept for it")
+        status, advance = late("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 9), "model": "kimi-k3", "max": "1.25"})
+        if status != 200 or advance.get("price") != "1.250000" or late("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 31 + 2), "model": "kimi-k3", "max": "2"})[0] != 409:
+            failures.append(f"advance hours sell at 1.25 up to 31 days ahead and not beyond: {status} {advance}")
+        credited = app.market.credit(app.book.emails["late@example.com"], Decimal(late("GET", "/market/state")[1]["onSale"]) + 100, "outage test")
+        if market.stamp_time(credited["expires"]) <= market.year_later(app.market.now()):
+            failures.append(f"a credit beyond the cover lapses after 12 months instead of later: {credited}")
+        status, kind, text = text_get(port, "/market/market.txt")
+        if "# hour-credits on sale now: 0.000000 HC" not in text:
+            failures.append(f"market.txt does not publish the HC on sale: {text[:200]}")
+    finally:
+        server.shutdown()
+
+
 def live_flows(failures, work):
     (work / "secret").write_text("test-client-secret\n")
     fake = http.server.ThreadingHTTPServer(("127.0.0.1", 0), tp.FakeCoinPayments)
@@ -299,8 +378,14 @@ def live_flows(failures, work):
         if balance(buyer) != Decimal("3.5"):
             failures.append(f"a part payment buys HC in proportion: {balance(buyer)}")
         receipt = [m for rcpt, m in mailbox.mail if "live@example.com" in rcpt and "Payment received" in m["Subject"]]
-        if not receipt or "hour-credits, usable for 12 months" not in receipt[0].get_content():
-            failures.append("the HC receipt names hour-credits")
+        if not receipt or "hour-credits, usable until 2027-11-02" not in receipt[0].get_content():
+            failures.append("the HC receipt names hour-credits and the date they lapse")
+        if buyer("POST", "/market/buy", {"amount": "100000", "coin": "USDC.BASE"})[0] != 200:
+            failures.append("a large HC order within the cover is refused")
+        status, refused = buyer("POST", "/market/buy", {"amount": "100000", "coin": "USDC.BASE"})
+        sale = Decimal(buyer("GET", "/market/state")[1]["onSale"])
+        if status != 409 or refused.get("reason") != "cover" or not 0 < sale < 5000:
+            failures.append(f"HC beyond what Fleet 1's free hours can deliver, counting unpaid orders, is sold: {status} {refused} {sale}")
         cells = buyer("GET", "/market/calendar")[1]["fleets"]
         if cells[0]["cells"][0] != ["closed", None] or cells[1]["cells"][0] != ["closed", None]:
             failures.append("the live calendar sells hours before 1 December or on a fleet still being built")
@@ -324,6 +409,7 @@ def main():
         site(work)
         sp.clock = lambda: START
         sandbox_flows(failures, work)
+        cover_flows(failures, work)
         live_flows(failures, work)
     finally:
         shutil.rmtree(work)
@@ -331,7 +417,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("market: HC bought by amount and lapsing after 12 months, reservations at Rate, releases sold before our hours and credited less the fee, one-off, resting, standing and consecutive bids, Tranche hours, the shared pool's metering and its hourly settlement to released hours, API keys, the ledger export, feeds, the sandbox clock and reset, and live HC invoices behave")
+    print("market: HC bought by amount and lapsing after 12 months, sold only while free Monday-to-Saturday hours cover it, later lapse dates instead of overselling, two-year set-asides in three regional windows that open 6 hours before, earlier-lapsing HC first, advance hours at 1.25 up to 31 days, reservations at Rate, releases sold before our hours and credited less the fee, one-off, resting, standing and consecutive bids, Tranche hours, the shared pool's metering and its hourly settlement to released hours, API keys, the ledger export, feeds, the sandbox clock and reset, and live HC invoices behave")
     return 0
 
 

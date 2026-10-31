@@ -113,8 +113,14 @@ ten minutes (quote requests: an hour), and each email for 5 codes an hour.
 - `agreements.json`: one entry per signed two-year agreement:
 
 ```json
-[{"id": "SP2Y-7K3QD9", "email": "billing@acme.example", "company": "Acme Co., Ltd.", "signed": "2026-12-15", "hourPrice": "15.00"}]
+[{"id": "SP2Y-7K3QD9", "email": "billing@acme.example", "company": "Acme Co., Ltd.", "signed": "2026-12-15", "hourPrice": "15.00", "election": "thirds"}]
 ```
+
+`election` is `thirds` or, with our written approval, one of the window ids
+in `site/pricing.js` (`americas`, `asia`, `europe`). Each active agreement
+keeps capacity off HC sale (docs/HOUR_MARKET.md, "No overselling, no
+bumping"), so check a new entry with `sparkpipe_pay.py cover FILE` before
+adding it.
 
 The service rereads `approved.json` and `agreements.json` on every
 request, so edits need no restart.
