@@ -39,3 +39,11 @@ body:not(.sandbox) .sandbox-only, body.sandbox .live-only { display: none !impor
 .mode a { padding: 8px 14px; font: 600 13px/1 var(--display); text-decoration: none; color: inherit; }
 .mode a[aria-current="true"] { background: var(--signal); color: #fff; }
 .mk .endpoint { font: 500 13px/1.4 var(--mono); overflow-wrap: anywhere; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--rule-strong); }
+.tabs button { border: 0; background: none; padding: 10px 14px; font: 600 14px/1 var(--display); color: var(--steel); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tabs button[aria-selected="true"] { color: inherit; border-bottom-color: var(--signal); }
+.tab-panel { display: grid; gap: 28px; }
+.tab-panel[hidden] { display: none; }
+.priority { display: flex; flex-wrap: wrap; gap: 6px; }
+.priority label { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--rule-strong); border-radius: 2px; font-size: 13px; cursor: pointer; }
+.priority input:checked + span { font-weight: 700; }

@@ -79,7 +79,7 @@ def check_units(failures):
 
 
 def sandbox_flows(failures, work):
-    cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(work / "sandbox"), "SPARKPIPE_PAY_SITE": str(work / "site"), "SPARKPIPE_PAY_SANDBOX": "1", "SPARKPIPE_PAY_PREFIX": "/pay/sandbox/api"})
+    cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(work / "sandbox"), "SPARKPIPE_PAY_SITE": str(work / "site"), "SPARKPIPE_PAY_SANDBOX": "1", "SPARKPIPE_PAY_PREFIX": "/pay/sandbox/api", "SPARKPIPE_PAY_SANDBOX_SWITCH_SECONDS": "1"})
     server = sp.start(cfg, port=0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     port, app = server.server_address[1], server.app
@@ -101,8 +101,8 @@ def sandbox_flows(failures, work):
             failures.append(f"HC bought by amount, lasting 12 months: {bought} {lots}")
         cal = buyer("GET", "/market/calendar?days=10")[1]
         cells = cal["fleets"][0]["cells"]
-        if cal["from"] != at(1) or len(cells) != 240 or cells[0] != ["hyor", "1.000000"] or cells[167] != ["hyor", "1.000000"] or cells[168] != ["hyor", "1.250000"]:
-            failures.append(f"the calendar sells our hours at Rate 7 days ahead and at the advance price after: {cal['from']} {cells[0]} {cells[167]} {cells[168]}")
+        if cal["from"] != at(1) or len(cells) != 240 or cells[0] != ["hyor", "1.000000"] or cells[167] != ["hyor", "1.000000"] or cells[168] != ["hyor", "1.000000"]:
+            failures.append(f"the calendar sells our hours at Rate, also more than 7 days ahead: {cal['from']} {cells[0]} {cells[167]} {cells[168]}")
         reserve_and_release(failures, seller, buyer)
         bids(failures, seller, buyer)
         pool(failures, app, port, seller, buyer)
@@ -221,8 +221,9 @@ def pool(failures, app, port, seller, buyer):
     key = buyer("POST", "/market/keys", {"note": "agents"})[1]["key"]
     models = urllib.request.Request(f"http://127.0.0.1:{port}/pool/v1/models", headers={"Authorization": f"Bearer {key}"})
     with urllib.request.urlopen(models, timeout=10) as response:
-        if [m["id"] for m in json.loads(response.read())["data"]] != ["kimi-k3", "glm-5.3"]:
-            failures.append("the pool lists its models")
+        listed = [m["id"] for m in json.loads(response.read())["data"]]
+        if len(listed) != 18 or listed[:2] != ["kimi-k3", "glm-5.3"] or "k-exaone-2.0" not in listed or "solar-open-2" not in listed or "qwen3.8-flash" in listed:
+            failures.append(f"the pool lists every offered model and no other: {listed}")
     if pool_call(port, "sk-hc-wrong", {"model": "kimi-k3", "messages": [{"role": "user", "content": "hi"}]})[0] != 401:
         failures.append("the pool takes a wrong key")
     status, held = seller("POST", "/market/reserve", {"fleet": "F3", "start": market.slot_text(sp.clock() + timedelta(seconds=app.book.market.offset) + timedelta(hours=2)), "model": "kimi-k3"})
@@ -254,6 +255,15 @@ def pool(failures, app, port, seller, buyer):
     status, _, text = text_get(port, "/market/pool.txt")
     if status != 200 or "\nkimi-k3 " not in text or "\nglm-5.3 " not in text:
         failures.append(f"pool.txt lists the price per model: {text}")
+    status, raw = pool_call(port, key, {"model": "glm-5.3", "messages": [{"role": "user", "content": "Switch."}], "max_tokens": 4})
+    switched = json.loads(raw).get("sparkpipe", {}) if status == 200 else {}
+    again = json.loads(pool_call(port, key, {"model": "glm-5.3", "messages": [{"role": "user", "content": "Stay."}], "max_tokens": 4})[1]).get("sparkpipe", {})
+    if status != 200 or switched.get("switch") != 1.0 or Decimal(switched.get("seconds", "9")) >= 1 or again.get("switch") is not None:
+        failures.append(f"a pool request that waits for a model switch pays no seat-seconds for the wait, and the next one waits for none: {switched} {again}")
+    pool = buyer("GET", "/market/state")[1]["pool"]
+    k3 = next((m for m in pool["models"] if m["id"] == "kimi-k3"), {})
+    if k3.get("usdPerMillionOutput") != market.per_million(Decimal(pool["hcPerSeatSecond"]) * 20, 16.2) or k3.get("usdPerMillionPrompt") != market.per_million(Decimal(pool["hcPerSeatSecond"]) * 20, 590):
+        failures.append(f"the pool estimates dollars per million prompt and output tokens from each model's measured speed: {k3} {pool['hcPerSeatSecond']}")
     revoke = buyer("GET", "/market/state")[1]["account"]["keys"][0]["key"]
     buyer("POST", "/market/keys/revoke", {"id": revoke})
     if pool_call(port, key, {"model": "kimi-k3", "messages": [{"role": "user", "content": "hi"}]})[0] != 401:
@@ -453,9 +463,27 @@ def accelerator_flows(failures, work):
 
 
 class FakeUpstream(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if not self.path.endswith("/sparkpipe/status"):
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.server.polled.append(self.headers.get("Authorization"))
+        data = json.dumps({"active": self.server.active, "state": self.server.state}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.server.seen.append((self.headers.get("X-SparkPipe-Accelerator"), body))
+        if body.get("model") != self.server.active:
+            self.server.state = "swapping"
+            time.sleep(1.5)
+            self.server.active, self.server.state = body.get("model"), "ready"
+            time.sleep(0.3)
         if body.get("stream"):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -482,7 +510,7 @@ def forwarded_flows(failures, work):
     (work / "secret").write_text("test-client-secret\n")
     (work / "pool_key").write_text("sk-pool-test\n")
     upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeUpstream)
-    upstream.seen = []
+    upstream.seen, upstream.polled, upstream.active, upstream.state = [], [], "kimi-k3", "ready"
     threading.Thread(target=upstream.serve_forever, daemon=True).start()
     mailbox = socketserver.ThreadingTCPServer(("127.0.0.1", 0), tp.FakeSMTP)
     mailbox.daemon_threads, mailbox.mail = True, []
@@ -519,6 +547,15 @@ def forwarded_flows(failures, work):
         pool_call(port, key, {"model": "kimi-k3", "messages": [{"role": "user", "content": "plain"}]})
         if upstream.seen[-1][0] is not None or app.market.busy:
             failures.append(f"a request without the accelerator option goes to its fleet alone: {upstream.seen[-1]}")
+        began = time.monotonic()
+        status, raw = pool_call(port, key, {"model": "solar-open-2", "messages": [{"role": "user", "content": "switch"}]})
+        waited = time.monotonic() - began
+        note = json.loads(raw).get("sparkpipe", {}) if status == 200 else {}
+        if status != 200 or not note.get("switch") or note["switch"] < 1.4 or Decimal(note.get("seconds", "9")) > Decimal(str(waited)) - Decimal("1.4") or "Bearer sk-pool-test" not in upstream.polled:
+            failures.append(f"a live pool request for a model the fleet must switch to holds no seat until the fleet serves it: {status} {note} waited {waited:.1f} {upstream.polled[-1:]}")
+        status, raw = pool_call(port, key, {"model": "solar-open-2", "messages": [{"role": "user", "content": "stay"}]})
+        if status != 200 or json.loads(raw).get("sparkpipe", {}).get("switch") is not None:
+            failures.append(f"a live pool request for the loaded model waits for no switch: {raw[:200]}")
     finally:
         server.shutdown()
         upstream.shutdown()
@@ -612,9 +649,9 @@ def cover_flows(failures, work):
             failures.append("an hour after the earlier HC lapses is kept from later HC")
         if early("POST", "/market/reserve", {"fleet": "F1", "start": at(48), "model": "kimi-k3", "max": "1"})[0] != 200:
             failures.append("HC lapsing sooner cannot reserve the hour kept for it")
-        status, advance = late("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 9), "model": "kimi-k3", "max": "1.25"})
-        if status != 200 or advance.get("price") != "1.250000" or late("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 31 + 2), "model": "kimi-k3", "max": "2"})[0] != 409:
-            failures.append(f"advance hours sell at 1.25 up to 31 days ahead and not beyond: {status} {advance}")
+        status, advance = late("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 9), "model": "solar-open-2", "max": "1"})
+        if status != 200 or advance.get("price") != "1.000000" or late("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 31 + 2), "model": "kimi-k3", "max": "2"})[0] != 409:
+            failures.append(f"our hours sell at Rate up to 31 days ahead, for any offered model, and not beyond: {status} {advance}")
         credited = app.market.credit(app.book.emails["late@example.com"], Decimal(late("GET", "/market/state")[1]["onSale"]) + 100, "outage test")
         if market.stamp_time(credited["expires"]) <= market.year_later(app.market.now()):
             failures.append(f"a credit beyond the cover lapses after 12 months instead of later: {credited}")
@@ -639,12 +676,10 @@ def locked_terms(failures, work):
             sandbox_in(client, f"{name}@example.com", f"{name} Co")
         early("POST", "/market/buy", {"amount": "100"})
         buyer("POST", "/market/buy", {"amount": "100"})
-        prices.write_text(text.replace('"releaseFee": 0.10', '"releaseFee": 0.5').replace('"advanceMultiplier": 1.25', '"advanceMultiplier": 2'))
+        prices.write_text(text.replace('"releaseFee": 0.10', '"releaseFee": 0.5'))
         late("POST", "/market/buy", {"amount": "100"})
         first = early("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 9), "model": "kimi-k3", "max": "3"})[1]
         second = late("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 9 + 1), "model": "kimi-k3", "max": "3"})[1]
-        if first.get("price") != "1.250000" or second.get("price") != "2.000000":
-            failures.append(f"an advance hour is not priced by the multiplier in force when the buyer's HC was bought: {first} {second}")
         for client, held, credit in ((early, first, Decimal("0.9")), (late, second, Decimal("0.5"))):
             before = balance(client)
             client("POST", "/market/release", {"reservation": held["reservation"], "min": "1"})
@@ -652,10 +687,6 @@ def locked_terms(failures, work):
             if bought[0] != 200 or balance(client) != before + credit:
                 failures.append(f"a release is not charged the fee in force when the hour's HC was bought: {bought} {before} {balance(client)}")
         prices.write_text(text)
-        status, filled = late("POST", "/market/bid", {"fleet": "F3", "model": "kimi-k3", "from": at(24 * 10), "to": at(24 * 10 + 1), "hours": 1, "max": "3"})
-        bought = [r for r in late("GET", "/market/state")[1]["account"]["reservations"] if r["fleet"] == "F3"]
-        if status != 200 or filled.get("state") != "filled" or not bought or bought[0]["price"] != "2.000000":
-            failures.append(f"a bid fills an advance hour at today's multiplier instead of the one its HC was bought under: {filled} {bought}")
         tp.set_plans(app, [plan(1, "holder@example.com", ["asia"], fee="0.2")])
         holder("POST", "/market/sandbox/tranche", {})
         held = holder("POST", "/market/reserve", {"fleet": "F2", "start": at(22), "model": "kimi-k3", "pay": "tranche"})[1]
@@ -693,7 +724,7 @@ def maintenance_flows(failures, work):
         cells = buyer("GET", "/market/calendar?days=10")[1]["fleets"][0]["cells"]
         offset = int((start - market.slot_time(at(1))).total_seconds() // 3600)
         states = {r["reservation"]: r["state"] for r in buyer("GET", "/market/state")[1]["account"]["reservations"]}
-        if len(done["credited"]) != 1 or states.get(done["credited"][0]) != "credited" or balance(buyer) != before + Decimal("1.25") or cells[offset:offset + 3] != [["maintenance", None]] * 3:
+        if len(done["credited"]) != 1 or states.get(done["credited"][0]) != "credited" or balance(buyer) != before + Decimal("1") or cells[offset:offset + 3] != [["maintenance", None]] * 3:
             failures.append(f"maintenance does not take the least-reserved run, credit the reservation it touches and show on the calendar: {done} {balance(buyer) - before} {cells[offset:offset + 3]}")
         try:
             app.market.schedule_maintenance("F1", "2026-11-09", 1)
@@ -740,13 +771,13 @@ def live_flows(failures, work):
             failures.append(f"HC is invoiced through CoinPayments: {status} {placed} {invoice.get('items')}")
         prices = work / "site" / "pricing.js"
         text = prices.read_text()
-        prices.write_text(text.replace('"advanceMultiplier": 1.25', '"advanceMultiplier": 3'))
+        prices.write_text(text.replace('"releaseFee": 0.10', '"releaseFee": 0.3'))
         fake.invoices["inv1"]["status"] = "completed"
         tp.webhook(buyer, cfg, "inv1")
         app.jobs.join()
         app.mails.join()
         prices.write_text(text)
-        if app.book.market.lots[app.book.emails["live@example.com"]][0]["terms"]["advanceMultiplier"] != "1.25":
+        if app.book.market.lots[app.book.emails["live@example.com"]][0]["terms"]["releaseFee"] != "0.1":
             failures.append("HC paid for after a settings change does not keep the settings in force when it was ordered")
         if balance(buyer) != Decimal("2.5"):
             failures.append(f"a completed HC invoice issues its HC: {balance(buyer)}")

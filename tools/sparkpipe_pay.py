@@ -243,6 +243,7 @@ class Config:
         self.pool_upstream = env.get("SPARKPIPE_POOL_UPSTREAM", "").rstrip("/")
         self.pool_key = read_secret(env.get("SPARKPIPE_POOL_KEY_FILE")).decode()
         self.sandbox_accelerators = json.loads(env.get("SPARKPIPE_PAY_SANDBOX_ACCELERATORS") or "[]") if self.sandbox else []
+        self.sandbox_switch = float(env.get("SPARKPIPE_PAY_SANDBOX_SWITCH_SECONDS") or 20)
         self.reconcile_seconds = int(env.get("SPARKPIPE_PAY_RECONCILE_SECONDS", "300"))
         self.smtp = env.get("SPARKPIPE_PAY_SMTP", "127.0.0.1:25")
         self.mail_from = env.get("SPARKPIPE_PAY_MAIL_FROM", "SparkPipe <noreply@sparkpipe.ai>")
@@ -740,6 +741,30 @@ class App:
         self.mails = queue.Queue()
         self.committed = None
         self.market = market.Market(self, cfg.sandbox, lambda: clock())
+        self.resident = cfg.pricing()["models"][0]["id"]
+
+    def loaded(self):
+        if self.cfg.sandbox:
+            return self.resident, False
+        request = urllib.request.Request(self.cfg.pool_upstream + "/sparkpipe/status", headers={"Authorization": f"Bearer {self.cfg.pool_key}", "X-SparkPipe-Public": "1"})
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                data = json.loads(response.read())
+            return data.get("active"), data.get("state") == "swapping"
+        except (urllib.error.URLError, OSError, ValueError, AttributeError) as error:
+            log(f"pool status: {error}")
+            return None, False
+
+    def switching(self, model):
+        active, swapping = self.loaded()
+        return active is not None and (active != model or swapping)
+
+    def watch(self, ticket, done):
+        while not done.is_set() and not ticket["seated"]:
+            active, swapping = self.loaded()
+            if active == ticket["model"] and not swapping:
+                return self.market.pool_seat(ticket)
+            done.wait(1)
 
     def throttle(self, kind, who):
         count, window = LIMITS[kind]
@@ -866,7 +891,7 @@ class App:
             plan_fields(pricing, plan)
             begins = date.fromisoformat(plan["start"])
             if begins <= day <= term_end(begins, plan["months"]):
-                return {"advanceMultiplier": market.published_terms(pricing["market"])["advanceMultiplier"], "releaseFee": format(Decimal(str(plan["releaseFee"])), "f")}
+                return {"releaseFee": format(Decimal(str(plan["releaseFee"])), "f")}
         return None
 
     def plans(self, account):
@@ -1423,7 +1448,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 app.market.key_account(self.bearer())
             except Refusal as error:
                 return self.pool_error(error)
-            return self.reply(200, {"object": "list", "data": [{"id": m["id"], "object": "model", "owned_by": "sparkpipe"} for m in app.cfg.pricing()["market"]["pool"]["models"]]})
+            return self.reply(200, {"object": "list", "data": [{"id": m["id"], "object": "model", "owned_by": "sparkpipe"} for m in app.cfg.pricing()["models"]]})
         try:
             app.throttle("read", self.client_ip())
             if path == "/account":
@@ -1525,7 +1550,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not isinstance(extra, dict):
                 raise Refusal("Give sparkpipe as an object.", 400, "invalid_accelerator")
             options = market.accelerator_field(extra.get("accelerator"), app.cfg.pricing()["market"])
-            ticket = app.market.pool_open(self.bearer(), body.get("model"), accelerated=options is not None)
+            switching = isinstance(body.get("model"), str) and app.switching(body["model"])
+            ticket = app.market.pool_open(self.bearer(), body.get("model"), deferred=options is not None or switching)
+            ticket["switching"] = switching
             accel = app.market.accelerator_join(ticket, options, market.estimate_tokens(messages)) if options else None
         except Refusal as error:
             return self.pool_error(error)
@@ -1538,6 +1565,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         app = self.server.app
         limit = body.get("max_tokens") if isinstance(body.get("max_tokens"), int) and not isinstance(body.get("max_tokens"), bool) else 128
         text, tokens_in, tokens_out = market.simulate(ticket["model"], messages, min(max(limit, 1), 512))
+        if ticket["switching"]:
+            time.sleep(app.cfg.sandbox_switch)
+            app.resident = ticket["model"]
         if accel and "job" in accel:
             seconds = Decimal(tokens_in) / accel["accelerator"]["speed"]
             time.sleep(float(min(seconds, 30)))
@@ -1552,11 +1582,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self.event({"id": ident, "object": "chat.completion.chunk", "created": made, "model": ticket["model"], "choices": [{"index": 0, "delta": {"content": word + " "}, "finish_reason": None}]})
                     time.sleep(0.025)
             finally:
-                charge = dict(app.market.pool_close(ticket, tokens_in, tokens_out), accelerator=accel)
+                charge = dict(app.market.pool_close(ticket, tokens_in, tokens_out), accelerator=accel, switch=switched(ticket))
             self.event({"id": ident, "object": "chat.completion.chunk", "created": made, "model": ticket["model"], "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "usage": usage, "sparkpipe": charge})
             return self.event(b"[DONE]")
         time.sleep(min(2.0, tokens_out / 40))
-        charge = dict(app.market.pool_close(ticket, tokens_in, tokens_out), accelerator=accel)
+        charge = dict(app.market.pool_close(ticket, tokens_in, tokens_out), accelerator=accel, switch=switched(ticket))
         self.reply(200, {"id": ident, "object": "chat.completion", "created": made, "model": ticket["model"], "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}], "usage": usage, "sparkpipe": charge})
 
     def forwarded(self, body, ticket, accel):
@@ -1564,12 +1594,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         job = accel if accel and "job" in accel else None
         note = [accel]
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {app.cfg.pool_key}", "X-SparkPipe-Public": "1"}
+        done = threading.Event()
         if job:
             headers["X-SparkPipe-Accelerator"] = job["accelerator"]["id"]
+        elif ticket["switching"]:
+            threading.Thread(target=app.watch, args=(ticket, done), daemon=True).start()
         else:
             app.market.pool_seat(ticket)
 
         def handed(usage, finished=True):
+            if finished and not job:
+                app.market.pool_seat(ticket)
             if job and note[0] is job:
                 reported = usage.get("sparkpipe_accelerator_seconds") if finished else None
                 measured = min(time.monotonic() - job["started"], float(job["tokens"] / job["accelerator"]["speed"]))
@@ -1578,7 +1613,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 app.market.pool_seat(ticket)
 
         def closing():
-            return dict(app.market.pool_close(ticket, tokens_in, tokens_out), accelerator=note[0])
+            return dict(app.market.pool_close(ticket, tokens_in, tokens_out), accelerator=note[0], switch=switched(ticket))
 
         payload = json.dumps(dict(body, model=ticket["model"]), ensure_ascii=False).encode()
         request = urllib.request.Request(app.cfg.pool_upstream + "/chat/completions", data=payload, method="POST", headers=headers)
@@ -1633,9 +1668,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not started:
                 self.pool_error(Refusal("The fleets did not answer. Try again in a minute.", 502, "upstream_error"))
         finally:
+            done.set()
             handed({}, finished=False)
             if not closed:
                 app.market.pool_close(ticket, tokens_in, tokens_out)
+
+
+def switched(ticket):
+    return round(ticket["began"] - ticket["opened"], 1) if ticket["switching"] else None
 
 
 def start(cfg, port=None):
