@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SparkPipe 플릿 목록</title>
-<meta name="description" content="SparkPipe 플릿 목록: 플릿, 요율, 이용 가능한 모델과 그 라이선스.">
+<meta name="description" content="SparkPipe 플릿 목록: 플릿, 프리필 가속기, 요율, 이용 가능한 모델과 그 라이선스.">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
 <link rel="alternate" hreflang="en" href="https://sparkpipe.ai/fleets.html">
@@ -39,6 +39,7 @@
     <a class="brand" href="index-ko.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">플릿 목록</span></a>
     <nav class="nav-links" aria-label="섹션">
       <a href="#fleets">플릿</a>
+      <a href="#accelerators">가속기</a>
       <a href="#models">모델</a>
       <a href="#speculation">추측 디코딩</a>
       <a href="#estimates">추정치</a>
@@ -55,7 +56,7 @@
   <section>
     <h1>플릿 목록</h1>
     <p class="effective">2026년 10월 31일 갱신</p>
-    <p>이 페이지는 <a href="agreement-ko.html">SparkPipe 고객 계약</a>이 가리키는 플릿 목록이자 이용 가능한 모델 목록입니다. 각 플릿의 요율은 그 플릿을 1시간 쓰는 데 드는 시간 크레딧(HC) 수입니다. 영문판(<a href="fleets.html" hreflang="en">fleets.html</a>)과 같은 내용이며, 서로 다르면 국문판이 우선합니다.</p>
+    <p>이 페이지는 <a href="agreement-ko.html">SparkPipe 고객 계약</a>이 가리키는 플릿 목록이자 프리필 가속기와 이용 가능한 모델의 목록입니다. 각 플릿의 요율은 그 플릿을 1시간 쓰는 데 드는 시간 크레딧(HC) 수이며, 가속기의 요율은 그 연산 능력에 따라 정해집니다. 영문판(<a href="fleets.html" hreflang="en">fleets.html</a>)과 같은 내용이며, 서로 다르면 국문판이 우선합니다.</p>
   </section>
 
   <div class="notice"><p><b>약관은 검토용으로 공개되어 있습니다.</b> 시간 크레딧(HC)은 지금 판매 중이며 공유 풀에서 바로 쓸 수 있고, 전용 플릿시간은 2026년 12월 1일부터 예약할 수 있습니다.</p></div>
@@ -71,6 +72,18 @@
     </table>
     </div>
     <p>저희 시스템은 플릿별 상태와 구간별 예약 가능 시간을 담은 실시간 가용 용량을 <span class="mono">https://sparkpipe.ai/availability.txt</span>에 공개하며, 최소 30초마다 갱신합니다.</p>
+  </section>
+
+  <section id="accelerators">
+    <h2>프리필 가속기</h2>
+    <p>프리필 가속기는 어느 플릿에서 처리되는 요청이든 그 프롬프트를 계산해 그 플릿에 돌려주며, 응답은 그 플릿이 씁니다. 요청이 원할 때만 가속기를 씁니다. 각 가속기는 종류와 규모, 요율, 속도, 상태와 함께 여기에 게시합니다.</p>
+    <div class="scroll">
+    <table>
+      <tr><th>가속기</th><th>종류와 규모</th><th>위치</th><th>상태</th><th class="num">요율</th><th class="num">속도</th></tr>
+      <tr><td colspan="6">아직 가동 중인 가속기는 없습니다. 각 가속기는 가동하면 요율, 속도와 함께 여기에 게시합니다.</td></tr>
+    </table>
+    </div>
+    <p>가속기의 요율은 DGX Spark 16대 플릿에 대한 연산 능력의 배수로, DGX Spark 48대는 3, 96대는 6입니다. 가속기가 계산하는 각 프롬프트의 가격은 가속기가 그 프롬프트를 시작한 때부터 돌려줄 때까지의 가속기초에 요율과 요청의 입찰 배수를 곱하고 3,600으로 나눈 값이며, HC 또는 플랜 시간으로 냅니다. 요율 6, 입찰 배수 1.5에서 180초는 0.45 HC입니다. 입찰 배수는 1부터 10까지 0.01 단위이며, 높은 것부터 계산합니다. 대기 시간(요청이 따로 정하지 않으면 300초, 최대 600초) 안에 어느 가속기도 시작하지 않은 요청은 가속기 없이 그 플릿에서 계산되며 가속기 비용을 내지 않습니다. 다만 요청은 그 대신 거절되도록 정할 수 있습니다. 가속기는 용량이나 속도를 보장하지 않습니다. 실시간 대기열과 각 가속기의 상태는 <a href="market.html" hreflang="en">시간 마켓(영문)</a> 페이지에 있고, 전체 규칙은 <a href="agreement-ko.html">고객 계약</a>에 있습니다.</p>
   </section>
 
   <section id="models">
@@ -140,7 +153,7 @@
     <ul>
       <li><b>디코드:</b> 토큰 하나의 시간은 각 노드가 그 토큰에 쓰이는 가중치 중 자기 몫을 플릿 1에서 실측한 245 GB/s로 읽는 시간에, 그 읽기를 둘러싼 커널과 집합 통신의 고정 비용으로 레이어마다 0.44 ms를 더한 값입니다. Kimi K3는 0.44 ms, GLM 5.3은 0.31 ms로 실측됩니다. 지금의 디코드 시간은 대부분 메모리가 아니라 이 고정 비용이므로, 저희 작업으로 이 비용이 줄면 추정치도 올라갑니다. 플릿 2는 Mac Studio의 1.2 TB/s 중 90%와 같은 레이어당 비용으로 잡았으며, 50 Gb/s 링크와 10GbE로 연결된 8대 전체에 모델을 나눕니다. Qwen 3.8 Max의 10.4 tok/s는 아직 이 방식으로 설명되지 않아 플릿 2 추정치를 싣지 않았습니다. K-EXAONE 2.0의 플릿 2 추정치는 전문가(expert)를 노드에 고르게 나눈 뒤라 다시 계산하고 있습니다.</li>
       <li><b>추측 디코딩</b>은 에이전트 코딩 턴에서 짧은 편집의 실측치대로 일반 디코드의 1.5배로 잡았습니다. 파일 전체 재작성은 8.3배, 새 산문은 1.0~1.2배로 실측됩니다.</li>
-      <li><b>프리필 가속기</b>는 모든 플릿이 함께 쓰는 전용 프리필 하드웨어이며, 여러 종류를 함께 운영할 수 있습니다. 긴 프롬프트를 계산해 프리필 시간을 크게 줄입니다. 함께 쓰는 자원이라 프롬프트는 앞서 대기 중인 프롬프트를 기다리므로 범위로 안내합니다. 100만 토큰 Kimi K3 프롬프트는 3~6분입니다.</li>
+      <li><b>프리필 가속기</b>는 모든 플릿이 함께 쓰는 전용 프리필 하드웨어이며, 여러 종류를 함께 운영할 수 있습니다. 긴 프롬프트를 계산해 프리필 시간을 크게 줄입니다. 함께 쓰는 자원이라 프롬프트는 입찰 배수 순서로 정해지는 대기열에서 앞의 프롬프트를 기다리므로 범위로 안내합니다. 100만 토큰 Kimi K3 프롬프트는 3~6분입니다. 가속기 이용 시간은 규모에 비례해 플릿시간처럼 가격이 매겨집니다. DGX Spark 48대는 요율 3, 96대는 요율 6이며, 초 단위로 부과됩니다(<a href="#accelerators">프리필 가속기</a>).</li>
       <li><b>Qwen 3.8 Max</b>는 공개된 FP8 정밀도(2.5TB)로는 플릿 하나의 2TB보다 큽니다. 이 행은 플릿 하나에 담기고 저희 정확도 A/B 검증을 통과하는 4비트 빌드(AMD MXFP4, Red Hat 또는 RadixArk의 NVFP4)를 가정합니다.</li>
     </ul>
   </section>

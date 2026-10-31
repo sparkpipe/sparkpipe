@@ -48,7 +48,39 @@ describes what is built, how it runs and how to test it.
   minute's load. Charges go to released hours first, earliest release first,
   up to a fleet's seat-seconds; after the hour each released hour's seller is
   credited what it earned less the fee. An account that holds the current
-  hour on a fleet uses its keys there free.
+  hour on a fleet pays no seat-seconds there.
+- **Prefill accelerators.** Shared prefill hardware listed under
+  `accelerators` in `pricing.js` (name, kind, state, `rate`,
+  `tokensPerSecond`). An accelerator's Rate is its size against a 16-Spark
+  fleet (48 Sparks: 3, 96 Sparks: 6). A pool request opts in with
+  `"sparkpipe": {"accelerator": {"bid", "maxWait", "pay", "fallback"}}`, or
+  `true` for the defaults, and is charged `seconds × rate × bid / 3600`,
+  rounded down to six places, whoever sends it: from the pool, in the
+  holder's own reserved hour, or under a plan. It is paid in HC from the lot
+  that lapses first, or with `"pay": "plan"` in Plan hours of the current
+  Tranche, which may be used in fractions.
+  - **Queue.** One queue for all accelerators: highest bid first, then
+    arrival; the fastest free accelerator takes the next prompt.
+  - **Bids and waiting.** The bid runs from 1 to `market.accelerator.maxBid`
+    (10) in steps of 0.01. A request waits up to `maxWait` seconds (default
+    `defaultWait`, 300, at most `maxWait`, 600). If no accelerator starts
+    it by then, it runs on its fleet with no accelerator charge, or is
+    refused (503 `accelerator_busy`) if it sent `"fallback": false`. With
+    none serving, the same happens at once.
+  - **Estimates.** On joining, the prompt's estimated price (UTF-8 bytes of
+    the messages ÷ 3 as tokens, ÷ the slowest serving accelerator's speed,
+    × Rate × bid, the highest across accelerators) is set aside against
+    the balance or the Tranche. A prompt the rest doesn't cover is refused
+    (402 `insufficient_hc` or `insufficient_plan_hours`). The actual charge
+    never exceeds the balance or the Tranche.
+  - **Pool seats.** A pool request that uses an accelerator takes its pool
+    seat, and its seat-second price, only when the accelerator hands the
+    prompt back, so waiting and accelerator time pay no seat-seconds.
+  - **HC on sale.** Accelerators are not fleets and are not counted in the
+    HC cover, so every HC stays backed by fleet-hours.
+  - **Public data.** `GET /market/state` and `pool.txt` publish each
+    accelerator, its Rate, its speed and whether it is busy, and the queue
+    (bid and estimated seconds per waiting prompt, no accounts).
 - **Tranche hours.** A plan holder's monthly hours reserve any free
   hour of their month, beyond the 7-day horizon, at no HC; released, they
   earn HC like any hour. Live, grant them with
@@ -153,13 +185,14 @@ has come into the horizon.
 Ledger lines it writes: `hc_lot`, `hc_debit`, `hc_hold`, `hc_unhold`,
 `hc_spend_hold`, `reserve`, `ask`, `ask_cancel`, `bid`, `bid_cancel`,
 `bid_close`, `bid_roll`, `pool_join`, `pool_settle`, `pool_charge`,
-`api_key`, `api_key_revoke`, `tranche_grant` and, in the sandbox, `clock`.
+`api_key`, `api_key_revoke`, `tranche_grant`, `maintenance`,
+`reservation_credit`, `accelerator_charge` and, in the sandbox, `clock`.
 Time-dependent lines carry the market time they used, so a replay gives the
 same balances.
 
 | Route | Who | What |
 | --- | --- | --- |
-| `GET /market/state` | anyone | Market time, settings, fleets, pool prices, HC on sale; the account's balance, lots, reservations, bids, Tranche hours, keys and charges when signed in |
+| `GET /market/state` | anyone | Market time, settings, fleets, pool prices, accelerators and their queue, HC on sale; the account's balance, lots, reservations, bids, Tranche hours, keys and pool and accelerator charges when signed in |
 | `GET /market/calendar?days=N` | anyone | Best ask per fleet-hour for up to 31 days |
 | `GET /market/book` | anyone | Open releases and bids, without identities, and recent trades |
 | `GET /market/market.txt`, `/market/pool.txt` | anyone | The same as plain-text feeds |
@@ -170,7 +203,7 @@ same balances.
 | `POST /market/cancel` | signed in | `ask` or `bid` |
 | `POST /market/bid` | signed in | `fleet` (or none), `model`, `from`, `to`, `hours`, `max`, `consecutive`, `standing` |
 | `POST /market/keys`, `/market/keys/revoke` | signed in | Create a pool key (shown once) or revoke one |
-| `POST /pool/v1/chat/completions`, `GET /pool/v1/models` | pool key | OpenAI format; replies carry `sparkpipe: {hc, seconds, dedicated}` |
+| `POST /pool/v1/chat/completions`, `GET /pool/v1/models` | pool key | OpenAI format, plus the optional `sparkpipe.accelerator` request field; replies carry `sparkpipe: {hc, seconds, dedicated, accelerator}`, where `accelerator` is null, `{used: false, reason}` or `{used: true, charge, accelerator, rate, bid, seconds, waited, pay, amount}` |
 | `POST /market/sandbox/clock`, `/tranche`, `/reset` | sandbox, signed in | Move the shared clock, take demo Tranche hours, clear the sandbox |
 
 ## The page, live and sandbox
@@ -189,6 +222,11 @@ redirects there. In the sandbox:
   the pool and the pool settles;
 - the pool answers with a built-in simulator, so the free sandbox never
   reaches the fleets;
+- the accelerators in `SPARKPIPE_PAY_SANDBOX_ACCELERATORS` (a JSON list
+  shaped like `pricing.js` `accelerators`, set in `sandbox.env`) serve, and
+  the simulator holds each prompt on its accelerator for its tokens ÷
+  `tokensPerSecond` seconds, at most 30, so the queue and the bids can be
+  watched;
 - `/market/sandbox/reset` moves the ledger aside and starts empty.
 
 Accepting the Customer Agreement records the SHA-256 of both languages of
@@ -238,3 +276,18 @@ exclusive to its holder during the hour is work for the fleet controller.
 The set-aside keeps the plan's fleets in its windows whatever fleet the
 holder later picks, except on a locked plan; more fleets at once, or hours
 outside the plan, are subject to availability.
+
+## Live accelerators
+
+When an accelerator serves, list it in `pricing.js` with `"state":
+"serving"` and its measured `tokensPerSecond`; an accelerator without a
+speed never serves, because its prompts' estimates can't be set aside. The
+gateway then forwards each accelerated prompt with the header
+`X-SparkPipe-Accelerator: <id>` and without its `sparkpipe` field. The
+fleets must compute the prompt on that accelerator and report its
+accelerator-seconds as `usage.sparkpipe_accelerator_seconds`. Without that
+report, the gateway charges the time from the accelerator's start to the
+first reply data, capped at the prompt's estimated seconds. A prompt whose
+upstream request fails is not charged. The Apache proxy and the
+upstream call allow 900 seconds without data, which covers the longest
+wait (600 seconds) plus the accelerator's prefill.

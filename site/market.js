@@ -110,6 +110,14 @@
     $('on-sale').textContent = Number(st.onSale) > 0 ? `On sale now: up to ${hc(st.onSale)} HC. We sell only the HC our free fleet-hours in the next 12 months can deliver.` : 'Sold out for now: every free fleet-hour in the next 12 months already backs HC sold.';
     const pool = st.pool;
     $('pool-status').textContent = `Price ${pool.hcPerSeatSecond} HC per seat-second ($${pool.usdPerSeatHour} per seat-hour${pool.usdPerMillionTokens ? `, about $${pool.usdPerMillionTokens} per million tokens` : ''}) · ${pool.active} of ${pool.seats} seats busy · pooled fleets: ${pool.fleets.join(', ') || 'none this hour'}`;
+    const limits = st.acceleratorLimits;
+    $('accel-max-bid').textContent = limits.maxBid;
+    $('accel-wait').textContent = limits.defaultWait;
+    $('accel-max-wait').textContent = limits.maxWait;
+    fill('accelerators', st.accelerators.map((a) => row([a.name, a.kind, a.rate, a.hcPerMinute, a.tokensPerSecond ? `${a.tokensPerSecond} tokens/s` : '-', a.busy ? 'computing a prompt' : a.serving ? 'free' : 'not serving'])), 'No prefill accelerator is serving yet.');
+    const queue = st.acceleratorQueue;
+    const ahead = queue.reduce((sum, q) => sum + Number(q.seconds || 0), 0);
+    $('accel-queue').textContent = queue.length ? `Queue: ${queue.length} prompt${queue.length === 1 ? '' : 's'} waiting, bids ${queue.map((q) => q.bid).join(', ')}, about ${Math.round(ahead)} s of accelerator time ahead at bid 1.` : (st.accelerators.some((a) => a.serving) ? 'Queue: empty.' : '');
     $('feed-market').href = API + '/market/market.txt';
     $('feed-pool').href = API + '/market/pool.txt';
   }
@@ -133,7 +141,9 @@
     fill('hours', me.reservations.map(hourRow), 'No reservations. Pick an hour on the calendar.');
     fill('bids', me.bids.map((b) => row([`${kst(b.from)} → ${kst(b.to)}${b.standing ? ' weekly' : ''}${b.consecutive ? ', consecutive' : ''}`, b.fleet || 'any', `${b.filled} / ${b.hours}`, hc(b.max), hc(b.held), b.state, button('Cancel', () => act('m-bid', () => call('POST', '/market/cancel', { bid: b.bid }), () => 'Bid cancelled; its held HC is back.'))])), 'No open bids.');
     fill('keys', me.keys.map((k) => row([`…${k.hint}`, k.note || '', kst(k.created), k.revoked ? 'revoked' : button('Revoke', () => act('m-try', () => call('POST', '/market/keys/revoke', { id: k.key }), () => 'Key revoked.'))])), 'No keys yet.');
-    fill('charges', me.charges.map((c) => row([kst(c.now), c.model, c.seconds, `${c.tokensIn} / ${c.tokensOut}`, c.hc])), 'No pool requests yet.');
+    fill('charges', me.charges.map((c) => row(c.kind === 'accelerator'
+      ? [kst(c.now), c.model, `${c.accelerator}, Rate ${c.rate} × bid ${c.bid}`, c.seconds, `${c.tokensIn} / -`, c.pay === 'plan' ? `${c.amount} Plan hours` : `${c.amount} HC`]
+      : [kst(c.now), c.model, 'pool seat', c.seconds, `${c.tokensIn} / ${c.tokensOut}`, `${c.hc} HC`])), 'No pool or accelerator charges yet.');
   }
 
   function hourRow(r) {
@@ -343,7 +353,8 @@
       const response = await fetch(API + '/pool/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + $('try-key').value.trim() },
-        body: JSON.stringify({ model: $('try-model').value, stream, max_tokens: 64, messages: [{ role: 'user', content: $('try-prompt').value }] }),
+        body: JSON.stringify(Object.assign({ model: $('try-model').value, stream, max_tokens: 64, messages: [{ role: 'user', content: $('try-prompt').value }] },
+          $('try-accel').checked ? { sparkpipe: { accelerator: { bid: Number($('try-bid').value), pay: $('try-pay').value } } } : {})),
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
@@ -374,7 +385,11 @@
         reply.textContent = data.choices[0].message.content;
         charge = data.sparkpipe;
       }
-      say('m-try', charge && charge.dedicated ? `Ran on your reserved hour: no HC charged (${charge.seconds} s).` : `Charged ${charge ? charge.hc : '?'} HC for ${charge ? charge.seconds : '?'} seat-seconds.`, 'ok');
+      const accel = charge && charge.accelerator;
+      const accelText = !accel ? '' : accel.used
+        ? ` Prefill accelerator ${accel.accelerator}: ${accel.seconds} s at Rate ${accel.rate} × bid ${accel.bid} = ${accel.amount} ${accel.pay === 'plan' ? 'Plan hours' : 'HC'}, after ${accel.waited} s in the queue.`
+        : ` No accelerator: ${{ none_serving: 'none is serving', waited: 'none started it in time', unfinished: 'it did not finish' }[accel.reason] || accel.reason}, so nothing was charged for one.`;
+      say('m-try', (charge && charge.dedicated ? `Ran on your reserved hour: no seat-seconds charged (${charge.seconds} s).` : `Charged ${charge ? charge.hc : '?'} HC for ${charge ? charge.seconds : '?'} seat-seconds.`) + accelText, 'ok');
       await refresh();
     } catch (error) {
       say('m-try', error.message, 'error');
