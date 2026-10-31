@@ -453,7 +453,7 @@ static int32_t K3StreamedKdaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 		b->tp_rank = shard;
 		b->sequence_row_begin = x->chunk_row_begin;
 		b->kda_state_index = x->chunk_slots;
-		status = K3LayerKdaProject<Format>(b,rows,multiprocessors,stream);
+		status = K3LayerKdaProject<Format>(b,rows,multiprocessors,stream,shard == 0u ? 1u : 0u);
 		if ( status != LM_LAUNCH_OK )
 			break;
 		{
