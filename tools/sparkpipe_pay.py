@@ -1167,7 +1167,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         payload = json.dumps(dict(body, model=ticket["model"]), ensure_ascii=False).encode()
         request = urllib.request.Request(app.cfg.pool_upstream + "/chat/completions", data=payload, method="POST", headers={"Content-Type": "application/json", "Authorization": f"Bearer {app.cfg.pool_key}", "X-SparkPipe-Public": "1"})
         tokens_in = tokens_out = 0
-        closed = False
+        closed = started = False
         try:
             with urllib.request.urlopen(request, timeout=900) as response:
                 if body.get("stream") is not True:
@@ -1178,6 +1178,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     closed = True
                     return self.reply(200, data)
                 self.stream_head()
+                started = True
                 for line in response:
                     text = line.strip()
                     if not text.startswith(b"data: "):
@@ -1208,7 +1209,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not closed:
                 closed = True
                 app.market.pool_close(ticket, tokens_in, tokens_out)
-            self.pool_error(Refusal("The fleets did not answer. Try again in a minute.", 502, "upstream_error"))
+            if not started:
+                self.pool_error(Refusal("The fleets did not answer. Try again in a minute.", 502, "upstream_error"))
         finally:
             if not closed:
                 app.market.pool_close(ticket, tokens_in, tokens_out)
