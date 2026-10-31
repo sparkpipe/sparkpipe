@@ -259,22 +259,22 @@ static void TestRmsNormResidual(uint32_t rows)
 			for ( i = 0u; i < DIM; i++ )
 			{
 				const uint64_t at = (uint64_t)row * DIM + i;
-				x[i] = Bf16(ToBf16(Bf16(original[at]) + Bf16(a[at])));
+				x[i] = (double)Bf16(original[at]) + (double)Bf16(a[at]);
 				square += x[i] * x[i];
 				if ( pass == 0u )
-					Observe(&sums,Bf16(h[at]),x[i],0.0);
+					Observe(&sums,Bf16(h[at]),Bf16(ToBf16(Bf16(original[at]) + Bf16(a[at]))),0.0);
 			}
 			const double scale = 1.0 / sqrt(square / DIM + 1e-6);
 			const double scale_error = Gamma(DIM) + FUNCTION_ERROR;
 			for ( i = 0u; i < DIM; i++ )
 			{
 				const double y = x[i] * scale * w[i];
-				Observe(check,Bf16(o[(uint64_t)row * DIM + i]),y,UNIT_BF16 * fabs(y) + (1.0 + UNIT_BF16) * (scale_error + 3.0 * UNIT_F32) * fabs(y));
+				Observe(check,Bf16(o[(uint64_t)row * DIM + i]),y,UNIT_BF16 * fabs(y) + (1.0 + UNIT_BF16) * (scale_error + 4.0 * UNIT_F32) * fabs(y));
 			}
 		}
 	}
 	snprintf(shape,sizeof(shape),"rows %u, dim 5120, residual written",rows);
-	Report("rmsnorm_residual",shape,&clean,&corrupted,"u|y| + (1+u)(gamma_5120 + 16 eps32 + 3 eps32)|y|, u = 2^-8, eps32 = 2^-24");
+	Report("rmsnorm_residual",shape,&clean,&corrupted,"u|y| + (1+u)(gamma_5120 + 16 eps32 + 4 eps32)|y| on the FP32 sum, u = 2^-8, eps32 = 2^-24");
 	if ( sums.bad != 0u )
 	{
 		printf("FAIL rmsnorm_residual: the written residual is not bf16(hidden + addend) at %llu elements\n",(unsigned long long)sums.bad);
