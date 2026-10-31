@@ -917,3 +917,25 @@ the Ling reference's FP32 variants):
 
     SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
         sh tools/metal_gates.sh glm-5.3-flash PACKS/glm53flash.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+
+### K-EXAONE 2.0 on eight ranks
+
+K-EXAONE 2.0 (78 layers of 6,144, BF16) is the Gemma family schedule's
+pre-norm layout, and `GemmaDevice` places it as `Kexaone2Device`
+(`SparkKexaone2DeviceStageModelAt`, TP 1, 2, 4 or 8). Its geometry has a
+layer table (`kLayerTable`): layer 0 attends globally, layer 1 through a
+4,096-key window, every fourth layer from layer 5 globally and the rest
+through the 128-key window, so the backend takes each layer's window from
+`L::Window` rather than from the full or sliding shape; and its last 16
+layers limit the SwiGLU at 7 (`L::SwigluLimit`), so those layers' dense and
+expert activations are `spark_silu_gate_limit_mul(_routed)`. The router
+logits stay FP32 (`kRouterFloat`, no BF16 rounding before the sigmoid), and
+every rank holds all 256 experts split by intermediate width
+(`tensor_parallel`). The checkpoint is 1.4 TB, so it runs as eight ranks
+paged from the SSD (`tools/kexaone2_tp16_pack.py --tp-degree 8`);
+`tools/kexaone2_reference.py` gains `gate-prompts` (the full chat turn) and
+`teacher` (FP32 products; variant b adds the routed experts in descending
+order):
+
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh k-exaone-2.0 PACKS/kexaone2.tp8.rank00.pack REFERENCE_DIR OUT REVISION

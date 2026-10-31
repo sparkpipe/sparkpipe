@@ -7,6 +7,7 @@
 #include "sparkpipe/spark_gemma4_31b_stage_model.h"
 #include "sparkpipe/spark_gemma4_device_stage.h"
 #include "sparkpipe/spark_gemma4_family.h"
+#include "sparkpipe/spark_kexaone2_tp16_stage_model.h"
 #include "sparkpipe/spark_laguna_tp16_stage_model.h"
 #include "sparkpipe/spark_muse_tp16_stage_model.h"
 
@@ -18,8 +19,7 @@ struct GemmaDevice
 	using G = typename P::Geometry;
 	using L = GemmaLayout<G>;
 
-	static_assert(!G::kRouterFloat && !G::kLayerTable && (!G::kEmbedNorm || G::kEmbedScale == 1.0f),
-		"the device layers do not cover this Gemma variant yet");
+	static_assert(!G::kEmbedNorm || G::kEmbedScale == 1.0f, "the device layers do not cover this Gemma variant yet");
 
 	struct Layer
 	{
@@ -35,6 +35,8 @@ struct GemmaDevice
 		SparkDeviceExpertsWeights experts;
 		uint32_t index;
 		uint32_t ffn;
+		uint32_t window;
+		float limit;
 	};
 
 	struct State
@@ -137,6 +139,27 @@ struct GemmaDevice
 		if constexpr ( G::kSigmoidRouter )
 			experts->routed_scale = G::kRoutedScale;
 		experts->round_logits = G::kRouterFloat ? 0u : 1u;
+		experts->tensor_parallel = G::kLocalExperts == G::kExperts ? 1u : 0u;
+	}
+
+	static SparkDeviceAttentionShape AttentionOf(const State *state, uint32_t index)
+	{
+		SparkDeviceAttentionShape shape = L::Full(index) ? state->full : state->sliding;
+		shape.window = L::Window(index);
+		return shape;
+	}
+
+	static uint32_t ActivationOf(const Layer &layer)
+	{
+		return G::kGeluMlp ? SPARK_GATED_GELU_TANH : isfinite(layer.limit) ? SPARK_GATED_SILU_GATE_LIMIT : SPARK_GATED_SILU;
+	}
+
+	static SparkDeviceExpertsShape ExpertsOf(const State *state, const Layer &layer)
+	{
+		SparkDeviceExpertsShape shape = state->experts_shape;
+		shape.activation = ActivationOf(layer);
+		shape.limit = isfinite(layer.limit) ? layer.limit : 0.0f;
+		return shape;
 	}
 
 	static uint32_t ScratchSlices(State *state, SparkDeviceStageSlice *slices)
@@ -196,10 +219,12 @@ struct GemmaDevice
 		const SparkDeviceStageConfigValue config[] =
 		{
 			{ "hidden", G::kHidden }, { "layers", G::kLayers }, { "vocab", G::kVocab }, { "vocab_rows", G::kVocab / G::kTpDegree },
-			{ "full_period", G::kPeriod }, { "sliding_window", G::kWindow }, { "experts", G::kExperts }, { "top_k", G::kTopK }
+			{ "sliding_window", G::kWindow }, { "experts", G::kExperts }, { "top_k", G::kTopK }, { "full_period", G::kPeriod }
 		};
 		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageExpectConfig(&state->stage, config, G::kMoe ? 8u : 6u);
+			status = SparkDeviceStageExpectConfig(&state->stage, config, G::kMoe ? 7u : 5u);
+		if ( status == SPARK_STATUS_OK && !G::kLayerTable )
+			status = SparkDeviceStageExpectConfig(&state->stage, &config[7], 1u);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageReserve(&state->stage, SparkDeviceStagePlan(0, slices, ScratchSlices(state, slices)), 0, 0u,
 				request->configuration->state_budget_bytes);
@@ -222,7 +247,10 @@ struct GemmaDevice
 		uint64_t offset = 0u, bytes = 0u;
 		uint32_t gate_up_rows = 0u;
 		SparkStatus status = SPARK_STATUS_OK;
+		const SparkDeviceAttentionShape attention = AttentionOf(state, index);
 		layer->index = index;
+		layer->window = L::Window(index);
+		layer->limit = L::SwigluLimit(index);
 		for ( uint32_t norm = 0u; norm < norm_count && status == SPARK_STATUS_OK; norm++ )
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, norms[norm], "f32", G::kHidden * sizeof(float), targets[norm]);
 		snprintf(key, sizeof(key), "layers.%u.ffn_gate_up", index);
@@ -234,7 +262,7 @@ struct GemmaDevice
 		if ( G::kLayerScalar && status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "layer_scalar", "f32", sizeof(float), &layer->layer_scalar);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceAttentionBind(&state->stage, weights, index, L::Full(index) ? &state->full : &state->sliding, &layer->attention);
+			status = SparkDeviceAttentionBind(&state->stage, weights, index, &attention, &layer->attention);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceFfnBind(&state->stage, weights, index, layer->ffn, &layer->ffn_weights);
 		if ( moe && status == SPARK_STATUS_OK )
@@ -309,13 +337,14 @@ struct GemmaDevice
 	template<bool FULL>
 	static SparkStatus Attention(State *state, const Frame &frame, const Layer &layer)
 	{
-		return SparkDeviceAttention(&state->stage, frame.queue, FULL ? &state->full : &state->sliding, FULL ? &state->full_rope : &state->sliding_rope,
-			&frame.t, &layer.attention, layer.index, &state->attention, state->normed, state->partial);
+		const SparkDeviceAttentionShape attention = AttentionOf(state, layer.index);
+		return SparkDeviceAttention(&state->stage, frame.queue, &attention, FULL ? &state->full_rope : &state->sliding_rope, &frame.t, &layer.attention,
+			layer.index, &state->attention, state->normed, state->partial);
 	}
 
 	static SparkStatus Mlp(State *state, const Frame &frame, const Layer &layer)
 	{
-		return SparkDeviceGatedFfn(&state->stage, frame.queue, layer.ffn, G::kGeluMlp ? SPARK_GATED_GELU_TANH : SPARK_GATED_SILU, 0.0f, &frame.t,
+		return SparkDeviceGatedFfn(&state->stage, frame.queue, layer.ffn, ActivationOf(layer), isfinite(layer.limit) ? layer.limit : 0.0f, &frame.t,
 			&layer.ffn_weights, &state->ffn_scratch, state->normed, state->partial);
 	}
 
@@ -337,14 +366,15 @@ struct GemmaDevice
 
 	static SparkStatus SigmoidExperts(State *state, const Frame &frame, const Layer &layer)
 	{
-		return SparkDeviceSigmoidExperts(&state->stage, frame.queue, &state->experts_shape, &frame.t, &layer.experts, &state->experts, state->normed,
-			state->partial, state->expert_out);
+		const SparkDeviceExpertsShape experts = ExpertsOf(state, layer);
+		return SparkDeviceSigmoidExperts(&state->stage, frame.queue, &experts, &frame.t, &layer.experts, &state->experts, state->normed, state->partial,
+			state->expert_out);
 	}
 
 	static SparkStatus Experts(State *state, const Frame &frame, const Layer &layer)
 	{
-		return SparkDeviceExperts(&state->stage, frame.queue, &state->experts_shape, &frame.t, layer.index, &layer.experts, &state->experts,
-			state->expert_out);
+		const SparkDeviceExpertsShape experts = ExpertsOf(state, layer);
+		return SparkDeviceExperts(&state->stage, frame.queue, &experts, &frame.t, layer.index, &layer.experts, &state->experts, state->expert_out);
 	}
 
 	static SparkStatus AllReduce(State *state, const Frame &frame, GemmaBranch branch, uint32_t blocks)
@@ -440,6 +470,15 @@ struct LagunaDevice
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_GEMV;
 };
 
+template<uint32_t TP>
+struct Kexaone2Device
+{
+	using Geometry = Kexaone2Geometry<TP>;
+	static constexpr const char *kTag = "sparkpipe_kexaone2_device";
+	static constexpr const char *kName = "k-exaone-2.0";
+	static constexpr uint32_t kProjection = SPARK_PROJECTION_GEMV;
+};
+
 template<template<uint32_t> class P>
 static const SparkStageRunnerModelInterface *GemmaDeviceAt(uint32_t tp_degree)
 {
@@ -491,4 +530,9 @@ const SparkStageRunnerModelInterface *SparkMuseGlimmerDeviceStageModelAt(uint32_
 const SparkStageRunnerModelInterface *SparkLagunaDeviceStageModelAt(uint32_t tp_degree)
 {
 	return GemmaDeviceAt<LagunaDevice>(tp_degree);
+}
+
+const SparkStageRunnerModelInterface *SparkKexaone2DeviceStageModelAt(uint32_t tp_degree)
+{
+	return GemmaDeviceAt<Kexaone2Device>(tp_degree);
 }

@@ -1376,6 +1376,15 @@ Metal backend and the single-Studio stage are in
   latent attention is not sharded by context across ranks: each rank
   attends its own heads over the whole context. The MTP layer is not
   packed.
+- K-EXAONE 2.0 on the Studio (`GemmaDevice<Kexaone2Device>`, TP8 paged from
+  the SSD) passes the gate's KL (0.91x / 0.68x of the floor) and top-1 (1.10x /
+  1.02x) tests and fails the paired test (+6.18 / +8.52 sigma). Its references
+  a and b differ only in the routed experts' FP32 summation order, so the
+  floor is tight: per-prompt KL means of 0.002 to 0.012 and medians of 1e-4 to
+  2e-3, against 0.15 to 0.43 means for Gemma 4 26B. Metal's means are as small
+  (0.003 to 0.010, top-1 agreement 0.97 to 0.99) and its median sits 10 to 35%
+  above the floor's on every prompt, which puts most positions above the floor
+  and the paired share far past 0.5.
 - Qwen 3.8 Flash Next on the Studio (`QwenDevice<Qwen38FlashDevice>`):
   - the QSA indexer is not built, so the stage refuses contexts past 2,048
     positions. Below 2,052 the indexer keeps every block and attention is

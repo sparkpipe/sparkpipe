@@ -14,6 +14,7 @@ const SparkStageRunnerModelInterface *SparkGemma4_26bDeviceStageModelAt(uint32_t
 const SparkStageRunnerModelInterface *SparkGemma4_31bDeviceStageModelAt(uint32_t tp_degree);
 const SparkStageRunnerModelInterface *SparkMuseGlimmerDeviceStageModelAt(uint32_t tp_degree);
 const SparkStageRunnerModelInterface *SparkLagunaDeviceStageModelAt(uint32_t tp_degree);
+const SparkStageRunnerModelInterface *SparkKexaone2DeviceStageModelAt(uint32_t tp_degree);
 
 #ifdef __cplusplus
 }

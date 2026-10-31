@@ -1425,10 +1425,11 @@ GEMMA4_DEVICE_HEADERS := model-families/gemma4/include/sparkpipe/spark_gemma4_fa
 	modules/gemma4_26b_resident_decode_stage/include/sparkpipe/spark_gemma4_26b_stage_model.h \
 	modules/gemma4_31b_resident_decode_stage/include/sparkpipe/spark_gemma4_31b_stage_model.h \
 	modules/muse_glimmer_tp16_resident_decode_stage/include/sparkpipe/spark_muse_tp16_stage_model.h \
-	modules/laguna_tp16_resident_decode_stage/include/sparkpipe/spark_laguna_tp16_stage_model.h
+	modules/laguna_tp16_resident_decode_stage/include/sparkpipe/spark_laguna_tp16_stage_model.h \
+	modules/kexaone2_tp16_resident_decode_stage/include/sparkpipe/spark_kexaone2_tp16_stage_model.h
 GEMMA4_DEVICE_INCLUDE_FLAGS := -Imodel-families/gemma4/include -Imodules/gemma4_26b_resident_decode_stage/include \
 	-Imodules/gemma4_31b_resident_decode_stage/include -Imodules/muse_glimmer_tp16_resident_decode_stage/include \
-	-Imodules/laguna_tp16_resident_decode_stage/include
+	-Imodules/laguna_tp16_resident_decode_stage/include -Imodules/kexaone2_tp16_resident_decode_stage/include
 GEMMA4_DEVICE_OBJECT := build/metal/gemma4_device_stage.o
 
 $(GEMMA4_DEVICE_OBJECT): $(GEMMA4_DEVICE_SOURCES) $(GEMMA4_DEVICE_HEADERS) $(DEVICE_RUNNER_HEADERS) | build
