@@ -36,7 +36,7 @@ These Rules are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 ## 4. Our capacity
 
-4.1. Every hour of a serving Fleet that nobody holds rests as our ask, from the first date we offer: at the Fleet's Rate up to 7 days ahead and, more than 7 and up to 31 days ahead, at the **advance price**, the Fleet's Rate times the advance multiplier under clauses 9.3 and 14.1 of the Customer Agreement. Hours further ahead are offered only as released hours. Capacity kept under clause 4.3 is offered only as that clause allows, hours under maintenance announced under clause 4.6 of the Customer Agreement are not offered, and an hour that clause 14.2 of the Customer Agreement keeps for HC that lapses sooner can be bought only with such HC until 6 hours before it starts.
+4.1. Every hour of a serving Fleet that nobody holds rests as our ask, from the first date we offer and up to 31 days ahead, at the Fleet's Rate under clause 14.1 of the Customer Agreement. Hours further ahead are offered only as released hours. Capacity kept under clause 4.3 is offered only as that clause allows, hours under maintenance announced under clause 4.6 of the Customer Agreement are not offered, and an hour that clause 14.2 of the Customer Agreement keeps for HC that lapses sooner can be bought only with such HC until 6 hours before it starts.
 
 4.2. We never bid, and we never use information about any Customer's orders to trade against it.
 
@@ -50,7 +50,7 @@ These Rules are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 5.2. An order fills from the cheapest asks within its limits. At equal prices, released hours fill before our capacity, and earlier releases before later ones; otherwise earlier hours fill first. Older bids are matched before newer ones. A consecutive bid takes the run of hours with the lowest total price, and of equal runs the earliest.
 
-5.3. A trade with our capacity is made at our ask: the Fleet's Rate, or the advance price (clause 4.1). A trade between a bid and a release is made at the price of the order that was resting first: the release's minimum price if the release came first, and the bid's maximum price if the bid came first.
+5.3. A trade with our capacity is made at our ask: the Fleet's Rate (clause 4.1). A trade between a bid and a release is made at the price of the order that was resting first: the release's minimum price if the release came first, and the bid's maximum price if the bid came first.
 
 ## 6. Settlement
 
@@ -70,7 +70,7 @@ These Rules are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 7.4. After the hour ends, the seller of a released hour in the pool is credited the HC allocated to it, less the release fee, rounded down to six decimal places, as a new lot of HC under clause 13.3 of the Customer Agreement. The credit may be zero.
 
-7.5. A pool request that uses an accelerator holds no seat, and pays no seat-seconds, while it waits for or is computed on the accelerator. It takes a seat when the accelerator hands its computed prompt back to the Fleet, or when its prompt is computed on its Fleet without an accelerator under clause 4.11 of the Customer Agreement.
+7.5. A pool request that uses an accelerator holds no seat, and pays no seat-seconds, while it waits for or is computed on the accelerator. It takes a seat when the accelerator hands its computed prompt back to the Fleet, or when its prompt is computed on its Fleet without an accelerator under clause 4.11 of the Customer Agreement. A Fleet holds one model at a time: a pool request for a model its Fleet has not loaded holds no seat, and pays no seat-seconds, while the Fleet switches to that model, and takes a seat when the Fleet serves it.
 
 ## 8. Prearranged trades
 
