@@ -50,7 +50,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential git python3 python3-numpy python3-pip libibverbs-dev
+            build-essential git python3 python3-cryptography python3-numpy python3-pip libibverbs-dev
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
@@ -115,7 +115,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential git python3 python3-numpy python3-pip libibverbs-dev
+            build-essential git python3 python3-cryptography python3-numpy python3-pip libibverbs-dev
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false

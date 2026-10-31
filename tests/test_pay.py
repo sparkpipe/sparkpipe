@@ -16,7 +16,10 @@ import threading
 import urllib.error
 import urllib.request
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -44,6 +47,21 @@ def plan(number, email, windows, days="every", fleets=1, months=24, start="2026-
     return found
 
 
+def record(app, found):
+    data = {key: value for key, value in found.items() if key != "id"}
+    app.book.append("plan_order", dict(data, plan=found["id"], account=app.book.emails.get(found["email"].lower()), email=found["email"].lower(), lock=found.get("lock", []), source="signed"))
+
+
+def set_plans(app, plans):
+    keep = {found["id"] for found in plans}
+    today = sp.local_day(app.market.now()).isoformat()
+    for ident, held in list(app.book.plans.items()):
+        if ident not in keep and not held["ended"]:
+            app.book.append("plan_end", {"plan": ident, "account": held["account"], "day": today, "reason": "test"})
+    for found in plans:
+        record(app, found)
+
+
 def check_dates(failures):
     pricing = json.loads((ROOT / "site" / "pricing.js").read_text().split("=", 1)[1].strip().rstrip(";"))
     hours = sp.tranches(pricing, plan(1, "a@x", ["asia"]))
@@ -65,6 +83,10 @@ def check_dates(failures):
             failures.append(f"an invalid plan is accepted: {bad}")
         except ValueError:
             pass
+    asia = plan(1, "a@x", ["asia"])
+    first, last = date(2026, 12, 15), date(2026, 12, 31)
+    if [sp.hours_before(pricing, asia, first, last, datetime(2026, 12, 20, hour, minute, tzinfo=timezone.utc)) for hour, minute in ((3, 0), (3, 30), (8, 0), (15, 0))] != [44, 45, 48, 48]:
+        failures.append("Plan hours that occur before a payment are counted wrongly")
     if sp.term_end(date(2028, 2, 29), 24) != date(2030, 2, 28) or sp.term_end(date(2026, 12, 1), 12) != date(2027, 11, 30):
         failures.append("term_end differs from the Customer Agreement")
 
@@ -224,6 +246,8 @@ def check_service(failures):
         shutil.copy(ROOT / "site" / "pricing.js", work / "site" / "pricing.js")
         for name in sp.TERMS.values():
             shutil.copy(ROOT / "site" / "terms" / name, work / "site" / "terms" / name)
+        for name in ("agreement.html", "agreement-ko.html"):
+            shutil.copy(ROOT / "site" / name, work / "site" / name)
         (work / "secret").write_text("test-client-secret\n")
         fake = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeCoinPayments)
         fake.invoices, fake.down = {}, False
@@ -237,9 +261,11 @@ def check_service(failures):
             "COINPAYMENTS_API": f"http://127.0.0.1:{fake.server_address[1]}/api/v2",
             "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
             "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}",
+            "SPARKPIPE_PAY_SUPPLIER_ADDRESS_KO": "서울특별시 용산구 시험로 1", "SPARKPIPE_PAY_SUPPLIER_ADDRESS_EN": "1 Test-ro, Yongsan-gu, Seoul",
         })
         sp.clock = lambda: NOW[0]
         sp.LIMITS["order"] = (40, 600)
+        sp.LIMITS["plan"] = (200, 600)
         server = sp.start(cfg, port=0)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         port, app = server.server_address[1], server.app
@@ -247,6 +273,7 @@ def check_service(failures):
         account_flow(failures, cfg, app, buyer, mailbox, port)
         credits_flow(failures, cfg, app, fake, buyer, mailbox)
         part_payment_flow(failures, cfg, app, fake, buyer, mailbox)
+        plan_order_flow(failures, cfg, app, fake, buyer, mailbox, port, work)
         prepayment_flow(failures, cfg, app, fake, buyer, mailbox, port)
         lead_flow(failures, app, buyer, mailbox, work)
         book = sp.Book(cfg.path("ledger.jsonl"))
@@ -445,6 +472,143 @@ def part_payment_flow(failures, cfg, app, fake, buyer, mailbox):
         failures.append("the rest of a part-paid order can still be ordered")
 
 
+CHOICE = {"start": "2026-12-15", "months": 24, "windows": ["asia"], "days": "every", "fleets": 1, "lock": False, "models": ["kimi-k3"],
+          "customer": {"kind": "company", "jurisdiction": "Delaware, United States", "registration": "7781234", "address": "1 Main St, Dover, DE"}}
+
+
+def pay_plan(app, fake, client, plan, amount):
+    status, placed = client("POST", "/order", {"product": "plan", "plan": plan, "amount": amount, "coin": "USDC.BASE"})
+    key = max(fake.invoices, key=lambda k: int(k[3:]))
+    fake.invoices[key]["status"] = "completed"
+    app.reconcile()
+    app.jobs.join()
+    return status, placed
+
+
+def place(client, choice):
+    status, quote = client("POST", "/plans/quote", choice)
+    if status != 200:
+        return status, quote, quote
+    status, placed = client("POST", "/plans/order", dict(choice, plan=quote["plan"], hash=quote["hash"], agree=True))
+    return status, placed, quote
+
+
+def plan_order_flow(failures, cfg, app, fake, buyer, mailbox, port, work):
+    team, other = Client(port, origin="https://sparkpipe.ai"), Client(port, origin="https://sparkpipe.ai")
+    sign_in(team, mailbox, "cto@plan.example", company="Plan Co Ltd", accept=True)
+    sign_in(other, mailbox, "dev@solo.example", company="Jane Kim", accept=True)
+    supplier = dict(cfg.supplier)
+    cfg.supplier["ko"] = ""
+    status, closed = team("POST", "/plans/quote", CHOICE)
+    cfg.supplier.update(supplier)
+    if status != 503 or closed.get("reason") != "plans_closed":
+        failures.append(f"Plan Orders open without our notice address: {status} {closed}")
+    if Client(port, origin="https://sparkpipe.ai")("POST", "/plans/quote", CHOICE)[0] != 401:
+        failures.append("a Plan Order is quoted without signing in")
+    customer = CHOICE["customer"]
+    for bad in (dict(CHOICE, months=5), dict(CHOICE, start="2026-11-20"), dict(CHOICE, start="2027-01-02"), dict(CHOICE, start="15 Dec"), dict(CHOICE, windows=[]), dict(CHOICE, windows=["mars"]),
+                dict(CHOICE, windows=["asia", "asia"]), dict(CHOICE, fleets=0), dict(CHOICE, fleets=4), dict(CHOICE, fleets=True), dict(CHOICE, days="weekends"), dict(CHOICE, lock=True),
+                dict(CHOICE, models=[]), dict(CHOICE, models=["gpt"]), dict(CHOICE, customer=dict(customer, kind="trust")), dict(CHOICE, customer=dict(customer, registration="")),
+                dict(CHOICE, customer=dict(customer, address="1 | 2")), dict(CHOICE, customer=dict(customer, brn="12345"))):
+        status, refused = team("POST", "/plans/quote", bad)
+        if status != 400:
+            failures.append(f"an invalid Plan Order is quoted: {status} {refused} for {bad}")
+    status, locked = team("POST", "/plans/quote", dict(CHOICE, windows=["americas", "asia", "europe"], lock=True))
+    if status != 200 or locked.get("lock") != ["F1"] or locked.get("price") != "16.00" or locked.get("hours") != 17544:
+        failures.append(f"a locked full-day plan is not assigned the free serving fleet at the lock price: {status} {locked}")
+    status, refused = team("POST", "/plans/quote", dict(CHOICE, fleets=2))
+    if status != 409 or refused.get("reason") != "capacity":
+        failures.append(f"a plan for more fleets than serve is quoted: {status} {refused}")
+    status, quote = team("POST", "/plans/quote", CHOICE)
+    rows, ko = dict(map(tuple, quote.get("rows", {}).get("en", []))), dict(map(tuple, quote.get("rows", {}).get("ko", [])))
+    if (status != 200 or quote["hours"] != 5848 or quote["total"] != "87720.00" or quote["withVat"] != "96492.00" or rows.get("Hours in the Term (clause 17.3)") != "5,848"
+            or rows.get("Payment schedule (clause 20)") != "Gated: Gate 1 by 13 January 2027, Gate 2 by 12 February 2027, Gate 3 by 14 March 2027"
+            or not rows.get("Customer", "").startswith("Plan Co Ltd, a company organised under the laws of Delaware, United States, registration number 7781234")
+            or cfg.terms("agreement-ko.md") not in rows.get("Customer Agreement (clause 9.1)", "") or cfg.terms("market-rules-en.md") not in rows.get("Customer Agreement (clause 9.1)", "")
+            or not rows.get("Customer Agreement (clause 9.1)", "").startswith("Version of ") or rows.get("Supplier notice address and email (clause 11.7)") != "1 Test-ro, Yongsan-gu, Seoul; hyor@sparkpipe.ai"
+            or ko.get("플랜 기간의 시간(제17.3조)") != "5,848시간" or ko.get("시간창(제17.1조)") != "아시아 시간창(08:00–16:00 KST)" or ko.get("공급자 통지 주소 및 이메일(제11.7조)") != "서울특별시 용산구 시험로 1, hyor@sparkpipe.ai"
+            or hashlib.sha256(quote["text"].encode()).hexdigest() != quote["hash"] or not quote["text"].index("# 플랜 주문서") < quote["text"].index("# Plan Order")):
+        failures.append(f"the Plan Order quote differs from the Customer Agreement's example and form: {status} {quote.get('hours')} {quote.get('total')} {rows} {ko}")
+        return
+    order = dict(CHOICE, plan=quote["plan"], hash=quote["hash"])
+    for body, reason in ((order, "agree"), (dict(order, hash="0" * 64, agree=True), "changed"), (dict(order, customer=dict(customer, address="2 Main St"), agree=True), "changed")):
+        status, refused = team("POST", "/plans/order", body)
+        if status != 409 or refused.get("reason") != reason:
+            failures.append(f"a Plan Order is placed without accepting its exact text: {status} {refused}")
+    sale = app.market.on_sale(app.market.now(), cfg.pricing())
+    status, placed = team("POST", "/plans/order", dict(order, agree=True))
+    app.mails.join()
+    line = [json.loads(raw) for raw in open(cfg.path("ledger.jsonl"), encoding="utf-8") if '"plan_order"' in raw][-1]["data"]
+    signature = line.get("signature") or {}
+    try:
+        Ed25519PublicKey.from_public_bytes(bytes.fromhex(signature["key"])).verify(bytes.fromhex(signature["value"]), bytes.fromhex(quote["hash"]))
+        signed = True
+    except Exception:
+        signed = False
+    if status != 200 or placed.get("plan") != quote["plan"] or placed.get("hours") != 5848 or line["hash"] != quote["hash"] or line["text"] != quote["text"] or line["accepted"]["ip"] != "127.0.0.1" or not signed or team("GET", "/plans/key")[1].get("key") != signature.get("key"):
+        failures.append(f"placing a Plan Order does not record the accepted text with our signature of its hash: {status} {placed} {signed}")
+        return
+    told = next((m for rcpt, m in mailbox.mail if "cto@plan.example" in rcpt and m["Subject"] == f"Plan Order {quote['plan']}: your SparkPipe plan"), None)
+    if not told or quote["hash"] not in told.get_content() or "| Hours in the Term (clause 17.3) | 5,848 |" not in told.get_content() or "| 플랜 기간의 시간(제17.3조) | 5,848시간 |" not in told.get_content():
+        failures.append("the customer is not emailed the Plan Order it accepted")
+    if not any(cfg.notify in rcpt and m["Subject"].startswith("New Plan Order: Plan Co Ltd") for rcpt, m in mailbox.mail):
+        failures.append("we are not told of a new Plan Order")
+    if not app.market.on_sale(app.market.now(), cfg.pricing()) < sale - 2000:
+        failures.append(f"an unpaid Plan Order does not take its hours off the HC on sale: {sale}")
+    if team("POST", "/plans/order", dict(order, agree=True))[0] != 409:
+        failures.append("a Plan Order is placed twice")
+    status, refused, _ = place(team, dict(CHOICE, windows=["europe"]))
+    if status != 409 or refused.get("reason") != "unpaid":
+        failures.append(f"an account places a second plan while its first is unpaid: {status} {refused}")
+    solo = {"kind": "individual", "address": "3 Side St, Busan"}
+    status, refused = other("POST", "/plans/quote", dict(CHOICE, customer=solo))
+    if status != 409 or refused.get("reason") != "capacity":
+        failures.append(f"a plan is quoted on capacity another Plan Order keeps: {status} {refused}")
+    status, refused = other("POST", "/plans/quote", dict(CHOICE, windows=["americas", "asia", "europe"], lock=True, customer=solo))
+    if status != 409:
+        failures.append(f"a fleet lock is quoted on a fleet another Plan Order needs: {status} {refused}")
+    status, view = team("GET", "/plan/" + quote["plan"])
+    if status != 200 or len(view.get("tranches", [])) != 25 or view.get("rows") != quote["rows"] or view.get("signature", {}).get("key") != signature["key"] or view.get("heldUntil") != "2028-12-14":
+        failures.append(f"the Plan Order view: {status} {view.get('tranches', [])[:1]} {view.get('heldUntil')}")
+    if other("GET", "/plan/" + quote["plan"])[0] != 404:
+        failures.append("another account reads a Plan Order")
+    pay_plan(app, fake, team, quote["plan"], "20160.00")
+    holder = app.book.emails["cto@plan.example"]
+    granted = [app.book.market.tranches[(holder, month)] for month in ("2026-12", "2027-01", "2027-05", "2027-06")]
+    if granted != [136, 248, 248, 0]:
+        failures.append(f"paying Gate 1 does not issue Tranches 1 to 6: {granted}")
+    status, upfront, upfront_quote = place(other, dict(CHOICE, months=3, windows=["americas"], customer=solo))
+    rows = dict(map(tuple, upfront_quote.get("rows", {}).get("en", [])))
+    if status != 200 or upfront.get("payment") != "upfront" or upfront.get("hours") != 720 or upfront.get("total") != "12600.00" or rows.get("Customer") != "Jane Kim, an individual, of 3 Side St, Busan" or rows.get("Payment schedule (clause 20)") != "Upfront: the Price of the Term before the Start Date":
+        failures.append(f"an individual's upfront plan: {status} {upfront} {rows}")
+    pay_plan(app, fake, other, upfront.get("plan"), "6300.00")
+    if app.book.market.tranches[(app.book.emails["dev@solo.example"], "2026-12")] != 0:
+        failures.append("an upfront plan paid in part issues Tranche hours")
+    status, europe, europe_quote = place(team, dict(CHOICE, windows=["europe"]))
+    if status != 200:
+        failures.append(f"a paid customer cannot order another plan on free capacity: {status} {europe}")
+        return
+    prices = work / "site" / "pricing.js"
+    text = prices.read_text()
+    prices.write_text(text.replace('{ "name": "Fleet 2", "kind": "M5U", "state": "building"', '{ "name": "Fleet 2", "kind": "M5U", "state": "serving"'))
+    status, held = buyer("POST", "/market/reserve", {"fleet": "F1", "start": "2026-12-02T01:00Z", "model": "kimi-k3", "max": "2"})
+    status, moved = team("POST", "/plans/quote", dict(CHOICE, start="2026-12-01", windows=["americas", "asia", "europe"], lock=True))
+    prices.write_text(text)
+    if not held.get("reservation") or status != 200 or moved.get("lock") != ["F2"]:
+        failures.append(f"a fleet lock is not moved to another serving fleet when the first is reserved in its term: {held} {status} {moved}")
+    start = NOW[0]
+    NOW[0] = datetime(2026, 12, 16, 3, 0, 0, tzinfo=timezone.utc)
+    kept = [found[6] for found in app.commitments(NOW[0])]
+    if upfront.get("plan") in kept or quote["plan"] not in kept or europe["plan"] not in kept:
+        failures.append(f"an unpaid upfront plan keeps capacity after its Start Date, or an unpaid plan in Phase A loses it: {kept}")
+    NOW[0] = datetime(2026, 12, 20, 3, 0, 0, tzinfo=timezone.utc)
+    sign_in(team, mailbox, "cto@plan.example")
+    pay_plan(app, fake, team, europe["plan"], "20160.00")
+    if app.book.market.tranches[(holder, "2026-12")] != 136 + 96:
+        failures.append(f"Plan hours that occurred before they were paid for are issued: {app.book.market.tranches[(holder, '2026-12')]}")
+    NOW[0] = start
+
+
 def prepayment_flow(failures, cfg, app, fake, buyer, mailbox, port):
     plans = [
         plan("0001", "ops@acme.example", ["asia"], start="2026-11-01"),
@@ -452,7 +616,7 @@ def prepayment_flow(failures, cfg, app, fake, buyer, mailbox, port):
         plan("0003", "else@other.example", ["americas"], start="2026-11-01"),
         plan("0004", "ops@acme.example", ["asia"], months=3, start="2026-11-10", payment="upfront"),
     ]
-    Path(cfg.path("plans.json")).write_text(json.dumps(plans))
+    set_plans(app, plans)
     hours = sp.tranches(cfg.pricing(), plans[0])
     found = buyer("GET", "/account")[1]["plans"]
     if [a["plan"] for a in found] != ["SP-PLAN-0001", "SP-PLAN-0002", "SP-PLAN-0004"]:
@@ -479,13 +643,44 @@ def prepayment_flow(failures, cfg, app, fake, buyer, mailbox, port):
     app.reconcile()
     app.jobs.join()
     state = buyer("GET", "/account")[1]["plans"][0]
-    if state["paid"] != "100.00" or not buyer("GET", "/order/" + placed["order"])[1]["issued"]:
+    if state["paid"] != "100.00" or not buyer("GET", "/order/" + placed["order"])[1]["issued"] or state["heldUntil"] != "2028-10-31":
         failures.append(f"reconciling a missed webhook does not issue the prepayment: {state}")
+    account = app.book.emails["ops@acme.example"]
+    if app.book.market.tranches[(account, "2026-11")] != 0:
+        failures.append(f"a payment smaller than the Plan hours that already occurred issues Tranche hours: {app.book.market.tranches[(account, '2026-11')]}")
+    pay_plan(app, fake, buyer, "SP-PLAN-0001", "3515.00")
+    if app.book.market.tranches[(account, "2026-11")] != 240 - 12 or app.book.market.tranches[(account, "2026-12")] != 0:
+        failures.append(f"a payment does not issue the rest of Tranche 1 less the 12 Plan hours that occurred before it was paid for: {app.book.market.tranches[(account, '2026-11')]} {app.book.market.tranches[(account, '2026-12')]}")
     NOW[0] = datetime(2026, 12, 1, 3, 0, 0, tzinfo=timezone.utc)
     state = buyer("GET", "/account")[1]["plans"]
     status, _ = buyer("POST", "/order", dict(pay, amount="100.00"))
     if "Gate 1 was missed" not in (state[0]["ended"] or "") or status != 409:
         failures.append(f"a missed gate does not stop prepayment: {state[0]} {status}")
+    kept = [found[6] for found in app.commitments(NOW[0])]
+    if state[0]["heldUntil"] != "2026-12-31" or "SP-PLAN-0001" not in kept or "SP-PLAN-0002" in kept:
+        failures.append(f"after a missed gate, a plan keeps capacity beyond its last paid Tranche, or a plan that ended in Phase A keeps any: {state[0]['heldUntil']} {kept}")
+    app.end_plan("SP-PLAN-0001", date(2026, 12, 10), "ended under clause 10.2")
+    if buyer("GET", "/account")[1]["plans"][0]["heldUntil"] != "2026-12-09":
+        failures.append("a Plan Order we end keeps capacity after its last day")
+    for bad in (plan("0005", "ops@acme.example", ["asia"], fleets=2, start="2026-12-15"), plan("0006", "nobody@acme.example", ["europe"]), plan("0001", "ops@acme.example", ["europe"])):
+        try:
+            app.record_signed(cfg.pricing(), bad, NOW[0])
+            failures.append(f"a signed Plan Order is recorded without capacity, an account or an unused number: {bad['id']}")
+        except sp.Refusal:
+            pass
+    signed = app.record_signed(cfg.pricing(), plan("0007", "ops@acme.example", ["europe"], months=3, start="2027-01-01", payment="upfront"), NOW[0])
+    if app.book.plans.get("SP-PLAN-0007", {}).get("source") != "signed" or signed["account"] != account:
+        failures.append(f"a signed Plan Order that fits is not recorded: {signed}")
+    pay_plan(app, fake, buyer, "SP-PLAN-0007", "10800.00")
+    if [app.book.market.tranches[(account, month)] for month in ("2027-01", "2027-02", "2027-03")] != [248, 224, 248]:
+        failures.append(f"an upfront plan paid in full does not issue every Tranche: {[app.book.market.tranches[(account, month)] for month in ('2027-01', '2027-02', '2027-03')]}")
+    app.market.credit(account, app.market.on_sale(app.market.now(), cfg.pricing()), "cover test")
+    try:
+        app.record_signed(cfg.pricing(), plan("0008", "ops@acme.example", ["americas"], months=3, start="2027-01-01", payment="upfront"), NOW[0])
+        failures.append("a Plan Order takes free fleet-hours that hour-credits already sold need")
+    except sp.Refusal as error:
+        if "Hour-credits already sold" not in str(error):
+            failures.append(f"a Plan Order is refused for the wrong reason when sold HC needs its hours: {error}")
     if "Phase A ended" not in (state[1]["ended"] or ""):
         failures.append(f"an unpaid plan survives Phase A: {state[1]}")
     if "not paid in full by its Start Date" not in (state[2]["ended"] or ""):
@@ -517,7 +712,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("pay: plan hours and gates match the Customer Agreement for every window, day choice, term and fleet count, invalid plans fail; email codes, sessions, terms acceptance, USDC and USDT invoices on the chosen network, payments in another stablecoin, signed webhooks, receipts, HC orders and part payments, reconciliation, gates, quote requests and the hash-chained ledger behave")
+    print("pay: plan hours and gates match the Customer Agreement for every window, day choice, term and fleet count, invalid plans fail; email codes, sessions, terms acceptance, USDC and USDT invoices on the chosen network, payments in another stablecoin, signed webhooks, receipts, HC orders and part payments, reconciliation, gates, self-serve Plan Orders (the bilingual Order Form, the accepted hash and our Ed25519 signature, capacity, HC cover and fleet-lock checks, holds that lapse unpaid or end at the last paid Tranche, Tranche hours issued on payment less hours that already occurred), quote requests and the hash-chained ledger behave")
     return 0
 
 

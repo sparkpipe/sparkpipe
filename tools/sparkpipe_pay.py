@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import hmac
 import http.server
+import itertools
 import json
 import os
 import queue
@@ -23,6 +24,9 @@ from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, parseaddr
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 import sparkpipe_market as market
 from sparkpipe_market import Refusal
 
@@ -30,7 +34,7 @@ KST = timezone(timedelta(hours=9))
 USD = "5057"
 CENT = Decimal("0.01")
 HOUR_STEP = Decimal("0.0001")
-LEDGER_IDS = ("order", "invoice", "reservation", "ask", "bid", "lot", "key", "ref")
+LEDGER_IDS = ("order", "invoice", "reservation", "ask", "bid", "lot", "key", "ref", "plan")
 TERMS = {"ko": "agreement-ko.md", "en": "agreement-en.md", "rules_ko": "market-rules-ko.md", "rules_en": "market-rules-en.md"}
 DAYS = ("every", "weekdays")
 PAYMENTS = ("upfront", "gates")
@@ -54,6 +58,12 @@ COINS = {
 EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,189}\.[^@\s.]{2,}$")
 CODE = re.compile(r"^\d{6}$")
 ORDER_PATH = re.compile(r"^/order/(SP[A-Z2-7]{16})$")
+PLAN_PATH = re.compile(r"^/plan/(PO[A-Z2-7]{16})$")
+PLAN_ID = re.compile(r"^PO[A-Z2-7]{16}$")
+BRN = re.compile(r"^\d{3}-\d{2}-\d{5}$")
+THRESHOLD = 80
+PARTIES = ("company", "individual")
+WINDOW_KO = {"americas": "미주", "asia": "아시아", "europe": "유럽"}
 COOKIE = "sp_session"
 SESSION_SECONDS = 30 * 86400
 CODE_SECONDS = 600
@@ -61,7 +71,7 @@ CODE_TRIES = 5
 PENDING_SECONDS = 86400
 RECONCILE_DAYS = 14
 SKEW_SECONDS = 300
-LIMITS = {"code": (20, 600), "code-email": (5, 3600), "verify": (30, 600), "order": (10, 600), "lead": (5, 3600), "read": (240, 600), "market": (240, 600), "pool": (600, 600)}
+LIMITS = {"code": (20, 600), "code-email": (5, 3600), "verify": (30, 600), "order": (10, 600), "lead": (5, 3600), "plan": (60, 3600), "read": (240, 600), "market": (240, 600), "pool": (600, 600)}
 
 
 def clock():
@@ -131,16 +141,35 @@ def plan_pattern(pricing, plan):
     return tuple(sum(fleets for w in windows if w["from"] <= hour < w["to"] and (plan["days"] == "every" or (monday + timedelta(days=weekday + w["localDay"])).weekday() < 5)) for weekday in range(7) for hour in range(24))
 
 
-def tranches(pricing, plan):
+def tranche_spans(pricing, plan):
     windows, fleets = plan_fields(pricing, plan)
     start = date.fromisoformat(plan["start"])
     end = term_end(start, plan["months"])
     found, cursor = [], start
     while cursor <= end:
         last = min(date(cursor.year, cursor.month, calendar.monthrange(cursor.year, cursor.month)[1]), end)
-        found.append(sum(day_hours(windows, plan["days"], fleets, cursor + timedelta(days=n)) for n in range((last - cursor).days + 1)))
+        found.append((cursor, last, sum(day_hours(windows, plan["days"], fleets, cursor + timedelta(days=n)) for n in range((last - cursor).days + 1))))
         cursor = last + timedelta(days=1)
     return found
+
+
+def tranches(pricing, plan):
+    return [hours for _, _, hours in tranche_spans(pricing, plan)]
+
+
+def hours_before(pricing, plan, first, last, moment):
+    windows, fleets = plan_fields(pricing, plan)
+    local = moment.astimezone(KST)
+    day, whole = local.date(), min(last, local.date() - timedelta(days=1))
+    total = sum(day_hours(windows, plan["days"], fleets, first + timedelta(days=n)) for n in range((whole - first).days + 1)) if whole >= first else 0
+    if first <= day <= last:
+        upto = local.hour + (1 if (local.minute, local.second, local.microsecond) != (0, 0, 0) else 0)
+        total += sum(max(0, min(w["to"], upto) - w["from"]) * fleets for w in windows if plan["days"] == "every" or (day + timedelta(days=w["localDay"])).weekday() < 5)
+    return total
+
+
+def kst_start(day):
+    return datetime(day.year, day.month, day.day, tzinfo=KST).astimezone(timezone.utc)
 
 
 def digest(body):
@@ -217,6 +246,7 @@ class Config:
         self.smtp = env.get("SPARKPIPE_PAY_SMTP", "127.0.0.1:25")
         self.mail_from = env.get("SPARKPIPE_PAY_MAIL_FROM", "SparkPipe <noreply@sparkpipe.ai>")
         self.notify = env.get("SPARKPIPE_PAY_NOTIFY", "hyor@sparkpipe.ai")
+        self.supplier = {"ko": env.get("SPARKPIPE_PAY_SUPPLIER_ADDRESS_KO", "").strip(), "en": env.get("SPARKPIPE_PAY_SUPPLIER_ADDRESS_EN", "").strip()}
 
     def path(self, name):
         return os.path.join(self.data, name)
@@ -230,15 +260,15 @@ class Config:
         with open(os.path.join(self.site, "terms", name), "rb") as handle:
             return hashlib.sha256(handle.read()).hexdigest()
 
-    def listing(self, name):
-        path = self.path(name)
-        if not os.path.exists(path):
-            return []
-        with open(path, encoding="utf-8") as handle:
-            return json.load(handle)
+    def version(self, lang):
+        with open(os.path.join(self.site, "agreement-ko.html" if lang == "ko" else "agreement.html"), encoding="utf-8") as handle:
+            found = re.search(r'<p class="effective">([^<]+)</p>', handle.read())
+        if not found:
+            raise ValueError(f"the published Customer Agreement ({lang}) states no version")
+        return found.group(1)
 
-    def session_key(self):
-        path = self.path("session_key")
+    def secret_file(self, name):
+        path = self.path(name)
         try:
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError:
@@ -248,6 +278,12 @@ class Config:
             key = secrets.token_bytes(32)
             handle.write(key)
             return key
+
+    def session_key(self):
+        return self.secret_file("session_key")
+
+    def signing_key(self):
+        return Ed25519PrivateKey.from_private_bytes(self.secret_file("signing_key"))
 
 
 def call(cfg, method, path, body=None):
@@ -292,6 +328,7 @@ class Book:
         self.invoices = {}
         self.accounts = {}
         self.emails = {}
+        self.plans = {}
         self.market = market.State()
         if os.path.exists(path):
             with open(path, "rb") as handle:
@@ -346,6 +383,10 @@ class Book:
             self.orders[data["order"]].update(state="completed", paid=line["at"], received=data["received"])
         elif kind == "hours_issued":
             self.orders[data["order"]].update(issued=True, issued_hours=data["hours"], paid_net=data["net"])
+        elif kind == "plan_order":
+            self.plans[data["plan"]] = dict(data, id=data["plan"], created=line["at"], ended=None)
+        elif kind == "plan_end":
+            self.plans[data["plan"]]["ended"] = {"day": data["day"], "reason": data["reason"]}
         elif kind in market.KINDS:
             self.market.apply(line)
 
@@ -357,6 +398,9 @@ class Book:
 
     def pending(self, plan, now):
         return sum((Decimal(order["net"]) for order in self.orders.values() if order.get("plan") == plan and self.waiting(order, now)), Decimal(0))
+
+    def paid_hours(self, plan, without=None):
+        return sum((Decimal(order["issued_hours"]) for order in self.orders.values() if order.get("plan") == plan and order["issued"] and order["order"] != without), Decimal(0))
 
 
 def standing(pricing, book, plan, now):
@@ -374,9 +418,11 @@ def standing(pricing, book, plan, now):
         gates = [{"name": "Payment", "tranches": None, "dueDay": 1}]
     else:
         gates = pricing["gates"]
-    ended = None
+    ended, stop, missed = None, plan.get("ended"), False
     if today > end:
         ended = f"The term ended on {end.isoformat()}."
+    elif stop and today >= date.fromisoformat(stop["day"]):
+        ended = f"The plan ended on {stop['day']}: {stop['reason']}"
     elif plan["payment"] == "gates" and not paid and today > start + timedelta(days=pricing["phaseADays"] - 1):
         ended = "Phase A ended with no payment, so the plan ended with nothing owed."
     elif plan["payment"] == "upfront" and today > start and paid_net < total:
@@ -389,9 +435,19 @@ def standing(pricing, book, plan, now):
         have = sum((net for moment, net in paid if moment <= cutoff), Decimal(0))
         if today > due:
             if plan["payment"] == "gates" and paid and have < need and not ended:
-                ended = f"{gate['name']} was missed on {due.isoformat()}, so no further prepayment can be made."
+                ended, missed = f"{gate['name']} was missed on {due.isoformat()}, so no further prepayment can be made.", True
         elif next_gate is None and paid_net + pending < need:
             next_gate = {"name": gate["name"], "due": due.isoformat(), "amount": text_money(need - paid_net - pending)}
+    held = None if ended else end
+    if missed:
+        covered, cursor = book.paid_hours(plan["id"]), Decimal(0)
+        for _, last, count in tranche_spans(pricing, plan):
+            held, cursor = last, cursor + count
+            if cursor >= covered:
+                break
+        held = held if held >= today else None
+    if held and stop:
+        held = min(held, date.fromisoformat(stop["day"]) - timedelta(days=1))
     return {
         "plan": plan["id"],
         "start": start.isoformat(),
@@ -410,6 +466,7 @@ def standing(pricing, book, plan, now):
         "remaining": text_money(max(Decimal(0), total - paid_net - pending)),
         "nextGate": None if ended else next_gate,
         "ended": ended,
+        "heldUntil": held.isoformat() if held and held >= start else None,
     }
 
 
@@ -455,6 +512,140 @@ def statement(cfg, company, terms):
             f"English text: SHA-256 {terms['en']} ({cfg.public}/terms/agreement-en.md). "
             f"Hour Market Rules, Korean text, which prevails: SHA-256 {terms['rules_ko']} ({cfg.public}/terms/market-rules-ko.md). "
             f"English text: SHA-256 {terms['rules_en']} ({cfg.public}/terms/market-rules-en.md).")
+
+
+def party_field(value, label, size):
+    found = text_field(value, label, size)
+    if "|" in found:
+        raise Refusal(f"The {label} cannot hold a | character.")
+    return found
+
+
+def long_date(day, lang):
+    day = date.fromisoformat(day) if isinstance(day, str) else day
+    return f"{day.year}년 {day.month}월 {day.day}일" if lang == "ko" else f"{day.day} {calendar.month_name[day.month]} {day.year}"
+
+
+def fleet_name(fleet, lang):
+    return ("플릿 " if lang == "ko" else "Fleet ") + fleet[1:]
+
+
+def window_names(windows, lang):
+    ko = lang == "ko"
+    named = [(f"{WINDOW_KO.get(w['id'], w['name'])} 시간창" if ko else f"{w['name']} Window ") + f"({w['from']:02d}:00–{w['to']:02d}:00 KST)" for w in windows]
+    full = sum(w["to"] - w["from"] for w in windows) == 24
+    return ("종일: " if ko else "Full day: ") * full + ", ".join(named)
+
+
+def plan_line(plan):
+    windows = "Full day" if sum(w["to"] - w["from"] for w in plan["windows"]) == 24 else " + ".join(w.get("name", w["id"]) for w in plan["windows"])
+    lock = [f"locked {', '.join(plan['lock'])}"] if plan.get("lock") else []
+    return " · ".join([f"{plan['months']} months", windows, "Every day" if plan["days"] == "every" else "Weekdays", f"{plan['fleets']} fleet" + "s" * (plan["fleets"] > 1)] + lock)
+
+
+def order_rows(record, lang):
+    ko = lang == "ko"
+    c, a, s = record["customer"], record["agreement"], record["supplier"]
+    usd = lambda value: format(Decimal(value), ",.2f")
+    if c["kind"] == "company":
+        customer = f"{c['name']}. {c['jurisdiction']}의 법률에 따라 설립된 회사로서, 등록번호 {c['registration']}, 소재지 {c['address']}" if ko else f"{c['name']}, a company organised under the laws of {c['jurisdiction']}, registration number {c['registration']}, registered address {c['address']}"
+    else:
+        customer = f"{c['name']}. 개인, 주소 {c['address']}" if ko else f"{c['name']}, an individual, of {c['address']}"
+    gates = record["schedule"]
+    fee, allowance = format((Decimal(record["releaseFee"]) * 100).normalize(), "f"), record["maintenanceHoursPerWeek"]
+    rates = ("; ", ", ")[ko].join(f"{fleet_name(fleet, lang)}: {rate}" for fleet, rate in record["rates"])
+    models = ", ".join(m["name"] for m in record["models"])
+    if ko:
+        payment = "일시 선납: 개시일 전까지 플랜 기간의 대금" if record["payment"] == "upfront" else "게이트 선납: " + ", ".join(f"게이트 {g['name'].split()[-1]} {long_date(g['due'], lang)}" for g in gates) + "까지"
+        return [
+            ("주문번호", record["plan"]),
+            ("고객", customer),
+            ("고객 계약(제9.1조)", f"{a['version']['ko']}. 국문 SHA-256 {a['ko']}, 영문 SHA-256 {a['en']}. 시간 마켓 규칙 국문 SHA-256 {a['rules_ko']}, 영문 SHA-256 {a['rules_en']}"),
+            ("개시일(제16.3조)", long_date(record["start"], lang)),
+            ("플랜 기간(제16.3조)", f"{record['months']}개월, {long_date(record['end'], lang)} 종료"),
+            ("시간창(제17.1조)", window_names(record["windows"], lang)),
+            ("이용 요일(제17.2조)", "매일" if record["days"] == "every" else "평일"),
+            ("플릿 수(제18.1조)", str(record["fleets"])),
+            ("플릿 고정(제19조)", ", ".join(fleet_name(f, lang) for f in record["lock"]) or "없음"),
+            ("시간당 가격(제16.4조)", f"플릿시간당 미화 {usd(record['hourPrice'])}달러(USD), 부가가치세 별도, 플릿 고정 포함, 플랜 기간 동안 고정"),
+            ("플랜 기간의 시간(제17.3조)", f"{record['hours']:,}시간"),
+            ("플랜 기간의 대금(제16.4조)", f"미화 {usd(record['total'])}달러(USD), 부가가치세 별도"),
+            ("납부 방식(제20조)", payment),
+            ("선택 모델(제7.2조)", models),
+            ("성능 기준(제23.2조)", f"기준치의 {record['threshold']}%"),
+            ("계정 이메일(제2.2조)", record["email"]),
+            ("공급자 통지 주소 및 이메일(제11.7조)", f"{s['ko']}, {s['email']}"),
+            ("고객 통지 주소 및 이메일(제11.7조)", f"{c['address']}, {c['notice']}"),
+            ("고객의 부가가치세 지위(제3.2조)", f"대한민국 사업자등록번호 {c['brn']}" if c["brn"] else "대한민국 내 사업장 없음"),
+            ("지급 통화 및 계좌(제3.3조)", "미국 달러 스테이블코인, 제3.3조 (다)목"),
+            ("공개 설정(제9.3조)", f"플랜 주문서 성립 시 공개된 설정: 반납 수수료 {fee}%, 점검 허용 시간 플릿당 매주 {allowance}시간, 시간창 시각은 위 시간창란에 기재된 바에 따름"),
+            ("플릿 요율(제16.5조)", f"플랜 주문서 성립 시 플릿 목록에 공개된 요율: {rates}"),
+        ]
+    payment = "Upfront: the Price of the Term before the Start Date" if record["payment"] == "upfront" else "Gated: " + ", ".join(f"{g['name']} by {long_date(g['due'], lang)}" for g in gates)
+    return [
+        ("Order number", record["plan"]),
+        ("Customer", customer),
+        ("Customer Agreement (clause 9.1)", f"{a['version']['en']}; SHA-256 of the Korean text {a['ko']} and of the English text {a['en']}; Hour Market Rules, SHA-256 of the Korean text {a['rules_ko']} and of the English text {a['rules_en']}"),
+        ("Start Date (clause 16.3)", long_date(record["start"], lang)),
+        ("Term (clause 16.3)", f"{record['months']} months, ending on {long_date(record['end'], lang)}"),
+        ("Windows (clause 17.1)", window_names(record["windows"], lang)),
+        ("Days (clause 17.2)", "Every day" if record["days"] == "every" else "Weekdays"),
+        ("Fleets (clause 18.1)", str(record["fleets"])),
+        ("Fleet lock (clause 19)", ", ".join(fleet_name(f, lang) for f in record["lock"]) or "None"),
+        ("Hour Price (clause 16.4)", f"USD {usd(record['hourPrice'])} per fleet-hour, exclusive of VAT, including any Fleet lock, fixed for the Term"),
+        ("Hours in the Term (clause 17.3)", f"{record['hours']:,}"),
+        ("Price of the Term (clause 16.4)", f"USD {usd(record['total'])}, exclusive of VAT"),
+        ("Payment schedule (clause 20)", payment),
+        ("Chosen Models (clause 7.2)", models),
+        ("Performance Threshold (clause 23.2)", f"{record['threshold']}% of the Baseline"),
+        ("Account email (clause 2.2)", record["email"]),
+        ("Supplier notice address and email (clause 11.7)", f"{s['en']}; {s['email']}"),
+        ("Customer notice address and email (clause 11.7)", f"{c['address']}; {c['notice']}"),
+        ("Customer VAT status (clause 3.2)", f"Korean business registration number {c['brn']}" if c["brn"] else "No place of business in the Republic of Korea"),
+        ("Payment currency and account (clause 3.3)", "US dollar stablecoin, clause 3.3(c)"),
+        ("Published settings (clause 9.3)", f"As published when this Plan Order is made: release fee {fee}%; maintenance allowance {allowance} hours a week per Fleet; window times as stated under Windows"),
+        ("Fleet Rates (clause 16.5)", f"As published on the Fleet List when this Plan Order is made: {rates}"),
+    ]
+
+
+def order_text(record):
+    blocks = []
+    for lang, title, head in (("ko", "플랜 주문서", "| 항목 | 기재 사항 |"), ("en", "Plan Order", "| Item | Entry |")):
+        lead = "본 플랜 주문서는 SparkPipe 고객 계약에 따라 체결된다." if lang == "ko" else "This Plan Order is made under the SparkPipe Customer Agreement."
+        blocks.append("\n".join([f"# {title} {record['plan']}", "", lead, "", head, "| --- | --- |"] + [f"| {item} | {entry} |" for item, entry in order_rows(record, lang)]))
+    return "\n\n".join(blocks) + "\n"
+
+
+def text_rows(text):
+    found, rows = {}, None
+    for line in text.splitlines():
+        if line.startswith("# "):
+            rows = found.setdefault("ko" if not found else "en", [])
+        elif line.startswith("| ") and rows is not None and not line.startswith("| --- "):
+            rows.append(line[2:-2].split(" | ", 1))
+    return {lang: rows[1:] for lang, rows in found.items()}
+
+
+def shortfall(cover, life, pending):
+    low = cover.low()
+    return max(Decimal(0), -low if low is not None else Decimal(0)) + max(Decimal(0), pending - cover.headroom(life))
+
+
+def plan_mail(cfg, record, pricing):
+    dates = ", ".join(f"{g['name']} by {long_date(g['due'], 'en')}" for g in record["schedule"])
+    return "\n".join([
+        f"{record['company']} placed Plan Order {record['plan']} under the SparkPipe Customer Agreement.",
+        "",
+        f"{plan_line(record)}: {record['hours']:,} hours from {long_date(record['start'], 'en')} to {long_date(record['end'], 'en')}, at {record['hourPrice']} USD an hour.",
+        f"Price of the Term: {record['total']} USD before VAT, paid " + ("in full by the Start Date." if record["payment"] == "upfront" else f"by gates: {dates}. Phase A runs to day {pricing['phaseADays']}: nothing is due, and you withdraw by not paying."),
+        f"Pay toward it from your account: {cfg.public}/account.html",
+        f"The Plan Order, ready to print: {cfg.public}/plan-order.html?plan={record['plan']}",
+        "",
+        f"You accepted the text below while signed in to {record['email']}. Its SHA-256 is {record['hash']}. We signed that hash with our Ed25519 key {record['signature']['key']}; the signature is {record['signature']['value']}.",
+        "",
+        record["text"],
+        "HYOR AI Tech Ltd. (SparkPipe), Seoul. Reply to this email with any question.",
+    ])
 
 
 def invoice_body(cfg, quote):
@@ -678,36 +869,245 @@ class App:
         return None
 
     def plans(self, account):
-        email = self.book.accounts[account]["email"]
-        return [p for p in self.cfg.listing("plans.json") if str(p.get("email", "")).lower() == email]
+        return [p for p in self.book.plans.values() if p["account"] == account]
 
-    def commitments(self, now, listing=None):
-        today = local_day(now)
-        if listing is None:
-            path = self.cfg.path("plans.json")
-            key = (os.path.getmtime(path) if os.path.exists(path) else None, today, self.book.count)
-            if self.committed and self.committed[0] == key:
-                return self.committed[1]
+    def commitment(self, pricing, plan, until):
+        return (
+            plan.get("account") or self.book.emails.get(str(plan.get("email", "")).lower()),
+            kst_start(date.fromisoformat(plan["start"])),
+            kst_start(until + timedelta(days=1)),
+            plan_pattern(pricing, plan),
+            tuple(plan.get("lock") or ()),
+            plan["maintenanceHoursPerWeek"],
+            plan["id"],
+        )
+
+    def commitments(self, now, extra=None):
+        key = (local_day(now), self.book.count)
+        if extra is None and self.committed and self.committed[0] == key:
+            return self.committed[1]
         pricing, found = self.cfg.pricing(), []
-        for plan in self.cfg.listing("plans.json") if listing is None else listing:
-            ended = standing(pricing, self.book, plan, now)["ended"]
-            if ended and not ended.endswith("no further prepayment can be made."):
-                continue
-            start = date.fromisoformat(plan["start"])
-            after = term_end(start, plan["months"]) + timedelta(days=1)
-            found.append((
-                self.book.emails.get(str(plan.get("email", "")).lower()),
-                datetime(start.year, start.month, start.day, tzinfo=KST).astimezone(timezone.utc),
-                datetime(after.year, after.month, after.day, tzinfo=KST).astimezone(timezone.utc),
-                plan_pattern(pricing, plan),
-                tuple(plan.get("lock") or ()),
-                plan["maintenanceHoursPerWeek"],
-                plan["id"],
-            ))
+        for plan in list(self.book.plans.values()) + list(extra or []):
+            until = standing(pricing, self.book, plan, now)["heldUntil"]
+            if until:
+                found.append(self.commitment(pricing, plan, date.fromisoformat(until)))
         found = tuple(found)
-        if listing is None:
+        if extra is None:
             self.committed = (key, found)
         return found
+
+    def plans_open(self):
+        if self.cfg.sandbox:
+            raise Refusal("Plan Orders are placed on the live service, not in the sandbox.", 404)
+        if not (self.cfg.supplier["ko"] and self.cfg.supplier["en"]):
+            raise Refusal("Online Plan Orders are not open yet. Ask us for a quote, or write to hyor@sparkpipe.ai.", 503, "plans_closed")
+
+    def customer_field(self, value, record):
+        value = value if isinstance(value, dict) else {}
+        if value.get("kind") not in PARTIES:
+            raise Refusal("Say whether the Customer is a company or an individual.")
+        found = {"kind": value["kind"], "name": record["company"], "address": party_field(value.get("address"), "address", 300), "notice": email_field(value.get("notice") or record["email"])}
+        if value["kind"] == "company":
+            found.update(jurisdiction=party_field(value.get("jurisdiction"), "country or state the company is organised in", 100), registration=party_field(value.get("registration"), "company registration number", 60))
+        found["brn"] = optional_text(value.get("brn"), 20)
+        if found["brn"] and not BRN.match(found["brn"]):
+            raise Refusal("Give the Korean business registration number as 123-45-67890, or leave it empty.")
+        return found
+
+    def plan_choice(self, pricing, body, account, now, ident):
+        offer, record = pricing["plans"], self.book.accounts[account]
+        months = body.get("months")
+        term = next((t for t in offer["terms"] if not isinstance(months, bool) and t["months"] == months), None)
+        if not term:
+            raise Refusal("Choose one of the terms we offer.")
+        try:
+            start = date.fromisoformat(body["start"])
+        except (KeyError, TypeError, ValueError):
+            raise Refusal("Give the Start Date as YYYY-MM-DD.")
+        today = local_day(now)
+        first = max(today, date.fromisoformat(offer["earliestStart"]))
+        last = max(first, today + timedelta(days=offer["startWithinDays"]))
+        if not first <= start <= last:
+            raise Refusal(f"Choose a Start Date from {long_date(first, 'en')} to {long_date(last, 'en')}.")
+        published, chosen = {w["id"]: w for w in pricing["windows"]}, body.get("windows")
+        if not isinstance(chosen, list) or not chosen or not all(isinstance(w, str) and w in published for w in chosen) or len(set(chosen)) != len(chosen):
+            raise Refusal("Choose one or more of the windows.")
+        fleets = body.get("fleets")
+        if isinstance(fleets, bool) or not isinstance(fleets, int) or not 1 <= fleets <= offer["maxFleets"]:
+            raise Refusal(f"Choose 1 to {offer['maxFleets']} fleets. For more, ask us for a quote.")
+        if body.get("days") not in DAYS:
+            raise Refusal("Choose Every day or Weekdays.")
+        lock = body.get("lock") is True
+        if lock and (len(chosen) != len(published) or body["days"] != "every"):
+            raise Refusal("A fleet lock comes only with a Full day on Every day.")
+        listed, models = {m["id"]: m for m in pricing["models"]}, body.get("models")
+        if not isinstance(models, list) or not models or not all(isinstance(m, str) and m in listed for m in models) or len(set(models)) != len(models):
+            raise Refusal("Choose at least one of the models.")
+        price = money(Decimal(str(term["hourPrice"])) + (Decimal(str(offer["lockPremium"])) if lock else 0))
+        plan = {
+            "id": ident, "plan": ident, "account": account, "email": record["email"], "company": record["company"],
+            "start": start.isoformat(), "months": months, "windows": [{key: w[key] for key in ("id", "name", "from", "to", "localDay")} for w in pricing["windows"] if w["id"] in chosen],
+            "days": body["days"], "fleets": fleets, "lock": [], "hourPrice": text_money(price), "payment": term["payment"],
+            "releaseFee": format(Decimal(str(pricing["market"]["releaseFee"])), "f"), "maintenanceHoursPerWeek": offer["maintenanceHoursPerWeek"],
+        }
+        details = {
+            "customer": self.customer_field(body.get("customer"), record), "models": [{"id": m, "name": listed[m]["name"]} for m in listed if m in models],
+            "threshold": THRESHOLD, "currency": "stablecoin", "rates": [[f["id"], format(f["rate"].quantize(CENT), "f")] for f in self.market.fleets(pricing)],
+        }
+        return plan, details, lock
+
+    def plan_room(self, pricing, plan, now, current):
+        added = self.commitment(pricing, plan, term_end(date.fromisoformat(plan["start"]), plan["months"]))
+        before, after = self.market.cover(now, pricing, current), self.market.cover(now, pricing, current + (added,))
+        moment, pattern = max(added[1], after.first), added[3]
+        while moment < added[2]:
+            local = moment.astimezone(KST)
+            if pattern[local.weekday() * 24 + local.hour] and after.clash(moment) and not before.clash(moment):
+                return Refusal(f"We cannot keep the capacity this plan needs at {market.kst_text(moment)}: it is already reserved or kept for another plan, or the fleets are not serving yet. Choose a later Start Date, other windows or fewer fleets.", 409, "capacity")
+            moment += market.HOUR
+        life, pending = market.year_later(now), self.market.pending()
+        if shortfall(after, life, pending) > shortfall(before, life, pending):
+            return Refusal("Hour-credits already sold need the free fleet-hours this plan would keep. Choose a later Start Date, other windows or fewer fleets.", 409, "capacity")
+        return None
+
+    def placed(self, pricing, plan, lock, now):
+        current = self.commitments(now)
+        if not lock:
+            refusal = self.plan_room(pricing, plan, now, current)
+            if refusal:
+                raise refusal
+            return plan
+        refusal = Refusal(f"We have fewer than {plan['fleets']} serving fleets to lock. Choose fewer fleets, or a plan without a lock.", 409, "capacity")
+        for fleets in itertools.combinations([f["id"] for f in self.market.fleets(pricing) if f["serving"]], plan["fleets"]):
+            trial = dict(plan, lock=list(fleets))
+            found = self.plan_room(pricing, trial, now, current)
+            if not found:
+                return trial
+            refusal = found
+        raise refusal
+
+    def plan_record(self, pricing, plan, details):
+        spans, start = tranche_spans(pricing, plan), date.fromisoformat(plan["start"])
+        hours = sum(count for _, _, count in spans)
+        schedule = [{"name": "Payment", "due": plan["start"]}] if plan["payment"] == "upfront" else [{"name": g["name"], "due": (start + timedelta(days=g["dueDay"] - 1)).isoformat()} for g in pricing["gates"]]
+        record = dict({key: value for key, value in plan.items() if key != "id"}, **details)
+        record.update(
+            end=term_end(start, plan["months"]).isoformat(), hours=hours, total=text_money(money(plan["hourPrice"]) * hours), schedule=schedule,
+            agreement=dict(self.current_terms(), version={"ko": self.cfg.version("ko"), "en": self.cfg.version("en")}),
+            supplier={"ko": self.cfg.supplier["ko"], "en": self.cfg.supplier["en"], "email": self.cfg.notify},
+        )
+        record["text"] = order_text(record)
+        record["hash"] = hashlib.sha256(record["text"].encode()).hexdigest()
+        return record
+
+    def draft(self, pricing, body, account, now, ident):
+        plan, details, lock = self.plan_choice(pricing, body, account, now, ident)
+        return self.plan_record(pricing, self.placed(pricing, plan, lock, now), details)
+
+    def preview(self, pricing, record):
+        net = Decimal(record["total"])
+        vat = money(net * Decimal(str(pricing["vatRate"])))
+        return {
+            "plan": record["plan"], "hash": record["hash"], "text": record["text"], "rows": text_rows(record["text"]), "line": plan_line(record),
+            "start": record["start"], "end": record["end"], "hours": record["hours"], "price": record["hourPrice"], "total": record["total"],
+            "vat": text_money(vat), "withVat": text_money(net + vat), "lock": record["lock"], "payment": record["payment"], "schedule": record["schedule"],
+        }
+
+    def quote_plan(self, body, account, ip):
+        self.throttle("plan", ip)
+        self.plans_open()
+        pricing = self.cfg.pricing()
+        with self.book.lock:
+            return self.preview(pricing, self.draft(pricing, body, account, clock(), new_id("PO")))
+
+    def place_plan(self, body, account, ip, agent):
+        self.throttle("plan", ip)
+        self.plans_open()
+        ident = body.get("plan")
+        if not isinstance(ident, str) or not PLAN_ID.match(ident):
+            raise Refusal("Review the Plan Order before placing it.")
+        if body.get("agree") is not True:
+            raise Refusal("Accept the Plan Order to place it.", 409, "agree")
+        pricing, now = self.cfg.pricing(), clock()
+        with self.book.lock:
+            if ident in self.book.plans:
+                raise Refusal("This Plan Order is already placed. It is in your account.", 409)
+            waiting = [p for p in self.plans(account) if not standing(pricing, self.book, p, now)["ended"] and not self.book.paid_hours(p["id"])]
+            if waiting:
+                raise Refusal(f"Plan Order {waiting[0]['id']} has no payment yet. Pay toward it from your account, or wait until it lapses unpaid, before ordering another plan.", 409, "unpaid")
+            if not self.accepted(account, self.current_terms()):
+                if body.get("accept") is not True:
+                    raise Refusal("The Customer Agreement has changed since you accepted it. Accept the current text to continue.", 409, "terms")
+                self.accept(account, ip, agent)
+            record = self.draft(pricing, body, account, now, ident)
+            if not hmac.compare_digest(record["hash"].encode(), str(body.get("hash")).encode()):
+                raise Refusal("The Plan Order changed since you reviewed it: the capacity, the fleets it locks or a published text moved. Review the new Order and accept it again.", 409, "changed")
+            key = self.cfg.signing_key()
+            record.update(source="account", accepted={"ip": ip, "agent": agent}, signature={
+                "algorithm": "Ed25519", "key": key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex(), "value": key.sign(bytes.fromhex(record["hash"])).hex()})
+            self.book.append("plan_order", record)
+        self.mail(record["email"], f"Plan Order {ident}: your SparkPipe plan", plan_mail(self.cfg, record, pricing))
+        self.mail(self.cfg.notify, f"New Plan Order: {record['company']}, {plan_line(record)}", f"{record['company']} <{record['email']}> placed Plan Order {ident}: {plan_line(record)}, from {record['start']}, {record['hours']:,} hours at {record['hourPrice']} USD, {record['total']} USD before VAT, {record['payment']}.")
+        log(f"plan order {ident} for {account}")
+        return self.plan_view(account, ident)
+
+    def plan_key(self):
+        return {"algorithm": "Ed25519", "key": self.cfg.signing_key().public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()}
+
+    def plan_view(self, account, ident):
+        pricing, now = self.cfg.pricing(), clock()
+        with self.book.lock:
+            plan = self.book.plans.get(ident)
+            if not plan or plan["account"] != account:
+                raise Refusal("No such plan on this account.", 404)
+            view = standing(pricing, self.book, plan, now)
+            view.update(
+                line=plan_line(plan), company=plan["company"], created=plan["created"], source=plan.get("source"), hash=plan.get("hash"),
+                rows=text_rows(plan["text"]) if plan.get("text") else None, text=plan.get("text"), signature=plan.get("signature"),
+                accepted=plan["created"] if plan.get("source") == "account" else None, schedule=plan.get("schedule"),
+                tranches=[{"from": first.isoformat(), "to": last.isoformat(), "hours": count} for first, last, count in tranche_spans(pricing, plan)],
+            )
+            return view
+
+    def record_signed(self, pricing, plan, now):
+        account = self.book.emails.get(str(plan.get("email", "")).lower())
+        ident = plan.get("id")
+        if not account or not isinstance(ident, str) or not ident or ident in self.book.plans:
+            raise Refusal("A signed Plan Order needs an unused id and the email of an existing account.")
+        record = {key: plan[key] for key in ("start", "months", "windows", "days", "fleets", "hourPrice", "payment", "releaseFee", "maintenanceHoursPerWeek")}
+        record.update(id=ident, plan=ident, account=account, email=self.book.accounts[account]["email"], company=self.book.accounts[account]["company"], lock=list(plan.get("lock") or []), source="signed")
+        tranches(pricing, record)
+        with self.book.lock:
+            refusal = self.plan_room(pricing, record, now, self.commitments(now))
+            if refusal:
+                raise refusal
+            self.book.append("plan_order", {key: value for key, value in record.items() if key != "id"})
+        return record
+
+    def end_plan(self, ident, day, reason):
+        plan = self.book.plans.get(ident)
+        if not plan or plan["ended"] or not reason:
+            raise Refusal("Name a Plan Order that has not ended, the first day it no longer holds, and the reason.")
+        self.book.append("plan_end", {"plan": ident, "account": plan["account"], "day": day.isoformat(), "reason": reason})
+
+    def grant_paid(self, ident, order_id, now):
+        plan = self.book.plans.get(ident)
+        if not plan:
+            return
+        pricing = self.cfg.pricing()
+        spans = tranche_spans(pricing, plan)
+        before, after = int(self.book.paid_hours(ident, order_id)), int(self.book.paid_hours(ident))
+        if plan["payment"] == "upfront":
+            if after < sum(count for _, _, count in spans):
+                return
+            before = 0
+        cursor = 0
+        for first, last, count in spans:
+            old, new = min(count, max(0, before - cursor)), min(count, max(0, after - cursor))
+            cursor += count
+            gone = max(0, min(new, hours_before(pricing, plan, first, last, now)) - old)
+            if new - old - gone > 0:
+                self.book.append("tranche_grant", {"account": plan["account"], "month": first.strftime("%Y-%m"), "hours": new - old - gone, "plan": ident, "source": "payment", "order": order_id})
 
     def summary(self, account):
         pricing = self.cfg.pricing()
@@ -723,12 +1123,12 @@ class App:
                 "hc": market.text_hc(self.book.market.balance(account, market.stamp(self.market.now()))),
                 "orders"
 : [self.shown(o) for o in mine[:50]],
-                "plans": [standing(pricing, self.book, p, now) for p in self.plans(account)],
+                "plans": [dict(standing(pricing, self.book, p, now), line=plan_line(p), form=bool(p.get("text"))) for p in self.plans(account)],
             }
 
     def prepayment_terms(self, pricing, body, account, now):
         number = body.get("plan")
-        found = next((p for p in self.plans(account) if isinstance(number, str) and p.get("id") == number), None)
+        found = next((p for p in self.plans(account) if isinstance(number, str) and p["id"] == number), None)
         if not found:
             raise Refusal("No plan with this number belongs to your account.", 404)
         net = money_field(body.get("amount"))
@@ -925,6 +1325,8 @@ class App:
             if order["product"] == "plan":
                 issued.update(plan=order["plan"])
             self.book.append("hours_issued", issued)
+            if order["product"] == "plan":
+                self.grant_paid(order["plan"], order_id, clock())
             if order["product"] == "credits":
                 issued["expires"] = self.market.issue(order["account"], Decimal(hours), order_id, order["terms"])["expires"]
             log(f"order {order_id}: paid, {hours} hours issued to {order['account']}")
@@ -1027,6 +1429,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(200, app.summary(app.need(self.headers)))
             if path == "/market/state":
                 return self.reply(200, app.market_state(app.signed_in(self.headers)))
+            if path == "/plans/key":
+                return self.reply(200, app.plan_key())
+            match = PLAN_PATH.match(path)
+            if match:
+                return self.reply(200, app.plan_view(app.need(self.headers), match.group(1)))
             if path == "/market/calendar":
                 days = query.get("days", ["7"])[0]
                 return self.reply(200, app.market.calendar(app.signed_in(self.headers), int(days) if days.isdigit() else 7))
@@ -1081,6 +1488,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(200, app.order(body, app.need(self.headers), self.client_ip(), self.agent()))
             if path == "/lead":
                 return self.reply(200, app.lead(body, self.client_ip(), self.agent()))
+            if path == "/plans/quote":
+                return self.reply(200, app.quote_plan(body, app.need(self.headers), self.client_ip()))
+            if path == "/plans/order":
+                return self.reply(200, app.place_plan(body, app.need(self.headers), self.client_ip(), self.agent()))
             if path == "/market/buy":
                 return self.reply(200, app.buy(body, app.need(self.headers), self.client_ip(), self.agent()))
             if path.startswith("/market/"):
@@ -1258,6 +1669,27 @@ def main(argv):
         app.mails.join()
         print(f"maintenance {found['maintenance']}: {found['fleet']} for {found['hours']} hours from {found['start']}; credited {', '.join(found['credited']) or 'nothing'}")
         return 0
+    if len(argv) == 3 and argv[1] == "plan":
+        app = App(cfg, Book(cfg.path("ledger.jsonl")))
+        with open(argv[2], encoding="utf-8") as handle:
+            listing = json.load(handle)
+        for plan in listing if isinstance(listing, list) else [listing]:
+            try:
+                found = app.record_signed(cfg.pricing(), plan, app.market.now())
+            except (Refusal, ValueError, KeyError, TypeError) as error:
+                print(f"{plan.get('id') if isinstance(plan, dict) else plan}: {error}", file=sys.stderr)
+                return 2
+            print(f"{found['plan']}: recorded for {found['email']}, {plan_line(found)}, from {found['start']}")
+        return 0
+    if len(argv) == 5 and argv[1] == "end-plan":
+        app = App(cfg, Book(cfg.path("ledger.jsonl")))
+        try:
+            app.end_plan(argv[2], date.fromisoformat(argv[3]), argv[4].strip()[:300])
+        except (Refusal, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        print(f"{argv[2]}: holds no capacity from {argv[3]}")
+        return 0
     if len(argv) == 5 and argv[1] == "credit":
         app = App(cfg, Book(cfg.path("ledger.jsonl")))
         account = app.book.emails.get(argv[2].lower())
@@ -1273,7 +1705,7 @@ def main(argv):
         print(f"credited {lot['hc']} HC to {argv[2]}, lot {lot['lot']}, lapsing {lot['expires']}")
         return 0
     if argv[1:] not in ([], ["serve"]):
-        print("usage: sparkpipe_pay.py [serve|verify|cover [PLANS.json]|maintenance FLEET YYYY-MM-DD [HOURS]|credit EMAIL HC NOTE|release ORDER|tranche EMAIL YYYY-MM HOURS]", file=sys.stderr)
+        print("usage: sparkpipe_pay.py [serve|verify|cover [PLANS.json]|plan PLANS.json|end-plan PLAN YYYY-MM-DD REASON|maintenance FLEET YYYY-MM-DD [HOURS]|credit EMAIL HC NOTE|release ORDER|tranche EMAIL YYYY-MM HOURS]", file=sys.stderr)
         return 2
     server = start(cfg)
     app = server.app
