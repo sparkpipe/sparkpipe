@@ -95,7 +95,7 @@ static void SparseCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 {
 	typedef SparseKv<SPARSE_LATENT + ROPE> Kv;
 	constexpr uint32_t WIDTH = SPARSE_LATENT + ROPE;
-	const uint32_t pages = (context + SPARSE_PAGE - 1u) / SPARSE_PAGE,total_heads = heads_per_rank * degree;
+	const uint32_t pages = (context + SPARSE_PAGE - 1u) / SPARSE_PAGE,total_heads = heads_per_rank * degree,paired = degree % 2u == 0u ? 1u : 0u;
 	const uint64_t query_stride = (uint64_t)rows * heads_per_rank * WIDTH,rank_stride = (uint64_t)rows * heads_per_rank * SPARSE_RECORD;
 	const uint64_t pair_stride = 2u * rank_stride,rank_floats = (uint64_t)degree * rank_stride;
 	const float scale = 1.0f / sqrtf((float)WIDTH);
@@ -201,12 +201,15 @@ static void SparseCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 			SparseCheck(LmLatentShardAttendHeadsLaunch<Kv,LmKvShardView,SPARSE_LATENT,ROPE>(local,query_device,query_stride,heads_per_rank,total_heads,sequences_device,
 				contexts_device,positions_device,wrong_device,selected_count,dense_limit,scale,wrong_out_device + at,rank_stride,heads_per_rank,1u,rows,0) == cudaSuccess,
 				"tensor launch on a corrupted list",label);
-			SparseCheck(LmLatentShardPartialHeadsLaunch<Kv,LmKvShardView,SPARSE_LATENT,ROPE>(local,query_device,query_stride,heads_per_rank,total_heads,sequences_device,
-				contexts_device,positions_device,selected_device,selected_count,dense_limit,scale,pair_scalar_device + (uint64_t)rank * degree * pair_stride,pair_stride,
-				2u * heads_per_rank,2u,rows,0) == cudaSuccess,"scalar pair-grouped launch",label);
-			SparseCheck(LmLatentShardAttendHeadsLaunch<Kv,LmKvShardView,SPARSE_LATENT,ROPE>(local,query_device,query_stride,heads_per_rank,total_heads,sequences_device,
-				contexts_device,positions_device,selected_device,selected_count,dense_limit,scale,pair_tensor_device + (uint64_t)rank * degree * pair_stride,pair_stride,
-				2u * heads_per_rank,2u,rows,0) == cudaSuccess,"tensor pair-grouped launch",label);
+			if ( paired != 0u )
+			{
+				SparseCheck(LmLatentShardPartialHeadsLaunch<Kv,LmKvShardView,SPARSE_LATENT,ROPE>(local,query_device,query_stride,heads_per_rank,total_heads,sequences_device,
+					contexts_device,positions_device,selected_device,selected_count,dense_limit,scale,pair_scalar_device + (uint64_t)rank * degree * pair_stride,pair_stride,
+					2u * heads_per_rank,2u,rows,0) == cudaSuccess,"scalar pair-grouped launch",label);
+				SparseCheck(LmLatentShardAttendHeadsLaunch<Kv,LmKvShardView,SPARSE_LATENT,ROPE>(local,query_device,query_stride,heads_per_rank,total_heads,sequences_device,
+					contexts_device,positions_device,selected_device,selected_count,dense_limit,scale,pair_tensor_device + (uint64_t)rank * degree * pair_stride,pair_stride,
+					2u * heads_per_rank,2u,rows,0) == cudaSuccess,"tensor pair-grouped launch",label);
+			}
 		}
 		SPARSE_CUDA(cudaDeviceSynchronize());
 		SPARSE_CUDA(cudaEventDestroy(begin));
@@ -241,7 +244,7 @@ static void SparseCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 					const float *first = pair_tensor.data() + (uint64_t)rank * degree * pair_stride + (uint64_t)group * 2u * pair_stride;
 					copies_equal &= memcmp(first,first + pair_stride,pair_stride * sizeof(float)) == 0 ? 1u : 0u;
 				}
-			SparseCheck(pair_worst <= SPARSE_TOLERANCE && pair_empty == 0u && copies_equal != 0u,
+			SparseCheck(paired == 0u || (pair_worst <= SPARSE_TOLERANCE && pair_empty == 0u && copies_equal != 0u),
 				"pair-grouped records hold each head for both ranks of its pair and match the scalar kernel's",label);
 			const double wrong_worst = SparseCompare(scalar,wrong_out,used_records,&wrong_empty);
 			SparseCheck(wrong_worst > SPARSE_TOLERANCE,"negative control: a corrupted selected list on one row is caught by the comparison",label);
@@ -262,13 +265,16 @@ int main(void)
 	SparseCase<64u>(48u,4096u,4u,16u,320u,256u,0u);
 	SparseCase<0u>(37u,9000u,16u,4u,2112u,2048u,0u);
 	SparseCase<64u>(19u,6000u,16u,4u,2048u,2048u,0u);
+	SparseCase<0u>(37u,9000u,1u,4u,2112u,2048u,0u);
+	SparseCase<64u>(19u,6000u,1u,8u,2048u,2048u,0u);
 	SparseCase<0u>(4096u,16384u,16u,4u,2112u,2048u,1u);
 	SparseCase<64u>(4096u,16384u,16u,4u,2048u,2048u,1u);
+	SparseCase<0u>(4096u,16384u,1u,4u,2112u,2048u,1u);
 	if ( sparse_failures != 0 )
 	{
 		printf("FAIL latent_shard_sparse_cuda: %d checks failed\n",sparse_failures);
 		return 1;
 	}
-	printf("PASS latent_shard_sparse_cuda: the tensor-core shard attention matches the scalar kernel on selected lists, split lists, pair-grouped records and empty rows, and is row-invariant\n");
+	printf("PASS latent_shard_sparse_cuda: the tensor-core shard attention matches the scalar kernel on selected lists, split lists, pair-grouped records, padded head groups and empty rows, and is row-invariant\n");
 	return 0;
 }

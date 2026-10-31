@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Run the tensor-core latent shard attention against the scalar partial kernel on selected-key lists, split lists,
-pair-grouped records and empty rows on an sm_121 device, and check that it is row-invariant."""
+pair-grouped records, padded head groups and empty rows on an sm_121 device, and check that it is row-invariant."""
 import sys
 from pathlib import Path
 

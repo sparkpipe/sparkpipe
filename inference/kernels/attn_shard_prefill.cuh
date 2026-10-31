@@ -17,11 +17,12 @@ typedef struct LmLatentShardSelection
 	uint32_t record_heads;
 	uint32_t record_copies;
 	uint32_t empty_rows;
+	uint32_t padded_heads;
 } LmLatentShardSelection;
 
 static __host__ __device__ inline LmLatentShardSelection LmLatentShardDense(uint32_t heads_per_rank)
 {
-	LmLatentShardSelection selection = { 0, 0, 0, 0u, 0u, heads_per_rank, 1u, 0u };
+	LmLatentShardSelection selection = { 0, 0, 0, 0u, 0u, heads_per_rank, 1u, 0u, 0u };
 	return selection;
 }
 
@@ -190,7 +191,7 @@ void LmLatentShardPrefillKernel(
 	{
 		q = index / CHUNKS;
 		chunk = index % CHUNKS;
-		head = group * BLOCK_HEADS + q % BLOCK_HEADS;
+		head = selection.padded_heads != 0u ? (q % BLOCK_HEADS) % selection.padded_heads : group * BLOCK_HEADS + q % BLOCK_HEADS;
 		query_row = row + q / BLOCK_HEADS;
 		query_row = query_row <= last_row ? query_row : last_row;
 		LmPrefillCopy(query_base + q * ROW_BYTES + LmPrefillSwizzle(q,chunk) * 16u,
@@ -370,7 +371,7 @@ void LmLatentShardPrefillKernel(
 				q = m * 16u + (lane >> 2u) + (index >> 1u) * 8u;
 				head = group * BLOCK_HEADS + q % BLOCK_HEADS;
 				query_row = row + q / BLOCK_HEADS;
-				if (query_row > last_row)
+				if (query_row > last_row || (selection.padded_heads != 0u && q % BLOCK_HEADS >= selection.padded_heads))
 					continue;
 				for (copy_index = 0u; copy_index < selection.record_copies; copy_index++)
 				{
@@ -379,7 +380,8 @@ void LmLatentShardPrefillKernel(
 					*(float2 *)(partials + base + 2u + warp * WARP_COLUMNS + frag * 8u + (lane & 3u) * 2u) = make_float2(output[m][frag][index], output[m][frag][index + 1u]);
 				}
 			}
-	if (threadIdx.x < QUERIES && row + threadIdx.x / BLOCK_HEADS <= last_row)
+	if (threadIdx.x < QUERIES && row + threadIdx.x / BLOCK_HEADS <= last_row &&
+		(selection.padded_heads == 0u || threadIdx.x % BLOCK_HEADS < selection.padded_heads))
 	{
 		head = group * BLOCK_HEADS + threadIdx.x % BLOCK_HEADS;
 		query_row = row + threadIdx.x / BLOCK_HEADS;
@@ -417,7 +419,8 @@ static inline cudaError_t LmLatentShardPrefillRowsLaunch(
 		(selection.selected_positions != 0 && selection.split_positions == 0 ? LmLatentShardListBytes(selection.selected_count) : 0u);
 	static bool granted = false;
 	if (rows == 0u || heads_per_rank == 0u || query_bf16 == 0 || partials == 0 || row_position == 0 ||
-		total_heads == 0u || (total_heads % block_heads) != 0u ||
+		total_heads == 0u || (selection.padded_heads != 0u ? ROWS != 1u || selection.padded_heads != total_heads || block_heads % total_heads != 0u :
+			(total_heads % block_heads) != 0u) ||
 		selection.record_heads == 0u || selection.record_copies == 0u || total_heads % selection.record_heads != 0u ||
 		(selection.selected_positions != 0 && (ROWS != 1u || split_count != 1u || (selection.split_positions == 0) != (selection.split_offsets == 0))) ||
 		shared > LM_PREFILL_ATTN_SHARED_LIMIT ||
@@ -433,7 +436,7 @@ static inline cudaError_t LmLatentShardPrefillRowsLaunch(
 			return error;
 		granted = true;
 	}
-	LmLatentShardPrefillKernel<Geometry, Pages, LATENT, ROPE, ROWS><<<dim3((rows + ROWS - 1u) / ROWS, total_heads / block_heads, split_count), LM_PREFILL_ATTN_THREADS, shared, stream>>>(
+	LmLatentShardPrefillKernel<Geometry, Pages, LATENT, ROPE, ROWS><<<dim3((rows + ROWS - 1u) / ROWS, selection.padded_heads != 0u ? 1u : total_heads / block_heads, split_count), LM_PREFILL_ATTN_THREADS, shared, stream>>>(
 		cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows,
 		split_count, split_stride, selection);
 	return cudaPeekAtLastError();
@@ -650,10 +653,11 @@ static inline cudaError_t LmLatentShardAttendHeadsLaunch(
 	if constexpr (LmLatentShardTensorFits<Geometry, LATENT, ROPE>())
 	{
 		const uint64_t list = selected_positions != 0 && split_positions == 0 ? LmLatentShardListBytes(selected_count) : 0u;
-		if (total_heads % LM_LATENT_SHARD_QUERIES == 0u && row_position != 0 && (partial_rank_stride % 2u) == 0u &&
+		const uint32_t padded = total_heads < LM_LATENT_SHARD_QUERIES && LM_LATENT_SHARD_QUERIES % total_heads == 0u ? total_heads : 0u;
+		if ( (total_heads % LM_LATENT_SHARD_QUERIES == 0u || padded != 0u) && row_position != 0 && (partial_rank_stride % 2u) == 0u &&
 			LmLatentShardPrefillSharedBytes<LATENT + ROPE>() + list <= LM_PREFILL_ATTN_SHARED_LIMIT)
 		{
-			const LmLatentShardSelection selection = { selected_positions, split_positions, split_offsets, selected_count, dense_limit, record_heads, record_copies, 1u };
+			const LmLatentShardSelection selection = { selected_positions, split_positions, split_offsets, selected_count, dense_limit, record_heads, record_copies, 1u, padded };
 			return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16, query_rank_stride, heads_per_rank, total_heads,
 				sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows, 1u, 0u, stream, selection);
 		}

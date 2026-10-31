@@ -345,13 +345,15 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
     keys.
 - `LmLatentShardAttendLaunch` and `LmLatentShardAttendHeadsLaunch` take the
   scalar launchers' arguments and use the tensor-core kernel when the width,
-  the head count (a multiple of 32) and the shared memory for the list fit;
-  otherwise they run the scalar kernel. GLM 5.3 Flash, GLM 5.3 Full's scatter
-  waves, A.X K2, Ling 3's MLA layers and Hy4 call them.
-- DSV4.1 keeps the scalar kernel: its own-heads landing path (four heads per
-  rank) must equal its all-heads records path bit for bit
-  (`tests/test_dsv41_flash_landing.cu`), and four heads cannot fill a 32-query
-  block with one row.
+  the head count and the shared memory for the list fit; otherwise they run
+  the scalar kernel. GLM 5.3 Flash, GLM 5.3 Full's scatter waves, A.X K2,
+  Ling 3's MLA layers, Hy4 and both DSV4.1 attention paths call them.
+- A head count that is a multiple of 32 fills each block. A head count below
+  32 that divides 32 (`padded_heads`) runs one row per block with its heads
+  repeated across the 32 query slots, and only the first copy writes records.
+  MMA rows are independent, so each head computes exactly what it would in a
+  full block. DSV4.1's landing path (4 heads per rank) therefore still equals
+  its records path (64 heads) bit for bit (`tests/test_dsv41_flash_landing.cu`).
 - lenovo7 (GB10), 64 heads over 16 ranks, one rank:
 
   | Shape | Scalar | Tensor cores |
@@ -360,6 +362,7 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
   | Same, width 576 | 39.7 ms | 4.91 ms |
   | 4,096 rows, 16K dense keys, width 576 | 161.5 ms | 12.9 ms |
   | Decode rows: 1 / 4 / 16 at 131K, 2,112 selected | 0.047 / 0.078 / 0.218 ms | 0.027 / 0.026 / 0.027 ms |
+  | 4,096 rows, 16K context, 2,112 selected, 4 heads (padded) | 18.1 ms | 11.8 ms |
 
   The normalized outputs differ from the scalar kernel's by at most 0.3% of
   each head's peak (`tests/cuda/latent_shard_sparse_cuda.cu`).
