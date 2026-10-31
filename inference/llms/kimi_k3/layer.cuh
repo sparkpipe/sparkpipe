@@ -428,7 +428,7 @@ void K3SplitFusedProjectionsKernel(const uint16_t *__restrict__ qkvb_bf16, uint1
 }
 
 template<class Format>
-static int32_t K3LayerKdaProject(const K3LayerBuffers *b, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LayerKdaProject(const K3LayerBuffers *b, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream, uint32_t decay = 1u)
 {
 	int32_t status;
 	uint32_t state_slot_bytes;
@@ -446,8 +446,9 @@ static int32_t K3LayerKdaProject(const K3LayerBuffers *b, uint32_t rows, uint32_
 		K3_RANK_DIM(b,kda_qkvb_rows,K3_KDA_QKVB_FUSED_ROWS),multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_decay_down_weight,0,
-		b->latent_bf16,rows,K3_HIDDEN,K3_KDA_KEY_DIM,multiprocessors,stream);
+	if ( decay != 0u )
+		status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_decay_down_weight,0,
+			b->latent_bf16,rows,K3_HIDDEN,K3_KDA_KEY_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_gate_weight,0,
