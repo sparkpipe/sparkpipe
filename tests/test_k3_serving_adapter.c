@@ -196,6 +196,33 @@ static int32_t TestK3SharedRows(void)
 	return(failures);
 }
 
+static int32_t TestK3DispatchClock(void)
+{
+	SparkStageServingState state;
+	SparkModelServingSubmission submission;
+	SparkStageRunnerDispatch dispatch;
+	int32_t failures = 0;
+	memset(&state, 0, sizeof(state));
+	memset(&submission, 0, sizeof(submission));
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	submission.flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER | SPARK_MODEL_SERVING_SUBMISSION_FLAG_CLOCK_MAX;
+	StageServingDispatch(&state, &submission, 4u, 2u, 1u, &dispatch);
+	failures += TestK3Check((dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) != 0u && (dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_CLOCK_MAX) != 0u,
+		"a deferred max-clock prefill reaches the runner as a deferred max-clock dispatch");
+	submission.flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER;
+	StageServingDispatch(&state, &submission, 4u, 2u, 1u, &dispatch);
+	failures += TestK3Check((dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_CLOCK_MAX) == 0u, "a capped deferred prefill carries no max clock flag");
+	submission.flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_CLOCK_MAX;
+	StageServingDispatch(&state, &submission, 4u, 2u, 1u, &dispatch);
+	failures += TestK3Check((dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_CLOCK_MAX) == 0u, "the max clock never reaches a wave that is not deferred");
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	submission.flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER | SPARK_MODEL_SERVING_SUBMISSION_FLAG_CLOCK_MAX;
+	StageServingDispatch(&state, &submission, 2u, 2u, 1u, &dispatch);
+	failures += TestK3Check((dispatch.flags & (SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER | SPARK_STAGE_RUNNER_DISPATCH_FLAG_CLOCK_MAX)) == 0u,
+		"a decode wave carries neither the defer nor the max clock flag");
+	return(failures);
+}
+
 static const uint32_t *TestK3Host(const SparkMemoryBuffer *buffer)
 {
 	return((const uint32_t *)buffer->pointer);
@@ -473,6 +500,7 @@ int main(int argc, char **argv)
 	int32_t failures = TestK3Descriptor();
 	failures += TestK3ReleaseValidation();
 	failures += TestK3SharedRows();
+	failures += TestK3DispatchClock();
 	failures += TestK3Grouping();
 	failures += TestK3TapStream();
 	int index;

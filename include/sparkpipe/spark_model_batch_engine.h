@@ -47,6 +47,7 @@ typedef struct SparkModelBatchEvent
 	uint32_t token_index;
 	uint32_t generated_token_count;
 	uint32_t cached_prompt_token_count;
+	uint32_t clock_max_token_count;
 	uint64_t monotonic_ns;
 	uint64_t request_id;
 	uint64_t sequence_id;
@@ -103,6 +104,7 @@ typedef struct SparkModelBatchSubmitRequest
 	uint32_t logprobs;
 	uint64_t deadline_ns;
 	uint32_t drafts_disabled;
+	uint32_t clock;
 } SparkModelBatchSubmitRequest;
 
 typedef struct SparkModelBatchEngineView

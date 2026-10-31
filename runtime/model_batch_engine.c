@@ -13,6 +13,7 @@
 #include "sparkpipe/spark_draft_bridge.h"
 #include "sparkpipe/spark_kv_page_cache.h"
 #include "sparkpipe/spark_prefix_cache.h"
+#include "sparkpipe/spark_clock_mode.h"
 #include "sparkpipe/spark_prefix_index_file.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_speculation_frame.h"
@@ -131,6 +132,8 @@ typedef struct SparkModelBatchRequestState
 	SparkModelBatchRequestHandle handle;
 	uint32_t defer_end;
 	uint32_t defer_decided;
+	uint32_t clock;
+	uint32_t clock_max_token_count;
 } SparkModelBatchRequestState;
 
 typedef struct SparkModelBatchCacheDemand
@@ -640,6 +643,7 @@ static void SparkModelBatchEmit(
 	event.token_index = request->generated_token_count != 0u ? request->generated_token_count - 1u : 0u;
 	event.generated_token_count = request->generated_token_count;
 	event.cached_prompt_token_count = request->cache_prefix_token_count;
+	event.clock_max_token_count = request->clock_max_token_count;
 	event.request_id = request->request_id;
 	event.sequence_id = request->sequence_id;
 	event.request_handle = request->handle;
@@ -2137,6 +2141,8 @@ static SparkStatus SparkModelBatchValidateSubmit(
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( request->logprobs != 0u && (engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS) == 0u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	if ( request->clock >= SPARK_CLOCK_MODES )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( request->prompt_token_count > engine->context_tokens || request->output_token_budget > engine->context_tokens - request->prompt_token_count )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( SparkModelBatchSchedulerRequestFitsPageCapacity(
@@ -2177,6 +2183,8 @@ SparkStatus SparkModelBatchEngineSubmit(
 	state->deadline_ns = request->deadline_ns;
 	state->sampling = SparkSamplingRuleWith(request->temperature,request->seed,request->top_p,request->top_k,request->logprobs);
 	state->drafts_disabled = request->drafts_disabled != 0u ? 1u : 0u;
+	state->clock = request->clock;
+	state->clock_max_token_count = 0u;
 	state->prompt_token_count = request->prompt_token_count;
 	state->output_token_budget = request->output_token_budget;
 	state->request_id = request->request_id;
@@ -2576,10 +2584,11 @@ static void SparkModelBatchDecideDefer(SparkModelBatchEngine *engine,SparkModelB
 	if ( remaining < engine->streamed_min_tokens || remaining <= engine->streamed_quantum )
 		return;
 	request->defer_end = request->computed_prompt_token_count + (remaining - 1u) / engine->streamed_quantum * engine->streamed_quantum;
+	request->clock_max_token_count = request->clock == SPARK_CLOCK_MAX ? request->defer_end - request->computed_prompt_token_count : 0u;
 	engine->deferring_slot = slot;
 	engine->deferring_generation = request->generation;
-	fprintf(stderr,"batch_streamed_prefill request=%llu positions %u..%u of %u go to the streamed prefill, the rest as waves\n",
-		(unsigned long long)request->request_id,request->computed_prompt_token_count,request->defer_end,request->prompt_token_count);
+	fprintf(stderr,"batch_streamed_prefill request=%llu positions %u..%u of %u go to the streamed prefill at the %s clock, the rest as waves\n",
+		(unsigned long long)request->request_id,request->computed_prompt_token_count,request->defer_end,request->prompt_token_count,SparkClockModeName(request->clock));
 }
 
 static uint32_t SparkModelBatchLogprobStride(
@@ -3474,7 +3483,11 @@ static uint32_t SparkModelBatchBuildSubmission(
 	{
 		SparkModelBatchBuildPrefillRows(engine,submission,lane_count);
 		if ( lane_count == 1u && SparkModelBatchDeferring(&engine->requests[engine->scratch_request_slots[0]]) != 0u )
+		{
 			submission->flags |= SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER;
+			if ( engine->requests[engine->scratch_request_slots[0]].clock == SPARK_CLOCK_MAX )
+				submission->flags |= SPARK_MODEL_SERVING_SUBMISSION_FLAG_CLOCK_MAX;
+		}
 	}
 	else if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 		SparkModelBatchBuildDecodeRows(engine,submission,lane_count);

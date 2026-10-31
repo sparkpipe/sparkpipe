@@ -1287,8 +1287,21 @@ static void TestApiSamplingOptions(TestApiStack *stack)
 		response,sizeof(response));
 	assert(TestApiResponseStatus(response) == 200);
 	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"speculation\":0}");
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"sparkpipe\":{\"clock\":\"max\"}}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	assert(strstr(TestApiResponseJsonBody(response),"\"clock\":{\"mode\":\"max\",\"max_clock_tokens\":0}") != 0);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"sparkpipe\":{\"clock\":\"cap\"}}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200 && strstr(TestApiResponseJsonBody(response),"\"clock\"") == 0);
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"sparkpipe\":{\"clock\":\"turbo\"}}");
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"sparkpipe\":{\"clock\":\"max\",\"prefill\":\"fp8\"}}");
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"sparkpipe\":\"max\"}");
 	printf("test_model_api_text: sampling options OK (logprobs return the emitted token and its top alternatives "
-		"in order, streamed or not; top-p and top-k reach a truncating adapter; speculation false is accepted; out-of-range options are 400)\n");
+		"in order, streamed or not; top-p and top-k reach a truncating adapter; speculation false is accepted; a max-clock request reports "
+		"how many prompt tokens ran at the max clock; unknown clock modes or keys and out-of-range options are 400)\n");
 }
 
 static void TestApiRefusedStartup(const char *tokenizer_asset_path, const char *label)

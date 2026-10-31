@@ -185,12 +185,20 @@ static SparkStatus StageServingParseStreamed(SparkStageServingState *state, Spar
 	streamed->traffic_class = StageServingJsonU32(doc, object, "traffic_class", 106u);
 	streamed->dense_buffers = StageServingJsonU32(doc, object, "dense_buffers", 1u);
 	streamed->expert_slots = StageServingJsonU32(doc, object, "expert_slots", 2u);
+	streamed->clock_cap_mhz = StageServingJsonU32(doc, object, "clock_cap_mhz", 0u);
+	streamed->clock_max_mhz = StageServingJsonU32(doc, object, "clock_max_mhz", 0u);
 	streamed->partner_pack_path = state->streamed_partner_pack;
 	streamed->fabric_device = state->streamed_fabric_device;
 	streamed->pair_device = state->streamed_pair_device;
 	if ( streamed->node_rows == 0u || streamed->partner_pack_path == 0 || streamed->fabric_device == 0 || streamed->pair_device == 0 )
 	{
 		fprintf(stderr, "%s adapter: streamed_prefill needs node_rows, partner_pack, fabric_device and pair_device\n", state->model->module_tag);
+		return SPARK_STATUS_SCHEMA_ERROR;
+	}
+	if ( (streamed->clock_cap_mhz == 0u) != (streamed->clock_max_mhz == 0u) || streamed->clock_cap_mhz > streamed->clock_max_mhz )
+	{
+		fprintf(stderr, "%s adapter: streamed_prefill names both clock_cap_mhz and clock_max_mhz, with the cap at or below the maximum, or neither (cap %u, max %u)\n",
+			state->model->module_tag, streamed->clock_cap_mhz, streamed->clock_max_mhz);
 		return SPARK_STATUS_SCHEMA_ERROR;
 	}
 	return SPARK_STATUS_OK;
@@ -1403,6 +1411,8 @@ static void StageServingDispatch(const SparkStageServingState *state, const Spar
 		(submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY : 0u;
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER) != 0u )
 		dispatch->flags |= SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER;
+	if ( (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) != 0u && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_CLOCK_MAX) != 0u )
+		dispatch->flags |= SPARK_STAGE_RUNNER_DISPATCH_FLAG_CLOCK_MAX;
 	dispatch->request_id = submission->request_id;
 	dispatch->sequence_id = submission->sequence_id;
 	dispatch->sequence_position = submission->sequence_position;
