@@ -224,6 +224,16 @@ second of steps after a stop token.
   passes.
 - The last pass's padding rows change neither the recurrent state nor the
   cache: they leave the KDA state unchanged, attend no key and write no KV.
+- A pass waits at every attention layer for the slowest node; a GPU that
+  runs hot is the usual cause. To shorten that wait, each node times its own
+  attention, and every six attention layers the nodes all-gather those times
+  and plan from them.
+  - The plan sends work from slower nodes to faster ones. A faster node
+    attends the last rows of its own token slice for a slower node's head
+    groups, so the values it computes are already on the node that owns
+    those rows.
+  - The output does not depend on the plan: a row's attention is computed
+    the same way on whichever node runs it.
 
 **Expert-grouped MoE.** Routed rows are sorted by expert, and each expert's
 weights are read once per step for all of its rows. At 288 experts with
