@@ -93,7 +93,14 @@ int main(int argc, char **argv)
 	if ( status == 0 && argc == 3 )
 	{
 		fd = open(argv[2],O_RDONLY);
-		status = fd >= 0 && fstat(fd,&info) == 0 && SparkDeviceMapFile(&mapped,fd,0u,(uint64_t)info.st_size / 16u * 16u,"bandwidth file") == SPARK_STATUS_OK ? 0 : 1;
+		status = fd >= 0 && fstat(fd,&info) == 0 ? 0 : 1;
+		if ( status == 0 )
+		{
+			const uint64_t window = (uint64_t)info.st_size < 4u * bytes ? (uint64_t)info.st_size : 4u * bytes;
+			status = SparkDeviceMapFile(&mapped,fd,0u,window / 16u * 16u,"bandwidth file") == SPARK_STATUS_OK ? 0 : 1;
+		}
+		if ( status != 0 )
+			fprintf(stderr,"device_bandwidth: cannot map %s for the file sweep\n",argv[2]);
 		if ( status == 0 )
 			status = Sweep(ops,queue,SparkTensorAt(&mapped,0u,mapped.bytes),SparkTensorAt(&sink,0u,sink.bytes),"file_mapping",0);
 		if ( mapped.handle != 0u )
