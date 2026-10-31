@@ -1682,7 +1682,7 @@ Metal backend and the single-Studio stage are in
     from CUDA by that operand rounding, and run slower than a grouped GEMM.
 - Qwen 3.8 Max on the Studio (`QwenDevice<Qwen38MaxDevice<TP>>`):
   - not gated yet: its TP8 pack and FP32 reference wait for hub capacity,
-    and the 1.45 TB of packs for room on the Studio's model disk;
+    and the 1.44 TB of packs for room on the Studio's model disk;
   - two attention layouts for one geometry: the Metal packs hold windows of
     the fused projection (`attn_rank_heads` 0), CUDA's TP16 packs each
     rank's own heads (`kRankHeads`), from two packers (the Metal one reads

@@ -885,8 +885,8 @@ the two layouts are the same tensor.
 The checkpoint (`qwen3.8-max-nvfp4-radixark-bf16-spine`, 1.4 TB: NVFP4 experts
 with an E4M3 scale per 16 inputs and an FP32 `weight_scale_2` per expert,
 everything else BF16) does not fit one Studio, so Max gates at TP8 with the
-packs paged from the SSD (`tools/qwen38_max_tp16_pack.py --tp-degree 8`, about
-181 GB per rank). The experts' `input_scale` is the checkpoint's W4A4
+packs paged from the SSD (`tools/qwen38_max_tp16_pack.py --tp-degree 8`, 180 GB
+per rank). The experts' `input_scale` is the checkpoint's W4A4
 activation scale; CUDA and Metal multiply BF16 activations and apply neither.
 `tools/qwen38_max_reference.py gate-prompts` writes
 `qualification/metal/qwen38_max/` (the Gemma set in the Qwen 3.8 chat turn;
