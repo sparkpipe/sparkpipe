@@ -1,0 +1,21 @@
+[Unit]
+Description=SparkPipe Hour Market sandbox: the payment service in sandbox mode for the test page
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=sparkpipe-pay
+Group=sparkpipe-pay
+EnvironmentFile=/etc/sparkpipe-pay/sandbox.env
+ExecStart=/usr/bin/python3 /opt/sparkpipe-pay/sparkpipe_pay.py serve
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/sparkpipe-pay-sandbox
+ReadOnlyPaths=/var/www/html /etc/sparkpipe-pay /opt/sparkpipe-pay
+
+[Install]
+WantedBy=multi-user.target

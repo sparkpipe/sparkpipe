@@ -23,6 +23,9 @@ from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, parseaddr
 
+import sparkpipe_market as market
+from sparkpipe_market import Refusal
+
 KST = timezone(timedelta(hours=9))
 USD = "5057"
 CENT = Decimal("0.01")
@@ -55,7 +58,7 @@ CODE_TRIES = 5
 PENDING_SECONDS = 86400
 RECONCILE_DAYS = 14
 SKEW_SECONDS = 300
-LIMITS = {"code": (20, 600), "code-email": (5, 3600), "verify": (30, 600), "order": (10, 600), "lead": (5, 3600), "read": (240, 600)}
+LIMITS = {"code": (20, 600), "code-email": (5, 3600), "verify": (30, 600), "order": (10, 600), "lead": (5, 3600), "read": (240, 600), "market": (240, 600), "pool": (600, 600)}
 
 
 def clock():
@@ -64,13 +67,6 @@ def clock():
 
 def log(text):
     print(text, file=sys.stderr, flush=True)
-
-
-class Refusal(Exception):
-    def __init__(self, text, status=400, reason=None):
-        super().__init__(text)
-        self.status = status
-        self.reason = reason
 
 
 def money(value):
@@ -160,6 +156,13 @@ def code_digest(email, code):
     return hashlib.sha256(f"{email}:{code}".encode()).hexdigest()
 
 
+def read_secret(path):
+    if not path:
+        return b""
+    with open(path, encoding="utf-8") as handle:
+        return handle.read().strip().encode()
+
+
 class Config:
     def __init__(self, env):
         self.port = int(env.get("SPARKPIPE_PAY_PORT", "18090"))
@@ -168,11 +171,16 @@ class Config:
         self.public = env.get("SPARKPIPE_PAY_PUBLIC", "https://sparkpipe.ai").rstrip("/")
         parts = urllib.parse.urlsplit(self.public)
         self.origin = f"{parts.scheme}://{parts.netloc}"
+        self.sandbox = env.get("SPARKPIPE_PAY_SANDBOX") == "1"
+        self.prefix = env.get("SPARKPIPE_PAY_PREFIX", "/pay/api")
         self.api = env.get("COINPAYMENTS_API", "https://a-api.coinpayments.net/api/v2").rstrip("/")
-        self.client_id = env["COINPAYMENTS_CLIENT_ID"]
-        with open(env["COINPAYMENTS_CLIENT_SECRET_FILE"], encoding="utf-8") as handle:
-            self.secret = handle.read().strip().encode()
-        self.webhook_url = self.public + "/pay/api/coinpayments"
+        self.client_id = env.get("COINPAYMENTS_CLIENT_ID", "")
+        self.secret = read_secret(env.get("COINPAYMENTS_CLIENT_SECRET_FILE"))
+        if not self.sandbox and not (self.client_id and self.secret):
+            raise ValueError("COINPAYMENTS_CLIENT_ID and COINPAYMENTS_CLIENT_SECRET_FILE are required outside the sandbox")
+        self.webhook_url = self.public + self.prefix + "/coinpayments"
+        self.pool_upstream = env.get("SPARKPIPE_POOL_UPSTREAM", "").rstrip("/")
+        self.pool_key = read_secret(env.get("SPARKPIPE_POOL_KEY_FILE")).decode()
         self.reconcile_seconds = int(env.get("SPARKPIPE_PAY_RECONCILE_SECONDS", "300"))
         self.smtp = env.get("SPARKPIPE_PAY_SMTP", "127.0.0.1:25")
         self.mail_from = env.get("SPARKPIPE_PAY_MAIL_FROM", "SparkPipe <noreply@sparkpipe.ai>")
@@ -252,6 +260,7 @@ class Book:
         self.invoices = {}
         self.accounts = {}
         self.emails = {}
+        self.market = market.State()
         if os.path.exists(path):
             with open(path, "rb") as handle:
                 self.catch_up(handle)
@@ -307,6 +316,8 @@ class Book:
             self.orders[data["order"]].update(state="completed", paid=line["at"], received=data["received"])
         elif kind == "hours_issued":
             self.orders[data["order"]].update(issued=True, issued_hours=data["hours"], paid_net=data["net"])
+        elif kind in market.KINDS:
+            self.market.apply(line)
 
     def waiting(self, order, now):
         return order["state"] not in CLOSED and order["state"] != "completed" and not order["issued"] and (now - stamp_time(order["created"])).total_seconds() < PENDING_SECONDS
@@ -433,6 +444,10 @@ def invoice_body(cfg, quote):
         name = f"Remaining {quote['hours']} SparkPipe fleet-hours of order {quote['parent']}"
         detail = f"Hourly Terms 3.5; usable {quote['start']} to {quote['last']}"
         quantity = {"value": 1, "type": "quantity"}
+    elif quote["product"] == "credits":
+        name = f"{quote['hours']} SparkPipe hour-credits"
+        detail = f"Hour Market; {quote['price']} USD each, usable for 12 months"
+        quantity = {"value": 1, "type": "quantity"}
     elif quote["product"] == "hourly":
         name = f"{quote['hours']} SparkPipe fleet-hours"
         detail = f"Hourly Terms; usable {quote['start']} to {quote['last']}"
@@ -476,6 +491,8 @@ def covered(order, paid):
     net = (Decimal(order["net"]) * share).quantize(CENT, rounding=ROUND_DOWN)
     if order["product"] == "hourly":
         return format((Decimal(order["hours"]) * share).quantize(HOUR_STEP, rounding=ROUND_DOWN), "f"), text_money(net)
+    if order["product"] == "credits":
+        return market.text_hc(net / Decimal(order["price"])), text_money(net)
     return format((net / Decimal(order["price"])).quantize(HOUR_STEP, rounding=ROUND_DOWN), "f"), text_money(net)
 
 
@@ -500,6 +517,8 @@ def receipt(cfg, order, issued, received, paid):
     coin = ", ".join(sorted({symbol.split(".")[0] for symbol in paid}))
     if order["product"] == "hourly":
         what = f"{issued['hours']} fleet-hours, usable from {order['start']} to {order['last']}"
+    elif order["product"] == "credits":
+        what = f"{issued['hours']} hour-credits, usable for 12 months"
     else:
         what = f"a prepayment of {issued['net']} USD under agreement {order['agreement']}: {issued['hours']} fleet-hours"
     if issued.get("short"):
@@ -537,6 +556,7 @@ class App:
         self.hits = collections.defaultdict(collections.deque)
         self.jobs = queue.Queue()
         self.mails = queue.Queue()
+        self.market = market.Market(self, cfg.sandbox, lambda: clock())
 
     def throttle(self, kind, who):
         count, window = LIMITS[kind]
@@ -550,7 +570,18 @@ class App:
             hits.append(now)
 
     def mail(self, to, subject, text):
-        self.mails.put((to, subject, text))
+        if not self.cfg.sandbox:
+            self.mails.put((to, subject, text))
+
+    def reset(self):
+        if not self.cfg.sandbox:
+            raise Refusal("Not found.", 404)
+        with self.book.lock:
+            os.replace(self.book.path, self.book.path + "." + clock().strftime("%Y%m%d%H%M%S"))
+            self.book = Book(self.book.path)
+        with self.lock:
+            self.codes.clear()
+        return {"reset": True}
 
     def deliver(self):
         while True:
@@ -600,6 +631,8 @@ class App:
             for key in [k for k, v in self.codes.items() if v["expires"] < now]:
                 del self.codes[key]
             self.codes[email] = {"hash": code_digest(email, code), "expires": now + CODE_SECONDS, "tries": 0}
+        if self.cfg.sandbox:
+            return {"sent": False, "code": code}
         try:
             send_mail(self.cfg, email, f"Your SparkPipe code: {code}", "\n".join([
                 f"Your SparkPipe sign-in code is {code}.",
@@ -737,15 +770,39 @@ class App:
             "net": text_money(left["net"]), "vat": text_money(left["vat"]), "total": text_money(left["total"]),
         }
 
+    def credit_terms(self, pricing, body):
+        offer = pricing["market"]
+        net = money_field(body.get("amount"))
+        if net < Decimal(str(offer["minPurchase"])) or net > 100000:
+            raise Refusal(f"Buy at least {offer['minPurchase']} USD of HC, and at most 100,000 USD at a time.")
+        price = money(Decimal(str(offer["hcPrice"])))
+        vat = money(net * Decimal(str(pricing["vatRate"])))
+        return {"product": "credits", "hours": market.text_hc(net / price), "price": text_money(price), "net": text_money(net), "vat": text_money(vat), "total": text_money(net + vat)}
+
+    def buy(self, body, account, ip, agent):
+        if self.cfg.sandbox:
+            self.throttle("market", ip)
+            pricing = self.cfg.pricing()
+            quote = self.credit_terms(pricing, body)
+            return self.market.buy(account, Decimal(quote["net"]), pricing["market"])
+        return self.order(dict(body, product="credits"), account, ip, agent)
+
     def order(self, body, account, ip, agent):
         self.throttle("order", ip)
+        if self.cfg.sandbox:
+            raise Refusal("The sandbox sells HC only, through the Hour Market test page.", 404)
         now = clock()
         coin = coin_field(body.get("coin"))
         pricing = self.cfg.pricing()
         with self.book.lock:
             record = self.book.accounts[account]
-            if body.get("product") in ("hourly", "rest"):
-                quote = self.hourly_terms(pricing, body, account, now) if body["product"] == "hourly" else self.rest_terms(pricing, body, account, now)
+            if body.get("product") in ("hourly", "rest", "credits"):
+                if body["product"] == "credits":
+                    quote = self.credit_terms(pricing, body)
+                elif body["product"] == "hourly":
+                    quote = self.hourly_terms(pricing, body, account, now)
+                else:
+                    quote = self.rest_terms(pricing, body, account, now)
                 if not self.accepted(account, self.current_terms()):
                     if body.get("accept") is not True:
                         raise Refusal("The Hourly Terms have changed since you accepted them. Accept the current text to continue.", 409, "terms")
@@ -784,6 +841,43 @@ class App:
             if not order:
                 raise Refusal("No such order.", 404)
             return self.shown(order)
+
+    def market_state(self, account):
+        state = self.market.public()
+        state["account"] = None
+        if account:
+            record = self.book.accounts[account]
+            state["account"] = dict(self.market.view(account), email=record["email"], company=record["company"])
+        return state
+
+    def market_action(self, path, body, account, ip):
+        self.throttle("market", ip)
+        actions = {
+            "/market/reserve": lambda: self.market.reserve(account, body),
+            "/market/release": lambda: self.market.release(account, body),
+            "/market/cancel": lambda: self.market.cancel(account, body),
+            "/market/bid": lambda: self.market.bid(account, body),
+            "/market/keys": lambda: self.market.create_key(account, optional_text(body.get("note"), 100)),
+            "/market/keys/revoke": lambda: self.market.revoke_key(account, body.get("id")),
+        }
+        sandbox = {
+            "/market/sandbox/clock": lambda: self.market.move_clock(market.count_field(body.get("hours"), "number of hours", 9600)),
+            "/market/sandbox/tranche": lambda: self.market.demo_tranche(account),
+            "/market/sandbox/reset": self.reset,
+        }
+        if path in actions:
+            return actions[path]()
+        if path in sandbox and self.cfg.sandbox:
+            return sandbox[path]()
+        raise Refusal("Not found.", 404)
+
+    def ledger(self, account):
+        lines = []
+        with self.book.lock:
+            if os.path.exists(self.book.path):
+                with open(self.book.path, encoding="utf-8") as handle:
+                    lines = [json.loads(raw) for raw in handle if account in raw]
+            return {"head": self.book.head, "count": self.book.count, "lines": lines[-300:]}
 
     def lead(self, body, ip, agent):
         self.throttle("lead", ip)
@@ -854,9 +948,11 @@ class App:
             issued = {"order": order_id, "account": order["account"], "product": order["product"], "hours": hours, "net": net, "released": released, "short": not full}
             if order["product"] == "hourly":
                 issued.update(start=order["start"], last=order["last"])
-            else:
+            elif order["product"] == "two-year":
                 issued.update(agreement=order["agreement"])
             self.book.append("hours_issued", issued)
+            if order["product"] == "credits":
+                self.market.issue(order["account"], Decimal(hours), order_id)
             log(f"order {order_id}: paid, {hours} hours issued to {order['account']}")
             self.mail(order["email"], f"Payment received: SparkPipe order {order_id}", receipt(self.cfg, order, issued, arrived, paid))
             subject = f"Paid in part: {order['company']}, {arrived} of {order['total']} USD" if not full else f"Paid: {order['company']}, {order['total']} USD"
@@ -903,9 +999,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         if cookie is not None:
-            secure = "; Secure" if self.server.app.cfg.public.startswith("https://") else ""
+            cfg = self.server.app.cfg
+            secure = "; Secure" if cfg.public.startswith("https://") else ""
             age = SESSION_SECONDS if cookie else 0
-            self.send_header("Set-Cookie", f"{COOKIE}={cookie}; Max-Age={age}; Path=/pay/api; HttpOnly; SameSite=Lax{secure}")
+            self.send_header("Set-Cookie", f"{COOKIE}={cookie}; Max-Age={age}; Path={cfg.prefix}; HttpOnly; SameSite=Lax{secure}")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def reply_text(self, text):
+        body = text.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -915,6 +1021,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             data["reason"] = error.reason
         self.reply(error.status, data)
 
+    def pool_error(self, error):
+        self.reply(error.status, {"error": {"message": str(error), "type": "invalid_request_error", "code": error.reason or "refused"}})
+
     def client_ip(self):
         forwarded = self.headers.get("X-Forwarded-For")
         return forwarded.split(",")[-1].strip() if forwarded else self.client_address[0]
@@ -922,15 +1031,40 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def agent(self):
         return (self.headers.get("User-Agent") or "")[:300]
 
+    def bearer(self):
+        header = self.headers.get("Authorization") or ""
+        return header[7:].strip() if header.startswith("Bearer ") else ""
+
     def do_GET(self):
         app = self.server.app
-        if self.path == "/health":
+        parts = urllib.parse.urlsplit(self.path)
+        path, query = parts.path, urllib.parse.parse_qs(parts.query)
+        if path == "/health":
             return self.reply(200, {"ok": True})
+        if path == "/pool/v1/models":
+            try:
+                app.market.key_account(self.bearer())
+            except Refusal as error:
+                return self.pool_error(error)
+            return self.reply(200, {"object": "list", "data": [{"id": m["id"], "object": "model", "owned_by": "sparkpipe"} for m in app.cfg.pricing()["market"]["pool"]["models"]]})
         try:
             app.throttle("read", self.client_ip())
-            if self.path == "/account":
+            if path == "/account":
                 return self.reply(200, app.summary(app.need(self.headers)))
-            match = ORDER_PATH.match(self.path)
+            if path == "/market/state":
+                return self.reply(200, app.market_state(app.signed_in(self.headers)))
+            if path == "/market/calendar":
+                days = query.get("days", ["7"])[0]
+                return self.reply(200, app.market.calendar(app.signed_in(self.headers), int(days) if days.isdigit() else 7))
+            if path == "/market/book":
+                return self.reply(200, app.market.book_view())
+            if path == "/market/ledger":
+                return self.reply(200, app.ledger(app.need(self.headers)))
+            if path == "/market/market.txt":
+                return self.reply_text(app.market.market_text())
+            if path == "/market/pool.txt":
+                return self.reply_text(app.market.pool_text())
+            match = ORDER_PATH.match(path)
             if not match:
                 return self.reply(404, {"error": "Not found."})
             self.reply(200, app.status(match.group(1)))
@@ -939,7 +1073,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         app = self.server.app
-        limit = 262144 if self.path == "/coinpayments" else 16384
+        path = urllib.parse.urlsplit(self.path).path
+        limit = 262144 if path == "/coinpayments" else 8388608 if path.startswith("/pool/") else 16384
         try:
             length = int(self.headers.get("Content-Length") or "0")
         except ValueError:
@@ -947,7 +1082,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if length <= 0 or length > limit:
             return self.reply(413 if length > limit else 400, {"error": "The request body is missing or too large."})
         raw = self.rfile.read(length)
-        if self.path == "/coinpayments":
+        if path == "/coinpayments":
             return self.reply(200 if app.webhook(self.headers, raw) else 401, {})
         origin = self.headers.get("Origin")
         if origin and origin != app.cfg.origin:
@@ -958,21 +1093,125 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise ValueError
         except ValueError:
             return self.reply(400, {"error": "The request is not a JSON object."})
+        if path == "/pool/v1/chat/completions":
+            return self.pool(body)
         try:
-            if self.path == "/code":
+            if path == "/code":
                 return self.reply(200, app.send_code(body, self.client_ip()))
-            if self.path == "/verify":
+            if path == "/verify":
                 summary, token = app.verify(body, self.client_ip(), self.agent())
                 return self.reply(200, summary, cookie=token)
-            if self.path == "/signout":
+            if path == "/signout":
                 return self.reply(200, {"ok": True}, cookie="")
-            if self.path == "/order":
+            if path == "/order":
                 return self.reply(200, app.order(body, app.need(self.headers), self.client_ip(), self.agent()))
-            if self.path == "/lead":
+            if path == "/lead":
                 return self.reply(200, app.lead(body, self.client_ip(), self.agent()))
+            if path == "/market/buy":
+                return self.reply(200, app.buy(body, app.need(self.headers), self.client_ip(), self.agent()))
+            if path.startswith("/market/"):
+                return self.reply(200, app.market_action(path, body, app.need(self.headers), self.client_ip()))
             return self.reply(404, {"error": "Not found."})
         except Refusal as error:
             self.refuse(error)
+
+    def stream_head(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+    def event(self, data):
+        self.wfile.write(b"data: " + (data if isinstance(data, bytes) else json.dumps(data, ensure_ascii=False).encode()) + b"\n\n")
+        self.wfile.flush()
+
+    def pool(self, body):
+        app = self.server.app
+        try:
+            app.throttle("pool", self.bearer()[-16:] or self.client_ip())
+            if not app.cfg.sandbox and not app.cfg.pool_upstream:
+                raise Refusal("The live shared pool opens once it is connected to the fleets.", 503, "pool_closed")
+            messages = body.get("messages")
+            if not isinstance(messages, list) or not messages:
+                raise Refusal("Send the conversation as a non-empty messages list.", 400, "invalid_messages")
+            ticket = app.market.pool_open(self.bearer(), body.get("model"))
+        except Refusal as error:
+            return self.pool_error(error)
+        if app.cfg.sandbox:
+            return self.simulated(body, messages, ticket)
+        return self.forwarded(body, ticket)
+
+    def simulated(self, body, messages, ticket):
+        app = self.server.app
+        limit = body.get("max_tokens") if isinstance(body.get("max_tokens"), int) and not isinstance(body.get("max_tokens"), bool) else 128
+        text, tokens_in, tokens_out = market.simulate(ticket["model"], messages, min(max(limit, 1), 512))
+        made, ident = int(time.time()), "chatcmpl-" + secrets.token_hex(12)
+        usage = {"prompt_tokens": tokens_in, "completion_tokens": tokens_out, "total_tokens": tokens_in + tokens_out}
+        if body.get("stream") is True:
+            self.stream_head()
+            try:
+                for word in text.split(" "):
+                    self.event({"id": ident, "object": "chat.completion.chunk", "created": made, "model": ticket["model"], "choices": [{"index": 0, "delta": {"content": word + " "}, "finish_reason": None}]})
+                    time.sleep(0.025)
+            finally:
+                charge = app.market.pool_close(ticket, tokens_in, tokens_out)
+            self.event({"id": ident, "object": "chat.completion.chunk", "created": made, "model": ticket["model"], "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "usage": usage, "sparkpipe": charge})
+            return self.event(b"[DONE]")
+        time.sleep(min(2.0, tokens_out / 40))
+        charge = app.market.pool_close(ticket, tokens_in, tokens_out)
+        self.reply(200, {"id": ident, "object": "chat.completion", "created": made, "model": ticket["model"], "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}], "usage": usage, "sparkpipe": charge})
+
+    def forwarded(self, body, ticket):
+        app = self.server.app
+        payload = json.dumps(dict(body, model=ticket["model"]), ensure_ascii=False).encode()
+        request = urllib.request.Request(app.cfg.pool_upstream + "/chat/completions", data=payload, method="POST", headers={"Content-Type": "application/json", "Authorization": f"Bearer {app.cfg.pool_key}", "X-SparkPipe-Public": "1"})
+        tokens_in = tokens_out = 0
+        closed = False
+        try:
+            with urllib.request.urlopen(request, timeout=900) as response:
+                if body.get("stream") is not True:
+                    data = json.loads(response.read())
+                    usage = data.get("usage") or {}
+                    tokens_in, tokens_out = int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
+                    data["sparkpipe"] = app.market.pool_close(ticket, tokens_in, tokens_out)
+                    closed = True
+                    return self.reply(200, data)
+                self.stream_head()
+                for line in response:
+                    text = line.strip()
+                    if not text.startswith(b"data: "):
+                        continue
+                    if text == b"data: [DONE]":
+                        closed = True
+                        self.event({"object": "chat.completion.chunk", "choices": [], "sparkpipe": app.market.pool_close(ticket, tokens_in, tokens_out)})
+                        return self.event(b"[DONE]")
+                    try:
+                        chunk = json.loads(text[6:])
+                        usage = chunk.get("usage") or {}
+                        tokens_in = int(usage.get("prompt_tokens") or tokens_in)
+                        tokens_out = int(usage.get("completion_tokens") or tokens_out + sum(1 for c in chunk.get("choices") or [] if (c.get("delta") or {}).get("content")))
+                    except (ValueError, AttributeError):
+                        pass
+                    self.event(text[6:])
+        except urllib.error.HTTPError as error:
+            closed = True
+            app.market.pool_close(ticket, tokens_in, tokens_out)
+            detail = error.read()[:4096]
+            self.send_response(error.code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(detail)))
+            self.end_headers()
+            self.wfile.write(detail)
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            log(f"pool upstream: {error}")
+            if not closed:
+                closed = True
+                app.market.pool_close(ticket, tokens_in, tokens_out)
+            self.pool_error(Refusal("The fleets did not answer. Try again in a minute.", 502, "upstream_error"))
+        finally:
+            if not closed:
+                app.market.pool_close(ticket, tokens_in, tokens_out)
 
 
 def start(cfg, port=None):
@@ -980,6 +1219,7 @@ def start(cfg, port=None):
     app = App(cfg, Book(cfg.path("ledger.jsonl")))
     threading.Thread(target=app.work, daemon=True).start()
     threading.Thread(target=app.deliver, daemon=True).start()
+    threading.Thread(target=app.market.run, args=(log,), daemon=True).start()
     server = http.server.ThreadingHTTPServer(("127.0.0.1", cfg.port if port is None else port), Handler)
     server.daemon_threads = True
     server.app = app
@@ -1009,8 +1249,16 @@ def main(argv):
         app.mails.join()
         print(f"{argv[2]}: " + (f"issued {issued['hours']} hours for {issued['net']} USD before VAT" if issued else "nothing issued"))
         return 0 if issued else 1
+    if len(argv) == 5 and argv[1] == "tranche":
+        app = App(cfg, Book(cfg.path("ledger.jsonl")))
+        account = app.book.emails.get(argv[2].lower())
+        if not account or not re.match(r"^\d{4}-\d{2}$", argv[3]) or not argv[4].isdigit():
+            print("usage: sparkpipe_pay.py tranche EMAIL YYYY-MM HOURS, for an existing account", file=sys.stderr)
+            return 2
+        print(app.market.grant_tranche(account, argv[3], int(argv[4])))
+        return 0
     if argv[1:] not in ([], ["serve"]):
-        print("usage: sparkpipe_pay.py [serve|verify|release ORDER]", file=sys.stderr)
+        print("usage: sparkpipe_pay.py [serve|verify|release ORDER|tranche EMAIL YYYY-MM HOURS]", file=sys.stderr)
         return 2
     server = start(cfg)
     app = server.app

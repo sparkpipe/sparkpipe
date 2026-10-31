@@ -173,7 +173,7 @@ email, which is the account email.
 sudo useradd --system --home /var/lib/sparkpipe-pay --shell /usr/sbin/nologin sparkpipe-pay
 sudo install -d -o sparkpipe-pay -g sparkpipe-pay -m 700 /var/lib/sparkpipe-pay
 sudo install -d -m 755 /opt/sparkpipe-pay /etc/sparkpipe-pay
-sudo install -m 644 tools/sparkpipe_pay.py /opt/sparkpipe-pay/
+sudo install -m 644 tools/sparkpipe_pay.py tools/sparkpipe_market.py /opt/sparkpipe-pay/
 sudo install -m 640 -g sparkpipe-pay deployment/vps/sparkpipe-pay.env.example /etc/sparkpipe-pay/env
 sudo install -m 640 -g sparkpipe-pay /dev/null /etc/sparkpipe-pay/client_secret
 sudo install -m 644 deployment/vps/sparkpipe-pay.service /etc/systemd/system/
@@ -212,14 +212,14 @@ on the host alone except the mail address lists, passwords and keys that
 
 ```sh
 git fetch origin main
-git archive --format=tar.gz -o pay-main.tgz origin/main site tools/sparkpipe_pay.py deployment/vps
+git archive --format=tar.gz -o pay-main.tgz origin/main site tools/sparkpipe_pay.py tools/sparkpipe_market.py deployment/vps
 ```
 
-On the VPS, back up `/var/www/html`, `/opt/sparkpipe-pay/sparkpipe_pay.py`
+On the VPS, back up `/var/www/html`, `/opt/sparkpipe-pay/*.py`, the ledgers
 and any configuration file being replaced, copy `site/.` over
 `/var/www/html`, install the service and changed configuration as in the
 install steps, check the configuration, then restart `sparkpipe-pay` and
-reload Apache or rspamd. The live pages, the service and the configuration
+`sparkpipe-pay-sandbox` (docs/HOUR_MARKET.md) and reload Apache or rspamd. The live pages, the service and the configuration
 must then match `origin/main` byte for byte.
 
 ## Operating it
