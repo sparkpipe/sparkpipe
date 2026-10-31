@@ -780,9 +780,13 @@ with Laguna's full chat turn by `tools/laguna_reference.py gate-prompts`);
 `tools/laguna_reference.py teacher` writes references a and b, b summing each
 row's routed experts in descending instead of ascending expert order. With
 `SPARK_GATE_TP` the gate runs the teacher, greedy and control passes on the
-rank group (a control corrupts rank 0's pack, the other ranks' packs are
-linked beside it) and leaves out the timing ladders, the benchmark and
-speculation.
+rank group and leaves out the timing ladders, the benchmark and
+speculation. A control corrupts the tensor in every rank's pack, as a kernel
+bug would reach every rank; corrupting rank 0's slice alone dilutes it by the
+rank count before the all-reduce, which left GLM 5.3 Flash's every-layer KDA
+control at 1.08 times the floor. `SPARK_GATE_CONTROL_DIR` puts the control
+packs on the packs' volume, where `cp -c` clones them and only the corrupted
+blocks take space.
 
 
 ### Ling 3.0 Flash on eight ranks
@@ -881,3 +885,35 @@ FP32 `teacher` modes:
 
     SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
         sh tools/metal_gates.sh solar-open-2 PACKS/solar_open2.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+
+### GLM 5.3 Flash on eight ranks
+
+GLM 5.3 Flash (45 layers of 4,096: 34 KDA layers and every fourth layer
+rope-free latent attention, four Sinkhorn hyper-connection streams, 288 FP8
+experts) runs on `Glm5NextSchedule` through `Glm5NextDevice`
+(`model-families/glm5_next/device/`): `spark_hyper_expand` copies the
+embedding into the four streams; before each branch `spark_hc_site` makes the
+branch input and the post and combination weights, and `spark_rmsnorm_bf16`
+norms it; the branch is `SparkDeviceChannelDelta` with the rounded write
+strength and the FP32-gain gated norm (`beta_mode` rounded, `norm_f32`), or
+`SparkDeviceLatentAttention` without rope (query LoRA 1,536, BF16 norms, the
+512-wide latent as both key and value through the d512 attention kernel,
+scale 1/16), or the dense layers 0-2, or the experts: the BF16 router in
+FP32, sigmoid top 8 of 288 over the bias-corrected scores with
+`LmTopkWarpKernel`'s tree sum, times 2.5, `SparkDeviceRoutedFfn` on the FP8
+experts (`spark_gemv_fp8_routed`, FP32 scale per row and 128 inputs) with the
+gate-limited SwiGLU at 10 and no route weight, `spark_route_combine_weighted`,
+and the shared expert added (`spark_add_rows`), as CUDA's finalize and add;
+every rank holds all 288 experts split by intermediate width. After each
+all-reduce `spark_hc_post_comb` updates the streams, and `spark_stream_mean`
+and the final BF16 norm feed the prenormed head. The indexer is not built:
+a row that sees more than 2,048 keys is refused, and below that every pool
+is selected and attention is dense. The FP8 checkpoint is 309 GB, so it runs
+as eight ranks paged from the SSD (`tools/glm53flash_tp16_pack.py
+--tp-degree 8`, which reads the checkpoint through the CUDA stagepack's
+reader, so the BF16 projections are its `bf16(e4m3 x scale)`); the reference
+is `tools/glm53flash_reference.py` (`gate-prompts`, and `teacher` through
+the Ling reference's FP32 variants):
+
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh glm-5.3-flash PACKS/glm53flash.tp8.rank00.pack REFERENCE_DIR OUT REVISION

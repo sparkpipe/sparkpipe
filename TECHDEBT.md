@@ -1362,6 +1362,16 @@ Metal backend and the single-Studio stage are in
   `device_layers.c`), plus a TP1 pack and its own gates. In progress: MiMo
   V2.6 Flash and Qwen 3.8 Flash Next, whose device stages are built but not
   yet gated.
+- GLM 5.3 Flash on the Studio (`Glm5NextDevice<Glm53FlashDevice>`): the DSA
+  indexer (`index_q`, `index_k` with its LayerNorm, the pooled key scores
+  with the compressor gate and position embedding, the top 512 of 4-key
+  pools, the index key pool) is not built, so the stage refuses a row past
+  position 2,047, below which every pool is selected and attention is
+  dense. The rope-free latent slot stores the 512-wide latent twice, as the
+  key and as the value (CUDA keeps it once and reads it as both), and the
+  latent attention is not sharded by context across ranks: each rank
+  attends its own heads over the whole context. The MTP layer is not
+  packed.
 - Qwen 3.8 Flash Next on the Studio (`QwenDevice<Qwen38FlashDevice>`):
   - the QSA indexer is not built, so the stage refuses contexts past 2,048
     positions. Below 2,052 the indexer keeps every block and attention is
