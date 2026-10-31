@@ -11,6 +11,11 @@ window.SP_PRICING = {
     { "name": "Fleet 2", "kind": "M5U", "state": "building", "rate": 1 },
     { "name": "Fleet 3", "kind": "16 Sparks", "state": "building", "rate": 1 }
   ],
+  "windows": [
+    { "id": "americas", "name": "Americas", "from": 0, "to": 8 },
+    { "id": "asia", "name": "Asia", "from": 8, "to": 16 },
+    { "id": "europe", "name": "Europe", "from": 16, "to": 24 }
+  ],
   "market": {
     "hcPrice": 20,
     "hcPriceKRW": 26000,
@@ -18,6 +23,9 @@ window.SP_PRICING = {
     "validityMonths": 12,
     "releaseFee": 0.10,
     "horizonDays": 7,
+    "advanceDays": 31,
+    "advanceMultiplier": 1.25,
+    "lastCallHours": 6,
     "maxBidDays": 31,
     "trancheDemoHours": 40,
     "pool": {

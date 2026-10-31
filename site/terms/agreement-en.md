@@ -15,7 +15,7 @@ In this Agreement:
 - **Fleet** means a group of computing machines that we operate as a single unit and list on our Fleet List, published at sparkpipe.ai/fleets.html.
 - **Fleet-hour** or **hour** means the use of one entire Fleet for sixty minutes.
 - **Rate** means the number of hours that one hour on a Fleet consumes, as published on our Fleet List; 1 unless the Fleet List states otherwise. The Rate of each Fleet listed at the Signature Date is fixed for the Term.
-- **East Window** and **West Window** mean the two 12-hour periods of each day defined in the Schedule.
+- **Americas Window**, **Asia Window** and **Europe Window** mean the three 8-hour periods of each day defined in the Schedule.
 - **Tranche** means the hours of one calendar month within the Term, as set out in clause 3.
 - **Reservation** means the booking of one or more hours on a selected Fleet through our system under clause 8. **Reserve** has a matching meaning.
 - **Phase A** means Day 1 to Day 30 inclusive.
@@ -64,27 +64,28 @@ In this Agreement:
 
 ## 4. Timezone election
 
-4.1. Each day consists of 12 East Window hours and 12 West Window hours. East and West are periods of the day. They are not separate pools of capacity or separate machines.
+4.1. Each day consists of 8 Americas Window hours, 8 Asia Window hours and 8 Europe Window hours. The windows are periods of the day. They are not separate pools of capacity or separate machines. As days are in KST, the Americas Window of each day falls on the previous calendar day in the Americas.
 
-4.2. Customer makes one timezone election in the Schedule at signing: **50/50**, **100% East** or **100% West**. The election is fixed for the Term and may be changed only on renewal.
+4.2. Customer makes one timezone election in the Schedule at signing: **Thirds**, **100% Americas**, **100% Asia** or **100% Europe**. The election is fixed for the Term and may be changed only on renewal.
 
 4.3. A 100% election needs our written approval. We give it in the order customers sign, and only where we can keep the capacity that clause 4.6 guarantees.
 
 4.4. The election sets Customer's **Guaranteed Limit**: the hours Customer may reserve in each window on each day from Monday to Saturday:
 
-| Election | East hours per day | West hours per day | Rate |
-| --- | --: | --: | --- |
-| 50/50 | 12 | 12 | 1× |
-| 100% East | 24 | 0 | 2× |
-| 100% West | 0 | 24 | 2× |
+| Election | Americas hours per day | Asia hours per day | Europe hours per day | Rate |
+| --- | --: | --: | --: | --- |
+| Thirds | 8 | 8 | 8 | 1× |
+| 100% Americas | 24 | 0 | 0 | 3× |
+| 100% Asia | 0 | 24 | 0 | 3× |
+| 100% Europe | 0 | 0 | 24 | 3× |
 
-"2×" means twice as many hours per day in the elected window as a 50/50 election gives. It does not change the price per hour or the total hours in clause 2.3. Hours Customer reserves with hour-credits under the Hourly Terms are outside the election and the Guaranteed Limit and draw on no Tranche.
+"3×" means three times as many hours per day in the elected window as Thirds gives: 24 hours in an 8-hour window, so up to three Fleets at once during that window and none outside it. It does not change the price per hour or the total hours in clause 2.3. Hours Customer reserves with hour-credits under the Hourly Terms are outside the election and the Guaranteed Limit and draw on no Tranche.
 
-4.5. The election applies only from Full Prepayment (clause 7). Until then Customer's Guaranteed Limit is that of a 50/50 election.
+4.5. The election applies only from Full Prepayment (clause 7). Until then Customer's Guaranteed Limit is that of Thirds.
 
-4.6. **Guarantee.** We keep enough capacity, on Fleets that serve Customer's Chosen Models, for Customer to reserve hours up to its Guaranteed Limit on every day from Monday to Saturday in the Term. Customer may make such Reservations for any time in the Term, subject to clauses 5.4 and 8.2. The guarantee is for capacity, not for a particular Fleet: where one Fleet is fully reserved, Customer reserves on another. If Customer asks for a Reservation within its Guaranteed Limit more than 6 hours before it starts and we cannot confirm it on any such Fleet, we credit Customer one hour under clause 9.3 for each hour asked for, in addition to its balance.
+4.6. **Guarantee.** On every day from Monday to Saturday in the Term, we keep the capacity that Customer's Guaranteed Limit needs, on Fleets that serve Customer's Chosen Models, off sale to anyone else until 6 hours before each hour starts: one Fleet in every hour for Thirds; and, for a 100% election, three Fleets in every hour of the elected window, and until Full Prepayment also one Fleet in every other hour (clause 4.5). From 6 hours before an hour starts, capacity Customer has not reserved may be reserved by others. The guarantee covers one Fleet at a time, or three during the elected window once a 100% election applies; Reservations on more Fleets at once are subject to availability. The guarantee is for capacity, not for a particular Fleet: where one Fleet is fully reserved, Customer reserves on another. Customer may make Reservations within its Guaranteed Limit for any time in the Term, subject to clauses 5.4 and 8.2. If Customer asks, more than 6 hours before it starts, for a Reservation that this guarantee covers and we cannot confirm it on any such Fleet, we credit Customer one hour under clause 9.3 for each hour asked for, in addition to its balance.
 
-4.7. **Sundays.** Sundays are kept for our own use, including scheduled maintenance. The Term holds no hours for them (clause 2.3), and the Guaranteed Limit does not apply on them. Customer may still reserve its hours on a Sunday where capacity is available, at most 30 days before they start: within the daily limits of a 50/50 election before Full Prepayment, and as Extra Hours (clause 7.1) after it. We carry out scheduled maintenance only on Sundays. Hours we set aside for it are not open for Reservation, and a Sunday Reservation already confirmed is never displaced (clause 8.4).
+4.7. **Sundays.** Sundays are kept for our own use, including scheduled maintenance. The Term holds no hours for them (clause 2.3), and the Guaranteed Limit does not apply on them. Customer may still reserve its hours on a Sunday where capacity is available, at most 30 days before they start: within the daily limits of Thirds before Full Prepayment, and as Extra Hours (clause 7.1) after it. We carry out scheduled maintenance only on Sundays. Hours we set aside for it are not open for Reservation, and a Sunday Reservation already confirmed is never displaced (clause 8.4).
 
 ## 5. Phase A and withdrawal
 
@@ -94,7 +95,7 @@ In this Agreement:
 
 5.3. Once Customer pays any amount under this Agreement, the withdrawal right in clause 5.2 ends.
 
-5.4. There are no unpaid hours: until Customer pays, no hour is issued or served under this Agreement. Until Full Prepayment, Customer reserves its paid hours at times of its choosing under clause 8, within the Tranche each hour belongs to and its Guaranteed Limit (12 East Window and 12 West Window hours per day), and on Sundays under clause 4.7. Hours Customer reserves with hour-credits are outside these limits (clause 4.4).
+5.4. There are no unpaid hours: until Customer pays, no hour is issued or served under this Agreement. Until Full Prepayment, Customer reserves its paid hours at times of its choosing under clause 8, within the Tranche each hour belongs to and its Guaranteed Limit (8 hours in each of the Americas, Asia and Europe Windows per day), and on Sundays under clause 4.7. Hours Customer reserves with hour-credits are outside these limits (clause 4.4).
 
 5.5. Each cleared payment issues hours equal to the amount paid, net of VAT, divided by the Hour Price, to the earliest Tranches not yet fully paid. Hours that occur before they are paid for are counted as consumed: the price of the Term does not change.
 
@@ -133,8 +134,8 @@ In this Agreement:
 
 7.1. On Full Prepayment, for all hours remaining in the Term:
 
-- **Fungibility.** Hours may be reserved in either window up to Customer's Guaranteed Limit (clause 4.4).
-- **Elected rate.** A 100% election takes effect, giving a Guaranteed Limit of 24 hours per day in the elected window.
+- **Fungibility.** Hours may be reserved in any window up to Customer's Guaranteed Limit (clause 4.4).
+- **Elected rate.** A 100% election takes effect, giving a Guaranteed Limit of 24 hours per day in the elected window, three times that of Thirds (clause 4.4).
 - **Extra Hours.** Customer may reserve hours beyond its Guaranteed Limit from Monday to Saturday, and without a daily limit on Sundays (the **Extra Hours**). Extra Hours are subject to availability, may be reserved at most 30 days before they start, and are never displaced once confirmed (clause 8.4). They never take an hour held under the Hourly Terms (clause 8.13).
 - **Spending ahead.** Customer may reserve more hours in a period than its current Tranche holds. As each reserved hour occurs it is drawn from the unexpired Tranche nearest to expiry, so the excess comes from future Tranches. Hours of a future Tranche consumed early do not reappear in their own month.
 - **Concurrency.** Customer may hold Reservations on several Fleets at the same time.
@@ -169,7 +170,7 @@ Hours Customer reserves with hour-credits are not Extra Hours, and none of the l
 
 8.12. **Customer data.** Customer keeps all rights in its data and outputs. We access them only as needed to operate and secure the service, or where the law requires. Customer is responsible for the lawfulness of any personal data it processes and for keeping its own copies: we keep no backups of Customer data. We handle Customer data as stated in our published privacy policy. The Fleets and our servers are located in Seoul, Republic of Korea. We hold no Customer data beyond transient caches, which we delete within 24 hours, so nothing is returned when this Agreement ends. We tell Customer without delay of any intrusion, any leak of its information and any unannounced interruption of the service.
 
-8.13. **Priority over hourly use.** Within its Guaranteed Limit, Customer may reserve an hour that another customer reserved from our own capacity under the Hourly Terms, if that hour starts more than 6 hours later; the hour then becomes Customer's Reservation. An hour bought in the Hour Market as a released hour is never taken. Extra Hours and hours on a Sunday never take an hour held under the Hourly Terms. Customer's own Reservations are never displaced (clause 8.4).
+8.13. **Priority over hourly use.** Customer's priority over hourly use comes from the capacity we keep off sale for it under clause 4.6, which nobody else can reserve until 6 hours before each hour starts. Customer never takes, and never needs to take, an hour that anyone else holds, and no customer's confirmed Reservation is ever displaced to make room for another (clause 8.4).
 
 ## 9. Delivery obligation
 
@@ -260,9 +261,10 @@ Where this Agreement ends under clause 11.2 or 11.3:
 | Hours in the Term (clause 2.3) | \[ \] |
 | Hour Price (clause 2) | KRW \[ \] or USD \[ \] per fleet-hour, in the currency of payment below, exclusive of VAT, fixed for the Term |
 | Customer VAT status (clause 2.2) | \[No place of business in the Republic of Korea / Korean business registration number \[ \]\] |
-| Timezone election | \[50/50 / 100% East / 100% West\], subject to clause 4.3 |
-| East Window | \[hh:mm–hh:mm KST\] |
-| West Window | \[hh:mm–hh:mm KST\] |
+| Timezone election | \[Thirds / 100% Americas / 100% Asia / 100% Europe\], subject to clause 4.3 |
+| Americas Window | 00:00–08:00 KST |
+| Asia Window | 08:00–16:00 KST |
+| Europe Window | 16:00–24:00 KST |
 | Performance Threshold (clause 9.2) | \[80\]% of the Baseline |
 | Live capacity address (clause 8.8) | https://sparkpipe.ai/availability.txt |
 | Chosen Models (clause 10.2) | \[models from the Fleet List\] |

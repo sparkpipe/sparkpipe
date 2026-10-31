@@ -1,6 +1,8 @@
 import base64
+import bisect
 import collections
 import hashlib
+import math
 import secrets
 import threading
 import time
@@ -11,6 +13,8 @@ HC_STEP = Decimal("0.000001")
 PRICE_STEP = Decimal("0.0000000001")
 HOUR = timedelta(hours=1)
 WEEK = timedelta(days=7)
+KST = timezone(timedelta(hours=9))
+LONGEST = timedelta(days=3653)
 STAMP = "%Y-%m-%dT%H:%M:%SZ"
 SLOT = "%Y-%m-%dT%H:00Z"
 EMPTY = Decimal("0.0001")
@@ -42,6 +46,14 @@ def slot_text(moment):
 
 def slot_time(text):
     return datetime.strptime(text, SLOT).replace(tzinfo=timezone.utc)
+
+
+def stamp_time(text):
+    return datetime.strptime(text, STAMP).replace(tzinfo=timezone.utc)
+
+
+def kst_text(moment):
+    return moment.astimezone(KST).strftime("%Y-%m-%d %H:%M KST")
 
 
 def floor_hour(moment):
@@ -257,6 +269,123 @@ class State:
         self.offset = data["offset"]
 
 
+def take_parts(parts, amount, front):
+    used, left = [], Decimal(amount)
+    while left > 0 and parts:
+        index = 0 if front else -1
+        expires, have = parts[index]
+        part = min(have, left)
+        used.append((expires, part))
+        left -= part
+        if part == have:
+            parts.pop(index)
+        else:
+            parts[index][1] = have - part
+    return used
+
+
+class Cover:
+    def __init__(self, st, now, first, fleets, commitments):
+        self.first = first
+        self.rates = {f["id"]: f["rate"] for f in fleets if f["serving"]}
+        self.commitments = commitments
+        self.taken, self.kept = {}, {}
+        for (fleet, start), held in st.slots.items():
+            if fleet in self.rates and slot_time(start) >= first:
+                self.taken.setdefault(start, set()).add(fleet)
+                res = st.reservations[held]
+                if res["source"] == "tranche":
+                    self.kept.setdefault(start, collections.Counter())[res["account"]] += 1
+        moment, due = stamp(now), collections.defaultdict(Decimal)
+        for lots in st.lots.values():
+            for lot in lots:
+                if lot["expires"] > moment and lot["hc"] > 0:
+                    due[lot["expires"]] += lot["hc"]
+        for parts in st.holds.values():
+            for lot, part in parts:
+                if lot["expires"] > moment:
+                    due[lot["expires"]] += part
+        self.lapses = sorted(due)
+        self.moments = [stamp_time(e) for e in self.lapses]
+        self.owed, total = [], Decimal(0)
+        for expires in self.lapses:
+            total += due[expires]
+            self.owed.append(total)
+        self.curve = [Decimal(0)]
+        self.lowest = None
+
+    def aside(self, moment):
+        local = moment.astimezone(KST)
+        if local.weekday() == 6:
+            return 0
+        used = self.kept.get(slot_text(moment), {})
+        return sum(max(0, pattern[local.hour] - used.get(account, 0)) for account, begins, ends, pattern in self.commitments if begins <= moment < ends)
+
+    def free(self, moment, without=None):
+        taken = self.taken.get(slot_text(moment), ())
+        return sorted(rate for fleet, rate in self.rates.items() if fleet not in taken and fleet != without)
+
+    def open(self, moment, now, last_call):
+        return moment - now < last_call or len(self.free(moment)) > self.aside(moment)
+
+    def value(self, moment, without=None):
+        if moment.astimezone(KST).weekday() == 6:
+            return Decimal(0)
+        free = self.free(moment, without)
+        keep = len(free) - self.aside(moment)
+        return sum(free[:keep], Decimal(0)) if keep > 0 else Decimal(0)
+
+    def supply(self, until):
+        hours = max(0, math.ceil((until - self.first) / HOUR))
+        while len(self.curve) <= hours:
+            self.curve.append(self.curve[-1] + self.value(self.first + HOUR * (len(self.curve) - 1)))
+        return self.curve[hours]
+
+    def due(self, until):
+        found = bisect.bisect_right(self.lapses, stamp(until))
+        return self.owed[found - 1] if found else Decimal(0)
+
+    def unspent(self):
+        return self.owed[-1] if self.owed else Decimal(0)
+
+    def slack(self, until):
+        return self.supply(until) - self.due(until)
+
+    def low(self):
+        if self.lowest is None and self.moments:
+            self.lowest = min(self.slack(moment) for moment in self.moments)
+        return self.lowest
+
+    def tightest(self):
+        return min(((self.slack(moment), moment) for moment in self.moments), default=None)
+
+    def headroom(self, life):
+        return max(Decimal(0), min(self.slack(moment) for moment in [life] + [m for m in self.moments if m > life]))
+
+    def lapse(self, amount, life):
+        moment = max([life] + [m for m in self.moments if m > life and self.slack(m) < amount])
+        while moment < life + LONGEST and self.slack(moment) < amount:
+            moment += HOUR
+        return moment
+
+    def blocked(self, hours, spent, now, last_call):
+        hours = [(start, fleet) for start, fleet in hours if start - now >= last_call]
+        if not hours:
+            return None
+        losses = [(start, self.value(start) - self.value(start, fleet)) for start, fleet in hours]
+        low = self.low()
+        if low is None or low >= sum(loss for _, loss in losses):
+            return None
+        first = min(start for start, _ in hours)
+        for until in sorted({start + HOUR for start, _ in hours} | {m for m in self.moments if m > first}):
+            before = self.slack(until)
+            lost = sum((loss for start, loss in losses if start < until), Decimal(0))
+            freed = sum((part for expires, part in spent if expires <= stamp(until)), Decimal(0))
+            if before - lost + freed < min(Decimal(0), before):
+                return until
+        return None
+
+
 class Market:
     def __init__(self, app, sandbox, clock):
         self.app = app
@@ -268,6 +397,7 @@ class Market:
         self.speed = collections.deque(maxlen=50)
         self.multiplier = Decimal("0.5")
         self.priced = 0.0
+        self.covered = None
 
     @property
     def book(self):
@@ -306,7 +436,48 @@ class Market:
     def fee(self, market):
         return Decimal(str(market["releaseFee"]))
 
-    def offer(self, fleet, start, now, market, earliest, tranche=False):
+    def last_call(self, market):
+        return timedelta(hours=market["lastCallHours"])
+
+    def cover(self, now, pricing, commitments=None):
+        found = self.app.commitments(now) if commitments is None else commitments
+        first = floor_hour(now) + HOUR
+        earliest = self.earliest(pricing)
+        if earliest and earliest > first:
+            first = earliest.astimezone(timezone.utc)
+        key = (id(self.st), self.st.seq, first, floor_hour(now), found)
+        if commitments is None and self.covered and self.covered[0] == key:
+            return self.covered[1]
+        cover = Cover(self.st, now, first, self.fleets(pricing), found)
+        if commitments is None:
+            self.covered = (key, cover)
+        return cover
+
+    def pending(self):
+        now = self.clock()
+        return sum((Decimal(o["hours"]) for o in self.book.orders.values() if o["product"] == "credits" and self.book.waiting(o, now)), Decimal(0))
+
+    def on_sale(self, now, pricing):
+        return max(Decimal(0), self.cover(now, pricing).headroom(year_later(now)) - self.pending())
+
+    def check_cover(self, credits, now, pricing):
+        sale = self.on_sale(now, pricing)
+        if credits > sale:
+            if sale <= 0:
+                raise Refusal("Hour-credits are sold out for now: every free fleet-hour in the next 12 months already backs HC that has been sold, and we never sell HC that cannot be spent. Reserve a released hour, or try again later.", 409, "cover")
+            raise Refusal(f"We can sell at most {text_hc(sale)} HC now: that is what our free fleet-hours in the next 12 months can still deliver, and we never sell HC that cannot be spent. Choose a smaller amount.", 409, "cover")
+
+    def lot_parts(self, account, now):
+        moment = stamp(now)
+        return [[lot["expires"], lot["hc"]] for lot in self.st.lots.get(account, []) if lot["expires"] > moment and lot["hc"] > 0]
+
+    def held_parts(self, bid):
+        return [[lot["expires"], part] for lot, part in self.st.holds.get(bid["bid"], [])]
+
+    def kept(self, moment):
+        return Refusal(f"Our hours before {kst_text(moment)} are kept for hour-credits that lapse sooner. HC that lapses later can reserve them from {self.app.cfg.pricing()['market']['lastCallHours']} hours before they start. Choose a later hour, a released hour or the shared pool.", 409, "kept")
+
+    def offer(self, fleet, start, now, market, earliest, cover, tranche=False):
         if start <= now:
             return None
         key = (fleet["id"], slot_text(start))
@@ -319,11 +490,18 @@ class Market:
             return {"fleet": key[0], "start": key[1], "price": Decimal(ask["min"]), "kind": "release", "ask": ask["ask"], "seq": ask["seq"], "seller": ask["account"]}
         if not fleet["serving"] or (earliest and start < earliest):
             return None
-        if not tranche and start > now + timedelta(days=market["horizonDays"]):
-            return None
-        return {"fleet": key[0], "start": key[1], "price": fleet["rate"], "kind": "hyor", "ask": None, "seq": 0, "seller": None}
+        price = fleet["rate"]
+        if not tranche:
+            ahead = start - now
+            if ahead > timedelta(days=market["advanceDays"]) or not cover.open(start, now, self.last_call(market)):
+                return None
+            if ahead > timedelta(days=market["horizonDays"]):
+                if start.astimezone(KST).weekday() == 6:
+                    return None
+                price = hc(price * Decimal(str(market["advanceMultiplier"])))
+        return {"fleet": key[0], "start": key[1], "price": price, "kind": "hyor", "ask": None, "seq": 0, "seller": None}
 
-    def window(self, bid, now, pricing, market):
+    def window(self, bid, now, pricing, market, cover):
         earliest, found = self.earliest(pricing), []
         first, last = max(slot_time(bid["from"]), floor_hour(now) + HOUR), slot_time(bid["to"])
         for fleet in self.fleets(pricing):
@@ -331,7 +509,7 @@ class Market:
                 continue
             moment = first
             while moment < last:
-                offer = self.offer(fleet, moment, now, market, earliest)
+                offer = self.offer(fleet, moment, now, market, earliest, cover)
                 if offer:
                     found.append(offer)
                 moment += HOUR
@@ -371,17 +549,33 @@ class Market:
                 self.book.append("hc_lot", {"lot": new_id("LT"), "account": offer["seller"], "hc": text_hc(credit), "expires": stamp(year_later(now)), "source": "sale", "ref": reservation, "now": moment})
         return reservation
 
+    def bid_price(self, offer, bid):
+        return offer["price"] if offer["kind"] == "hyor" or offer["seq"] < bid["seq"] else Decimal(bid["max"])
+
+    def bid_blocked(self, chosen, bid, cover, now, market):
+        parts, most, ours, spent = self.held_parts(bid), Decimal(bid["max"]), [], []
+        for offer in chosen:
+            price = self.bid_price(offer, bid)
+            used = take_parts(parts, price, True)
+            take_parts(parts, most - price, False)
+            if offer["kind"] == "hyor":
+                ours.append((slot_time(offer["start"]), offer["fleet"]))
+                spent.extend(used)
+        return cover.blocked(ours, spent, now, self.last_call(market)) if ours else None
+
     def match_resting(self, now, pricing, market):
         for bid in sorted((b for b in self.st.bids.values() if b["state"] == "open"), key=lambda b: b["seq"]):
             left = bid["hours"] - bid["filled"]
             if left <= 0 or (bid["consecutive"] and bid["filled"]):
                 continue
-            chosen = self.choose(self.window(bid, now, pricing, market), left, bid["consecutive"], Decimal(bid["max"]), bid["account"])
+            cover = self.cover(now, pricing)
+            chosen = self.choose(self.window(bid, now, pricing, market, cover), left, bid["consecutive"], Decimal(bid["max"]), bid["account"])
             if bid["consecutive"] and len(chosen) < left:
                 continue
+            while chosen and self.bid_blocked(chosen, bid, cover, now, market):
+                chosen = [] if bid["consecutive"] else chosen[:-1]
             for offer in chosen:
-                price = offer["price"] if offer["kind"] == "hyor" or offer["seq"] < bid["seq"] else Decimal(bid["max"])
-                self.trade(offer, bid["account"], bid["model"], now, market, price, bid=bid)
+                self.trade(offer, bid["account"], bid["model"], now, market, self.bid_price(offer, bid), bid=bid)
 
     def advance(self, now, pricing, market):
         st, moment = self.st, stamp(now)
@@ -429,16 +623,29 @@ class Market:
             except Exception as error:
                 log(f"market tick: {error}")
 
-    def buy(self, account, amount, market):
+    def lot(self, account, credits, source, ref, now, pricing, note=None):
+        data = {"lot": new_id("LT"), "account": account, "hc": text_hc(credits), "expires": stamp(self.cover(now, pricing).lapse(credits, year_later(now))), "source": source, "ref": ref, "now": stamp(now)}
+        if note:
+            data["note"] = note
+        self.book.append("hc_lot", data)
+        return data
+
+    def buy(self, account, amount, pricing):
         with self.book.lock:
             now = self.now()
-            lot, credits = new_id("LT"), hc(amount / Decimal(str(market["hcPrice"])))
-            self.book.append("hc_lot", {"lot": lot, "account": account, "hc": text_hc(credits), "expires": stamp(year_later(now)), "source": "purchase", "ref": "sandbox", "now": stamp(now)})
-        return {"lot": lot, "hc": text_hc(credits)}
+            credits = hc(amount / Decimal(str(pricing["market"]["hcPrice"])))
+            self.check_cover(credits, now, pricing)
+            data = self.lot(account, credits, "purchase", "sandbox", now, pricing)
+        return {"lot": data["lot"], "hc": data["hc"], "expires": data["expires"]}
 
     def issue(self, account, credits, order):
-        now = self.now()
-        self.book.append("hc_lot", {"lot": new_id("LT"), "account": account, "hc": text_hc(credits), "expires": stamp(year_later(now)), "source": "purchase", "ref": order, "now": stamp(now)})
+        pricing, _ = self.settings()
+        return self.lot(account, credits, "purchase", order, self.now(), pricing)
+
+    def credit(self, account, credits, note):
+        pricing, _ = self.settings()
+        with self.book.lock:
+            return self.lot(account, credits, "credit", new_id("CR"), self.now(), pricing, note)
 
     def tranche_left(self, account, month):
         return self.st.tranches[(account, month)] - self.st.tranche_used[(account, month)]
@@ -454,7 +661,8 @@ class Market:
         with self.book.lock:
             now = self.now()
             self.advance(now, pricing, market)
-            offer = self.offer(fleet, start, now, market, self.earliest(pricing), tranche=pay == "tranche")
+            cover = self.cover(now, pricing)
+            offer = self.offer(fleet, start, now, market, self.earliest(pricing), cover, tranche=pay == "tranche")
             if not offer:
                 raise Refusal("That hour is not for sale.", 409)
             if offer["seller"] == account:
@@ -470,6 +678,10 @@ class Market:
                     raise Refusal(f"The price is now {text_hc(price)} HC. Reserve again to accept it.", 409)
                 if self.st.balance(account, stamp(now)) < price:
                     raise Refusal(f"This hour costs {text_hc(price)} HC, more than the account holds. Buy HC first.", 402)
+                if offer["kind"] == "hyor":
+                    stop = cover.blocked([(start, fleet["id"])], take_parts(self.lot_parts(account, now), price, True), now, self.last_call(market))
+                    if stop:
+                        raise self.kept(stop)
             reservation = self.trade(offer, account, model, now, market, price, pay=pay)
         return {"reservation": reservation, "price": text_hc(price)}
 
@@ -700,9 +912,11 @@ class Market:
             now = self.now()
             self.advance(now, pricing, market)
             pool = self.pool_view(pricing, market, now)
+            sale = self.on_sale(now, pricing)
         return {
             "now": stamp(now), "sandbox": self.sandbox,
-            "market": {k: market[k] for k in ("hcPrice", "hcPriceKRW", "minPurchase", "validityMonths", "releaseFee", "horizonDays", "maxBidDays")},
+            "market": {k: market[k] for k in ("hcPrice", "hcPriceKRW", "minPurchase", "validityMonths", "releaseFee", "horizonDays", "advanceDays", "advanceMultiplier", "lastCallHours", "maxBidDays")},
+            "onSale": text_hc(sale),
             "vatRate": pricing["vatRate"],
             "fleets": [{"id": f["id"], "name": f["name"], "kind": f["kind"], "rate": text_hc(f["rate"]), "serving": f["serving"]} for f in self.fleets(pricing)],
             "pool": pool,
@@ -750,6 +964,7 @@ class Market:
             now = self.now()
             self.advance(now, pricing, market)
             first, earliest, fleets = floor_hour(now) + HOUR, self.earliest(pricing), []
+            cover = self.cover(now, pricing)
             for fleet in self.fleets(pricing):
                 cells = []
                 for n in range(days * 24):
@@ -763,7 +978,7 @@ class Market:
                         else:
                             cells.append(["mine" if mine else "taken", None])
                     else:
-                        offer = self.offer(fleet, start, now, market, earliest)
+                        offer = self.offer(fleet, start, now, market, earliest, cover)
                         cells.append(["hyor", text_hc(offer["price"])] if offer else ["closed", None])
                 fleets.append({"id": fleet["id"], "name": fleet["name"], "cells": cells})
         return {"from": slot_text(first), "hours": days * 24, "fleets": fleets}
@@ -779,9 +994,10 @@ class Market:
 
     def market_text(self):
         pricing, market = self.settings()
-        cal = self.calendar(None, market["horizonDays"])
+        cal = self.calendar(None, market["advanceDays"])
         bids = self.book_view()["bids"]
-        lines = [f"# SparkPipe Hour Market, generated {stamp(self.now())}", "# prices in HC per fleet-hour; times in UTC; ask kinds: hyor = our capacity, release = a customer's released hour", "# start fleet best_ask kind best_bid"]
+        sale = self.public()["onSale"]
+        lines = [f"# SparkPipe Hour Market, generated {stamp(self.now())}", f"# hour-credits on sale now: {sale} HC", "# prices in HC per fleet-hour; times in UTC; ask kinds: hyor = our capacity, release = a customer's released hour", "# start fleet best_ask kind best_bid"]
         start = slot_time(cal["from"])
         for fleet in cal["fleets"]:
             for n, (kind, price) in enumerate(fleet["cells"]):
@@ -792,6 +1008,26 @@ class Market:
         lines.append("# last trades: at fleet start price kind")
         lines.extend(f"{t['at']} {t['fleet']} {t['start']} {t['price']} {t['kind']}" for t in self.book_view()["trades"])
         return "\n".join(lines) + "\n"
+
+    def report(self, commitments=None):
+        pricing, market = self.settings()
+        with self.book.lock:
+            now = self.now()
+            found = self.app.commitments(now) if commitments is None else commitments
+            cover, life, pending = self.cover(now, pricing, found), year_later(now), self.pending()
+            clashes, moment = [], cover.first
+            while moment < max([cover.first] + [ends for _, _, ends, _ in found]):
+                if len(cover.free(moment)) < cover.aside(moment):
+                    clashes.append(moment)
+                moment += HOUR
+            tight = cover.tightest()
+            return {
+                "now": stamp(now), "first": stamp(cover.first), "fleets": sorted(cover.rates), "agreements": len(found),
+                "free": text_hc(cover.supply(life)), "unspent": text_hc(cover.unspent()), "pending": text_hc(pending),
+                "onSale": text_hc(max(Decimal(0), cover.headroom(life) - pending)),
+                "tightest": None if tight is None else {"slack": text_hc(tight[0]), "lapse": stamp(tight[1])},
+                "clashes": len(clashes), "firstClash": stamp(clashes[0]) if clashes else None,
+            }
 
     def pool_text(self):
         state = self.public()

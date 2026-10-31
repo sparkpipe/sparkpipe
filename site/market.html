@@ -43,7 +43,7 @@
 </section>
 
 <div class="sandbox-bar">
-  <span class="live-only muted">Times are Korea Standard Time. Our own fleet-hours can be reserved from <span data-start>1 December 2026</span>, up to 7 days ahead.</span>
+  <span class="live-only muted">Times are Korea Standard Time. Our own fleet-hours can be reserved from <span data-start>1 December 2026</span>: at Rate up to 7 days ahead, and Monday to Saturday up to 31 days ahead at 1.25×. A reservation is never bumped.</span>
   <div><span class="muted">Market time</span> <span class="num" id="now">-</span></div>
   <div class="row sandbox-only">
     <button class="btn small" type="button" data-clock="1">+1 hour</button>
@@ -79,6 +79,7 @@
     <form class="form" id="buy" novalidate>
       <label>Amount in US dollars, before VAT<input id="amount" type="number" min="10" step="1" value="100"></label>
       <p class="num" id="buy-sum"></p>
+      <p class="muted" id="on-sale"></p>
       <button class="btn solid" type="submit"><span class="live-only">Continue to payment</span><span class="sandbox-only">Buy, no money</span></button>
       <p class="muted live-only">Paid in a US-dollar stablecoin through CoinPayments; the HC arrives once the payment completes.</p>
       <p class="flash" id="m-buy" hidden></p>
@@ -97,9 +98,9 @@
   <h2>Calendar</h2>
   <div class="row">
     <label>Show<select id="days"><option value="7">7 days</option><option value="14">14 days</option><option value="31">31 days</option></select></label>
-    <div class="legend"><span><i class="cell hyor"></i>Our hour at Rate</span><span><i class="cell release" style="--depth:.7"></i>Released hour, darker is cheaper</span><span><i class="cell mine"></i>Yours</span><span><i class="cell mine-release"></i>Yours, released</span><span><i class="cell taken"></i>Taken</span><span><i class="cell closed"></i>Not for sale</span></div>
+    <div class="legend"><span><i class="cell hyor"></i>Our hour at its price</span><span><i class="cell release" style="--depth:.7"></i>Released hour, darker is cheaper</span><span><i class="cell mine"></i>Yours</span><span><i class="cell mine-release"></i>Yours, released</span><span><i class="cell taken"></i>Taken</span><span><i class="cell closed"></i>Not for sale</span></div>
   </div>
-  <p class="muted">Times in KST. Our own hours sell up to 7 days ahead; released hours sell at any distance.</p>
+  <p class="muted">Times in KST. Our own hours sell at Rate up to 7 days ahead, and Monday to Saturday up to 31 days ahead at 1.25×; released hours sell at any distance. Capacity kept for two-year customers opens 6 hours before it starts. Once reserved, an hour is yours: nobody can take it.</p>
   <div id="calendar"></div>
   <div class="card" id="pick" hidden>
     <h3 id="pick-title"></h3>
