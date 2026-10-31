@@ -461,6 +461,7 @@ int main(void)
 			n->peer.node = node;
 			x->context = &n->peer;
 			x->chunks = 1u;
+			x->pass_tokens = SL_NODES * SL_NODE_ROWS;
 			x->chunk_row_begin = node_begin;
 			x->chunk_slots = state_index;
 			x->ends = SlAlloc<float>(SL_SLOT_BYTES / 4u);
@@ -487,6 +488,7 @@ int main(void)
 		}
 		single_x.node = 0u;
 		single_x.nodes = 1u;
+		single_x.pass_tokens = SL_ROWS;
 		single_x.chunk_row_begin = row_begin;
 		single_x.tail_send = SlAlloc<uint16_t>(SL_TAIL);
 		single_x.tails = SlAlloc<uint16_t>(SL_TAIL);

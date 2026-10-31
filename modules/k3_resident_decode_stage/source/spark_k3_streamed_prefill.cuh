@@ -1159,31 +1159,43 @@ static SparkStatus K3StreamedUpload(void *device, const void *host, uint64_t byt
 	return cudaMemcpyAsync(device, host, (size_t)bytes, cudaMemcpyHostToDevice, stream) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
 }
 
+static uint32_t K3StreamedPassNodeRows(uint64_t tokens)
+{
+	const uint64_t rows = (tokens + K3_STREAMED_SHARDS - 1u) / K3_STREAMED_SHARDS;
+	return (uint32_t)((rows + K3_STREAMED_ROW_ALIGN - 1u) / K3_STREAMED_ROW_ALIGN * K3_STREAMED_ROW_ALIGN);
+}
+
 static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPrefill *request, const SparkStageRunnerServices *services, cudaStream_t stream)
 {
 	const uint64_t pass_max = (uint64_t)K3_STREAMED_SHARDS * s->node_rows;
 	const uint64_t keys = request != 0 ? (uint64_t)request->first_position + request->token_count : 0u;
 	const uint64_t started = K3StreamedNowNs();
 	uint32_t pass, passes, layer, row, rows, chunk;
-	uint64_t dense_item = 0u, expert_item = 0u;
+	uint64_t dense_item = 0u, expert_item = 0u, pass_share, last_tokens, padded_keys;
 	pthread_t streamer;
 	K3StreamedVocab vocab;
 	SparkStatus status;
-	if ( request == 0 || request->token_ids == 0 || request->token_count == 0u || (request->token_count % (K3_STREAMED_SHARDS * K3_STREAMED_ROW_ALIGN)) != 0u ||
+	if ( request == 0 || request->token_ids == 0 || request->token_count == 0u ||
 		request->sequence_slot >= s->dispatch->sequences || request->state_target >= s->dispatch->sequences || keys > UINT32_MAX )
 	{
-		fprintf(stderr, "sparkpipe_k3: streamed prefill takes a multiple of %u tokens for a known slot (got %u tokens, slot %u, state %u)\n",
-			K3_STREAMED_SHARDS * K3_STREAMED_ROW_ALIGN, request != 0 ? request->token_count : 0u, request != 0 ? request->sequence_slot : 0u,
-			request != 0 ? request->state_target : 0u);
+		fprintf(stderr, "sparkpipe_k3: streamed prefill takes at least one token for a known slot (got %u tokens, slot %u, state %u)\n",
+			request != 0 ? request->token_count : 0u, request != 0 ? request->sequence_slot : 0u, request != 0 ? request->state_target : 0u);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
+	passes = (uint32_t)((request->token_count + pass_max - 1u) / pass_max);
+	pass_share = ((uint64_t)request->token_count + K3_STREAMED_SHARDS * K3_STREAMED_ROW_ALIGN - 1u) / (K3_STREAMED_SHARDS * K3_STREAMED_ROW_ALIGN);
+	pass_share = (pass_share + passes - 1u) / passes * (K3_STREAMED_SHARDS * K3_STREAMED_ROW_ALIGN);
+	passes = (uint32_t)((request->token_count + pass_share - 1u) / pass_share);
+	last_tokens = request->token_count - (uint64_t)(passes - 1u) * pass_share;
+	padded_keys = keys - last_tokens + (uint64_t)K3_STREAMED_SHARDS * K3StreamedPassNodeRows(last_tokens);
+	if ( padded_keys > UINT32_MAX )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = K3StreamedOpen(s, services);
 	if ( status == SPARK_STATUS_OK )
-		status = K3StreamedKeys(s, keys);
+		status = K3StreamedKeys(s, padded_keys);
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	s->b.cache_shard.pages = s->dispatch->mla_cache[0];
-	passes = (uint32_t)((request->token_count + pass_max - 1u) / pass_max);
 	status = K3StreamedStates(s, request->state_target, 0u, stream);
 	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize(stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
@@ -1197,13 +1209,14 @@ static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPr
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	for (pass = 0u; pass < passes && status == SPARK_STATUS_OK; pass++)
 	{
-		const uint64_t base = (uint64_t)request->first_position + (uint64_t)pass * pass_max;
+		const uint64_t base = (uint64_t)request->first_position + (uint64_t)pass * pass_share;
+		const uint64_t pass_tokens = pass + 1u < passes ? pass_share : last_tokens;
 		uint32_t *host = s->host_staging, *small;
-		uint64_t node_first, pass_rows;
-		rows = (uint32_t)((request->token_count - (uint64_t)pass * pass_max) / K3_STREAMED_SHARDS);
-		rows = rows < s->node_rows ? rows : s->node_rows;
+		uint64_t node_first, pass_rows, node_tokens;
+		rows = K3StreamedPassNodeRows(pass_tokens);
 		pass_rows = (uint64_t)K3_STREAMED_SHARDS * rows;
 		node_first = base + (uint64_t)s->rank * rows;
+		node_tokens = pass_tokens > (uint64_t)s->rank * rows ? (pass_tokens - (uint64_t)s->rank * rows < rows ? pass_tokens - (uint64_t)s->rank * rows : rows) : 0u;
 		if ( cudaStreamSynchronize(stream) != cudaSuccess )
 		{
 			status = SPARK_STATUS_IO_ERROR;
@@ -1218,14 +1231,17 @@ static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPr
 		small[K3_STREAMED_CHUNKS + 2u] = rows;
 		small[K3_STREAMED_CHUNKS + 3u] = 0u;
 		small[K3_STREAMED_CHUNKS + 4u] = (uint32_t)pass_rows;
-		small[K3_STREAMED_CHUNKS + 5u] = (uint32_t)(base + pass_rows);
+		small[K3_STREAMED_CHUNKS + 5u] = (uint32_t)(base + pass_tokens);
 		small[K3_STREAMED_CHUNKS + 6u] = (uint32_t)base;
 		small[K3_STREAMED_CHUNKS + 7u] = request->sequence_slot;
 		status = K3StreamedUpload((void *)s->mla.pass_positions, host, pass_rows * sizeof(uint32_t), stream);
 		if ( status == SPARK_STATUS_OK )
 			status = K3StreamedUpload(s->positions_device, host + (uint64_t)s->rank * rows, (uint64_t)rows * sizeof(uint32_t), stream);
-		if ( status == SPARK_STATUS_OK )
-			status = K3StreamedUpload(s->tokens_device, request->token_ids + (node_first - request->first_position), (uint64_t)rows * sizeof(uint32_t), stream);
+		if ( status == SPARK_STATUS_OK && node_tokens != 0u )
+			status = K3StreamedUpload(s->tokens_device, request->token_ids + (node_first - request->first_position), node_tokens * sizeof(uint32_t), stream);
+		if ( status == SPARK_STATUS_OK && node_tokens < rows &&
+			cudaMemsetAsync(s->tokens_device + node_tokens, 0, (size_t)(rows - node_tokens) * sizeof(uint32_t), stream) != cudaSuccess )
+			status = SPARK_STATUS_IO_ERROR;
 		if ( status == SPARK_STATUS_OK )
 			status = K3StreamedUpload((void *)s->kda.chunk_row_begin, small, (K3_STREAMED_CHUNKS + 1u) * sizeof(uint32_t), stream);
 		if ( status == SPARK_STATUS_OK )
@@ -1251,6 +1267,8 @@ static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPr
 		if ( status != SPARK_STATUS_OK )
 			break;
 		s->mla.pass_rows = (uint32_t)pass_rows;
+		s->mla.pass_tokens = (uint32_t)pass_tokens;
+		s->kda.pass_tokens = (uint32_t)pass_tokens;
 		s->mla.first_key = (uint32_t)base;
 		status = K3StreamedAwaitPublished(s, &s->dense_published, dense_item, 1u);
 		if ( status != SPARK_STATUS_OK )
@@ -1289,7 +1307,7 @@ static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPr
 		fprintf(stderr, "sparkpipe_k3: streamed prefill pass %u/%u rows %u x %u keys to %llu status=%d at %.1f s; streamer waited %.1f s for the GPU to release buffers, "
 			"compute waited %.1f s for dense and %.1f s for expert blocks, own blocks took %.1f s; streamer spent %.1f s in dense broadcasts and %.1f s in expert steps, "
 			"%.1f s of them reading the packs\n", pass + 1u, passes, rows, K3_STREAMED_SHARDS,
-			(unsigned long long)(base + pass_rows), (int)status, (double)(K3StreamedNowNs() - started) / 1e9, (double)s->spent[0] / 1e9, (double)s->spent[1] / 1e9,
+			(unsigned long long)(base + pass_tokens), (int)status, (double)(K3StreamedNowNs() - started) / 1e9, (double)s->spent[0] / 1e9, (double)s->spent[1] / 1e9,
 			(double)s->spent[2] / 1e9, (double)s->spent[3] / 1e9, (double)s->spent[4] / 1e9, (double)s->spent[5] / 1e9, (double)s->spent[6] / 1e9);
 		memset(s->spent, 0, sizeof(s->spent));
 	}

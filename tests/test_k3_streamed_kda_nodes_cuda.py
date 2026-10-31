@@ -1,4 +1,4 @@
-"""Run the streamed K3 KDA layer on emulated nodes (one token slice each, conv tails and chunk transforms exchanged per shard, two passes) against the sequential layer on an sm_121 device."""
+"""Run the streamed K3 KDA layer on emulated nodes (one token slice each, conv tails and chunk transforms exchanged per shard, two passes, the last one full or ragged) against the sequential layer on an sm_121 device."""
 import os
 import pathlib
 import shutil
@@ -26,9 +26,12 @@ if REQUIRED_COMPUTE_CAPABILITY not in capabilities:
     raise SystemExit(0)
 if shutil.which(NVCC) is None:
     raise SystemExit("FAIL test_k3_streamed_kda_nodes_cuda: an sm_121 device is present but nvcc is unavailable")
+RAGGED_TOKENS = (None, 203, 194, 130)
 with tempfile.TemporaryDirectory(prefix="k3-streamed-kda-nodes-cuda-") as directory:
-    binary = str(pathlib.Path(directory) / "probe")
-    subprocess.run([NVCC, "-O3", "-std=c++17", "-gencode", "arch=compute_121a,code=sm_121a",
-                    "-I.", "-Iinclude", "-Imodel-families/common/include", "-Imodel-families/k3/include",
-                    "tests/cuda/k3_streamed_kda_nodes_cuda.cu", "-o", binary, "-lpthread", "-lcuda"], cwd=ROOT, check=True)
-    subprocess.run([binary], check=True, timeout=900)
+    for tokens in RAGGED_TOKENS:
+        binary = str(pathlib.Path(directory) / f"probe-{tokens or 'full'}")
+        defines = [] if tokens is None else [f"-DKDA_TOKENS={tokens}u"]
+        subprocess.run([NVCC, "-O3", "-std=c++17", "-gencode", "arch=compute_121a,code=sm_121a", *defines,
+                        "-I.", "-Iinclude", "-Imodel-families/common/include", "-Imodel-families/k3/include",
+                        "tests/cuda/k3_streamed_kda_nodes_cuda.cu", "-o", binary, "-lpthread", "-lcuda"], cwd=ROOT, check=True)
+        subprocess.run([binary], check=True, timeout=900)

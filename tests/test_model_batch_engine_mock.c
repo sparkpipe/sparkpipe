@@ -966,7 +966,6 @@ static void TestScenarioStreamedPrefillDefers(const SparkModelResidentDeployment
 	uint32_t prompt[11] = {61u,62u,63u,64u,65u,66u,67u,68u,69u,70u,71u};
 	uint32_t other[3] = {81u,82u,83u};
 	uint32_t index,deferred_rows = 0u,deferred_publish = 0u,deferred_stateful = 0u,deferred_shared = 0u,final_seen = 0u,final_index = 0u,interleaved = 0u,first_index = UINT32_MAX;
-	streamed.streamed_prefill_quantum = 4u;
 	streamed.streamed_prefill_min_tokens = 8u;
 	MockResidentClientReset();
 	engine = TestConnectRows(&streamed,&state,runtime_root,6u);
@@ -989,7 +988,7 @@ static void TestScenarioStreamedPrefillDefers(const SparkModelResidentDeployment
 			deferred_stateful += (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u && (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS) == 0u ? 1u : 0u;
 			continue;
 		}
-		if ( lane.request_id == 1u && lane.sequence_position == 8u && final_seen == 0u )
+		if ( lane.request_id == 1u && lane.sequence_position == 10u && final_seen == 0u )
 		{
 			final_seen = 1u;
 			final_index = index;
@@ -1001,7 +1000,7 @@ static void TestScenarioStreamedPrefillDefers(const SparkModelResidentDeployment
 		if ( lane.request_id != 1u && deferred != 0u )
 			deferred_shared++;
 	}
-	CHECK(deferred_rows == 8u,"streamed prefill: positions 0..8 go out as deferred waves (the last quantum boundary before the prompt end)");
+	CHECK(deferred_rows == 10u,"streamed prefill: positions 0..10 go out as deferred waves (every prompt token but the last, which runs as the final wave)");
 	CHECK(deferred_publish != 0u && deferred_stateful == 0u,"streamed prefill: deferred waves seal and publish their blocks without state (the streamed prefill writes the pages before any other request may run)");
 	CHECK(deferred_shared == 0u && interleaved == 0u,"streamed prefill: no other request's rows ride in or between the deferred waves");
 	CHECK(final_seen != 0u && final_index > first_index,"streamed prefill: the final wave runs normally after the deferred ones");
@@ -1019,7 +1018,6 @@ static void TestScenarioStreamedSpanBudget(const SparkModelResidentDeployment *d
 	uint32_t prompt[104],index;
 	for (index=0u; index<104u; index++)
 		prompt[index] = 100u + index;
-	streamed.streamed_prefill_quantum = 4u;
 	streamed.streamed_prefill_min_tokens = 8u;
 	MockResidentClientReset();
 	memset(&state,0,sizeof(state));

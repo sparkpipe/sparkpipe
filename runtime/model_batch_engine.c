@@ -242,7 +242,6 @@ struct SparkModelBatchEngine
 	uint32_t max_prefill_rows;
 	uint32_t max_shared_prefill_rows;
 	uint32_t streamed_min_tokens;
-	uint32_t streamed_quantum;
 	uint32_t deferring_slot;
 	uint32_t deferring_generation;
 	uint32_t max_active_sequence_count;
@@ -1972,7 +1971,6 @@ static SparkStatus SparkModelBatchInitialize(
 	engine->inflight_budget_ns = configuration->inflight_budget_ns;
 	engine->max_prefill_rows = configuration->max_prefill_rows_per_submission;
 	engine->streamed_min_tokens = configuration->deployment->streamed_prefill_min_tokens;
-	engine->streamed_quantum = configuration->deployment->streamed_prefill_quantum;
 	engine->deferring_slot = UINT32_MAX;
 	engine->max_shared_prefill_rows = configuration->deployment->max_shared_input_row_count != 0u &&
 		configuration->deployment->max_shared_input_row_count < engine->max_prefill_rows ?
@@ -2570,13 +2568,13 @@ static uint32_t SparkModelBatchDeferHolds(SparkModelBatchEngine *engine,uint32_t
 static void SparkModelBatchDecideDefer(SparkModelBatchEngine *engine,SparkModelBatchRequestState *request,uint32_t slot)
 {
 	uint32_t remaining;
-	if ( request->defer_decided != 0u || engine->streamed_quantum == 0u )
+	if ( request->defer_decided != 0u || engine->streamed_min_tokens == 0u )
 		return;
 	request->defer_decided = 1u;
 	remaining = request->prompt_token_count - request->computed_prompt_token_count;
-	if ( remaining < engine->streamed_min_tokens || remaining <= engine->streamed_quantum )
+	if ( remaining < engine->streamed_min_tokens || remaining < 2u )
 		return;
-	request->defer_end = request->computed_prompt_token_count + (remaining - 1u) / engine->streamed_quantum * engine->streamed_quantum;
+	request->defer_end = request->prompt_token_count - 1u;
 	engine->deferring_slot = slot;
 	engine->deferring_generation = request->generation;
 	fprintf(stderr,"batch_streamed_prefill request=%llu positions %u..%u of %u go to the streamed prefill, the rest as waves\n",

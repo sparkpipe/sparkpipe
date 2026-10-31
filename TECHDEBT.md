@@ -291,8 +291,9 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   keys) still take the scalar kernel, which re-reads every key for every row
   and reaches 1 to 2 TFLOP/s per node; a long Gemma 4 prompt is bound by it.
 - Kimi K3's streamed prefill (lanes whose stage config names
-  `streamed_prefill` and whose deployment names `streamed_prefill_quantum`
-  and `streamed_prefill_min_tokens`) has three gaps. The deferred span's
+  `streamed_prefill` and whose deployment names
+  `streamed_prefill_min_tokens`) takes every prompt token but the last; the
+  last runs as a one-row wave that samples. It has three gaps. The deferred span's
   cache blocks are not published, so a later request does not reuse that
   part of the prompt and no mid-prompt checkpoint is kept; publishing them
   needs a sealed-page publish after the streamed prefill writes the pages.
