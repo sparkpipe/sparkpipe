@@ -1183,9 +1183,13 @@ and the multidev docs on 2026-09-28. Line numbers are in
     modules (and so the gate references) round the sum and normalise the
     rounded value. Taking CUDA's order moved the paired test from +2.42 /
     +3.37 sigma to +0.28 / +1.35 for Ling 3.0 Flash (which now passes), from
-    +2.90 / +2.28 to +0.85 / +0.84 for Gemma 4 26B and from -2.10 / +2.01 to
-    +0.47 / +1.32 for Qwen3.8-27B; Gemma 4 31B's and Muse Glimmer's gate
-    numbers are identical to the last digit. Both backends apply the gain with one rounding,
+    +2.90 / +2.28 to +0.85 / +0.84 for Gemma 4 26B, from -2.10 / +2.01 to
+    +0.47 / +1.32 for Qwen3.8-27B, from +1.79 / +2.05 to +0.78 / +2.97 for
+    Ling 3.0 Flash Fin and from -0.30 / +1.25 to +1.72 / +1.62 for Qwen 3.8
+    Flash, all passing, and from +1.44 / +0.22 to +3.33 / -0.32 for Laguna,
+    which now fails against reference a although its CUDA stage uses the same
+    fused norm; Gemma 4 31B's and Muse Glimmer's gate numbers are identical
+    to the last digit. Both backends apply the gain with one rounding,
     `bf16(x r w)`, where the publishers round `x r` first, and keep the
     attention probabilities and the GQA gate in FP32 where the publishers
     round them: at Solar Open 2's layer 0 (GQA, no residual add before it)
