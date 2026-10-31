@@ -18,7 +18,7 @@ LONGEST = timedelta(days=3653)
 STAMP = "%Y-%m-%dT%H:%M:%SZ"
 SLOT = "%Y-%m-%dT%H:00Z"
 EMPTY = Decimal("0.0001")
-KINDS = ("hc_lot", "hc_debit", "hc_hold", "hc_unhold", "hc_spend_hold", "reserve", "ask", "ask_cancel", "bid", "bid_cancel", "bid_close", "bid_roll", "pool_join", "pool_settle", "pool_charge", "api_key", "api_key_revoke", "tranche_grant", "clock")
+KINDS = ("hc_lot", "hc_debit", "hc_hold", "hc_unhold", "hc_spend_hold", "reserve", "ask", "ask_cancel", "bid", "bid_cancel", "bid_close", "bid_roll", "pool_join", "pool_settle", "pool_charge", "api_key", "api_key_revoke", "tranche_grant", "clock", "maintenance", "reservation_credit")
 
 
 class Refusal(Exception):
@@ -83,6 +83,15 @@ def rank(offer):
     return (offer["price"], offer["kind"] != "release", offer["seq"], offer["start"], offer["fleet"])
 
 
+def published_terms(market):
+    return {"advanceMultiplier": format(Decimal(str(market["advanceMultiplier"])), "f"), "releaseFee": format(Decimal(str(market["releaseFee"])), "f")}
+
+
+def window_of(moment, windows):
+    hour = moment.astimezone(KST).hour
+    return next((w["id"] for w in windows if w["from"] <= hour < w["to"]), None)
+
+
 def hc_field(value, label):
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise Refusal(f"Give the {label} in HC.")
@@ -135,13 +144,15 @@ class State:
         self.tranches = collections.defaultdict(int)
         self.tranche_used = collections.defaultdict(int)
         self.settled = set()
+        self.maintenance = {}
+        self.maintained = []
         self.offset = 0
         self.seq = 0
         self.handlers = dict(zip(KINDS, (
             self.on_lot, self.on_debit, self.on_hold, self.on_unhold, self.on_spend_hold, self.on_reserve,
             self.on_ask, self.on_ask_cancel, self.on_bid, self.on_bid_cancel, self.on_bid_close, self.on_bid_roll,
             self.on_pool_join, self.on_pool_settle, self.on_charge, self.on_key, self.on_key_revoke,
-            self.on_tranche, self.on_clock)))
+            self.on_tranche, self.on_clock, self.on_maintenance, self.on_reservation_credit)))
 
     def apply(self, line):
         self.seq = line["seq"]
@@ -167,7 +178,7 @@ class State:
 
     def on_lot(self, data):
         lots = self.lots.setdefault(data["account"], [])
-        lots.append({"lot": data["lot"], "hc": Decimal(data["hc"]), "first": data["hc"], "expires": data["expires"], "source": data["source"], "ref": data["ref"], "issued": data["now"]})
+        lots.append({"lot": data["lot"], "hc": Decimal(data["hc"]), "first": data["hc"], "expires": data["expires"], "source": data["source"], "ref": data["ref"], "issued": data["now"], "terms": data["terms"]})
         lots.sort(key=lambda lot: (lot["expires"], lot["issued"]))
 
     def on_debit(self, data):
@@ -202,7 +213,7 @@ class State:
     def on_reserve(self, data):
         self.reservations[data["reservation"]] = {
             "reservation": data["reservation"], "account": data["account"], "fleet": data["fleet"], "start": data["start"],
-            "model": data["model"], "price": data["price"], "source": data["source"], "state": "held", "ask": None, "created": data["now"],
+            "model": data["model"], "price": data["price"], "source": data["source"], "state": "held", "ask": None, "created": data["now"], "terms": data["terms"],
         }
         if data["ask"]:
             ask = self.asks[data["ask"]]
@@ -268,6 +279,22 @@ class State:
     def on_clock(self, data):
         self.offset = data["offset"]
 
+    def on_maintenance(self, data):
+        first = slot_time(data["start"])
+        for n in range(data["hours"]):
+            self.maintenance[(data["fleet"], slot_text(first + HOUR * n))] = data["maintenance"]
+        self.maintained.append(data)
+
+    def on_reservation_credit(self, data):
+        res = self.reservations[data["reservation"]]
+        res["state"] = "credited"
+        if res["ask"] and self.asks[res["ask"]]["state"] == "open":
+            self.asks[res["ask"]]["state"] = "cancelled"
+        if res["source"] == "tranche":
+            self.tranche_used[(res["account"], month_of(res["start"]))] -= 1
+        if self.slots.get((res["fleet"], res["start"])) == res["reservation"]:
+            del self.slots[(res["fleet"], res["start"])]
+
 
 def take_parts(parts, amount, front):
     used, left = [], Decimal(amount)
@@ -285,17 +312,22 @@ def take_parts(parts, amount, front):
 
 
 class Cover:
-    def __init__(self, st, now, first, fleets, commitments):
+    def __init__(self, st, now, first, fleets, commitments, maintenance):
         self.first = first
         self.rates = {f["id"]: f["rate"] for f in fleets if f["serving"]}
         self.commitments = commitments
-        self.taken, self.kept = {}, {}
+        self.share = 1 - Decimal(str(maintenance)) / 168
+        self.taken, self.kept, self.owners = {}, {}, {}
         for (fleet, start), held in st.slots.items():
             if fleet in self.rates and slot_time(start) >= first:
                 self.taken.setdefault(start, set()).add(fleet)
                 res = st.reservations[held]
+                self.owners.setdefault(start, {})[fleet] = res["account"]
                 if res["source"] == "tranche":
                     self.kept.setdefault(start, collections.Counter())[res["account"]] += 1
+        for fleet, start in st.maintenance:
+            if fleet in self.rates and slot_time(start) >= first:
+                self.taken.setdefault(start, set()).add(fleet)
         moment, due = stamp(now), collections.defaultdict(Decimal)
         for lots in st.lots.values():
             for lot in lots:
@@ -314,26 +346,41 @@ class Cover:
         self.curve = [Decimal(0)]
         self.lowest = None
 
-    def aside(self, moment):
+    def active(self, moment):
         local = moment.astimezone(KST)
-        if local.weekday() == 6:
-            return 0
+        slot = local.weekday() * 24 + local.hour
+        return [(account, pattern[slot], lock) for account, begins, ends, pattern, lock, allowance, plan in self.commitments if begins <= moment < ends and pattern[slot]]
+
+    def locked(self, moment, holder=None):
+        return {fleet for account, need, lock in self.active(moment) if lock and (holder is None or account != holder) for fleet in lock}
+
+    def aside(self, moment, holder=None):
         used = self.kept.get(slot_text(moment), {})
-        return sum(max(0, pattern[local.hour] - used.get(account, 0)) for account, begins, ends, pattern in self.commitments if begins <= moment < ends)
+        return sum(max(0, need - used.get(account, 0)) for account, need, lock in self.active(moment) if not lock and (holder is None or account != holder))
 
-    def free(self, moment, without=None):
-        taken = self.taken.get(slot_text(moment), ())
-        return sorted(rate for fleet, rate in self.rates.items() if fleet not in taken and fleet != without)
+    def free(self, moment, without=None, holder=None):
+        closed = self.taken.get(slot_text(moment), set()) | self.locked(moment, holder)
+        return sorted(rate for fleet, rate in self.rates.items() if fleet not in closed and fleet != without)
 
-    def open(self, moment, now, last_call):
-        return moment - now < last_call or len(self.free(moment)) > self.aside(moment)
+    def open(self, moment, now, last_call, holder=None, fleet=None):
+        if fleet in self.locked(moment, holder):
+            return False
+        return moment - now < last_call or len(self.free(moment, holder=holder)) > self.aside(moment, holder)
+
+    def clash(self, moment):
+        taken, held = self.taken.get(slot_text(moment), set()), collections.Counter()
+        for account, need, lock in self.active(moment):
+            held.update(lock)
+        owners = {fleet: res for fleet, res in self.owners.get(slot_text(moment), {}).items()}
+        for account, need, lock in self.active(moment):
+            if any(held[fleet] > 1 or fleet not in self.rates or (fleet in taken and owners.get(fleet) != account) for fleet in lock):
+                return True
+        return len(self.free(moment)) < self.aside(moment)
 
     def value(self, moment, without=None):
-        if moment.astimezone(KST).weekday() == 6:
-            return Decimal(0)
         free = self.free(moment, without)
         keep = len(free) - self.aside(moment)
-        return sum(free[:keep], Decimal(0)) if keep > 0 else Decimal(0)
+        return sum(free[:keep], Decimal(0)) * self.share if keep > 0 else Decimal(0)
 
     def supply(self, until):
         hours = max(0, math.ceil((until - self.first) / HOUR))
@@ -433,9 +480,6 @@ class Market:
             return None
         return datetime.fromisoformat(pricing["hourlyEarliestStart"]).replace(tzinfo=timezone(timedelta(hours=9)))
 
-    def fee(self, market):
-        return Decimal(str(market["releaseFee"]))
-
     def last_call(self, market):
         return timedelta(hours=market["lastCallHours"])
 
@@ -448,7 +492,7 @@ class Market:
         key = (id(self.st), self.st.seq, first, floor_hour(now), found)
         if commitments is None and self.covered and self.covered[0] == key:
             return self.covered[1]
-        cover = Cover(self.st, now, first, self.fleets(pricing), found)
+        cover = Cover(self.st, now, first, self.fleets(pricing), found, pricing["plans"]["maintenanceHoursPerWeek"])
         if commitments is None:
             self.covered = (key, cover)
         return cover
@@ -474,13 +518,23 @@ class Market:
     def held_parts(self, bid):
         return [[lot["expires"], part] for lot, part in self.st.holds.get(bid["bid"], [])]
 
+    def lot_terms(self, account, now):
+        moment = stamp(now)
+        return next((lot["terms"] for lot in self.st.lots.get(account, []) if lot["expires"] > moment and lot["hc"] > 0), None)
+
+    def hold_terms(self, bid):
+        hold = self.st.holds.get(bid["bid"], [])
+        return hold[0][0]["terms"] if hold else None
+
     def kept(self, moment):
         return Refusal(f"Our hours before {kst_text(moment)} are kept for hour-credits that lapse sooner. HC that lapses later can reserve them from {self.app.cfg.pricing()['market']['lastCallHours']} hours before they start. Choose a later hour, a released hour or the shared pool.", 409, "kept")
 
-    def offer(self, fleet, start, now, market, earliest, cover, tranche=False):
+    def offer(self, fleet, start, now, market, earliest, cover, tranche=False, account=None, multiplier=None):
         if start <= now:
             return None
         key = (fleet["id"], slot_text(start))
+        if key in self.st.maintenance:
+            return None
         holder = self.st.slots.get(key)
         if holder:
             res = self.st.reservations[holder]
@@ -491,25 +545,27 @@ class Market:
         if not fleet["serving"] or (earliest and start < earliest):
             return None
         price = fleet["rate"]
+        if not cover.open(start, now, self.last_call(market), account if tranche else None, fleet["id"]):
+            return None
         if not tranche:
             ahead = start - now
-            if ahead > timedelta(days=market["advanceDays"]) or not cover.open(start, now, self.last_call(market)):
+            if ahead > timedelta(days=market["advanceDays"]):
                 return None
             if ahead > timedelta(days=market["horizonDays"]):
-                if start.astimezone(KST).weekday() == 6:
-                    return None
-                price = hc(price * Decimal(str(market["advanceMultiplier"])))
+                price = hc(price * (Decimal(str(market["advanceMultiplier"])) if multiplier is None else multiplier))
         return {"fleet": key[0], "start": key[1], "price": price, "kind": "hyor", "ask": None, "seq": 0, "seller": None}
 
     def window(self, bid, now, pricing, market, cover):
         earliest, found = self.earliest(pricing), []
+        terms = self.hold_terms(bid)
+        multiplier = Decimal(terms["advanceMultiplier"]) if terms else None
         first, last = max(slot_time(bid["from"]), floor_hour(now) + HOUR), slot_time(bid["to"])
         for fleet in self.fleets(pricing):
             if bid["fleet"] and fleet["id"] != bid["fleet"]:
                 continue
             moment = first
             while moment < last:
-                offer = self.offer(fleet, moment, now, market, earliest, cover)
+                offer = self.offer(fleet, moment, now, market, earliest, cover, multiplier=multiplier)
                 if offer:
                     found.append(offer)
                 moment += HOUR
@@ -532,7 +588,7 @@ class Market:
                         best = (total, start, run)
         return best[2] if best else []
 
-    def trade(self, offer, account, model, now, market, price, bid=None, pay="hc"):
+    def trade(self, offer, account, model, now, market, price, terms, bid=None, pay="hc"):
         moment, reservation = stamp(now), new_id("RS")
         if bid:
             self.book.append("hc_spend_hold", {"bid": bid["bid"], "hc": text_hc(price)})
@@ -542,11 +598,11 @@ class Market:
         elif pay == "hc":
             self.book.append("hc_debit", {"account": account, "hc": text_hc(price), "reason": "reserve", "ref": reservation, "now": moment})
         source = "tranche" if pay == "tranche" else offer["kind"]
-        self.book.append("reserve", {"reservation": reservation, "account": account, "fleet": offer["fleet"], "start": offer["start"], "model": model, "price": text_hc(price), "source": source, "ask": offer["ask"], "bid": bid["bid"] if bid else None, "now": moment})
+        self.book.append("reserve", {"reservation": reservation, "account": account, "fleet": offer["fleet"], "start": offer["start"], "model": model, "price": text_hc(price), "source": source, "ask": offer["ask"], "bid": bid["bid"] if bid else None, "now": moment, "terms": terms})
         if offer["kind"] == "release":
             credit = hc(price * (1 - self.st.asks[offer["ask"]]["fee"]))
             if credit > 0:
-                self.book.append("hc_lot", {"lot": new_id("LT"), "account": offer["seller"], "hc": text_hc(credit), "expires": stamp(year_later(now)), "source": "sale", "ref": reservation, "now": moment})
+                self.book.append("hc_lot", {"lot": new_id("LT"), "account": offer["seller"], "hc": text_hc(credit), "expires": stamp(year_later(now)), "source": "sale", "ref": reservation, "now": moment, "terms": published_terms(market)})
         return reservation
 
     def bid_price(self, offer, bid):
@@ -575,7 +631,7 @@ class Market:
             while chosen and self.bid_blocked(chosen, bid, cover, now, market):
                 chosen = [] if bid["consecutive"] else chosen[:-1]
             for offer in chosen:
-                self.trade(offer, bid["account"], bid["model"], now, market, self.bid_price(offer, bid), bid=bid)
+                self.trade(offer, bid["account"], bid["model"], now, market, self.bid_price(offer, bid), self.hold_terms(bid) or published_terms(market), bid=bid)
 
     def advance(self, now, pricing, market):
         st, moment = self.st, stamp(now)
@@ -589,7 +645,7 @@ class Market:
                 credit = hc(earned * (1 - st.asks[res["ask"]]["fee"]))
                 self.book.append("pool_settle", {"fleet": res["fleet"], "start": res["start"], "ask": res["ask"], "seller": res["account"], "earned": text_hc(earned), "credit": text_hc(credit), "seconds": text_hc(st.pool_seconds.get(key, Decimal(0))), "now": moment})
                 if credit > 0:
-                    self.book.append("hc_lot", {"lot": new_id("LT"), "account": res["account"], "hc": text_hc(credit), "expires": stamp(year_later(now)), "source": "pool", "ref": res["ask"], "now": moment})
+                    self.book.append("hc_lot", {"lot": new_id("LT"), "account": res["account"], "hc": text_hc(credit), "expires": stamp(year_later(now)), "source": "pool", "ref": res["ask"], "now": moment, "terms": published_terms(market)})
         for bid in list(st.bids.values()):
             if bid["state"] not in ("open", "filled") or slot_time(bid["to"]) > now:
                 continue
@@ -623,8 +679,8 @@ class Market:
             except Exception as error:
                 log(f"market tick: {error}")
 
-    def lot(self, account, credits, source, ref, now, pricing, note=None):
-        data = {"lot": new_id("LT"), "account": account, "hc": text_hc(credits), "expires": stamp(self.cover(now, pricing).lapse(credits, year_later(now))), "source": source, "ref": ref, "now": stamp(now)}
+    def lot(self, account, credits, source, ref, now, pricing, note=None, terms=None):
+        data = {"lot": new_id("LT"), "account": account, "hc": text_hc(credits), "expires": stamp(self.cover(now, pricing).lapse(credits, year_later(now))), "source": source, "ref": ref, "now": stamp(now), "terms": terms or published_terms(pricing["market"])}
         if note:
             data["note"] = note
         self.book.append("hc_lot", data)
@@ -638,9 +694,9 @@ class Market:
             data = self.lot(account, credits, "purchase", "sandbox", now, pricing)
         return {"lot": data["lot"], "hc": data["hc"], "expires": data["expires"]}
 
-    def issue(self, account, credits, order):
+    def issue(self, account, credits, order, terms):
         pricing, _ = self.settings()
-        return self.lot(account, credits, "purchase", order, self.now(), pricing)
+        return self.lot(account, credits, "purchase", order, self.now(), pricing, terms=terms)
 
     def credit(self, account, credits, note):
         pricing, _ = self.settings()
@@ -662,7 +718,10 @@ class Market:
             now = self.now()
             self.advance(now, pricing, market)
             cover = self.cover(now, pricing)
-            offer = self.offer(fleet, start, now, market, self.earliest(pricing), cover, tranche=pay == "tranche")
+            terms = self.app.plan_terms(account, start) if pay == "tranche" else self.lot_terms(account, now)
+            terms = terms or published_terms(market)
+            multiplier = Decimal(terms["advanceMultiplier"]) if pay == "hc" else None
+            offer = self.offer(fleet, start, now, market, self.earliest(pricing), cover, tranche=pay == "tranche", account=account, multiplier=multiplier)
             if not offer:
                 raise Refusal("That hour is not for sale.", 409)
             if offer["seller"] == account:
@@ -682,7 +741,7 @@ class Market:
                     stop = cover.blocked([(start, fleet["id"])], take_parts(self.lot_parts(account, now), price, True), now, self.last_call(market))
                     if stop:
                         raise self.kept(stop)
-            reservation = self.trade(offer, account, model, now, market, price, pay=pay)
+            reservation = self.trade(offer, account, model, now, market, price, terms, pay=pay)
         return {"reservation": reservation, "price": text_hc(price)}
 
     def release(self, account, body):
@@ -698,7 +757,7 @@ class Market:
             rate = self.fleet_field(pricing, res["fleet"])["rate"]
             least = rate if body.get("min") in (None, "") else hc_field(body.get("min"), "minimum price")
             ask = new_id("AK")
-            self.book.append("ask", {"ask": ask, "account": account, "reservation": res["reservation"], "min": text_hc(least), "fee": format(self.fee(market), "f"), "now": stamp(now)})
+            self.book.append("ask", {"ask": ask, "account": account, "reservation": res["reservation"], "min": text_hc(least), "fee": res["terms"]["releaseFee"], "now": stamp(now)})
             self.match_resting(now, pricing, market)
             return {"ask": ask, "state": self.st.asks[ask]["state"]}
 
@@ -784,6 +843,79 @@ class Market:
             self.grant_tranche(account, month, market["trancheDemoHours"])
         return {"months": months, "hours": market["trancheDemoHours"]}
 
+    def schedule_maintenance(self, fleet_id, day, hours=None):
+        pricing, market = self.settings()
+        fleet = self.fleet_field(pricing, fleet_id)
+        try:
+            local = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=KST)
+        except (TypeError, ValueError):
+            raise Refusal("Give the Monday of the week as YYYY-MM-DD, in KST.")
+        if local.weekday() != 0:
+            raise Refusal("Maintenance allowances run by calendar week, Monday to Sunday: give the Monday of the week.")
+        with self.book.lock:
+            now = self.now()
+            self.advance(now, pricing, market)
+            begin, end = local.astimezone(timezone.utc), (local + WEEK).astimezone(timezone.utc)
+            if not fleet["serving"]:
+                raise Refusal(f"{fleet['name']} is not serving.")
+            earliest = max(begin, floor_hour(now + WEEK) + (HOUR if now + WEEK > floor_hour(now + WEEK) else timedelta(0)))
+            commitments = self.app.commitments(now)
+            allowance = min([int(pricing["plans"]["maintenanceHoursPerWeek"])] + [found[5] for found in commitments if found[1] < end and found[2] > begin])
+            hours = allowance if hours is None else hours
+            done = sum(m["hours"] for m in self.st.maintained if m["fleet"] == fleet["id"] and begin <= slot_time(m["start"]) < end)
+            if hours < 1 or done + hours > allowance:
+                raise Refusal(f"{fleet['name']} has {max(0, allowance - done)} of its {allowance} maintenance hours left in that week.")
+            last = {}
+            for m in self.st.maintained:
+                if m["fleet"] == fleet["id"]:
+                    last[window_of(slot_time(m["start"]), pricing["windows"])] = m["start"]
+            best = None
+            for n in range(7 * 24 - hours + 1):
+                start = begin + HOUR * n
+                if start < earliest:
+                    continue
+                run = [slot_text(start + HOUR * k) for k in range(hours)]
+                if any((fleet["id"], slot) in self.st.maintenance for slot in run):
+                    continue
+                held = sum(1 for slot in run if self.st.slots.get((fleet["id"], slot)))
+                score = (held, last.get(window_of(start, pricing["windows"]), ""), start)
+                if best is None or score < best[0]:
+                    best = (score, start, run)
+            if best is None:
+                raise Refusal(f"No run of {hours} free hours on {fleet['name']} that week starts at least 7 days from now.")
+            start, run = best[1], best[2]
+            moment, ident = stamp(now), new_id("MT")
+            touched = [self.st.reservations[self.st.slots[(fleet["id"], slot)]] for slot in run if self.st.slots.get((fleet["id"], slot))]
+            self.book.append("maintenance", {"maintenance": ident, "fleet": fleet["id"], "start": slot_text(start), "hours": hours, "now": moment})
+            credits, notices = [], collections.defaultdict(list)
+            for res in touched:
+                self.book.append("reservation_credit", {"reservation": res["reservation"], "reason": "maintenance", "ref": ident, "now": moment})
+                if res["source"] != "tranche" and Decimal(res["price"]) > 0:
+                    self.lot(res["account"], Decimal(res["price"]), "maintenance", res["reservation"], now, pricing, terms=res["terms"])
+                credits.append(res["reservation"])
+                notices[res["account"]].append(f"{kst_text(slot_time(res['start']))} on {fleet['name']}: your reservation {res['reservation']} is credited back in full")
+            cover = self.cover(now, pricing)
+            for slot in run:
+                moment_slot = slot_time(slot)
+                local_slot = moment_slot.astimezone(KST)
+                index = local_slot.weekday() * 24 + local_slot.hour
+                live = [found for found in commitments if found[1] <= moment_slot < found[2] and found[3][index]]
+                hit = [found for found in live if fleet["id"] in found[4]]
+                short = max(0, cover.aside(moment_slot) - len(cover.free(moment_slot)))
+                hit += sorted((found for found in live if not found[4]), key=lambda found: found[1], reverse=True)[:short]
+                for found in hit:
+                    if any(res["account"] == found[0] and res["start"] == slot for res in touched):
+                        continue
+                    self.book.append("tranche_grant", {"account": found[0], "month": month_of(slot), "hours": 1, "credit": "maintenance", "plan": found[6], "ref": ident})
+                    credits.append(found[6])
+                    if found[0]:
+                        notices[found[0]].append(f"{kst_text(moment_slot)}: one plan hour of {found[6]} is credited")
+            for account, lines in notices.items():
+                if account in self.app.book.accounts:
+                    self.app.mail(self.app.book.accounts[account]["email"], f"SparkPipe maintenance on {fleet['name']}, {kst_text(start)}",
+                                  "\n".join([f"We will maintain {fleet['name']} for {hours} hours from {kst_text(start)}."] + lines + ["", "Nothing is counted against you for these hours."]))
+        return {"maintenance": ident, "fleet": fleet["id"], "start": slot_text(start), "hours": hours, "credited": credits}
+
     def move_clock(self, hours):
         pricing, market = self.settings()
         with self.book.lock:
@@ -793,10 +925,13 @@ class Market:
 
     def pooled(self, now, pricing):
         start, found = slot_text(floor_hour(now)), []
+        locked = self.cover(now, pricing).locked(floor_hour(now))
         for fleet in self.fleets(pricing):
             if not fleet["serving"]:
                 continue
             holder = self.st.slots.get((fleet["id"], start))
+            if (holder is None and fleet["id"] in locked) or (fleet["id"], start) in self.st.maintenance:
+                continue
             if holder is None:
                 found.append({"fleet": fleet["id"], "start": start, "order": (1, 0), "seller": None})
             elif self.st.reservations[holder]["state"] == "pooled":
@@ -970,7 +1105,9 @@ class Market:
                 for n in range(days * 24):
                     start = first + HOUR * n
                     holder = self.st.slots.get((fleet["id"], slot_text(start)))
-                    if holder:
+                    if (fleet["id"], slot_text(start)) in self.st.maintenance:
+                        cells.append(["maintenance", None])
+                    elif holder:
                         res = self.st.reservations[holder]
                         mine = res["account"] == account
                         if res["state"] == "released":
@@ -1016,13 +1153,13 @@ class Market:
             found = self.app.commitments(now) if commitments is None else commitments
             cover, life, pending = self.cover(now, pricing, found), year_later(now), self.pending()
             clashes, moment = [], cover.first
-            while moment < max([cover.first] + [ends for _, _, ends, _ in found]):
-                if len(cover.free(moment)) < cover.aside(moment):
+            while moment < max([cover.first] + [found_plan[2] for found_plan in found]):
+                if cover.clash(moment):
                     clashes.append(moment)
                 moment += HOUR
             tight = cover.tightest()
             return {
-                "now": stamp(now), "first": stamp(cover.first), "fleets": sorted(cover.rates), "agreements": len(found),
+                "now": stamp(now), "first": stamp(cover.first), "fleets": sorted(cover.rates), "plans": len(found),
                 "free": text_hc(cover.supply(life)), "unspent": text_hc(cover.unspent()), "pending": text_hc(pending),
                 "onSale": text_hc(max(Decimal(0), cover.headroom(life) - pending)),
                 "tightest": None if tight is None else {"slack": text_hc(tight[0]), "lapse": stamp(tight[1])},

@@ -18,6 +18,8 @@
 .policy { padding-block: 48px 64px; display: grid; gap: 28px; }
 .policy h1 { font-size: clamp(32px, 5vw, 56px); }
 .policy h2 { font-size: clamp(22px, 2.6vw, 30px); margin-top: 12px; }
+.policy .part h2 { font-size: clamp(28px, 3.6vw, 42px); margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--rule); }
+.policy h3 { font-size: clamp(20px, 2.2vw, 26px); margin-top: 8px; }
 .policy section { display: grid; gap: 12px; max-width: 76ch; }
 .policy p, .policy li { color: var(--steel); font: 400 16px/1.6 var(--text); }
 .policy ul { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; }
@@ -50,22 +52,22 @@
 <section>
 <h1>SparkPipe Hour Market Rules</h1>
 <p class="effective">Version of 31 October 2026</p>
-<p>These Rules form part of the Hourly Terms and are accepted with them. The Korean text prevails (clause 13.3).</p>
+<p>These Rules form part of the Customer Agreement and are accepted with it. The Korean text prevails (clause 13.3).</p>
 </section>
 <div class="notice"><p><b>Published for review.</b> Hour-credits are on sale now and work in the shared pool at once; our own fleet-hours can be reserved from 1 December 2026. This text may still change. Send comments to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</p></div>
 <section id="parties">
 <h2>Parties</h2>
-<p>These Rules are made between <b>HYOR AI Tech Ltd.</b> (효르에이아이테크 유한회사), business registration number 641-87-03809, of Yongsan-gu, Seoul, Republic of Korea, whose full address we give on request ("<b>we</b>"), and each business whose account takes part in the Hour Market ("<b>Customer</b>").</p>
+<p>These Rules are made between <b>HYOR AI Tech Ltd.</b> (효르에이아이테크 유한회사), business registration number 641-87-03809, of Yongsan-gu, Seoul, Republic of Korea, whose full address we give on request ("<b>we</b>"), and each company, professional or independent developer whose account takes part in the Hour Market ("<b>Customer</b>").</p>
 </section>
 <section id="s1">
 <h2>1. Scope</h2>
-<p id="c1-1">1.1. These Rules govern the <b>Hour Market</b>, in which Reservations are released, bid for and bought with hour-credits, and the shared pool's use of released hours that remain unsold. They form part of our SparkPipe Hourly Terms (the "<b>Hourly Terms</b>") and are accepted with them, and, for hours reserved under our 2-Year Reserved Fleet Service Agreement (the "<b>Agreement</b>"), they form part of the Agreement. Words defined in the Hourly Terms have the same meaning in these Rules.</p>
-<p id="c1-2">1.2. <b>Participants.</b> Only businesses with an account under the Hourly Terms or the Agreement take part, each acting for itself.</p>
+<p id="c1-1">1.1. These Rules govern the <b>Hour Market</b>, in which Reservations are released, bid for and bought with hour-credits, and the shared pool's use of released hours that remain unsold. They form part of our SparkPipe Customer Agreement (the "<b>Customer Agreement</b>") and are accepted with it. Words defined in the Customer Agreement have the same meaning in these Rules.</p>
+<p id="c1-2">1.2. <b>Participants.</b> Only businesses with an account under the Customer Agreement take part, each acting for itself.</p>
 <p id="c1-3">1.3. <b>One counterparty.</b> Customers do not trade with each other: every sale is settled with us under clause 6. HC never moves between accounts and is never paid out.</p>
 </section>
 <section id="s2">
 <h2>2. Release</h2>
-<p id="c2-1">2.1. The holder of a Reservation that has not started may release it, at <b>list</b>, which is the Fleet's Rate in HC per hour, or at a minimum price it sets of more than 0 and at most 1,000 HC per hour. This applies equally to a Reservation bought in the Hour Market and to one made with hours under the Agreement.</p>
+<p id="c2-1">2.1. The holder of a Reservation that has not started may release it, at <b>list</b>, which is the Fleet's Rate in HC per hour, or at a minimum price it sets of more than 0 and at most 1,000 HC per hour. This applies equally to a Reservation bought in the Hour Market and to one made with Plan hours under a Plan Order.</p>
 <p id="c2-2">2.2. A release rests as an ask until it is sold or its hour starts. Until then Customer may cancel it, and the hour is again Customer's Reservation, which Customer may use or release again.</p>
 <p id="c2-3">2.3. Customer cannot buy its own released hour.</p>
 </section>
@@ -73,17 +75,17 @@
 <h2>3. Bids</h2>
 <p id="c3-1">3.1. A <b>bid</b> is an order to reserve hours within a window. It names the model, a window that starts and ends on the hour, the number of hours wanted, at least one and at most the hours in the window, and the most Customer will pay per hour, more than 0 and at most 1,000 HC; it may also name a Fleet. A <b>consecutive</b> bid fills only with that number of unbroken hours on one Fleet, all at once. A <b>standing bid</b> repeats every week.</p>
 <p id="c3-2">3.2. A window must end after it starts and in the future, and may span at most 31 days, or 7 days for a standing bid. A bid fills only with hours that start after the current hour.</p>
-<p id="c3-3">3.3. <b>Hold.</b> Placing a bid holds its maximum price times its number of hours from Customer's balance, which must cover that amount. As each hour fills, its price is paid from the hold and the rest of that hour's maximum returns to the balance. When the window ends, or Customer cancels the bid, the HC still held returns to the balance. HC is held from Customer's lots in the order of clause 4.2 of the Hourly Terms and returns to the lots it came from; HC returned to a lot that has lapsed lapses with it.</p>
+<p id="c3-3">3.3. <b>Hold.</b> Placing a bid holds its maximum price times its number of hours from Customer's balance, which must cover that amount. As each hour fills, its price is paid from the hold and the rest of that hour's maximum returns to the balance. When the window ends, or Customer cancels the bid, the HC still held returns to the balance. HC is held from Customer's lots in the order of clause 13.3 of the Customer Agreement and returns to the lots it came from; HC returned to a lot that has lapsed lapses with it.</p>
 <p id="c3-4">3.4. When a standing bid's window ends, the window moves forward by whole weeks to the first one that has not ended, and the bid holds again. If Customer's balance cannot cover that hold, the bid is paused and fills no more.</p>
 <p id="c3-5">3.5. Customer may cancel a bid at any time. Hours already filled remain Customer's Reservations.</p>
 <p id="c3-6">3.6. <b>Reserving.</b> Choosing an hour on the calendar, or reserving it through our API, buys the ask for that hour at its price. Each hour has at most one ask: ours, or its holder's release. Customer may state the most it will pay, and the purchase is refused if the price is higher.</p>
 </section>
 <section id="s4">
 <h2>4. Our capacity</h2>
-<p id="c4-1">4.1. Every hour of a serving Fleet that nobody holds rests as our ask, from the first date we offer: at the Fleet's Rate up to 7 days ahead and, from Monday to Saturday, at the <b>advance price</b>, the Fleet's Rate times the advance multiplier under clause 5.1 of the Hourly Terms, more than 7 and up to 31 days ahead. Hours further ahead are offered only as released hours. Capacity kept under clause 4.3 is not offered, and an hour that clause 5.5 of the Hourly Terms keeps for HC that lapses sooner can be bought only with such HC until 6 hours before it starts.</p>
+<p id="c4-1">4.1. Every hour of a serving Fleet that nobody holds rests as our ask, from the first date we offer: at the Fleet's Rate up to 7 days ahead and, more than 7 and up to 31 days ahead, at the <b>advance price</b>, the Fleet's Rate times the advance multiplier under clauses 9.3 and 14.1 of the Customer Agreement. Hours further ahead are offered only as released hours. Capacity kept under clause 4.3 is offered only as that clause allows, hours under maintenance announced under clause 4.6 of the Customer Agreement are not offered, and an hour that clause 14.2 of the Customer Agreement keeps for HC that lapses sooner can be bought only with such HC until 6 hours before it starts.</p>
 <p id="c4-2">4.2. We never bid, and we never use information about any Customer's orders to trade against it.</p>
-<p id="c4-3">4.3. <b>Capacity kept for the Agreement.</b> Until 6 hours before each hour starts, we keep off sale the capacity the Agreement guarantees its customers (clause 4.6 of the Agreement and clause 5.2 of the Hourly Terms). From then on, any of it they have not reserved rests as our ask under clause 4.1.</p>
-<p id="c4-4">4.4. <b>HC on sale.</b> We sell HC only as far as clause 4.4 of the Hourly Terms allows, and publish the HC still on sale on the Hour Market page and under clause 11.</p>
+<p id="c4-3">4.3. <b>Capacity kept for Plan Orders.</b> Until 6 hours before each hour starts, we keep off sale the capacity that Plan Orders guarantee their holders (clause 18 of the Customer Agreement). From then on, any of it they have not reserved rests as our ask under clause 4.1. A locked Fleet is never offered (clause 19 of the Customer Agreement).</p>
+<p id="c4-4">4.4. <b>HC on sale.</b> We sell HC only as far as clause 13.4 of the Customer Agreement allows, and publish the HC still on sale on the Hour Market page and under clause 11.</p>
 </section>
 <section id="s5">
 <h2>5. Matching</h2>
@@ -93,7 +95,7 @@
 </section>
 <section id="s6">
 <h2>6. Settlement</h2>
-<p id="c6-1">6.1. When an order matches, in one step: the buyer's HC is debited, or paid from its bid's hold; the hour becomes the buyer's Reservation under the Hourly Terms, for the model the buyer named; and, for a released hour, the seller is credited the price less the release fee (clause 9), rounded down to six decimal places, as a new lot of HC under clause 4.2 of the Hourly Terms.</p>
+<p id="c6-1">6.1. When an order matches, in one step: the buyer's HC is debited, or paid from its bid's hold; the hour becomes the buyer's Reservation under the Customer Agreement, for the model the buyer named; and, for a released hour, the seller is credited the price less the release fee (clause 9), rounded down to six decimal places, as a new lot of HC under clause 13.3 of the Customer Agreement.</p>
 <p id="c6-2">6.2. In form, the seller surrenders the released hour to us, and we supply it to the buyer. We buy no released hour and pay no cash for one: the seller is credited only HC under clause 6.1.</p>
 <p id="c6-3">6.3. A settled trade is final, except under clause 8.</p>
 </section>
@@ -102,16 +104,16 @@
 <p id="c7-1">7.1. A released hour still unsold when it starts joins the shared pool for that hour, and its release ends.</p>
 <p id="c7-2">7.2. <b>Pool price.</b> The price of a seat-second in the shared pool is 1 HC divided by the seat-seconds of one pooled Fleet in an hour, which are the seats per Fleet we publish (8 today) times 3,600, multiplied by a factor between the minimum and maximum we publish (0.5 and 3 today) that we set about once a minute from the share of the pool's seats used in the minute before. We post the current price for each model on the Hour Market page and under clause 11.</p>
 <p id="c7-3">7.3. The HC charged for pool requests in an hour is allocated first to the released hours in the pool, earliest release first, each up to its Fleet's seat-seconds for the hour, and then to our own Fleets.</p>
-<p id="c7-4">7.4. After the hour ends, the seller of a released hour in the pool is credited the HC allocated to it, less the release fee, rounded down to six decimal places, as a new lot of HC under clause 4.2 of the Hourly Terms. The credit may be zero.</p>
+<p id="c7-4">7.4. After the hour ends, the seller of a released hour in the pool is credited the HC allocated to it, less the release fee, rounded down to six decimal places, as a new lot of HC under clause 13.3 of the Customer Agreement. The credit may be zero.</p>
 </section>
 <section id="s8">
 <h2>8. Prearranged trades</h2>
-<p id="c8-1">8.1. Customers may not prearrange trades between accounts, such as a release and a bid timed or priced to meet each other, or trade with themselves through several accounts. We may void such a trade: the buyer's HC is returned, the hour returns to the seller if it has not started, and the HC credited to the seller is withdrawn from its balance, as far as the balance allows. We may also close the accounts involved under clause 11.2 of the Hourly Terms.</p>
+<p id="c8-1">8.1. Customers may not prearrange trades between accounts, such as a release and a bid timed or priced to meet each other, or trade with themselves through several accounts. We may void such a trade: the buyer's HC is returned, the hour returns to the seller if it has not started, and the HC credited to the seller is withdrawn from its balance, as far as the balance allows. We may also close the accounts involved under clause 10.2 of the Customer Agreement.</p>
 </section>
 <section id="s9">
 <h2>9. Release fee</h2>
 <p id="c9-1">9.1. We deduct a <b>release fee</b> from each sale of a released hour and from each pool credit for one: a percentage of the price or of the HC allocated, which we publish on our website. It is 10% at the date of these Rules. Releasing, bidding and cancelling are free.</p>
-<p id="c9-2">9.2. A change of the release fee applies only to sales and pool credits made after we publish it.</p>
+<p id="c9-2">9.2. The release fee is a published setting, and a change of it applies as clause 9.3 of the Customer Agreement provides.</p>
 </section>
 <section id="s10">
 <h2>10. Records</h2>
@@ -128,8 +130,8 @@
 </section>
 <section id="s13">
 <h2>13. Changes, law and language</h2>
-<p id="c13-1">13.1. We change these Rules as clause 10 of the Hourly Terms provides, and the release fee as clause 9.2 provides. For an hour reserved under the Agreement, the version in force when Customer releases it applies.</p>
-<p id="c13-2">13.2. These Rules are governed by the laws of the Republic of Korea. Disputes under them are settled as clause 12.2 of the Hourly Terms provides or, for an hour reserved under the Agreement, as clause 14.2 of the Agreement provides.</p>
+<p id="c13-1">13.1. We change these Rules as clause 9.1 of the Customer Agreement provides for that Agreement, and the release fee as clause 9.2 provides. For an hour reserved under a Plan Order, the version in force when Customer releases it applies.</p>
+<p id="c13-2">13.2. These Rules are governed by the laws of the Republic of Korea. Disputes under them are settled as clause 12.2 of the Customer Agreement provides.</p>
 <p id="c13-3">13.3. These Rules are published in English and Korean. The Korean text prevails.</p>
 </section>
 </main>

@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>SparkPipe 2-Year Reserved Fleet Service Agreement</title>
-<meta name="description" content="Draft 2-Year Reserved Fleet Service Agreement for SparkPipe fleet-hours, published for review.">
+<title>SparkPipe Customer Agreement</title>
+<meta name="description" content="Draft SparkPipe Customer Agreement for hour-credits, the Hour Market, the shared pool and reserved plans ordered by Plan Order, published for review.">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
 <link rel="alternate" hreflang="en" href="https://sparkpipe.ai/agreement.html">
@@ -18,6 +18,8 @@
 .policy { padding-block: 48px 64px; display: grid; gap: 28px; }
 .policy h1 { font-size: clamp(32px, 5vw, 56px); }
 .policy h2 { font-size: clamp(22px, 2.6vw, 30px); margin-top: 12px; }
+.policy .part h2 { font-size: clamp(28px, 3.6vw, 42px); margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--rule); }
+.policy h3 { font-size: clamp(20px, 2.2vw, 26px); margin-top: 8px; }
 .policy section { display: grid; gap: 12px; max-width: 76ch; }
 .policy p, .policy li { color: var(--steel); font: 400 16px/1.6 var(--text); }
 .policy ul { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; }
@@ -48,197 +50,258 @@
 
 <main class="wrap policy">
 <section>
-<h1>SparkPipe 2-Year Reserved Fleet Service Agreement</h1>
+<h1>SparkPipe Customer Agreement</h1>
 <p class="effective">Version of 31 October 2026</p>
-<p>Signed individually after business verification; each clause may be negotiated. The Korean text prevails (clause 14.3).</p>
+<p>This Agreement, with the Hour Market Rules, is accepted online while signed in to the account, and we record the hashes of their exact texts. Reserved plans are added by Plan Orders signed or accepted by both parties. The Korean text prevails (clause 12.3).</p>
 </section>
 <div class="notice"><p><b>Published for review.</b> Hour-credits are on sale now and work in the shared pool at once; our own fleet-hours can be reserved from 1 December 2026. This text may still change. Send comments to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</p></div>
-<section id="parties-and-definitions">
-<h2>Parties and definitions</h2>
-<p>This Agreement is made on the Signature Date between:</p>
-<ul><li><b>Supplier:</b> HYOR AI Tech, Ltd., a company organised under the laws of the Republic of Korea, business registration number 641-87-03809, with its registered office in Yongsan-gu, Seoul, Republic of Korea, whose full address we give on request and in the signed Agreement ("<b>we</b>", "<b>Supplier</b>"); and</li><li><b>Customer:</b> [legal name], a company organised under the laws of [jurisdiction], registration number [number], registered address [address] ("<b>Customer</b>").</li></ul>
-<p>In this Agreement:</p>
-<ul><li><b>Signature Date</b> means the date of the last signature below. The Term begins on it, and the Tranches, Phase A and every payment deadline run from it.</li><li><b>KST</b> means Korea Standard Time (UTC+9). All times and days in this Agreement are KST.</li><li><b>Day N</b> means the Nth calendar day counting the Signature Date as <b>Day 1</b>.</li><li><b>Fleet</b> means a group of computing machines that we operate as a single unit and list on our Fleet List, published at sparkpipe.ai/fleets.html.</li><li><b>Fleet-hour</b> or <b>hour</b> means the use of one entire Fleet for sixty minutes.</li><li><b>Rate</b> means the number of hours that one hour on a Fleet consumes, as published on our Fleet List; 1 unless the Fleet List states otherwise. The Rate of each Fleet listed at the Signature Date is fixed for the Term.</li><li><b>Americas Window</b>, <b>Asia Window</b> and <b>Europe Window</b> mean the three 8-hour periods of each day defined in the Schedule.</li><li><b>Tranche</b> means the hours of one calendar month within the Term, as set out in clause 3.</li><li><b>Reservation</b> means the booking of one or more hours on a selected Fleet through our system under clause 8. <b>Reserve</b> has a matching meaning.</li><li><b>Phase A</b> means Day 1 to Day 30 inclusive.</li><li><b>Full Prepayment</b> means our receipt, in cleared funds, of the price of every Tranche in the Term.</li><li><b>Account</b> means Customer's account with us under clause 8.5.</li><li><b>Hourly Terms</b> means our SparkPipe Hourly Terms, published at sparkpipe.ai/hourly-terms.html. <b>Hour-credit</b> (or <b>HC</b>) has the meaning given there.</li><li><b>Hour Market Rules</b> means our SparkPipe Hour Market Rules, published at sparkpipe.ai/market-rules.html, in the version in force when Customer releases an hour.</li></ul>
+<section id="parties">
+<h2>Parties</h2>
+<p>This Agreement is made between <b>HYOR AI Tech Ltd.</b> (효르에이아이테크 유한회사), a company organised under the laws of the Republic of Korea, business registration number 641-87-03809, of Yongsan-gu, Seoul, Republic of Korea, whose full address we give on request and in each Plan Order ("<b>we</b>"), and the company, professional or independent developer identified in the account that accepts it ("<b>Customer</b>"). A Plan Order identifies Customer by its legal name and address, and a company also by its jurisdiction of incorporation and registration number.</p>
+</section>
+<section id="part1" class="part">
+<h2>Part 1. General</h2>
 </section>
 <section id="s1">
-<h2>1. Subject</h2>
-<p id="c1-1">1.1. We provide Customer the SparkPipe reserved fleet service for the Term: reserved capacity on our Fleets, the guaranteed models in clause 10, the interconnect that joins the machines of each Fleet, and operation and support. The fleet-hour is the unit in which the service is measured, reserved and paid for. Customer selects the Fleet at each Reservation from the Fleets we operate at that time, current or future, subject to availability under clause 8.8.</p>
-<p id="c1-2">1.2. We provide a service, not hardware. We keep ownership, possession and operation of every Fleet.</p>
+<h3>1. Definitions and documents</h3>
+<p id="c1-1">1.1. In this Agreement:</p>
+<ul><li><b>Fleet</b> means a group of computing machines that we operate as one unit and list on our <b>Fleet List</b>, published at sparkpipe.ai/fleets.html.</li><li><b>Fleet-hour</b> or <b>hour</b> means the use of one entire Fleet for sixty minutes.</li><li><b>Rate</b> means the number that the Fleet List gives each Fleet, 1 unless the Fleet List states otherwise: the HC that one hour of our capacity on that Fleet costs up to 7 days ahead (clause 14.1), and the Plan hours that one reserved hour on it consumes (clause 22.1).</li><li><b>Reservation</b> (or <b>dated hour</b>) means the right to use one named Fleet for the sixty minutes from a named start on the hour. To <b>reserve</b> is to obtain one.</li><li>To <b>release</b> a Reservation is to offer it for resale in the <b>Hour Market</b> under the Hour Market Rules.</li><li><b>Hour-credit</b> (<b>HC</b>) means the prepaid unit in which Customer pays for hours and for the shared pool under Part 2.</li><li><b>Plan</b> means the reserved plan that a Plan Order creates under Part 3, and <b>Plan hours</b> means the hours it holds (clause 17.3).</li><li><b>Hour Market Rules</b> means our SparkPipe Hour Market Rules, published at sparkpipe.ai/market-rules.html.</li><li><b>KST</b> means Korea Standard Time (UTC+9). All times and days in this Agreement and in each Order are in KST.</li></ul>
+<p id="c1-2">1.2. <b>Orders.</b> Customer buys under this Agreement by Orders. An <b>Order</b> is either (a) a purchase of HC made through our website under Part 2, or (b) a <b>Plan Order</b>: a one-page order form in the form set out at the end of this Agreement, stating the fields listed in clause 16.1, signed by both parties or accepted by both in the Account (clause 12.4).</p>
+<p id="c1-3">1.3. <b>Precedence.</b> A Plan Order prevails over this Agreement for its own fields, and the Hour Market Rules prevail over it on the matters listed in clause 1.4; otherwise this Agreement prevails. A Plan Order does not vary clause 5, 6, 8 or 12 unless it says so expressly.</p>
+<p id="c1-4">1.4. <b>Hour Market Rules.</b> The Hour Market Rules form part of this Agreement. They govern the release of Reservations, bids, the matching and settlement of trades, the price of the shared pool and its use of released hours, and the release fee.</p>
 </section>
 <section id="s2">
-<h2>2. The hour and the price</h2>
-<p id="c2-1">2.1. The price of each fleet-hour is the <b>Hour Price</b> stated in the Schedule, fixed for the Term.</p>
-<p id="c2-2">2.2. The Hour Price is a single all-in price. It covers the Fleet and its interconnect, the models in clause 10, and operation and support. No other fee, surcharge or charge applies during the Term, apart from the release fee that the Hour Market Rules deduct from what a released hour earns. The Hour Price is exclusive of value-added tax (VAT). We charge VAT at the statutory rate (10% at the Signature Date) on every payment and show it separately on our invoice, except a payment that the Schedule states is zero-rated and that Customer makes in the way the Schedule states. Any amount charged as VAT that is not owed is an overpayment, and we refund it to Customer. If a payment Customer made as zero-rated is held subject to VAT because Customer's information was incorrect or Customer did not pay in the way the Schedule states, Customer pays us that VAT, with any additional tax and penalty, on demand.</p>
-<p id="c2-3">2.3. The Term contains 24 hours for every day in it other than a Sunday: <b>15,000 to 15,048 hours</b>, depending on how many Sundays fall within the Term and whether 29 February does. The Schedule states the number. The price of the Term is the Hour Price multiplied by those hours.</p>
-<p id="c2-4">2.4. All balances, refunds and claims are counted in hours, valued at the Hour Price.</p>
-<p id="c2-5">2.5. Customer pays every amount in full, in cleared funds, without set-off, deduction or withholding. If a law requires Customer to withhold or deduct any tax from a payment, Customer pays an additional amount so that we receive what we would have received without the withholding or deduction. Customer bears its own and any intermediary bank, transfer, network and currency conversion charges, so that the full amount invoiced is paid. We bear our payment processor's own fees.</p>
+<h3>2. Professional use and account</h3>
+<p id="c2-1">2.1. <b>Professional use.</b> Customer confirms that it is purchasing and using hours, hour-credits and the shared pool for business, professional, commercial, or independent research and development purposes, and not as a retail household consumer, and that its account details are true and current. We may refuse or close an account that does not meet this.</p>
+<p id="c2-2">2.2. Customer's <b>Account</b> is its account on our website, identified by the email address Customer verifies with us and signed in to with one-time codes we send to that address. Acceptance of this Agreement, purchases of HC, Reservations and changes to the Account are made while signed in to it, or through our API with an access token issued under it. Customer may issue access tokens and add users under the Account. Access is automated, with no notice to us, approval or waiting period. We set the technical mechanism and may change it without amending this Agreement, provided equivalent access continues.</p>
+<p id="c2-3">2.3. Customer bears all risk of loss or compromise of its Account email and access tokens; any use under them is Customer's use. Customer may name a recovery email address, which can replace the Account email after a 72-hour delay with notice to the Account email.</p>
 </section>
 <section id="s3">
-<h2>3. Term and Tranches</h2>
-<p id="c3-1">3.1. The Term starts at 00:00:00 on the Signature Date and ends at 23:59:59 on the day before the date 24 calendar months later. Where the Signature Date is 29 February, the Term ends at 23:59:59 on 28 February two years later.</p>
-<p id="c3-2">3.2. Each calendar month within the Term is one Tranche. Tranche 1 runs from the Signature Date to the end of that month. The final Tranche runs from the first day of its month to the end of the Term. There are 24 Tranches where the Signature Date is the first day of a month, and 25 otherwise.</p>
-<p id="c3-3">3.3. Each Tranche holds 24 hours for each of its days within the Term other than a Sunday. A whole month holds 576 to 648 hours, depending on its length and how many Sundays it has. A partial first or final Tranche counts only its days within the Term.</p>
-<p id="c3-4">3.4. Example, signed on 15 December 2026:</p>
-<div class="scroll"><table>
-<tr><th>Tranche</th><th>Period</th><th>Hours</th></tr>
-<tr><td>1</td><td>15–31 Dec 2026</td><td>360</td></tr>
-<tr><td>2</td><td>Jan 2027</td><td>624</td></tr>
-<tr><td>15</td><td>Feb 2028 (leap)</td><td>600</td></tr>
-<tr><td>25</td><td>1–14 Dec 2028</td><td>288</td></tr>
-<tr><td><b>All</b></td><td><b>15 Dec 2026 – 14 Dec 2028</b></td><td><b>15,048</b></td></tr>
-</table></div>
-<p id="c3-5">3.5. An hour expires at 23:59:59 on the last day of its Tranche unless consumed. Expired hours do not carry forward, convert, accumulate or have any cash value. Before a reserved hour occurs, Customer may release it under the Hour Market Rules (clause 8.6). A released hour that is sold, or that reaches its start unsold, counts as consumed, and Customer is credited the hour-credits it earns under those Rules.</p>
+<h3>3. Prices, VAT and payment</h3>
+<p id="c3-1">3.1. <b>Prices.</b> HC is priced at the HC Price (clause 13.1), and Plan hours at the Hour Price stated in the Plan Order (clause 16.4). Prices are exclusive of value-added tax (VAT).</p>
+<p id="c3-2">3.2. <b>VAT.</b> We charge VAT at the statutory rate (10% today) on every payment and show it separately on our invoice, except a payment that is zero-rated under clause 3.3(b). Any amount charged as VAT that is not owed is an overpayment, and we refund it to Customer. If a payment made as zero-rated is held subject to VAT because Customer's information was incorrect or Customer did not pay in the way the Order states, Customer pays us that VAT, with any additional tax and penalty, on demand.</p>
+<p id="c3-3">3.3. <b>Methods.</b> Customer pays in advance: no HC and no Plan hour is issued before it is paid for. Customer pays in one of the following ways, as our website offers it for a purchase of HC or as the Plan Order states:</p>
+<ul><li>(a) in Korean won, where Customer has a Korean business registration number, by bank transfer from Customer's account at a Korean bank to our won account named on the electronic tax invoice (세금계산서) we issue;</li><li>(b) in US dollars, by bank transfer from Customer's own account outside the Republic of Korea to our US dollar account at a Korean foreign exchange bank, whose details both parties confirm before payment; such a payment is zero-rated where Customer has no place of business in the Republic of Korea and the law allows; or</li><li>(c) in a US dollar stablecoin, such as USDC or USDT, that our payment processor CoinPayments accepts, on any network it accepts for that coin, through the invoice it issues for us.</li></ul>
+<p id="c3-4">3.4. Customer pays every amount in full, without set-off, deduction or withholding. If a law requires Customer to withhold or deduct any tax from a payment, Customer pays an additional amount so that we receive what we would have received without the withholding or deduction. Customer bears its own and any intermediary bank, transfer, network and currency conversion charges, so that the full amount invoiced is paid. We bear our payment processor's own fees.</p>
+<p id="c3-5">3.5. <b>Cleared payment.</b> A payment counts once we have verified it: a bank transfer when it reaches our account, and a stablecoin payment when our payment processor reports it completed. If the processor completes a stablecoin payment for less than the invoice total, the payment counts for the amount received, as the processor values it in US dollars, and the HC or Plan hours it issues are reduced in proportion. A payment the processor does not complete, an amount above the invoice total, and a payment that arrives after the processor's payment window are returned through the processor's refund procedure.</p>
 </section>
 <section id="s4">
-<h2>4. Timezone election</h2>
-<p id="c4-1">4.1. Each day consists of 8 Americas Window hours, 8 Asia Window hours and 8 Europe Window hours. The windows are periods of the day. They are not separate pools of capacity or separate machines. As days are in KST, the Americas Window of each day falls on the previous calendar day in the Americas.</p>
-<p id="c4-2">4.2. Customer makes one timezone election in the Schedule at signing: <b>Thirds</b>, <b>100% Americas</b>, <b>100% Asia</b> or <b>100% Europe</b>. The election is fixed for the Term and may be changed only on renewal.</p>
-<p id="c4-3">4.3. A 100% election needs our written approval. We give it in the order customers sign, and only where we can keep the capacity that clause 4.6 guarantees.</p>
-<p id="c4-4">4.4. The election sets Customer's <b>Guaranteed Limit</b>: the hours Customer may reserve in each window on each day from Monday to Saturday:</p>
-<div class="scroll"><table>
-<tr><th>Election</th><th class="num">Americas hours per day</th><th class="num">Asia hours per day</th><th class="num">Europe hours per day</th><th>Rate</th></tr>
-<tr><td>Thirds</td><td class="num">8</td><td class="num">8</td><td class="num">8</td><td>1×</td></tr>
-<tr><td>100% Americas</td><td class="num">24</td><td class="num">0</td><td class="num">0</td><td>3×</td></tr>
-<tr><td>100% Asia</td><td class="num">0</td><td class="num">24</td><td class="num">0</td><td>3×</td></tr>
-<tr><td>100% Europe</td><td class="num">0</td><td class="num">0</td><td class="num">24</td><td>3×</td></tr>
-</table></div>
-<p>"3×" means three times as many hours per day in the elected window as Thirds gives: 24 hours in an 8-hour window, so up to three Fleets at once during that window and none outside it. It does not change the price per hour or the total hours in clause 2.3. Hours Customer reserves with hour-credits under the Hourly Terms are outside the election and the Guaranteed Limit and draw on no Tranche.</p>
-<p id="c4-5">4.5. The election applies only from Full Prepayment (clause 7). Until then Customer's Guaranteed Limit is that of Thirds.</p>
-<p id="c4-6">4.6. <b>Guarantee.</b> On every day from Monday to Saturday in the Term, we keep the capacity that Customer's Guaranteed Limit needs, on Fleets that serve Customer's Chosen Models, off sale to anyone else until 6 hours before each hour starts: one Fleet in every hour for Thirds; and, for a 100% election, three Fleets in every hour of the elected window, and until Full Prepayment also one Fleet in every other hour (clause 4.5). From 6 hours before an hour starts, capacity Customer has not reserved may be reserved by others. The guarantee covers one Fleet at a time, or three during the elected window once a 100% election applies; Reservations on more Fleets at once are subject to availability. The guarantee is for capacity, not for a particular Fleet: where one Fleet is fully reserved, Customer reserves on another. Customer may make Reservations within its Guaranteed Limit for any time in the Term, subject to clauses 5.4 and 8.2. If Customer asks, more than 6 hours before it starts, for a Reservation that this guarantee covers and we cannot confirm it on any such Fleet, we credit Customer one hour under clause 9.3 for each hour asked for, in addition to its balance.</p>
-<p id="c4-7">4.7. <b>Sundays.</b> Sundays are kept for our own use, including scheduled maintenance. The Term holds no hours for them (clause 2.3), and the Guaranteed Limit does not apply on them. Customer may still reserve its hours on a Sunday where capacity is available, at most 30 days before they start: within the daily limits of Thirds before Full Prepayment, and as Extra Hours (clause 7.1) after it. We carry out scheduled maintenance only on Sundays. Hours we set aside for it are not open for Reservation, and a Sunday Reservation already confirmed is never displaced (clause 8.4).</p>
+<h3>4. Fleets, Reservations and maintenance</h3>
+<p id="c4-1">4.1. We provide a service, not hardware. We keep ownership, possession and operation of every Fleet. Customer reserves on the Fleets we operate at the time, current or future, subject to availability, except as clause 19 provides for a locked Fleet.</p>
+<p id="c4-2">4.2. <b>Reserving.</b> Customer reserves hours through our website while signed in to its Account, or through our API with an access token issued under it, naming the Fleet, the hours and the model and paying in HC under Part 2 or with Plan hours under Part 3, or by a bid under the Hour Market Rules. A Reservation exists once our system confirms it and debits its price, and is then final: it cannot be cancelled, moved or refunded, except under clause 24.3, but Customer may release it under the Hour Market Rules before it starts.</p>
+<p id="c4-3">4.3. <b>Consumption.</b> A reserved hour is consumed when it occurs, whether or not it is used, and not before. Requests still running at its end have 30 seconds to finish. Loading the reserved model counts as part of the hour.</p>
+<p id="c4-4">4.4. <b>No displacement.</b> A confirmed Reservation is never taken, moved or displaced, and is delivered on the Fleet it was made on, except on a suspension under clause 5.3, when a prearranged trade is voided under clause 8 of the Hour Market Rules, where maintenance overlaps it under clause 4.6, or where a locked Fleet cannot serve under clause 19.4.</p>
+<p id="c4-5">4.5. <b>Availability.</b> We publish live capacity in machine-readable form at https://sparkpipe.ai/availability.txt, regenerated at least every 30 seconds: each Fleet we operate, whether it is serving, and the hours open for Reservation. Wherever this Agreement makes anything subject to availability, availability means what that publication shows when Customer reserves.</p>
+<p id="c4-6">4.6. <b>Maintenance.</b> We may take each Fleet out of service for maintenance for up to the maintenance allowance we publish (3 hours in each calendar week, Monday to Sunday, today). We announce each maintenance period at least 7 days ahead, choose the times with the fewest Reservations, and rotate those times between the windows (clause 17.1). Hours under announced maintenance cannot be reserved. A Reservation that maintenance overlaps is credited under clause 4.7 as if its Fleet were unavailable throughout it.</p>
+<p id="c4-7">4.7. <b>Automatic credit.</b> If a reserved hour is unavailable, or its Fleet is unreachable, for more than 15 consecutive minutes, every reserved hour in which any part of that period falls is credited back in full within 24 hours after the period ends, from our own records, to the account that holds the Reservation: as HC equal to the price it paid, for a Reservation paid in HC; and as Plan hours under clause 23.3, for a Reservation made with Plan hours. Where Customer's records show such a period and ours do not, Customer may send them within 7 days, and we credit the hours unless our records show the Fleet was available throughout.</p>
+<p id="c4-8">4.8. Credits are made in HC or Plan hours, never in cash, and are Customer's only remedy for any failure of performance, subject to clause 8.5.</p>
 </section>
 <section id="s5">
-<h2>5. Phase A and withdrawal</h2>
-<p id="c5-1">5.1. No payment is due during Phase A. Customer may pay any amount at any time, and each cleared payment issues hours under clause 5.5.</p>
-<p id="c5-2">5.2. Customer may withdraw from this Agreement during Phase A only, by making no payment under it by the end of Day 30. If no payment has been made by then, this Agreement ends at 23:59:59 on Day 30, with no payment or liability owed by either party, except under the confidentiality terms in clause 13. We may extend the Gate 1 deadline in writing.</p>
-<p id="c5-3">5.3. Once Customer pays any amount under this Agreement, the withdrawal right in clause 5.2 ends.</p>
-<p id="c5-4">5.4. There are no unpaid hours: until Customer pays, no hour is issued or served under this Agreement. Until Full Prepayment, Customer reserves its paid hours at times of its choosing under clause 8, within the Tranche each hour belongs to and its Guaranteed Limit (8 hours in each of the Americas, Asia and Europe Windows per day), and on Sundays under clause 4.7. Hours Customer reserves with hour-credits are outside these limits (clause 4.4).</p>
-<p id="c5-5">5.5. Each cleared payment issues hours equal to the amount paid, net of VAT, divided by the Hour Price, to the earliest Tranches not yet fully paid. Hours that occur before they are paid for are counted as consumed: the price of the Term does not change.</p>
+<h3>5. Use and responsibility</h3>
+<p id="c5-1">5.1. <b>We provide capacity only.</b> Customer has the exclusive right to use each hour it has reserved. Customer alone decides what runs on its hours and in its requests to the shared pool, and is solely responsible for its workloads, the data and content it processes, the outputs it obtains and every use made of them. We do not monitor, review or control them and are not responsible for them. Customer is responsible, as for its own acts, for everyone who uses hours or the shared pool under its Account, access tokens or API keys, including its end users and anyone it resells, transfers or gives hours or access to, and must bind those persons by terms no less protective of us than clauses 5 and 6. The Hour Market is the only resale of hours in which we take part. We keep no register of, and are not a party to, any other resale or transfer of hours: it happens outside our system, we do not match, price, clear or settle it, and we have no liability for its price or counterparties.</p>
+<p id="c5-2">5.2. <b>Lawful use.</b> Customer must comply, and must ensure that every user of its hours and of its access to the shared pool complies, with every law that applies to the use, including laws on export control and sanctions, personal data, intellectual property and computer misuse, and with the licence of each model it uses. No hour, and no request to the shared pool, may be used to: (a) create, store or distribute unlawful content, including child sexual abuse material; (b) attack, probe or disrupt any system or network, or distribute malicious code; (c) infringe the rights of any person; (d) benefit any person, entity or country subject to sanctions of the United Nations, the Republic of Korea, the United States or the European Union, or serve any end use that export control laws prohibit, including weapons of mass destruction; or (e) interfere with a Fleet or with other customers. Customer represents that neither it nor any person that owns or controls it is subject to those sanctions. Where Customer uses its hours or the shared pool to provide generative AI products or services to others, Customer is their provider and bears the duties that apply to them, including the transparency and labelling duties of the Korean Framework Act on the Development of Artificial Intelligence and Establishment of Trust.</p>
+<p id="c5-3">5.3. <b>Suspension.</b> We may suspend a Reservation or access under the Account, at once and without prior notice, where (a) a law, court or competent authority requires it, (b) we reasonably believe clause 5.2 is being breached, or (c) the use threatens the security or integrity of a Fleet or of others. We tell Customer as soon as practicable and lift the suspension when its cause ends. Hours lost to a suspension caused by the use of Customer's hours are consumed and are not credited.</p>
 </section>
 <section id="s6">
-<h2>6. Prepayment gates</h2>
-<p id="c6-1">6.1. Customer prepays in whole Tranches, in cleared funds, by these deadlines:</p>
+<h3>6. Customer data</h3>
+<p id="c6-1">6.1. Customer keeps all rights in its data and outputs. We access them only as needed to operate and secure the service, or where the law requires. Customer is responsible for the lawfulness of any personal data it processes and for keeping its own copies: we keep no backups of Customer data. The Fleets and our servers are in Seoul, Republic of Korea.</p>
+<p id="c6-2">6.2. We hold no Customer data beyond transient caches, which we delete within 24 hours, and the model state and caches that clause 19.3 keeps on a locked Fleet. Nothing is therefore returned when an Order or this Agreement ends.</p>
+<p id="c6-3">6.3. We tell Customer without delay of any intrusion, any leak of its information and any unannounced interruption of the service. We handle account data and Customer data as our published privacy policy states.</p>
+</section>
+<section id="s7">
+<h3>7. Models</h3>
+<p id="c7-1">7.1. We offer only open-source models whose availability cannot be withdrawn by any third party, and list the models available on each Fleet on the Fleet List. A model chosen for a confirmed Reservation stays available for that Reservation. Other models are available while they are listed, except that the Chosen Models stay available as clause 7.2 provides.</p>
+<p id="c7-2">7.2. <b>Chosen Models.</b> The models Customer chooses from the Fleet List and names in a Plan Order (the <b>Chosen Models</b>) remain available to Customer for the whole Term of that Plan, on at least one Fleet and, under a Fleet lock, on each locked Fleet.</p>
+<p id="c7-3">7.3. <b>Model licences and outputs.</b> Each model is third-party open-source software provided under its own licence, which Customer must comply with. Outputs are generated automatically from Customer's inputs: we do not author, review or endorse them, and we give no warranty that any output is accurate, complete, lawful, safe or fit for any purpose. Customer is responsible for evaluating outputs before relying on, publishing or acting on them.</p>
+</section>
+<section id="s8">
+<h3>8. Liability</h3>
+<p id="c8-1">8.1. Our aggregate liability for all causes combined is capped: (a) for claims arising under or in connection with a Plan Order, at the amounts we received from Customer under that Plan Order in the 6 months before the event giving rise to the claim; and (b) for all other claims, at the amounts we received from Customer for HC in the 6 months before that event.</p>
+<p id="c8-2">8.2. We are not liable for lost profit, lost data, lost opportunity, business interruption, or indirect or consequential loss, whether or not foreseeable.</p>
+<p id="c8-3">8.3. Customer indemnifies us, our officers and our employees against any claim, loss, liability, fine, penalty or cost, including reasonable legal fees, arising from (a) the use of its hours, or of the shared pool under its Account, by anyone, including Customer, its end users and anyone it resells, transfers or gives hours or access to, (b) its workloads, data, content and outputs, (c) any breach of clause 5 or 6, or (d) any third-party claim, or investigation by an authority, connected with them. We give no reciprocal indemnity.</p>
+<p id="c8-4">8.4. The service and the models are provided "as available". We give no warranty of merchantability, fitness for purpose, accuracy of outputs or uninterrupted service beyond clauses 4.7 and 23.</p>
+<p id="c8-5">8.5. Nothing in this Agreement limits or excludes liability for intentional misconduct or gross negligence, or any other liability that cannot lawfully be limited or excluded.</p>
+<p id="c8-6">8.6. Clauses 8.1 and 8.2 limit our liability only. They do not limit Customer's payment obligations or its liability under clauses 3.2, 5, 6 and 8.3.</p>
+<p id="c8-7">8.7. <b>Force majeure.</b> Neither party is liable for a delay or failure caused by an event beyond its reasonable control, including natural disaster, fire, flood, war, terrorism, epidemic, action of a government or authority, or failure of public power or telecommunications networks. Clause 4.7 still applies to reserved hours lost to such an event and is Customer's only remedy for them.</p>
+</section>
+<section id="s9">
+<h3>9. Changes and published settings</h3>
+<p id="c9-1">9.1. We may change this Agreement by publishing a new version and emailing Customer. A new version applies to Orders made after Customer accepts it, and we accept no further Order from Customer until it has. HC already bought, and each Plan Order, stay under the version in force when they were made, unless Customer accepts a newer version for them.</p>
+<p id="c9-2">9.2. We change the Hour Market Rules in the same way, and each version applies as clause 13.1 of the Hour Market Rules provides.</p>
+<p id="c9-3">9.3. <b>Published settings.</b> We publish the following on our website as <b>published settings</b>: the HC Price, the advance multiplier, the release fee, the window times, the plan price list (the Terms, Hour Prices and payment schedules we offer for Plans, and the price of a Fleet lock) and the maintenance allowance. A change to a published setting applies only to Orders made after we publish it, never to an existing Order. HC, and each Reservation paid with it, keep the settings in force when that HC was bought; where a Reservation is paid with HC from more than one purchase, the settings of the HC spent first apply. A Plan Order keeps, for its whole Term, the settings in force when it was made, and states those that apply to it.</p>
+</section>
+<section id="s10">
+<h3>10. Ending, refunds and survival</h3>
+<p id="c10-1">10.1. Customer may close its Account at any time while no Plan Order under it is in force. Its HC and Reservations then lapse, and its orders in the Hour Market are cancelled.</p>
+<p id="c10-2">10.2. We may close the Account and end this Agreement, or end a Plan Order, by written notice: (a) if Customer materially breaches this Agreement and does not remedy the breach within 30 days after our written notice; or (b) at once, where a breach of clause 5.2 cannot be remedied, where Customer or a person that owns or controls it becomes subject to the sanctions in clause 5.2(d), or where a law, court or competent authority requires us to stop serving Customer. We may not end a Plan Order because of a missed gate.</p>
+<p id="c10-3">10.3. <b>Right of use only; no refunds.</b> HC, Reservations and Plan hours give the right to use the service only. They give no ownership of, or rights in, our company, hardware, software, models or intellectual property, are not a deposit, loan, security or investment, carry no expectation of profit from our efforts, and have no cash value. HC and Plan hours cannot be moved to another account or withdrawn. <b>Every amount paid is non-refundable and non-cancellable</b>, except under clause 10.4, 20.2 or 24.3 or where the law requires. Customer may not set off, deduct, counterclaim or withhold against any amount. We do not buy back HC or hours.</p>
+<p id="c10-4">10.4. If we stop offering service for HC, or close an Account other than for Customer's breach, we refund the purchased HC not yet spent or lapsed at the price paid, within 60 days, counting HC as spent from the oldest lot first. HC credited for a released hour is not refunded.</p>
+<p id="c10-5">10.5. Clauses 3.2, 3.4, 5, 6, 7.3, 8, 10, 11, 12, 22.3 and 24.3 survive the end of this Agreement and of each Order.</p>
+</section>
+<section id="s11">
+<h3>11. General</h3>
+<p id="c11-1">11.1. <b>Entire agreement.</b> This Agreement, with the Hour Market Rules and Customer's Orders, is the whole agreement between the parties. Neither party relies on any pre-contractual statement, projection, benchmark or representation, including anything said in diligence or during Phase A, except a Baseline recorded under clause 23.1.</p>
+<p id="c11-2">11.2. <b>Amendment and waiver.</b> This Agreement changes only as clause 9 provides. A Plan Order is made, and changed, only in writing signed or accepted by both parties under clause 12.4. No conduct, delay or extension operates as a waiver.</p>
+<p id="c11-3">11.3. <b>Third parties.</b> This Agreement gives no rights to anyone except the parties.</p>
+<p id="c11-4">11.4. <b>Confidentiality.</b> Each party keeps confidential the other's non-public information that it receives in connection with a Plan Order, including the Plan Order itself, for 3 years after that Plan ends, and pricing and technical information indefinitely.</p>
+<p id="c11-5">11.5. <b>Publicity.</b> Customer may not publicise a Plan Order or our relationship under it without our written consent. We may refer to Customer by name and logo once a Plan of Customer's reaches Full Prepayment.</p>
+<p id="c11-6">11.6. <b>Assignment.</b> Customer may not assign this Agreement or an Order without our written consent. Letting others use reserved hours under clause 5.1 is not an assignment. We may assign this Agreement and any Order freely, including to an acquirer or financier.</p>
+<p id="c11-7">11.7. <b>Notices.</b> We send notices to the email address verified on the Account, which Customer keeps current. Notices under a Plan Order, including any withdrawal or termination, must be in writing and sent to the notice address or email it states; our notices may also be sent to the Account email.</p>
+</section>
+<section id="s12">
+<h3>12. Law, disputes, language and acceptance</h3>
+<p id="c12-1">12.1. This Agreement and each Order are governed by the laws of the Republic of Korea.</p>
+<p id="c12-2">12.2. Any dispute arising out of or in connection with this Agreement or an Order is finally settled by arbitration in Seoul under the Arbitration Rules of the Korean Commercial Arbitration Board, before a sole arbitrator, in the Korean language. Either party may apply to a competent court for interim measures.</p>
+<p id="c12-3">12.3. This Agreement is published in English and Korean, and each Plan Order is made in both. The Korean text prevails.</p>
+<p id="c12-4">12.4. <b>Acceptance and signature.</b> Customer accepts this Agreement, which includes the Hour Market Rules, by ticking the acceptance box while signed in to its Account. We record the SHA-256 hashes of the exact Korean and English texts of this Agreement and of the Hour Market Rules accepted, with the time, the IP address and the browser. A Plan Order is signed by both parties, by hand or electronically, or accepted by both in the Account: by Customer accepting the hash of its final text while signed in, and by us signing that hash with our signing key. The record of any negotiation of a Plan Order is kept with it. Each such acceptance or signature has the same effect as a handwritten signature.</p>
+</section>
+<section id="part2" class="part">
+<h2>Part 2. Hour-credits</h2>
+</section>
+<section id="s13">
+<h3>13. Hour-credits</h3>
+<p id="c13-1">13.1. <b>Buying HC.</b> The price of one HC is the <b>HC Price</b> shown on our website when Customer buys it: in Korean won for payment in won, otherwise in US dollars. It is fixed for the HC bought. Customer buys HC by amount, within the minimum and maximum per purchase shown on our website, and receives the amount paid, net of VAT, divided by the HC Price, rounded down to six decimal places. HC is issued when the payment counts under clause 3.5.</p>
+<p id="c13-2">13.2. <b>Balance.</b> HC is counted to six decimal places. Each purchase, and each credit under this Agreement or the Hour Market Rules, is added to Customer's balance as a separate lot.</p>
+<p id="c13-3">13.3. <b>Lapse.</b> Each lot lapses 12 months after it is issued, or on the later date clause 13.4 sets, with any HC left in it. HC is spent from the lot that lapses first. The same applies to HC credited for a released hour or under clause 4.7.</p>
+<p id="c13-4">13.4. <b>No overselling.</b> We sell HC only while it can be spent. We accept a purchase only if, for the date its lot lapses and for every later date on which other HC lapses, the free hours of our capacity before that date cover all HC not yet spent or lapsed that lapses by it, including the new lot, HC held for bids, and HC in orders not yet paid as if it were issued at once. Free hours are the hours of serving Fleets, on every day of the week, that nobody holds, after the capacity kept for Plans under clauses 18 and 19 and after each Fleet's maintenance allowance (clause 4.6), each counted at its Fleet's Rate; Fleets not yet serving are not counted. We refuse a purchase beyond that cover, and show the HC still on sale on our website. If a payment counts, or we credit HC under clause 4.7, when that cover no longer reaches 12 months for the new lot, the lot lapses instead on the first date that the cover reaches with the lot included.</p>
+</section>
+<section id="s14">
+<h3>14. Reserving with HC</h3>
+<p id="c14-1">14.1. With HC, Customer may reserve (a) an hour of our capacity on a serving Fleet, from the first date we offer, up to 7 days ahead at its Rate in HC, and more than 7 and up to 31 days ahead at its Rate times the advance multiplier (1.25 today); or (b) an hour another customer has released, at the price the Hour Market Rules set, however far ahead it starts. Capacity kept for Plans is offered only as clauses 18.2 and 19.2 allow, capacity kept under clause 14.2 only as that clause allows, and hours under announced maintenance not at all (clause 4.6).</p>
+<p id="c14-2">14.2. <b>Earlier lapse first.</b> Where reserving an hour of our capacity with HC that lapses after a date would leave the free hours before that date short of the HC that lapses by it (clause 13.4), that hour can be reserved, until 6 hours before it starts, only with HC that lapses by that date; from then on, with any HC.</p>
+</section>
+<section id="s15">
+<h3>15. Shared pool</h3>
+<p id="c15-1">15.1. The <b>shared pool</b> serves individual requests on Fleets that nobody holds in that hour and on released hours that reach their start unsold. Its meter is the <b>seat-second</b>, one second of one request slot on a pooled Fleet.</p>
+<p id="c15-2">15.2. Customer may send requests to the models we list for the shared pool, through our OpenAI-compatible endpoint at https://sparkpipe.ai/pay/api/pool/v1, with API keys it issues under its Account. API keys are access tokens for the purposes of clause 2, and Customer may revoke one at any time. Each request holds one seat and is charged in HC for its seat-seconds, from when we accept it until its reply ends and whether or not it succeeds, at the price per seat-second posted when it starts (clause 7.2 of the Hour Market Rules), rounded down to six decimal places and never more than Customer's balance. We accept a request only while Customer holds at least 0.0001 HC. The shared pool has no guaranteed capacity: when no Fleet is in it, or its seats are taken, requests are refused. Requests made with Customer's API keys during an hour in which Customer holds a Reservation are not charged.</p>
+</section>
+<section id="part3" class="part">
+<h2>Part 3. Reserved Plans</h2>
+</section>
+<section id="s16">
+<h3>16. Plan Orders and the Term</h3>
+<p id="c16-1">16.1. <b>Fields.</b> A Plan Order states: its order number; Customer's legal details; the version of this Agreement under which it is made; the <b>Start Date</b>; the <b>Term</b>, in whole months; the <b>Windows</b> and the <b>Days</b> (clause 17); the number of <b>Fleets</b> (clause 18); whether the Plan has a <b>Fleet lock</b>, and which Fleets it locks (clause 19); the <b>Hour Price</b>; the <b>Payment schedule</b>, Upfront or Gated (clause 20); the Chosen Models (clause 7.2); the Performance Threshold (clause 23.2); the Account email; each party's notice address and email; Customer's VAT status; the payment currency and account; and the published settings that apply to it (clause 9.3). It also states the <b>Hours in the Term</b> and the <b>Price of the Term</b>, worked out from those fields under clauses 17.3 and 16.4. The fields are fixed for the Term.</p>
+<p id="c16-2">16.2. <b>Making a Plan Order.</b> We make a Plan Order only where we can keep the capacity it needs under clauses 18 and 19 alongside every Plan Order made before it. A Plan Order is made on the date of the last signature or acceptance under clause 12.4, and its Start Date is on or after that date.</p>
+<p id="c16-3">16.3. <b>Term.</b> The Term starts at 00:00:00 on the Start Date and ends at 23:59:59 on the day before the same date in the month that falls the Term's number of months after the Start Date; where that month has no such date, the Term ends at 23:59:59 on the last day of that month. <b>Day N</b> means the Nth calendar day counting the Start Date as Day 1.</p>
+<p id="c16-4">16.4. <b>Price.</b> Each Plan hour is priced at the Hour Price, fixed for the Term; under a Fleet lock, the Hour Price includes the lock. The Hour Price is a single all-in price: it covers the Fleets and the interconnect that joins the machines of each Fleet, the models in clause 7, and operation and support, and no other fee, surcharge or charge applies during the Term, apart from the release fee that the Hour Market Rules deduct from what a released hour earns. The Price of the Term is the Hour Price multiplied by the Hours in the Term. All balances, refunds and claims under a Plan Order are counted in Plan hours, valued at the Hour Price. A Plan Order sets no price for any other capacity Customer buys.</p>
+<p id="c16-5">16.5. The Rate of each Fleet on the Fleet List when a Plan Order is made is fixed for its Term.</p>
+</section>
+<section id="s17">
+<h3>17. Windows, Days and Plan hours</h3>
+<p id="c17-1">17.1. <b>Windows.</b> Each day has three <b>windows</b>, whose times we publish. They are today the <b>Americas Window</b>, 00:00–08:00 KST, which falls on the previous calendar day in the Americas; the <b>Asia Window</b>, 08:00–16:00 KST; and the <b>Europe Window</b>, 16:00–24:00 KST. The windows are periods of the day, not separate pools of capacity or separate machines. A Plan Order elects one or more windows; all three together are a <b>Full day</b>.</p>
+<p id="c17-2">17.2. <b>Days.</b> A Plan Order elects <b>Every day</b> or <b>Weekdays</b>. Under Every day, each elected window counts on every day of the Term. Under Weekdays, it counts only on Monday to Friday in its own region: the Americas Window on each day from Tuesday to Saturday, and the Asia and Europe Windows on each day from Monday to Friday.</p>
+<p id="c17-3">17.3. <b>Plan hours and Tranches.</b> For every day of the Term, each elected window that counts on that day holds the window's hours times the Fleets; these are the <b>Plan hours</b>. Each calendar month within the Term is one <b>Tranche</b>, holding the Plan hours of its days within the Term. Tranche 1 runs from the Start Date to the end of that month, and the final Tranche from the first day of its month to the end of the Term; there are as many Tranches as the Term has months where the Start Date is the first day of a month, and one more otherwise. The Hours in the Term are the Plan hours of all Tranches.</p>
+<p id="c17-4">17.4. A Plan hour expires at 23:59:59 on the last day of its Tranche unless consumed. Expired hours do not carry forward, convert, accumulate or have any cash value.</p>
+<p id="c17-5">17.5. Example: a Plan Order with a Start Date of 15 December 2026, a Term of 24 months, the Asia Window, Every day, 1 Fleet, no Fleet lock and the Gated schedule:</p>
+<div class="scroll"><table>
+<tr><th>Tranche</th><th>Period</th><th class="num">Plan hours</th></tr>
+<tr><td>1</td><td>15–31 Dec 2026</td><td class="num">136</td></tr>
+<tr><td>2</td><td>Jan 2027</td><td class="num">248</td></tr>
+<tr><td>15</td><td>Feb 2028 (leap)</td><td class="num">232</td></tr>
+<tr><td>25</td><td>1–14 Dec 2028</td><td class="num">112</td></tr>
+<tr><td><b>All</b></td><td><b>15 Dec 2026 – 14 Dec 2028</b></td><td class="num"><b>5,848</b></td></tr>
+</table></div>
+<p>The same Plan Order on Weekdays holds 4,184 Plan hours.</p>
+</section>
+<section id="s18">
+<h3>18. Guaranteed Limit and set-aside</h3>
+<p id="c18-1">18.1. A Plan's <b>Guaranteed Limit</b> is its Fleets at once, in every hour of its elected windows that counts under clause 17.2.</p>
+<p id="c18-2">18.2. <b>Set-aside.</b> We keep the capacity of the Guaranteed Limit, on Fleets that serve the Chosen Models, off sale to anyone else until 6 hours before each hour starts. From then on, capacity Customer has not reserved may be reserved by others. Except under a Fleet lock, the guarantee is for capacity, not for a particular Fleet: where one Fleet is fully reserved, Customer reserves on another. Customer may make Reservations within its Guaranteed Limit for any time in the Term, subject to clauses 20 and 22.1. With Plan hours, Customer may reserve more Fleets at once, or other hours, only as Extra Hours after Full Prepayment (clause 21.2).</p>
+<p id="c18-3">18.3. If Customer asks, more than 6 hours before it starts, for a Reservation within its Guaranteed Limit and we cannot confirm it on any Fleet that serves the Chosen Models, we credit Customer one Plan hour under clause 23.3 for each hour asked for, in addition to its balance.</p>
+<p id="c18-4">18.4. The guarantee does not cover hours of maintenance announced under clause 4.6 before Customer asks for them. For each Fleet of its Guaranteed Limit that such maintenance prevents us from keeping in an hour, Customer is credited one Plan hour under clause 23.3.</p>
+<p id="c18-5">18.5. <b>Priority over hourly use.</b> Customer's priority over hourly use comes from the capacity kept for it under this clause and clause 19, which nobody else can reserve until 6 hours before each hour starts or, on a locked Fleet, at all. Customer never takes, and never needs to take, an hour that anyone else holds, and no confirmed Reservation is ever displaced to make room for another (clause 4.4).</p>
+</section>
+<section id="s19">
+<h3>19. Fleet lock</h3>
+<p id="c19-1">19.1. A Plan whose Windows are a Full day and whose Days are Every day may have a <b>Fleet lock</b>. Its Plan Order then names as many Fleets as its Fleets (the <b>locked Fleets</b>).</p>
+<p id="c19-2">19.2. Each locked Fleet is held for Customer in every hour of the Term and is Customer's alone: it is never offered to anyone else, not even 6 hours before an hour starts, is not counted in the free hours under clause 13.4, and does not serve the shared pool. Reservations within the Guaranteed Limit are made and delivered on the locked Fleets. Another customer uses a locked Fleet only in an hour that Customer itself has released in the Hour Market and that is sold or joins the shared pool.</p>
+<p id="c19-3">19.3. Because nobody else uses a locked Fleet, Customer's model state and caches may stay on it between Customer's hours for the Term, encrypted and isolated from other customers. We delete them when Customer asks, when the Plan ends, and before the start of any hour that Customer has released and that is sold or joins the shared pool.</p>
+<p id="c19-4">19.4. If a locked Fleet cannot serve, including under maintenance (clause 4.6), we deliver the affected Reservations on another Fleet, without the kept model state and caches, or credit the hours under clause 4.7.</p>
+</section>
+<section id="s20">
+<h3>20. Payment schedule</h3>
+<p id="c20-1">20.1. No Plan hour is issued or served until it is paid for. Each payment that counts under clause 3.5 issues Plan hours equal to the amount paid, net of VAT, divided by the Hour Price and rounded down to four decimal places, to the earliest Tranches not yet fully paid. Plan hours that occur before they are paid for are counted as consumed: the Price of the Term does not change.</p>
+<p id="c20-2">20.2. <b>Upfront.</b> Under the Upfront schedule, Customer pays the Price of the Term before the Start Date, and reaches Full Prepayment when it is paid. If the Price of the Term is not paid in full by the end of the Start Date, the Plan ends then, with nothing further owed by either party, except that we refund any amount paid under it as clause 24.3(b) and (c) provide.</p>
+<p id="c20-3">20.3. <b>Gated.</b> Under the Gated schedule, Day 1 to Day 30 inclusive is <b>Phase A</b>. No payment is due during Phase A. Customer may pay any amount at any time.</p>
+<p id="c20-4">20.4. <b>Withdrawal.</b> Customer may withdraw from a Gated Plan during Phase A only, by making no payment under its Plan Order by the end of Day 30. If no payment has been made by then, the Plan ends at 23:59:59 on Day 30, with no payment or liability owed by either party, except under clause 11.4. Once Customer pays any amount under the Plan Order, this right ends. We may extend the Gate 1 deadline in writing.</p>
+<p id="c20-5">20.5. <b>Gates.</b> Customer prepays in whole Tranches, in cleared funds, by these deadlines; a gate that names more Tranches than the Term has covers all of them:</p>
 <div class="scroll"><table>
 <tr><th>Gate</th><th>Deadline</th><th>Tranches paid in total</th><th>Effect</th></tr>
 <tr><td>1</td><td>end of Day 30</td><td>1–6</td><td>paid hours used at Customer's choice</td></tr>
 <tr><td>2</td><td>end of Day 60</td><td>1–12</td><td>paid hours used at Customer's choice</td></tr>
-<tr><td>3</td><td>end of Day 90</td><td>all</td><td>Full Prepayment (clause 7)</td></tr>
+<tr><td>3</td><td>end of Day 90</td><td>all</td><td>Full Prepayment (clause 21)</td></tr>
 </table></div>
-<p id="c6-2">6.2. Customer may pay any amount early, including Full Prepayment at signing. Fungibility, the elected rate and Extra Hours start only on Full Prepayment. The Term runs from the Signature Date regardless, so hours that occur before they are paid for are consumed under clause 5.5 and are not restored.</p>
-<p id="c6-3">6.3. Paying a gate does not oblige Customer to pay the next gate. No unpaid amount is ever overdue: there is no interest, acceleration, suspension or default for a missed gate.</p>
-<p id="c6-4">6.4. If Customer misses a gate after making any payment:</p>
-<ul><li>Customer keeps every hour already paid for and may reserve it until the end of its Tranche, and this Agreement expires at the end of the last Tranche with paid hours;</li><li>Customer may make no further prepayment and can never reach Full Prepayment, so clause 7 never applies; and</li><li>no amount becomes due, and neither party may terminate this Agreement because of the missed gate.</li></ul>
-<p id="c6-5">6.5. Hours are issued only on cleared payment, under clause 5.5. Hours not paid for are not issued.</p>
-<p id="c6-6">6.6. Example, signed on 15 December 2026. The amount due at each gate is the hours due multiplied by the Hour Price:</p>
+<p id="c20-6">20.6. Customer may pay any amount early, including the Price of the Term at signing. Extra Hours and spending ahead start only on Full Prepayment. The Term runs from the Start Date regardless (clause 20.1).</p>
+<p id="c20-7">20.7. Paying a gate does not oblige Customer to pay the next gate. No unpaid amount is ever overdue: there is no interest, acceleration, suspension or default for a missed gate.</p>
+<p id="c20-8">20.8. If Customer misses a gate after making any payment:</p>
+<ul><li>Customer keeps every Plan hour already paid for and may reserve it until the end of its Tranche, and the Plan ends at the end of the last Tranche with paid hours;</li><li>Customer may make no further prepayment and can never reach Full Prepayment, so clause 21.2 never applies; and</li><li>no amount becomes due, and neither party may end the Plan because of the missed gate.</li></ul>
+<p id="c20-9">20.9. Example, for the Plan Order in clause 17.5. The amount due at each gate is the hours due multiplied by the Hour Price:</p>
 <div class="scroll"><table>
 <tr><th>Gate</th><th>Deadline</th><th class="num">Hours paid in total</th><th class="num">Hours due at the gate</th></tr>
-<tr><td>1</td><td>13 Jan 2027</td><td class="num">3,456</td><td class="num">3,456</td></tr>
-<tr><td>2</td><td>12 Feb 2027</td><td class="num">7,224</td><td class="num">3,768</td></tr>
-<tr><td>3</td><td>14 Mar 2027</td><td class="num">15,048</td><td class="num">7,824</td></tr>
-<tr><td><b>Total</b></td><td></td><td class="num"></td><td class="num"><b>15,048</b></td></tr>
+<tr><td>1</td><td>13 Jan 2027</td><td class="num">1,344</td><td class="num">1,344</td></tr>
+<tr><td>2</td><td>12 Feb 2027</td><td class="num">2,808</td><td class="num">1,464</td></tr>
+<tr><td>3</td><td>14 Mar 2027</td><td class="num">5,848</td><td class="num">3,040</td></tr>
+<tr><td><b>Total</b></td><td></td><td class="num"></td><td class="num"><b>5,848</b></td></tr>
 </table></div>
 </section>
-<section id="s7">
-<h2>7. Full Prepayment</h2>
-<p id="c7-1">7.1. On Full Prepayment, for all hours remaining in the Term:</p>
-<ul><li><b>Fungibility.</b> Hours may be reserved in any window up to Customer's Guaranteed Limit (clause 4.4).</li><li><b>Elected rate.</b> A 100% election takes effect, giving a Guaranteed Limit of 24 hours per day in the elected window, three times that of Thirds (clause 4.4).</li><li><b>Extra Hours.</b> Customer may reserve hours beyond its Guaranteed Limit from Monday to Saturday, and without a daily limit on Sundays (the <b>Extra Hours</b>). Extra Hours are subject to availability, may be reserved at most 30 days before they start, and are never displaced once confirmed (clause 8.4). They never take an hour held under the Hourly Terms (clause 8.13).</li><li><b>Spending ahead.</b> Customer may reserve more hours in a period than its current Tranche holds. As each reserved hour occurs it is drawn from the unexpired Tranche nearest to expiry, so the excess comes from future Tranches. Hours of a future Tranche consumed early do not reappear in their own month.</li><li><b>Concurrency.</b> Customer may hold Reservations on several Fleets at the same time.</li></ul>
-<p>Hours Customer reserves with hour-credits are not Extra Hours, and none of the limits of this clause applies to them (clause 4.4).</p>
-<p id="c7-2">7.2. Customer's hours may be reserved on any Fleet we operate, current or future, subject to availability. This Agreement does not set the price of any further capacity Customer buys later.</p>
+<section id="s21">
+<h3>21. Full Prepayment</h3>
+<p id="c21-1">21.1. <b>Full Prepayment</b> means our receipt, in cleared funds, of the Price of the Term. Until then, Customer reserves its paid Plan hours at times of its choosing within the Tranche each belongs to and within its Guaranteed Limit.</p>
+<p id="c21-2">21.2. From Full Prepayment, for all Plan hours remaining in the Term:</p>
+<ul><li><b>Extra Hours.</b> Customer may reserve Plan hours beyond its Guaranteed Limit: on more Fleets at the same time than its Fleets, or outside its elected windows or the days on which they count (the <b>Extra Hours</b>). Extra Hours are subject to availability, may be reserved at most 30 days before they start, and never take an hour that anyone holds or capacity kept for another Plan (clause 18.5).</li><li><b>Spending ahead.</b> Customer may reserve more Plan hours in a period than its current Tranche holds. As each reserved hour occurs it is drawn from the unexpired Tranche nearest to expiry, so the excess comes from future Tranches. Plan hours of a future Tranche consumed early do not reappear in their own month.</li></ul>
 </section>
-<section id="s8">
-<h2>8. Reservation, consumption, use and responsibility</h2>
-<p id="c8-1">8.1. Customer reserves hours through our website while signed in to its Account, or through our API with an access token issued under it, naming the Fleet, the start time and the number of hours. A Reservation exists once our system confirms it. A reserved hour on a Fleet consumes as many hours as that Fleet's Rate.</p>
-<p id="c8-2">8.2. A Reservation is final once confirmed: it cannot be cancelled, moved or refunded, except under clause 11.3, but Customer may release it under the Hour Market Rules before it occurs (clause 8.6). Customer may not make a Reservation unless its paid hours can cover it together with every Reservation it already holds, each from hours that have not expired when it occurs. A reserved hour is consumed when that hour occurs, whether or not it is used, and not before. Our technical records of payments, Reservations and consumption are kept in an append-only, hash-chained ledger whose daily roots we publish, and Customer may obtain its own entries with proof that they were recorded and not altered. These records are conclusive, except for manifest error.</p>
-<p id="c8-3">8.3. <b>Customer has the exclusive right to use each reserved hour.</b> Customer may use it, or let others use it by resale, transfer or gift through its Account and the access tokens it issues, and may run any lawful workload on it, subject to clauses 8.9 to 8.12. Any such arrangement is made outside our system and is out of our control (clause 8.6).</p>
-<p id="c8-4">8.4. We do not move, reassign, displace or interfere with a reserved hour, except under clause 8.11. A Reservation is delivered on the Fleet it was made on.</p>
-<p id="c8-5">8.5. Access is through Customer's Account: the account on our website identified by the email address Customer registers with us, signed in to with one-time codes sent to that address. It authorises Reservations and the use of each reserved hour, and Customer may issue access tokens and add users under it. Access is automated: no notice to us, approval or waiting period. We set the technical mechanism and may change it without amending this Agreement, provided equivalent access continues. Customer bears all risk of loss or compromise of its Account email and access tokens; any use under the Account is Customer's use.</p>
-<p id="c8-6">8.6. <b>Hour Market.</b> We run the Hour Market under the Hour Market Rules, and Customer may release a reserved hour through it before the hour occurs. In the Hour Market we buy no hour, guarantee no sale or price, and pay no cash: a released hour earns only the hour-credits those Rules provide, less the release fee. Otherwise, we keep no register of, and are not a party to, any resale or transfer of hours. We do not match, price, clear or settle such transactions, have no liability for their price or counterparties, and are never obliged to buy any hour. Except as the Hour Market Rules provide for a released hour, we do not buy back, credit or pay cash for any expiring or unused hour, at any time, for any reason.</p>
-<p id="c8-7">8.7. Hours give the right to use the service only. They give no ownership of, or rights in, our company, hardware, software, models or intellectual property. They are not a deposit, loan, security or investment, and carry no expectation of profit from our efforts.</p>
-<p id="c8-8">8.8. We publish live capacity in machine-readable form at the address stated in the Schedule, regenerated at least every 30 seconds. It lists each Fleet we operate, whether it is serving, and the hours open for Reservation in each window. Wherever this Agreement makes anything subject to availability, availability means the capacity that publication shows when Customer makes the Reservation.</p>
-<p id="c8-9">8.9. <b>We provide capacity only.</b> Customer alone decides what runs on its hours. Customer is solely responsible for its workloads, the data and content it processes, the outputs it obtains, and every use made of them. We do not monitor, review or control workloads, data or outputs, and we are not responsible for them. Customer is responsible for every person who uses hours under its Account or this Agreement, including its end users, as if their acts were its own. Customer must bind anyone it resells or transfers hours to by terms no less protective of us than clauses 8.9 to 8.12, and remains responsible to us for that person's compliance.</p>
-<p id="c8-10">8.10. <b>Lawful use.</b> Customer must comply, and must ensure that every user of its hours complies, with every law that applies to the use, including laws on export control and sanctions, personal data, intellectual property and computer misuse, and with the licence terms of any model it uses. In particular, no hour may be used to: (a) create, store or distribute unlawful content, including child sexual abuse material; (b) attack, probe or disrupt any system or network, or distribute malicious code; (c) infringe the rights of any person; (d) benefit any person, entity or country subject to sanctions of the United Nations, the Republic of Korea, the United States or the European Union, or serve any end use that export control laws prohibit, including weapons of mass destruction; or (e) interfere with a Fleet or with other customers. Customer represents that neither it nor any person that owns or controls it is subject to those sanctions. Where Customer uses its hours to provide generative AI products or services to others, Customer is their provider and bears the duties that apply to them, including the transparency and labelling duties of the Korean Framework Act on the Development of Artificial Intelligence and Establishment of Trust.</p>
-<p id="c8-11">8.11. <b>Suspension.</b> We may suspend a Reservation or access under the Account, at once and without prior notice, where (a) a law, court or competent authority requires it, (b) we reasonably believe clause 8.10 is being breached, or (c) the use threatens the security or integrity of a Fleet or of others. We tell Customer as soon as practicable and lift the suspension when its cause ends. Hours lost to a suspension caused by the use of Customer's hours are consumed and are not credited under clause 9.2.</p>
-<p id="c8-12">8.12. <b>Customer data.</b> Customer keeps all rights in its data and outputs. We access them only as needed to operate and secure the service, or where the law requires. Customer is responsible for the lawfulness of any personal data it processes and for keeping its own copies: we keep no backups of Customer data. We handle Customer data as stated in our published privacy policy. The Fleets and our servers are located in Seoul, Republic of Korea. We hold no Customer data beyond transient caches, which we delete within 24 hours, so nothing is returned when this Agreement ends. We tell Customer without delay of any intrusion, any leak of its information and any unannounced interruption of the service.</p>
-<p id="c8-13">8.13. <b>Priority over hourly use.</b> Customer's priority over hourly use comes from the capacity we keep off sale for it under clause 4.6, which nobody else can reserve until 6 hours before each hour starts. Customer never takes, and never needs to take, an hour that anyone else holds, and no customer's confirmed Reservation is ever displaced to make room for another (clause 8.4).</p>
+<section id="s22">
+<h3>22. Using Plan hours</h3>
+<p id="c22-1">22.1. A Reservation made with Plan hours consumes as many Plan hours as its Fleet's Rate. Customer may make one only if its paid Plan hours can cover it together with every Reservation it already holds under the Plan, each from Plan hours that have not expired when it occurs.</p>
+<p id="c22-2">22.2. <b>Records.</b> Our technical records of payments, Reservations and consumption are kept in an append-only, hash-chained ledger whose daily roots we publish, and Customer may obtain its own entries with proof that they were recorded and not altered. These records are conclusive, except for manifest error.</p>
+<p id="c22-3">22.3. <b>Release.</b> Before a reserved hour starts, Customer may release it in the Hour Market under the Hour Market Rules. A released hour that is sold, or that reaches its start unsold, counts as consumed, and Customer is credited only the HC it earns under those Rules, less the release fee. In the Hour Market we buy no hour, guarantee no sale or price, and pay no cash. Except as the Hour Market Rules provide for a released hour, we do not buy back, credit or pay cash for any expiring or unused hour, at any time, for any reason, and we are never obliged to buy any hour.</p>
+<p id="c22-4">22.4. Hours Customer reserves with HC are outside the Plan: they draw on no Tranche, and neither the Guaranteed Limit nor any other limit of this Part applies to them.</p>
 </section>
-<section id="s9">
-<h2>9. Delivery obligation</h2>
-<p id="c9-1">9.1. This is our only performance commitment. Each reserved hour will deliver <b>materially the same performance as measured on Customer's own workload in the 30 days that begin with Customer's first reserved hour</b> (the <b>Baseline</b>). We record the Baseline at the end of that period and give Customer a copy.</p>
-<p id="c9-2">9.2. <b>Automatic credit.</b> If a reserved hour is unavailable, or the Fleet it was reserved on is unreachable for more than 15 consecutive minutes, every reserved hour in which any part of that period falls is credited back to Customer in full and is not counted as consumed. The same applies to any period of more than 15 consecutive minutes in which Customer's workload runs below the Performance Threshold stated in the Schedule. No claim is needed: we credit from our own records. Where Customer's records show such a period and ours do not, Customer may send its records within 7 days, and we credit the hours unless our records show the Fleet was available and at or above the Performance Threshold throughout that period.</p>
-<p id="c9-3">9.3. Credits are made in hours, never in cash: each affected hour is credited as one hour. We credit within 24 hours after the end of the period, to the Tranche current at that time, or to the next Tranche where fewer than 7 days remain in the current one. Credited hours expire with the Tranche they are credited to.</p>
-<p id="c9-4">9.4. Credited hours are Customer's sole and exclusive remedy for any failure of performance, subject to clause 12.5.</p>
+<section id="s23">
+<h3>23. Delivery obligation</h3>
+<p id="c23-1">23.1. This is our only performance commitment for a Plan. Each hour reserved under the Plan delivers <b>materially the same performance as measured on Customer's own workload in the 30 days that begin with Customer's first hour reserved under the Plan</b> (the <b>Baseline</b>). We record the Baseline at the end of that period and give Customer a copy.</p>
+<p id="c23-2">23.2. Clause 4.7 also applies to any period of more than 15 consecutive minutes in which Customer's workload on an hour reserved under the Plan runs below the <b>Performance Threshold</b> stated in the Plan Order. Where Customer sends its records of such a period, we credit the hours unless our records show the Fleet was available and at or above the Performance Threshold throughout.</p>
+<p id="c23-3">23.3. <b>Credits in Plan hours.</b> A Reservation credited under clause 4.7 is credited back with the Plan hours it consumed, which are not counted as consumed. Clauses 18.3 and 18.4 credit one Plan hour for each hour or Fleet they state, within 24 hours after the hour concerned. Credited Plan hours go to the Tranche current when they are credited, or to the next Tranche where fewer than 7 days remain in the current one, and expire with the Tranche they are credited to.</p>
 </section>
-<section id="s10">
-<h2>10. Models</h2>
-<p id="c10-1">10.1. We offer only open-source models whose availability cannot be withdrawn by any third party. We publish the available models on the Fleet List.</p>
-<p id="c10-2">10.2. The models Customer chooses from the Fleet List and names in the Schedule (the <b>Chosen Models</b>) remain available to Customer, on at least one Fleet, for the whole Term. Other models on the Fleet List are available while they are listed.</p>
-<p id="c10-3">10.3. <b>Model licences and outputs.</b> Each model is third-party open-source software provided under its own licence, which Customer must comply with. Outputs are generated automatically from Customer's inputs: we do not author, review or endorse them, and we give no warranty that any output is accurate, complete, lawful, safe or fit for any purpose. Customer is responsible for evaluating outputs before relying on, publishing or acting on them.</p>
+<section id="s24">
+<h3>24. Renewal and ending of a Plan</h3>
+<p id="c24-1">24.1. <b>Renewal.</b> A Plan ends at the end of its Term and does not renew automatically. Customer may continue by a new Plan Order, which may start on the day after the Term ends and may state different fields.</p>
+<p id="c24-2">24.2. Customer has no right to end a Plan Order, for convenience or for any other reason, except the withdrawal right in clause 20.4. If a court or tribunal holds that Customer has a termination right that cannot lawfully be excluded, Customer may exercise it only if we fail to deliver reserved hours under the Plan for 60 consecutive days after Customer's written notice identifying the failure, and Customer's only financial remedy is the refund in clause 24.3.</p>
+<p id="c24-3">24.3. Where a Plan ends under clause 10.2 or 24.2:</p>
+<ul><li>(a) we waive every unpaid amount, do not pursue the remainder of the Term, and cancel Reservations under the Plan for hours that have not yet occurred, which count as unconsumed;</li><li>(b) the refund basis is Plan hours paid for minus Plan hours consumed, at the Hour Price; and</li><li>(c) we pay that refund within 60 days, without interest, net of any amount Customer owes us, except where a law prohibits the payment.</li></ul>
+<p id="c24-4">24.4. At the end of the Term, all unconsumed Plan hours lapse without refund.</p>
 </section>
-<section id="s11">
-<h2>11. No refunds and termination</h2>
-<p id="c11-1">11.1. <b>Every amount paid is non-refundable and non-cancellable</b>, except under clause 11.3. Customer may not set off, deduct, counterclaim or withhold against any amount.</p>
-<p id="c11-2">11.2. Customer has no right to terminate or rescind this Agreement, for convenience or for any other reason, except the withdrawal right in clause 5.2. If a court or tribunal holds that Customer has a termination right that cannot lawfully be excluded, Customer may exercise it only if we fail to deliver reserved hours for 60 consecutive days after Customer's written notice identifying the failure, and Customer's only financial remedy is the refund in clause 11.3(c).</p>
-<p id="c11-3">11.3. We may terminate this Agreement by written notice (a) if Customer materially breaches it and does not remedy the breach within 30 days after our written notice, or (b) at once, where a breach of clause 8.10 cannot be remedied, where Customer or a person that owns or controls it becomes subject to the sanctions in clause 8.10(d), or where a law, court or competent authority requires us to stop serving Customer. We may not terminate because of a missed gate.</p>
-<p>Where this Agreement ends under clause 11.2 or 11.3:</p>
-<ul><li>(a) we waive every unpaid amount, do not pursue the remainder of the Term, and cancel Reservations for hours that have not yet occurred, which count as unconsumed;</li><li>(b) the refund basis is hours paid for minus hours consumed, at the Hour Price; and</li><li>(c) we pay that refund within 60 days, without interest, net of any amount Customer owes us, except where a law prohibits the payment.</li></ul>
-<p id="c11-4">11.4. At the end of the Term, all unconsumed hours lapse without refund.</p>
-<p id="c11-5">11.5. Clauses 2.2, 2.5, 8.6, 8.7, 8.9 to 8.12, 10.3, 11, 12, 13 and 14 survive the end of this Agreement.</p>
-</section>
-<section id="s12">
-<h2>12. Liability</h2>
-<p id="c12-1">12.1. Our aggregate liability for all causes combined is capped at the amounts we received from Customer under this Agreement in the 6 months before the event giving rise to the claim.</p>
-<p id="c12-2">12.2. We are not liable for lost profit, lost data, lost opportunity, business interruption, or indirect or consequential loss, whether or not foreseeable.</p>
-<p id="c12-3">12.3. Customer indemnifies us, our officers and our employees against any claim, loss, liability, fine, penalty or cost, including reasonable legal fees, arising from (a) the use of its hours by Customer, its end users or anyone it resells or transfers hours to, (b) its workloads, data, content and outputs, (c) any breach of clauses 8.9 to 8.12, or (d) any third-party claim, or investigation by an authority, connected with them. We give no reciprocal indemnity.</p>
-<p id="c12-4">12.4. The service and the models are provided "as available". We give no warranty of merchantability, fitness for purpose, accuracy of outputs or uninterrupted service beyond clause 9.</p>
-<p id="c12-5">12.5. Nothing in this Agreement limits or excludes liability for intentional misconduct or gross negligence, or any other liability that cannot lawfully be limited or excluded.</p>
-<p id="c12-6">12.6. Clauses 12.1 and 12.2 limit our liability only. They do not limit Customer's payment obligations or its liability under clauses 2.2, 8.9 to 8.12 and 12.3.</p>
-<p id="c12-7">12.7. <b>Force majeure.</b> Neither party is liable for a delay or failure caused by an event beyond its reasonable control, including natural disaster, fire, flood, war, terrorism, epidemic, action of a government or authority, or failure of public power or telecommunications networks. Clause 9.2 still applies to reserved hours lost to such an event and is Customer's only remedy for them.</p>
-</section>
-<section id="s13">
-<h2>13. General</h2>
-<p id="c13-1">13.1. <b>Entire agreement.</b> This Agreement is the whole agreement between the parties. Neither party relies on any pre-contractual statement, projection, benchmark or representation, including anything said in diligence or during Phase A, except the Baseline recorded under clause 9.1.</p>
-<p id="c13-2">13.2. <b>Amendment and waiver.</b> Amendments must be in writing and signed by both parties. No conduct, delay or extension operates as a waiver.</p>
-<p id="c13-3">13.3. <b>Third parties.</b> This Agreement gives no rights to anyone except the parties.</p>
-<p id="c13-4">13.4. <b>Publicity.</b> Customer may not publicise this Agreement or our relationship without our written consent. We may refer to Customer by name and logo after Full Prepayment.</p>
-<p id="c13-5">13.5. <b>Confidentiality.</b> Each party keeps the other's non-public information confidential for 3 years after this Agreement ends, and pricing and technical information indefinitely.</p>
-<p id="c13-6">13.6. <b>Assignment.</b> Customer may not assign this Agreement without our written consent. Reselling or transferring hours under clause 8.3 is not an assignment. We may assign this Agreement freely, including to an acquirer or financier.</p>
-<p id="c13-7">13.7. <b>Notices.</b> Notices under this Agreement, including any withdrawal, election or termination, must be in writing and sent to the notice address or email stated in the Schedule. Our notices may also be sent to the email address verified on Customer's account.</p>
-<p id="c13-8">13.8. <b>Business use.</b> Customer enters into this Agreement in the course of its business and not as a consumer. Each party confirms that it has read every clause and had the opportunity to negotiate it.</p>
-<p id="c13-9">13.9. <b>Electronic signature.</b> Either party may sign this Agreement electronically, including by Customer accepting the hash of the final text while signed in to its Account, or by a signature with our signing key over that hash. Such a signature has the same effect as a handwritten signature. The record of any negotiation of this Agreement is kept with the signed text.</p>
-</section>
-<section id="s14">
-<h2>14. Law, disputes and language</h2>
-<p id="c14-1">14.1. This Agreement is governed by the laws of the Republic of Korea.</p>
-<p id="c14-2">14.2. Any dispute arising out of or in connection with this Agreement is finally settled by arbitration in Seoul under the Arbitration Rules of the Korean Commercial Arbitration Board, before a sole arbitrator, in the Korean language. Either party may apply to a competent court for interim measures.</p>
-<p id="c14-3">14.3. This Agreement is executed in English and Korean. The Korean text prevails.</p>
-</section>
-<section id="schedule">
-<h2>Schedule</h2>
+<section id="plan-order-form">
+<h3>Plan Order form</h3>
 <div class="scroll"><table>
 <tr><th>Item</th><th>Entry</th></tr>
-<tr><td>Customer legal name and jurisdiction</td><td>[ ]</td></tr>
-<tr><td>Signature Date</td><td>[ ]</td></tr>
-<tr><td>Hours in the Term (clause 2.3)</td><td>[ ]</td></tr>
-<tr><td>Hour Price (clause 2)</td><td>KRW [ ] or USD [ ] per fleet-hour, in the currency of payment below, exclusive of VAT, fixed for the Term</td></tr>
-<tr><td>Customer VAT status (clause 2.2)</td><td>[No place of business in the Republic of Korea / Korean business registration number [ ]]</td></tr>
-<tr><td>Timezone election</td><td>[Thirds / 100% Americas / 100% Asia / 100% Europe], subject to clause 4.3</td></tr>
-<tr><td>Americas Window</td><td>00:00–08:00 KST</td></tr>
-<tr><td>Asia Window</td><td>08:00–16:00 KST</td></tr>
-<tr><td>Europe Window</td><td>16:00–24:00 KST</td></tr>
-<tr><td>Performance Threshold (clause 9.2)</td><td>[80]% of the Baseline</td></tr>
-<tr><td>Live capacity address (clause 8.8)</td><td>https://sparkpipe.ai/availability.txt</td></tr>
-<tr><td>Chosen Models (clause 10.2)</td><td>[models from the Fleet List]</td></tr>
-<tr><td>Customer Account email (clause 8.5)</td><td>[ ]</td></tr>
-<tr><td>Payment currency and account</td><td>Either (a) KRW, by bank transfer from Customer's account at a Korean bank to our won account named on our electronic tax invoice (세금계산서), with VAT charged under clause 2.2; or (b) USD, by bank transfer from Customer's own account outside the Republic of Korea to our USD account at a Korean foreign exchange bank, zero-rated where Customer has no place of business in the Republic of Korea: [bank, account holder, account number, SWIFT], confirmed by both parties before payment; or (c) a US dollar stablecoin, such as USDC or USDT, that our payment processor CoinPayments accepts, on any network it accepts for that coin, through the invoice it issues for us, with VAT charged under clause 2.2</td></tr>
-<tr><td>Supplier notice address and email</td><td>[ ]</td></tr>
-<tr><td>Customer notice address and email</td><td>[ ]</td></tr>
-<tr><td>Fleet Rates at the Signature Date</td><td>As published on the Fleet List at signing: [Fleet 1 (16 Sparks): 1.00; Fleet 2 (M5U): 1.00; Fleet 3 (16 Sparks): 1.00]</td></tr>
-<tr><td>Release fee (clause 8.6)</td><td>As published under the Hour Market Rules</td></tr>
+<tr><td>Order number</td><td>[ ]</td></tr>
+<tr><td>Customer</td><td>[legal name], a company organised under the laws of [jurisdiction], registration number [ ], registered address [ ]</td></tr>
+<tr><td>Customer Agreement (clause 9.1)</td><td>Version of [date]; SHA-256 of the Korean text [ ] and of the English text [ ]</td></tr>
+<tr><td>Start Date (clause 16.3)</td><td>[ ]</td></tr>
+<tr><td>Term (clause 16.3)</td><td>[ ] months, ending on [ ]</td></tr>
+<tr><td>Windows (clause 17.1)</td><td>[Americas Window (00:00–08:00 KST) / Asia Window (08:00–16:00 KST) / Europe Window (16:00–24:00 KST) / Full day]</td></tr>
+<tr><td>Days (clause 17.2)</td><td>[Every day / Weekdays]</td></tr>
+<tr><td>Fleets (clause 18.1)</td><td>[1]</td></tr>
+<tr><td>Fleet lock (clause 19)</td><td>[None / Fleets [ ], one for each of the Fleets; only with Windows of a Full day and Days of Every day]</td></tr>
+<tr><td>Hour Price (clause 16.4)</td><td>KRW [ ] or USD [ ] per fleet-hour, in the payment currency below, exclusive of VAT, including any Fleet lock, fixed for the Term</td></tr>
+<tr><td>Hours in the Term (clause 17.3)</td><td>[ ]</td></tr>
+<tr><td>Price of the Term (clause 16.4)</td><td>KRW [ ] or USD [ ], exclusive of VAT</td></tr>
+<tr><td>Payment schedule (clause 20)</td><td>[Upfront: the Price of the Term before the Start Date / Gated: Gate 1 by [date], Gate 2 by [date], Gate 3 by [date]]</td></tr>
+<tr><td>Chosen Models (clause 7.2)</td><td>[models from the Fleet List]</td></tr>
+<tr><td>Performance Threshold (clause 23.2)</td><td>[80]% of the Baseline</td></tr>
+<tr><td>Account email (clause 2.2)</td><td>[ ]</td></tr>
+<tr><td>Supplier notice address and email (clause 11.7)</td><td>[ ]</td></tr>
+<tr><td>Customer notice address and email (clause 11.7)</td><td>[ ]</td></tr>
+<tr><td>Customer VAT status (clause 3.2)</td><td>[No place of business in the Republic of Korea / Korean business registration number [ ]]</td></tr>
+<tr><td>Payment currency and account (clause 3.3)</td><td>[KRW, clause 3.3(a) / USD, clause 3.3(b): [bank, account holder, account number, SWIFT] / US dollar stablecoin, clause 3.3(c)]</td></tr>
+<tr><td>Published settings (clause 9.3)</td><td>As published when this Plan Order is made: release fee [10]%; maintenance allowance [3] hours a week per Fleet; window times as stated under Windows</td></tr>
+<tr><td>Fleet Rates (clause 16.5)</td><td>As published on the Fleet List when this Plan Order is made: [Fleet 1: 1.00; Fleet 2: 1.00; Fleet 3: 1.00]</td></tr>
 </table></div>
 </section>
 <section id="signatures">
-<h2>Signatures</h2>
-<p><b>Supplier: HYOR AI Tech, Ltd.</b></p>
+<h3>Signatures</h3>
+<p><b>Supplier: HYOR AI Tech Ltd.</b></p>
 <p>Name: ______________________ Title: ______________________</p>
 <p>Signature: ______________________ Date: ______________________</p>
 <p><b>Customer</b></p>

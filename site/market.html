@@ -22,9 +22,9 @@
     <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">hour market</span></a>
     <nav class="nav-links" aria-label="Sections">
       <a href="fleets.html">Fleets</a>
-      <a href="two-year.html">Two-year</a>
+      <a href="plans.html">Plans</a>
       <a href="market-rules.html">Rules</a>
-      <a href="hourly-terms.html">Terms</a>
+      <a href="agreement.html">Agreement</a>
     </nav>
     <div class="nav-actions"><span class="pill sandbox-only">Sandbox</span><button class="btn small" id="signout" type="button" hidden>Sign out</button><a class="btn small solid live-only" href="buy.html">Buy HC</a></div>
   </div>
@@ -34,7 +34,7 @@
 <section class="co-head">
   <p class="label">Hour Market · <span class="signal live-only">live</span><span class="signal sandbox-only">sandbox</span></p>
   <h1>Hour-credits for whole AI fleets.</h1>
-  <p class="lead">One hour-credit (HC) buys one hour of a Rate-1 fleet and lasts 12 months. Spend it per request in the shared pool, reserve a whole fleet by the hour, or bid for the windows you need. Release a reserved hour you won't use, and get HC back for what it earns, less a 10% fee. The <a href="market-rules.html">Hour Market Rules</a> and the <a href="hourly-terms.html">Hourly Terms</a> apply.</p>
+  <p class="lead">One hour-credit (HC) buys one hour of a Rate-1 fleet and lasts 12 months. Spend it per request in the shared pool, reserve a whole fleet by the hour, or bid for the windows you need. Release a reserved hour you won't use, and get HC back for what it earns, less a 10% fee. The <a href="market-rules.html">Hour Market Rules</a> and the <a href="agreement.html">SparkPipe Customer Agreement</a> apply.</p>
   <div class="row">
     <nav class="mode" aria-label="Mode"><a href="market.html" id="mode-live">Live</a><a href="market.html?sandbox" id="mode-sandbox">Sandbox, no money</a></nav>
     <p class="muted live-only">Real accounts and real payments. Try every flow first in the sandbox.</p>
@@ -43,7 +43,7 @@
 </section>
 
 <div class="sandbox-bar">
-  <span class="live-only muted">Times are Korea Standard Time. Our own fleet-hours can be reserved from <span data-start>1 December 2026</span>: at Rate up to 7 days ahead, and Monday to Saturday up to 31 days ahead at 1.25×. A reservation is never bumped.</span>
+  <span class="live-only muted">Times are Korea Standard Time. Our own fleet-hours can be reserved from <span data-start>1 December 2026</span>: at Rate up to 7 days ahead, and up to 31 days ahead at 1.25× on any day. A reservation is never bumped.</span>
   <div><span class="muted">Market time</span> <span class="num" id="now">-</span></div>
   <div class="row sandbox-only">
     <button class="btn small" type="button" data-clock="1">+1 hour</button>
@@ -59,8 +59,8 @@
     <h2>Account</h2>
     <form class="form" id="signin" novalidate>
       <label>Work email<input id="email" type="email" autocomplete="email" required></label>
-      <label>Company (legal name)<input id="company" type="text" autocomplete="organization" placeholder="Needed for a new account"></label>
-      <label class="check"><input type="checkbox" id="accept"><span>I accept the <a href="hourly-terms.html" target="_blank" rel="noopener">Hourly Terms</a> and the <a href="market-rules.html" target="_blank" rel="noopener">Hour Market Rules</a> on behalf of this company, a business. The Korean texts prevail.</span></label>
+      <label>Company legal name, or your full name<input id="company" type="text" autocomplete="organization" placeholder="Needed for a new account"></label>
+      <label class="check"><input type="checkbox" id="accept"><span>I accept the <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a> and the <a href="market-rules.html" target="_blank" rel="noopener">Hour Market Rules</a> for business, professional, commercial or independent research and development use, not as a household consumer. The Korean texts prevail.</span></label>
       <label id="code-row" hidden>6-digit code from your email<input id="code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></label>
       <p class="muted sandbox-only">In the sandbox the code is filled in for you and nothing is emailed. Use two browsers to act as buyer and seller.</p>
       <button class="btn solid" type="submit" id="signin-go">Sign in</button>
@@ -85,8 +85,8 @@
       <p class="flash" id="m-buy" hidden></p>
     </form>
     <div id="tranche-box">
-    <h3>Two-year Tranche hours</h3>
-    <p class="muted">A two-year customer gets monthly Tranche hours. Reserve them from the calendar with “Tranche hours”, and release any you won't use.</p>
+    <h3>Plan Tranche hours</h3>
+    <p class="muted">A plan holder gets the paid hours of each month of the plan as Tranche hours. Reserve them from the calendar with “Tranche hours”, and release any you won't use. See <a href="plans.html">reserved plans</a>.</p>
     <div class="row sandbox-only"><button class="btn small" type="button" id="tranche">Get demo Tranche hours</button></div>
     <div class="scroll"><table><thead><tr><th>Month</th><th>Granted</th><th>Used</th><th>Left</th></tr></thead><tbody id="tranches"></tbody></table></div>
     <p class="flash" id="m-tranche" hidden></p>
@@ -98,9 +98,9 @@
   <h2>Calendar</h2>
   <div class="row">
     <label>Show<select id="days"><option value="7">7 days</option><option value="14">14 days</option><option value="31">31 days</option></select></label>
-    <div class="legend"><span><i class="cell hyor"></i>Our hour at its price</span><span><i class="cell release" style="--depth:.7"></i>Released hour, darker is cheaper</span><span><i class="cell mine"></i>Yours</span><span><i class="cell mine-release"></i>Yours, released</span><span><i class="cell taken"></i>Taken</span><span><i class="cell closed"></i>Not for sale</span></div>
+    <div class="legend"><span><i class="cell hyor"></i>Our hour at its price</span><span><i class="cell release" style="--depth:.7"></i>Released hour, darker is cheaper</span><span><i class="cell mine"></i>Yours</span><span><i class="cell mine-release"></i>Yours, released</span><span><i class="cell taken"></i>Taken</span><span><i class="cell maintenance"></i>Maintenance, announced 7 days ahead</span><span><i class="cell closed"></i>Not for sale</span></div>
   </div>
-  <p class="muted">Times in KST. Our own hours sell at Rate up to 7 days ahead, and Monday to Saturday up to 31 days ahead at 1.25×; released hours sell at any distance. Capacity kept for two-year customers opens 6 hours before it starts. Once reserved, an hour is yours: nobody can take it.</p>
+  <p class="muted">Times in KST. Our own hours sell at Rate up to 7 days ahead, and up to 31 days ahead at 1.25×; released hours sell at any distance. Capacity kept for plan holders opens 6 hours before it starts, and a fleet locked to a plan sells only the hours its holder releases. Once reserved, an hour is yours: nobody can take it.</p>
   <div id="calendar"></div>
   <div class="card" id="pick" hidden>
     <h3 id="pick-title"></h3>
@@ -199,7 +199,7 @@
 <footer class="foot">
   <div class="wrap">
     <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
-    <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Buy HC</a><a href="account.html">Account</a><a href="hourly-terms.html">Hourly Terms</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Buy HC</a><a href="account.html">Account</a><a href="plans.html">Reserved plans</a><a href="agreement.html">Customer Agreement</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
     <span class="sandbox-only">The sandbox takes no payment and uses no fleet.</span>
   </div>
 </footer>

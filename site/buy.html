@@ -23,7 +23,7 @@
     <nav class="nav-links" aria-label="Sections">
       <a href="index.html#fleets">Fleets</a>
       <a href="index.html#prices">Prices</a>
-      <a href="two-year.html">Two-year</a>
+      <a href="plans.html">Plans</a>
       <a href="#faq">Questions</a>
     </nav>
     <div class="nav-actions">
@@ -64,9 +64,9 @@
           <button class="btn solid big" type="button" id="known-go">Continue</button>
         </div>
         <form class="form" id="f-2" novalidate>
-          <label>Company (legal name)<input id="company" autocomplete="organization" maxlength="200" placeholder="Acme Co., Ltd."></label>
+          <label>Company legal name, or your full name<input id="company" autocomplete="organization" maxlength="200" placeholder="Acme Co., Ltd. or Jane Kim"></label>
           <label>Work email<input id="email" type="email" autocomplete="email" maxlength="254" placeholder="you@company.com"></label>
-          <label class="check"><input type="checkbox" id="accept"><span>I accept the <a href="hourly-terms.html" target="_blank" rel="noopener">Hourly Terms</a> and the <a href="market-rules.html" target="_blank" rel="noopener">Hour Market Rules</a> on behalf of this company, a business. The Korean texts (<a href="hourly-terms-ko.html" target="_blank" rel="noopener" hreflang="ko">약관</a>, <a href="market-rules-ko.html" target="_blank" rel="noopener" hreflang="ko">규칙</a>) prevail.</span></label>
+          <label class="check"><input type="checkbox" id="accept"><span>I accept the <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a> and the <a href="market-rules.html" target="_blank" rel="noopener">Hour Market Rules</a> for business, professional, commercial or independent research and development use, not as a household consumer. The Korean texts (<a href="agreement-ko.html" target="_blank" rel="noopener" hreflang="ko">계약</a>, <a href="market-rules-ko.html" target="_blank" rel="noopener" hreflang="ko">규칙</a>) prevail.</span></label>
           <p class="flash" id="m-2" hidden></p>
           <button class="btn solid big" type="submit" id="send">Email me a 6-digit code</button>
           <p class="hint">The code confirms your email. It becomes your account: receipts, your hours and sign-in all use it. Already have an account? Use the same email.</p>
@@ -86,7 +86,7 @@
       <form class="step-body form" id="f-3" novalidate>
         <p>What will you pay with?</p>
         <div id="coins"></div>
-        <label class="check" id="reaccept" hidden><input type="checkbox" id="accept-again"><span>The Hourly Terms or the Hour Market Rules changed since you accepted them. I accept the current <a href="hourly-terms.html" target="_blank" rel="noopener">Hourly Terms</a> and <a href="market-rules.html" target="_blank" rel="noopener">Hour Market Rules</a> (the Korean texts prevail) on behalf of my company.</span></label>
+        <label class="check" id="reaccept" hidden><input type="checkbox" id="accept-again"><span>The Customer Agreement or the Hour Market Rules changed since you accepted them. I accept the current <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a> and <a href="market-rules.html" target="_blank" rel="noopener">Hour Market Rules</a> (the Korean texts prevail) on behalf of my company.</span></label>
         <p class="flash" id="m-3" hidden></p>
         <button class="btn solid big" type="submit" id="pay">Pay in USDC</button>
         <p class="hint">Next you see CoinPayments' checkout with the exact amount, an address and a QR code. Send only the coin you picked, on the network you picked, within the hour. Any wallet or exchange works: Coinbase, Binance, OKX, Kraken, MetaMask, Phantom. We pay CoinPayments' fee; you pay only your network's fee. Your HC appears in your account as soon as the network confirms the payment, usually within minutes.</p>
@@ -103,12 +103,12 @@
       <div class="grand"><span id="o-total-label">Total in USDC</span><strong id="o-total">$88.00</strong></div>
     </div>
     <ul class="perks">
-      <li>1 HC reserves one hour of a whole Rate-1 fleet: 16 DGX Sparks in Seoul, no other customer's requests in the queue. Our own hours open up to 7 days ahead at the fleet's Rate, or up to 31 days ahead at 1.25× from Monday to Saturday; released hours at any distance. No reservation is ever bumped.</li>
+      <li>1 HC reserves one hour of a whole Rate-1 fleet: 16 DGX Sparks in Seoul, no other customer's requests in the queue. Our own hours open up to 7 days ahead at the fleet's Rate, or up to 31 days ahead at 1.25× on any day; released hours at any distance. No reservation is ever bumped.</li>
       <li>Or spend HC per request in the shared pool, billed per seat-second, through an OpenAI-format API with your own keys.</li>
       <li>Kimi K3 and other open models over a terabyte, million-token context, and Korea's own models: K-EXAONE 2.0, A.X K2, Solar Open 2.</li>
       <li>Release a reserved hour you won't use: when it sells or the pool uses it, you get HC for what it earned, less a 10% fee. A reserved hour with over 15 minutes of downtime comes back in full.</li>
     </ul>
-    <p class="hint">Want every hour, Monday to Saturday, for two years? <a href="two-year.html">The two-year price is <span id="o-committed">$15</span> an hour</a>.</p>
+    <p class="hint">Want the same hours kept for you every week? <a href="plans.html">A 2-year reserved plan is <span id="o-plan">$15</span> an hour</a>.</p>
   </aside>
 </div>
 
@@ -120,10 +120,10 @@
       <details><summary>Do I need a crypto wallet extension?</summary><p>No. Your account is your email. You pay on CoinPayments' checkout page from any wallet or exchange account that can send USDC or USDT: copy the address, or scan the QR code with your phone.</p></details>
       <details><summary>Which coin and network should I choose?</summary><p>The ones you hold. Each tile shows the name exchanges use on their withdrawal screens: ERC20, TRC20, BEP20, Base, SOL, Arbitrum One or Polygon PoS. Network fees are usually cents on all of them. Send only the coin you chose, only on the network you chose: the checkout page shows the exact amount and address for it. If your exchange takes a withdrawal fee from the amount, add it on top so the whole amount arrives.</p></details>
       <details><summary>Why stablecoins?</summary><p>Prices are in US dollars, and dollar stablecoins keep their value between the invoice and the payment, so neither of us carries the price swings of other crypto. We list USDC and USDT, which carry almost all stablecoin payments; CoinPayments' checkout page also takes the other dollar stablecoins it offers.</p></details>
-      <details><summary>When can I use my HC?</summary><p>At once in the shared pool, and on our own fleet-hours from <span data-start>1 December 2026</span>, reserved in the <a href="market.html">Hour Market</a> up to 7 days ahead at the fleet's Rate, or up to 31 days ahead at 1.25× from Monday to Saturday. Once confirmed, a reservation is yours: no one can bump it. Each purchase lasts 12 months from the day it is issued, and the oldest HC is spent first.</p></details>
-      <details><summary>Can HC sell out?</summary><p>Yes, on purpose. We sell HC only while our free fleet-hours can deliver it: before every date, the hours on our fleets from Monday to Saturday that nobody holds, after those kept for two-year customers, must cover all the HC that lapses by then. Beyond that a purchase is refused, and the <a href="market.html">Hour Market</a> shows how much HC is still on sale. So every HC you buy can be spent (Hourly Terms, clause 4.4).</p></details>
+      <details><summary>When can I use my HC?</summary><p>At once in the shared pool, and on our own fleet-hours from <span data-start>1 December 2026</span>, reserved in the <a href="market.html">Hour Market</a> up to 7 days ahead at the fleet's Rate, or up to 31 days ahead at 1.25× on any day. Once confirmed, a reservation is yours: no one can bump it. Each purchase lasts 12 months from the day it is issued, and the oldest HC is spent first.</p></details>
+      <details><summary>Can HC sell out?</summary><p>Yes, on purpose. We sell HC only while our free fleet-hours can deliver it: before every date, the hours on our fleets that nobody holds, after those kept for plan holders and an allowance for maintenance, must cover all the HC that lapses by then. Beyond that a purchase is refused, and the <a href="market.html">Hour Market</a> shows how much HC is still on sale. So every HC you buy can be spent (<a href="agreement.html">Customer Agreement</a>).</p></details>
       <details><summary>Can I try it first?</summary><p>Yes. The <a href="market.html?sandbox">Hour Market sandbox</a> runs the same market with no money: buy HC, reserve and release hours, bid, and call the pool against a simulator.</p></details>
-      <details><summary>Why is VAT added?</summary><p>We are a Korean company, and Korean VAT of 10% applies to every stablecoin payment (Hourly Terms, clause 3.2). The invoice shows it separately.</p></details>
+      <details><summary>Why is VAT added?</summary><p>We are a Korean company, and Korean VAT of 10% applies to every stablecoin payment (<a href="agreement.html">Customer Agreement</a>). The invoice shows it separately.</p></details>
       <details><summary>Can we pay in won against a tax invoice?</summary><p>Yes. Korean businesses can pay by bank transfer against our electronic tax invoice (세금계산서): write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</p></details>
       <details><summary>What if I send the wrong amount, or too late?</summary><p>If less arrives than the invoice, the HC it covers appears in your account at once, in proportion to what arrived, to six decimals; buy more whenever you like. Anything sent above the invoice, or after the payment page has closed, CoinPayments refunds with an email link to claim it. No one needs to write to anyone.</p></details>
     </div>
@@ -134,7 +134,7 @@
 <footer class="foot">
   <div class="wrap">
     <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
-    <nav aria-label="Footer"><a href="index.html">Home</a><a href="market.html">Hour Market</a><a href="fleets.html">Fleet List</a><a href="hourly-terms.html">Hourly Terms</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="market.html">Hour Market</a><a href="fleets.html">Fleet List</a><a href="plans.html">Reserved plans</a><a href="agreement.html">Customer Agreement</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
 
     <span>Stablecoin payments are processed by CoinPayments.</span>
   </div>
@@ -244,8 +244,8 @@
   $('f-2').addEventListener('submit', (event) => {
     event.preventDefault();
     busy($('send'), $('m-2'), async () => {
-      if (!$('company').value.trim()) throw new Error('Enter your company’s legal name.');
-      if (!$('accept').checked) throw new Error('Accept the Hourly Terms and the Hour Market Rules to continue.');
+      if (!$('company').value.trim()) throw new Error('Enter your company’s legal name, or your full name.');
+      if (!$('accept').checked) throw new Error('Accept the Customer Agreement and the Hour Market Rules to continue.');
       await flow.send($('email').value.trim());
       $('f-2').hidden = true;
     });
@@ -276,7 +276,7 @@
     busy($('pay'), $('m-3'), async () => {
       const coin = SP.chosen($('f-3'), 'coin');
       if (!coin) throw new Error('Choose USDC or USDT and its network.');
-      if (!$('reaccept').hidden && !$('accept-again').checked) throw new Error('Accept the current Hourly Terms and Hour Market Rules to continue.');
+      if (!$('reaccept').hidden && !$('accept-again').checked) throw new Error('Accept the current Customer Agreement and Hour Market Rules to continue.');
       $('pay').textContent = 'Creating your invoice…';
       let placed;
       try {
@@ -294,7 +294,7 @@
   });
 
   document.querySelectorAll('[data-start]').forEach((el) => { el.textContent = nice(P.hourlyEarliestStart); });
-  $('o-committed').textContent = SP.usd(P.committedPrice).replace('.00', '');
+  $('o-plan').textContent = SP.usd(P.plans.terms.find((t) => t.months === 24).hourPrice).replace('.00', '');
   $('start-hint').textContent = 'HC lasts 12 months from the day it is issued. Spend it in the shared pool at once, or on fleet-hours from ' + nice(P.hourlyEarliestStart) + '.';
   SP.coinPicker($('coins'), 'coin', S.coin, (id) => { S.coin = id; keep(); renderSummary(); });
   renderPresets();
