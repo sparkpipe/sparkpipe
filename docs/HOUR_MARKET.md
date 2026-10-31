@@ -1,8 +1,11 @@
 # Hour Market
 
 The Hour Market sells hour-credits (HC) and lets customers trade dated
-fleet-hours with HYOR as the only counterparty. The design, the market view
-and the contract changes are in the shared Hour Market document; this file
+fleet-hours with HYOR as the only counterparty. HC is the only hourly
+product: `buy.html` sells it by amount, `market.html` is the market, and the
+Hourly Terms and the Hour Market Rules (`site/terms/hourly-*.md`,
+`site/terms/market-rules-*.md`) govern it. The design, the market view and
+the contract changes are in the shared Hour Market document; this file
 describes what is built, how it runs and how to test it.
 
 ## Units and rules
@@ -80,11 +83,15 @@ same balances.
 | `POST /pool/v1/chat/completions`, `GET /pool/v1/models` | pool key | OpenAI format; replies carry `sparkpipe: {hc, seconds, dedicated}` |
 | `POST /market/sandbox/clock`, `/tranche`, `/reset` | sandbox, signed in | Move the shared clock, take demo Tranche hours, clear the sandbox |
 
-## Sandbox and test page
+## The page, live and sandbox
 
-`https://sparkpipe.ai/market-test.html` (not linked, `noindex`) drives every
-route against a second instance of the service in sandbox mode, served at
-`/pay/sandbox/api/`:
+`https://sparkpipe.ai/market.html` (`site/market.html`, `market.js`,
+`market.css`) is the market against the live service at `/pay/api/`: real
+accounts signed in by an emailed code, HC bought through `buy.html` and
+CoinPayments, the live pool. `market.html?sandbox` is the same page against
+a second instance of the service in sandbox mode, served at
+`/pay/sandbox/api/`, with its own accounts and ledger; `market-test.html`
+redirects there. In the sandbox:
 
 - purchases settle at once and no CoinPayments call is made;
 - `/code` returns the sign-in code instead of mailing it, and no mail is sent;
@@ -93,6 +100,11 @@ route against a second instance of the service in sandbox mode, served at
 - the pool answers with a built-in simulator, so the free sandbox never
   reaches the fleets;
 - `/market/sandbox/reset` moves the ledger aside and starts empty.
+
+Accepting the Hourly Terms records the SHA-256 of both languages of the
+Hourly Terms and of the Hour Market Rules (`TERMS` in
+`tools/sparkpipe_pay.py`); a change to any of the four texts asks the
+account to accept again at its next order.
 
 First install on the VPS, beside the live service:
 
@@ -121,9 +133,15 @@ SPARKPIPE_POOL_UPSTREAM=http://127.0.0.1:18081/v1
 SPARKPIPE_POOL_KEY_FILE=/etc/sparkpipe-pay/pool_key
 ```
 
-Until both are set, the live pool answers 503 `pool_closed`. The door
-allows four concurrent requests per key, which caps the live pool at four
-requests at once until the hub gives the pool its own limit.
+Until both are set, the live pool answers 503 `pool_closed`. The key is
+`k_dbfba343` in the hub's `~/sparkpipe-chat/api_keys.json` (note "sparkpipe.ai
+Hour Market live pool", created 2026-10-31, expires 2036-10-28); revoke it
+there with `api_keys.py revoke k_dbfba343`. The door allows four concurrent
+requests per key, which caps the live pool at four requests at once until
+the hub gives the pool its own limit. A public request for a model the
+fleet has not loaded starts a swap, as any public request does, so a pool
+request for the other pool model moves the whole fleet.
+
 
 Dedicated hours are recorded, billed and released here; keeping a fleet
 exclusive to its holder during the hour is work for the fleet controller.

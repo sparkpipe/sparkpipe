@@ -207,7 +207,7 @@ class State:
         self.trades.appendleft({"fleet": data["fleet"], "start": data["start"], "price": data["price"], "kind": data["source"], "at": data["now"]})
 
     def on_ask(self, data):
-        self.asks[data["ask"]] = {"ask": data["ask"], "account": data["account"], "reservation": data["reservation"], "min": data["min"], "state": "open", "at": data["now"], "seq": self.seq, "price": None, "earned": None}
+        self.asks[data["ask"]] = {"ask": data["ask"], "account": data["account"], "reservation": data["reservation"], "min": data["min"], "fee": Decimal(data["fee"]), "state": "open", "at": data["now"], "seq": self.seq, "price": None, "earned": None}
         self.reservations[data["reservation"]].update(state="released", ask=data["ask"])
 
     def on_ask_cancel(self, data):
@@ -366,7 +366,7 @@ class Market:
         source = "tranche" if pay == "tranche" else offer["kind"]
         self.book.append("reserve", {"reservation": reservation, "account": account, "fleet": offer["fleet"], "start": offer["start"], "model": model, "price": text_hc(price), "source": source, "ask": offer["ask"], "bid": bid["bid"] if bid else None, "now": moment})
         if offer["kind"] == "release":
-            credit = hc(price * (1 - self.fee(market)))
+            credit = hc(price * (1 - self.st.asks[offer["ask"]]["fee"]))
             if credit > 0:
                 self.book.append("hc_lot", {"lot": new_id("LT"), "account": offer["seller"], "hc": text_hc(credit), "expires": stamp(year_later(now)), "source": "sale", "ref": reservation, "now": moment})
         return reservation
@@ -384,7 +384,7 @@ class Market:
                 self.trade(offer, bid["account"], bid["model"], now, market, price, bid=bid)
 
     def advance(self, now, pricing, market):
-        st, moment, fee = self.st, stamp(now), self.fee(market)
+        st, moment = self.st, stamp(now)
         for res in list(st.reservations.values()):
             if res["state"] == "released" and slot_time(res["start"]) <= now:
                 self.book.append("pool_join", {"ask": res["ask"], "fleet": res["fleet"], "start": res["start"], "now": moment})
@@ -392,7 +392,7 @@ class Market:
             key = (res["fleet"], res["start"])
             if res["state"] == "pooled" and slot_time(res["start"]) + HOUR <= now and key not in st.settled:
                 earned = hc(st.pool_hc.get(key, Decimal(0)))
-                credit = hc(earned * (1 - fee))
+                credit = hc(earned * (1 - st.asks[res["ask"]]["fee"]))
                 self.book.append("pool_settle", {"fleet": res["fleet"], "start": res["start"], "ask": res["ask"], "seller": res["account"], "earned": text_hc(earned), "credit": text_hc(credit), "seconds": text_hc(st.pool_seconds.get(key, Decimal(0))), "now": moment})
                 if credit > 0:
                     self.book.append("hc_lot", {"lot": new_id("LT"), "account": res["account"], "hc": text_hc(credit), "expires": stamp(year_later(now)), "source": "pool", "ref": res["ask"], "now": moment})
@@ -486,13 +486,16 @@ class Market:
             rate = self.fleet_field(pricing, res["fleet"])["rate"]
             least = rate if body.get("min") in (None, "") else hc_field(body.get("min"), "minimum price")
             ask = new_id("AK")
-            self.book.append("ask", {"ask": ask, "account": account, "reservation": res["reservation"], "min": text_hc(least), "now": stamp(now)})
+            self.book.append("ask", {"ask": ask, "account": account, "reservation": res["reservation"], "min": text_hc(least), "fee": format(self.fee(market), "f"), "now": stamp(now)})
             self.match_resting(now, pricing, market)
             return {"ask": ask, "state": self.st.asks[ask]["state"]}
 
     def cancel(self, account, body):
+        pricing, market = self.settings()
         with self.book.lock:
+            self.advance(self.now(), pricing, market)
             if body.get("ask"):
+
                 ask = self.st.asks.get(body["ask"])
                 if not ask or ask["account"] != account or ask["state"] != "open":
                     raise Refusal("No open release with that number on this account.", 404)

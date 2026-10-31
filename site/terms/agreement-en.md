@@ -21,6 +21,8 @@ In this Agreement:
 - **Phase A** means Day 1 to Day 30 inclusive.
 - **Full Prepayment** means our receipt, in cleared funds, of the price of every Tranche in the Term.
 - **Account** means Customer's account with us under clause 8.5.
+- **Hourly Terms** means our SparkPipe Hourly Terms, published at sparkpipe.ai/hourly-terms.html. **Hour-credit** (or **HC**) has the meaning given there.
+- **Hour Market Rules** means our SparkPipe Hour Market Rules, published at sparkpipe.ai/market-rules.html, in the version in force when Customer releases an hour.
 
 ## 1. Subject
 
@@ -32,7 +34,7 @@ In this Agreement:
 
 2.1. The price of each fleet-hour is the **Hour Price** stated in the Schedule, fixed for the Term.
 
-2.2. The Hour Price is a single all-in price. It covers the Fleet and its interconnect, the models in clause 10, and operation and support. No other fee, surcharge or charge applies during the Term. The Hour Price is exclusive of value-added tax (VAT). We charge VAT at the statutory rate (10% at the Signature Date) on every payment and show it separately on our invoice, except a payment that the Schedule states is zero-rated and that Customer makes in the way the Schedule states. Any amount charged as VAT that is not owed is an overpayment, and we refund it to Customer. If a payment Customer made as zero-rated is held subject to VAT because Customer's information was incorrect or Customer did not pay in the way the Schedule states, Customer pays us that VAT, with any additional tax and penalty, on demand.
+2.2. The Hour Price is a single all-in price. It covers the Fleet and its interconnect, the models in clause 10, and operation and support. No other fee, surcharge or charge applies during the Term, apart from the release fee that the Hour Market Rules deduct from what a released hour earns. The Hour Price is exclusive of value-added tax (VAT). We charge VAT at the statutory rate (10% at the Signature Date) on every payment and show it separately on our invoice, except a payment that the Schedule states is zero-rated and that Customer makes in the way the Schedule states. Any amount charged as VAT that is not owed is an overpayment, and we refund it to Customer. If a payment Customer made as zero-rated is held subject to VAT because Customer's information was incorrect or Customer did not pay in the way the Schedule states, Customer pays us that VAT, with any additional tax and penalty, on demand.
 
 2.3. The Term contains 24 hours for every day in it other than a Sunday: **15,000 to 15,048 hours**, depending on how many Sundays fall within the Term and whether 29 February does. The Schedule states the number. The price of the Term is the Hour Price multiplied by those hours.
 
@@ -58,7 +60,7 @@ In this Agreement:
 | 25 | 1–14 Dec 2028 | 288 |
 | **All** | **15 Dec 2026 – 14 Dec 2028** | **15,048** |
 
-3.5. An hour expires at 23:59:59 on the last day of its Tranche unless consumed. Expired hours do not carry forward, convert, accumulate or have any cash value.
+3.5. An hour expires at 23:59:59 on the last day of its Tranche unless consumed. Expired hours do not carry forward, convert, accumulate or have any cash value. Before a reserved hour occurs, Customer may release it under the Hour Market Rules (clause 8.6). A released hour that is sold, or that reaches its start unsold, counts as consumed, and Customer is credited the hour-credits it earns under those Rules.
 
 ## 4. Timezone election
 
@@ -76,7 +78,7 @@ In this Agreement:
 | 100% East | 24 | 0 | 2× |
 | 100% West | 0 | 24 | 2× |
 
-"2×" means twice as many hours per day in the elected window as a 50/50 election gives. It does not change the price per hour or the total hours in clause 2.3.
+"2×" means twice as many hours per day in the elected window as a 50/50 election gives. It does not change the price per hour or the total hours in clause 2.3. Hours Customer reserves with hour-credits under the Hourly Terms are outside the election and the Guaranteed Limit and draw on no Tranche.
 
 4.5. The election applies only from Full Prepayment (clause 7). Until then Customer's Guaranteed Limit is that of a 50/50 election.
 
@@ -92,7 +94,7 @@ In this Agreement:
 
 5.3. Once Customer pays any amount under this Agreement, the withdrawal right in clause 5.2 ends.
 
-5.4. There are no unpaid hours: until Customer pays, no hour is issued or served under this Agreement. Until Full Prepayment, Customer reserves its paid hours at times of its choosing under clause 8, within the Tranche each hour belongs to and its Guaranteed Limit (12 East Window and 12 West Window hours per day), and on Sundays under clause 4.7.
+5.4. There are no unpaid hours: until Customer pays, no hour is issued or served under this Agreement. Until Full Prepayment, Customer reserves its paid hours at times of its choosing under clause 8, within the Tranche each hour belongs to and its Guaranteed Limit (12 East Window and 12 West Window hours per day), and on Sundays under clause 4.7. Hours Customer reserves with hour-credits are outside these limits (clause 4.4).
 
 5.5. Each cleared payment issues hours equal to the amount paid, net of VAT, divided by the Hour Price, to the earliest Tranches not yet fully paid. Hours that occur before they are paid for are counted as consumed: the price of the Term does not change.
 
@@ -133,9 +135,11 @@ In this Agreement:
 
 - **Fungibility.** Hours may be reserved in either window up to Customer's Guaranteed Limit (clause 4.4).
 - **Elected rate.** A 100% election takes effect, giving a Guaranteed Limit of 24 hours per day in the elected window.
-- **Extra Hours.** Customer may reserve hours beyond its Guaranteed Limit from Monday to Saturday, and without a daily limit on Sundays (the **Extra Hours**). Extra Hours are subject to availability, may be reserved at most 30 days before they start, and are never displaced once confirmed (clause 8.4). They never take an hour held under our hourly terms (clause 8.13).
+- **Extra Hours.** Customer may reserve hours beyond its Guaranteed Limit from Monday to Saturday, and without a daily limit on Sundays (the **Extra Hours**). Extra Hours are subject to availability, may be reserved at most 30 days before they start, and are never displaced once confirmed (clause 8.4). They never take an hour held under the Hourly Terms (clause 8.13).
 - **Spending ahead.** Customer may reserve more hours in a period than its current Tranche holds. As each reserved hour occurs it is drawn from the unexpired Tranche nearest to expiry, so the excess comes from future Tranches. Hours of a future Tranche consumed early do not reappear in their own month.
 - **Concurrency.** Customer may hold Reservations on several Fleets at the same time.
+
+Hours Customer reserves with hour-credits are not Extra Hours, and none of the limits of this clause applies to them (clause 4.4).
 
 7.2. Customer's hours may be reserved on any Fleet we operate, current or future, subject to availability. This Agreement does not set the price of any further capacity Customer buys later.
 
@@ -143,7 +147,7 @@ In this Agreement:
 
 8.1. Customer reserves hours through our website while signed in to its Account, or through our API with an access token issued under it, naming the Fleet, the start time and the number of hours. A Reservation exists once our system confirms it. A reserved hour on a Fleet consumes as many hours as that Fleet's Rate.
 
-8.2. A Reservation is final once confirmed: it cannot be cancelled, moved or refunded, except under clause 11.3. Customer may not make a Reservation unless its paid hours can cover it together with every Reservation it already holds, each from hours that have not expired when it occurs. A reserved hour is consumed when that hour occurs, whether or not it is used, and not before. Our technical records of payments, Reservations and consumption are kept in an append-only, hash-chained ledger whose daily roots we publish, and Customer may obtain its own entries with proof that they were recorded and not altered. These records are conclusive, except for manifest error.
+8.2. A Reservation is final once confirmed: it cannot be cancelled, moved or refunded, except under clause 11.3, but Customer may release it under the Hour Market Rules before it occurs (clause 8.6). Customer may not make a Reservation unless its paid hours can cover it together with every Reservation it already holds, each from hours that have not expired when it occurs. A reserved hour is consumed when that hour occurs, whether or not it is used, and not before. Our technical records of payments, Reservations and consumption are kept in an append-only, hash-chained ledger whose daily roots we publish, and Customer may obtain its own entries with proof that they were recorded and not altered. These records are conclusive, except for manifest error.
 
 8.3. **Customer has the exclusive right to use each reserved hour.** Customer may use it, or let others use it by resale, transfer or gift through its Account and the access tokens it issues, and may run any lawful workload on it, subject to clauses 8.9 to 8.12. Any such arrangement is made outside our system and is out of our control (clause 8.6).
 
@@ -151,7 +155,7 @@ In this Agreement:
 
 8.5. Access is through Customer's Account: the account on our website identified by the email address Customer registers with us, signed in to with one-time codes sent to that address. It authorises Reservations and the use of each reserved hour, and Customer may issue access tokens and add users under it. Access is automated: no notice to us, approval or waiting period. We set the technical mechanism and may change it without amending this Agreement, provided equivalent access continues. Customer bears all risk of loss or compromise of its Account email and access tokens; any use under the Account is Customer's use.
 
-8.6. We keep no register of, and are not a party to, any resale or transfer of hours. We do not match, price, clear or settle such transactions, have no liability for their price or counterparties, and are never obliged to buy any hour. We do not buy back, credit or pay cash for any expiring or unused hour, at any time, for any reason.
+8.6. **Hour Market.** We run the Hour Market under the Hour Market Rules, and Customer may release a reserved hour through it before the hour occurs. In the Hour Market we buy no hour, guarantee no sale or price, and pay no cash: a released hour earns only the hour-credits those Rules provide, less the release fee. Otherwise, we keep no register of, and are not a party to, any resale or transfer of hours. We do not match, price, clear or settle such transactions, have no liability for their price or counterparties, and are never obliged to buy any hour. Except as the Hour Market Rules provide for a released hour, we do not buy back, credit or pay cash for any expiring or unused hour, at any time, for any reason.
 
 8.7. Hours give the right to use the service only. They give no ownership of, or rights in, our company, hardware, software, models or intellectual property. They are not a deposit, loan, security or investment, and carry no expectation of profit from our efforts.
 
@@ -165,7 +169,7 @@ In this Agreement:
 
 8.12. **Customer data.** Customer keeps all rights in its data and outputs. We access them only as needed to operate and secure the service, or where the law requires. Customer is responsible for the lawfulness of any personal data it processes and for keeping its own copies: we keep no backups of Customer data. We handle Customer data as stated in our published privacy policy. The Fleets and our servers are located in Seoul, Republic of Korea. We hold no Customer data beyond transient caches, which we delete within 24 hours, so nothing is returned when this Agreement ends. We tell Customer without delay of any intrusion, any leak of its information and any unannounced interruption of the service.
 
-8.13. **Priority over hourly use.** Within its Guaranteed Limit, Customer may reserve an hour that another customer holds under our hourly terms, if that hour starts more than 6 hours later; the hour then becomes Customer's Reservation. Extra Hours and hours on a Sunday never take an hour held under our hourly terms. Customer's own Reservations are never displaced (clause 8.4).
+8.13. **Priority over hourly use.** Within its Guaranteed Limit, Customer may reserve an hour that another customer reserved from our own capacity under the Hourly Terms, if that hour starts more than 6 hours later; the hour then becomes Customer's Reservation. An hour bought in the Hour Market as a released hour is never taken. Extra Hours and hours on a Sunday never take an hour held under the Hourly Terms. Customer's own Reservations are never displaced (clause 8.4).
 
 ## 9. Delivery obligation
 
@@ -267,6 +271,7 @@ Where this Agreement ends under clause 11.2 or 11.3:
 | Supplier notice address and email | \[ \] |
 | Customer notice address and email | \[ \] |
 | Fleet Rates at the Signature Date | As published on the Fleet List at signing: \[Fleet 1 (16 Sparks): 1.00; Fleet 2 (M5U): 1.00; Fleet 3 (16 Sparks): 1.00\] |
+| Release fee (clause 8.6) | As published under the Hour Market Rules |
 
 ## Signatures
 

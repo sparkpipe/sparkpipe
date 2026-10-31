@@ -1,13 +1,7 @@
 window.SP_PRICING = {
-  "hourlyPrice": 20,
   "committedPrice": 15,
-  "hourlyPriceKRW": 26000,
   "committedPriceKRW": 20000,
   "vatRate": 0.10,
-  "hourlyMaxHours": 168,
-  "verifiedMaxHours": 720,
-  "hourlyValidityMonths": 12,
-  "displaceNoticeHours": 6,
   "termMonths": 24,
   "phaseADays": 30,
   "hourlyEarliestStart": "2026-12-01",

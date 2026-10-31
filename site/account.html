@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Your Account · SparkPipe</title>
-<meta name="description" content="Your SparkPipe fleet-hours: balance, orders, payments and two-year prepayments.">
+<meta name="description" content="Your SparkPipe account: hour-credits, orders, payments and two-year prepayments.">
 <meta name="robots" content="noindex">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
@@ -20,7 +20,7 @@
 <body>
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">fleet-hours</span></a>
+    <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">account</span></a>
     <nav class="nav-links" aria-label="Sections">
       <a href="index.html#fleets">Fleets</a>
       <a href="index.html#prices">Prices</a>
@@ -28,7 +28,7 @@
     </nav>
     <div class="nav-actions">
       <div class="lang" role="group" aria-label="Language / 언어"><a href="account.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
-      <a class="btn small solid" href="buy.html">Buy hours</a>
+      <a class="btn small solid" href="buy.html">Buy HC</a>
     </div>
   </div>
 </header>
@@ -36,7 +36,7 @@
 <main class="wrap">
 <section class="co-head">
   <p class="label">Account</p>
-  <h1 id="title">Your fleet-hours.</h1>
+  <h1 id="title">Your account.</h1>
 </section>
 
 <div class="stack">
@@ -54,7 +54,7 @@
       <label>Email<input id="email" type="email" autocomplete="email" maxlength="254" placeholder="you@company.com"></label>
       <p class="flash" id="m-email" hidden></p>
       <button class="btn solid big" type="submit" id="send">Email me a 6-digit code</button>
-      <p class="hint">No password. New here? <a href="buy.html">Buy hours</a> to open an account.</p>
+      <p class="hint">No password. New here? <a href="buy.html">Buy HC</a> to open an account, or try the <a href="market.html?sandbox">Hour Market sandbox</a> first.</p>
     </form>
     <form class="form" id="f-code" hidden novalidate>
       <p>We sent a code to <b id="sent-to"></b>. It expires in 10 minutes.</p>
@@ -72,36 +72,27 @@
         <button class="btn small" type="button" id="signout">Sign out</button>
       </div>
       <div class="stats">
-        <div><span>Hours available</span><strong id="s-hours">0</strong></div>
-        <div><span>You can still buy</span><strong id="s-room">0</strong></div>
+        <div><span>Hour-credits</span><strong id="s-hc">0</strong></div>
         <div><span>Awaiting payment</span><strong id="s-open">0</strong></div>
       </div>
-      <p class="hint" id="s-limit"></p>
-      <div class="actions"><a class="btn solid" href="buy.html">Buy hours</a><a class="btn" href="two-year.html">Two-year price</a></div>
+      <div class="actions"><a class="btn solid" href="market.html">Open the Hour Market</a><a class="btn" href="buy.html">Buy HC</a><a class="btn" href="two-year.html">Two-year price</a></div>
     </section>
 
     <section class="card" id="next">
       <p class="label">What happens next</p>
       <ul class="perks">
-        <li>Your hours are usable from the first day you chose, for 12 months. The fleets open to customers on <span data-start>1 December 2026</span>.</li>
-        <li>You reserve hours on a fleet's calendar, up to 7 days ahead, and use them through the SparkPipe API in the OpenAI chat format. We email <b class="email-here"></b> when the calendar opens for your account.</li>
-        <li>Receipts go to the same email. For a won tax invoice, a business check (to hold up to 720 hours) or anything else, write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</li>
+        <li>Each purchase of HC lasts 12 months from the day it is issued, and the oldest is spent first. The <a href="market.html">Hour Market</a> shows every lot.</li>
+        <li>Spend HC in the shared pool at once, through an OpenAI-format API with keys you create in the Hour Market, or reserve whole fleet-hours from <span data-start>1 December 2026</span>, up to 7 days ahead.</li>
+        <li>Receipts go to <b class="email-here"></b>. For a won tax invoice or anything else, write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</li>
       </ul>
     </section>
 
-    <section class="card" id="blocks-card" hidden>
-      <p class="label">Your hours</p>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Hours</th><th>Usable from</th><th>Until</th><th>Order</th></tr></thead>
-        <tbody id="blocks"></tbody>
-      </table></div>
-    </section>
 
     <div id="agreements" class="stack" hidden></div>
 
     <section class="card">
       <p class="label">Orders</p>
-      <p class="flash" id="no-orders">No orders yet. <a href="buy.html">Buy your first hours.</a></p>
+      <p class="flash" id="no-orders">No orders yet. <a href="buy.html">Buy your first HC.</a></p>
       <div class="table-wrap" id="orders-wrap"><table>
         <thead><tr><th>Order</th><th>What</th><th>Total</th><th>Paid with</th><th>State</th><th></th></tr></thead>
         <tbody id="orders"></tbody>
@@ -137,7 +128,7 @@
 <footer class="foot">
   <div class="wrap">
     <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
-    <nav aria-label="Footer"><a href="index.html">Home</a><a href="fleets.html">Fleet List</a><a href="hourly-terms.html">Hourly Terms</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="market.html">Hour Market</a><a href="fleets.html">Fleet List</a><a href="hourly-terms.html">Hourly Terms</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
     <span>Stablecoin payments are processed by CoinPayments.</span>
   </div>
 </footer>
@@ -155,29 +146,12 @@
   const cell = (content, cls) => { const td = document.createElement('td'); if (content instanceof Node) td.append(content); else td.textContent = content; if (cls) td.className = cls; return td; };
   const row = (cells) => { const tr = document.createElement('tr'); tr.append(...cells); return tr; };
   const link = (href, text, cls) => { const a = document.createElement('a'); a.href = href; a.textContent = text; if (cls) a.className = cls; return a; };
-  const payRest = (o, label, cls) => {
-    const button = document.createElement('button');
-    Object.assign(button, { type: 'button', className: cls, textContent: label });
-    button.addEventListener('click', async () => {
-      button.disabled = true;
-      try {
-        const placed = await SP.call('/order', { product: 'rest', parent: o.order, coin: o.coin });
-        if (!/^https:\/\//.test(placed.checkout)) throw new Error('The checkout link is not secure. Your order ' + placed.order + ' is listed below.');
-        window.location.assign(placed.checkout);
-      } catch (error) {
-        button.disabled = false;
-        SP.say($('st-text'), error.status === 401 ? 'Sign in below to pay the rest of this order.' : error.message, 'error');
-        $('status').hidden = false;
-        $('status').scrollIntoView({ behavior: 'smooth' });
-      }
-    });
-    return button;
-  };
+  const hc = (text) => (+text).toLocaleString('en-US', { maximumFractionDigits: 6 });
   const what = (o) => {
-    const hours = o.issued && +o.issuedHours < +o.hours ? SP.whole(o.issuedHours) + ' of ' + SP.whole(o.hours) : SP.whole(o.hours);
-    if (o.parent) return 'Rest of ' + o.parent + ': ' + hours + ' hours';
-    return o.product === 'hourly' ? hours + ' hours from ' + nice(o.start) : 'Prepayment ' + o.agreement + ': ' + hours + ' hours';
+    const amount = o.issued && +o.issuedHours < +o.hours ? hc(o.issuedHours) + ' of ' + hc(o.hours) : hc(o.hours);
+    return o.product === 'credits' ? amount + ' HC' : 'Prepayment ' + o.agreement + ': ' + amount + ' hours';
   };
+  const unit = (o) => (o.product === 'credits' ? ' HC' : ' fleet-hours');
   let me = null, watching = new URLSearchParams(window.location.search).get('order'), timer = null;
 
   const renderStatus = (o) => {
@@ -189,12 +163,12 @@
     let title, text, kind;
     const part = o.received && +o.received > 0 && +o.received < +o.total;
     if (o.state === 'completed' && o.issued) {
-      title = +o.issuedHours < +o.hours ? 'Paid in part. Your hours are in.' : 'Paid. Your hours are in.'; kind = 'ok';
-      text = SP.whole(o.issuedHours) + ' fleet-hours are in your account' + (o.product === 'hourly' ? ', usable from ' + nice(o.start) + ' to ' + nice(o.last) : '') + (part ? ', for the ' + SP.usd(o.received) + ' that arrived' : '') + '. The receipt is on its way to your email.' + (o.left ? ' The other ' + SP.whole(o.leftHours) + ' hours of this order are yours at the same price when you pay the remaining ' + SP.usd(o.left) + '.' : '');
-      if (o.left) actions.push(payRest(o, 'Pay the remaining ' + SP.usd(o.left) + ' in ' + SP.coinName(o.coin), 'btn solid'));
+      title = +o.issuedHours < +o.hours ? 'Paid in part. Your HC is in.' : 'Paid. Your HC is in.'; kind = 'ok';
+      text = hc(o.issuedHours) + unit(o) + ' are in your account' + (o.product === 'credits' ? ', usable for 12 months' : '') + (part ? ', for the ' + SP.usd(o.received) + ' that arrived' : '') + '. The receipt is on its way to your email.';
+      if (o.product === 'credits') actions.push(link('market.html', 'Open the Hour Market', 'btn solid'));
     } else if (part && OPEN.has(o.state)) {
       title = 'Part of the payment arrived.'; kind = 'error';
-      text = 'We received ' + SP.usd(o.received) + ' of ' + SP.usd(o.total) + ' in ' + SP.coinName(o.coin) + '. While the payment page is open you can send the remaining ' + SP.usd(+o.total - +o.received) + ' to the same address. Otherwise, if CoinPayments completes the payment with what arrived, it buys ' + SP.whole(Math.floor(+o.received / +o.total * +o.hours * 10000) / 10000) + ' hours, in proportion; if it does not, CoinPayments refunds it when the payment page closes and emails you a link to claim it.';
+      text = 'We received ' + SP.usd(o.received) + ' of ' + SP.usd(o.total) + ' in ' + SP.coinName(o.coin) + '. While the payment page is open you can send the remaining ' + SP.usd(+o.total - +o.received) + ' to the same address. Otherwise, if CoinPayments completes the payment with what arrived, it buys ' + hc(Math.floor(+o.received / +o.total * +o.hours * 1e6) / 1e6) + unit(o) + ', in proportion; if it does not, CoinPayments refunds it when the payment page closes and emails you a link to claim it.';
       if (o.checkout && /^https:\/\//.test(o.checkout)) actions.push(link(o.checkout, 'Open the payment page', 'btn solid'));
     } else if (o.state === 'created' || o.state === 'unpaid') {
       title = 'Waiting for your payment.';
@@ -204,19 +178,19 @@
       title = 'Payment seen. Confirming…';
       text = 'The network is confirming your payment. This usually takes a few minutes.';
     } else if (o.state === 'paid' || o.state === 'completed') {
-      title = 'Confirmed. Issuing your hours…';
-      text = 'CoinPayments has confirmed the payment; the hours appear in a moment.';
+      title = 'Confirmed. Issuing…';
+      text = 'CoinPayments has confirmed the payment; it appears in your account in a moment.';
     } else if (o.state === 'mismatch') {
       title = 'We are checking this payment.'; kind = 'error';
-      text = (o.received ? 'We received ' + SP.usd(o.received) + ' of ' + SP.usd(o.total) + ', so' : 'The amount we received differs from the order, so') + ' no hours were issued automatically. We will email you; you can also write to hyor@sparkpipe.ai with order ' + o.order + '.';
+      text = (o.received ? 'We received ' + SP.usd(o.received) + ' of ' + SP.usd(o.total) + ', so' : 'The amount we received differs from the order, so') + ' nothing was issued automatically. We will email you; you can also write to hyor@sparkpipe.ai with order ' + o.order + '.';
     } else if (o.received && +o.received > 0) {
       title = 'This invoice ' + (o.state === 'timedout' ? 'expired' : 'was cancelled') + '. The payment goes back to you.';
-      text = 'The ' + SP.usd(o.received) + ' that arrived is refunded: CoinPayments emails the order\u2019s address a link to claim it, and the refund reaches the wallet you give there, less the network fee. No hours were issued.';
-      actions.push(link('buy.html', 'Buy hours', 'btn solid'));
+      text = 'The ' + SP.usd(o.received) + ' that arrived is refunded: CoinPayments emails the order\u2019s address a link to claim it, and the refund reaches the wallet you give there, less the network fee. Nothing was issued.';
+      actions.push(link('buy.html', 'Buy HC', 'btn solid'));
     } else {
       title = o.state === 'failed' ? 'The invoice was not created.' : 'This invoice ' + (o.state === 'timedout' ? 'expired' : 'was cancelled') + ' unpaid.';
       text = 'Nothing was charged.';
-      actions.push(link('buy.html', 'Buy hours', 'btn solid'));
+      actions.push(link('buy.html', 'Buy HC', 'btn solid'));
     }
     $('st-title').textContent = title;
     SP.say($('st-text'), text, kind);
@@ -275,23 +249,20 @@
   const renderHome = () => {
     $('signin').hidden = true;
     $('home').hidden = false;
-    $('title').textContent = 'Your fleet-hours.';
+    $('title').textContent = 'Your account.';
     $('company').textContent = me.company;
     $('who-email').textContent = me.email;
     document.querySelectorAll('.email-here').forEach((el) => { el.textContent = me.email; });
     $('since').textContent = nice(me.since);
-    $('s-hours').textContent = SP.whole(me.hours);
-    $('s-room').textContent = SP.whole(me.room);
+    $('s-hc').textContent = hc(me.hc);
     $('s-open').textContent = me.orders.filter((o) => o.state === 'unpaid' || o.state === 'pending' || o.state === 'paid').length;
-    $('s-limit').textContent = 'You may hold up to ' + me.limit + ' hours at a time, counting unused hours and unpaid orders' + (me.limit < P.verifiedMaxHours ? '; ' + P.verifiedMaxHours + ' after a business check.' : '.');
-    $('blocks-card').hidden = me.blocks.length === 0;
-    $('blocks').replaceChildren(...me.blocks.map((b) => row([cell(SP.whole(b.hours), 'figure'), cell(nice(b.start)), cell(nice(b.last)), cell(b.order)])));
     $('agreements').hidden = me.agreements.length === 0;
     $('agreements').replaceChildren(...me.agreements.map(renderAgreement));
     $('no-orders').hidden = me.orders.length > 0;
     $('orders-wrap').hidden = me.orders.length === 0;
     $('orders').replaceChildren(...me.orders.map((o) => {
-      const action = o.checkout && /^https:\/\//.test(o.checkout) ? link(o.checkout, 'Pay', 'btn small solid') : o.left ? payRest(o, 'Pay rest ' + SP.usd(o.left), 'btn small solid') : '';
+      const action = o.checkout && /^https:\/\//.test(o.checkout) ? link(o.checkout, 'Pay', 'btn small solid') : '';
+
       const state = document.createElement('span');
       state.className = 'state' + (o.state === 'completed' ? ' live' : OPEN.has(o.state) ? ' building' : '');
       const part = o.received && +o.received > 0 && +o.received < +o.total;
@@ -325,7 +296,7 @@
       $('f-email').hidden = false;
       renderHome();
     } catch (error) {
-      if (error.reason === 'new') { SP.say($('m-code'), 'No account uses this email yet. Buy hours to open one: it takes two minutes.', 'error'); }
+      if (error.reason === 'new') { SP.say($('m-code'), 'No account uses this email yet. Buy HC to open one: it takes two minutes.', 'error'); }
       else SP.say($('m-code'), error.message, 'error');
     }
     button.disabled = false;

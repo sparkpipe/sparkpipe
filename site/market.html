@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hour Market · SparkPipe</title>
+<meta name="description" content="Buy hour-credits, reserve and release whole AI fleets by the hour, bid for windows and call the shared pool, live or in a sandbox with no money.">
+<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
+<link rel="stylesheet" href="site.css?v=dcbd7de8">
+<link rel="stylesheet" href="checkout.css?v=1">
+<link rel="stylesheet" href="market.css?v=1">
+</head>
+<body>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">hour market</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="fleets.html">Fleets</a>
+      <a href="two-year.html">Two-year</a>
+      <a href="market-rules.html">Rules</a>
+      <a href="hourly-terms.html">Terms</a>
+    </nav>
+    <div class="nav-actions"><span class="pill sandbox-only">Sandbox</span><button class="btn small" id="signout" type="button" hidden>Sign out</button><a class="btn small solid live-only" href="buy.html">Buy HC</a></div>
+  </div>
+</header>
+
+<main class="wrap mk">
+<section class="co-head">
+  <p class="label">Hour Market · <span class="signal live-only">live</span><span class="signal sandbox-only">sandbox</span></p>
+  <h1>Hour-credits for whole AI fleets.</h1>
+  <p class="lead">One hour-credit (HC) buys one hour of a Rate-1 fleet and lasts 12 months. Spend it per request in the shared pool, reserve a whole fleet by the hour, or bid for the windows you need. Release a reserved hour you won't use, and get HC back for what it earns, less a 10% fee. The <a href="market-rules.html">Hour Market Rules</a> and the <a href="hourly-terms.html">Hourly Terms</a> apply.</p>
+  <div class="row">
+    <nav class="mode" aria-label="Mode"><a href="market.html" id="mode-live">Live</a><a href="market.html?sandbox" id="mode-sandbox">Sandbox, no money</a></nav>
+    <p class="muted live-only">Real accounts and real payments. Try every flow first in the sandbox.</p>
+    <p class="muted sandbox-only">The same market with its own accounts: purchases settle at once with no money, sign-in codes show on screen, the shared test clock moves time forward, and the pool answers with a simulator instead of the fleets.</p>
+  </div>
+</section>
+
+<div class="sandbox-bar">
+  <span class="live-only muted">Times are Korea Standard Time. Our own fleet-hours can be reserved from <span data-start>1 December 2026</span>, up to 7 days ahead.</span>
+  <div><span class="muted">Market time</span> <span class="num" id="now">-</span></div>
+  <div class="row sandbox-only">
+    <button class="btn small" type="button" data-clock="1">+1 hour</button>
+    <button class="btn small" type="button" data-clock="24">+1 day</button>
+    <button class="btn small" type="button" data-clock="168">+1 week</button>
+    <button class="btn small" type="button" id="reset">Reset sandbox</button>
+  </div>
+  <p class="flash" id="m-clock" hidden></p>
+</div>
+
+<div class="mk-grid">
+  <section class="card" id="signin-card">
+    <h2>Account</h2>
+    <form class="form" id="signin" novalidate>
+      <label>Work email<input id="email" type="email" autocomplete="email" required></label>
+      <label>Company (legal name)<input id="company" type="text" autocomplete="organization" placeholder="Needed for a new account"></label>
+      <label class="check"><input type="checkbox" id="accept"><span>I accept the <a href="hourly-terms.html" target="_blank" rel="noopener">Hourly Terms</a> and the <a href="market-rules.html" target="_blank" rel="noopener">Hour Market Rules</a> on behalf of this company, a business. The Korean texts prevail.</span></label>
+      <label id="code-row" hidden>6-digit code from your email<input id="code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></label>
+      <p class="muted sandbox-only">In the sandbox the code is filled in for you and nothing is emailed. Use two browsers to act as buyer and seller.</p>
+      <button class="btn solid" type="submit" id="signin-go">Sign in</button>
+      <p class="flash" id="m-signin" hidden></p>
+    </form>
+    <div id="me" hidden>
+      <p class="muted"><span id="me-company"></span> · <span id="me-email"></span></p>
+      <div class="row"><div><span class="muted">Balance</span><div class="big-num"><span id="balance">0</span> <span class="muted">HC</span></div></div><div><span class="muted">Held by bids</span><div class="num" id="held">0</div></div></div>
+      <h3>Lots</h3>
+      <div class="scroll"><table><thead><tr><th>HC left</th><th>Of</th><th>Source</th><th>Lapses</th></tr></thead><tbody id="lots"></tbody></table></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Buy hour-credits</h2>
+    <form class="form" id="buy" novalidate>
+      <label>Amount in US dollars, before VAT<input id="amount" type="number" min="10" step="1" value="100"></label>
+      <p class="num" id="buy-sum"></p>
+      <button class="btn solid" type="submit"><span class="live-only">Continue to payment</span><span class="sandbox-only">Buy, no money</span></button>
+      <p class="muted live-only">Paid in a US-dollar stablecoin through CoinPayments; the HC arrives once the payment completes.</p>
+      <p class="flash" id="m-buy" hidden></p>
+    </form>
+    <div id="tranche-box">
+    <h3>Two-year Tranche hours</h3>
+    <p class="muted">A two-year customer gets monthly Tranche hours. Reserve them from the calendar with “Tranche hours”, and release any you won't use.</p>
+    <div class="row sandbox-only"><button class="btn small" type="button" id="tranche">Get demo Tranche hours</button></div>
+    <div class="scroll"><table><thead><tr><th>Month</th><th>Granted</th><th>Used</th><th>Left</th></tr></thead><tbody id="tranches"></tbody></table></div>
+    <p class="flash" id="m-tranche" hidden></p>
+    </div>
+  </section>
+</div>
+
+<section class="card">
+  <h2>Calendar</h2>
+  <div class="row">
+    <label>Show<select id="days"><option value="7">7 days</option><option value="14">14 days</option><option value="31">31 days</option></select></label>
+    <div class="legend"><span><i class="cell hyor"></i>Our hour at Rate</span><span><i class="cell release" style="--depth:.7"></i>Released hour, darker is cheaper</span><span><i class="cell mine"></i>Yours</span><span><i class="cell mine-release"></i>Yours, released</span><span><i class="cell taken"></i>Taken</span><span><i class="cell closed"></i>Not for sale</span></div>
+  </div>
+  <p class="muted">Times in KST. Our own hours sell up to 7 days ahead; released hours sell at any distance.</p>
+  <div id="calendar"></div>
+  <div class="card" id="pick" hidden>
+    <h3 id="pick-title"></h3>
+    <p class="muted" id="pick-note"></p>
+    <div class="row">
+      <label>Model<select id="pick-model"></select></label>
+      <label>Pay with<select id="pick-pay"><option value="hc">HC</option><option value="tranche">Tranche hours</option></select></label>
+      <button class="btn solid" type="button" id="reserve">Reserve</button>
+    </div>
+    <p class="flash" id="m-pick" hidden></p>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Your hours</h2>
+  <p class="muted">Release an hour you won't use: it sells before our own hours at your price, and if it is still unsold when it starts, the shared pool uses it. Either way you get back HC for what it earned, less the 10% fee.</p>
+  <div class="scroll"><table><thead><tr><th>Start (KST)</th><th>Fleet</th><th>Model</th><th>Paid</th><th>State</th><th></th></tr></thead><tbody id="hours"></tbody></table></div>
+  <p class="flash" id="m-hours" hidden></p>
+</section>
+
+<div class="mk-grid">
+  <section class="card">
+    <h2>Bid for a window</h2>
+    <form class="form" id="bid" novalidate>
+      <div class="row">
+        <label>Fleet<select id="bid-fleet"><option value="">Any fleet</option></select></label>
+        <label>Model<select id="bid-model"></select></label>
+      </div>
+      <div class="row">
+        <label>From (KST)<input id="bid-from" type="datetime-local" step="3600"></label>
+        <label>To (KST)<input id="bid-to" type="datetime-local" step="3600"></label>
+      </div>
+      <div class="row">
+        <label>Hours<input id="bid-hours" type="number" min="1" step="1" value="4"></label>
+        <label>At most, HC per hour<input id="bid-max" type="number" min="0.000001" step="0.01" value="1"></label>
+      </div>
+      <label class="check"><input id="bid-consecutive" type="checkbox"><span>Consecutive hours on one fleet</span></label>
+      <label class="check"><input id="bid-standing" type="checkbox"><span>Standing: repeat every week</span></label>
+      <div class="row">
+        <button class="btn solid" type="submit">Place bid</button>
+        <button class="btn small" type="button" id="preset-saturday">Next Saturday 10:00–18:00</button>
+        <button class="btn small" type="button" id="preset-weekdays">Weekdays 09:00–18:00, standing</button>
+      </div>
+      <p class="flash" id="m-bid" hidden></p>
+    </form>
+    <h3>Your bids</h3>
+    <div class="scroll"><table><thead><tr><th>Window (KST)</th><th>Fleet</th><th>Filled</th><th>Max</th><th>Held</th><th>State</th><th></th></tr></thead><tbody id="bids"></tbody></table></div>
+  </section>
+
+  <section class="card">
+    <h2>Hour Market</h2>
+    <h3>Released hours for sale</h3>
+    <div class="scroll"><table><thead><tr><th>Start (KST)</th><th>Fleet</th><th>Ask</th></tr></thead><tbody id="asks"></tbody></table></div>
+    <h3>Open bids</h3>
+    <div class="scroll"><table><thead><tr><th>Window (KST)</th><th>Fleet</th><th>Hours left</th><th>Max</th></tr></thead><tbody id="openbids"></tbody></table></div>
+    <h3>Recent trades</h3>
+    <div class="scroll"><table><thead><tr><th>Hour (KST)</th><th>Fleet</th><th>Price</th><th>From</th></tr></thead><tbody id="trades"></tbody></table></div>
+    <p class="muted">Feeds: <a id="feed-market" href="#">market.txt</a> · <a id="feed-pool" href="#">pool.txt</a></p>
+  </section>
+</div>
+
+<section class="card">
+  <h2>Shared pool</h2>
+  <p class="muted">Per-request access on fleets nobody has reserved this hour, billed per seat-second in HC. An account that holds the current hour on a fleet uses it for free. <span class="sandbox-only">The sandbox answers with a simulator.</span></p>
+  <p class="muted">OpenAI-format endpoint: <span class="endpoint" id="pool-base"></span> (<code>/chat/completions</code>, <code>/models</code>), with an API key below as the bearer token.</p>
+  <div class="row num" id="pool-status"></div>
+  <div class="mk-grid">
+    <div class="form">
+      <h3>API keys</h3>
+      <div class="row"><label>Note<input id="key-note" type="text" placeholder="What the key is for"></label><button class="btn small" type="button" id="key-create">Create key</button></div>
+      <p class="key-once" id="key-once" hidden></p>
+      <div class="scroll"><table><thead><tr><th>Key</th><th>Note</th><th>Created</th><th></th></tr></thead><tbody id="keys"></tbody></table></div>
+    </div>
+    <form class="form" id="try" novalidate>
+      <h3>Send a request</h3>
+      <label>Key<input id="try-key" type="text" placeholder="sk-hc-..." autocomplete="off"></label>
+      <div class="row"><label>Model<select id="try-model"></select></label><label class="check"><input id="try-stream" type="checkbox" checked><span>Stream</span></label></div>
+      <label>Message<textarea id="try-prompt" rows="3">Summarize what a fleet-hour buys.</textarea></label>
+      <button class="btn solid" type="submit">Send</button>
+      <div class="reply" id="try-reply"></div>
+      <p class="flash" id="m-try" hidden></p>
+    </form>
+  </div>
+  <h3>Recent pool charges</h3>
+  <div class="scroll"><table><thead><tr><th>When (KST)</th><th>Model</th><th>Seconds</th><th>Tokens in / out</th><th>HC</th></tr></thead><tbody id="charges"></tbody></table></div>
+</section>
+
+<section class="card">
+  <h2>Your ledger lines</h2>
+  <p class="muted">Every purchase, reservation, release, bid, pool charge and credit is a line in the hash-chained ledger.</p>
+  <div class="row"><button class="btn small" type="button" id="ledger-load">Load my lines</button><span class="num" id="ledger-head"></span></div>
+  <div class="scroll"><table><thead><tr><th>#</th><th>Written (KST)</th><th>Type</th><th>Detail</th><th>Hash</th></tr></thead><tbody id="ledger"></tbody></table></div>
+</section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Buy HC</a><a href="account.html">Account</a><a href="hourly-terms.html">Hourly Terms</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <span class="sandbox-only">The sandbox takes no payment and uses no fleet.</span>
+  </div>
+</footer>
+
+<script src="pricing.js"></script>
+<script src="market.js?v=1"></script>
+</body>
+</html>
