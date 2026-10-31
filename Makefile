@@ -1456,8 +1456,19 @@ $(LING_DEVICE_OBJECT): $(LING_DEVICE_SOURCES) $(LING_DEVICE_HEADERS) $(DEVICE_RU
 	@mkdir -p $(dir $@)
 	$(CXX) $(CORE_INCLUDE_FLAGS) $(LING_DEVICE_INCLUDE_FLAGS) $(CXXFLAGS) -c $(LING_DEVICE_SOURCES) -o $@
 
-build/metal_stage_run: tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(LING_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
-	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(GEMMA4_DEVICE_INCLUDE_FLAGS) $(MIMO26_DEVICE_INCLUDE_FLAGS) $(LING_DEVICE_INCLUDE_FLAGS) $(CFLAGS) tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(LING_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lc++ -lm -o $@; else echo "SKIP metal_stage_run (no Metal device or kernel library)"; fi
+DSV41_DEVICE_SOURCES := model-families/dsv41_flash/device/dsv41_flash_device_stage.cpp
+DSV41_DEVICE_HEADERS := model-families/dsv41_flash/include/sparkpipe/spark_dsv41_flash_family.h \
+	model-families/dsv41_flash/include/sparkpipe/spark_dsv41_flash_device_stage.h model-families/dsv41_flash/include/sparkpipe/spark_dsv41_flash_model.h \
+	model-families/dsv41_flash/include/sparkpipe/llm_defines.h
+DSV41_DEVICE_INCLUDE_FLAGS := -Imodel-families/dsv41_flash/include
+DSV41_DEVICE_OBJECT := build/metal/dsv41_flash_device_stage.o
+
+$(DSV41_DEVICE_OBJECT): $(DSV41_DEVICE_SOURCES) $(DSV41_DEVICE_HEADERS) $(DEVICE_RUNNER_HEADERS) | build
+	@mkdir -p $(dir $@)
+	$(CXX) $(CORE_INCLUDE_FLAGS) $(DSV41_DEVICE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(CXXFLAGS) -c $(DSV41_DEVICE_SOURCES) -o $@
+
+build/metal_stage_run: tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(LING_DEVICE_OBJECT) $(DSV41_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(GEMMA4_DEVICE_INCLUDE_FLAGS) $(MIMO26_DEVICE_INCLUDE_FLAGS) $(LING_DEVICE_INCLUDE_FLAGS) $(DSV41_DEVICE_INCLUDE_FLAGS) $(CFLAGS) tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(LING_DEVICE_OBJECT) $(DSV41_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lc++ -lm -o $@; else echo "SKIP metal_stage_run (no Metal device or kernel library)"; fi
 
 build/qwen38_27b_reference: tools/qwen38_27b_reference.c tools/token_prompts.c runtime/json.c runtime/filesystem.c | build
 	@if [ "$(UNAME_S)" = Darwin ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fblocks -DACCELERATE_NEW_LAPACK tools/qwen38_27b_reference.c tools/token_prompts.c runtime/json.c runtime/filesystem.c -framework Accelerate $(LDLIBS) -lm -o $@; else echo "SKIP qwen38_27b_reference (it uses the Accelerate BLAS)"; fi

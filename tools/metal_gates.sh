@@ -2,7 +2,7 @@
 set -eu
 
 if [ "$#" -ne 5 ]; then
-	echo "usage: [SPARK_GATE_TP=N [SPARK_GATE_STREAM=1]] [SPARK_GATE_DECODE=N] [SPARK_GATE_GREEDY=N] $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|qwen3.8-flash|laguna-s-2.1|ling-3.0-flash|ling-3.0-flash-fin|solar-open-2 PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
+	echo "usage: [SPARK_GATE_TP=N [SPARK_GATE_STREAM=1]] [SPARK_GATE_DECODE=N] [SPARK_GATE_GREEDY=N] $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|qwen3.8-flash|laguna-s-2.1|ling-3.0-flash|ling-3.0-flash-fin|solar-open-2|deepseek-v4.1-flash PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
 	exit 2
 fi
 model=$1
@@ -19,6 +19,7 @@ case $model in
 	laguna-s-2.1) routed=0 prompt_dir=laguna vocab=100352 probe=attn_out layer=11;;
 	ling-3.0-flash|ling-3.0-flash-fin) routed=0 prompt_dir=ling vocab=157184 probe=kda_out layer=12;;
 	solar-open-2) routed=0 prompt_dir=solar_open2 vocab=196608 probe=kda_out layer=13;;
+	deepseek-v4.1-flash) routed=0 prompt_dir=dsv41_flash vocab=129280 probe=o_b layer=11 sidecar=dsv41_flash.engram.pack;;
 	*) echo "unknown Metal model $model" >&2; exit 2;;
 esac
 greedy_tokens=${SPARK_GATE_GREEDY:-${greedy_tokens:-128}}
@@ -46,6 +47,7 @@ if [ "$tp" -gt 1 ]; then
 		rank=$((rank + 1))
 	done
 fi
+[ -n "${sidecar:-}" ] && ln -sfn "$(cd "$(dirname "$pack")" && pwd)/$sidecar" "$(dirname "$control_pack")/$sidecar"
 mkdir -p "$out/metal" "$out/exact" "$out/compare"
 ln -sfn "$reference" "$out/ref"
 cd "$root"

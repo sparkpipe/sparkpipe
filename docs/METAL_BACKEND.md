@@ -899,3 +899,67 @@ FP32 `teacher` modes:
 
     SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
         sh tools/metal_gates.sh solar-open-2 PACKS/solar_open2.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+
+### DeepSeek V4.1 Flash on eight ranks
+
+DeepSeek V4.1 Flash (40 layers of 5,120, four Sinkhorn hyper-connection
+streams, 64 heads of 512 over one shared key that is also the value, 384
+MXFP4 experts, two engram modules) runs on its family schedule
+`D41Schedule` (`spark_dsv41_flash_family.h`, the one `D41Cuda` steps
+through) with the Metal backend `D41Device` in `model-families/dsv41_flash/device/`
+at TP 1, 2, 4 or 8 (`SparkDsv41FlashDeviceStageModelAt`). The CUDA backend's
+tail rows, landing caches and context-sharded records are its way of running
+a step; the Metal backend's `LayerRows`, `Tap` and `LayerEnd` do nothing.
+
+- Streams: `spark_hyper_expand` copies the embedding into four streams. Each
+  site's `spark_hc_site_lagged` mixes the streams and collapses them with
+  the previous site's pre weights (the first site of a step with
+  `[1, 0, 0, 0]`, the head with the last FFN site's), as the publisher's
+  `model.py` and the CUDA stage do; the branch input is normed with the FP32
+  gain and rounded once (`spark_rmsnorm_residual`) and quantised for the FP8
+  and FP4 consumers (`spark_block_qdq`); `spark_hc_post_comb_f32` adds the
+  reduced branch back, and `spark_hc_collapse` and the final norm feed the
+  prenormed head.
+- Attention: q_a, the q norm, FP8 round trip, q_b (the rank's heads); kv, its
+  norm, the rope of the last 64 dimensions (interleaved pairs, theta 10,000
+  on layers 0 and 1, the compressed YaRN table elsewhere, through
+  `spark_head_rmsnorm_rope` on a 64-wide view) and the FP8 round trip, stored
+  as the layer's window key. Layers 2, 8, 14 and 20 compress: the FP32
+  projections of the unquantised input, `spark_kv_compress` (pairs on layers
+  2 to 19, every token from layer 20), the norm, the rope at the group's
+  first position and the FP4 round trip, stored at the compressed index in
+  the cache's own KV layer (40 window layers, then 4 caches; layers 2-7 read
+  layer 2's, ..., 20-39 layer 20's). `SparkOpsAttentionExtra` attends the
+  last 128 window keys and every visible compressed key in one softmax with
+  the per-head sinks (layers 0 and 1: the window alone, `SparkOpsAttention`),
+  the output tail is rotated back, rounded through FP8, projected per output
+  group (`o_a`, a rank holding 8/T groups), rounded again and projected by
+  the rank's `o_b` columns before the all-reduce.
+- MoE: the BF16 router in FP32, top 6 of `sqrt(softplus(z)) + bias` with the
+  warp tree sum times 1.5 (`spark_route_sqrt_softplus_topk`), the rank's 384/T
+  experts (`spark_route_local`) through `SparkDeviceRoutedFfnQdq` (MXFP4, the
+  gate-limited SwiGLU at 10 with the route weight before the down
+  projection, the activation rounded through FP8), the shared expert's rank
+  slice the same way, `spark_route_combine_shared` and the all-reduce.
+- Engram (layers 1 and 14): `Begin` hashes both modules' 24 ids per row with
+  the token map (`spark_ngram_hash_mapped`), waits for the queue and copies
+  the rows from `dsv41_flash.engram.pack` beside the rank pack (203 GB,
+  mapped on the host, never bound) into a staging buffer; the layer gathers
+  them (`spark_ngram_gather_e8m0`), rounds through FP8, projects through the
+  rank's `engram_kv` rows, gathers the ranks' rows and gates every stream
+  (`spark_stream_key_gate`). `End` keeps the last three mapped tokens.
+
+The sparse-attention indexer is not built. A row at position 512 or later
+is refused: from there the ratio-1 layers see more than the indexer's 512
+compressed keys, and below it the indexer keeps every key, so attention is
+exactly dense. The gate prompts are therefore 496 tokens.
+
+`tools/dsv41_flash_tp16_pack.py --tp-degree 8` writes the rank packs (about
+38 GB each: the official FP8 bytes with the 32 x 32 UE8M0 block scales
+repeated per row, the MXFP4 expert planes, the hash tables) and the engram
+file; `tools/dsv41_flash_reference.py` gives the gate prompts in the model's
+chat turn and the FP32 teacher (variant b in the reversed reduction order):
+
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh deepseek-v4.1-flash PACKS/dsv41_flash.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+

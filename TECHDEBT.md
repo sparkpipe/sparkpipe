@@ -1417,6 +1417,31 @@ Metal backend and the single-Studio stage are in
     solo tokens. Taking the GEMV passes for three to eight rows in the GEMV
     family would make B3 to B8 both faster and identical to solo decode;
     it needs Gemma's ladder gate re-run.
+- DeepSeek V4.1 Flash on Metal (`model-families/dsv41_flash/device/`) is the
+  dense path only:
+  - the sparse-attention indexer is not built, so a row at position 512 or
+    later is refused. It needs the index keys beside the compressed keys,
+    the 32-head ReLU-weighted scores, an exact top 512 with CUDA's tie
+    order, the selection reused by the layers between index sources and the
+    candidate-block prefilter past 16,384 compressed keys;
+  - the window keys of every layer sit in the paged pool for every position
+    (2 KB per position per layer), not in a 128-row ring per sequence;
+  - `SparkOpsAttentionExtra` runs the decode kernel for every row count, so
+    prefill walks 128-key partitions one key per SIMD group instead of the
+    tensor-unit blocks;
+  - `Begin` waits for the queue once per step to read the engram ids and
+    copies the 48 rows per token from the 203 GB table file on the host; at
+    TP8 in one process every rank reads the same rows;
+  - verify frames and `keep_rows` are not wired (the compressor's carried
+    pair is not replayed), so speculation is refused;
+  - each rank rounds its routed sum plus its shared slice to BF16 before the
+    BF16 all-reduce; the publisher all-reduces the routed sum in FP32 and
+    rounds once after the shared expert;
+  - the compressed rope table comes from `SparkRopeYarnRampTable`, not from
+    CUDA's `D41FrequencyKernel` op order, and the software E4M3 and E2M1
+    rounders are checked against an enumerated grid, not against the PTX
+    conversions on a GPU;
+  - the indexer weights and the dspark blocks are not packed.
 - Define hardware profiles for one to eight Studios: memory, bandwidth, the
   Thunderbolt 5 island wiring, the bridge to the Sparks, power, and storage.
 - Add Thunderbolt 5 RDMA as a link class. Apple's verbs API (TN3205) offers
