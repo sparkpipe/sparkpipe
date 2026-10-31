@@ -333,7 +333,8 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
   up to four heads, with every key re-read by each block.
 - `LmLatentShardPrefillKernel` runs the same records on tensor cores: one
   row and 32 heads per block, 32-key tiles through a cp.async double buffer,
-  QK and PV on `mma.sync`, one bf16 copy of the probabilities.
+  QK and PV on `mma.sync`, the probabilities split into high and low bf16
+  halves so PV keeps fp32 precision.
   - Rows past the dense limit read their selected positions, either from
     a list compacted in shared memory or from the caller's split lists
     (`LmLatentShardSplitLaunch`). The two orders are the same, so both
@@ -358,14 +359,17 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
 
   | Shape | Scalar | Tensor cores |
   |---|---|---|
-  | 4,096 rows, 16K context, 2,112 selected of each row, width 512 | 51.3 ms | 4.94 ms |
-  | Same, width 576 | 39.7 ms | 4.91 ms |
-  | 4,096 rows, 16K dense keys, width 576 | 161.5 ms | 12.9 ms |
-  | Decode rows: 1 / 4 / 16 at 131K, 2,112 selected | 0.047 / 0.078 / 0.218 ms | 0.027 / 0.026 / 0.027 ms |
-  | 4,096 rows, 16K context, 2,112 selected, 4 heads (padded) | 18.1 ms | 11.8 ms |
+  | 4,096 rows, 16K context, 2,112 selected of each row, width 512 | 51.4 ms | 5.48 ms |
+  | Same, width 576 | 39.4 ms | 5.27 ms |
+  | 4,096 rows, 16K dense keys, width 576 | 99.3 ms | 9.73 ms |
+  | Decode rows: 1 / 4 / 16 at 131K, 2,112 selected | 0.040 / 0.056 / 0.171 ms | 0.030 / 0.030 / 0.029 ms |
+  | 4,096 rows, 16K context, 2,112 selected, 4 heads (padded) | 18.0 ms | 13.7 ms |
 
-  The normalized outputs differ from the scalar kernel's by at most 0.3% of
-  each head's peak (`tests/cuda/latent_shard_sparse_cuda.cu`).
+  The normalized outputs differ from the scalar kernel's by at most 1/8192 of
+  each head's peak (`tests/cuda/latent_shard_sparse_cuda.cu`). With one bf16
+  copy of the probabilities the gap was 0.3%, and on the fleet one of six
+  greedy chat prompts per model changed its tokens against the scalar kernel
+  (GLM 5.3 Flash, GLM 5.3 Full, DSV4.1); the low half costs 6%.
 
 **Projections (`project.cuh`)**
 

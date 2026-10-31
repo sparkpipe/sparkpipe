@@ -11,7 +11,7 @@
 #define SPARSE_PAGE 64u
 #define SPARSE_LATENT 512u
 #define SPARSE_RECORD LM_LATENT_SHARD_RECORD_FLOATS(SPARSE_LATENT)
-#define SPARSE_TOLERANCE (1.0 / 128.0)
+#define SPARSE_TOLERANCE (1.0 / 8192.0)
 
 template<uint32_t WIDTH>
 struct SparseKv
@@ -270,6 +270,10 @@ int main(void)
 	SparseCase<0u>(4096u,16384u,16u,4u,2112u,2048u,1u);
 	SparseCase<64u>(4096u,16384u,16u,4u,2048u,2048u,1u);
 	SparseCase<0u>(4096u,16384u,1u,4u,2112u,2048u,1u);
+	SparseCase<64u>(4096u,16384u,16u,4u,2112u,16384u,1u);
+	SparseCase<64u>(1u,131072u,16u,4u,2112u,2048u,1u);
+	SparseCase<64u>(4u,131072u,16u,4u,2112u,2048u,1u);
+	SparseCase<64u>(16u,131072u,16u,4u,2112u,2048u,1u);
 	if ( sparse_failures != 0 )
 	{
 		printf("FAIL latent_shard_sparse_cuda: %d checks failed\n",sparse_failures);
