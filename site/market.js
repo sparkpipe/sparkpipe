@@ -209,7 +209,7 @@
       release: `A released hour at ${hc(slot.price)} HC: the seller gets the price less the fee.`,
       mine: 'This hour is yours. Release it from Your hours.',
       'mine-release': 'You released this hour. Cancel the release from Your hours to keep it.',
-      closed: 'Not for sale now: beyond 31 days, a Sunday more than 7 days ahead, kept for two-year customers until 6 hours before it starts, or kept for HC that lapses sooner. Tranche hours can reserve any hour in their month.',
+      closed: 'Not for sale now: beyond 31 days, kept for plan holders until 6 hours before it starts, on a fleet locked to a plan, or kept for HC that lapses sooner. Tranche hours can reserve any hour in their month that no other plan keeps.',
     };
     $('pick-note').textContent = notes[slot.kind];
     $('reserve').disabled = slot.kind === 'mine' || slot.kind === 'mine-release';

@@ -55,7 +55,7 @@
   <section>
     <h1>Fleet List</h1>
     <p class="effective">Updated 31 October 2026</p>
-    <p>This page is the Fleet List and the list of available models that the <a href="hourly-terms.html">Hourly Terms</a> (clauses 1.1 and 8.2) and the <a href="agreement.html">2-Year Reserved Fleet Service Agreement</a> (definitions and clause 10.1) refer to. Each fleet's Rate is the number of hour-credits (HC) one hour on it costs. The Korean version (<a href="fleets-ko.html" hreflang="ko">fleets-ko.html</a>) has the same content and prevails if they differ.</p>
+    <p>This page is the Fleet List and the list of available models that the <a href="agreement.html">SparkPipe Customer Agreement</a> refers to. Each fleet's Rate is the number of hour-credits (HC) one hour on it costs. The Korean version (<a href="fleets-ko.html" hreflang="ko">fleets-ko.html</a>) has the same content and prevails if they differ.</p>
   </section>
 
   <div class="notice"><p><b>The terms are published for review.</b> Hour-credits (HC) are on sale now and work in the shared pool at once; dedicated fleet-hours can be reserved from 1 December 2026.</p></div>
@@ -75,7 +75,7 @@
 
   <section id="models">
     <h2>Models on Fleet 1</h2>
-    <p>Every model installed on Fleet 1. An <b>offered</b> model can be chosen for any reservation, and named among the Chosen Models of a two-year agreement. A <b>core</b> model gets ongoing performance work; a <b>qualified</b> model passed the release qualification and serves at the speeds shown; a <b>verifying</b> model serves and passes the chat checks while its tokens are compared with the publisher's reference implementation.</p>
+    <p>Every model installed on Fleet 1. An <b>offered</b> model can be chosen for any reservation, and named among the Chosen Models of a Plan Order for a <a href="plans.html">reserved plan</a>. A <b>core</b> model gets ongoing performance work; a <b>qualified</b> model passed the release qualification and serves at the speeds shown; a <b>verifying</b> model serves and passes the chat checks while its tokens are compared with the publisher's reference implementation.</p>
     <div class="scroll">
     <table>
       <tr><th>Model</th><th>Publisher</th><th>License</th><th class="num">Context window</th><th class="num">Decode, one request</th><th class="num">Prefill, 8K prompt</th><th>Track</th><th>Availability</th></tr>
@@ -127,20 +127,20 @@
     <p><b>ESTIMATED</b> values are projections from our measurements and the hardware's published figures, not measurements. We publish one only when we expect to meet it, and each is replaced by a measurement when the hardware or software behind it is running. Cells marked measured already are.</p>
     <div class="scroll">
     <table>
-      <tr><th>Model</th><th class="num">Size</th><th class="num">Decode, Fleet 1</th><th class="num">Decode, Fleet 2</th><th class="num">Fleet 2 with speculation</th><th class="num">128K prompt, 4 accelerator boxes</th><th class="num">8 boxes</th></tr>
-      <tr><td><b>Kimi K3</b></td><td class="num">1.56 TB</td><td class="num">16.2 tok/s, measured</td><td class="num">23 tok/s</td><td class="num">35 tok/s</td><td class="num">37 s</td><td class="num">18 s</td></tr>
-      <tr><td><b>Qwen 3.8 Max</b>, 4-bit build</td><td class="num">1.37–1.48 TB</td><td class="num">10.4 tok/s, measured</td><td class="num">–</td><td class="num">–</td><td class="num">35 s</td><td class="num">17 s</td></tr>
-      <tr><td><b>K-EXAONE 2.0</b>, LG</td><td class="num">1.50 TB</td><td class="num">27.3 tok/s, measured</td><td class="num">–</td><td class="num">–</td><td class="num">35 s</td><td class="num">18 s</td></tr>
-      <tr><td><b>A.X K2</b>, SKT</td><td class="num">0.69 TB</td><td class="num">23.8 tok/s, measured</td><td class="num">33 tok/s</td><td class="num">49 tok/s</td><td class="num">16 s</td><td class="num">8 s</td></tr>
+      <tr><th>Model</th><th class="num">Size</th><th class="num">Decode, Fleet 1</th><th class="num">Decode, Fleet 2</th><th class="num">Fleet 2 with speculation</th></tr>
+      <tr><td><b>Kimi K3</b></td><td class="num">1.56 TB</td><td class="num">16.2 tok/s, measured</td><td class="num">23 tok/s</td><td class="num">35 tok/s</td></tr>
+      <tr><td><b>Qwen 3.8 Max</b>, 4-bit build</td><td class="num">1.37–1.48 TB</td><td class="num">10.4 tok/s, measured</td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td><b>K-EXAONE 2.0</b>, LG</td><td class="num">1.50 TB</td><td class="num">27.3 tok/s, measured</td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td><b>A.X K2</b>, SKT</td><td class="num">0.69 TB</td><td class="num">23.8 tok/s, measured</td><td class="num">33 tok/s</td><td class="num">49 tok/s</td></tr>
     </table>
     </div>
     <p><b>Measured on one M5 Ultra Mac Studio</b>, the Fleet 2 machine, with SparkPipe's Metal engine (2026-10-26): Qwen 3.8 27B at its full BF16 precision decodes 20.1 tok/s for one request, 90% of the 22.3 tok/s that the Studio's measured 1.14 TB/s of memory bandwidth allows. Several requests share each read of the weights: 39.0 tok/s in total for 2 requests, 130 for 8, 231 for 16, 366 for 32 and 442 for 64. Its prefill runs at 1,429 tok/s for a 1K-token prompt and 1,501 tok/s for 8K.</p>
-    <p><b>Measured on Fleet 1 alone</b> (2026-10-30, the fleet set to prefill only, so it serves no decode meanwhile): a 990,879-token Kimi K3 prompt prefills from cold in 16.9 minutes, two passes of 32,768 tokens a node, and its first answer comes 18.0 minutes after the request; a 258,338-token prompt prefills in one 150 s pass. With accelerator boxes, a 1M-token prompt is estimated at about 17 minutes with four boxes and 9 minutes with eight. Fleet 1 and Fleet 2 together hold 4 TB, and Fleet 3 adds 2 TB more, so a model too large for one fleet at its published precision can run across two: Qwen 3.8 Max in FP8 (2.5 TB) and Inkling in BF16 (1.9 TB).</p>
+    <p><b>Measured on Fleet 1 alone</b> (the fleet set to prefill only, so it serves no decode meanwhile): a 1M-token Kimi K3 prompt now prefills from cold in 15.6 minutes, down from 16.9 minutes for a 990,879-token prompt on 2026-10-30, whose first answer came 18.0 minutes after the request; a 258,338-token prompt prefills in one 150 s pass. With the prefill accelerators, a 1M-token prompt is estimated at 3 to 6 minutes, depending on how busy they are. Fleet 1 and Fleet 2 together hold 4 TB, and Fleet 3 adds 2 TB more, so a model too large for one fleet at its published precision can run across two: Qwen 3.8 Max in FP8 (2.5 TB) and Inkling in BF16 (1.9 TB).</p>
     <p>How the estimates are made:</p>
     <ul>
       <li><b>Decode:</b> a token takes the time each node needs to read its share of the weights the token uses, at the 245 GB/s measured on Fleet 1, plus a fixed 0.44 ms per layer for the kernels and collectives around those reads. Kimi K3 measures 0.44 ms and GLM 5.3 0.31 ms; that fixed cost, not memory, is most of today's decode time, so the estimates rise as our work lowers it. Fleet 2 is taken at 90% of the Mac Studios' 1.2 TB/s with the same cost per layer and the model split over all eight, which are joined by 50 Gb/s links plus 10 GbE. Qwen 3.8 Max's 10.4 tok/s is not yet explained by this, so it has no Fleet 2 estimate. K-EXAONE 2.0's Fleet 2 estimate is being redone now that its experts are split evenly over the nodes.</li>
       <li><b>Speculation</b> on agent coding turns is taken as 1.5 times plain decode, as measured on short edits; whole-file rewrites measure 8.3 times and new prose 1.0 to 1.2 times.</li>
-      <li><b>Prefill accelerators</b> are boxes of four RTX 5080 cards that reduce over PCIe inside the box and reach the fleets at 100 Gb/s each over a 400 Gb/s switch. Each long prompt streams the model's weights through the boxes once, at 85% of the links (42.5 GB/s with four boxes, 85 GB/s with eight), and the cards compute at 40% of their dense peak (about 450 TFLOPS each in FP8, 225 in BF16), including the attention cost of the prompt. Prompts shorter than about 20,000 tokens stay on the fleet's own prefill.</li>
+      <li><b>Prefill accelerators</b> are dedicated prefill hardware that every fleet shares; we may run several kinds side by side. They compute long prompts and cut prefill time sharply. Because they are shared, a prompt waits for the prompts queued before it, so we give a range: 3 to 6 minutes for a 1M-token Kimi K3 prompt.</li>
       <li><b>Qwen 3.8 Max</b> at its published FP8 precision (2.5 TB) is larger than one fleet's 2 TB. Its row assumes one of its 4-bit builds (AMD MXFP4, Red Hat or RadixArk NVFP4), which fit one fleet and pass our accuracy A/B.</li>
     </ul>
   </section>
@@ -161,7 +161,7 @@
 
   <section id="licenses">
     <h2>Model licenses</h2>
-    <p>Each model is the publisher's open-weight software under its own license, which the customer must follow (Hourly Terms 8.1, agreement 10.3). The conditions of the offered models:</p>
+    <p>Each model is the publisher's open-weight software under its own license, which the customer must follow (<a href="agreement.html">Customer Agreement</a>). The conditions of the offered models:</p>
     <ul>
       <li><b>Kimi K3:</b> a model-as-a-service business whose group revenue exceeds US$20 million in any 12 months needs a separate agreement with Moonshot AI, and a commercial product with more than 100 million monthly active users or US$20 million in monthly revenue must display "Kimi K3" in its interface.</li>
       <li><b>GLM 5.3:</b> a model-as-a-service business whose group revenue exceeds US$10 billion in any 12 months must pass Z.AI's security review before commercial use.</li>

@@ -31,7 +31,9 @@ USD = "5057"
 CENT = Decimal("0.01")
 HOUR_STEP = Decimal("0.0001")
 LEDGER_IDS = ("order", "invoice", "reservation", "ask", "bid", "lot", "key", "ref")
-TERMS = {"ko": "hourly-ko.md", "en": "hourly-en.md", "rules_ko": "market-rules-ko.md", "rules_en": "market-rules-en.md"}
+TERMS = {"ko": "agreement-ko.md", "en": "agreement-en.md", "rules_ko": "market-rules-ko.md", "rules_en": "market-rules-en.md"}
+DAYS = ("every", "weekdays")
+PAYMENTS = ("upfront", "gates")
 EVENTS = ["invoicePending", "invoicePaid", "invoiceCompleted", "invoiceCancelled", "invoiceTimedOut"]
 OPEN = {"unpaid", "pending", "paid"}
 CLOSED = {"cancelled", "timedout", "deleted", "failed"}
@@ -98,18 +100,47 @@ def term_end(start, months):
     return moved - timedelta(days=1) if exists else moved
 
 
-def served_days(first, last):
-    return sum(1 for n in range((last - first).days + 1) if (first + timedelta(days=n)).weekday() != 6)
+def plan_fields(pricing, plan):
+    fleets, months, lock, chosen = plan.get("fleets", 1), plan.get("months"), plan.get("lock") or [], plan.get("windows")
+    named = {"F" + f["name"].split()[-1] for f in pricing["fleets"]}
+    whole = lambda n: isinstance(n, int) and not isinstance(n, bool) and n >= 1
+    good = isinstance(chosen, list) and bool(chosen) and all(
+        isinstance(w, dict) and isinstance(w.get("id"), str) and whole(w.get("to")) and isinstance(w.get("from"), int) and not isinstance(w.get("from"), bool)
+        and 0 <= w["from"] < w["to"] <= 24 and w.get("localDay") in (-1, 0, 1) for w in chosen)
+    hours = [h for w in chosen for h in range(w["from"], w["to"])] if good else []
+    try:
+        fee, allowance = Decimal(str(plan.get("releaseFee"))), plan.get("maintenanceHoursPerWeek")
+    except InvalidOperation:
+        fee, allowance = None, None
+    if (not good or len(set(hours)) != len(hours) or len({w["id"] for w in chosen}) != len(chosen)
+            or plan.get("days") not in DAYS or not whole(fleets) or not whole(months) or plan.get("payment") not in PAYMENTS
+            or fee is None or not fee.is_finite() or not 0 <= fee < 1 or not isinstance(allowance, int) or isinstance(allowance, bool) or not 0 <= allowance <= 24
+            or not isinstance(lock, list) or (lock and (len(lock) != fleets or len(set(lock)) != len(lock) or any(f not in named for f in lock)
+                                                       or len(hours) != 24 or plan.get("days") != "every"))):
+        raise ValueError(f"plan {plan.get('id')}: windows as non-overlapping {{id, from, to, localDay}} of the Order, days {' or '.join(DAYS)}, fleets and months whole numbers from 1, payment {' or '.join(PAYMENTS)}, releaseFee from 0 to below 1, maintenanceHoursPerWeek from 0 to 24, and lock none, or one named fleet per fleet on a plan of the whole day every day")
+    return chosen, fleets
 
 
-def tranches(signed, months):
-    end = term_end(signed, months)
-    plan, cursor = [], signed
+def day_hours(windows, days, fleets, day):
+    return sum((w["to"] - w["from"]) * fleets for w in windows if days == "every" or (day + timedelta(days=w["localDay"])).weekday() < 5)
+
+
+def plan_pattern(pricing, plan):
+    windows, fleets = plan_fields(pricing, plan)
+    monday = date(2026, 11, 2)
+    return tuple(sum(fleets for w in windows if w["from"] <= hour < w["to"] and (plan["days"] == "every" or (monday + timedelta(days=weekday + w["localDay"])).weekday() < 5)) for weekday in range(7) for hour in range(24))
+
+
+def tranches(pricing, plan):
+    windows, fleets = plan_fields(pricing, plan)
+    start = date.fromisoformat(plan["start"])
+    end = term_end(start, plan["months"])
+    found, cursor = [], start
     while cursor <= end:
         last = min(date(cursor.year, cursor.month, calendar.monthrange(cursor.year, cursor.month)[1]), end)
-        plan.append(24 * served_days(cursor, last))
+        found.append(sum(day_hours(windows, plan["days"], fleets, cursor + timedelta(days=n)) for n in range((last - cursor).days + 1)))
         cursor = last + timedelta(days=1)
-    return plan
+    return found
 
 
 def digest(body):
@@ -321,45 +352,58 @@ class Book:
     def waiting(self, order, now):
         return order["state"] not in CLOSED and order["state"] != "completed" and not order["issued"] and (now - stamp_time(order["created"])).total_seconds() < PENDING_SECONDS
 
-    def prepaid(self, agreement):
-        return sorted((stamp_time(order["paid"]), Decimal(order["paid_net"])) for order in self.orders.values() if order.get("agreement") == agreement and order["issued"])
+    def prepaid(self, plan):
+        return sorted((stamp_time(order["paid"]), Decimal(order["paid_net"])) for order in self.orders.values() if order.get("plan") == plan and order["issued"])
 
-    def pending(self, agreement, now):
-        return sum((Decimal(order["net"]) for order in self.orders.values() if order.get("agreement") == agreement and self.waiting(order, now)), Decimal(0))
+    def pending(self, plan, now):
+        return sum((Decimal(order["net"]) for order in self.orders.values() if order.get("plan") == plan and self.waiting(order, now)), Decimal(0))
 
 
-def standing(pricing, book, agreement, now):
-    signed = date.fromisoformat(agreement["signed"])
-    price = money(agreement["hourPrice"])
-    plan = tranches(signed, pricing["termMonths"])
-    end = term_end(signed, pricing["termMonths"])
+def standing(pricing, book, plan, now):
+    windows, fleets = plan_fields(pricing, plan)
+    start = date.fromisoformat(plan["start"])
+    price = money(plan["hourPrice"])
+    hours = tranches(pricing, plan)
+    end = term_end(start, plan["months"])
     today = local_day(now)
-    paid = book.prepaid(agreement["id"])
+    paid = book.prepaid(plan["id"])
     paid_net = sum((net for _, net in paid), Decimal(0))
-    pending = book.pending(agreement["id"], now)
-    total = price * sum(plan)
+    pending = book.pending(plan["id"], now)
+    total = price * sum(hours)
+    if plan["payment"] == "upfront":
+        gates = [{"name": "Payment", "tranches": None, "dueDay": 1}]
+    else:
+        gates = pricing["gates"]
     ended = None
     if today > end:
         ended = f"The term ended on {end.isoformat()}."
-    elif not paid and today > signed + timedelta(days=pricing["phaseADays"] - 1):
-        ended = "Phase A ended with no payment, so the agreement ended with nothing owed (clause 5.2)."
+    elif plan["payment"] == "gates" and not paid and today > start + timedelta(days=pricing["phaseADays"] - 1):
+        ended = "Phase A ended with no payment, so the plan ended with nothing owed."
+    elif plan["payment"] == "upfront" and today > start and paid_net < total:
+        ended = "The plan was not paid in full by its Start Date, so it ended."
     next_gate = None
-    for gate in pricing["gates"]:
-        due = signed + timedelta(days=gate["dueDay"] - 1)
-        need = price * sum(plan if gate["tranches"] is None else plan[:gate["tranches"]])
+    for gate in gates:
+        due = start + timedelta(days=gate["dueDay"] - 1)
+        need = price * sum(hours if gate["tranches"] is None else hours[:gate["tranches"]])
         cutoff = datetime(due.year, due.month, due.day, 23, 59, 59, tzinfo=KST)
         have = sum((net for moment, net in paid if moment <= cutoff), Decimal(0))
         if today > due:
-            if paid and have < need and not ended:
-                ended = f"{gate['name']} was missed on {due.isoformat()}, so no further prepayment can be made (clause 6.4)."
+            if plan["payment"] == "gates" and paid and have < need and not ended:
+                ended = f"{gate['name']} was missed on {due.isoformat()}, so no further prepayment can be made."
         elif next_gate is None and paid_net + pending < need:
             next_gate = {"name": gate["name"], "due": due.isoformat(), "amount": text_money(need - paid_net - pending)}
     return {
-        "agreement": agreement["id"],
-        "signed": signed.isoformat(),
+        "plan": plan["id"],
+        "start": start.isoformat(),
         "end": end.isoformat(),
+        "months": plan["months"],
+        "windows": [w["id"] for w in windows],
+        "days": plan["days"],
+        "fleets": fleets,
+        "lock": list(plan.get("lock") or []),
+        "payment": plan["payment"],
         "price": text_money(price),
-        "hours": sum(plan),
+        "hours": sum(hours),
         "total": text_money(total),
         "paid": text_money(paid_net),
         "pending": text_money(pending),
@@ -406,9 +450,9 @@ def coin_field(value):
 
 
 def statement(cfg, company, terms):
-    return (f"On behalf of {company}, I accept the SparkPipe Hourly Terms, which include the Hour Market Rules. "
-            f"Hourly Terms, Korean text, which prevails: SHA-256 {terms['ko']} ({cfg.public}/terms/hourly-ko.md). "
-            f"English text: SHA-256 {terms['en']} ({cfg.public}/terms/hourly-en.md). "
+    return (f"For {company}, I accept the SparkPipe Customer Agreement, which includes the Hour Market Rules, and confirm that {company} buys and uses SparkPipe for business, professional, commercial or independent research and development purposes, not as a household consumer. "
+            f"Customer Agreement, Korean text, which prevails: SHA-256 {terms['ko']} ({cfg.public}/terms/agreement-ko.md). "
+            f"English text: SHA-256 {terms['en']} ({cfg.public}/terms/agreement-en.md). "
             f"Hour Market Rules, Korean text, which prevails: SHA-256 {terms['rules_ko']} ({cfg.public}/terms/market-rules-ko.md). "
             f"English text: SHA-256 {terms['rules_en']} ({cfg.public}/terms/market-rules-en.md).")
 
@@ -416,10 +460,10 @@ def statement(cfg, company, terms):
 def invoice_body(cfg, quote):
     if quote["product"] == "credits":
         name = f"{quote['hours']} SparkPipe hour-credits"
-        detail = f"Hourly Terms; {quote['price']} USD each, usable for 12 months"
+        detail = f"Customer Agreement; {quote['price']} USD each, usable for 12 months"
         quantity = {"value": 1, "type": "quantity"}
     else:
-        name = f"Prepayment, agreement {quote['agreement']}"
+        name = f"Prepayment, plan {quote['plan']}"
         detail = f"{quote['hours']} fleet-hours at {quote['price']} USD"
         quantity = {"value": 1, "type": "quantity"}
     back = f"{cfg.public}/account.html?order={quote['order']}"
@@ -469,7 +513,7 @@ def receipt(cfg, order, issued, received, paid):
     if order["product"] == "credits":
         what = f"{issued['hours']} hour-credits, usable until {market.stamp_time(issued['expires']).astimezone(KST).strftime('%Y-%m-%d')}"
     else:
-        what = f"a prepayment of {issued['net']} USD under agreement {order['agreement']}: {issued['hours']} fleet-hours"
+        what = f"a prepayment of {issued['net']} USD under plan {order['plan']}: {issued['hours']} fleet-hours"
     if issued.get("short"):
         lines = [
             f"Order {order['order']} was for {order['total']} USD; {received} USD arrived. We issued what it covers: {what}.",
@@ -611,9 +655,9 @@ class App:
             if not account:
                 if not body.get("company"):
                     raise Refusal("No account uses this email yet. Add your company's name to open one.", 404, "new")
-                company = text_field(body.get("company"), "company's legal name", 200)
+                company = text_field(body.get("company"), "company's legal name, or your full name", 200)
                 if body.get("accept") is not True:
-                    raise Refusal("Accept the Hourly Terms to open an account.", 409, "terms")
+                    raise Refusal("Accept the Customer Agreement to open an account.", 409, "terms")
                 account = new_id("AC")
                 self.book.append("account", {"account": account, "email": email, "company": company, "ip": ip, "agent": agent})
                 self.accept(account, ip, agent)
@@ -624,41 +668,41 @@ class App:
         expires = int(clock().timestamp()) + SESSION_SECONDS
         return self.summary(account), session_token(self.key, account, expires)
 
-    def agreements(self, account):
+    def plan_terms(self, account, start):
+        pricing, day = self.cfg.pricing(), local_day(start)
+        for plan in self.plans(account):
+            plan_fields(pricing, plan)
+            begins = date.fromisoformat(plan["start"])
+            if begins <= day <= term_end(begins, plan["months"]):
+                return {"advanceMultiplier": market.published_terms(pricing["market"])["advanceMultiplier"], "releaseFee": format(Decimal(str(plan["releaseFee"])), "f")}
+        return None
+
+    def plans(self, account):
         email = self.book.accounts[account]["email"]
-        return [a for a in self.cfg.listing("agreements.json") if str(a.get("email", "")).lower() == email]
+        return [p for p in self.cfg.listing("plans.json") if str(p.get("email", "")).lower() == email]
 
     def commitments(self, now, listing=None):
         today = local_day(now)
         if listing is None:
-            path = self.cfg.path("agreements.json")
+            path = self.cfg.path("plans.json")
             key = (os.path.getmtime(path) if os.path.exists(path) else None, today, self.book.count)
             if self.committed and self.committed[0] == key:
                 return self.committed[1]
         pricing, found = self.cfg.pricing(), []
-        windows = {w["id"]: w for w in pricing["windows"]}
-        for agreement in self.cfg.listing("agreements.json") if listing is None else listing:
-            signed = date.fromisoformat(agreement["signed"])
-            end = term_end(signed, pricing["termMonths"])
-            paid = self.book.prepaid(agreement["id"])
-            if today > end or (not paid and today > signed + timedelta(days=pricing["phaseADays"] - 1)):
+        for plan in self.cfg.listing("plans.json") if listing is None else listing:
+            ended = standing(pricing, self.book, plan, now)["ended"]
+            if ended and not ended.endswith("no further prepayment can be made."):
                 continue
-            election = agreement.get("election", "thirds")
-            if election == "thirds":
-                pattern = (1,) * 24
-            elif election in windows:
-                window = windows[election]
-                elected = tuple(3 if window["from"] <= hour < window["to"] else 0 for hour in range(24))
-                full = sum((net for _, net in paid), Decimal(0)) >= money(agreement["hourPrice"]) * sum(tranches(signed, pricing["termMonths"]))
-                pattern = elected if full else tuple(max(1, n) for n in elected)
-            else:
-                raise ValueError(f"agreement {agreement['id']}: election must be thirds or one of {', '.join(windows)}")
-            after = end + timedelta(days=1)
+            start = date.fromisoformat(plan["start"])
+            after = term_end(start, plan["months"]) + timedelta(days=1)
             found.append((
-                self.book.emails.get(str(agreement.get("email", "")).lower()),
-                datetime(signed.year, signed.month, signed.day, tzinfo=KST).astimezone(timezone.utc),
+                self.book.emails.get(str(plan.get("email", "")).lower()),
+                datetime(start.year, start.month, start.day, tzinfo=KST).astimezone(timezone.utc),
                 datetime(after.year, after.month, after.day, tzinfo=KST).astimezone(timezone.utc),
-                pattern,
+                plan_pattern(pricing, plan),
+                tuple(plan.get("lock") or ()),
+                plan["maintenanceHoursPerWeek"],
+                plan["id"],
             ))
         found = tuple(found)
         if listing is None:
@@ -679,14 +723,14 @@ class App:
                 "hc": market.text_hc(self.book.market.balance(account, market.stamp(self.market.now()))),
                 "orders"
 : [self.shown(o) for o in mine[:50]],
-                "agreements": [standing(pricing, self.book, a, now) for a in self.agreements(account)],
+                "plans": [standing(pricing, self.book, p, now) for p in self.plans(account)],
             }
 
     def prepayment_terms(self, pricing, body, account, now):
-        number = body.get("agreement")
-        found = next((a for a in self.agreements(account) if isinstance(number, str) and a.get("id") == number), None)
+        number = body.get("plan")
+        found = next((p for p in self.plans(account) if isinstance(number, str) and p.get("id") == number), None)
         if not found:
-            raise Refusal("No agreement with this number belongs to your account.", 404)
+            raise Refusal("No plan with this number belongs to your account.", 404)
         net = money_field(body.get("amount"))
         if net < Decimal("1.00"):
             raise Refusal("The smallest prepayment is 1.00 USD.")
@@ -698,7 +742,7 @@ class App:
         price = money(found["hourPrice"])
         vat = money(net * Decimal(str(pricing["vatRate"])))
         return {
-            "product": "two-year", "agreement": found["id"],
+            "product": "plan", "plan": found["id"],
             "price": text_money(price), "hours": format((net / price).quantize(HOUR_STEP, rounding=ROUND_DOWN), "f"),
             "net": text_money(net), "vat": text_money(vat), "total": text_money(net + vat),
         }
@@ -710,7 +754,7 @@ class App:
             raise Refusal(f"Buy at least {offer['minPurchase']} USD of HC, and at most 100,000 USD at a time.")
         price = money(Decimal(str(offer["hcPrice"])))
         vat = money(net * Decimal(str(pricing["vatRate"])))
-        return {"product": "credits", "hours": market.text_hc(net / price), "price": text_money(price), "net": text_money(net), "vat": text_money(vat), "total": text_money(net + vat)}
+        return {"product": "credits", "hours": market.text_hc(net / price), "price": text_money(price), "net": text_money(net), "vat": text_money(vat), "total": text_money(net + vat), "terms": market.published_terms(offer)}
 
     def buy(self, body, account, ip, agent):
         if self.cfg.sandbox:
@@ -734,12 +778,12 @@ class App:
                 self.market.check_cover(Decimal(quote["hours"]), self.market.now(), pricing)
                 if not self.accepted(account, self.current_terms()):
                     if body.get("accept") is not True:
-                        raise Refusal("The Hourly Terms have changed since you accepted them. Accept the current text to continue.", 409, "terms")
+                        raise Refusal("The Customer Agreement has changed since you accepted it. Accept the current text to continue.", 409, "terms")
                     self.accept(account, ip, agent)
-            elif body.get("product") == "two-year":
+            elif body.get("product") == "plan":
                 quote = self.prepayment_terms(pricing, body, account, now)
             else:
-                raise Refusal("Choose hour-credits or a two-year prepayment.")
+                raise Refusal("Choose hour-credits or a plan prepayment.")
             quote.update(order=new_id("SP"), account=account, email=record["email"], company=record["company"], coin=coin)
             self.book.append("order", dict(quote, ip=ip, agent=agent))
         try:
@@ -754,7 +798,7 @@ class App:
         return {"order": quote["order"], "checkout": link}
 
     def shown(self, order):
-        shown = {key: order.get(key) for key in ("order", "product", "hours", "net", "vat", "total", "agreement", "coin", "state", "issued", "created", "paid", "received")}
+        shown = {key: order.get(key) for key in ("order", "product", "hours", "net", "vat", "total", "plan", "coin", "state", "issued", "created", "paid", "received")}
         shown["issuedHours"] = None if order.get("issued_hours") is None else hours_number(order["issued_hours"])
         shown["checkout"] = order["link"] if order["state"] in ("unpaid", "pending") else None
         return shown
@@ -824,7 +868,7 @@ class App:
         line = dict(lead, at=clock().strftime("%Y-%m-%dT%H:%M:%SZ"), ip=ip, agent=agent)
         with self.lock, open(self.cfg.path("leads.jsonl"), "a", encoding="utf-8") as handle:
             handle.write(json.dumps(line, ensure_ascii=False) + "\n")
-        self.mail(self.cfg.notify, f"Two-year quote request: {lead['company']}", "\n".join(f"{key}: {value}" for key, value in lead.items()))
+        self.mail(self.cfg.notify, f"Plan quote request: {lead['company']}", "\n".join(f"{key}: {value}" for key, value in lead.items()))
         log(f"lead from {lead['company']}")
         return {"ok": True}
 
@@ -878,12 +922,11 @@ class App:
             if order["state"] != "completed":
                 self.book.append("payment", {"order": order_id, "invoice": order["invoice"], "total": order["total"], "received": arrived, "currency": currency, "paidWith": paid})
             issued = {"order": order_id, "account": order["account"], "product": order["product"], "hours": hours, "net": net, "released": released, "short": not full}
-            if order["product"] == "two-year":
-
-                issued.update(agreement=order["agreement"])
+            if order["product"] == "plan":
+                issued.update(plan=order["plan"])
             self.book.append("hours_issued", issued)
             if order["product"] == "credits":
-                issued["expires"] = self.market.issue(order["account"], Decimal(hours), order_id)["expires"]
+                issued["expires"] = self.market.issue(order["account"], Decimal(hours), order_id, order["terms"])["expires"]
             log(f"order {order_id}: paid, {hours} hours issued to {order['account']}")
             self.mail(order["email"], f"Payment received: SparkPipe order {order_id}", receipt(self.cfg, order, issued, arrived, paid))
             subject = f"Paid in part: {order['company']}, {arrived} of {order['total']} USD" if not full else f"Paid: {order['company']}, {order['total']} USD"
@@ -1198,12 +1241,23 @@ def main(argv):
                 listing = json.load(handle)
         found = app.market.report(None if listing is None else app.commitments(app.market.now(), listing))
         tight = found["tightest"]
-        print(f"cover at {found['now']}: serving {', '.join(found['fleets']) or 'no fleet'} from {found['first']}, {found['agreements']} two-year agreements")
+        print(f"cover at {found['now']}: serving {', '.join(found['fleets']) or 'no fleet'} from {found['first']}, {found['plans']} plans")
         print(f"free fleet-hours in the next 12 months, Monday to Saturday, after set-asides: {found['free']} HC")
         print(f"unspent HC: {found['unspent']}; in unpaid orders: {found['pending']}; HC on sale now: {found['onSale']}")
         print("tightest lapse: none" if not tight else f"tightest lapse: {tight['lapse']}, {tight['slack']} HC of free hours to spare")
         print(f"hours where a set-aside cannot be kept: {found['clashes']}" + (f", first {found['firstClash']}" if found["firstClash"] else ""))
         return 1 if found["clashes"] or (tight and Decimal(tight["slack"]) < 0) else 0
+    if len(argv) in (4, 5) and argv[1] == "maintenance":
+        app = App(cfg, Book(cfg.path("ledger.jsonl")))
+        try:
+            found = app.market.schedule_maintenance(argv[2], argv[3], int(argv[4]) if len(argv) == 5 else None)
+        except (Refusal, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        threading.Thread(target=app.deliver, daemon=True).start()
+        app.mails.join()
+        print(f"maintenance {found['maintenance']}: {found['fleet']} for {found['hours']} hours from {found['start']}; credited {', '.join(found['credited']) or 'nothing'}")
+        return 0
     if len(argv) == 5 and argv[1] == "credit":
         app = App(cfg, Book(cfg.path("ledger.jsonl")))
         account = app.book.emails.get(argv[2].lower())
@@ -1219,7 +1273,7 @@ def main(argv):
         print(f"credited {lot['hc']} HC to {argv[2]}, lot {lot['lot']}, lapsing {lot['expires']}")
         return 0
     if argv[1:] not in ([], ["serve"]):
-        print("usage: sparkpipe_pay.py [serve|verify|cover [AGREEMENTS.json]|credit EMAIL HC NOTE|release ORDER|tranche EMAIL YYYY-MM HOURS]", file=sys.stderr)
+        print("usage: sparkpipe_pay.py [serve|verify|cover [PLANS.json]|maintenance FLEET YYYY-MM-DD [HOURS]|credit EMAIL HC NOTE|release ORDER|tranche EMAIL YYYY-MM HOURS]", file=sys.stderr)
         return 2
     server = start(cfg)
     app = server.app

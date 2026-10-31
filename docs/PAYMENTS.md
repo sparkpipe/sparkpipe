@@ -9,20 +9,20 @@ enabled, so an invoice priced in dollars is paid in dollars and neither side
 carries crypto price risk. Hours follow the US-dollar value CoinPayments
 reports for a payment (`nativeActualAmount`), whatever coin it came in, and
 the receipt names the coin that was paid (`paymentCurrencySymbol`). Won bank transfers against a tax
-invoice and USD wires under a two-year agreement are still arranged by hand.
+invoice and USD wires under a Plan Order are still arranged by hand.
 
 ## How a customer buys
 
 1. `https://sparkpipe.ai/buy.html` asks three things, one step at a time:
    how much HC (10, 100, 400 or 3,200 USD before VAT, or any amount from
    `market.minPurchase`; `?amount=` presets it); the company's legal name
-   and a work email, with a box accepting the Hourly Terms and the Hour
-   Market Rules; and the coin and network the customer pays with. The order
+   and a work email, with a box accepting the Customer Agreement and the
+   Hour Market Rules; and the coin and network the customer pays with. The order
    total, with VAT, stays in view. HC is the only hourly product; the market
    that spends it is described in docs/HOUR_MARKET.md.
 2. `POST /pay/api/code` emails a 6-digit code. `POST /pay/api/verify`
    checks it, opens the account if the email is new, records the
-   acceptance of the Hourly Terms and the Hour Market Rules and sets the session cookie. The email is
+   acceptance of the Customer Agreement and the Hour Market Rules and sets the session cookie. The email is
    the account: there is no password and no wallet.
 3. `POST /pay/api/order` prices the order from `site/pricing.js` (never
    from the browser), records the order and
@@ -33,26 +33,28 @@ invoice and USD wires under a two-year agreement are still arranged by hand.
 4. CoinPayments posts signed webhooks to `/pay/api/coinpayments`. The
    service checks the HMAC and the timestamp, then fetches the invoice from
    the CoinPayments API and acts on that answer, not on the webhook body.
-   HC (or two-year hours) is issued only when the invoice is `completed` and
+   HC (or plan hours) is issued only when the invoice is `completed` and
    its total and currency match the order: the whole order when the amount
    received covers the total, or, when CoinPayments completes it for less,
-   in proportion to the amount received, HC to six decimals and two-year
-   hours to four (agreement clause 5.5). The customer gets a receipt by email, and
+   in proportion to the amount received, HC to six decimals and plan hours
+   to four. The customer gets a receipt by email, and
    `SPARKPIPE_PAY_NOTIFY` gets a note of each new account, payment and
    mismatch.
 5. CoinPayments sends the customer back to `account.html?order=…`, which
    follows the order (awaiting payment, payment seen, confirmed, issued)
-   every 6 seconds and then shows the account: the HC balance, two-year
-   agreements and orders, with a link to the Hour Market.
+   every 6 seconds and then shows the account: the HC balance, plans and
+   orders, with a link to the Hour Market.
 
 Every five minutes the service also asks CoinPayments about each open
 invoice from the last 14 days, so a lost webhook only delays the hours.
 
-A two-year customer signs its agreement by hand. Once its entry is in
-`agreements.json`, the account page lists the agreement for the account
-with the same email, with what is paid, what is left and the next gate,
-and takes prepayments in USDC or USDT. `two-year.html` plans a term and sends a
-quote request to `POST /pay/api/lead`.
+Every customer is under one contract, the Customer Agreement
+(`site/terms/agreement-*.md`). A reserved plan is a Plan Order under it,
+signed by hand for now. Once its entry is in `plans.json`, the account page
+lists the plan for the account with the same email, with what is paid, what
+is left and the next payment, and takes prepayments in USDC or USDT.
+`plans.html` builds a plan from the published choices and sends a quote
+request to `POST /pay/api/lead`.
 
 ## Endpoints
 
@@ -61,10 +63,10 @@ quote request to `POST /pay/api/lead`.
 | `POST /pay/api/code` | `email`: emails a 6-digit sign-in code, valid 10 minutes for 5 tries |
 | `POST /pay/api/verify` | `email`, `code`, and for a new account `company` and `accept: true`: signs in, sets the cookie `sp_session` and returns the account |
 | `POST /pay/api/signout` | Clears the cookie |
-| `GET /pay/api/account` | The signed-in account: HC balance, orders, agreements and whether it accepted the current Hourly Terms and Hour Market Rules |
-| `POST /pay/api/order` | Signed in. `product: "credits"` with `amount` before VAT and `coin` (and `accept: true` when the terms changed since the account accepted them); or `product: "two-year"` with `agreement`, `amount` before VAT and `coin`: returns the checkout link. `coin` is one of the twelve CoinPayments symbols in `COINS`, such as `USDC.BASE` or `USDT.TRC20` |
+| `GET /pay/api/account` | The signed-in account: HC balance, orders, plans and whether it accepted the current Customer Agreement and Hour Market Rules |
+| `POST /pay/api/order` | Signed in. `product: "credits"` with `amount` before VAT and `coin` (and `accept: true` when the terms changed since the account accepted them); or `product: "plan"` with `plan`, `amount` before VAT and `coin`: returns the checkout link. `coin` is one of the twelve CoinPayments symbols in `COINS`, such as `USDC.BASE` or `USDT.TRC20` |
 | `GET /pay/api/order/<order>` | The order's state, amounts and hours; the checkout link while unpaid. The order number is 80 random bits |
-| `POST /pay/api/lead` | A two-year quote request: `company`, `email`, `name`, `fleets`, `start`, `message` |
+| `POST /pay/api/lead` | A plan quote request: `company`, `email`, `name`, `fleets`, `start`, `message` |
 | `POST /pay/api/coinpayments` | CoinPayments webhooks |
 | `GET /pay/api/health` | `{"ok": true}` |
 
@@ -78,21 +80,22 @@ ten minutes (quote requests: an hour), and each email for 5 codes an hour.
 ## Rules the service enforces
 
 - An account opens only with the box ticked; the ledger keeps the
-  statement accepted, the SHA-256 hashes of `terms/hourly-ko.md`,
-  `terms/hourly-en.md`, `terms/market-rules-ko.md` and
-  `terms/market-rules-en.md`, the IP address and the browser (clause 12.4).
+  statement accepted, the SHA-256 hashes of `terms/agreement-ko.md`,
+  `terms/agreement-en.md`, `terms/market-rules-ko.md` and
+  `terms/market-rules-en.md`, the IP address and the browser.
   When any of them changes, the next HC order asks the customer to accept
   the new texts.
 - HC is bought from `market.minPurchase` to 100,000 USD at a time and each
   lot lasts `market.validityMonths` (12) months from issue; there is no
   holding limit.
 
-- A two-year prepayment is at least 1.00 USD and at most what is left of
-  the term's price, counting unpaid orders. It is refused after Phase A
-  with nothing paid (clause 5.2), after a missed gate (clause 6.4), and
-  after the term ends. Each payment issues the amount before VAT divided by
-  the hour price, to four decimals (clause 5.5).
-- VAT is charged on every stablecoin payment (Hourly Terms 3.2, Schedule (c)).
+- A plan prepayment is at least 1.00 USD and at most what is left of the
+  term's price, counting unpaid orders. A gated plan's prepayment is
+  refused after Phase A with nothing paid, after a missed gate, and after
+  the term ends; an upfront plan's after its Start Date unless it is paid
+  in full. Each payment issues the amount before VAT divided by the hour
+  price, to four decimals.
+- VAT is charged on every stablecoin payment.
   CoinPayments' own fee is ours; the customer pays the network fee.
 
 ## Data on the VPS
@@ -107,22 +110,37 @@ ten minutes (quote requests: an hour), and each email for 5 codes an hour.
   records say; a payment line keeps the coin CoinPayments reports.
 - `session_key`: 32 random bytes that sign the session cookies. Deleting
   it signs everyone out.
-- `leads.jsonl`: the two-year quote requests.
+- `leads.jsonl`: the plan quote requests.
 - `approved.json`: the emails that passed the business check, for example
   `["cto@acme.example"]`.
-- `agreements.json`: one entry per signed two-year agreement:
+- `plans.json`: one entry per Plan Order:
 
 ```json
-[{"id": "SP2Y-7K3QD9", "email": "billing@acme.example", "company": "Acme Co., Ltd.", "signed": "2026-12-15", "hourPrice": "15.00", "election": "thirds"}]
+[{"id": "SP-PLAN-7K3QD9", "email": "billing@acme.example", "company": "Acme Co., Ltd.", "start": "2026-12-15", "months": 24, "windows": [{"id": "asia", "from": 8, "to": 16, "localDay": 0}], "days": "every", "fleets": 1, "hourPrice": "15.00", "payment": "gates", "releaseFee": "0.10", "maintenanceHoursPerWeek": 3}]
 ```
 
-`election` is `thirds` or, with our written approval, one of the window ids
-in `site/pricing.js` (`americas`, `asia`, `europe`). Each active agreement
-keeps capacity off HC sale (docs/HOUR_MARKET.md, "No overselling, no
-bumping"), so check a new entry with `sparkpipe_pay.py cover FILE` before
-adding it.
+  - `windows`: the Order's windows with their KST hours as published when
+    it was made (copy them from `windows` in `site/pricing.js`; all three is
+    a full day). A later change to the published times does not move them.
+  - `days`: `every` or `weekdays` (Monday to Friday in each window's own
+    region: `localDay` shifts the Americas Window back a day).
+  - `fleets`: how many fleets at once; `months`: the term.
+  - `hourPrice`: the Order's price per fleet-hour, lock premium included.
+  - `payment`: `upfront` (due in full on the Start Date) or `gates` (Phase A
+    and the gates in `site/pricing.js`).
+  - `releaseFee` and `maintenanceHoursPerWeek`: the published settings in
+    force when the Order was made, kept for its whole term.
+  - `lock`: optional, a list of fleet ids, one per fleet, only on a full-day
+    every-day plan. A locked fleet is never offered to anyone else, not even
+    6 hours before, and stays out of the shared pool.
 
-The service rereads `approved.json` and `agreements.json` on every
+  A plan's hours are each elected window's hours times `fleets` on every
+  plan day, by calendar-month Tranche. Each active plan keeps capacity off
+  HC sale (docs/HOUR_MARKET.md, "No overselling, no bumping"), so check a
+  new entry with `sparkpipe_pay.py cover FILE` before adding it. A bad
+  entry stops the service with the reason.
+
+The service rereads `approved.json` and `plans.json` on every
 request, so edits need no restart.
 
 ## Mail
@@ -159,7 +177,7 @@ DKIM and DMARC pass.
    Keep `USDC.ERC20`, `USDC.BASE`, `USDC.ARB`, `USDC.POL`, `USDC.SOL`,
    `USDC.BEP20`, `USDT.TRC20`, `USDT.ERC20`, `USDT.BEP20`, `USDT.SOL`,
    `USDT.POL` and `USDT.ARB` on. Other US-dollar stablecoins may stay on
-   (Hourly Terms 3.3 and Schedule (c) take any the processor accepts). Turn
+   (the Customer Agreement takes any the processor accepts). Turn
    every other coin off, LTCT included, so no payment arrives in a coin whose
    price moves. Set the underpayment limit
    to a fixed $100,000 with no percentage (see Operating it). Payment Settings lists
@@ -193,8 +211,8 @@ client secret into `/etc/sparkpipe-pay/client_secret` by copying a file,
 never on a command line. `sparkpipe-ai-ssl.conf` is sparkpipe.ai's port-443
 virtual host and includes `sparkpipe-pay.conf` beside the other
 `deployment/vps` includes; `mod_proxy_http` must be on. Copy `site/` to `/var/www/html` as usual, including
-`site/terms/`: the acceptance names `https://sparkpipe.ai/terms/hourly-ko.md`,
-`hourly-en.md` and the two `market-rules` texts, and the service hashes the copies under
+`site/terms/`: the acceptance names `https://sparkpipe.ai/terms/agreement-ko.md`,
+`agreement-en.md` and the two `market-rules` texts, and the service hashes the copies under
 `/var/www/html/terms`. Then:
 
 ```sh
@@ -242,7 +260,7 @@ must then match `origin/main` byte for byte.
   amount, or both, in which case the smaller wins. Set only a fixed
   $100,000, with no percentage, so every part payment of an invoice under
   $100,000 completes with what arrived. The service then issues HC (or
-  two-year hours) in proportion to what arrived, mails the customer a
+  plan hours) in proportion to what arrived, mails the customer a
   receipt that says so, and mails `SPARKPIPE_PAY_NOTIFY` "Paid in part".
   HC is bought by amount, so a customer who wants more simply buys again. A part payment
   CoinPayments does not complete stays `pending` until the payment window
@@ -255,15 +273,15 @@ must then match `origin/main` byte for byte.
   right, `sparkpipe_pay.py release <order>` fetches the invoice again and,
   once CoinPayments says `completed`, issues the hours the amount received
   covers: HC at the order's price for an HC order, the amount before VAT
-  divided by the hour price for a two-year prepayment. It appends to the same ledger
+  divided by the hour price for a plan prepayment. It appends to the same ledger
   safely while the service runs.
 - A customer whose payment fell short or arrived late is refunded through
   CoinPayments' own refund flow; the ledger records no hours for it.
 
 ## Tests
 
-`python3 tests/test_pay.py` checks the Sunday-free tranches against
-agreement clause 6.6, the session tokens, and the whole service against a
+`python3 tests/test_pay.py` checks plan hours and gates for every window,
+day choice, term and fleet count against the Customer Agreement's examples, the session tokens, and the whole service against a
 fake CoinPayments that verifies request signatures and a fake mail server:
 codes, sign-in, terms acceptance and re-acceptance, cross-site refusal,
 refusal of coins that are not USDC or USDT, invoice bodies on the chosen

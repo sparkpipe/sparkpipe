@@ -33,23 +33,47 @@ def docs_signature(method, url, stamp, body):
     return base64.b64encode(hmac.new(SECRET, message.encode("utf-8") + body, hashlib.sha256).digest()).decode()
 
 
+WINDOWS = {"americas": {"id": "americas", "from": 0, "to": 8, "localDay": -1}, "asia": {"id": "asia", "from": 8, "to": 16, "localDay": 0}, "europe": {"id": "europe", "from": 16, "to": 24, "localDay": 0}}
+
+
+def plan(number, email, windows, days="every", fleets=1, months=24, start="2026-12-15", payment="gates", lock=None):
+    found = {"id": f"SP-PLAN-{number}", "email": email, "company": "Acme", "start": start, "months": months, "windows": [WINDOWS[w] for w in windows], "days": days, "fleets": fleets,
+             "hourPrice": "15.00", "payment": payment, "releaseFee": "0.10", "maintenanceHoursPerWeek": 3}
+    if lock:
+        found["lock"] = lock
+    return found
+
+
 def check_dates(failures):
-    plan = sp.tranches(date(2026, 12, 15), 24)
-    if (len(plan), plan[0], plan[1], plan[14], plan[-1], sum(plan)) != (25, 360, 624, 600, 288, 15048):
-        failures.append(f"tranches of a 15 Dec 2026 term: {plan}")
-    if (sum(plan[:6]), sum(plan[:12])) != (3456, 7224):
-        failures.append("the 15 Dec 2026 gates differ from agreement clause 6.6")
+    pricing = json.loads((ROOT / "site" / "pricing.js").read_text().split("=", 1)[1].strip().rstrip(";"))
+    hours = sp.tranches(pricing, plan(1, "a@x", ["asia"]))
+    if (len(hours), hours[0], hours[1], hours[14], hours[-1], sum(hours)) != (25, 136, 248, 232, 112, 5848):
+        failures.append(f"tranches of the Customer Agreement's example plan: {hours}")
+    if (sum(hours[:6]), sum(hours[:12])) != (1344, 2808):
+        failures.append("the example plan's gates differ from the Customer Agreement")
+    if sum(sp.tranches(pricing, plan(1, "a@x", ["asia"], "weekdays"))) != 4184 or sum(sp.tranches(pricing, plan(1, "a@x", ["europe"], months=3))) != 720:
+        failures.append("a weekday plan or a 3-month plan holds the wrong hours")
+    if sum(sp.tranches(pricing, plan(1, "a@x", ["americas", "asia", "europe"], fleets=2))) != 2 * 17544:
+        failures.append("a full-day plan on two fleets holds the wrong hours")
+    week = sp.plan_pattern(pricing, plan(1, "a@x", ["americas"], "weekdays"))
+    if [sum(week[d * 24:d * 24 + 24]) for d in range(7)] != [0, 8, 8, 8, 8, 8, 0]:
+        failures.append(f"an Americas weekday plan does not hold KST Tuesday to Saturday, the Americas' Monday to Friday: {week}")
+    overlapping = dict(plan(1, "a@x", ["asia"]), windows=[WINDOWS["asia"], dict(WINDOWS["europe"], **{"from": 15})])
+    for bad in (plan(1, "a@x", ["asia"], lock=["F1"]), plan(1, "a@x", ["americas", "asia", "europe"], "weekdays", lock=["F1"]), plan(1, "a@x", ["asia"], "weekends"), plan(1, "a@x", []), overlapping, dict(plan(1, "a@x", ["asia"]), releaseFee="1.5")):
+        try:
+            sp.tranches(pricing, bad)
+            failures.append(f"an invalid plan is accepted: {bad}")
+        except ValueError:
+            pass
     if sp.term_end(date(2028, 2, 29), 24) != date(2030, 2, 28) or sp.term_end(date(2026, 12, 1), 12) != date(2027, 11, 30):
-        failures.append("term_end differs from agreement clause 3.1")
-    if sp.served_days(date(2026, 12, 15), date(2026, 12, 21)) != 6:
-        failures.append("served_days counts a Sunday")
+        failures.append("term_end differs from the Customer Agreement")
 
 
 def check_covered(failures):
     credits = {"product": "credits", "hours": "168.000000", "price": "20.00", "net": "3360.00", "total": "3696.00"}
     if sp.covered(credits, sp.money("22.99")) != ("1.045000", "20.90") or sp.covered(credits, sp.money("0.01")) != ("0.000000", "0.00") or sp.covered(credits, sp.money("9999.00")) != ("168.000000", "3360.00"):
         failures.append(f"HC covered by a part payment: {sp.covered(credits, sp.money('22.99'))}")
-    prepay = {"product": "two-year", "hours": "6.6666", "net": "100.00", "total": "110.00", "price": "15.00"}
+    prepay = {"product": "plan", "hours": "6.6666", "net": "100.00", "total": "110.00", "price": "15.00"}
     if sp.covered(prepay, sp.money("55.00")) != ("3.3333", "50.00"):
         failures.append(f"prepayment covered by a part payment: {sp.covered(prepay, sp.money('55.00'))}")
 
@@ -275,7 +299,7 @@ def account_flow(failures, cfg, app, buyer, mailbox, port):
     if "HttpOnly" not in buyer.last_cookie or "SameSite=Lax" not in buyer.last_cookie or "Path=/pay/api" not in buyer.last_cookie:
         failures.append(f"session cookie attributes: {buyer.last_cookie}")
     record = [json.loads(line) for line in open(cfg.path("ledger.jsonl"), encoding="utf-8") if '"acceptance"' in line][-1]["data"]
-    if record["ko"] != cfg.terms("hourly-ko.md") or record["rules_ko"] != cfg.terms("market-rules-ko.md") or record["rules_en"] != cfg.terms("market-rules-en.md") or "Hour Market Rules, Korean text, which prevails" not in record["statement"] or "Acme 주식회사" not in record["statement"]:
+    if record["ko"] != cfg.terms("agreement-ko.md") or record["rules_ko"] != cfg.terms("market-rules-ko.md") or record["rules_en"] != cfg.terms("market-rules-en.md") or "Hour Market Rules, Korean text, which prevails" not in record["statement"] or "Acme 주식회사" not in record["statement"]:
         failures.append(f"acceptance record: {record}")
     if buyer("GET", "/account")[0] != 200:
         failures.append("a signed-in account cannot read itself")
@@ -367,7 +391,7 @@ def credits_flow(failures, cfg, app, fake, buyer, mailbox):
     fake.down = False
     if status != 502 or buyer("GET", "/account")[1]["orders"][0]["state"] != "failed":
         failures.append(f"a failed invoice is not recorded: {status} {refused}")
-    for name in ("hourly-en.md", "market-rules-ko.md"):
+    for name in ("agreement-en.md", "market-rules-ko.md"):
         terms = Path(cfg.site) / "terms" / name
         terms.write_text(terms.read_text() + "\n")
         status, refused = buyer("POST", "/order", dict(base, amount="20"))
@@ -422,22 +446,27 @@ def part_payment_flow(failures, cfg, app, fake, buyer, mailbox):
 
 
 def prepayment_flow(failures, cfg, app, fake, buyer, mailbox, port):
-    agreements = [
-        {"id": "SP2Y-TEST-0001", "email": "ops@acme.example", "company": "Acme", "signed": "2026-11-01", "hourPrice": "15.00"},
-        {"id": "SP2Y-TEST-0002", "email": "OPS@acme.example", "company": "Acme", "signed": "2026-11-01", "hourPrice": "15.00"},
-        {"id": "SP2Y-TEST-0003", "email": "else@other.example", "company": "Other", "signed": "2026-11-01", "hourPrice": "15.00"},
+    plans = [
+        plan("0001", "ops@acme.example", ["asia"], start="2026-11-01"),
+        plan("0002", "OPS@acme.example", ["europe"], fleets=2, start="2026-11-01"),
+        plan("0003", "else@other.example", ["americas"], start="2026-11-01"),
+        plan("0004", "ops@acme.example", ["asia"], months=3, start="2026-11-10", payment="upfront"),
     ]
-    Path(cfg.path("agreements.json")).write_text(json.dumps(agreements))
-    plan = sp.tranches(date(2026, 11, 1), 24)
-    found = buyer("GET", "/account")[1]["agreements"]
-    if [a["agreement"] for a in found] != ["SP2Y-TEST-0001", "SP2Y-TEST-0002"]:
-        failures.append(f"the account lists other agreements: {found}")
+    Path(cfg.path("plans.json")).write_text(json.dumps(plans))
+    hours = sp.tranches(cfg.pricing(), plans[0])
+    found = buyer("GET", "/account")[1]["plans"]
+    if [a["plan"] for a in found] != ["SP-PLAN-0001", "SP-PLAN-0002", "SP-PLAN-0004"]:
+        failures.append(f"the account lists other customers' plans: {found}")
         return
-    if found[0]["hours"] != sum(plan) or found[0]["nextGate"] != {"name": "Gate 1", "due": "2026-11-30", "amount": f"{15 * sum(plan[:6])}.00"}:
-        failures.append(f"agreement standing: {found[0]}")
-    pay = {"product": "two-year", "agreement": "SP2Y-TEST-0001", "coin": "USDT.SOL"}
-    if buyer("POST", "/order", dict(pay, agreement="SP2Y-TEST-0003", amount="100.00"))[0] != 404:
-        failures.append("an account can prepay another account's agreement")
+    if found[1]["hours"] != 2 * sum(hours):
+        failures.append(f"a plan for two fleets holds twice the hours: {found[1]}")
+    if found[0]["hours"] != sum(hours) or found[0]["nextGate"] != {"name": "Gate 1", "due": "2026-11-30", "amount": f"{15 * sum(hours[:6])}.00"}:
+        failures.append(f"plan standing: {found[0]}")
+    if found[2]["payment"] != "upfront" or found[2]["nextGate"] != {"name": "Payment", "due": "2026-11-10", "amount": f"{15 * found[2]['hours']}.00"}:
+        failures.append(f"an upfront plan is not due in full on its Start Date: {found[2]}")
+    pay = {"product": "plan", "plan": "SP-PLAN-0001", "coin": "USDT.SOL"}
+    if buyer("POST", "/order", dict(pay, plan="SP-PLAN-0003", amount="100.00"))[0] != 404:
+        failures.append("an account can prepay another account's plan")
     if buyer("POST", "/order", dict(pay, amount="999999999.00"))[0] != 409:
         failures.append("a prepayment above the remaining price is ordered")
     status, placed = buyer("POST", "/order", dict(pay, amount="100.00"))
@@ -449,16 +478,18 @@ def prepayment_flow(failures, cfg, app, fake, buyer, mailbox, port):
     fake.invoices[key]["status"] = "completed"
     app.reconcile()
     app.jobs.join()
-    state = buyer("GET", "/account")[1]["agreements"][0]
+    state = buyer("GET", "/account")[1]["plans"][0]
     if state["paid"] != "100.00" or not buyer("GET", "/order/" + placed["order"])[1]["issued"]:
         failures.append(f"reconciling a missed webhook does not issue the prepayment: {state}")
     NOW[0] = datetime(2026, 12, 1, 3, 0, 0, tzinfo=timezone.utc)
-    state = buyer("GET", "/account")[1]["agreements"]
+    state = buyer("GET", "/account")[1]["plans"]
     status, _ = buyer("POST", "/order", dict(pay, amount="100.00"))
     if "Gate 1 was missed" not in (state[0]["ended"] or "") or status != 409:
         failures.append(f"a missed gate does not stop prepayment: {state[0]} {status}")
     if "Phase A ended" not in (state[1]["ended"] or ""):
-        failures.append(f"an unpaid agreement survives Phase A: {state[1]}")
+        failures.append(f"an unpaid plan survives Phase A: {state[1]}")
+    if "not paid in full by its Start Date" not in (state[2]["ended"] or ""):
+        failures.append(f"an unpaid upfront plan survives its Start Date: {state[2]}")
 
 
 def lead_flow(failures, app, buyer, mailbox, work):
@@ -486,7 +517,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("pay: tranches match the agreement; email codes, sessions, terms acceptance, USDC and USDT invoices on the chosen network, payments in another stablecoin, signed webhooks, receipts, HC orders and part payments, reconciliation, gates, quote requests and the hash-chained ledger behave")
+    print("pay: plan hours and gates match the Customer Agreement for every window, day choice, term and fleet count, invalid plans fail; email codes, sessions, terms acceptance, USDC and USDT invoices on the chosen network, payments in another stablecoin, signed webhooks, receipts, HC orders and part payments, reconciliation, gates, quote requests and the hash-chained ledger behave")
     return 0
 
 

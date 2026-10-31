@@ -3,7 +3,7 @@
 The Hour Market sells hour-credits (HC) and lets customers trade dated
 fleet-hours with HYOR as the only counterparty. HC is the only hourly
 product: `buy.html` sells it by amount, `market.html` is the market, and the
-Hourly Terms and the Hour Market Rules (`site/terms/hourly-*.md`,
+Customer Agreement and the Hour Market Rules (`site/terms/agreement-*.md`,
 `site/terms/market-rules-*.md`) govern it. The design, the market view and
 the contract changes are in the shared Hour Market document; this file
 describes what is built, how it runs and how to test it.
@@ -20,12 +20,11 @@ describes what is built, how it runs and how to test it.
   hour (UTC slots such as `2026-12-01T01:00Z`; the page shows KST). It is
   consumed when it occurs.
 - **Our capacity.** Every unreserved fleet-hour within `market.horizonDays`
-  (7) is for sale at the fleet's Rate, and from Monday to Saturday up to
-  `market.advanceDays` (31) ahead at Rate × `market.advanceMultiplier`
-  (1.25): the premium buys lead time. Sunday hours open only within 7 days,
-  after maintenance is announced. Live, only fleets whose `state` is
+  (7) is for sale at the fleet's Rate, and up to `market.advanceDays` (31)
+  ahead at Rate × `market.advanceMultiplier` (1.25), on any day: the premium
+  buys lead time. Live, only fleets whose `state` is
   `serving` sell, and not before `hourlyEarliestStart`. Capacity kept for
-  two-year customers and for earlier-lapsing HC (below) is not offered.
+  plans and for earlier-lapsing HC (below) is not offered.
 - **Release.** The holder of a reservation that has not started may release
   it at list (Rate) or a lower minimum, and cancel until it sells. A slot has
   at most one ask: ours, or the holder's release.
@@ -50,7 +49,7 @@ describes what is built, how it runs and how to test it.
   up to a fleet's seat-seconds; after the hour each released hour's seller is
   credited what it earned less the fee. An account that holds the current
   hour on a fleet uses its keys there free.
-- **Tranche hours.** A two-year customer's monthly hours reserve any free
+- **Tranche hours.** A plan holder's monthly hours reserve any free
   hour of their month, beyond the 7-day horizon, at no HC; released, they
   earn HC like any hour. Live, grant them with
   `sparkpipe_pay.py tranche EMAIL YYYY-MM HOURS`.
@@ -62,28 +61,57 @@ everyone turns up. The market does neither: no reservation is ever taken
 from its holder, and HC is sold only while it can be spent. Four rules in
 `Cover` (`tools/sparkpipe_market.py`) carry this:
 
-- **Set-aside instead of bumping.** Every active two-year agreement in
-  `agreements.json` keeps capacity off sale for every Monday-to-Saturday
-  hour of its term: one fleet for a Thirds election (8 hours in each of the
-  Americas 00-08, Asia 08-16 and Europe 16-24 KST windows, `windows` in
-  `site/pricing.js`), three fleets in the elected window for a 100%
-  election (one fleet's worth of hours run at 3x during the customer's own
-  working day; three regions tile three fleets with nothing to swap), plus
-  one fleet in the other hours until Full Prepayment, when Thirds still
-  applies. The holder's own Tranche reservations use up its set-aside.
-  Capacity still unreserved `market.lastCallHours` (6) before an hour
-  starts opens to HC, the point from which the Agreement's guarantee no
-  longer applies. The two-year guarantee therefore never needs to take an
-  hour anyone holds, and the Terms carry no displacement right.
-- **Cover.** Free Monday-to-Saturday hours of serving fleets, after the
-  set-aside, each at its fleet's Rate, must cover all unspent HC (lots and
-  bid holds) that lapses by any date. Sundays and fleets still being built
-  are not counted. A purchase is refused beyond the HC on sale: the cover
-  12 months out minus all unspent HC and the HC in unpaid orders (reason
-  `cover`). `onSale` in `/market/state`, the page and `market.txt` publish
-  it. Sales and pool credits for released hours never weaken the cover, as
-  the buyer's HC spent is more than the seller's credit and the hour was
-  already taken.
+- **Set-aside instead of bumping.** A reserved plan is a Plan Order in
+  `plans.json` (docs/PAYMENTS.md): windows (Americas 00-08, Asia 08-16,
+  Europe 16-24 KST, `windows` in `site/pricing.js`; all three is a full
+  day), days (every day, or weekdays in each window's own region), fleets,
+  term and an optional fleet lock. Every active plan keeps its fleets off
+  sale in every hour of its windows on its days for its whole term, so
+  three customers in three regions share one fleet around the clock. The
+  holder's own Tranche reservations use up its set-aside, and its Tranche
+  bookings elsewhere never take another plan's. Capacity still unreserved
+  `market.lastCallHours` (6) before an hour starts opens to HC, the point
+  from which a plan's guarantee no longer applies. The guarantee never
+  needs to take an hour anyone holds, so the Customer Agreement carries no
+  displacement right.
+- **Fleet lock.** Only on a full-day, every-day plan: the named fleets are
+  the holder's alone for the term. They are never offered to anyone else,
+  not even 6 hours before, and stay out of the shared pool, so the
+  holder's model state and caches can stay on them; another customer uses
+  one only for an hour the holder releases.
+- **Cover.** Free hours of serving fleets on every day, after the
+  set-asides and locks, each at its fleet's Rate and less the maintenance
+  allowance (`plans.maintenanceHoursPerWeek`, 3 hours a week per fleet),
+  must cover all unspent HC (lots and bid holds) that lapses by any date.
+  Fleets still being built are not counted. A purchase is refused beyond
+  the HC on sale: the cover 12 months out minus all unspent HC and the HC
+  in unpaid orders (reason `cover`). `onSale` in `/market/state`, the page
+  and `market.txt` publish it. Sales and pool credits for released hours
+  never weaken the cover, as the buyer's HC spent is more than the seller's
+  credit and the hour was already taken.
+- **Settings locked to what was bought.** Each HC lot carries the
+  published settings in force when it was ordered (`terms`: the advance
+  multiplier and the release fee); a sale or pool credit carries those in
+  force when it is credited. A reservation paid with HC keeps the settings
+  of the lot it spent first (the one that lapses first, or the first part of
+  a bid's hold): its advance price uses that lot's multiplier, and its
+  release that lot's fee. A Tranche reservation keeps its Plan Order's
+  release fee. A change in `site/pricing.js` therefore reaches only HC and
+  Plan Orders made after it, as the Customer Agreement's published settings
+  clause promises.
+- **Maintenance.** `sparkpipe_pay.py maintenance FLEET YYYY-MM-DD [HOURS]`
+  schedules maintenance in the week starting on that KST date, which must
+  begin at least 7 days ahead. It takes at most the weekly allowance (the
+  published `plans.maintenanceHoursPerWeek`, or the lowest allowance of any
+  Plan Order active that week), picks the run with the fewest reservations,
+  and between equal runs the window least recently maintained on that
+  fleet. Every reservation in the run is credited back (HC at the price paid,
+  with its settings, or the Tranche hour, which no longer counts as used);
+  a locked plan on that fleet, and the newest plans whose set-aside the
+  remaining fleets cannot keep, are credited one plan hour for each hour.
+  Holders are emailed, the hours show as maintenance on the calendar and in
+  `market.txt`, and they are out of every offer, the cover and the shared
+  pool.
 - **Later lapse instead of overselling.** A payment that completes after
   others have bought the cover, and a credit we owe (`credit`, below), lapses
   on the first date the cover reaches it, never before 12 months.
@@ -102,11 +130,14 @@ Operations:
   free hours in the next 12 months after set-asides, unspent HC, HC on sale,
   the tightest lapse date and the hours where a set-aside cannot be kept.
   It exits 1 when a set-aside cannot be kept or HC is left without cover.
-  Before signing a two-year agreement, or approving a 100% election, run
-  it with a copy of `agreements.json` that includes the new entry; sign only
-  when it exits 0, or move the start date or wait for a fleet.
+  Before signing a Plan Order, run it with a copy of `plans.json` that
+  includes the new entry; sign only
+  when it exits 0, or move the start date, choose another window or wait for
+  a fleet.
+- `sparkpipe_pay.py maintenance FLEET YYYY-MM-DD [HOURS]` schedules and
+  announces maintenance, as above, and prints what it credited.
 - `sparkpipe_pay.py credit EMAIL HC NOTE` issues HC we owe, such as an
-  outage credit under clause 6 of the Hourly Terms, with the lapse date the
+  outage or maintenance credit under the Customer Agreement, with the lapse date the
   cover allows.
 
 ## Code
@@ -160,8 +191,8 @@ redirects there. In the sandbox:
   reaches the fleets;
 - `/market/sandbox/reset` moves the ledger aside and starts empty.
 
-Accepting the Hourly Terms records the SHA-256 of both languages of the
-Hourly Terms and of the Hour Market Rules (`TERMS` in
+Accepting the Customer Agreement records the SHA-256 of both languages of
+the Customer Agreement and of the Hour Market Rules (`TERMS` in
 `tools/sparkpipe_pay.py`); a change to any of the four texts asks the
 account to accept again at its next order.
 
@@ -204,6 +235,6 @@ request for the other pool model moves the whole fleet.
 
 Dedicated hours are recorded, billed and released here; keeping a fleet
 exclusive to its holder during the hour is work for the fleet controller.
-The set-aside keeps one fleet per agreement-hour (three in a 100% window)
-whatever fleet the holder later picks; a Thirds holder using several fleets
-at once after Full Prepayment does so subject to availability.
+The set-aside keeps the plan's fleets in its windows whatever fleet the
+holder later picks, except on a locked plan; more fleets at once, or hours
+outside the plan, are subject to availability.

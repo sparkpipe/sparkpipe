@@ -64,7 +64,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
         <a class="btn solid" href="buy.html">Buy HC in USDC or USDT</a>
         <a class="btn" href="#prices">Prices and terms</a>
       </div>
-      <p class="note">For businesses only. One hour-credit (HC) buys one hour of a Rate-1 fleet. HC bought now works at once in the shared pool, and buys dedicated fleet-hours from <span data-start>1 December 2026</span>. Anyone can try every flow without money in the <a href="market-test.html">Hour Market sandbox</a>.</p>
+      <p class="note">For companies, professionals and independent developers, not household consumers. One hour-credit (HC) buys one hour of a Rate-1 fleet. HC bought now works at once in the shared pool, and buys dedicated fleet-hours from <span data-start>1 December 2026</span>. Anyone can try every flow without money in the <a href="market-test.html">Hour Market sandbox</a>.</p>
     </div>
     <figure class="screen" role="img" aria-label="Animated diagram of Fleet 1: sixteen DGX Spark nodes on one switch with direct pair links. Each decode step, every node reads its sixteenth of the model, the nodes exchange partial results, and one token comes out.">
       <div class="screen-bar"><span><b>Fleet 1</b> · 16 × DGX Spark · Seoul</span><span id="phase">each node reads its 1/16 of the weights</span></div>
@@ -78,7 +78,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
   </div>
   <div class="specs">
     <div><strong data-krw="hc">₩26,000</strong><span><span data-price="hc">$20</span> per HC plus VAT, one hour of a Rate-1 fleet, bought by amount from <span data-market="min">$10</span>, no commitment</span></div>
-    <div><strong data-krw="committed">₩20,000</strong><span><span data-price="committed">$15</span> per fleet-hour plus VAT, Monday to Saturday over a two-year term</span></div>
+    <div><strong data-plan-krw="36">₩18,500</strong><span><span data-plan-usd="36">$14</span> per fleet-hour plus VAT on a 3-year reserved plan, the lowest of four terms from 3 months</span></div>
     <div><strong><span data-market="months">12</span> months</strong><span>each HC lasts from purchase, with no limit on how many you hold</span></div>
     <div><strong>18 models</strong><span>offered, among them K-EXAONE 2.0, A.X K2, Solar Open 2, Kimi K3 and GLM 5.3, each under its publisher's open license</span></div>
   </div>
@@ -94,7 +94,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
     <h2>Built for Korean companies.</h2>
     <div class="defs">
       <div><p class="label">Data stays in Korea</p><p>The fleets and our servers are in Seoul, and your requests go to no foreign AI service. Cached request state is deleted within 24 hours of its last use.</p></div>
-      <div><p class="label">A Korean company</p><p>You contract with HYOR AI Tech Ltd., a Korean company, under Korean law. Both contracts are in Korean and English, and the Korean text prevails.</p></div>
+      <div><p class="label">A Korean company</p><p>You contract with HYOR AI Tech Ltd., a Korean company, under Korean law. The Customer Agreement and the Hour Market Rules are in Korean and English, and the Korean text prevails.</p></div>
       <div><p class="label">Pay in won</p><p>Korean businesses pay by bank transfer against our electronic tax invoice (세금계산서), with 10% VAT. Customers abroad pay in USDC, USDT or by USD wire.</p></div>
       <div><p class="label">Korean models</p><p>LG's K-EXAONE 2.0 and SKT's A.X K2, both under Apache 2.0, and Upstage's Solar Open 2 serve on Fleet 1, each the whole model at its publisher's precision, beside Kimi K3, GLM 5.3 and the other open models. They are hard to get elsewhere: in October 2026 neither <a href="https://artificialanalysis.ai/models/solar-open2-250b/providers">Artificial Analysis</a> nor Hugging Face lists a public API provider for any of the three.</p></div>
       <div><p class="label">Dedicated, not shared</p><p>During your hours the whole fleet serves only your requests. Nobody else's traffic waits in front of yours, so answers start as soon as the fleet is free.</p></div>
@@ -134,8 +134,8 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
     <div class="facts">
       <div><strong class="mono">126 tok/s</strong><p>Kimi K3 rewriting whole files with speculation, measured; 15 tok/s without it. Search-and-replace edits run at 28 tok/s.</p></div>
       <div><strong class="mono">0.3–5 s</strong><p>to the first token of a follow-up turn whose conversation is cached, measured on Kimi K3 up to 137,700 tokens.</p></div>
-      <div><strong class="mono">16.9 min</strong><p>to prefill a 990,879-token Kimi K3 prompt from cold on Fleet 1 alone, measured on 2026-10-30 with the fleet set to prefill only; a 258K-token prompt takes 150 s.</p></div>
-      <div><strong class="mono">37 s</strong><p><b>ESTIMATED</b>: a 128K-token Kimi K3 prompt from cold with four prefill accelerator boxes, 18 s with eight.</p></div>
+      <div><strong class="mono">15.6 min</strong><p>to prefill a 1M-token Kimi K3 prompt from cold on one fleet, Fleet 1 alone, in our latest measurement: a coffee break, not a lunch. A 258K-token prompt takes 150 s.</p></div>
+      <div><strong class="mono">3–6 min</strong><p><b>ESTIMATED</b>: the same 1M-token prompt with our prefill accelerators, which cut prefill time sharply. They are shared by every fleet, so the time depends on what else is queued.</p></div>
     </div>
     <p class="prose"><b>ESTIMATED</b> for Kimi K3 on Fleet 2, eight M5 Ultra Mac Studios: 23 tok/s for one request without speculation, and about 35 tok/s with it on agent coding turns. SKT's A.X K2 is estimated at 33 and about 49 tok/s. Estimates are projections from our measurements and published hardware figures, published only where we expect to meet them; the <a href="fleets.html#estimates">Fleet List</a> shows how each is made, and each is replaced by a measurement once the hardware runs.</p>
   </div>
@@ -149,7 +149,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
   <div class="sec-body">
     <h2>What comes next.</h2>
     <div class="check-list">
-      <div><b>Prefill accelerators</b><span>Boxes of four NVIDIA RTX 5080 cards compute long prompts, four boxes first, then eight. ESTIMATED: a 128K-token Kimi K3 prompt in 37 s (18 s with eight boxes). Fleet 1 alone now prefills a 1M-token prompt in 16.9 minutes, measured.</span></div>
+      <div><b>Prefill accelerators</b><span>Dedicated hardware, shared by every fleet, that computes long prompts and cuts prefill time sharply. ESTIMATED: a 1M-token Kimi K3 prompt in 3 to 6 minutes, depending on how busy they are. Fleet 1 alone already prefills it in 15.6 minutes, measured.</span></div>
       <div><b>Fleet 2</b><span>Eight M5 Ultra Mac Studios with 2.2 times Fleet 1's memory bandwidth, for faster decoding. Measured on one of its Studios: Qwen 3.8 27B at full BF16 precision decodes 20.1 tok/s for one request, 90% of what the Studio's memory bandwidth allows, and 442 tok/s in total for 64 requests at once. ESTIMATED: Kimi K3 at 23 tok/s without speculation.</span></div>
       <div><b>Better speculation</b><span>Tree drafts from several drafters at once, so more drafted tokens are accepted in each step.</span></div>
       <div><b>Field search</b><span>Checkboxes in the chat add search tools for law, medicine, finance, patents and more, so any model answers from current primary sources and cites them.</span></div>
@@ -167,9 +167,9 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
   <div class="sec-body">
     <h2>Account, HC, use, release.</h2>
     <ol class="steps">
-      <li><h3>Open an account</h3><p>Give your company's legal name and a work email, confirm the email with a 6-digit code, and accept the Hourly Terms and the Hour Market Rules. The email is your account: no password and no crypto wallet. Every business is screened against sanctions lists.</p></li>
+      <li><h3>Open an account</h3><p>Give your company's legal name, or your own name, and a work email, confirm the email with a 6-digit code, and accept the SparkPipe Customer Agreement and the Hour Market Rules. The email is your account: no password and no crypto wallet. Every business is screened against sanctions lists.</p></li>
       <li><h3>Buy HC</h3><p>Pay any amount from <span data-market="min">$10</span> in advance: Korean businesses in won, by bank transfer against our electronic tax invoice; customers abroad in USDC or USDT, through an invoice from our payment processor. Korean VAT of 10% is added. Once the payment has cleared it becomes HC at <span data-price="hc">$20</span> each, to six decimal places. Each HC lasts <span data-market="months">12</span> months from purchase, and the oldest is spent first.</p></li>
-      <li><h3>Use it three ways</h3><p>In the shared pool, open now, each request to our OpenAI-format API pays for the seconds it holds a seat, at a posted price, on fleets nobody has reserved. Dedicated fleet-hours give you a whole fleet: reserve them on the Hour Market calendar from <span data-start>1 December 2026</span>, up to <span data-market="days">7</span> days ahead at the fleet's Rate in HC an hour, up to <span data-market="ahead">31</span> days ahead at <span data-market="advance">1.25</span> times that from Monday to Saturday, or further ahead when someone releases one. No reservation is ever bumped. A standing bid fills a recurring window, such as weekdays 09:00 to 18:00, every week at no more than your price. You create the API keys, so you decide who uses them.</p></li>
+      <li><h3>Use it three ways</h3><p>In the shared pool, open now, each request to our OpenAI-format API pays for the seconds it holds a seat, at a posted price, on fleets nobody has reserved. Dedicated fleet-hours give you a whole fleet: reserve them on the Hour Market calendar from <span data-start>1 December 2026</span>, up to <span data-market="days">7</span> days ahead at the fleet's Rate in HC an hour, up to <span data-market="ahead">31</span> days ahead at <span data-market="advance">1.25</span> times that on any day, or further ahead when someone releases one. No reservation is ever bumped. A standing bid fills a recurring window, such as weekdays 09:00 to 18:00, every week at no more than your price. You create the API keys, so you decide who uses them.</p></li>
       <li><h3>Release what you won't use</h3><p>A reservation takes its HC at once and is final, but you may release an hour before it starts, at its Rate or a lower minimum. If someone reserves it, or the shared pool uses it when it starts, you get HC for what it earned, less a <span data-market="fee">10%</span> fee, usable for <span data-market="months">12</span> months. We never buy a released hour: it earns only what buyers and the pool pay for it.</p></li>
     </ol>
     <p class="caption">Won payments go straight to HYOR AI Tech Ltd.'s Korean bank account. USDC and USDT payments go through a payment processor. HC cannot be sent between accounts or paid out, and a released hour passes through us to whoever reserves it, never directly between accounts. Try every step without money in the <a href="market-test.html">sandbox</a>, on a test clock.</p>
@@ -182,26 +182,26 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
     <p class="label">Two ways to buy</p>
   </div>
   <div class="sec-body">
-    <h2>Start with HC. Commit for less.</h2>
-    <p class="prose">Every business starts with HC on the Hourly Terms. A business that wants every hour from Monday to Saturday for two years at the lower price passes our business check and signs the two-year agreement, which it may negotiate clause by clause.</p>
+    <h2>Start with HC. Reserve for less.</h2>
+    <p class="prose">Every customer can start with HC, with no commitment, and HC is also the way to try a fleet: book your 8-hour window every day for a week, <span data-market="week">56</span> HC, for about <span data-market="trial">$1,120</span> plus VAT. A business that wants its hours kept for it at a lower price, fixed for the term, builds a reserved plan from five choices, passes our business check and signs a Plan Order. HC and plans are under one contract, the SparkPipe Customer Agreement.</p>
     <div class="table-wrap"><table class="cmp">
-      <thead><tr><th scope="col"></th><th scope="col">Hour-credits</th><th scope="col">Two years</th></tr></thead>
+      <thead><tr><th scope="col"></th><th scope="col">Hour-credits</th><th scope="col">Reserved plans</th></tr></thead>
       <tbody>
-        <tr><th scope="row">Price</th><td><span data-krw="hc">₩26,000</span> or <span data-price="hc">$20</span> per HC plus VAT, bought by amount from <span data-market="min">$10</span>. One HC buys one hour of a Rate-1 fleet</td><td><span data-krw="committed">₩20,000</span> or <span data-price="committed">$15</span> per fleet-hour plus VAT, fixed for the term</td></tr>
-        <tr><th scope="row">Commitment</th><td>None</td><td>Every hour of two years from signing except Sundays: 15,000 to 15,048 hours. Sundays are for our maintenance, and you may still use your hours on them when a fleet is free</td></tr>
-        <tr><th scope="row">Models</th><td>Any offered model on the Fleet List, chosen for each reservation; the shared pool serves a posted menu of models</td><td>The models you choose in the agreement stay available for the whole term; the others while they are listed</td></tr>
-        <tr><th scope="row">Business check</th><td>Not needed</td><td>Required before signing</td></tr>
-        <tr><th scope="row">Holding</th><td>No limit. Each HC lasts <span data-market="months">12</span> months from purchase, and the oldest is spent first</td><td>Each month's paid hours, reserved when you choose within that month: 8 in each of the day's three 8-hour windows, Americas, Asia and Europe, guaranteed, until you have prepaid the whole term. Then your election's daily hours are guaranteed for any day of the term, 8 in each window or 24 in your own window on up to three fleets at once, and you may use more on free fleets up to 30 days ahead</td></tr>
+        <tr><th scope="row">Price</th><td><span data-krw="hc">₩26,000</span> or <span data-price="hc">$20</span> per HC plus VAT, bought by amount from <span data-market="min">$10</span>. One HC buys one hour of a Rate-1 fleet</td><td>An Hour Price per fleet-hour plus VAT, fixed for the term: <span data-plan-krw="3">₩23,000</span> or <span data-plan-usd="3">$17.50</span> for 3 months, <span data-plan-krw="12">₩22,000</span> or <span data-plan-usd="12">$16.50</span> for 1 year, <span data-plan-krw="24">₩20,000</span> or <span data-plan-usd="24">$15</span> for 2 years, <span data-plan-krw="36">₩18,500</span> or <span data-plan-usd="36">$14</span> for 3 years. A fleet lock adds <span data-plan-krw="lock">₩1,300</span> or <span data-plan-usd="lock">$1</span> an hour</td></tr>
+        <tr><th scope="row">Commitment</th><td>None</td><td>A Plan Order for the hours of five choices: a term of 3 months, 1 year, 2 years or 3 years; one or more 8-hour windows, Americas 00:00–08:00, Asia 08:00–16:00 or Europe 16:00–24:00 KST, all three a Full day; Every day, seven days a week, or Weekdays, Monday to Friday in each window's own region; 1 to <span data-plan="fleets">3</span> fleets at once, more on request; and, on a Full day every day, a fleet lock</td></tr>
+        <tr><th scope="row">Models</th><td>Any offered model on the Fleet List, chosen for each reservation; the shared pool serves a posted menu of models</td><td>The models you name in your Plan Order stay available for the whole term; the others while they are listed</td></tr>
+        <tr><th scope="row">Identity check</th><td>Not needed</td><td>Required before a Plan Order</td></tr>
+        <tr><th scope="row">Holding</th><td>No limit. Each HC lasts <span data-market="months">12</span> months from purchase, and the oldest is spent first</td><td>The capacity your windows, days and fleets need is kept off sale until <span data-plan="lastcall">6</span> hours before each hour, and each month's paid hours, a Tranche, reserve it from the Hour Market calendar. More fleets at once, or hours outside your windows, are subject to availability. A locked fleet is the same named fleet for the whole term and yours alone, so your model state and caches stay on it</td></tr>
         <tr><th scope="row">Release</th><td colspan="2">Release a reserved hour you won't use, Tranche hours included, before it starts. When someone reserves it, or the shared pool uses it, you get HC for what it earned, less a <span data-market="fee">10%</span> fee, usable for <span data-market="months">12</span> months</td></tr>
-        <tr><th scope="row">Payment</th><td>Before use: a won bank transfer against our electronic tax invoice (세금계산서) for Korean businesses, or a USDC or USDT invoice</td><td>A won bank transfer against our electronic tax invoice, a USD wire from your own account abroad (zero-rated for VAT), or a USDC or USDT invoice. Nothing is due in the first 30 days; you pay any amounts up to three deadlines, on days 30, 60 and 90</td></tr>
-        <tr><th scope="row">Reservations</th><td>Our capacity from <span data-start>1 December 2026</span>, up to <span data-market="days">7</span> days ahead at the fleet's Rate, or up to <span data-market="ahead">31</span> days ahead at <span data-market="advance">1.25</span> times it from Monday to Saturday; released hours any distance ahead. Final, except release, and never taken by anyone: two-year customers' guaranteed hours come from capacity we keep off sale until 6 hours before each hour</td><td>Final, except release, and never taken by anyone</td></tr>
+        <tr><th scope="row">Payment</th><td>Before use: a won bank transfer against our electronic tax invoice (세금계산서) for Korean businesses, or a USDC or USDT invoice</td><td>A won bank transfer against our electronic tax invoice, a USD wire from your own account abroad (zero-rated for VAT), or a USDC or USDT invoice. A 3-month plan is paid in full before it starts. A longer plan owes nothing in its first 30 days, Phase A, and you withdraw by not paying; three gates, on days 30, 60 and 90, require 6 months' hours, 12 months' hours and the whole term paid. Hours exist only once paid</td></tr>
+        <tr><th scope="row">Reservations</th><td>Our capacity from <span data-start>1 December 2026</span>, up to <span data-market="days">7</span> days ahead at the fleet's Rate, or up to <span data-market="ahead">31</span> days ahead at <span data-market="advance">1.25</span> times it on any day; released hours any distance ahead. Final, except release, and never taken by anyone: plan holders' capacity is kept off sale until <span data-plan="lastcall">6</span> hours before each hour</td><td>Final, except release, and never taken by anyone. We may take each fleet out for maintenance for up to <span data-plan="maintenance">3</span> hours a week, announced 7 days ahead, and any reserved hour it touches is credited back</td></tr>
         <tr><th scope="row">Downtime</th><td colspan="2">A reserved hour with more than 15 minutes of downtime comes back in full, automatically, from our own records</td></tr>
-        <tr><th scope="row">Refunds</th><td>None, unless we stop hourly service or close your account through no fault of yours. HC earned from releases is never refunded</td><td>None, except paid hours not yet used if the agreement ends early (clause 11.3). If no payment is made by day 30, it ends with nothing owed</td></tr>
-        <tr><th scope="row">Terms</th><td><a href="hourly-terms.html">Hourly Terms</a><a href="hourly-terms-ko.html" hreflang="ko">시간제 이용약관</a><a href="market-rules.html">Hour Market Rules</a><a href="market-rules-ko.html" hreflang="ko">시간 마켓 규칙</a></td><td><a href="agreement.html">Two-year agreement</a><a href="agreement-ko.html" hreflang="ko">2년 예약 계약서</a></td></tr>
+        <tr><th scope="row">Refunds</th><td>None, unless we stop hourly service or close your account through no fault of yours. HC earned from releases is never refunded</td><td>None, except paid hours not yet used if the plan ends early. A plan with Phase A that gets no payment in it ends with nothing owed</td></tr>
+        <tr><th scope="row">Terms</th><td colspan="2"><a href="agreement.html">SparkPipe Customer Agreement</a><a href="agreement-ko.html" hreflang="ko">SparkPipe 고객 계약</a><a href="market-rules.html">Hour Market Rules</a><a href="market-rules-ko.html" hreflang="ko">시간 마켓 규칙</a></td></tr>
       </tbody>
     </table></div>
-    <p class="caption">VAT is charged at 10% on every payment except a zero-rated wire. Any amount charged as VAT that turns out not to be owed is an overpayment, and we refund it. The Korean text of each contract prevails.</p>
-    <div class="actions"><a class="btn solid" href="buy.html">Buy HC with USDC or USDT</a><a class="btn" href="two-year.html">Plan a two-year term</a></div>
+    <p class="caption">VAT is charged at 10% on every payment except a zero-rated wire. Any amount charged as VAT that turns out not to be owed is an overpayment, and we refund it. The Korean text prevails.</p>
+    <div class="actions"><a class="btn solid" href="buy.html">Buy HC with USDC or USDT</a><a class="btn" href="plans.html">Build a reserved plan</a></div>
   </div>
 </section>
 
@@ -255,7 +255,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
       <div><p class="label">Lawful use</p><p>Every use must follow the law, including sanctions and export control, personal data and intellectual property law, and each model's license. We may suspend use that a law or authority requires us to stop, that breaks the terms, or that threatens a fleet.</p></div>
       <div><p class="label">AI law</p><p>If you offer generative AI to your own users, you are their provider under Korea's AI Basic Act and carry its notice and labelling duties.</p></div>
       <div><p class="label">Your data</p><p>You keep every right in your data and outputs. We keep no backups of it. Cached request state is deleted within 24 hours of its last use. The fleets and our servers are in Seoul.</p></div>
-      <div><p class="label">Businesses only</p><p>HC is sold to businesses for their business, never to consumers. Korean law governs both contracts, and disputes go to arbitration in Seoul under the Korean Commercial Arbitration Board's rules.</p></div>
+      <div><p class="label">For professional use</p><p>HC is sold for business, professional, commercial or independent research and development use, never to household consumers. Korean law governs the Customer Agreement, and disputes go to arbitration in Seoul under the Korean Commercial Arbitration Board's rules.</p></div>
     </div>
   </div>
 </section>
@@ -297,7 +297,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
       <div><b>Registration</b><span>Business registration number 641-87-03809</span></div>
       <div><b>Location</b><span>Yongsan-gu, Seoul, Republic of Korea; full address on request by email</span></div>
       <div><b>Contact</b><span><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></span></div>
-      <div><b>Terms</b><span><a href="terms.html">Hourly Terms, Hour Market Rules and two-year agreement</a>, in English and Korean, published for review</span></div>
+      <div><b>Terms</b><span><a href="terms.html">SparkPipe Customer Agreement and Hour Market Rules</a>, in English and Korean, published for review</span></div>
       <div><b>Privacy</b><span><a href="privacy.html">Privacy policy</a> · <a href="privacy-ko.html" hreflang="ko">개인정보처리방침</a></span></div>
       <div><b>Other service</b><span><a href="https://sparkpipe.ai:8443">SparkPipe Chat</a>, for invited users. Its replies are labelled as generated by AI.</span></div>
     </div>
@@ -309,7 +309,7 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
 <footer class="foot">
   <div class="wrap">
     <a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
-    <nav aria-label="Footer"><a href="buy.html">Buy HC</a><a href="market.html">Hour Market</a><a href="fleets.html">Fleet List</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <nav aria-label="Footer"><a href="buy.html">Buy HC</a><a href="plans.html">Reserved plans</a><a href="market.html">Hour Market</a><a href="fleets.html">Fleet List</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
 
@@ -320,13 +320,18 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
   if (!P) return;
   var usd = function (n) { return "$" + (Number.isInteger(n) ? n : n.toFixed(2)); };
   var months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-  var start = P.committedEarliestStart < P.hourlyEarliestStart ? P.committedEarliestStart : P.hourlyEarliestStart;
+  var start = P.plans.earliestStart < P.hourlyEarliestStart ? P.plans.earliestStart : P.hourlyEarliestStart;
   var parts = start.split("-");
   var when = Number(parts[2]) + " " + months[Number(parts[1]) - 1] + " " + parts[0];
-  var M = P.market;
-  var market = { min: usd(M.minPurchase), months: String(M.validityMonths), days: String(M.horizonDays), ahead: String(M.advanceDays), advance: String(M.advanceMultiplier), fee: Math.round(M.releaseFee * 100) + "%" };
-  document.querySelectorAll("[data-price]").forEach(function (el) { el.textContent = usd(el.dataset.price === "hc" ? M.hcPrice : P.committedPrice); });
-  document.querySelectorAll("[data-krw]").forEach(function (el) { el.textContent = "₩" + (el.dataset.krw === "hc" ? M.hcPriceKRW : P.committedPriceKRW).toLocaleString("en-US"); });
+  var M = P.market, L = P.plans, week = 7 * (P.windows[0].to - P.windows[0].from);
+  var term = function (key) { return key === "lock" ? { usd: L.lockPremium, krw: L.lockPremiumKRW } : L.terms.filter(function (t) { return String(t.months) === key; }).map(function (t) { return { usd: t.hourPrice, krw: t.hourPriceKRW }; })[0]; };
+  var market = { min: usd(M.minPurchase), months: String(M.validityMonths), days: String(M.horizonDays), ahead: String(M.advanceDays), advance: String(M.advanceMultiplier), fee: Math.round(M.releaseFee * 100) + "%", week: String(week), trial: "$" + (week * M.hcPrice).toLocaleString("en-US") };
+  var plan = { fleets: String(L.maxFleets), maintenance: String(L.maintenanceHoursPerWeek), lastcall: String(M.lastCallHours) };
+  document.querySelectorAll("[data-price]").forEach(function (el) { el.textContent = usd(M.hcPrice); });
+  document.querySelectorAll("[data-krw]").forEach(function (el) { el.textContent = "₩" + M.hcPriceKRW.toLocaleString("en-US"); });
+  document.querySelectorAll("[data-plan-usd]").forEach(function (el) { el.textContent = usd(term(el.dataset.planUsd).usd); });
+  document.querySelectorAll("[data-plan-krw]").forEach(function (el) { el.textContent = "₩" + term(el.dataset.planKrw).krw.toLocaleString("en-US"); });
+  document.querySelectorAll("[data-plan]").forEach(function (el) { el.textContent = plan[el.dataset.plan]; });
   document.querySelectorAll("[data-market]").forEach(function (el) { el.textContent = market[el.dataset.market]; });
   document.querySelectorAll("[data-start]").forEach(function (el) { el.textContent = when; });
 })();

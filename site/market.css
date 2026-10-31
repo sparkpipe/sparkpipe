@@ -25,6 +25,7 @@
 .cell.mine-release { background: repeating-linear-gradient(45deg, var(--signal), var(--signal) 3px, transparent 3px, transparent 6px); outline: 1px solid var(--signal); }
 .cell.taken { background: repeating-linear-gradient(45deg, var(--rule-strong), var(--rule-strong) 2px, transparent 2px, transparent 5px); cursor: default; }
 .cell.closed, .cell.blank { background: transparent; outline: 1px solid var(--rule); cursor: default; }
+.cell.maintenance { background: repeating-linear-gradient(45deg, transparent 0 3px, var(--rule) 3px 5px); outline: 1px solid var(--rule); cursor: default; }
 .cell.picked { outline: 2px solid var(--ink, currentColor); outline-offset: 1px; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--steel); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }

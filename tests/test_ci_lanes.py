@@ -14,7 +14,7 @@ WHOLE_TREE = re.compile(r"""\bROOT\s*\.rglob\(|os\.walk\(\s*ROOT\b|["']ls-files[
 
 def check_classification(failures):
     cases = [
-        (["site/buy.html", "site/terms/hourly-en.md", "tools/sparkpipe_pay.py", "tests/test_pay.py", "docs/PAYMENTS.md"], False),
+        (["site/buy.html", "site/terms/agreement-en.md", "tools/sparkpipe_pay.py", "tests/test_pay.py", "docs/PAYMENTS.md"], False),
         (["deployment/vps/hyor.io/index.html", "deployment/vps/sparkpipe-pay.service", "docs/brand/hyor-ai/README.md"], False),
         (["deployment/vps/postfix-main.cf", "deployment/vps/dovecot-99-sparkpipe.conf", "deployment/vps/certbot-reload-mail-services.sh", "docs/VPS_MAIL.md"], False),
         ([], False),

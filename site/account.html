@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Your Account · SparkPipe</title>
-<meta name="description" content="Your SparkPipe account: hour-credits, orders, payments and two-year prepayments.">
+<meta name="description" content="Your SparkPipe account: hour-credits, orders, payments and reserved plans.">
 <meta name="robots" content="noindex">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
@@ -24,7 +24,7 @@
     <nav class="nav-links" aria-label="Sections">
       <a href="index.html#fleets">Fleets</a>
       <a href="index.html#prices">Prices</a>
-      <a href="two-year.html">Two-year</a>
+      <a href="plans.html">Plans</a>
     </nav>
     <div class="nav-actions">
       <div class="lang" role="group" aria-label="Language / 언어"><a href="account.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
@@ -75,20 +75,20 @@
         <div><span>Hour-credits</span><strong id="s-hc">0</strong></div>
         <div><span>Awaiting payment</span><strong id="s-open">0</strong></div>
       </div>
-      <div class="actions"><a class="btn solid" href="market.html">Open the Hour Market</a><a class="btn" href="buy.html">Buy HC</a><a class="btn" href="two-year.html">Two-year price</a></div>
+      <div class="actions"><a class="btn solid" href="market.html">Open the Hour Market</a><a class="btn" href="buy.html">Buy HC</a><a class="btn" href="plans.html">Reserved plans</a></div>
     </section>
 
     <section class="card" id="next">
       <p class="label">What happens next</p>
       <ul class="perks">
         <li>Each purchase of HC lasts 12 months from the day it is issued, and the oldest is spent first. The <a href="market.html">Hour Market</a> shows every lot.</li>
-        <li>Spend HC in the shared pool at once, through an OpenAI-format API with keys you create in the Hour Market, or reserve whole fleet-hours from <span data-start>1 December 2026</span>, up to 7 days ahead at the fleet's Rate, or up to 31 days ahead at 1.25× from Monday to Saturday. No reservation is ever bumped.</li>
+        <li>Spend HC in the shared pool at once, through an OpenAI-format API with keys you create in the Hour Market, or reserve whole fleet-hours from <span data-start>1 December 2026</span>, up to 7 days ahead at the fleet's Rate, or up to 31 days ahead at 1.25× on any day. No reservation is ever bumped.</li>
         <li>Receipts go to <b class="email-here"></b>. For a won tax invoice or anything else, write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</li>
       </ul>
     </section>
 
 
-    <div id="agreements" class="stack" hidden></div>
+    <div id="plans" class="stack" hidden></div>
 
     <section class="card">
       <p class="label">Orders</p>
@@ -102,16 +102,18 @@
 </div>
 </main>
 
-<template id="agreement-card">
+<template id="plan-card">
   <section class="card">
-    <p class="label">Two-year agreement <span data-k="agreement"></span></p>
+    <p class="label">Plan <span data-k="plan"></span></p>
+    <h3 data-k="summary"></h3>
     <div class="calc">
       <div class="readout">
         <div><span>Term</span><strong data-k="term"></strong></div>
         <div><span>Hours in the term</span><strong data-k="hours"></strong></div>
+        <div><span>Hour Price</span><strong data-k="price"></strong></div>
         <div><span>Paid, before VAT</span><strong data-k="paid"></strong></div>
-        <div><span>Left to prepay</span><strong data-k="left"></strong></div>
-        <div class="you"><span>Next gate</span><strong data-k="gate"></strong></div>
+        <div><span>Left to pay, before VAT</span><strong data-k="left"></strong></div>
+        <div class="you"><span data-k="gate-name">Next gate</span><strong data-k="gate"></strong></div>
       </div>
       <form class="form" novalidate>
         <label>Amount, before VAT (USD)<input name="amount" type="number" inputmode="decimal" min="1" step="0.01"></label>
@@ -119,7 +121,7 @@
         <div data-k="coins"></div>
         <p class="flash" hidden></p>
         <button class="btn solid big" type="submit">Pay</button>
-        <p class="hint">Each payment issues hours equal to the amount before VAT divided by your hour price, to the earliest tranches not yet paid (clause 5.5). For a USD wire or a won transfer, write to us.</p>
+        <p class="hint">Each payment issues hours equal to the amount before VAT divided by your Hour Price, to the earliest Tranches not yet paid. For a USD wire or a won transfer, write to us.</p>
       </form>
     </div>
   </section>
@@ -128,7 +130,7 @@
 <footer class="foot">
   <div class="wrap">
     <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
-    <nav aria-label="Footer"><a href="index.html">Home</a><a href="market.html">Hour Market</a><a href="fleets.html">Fleet List</a><a href="hourly-terms.html">Hourly Terms</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="market.html">Hour Market</a><a href="fleets.html">Fleet List</a><a href="agreement.html">Customer Agreement</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
     <span>Stablecoin payments are processed by CoinPayments.</span>
   </div>
 </footer>
@@ -149,8 +151,12 @@
   const hc = (text) => (+text).toLocaleString('en-US', { maximumFractionDigits: 6 });
   const what = (o) => {
     const amount = o.issued && +o.issuedHours < +o.hours ? hc(o.issuedHours) + ' of ' + hc(o.hours) : hc(o.hours);
-    return o.product === 'credits' ? amount + ' HC' : 'Prepayment ' + o.agreement + ': ' + amount + ' hours';
+    return o.product === 'credits' ? amount + ' HC' : 'Plan ' + o.plan + ': ' + amount + ' hours';
   };
+  const DAYS = { every: 'Every day', weekdays: 'Weekdays' };
+  const windowName = (id) => (P.windows.find((w) => w.id === id) || { name: id }).name;
+  const summary = (a) => [a.months + ' months', a.windows.length === P.windows.length ? 'Full day' : a.windows.map(windowName).join(' + '), DAYS[a.days] || a.days, a.fleets + (a.fleets === 1 ? ' fleet' : ' fleets')]
+    .concat([].concat(a.lock || []).length ? ['locked ' + [].concat(a.lock).join(', ')] : []).join(' · ');
   const unit = (o) => (o.product === 'credits' ? ' HC' : ' fleet-hours');
   let me = null, watching = new URLSearchParams(window.location.search).get('order'), timer = null;
 
@@ -212,20 +218,23 @@
     }
   };
 
-  const renderAgreement = (a) => {
-    const node = $('agreement-card').content.firstElementChild.cloneNode(true);
+  const renderPlan = (a) => {
+    const node = $('plan-card').content.firstElementChild.cloneNode(true);
     const k = (name) => node.querySelector('[data-k="' + name + '"]');
-    k('agreement').textContent = a.agreement;
-    k('term').textContent = nice(a.signed) + ' – ' + nice(a.end);
+    k('plan').textContent = a.plan;
+    k('summary').textContent = summary(a);
+    k('term').textContent = nice(a.start) + ' – ' + nice(a.end);
     k('hours').textContent = SP.whole(a.hours);
+    k('price').textContent = SP.usd(a.price);
     k('paid').textContent = SP.usd(a.paid) + (+a.pending ? ' (+' + SP.usd(a.pending) + ' unpaid)' : '');
     k('left').textContent = SP.usd(a.remaining);
-    k('gate').textContent = a.ended ? 'Closed' : a.nextGate ? SP.usd(a.nextGate.amount) + ' by ' + nice(a.nextGate.due) : 'All gates met';
+    k('gate-name').textContent = a.nextGate && !a.ended ? 'Next: ' + a.nextGate.name + ', before VAT' : a.payment === 'upfront' ? 'Payment' : 'Next gate';
+    k('gate').textContent = a.ended ? 'Closed' : a.nextGate ? SP.usd(a.nextGate.amount) + ' by ' + nice(a.nextGate.due) : a.payment === 'upfront' ? 'Paid in full' : 'All gates met';
     const form = node.querySelector('form'), amount = form.elements.amount, note = form.querySelector('.flash'), button = form.querySelector('button');
-    SP.coinPicker(k('coins'), 'coin-' + a.agreement, 'USDC.ERC20', () => update());
+    SP.coinPicker(k('coins'), 'coin-' + a.plan, 'USDC.ERC20', () => update());
     if (a.nextGate) amount.value = a.nextGate.amount;
     const update = () => {
-      const net = Math.round((+amount.value || 0) * 100) / 100, vat = Math.round(net * P.vatRate * 100) / 100, coin = SP.coinOf(SP.chosen(form, 'coin-' + a.agreement) || 'USDC.ERC20');
+      const net = Math.round((+amount.value || 0) * 100) / 100, vat = Math.round(net * P.vatRate * 100) / 100, coin = SP.coinOf(SP.chosen(form, 'coin-' + a.plan) || 'USDC.ERC20');
       k('issues').textContent = net >= 1 ? 'Issues ' + SP.whole(Math.floor(net / +a.price * 10000) / 10000) + ' hours. Total with VAT: ' + SP.usd(net + vat) + ' in ' + coin + '.' : '';
       button.textContent = net >= 1 ? 'Pay ' + SP.usd(net + vat) + ' in ' + coin : 'Pay in ' + coin;
       button.disabled = Boolean(a.ended) || net < 1 || net > +a.remaining;
@@ -238,7 +247,7 @@
       button.disabled = true;
       SP.say(note, '');
       try {
-        const placed = await SP.call('/order', { product: 'two-year', agreement: a.agreement, amount: (+amount.value).toFixed(2), coin: SP.chosen(form, 'coin-' + a.agreement) });
+        const placed = await SP.call('/order', { product: 'plan', plan: a.plan, amount: (+amount.value).toFixed(2), coin: SP.chosen(form, 'coin-' + a.plan) });
         if (!/^https:\/\//.test(placed.checkout)) throw new Error('The checkout link is not secure. Your order is listed below.');
         window.location.assign(placed.checkout);
       } catch (error) { SP.say(note, error.message, 'error'); update(); }
@@ -256,8 +265,8 @@
     $('since').textContent = nice(me.since);
     $('s-hc').textContent = hc(me.hc);
     $('s-open').textContent = me.orders.filter((o) => o.state === 'unpaid' || o.state === 'pending' || o.state === 'paid').length;
-    $('agreements').hidden = me.agreements.length === 0;
-    $('agreements').replaceChildren(...me.agreements.map(renderAgreement));
+    $('plans').hidden = me.plans.length === 0;
+    $('plans').replaceChildren(...me.plans.map(renderPlan));
     $('no-orders').hidden = me.orders.length > 0;
     $('orders-wrap').hidden = me.orders.length === 0;
     $('orders').replaceChildren(...me.orders.map((o) => {

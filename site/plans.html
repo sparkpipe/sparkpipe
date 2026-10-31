@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Reserved plans · SparkPipe</title>
+<meta name="description" content="Reserve whole SparkPipe fleets in Seoul for 3 months to 3 years at a fixed Hour Price: choose your windows, days, fleets and a fleet lock, see every hour and payment, and ask for a quote.">
+<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
+<link rel="stylesheet" href="site.css?v=dcbd7de8">
+<link rel="stylesheet" href="checkout.css?v=1">
+<style>
+.table-wrap.scroll { max-height: 440px; overflow-y: auto; }
+.table-wrap.scroll thead th { position: sticky; top: 0; background: var(--sheet); }
+.table-wrap table.short { min-width: 0; }
+.pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.choice { border: 0; margin: 0; padding: 0; min-width: 0; display: grid; gap: 10px; }
+.choice legend { padding: 0; margin-bottom: 10px; font: 500 11px/1.3 var(--mono); font-variation-settings: 'wdth' 87.5; letter-spacing: .06em; text-transform: uppercase; color: var(--steel); }
+.tiles .tile.word b { font-size: 18px; }
+.tiles .tile:has(input:disabled) { opacity: .45; cursor: not-allowed; border-color: var(--rule); }
+.card .calc .readout strong { font-size: clamp(18px, 2vw, 24px); }
+#r-plan { font-size: clamp(20px, 2.4vw, 28px); }
+@media (max-width: 560px) { .pair { grid-template-columns: minmax(0, 1fr); } }
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">fleet-hours</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#plan">Build a plan</a>
+      <a href="#payment">Payment</a>
+      <a href="#tranches">Tranches</a>
+      <a href="#quote">Ask for a quote</a>
+    </nav>
+    <div class="nav-actions">
+      <div class="lang" role="group" aria-label="Language / 언어"><a href="plans.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
+      <a class="btn small" href="account.html">Account</a>
+      <a class="btn small solid" href="#quote">Get a quote</a>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+<section class="co-head">
+  <p class="label">Reserved plans</p>
+  <h1 id="title">Your fleets in your hours, from $14 an hour.</h1>
+  <p class="lead">Choose a term, your windows, the days, how many fleets and whether to lock them. The Hour Price is fixed for the term, the capacity is kept for you until <span data-plan="lastcall">6</span> hours before each hour, and nobody is ever bumped. A plan is a Plan Order under the same contract as hour-credits, the SparkPipe Customer Agreement.</p>
+  <div class="trust"><span>Price fixed for the term</span><span>Capacity kept for you</span><span>Never bumped</span><span>Unused hours released for HC</span><span>One contract</span></div>
+</section>
+
+<div class="co">
+  <div class="stack">
+    <section class="card" id="plan">
+      <p class="label">Build a plan</p>
+      <h2>Five choices and a start date.</h2>
+      <form class="form" id="plan-form" novalidate>
+        <label>Start Date<input id="r-start" type="date"></label>
+        <p class="hint" id="start-hint">The term starts on that day and ends the day before the same date at the end of the term.</p>
+        <fieldset class="choice">
+          <legend>Term</legend>
+          <div class="tiles" id="c-term" role="radiogroup" aria-label="Term"></div>
+          <p class="hint">The longer the term, the lower its Hour Price, fixed for the whole term.</p>
+        </fieldset>
+        <fieldset class="choice">
+          <legend>Windows</legend>
+          <div class="tiles" id="c-windows" role="group" aria-label="Windows"></div>
+          <p class="hint">Each window is 8 hours of the Korean day, the working day of its region; choose any one or more, and all three is a Full day. <button class="linkish" type="button" id="full-day">Choose a Full day</button></p>
+        </fieldset>
+        <fieldset class="choice">
+          <legend>Days</legend>
+          <div class="tiles" id="c-days" role="radiogroup" aria-label="Days"></div>
+          <p class="hint">Every day runs seven days a week, for long-running work; Weekdays runs Monday to Friday in each window's own region, so the Americas Window runs on KST Tuesday to Saturday.</p>
+        </fieldset>
+        <fieldset class="choice">
+          <legend>Fleets</legend>
+          <div class="tiles" id="c-fleets" role="radiogroup" aria-label="Fleets"></div>
+          <p class="hint">How many whole fleets you hold at once in those hours; more on request, subject to our approval.</p>
+        </fieldset>
+        <fieldset class="choice">
+          <legend>Fleet lock</legend>
+          <div class="tiles" id="c-lock" role="group" aria-label="Fleet lock"></div>
+          <p class="hint">A locked fleet is the same named fleet for the whole term and yours alone, never offered to anyone else, so your model state and caches stay on it instead of being cleared for another customer. Another customer uses it only for an hour you release, and we clear it first.</p>
+          <p class="hint" id="lock-why"></p>
+        </fieldset>
+      </form>
+    </section>
+
+    <section class="card" id="summary">
+      <p class="label">Your plan</p>
+      <h2 id="r-plan">-</h2>
+      <div class="calc">
+        <div class="readout">
+          <div><span>Starts</span><strong id="r-starts">-</strong></div>
+          <div><span>Ends</span><strong id="r-ends">-</strong></div>
+          <div><span>Hours per day</span><strong id="r-day">-</strong></div>
+          <div><span>Hours per week</span><strong id="r-week">-</strong></div>
+          <div><span>Hours in the term</span><strong id="r-hours">-</strong></div>
+        </div>
+        <div class="readout">
+          <div><span id="r-price-label">Hour Price</span><strong id="r-price">-</strong></div>
+          <div><span>Price of the term</span><strong id="r-net">-</strong></div>
+          <div><span id="r-vat-label">Korean VAT, 10%</span><strong id="r-vat">-</strong></div>
+          <div class="you"><span>Total with VAT</span><strong id="r-total">-</strong></div>
+        </div>
+      </div>
+      <ul class="perks">
+        <li><span>The capacity your plan needs is kept off sale until <span data-plan="lastcall">6</span> hours before each hour, and a locked fleet is never offered to anyone else. Nobody is ever bumped: a reservation, yours or anyone's, is never taken.</span></li>
+        <li><span>We may take each fleet out for maintenance for at most <span data-plan="maintenance">3</span> hours a week, announced 7 days ahead, and any reserved hour it touches is credited back.</span></li>
+        <li><span>Hours exist only once paid. A paid Tranche hour you have reserved but won't use can be released on the <a href="market.html">Hour Market</a> before it starts: when it sells, or the shared pool uses it, you get hour-credits (HC) for what it earned, less a <span data-plan="fee">10%</span> fee, usable for <span data-plan="months">12</span> months.</span></li>
+      </ul>
+    </section>
+
+    <section class="card" id="payment">
+      <p class="label">Payment</p>
+      <p class="prose" id="pay-note"></p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Payment</th><th>Due</th><th>Hours paid by then</th><th>Paid by then, with VAT</th></tr></thead>
+        <tbody id="r-gates"></tbody>
+      </table></div>
+    </section>
+
+    <section class="card" id="tranches">
+      <p class="label">Tranches</p>
+      <p class="prose">Each calendar month of the term is a Tranche: the hours of your windows and days in it. A payment buys hours in the earliest Tranches not yet paid, and you reserve them from the Hour Market calendar.</p>
+      <div class="table-wrap scroll"><table class="short">
+        <thead><tr><th>Tranche</th><th>Period</th><th>Hours</th></tr></thead>
+        <tbody id="r-tranches"></tbody>
+      </table></div>
+    </section>
+  </div>
+
+  <aside class="summary" id="quote" aria-label="Ask for a quote">
+    <p class="label">Ask for a quote</p>
+    <form class="form" id="lead" novalidate>
+      <label>Company<input id="l-company" autocomplete="organization" maxlength="200" required></label>
+      <div class="pair">
+        <label>Your name<input id="l-name" autocomplete="name" maxlength="200"></label>
+        <label>Work email<input id="l-email" type="email" autocomplete="email" maxlength="254" required></label>
+      </div>
+      <div class="pair">
+        <label>Fleets<select id="l-fleets"><option>1</option><option>2</option><option>3</option><option value="4+">4 or more</option></select></label>
+        <label>Start<input id="l-start" type="month"></label>
+      </div>
+      <label>What you will run<textarea id="l-message" maxlength="3600" placeholder="Term, windows, Every day or Weekdays, fleets, fleet lock; the models and context lengths you will run; anything you want to ask."></textarea></label>
+      <p class="hint">Sent with your request: <b id="l-plan">-</b></p>
+      <p class="flash" id="l-msg" hidden></p>
+      <button class="btn solid big" type="submit" id="l-send">Send</button>
+      <p class="hint">We reply by email with a Plan Order to review. Or write to <a href="mailto:hyor@sparkpipe.ai?subject=Reserved%20plan">hyor@sparkpipe.ai</a>. Already have a plan? Pay toward it from <a href="account.html">your account</a>.</p>
+    </form>
+    <p class="hint">Plans and hour-credits are under one contract: read the <a href="agreement.html">SparkPipe Customer Agreement</a> (<a href="agreement-ko.html" hreflang="ko">한국어</a>, which prevails) and the <a href="market-rules.html">Hour Market Rules</a> (<a href="market-rules-ko.html" hreflang="ko">한국어</a>).</p>
+  </aside>
+</div>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Buy HC</a><a href="market.html">Hour Market</a><a href="agreement.html">Customer Agreement</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <span>Stablecoin payments are processed by CoinPayments.</span>
+  </div>
+</footer>
+
+<script src="pricing.js"></script>
+<script src="checkout.js?v=1"></script>
+<script>
+(() => {
+  const P = window.SP_PRICING, SP = window.SP, L = P.plans;
+  const $ = (id) => document.getElementById(id);
+  const DAY = 86400000;
+  const parse = (text) => { const [y, m, d] = text.split('-').map(Number); return Date.UTC(y, m - 1, d); };
+  const ymd = (t) => new Date(t).toISOString().slice(0, 10);
+  const nice = (day) => new Date(day + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+  const today = () => ymd(Date.now() + 9 * 3600000);
+  const minStart = () => (today() > L.earliestStart ? today() : L.earliestStart);
+  const round = (n) => Math.round(n * 100) / 100;
+  const withVat = (net) => round(round(net) + round(net * P.vatRate));
+  const short = (n) => SP.usd(n).replace('.00', '');
+  const clock = (h) => String(h).padStart(2, '0') + ':00';
+  const termName = (months) => (months % 12 ? months + ' months' : months === 12 ? '1 year' : months / 12 + ' years');
+  const termEnd = (start, months) => {
+    const [y, m, d] = start.split('-').map(Number), total = m - 1 + months;
+    const year = y + Math.floor(total / 12), month = total % 12, last = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+    return d <= last ? Date.UTC(year, month, d) - DAY : Date.UTC(year, month, last);
+  };
+  const weekend = (t) => { const day = new Date(t).getUTCDay(); return day === 0 || day === 6; };
+  const plan = (c) => {
+    const term = L.terms.find((t) => t.months === c.months), end = termEnd(c.start, c.months), tranches = [];
+    const daily = (t) => c.windows.reduce((a, w) => a + (c.days === 'weekdays' && weekend(t + w.localDay * DAY) ? 0 : (w.to - w.from) * c.fleets), 0);
+    let cursor = parse(c.start);
+    while (cursor <= end) {
+      const d = new Date(cursor), to = Math.min(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0), end);
+      let hours = 0;
+      for (let t = cursor; t <= to; t += DAY) hours += daily(t);
+      tranches.push({ key: ymd(cursor).slice(0, 7), from: ymd(cursor), to: ymd(to), hours });
+      cursor = to + DAY;
+    }
+    const perDay = c.windows.reduce((a, w) => a + (w.to - w.from) * c.fleets, 0), hours = tranches.reduce((a, t) => a + t.hours, 0);
+    const hourPrice = term.hourPrice + (c.lock ? L.lockPremium : 0);
+    return Object.assign({}, c, { term, end: ymd(end), tranches, hours, perDay, perWeek: perDay * (c.days === 'weekdays' ? 5 : 7), hourPrice, net: round(hours * hourPrice) });
+  };
+  const schedule = (p) => (p.term.payment === 'upfront'
+    ? [{ name: 'Payment, upfront', due: p.start, note: 'the Start Date', hours: p.hours }]
+    : P.gates.map((g) => {
+      const n = g.tranches === null ? p.tranches.length : Math.min(g.tranches, p.tranches.length);
+      return { name: g.name, due: ymd(parse(p.start) + (g.dueDay - 1) * DAY), note: 'day ' + g.dueDay, hours: p.tranches.slice(0, n).reduce((a, t) => a + t.hours, 0) };
+    }));
+  const windowsName = (ws) => (ws.length === P.windows.length ? 'Full day' : ws.map((w) => w.name).join(' + '));
+  const line = (p) => [p.months + ' months', windowsName(p.windows), p.days === 'weekdays' ? 'Weekdays' : 'Every day', p.fleets + (p.fleets === 1 ? ' fleet' : ' fleets')].concat(p.lock ? ['locked'] : []).join(' · ');
+  const cell = (text, cls) => { const td = document.createElement('td'); td.textContent = text; if (cls) td.className = cls; return td; };
+  const row = (cells) => { const tr = document.createElement('tr'); tr.append(...cells); return tr; };
+  const tile = (box, type, name, value, title, note, word) => {
+    const label = document.createElement('label'), input = document.createElement('input'), b = document.createElement('b'), span = document.createElement('span');
+    label.className = word ? 'tile word' : 'tile';
+    input.type = type;
+    input.name = name;
+    input.value = value;
+    b.textContent = title;
+    span.textContent = note;
+    label.append(input, b, span);
+    box.append(label);
+    return input;
+  };
+
+  const terms = L.terms.map((t) => tile($('c-term'), 'radio', 'term', String(t.months), termName(t.months), short(t.hourPrice) + ' an hour · ' + (t.payment === 'upfront' ? 'paid upfront' : 'paid by gates'), true));
+  const windows = P.windows.map((w) => tile($('c-windows'), 'checkbox', 'window', w.id, w.name, clock(w.from) + '–' + clock(w.to) + ' KST', true));
+  const days = [['every', 'Every day', 'Seven days a week'], ['weekdays', 'Weekdays', 'Monday to Friday']].map(([id, title, note]) => tile($('c-days'), 'radio', 'days', id, title, note, true));
+  const fleets = Array.from({ length: L.maxFleets }, (_, i) => tile($('c-fleets'), 'radio', 'fleets', String(i + 1), String(i + 1), i ? 'fleets at once' : 'fleet at once'));
+  const lock = tile($('c-lock'), 'checkbox', 'lock', 'lock', 'Locked', '+' + short(L.lockPremium) + ' an hour · the same fleet, yours alone', true);
+  (terms.find((i) => i.value === '24') || terms[0]).checked = true;
+  (windows.find((i) => i.value === 'asia') || windows[0]).checked = true;
+  days[0].checked = true;
+  fleets[0].checked = true;
+
+  const choice = () => {
+    const typed = $('r-start').value;
+    return {
+      start: /^\d{4}-\d{2}-\d{2}$/.test(typed) && typed >= minStart() ? typed : minStart(),
+      months: +terms.find((i) => i.checked).value,
+      windows: P.windows.filter((w, i) => windows[i].checked),
+      days: days.find((i) => i.checked).value,
+      fleets: +fleets.find((i) => i.checked).value,
+      lock: lock.checked,
+    };
+  };
+  let current = null;
+  const render = () => {
+    const c = choice(), lockable = c.windows.length === P.windows.length && c.days === 'every';
+    lock.disabled = !lockable;
+    if (!lockable) { lock.checked = false; c.lock = false; }
+    $('lock-why').textContent = lockable ? '' : 'Fleet lock comes only with a Full day on Every day: a locked fleet is yours 24 hours a day, 7 days a week.';
+    const p = plan(c), vat = round(p.net * P.vatRate);
+    current = p;
+    $('r-plan').textContent = line(p);
+    $('r-starts').textContent = nice(p.start);
+    $('r-ends').textContent = nice(p.end);
+    $('r-day').textContent = SP.whole(p.perDay) + (p.days === 'weekdays' ? ' on weekdays' : '');
+    $('r-week').textContent = SP.whole(p.perWeek);
+    $('r-hours').textContent = SP.whole(p.hours);
+    $('r-price-label').textContent = p.lock ? 'Hour Price, ' + short(p.term.hourPrice) + ' + ' + short(L.lockPremium) + ' lock' : 'Hour Price';
+    $('r-price').textContent = SP.usd(p.hourPrice);
+    $('r-net').textContent = SP.usd(p.net);
+    $('r-vat').textContent = SP.usd(vat);
+    $('r-total').textContent = SP.usd(p.net + vat);
+    $('pay-note').textContent = p.term.payment === 'upfront'
+      ? 'A ' + p.months + '-month plan is paid in full, upfront, by its Start Date, ' + nice(p.start) + '. Hours exist only once paid.'
+      : 'Phase A is the first ' + P.phaseADays + ' days, to ' + nice(ymd(parse(p.start) + (P.phaseADays - 1) * DAY)) + ': nothing is due, and you withdraw by not paying, with nothing owed. You pay any amounts, at any time, up to the whole term; three gates set how much must be paid by when.';
+    $('r-gates').replaceChildren(...schedule(p).map((s) => row([cell(s.name), cell(nice(s.due) + ', ' + s.note), cell(SP.whole(s.hours), 'figure'), cell(SP.usd(withVat(s.hours * p.hourPrice)), 'figure')])));
+    $('r-tranches').replaceChildren(...p.tranches.map((t, i) => row([cell((i + 1) + ' · ' + t.key), cell(nice(t.from) + ' – ' + nice(t.to)), cell(SP.whole(t.hours), 'figure')])));
+    $('l-fleets').value = String(p.fleets);
+    $('l-start').value = p.start.slice(0, 7);
+    $('l-plan').textContent = line(p) + ', from ' + nice(p.start);
+  };
+
+  const fill = { lastcall: String(P.market.lastCallHours), maintenance: String(L.maintenanceHoursPerWeek), fee: Math.round(P.market.releaseFee * 100) + '%', months: String(P.market.validityMonths) };
+  document.querySelectorAll('[data-plan]').forEach((el) => { el.textContent = fill[el.dataset.plan]; });
+  $('title').textContent = 'Your fleets in your hours, from ' + short(Math.min(...L.terms.map((t) => t.hourPrice))) + ' an hour.';
+  $('r-vat-label').textContent = 'Korean VAT, ' + Math.round(P.vatRate * 100) + '%';
+  $('start-hint').textContent = 'The term starts on that day, ' + nice(L.earliestStart) + ' at the earliest, and ends the day before the same date at the end of the term.';
+  $('r-start').min = minStart();
+  $('r-start').value = minStart();
+  $('plan-form').addEventListener('change', (event) => {
+    if (event.target.name === 'window' && !windows.some((i) => i.checked)) event.target.checked = true;
+    render();
+  });
+  $('r-start').addEventListener('input', render);
+  $('full-day').addEventListener('click', () => { windows.forEach((i) => { i.checked = true; }); render(); });
+  render();
+
+  $('lead').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    $('l-send').disabled = true;
+    SP.say($('l-msg'), '');
+    try {
+      if (!$('l-company').value.trim()) throw new Error('Enter your company.');
+      const typed = $('l-message').value.trim(), planned = 'Plan: ' + line(current) + ', from ' + current.start;
+      await SP.call('/lead', { company: $('l-company').value.trim(), name: $('l-name').value.trim(), email: $('l-email').value.trim(), fleets: $('l-fleets').value, start: $('l-start').value, message: typed ? planned + '\n\n' + typed : planned });
+      $('lead').reset();
+      render();
+      SP.say($('l-msg'), 'Thank you. We will reply by email.', 'ok');
+    } catch (error) { SP.say($('l-msg'), error.message, 'error'); }
+    $('l-send').disabled = false;
+  });
+})();
+</script>
+</body>
+</html>

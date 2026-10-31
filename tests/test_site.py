@@ -86,7 +86,7 @@ def check_languages(pages, failures):
     pairs = twins()
     if "index.html" not in pairs:
         failures.append("sparkpipe-lang.conf: the home page has no Korean redirect")
-    korean = {name for name in pages if name.endswith("-ko.html")}
+    korean = {name for name in pages if name.endswith("-ko.html") and 'http-equiv="refresh"' not in pages[name].source}
     for name in sorted(korean - set(pairs.values())):
         failures.append(f"{name}: Korean page without a redirect in {LANG_CONF.name}")
     for en, ko in pairs.items():
