@@ -6,6 +6,7 @@
 #include <vector>
 #include "runtime/launch.h"
 #include "inference/kernels/attn_shard.cuh"
+#include "inference/kernels/attn_shard_prefill.cuh"
 #include "inference/kernels/kv_shard.cuh"
 #include "modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_kernels.cuh"
 
@@ -145,7 +146,7 @@ static uint32_t Case(uint32_t rows, uint32_t first_position)
 	for ( uint32_t source = 0u; source < DEGREE; ++source )
 	{
 		float *records = sent + (uint64_t)source * DEGREE * stride;
-		REQUIRE((LmLatentShardPartialHeadsLaunch<Kv, LmKvShardView, LATENT, 0u>(views[source], gathered, query_stride, LOCAL, HEADS, zeros_d,
+		REQUIRE((LmLatentShardAttendHeadsLaunch<Kv, LmKvShardView, LATENT, 0u>(views[source], gathered, query_stride, LOCAL, HEADS, zeros_d,
 			length_d, bound_d, selected_d, TOPK, TOPK, scale, records, stride, LOCAL, 1u, rows, 0)) == cudaSuccess);
 		D41WindowFoldKernel<<<dim3(rows, HEADS), D41K_THREADS>>>(records, stride, LOCAL, gathered, query_stride, wave,
 			rings + (uint64_t)source * RING * LATENT, positions_d, zeros_d, ordinal_d, begin_d, indices_d, slot_d, 0u, RING, WINDOW, DEGREE, source,
@@ -172,7 +173,7 @@ static uint32_t Case(uint32_t rows, uint32_t first_position)
 			REQUIRE(shard.rank == source);
 			REQUIRE(LmKvShardGatherViewInitialize<Kv>(&view, views[source].pages, shard, landing + (uint64_t)source * landing_stride, plan_d + 1u,
 				plan_d + 2u) == 0 && LmKvShardGatherViewWindow(&view, 0u, landing_keys) == 0);
-			REQUIRE((LmLatentShardPartialHeadsLaunch<Kv, LmKvShardGatherView, LATENT, 0u>(view, query, (uint64_t)rows * LOCAL * LATENT, LOCAL, LOCAL,
+			REQUIRE((LmLatentShardAttendHeadsLaunch<Kv, LmKvShardGatherView, LATENT, 0u>(view, query, (uint64_t)rows * LOCAL * LATENT, LOCAL, LOCAL,
 				zeros_d, length_d, bound_d, selected_d, TOPK, TOPK, scale, received + (uint64_t)source * stride, stride, LOCAL, 1u, rows, 0)) == cudaSuccess);
 			D41WindowFoldKernel<<<dim3(rows, LOCAL), D41K_THREADS>>>(received + (uint64_t)source * stride, stride, LOCAL, query,
 				(uint64_t)rows * LOCAL * LATENT, wave, ring_landing + (uint64_t)source * RING * LATENT, positions_d, zeros_d, ordinal_d, begin_d, indices_d,
@@ -200,7 +201,7 @@ static uint32_t Case(uint32_t rows, uint32_t first_position)
 				SparkKvShard shard = views[source].shard;
 				REQUIRE(LmKvShardGatherViewInitialize<Kv>(&view, views[source].pages, shard, landing + (uint64_t)source * landing_stride, plan_d + 1u,
 					plan_d + 2u) == 0 && LmKvShardGatherViewWindow(&view, 0u, landing_keys) == 0);
-				REQUIRE((LmLatentShardPartialHeadsLaunch<Kv, LmKvShardGatherView, LATENT, 0u>(view, query, (uint64_t)rows * LOCAL * LATENT, LOCAL, LOCAL,
+				REQUIRE((LmLatentShardAttendHeadsLaunch<Kv, LmKvShardGatherView, LATENT, 0u>(view, query, (uint64_t)rows * LOCAL * LATENT, LOCAL, LOCAL,
 					zeros_d, length_d, bound_d, selected_d, TOPK, TOPK, scale, received + (uint64_t)source * stride, stride, LOCAL, 1u, rows, 0,
 					split_selected, split_offsets, 1u)) == cudaSuccess);
 				D41WindowFoldKernel<<<dim3(rows, LOCAL), D41K_THREADS>>>(received + (uint64_t)source * stride, stride, LOCAL, query,

@@ -407,7 +407,7 @@ struct LingModel
 		if ( (rows >= LM_LATENT_SHARD_PREFILL_MIN_ROWS ?
 				LmLatentShardPrefillLaunch<typename S::Kv,LmKvShardView,G::kLatent,G::kRope>(*view, state->mla_gathered, query_stride, S::kMlaRankHeads,
 					step->sequence_of_row, step->context_length, step->positions, scale, state->attn_send, partial_stride, rows, stream) :
-				LmLatentShardPartialLaunch<typename S::Kv,LmKvShardView,G::kLatent,G::kRope>(*view, state->mla_gathered, query_stride, S::kMlaRankHeads,
+				LmLatentShardAttendLaunch<typename S::Kv,LmKvShardView,G::kLatent,G::kRope>(*view, state->mla_gathered, query_stride, S::kMlaRankHeads,
 					step->sequence_of_row, step->context_length, step->positions, (const uint32_t *)0, 0u, 0u, scale, state->attn_send, partial_stride,
 					rows, stream)) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
