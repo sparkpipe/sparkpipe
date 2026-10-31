@@ -185,7 +185,7 @@ struct QwenDevice
 			{ rows * GatedWidth(state) * 2u, &state->delta.gated },
 			{ rows * SparkDeviceAttentionQueryWidth(attention) * 2u, &state->attention.query },
 			{ rows * SparkDeviceAttentionKvWidth(attention) * 2u, &state->attention.key },
-			{ SparkOpsAttentionScratchBytes(state->stage.max_rows, attention->heads, attention->head_dimension, state->stage.max_positions),
+			{ SparkOpsAttentionScratchBytes(state->stage.max_rows, attention->heads / G::kTpDegree, attention->head_dimension, state->stage.max_positions),
 				&state->attention.records },
 			{ rows * 2u * state->ffn * 2u, &state->ffn_scratch.gate_up },
 			{ rows * state->ffn * 2u, &state->ffn_scratch.act },
