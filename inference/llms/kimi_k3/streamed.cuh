@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sparkpipe/spark_tp_device_collective.h"
+#include "inference/kernels/attention_block.cuh"
 #include "inference/kernels/tp_reduce.cuh"
 #include "inference/llms/kimi_k3/slice.cuh"
 
@@ -649,13 +650,11 @@ template<class Format, class Geometry, uint32_t HEADS>
 static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards, uint32_t shard_count, const K3StreamedMlaExchange *x,
 	uint16_t *partial, const K3StreamedJoin *join, uint32_t boundary, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
 {
-	typedef K3StreamedHeadKv<HEADS,Geometry> Expanded;
 	const uint64_t key_pitch = (uint64_t)HEADS * (K3_MHA_QK + K3_V_HEAD_DIM);
 	const uint64_t value_elements = (uint64_t)HEADS * K3_V_HEAD_DIM;
 	uint16_t *const own_value = b->value_bf16;
 	const uint32_t *const own_row_offset = b->dense_row_offset;
 	uint32_t *const own_tile_prefix = b->dense_tile_prefix;
-	LmKvShardGatherView view;
 	uint64_t stride, key_count, key_first, block, blocks;
 	uint32_t shard, groups;
 	int32_t status;
@@ -708,11 +707,8 @@ static int32_t K3StreamedMlaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 					(const uint16_t *)shards[x->node].mla_kv_b_value_full_weight + value_rows * K3_KV_LORA_RANK,HEADS,x->expanded + (uint64_t)HEADS * K3_MHA_QK * 2u,
 					key_pitch,K3_V_HEAD_DIM,stream) != cudaSuccess )
 				status = LM_LAUNCH_ERR_LAUNCH;
-			else if ( LmKvShardGatherViewInitialize<Expanded>(&view,b->cache_shard.pages,b->kv_shard,x->expanded,x->key_offset,x->key_context) != 0 ||
-				LmKvShardGatherViewWindow(&view,(uint32_t)key_first,(uint32_t)key_first + keys) != 0 )
-				status = LM_LAUNCH_ERR_SHAPE;
-			else if ( LmGqaShardPartialLaunch<Expanded,LmKvShardGatherView,HEADS,K3_MHA_QK,K3_V_HEAD_DIM>(view,x->query,HEADS,x->pass_sequence_of_row,
-					x->key_context,x->pass_positions,K3_MLA_QK_SCALE,x->partials,stride,x->pass_rows,stream) != cudaSuccess )
+			else if ( LmAttentionBlockPartialLaunch<K3_MHA_QK,K3_V_HEAD_DIM>(x->query,HEADS,x->pass_positions,x->pass_rows,(const uint16_t *)x->expanded,key_pitch,
+					(uint32_t)key_first,keys,K3_MLA_QK_SCALE,x->partials,stride,stream) != cudaSuccess )
 				status = LM_LAUNCH_ERR_LAUNCH;
 			else if ( blocks > 1u )
 				LM_LAUNCH((K3StreamedFoldRecordsKernel<K3_V_HEAD_DIM>), x->pass_rows, 256u, 0, stream, x->running,x->partials,HEADS,x->pass_rows,key_first == 0u ? 1u : 0u);
