@@ -1074,6 +1074,53 @@ static void TestScenarioSingleTokenEosPublishesTail(const SparkModelResidentDepl
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static SparkStatus TestSubmitStops(SparkModelBatchEngine *engine,uint64_t request_id,uint64_t sequence_id,uint32_t budget,const uint32_t *stops,uint32_t stop_count)
+{
+	static const uint32_t prompt[4] = {11u,12u,13u,14u};
+	SparkModelBatchSubmitRequest request;
+	SparkModelBatchRequestHandle handle = 0;
+	memset(&request,0,sizeof(request));
+	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+	request.descriptor_bytes = sizeof(request);
+	request.top_p = 1.0f;
+	request.request_id = request_id;
+	request.sequence_id = sequence_id;
+	request.prompt_token_ids = prompt;
+	request.prompt_token_count = 4u;
+	request.output_token_budget = budget;
+	request.drafts_disabled = TestDraftsDisabled;
+	request.stop_token_count = stop_count;
+	request.stop_token_ids = stops;
+	return(SparkModelBatchEngineSubmit(engine,&request,&handle));
+}
+
+static void TestScenarioRequestStopPublishesTail(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t stops[SPARK_MODEL_BATCH_ENGINE_MAX_REQUEST_STOP_TOKEN_COUNT + 1u] = {2000u};
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t frames;
+	MockResidentClientReset();
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	CHECK(TestSubmitStops(engine,9u,639u,8u,stops,SPARK_MODEL_BATCH_ENGINE_MAX_REQUEST_STOP_TOKEN_COUNT + 1u) == SPARK_STATUS_INVALID_ARGUMENT &&
+		TestSubmitStops(engine,9u,639u,8u,0,1u) == SPARK_STATUS_INVALID_ARGUMENT,"request stop: a stop list longer than the engine holds, or a count without ids, is refused");
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetTokenStart(1000u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	CHECK(TestSubmitStops(engine,1u,631u,8u,stops,1u) == SPARK_STATUS_OK,"request stop: submit with one stop token");
+	CHECK(TestWaitLane(engine,1u,4u,&lane) != 0u,"request stop: a decode frame follows prefill");
+	frames = TestCoordinatorFrames();
+	MockResidentClientSetTokenStart(2000u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	TestDrive(engine,8u);
+	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && state.token_events[1] == 2u && TestCoordinatorFrames() == frames + 2u,
+		"request stop: a reply that stops on one of its request's stop tokens completes like EOS and publishes its partial block before the release");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioChainEosCheckpoint(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	TestBatchState state = {0};
@@ -3484,6 +3531,7 @@ int main(void)
 	TestScenarioChainPublishesFinalCheckpoint(&deployment,runtime_root);
 	TestScenarioChainPublishesAtBlockBoundary(&deployment,runtime_root);
 	TestScenarioSingleTokenEosPublishesTail(&deployment,runtime_root);
+	TestScenarioRequestStopPublishesTail(&deployment,runtime_root);
 	TestScenarioChainEosCheckpoint(&deployment,runtime_root);
 	TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,1u);
 	TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,3u);
