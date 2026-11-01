@@ -19,6 +19,7 @@ LONGEST = timedelta(days=3653)
 STAMP = "%Y-%m-%dT%H:%M:%SZ"
 SLOT = "%Y-%m-%dT%H:00Z"
 EMPTY = Decimal("0.0001")
+Commitment = collections.namedtuple("Commitment", "account begins ends hours fleets lock allowance plan")
 KINDS = ("hc_lot", "hc_debit", "hc_hold", "hc_unhold", "hc_spend_hold", "reserve", "ask", "ask_cancel", "bid", "bid_cancel", "bid_close", "bid_roll", "pool_join", "pool_settle", "pool_charge", "api_key", "api_key_revoke", "tranche_grant", "clock", "maintenance", "reservation_credit", "accelerator_charge")
 
 
@@ -124,6 +125,10 @@ def rank(offer):
 
 def published_terms(market):
     return {"advanceMultiplier": format(Decimal(str(market["advanceMultiplier"])), "f"), "releaseFee": format(Decimal(str(market["releaseFee"])), "f")}
+
+
+def hour_key(moment):
+    return int(moment.timestamp()) // 3600
 
 
 def window_of(moment, windows):
@@ -403,9 +408,8 @@ class Cover:
         self.lowest = None
 
     def active(self, moment):
-        local = moment.astimezone(KST)
-        slot = local.weekday() * 24 + local.hour
-        return [(account, pattern[slot], lock) for account, begins, ends, pattern, lock, allowance, plan in self.commitments if begins <= moment < ends and pattern[slot]]
+        key = hour_key(moment)
+        return [(c.account, c.fleets, c.lock) for c in self.commitments if c.begins <= moment < c.ends and key in c.hours]
 
     def locked(self, moment, holder=None):
         return {fleet for account, need, lock in self.active(moment) if lock and (holder is None or account != holder) for fleet in lock}
@@ -932,7 +936,7 @@ class Market:
                 raise Refusal(f"{fleet['name']} is not serving.")
             earliest = max(begin, floor_hour(now + WEEK) + (HOUR if now + WEEK > floor_hour(now + WEEK) else timedelta(0)))
             commitments = self.app.commitments(now)
-            allowance = min([int(pricing["plans"]["maintenanceHoursPerWeek"])] + [found[5] for found in commitments if found[1] < end and found[2] > begin])
+            allowance = min([int(pricing["plans"]["maintenanceHoursPerWeek"])] + [c.allowance for c in commitments if c.begins < end and c.ends > begin])
             hours = allowance if hours is None else hours
             done = sum(m["hours"] for m in self.st.maintained if m["fleet"] == fleet["id"] and begin <= slot_time(m["start"]) < end)
             if hours < 1 or done + hours > allowance:
@@ -969,19 +973,18 @@ class Market:
             cover = self.cover(now, pricing)
             for slot in run:
                 moment_slot = slot_time(slot)
-                local_slot = moment_slot.astimezone(KST)
-                index = local_slot.weekday() * 24 + local_slot.hour
-                live = [found for found in commitments if found[1] <= moment_slot < found[2] and found[3][index]]
-                hit = [found for found in live if fleet["id"] in found[4]]
+                key = hour_key(moment_slot)
+                live = [c for c in commitments if c.begins <= moment_slot < c.ends and key in c.hours]
+                hit = [c for c in live if fleet["id"] in c.lock]
                 short = max(0, cover.aside(moment_slot) - len(cover.free(moment_slot)))
-                hit += sorted((found for found in live if not found[4]), key=lambda found: found[1], reverse=True)[:short]
+                hit += sorted((c for c in live if not c.lock), key=lambda c: c.begins, reverse=True)[:short]
                 for found in hit:
-                    if any(res["account"] == found[0] and res["start"] == slot for res in touched):
+                    if any(res["account"] == found.account and res["start"] == slot for res in touched):
                         continue
-                    self.book.append("tranche_grant", {"account": found[0], "month": month_of(slot), "hours": 1, "credit": "maintenance", "plan": found[6], "ref": ident})
-                    credits.append(found[6])
-                    if found[0]:
-                        notices[found[0]].append(f"{kst_text(moment_slot)}: one plan hour of {found[6]} is credited")
+                    self.book.append("tranche_grant", {"account": found.account, "month": month_of(slot), "hours": 1, "credit": "maintenance", "plan": found.plan, "ref": ident})
+                    credits.append(found.plan)
+                    if found.account:
+                        notices[found.account].append(f"{kst_text(moment_slot)}: one plan hour of {found.plan} is credited")
             for account, lines in notices.items():
                 if account in self.app.book.accounts:
                     self.app.mail(self.app.book.accounts[account]["email"], f"SparkPipe maintenance on {fleet['name']}, {kst_text(start)}",
@@ -1348,7 +1351,7 @@ class Market:
             found = self.app.commitments(now) if commitments is None else commitments
             cover, life, pending = self.cover(now, pricing, found), year_later(now), self.pending()
             clashes, moment = [], cover.first
-            while moment < max([cover.first] + [found_plan[2] for found_plan in found]):
+            while moment < max([cover.first] + [c.ends for c in found]):
                 if cover.clash(moment):
                     clashes.append(moment)
                 moment += HOUR

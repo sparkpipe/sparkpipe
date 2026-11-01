@@ -104,7 +104,7 @@
   const line = (label, value) => { const p = document.createElement('p'); const b = document.createElement('b'); b.textContent = label + ' '; p.append(b, document.createTextNode(value)); return p; };
   const show = (plan) => {
     $('title').textContent = 'Plan Order ' + plan.plan + '.';
-    $('lead').textContent = plan.company + ' · ' + plan.line + ', ' + nice(plan.start) + ' to ' + nice(plan.end) + '.';
+    $('lead').textContent = plan.company + ' · ' + plan.line + ', ' + (plan.end ? nice(plan.start) + ' to ' + nice(plan.end) : 'from ' + nice(plan.start)) + '.';
     $('body').hidden = false;
     $('actions').hidden = false;
     $('rows-ko').replaceChildren(...plan.rows.ko.map(([item, entry]) => row([cell('th', item), cell('td', entry)])));

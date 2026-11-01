@@ -9,9 +9,9 @@ window.SP_PRICING = {
   ],
   "accelerators": [],
   "windows": [
-    { "id": "americas", "name": "Americas", "from": 0, "to": 8, "localDay": -1 },
-    { "id": "asia", "name": "Asia", "from": 8, "to": 16, "localDay": 0 },
-    { "id": "europe", "name": "Europe", "from": 16, "to": 24, "localDay": 0 }
+    { "id": "w00", "from": 0, "to": 8 },
+    { "id": "w08", "from": 8, "to": 16 },
+    { "id": "w16", "from": 16, "to": 24 }
   ],
   "models": [
     { "id": "kimi-k3", "name": "Kimi K3" },
@@ -37,11 +37,13 @@ window.SP_PRICING = {
     "earliestStart": "2026-12-01",
     "startWithinDays": 60,
     "terms": [
-      { "months": 3, "hourPrice": 17.5, "hourPriceKRW": 23000, "payment": "upfront" },
-      { "months": 12, "hourPrice": 16.5, "hourPriceKRW": 22000, "payment": "gates" },
-      { "months": 24, "hourPrice": 15, "hourPriceKRW": 20000, "payment": "gates" },
-      { "months": 36, "hourPrice": 14, "hourPriceKRW": 18500, "payment": "gates" }
+      { "id": "monthly", "months": null, "hourPrice": 17.5, "hourPriceKRW": 23000, "payment": "monthly" },
+      { "id": "1y", "months": 12, "hourPrice": 16.5, "hourPriceKRW": 22000, "payment": "gates" },
+      { "id": "2y", "months": 24, "hourPrice": 15, "hourPriceKRW": 20000, "payment": "gates" },
+      { "id": "3y", "months": 36, "hourPrice": 14, "hourPriceKRW": 18500, "payment": "gates" }
     ],
+    "office": { "zone": "Asia/Seoul", "from": 9, "to": 18, "days": "weekdays", "minHours": 8 },
+    "zones": ["Asia/Seoul", "Asia/Tokyo", "Asia/Singapore", "Asia/Kolkata", "Europe/London", "Europe/Berlin", "America/New_York", "America/Chicago", "America/Los_Angeles", "UTC"],
     "lockPremium": 1,
     "lockPremiumKRW": 1300,
     "maxFleets": 3,

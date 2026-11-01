@@ -19,7 +19,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 - **Hour-credit** (**HC**) means the prepaid unit in which Customer pays for hours and for the shared pool under Part 2, and for accelerators under clause 4.10.
 - **Plan** means the reserved plan that a Plan Order creates under Part 3, and **Plan hours** means the hours it holds (clause 17.3).
 - **Hour Market Rules** means our SparkPipe Hour Market Rules, published at sparkpipe.ai/market-rules.html.
-- **KST** means Korea Standard Time (UTC+9). All times and days in this Agreement and in each Order are in KST.
+- **KST** means Korea Standard Time (UTC+9). All times and days in this Agreement and in each Order are in KST, except the office hours that a Plan Order names in its time zone and the days on which they start (clause 17).
 
 1.2. **Orders.** Customer buys under this Agreement by Orders. An **Order** is either (a) a purchase of HC made through our website under Part 2, or (b) a **Plan Order**: a one-page order form in the form set out at the end of this Agreement, stating the fields listed in clause 16.1, signed by both parties or accepted by both in the Account (clause 12.4).
 
@@ -191,41 +191,43 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 ## 16. Plan Orders and the Term
 
-16.1. **Fields.** A Plan Order states: its order number; Customer's legal details; the version of this Agreement under which it is made; the **Start Date**; the **Term**, in whole months; the **Windows** and the **Days** (clause 17); the number of **Fleets** (clause 18); whether the Plan has a **Fleet lock**, and which Fleets it locks (clause 19); the **Hour Price**; the **Payment schedule**, Upfront or Gated (clause 20); the Chosen Models (clause 7.2); the Performance Threshold (clause 23.2); the Account email; each party's notice address and email; Customer's VAT status; the payment currency and account; and the published settings that apply to it (clause 9.3). It also states the **Hours in the Term** and the **Price of the Term**, worked out from those fields under clauses 17.3 and 16.4. The fields are fixed for the Term.
+16.1. **Fields.** A Plan Order states: its order number; Customer's legal details; the version of this Agreement under which it is made; the **Start Date**; the **Term**, Monthly or in whole months (clause 16.3); the **time zone**, the **office hours** and the **Days** (clause 17); the number of **Fleets** (clause 18); whether the Plan has a **Fleet lock**, and which Fleets it locks (clause 19); the **Hour Price**; the **Payment schedule**, Monthly, Upfront or Gated (clause 20); the Chosen Models (clause 7.2); the Performance Threshold (clause 23.2); the Account email; each party's notice address and email; Customer's VAT status; the payment currency and account; and the published settings that apply to it (clause 9.3). A Plan Order with a Term in months also states the **Hours in the Term** and the **Price of the Term**, and a Monthly Plan Order the Plan hours and price of Tranche 1, worked out from those fields under clauses 17.3 and 16.4. The fields are fixed for the Term.
 
-16.2. **Making a Plan Order.** We make a Plan Order only where we can keep the capacity it needs under clauses 18 and 19 alongside every Plan Order made before it. A Plan Order is made on the date of the last signature or acceptance under clause 12.4, and its Start Date is on or after that date.
+16.2. **Making a Plan Order.** We make a Plan Order only where we can keep the capacity it needs under clauses 18 and 19 alongside every Plan Order made before it, counting each Monthly Plan that has not ended as continuing in every later month. A Plan Order is made on the date of the last signature or acceptance under clause 12.4, and its Start Date is on or after that date.
 
-16.3. **Term.** The Term starts at 00:00:00 on the Start Date and ends at 23:59:59 on the day before the same date in the month that falls the Term's number of months after the Start Date; where that month has no such date, the Term ends at 23:59:59 on the last day of that month. **Day N** means the Nth calendar day counting the Start Date as Day 1.
+16.3. **Term.** A Term in months starts at 00:00:00 on the Start Date and ends at 23:59:59 on the day before the same date in the month that falls the Term's number of months after the Start Date; where that month has no such date, the Term ends at 23:59:59 on the last day of that month. A **Monthly** Term starts at 00:00:00 on the Start Date and has no fixed end: it runs until the Plan ends under clause 10.2, 20.11 or 20.12. **Day N** means the Nth calendar day counting the Start Date as Day 1.
 
-16.4. **Price.** Each Plan hour is priced at the Hour Price, fixed for the Term; under a Fleet lock, the Hour Price includes the lock. The Hour Price is a single all-in price: it covers the Fleets and the interconnect that joins the machines of each Fleet, the models in clause 7, and operation and support, and no other fee, surcharge or charge applies during the Term, apart from the release fee that the Hour Market Rules deduct from what a released hour earns and the price of prefill accelerator time that Customer asks for under clause 4.9. The Price of the Term is the Hour Price multiplied by the Hours in the Term. All balances, refunds and claims under a Plan Order are counted in Plan hours, valued at the Hour Price. A Plan Order sets no price for any other capacity Customer buys.
+16.4. **Price.** Each Plan hour is priced at the Hour Price, fixed for the Term; under a Fleet lock, the Hour Price includes the lock. The Hour Price is a single all-in price: it covers the Fleets and the interconnect that joins the machines of each Fleet, the models in clause 7, and operation and support, and no other fee, surcharge or charge applies during the Term, apart from the release fee that the Hour Market Rules deduct from what a released hour earns and the price of prefill accelerator time that Customer asks for under clause 4.9. The Price of the Term is the Hour Price multiplied by the Hours in the Term. A Monthly Plan has no Price of the Term: the price of each of its Tranches is the Hour Price multiplied by the Plan hours of that Tranche. All balances, refunds and claims under a Plan Order are counted in Plan hours, valued at the Hour Price. A Plan Order sets no price for any other capacity Customer buys.
 
 16.5. The Rate of each Fleet on the Fleet List when a Plan Order is made is fixed for its Term.
 
-## 17. Windows, Days and Plan hours
+16.6. **Monthly Plan.** A Monthly Plan continues from month to month for as long as Customer pays each Tranche under clause 20.10. While it runs, its Hour Price and its other fields do not change, and we end it only under clause 10.2.
 
-17.1. **Windows.** Each day has three **windows**, whose times we publish. They are today the **Americas Window**, 00:00–08:00 KST, which falls on the previous calendar day in the Americas; the **Asia Window**, 08:00–16:00 KST; and the **Europe Window**, 16:00–24:00 KST. The windows are periods of the day, not separate pools of capacity or separate machines. A Plan Order elects one or more windows; all three together are a **Full day**.
+## 17. Office hours, Days and Plan hours
 
-17.2. **Days.** A Plan Order elects **Every day** or **Weekdays**. Under Every day, each elected window counts on every day of the Term. Under Weekdays, it counts only on Monday to Friday in its own region: the Americas Window on each day from Tuesday to Saturday, and the Asia and Europe Windows on each day from Monday to Friday.
+17.1. **Time zone and office hours.** A Plan Order names a **time zone** of the IANA time zone database, such as Asia/Seoul, Europe/Berlin or America/New_York, and **office hours**: a start and an end on whole hours of that zone's local clock, at least 8 hours apart. Office hours whose end is at or before their start end on the next day, and office hours of 24 hours are a **Full day**. Office hours follow the zone's local clock, including its daylight-saving changes, so the KST hours they cover move when that clock changes; on a day the clock changes, the office hours are the hours that actually elapse between their local start and end. Where the local clock shows a start or an end twice, it is the first time it shows it; where the clock skips it, it is the moment the clock skips. A Plan Order names one time zone and one set of office hours; Customer may make another Plan Order for another office. For clause 4.6, the windows are the parts of the KST day that we publish as the window times, today 00:00–08:00, 08:00–16:00 and 16:00–24:00 KST.
 
-17.3. **Plan hours and Tranches.** For every day of the Term, each elected window that counts on that day holds the window's hours times the Fleets; these are the **Plan hours**. Each calendar month within the Term is one **Tranche**, holding the Plan hours of its days within the Term. Tranche 1 runs from the Start Date to the end of that month, and the final Tranche from the first day of its month to the end of the Term; there are as many Tranches as the Term has months where the Start Date is the first day of a month, and one more otherwise. The Hours in the Term are the Plan hours of all Tranches.
+17.2. **Days.** A Plan Order elects **Every day** or **Weekdays**. Under Every day, the office hours count on every day. Under Weekdays, they count only where they start on a Monday to Friday, public holidays included, by the date in the Plan Order's time zone, and then until they end, even after midnight.
+
+17.3. **Plan hours and Tranches.** The **Plan hours** are the Fleets times each hour of the Term, starting on the hour, that starts within office hours that count under clause 17.2. Where the time zone's offset from KST is not a whole number of hours, the Plan hours therefore start and end that part of an hour after the office hours. Each calendar month within the Term is one **Tranche**, holding the Plan hours that start in it. Tranche 1 runs from the Start Date to the end of that month. Under a Term in months, the final Tranche runs from the first day of its month to the end of the Term, there are as many Tranches as the Term has months where the Start Date is the first day of a month, and one more otherwise, and the Hours in the Term are the Plan hours of all Tranches. A Monthly Plan has one Tranche for each calendar month in which it runs.
 
 17.4. A Plan hour expires at 23:59:59 on the last day of its Tranche unless consumed. Expired hours do not carry forward, convert, accumulate or have any cash value.
 
-17.5. Example: a Plan Order with a Start Date of 15 December 2026, a Term of 24 months, the Asia Window, Every day, 1 Fleet, no Fleet lock and the Gated schedule:
+17.5. Example: a Plan Order with a Start Date of 15 December 2026, a Term of 24 months, the time zone Asia/Seoul, office hours 09:00–18:00, Every day, 1 Fleet, no Fleet lock and the Gated schedule:
 
 | Tranche | Period | Plan hours |
 | --- | --- | --: |
-| 1 | 15–31 Dec 2026 | 136 |
-| 2 | Jan 2027 | 248 |
-| 15 | Feb 2028 (leap) | 232 |
-| 25 | 1–14 Dec 2028 | 112 |
-| **All** | **15 Dec 2026 – 14 Dec 2028** | **5,848** |
+| 1 | 15–31 Dec 2026 | 153 |
+| 2 | Jan 2027 | 279 |
+| 15 | Feb 2028 (leap) | 261 |
+| 25 | 1–14 Dec 2028 | 126 |
+| **All** | **15 Dec 2026 – 14 Dec 2028** | **6,579** |
 
-The same Plan Order on Weekdays holds 4,184 Plan hours.
+The same Plan Order on Weekdays holds 4,707 Plan hours. With the time zone Europe/Berlin and the same office hours, its Plan hours are 17:00–02:00 KST while Berlin keeps standard time (UTC+1) and 16:00–01:00 KST while it keeps summer time (UTC+2). With the time zone America/New_York, office hours 09:00–17:00 and Weekdays, they start at 23:00 KST on each Monday to Friday (22:00 KST in New York's summer time) and end eight hours later.
 
 ## 18. Guaranteed Limit and set-aside
 
-18.1. A Plan's **Guaranteed Limit** is its Fleets at once, in every hour of its elected windows that counts under clause 17.2.
+18.1. A Plan's **Guaranteed Limit** is its Fleets at once, in every hour that holds Plan hours (clause 17.3).
 
 18.2. **Set-aside.** We keep the capacity of the Guaranteed Limit, on Fleets that serve the Chosen Models, off sale to anyone else until 6 hours before each hour starts. From then on, capacity Customer has not reserved may be reserved by others. Except under a Fleet lock, the guarantee is for capacity, not for a particular Fleet: where one Fleet is fully reserved, Customer reserves on another. Customer may make Reservations within its Guaranteed Limit for any time in the Term, subject to clauses 20 and 22.1. With Plan hours, Customer may reserve more Fleets at once, or other hours, only as Extra Hours after Full Prepayment (clause 21.2).
 
@@ -235,9 +237,11 @@ The same Plan Order on Weekdays holds 4,184 Plan hours.
 
 18.5. **Priority over hourly use.** Customer's priority over hourly use comes from the capacity kept for it under this clause and clause 19, which nobody else can reserve until 6 hours before each hour starts or, on a locked Fleet, at all. Customer never takes, and never needs to take, an hour that anyone else holds, and no confirmed Reservation is ever displaced to make room for another (clause 4.4).
 
+18.6. **Monthly Plans.** For a Monthly Plan, clause 18.2 keeps the capacity of the current Tranche and of the next calendar month while the Plan runs, and of each later month once it becomes the next one. When the Plan ends, or Customer stops it under clause 20.12, the capacity of every month after its last Tranche paid in full is freed.
+
 ## 19. Fleet lock
 
-19.1. A Plan whose Windows are a Full day and whose Days are Every day may have a **Fleet lock**. Its Plan Order then names as many Fleets as its Fleets (the **locked Fleets**).
+19.1. A Plan whose office hours are a Full day and whose Days are Every day may have a **Fleet lock**. Its Plan Order then names as many Fleets as its Fleets (the **locked Fleets**).
 
 19.2. Each locked Fleet is held for Customer in every hour of the Term and is Customer's alone: it is never offered to anyone else, not even 6 hours before an hour starts, is not counted in the free hours under clause 13.4, and does not serve the shared pool. Reservations within the Guaranteed Limit are made and delivered on the locked Fleets. Another customer uses a locked Fleet only in an hour that Customer itself has released in the Hour Market and that is sold or joins the shared pool.
 
@@ -247,7 +251,7 @@ The same Plan Order on Weekdays holds 4,184 Plan hours.
 
 ## 20. Payment schedule
 
-20.1. No Plan hour is issued or served until it is paid for. Each payment that counts under clause 3.5 issues Plan hours equal to the amount paid, net of VAT, divided by the Hour Price and rounded down to four decimal places, to the earliest Tranches not yet fully paid. Plan hours that occur before they are paid for are counted as consumed: the Price of the Term does not change.
+20.1. No Plan hour is issued or served until it is paid for. Each payment that counts under clause 3.5 issues Plan hours equal to the amount paid, net of VAT, divided by the Hour Price and rounded down to four decimal places, to the earliest Tranches not yet fully paid. Plan hours that occur before they are paid for are counted as consumed: the Price of the Term, and the price of a Tranche, does not change.
 
 20.2. **Upfront.** Under the Upfront schedule, Customer pays the Price of the Term before the Start Date, and reaches Full Prepayment when it is paid. If the Price of the Term is not paid in full by the end of the Start Date, the Plan ends then, with nothing further owed by either party, except that we refund any amount paid under it as clause 24.3(b) and (c) provide.
 
@@ -277,10 +281,18 @@ The same Plan Order on Weekdays holds 4,184 Plan hours.
 
 | Gate | Deadline | Hours paid in total | Hours due at the gate |
 | --- | --- | --: | --: |
-| 1 | 13 Jan 2027 | 1,344 | 1,344 |
-| 2 | 12 Feb 2027 | 2,808 | 1,464 |
-| 3 | 14 Mar 2027 | 5,848 | 3,040 |
-| **Total** |  |  | **5,848** |
+| 1 | 13 Jan 2027 | 1,512 | 1,512 |
+| 2 | 12 Feb 2027 | 3,159 | 1,647 |
+| 3 | 14 Mar 2027 | 6,579 | 3,420 |
+| **Total** |  |  | **6,579** |
+
+20.10. **Monthly.** Under the Monthly schedule, Customer pays each Tranche in full before it starts, and Tranche 1 before the Start Date. Customer may pay a Tranche at any time once every earlier Tranche is paid. The Plan hours of a Tranche are issued when it is paid in full, instead of as clause 20.1 provides. An unpaid Tranche is never overdue: there is no interest, acceleration, suspension or default for it.
+
+20.11. **Ending by not paying.** If a Tranche is not paid in full by the end of its first day, the Plan ends as of the end of the last Tranche paid in full, or of the Start Date where none is, with nothing further owed by either party, except that we refund any amount paid toward a Tranche that was not paid in full by then, as clause 24.3(b) and (c) provide.
+
+20.12. **Stopping.** Customer may also end a Monthly Plan at any time, by stopping it in its Account or by notice. The Plan then ends at the end of the last Tranche paid in full, or at once where none is; we accept no further payment under it, and clause 18.6 frees the capacity after that Tranche at once.
+
+20.13. Example: a Monthly Plan Order with a Start Date of 15 December 2026, the time zone Asia/Seoul, office hours 09:00–18:00, Weekdays and 1 Fleet. Tranche 1, from 15 to 31 December 2026, holds 117 Plan hours and is paid before 15 December 2026; Tranche 2, January 2027, holds 189 Plan hours and is paid before 1 January 2027; and so on for each month, each priced at the Hour Price times its Plan hours. If January 2027 is not paid in full by the end of 1 January 2027, the Plan ends as of the end of 31 December 2026, with nothing owed.
 
 ## 21. Full Prepayment
 
@@ -288,8 +300,10 @@ The same Plan Order on Weekdays holds 4,184 Plan hours.
 
 21.2. From Full Prepayment, for all Plan hours remaining in the Term:
 
-- **Extra Hours.** Customer may reserve Plan hours beyond its Guaranteed Limit: on more Fleets at the same time than its Fleets, or outside its elected windows or the days on which they count (the **Extra Hours**). Extra Hours are subject to availability, may be reserved at most 30 days before they start, and never take an hour that anyone holds or capacity kept for another Plan (clause 18.5).
+- **Extra Hours.** Customer may reserve Plan hours beyond its Guaranteed Limit: on more Fleets at the same time than its Fleets, or outside its office hours or the days on which they count (the **Extra Hours**). Extra Hours are subject to availability, may be reserved at most 30 days before they start, and never take an hour that anyone holds or capacity kept for another Plan (clause 18.5).
 - **Spending ahead.** Customer may reserve more Plan hours in a period than its current Tranche holds. As each reserved hour occurs it is drawn from the unexpired Tranche nearest to expiry, so the excess comes from future Tranches. Plan hours of a future Tranche consumed early do not reappear in their own month.
+
+21.3. A Monthly Plan has no Price of the Term. Each of its Tranches reaches Full Prepayment when it is paid in full, and clause 21.2 then applies to that Tranche's Plan hours, except spending ahead.
 
 ## 22. Using Plan hours
 
@@ -311,9 +325,9 @@ The same Plan Order on Weekdays holds 4,184 Plan hours.
 
 ## 24. Renewal and ending of a Plan
 
-24.1. **Renewal.** A Plan ends at the end of its Term and does not renew automatically. Customer may continue by a new Plan Order, which may start on the day after the Term ends and may state different fields.
+24.1. **Renewal.** A Plan with a Term in months ends at the end of its Term and does not renew automatically. Customer may continue by a new Plan Order, which may start on the day after the Term ends and may state different fields. A Monthly Plan continues as clause 16.6 provides.
 
-24.2. Customer has no right to end a Plan Order, for convenience or for any other reason, except the withdrawal right in clause 20.4. If a court or tribunal holds that Customer has a termination right that cannot lawfully be excluded, Customer may exercise it only if we fail to deliver reserved hours under the Plan for 60 consecutive days after Customer's written notice identifying the failure, and Customer's only financial remedy is the refund in clause 24.3.
+24.2. Customer has no right to end a Plan Order, for convenience or for any other reason, except the withdrawal right in clause 20.4 and, for a Monthly Plan, clauses 20.11 and 20.12. If a court or tribunal holds that Customer has a termination right that cannot lawfully be excluded, Customer may exercise it only if we fail to deliver reserved hours under the Plan for 60 consecutive days after Customer's written notice identifying the failure, and Customer's only financial remedy is the refund in clause 24.3.
 
 24.3. Where a Plan ends under clause 10.2 or 24.2:
 
@@ -331,15 +345,17 @@ The same Plan Order on Weekdays holds 4,184 Plan hours.
 | Customer | \[legal name\], a company organised under the laws of \[jurisdiction\], registration number \[ \], registered address \[ \] / \[full name\], an individual, of \[address\] |
 | Customer Agreement (clause 9.1) | Version of \[date\]; SHA-256 of the Korean text \[ \] and of the English text \[ \]; Hour Market Rules, SHA-256 of the Korean text \[ \] and of the English text \[ \] |
 | Start Date (clause 16.3) | \[ \] |
-| Term (clause 16.3) | \[ \] months, ending on \[ \] |
-| Windows (clause 17.1) | \[Americas Window (00:00–08:00 KST) / Asia Window (08:00–16:00 KST) / Europe Window (16:00–24:00 KST) / Full day\] |
+| Term (clause 16.3) | \[\[ \] months, ending on \[ \] / Monthly, with no fixed end\] |
+| Time zone (clause 17.1) | \[an IANA time zone, such as Asia/Seoul\] |
+| Office hours (clause 17.1) | \[\[ \]:00 to \[ \]:00, local time in the time zone, at least 8 hours / Full day\] |
 | Days (clause 17.2) | \[Every day / Weekdays\] |
 | Fleets (clause 18.1) | \[1\] |
-| Fleet lock (clause 19) | \[None / Fleets \[ \], one for each of the Fleets; only with Windows of a Full day and Days of Every day\] |
+| Fleet lock (clause 19) | \[None / Fleets \[ \], one for each of the Fleets; only with office hours of a Full day and Days of Every day\] |
 | Hour Price (clause 16.4) | KRW \[ \] or USD \[ \] per fleet-hour, in the payment currency below, exclusive of VAT, including any Fleet lock, fixed for the Term |
-| Hours in the Term (clause 17.3) | \[ \] |
-| Price of the Term (clause 16.4) | KRW \[ \] or USD \[ \], exclusive of VAT |
-| Payment schedule (clause 20) | \[Upfront: the Price of the Term before the Start Date / Gated: Gate 1 by \[date\], Gate 2 by \[date\], Gate 3 by \[date\]\] |
+| Hours in the Term (clause 17.3) | \[ \], for a Term in months |
+| Price of the Term (clause 16.4) | KRW \[ \] or USD \[ \], exclusive of VAT, for a Term in months |
+| Tranche 1 (clause 17.3) | \[dates\]: \[ \] Plan hours, KRW \[ \] or USD \[ \], exclusive of VAT, for a Monthly Term |
+| Payment schedule (clause 20) | \[Monthly: each Tranche before it starts, Tranche 1 before the Start Date / Upfront: the Price of the Term before the Start Date / Gated: Gate 1 by \[date\], Gate 2 by \[date\], Gate 3 by \[date\]\] |
 | Chosen Models (clause 7.2) | \[models from the Fleet List\] |
 | Performance Threshold (clause 23.2) | \[80\]% of the Baseline |
 | Account email (clause 2.2) | \[ \] |
@@ -347,7 +363,7 @@ The same Plan Order on Weekdays holds 4,184 Plan hours.
 | Customer notice address and email (clause 11.7) | \[ \] |
 | Customer VAT status (clause 3.2) | \[No place of business in the Republic of Korea / Korean business registration number \[ \]\] |
 | Payment currency and account (clause 3.3) | \[KRW, clause 3.3(a) / USD, clause 3.3(b): \[bank, account holder, account number, SWIFT\] / US dollar stablecoin, clause 3.3(c)\] |
-| Published settings (clause 9.3) | As published when this Plan Order is made: release fee \[10\]%; maintenance allowance \[3\] hours a week per Fleet; window times as stated under Windows |
+| Published settings (clause 9.3) | As published when this Plan Order is made: release fee \[10\]%; maintenance allowance \[3\] hours a week per Fleet; maintenance windows (clause 4.6) \[00:00–08:00, 08:00–16:00 and 16:00–24:00\] KST |
 | Fleet Rates (clause 16.5) | As published on the Fleet List when this Plan Order is made: \[Fleet 1: 1.00; Fleet 2: 1.00; Fleet 3: 1.00\] |
 
 ## Signatures

@@ -110,21 +110,23 @@
     <div class="calc">
       <div class="readout">
         <div><span>Term</span><strong data-k="term"></strong></div>
-        <div><span>Hours in the term</span><strong data-k="hours"></strong></div>
+        <div><span data-k="hours-label">Hours in the term</span><strong data-k="hours"></strong></div>
         <div><span>Hour Price</span><strong data-k="price"></strong></div>
         <div><span>Paid, before VAT</span><strong data-k="paid"></strong></div>
-        <div><span>Left to pay, before VAT</span><strong data-k="left"></strong></div>
+        <div><span data-k="left-label">Left to pay, before VAT</span><strong data-k="left"></strong></div>
         <div class="you"><span data-k="gate-name">Next gate</span><strong data-k="gate"></strong></div>
       </div>
       <form class="form" novalidate>
-        <label>Amount, before VAT (USD)<input name="amount" type="number" inputmode="decimal" min="1" step="0.01"></label>
+        <label data-k="amount-line">Amount, before VAT (USD)<input name="amount" type="number" inputmode="decimal" min="1" step="0.01"></label>
         <p class="hint" data-k="issues"></p>
         <div data-k="coins"></div>
         <p class="flash" hidden></p>
         <button class="btn solid big" type="submit">Pay</button>
-        <p class="hint">Each payment issues hours equal to the amount before VAT divided by your Hour Price, to the earliest Tranches not yet paid. For a USD wire or a won transfer, write to us.</p>
+        <p class="hint" data-k="rule">Each payment issues hours equal to the amount before VAT divided by your Hour Price, to the earliest Tranches not yet paid. For a USD wire or a won transfer, write to us.</p>
       </form>
     </div>
+    <div class="actions" data-k="stop-line" hidden><button class="btn small" type="button" data-k="stop">Stop after this month</button></div>
+    <p class="flash" data-k="stop-note" hidden></p>
   </section>
 </template>
 
@@ -154,10 +156,7 @@
     const amount = o.issued && +o.issuedHours < +o.hours ? hc(o.issuedHours) + ' of ' + hc(o.hours) : hc(o.hours);
     return o.product === 'credits' ? amount + ' HC' : 'Plan ' + o.plan + ': ' + amount + ' hours';
   };
-  const DAYS = { every: 'Every day', weekdays: 'Weekdays' };
-  const windowName = (id) => (P.windows.find((w) => w.id === id) || { name: id }).name;
-  const summary = (a) => [a.months + ' months', a.windows.length === P.windows.length ? 'Full day' : a.windows.map(windowName).join(' + '), DAYS[a.days] || a.days, a.fleets + (a.fleets === 1 ? ' fleet' : ' fleets')]
-    .concat([].concat(a.lock || []).length ? ['locked ' + [].concat(a.lock).join(', ')] : []).join(' · ');
+  const monthOf = (day) => new Date(day.slice(0, 10) + 'T00:00:00Z').toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
   const unit = (o) => (o.product === 'credits' ? ' HC' : ' fleet-hours');
   let me = null, watching = new URLSearchParams(window.location.search).get('order'), timer = null;
 
@@ -222,29 +221,48 @@
   const renderPlan = (a) => {
     const node = $('plan-card').content.firstElementChild.cloneNode(true);
     const k = (name) => node.querySelector('[data-k="' + name + '"]');
+    const monthly = a.payment === 'monthly';
     k('plan').textContent = a.plan;
-    k('summary').textContent = summary(a);
+    k('summary').textContent = a.line;
     k('form-line').hidden = !a.form;
     k('form').href = 'plan-order.html?plan=' + encodeURIComponent(a.plan);
-    k('term').textContent = nice(a.start) + ' – ' + nice(a.end);
+    k('term').textContent = monthly ? (a.end ? nice(a.start) + ' – ' + nice(a.end) : 'Monthly, from ' + nice(a.start)) : nice(a.start) + ' – ' + nice(a.end);
+    k('hours-label').textContent = monthly ? (a.tranche ? 'Plan hours in ' + monthOf(a.tranche.from) : 'Plan hours this month') : 'Hours in the term';
     k('hours').textContent = SP.whole(a.hours);
     k('price').textContent = SP.usd(a.price);
     k('paid').textContent = SP.usd(a.paid) + (+a.pending ? ' (+' + SP.usd(a.pending) + ' unpaid)' : '');
-    k('left').textContent = SP.usd(a.remaining);
-    k('gate-name').textContent = a.nextGate && !a.ended ? 'Next: ' + a.nextGate.name + ', before VAT' : a.payment === 'upfront' ? 'Payment' : 'Next gate';
-    k('gate').textContent = a.ended ? 'Closed' : a.nextGate ? SP.usd(a.nextGate.amount) + ' by ' + nice(a.nextGate.due) : a.payment === 'upfront' ? 'Paid in full' : 'All gates met';
+    k('left-label').textContent = monthly ? 'Paid through' : 'Left to pay, before VAT';
+    k('left').textContent = monthly ? (a.paidThrough ? nice(a.paidThrough) : 'Nothing yet') : SP.usd(a.remaining);
+    k('gate-name').textContent = a.nextGate && !a.ended ? 'Next: ' + a.nextGate.name + ', before VAT' : monthly ? 'Next month' : a.payment === 'upfront' ? 'Payment' : 'Next gate';
+    k('gate').textContent = a.ended ? 'Closed' : a.nextGate ? SP.usd(a.nextGate.amount) + (monthly ? ' before ' : ' by ') + nice(a.nextGate.due) : monthly ? (a.stopped ? 'Stopped' : 'Awaiting payment') : a.payment === 'upfront' ? 'Paid in full' : 'All gates met';
     const form = node.querySelector('form'), amount = form.elements.amount, note = form.querySelector('.flash'), button = form.querySelector('button');
+    if (monthly) {
+      k('amount-line').hidden = true;
+      k('rule').textContent = 'Each month is paid in full before it starts, and its hours are issued once it is paid. If a month is not paid by its first day, the plan ends after the last paid month, with nothing owed. For a USD wire or a won transfer, write to us.';
+      if (a.stopped && !a.ended) { k('stop-note').hidden = false; SP.say(k('stop-note'), 'Stopped: the plan ends on ' + nice(a.end) + ', after its last paid month, with nothing owed.'); }
+      k('stop-line').hidden = Boolean(a.ended || a.stopped);
+      k('stop').addEventListener('click', async () => {
+        const ask = a.paidThrough ? 'Stop plan ' + a.plan + ' after ' + monthOf(a.paidThrough) + '? It ends on ' + nice(a.paidThrough) + ' with nothing owed, takes no further payment, and its capacity after that is released. This cannot be undone.' : 'Stop plan ' + a.plan + ' now? Nothing is paid under it yet, so it ends at once with nothing owed. This cannot be undone.';
+        if (!window.confirm(ask)) return;
+        k('stop').disabled = true;
+        try { await SP.call('/plans/stop', { plan: a.plan }); load(); } catch (error) { k('stop-note').hidden = false; SP.say(k('stop-note'), error.message, 'error'); k('stop').disabled = false; }
+      });
+    }
     SP.coinPicker(k('coins'), 'coin-' + a.plan, 'USDC.ERC20', () => update());
     if (a.nextGate) amount.value = a.nextGate.amount;
     const update = () => {
       const net = Math.round((+amount.value || 0) * 100) / 100, vat = Math.round(net * P.vatRate * 100) / 100, coin = SP.coinOf(SP.chosen(form, 'coin-' + a.plan) || 'USDC.ERC20');
-      k('issues').textContent = net >= 1 ? 'Issues ' + SP.whole(Math.floor(net / +a.price * 10000) / 10000) + ' hours. Total with VAT: ' + SP.usd(net + vat) + ' in ' + coin + '.' : '';
+      k('issues').textContent = net < 1 ? '' : monthly && a.nextGate ? 'Pays ' + a.nextGate.name + ': ' + SP.whole(a.nextGate.hours) + ' Plan hours, ' + nice(a.nextGate.from) + ' – ' + nice(a.nextGate.to) + '. Total with VAT: ' + SP.usd(net + vat) + ' in ' + coin + '.' : 'Issues ' + SP.whole(Math.floor(net / +a.price * 10000) / 10000) + ' hours. Total with VAT: ' + SP.usd(net + vat) + ' in ' + coin + '.';
       button.textContent = net >= 1 ? 'Pay ' + SP.usd(net + vat) + ' in ' + coin : 'Pay in ' + coin;
       button.disabled = Boolean(a.ended) || net < 1 || net > +a.remaining;
     };
     amount.addEventListener('input', update);
     update();
-    if (a.ended) { form.hidden = true; const p = document.createElement('p'); p.className = 'flash'; p.textContent = a.ended; node.querySelector('.calc').append(p); }
+    if (a.ended || (monthly && !a.nextGate)) {
+      form.hidden = true;
+      const text = a.ended || (a.stopped ? '' : +a.pending ? 'The next month is awaiting payment.' : '');
+      if (text) { const p = document.createElement('p'); p.className = 'flash'; p.textContent = text; node.querySelector('.calc').append(p); }
+    }
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       button.disabled = true;

@@ -53,8 +53,10 @@ Every customer is under one contract, the Customer Agreement
 (`site/terms/agreement-*.md`). A reserved plan is a Plan Order under it,
 which the customer orders on `plans.html`:
 
-1. The page builds the plan from the published choices (term, windows, days,
-   fleets, fleet lock, Start Date) and, once the customer is signed in (the
+1. The page builds the plan from the published choices (term: Monthly, 1, 2
+   or 3 years; office hours in a time zone; days; fleets; fleet lock; Start
+   Date), leading with Monthly, 09:00–18:00 Asia/Seoul, Weekdays and one
+   fleet, and works out its hours per KST hour as the service does. Then, once the customer is signed in (the
    same email-code sign-in, which opens an account with the company's legal
    name or the person's own name and the acceptance box), asks what the
    Order Form needs: company or individual; for a company, where it is
@@ -63,7 +65,8 @@ which the customer orders on `plans.html`:
    `models` in `site/pricing.js`, which `tests/test_site.py` keeps equal to the
    models the Fleet List offers.
 2. `POST /pay/api/plans/quote` prices it from `plans.terms` (plus
-   `lockPremium` for a lock), works out the hours, Tranches and gates,
+   `lockPremium` for a lock), works out the hours, Tranches and gates (for a
+   Monthly plan, Tranche 1 and its price),
    checks that we can keep its capacity (below), picks the locked fleets,
    and returns the whole Plan Order: one text, Korean first, then English,
    following the Customer Agreement's Plan Order form, with its SHA-256.
@@ -79,13 +82,18 @@ which the customer orders on `plans.html`:
    it, ready to print, with a download of the exact text.
 
 The account page lists each plan with what is paid, what is left and the
-next payment, links its Plan Order, and takes prepayments in USDC or USDT.
+next payment, links its Plan Order, and takes payments through the payment
+order flow (`POST /pay/api/order` with `product: "plan"`).
 Each payment issues its hours to the earliest Tranches not yet paid as
 Tranche hours the customer reserves in the Hour Market (`tranche_grant`
 lines). Plan hours that occurred before they were paid for count as
 consumed (clause 20.1), so a payment first covers the hours of its Tranche
 that have already passed and issues the rest. An upfront plan's Tranche
-hours are issued once it is paid in full. For more than `plans.maxFleets`
+hours are issued once it is paid in full, and a Monthly plan's Tranche
+once that Tranche is paid in full (clause 20.10). For a Monthly plan the
+account shows the next month's amount and the day it is due, with a pay
+button for exactly that amount, and a "Stop after this month" button
+(`POST /pay/api/plans/stop`, clause 20.12). For more than `plans.maxFleets`
 fleets, or a plan paid by bank transfer, `plans.html` still sends a quote
 request to `POST /pay/api/lead`.
 
@@ -100,8 +108,9 @@ request to `POST /pay/api/lead`.
 | `POST /pay/api/order` | Signed in. `product: "credits"` with `amount` before VAT and `coin` (and `accept: true` when the terms changed since the account accepted them); or `product: "plan"` with `plan`, `amount` before VAT and `coin`: returns the checkout link. `coin` is one of the twelve CoinPayments symbols in `COINS`, such as `USDC.BASE` or `USDT.TRC20` |
 | `GET /pay/api/order/<order>` | The order's state, amounts and hours; the checkout link while unpaid. The order number is 80 random bits |
 | `POST /pay/api/lead` | A plan quote request: `company`, `email`, `name`, `fleets`, `start`, `message` |
-| `POST /pay/api/plans/quote` | Signed in. `start`, `months`, `windows` (ids), `days`, `fleets`, `lock`, `models` (ids) and `customer` (`kind` `company` or `individual`, `address`, optional `notice` and `brn`; a company also `jurisdiction` and `registration`): returns the Plan Order's number, text, rows, SHA-256, hours, prices and schedule, or 409 `capacity` |
+| `POST /pay/api/plans/quote` | Signed in. `start`, `term` (an id from `plans.terms`: `monthly`, `1y`, `2y` or `3y`), `office` (`zone`, an IANA time zone, and `from` and `to`, whole hours 0 to 23 of its local clock, at least 8 hours apart; `to` at or before `from` runs past midnight, equal is a Full day), `days` (`weekdays` or `every`), `fleets`, `lock`, `models` (ids) and `customer` (`kind` `company` or `individual`, `address`, optional `notice` and `brn`; a company also `jurisdiction` and `registration`): returns the Plan Order's number, text, rows, SHA-256, hours, prices and schedule, or 409 `capacity` |
 | `POST /pay/api/plans/order` | Signed in. The same fields with the quoted `plan` and `hash` and `agree: true` (and `accept: true` when the Customer Agreement changed since the account accepted it): records and signs the Plan Order. 409 `changed` when the text no longer matches, `unpaid` while another of the account's Plan Orders has no payment |
+| `POST /pay/api/plans/stop` | Signed in. `plan`: stops the account's own Monthly plan after its last Tranche paid in full (at once if none is), records `plan_stop`, frees the capacity after that Tranche and takes no further payment. 409 for a plan with a fixed term (`fixed`) or one already ended or stopped |
 | `GET /pay/api/plan/<plan>` | Signed in, the account's own: the plan's standing, its Plan Order rows and text, the acceptance time, our signature and its Tranches |
 | `GET /pay/api/plans/key` | Our Ed25519 public key for Plan Orders |
 | `POST /pay/api/coinpayments` | CoinPayments webhooks |
@@ -131,24 +140,53 @@ orders an hour, and each email for 5 codes an hour.
   and `SPARKPIPE_PAY_SUPPLIER_ADDRESS_EN` hold our full notice address,
   which every Plan Order states, and never in the sandbox. Its Start Date
   is from `plans.earliestStart` (or today) to `plans.startWithinDays` (60)
-  days ahead, its fleets at most `plans.maxFleets`, and a fleet lock only on
-  a full day every day. The published window times, release fee,
-  maintenance allowance and fleet Rates are copied into it and kept for its
-  term.
+  days ahead, its fleets at most `plans.maxFleets`, its term one of
+  `plans.terms` (Monthly, 1, 2 or 3 years; there is no 3-month term), its
+  office hours whole hours of an IANA time zone, at least
+  `MIN_OFFICE_HOURS` (8) long, and a fleet lock only on a full day every
+  day. The published release fee, maintenance allowance, maintenance window
+  times (`windows` in `pricing.js`, clause 4.6) and fleet Rates are copied
+  into it and kept for its term.
+- Plan hours are worked out per KST hour with `zoneinfo`: each hour of the
+  term that starts within the office hours of a counted local day (every
+  day, or Monday to Friday by the local date the hours start), times the
+  fleets. The office hours follow the zone's clock, so on a daylight-saving
+  change they are the hours that elapse between the local start and end;
+  a start the clock skips is the moment it skips, one it shows twice the
+  first. In a zone half an hour off KST the plan holds the KST hours that
+  start within the office hours. Each KST calendar month is a Tranche.
 - Clause 16.2: a Plan Order is made only if its set-aside fits on serving
   fleets in every hour of its term with every earlier plan and every
   reservation (`Cover.clash`), and only if the HC already sold, and the HC
-  in unpaid orders, stays covered with it (docs/HOUR_MARKET.md). A fleet
-  lock takes the first serving fleets that pass both checks.
+  in unpaid orders, stays covered with it (docs/HOUR_MARKET.md). A running
+  Monthly plan counts as continuing in every later month: in these checks,
+  and in the HC cover, it keeps its hours to the end of the month in which
+  a plan of the longest offered term, started as late as
+  `plans.startWithinDays` allows, would end (`monthly_horizon`). A new
+  Monthly plan must fit to that month too. A fleet lock takes the first
+  serving fleets that pass both checks.
 - An account may hold one Plan Order with no payment at a time. An unpaid
   Plan Order keeps its capacity until it lapses: a gated plan at the end of
-  Phase A, an upfront plan at the end of its Start Date. After a missed
-  gate, a plan keeps capacity only to the end of its last paid Tranche.
+  Phase A, an upfront plan and a Monthly plan at the end of its Start Date.
+  After a missed gate, a plan keeps capacity only to the end of its last
+  paid Tranche.
+- A Monthly plan's set-aside covers the current Tranche and the next month
+  (`heldUntil`): Tranches 1 and 2 before anything is paid, and the month
+  after the last Tranche paid in full after that. A Tranche counts as paid
+  only if it was paid in full by the end of its first day (KST). If it was
+  not, the plan ended at the end of the last Tranche paid in full and frees
+  every later month; a stopped plan frees them at once and ends at the end
+  of its last paid Tranche. A payment that arrives after that buys no
+  Tranche and mails `SPARKPIPE_PAY_NOTIFY` a refund note (clause 20.11);
+  a Tranche left part-paid when the plan ends is refunded by hand the same
+  way. We end a plan only with `end-plan` (clause 10.2).
 - A plan prepayment is at least 1.00 USD and at most what is left of the
-  term's price, counting unpaid orders. A gated plan's prepayment is
-  refused after Phase A with nothing paid, after a missed gate, and after
-  the term ends; an upfront plan's after its Start Date unless it is paid
-  in full. Each payment issues the amount before VAT divided by the hour
+  term's price, counting unpaid orders; a Monthly plan's is at most what is
+  left of its next Tranche, so it is paid one Tranche at a time. A gated
+  plan's prepayment is refused after Phase A with nothing paid, after a
+  missed gate, and after the term ends; an upfront plan's after its Start
+  Date unless it is paid in full; a Monthly plan's once it has ended or is
+  stopped. Each payment issues the amount before VAT divided by the hour
   price, to four decimals.
 - VAT is charged on every stablecoin payment.
   CoinPayments' own fee is ours; the customer pays the network fee.
@@ -159,7 +197,7 @@ orders an hour, and each email for 5 codes an hour.
 
 - `ledger.jsonl`: one JSON line per event (`account`, `acceptance`,
   `order`, `invoice`, `invoice_failed`, `invoice_state`, `payment`,
-  `hours_issued`, `plan_order`, `plan_end`, and the Hour Market's lines),
+  `hours_issued`, `plan_order`, `plan_end`, `plan_stop`, and the Hour Market's lines),
   each with the SHA-256 of the line before it. The service
   refuses to start if the chain is broken. An account or order line keeps
   the IP address and the browser, as the privacy policy's acceptance
@@ -173,16 +211,18 @@ orders an hour, and each email for 5 codes an hour.
 - `leads.jsonl`: the plan quote requests.
 
 A Plan Order line (`plan_order`) holds its number (`plan`), `account`,
-`email`, `company`, `start`, `months`, `windows` (with their KST hours as
-published when it was made), `days`, `fleets`, `lock` (fleet ids, one per
+`email`, `company`, `start`, `months` (null for a Monthly plan), `office`
+(`zone`, `from`, `to`), `days`, `fleets`, `lock` (fleet ids, one per
 fleet, only on a full day every day), `hourPrice` (lock premium included),
-`payment` (`upfront` or `gates`), `releaseFee` and
+`payment` (`monthly`, `upfront` or `gates`), `releaseFee` and
 `maintenanceHoursPerWeek` as published then, and, for one made in the
-account, `customer`, `models`, `threshold`, `currency`, `rates`, `hours`,
-`total`, `schedule`, `agreement` (the hashes and version of the texts it
-is made under), `supplier`, `text`, `hash`, `accepted` (IP address and
-browser) and `signature`. A plan's hours are each elected window's hours
-times `fleets` on every plan day, by calendar-month Tranche.
+account, `customer`, `models`, `threshold`, `currency`, `rates`, `windows`
+(the maintenance window hours), `hours` and `total` (a term in months) or
+`first` (a Monthly plan's Tranche 1: `from`, `to`, `hours`, `total`),
+`schedule`, `agreement` (the hashes and version of the texts it is made
+under), `supplier`, `text`, `hash`, `accepted` (IP address and browser)
+and `signature`. A `plan_stop` line records a customer's Stop after this
+month.
 
 A Plan Order signed on paper is recorded with
 `sparkpipe_pay.py plan FILE.json`, a JSON object or list with `id`, the
@@ -190,7 +230,8 @@ account's `email` and the fields above from `start` to
 `maintenanceHoursPerWeek`:
 
 ```json
-[{"id": "SP-PLAN-7K3QD9", "email": "billing@acme.example", "start": "2026-12-15", "months": 24, "windows": [{"id": "asia", "from": 8, "to": 16, "localDay": 0}], "days": "every", "fleets": 1, "hourPrice": "15.00", "payment": "gates", "releaseFee": "0.10", "maintenanceHoursPerWeek": 3}]
+[{"id": "SP-PLAN-7K3QD9", "email": "billing@acme.example", "start": "2026-12-15", "months": 24, "office": {"zone": "Asia/Seoul", "from": 9, "to": 18}, "days": "every", "fleets": 1, "hourPrice": "15.00", "payment": "gates", "releaseFee": "0.10", "maintenanceHoursPerWeek": 3},
+ {"id": "SP-PLAN-M4WQ2B", "email": "ops@berlin.example", "start": "2027-01-01", "months": null, "office": {"zone": "Europe/Berlin", "from": 9, "to": 18}, "days": "weekdays", "fleets": 1, "hourPrice": "17.50", "payment": "monthly", "releaseFee": "0.10", "maintenanceHoursPerWeek": 3}]
 ```
 
 It refuses an unknown email, a number already used and a plan whose
