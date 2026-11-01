@@ -557,6 +557,21 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   lane rejoins, so a lane is parked and restored page by page rather than as
   one contiguous transfer. Close it with a fleet backpressure run at 2x device
   pages where parked lanes restore bit-exact at B1 and B16.
+- A K3 conversation prefilled by the streamed (pass) prefill cannot be
+  restored from the snapshot store after its engine restarts or its pages
+  leave the device. The pass computes the whole prompt in one pass and keeps
+  only the final KDA state in the lane's slot; it records no checkpoint at
+  the 16,384-token stride (`cache_checkpoint_token_count`), so the API finds
+  no resume point and recomputes the prompt from token 0. On 2026-11-01 ten
+  134K-token conversations were saved to the store (1.03 GB in 8,735 files on
+  rank 0, 12,900 page files and one 12-token state file), and after a swap
+  away and back both the oldest and the newest resent with
+  `cached_tokens` 0 and took 132 s and 129 s, the same as their first
+  prefill; within one engine's lifetime follow-ups still hit the device
+  pages. Close it by having the pass capture the KDA state at the last stride
+  multiple inside each pass and at the pass's end, staging both as recurrent
+  checkpoints for the binding to save, proven by the same resend restoring
+  with `cached_tokens` at the checkpoint and tokens equal to the first run.
 - The KV snapshot tier is proven on the fleet only at its old 8 GiB budget.
   The hub API's `kv_store_report` lines up to 2026-11-01 show restores from
   it with no misses: K3 restored 16,241 pages (about 1.04M tokens) on one rank

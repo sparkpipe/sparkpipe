@@ -2296,6 +2296,7 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 		return exchange_status;
 	if ( state->deferred_active != 0u )
 	{
+		state->logical_sequence_count = dispatch->active_sequence_count;
 		exchange_status = StageRunnerChainBegin(state, dispatch->request_id);
 		if ( exchange_status == SPARK_STATUS_OK )
 			exchange_status = StageRunnerRunDeferred(state, dispatch);
