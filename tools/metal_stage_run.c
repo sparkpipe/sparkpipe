@@ -7,6 +7,7 @@
 
 #include "inference/runner/device_stage_model.h"
 #include "inference/runner/device_stage_runner.h"
+#include "sparkpipe/spark_dsv41_flash_device_stage.h"
 #include "sparkpipe/spark_gemma4_device_stage.h"
 #include "sparkpipe/spark_glm52_device_stage.h"
 #include "sparkpipe/spark_glm5_next_device_stage.h"
@@ -81,7 +82,7 @@ static const RunModelAt run_models_at[] = { SparkGemma4_26bDeviceStageModelAt, S
 	SparkKexaone2DeviceStageModelAt,
 	SparkHy4DeviceStageModelAt,
 	SparkMimo26FlashDeviceStageModelAt, SparkMimo26ProDeviceStageModelAt,
-	SparkGlm53FullDeviceStageModelAt, SparkAxk2DeviceStageModelAt };
+	SparkGlm53FullDeviceStageModelAt, SparkAxk2DeviceStageModelAt, SparkDsv41FlashDeviceStageModelAt };
 
 typedef struct RunOutputVocabulary
 {
@@ -92,7 +93,8 @@ typedef struct RunOutputVocabulary
 static const RunOutputVocabulary run_output_vocabularies[] = { { "qwen3.8-27b", 248077u }, { "qwen3.8-flash", 248077u }, { "gemma4-26b-a4b", 262144u },
 	{ "gemma4-31b", 262144u }, { "muse-glimmer-30b", 202048u }, { "mimo-v2.6-flash", 151675u }, { "mimo-v2.6-pro", 151675u },
 	{ "laguna-s-2.1", 100352u }, { "k-exaone-2.0", 153600u }, { "ling-3.0-flash", 157153u }, { "ling-3.0-flash-fin", 157153u },
-	{ "solar-open-2", 196608u }, { "hy4-preview", 120832u }, { "glm-5.3-flash", 154856u }, { "glm-5.3-full", 154856u }, { "ax-k2", 163840u } };
+	{ "solar-open-2", 196608u }, { "hy4-preview", 120832u }, { "glm-5.3-flash", 154856u }, { "glm-5.3-full", 154856u }, { "ax-k2", 163840u },
+	{ "deepseek-v4.1-flash", 129280u } };
 
 static const SparkStageRunnerModelInterface *RunModel(const char *name, uint32_t tp_degree)
 {
@@ -122,7 +124,7 @@ static uint32_t RunModelOutputVocabulary(const SparkStageRunnerModelInterface *m
 static int Usage(const char *program)
 {
 	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|pairs|bench|ladder|spec --out DIR [--prefill-rows N] [--new-tokens N] "
-		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|qwen3.8-flash|gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|mimo-v2.6-pro|laguna-s-2.1|k-exaone-2.0|ling-3.0-flash|ling-3.0-flash-fin|solar-open-2|hy4-preview|glm-5.3-flash|glm-5.3-full|ax-k2] [--pin-routes DIR] [--exact-rows] [--tp 2|4|8, the pack named for rank 00] [--rank R [--tp-hosts H0,H1,...] [--tp-port P]: one rank process over TCP] [--stream-weights] [--bench-long-tokens N] [--decode-positions N, teacher: decode only the last N positions]\n",program);
+		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|qwen3.8-flash|gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|mimo-v2.6-pro|laguna-s-2.1|k-exaone-2.0|ling-3.0-flash|ling-3.0-flash-fin|solar-open-2|hy4-preview|glm-5.3-flash|glm-5.3-full|ax-k2|deepseek-v4.1-flash] [--pin-routes DIR] [--exact-rows] [--tp 2|4|8, the pack named for rank 00] [--rank R [--tp-hosts H0,H1,...] [--tp-port P]: one rank process over TCP] [--stream-weights] [--bench-long-tokens N] [--decode-positions N, teacher: decode only the last N positions]\n",program);
 	return(2);
 }
 

@@ -87,7 +87,7 @@ static __global__ void SparkDsv41FlashEngramGateKernel(
 	uint64_t key_base = kv_row + (uint64_t)copy * dimension;
 	uint64_t value_base = kv_row + (uint64_t)hc * dimension;
 	uint64_t weight_base = (uint64_t)copy * dimension;
-	float h,key,weight,h_square = 0.0f,key_square = 0.0f,dot = 0.0f,rstd,gate,magnitude;
+	float h,key,weight,h_square = 0.0f,key_square = 0.0f,dot = 0.0f,gate;
 	for (element = threadIdx.x; element < dimension; element += blockDim.x)
 	{
 		h = LmBf16ToFloat(streams_bf16[stream_base + element]);
@@ -100,10 +100,7 @@ static __global__ void SparkDsv41FlashEngramGateKernel(
 	h_square = SparkDsv41FlashBlockSum(h_square,scratch);
 	key_square = SparkDsv41FlashBlockSum(key_square,scratch);
 	dot = SparkDsv41FlashBlockSum(dot,scratch);
-	rstd = (1.0f / sqrtf(h_square / (float)dimension + epsilon)) * (1.0f / sqrtf(key_square / (float)dimension + epsilon));
-	dot = dot * rstd * (1.0f / sqrtf((float)dimension));
-	magnitude = sqrtf(fmaxf(fabsf(dot),SPARK_DSV41_FLASH_ENGRAM_GATE_FLOOR));
-	gate = 1.0f / (1.0f + expf(-copysignf(magnitude,dot)));
+	gate = SparkMathSignedSqrtGate(dot,h_square,key_square,dimension,epsilon,SPARK_DSV41_FLASH_ENGRAM_GATE_FLOOR);
 	for (element = threadIdx.x; element < dimension; element += blockDim.x)
 	{
 		h = LmBf16ToFloat(streams_bf16[stream_base + element]);
@@ -369,15 +366,7 @@ static inline cudaError_t SparkDsv41FlashLaunchShardBlockApply(
 }
 
 #define SPARK_DSV41_FLASH_FP8_BLOCK 32u
-#define SPARK_DSV41_FLASH_FP8_AMAX_FLOOR 1e-4f
 #define SPARK_DSV41_FLASH_LINEAR_WARPS 8u
-
-static __device__ __forceinline__ float SparkDsv41FlashPow2CeilScale(float amax, float inverse_max)
-{
-	uint32_t bits = __float_as_uint(amax * inverse_max);
-	int32_t exponent = (int32_t)((bits >> 23u) & 0xffu) - 127 + ((bits & 0x7fffffu) != 0u ? 1 : 0);
-	return(__uint_as_float((uint32_t)(exponent + 127) << 23u));
-}
 
 static __global__ void SparkDsv41FlashActQuantKernel(const uint16_t *input_bf16, float *output_f32, uint32_t row_count, uint32_t width)
 {
@@ -391,7 +380,7 @@ static __global__ void SparkDsv41FlashActQuantKernel(const uint16_t *input_bf16,
 	base = (group / groups) * width + (group % groups) * SPARK_DSV41_FLASH_FP8_BLOCK;
 	for (element = 0u; element < SPARK_DSV41_FLASH_FP8_BLOCK; element++)
 		amax = fmaxf(amax,fabsf(LmBf16ToFloat(input_bf16[base + element])));
-	scale = SparkDsv41FlashPow2CeilScale(fmaxf(amax,SPARK_DSV41_FLASH_FP8_AMAX_FLOOR),1.0f / LM_E4M3_MAX);
+	scale = SparkMathFp8QdqScale(amax);
 	for (element = 0u; element < SPARK_DSV41_FLASH_FP8_BLOCK; element++)
 	{
 		value = fminf(fmaxf(LmBf16ToFloat(input_bf16[base + element]) / scale,-LM_E4M3_MAX),LM_E4M3_MAX);
@@ -527,7 +516,7 @@ static __device__ __forceinline__ uint16_t SparkDsv41FlashFp8QdqLane(float value
 	for (offset = SPARK_DSV41_FLASH_FP8_BLOCK / 2u; offset != 0u; offset >>= 1u)
 		amax = fmaxf(amax,__shfl_xor_sync(0xffffffffu,amax,offset));
 	amax = fmaxf(0.0f,amax);
-	scale = SparkDsv41FlashPow2CeilScale(fmaxf(amax,SPARK_DSV41_FLASH_FP8_AMAX_FLOOR),1.0f / LM_E4M3_MAX);
+	scale = SparkMathFp8QdqScale(amax);
 	value = fminf(fmaxf(value / scale,-LM_E4M3_MAX),LM_E4M3_MAX);
 	return(LmFloatToBf16(LmE4m3ToFloat(LmFloatToE4m3(value)) * scale));
 }
@@ -1019,7 +1008,7 @@ static __global__ void SparkDsv41FlashFp4Pow2QdqKernel(uint16_t *data_bf16, uint
 	base = (uint64_t)group * group_size;
 	for (element = 0u; element < group_size; element++)
 		amax = fmaxf(amax,fabsf(LmBf16ToFloat(data_bf16[base + element])));
-	scale = SparkDsv41FlashPow2CeilScale(fmaxf(amax,LM_E2M1_MAX * 1.1754943508222875e-38f),1.0f / LM_E2M1_MAX);
+	scale = SparkMathFp4Pow2QdqScale(amax);
 	for (element = 0u; element < group_size; element++)
 	{
 		value = fminf(fmaxf(LmBf16ToFloat(data_bf16[base + element]) / scale,-LM_E2M1_MAX),LM_E2M1_MAX);

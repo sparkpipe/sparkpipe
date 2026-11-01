@@ -217,17 +217,21 @@ kernel void spark_hc_post(constant SparkHcParams &p [[buffer(0)]], device ushort
 		SparkMathBf16ToFloat(streams[at])));
 }
 
+template <bool LAGGED>
 kernel void spark_hc_site(constant SparkHcParams &p [[buffer(0)]], device const ushort *streams [[buffer(1)]], device const float *fn [[buffer(2)]],
 	device const float *base [[buffer(3)]], device const float *scale [[buffer(4)]], device float *post [[buffer(5)]], device float *comb [[buffer(6)]],
-	device ushort *mixed [[buffer(7)]], uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
-	uint threads [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]],
-	uint simds [[simdgroups_per_threadgroup]])
+	device ushort *mixed [[buffer(7)]], device float *pre_state [[buffer(8)]], uint row [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]],
+	uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
 {
 	threadgroup float reduction[(SPARK_HC_COMB_MIXES + 1u) * 32u];
 	threadgroup float weights[SPARK_HC_MAX_STREAMS];
+	threadgroup float lagged[SPARK_HC_MAX_STREAMS];
 	const uint flat = SPARK_HC_MAX_STREAMS * p.width;
 	device const ushort *source = streams + (ulong)row * flat;
 	float total[SPARK_HC_COMB_MIXES + 1u];
+	if ( LAGGED && tid < SPARK_HC_MAX_STREAMS )
+		lagged[tid] = pre_state[(ulong)row * SPARK_HC_MAX_STREAMS + tid];
 	SparkHcTotals<SPARK_HC_COMB_MIXES>(source, fn, flat, tid, threads, lane, simd, simds, reduction, total);
 	if ( tid == 0u )
 	{
@@ -278,11 +282,25 @@ kernel void spark_hc_site(constant SparkHcParams &p [[buffer(0)]], device const 
 		}
 		for ( uint c = 0u; c < SPARK_HC_MAX_STREAMS * SPARK_HC_MAX_STREAMS; c++ )
 			comb[(ulong)row * SPARK_HC_MAX_STREAMS * SPARK_HC_MAX_STREAMS + c] = cell[c];
+		if ( LAGGED )
+			for ( uint s = 0u; s < SPARK_HC_MAX_STREAMS; s++ )
+				pre_state[(ulong)row * SPARK_HC_MAX_STREAMS + s] = weights[s];
 	}
 	threadgroup_barrier(mem_flags::mem_threadgroup);
-	SparkHcCollapse(p, source, weights, mixed + (ulong)row * p.width, tid, threads);
+	SparkHcCollapse(p, source, LAGGED ? lagged : weights, mixed + (ulong)row * p.width, tid, threads);
 }
 
+#define SPARK_HC_SITE_INSTANCE(name, lagged) \
+	template [[host_name(name)]] kernel void spark_hc_site<lagged>(constant SparkHcParams &p [[buffer(0)]], device const ushort *streams [[buffer(1)]], \
+		device const float *fn [[buffer(2)]], device const float *base [[buffer(3)]], device const float *scale [[buffer(4)]], device float *post [[buffer(5)]], \
+		device float *comb [[buffer(6)]], device ushort *mixed [[buffer(7)]], device float *pre_state [[buffer(8)]], uint row [[threadgroup_position_in_grid]], \
+		uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]], \
+		uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]]);
+
+SPARK_HC_SITE_INSTANCE("spark_hc_site", false)
+SPARK_HC_SITE_INSTANCE("spark_hc_site_lagged", true)
+
+template <bool ROUNDED>
 kernel void spark_hc_post_comb(constant SparkHcParams &p [[buffer(0)]], device ushort *streams [[buffer(1)]], device const float *post [[buffer(2)]],
 	device const float *comb [[buffer(3)]], device const ushort *output [[buffer(4)]], uint2 group [[threadgroup_position_in_grid]],
 	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
@@ -299,11 +317,25 @@ kernel void spark_hc_post_comb(constant SparkHcParams &p [[buffer(0)]], device u
 	{
 		float value = 0.0f;
 		for ( uint s = 0u; s < SPARK_HC_MAX_STREAMS; s++ )
-			value = fma(SparkMathRoundBf16(comb[((ulong)row * SPARK_HC_MAX_STREAMS + s) * SPARK_HC_MAX_STREAMS + t]), residual[s], value);
-		const float contribution = SparkMathRoundBf16(SparkMathRoundBf16(post[(ulong)row * SPARK_HC_MAX_STREAMS + t]) * out);
-		row_streams[t * p.width + d] = SparkMathFloatToBf16(contribution + SparkMathRoundBf16(value));
+		{
+			const float weight = comb[((ulong)row * SPARK_HC_MAX_STREAMS + s) * SPARK_HC_MAX_STREAMS + t];
+			value = fma(ROUNDED ? SparkMathRoundBf16(weight) : weight, residual[s], value);
+		}
+		const float gain = post[(ulong)row * SPARK_HC_MAX_STREAMS + t];
+		if ( ROUNDED )
+			row_streams[t * p.width + d] = SparkMathFloatToBf16(SparkMathRoundBf16(SparkMathRoundBf16(gain) * out) + SparkMathRoundBf16(value));
+		else
+			row_streams[t * p.width + d] = SparkMathFloatToBf16(fma(gain, out, value));
 	}
 }
+
+#define SPARK_HC_POST_COMB_INSTANCE(name, rounded) \
+	template [[host_name(name)]] kernel void spark_hc_post_comb<rounded>(constant SparkHcParams &p [[buffer(0)]], device ushort *streams [[buffer(1)]], \
+		device const float *post [[buffer(2)]], device const float *comb [[buffer(3)]], device const ushort *output [[buffer(4)]], \
+		uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
+
+SPARK_HC_POST_COMB_INSTANCE("spark_hc_post_comb", true)
+SPARK_HC_POST_COMB_INSTANCE("spark_hc_post_comb_f32", false)
 
 kernel void spark_stream_mean(constant SparkHcParams &p [[buffer(0)]], device const ushort *streams [[buffer(1)]], device ushort *output [[buffer(2)]],
 	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
@@ -316,4 +348,45 @@ kernel void spark_stream_mean(constant SparkHcParams &p [[buffer(0)]], device co
 	for ( uint s = 0u; s < p.streams; s++ )
 		total += SparkMathBf16ToFloat(source[(ulong)s * p.width]);
 	output[(ulong)row * p.width + d] = SparkMathFloatToBf16(total / float(p.streams));
+}
+
+kernel void spark_hc_collapse(constant SparkHcParams &p [[buffer(0)]], device const ushort *streams [[buffer(1)]], device const float *pre [[buffer(2)]],
+	device ushort *output [[buffer(3)]], uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+	uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint row = group.y, d = group.x * group_size.x + tid;
+	if ( d >= p.width )
+		return;
+	device const ushort *source = streams + (ulong)row * p.streams * p.width + d;
+	float total = 0.0f;
+	for ( uint s = 0u; s < p.streams; s++ )
+		total = fma(pre[(ulong)row * p.streams + s], SparkMathBf16ToFloat(source[(ulong)s * p.width]), total);
+	output[(ulong)row * p.width + d] = SparkMathFloatToBf16(total);
+}
+
+kernel void spark_stream_key_gate(constant SparkGateParams &p [[buffer(0)]], device ushort *streams [[buffer(1)]], device const ushort *kv [[buffer(2)]],
+	device const ushort *query_weight [[buffer(3)]], device const ushort *key_weight [[buffer(4)]], uint2 group [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]],
+	uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
+{
+	threadgroup float scratch[32];
+	const uint threads = group_size.x, stream = group.x, row = group.y;
+	device ushort *h = streams + ((ulong)row * p.streams + stream) * p.width;
+	device const ushort *row_kv = kv + (ulong)row * (p.streams + 1u) * p.width;
+	device const ushort *key = row_kv + (ulong)stream * p.width, *value = row_kv + (ulong)p.streams * p.width;
+	float h_square = 0.0f, key_square = 0.0f, dot = 0.0f;
+	for ( uint i = tid; i < p.width; i += threads )
+	{
+		const float x = SparkMathBf16ToFloat(h[i]), k = SparkMathBf16ToFloat(key[i]);
+		const float weight = SparkMathBf16ToFloat(query_weight[(ulong)stream * p.width + i]) * SparkMathBf16ToFloat(key_weight[(ulong)stream * p.width + i]);
+		h_square = fma(x, x, h_square);
+		key_square = fma(k, k, key_square);
+		dot = fma(x * weight, k, dot);
+	}
+	h_square = SparkGroupSum(h_square, scratch, lane, simd, simds);
+	key_square = SparkGroupSum(key_square, scratch, lane, simd, simds);
+	dot = SparkGroupSum(dot, scratch, lane, simd, simds);
+	const float gate = SparkMathSignedSqrtGate(dot, h_square, key_square, p.width, p.epsilon, p.floor);
+	for ( uint i = tid; i < p.width; i += threads )
+		h[i] = SparkMathFloatToBf16(fma(gate, SparkMathBf16ToFloat(value[i]), SparkMathBf16ToFloat(h[i])));
 }

@@ -30,7 +30,7 @@ The backends:
 | GLM 5.3 Flash | `Glm5NextStage<G>` in `model-families/glm5_next/source/glm5_next_stage_model.cuh` | not yet |
 | GLM 5.3 Full (GLM 5.3 Full, A.X K2) | `GlmModel<G>` in `model-families/glm52/source/glm52_stage.cuh` | not yet |
 | K3 | `K3Cuda<Format, Geometry>` in `inference/llms/kimi_k3/slice.cuh` | not yet |
-| DeepSeek V4.1 Flash | `D41Cuda` in `modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_model.cu` | not yet |
+| DeepSeek V4.1 Flash | `D41Cuda` in `modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_model.cu` | `D41Device<TP>` in `model-families/dsv41_flash/device/dsv41_flash_device_stage.cpp` (dense, below position 512) |
 
 A backend defines `State`, `Frame` (the per-step handles: the CUDA stream and
 step, or the Metal queue and step tables), `Layer` (the bound weights of one

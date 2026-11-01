@@ -51,20 +51,12 @@ def next_prime(start: int, seen: set) -> int:
     return candidate
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--token-map", type=Path, default=ROOT / "qualification/t1_reference/dsv41/engram_token_map.npy")
-    parser.add_argument("--out", type=Path, required=True)
-    args = parser.parse_args()
-    config = json.loads(args.config.read_text())
-    text = config.get("text_config", config)
+def tables(text: dict, token_map: np.ndarray) -> dict:
     layers = list(text["engram_layer_ids"])
     orders = int(text["engram_max_ngram_size"]) - 1
     heads = int(text["engram_n_heads"])
     bucket = int(text["engram_vocab_size"])
     compressed = int(text["engram_compressed_vocab_size"])
-    token_map = np.load(args.token_map).astype(np.int64)
     if len(layers) != 2 or orders != 3 or heads != 8 or token_map.shape[0] != int(text["vocab_size"]):
         raise SystemExit("engram geometry differs from the stage runner's (2 layers, 3 orders, 8 heads, full vocab map)")
     if int(token_map.max()) + 1 > compressed:
@@ -87,7 +79,21 @@ def main() -> int:
         values = np.random.default_rng(10007 * layer).integers(low=0, high=bound, size=(orders + 1,), dtype=np.int64)
         multipliers.append([int(v) * 2 + 1 for v in values])
     pad = int(token_map[int(text["engram_pad_token_id"])])
-    blob = struct.pack("<5I", MAGIC, VERSION, token_map.shape[0], orders * heads, pad & 0xffffffff)
+    return {"layers": layers, "orders": orders, "heads": heads, "rows": rows, "multipliers": multipliers, "primes": primes, "offsets": offsets, "pad": pad}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--token-map", type=Path, default=ROOT / "qualification/t1_reference/dsv41/engram_token_map.npy")
+    parser.add_argument("--out", type=Path, required=True)
+    args = parser.parse_args()
+    config = json.loads(args.config.read_text())
+    text = config.get("text_config", config)
+    token_map = np.load(args.token_map).astype(np.int64)
+    derived = tables(text, token_map)
+    rows, multipliers, primes, offsets, pad = derived["rows"], derived["multipliers"], derived["primes"], derived["offsets"], derived["pad"]
+    blob = struct.pack("<5I", MAGIC, VERSION, token_map.shape[0], derived["orders"] * derived["heads"], pad & 0xffffffff)
     blob += struct.pack("<2Q", *rows)
     blob += struct.pack("<8q", *[v for m in multipliers for v in m])
     blob += struct.pack("<48q", *[int(v) for p in primes for v in p])

@@ -269,7 +269,8 @@ kernel void spark_route_combine_weighted(constant SparkRouteParams &p [[buffer(0
 	output[(ulong)row * p.width + index] = SparkMathFloatToBf16(total);
 }
 
-kernel void spark_route_sigmoid_topk(constant SparkRouteParams &p [[buffer(0)]], device const float *logits [[buffer(1)]],
+template <uint SCORE>
+kernel void spark_route_scored_topk(constant SparkRouteParams &p [[buffer(0)]], device const float *logits [[buffer(1)]],
 	device const float *bias [[buffer(2)]], device uint *experts [[buffer(3)]], device float *weights [[buffer(4)]],
 	uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]],
 	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
@@ -284,7 +285,8 @@ kernel void spark_route_sigmoid_topk(constant SparkRouteParams &p [[buffer(0)]],
 	for ( uint expert = tid; expert < p.experts; expert += threads )
 	{
 		const float logit = logits[(ulong)row * p.logit_stride + expert];
-		const float value = SparkMathSigmoid(p.round_logits != 0u ? SparkMathRoundBf16(logit) : logit);
+		const float rounded = p.round_logits != 0u ? SparkMathRoundBf16(logit) : logit;
+		const float value = SCORE == SPARK_ROUTE_SCORE_SQRT_SOFTPLUS ? SparkMathSqrtSoftplus(rounded) : SparkMathSigmoid(rounded);
 		score[expert] = value;
 		selection[expert] = value + bias[expert];
 	}
@@ -392,6 +394,16 @@ kernel void spark_route_sigmoid_topk(constant SparkRouteParams &p [[buffer(0)]],
 	}
 }
 
+#define SPARK_ROUTE_SCORED_INSTANCE(name, score) \
+	template [[host_name(name)]] kernel void spark_route_scored_topk<score>(constant SparkRouteParams &p [[buffer(0)]], \
+		device const float *logits [[buffer(1)]], device const float *bias [[buffer(2)]], device uint *experts [[buffer(3)]], \
+		device float *weights [[buffer(4)]], uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], \
+		uint threads [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]], \
+		uint simds [[simdgroups_per_threadgroup]]);
+
+SPARK_ROUTE_SCORED_INSTANCE("spark_route_sigmoid_topk", SPARK_ROUTE_SCORE_SIGMOID)
+SPARK_ROUTE_SCORED_INSTANCE("spark_route_sqrt_softplus_topk", SPARK_ROUTE_SCORE_SQRT_SOFTPLUS)
+
 kernel void spark_logprob_rows(constant SparkLogprobParams &p [[buffer(0)]], device const float *logits [[buffer(1)]],
 	device const uint *targets [[buffer(2)]], device float *result [[buffer(3)]], device uint *argmax [[buffer(4)]],
 	uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]],
@@ -469,4 +481,83 @@ kernel void spark_sigmoid_gate_rows(constant SparkRouteParams &p [[buffer(0)]], 
 	const float gate = SparkMathSigmoid(SparkMathBf16ToFloat(logits[(ulong)row * p.logit_stride]));
 	const ulong at = (ulong)row * p.width + index;
 	values[at] = SparkMathFloatToBf16(SparkMathBf16ToFloat(values[at]) * gate);
+}
+
+kernel void spark_block_qdq(constant SparkQdqParams &p [[buffer(0)]], device const ushort *input [[buffer(1)]], device ushort *output [[buffer(2)]],
+	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint size = SPARK_QDQ_BLOCK(p.format), block = group.x * group_size.x + tid, row = group.y;
+	if ( row >= p.rows || block * size >= p.width )
+		return;
+	device const ushort *x = input + (ulong)row * p.input_stride + block * size;
+	device ushort *y = output + (ulong)row * p.output_stride + block * size;
+	float values[32];
+	float amax = 0.0f;
+	for ( uint i = 0u; i < size; i++ )
+	{
+		values[i] = SparkMathBf16ToFloat(x[i]);
+		amax = fmax(amax, fabs(values[i]));
+	}
+	const float scale = p.format == SPARK_QDQ_FP8 ? SparkMathFp8QdqScale(amax) : p.format == SPARK_QDQ_FP4 ? SparkMathFp4QdqScale(amax) :
+		SparkMathFp4Pow2QdqScale(amax);
+	for ( uint i = 0u; i < size; i++ )
+		y[i] = SparkMathFloatToBf16(p.format == SPARK_QDQ_FP8 ? SparkMathFp8Qdq(values[i], scale) : SparkMathFp4Qdq(values[i], scale));
+}
+
+static inline uint SparkSequenceOfRow(device const uint *row_begin, uint sequences, uint row)
+{
+	uint lane = 0u;
+	while ( lane + 1u < sequences && row_begin[lane + 1u] <= row )
+		lane++;
+	return lane;
+}
+
+kernel void spark_kv_compress(constant SparkCompressParams &p [[buffer(0)]], device const float *kv [[buffer(1)]], device const float *score [[buffer(2)]],
+	device const float *state [[buffer(3)]], device const uint *positions [[buffer(4)]], device const uint *row_begin [[buffer(5)]],
+	device const uint *state_index [[buffer(6)]], device ushort *pooled [[buffer(7)]], uint2 group [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint row = group.y, c = group.x * group_size.x + tid;
+	if ( row >= p.rows || c >= p.width )
+		return;
+	const ulong at = (ulong)row * p.width + c;
+	if ( p.ratio == 1u )
+	{
+		pooled[at] = SparkMathFloatToBf16(kv[at]);
+		return;
+	}
+	if ( (positions[row] + 1u) % p.ratio != 0u )
+		return;
+	const uint lane = SparkSequenceOfRow(row_begin, p.sequences, row);
+	device const float *carried = state + (ulong)state_index[lane] * p.state_stride;
+	const bool inside = row > row_begin[lane];
+	const float first = inside ? kv[at - p.width] : carried[c], first_score = inside ? score[at - p.width] : carried[p.width + c];
+	pooled[at] = SparkMathFloatToBf16(SparkMathSoftmaxPool2(first, first_score, kv[at], score[at]));
+}
+
+kernel void spark_kv_compress_save(constant SparkCompressParams &p [[buffer(0)]], device const float *kv [[buffer(1)]],
+	device const float *score [[buffer(2)]], device float *state [[buffer(3)]], device const uint *positions [[buffer(4)]],
+	device const uint *row_begin [[buffer(5)]], device const uint *state_index [[buffer(6)]], uint2 group [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint lane = group.y, c = group.x * group_size.x + tid;
+	if ( p.commit == 0u || lane >= p.sequences || c >= p.width || row_begin[lane + 1u] == row_begin[lane] )
+		return;
+	const uint row = row_begin[lane + 1u] - 1u;
+	if ( (positions[row] + 1u) % p.ratio == 0u )
+		return;
+	device float *carried = state + (ulong)state_index[lane] * p.state_stride;
+	carried[c] = kv[(ulong)row * p.width + c];
+	carried[p.width + c] = score[(ulong)row * p.width + c];
+}
+
+kernel void spark_compressed_positions(constant SparkCompressParams &p [[buffer(0)]], device const uint *positions [[buffer(1)]],
+	device uint *store [[buffer(2)]], device uint *rope [[buffer(3)]], device uint *last [[buffer(4)]], uint row [[thread_position_in_grid]])
+{
+	if ( row >= p.rows )
+		return;
+	const uint position = positions[row];
+	store[row] = (position + 1u) % p.ratio == 0u ? position / p.ratio : SPARK_KV_SKIP;
+	rope[row] = position + 1u - p.ratio;
+	last[row] = (position + 1u) / p.ratio - 1u;
 }
