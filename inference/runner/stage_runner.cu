@@ -51,6 +51,8 @@ typedef struct StageRunnerBulk
 	uint64_t oversize;
 	uint64_t bytes;
 	uint64_t ns;
+	uint64_t sync_ns;
+	uint64_t wire_ns;
 } StageRunnerBulk;
 
 #define STAGE_RUNNER_LANE_MIN_ROWS 256u
@@ -650,12 +652,12 @@ static void StageRunnerBulkClose(SparkStageRunnerState *state)
 {
 	StageRunnerBulk *bulk = &state->bulk;
 	if ( bulk->opened != 0u )
-		fprintf(stderr, "sparkpipe_stage_runner: bulk collectives rank=%u all_gather=%llu all_reduce=%llu reduce_scatter=%llu all_to_all=%llu oversize_on_mesh=%llu bytes=%llu seconds=%.3f\n",
+		fprintf(stderr, "sparkpipe_stage_runner: bulk collectives rank=%u all_gather=%llu all_reduce=%llu reduce_scatter=%llu all_to_all=%llu oversize_on_mesh=%llu bytes=%llu seconds=%.3f waiting_for_gpu=%.3f on_wire=%.3f\n",
 			state->tp_rank, (unsigned long long)bulk->calls[SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER],
 			(unsigned long long)bulk->calls[SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16],
 			(unsigned long long)bulk->calls[SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16],
 			(unsigned long long)bulk->calls[SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL], (unsigned long long)bulk->oversize, (unsigned long long)bulk->bytes,
-			(double)bulk->ns / 1e9);
+			(double)bulk->ns / 1e9, (double)bulk->sync_ns / 1e9, (double)bulk->wire_ns / 1e9);
 	if ( bulk->stream != 0 )
 		SparkWeightStreamClose(bulk->stream);
 	if ( bulk->region != 0 )
@@ -704,9 +706,21 @@ static SparkStatus StageRunnerBulkCopy(void *destination, const void *source, ui
 	return cudaMemcpyAsync(destination, source, (size_t)bytes, cudaMemcpyDefault, stream) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
 }
 
-static SparkStatus StageRunnerBulkSync(cudaStream_t stream)
+static SparkStatus StageRunnerBulkSync(StageRunnerBulk *bulk, cudaStream_t stream)
 {
-	return cudaStreamSynchronize(stream) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+	const uint64_t mark = StageRunnerNowNs();
+	const cudaError_t error = cudaStreamSynchronize(stream);
+	bulk->sync_ns += StageRunnerNowNs() - mark;
+	return error == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+}
+
+static SparkStatus StageRunnerBulkWire(StageRunnerBulk *bulk, uint32_t gather, uint64_t source, uint64_t pitch, uint64_t bytes, uint64_t landing)
+{
+	const uint64_t mark = StageRunnerNowNs();
+	const SparkStatus status = gather != 0u ? SparkWeightStreamBroadcast(bulk->stream, source, bytes, landing, bulk->tag++) :
+		SparkWeightStreamExchange(bulk->stream, source, pitch, bytes, landing, bulk->tag++);
+	bulk->wire_ns += StageRunnerNowNs() - mark;
+	return status;
 }
 
 static SparkStatus StageRunnerBulkRun(SparkStageRunnerState *state, cudaStream_t stream, uint32_t operation, uint64_t elements, const void *local, void *full)
@@ -723,10 +737,9 @@ static SparkStatus StageRunnerBulkRun(SparkStageRunnerState *state, cudaStream_t
 	else if ( status == SPARK_STATUS_OK && cudaMemcpy2DAsync(bulk->region, (size_t)pitch, local, (size_t)bytes, (size_t)bytes, degree, cudaMemcpyDefault, stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK )
-		status = StageRunnerBulkSync(stream);
+		status = StageRunnerBulkSync(bulk, stream);
 	if ( status == SPARK_STATUS_OK )
-		status = gather != 0u ? SparkWeightStreamBroadcast(bulk->stream, landing + (uint64_t)rank * bytes, bytes, landing, bulk->tag++) :
-			SparkWeightStreamExchange(bulk->stream, 0u, pitch, bytes, landing, bulk->tag++);
+		status = gather != 0u ? StageRunnerBulkWire(bulk, 1u, landing + (uint64_t)rank * bytes, 0u, bytes, landing) : StageRunnerBulkWire(bulk, 0u, 0u, pitch, bytes, landing);
 	if ( status == SPARK_STATUS_OK && sums != 0u )
 	{
 		uint16_t *share = (uint16_t *)full + (operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 ? (uint64_t)rank * (bytes / sizeof(uint16_t)) : 0u);
@@ -736,9 +749,9 @@ static SparkStatus StageRunnerBulkRun(SparkStageRunnerState *state, cudaStream_t
 		{
 			status = StageRunnerBulkCopy(bulk->region + landing + (uint64_t)rank * bytes, share, bytes, stream);
 			if ( status == SPARK_STATUS_OK )
-				status = StageRunnerBulkSync(stream);
+				status = StageRunnerBulkSync(bulk, stream);
 			if ( status == SPARK_STATUS_OK )
-				status = SparkWeightStreamBroadcast(bulk->stream, landing + (uint64_t)rank * bytes, bytes, landing, bulk->tag++);
+				status = StageRunnerBulkWire(bulk, 1u, landing + (uint64_t)rank * bytes, 0u, bytes, landing);
 			if ( status == SPARK_STATUS_OK )
 				status = StageRunnerBulkCopy(full, bulk->region + landing, (uint64_t)degree * bytes, stream);
 		}
