@@ -395,7 +395,6 @@ def check_service(failures):
             "COINPAYMENTS_API": f"http://127.0.0.1:{fake.server_address[1]}/api/v2",
             "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
             "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}",
-            "SPARKPIPE_PAY_SUPPLIER_ADDRESS_KO": "서울특별시 용산구 시험로 1", "SPARKPIPE_PAY_SUPPLIER_ADDRESS_EN": "1 Test-ro, Yongsan-gu, Seoul",
         })
         sp.clock = lambda: NOW[0]
         sp.LIMITS["order"] = (40, 600)
@@ -636,12 +635,9 @@ def plan_order_flow(failures, cfg, app, fake, buyer, mailbox, port, work):
     team, other = Client(port, origin="https://sparkpipe.ai"), Client(port, origin="https://sparkpipe.ai")
     sign_in(team, mailbox, "cto@plan.example", company="Plan Co Ltd", accept=True)
     sign_in(other, mailbox, "dev@solo.example", company="Jane Kim", accept=True)
-    supplier = dict(cfg.supplier)
-    cfg.supplier["ko"] = ""
-    status, closed = team("POST", "/plans/quote", CHOICE)
-    cfg.supplier.update(supplier)
-    if status != 503 or closed.get("reason") != "plans_closed":
-        failures.append(f"Plan Orders open without our notice address: {status} {closed}")
+    parties = {(name, lang): next(p for p in (Path(cfg.site) / "terms" / f"{name}-{lang}.md").read_text().split("\n\n") if "641-87-03809" in p) for name in ("agreement", "market-rules") for lang in ("ko", "en")}
+    if any(sp.SUPPLIER[lang] not in text for (_, lang), text in parties.items()):
+        failures.append(f"the address every Plan Order states is not the one the Customer Agreement and the Hour Market Rules publish: {sp.SUPPLIER}")
     if Client(port, origin="https://sparkpipe.ai")("POST", "/plans/quote", CHOICE)[0] != 401:
         failures.append("a Plan Order is quoted without signing in")
     customer, office = CHOICE["customer"], CHOICE["office"]
@@ -670,9 +666,9 @@ def plan_order_flow(failures, cfg, app, fake, buyer, mailbox, port, work):
             or "Windows (clause 17.1)" in rows or "Published settings (clause 9.3)" in rows or rows.get("Maintenance allowance (clause 4.6)") != "As published when this Plan Order is made: 3 hours a week per Fleet"
             or not rows.get("Customer", "").startswith("Plan Co Ltd, a company organised under the laws of Delaware, United States, registration number 7781234")
             or cfg.terms("agreement-ko.md") not in rows.get("Customer Agreement (clause 9.1)", "") or cfg.terms("market-rules-en.md") not in rows.get("Customer Agreement (clause 9.1)", "")
-            or not rows.get("Customer Agreement (clause 9.1)", "").startswith("Version of ") or rows.get("Supplier notice address and email (clause 11.7)") != "1 Test-ro, Yongsan-gu, Seoul; hyor@sparkpipe.ai"
+            or not rows.get("Customer Agreement (clause 9.1)", "").startswith("Version of ") or rows.get("Supplier notice address and email (clause 11.7)") != sp.SUPPLIER["en"] + "; hyor@sparkpipe.ai"
             or ko.get("플랜 기간의 시간(제17.3조)") != "6,579시간" or ko.get("업무 시간(제17.1조)") != "Asia/Seoul 현지 시각 09:00부터 18:00까지(9시간)" or ko.get("표준시간대(제17.1조)") != "Asia/Seoul"
-            or ko.get("공급자 통지 주소 및 이메일(제11.7조)") != "서울특별시 용산구 시험로 1, hyor@sparkpipe.ai"
+            or ko.get("공급자 통지 주소 및 이메일(제11.7조)") != sp.SUPPLIER["ko"] + ", hyor@sparkpipe.ai"
             or hashlib.sha256(quote["text"].encode()).hexdigest() != quote["hash"] or not quote["text"].index("# 플랜 주문서") < quote["text"].index("# Plan Order")):
         failures.append(f"the Plan Order quote differs from the Customer Agreement's example and form: {status} {quote.get('hours')} {quote.get('total')} {rows} {ko}")
         return
@@ -955,7 +951,6 @@ def toss_env(work, fake, mailbox, keys, name="data", sandbox=False):
         "SPARKPIPE_PAY_DATA": str(work / name), "SPARKPIPE_PAY_SITE": str(work / "site"),
         "COINPAYMENTS_API": "http://127.0.0.1:9/api/v2", "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
         "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}", "TOSS_API": f"http://127.0.0.1:{fake.server_address[1]}",
-        "SPARKPIPE_PAY_SUPPLIER_ADDRESS_KO": "서울특별시 용산구 시험로 1", "SPARKPIPE_PAY_SUPPLIER_ADDRESS_EN": "1 Test-ro, Yongsan-gu, Seoul",
     }
     if keys:
         env.update(TOSS_CLIENT_KEY=keys[0], TOSS_SECRET_KEY=keys[1])
