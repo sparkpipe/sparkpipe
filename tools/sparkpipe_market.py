@@ -226,6 +226,9 @@ class State:
         lots.sort(key=lambda lot: (lot["expires"], lot["issued"]))
 
     def on_debit(self, data):
+        if data.get("lot"):
+            next(lot for lot in self.lots[data["account"]] if lot["lot"] == data["lot"])["hc"] -= Decimal(data["hc"])
+            return
         self.take(data["account"], data["hc"], data["now"])
 
     def on_hold(self, data):

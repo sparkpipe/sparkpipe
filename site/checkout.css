@@ -89,3 +89,13 @@ td .btn.small { min-height: 30px; }
 }
 .stack .stack { padding-bottom: 0; }
 .card .readout strong { font-size: clamp(20px, 2.2vw, 28px); text-align: right; }
+.custom .unit { flex: 0 0 auto; min-width: 150px; }
+.tiles.methods { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); margin-bottom: 4px; }
+.tiles .tile.method { min-height: 76px; }
+.tile.method b { font-size: 17px; line-height: 1.2; }
+.toss-box { display: grid; gap: 14px; }
+.toss-box > div:empty { display: none; }
+@media (max-width: 560px) {
+  .tiles.methods { grid-template-columns: minmax(0, 1fr); }
+  .custom { flex-wrap: wrap; }
+}

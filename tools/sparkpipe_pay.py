@@ -20,7 +20,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
-from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
+from fractions import Fraction
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, parseaddr
 
@@ -32,7 +33,9 @@ from sparkpipe_market import Refusal
 
 KST = timezone(timedelta(hours=9))
 USD = "5057"
+KRW = "KRW"
 CENT = Decimal("0.01")
+WON = Decimal("1")
 HOUR_STEP = Decimal("0.0001")
 LEDGER_IDS = ("order", "invoice", "reservation", "ask", "bid", "lot", "key", "ref", "plan")
 TERMS = {"ko": "agreement-ko.md", "en": "agreement-en.md", "rules_ko": "market-rules-ko.md", "rules_en": "market-rules-en.md"}
@@ -41,6 +44,16 @@ PAYMENTS = ("upfront", "gates")
 EVENTS = ["invoicePending", "invoicePaid", "invoiceCompleted", "invoiceCancelled", "invoiceTimedOut"]
 OPEN = {"unpaid", "pending", "paid"}
 CLOSED = {"cancelled", "timedout", "deleted", "failed"}
+PROCESSORS = ("coinpayments", "toss")
+TOSS_OPEN = ("created", "waiting")
+TOSS_SECONDS = 2700
+TOSS_KEY = re.compile(r"^[!-~]{1,200}$")
+REFUND_CLAUSES = ("3.2", "3.5", "10.4", "20.2", "24.3", "law")
+CASH_METHODS = ("계좌이체", "가상계좌")
+METHOD_EN = {"카드": "card", "가상계좌": "virtual account", "계좌이체": "bank transfer", "간편결제": "easy pay", "휴대폰": "mobile phone"}
+BANKS = {code: name for codes, name in (
+    (("39", "039"), "경남은행"), (("34", "034"), "광주은행"), (("06", "004"), "KB국민은행"), (("03", "003"), "IBK기업은행"), (("11", "011"), "NH농협은행"), (("31", "031"), "iM뱅크"), (("32", "032"), "부산은행"),
+    (("07", "007"), "Sh수협은행"), (("88", "088"), "신한은행"), (("20", "020"), "우리은행"), (("71", "071"), "우체국"), (("37", "037"), "전북은행"), (("81", "081"), "하나은행")) for code in codes}
 COINS = {
     "USDC.BASE": "51:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
     "USDC.SOL": "55:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
@@ -58,6 +71,7 @@ COINS = {
 EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,189}\.[^@\s.]{2,}$")
 CODE = re.compile(r"^\d{6}$")
 ORDER_PATH = re.compile(r"^/order/(SP[A-Z2-7]{16})$")
+TOSS_PATH = re.compile(r"^/toss/(success|fail)/(SP[A-Z2-7]{16})$")
 PLAN_PATH = re.compile(r"^/plan/(PO[A-Z2-7]{16})$")
 PLAN_ID = re.compile(r"^PO[A-Z2-7]{16}$")
 BRN = re.compile(r"^\d{3}-\d{2}-\d{5}$")
@@ -88,6 +102,33 @@ def money(value):
 
 def text_money(value):
     return format(money(value), "f")
+
+
+def won(value):
+    return Decimal(value).quantize(WON, rounding=ROUND_HALF_UP)
+
+
+def text_won(value):
+    return format(won(value), "f")
+
+
+def unit_of(currency):
+    return WON if currency == KRW else CENT
+
+
+def amount_text(value, currency):
+    return f"{int(won(value)):,} KRW" if currency == KRW else f"{text_money(value)} USD"
+
+
+def value_text(price, hours, currency, up=False):
+    unit = unit_of(currency)
+    steps = Fraction(str(price)) * Fraction(hours) / Fraction(str(unit))
+    whole = -(-steps // 1) if up else (steps + Fraction(1, 2)) // 1
+    return format(max(Decimal(0), Decimal(whole) * unit).quantize(unit), "f")
+
+
+def order_hours(order, net=None):
+    return Fraction(str(order["net"] if net is None else net)) / Fraction(str(order["price"]))
 
 
 def stamp_time(text):
@@ -240,6 +281,14 @@ class Config:
         if not self.sandbox and not (self.client_id and self.secret):
             raise ValueError("COINPAYMENTS_CLIENT_ID and COINPAYMENTS_CLIENT_SECRET_FILE are required outside the sandbox")
         self.webhook_url = self.public + self.prefix + "/coinpayments"
+        self.toss_api = env.get("TOSS_API", "https://api.tosspayments.com").rstrip("/")
+        self.toss_client = env.get("TOSS_CLIENT_KEY", "").strip()
+        self.toss_secret = env.get("TOSS_SECRET_KEY", "").strip()
+        self.toss_variant = env.get("TOSS_VARIANT_KEY", "").strip() or "DEFAULT"
+        mode = "test_" if self.sandbox else "live_"
+        if (self.toss_client or self.toss_secret) and not (self.toss_client.startswith(mode) and self.toss_secret.startswith(mode)):
+            raise ValueError(f"TOSS_CLIENT_KEY and TOSS_SECRET_KEY must both be Toss Payments {mode[:-1]} keys " + ("in the sandbox" if self.sandbox else "outside the sandbox"))
+        self.toss = bool(self.toss_client and self.toss_secret)
         self.pool_upstream = env.get("SPARKPIPE_POOL_UPSTREAM", "").rstrip("/")
         self.pool_key = read_secret(env.get("SPARKPIPE_POOL_KEY_FILE")).decode()
         self.sandbox_accelerators = json.loads(env.get("SPARKPIPE_PAY_SANDBOX_ACCELERATORS") or "[]") if self.sandbox else []
@@ -303,6 +352,36 @@ def call(cfg, method, path, body=None):
             return json.loads(response.read() or b"{}")
     except urllib.error.HTTPError as error:
         raise RuntimeError(f"{method} {path}: HTTP {error.code} {error.read()[:300].decode('utf-8', 'replace')}") from None
+
+
+class Declined(Exception):
+    def __init__(self, code, text, status):
+        super().__init__(f"{code}: {text}")
+        self.code = code
+        self.status = status
+
+
+def toss_call(cfg, method, path, body=None, idempotency=None):
+    token = base64.b64encode((cfg.toss_secret + ":").encode()).decode()
+    headers = {"Authorization": "Basic " + token, "Content-Type": "application/json"}
+    if idempotency:
+        headers["Idempotency-Key"] = idempotency
+    payload = None if body is None else json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode()
+    request = urllib.request.Request(cfg.toss_api + path, data=payload, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as error:
+        try:
+            found = json.loads(error.read() or b"{}")
+        except ValueError:
+            found = {}
+        found = found if isinstance(found, dict) else {}
+        raise Declined(str(found.get("code") or "HTTP_" + str(error.code))[:100], str(found.get("message") or "")[:300], error.code) from None
+
+
+def toss_payment(cfg, key):
+    return toss_call(cfg, "GET", "/v1/payments/" + urllib.parse.quote(key, safe=""))
 
 
 def send_mail(cfg, to, subject, text):
@@ -381,8 +460,19 @@ class Book:
             self.orders[data["order"]]["state"] = data["state"]
             if "received" in data:
                 self.orders[data["order"]]["received"] = data["received"]
+        elif kind == "toss_payment":
+            self.orders[data["order"]]["payment_key"] = data["paymentKey"]
+        elif kind == "toss_state":
+            self.orders[data["order"]].update({name: data[key] for key, name in (("state", "state"), ("reason", "reason"), ("method", "method"), ("deposit", "deposit"), ("expires", "expires")) if key in data})
         elif kind == "payment":
-            self.orders[data["order"]].update(state="completed", paid=line["at"], received=data["received"])
+            self.orders[data["order"]].update(state="completed", paid=line["at"], received=data["received"], method=data.get("method"), tax_invoice=data.get("taxInvoice"))
+        elif kind == "refund":
+            order = self.orders[data["order"]]
+            order["refunded"] = format(Decimal(order.get("refunded") or "0") + Decimal(data["amount"]), "f")
+            if Decimal(data["balance"]) == 0:
+                order["state"] = "refunded"
+        elif kind == "tax_invoice":
+            self.orders[data["order"]]["tax_invoice_number"] = data["number"]
         elif kind == "hours_issued":
             self.orders[data["order"]].update(issued=True, issued_hours=data["hours"], paid_net=data["net"])
         elif kind == "plan_order":
@@ -392,14 +482,17 @@ class Book:
         elif kind in market.KINDS:
             self.market.apply(line)
 
+    def expiry(self, order):
+        return stamp_time(order["expires"]) if order.get("expires") else stamp_time(order["created"]) + timedelta(seconds=PENDING_SECONDS)
+
     def waiting(self, order, now):
-        return order["state"] not in CLOSED and order["state"] != "completed" and not order["issued"] and (now - stamp_time(order["created"])).total_seconds() < PENDING_SECONDS
+        return order["state"] not in CLOSED and order["state"] != "completed" and not order["issued"] and now < self.expiry(order)
 
     def prepaid(self, plan):
-        return sorted((stamp_time(order["paid"]), Decimal(order["paid_net"])) for order in self.orders.values() if order.get("plan") == plan and order["issued"])
+        return sorted((stamp_time(order["paid"]), order_hours(order, order["paid_net"])) for order in self.orders.values() if order.get("plan") == plan and order["issued"])
 
     def pending(self, plan, now):
-        return sum((Decimal(order["net"]) for order in self.orders.values() if order.get("plan") == plan and self.waiting(order, now)), Decimal(0))
+        return sum((order_hours(order) for order in self.orders.values() if order.get("plan") == plan and self.waiting(order, now)), Fraction(0))
 
     def paid_hours(self, plan, without=None):
         return sum((Decimal(order["issued_hours"]) for order in self.orders.values() if order.get("plan") == plan and order["issued"] and order["order"] != without), Decimal(0))
@@ -409,37 +502,39 @@ def standing(pricing, book, plan, now):
     windows, fleets = plan_fields(pricing, plan)
     start = date.fromisoformat(plan["start"])
     price = money(plan["hourPrice"])
+    price_won = won(plan["hourPriceKRW"]) if plan.get("hourPriceKRW") else None
     hours = tranches(pricing, plan)
     end = term_end(start, plan["months"])
     today = local_day(now)
     paid = book.prepaid(plan["id"])
-    paid_net = sum((net for _, net in paid), Decimal(0))
+    paid_hours = sum((count for _, count in paid), Fraction(0))
     pending = book.pending(plan["id"], now)
     total = price * sum(hours)
     if plan["payment"] == "upfront":
         gates = [{"name": "Payment", "tranches": None, "dueDay": 1}]
     else:
         gates = pricing["gates"]
-    ended, stop, missed = None, plan.get("ended"), False
+    ended, stop, missed, next_won = None, plan.get("ended"), False, None
     if today > end:
         ended = f"The term ended on {end.isoformat()}."
     elif stop and today >= date.fromisoformat(stop["day"]):
         ended = f"The plan ended on {stop['day']}: {stop['reason']}"
     elif plan["payment"] == "gates" and not paid and today > start + timedelta(days=pricing["phaseADays"] - 1):
         ended = "Phase A ended with no payment, so the plan ended with nothing owed."
-    elif plan["payment"] == "upfront" and today > start and paid_net < total:
+    elif plan["payment"] == "upfront" and today > start and paid_hours < sum(hours):
         ended = "The plan was not paid in full by its Start Date, so it ended."
     next_gate = None
     for gate in gates:
         due = start + timedelta(days=gate["dueDay"] - 1)
-        need = price * sum(hours if gate["tranches"] is None else hours[:gate["tranches"]])
+        need = sum(hours if gate["tranches"] is None else hours[:gate["tranches"]])
         cutoff = datetime(due.year, due.month, due.day, 23, 59, 59, tzinfo=KST)
-        have = sum((net for moment, net in paid if moment <= cutoff), Decimal(0))
+        have = sum((count for moment, count in paid if moment <= cutoff), Fraction(0))
         if today > due:
             if plan["payment"] == "gates" and paid and have < need and not ended:
                 ended, missed = f"{gate['name']} was missed on {due.isoformat()}, so no further prepayment can be made.", True
-        elif next_gate is None and paid_net + pending < need:
-            next_gate = {"name": gate["name"], "due": due.isoformat(), "amount": text_money(need - paid_net - pending)}
+        elif next_gate is None and paid_hours + pending < need:
+            next_gate = {"name": gate["name"], "due": due.isoformat(), "amount": value_text(price, need - paid_hours - pending, "USD", up=True)}
+            next_won = value_text(price_won, need - paid_hours - pending, KRW, up=True) if price_won else None
     held = None if ended else end
     if missed:
         covered, cursor = book.paid_hours(plan["id"]), Decimal(0)
@@ -461,12 +556,15 @@ def standing(pricing, book, plan, now):
         "lock": list(plan.get("lock") or []),
         "payment": plan["payment"],
         "price": text_money(price),
+        "priceKRW": None if price_won is None else text_won(price_won),
         "hours": sum(hours),
         "total": text_money(total),
-        "paid": text_money(paid_net),
-        "pending": text_money(pending),
-        "remaining": text_money(max(Decimal(0), total - paid_net - pending)),
+        "paid": value_text(price, paid_hours, "USD"),
+        "pending": value_text(price, pending, "USD"),
+        "remaining": value_text(price, sum(hours) - paid_hours - pending, "USD", up=True),
+        "remainingKRW": None if price_won is None else value_text(price_won, sum(hours) - paid_hours - pending, KRW, up=True),
         "nextGate": None if ended else next_gate,
+        "nextGateKRW": None if ended else next_won,
         "ended": ended,
         "heldUntil": held.isoformat() if held and held >= start else None,
     }
@@ -500,6 +598,13 @@ def money_field(value):
     if amount is None or not amount.is_finite() or amount.as_tuple().exponent < -2:
         raise Refusal("Enter an amount in US dollars, to the cent.")
     return money(amount)
+
+
+def won_field(value):
+    text = str(value) if isinstance(value, (int, str)) and not isinstance(value, bool) else ""
+    if not re.fullmatch(r"[0-9]{1,12}", text.strip()):
+        raise Refusal("Enter an amount in Korean won, in whole won.")
+    return Decimal(text.strip())
 
 
 def coin_field(value):
@@ -549,6 +654,7 @@ def order_rows(record, lang):
     ko = lang == "ko"
     c, a, s = record["customer"], record["agreement"], record["supplier"]
     usd = lambda value: format(Decimal(value), ",.2f")
+    krw = lambda value: format(Decimal(value), ",.0f")
     if c["kind"] == "company":
         customer = f"{c['name']}. {c['jurisdiction']}의 법률에 따라 설립된 회사로서, 등록번호 {c['registration']}, 소재지 {c['address']}" if ko else f"{c['name']}, a company organised under the laws of {c['jurisdiction']}, registration number {c['registration']}, registered address {c['address']}"
     else:
@@ -569,9 +675,9 @@ def order_rows(record, lang):
             ("이용 요일(제17.2조)", "매일" if record["days"] == "every" else "평일"),
             ("플릿 수(제18.1조)", str(record["fleets"])),
             ("플릿 고정(제19조)", ", ".join(fleet_name(f, lang) for f in record["lock"]) or "없음"),
-            ("시간당 가격(제16.4조)", f"플릿시간당 미화 {usd(record['hourPrice'])}달러(USD), 부가가치세 별도, 플릿 고정 포함, 플랜 기간 동안 고정"),
+            ("시간당 가격(제16.4조)", f"아래 지급 통화에 따라 플릿시간당 {krw(record['hourPriceKRW'])}원(KRW) 또는 미화 {usd(record['hourPrice'])}달러(USD), 부가가치세 별도, 플릿 고정 포함, 플랜 기간 동안 고정"),
             ("플랜 기간의 시간(제17.3조)", f"{record['hours']:,}시간"),
-            ("플랜 기간의 대금(제16.4조)", f"미화 {usd(record['total'])}달러(USD), 부가가치세 별도"),
+            ("플랜 기간의 대금(제16.4조)", f"{krw(record['totalKRW'])}원(KRW) 또는 미화 {usd(record['total'])}달러(USD), 부가가치세 별도"),
             ("납부 방식(제20조)", payment),
             ("선택 모델(제7.2조)", models),
             ("성능 기준(제23.2조)", f"기준치의 {record['threshold']}%"),
@@ -579,7 +685,7 @@ def order_rows(record, lang):
             ("공급자 통지 주소 및 이메일(제11.7조)", f"{s['ko']}, {s['email']}"),
             ("고객 통지 주소 및 이메일(제11.7조)", f"{c['address']}, {c['notice']}"),
             ("고객의 부가가치세 지위(제3.2조)", f"대한민국 사업자등록번호 {c['brn']}" if c["brn"] else "대한민국 내 사업장 없음"),
-            ("지급 통화 및 계좌(제3.3조)", "미국 달러 스테이블코인, 제3.3조 (다)목"),
+            ("지급 통화 및 계좌(제3.3조)", "원화(KRW), 제3.3조 (가)목: 토스페이먼츠 / 미국 달러 스테이블코인, 제3.3조 (다)목"),
             ("공개 설정(제9.3조)", f"플랜 주문서 성립 시 공개된 설정: 반납 수수료 {fee}%, 점검 허용 시간 플릿당 매주 {allowance}시간, 시간창 시각은 위 시간창란에 기재된 바에 따름"),
             ("플릿 요율(제16.5조)", f"플랜 주문서 성립 시 플릿 목록에 공개된 요율: {rates}"),
         ]
@@ -594,9 +700,9 @@ def order_rows(record, lang):
         ("Days (clause 17.2)", "Every day" if record["days"] == "every" else "Weekdays"),
         ("Fleets (clause 18.1)", str(record["fleets"])),
         ("Fleet lock (clause 19)", ", ".join(fleet_name(f, lang) for f in record["lock"]) or "None"),
-        ("Hour Price (clause 16.4)", f"USD {usd(record['hourPrice'])} per fleet-hour, exclusive of VAT, including any Fleet lock, fixed for the Term"),
+        ("Hour Price (clause 16.4)", f"KRW {krw(record['hourPriceKRW'])} or USD {usd(record['hourPrice'])} per fleet-hour, in the payment currency below, exclusive of VAT, including any Fleet lock, fixed for the Term"),
         ("Hours in the Term (clause 17.3)", f"{record['hours']:,}"),
-        ("Price of the Term (clause 16.4)", f"USD {usd(record['total'])}, exclusive of VAT"),
+        ("Price of the Term (clause 16.4)", f"KRW {krw(record['totalKRW'])} or USD {usd(record['total'])}, exclusive of VAT"),
         ("Payment schedule (clause 20)", payment),
         ("Chosen Models (clause 7.2)", models),
         ("Performance Threshold (clause 23.2)", f"{record['threshold']}% of the Baseline"),
@@ -604,7 +710,7 @@ def order_rows(record, lang):
         ("Supplier notice address and email (clause 11.7)", f"{s['en']}; {s['email']}"),
         ("Customer notice address and email (clause 11.7)", f"{c['address']}; {c['notice']}"),
         ("Customer VAT status (clause 3.2)", f"Korean business registration number {c['brn']}" if c["brn"] else "No place of business in the Republic of Korea"),
-        ("Payment currency and account (clause 3.3)", "US dollar stablecoin, clause 3.3(c)"),
+        ("Payment currency and account (clause 3.3)", "KRW, clause 3.3(a): Toss Payments / US dollar stablecoin, clause 3.3(c)"),
         ("Published settings (clause 9.3)", f"As published when this Plan Order is made: release fee {fee}%; maintenance allowance {allowance} hours a week per Fleet; window times as stated under Windows"),
         ("Fleet Rates (clause 16.5)", f"As published on the Fleet List when this Plan Order is made: {rates}"),
     ]
@@ -701,12 +807,25 @@ def paid_with(remote):
     return sorted({str(p["paymentCurrencySymbol"]) for p in remote["payments"]})
 
 
-def receipt(cfg, order, issued, received, paid):
+def tax_note(order, payment):
+    if order.get("currency") != KRW:
+        return []
+    if payment.get("receiptUrl") and not payment["taxInvoice"]["needed"]:
+        return ["", f"Your card slip, which is the VAT document for this payment: {payment['receiptUrl']}"]
+    if payment["taxInvoice"]["brn"]:
+        return ["", f"We issue an electronic tax invoice (세금계산서) for this payment to business registration number {payment['taxInvoice']['brn']}."]
+    return ["", "For an electronic tax invoice (세금계산서) for this payment, reply with your Korean business registration number."]
+
+
+def receipt(cfg, order, issued, payment):
+    currency = order.get("currency", "USD")
+    paid, received = payment["paidWith"], payment["received"]
     coin = ", ".join(sorted({symbol.split(".")[0] for symbol in paid}))
+    way = f"by {METHOD_EN.get(payment.get('method'), payment.get('method'))} through Toss Payments" if order.get("processor") == "toss" else f"in {coin}"
     if order["product"] == "credits":
         what = f"{issued['hours']} hour-credits, usable until {market.stamp_time(issued['expires']).astimezone(KST).strftime('%Y-%m-%d')}"
     else:
-        what = f"a prepayment of {issued['net']} USD under plan {order['plan']}: {issued['hours']} fleet-hours"
+        what = f"a prepayment of {amount_text(issued['net'], currency)} under plan {order['plan']}: {issued['hours']} fleet-hours"
     if issued.get("short"):
         lines = [
             f"Order {order['order']} was for {order['total']} USD; {received} USD arrived. We issued what it covers: {what}.",
@@ -717,10 +836,10 @@ def receipt(cfg, order, issued, received, paid):
         lines = [
             f"We received your payment for order {order['order']}: {what}.",
             "",
-            f"Subtotal: {order['net']} USD",
-            f"VAT: {order['vat']} USD",
-            f"Total paid in {coin}: {order['total']} USD",
-        ]
+            f"Subtotal: {amount_text(order['net'], currency)}",
+            f"VAT: {amount_text(order['vat'], currency)}",
+            f"Total paid {way}: {amount_text(order['total'], currency)}",
+        ] + tax_note(order, payment)
     return "\n".join(lines + [
         "",
         f"They are in your account: {cfg.public}/market.html" if order["product"] == "credits" else f"They are in your account: {cfg.public}/account.html",
@@ -970,15 +1089,16 @@ class App:
         if not isinstance(models, list) or not models or not all(isinstance(m, str) and m in listed for m in models) or len(set(models)) != len(models):
             raise Refusal("Choose at least one of the models.")
         price = money(Decimal(str(term["hourPrice"])) + (Decimal(str(offer["lockPremium"])) if lock else 0))
+        price_won = won(Decimal(str(term["hourPriceKRW"])) + (Decimal(str(offer["lockPremiumKRW"])) if lock else 0))
         plan = {
             "id": ident, "plan": ident, "account": account, "email": record["email"], "company": record["company"],
             "start": start.isoformat(), "months": months, "windows": [{key: w[key] for key in ("id", "name", "from", "to", "localDay")} for w in pricing["windows"] if w["id"] in chosen],
-            "days": body["days"], "fleets": fleets, "lock": [], "hourPrice": text_money(price), "payment": term["payment"],
+            "days": body["days"], "fleets": fleets, "lock": [], "hourPrice": text_money(price), "hourPriceKRW": text_won(price_won), "payment": term["payment"],
             "releaseFee": format(Decimal(str(pricing["market"]["releaseFee"])), "f"), "maintenanceHoursPerWeek": offer["maintenanceHoursPerWeek"],
         }
         details = {
             "customer": self.customer_field(body.get("customer"), record), "models": [{"id": m, "name": listed[m]["name"]} for m in listed if m in models],
-            "threshold": THRESHOLD, "currency": "stablecoin", "rates": [[f["id"], format(f["rate"].quantize(CENT), "f")] for f in self.market.fleets(pricing)],
+            "threshold": THRESHOLD, "currency": "won or stablecoin", "rates": [[f["id"], format(f["rate"].quantize(CENT), "f")] for f in self.market.fleets(pricing)],
         }
         return plan, details, lock
 
@@ -1018,7 +1138,7 @@ class App:
         schedule = [{"name": "Payment", "due": plan["start"]}] if plan["payment"] == "upfront" else [{"name": g["name"], "due": (start + timedelta(days=g["dueDay"] - 1)).isoformat()} for g in pricing["gates"]]
         record = dict({key: value for key, value in plan.items() if key != "id"}, **details)
         record.update(
-            end=term_end(start, plan["months"]).isoformat(), hours=hours, total=text_money(money(plan["hourPrice"]) * hours), schedule=schedule,
+            end=term_end(start, plan["months"]).isoformat(), hours=hours, total=text_money(money(plan["hourPrice"]) * hours), totalKRW=text_won(won(plan["hourPriceKRW"]) * hours), schedule=schedule,
             agreement=dict(self.current_terms(), version={"ko": self.cfg.version("ko"), "en": self.cfg.version("en")}),
             supplier={"ko": self.cfg.supplier["ko"], "en": self.cfg.supplier["en"], "email": self.cfg.notify},
         )
@@ -1037,6 +1157,8 @@ class App:
             "plan": record["plan"], "hash": record["hash"], "text": record["text"], "rows": text_rows(record["text"]), "line": plan_line(record),
             "start": record["start"], "end": record["end"], "hours": record["hours"], "price": record["hourPrice"], "total": record["total"],
             "vat": text_money(vat), "withVat": text_money(net + vat), "lock": record["lock"], "payment": record["payment"], "schedule": record["schedule"],
+            "priceKRW": record["hourPriceKRW"], "totalKRW": record["totalKRW"], "vatKRW": text_won(Decimal(record["totalKRW"]) * Decimal(str(pricing["vatRate"]))),
+            "withVatKRW": text_won(Decimal(record["totalKRW"]) + won(Decimal(record["totalKRW"]) * Decimal(str(pricing["vatRate"])))),
         }
 
     def quote_plan(self, body, account, ip):
@@ -1101,6 +1223,8 @@ class App:
         if not account or not isinstance(ident, str) or not ident or ident in self.book.plans:
             raise Refusal("A signed Plan Order needs an unused id and the email of an existing account.")
         record = {key: plan[key] for key in ("start", "months", "windows", "days", "fleets", "hourPrice", "payment", "releaseFee", "maintenanceHoursPerWeek")}
+        if plan.get("hourPriceKRW"):
+            record["hourPriceKRW"] = text_won(Decimal(str(plan["hourPriceKRW"])))
         record.update(id=ident, plan=ident, account=account, email=self.book.accounts[account]["email"], company=self.book.accounts[account]["company"], lock=list(plan.get("lock") or []), source="signed")
         tranches(pricing, record)
         with self.book.lock:
@@ -1152,46 +1276,77 @@ class App:
                 "plans": [dict(standing(pricing, self.book, p, now), line=plan_line(p), form=bool(p.get("text"))) for p in self.plans(account)],
             }
 
-    def prepayment_terms(self, pricing, body, account, now):
+    def prepayment_terms(self, pricing, body, account, now, currency):
         number = body.get("plan")
         found = next((p for p in self.plans(account) if isinstance(number, str) and p["id"] == number), None)
         if not found:
             raise Refusal("No plan with this number belongs to your account.", 404)
-        net = money_field(body.get("amount"))
-        if net < Decimal("1.00"):
-            raise Refusal("The smallest prepayment is 1.00 USD.")
+        if currency == KRW and not found.get("hourPriceKRW"):
+            raise Refusal("This Plan Order states its Hour Price in US dollars only. Pay it in USDC or USDT.", 409)
+        net = won_field(body.get("amount")) if currency == KRW else money_field(body.get("amount"))
+        smallest = Decimal(1000) if currency == KRW else Decimal("1.00")
+        if net < smallest:
+            raise Refusal(f"The smallest prepayment is {amount_text(smallest, currency)}.")
         state = standing(pricing, self.book, found, now)
         if state["ended"]:
             raise Refusal(state["ended"], 409)
-        if net > Decimal(state["remaining"]):
-            raise Refusal(f"At most {state['remaining']} USD remains to prepay, counting unpaid orders.", 409)
-        price = money(found["hourPrice"])
-        vat = money(net * Decimal(str(pricing["vatRate"])))
+        left = Decimal(state["remainingKRW"] if currency == KRW else state["remaining"])
+        if net > left:
+            raise Refusal(f"At most {amount_text(left, currency)} remains to prepay, counting unpaid orders.", 409)
+        price = won(found["hourPriceKRW"]) if currency == KRW else money(found["hourPrice"])
+        vat = (net * Decimal(str(pricing["vatRate"]))).quantize(unit_of(currency), rounding=ROUND_HALF_UP)
+        shown = text_won if currency == KRW else text_money
         return {
-            "product": "plan", "plan": found["id"],
-            "price": text_money(price), "hours": format((net / price).quantize(HOUR_STEP, rounding=ROUND_DOWN), "f"),
-            "net": text_money(net), "vat": text_money(vat), "total": text_money(net + vat),
+            "product": "plan", "plan": found["id"], "currency": "KRW" if currency == KRW else "USD",
+            "price": shown(price), "hours": format((net / price).quantize(HOUR_STEP, rounding=ROUND_DOWN), "f"),
+            "net": shown(net), "vat": shown(vat), "total": shown(net + vat),
         }
 
-    def credit_terms(self, pricing, body):
+    def credit_terms(self, pricing, body, currency):
         offer = pricing["market"]
+        if currency == KRW:
+            price, rate = won(Decimal(str(offer["hcPriceKRW"]))), Decimal(str(offer["hcPriceKRW"])) / Decimal(str(offer["hcPrice"]))
+            net = won_field(body.get("amount"))
+            low, high = (Decimal(str(offer["minPurchase"])) * rate).quantize(WON, rounding=ROUND_CEILING), (Decimal(100000) * rate).quantize(WON, rounding=ROUND_DOWN)
+            if not low <= net <= high:
+                raise Refusal(f"Buy at least {amount_text(low, KRW)} of HC, and at most {amount_text(high, KRW)} at a time.")
+            vat = won(net * Decimal(str(pricing["vatRate"])))
+            return {"product": "credits", "currency": "KRW", "hours": market.text_hc(net / price), "price": text_won(price), "net": text_won(net), "vat": text_won(vat), "total": text_won(net + vat), "terms": market.published_terms(offer)}
         net = money_field(body.get("amount"))
         if net < Decimal(str(offer["minPurchase"])) or net > 100000:
             raise Refusal(f"Buy at least {offer['minPurchase']} USD of HC, and at most 100,000 USD at a time.")
         price = money(Decimal(str(offer["hcPrice"])))
         vat = money(net * Decimal(str(pricing["vatRate"])))
-        return {"product": "credits", "hours": market.text_hc(net / price), "price": text_money(price), "net": text_money(net), "vat": text_money(vat), "total": text_money(net + vat), "terms": market.published_terms(offer)}
+        return {"product": "credits", "currency": "USD", "hours": market.text_hc(net / price), "price": text_money(price), "net": text_money(net), "vat": text_money(vat), "total": text_money(net + vat), "terms": market.published_terms(offer)}
 
     def buy(self, body, account, ip, agent):
-        if self.cfg.sandbox:
+        if self.cfg.sandbox and body.get("processor") != "toss":
             self.throttle("market", ip)
             pricing = self.cfg.pricing()
-            quote = self.credit_terms(pricing, body)
+            quote = self.credit_terms(pricing, body, "USD")
             return self.market.buy(account, Decimal(quote["net"]), pricing)
         return self.order(dict(body, product="credits"), account, ip, agent)
 
+    def priced(self, pricing, body, account, now, currency, ip, agent):
+        if body.get("product") == "credits":
+            quote = self.credit_terms(pricing, body, currency)
+            self.market.check_cover(Decimal(quote["hours"]), self.market.now(), pricing)
+            if not self.accepted(account, self.current_terms()):
+                if body.get("accept") is not True:
+                    raise Refusal("The Customer Agreement has changed since you accepted it. Accept the current text to continue.", 409, "terms")
+                self.accept(account, ip, agent)
+            return quote
+        if body.get("product") == "plan":
+            return self.prepayment_terms(pricing, body, account, now, currency)
+        raise Refusal("Choose hour-credits or a plan prepayment.")
+
     def order(self, body, account, ip, agent):
         self.throttle("order", ip)
+        processor = body.get("processor", "coinpayments")
+        if processor not in PROCESSORS:
+            raise Refusal("Pay by card or bank transfer through Toss Payments, or in USDC or USDT.")
+        if processor == "toss":
+            return self.toss_order(body, account, ip, agent)
         if self.cfg.sandbox:
             raise Refusal("The sandbox sells HC only, through the Hour Market test page.", 404)
         now = clock()
@@ -1199,18 +1354,8 @@ class App:
         pricing = self.cfg.pricing()
         with self.book.lock:
             record = self.book.accounts[account]
-            if body.get("product") == "credits":
-                quote = self.credit_terms(pricing, body)
-                self.market.check_cover(Decimal(quote["hours"]), self.market.now(), pricing)
-                if not self.accepted(account, self.current_terms()):
-                    if body.get("accept") is not True:
-                        raise Refusal("The Customer Agreement has changed since you accepted it. Accept the current text to continue.", 409, "terms")
-                    self.accept(account, ip, agent)
-            elif body.get("product") == "plan":
-                quote = self.prepayment_terms(pricing, body, account, now)
-            else:
-                raise Refusal("Choose hour-credits or a plan prepayment.")
-            quote.update(order=new_id("SP"), account=account, email=record["email"], company=record["company"], coin=coin)
+            quote = self.priced(pricing, body, account, now, "USD", ip, agent)
+            quote.update(order=new_id("SP"), account=account, email=record["email"], company=record["company"], processor="coinpayments", coin=coin)
             self.book.append("order", dict(quote, ip=ip, agent=agent))
         try:
             invoice = call(self.cfg, "POST", "/merchant/invoices", invoice_body(self.cfg, quote))["invoices"][0]
@@ -1224,7 +1369,8 @@ class App:
         return {"order": quote["order"], "checkout": link}
 
     def shown(self, order):
-        shown = {key: order.get(key) for key in ("order", "product", "hours", "net", "vat", "total", "plan", "coin", "state", "issued", "created", "paid", "received")}
+        shown = {key: order.get(key) for key in ("order", "product", "hours", "net", "vat", "total", "plan", "coin", "state", "issued", "created", "paid", "received", "processor", "method", "deposit", "refunded", "reason", "expires")}
+        shown["currency"] = order.get("currency", "USD")
         shown["issuedHours"] = None if order.get("issued_hours") is None else hours_number(order["issued_hours"])
         shown["checkout"] = order["link"] if order["state"] in ("unpaid", "pending") else None
         return shown
@@ -1344,22 +1490,251 @@ class App:
                 log(f"order {order_id}: {arrived} USD received covers no hours; refund it in CoinPayments")
                 self.mail(self.cfg.notify, f"Payment to review: {order_id}", f"Order {order_id} completed at CoinPayments with {arrived} USD received, which covers no hours. Refund it in CoinPayments.")
                 return None
-            paid = paid_with(remote)
-            if order["state"] != "completed":
-                self.book.append("payment", {"order": order_id, "invoice": order["invoice"], "total": order["total"], "received": arrived, "currency": currency, "paidWith": paid})
-            issued = {"order": order_id, "account": order["account"], "product": order["product"], "hours": hours, "net": net, "released": released, "short": not full}
-            if order["product"] == "plan":
-                issued.update(plan=order["plan"])
-            self.book.append("hours_issued", issued)
-            if order["product"] == "plan":
-                self.grant_paid(order["plan"], order_id, clock())
-            if order["product"] == "credits":
-                issued["expires"] = self.market.issue(order["account"], Decimal(hours), order_id, order["terms"])["expires"]
-            log(f"order {order_id}: paid, {hours} hours issued to {order['account']}")
-            self.mail(order["email"], f"Payment received: SparkPipe order {order_id}", receipt(self.cfg, order, issued, arrived, paid))
-            subject = f"Paid in part: {order['company']}, {arrived} of {order['total']} USD" if not full else f"Paid: {order['company']}, {order['total']} USD"
-            self.mail(self.cfg.notify, subject, f"Order {order_id}: {hours} of {order['hours']} hours for {order['company']} <{order['email']}>, {arrived} USD received of {order['total']} USD in {', '.join(paid)}.")
-            return issued
+            payment = {"order": order_id, "invoice": order["invoice"], "total": order["total"], "received": arrived, "currency": currency, "paidWith": paid_with(remote)}
+            return self.issue(order, payment, hours, net, released, not full)
+
+    def issue(self, order, payment, hours, net, released=False, short=False):
+        order_id, currency = order["order"], order.get("currency", "USD")
+        if order["state"] != "completed":
+            self.book.append("payment", payment)
+        issued = {"order": order_id, "account": order["account"], "product": order["product"], "hours": hours, "net": net, "released": released, "short": short}
+        if order["product"] == "plan":
+            issued.update(plan=order["plan"])
+        self.book.append("hours_issued", issued)
+        if order["product"] == "plan":
+            self.grant_paid(order["plan"], order_id, clock())
+        if order["product"] == "credits":
+            issued["expires"] = self.market.issue(order["account"], Decimal(hours), order_id, order["terms"])["expires"]
+        log(f"order {order_id}: paid, {hours} hours issued to {order['account']}")
+        self.mail(order["email"], f"Payment received: SparkPipe order {order_id}", receipt(self.cfg, order, issued, payment))
+        received, total = amount_text(payment["received"], currency), amount_text(order["total"], currency)
+        subject = f"Paid in part: {order['company']}, {payment['received']} of {total}" if short else f"Paid: {order['company']}, {total}"
+        self.mail(self.cfg.notify, subject, f"Order {order_id}: {hours} of {order['hours']} hours for {order['company']} <{order['email']}>, {received} received of {total} in {', '.join(payment['paidWith'])}.")
+        return issued
+
+    def toss_config(self):
+        return {"enabled": self.cfg.toss, "clientKey": self.cfg.toss_client or None, "variantKey": self.cfg.toss_variant, "test": self.cfg.sandbox}
+
+    def toss_order(self, body, account, ip, agent):
+        if not self.cfg.toss:
+            raise Refusal("Card and bank payments are not open yet. Pay in USDC or USDT, or write to hyor@sparkpipe.ai.", 503, "cards_closed")
+        if self.cfg.sandbox and body.get("product") != "credits":
+            raise Refusal("The sandbox sells HC only.", 404)
+        brn = optional_text(body.get("brn"), 20)
+        if brn and not BRN.match(brn):
+            raise Refusal("Give the Korean business registration number as 123-45-67890, or leave it empty.")
+        now, pricing = clock(), self.cfg.pricing()
+        with self.book.lock:
+            record = self.book.accounts[account]
+            quote = self.priced(pricing, body, account, now, KRW, ip, agent)
+            if not brn and quote["product"] == "plan":
+                brn = (self.book.plans[quote["plan"]].get("customer") or {}).get("brn") or ""
+            quote.update(order=new_id("SP"), account=account, email=record["email"], company=record["company"], processor="toss", brn=brn, expires=market.stamp(now + timedelta(seconds=TOSS_SECONDS)))
+            self.book.append("order", dict(quote, ip=ip, agent=agent))
+        log(f"order {quote['order']}: Toss Payments for {quote['total']} KRW")
+        return {"order": quote["order"], "processor": "toss", "toss": self.toss_request(quote)}
+
+    def toss_request(self, quote):
+        base = self.cfg.public + self.cfg.prefix + "/toss/"
+        what = f"SparkPipe hour-credits, {hours_number(quote['hours'])} HC" if quote["product"] == "credits" else f"SparkPipe plan {quote['plan']}, prepayment"
+        found = {
+            "clientKey": self.cfg.toss_client, "variantKey": self.cfg.toss_variant, "test": self.cfg.sandbox, "orderId": quote["order"], "orderName": what[:100],
+            "amount": int(quote["total"]), "currency": KRW, "customerName": quote["company"][:100], "successUrl": base + "success/" + quote["order"], "failUrl": base + "fail/" + quote["order"],
+        }
+        if len(quote["email"]) <= 100:
+            found["customerEmail"] = quote["email"]
+        return found
+
+    def back(self, order_id):
+        return f"{self.cfg.public}/account.html?{'sandbox&' if self.cfg.sandbox else ''}order={order_id}"
+
+    def toss_success(self, order_id, query):
+        key, given, amount = (query.get(name, [""])[0] for name in ("paymentKey", "orderId", "amount"))
+        with self.book.lock:
+            order = self.book.orders.get(order_id)
+            if not order or order.get("processor") != "toss" or given != order_id or not TOSS_KEY.match(key):
+                return self.back(order_id)
+            if order["issued"] or order["state"] != "created" or order.get("payment_key") not in (None, key):
+                return self.back(order_id)
+            if amount != text_won(order["total"]):
+                self.book.append("toss_state", {"order": order_id, "state": "failed", "reason": "amount"})
+                log(f"order {order_id}: Toss Payments authorised {amount[:20]!r} KRW for an order of {order['total']} KRW; not confirmed")
+                return self.back(order_id)
+            if not order.get("payment_key"):
+                self.book.append("toss_payment", {"order": order_id, "paymentKey": key})
+        reason = None
+        try:
+            remote = toss_call(self.cfg, "POST", "/v1/payments/confirm", {"paymentKey": key, "orderId": order_id, "amount": int(order["total"])}, "confirm-" + order_id)
+        except Declined as error:
+            log(f"order {order_id}: confirm refused: {error.code}")
+            reason = error.code
+            try:
+                remote = toss_payment(self.cfg, key)
+            except (Declined, urllib.error.URLError, OSError, ValueError) as again:
+                log(f"order {order_id}: {again}")
+                return self.back(order_id)
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            log(f"order {order_id}: confirm: {error}")
+            return self.back(order_id)
+        self.toss_apply(order_id, remote, reason)
+        return self.back(order_id)
+
+    def toss_fail(self, order_id, query):
+        code = query.get("code", [""])[0]
+        code = code if re.fullmatch(r"[A-Z0-9_]{1,100}", code) else "PAY_PROCESS_CANCELED"
+        with self.book.lock:
+            order = self.book.orders.get(order_id)
+            if order and order.get("processor") == "toss" and order["state"] == "created" and not order.get("payment_key") and not order["issued"]:
+                self.book.append("toss_state", {"order": order_id, "state": "cancelled", "reason": code})
+        return self.back(order_id)
+
+    def toss_webhook(self, raw):
+        try:
+            event = json.loads(raw)
+        except ValueError:
+            return
+        data = event.get("data") if isinstance(event, dict) and isinstance(event.get("data"), dict) else event
+        found = data.get("orderId") if isinstance(data, dict) else None
+        if isinstance(found, str) and self.book.orders.get(found, {}).get("processor") == "toss":
+            self.jobs.put(("toss", found))
+
+    def toss_paid(self, order, remote):
+        method, easy = str(remote.get("method") or ""), remote.get("easyPay") or {}
+        provider = easy.get("provider")
+        cash = method in CASH_METHODS or (method == "간편결제" and Decimal(str(easy.get("amount") or 0)) > 0)
+        return {
+            "order": order["order"], "processor": "toss", "paymentKey": order["payment_key"], "total": order["total"], "received": text_won(Decimal(str(remote["totalAmount"]))), "currency": KRW,
+            "method": method, "paidWith": [method + (f":{provider}" if provider else "")], "approvedAt": remote.get("approvedAt"), "receiptUrl": (remote.get("receipt") or {}).get("url"),
+            "taxInvoice": {"needed": cash, "brn": order.get("brn") or None, "supply": order["net"], "vat": order["vat"]},
+        }
+
+    def toss_apply(self, order_id, remote, reason=None):
+        status = str(remote.get("status") or "")
+        with self.book.lock:
+            order = self.book.orders[order_id]
+            if order["issued"] or remote.get("orderId") != order_id or remote.get("paymentKey") != order.get("payment_key"):
+                return None
+            matches = remote.get("currency") == KRW and str(remote.get("totalAmount")) == text_won(order["total"])
+            if status in ("DONE", "WAITING_FOR_DEPOSIT") and not matches:
+                if order.get("reason") == "amount" and order["state"] in ("cancelled", "mismatch"):
+                    return None
+            elif status == "DONE":
+                return self.issue(order, self.toss_paid(order, remote), order["hours"], order["net"])
+            elif status == "WAITING_FOR_DEPOSIT":
+                if order["state"] == "created":
+                    self.toss_waiting(order, remote)
+                return None
+            elif status in ("ABORTED", "EXPIRED", "CANCELED", "PARTIAL_CANCELED"):
+                if order["state"] in TOSS_OPEN:
+                    state = "timedout" if status == "EXPIRED" else "cancelled" if status.endswith("CANCELED") else "failed"
+                    self.book.append("toss_state", {"order": order_id, "state": state, "reason": reason or str((remote.get("failure") or {}).get("code") or status)[:100]})
+                return None
+            else:
+                return None
+        self.toss_refuse(order, status)
+        return None
+
+    def toss_waiting(self, order, remote):
+        account = remote.get("virtualAccount") or {}
+        deposit = {"bank": BANKS.get(str(account.get("bankCode")), str(account.get("bankCode") or "")), "accountNumber": str(account.get("accountNumber") or ""), "dueDate": str(account.get("dueDate") or "")}
+        expires = stamp_time(order["created"]) + timedelta(seconds=PENDING_SECONDS)
+        try:
+            due = datetime.fromisoformat(deposit["dueDate"])
+            expires = min(expires, due if due.tzinfo else due.replace(tzinfo=KST))
+        except ValueError:
+            pass
+        self.book.append("toss_state", {"order": order["order"], "state": "waiting", "method": str(remote.get("method") or ""), "deposit": deposit, "expires": market.stamp(expires)})
+        self.mail(order["email"], f"Deposit for SparkPipe order {order['order']}", "\n".join([
+            f"Deposit {amount_text(order['total'], KRW)} to {deposit['bank']} account {deposit['accountNumber']}, the virtual account Toss Payments issued for order {order['order']}, by {market.kst_text(expires)}.",
+            "",
+            "We issue the hours as soon as Toss Payments reports the deposit. If nothing arrives by then, the account expires with the order and nothing is owed.",
+            "",
+            f"Follow it in your account: {self.back(order['order'])}",
+            "",
+            "HYOR AI Tech Ltd. (SparkPipe), Seoul. Reply to this email with any question.",
+        ]))
+
+    def toss_refuse(self, order, status):
+        order_id, state = order["order"], "cancelled"
+        try:
+            toss_call(self.cfg, "POST", "/v1/payments/" + urllib.parse.quote(order["payment_key"], safe="") + "/cancel", {"cancelReason": "The amount differs from the order."}, "mismatch-" + order_id)
+        except (Declined, urllib.error.URLError, OSError, ValueError) as error:
+            log(f"order {order_id}: cancelling a payment that does not match its order: {error}")
+            state = "mismatch"
+        with self.book.lock:
+            self.book.append("toss_state", {"order": order_id, "state": state, "reason": "amount"})
+        log(f"order {order_id}: Toss Payments reports {status} for another amount than the order; no hours issued, payment {'cancelled' if state == 'cancelled' else 'left for review'}")
+        self.mail(self.cfg.notify, f"Payment to review: {order_id}", f"Order {order_id} for {order['total']} KRW: Toss Payments reported {status} for a different amount or currency. No hours were issued. " + ("We cancelled it at Toss Payments." if state == "cancelled" else "Cancelling it failed: cancel it in the Toss Payments console."))
+
+    def toss_check(self, order_id):
+        order = self.book.orders.get(order_id)
+        if not order or order.get("processor") != "toss":
+            return
+        if order.get("payment_key"):
+            self.toss_apply(order_id, toss_payment(self.cfg, order["payment_key"]))
+        with self.book.lock:
+            if order["issued"] or order["state"] not in TOSS_OPEN or clock() < self.book.expiry(order):
+                return
+        if order["state"] == "waiting":
+            try:
+                remote = toss_call(self.cfg, "POST", "/v1/payments/" + urllib.parse.quote(order["payment_key"], safe="") + "/cancel", {"cancelReason": "The deposit deadline passed unpaid."}, "expire-" + order_id)
+            except Declined as error:
+                log(f"order {order_id}: cancelling the unpaid virtual account: {error}")
+                remote = toss_payment(self.cfg, order["payment_key"])
+            if remote.get("status") == "DONE":
+                self.toss_apply(order_id, remote)
+                return
+        with self.book.lock:
+            if not order["issued"] and order["state"] in TOSS_OPEN:
+                self.book.append("toss_state", {"order": order_id, "state": "timedout", "reason": "expired"})
+
+    def refund(self, order_id, clause, amount, reason, account=None):
+        order = self.book.orders.get(order_id)
+        if not order or order.get("processor") != "toss" or not order["issued"] or not order.get("payment_key"):
+            raise Refusal(f"{order_id} is not a Toss Payments payment that issued hours.")
+        if clause not in REFUND_CLAUSES or not reason:
+            raise Refusal("Name the clause of the Customer Agreement that allows the refund (" + ", ".join(REFUND_CLAUSES) + ") and the reason.")
+        remote = toss_payment(self.cfg, order["payment_key"])
+        if remote.get("orderId") != order_id:
+            raise Refusal(f"Toss Payments does not report {order_id} for this payment key.")
+        balance = Decimal(str(remote.get("balanceAmount") or 0))
+        amount = balance if amount == "all" else won_field(amount)
+        if not 0 < amount <= balance:
+            raise Refusal(f"Refund from 1 KRW to {amount_text(balance, KRW)}, what is left of this payment at Toss Payments.")
+        if remote.get("method") == "가상계좌" and not account:
+            raise Refusal("A virtual account payment is refunded to a bank account: give the bank code, the account number and the holder's name.")
+        debit, lot, moment = Decimal(0), None, market.stamp(self.market.now())
+        if order["product"] == "credits" and clause != "3.2":
+            debit = (Decimal(order["hours"]) * amount / Decimal(order["total"])).quantize(market.HC_STEP, rounding=ROUND_CEILING)
+            lot = next((found for found in self.book.market.lots.get(order["account"], []) if found["ref"] == order_id and found["expires"] > moment), None)
+            left = lot["hc"] if lot else Decimal(0)
+            if debit > left:
+                most = (left * Decimal(order["total"]) / Decimal(order["hours"])).quantize(WON, rounding=ROUND_DOWN)
+                raise Refusal(f"Only {market.text_hc(left)} HC of this order is unspent and not lapsed, which refunds at most {amount_text(most, KRW)}.")
+        body = {"cancelReason": f"Customer Agreement clause {clause}: {reason}"[:200], "refundableAmount": int(balance)}
+        if amount < balance:
+            body["cancelAmount"] = int(amount)
+        if account:
+            body["refundReceiveAccount"] = account
+        after = toss_call(self.cfg, "POST", "/v1/payments/" + urllib.parse.quote(order["payment_key"], safe="") + "/cancel", body, f"refund-{order_id}-{int(balance)}")
+        rest = Decimal(str(after.get("balanceAmount")))
+        if rest != balance - amount:
+            raise Refusal(f"Toss Payments left {amount_text(rest, KRW)} of this payment instead of {amount_text(balance - amount, KRW)}; check it in the console before recording anything.", 502)
+        with self.book.lock:
+            line = self.book.append("refund", {"order": order_id, "account": order["account"], "processor": "toss", "paymentKey": order["payment_key"], "amount": text_won(amount), "balance": text_won(rest), "clause": clause, "reason": reason, "hc": market.text_hc(debit)})
+            if lot:
+                self.book.append("hc_debit", {"account": order["account"], "hc": market.text_hc(debit), "reason": "refund", "ref": order_id, "lot": lot["lot"], "now": moment})
+        self.mail(order["email"], f"Refund: SparkPipe order {order_id}", "\n".join([
+            f"We refunded {amount_text(amount, KRW)} of order {order_id} under clause {clause} of the Customer Agreement: {reason}",
+            "",
+            "It goes back by the method you paid with, through Toss Payments" + (f"; {market.text_hc(debit)} HC of the order left your account." if lot else "."),
+            "",
+            "HYOR AI Tech Ltd. (SparkPipe), Seoul. Reply to this email with any question.",
+        ]))
+        return line["data"]
+
+    def tax_invoices(self):
+        return [o for o in self.book.orders.values() if o.get("processor") == "toss" and (o.get("tax_invoice") or {}).get("needed") and not o.get("tax_invoice_number")]
 
     def work(self):
         while True:
@@ -1367,6 +1742,9 @@ class App:
             try:
                 if key is None:
                     return
+                if isinstance(key, tuple):
+                    self.toss_check(key[1])
+                    continue
                 order_id = self.book.invoices.get(key)
                 if order_id:
                     self.settle(order_id, call(self.cfg, "GET", "/merchant/invoices/" + key))
@@ -1379,6 +1757,7 @@ class App:
         now = clock()
         with self.book.lock:
             keys = [o["invoice"] for o in self.book.orders.values() if o["invoice"] and (o["state"] in OPEN or (o["state"] == "completed" and not o["issued"])) and (now - stamp_time(o["created"])).days < RECONCILE_DAYS]
+            keys += [("toss", o["order"]) for o in self.book.orders.values() if o.get("processor") == "toss" and not o["issued"] and o["state"] in TOSS_OPEN]
         for key in keys:
             self.jobs.put(key)
 
@@ -1416,6 +1795,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def redirect(self, location):
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
 
     def refuse(self, error):
         data = {"error": str(error)}
@@ -1457,6 +1843,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(200, app.market_state(app.signed_in(self.headers)))
             if path == "/plans/key":
                 return self.reply(200, app.plan_key())
+            if path == "/toss/config":
+                return self.reply(200, app.toss_config())
+            match = TOSS_PATH.match(path)
+            if match:
+                return self.redirect((app.toss_success if match.group(1) == "success" else app.toss_fail)(match.group(2), query))
             match = PLAN_PATH.match(path)
             if match:
                 return self.reply(200, app.plan_view(app.need(self.headers), match.group(1)))
@@ -1481,7 +1872,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         app = self.server.app
         path = urllib.parse.urlsplit(self.path).path
-        limit = 262144 if path == "/coinpayments" else 8388608 if path.startswith("/pool/") else 16384
+        limit = 262144 if path in ("/coinpayments", "/toss/webhook") else 8388608 if path.startswith("/pool/") else 16384
         try:
             length = int(self.headers.get("Content-Length") or "0")
         except ValueError:
@@ -1491,6 +1882,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         raw = self.rfile.read(length)
         if path == "/coinpayments":
             return self.reply(200 if app.webhook(self.headers, raw) else 401, {})
+        if path == "/toss/webhook":
+            app.toss_webhook(raw)
+            return self.reply(200, {})
         origin = self.headers.get("Origin")
         if origin and origin != app.cfg.origin:
             return self.reply(403, {"error": "Cross-site requests are refused."})
@@ -1781,14 +2175,43 @@ def main(argv):
         lot = app.market.credit(account, credits, argv[4].strip()[:200])
         print(f"credited {lot['hc']} HC to {argv[2]}, lot {lot['lot']}, lapsing {lot['expires']}")
         return 0
+    if len(argv) in (6, 9) and argv[1] == "refund":
+        app = App(cfg, Book(cfg.path("ledger.jsonl")))
+        account = {"bank": argv[6], "accountNumber": argv[7], "holderName": argv[8]} if len(argv) == 9 else None
+        try:
+            found = app.refund(argv[2], argv[3], argv[4], argv[5].strip()[:150], account)
+        except (Refusal, Declined) as error:
+            print(f"{argv[2]}: {error}", file=sys.stderr)
+            return 2
+        threading.Thread(target=app.deliver, daemon=True).start()
+        app.mails.join()
+        print(f"{argv[2]}: refunded {found['amount']} KRW under clause {found['clause']}, {found['balance']} KRW left at Toss Payments, {found['hc']} HC debited")
+        return 0
+    if argv[1:] == ["tax-invoices"]:
+        app = App(cfg, Book(cfg.path("ledger.jsonl")))
+        for order in app.tax_invoices():
+            invoice = order["tax_invoice"]
+            day = stamp_time(order["paid"]).astimezone(KST).strftime("%Y-%m-%d")
+            refunded = f", refunded {order['refunded']} KRW: issue an amended invoice" if order.get("refunded") else ""
+            print(f"{order['order']} {day} {order['company']} <{order['email']}> BRN {invoice['brn'] or 'missing: ask the customer'}: supply {invoice['supply']} KRW, VAT {invoice['vat']} KRW, total {order['total']} KRW, {METHOD_EN.get(order.get('method'), order.get('method'))}{refunded}")
+        return 0
+    if len(argv) == 4 and argv[1] == "tax-invoice":
+        app = App(cfg, Book(cfg.path("ledger.jsonl")))
+        order = app.book.orders.get(argv[2])
+        if not order or order not in app.tax_invoices() or not argv[3].strip():
+            print("usage: sparkpipe_pay.py tax-invoice ORDER NUMBER, for an order that tax-invoices lists", file=sys.stderr)
+            return 2
+        app.book.append("tax_invoice", {"order": argv[2], "account": order["account"], "number": argv[3].strip()[:40]})
+        print(f"{argv[2]}: electronic tax invoice {argv[3].strip()[:40]} recorded")
+        return 0
     if argv[1:] not in ([], ["serve"]):
-        print("usage: sparkpipe_pay.py [serve|verify|cover [PLANS.json]|plan PLANS.json|end-plan PLAN YYYY-MM-DD REASON|maintenance FLEET YYYY-MM-DD [HOURS]|credit EMAIL HC NOTE|release ORDER|tranche EMAIL YYYY-MM HOURS]", file=sys.stderr)
+        print("usage: sparkpipe_pay.py [serve|verify|cover [PLANS.json]|plan PLANS.json|end-plan PLAN YYYY-MM-DD REASON|maintenance FLEET YYYY-MM-DD [HOURS]|credit EMAIL HC NOTE|release ORDER|tranche EMAIL YYYY-MM HOURS|refund ORDER CLAUSE KRW|all REASON [BANK ACCOUNT HOLDER]|tax-invoices|tax-invoice ORDER NUMBER]", file=sys.stderr)
         return 2
     server = start(cfg)
     app = server.app
     threading.Thread(target=app.reconcile_forever, daemon=True).start()
     app.reconcile()
-    log(f"sparkpipe-pay on 127.0.0.1:{server.server_address[1]}, {app.book.count} ledger lines, webhook {cfg.webhook_url}")
+    log(f"sparkpipe-pay on 127.0.0.1:{server.server_address[1]}, {app.book.count} ledger lines, webhook {cfg.webhook_url}, Toss Payments " + (("test" if cfg.sandbox else "live") + f" at {cfg.public}{cfg.prefix}/toss/webhook" if cfg.toss else "off"))
     server.serve_forever()
     return 0
 
