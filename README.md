@@ -191,7 +191,9 @@ full logical batch count separately from its execution rows, so splitting a
 batch cannot select the wrong algorithm.
 
 **Overlap.** Two micro-batches alternate, so one computes while the other
-communicates. A GB10 SM cannot ring the CX-7 doorbell, and work requests
+communicates. The leading micro-batch runs at a higher stream priority, and
+each layer releases the trailing one as soon as the cache rows it reads are
+written, so the trailing micro-batch gathers while the leader attends. A GB10 SM cannot ring the CX-7 doorbell, and work requests
 built on the GPU gain nothing over the CPU posting them, so the CPU rings
 the NIC. Both rails carry traffic at once: the switch for all-to-all reach,
 the direct pair link for the first reduction level.
@@ -706,17 +708,22 @@ changes (`tools/ci_lanes.py`):
 
 - `light-tests` always runs, in about two minutes: the website and payment
   tests, plus every test that scans the whole tree, from code size and
-  source comments to the source package gate. When a Markdown file outside
-  the site changes, it also builds the host targets and runs every test that
-  can read Markdown: tests that name a `.md` file, `docs/`, README or
-  TECHDEBT, and tests that import a tool that does, directly or through
-  other tools (about three minutes more).
-- The engine lane (`compile-sm121a` and `host-tests`, about 40 minutes) runs
-  unless every changed file is a site path in `SITE_PATHS` (the website, its
-  tools and tests, its VPS configuration and its docs) or Markdown. No engine
-  test or build rule reads the site paths, no Makefile rule uses Markdown,
-  and `tests/test_ci_lanes.py` fails when either starts to, or when a
-  whole-tree test is missing from `light-tests`.
+  source comments to the source package gate. When Markdown outside the site
+  or anything under `docs/` changes, it also builds the host targets and runs
+  every test that can read Markdown: tests that name a `.md` file, `docs/`,
+  README or TECHDEBT, and tests that import a tool that does, directly or
+  through other tools (about three minutes more).
+- The engine lane (`compile-sm121a` and `host-tests`, over an hour) runs
+  only when a changed file is an engine path in `ENGINE_PATHS`: the source
+  directories, `tools/`, `tests/`, `deployment/`, `Makefile`, `*.mk` and the
+  workflow. It does not run for the site (`SITE_PATHS`), Markdown and `docs/`,
+  or repository files (`LIGHT_PATHS`: `LICENSE*`, `NOTICE`, git and GitHub
+  metadata, and the lane script and its test). A file outside every list runs
+  the engine lane to be safe.
+- `tests/test_ci_lanes.py` fails when a tracked file has no lane, when an
+  engine test or build rule starts to read a site or repository file, when a
+  Makefile rule uses Markdown, or when a whole-tree test is missing from
+  `light-tests`.
 - A new push to a pull request cancels its older run. `workflow_dispatch`
   and a nightly run on `main` (18:00 UTC) run every lane, so anything the
   lane rules miss still shows up within a day.

@@ -1011,6 +1011,14 @@ static int32_t Glm5NextAttentionHead(const Glm5NextLayerBuffers *b, uint32_t row
 		return status;
 	LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_QA + 8u) * sizeof(float), stream, b->q_compressed_bf16,
 		(const uint16_t *)w->q_a_norm, b->q_compressed_bf16, G5N_QA, G5N_QA, G5N_EPS);
+	status = Glm5NextLinear(b->normed_bf16, w->kv_a, b->kv_slot_bf16, b->dense_row_offset, b->dense_tile_prefix, rows, G5N_HIDDEN, G5N_LATENT,
+		G5N_LATENT, 0u, sms, stream);
+	if ( status != LM_LAUNCH_OK )
+		return status;
+	LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_LATENT + 8u) * sizeof(float), stream, b->kv_slot_bf16,
+		(const uint16_t *)w->kv_a_norm, b->kv_slot_bf16, G5N_LATENT, G5N_LATENT, G5N_EPS);
+	LM_LAUNCH((LmKvShardStoreKernel<Glm5NextKv, G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->cache, b->kv_slot_bf16, b->sequence_of_row,
+		b->positions, rows, G5N_LATENT);
 	return Glm5NextIndexScore(b, rows, context, sms, projected, stream);
 }
 
@@ -1033,18 +1041,11 @@ static int32_t Glm5NextAttentionTail(const Glm5NextLayerBuffers *b, uint32_t row
 	if ( status == LM_LAUNCH_OK )
 		status = Glm5NextLinear(b->q_compressed_bf16, w->q_b, b->q_bf16, b->dense_row_offset, b->dense_tile_prefix, rows, G5N_QA, b->q_b_rows,
 			b->q_b_rows, 0u, sms, stream);
-	if ( status == LM_LAUNCH_OK )
-		status = Glm5NextLinear(b->normed_bf16, w->kv_a, b->kv_slot_bf16, b->dense_row_offset, b->dense_tile_prefix, rows, G5N_HIDDEN, G5N_LATENT,
-			G5N_LATENT, 0u, sms, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
-	LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_LATENT + 8u) * sizeof(float), stream, b->kv_slot_bf16,
-		(const uint16_t *)w->kv_a_norm, b->kv_slot_bf16, G5N_LATENT, G5N_LATENT, G5N_EPS);
 	if ( LmPerHeadProjectRowsLaunch<G5N_THREADS, G5N_NOPE, G5N_LATENT, G5N_NOPE, 0u>(b->q_bf16, (const uint16_t *)b->kv_b_key, b->query_latent_bf16,
 		b->attn_heads, rows, stream) != cudaSuccess )
 		return LM_LAUNCH_ERR_LAUNCH;
-	LM_LAUNCH((LmKvShardStoreKernel<Glm5NextKv, G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->cache, b->kv_slot_bf16, b->sequence_of_row,
-		b->positions, rows, G5N_LATENT);
 	return Glm5NextLaunched();
 }
 
