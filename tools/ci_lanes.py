@@ -35,7 +35,7 @@ SITE_PATHS = (
     "deployment/vps/dovecot-99-sparkpipe.conf",
     "deployment/vps/certbot-reload-mail-services.sh",
     "docs/PAYMENTS.md",
-    "docs/FLEET_BOOKINGS.md",
+    "docs/HOUR_MARKET.md",
     "docs/LITELLM_FRONTEND.md",
     "docs/brand/*",
 )
