@@ -970,3 +970,31 @@ the experts in descending order):
 
     SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
         sh tools/metal_gates.sh hy4-preview PACKS/hy4.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+
+### MiMo V2.6 Pro on eight ranks
+
+`MimoDevice` places either MiMo geometry at TP 1, 2, 4 or 8
+(`SparkMimo26FlashDeviceStageModelAt`, `SparkMimo26ProDeviceStageModelAt`):
+each rank projects its rows of the fused FP8 QKV, which the shared attention
+gathers before its heads run (the SWA layers' sinks sliced to them), holds
+its slice of the dense layer and the vocabulary and `E / TP` whole experts,
+maps the routes to its experts (`spark_route_local`, the others skipped) and
+all-reduces the attention and FFN outputs. Pro is Flash's schedule with 70
+layers of 6,144, 128 heads, 8 KV heads in both attention kinds, 384 experts,
+a value scale of 0.612 and an epsilon of 1e-5. Its checkpoint is 566 GB, so
+it runs as eight ranks paged from the SSD (`tools/mimo26_tp16_pack.py
+--model pro --tp-degree 8`), against the MiMo gate prompts (the same
+tokenizer and chat template):
+
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh mimo-v2.6-pro PACKS/mimo26_pro.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+
+Pro's single-layer controls corrupt layer 7, a full-attention layer, where
+Flash's corrupt layer 11. On the gate prompts every head of Pro's SWA layers
+1 and 11 puts its softmax mass on the sink: the keys carry a constant
+component the query is anti-aligned with (scores of -60 to -90 against sinks
+near 0.6), so those layers' `attn_out` reaches the residual only as values far
+below a BF16 step, and a corrupted layer-11 `attn_out` leaves the logits
+byte-identical. Shifting the layer's query rows by one breaks that alignment
+and moves the logits (mean KL 4.1), and rotating layer 7's `attn_out` moves
+them by a mean KL of 0.56.

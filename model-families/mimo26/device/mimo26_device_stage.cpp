@@ -6,6 +6,7 @@
 #include "sparkpipe/spark_mimo26_device_stage.h"
 #include "sparkpipe/spark_mimo26_family.h"
 #include "sparkpipe/spark_mimo26_flash_tp16_stage_model.h"
+#include "sparkpipe/spark_mimo26_pro_tp16_stage_model.h"
 
 #define MD_SLICES 24u
 
@@ -14,8 +15,6 @@ struct MimoDevice
 {
 	using G = typename P::Geometry;
 	using L = MimoLayout<G>;
-
-	static_assert(G::kTpDegree == 1u, "a device stage is one whole rank");
 
 	struct Layer
 	{
@@ -108,6 +107,8 @@ struct MimoDevice
 			{ rows * hidden * 2u, &state->normed },
 			{ rows * hidden * 2u, &state->partial },
 			{ rows * fused * 2u, &state->attention.qkv },
+			{ G::kTpDegree > 1u ? rows * fused / G::kTpDegree * 2u : 0u, &state->attention.qkv_local },
+			{ G::kTpDegree > 1u ? rows * fused * 2u : 0u, &state->attention.qkv_gathered },
 			{ rows * SparkDeviceAttentionQueryWidth(&state->full) * 2u, &state->attention.query },
 			{ rows * key * 2u, &state->attention.key },
 			{ rows * value * 2u, &state->attention.value },
@@ -141,8 +142,9 @@ struct MimoDevice
 		Shapes(state);
 		const SparkDeviceStageConfigValue config[] =
 		{
-			{ "hidden", G::kHidden }, { "layers", G::kLayers }, { "vocab_rows", G::kVocab }, { "ffn_rows", L::kDenseRows },
-			{ "sliding_window", G::kWindow }, { "experts", G::kExperts }, { "top_k", G::kTopK }
+			{ "hidden", G::kHidden }, { "layers", G::kLayers }, { "vocab", G::kVocab }, { "vocab_rows", G::kVocab / G::kTpDegree },
+			{ "ffn_rows", L::kDenseRows }, { "sliding_window", G::kWindow }, { "experts", G::kExperts }, { "local_experts", G::kLocalExperts },
+			{ "top_k", G::kTopK }
 		};
 		status = SparkDeviceStageOpen(&state->stage, &state->shape, request);
 		if ( status == SPARK_STATUS_OK )
@@ -161,14 +163,15 @@ struct MimoDevice
 		uint64_t columns, SparkDeviceExpertMatrix *matrix)
 	{
 		char scale_name[64];
-		SparkStatus status = SparkDeviceStageLayerTensor(&state->stage, weights, index, name, "mxfp4_e2m1", G::kExperts * rows * (columns / 2u), &matrix->values);
+		SparkStatus status = SparkDeviceStageLayerTensor(&state->stage, weights, index, name, "mxfp4_e2m1", G::kLocalExperts * rows * (columns / 2u),
+			&matrix->values);
 		matrix->codec = SPARK_WEIGHT_CODEC_MXFP4_E2M1;
 		snprintf(scale_name, sizeof(scale_name), "%s.scale", name);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, scale_name, "e8m0", G::kExperts * rows * (columns / SPARK_MXFP4_GROUP),
+			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, scale_name, "e8m0", G::kLocalExperts * rows * (columns / SPARK_MXFP4_GROUP),
 				&matrix->scale);
 		if ( status == SPARK_STATUS_OK )
-			SparkDeviceStageNoteRouted(&state->stage, matrix->values.bytes + matrix->scale.bytes, G::kExperts, G::kTopK);
+			SparkDeviceStageNoteRouted(&state->stage, matrix->values.bytes + matrix->scale.bytes, G::kLocalExperts, G::kTopK);
 		return status;
 	}
 
@@ -242,9 +245,7 @@ struct MimoDevice
 
 	static SparkStatus AllReduce(State *state, const Frame &frame)
 	{
-		(void)state;
-		(void)frame;
-		return SPARK_STATUS_OK;
+		return SparkDeviceStageAllReduce(&state->stage, frame.queue, state->partial, frame.t.rows);
 	}
 
 	static SparkStatus AddResidual(State *state, const Frame &frame)
@@ -261,7 +262,7 @@ struct MimoDevice
 	static SparkStatus Experts(State *state, const Frame &frame, const Layer &layer)
 	{
 		const uint32_t rows = frame.t.rows;
-		const SparkDeviceRoutedFfnShape ffn = { G::kExperts, G::kTopK, G::kMoeInter, SPARK_GATED_SILU_ROUNDED, 0u, 0.0f, 0.0f, 0u };
+		const SparkDeviceRoutedFfnShape ffn = { G::kLocalExperts, G::kTopK, G::kMoeInter, SPARK_GATED_SILU_ROUNDED, 0u, 0.0f, 0.0f, 0u };
 		SparkGemvParams router;
 		SparkRouteParams route;
 		SparkStatus status;
@@ -282,6 +283,10 @@ struct MimoDevice
 		if ( status == SPARK_STATUS_OK )
 			status = SparkOpsRouteSigmoid(state->stage.ops, frame.queue, state->router_logits, layer.router_bias, state->experts.experts,
 				state->experts.weights, &route);
+		route.local_experts = G::kLocalExperts;
+		route.first_expert = state->stage.tp_rank * G::kLocalExperts;
+		if ( status == SPARK_STATUS_OK && G::kTpDegree > 1u )
+			status = SparkOpsRouteLocal(state->stage.ops, frame.queue, state->experts.experts, &route);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceRoutedFfn(&state->stage, frame.queue, &ffn, rows, &layer.gate, &layer.up, &layer.down, &state->experts, state->normed);
 		if ( status == SPARK_STATUS_OK )
@@ -330,15 +335,48 @@ struct MimoDevice
 	}
 };
 
+template<uint32_t TP>
 struct Mimo26FlashDevice
 {
-	using Geometry = Mimo26FlashGeometry<1u>;
+	using Geometry = Mimo26FlashGeometry<TP>;
 	static constexpr const char *kTag = "sparkpipe_mimo26_flash_device";
 	static constexpr const char *kName = "mimo-v2.6-flash";
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
 };
 
-const SparkStageRunnerModelInterface *SparkMimo26FlashDeviceStageModel(void)
+template<uint32_t TP>
+struct Mimo26ProDevice
 {
-	return MimoDevice<Mimo26FlashDevice>::Interface();
+	using Geometry = Mimo26ProGeometry<TP>;
+	static constexpr const char *kTag = "sparkpipe_mimo26_pro_device";
+	static constexpr const char *kName = "mimo-v2.6-pro";
+	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
+};
+
+template<template<uint32_t> class P>
+static const SparkStageRunnerModelInterface *MimoDeviceAt(uint32_t tp_degree)
+{
+	switch ( tp_degree )
+	{
+	case 1u:
+		return MimoDevice<P<1u>>::Interface();
+	case 2u:
+		return MimoDevice<P<2u>>::Interface();
+	case 4u:
+		return MimoDevice<P<4u>>::Interface();
+	case 8u:
+		return MimoDevice<P<8u>>::Interface();
+	default:
+		return 0;
+	}
+}
+
+const SparkStageRunnerModelInterface *SparkMimo26FlashDeviceStageModelAt(uint32_t tp_degree)
+{
+	return MimoDeviceAt<Mimo26FlashDevice>(tp_degree);
+}
+
+const SparkStageRunnerModelInterface *SparkMimo26ProDeviceStageModelAt(uint32_t tp_degree)
+{
+	return MimoDeviceAt<Mimo26ProDevice>(tp_degree);
 }

@@ -1359,13 +1359,22 @@ Metal backend and the single-Studio stage are in
   BF16 before the MMA). The grouping also reads the step's routes back to the
   host after a queue wait; a device-side sort and a grouped GEMM over an
   offset table would drop that sync.
-- Four models have device stages: Qwen3.8-27B (BF16 and FP8), Gemma 4 26B
-  A4B, Gemma 4 31B and Muse Glimmer 30B. Each is its family's Metal backend placed on the
-  model's TP1 geometry (`model-families/<family>/device/`, over the device
-  stage and layer kinds in `inference/runner/device_stage_model.c` and
-  `device_layers.c`), plus a TP1 pack and its own gates. In progress: MiMo
-  V2.6 Flash and Qwen 3.8 Flash Next, whose device stages are built but not
-  yet gated.
+- Device stages exist for the Gemma 4 family (Gemma 4 26B A4B and 31B, Muse
+  Glimmer 30B, Laguna S 2.1, K-EXAONE 2.0), Qwen 3.8 (27B BF16 and FP8, 3.8
+  Flash Next), MiMo V2.6 (Flash, Pro) and Ling 3 (Ling 3.0 Flash and Fin,
+  Solar Open 2). Each is its family's Metal backend placed on the model's
+  geometry at TP 1, 2, 4 or 8 (`model-families/<family>/device/`, over the
+  device stage and layer kinds in `inference/runner/device_stage_model.c`
+  and `device_layers.c`), plus its packs and gates; the models larger than
+  one Studio gate at TP8 on one Studio with the packs paged from the SSD.
+  Gates pass for Gemma 4 26B, Qwen3.8-27B (both codecs), Qwen 3.8 Flash,
+  Ling 3.0 Flash, Ling 3.0 Flash Fin and GLM 5.3 Flash; the paired test
+  fails, by the worse leg, for Gemma 4 31B (+4.8 sigma), Muse Glimmer
+  (+3.4), MiMo Flash (+5.2), MiMo Pro (+5.8), Laguna (+3.3), K-EXAONE 2.0
+  (+8.5), HY4 (+4.1) and Solar Open 2 (+4.5, not re-gated on the FP32-sum
+  norm); GLM 5.3 Full and A.X K2 wait for their references, and Kimi K3 for
+  its pack and reference. The Metal backends for DeepSeek V4.1 Flash and
+  Qwen 3.8 Max are in progress.
 - HY4 on the Studio (`HyDevice<Hy4Device>`): the DSA indexer (`index_q`,
   `index_k` with its LayerNorm, the ReLU-weighted head scores, the exact
   top-2,048 per rank and over the gathered candidates, the second KV pool

@@ -2,7 +2,7 @@
 set -eu
 
 if [ "$#" -ne 5 ]; then
-	echo "usage: [SPARK_GATE_TP=N [SPARK_GATE_STREAM=1]] [SPARK_GATE_DECODE=N] [SPARK_GATE_GREEDY=N] $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|qwen3.8-flash|laguna-s-2.1|k-exaone-2.0|ling-3.0-flash|ling-3.0-flash-fin|solar-open-2|hy4-preview|glm-5.3-flash PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
+	echo "usage: [SPARK_GATE_TP=N [SPARK_GATE_STREAM=1]] [SPARK_GATE_DECODE=N] [SPARK_GATE_GREEDY=N] $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|mimo-v2.6-pro|qwen3.8-flash|laguna-s-2.1|k-exaone-2.0|ling-3.0-flash|ling-3.0-flash-fin|solar-open-2|hy4-preview|glm-5.3-flash PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
 	exit 2
 fi
 model=$1
@@ -15,6 +15,7 @@ case $model in
 	gemma4-31b) routed=0 prompt_dir=gemma4 vocab=262144 probe=ffn_down layer=11;;
 	muse-glimmer-30b) routed=0 prompt_dir=muse_glimmer vocab=202048 probe=ffn_down layer=11;;
 	mimo-v2.6-flash) routed=0 prompt_dir=mimo26_flash vocab=152576 probe=attn_out layer=11;;
+	mimo-v2.6-pro) routed=0 prompt_dir=mimo26_flash vocab=152576 probe=attn_out layer=7;;
 	qwen3.8-flash) routed=0 prompt_dir=qwen38_27b vocab=248320 probe=moe_shared_down layer=11 greedy_tokens=8 bench_prompt=design spec=0 bench_long=2048;;
 	laguna-s-2.1) routed=0 prompt_dir=laguna vocab=100352 probe=attn_out layer=11;;
 	k-exaone-2.0) routed=0 prompt_dir=kexaone2 vocab=153600 probe=attn_out layer=11;;

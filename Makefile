@@ -1438,8 +1438,10 @@ $(GEMMA4_DEVICE_OBJECT): $(GEMMA4_DEVICE_SOURCES) $(GEMMA4_DEVICE_HEADERS) $(DEV
 
 MIMO26_DEVICE_SOURCES := model-families/mimo26/device/mimo26_device_stage.cpp
 MIMO26_DEVICE_HEADERS := model-families/mimo26/include/sparkpipe/spark_mimo26_family.h model-families/mimo26/include/sparkpipe/spark_mimo26_device_stage.h \
-	modules/mimo26_flash_tp16_resident_decode_stage/include/sparkpipe/spark_mimo26_flash_tp16_stage_model.h
-MIMO26_DEVICE_INCLUDE_FLAGS := -Imodel-families/mimo26/include -Imodules/mimo26_flash_tp16_resident_decode_stage/include
+	modules/mimo26_flash_tp16_resident_decode_stage/include/sparkpipe/spark_mimo26_flash_tp16_stage_model.h \
+	modules/mimo26_pro_tp16_resident_decode_stage/include/sparkpipe/spark_mimo26_pro_tp16_stage_model.h
+MIMO26_DEVICE_INCLUDE_FLAGS := -Imodel-families/mimo26/include -Imodules/mimo26_flash_tp16_resident_decode_stage/include \
+	-Imodules/mimo26_pro_tp16_resident_decode_stage/include
 MIMO26_DEVICE_OBJECT := build/metal/mimo26_device_stage.o
 
 $(MIMO26_DEVICE_OBJECT): $(MIMO26_DEVICE_SOURCES) $(MIMO26_DEVICE_HEADERS) $(DEVICE_RUNNER_HEADERS) | build

@@ -73,12 +73,13 @@ typedef const SparkStageRunnerModelInterface *(*RunModelGetter)(void);
 typedef const SparkStageRunnerModelInterface *(*RunModelAt)(uint32_t tp_degree);
 
 static const RunModelGetter run_models[] = { SparkQwen38_27bDeviceStageModel, SparkGemma4_26bDeviceStageModel, SparkGemma4_31bDeviceStageModel,
-	SparkMuseGlimmerDeviceStageModel, SparkMimo26FlashDeviceStageModel, SparkQwen38FlashDeviceStageModel };
+	SparkMuseGlimmerDeviceStageModel, SparkQwen38FlashDeviceStageModel };
 static const RunModelAt run_models_at[] = { SparkGemma4_26bDeviceStageModelAt, SparkGemma4_31bDeviceStageModelAt, SparkMuseGlimmerDeviceStageModelAt,
 	SparkLagunaDeviceStageModelAt, SparkLing3FlashDeviceStageModelAt, SparkLing3FinDeviceStageModelAt, SparkSolarOpen2DeviceStageModelAt,
 	SparkGlm53FlashDeviceStageModelAt,
 	SparkKexaone2DeviceStageModelAt,
-	SparkHy4DeviceStageModelAt };
+	SparkHy4DeviceStageModelAt,
+	SparkMimo26FlashDeviceStageModelAt, SparkMimo26ProDeviceStageModelAt };
 
 static const SparkStageRunnerModelInterface *RunModel(const char *name, uint32_t tp_degree)
 {
@@ -99,7 +100,7 @@ static const SparkStageRunnerModelInterface *RunModel(const char *name, uint32_t
 static int Usage(const char *program)
 {
 	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|pairs|bench|ladder|spec --out DIR [--prefill-rows N] [--new-tokens N] "
-		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|qwen3.8-flash|gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|laguna-s-2.1|k-exaone-2.0|ling-3.0-flash|ling-3.0-flash-fin|solar-open-2|hy4-preview|glm-5.3-flash] [--pin-routes DIR] [--exact-rows] [--tp 2|4|8, the pack named for rank 00] [--rank R [--tp-hosts H0,H1,...] [--tp-port P]: one rank process over TCP] [--stream-weights] [--bench-long-tokens N] [--decode-positions N, teacher: decode only the last N positions]\n",program);
+		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|qwen3.8-flash|gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|mimo-v2.6-pro|laguna-s-2.1|k-exaone-2.0|ling-3.0-flash|ling-3.0-flash-fin|solar-open-2|hy4-preview|glm-5.3-flash] [--pin-routes DIR] [--exact-rows] [--tp 2|4|8, the pack named for rank 00] [--rank R [--tp-hosts H0,H1,...] [--tp-port P]: one rank process over TCP] [--stream-weights] [--bench-long-tokens N] [--decode-positions N, teacher: decode only the last N positions]\n",program);
 	return(2);
 }
 
