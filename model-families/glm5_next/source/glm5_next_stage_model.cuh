@@ -593,7 +593,11 @@ struct Glm5NextStage
 		const void *w1 = 0, *w2 = 0;
 		SparkStatus status;
 		if ( layer < G5N_FIRST_ROUTED )
-			return Launch(Glm5NextDenseMlp(b, rows, sms, stream), "dense mlp", layer);
+		{
+			status = Launch(Glm5NextDenseMlp(b, rows, sms, stream), "dense mlp", layer);
+			state->services->layer_done(state->services->context, layer);
+			return status;
+		}
 		status = Launch(Glm5NextMoeRoute(b, rows, sms, stream), "moe route", layer);
 		if ( status == SPARK_STATUS_OK )
 			status = state->services->expert_weights(state->services->context, layer, b->group_row_offset, rows * G5N_TOP_K, &w1, &w2);
