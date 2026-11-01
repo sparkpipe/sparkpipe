@@ -125,8 +125,8 @@ h1 { max-width: 15ch; }
     <h2>A fleet that serves only you and remembers your code.</h2>
     <div class="defs">
       <div><p class="label">Pinned to you</p><p>The whole fleet serves only your requests: no shared queue, no shared cache, no rate limit but the fleet's own speed. Nobody else can book its hours while you keep booking the next week. Hold more fleets for more work: one for the day, one for the night, one for a parallel review.</p></div>
-      <div><p class="label">Working state that stays</p><p>8 TB of cache on the fleet, 1 TB per node mirrored to its pair partner. Requests reuse the longest cached prefix automatically, with no slots to manage. It is deleted when another customer's booking of the fleet starts, or 24 hours after your last hour. No copies off the fleet, no backups.</p></div>
-      <div><p class="label">Your storage</p><p><span data-storage>4 TB</span> on every fleet for your repository, datasets, adapters and models, 500 GB per node mirrored like the cache. Export it and restore it to any fleet you hold.</p></div>
+      <div><p class="label">Working state that stays</p><p>8 TB of cache on the fleet, 1 TB per node mirrored to its pair partner. Requests reuse the longest cached prefix automatically, with no slots to manage. It is deleted when another customer's booking of the fleet starts, or 24 hours after your last hour. No copies off the fleet, no backups. Treat it as working space, not an archive: if a failure ever takes both copies, we credit 24 hours of the fleet while the cache rebuilds.</p></div>
+      <div><p class="label">Your storage</p><p><span data-storage>4 TB</span> on every fleet for your repository, datasets, adapters and models, 500 GB per node mirrored like the cache. Export it and restore it to any fleet you hold, and back up daily anything you want to keep.</p></div>
       <div><p class="label">Your tools</p><p>An endpoint and a key in Claude Code, Codex, Cursor or any OpenAI-compatible tool, and the <span class="mono">sparkpipe</span> CLI for everything your account does.</p></div>
       <div><p class="label">18 open models</p><p>Kimi K3, GLM 5.3, DeepSeek V4.1 Flash and Korea's K-EXAONE 2.0, A.X K2 and Solar Open 2, among others, each under its publisher's license. A switch takes 20 to 80 seconds. The <a href="fleets.html">Fleet List</a> has every model's measured speeds.</p></div>
       <div><p class="label">Only in Korea</p><p>Requests and data are processed only on machines we operate in Korea, and never sent to another AI service. Korea holds an <a href="https://commission.europa.eu/law/law-topic/data-protection/international-dimension-data-protection/adequacy-decisions_en">EU adequacy decision</a> and a UK one, so personal data from Europe can come to your fleet without separate transfer contracts. You contract with a Korean company under Korean law.</p></div>
@@ -149,6 +149,7 @@ h1 { max-width: 15ch; }
         <dt>Prefill ahead</dt><dd>Keeps the branches and modules you name warm, and prefills the likely next ones between your turns.</dd>
         <dt>Resume sessions</dt><dd>Keeps yesterday's agent sessions warm, so you pick up where they stopped.</dd>
         <dt>Export and restore</dt><dd>Takes your storage, cache snapshots, draft model and adapters to any fleet you hold.</dd>
+        <dt>Daily backup</dt><dd>Copies the storage paths you choose to your own bucket or server every day, changes only.</dd>
       </dl></div>
       <div class="fn"><p class="label">Find problems</p><dl>
         <dt>Review the day's changes</dt><dd>Reviews each change against the whole codebase, not just the diff, and confirms each finding with a test.</dd>

@@ -68,7 +68,7 @@
       <tr><td><b>Fleet 3</b></td><td>16 NVIDIA DGX Spark (GB10)</td><td>Under construction</td><td>By the week, pinned</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>Listed here when the fleet opens</td></tr>
     </table>
     </div>
-    <p>Each node keeps 1 TB of cache and 500 GB of customer storage on its own NVMe drive, mirrored to its pair partner over the direct pair link, so a fleet holds 8 TB of cache and 4 TB of storage, and a failed node loses neither.</p>
+    <p>Each node keeps 1 TB of cache and 500 GB of customer storage on its own NVMe drive, mirrored to its pair partner over the direct pair link, so a fleet holds 8 TB of cache and 4 TB of storage, and a failed node loses neither. If both nodes of a pair fail together, their part of the cache has to be rebuilt, and the Customer Agreement credits 24 hours of the fleet for each such event (clause 6.6). Customer storage is working space: back up daily anything you want to keep.</p>
     <p>Our system publishes live capacity, with each fleet's state, whether it is the demo fleet, pinned or available, and how many waitlist locks are waiting, at <span class="mono">https://sparkpipe.ai/availability.txt</span>, regenerated at least every 30 seconds.</p>
   </section>
 
