@@ -11,8 +11,10 @@ describes what is built, how it runs and how to test it.
 ## Units and rules
 
 - **HC.** One HC buys one hour of a Rate-1 fleet. It is bought by amount
-  (`market.hcPrice` in `site/pricing.js`, $20, plus VAT), from
-  `market.minPurchase` ($10), to 6 decimal places. Each purchase or credit is
+  (`market.hcPrice` in `site/pricing.js`, $20, plus VAT, or
+  `market.hcPriceKRW`, ₩26,000, plus VAT, when paid in won through Toss
+  Payments), from `market.minPurchase` ($10, or ₩13,000 in won), to 6
+  decimal places. Each purchase or credit is
   a lot that lapses 12 months after it is issued, or later when the cover
   below needs it; spending takes the lot that lapses first. HC never moves
   between accounts and is never paid out.
@@ -200,7 +202,7 @@ same balances.
 | `GET /market/book` | anyone | Open releases and bids, without identities, and recent trades |
 | `GET /market/market.txt`, `/market/pool.txt` | anyone | The same as plain-text feeds |
 | `GET /market/ledger` | signed in | The account's own ledger lines with their hashes |
-| `POST /market/buy` | signed in | `amount` in USD before VAT; live also `coin`, and returns the CoinPayments checkout |
+| `POST /market/buy` | signed in | `amount` in USD before VAT; live also `coin`, and returns the CoinPayments checkout; or `processor: "toss"` with `amount` in won, live and sandbox, which returns the Toss Payments request (docs/PAYMENTS.md) |
 | `POST /market/reserve` | signed in | `fleet`, `start`, `model`, optional `max`, `pay`: `hc` or `tranche` |
 | `POST /market/release` | signed in | `reservation`, optional `min` |
 | `POST /market/cancel` | signed in | `ask` or `bid` |
@@ -219,7 +221,25 @@ a second instance of the service in sandbox mode, served at
 `/pay/sandbox/api/`, with its own accounts and ledger; `market-test.html`
 redirects there. In the sandbox:
 
-- purchases settle at once and no CoinPayments call is made;
+- purchases from the market page settle at once and no CoinPayments call is
+  made;
+- card purchases through `buy.html?sandbox` (which, like
+  `account.html?sandbox`, talks to `/pay/sandbox/api/`) go through Toss
+  Payments' test mode, so the whole card checkout can be tried and no card
+  is charged. The sandbox refuses live Toss Payments keys. Its
+  `/etc/sparkpipe-pay/sandbox.env` holds Toss Payments' published
+  documentation test keys for the checkout-page payment (주문서형 결제) as
+  `TOSS_CLIENT_KEY` (`test_gck_docs_…`) and `TOSS_SECRET_KEY`
+  (`test_gsk_docs_…`): copy them from the guide "주문서형 결제 연동하기"
+  (https://docs.tosspayments.com/guides/v2/payment-widget/integration) or
+  from Toss Payments' sample repository
+  (https://github.com/tosspayments/tosspayments-sample). Those keys belong
+  to Toss Payments' documentation shop: cards, transfers and most easy-pay
+  wallets work, virtual accounts and webhooks do not, so the reconciliation
+  confirms payments instead. Once the contract gives us our own test keys,
+  put those there instead and register the sandbox webhook
+  (docs/PAYMENTS.md); test virtual accounts are then paid from the test
+  payment log in the Toss Payments developer centre;
 - `/code` returns the sign-in code instead of mailing it, and no mail is sent;
 - a shared test clock moves forward, so hours start, released hours reach
   the pool and the pool settles;
@@ -242,6 +262,7 @@ First install on the VPS, beside the live service:
 ```sh
 sudo install -d -o sparkpipe-pay -g sparkpipe-pay -m 700 /var/lib/sparkpipe-pay-sandbox
 sudo install -m 640 -g sparkpipe-pay deployment/vps/sparkpipe-pay-sandbox.env.example /etc/sparkpipe-pay/sandbox.env
+sudoedit /etc/sparkpipe-pay/sandbox.env
 sudo install -m 644 deployment/vps/sparkpipe-pay-sandbox.service /etc/systemd/system/
 sudo install -m 644 deployment/vps/sparkpipe-pay.conf /etc/apache2/sparkpipe/
 sudo systemctl daemon-reload

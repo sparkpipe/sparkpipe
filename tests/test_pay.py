@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 
 import base64
+import contextlib
 import email
+import io
 import email.policy
 import hashlib
 import hmac
 import http.server
 import json
+import os
 import re
 import shutil
 import socketserver
@@ -14,6 +17,7 @@ import sys
 import tempfile
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -28,6 +32,8 @@ import sparkpipe_pay as sp
 
 SECRET = b"test-client-secret"
 CLIENT = "test-client-id"
+TOSS_LIVE = ("live_gck_fake_client", "live_gsk_fake_secret")
+TOSS_TEST = ("test_gck_fake_client", "test_gsk_fake_secret")
 NOW = [datetime(2026, 11, 2, 3, 0, 0, tzinfo=timezone.utc)]
 
 
@@ -149,6 +155,83 @@ class FakeCoinPayments(http.server.BaseHTTPRequestHandler):
         invoice = self.server.invoices[key]
         arrived = invoice.get("received", invoice["total"] if invoice["status"] in ("paid", "completed") else "0")
         self.answer(200, {"id": key, "status": invoice["status"], "amount": {"breakdown": {}, "total": invoice["total"]}, "currency": {"id": "5057", "symbol": "USD"}, "payments": [{"paymentCurrencySymbol": invoice.get("paidIn", "USDC.BASE"), "nativeActualAmount": arrived}]})
+
+
+class FakeToss(http.server.BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        pass
+
+    def answer(self, status, data):
+        body = json.dumps(data, ensure_ascii=False).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def authorised(self):
+        return self.headers.get("Authorization") == "Basic " + base64.b64encode((self.server.secret + ":").encode()).decode()
+
+    def view(self, key):
+        found = self.server.payments[key]
+        return {name: value for name, value in found.items() if not name.startswith("_")}
+
+    def do_GET(self):
+        key = urllib.parse.unquote(self.path.rsplit("/", 1)[1])
+        self.server.calls.append(("GET", key, None, None))
+        if not self.authorised():
+            return self.answer(401, {"code": "UNAUTHORIZED_KEY", "message": "key"})
+        if key not in self.server.payments:
+            return self.answer(404, {"code": "NOT_FOUND_PAYMENT", "message": "none"})
+        self.answer(200, self.view(key))
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        idem = self.headers.get("Idempotency-Key")
+        parts = self.path.split("/")
+        key = body.get("paymentKey") if self.path == "/v1/payments/confirm" else urllib.parse.unquote(parts[3])
+        self.server.calls.append(("POST", key, body, idem))
+        if not self.authorised():
+            return self.answer(401, {"code": "UNAUTHORIZED_KEY", "message": "key"})
+        if idem in self.server.done:
+            return self.answer(*self.server.done[idem])
+        found = self.server.payments.get(key)
+        if found is None:
+            result = (404, {"code": "NOT_FOUND_PAYMENT_SESSION", "message": "none"})
+        elif self.path == "/v1/payments/confirm":
+            if body["amount"] != found["_authorised"] or body["orderId"] != found["orderId"]:
+                result = (400, {"code": "INVALID_REQUEST", "message": "amount"})
+            elif found.get("_decline"):
+                found["status"] = "ABORTED"
+                result = (400, {"code": found["_decline"], "message": "declined"})
+            else:
+                found["status"] = found.pop("_after", "DONE")
+                result = (200, self.view(key))
+        else:
+            balance = found["balanceAmount"]
+            amount = body.get("cancelAmount", balance)
+            if "refundableAmount" in body and body["refundableAmount"] != balance:
+                result = (400, {"code": "NOT_MATCHES_REFUNDABLE_AMOUNT", "message": "balance"})
+            elif found["method"] == "가상계좌" and found["status"] == "DONE" and "refundReceiveAccount" not in body:
+                result = (400, {"code": "INVALID_REFUND_ACCOUNT_INFO", "message": "account"})
+            else:
+                found["balanceAmount"] = balance - amount
+                found["status"] = "CANCELED" if found["balanceAmount"] == 0 else "PARTIAL_CANCELED"
+                found.setdefault("cancels", []).append({"cancelAmount": amount, "cancelReason": body["cancelReason"]})
+                result = (200, self.view(key))
+        if idem:
+            self.server.done[idem] = result
+        self.answer(*result)
+
+
+def toss_payment(fake, key, order, amount, method="카드", after="DONE", total=None, **extra):
+    found = {"paymentKey": key, "orderId": order, "status": "IN_PROGRESS", "totalAmount": amount if total is None else total, "balanceAmount": amount if total is None else total,
+             "currency": "KRW", "method": method, "approvedAt": "2026-11-02T12:00:00+09:00", "receipt": {"url": f"https://dashboard.tosspayments.com/receipt/{key}"}, "_authorised": amount, "_after": after}
+    if method == "가상계좌":
+        found["virtualAccount"] = {"accountNumber": "X12345678901", "bankCode": "88", "dueDate": "2026-11-03T12:00:00+09:00"}
+    found.update(extra)
+    fake.payments[key] = found
+    return found
 
 
 class FakeSMTP(socketserver.StreamRequestHandler):
@@ -702,17 +785,352 @@ def lead_flow(failures, app, buyer, mailbox, work):
         failures.append("a quote request without a company is accepted")
 
 
+def site_copy(work):
+    (work / "site" / "terms").mkdir(parents=True)
+    shutil.copy(ROOT / "site" / "pricing.js", work / "site" / "pricing.js")
+    for name in sp.TERMS.values():
+        shutil.copy(ROOT / "site" / "terms" / name, work / "site" / "terms" / name)
+    for name in ("agreement.html", "agreement-ko.html"):
+        shutil.copy(ROOT / "site" / name, work / "site" / name)
+    (work / "secret").write_text("test-client-secret\n")
+
+
+def toss_env(work, fake, mailbox, keys, name="data", sandbox=False):
+    env = {
+        "SPARKPIPE_PAY_DATA": str(work / name), "SPARKPIPE_PAY_SITE": str(work / "site"),
+        "COINPAYMENTS_API": "http://127.0.0.1:9/api/v2", "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
+        "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}", "TOSS_API": f"http://127.0.0.1:{fake.server_address[1]}",
+        "SPARKPIPE_PAY_SUPPLIER_ADDRESS_KO": "서울특별시 용산구 시험로 1", "SPARKPIPE_PAY_SUPPLIER_ADDRESS_EN": "1 Test-ro, Yongsan-gu, Seoul",
+    }
+    if keys:
+        env.update(TOSS_CLIENT_KEY=keys[0], TOSS_SECRET_KEY=keys[1])
+    if sandbox:
+        env.update(SPARKPIPE_PAY_SANDBOX="1", SPARKPIPE_PAY_PREFIX="/pay/sandbox/api")
+    return env
+
+
+def redirected(port, path):
+    class Stop(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+    try:
+        urllib.request.build_opener(Stop).open(f"http://127.0.0.1:{port}{path}", timeout=20)
+        return None
+    except urllib.error.HTTPError as error:
+        return error.code, error.headers.get("Location")
+
+
+def succeed(port, order, key, amount):
+    return redirected(port, f"/toss/success/{order}?" + urllib.parse.urlencode({"paymentKey": key, "orderId": order, "amount": amount, "paymentType": "NORMAL"}))
+
+
+def toss_webhook(client, body):
+    return client("POST", "/toss/webhook", raw=json.dumps(body, ensure_ascii=False).encode(), headers={"tosspayments-webhook-transmission-time": "2026-11-02T12:00:00+09:00"})
+
+
+def lines_of(cfg, kind):
+    return [json.loads(line)["data"] for line in open(cfg.path("ledger.jsonl"), encoding="utf-8") if json.loads(line)["type"] == kind]
+
+
+def check_toss_keys(failures, work, fake, mailbox):
+    for keys, sandbox in ((TOSS_TEST, False), (TOSS_LIVE, True), ((TOSS_LIVE[0], ""), False), (("", TOSS_TEST[1]), True)):
+        try:
+            sp.Config(toss_env(work, fake, mailbox, keys, sandbox=sandbox))
+            failures.append(f"Toss Payments keys {'live' if keys[0].startswith('live') else 'test'} are accepted {'in the sandbox' if sandbox else 'on the live service'}, or one key without the other")
+        except ValueError as error:
+            if "test_" in str(error) or "live_" in str(error) or "fake" in str(error):
+                failures.append(f"the key error names a key: {error}")
+    cfg = sp.Config(toss_env(work, fake, mailbox, None, "closed"))
+    server = sp.start(cfg, port=0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    buyer = Client(server.server_address[1], origin="https://sparkpipe.ai")
+    try:
+        if buyer("GET", "/toss/config")[1] != {"enabled": False, "clientKey": None, "variantKey": "DEFAULT", "test": False}:
+            failures.append(f"the live service offers cards without live Toss Payments keys: {buyer('GET', '/toss/config')[1]}")
+        sign_in(buyer, mailbox, "nokeys@acme.example", company="No Keys", accept=True)
+        status, refused = buyer("POST", "/order", {"product": "credits", "amount": "130000", "processor": "toss"})
+        if status != 503 or refused.get("reason") != "cards_closed" or server.app.book.orders:
+            failures.append(f"a card order is taken without live Toss Payments keys: {status} {refused}")
+    finally:
+        server.shutdown()
+
+
+def check_toss_sandbox(failures, work, fake, mailbox):
+    cfg = sp.Config(toss_env(work, fake, mailbox, TOSS_TEST, "sandbox", sandbox=True))
+    server = sp.start(cfg, port=0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port, app = server.server_address[1], server.app
+    tester = Client(port, origin="https://sparkpipe.ai")
+    try:
+        if tester("GET", "/toss/config")[1] != {"enabled": True, "clientKey": TOSS_TEST[0], "variantKey": "DEFAULT", "test": True}:
+            failures.append(f"the sandbox does not run Toss Payments in test mode: {tester('GET', '/toss/config')[1]}")
+        code = tester("POST", "/code", {"email": "try@acme.example"})[1].get("code")
+        tester("POST", "/verify", {"email": "try@acme.example", "code": code, "company": "Try Co", "accept": True})
+        status, placed = tester("POST", "/market/buy", {"amount": "26000", "processor": "toss"})
+        request = placed.get("toss", {})
+        if status != 200 or request.get("clientKey") != TOSS_TEST[0] or not request.get("test") or request.get("amount") != 28600 or not request.get("successUrl", "").startswith("https://sparkpipe.ai/pay/sandbox/api/toss/success/"):
+            failures.append(f"a sandbox card purchase is not a Toss Payments test payment: {status} {placed}")
+            return
+        toss_payment(fake, "sandbox-key-1", request["orderId"], 28600)
+        hop = succeed(port, request["orderId"], "sandbox-key-1", "28600")
+        state = tester("GET", "/market/state")[1]["account"]
+        if hop != (303, f"https://sparkpipe.ai/account.html?sandbox&order={request['orderId']}") or Decimal(state["balance"]) != 1:
+            failures.append(f"a sandbox test card payment does not issue its HC: {hop} {state['balance']}")
+        if Decimal(tester("POST", "/market/buy", {"amount": "40"})[1].get("hc", "0")) != 2:
+            failures.append("the sandbox's free HC purchase stops working beside the test card payments")
+        if tester("POST", "/order", {"product": "plan", "plan": "PO", "amount": "1000", "processor": "toss"})[0] != 404:
+            failures.append("the sandbox takes a plan payment")
+    finally:
+        server.shutdown()
+
+
+def check_toss(failures):
+    work = Path(tempfile.mkdtemp(prefix="sparkpipe-toss-"))
+    fake = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeToss)
+    fake.payments, fake.calls, fake.done, fake.secret = {}, [], {}, TOSS_LIVE[1]
+    threading.Thread(target=fake.serve_forever, daemon=True).start()
+    mailbox = socketserver.ThreadingTCPServer(("127.0.0.1", 0), FakeSMTP)
+    mailbox.daemon_threads, mailbox.mail = True, []
+    threading.Thread(target=mailbox.serve_forever, daemon=True).start()
+    start = NOW[0]
+    NOW[0] = datetime(2026, 11, 2, 3, 0, 0, tzinfo=timezone.utc)
+    try:
+        site_copy(work)
+        sp.clock = lambda: NOW[0]
+        sp.LIMITS["order"] = (100, 600)
+        check_toss_keys(failures, work, fake, mailbox)
+        cfg = sp.Config(toss_env(work, fake, mailbox, TOSS_LIVE))
+        server = sp.start(cfg, port=0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        port, app = server.server_address[1], server.app
+        buyer = Client(port, origin="https://sparkpipe.ai")
+        sign_in(buyer, mailbox, "card@acme.example", company="Card Co", accept=True)
+        try:
+            toss_flows(failures, cfg, app, fake, buyer, mailbox, port)
+        finally:
+            server.shutdown()
+        fake.secret = TOSS_TEST[1]
+        check_toss_sandbox(failures, work, fake, mailbox)
+    finally:
+        NOW[0] = start
+        fake.shutdown()
+        mailbox.shutdown()
+        shutil.rmtree(work)
+
+
+def order_toss(client, body):
+    status, placed = client("POST", "/order", dict(body, processor="toss"))
+    return status, placed, placed.get("toss", {})
+
+
+def toss_flows(failures, cfg, app, fake, buyer, mailbox, port):
+    if buyer("GET", "/toss/config")[1] != {"enabled": True, "clientKey": TOSS_LIVE[0], "variantKey": "DEFAULT", "test": False}:
+        failures.append(f"the live service hides cards with live Toss Payments keys set: {buyer('GET', '/toss/config')[1]}")
+    for amount in ("12999", "130000001", "130000.5", "ten", "", True):
+        if buyer("POST", "/order", {"product": "credits", "amount": amount, "processor": "toss"})[0] != 400:
+            failures.append(f"a card order of {amount!r} KRW is accepted")
+    if buyer("POST", "/order", {"product": "credits", "amount": "130000", "processor": "toss", "brn": "12345"})[0] != 400:
+        failures.append("a card order with a malformed business registration number is accepted")
+    if buyer("POST", "/order", {"product": "credits", "amount": "130000", "processor": "paypal"})[0] != 400:
+        failures.append("an order through an unknown processor is accepted")
+    status, placed, request = order_toss(buyer, {"product": "credits", "amount": "130000", "total": "1"})
+    order = placed.get("order", "")
+    expected = {"amount": 143000, "currency": "KRW", "orderId": order, "customerEmail": "card@acme.example", "customerName": "Card Co", "clientKey": TOSS_LIVE[0],
+                "successUrl": f"https://sparkpipe.ai/pay/api/toss/success/{order}", "failUrl": f"https://sparkpipe.ai/pay/api/toss/fail/{order}", "orderName": "SparkPipe hour-credits, 5 HC"}
+    if status != 200 or any(request.get(key) != value for key, value in expected.items()):
+        failures.append(f"a card order does not fix its won amount on the server: {status} {placed}")
+        return
+    shown = buyer("GET", "/order/" + order)[1]
+    if (shown["state"], shown["total"], shown["vat"], shown["hours"], shown["currency"], shown["processor"]) != ("created", "143000", "13000", "5.000000", "KRW", "toss"):
+        failures.append(f"a card order's status: {shown}")
+    toss_payment(fake, "pay-card-1", order, 143000)
+    hop = succeed(port, order, "pay-card-1", "143000")
+    app.mails.join()
+    confirms = [c for c in fake.calls if c[0] == "POST" and c[1] == "pay-card-1"]
+    account = app.book.emails["card@acme.example"]
+    if hop != (303, f"https://sparkpipe.ai/account.html?order={order}") or confirms != [("POST", "pay-card-1", {"paymentKey": "pay-card-1", "orderId": order, "amount": 143000}, f"confirm-{order}")]:
+        failures.append(f"the success redirect does not confirm the server's amount once with an idempotency key: {hop} {confirms}")
+    if buyer("GET", "/account")[1]["hc"] != "5.000000" or ledger_types(cfg).count("hours_issued") != 1:
+        failures.append(f"a confirmed card payment does not issue its HC: {buyer('GET', '/account')[1]['hc']}")
+    payment = lines_of(cfg, "payment")[-1]
+    if payment.get("processor") != "toss" or payment.get("method") != "카드" or payment.get("taxInvoice", {}).get("needed") is not False or payment.get("received") != "143000":
+        failures.append(f"the card payment line: {payment}")
+    note = next((m.get_content() for rcpt, m in mailbox.mail if "card@acme.example" in rcpt and order in m["Subject"]), "")
+    if "143,000 KRW" not in note or "by card through Toss Payments" not in note or "card slip" not in note or "receipt/pay-card-1" not in note:
+        failures.append(f"the card receipt: {note!r}")
+    succeed(port, order, "pay-card-1", "143000")
+    toss_webhook(buyer, {"eventType": "PAYMENT_STATUS_CHANGED", "createdAt": "2026-11-02T12:00:00.000000", "data": {"orderId": order, "paymentKey": "pay-card-1", "status": "DONE"}})
+    app.jobs.join()
+    app.reconcile()
+    app.jobs.join()
+    if buyer("GET", "/account")[1]["hc"] != "5.000000" or ledger_types(cfg).count("hours_issued") != 1 or len([c for c in fake.calls if c[0] == "POST" and c[1] == "pay-card-1"]) != 1:
+        failures.append("a repeated success redirect or webhook issues HC twice or confirms twice")
+
+    status, placed, request = order_toss(buyer, {"product": "credits", "amount": "130000"})
+    toss_payment(fake, "pay-cheap", request["orderId"], 100)
+    hop = succeed(port, request["orderId"], "pay-cheap", "100")
+    shown = buyer("GET", "/order/" + request["orderId"])[1]
+    if any(c[1] == "pay-cheap" and c[0] == "POST" for c in fake.calls) or shown["state"] != "failed" or shown["reason"] != "amount" or buyer("GET", "/account")[1]["hc"] != "5.000000":
+        failures.append(f"a payment authorised for another amount is confirmed: {shown}")
+    status, placed, request = order_toss(buyer, {"product": "credits", "amount": "130000"})
+    toss_payment(fake, "pay-odd", request["orderId"], 143000, total=1000)
+    succeed(port, request["orderId"], "pay-odd", "143000")
+    shown = buyer("GET", "/order/" + request["orderId"])[1]
+    cancels = [c for c in fake.calls if c[1] == "pay-odd" and c[0] == "POST" and c[3] == f"mismatch-{request['orderId']}"]
+    if shown["state"] != "cancelled" or shown["reason"] != "amount" or len(cancels) != 1 or fake.payments["pay-odd"]["status"] != "CANCELED" or buyer("GET", "/account")[1]["hc"] != "5.000000":
+        failures.append(f"a payment Toss Payments reports for another amount is not refused and cancelled: {shown} {cancels}")
+    status, placed, request = order_toss(buyer, {"product": "credits", "amount": "130000"})
+    toss_payment(fake, "pay-declined", request["orderId"], 143000, _decline="REJECT_CARD_COMPANY")
+    succeed(port, request["orderId"], "pay-declined", "143000")
+    shown = buyer("GET", "/order/" + request["orderId"])[1]
+    if shown["state"] != "failed" or shown["reason"] != "REJECT_CARD_COMPANY":
+        failures.append(f"a declined card is not recorded: {shown}")
+    status, placed, request = order_toss(buyer, {"product": "credits", "amount": "26000"})
+    hop = redirected(port, f"/toss/fail/{request['orderId']}?code=PAY_PROCESS_CANCELED&message=x")
+    if hop != (303, f"https://sparkpipe.ai/account.html?order={request['orderId']}") or buyer("GET", "/order/" + request["orderId"])[1]["state"] != "cancelled":
+        failures.append(f"a payment the buyer cancels stays open: {hop}")
+
+    status, placed, request = order_toss(buyer, {"product": "credits", "amount": "260000", "brn": "123-45-67890"})
+    deposit = request["orderId"]
+    toss_payment(fake, "pay-va-1", deposit, 286000, method="가상계좌", after="WAITING_FOR_DEPOSIT", secret="va-secret")
+    succeed(port, deposit, "pay-va-1", "286000")
+    app.mails.join()
+    shown = buyer("GET", "/order/" + deposit)[1]
+    if shown["state"] != "waiting" or shown["deposit"] != {"bank": "신한은행", "accountNumber": "X12345678901", "dueDate": "2026-11-03T12:00:00+09:00"} or shown["expires"] != "2026-11-03T03:00:00Z" or buyer("GET", "/account")[1]["hc"] != "5.000000":
+        failures.append(f"an issued virtual account is not shown awaiting its deposit, or issues HC before it: {shown}")
+    if not any("신한은행 account X12345678901" in m.get_content() for rcpt, m in mailbox.mail if "card@acme.example" in rcpt and deposit in m["Subject"]):
+        failures.append("the buyer is not emailed the virtual account to pay")
+    for forged in ({"createdAt": "2026-11-02T12:00:00.000000", "secret": "va-secret", "status": "DONE", "transactionKey": "t", "orderId": deposit},
+                   {"eventType": "PAYMENT_STATUS_CHANGED", "data": {"orderId": deposit, "paymentKey": "pay-va-1", "status": "DONE", "totalAmount": 286000, "currency": "KRW", "method": "가상계좌"}}):
+        if toss_webhook(buyer, forged)[0] != 200:
+            failures.append("a Toss Payments webhook is not acknowledged")
+        app.jobs.join()
+    if buyer("GET", "/account")[1]["hc"] != "5.000000" or buyer("GET", "/order/" + deposit)[1]["state"] != "waiting":
+        failures.append("a webhook body that says DONE issues HC while Toss Payments still waits for the deposit")
+    fake.payments["pay-va-1"]["status"] = "DONE"
+    toss_webhook(buyer, {"createdAt": "2026-11-02T13:00:00.000000", "secret": "va-secret", "status": "DONE", "transactionKey": "t", "orderId": deposit})
+    app.jobs.join()
+    toss_webhook(buyer, {"createdAt": "2026-11-02T13:00:00.000000", "secret": "va-secret", "status": "DONE", "transactionKey": "t", "orderId": deposit})
+    app.jobs.join()
+    app.mails.join()
+    if buyer("GET", "/account")[1]["hc"] != "15.000000" or ledger_types(cfg).count("hours_issued") != 2:
+        failures.append(f"a virtual account deposit verified with Toss Payments does not issue its HC exactly once: {buyer('GET', '/account')[1]['hc']}")
+    invoice = lines_of(cfg, "payment")[-1].get("taxInvoice")
+    if invoice != {"needed": True, "brn": "123-45-67890", "supply": "260000", "vat": "26000"} or [o["order"] for o in app.tax_invoices()] != [deposit]:
+        failures.append(f"a virtual account payment is not recorded as needing an electronic tax invoice: {invoice}")
+    note = next((m.get_content() for rcpt, m in mailbox.mail if "card@acme.example" in rcpt and m["Subject"] == f"Payment received: SparkPipe order {deposit}"), "")
+    if "electronic tax invoice" not in note or "123-45-67890" not in note:
+        failures.append(f"the virtual account receipt does not promise the tax invoice: {note!r}")
+
+    status, placed, request = order_toss(buyer, {"product": "credits", "amount": "130000"})
+    late = request["orderId"]
+    toss_payment(fake, "pay-va-2", late, 143000, method="가상계좌", after="WAITING_FOR_DEPOSIT")
+    succeed(port, late, "pay-va-2", "143000")
+    status, placed, request = order_toss(buyer, {"product": "credits", "amount": "130000"})
+    abandoned = request["orderId"]
+    held = app.market.pending()
+    NOW[0] = datetime(2026, 11, 3, 4, 0, 0, tzinfo=timezone.utc)
+    if held != 10 or app.market.pending() != 0:
+        failures.append(f"open card orders do not hold their HC off sale until they expire, and no longer: {held} {app.market.pending()}")
+    app.reconcile()
+    app.jobs.join()
+    expired = [c for c in fake.calls if c[1] == "pay-va-2" and c[0] == "POST" and c[3] == f"expire-{late}"]
+    states = [buyer("GET", "/order/" + ident)[1]["state"] for ident in (late, abandoned)]
+    if states != ["timedout", "timedout"] or len(expired) != 1 or fake.payments["pay-va-2"]["status"] != "CANCELED" or buyer("GET", "/account")[1]["hc"] != "15.000000":
+        failures.append(f"an unpaid virtual account or an abandoned card order does not expire with its order: {states} {expired}")
+    toss_flows_plans(failures, cfg, app, fake, buyer, mailbox, port)
+    toss_refunds(failures, cfg, app, fake, buyer, mailbox, order, deposit)
+
+
+def toss_flows_plans(failures, cfg, app, fake, buyer, mailbox, port):
+    status, quote = buyer("POST", "/plans/quote", CHOICE)
+    rows = dict(map(tuple, quote.get("rows", {}).get("en", [])))
+    ko = dict(map(tuple, quote.get("rows", {}).get("ko", [])))
+    if status != 200 or quote.get("priceKRW") != "20000" or rows.get("Hour Price (clause 16.4)") != "KRW 20,000 or USD 15.00 per fleet-hour, in the payment currency below, exclusive of VAT, including any Fleet lock, fixed for the Term" \
+            or rows.get("Price of the Term (clause 16.4)") != "KRW 116,960,000 or USD 87,720.00, exclusive of VAT" or rows.get("Payment currency and account (clause 3.3)") != "KRW, clause 3.3(a): Toss Payments / US dollar stablecoin, clause 3.3(c)" \
+            or ko.get("시간당 가격(제16.4조)") != "아래 지급 통화에 따라 플릿시간당 20,000원(KRW) 또는 미화 15.00달러(USD), 부가가치세 별도, 플릿 고정 포함, 플랜 기간 동안 고정":
+        failures.append(f"a Plan Order does not state its Hour Price in won for payment through Toss Payments: {status} {quote.get('priceKRW')} {rows} {ko}")
+    holder = app.book.emails["card@acme.example"]
+    record(app, dict(plan("TOSS", "card@acme.example", ["asia"]), hourPriceKRW="20000"))
+    record(app, plan("USD", "card@acme.example", ["europe"]))
+    found = {p["plan"]: p for p in buyer("GET", "/account")[1]["plans"]}
+    toss_plan = found.get("SP-PLAN-TOSS", {})
+    if toss_plan.get("priceKRW") != "20000" or toss_plan.get("nextGateKRW") != "26880000" or toss_plan.get("remainingKRW") != "116960000" or found.get("SP-PLAN-USD", {}).get("remainingKRW") is not None:
+        failures.append(f"a plan does not show what is due in won: {toss_plan}")
+    if buyer("POST", "/order", {"product": "plan", "plan": "SP-PLAN-USD", "amount": "2720000", "processor": "toss"})[0] != 409:
+        failures.append("a plan whose Plan Order has no won Hour Price is paid in won")
+    if buyer("POST", "/order", {"product": "plan", "plan": "SP-PLAN-TOSS", "amount": "116960001", "processor": "toss"})[0] != 409:
+        failures.append("a won prepayment above what is left of the plan is ordered")
+    status, placed, request = order_toss(buyer, {"product": "plan", "plan": "SP-PLAN-TOSS", "amount": "2720000"})
+    if status != 200 or request.get("amount") != 2992000 or request.get("orderName") != "SparkPipe plan SP-PLAN-TOSS, prepayment":
+        failures.append(f"a plan payment through Toss Payments: {status} {placed}")
+        return
+    toss_payment(fake, "pay-plan-1", request["orderId"], 2992000, method="계좌이체")
+    succeed(port, request["orderId"], "pay-plan-1", "2992000")
+    app.mails.join()
+    after = {p["plan"]: p for p in buyer("GET", "/account")[1]["plans"]}["SP-PLAN-TOSS"]
+    if app.book.market.tranches[(holder, "2026-12")] != 136 or after["paid"] != "2040.00" or after["remainingKRW"] != "114240000" or after["nextGateKRW"] != "24160000":
+        failures.append(f"a plan payment through Toss Payments does not issue its Tranche: {app.book.market.tranches[(holder, '2026-12')]} {after}")
+    if lines_of(cfg, "payment")[-1]["taxInvoice"] != {"needed": True, "brn": None, "supply": "2720000", "vat": "272000"}:
+        failures.append(f"a won bank transfer for a plan is not recorded as needing a tax invoice: {lines_of(cfg, 'payment')[-1]}")
+
+
+def run_main(cfg, args, fake, mailbox):
+    saved = dict(os.environ)
+    os.environ.update({"SPARKPIPE_PAY_DATA": cfg.data, "SPARKPIPE_PAY_SITE": cfg.site, "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(Path(cfg.site).parent / "secret"),
+                       "SPARKPIPE_PAY_SMTP": cfg.smtp, "TOSS_API": cfg.toss_api, "TOSS_CLIENT_KEY": cfg.toss_client, "TOSS_SECRET_KEY": cfg.toss_secret})
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return sp.main(["sparkpipe_pay.py"] + args)
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+def toss_refunds(failures, cfg, app, fake, buyer, mailbox, card, deposit):
+    account = app.book.emails["card@acme.example"]
+    if run_main(cfg, ["refund", card, "9.9", "71500", "goodwill"], fake, mailbox) != 2 or run_main(cfg, ["refund", card, "10.4", "143001", "too much"], fake, mailbox) != 2:
+        failures.append("a refund outside the Customer Agreement's clauses, or above the payment, is made")
+    if run_main(cfg, ["refund", deposit, "10.4", "all", "service ended"], fake, mailbox) != 2:
+        failures.append("a virtual account payment is refunded without the account to refund it to")
+    before = len(fake.calls)
+    if run_main(cfg, ["refund", card, "10.4", "71500", "we stopped offering HC"], fake, mailbox) != 0:
+        failures.append("the refund command fails")
+        return
+    cancel = [c for c in fake.calls[before:] if c[0] == "POST"]
+    with app.book.lock, open(app.book.path, "rb") as handle:
+        app.book.catch_up(handle)
+    refund = lines_of(cfg, "refund")
+    if cancel != [("POST", "pay-card-1", {"cancelReason": "Customer Agreement clause 10.4: we stopped offering HC", "refundableAmount": 143000, "cancelAmount": 71500}, f"refund-{card}-143000")] \
+            or refund != [dict(refund[0], order=card, amount="71500", balance="71500", clause="10.4", hc="2.500000")] or buyer("GET", "/account")[1]["hc"] != "12.500000":
+        failures.append(f"the refund command does not refund through the cancel API and debit the order's HC: {cancel} {refund} {buyer('GET', '/account')[1]['hc']}")
+    if not any(m["Subject"] == f"Refund: SparkPipe order {card}" for rcpt, m in mailbox.mail if "card@acme.example" in rcpt):
+        failures.append("the customer is not told of a refund")
+    app.market.reserve(account, {"fleet": "F1", "start": "2026-12-02T01:00Z", "model": "kimi-k3", "max": "2"})
+    if run_main(cfg, ["refund", card, "10.4", "all", "rest"], fake, mailbox) != 2:
+        failures.append("a refund pays back HC that was already spent")
+    if run_main(cfg, ["refund", deposit, "3.2", "100", "VAT not owed", "088", "110123456789", "Card Co"], fake, mailbox) != 0 or fake.calls[-1][2].get("refundReceiveAccount") != {"bank": "088", "accountNumber": "110123456789", "holderName": "Card Co"}:
+        failures.append("a virtual account payment is not refunded to the account given")
+    if run_main(cfg, ["tax-invoice", deposit, "20261102-41000000-00000001"], fake, mailbox) != 0:
+        failures.append("an issued tax invoice cannot be recorded")
+    with app.book.lock, open(app.book.path, "rb") as handle:
+        app.book.catch_up(handle)
+    if deposit in [o["order"] for o in app.tax_invoices()]:
+        failures.append("a recorded tax invoice is still listed")
+
+
 def main():
     failures = []
     check_dates(failures)
     check_sessions(failures)
     check_covered(failures)
     check_service(failures)
+    check_toss(failures)
     for failure in failures:
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("pay: plan hours and gates match the Customer Agreement for every window, day choice, term and fleet count, invalid plans fail; email codes, sessions, terms acceptance, USDC and USDT invoices on the chosen network, payments in another stablecoin, signed webhooks, receipts, HC orders and part payments, reconciliation, gates, self-serve Plan Orders (the bilingual Order Form, the accepted hash and our Ed25519 signature, capacity, HC cover and fleet-lock checks, holds that lapse unpaid or end at the last paid Tranche, Tranche hours issued on payment less hours that already occurred), quote requests and the hash-chained ledger behave")
+    print("pay: plan hours and gates match the Customer Agreement for every window, day choice, term and fleet count, invalid plans fail; email codes, sessions, terms acceptance, USDC and USDT invoices on the chosen network, payments in another stablecoin, signed webhooks, receipts, HC orders and part payments, reconciliation, gates, self-serve Plan Orders (the bilingual Order Form, the accepted hash and our Ed25519 signature, capacity, HC cover and fleet-lock checks, holds that lapse unpaid or end at the last paid Tranche, Tranche hours issued on payment less hours that already occurred), quote requests and the hash-chained ledger behave; Toss Payments: live keys only on the live service and test keys only in the sandbox, no card option without them, won amounts fixed on the server and confirmed once, other amounts refused and cancelled, webhooks only trigger a check with Toss Payments, virtual accounts issued on a verified deposit and expiring with their order, plan payments in won issuing Tranches, refunds under the named clause through the cancel API, and the tax invoice list")
     return 0
 
 

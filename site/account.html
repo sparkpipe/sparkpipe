@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
 <link rel="stylesheet" href="site.css?v=dcbd7de8">
-<link rel="stylesheet" href="checkout.css?v=1">
+<link rel="stylesheet" href="checkout.css?v=2">
 </head>
 <body>
 <header class="nav">
@@ -83,7 +83,7 @@
       <ul class="perks">
         <li><span>Each purchase of HC lasts 12 months from the day it is issued, and the oldest is spent first. The <a href="market.html">Hour Market</a> shows every lot.</span></li>
         <li><span>Spend HC in the shared pool at once, through an OpenAI-format API with keys you create in the Hour Market, or reserve whole fleet-hours from <span data-start>1 December 2026</span>, up to 7 days ahead at the fleet's Rate, or up to 31 days ahead at 1.25× on any day. No reservation is ever bumped.</span></li>
-        <li><span>Receipts go to <b class="email-here"></b>. For a won tax invoice or anything else, write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</span></li>
+        <li><span>Receipts go to <b class="email-here"></b>. A card payment's card slip is its VAT document; for a bank transfer or virtual account we issue an electronic tax invoice (세금계산서) to the Korean business registration number you gave. For anything else, write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</span></li>
       </ul>
     </section>
 
@@ -117,12 +117,12 @@
         <div class="you"><span data-k="gate-name">Next gate</span><strong data-k="gate"></strong></div>
       </div>
       <form class="form" novalidate>
-        <label>Amount, before VAT (USD)<input name="amount" type="number" inputmode="decimal" min="1" step="0.01"></label>
+        <div data-k="pay"></div>
+        <label><span data-k="unit">Amount, before VAT (USD)</span><input name="amount" type="number" inputmode="decimal" min="1" step="0.01"></label>
         <p class="hint" data-k="issues"></p>
-        <div data-k="coins"></div>
         <p class="flash" hidden></p>
         <button class="btn solid big" type="submit">Pay</button>
-        <p class="hint">Each payment issues hours equal to the amount before VAT divided by your Hour Price, to the earliest Tranches not yet paid. For a USD wire or a won transfer, write to us.</p>
+        <p class="hint">Each payment issues hours equal to the amount before VAT divided by your Hour Price in that currency, to the earliest Tranches not yet paid. Pay by card or Korean bank transfer in won through Toss Payments, or in USDC or USDT. For a USD wire, write to us.</p>
       </form>
     </div>
   </section>
@@ -132,17 +132,18 @@
   <div class="wrap">
     <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
     <nav aria-label="Footer"><a href="index.html">Home</a><a href="market.html">Hour Market</a><a href="fleets.html">Fleet List</a><a href="agreement.html">Customer Agreement</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
-    <span>Stablecoin payments are processed by CoinPayments.</span>
+    <span>Card and won payments are processed by Toss Payments; stablecoin payments by CoinPayments.</span>
   </div>
 </footer>
 
+<script src="https://js.tosspayments.com/v2/standard" id="toss-sdk" async></script>
 <script src="pricing.js"></script>
-<script src="checkout.js?v=1"></script>
+<script src="checkout.js?v=2"></script>
 <script>
 (() => {
   const P = window.SP_PRICING, SP = window.SP;
   const $ = (id) => document.getElementById(id);
-  const OPEN = new Set(['created', 'unpaid', 'pending', 'paid']);
+  const OPEN = new Set(['created', 'unpaid', 'pending', 'paid', 'waiting']);
   const STEPS = { created: 0, unpaid: 1, pending: 2, paid: 3, completed: 4 };
   const ORDER = /^SP[A-Z2-7]{16}$/;
   const nice = (day) => (day ? new Date(day.slice(0, 10) + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) : '-');
@@ -169,7 +170,12 @@
     const actions = [];
     let title, text, kind;
     const part = o.received && +o.received > 0 && +o.received < +o.total;
-    if (o.state === 'completed' && o.issued) {
+    const toss = o.processor === 'toss' ? SP.tossStatus(o) : null;
+    if (toss) {
+      ({ title, text, kind } = toss);
+      [...$('st-line').children].forEach((li, i) => { li.className = i < toss.step ? 'done' : i === toss.step && OPEN.has(o.state) ? 'now' : ''; });
+      if (toss.retry) actions.push(link((o.product === 'credits' ? 'buy.html' : 'account.html') + (SP.sandbox ? '?sandbox' : ''), o.product === 'credits' ? 'Buy HC' : 'Pay again', 'btn solid'));
+    } else if (o.state === 'completed' && o.issued) {
       title = +o.issuedHours < +o.hours ? 'Paid in part. Your HC is in.' : 'Paid. Your HC is in.'; kind = 'ok';
       text = hc(o.issuedHours) + unit(o) + ' are in your account' + (o.product === 'credits' ? ', usable for 12 months' : '') + (part ? ', for the ' + SP.usd(o.received) + ' that arrived' : '') + '. The receipt is on its way to your email.';
       if (o.product === 'credits') actions.push(link('market.html', 'Open the Hour Market', 'btn solid'));
@@ -233,28 +239,9 @@
     k('left').textContent = SP.usd(a.remaining);
     k('gate-name').textContent = a.nextGate && !a.ended ? 'Next: ' + a.nextGate.name + ', before VAT' : a.payment === 'upfront' ? 'Payment' : 'Next gate';
     k('gate').textContent = a.ended ? 'Closed' : a.nextGate ? SP.usd(a.nextGate.amount) + ' by ' + nice(a.nextGate.due) : a.payment === 'upfront' ? 'Paid in full' : 'All gates met';
-    const form = node.querySelector('form'), amount = form.elements.amount, note = form.querySelector('.flash'), button = form.querySelector('button');
-    SP.coinPicker(k('coins'), 'coin-' + a.plan, 'USDC.ERC20', () => update());
-    if (a.nextGate) amount.value = a.nextGate.amount;
-    const update = () => {
-      const net = Math.round((+amount.value || 0) * 100) / 100, vat = Math.round(net * P.vatRate * 100) / 100, coin = SP.coinOf(SP.chosen(form, 'coin-' + a.plan) || 'USDC.ERC20');
-      k('issues').textContent = net >= 1 ? 'Issues ' + SP.whole(Math.floor(net / +a.price * 10000) / 10000) + ' hours. Total with VAT: ' + SP.usd(net + vat) + ' in ' + coin + '.' : '';
-      button.textContent = net >= 1 ? 'Pay ' + SP.usd(net + vat) + ' in ' + coin : 'Pay in ' + coin;
-      button.disabled = Boolean(a.ended) || net < 1 || net > +a.remaining;
-    };
-    amount.addEventListener('input', update);
-    update();
+    const form = node.querySelector('form');
+    SP.planPay(form, a, P);
     if (a.ended) { form.hidden = true; const p = document.createElement('p'); p.className = 'flash'; p.textContent = a.ended; node.querySelector('.calc').append(p); }
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      button.disabled = true;
-      SP.say(note, '');
-      try {
-        const placed = await SP.call('/order', { product: 'plan', plan: a.plan, amount: (+amount.value).toFixed(2), coin: SP.chosen(form, 'coin-' + a.plan) });
-        if (!/^https:\/\//.test(placed.checkout)) throw new Error('The checkout link is not secure. Your order is listed below.');
-        window.location.assign(placed.checkout);
-      } catch (error) { SP.say(note, error.message, 'error'); update(); }
-    });
     return node;
   };
 
@@ -267,7 +254,7 @@
     document.querySelectorAll('.email-here').forEach((el) => { el.textContent = me.email; });
     $('since').textContent = nice(me.since);
     $('s-hc').textContent = hc(me.hc);
-    $('s-open').textContent = me.orders.filter((o) => o.state === 'unpaid' || o.state === 'pending' || o.state === 'paid').length;
+    $('s-open').textContent = me.orders.filter((o) => o.state === 'unpaid' || o.state === 'pending' || o.state === 'paid' || o.state === 'waiting').length;
     $('plans').hidden = me.plans.length === 0;
     $('plans').replaceChildren(...me.plans.map(renderPlan));
     $('no-orders').hidden = me.orders.length > 0;
@@ -278,8 +265,8 @@
       const state = document.createElement('span');
       state.className = 'state' + (o.state === 'completed' ? ' live' : OPEN.has(o.state) ? ' building' : '');
       const part = o.received && +o.received > 0 && +o.received < +o.total;
-      state.textContent = part && OPEN.has(o.state) ? 'Part paid: ' + SP.usd(o.received) : part && !o.issued && (o.state === 'cancelled' || o.state === 'timedout') ? (SP.STATES[o.state] || o.state) + ', refunded' : SP.STATES[o.state] || o.state;
-      return row([cell(o.order), cell(what(o)), cell(SP.usd(o.total), 'figure'), cell(SP.coinName(o.coin)), cell(state), cell(action)]);
+      state.textContent = part && OPEN.has(o.state) ? 'Part paid: ' + SP.usd(o.received) : part && !o.issued && (o.state === 'cancelled' || o.state === 'timedout') ? (SP.STATES[o.state] || o.state) + ', refunded' : SP.stateOf(o);
+      return row([cell(o.order), cell(what(o)), cell(SP.priced(o.total, o.currency), 'figure'), cell(SP.paidWith(o)), cell(state), cell(action)]);
     }));
   };
 
