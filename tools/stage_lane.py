@@ -496,6 +496,7 @@ def deployment(model: dict, lane: int, args) -> dict:
             "resident_sequence_capacity": args.sequences,
             "kv_logical_page_capacity": args.kv_logical_pages,
             "kv_physical_page_capacity": args.kv_physical_pages,
+            "output_vocabulary": model["tokenizer_vocabulary"],
         },
         "chat_template": chat_template(model),
         "nodes": nodes,

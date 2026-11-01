@@ -161,6 +161,7 @@ static void TestWriteDeployment(const char *path, const char *runtime_root, cons
 	fixture.runtime_limits.resident_sequence_capacity = 32u;
 	fixture.runtime_limits.kv_logical_page_capacity = 256u;
 	fixture.runtime_limits.kv_physical_page_capacity = 256u;
+	fixture.runtime_limits.output_vocabulary = TEST_MODEL_RESIDENT_OUTPUT_VOCABULARY;
 	fixture.control_port_base = 59200u;
 	fixture.node_count = TEST_RANKS;
 	fixture.coordinator_rank_index = 0u;
@@ -1317,6 +1318,7 @@ static void TestScenarioPartialCopyCapacity(const SparkModelResidentDeployment *
 	MockResidentClientReset();
 	bounded.runtime_limits.max_active_sequence_count = 1u;
 	bounded.runtime_limits.kv_physical_page_capacity = 1u;
+	bounded.runtime_limits.output_vocabulary = TEST_MODEL_RESIDENT_OUTPUT_VOCABULARY;
 	engine = TestConnect(&bounded,&state,runtime_root);
 	if ( engine == 0 )
 		return;
@@ -1492,6 +1494,7 @@ static void TestScenarioSharedPrefixReservation(const SparkModelResidentDeployme
 		whole[index] = 400u + index;
 	MockResidentClientReset();
 	bounded.runtime_limits.kv_physical_page_capacity = 9u;
+	bounded.runtime_limits.output_vocabulary = TEST_MODEL_RESIDENT_OUTPUT_VOCABULARY;
 	engine = TestConnectRows(&bounded,&state,runtime_root,16u);
 	if ( engine == 0 )
 		return;
@@ -1540,6 +1543,7 @@ static void TestScenarioSharedMidBlockPrefixDecode(const SparkModelResidentDeplo
 	second[19] = 812u;
 	MockResidentClientReset();
 	bounded.runtime_limits.kv_physical_page_capacity = 10u;
+	bounded.runtime_limits.output_vocabulary = TEST_MODEL_RESIDENT_OUTPUT_VOCABULARY;
 	engine = TestConnectRows(&bounded,&state,runtime_root,16u);
 	if ( engine == 0 )
 		return;
@@ -1576,6 +1580,7 @@ static void TestScenarioSharedBlocksAcrossChains(const SparkModelResidentDeploym
 	second[19] = 1604u;
 	MockResidentClientReset();
 	bounded.runtime_limits.kv_physical_page_capacity = 10u;
+	bounded.runtime_limits.output_vocabulary = TEST_MODEL_RESIDENT_OUTPUT_VOCABULARY;
 	engine = TestConnectRows(&bounded,&state,runtime_root,16u);
 	if ( engine == 0 )
 		return;

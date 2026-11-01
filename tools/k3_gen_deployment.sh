@@ -48,7 +48,8 @@ print(token)' "$ROOT/model_contracts/k3_authoritative.json")
   echo '    "max_input_rows": 16,'
   echo '    "resident_sequence_capacity": '$RESIDENT_SEQUENCES','
   echo '    "kv_logical_page_capacity": '$KV_PAGES','
-  echo '    "kv_physical_page_capacity": '$KV_PAGES
+  echo '    "kv_physical_page_capacity": '$KV_PAGES','
+  echo '    "output_vocabulary": 163840'
   echo '  },'
   echo '  "nodes": ['
   for i in $(seq 0 15); do

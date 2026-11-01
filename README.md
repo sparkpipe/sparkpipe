@@ -412,6 +412,15 @@ rank or batch row computes it, so a sampled completion replays like a greedy
 one and can be audited off-node against logged (driver, contract, request)
 identities.
 
+Greedy, sampled and logprob tokens come only from ids the tokenizer can
+decode. Several models pad their logits past their tokenizer: GLM-5.3 Full
+and Flash by 24 ids, Ling 3.0 by 31, Qwen 3.8 by 243, MiMo V2.6 by 901. Every
+deployment names `runtime_limits.output_vocabulary`, and the lane tool sets
+it to the tokenizer's vocabulary. Each rank's final head scores only its
+rows below that limit, and the top-p/top-k sampler ranks only tokens below
+it. The engines report the limit in their hello, and the API refuses a
+deployment whose limit differs from its tokenizer's vocabulary.
+
 **Evidence domains.** Each of these is separate:
 
 - source identity;

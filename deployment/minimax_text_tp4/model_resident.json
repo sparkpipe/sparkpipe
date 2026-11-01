@@ -24,7 +24,8 @@
   "max_input_rows": 4,
   "resident_sequence_capacity": 4,
   "kv_logical_page_capacity": 512,
-  "kv_physical_page_capacity": 512
+  "kv_physical_page_capacity": 512,
+  "output_vocabulary": 200064
  },
  "nodes": [
   {
