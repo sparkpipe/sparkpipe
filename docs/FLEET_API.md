@@ -35,7 +35,8 @@ All paths are under `https://sparkpipe.ai/pay/api`. Every request authenticates 
 | Usage records | `GET /v1/requests` |
 | Context packs | `GET/POST /v1/packs`, `GET/DELETE /v1/packs/{name}`, `POST /v1/packs/{name}/refresh` |
 | Repositories | `GET/POST /v1/repos`, `DELETE /v1/repos/{name}`, `POST /v1/repos/{name}/sync`, `POST /v1/repos/{name}/hook` |
-| Storage | `GET /v1/storage`, `PUT/GET/DELETE /v1/storage/{path}`, `POST /v1/storage/fetch`, `POST /v1/export`, `POST /v1/restore` |
+| Storage | `GET /v1/storage`, `PUT/GET/DELETE /v1/storage/{path}`, `POST /v1/export`, `POST /v1/restore`, `PUT /v1/backups` |
+| Fetch and credentials | `POST /v1/fetch`, `GET/DELETE /v1/fetch/{id}`, `GET /v1/secrets`, `PUT/DELETE /v1/secrets/{name}` |
 | Functions | `GET /v1/functions`, `POST /v1/functions/{name}/runs`, `GET /v1/runs`, `GET /v1/runs/{id}`, `GET /v1/runs/{id}/log`, `DELETE /v1/runs/{id}`, `GET/PUT/DELETE /v1/schedules`, `GET /v1/reports/{date}` |
 | Draft models | `GET /v1/drafters`, `PUT /v1/drafters/active` |
 | Customer models | `GET/POST /v1/custom-models`, `DELETE /v1/custom-models/{id}` |
@@ -313,9 +314,9 @@ A pack is a snapshot of a repository rendered into one deterministic text block.
 Customer storage is on the fleet's nodes: 500 GB per node, mirrored to the pair partner, 4 TB in all, in the scratch area of `docs/WORKING_STATE.md`. It follows the working-state deletion rule.
 
 - **Small files.** `PUT /v1/storage/{path}` (with `Content-Range` for resumable chunks of up to 32 MiB), `GET`, `DELETE`, and `GET /v1/storage?prefix=` with sizes and totals.
-- **Large files.** `POST /v1/storage/fetch {"url": "https://…", "path": "models/x/", "headers": {...}}` has the fleet download straight from an HTTPS URL, a presigned bucket URL or a Hugging Face repository over the facility's line. Model weights never pass through the public gateway.
+- **Large files** are fetched by the fleet itself (§6.1), so model weights never pass through the public gateway or the customer's laptop.
 - **Repositories.**
-  - `POST /v1/repos {"name": "main", "url": "https://github.com/acme/app.git", "token": "…", "branch": "main"}` clones into storage. The token is kept as working state and used only to pull.
+  - `POST /v1/repos {"name": "main", "url": "https://github.com/acme/app.git", "secret": "github", "branch": "main"}` clones into storage, with a credential from §6.2.
   - `POST /v1/repos/{name}/sync` pulls now.
   - `POST /v1/repos/{name}/hook` returns a webhook URL for push events, which triggers a sync and then the refreshes the account has scheduled.
 - **Export and restore.**
@@ -324,6 +325,55 @@ Customer storage is on the fleet's nodes: 500 GB per node, mirrored to the pair 
   - Cache snapshots are not exported: they only work on the same model build and topology, and rebuilding them is a warm-up.
 - **Daily backup.** `PUT /v1/backups {"paths": [...], "destination": {"type": "s3" | "https" | "sftp", ...}, "at": "03:00", "tz": "Asia/Seoul"}` copies the chosen storage paths to the customer's own bucket or server every day, sending only what changed, and reports each run in the morning report.
   - Clause 6.3 of the Agreement tells customers to treat working state as temporary, even on a fleet held many weeks ahead, and recommends a daily export. This makes that one setting.
+
+
+### 6.1 Fetch
+
+Terabytes move between the fleet and the source over the fleet's own line, while the customer's machine sends only the request. An engineer on a plane can start a 1.5 TB model download, or a repository and its datasets, and get a notification when it is in storage.
+
+- **Request.** `POST /v1/fetch {"source": "hf://org/model@revision", "to": "models/x/", "secret": "hf", "include": ["*.safetensors", "*.json"], "then": "pack"}` returns a fetch id at once. `GET /v1/fetch/{id}` reports files, bytes, rate and checks; `DELETE` cancels. `sparkpipe fetch` is the same in the CLI.
+- **Sources:**
+  - `hf://` models and datasets, pinned to a revision (resolved to a commit hash when the fetch starts);
+  - `s3://` and S3-compatible buckets (R2, GCS through S3 compatibility, MinIO), with a stored credential or a presigned URL;
+  - `https://` URLs, with stored headers;
+  - `git+https://` repositories with LFS.
+- **Transfer:**
+  - The files are spread over the fleet's nodes, each downloading its share straight into its own storage, which is then mirrored to its pair partner.
+  - Large files are downloaded in parallel ranges and resume after an interruption.
+  - Each file is checked against the source's published SHA-256 (Hugging Face's LFS hashes, S3 checksums or ETags). A mismatch is downloaded again, and the fetch fails if it keeps happening.
+- **Chaining.** `"then": "pack"` qualifies and packs a customer model (§9) when the download finishes; `"then": "warm"` warms a pack (§5). The result appears in the account's model list or pack status.
+- **Notices.** `fetch.finished` and `fetch.failed` webhooks and emails (§13), and a line in the morning report.
+
+Where a fetch may go:
+- **Only into the account's storage** on a fleet it holds, within the storage quota, and only while it holds the fleet. A fetch still running when the account stops holding the fleet is cancelled, and partial files follow the working-state deletion rule.
+- **Only to the public internet.** The fetch service resolves each host, pins the address it connects to, and refuses:
+  - private, loopback and link-local addresses;
+  - our own hosts and networks;
+  - any redirect that leads to one of them.
+
+  The fleet can therefore never be used to reach the hub, the nodes or the facility's internal services. Only HTTPS is used, plus git over HTTPS.
+- **Downloads are data, never run.** The fetch service writes files and runs nothing in them. The packer accepts weights in safetensors and GGUF only, and refuses pickle-based formats (`.bin`, `.pt`, `.pkl`), which can execute code when loaded. Converting those is the customer's own job, in the sandbox (§7.1).
+- **Bandwidth is shared** with the facility's other traffic and is not promised.
+
+### 6.2 Stored credentials
+
+Credentials for other services are stored with the account, so a fetch, a repository sync or a backup can run unattended, and the customer never has to paste a token again from a hotel or a plane.
+
+- **API.**
+  - `PUT /v1/secrets/{name} {"value": "…", "hosts": ["huggingface.co"], "expires": "2027-03-01"}` stores a credential.
+  - `GET /v1/secrets` lists names, hosts, the last four characters and the last use, never the value.
+  - `DELETE /v1/secrets/{name}` removes one.
+  - `sparkpipe secrets set hf` reads the value from the terminal without echoing it, so it never lands in shell history.
+- **Write-only.** A stored value can never be read back through any API, page or log.
+- **Bound to hosts.** A credential is sent only to the hosts it names. A Hugging Face token never goes anywhere but huggingface.co, even if a redirect points elsewhere.
+- **Used by our services only.**
+  - Fetch, repository sync and backup use credentials.
+  - A Function's sandbox gets a credential only when the run names it explicitly (`"secrets": ["hf"]`), as an environment variable for that run only.
+- **Encrypted at rest** with a per-account key held outside the database, in Korea, like all customer data.
+- **Audited.** Every use goes in the audit log (§12), with the host, the operation and the time.
+- **One-time mode.** `"secret_value"` in a fetch request uses a credential for that one fetch and stores nothing.
+- **Guidance in setup.** `sparkpipe secrets set hf` recommends a fine-grained, read-only Hugging Face token limited to the repositories needed, with an expiry. For buckets it recommends a read-only key, or a write-only key for backups.
+- **Deletion.** Credentials are deleted when the customer deletes them, when they expire, or when the account closes. They are account data, not working state, so they stay when a fleet changes hands.
 
 ## 7. Functions
 
@@ -439,6 +489,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
   - sign-ins, member and key changes;
   - bookings and waitlist locks;
   - model switches, wipes and storage access;
+  - credential changes, and each use of a credential, with host and operation;
   - Function runs.
 
 ## 13. Notifications
@@ -450,6 +501,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 | `booking.deadline` | 48 h and 6 h before 00:00 on the Sunday of the last booked week, while the next week is not booked |
 | `booking.confirmed`, `fleet.allocated`, `waitlist.position` | A booking, a waitlist allocation, a change in the account's own position |
 | `run.finished`, `run.failed`, `report.ready` | §7 |
+| `fetch.finished`, `fetch.failed` | §6.1 |
 | `pack.warm`, `cache.restored` | A pack version is warm; the cache is back after a handover, a release or a restart |
 | `models.changed` | A model loaded or unloaded on the fleet |
 | `downtime.credited` | HC credited for downtime or maintenance |
@@ -487,7 +539,9 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 | `sparkpipe fn ls`, `fn run NAME`, `fn schedule`, `fn logs ID`, `fn cancel ID` | §7 |
 | `sparkpipe report [DATE]` | The morning report |
 | `sparkpipe stats [--since 7d]` | Cached share, prefill avoided and decode speed, from §3.6 |
-| `sparkpipe storage ls`, `put`, `get`, `rm`, `fetch`, `export`, `restore` | §6 |
+| `sparkpipe storage ls`, `put`, `get`, `rm`, `export`, `restore` | §6 |
+| `sparkpipe fetch SOURCE PATH [--secret NAME] [--then pack]`, `fetch ls`, `fetch cancel ID` | §6.1 |
+| `sparkpipe secrets set NAME --host HOST`, `secrets ls`, `secrets rm NAME` | §6.2 |
 | `sparkpipe drafter ls`, `drafter use` | §8 |
 | `sparkpipe models add`, `models rm` | §9 |
 | `sparkpipe keys ls`, `keys create`, `keys revoke` | Keys, with `--fleet` and `--allow-swap` |

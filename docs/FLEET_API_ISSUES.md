@@ -61,7 +61,9 @@ Each issue is one piece of work with a test that closes it. Sizes: **S** is up t
 | ID | Issue | Done when | Size | Needs |
 | --- | --- | --- | --- | --- |
 | P1 | Customer storage service on the nodes' scratch area | `PUT`, `GET`, `DELETE` and list with resumable chunks, a 4 TB quota and the working-state deletion rule; a 50 GB upload resumes after a cut | L | E1 |
-| P2 | Fetch from a URL | A 1.5 TB model fetched from Hugging Face lands in storage without passing through the VPS | M | P1 |
+| P2 | Fetch (§6.1) | A 1.5 TB Hugging Face model at a pinned revision is fetched across the fleet's nodes with parallel ranges, survives a cut connection, matches every published SHA-256, and lands in storage without passing through the VPS. `--then pack` puts it in the model list | L | P1, P8, P9 |
+| P8 | Stored credentials (§6.2) | Values are write-only, bound to hosts, encrypted at rest with a per-account key, used only by fetch, sync and backup unless a run names them, audited on every use, and deleted on request, on expiry or when the account closes. A Hugging Face token is never sent to another host, even through a redirect | M | G6 |
+| P9 | Egress guard for fetch | Requests to private, loopback and link-local addresses, to our own hosts, and redirects to any of them are refused. DNS answers are pinned per connection. A test suite of rebinding and redirect attacks passes | M | |
 | P3 | Repository ingest | Clone and pull with a token, a push webhook, and a tree-sitter symbol index plus a semantic index built on the sandbox host; a 1M-line repository is ingested in under an hour | L | P1, F3 |
 | P4 | Pack builder | Least-changed files first, deterministic rendering, budget and versions; the same commit always gives the same tokens | M | P3 |
 | P5 | Pack refresh and warm-up | After a push, the new version is warm in the background, and only the part after the first changed file is prefilled again | M | P4, E5, E8 |
@@ -97,7 +99,7 @@ Each issue is one piece of work with a test that closes it. Sizes: **S** is up t
 
 | ID | Issue | Done when | Size | Needs |
 | --- | --- | --- | --- | --- |
-| X1 | Tier A: a packer per offered family for fine-tunes | A fine-tune of Qwen 3.8 27B and one of Gemma 4 31B go from storage to the account's model list, run on the sandbox host | L | P1, F3 |
+| X1 | Tier A: a packer per offered family for fine-tunes | A fine-tune of Qwen 3.8 27B and one of Gemma 4 31B go from storage to the account's model list, run on the sandbox host. Pickle-based weights (`.bin`, `.pt`, `.pkl`) are refused | L | P1, F3 |
 | X2 | Tiers B and C: the driver guide and review | A coding agent writes a tier B driver from the guide alone. Review and qualification pass, and the model serves through all three API shapes (Gate F) | M | X1 |
 | X3 | Private model lists | A customer model appears only in its account's listing, and is removed with the working state at a change of user | M | X1 |
 
