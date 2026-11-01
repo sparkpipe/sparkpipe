@@ -1311,9 +1311,9 @@ static void SparkTestPrefixCacheResumePoints(void)
 	assert(resume_records == 2u);
 	SparkTestPrefixCacheResumeOpen(&imported_fixture,&imported,imported_entries,imported_bindings);
 	records[0].flags |= 0x40u;
-	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == 0u && skipped == count);
+	assert(SparkPrefixCacheImportCommitted(&imported,records,count,0,&added,&skipped) == SPARK_STATUS_OK && added == 0u && skipped == count);
 	records[0].flags &= ~0x40u;
-	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == count && skipped == 0u);
+	assert(SparkPrefixCacheImportCommitted(&imported,records,count,0,&added,&skipped) == SPARK_STATUS_OK && added == count && skipped == 0u);
 	assert(SparkPrefixCacheResumeTokenCount(&imported,tokens,16u) == 16u);
 	assert(SparkPrefixCacheResumeTokenCount(&imported,tokens,12u) == 8u);
 	printf("prefix cache resume points: only marked publication ends resume, a lookup truncates to the last one, and the marks survive export and import: ok\n");
@@ -1373,7 +1373,7 @@ static void SparkTestPrefixCacheResumeInsideEarlierBlock(void)
 	assert(SparkPrefixCacheResumeTokenCount(&cache,sibling,checkpoint - 1u) == 0u);
 	assert(SparkPrefixCacheExportCommitted(&cache,records,8u,&count) == SPARK_STATUS_OK);
 	SparkTestPrefixCacheResumeOpen(&imported_fixture,&imported,imported_entries,imported_bindings);
-	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == count && skipped == 0u);
+	assert(SparkPrefixCacheImportCommitted(&imported,records,count,0,&added,&skipped) == SPARK_STATUS_OK && added == count && skipped == 0u);
 	assert(SparkPrefixCacheResumeTokenCount(&imported,follow,reply_end) == checkpoint);
 	printf("prefix cache resume points: a resumable point inside an earlier matched block is found when a later turn matches past it, a sibling that diverges before it gets none, and import keeps it findable: ok\n");
 }
@@ -1388,27 +1388,34 @@ static void SparkTestPrefixCacheRetention(void)
 	SparkPrefixCacheLookup lookup;
 	uint32_t tokens[12u],index,count,added,skipped,expired;
 	uint64_t now = (uint64_t)time(0);
+	const SparkWorkingStateDirective wipe = {now + 1u,0u},held = {0u,now + 3600u},held_past = {0u,now - 60u};
 	SparkTestPrefixCacheResumeOpen(&fixture,&cache,entries,bindings);
 	for (index=0u; index<12u; index++)
 		tokens[index] = 6000u + index;
 	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,3u * SPARK_TEST_BLOCK_TOKENS,&lookup) == SPARK_STATUS_OK);
-	assert(SparkPrefixCacheExpire(&cache,now + SPARK_KV_RETENTION_SECONDS + 60u,&expired) == SPARK_STATUS_OK && expired == 0u);
+	assert(SparkPrefixCacheExpire(&cache,0,now + SPARK_KV_RETENTION_SECONDS + 60u,&expired) == SPARK_STATUS_OK && expired == 0u);
 	assert(SparkPrefixCacheExportCommitted(&cache,records,8u,&count) == SPARK_STATUS_OK && count == 3u);
 	for (index=0u; index<count; index++)
 		assert(records[index].used_seconds != 0u && (uint64_t)records[index].used_seconds + 60u >= now);
+	assert(SparkPrefixCacheExpire(&cache,&wipe,now,&expired) == SPARK_STATUS_OK && expired == 0u && SparkPrefixCacheHoldsUsedBefore(&cache,now + 1u) == 1u);
 	assert(SparkPrefixCacheReleaseSequence(&cache,1u) == SPARK_STATUS_OK);
-	assert(SparkPrefixCacheExpire(&cache,now,&expired) == SPARK_STATUS_OK && expired == 0u);
-	assert(SparkPrefixCacheExpire(&cache,now + SPARK_KV_RETENTION_SECONDS + 60u,&expired) == SPARK_STATUS_OK && expired == 3u);
+	assert(SparkPrefixCacheExpire(&cache,0,now,&expired) == SPARK_STATUS_OK && expired == 0u);
+	assert(SparkPrefixCacheExpire(&cache,&held,now + SPARK_KV_RETENTION_SECONDS + 60u,&expired) == SPARK_STATUS_OK && expired == 0u);
+	assert(SparkPrefixCacheExpire(&cache,0,now + SPARK_KV_RETENTION_SECONDS + 60u,&expired) == SPARK_STATUS_OK && expired == 3u);
 	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,3u * SPARK_TEST_BLOCK_TOKENS) == 0u);
 	assert(SparkPrefixCacheExportCommitted(&cache,records + 4u,4u,&added) == SPARK_STATUS_OK && added == 0u);
 	SparkTestPrefixCacheResumeOpen(&imported_fixture,&imported,imported_entries,imported_bindings);
 	records[0].used_seconds = (uint32_t)(now - SPARK_KV_RETENTION_SECONDS - 60u);
-	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == 0u && skipped == count);
+	assert(SparkPrefixCacheImportCommitted(&imported,records,count,0,&added,&skipped) == SPARK_STATUS_OK && added == 0u && skipped == count);
 	records[0].used_seconds = 0u;
-	assert(SparkPrefixCacheImportCommitted(&imported,records,1u,&added,&skipped) == SPARK_STATUS_OK && added == 0u && skipped == 1u);
+	assert(SparkPrefixCacheImportCommitted(&imported,records,1u,0,&added,&skipped) == SPARK_STATUS_OK && added == 0u && skipped == 1u);
 	records[0].used_seconds = (uint32_t)now;
-	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == count && skipped == 0u);
-	printf("prefix cache retention: an index record unused for %llu s leaves the cache and is refused on import, an entry a live request holds stays, a record without a use time is refused: ok\n",
+	assert(SparkPrefixCacheImportCommitted(&imported,records,count,0,&added,&skipped) == SPARK_STATUS_OK && added == count && skipped == 0u);
+	assert(SparkPrefixCacheExpire(&imported,&wipe,now,&expired) == SPARK_STATUS_OK && expired == count && SparkPrefixCacheHoldsUsedBefore(&imported,now + 1u) == 0u);
+	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&wipe,&added,&skipped) == SPARK_STATUS_OK && added == 0u && skipped == count);
+	records[0].used_seconds = (uint32_t)(now - SPARK_KV_RETENTION_SECONDS - 60u);
+	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&held_past,&added,&skipped) == SPARK_STATUS_OK && added == count && skipped == 0u);
+	printf("prefix cache retention: an index record unused for %llu s leaves the cache and is refused on import, an entry a live request holds stays, a record without a use time is refused, held hours extend the 24 hours and a wipe expires and refuses every record used before it: ok\n",
 		(unsigned long long)SPARK_KV_RETENTION_SECONDS);
 }
 

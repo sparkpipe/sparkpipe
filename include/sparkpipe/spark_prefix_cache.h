@@ -5,6 +5,7 @@
 #include "sparkpipe/spark_kv_cache.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_status.h"
+#include "sparkpipe/spark_working_state.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -383,8 +384,12 @@ uint32_t SparkPrefixCacheResumeTokenCount(
 
 SparkStatus SparkPrefixCacheExpire(
     SparkPrefixCache *cache,
+    const SparkWorkingStateDirective *directive,
     uint64_t now_seconds,
     uint32_t *expired_out);
+uint32_t SparkPrefixCacheHoldsUsedBefore(
+    const SparkPrefixCache *cache,
+    uint64_t seconds);
 SparkStatus SparkPrefixCacheExportCommitted(
     const SparkPrefixCache *cache,
     SparkPrefixCacheCommittedRecord *records,
@@ -395,6 +400,7 @@ SparkStatus SparkPrefixCacheImportCommitted(
     SparkPrefixCache *cache,
     const SparkPrefixCacheCommittedRecord *records,
     uint32_t record_count,
+    const SparkWorkingStateDirective *directive,
     uint32_t *imported_out,
     uint32_t *skipped_out);
 

@@ -29,7 +29,7 @@ typedef struct LruHarness
 } LruHarness;
 
 static uint64_t lru_seed,lru_state;
-static uint32_t lru_step,lru_evictions,lru_refusals,lru_prefix_binds,lru_release_all,lru_expired,lru_expiry_kept;
+static uint32_t lru_step,lru_evictions,lru_refusals,lru_prefix_binds,lru_release_all,lru_expired,lru_expiry_kept,lru_wiped,lru_held;
 
 static uint32_t LruRand(uint32_t bound)
 {
@@ -142,6 +142,8 @@ static void LruEvict(LruHarness *h)
 static void LruExpire(LruHarness *h)
 {
 	const uint64_t now = UINT64_C(2000000000),ages[3] = {0u,SPARK_KV_RETENTION_SECONDS - 60u,SPARK_KV_RETENTION_SECONDS};
+	const SparkWorkingStateDirective directives[3] = {{0u,0u},{now - 600u,0u},{0u,now - 30u}};
+	const SparkWorkingStateDirective *directive = &directives[LruRand(3u)];
 	uint32_t index,fresh[LRU_BLOCKS],valid_before,expired = UINT32_MAX;
 	for (index=0u; index<LRU_BLOCKS; index++)
 	{
@@ -149,10 +151,10 @@ static void LruExpire(LruHarness *h)
 		if ( (h->entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) == 0u )
 			continue;
 		h->entries[index].used_seconds = now - ages[LruRand(3u)];
-		fresh[index] = h->entries[index].used_seconds + SPARK_KV_RETENTION_SECONDS > now ? 1u : 0u;
+		fresh[index] = SparkWorkingStateExpired(directive,h->entries[index].used_seconds,now) == 0u ? 1u : 0u;
 	}
 	valid_before = LruValidCount(h);
-	CHECK(SparkKvPageCacheExpire(&h->cache,now,&expired) == SPARK_STATUS_OK && expired == valid_before - LruValidCount(h));
+	CHECK(SparkKvPageCacheExpire(&h->cache,directive,now,&expired) == SPARK_STATUS_OK && expired == valid_before - LruValidCount(h));
 	for (index=0u; index<LRU_BLOCKS; index++)
 	{
 		if ( fresh[index] != 0u )
@@ -161,9 +163,11 @@ static void LruExpire(LruHarness *h)
 			lru_expiry_kept++;
 		}
 		if ( (h->entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u && LruUnreferenced(&h->entries[index]) != 0u && LruDiscardable(h,h->entries[index].logical_page_index) != 0u )
-			CHECK(h->entries[index].used_seconds + SPARK_KV_RETENTION_SECONDS > now);
+			CHECK(SparkWorkingStateExpired(directive,h->entries[index].used_seconds,now) == 0u);
 	}
 	lru_expired += expired;
+	lru_wiped += directive == &directives[1] ? expired : 0u;
+	lru_held += directive == &directives[2] ? 1u : 0u;
 }
 
 static void LruIdentity(SparkModelDriverCacheIdentity *identity, const SparkModelDriverCacheIdentity *parent, uint32_t token, uint32_t context)
@@ -302,8 +306,8 @@ int main(void)
 		lru_state = lru_seed;
 		LruRound();
 	}
-	CHECK(lru_evictions > 1000u && lru_refusals > 0u && lru_prefix_binds > 1000u && lru_release_all == LRU_ROUNDS / 2u && lru_expired > 1000u && lru_expiry_kept > 1000u);
-	CHECK(SparkKvPageCacheExpire(0,0u,0) == SPARK_STATUS_INVALID_ARGUMENT);
-	printf("test_kv_page_cache_lru PASS rounds=%u evictions=%u refusals=%u prefix_binds=%u release_all=%u expired=%u kept_fresh=%u; expiry drops every idle evictable entry unused for 24 hours, chain by chain, and never one used within them\n",LRU_ROUNDS,lru_evictions,lru_refusals,lru_prefix_binds,lru_release_all,lru_expired,lru_expiry_kept);
+	CHECK(lru_evictions > 1000u && lru_refusals > 0u && lru_prefix_binds > 1000u && lru_release_all == LRU_ROUNDS / 2u && lru_expired > 1000u && lru_expiry_kept > 1000u && lru_wiped > 100u && lru_held > 100u);
+	CHECK(SparkKvPageCacheExpire(0,0,0u,0) == SPARK_STATUS_INVALID_ARGUMENT);
+	printf("test_kv_page_cache_lru PASS rounds=%u evictions=%u refusals=%u prefix_binds=%u release_all=%u expired=%u wiped=%u held_sweeps=%u kept_fresh=%u; expiry drops every idle evictable entry the working-state directive expires (used before a wipe, or 24 hours past the later of last use and held hours), chain by chain, and never one it keeps\n",LRU_ROUNDS,lru_evictions,lru_refusals,lru_prefix_binds,lru_release_all,lru_expired,lru_wiped,lru_held,lru_expiry_kept);
 	return(0);
 }

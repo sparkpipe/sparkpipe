@@ -1428,6 +1428,7 @@ uint64_t SparkWeightdKvMemoryMargin(uint64_t total_bytes);
 uint64_t SparkWeightdServerKvMarginBytes(const SparkWeightdServer *server);
 uint32_t SparkWeightdServerKvPoolCount(const SparkWeightdServer *server);
 uint32_t SparkWeightdServerExpireKv(SparkWeightdServer *server,uint64_t now_ns);
+void SparkWeightdServerSetWorkingStateWiped(SparkWeightdServer *server,uint64_t wiped_seconds);
 
 SparkStatus SparkWeightdClientLaneAcquire(SparkWeightdClient *client,
     uint32_t requested_lane,

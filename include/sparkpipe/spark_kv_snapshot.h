@@ -5,12 +5,13 @@
 #include "sparkpipe/spark_kv_ledger.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_status.h"
+#include "sparkpipe/spark_working_state.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define SPARK_KV_SNAPSHOT_ABI_VERSION 7u
+#define SPARK_KV_SNAPSHOT_ABI_VERSION 8u
 #define SPARK_KV_SNAPSHOT_FORMAT_VERSION 2u
 #define SPARK_KV_SNAPSHOT_MAGIC UINT64_C(0x31504e534b565053)
 #define SPARK_KV_SNAPSHOT_MAX_SEGMENTS 4u
@@ -125,6 +126,7 @@ typedef struct SparkKvSnapshotStore
 	uint64_t failed_at_ns;
 	uint64_t failure_retry_ns;
 	uint64_t recovered_count;
+	SparkWorkingStateDirective directive;
 	void *runtime;
 } SparkKvSnapshotStore;
 
@@ -142,10 +144,11 @@ typedef struct SparkKvSnapshotWriteTicket
 #define SPARK_KV_SNAPSHOT_STORE_BYTES ((uint32_t)sizeof(SparkKvSnapshotStore))
 #define SPARK_KV_SNAPSHOT_FAILURE_RETRY_NS UINT64_C(10000000000)
 
-SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *directory,SparkKvLedger *ledger,uint64_t queue_maximum_bytes);
+SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *directory,SparkKvLedger *ledger,uint64_t queue_maximum_bytes,const SparkWorkingStateDirective *directive);
 void SparkKvSnapshotStoreClose(SparkKvSnapshotStore *store);
 SparkStatus SparkKvSnapshotStoreSample(SparkKvSnapshotStore *store,SparkKvSnapshotStore *sample);
 SparkStatus SparkKvSnapshotExpire(SparkKvSnapshotStore *store,uint64_t now_seconds);
+SparkStatus SparkKvSnapshotSetDirective(SparkKvSnapshotStore *store,const SparkWorkingStateDirective *directive);
 SparkStatus SparkKvSnapshotPrune(SparkKvSnapshotStore *store,const uint8_t layout_sha256[SPARK_SHA256_DIGEST_BYTES]);
 SparkStatus SparkKvSnapshotCountLayout(SparkKvSnapshotStore *store,const uint8_t layout_sha256[SPARK_SHA256_DIGEST_BYTES],uint64_t *matching_files,uint64_t *foreign_files);
 SparkStatus SparkKvSnapshotBinaryDigest(const void *symbol,uint8_t digest[SPARK_SHA256_DIGEST_BYTES],char *path,uint32_t path_capacity);
@@ -164,8 +167,8 @@ SparkStatus SparkKvSnapshotReadSegment(SparkKvSnapshotStore *store,const SparkKv
 SparkStatus SparkKvSnapshotRemove(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key);
 uint32_t SparkKvSnapshotIsCacheFileName(const char *name);
 uint32_t SparkKvSnapshotIsShardName(const char *name);
-SparkStatus SparkKvSnapshotPurgeDirectory(SparkKvLedger *ledger,const char *directory,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result);
-SparkStatus SparkKvSnapshotPurgeTree(SparkKvLedger *ledger,const char *root,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result);
+SparkStatus SparkKvSnapshotPurgeDirectory(SparkKvLedger *ledger,const char *directory,const SparkWorkingStateDirective *directive,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result);
+SparkStatus SparkKvSnapshotPurgeTree(SparkKvLedger *ledger,const char *root,const SparkWorkingStateDirective *directive,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result);
 SparkStatus SparkKvSnapshotPurgeOldest(SparkKvLedger *ledger,const char *directory,uint64_t needed_bytes,uint64_t *freed_bytes);
 
 #ifdef __cplusplus
