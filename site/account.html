@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Payments and plans · SparkPipe</title>
-<meta name="description" content="Your SparkPipe payments and plans: purchases of hour-credits, receipts and reserved plan payments.">
+<title>Payments · SparkPipe</title>
+<meta name="description" content="Your SparkPipe payments: purchases of hour-credits and their receipts.">
 <meta name="robots" content="noindex">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
@@ -22,9 +22,9 @@
   <div class="wrap">
     <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">payments</span></a>
     <nav class="nav-links" aria-label="Sections">
-      <a href="index.html#fleets">Fleets</a>
+      <a href="fleets.html">Fleet List</a>
       <a href="index.html#prices">Prices</a>
-      <a href="plans.html">Plans</a>
+      <a href="market.html">Your account</a>
     </nav>
     <div class="nav-actions">
       <div class="lang" role="group" aria-label="Language / 언어"><a href="account.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
@@ -36,7 +36,7 @@
 <main class="wrap">
 <section class="co-head">
   <p class="label">Account</p>
-  <h1 id="title">Payments and plans.</h1>
+  <h1 id="title">Payments.</h1>
 </section>
 
 <div class="stack">
@@ -54,7 +54,7 @@
       <label>Email<input id="email" type="email" autocomplete="email" maxlength="254" placeholder="you@company.com"></label>
       <p class="flash" id="m-email" hidden></p>
       <button class="btn solid big" type="submit" id="send">Email me a 6-digit code</button>
-      <p class="hint">No password. New here? <a href="buy.html">Buy HC</a> or <a href="plans.html">order a plan</a> to open an account, or try the <a href="market.html?sandbox">sandbox</a> first.</p>
+      <p class="hint">No password. New here? <a href="buy.html">Buy HC</a> to open an account, or try the <a href="market.html?sandbox">sandbox</a> first.</p>
     </form>
     <form class="form" id="f-code" hidden novalidate>
       <p>We sent a code to <b id="sent-to"></b>. It expires in 10 minutes.</p>
@@ -75,20 +75,19 @@
         <div><span>Hour-credits</span><strong id="s-hc">0</strong></div>
         <div><span>Awaiting payment</span><strong id="s-open">0</strong></div>
       </div>
-      <div class="actions"><a class="btn solid" href="market.html">Open your account</a><a class="btn" href="buy.html">Buy HC</a><a class="btn" href="plans.html">Reserved plans</a></div>
+      <div class="actions"><a class="btn solid" href="market.html">Open your account</a><a class="btn" href="buy.html">Buy HC</a></div>
     </section>
 
     <section class="card" id="next">
       <p class="label">What happens next</p>
       <ul class="perks">
-        <li><span>Each purchase of HC lasts 12 months from the day it is issued, and the oldest is spent first. <a href="market.html">Your account</a> shows every lot.</span></li>
-        <li><span>Spend HC in the shared pool at once, through an OpenAI-format API with keys you create in <a href="market.html">your account</a>, or book whole fleet-hours from <span data-start>1 December 2026</span>, up to 31 days ahead at the fleet's Rate. No booking is ever bumped.</span></li>
+        <li><span>Each purchase of HC lapses 12 months after it is issued unless you book with it, and the HC that lapses first is spent first. <a href="market.html">Your account</a> shows every lot.</span></li>
+        <li><span>In <a href="market.html">your account</a>, book demo hours from <span data-start="demo">1 December 2026</span> and weeks on a fleet pinned to you from <span data-start="weeks">4 January 2027</span>, or join the waitlist. No booking is ever bumped.</span></li>
         <li><span>Receipts go to <b class="email-here"></b>. A card payment's card slip is its VAT document; for a bank transfer or virtual account we issue an electronic tax invoice (세금계산서) to the Korean business registration number you gave. For anything else, write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</span></li>
       </ul>
     </section>
 
 
-    <div id="plans" class="stack" hidden></div>
 
     <section class="card">
       <p class="label">Orders</p>
@@ -102,45 +101,19 @@
 </div>
 </main>
 
-<template id="plan-card">
-  <section class="card">
-    <p class="label">Plan <span data-k="plan"></span></p>
-    <h3 data-k="summary"></h3>
-    <p class="hint" data-k="form-line" hidden><a data-k="form">Open the Plan Order</a>, ready to print, with its acceptance record and our signature.</p>
-    <div class="calc">
-      <div class="readout">
-        <div><span>Term</span><strong data-k="term"></strong></div>
-        <div><span data-k="hours-label">Hours in the term</span><strong data-k="hours"></strong></div>
-        <div><span>Hour Price</span><strong data-k="price"></strong></div>
-        <div><span>Paid, before VAT</span><strong data-k="paid"></strong></div>
-        <div><span data-k="left-label">Left to pay, before VAT</span><strong data-k="left"></strong></div>
-        <div class="you"><span data-k="gate-name">Next gate</span><strong data-k="gate"></strong></div>
-      </div>
-      <form class="form" novalidate>
-        <div data-k="pay"></div>
-        <label data-k="amount-line"><span data-k="unit">Amount, before VAT (USD)</span><input name="amount" type="number" inputmode="decimal" min="1" step="0.01"></label>
-        <p class="hint" data-k="issues"></p>
-        <p class="flash" hidden></p>
-        <button class="btn solid big" type="submit">Pay</button>
-        <p class="hint" data-k="rule">Each payment issues hours equal to the amount before VAT divided by your Hour Price in that currency, to the earliest Tranches not yet paid. Pay by card or Korean bank transfer in won through Toss Payments, or in USDC or USDT. For a USD wire, write to us.</p>
-      </form>
-    </div>
-    <div class="actions" data-k="stop-line" hidden><button class="btn small" type="button" data-k="stop">Stop after this month</button></div>
-    <p class="flash" data-k="stop-note" hidden></p>
-  </section>
-</template>
 
 <footer class="foot">
   <div class="wrap">
     <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
-    <nav aria-label="Footer"><a href="index.html">Home</a><a href="market.html">Your account</a><a href="fleets.html">Fleet List</a><a href="agreement.html">Customer Agreement</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="market.html">Your account</a><a href="fleets.html">Fleet List</a><a href="agreement.html">Customer Agreement</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
     <span>Card and won payments are processed by Toss Payments; stablecoin payments by CoinPayments.</span>
   </div>
 </footer>
 
 <script src="https://js.tosspayments.com/v2/standard" id="toss-sdk" async></script>
 <script src="pricing.js"></script>
-<script src="checkout.js?v=2"></script>
+<script src="prices.js"></script>
+<script src="checkout.js?v=3"></script>
 <script>
 (() => {
   const P = window.SP_PRICING, SP = window.SP;
@@ -155,9 +128,8 @@
   const hc = (text) => (+text).toLocaleString('en-US', { maximumFractionDigits: 6 });
   const what = (o) => {
     const amount = o.issued && +o.issuedHours < +o.hours ? hc(o.issuedHours) + ' of ' + hc(o.hours) : hc(o.hours);
-    return o.product === 'credits' ? amount + ' HC' : 'Plan ' + o.plan + ': ' + amount + ' hours';
+    return amount + ' HC';
   };
-  const monthOf = (day) => new Date(day.slice(0, 10) + 'T00:00:00Z').toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
   const unit = (o) => (o.product === 'credits' ? ' HC' : ' fleet-hours');
   let me = null, watching = new URLSearchParams(window.location.search).get('order'), timer = null;
 
@@ -176,7 +148,7 @@
       if (toss.retry) actions.push(link((o.product === 'credits' ? 'buy.html' : 'account.html') + (SP.sandbox ? '?sandbox' : ''), o.product === 'credits' ? 'Buy HC' : 'Pay again', 'btn solid'));
     } else if (o.state === 'completed' && o.issued) {
       title = +o.issuedHours < +o.hours ? 'Paid in part. Your HC is in.' : 'Paid. Your HC is in.'; kind = 'ok';
-      text = hc(o.issuedHours) + unit(o) + ' are in your account' + (o.product === 'credits' ? ', usable for 12 months' : '') + (part ? ', for the ' + SP.usd(o.received) + ' that arrived' : '') + '. The receipt is on its way to your email.';
+      text = hc(o.issuedHours) + unit(o) + ' are in your account' + (o.product === 'credits' ? ', lapsing in 12 months unless you book with them' : '') + (part ? ', for the ' + SP.usd(o.received) + ' that arrived' : '') + '. The receipt is on its way to your email.';
       if (o.product === 'credits') actions.push(link('market.html', 'Open your account', 'btn solid'));
     } else if (part && OPEN.has(o.state)) {
       title = 'Part of the payment arrived.'; kind = 'error';
@@ -224,57 +196,16 @@
     }
   };
 
-  const renderPlan = (a) => {
-    const node = $('plan-card').content.firstElementChild.cloneNode(true);
-    const k = (name) => node.querySelector('[data-k="' + name + '"]');
-    const monthly = a.payment === 'monthly';
-    k('plan').textContent = a.plan;
-    k('summary').textContent = a.line;
-    k('form-line').hidden = !a.form;
-    k('form').href = 'plan-order.html?plan=' + encodeURIComponent(a.plan);
-    k('term').textContent = monthly ? (a.end ? nice(a.start) + ' – ' + nice(a.end) : 'Monthly, from ' + nice(a.start)) : nice(a.start) + ' – ' + nice(a.end);
-    k('hours-label').textContent = monthly ? (a.tranche ? 'Plan hours in ' + monthOf(a.tranche.from) : 'Plan hours this month') : 'Hours in the term';
-    k('hours').textContent = SP.whole(a.hours);
-    k('price').textContent = SP.usd(a.price);
-    k('paid').textContent = SP.usd(a.paid) + (+a.pending ? ' (+' + SP.usd(a.pending) + ' unpaid)' : '');
-    k('left-label').textContent = monthly ? 'Paid through' : 'Left to pay, before VAT';
-    k('left').textContent = monthly ? (a.paidThrough ? nice(a.paidThrough) : 'Nothing yet') : SP.usd(a.remaining);
-    k('gate-name').textContent = a.nextGate && !a.ended ? 'Next: ' + a.nextGate.name + ', before VAT' : monthly ? 'Next month' : a.payment === 'upfront' ? 'Payment' : 'Next gate';
-    k('gate').textContent = a.ended ? 'Closed' : a.nextGate ? SP.usd(a.nextGate.amount) + (monthly ? ' before ' : ' by ') + nice(a.nextGate.due) : monthly ? (a.stopped ? 'Stopped' : 'Awaiting payment') : a.payment === 'upfront' ? 'Paid in full' : 'All gates met';
-    const form = node.querySelector('form');
-    if (monthly) {
-      k('amount-line').hidden = true;
-      k('rule').textContent = 'Each month is paid in full before it starts, and its hours are issued once it is paid. If a month is not paid by its first day, the plan ends after the last paid month, with nothing owed. Pay by card or Korean bank transfer in won through Toss Payments, or in USDC or USDT. For a USD wire, write to us.';
-      if (a.stopped && !a.ended) { k('stop-note').hidden = false; SP.say(k('stop-note'), 'Stopped: the plan ends on ' + nice(a.end) + ', after its last paid month, with nothing owed.'); }
-      k('stop-line').hidden = Boolean(a.ended || a.stopped);
-      k('stop').addEventListener('click', async () => {
-        const ask = a.paidThrough ? 'Stop plan ' + a.plan + ' after ' + monthOf(a.paidThrough) + '? It ends on ' + nice(a.paidThrough) + ' with nothing owed, takes no further payment, and its capacity after that is released. This cannot be undone.' : 'Stop plan ' + a.plan + ' now? Nothing is paid under it yet, so it ends at once with nothing owed. This cannot be undone.';
-        if (!window.confirm(ask)) return;
-        k('stop').disabled = true;
-        try { await SP.call('/plans/stop', { plan: a.plan }); load(); } catch (error) { k('stop-note').hidden = false; SP.say(k('stop-note'), error.message, 'error'); k('stop').disabled = false; }
-      });
-    }
-    SP.planPay(form, a, P);
-    if (a.ended || (monthly && !a.nextGate)) {
-      form.hidden = true;
-      const text = a.ended || (a.stopped ? '' : +a.pending ? 'The next month is awaiting payment.' : '');
-      if (text) { const p = document.createElement('p'); p.className = 'flash'; p.textContent = text; node.querySelector('.calc').append(p); }
-    }
-    return node;
-  };
-
   const renderHome = () => {
     $('signin').hidden = true;
     $('home').hidden = false;
-    $('title').textContent = 'Payments and plans.';
+    $('title').textContent = 'Payments.';
     $('company').textContent = me.company;
     $('who-email').textContent = me.email;
     document.querySelectorAll('.email-here').forEach((el) => { el.textContent = me.email; });
     $('since').textContent = nice(me.since);
     $('s-hc').textContent = hc(me.hc);
     $('s-open').textContent = me.orders.filter((o) => o.state === 'unpaid' || o.state === 'pending' || o.state === 'paid' || o.state === 'waiting').length;
-    $('plans').hidden = me.plans.length === 0;
-    $('plans').replaceChildren(...me.plans.map(renderPlan));
     $('no-orders').hidden = me.orders.length > 0;
     $('orders-wrap').hidden = me.orders.length === 0;
     $('orders').replaceChildren(...me.orders.map((o) => {
@@ -291,7 +222,7 @@
   const load = async () => {
     me = await SP.me();
     if (me) renderHome();
-    else { $('home').hidden = true; $('signin').hidden = false; $('title').textContent = 'Sign in to see your payments and plans.'; }
+    else { $('home').hidden = true; $('signin').hidden = false; $('title').textContent = 'Sign in to see your payments.'; }
   };
 
   const flow = SP.codeFlow({ codeForm: $('f-code'), code: $('code'), sentTo: $('sent-to'), autoSubmit: true });
@@ -321,7 +252,6 @@
   $('resend').addEventListener('click', async () => { try { await flow.send(flow.email()); SP.say($('m-code'), 'A new code is on its way.', 'ok'); } catch (error) { SP.say($('m-code'), error.message, 'error'); } });
   $('change').addEventListener('click', () => { $('f-code').hidden = true; $('f-email').hidden = false; $('email').focus(); });
   $('signout').addEventListener('click', async () => { await SP.call('/signout', {}).catch(() => {}); me = null; load(); });
-  document.querySelectorAll('[data-start]').forEach((el) => { el.textContent = nice(P.hourlyEarliestStart); });
 
   load().catch((error) => { $('signin').hidden = false; SP.say($('m-email'), error.message, 'error'); });
   watch();

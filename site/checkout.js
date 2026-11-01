@@ -205,58 +205,5 @@
       note: (value, text) => { tiles.querySelector('input[value="' + value + '"]').parentElement.querySelector('span').textContent = text; },
     };
   };
-  const planPay = (form, a, P) => {
-    const k = (name) => form.querySelector('[data-k="' + name + '"]');
-    const amount = form.elements.amount, note = form.querySelector('.flash'), button = form.querySelector('button[type=submit]');
-    const box = k('pay'), coins = document.createElement('div'), toss = document.createElement('div'), methods = document.createElement('div'), agreement = document.createElement('div');
-    toss.className = 'toss-box';
-    toss.hidden = true;
-    toss.append(methods, agreement);
-    box.append(toss, coins);
-    let method = 'coin';
-    const net = () => (method === 'toss' ? Math.round(+amount.value || 0) : Math.round((+amount.value || 0) * 100) / 100);
-    const update = () => {
-      const currency = method === 'toss' ? 'KRW' : 'USD', value = net(), vat = vatOf(value, currency, P.vatRate), price = method === 'toss' ? +a.priceKRW : +a.price;
-      const smallest = method === 'toss' ? 1000 : 1, left = method === 'toss' ? +a.remainingKRW : +a.remaining;
-      const how = method === 'toss' ? 'by card or bank transfer' : 'in ' + coinOf(chosen(form, 'coin-' + a.plan) || 'USDC.ERC20');
-      k('issues').textContent = value >= smallest ? 'Issues ' + whole(Math.floor(value / price * 10000) / 10000) + ' hours. Total with VAT: ' + priced(value + vat, currency) + ' ' + how + '.' : '';
-      button.textContent = value >= smallest ? 'Pay ' + priced(value + vat, currency) + ' ' + how : 'Pay ' + how;
-      button.disabled = Boolean(a.ended) || value < smallest || value > left;
-      if (method === 'toss' && value >= smallest) tossAmount(value + vat);
-    };
-    const switchTo = (value) => {
-      method = value;
-      const won = method === 'toss';
-      k('unit').textContent = won ? 'Amount, before VAT (KRW)' : 'Amount, before VAT (USD)';
-      amount.step = won ? '1' : '0.01';
-      amount.min = won ? '1000' : '1';
-      amount.value = won ? a.nextGateKRW || '' : a.nextGate ? a.nextGate.amount : '';
-      toss.hidden = !won;
-      coins.hidden = won;
-      update();
-      if (won) tossMount(methods, agreement, Math.max(net() + vatOf(net(), 'KRW', P.vatRate), 1100)).catch((error) => say(note, error.message, 'error'));
-    };
-    const picker = methodPicker(box, 'method-' + a.plan, switchTo);
-    coinPicker(coins, 'coin-' + a.plan, 'USDC.ERC20', () => update());
-    amount.addEventListener('input', update);
-    switchTo('coin');
-    if (a.priceKRW && !a.ended) tossConfig().then((config) => { if (config.enabled) { picker.offer(true); picker.choose('toss'); } });
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      button.disabled = true;
-      say(note, '');
-      try {
-        if (method === 'toss') {
-          tossReady();
-          const placed = await call('/order', { product: 'plan', plan: a.plan, amount: String(net()), processor: 'toss' });
-          await tossPay(placed.toss);
-          return;
-        }
-        const placed = await call('/order', { product: 'plan', plan: a.plan, amount: net().toFixed(2), coin: chosen(form, 'coin-' + a.plan) });
-        if (!/^https:\/\//.test(placed.checkout)) throw new Error('The checkout link is not secure. Your order is listed below.');
-        window.location.assign(placed.checkout);
-      } catch (error) { say(note, error.message, 'error'); update(); }
-    });
-  };
-  window.SP = { call, me, usd, krw, priced, vatOf, whole, say, COINS, STATES, METHODS, coinOf, coinName, paidWith, stateOf, tossStatus, coinPicker, methodPicker, planPay, chosen, store, codeFlow, tossConfig, tossMount, tossAmount, tossReady, tossPay, sandbox: SANDBOX };
+  window.SP = { call, me, usd, krw, priced, vatOf, whole, say, COINS, STATES, METHODS, coinOf, coinName, paidWith, stateOf, tossStatus, coinPicker, methodPicker, chosen, store, codeFlow, tossConfig, tossMount, tossAmount, tossReady, tossPay, sandbox: SANDBOX };
 })();

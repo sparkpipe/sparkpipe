@@ -56,22 +56,22 @@
   <section>
     <h1>Fleet List</h1>
     <p class="effective">Updated 1 November 2026</p>
-    <p>This page is the Fleet List, with the prefill accelerators and the available models, that the <a href="agreement.html">SparkPipe Customer Agreement</a> refers to. Every fleet and every accelerator is made up of machines we operate ourselves in Seoul. A fleet's Rate is the number of hour-credits (HC) one hour on it costs; an accelerator's Rate follows its computing capacity against a Rate-1 fleet. The Korean version (<a href="fleets-ko.html" hreflang="ko">fleets-ko.html</a>) has the same content and prevails if they differ.</p>
+    <p>This page is the Fleet List, with the prefill accelerators and the available models, that the <a href="agreement.html">SparkPipe Customer Agreement</a> refers to. Every fleet and every accelerator is made up of machines we operate ourselves in Seoul. A fleet's Rate is the number of hour-credits (HC) one hour of it costs; a week on it costs <span data-week="hc">144</span> HC times its Rate. The demo fleet is booked only by the hour and is never pinned. Every fleet gives the customer who holds it <span data-storage>4 TB</span> of storage. The Korean version (<a href="fleets-ko.html" hreflang="ko">fleets-ko.html</a>) has the same content and prevails if they differ.</p>
   </section>
 
-  <div class="notice"><p><b>The terms are published for review.</b> Hour-credits (HC) are on sale and work at once through the API, on every offered model; whole fleets can be booked from 1 December 2026.</p></div>
+  <div class="notice"><p><b>The terms are published for review.</b> Demo hours can be booked from <span data-start="demo">1 December 2026</span>, and weeks on a pinned fleet from <span data-start="weeks">4 January 2027</span>.</p></div>
 
   <section id="fleets">
     <h2>Fleets</h2>
     <div class="scroll">
     <table>
-      <tr><th>Fleet</th><th>Machines</th><th>State</th><th class="num">HC an hour (Rate)</th><th>Models</th></tr>
-      <tr><td><b>Fleet 1</b></td><td>16 NVIDIA DGX Spark (GB10), 128 GB of memory each, joined by a 100 Gb/s RDMA switch and direct pair links</td><td>Serving</td><td class="num">1</td><td>The models below</td></tr>
-      <tr><td><b>Fleet 2</b></td><td>Eight Apple Mac Studio (M5 Ultra, 256 GB each at 1.2 TB/s: 2 TB at 9.6 TB/s in all, 2.2 times Fleet 1's memory bandwidth)</td><td>Under construction</td><td class="num">1</td><td>Listed here when the fleet opens</td></tr>
-      <tr><td><b>Fleet 3</b></td><td>16 NVIDIA DGX Spark (GB10)</td><td>Under construction</td><td class="num">1</td><td>Listed here when the fleet opens</td></tr>
+      <tr><th>Fleet</th><th>Machines</th><th>State</th><th>Booked</th><th class="num">HC an hour (Rate)</th><th class="num">Customer storage</th><th>Models</th></tr>
+      <tr><td><b>Fleet 1</b></td><td>16 NVIDIA DGX Spark (GB10), 128 GB of memory each, joined by a 100 Gb/s RDMA switch and direct pair links</td><td>Serving</td><td>Demo fleet: by the hour</td><td class="num">1</td><td class="num">4 TB</td><td>The models below</td></tr>
+      <tr><td><b>Fleet 2</b></td><td>Eight Apple Mac Studio (M5 Ultra, 256 GB each at 1.2 TB/s: 2 TB at 9.6 TB/s in all, 2.2 times Fleet 1's memory bandwidth)</td><td>Under construction</td><td>By the week, pinned</td><td class="num">1</td><td class="num">4 TB</td><td>Listed here when the fleet opens</td></tr>
+      <tr><td><b>Fleet 3</b></td><td>16 NVIDIA DGX Spark (GB10)</td><td>Under construction</td><td>By the week, pinned</td><td class="num">1</td><td class="num">4 TB</td><td>Listed here when the fleet opens</td></tr>
     </table>
     </div>
-    <p>Our system publishes live capacity, with each fleet's state and the hours open for reservation, at <span class="mono">https://sparkpipe.ai/availability.txt</span>, regenerated at least every 30 seconds.</p>
+    <p>Our system publishes live capacity, with each fleet's state and whether it is the demo fleet, pinned or free, at <span class="mono">https://sparkpipe.ai/availability.txt</span>, regenerated at least every 30 seconds.</p>
   </section>
 
   <section id="accelerators">
@@ -83,12 +83,12 @@
       <tr><td colspan="5">None is serving yet. Each accelerator is listed here, with its Rate and speed, when it serves.</td></tr>
     </table>
     </div>
-    <p>An accelerator's Rate follows its computing capacity against a Rate-1 fleet such as Fleet 1: Rate 3 for an accelerator of 48 DGX Sparks, and Rate 6 for one of 96. Its time is charged by the second: an hour of it at priority 1 costs its Rate in HC. A prompt costs its accelerator-seconds, from when the accelerator starts it until it hands it back, × the Rate × the prompt's priority (its queue bid) ÷ 3,600, in HC or Plan hours. For example, 180 accelerator-seconds at Rate 6 and priority 1.5 cost 0.45 HC. Your account offers Standard ×1, Priority ×2 and Rush ×5; through the API a request may set any priority from 1 to 10 in steps of 0.01, and has priority 1 if it sets none. The highest priority is computed first, and equal priorities in the order they arrive. A request that no accelerator starts within its waiting time, 300 seconds unless it sets another of at most 600, is computed on its fleet without one and pays nothing for an accelerator, unless it asks to be refused instead. Accelerators have no guaranteed capacity or speed. The live queue and each accelerator's state are in <a href="market.html">your account</a>; the full rules are in the <a href="agreement.html">Customer Agreement</a>.</p>
+    <p>An accelerator's Rate follows its computing capacity against a Rate-1 fleet such as Fleet 1: Rate 3 for an accelerator of 48 DGX Sparks, and Rate 6 for one of 96. Its time is charged by the second: an hour of it at priority 1 costs its Rate in HC. A prompt costs its accelerator-seconds, from when the accelerator starts it until it hands it back, × the Rate × the prompt's priority (its queue bid) ÷ 3,600, in HC. For example, 180 accelerator-seconds at Rate 6 and priority 1.5 cost 0.45 HC. Your account offers Standard ×1, Priority ×2 and Rush ×5; through the API a request may set any priority from 1 to 10 in steps of 0.01, and has priority 1 if it sets none. The highest priority is computed first, and equal priorities in the order they arrive. A request that no accelerator starts within its waiting time, 300 seconds unless it sets another of at most 600, is computed on its fleet without one and pays nothing for an accelerator, unless it asks to be refused instead. Accelerators have no guaranteed capacity or speed. The live queue and each accelerator's state are in <a href="market.html">your account</a>; the full rules are in the <a href="agreement.html">Customer Agreement</a>.</p>
   </section>
 
   <section id="models">
     <h2>Models on Fleet 1</h2>
-    <p>Every model installed on Fleet 1. An <b>offered</b> model can be called per request through our API (the shared pool), chosen for any booking, and named among the Chosen Models of a Plan Order for a <a href="plans.html">reserved plan</a>. A fleet holds one model at a time: a request through the API for a model its fleet has not loaded waits while the fleet switches, usually 20 to 80 seconds, and pays nothing for the wait. Your account shows, for each offered model, ESTIMATED dollars per million prompt and output tokens, from the measured speeds below at the current seat price. A <b>core</b> model gets ongoing performance work; a <b>qualified</b> model passed the release qualification and serves at the speeds shown; a <b>verifying</b> model serves and passes the chat checks while its tokens are compared with the publisher's reference implementation.</p>
+    <p>Every model installed on Fleet 1. An <b>offered</b> model can be called on any fleet you hold, through our API with your own keys. A fleet holds one model at a time: a request for a model the fleet has not loaded waits while the fleet switches, usually 20 to 80 seconds. A <b>core</b> model gets ongoing performance work; a <b>qualified</b> model passed the release qualification and serves at the speeds shown; a <b>verifying</b> model serves and passes the chat checks while its tokens are compared with the publisher's reference implementation.</p>
     <div class="scroll">
     <table>
       <tr><th>Model</th><th>Publisher</th><th>License</th><th class="num">Context window</th><th class="num">Decode, one request</th><th class="num">Prefill, 8K prompt</th><th>Track</th><th>Availability</th></tr>
@@ -193,5 +193,7 @@
     <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Buy HC</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
+<script src="pricing.js"></script>
+<script src="prices.js"></script>
 </body>
 </html>
