@@ -54,7 +54,7 @@
   <section>
     <h1>Fleet List</h1>
     <p class="effective">Updated 1 November 2026</p>
-    <p>This page is the Fleet List, with the available models, that the <a href="agreement.html">SparkPipe Customer Agreement</a> refers to. Every fleet is made up of machines we operate ourselves in Seoul. A fleet's Rate is the number of hour-credits (HC) one hour of it costs; a week on it costs <span data-week="hc">144</span> HC times its Rate. The demo fleet is booked only by the hour and is never pinned. Every fleet gives the customer who holds it 8 TB of cache and <span data-storage>4 TB</span> of storage. The Korean version (<a href="fleets-ko.html" hreflang="ko">fleets-ko.html</a>) has the same content and prevails if they differ.</p>
+    <p>This page is the Fleet List, with the available models, that the <a href="agreement.html">SparkPipe Customer Agreement</a> refers to. Every fleet is made up of machines we operate ourselves in Seoul. A fleet's Rate is the number of hour-credits (HC) one hour of it costs; a week on it costs <span data-week="hc">144</span> HC times its Rate. The demo fleet is booked only by the hour and is never pinned. Any other fleet that nobody holds can also be booked by the hour, up to the end of the current week. Every fleet gives the customer who holds it 8 TB of cache and <span data-storage>4 TB</span> of storage. The Korean version (<a href="fleets-ko.html" hreflang="ko">fleets-ko.html</a>) has the same content and prevails if they differ.</p>
   </section>
 
   <div class="notice"><p><b>The terms are published for review.</b> Demo hours can be booked from <span data-start="demo">1 December 2026</span>, and weeks on a pinned fleet from <span data-start="weeks">4 January 2027</span>.</p></div>
@@ -65,7 +65,7 @@
     <table>
       <tr><th>Fleet</th><th>Machines</th><th>State</th><th>Booked</th><th class="num">HC an hour (Rate)</th><th class="num">Cache</th><th class="num">Customer storage</th><th>Models</th></tr>
       <tr><td><b>Fleet 1</b></td><td>16 NVIDIA DGX Spark (GB10), 128 GB of memory each, joined by a 100 Gb/s RDMA switch and direct pair links</td><td>Serving</td><td>Demo fleet: by the hour</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>The models below</td></tr>
-      <tr><td><b>Fleet 3</b></td><td>16 NVIDIA DGX Spark (GB10)</td><td>Under construction</td><td>By the week, pinned</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>Listed here when the fleet opens</td></tr>
+      <tr><td><b>Fleet 3</b></td><td>16 NVIDIA DGX Spark (GB10)</td><td>Under construction</td><td>By the week, pinned; by the hour while nobody holds it</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>Listed here when the fleet opens</td></tr>
     </table>
     </div>
     <p>Each node keeps 1 TB of cache and 500 GB of customer storage on its own NVMe drive, mirrored to its pair partner over the direct pair link, so a fleet holds 8 TB of cache and 4 TB of storage, and a failed node loses neither. If both nodes of a pair fail together, their part of the cache has to be rebuilt, and the Customer Agreement credits 24 hours of the fleet for each such event (clause 6.6). Customer storage is working space: back up daily anything you want to keep.</p>
