@@ -319,7 +319,10 @@ startup scan reads the shards on eight threads. Each store has a byte budget
 `kv_partition_reserve_bytes` (512 GiB) free on the KV partition: before a
 write it evicts its oldest files until the partition holds the reserve plus
 the new file, and refuses the write when nothing is left to evict, so KV never
-fills the system drive.
+fills the system drive. A write the store cannot complete is logged with the step
+that failed and its errno. The cache then drops that entry's saved mark and,
+after an I/O error, saves the entry again, so one failed write never leaves a
+chain that cannot restore.
 
 For a model with recurrent state (K3's KDA layers, GLM-5.3 Flash's linear
 attention), a resume point is a page with its state saved beside it:

@@ -557,6 +557,13 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   lane rejoins, so a lane is parked and restored page by page rather than as
   one contiguous transfer. Close it with a fleet backpressure run at 2x device
   pages where parked lanes restore bit-exact at B1 and B16.
+- One K3 page write on spark8 failed with an I/O error on 2026-11-01
+  (`KV-SNAPSHOT write status=4 tokens=64832`). The other fifteen ranks wrote
+  the same chain without error, and the kernel logged nothing. The step and
+  errno were not logged then, so the cause is unknown. The write path now
+  logs both, and the cache saves a failed page again. Close it with the errno
+  from the next occurrence, or a fleet fill of at least 1M tokens per rank in
+  which no write fails.
 - The streamed (pass) prefill keeps no state on the 16,384-token stride
   inside its pass. Only its prompt checkpoint, one token before the end,
   carries one. A prompt that diverges from a published one before that
