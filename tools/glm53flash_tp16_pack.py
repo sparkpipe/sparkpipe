@@ -24,8 +24,8 @@ Rank r holds, bf16 unless noted (H hidden, R = 1/TP of a sharded dimension):
                        mla_kv_norm [512] (replicated); mla_q_b [heads*256,
                        1536]; mla_uk [heads, 512, 256]; mla_uv [heads, 256,
                        512]; mla_out [H, heads*256]
-  dense layers 0-2     ffn_gate_up: gate then up rows [2*12288/TP, H];
-                       ffn_down [H, 12288/TP]
+  dense layers 0-2     ffn_gate_up: gate then up rows [2*I/TP, H];
+                       ffn_down [H, I/TP] (I the dense intermediate width)
   routed layers        router [288, H], router_bias f32 [288] (replicated);
                        all 288 experts split by intermediate width:
                        moe_w1 (gate) and moe_w3 (up) fp8 [288, 2048/TP, H] with

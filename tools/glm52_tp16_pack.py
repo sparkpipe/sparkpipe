@@ -18,7 +18,7 @@ LoRA width, q the rows per query head: nope + rope (+ gate on A.X K2)):
   every layer          input_norm, post_norm f32 [H]; A.X K2 adds the
                        rank-16 norm gates input_gate_down bf16 [16, H] and
                        input_gate_up [H, 16] (post_gate_* on routed layers)
-                       mla_q_a fp8_e4m3 [Q, H], mla_kv_a [576, H]
+                       mla_q_a fp8_e4m3 [Q, H], mla_kv_a [latent + rope, H]
                        (replicated); mla_q_b the rank's heads [heads*q, Q, or
                        2Q on A.X K2 whose q_b reads the normed and raw
                        query]; mla_out [H, heads*value]; each with a .scale
@@ -48,11 +48,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from glm52_resident_stagepack import Fp8SourceReader  # noqa: E402
 from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble, source_identity  # noqa: E402
 from spark_pack_common import PackFailure  # noqa: E402
+from glm52_model_contract import load_model_contract  # noqa: E402
 
+GLM = load_model_contract()
 MODELS = {
-    "glm53full": {"name": "glm-5.3-full", "revision": "935644c05e76fc198714f4cca449fd8b970ff6d7", "hidden": 6144, "layers": 78, "vocab": 154880,
-                  "heads": 64, "nope": 192, "rope": 64, "value": 256, "latent": 512, "query_lora": 2048, "query_gate": 0, "gate_rank": 0,
-                  "experts": 256, "top_k": 8, "expert_inter": 2048, "dense_inter": 12288, "first_routed": 3},
+    "glm53full": {"name": "glm-5.3-full", "revision": "935644c05e76fc198714f4cca449fd8b970ff6d7", "hidden": GLM["hidden_dimension"],
+                  "layers": GLM["layer_count"], "vocab": GLM["output_vocab_count"], "heads": GLM["head_count"], "nope": GLM["qk_nope_head_dimension"],
+                  "rope": GLM["rope_dimension"], "value": 256, "latent": GLM["latent_dimension"], "query_lora": GLM["query_a_dimension"], "query_gate": 0,
+                  "gate_rank": 0, "experts": GLM["moe_expert_count"], "top_k": GLM["moe_top_k"], "expert_inter": GLM["moe_intermediate_dimension"],
+                  "dense_inter": GLM["dense_intermediate_dimension"], "first_routed": GLM["first_routed_layer"]},
     "axk2": {"name": "ax-k2", "revision": "d0805cfd1fc647b4078c0d9f232c80d34ee0c893", "hidden": 7168, "layers": 61, "vocab": 163840,
              "heads": 64, "nope": 128, "rope": 64, "value": 128, "latent": 512, "query_lora": 1536, "query_gate": 128, "gate_rank": 16,
              "experts": 256, "top_k": 8, "expert_inter": 2048, "dense_inter": 18432, "first_routed": 1},
