@@ -87,7 +87,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 ## 6. Customer data
 
-6.1. Customer keeps all rights in its data and outputs. We access them only as needed to operate and secure the service, or where the law requires. Customer is responsible for the lawfulness of any personal data it processes and for keeping its own copies: we keep no backups of Customer data. The Fleets and our servers are in Seoul, Republic of Korea.
+6.1. Customer keeps all rights in its data and outputs. We access them only as needed to operate and secure the service, or where the law requires. Customer is responsible for the lawfulness of any personal data it processes and for keeping its own copies: we keep no backups of Customer data. The Fleets and our servers are in the Republic of Korea (clause 6.5).
 
 6.2. We hold no Customer data beyond transient caches, which we delete within 24 hours, and the model state and caches that clause 19.3 keeps on a locked Fleet. Nothing is therefore returned when an Order or this Agreement ends.
 
