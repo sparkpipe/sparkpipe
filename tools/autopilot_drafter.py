@@ -239,7 +239,11 @@ def status(scratch):
 
 
 def tokens_per_round(path):
-    return float(read_json(path, path)["tokens_per_round"])
+    score = read_json(path, path)
+    region = (score.get("arm") or {}).get("region")
+    if region != "reply":
+        raise RefusedDrafter(f"{path} scores the {region} region; the gate counts only tokens the target generated (block_drafter.py --region reply)")
+    return float(score["tokens_per_round"])
 
 
 def gate(candidate, incumbent, base_general, candidate_general, margin):

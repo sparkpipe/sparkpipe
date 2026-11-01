@@ -1,0 +1,66 @@
+{
+ "format": "sparkpipe-drafter-training-v1",
+ "base": {
+  "directory": "weights/kimi-k3-dflash2-lightseek-e77935fb",
+  "model_sha256": "1f2a5376315ce5d235303d48d975f78a3dcb19b906e820c1d6447e5fa66e52c2"
+ },
+ "target_shard": "model-00094-of-000096.safetensors",
+ "taps": [
+  "k3-edits-20261016.spt2"
+ ],
+ "tap_entries": [
+  "o19",
+  "o37",
+  "o66",
+  "o78",
+  "o90"
+ ],
+ "target_model": "k3_stage",
+ "pack_identity": "ea6ea6d30a87835d9910079fe872eeca16551110e89c2264f763df179107fbbf",
+ "world": 1,
+ "requests": [
+  100001,
+  100002,
+  100003,
+  100004,
+  100005,
+  100006,
+  100007,
+  100008,
+  100009,
+  100010
+ ],
+ "positions": 19152,
+ "frozen": [
+  "fc.weight",
+  "hidden_norm.weight"
+ ],
+ "steps": 300,
+ "anchors": 48,
+ "lr": 2e-05,
+ "warmup": 20,
+ "decay": 4.0,
+ "clip": 1.0,
+ "seed": 0,
+ "seconds": 901.7,
+ "block_rows_per_second": 127.8,
+ "peak_gib": 47.97,
+ "first": {
+  "loss": 1.5685627460479736,
+  "head_top1": 0.7678571343421936,
+  "teacher_forced_prefix": 5.1666669845581055,
+  "step": 0,
+  "lr": 1.0000000000000002e-06,
+  "grad_norm": 8.440811157226562
+ },
+ "last": {
+  "loss": 0.575038492679596,
+  "head_top1": 0.8839285969734192,
+  "teacher_forced_prefix": 5.8541669845581055,
+  "step": 299,
+  "lr": 2.0005664892076953e-06,
+  "grad_norm": 6.3909010887146
+ },
+ "model_sha256": "4c78ab6b019b8d52829c9dce11ebe342bed702b4ee1f9846bc091d1a7a3330b3",
+ "tensors": 86
+}

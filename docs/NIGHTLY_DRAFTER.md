@@ -19,16 +19,21 @@ hub.
 - **It fits.** Fine-tune the drafter that serves K3 today, the lightseek
   DFlash2 block drafter. Only its weights change: same taps, same daemon,
   same verify.
-- **Training is cheap; producing K3's hidden states is not.** One epoch over
-  8M positions takes about 10 minutes of fleet compute. The drafter trains on
-  K3's tap rows, and K3 makes those at 590 tok/s of prefill. The day's
-  sessions emit them for free while they serve. Only the repository delta
-  needs K3 time at night.
+- **K3's hidden states and training time both bind.** The drafter trains on
+  K3's tap rows. K3 makes those at 590 tok/s of prefill, and the day's
+  sessions emit them for free while they serve.
+  - **Training rate:** the first trainer runs 16 blocks per second on one GB10
+    at 48 GiB (MEASURED on lenovo7). Sixteen nodes would train about one pass
+    over a night's 3.2M new positions per hour (DERIVED).
+  - **Estimate miss:** the estimate of 10 minutes per 8M positions assumed 40%
+    of the BF16 peak. The trainer reaches about 3%, so it needs a fused bf16
+    attention before nights can run several epochs.
 - **Net-new code gains the most; whole-file rewrites gain little.** Lookup
   already carries rewrites (126.4 tok/s). Model drafts run when lookup has no
   8-token match, which is most of net-new code. The ASSUMED range for net-new
-  code at B1 is +8% to +24% tok/s. The prototype measures it before anything
-  ships.
+  code at B1 is +8% to +24% tok/s. It is still unmeasured; see the
+  [validation](#customer-zero-validation-on-lenovo7-2026-11-01) for what five
+  files show.
 - **Gains are B1-B2 only.** At B8, model drafts change nothing measurable
   today (MEASURED, below).
 
@@ -131,9 +136,19 @@ PERFORMANCE_STATUS.md, 40% utilization is ASSUMED):
 - One 8-row block, forward and backward with a frozen head, is about 161
   GFLOP. Context rows add about 1.9 GFLOP per position.
 - One block per 4 positions makes about 42 GFLOP per position.
-- 16 nodes x 90 TFLOPS x 40% = 576 TFLOPS gives 13.7K positions per second.
-  One epoch over 3.2M positions takes 4 minutes; over 8M, 10 minutes. At 15%
-  utilization the 8M epoch takes 26 minutes.
+- At 40% of the 90 TFLOPS peak, 16 nodes would train 13.7K positions per
+  second: an 8M-position epoch in 10 minutes.
+- **Measured instead** (lenovo7, one GB10, SM clock up to 3.0 GHz against the
+  fleet's 2.2 GHz cap; `latent_block_train.py`, 48 blocks per step):
+  - 16.0 blocks (127.8 block rows) per second and 3.0 s per step, at 48.0 GiB
+    peak with replicated fp32 Adam;
+  - that is about 2.6 TFLOPS, 3% of the peak.
+  - The attention runs as fp32 einsums over the whole context, and the
+    elementwise work is bound by 273 GB/s.
+- At the measured rate, 16 nodes train about 256 blocks per second, or 1,024
+  positions per second at one block per 4 positions. One pass over 3.2M
+  positions takes 52 minutes. A fused bf16 attention for training (the
+  serving path already has a Triton latent kernel) is the first speedup.
 
 Memory per node (DERIVED; with K3 swapped out, since K3's lane holds an
 expert pool of 99.6 GB per node):
@@ -146,9 +161,14 @@ expert pool of 99.6 GB per node):
 | activations, 16K positions per step | about 16 GB (ASSUMED) | about 16 GB |
 | total | about 61 GB | about 33 GB |
 
-Gradient sync (DERIVED): 5.04 GB of bf16 gradients per step is about 0.8 s on a
-ring at 98-109 Gb/s per link. A step of 16K positions per node is about 19 s
-of compute, so the sync costs about 4%.
+The first trainer keeps fp32 weights and fp32 gradients, and peaked at 48.0
+GiB with 48 blocks per step (MEASURED). It fits a Spark only with K3 swapped
+out.
+
+Gradient sync (DERIVED): 10 GB of fp32 gradients per step is about 1.6 s on a
+ring at 98-109 Gb/s per link, against 3.0 s of compute per step. That is
+about 50% overhead until the gradients cross as bf16 buckets, or the steps
+grow.
 
 The software (MEASURED on spark0, 2026-11-01): torch 2.14.1+cu130 with CUDA,
 121 GB of memory, 1.8 TB free on its NVMe. Multi-node NCCL over the fleet's
@@ -161,12 +181,12 @@ A 3-hour window:
 | --- | --- | --- |
 | 0:00-1:30 | serving | prefill the repository delta; taps tee into scratch (3.2M positions at most) |
 | 1:30-1:32 | swapped out | swap time 46 s median, 79 s worst (MEASURED, PERFORMANCE_STATUS.md) |
-| 1:32-2:30 | out | train from the incumbent: 2-3 epochs over the newest 15-25M positions |
+| 1:32-2:30 | out | train from the incumbent: one pass over the night's 3.2M positions at the measured rate, more once the trainer is faster |
 | 2:30-2:45 | out | offline acceptance on the held-out last hours: base, incumbent, candidate |
 | 2:45-2:47 | swapped in | draftd loads the winner from scratch |
 | 2:47-3:00 | serving | slack |
 
-The binding cost is K3 time to make tap rows. Training is not.
+With the first trainer, both K3 time and training time bind.
 
 ## Expected change in acceptance and tok/s
 
@@ -223,11 +243,115 @@ Other workloads:
 
   Otherwise the incumbent stays.
 
+## Customer Zero validation on lenovo7 (2026-11-01)
+
+The first fine-tune ran without fleet time. Inputs:
+
+- **Recording:** K3's recording of the 20-task edit corpus, taken on
+  2026-10-16:
+  - ten SparkPipe files (`qualification/spec_offline/k3-edits-20261015/corpus.json`);
+  - each one answered greedily as a whole file and as SEARCH/REPLACE blocks;
+  - the DFlash2 taps and `final`;
+  - `k3-20261016T022856Z.spt2` on the hub's cold storage, reduced with
+    `latent_block_train.py select` to 52,712 rows.
+- **Mapping:** request 100001+i is corpus task i; prompt lengths and token
+  streams match the 10-15 streams.
+- **Training:** files 01-05 (requests 100001-100010, 19,152 positions), 300
+  steps of 48 blocks, lr 2e-5, 15 minutes.
+- **Held out:** files 06-10 (requests 100011-100020).
+- **Prose check:** ten 286-token story replies from the same recording.
+- **Scoring:** `block_drafter.py`:
+  - the serving kernels;
+  - the same anchors for both arms;
+  - tokens per round = 1 + accepted drafts, at most 8;
+  - "replies" are K3's generated tokens; "file text" is the prompt K3 read,
+    scored against the file's own next tokens.
+
+| Set | Anchors | Base | Tuned | Change |
+| --- | ---: | ---: | ---: | ---: |
+| Held-out files, replies | 3,203 | 7.373 | 7.449 | +1.0% |
+| Held-out files, file text | 3,363 | 3.827 | 4.143 | +8.3% |
+| of which the 8 prompts recorded from position 0 | 3,200 | 3.943 | 3.999 | +1.4% |
+| of which the 2 recorded mid-sequence | 163 | 1.56, 1.61 | 6.75, 7.16 | |
+| Training files, file text | 4,000 | 3.547 | 6.830 | +93% |
+| Training files, replies | 2,864 | 7.513 | 7.859 | +4.6% |
+| Prose, story replies | 2,421 | 2.693 | 2.640 | -2.0% |
+
+What it shows:
+
+1. **The pipeline works on the real drafter.**
+   - The 3.69B checkpoint's 86 drafter tensors match the contract.
+   - It trains on one GB10 at 48 GiB.
+   - The new checkpoint serves through the unchanged scorer and kernels.
+   - The 5.04 GB drafter installs in 8.2 s, exports in 6.8 s and restores on a
+     second scratch in 8.8 s. A different target pack is refused.
+2. **The drafter learns what it trains on.** On the training files' own
+   text, acceptance nearly doubles (3.55 to 6.83 tokens per round). A drafter
+   trained on the repository at night predicts the code it saw almost word
+   for word.
+3. **Five files do not carry over to other files.**
+   - The +8.3% on held-out file text comes from two short SEARCH/REPLACE
+     prompts recorded from mid-sequence. Their text is the instruction
+     boilerplate shared with the training prompts.
+   - On the eight complete held-out prompts the change is +1.4%, inside the
+     spread from file to file (-3.1% to +8.9%).
+   - Replies gain 1.0%; they are mostly copies at 7.4 of 8 already.
+   - Whether a whole repository carries over to next-day net-new code is
+     still the open measurement.
+4. **Prose fell 2.0%**, exactly at the gate's floor. Training mixed in no
+   general rows, so the nightly run needs a replay share.
+5. **The gate must score replies only.** Prompt text is prefilled, never
+   drafted, and its boilerplate inflated the file-text score. `autopilot_drafter.py
+   gate` now refuses scores of any region but `reply`.
+
 ## The customer-run function
 
-One model-neutral tool drives the night, keyed by lane record and scratch
-root. Its steps are `record`, `prepare`, `train`, `evaluate`, `publish`,
-`export` and `restore`.
+The night's steps are record, prepare, train, evaluate, gate, publish, and,
+on the customer's request, export and restore.
+
+Built:
+
+- `tools/spec_offline/latent_block_train.py train`:
+  - fine-tunes a latent block drafter from recorded tap streams;
+  - the context projector (`fc`, `hidden_norm`) stays frozen, so each
+    position's features (14,336 bytes, against 71,680 for the five raw taps)
+    can be computed once and kept;
+  - the loss is the head's cross-entropy plus the selector lattice's, given
+    the true previous token, weighted `exp(-(k-1)/4)` by block position;
+  - it runs data-parallel under `torchrun`: each rank trains on its own share
+    of the requests, gradients are averaged, and the ranks' weights are
+    checked equal before rank 0 writes the checkpoint and
+    `TRAINING-RECEIPT.json` (base sha256, tap entries, target pack identity,
+    data, steps, throughput).
+- `latent_block_train.py select`: a tap stream reduced to the named entries
+  and requests, for storage and transfer.
+- `tools/spec_offline/block_drafter.py --requests --region`: offline
+  acceptance on chosen requests, over the target's replies or the prompts it
+  read.
+- `tools/autopilot_drafter.py`:
+  - `install` places a trained checkpoint under
+    `<scratch>/autopilot/drafter/drafters/<id>`, where the id is the first 16
+    hex digits of the weights' sha256;
+  - `publish` points `published` at a verified drafter;
+  - `export` writes a tar of `MANIFEST.json`, `config.json`,
+    `model.safetensors` and `TRAINING-RECEIPT.json`;
+  - `restore` takes such an archive, on any fleet;
+  - `status` lists the drafters and the published one;
+  - `gate` publishes a candidate only if it beats the incumbent on the
+    replies of held-out hours, and stays within 2% of the base on a general
+    set. It refuses scores of any other region.
+
+  Install and restore refuse:
+  - files other than those four;
+  - an unsupported config;
+  - weights that are not exactly the drafter's tensors (BF16, the config's
+    shapes, contiguous);
+  - a receipt that names other weights;
+  - taps the lane does not stream;
+  - another target pack.
+
+  Restore also refuses links, duplicates, path tricks and a manifest that
+  does not describe its files, and leaves nothing behind when it does.
 
 Still to build:
 
@@ -235,18 +359,16 @@ Still to build:
    `"stream"`. A lane that both serves drafts and records needs both: the
    stream to draftd, and a size-capped file in the customer's scratch on the
    tap rank. This is shared adapter code and stays model-neutral.
-2. **Training.** A differentiable training step for `LatentBlockDrafter`,
-   checked against its inference forward on the tiny random checkpoint of
-   `tests/test_latent_block_drafter.py`. It needs random anchors, the
-   position-weighted loss, frozen target embedding and head, and
-   `torch.distributed` across the sixteen nodes. It writes only the drafter's
-   own tensors, about 5.0 GB in bf16.
-3. **Evaluation.** Offline acceptance per drafter on the recorded held-out
-   streams, the scoring `tools/spec_offline/long_drafter.py` and
-   `block_drafter.py` already do. With keyed-noise sampling the committed
-   stream does not depend on the draft, so the replay scores sampled sessions
-   exactly.
-4. **Serving the customer's drafter.**
+2. **The night's driver.** One command per night on the customer's fleet:
+   - pick the repository delta and prefill it;
+   - swap K3 out and fan the shards out;
+   - run `torchrun` on the sixteen Sparks;
+   - score base, incumbent and candidate on the held-out hours;
+   - gate, install, publish, and swap K3 back.
+
+   Multi-node NCCL over the fleet's RoCE is untried. Gradients cross as
+   fp32 (10 GB a step), and bf16 buckets would halve that.
+3. **Serving the customer's drafter.**
    - At lane start, draftd loads the published drafter from the customer's
      scratch over the sparkf link, about 5 s for 5 GB.
    - It holds the drafter in GPU memory only and drops it when the lane
@@ -255,13 +377,9 @@ Still to build:
      target pack identity.
    - `hub_draftd.sh` today accepts weights only from the hub's own NVMe, so it
      needs this source added.
-5. **Export and restore.**
-   - **Export** packs the drafter's tensors with a manifest: base drafter repo
-     and sha256, tap layers, target pack identity, training receipt (data
-     hours, positions, held-out acceptance) and a sha256 per file.
-   - **Restore** checks every one of those against the target fleet's K3
-     lane before it places the drafter in that fleet's scratch. It works on
-     any fleet the customer holds.
+4. **Download and upload.** Moving an exported archive to the customer and
+   an uploaded one onto their fleet is the account API's job: it hands the
+   file to `export` and `restore`.
 
 Each fleet will have its own hub (owner, 2026-11-01). The customer's drafter
 therefore serves from their fleet's hub GPU, and no other customer's lane
@@ -295,6 +413,9 @@ K3's taps. Freeze a training commit C0 on main. Hold out everything after it.
 - **Measurements:**
   - offline tokens per round for both arms;
   - end-to-end tok/s with draftd serving each drafter in turn, in one hold.
+- **Training time:** at the measured 16 blocks per second, 2M positions at
+  one block per 8 positions take about 4.3 hours on lenovo7. A fused bf16
+  attention, or lenovo9 as a second rank, shortens that.
 - **Fleet time:** about 4 hours exclusive with K3, since training runs off
   the fleet:
   - about 1 hour of prefill;

@@ -169,14 +169,15 @@ class AutopilotDrafterTest(unittest.TestCase):
         self.assertIn("not a readable", self.refused(autopilot.restore, self.scratch, self.base / "junk.tar", self.lane, PACK))
 
     def test_gate_publishes_only_a_candidate_that_wins_held_out_and_keeps_general(self):
-        def score(name, value):
+        def score(name, value, region="reply"):
             path = self.base / f"{name}.json"
-            path.write_text(json.dumps({"tokens_per_round": value}))
+            path.write_text(json.dumps({"tokens_per_round": value, "arm": {"region": region}}))
             return path
         decide = lambda c, i, b, g: autopilot.gate(score("c", c), score("i", i), score("b", b), score("g", g), 0.02)["publish"]
         self.assertTrue(decide(4.6, 4.4, 3.0, 2.95))
         self.assertFalse(decide(4.4, 4.4, 3.0, 3.0))
         self.assertFalse(decide(4.8, 4.4, 3.0, 2.9))
+        self.assertIn("region", self.refused(autopilot.gate, score("c", 6.0, "prompt"), score("i", 4.4), score("b", 3.0), score("g", 3.0), 0.02))
 
     def test_command_line_refuses_with_exit_two_and_reads_lane_taps(self):
         lanes = self.base / "lanes.json"
