@@ -58,6 +58,8 @@ typedef struct SparkStageServingState
 	char *streamed_partner_pack;
 	char *streamed_fabric_device;
 	char *streamed_pair_device;
+	char *bulk_fabric_device;
+	char *bulk_pair_device;
 	uint32_t max_rows;
 	uint32_t max_shared_rows;
 	SparkTpDeviceCollectiveConfig device_config;
@@ -191,6 +193,28 @@ static SparkStatus StageServingParseStreamed(SparkStageServingState *state, Spar
 	if ( streamed->node_rows == 0u || streamed->partner_pack_path == 0 || streamed->fabric_device == 0 || streamed->pair_device == 0 )
 	{
 		fprintf(stderr, "%s adapter: streamed_prefill needs node_rows, partner_pack, fabric_device and pair_device\n", state->model->module_tag);
+		return SPARK_STATUS_SCHEMA_ERROR;
+	}
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus StageServingParseBulk(SparkStageServingState *state, SparkJsonDocument *doc, int32_t object)
+{
+	SparkStageRunnerBulkCollectiveConfig *bulk = &state->runner_config.bulk_collectives;
+	if ( !SparkJsonTokenIsType(doc, object, SPARK_JSON_TOKEN_OBJECT) ||
+		StageServingCopyMember(doc, object, "fabric_device", &state->bulk_fabric_device) != SPARK_STATUS_OK ||
+		StageServingCopyMember(doc, object, "pair_device", &state->bulk_pair_device) != SPARK_STATUS_OK )
+		return SPARK_STATUS_SCHEMA_ERROR;
+	bulk->gid_index = StageServingJsonU32(doc, object, "gid_index", 3u);
+	bulk->pair_gid_index = StageServingJsonU32(doc, object, "pair_gid_index", bulk->gid_index);
+	bulk->traffic_class = StageServingJsonU32(doc, object, "traffic_class", 106u);
+	bulk->block_bytes = (uint64_t)StageServingJsonU32(doc, object, "block_mib", 0u) << 20u;
+	bulk->minimum_bytes = (uint64_t)StageServingJsonU32(doc, object, "minimum_kib", 0u) << 10u;
+	bulk->fabric_device = state->bulk_fabric_device;
+	bulk->pair_device = state->bulk_pair_device;
+	if ( bulk->block_bytes == 0u || bulk->minimum_bytes == 0u || bulk->minimum_bytes > bulk->block_bytes || bulk->fabric_device == 0 || bulk->pair_device == 0 )
+	{
+		fprintf(stderr, "%s adapter: bulk_collectives needs block_mib, minimum_kib no larger than the block, fabric_device and pair_device\n", state->model->module_tag);
 		return SPARK_STATUS_SCHEMA_ERROR;
 	}
 	return SPARK_STATUS_OK;
@@ -694,6 +718,9 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 	token = SparkJsonFindObjectMember(doc, root, "streamed_prefill");
 	if ( token >= 0 && StageServingParseStreamed(state, doc, token) != SPARK_STATUS_OK )
 		return SPARK_STATUS_SCHEMA_ERROR;
+	token = SparkJsonFindObjectMember(doc, root, "bulk_collectives");
+	if ( token >= 0 && StageServingParseBulk(state, doc, token) != SPARK_STATUS_OK )
+		return SPARK_STATUS_SCHEMA_ERROR;
 	token = SparkJsonFindObjectMember(doc, root, "device_collective");
 	if ( token >= 0 )
 		return StageServingLoadDeviceCollective(state, doc, token);
@@ -1090,6 +1117,8 @@ static void StageServingDestroy(void *adapter_state)
 	free(state->streamed_partner_pack);
 	free(state->streamed_fabric_device);
 	free(state->streamed_pair_device);
+	free(state->bulk_fabric_device);
+	free(state->bulk_pair_device);
 	free(state);
 }
 
