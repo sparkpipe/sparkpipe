@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MiMo V2.6 Flash / Pro (official FP8 + MXFP4 checkpoint) -> TP named stage packs (sixteen by default).
 
---tp-degree sets the rank count (16 for the Sparks, 1 for a single device; every per-rank
+--tp-degree sets the rank count (16 for the Sparks, 8 for eight Studios, 1 for a single device; every per-rank
 split below is 1/degree, so the TP1 rank holds whole tensors).
 Output per rank: <out>/mimo26_<model>.tp<degree>.rank<NN>.pack (tools/spark_named_pack.py
 container), <pack>.sha256 and the empty-range <pack>.experts v2 manifest (experts
@@ -322,7 +322,7 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--contract", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--tp-degree", type=int, choices=(1, 16), default=16)
+    parser.add_argument("--tp-degree", type=int, choices=(1, 8, 16), default=16)
     parser.add_argument("--ranks")
     args = parser.parse_args()
     global TP

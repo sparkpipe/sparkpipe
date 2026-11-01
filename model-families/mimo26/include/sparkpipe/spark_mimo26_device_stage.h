@@ -7,7 +7,8 @@
 extern "C" {
 #endif
 
-const SparkStageRunnerModelInterface *SparkMimo26FlashDeviceStageModel(void);
+const SparkStageRunnerModelInterface *SparkMimo26FlashDeviceStageModelAt(uint32_t tp_degree);
+const SparkStageRunnerModelInterface *SparkMimo26ProDeviceStageModelAt(uint32_t tp_degree);
 
 #ifdef __cplusplus
 }

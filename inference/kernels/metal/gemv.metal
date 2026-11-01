@@ -87,13 +87,6 @@ static inline float SparkFp8Chunk(thread const float *w, device const ushort *x)
 	return(sum);
 }
 
-template <bool MX>
-static inline float SparkFp8Block(constant SparkGemvParams &p, device const uchar *scale, ulong row, uint k)
-{
-	return(MX ? SparkMathUe8m0ToFloat(scale[row * p.scale_stride + k / SPARK_MXFP8_GROUP]) :
-		((device const float *)scale)[row * p.scale_stride + k / SPARK_FP8_SCALE_K]);
-}
-
 template <uint R, uint O, bool MX>
 static inline void SparkFp8Rows(constant SparkGemvParams &p, device const ushort *x, device const uchar *w, device const uchar *scale,
 	device ushort *out, uint first, uint lane, uint simd, threadgroup float *partial, threadgroup const float *table)
@@ -188,11 +181,11 @@ kernel void spark_dequant_fp8(constant SparkGemvParams &p [[buffer(0)]], device 
 	const uint k = index.x * 4u, row = index.y;
 	if ( row >= p.output_dimension || k >= p.input_dimension )
 		return;
-	const float block = SparkFp8Block<MX>(p, scale, row, k);
+	(void)scale;
 	const uint bits = *(device const uint *)(w + (ulong)row * p.input_dimension + k);
 	device ushort *y = out + (ulong)row * p.input_dimension + k;
 	for ( uint j = 0u; j < 4u; j++ )
-		y[j] = SparkMathFloatToBf16(SparkMathE4m3ToFloat((bits >> (8u * j)) & 0xffu) * block);
+		y[j] = SparkMathFloatToBf16(SparkMathE4m3ToFloat((bits >> (8u * j)) & 0xffu));
 }
 
 template [[host_name("spark_dequant_fp8")]] kernel void spark_dequant_fp8<false>(constant SparkGemvParams &p [[buffer(0)]],

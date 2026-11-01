@@ -1425,10 +1425,11 @@ GEMMA4_DEVICE_HEADERS := model-families/gemma4/include/sparkpipe/spark_gemma4_fa
 	modules/gemma4_26b_resident_decode_stage/include/sparkpipe/spark_gemma4_26b_stage_model.h \
 	modules/gemma4_31b_resident_decode_stage/include/sparkpipe/spark_gemma4_31b_stage_model.h \
 	modules/muse_glimmer_tp16_resident_decode_stage/include/sparkpipe/spark_muse_tp16_stage_model.h \
-	modules/laguna_tp16_resident_decode_stage/include/sparkpipe/spark_laguna_tp16_stage_model.h
+	modules/laguna_tp16_resident_decode_stage/include/sparkpipe/spark_laguna_tp16_stage_model.h \
+	modules/kexaone2_tp16_resident_decode_stage/include/sparkpipe/spark_kexaone2_tp16_stage_model.h
 GEMMA4_DEVICE_INCLUDE_FLAGS := -Imodel-families/gemma4/include -Imodules/gemma4_26b_resident_decode_stage/include \
 	-Imodules/gemma4_31b_resident_decode_stage/include -Imodules/muse_glimmer_tp16_resident_decode_stage/include \
-	-Imodules/laguna_tp16_resident_decode_stage/include
+	-Imodules/laguna_tp16_resident_decode_stage/include -Imodules/kexaone2_tp16_resident_decode_stage/include
 GEMMA4_DEVICE_OBJECT := build/metal/gemma4_device_stage.o
 
 $(GEMMA4_DEVICE_OBJECT): $(GEMMA4_DEVICE_SOURCES) $(GEMMA4_DEVICE_HEADERS) $(DEVICE_RUNNER_HEADERS) | build
@@ -1437,8 +1438,10 @@ $(GEMMA4_DEVICE_OBJECT): $(GEMMA4_DEVICE_SOURCES) $(GEMMA4_DEVICE_HEADERS) $(DEV
 
 MIMO26_DEVICE_SOURCES := model-families/mimo26/device/mimo26_device_stage.cpp
 MIMO26_DEVICE_HEADERS := model-families/mimo26/include/sparkpipe/spark_mimo26_family.h model-families/mimo26/include/sparkpipe/spark_mimo26_device_stage.h \
-	modules/mimo26_flash_tp16_resident_decode_stage/include/sparkpipe/spark_mimo26_flash_tp16_stage_model.h
-MIMO26_DEVICE_INCLUDE_FLAGS := -Imodel-families/mimo26/include -Imodules/mimo26_flash_tp16_resident_decode_stage/include
+	modules/mimo26_flash_tp16_resident_decode_stage/include/sparkpipe/spark_mimo26_flash_tp16_stage_model.h \
+	modules/mimo26_pro_tp16_resident_decode_stage/include/sparkpipe/spark_mimo26_pro_tp16_stage_model.h
+MIMO26_DEVICE_INCLUDE_FLAGS := -Imodel-families/mimo26/include -Imodules/mimo26_flash_tp16_resident_decode_stage/include \
+	-Imodules/mimo26_pro_tp16_resident_decode_stage/include
 MIMO26_DEVICE_OBJECT := build/metal/mimo26_device_stage.o
 
 $(MIMO26_DEVICE_OBJECT): $(MIMO26_DEVICE_SOURCES) $(MIMO26_DEVICE_HEADERS) $(DEVICE_RUNNER_HEADERS) | build
@@ -1456,6 +1459,27 @@ $(LING_DEVICE_OBJECT): $(LING_DEVICE_SOURCES) $(LING_DEVICE_HEADERS) $(DEVICE_RU
 	@mkdir -p $(dir $@)
 	$(CXX) $(CORE_INCLUDE_FLAGS) $(LING_DEVICE_INCLUDE_FLAGS) $(CXXFLAGS) -c $(LING_DEVICE_SOURCES) -o $@
 
+GLM5_NEXT_DEVICE_SOURCES := model-families/glm5_next/device/glm5_next_device_stage.cpp
+GLM5_NEXT_DEVICE_HEADERS := model-families/glm5_next/include/sparkpipe/spark_glm5_next_family.h \
+	model-families/glm5_next/include/sparkpipe/spark_glm5_next_device_stage.h model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h \
+	modules/glm53_flash_tp16_resident_decode_stage/include/sparkpipe/spark_glm53_flash_tp16_stage_model.h
+GLM5_NEXT_DEVICE_INCLUDE_FLAGS := -Imodel-families/glm5_next/include -Imodules/glm53_flash_tp16_resident_decode_stage/include
+GLM5_NEXT_DEVICE_OBJECT := build/metal/glm5_next_device_stage.o
+
+$(GLM5_NEXT_DEVICE_OBJECT): $(GLM5_NEXT_DEVICE_SOURCES) $(GLM5_NEXT_DEVICE_HEADERS) $(DEVICE_RUNNER_HEADERS) | build
+	@mkdir -p $(dir $@)
+	$(CXX) $(CORE_INCLUDE_FLAGS) $(GLM5_NEXT_DEVICE_INCLUDE_FLAGS) $(CXXFLAGS) -c $(GLM5_NEXT_DEVICE_SOURCES) -o $@
+
+HY4_DEVICE_SOURCES := model-families/hy4/device/hy4_device_stage.cpp
+HY4_DEVICE_HEADERS := model-families/hy4/include/sparkpipe/spark_hy4_family.h model-families/hy4/include/sparkpipe/spark_hy4_device_stage.h \
+	modules/hy4_tp16_resident_decode_stage/include/sparkpipe/spark_hy4_tp16_stage_model.h
+HY4_DEVICE_INCLUDE_FLAGS := -Imodel-families/hy4/include -Imodules/hy4_tp16_resident_decode_stage/include
+HY4_DEVICE_OBJECT := build/metal/hy4_device_stage.o
+
+$(HY4_DEVICE_OBJECT): $(HY4_DEVICE_SOURCES) $(HY4_DEVICE_HEADERS) $(DEVICE_RUNNER_HEADERS) | build
+	@mkdir -p $(dir $@)
+	$(CXX) $(CORE_INCLUDE_FLAGS) $(HY4_DEVICE_INCLUDE_FLAGS) $(CXXFLAGS) -c $(HY4_DEVICE_SOURCES) -o $@
+
 DSV41_DEVICE_SOURCES := model-families/dsv41_flash/device/dsv41_flash_device_stage.cpp
 DSV41_DEVICE_HEADERS := model-families/dsv41_flash/include/sparkpipe/spark_dsv41_flash_family.h \
 	model-families/dsv41_flash/include/sparkpipe/spark_dsv41_flash_device_stage.h model-families/dsv41_flash/include/sparkpipe/spark_dsv41_flash_model.h \
@@ -1467,8 +1491,8 @@ $(DSV41_DEVICE_OBJECT): $(DSV41_DEVICE_SOURCES) $(DSV41_DEVICE_HEADERS) $(DEVICE
 	@mkdir -p $(dir $@)
 	$(CXX) $(CORE_INCLUDE_FLAGS) $(DSV41_DEVICE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(CXXFLAGS) -c $(DSV41_DEVICE_SOURCES) -o $@
 
-build/metal_stage_run: tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(LING_DEVICE_OBJECT) $(DSV41_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
-	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(GEMMA4_DEVICE_INCLUDE_FLAGS) $(MIMO26_DEVICE_INCLUDE_FLAGS) $(LING_DEVICE_INCLUDE_FLAGS) $(DSV41_DEVICE_INCLUDE_FLAGS) $(CFLAGS) tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(LING_DEVICE_OBJECT) $(DSV41_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lc++ -lm -o $@; else echo "SKIP metal_stage_run (no Metal device or kernel library)"; fi
+build/metal_stage_run: tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(LING_DEVICE_OBJECT) $(GLM5_NEXT_DEVICE_OBJECT) $(HY4_DEVICE_OBJECT) $(DSV41_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(GEMMA4_DEVICE_INCLUDE_FLAGS) $(MIMO26_DEVICE_INCLUDE_FLAGS) $(LING_DEVICE_INCLUDE_FLAGS) $(GLM5_NEXT_DEVICE_INCLUDE_FLAGS) $(HY4_DEVICE_INCLUDE_FLAGS) $(DSV41_DEVICE_INCLUDE_FLAGS) $(CFLAGS) tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(LING_DEVICE_OBJECT) $(GLM5_NEXT_DEVICE_OBJECT) $(HY4_DEVICE_OBJECT) $(DSV41_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lc++ -lm -o $@; else echo "SKIP metal_stage_run (no Metal device or kernel library)"; fi
 
 build/qwen38_27b_reference: tools/qwen38_27b_reference.c tools/token_prompts.c runtime/json.c runtime/filesystem.c | build
 	@if [ "$(UNAME_S)" = Darwin ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fblocks -DACCELERATE_NEW_LAPACK tools/qwen38_27b_reference.c tools/token_prompts.c runtime/json.c runtime/filesystem.c -framework Accelerate $(LDLIBS) -lm -o $@; else echo "SKIP qwen38_27b_reference (it uses the Accelerate BLAS)"; fi

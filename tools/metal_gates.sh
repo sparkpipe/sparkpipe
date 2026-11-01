@@ -2,7 +2,7 @@
 set -eu
 
 if [ "$#" -ne 5 ]; then
-	echo "usage: [SPARK_GATE_TP=N [SPARK_GATE_STREAM=1]] [SPARK_GATE_DECODE=N] [SPARK_GATE_GREEDY=N] $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|qwen3.8-flash|laguna-s-2.1|ling-3.0-flash|ling-3.0-flash-fin|solar-open-2|deepseek-v4.1-flash PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
+	echo "usage: [SPARK_GATE_TP=N [SPARK_GATE_STREAM=1]] [SPARK_GATE_DECODE=N] [SPARK_GATE_GREEDY=N] $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|mimo-v2.6-pro|qwen3.8-flash|laguna-s-2.1|k-exaone-2.0|ling-3.0-flash|ling-3.0-flash-fin|solar-open-2|hy4-preview|glm-5.3-flash|deepseek-v4.1-flash PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
 	exit 2
 fi
 model=$1
@@ -15,10 +15,14 @@ case $model in
 	gemma4-31b) routed=0 prompt_dir=gemma4 vocab=262144 probe=ffn_down layer=11;;
 	muse-glimmer-30b) routed=0 prompt_dir=muse_glimmer vocab=202048 probe=ffn_down layer=11;;
 	mimo-v2.6-flash) routed=0 prompt_dir=mimo26_flash vocab=152576 probe=attn_out layer=11;;
+	mimo-v2.6-pro) routed=0 prompt_dir=mimo26_flash vocab=152576 probe=attn_out layer=7;;
 	qwen3.8-flash) routed=0 prompt_dir=qwen38_27b vocab=248320 probe=moe_shared_down layer=11 greedy_tokens=8 bench_prompt=design spec=0 bench_long=2048;;
 	laguna-s-2.1) routed=0 prompt_dir=laguna vocab=100352 probe=attn_out layer=11;;
+	k-exaone-2.0) routed=0 prompt_dir=kexaone2 vocab=153600 probe=attn_out layer=11;;
 	ling-3.0-flash|ling-3.0-flash-fin) routed=0 prompt_dir=ling vocab=157184 probe=kda_out layer=12;;
 	solar-open-2) routed=0 prompt_dir=solar_open2 vocab=196608 probe=kda_out layer=13;;
+	hy4-preview) routed=0 prompt_dir=hy4 vocab=120832 probe=gate layer=11;;
+	glm-5.3-flash) routed=0 prompt_dir=glm53flash vocab=154880 probe=kda_out layer=12;;
 	deepseek-v4.1-flash) routed=0 prompt_dir=dsv41_flash vocab=129280 probe=o_b layer=11 sidecar=dsv41_flash.engram.pack;;
 	*) echo "unknown Metal model $model" >&2; exit 2;;
 esac
@@ -30,24 +34,21 @@ spec=${spec:-1}
 root=$(cd "$(dirname "$0")/.." && pwd)
 prompts=$root/qualification/metal/$prompt_dir/gate_prompts.json
 spec_prompts=$root/qualification/metal/$prompt_dir/spec_prompts.json
-control_pack=$out/control.pack
 batches=${SPARK_LADDER_BATCHES:-1,2,4,8,16,32,64}
 run="./build/metal_stage_run --model $model --prompts $prompts"
 tp=${SPARK_GATE_TP:-1}
+control_dir=${SPARK_GATE_CONTROL_DIR:-$out/controlpack}
+rank_pack() {
+	if [ "$1" = 0 ]; then echo "$pack"; else echo "$(dirname "$pack")/$(basename "$pack" | sed "s/rank00/rank$(printf %02d "$1")/")"; fi
+}
 if [ "$tp" -gt 1 ]; then
 	run="$run --tp $tp"
 	[ "${SPARK_GATE_STREAM:-0}" = 1 ] && run="$run --stream-weights"
 	spec=0
-	mkdir -p "$out/controlpack"
-	control_pack=$out/controlpack/$(basename "$pack")
-	rank=1
-	while [ "$rank" -lt "$tp" ]; do
-		peer=$(dirname "$pack")/$(basename "$pack" | sed "s/rank00/rank$(printf %02d "$rank")/")
-		ln -sfn "$peer" "$out/controlpack/$(basename "$peer")"
-		rank=$((rank + 1))
-	done
 fi
-[ -n "${sidecar:-}" ] && ln -sfn "$(cd "$(dirname "$pack")" && pwd)/$sidecar" "$(dirname "$control_pack")/$sidecar"
+mkdir -p "$control_dir"
+control_pack=$control_dir/$(basename "$pack")
+[ -n "${sidecar:-}" ] && ln -sfn "$(cd "$(dirname "$pack")" && pwd)/$sidecar" "$control_dir/$sidecar"
 mkdir -p "$out/metal" "$out/exact" "$out/compare"
 ln -sfn "$reference" "$out/ref"
 cd "$root"
@@ -72,9 +73,20 @@ for control in $controls; do
 	label=${control%%:*}
 	rest=${control#*:}
 	mkdir -p "$out/$label"
-	python3 -I tools/pack_tensor_control.py --pack "$pack" --tensor "${rest%:*}" --corruption "${rest##*:}" --output "$control_pack" --receipt "$out/$label/control.json"
+	rank=0
+	while [ "$rank" -lt "$tp" ]; do
+		receipt=$out/$label/control.json
+		[ "$rank" = 0 ] || receipt=$out/$label/control.rank$(printf %02d "$rank").json
+		python3 -I tools/pack_tensor_control.py --pack "$(rank_pack "$rank")" --tensor "${rest%:*}" --corruption "${rest##*:}" \
+			--output "$control_dir/$(basename "$(rank_pack "$rank")")" --receipt "$receipt"
+		rank=$((rank + 1))
+	done
 	$run --pack "$control_pack" --mode teacher --out "$out/$label" $pin $teacher_flags > "$out/${label}_teacher.log"
-	rm -f "$control_pack"
+	rank=0
+	while [ "$rank" -lt "$tp" ]; do
+		rm -f "$control_dir/$(basename "$(rank_pack "$rank")")"
+		rank=$((rank + 1))
+	done
 done
 set +f
 if [ "$tp" = 1 ]; then

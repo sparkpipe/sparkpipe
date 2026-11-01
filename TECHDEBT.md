@@ -1175,6 +1175,27 @@ and the multidev docs on 2026-09-28. Line numbers are in
     outside (+3.14 against A). With CUDA's rescale, 31B (+4.8 / +4.3) and Muse
     (+3.37 against A) fail the paired test; the attention arithmetic that
     takes all four through, on both backends, is still open;
+  - the residual norm: both backends take the statistic and the normed
+    value from the FP32 sum of residual and branch and store only the
+    residual rounded (CUDA's `LmFusedResidualRmsNormKernel` in the Gemma,
+    Qwen, Ling and GLM 5.2 stages, and Metal's `spark_rmsnorm_residual`
+    since it stopped rounding the sum first), where the publishers' eager
+    modules (and so the gate references) round the sum and normalise the
+    rounded value. Taking CUDA's order moved the paired test from +2.42 /
+    +3.37 sigma to +0.28 / +1.35 for Ling 3.0 Flash (which now passes), from
+    +2.90 / +2.28 to +0.85 / +0.84 for Gemma 4 26B, from -2.10 / +2.01 to
+    +0.47 / +1.32 for Qwen3.8-27B, from +1.79 / +2.05 to +0.78 / +2.97 for
+    Ling 3.0 Flash Fin and from -0.30 / +1.25 to +1.72 / +1.62 for Qwen 3.8
+    Flash, all passing, and from +1.44 / +0.22 to +3.33 / -0.32 for Laguna,
+    which now fails against reference a although its CUDA stage uses the same
+    fused norm; Gemma 4 31B's and Muse Glimmer's gate numbers are identical
+    to the last digit. Both backends apply the gain with one rounding,
+    `bf16(x r w)`, where the publishers round `x r` first, and keep the
+    attention probabilities and the GQA gate in FP32 where the publishers
+    round them: at Solar Open 2's layer 0 (GQA, no residual add before it)
+    Metal's output is 2.5e-3 of its norm from reference a against an a/b
+    floor of 8.3e-5, giving the reference those three roundings brings it
+    to 1.75e-3, and the rest is not located yet;
   - exp flavor: CUDA kernels use `__expf` in some places and `expf` in
     others. On the M5 Ultra GPU, `metal::exp` and `metal::fast::exp` are the
     same hardware approximation: bitwise identical over the float range and
@@ -1338,13 +1359,50 @@ Metal backend and the single-Studio stage are in
   BF16 before the MMA). The grouping also reads the step's routes back to the
   host after a queue wait; a device-side sort and a grouped GEMM over an
   offset table would drop that sync.
-- Four models have device stages: Qwen3.8-27B (BF16 and FP8), Gemma 4 26B
-  A4B, Gemma 4 31B and Muse Glimmer 30B. Each is its family's Metal backend placed on the
-  model's TP1 geometry (`model-families/<family>/device/`, over the device
-  stage and layer kinds in `inference/runner/device_stage_model.c` and
-  `device_layers.c`), plus a TP1 pack and its own gates. In progress: MiMo
-  V2.6 Flash and Qwen 3.8 Flash Next, whose device stages are built but not
-  yet gated.
+- Device stages exist for the Gemma 4 family (Gemma 4 26B A4B and 31B, Muse
+  Glimmer 30B, Laguna S 2.1, K-EXAONE 2.0), Qwen 3.8 (27B BF16 and FP8, 3.8
+  Flash Next), MiMo V2.6 (Flash, Pro) and Ling 3 (Ling 3.0 Flash and Fin,
+  Solar Open 2). Each is its family's Metal backend placed on the model's
+  geometry at TP 1, 2, 4 or 8 (`model-families/<family>/device/`, over the
+  device stage and layer kinds in `inference/runner/device_stage_model.c`
+  and `device_layers.c`), plus its packs and gates; the models larger than
+  one Studio gate at TP8 on one Studio with the packs paged from the SSD.
+  Gates pass for Gemma 4 26B, Qwen3.8-27B (both codecs), Qwen 3.8 Flash,
+  Ling 3.0 Flash, Ling 3.0 Flash Fin and GLM 5.3 Flash; the paired test
+  fails, by the worse leg, for Gemma 4 31B (+4.8 sigma), Muse Glimmer
+  (+3.4), MiMo Flash (+5.2), MiMo Pro (+5.8), Laguna (+3.3), K-EXAONE 2.0
+  (+8.5), HY4 (+4.1) and Solar Open 2 (+4.5, not re-gated on the FP32-sum
+  norm); GLM 5.3 Full and A.X K2 wait for their references, and Kimi K3 for
+  its pack and reference. The Metal backends for DeepSeek V4.1 Flash and
+  Qwen 3.8 Max are in progress.
+- HY4 on the Studio (`HyDevice<Hy4Device>`): the DSA indexer (`index_q`,
+  `index_k` with its LayerNorm, the ReLU-weighted head scores, the exact
+  top-2,048 per rank and over the gathered candidates, the second KV pool
+  of 128-wide keys) is not built, so the stage refuses a row past position
+  2,047; below that the indexer keeps every key and attention is dense. The
+  latent KV slot stores the 512-wide latent a second time as the value (1,088
+  elements per slot where CUDA keeps 576), and the rope's inverse
+  frequencies come from a double-precision table where CUDA's kernel
+  computes `__powf`.
+- GLM 5.3 Flash on the Studio (`Glm5NextDevice<Glm53FlashDevice>`): the DSA
+  indexer (`index_q`, `index_k` with its LayerNorm, the pooled key scores
+  with the compressor gate and position embedding, the top 512 of 4-key
+  pools, the index key pool) is not built, so the stage refuses a row past
+  position 2,047, below which every pool is selected and attention is
+  dense. The rope-free latent slot stores the 512-wide latent twice, as the
+  key and as the value (CUDA keeps it once and reads it as both), and the
+  latent attention is not sharded by context across ranks: each rank
+  attends its own heads over the whole context. The MTP layer is not
+  packed.
+- K-EXAONE 2.0 on the Studio (`GemmaDevice<Kexaone2Device>`, TP8 paged from
+  the SSD) passes the gate's KL (0.91x / 0.68x of the floor) and top-1 (1.10x /
+  1.02x) tests and fails the paired test (+6.18 / +8.52 sigma). Its references
+  a and b differ only in the routed experts' FP32 summation order, so the
+  floor is tight: per-prompt KL means of 0.002 to 0.012 and medians of 1e-4 to
+  2e-3, against 0.15 to 0.43 means for Gemma 4 26B. Metal's means are as small
+  (0.003 to 0.010, top-1 agreement 0.97 to 0.99) and its median sits 10 to 35%
+  above the floor's on every prompt, which puts most positions above the floor
+  and the paired share far past 0.5.
 - Qwen 3.8 Flash Next on the Studio (`QwenDevice<Qwen38FlashDevice>`):
   - the QSA indexer is not built, so the stage refuses contexts past 2,048
     positions. Below 2,052 the indexer keeps every block and attention is

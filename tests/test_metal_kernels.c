@@ -259,22 +259,22 @@ static void TestRmsNormResidual(uint32_t rows)
 			for ( i = 0u; i < DIM; i++ )
 			{
 				const uint64_t at = (uint64_t)row * DIM + i;
-				x[i] = Bf16(ToBf16(Bf16(original[at]) + Bf16(a[at])));
+				x[i] = (double)Bf16(original[at]) + (double)Bf16(a[at]);
 				square += x[i] * x[i];
 				if ( pass == 0u )
-					Observe(&sums,Bf16(h[at]),x[i],0.0);
+					Observe(&sums,Bf16(h[at]),Bf16(ToBf16(Bf16(original[at]) + Bf16(a[at]))),0.0);
 			}
 			const double scale = 1.0 / sqrt(square / DIM + 1e-6);
 			const double scale_error = Gamma(DIM) + FUNCTION_ERROR;
 			for ( i = 0u; i < DIM; i++ )
 			{
 				const double y = x[i] * scale * w[i];
-				Observe(check,Bf16(o[(uint64_t)row * DIM + i]),y,UNIT_BF16 * fabs(y) + (1.0 + UNIT_BF16) * (scale_error + 3.0 * UNIT_F32) * fabs(y));
+				Observe(check,Bf16(o[(uint64_t)row * DIM + i]),y,UNIT_BF16 * fabs(y) + (1.0 + UNIT_BF16) * (scale_error + 4.0 * UNIT_F32) * fabs(y));
 			}
 		}
 	}
 	snprintf(shape,sizeof(shape),"rows %u, dim 5120, residual written",rows);
-	Report("rmsnorm_residual",shape,&clean,&corrupted,"u|y| + (1+u)(gamma_5120 + 16 eps32 + 3 eps32)|y|, u = 2^-8, eps32 = 2^-24");
+	Report("rmsnorm_residual",shape,&clean,&corrupted,"u|y| + (1+u)(gamma_5120 + 16 eps32 + 4 eps32)|y| on the FP32 sum, u = 2^-8, eps32 = 2^-24");
 	if ( sums.bad != 0u )
 	{
 		printf("FAIL rmsnorm_residual: the written residual is not bf16(hidden + addend) at %llu elements\n",(unsigned long long)sums.bad);
@@ -635,8 +635,8 @@ static void TestLinearFp8(uint32_t rows, uint32_t K, uint32_t N, uint32_t row_ex
 {
 	const uint32_t blocks = mx != 0u ? K / SPARK_MXFP8_GROUP : (K + SPARK_FP8_SCALE_K - 1u) / SPARK_FP8_SCALE_K;
 	const uint32_t rounded = rows > SPARK_OPS_FP8_GEMV_ROWS && row_exact == 0u ? 1u : 0u;
-	const char *label = mx != 0u ? rounded != 0u ? "linear_mxfp8 dequant" : row_exact != 0u ? "linear_mxfp8 exact" : "linear_mxfp8 gemv" :
-		rounded != 0u ? "linear_fp8 dequant" : row_exact != 0u ? "linear_fp8 exact" : "linear_fp8 gemv";
+	const char *label = mx != 0u ? rounded != 0u ? "linear_mxfp8 blocks" : row_exact != 0u ? "linear_mxfp8 exact" : "linear_mxfp8 gemv" :
+		rounded != 0u ? "linear_fp8 blocks" : row_exact != 0u ? "linear_fp8 exact" : "linear_fp8 gemv";
 	SparkDeviceBuffer x, w, scale, dequant, y;
 	uint16_t *xv = (uint16_t *)Shared(&x,(uint64_t)rows * K * 2u,"fp8 linear x");
 	uint8_t *wv = (uint8_t *)Shared(&w,(uint64_t)N * K,"fp8 linear w");
@@ -684,11 +684,11 @@ static void TestLinearFp8(uint32_t rows, uint32_t K, uint32_t N, uint32_t row_ex
 		{
 			uint64_t wrong = 0u;
 			for ( index = 0u; index < (uint64_t)N * K; index++ )
-				if ( ((const uint16_t *)dequant.host)[index] != ToBf16((float)E4m3(wv[index]) * Fp8Block(sv,mx,blocks,(uint32_t)(index / K),(uint32_t)(index % K))) )
+				if ( ((const uint16_t *)dequant.host)[index] != ToBf16((float)E4m3(wv[index])) )
 					wrong++;
 			if ( wrong != 0u )
 			{
-				printf("FAIL %s: %llu of %llu weights are not bf16(e4m3 x scale)\n",label,(unsigned long long)wrong,(unsigned long long)N * K);
+				printf("FAIL %s: %llu of %llu weights are not bf16(e4m3)\n",label,(unsigned long long)wrong,(unsigned long long)N * K);
 				failures++;
 			}
 		}
@@ -700,7 +700,7 @@ static void TestLinearFp8(uint32_t rows, uint32_t K, uint32_t N, uint32_t row_ex
 			for ( k = 0u; k < K; k++ )
 			{
 				const float block = Fp8Block(sv,mx,blocks,n,k);
-				const double weight = rounded != 0u ? RoundBf16((double)(float)((float)E4m3(wv[(uint64_t)n * K + k]) * block)) : E4m3(wv[(uint64_t)n * K + k]) * block;
+				const double weight = E4m3(wv[(uint64_t)n * K + k]) * block;
 				const double term = Bf16(xv[(uint64_t)row * K + k]) * weight;
 				sum += term;
 				magnitude += fabs(term);
@@ -708,10 +708,9 @@ static void TestLinearFp8(uint32_t rows, uint32_t K, uint32_t N, uint32_t row_ex
 			Observe(check,Bf16(yv[element]),sum,UNIT_BF16 * fabs(sum) + (1.0 + UNIT_BF16) * Gamma(K + K / SPARK_FP8_CHUNK + 2u) * magnitude);
 		}
 	}
-	snprintf(shape,sizeof(shape),"rows %u, K %u -> N %u%s%s",rows,K,N,rounded != 0u ? ", bf16 dequant" : mx != 0u ? ", UE8M0 per 32" : ", per-chunk scale",
-		samples < total ? ", sampled" : "");
-	Report(label,shape,&clean,&corrupted,
-		rounded != 0u ? "u|y| + (1+u) gamma_K sum|x bf16(w s)|" : "u|y| + (1+u) gamma_(K + K/16 + 2) sum|x w s|, u = 2^-8");
+	snprintf(shape,sizeof(shape),"rows %u, K %u -> N %u%s%s",rows,K,N,rounded != 0u ? ", scale per block after the sum" : mx != 0u ? ", UE8M0 per 32" :
+		", per-chunk scale", samples < total ? ", sampled" : "");
+	Report(label,shape,&clean,&corrupted,"u|y| + (1+u) gamma_(K + K/16 + 2) sum|x w s|, u = 2^-8");
 	SparkDeviceFree(&x);
 	SparkDeviceFree(&w);
 	SparkDeviceFree(&scale);
@@ -5460,6 +5459,7 @@ int main(int argc, char **argv)
 	TestAddRows(9u);
 	TestLogprob(1u);
 	TestLogprob(3u);
+	TestLinearFp8(150u,4096u,1000u,0u,20000u,0u);
 	TestHcCombKernels(3u,1u);
 	TestHcCombKernels(17u,1u);
 	TestNgram(1u);

@@ -116,6 +116,8 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_situ_mul",
 	"spark_attnres_score",
 	"spark_attnres_mix",
+	"spark_gemm_fp8_blocks",
+	"spark_gemm_mxfp8_blocks",
 	"spark_route_sqrt_softplus_topk",
 	"spark_block_qdq",
 	"spark_kv_compress",
@@ -674,7 +676,7 @@ SparkStatus SparkOpsLinearFp8(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spar
 		status = OpsNeed("linear_fp8","output",y,OpsRowsBytes(params->rows,params->output_stride,N,2u));
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	if ( params->rows > SPARK_OPS_FP8_GEMV_ROWS && params->row_exact == 0u )
+	if ( params->rows > SPARK_OPS_FP8_GEMV_ROWS && params->row_exact == 0u && K % (mx != 0u ? SPARK_MXFP8_GROUP : SPARK_FP8_SCALE_K) == 0u )
 	{
 		status = OpsNeed("linear_fp8","dequant",dequant,(uint64_t)N * K * sizeof(uint16_t));
 		if ( status != SPARK_STATUS_OK )
@@ -684,7 +686,14 @@ SparkStatus SparkOpsLinearFp8(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spar
 		bindings[2] = OpsBind(dequant,SPARK_DEVICE_BIND_WRITE);
 		status = OpsLaunch(ops,queue,mx != 0u ? SPARK_OPS_DEQUANT_MXFP8 : SPARK_OPS_DEQUANT_FP8,(K / 4u + 255u) / 256u,N,1u,256u,params,sizeof(*params),
 			bindings,3u);
-		return(status == SPARK_STATUS_OK ? SparkOpsLinear(ops,queue,x,dequant,y,params) : status);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		bindings[0] = OpsBind(x,SPARK_DEVICE_BIND_READ);
+		bindings[1] = OpsBind(dequant,SPARK_DEVICE_BIND_READ);
+		bindings[2] = OpsBind(scale,SPARK_DEVICE_BIND_READ);
+		bindings[3] = OpsBind(y,SPARK_DEVICE_BIND_WRITE);
+		return(OpsLaunch(ops,queue,mx != 0u ? SPARK_OPS_GEMM_MXFP8_BLOCKS : SPARK_OPS_GEMM_FP8_BLOCKS,(N + OPS_GEMM_OUTPUTS - 1u) / OPS_GEMM_OUTPUTS,
+			(params->rows + OPS_GEMM_ROWS - 1u) / OPS_GEMM_ROWS,1u,128u,params,sizeof(*params),bindings,4u));
 	}
 	bindings[1] = OpsBind(w,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(scale,SPARK_DEVICE_BIND_READ);

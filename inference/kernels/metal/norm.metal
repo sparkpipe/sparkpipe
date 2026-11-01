@@ -14,7 +14,7 @@ kernel void spark_rmsnorm_residual(constant SparkNormParams &p [[buffer(0)]], de
 	{
 		float value = SparkMathBf16ToFloat(x[i]);
 		if ( p.has_addend != 0u )
-			value = SparkMathRoundBf16(value + SparkMathBf16ToFloat(a[i]));
+			value += SparkMathBf16ToFloat(a[i]);
 		total += value * value;
 	}
 	total = SparkGroupSum(total, scratch, lane, simd, simds);
@@ -24,7 +24,7 @@ kernel void spark_rmsnorm_residual(constant SparkNormParams &p [[buffer(0)]], de
 		float value = SparkMathBf16ToFloat(x[i]);
 		if ( p.has_addend != 0u )
 		{
-			value = SparkMathRoundBf16(value + SparkMathBf16ToFloat(a[i]));
+			value += SparkMathBf16ToFloat(a[i]);
 			if ( p.write_sum != 0u )
 				x[i] = SparkMathFloatToBf16(value);
 		}
