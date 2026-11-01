@@ -31,6 +31,7 @@ window.SP_PRICING = {
     { "id": "k-exaone-2.0", "name": "K-EXAONE 2.0", "decode": 27.3, "prefill": 324 },
     { "id": "a.x-k2", "name": "A.X K2", "decode": 23.8, "prefill": 1274 },
     { "id": "solar-open-2", "name": "Solar Open 2", "decode": 61.2, "prefill": 1025 },
+    { "id": "motif-3", "name": "Motif 3", "decode": null, "prefill": null },
     { "id": "mimo-v2.6-pro", "name": "MiMo V2.6 Pro", "decode": 19.0, "prefill": 55 },
     { "id": "mimo-v2.6-flash", "name": "MiMo V2.6 Flash", "decode": 40.9, "prefill": 157 },
     { "id": "gemma-4-31b", "name": "Gemma 4 31B", "decode": 34.4, "prefill": 834 },
