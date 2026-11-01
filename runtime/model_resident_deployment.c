@@ -47,10 +47,10 @@ static const char *const SparkModelResidentDeploymentRuntimeMembers[] =
 {
 	"max_inflight_submissions","max_active_sequences","max_input_rows",
 	"resident_sequence_capacity","kv_logical_page_capacity",
-	"kv_physical_page_capacity","max_sequence_positions","max_shared_input_rows",
+	"kv_physical_page_capacity","output_vocabulary","max_sequence_positions","max_shared_input_rows",
 	"streamed_prefill_min_tokens"
 };
-#define SPARK_MODEL_RESIDENT_DEPLOYMENT_RUNTIME_REQUIRED_MEMBER_COUNT 6u
+#define SPARK_MODEL_RESIDENT_DEPLOYMENT_RUNTIME_REQUIRED_MEMBER_COUNT 7u
 static const char *const SparkModelResidentDeploymentNodeMembers[] =
 {
 	"rank_index","stage_index","runtime_root","node_target","transport_host",
@@ -359,6 +359,10 @@ static SparkStatus SparkModelResidentDeploymentParseRuntime(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentUnsigned(document,object,
 			"kv_physical_page_capacity",&limits->kv_physical_page_capacity);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentUnsigned(document,object,"output_vocabulary",&limits->output_vocabulary);
+	if ( status == SPARK_STATUS_OK && limits->output_vocabulary == 0u )
+		status = SPARK_STATUS_SCHEMA_ERROR;
 	SPARK_RETURN(status);
 }
 
@@ -768,6 +772,8 @@ static SparkStatus SparkModelResidentDeploymentValidateStructure(
 	if ( !SparkPathIsNormalized(deployment->adapter_shared_object_path,false) || !SparkPathIsNormalized(deployment->driver_shared_object_path,false) || SparkModelResidentDeploymentHasText(deployment->driver_program_name) == 0u || !SparkPathIsNormalized(deployment->transport_shared_object_path,false) || SparkModelResidentDeploymentHasText(deployment->transport_mode) == 0u )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( deployment->tokenizer_asset_path != 0 && !SparkPathIsNormalized(deployment->tokenizer_asset_path,false) )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	if ( deployment->tokenizer_vocabulary_size != 0u && deployment->runtime_limits.output_vocabulary != deployment->tokenizer_vocabulary_size )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	memset(ranks,0,sizeof(ranks));
 	memset(stages,0,sizeof(stages));

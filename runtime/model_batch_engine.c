@@ -1675,7 +1675,8 @@ static SparkStatus SparkModelBatchValidateConfiguration(
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	for (left=0u; left<configuration->deployment->eos_token_count; left++)
 	{
-		if ( configuration->deployment->tokenizer_vocabulary_size != 0u && configuration->deployment->eos_token_ids[left] >= configuration->deployment->tokenizer_vocabulary_size )
+		if ( (configuration->deployment->tokenizer_vocabulary_size != 0u && configuration->deployment->eos_token_ids[left] >= configuration->deployment->tokenizer_vocabulary_size) ||
+			configuration->deployment->eos_token_ids[left] >= configuration->deployment->runtime_limits.output_vocabulary )
 			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 		for (right=left + 1u; right<configuration->deployment->eos_token_count; right++)
 			if ( configuration->deployment->eos_token_ids[left] == configuration->deployment->eos_token_ids[right] )

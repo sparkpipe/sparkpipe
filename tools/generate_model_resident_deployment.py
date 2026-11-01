@@ -42,6 +42,7 @@ RUNTIME_KEYS = {
     "resident_sequence_capacity",
     "kv_logical_page_capacity",
     "kv_physical_page_capacity",
+    "output_vocabulary",
 }
 TOPOLOGY_KEYS = {
     "rank_hosts",
@@ -206,6 +207,7 @@ def validate_common(specification: dict[str, Any]) -> None:
     physical_pages = integer_value(limits["kv_physical_page_capacity"],
                                    "runtime_limits.kv_physical_page_capacity",
                                    0, 4294967295)
+    integer_value(limits["output_vocabulary"], "runtime_limits.output_vocabulary", 1, 4294967295)
     if inflight > resident or active > rows or active > resident:
         raise DeploymentError("runtime_limits capacities are inconsistent")
     if ((logical_pages == 0) != (physical_pages == 0) or

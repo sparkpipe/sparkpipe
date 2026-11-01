@@ -47,6 +47,7 @@ def main() -> int:
         "resident_sequence_capacity": 16384,
         "kv_logical_page_capacity": 1048576,
         "kv_physical_page_capacity": 16384,
+        "output_vocabulary": 32000,
     }
     assert deployment["adapter"]["shared_object_path"] == (
         "lib/model_serving_adapter.so")

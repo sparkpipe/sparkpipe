@@ -90,6 +90,7 @@ typedef struct SparkModelResidentdConfiguration
 	uint32_t resident_sequence_capacity;
 	uint32_t kv_logical_page_capacity;
 	uint32_t kv_physical_page_capacity;
+	uint32_t output_vocabulary;
 	uint32_t port_base;
 	uint32_t listen_port;
 } SparkModelResidentdConfiguration;
@@ -392,6 +393,7 @@ static SparkStatus SparkModelResidentdBuildConfiguration(
 		deployment->runtime_limits.kv_logical_page_capacity;
 	configuration->kv_physical_page_capacity =
 		deployment->runtime_limits.kv_physical_page_capacity;
+	configuration->output_vocabulary = deployment->runtime_limits.output_vocabulary;
 	configuration->port_base = deployment->transport_control_port_base;
 	return(SPARK_STATUS_OK);
 }
@@ -1385,6 +1387,7 @@ static SparkStatus SparkModelResidentdInitializeLimits(
 		configuration->kv_logical_page_capacity;
 	runtime->runtime_limits.kv_physical_page_capacity =
 		configuration->kv_physical_page_capacity;
+	runtime->runtime_limits.output_vocabulary = configuration->output_vocabulary;
 	return(SparkModelServingAdapterValidateRuntimeLimits(runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits));
 }
 

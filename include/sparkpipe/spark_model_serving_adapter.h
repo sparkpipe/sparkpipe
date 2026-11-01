@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 35u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 36u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
@@ -187,7 +187,8 @@ typedef struct SparkModelServingRuntimeLimits
 	uint32_t resident_sequence_capacity;
 	uint32_t kv_logical_page_capacity;
 	uint32_t kv_physical_page_capacity;
-	uint32_t reserved[4];
+	uint32_t output_vocabulary;
+	uint32_t reserved[3];
 } SparkModelServingRuntimeLimits;
 
 typedef struct SparkModelServingCacheIdentity

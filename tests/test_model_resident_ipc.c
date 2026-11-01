@@ -52,6 +52,7 @@ static void TestHello(void)
 	limits.resident_sequence_capacity = 64u;
 	limits.kv_logical_page_capacity = 256u;
 	limits.kv_physical_page_capacity = 8u;
+	limits.output_vocabulary = 32000u;
 	assert(SparkModelResidentIpcInitializeHello(&hello,7u,1u,1u,0x1234u,&descriptor) == SPARK_STATUS_OK);
 	assert(hello.session_epoch == 0x1234u);
 	assert(SparkModelResidentIpcValidateHello(&hello,sizeof(hello),1u,1u,&descriptor) == SPARK_STATUS_OK);
