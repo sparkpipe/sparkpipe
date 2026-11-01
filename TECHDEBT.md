@@ -557,15 +557,6 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   lane rejoins, so a lane is parked and restored page by page rather than as
   one contiguous transfer. Close it with a fleet backpressure run at 2x device
   pages where parked lanes restore bit-exact at B1 and B16.
-- A K3 reply's own end is never a resume point. The chat template stops on
-  `<|close|>`, which is not one of the engine's stop tokens, so the API cancels
-  the request when the marker arrives. A cancelled reply publishes no tail and
-  its state is never saved. On 2026-11-01 three 134K-token conversations
-  ended this way (three cancels in flight in the hub API log), and every rank
-  closed with `states records=0`. A follow-up turn therefore resumes at the
-  previous prompt's checkpoint and recomputes the reply. Close it by passing
-  a request's stop markers to the engine as stop tokens, so the reply
-  completes, publishes its tail and the release saves the state.
 - The streamed (pass) prefill keeps no state on the 16,384-token stride
   inside its pass. Only its prompt checkpoint, one token before the end,
   carries one. A prompt that diverges from a published one before that

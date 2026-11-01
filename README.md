@@ -327,8 +327,10 @@ attention), a resume point is a page with its state saved beside it:
   16,384 tokens for K3, 4,096 for GLM-5.3 Flash);
 - the prompt checkpoint, one token before each prompt's end, which the store
   writes as soon as its wave publishes it;
-- the newest state of a sequence whose reply ends on an engine stop token or
-  its token budget, which the release saves with the pages.
+- the newest state of a sequence whose reply ends on a stop token or its
+  token budget, which the release saves with the pages. The stop tokens are
+  the model's end-of-sequence tokens and the request's own, which for a chat
+  request are its template's stop markers.
 
 After a restart or a model swap, a repeated prompt resumes one token before
 its end, and a follow-up turn resumes at the newest of these points on its
