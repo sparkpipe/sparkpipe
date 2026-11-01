@@ -75,7 +75,7 @@
 
   <section id="models">
     <h2>Models on Fleet 1</h2>
-    <p>Every model installed on Fleet 1. An <b>offered</b> model can be called on any fleet you hold, through our API with your own keys. A model a customer adds to its own storage is listed only in that customer's account. A fleet holds one model at a time: a request for a model the fleet has not loaded waits while the fleet switches, usually 20 to 80 seconds. A <b>core</b> model gets ongoing performance work; a <b>qualified</b> model passed the release qualification and serves at the speeds shown; a <b>verifying</b> model serves and passes the chat checks while its tokens are compared with the publisher's reference implementation.</p>
+    <p>Every model installed on Fleet 1. An <b>offered</b> model can be called on any fleet you hold, through our API with your own keys. A model a customer adds to its own storage is listed only in that customer's account. A fleet keeps as many models loaded at once as fit in its memory. A request for a model that is not loaded waits while it loads, usually 20 to 80 seconds. Loading it unloads another model only if they do not all fit, and the unloaded model's cache is kept for when it comes back. A <b>core</b> model gets ongoing performance work; a <b>qualified</b> model passed the release qualification and serves at the speeds shown; a <b>verifying</b> model serves and passes the chat checks while its tokens are compared with the publisher's reference implementation.</p>
     <div class="scroll">
     <table>
       <tr><th>Model</th><th>Publisher</th><th>License</th><th class="num">Context window</th><th class="num">Decode, one request</th><th class="num">Prefill, 8K prompt</th><th>Track</th><th>Availability</th></tr>
