@@ -98,6 +98,7 @@ GENERATION_CACHE = 64
 DIRECTIVE_CHECK_SECONDS = 1.0
 EXPIRY_SWEEP_SECONDS = 60.0
 OWN_SCOPE = "own"
+ADMIT_SECONDS = 300
 
 
 def tojson(value, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
@@ -722,11 +723,11 @@ class WarmGate:
         return {"waiting": self.waiting, "depth": self.depth, "wait_seconds": self.wait_seconds, "activations": self.activations,
                 "released": self.released, "overflowed": self.overflowed, "expired": self.expired}
 
-    async def poll(self, session, headers):
+    async def poll(self, session, headers, account):
         if self.activation_url is not None:
             self.activations += 1
             try:
-                async with session.post(self.activation_url, json={"model": self.model_id}, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                async with session.post(self.activation_url, json={"model": self.model_id, "account": account}, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                     await response.read()
                     if response.status >= 400:
                         print(json.dumps({"event": "warm_activation_refused", "model": self.model_id, "status": response.status}), file=sys.stderr, flush=True)
@@ -742,7 +743,7 @@ class WarmGate:
                 pass
             await asyncio.sleep(self.POLL_SECONDS)
 
-    async def wait_ready(self, session, timeout, headers):
+    async def wait_ready(self, session, timeout, headers, account):
         if timeout <= 0:
             self.expired += 1
             raise RequestError(503, "warm_queue_expired", f"the {self.model_id} engine did not become ready within {self.wait_seconds:g} s")
@@ -751,7 +752,7 @@ class WarmGate:
             raise RequestError(503, "warm_queue_full", f"the {self.model_id} engine is not ready and {self.waiting} requests already wait for it")
         if self.poller is None or self.poller.done():
             self.event.clear()
-            self.poller = asyncio.ensure_future(self.poll(session, headers))
+            self.poller = asyncio.ensure_future(self.poll(session, headers, account))
         self.waiting += 1
         try:
             await asyncio.wait_for(asyncio.shield(self.event.wait()), timeout)
@@ -1544,6 +1545,7 @@ class Frontend:
     directive = None
     expiry_task = None
     codex_instructions = None
+    WORKING_STATE_POLL_SECONDS = 2.0
 
     def __init__(self, config, base):
         self.models = {}
@@ -1551,8 +1553,10 @@ class Frontend:
             model = Model(spec, base)
             self.models[model.id] = model
         self.control = config.get("control")
-        if self.control is not None and set(self.control) not in ({"status_url"}, {"status_url", "force_url", "admin_url"}):
-            raise SystemExit("chat_frontend: control needs status_url, and optionally both force_url and admin_url")
+        if self.control is not None and set(self.control) not in ({"status_url", "working_state_url"}, {"status_url", "working_state_url", "force_url", "admin_url"}):
+            raise SystemExit("chat_frontend: control needs status_url and working_state_url, and optionally both force_url and admin_url")
+        if self.models and self.control is None:
+            raise SystemExit("chat_frontend: a front end that serves models needs control, so the fleet controller admits every request's account")
         controlled = self.control is not None or any(model.gate.activation_url is not None for model in self.models.values())
         if controlled != ("controller_token_file" in config):
             raise SystemExit("chat_frontend: controller_token_file is needed exactly when the config has control or an activation_url")
@@ -1587,6 +1591,10 @@ class Frontend:
         self.residency_cache = None
         self.residency_task = None
         self.control_error = None
+        self.running = {}
+        self.revoked = set()
+        self.working = None
+        self.working_task = None
         self.session = None
         self.memory = None
         self.tool_call_faults = {}
@@ -1609,9 +1617,11 @@ class Frontend:
             self.prune_task = asyncio.create_task(self.memory.prune_loop())
         self.expire_working_state(time.time(), True)
         self.expiry_task = asyncio.create_task(self.expiry_loop())
+        if self.control is not None:
+            self.working_task = asyncio.create_task(self.watch_working_state())
 
     async def stop(self, app):
-        for task in (self.prune_task, self.expiry_task):
+        for task in (self.prune_task, self.expiry_task, self.working_task):
             if task is not None:
                 task.cancel()
         await self.session.close()
@@ -1639,6 +1649,86 @@ class Frontend:
             if sweep:
                 swept = time.monotonic()
             self.expire_working_state(time.time(), sweep)
+
+    @staticmethod
+    def account_of(scope):
+        return scope[len("account:"):] if isinstance(scope, str) and scope.startswith("account:") else working_state.OWN_ACCOUNT
+
+    async def check_fleet(self, fleet):
+        if not fleet:
+            raise RequestError(400, "fleet_required", f"a gateway key must name the fleet in {FLEET_HEADER}")
+        if self.working is None:
+            try:
+                await self.read_working_state()
+            except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError, ValueError) as error:
+                raise RequestError(503, "control_unavailable", f"the fleet controller did not say which fleet it serves: {error}")
+        if fleet != self.working.get("fleet"):
+            raise RequestError(400, "wrong_fleet", f"this door serves fleet {self.working.get('fleet')}, not {fleet}")
+
+    async def admit(self, account):
+        try:
+            async with self.session.post(self.control["working_state_url"] + "/admit", json={"account": account}, headers=self.controller_headers,
+                                         timeout=aiohttp.ClientTimeout(total=ADMIT_SECONDS)) as response:
+                payload = await response.json(content_type=None)
+                retry_after = response.headers.get("Retry-After")
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
+            raise RequestError(503, "control_unavailable", f"the fleet controller could not admit the request: {error}")
+        if response.status == 200 and isinstance(payload, dict):
+            self.observe(payload)
+            return
+        error = payload.get("error") if isinstance(payload, dict) else None
+        error = error if isinstance(error, dict) else {}
+        if response.status != 503:
+            raise RequestError(502, "control_error", f"the fleet controller answered the admission with {response.status}: {error.get('message')}")
+        raise RequestError(503, str(error.get("code") or "admission_refused"), str(error.get("message") or "the fleet controller refused the request"), retry_after)
+
+    def observe(self, state):
+        handover = state.get("handover")
+        target = handover.get("to") if isinstance(handover, dict) else state.get("user")
+        changed = self.working is None or state.get("wiped") != self.working.get("wiped")
+        self.working = state
+        if not isinstance(handover, dict) and not changed:
+            return
+        self.prefixes = {}
+        self.public_prefixes = {}
+        cancelled = 0
+        for task, account in list(self.running.items()):
+            if account != target and task not in self.revoked:
+                self.revoked.add(task)
+                task.cancel()
+                cancelled += 1
+        if self.memory is not None and target != working_state.OWN_ACCOUNT:
+            self.memory.cancel_all()
+        if cancelled or isinstance(handover, dict):
+            print(json.dumps({"event": "working_state_handover_seen", "wiped": state.get("wiped"), "handover": isinstance(handover, dict), "cancelled": cancelled}),
+                  file=sys.stderr, flush=True)
+
+    def handover_error(self, task):
+        if task not in self.revoked:
+            return None
+        self.revoked.discard(task)
+        if task.uncancel():
+            return None
+        return RequestError(503, "fleet_handover", "the fleet passed to another account, so this request was cancelled")
+
+    async def read_working_state(self):
+        async with self.session.get(self.control["working_state_url"], headers=self.controller_headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+            state = await response.json(content_type=None)
+            if response.status != 200 or not isinstance(state, dict):
+                raise ValueError(f"the controller answered {response.status}")
+        self.observe(state)
+
+    async def watch_working_state(self):
+        failure = None
+        while True:
+            try:
+                await self.read_working_state()
+                failure = None
+            except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError, ValueError) as error:
+                if str(error) != failure:
+                    print(json.dumps({"event": "working_state_unavailable", "error": str(error)}), file=sys.stderr, flush=True)
+                failure = str(error)
+            await asyncio.sleep(self.WORKING_STATE_POLL_SECONDS)
 
     def model_for(self, body):
         name = body.get("model")
@@ -1981,7 +2071,8 @@ class Frontend:
         if model is not None and model not in self.models:
             return web.json_response(error_body("model_not_found", f"model {model!r} is not served here; served: {sorted(self.models)}"), status=404)
         try:
-            async with self.session.post(self.control["force_url"], json={"model": model} if model else {}, headers=self.controller_headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            async with self.session.post(self.control["force_url"], json=dict({"model": model} if model else {}, account=working_state.OWN_ACCOUNT),
+                                         headers=self.controller_headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 return web.json_response(await response.json(content_type=None), status=response.status)
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
             return web.json_response(error_body("control_unavailable", str(error)), status=503)
@@ -2168,7 +2259,7 @@ class Frontend:
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
             raise RequestError(503, "engine_unavailable", f"the {model.id} engine at {model.engine} is unreachable: {error}")
 
-    async def engine_stream(self, model, engine_body, public):
+    async def engine_stream(self, model, engine_body, public, account):
         deadline = None
         while True:
             started = False
@@ -2187,7 +2278,7 @@ class Frontend:
             deadline = deadline if deadline is not None else now + model.gate.wait_seconds
             if self.memory is not None and not public:
                 self.memory.cancel_all()
-            await model.gate.wait_ready(self.session, deadline - now, self.controller_headers)
+            await model.gate.wait_ready(self.session, deadline - now, self.controller_headers, account)
 
     def logprob_entries(self, model, chunk, expected):
         tokens = chunk.get("tokens", [])
@@ -2205,7 +2296,7 @@ class Frontend:
             entries.append(entry)
         return entries
 
-    async def generate_attempt(self, model, engine_body, parser, outcome, public, timing=None):
+    async def generate_attempt(self, model, engine_body, parser, outcome, public, timing=None, account=None):
         step = model.vocabulary.decoder()
         finish = None
         usage = None
@@ -2215,7 +2306,7 @@ class Frontend:
         written = 0
         stop_string = False
         logprobs = engine_body.get("logprobs")
-        stream = self.engine_stream(model, engine_body, public)
+        stream = self.engine_stream(model, engine_body, public, account)
         try:
             async for chunk in stream:
                 if "error" in chunk:
@@ -2280,13 +2371,13 @@ class Frontend:
         print(json.dumps({"event": "tool_call_fault", "model": model.id, "kind": fault["kind"], "attempt": attempt, "action": action,
                           "text": fault["text"][:400]}, ensure_ascii=False), file=sys.stderr, flush=True)
 
-    async def generate(self, model, engine_body, parser, public, timing=None):
+    async def generate(self, model, engine_body, parser, public, timing=None, account=None):
         prompt = list(engine_body["prompt_token_ids"])
         budget = engine_body.get("max_tokens")
         body, kept, attempt = engine_body, [], 0
         while True:
             outcome = {"attempt": attempt}
-            async for event in self.generate_attempt(model, body, parser, outcome, public, timing):
+            async for event in self.generate_attempt(model, body, parser, outcome, public, timing, account):
                 yield event
             fault = outcome.get("fault")
             if fault is None:
@@ -2330,14 +2421,14 @@ class Frontend:
     async def respond(self, model, plan):
         session = plan["session"]
         if session is None:
-            async for event in self.generate(model, plan["engine_body"], plan["parser"], "public_key" in plan, plan.get("timing")):
+            async for event in self.generate(model, plan["engine_body"], plan["parser"], "public_key" in plan, plan.get("timing"), plan.get("account")):
                 yield event
             return
         completion = 0
         while True:
             internal, visible, content, reasoning = [], [], [], []
             result = {}
-            async for kind, value in self.generate(model, plan["engine_body"], plan["parser"], False, plan.get("timing")):
+            async for kind, value in self.generate(model, plan["engine_body"], plan["parser"], False, plan.get("timing"), plan.get("account")):
                 if kind == "tool_call" and session.claims(value):
                     internal.append(value)
                     continue
@@ -2371,9 +2462,13 @@ class Frontend:
         try:
             async with self.session.get(self.control["status_url"], headers=self.controller_headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
                 status = await response.json(content_type=None)
+            async with self.session.get(self.control["working_state_url"], headers=self.controller_headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                working = await response.json(content_type=None)
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError):
             return False
-        return (isinstance(status, dict) and status.get("active") == model.id and status.get("state") == "idle"
+        own = (isinstance(working, dict) and working.get("user") == working_state.OWN_ACCOUNT and working.get("confirmed") is True
+               and working.get("handover") is None and working.get("holder") in (None, working_state.OWN_ACCOUNT))
+        return (own and isinstance(status, dict) and status.get("active") == model.id and status.get("state") == "idle"
                 and not status.get("draining") and status.get("wanted") in (None, model.id))
 
     def memory_curator_ids(self, model, messages, tools, kwargs, suffix):
@@ -2528,16 +2623,38 @@ class Frontend:
 
     async def admitted(self, request, model, body, plan, started, answer, failed):
         scope, member = plan.get("gate", (OWN_SCOPE, None))
+        account = self.account_of(scope)
+        plan["account"] = account
+        plan.setdefault("trace", {})["account"] = account
+        task = asyncio.current_task()
+        self.running[task] = account
         try:
-            await model.sequences.acquire(plan["engine_body"].get("priority", INTERACTIVE_PRIORITY), BUSY_WAIT_SECONDS if "public_key" in plan else None,
-                                          scope, member)
-        except RequestError as error:
-            return failed(error)
-        plan["timing"]["admitted"] = time.monotonic()
-        try:
-            return await answer(request, model, body, plan, started)
+            try:
+                if scope.startswith("account:"):
+                    await self.check_fleet(request.headers.get(FLEET_HEADER))
+                await self.admit(account)
+                await model.sequences.acquire(plan["engine_body"].get("priority", INTERACTIVE_PRIORITY), BUSY_WAIT_SECONDS if "public_key" in plan else None,
+                                              scope, member)
+            except RequestError as error:
+                return failed(error)
+            except asyncio.CancelledError:
+                error = self.handover_error(task)
+                if error is None:
+                    raise
+                return failed(error)
+            plan["timing"]["admitted"] = time.monotonic()
+            try:
+                return await answer(request, model, body, plan, started)
+            except asyncio.CancelledError:
+                error = self.handover_error(task)
+                if error is None:
+                    raise
+                return failed(error)
+            finally:
+                await model.sequences.release(scope, member)
         finally:
-            await model.sequences.release(scope, member)
+            self.running.pop(task, None)
+            self.revoked.discard(task)
 
     def settle(self, model, plan, result, assistant, started, headers, shape, reasoning_tokens=0):
         usage = self.normalized_usage(plan, result, reasoning_tokens)
@@ -2879,8 +2996,11 @@ class Frontend:
         except RequestError as error:
             return error_response(error)
         except asyncio.CancelledError:
-            self.log(model, prompt_tokens, result.get("usage"), started, first, "client_gone", plan.get("trace"))
-            raise
+            error = self.handover_error(asyncio.current_task())
+            self.log(model, prompt_tokens, result.get("usage"), started, first, "client_gone" if error is None else "handover", plan.get("trace"))
+            if error is None:
+                raise
+            return error_response(error)
         message = {"role": "assistant", "content": "".join(content) or None}
         if reasoning:
             message["reasoning_content"] = "".join(reasoning)
@@ -2943,6 +3063,12 @@ class Frontend:
                     calls += 1
                 elif kind == "finish":
                     result = value
+            usage = self.usage_block(result.get("usage"), prompt_tokens, plan)
+            await response.write(chunk({}, result.get("finish_reason"), usage))
+            if include_usage:
+                payload = {"id": identifier, "object": "chat.completion.chunk", "created": created, "model": model.id, "choices": [], "usage": usage}
+                await response.write(("data: " + json.dumps(payload) + "\n\n").encode())
+            await response.write(b"data: [DONE]\n\n")
         except RequestError as error:
             if response is None:
                 return error_response(error)
@@ -2953,8 +3079,15 @@ class Frontend:
             self.log(model, prompt_tokens, result.get("usage"), started, first, "client_gone", plan.get("trace"))
             return response
         except asyncio.CancelledError:
-            self.log(model, prompt_tokens, result.get("usage"), started, first, "client_gone", plan.get("trace"))
-            raise
+            error = self.handover_error(asyncio.current_task())
+            self.log(model, prompt_tokens, result.get("usage"), started, first, "client_gone" if error is None else "handover", plan.get("trace"))
+            if error is None:
+                raise
+            if response is None:
+                return error_response(error)
+            await response.write(("data: " + json.dumps(error_body(error.code, error.message)) + "\n\n").encode())
+            await response.write(b"data: [DONE]\n\n")
+            return response
         usage = self.usage_block(result.get("usage"), prompt_tokens, plan)
         message = {"role": "assistant", "content": "".join(content) or None}
         if reasoning:

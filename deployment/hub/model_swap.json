@@ -32,6 +32,15 @@
  "node_seconds": 240,
  "memory_probe": "awk '/MemAvailable/ {print $2 * 1024}' /proc/meminfo",
  "memory_margin_bytes": 6442450944,
+ "working_state": {
+  "fleet": "F1",
+  "holders_url": "https://sparkpipe.ai/market/fleets/F1/holders",
+  "holders_token_file": "/srv/workspace/sparkpipe/swap-controller/holders-token",
+  "state_file": "/srv/workspace/sparkpipe/swap-controller/working-state.json",
+  "hub_directive": "/home/spec/sparkdata/working-state/directive",
+  "drain_seconds": 60,
+  "confirm_seconds": 30
+ },
  "models": [
   {
    "id": "glm-5.3",

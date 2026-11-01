@@ -11,6 +11,7 @@ from aiohttp import web
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools" / "serving"))
 import model_swap  # noqa: E402
+import working_state_fixture  # noqa: E402
 
 GIB = 2 ** 30
 FAKE_SSH = """import glob, json, os, sys
@@ -64,7 +65,9 @@ async def scenario(active, targets):
         site = web.TCPSite(runner, "127.0.0.1", 0)
         await site.start()
         port = site._server.sockets[0].getsockname()[1]
+        working_state_fixture.write_token(state)
         swapper = model_swap.Swapper({
+            "working_state": working_state_fixture.block(state),
             "nodes": nodes, "ssh": [sys.executable, os.path.join(state, "fake_ssh.py")], "drop_kv": "DROP {label}",
             "memory_probe": "PROBE", "memory_margin_bytes": GIB,
             "ready_seconds": 10, "api_seconds": 10, "drain_seconds": 1, "node_seconds": 10,
