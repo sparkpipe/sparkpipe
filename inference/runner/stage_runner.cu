@@ -1692,6 +1692,7 @@ static SparkStatus StageRunnerCreateLanes(SparkStageRunnerState *state)
 {
 	StageRunnerLanes *lanes = &state->lanes;
 	uint32_t index;
+	int least = 0, greatest = 0;
 	if ( state->model_interface->lane == 0 || state->device_collective_created == 0 || state->device_collective_deferred == 0u )
 		return SPARK_STATUS_OK;
 	if ( pthread_mutex_init(&lanes->lock, 0) != 0 )
@@ -1704,7 +1705,8 @@ static SparkStatus StageRunnerCreateLanes(SparkStageRunnerState *state)
 	lanes->created = 1u;
 	lanes->context_entries = state->sequence_capacity;
 	if ( cudaGetDevice(&lanes->device) != cudaSuccess || cudaEventCreateWithFlags(&lanes->fork, cudaEventDisableTiming) != cudaSuccess ||
-		cudaMallocHost((void **)&lanes->host_stage, 8u * sizeof(uint32_t)) != cudaSuccess )
+		cudaMallocHost((void **)&lanes->host_stage, 8u * sizeof(uint32_t)) != cudaSuccess ||
+		cudaDeviceGetStreamPriorityRange(&least, &greatest) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	for ( index = 0u; index < SPARK_STAGE_RUNNER_LANES; ++index )
 	{
@@ -1718,7 +1720,7 @@ static SparkStatus StageRunnerCreateLanes(SparkStageRunnerState *state)
 		lane->services.expert_weights = StageRunnerLaneExpertWeights;
 		lane->services.layer_done = StageRunnerLaneLayerDone;
 		lane->services.row_state = StageRunnerLaneRowState;
-		if ( cudaStreamCreateWithFlags(&lane->stream, cudaStreamNonBlocking) != cudaSuccess ||
+		if ( cudaStreamCreateWithPriority(&lane->stream, cudaStreamNonBlocking, index != 0u ? least : greatest + 1 < least ? greatest + 1 : greatest) != cudaSuccess ||
 			cudaEventCreateWithFlags(&lane->ready, cudaEventDisableTiming) != cudaSuccess ||
 			cudaEventCreateWithFlags(&lane->landed, cudaEventDisableTiming) != cudaSuccess ||
 			cudaMalloc(&lane->row_begin, 2u * sizeof(uint32_t)) != cudaSuccess ||

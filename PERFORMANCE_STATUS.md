@@ -114,6 +114,8 @@ GLM 5.3 Flash and DSV4.1 prefill in 2,048-row waves (2026-11-01, main firmware 5
 
 The outputs do not change. On both models, the two wave sizes give the same greedy tokens and the same top-5 logprobs on six chat prompts, alone and behind a 40,000-character document that spans several waves.
 
+GLM 5.3 Flash's second prefill lane now starts each DSA layer as soon as the first lane has written its cache rows (2026-11-01, 16 Sparks, interleaved A B A B on one hold): a 108,324-token prompt prefills in 82.7 and 82.8 s instead of 93.0 and 93.3 s (1,309 instead of 1,163 tok/s). The greedy tokens and top-5 logprobs are identical on the same six prompts and on the long prompt's answer. GLM 5.3 Full, whose lanes now also run the leader at the higher stream priority, prefills a 108,328-token prompt in 121.0 and 121.4 s against 124.1 s, also with identical outputs.
+
 ### Floors
 
 Two floors bound decode:

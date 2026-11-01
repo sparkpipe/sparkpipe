@@ -191,7 +191,9 @@ full logical batch count separately from its execution rows, so splitting a
 batch cannot select the wrong algorithm.
 
 **Overlap.** Two micro-batches alternate, so one computes while the other
-communicates. A GB10 SM cannot ring the CX-7 doorbell, and work requests
+communicates. The leading micro-batch runs at a higher stream priority, and
+each layer releases the trailing one as soon as the cache rows it reads are
+written, so the trailing micro-batch gathers while the leader attends. A GB10 SM cannot ring the CX-7 doorbell, and work requests
 built on the GPU gain nothing over the CPU posting them, so the CPU rings
 the NIC. Both rails carry traffic at once: the switch for all-to-all reach,
 the direct pair link for the first reduction level.
