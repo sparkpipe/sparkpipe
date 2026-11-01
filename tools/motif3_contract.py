@@ -15,6 +15,7 @@ headers by ranged reads, so the contract can be built before the download ends.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import struct
@@ -35,11 +36,14 @@ class Source:
     def url(self, name: str) -> str:
         return f"https://huggingface.co/{MODEL_ID}/resolve/{REVISION}/{name}"
 
-    def json(self, name: str):
+    def raw(self, name: str) -> bytes:
         if self.snapshot is not None:
-            return json.loads((self.snapshot / name).read_text())
+            return (self.snapshot / name).read_bytes()
         with urllib.request.urlopen(self.url(name), timeout=120) as reply:
-            return json.loads(reply.read())
+            return reply.read()
+
+    def json(self, name: str):
+        return json.loads(self.raw(name))
 
     def header(self, name: str) -> dict:
         if self.snapshot is not None:
@@ -182,6 +186,7 @@ def contract(source: Source) -> dict:
         },
         "precision": {"weight_format": config["dtype"]},
         "source": {
+            "config_json": {"sha256": hashlib.sha256(source.raw("config.json")).hexdigest()},
             "shard_count": len(set(index["weight_map"].values())),
             "tensor_count": len(index["weight_map"]),
             "index_total_bytes": index["metadata"]["total_size"],

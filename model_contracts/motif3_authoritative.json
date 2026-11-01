@@ -200,6 +200,9 @@
   "weight_format": "bfloat16"
  },
  "source": {
+  "config_json": {
+   "sha256": "30f14b635d3258a18c3ff7e69829f8fbfa775e87477ffabb59a79115bba820a5"
+  },
   "shard_count": 155,
   "tensor_count": 2236,
   "index_total_bytes": 629683551500,
