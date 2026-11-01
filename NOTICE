@@ -2,9 +2,10 @@ SparkPipe
 Copyright 2026 HYOR AI Tech Ltd
 
 This product is licensed under the Functional Source License, Version 1.1,
-ALv2 Future License (FSL-1.1-ALv2, LICENSE). Each version becomes available
-under the Apache License, Version 2.0 (LICENSE-APACHE-2.0) two years after we
-make it available.
+ALv2 Future License (FSL-1.1-ALv2, LICENSE), with the additional permission in
+LICENSE-PERMISSION.md, which allows every use, commercial included, except a
+Fleet Rental Service. Each version becomes available under the Apache License,
+Version 2.0 (LICENSE-APACHE-2.0) two years after we make it available.
 
 Every version made available before LICENSE named the FSL-1.1-ALv2 is
 licensed under the Apache License, Version 2.0, and stays so.
