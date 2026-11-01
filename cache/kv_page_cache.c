@@ -2658,6 +2658,51 @@ static SparkStatus SparkKvPageCacheSaveBegin(SparkKvPageCache *cache,uint32_t en
 	return(SparkKvSnapshotWriteBegin(cache->snapshot->store,&key,&parent,&kind,&bytes,1u,cache->entries[entry_index].used_seconds,&work->ticket));
 }
 
+#define SPARK_KV_PAGE_CACHE_FAILED_WRITE_BATCH 32u
+
+static void SparkKvPageCacheResave(SparkKvPageCache *cache,uint32_t entry_index,uint32_t file_kind,SparkStatus status)
+{
+	cache->entries[entry_index].flags &= ~SparkKvPageCacheSavedFlag(file_kind);
+	SparkKvPageCacheSaveLog(cache,status,entry_index);
+	if ( status == SPARK_STATUS_IO_ERROR && SparkKvPageCacheSaveIsPending(cache->snapshot,entry_index) == 0u && SparkKvPageCacheSaveEligible(cache,entry_index) != 0u &&
+		SparkKvPageCacheSavePush(cache,entry_index) == SPARK_STATUS_OK )
+		cache->snapshot->write_resaved_count++;
+}
+
+static void SparkKvPageCacheTakeFailedWrites(SparkKvPageCache *cache)
+{
+	static const uint32_t kinds[2] = {SPARK_KV_SNAPSHOT_FILE_PAGES,SPARK_KV_SNAPSHOT_FILE_STATE};
+	SparkKvSnapshotKey keys[SPARK_KV_PAGE_CACHE_FAILED_WRITE_BATCH],key;
+	SparkStatus statuses[SPARK_KV_PAGE_CACHE_FAILED_WRITE_BATCH];
+	uint32_t count,index,entry,kind,lost = 0u,batch_lost;
+	do
+	{
+		count = SparkKvSnapshotTakeFailedWrites(cache->snapshot->store,keys,statuses,SPARK_KV_PAGE_CACHE_FAILED_WRITE_BATCH,&batch_lost);
+		lost += batch_lost;
+		for (index=0u; index<count; index++)
+		{
+			cache->snapshot->write_failed_count++;
+			entry = SparkKvPageCacheFindEntryConst(cache,(const SparkModelDriverCacheIdentity *)(const void *)keys[index].identity_sha256,keys[index].token_count);
+			if ( entry < cache->entry_capacity && (cache->entries[entry].flags & SparkKvPageCacheSavedFlag(keys[index].file_kind)) != 0u )
+				SparkKvPageCacheResave(cache,entry,keys[index].file_kind,statuses[index]);
+		}
+	}
+	while ( count == SPARK_KV_PAGE_CACHE_FAILED_WRITE_BATCH );
+	if ( lost == 0u )
+		return;
+	fprintf(stderr,"KV-SNAPSHOT %u failed writes overflowed the store's list; every saved entry is checked against the store\n",lost);
+	cache->snapshot->write_failed_count += lost;
+	for (entry=0u; entry<cache->entry_capacity; entry++)
+		for (kind=0u; kind<2u; kind++)
+		{
+			if ( (cache->entries[entry].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) == 0u || (cache->entries[entry].flags & SparkKvPageCacheSavedFlag(kinds[kind])) == 0u )
+				continue;
+			SparkKvPageCacheEntryKey(cache,entry,kinds[kind],&key);
+			if ( SparkKvSnapshotContains(cache->snapshot->store,&key) == 0u )
+				SparkKvPageCacheResave(cache,entry,kinds[kind],SPARK_STATUS_IO_ERROR);
+		}
+}
+
 SparkStatus SparkKvPageCacheSaveTake(SparkKvPageCache *cache,SparkKvPageCacheSaveWork *work)
 {
 	SparkKvPageCacheSnapshot *snapshot;
@@ -2668,6 +2713,7 @@ SparkStatus SparkKvPageCacheSaveTake(SparkKvPageCache *cache,SparkKvPageCacheSav
 	snapshot = cache->snapshot;
 	if ( snapshot->in_flight != 0u )
 		SPARK_FAIL(SPARK_STATUS_BUSY);
+	SparkKvPageCacheTakeFailedWrites(cache);
 	while ( snapshot->pending_count != 0u )
 	{
 		terminal = snapshot->pending_terminals[snapshot->pending_head];

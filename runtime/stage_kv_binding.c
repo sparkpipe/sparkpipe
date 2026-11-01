@@ -1541,9 +1541,10 @@ static void SparkStageKvBindingSaveAtDestroy(SparkStageKvBinding *binding)
 	if ( binding->mutex_initialized == 0u || binding->page_cache.snapshot == 0 || binding->save_started == 0u )
 		return;
 	status = SparkStageKvBindingSaveAll(binding,SparkStageKvNowNs() + SPARK_STAGE_KV_DESTROY_SAVE_TIMEOUT_NS,&saved,&unsaved,&ineligible);
-	fprintf(stderr,"%s kv snapshot store close saved_entries=%u unsaved_entries=%u ineligible_entries=%u used_bytes=%llu files=%llu save_failures=%llu save_deferred=%llu evicted_unsaved=%llu demotions_queued=%llu park_saves_queued=%llu evictions=%llu reserve_evictions=%llu reserve_refusals=%llu status=%s\n",
+	fprintf(stderr,"%s kv snapshot store close saved_entries=%u unsaved_entries=%u ineligible_entries=%u used_bytes=%llu files=%llu save_failures=%llu write_failures=%llu resaved=%llu save_deferred=%llu evicted_unsaved=%llu demotions_queued=%llu park_saves_queued=%llu evictions=%llu reserve_evictions=%llu reserve_refusals=%llu status=%s\n",
 		binding->module_tag,saved,unsaved,ineligible,(unsigned long long)binding->snapshot_store.used_bytes,(unsigned long long)binding->snapshot_store.file_count,
-		(unsigned long long)binding->snapshot.save_failure_count,(unsigned long long)binding->snapshot.save_deferred_count,
+		(unsigned long long)binding->snapshot.save_failure_count,(unsigned long long)binding->snapshot.write_failed_count,(unsigned long long)binding->snapshot.write_resaved_count,
+		(unsigned long long)binding->snapshot.save_deferred_count,
 		(unsigned long long)binding->snapshot.evicted_unsaved_count,(unsigned long long)binding->snapshot.demote_queued_count,(unsigned long long)binding->snapshot.park_save_queued_count,
 		(unsigned long long)binding->snapshot_store.eviction_count,(unsigned long long)binding->snapshot_store.reserve_eviction_count,(unsigned long long)binding->snapshot_store.reserve_refusal_count,
 		SparkStatusToString(status));
