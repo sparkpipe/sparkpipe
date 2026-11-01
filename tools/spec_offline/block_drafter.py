@@ -395,6 +395,14 @@ class DraftGraph:
         return tokens, (scores[:count].tolist() if scores is not None else [])
 
 
+def request_set(text):
+    chosen = set()
+    for part in filter(None, text.split(",")):
+        first, _, last = part.partition("-")
+        chosen.update(range(int(first), int(last or first) + 1))
+    return chosen
+
+
 def requests(paths, entry_names):
     streams = defaultdict(lambda: {"positions": {}, "tail": {}})
     hello = None
@@ -446,7 +454,9 @@ def main():
     parser.add_argument("--convention", choices=("shift", "inplace"), help="defaults to the drafter's own")
     parser.add_argument("--window", type=int, default=4096, help="context positions a block drafter attends to, as draftd keeps them; latent drafters use their own layer windows")
     parser.add_argument("--donor-taps", nargs="*", default=[], help="recordings that only lend context: a request recorded from position s > 0 takes positions below s from the latest earlier request that holds them all and matches its recorded prompt rows")
-    parser.add_argument("--max-anchors", type=int, default=400, help="per request, spread over the reply")
+    parser.add_argument("--max-anchors", type=int, default=400, help="per request, spread over the scored region")
+    parser.add_argument("--requests", default="", help="request ids to score, as a comma list of ids and ranges; all when empty")
+    parser.add_argument("--region", choices=("reply", "prompt", "all"), default="reply", help="anchors in the target's reply, in the prompt it read, or in both")
     parser.add_argument("--out", required=True)
     parser.add_argument("--anchors-out", help="JSON lines, one per anchor: request, position, accepted, drafts, confidence")
     parser.add_argument("--temperature", type=float, default=0.0, help="the recorded streams' sampling; above 0 also scores drafts made with the verifier's keyed noise")
@@ -488,7 +498,10 @@ def main():
     head_agree = head_total = 0
     reply_agree = reply_total = 0
     anchor_log = open(args.anchors_out, "w") if args.anchors_out else None
+    chosen = request_set(args.requests)
     for key, item in sorted(streams.items()):
+        if chosen and key[1] not in chosen:
+            continue
         end = max(item["positions"]) + 1
         start = end - 1
         while start - 1 in item["positions"]:
@@ -521,7 +534,7 @@ def main():
         reply_count = len(records) - first if first > 0 else 0
         reply_agree += reply_hits
         reply_total += reply_count
-        anchors = list(range(first, len(records)))
+        anchors = list({"reply": range(first, len(records)), "prompt": range(1, first), "all": range(1, len(records))}[args.region])
         if len(anchors) > args.max_anchors:
             step = len(anchors) / args.max_anchors
             anchors = [anchors[int(i * step)] for i in range(args.max_anchors)]

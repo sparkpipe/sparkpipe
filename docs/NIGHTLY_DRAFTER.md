@@ -263,17 +263,22 @@ Still to build:
      lane before it places the drafter in that fleet's scratch. It works on
      any fleet the customer holds.
 
-Open items for the 30-fleet facility:
+Each fleet will have its own hub (owner, 2026-11-01). The customer's drafter
+therefore serves from their fleet's hub GPU, and no other customer's lane
+ever reaches that daemon. Today's hub GPU is full (two drafters, 32.1 of
+32.6 GB), so a production hub runs the K3 drafter only, or has a larger GPU.
 
-- Each fleet's K3 lane needs a drafter GPU. One RTX 5090 serves one fleet
-  today and is full.
-- If drafters stay hub-only by the owner's ruling, every fleet needs its own
-  drafter host or a slot on a shared one.
+Training stays on the customer's Sparks. A full fine-tune needs about 33-61
+GB per device, more than a 32 GB hub GPU holds. Moving the customer's
+recordings to any other machine would also take their working state off
+their fleet.
 
 ## Prototype plan: Customer Zero
 
-SparkPipe's own repository is the customer. Freeze a training commit C0 on
-main. Hold out everything after it.
+SparkPipe's own repository is the customer, and its data may leave the fleet.
+Training runs on `lenovo7`, the build host: a GB10 outside the fleet with
+torch 2.14 and CUDA (owner, 2026-11-01). The fleet is needed only to record
+K3's taps. Freeze a training commit C0 on main. Hold out everything after it.
 
 - **Training data:**
   - the most-edited 2M tokens of the repository at C0, prefilled with taps;
@@ -290,10 +295,10 @@ main. Hold out everything after it.
 - **Measurements:**
   - offline tokens per round for both arms;
   - end-to-end tok/s with draftd serving each drafter in turn, in one hold.
-- **Fleet time:** about 5 hours exclusive with K3:
+- **Fleet time:** about 4 hours exclusive with K3, since training runs off
+  the fleet:
   - about 1 hour of prefill;
   - about 1.5 hours generating training replies;
-  - about 1 hour of training with K3 swapped out;
   - about 1.5 hours of test generation and the two serving arms.
 
 Recording the prototype's tap streams needs one of two things. The tee
