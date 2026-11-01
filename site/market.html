@@ -164,9 +164,13 @@
 
 <section class="card">
   <h2>Shared pool</h2>
-  <p class="muted">Per-request access on fleets nobody has reserved this hour, billed per seat-second in HC. An account that holds the current hour on a fleet uses it for free. <span class="sandbox-only">The sandbox answers with a simulator.</span></p>
+  <p class="muted">Per-request access on fleets nobody has reserved this hour, billed per seat-second in HC. An account that holds the current hour on a fleet pays no seat-seconds on it; prefill accelerator time is charged either way. <span class="sandbox-only">The sandbox answers with a simulator.</span></p>
   <p class="muted">OpenAI-format endpoint: <span class="endpoint" id="pool-base"></span> (<code>/chat/completions</code>, <code>/models</code>), with an API key below as the bearer token.</p>
   <div class="row num" id="pool-status"></div>
+  <h3>Prefill accelerators</h3>
+  <p class="muted">Shared prefill hardware that computes long prompts for any fleet and hands them back for the reply. Ask for it per request with <code>"sparkpipe": {"accelerator": {"bid": 1.5}}</code>. Each prompt is charged its accelerator-seconds × the accelerator's Rate × your bid. The Rate is the accelerator's size against a 16-Spark fleet: 48 Sparks is 3, 96 Sparks is 6. You pay in HC, from the lot that lapses first, or with this month's Plan hours (<code>"pay": "plan"</code>), during your own reserved hour too. The highest bid is computed first, from 1 up to <span id="accel-max-bid"></span>; equal bids go in arrival order. A prompt that no accelerator starts within <code>maxWait</code> seconds (default <span id="accel-wait"></span>, at most <span id="accel-max-wait"></span>) runs on its fleet without one and pays nothing for an accelerator, unless you send <code>"fallback": false</code>.</p>
+  <div class="scroll"><table><thead><tr><th>Accelerator</th><th>Size</th><th>Rate</th><th>HC per minute at bid 1</th><th>Speed</th><th>State</th></tr></thead><tbody id="accelerators"></tbody></table></div>
+  <p class="muted num" id="accel-queue"></p>
   <div class="mk-grid">
     <div class="form">
       <h3>API keys</h3>
@@ -179,18 +183,19 @@
       <label>Key<input id="try-key" type="text" placeholder="sk-hc-..." autocomplete="off"></label>
       <div class="row"><label>Model<select id="try-model"></select></label><label class="check"><input id="try-stream" type="checkbox" checked><span>Stream</span></label></div>
       <label>Message<textarea id="try-prompt" rows="3">Summarize what a fleet-hour buys.</textarea></label>
+      <div class="row"><label class="check"><input id="try-accel" type="checkbox"><span>Prefill accelerator</span></label><label>Bid<input id="try-bid" type="number" min="1" max="10" step="0.01" value="1"></label><label>Pay with<select id="try-pay"><option value="hc">HC</option><option value="plan">Plan hours</option></select></label></div>
       <button class="btn solid" type="submit">Send</button>
       <div class="reply" id="try-reply"></div>
       <p class="flash" id="m-try" hidden></p>
     </form>
   </div>
-  <h3>Recent pool charges</h3>
-  <div class="scroll"><table><thead><tr><th>When (KST)</th><th>Model</th><th>Seconds</th><th>Tokens in / out</th><th>HC</th></tr></thead><tbody id="charges"></tbody></table></div>
+  <h3>Recent pool and accelerator charges</h3>
+  <div class="scroll"><table><thead><tr><th>When (KST)</th><th>Model</th><th>For</th><th>Seconds</th><th>Tokens in / out</th><th>Charge</th></tr></thead><tbody id="charges"></tbody></table></div>
 </section>
 
 <section class="card">
   <h2>Your ledger lines</h2>
-  <p class="muted">Every purchase, reservation, release, bid, pool charge and credit is a line in the hash-chained ledger.</p>
+  <p class="muted">Every purchase, reservation, release, bid, pool charge, accelerator charge and credit is a line in the hash-chained ledger.</p>
   <div class="row"><button class="btn small" type="button" id="ledger-load">Load my lines</button><span class="num" id="ledger-head"></span></div>
   <div class="scroll"><table><thead><tr><th>#</th><th>Written (KST)</th><th>Type</th><th>Detail</th><th>Hash</th></tr></thead><tbody id="ledger"></tbody></table></div>
 </section>

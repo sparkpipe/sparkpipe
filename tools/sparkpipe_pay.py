@@ -242,6 +242,7 @@ class Config:
         self.webhook_url = self.public + self.prefix + "/coinpayments"
         self.pool_upstream = env.get("SPARKPIPE_POOL_UPSTREAM", "").rstrip("/")
         self.pool_key = read_secret(env.get("SPARKPIPE_POOL_KEY_FILE")).decode()
+        self.sandbox_accelerators = json.loads(env.get("SPARKPIPE_PAY_SANDBOX_ACCELERATORS") or "[]") if self.sandbox else []
         self.reconcile_seconds = int(env.get("SPARKPIPE_PAY_RECONCILE_SECONDS", "300"))
         self.smtp = env.get("SPARKPIPE_PAY_SMTP", "127.0.0.1:25")
         self.mail_from = env.get("SPARKPIPE_PAY_MAIL_FROM", "SparkPipe <noreply@sparkpipe.ai>")
@@ -1520,17 +1521,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
             messages = body.get("messages")
             if not isinstance(messages, list) or not messages:
                 raise Refusal("Send the conversation as a non-empty messages list.", 400, "invalid_messages")
-            ticket = app.market.pool_open(self.bearer(), body.get("model"))
+            extra = body.get("sparkpipe", {})
+            if not isinstance(extra, dict):
+                raise Refusal("Give sparkpipe as an object.", 400, "invalid_accelerator")
+            options = market.accelerator_field(extra.get("accelerator"), app.cfg.pricing()["market"])
+            ticket = app.market.pool_open(self.bearer(), body.get("model"), accelerated=options is not None)
+            accel = app.market.accelerator_join(ticket, options, market.estimate_tokens(messages)) if options else None
         except Refusal as error:
             return self.pool_error(error)
+        body = {k: v for k, v in body.items() if k != "sparkpipe"}
         if app.cfg.sandbox:
-            return self.simulated(body, messages, ticket)
-        return self.forwarded(body, ticket)
+            return self.simulated(body, messages, ticket, accel)
+        return self.forwarded(body, ticket, accel)
 
-    def simulated(self, body, messages, ticket):
+    def simulated(self, body, messages, ticket, accel):
         app = self.server.app
         limit = body.get("max_tokens") if isinstance(body.get("max_tokens"), int) and not isinstance(body.get("max_tokens"), bool) else 128
         text, tokens_in, tokens_out = market.simulate(ticket["model"], messages, min(max(limit, 1), 512))
+        if accel and "job" in accel:
+            seconds = Decimal(tokens_in) / accel["accelerator"]["speed"]
+            time.sleep(float(min(seconds, 30)))
+            accel = app.market.accelerator_finish(accel, float(seconds))
+        app.market.pool_seat(ticket)
         made, ident = int(time.time()), "chatcmpl-" + secrets.token_hex(12)
         usage = {"prompt_tokens": tokens_in, "completion_tokens": tokens_out, "total_tokens": tokens_in + tokens_out}
         if body.get("stream") is True:
@@ -1540,17 +1552,36 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self.event({"id": ident, "object": "chat.completion.chunk", "created": made, "model": ticket["model"], "choices": [{"index": 0, "delta": {"content": word + " "}, "finish_reason": None}]})
                     time.sleep(0.025)
             finally:
-                charge = app.market.pool_close(ticket, tokens_in, tokens_out)
+                charge = dict(app.market.pool_close(ticket, tokens_in, tokens_out), accelerator=accel)
             self.event({"id": ident, "object": "chat.completion.chunk", "created": made, "model": ticket["model"], "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "usage": usage, "sparkpipe": charge})
             return self.event(b"[DONE]")
         time.sleep(min(2.0, tokens_out / 40))
-        charge = app.market.pool_close(ticket, tokens_in, tokens_out)
+        charge = dict(app.market.pool_close(ticket, tokens_in, tokens_out), accelerator=accel)
         self.reply(200, {"id": ident, "object": "chat.completion", "created": made, "model": ticket["model"], "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}], "usage": usage, "sparkpipe": charge})
 
-    def forwarded(self, body, ticket):
+    def forwarded(self, body, ticket, accel):
         app = self.server.app
+        job = accel if accel and "job" in accel else None
+        note = [accel]
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {app.cfg.pool_key}", "X-SparkPipe-Public": "1"}
+        if job:
+            headers["X-SparkPipe-Accelerator"] = job["accelerator"]["id"]
+        else:
+            app.market.pool_seat(ticket)
+
+        def handed(usage, finished=True):
+            if job and note[0] is job:
+                reported = usage.get("sparkpipe_accelerator_seconds") if finished else None
+                measured = min(time.monotonic() - job["started"], float(job["tokens"] / job["accelerator"]["speed"]))
+                seconds = float(reported) if isinstance(reported, (int, float)) and not isinstance(reported, bool) and reported >= 0 else measured
+                note[0] = app.market.accelerator_finish(job, seconds if finished else None)
+                app.market.pool_seat(ticket)
+
+        def closing():
+            return dict(app.market.pool_close(ticket, tokens_in, tokens_out), accelerator=note[0])
+
         payload = json.dumps(dict(body, model=ticket["model"]), ensure_ascii=False).encode()
-        request = urllib.request.Request(app.cfg.pool_upstream + "/chat/completions", data=payload, method="POST", headers={"Content-Type": "application/json", "Authorization": f"Bearer {app.cfg.pool_key}", "X-SparkPipe-Public": "1"})
+        request = urllib.request.Request(app.cfg.pool_upstream + "/chat/completions", data=payload, method="POST", headers=headers)
         tokens_in = tokens_out = 0
         closed = started = False
         try:
@@ -1558,8 +1589,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if body.get("stream") is not True:
                     data = json.loads(response.read())
                     usage = data.get("usage") or {}
+                    handed(usage)
                     tokens_in, tokens_out = int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
-                    data["sparkpipe"] = app.market.pool_close(ticket, tokens_in, tokens_out)
+                    data["sparkpipe"] = closing()
                     closed = True
                     return self.reply(200, data)
                 self.stream_head()
@@ -1569,18 +1601,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     if not text.startswith(b"data: "):
                         continue
                     if text == b"data: [DONE]":
+                        handed({})
                         closed = True
-                        self.event({"object": "chat.completion.chunk", "choices": [], "sparkpipe": app.market.pool_close(ticket, tokens_in, tokens_out)})
+                        self.event({"object": "chat.completion.chunk", "choices": [], "sparkpipe": closing()})
                         return self.event(b"[DONE]")
                     try:
                         chunk = json.loads(text[6:])
                         usage = chunk.get("usage") or {}
+                        handed(usage)
                         tokens_in = int(usage.get("prompt_tokens") or tokens_in)
                         tokens_out = int(usage.get("completion_tokens") or tokens_out + sum(1 for c in chunk.get("choices") or [] if (c.get("delta") or {}).get("content")))
                     except (ValueError, AttributeError):
                         pass
                     self.event(text[6:])
         except urllib.error.HTTPError as error:
+            handed({}, finished=False)
             closed = True
             app.market.pool_close(ticket, tokens_in, tokens_out)
             detail = error.read()[:4096]
@@ -1591,12 +1626,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(detail)
         except (urllib.error.URLError, OSError, ValueError) as error:
             log(f"pool upstream: {error}")
+            handed({}, finished=False)
             if not closed:
                 closed = True
                 app.market.pool_close(ticket, tokens_in, tokens_out)
             if not started:
                 self.pool_error(Refusal("The fleets did not answer. Try again in a minute.", 502, "upstream_error"))
         finally:
+            handed({}, finished=False)
             if not closed:
                 app.market.pool_close(ticket, tokens_in, tokens_out)
 
@@ -1653,7 +1690,7 @@ def main(argv):
         found = app.market.report(None if listing is None else app.commitments(app.market.now(), listing))
         tight = found["tightest"]
         print(f"cover at {found['now']}: serving {', '.join(found['fleets']) or 'no fleet'} from {found['first']}, {found['plans']} plans")
-        print(f"free fleet-hours in the next 12 months, Monday to Saturday, after set-asides: {found['free']} HC")
+        print(f"free fleet-hours in the next 12 months, every day, after plan set-asides and the maintenance allowance: {found['free']} HC")
         print(f"unspent HC: {found['unspent']}; in unpaid orders: {found['pending']}; HC on sale now: {found['onSale']}")
         print("tightest lapse: none" if not tight else f"tightest lapse: {tight['lapse']}, {tight['slack']} HC of free hours to spare")
         print(f"hours where a set-aside cannot be kept: {found['clashes']}" + (f", first {found['firstClash']}" if found["firstClash"] else ""))

@@ -7,6 +7,7 @@ window.SP_PRICING = {
     { "name": "Fleet 2", "kind": "M5U", "state": "building", "rate": 1 },
     { "name": "Fleet 3", "kind": "16 Sparks", "state": "building", "rate": 1 }
   ],
+  "accelerators": [],
   "windows": [
     { "id": "americas", "name": "Americas", "from": 0, "to": 8, "localDay": -1 },
     { "id": "asia", "name": "Asia", "from": 8, "to": 16, "localDay": 0 },
@@ -58,6 +59,11 @@ window.SP_PRICING = {
     "lastCallHours": 6,
     "maxBidDays": 31,
     "trancheDemoHours": 40,
+    "accelerator": {
+      "maxBid": 10,
+      "defaultWait": 300,
+      "maxWait": 600
+    },
     "pool": {
       "seats": 8,
       "minMultiplier": 0.5,

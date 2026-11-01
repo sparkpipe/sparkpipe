@@ -2,6 +2,7 @@ import base64
 import bisect
 import collections
 import hashlib
+import json
 import math
 import secrets
 import threading
@@ -18,7 +19,7 @@ LONGEST = timedelta(days=3653)
 STAMP = "%Y-%m-%dT%H:%M:%SZ"
 SLOT = "%Y-%m-%dT%H:00Z"
 EMPTY = Decimal("0.0001")
-KINDS = ("hc_lot", "hc_debit", "hc_hold", "hc_unhold", "hc_spend_hold", "reserve", "ask", "ask_cancel", "bid", "bid_cancel", "bid_close", "bid_roll", "pool_join", "pool_settle", "pool_charge", "api_key", "api_key_revoke", "tranche_grant", "clock", "maintenance", "reservation_credit")
+KINDS = ("hc_lot", "hc_debit", "hc_hold", "hc_unhold", "hc_spend_hold", "reserve", "ask", "ask_cancel", "bid", "bid_cancel", "bid_close", "bid_roll", "pool_join", "pool_settle", "pool_charge", "api_key", "api_key_revoke", "tranche_grant", "clock", "maintenance", "reservation_credit", "accelerator_charge")
 
 
 class Refusal(Exception):
@@ -54,6 +55,44 @@ def stamp_time(text):
 
 def kst_text(moment):
     return moment.astimezone(KST).strftime("%Y-%m-%d %H:%M KST")
+
+
+def text_hours(value):
+    return format(Decimal(value).quantize(HC_STEP, rounding=ROUND_DOWN).normalize(), "f")
+
+
+def kst_month(moment):
+    return (moment + timedelta(hours=9)).strftime("%Y-%m")
+
+
+def estimate_tokens(messages):
+    return max(1, math.ceil(len(json.dumps(messages, ensure_ascii=False).encode()) / 3))
+
+
+def accelerator_field(value, market):
+    if value is None or value is False:
+        return None
+    limits = market["accelerator"]
+    options = {} if value is True else value
+    if not isinstance(options, dict):
+        raise Refusal("Give sparkpipe.accelerator as true or as an object with bid, maxWait, pay and fallback.", 400, "invalid_accelerator")
+    try:
+        bid = Decimal(str(options.get("bid", 1)))
+    except InvalidOperation:
+        bid = Decimal(-1)
+    most = Decimal(str(limits["maxBid"]))
+    if isinstance(options.get("bid", 1), bool) or not bid.is_finite() or bid < 1 or bid > most or bid != bid.quantize(Decimal("0.01")):
+        raise Refusal(f"The accelerator bid must be from 1 to {most}, in steps of 0.01.", 400, "invalid_accelerator")
+    wait = options.get("maxWait", limits["defaultWait"])
+    if isinstance(wait, bool) or not isinstance(wait, int) or wait < 0 or wait > limits["maxWait"]:
+        raise Refusal(f"The accelerator maxWait must be a whole number of seconds from 0 to {limits['maxWait']}.", 400, "invalid_accelerator")
+    pay = options.get("pay", "hc")
+    if pay not in ("hc", "plan"):
+        raise Refusal("Pay for accelerator time with hc or plan.", 400, "invalid_accelerator")
+    fallback = options.get("fallback", True)
+    if not isinstance(fallback, bool):
+        raise Refusal("Give the accelerator fallback as true or false.", 400, "invalid_accelerator")
+    return {"bid": bid, "maxWait": wait, "pay": pay, "fallback": fallback}
 
 
 def floor_hour(moment):
@@ -131,6 +170,7 @@ class State:
     def __init__(self):
         self.lots = {}
         self.holds = {}
+        self.hold_owner = {}
         self.reservations = {}
         self.slots = {}
         self.asks = {}
@@ -142,7 +182,7 @@ class State:
         self.keys = {}
         self.key_hashes = {}
         self.tranches = collections.defaultdict(int)
-        self.tranche_used = collections.defaultdict(int)
+        self.tranche_used = collections.defaultdict(Decimal)
         self.settled = set()
         self.maintenance = {}
         self.maintained = []
@@ -152,7 +192,7 @@ class State:
             self.on_lot, self.on_debit, self.on_hold, self.on_unhold, self.on_spend_hold, self.on_reserve,
             self.on_ask, self.on_ask_cancel, self.on_bid, self.on_bid_cancel, self.on_bid_close, self.on_bid_roll,
             self.on_pool_join, self.on_pool_settle, self.on_charge, self.on_key, self.on_key_revoke,
-            self.on_tranche, self.on_clock, self.on_maintenance, self.on_reservation_credit)))
+            self.on_tranche, self.on_clock, self.on_maintenance, self.on_reservation_credit, self.on_accelerator)))
 
     def apply(self, line):
         self.seq = line["seq"]
@@ -185,6 +225,7 @@ class State:
         self.take(data["account"], data["hc"], data["now"])
 
     def on_hold(self, data):
+        self.hold_owner[data["bid"]] = data["account"]
         self.holds.setdefault(data["bid"], []).extend(self.take(data["account"], data["hc"], data["now"]))
 
     def on_unhold(self, data):
@@ -264,7 +305,22 @@ class State:
         for fleet, start, part_hc, part_seconds in data["split"]:
             self.pool_hc[(fleet, start)] += Decimal(part_hc)
             self.pool_seconds[(fleet, start)] += Decimal(part_seconds)
-        self.charges[data["account"]].appendleft({key: data[key] for key in ("charge", "key", "model", "seconds", "seats", "hc", "tokensIn", "tokensOut", "now")})
+        self.charges[data["account"]].appendleft(dict({key: data[key] for key in ("charge", "key", "model", "seconds", "seats", "hc", "tokensIn", "tokensOut", "now")}, kind="pool"))
+
+    def on_accelerator(self, data):
+        if data["pay"] == "plan":
+            self.tranche_used[(data["account"], data["month"])] += Decimal(data["amount"])
+        else:
+            amount, held = Decimal(data["amount"]), self.held(data["job"])
+            spent = min(amount, held)
+            self.on_spend_hold({"bid": data["job"], "hc": spent})
+            self.take(data["account"], amount - spent, data["now"])
+            self.on_unhold({"bid": data["job"], "hc": held - spent})
+        self.charges[data["account"]].appendleft({
+            "kind": "accelerator", "charge": data["charge"], "key": data["key"], "model": data["model"], "seconds": data["seconds"], "seats": None,
+            "hc": data["amount"] if data["pay"] == "hc" else "0.000000", "tokensIn": data["tokens"], "tokensOut": 0, "now": data["now"],
+            "accelerator": data["accelerator"], "rate": data["rate"], "bid": data["bid"], "pay": data["pay"], "amount": data["amount"], "waited": data["waited"],
+        })
 
     def on_key(self, data):
         self.keys[data["key"]] = {"key": data["key"], "account": data["account"], "note": data["note"], "hint": data["hint"], "created": data["now"], "revoked": False}
@@ -445,6 +501,11 @@ class Market:
         self.multiplier = Decimal("0.5")
         self.priced = 0.0
         self.covered = None
+        self.queue = threading.Condition()
+        self.waiting = []
+        self.busy = {}
+        self.plan_held = collections.defaultdict(Decimal)
+        self.joined = 0
 
     @property
     def book(self):
@@ -463,6 +524,14 @@ class Market:
 
     def fleets(self, pricing):
         return [{"id": "F" + f["name"].split()[-1], "name": f["name"], "kind": f["kind"], "rate": Decimal(str(f["rate"])), "serving": self.sandbox or f["state"] == "serving"} for f in pricing["fleets"]]
+
+    def accelerators(self, pricing):
+        listed = pricing.get("accelerators", []) + (self.app.cfg.sandbox_accelerators if self.sandbox else [])
+        found = []
+        for a in listed:
+            speed = Decimal(str(a["tokensPerSecond"])) if a.get("tokensPerSecond") else None
+            found.append({"id": "A" + a["name"].split()[-1], "name": a["name"], "kind": a["kind"], "rate": Decimal(str(a["rate"])), "speed": speed, "serving": bool(speed) and (self.sandbox or a["state"] == "serving")})
+        return found
 
     def fleet_field(self, pricing, value):
         found = next((f for f in self.fleets(pricing) if f["id"] == value), None)
@@ -672,6 +741,7 @@ class Market:
             self.advance(self.now(), pricing, market)
 
     def run(self, log):
+        self.release_orphans()
         while True:
             time.sleep(30)
             try:
@@ -728,8 +798,10 @@ class Market:
                 raise Refusal("That is your own released hour. Cancel the release to keep it.", 409)
             if pay == "tranche":
                 month = month_of(offer["start"])
-                if self.tranche_left(account, month) < 1:
-                    raise Refusal(f"This account has no Tranche hours left for {month}.", 409)
+                with self.queue:
+                    held = self.plan_held[(account, month)]
+                if self.tranche_left(account, month) - held < 1:
+                    raise Refusal(f"This account has no Tranche hours left for {month}{', apart from those held for prefill accelerator prompts' if held else ''}.", 409)
                 price = Decimal(0)
             else:
                 price = offer["price"]
@@ -959,7 +1031,116 @@ class Market:
         base = Decimal(1) / (Decimal(market["pool"]["seats"]) * 3600)
         return (base * self.multiplier).quantize(PRICE_STEP)
 
-    def pool_open(self, key, model):
+    def accelerator_join(self, ticket, options, tokens):
+        pricing, market = self.settings()
+        serving = [a for a in self.accelerators(pricing) if a["serving"]]
+        if not serving:
+            return self.unaccelerated(options, "none_serving")
+        account, pay, bid = ticket["account"], options["pay"], options["bid"]
+        estimate = max(max(hc(Decimal(tokens) / a["speed"] * a["rate"] * bid / 3600) for a in serving), EMPTY)
+        job = {"job": new_id("AJ"), "account": account, "key": ticket["key"], "model": ticket["model"], "pay": pay, "bid": bid,
+               "tokens": tokens, "estimate": estimate, "accelerator": None}
+        with self.book.lock:
+            now = self.now()
+            job["month"] = kst_month(now)
+            if pay == "hc":
+                if self.st.balance(account, stamp(now)) < estimate:
+                    raise Refusal("This account's HC does not cover this prompt's estimated accelerator time.", 402, "insufficient_hc")
+                self.book.append("hc_hold", {"bid": job["job"], "account": account, "hc": text_hc(estimate), "now": stamp(now)})
+            else:
+                with self.queue:
+                    if self.tranche_left(account, job["month"]) - self.plan_held[(account, job["month"])] < estimate:
+                        raise Refusal("This month's Tranche has too few unused Plan hours for this prompt's estimated accelerator time.", 402, "insufficient_plan_hours")
+                    self.plan_held[(account, job["month"])] += estimate
+        with self.queue:
+            self.joined += 1
+            job.update(seq=self.joined, joined=time.monotonic())
+            self.waiting.append(job)
+            self.dispatch(serving)
+            deadline = job["joined"] + options["maxWait"]
+            while job["accelerator"] is None and time.monotonic() < deadline:
+                self.queue.wait(deadline - time.monotonic())
+            if job["accelerator"] is None:
+                self.waiting.remove(job)
+        if job["accelerator"] is None:
+            self.unhold(job)
+            return self.unaccelerated(options, "waited")
+        job["started"] = time.monotonic()
+        return job
+
+    def unhold(self, job):
+        if job["pay"] == "plan":
+            with self.queue:
+                self.plan_held[(job["account"], job["month"])] -= job["estimate"]
+            return
+        with self.book.lock:
+            held = self.st.held(job["job"])
+            if held > 0:
+                self.book.append("hc_unhold", {"bid": job["job"], "hc": text_hc(held)})
+
+    def release_orphans(self):
+        with self.book.lock:
+            for job, parts in list(self.st.holds.items()):
+                if job.startswith("AJ") and self.st.held(job) > 0:
+                    self.book.append("hc_unhold", {"bid": job, "hc": text_hc(self.st.held(job))})
+
+    def unaccelerated(self, options, reason):
+        if not options["fallback"]:
+            raise Refusal("No prefill accelerator started this prompt in time, and the request asked not to fall back.", 503, "accelerator_busy")
+        return {"used": False, "reason": reason}
+
+    def dispatch(self, serving):
+        free = sorted((a for a in serving if a["id"] not in self.busy), key=lambda a: (-a["speed"], a["id"]))
+        while free and self.waiting:
+            job = min(self.waiting, key=lambda j: (-j["bid"], j["seq"]))
+            self.waiting.remove(job)
+            job["accelerator"] = free.pop(0)
+            self.busy[job["accelerator"]["id"]] = job["job"]
+        self.queue.notify_all()
+
+    def accelerator_finish(self, job, seconds):
+        pricing, _ = self.settings()
+        accel = job["accelerator"]
+        with self.queue:
+            if self.busy.get(accel["id"]) != job["job"]:
+                return job.get("result")
+            del self.busy[accel["id"]]
+            self.dispatch([a for a in self.accelerators(pricing) if a["serving"]])
+        waited = Decimal(str(round(job["started"] - job["joined"], 3)))
+        if seconds is None:
+            self.unhold(job)
+            job["result"] = {"used": False, "reason": "unfinished", "accelerator": accel["id"]}
+            return job["result"]
+        if job["pay"] == "plan":
+            self.unhold(job)
+        seconds = Decimal(str(round(seconds, 3)))
+        with self.book.lock:
+            now = self.now()
+            month = kst_month(now)
+            have = max(self.tranche_left(job["account"], month), Decimal(0)) if job["pay"] == "plan" else self.st.held(job["job"]) + self.st.balance(job["account"], stamp(now))
+            amount = min(hc(seconds * accel["rate"] * job["bid"] / 3600), hc(have))
+            charge = new_id("XC")
+            self.book.append("accelerator_charge", {
+                "charge": charge, "job": job["job"], "account": job["account"], "key": job["key"], "model": job["model"], "accelerator": accel["id"], "rate": text_hours(accel["rate"]),
+                "bid": format(job["bid"], "f"), "pay": job["pay"], "month": month if job["pay"] == "plan" else None, "seconds": format(seconds, "f"), "waited": format(waited, "f"),
+                "tokens": job["tokens"], "amount": text_hc(amount), "now": stamp(now),
+            })
+        job["result"] = {"used": True, "charge": charge, "accelerator": accel["id"], "rate": text_hours(accel["rate"]), "bid": format(job["bid"], "f"), "seconds": format(seconds, "f"), "waited": format(waited, "f"), "pay": job["pay"], "amount": text_hc(amount)}
+        return job["result"]
+
+    def accelerator_view(self, pricing):
+        listed = self.accelerators(pricing)
+        speeds = [a["speed"] for a in listed if a["serving"]]
+        with self.queue:
+            queue = sorted(self.waiting, key=lambda j: (-j["bid"], j["seq"]))
+            busy = set(self.busy)
+        return {
+            "accelerators": [{"id": a["id"], "name": a["name"], "kind": a["kind"], "rate": text_hours(a["rate"]), "tokensPerSecond": None if a["speed"] is None else text_hours(a["speed"]),
+                              "serving": a["serving"], "busy": a["id"] in busy, "hcPerMinute": text_hc(a["rate"] / 60)} for a in listed],
+            "queue": [{"bid": format(j["bid"], "f"), "seconds": text_hours(Decimal(j["tokens"]) / max(speeds)) if speeds else None} for j in queue],
+        }
+
+    def pool_open(self, key, model, accelerated=False):
         pricing, market = self.settings()
         record = self.key_account(key)
         model = self.model_field(market, model)
@@ -977,12 +1158,21 @@ class Market:
         with self.lock:
             capacity = len(slots) * market["pool"]["seats"]
             self.reprice(capacity, market)
-            if not mine:
+            if not mine and not accelerated:
                 if self.active + seats > capacity:
                     raise Refusal("The shared pool is full right now. Try again in a moment.", 429, "pool_full")
                 self.active += seats
             price = self.price(market)
-        return {"account": account, "key": record["key"], "model": model, "dedicated": mine["reservation"] if mine else None, "seats": seats, "price": price, "slots": slots, "began": time.monotonic()}
+        return {"account": account, "key": record["key"], "model": model, "dedicated": mine["reservation"] if mine else None, "seats": seats, "price": price, "slots": slots, "began": time.monotonic(), "seated": not accelerated}
+
+    def pool_seat(self, ticket):
+        if ticket["seated"]:
+            return
+        _, market = self.settings()
+        with self.lock:
+            if not ticket["dedicated"]:
+                self.active += ticket["seats"]
+            ticket.update(seated=True, price=self.price(market), began=time.monotonic())
 
     def split(self, slots, seat_seconds, cost, market):
         if seat_seconds <= 0 or not slots:
@@ -1004,6 +1194,7 @@ class Market:
         return result
 
     def pool_close(self, ticket, tokens_in, tokens_out):
+        self.pool_seat(ticket)
         seconds = Decimal(str(round(time.monotonic() - ticket["began"], 3)))
         seat_seconds = seconds * ticket["seats"]
         _, market = self.settings()
@@ -1048,6 +1239,7 @@ class Market:
             self.advance(now, pricing, market)
             pool = self.pool_view(pricing, market, now)
             sale = self.on_sale(now, pricing)
+        accelerated = self.accelerator_view(pricing)
         return {
             "now": stamp(now), "sandbox": self.sandbox,
             "market": {k: market[k] for k in ("hcPrice", "hcPriceKRW", "minPurchase", "validityMonths", "releaseFee", "horizonDays", "advanceDays", "advanceMultiplier", "lastCallHours", "maxBidDays")},
@@ -1055,6 +1247,9 @@ class Market:
             "vatRate": pricing["vatRate"],
             "fleets": [{"id": f["id"], "name": f["name"], "kind": f["kind"], "rate": text_hc(f["rate"]), "serving": f["serving"]} for f in self.fleets(pricing)],
             "pool": pool,
+            "accelerators": accelerated["accelerators"],
+            "acceleratorQueue": accelerated["queue"],
+            "acceleratorLimits": market["accelerator"],
         }
 
     def reservation_view(self, res, now):
@@ -1082,11 +1277,11 @@ class Market:
             return {
                 "now": moment,
                 "balance": text_hc(st.balance(account, moment)),
-                "held": text_hc(sum((st.held(b["bid"]) for b in st.bids.values() if b["account"] == account), Decimal(0))),
+                "held": text_hc(sum((st.held(b["bid"]) for b in st.bids.values() if b["account"] == account), Decimal(0)) + sum((st.held(j) for j, owner in st.hold_owner.items() if owner == account and j.startswith("AJ")), Decimal(0))),
                 "lots": [{"lot": l["lot"], "hc": text_hc(l["hc"]), "first": l["first"], "expires": l["expires"], "source": l["source"], "ref": l["ref"], "issued": l["issued"], "expired": l["expires"] <= moment} for l in st.lots.get(account, [])],
                 "reservations": [self.reservation_view(r, now) for r in reservations],
                 "bids": [dict({k: b[k] for k in ("bid", "fleet", "model", "from", "to", "hours", "filled", "consecutive", "max", "standing", "state", "now")}, held=text_hc(st.held(b["bid"]))) for b in st.bids.values() if b["account"] == account and b["state"] in ("open", "filled", "paused")],
-                "tranche": [{"month": m, "granted": st.tranches[(account, m)], "used": st.tranche_used[(account, m)], "left": self.tranche_left(account, m)} for m in (month, following) if st.tranches[(account, m)]],
+                "tranche": [{"month": m, "granted": st.tranches[(account, m)], "used": text_hours(st.tranche_used[(account, m)]), "left": text_hours(self.tranche_left(account, m))} for m in (month, following) if st.tranches[(account, m)]],
                 "keys": [{k: r[k] for k in ("key", "note", "hint", "created", "revoked")} for r in st.keys.values() if r["account"] == account],
                 "charges": list(st.charges[account])[:20],
                 "dedicated": (self.dedicated(account, now) or {}).get("reservation"),
@@ -1172,4 +1367,10 @@ class Market:
         lines = [f"# SparkPipe shared pool, generated {state['now']}", "# model hc_per_seat_second usd_per_seat_hour usd_per_million_tokens active_seats seats pooled_fleets"]
         for model in pool["models"]:
             lines.append(f"{model['id']} {pool['hcPerSeatSecond']} {pool['usdPerSeatHour']} {pool['usdPerMillionTokens'] or '-'} {pool['active']} {pool['seats']} {','.join(pool['fleets']) or '-'}")
+        lines.append("# prefill accelerators: id rate hc_per_minute_at_bid_1 tokens_per_second state")
+        for a in state["accelerators"]:
+            lines.append(f"{a['id']} {a['rate']} {a['hcPerMinute']} {a['tokensPerSecond'] or '-'} {'busy' if a['busy'] else 'free' if a['serving'] else 'not-serving'}")
+        lines.append("# accelerator queue, first to be computed first: bid estimated_seconds")
+        for job in state["acceleratorQueue"]:
+            lines.append(f"{job['bid']} {job['seconds'] or '-'}")
         return "\n".join(lines) + "\n"
