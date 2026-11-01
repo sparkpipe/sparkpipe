@@ -40,9 +40,11 @@ PURGE_PROBE = r"""
 #include "sparkpipe/spark_kv_snapshot.h"
 int main(int argc, char **argv) {
     SparkKvSnapshotPurgeResult result;
+    SparkWorkingStateDirective directive = {0u, 0u};
     SparkStatus status;
-    if (argc != 3) return 2;
-    status = SparkKvSnapshotPurgeTree(argv[1], strtoull(argv[2], 0, 10), &result);
+    if (argc != 3 && argc != 4) return 2;
+    if (argc == 4) directive.wiped_seconds = strtoull(argv[3], 0, 10);
+    status = SparkKvSnapshotPurgeTree(argv[1], &directive, strtoull(argv[2], 0, 10), &result);
     printf("%d %u %llu\n", (int)status, result.stores, (unsigned long long)result.deleted_files);
     return status == SPARK_STATUS_OK ? 0 : 1;
 }
@@ -71,7 +73,7 @@ class WorkingStateMirror(unittest.TestCase):
         probe.write_text(PURGE_PROBE)
         cls.purge = Path(cls.build.name) / "purge"
         subprocess.run(["cc", "-std=c11", "-D_GNU_SOURCE", "-D_DARWIN_C_SOURCE", "-Wall", "-Wextra", "-Werror",
-                        "-Iinclude", "cache/kv_snapshot_purge.c", str(probe), "-o", str(cls.purge)],
+                        "-Iinclude", "cache/kv_snapshot_purge.c", "cache/working_state.c", str(probe), "-o", str(cls.purge)],
                        cwd=ROOT, check=True)
 
     @classmethod
@@ -368,6 +370,15 @@ class WorkingStateMirror(unittest.TestCase):
         self.assertFalse(self.mirrored(f"{deep}/old.kvs").exists())
         self.assertEqual(self.mirrored(f"{STORE}/new.kvs").read_bytes(), b"new")
         self.assertTrue((self.home / STORE / "old.kvs").exists())
+
+    def test_a_wipe_deletes_the_copies_on_the_partner_too(self):
+        self.put(self.home, f"{STORE}/before.kvs", b"before", self.now - 600)
+        self.put(self.home, f"{STORE}/after.kvs", b"after", self.now - 60)
+        self.tool("push", check=0)
+        result = subprocess.run([str(self.purge), str(self.partner), str(self.now), str(self.now - 300)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.mirrored(f"{STORE}/before.kvs").exists())
+        self.assertEqual(self.mirrored(f"{STORE}/after.kvs").read_bytes(), b"after")
 
     def test_a_store_too_deep_for_the_partner_purge_is_not_mirrored(self):
         too_deep = "/".join(f"d{level}" for level in range(1, MODULE.STORE_DEPTH_MAX + 2))
