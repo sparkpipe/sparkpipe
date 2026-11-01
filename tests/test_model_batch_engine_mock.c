@@ -2479,6 +2479,19 @@ static void TestScenarioRecurrentStreamedCheckpoint(const SparkModelResidentDepl
 	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 17u,"recurrent streamed prefill: a repeated prompt resumes one token before its end");
 	TestDriveUntilTerminal(engine,&state,2u,800u);
 	CHECK(state.completed_events[2] == 1u && state.error_events[2] == 0u,"recurrent streamed prefill: the repeated prompt completes");
+	{
+		uint32_t unaligned[21];
+		for (index=0u; index<21u; index++)
+			unaligned[index] = 500u + index;
+		TestSubmitPrompt(engine,3u,699u,1u,unaligned,21u);
+		TestDriveUntilTerminal(engine,&state,3u,800u);
+		CHECK(state.completed_events[3] == 1u && state.error_events[3] == 0u && TestPrefillBlockIdentities(3u,unaligned,4u,21u) == 2u,
+			"recurrent streamed prefill: a deferral that ends inside a block publishes its last wave, so every block that wave seals carries its identity");
+		TestSubmitPrompt(engine,4u,700u,1u,unaligned,21u);
+		CHECK(TestWaitFirstRequestLane(engine,4u,&lane) != 0u && lane.cache_prefix_token_count == 20u,
+			"recurrent streamed prefill: a repeated prompt whose deferral ended inside a block resumes one token before its end");
+		TestDriveUntilTerminal(engine,&state,4u,800u);
+	}
 	SparkModelBatchEngineDestroy(engine);
 }
 
