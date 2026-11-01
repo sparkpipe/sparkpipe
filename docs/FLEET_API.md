@@ -462,6 +462,10 @@ Uses: evals, bulk edits, test generation, data for a customer model.
   - With `fleet: "any"`, requests reach a burst fleet like a held one.
   - When the booking starts, the account's packs are warmed on that fleet in the background.
   - Uses: a big refactor, a parallel review, or an overnight batch on a second fleet.
+- **Bursts on idle fleets.** An account can book hours on any fleet that nobody holds, up to the end of the current week (Agreement 14.1), with `sparkpipe book hours` or `/market/...`.
+  - With `fleet: "any"`, requests reach a burst fleet like a held one.
+  - When the booking starts, the account's packs are warmed on that fleet in the background.
+  - Uses: a big refactor, a parallel review, or an overnight batch on a second fleet.
 - **Packs** are warmed on every fleet that serves their alias.
 - **Moving working state.** `POST /v1/state/move {"from": "F3", "to": "F4"}` copies the snapshot store and the storage between two held fleets of the same model build and topology over the facility network. A fleet change or a long repair then costs no cache.
 
