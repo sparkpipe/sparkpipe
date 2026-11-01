@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 36u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 37u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
@@ -362,6 +362,7 @@ typedef struct SparkModelServingAdapterConfiguration
 	uint64_t kv_backing_maximum_bytes;
 	const char *kv_snapshot_directory;
 	uint64_t kv_snapshot_maximum_bytes;
+	uint64_t kv_partition_reserve_bytes;
 	void *execution_stream;
 	SparkModelServingCompletionFunction completion_function;
 	void *completion_context;

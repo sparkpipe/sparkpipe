@@ -103,6 +103,8 @@ def deployment_gates(deployment, runtime_root, socket, failures):
               f"node {i}: the KV binding refuses a deployment without a snapshot store under the root")
         check(0 < node.get("kv_snapshot_maximum_bytes", 0) < 1 << 40, failures,
               f"node {i}: kv snapshot cap must be finite")
+        check(0 < node.get("kv_partition_reserve_bytes", 0) < 1 << 42, failures,
+              f"node {i}: the snapshot store needs a partition reserve it keeps free")
         endpoint = node["control_endpoint"]
         host = f"spark{HEX[i]}"
         check(endpoint["host"] == host, failures,

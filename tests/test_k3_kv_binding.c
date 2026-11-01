@@ -50,6 +50,7 @@ static SparkStatus BindWith(SparkStageServingState *state, uint32_t logical, uin
 	configuration.kv_backing_maximum_bytes = UINT64_C(1) << 26;
 	configuration.kv_snapshot_directory = SNAPSHOT_DIRECTORY;
 	configuration.kv_snapshot_maximum_bytes = UINT64_C(1) << 26;
+	configuration.kv_partition_reserve_bytes = UINT64_C(1) << 20;
 	return(StageServingBindKv(state, &configuration));
 }
 

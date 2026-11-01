@@ -32,6 +32,41 @@ uint32_t SparkKvSnapshotIsCacheFileName(const char *name)
 		SparkKvSnapshotPurgeIsTemporary(name) != 0u ? 1u : 0u);
 }
 
+uint32_t SparkKvSnapshotIsShardName(const char *name)
+{
+	static const char digits[] = "0123456789abcdef";
+	return(name != 0 && name[0] != '\0' && name[1] != '\0' && name[2] == '\0' && strchr(digits,name[0]) != 0 && strchr(digits,name[1]) != 0 ? 1u : 0u);
+}
+
+static void SparkKvSnapshotPurgeFiles(const char *directory,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
+{
+	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
+	struct dirent *item;
+	struct stat info;
+	DIR *listing = opendir(directory);
+	if ( listing == 0 )
+		return;
+	while ( (item = readdir(listing)) != 0 )
+	{
+		if ( SparkKvSnapshotIsCacheFileName(item->d_name) == 0u )
+			continue;
+		if ( (size_t)snprintf(path,sizeof(path),"%s/%s",directory,item->d_name) >= sizeof(path) )
+			continue;
+		if ( lstat(path,&info) != 0 || !S_ISREG(info.st_mode) )
+			continue;
+		if ( SparkKvSnapshotPurgeIsTemporary(item->d_name) == 0u && (uint64_t)info.st_mtime + SPARK_KV_RETENTION_SECONDS > now_seconds )
+			continue;
+		if ( unlink(path) != 0 )
+		{
+			result->failed_unlinks++;
+			continue;
+		}
+		result->deleted_files++;
+		result->deleted_bytes += (uint64_t)info.st_size;
+	}
+	(void)closedir(listing);
+}
+
 SparkStatus SparkKvSnapshotPurgeDirectory(const char *directory,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
 {
 	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
@@ -64,23 +99,15 @@ SparkStatus SparkKvSnapshotPurgeDirectory(const char *directory,uint64_t now_sec
 	result->stores++;
 	while ( (item = readdir(listing)) != 0 )
 	{
-		if ( SparkKvSnapshotIsCacheFileName(item->d_name) == 0u )
+		if ( SparkKvSnapshotIsShardName(item->d_name) == 0u )
 			continue;
 		if ( (size_t)snprintf(path,sizeof(path),"%s/%s",directory,item->d_name) >= sizeof(path) )
 			continue;
-		if ( lstat(path,&info) != 0 || !S_ISREG(info.st_mode) )
-			continue;
-		if ( SparkKvSnapshotPurgeIsTemporary(item->d_name) == 0u && (uint64_t)info.st_mtime + SPARK_KV_RETENTION_SECONDS > now_seconds )
-			continue;
-		if ( unlink(path) != 0 )
-		{
-			result->failed_unlinks++;
-			continue;
-		}
-		result->deleted_files++;
-		result->deleted_bytes += (uint64_t)info.st_size;
+		if ( lstat(path,&info) == 0 && S_ISDIR(info.st_mode) )
+			SparkKvSnapshotPurgeFiles(path,now_seconds,result);
 	}
 	(void)closedir(listing);
+	SparkKvSnapshotPurgeFiles(directory,now_seconds,result);
 	if ( lock >= 0 )
 		(void)close(lock);
 	return(SPARK_STATUS_OK);
@@ -93,18 +120,20 @@ static SparkStatus SparkKvSnapshotPurgeWalk(const char *directory,dev_t device,u
 	struct stat info;
 	uint32_t holds_cache = 0u;
 	SparkStatus status = SPARK_STATUS_OK;
-	DIR *listing = opendir(directory);
+	DIR *listing;
+	if ( (size_t)snprintf(path,sizeof(path),"%s/%s",directory,SPARK_KV_SNAPSHOT_LOCK_NAME) < sizeof(path) && lstat(path,&info) == 0 )
+		SPARK_RETURN(SparkKvSnapshotPurgeDirectory(directory,now_seconds,result));
+	listing = opendir(directory);
 	if ( listing == 0 )
 		return(errno == EACCES || errno == ENOENT ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR);
+	while ( holds_cache == 0u && (item = readdir(listing)) != 0 )
+		holds_cache = SparkKvSnapshotIsCacheFileName(item->d_name);
+	rewinddir(listing);
 	while ( (item = readdir(listing)) != 0 )
 	{
-		if ( strcmp(item->d_name,".") == 0 || strcmp(item->d_name,"..") == 0 )
+		if ( strcmp(item->d_name,".") == 0 || strcmp(item->d_name,"..") == 0 || SparkKvSnapshotIsCacheFileName(item->d_name) != 0u ||
+			(holds_cache != 0u && SparkKvSnapshotIsShardName(item->d_name) != 0u) )
 			continue;
-		if ( SparkKvSnapshotIsCacheFileName(item->d_name) != 0u || strcmp(item->d_name,SPARK_KV_SNAPSHOT_LOCK_NAME) == 0 )
-		{
-			holds_cache = 1u;
-			continue;
-		}
 		if ( depth >= SPARK_KV_PURGE_DEPTH_MAX || (item->d_type != DT_DIR && item->d_type != DT_UNKNOWN) )
 			continue;
 		if ( (size_t)snprintf(path,sizeof(path),"%s/%s",directory,item->d_name) >= sizeof(path) )

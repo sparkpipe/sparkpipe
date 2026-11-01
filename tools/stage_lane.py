@@ -35,6 +35,7 @@ MAX_ROWS = 4096
 MAX_SEQUENCES = 128
 DEFAULT_STATE_BUDGET_BYTES = 5 << 30
 DEFAULT_KV_SNAPSHOT_BYTES = 8 << 30
+DEFAULT_KV_PARTITION_RESERVE_BYTES = 512 << 30
 KV_BLOCK_TOKENS = 64
 
 QWEN38_27B = {
@@ -475,6 +476,7 @@ def deployment(model: dict, lane: int, args) -> dict:
             "kv_backing_maximum_bytes": args.kv_backing_bytes,
             "kv_snapshot_directory": os.path.join(root, "kvsnapshot"),
             "kv_snapshot_maximum_bytes": args.kv_snapshot_bytes,
+            "kv_partition_reserve_bytes": args.kv_partition_reserve_bytes,
             "control_endpoint": {"kind": "tcp", "host": host, "port": 23000 + 16 * lane + rank},
         })
     result = {
@@ -576,7 +578,8 @@ def lane_records() -> dict:
 
 
 def record_arguments(swap_id: str) -> argparse.Namespace:
-    records = lane_records()["lanes"]
+    document = lane_records()
+    records = document["lanes"]
     if swap_id not in records:
         raise SystemExit(f"{LANES} has no lane record {swap_id}; known: {', '.join(sorted(records))}")
     record = records[swap_id]
@@ -592,6 +595,7 @@ def record_arguments(swap_id: str) -> argparse.Namespace:
         shared_rows=record.get("shared_rows"), kv_pages=record["context_tokens"] // block,
         kv_physical_pages=record["kv_physical_pages"], kv_logical_pages=record["kv_logical_pages"],
         kv_backing_bytes=record["kv_backing_bytes"], kv_snapshot_bytes=record["kv_snapshot_bytes"],
+        kv_partition_reserve_bytes=document["kv_partition_reserve_bytes"],
         state_budget_bytes=record["state_budget_bytes"], state_memory_bytes=record.get("state_memory_bytes"),
         taps=record.get("taps"), tokenizer_sha256=record["tokenizer_sha256"], tokenizer_dir=None,
         text_prompt_prefix=record["text_prompt_prefix_token_ids"],
@@ -657,6 +661,8 @@ def main() -> int:
     parser.add_argument("--kv-logical-pages", type=int, default=None)
     parser.add_argument("--kv-backing-bytes", type=int, default=8 << 30)
     parser.add_argument("--kv-snapshot-bytes", type=int, default=DEFAULT_KV_SNAPSHOT_BYTES)
+    parser.add_argument("--kv-partition-reserve-bytes", type=int, default=DEFAULT_KV_PARTITION_RESERVE_BYTES,
+                        help="free bytes every KV snapshot store leaves on kv_partition; stores evict their oldest files to keep it")
     parser.add_argument("--state-budget-bytes", type=int, default=DEFAULT_STATE_BUDGET_BYTES)
     parser.add_argument("--state-memory-bytes", type=int, default=None,
                         help="per-rank memory for recurrent-state records; default twice the two per sequence plus two the KV binding needs")
