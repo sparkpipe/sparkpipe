@@ -859,9 +859,9 @@ static uint8_t *LmPassRowsSend(const LmPass *p, uint32_t destination)
 	return p->rows_region != 0 ? p->rows_region + (uint64_t)destination * p->rows_block_bytes : 0;
 }
 
-static uint8_t *LmPassRowsLanding(const LmPass *p, uint32_t source)
+static uint8_t *LmPassRowsLanding(const LmPass *p, uint32_t source, uint64_t bytes)
 {
-	return p->rows_region != 0 ? p->rows_region + ((uint64_t)LM_PASS_RANKS + source) * p->rows_block_bytes : 0;
+	return p->rows_region != 0 ? p->rows_region + (uint64_t)LM_PASS_RANKS * p->rows_block_bytes + (uint64_t)source * bytes : 0;
 }
 
 static SparkStatus LmPassRowsAllGather(LmPass *p, uint64_t bytes, cudaStream_t stream)
@@ -911,10 +911,10 @@ __global__ static void LmPassSumBlocksKernel(const uint16_t *blocks, uint64_t bl
 
 static int32_t LmPassSumBlocks(const LmPass *p, uint64_t elements, uint16_t *out_bf16, float *out_f32, uint32_t accumulate, cudaStream_t stream)
 {
-	const uint64_t block_elements = p->rows_block_bytes / sizeof(uint16_t);
-	if ( p->rows_region == 0 || elements == 0u || elements > block_elements || (out_bf16 == 0 && out_f32 == 0) )
+	if ( p->rows_region == 0 || elements == 0u || elements > p->rows_block_bytes / sizeof(uint16_t) || (out_bf16 == 0 && out_f32 == 0) )
 		return(LM_LAUNCH_ERR_SHAPE);
-	LmPassSumBlocksKernel<<<512u, LM_PASS_THREADS, 0, stream>>>((const uint16_t *)LmPassRowsLanding(p, 0u), block_elements, elements, out_bf16, out_f32, accumulate);
+	LmPassSumBlocksKernel<<<512u, LM_PASS_THREADS, 0, stream>>>((const uint16_t *)LmPassRowsLanding(p, 0u, elements * sizeof(uint16_t)), elements, elements, out_bf16, out_f32,
+		accumulate);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
