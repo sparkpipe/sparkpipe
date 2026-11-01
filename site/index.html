@@ -201,8 +201,8 @@ h1 { max-width: 15ch; }
     <ol class="steps">
       <li><h3>Open an account</h3><p>Your company's legal name or your own, a work email confirmed with a 6-digit code, and the Customer Agreement. No password. Then buy HC in any quantity.</p></li>
       <li><h3>Book a demo hour</h3><p>The whole demo fleet by the hour, up to <span data-demo="days">7</span> days ahead, <span data-hour="hc">1</span> HC an hour. Point your own tools at it and try your codebase.</p></li>
-      <li><h3>Pin a fleet</h3><p>Book a first week on a free fleet, from the next Monday. When every fleet is held, join the waitlist by locking at least <span data-week="hc">144</span> HC.</p></li>
-      <li><h3>Keep it</h3><p>Book the next week before 00:00 on the Sunday of your last booked week and the fleet stays yours. Hold more weeks ahead and each new week costs less.</p></li>
+      <li><h3>Pin a fleet</h3><p>Book a first week on an available fleet, from the next Monday. When every fleet is held, join the waitlist by locking at least <span data-week="hc">144</span> HC.</p></li>
+      <li><h3>Keep it</h3><p>Book the next week before 00:00 on the Sunday of your last booked week and the fleet stays yours. The more weeks you hold ahead, the bigger the discount on every week you book, up to <span data-off="max">20%</span>.</p></li>
     </ol>
     <p class="prose">The waitlist goes biggest lock first, then earliest. Fleets are allocated every Sunday at 00:00 KST, and your whole lock books as many weeks as it pays for. You see your own position and how many are waiting, nothing more. If you stop booking, the fleet goes to the waitlist that Sunday, and your cache and storage are deleted when the next customer starts.</p>
     <p class="caption">Weeks run Monday 00:00 to Sunday 24:00 KST, and Sunday is the free day. Eight fleets at launch.</p>
@@ -250,8 +250,18 @@ h1 { max-width: 15ch; }
 <span class="k">export</span> ANTHROPIC_BASE_URL=https://sparkpipe.ai/pay/api
 <span class="k">export</span> ANTHROPIC_AUTH_TOKEN=<span class="d">your key from your account</span>
 <span class="k">export</span> ANTHROPIC_MODEL=kimi-k3
+<span class="k">export</span> CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000
 
-<span class="d"># Codex, Cursor and other OpenAI-compatible tools</span>
+<span class="d"># Codex: ~/.codex/config.toml</span>
+model = "kimi-k3"
+model_provider = "sparkpipe"
+[model_providers.sparkpipe]
+name = "SparkPipe"
+base_url = "https://sparkpipe.ai/pay/api/v1"
+env_key = "SPARKPIPE_API_KEY"
+wire_api = "responses"
+
+<span class="d"># Cursor, Aider and other OpenAI-compatible tools</span>
 <span class="k">export</span> OPENAI_BASE_URL=https://sparkpipe.ai/pay/api/v1
 <span class="k">export</span> OPENAI_API_KEY=<span class="d">your key from your account</span>
 
@@ -259,7 +269,7 @@ curl $OPENAI_BASE_URL/chat/completions \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -d '{"model": "kimi-k3", "messages": [{"role": "user", "content": "Hello"}]}'</pre>
     </div>
-    <p class="caption">Holding more than one fleet? Name one with <span class="mono">"sparkpipe": {"fleet": "F3"}</span>. The <span class="mono">sparkpipe</span> CLI books, uploads, starts Functions and fetches the morning report from your terminal.</p>
+    <p class="caption">Holding more than one fleet? Name one with <span class="mono">"sparkpipe": {"fleet": "F3"}</span>. <span class="mono">sparkpipe setup claude-code</span> and <span class="mono">sparkpipe setup codex</span> write these settings for you. The <span class="mono">sparkpipe</span> CLI also books, uploads, starts Functions and fetches the morning report from your terminal.</p>
   </div>
 </section>
 

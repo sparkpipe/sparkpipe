@@ -33,7 +33,7 @@
 <section class="co-head">
   <p class="label">Your account · <span class="signal live-only">live</span><span class="signal sandbox-only">sandbox</span></p>
   <h1>Your fleets.</h1>
-  <p class="lead">Book the whole demo fleet by the hour, pin a fleet to yourself week by week, or join the waitlist when every fleet is taken. Keep a pinned fleet by booking the next week before 00:00 on the Sunday of your last booked week. A week is <span data-week="hc">144</span> HC, and each new week costs up to <span data-off="max">20%</span> less the more weeks you hold ahead. The <a href="agreement.html">SparkPipe Customer Agreement</a> applies.</p>
+  <p class="lead">Book the whole demo fleet by the hour, pin a fleet to yourself week by week, or join the waitlist when every fleet is taken. Keep a pinned fleet by booking the next week before 00:00 on the Sunday of your last booked week. A week is <span data-week="hc">144</span> HC, and the more weeks you hold ahead, the bigger the discount on every week you book, up to <span data-off="max">20%</span>. The <a href="agreement.html">SparkPipe Customer Agreement</a> applies.</p>
   <div class="row">
     <nav class="mode" aria-label="Mode"><a href="market.html" id="mode-live">Live</a><a href="market.html?sandbox" id="mode-sandbox">Sandbox, no money</a></nav>
     <p class="muted live-only">Real accounts and real payments. Try every flow first in the sandbox.</p>
@@ -108,12 +108,12 @@
 <div class="tab-panel" role="tabpanel" data-panel="fleets">
 <section class="card">
   <h2>Fleets</h2>
-  <p class="muted">A pinned fleet serves only its holder. A free fleet can be pinned from the next Monday, unless the waitlist takes it first at 00:00 on Sunday.</p>
+  <p class="muted">A pinned fleet serves only its holder. An available fleet can be pinned from the next Monday, unless the waitlist takes it first at 00:00 on Sunday.</p>
   <div class="scroll"><table><thead><tr><th>Fleet</th><th>Machines</th><th>Rate</th><th>Status</th><th>Yours</th></tr></thead><tbody id="fleets"></tbody></table></div>
 </section>
 <section class="card">
   <h2>Book weeks</h2>
-  <p class="muted">Pin a free fleet from the next Monday, or extend a fleet pinned to you from the end of your last booked week. Each week runs Monday 00:00 to Sunday 24:00 KST, and Sunday is the free day. The discount counts the weeks you hold on that fleet, including the current week and the ones you are booking.</p>
+  <p class="muted">Pin an available fleet from the next Monday, or extend a fleet pinned to you from the end of your last booked week. Each week runs Monday 00:00 to Sunday 24:00 KST, and Sunday is the free day. The discount counts the weeks you hold on that fleet, including the current week and the ones you are booking.</p>
   <form class="form" id="weeks" novalidate>
     <div class="row">
       <label>Fleet<select id="weeks-fleet"></select></label>
@@ -130,7 +130,7 @@
 <div class="tab-panel" role="tabpanel" data-panel="demo" hidden>
 <section class="card">
   <h2>Book demo hours</h2>
-  <p class="muted">The demo fleet can be booked by the hour up to <span data-demo="days">7</span> days ahead, up to <span data-demo="hours">24</span> hours each week per account. A free fleet can be booked by the hour until the end of the current week. Each hour is <span data-hour="hc">1</span> HC times the fleet's Rate.</p>
+  <p class="muted">The demo fleet can be booked by the hour up to <span data-demo="days">7</span> days ahead, up to <span data-demo="hours">24</span> hours each week per account. An available fleet can be booked by the hour until the end of the current week. Each hour is <span data-hour="hc">1</span> HC times the fleet's Rate.</p>
   <form class="form" id="hours-form" novalidate>
     <div class="row">
       <label>Fleet<select id="hours-fleet"></select></label>
@@ -164,7 +164,7 @@
 <div class="tab-panel" role="tabpanel" data-panel="api" hidden>
 <section class="card">
   <h2>Use your fleet</h2>
-  <p class="muted">Your fleet speaks the OpenAI chat-completions API, for Codex, Cursor and other OpenAI-compatible tools, and the Anthropic Messages API for Claude Code. Requests go to the fleet you hold at that moment, and the fleet loads the model you name if it is not already loaded. Holding two fleets? Name one with <code>"sparkpipe": {"fleet": "F3"}</code>. <span class="sandbox-only">The sandbox answers with a simulator.</span></p>
+  <p class="muted">Your fleet speaks the Anthropic Messages API for Claude Code, the OpenAI Responses API for Codex, and OpenAI chat completions for Cursor and other OpenAI-compatible tools. Requests go to the fleet you hold at that moment, and the fleet loads the model you name if it is not already loaded. Holding two fleets? Name one with <code>"sparkpipe": {"fleet": "F3"}</code>. <span class="sandbox-only">The sandbox answers with a simulator.</span></p>
   <p class="muted">Endpoint: <span class="endpoint" id="api-base"></span> (<code>/chat/completions</code>, <code>/models</code>), with an API key below as the bearer token.</p>
   <div class="mk-grid">
     <div class="form">
@@ -204,6 +204,6 @@
 </footer>
 <script src="pricing.js"></script>
 <script src="prices.js"></script>
-<script src="market.js?v=4"></script>
+<script src="market.js?v=5"></script>
 </body>
 </html>
