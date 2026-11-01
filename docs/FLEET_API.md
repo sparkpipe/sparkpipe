@@ -30,7 +30,7 @@ All paths are under `https://sparkpipe.ai/pay/api`. Every request authenticates 
 
 | Area | Paths |
 | --- | --- |
-| Inference | `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/responses`, `POST /v1/chat/completions`, `POST /v1beta/models/{model}:generateContent` and `:streamGenerateContent`, `GET /v1/models`, `GET /v1/codex/models`, `HEAD /api/hello` |
+| Inference | `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/responses`, `POST /v1/chat/completions`, `GET /v1/models`, `GET /v1/codex/models`, `HEAD /api/hello`, WebSocket `/v1/responses` |
 | Working state | `GET /v1/state`, `POST /v1/cache/warm`, `GET/POST/DELETE /v1/cache/pins`, `DELETE /v1/cache`, `GET/PUT /v1/model`, `GET/PUT /v1/model/aliases` |
 | Usage records | `GET /v1/requests` |
 | Context packs | `GET/POST /v1/packs`, `GET/DELETE /v1/packs/{name}`, `POST /v1/packs/{name}/refresh` |
@@ -153,7 +153,7 @@ stream_idle_timeout_ms = 600000
 
 ### 3.5 `POST /v1/chat/completions`
 
-This endpoint already exists in the gateway; Cursor, Aider and the OpenAI SDKs use it. It gains:
+This endpoint already exists in the gateway; OpenAI-compatible tools and SDKs use it. It gains:
 - `usage.prompt_tokens_details.cached_tokens`;
 - the alias and pack names;
 - keep-alive comments;
@@ -188,40 +188,54 @@ Every response carries what it cost in time:
 - **Images** on models that take them, in all three API shapes.
 - **Seeds.** `seed` gives reproducible sampling for the same prompt, model build and batch.
 
-### 3.8 Harnesses
+### 3.8 The three harnesses we support first-class
 
-Senior engineers use Claude Code most, by the widest margin, then Codex, OpenCode, GitHub Copilot and Cursor. Pi, Kilo Code and Cline carry heavy traffic to third-party endpoints. Sources:
-- [Pragmatic Engineer, 2026](https://newsletter.pragmaticengineer.com/p/ai-tooling-2026): median 11–15 years of experience;
+Senior engineers use Claude Code most, by the widest margin, then Codex and OpenCode. Sources:
+- [Pragmatic Engineer, 2026](https://newsletter.pragmaticengineer.com/p/ai-tooling-2026): median 11–15 years of experience, Claude Code at 75% in the smallest companies. Staff+ engineers name OpenCode as a favourite as often as Copilot;
 - [Stack Overflow, 2026](https://survey.stackoverflow.co/2026/ai);
-- [JetBrains, 2026](https://blog.jetbrains.com/research/2026/08/ai-coding-agent-adoption-2026/);
-- [OpenRouter app rankings](https://openrouter.ai/apps), November 2026.
+- [JetBrains, 2026](https://blog.jetbrains.com/research/2026/08/ai-coding-agent-adoption-2026/).
 
-Every harness below gets three things:
-- a `sparkpipe setup <harness>` that writes a working configuration (endpoint, key, model, context window, compaction threshold);
-- a release check that runs a scripted session against staging before customers are told to upgrade;
-- a line in the API reference.
+We support these three as deeply as each one allows:
+- a one-command setup;
+- every extension point the harness offers;
+- a release check that runs a scripted session against staging within a day of each release, before customers are told to upgrade.
 
-| Harness | Wire API it uses | What `sparkpipe setup` writes | For the cache and the fleet |
-| --- | --- | --- | --- |
-| Claude Code | Messages | The environment in §3.3, plus `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` | The hint headers mark compaction and auxiliary requests, which the chat layer runs at background priority. `x-claude-code-session-id` and `x-claude-code-agent-id` drive pack-version affinity and routing between fleets |
-| Codex CLI | Responses only | The `config.toml` provider in §3.4, with `model_context_window`, `model_auto_compact_token_limit` and `model_catalog_url` | Its session-derived `prompt_cache_key` drives affinity. `GET /v1/codex/models` serves a Codex-native catalogue of our models |
-| OpenCode | Chat completions by default; Responses or Messages per provider | `opencode.json`: provider, `baseURL`, `{env:SPARKPIPE_API_KEY}`, `limit.context` and `limit.output`, with `prune` off | Pruning rewrites history and misses the cache, so setup turns it off |
-| GitHub Copilot, CLI and VS Code | Chat completions, Responses or Messages | `~/.copilot/providers.json` with `maxPromptTokens`; VS Code `chatLanguageModels.json` with a `customendpoint` vendor | The CLI keeps the key in plain text, so setup creates a key scoped to `inference` only |
-| Cursor | Chat completions, though agent mode sends Responses-shaped bodies | Printed instructions for Settings > Models and the base-URL override | Requests come from Cursor's servers, so its key must not carry an IP allowlist, and prompts pass through Cursor. The chat-completions path accepts Responses-shaped bodies |
-| Pi | Chat completions, Responses, Messages or Gemini | `models.json`: provider, `api`, `contextWindow`, `maxTokens` | |
-| Kilo Code | Chat completions, Responses or Messages | `kilo.jsonc` (OpenCode's schema) | |
-| Cline | Chat completions | Printed values for its provider screen: base URL, key, model, context window | |
-| Zed | Chat completions, Responses or Messages | `settings.json`: `language_models.openai_compatible` or `anthropic_compatible` | |
-| Factory Droid | Messages, Responses or chat completions | `~/.factory/settings.json` `customModels`, with `maxContextLimit` | |
-| Amp | OpenAI- or Anthropic-compatible custom URL | Its model-provider configuration | Requests come from Amp's servers |
-| Gemini CLI | Gemini API | `GOOGLE_GEMINI_BASE_URL` and the key | Served by the Gemini endpoint below |
-| Aider | Chat completions, with text edit formats | `.aider.model.metadata.json` (`max_input_tokens`) and `--cache-prompts` | Its cache-prompts order (system, read-only files, repo map, then editable files) keeps the prefix stable |
-| Goose | OpenAI or Anthropic engine | A custom provider file in `~/.config/goose/custom_providers/` | |
+Any other tool that speaks Anthropic Messages, OpenAI Responses or chat completions works too, without a setup command or a release check.
 
-Also:
-- **The Gemini API shape.** `POST /v1beta/models/{model}:generateContent` and `:streamGenerateContent`, with `contents`, `systemInstruction`, function declarations and `usageMetadata.cachedContentTokenCount`. It is translated in the chat layer like the other three shapes, with token-exact replay (§3.2).
-- **Responses-shaped bodies on chat completions.** Recognised by their `input` field and answered in the shape the client asked for.
-- **Model catalogues.** SparkPipe's models, with their served context windows, are published to [models.dev](https://models.dev), which OpenCode and Kilo Code read. They are also served at `GET /v1/codex/models` for Codex.
+**Claude Code** (Anthropic Messages, §3.3)
+- **Setup.** `sparkpipe setup claude-code` writes the environment of §3.3, with three additions:
+  - `CLAUDE_CODE_SUBAGENT_MODEL` set to the same model, so subagents never swap the fleet;
+  - `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`;
+  - a `modelOverrides` entry, so `/model` lists our models.
+- **Priority from hint headers.** With hint headers on, Claude Code marks each request as main, subagent, compaction or auxiliary. Compaction and auxiliary requests run at background priority, and main requests at interactive priority.
+- **Affinity.** `x-claude-code-session-id` and `x-claude-code-agent-id` drive pack-version affinity (§5), routing between fleets (§14) and fair share (§12).
+- **The SparkPipe plugin for Claude Code**, from our plugin marketplace on GitHub, bundles:
+  - the MCP server of §10;
+  - slash commands: `/sparkpipe:status`, `/sparkpipe:report`, `/sparkpipe:stats`, `/sparkpipe:run` (tests on the sandbox host with the local diff) and `/sparkpipe:fn`;
+  - a `SessionStart` hook that warms the session's pack after a resume, a compaction or a long pause (§4.2);
+  - a skill that tells the agent when to use the fleet's `run`, `search_code` and `pack_info` instead of local tools.
+- **Status line.** `sparkpipe statusline` shows the fleet, the loaded model, the cached share of the last turn and the prefill avoided today.
+
+**Codex** (OpenAI Responses, §3.4)
+- **Setup.** `sparkpipe setup codex` writes a `[profiles.sparkpipe]` profile and the provider of §3.4, with:
+  - `model_context_window` and `model_auto_compact_token_limit` set from the model;
+  - `model_catalog_url` pointing at `GET /v1/codex/models`, a Codex-native catalogue of our models with context windows and reasoning settings;
+  - `agents.default_subagent_model` set to the same model;
+  - `agents.max_concurrent_threads_per_session` set to fit the fleet's sequences;
+  - `[mcp_servers.sparkpipe]` for §10.
+- **Affinity.** Codex's session-derived `prompt_cache_key` drives pack-version affinity and routing.
+- **WebSocket transport.** `/v1/responses` also accepts Codex's optional WebSocket transport (`supports_websockets`), which removes a connection set-up per turn.
+
+**OpenCode** (Anthropic Messages through its `@ai-sdk/anthropic` provider, so tools and reasoning keep full fidelity)
+- **Setup.** `sparkpipe setup opencode` writes `opencode.json`:
+  - the provider, with `baseURL` and `{env:SPARKPIPE_API_KEY}`;
+  - `limit.context` and `limit.output` per model;
+  - the subagent model set to the same model;
+  - the remote MCP server of §10;
+  - `prune` off, because pruning rewrites history and misses the cache;
+  - `"share": "disabled"`, so sessions are never uploaded outside Korea.
+- **The SparkPipe plugin for OpenCode** does what the Claude Code plugin does: it warms on session start, reports status and adds the fleet commands.
+- **models.dev.** Our models and their served context windows are published there, so OpenCode knows them without any manual setting.
 
 ## 4. Working state
 
@@ -375,7 +389,7 @@ The product promise is that a team can serve its own model on its own fleet, lis
 
 ## 10. Codebase tools over MCP
 
-The fleet serves an MCP server (Streamable HTTP) at `/mcp`, authenticated with the account's key. Claude Code, Codex, Cursor and any MCP client can call tools that run next to the ingested repository and the sandbox host. `sparkpipe mcp` is a stdio bridge for clients that only start local servers.
+The fleet serves an MCP server (Streamable HTTP) at `/mcp`, authenticated with the account's key. Claude Code, Codex, OpenCode and any MCP client can call tools that run next to the ingested repository and the sandbox host. `sparkpipe mcp` is a stdio bridge for clients that only start local servers.
 
 | Tool | Does | Why it saves time |
 | --- | --- | --- |
@@ -387,10 +401,7 @@ The fleet serves an MCP server (Streamable HTTP) at `/mcp`, authenticated with t
 | `start_function`, `run_status`, `morning_report` | §7 | |
 | `warm` | §4.2 | |
 
-Setup, written by `sparkpipe setup`:
-- Claude Code: `claude mcp add --transport http sparkpipe https://sparkpipe.ai/pay/api/mcp --header "Authorization: Bearer <key>"`.
-- Codex: `[mcp_servers.sparkpipe]` in `config.toml`.
-- Others: the stdio bridge.
+Setup is written by `sparkpipe setup` and the plugins (§3.8). For Claude Code that is `claude mcp add --transport http sparkpipe https://sparkpipe.ai/pay/api/mcp --header "Authorization: Bearer <key>"`; for Codex, `[mcp_servers.sparkpipe]` in its profile; for OpenCode, a remote MCP entry in `opencode.json`. Other clients use the stdio bridge.
 
 ## 11. Batch jobs
 
@@ -448,7 +459,8 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 | `sparkpipe login` | Email code sign-in, then creates a key for this machine |
 | `sparkpipe status` | Holdings, the fleet's model, cache use, pins, packs, runs, deadlines |
 | `sparkpipe book week F3 4`, `book hours F1 2027-01-05T10 2`, `waitlist lock 144` | Bookings (§16) |
-| `sparkpipe setup claude-code`, `setup codex`, `setup cursor` | Writes the client settings of §3 |
+| `sparkpipe setup claude-code`, `setup codex`, `setup opencode` | Writes the client settings and installs the plugins of §3.8 |
+| `sparkpipe statusline` | The Claude Code status line of §3.8 |
 | `sparkpipe model [name]`, `aliases` | §4.5 |
 | `sparkpipe repo add`, `repo sync`, `repo hook` | §6 |
 | `sparkpipe pack create`, `pack refresh`, `pack ls`, `pin` | §5, §4.3 |

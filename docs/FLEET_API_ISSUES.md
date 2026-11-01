@@ -39,8 +39,6 @@ Each issue is one piece of work with a test that closes it. Sizes: **S** is up t
 | C7 | Keep-alives and busy handling | A 10-minute prefill keeps a Claude Code and a Codex stream open. When all sequences are busy, requests wait up to 60 s, then get 429 with `retry-after` | S | |
 | C8 | Fair share between members | With two members flooding requests, neither gets more than three quarters of the sequences while the other waits | M | G5 |
 | C9 | Pack prefixing with version affinity (§5) | A session keeps its pack version through a refresh. New sessions get the new version only once it is warm | M | P4 |
-| C10 | Claude Code release check | Every new Claude Code release runs a scripted session against staging within a day of release; the result goes on an internal status page before customers are told to upgrade | M | C1 |
-| C11 | Codex release check | The same for Codex | S | C2 |
 
 ## Gateway and account (VPS)
 
@@ -84,7 +82,7 @@ Each issue is one piece of work with a test that closes it. Sizes: **S** is up t
 
 | ID | Issue | Done when | Size | Needs |
 | --- | --- | --- | --- | --- |
-| M1 | MCP server at `/mcp` (§10) | Claude Code, Codex and Cursor each call every tool. `run` executes the test suite with the local diff applied on the sandbox host | L | P3, F3 |
+| M1 | MCP server at `/mcp` (§10) | Claude Code, Codex and OpenCode each call every tool. `run` executes the test suite with the local diff applied on the sandbox host | L | P3, F3 |
 | M2 | `sparkpipe mcp` stdio bridge | A client that only starts local servers uses every tool through it | S | M1, L1 |
 
 ## Draft models
@@ -106,22 +104,21 @@ Each issue is one piece of work with a test that closes it. Sizes: **S** is up t
 
 | ID | Issue | Done when | Size | Needs |
 | --- | --- | --- | --- | --- |
-| L1 | `sparkpipe` core | `login`, `keys`, `status`, `book`, `waitlist`, and `setup claude-code`, `setup codex` and `setup cursor` writing working configurations | M | G4 |
+| L1 | `sparkpipe` core | `login`, `keys`, `status`, `book` and `waitlist` | M | G4 |
 | L2 | The rest of §15 | Every command in §15, with tests against the sandbox service | M | grows with each component |
 | L3 | `sparkpipe proxy` | A tool that cannot set headers reaches the right fleet through `localhost`, with 429s retried | S | L1 |
 | L4 | Publishing | `pip install sparkpipe` installs the single-file CLI, built from this repository on each tagged release | S | L1 |
 
-## Harnesses
+## The three harnesses (§3.8)
 
 | ID | Issue | Done when | Size | Needs |
 | --- | --- | --- | --- | --- |
-| H1 | `sparkpipe setup` for every harness in §3.8 | Each writes a configuration with which that harness finishes a scripted 20-turn session with tools on Fleet 1 | M | L1, C1, C2 |
-| H2 | Release checks for every harness in §3.8 | A new release of any of them runs its scripted session against staging within a day; results on the internal status page | M | H1, C10 |
-| H3 | Gemini API shape | Gemini CLI finishes a scripted session through `:streamGenerateContent`, with cache hits after the first turn | L | C3 |
-| H4 | Responses-shaped bodies on chat completions | Cursor's agent mode finishes a scripted session through `/v1/chat/completions` | S | C2 |
-| H5 | Codex model catalogue | `GET /v1/codex/models` gives Codex our models' context windows and reasoning settings without any manual setting | S | C2 |
-| H6 | Claude Code hint headers | With `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`, compaction and auxiliary requests run at background priority | S | C1, E8 |
-| H7 | models.dev entries | OpenCode and Kilo Code pick up our models' context windows from models.dev | S | |
+| H1 | Claude Code: `sparkpipe setup claude-code`, the plugin (MCP server, slash commands, `SessionStart` warm-up hook, skill) and `sparkpipe statusline` | On a fresh machine, one command later Claude Code finishes a 50-turn task using the fleet's `run` and `search_code`. After a 3-hour pause and `--resume`, the hook has warmed the pack and the first turn is a cache hit | L | C1, M1, L1, E5 |
+| H2 | Codex: `sparkpipe setup codex` (profile, provider, subagent model, MCP) and `GET /v1/codex/models` | `codex --profile sparkpipe` finishes a scripted session with tools and MCP, and knows the context window from the catalogue with no manual setting | M | C2, M1, L1 |
+| H3 | Codex WebSocket transport on `/v1/responses` | Codex with `supports_websockets` finishes the same session over WebSocket; time per turn recorded against HTTP | M | C2 |
+| H4 | OpenCode: `sparkpipe setup opencode`, the plugin, and the models.dev entries | OpenCode, through its `@ai-sdk/anthropic` provider, finishes a scripted session with tools, MCP and cache hits after the first turn. Sharing is disabled and no request leaves for opencode.ai | M | C1, M1, L1 |
+| H5 | Hint headers and affinity keys | Claude Code's compaction and auxiliary requests run at background priority. Its session and agent ids, Codex's `prompt_cache_key` and OpenCode's session keep each conversation on its pack version and fleet | S | C1, C2, E8, C9 |
+| H6 | Release checks for the three | Each new release of Claude Code, Codex or OpenCode runs its scripted session against staging within a day: cache share, tool calls, MCP, subagents. The result goes on an internal status page before customers are told to upgrade | M | H1, H2, H4 |
 
 ## Site
 
