@@ -26,7 +26,9 @@ shared pool (owner, 2026-11-01).
 4. **Exclusivity.** A held fleet (a reserved hour or a locked plan) serves
    only its holder during held hours.
 
-A held hour is an hour an account holds on that fleet. Our own use (SparkPipe
+A held hour is an hour an account holds on that fleet: an hour of a weekly
+plan that pins the fleet, or an hour booked with HC on a fleet no plan pins.
+The Hour Market (release, resale, bids) is gone (owner, 2026-11-01). Our own use (SparkPipe
 Chat, the LAN door, operator tools) is one more account, `sparkpipe`, and
 follows the same rules: it wipes a customer's state when it starts, and it
 never runs during a held hour. There is no encryption at rest (owner,
@@ -181,10 +183,36 @@ which are being rewritten elsewhere:
 2. **Holder schedule.** `GET /market/fleets/<fleet>/holders?from=<slot>&to=<slot>`
    with a hub service token, answering
    `{"fleet": "...", "now": "...Z", "hours": [{"start": "2026-12-01T01:00Z", "account": "..."}]}`:
-   every held hour of that fleet in the window, reservations and locked-plan
-   hours alike. The hub asks for the last 25 hours through the next 25.
-3. **No shared pool.** The gateway forwards only an account's own held
+   every held hour of that fleet in the window, weekly-plan hours and
+   HC-booked hours alike. The hub asks for the last 25 hours through the
+   next 25.
+3. **Fleet on forwarded requests.** The gateway names the fleet it routes a
+   request to in `X-SparkPipe-Fleet`; the hub refuses a gateway request for
+   a fleet other than its own (400 `wrong_fleet`).
+4. **No shared pool.** The gateway forwards only an account's own held
    hours.
+
+### If a shared pool comes back
+
+With fleets rented whole, the wipe at a change of user is the isolation.
+A shared pool (several accounts on one fleet in the same hour) would need
+one of these, and the owner picks:
+
+- **Per-account salt (recommended).** The chat layer sends a per-account
+  secret with every request; the batch engine starts each identity digest
+  and each prefix-cache chain from it, so two accounts never share or time a
+  cached block. Ranks need no change, because they key everything by the
+  identity the coordinator computes. Cost: a system prompt common to many
+  accounts is cached and prefilled once per account instead of once, and the
+  prefix cache's prompt functions take the account's seed.
+- **Disclosure.** Accounts share cached prefixes, and the Agreement says
+  that another user of the same shared fleet can learn from `cached_tokens`
+  or the time to the first token whether a guessed prompt prefix was sent
+  recently. Matching is by 64-token blocks, so a guess that fills a known
+  template, such as a short secret inside a standard prompt, can be
+  confirmed.
+
+A dedicated fleet needs neither.
 
 ### Contract and invariant changes
 
