@@ -1499,7 +1499,12 @@ Metal backend and the single-Studio stage are in
     CUDA's `D41FrequencyKernel` op order, and the software E4M3 and E2M1
     rounders are checked against an enumerated grid, not against the PTX
     conversions on a GPU;
-  - the indexer weights and the dspark blocks are not packed.
+  - the indexer weights and the dspark blocks are not packed;
+  - the TP8 gate passes with Metal at +2.3 and +2.9 sigma on the paired test
+    (the limit is 3), further from the floor than the other TP8 models.
+    Each rank's BF16 partials of `o_b` and of the MoE before the all-reduce
+    are extra roundings the references do not have; a TP1 gate, or an FP32
+    all-reduce, would show whether they are the whole difference.
 - Define hardware profiles for one to eight Studios: memory, bandwidth, the
   Thunderbolt 5 island wiring, the bridge to the Sparks, power, and storage.
 - Add Thunderbolt 5 RDMA as a link class. Apple's verbs API (TN3205) offers

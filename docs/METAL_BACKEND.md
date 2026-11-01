@@ -1080,3 +1080,11 @@ chat turn and the FP32 teacher (variant b in the reversed reduction order):
     SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
         sh tools/metal_gates.sh deepseek-v4.1-flash PACKS/dsv41_flash.tp8.rank00.pack REFERENCE_DIR OUT REVISION
 
+The FP8 and FP4 round trips make the floor large: references a and b agree
+on the top-1 token at 88 to 96% of the positions and differ by a mean KL of
+0.048. The controls corrupt `kv`, whose rows feed every head's keys and
+values. Swapping rows 0 and 1 of `o_b` in every layer, which moves two of
+the 5,120 hidden channels, stayed within 1.2 times the floor's KL and +3.1
+sigma, as close to the floor as Metal itself; the same swap in `kv` fails
+at 1.75 and 1.67 times the floor and +9.0 and +11.2 sigma.
+

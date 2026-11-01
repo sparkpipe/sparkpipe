@@ -23,7 +23,7 @@ case $model in
 	solar-open-2) routed=0 prompt_dir=solar_open2 vocab=196608 probe=kda_out layer=13;;
 	hy4-preview) routed=0 prompt_dir=hy4 vocab=120832 probe=gate layer=11;;
 	glm-5.3-flash) routed=0 prompt_dir=glm53flash vocab=154880 probe=kda_out layer=12;;
-	deepseek-v4.1-flash) routed=0 prompt_dir=dsv41_flash vocab=129280 probe=o_b layer=11 sidecar=dsv41_flash.engram.pack;;
+	deepseek-v4.1-flash) routed=0 prompt_dir=dsv41_flash vocab=129280 probe=kv layer=11 sidecar=dsv41_flash.engram.pack;;
 	*) echo "unknown Metal model $model" >&2; exit 2;;
 esac
 greedy_tokens=${SPARK_GATE_GREEDY:-${greedy_tokens:-128}}
