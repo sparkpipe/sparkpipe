@@ -139,7 +139,9 @@ the agent, `~/sparkdata/weightd/sparkpipe_weightd` and
    installs the binary into `~/sparkdata/weightd/` (temp + `mv`) and restarts
    nothing (`:356-368`).
 3. `self_update` executes a changed `core/bin/fleet_node_agent.sh`
-   (`:370-379`).
+   (`:370-379`). Then `ensure_working_state` rebuilds a fresh disk once and
+   keeps the working-state mirror loop running on a paired rank
+   (section 2.4), whether or not weightd is ready.
 4. `node_doctor` flaps the netdev of `rocep1s0f1` when the port is not
    `PORT_ACTIVE` (`:381-395`). `janitor` sends `kill -9` to every duplicate
    engine in the same root that is more than 1800 s old, keeping the
@@ -215,6 +217,100 @@ The agent matches each root's residentd by its resolved cwd and exe, never by th
 Before starting a non-production root, the agent checks that at least 20 GiB of `MemAvailable` would remain. If not, it holds the root as `blocked-headroom`. The production root is never held.
 
 See [FLEET_AGENT_ROOTS.md](FLEET_AGENT_ROOTS.md).
+
+### 2.4 Working-state mirror and rebuild
+
+Each node mirrors its working state (KV snapshot files and the scratch area,
+[WORKING_STATE.md](WORKING_STATE.md)) to its pair partner, rank `R ^ 1`, at
+`10.10.200.<R ^ 1>` on the direct pair link. The tool is
+`tools/working_state_mirror.py`, published in the core root as
+`bin/working_state_mirror.py` (section 5) and run from
+`~/sparkdata/core/bin/`. Only ranks in the agent's `MESH_LINK_MAP` are
+mirrored; today it pairs all sixteen. An unpaired rank logs
+`its working state is not mirrored`, gets its scratch area from
+`working_state_mirror.py init`, and runs no loop.
+
+What the agent runs on a paired rank, from `ensure_working_state` in step 3
+of every pass (section 2.2), which comes before `ensure_weightd` and
+`ensure_root`:
+
+- In the agent's first pass that finds the tool (on a fresh node, the pass
+  whose core sync fetched it), `prepare_working_state` runs
+  `working_state_mirror.py rebuild` when `~/sparkdata/working-state/mirror/`
+  is missing: a fresh or replaced disk. The rebuild runs to its end inside
+  the pass, so no engine starts before it. A failed rebuild is logged and
+  the agent goes on; the loop retries it.
+- Every pass, `ensure_working_state` keeps one
+  `working_state_mirror.py loop --agent-pid <agent>` running (pid in
+  `~/.fleet_agent_working_state.pid`), replaces one that died, and restarts
+  it when the tool's sha changes (section 5.1). A self-update stops it
+  before `exec`; the loop also ends when the agent pid is gone.
+- The loop pushes every 30 s and logs one line per pass to the agent's
+  journal: `working-state: push to 10.10.200.5: 3 stores, 2 sent, 40 touched,
+  1 deleted; scratch 0 sent, 0 deleted; 0 failures (0.4s)`. A failed pass
+  names the rsync error and is retried on the next pass.
+
+What a push sends, with `rsync --archive --delete` over ssh:
+
+| Source | Copy on the partner | Compared by |
+| --- | --- | --- |
+| Snapshot stores: every directory under the home that holds `*.kvs`, `*.kvst`, `.kvs-writing-*` or `.kvs-lock`, found as weightd's purge finds them (one filesystem, no symlinks, depth 16), except `~/sparkdata/working-state/mirror` and `scratch`. Only the store's own `*.kvs` and `*.kvst` files go | `~/sparkdata/working-state/mirror/<R in hex>/<path under the home>/` | size only: the files are content-addressed, so a file that was used again gets its new time without a copy |
+| `~/sparkdata/working-state/scratch/` | `~/sparkdata/working-state/mirror/<R in hex>/sparkdata/working-state/scratch/` | size and time: customer files change in place |
+
+- Temporaries (`.kvs-writing-*`) and store locks are never mirrored.
+- A deleted file, a store that is gone and a scratch area that is gone
+  leave the mirror on the next push.
+- Times are kept, so each node's weightd purge deletes the copies it holds
+  for its partner by the same rule as the originals. A store deeper than 12
+  below the home is not mirrored and is logged as a failure: its copy would
+  sit deeper than the purge's 16.
+- A node whose `~/sparkdata/working-state/mirror/` is missing never pushes,
+  so a disk that was not rebuilt cannot erase the copy it needs. A push
+  never creates the partner's `~/sparkdata/working-state/mirror/` either; it
+  fails until the partner's own rebuild created it. Only `rebuild` (and
+  `init` on an unpaired rank) creates that directory. The hub's directive
+  also lives in `~/sparkdata/working-state/`, which is why `mirror/` and not
+  its parent marks a node as rebuilt.
+
+Each pair needs, in both directions: the node's SSH key authorized for the
+same user on its partner, `ssh -o BatchMode=yes 10.10.200.<partner> true`
+working, the direct pair link up (`ds4-direct-pair-fabric-apply`, rank
+address `10.10.200.<R>/31`) and `rsync` installed. The loop adds the
+partner's host key on first contact (`StrictHostKeyChecking=accept-new`).
+
+**Replacing a node or its disk.**
+
+1. On the partner, drop the old host key, which the new disk does not have:
+   `ssh-keygen -R 10.10.200.<R>`. Until then the partner's pushes fail on
+   the changed key, which keeps its copy of `R` intact.
+2. Bootstrap the node (section 7), including both SSH authorizations above.
+   Its agent finds no `~/sparkdata/working-state/mirror/` and rebuilds
+   before engines start. `journalctl --user -u fleet-agent | grep
+   working-state` shows `rebuild from 10.10.200.<partner>: N files restored
+   into S stores and scratch; 0 failures; area ready`, then a push line
+   every 30 s.
+3. To rebuild by hand, with the agent stopped or before its first start
+   (fetch `core/bin/working_state_mirror.py` from the hub as section 7 fetches
+   the agent if the node has no core yet):
+   `~/sparkdata/core/bin/working_state_mirror.py rebuild --rank <R>
+   --link-map '<MESH_LINK_MAP of the agent>'`. It pulls this rank's files
+   from the partner's mirror into their original paths, keeps times, never
+   overwrites a local file, and creates the scratch area and `mirror/` once
+   the partner answered. It skips, and exits 1 naming it, any store whose
+   `.kvs-lock` is held, which means an engine has that store open. Stop that
+   root with `touch <root>/agent.hold`
+   ([FLEET_AGENT_ROOTS.md](FLEET_AGENT_ROOTS.md#stopping-a-dev-root); in a
+   production root that is a planned outage), run `rebuild` again and remove
+   `agent.hold`.
+
+Files written in the 30 s before a node is lost are not in the mirror, and a
+pair that loses both nodes loses its mirror; a restore that misses files
+recomputes, as on any cache miss.
+
+**Disks.** There is no encryption at rest, and every Spark disk holds its
+partner's working state as well as its own. A Spark disk, working or failed,
+leaves the facility only after a secure erase (`nvme sanitize` or
+`nvme format --ses=1`); a disk that cannot be erased is destroyed on site.
 
 ## 3. weightd ownership
 
@@ -310,7 +406,8 @@ manual repair.
 ## 5. Releasing core: agent and weightd
 
 `~/release/core/` holds `bin/fleet_node_agent.sh`, `bin/sparkpipe_weightd`,
-`MANIFEST` (the `bin/` files only) and `WEIGHTSD_BIN`. On 2026-09-28 the hub
+`bin/working_state_mirror.py` (section 2.4), `MANIFEST` (the `bin/` files
+only) and `WEIGHTSD_BIN`. On 2026-09-28 the hub
 served agent `a05e207588da2cef` (origin/main) and weightd `3da98597a88b60b5`,
 which was the announced one. Write the core MANIFEST like this:
 
@@ -340,6 +437,17 @@ git show <SHA>:tools/fleet_node_agent.sh | ssh rtx5090 'set -e; cd ~/release/cor
 
 Then check the `agent` field in the heartbeats, and run
 `journalctl --user -u fleet-agent | grep self-updating` on a node.
+
+The working-state mirror tool is published the same way, from the same SHA,
+as `bin/working_state_mirror.py` with mode 755. Publish it before or together
+with an agent that calls it: a node fetches every changed MANIFEST entry
+before `self_update` runs, so one MANIFEST write delivers both. When the
+tool's sha changes, `ensure_working_state` stops the running loop (TERM,
+which also ends its rsync; up to 15 s, then `kill -9`) and starts the new
+file on the same pass, so a tool publish needs no agent change. Check it with
+`journalctl --user -u fleet-agent | grep 'working_state_mirror.py changed'`.
+An agent without the tool logs `working_state_mirror.py is missing` once and
+serves without a scratch area, rebuild or mirror.
 
 ### 5.2 weightd
 
@@ -472,6 +580,9 @@ To bootstrap one node:
    - `sparkpipe-hub-route.service` (section 1);
    - the node's SSH key is authorized for `spec@100.123.97.61` (the agent adds
      the host key itself, `:215-217`);
+   - the node and its pair partner can ssh to each other over the direct pair
+     link without a prompt, and a replaced node's old host key is gone from
+     the partner (section 2.4);
    - linger is enabled for the user (section 2.1);
    - the root's packs are in `~/sparkdata/<root>/packs/`, because the channel
      never syncs packs.
@@ -481,8 +592,10 @@ To bootstrap one node:
    `systemctl --user daemon-reload && systemctl --user enable --now fleet-agent`.
 4. The agent then takes over:
    1. it syncs core and installs the announced weightd;
-   2. it starts weightd and syncs the root;
-   3. it waits for the mesh and starts the engine once the node has been up
+   2. it rebuilds the node's working state from its pair partner (section
+      2.4) and starts the mirror loop;
+   3. it starts weightd and syncs the root;
+   4. it waits for the mesh and starts the engine once the node has been up
       for 5 minutes, unless the boot-loop breaker holds it in safe mode.
 
 ## 8. Triage

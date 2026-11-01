@@ -396,6 +396,8 @@ PYTHON_TESTS := \
 	tests/test_fleet_agent_boot_breaker.py \
 	tests/test_roce_qos_contract.py \
 	tests/test_fleet_agent_multi_root.py \
+	tests/test_fleet_agent_working_state.py \
+	tests/test_working_state_mirror.py \
 	tests/test_ab_fleet.py \
 	tests/test_ab_campaign_plans.py \
 	tests/test_spark_queue.py \

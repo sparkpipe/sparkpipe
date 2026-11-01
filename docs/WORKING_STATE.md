@@ -130,19 +130,36 @@ builds the area, the rule and the mirror.
 
 ### Pair mirror and rebuild
 
-`tools/working_state_mirror.py` runs on every node from the node agent. Every
-30 s it pushes the node's snapshot stores (found as weightd's purge finds
-them) and its scratch area to the partner's
-`~/sparkdata/working-state/mirror/<rank>/` over the direct pair link
-(`10.10.200.<rank ^ 1>`) with `rsync --archive --delete`, skipping
-temporaries and store locks. Snapshot files are content-addressed, so they
-are compared by size only and an unchanged file gets just its time; scratch
-files are compared by size and time. Times are kept, so the partner deletes
-a mirrored file by the same rule, and deletions reach it on the next push.
-A replaced node runs `rebuild` before its engines start: it pulls its own
-files back from the partner's mirror into stores whose lock nobody holds.
-Files written in the 30 s before a node is lost are not in the mirror; a
-restore that misses them recomputes, as on any cache miss.
+`tools/working_state_mirror.py` runs from the node agent on every rank that
+the agent's `MESH_LINK_MAP` pairs (today all sixteen; an unpaired rank logs
+that it is not mirrored and only gets its scratch area). Every 30 s it pushes
+the node's snapshot stores (found as weightd's purge finds them, except the
+copies it holds for its partner and the scratch area) and its scratch area to
+the partner's `~/sparkdata/working-state/mirror/<rank in hex>/<path under the
+home>` over the direct pair link (`10.10.200.<rank ^ 1>`) with
+`rsync --archive --delete`, skipping temporaries and store locks. Only a
+store's `*.kvs` and `*.kvst` files go. Snapshot files are content-addressed,
+so they are compared by size only and an unchanged file gets just its time;
+scratch files are compared by size and time. Times are kept, so the partner
+deletes a mirrored file by the same rule, and deletions, including a store
+or a scratch area that is gone, reach it on the next push. A store deeper
+than 12 below the home is not mirrored: its copy would sit deeper than the
+purge's 16. weightd applies the scratch rule to each mirrored scratch area
+(`mirror/<rank>/sparkdata/working-state/scratch/`, by its mirrored
+`.last-use`) as to its own, so a copy whose node is gone is still deleted.
+
+A node is rebuilt when its `~/sparkdata/working-state/mirror/` exists. Only
+`rebuild` creates it, together with the scratch area and its `.last-use`
+stamp, once the partner answered. The hub's directive does not mark a node
+as rebuilt, because it also lives in `~/sparkdata/working-state/`. A node
+that is not rebuilt never pushes, and a push never creates the partner's
+`mirror/`, so a fresh disk can neither erase its copy on the partner nor
+receive one before its own rebuild. The agent runs `rebuild` in its first
+pass that has the tool, before any engine starts: it pulls the rank's own
+files back from the partner's mirror into their original paths with their
+times, never overwrites a local file, and skips (exit 1) any store whose
+lock someone holds. Files written in the 30 s before a node is lost are not
+in the mirror; a restore that misses them recomputes, as on any cache miss.
 
 Room: the 4 TB has no space for a second copy, so the 1 TB KV allocation is
 500 GB of the node's own snapshot stores plus 500 GB of its partner's, and
