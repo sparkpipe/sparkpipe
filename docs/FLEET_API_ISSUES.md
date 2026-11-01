@@ -62,13 +62,13 @@ Each issue is one piece of work with a test that closes it. Sizes: **S** is up t
 | --- | --- | --- | --- | --- |
 | P1 | Customer storage service on the nodes' scratch area | `PUT`, `GET`, `DELETE` and list with resumable chunks, a 4 TB quota and the working-state deletion rule; a 50 GB upload resumes after a cut | L | E1 |
 | P2 | Fetch (§6.1) | A 1.5 TB Hugging Face model at a pinned revision is fetched across the fleet's nodes with parallel ranges, survives a cut connection, matches every published SHA-256, and lands in storage without passing through the VPS. `--then pack` puts it in the model list | L | P1, P8, P9 |
-| P8 | Stored credentials (§6.2) | Values are write-only, bound to hosts, encrypted at rest with a per-account key, used only by fetch, sync and backup unless a run names them, audited on every use, and deleted on request, on expiry or when the account closes. A Hugging Face token is never sent to another host, even through a redirect | M | G6 |
+| P8 | Tokens stay with the customer (§6.2) | The token arrives with the request and is held only in the fetch worker's memory. A disk and log scan after a fetch finds no trace of it, and it is never sent to any host but the source's, even through a redirect. A worker restart pauses the fetch and `fetch resume` continues it. The CLI keeps tokens in the OS keychain | M | |
 | P9 | Egress guard for fetch | Requests to private, loopback and link-local addresses, to our own hosts, and redirects to any of them are refused. DNS answers are pinned per connection. A test suite of rebinding and redirect attacks passes | M | |
-| P3 | Repository ingest | Clone and pull with a token, a push webhook, and a tree-sitter symbol index plus a semantic index built on the sandbox host; a 1M-line repository is ingested in under an hour | L | P1, F3 |
+| P3 | Repositories pushed to the fleet | `git push` to `/git/{repo}.git` with the SparkPipe key updates the fleet's copy, and each push triggers the scheduled refreshes. A tree-sitter symbol index and a semantic index are built on the sandbox host, and a 1M-line repository is indexed in under an hour | L | P1, F3 |
 | P4 | Pack builder | Least-changed files first, deterministic rendering, budget and versions; the same commit always gives the same tokens | M | P3 |
 | P5 | Pack refresh and warm-up | After a push, the new version is warm in the background, and only the part after the first changed file is prefilled again | M | P4, E5, E8 |
 | P6 | Export and restore | An archive of storage, drafters and pack definitions restores on another fleet | M | P1 |
-| P7 | Daily backup | Changed files are pushed every day to S3, HTTPS or SFTP, and a run appears in the morning report | M | P1, F1 |
+| P7 | Daily backup by pull | `GET /v1/storage/changes` and `sparkpipe storage sync` copy only the day's changes to a local directory or a bucket the customer's machine writes to; the morning report shows each path's last pull | M | P1, L1 |
 
 ## Functions and the sandbox host
 
