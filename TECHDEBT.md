@@ -557,32 +557,27 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   lane rejoins, so a lane is parked and restored page by page rather than as
   one contiguous transfer. Close it with a fleet backpressure run at 2x device
   pages where parked lanes restore bit-exact at B1 and B16.
-- An identical resend, or a regenerate, of a K3 prompt prefilled by the
-  streamed (pass) prefill recomputes it from token 0 once its pages have
-  left the device (after a restart, a swap or an eviction). The pass computes
-  the whole prompt in one pass and leaves only the final KDA state in the
-  lane's slot, so no state lands on the 16,384-token stride
-  (`cache_checkpoint_token_count`) below the prompt's end, and the API finds
-  no resume point. A follow-up turn is not affected: the release saves the
-  sequence's newest state with its pages, and the follow-up resumes there.
-  On 2026-11-01, before that release save, ten 134K-token conversations left
-  12,900 page files and no state, and both the oldest and the newest resent
-  after a swap with `cached_tokens` 0 in 132 s and 129 s, the same as their
-  first prefill. The pass already holds a usable checkpoint: when
-  `K3StreamedKdaNode` composes the gathered node summaries in order, every
-  rank has its own head shard's state at each node boundary, and the
-  gathered convolution tails give the windows there, so the start of the last
-  node's rows (126,720 for a 133,656-token prompt, a whole number of pages)
-  costs one copy per KDA layer. Two parts are missing: the stage runner has no
-  way to hand that state to the binding as the checkpoint of its page (the
-  binding stages only the lane's current state), and the API marks a deferred
-  block stateless when it sends it and learns no resume point afterwards. Close
-  it by capturing that state in the pass, staging it through the binding,
-  reporting the checkpoint in the completion of the wave after the deferred
-  tokens so the API marks the block resumable, and proving it with the same
-  resend restoring with `cached_tokens` at the boundary and tokens equal to the
-  first run. Splitting the deferral at a stride multiple instead would run up
-  to 16,383 tail tokens as waves at long context on every long prompt.
+- A K3 reply's own end is never a resume point. The chat template stops on
+  `<|close|>`, which is not one of the engine's stop tokens, so the API cancels
+  the request when the marker arrives. A cancelled reply publishes no tail and
+  its state is never saved. On 2026-11-01 three 134K-token conversations
+  ended this way (three cancels in flight in the hub API log), and every rank
+  closed with `states records=0`. A follow-up turn therefore resumes at the
+  previous prompt's checkpoint and recomputes the reply. Close it by passing
+  a request's stop markers to the engine as stop tokens, so the reply
+  completes, publishes its tail and the release saves the state.
+- The streamed (pass) prefill keeps no state on the 16,384-token stride
+  inside its pass. Only its prompt checkpoint, one token before the end,
+  carries one. A prompt that diverges from a published one before that
+  checkpoint therefore recomputes from the newest state before the
+  divergence, which for a single long turn is token 0. An example is an
+  edited message in one long turn. The pass already holds those states:
+  `K3StreamedKdaNode` composes the gathered node summaries in order, so every
+  rank has its own head shard's state at each node boundary, and the gathered
+  convolution tails give the windows there. Close it by capturing the states
+  at the node boundaries that land on the stride, staging each through the
+  binding as the checkpoint of its page, and reporting them in the
+  completion so the API marks those blocks resumable.
 - The KV snapshot tier is proven on the fleet only at its old 8 GiB budget.
   The hub API's `kv_store_report` lines up to 2026-11-01 show restores from
   it with no misses: K3 restored 16,241 pages (about 1.04M tokens) on one rank

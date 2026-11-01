@@ -217,7 +217,10 @@ second of steps after a stop token.
 `streamed_prefill` (Kimi K3 today), a prompt of at least
 `streamed_prefill_min_tokens` tokens takes a different path:
 - Every token but the last runs through the streamed prefill. The last token
-  then runs as a one-row wave that samples.
+  then runs as a one-row wave that samples. On a model with recurrent state
+  the streamed prefill stops one token earlier: the token before the last
+  runs as a one-row wave whose state is the prompt's checkpoint, then the last
+  token samples.
 - Each node takes a contiguous slice of every pass's tokens. The streamer
   brings every layer's weights through a window, so a pass can hold
   16,384–32,768 rows a node. The deferred tokens are split evenly over the
@@ -319,12 +322,17 @@ the new file, and refuses the write when nothing is left to evict, so KV never
 fills the system drive.
 
 For a model with recurrent state (K3's KDA layers, GLM-5.3 Flash's linear
-attention), a resume point is a page with its state saved beside it: one
-state on every checkpoint stride (`cache_checkpoint_token_count`, 16,384
-tokens for K3, 4,096 for GLM-5.3 Flash) and the newest state of every
-released sequence. The release saves that newest state with the pages, so a
-follow-up turn resumes at the end of the previous one after a restart or a
-model swap.
+attention), a resume point is a page with its state saved beside it:
+- one state on every checkpoint stride (`cache_checkpoint_token_count`,
+  16,384 tokens for K3, 4,096 for GLM-5.3 Flash);
+- the prompt checkpoint, one token before each prompt's end, which the store
+  writes as soon as its wave publishes it;
+- the newest state of a sequence whose reply ends on an engine stop token or
+  its token budget, which the release saves with the pages.
+
+After a restart or a model swap, a repeated prompt resumes one token before
+its end, and a follow-up turn resumes at the newest of these points on its
+path.
 
 **Sharding.** The fleet stores 1/N of the cache on each of N nodes:
 
