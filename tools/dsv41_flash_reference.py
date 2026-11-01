@@ -7,13 +7,15 @@
              chat turn (thinking off) -> --out prompts.json
   teacher    FP32 logits of every prompt position but the last:
              --prompts prompts.json -> --out DIR/<name>.ref_<v>.logits for
-             --variants a,b, through tools/ling3_reference.py's teacher: a
-             multiplies in numpy's order; b splits every matmul's inner
-             dimension into 1,024-wide chunks summed last chunk first,
+             --variants a,h (or b), through tools/ling3_reference.py's
+             teacher: a multiplies in numpy's order; b splits every matmul's
+             inner dimension into 1,024-wide chunks summed last chunk first,
              reverses the other reductions (norms, mixes, softmax, Sinkhorn
              and engram sums, the route weight sum, the stream sums) and
              combines the routed experts in reverse pick order, so a against
-             b is the FP32 reduction-order floor
+             b is the FP32 reduction-order noise; h is b with a GPU's exp
+             error (tools/reference_device_error.py), and a against h is the
+             gate's floor
 
 Every prompt is its own sequence at positions 0..n-1. A position at or past
 index_topk (512) is refused: below it the sparse indexer keeps every
@@ -81,6 +83,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ling3_reference as base  # noqa: E402
+import reference_device_error as device  # noqa: E402
 from dsv41_flash_engram_tables import tables as engram_tables  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -409,7 +412,7 @@ class Reference:
         pre = base.sigmoid(mixes[:, :n] * scale[0] + bias[:n]) + self.hc_epsilon
         post = POST_GAIN * base.sigmoid(mixes[:, n:2 * n] * scale[1] + bias[n:2 * n])
         logits = mixes[:, 2 * n:].reshape(rows, n, n) * scale[2] + bias[2 * n:].reshape(n, n)
-        comb = np.exp(logits - logits.max(axis=-1, keepdims=True))
+        comb = device.exp(logits - logits.max(axis=-1, keepdims=True))
         comb = comb / base.reduce_sum(comb, axis=-1) + self.hc_epsilon
         for iteration in range(self.sinkhorn):
             if iteration != 0:
@@ -489,7 +492,7 @@ class Reference:
                 ends = np.arange(first + 1, last, 2)
                 left, right = scores[ends - 1], scores[ends]
                 top = np.maximum(left, right)
-                early, late = np.exp(left - top), np.exp(right - top)
+                early, late = device.exp(left - top), device.exp(right - top)
                 pooled = base.bf16((values[ends - 1] * early + values[ends] * late) / (early + late))
                 starts = ends - 1 - first
             else:
@@ -511,8 +514,8 @@ class Reference:
         scores = base.matmul(query.transpose(1, 0, 2), keys.T) * scale
         scores = np.where(allowed[None], scores, np.float32(-np.inf))
         top = np.maximum(scores.max(axis=-1, keepdims=True), sinks[:, None, None])
-        weights = np.exp(scores - top)
-        total = base.reduce_sum(weights) + np.exp(sinks[:, None, None] - top)
+        weights = device.exp(scores - top)
+        total = base.reduce_sum(weights) + device.exp(sinks[:, None, None] - top)
         return (base.matmul(weights, keys) / total).transpose(1, 0, 2)
 
     def attention(self, layer, normed, positions, bounds, compressed):
@@ -563,8 +566,8 @@ class Reference:
 
     def route(self, f, normed):
         logits = base.matmul(normed, self.widened(f + "gate.weight", self.experts, self.hidden).T)
-        with np.errstate(over="ignore"):
-            softplus = np.where(logits > SOFTPLUS_LINEAR, logits, np.log1p(np.exp(logits)))
+        with np.errstate(over="ignore", invalid="ignore"):
+            softplus = np.where(logits > SOFTPLUS_LINEAR, logits, np.log1p(device.exp(logits)))
         scores = np.sqrt(np.maximum(softplus, np.float32(0.0)))
         selection = scores + self.f32(f + "gate.bias", self.experts)[None, :]
         chosen = np.argsort(-selection, axis=-1, kind="stable")[:, :self.top_k]
@@ -645,11 +648,11 @@ def main():
     parser.add_argument("mode", choices=("gate-prompts", "teacher"))
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--prompts")
-    parser.add_argument("--variants", default="a,b")
+    parser.add_argument("--variants", default="a,h")
     parser.add_argument("--template", default=str(ROOT / "model-families/dsv41_flash/chat_template.json"))
     parser.add_argument("--token-map", default=str(ROOT / "qualification/t1_reference/dsv41/engram_token_map.npy"),
                         help="the engram vocabulary -> compressed id map (tools/dsv41_flash_engram_tables.py's)")
-    parser.add_argument("--dump", help="teacher: write the embedding and every layer's streams for all rows to PATH.a.npz / PATH.b.npz")
+    parser.add_argument("--dump", help="teacher: write the embedding and every layer's streams for all rows to PATH.<variant>.npz")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     if args.mode == "gate-prompts":

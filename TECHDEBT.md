@@ -1453,8 +1453,10 @@ Metal backend and the single-Studio stage are in
   test fails, by the worse leg, for Gemma 4 31B (+4.8 sigma), Muse Glimmer
   (+3.4), MiMo Flash (+5.2), MiMo Pro (+5.8), Laguna (+3.3), K-EXAONE 2.0
   (+8.5), HY4 (+4.1) and Solar Open 2 (+5.1); GLM 5.3 Full waits for its
-  reference and Kimi K3 for its pack and reference. The Metal backends for
-  DeepSeek V4.1 Flash and Qwen 3.8 Max are in progress.
+  reference and Kimi K3 for its pack and reference. DeepSeek V4.1 Flash
+  passes against references a and h (KL 1.10 and 0.98 times the floor's,
+  paired +2.0 and +1.2 sigma). The Metal backend for Qwen 3.8 Max is in
+  progress.
 - HY4 on the Studio (`HyDevice<Hy4Device>`): the DSA indexer (`index_q`,
   `index_k` with its LayerNorm, the ReLU-weighted head scores, the exact
   top-2,048 per rank and over the gathered candidates, the second KV pool

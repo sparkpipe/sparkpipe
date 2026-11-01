@@ -1141,15 +1141,18 @@ exactly dense. The gate prompts are therefore 496 tokens.
 38 GB each: the official FP8 bytes with the 32 x 32 UE8M0 block scales
 repeated per row, the MXFP4 expert planes, the hash tables) and the engram
 file; `tools/dsv41_flash_reference.py` gives the gate prompts in the model's
-chat turn and the FP32 teacher (variant b in the reversed reduction order):
+chat turn and the FP32 teacher:
 
     SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
         sh tools/metal_gates.sh deepseek-v4.1-flash PACKS/dsv41_flash.tp8.rank00.pack REFERENCE_DIR OUT REVISION
 
-The FP8 and FP4 round trips make the floor large: references a and b agree
+The FP8 and FP4 round trips make the floor large: references a and h agree
 on the top-1 token at 88 to 96% of the positions and differ by a mean KL of
-0.048. The controls corrupt `kv`, whose rows feed every head's keys and
-values. Swapping rows 0 and 1 of `o_b` in every layer, which moves two of
-the 5,120 hidden channels, stayed within 1.2 times the floor's KL and +3.1
-sigma, as close to the floor as Metal itself; the same swap in `kv` fails
-at 1.75 and 1.67 times the floor and +9.0 and +11.2 sigma.
+0.051 (a and b: 0.048). Metal is 1.10 and 0.98 times that KL from a and h,
+at +2.0 and +1.2 sigma. The controls corrupt `kv`, whose rows feed every
+head's keys and values: swapping rows 0 and 1 in every layer fails at 1.64
+and 1.60 times the floor and +8.0 and +15.5 sigma, rotating layer 11's rows
+at 2.53 and 2.35 times and +20.7 and +23.6 sigma. The same swap in layer
+11 alone stays at +2.4 and +1.1 sigma, and in every layer's `o_b`, which
+moves two of the 5,120 hidden channels, it stayed within 1.2 times the a
+and b floor's KL and +3.1 sigma: as close to the floor as Metal itself.
