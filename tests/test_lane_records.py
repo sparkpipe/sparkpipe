@@ -33,6 +33,9 @@ def main():
         pass
     finally:
         lane_config.record = original
+    partition_reserve = document.get("kv_partition_reserve_bytes", 0)
+    if not isinstance(partition_reserve, int) or not 1 << 30 <= partition_reserve < 1 << 42:
+        failures.append(f"kv_partition_reserve_bytes {partition_reserve!r}: every node needs a finite reserve the KV snapshot stores keep free")
     for missing in sorted(set(swap) - set(lanes)):
         failures.append(f"{missing}: the swap controller serves it but deployment/lanes.json has no record")
     for extra in sorted(set(lanes) - set(swap)):

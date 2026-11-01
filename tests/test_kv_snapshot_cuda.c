@@ -13,6 +13,7 @@
 #include "sparkpipe/spark_kv_snapshot.h"
 
 #define CUDA_PAGES 64u
+#define CUDA_SNAPSHOT_RESERVE (UINT64_C(1) << 20)
 #define CUDA_BLOCK_TOKENS 64u
 #define CUDA_HEAD_DIM 128u
 #define CUDA_KEY_BYTES (CUDA_BLOCK_TOKENS * CUDA_HEAD_DIM * 4u)
@@ -356,7 +357,8 @@ static void CudaRemoveTree(const char *directory)
 		if ( item->d_name[0] == '.' && (item->d_name[1] == '\0' || (item->d_name[1] == '.' && item->d_name[2] == '\0')) )
 			continue;
 		snprintf(path,sizeof(path),"%s/%s",directory,item->d_name);
-		unlink(path);
+		if ( unlink(path) != 0 )
+			CudaRemoveTree(path);
 	}
 	closedir(listing);
 	rmdir(directory);
@@ -379,7 +381,7 @@ int main(int argc,char **argv)
 	snprintf(directory,sizeof(directory),"%s/kv-snapshot-cuda-XXXXXX",argv[1]);
 	if ( mkdtemp(directory) == 0 )
 		return(2);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u,CUDA_SNAPSHOT_RESERVE) == SPARK_STATUS_OK);
 	CHECK(CudaEngineOpen(&source,&store) == 0);
 	result = CudaPrefillPrompt(&source,logits_source,&prefill_ns);
 	CHECK(result == 0 && SparkKvPageCacheSaveDrain(&source.cache) == SPARK_STATUS_OK && SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK);
@@ -387,7 +389,7 @@ int main(int argc,char **argv)
 	CudaEngineClose(&source);
 	SparkKvSnapshotStoreClose(&store);
 
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u) == SPARK_STATUS_OK && store.file_count == CUDA_PROMPT_PAGES);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u,CUDA_SNAPSHOT_RESERVE) == SPARK_STATUS_OK && store.file_count == CUDA_PROMPT_PAGES);
 	CHECK(CudaEngineOpen(&fresh,&store) == 0);
 	result = CudaRestorePrompt(&fresh,logits_restored,&restore_ns);
 	CHECK(result == 0);
@@ -399,7 +401,7 @@ int main(int argc,char **argv)
 	CudaEngineClose(&fresh);
 	SparkKvSnapshotStoreClose(&store);
 
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u,CUDA_SNAPSHOT_RESERVE) == SPARK_STATUS_OK);
 	CHECK(CudaEngineOpen(&cold,&store) == 0);
 	cold.snapshot.layout_sha256[0] ^= 1u;
 	result = CudaPrefillPrompt(&cold,logits_cold,&cold_ns);
