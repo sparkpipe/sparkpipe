@@ -21,8 +21,9 @@ Rank r of T holds, bf16 unless noted:
                       and attn_kv_norm (f32) replicated; attn_q_b = wq_b rows of
                       the rank's query heads; attn_gate = wq_b_gate rows,
                       attn_lambda = lambda_proj rows and attn_out = wo columns
-                      of the rank's signal heads; attn_kv_b = wkv_b rows of the
-                      rank's KV heads
+                      of the rank's signal heads; per query head, from its KV
+                      head's wkv_b rows: attn_uk = the key block transposed
+                      [512, 128] and attn_uv = the value block [128, 512]
   dense MLP (0, 1)    on rank layer % T only: ffn_gate_up = gate_proj|up_proj,
                       ffn_down, ffn_poly = [w0, w1, w2, bias] f32
   MoE (2..52)         router_proj and expert_bias (f32) replicated; experts
@@ -159,12 +160,14 @@ def pack_layer(checkpoint, packs, g, layer):
     for rank in packs.ranks:
         heads = slice(rank * groups * g["group"], (rank + 1) * groups * g["group"])
         signal = slice(rank * groups * g["signal"], (rank + 1) * groups * g["signal"])
-        kv = slice(rank * groups, (rank + 1) * groups)
         packs.add(rank, name + "attn_q_b", q_b.reshape(g["heads"], g["head_dim"], -1)[heads].reshape(-1, g["q_lora"]), "bf16")
         packs.add(rank, name + "attn_gate", gate.reshape(signal_total, g["value_dim"], -1)[signal].reshape(-1, g["q_lora"]), "bf16")
         packs.add(rank, name + "attn_lambda", lam[signal], "bf16")
         packs.add(rank, name + "attn_out", out.reshape(hidden, signal_total, g["value_dim"])[:, signal].reshape(hidden, -1), "bf16")
-        packs.add(rank, name + "attn_kv_b", kv_b.reshape(g["kv_heads"], g["nope"] + g["value_dim"], -1)[kv].reshape(-1, g["latent"]), "bf16")
+        per_kv = kv_b.reshape(g["kv_heads"], g["nope"] + g["value_dim"], g["latent"])
+        owners = [head // g["group"] for head in range(heads.start, heads.stop)]
+        packs.add(rank, name + "attn_uk", np.stack([per_kv[kv_head, :g["nope"]].T for kv_head in owners]), "bf16")
+        packs.add(rank, name + "attn_uv", np.stack([per_kv[kv_head, g["nope"]:] for kv_head in owners]), "bf16")
     owner = layer % TP
     if layer < g["first_routed"]:
         m, inter = p + "mlp.", g["dense_inter"]

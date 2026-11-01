@@ -131,7 +131,10 @@ class MotifPackTest(unittest.TestCase):
             out = self.tensor(a + "wo.weight").reshape(G["hidden"], -1, G["value"])
             np.testing.assert_array_equal(packed["layers.1.attn_out"], np.concatenate([out[:, s] for s in signal], axis=1))
             kv_b = self.tensor(a + "wkv_b.weight").reshape(G["kv"], G["nope"] + G["value"], -1)
-            np.testing.assert_array_equal(packed["layers.1.attn_kv_b"], np.concatenate([kv_b[k] for k in range(rank * groups, (rank + 1) * groups)]))
+            owners = [head // G["group"] for head in heads]
+            np.testing.assert_array_equal(packed["layers.1.attn_uk"], np.stack([kv_b[k, :G["nope"]].T for k in owners]))
+            np.testing.assert_array_equal(packed["layers.1.attn_uv"], np.stack([kv_b[k, G["nope"]:] for k in owners]))
+            self.assertEqual(packed["layers.1.attn_uk"].shape, (len(heads), G["latent"], G["nope"]))
             np.testing.assert_array_equal(packed["layers.1.attn_q_a"], self.tensor(a + "wq_a.weight"))
 
     def test_experts_are_whole_and_local(self):
