@@ -36,13 +36,13 @@ These Rules are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 ## 4. Our capacity
 
-4.1. Every hour of a serving Fleet that nobody holds rests as our ask, from the first date we offer: at the Fleet's Rate up to 7 days ahead and, more than 7 and up to 31 days ahead, at the **advance price**, the Fleet's Rate times the advance multiplier under clauses 9.3 and 14.1 of the Customer Agreement. Hours further ahead are offered only as released hours. Capacity kept under clause 4.3 is offered only as that clause allows, hours under maintenance announced under clause 4.6 of the Customer Agreement are not offered, and an hour that clause 14.2 of the Customer Agreement keeps for HC that lapses sooner can be bought only with such HC until 6 hours before it starts.
+4.1. Every hour of a serving Fleet that nobody holds rests as our ask, from the first date we offer and up to 31 days ahead, at the Fleet's Rate under clause 14.1 of the Customer Agreement. Hours further ahead are offered only as released hours. Capacity kept under clause 4.3 is offered only as that clause allows, hours under maintenance announced under clause 4.6 of the Customer Agreement are not offered, and an hour that clause 14.2 of the Customer Agreement keeps for HC that lapses sooner can be bought only with such HC until 6 hours before it starts.
 
 4.2. We never bid, and we never use information about any Customer's orders to trade against it.
 
 4.3. **Capacity kept for Plan Orders.** Until 6 hours before each hour starts, we keep off sale the capacity that Plan Orders guarantee their holders (clause 18 of the Customer Agreement). From then on, any of it they have not reserved rests as our ask under clause 4.1. A locked Fleet is never offered (clause 19 of the Customer Agreement).
 
-4.4. **HC on sale.** We sell HC only as far as clause 13.4 of the Customer Agreement allows, and publish the HC still on sale on the Hour Market page and under clause 11.
+4.4. **HC on sale.** We sell HC only as far as clause 13.4 of the Customer Agreement allows, and publish the HC still on sale on our website and under clause 11.
 
 ## 5. Matching
 
@@ -50,7 +50,7 @@ These Rules are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 5.2. An order fills from the cheapest asks within its limits. At equal prices, released hours fill before our capacity, and earlier releases before later ones; otherwise earlier hours fill first. Older bids are matched before newer ones. A consecutive bid takes the run of hours with the lowest total price, and of equal runs the earliest.
 
-5.3. A trade with our capacity is made at our ask: the Fleet's Rate, or the advance price (clause 4.1). A trade between a bid and a release is made at the price of the order that was resting first: the release's minimum price if the release came first, and the bid's maximum price if the bid came first.
+5.3. A trade with our capacity is made at our ask: the Fleet's Rate (clause 4.1). A trade between a bid and a release is made at the price of the order that was resting first: the release's minimum price if the release came first, and the bid's maximum price if the bid came first.
 
 ## 6. Settlement
 
@@ -64,11 +64,13 @@ These Rules are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 7.1. A released hour still unsold when it starts joins the shared pool for that hour, and its release ends.
 
-7.2. **Pool price.** The price of a seat-second in the shared pool is 1 HC divided by the seat-seconds of one pooled Fleet in an hour, which are the seats per Fleet we publish (8 today) times 3,600, multiplied by a factor between the minimum and maximum we publish (0.5 and 3 today) that we set about once a minute from the share of the pool's seats used in the minute before. We post the current price for each model on the Hour Market page and under clause 11.
+7.2. **Pool price.** The price of a seat-second in the shared pool is 1 HC divided by the seat-seconds of one pooled Fleet in an hour, which are the seats per Fleet we publish times 3,600, multiplied by a factor between the minimum and maximum we publish that we set about once a minute from the share of the pool's seats used in the minute before. We post the current price for each model on our website and under clause 11.
 
-7.3. The HC charged for pool requests in an hour is allocated first to the released hours in the pool, earliest release first, each up to its Fleet's seat-seconds for the hour, and then to our own Fleets.
+7.3. The HC charged for the seat-seconds of pool requests in an hour is allocated first to the released hours in the pool, earliest release first, each up to its Fleet's seat-seconds for the hour, and then to our own Fleets.
 
 7.4. After the hour ends, the seller of a released hour in the pool is credited the HC allocated to it, less the release fee, rounded down to six decimal places, as a new lot of HC under clause 13.3 of the Customer Agreement. The credit may be zero.
+
+7.5. A pool request that uses an accelerator holds no seat, and pays no seat-seconds, while it waits for or is computed on the accelerator. It takes a seat when the accelerator hands its computed prompt back to the Fleet, or when its prompt is computed on its Fleet without an accelerator under clause 4.11 of the Customer Agreement. A pool request for a model that its Fleet must first load holds no seat, and pays no seat-seconds, while the Fleet loads that model, and takes a seat when the Fleet serves it.
 
 ## 8. Prearranged trades
 
@@ -76,19 +78,19 @@ These Rules are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 ## 9. Release fee
 
-9.1. We deduct a **release fee** from each sale of a released hour and from each pool credit for one: a percentage of the price or of the HC allocated, which we publish on our website. It is 10% at the date of these Rules. Releasing, bidding and cancelling are free.
+9.1. We deduct a **release fee** from each sale of a released hour and from each pool credit for one: a percentage of the price or of the HC allocated, which we publish on our website. Each release bears the release fee published when Customer releases the hour. Releasing, bidding and cancelling are free.
 
-9.2. The release fee is a published setting, and a change of it applies as clause 9.3 of the Customer Agreement provides.
+9.2. The release fee is a published setting under clause 9.3 of the Customer Agreement. A change of it applies to every hour released after we publish it, including an hour reserved with Plan hours.
 
 ## 10. Records
 
-10.1. Every order, cancellation, trade, hold, credit and pool charge is recorded as a line in our append-only, hash-chained ledger. Customer may download its own ledger lines, with their hashes, while signed in to its account.
+10.1. Every order, cancellation, trade, hold, credit, pool charge and accelerator charge is recorded as a line in our append-only, hash-chained ledger. Customer may download its own ledger lines, with their hashes, while signed in to its account.
 
 10.2. These records are conclusive, except for manifest error.
 
 ## 11. Market data
 
-11.1. We publish, without any account number, name or other identity: for each hour of each Fleet up to 31 days ahead, the best ask, whether it is ours or a release, and the best bid; the HC still on sale (clause 4.4); the open releases and bids; recent trades, with their Fleet, hour, price and kind; and the shared pool's prices, seats and Fleets. They are on the Hour Market page and at https://sparkpipe.ai/pay/api/market/market.txt and https://sparkpipe.ai/pay/api/market/pool.txt.
+11.1. We publish, without any account number, name or other identity: for each hour of each Fleet up to 31 days ahead, the best ask, whether it is ours or a release, and the best bid; the HC still on sale (clause 4.4); the open releases and bids; recent trades, with their Fleet, hour, price and kind; the shared pool's prices, seats and Fleets; and the accelerators, each with its Rate, speed and whether it is serving, and the live queue, with each waiting prompt's queue bid and estimated accelerator-seconds. They are on our website and at https://sparkpipe.ai/pay/api/market/market.txt and https://sparkpipe.ai/pay/api/market/pool.txt.
 
 ## 12. Suspension
 

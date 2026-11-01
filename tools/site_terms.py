@@ -165,10 +165,10 @@ PAGES = [
 ]
 
 NOTICE = {
-    "en": "<b>Published for review.</b> Hour-credits are on sale now and work in the shared pool at once; our own fleet-hours can be reserved from 1 December 2026. This text may still change. Send comments to <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>.",
-    "ko": "<b>검토용으로 공개한 문안입니다.</b> 시간 크레딧은 지금 판매하며 공유 풀에서 바로 쓸 수 있고, 당사 플릿시간은 2026년 12월 1일부터 예약할 수 있습니다. 문안은 바뀔 수 있습니다. 의견은 <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>로 보내 주십시오.",
+    "en": "<b>Published for review.</b> Hour-credits are on sale and work in the shared pool at once; our own fleet-hours can be reserved from 1 December 2026. This text may still change. Send comments to <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>.",
+    "ko": "<b>검토용으로 공개한 문안입니다.</b> 시간 크레딧은 판매 중이며 공유 풀에서 바로 쓸 수 있고, 당사 플릿시간은 2026년 12월 1일부터 예약할 수 있습니다. 문안은 바뀔 수 있습니다. 의견은 <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>로 보내 주십시오.",
 }
-VERSION = {"en": "Version of 31 October 2026", "ko": "2026년 10월 31일 판"}
+VERSION = {"en": "Version of 1 November 2026", "ko": "2026년 11월 1일 판"}
 NAV = {
     "en": ('<a href="terms.html">All terms</a>', '<a href="privacy.html">Privacy</a>', '<a href="index.html">Home</a>'),
     "ko": ('<a href="terms-ko.html">약관 목록</a>', '<a href="privacy-ko.html">개인정보처리방침</a>', '<a href="index-ko.html">홈</a>'),

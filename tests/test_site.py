@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import json
+import re
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -12,6 +14,9 @@ COMPANY_CONF = ROOT / "deployment" / "vps" / "hyor-io.conf"
 EXTERNAL = ("https://", "http://", "mailto:")
 ALLOWED_STYLES = ("https://fonts.googleapis.com/",)
 CHAT_APP_PAGES = {"fleet.html": {"/", "/static/favicon.svg", "/static/favicon.png"}}
+SSL_CONF = ROOT / "deployment" / "vps" / "sparkpipe-ai-ssl.conf"
+TOSS_SDK = "https://js.tosspayments.com/v2/standard"
+PAYMENT_PAGES = ("account.html", "buy.html")
 
 
 class Page(HTMLParser):
@@ -126,7 +131,7 @@ def check_links(name, page, pages, root, failures, skip=frozenset()):
             failures.append(f"{name}: {link} names no file in {root.relative_to(ROOT)}/")
         elif fragment and fragment not in pages.get(target or name, page).ids:
             failures.append(f"{name}: {link} names no element")
-    failures += [f"{name}: external script {src}" for src in page.scripts if src.startswith(EXTERNAL)]
+    failures += [f"{name}: external script {src}" for src in page.scripts if src.startswith(EXTERNAL) and not (src == TOSS_SDK and root == SITE and name in PAYMENT_PAGES)]
     failures += [f"{name}: stylesheet {href}" for href in page.styles if href.startswith(EXTERNAL) and not href.startswith(ALLOWED_STYLES)]
 
 
@@ -172,6 +177,28 @@ def check_kr_networks(failures):
         failures.append(f"site_kr_networks: wrong /24 networks {len(keys)} {keys[:1]} {keys[-2:]}")
 
 
+def check_payment_pages(pages, failures):
+    loading = sorted(name for name, page in pages.items() if TOSS_SDK in page.scripts)
+    if loading != list(PAYMENT_PAGES):
+        failures.append(f"the Toss Payments SDK loads on {loading}, but only the payment pages {list(PAYMENT_PAGES)} take payment")
+    conf = SSL_CONF.read_text(encoding="utf-8")
+    blocks = re.findall(r'<LocationMatch "\^/\(([a-z|-]+)\)\\\.html\$">(.*?)</LocationMatch>', conf, re.S)
+    allowed = [(sorted(f"{name}.html" for name in names.split("|")), body) for names, body in blocks if "tosspayments" in body]
+    if len(allowed) != 1 or allowed[0][0] != list(PAYMENT_PAGES) or "script-src 'self' 'unsafe-inline' https://*.tosspayments.com https://*.toss.im;" not in allowed[0][1]:
+        failures.append(f"{SSL_CONF.name}: the Content-Security-Policy must let exactly the payment pages {list(PAYMENT_PAGES)} load the Toss Payments SDK")
+    if "tosspayments" in re.sub(r"<LocationMatch.*?</LocationMatch>", "", conf, flags=re.S):
+        failures.append(f"{SSL_CONF.name}: the Toss Payments hosts are allowed beyond the payment pages")
+
+
+def check_models(failures):
+    text = (SITE / "pricing.js").read_text()
+    listed = [(m["name"], m["id"]) for m in json.loads(text[text.index("{"):text.rindex("}") + 1])["models"]]
+    rows = re.findall(r'<tr><td><b>([^<]+)</b><br><span class="mono">([^<]+)</span></td>.*?<td>(Offered[^<]*|Not offered)</td></tr>', (SITE / "fleets.html").read_text())
+    offered = [(name, ident) for name, ident, state in rows if state.startswith("Offered")]
+    if not offered or listed != offered:
+        failures.append(f"the models a Plan Order can choose (pricing.js) differ from the Fleet List's offered models: {listed} {offered}")
+
+
 def main():
     pages = {path.name: parse(path) for path in sorted(SITE.glob("*.html"))}
     failures = []
@@ -179,6 +206,8 @@ def main():
     check_languages(pages, failures)
     check_kr_networks(failures)
     check_brand(failures)
+    check_models(failures)
+    check_payment_pages(pages, failures)
     for name, page in pages.items():
         check_links(name, page, pages, SITE, failures, CHAT_APP_PAGES.get(name, frozenset()))
         check_tables(name, page, failures)
@@ -187,7 +216,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures or not pages:
         return 1
-    print(f"site: {len(pages)} pages, every local link and anchor resolves, no external scripts, the contract pages match site/terms/, every page with a Korean twin has the language switch and redirect")
+    print(f"site: {len(pages)} pages, every local link and anchor resolves, no external scripts beyond the Toss Payments SDK on the payment pages and their Content-Security-Policy, the contract pages match site/terms/, every page with a Korean twin has the language switch and redirect")
     print(f"hyor.io: {company} pages with the language switch and redirect, no scripts; the logo files match tools/brand_logo.py")
     return 0
 

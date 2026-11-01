@@ -290,6 +290,21 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   Qwen 3.8 and Gemma 4's sliding layers). Gemma 4's global layers (512-wide
   keys) still take the scalar kernel, which re-reads every key for every row
   and reaches 1 to 2 TFLOP/s per node; a long Gemma 4 prompt is bound by it.
+- Only Kimi K3 runs on the shared pass engine (`inference/runner/pass_prefill.cuh`).
+  - GLM 5.3 Full, GLM 5.3 Flash and DSV4.1 still prefill in TP16 waves, which
+    move every row's hidden state through the GPU mesh collectives at about
+    5 GB/s a node (pfbench, 2,048 x 6,144 reduce-scatter in 5.1 ms) and
+    re-gather the whole context's latent keys every wave. The weight stream
+    all-gathers at 24.8 GB/s a node with the pair link (wsbench, 650 MiB a
+    node).
+  - Carrying the waves' large collectives on the weight stream would help
+    every TP16 model without model code.
+  - Moving each model's attention onto the pass engine (rows stay on their
+    node, attention weights are streamed, MoE rows go to the resident expert
+    slices) would remove the attention collectives and the per-wave re-gather.
+  - GLM's TP16 slices are uneven (`kv_a`'s 576 columns are 72 granules, 5 or 4
+    a rank), so rank packs differ in layout. Streaming GLM's dense weights
+    needs every rank's entry table and broadcasts padded to the largest rank.
 - Kimi K3's streamed prefill (lanes whose stage config names
   `streamed_prefill` and whose deployment names
   `streamed_prefill_min_tokens`) takes every prompt token but the last; the

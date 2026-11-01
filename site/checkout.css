@@ -89,3 +89,19 @@ td .btn.small { min-height: 30px; }
 }
 .stack .stack { padding-bottom: 0; }
 .card .readout strong { font-size: clamp(20px, 2.2vw, 28px); text-align: right; }
+.custom .unit { flex: 0 0 auto; min-width: 150px; }
+.tiles.methods { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); margin-bottom: 4px; }
+.tiles .tile.method { min-height: 76px; }
+.tile.method b { font-size: 17px; line-height: 1.2; }
+.toss-box { display: grid; gap: 14px; }
+.toss-box > div:empty { display: none; }
+@media (max-width: 560px) {
+  .tiles.methods { grid-template-columns: minmax(0, 1fr); }
+  .custom { flex-wrap: wrap; }
+}
+.keyterms { display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--rule); border-left: 3px solid var(--signal); border-radius: 2px; background: var(--paper); font: 400 13px/1.5 var(--text); color: var(--steel); }
+.keyterms > .label, .keyterms summary { color: var(--ink); }
+.keyterms summary { cursor: pointer; font: 600 13px/1.4 var(--text); }
+.keyterms[open] summary { margin-bottom: 4px; }
+.keyterms ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.keyterms p { margin: 0; }

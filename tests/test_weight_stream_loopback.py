@@ -1,4 +1,4 @@
-"""Run the weight-stream library loopback test (four ranks on one RoCE device: pair-relay broadcasts and expert rotation steps, every byte checked, then one reused landing with no barriers while a slow rank holds it: no sender may write a landing before its owner enters the call) on a host with an active RoCE v2 port."""
+"""Run the weight-stream library loopback test (four ranks on one RoCE device: pair-relay broadcasts, expert rotation steps and per-destination exchanges, every byte checked, then one reused landing with no barriers while a slow rank holds it: no sender may write a landing before its owner enters the call) on a host with an active RoCE v2 port."""
 import os
 import pathlib
 import shutil

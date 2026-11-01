@@ -174,6 +174,35 @@ static void *PwRun(void *argument)
 			pthread_barrier_wait(&self->shared->barrier);
 		}
 	}
+	if ( layer == PW_LAYERS )
+	{
+		SparkPackWindow dense_only;
+		window_config.expert_slots = 0u;
+		window_config.expert_capacity = 0u;
+		window_config.read_partner = 0;
+		if ( SparkPackWindowInitialize(&dense_only,&window_config) != SPARK_STATUS_OK )
+			layer = 0u;
+		for (uint32_t pass = 0u; layer == PW_LAYERS && pass < PW_LAYERS; pass++)
+		{
+			SparkPackWindowLayer ranges;
+			uint8_t *bases[PW_RANKS];
+			const uint8_t *block = 0;
+			uint32_t source = UINT32_MAX;
+			PwLayer(pass,&ranges);
+			if ( SparkPackWindowDense(&dense_only,&ranges,pass & 1u,tag++,bases) != SPARK_STATUS_OK )
+			{
+				layer = 0u;
+				break;
+			}
+			for (rank=0u; rank<PW_RANKS; rank++)
+			{
+				self->bad += PwCheck(bases[rank],rank,ranges.dense[0].offset,ranges.dense[0].bytes);
+				self->bad += PwCheck(bases[rank] + ranges.dense[0].bytes,rank,ranges.dense[1].offset,ranges.dense[1].bytes);
+				self->checked++;
+			}
+			self->bad += SparkPackWindowExpertStep(&dense_only,&ranges,0u,0u,tag++,&source,&block) == SPARK_STATUS_OK ? 1u : 0u;
+		}
+	}
 	SparkWeightStreamClose(stream);
 	free(region);
 	self->status = layer == PW_LAYERS ? 0 : 1;
@@ -213,13 +242,13 @@ int main(int argc, char **argv)
 		bad += ranks[rank].bad;
 		checked += ranks[rank].checked;
 	}
-	if ( failed != 0 || bad != 0u || checked != (uint64_t)PW_RANKS * PW_LAYERS * (PW_RANKS + PW_RANKS - 1u) )
+	if ( failed != 0 || bad != 0u || checked != (uint64_t)PW_RANKS * PW_LAYERS * (3u * PW_RANKS - 1u) )
 	{
 		printf("FAIL pack window loopback: %s, %llu bad words, %llu of %llu blocks checked\n",failed != 0 ? "a rank failed" : "every rank finished",
-			(unsigned long long)bad,(unsigned long long)checked,(unsigned long long)PW_RANKS * PW_LAYERS * (PW_RANKS + PW_RANKS - 1u));
+			(unsigned long long)bad,(unsigned long long)checked,(unsigned long long)PW_RANKS * PW_LAYERS * (3u * PW_RANKS - 1u));
 		return 1;
 	}
-	printf("PASS pack window loopback: %u ranks x %u layers, every rank's two dense ranges and every peer's expert block (own half from the pack, partner half from the copy) byte-equal to the source packs, %llu blocks\n",
+	printf("PASS pack window loopback: %u ranks x %u layers, every rank's two dense ranges and every peer's expert block (own half from the pack, partner half from the copy) byte-equal to the source packs, then a dense-only window (no expert slots, no partner pack) that refuses expert steps, %llu blocks\n",
 		PW_RANKS,PW_LAYERS,(unsigned long long)checked);
 	return 0;
 }

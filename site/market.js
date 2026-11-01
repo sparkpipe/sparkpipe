@@ -10,6 +10,10 @@
   $('pool-base').textContent = location.origin + API + '/pool/v1';
   const first = new Date(window.SP_PRICING.hourlyEarliestStart + 'T00:00:00Z');
   document.querySelectorAll('[data-start]').forEach((el) => { el.textContent = first.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }); });
+  const listed = window.SP_PRICING.market;
+  document.querySelectorAll('[data-krw]').forEach((el) => { el.textContent = '₩' + listed.hcPriceKRW.toLocaleString('en-US'); });
+  document.querySelectorAll('[data-usd]').forEach((el) => { el.textContent = '$' + listed.hcPrice.toLocaleString('en-US'); });
+  document.querySelectorAll('[data-fee]').forEach((el) => { el.textContent = Math.round(listed.releaseFee * 100) + '%'; });
 
   const call = async (method, path, body) => {
     const response = await fetch(API + path, {
@@ -109,7 +113,16 @@
     $('buy-sum').textContent = amount ? `${hc(amount / price)} HC for $${amount.toFixed(2)} plus $${(amount * st.vatRate).toFixed(2)} VAT, lasting ${st.market.validityMonths} months` : '';
     $('on-sale').textContent = Number(st.onSale) > 0 ? `On sale now: up to ${hc(st.onSale)} HC. We sell only the HC our free fleet-hours in the next 12 months can deliver.` : 'Sold out for now: every free fleet-hour in the next 12 months already backs HC sold.';
     const pool = st.pool;
-    $('pool-status').textContent = `Price ${pool.hcPerSeatSecond} HC per seat-second ($${pool.usdPerSeatHour} per seat-hour${pool.usdPerMillionTokens ? `, about $${pool.usdPerMillionTokens} per million tokens` : ''}) · ${pool.active} of ${pool.seats} seats busy · pooled fleets: ${pool.fleets.join(', ') || 'none this hour'}`;
+    $('pool-status').textContent = `Seat price $${pool.usdPerSeatHour} per seat-hour (${pool.hcPerSeatSecond} HC per seat-second)${pool.usdPerMillionTokens ? `, lately about $${pool.usdPerMillionTokens} per million output tokens` : ''} · ${pool.active} of ${pool.seats} seats busy · fleets serving the API: ${pool.fleets.join(', ') || 'none this hour'}`;
+    fill('pool-models', pool.models.map((m) => row([m.name, '$' + m.usdPerMillionPrompt, '$' + m.usdPerMillionOutput])), 'No model is served yet.');
+    const limits = st.acceleratorLimits;
+    $('accel-max-bid').textContent = limits.maxBid;
+    $('accel-wait').textContent = limits.defaultWait;
+    $('accel-max-wait').textContent = limits.maxWait;
+    fill('accelerators', st.accelerators.map((a) => row([a.name, a.kind, a.rate + '×', a.tokensPerSecond ? hc(100000 / Number(a.tokensPerSecond) * Number(a.rate) / 3600) : '-', a.tokensPerSecond ? `${a.tokensPerSecond} tokens/s` : '-', a.busy ? 'computing a prompt' : a.serving ? 'free' : 'not serving'])), 'No prefill accelerator is serving yet.');
+    const queue = st.acceleratorQueue;
+    const ahead = queue.reduce((sum, q) => sum + Number(q.seconds || 0), 0);
+    $('accel-queue').textContent = queue.length ? `Queue: ${queue.length} prompt${queue.length === 1 ? '' : 's'} waiting, bids ${queue.map((q) => '×' + q.bid).join(', ')}, about ${Math.round(ahead)} s of accelerator time ahead.` : (st.accelerators.some((a) => a.serving) ? 'Queue: empty.' : '');
     $('feed-market').href = API + '/market/market.txt';
     $('feed-pool').href = API + '/market/pool.txt';
   }
@@ -126,18 +139,20 @@
     $('me-company').textContent = me.company;
     $('me-email').textContent = me.email;
     $('balance').textContent = hc(me.balance);
+    $('balance-usd').textContent = `worth $${(Number(me.balance) * S.state.market.hcPrice).toFixed(2)} at $${S.state.market.hcPrice} each`;
     $('held').textContent = hc(me.held) + ' HC';
     fill('lots', me.lots.filter((l) => Number(l.hc) > 0 || !l.expired).map((l) => row([hc(l.hc), hc(l.first), l.source, (l.expired ? 'lapsed ' : '') + kstDate(l.expires)])), 'No HC yet. Buy some to start.');
-    fill('tranches', me.tranche.map((t) => row([t.month, String(t.granted), String(t.used), String(t.left)])), 'No Tranche hours.');
-    $('tranche-box').hidden = !SANDBOX && !me.tranche.length;
-    fill('hours', me.reservations.map(hourRow), 'No reservations. Pick an hour on the calendar.');
-    fill('bids', me.bids.map((b) => row([`${kst(b.from)} → ${kst(b.to)}${b.standing ? ' weekly' : ''}${b.consecutive ? ', consecutive' : ''}`, b.fleet || 'any', `${b.filled} / ${b.hours}`, hc(b.max), hc(b.held), b.state, button('Cancel', () => act('m-bid', () => call('POST', '/market/cancel', { bid: b.bid }), () => 'Bid cancelled; its held HC is back.'))])), 'No open bids.');
+    fill('tranches', me.tranche.map((t) => row([t.month, String(t.granted), String(t.used), String(t.left)])), 'No plan hours yet.');
+    fill('hours', me.reservations.map(hourRow), 'No booked hours. Pick an hour on the calendar.');
+    fill('bids', me.bids.map((b) => row([`${kst(b.from)} → ${kst(b.to)}${b.standing ? ' weekly' : ''}${b.consecutive ? ', consecutive' : ''}`, b.fleet || 'any', `${b.filled} / ${b.hours}`, hc(b.max), hc(b.held), b.state, button('Cancel', () => act('m-bid', () => call('POST', '/market/cancel', { bid: b.bid }), () => 'Window request cancelled; the HC it set aside is back.'))])), 'No window requests.');
     fill('keys', me.keys.map((k) => row([`…${k.hint}`, k.note || '', kst(k.created), k.revoked ? 'revoked' : button('Revoke', () => act('m-try', () => call('POST', '/market/keys/revoke', { id: k.key }), () => 'Key revoked.'))])), 'No keys yet.');
-    fill('charges', me.charges.map((c) => row([kst(c.now), c.model, c.seconds, `${c.tokensIn} / ${c.tokensOut}`, c.hc])), 'No pool requests yet.');
+    fill('charges', me.charges.map((c) => row(c.kind === 'accelerator'
+      ? [kst(c.now), c.model, `${c.accelerator}, ${c.rate}× fleet-hour, priority ×${c.bid}`, c.seconds, `${c.tokensIn} / -`, c.pay === 'plan' ? `${c.amount} plan hours` : `${c.amount} HC`]
+      : [kst(c.now), c.model, 'API seat', c.seconds, `${c.tokensIn} / ${c.tokensOut}`, `${c.hc} HC`])), 'No API or accelerator charges yet.');
   }
 
   function hourRow(r) {
-    const paid = r.source === 'tranche' ? 'Tranche hour' : `${hc(r.price)} HC${r.source === 'release' ? ', released hour' : ''}`;
+    const paid = r.source === 'tranche' ? 'Plan hour' : `${hc(r.price)} HC${r.source === 'release' ? ', sold back by another customer' : ''}`;
     const rel = r.release;
     let state = r.state;
     let action = '';
@@ -145,15 +160,15 @@
       const wrap = document.createElement('span');
       const min = document.createElement('input');
       min.type = 'number'; min.step = '0.01'; min.min = '0.000001'; min.placeholder = 'list'; min.title = 'Lowest price in HC; empty means list';
-      wrap.append(min, ' ', button('Release', () => act('m-hours', () => call('POST', '/market/release', { reservation: r.reservation, min: min.value || null }), (x) => x.state === 'sold' ? 'Released and sold at once to a waiting bid.' : 'Released. It sells before our own hours.')));
+      wrap.append(min, ' ', button('Sell back', () => act('m-hours', () => call('POST', '/market/release', { reservation: r.reservation, min: min.value || null }), (x) => x.state === 'sold' ? 'Sold at once to a waiting window request.' : 'Offered for sale. It sells before our own hours.')));
       action = wrap;
     } else if (r.state === 'released') {
-      state = `released at ${hc(rel.min)} HC`;
-      action = button('Cancel release', () => act('m-hours', () => call('POST', '/market/cancel', { ask: rel.ask }), () => 'Release cancelled; the hour is yours again.'));
+      state = `for sale at ${hc(rel.min)} HC`;
+      action = button('Keep it', () => act('m-hours', () => call('POST', '/market/cancel', { ask: rel.ask }), () => 'No longer for sale; the hour is yours again.'));
     } else if (r.state === 'sold') {
       state = `sold at ${hc(rel.price)} HC`;
     } else if (r.state === 'pooled') {
-      state = rel.earned === null ? 'in the shared pool' : `pool earned ${hc(rel.earned)} HC`;
+      state = rel.earned === null ? 'used by the API pool' : `the API pool earned ${hc(rel.earned)} HC`;
     } else if (r.state === 'live') {
       state = 'running now: your keys use it free';
     }
@@ -205,11 +220,11 @@
     $('pick').hidden = false;
     $('pick-title').textContent = `${fleet.name}, ${kst(start)} KST`;
     const notes = {
-      hyor: `Our hour at ${hc(slot.price)} HC. Tranche hours can pay for it too.`,
-      release: `A released hour at ${hc(slot.price)} HC: the seller gets the price less the fee.`,
-      mine: 'This hour is yours. Release it from Your hours.',
-      'mine-release': 'You released this hour. Cancel the release from Your hours to keep it.',
-      closed: 'Not for sale now: beyond 31 days, kept for plan holders until 6 hours before it starts, on a fleet locked to a plan, or kept for HC that lapses sooner. Tranche hours can reserve any hour in their month that no other plan keeps.',
+      hyor: `Our hour at ${hc(slot.price)} HC. Plan hours can pay for it too.`,
+      release: `Sold back by another customer, at ${hc(slot.price)} HC: they get the price less the fee.`,
+      mine: 'This hour is yours. Sell it back from Your hours if you can\'t use it.',
+      'mine-release': 'You offered this hour for sale. Choose Keep it in Your hours to keep it.',
+      closed: 'Not for sale now: beyond 31 days, kept for plan holders until 6 hours before it starts, on a fleet locked to a plan, or kept for HC that lapses sooner. Plan hours can book any hour in their month that no other plan keeps.',
     };
     $('pick-note').textContent = notes[slot.kind];
     $('reserve').disabled = slot.kind === 'mine' || slot.kind === 'mine-release';
@@ -219,9 +234,9 @@
 
   function renderBook() {
     const book = S.book;
-    fill('asks', book.asks.map((a) => row([kst(a.start), a.fleet, hc(a.min) + ' HC'])), 'No released hours for sale.');
-    fill('openbids', book.bids.map((b) => row([`${kst(b.from)} → ${kst(b.to)}${b.standing ? ' weekly' : ''}`, b.fleet || 'any', String(b.left), hc(b.max) + ' HC'])), 'No open bids.');
-    fill('trades', book.trades.map((t) => row([kst(t.start), t.fleet, hc(t.price) + ' HC', { hyor: 'our capacity', release: 'released hour', tranche: 'Tranche hour' }[t.kind] || t.kind])), 'No trades yet.');
+    fill('asks', book.asks.map((a) => row([kst(a.start), a.fleet, hc(a.min) + ' HC'])), 'No hours for sale now.');
+    fill('openbids', book.bids.map((b) => row([`${kst(b.from)} → ${kst(b.to)}${b.standing ? ' weekly' : ''}`, b.fleet || 'any', String(b.left), hc(b.max) + ' HC'])), 'No open window requests.');
+    fill('trades', book.trades.map((t) => row([kst(t.start), t.fleet, hc(t.price) + ' HC', { hyor: 'our capacity', release: 'sold back', tranche: 'plan hour' }[t.kind] || t.kind])), 'No trades yet.');
   }
 
   async function refresh() {
@@ -280,13 +295,13 @@
     act('m-buy', () => call('POST', '/market/buy', { amount: $('amount').value }), (r) => `Added ${hc(r.hc)} HC.`);
   });
 
-  $('tranche').addEventListener('click', () => act('m-tranche', () => call('POST', '/market/sandbox/tranche', {}), (r) => `${r.hours} Tranche hours for each of ${r.months.join(' and ')}.`));
+  $('tranche').addEventListener('click', () => act('m-tranche', () => call('POST', '/market/sandbox/tranche', {}), (r) => `${r.hours} plan hours for each of ${r.months.join(' and ')}.`));
   $('days').addEventListener('change', () => { S.days = Number($('days').value); refresh().catch((error) => say('m-pick', error.message, 'error')); });
   $('reserve').addEventListener('click', () => {
     const p = S.pick;
     if (!p) return;
     const pay = $('pick-pay').value;
-    act('m-pick', () => call('POST', '/market/reserve', { fleet: p.fleet, start: p.start, model: $('pick-model').value, pay, max: pay === 'hc' ? p.price : undefined }), (r) => `Reserved for ${pay === 'tranche' ? 'one Tranche hour' : hc(r.price) + ' HC'}.`);
+    act('m-pick', () => call('POST', '/market/reserve', { fleet: p.fleet, start: p.start, model: $('pick-model').value, pay, max: pay === 'hc' ? p.price : undefined }), (r) => `Booked for ${pay === 'tranche' ? 'one plan hour' : hc(r.price) + ' HC'}.`);
   });
   document.querySelectorAll('[data-clock]').forEach((b) => b.addEventListener('click', () => act('m-clock', () => call('POST', '/market/sandbox/clock', { hours: Number(b.dataset.clock) }), (r) => `Market time is now ${kst(r.now)} KST.`)));
   $('reset').addEventListener('click', () => {
@@ -300,7 +315,7 @@
       from: slotFromLocal($('bid-from').value), to: slotFromLocal($('bid-to').value),
       hours: Number($('bid-hours').value), max: $('bid-max').value,
       consecutive: $('bid-consecutive').checked, standing: $('bid-standing').checked,
-    }), (r) => r.state === 'filled' ? 'Filled at once.' : `Bid placed; ${r.filled} hours filled so far.`);
+    }), (r) => r.state === 'filled' ? 'Booked at once.' : `Window requested; ${r.filled} hours booked so far.`);
   });
   const nextKstDay = (weekday) => {
     const base = nowMs() + KST;
@@ -324,7 +339,7 @@
       placed++;
     }
     return placed;
-  }, (n) => `${n} standing bids placed, one per weekday.`));
+  }, (n) => `${n} weekly window requests placed, one per weekday.`));
   $('key-create').addEventListener('click', () => act('m-try', async () => {
     const made = await call('POST', '/market/keys', { note: $('key-note').value });
     S.lastKey = made.key;
@@ -343,7 +358,8 @@
       const response = await fetch(API + '/pool/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + $('try-key').value.trim() },
-        body: JSON.stringify({ model: $('try-model').value, stream, max_tokens: 64, messages: [{ role: 'user', content: $('try-prompt').value }] }),
+        body: JSON.stringify(Object.assign({ model: $('try-model').value, stream, max_tokens: 64, messages: [{ role: 'user', content: $('try-prompt').value }] },
+          $('try-accel').checked ? { sparkpipe: { accelerator: { bid: Number(document.querySelector('input[name="priority"]:checked').value), pay: $('try-pay').value } } } : {})),
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
@@ -374,7 +390,12 @@
         reply.textContent = data.choices[0].message.content;
         charge = data.sparkpipe;
       }
-      say('m-try', charge && charge.dedicated ? `Ran on your reserved hour: no HC charged (${charge.seconds} s).` : `Charged ${charge ? charge.hc : '?'} HC for ${charge ? charge.seconds : '?'} seat-seconds.`, 'ok');
+      const accel = charge && charge.accelerator;
+      const accelText = !accel ? '' : accel.used
+        ? ` Prefill accelerator ${accel.accelerator}: ${accel.seconds} s × ${accel.rate} fleets × priority ${accel.bid} = ${accel.amount} ${accel.pay === 'plan' ? 'plan hours' : 'HC'}, after ${accel.waited} s in the queue.`
+        : ` No accelerator: ${{ none_serving: 'none is serving', waited: 'none started it in time', unfinished: 'it did not finish' }[accel.reason] || accel.reason}, so nothing was charged for one.`;
+      const switchText = charge && charge.switch ? ` The fleet switched to this model first: ${charge.switch} s, not charged.` : '';
+      say('m-try', (charge && charge.dedicated ? `Ran on your booked hour: no seat-seconds charged (${charge.seconds} s).` : `Charged ${charge ? charge.hc : '?'} HC for ${charge ? charge.seconds : '?'} seat-seconds.`) + switchText + accelText, 'ok');
       await refresh();
     } catch (error) {
       say('m-try', error.message, 'error');
@@ -389,6 +410,25 @@
       $('ledger-head').textContent = error.message;
     }
   });
+
+  [['1', 'Standard ×1'], ['2', 'Priority ×2'], ['5', 'Rush ×5']].forEach(([value, label], index) => {
+    const choice = document.createElement('label');
+    const input = document.createElement('input');
+    input.type = 'radio'; input.name = 'priority'; input.value = value; input.checked = index === 0;
+    choice.append(input, cell('span', label));
+    $('try-priority').append(choice);
+  });
+  const tabs = [...document.querySelectorAll('#tabs [data-tab]')];
+  const show = (name) => {
+    tabs.forEach((t) => t.setAttribute('aria-selected', String(t.dataset.tab === name)));
+    document.querySelectorAll('[data-panel]').forEach((p) => { p.hidden = p.dataset.panel !== name; });
+    try { localStorage.setItem('sp-tab', name); } catch (error) {}
+  };
+  tabs.forEach((t) => t.addEventListener('click', () => { show(t.dataset.tab); history.replaceState(null, '', location.search + '#' + t.dataset.tab); }));
+  let saved = null;
+  try { saved = localStorage.getItem('sp-tab'); } catch (error) {}
+  const wanted = location.hash.slice(1) || saved;
+  show(tabs.some((t) => t.dataset.tab === wanted) ? wanted : 'use');
 
   const start = nowMs();
   $('bid-from').value = localFromMs(start + 24 * HOUR);
