@@ -2495,6 +2495,42 @@ static void TestScenarioRecurrentStreamedCheckpoint(const SparkModelResidentDepl
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioRecurrentStreamedStaleResume(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	SparkModelResidentDeployment streamed = *deployment;
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t prompt[18],index,deferred_rows = 0u,wave_rows = 0u;
+	for (index=0u; index<18u; index++)
+		prompt[index] = 600u + index;
+	streamed.streamed_prefill_min_tokens = 8u;
+	MockResidentClientReset();
+	engine = TestConnectRows(&streamed,&state,runtime_root,10u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,701u,1u,prompt,18u);
+	TestDriveUntilTerminal(engine,&state,1u,800u);
+	MockResidentClientScriptPrefixResult(1u,SPARK_STATUS_NOT_FOUND,1u);
+	TestSubmitPrompt(engine,2u,702u,1u,prompt,18u);
+	TestDriveUntilTerminal(engine,&state,2u,800u);
+	MockResidentClientScriptPrefixResult(1u,SPARK_STATUS_OK,0u);
+	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
+	{
+		if ( lane.request_id != 2u || lane.context_token_count <= lane.sequence_position || lane.context_token_count > 18u )
+			continue;
+		if ( (MockResidentClientLaneSubmissionFlags(index) & SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER) != 0u )
+			deferred_rows += lane.context_token_count - (uint32_t)lane.sequence_position;
+		else
+			wave_rows += lane.context_token_count - (uint32_t)lane.sequence_position;
+	}
+	CHECK(state.completed_events[2] == 1u && state.error_events[2] == 0u && state.stale_recomputes[2] == 1u,"recurrent streamed stale resume: a prompt checkpoint the ranks no longer hold costs one retry and the request completes");
+	CHECK(deferred_rows == 16u && wave_rows == 3u,"recurrent streamed stale resume: the retry from token 0 decides the streamed prefill again, so the prompt goes to the streamed prefill rather than to waves (one row from the refused resume, then the checkpoint and the last token)");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioRecurrentStaleResume(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	TestBatchState state = {0};
@@ -2640,6 +2676,7 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 	TestLoadVariantDeployment(runtime_root,"recurrent-checkpoints",TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH,path,sizeof(path),&deployment);
 	TestScenarioRecurrentCheckpoints(&deployment,runtime_root);
 	TestScenarioRecurrentStreamedCheckpoint(&deployment,runtime_root);
+	TestScenarioRecurrentStreamedStaleResume(&deployment,runtime_root);
 	TestScenarioRecurrentStaleResume(&deployment,runtime_root);
 	TestScenarioReplyCheckpoint(&deployment,runtime_root);
 	TestScenarioResumeSuperseded(&deployment,runtime_root);

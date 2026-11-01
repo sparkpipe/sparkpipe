@@ -1049,6 +1049,8 @@ static SparkStatus SparkModelBatchRecomputeStalePrefix(SparkModelBatchEngine *en
 	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND )
 		SPARK_RETURN(status);
 	request->computed_prompt_token_count = 0u;
+	request->defer_decided = 0u;
+	request->defer_end = 0u;
 	request->cache_prefix_token_count = 0u;
 	request->cache_published_token_count = 0u;
 	request->cache_lookup_epoch = 0u;
@@ -3894,6 +3896,8 @@ static SparkStatus SparkModelBatchInvalidateEngineSession(SparkModelBatchEngine 
 			continue;
 		}
 		request->computed_prompt_token_count = 0u;
+		request->defer_decided = 0u;
+		request->defer_end = 0u;
 		request->cache_prefix_token_count = 0u;
 		request->cache_published_token_count = 0u;
 		request->cache_lookup_epoch = 0u;
