@@ -251,6 +251,8 @@ def waitlist(failures, app, m, port, state):
     m.join(X, {"lock": 144})
     if refused(lambda: m.book_hours(X, {"fleet": "F4", "start": slot(kst(2027, 1, 6, 15)), "hours": 1})) != (402, "insufficient_hc") or m.leave(X) != {"locked": "0.000000", "position": None} or balance(app, X) != 144:
         failures.append("locked HC can be spent, or leaving does not unlock all of it")
+    if refused(lambda: m.quote_weeks(E, {"fleet": "F4", "weeks": 1})) != (409, "waitlist") or [f["firstWeek"] for f in m.public()["fleets"] if f["id"] == "F4"] != [None]:
+        failures.append("a first Week jumps ahead of a waitlist lock that could pay for it")
     shown = client(app, port, A)("GET", "/market/state")[1]
     text = json.dumps(shown)
     if (shown["account"]["position"], shown["account"]["locked"], shown["account"]["balance"]) != (3, "250.000000", "750.000000") or any(other in text for other in (B, W, "b@example.com", "300.000000")):

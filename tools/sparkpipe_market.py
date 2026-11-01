@@ -386,6 +386,9 @@ class Market:
         held = [b for b in self.busy(fleet["id"], first - WEEK, first) if b["kind"] == "week"]
         if held and now < first - DAY:
             raise Refusal(f"{fleet['name']} is pinned to a customer, who may book its next Week until {kst_text(first - DAY)}.", 409, "pinned")
+        week = Decimal(str(pricing["bookings"]["weekHC"])) * fleet["rate"]
+        if any(self.st.locked(account) >= week for account in self.st.locks):
+            raise Refusal("Customers on the waitlist come first: join the waitlist, which allocates each free Fleet every Sunday at 00:00 KST.", 409, "waitlist")
 
     def week_plan(self, pricing, account, fleet, weeks, now):
         rules = pricing["bookings"]
