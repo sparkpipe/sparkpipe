@@ -638,6 +638,73 @@ start_mesh_exchange() {
     echo "$!" > "$MESH_PIDFILE"
 }
 
+WORKING_STATE_DIR="$HOME/sparkdata/working-state"
+WORKING_STATE_TOOL="$HOME/sparkdata/core/bin/working_state_mirror.py"
+WORKING_STATE_PIDFILE="$HOME/.fleet_agent_working_state.pid"
+WORKING_STATE_MISSING=""
+WORKING_STATE_PREPARED=""
+WORKING_STATE_SHA=""
+
+working_state_tool_present() {
+    if [ -x "$WORKING_STATE_TOOL" ]; then
+        WORKING_STATE_MISSING=""
+        return 0
+    fi
+    [ -n "$WORKING_STATE_MISSING" ] || echo "$(date +%T) working state: $WORKING_STATE_TOOL is missing; no scratch area, rebuild or mirror until the core release carries it" >&2
+    WORKING_STATE_MISSING=1
+    return 1
+}
+
+prepare_working_state() {
+    local status
+    WORKING_STATE_PREPARED=1
+    if [ -z "$MESH_PAIRED" ]; then
+        echo "$(date +%T) working state: rank $RANK has no cabled pair in MESH_LINK_MAP; its working state is not mirrored"
+        "$WORKING_STATE_TOOL" init && return 0
+        status=$?
+        echo "$(date +%T) working state: init exited $status" >&2
+        return 0
+    fi
+    [ -d "$WORKING_STATE_DIR/mirror" ] && return 0
+    echo "$(date +%T) working state: $WORKING_STATE_DIR/mirror is missing (fresh or replaced disk); rebuilding from rank $(( RANK ^ 1 )) before engines start"
+    "$WORKING_STATE_TOOL" rebuild --rank "$RANK" --link-map "$MESH_LINK_MAP" && return 0
+    status=$?
+    echo "$(date +%T) working state: rebuild exited $status; the mirror loop rebuilds before it pushes" >&2
+}
+
+stop_working_state() {
+    local pid tick
+    pid=$(cat "$WORKING_STATE_PIDFILE" 2>/dev/null)
+    rm -f "$WORKING_STATE_PIDFILE"
+    [ -n "$pid" ] && [ "$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$$" ] || return 0
+    kill "$pid" 2>/dev/null
+    for tick in $(seq 1 30); do
+        kill -0 "$pid" 2>/dev/null || return 0
+        sleep 0.5
+    done
+    echo "$(date +%T) working state: mirror loop $pid ignored TERM for 15 s; killing it" >&2
+    kill -KILL "$pid" 2>/dev/null
+}
+
+ensure_working_state() {
+    local pid sha
+    working_state_tool_present || return 0
+    [ -n "$WORKING_STATE_PREPARED" ] || prepare_working_state
+    [ -n "$MESH_PAIRED" ] || return 0
+    sha=$(sha16 "$WORKING_STATE_TOOL")
+    pid=$(cat "$WORKING_STATE_PIDFILE" 2>/dev/null)
+    if [ -n "$pid" ] && [ "$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$$" ]; then
+        [ "$sha" = "$WORKING_STATE_SHA" ] && return 0
+        echo "$(date +%T) working state: working_state_mirror.py changed $WORKING_STATE_SHA -> $sha; restarting the mirror loop"
+        stop_working_state
+    elif [ -n "$pid" ]; then
+        echo "$(date +%T) working state: mirror loop $pid is gone; starting another" >&2
+    fi
+    "$WORKING_STATE_TOOL" loop --rank "$RANK" --link-map "$MESH_LINK_MAP" --agent-pid "$$" &
+    echo "$!" > "$WORKING_STATE_PIDFILE"
+    WORKING_STATE_SHA=$sha
+}
+
 apply_manifest() {
     local name="$1" root="$2" scope="${3:-/dev/null}" manifest_cur manifest_applied
     manifest_cur="/tmp/fleet_manifest_$name.txt"
@@ -761,6 +828,7 @@ self_update() {
     [ "$disk" != "$START_SHA" ] || return 0
     echo "$(date +%T) agent: self-updating $START_SHA -> $disk ($0)"
     stop_mesh_exchange
+    stop_working_state
     exec bash "$new" "$ROOTS" "$HUB"
 }
 
@@ -1057,6 +1125,7 @@ while true; do
     sync_core
     install_core
     self_update
+    ensure_working_state
     node_doctor
     janitor
     if ! ensure_weightd; then

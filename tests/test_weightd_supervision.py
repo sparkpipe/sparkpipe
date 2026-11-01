@@ -454,6 +454,7 @@ load_roots() { ROOT_LIST=test; }
 sync_core() { :; }
 install_core() { :; }
 self_update() { :; }
+ensure_working_state() { echo WORKING_STATE; }
 node_doctor() { :; }
 janitor() { :; }
 ensure_weightd() { return "$TEST_WEIGHTD_STATUS"; }
@@ -473,8 +474,8 @@ sleep() { exit 0; }
                     capture_output=True, text=True)
                 self.assertEqual((result.returncode, result.stderr), (0, ""))
                 self.assertEqual(result.stdout.splitlines(),
-                    ["ROOT_SYNC", "ROOT_START", "WARMUP", "REPORT"]
-                    if ready else ["REPORT"])
+                    ["WORKING_STATE", "ROOT_SYNC", "ROOT_START", "WARMUP", "REPORT"]
+                    if ready else ["WORKING_STATE", "REPORT"])
 
     def serving_gate(self, function, **values):
         script = r'''
