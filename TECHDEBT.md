@@ -568,12 +568,21 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   On 2026-11-01, before that release save, ten 134K-token conversations left
   12,900 page files and no state, and both the oldest and the newest resent
   after a swap with `cached_tokens` 0 in 132 s and 129 s, the same as their
-  first prefill. Close it by capturing, in the streamed KDA fold
-  (`K3StreamedFold`, `inference/llms/kimi_k3/streamed.cuh`), the running state
-  and the convolution windows at the last stride multiple inside each pass,
-  staging them for the binding as that page's checkpoint, proven by the same
-  resend restoring with `cached_tokens` at the checkpoint and tokens equal to
-  the first run.
+  first prefill. The pass already holds a usable checkpoint: when
+  `K3StreamedKdaNode` composes the gathered node summaries in order, every
+  rank has its own head shard's state at each node boundary, and the
+  gathered convolution tails give the windows there, so the start of the last
+  node's rows (126,720 for a 133,656-token prompt, a whole number of pages)
+  costs one copy per KDA layer. Two parts are missing: the stage runner has no
+  way to hand that state to the binding as the checkpoint of its page (the
+  binding stages only the lane's current state), and the API marks a deferred
+  block stateless when it sends it and learns no resume point afterwards. Close
+  it by capturing that state in the pass, staging it through the binding,
+  reporting the checkpoint in the completion of the wave after the deferred
+  tokens so the API marks the block resumable, and proving it with the same
+  resend restoring with `cached_tokens` at the boundary and tokens equal to the
+  first run. Splitting the deferral at a stride multiple instead would run up
+  to 16,383 tail tokens as waves at long context on every long prompt.
 - The KV snapshot tier is proven on the fleet only at its old 8 GiB budget.
   The hub API's `kv_store_report` lines up to 2026-11-01 show restores from
   it with no misses: K3 restored 16,241 pages (about 1.04M tokens) on one rank
