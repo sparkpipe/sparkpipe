@@ -1,0 +1,285 @@
+{
+ "arm": {
+  "delta": 0,
+  "convention": "inplace",
+  "layers": [
+   "o19",
+   "o37",
+   "o66",
+   "o78",
+   "o90"
+  ],
+  "window": null,
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "top_k": 0,
+  "seed": 0
+ },
+ "requests": [
+  {
+   "request_id": 100011,
+   "positions": 1696,
+   "recorded_from": 0,
+   "context_from": 0,
+   "reply": 812,
+   "anchors": 400,
+   "tokens_per_round": 7.8,
+   "histogram": [
+    0,
+    0,
+    3,
+    1,
+    7,
+    11,
+    18,
+    360
+   ],
+   "final_head_agreement": 0.9215339233038348,
+   "reply_head_agreement": 1.0
+  },
+  {
+   "request_id": 100012,
+   "positions": 320,
+   "recorded_from": 832,
+   "context_from": 832,
+   "reply": 232,
+   "anchors": 232,
+   "tokens_per_round": 6.163793103448276,
+   "histogram": [
+    6,
+    12,
+    22,
+    23,
+    22,
+    16,
+    12,
+    119
+   ],
+   "final_head_agreement": 0.8683385579937304,
+   "reply_head_agreement": 1.0
+  },
+  {
+   "request_id": 100013,
+   "positions": 1553,
+   "recorded_from": 0,
+   "context_from": 0,
+   "reply": 744,
+   "anchors": 400,
+   "tokens_per_round": 7.7175,
+   "histogram": [
+    0,
+    2,
+    1,
+    6,
+    4,
+    19,
+    22,
+    346
+   ],
+   "final_head_agreement": 0.8930412371134021,
+   "reply_head_agreement": 1.0
+  },
+  {
+   "request_id": 100014,
+   "positions": 136,
+   "recorded_from": 768,
+   "context_from": 768,
+   "reply": 59,
+   "anchors": 59,
+   "tokens_per_round": 5.4576271186440675,
+   "histogram": [
+    4,
+    5,
+    7,
+    7,
+    4,
+    7,
+    3,
+    22
+   ],
+   "final_head_agreement": 0.725925925925926,
+   "reply_head_agreement": 1.0
+  },
+  {
+   "request_id": 100015,
+   "positions": 4462,
+   "recorded_from": 0,
+   "context_from": 0,
+   "reply": 2199,
+   "anchors": 400,
+   "tokens_per_round": 7.695,
+   "histogram": [
+    0,
+    0,
+    4,
+    4,
+    7,
+    20,
+    25,
+    340
+   ],
+   "final_head_agreement": 0.887917507285362,
+   "reply_head_agreement": 1.0
+  },
+  {
+   "request_id": 100016,
+   "positions": 2593,
+   "recorded_from": 0,
+   "context_from": 0,
+   "reply": 294,
+   "anchors": 294,
+   "tokens_per_round": 7.401360544217687,
+   "histogram": [
+    2,
+    1,
+    5,
+    9,
+    13,
+    16,
+    24,
+    224
+   ],
+   "final_head_agreement": 0.8009259259259259,
+   "reply_head_agreement": 1.0
+  },
+  {
+   "request_id": 100017,
+   "positions": 6472,
+   "recorded_from": 0,
+   "context_from": 0,
+   "reply": 3203,
+   "anchors": 400,
+   "tokens_per_round": 7.69,
+   "histogram": [
+    0,
+    0,
+    1,
+    4,
+    12,
+    18,
+    31,
+    334
+   ],
+   "final_head_agreement": 0.9437490341523721,
+   "reply_head_agreement": 1.0
+  },
+  {
+   "request_id": 100018,
+   "positions": 3679,
+   "recorded_from": 0,
+   "context_from": 0,
+   "reply": 374,
+   "anchors": 374,
+   "tokens_per_round": 7.2994652406417115,
+   "histogram": [
+    4,
+    6,
+    8,
+    10,
+    15,
+    22,
+    29,
+    280
+   ],
+   "final_head_agreement": 0.8958673191952148,
+   "reply_head_agreement": 1.0
+  },
+  {
+   "request_id": 100019,
+   "positions": 6362,
+   "recorded_from": 0,
+   "context_from": 0,
+   "reply": 3148,
+   "anchors": 400,
+   "tokens_per_round": 7.63,
+   "histogram": [
+    0,
+    2,
+    1,
+    2,
+    17,
+    21,
+    30,
+    327
+   ],
+   "final_head_agreement": 0.9154221034428549,
+   "reply_head_agreement": 1.0
+  },
+  {
+   "request_id": 100020,
+   "positions": 3494,
+   "recorded_from": 0,
+   "context_from": 0,
+   "reply": 244,
+   "anchors": 244,
+   "tokens_per_round": 7.323770491803279,
+   "histogram": [
+    4,
+    5,
+    3,
+    6,
+    8,
+    14,
+    16,
+    188
+   ],
+   "final_head_agreement": 0.8411107930146007,
+   "reply_head_agreement": 1.0
+  }
+ ],
+ "tokens_per_round": 7.448641898220418,
+ "coupled_tokens_per_round": null,
+ "slot_conditional": [
+  0.9953095684803002,
+  0.9908776344762504,
+  0.9834763266603114,
+  0.9776843467011643,
+  0.9649006622516556,
+  0.9450171821305842,
+  0.9246450673461959
+ ],
+ "final_head_agreement": 0.8948532041486491,
+ "reply_head_agreement": 1.0,
+ "confidence_bins": {
+  "0": {
+   "n": 2,
+   "accepted": 1.0
+  },
+  "1": {
+   "n": 13,
+   "accepted": 0.23076923076923078
+  },
+  "2": {
+   "n": 32,
+   "accepted": 0.0625
+  },
+  "3": {
+   "n": 62,
+   "accepted": 0.25806451612903225
+  },
+  "4": {
+   "n": 125,
+   "accepted": 0.392
+  },
+  "5": {
+   "n": 192,
+   "accepted": 0.484375
+  },
+  "6": {
+   "n": 205,
+   "accepted": 0.5658536585365853
+  },
+  "7": {
+   "n": 231,
+   "accepted": 0.70995670995671
+  },
+  "8": {
+   "n": 407,
+   "accepted": 0.8058968058968059
+  },
+  "9": {
+   "n": 20024,
+   "accepted": 0.9929085097882541
+  }
+ }
+}

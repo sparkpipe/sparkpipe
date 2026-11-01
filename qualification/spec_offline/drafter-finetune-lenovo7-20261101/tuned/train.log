@@ -1,0 +1,33 @@
+TRAIN-DATA rank 0/1 requests 10 positions 19152 trainable 2261564416
+TRAIN-STEP 0 loss 1.5686 head_top1 0.768 prefix 5.17 grad 8.44 lr 1.00e-06 block_rows_per_s 78 peak_gib 47.8
+TRAIN-STEP 10 loss 2.1017 head_top1 0.673 prefix 4.38 grad 10.93 lr 1.10e-05 block_rows_per_s 122 peak_gib 47.9
+TRAIN-STEP 20 loss 2.0318 head_top1 0.669 prefix 4.33 grad 8.35 lr 2.00e-05 block_rows_per_s 125 peak_gib 47.9
+TRAIN-STEP 30 loss 1.1743 head_top1 0.800 prefix 5.44 grad 5.64 lr 1.99e-05 block_rows_per_s 126 peak_gib 48.0
+TRAIN-STEP 40 loss 2.2694 head_top1 0.577 prefix 3.60 grad 8.10 lr 1.98e-05 block_rows_per_s 126 peak_gib 48.0
+TRAIN-STEP 50 loss 2.9410 head_top1 0.450 prefix 2.56 grad 11.27 lr 1.95e-05 block_rows_per_s 127 peak_gib 48.0
+TRAIN-STEP 60 loss 2.9033 head_top1 0.521 prefix 3.17 grad 11.74 lr 1.91e-05 block_rows_per_s 127 peak_gib 48.0
+TRAIN-STEP 70 loss 1.9449 head_top1 0.619 prefix 3.98 grad 8.22 lr 1.86e-05 block_rows_per_s 127 peak_gib 48.0
+TRAIN-STEP 80 loss 1.7022 head_top1 0.685 prefix 4.38 grad 8.09 lr 1.80e-05 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 90 loss 1.2174 head_top1 0.753 prefix 4.88 grad 6.48 lr 1.74e-05 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 100 loss 2.2425 head_top1 0.593 prefix 3.77 grad 10.41 lr 1.66e-05 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 110 loss 0.9302 head_top1 0.833 prefix 5.73 grad 11.37 lr 1.58e-05 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 120 loss 0.5717 head_top1 0.875 prefix 5.90 grad 5.88 lr 1.49e-05 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 130 loss 1.2421 head_top1 0.735 prefix 5.15 grad 9.40 lr 1.40e-05 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 140 loss 0.6492 head_top1 0.863 prefix 5.92 grad 7.09 lr 1.30e-05 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 150 loss 1.3637 head_top1 0.729 prefix 4.88 grad 9.90 lr 1.20e-05 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 160 loss 1.5920 head_top1 0.676 prefix 4.46 grad 10.43 lr 1.10e-05 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 170 loss 0.4928 head_top1 0.920 prefix 6.19 grad 5.69 lr 9.99e-06 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 180 loss 1.6694 head_top1 0.682 prefix 4.31 grad 9.46 lr 9.00e-06 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 190 loss 0.6213 head_top1 0.869 prefix 6.02 grad 6.64 lr 8.03e-06 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 200 loss 0.6680 head_top1 0.912 prefix 5.96 grad 7.24 lr 7.10e-06 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 210 loss 0.9691 head_top1 0.821 prefix 5.50 grad 7.79 lr 6.21e-06 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 220 loss 0.6505 head_top1 0.872 prefix 6.15 grad 7.54 lr 5.39e-06 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 230 loss 0.4263 head_top1 0.902 prefix 6.31 grad 5.70 lr 4.64e-06 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 240 loss 0.6138 head_top1 0.875 prefix 5.71 grad 6.28 lr 3.96e-06 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 250 loss 0.3536 head_top1 0.920 prefix 6.38 grad 5.44 lr 3.38e-06 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 260 loss 0.4952 head_top1 0.889 prefix 6.10 grad 5.58 lr 2.89e-06 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 270 loss 0.5857 head_top1 0.887 prefix 6.02 grad 8.51 lr 2.51e-06 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 280 loss 0.3526 head_top1 0.946 prefix 6.52 grad 6.11 lr 2.23e-06 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 290 loss 0.5695 head_top1 0.911 prefix 6.17 grad 6.60 lr 2.06e-06 block_rows_per_s 128 peak_gib 48.0
+TRAIN-STEP 299 loss 0.5750 head_top1 0.884 prefix 5.85 grad 6.39 lr 2.00e-06 block_rows_per_s 128 peak_gib 48.0
+TRAIN-DONE {"model_sha256": "4c78ab6b019b8d52829c9dce11ebe342bed702b4ee1f9846bc091d1a7a3330b3", "seconds": 901.7, "block_rows_per_second": 127.8, "peak_gib": 47.97, "first": {"loss": 1.5685627460479736, "head_top1": 0.7678571343421936, "teacher_forced_prefix": 5.1666669845581055, "step": 0, "lr": 1.0000000000000002e-06, "grad_norm": 8.440811157226562}, "last": {"loss": 0.575038492679596, "head_top1": 0.8839285969734192, "teacher_forced_prefix": 5.8541669845581055, "step": 299, "lr": 2.0005664892076953e-06, "grad_norm": 6.3909010887146}}
