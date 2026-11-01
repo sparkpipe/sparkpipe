@@ -11,6 +11,7 @@ from aiohttp import web
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools" / "serving"))
 import model_swap  # noqa: E402
+import working_state_fixture  # noqa: E402
 
 GIB = 2 ** 30
 FAKE_SSH = """import json, os, sys
@@ -49,6 +50,7 @@ class RequestStub:
 
 def config(state, port):
     return {
+        "working_state": working_state_fixture.block(state),
         "nodes": ["n0", "n1", "n2"],
         "ssh": [sys.executable, os.path.join(state, "fake_ssh.py")],
         "drop_kv": "DROP {label}",
@@ -85,8 +87,10 @@ async def scenario(memory, expect_ok):
         site = web.TCPSite(runner, "127.0.0.1", 0)
         await site.start()
         port = site._server.sockets[0].getsockname()[1]
+        working_state_fixture.write_token(state)
         swapper = model_swap.Swapper(config(state, port))
         await swapper.startup(None)
+        working_state_fixture.unheld(swapper)
 
         async def connect_after_start():
             while not any(pathlib.Path(state).glob("started-*")):

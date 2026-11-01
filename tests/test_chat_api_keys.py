@@ -89,8 +89,12 @@ async def run(tmp):
     token_file.write_text("k" * 40 + "\n")
     token_file.chmod(0o600)
     frontend = chat_frontend.Frontend({"models": [], "public": {"header": HEADER, "keys_file": keys.name, "models": []},
-                                       "controller_token_file": token_file.name, "control": {"status_url": upstream_base + "/status", "force_url": upstream_base + "/force", "admin_url": upstream_base + "/api/v1/auths/"}}, tmp)
+                                       "controller_token_file": token_file.name, "control": {"status_url": upstream_base + "/status", "working_state_url": upstream_base + "/working-state", "force_url": upstream_base + "/force", "admin_url": upstream_base + "/api/v1/auths/"}}, tmp)
     frontend.models = {"open": FakeModel("open"), "inside": FakeModel("inside")}
+
+    async def admit(account):
+        return None
+    frontend.admit = admit
     frontend.public_models = frozenset({"open"})
     app = chat_frontend.build(frontend)
     runner = web.AppRunner(app)

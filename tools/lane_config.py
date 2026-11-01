@@ -159,7 +159,8 @@ def draftd_environment(record_id: str) -> tuple[str, dict[str, str]]:
 
 def draftd_flags(environment: dict[str, str]) -> list[str]:
     flags = [f"--drafter {environment['DRAFTD_DRAFTER']}", f"--tap-host {environment['DRAFTD_TAP_HOST']}", f"--tap-port {environment['DRAFTD_TAP_PORT']}",
-             f"--draft-port {environment['DRAFTD_DRAFT_PORT']}", f"--window {environment['DRAFTD_WINDOW']}", f"--context-bytes {environment['DRAFTD_CONTEXT_BYTES']}"]
+             f"--draft-port {environment['DRAFTD_DRAFT_PORT']}", f"--window {environment['DRAFTD_WINDOW']}", f"--context-bytes {environment['DRAFTD_CONTEXT_BYTES']}",
+             "--directive "]
     if environment["DRAFTD_TARGET_SHARD"]:
         flags.append(f"--target-shard {environment['DRAFTD_TARGET_SHARD']}")
     return flags

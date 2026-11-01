@@ -110,7 +110,7 @@ def main():
     async def collect():
         frontend.engine_events = events
         parser = chat_frontend.OutputParser(model, None, False, [])
-        return [item async for item in frontend.generate(model, {"prompt_token_ids": [1], "logprobs": 1}, parser, False)]
+        return [item async for item in frontend.generate(model, {"prompt_token_ids": [1], "logprobs": 1}, parser, False, "sparkpipe")]
 
     produced = asyncio.run(collect())
     kinds = [kind for kind, _ in produced]

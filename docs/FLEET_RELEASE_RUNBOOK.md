@@ -396,6 +396,19 @@ error. The node-global `--reclaim` frees every cold arena of every lane: on
 
 A weightd older than #1345 does not support `--reclaim-pack`.
 
+Before the first start of a swap controller with the `working_state` block,
+on the hub as spec: put the market's hub token for the holder schedule in
+`/srv/workspace/sparkpipe/swap-controller/holders-token` (`umask 077`, at
+least 32 characters), copy `working_state.py` into `~/sparkpipe-swap` and
+`~/sparkpipe-chat`, and give the chat layer's config the
+`working_state_url` (`deployment/hub/chat_frontend.json`). The order
+matters: the engine API must already report `working_state_wiped` on
+`/health` and the market must already serve the holder schedule, or every
+request fails closed (503 `handover_failed` or `holder_schedule_unknown`).
+A draft server's source directory needs `context_retention.py` and
+`serving/working_state.py` beside `block_draftd.py`; `hub_draftd.sh`
+refuses one without them and passes `--directive`.
+
 ## 6. The serving stack on the hub
 
 Since 2026-10-08 one model holds the fleet at a time. The hub runs:
@@ -405,7 +418,12 @@ Since 2026-10-08 one model holds the fleet at a time. The hub runs:
   `~/sparkpipe-swap`, `127.0.0.1:8440`, every call with the token in
   `/srv/workspace/sparkpipe/swap-controller/token`). It stops the other
   models, starts the requested model's engines on every node, then its
-  engine API;
+  engine API. It also runs the working-state controller
+  (`tools/serving/working_state.py`, next to `model_swap.py` and to
+  `chat_frontend.py`): it admits every request's account, keeps a held
+  fleet to its holder and writes the working-state directive on the hub and
+  every node ([LITELLM_FRONTEND.md](LITELLM_FRONTEND.md), "Working state and
+  held fleets");
 - one engine API at a time: `sparkpipe_model_api` from the model's
   `~/<model>-kv-api` (`bin/`, `runtime/lib/<adapter>.so`,
   `model_resident.json`), started by the controller as the transient unit
