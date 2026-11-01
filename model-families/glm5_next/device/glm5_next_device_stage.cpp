@@ -9,7 +9,7 @@
 #include "sparkpipe/spark_glm53_flash_tp16_stage_model.h"
 
 #define GD_SLICES 40u
-#define GD_ALIGNMENT 256u
+#define GD_ALIGNMENT 128u
 
 template<class P>
 struct Glm5NextDevice

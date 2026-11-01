@@ -295,7 +295,8 @@ needs that they lack is added there, for every model, and the existing
 models' gates are re-run to show their output is unchanged.
 
 - `device_stage_model.{h,c}` (`SparkDeviceStage`) is the model's lifecycle. It
-  opens the rank pack and checks its topology (`SparkDeviceStageOpen`) and its
+  opens the rank pack and checks its payload alignment and topology
+  (`SparkDeviceStageOpen`) and its
   configuration values (`SparkDeviceStageExpectConfig`), reserves scratch and
   recurrent state against the state budget (`SparkDeviceStageReserve`), fills
   the runner geometry from the stage shape and the pack's `embed`,
@@ -308,7 +309,10 @@ models' gates are re-run to show their output is unchanged.
   not depend on the model: close, manifest check, the weightd, sideband and
   lane refusals, `attach_kv`, `recurrent_copy`, `reset_slot`, probe and
   report. A model struct starts with its `SparkDeviceStage`, so these entries
-  take the model pointer as it is.
+  take the model pointer as it is. The payload starts at the header rounded up
+  to the stage shape's alignment, so a pack whose manifest `format` declares
+  another alignment is refused: opened at 256 bytes, a 128-byte GLM 5.3 Full
+  pack read every tensor 128 bytes late and failed only at its last tensor.
 - Recurrent state is a set of pools, each `[layer][slot]` of one width;
   `recurrent_copy` packs pool by pool, layer by layer, and `reset_slot` zeroes
   a slot in every pool.

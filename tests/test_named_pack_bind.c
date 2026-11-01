@@ -21,7 +21,7 @@ static void Check(int condition, const char *message)
 
 static uint64_t WritePack(const char *path, uint8_t *file, uint64_t capacity)
 {
-	static const char manifest[] = "{\"format\":{\"container\":\"spark_named_pack\"},\"config\":{},\"tensors\":{"
+	static const char manifest[] = "{\"format\":{\"container\":\"spark_named_pack\",\"alignment\":128},\"config\":{},\"tensors\":{"
 		"\"layers.0.mix\":{\"offset\":0,\"bytes\":64,\"align\":128,\"kind\":\"bf16\",\"shape\":[4,8]},"
 		"\"layers.0.short\":{\"offset\":128,\"bytes\":48,\"align\":128,\"kind\":\"bf16\",\"shape\":[3,8]},"
 		"\"layers.0.norm\":{\"offset\":256,\"bytes\":32,\"align\":128,\"kind\":\"f32\",\"shape\":[8]}}}";
@@ -90,6 +90,9 @@ int main(void)
 		bound == file + pack.payload_base + 256u, "a later tensor binds at its own offset");
 	Check(SparkNamedPackTensorRange(&pack, "test", "layers.0.short", "bf16", &offset, &bytes, &rows) == SPARK_STATUS_OK &&
 		offset == pack.payload_base + 128u && bytes == 48u && rows == 3u, "the tensor range reports its file offset, bytes and rows");
+	Check(SparkNamedPackFormatU32(&pack, "alignment", &rows) == SPARK_STATUS_OK && rows == PACK_ALIGNMENT,
+		"the pack format reports the payload alignment it was written with");
+	Check(SparkNamedPackFormatU32(&pack, "version", &rows) == SPARK_STATUS_VALIDATION_FAILED, "a format field the pack lacks is refused");
 	lazy.ready = 0u;
 	Check(SparkNamedPackBindSized(&pack, &lazy, "test", "layers.0.mix", "bf16", 64u, &bound) == SPARK_STATUS_PARSE_ERROR,
 		"a tensor weightd holds no bytes for is refused");
@@ -97,6 +100,6 @@ int main(void)
 	unlink(path);
 	if ( failures != 0u )
 		return 1;
-	printf("PASS test_named_pack_bind: a tensor binds only at exactly the geometry's bytes; one row short, no expected size, another kind, a missing tensor or no resident bytes is refused\n");
+	printf("PASS test_named_pack_bind: a tensor binds only at exactly the geometry's bytes; one row short, no expected size, another kind, a missing tensor or no resident bytes is refused; the format reports its payload alignment\n");
 	return 0;
 }

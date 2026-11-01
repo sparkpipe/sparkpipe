@@ -24,7 +24,7 @@ SparkStatus SparkDeviceStageRefuse(const SparkDeviceStage *stage, SparkStatus st
 SparkStatus SparkDeviceStageOpen(SparkDeviceStage *stage, const SparkDeviceStageShape *shape, const SparkStageRunnerModelOpen *request)
 {
 	const SparkStageRunnerConfiguration *configuration = request->configuration;
-	uint32_t degree = 0u, rank = 0u;
+	uint32_t degree = 0u, rank = 0u, alignment = 0u;
 	SparkStatus status;
 	stage->shape = shape;
 	if ( configuration->stage_count != 1u || configuration->tp_degree == 0u || configuration->tp_rank >= configuration->tp_degree ||
@@ -46,6 +46,11 @@ SparkStatus SparkDeviceStageOpen(SparkDeviceStage *stage, const SparkDeviceStage
 		return(SparkDeviceStageRefuse(stage,status,"cannot open the rank pack"));
 	stage->pack_open = 1u;
 	stage->pack_bytes = stage->pack.file_bytes;
+	if ( SparkNamedPackFormatU32(&stage->pack,"alignment",&alignment) != SPARK_STATUS_OK || alignment != shape->pack_alignment )
+	{
+		fprintf(stderr,"%s: the pack does not declare the model's %u-byte payload alignment\n",shape->tag,shape->pack_alignment);
+		return(SPARK_STATUS_TARGET_MISMATCH);
+	}
 	if ( SparkNamedPackConfigU32(&stage->pack,"tp_degree",&degree) != SPARK_STATUS_OK ||
 		SparkNamedPackConfigU32(&stage->pack,"tp_rank",&rank) != SPARK_STATUS_OK )
 		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_PARSE_ERROR,"the pack configuration lacks its topology"));
