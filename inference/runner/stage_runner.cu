@@ -26,6 +26,7 @@
 #define STAGE_RUNNER_GRAPH_KEYS 2u
 #define STAGE_RUNNER_GRAPH_SLOTS (STAGE_RUNNER_GRAPH_KEYS * STAGE_RUNNER_GRAPH_ROWS)
 #define STAGE_RUNNER_WIDE_ROWS 16u
+#define STAGE_RUNNER_ROUND_MARKS 512u
 
 typedef struct SparkStageRunnerState SparkStageRunnerState;
 
@@ -350,6 +351,12 @@ typedef struct SparkStageRunnerState
 	uint32_t layer_marks;
 	uint32_t layer_mark_last;
 	uint32_t layer_waves;
+	double *layer_round_ms;
+	cudaEvent_t round_event[2u * STAGE_RUNNER_ROUND_MARKS];
+	uint32_t round_layer[STAGE_RUNNER_ROUND_MARKS];
+	uint32_t round_marks;
+	uint32_t round_events_created;
+	uint64_t round_unmarked;
 	uint64_t timing_graph_ns;
 	SparkTpDeviceCollectiveHardwareTiming timing_wait;
 	SparkTpDeviceCollectiveHardwareTiming timing_arrival_mark;
@@ -535,10 +542,9 @@ static SparkStatus StageRunnerReduceBf16(SparkStageRunnerState *state, cudaStrea
 		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
 }
 
-static SparkStatus StageRunnerRoundService(void *context, void *stream_void, uint32_t operation, uint32_t stage,
+static SparkStatus StageRunnerMeshRound(SparkStageRunnerState *state, void *stream_void, uint32_t operation, uint32_t stage,
 	uint32_t rows, uint32_t row_elements, const void *local, void *full)
 {
-	SparkStageRunnerState *state = (SparkStageRunnerState *)context;
 	SparkTpDeviceCollectiveSubmission submission;
 	SparkStatus status;
 	if ( state->device_collective_created == 0 )
@@ -559,6 +565,27 @@ static SparkStatus StageRunnerRoundService(void *context, void *stream_void, uin
 	}
 	if ( status != SPARK_STATUS_OK )
 		state->tp_collective_failed = 1u;
+	return status;
+}
+
+static SparkStatus StageRunnerRoundService(void *context, void *stream_void, uint32_t operation, uint32_t stage,
+	uint32_t rows, uint32_t row_elements, const void *local, void *full)
+{
+	SparkStageRunnerState *state = (SparkStageRunnerState *)context;
+	const uint32_t mark = state->layer_marks != 0u && state->round_marks < STAGE_RUNNER_ROUND_MARKS ? 1u : 0u;
+	SparkStatus status;
+	if ( state->layer_marks != 0u && mark == 0u )
+		state->round_unmarked++;
+	if ( mark != 0u && cudaEventRecord(state->round_event[2u * state->round_marks], (cudaStream_t)stream_void) != cudaSuccess )
+		state->layer_marks = 0u;
+	status = StageRunnerMeshRound(state, stream_void, operation, stage, rows, row_elements, local, full);
+	if ( mark != 0u && state->layer_marks != 0u )
+	{
+		if ( cudaEventRecord(state->round_event[2u * state->round_marks + 1u], (cudaStream_t)stream_void) != cudaSuccess )
+			state->layer_marks = 0u;
+		else
+			state->round_layer[state->round_marks++] = state->layer_mark_last + 1u;
+	}
 	return status;
 }
 
@@ -892,8 +919,9 @@ static SparkStatus StageRunnerCreateBuffers(SparkStageRunnerState *state, const 
 	state->layer_gpu_ms = (double *)calloc(state->mark_count, sizeof(double));
 	state->layer_enqueue_ms = (double *)calloc(state->mark_count, sizeof(double));
 	state->layer_lag_ms = (double *)calloc(state->mark_count, sizeof(double));
+	state->layer_round_ms = (double *)calloc(state->mark_count, sizeof(double));
 	if ( state->layer_event == 0 || state->layer_host_ns == 0 || state->layer_gpu_ms == 0 ||
-		state->layer_enqueue_ms == 0 || state->layer_lag_ms == 0 )
+		state->layer_enqueue_ms == 0 || state->layer_lag_ms == 0 || state->layer_round_ms == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	return SPARK_STATUS_OK;
 }
@@ -1313,6 +1341,10 @@ static uint32_t StageRunnerLayerMarksBegin(SparkStageRunnerState *state)
 	for ( ; state->layer_events_created < state->mark_count; ++state->layer_events_created )
 		if ( cudaEventCreate(&state->layer_event[state->layer_events_created]) != cudaSuccess )
 			return 0u;
+	for ( ; state->round_events_created < 2u * STAGE_RUNNER_ROUND_MARKS; ++state->round_events_created )
+		if ( cudaEventCreate(&state->round_event[state->round_events_created]) != cudaSuccess )
+			return 0u;
+	state->round_marks = 0u;
 	state->layer_marks = 1u;
 	state->layer_mark_last = 0u;
 	for ( index = 0u; index < state->mark_count; ++index )
@@ -1339,6 +1371,10 @@ static void StageRunnerLayerMarksEnd(SparkStageRunnerState *state, uint32_t rank
 		state->layer_enqueue_ms[index] += (double)(state->layer_host_ns[index] - state->layer_host_ns[index - 1u]) / 1e6;
 		state->layer_lag_ms[index] += since - (double)(state->layer_host_ns[index] - state->layer_host_ns[0]) / 1e6;
 	}
+	for ( index = 0u; index < state->round_marks; ++index )
+		if ( cudaEventElapsedTime(&gpu, state->round_event[2u * index], state->round_event[2u * index + 1u]) == cudaSuccess && state->round_layer[index] < state->mark_count )
+			state->layer_round_ms[state->round_layer[index]] += gpu;
+	state->round_marks = 0u;
 	state->layer_span_ms[0] += since;
 	state->layer_span_ms[1] += (double)(state->layer_host_ns[last] - state->layer_host_ns[0]) / 1e6;
 	if ( ++state->layer_waves < 16u )
@@ -1367,7 +1403,12 @@ static void StageRunnerLayerMarksEnd(SparkStageRunnerState *state, uint32_t rank
 	fprintf(stderr, "\nSTAGE-LAYER-LAG rank=%u ms", rank);
 	for ( index = 1u; index <= last; ++index )
 		fprintf(stderr, "%c%.0f", index == 1u ? '=' : ',', state->layer_lag_ms[index] / state->layer_waves);
+	fprintf(stderr, "\nSTAGE-LAYER-ROUND rank=%u unmarked=%llu ms", rank, (unsigned long long)state->round_unmarked);
+	for ( index = 1u; index <= last; ++index )
+		fprintf(stderr, "%c%.1f", index == 1u ? '=' : ',', state->layer_round_ms[index] / state->layer_waves);
 	fprintf(stderr, "\n");
+	memset(state->layer_round_ms, 0, (size_t)state->mark_count * sizeof(double));
+	state->round_unmarked = 0u;
 	memset(state->layer_gpu_ms, 0, (size_t)state->mark_count * sizeof(double));
 	memset(state->layer_enqueue_ms, 0, (size_t)state->mark_count * sizeof(double));
 	memset(state->layer_lag_ms, 0, (size_t)state->mark_count * sizeof(double));
@@ -2765,6 +2806,9 @@ void SparkStageRunnerDestroy(SparkStageRunner *runner)
 		(void)cudaEventDestroy(state->layer_event[--state->layer_events_created]);
 	free(state->layer_event);
 	free(state->layer_host_ns);
+	while ( state->round_events_created != 0u )
+		(void)cudaEventDestroy(state->round_event[--state->round_events_created]);
+	free(state->layer_round_ms);
 	free(state->layer_gpu_ms);
 	free(state->layer_enqueue_ms);
 	free(state->layer_lag_ms);
