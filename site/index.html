@@ -315,11 +315,11 @@ curl $OPENAI_BASE_URL/chat/completions \
 <section id="technology" class="sec">
   <div class="sec-rail">
     <p class="label">09 Technology</p>
-    <p class="label">Open source</p>
+    <p class="label">Source available</p>
   </div>
   <div class="sec-body">
     <h2>Sixteen small boxes, one frontier model.</h2>
-    <p class="prose">Decoding a large model is limited by how fast its weights can be read. SparkPipe splits every weight and every cache entry across the sixteen nodes of a fleet, so each reads only its own sixteenth, then merges the partial results over a 100 Gb/s RDMA mesh in 16 to 38 microseconds. The engine is written from scratch in C and CUDA and published under the Apache 2.0 license.</p>
+    <p class="prose">Decoding a large model is limited by how fast its weights can be read. SparkPipe splits every weight and every cache entry across the sixteen nodes of a fleet, so each reads only its own sixteenth, then merges the partial results over a 100 Gb/s RDMA mesh in 16 to 38 microseconds. The engine is written from scratch in C and CUDA, and its source is public under the Functional Source License with an added permission: use it for anything, commercially too, except renting out fleets or selling inference that runs on them. Each version becomes Apache 2.0 two years after we release it.</p>
     <figure class="screen" role="img" aria-label="Animated diagram of a fleet: sixteen DGX Spark nodes on one switch with direct pair links. Each decode step, every node reads its sixteenth of the model, the nodes exchange partial results, and one token comes out.">
       <div class="screen-bar"><span><b>Fleet 1</b> · 16 × DGX Spark · Korea</span><span id="phase">each node reads its 1/16 of the weights</span></div>
       <canvas id="fleet-canvas" width="1600" height="700"></canvas>
