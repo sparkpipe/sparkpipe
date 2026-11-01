@@ -8,8 +8,9 @@
             numpy's order, b splits every matmul's inner dimension into
             1,024-wide chunks summed last chunk first and reverses every other
             reduction, the hyper-connection stream sum and the expert
-            combination, so a against b is the noise of FP32 reduction order
-            (the Metal gate's floor)
+            combination, so a against b is the noise of FP32 reduction order,
+            and h is b with a GPU's exp and tanh error (tools/reference_device_error.py): a
+            against h is the Metal gate's floor
 
 No publisher modeling code exists for qwen4_exp, so the semantics are those of
 SparkPipe's CUDA stage (model-families/qwen38/source/qwen38_hybrid_stage.cuh),
@@ -49,6 +50,8 @@ from pathlib import Path
 
 import numpy as np
 
+import reference_device_error as device
+
 PREFIX = "model.language_model."
 EPSILON = np.float32(1e-6)
 NGRAM_SHARD_ROWS = 2500012
@@ -66,12 +69,12 @@ def bf16(values):
 
 
 def sigmoid(values):
-    return (1.0 / (1.0 + np.exp(-values.astype(np.float64)))).astype(np.float32)
+    return (1.0 / (1.0 + device.exp(-values.astype(np.float64)))).astype(np.float32)
 
 
 def silu(values):
     wide = values.astype(np.float64)
-    return (wide / (1.0 + np.exp(-wide))).astype(np.float32)
+    return (wide / (1.0 + device.exp(-wide))).astype(np.float32)
 
 
 def reduce_sum(values, axis=-1, keepdims=False):
@@ -307,8 +310,8 @@ class Reference:
             q = np.repeat(q * q_scale, group, axis=1)
             k = np.repeat(k * k_scale, group, axis=1)
             shifted = (a[first:first + count] + dt_bias).astype(np.float64)
-            softplus = np.where(shifted > 20.0, shifted, np.log1p(np.exp(np.minimum(shifted, 20.0))))
-            decay = np.exp(-np.exp(a_log) * softplus).astype(np.float32)
+            softplus = np.where(shifted > 20.0, shifted, np.log1p(device.exp(np.minimum(shifted, 20.0))))
+            decay = device.exp(-device.exp(a_log) * softplus).astype(np.float32)
             beta = sigmoid(b[first:first + count])
             state = np.zeros((self.value_heads, self.key_dim, self.value_dim), dtype=np.float32)
             for t in range(count):
@@ -353,7 +356,7 @@ class Reference:
             for head in range(self.heads):
                 scores = (query[:, head] @ key[:, head // group].T) * np.float32(1.0 / np.sqrt(self.head_dim))
                 scores = np.where(visible, scores, -np.inf)
-                weights = np.exp((scores - scores.max(axis=-1, keepdims=True)).astype(np.float64)).astype(np.float32)
+                weights = device.exp((scores - scores.max(axis=-1, keepdims=True)).astype(np.float64)).astype(np.float32)
                 weights = weights / reduce_sum(weights, keepdims=True)
                 out = bf16(matmul(weights, v[first:first + count, head // group]))
                 gated[first:first + count, head] = bf16(out * sigmoid(gq[first:first + count, head, self.head_dim:]))
@@ -363,7 +366,7 @@ class Reference:
         c = self.checkpoint
         m = f"{PREFIX}layers.{layer}.mlp."
         logits = self.linear(x, c.bf16(m + "gate.weight")).astype(np.float64)
-        probs = np.exp(logits - logits.max(axis=-1, keepdims=True)).astype(np.float32)
+        probs = device.exp(logits - logits.max(axis=-1, keepdims=True)).astype(np.float32)
         probs = probs / reduce_sum(probs, keepdims=True)
         chosen = np.argsort(-probs, axis=-1, kind="stable")[:, :self.top_k]
         weights = np.take_along_axis(probs, chosen, axis=-1)
@@ -427,8 +430,8 @@ class Reference:
 def teacher(args):
     global REVERSED
     variants = args.variants.split(",")
-    if not variants or any(label not in ("a", "b") for label in variants) or len(set(variants)) != len(variants):
-        raise SystemExit("--variants takes distinct a and b")
+    if not variants or any(label not in ("a", "b", "h") for label in variants) or len(set(variants)) != len(variants):
+        raise SystemExit("--variants takes distinct a, b and h")
     reference = Reference(args.checkpoint, args.threads)
     prompts = json.loads(Path(args.prompts).read_text())["prompts"]
     if args.only:
@@ -436,7 +439,8 @@ def teacher(args):
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     for label in variants:
-        REVERSED = label == "b"
+        REVERSED = label != "a"
+        device.select(label)
         hidden, spans = reference.forward([prompt["prompt_token_ids"] for prompt in prompts])
         for prompt, (first, count) in zip(prompts, spans):
             with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
@@ -451,7 +455,7 @@ def main():
     parser.add_argument("mode", choices=("teacher",))
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--prompts", required=True)
-    parser.add_argument("--variants", default="a,b")
+    parser.add_argument("--variants", default="a,h")
     parser.add_argument("--only", help="comma-separated prompt names (default every prompt)")
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--out", required=True)

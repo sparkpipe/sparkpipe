@@ -598,15 +598,31 @@ every position. The reference, `tools/qwen38_27b_reference.c`, is a separate
 implementation of the same precision policy on the CPU: it reads the original
 safetensors (separate q, k, v, z, b and a projections, unfused, norms folded
 at load), converts the weights to FP32 once and runs the whole prompt through
-Accelerate's FP32 GEMM. It runs twice per prompt with different reduction
-orders: variant A uses the BLAS GEMM over the full inner dimension and
-forward sums; variant B splits every GEMM's inner dimension into 1,024-wide
-chunks accumulated last chunk first and reverses every sum. KL divergence
-between A and B is the floor: the noise of FP32 reduction order under BF16
-rounding.
+Accelerate's FP32 GEMM. It runs twice per prompt: variant A uses the BLAS
+GEMM over the full inner dimension and forward sums; variant H splits every
+GEMM's inner dimension into 1,024-wide chunks accumulated last chunk first,
+reverses every sum (the order of the older variant B) and gives every exp and
+tanh the error a GPU's has (`tools/reference_device_error.py`: on the M5 Ultra
+under `-fno-fast-math`, exp is off by a relative 1.64e-7 mean and 4.35e-7
+standard deviation, about 18 times FP32 rounding, and tanh by an absolute
+3.7e-8; the error is a fixed function of the input, drawn from a hash of its
+bits). KL divergence between A and H is the floor: FP32 reduction-order noise
+plus the transcendental noise any GPU adds, under BF16 rounding. Every
+reference (the Python ones too) computes A and H by default.
+
+The floor used to be A against B, reduction order alone. It failed the
+reference itself: the same numpy reference of Gemma 4 31B run on a second CPU
+(lenovo7 against the hub, BLAS kernels the only difference) scored paired
++4.20 / +3.33 standard errors against it, about where Metal stood (+4.78 /
++4.32), so it could not pass a correct GPU implementation. A against H, both
+computed on lenovo7, differs by a mean KL of 0.112, the same as the hub's and
+lenovo7's A differ by; against it the same Metal run passes (KL 1.06 / 0.73
+times the floor, top-1 1.05 / 0.98, paired +0.10 / -1.15), the hub's
+reference passes (paired -0.32 / -1.24), and the all-layer and whole-tensor
+controls still fail (+25.1 / +26.7 and +124 / +122 standard errors).
 
 The gate rule is relative to that floor and runs in two legs, against A with
-B as the floor and against B with A as the floor. A candidate passes a leg
+H as the floor and against H with A as the floor. A candidate passes a leg
 when all three hold:
 
 - its position-weighted mean KL is at most 2 times the floor's;

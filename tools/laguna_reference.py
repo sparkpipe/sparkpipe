@@ -21,9 +21,9 @@
              rendered with the full Laguna chat turn -> --out prompts.json.
   teacher    FP32 logits of every prompt position for the Metal gate:
              --prompts prompts.json -> --out DIR/<name>.ref_<v>.logits for
-             --variants a,b. Variant b sums each row's routed experts in
-             descending instead of ascending expert order, a second
-             reference whose distance from a is the gate's floor.
+             --variants a,h. Variant b sums each row's routed experts in
+             descending instead of ascending expert order, and h is b with a GPU's exp and tanh error (tools/reference_device_error.py),
+             the second reference whose distance from a is the gate's floor.
 
 Semantics follow modeling_laguna.py (checkpoint revision 0f573140, sha256
 765fd328...): pre-norm blocks; LagunaRMSNorm is w * bf16(x * rsqrt(mean
@@ -48,6 +48,8 @@ from pathlib import Path
 
 import numpy as np
 
+import reference_device_error as device
+
 PREFIX = "model."
 REVERSED = False
 
@@ -63,11 +65,11 @@ def rms(values, epsilon):
 
 
 def silu(values):
-    return values / (np.float32(1.0) + np.exp(-values))
+    return values / (np.float32(1.0) + device.exp(-values))
 
 
 def softplus(values):
-    return np.where(values > 20.0, values, np.log1p(np.exp(np.minimum(values, np.float32(20.0))))).astype(np.float32)
+    return np.where(values > 20.0, values, np.log1p(device.exp(np.minimum(values, np.float32(20.0))))).astype(np.float32)
 
 
 def yarn_publisher(rope, head_dim):
@@ -193,7 +195,7 @@ class Reference:
         for head in range(heads):
             scores = (query[:, head, :] @ key[:, head // group, :].T) * self.scale
             scores = np.where(visible, scores, -np.inf)
-            weights = np.exp(scores - scores.max(axis=-1, keepdims=True))
+            weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
             weights /= weights.sum(axis=-1, keepdims=True)
             output[:, head, :] = bf16(weights @ value[:, head // group, :])
         gate = bf16(softplus(self.linear(normed, p + "g_proj.weight")))
@@ -209,7 +211,7 @@ class Reference:
         p = f"{PREFIX}layers.{layer}.mlp."
         shared = self.mlp(normed, p + "shared_expert.")
         logits = bf16(normed @ self.weight(p + "gate.weight").T)
-        scores = (np.float32(1.0) / (np.float32(1.0) + np.exp(-logits))).astype(np.float32)
+        scores = (np.float32(1.0) / (np.float32(1.0) + device.exp(-logits))).astype(np.float32)
         selection = scores + self.weight(p + "experts.e_score_correction_bias")[None, :]
         chosen = np.argsort(-selection, axis=-1, kind="stable")[:, :self.top_k]
         weights = np.take_along_axis(scores, chosen, axis=-1)
@@ -352,14 +354,15 @@ def score(args):
 def teacher(args):
     global REVERSED
     variants = args.variants.split(",")
-    if not variants or any(label not in ("a", "b") for label in variants) or len(set(variants)) != len(variants):
-        raise SystemExit("--variants takes distinct a and b")
+    if not variants or any(label not in ("a", "b", "h") for label in variants) or len(set(variants)) != len(variants):
+        raise SystemExit("--variants takes distinct a, b and h")
     reference = Reference(args.checkpoint)
     prompts = json.loads(Path(args.prompts).read_text())["prompts"]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     for label in variants:
-        REVERSED = label == "b"
+        REVERSED = label != "a"
+        device.select(label)
         finals = reference.forward([prompt["prompt_token_ids"] for prompt in prompts])
         for prompt, final in zip(prompts, finals):
             count = len(prompt["prompt_token_ids"])
@@ -389,7 +392,7 @@ def main():
     parser.add_argument("mode", choices=("tokenize", "score", "yarn", "gate-prompts", "teacher"))
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--prompts")
-    parser.add_argument("--variants", default="a,b")
+    parser.add_argument("--variants", default="a,h")
     parser.add_argument("--capture")
     parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/laguna/chat_template.json"))
     parser.add_argument("--out")

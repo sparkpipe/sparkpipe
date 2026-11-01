@@ -23,8 +23,13 @@
              every layer's experts taken from a's choice instead of its own
              top-k (the weights are still b's probabilities of those
              experts, renormalised), so a against bp is that noise without
-             the discrete expert choice. MoE models also write
-             <out>/<name>.ref_<variant>.routes for a and b, the chosen
+             the discrete expert choice, and hp is h pinned the same way;
+             h is b with every exp and tanh
+             carrying a GPU's measured error
+             (tools/reference_device_error.py), so a against h is the
+             gate's floor: reduction-order noise plus the transcendental
+             noise a GPU adds. MoE models also write
+             <out>/<name>.ref_<variant>.routes for a, b and h, the chosen
              experts as little-endian uint16 [layer][position][rank]
   gate-prompts  the Metal gate prompts (the same instructions and repository
              files as the Qwen3.8-27B gate) in this model's chat framing,
@@ -76,6 +81,8 @@ from pathlib import Path
 
 import numpy as np
 
+import reference_device_error as device
+
 PREFIX = "model.language_model."
 
 
@@ -111,11 +118,11 @@ def rms(values, weight=None, epsilon=1e-6):
 
 def gelu_tanh(values):
     cube = values * values * values
-    return 0.5 * values * (1.0 + np.tanh(np.float32(0.7978845608028654) * (values + np.float32(0.044715) * cube)))
+    return 0.5 * values * (1.0 + device.tanh(np.float32(0.7978845608028654) * (values + np.float32(0.044715) * cube)))
 
 
 def sigmoid(values):
-    return np.float32(1.0) / (np.float32(1.0) + np.exp(-values))
+    return np.float32(1.0) / (np.float32(1.0) + device.exp(-values))
 
 
 class Checkpoint:
@@ -166,6 +173,7 @@ class Reference:
         self.inv_freq = {}
         self.sequence = 0
         self.reversed_of = []
+        self.variant_of = []
         self.pin_source = []
         self.head = None
         self.routes = {}
@@ -218,7 +226,7 @@ class Reference:
         for head in range(heads):
             scores = matmul(query[:, head, :], key[:, head // group, :].T, query.shape[-1] // 2) * np.float32(scale)
             scores = np.where(causal, scores, -np.inf)
-            weights = np.exp(scores - scores.max(axis=-1, keepdims=True))
+            weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
             weights /= reduce_sum(weights, keepdims=True)
             output[:, head, :] = bf16(matmul(weights, value[:, head // group, :]))
         return output.reshape(rows, -1)
@@ -264,7 +272,7 @@ class Reference:
         routed = bf16(rms(residual, None, self.epsilon))
         routed = bf16(bf16(routed * self.checkpoint.f32(p + "router.scale")) * np.float32(self.hidden ** -0.5))
         logits = self.linear(routed, p + "router.proj.weight")
-        probabilities = np.exp(logits - logits.max(axis=-1, keepdims=True))
+        probabilities = device.exp(logits - logits.max(axis=-1, keepdims=True))
         probabilities /= reduce_sum(probabilities, keepdims=True)
         chosen = np.argsort(-probabilities, axis=-1, kind="stable")[:, :top_k]
         if self.pin_source and self.pin_source[self.sequence] is not None:
@@ -313,6 +321,7 @@ class Reference:
                 self.sequence = index
                 if self.reversed_of:
                     REVERSED = self.reversed_of[index]
+                    device.select(self.variant_of[index])
                 residuals[index] = self.layer(layer, residuals[index], position)
             print(f"layer {layer} done", file=sys.stderr, flush=True)
         self.checkpoint.cache.clear()
@@ -321,6 +330,7 @@ class Reference:
         for index, residual in enumerate(residuals):
             if self.reversed_of:
                 REVERSED = self.reversed_of[index]
+                device.select(self.variant_of[index])
             normed.append(bf16(rms(residual, final, self.epsilon)))
         return normed
 
@@ -331,7 +341,7 @@ class Reference:
         logits = np.concatenate([matmul(normed, head[first:first + chunk].T) for first in range(0, head.shape[0], chunk)], axis=-1)
         if self.muse:
             logits = logits * self.output_multiplier
-        return np.float32(self.softcap) * np.tanh(logits / np.float32(self.softcap))
+        return np.float32(self.softcap) * device.tanh(logits / np.float32(self.softcap))
 
 
 def tokenize(args):
@@ -443,24 +453,27 @@ def gate_prompts(args, head_keys=("prefix", "user"), tail_keys=("turn_suffix", "
 def teacher(args):
     global REVERSED
     variants = args.variants.split(",")
-    if not variants or any(label not in ("a", "b", "bp") for label in variants) or len(set(variants)) != len(variants):
-        raise ValueError("--variants takes distinct a, b and bp")
+    if not variants or any(label not in ("a", "b", "bp", "h", "hp") for label in variants) or len(set(variants)) != len(variants):
+        raise ValueError("--variants takes distinct a, b, bp, h and hp")
     reference = Reference(args.checkpoint)
-    if "bp" in variants and ("a" not in variants or not reference.moe):
-        raise ValueError("bp pins b to a's experts: it needs a in the same pass and an MoE model")
+    pinned = [label for label in variants if label in ("bp", "hp")]
+    if pinned and ("a" not in variants or not reference.moe):
+        raise ValueError("bp and hp pin b and h to a's experts: they need a in the same pass and an MoE model")
     prompts = json.loads(Path(args.prompts).read_text())["prompts"]
     runs = [(prompt, label) for label in variants for prompt in prompts]
     first_a = variants.index("a") * len(prompts) if "a" in variants else None
     reference.reversed_of = [label != "a" for _, label in runs]
-    reference.pin_source = [first_a + index % len(prompts) if label == "bp" else None for index, (_, label) in enumerate(runs)]
-    if "bp" in variants and variants.index("bp") < variants.index("a"):
-        raise ValueError("list a before bp so a's experts are chosen first in every layer")
+    reference.variant_of = [label for _, label in runs]
+    reference.pin_source = [first_a + index % len(prompts) if label in ("bp", "hp") else None for index, (_, label) in enumerate(runs)]
+    if any(variants.index(label) < variants.index("a") for label in pinned):
+        raise ValueError("list a before bp and hp so a's experts are chosen first in every layer")
     normed = reference.forward([prompt["prompt_token_ids"] for prompt, _ in runs])
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     for index, ((prompt, label), hidden) in enumerate(zip(runs, normed)):
         REVERSED = label != "a"
-        if reference.moe and label != "bp":
+        device.select(label)
+        if reference.moe and label not in ("bp", "hp"):
             np.ascontiguousarray(np.stack(reference.routes[index]), dtype="<u2").tofile(out / f"{prompt['name']}.ref_{label}.routes")
         with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
             for first in range(0, len(prompt["prompt_token_ids"]) - 1, 128):
@@ -515,7 +528,7 @@ def main():
     r.add_argument("--checkpoint", required=True)
     r.add_argument("--prompts", required=True)
     r.add_argument("--out", required=True)
-    r.add_argument("--variants", default="a")
+    r.add_argument("--variants", default="a,h")
     m = sub.add_parser("summary")
     m.add_argument("--report", required=True)
     m.add_argument("--tie", type=float, default=0.1)

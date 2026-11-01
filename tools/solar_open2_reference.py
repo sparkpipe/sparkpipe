@@ -9,7 +9,7 @@
   score      as tools/ling3_reference.py score: one forward over prompt +
              served tokens per prompt against --capture capture.json
   gate-prompts, teacher  as tools/ling3_reference.py: the Metal gate prompts
-             in Solar's chat turn, and FP32 references a and b
+             in Solar's chat turn, and FP32 references a and h
 
 Semantics follow the publisher modular_solar_open2.py and the fla kernels its
 fast path calls (model_contracts/references/fla_kda_gate.py):
@@ -44,6 +44,8 @@ import sys
 from pathlib import Path
 
 import numpy as np
+
+import reference_device_error as device  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ling3_reference  # noqa: E402
@@ -117,13 +119,13 @@ class Reference(ling3_reference.Reference):
         f = self.low_rank(normed, a + "f", width).reshape(rows, heads, dim)
         a_log = self.checkpoint.bf16(a + "A_log", 1, 1, heads, 1).reshape(heads)
         dt_bias = self.checkpoint.bf16(a + "dt_bias", width).reshape(heads, dim)
-        log_decay = self.lower_bound * sigmoid(np.exp(a_log)[None, :, None] * (f + dt_bias[None]))
+        log_decay = self.lower_bound * sigmoid(device.exp(a_log)[None, :, None] * (f + dt_bias[None]))
         beta = bf16(sigmoid(self.linear(normed, a + "b_proj.weight", heads, self.hidden))) * np.float32(2.0)
         q = q / np.sqrt(reduce_sum(q * q) + np.float32(1e-6)) * np.float32(dim ** -0.5)
         k = k / np.sqrt(reduce_sum(k * k) + np.float32(1e-6))
         state = np.zeros((heads, dim, dim), dtype=np.float32)
         output = np.empty((rows, heads, dim), dtype=np.float32)
-        decay = np.exp(log_decay)
+        decay = device.exp(log_decay)
         for t in range(rows):
             state *= decay[t][:, :, None]
             delta = (v[t] - dot_last(state, k[t])) * beta[t][:, None]
@@ -148,7 +150,7 @@ class Reference(ling3_reference.Reference):
         for head in range(heads):
             scores = matmul(q[:, head, :], k[:, head // group, :].T) * scale
             scores = np.where(causal, scores, -np.inf)
-            weights = np.exp(scores - scores.max(axis=-1, keepdims=True))
+            weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
             weights = bf16(weights / reduce_sum(weights))
             output[:, head, :] = bf16(matmul(weights, v[:, head // group, :]))
         gate = bf16(sigmoid(self.linear(normed, a + "g_proj.weight", heads * dim, self.hidden)))
@@ -174,7 +176,7 @@ def main():
     parser.add_argument("mode", choices=("tokenize", "score", "gate-prompts", "teacher"))
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--prompts")
-    parser.add_argument("--variants", default="a,b")
+    parser.add_argument("--variants", default="a,h")
     parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/solar_open2/chat_template.json"))
     parser.add_argument("--capture")
     parser.add_argument("--tie-margin", type=float, default=0.1)

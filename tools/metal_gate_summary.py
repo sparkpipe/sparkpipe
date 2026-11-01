@@ -3,9 +3,10 @@
 
 Reads the outputs a model's gate script (tools/qwen38_27b_metal_gates.sh,
 tools/metal_gates.sh) writes and applies the
-gate rule against both reference variants (A and B, the same reference with
-different reduction orders), each leg measured against the other variant as
-its floor: the position-weighted mean KL at most KL_FACTOR times the floor's,
+gate rule against both reference variants (A, which sums in numpy's order,
+and H, which sums in the reversed and chunked order and carries a GPU's
+measured exp and tanh error, tools/reference_device_error.py), each leg
+measured against the other variant as its floor: the position-weighted mean KL at most KL_FACTOR times the floor's,
 the top-1 disagreement rate at most TOP1_FACTOR times the floor's, and the
 paired test (the share of positions where the candidate is further from the
 reference than the other variant is, which is one half for a candidate whose
@@ -19,8 +20,8 @@ is reported against the measured streaming-read bandwidth.
 
 A mixture-of-experts gate adds a pinned-route set (labels prefixed pinned_):
 the Metal run and the controls with every layer's experts taken from
-reference A's choice, against A and against B pinned the same way (bp), with
-A against bp as the floor. The same rule applies to it; the Metal runs
+reference A's choice, against A and against H pinned the same way (hp), with
+A against hp as the floor. The same rule applies to it; the Metal runs
 (metal, and metal_rows64 when present: the same pass prefilled in 64-row
 chunks) must pass every set present, and a required control must fail in
 every set it appears in. A batch ladder run with --exact-rows (exact/) must
@@ -105,8 +106,8 @@ def leg(candidate, floor_top1):
             "pass": all(checks.values())}
 
 
-def verdict(against_a, against_b, floor):
-    legs = {"reference_a": leg(against_a, floor["top1_agreement"]), "reference_b": leg(against_b, floor["top1_agreement"])}
+def verdict(against_a, against_h, floor):
+    legs = {"reference_a": leg(against_a, floor["top1_agreement"]), "reference_h": leg(against_h, floor["top1_agreement"])}
     return {**legs, "pass": all(item["pass"] for item in legs.values())}
 
 
@@ -128,8 +129,8 @@ def greedy_table(out):
         entry[f"reference_{item['variant']}"] = item["generated"]
     for entry in table.values():
         entry["metal_matches_reference_a_tokens"] = common_prefix(entry["metal"], entry["reference_a"])
-        entry["metal_matches_reference_b_tokens"] = common_prefix(entry["metal"], entry["reference_b"])
-        entry["reference_a_matches_b_tokens"] = common_prefix(entry["reference_a"], entry["reference_b"])
+        entry["metal_matches_reference_h_tokens"] = common_prefix(entry["metal"], entry["reference_h"])
+        entry["reference_a_matches_h_tokens"] = common_prefix(entry["reference_a"], entry["reference_h"])
     return table
 
 
@@ -181,10 +182,10 @@ def speed(out):
 def numerics_set(rows, prefix, out):
     labels = {row["label"] for row in rows}
     floor = aggregate(rows, prefix + "floor")
-    candidates = {name: (aggregate(rows, prefix + name), aggregate(rows, f"{prefix}{name}_vs_b")) for name in CANDIDATES + REQUIRED_CONTROLS + REQUIRED_WHERE_RUN + PROBE_CONTROLS
-                  if prefix + name in labels and f"{prefix}{name}_vs_b" in labels}
+    candidates = {name: (aggregate(rows, prefix + name), aggregate(rows, f"{prefix}{name}_vs_h")) for name in CANDIDATES + REQUIRED_CONTROLS + REQUIRED_WHERE_RUN + PROBE_CONTROLS
+                  if prefix + name in labels and f"{prefix}{name}_vs_h" in labels}
     result = {"floor": floor,
-              **{name: {"against_reference_a": pair[0], "against_reference_b": pair[1], "verdict": verdict(pair[0], pair[1], floor),
+              **{name: {"against_reference_a": pair[0], "against_reference_h": pair[1], "verdict": verdict(pair[0], pair[1], floor),
                         "corruption": json.loads((out / name / "control.json").read_text()) if name not in CANDIDATES else None}
                  for name, pair in candidates.items()}}
     return candidates, result

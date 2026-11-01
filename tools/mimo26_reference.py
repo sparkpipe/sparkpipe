@@ -19,8 +19,8 @@
             in numpy's order, b splits every matmul's inner dimension into
             1,024-wide chunks summed last chunk first, reverses every other
             reduction and combines the experts in descending order, so a
-            against b is the noise of FP32 reduction order (the Metal gate's
-            floor)
+            against b is the noise of FP32 reduction order, and h is b with a GPU's exp and tanh error (tools/reference_device_error.py):
+            a against h is the Metal gate's floor
   gate-prompts, spec-prompts   the Metal gate and speculation prompts
             (tools/gemma4_reference.py's sources and cuts) in MiMo's chat
             framing -> --out prompts.json
@@ -56,6 +56,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
+
+import reference_device_error as device
 
 BLOCK = 128
 GROUP = 32
@@ -241,16 +243,16 @@ class Reference:
                 top = scores.max(axis=-1, keepdims=True)
                 if sinks is not None:
                     top = np.maximum(top, sinks[head])
-                weights = np.exp(scores - top)
+                weights = device.exp(scores - top)
                 total = reduce_sum(weights, keepdims=True)
                 if sinks is not None:
-                    total = total + np.exp(sinks[head] - top)
+                    total = total + device.exp(sinks[head] - top)
                 output[first:first + count, head, :] = bf16(matmul(weights / total, v[:, head // group, :]))
         return bf16(matmul(output.reshape(normed.shape[0], -1), self.checkpoint.bf16(a + "o_proj.weight").T))
 
     @staticmethod
     def swiglu(gate, up):
-        return bf16(bf16(gate / (np.float32(1.0) + np.exp(-gate))) * up)
+        return bf16(bf16(gate / (np.float32(1.0) + device.exp(-gate))) * up)
 
     def dense(self, layer, normed):
         m = f"model.layers.{layer}.mlp."
@@ -261,7 +263,7 @@ class Reference:
     def moe(self, layer, normed):
         m = f"model.layers.{layer}.mlp."
         logits = matmul(normed, self.checkpoint.bf16(m + "gate.weight").T)
-        scores = np.float32(1.0) / (np.float32(1.0) + np.exp(-logits))
+        scores = np.float32(1.0) / (np.float32(1.0) + device.exp(-logits))
         choice = scores + self.checkpoint.f32(m + "gate.e_score_correction_bias")[None, :]
         chosen = np.argsort(-choice, axis=-1, kind="stable")[:, :self.top_k]
         weights = np.take_along_axis(scores, chosen, axis=-1)
@@ -393,14 +395,15 @@ def score(args):
 def teacher(args):
     global REVERSED
     variants = args.variants.split(",")
-    if not variants or any(label not in ("a", "b") for label in variants) or len(set(variants)) != len(variants):
-        raise SystemExit("--variants takes distinct a and b")
+    if not variants or any(label not in ("a", "b", "h") for label in variants) or len(set(variants)) != len(variants):
+        raise SystemExit("--variants takes distinct a, b and h")
     reference = Reference(args.checkpoint, args.threads)
     prompts = json.loads(Path(args.prompts).read_text())["prompts"]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     for label in variants:
-        REVERSED = label == "b"
+        REVERSED = label != "a"
+        device.select(label)
         normed, spans = reference.forward([prompt["prompt_token_ids"] for prompt in prompts])
         for prompt, (first, count) in zip(prompts, spans):
             with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
@@ -421,7 +424,7 @@ def main():
     parser.add_argument("mode", choices=("tokenize", "score", "teacher", "gate-prompts", "spec-prompts"))
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--prompts")
-    parser.add_argument("--variants", default="a,b")
+    parser.add_argument("--variants", default="a,h")
     parser.add_argument("--capture")
     parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/mimo26/chat_template.json"))
     parser.add_argument("--answers-out")

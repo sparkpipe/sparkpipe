@@ -1283,7 +1283,12 @@ and the multidev docs on 2026-09-28. Line numbers are in
     to -1.3, MiMo +3.49 to +2.23 (all to passing), Gemma 4 26B with free
     routing +0.85 to +5.1 and Qwen3.8-27B +2.0 to +4.0 (both to failing). The
     paired test of the models near its limit is within reach of
-    reduction-order noise; the code keeps `exp`;
+    reduction-order noise; the code keeps `exp`. The gate's floor now
+    carries that noise: reference variant h (`tools/reference_device_error.py`)
+    adds a GPU's measured exp and tanh error to variant b's reduction order,
+    because the floor of reduction order alone (a against b) failed the
+    reference itself run on a second CPU (Gemma 4 31B, paired +4.20 / +3.33);
+    the models gated against a and b are being re-gated against a and h;
   Kernel bodies (the schedules) stay per backend.
 - Every family runs one schedule for all backends
   ([`docs/FAMILY_SCHEDULES.md`](docs/FAMILY_SCHEDULES.md)); Gemma 4 (with

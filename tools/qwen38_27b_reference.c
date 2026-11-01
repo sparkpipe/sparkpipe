@@ -40,6 +40,8 @@
 #define REF_MAX_CONTEXT 4096u
 #define REF_SPLIT 1024u
 #define REF_PREFIX "model.language_model."
+#define REF_EXP_ERROR_MEAN 1.637e-7
+#define REF_EXP_ERROR_SPREAD 4.354e-7
 
 typedef struct RefShard
 {
@@ -93,6 +95,7 @@ static float Bf16(uint16_t bits)
 }
 
 static uint32_t ref_round_activations = 1u;
+static uint32_t ref_device_error;
 
 static float RoundBf16(float value)
 {
@@ -107,14 +110,33 @@ static float RoundBf16(float value)
 	return(value);
 }
 
+static double RefDeviceCentered(float value, uint32_t salt)
+{
+	uint32_t x;
+	memcpy(&x,&value,sizeof(x));
+	x ^= salt * 0x9E3779B9u;
+	x ^= x >> 16;
+	x *= 0x7FEB352Du;
+	x ^= x >> 15;
+	x *= 0x846CA68Bu;
+	x ^= x >> 16;
+	return(((double)(x >> 8) + 0.5) * (2.0 / 16777216.0) - 1.0);
+}
+
+static double RefExp(double x)
+{
+	const double exact = exp(x);
+	return(ref_device_error != 0u ? exact + exact * (REF_EXP_ERROR_MEAN + REF_EXP_ERROR_SPREAD * sqrt(3.0) * RefDeviceCentered((float)x,1u)) : exact);
+}
+
 static float Silu(float x)
 {
-	return((float)((double)x / (1.0 + exp(-(double)x))));
+	return((float)((double)x / (1.0 + RefExp(-(double)x))));
 }
 
 static float Sigmoid(float x)
 {
-	return((float)(1.0 / (1.0 + exp(-(double)x))));
+	return((float)(1.0 / (1.0 + RefExp(-(double)x))));
 }
 
 static double Seconds(void)
@@ -422,8 +444,8 @@ static void RefGdn(uint32_t variant, const RefLayer *layer, uint32_t index, RefS
 		{
 			const float *kv = k + (uint64_t)row * REF_QK + key_head * REF_DIM, *qv = q + (uint64_t)row * REF_QK + key_head * REF_DIM;
 			const float shifted = a[(uint64_t)row * REF_VALUE_HEADS + head] + layer->dt_bias[head];
-			const double softplus = shifted > 20.0f ? (double)shifted : log1p(exp((double)shifted));
-			const float decay = (float)exp(-exp((double)layer->a_log[head]) * softplus);
+			const double softplus = shifted > 20.0f ? (double)shifted : log1p(RefExp((double)shifted));
+			const float decay = (float)RefExp(-RefExp((double)layer->a_log[head]) * softplus);
 			const float beta = Sigmoid(b[(uint64_t)row * REF_VALUE_HEADS + head]);
 			const float value = mix[(uint64_t)row * REF_CHANNELS + 2u * REF_QK + head * REF_DIM + column];
 			for ( uint32_t i = 0u; i < REF_DIM; i++ )
@@ -525,7 +547,7 @@ static void RefAttention(uint32_t variant, const RefLayer *layer, uint32_t index
 			for ( uint32_t j = 0u; j < visible; j++ )
 				best = line[j] > best ? line[j] : best;
 			for ( uint32_t j = 0u; j < length; j++ )
-				line[j] = j < visible ? (float)exp((double)(line[j] - best)) : 0.0f;
+				line[j] = j < visible ? (float)RefExp((double)(line[j] - best)) : 0.0f;
 			const float total = RefSum(variant,line,visible,1u);
 			for ( uint32_t j = 0u; j < visible; j++ )
 				line[j] /= total;
@@ -645,26 +667,29 @@ static double RefLogprob(const float *logits, uint32_t token)
 static void RefPrompt(const RefModel *model, RefState *state, const SparkTokenPrompt *prompt, const char *out, uint32_t new_tokens, FILE *greedy, uint32_t first)
 {
 	float *logits = (float *)malloc((size_t)prompt->count * REF_VOCAB * sizeof(float));
-	uint32_t variant, *generated = (uint32_t *)calloc(new_tokens + 1u,sizeof(uint32_t));
+	static const uint32_t variants[2] = { 0u, 2u };
+	uint32_t pass, variant, *generated = (uint32_t *)calloc(new_tokens + 1u,sizeof(uint32_t));
 	char path[4096];
 	if ( logits == 0 || generated == 0 || prompt->count + new_tokens > REF_MAX_CONTEXT || prompt->count < 2u )
 		Die("a prompt does not fit the reference",prompt->name);
-	for ( variant = 0u; variant < 2u; variant++ )
+	for ( pass = 0u; pass < 2u; pass++ )
 	{
 		const double start = Seconds();
 		FILE *file;
 		uint32_t index;
+		variant = variants[pass];
+		ref_device_error = variant == 2u ? 1u : 0u;
 		RefStateReset(state);
 		RefForward(variant,model,state,prompt->tokens,prompt->count,logits);
-		snprintf(path,sizeof(path),"%s/%s.ref_%c.logits",out,prompt->name,variant == 0u ? 'a' : 'b');
+		snprintf(path,sizeof(path),"%s/%s.ref_%c.logits",out,prompt->name,variant == 0u ? 'a' : 'h');
 		file = fopen(path,"wb");
 		if ( file == 0 || fwrite(logits,sizeof(float),(size_t)(prompt->count - 1u) * REF_VOCAB,file) != (size_t)(prompt->count - 1u) * REF_VOCAB ||
 			fclose(file) != 0 )
 			Die("cannot write",path);
 		generated[0] = RefArgmax(logits + (uint64_t)(prompt->count - 1u) * REF_VOCAB);
-		fprintf(stderr,"%s variant %c: %u teacher-forced positions in %.1f s\n",prompt->name,variant == 0u ? 'a' : 'b',prompt->count - 1u,Seconds() - start);
+		fprintf(stderr,"%s variant %c: %u teacher-forced positions in %.1f s\n",prompt->name,variant == 0u ? 'a' : 'h',prompt->count - 1u,Seconds() - start);
 		fprintf(greedy,"%s{\"name\":\"%s\",\"variant\":\"%c\",\"prompt_tokens\":%u,\"generated\":[",first != 0u && variant == 0u ? "" : ",\n",prompt->name,
-			variant == 0u ? 'a' : 'b',prompt->count);
+			variant == 0u ? 'a' : 'h',prompt->count);
 		for ( index = 0u; index < new_tokens; index++ )
 		{
 			fprintf(greedy,"%s%u",index != 0u ? "," : "",generated[index]);
@@ -673,7 +698,7 @@ static void RefPrompt(const RefModel *model, RefState *state, const SparkTokenPr
 		}
 		fprintf(greedy,"],\"seconds\":%.1f}",Seconds() - start);
 		fflush(greedy);
-		fprintf(stderr,"%s variant %c: %u greedy tokens, %.1f s total\n",prompt->name,variant == 0u ? 'a' : 'b',new_tokens,Seconds() - start);
+		fprintf(stderr,"%s variant %c: %u greedy tokens, %.1f s total\n",prompt->name,variant == 0u ? 'a' : 'h',new_tokens,Seconds() - start);
 		(void)RefLogprob;
 	}
 	free(logits);

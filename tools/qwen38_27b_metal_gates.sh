@@ -43,10 +43,10 @@ set +f
 rm -f "$out/compare/compare.jsonl"
 for name in $(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in json.load(open(sys.argv[1]))["prompts"]))' "$prompts"); do
 	split=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["prefill_positions"])' "$out/metal/$name.metal.json")
-	./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_a.logits" "$out/ref/$name.ref_b.logits" floor "$split" >> "$out/compare/compare.jsonl"
+	./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_a.logits" "$out/ref/$name.ref_h.logits" floor "$split" >> "$out/compare/compare.jsonl"
 	for label in metal control control_layers control_rotate; do
-		./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_a.logits" "$out/$label/$name.metal.logits" "$label" "$split" "$out/ref/$name.ref_b.logits" >> "$out/compare/compare.jsonl"
-		./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_b.logits" "$out/$label/$name.metal.logits" "${label}_vs_b" "$split" "$out/ref/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
+		./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_a.logits" "$out/$label/$name.metal.logits" "$label" "$split" "$out/ref/$name.ref_h.logits" >> "$out/compare/compare.jsonl"
+		./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_h.logits" "$out/$label/$name.metal.logits" "${label}_vs_h" "$split" "$out/ref/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
 	done
 	if [ -f "$out/ref/$name.ref_c.logits" ]; then
 		./build/logit_compare "$prompts" "$name" 248320 "$out/ref/$name.ref_c.logits" "$out/ref/$name.ref_a.logits" fp32_activations_vs_a "$split" >> "$out/compare/compare.jsonl"

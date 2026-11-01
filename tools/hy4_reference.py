@@ -16,10 +16,10 @@
              chat_template.json, reasoning off) -> --out prompts.json
   teacher    logits of every prompt position for the Metal gate: --prompts
              prompts.json -> --out DIR/<name>.ref_<v>.logits for --variants
-             a,b. Variant b sums every matrix product in 1,024-wide chunks
+             a,h. Variant b sums every matrix product in 1,024-wide chunks
              last first, reverses the norms' and softmax sums and adds the
-             routed experts in descending order, a second reference whose
-             distance from a is the gate's floor
+             routed experts in descending order, and h is b with a GPU's exp and tanh error (tools/reference_device_error.py),
+             the second reference whose distance from a is the gate's floor
 
 The checkpoint ships no modeling code. The semantics follow config.json and
 the hy-v4 graph llama.cpp merged at 49c0dc82 (MIT, see NOTICE), which mirrors the vLLM
@@ -62,6 +62,8 @@ from pathlib import Path
 
 import numpy as np
 
+import reference_device_error as device
+
 GROUP = 32
 LOOKAHEAD = 8
 REVERSED = False
@@ -77,7 +79,7 @@ def bf16(values):
 
 
 def sigmoid(values):
-    return (1.0 / (1.0 + np.exp(-values))).astype(np.float32)
+    return (1.0 / (1.0 + device.exp(-values))).astype(np.float32)
 
 
 def silu(values):
@@ -324,8 +326,8 @@ class Reference:
                 scores = (product(query[window, head, :self.nope], key_nope[window, head].T) + rope_scores[head]) * self.scale
                 scores = np.where(allowed, scores, -np.inf)
                 peak = np.maximum(scores.max(axis=-1, keepdims=True), sinks[head])
-                weights = np.exp(scores - peak)
-                denominator = reduce_sum(weights) + np.exp(sinks[head] - peak)
+                weights = device.exp(scores - peak)
+                denominator = reduce_sum(weights) + device.exp(sinks[head] - peak)
                 output[window, head] = bf16(product(weights, value[window, head]) / denominator)
         gate = bf16(sigmoid(bf16(product(normed, c.bf16(p + "linear_gate.weight", (self.heads * self.value, self.hidden)).T))))
         gated = bf16(output.reshape(rows, -1) * gate)
@@ -538,14 +540,15 @@ def summary(args):
 def teacher(args):
     global REVERSED
     variants = args.variants.split(",")
-    if not variants or any(label not in ("a", "b") for label in variants) or len(set(variants)) != len(variants):
-        raise SystemExit("--variants takes distinct a and b")
+    if not variants or any(label not in ("a", "b", "h") for label in variants) or len(set(variants)) != len(variants):
+        raise SystemExit("--variants takes distinct a, b and h")
     reference = Reference(args.checkpoint, args.lora_epsilon)
     prompts = json.loads(Path(args.prompts).read_text())["prompts"]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     for label in variants:
-        REVERSED = label == "b"
+        REVERSED = label != "a"
+        device.select(label)
         spans, _, normed = reference.forward([prompt["prompt_token_ids"] for prompt in prompts])
         for prompt, (first, count) in zip(prompts, spans):
             with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
@@ -570,7 +573,7 @@ def main():
     e = sub.add_parser("teacher")
     e.add_argument("--checkpoint", required=True)
     e.add_argument("--prompts", required=True)
-    e.add_argument("--variants", default="a,b")
+    e.add_argument("--variants", default="a,h")
     e.add_argument("--lora-epsilon", type=float, default=1e-5)
     e.add_argument("--out", required=True)
     m = sub.add_parser("summary")

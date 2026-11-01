@@ -6,9 +6,11 @@
              chat_template.json, thinking off) -> --out prompts.json
   teacher    FP32 logits of every prompt position but the last:
              --prompts prompts.json -> --out DIR/<name>.ref_<v>.logits for
-             --variants a,b, through tools/ling3_reference.py's teacher (b
+             --variants a,h, through tools/ling3_reference.py's teacher (b
              sums every product in 1,024-wide chunks last first, reverses the
-             other reductions and combines the experts in descending order)
+             other reductions and combines the experts in descending order;
+             h is b with a GPU's exp and tanh error (tools/reference_device_error.py),
+             and a against h is the gate's floor)
 
 The rounding points follow the CUDA stage (model-families/glm52/source/
 glm52_stage.cuh): FP8 projections are e4m3 x the FP32 block scale taken in
@@ -46,6 +48,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
+
+import reference_device_error as device  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ling3_reference as base  # noqa: E402
@@ -181,7 +185,7 @@ class Reference:
             query = base.bf16(base.matmul(q[:, head, :self.nope], key_up))
             scores = (base.matmul(query, latent.T) + base.matmul(query_rope[:, head, :], key_rope.T)) * self.scale
             scores = np.where(causal, scores, -np.inf)
-            probabilities = np.exp(scores - scores.max(axis=-1, keepdims=True))
+            probabilities = device.exp(scores - scores.max(axis=-1, keepdims=True))
             probabilities = probabilities / base.reduce_sum(probabilities)
             attended = base.bf16(base.matmul(probabilities, latent))
             output[:, head, :] = base.bf16(base.matmul(attended, value_up.T))
@@ -293,7 +297,7 @@ def main():
     parser.add_argument("--model", choices=sorted(MODELS), required=True)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--prompts")
-    parser.add_argument("--variants", default="a,b")
+    parser.add_argument("--variants", default="a,h")
     parser.add_argument("--template")
     parser.add_argument("--dump", help="teacher: write the embedding and every layer's residual for all rows to PATH.a.npz / PATH.b.npz")
     parser.add_argument("--out", required=True)
