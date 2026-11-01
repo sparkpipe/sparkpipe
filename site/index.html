@@ -127,7 +127,7 @@ h1 { max-width: 15ch; }
       <div><p class="label">Pinned to you</p><p>The whole fleet serves only your requests: no shared queue, no shared cache, no rate limit but the fleet's own speed. Nobody else can book its hours while you keep booking the next week. Hold more fleets for more work: one for the day, one for the night, one for a parallel review.</p></div>
       <div><p class="label">Working state that stays</p><p>8 TB of cache on the fleet, 1 TB per node mirrored to its pair partner. Requests reuse the longest cached prefix automatically, with no slots to manage. It is deleted when another customer's booking of the fleet starts, or 24 hours after your last hour. No copies off the fleet, no backups.</p></div>
       <div><p class="label">Your storage</p><p><span data-storage>4 TB</span> on every fleet for your repository, datasets, adapters and models, 500 GB per node mirrored like the cache. Export it and restore it to any fleet you hold.</p></div>
-      <div><p class="label">Your tools</p><p>An endpoint and a key in Claude Code, Codex, Cursor or any OpenAI-compatible tool, and the <span class="mono">sparkpipe</span> CLI for everything your account does.</p></div>
+      <div><p class="label">Your tools</p><p>Claude Code, Codex and OpenCode, the agents senior engineers use most, each set up with one command and tested on every release. Any other tool that speaks the Anthropic or OpenAI APIs works too, and the <span class="mono">sparkpipe</span> CLI does everything your account does.</p></div>
       <div><p class="label">18 open models</p><p>Kimi K3, GLM 5.3, DeepSeek V4.1 Flash and Korea's K-EXAONE 2.0, A.X K2 and Solar Open 2, among others, each under its publisher's license. A switch takes 20 to 80 seconds. The <a href="fleets.html">Fleet List</a> has every model's measured speeds.</p></div>
       <div><p class="label">Only in Korea</p><p>Requests and data are processed only on machines we operate in Korea, and never sent to another AI service. Korea holds an <a href="https://commission.europa.eu/law/law-topic/data-protection/international-dimension-data-protection/adequacy-decisions_en">EU adequacy decision</a> and a UK one, so personal data from Europe can come to your fleet without separate transfer contracts. You contract with a Korean company under Korean law.</p></div>
     </div>
@@ -201,8 +201,8 @@ h1 { max-width: 15ch; }
     <ol class="steps">
       <li><h3>Open an account</h3><p>Your company's legal name or your own, a work email confirmed with a 6-digit code, and the Customer Agreement. No password. Then buy HC in any quantity.</p></li>
       <li><h3>Book a demo hour</h3><p>The whole demo fleet by the hour, up to <span data-demo="days">7</span> days ahead, <span data-hour="hc">1</span> HC an hour. Point your own tools at it and try your codebase.</p></li>
-      <li><h3>Pin a fleet</h3><p>Book a first week on a free fleet, from the next Monday. When every fleet is held, join the waitlist by locking at least <span data-week="hc">144</span> HC.</p></li>
-      <li><h3>Keep it</h3><p>Book the next week before 00:00 on the Sunday of your last booked week and the fleet stays yours. Hold more weeks ahead and each new week costs less.</p></li>
+      <li><h3>Pin a fleet</h3><p>Book a first week on an available fleet, from the next Monday. When every fleet is held, join the waitlist by locking at least <span data-week="hc">144</span> HC.</p></li>
+      <li><h3>Keep it</h3><p>Book the next week before 00:00 on the Sunday of your last booked week and the fleet stays yours. The more weeks you hold ahead, the bigger the discount on every week you book, up to <span data-off="max">20%</span>.</p></li>
     </ol>
     <p class="prose">The waitlist goes biggest lock first, then earliest. Fleets are allocated every Sunday at 00:00 KST, and your whole lock books as many weeks as it pays for. You see your own position and how many are waiting, nothing more. If you stop booking, the fleet goes to the waitlist that Sunday, and your cache and storage are deleted when the next customer starts.</p>
     <p class="caption">Weeks run Monday 00:00 to Sunday 24:00 KST, and Sunday is the free day. Eight fleets at launch.</p>
@@ -250,8 +250,31 @@ h1 { max-width: 15ch; }
 <span class="k">export</span> ANTHROPIC_BASE_URL=https://sparkpipe.ai/pay/api
 <span class="k">export</span> ANTHROPIC_AUTH_TOKEN=<span class="d">your key from your account</span>
 <span class="k">export</span> ANTHROPIC_MODEL=kimi-k3
+<span class="k">export</span> CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000
 
-<span class="d"># Codex, Cursor and other OpenAI-compatible tools</span>
+<span class="d"># Codex: ~/.codex/config.toml</span>
+model = "kimi-k3"
+model_provider = "sparkpipe"
+[model_providers.sparkpipe]
+name = "SparkPipe"
+base_url = "https://sparkpipe.ai/pay/api/v1"
+env_key = "SPARKPIPE_API_KEY"
+wire_api = "responses"
+
+<span class="d"># OpenCode: opencode.json</span>
+{
+  "provider": {
+    "sparkpipe": {
+      "npm": "@ai-sdk/anthropic",
+      "options": { "baseURL": "https://sparkpipe.ai/pay/api/v1", "apiKey": "{env:SPARKPIPE_API_KEY}" },
+      "models": { "kimi-k3": { "limit": { "context": 1000000, "output": 32768 } } }
+    }
+  },
+  "model": "sparkpipe/kimi-k3",
+  "share": "disabled"
+}
+
+<span class="d"># Any other tool that speaks the OpenAI API</span>
 <span class="k">export</span> OPENAI_BASE_URL=https://sparkpipe.ai/pay/api/v1
 <span class="k">export</span> OPENAI_API_KEY=<span class="d">your key from your account</span>
 
@@ -259,7 +282,7 @@ curl $OPENAI_BASE_URL/chat/completions \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -d '{"model": "kimi-k3", "messages": [{"role": "user", "content": "Hello"}]}'</pre>
     </div>
-    <p class="caption">Holding more than one fleet? Name one with <span class="mono">"sparkpipe": {"fleet": "F3"}</span>. The <span class="mono">sparkpipe</span> CLI books, uploads, starts Functions and fetches the morning report from your terminal.</p>
+    <p class="caption">Holding more than one fleet? Name one with <span class="mono">"sparkpipe": {"fleet": "F3"}</span>. <span class="mono">sparkpipe setup claude-code</span>, <span class="mono">setup codex</span> and <span class="mono">setup opencode</span> write these settings for you, with the SparkPipe plugin that adds the fleet's code search, test runs on its sandbox, status and morning report to the agent. Each new release of the three is tested against the fleet before we recommend it. The <span class="mono">sparkpipe</span> CLI also books, uploads, starts Functions and fetches the morning report from your terminal.</p>
   </div>
 </section>
 

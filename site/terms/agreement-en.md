@@ -52,7 +52,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 4.1. We provide a service, not hardware. We keep ownership, possession and operation of every Fleet.
 
-4.2. **Availability.** We publish live capacity in machine-readable form at https://sparkpipe.ai/availability.txt, regenerated at least every 30 seconds: each Fleet we operate, whether it is serving, and whether it is the Demo Fleet, pinned (clause 15) or free. Wherever this Agreement makes anything subject to availability, availability means what that publication shows when Customer books.
+4.2. **Availability.** We publish live capacity in machine-readable form at https://sparkpipe.ai/availability.txt, regenerated at least every 30 seconds: each Fleet we operate, whether it is serving, and whether it is the Demo Fleet, pinned (clause 15) or available. Wherever this Agreement makes anything subject to availability, availability means what that publication shows when Customer books.
 
 4.3. **Maintenance.** We may take each Fleet out of service for maintenance for up to the maintenance allowance we publish in each Week. We announce each maintenance period at least 7 days ahead, choose the times of least use, and rotate those times across the hours of the day. A booked hour under maintenance is credited under clause 4.4 as if the Fleet were unavailable throughout it, unless we serve Customer on another Fleet in that hour under clause 15.7.
 
@@ -184,7 +184,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 15.2. **Price.** Each Week costs the HC we publish for a Week, times the Fleet's Rate, less the discount we publish for the number of Customer's booked Weeks on that Fleet that have not ended, counting the Weeks being booked. The discount applies to the Weeks being booked.
 
-15.3. **First Week.** Customer may book a first Week, and any Weeks following it, starting on the next Monday, on a serving Fleet other than the Demo Fleet that is free for that Week, that clause 16 has not allocated, and for which no customer on the waitlist has locked enough HC to pay for a Week. The waitlist comes first: while such a customer waits, a free Fleet is allocated under clause 16.3.
+15.3. **First Week.** Customer may book a first Week, and any Weeks following it, starting on the next Monday, on a serving Fleet other than the Demo Fleet that is available for that Week, that clause 16 has not allocated, and for which no customer on the waitlist has locked enough HC to pay for a Week. The waitlist comes first: while such a customer waits, a free Fleet is allocated under clause 16.3.
 
 15.4. **Extending.** Customer may book further Weeks on a Fleet pinned to it, each following a Week already booked, and no Week more than 52 Weeks after the current Week. Nobody else may book any Week of a Fleet pinned to Customer.
 
