@@ -48,13 +48,14 @@ class Engine:
         self.live = 0
         self.follow = True
         self.applied = 0
+        self.status = 200
         self.reached = {}
 
     async def health(self, request):
         if self.follow:
             self.applied = working_state.read_directive(self.directive)[0]
             self.reached.setdefault(self.applied, time.monotonic())
-        return web.json_response({"connected_ranks": 2, "live_requests": self.live, "working_state_wiped": self.applied})
+        return web.json_response({"connected_ranks": 2, "live_requests": self.live, "working_state_wiped": self.applied}, status=self.status)
 
 
 async def serve(app):
@@ -214,6 +215,10 @@ async def scenario(state, failures):
                   f"an engine that never applies the wipe fails the admit closed: {status} {code}")
             status, code, _, _ = await admit("sparkpipe")
             check((status, code) == (503, "handover_failed") and working.wiped == fourth, f"and keeps failing, without another wipe, until the engine confirms: {status} {code}")
+            engine.status = 503
+            status, code, _, _ = await admit("sparkpipe")
+            check((status, code) == (503, "handover_failed"), f"a degraded engine (503) that reports an older wipe does not count as confirmed: {status} {code}")
+            engine.status = 200
             engine.follow = True
             status, _, _, _ = await admit("sparkpipe")
             check(status == 200 and working.wiped == fourth, "once the engine confirms the same wipe, the account is admitted")

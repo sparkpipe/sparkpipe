@@ -444,12 +444,11 @@ public models:
   holds, so a key cannot test whether someone else sent a prompt. Prefix
   reuse is per account: the fleet serves one account at a time and wipes at
   every change of user, and the ledgers are cleared at every handover.
-- A request with the market gateway's key (`api_keys.py create --gateway`)
-  must carry `X-SparkPipe-Account` (the market account id, 1 to 64 letters,
-  digits, `-` or `_`, never `sparkpipe`) and `X-SparkPipe-Fleet` (the fleet
-  id the controller serves). A missing header is 400 `account_required` or
-  `fleet_required`, a malformed account 400 `invalid_account` and another
-  fleet 400 `wrong_fleet`. Every other request is the account `sparkpipe`.
+- A gateway request must also carry `X-SparkPipe-Fleet`, the fleet id the
+  working-state controller serves: 400 `fleet_required` without it and 400
+  `wrong_fleet` for another fleet. The account of a gateway request is the
+  one in `X-SparkPipe-Account`; every other request is the account
+  `sparkpipe`, our own use.
 - Every request is admitted by the controller as its account before it takes
   a sequence. A refusal reaches the client with the controller's status, code
   and Retry-After: 503 `fleet_held` during another account's held hour

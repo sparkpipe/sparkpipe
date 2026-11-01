@@ -193,6 +193,28 @@ async def run(tmp, failures):
             check(status == 503 and code(text) == "holder_schedule_unknown" and retry == "30", f"an unknown holder schedule refuses SparkPipe's own requests too: {status} {text}")
             controller.refusal = None
 
+            release = asyncio.Event()
+            held = []
+
+            async def held_answer(request, model, body, plan, started):
+                held.append(plan["account"])
+                await release.wait()
+                return web.json_response({"ok": True})
+            frontend.answer = held_answer
+            holder = dict(gateway, **{"X-SparkPipe-Account": "ACONE", "X-SparkPipe-Fleet": "F1"})
+            holder_requests = [asyncio.ensure_future(ask(holder)) for _ in range(chat_frontend.PUBLIC_KEY_CONCURRENCY + 2)]
+            check(await until(lambda: len(held) == chat_frontend.PUBLIC_KEY_CONCURRENCY + 2, 10),
+                  f"the gateway key is not held to the per-key limit, so a fleet's holder runs more than {chat_frontend.PUBLIC_KEY_CONCURRENCY} requests at once: {len(held)}")
+            plain_requests = [asyncio.ensure_future(ask(plain)) for _ in range(chat_frontend.PUBLIC_KEY_CONCURRENCY + 1)]
+            check(await until(lambda: sum(1 for task in plain_requests if task.done()) == 1, 10), "one request over another key's limit is answered at once")
+            over = [task.result() for task in plain_requests if task.done()]
+            check(over and over[0][0] == 429 and code(over[0][1]) == "rate_limited" and len(held) == 2 * chat_frontend.PUBLIC_KEY_CONCURRENCY + 2,
+                  f"another public key still runs at most {chat_frontend.PUBLIC_KEY_CONCURRENCY} requests at once: {over}")
+            release.set()
+            finished = await asyncio.gather(*holder_requests, *plain_requests)
+            check(sorted(result[0] for result in finished) == [200] * (2 * chat_frontend.PUBLIC_KEY_CONCURRENCY + 2) + [429], f"every held request then finishes: {finished}")
+            check(frontend.public_inflight == {}, f"no request is left counted against a key: {frontend.public_inflight}")
+
             del frontend.answer
             frontend.prefixes = {"m": chat_frontend.PrefixLedger()}
             frontend.public_prefixes = {(gateway_id, "m"): chat_frontend.PrefixLedger()}
