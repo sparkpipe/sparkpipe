@@ -1,14 +1,14 @@
 # Fleet API
 
-This is the specification of the API and CLI a customer uses on a fleet it holds. Every feature here exists for one reason: it removes waiting or repeated work from an engineer's day. The spec only promises what the engine does today or can be built to do. Each feature names what exists, what is missing, and the measurement that proves it.
+This is the specification of the API and CLI a customer uses on a fleet it holds, as it ships on 4 January 2027. Every feature removes waiting or repeated work from an engineer's day. Section 1 says, for each saving, where the engine starts today and the work that delivers it. Section 18 assigns that work and lists the acceptance tests that close it.
 
 The product rules (who holds a fleet, bookings, working-state deletion) are in the Customer Agreement and `docs/FLEET_BOOKINGS.md`. The engine side of working state is `docs/WORKING_STATE.md` (PR #1691, with the hub in PR #1692). This file is the customer-facing contract built on top of them.
 
 ## 1. Where the time goes, and what removes it
 
-An engineer working with a coding agent waits for three things: prefill of context the model has seen before, generation, and work they could have left running overnight. Per-token APIs make the first one recur, because their caches expire after 5 minutes by default. A held fleet removes it, but only if every link below holds.
+An engineer working with a coding agent waits for three things: prefill of context the model has seen before, generation, and work they could have left running overnight. Per-token APIs make the first one recur, because their caches expire after 5 minutes by default. A held fleet removes all three. The table lists the engine work that makes each saving hold.
 
-| Saving | Mechanism | Today on `main` | To build | Proven by |
+| Saving | Mechanism | Starting point on `main` | Work | Acceptance test |
 | --- | --- | --- | --- | --- |
 | No re-prefill after a break | Automatic prefix cache, kept while the account holds the fleet | Prefix cache exists: hash-chained 64-token blocks, LRU (`cache/prefix_cache.c`). Retention is 24 h from last use (`spark_kv_snapshot.h:27`) | Held-hours retention and the wipe at a change of user (#1691, #1692). Snapshot store proven at the full per-node budget; today only 8 GiB per rank is proven (`TECHDEBT.md:579-599`). Prefix index that survives a release and a restart (`FLEET_RELEASE_RUNBOOK.md:298` drops it today) | Gate A |
 | Every turn resumes where the last one ended | Assistant turns replayed token-exact, so the next request matches up to the end of the previous reply | The chat layer keeps reply text byte-exact for chat (`LITELLM_FRONTEND.md:33-37`). Kimi K3 resumes only at 16,384-token checkpoints or at the end of a reply (`CHAT_MEMORY.md:22-33`) | The same guarantee for Anthropic Messages and Responses, including tool calls and reasoning (§3.2) | Gate A |
@@ -17,9 +17,10 @@ An engineer working with a coding agent waits for three things: prefill of conte
 | Big prompts paid for once | Long prefill publishes its cache | The fast streamed 1M prefill (16.2 min) publishes no cache blocks and stops decode meanwhile (`TECHDEBT.md:308-326`). A reusable 1M prefill takes about 76 min (`PERFORMANCE_STATUS.md:68`) | Streamed prefill that publishes its blocks to the prefix cache and snapshot store | Gate C |
 | The codebase is already in context | Context packs (§5): a repository snapshot placed first in every prompt, kept warm | None | Pack builder, versioned aliases, and refresh in idle time | Gate D |
 | A session starts warm | Prefill-only warm-up of an exact future prefix, and pins that protect it | `max_tokens` must be 1 or more (`node/model_api.c:1622-1631`); `max_tokens` 1 commits a prompt (`CHAT_MEMORY.md:38`). No pinning | `POST /v1/cache/warm` and pins (§4) | Gate B |
-| Faster generation | Speculation | Lookup drafts from the request's own text, plus a model drafter for K3 and DeepSeek V4.1 Flash. 126.4 tok/s on K3 whole-file rewrites, against 15.3 plain. No speculation at batch 2 or more (`PERFORMANCE_STATUS.md:50-51`) | Per-fleet drafter choice (§8). Batch speculation later | tok/s per request in telemetry |
+| Faster generation | Speculation | Lookup drafts from the request's own text, plus a model drafter for K3 and DeepSeek V4.1 Flash. 126.4 tok/s on K3 whole-file rewrites, against 15.3 plain. No speculation at batch 2 or more (`PERFORMANCE_STATUS.md:50-51`) | Per-fleet drafter choice (§8), and speculation at batch 2 and more | tok/s per request in telemetry |
 | Parallel agents | Batching | 8 sequences for K3, and 4 requests at once per key (`LITELLM_FRONTEND.md:401`) | Holder keys exempt from the per-key cap (#1692). Two sequences kept for interactive use while Functions run | Aggregate tok/s in telemetry |
-| Work done while you are away | Functions (§7) on the held fleet, with a sandbox for code that runs | None. No sandbox. About 11 GB of free memory per node with K3 loaded, and a 16-core CPU tenant cut K3 from 16.2 to 10.0 tok/s (`PERFORMANCE_STATUS.md:197-199`) | Function runner, plus a sandbox host per fleet so that code never runs on the Sparks | Morning report |
+| A lost node pair costs hours, not days | The hub reports which part of the cache a pair failure destroyed. The market credits the rebuild hours (Agreement 6.6), and a Function rebuilds the cache | Pair mirror on branch (`docs/WORKING_STATE.md`, #1691/#1692); no loss report | Loss report from the hub, automatic credit, and the rebuild Function (§7.2) | Gate A |
+| Work done while you are away | Functions (§7) on the held fleet, with a sandbox for code that runs | None. No sandbox. About 11 GB of free memory per node with K3 loaded, and a 16-core CPU tenant cut K3 from 16.2 to 10.0 tok/s (`PERFORMANCE_STATUS.md:197-199`) | Function runner, plus a sandbox host per fleet so that code never runs on the Sparks | Gate E |
 
 Telemetry (§3.6) puts the numbers on every response, so the saving is measured per request rather than claimed.
 
@@ -27,20 +28,26 @@ Telemetry (§3.6) puts the numbers on every response, so the saving is measured 
 
 All paths are under `https://sparkpipe.ai/pay/api`. Every request authenticates with an API key from the account page or the CLI.
 
-| Area | Paths | Phase |
-| --- | --- | --- |
-| Inference | `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/responses`, `POST /v1/chat/completions`, `GET /v1/models`, `HEAD /api/hello` | 1 |
-| Working state | `GET /v1/state`, `POST /v1/cache/warm`, `GET/POST/DELETE /v1/cache/pins`, `DELETE /v1/cache`, `GET/PUT /v1/model`, `GET/PUT /v1/model/aliases` | 1 |
-| Usage records | `GET /v1/requests` | 1 |
-| Context packs | `GET/POST /v1/packs`, `GET/DELETE /v1/packs/{name}`, `POST /v1/packs/{name}/refresh` | 1 |
-| Repositories | `GET/POST /v1/repos`, `DELETE /v1/repos/{name}`, `POST /v1/repos/{name}/sync`, `POST /v1/repos/{name}/hook` | 1 |
-| Storage | `GET /v1/storage`, `PUT/GET/DELETE /v1/storage/{path}`, `POST /v1/storage/fetch`, `POST /v1/export`, `POST /v1/restore` | 1 |
-| Functions | `GET /v1/functions`, `POST /v1/functions/{name}/runs`, `GET /v1/runs`, `GET /v1/runs/{id}`, `GET /v1/runs/{id}/log`, `DELETE /v1/runs/{id}`, `GET/PUT/DELETE /v1/schedules`, `GET /v1/reports/{date}` | 1, then 2 and 3 |
-| Draft models | `GET /v1/drafters`, `PUT /v1/drafters/active` | 3 |
-| Customer models | `GET/POST /v1/custom-models`, `DELETE /v1/custom-models/{id}` | 3 |
-| Account | the existing `/market/...` endpoints, with a bearer session for the CLI (§11) | 1 |
+| Area | Paths |
+| --- | --- |
+| Inference | `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/responses`, `POST /v1/chat/completions`, `GET /v1/models`, `HEAD /api/hello` |
+| Working state | `GET /v1/state`, `POST /v1/cache/warm`, `GET/POST/DELETE /v1/cache/pins`, `DELETE /v1/cache`, `GET/PUT /v1/model`, `GET/PUT /v1/model/aliases` |
+| Usage records | `GET /v1/requests` |
+| Context packs | `GET/POST /v1/packs`, `GET/DELETE /v1/packs/{name}`, `POST /v1/packs/{name}/refresh` |
+| Repositories | `GET/POST /v1/repos`, `DELETE /v1/repos/{name}`, `POST /v1/repos/{name}/sync`, `POST /v1/repos/{name}/hook` |
+| Storage | `GET /v1/storage`, `PUT/GET/DELETE /v1/storage/{path}`, `POST /v1/storage/fetch`, `POST /v1/export`, `POST /v1/restore` |
+| Functions | `GET /v1/functions`, `POST /v1/functions/{name}/runs`, `GET /v1/runs`, `GET /v1/runs/{id}`, `GET /v1/runs/{id}/log`, `DELETE /v1/runs/{id}`, `GET/PUT/DELETE /v1/schedules`, `GET /v1/reports/{date}` |
+| Draft models | `GET /v1/drafters`, `PUT /v1/drafters/active` |
+| Customer models | `GET/POST /v1/custom-models`, `DELETE /v1/custom-models/{id}` |
+| Codebase tools (MCP) | `POST /mcp` (Streamable HTTP), and `sparkpipe mcp` for stdio |
+| Batch jobs | `GET/POST /v1/batches`, `GET/DELETE /v1/batches/{id}` |
+| Teams, keys, audit | `GET/POST /v1/members`, `DELETE /v1/members/{id}`, `GET/POST /v1/keys`, `DELETE /v1/keys/{id}`, `GET /v1/audit` |
+| Notifications | `GET/PUT /v1/webhooks`, `DELETE /v1/webhooks/{id}` |
+| Several fleets | key option `fleet: "any"`, `POST /v1/state/move` |
+| Inference extras | `POST /v1/tokenize`, `POST /v1/detokenize`, `DELETE /v1/requests/{id}` |
+| Account | the existing `/market/...` endpoints, with a bearer session for the CLI, and auto-extend (§16) |
 
-Phase 1 is everything a customer needs on 4 January 2027. Phase 2 needs the sandbox host. Phase 3 needs training and new model families on the fleet. §13 has the order, gates and owners.
+Everything here ships for 4 January 2027. §18 orders the work into parallel components and lists the acceptance tests.
 
 ## 3. Inference
 
@@ -109,7 +116,7 @@ CLAUDE_CODE_ATTRIBUTION_HEADER=0
 - **The Haiku alias points at the same model,** because Claude Code's background calls would otherwise ask for another model. The alias table catches any `claude-*` name as well.
 - **The context limit is the model's served window.** Claude Code otherwise assumes 200K.
 - **The attribution header is turned off,** so the first system block stays the same from session to session.
-- **Anthropic does not support non-Claude models through gateways** ([LLM gateway docs](https://code.claude.com/docs/en/llm-gateway.md)). We test every Claude Code release against this endpoint before telling customers to upgrade.
+- **Every Claude Code release is tested** against this endpoint before we tell customers to upgrade, because Anthropic does not test Claude Code against other models ([LLM gateway docs](https://code.claude.com/docs/en/llm-gateway.md)).
 - **Claude Code's terms keep it on the customer's own machine.** Functions never run Claude Code on our servers (§7).
 
 ### 3.4 `POST /v1/responses` (Codex)
@@ -170,6 +177,17 @@ Every response carries what it cost in time:
 
 `cold_prefill_ms_estimate` is the measured prefill rate for this model at this length, applied to the tokens that came from the cache: the wait the cache removed. `GET /v1/requests?since=&until=` returns these records, without prompts or replies; they are the operational records the privacy policy already lists, kept for a year. `sparkpipe stats` sums them into "prefill avoided this week", which is the number the Customer Zero report publishes.
 
+### 3.7 More inference features
+
+- **Structured outputs.** `response_format: {"type": "json_schema", ...}` on chat completions, `text.format` on Responses, and forced tool use on Messages always produce output that matches the schema. The engine's sampler masks tokens with a grammar compiled from the schema. Today `response_format` other than text answers 400 (`LITELLM_FRONTEND.md:59-62`).
+- **Parallel samples.** `n` up to 8 on chat completions and `n` in the body of Messages and Responses. The samples share the prompt's cache and run as one batch: best-of-N patches cost one prefill. Today `n` answers 400.
+- **Log probabilities.** `logprobs` and `top_logprobs` up to 20, for evals and confidence checks.
+- **Tokens.** `POST /v1/tokenize` and `POST /v1/detokenize` with the model's tokenizer and chat template, so tools can count and place context exactly.
+- **Cancellation.** A client disconnect, or `DELETE /v1/requests/{id}`, stops generation within one decode step and frees the sequence. Agents interrupt often; an abandoned generation must not hold a sequence.
+- **Priority.** `X-SparkPipe-Priority: interactive | background` (and a default per key). Background requests yield sequences and prefill to interactive ones, and Functions and batches always run as background. The chat layer passes priority to `sparkpipe_model_api`; LiteLLM drops it today (`TECHDEBT.md:1121`).
+- **Images** on models that take them, in all three API shapes.
+- **Seeds.** `seed` gives reproducible sampling for the same prompt, model build and batch.
+
 ## 4. Working state
 
 ### 4.1 `GET /v1/state`
@@ -228,7 +246,7 @@ A pack is a snapshot of a repository rendered into one deterministic text block.
   - Only the part after the first changed file has to be prefilled again. For K3 that means everything after the last 16,384-token checkpoint before it, which is why rarely changed files come first.
   - The new version is prefilled at low priority, and the alias moves to it only once it is warm. No request ever waits for a rebuild.
 - **Session affinity.** A conversation that started on version A keeps version A, matched by its prompt prefix and by `x-claude-code-session-id` when present, because switching it would invalidate the conversation's whole cache. New sessions get the newest warm version. Old versions are dropped when no session has used them for 24 hours.
-- **Cost.** A pack makes every prompt longer, so decode slows a little: K3 runs at 16.2 tok/s at 8K, 15.1 at 73K and 12.0–12.4 at 1M (`PERFORMANCE_STATUS.md:36-38,65-81`). The budget is the customer's choice. Gate D measures whether a pack shortens a task.
+- **Cost.** A pack makes every prompt longer, so decode slows a little: K3 runs at 16.2 tok/s at 8K, 15.1 at 73K and 12.0–12.4 at 1M (`PERFORMANCE_STATUS.md:36-38,65-81`). The budget is the customer's choice. Gate D records what a pack saves on a real task list, for the Customer Zero report.
 
 ## 6. Storage and repositories
 
@@ -244,6 +262,8 @@ Customer storage is on the fleet's nodes: 500 GB per node, mirrored to the pair 
   - `POST /v1/export {"paths": [...], "include": ["drafter", "packs"]}` writes an archive to storage, for download or for fetching from another fleet.
   - `POST /v1/restore {"url" | "path"}` brings one back.
   - Cache snapshots are not exported: they only work on the same model build and topology, and rebuilding them is a warm-up.
+- **Daily backup.** `PUT /v1/backups {"paths": [...], "destination": {"type": "s3" | "https" | "sftp", ...}, "at": "03:00", "tz": "Asia/Seoul"}` copies the chosen storage paths to the customer's own bucket or server every day, sending only what changed, and reports each run in the morning report.
+  - Clause 6.3 of the Agreement tells customers to treat working state as temporary, even on a fleet held many weeks ahead, and recommends a daily export. This makes that one setting.
 
 ## 7. Functions
 
@@ -255,7 +275,7 @@ A Function is software we build and run for the account on a fleet it holds. It 
 - **Sandbox host.** Code that a Function builds or runs (tests, fuzzers, builds, an agent's shell commands) runs on a sandbox host attached to the fleet, never on the Sparks.
   - Each run gets a fresh microVM with a copy of the repository and no network unless the run allows it.
   - The VM is destroyed when the run ends, and the host is wiped at a change of user.
-  - The Sparks have about 11 GB of memory to spare with K3 loaded, and a CPU tenant slows decode by more than a third (§1), so this host is required, not optional.
+  - The Sparks have about 11 GB of memory to spare with K3 loaded, and a CPU tenant slows decode by more than a third (§1), so every fleet comes with its own sandbox host.
 - **Our agent loop.** Agent Functions use our own open-source agent loop with read, search, edit and run tools against the sandbox. They never use Claude Code.
 - **API.**
   - `POST /v1/functions/{name}/runs` takes parameters and returns a run id.
@@ -265,30 +285,33 @@ A Function is software we build and run for the account on a fleet it holds. It 
 
 ### 7.2 Catalogue
 
-| Function | What it does | Needs | Phase |
-| --- | --- | --- | --- |
-| Ingest a repository | Clone and follow a repository, and map its files, symbols and history (§6) | Storage | 1 |
-| Build and refresh the cache | Build and refresh packs, warm them, and pin them if asked (§5) | Packs, warm | 1 |
-| Prefill ahead | Warm the named branches' packs, and re-warm after a handover or release | Warm | 1 |
-| Resume sessions | Re-warm the last prompts of recent sessions from the usage records, after a release or restart | Warm | 1 |
-| Export and restore | §6 | Storage | 1 |
-| Review the day's changes | For each change since the last run, review it against the pack and the files it touches, and report findings ranked by severity | Packs | 1 |
-| Second opinions | Run the same review on a second model at night, then switch back before the morning (§4.5) | Model switch | 1 |
-| Ask the whole codebase | Run one question or instruction over every file or module, and collect the answers | Packs | 1 |
-| Keep docs current | Draft updates to architecture notes, API docs and a map of the code after each push, as a branch | Packs, repo push token | 1 |
-| Morning report | Everything the night produced, with the week's prefill avoided (§3.6) | Runner | 1 |
-| Tests and fuzzing | Write and run tests and fuzzers for changed code, and report crashes with reproductions | Sandbox | 2 |
-| Confirmed findings | Re-run review findings as tests in the sandbox, and keep only those that reproduce | Sandbox | 2 |
-| Security audit | Memory safety, concurrency, injection, secrets and dependencies, with reproductions | Sandbox | 2 |
-| Overnight agent | Work through a task list and leave one branch per task, with test results | Sandbox, agent loop | 2 |
-| Codebase-wide change | A rename, an API migration or a port, done file by file, built and tested, as one branch | Sandbox, agent loop | 2 |
-| Evaluate models on your code | Run the account's tests or eval set against offered models and its own | Sandbox, model switch | 2 |
-| Train a draft model | Train the fleet's drafter on the account's repository and sessions, with an acceptance report against the current drafter | Training (§8) | 3 |
-| Qualify your model | Compare a customer model's outputs with its reference outputs (§9) | Customer models | 3 |
-| Train an adapter | Train an adapter for an offered model or a customer model | Adapter support in the engine | 3 |
-| Make training data | Generate training data for a customer model, only from models whose licence allows it | License list | 3 |
+| Function | What it does | Needs |
+| --- | --- | --- |
+| Ingest a repository | Clone and follow a repository, and map its files, symbols and history (§6) | Storage |
+| Build and refresh the cache | Build and refresh packs, warm them, and pin them if asked (§5) | Packs, warm |
+| Prefill ahead | Warm the named branches' packs, and re-warm after a handover or release | Warm |
+| Resume sessions | Re-warm the last prompts of recent sessions from the usage records, after a release or restart | Warm |
+| Export and restore | §6 | Storage |
+| Daily backup | §6: push chosen paths to the customer's own destination every day | Storage |
+| Rebuild after a loss | When a node pair loses part of the cache (clause 6.6), re-warm packs and recent sessions at background priority, and report what was rebuilt | Warm, loss report |
+| Review the day's changes | For each change since the last run, review it against the pack and the files it touches, and report findings ranked by severity | Packs |
+| Second opinions | Run the same review on a second model at night, then switch back before the morning (§4.5) | Model switch |
+| Ask the whole codebase | Run one question or instruction over every file or module, and collect the answers | Packs |
+| Keep docs current | Draft updates to architecture notes, API docs and a map of the code after each push, as a branch | Packs, repo push token |
+| Morning report | Everything the night produced, with the week's prefill avoided (§3.6) | Runner |
+| Benchmark your repository | For a demo hour or any time: ingest the repository, replay a standard set of agent turns on it, and report first-token times warm and cold, decode speed and prefill avoided | Packs, warm |
+| Scheduled model | Switch the fleet's model on a schedule, for example a second model for the night, with the cache of each saved and restored (§4.5) | Model switch |
+| Tests and fuzzing | Write and run tests and fuzzers for changed code, and report crashes with reproductions | Sandbox |
+| Confirmed findings | Re-run review findings as tests in the sandbox, and keep only those that reproduce | Sandbox |
+| Security audit | Memory safety, concurrency, injection, secrets and dependencies, with reproductions | Sandbox |
+| Overnight agent | Work through a task list and leave one branch per task, with test results | Sandbox, agent loop |
+| Codebase-wide change | A rename, an API migration or a port, done file by file, built and tested, as one branch | Sandbox, agent loop |
+| Evaluate models on your code | Run the account's tests or eval set against offered models and its own | Sandbox, model switch |
+| Train a draft model | Train the fleet's drafter on the account's repository and sessions, with an acceptance report against the current drafter | Training (§8) |
+| Qualify your model | Compare a customer model's outputs with its reference outputs (§9) | Customer models |
+| Train an adapter | Train an adapter for an offered model or a customer model | Adapter support in the engine |
+| Make training data | Generate training data for a customer model, only from models whose licence allows it | License list |
 
-Phase 1 Functions read code and call the model; none of them runs customer code. That is what makes them buildable before the sandbox host exists.
 
 ## 8. Draft models
 
@@ -299,23 +322,89 @@ Phase 1 Functions read code and call the model; none of them runs customer code.
 - **Training.**
   - The branch measured one GB10 at 16 blocks/s, with 3.2M positions taking about 52 min on 16 nodes (derived).
   - It fits only with K3 swapped out, so a nightly training run costs a swap out and back (two switches of 16–79 s each) plus the run.
-  - Measured gains so far are small: +1.0–1.4% on held-out replies, and −2.0% on prose. The Function therefore reports acceptance against the current drafter on the account's own recent requests, and activates the new drafter only if it is better.
-  - We publish only measured gains.
+  - The Function measures the new drafter's acceptance against the current one on the account's own recent requests, keeps whichever accepts more, and reports both.
 
 ## 9. Customer models
 
 The product promise is that a team can serve its own model on its own fleet, listed only for it. What a "driver" is depends on the architecture (`README.md:100-106`, `docs/MODULE_MAP.md`):
 
-| Tier | The model | What the customer supplies | Phase |
-| --- | --- | --- | --- |
-| A | Same architecture as an offered model, such as a fine-tune of Qwen, Gemma, GLM or K3 | Weights in storage (§6) and the base model's name. Our packer for that family builds the stage packs on the sandbox host. No code | 3 |
-| B | A new model in a family we already run | A model contract, a module of about 200 lines and a packer of about 250 (K-EXAONE 2.0 on the Gemma family: 212 and 255 lines), from our guide for coding agents. We review it before it runs | 3 |
-| C | A new architecture | A family stage of about 1,100 lines of CUDA (`gemma4_stage.cuh` is 1,173). Case by case | Later |
+| Tier | The model | What the customer supplies |
+| --- | --- | --- |
+| A | Same architecture as an offered model, such as a fine-tune of Qwen, Gemma, GLM or K3 | Weights in storage (§6) and the base model's name. Our packer for that family builds the stage packs on the sandbox host. No code |
+| B | A new model in a family we already run | A model contract, a module of about 200 lines and a packer of about 250 (K-EXAONE 2.0 on the Gemma family: 212 and 255 lines), from our guide for coding agents. We review it before it runs |
+| C | A new architecture | A family stage of about 1,100 lines of CUDA (`gemma4_stage.cuh` is 1,173), written from our guide. We review it, then qualify it like any model |
 
 - **API.** `POST /v1/custom-models {"name", "tier", "base", "path", "contract"}` packs and qualifies the model and adds it to the account's model list. `DELETE` removes it.
 - **Isolation.** A customer model is working state. Clause 6.3 of the Agreement restores the fleet's software image before another customer's booking starts, which covers tier B and C code.
 
-## 10. CLI
+
+## 10. Codebase tools over MCP
+
+The fleet serves an MCP server (Streamable HTTP) at `/mcp`, authenticated with the account's key. Claude Code, Codex, Cursor and any MCP client can call tools that run next to the ingested repository and the sandbox host. `sparkpipe mcp` is a stdio bridge for clients that only start local servers.
+
+| Tool | Does | Why it saves time |
+| --- | --- | --- |
+| `search_code` | ripgrep, plus a semantic index built at ingest, over a repository at any commit | Answers in milliseconds from the fleet's copy, with no files shipped back and forth |
+| `find_symbol`, `references` | Definitions and uses from a tree-sitter index built at ingest | Replaces several grep-and-read turns |
+| `read_file` | A file or line range at a commit | |
+| `pack_info` | Which files and commit a pack holds | The agent knows what is already in its context and does not read it again |
+| `run` | A command in a fresh sandbox microVM on the repository at a commit, with an optional patch (the local `git diff`) applied; no network unless allowed | Builds and test suites run on the fleet's sandbox host while the laptop stays free |
+| `start_function`, `run_status`, `morning_report` | §7 | |
+| `warm` | §4.2 | |
+
+Setup, written by `sparkpipe setup`:
+- Claude Code: `claude mcp add --transport http sparkpipe https://sparkpipe.ai/pay/api/mcp --header "Authorization: Bearer <key>"`.
+- Codex: `[mcp_servers.sparkpipe]` in `config.toml`.
+- Others: the stdio bridge.
+
+## 11. Batch jobs
+
+`POST /v1/batches {"input": "storage path of a JSONL file" | [...], "format": "anthropic" | "openai_responses" | "openai_chat", "window": "now" | "tonight"}` runs many requests at background priority, using sequences that interactive use leaves free.
+- Requests are ordered by shared prefix, so the cache serves the common part once.
+- Results are written as JSONL to storage, with telemetry per line.
+- `GET` reports progress, and `DELETE` cancels.
+
+Uses: evals, bulk edits, test generation, data for a customer model.
+
+## 12. Teams, keys and audit
+
+- **Members.** The account owner invites members by email. Each signs in with their own email code.
+  - **Roles:**
+    - **owner:** bookings, payments and members;
+    - **admin:** keys, Functions, models and storage;
+    - **member:** their own keys, inference, and their own Function runs.
+- **Keys** belong to a member.
+  - Options: scopes (`inference`, `state`, `storage`, `functions`, `models`, `account:read`), `fleet`, `allow_swap`, expiry, and an IP allowlist.
+  - `POST /v1/keys/{id}/rotate` issues a new key and keeps the old one valid for an hour.
+- **Fair share.** When several members' requests are waiting, the chat layer shares sequences between members. No member takes more than three quarters of them while another is waiting.
+- **Usage per member** in `/v1/requests` and `sparkpipe stats`.
+- **Audit log.** `GET /v1/audit` lists events, without prompts or replies, kept like the operational records:
+  - sign-ins, member and key changes;
+  - bookings and waitlist locks;
+  - model switches, wipes and storage access;
+  - Function runs.
+
+## 13. Notifications
+
+`PUT /v1/webhooks {"url", "events", "secret"}` delivers signed JSON (HMAC-SHA256 in `X-SparkPipe-Signature`), Slack-compatible on request. The same events can go by email to chosen members.
+
+| Event | When |
+| --- | --- |
+| `booking.deadline` | 48 h and 6 h before 00:00 on the Sunday of the last booked week, while the next week is not booked |
+| `booking.confirmed`, `fleet.allocated`, `waitlist.position` | A booking, a waitlist allocation, a change in the account's own position |
+| `run.finished`, `run.failed`, `report.ready` | §7 |
+| `pack.warm`, `cache.restored` | A pack version is warm; the cache is back after a handover, a release or a restart |
+| `model.switched` | Any model switch on the fleet |
+| `downtime.credited` | HC credited for downtime or maintenance |
+| `working_state.lost` | A node pair lost part of the working state: what was lost, the rebuild credit under clause 6.6 (24 hours of the fleet), and the rebuild run started |
+
+## 14. Several fleets
+
+- **Routing.** A key with `fleet: "any"` sends each request to the held fleet where its prefix is warm, by the prefix hash the chat layer already computes, and otherwise to the least busy one. A session stays on its fleet.
+- **Packs** are warmed on every fleet that serves their alias.
+- **Moving working state.** `POST /v1/state/move {"from": "F3", "to": "F4"}` copies the snapshot store and the storage between two held fleets of the same model build and topology over the facility network. A fleet change or a long repair then costs no cache.
+
+## 15. CLI
 
 `sparkpipe` is a single-file Python command with no dependencies outside the standard library. It is published on PyPI and in this repository (`tools/sparkpipe_cli.py`). Every command is one or a few API calls.
 
@@ -323,7 +412,7 @@ The product promise is that a team can serve its own model on its own fleet, lis
 | --- | --- |
 | `sparkpipe login` | Email code sign-in, then creates a key for this machine |
 | `sparkpipe status` | Holdings, the fleet's model, cache use, pins, packs, runs, deadlines |
-| `sparkpipe book week F3 4`, `book hours F1 2027-01-05T10 2`, `waitlist lock 144` | Bookings (§11) |
+| `sparkpipe book week F3 4`, `book hours F1 2027-01-05T10 2`, `waitlist lock 144` | Bookings (§16) |
 | `sparkpipe setup claude-code`, `setup codex`, `setup cursor` | Writes the client settings of §3 |
 | `sparkpipe model [name]`, `aliases` | §4.5 |
 | `sparkpipe repo add`, `repo sync`, `repo hook` | §6 |
@@ -337,12 +426,24 @@ The product promise is that a team can serve its own model on its own fleet, lis
 | `sparkpipe models add`, `models rm` | §9 |
 | `sparkpipe keys ls`, `keys create`, `keys revoke` | Keys, with `--fleet` and `--allow-swap` |
 | `sparkpipe wipe [--storage]` | §4.4 |
+| `sparkpipe proxy` | A local Anthropic- and OpenAI-compatible endpoint on `localhost` that adds the key and fleet, retries `429` with `retry-after`, and serves tools that cannot set headers |
+| `sparkpipe mcp` | The stdio MCP bridge (§10) |
+| `sparkpipe batch submit FILE`, `batch ls`, `batch get ID` | §11 |
+| `sparkpipe team invite EMAIL --role`, `team ls`, `audit` | §12 |
+| `sparkpipe webhooks add URL --events` | §13 |
+| `sparkpipe auto-extend F3 --weeks 4` | §16 |
 
-## 11. Account and bookings
+## 16. Account and bookings
 
-The account endpoints already exist in the payment service under `/market/...`: state, quote and book weeks, book hours, the waitlist, keys and the ledger (`docs/FLEET_BOOKINGS.md`). For the CLI they also accept `Authorization: Bearer <session>` from the email-code sign-in, besides the page's cookie. Keys gain the `fleet` and `allow_swap` options.
+The account endpoints already exist in the payment service under `/market/...`: state, quote and book weeks, book hours, the waitlist, keys and the ledger (`docs/FLEET_BOOKINGS.md`). For the CLI they also accept `Authorization: Bearer <session>` from the email-code sign-in, besides the page's cookie. Keys gain the options of §12.
 
-## 12. Limits and errors
+**Auto-extend.** `PUT /market/auto-extend {"fleet": "F3", "weeks_ahead": 4}` keeps that many weeks booked ahead from the account's HC.
+- It books each new week as soon as the rules allow, at the discount for the weeks held.
+- If the balance runs short, it sends `booking.deadline` early, with the HC needed.
+
+A held fleet is then never lost to a forgotten Sunday.
+
+## 17. Limits and errors
 
 | Limit | Value | Where it comes from |
 | --- | --- | --- |
@@ -358,9 +459,9 @@ Errors use each API shape's own error body, with these `type` or `code` values:
 - `image_not_supported`, `context_too_long`, `busy`;
 - `invalid_request`, `invalid_key`, `upstream_error`.
 
-## 13. Build order and gates
+## 18. Build order and acceptance tests
 
-Owners are components, so the work splits into parallel sessions with no shared files:
+Owners are components, so the work splits into parallel sessions with no shared files. `docs/FLEET_API_ISSUES.md` breaks it into issues with sizes, dependencies and done-when tests.
 
 | # | Component | Work | Depends on |
 | --- | --- | --- | --- |
@@ -368,13 +469,13 @@ Owners are components, so the work splits into parallel sessions with no shared 
 | 2 | Chat layer (hub) | Messages and Responses translation, token-exact replay (§3.2), alias table and explicit switches, telemetry fields, `count_tokens`, keep-alives | Engine: commit-only and pins for §4 |
 | 3 | Gateway (VPS) | Pass the new paths through, `X-Api-Key`, 32 MiB bodies, key options, the usage-record store and `/v1/requests`, bearer sessions for the CLI | — |
 | 4 | Packs, repositories, storage | Repository ingest, the pack builder, versioned aliases with session affinity, refresh and warm, storage and fetch | 1, 2 |
-| 5 | Function runner | The runner, Phase 1 Functions, the morning report | 2, 4 |
-| 6 | Sandbox host | Hardware per fleet, microVMs, the agent loop, Phase 2 Functions | 5 |
+| 5 | Function runner | The runner, the Functions that only read code, the morning report | 2, 4 |
+| 6 | Sandbox host | Hardware per fleet, microVMs, the agent loop, the Functions that run code | 5 |
 | 7 | CLI | `tools/sparkpipe_cli.py` and its tests | 3; grows with each component |
 | 8 | Drafters | Productize `drafter/nightly-retrain` with the acceptance gate (§8) | 5 |
-| 9 | Customer models | Tier A packers per family, then tier B with review | 6 |
+| 9 | Customer models | A packer per family (tier A), the driver guide and review (tiers B and C) | 6 |
 
-Gates, each a recorded measurement in `PERFORMANCE_STATUS.md` before the feature is sold:
+Acceptance tests, each recorded in `PERFORMANCE_STATUS.md`, all passed before 4 January 2027:
 
 - **Gate A (a held week of Claude Code).** A 300-turn Claude Code session on K3 through `/v1/messages`, with tool use and two pauses of 2 and 14 hours.
   - After the first turn, at least 95% of prompt tokens come from the cache.
@@ -383,11 +484,10 @@ Gates, each a recorded measurement in `PERFORMANCE_STATUS.md` before the feature
   - The cache survives a hub release and one node reboot during the session.
 - **Gate B (warm-up).** A warmed prefix of 150K tokens is fully matched by the next real request, and the warm-up never delays an interactive request by more than one decode step.
 - **Gate C (big prompts).** A 1M-token prompt prefilled once is answered from the cache by a follow-up, with the first token under 10 s.
-- **Gate D (packs).** On the Customer Zero repository, the same task list with and without a 300K-token pack. Report turns, tokens read through tools, wall time and decode speed. Packs are offered only if they shorten the tasks.
-
-## 14. What this spec does not promise
-
-- **Claude Code compatibility,** beyond the wire contract in §3.3 that we test. Anthropic does not support non-Claude models through gateways, and a Claude Code release can change what it sends.
-- **Cache capacity beyond what is measured.** Until the per-node budget is proven (Gate A), the Fleet List states the measured capacity.
-- **Speculation for parallel requests.** Batches of two or more do not speculate today.
-- **Any speed-up from a repo-trained drafter** until §8's report measures one on the account's own requests.
+- **Gate D (packs).** On the Customer Zero repository, the same task list with and without a 300K-token pack. Report turns, tokens read through tools, wall time and decode speed, for the Customer Zero report.
+- **Gate E (a night of Functions).** On the Customer Zero repository, one night runs every Function in §7.2 on its schedule.
+  - Every run finishes.
+  - Interactive first-token time during the night stays within 10% of an idle fleet's.
+  - The morning report is ready by 08:30.
+- **Gate A also covers losing a pair:** one node pair fails during the session. The loss is reported, the 24-hour credit appears within an hour, and the rebuild Function restores the session's pack and conversation before its next turn.
+- **Gate F (customer models).** A tier A fine-tune and a tier B model each go from upload to the account's model list, pass qualification, and serve through all three API shapes.
