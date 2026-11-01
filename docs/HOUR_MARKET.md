@@ -163,9 +163,9 @@ from its holder, and HC is sold only while it can be spent. Four rules in
   begin at least 7 days ahead. It takes at most the weekly allowance (the
   published `plans.maintenanceHoursPerWeek`, or the lowest allowance of any
   Plan Order active that week), picks the run with the fewest reservations,
-  and between equal runs the maintenance window (the three 8-hour parts
-  of the KST day, `windows` in `site/pricing.js`, clause 4.6) least
-  recently maintained on that fleet. Every reservation in the run is credited back (HC at the price paid,
+  and between equal runs the 8-hour part of the KST day (`windows` in
+  `site/pricing.js`) least recently maintained on that fleet, which rotates
+  maintenance across the hours of the day as clause 4.6 requires. Every reservation in the run is credited back (HC at the price paid,
   with its settings, or the Tranche hour, which no longer counts as used);
   a locked plan on that fleet, and the newest plans whose set-aside the
   remaining fleets cannot keep, are credited one plan hour for each hour.

@@ -209,7 +209,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 ## 17. Office hours, Days and Plan hours
 
-17.1. **Time zone and office hours.** A Plan Order names a **time zone** of the IANA time zone database, such as Asia/Seoul, Europe/Berlin or America/New_York, and **office hours**: a start and an end on whole hours of that zone's local clock, at least 8 hours apart. Office hours whose end is at or before their start end on the next day, and office hours of 24 hours are a **Full day**. Office hours follow the zone's local clock, including its daylight-saving changes, so the KST hours they cover move when that clock changes; on a day the clock changes, the office hours are the hours that actually elapse between their local start and end. Where the local clock shows a start or an end twice, it is the first time it shows it; where the clock skips it, it is the moment the clock skips. A Plan Order names one time zone and one set of office hours; Customer may make another Plan Order for another office. For clause 4.6, the windows are the parts of the KST day that we publish as the window times, today 00:00–08:00, 08:00–16:00 and 16:00–24:00 KST.
+17.1. **Time zone and office hours.** A Plan Order names a **time zone** of the IANA time zone database, such as Asia/Seoul, Europe/Berlin or America/New_York, and **office hours**: a start and an end on whole hours of that zone's local clock, at least 8 hours apart. Office hours whose end is at or before their start end on the next day, and office hours of 24 hours are a **Full day**. Office hours follow the zone's local clock, including its daylight-saving changes, so the KST hours they cover move when that clock changes; on a day the clock changes, the office hours are the hours that actually elapse between their local start and end. Where the local clock shows a start or an end twice, it is the first time it shows it; where the clock skips it, it is the moment the clock skips. A Plan Order names one time zone and one set of office hours; Customer may make another Plan Order for another office.
 
 17.2. **Days.** A Plan Order elects **Every day** or **Weekdays**. Under Every day, the office hours count on every day. Under Weekdays, they count only where they start on a Monday to Friday, public holidays included, by the date in the Plan Order's time zone, and then until they end, even after midnight.
 
@@ -367,7 +367,7 @@ The same Plan Order on Weekdays holds 4,707 Plan hours. With the time zone Europ
 | Customer notice address and email (clause 11.7) | \[ \] |
 | Customer VAT status (clause 3.2) | \[No place of business in the Republic of Korea / Korean business registration number \[ \]\] |
 | Payment currency and account (clause 3.3) | \[KRW, clause 3.3(a) / USD, clause 3.3(b): \[bank, account holder, account number, SWIFT\] / US dollar stablecoin, clause 3.3(c)\] |
-| Published settings (clause 9.3) | As published when this Plan Order is made: release fee \[10\]%; maintenance allowance \[3\] hours a week per Fleet; maintenance windows (clause 4.6) \[00:00–08:00, 08:00–16:00 and 16:00–24:00\] KST |
+| Published settings (clause 9.3) | As published when this Plan Order is made: release fee \[10\]%; maintenance allowance \[3\] hours a week per Fleet |
 | Fleet Rates (clause 16.5) | As published on the Fleet List when this Plan Order is made: \[Fleet 1: 1.00; Fleet 2: 1.00; Fleet 3: 1.00\] |
 
 ## Signatures

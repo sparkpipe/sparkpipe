@@ -56,7 +56,7 @@
   <section>
     <h1>Fleet List</h1>
     <p class="effective">Updated 1 November 2026</p>
-    <p>This page is the Fleet List, with the prefill accelerators and the available models, that the <a href="agreement.html">SparkPipe Customer Agreement</a> refers to. Every fleet and every accelerator is made up of machines we operate ourselves in Seoul. A fleet's Rate is the number of hour-credits (HC) one hour on it costs; an accelerator's Rate is its number of DGX Sparks divided by 16. The Korean version (<a href="fleets-ko.html" hreflang="ko">fleets-ko.html</a>) has the same content and prevails if they differ.</p>
+    <p>This page is the Fleet List, with the prefill accelerators and the available models, that the <a href="agreement.html">SparkPipe Customer Agreement</a> refers to. Every fleet and every accelerator is made up of machines we operate ourselves in Seoul. A fleet's Rate is the number of hour-credits (HC) one hour on it costs; an accelerator's Rate follows its computing capacity against a Rate-1 fleet. The Korean version (<a href="fleets-ko.html" hreflang="ko">fleets-ko.html</a>) has the same content and prevails if they differ.</p>
   </section>
 
   <div class="notice"><p><b>The terms are published for review.</b> Hour-credits (HC) are on sale and work at once through the API, on every offered model; whole fleets can be booked from 1 December 2026.</p></div>
@@ -71,19 +71,19 @@
       <tr><td><b>Fleet 3</b></td><td>16 NVIDIA DGX Spark (GB10)</td><td>Under construction</td><td class="num">1</td><td>Listed here when the fleet opens</td></tr>
     </table>
     </div>
-    <p>Our system publishes live capacity, with each fleet's state and the hours open in each window, at <span class="mono">https://sparkpipe.ai/availability.txt</span>, regenerated at least every 30 seconds.</p>
+    <p>Our system publishes live capacity, with each fleet's state and the hours open for reservation, at <span class="mono">https://sparkpipe.ai/availability.txt</span>, regenerated at least every 30 seconds.</p>
   </section>
 
   <section id="accelerators">
     <h2>Prefill accelerators</h2>
-    <p>A prefill accelerator is a group of DGX Sparks that computes the prompt of a request served on any fleet and hands it back to that fleet, which writes the reply. A request uses one only if it asks to. Each accelerator is listed here with its size, Rate, speed and state.</p>
+    <p>A prefill accelerator is a group of DGX Sparks that computes the prompt of a request served on any fleet and hands it back to that fleet, which writes the reply. A request uses one only if it asks to. Each accelerator is listed here with its machines, Rate, speed and state.</p>
     <div class="scroll">
     <table>
-      <tr><th>Accelerator</th><th>Size</th><th>State</th><th class="num">× fleet-hour (Rate)</th><th class="num">Speed</th></tr>
+      <tr><th>Accelerator</th><th>Machines</th><th>State</th><th class="num">× fleet-hour (Rate)</th><th class="num">Speed</th></tr>
       <tr><td colspan="5">None is serving yet. Each accelerator is listed here, with its Rate and speed, when it serves.</td></tr>
     </table>
     </div>
-    <p>An accelerator's Rate is its size in fleets: its number of DGX Sparks divided by 16, so 3 for 48 and 6 for 96. Its time is priced like fleet time and charged by the second: an hour of it at priority 1 costs its Rate in HC. A prompt costs its accelerator-seconds, from when the accelerator starts it until it hands it back, × the Rate × the prompt's priority (its queue bid) ÷ 3,600, in HC or Plan hours. For example, 180 accelerator-seconds at Rate 6 and priority 1.5 cost 0.45 HC. Your account offers Standard ×1, Priority ×2 and Rush ×5; through the API a request may set any priority from 1 to 10 in steps of 0.01, and has priority 1 if it sets none. The highest priority is computed first, and equal priorities in the order they arrive. A request that no accelerator starts within its waiting time, 300 seconds unless it sets another of at most 600, is computed on its fleet without one and pays nothing for an accelerator, unless it asks to be refused instead. Accelerators have no guaranteed capacity or speed. The live queue and each accelerator's state are in <a href="market.html">your account</a>; the full rules are in the <a href="agreement.html">Customer Agreement</a>.</p>
+    <p>An accelerator's Rate follows its computing capacity against a Rate-1 fleet such as Fleet 1: Rate 3 for an accelerator of 48 DGX Sparks, and Rate 6 for one of 96. Its time is charged by the second: an hour of it at priority 1 costs its Rate in HC. A prompt costs its accelerator-seconds, from when the accelerator starts it until it hands it back, × the Rate × the prompt's priority (its queue bid) ÷ 3,600, in HC or Plan hours. For example, 180 accelerator-seconds at Rate 6 and priority 1.5 cost 0.45 HC. Your account offers Standard ×1, Priority ×2 and Rush ×5; through the API a request may set any priority from 1 to 10 in steps of 0.01, and has priority 1 if it sets none. The highest priority is computed first, and equal priorities in the order they arrive. A request that no accelerator starts within its waiting time, 300 seconds unless it sets another of at most 600, is computed on its fleet without one and pays nothing for an accelerator, unless it asks to be refused instead. Accelerators have no guaranteed capacity or speed. The live queue and each accelerator's state are in <a href="market.html">your account</a>; the full rules are in the <a href="agreement.html">Customer Agreement</a>.</p>
   </section>
 
   <section id="models">

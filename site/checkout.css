@@ -99,3 +99,9 @@ td .btn.small { min-height: 30px; }
   .tiles.methods { grid-template-columns: minmax(0, 1fr); }
   .custom { flex-wrap: wrap; }
 }
+.keyterms { display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--rule); border-left: 3px solid var(--signal); border-radius: 2px; background: var(--paper); font: 400 13px/1.5 var(--text); color: var(--steel); }
+.keyterms > .label, .keyterms summary { color: var(--ink); }
+.keyterms summary { cursor: pointer; font: 600 13px/1.4 var(--text); }
+.keyterms[open] summary { margin-bottom: 4px; }
+.keyterms ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.keyterms p { margin: 0; }

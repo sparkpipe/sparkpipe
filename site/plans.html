@@ -14,7 +14,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
 <link rel="stylesheet" href="site.css?v=dcbd7de8">
-<link rel="stylesheet" href="checkout.css?v=1">
+<link rel="stylesheet" href="checkout.css?v=2">
 <style>
 .table-wrap.scroll { max-height: 440px; overflow-y: auto; }
 .table-wrap.scroll thead th { position: sticky; top: 0; background: var(--sheet); }
@@ -58,7 +58,7 @@ details.ask[open] summary { margin-bottom: 14px; }
     </nav>
     <div class="nav-actions">
       <div class="lang" role="group" aria-label="Language / 언어"><a href="plans.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
-      <a class="btn small" href="account.html">Account</a>
+      <a class="btn small" href="account.html">Payments and plans</a>
       <a class="btn small solid" href="#order">Order</a>
     </div>
   </div>
@@ -67,7 +67,7 @@ details.ask[open] summary { margin-bottom: 14px; }
 <main class="wrap">
 <section class="co-head">
   <p class="label">Reserved plans</p>
-  <h1 id="title">Your fleets in your office hours, from $14 an hour.</h1>
+  <h1 id="title">Your fleets in your office hours, from ₩18,500 or $14 an hour.</h1>
   <p class="lead">Choose your office hours in your own time zone, the days, how many fleets and whether to lock them, and pay month by month or for a term of 1 to 3 years. The Hour Price holds for as long as the plan runs, the capacity is kept for you until <span data-plan="lastcall">6</span> hours before each hour, and nobody is ever bumped. A plan is a Plan Order under the same contract as hour-credits, the SparkPipe Customer Agreement.</p>
   <div class="trust"><span>Your hours, your time zone</span><span>Monthly or 1 to 3 years</span><span>Price holds while it runs</span><span>Capacity kept for you</span><span>Never bumped</span><span>One contract</span></div>
 </section>
@@ -108,7 +108,7 @@ details.ask[open] summary { margin-bottom: 14px; }
         <fieldset class="choice">
           <legend>Fleet lock</legend>
           <div class="tiles" id="c-lock" role="group" aria-label="Fleet lock"></div>
-          <p class="hint">A locked fleet is the same named fleet for the whole term and yours alone, never offered to anyone else, so your model state and caches stay on it instead of being cleared for another customer. Another customer uses it only for an hour you release, and we clear it first.</p>
+          <p class="hint">A locked fleet is the same named fleet as long as the plan runs and yours alone, never offered to anyone else, so your model state and caches stay on it instead of being cleared for another customer. Another customer uses it only for an hour you release, and we clear it first.</p>
           <p class="hint" id="lock-why"></p>
         </fieldset>
       </form>
@@ -136,7 +136,7 @@ details.ask[open] summary { margin-bottom: 14px; }
       <ul class="perks">
         <li><span>The capacity your plan needs is kept off sale until <span data-plan="lastcall">6</span> hours before each hour, and a locked fleet is never offered to anyone else. Nobody is ever bumped: a reservation, yours or anyone's, is never taken.</span></li>
         <li><span>We may take each fleet out for maintenance for at most <span data-plan="maintenance">3</span> hours a week, announced 7 days ahead, and any reserved hour it touches is credited back.</span></li>
-        <li><span>Hours exist only once paid. A paid Tranche hour you have reserved but won't use can be released on the <a href="market.html">Hour Market</a> before it starts: when it sells, or the shared pool uses it, you get hour-credits (HC) for what it earned, less a <span data-plan="fee">10%</span> fee, usable for <span data-plan="months">12</span> months.</span></li>
+        <li><span>Hours exist only once paid. A paid Tranche hour you have reserved but won't use can be sold back (released) in <a href="market.html">your account</a> before it starts: when it sells, or the shared pool uses it, you get hour-credits (HC) for what it earned, less a <span data-plan="fee">10%</span> fee, usable for <span data-plan="months">12</span> months.</span></li>
       </ul>
     </section>
 
@@ -159,7 +159,7 @@ details.ask[open] summary { margin-bottom: 14px; }
       <p class="label">Plan Order placed</p>
       <h2 id="p-title">Your plan is ordered.</h2>
       <p class="prose" id="p-text"></p>
-      <div class="actions"><a class="btn solid" id="p-pay" href="account.html">Pay from your account</a><a class="btn" id="p-form" href="plan-order.html">Open the Plan Order</a></div>
+      <div class="actions"><a class="btn solid" id="p-pay" href="account.html">Pay in Payments and plans</a><a class="btn" id="p-form" href="plan-order.html">Open the Plan Order</a></div>
     </section>
 
     <section class="card" id="payment">
@@ -173,7 +173,7 @@ details.ask[open] summary { margin-bottom: 14px; }
 
     <section class="card" id="tranches">
       <p class="label">Tranches</p>
-      <p class="prose" id="tranche-note">Each calendar month in KST is a Tranche: the hours of your office hours and days that start in it. You reserve them from the Hour Market calendar.</p>
+      <p class="prose" id="tranche-note">Each calendar month in KST is a Tranche: the hours of your office hours and days that start in it. You book them on the calendar in your account.</p>
       <div class="table-wrap scroll"><table class="short">
         <thead><tr><th>Tranche</th><th>Period</th><th>Hours</th><th>Price before VAT</th></tr></thead>
         <tbody id="r-tranches"></tbody>
@@ -223,10 +223,10 @@ details.ask[open] summary { margin-bottom: 14px; }
       </details>
       <p class="flash" id="o-msg" hidden></p>
       <button class="btn solid big" type="submit" id="o-review">Review the Plan Order</button>
-      <p class="hint">You pay from your account, by the dates the Plan Order states. <a href="account.html">Account</a></p>
+      <p class="hint">You pay in <a href="account.html">Payments and plans</a> by card or Korean bank transfer in won through Toss Payments, or in USDC or USDT through CoinPayments, by the dates the Plan Order states.</p>
     </form>
     <details class="ask" id="quote">
-      <summary>More than <span data-plan="maxfleets">3</span> fleets, or paying by bank transfer in won or US dollars? Ask us.</summary>
+      <summary>More than <span data-plan="maxfleets">3</span> fleets, or paying by USD wire? Ask us.</summary>
       <form class="form" id="lead" novalidate>
         <label>Company<input id="l-company" autocomplete="organization" maxlength="200" required></label>
         <div class="pair">
@@ -252,13 +252,13 @@ details.ask[open] summary { margin-bottom: 14px; }
 <footer class="foot">
   <div class="wrap">
     <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
-    <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Buy HC</a><a href="market.html">Hour Market</a><a href="agreement.html">Customer Agreement</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
-    <span>Stablecoin payments are processed by CoinPayments.</span>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Buy HC</a><a href="market.html">Your account</a><a href="account.html">Payments and plans</a><a href="agreement.html">Customer Agreement</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <span>Card and won payments are processed by Toss Payments; stablecoin payments by CoinPayments.</span>
   </div>
 </footer>
 
 <script src="pricing.js"></script>
-<script src="checkout.js?v=1"></script>
+<script src="checkout.js?v=2"></script>
 <script>
 (() => {
   const P = window.SP_PRICING, SP = window.SP, L = P.plans;
@@ -275,6 +275,8 @@ details.ask[open] summary { margin-bottom: 14px; }
   const withVat = (net) => round(round(net) + round(net * P.vatRate));
   const short = (n) => SP.usd(n).replace('.00', '');
   const won = (n) => '₩' + Math.round(n).toLocaleString('en-US');
+  const both = (krw, usd) => (krw === null || krw === undefined ? '' : won(krw) + ' or ') + SP.usd(usd);
+  const wonVat = (krw) => krw + SP.vatOf(krw, 'KRW', P.vatRate);
   const clock = (h) => String(h).padStart(2, '0') + ':00';
   const kstClock = (t) => new Date(t + 9 * H).toISOString().slice(11, 16);
   const termName = (t) => (t.months === null ? 'Monthly' : t.months === 12 ? '1 year' : t.months % 12 ? t.months + ' months' : t.months / 12 + ' years');
@@ -335,12 +337,12 @@ details.ask[open] summary { margin-bottom: 14px; }
     return Object.assign({}, c, { term, monthly, end: monthly ? null : ymd(end), tranches, hours, perDay, perWeek: perDay * (c.days === 'weekdays' ? 5 : 7), hourPrice, hourPriceKRW, net: round(hours * hourPrice) });
   };
   const schedule = (p) => (p.monthly
-    ? p.tranches.slice(0, 3).map((t, i) => ({ name: i ? monthName(t.key) : 'Tranche 1, ' + nice(t.from) + ' – ' + nice(t.to), due: t.from, note: i ? 'before it starts' : 'before the Start Date', hours: t.hours, amount: withVat(t.net) }))
+    ? p.tranches.slice(0, 3).map((t, i) => ({ name: i ? monthName(t.key) : 'Tranche 1, ' + nice(t.from) + ' – ' + nice(t.to), due: t.from, note: i ? 'before it starts' : 'before the Start Date', hours: t.hours, amount: withVat(t.net), amountKRW: wonVat(t.krw) }))
     : p.term.payment === 'upfront'
-      ? [{ name: 'Payment, upfront', due: p.start, note: 'the Start Date', hours: p.hours, amount: withVat(p.net) }]
+      ? [{ name: 'Payment, upfront', due: p.start, note: 'the Start Date', hours: p.hours, amount: withVat(p.net), amountKRW: wonVat(p.hours * p.hourPriceKRW) }]
       : P.gates.map((g) => {
         const n = g.tranches === null ? p.tranches.length : Math.min(g.tranches, p.tranches.length), hours = p.tranches.slice(0, n).reduce((a, t) => a + t.hours, 0);
-        return { name: g.name, due: ymd(parse(p.start) + (g.dueDay - 1) * DAY), note: 'day ' + g.dueDay, hours, amount: withVat(hours * p.hourPrice) };
+        return { name: g.name, due: ymd(parse(p.start) + (g.dueDay - 1) * DAY), note: 'day ' + g.dueDay, hours, amount: withVat(hours * p.hourPrice), amountKRW: wonVat(hours * p.hourPriceKRW) };
       }));
   const line = (p) => [termName(p.term), officeName(p.office, p.days), p.days === 'weekdays' ? 'Weekdays' : 'Every day', p.fleets + (p.fleets === 1 ? ' fleet' : ' fleets')].concat(p.lock ? ['locked'] : []).join(' · ');
   const cell = (text, cls) => { const td = document.createElement('td'); td.textContent = text; if (cls) td.className = cls; return td; };
@@ -359,12 +361,12 @@ details.ask[open] summary { margin-bottom: 14px; }
   };
   const option = (select, value, text) => { const o = document.createElement('option'); o.value = value; o.textContent = text; select.append(o); };
 
-  const terms = L.terms.map((t) => tile($('c-term'), 'radio', 'term', t.id, termName(t), short(t.hourPrice) + ' an hour · ' + (t.payment === 'monthly' ? 'paid month by month' : t.payment === 'upfront' ? 'paid upfront' : 'paid by gates'), true));
+  const terms = L.terms.map((t) => tile($('c-term'), 'radio', 'term', t.id, termName(t), won(t.hourPriceKRW) + ' or ' + short(t.hourPrice) + ' an hour · ' + (t.payment === 'monthly' ? 'paid month by month' : t.payment === 'upfront' ? 'paid upfront' : 'paid by gates'), true));
   L.zones.forEach((zone) => option($('o-zone'), zone, zone.replace(/_/g, ' ')));
   for (let h = 0; h < 24; h += 1) { option($('o-from'), String(h), clock(h)); option($('o-to'), String(h), clock(h)); }
   const days = [['weekdays', 'Weekdays', 'Monday to Friday where you are'], ['every', 'Every day', 'Seven days a week']].map(([id, title, note]) => tile($('c-days'), 'radio', 'days', id, title, note, true));
   const fleets = Array.from({ length: L.maxFleets }, (_, i) => tile($('c-fleets'), 'radio', 'fleets', String(i + 1), String(i + 1), i ? 'fleets at once' : 'fleet at once'));
-  const lock = tile($('c-lock'), 'checkbox', 'lock', 'lock', 'Locked', '+' + short(L.lockPremium) + ' an hour · the same fleet, yours alone', true);
+  const lock = tile($('c-lock'), 'checkbox', 'lock', 'lock', 'Locked', '+' + won(L.lockPremiumKRW) + ' or ' + short(L.lockPremium) + ' an hour · the same fleet, yours alone', true);
   (terms.find((i) => i.value === 'monthly') || terms[0]).checked = true;
   (days.find((i) => i.value === L.office.days) || days[0]).checked = true;
   fleets[0].checked = true;
@@ -403,7 +405,7 @@ details.ask[open] summary { margin-bottom: 14px; }
     $('r-plan').textContent = line(p);
     $('office-hint').textContent = officeHint(p);
     $('term-hint').textContent = p.monthly
-      ? 'Monthly has no fixed end: each calendar month is paid before it starts, at an Hour Price that holds for as long as the plan runs, and you stop by not paying the next month or from your account. A longer term lowers the Hour Price.'
+      ? 'Monthly has no fixed end: each calendar month is paid before it starts, at an Hour Price that holds for as long as the plan runs, and you stop by not paying the next month or in Payments and plans. A longer term lowers the Hour Price.'
       : 'The term ends on ' + nice(p.end) + '. The longer the term, the lower its Hour Price, fixed for the whole term.';
     $('r-month-box').hidden = !p.monthly;
     $('r-month').textContent = won(full.krw) + ' a month + VAT';
@@ -414,23 +416,23 @@ details.ask[open] summary { margin-bottom: 14px; }
     $('r-week').textContent = SP.whole(p.perWeek);
     $('r-hours-label').textContent = p.monthly ? 'Hours in Tranche 1' : 'Hours in the term';
     $('r-hours').textContent = SP.whole(p.monthly ? first.hours : p.hours);
-    $('r-price-label').textContent = p.lock ? 'Hour Price, ' + short(p.term.hourPrice) + ' + ' + short(L.lockPremium) + ' lock' : 'Hour Price';
-    $('r-price').textContent = SP.usd(p.hourPrice);
-    const net = p.monthly ? first.net : p.net, vat = round(net * P.vatRate);
+    $('r-price-label').textContent = p.lock ? 'Hour Price, ' + won(p.term.hourPriceKRW) + ' + ' + won(L.lockPremiumKRW) + ' lock' : 'Hour Price';
+    $('r-price').textContent = both(p.hourPriceKRW, p.hourPrice);
+    const net = p.monthly ? first.net : p.net, vat = round(net * P.vatRate), netKRW = p.monthly ? first.krw : p.hours * p.hourPriceKRW, vatKRW = SP.vatOf(netKRW, 'KRW', P.vatRate);
     $('r-net-label').textContent = p.monthly ? 'Tranche 1, ' + nice(first.from) + ' – ' + nice(first.to) : 'Price of the term';
-    $('r-net').textContent = SP.usd(net);
-    $('r-vat').textContent = SP.usd(vat);
-    $('r-total').textContent = SP.usd(net + vat);
+    $('r-net').textContent = both(netKRW, net);
+    $('r-vat').textContent = both(vatKRW, vat);
+    $('r-total').textContent = both(netKRW + vatKRW, net + vat);
     $('pay-note').textContent = p.monthly
-      ? 'Each calendar month is paid before it starts, the first before the Start Date, ' + nice(p.start) + '. Hours exist only once paid. We keep your capacity for the current month and the next one; if a month is not paid by its first day, the plan ends after the last paid month with nothing owed, and you can also stop it from your account at any time.'
+      ? 'Each calendar month is paid before it starts, the first before the Start Date, ' + nice(p.start) + '. Hours exist only once paid. We keep your capacity for the current month and the next one; if a month is not paid by its first day, the plan ends after the last paid month with nothing owed, and you can also stop it in Payments and plans at any time.'
       : 'Phase A is the first ' + P.phaseADays + ' days, to ' + nice(ymd(parse(p.start) + (P.phaseADays - 1) * DAY)) + ': nothing is due, and you withdraw by not paying, with nothing owed. You pay any amounts, at any time, up to the whole term; three gates set how much must be paid by when.';
     $('g-hours').textContent = p.monthly ? 'Hours' : 'Hours paid by then';
     $('g-paid').textContent = p.monthly ? 'Price with VAT' : 'Paid by then, with VAT';
-    $('r-gates').replaceChildren(...schedule(p).map((s) => row([cell(s.name), cell(nice(s.due) + ', ' + s.note), cell(SP.whole(s.hours), 'figure'), cell(SP.usd(s.amount), 'figure')])));
+    $('r-gates').replaceChildren(...schedule(p).map((s) => row([cell(s.name), cell(nice(s.due) + ', ' + s.note), cell(SP.whole(s.hours), 'figure'), cell(both(s.amountKRW, s.amount), 'figure')])));
     $('tranche-note').textContent = p.monthly
-      ? 'Each calendar month in KST is a Tranche: the hours of your office hours and days that start in it, paid before it starts. The first twelve are below; you reserve them from the Hour Market calendar.'
-      : 'Each calendar month of the term, in KST, is a Tranche: the hours of your office hours and days that start in it. A payment buys hours in the earliest Tranches not yet paid, and you reserve them from the Hour Market calendar.';
-    $('r-tranches').replaceChildren(...p.tranches.map((t, i) => row([cell((i + 1) + ' · ' + t.key), cell(nice(t.from) + ' – ' + nice(t.to)), cell(SP.whole(t.hours), 'figure'), cell(SP.usd(t.net), 'figure')])));
+      ? 'Each calendar month in KST is a Tranche: the hours of your office hours and days that start in it, paid before it starts. The first twelve are below; you book them on the calendar in your account.'
+      : 'Each calendar month of the term, in KST, is a Tranche: the hours of your office hours and days that start in it. A payment buys hours in the earliest Tranches not yet paid, and you book them on the calendar in your account.';
+    $('r-tranches').replaceChildren(...p.tranches.map((t, i) => row([cell((i + 1) + ' · ' + t.key), cell(nice(t.from) + ' – ' + nice(t.to)), cell(SP.whole(t.hours), 'figure'), cell(both(t.krw, t.net), 'figure')])));
     $('l-fleets').value = String(p.fleets);
     $('l-start').value = p.start.slice(0, 7);
     $('l-plan').textContent = line(p) + ', from ' + nice(p.start);
@@ -440,7 +442,7 @@ details.ask[open] summary { margin-bottom: 14px; }
 
   const fill = { lastcall: String(P.market.lastCallHours), maintenance: String(L.maintenanceHoursPerWeek), fee: Math.round(P.market.releaseFee * 100) + '%', months: String(P.market.validityMonths), maxfleets: String(L.maxFleets), minhours: String(L.office.minHours) };
   document.querySelectorAll('[data-plan]').forEach((el) => { el.textContent = fill[el.dataset.plan]; });
-  $('title').textContent = 'Your fleets in your office hours, from ' + short(Math.min(...L.terms.map((t) => t.hourPrice))) + ' an hour.';
+  $('title').textContent = 'Your fleets in your office hours, from ' + won(Math.min(...L.terms.map((t) => t.hourPriceKRW))) + ' or ' + short(Math.min(...L.terms.map((t) => t.hourPrice))) + ' an hour.';
   $('r-vat-label').textContent = 'Korean VAT, ' + Math.round(P.vatRate * 100) + '%';
   $('start-hint').textContent = 'The plan starts on that day, from ' + nice(minStart()) + ' to ' + nice(maxStart()) + '. Dates and months are in KST; your office hours are in your time zone.';
   $('r-start').min = minStart();
@@ -492,7 +494,7 @@ details.ask[open] summary { margin-bottom: 14px; }
     $('v-rows').replaceChildren(...q.rows[O.lang].map(([item, entry]) => row([th(item), cell(entry)])));
     document.querySelectorAll('.switch button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.lang === O.lang)));
     $('v-hash').textContent = q.hash;
-    $('v-agree-text').textContent = 'For ' + O.me.company + ', I accept Plan Order ' + q.plan + ', whose text above has the SHA-256 ' + q.hash + ', under the SparkPipe Customer Agreement and the Hour Market Rules; the Korean text prevails. ' + q.line + ', ' + (monthly ? 'Tranche 1: ' : '') + SP.whole(q.hours) + ' hours, ' + SP.usd(q.total) + ' before VAT, ' + SP.usd(q.withVat) + ' with VAT' + (monthly ? ', then each month before it starts.' : '.');
+    $('v-agree-text').textContent = 'For ' + O.me.company + ', I accept Plan Order ' + q.plan + ', whose text above has the SHA-256 ' + q.hash + ', under the SparkPipe Customer Agreement and the Hour Market Rules; the Korean text prevails. ' + q.line + ', ' + (monthly ? 'Tranche 1: ' : '') + SP.whole(q.hours) + ' hours, ' + both(q.totalKRW, q.total) + ' before VAT, ' + both(q.withVatKRW, q.withVat) + ' with VAT' + (monthly ? ', then each month before it starts.' : '.');
     $('v-reaccept').hidden = O.me.termsCurrent;
   };
   const flow = SP.codeFlow({ codeForm: $('o-code-form'), code: $('o-code'), sentTo: $('o-sent-to'), autoSubmit: true });
@@ -561,10 +563,10 @@ details.ask[open] summary { margin-bottom: 14px; }
       $('placed').hidden = false;
       $('p-title').textContent = 'Plan Order ' + placed.plan + ' is placed.';
       $('p-text').textContent = placed.payment === 'monthly'
-        ? 'Pay ' + (placed.nextGate ? placed.nextGate.name + ', ' + SP.usd(placed.nextGate.amount) + ' before VAT,' : 'Tranche 1') + ' from your account before ' + nice(placed.start) + '. Its hours are issued once it is paid in full, and each later month is paid the same way, before it starts. The Plan Order is in your email and your account.'
+        ? 'Pay ' + (placed.nextGate ? placed.nextGate.name + ', ' + both(placed.nextGateKRW, placed.nextGate.amount) + ' before VAT,' : 'Tranche 1') + ' in Payments and plans before ' + nice(placed.start) + '. Its hours are issued once it is paid in full, and each later month is paid the same way, before it starts. The Plan Order is in your email and in Payments and plans.'
         : placed.payment === 'upfront'
-          ? 'Pay the Price of the Term, ' + SP.usd(placed.total) + ' before VAT, from your account by ' + nice(placed.start) + '. Its hours are issued to your Tranches once it is paid in full. The Plan Order is in your email and your account.'
-          : 'Nothing is due in Phase A. Pay any amount from your account: each payment issues its hours to your earliest Tranches. ' + (placed.nextGate ? placed.nextGate.name + ' is ' + SP.usd(placed.nextGate.amount) + ' before VAT by ' + nice(placed.nextGate.due) + '. ' : '') + 'The Plan Order is in your email and your account.';
+          ? 'Pay the Price of the Term, ' + both(placed.totalKRW, placed.total) + ' before VAT, in Payments and plans by ' + nice(placed.start) + '. Its hours are issued to your Tranches once it is paid in full. The Plan Order is in your email and in Payments and plans.'
+          : 'Nothing is due in Phase A. Pay any amount in Payments and plans: each payment issues its hours to your earliest Tranches. ' + (placed.nextGate ? placed.nextGate.name + ' is ' + both(placed.nextGateKRW, placed.nextGate.amount) + ' before VAT by ' + nice(placed.nextGate.due) + '. ' : '') + 'The Plan Order is in your email and in Payments and plans.';
       $('p-form').href = 'plan-order.html?plan=' + encodeURIComponent(placed.plan);
       $('placed').scrollIntoView({ behavior: 'smooth', block: 'start' });
       O.quote = null;

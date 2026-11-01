@@ -42,7 +42,7 @@
       <a href="#record">Acceptance</a>
     </nav>
     <div class="nav-actions">
-      <a class="btn small solid" href="account.html">Account</a>
+      <a class="btn small solid" href="account.html">Payments and plans</a>
     </div>
   </div>
 </header>
@@ -51,8 +51,8 @@
 <section class="co-head">
   <p class="label">Plan Order</p>
   <h1 id="title">Your Plan Order.</h1>
-  <p class="lead" id="lead">Sign in to your <a href="account.html">account</a> to see it.</p>
-  <div class="actions" id="actions" hidden><button class="btn solid" type="button" id="print">Print or save as PDF</button><a class="btn" id="download" download>Download the exact text</a><a class="btn" href="account.html">Pay from your account</a></div>
+  <p class="lead" id="lead">Sign in to <a href="account.html">Payments and plans</a> to see it.</p>
+  <div class="actions" id="actions" hidden><button class="btn solid" type="button" id="print">Print or save as PDF</button><a class="btn" id="download" download>Download the exact text</a><a class="btn" href="account.html">Pay in Payments and plans</a></div>
 </section>
 
 <div class="stack" id="body" hidden>
@@ -120,12 +120,12 @@
     $('download').download = 'plan-order-' + plan.plan + '.md';
   };
   $('print').addEventListener('click', () => window.print());
-  if (!ident || !PLAN.test(ident)) { $('lead').textContent = 'Open a Plan Order from your account.'; return; }
+  if (!ident || !PLAN.test(ident)) { $('lead').textContent = 'Open a Plan Order from Payments and plans.'; return; }
   SP.call('/plan/' + ident).then((plan) => {
     if (!plan.rows) { $('title').textContent = 'Plan Order ' + plan.plan + '.'; $('lead').textContent = 'This Plan Order was signed on paper. Write to hyor@sparkpipe.ai for a copy.'; return; }
     show(plan);
   }).catch((error) => {
-    $('lead').textContent = error.status === 401 ? 'Sign in to your account to see this Plan Order.' : error.message;
+    $('lead').textContent = error.status === 401 ? 'Sign in to Payments and plans to see this Plan Order.' : error.message;
   });
 })();
 </script>

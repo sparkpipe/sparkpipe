@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Your Account · SparkPipe</title>
-<meta name="description" content="Your SparkPipe account: hour-credits, orders, payments and reserved plans.">
+<title>Payments and plans · SparkPipe</title>
+<meta name="description" content="Your SparkPipe payments and plans: purchases of hour-credits, receipts and reserved plan payments.">
 <meta name="robots" content="noindex">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
@@ -20,7 +20,7 @@
 <body>
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">account</span></a>
+    <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">payments</span></a>
     <nav class="nav-links" aria-label="Sections">
       <a href="index.html#fleets">Fleets</a>
       <a href="index.html#prices">Prices</a>
@@ -36,7 +36,7 @@
 <main class="wrap">
 <section class="co-head">
   <p class="label">Account</p>
-  <h1 id="title">Your account.</h1>
+  <h1 id="title">Payments and plans.</h1>
 </section>
 
 <div class="stack">
@@ -54,7 +54,7 @@
       <label>Email<input id="email" type="email" autocomplete="email" maxlength="254" placeholder="you@company.com"></label>
       <p class="flash" id="m-email" hidden></p>
       <button class="btn solid big" type="submit" id="send">Email me a 6-digit code</button>
-      <p class="hint">No password. New here? <a href="buy.html">Buy HC</a> or <a href="plans.html">order a plan</a> to open an account, or try the <a href="market.html?sandbox">Hour Market sandbox</a> first.</p>
+      <p class="hint">No password. New here? <a href="buy.html">Buy HC</a> or <a href="plans.html">order a plan</a> to open an account, or try the <a href="market.html?sandbox">sandbox</a> first.</p>
     </form>
     <form class="form" id="f-code" hidden novalidate>
       <p>We sent a code to <b id="sent-to"></b>. It expires in 10 minutes.</p>
@@ -75,14 +75,14 @@
         <div><span>Hour-credits</span><strong id="s-hc">0</strong></div>
         <div><span>Awaiting payment</span><strong id="s-open">0</strong></div>
       </div>
-      <div class="actions"><a class="btn solid" href="market.html">Open the Hour Market</a><a class="btn" href="buy.html">Buy HC</a><a class="btn" href="plans.html">Reserved plans</a></div>
+      <div class="actions"><a class="btn solid" href="market.html">Open your account</a><a class="btn" href="buy.html">Buy HC</a><a class="btn" href="plans.html">Reserved plans</a></div>
     </section>
 
     <section class="card" id="next">
       <p class="label">What happens next</p>
       <ul class="perks">
-        <li><span>Each purchase of HC lasts 12 months from the day it is issued, and the oldest is spent first. The <a href="market.html">Hour Market</a> shows every lot.</span></li>
-        <li><span>Spend HC in the shared pool at once, through an OpenAI-format API with keys you create in the Hour Market, or reserve whole fleet-hours from <span data-start>1 December 2026</span>, up to 7 days ahead at the fleet's Rate, or up to 31 days ahead at 1.25× on any day. No reservation is ever bumped.</span></li>
+        <li><span>Each purchase of HC lasts 12 months from the day it is issued, and the oldest is spent first. <a href="market.html">Your account</a> shows every lot.</span></li>
+        <li><span>Spend HC in the shared pool at once, through an OpenAI-format API with keys you create in <a href="market.html">your account</a>, or book whole fleet-hours from <span data-start>1 December 2026</span>, up to 31 days ahead at the fleet's Rate. No booking is ever bumped.</span></li>
         <li><span>Receipts go to <b class="email-here"></b>. A card payment's card slip is its VAT document; for a bank transfer or virtual account we issue an electronic tax invoice (세금계산서) to the Korean business registration number you gave. For anything else, write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</span></li>
       </ul>
     </section>
@@ -133,7 +133,7 @@
 <footer class="foot">
   <div class="wrap">
     <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
-    <nav aria-label="Footer"><a href="index.html">Home</a><a href="market.html">Hour Market</a><a href="fleets.html">Fleet List</a><a href="agreement.html">Customer Agreement</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="market.html">Your account</a><a href="fleets.html">Fleet List</a><a href="agreement.html">Customer Agreement</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
     <span>Card and won payments are processed by Toss Payments; stablecoin payments by CoinPayments.</span>
   </div>
 </footer>
@@ -177,7 +177,7 @@
     } else if (o.state === 'completed' && o.issued) {
       title = +o.issuedHours < +o.hours ? 'Paid in part. Your HC is in.' : 'Paid. Your HC is in.'; kind = 'ok';
       text = hc(o.issuedHours) + unit(o) + ' are in your account' + (o.product === 'credits' ? ', usable for 12 months' : '') + (part ? ', for the ' + SP.usd(o.received) + ' that arrived' : '') + '. The receipt is on its way to your email.';
-      if (o.product === 'credits') actions.push(link('market.html', 'Open the Hour Market', 'btn solid'));
+      if (o.product === 'credits') actions.push(link('market.html', 'Open your account', 'btn solid'));
     } else if (part && OPEN.has(o.state)) {
       title = 'Part of the payment arrived.'; kind = 'error';
       text = 'We received ' + SP.usd(o.received) + ' of ' + SP.usd(o.total) + ' in ' + SP.coinName(o.coin) + '. While the payment page is open you can send the remaining ' + SP.usd(+o.total - +o.received) + ' to the same address. Otherwise, if CoinPayments completes the payment with what arrived, it buys ' + hc(Math.floor(+o.received / +o.total * +o.hours * 1e6) / 1e6) + unit(o) + ', in proportion; if it does not, CoinPayments refunds it when the payment page closes and emails you a link to claim it.';
@@ -266,7 +266,7 @@
   const renderHome = () => {
     $('signin').hidden = true;
     $('home').hidden = false;
-    $('title').textContent = 'Your account.';
+    $('title').textContent = 'Payments and plans.';
     $('company').textContent = me.company;
     $('who-email').textContent = me.email;
     document.querySelectorAll('.email-here').forEach((el) => { el.textContent = me.email; });
@@ -291,7 +291,7 @@
   const load = async () => {
     me = await SP.me();
     if (me) renderHome();
-    else { $('home').hidden = true; $('signin').hidden = false; $('title').textContent = 'Sign in to your account.'; }
+    else { $('home').hidden = true; $('signin').hidden = false; $('title').textContent = 'Sign in to see your payments and plans.'; }
   };
 
   const flow = SP.codeFlow({ codeForm: $('f-code'), code: $('code'), sentTo: $('sent-to'), autoSubmit: true });

@@ -42,7 +42,7 @@ These Rules are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 4.3. **Capacity kept for Plan Orders.** Until 6 hours before each hour starts, we keep off sale the capacity that Plan Orders guarantee their holders (clause 18 of the Customer Agreement). From then on, any of it they have not reserved rests as our ask under clause 4.1. A locked Fleet is never offered (clause 19 of the Customer Agreement).
 
-4.4. **HC on sale.** We sell HC only as far as clause 13.4 of the Customer Agreement allows, and publish the HC still on sale on the Hour Market page and under clause 11.
+4.4. **HC on sale.** We sell HC only as far as clause 13.4 of the Customer Agreement allows, and publish the HC still on sale on our website and under clause 11.
 
 ## 5. Matching
 
@@ -64,7 +64,7 @@ These Rules are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 7.1. A released hour still unsold when it starts joins the shared pool for that hour, and its release ends.
 
-7.2. **Pool price.** The price of a seat-second in the shared pool is 1 HC divided by the seat-seconds of one pooled Fleet in an hour, which are the seats per Fleet we publish (8 today) times 3,600, multiplied by a factor between the minimum and maximum we publish (0.5 and 3 today) that we set about once a minute from the share of the pool's seats used in the minute before. We post the current price for each model on the Hour Market page and under clause 11.
+7.2. **Pool price.** The price of a seat-second in the shared pool is 1 HC divided by the seat-seconds of one pooled Fleet in an hour, which are the seats per Fleet we publish (8 today) times 3,600, multiplied by a factor between the minimum and maximum we publish (0.5 and 3 today) that we set about once a minute from the share of the pool's seats used in the minute before. We post the current price for each model on our website and under clause 11.
 
 7.3. The HC charged for the seat-seconds of pool requests in an hour is allocated first to the released hours in the pool, earliest release first, each up to its Fleet's seat-seconds for the hour, and then to our own Fleets.
 
@@ -90,7 +90,7 @@ These Rules are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 ## 11. Market data
 
-11.1. We publish, without any account number, name or other identity: for each hour of each Fleet up to 31 days ahead, the best ask, whether it is ours or a release, and the best bid; the HC still on sale (clause 4.4); the open releases and bids; recent trades, with their Fleet, hour, price and kind; the shared pool's prices, seats and Fleets; and the accelerators, each with its Rate, speed and whether it is serving, and the live queue, with each waiting prompt's queue bid and estimated accelerator-seconds. They are on the Hour Market page and at https://sparkpipe.ai/pay/api/market/market.txt and https://sparkpipe.ai/pay/api/market/pool.txt.
+11.1. We publish, without any account number, name or other identity: for each hour of each Fleet up to 31 days ahead, the best ask, whether it is ours or a release, and the best bid; the HC still on sale (clause 4.4); the open releases and bids; recent trades, with their Fleet, hour, price and kind; the shared pool's prices, seats and Fleets; and the accelerators, each with its Rate, speed and whether it is serving, and the live queue, with each waiting prompt's queue bid and estimated accelerator-seconds. They are on our website and at https://sparkpipe.ai/pay/api/market/market.txt and https://sparkpipe.ai/pay/api/market/pool.txt.
 
 ## 12. Suspension
 

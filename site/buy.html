@@ -37,7 +37,7 @@
 <section class="co-head">
   <p class="label">Buy hour-credits · <span class="signal">Card · Won transfer · USDC · USDT</span></p>
   <h1>Hour-credits for whole AI fleets.</h1>
-  <p class="lead">One hour-credit (HC) buys one hour of a Rate-1 fleet: sixteen DGX Sparks in Seoul serving only you, with Kimi K3 and other open models over a terabyte and million-token context. Spend HC per request in the shared pool, reserve whole fleet-hours, or bid for windows in the <a href="market.html">Hour Market</a>. Choose an amount, confirm your email, then pay by card or Korean bank transfer in won, or in USDC or USDT.</p>
+  <p class="lead">One hour-credit (HC) buys one hour of a Rate-1 fleet: sixteen DGX Sparks in Seoul serving only you, with Kimi K3 and other open models over a terabyte and million-token context. Spend HC per request in the shared pool, book whole fleet-hours, or bid for hours in a window, all in <a href="market.html">your account</a>. Choose an amount, confirm your email, then pay by card or Korean bank transfer in won, or in USDC or USDT.</p>
   <div class="trust"><span>From $10 or ₩13,000</span><span>Korean and overseas cards, won transfer, USDC, USDT</span><span>HC usable for 12 months</span><span>Data stays in Korea</span></div>
 </section>
 
@@ -67,6 +67,21 @@
         <form class="form" id="f-2" novalidate>
           <label>Company legal name, or your full name<input id="company" autocomplete="organization" maxlength="200" placeholder="Acme Co., Ltd. or Jane Kim"></label>
           <label>Work email<input id="email" type="email" autocomplete="email" maxlength="254" placeholder="you@company.com"></label>
+          <div class="keyterms" role="note" aria-labelledby="key-terms">
+            <p class="label" id="key-terms">Key terms</p>
+            <ul>
+              <li>For business, professional, commercial or independent research and development use, not as a household consumer.</li>
+              <li>Prepaid: one HC costs <span data-krw>₩26,000</span> when paid in won, otherwise <span data-usd>$20</span>, plus 10% VAT, and buys one hour of a Rate-1 fleet or seat-seconds through the API. HC is issued once the payment completes.</li>
+              <li>Each purchase lasts 12 months from issue, and the HC that lapses first is spent first.</li>
+              <li>HC has no cash value, cannot be moved to another account and is not refunded, unless we stop offering service for HC, close your account other than for your breach, or the law requires a refund.</li>
+              <li>A booking is final and never taken from you. You can sell an hour back before it starts and get HC for what it earns, less a 10% fee.</li>
+              <li>A booked hour that is down for more than 15 consecutive minutes is credited back in full, automatically.</li>
+              <li>Requests and data are processed only on fleets, accelerators and servers we operate in Korea, and go to no other computing or AI service. Transient caches are deleted within 24 hours.</li>
+              <li>Our liability for claims about HC is capped at what you paid us for HC in the 6 months before the event giving rise to the claim.</li>
+              <li>Korean law; disputes go to arbitration in Seoul under the Korean Commercial Arbitration Board's rules.</li>
+            </ul>
+            <p>The Customer Agreement and the Hour Market Rules govern, and the Korean text prevails.</p>
+          </div>
           <label class="check"><input type="checkbox" id="accept"><span>I accept the <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a> and the <a href="market-rules.html" target="_blank" rel="noopener">Hour Market Rules</a> for business, professional, commercial or independent research and development use, not as a household consumer. The Korean texts (<a href="agreement-ko.html" target="_blank" rel="noopener" hreflang="ko">계약</a>, <a href="market-rules-ko.html" target="_blank" rel="noopener" hreflang="ko">규칙</a>) prevail.</span></label>
           <p class="flash" id="m-2" hidden></p>
           <button class="btn solid big" type="submit" id="send">Email me a 6-digit code</button>
@@ -111,12 +126,12 @@
       <div class="grand"><span id="o-total-label">Total in USDC</span><strong id="o-total">$110.00</strong></div>
     </div>
     <ul class="perks">
-      <li>1 HC reserves one hour of a whole Rate-1 fleet: 16 DGX Sparks in Seoul, no other customer's requests in the queue. Our own hours open up to 7 days ahead at the fleet's Rate, or up to 31 days ahead at 1.25× on any day; released hours at any distance. No reservation is ever bumped.</li>
+      <li>1 HC reserves one hour of a whole Rate-1 fleet: 16 DGX Sparks in Seoul, no other customer's requests in the queue. Our own hours can be booked up to 31 days ahead at the fleet's Rate, and hours sold back by other customers at any distance. No booking is ever bumped.</li>
       <li>Or spend HC per request in the shared pool, billed per seat-second, through an OpenAI-format API with your own keys.</li>
       <li>Kimi K3 and other open models over a terabyte, million-token context, and Korea's own models: K-EXAONE 2.0, A.X K2, Solar Open 2.</li>
       <li>Release a reserved hour you won't use: when it sells or the pool uses it, you get HC for what it earned, less a 10% fee. A reserved hour with over 15 minutes of downtime comes back in full.</li>
     </ul>
-    <p class="hint">Want the same hours kept for you every week? <a href="plans.html">A 2-year reserved plan is <span id="o-plan">$15</span> an hour</a>.</p>
+    <p class="hint">Want your office hours kept for you every week? <a href="plans.html">A Monthly reserved plan is <span id="o-plan">$17.50</span> an hour, <span id="o-plan-2y">$15</span> on 2 years</a>.</p>
   </aside>
 </div>
 
@@ -129,10 +144,10 @@
       <details><summary>Which cards and accounts work?</summary><p>Cards issued in Korea, and Visa, Mastercard and JCB cards issued abroad; bank transfer and virtual accounts at Korean banks; and the Korean easy-pay wallets shown at checkout. All are charged in won, at the won HC Price of <span data-krw>₩26,000</span> plus VAT. A card issued abroad is converted to your own currency by your card issuer, and its conversion and foreign-transaction fees are yours (<a href="agreement.html">Customer Agreement</a>). Toss Payments is the payment gateway; HYOR AI Tech Ltd. is the seller.</p></details>
       <details><summary>Which coin and network should I choose?</summary><p>The ones you hold. Each tile shows the name exchanges use on their withdrawal screens: ERC20, TRC20, BEP20, Base, SOL, Arbitrum One or Polygon PoS. Network fees are usually cents on all of them. Send only the coin you chose, only on the network you chose: the checkout page shows the exact amount and address for it. If your exchange takes a withdrawal fee from the amount, add it on top so the whole amount arrives.</p></details>
       <details><summary>Why won, or dollar stablecoins?</summary><p>The HC Price is set in both currencies: <span data-krw>₩26,000</span> when you pay in won, <span data-usd>$20</span> otherwise. Dollar payments are in stablecoins because they keep their value between the invoice and the payment, so neither of us carries the price swings of other crypto. We list USDC and USDT, which carry almost all stablecoin payments; CoinPayments' checkout page also takes the other dollar stablecoins it offers.</p></details>
-      <details><summary>When can I use my HC?</summary><p>At once in the shared pool, and on our own fleet-hours from <span data-start>1 December 2026</span>, reserved in the <a href="market.html">Hour Market</a> up to 7 days ahead at the fleet's Rate, or up to 31 days ahead at 1.25× on any day. Once confirmed, a reservation is yours: no one can bump it. Each purchase lasts 12 months from the day it is issued, and the oldest HC is spent first.</p></details>
-      <details><summary>What do prefill accelerators cost?</summary><p>A prefill accelerator computes a long prompt for a request that asks for one and hands it back to the fleet, which writes the reply; none is serving yet. Each prompt pays for its accelerator-seconds, from when the accelerator starts it until it hands it back, times the accelerator's Rate, times your queue bid, divided by 3,600. The Rate follows size against a 16-Spark fleet: 3 for 48 Sparks, 6 for 96. So 180 seconds at Rate 6 with a queue bid of 1.5 costs 180 × 6 × 1.5 ÷ 3,600 = 0.45 HC. The queue bid, from 1 to 10 in steps of 0.01, buys a better place in the queue: the highest is computed first, and each prompt pays its own bid. Accelerator time is charged in the shared pool, during your own reserved hours and under a plan alike, in HC or with Plan hours. A prompt the accelerator does not finish costs nothing, and one that no accelerator starts in time runs on its fleet without one. HC close to lapsing is well spent here: accelerator time takes the HC that lapses first, with no hour to reserve or release (<a href="agreement.html">Customer Agreement</a>).</p></details>
-      <details><summary>Can HC sell out?</summary><p>Yes, on purpose. We sell HC only while our free fleet-hours can deliver it: before every date, the hours on our fleets that nobody holds, after those kept for plan holders and an allowance for maintenance, must cover all the HC that lapses by then. Beyond that a purchase is refused, and the <a href="market.html">Hour Market</a> shows how much HC is still on sale. So every HC you buy can be spent (<a href="agreement.html">Customer Agreement</a>).</p></details>
-      <details><summary>Can I try it first?</summary><p>Yes. The <a href="market.html?sandbox">Hour Market sandbox</a> runs the same market with no money: buy HC, reserve and release hours, bid, and call the pool against a simulator. The <a href="buy.html?sandbox">sandbox checkout</a> takes card payments in Toss Payments' test mode, where no card is charged.</p></details>
+      <details><summary>When can I use my HC?</summary><p>At once in the shared pool, and on our own fleet-hours from <span data-start>1 December 2026</span>, booked in <a href="market.html">your account</a> up to 31 days ahead at the fleet's Rate; hours sold back by other customers can be booked however far ahead they start. Once confirmed, a booking is yours: no one can bump it. Each purchase lasts 12 months from the day it is issued, and the oldest HC is spent first.</p></details>
+      <details><summary>What do prefill accelerators cost?</summary><p>A prefill accelerator computes a long prompt for a request that asks for one and hands it back to the fleet, which writes the reply; none is serving yet. Each prompt pays for its accelerator-seconds, from when the accelerator starts it until it hands it back, times the accelerator's Rate, times your queue bid, divided by 3,600. The Fleet List gives each accelerator a Rate that follows its computing capacity against a Rate-1 fleet: Rate 3 for an accelerator of 48 DGX Sparks, Rate 6 for one of 96. So 180 seconds at Rate 6 with a queue bid of 1.5 costs 180 × 6 × 1.5 ÷ 3,600 = 0.45 HC. The queue bid, from 1 to 10 in steps of 0.01, buys a better place in the queue: the highest is computed first, and each prompt pays its own bid. Accelerator time is charged in the shared pool, during your own reserved hours and under a plan alike, in HC or with Plan hours. A prompt the accelerator does not finish costs nothing, and one that no accelerator starts in time runs on its fleet without one. HC close to lapsing is well spent here: accelerator time takes the HC that lapses first, with no hour to reserve or release (<a href="agreement.html">Customer Agreement</a>).</p></details>
+      <details><summary>Can HC sell out?</summary><p>Yes, on purpose. We sell HC only while our free fleet-hours can deliver it: before every date, the hours on our fleets that nobody holds, after those kept for plan holders and an allowance for maintenance, must cover all the HC that lapses by then. Beyond that a purchase is refused, and <a href="market.html">your account</a> shows how much HC is still on sale. So every HC you buy can be spent (<a href="agreement.html">Customer Agreement</a>).</p></details>
+      <details><summary>Can I try it first?</summary><p>Yes. The <a href="market.html?sandbox">sandbox</a> runs your account and the Hour Market with no money: buy HC, book and sell back hours, bid, and call the pool against a simulator. The <a href="buy.html?sandbox">sandbox checkout</a> takes card payments in Toss Payments' test mode, where no card is charged.</p></details>
       <details><summary>Why is VAT added?</summary><p>We are a Korean company, and Korean VAT of 10% applies to every payment for HC, in won or in stablecoins (<a href="agreement.html">Customer Agreement</a>). For a card payment, the card slip Toss Payments issues is the VAT document; for a bank transfer or virtual account, we issue an electronic tax invoice; a stablecoin invoice shows the VAT separately.</p></details>
       <details><summary>Can we get an electronic tax invoice?</summary><p>Yes, for a bank transfer or a virtual account: enter your Korean business registration number at checkout, and we issue an electronic tax invoice (세금계산서) for the payment. For a card payment, the card slip is the VAT document instead, as Korean VAT law provides.</p></details>
       <details><summary>What if a payment falls short, or comes too late?</summary><p>In USDC or USDT: if less arrives than the invoice, the HC it covers appears in your account at once, in proportion to what arrived, to six decimals; buy more whenever you like. Anything sent above the invoice, or after the payment page has closed, CoinPayments refunds with an email link to claim it. With a virtual account, deposit the exact amount by the deadline shown: an account not paid in time expires with its order, and nothing is owed. No one needs to write to anyone.</p></details>
@@ -145,7 +160,7 @@
 <footer class="foot">
   <div class="wrap">
     <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
-    <nav aria-label="Footer"><a href="index.html">Home</a><a href="market.html">Hour Market</a><a href="fleets.html">Fleet List</a><a href="plans.html">Reserved plans</a><a href="agreement.html">Customer Agreement</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="market.html">Your account</a><a href="account.html">Payments and plans</a><a href="fleets.html">Fleet List</a><a href="plans.html">Reserved plans</a><a href="agreement.html">Customer Agreement</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
 
     <span>Card and won payments are processed by Toss Payments; stablecoin payments by CoinPayments.</span>
   </div>
@@ -304,7 +319,7 @@
       if ($('code').value.length !== 6) throw new Error('Enter the 6 digits from the email.');
       S.me = await SP.call('/verify', { email: flow.email(), code: $('code').value, company: $('company').value.trim(), accept: $('accept').checked });
       $('f-code').hidden = true;
-      $('nav-account').textContent = 'Account';
+      $('nav-account').textContent = 'Payments and plans';
       go(3);
     });
   });
@@ -353,7 +368,8 @@
   document.querySelectorAll('[data-start]').forEach((el) => { el.textContent = nice(P.hourlyEarliestStart); });
   document.querySelectorAll('[data-krw]').forEach((el) => { el.textContent = SP.krw(M.hcPriceKRW); });
   document.querySelectorAll('[data-usd]').forEach((el) => { el.textContent = SP.usd(M.hcPrice).replace('.00', ''); });
-  $('o-plan').textContent = SP.usd(P.plans.terms.find((t) => t.months === 24).hourPrice).replace('.00', '');
+  $('o-plan').textContent = SP.usd(P.plans.terms.find((t) => t.id === 'monthly').hourPrice).replace('.00', '');
+  $('o-plan-2y').textContent = SP.usd(P.plans.terms.find((t) => t.months === 24).hourPrice).replace('.00', '');
   $('start-hint').textContent = 'HC lasts 12 months from the day it is issued. Spend it in the shared pool at once, or on fleet-hours from ' + nice(P.hourlyEarliestStart) + '.';
   S.picker = SP.methodPicker($('pay-box'), 'method', (value) => { S.method = value; keep(); renderMethod(); });
   SP.coinPicker($('coins'), 'coin', S.coin, (id) => { S.coin = id; keep(); renderSummary(); });
@@ -366,7 +382,7 @@
   renderSummary();
   SP.me().then((me) => {
     S.me = me;
-    if (me) $('nav-account').textContent = 'Account';
+    if (me) $('nav-account').textContent = 'Payments and plans';
   }).catch(() => {});
 })();
 </script>

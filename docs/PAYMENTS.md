@@ -165,9 +165,8 @@ orders an hour, and each email for 5 codes an hour.
   `plans.terms` (Monthly, 1, 2 or 3 years; there is no 3-month term), its
   office hours whole hours of an IANA time zone, at least
   `MIN_OFFICE_HOURS` (8) long, and a fleet lock only on a full day every
-  day. The published release fee, maintenance allowance, maintenance window
-  times (`windows` in `pricing.js`, clause 4.6) and fleet Rates are copied
-  into it and kept for its term.
+  day. The published release fee, maintenance allowance and fleet Rates are
+  copied into it and kept for its term.
 - Plan hours are worked out per KST hour with `zoneinfo`: each hour of the
   term that starts within the office hours of a counted local day (every
   day, or Monday to Friday by the local date the hours start), times the
