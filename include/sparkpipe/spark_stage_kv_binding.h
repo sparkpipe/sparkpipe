@@ -283,6 +283,9 @@ struct SparkStageKvBinding
 	uint32_t save_stop;
 	uint32_t save_held;
 	uint64_t expiry_sweep_seconds;
+	char working_state_path[SPARK_WORKING_STATE_PATH_BYTES];
+	SparkWorkingStateDirective working_state;
+	SparkStatus working_state_read_status;
 	uint32_t save_running;
 	uint32_t sync_initialized;
 	SparkStageKvBindingCounters counters;

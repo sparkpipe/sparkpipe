@@ -255,6 +255,7 @@ struct SparkWeightdServer
     uint64_t next_kv_pool_generation;
     atomic_ullong published_kv_committed_bytes;
     atomic_uint published_kv_pool_count;
+    _Atomic uint64_t working_state_wiped_ns;
     SparkWeightdKvPool kv_pools[SPARK_WEIGHTD_KV_POOL_COUNT_MAX];
     SparkWeightdArena arenas[SPARK_WEIGHTD_ARENA_COUNT_MAX];
     SparkWeightdConnection connections[SPARK_WEIGHTD_CONNECTION_COUNT_MAX];
@@ -4283,19 +4284,34 @@ static void SparkWeightdServerPublish(SparkWeightdServer *server)
     atomic_store_explicit(&server->published_kv_pool_count,server->kv_pool_count,memory_order_release);
 }
 
+void SparkWeightdServerSetWorkingStateWiped(SparkWeightdServer *server,uint64_t wiped_seconds)
+{
+	struct timespec wall;
+	uint64_t now_ns,wall_ns,wiped_ns,since_ns;
+	if ( server == 0 || clock_gettime(CLOCK_REALTIME,&wall) != 0 )
+		return;
+	now_ns = SparkWeightdMonotonicTimeNs();
+	wall_ns = (uint64_t)wall.tv_sec * UINT64_C(1000000000) + (uint64_t)wall.tv_nsec;
+	wiped_ns = wiped_seconds * UINT64_C(1000000000);
+	since_ns = wiped_ns >= wall_ns ? 0u : wall_ns - wiped_ns;
+	atomic_store_explicit(&server->working_state_wiped_ns,since_ns >= now_ns ? 0u : now_ns - since_ns,memory_order_release);
+}
+
 uint32_t SparkWeightdServerExpireKv(SparkWeightdServer *server,uint64_t now_ns)
 {
 	const uint64_t limit_ns = SPARK_KV_DETACHED_POOL_SECONDS * UINT64_C(1000000000);
+	uint64_t wiped_ns;
 	uint32_t index,released = 0u;
 	if ( server == 0 )
 		return(0u);
+	wiped_ns = atomic_load_explicit(&server->working_state_wiped_ns,memory_order_acquire);
 	for (index=0u; index<SPARK_WEIGHTD_KV_POOL_COUNT_MAX; index++)
 	{
 		const SparkWeightdKvPool *pool = &server->kv_pools[index];
 		if ( pool->generation == 0u || pool->detached_ns == 0u || pool->owner_connection != 0u || (pool->shared != 0u && pool->holder_mask != 0u) ||
-			now_ns < pool->detached_ns + limit_ns )
+			(now_ns < pool->detached_ns + limit_ns && pool->detached_ns >= wiped_ns) )
 			continue;
-		SparkWeightdKvPoolRelease(server,index,"detached_retention");
+		SparkWeightdKvPoolRelease(server,index,pool->detached_ns < wiped_ns ? "working_state_wipe" : "detached_retention");
 		released++;
 	}
 	if ( released != 0u )

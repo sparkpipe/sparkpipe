@@ -485,9 +485,9 @@ static void SparkKvSnapshotUnlinkEntryLocked(SparkKvSnapshotStore *store,uint32_
 	SparkKvSnapshotIndexRemoveAt(store,index);
 }
 
-static uint32_t SparkKvSnapshotEntryExpired(const SparkKvSnapshotIndexEntry *entry,uint64_t now_seconds)
+static uint32_t SparkKvSnapshotEntryExpired(const SparkKvSnapshotStore *store,const SparkKvSnapshotIndexEntry *entry,uint64_t now_seconds)
 {
-	return(entry->live != 0u && entry->pins == 0u && entry->used_seconds + SPARK_KV_RETENTION_SECONDS <= now_seconds ? 1u : 0u);
+	return(entry->live != 0u && entry->pins == 0u && SparkWorkingStateExpired(&store->directive,entry->used_seconds,now_seconds) != 0u ? 1u : 0u);
 }
 
 static uint32_t SparkKvSnapshotExpireLocked(SparkKvSnapshotStore *store,uint64_t now_seconds,uint64_t file_limit)
@@ -498,7 +498,7 @@ static uint32_t SparkKvSnapshotExpireLocked(SparkKvSnapshotStore *store,uint64_t
 	store->expiry_sweep_seconds = now_seconds;
 	for (with_children=0u; with_children<2u && files<file_limit; with_children++)
 		for (index=0u; index<runtime->entry_capacity && files<file_limit; index++)
-			for (link=index; files<file_limit && SparkKvSnapshotEntryExpired(&runtime->entries[link],now_seconds) != 0u &&
+			for (link=index; files<file_limit && SparkKvSnapshotEntryExpired(store,&runtime->entries[link],now_seconds) != 0u &&
 				(with_children != 0u || runtime->entries[link].children == 0u); link=parent)
 			{
 				parent = runtime->entries[link].parent;
@@ -512,8 +512,8 @@ static uint32_t SparkKvSnapshotExpireLocked(SparkKvSnapshotStore *store,uint64_t
 		return(0u);
 	store->expired_count += files;
 	store->expired_bytes += bytes;
-	fprintf(stderr,"KV-SNAPSHOT expired files=%llu bytes=%llu unused_for_s=%llu store=%s\n",(unsigned long long)files,(unsigned long long)bytes,
-		(unsigned long long)SPARK_KV_RETENTION_SECONDS,store->directory);
+	fprintf(stderr,"KV-SNAPSHOT expired files=%llu bytes=%llu unused_for_s=%llu wiped=%llu held_until=%llu store=%s\n",(unsigned long long)files,(unsigned long long)bytes,
+		(unsigned long long)SPARK_KV_RETENTION_SECONDS,(unsigned long long)store->directive.wiped_seconds,(unsigned long long)store->directive.held_until_seconds,store->directory);
 	return(files >= file_limit ? 1u : 0u);
 }
 
@@ -865,7 +865,7 @@ static SparkStatus SparkKvSnapshotScan(SparkKvSnapshotStore *store)
 		}
 		if ( stat(path,&info) != 0 || !S_ISREG(info.st_mode) )
 			continue;
-		if ( (uint64_t)info.st_mtime + SPARK_KV_RETENTION_SECONDS <= now )
+		if ( SparkWorkingStateExpired(&store->directive,(uint64_t)info.st_mtime,now) != 0u )
 		{
 			if ( unlink(path) == 0 )
 			{
@@ -932,7 +932,7 @@ static void SparkKvSnapshotRuntimeFree(SparkKvSnapshotRuntime *runtime)
 	free(runtime);
 }
 
-SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *directory,uint64_t maximum_bytes,uint64_t queue_maximum_bytes)
+SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *directory,uint64_t maximum_bytes,uint64_t queue_maximum_bytes,const SparkWorkingStateDirective *directive)
 {
 	SparkKvSnapshotRuntime *runtime;
 	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
@@ -966,6 +966,8 @@ SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *dir
 	store->queue_maximum_bytes = queue_maximum_bytes;
 	store->spare_maximum_bytes = queue_maximum_bytes / SPARK_KV_SNAPSHOT_SPARE_SHARE;
 	store->failure_retry_ns = SPARK_KV_SNAPSHOT_FAILURE_RETRY_NS;
+	if ( directive != 0 )
+		store->directive = *directive;
 	memcpy(store->directory,directory,strlen(directory) + 1u);
 	store->runtime = runtime;
 	status = SparkKvSnapshotScan(store);
@@ -1254,6 +1256,23 @@ SparkStatus SparkKvSnapshotExpire(SparkKvSnapshotStore *store,uint64_t now_secon
 		more = SparkKvSnapshotExpireLocked(store,now_seconds,SPARK_KV_SNAPSHOT_EXPIRY_BATCH_FILES);
 		pthread_mutex_unlock(&runtime->mutex);
 	} while ( more != 0u );
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkKvSnapshotSetDirective(SparkKvSnapshotStore *store,const SparkWorkingStateDirective *directive)
+{
+	SparkKvSnapshotRuntime *runtime;
+	if ( SparkKvSnapshotStoreIsValid(store) == 0u || directive == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	runtime = SparkKvSnapshotRuntimeOf(store);
+	pthread_mutex_lock(&runtime->mutex);
+	if ( SparkWorkingStateDirectiveEqual(&store->directive,directive) == 0u )
+	{
+		store->directive = *directive;
+		store->expiry_sweep_seconds = 0u;
+		pthread_cond_broadcast(&runtime->wake);
+	}
+	pthread_mutex_unlock(&runtime->mutex);
 	return(SPARK_STATUS_OK);
 }
 

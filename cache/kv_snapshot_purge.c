@@ -32,7 +32,7 @@ uint32_t SparkKvSnapshotIsCacheFileName(const char *name)
 		SparkKvSnapshotPurgeIsTemporary(name) != 0u ? 1u : 0u);
 }
 
-SparkStatus SparkKvSnapshotPurgeDirectory(const char *directory,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
+SparkStatus SparkKvSnapshotPurgeDirectory(const char *directory,const SparkWorkingStateDirective *directive,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
 {
 	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
 	struct dirent *item;
@@ -70,7 +70,7 @@ SparkStatus SparkKvSnapshotPurgeDirectory(const char *directory,uint64_t now_sec
 			continue;
 		if ( lstat(path,&info) != 0 || !S_ISREG(info.st_mode) )
 			continue;
-		if ( SparkKvSnapshotPurgeIsTemporary(item->d_name) == 0u && (uint64_t)info.st_mtime + SPARK_KV_RETENTION_SECONDS > now_seconds )
+		if ( SparkKvSnapshotPurgeIsTemporary(item->d_name) == 0u && SparkWorkingStateExpired(directive,(uint64_t)info.st_mtime,now_seconds) == 0u )
 			continue;
 		if ( unlink(path) != 0 )
 		{
@@ -86,7 +86,7 @@ SparkStatus SparkKvSnapshotPurgeDirectory(const char *directory,uint64_t now_sec
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkKvSnapshotPurgeWalk(const char *directory,dev_t device,uint32_t depth,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
+static SparkStatus SparkKvSnapshotPurgeWalk(const char *directory,dev_t device,uint32_t depth,const SparkWorkingStateDirective *directive,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
 {
 	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
 	struct dirent *item;
@@ -111,16 +111,16 @@ static SparkStatus SparkKvSnapshotPurgeWalk(const char *directory,dev_t device,u
 			continue;
 		if ( lstat(path,&info) != 0 || !S_ISDIR(info.st_mode) || info.st_dev != device )
 			continue;
-		if ( SparkKvSnapshotPurgeWalk(path,device,depth + 1u,now_seconds,result) != SPARK_STATUS_OK )
+		if ( SparkKvSnapshotPurgeWalk(path,device,depth + 1u,directive,now_seconds,result) != SPARK_STATUS_OK )
 			status = SPARK_STATUS_IO_ERROR;
 	}
 	(void)closedir(listing);
-	if ( holds_cache != 0u && SparkKvSnapshotPurgeDirectory(directory,now_seconds,result) != SPARK_STATUS_OK )
+	if ( holds_cache != 0u && SparkKvSnapshotPurgeDirectory(directory,directive,now_seconds,result) != SPARK_STATUS_OK )
 		status = SPARK_STATUS_IO_ERROR;
 	SPARK_RETURN(status);
 }
 
-SparkStatus SparkKvSnapshotPurgeTree(const char *root,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
+SparkStatus SparkKvSnapshotPurgeTree(const char *root,const SparkWorkingStateDirective *directive,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
 {
 	struct stat info;
 	if ( root == 0 || root[0] != '/' || result == 0 )
@@ -128,5 +128,5 @@ SparkStatus SparkKvSnapshotPurgeTree(const char *root,uint64_t now_seconds,Spark
 	memset(result,0,sizeof(*result));
 	if ( lstat(root,&info) != 0 || !S_ISDIR(info.st_mode) )
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
-	SPARK_RETURN(SparkKvSnapshotPurgeWalk(root,info.st_dev,0u,now_seconds,result));
+	SPARK_RETURN(SparkKvSnapshotPurgeWalk(root,info.st_dev,0u,directive,now_seconds,result));
 }

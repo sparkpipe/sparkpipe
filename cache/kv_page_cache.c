@@ -637,13 +637,13 @@ SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache)
 	return(SparkKvPageCacheEvictUnusedExcept(cache,0,0u));
 }
 
-static uint32_t SparkKvPageCacheExpiredDiscardable(const SparkKvPageCache *cache,uint32_t entry_index,uint64_t now_seconds)
+static uint32_t SparkKvPageCacheExpiredDiscardable(const SparkKvPageCache *cache,const SparkWorkingStateDirective *directive,uint32_t entry_index,uint64_t now_seconds)
 {
-	return(cache->entries[entry_index].used_seconds + SPARK_KV_RETENTION_SECONDS <= now_seconds &&
+	return(SparkWorkingStateExpired(directive,cache->entries[entry_index].used_seconds,now_seconds) != 0u &&
 		SparkKvPageCachePageCanDiscard(cache,cache->entries[entry_index].logical_page_index) != 0u ? 1u : 0u);
 }
 
-SparkStatus SparkKvPageCacheExpire(SparkKvPageCache *cache,uint64_t now_seconds,uint32_t *expired_entries)
+SparkStatus SparkKvPageCacheExpire(SparkKvPageCache *cache,const SparkWorkingStateDirective *directive,uint64_t now_seconds,uint32_t *expired_entries)
 {
 	uint32_t entry,next,pass,total = 0u,link,parent,chain;
 	if ( expired_entries != 0 )
@@ -656,13 +656,13 @@ SparkStatus SparkKvPageCacheExpire(SparkKvPageCache *cache,uint64_t now_seconds,
 		for (entry=cache->lru_head; entry != SPARK_KV_PAGE_CACHE_NO_INDEX; entry=next)
 		{
 			next = cache->entries[entry].lru_next;
-			if ( SparkKvPageCacheExpiredDiscardable(cache,entry,now_seconds) == 0u )
+			if ( SparkKvPageCacheExpiredDiscardable(cache,directive,entry,now_seconds) == 0u )
 				continue;
 			for (link=entry, chain=1u; chain != 0u; link=parent)
 			{
 				parent = cache->entries[link].parent_entry_index;
 				chain = parent < cache->entry_capacity && cache->entries[parent].reference_count == 1u &&
-					SparkKvPageCacheExpiredDiscardable(cache,parent,now_seconds) != 0u ? 1u : 0u;
+					SparkKvPageCacheExpiredDiscardable(cache,directive,parent,now_seconds) != 0u ? 1u : 0u;
 				if ( SparkKvPageCacheEvictEntryInChain(cache,link,link == entry ? 1u : 0u,chain == 0u ? 1u : 0u) != SPARK_STATUS_OK )
 					break;
 				pass++;

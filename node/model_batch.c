@@ -13,6 +13,7 @@
 #include "sparkpipe/spark_model_resident_deployment.h"
 #include "sparkpipe/spark_quant_arm.h"
 #include "sparkpipe/spark_continuous_batch.h"
+#include "sparkpipe/spark_working_state.h"
 
 #define SPARK_MODEL_BATCH_FILE_SCHEMA_VERSION 1u
 #define SPARK_MODEL_BATCH_STAGE_PROFILE_EVENT_CAPACITY_MAX 1048576u
@@ -791,7 +792,7 @@ int main(int argc,char **argv)
 	SparkModelBatchOutput output;
 	static SparkQuantArm quant_arm;
 	const char *deployment_path,*runtime_root,*batch_path,*quant_arm_path;
-	static char resolved_root[4096],index_path[4200];
+	static char resolved_root[4096],index_path[4200],working_state_home[SPARK_WORKING_STATE_PATH_BYTES],working_state_path[SPARK_WORKING_STATE_PATH_BYTES];
 	char quant_arm_error[512];
 	uint32_t failed_stage_index,profile_stages,view_valid;
 	uint32_t continuous,admission_closed,submitted_count;
@@ -808,6 +809,12 @@ int main(int argc,char **argv)
 	}
 	runtime_root = resolved_root;
 	(void)snprintf(index_path,sizeof(index_path),"%s/prefix_index_batch.spi",resolved_root);
+	if ( SparkWorkingStateOwnerRoot(working_state_home,sizeof(working_state_home)) != SPARK_STATUS_OK ||
+		SparkWorkingStateDirectivePath(working_state_home,working_state_path,sizeof(working_state_path)) != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"sparkpipe_model_batch: the working state directive path under the owner's home cannot be resolved\n");
+		return(1);
+	}
 	if ( quant_arm_path != 0 && SparkQuantArmLoadFile(quant_arm_path,&quant_arm,quant_arm_error,(uint32_t)sizeof(quant_arm_error)) != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"sparkpipe_model_batch: --quant-arm %s REFUSED: %s\n",quant_arm_path,quant_arm_error);
@@ -852,6 +859,7 @@ int main(int argc,char **argv)
 		file.engine.deployment = &deployment;
 		file.engine.runtime_root = runtime_root;
 		file.engine.prefix_index_path = index_path;
+		file.engine.working_state_directive_path = working_state_path;
 		file.engine.event_function = SparkModelBatchWriteEvent;
 		file.engine.event_context = &output;
 		if ( profile_stages != 0u )

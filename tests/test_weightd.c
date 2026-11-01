@@ -1553,6 +1553,47 @@ static void SparkTestKvSharedPools(void)
     printf("weightd kv shared pools: no window answers UNSUPPORTED as the documented off outcome with no error site, a window too small for one alignment group refuses with CAPACITY_EXCEEDED, the window is sized in whole alignment groups, the first holder creates the whole pool and formats the index, later holders join with the same page and layout only, holders export but never resize, a private key cannot collide, a leaving holder's bits and writing slots are cleared, the pool outlives its last holder with its published slots for the next attach, and a private pool that needs the room evicts it\n");
 }
 
+static void SparkTestKvWipeReleasesDetached(void)
+{
+    const char *socket_path = "/tmp/spark_weightd_test_kv_wipe.sock";
+    SparkTestServerThread context;
+    pthread_t thread;
+    SparkWeightdClient *detached = 0,*attached = 0;
+    SparkWeightdKvPoolGrant grant,kept;
+    SparkWeightdKvPoolState state;
+    uint32_t index;
+
+    (void)unlink(socket_path);
+    SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,4u * SPARK_TEST_KV_CHUNK_BYTES);
+    SparkTestConnect(&detached,socket_path,0ull);
+    SparkTestConnect(&attached,socket_path,0ull);
+    assert(SparkTestKvAttach(detached,0x51,SPARK_TEST_KV_CHUNK_BYTES,SPARK_TEST_KV_CHUNK_BYTES,4096u,&grant) == SPARK_STATUS_OK);
+    assert(SparkTestKvAttach(attached,0x52,SPARK_TEST_KV_CHUNK_BYTES,SPARK_TEST_KV_CHUNK_BYTES,4096u,&kept) == SPARK_STATUS_OK);
+    SparkTestKvGrantClose(&grant);
+    SparkWeightdClientClose(detached);
+    detached = 0;
+    for (index = 0u; index < 2u; index++)
+        assert(SparkWeightdClientKvPoolStatus(attached,kept.pool_generation,&state,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+    __atomic_store_n(&context.stop,1,__ATOMIC_SEQ_CST);
+    assert(pthread_join(thread,0) == 0 && context.run_status == SPARK_STATUS_OK);
+    assert(SparkWeightdServerKvPoolCount(context.server) == 2u);
+    SparkWeightdServerSetWorkingStateWiped(context.server,(uint64_t)time(0) - 3600u);
+    assert(SparkWeightdServerExpireKv(context.server,SparkTestMonotonicNs()) == 0u);
+    assert(SparkWeightdServerKvPoolCount(context.server) == 2u);
+    SparkWeightdServerSetWorkingStateWiped(context.server,0u);
+    assert(SparkWeightdServerExpireKv(context.server,SparkTestMonotonicNs()) == 0u);
+    SparkWeightdServerSetWorkingStateWiped(context.server,(uint64_t)time(0) + 2u);
+    assert(SparkWeightdServerExpireKv(context.server,SparkTestMonotonicNs()) == 1u);
+    assert(SparkWeightdServerKvPoolCount(context.server) == 1u && SparkWeightdServerKvCommittedBytes(context.server) == SPARK_TEST_KV_CHUNK_BYTES);
+    assert(SparkWeightdServerExpireKv(context.server,SparkTestMonotonicNs()) == 0u);
+    SparkTestKvGrantClose(&kept);
+    SparkWeightdClientClose(attached);
+    SparkWeightdServerDestroy(context.server);
+    context.server = 0;
+    assert(spark_stub_cuda_outstanding_allocs() == 0u);
+    printf("weightd kv pools: a working-state wipe releases at once a pool detached before it, never one detached after it or still attached\n");
+}
+
 int main(void)
 {
     (void)signal(SIGPIPE, SIG_IGN);
@@ -1565,6 +1606,7 @@ int main(void)
     SparkTestFailClosedPaths();
     SparkTestKvPools();
     SparkTestKvDetachedRetention();
+    SparkTestKvWipeReleasesDetached();
     SparkTestKvSharedPools();
     SparkTestKvAttachRollsBackOnFdFailure();
     SparkTestKvPoolRefusesWrappingSize();

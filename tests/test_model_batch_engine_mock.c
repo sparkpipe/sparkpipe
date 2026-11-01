@@ -185,6 +185,17 @@ static const char *TestPrefixIndexPath(void)
 	return(path);
 }
 
+static const char *TestWorkingStatePath(void)
+{
+	static char path[1100];
+	if ( path[0] == '\0' )
+	{
+		const char *index = TestPrefixIndexPath();
+		(void)snprintf(path,sizeof(path),"%.*s/directive",(int)(strrchr(index,'/') - index),index);
+	}
+	return(path);
+}
+
 static void TestConfigure(SparkModelBatchEngineConfiguration *configuration,const SparkModelResidentDeployment *deployment,TestBatchState *state,const char *runtime_root,uint32_t prefill_rows,uint32_t request_capacity,uint32_t flags)
 {
 	memset(configuration,0,sizeof(*configuration));
@@ -200,6 +211,7 @@ static void TestConfigure(SparkModelBatchEngineConfiguration *configuration,cons
 	configuration->deployment = deployment;
 	configuration->runtime_root = runtime_root;
 	configuration->prefix_index_path = TestPrefixIndexPath();
+	configuration->working_state_directive_path = TestWorkingStatePath();
 	if ( TestKeepPrefixIndex == 0u )
 		(void)unlink(configuration->prefix_index_path);
 	if ( TestPeerPrefixIndex != 0 )
@@ -1371,6 +1383,88 @@ static void TestScenarioMeasurements(const SparkModelResidentDeployment *deploym
 	CHECK(state.completed_events[3] == 1u && view.prefix_miss_count == 2u && view.first_token_count == 3u,"measure: retried waves count the prefix outcome once");
 	CHECK(state.first_dispatch_ns[3] >= state.accepted_ns[3] + UINT64_C(10000000),"measure: BUSY retry time before admission is booked as queue, not prefill");
 	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestWriteWorkingState(uint64_t wiped,uint64_t held_until)
+{
+	char temporary[1200];
+	FILE *file;
+	(void)snprintf(temporary,sizeof(temporary),"%s.next",TestWorkingStatePath());
+	file = fopen(temporary,"w");
+	assert(file != 0);
+	fprintf(file,"sparkpipe-working-state 1\nwiped %llu\nheld_until %llu\n",(unsigned long long)wiped,(unsigned long long)held_until);
+	assert(fclose(file) == 0 && rename(temporary,TestWorkingStatePath()) == 0);
+}
+
+static uint64_t TestNextSecond(void)
+{
+	uint64_t start = (uint64_t)time(0);
+	while ( (uint64_t)time(0) == start )
+		usleep(10000);
+	return((uint64_t)time(0));
+}
+
+static void TestDriveUntilWiped(SparkModelBatchEngine *engine,uint64_t wiped,SparkModelBatchEngineView *view)
+{
+	uint32_t step;
+	for (step=0u; step<4000u; step++)
+	{
+		if ( SparkModelBatchEngineGetView(engine,view) == SPARK_STATUS_OK && view->working_state_wiped_seconds == wiped )
+			return;
+		TestDrive(engine,1u);
+	}
+}
+
+static void TestScenarioWorkingStateHandover(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t old_prompt[8] = {11u,12u,13u,14u,15u,16u,17u,18u};
+	static const uint32_t new_prompt[8] = {21u,22u,23u,24u,25u,26u,27u,28u};
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	uint64_t wiped;
+	(void)unlink(TestWorkingStatePath());
+	MockResidentClientReset();
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,900u,1u,old_prompt,4u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	TestSubmitPrompt(engine,2u,901u,1u,old_prompt,8u);
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 4u,"working state: before a handover the user's repeated prompt hits its own prefix");
+	wiped = TestNextSecond();
+	TestWriteWorkingState(wiped,wiped + 3600u);
+	TestDriveUntilWiped(engine,wiped,&view);
+	CHECK(view.working_state_wiped_seconds == wiped && view.working_state_held_until_seconds == wiped + 3600u,"working state: the engine applies a new wiped time within its one-second check and reports it");
+	TestSubmitPrompt(engine,3u,902u,1u,old_prompt,8u);
+	TestDriveUntilTerminal(engine,&state,3u,400u);
+	CHECK(state.completed_events[3] == 1u && state.cached_tokens[3] == 0u,"working state: after the handover the old user's prompt misses, so the new user cannot hit or time it");
+	TestSubmitPrompt(engine,4u,903u,1u,new_prompt,4u);
+	TestDriveUntilTerminal(engine,&state,4u,400u);
+	TestSubmitPrompt(engine,5u,904u,1u,new_prompt,8u);
+	TestDriveUntilTerminal(engine,&state,5u,400u);
+	CHECK(state.completed_events[5] == 1u && state.cached_tokens[5] == 4u,"working state: the new user's own prefixes are cached as usual");
+	CHECK(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK,"working state: the engine is destroyed and writes its index");
+	memset(&state,0,sizeof(state));
+	MockResidentClientReset();
+	TestKeepPrefixIndex = 1u;
+	engine = TestConnect(deployment,&state,runtime_root);
+	TestKeepPrefixIndex = 0u;
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,6u,905u,1u,new_prompt,8u);
+	TestDriveUntilTerminal(engine,&state,6u,400u);
+	CHECK(state.completed_events[6] == 1u && state.cached_tokens[6] == 4u,"working state: a restarted engine keeps the new user's prefix");
+	TestWriteWorkingState(wiped,0u);
+	TestDrive(engine,1500u);
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.working_state_held_until_seconds == 0u && view.working_state_wiped_seconds == wiped,"working state: a changed held_until alone is taken without another wipe");
+	SparkModelBatchEngineDestroy(engine);
+	(void)unlink(TestWorkingStatePath());
 }
 
 static uint32_t TestFindLane(uint64_t request_id,uint64_t position,uint32_t prefix_tokens,SparkModelServingLane *found)
@@ -3447,6 +3541,7 @@ int main(void)
 	TestScenarioAdapterContextLimit(&deployment,runtime_root);
 	TestScenarioChainYieldsToPrefill(&deployment,runtime_root);
 	TestScenarioMeasurements(&deployment,runtime_root);
+	TestScenarioWorkingStateHandover(&deployment,runtime_root);
 	TestScenarioStalePrefixRecomputes(&deployment,runtime_root);
 	TestScenarioStalePrefixTerminates(&deployment,runtime_root);
 	TestScenarioStalePrefixIsolatesLanes(&deployment,runtime_root);
