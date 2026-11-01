@@ -196,7 +196,7 @@ def check_models(failures):
     rows = re.findall(r'<tr><td><b>([^<]+)</b><br><span class="mono">([^<]+)</span></td>.*?<td>(Offered[^<]*|Not offered)</td></tr>', (SITE / "fleets.html").read_text())
     offered = [(name, ident) for name, ident, state in rows if state.startswith("Offered")]
     if not offered or listed != offered:
-        failures.append(f"the models a Plan Order can choose (pricing.js) differ from the Fleet List's offered models: {listed} {offered}")
+        failures.append(f"the models pricing.js lists differ from the Fleet List's offered models: {listed} {offered}")
 
 
 def main():

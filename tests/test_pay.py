@@ -3,11 +3,11 @@
 import base64
 import contextlib
 import email
-import io
 import email.policy
 import hashlib
 import hmac
 import http.server
+import io
 import json
 import os
 import re
@@ -19,11 +19,9 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -42,133 +40,21 @@ def docs_signature(method, url, stamp, body):
     return base64.b64encode(hmac.new(SECRET, message.encode("utf-8") + body, hashlib.sha256).digest()).decode()
 
 
-OFFICES = {
-    "day": {"zone": "Asia/Seoul", "from": 9, "to": 18},
-    "asia": {"zone": "Asia/Seoul", "from": 8, "to": 16},
-    "europe": {"zone": "Asia/Seoul", "from": 16, "to": 0},
-    "americas": {"zone": "Asia/Seoul", "from": 0, "to": 8},
-    "full": {"zone": "Asia/Seoul", "from": 0, "to": 0},
-    "newyork": {"zone": "America/New_York", "from": 9, "to": 17},
-    "night": {"zone": "America/New_York", "from": 22, "to": 6},
-    "dawn": {"zone": "America/New_York", "from": 0, "to": 8},
-    "berlin": {"zone": "Europe/Berlin", "from": 9, "to": 18},
-    "kolkata": {"zone": "Asia/Kolkata", "from": 9, "to": 18},
-}
-
-
-def plan(number, email, office, days="every", fleets=1, months=24, start="2026-12-15", payment="gates", lock=None):
-    found = {"id": f"SP-PLAN-{number}", "email": email, "company": "Acme", "start": start, "months": None if payment == "monthly" else months, "office": dict(OFFICES[office] if isinstance(office, str) else office),
-             "days": days, "fleets": fleets, "hourPrice": "15.00", "payment": payment, "maintenanceHoursPerWeek": 3}
-    if lock:
-        found["lock"] = lock
-    return found
-
-
-def record(app, found):
-    data = {key: value for key, value in found.items() if key != "id"}
-    app.book.append("plan_order", dict(data, plan=found["id"], account=app.book.emails.get(found["email"].lower()), email=found["email"].lower(), lock=found.get("lock", []), source="signed"))
-
-
-def set_plans(app, plans):
-    keep = {found["id"] for found in plans}
-    today = sp.local_day(app.market.now()).isoformat()
-    for ident, held in list(app.book.plans.items()):
-        if ident not in keep and not held["ended"]:
-            app.book.append("plan_end", {"plan": ident, "account": held["account"], "day": today, "reason": "test"})
-    for found in plans:
-        record(app, found)
-
-
-def kst_hours(found, first, last):
-    return sorted(datetime.fromtimestamp(key * 3600, sp.KST) for key in sp.plan_slots(found, first, last))
-
-
-def local_hours(found, first, last):
-    zone = sp.zoneinfo.ZoneInfo(found["office"]["zone"])
-    return sorted(moment.astimezone(zone) for moment in kst_hours(found, first, last))
-
-
-def check_dates(failures):
-    pricing = json.loads((ROOT / "site" / "pricing.js").read_text().split("=", 1)[1].strip().rstrip(";"))
-    hours = sp.tranches(pricing, plan(1, "a@x", "day"))
-    if (len(hours), hours[0], hours[1], hours[14], hours[-1], sum(hours)) != (25, 153, 279, 261, 126, 6579):
-        failures.append(f"tranches of the Customer Agreement's example plan: {hours}")
-    if (sum(hours[:6]), sum(hours[:12])) != (1512, 3159):
-        failures.append("the example plan's gates differ from the Customer Agreement")
-    if sum(sp.tranches(pricing, plan(1, "a@x", "day", "weekdays"))) != 4707:
-        failures.append("the example plan on Weekdays holds the wrong hours")
-    if sum(sp.tranches(pricing, plan(1, "a@x", "full", fleets=2))) != 2 * 17544:
-        failures.append("a full-day plan on two fleets holds the wrong hours")
-    if pricing["plans"]["office"]["minHours"] != sp.MIN_OFFICE_HOURS or [t["id"] for t in pricing["plans"]["terms"]] != ["monthly", "1y", "2y", "3y"]:
-        failures.append(f"the published terms or the shortest office hours differ from the Customer Agreement: {pricing['plans']['terms']}")
-    night = plan(1, "a@x", "night", "weekdays", start="2027-01-04")
-    week = [sum(1 for moment in kst_hours(night, date(2027, 1, 4), date(2027, 1, 10)) if moment.weekday() == day) for day in range(7)]
-    if week != [0, 8, 8, 8, 8, 8, 0]:
-        failures.append(f"New York office hours from 22:00 to 06:00 on Weekdays do not run from KST Tuesday to Saturday, the hours New York's Monday to Friday start in: {week}")
-    if [moment.strftime("%a %H") for moment in local_hours(night, date(2027, 1, 9), date(2027, 1, 9))][:1] != ["Fri 22"]:
-        failures.append("office hours that start on a local Friday stop at local midnight instead of running to their end")
-    dawn = plan(1, "a@x", "dawn", start="2027-01-01", months=12)
-    spring, autumn = local_hours(dawn, date(2027, 3, 14), date(2027, 3, 15)), local_hours(dawn, date(2027, 11, 7), date(2027, 11, 8))
-    spring = [m for m in spring if m.date() == date(2027, 3, 14)]
-    autumn = [m for m in autumn if m.date() == date(2027, 11, 7)]
-    if len(spring) != 7 or len(autumn) != 9 or [m.hour for m in spring] != [0, 1, 3, 4, 5, 6, 7]:
-        failures.append(f"office hours on the days New York changes its clock are not the hours that elapse between 00:00 and 08:00: {[m.strftime('%H%z') for m in spring]} {[m.strftime('%H%z') for m in autumn]}")
-    berlin = plan(1, "a@x", "berlin", start="2027-01-01", months=12)
-    winter, summer = kst_hours(berlin, date(2027, 1, 13), date(2027, 1, 13)), kst_hours(berlin, date(2027, 7, 14), date(2027, 7, 14))
-    if [m.hour for m in winter] != [0, 1, 17, 18, 19, 20, 21, 22, 23] or [m.hour for m in summer] != [0, 16, 17, 18, 19, 20, 21, 22, 23]:
-        failures.append(f"Berlin office hours do not move in KST when Berlin changes its clock: {[m.hour for m in winter]} {[m.hour for m in summer]}")
-    kolkata = kst_hours(plan(1, "a@x", "kolkata", start="2027-01-01", months=12), date(2027, 1, 13), date(2027, 1, 13))
-    if [m.hour for m in kolkata] != list(range(13, 22)):
-        failures.append(f"office hours in a zone half an hour off KST do not hold the nine KST hours that start within them: {[m.hour for m in kolkata]}")
-    seoul = plan(1, "a@x", "day", "weekdays", start="2027-01-01", months=12)
-    if [m.strftime("%a") for m in kst_hours(seoul, date(2027, 1, 8), date(2027, 1, 11))][::9] != ["Fri", "Mon"]:
-        failures.append("Seoul Weekdays hold a weekend day")
-    for bad in (plan(1, "a@x", "day", lock=["F1"]), plan(1, "a@x", "full", "weekdays", lock=["F1"]), plan(1, "a@x", "day", "weekends"),
-                plan(1, "a@x", {"zone": "Asia/Seoul", "from": 9, "to": 16}), plan(1, "a@x", {"zone": "Mars/Olympus", "from": 9, "to": 18}),
-                plan(1, "a@x", {"zone": "Asia/Seoul", "from": 9, "to": 24}), plan(1, "a@x", {"zone": "Asia/Seoul", "from": "9", "to": 18}),
-                dict(plan(1, "a@x", "day"), payment="monthly"), dict(plan(1, "a@x", "day"), months=None), dict(plan(1, "a@x", "day"), maintenanceHoursPerWeek=25)):
-        try:
-            sp.tranches(pricing, bad)
-            failures.append(f"an invalid plan is accepted: {bad}")
-        except ValueError:
-            pass
-    try:
-        sp.tranches(pricing, plan(1, "a@x", {"zone": "Asia/Seoul", "from": 20, "to": 4}))
-        sp.tranches(pricing, plan(1, "a@x", "full", lock=["F1"]))
-    except ValueError as error:
-        failures.append(f"eight office hours across midnight, or a locked full day, are refused: {error}")
-    first, last = date(2026, 12, 15), date(2026, 12, 31)
-    if [sp.hours_before(pricing, plan(1, "a@x", "day"), first, last, datetime(2026, 12, 20, hour, minute, tzinfo=timezone.utc)) for hour, minute in ((3, 0), (3, 30), (8, 0), (15, 0))] != [48, 49, 53, 54]:
-        failures.append("Plan hours that occur before a payment are counted wrongly")
-    if sp.term_end(date(2028, 2, 29), 24) != date(2030, 2, 28) or sp.term_end(date(2026, 12, 1), 12) != date(2027, 11, 30):
-        failures.append("term_end differs from the Customer Agreement")
-    month = plan(1, "a@x", "newyork", "weekdays", payment="monthly")
-    spans = sp.tranche_spans(pricing, month, date(2027, 1, 31))
-    if [(a.isoformat(), b.isoformat(), n) for a, b, n in spans] != [("2026-12-15", "2026-12-31", 104), ("2027-01-01", "2027-01-31", 175)]:
-        failures.append(f"a Monthly plan's Tranches are not its calendar months in KST, each holding the KST hours that start in it: {spans}")
-
-
-def check_covered(failures):
-    credits = {"product": "credits", "hours": "168.000000", "price": "20.00", "net": "3360.00", "total": "3696.00"}
+def check_units(failures):
+    credits = {"hc": "168", "price": "20.00", "net": "3360.00", "total": "3696.00"}
     if sp.covered(credits, sp.money("22.99")) != ("1.045000", "20.90") or sp.covered(credits, sp.money("0.01")) != ("0.000000", "0.00") or sp.covered(credits, sp.money("9999.00")) != ("168.000000", "3360.00"):
         failures.append(f"HC covered by a part payment: {sp.covered(credits, sp.money('22.99'))}")
-    prepay = {"product": "plan", "hours": "6.6666", "net": "100.00", "total": "110.00", "price": "15.00"}
-    if sp.covered(prepay, sp.money("55.00")) != ("3.3333", "50.00"):
-        failures.append(f"prepayment covered by a part payment: {sp.covered(prepay, sp.money('55.00'))}")
-
-
-def check_sessions(failures):
     key = b"k" * 32
     token = sp.session_token(key, "ACX", 2000)
-    if sp.session_account(key, token, 1999) != "ACX":
-        failures.append("a fresh session token is refused")
-    if sp.session_account(key, token, 2001) is not None:
-        failures.append("an expired session token is accepted")
+    if sp.session_account(key, token, 1999) != "ACX" or sp.session_account(key, token, 2001) is not None:
+        failures.append("a fresh session token is refused or an expired one accepted")
     if sp.session_account(b"j" * 32, token, 1999) is not None or sp.session_account(key, token.replace("ACX", "ACY"), 1999) is not None:
         failures.append("a forged session token is accepted")
     for bad in (None, "", "a.b", "ACX.x.y", "ACX.2000.00"):
         if sp.session_account(key, bad, 1999) is not None:
             failures.append(f"a malformed session token {bad!r} is accepted")
+    if set(sp.TERMS.values()) != {"agreement-ko.md", "agreement-en.md"} or "Market Rules" in sp.statement(type("C", (), {"public": "https://sparkpipe.ai"}), "Acme", {"ko": "k", "en": "e"}):
+        failures.append("the accepted terms are not just the Korean and English Customer Agreement")
 
 
 class FakeCoinPayments(http.server.BaseHTTPRequestHandler):
@@ -224,8 +110,7 @@ class FakeToss(http.server.BaseHTTPRequestHandler):
         return self.headers.get("Authorization") == "Basic " + base64.b64encode((self.server.secret + ":").encode()).decode()
 
     def view(self, key):
-        found = self.server.payments[key]
-        return {name: value for name, value in found.items() if not name.startswith("_")}
+        return {name: value for name, value in self.server.payments[key].items() if not name.startswith("_")}
 
     def do_GET(self):
         key = urllib.parse.unquote(self.path.rsplit("/", 1)[1])
@@ -239,8 +124,7 @@ class FakeToss(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         idem = self.headers.get("Idempotency-Key")
-        parts = self.path.split("/")
-        key = body.get("paymentKey") if self.path == "/v1/payments/confirm" else urllib.parse.unquote(parts[3])
+        key = body.get("paymentKey") if self.path == "/v1/payments/confirm" else urllib.parse.unquote(self.path.split("/")[3])
         self.server.calls.append(("POST", key, body, idem))
         if not self.authorised():
             return self.answer(401, {"code": "UNAUTHORIZED_KEY", "message": "key"})
@@ -268,7 +152,6 @@ class FakeToss(http.server.BaseHTTPRequestHandler):
             else:
                 found["balanceAmount"] = balance - amount
                 found["status"] = "CANCELED" if found["balanceAmount"] == 0 else "PARTIAL_CANCELED"
-                found.setdefault("cancels", []).append({"cancelAmount": amount, "cancelReason": body["cancelReason"]})
                 result = (200, self.view(key))
         if idem:
             self.server.done[idem] = result
@@ -318,6 +201,15 @@ class FakeSMTP(socketserver.StreamRequestHandler):
                 say("250 ok")
 
 
+def serve(handler, **fields):
+    server = (socketserver.ThreadingTCPServer if handler is FakeSMTP else http.server.ThreadingHTTPServer)(("127.0.0.1", 0), handler)
+    server.daemon_threads = True
+    for name, value in fields.items():
+        setattr(server, name, value)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
 class Client:
     def __init__(self, port, origin=None):
         self.port = port
@@ -342,7 +234,10 @@ class Client:
             value = given.split(";", 1)[0]
             self.cookie = None if value.endswith("=") else value
             self.last_cookie = given
-        return status, json.loads(payload or b"{}")
+        try:
+            return status, json.loads(payload or b"{}")
+        except ValueError:
+            return status, payload.decode()
 
 
 def last_code(mailbox, to):
@@ -364,32 +259,103 @@ def sign_in(client, mailbox, address, **extra):
 def webhook(client, cfg, invoice, kind="InvoiceCompleted", stamp=None, tamper=False):
     stamp = stamp or NOW[0].strftime("%Y-%m-%dT%H:%M:%S")
     raw = json.dumps({"id": invoice, "type": kind, "invoice": {"id": invoice, "state": kind[7:]}}).encode()
-    signature = docs_signature("POST", cfg.webhook_url, stamp, raw)
-    headers = {"X-CoinPayments-Client": CLIENT, "X-CoinPayments-Timestamp": stamp, "X-CoinPayments-Signature": signature}
+    headers = {"X-CoinPayments-Client": CLIENT, "X-CoinPayments-Timestamp": stamp, "X-CoinPayments-Signature": docs_signature("POST", cfg.webhook_url, stamp, raw)}
     return client("POST", "/coinpayments", headers=headers, raw=raw + (b" " if tamper else b""))
 
 
-def ledger_types(cfg):
-    return [json.loads(line)["type"] for line in open(cfg.path("ledger.jsonl"), encoding="utf-8")]
+def lines_of(cfg, kind=None):
+    found = [json.loads(line) for line in open(cfg.path("ledger.jsonl"), encoding="utf-8")]
+    return [line["type"] for line in found] if kind is None else [line["data"] for line in found if line["type"] == kind]
+
+
+def site_copy(work):
+    (work / "site" / "terms").mkdir(parents=True)
+    shutil.copy(ROOT / "site" / "pricing.js", work / "site" / "pricing.js")
+    for name in sp.TERMS.values():
+        shutil.copy(ROOT / "site" / "terms" / name, work / "site" / "terms" / name)
+    (work / "secret").write_text("test-client-secret\n")
+
+
+def chain(rows):
+    lines, head = [], "0" * 64
+    for seq, (kind, data) in enumerate(rows, 1):
+        body = {"seq": seq, "at": f"2026-10-2{seq % 10}T01:00:00Z", "type": kind, "data": data, "prev": head}
+        head = sp.digest(body)
+        lines.append(json.dumps(dict(body, hash=head), ensure_ascii=False, separators=(",", ":")))
+    return "\n".join(lines) + "\n"
+
+
+LEGACY = [
+    ("account", {"account": "ACLIVE0000000000000", "email": "first@acme.example", "company": "First Co", "ip": "1.2.3.4", "agent": "test"}),
+    ("acceptance", {"account": "ACLIVE0000000000000", "ko": "a" * 64, "en": "b" * 64, "rules_ko": "c" * 64, "rules_en": "d" * 64, "statement": "old", "ip": "1.2.3.4", "agent": "test"}),
+    ("order", {"order": "SPLIVEAAAAAAAAAAAAAA", "account": "ACLIVE0000000000000", "email": "first@acme.example", "company": "First Co", "product": "hourly", "hours": 4, "start": "2026-12-01", "price": "15.00", "net": "60.00", "vat": "6.00", "total": "66.00", "coin": "USDC.BASE"}),
+    ("invoice", {"order": "SPLIVEAAAAAAAAAAAAAA", "invoice": "CPLIVE1", "link": "https://pay.example/c/CPLIVE1"}),
+    ("invoice_state", {"order": "SPLIVEAAAAAAAAAAAAAA", "invoice": "CPLIVE1", "state": "pending"}),
+    ("invoice_state", {"order": "SPLIVEAAAAAAAAAAAAAA", "invoice": "CPLIVE1", "state": "pending", "received": "1.00"}),
+    ("invoice_state", {"order": "SPLIVEAAAAAAAAAAAAAA", "invoice": "CPLIVE1", "state": "unpaid"}),
+    ("invoice_state", {"order": "SPLIVEAAAAAAAAAAAAAA", "invoice": "CPLIVE1", "state": "timedout"}),
+    ("invoice_state", {"order": "SPLIVEAAAAAAAAAAAAAA", "invoice": "CPLIVE1", "state": "cancelled"}),
+]
+
+
+def run_main(cfg, args, capture=True):
+    saved = dict(os.environ)
+    os.environ.update({"SPARKPIPE_PAY_DATA": cfg.data, "SPARKPIPE_PAY_SITE": cfg.site, "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(Path(cfg.site).parent / "secret"),
+                       "SPARKPIPE_PAY_SMTP": cfg.smtp, "TOSS_API": cfg.toss_api, "TOSS_CLIENT_KEY": cfg.toss_client, "TOSS_SECRET_KEY": cfg.toss_secret})
+    try:
+        if not capture:
+            return sp.main(["sparkpipe_pay.py"] + args)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return sp.main(["sparkpipe_pay.py"] + args)
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+def started(cfg):
+    server = sp.start(cfg, port=0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, Client(server.server_address[1], origin="https://sparkpipe.ai")
+
+
+def check_legacy(failures):
+    work = Path(tempfile.mkdtemp(prefix="sparkpipe-legacy-"))
+    mailbox = serve(FakeSMTP, mail=[])
+    try:
+        site_copy(work)
+        (work / "data").mkdir()
+        (work / "data" / "ledger.jsonl").write_text(chain(LEGACY))
+        cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(work / "data"), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
+                         "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}"})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = run_main(cfg, ["verify"], capture=False)
+        if code != 0 or not out.getvalue().startswith("9 lines, head ") or "1 accounts, 1 orders" not in out.getvalue():
+            failures.append(f"the live ledger of 9 lines does not replay: {out.getvalue()!r}")
+        server, client = started(cfg)
+        try:
+            status, summary = sign_in(client, mailbox, "first@acme.example")
+            order = (summary.get("orders") or [{}])[0]
+            if status != 200 or summary.get("termsCurrent") is not False or order.get("state") != "cancelled" or order.get("product") != "hourly" or summary.get("hc") != "0.000000":
+                failures.append(f"an account from the live ledger signs in, sees its cancelled hourly order and is asked to accept the new Agreement: {status} {summary}")
+            status, state = client("GET", "/market/state")
+            if status != 200 or state["account"]["termsCurrent"] is not False:
+                failures.append(f"the market state of a legacy account: {status} {state}")
+            if sign_in(client, mailbox, "first@acme.example", accept=True)[1].get("termsCurrent") is not True or sp.Book(cfg.path("ledger.jsonl")).count != 10:
+                failures.append("a legacy account cannot accept the new Agreement on top of the old ledger")
+        finally:
+            server.shutdown()
+    finally:
+        mailbox.shutdown()
+        shutil.rmtree(work)
 
 
 def check_service(failures):
     work = Path(tempfile.mkdtemp(prefix="sparkpipe-pay-"))
+    fake = serve(FakeCoinPayments, invoices={}, down=False)
+    mailbox = serve(FakeSMTP, mail=[])
     try:
-        (work / "site" / "terms").mkdir(parents=True)
-        shutil.copy(ROOT / "site" / "pricing.js", work / "site" / "pricing.js")
-        for name in sp.TERMS.values():
-            shutil.copy(ROOT / "site" / "terms" / name, work / "site" / "terms" / name)
-        for name in ("agreement.html", "agreement-ko.html"):
-            shutil.copy(ROOT / "site" / name, work / "site" / name)
-        (work / "secret").write_text("test-client-secret\n")
-        fake = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeCoinPayments)
-        fake.invoices, fake.down = {}, False
-        threading.Thread(target=fake.serve_forever, daemon=True).start()
-        mailbox = socketserver.ThreadingTCPServer(("127.0.0.1", 0), FakeSMTP)
-        mailbox.daemon_threads = True
-        mailbox.mail = []
-        threading.Thread(target=mailbox.serve_forever, daemon=True).start()
+        site_copy(work)
         cfg = sp.Config({
             "SPARKPIPE_PAY_DATA": str(work / "data"), "SPARKPIPE_PAY_SITE": str(work / "site"),
             "COINPAYMENTS_API": f"http://127.0.0.1:{fake.server_address[1]}/api/v2",
@@ -398,17 +364,17 @@ def check_service(failures):
         })
         sp.clock = lambda: NOW[0]
         sp.LIMITS["order"] = (40, 600)
-        sp.LIMITS["plan"] = (200, 600)
-        server = sp.start(cfg, port=0)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        server, buyer = started(cfg)
         port, app = server.server_address[1], server.app
-        buyer = Client(port, origin="https://sparkpipe.ai")
         account_flow(failures, cfg, app, buyer, mailbox, port)
         credits_flow(failures, cfg, app, fake, buyer, mailbox)
         part_payment_flow(failures, cfg, app, fake, buyer, mailbox)
-        plan_order_flow(failures, cfg, app, fake, buyer, mailbox, port, work)
-        prepayment_flow(failures, cfg, app, fake, buyer, mailbox, port)
-        lead_flow(failures, app, buyer, mailbox, work)
+        for path, body in (("/lead", {"company": "Big Co", "email": "cto@big.example"}), ("/plans/quote", {}), ("/plans/order", {}), ("/plans/stop", {}), ("/market/reserve", {}), ("/market/bid", {}), ("/market/release", {}), ("/market/cancel", {}), ("/market/sandbox/tranche", {})):
+            if buyer("POST", path, body)[0] != 404:
+                failures.append(f"a removed route still answers: {path}")
+        for path in ("/plans/key", "/market/market.txt", "/market/pool.txt", "/market/calendar", "/market/book", "/pool/v1/models"):
+            if buyer("GET", path)[0] != 404:
+                failures.append(f"a removed route still answers: {path}")
         book = sp.Book(cfg.path("ledger.jsonl"))
         if book.count != app.book.count or book.head != app.book.head or book.emails != app.book.emails:
             failures.append("a reloaded ledger differs from the live one")
@@ -419,7 +385,7 @@ def check_service(failures):
             failures.append("two writers break the ledger chain")
         lines = open(cfg.path("ledger.jsonl"), encoding="utf-8").read().splitlines()
         index = next(i for i, line in enumerate(lines) if '"type":"account"' in line)
-        lines[index] = lines[index].replace('Acme', 'Acmf', 1)
+        lines[index] = lines[index].replace("Acme", "Acmf", 1)
         (work / "tampered.jsonl").write_text("\n".join(lines) + "\n")
         try:
             sp.Book(str(work / "tampered.jsonl"))
@@ -429,9 +395,9 @@ def check_service(failures):
         if oct((work / "data" / "session_key").stat().st_mode & 0o777) != "0o600":
             failures.append("the session key is readable by others")
         server.shutdown()
+    finally:
         fake.shutdown()
         mailbox.shutdown()
-    finally:
         shutil.rmtree(work)
 
 
@@ -451,22 +417,19 @@ def account_flow(failures, cfg, app, buyer, mailbox, port):
         failures.append(f"a code for an unknown email without a company opens an account: {status} {refused}")
     sign_in(buyer, mailbox, "ops@acme.example", company="Acme 주식회사")
     if "ops@acme.example" in app.book.emails:
-        failures.append("an account opens without accepting the Hourly Terms")
+        failures.append("an account opens without accepting the Customer Agreement")
     status, summary = sign_in(buyer, mailbox, "Ops@Acme.example", company="Acme 주식회사", accept=True)
-    if status != 200 or summary.get("company") != "Acme 주식회사" or not summary.get("termsCurrent") or summary.get("hc") != "0.000000":
+    if status != 200 or summary.get("company") != "Acme 주식회사" or not summary.get("termsCurrent") or summary.get("hc") != "0.000000" or summary.get("locked") != "0.000000":
         failures.append(f"opening an account: {status} {summary}")
         return
     if "HttpOnly" not in buyer.last_cookie or "SameSite=Lax" not in buyer.last_cookie or "Path=/pay/api" not in buyer.last_cookie:
         failures.append(f"session cookie attributes: {buyer.last_cookie}")
-    record = [json.loads(line) for line in open(cfg.path("ledger.jsonl"), encoding="utf-8") if '"acceptance"' in line][-1]["data"]
-    if record["ko"] != cfg.terms("agreement-ko.md") or record["rules_ko"] != cfg.terms("market-rules-ko.md") or record["rules_en"] != cfg.terms("market-rules-en.md") or "Hour Market Rules, Korean text, which prevails" not in record["statement"] or "Acme 주식회사" not in record["statement"]:
+    record = lines_of(cfg, "acceptance")[-1]
+    if (record["ko"], record["en"]) != (cfg.terms("agreement-ko.md"), cfg.terms("agreement-en.md")) or "rules_ko" in record or "Market Rules" in record["statement"] or "Korean text, which prevails" not in record["statement"] or "Acme 주식회사" not in record["statement"]:
         failures.append(f"acceptance record: {record}")
-    if buyer("GET", "/account")[0] != 200:
-        failures.append("a signed-in account cannot read itself")
     if buyer("POST", "/verify", {"email": "ops@acme.example", "code": last_code(mailbox, "ops@acme.example")})[0] != 403:
         failures.append("a sign-in code works twice")
-    stranger = Client(port, origin="https://evil.example")
-    if stranger("POST", "/code", {"email": "ops@acme.example"})[0] != 403:
+    if Client(port, origin="https://evil.example")("POST", "/code", {"email": "ops@acme.example"})[0] != 403:
         failures.append("a cross-site POST is accepted")
     forged = Client(port)
     forged.cookie = buyer.cookie.replace(buyer.cookie.split("=", 1)[1].split(".")[0], "ACAAAAAAAAAAAAAAAA")
@@ -476,93 +439,103 @@ def account_flow(failures, cfg, app, buyer, mailbox, port):
     status, _ = sign_in(other, mailbox, "ops@acme.example")
     if status != 200 or other("POST", "/signout", {})[0] != 200 or other.cookie is not None:
         failures.append("signing in again or signing out fails")
+    app.mails.join()
+    opened = next(m for _, m in mailbox.mail if m["Subject"].startswith("New SparkPipe account"))
+    if "Acme 주식회사 <ops@acme.example>" not in opened.get_content() or opened["Content-Transfer-Encoding"] != "quoted-printable":
+        failures.append(f"a Korean company name is garbled in mail: {opened.get_content()[:80]!r}")
 
 
 def credits_flow(failures, cfg, app, fake, buyer, mailbox):
-    base = {"product": "credits", "amount": "80", "coin": "USDC.BASE"}
+    base = {"product": "credits", "hc": 4, "coin": "USDC.BASE"}
     for coin in ("BTC", "TUSD.TRC20", "base", None):
         if buyer("POST", "/order", dict(base, coin=coin))[0] != 400:
             failures.append(f"an order in {coin} is accepted")
-    for amount in ("9.99", "100000.01", "12.345", "ten"):
-        if buyer("POST", "/order", dict(base, amount=amount))[0] != 400:
-            failures.append(f"an HC order of {amount} USD is accepted")
-    if buyer("POST", "/order", {"product": "hourly", "hours": 4, "start": "2026-12-01", "coin": "USDC.BASE"})[0] != 400:
-        failures.append("fleet-hours are still sold by the hour")
-    anonymous = Client(buyer.port)
-    if anonymous("POST", "/order", base)[0] != 401:
+    for count in (0, "0.5", -1, "ten", True, "1.0000001", "1234567890", None):
+        if buyer("POST", "/order", dict(base, hc=count))[0] != 400:
+            failures.append(f"an order for {count!r} HC is accepted")
+    status, placed = buyer("POST", "/order", dict(base, hc="2.5"))
+    if status != 200 or fake.invoices[max(fake.invoices, key=lambda k: int(k[3:]))]["body"]["amount"]["total"] != "55.00" or buyer("GET", "/order/" + placed["order"])[1]["hc"] != "2.5":
+        failures.append(f"an order for a quantity of HC that is not whole is refused or mispriced: {status} {placed}")
+    for body in ({"product": "hourly", "hours": 4, "coin": "USDC.BASE"}, {"product": "plan", "plan": "PO", "amount": "100", "coin": "USDC.BASE"}, {"product": "credits", "amount": "80", "coin": "USDC.BASE"}):
+        if buyer("POST", "/order", body)[0] != 400:
+            failures.append(f"a removed product or an order by amount is accepted: {body}")
+    if Client(buyer.port)("POST", "/order", base)[0] != 401:
         failures.append("an order without signing in is accepted")
+    ladder = {}
+    for count in (143, 144):
+        status, placed = buyer("POST", "/order", dict(base, hc=count))
+        invoice = fake.invoices[max(fake.invoices, key=lambda k: int(k[3:]))]["body"]
+        ladder[count] = (status, invoice["amount"], invoice["items"][0]["description"])
+    if ladder[143] != (200, {"breakdown": {"subtotal": "2860.00", "taxTotal": "286.00"}, "total": "3146.00"}, "Customer Agreement; 20.00 USD each, usable for 12 months") \
+            or ladder[144] != (200, {"breakdown": {"subtotal": "2160.00", "taxTotal": "216.00"}, "total": "2376.00"}, "Customer Agreement; 15.00 USD each, usable for 12 months"):
+        failures.append(f"the US dollar price ladder at 143 and 144 HC: {ladder}")
     status, placed = buyer("POST", "/order", base)
     if status != 200 or not placed.get("checkout", "").startswith("https://pay.example/c/"):
         failures.append(f"HC order: {status} {placed}")
         return
-    invoice = fake.invoices["inv1"]["body"]
+    key = max(fake.invoices, key=lambda k: int(k[3:]))
+    invoice = fake.invoices[key]["body"]
     expected = {"currency": "5057", "invoiceId": placed["order"], "amount": {"breakdown": {"subtotal": "80.00", "taxTotal": "8.00"}, "total": "88.00"}}
-    if any(invoice.get(key) != value for key, value in expected.items()):
+    if any(invoice.get(name) != value for name, value in expected.items()):
         failures.append(f"invoice body: {invoice}")
     if invoice["payment"] != {"paymentCurrency": sp.COINS["USDC.BASE"], "refundEmail": "ops@acme.example"} or invoice["buyer"] != {"companyName": "Acme 주식회사", "emailAddress": "ops@acme.example"}:
         failures.append(f"invoice payment or buyer: {invoice['payment']} {invoice['buyer']}")
-    if invoice["items"][0]["name"] != "4.000000 SparkPipe hour-credits" or invoice["webhooks"][0]["notificationsUrl"] != "https://sparkpipe.ai/pay/api/coinpayments":
-        failures.append(f"invoice items or webhooks: {invoice['items']} {invoice['webhooks']}")
-    if invoice["successUrl"] != f"https://sparkpipe.ai/account.html?order={placed['order']}":
-        failures.append(f"invoice return address: {invoice['successUrl']}")
+    if invoice["items"][0]["name"] != "4 SparkPipe hour-credits" or invoice["webhooks"][0]["notificationsUrl"] != "https://sparkpipe.ai/pay/api/coinpayments" or invoice["successUrl"] != f"https://sparkpipe.ai/account.html?order={placed['order']}":
+        failures.append(f"invoice items, webhooks or return address: {invoice['items']} {invoice['webhooks']} {invoice['successUrl']}")
     status, shown = buyer("GET", "/order/" + placed["order"])
-    if status != 200 or shown["state"] != "unpaid" or shown["checkout"] != placed["checkout"] or "email" in shown:
+    if status != 200 or shown["state"] != "unpaid" or shown["checkout"] != placed["checkout"] or shown["hc"] != "4" or shown["price"] != "20.00" or "email" in shown:
         failures.append(f"unpaid order status: {status} {shown}")
-    if webhook(buyer, cfg, "inv1", tamper=True)[0] != 401 or webhook(buyer, cfg, "inv1", stamp="2026-11-02T02:50:00")[0] != 401:
+    if webhook(buyer, cfg, key, tamper=True)[0] != 401 or webhook(buyer, cfg, key, stamp="2026-11-02T02:50:00")[0] != 401:
         failures.append("a tampered or stale webhook is accepted")
-    fake.invoices["inv1"]["status"] = "paid"
-    webhook(buyer, cfg, "inv1", "InvoicePaid")
+    fake.invoices[key]["status"] = "paid"
+    webhook(buyer, cfg, key, "InvoicePaid")
     app.jobs.join()
     if buyer("GET", "/order/" + placed["order"])[1]["state"] != "paid":
         failures.append("a paid invoice does not move the order to paid")
-    fake.invoices["inv1"]["status"] = "completed"
-    if webhook(buyer, cfg, "inv1")[0] != 200:
+    fake.invoices[key]["status"] = "completed"
+    if webhook(buyer, cfg, key)[0] != 200:
         failures.append("a signed webhook is refused")
     app.jobs.join()
-    webhook(buyer, cfg, "inv1")
+    webhook(buyer, cfg, key)
     app.jobs.join()
     app.mails.join()
     summary = buyer("GET", "/account")[1]
-    if summary["hc"] != "4.000000" or ledger_types(cfg).count("hours_issued") != 1 or ledger_types(cfg).count("hc_lot") != 1:
-        failures.append(f"completed order: {summary} {ledger_types(cfg)}")
+    lots = buyer("GET", "/market/state")[1]["account"]["lots"]
+    if summary["hc"] != "4.000000" or lines_of(cfg).count("hc_issued") != 1 or lines_of(cfg).count("hc_lot") != 1 or lots[0]["expires"] != "2027-11-02T03:00:00Z" or lots[0]["ref"] != placed["order"]:
+        failures.append(f"completed order: {summary} {lots} {lines_of(cfg)}")
     receipts = [m for rcpt, m in mailbox.mail if "ops@acme.example" in rcpt and placed["order"] in m["Subject"]]
-    if len(receipts) != 1 or "88.00" not in receipts[0].get_content() or "4.000000 hour-credits" not in receipts[0].get_content() or "/market.html" not in receipts[0].get_content():
+    if len(receipts) != 1 or "88.00" not in receipts[0].get_content() or "4 hour-credits, usable until 2027-11-02" not in receipts[0].get_content():
         failures.append(f"receipt mail: {[m['Subject'] for _, m in mailbox.mail]}")
     if not any(cfg.notify in rcpt and m["Subject"].startswith("Paid:") for rcpt, m in mailbox.mail):
         failures.append("we are not told of a payment")
-    payment = [json.loads(line) for line in open(cfg.path("ledger.jsonl"), encoding="utf-8") if '"payment"' in line][-1]["data"]
-    if payment["paidWith"] != ["USDC.BASE"]:
-        failures.append(f"the payment line does not record the coin: {payment}")
-    if buyer("POST", "/order", dict(base, amount="3280", coin="USDT.TRC20"))[0] != 200:
-        failures.append("a second HC order is refused")
-    fake.invoices["inv2"]["status"] = "completed"
-    fake.invoices["inv2"]["total"] = "1.00"
-    webhook(buyer, cfg, "inv2")
+    if lines_of(cfg, "payment")[-1]["paidWith"] != ["USDC.BASE"]:
+        failures.append("the payment line does not record the coin")
+    status, placed = buyer("POST", "/order", dict(base, hc=164, coin="USDT.TRC20"))
+    key = max(fake.invoices, key=lambda k: int(k[3:]))
+    fake.invoices[key].update(status="completed", total="1.00")
+    webhook(buyer, cfg, key)
     app.jobs.join()
-    if fake.invoices["inv2"]["body"]["payment"]["paymentCurrency"] != "9:TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t":
+    if fake.invoices[key]["body"]["payment"]["paymentCurrency"] != "9:TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t":
         failures.append("a USDT order on Tron does not preset USDT on Tron")
-    second = next(o for o in buyer("GET", "/account")[1]["orders"] if o["net"] == "3280.00")
-    if second["coin"] != "USDT.TRC20":
-        failures.append(f"the order does not show its coin: {second}")
-    if second["state"] != "mismatch" or second["issued"] or buyer("GET", "/account")[1]["hc"] != "4.000000":
+    second = buyer("GET", "/order/" + placed["order"])[1]
+    if second["coin"] != "USDT.TRC20" or second["state"] != "mismatch" or second["issued"] or buyer("GET", "/account")[1]["hc"] != "4.000000":
         failures.append(f"an invoice that does not match its order issues HC: {second}")
     fake.down = True
-    status, refused = buyer("POST", "/order", dict(base, amount="20"))
+    status, refused = buyer("POST", "/order", dict(base, hc=1))
     fake.down = False
     if status != 502 or buyer("GET", "/account")[1]["orders"][0]["state"] != "failed":
         failures.append(f"a failed invoice is not recorded: {status} {refused}")
-    for name in ("agreement-en.md", "market-rules-ko.md"):
-        terms = Path(cfg.site) / "terms" / name
-        terms.write_text(terms.read_text() + "\n")
-        status, refused = buyer("POST", "/order", dict(base, amount="20"))
-        if status != 409 or refused.get("reason") != "terms":
-            failures.append(f"an order after {name} changed does not ask to accept the terms again: {status} {refused}")
-        if buyer("POST", "/order", dict(base, amount="20", accept=True))[0] != 200 or not buyer("GET", "/account")[1]["termsCurrent"]:
-            failures.append(f"accepting the terms again after {name} changed is not recorded")
+    terms = Path(cfg.site) / "terms" / "agreement-en.md"
+    terms.write_text(terms.read_text() + "\n")
+    status, refused = buyer("POST", "/order", dict(base, hc=1))
+    if status != 409 or refused.get("reason") != "terms":
+        failures.append(f"an order after the Agreement changed does not ask to accept it again: {status} {refused}")
+    if buyer("POST", "/order", dict(base, hc=1, accept=True))[0] != 200 or not buyer("GET", "/account")[1]["termsCurrent"]:
+        failures.append("accepting the Agreement again is not recorded")
 
 
 def part_payment_flow(failures, cfg, app, fake, buyer, mailbox):
-    status, placed = buyer("POST", "/order", {"product": "credits", "amount": "80", "coin": "USDC.ERC20"})
+    status, placed = buyer("POST", "/order", {"product": "credits", "hc": 4, "coin": "USDC.ERC20"})
     if status != 200:
         failures.append(f"part payment order: {status} {placed}")
         return
@@ -570,7 +543,6 @@ def part_payment_flow(failures, cfg, app, fake, buyer, mailbox):
     fake.invoices[key].update(status="pending", received="22.99", paidIn="DAI.ERC20")
     webhook(buyer, cfg, key, "InvoicePending")
     app.jobs.join()
-    app.mails.join()
     shown = buyer("GET", "/order/" + placed["order"])[1]
     if shown["state"] != "pending" or shown["received"] != "22.99":
         failures.append(f"a part payment is not shown: {shown}")
@@ -579,371 +551,23 @@ def part_payment_flow(failures, cfg, app, fake, buyer, mailbox):
         fake.invoices[key]["received"] = value
         app.reconcile()
         app.jobs.join()
-    app.mails.join()
     if app.book.count != lines:
         failures.append("a part payment revalued by cents writes ledger lines")
-    before = sp.Decimal(buyer("GET", "/account")[1]["hc"])
+    before = Decimal(buyer("GET", "/account")[1]["hc"])
     fake.invoices[key]["status"] = "completed"
     webhook(buyer, cfg, key)
     app.jobs.join()
     app.mails.join()
     shown = buyer("GET", "/order/" + placed["order"])[1]
-    after = sp.Decimal(buyer("GET", "/account")[1]["hc"])
-    if shown["state"] != "completed" or not shown["issued"] or shown["issuedHours"] != "1.0445" or after != before + sp.Decimal("1.0445"):
-        failures.append(f"a completed part payment does not issue HC in proportion: {shown} {before} {after}")
-    note = [m for rcpt, m in mailbox.mail if "ops@acme.example" in rcpt and placed["order"] in m["Subject"]]
-    if not note or "22.98 USD arrived" not in note[-1].get_content() or "1.044500 hour-credits" not in note[-1].get_content():
-        failures.append("the receipt for a part payment does not say what arrived and what it bought")
-    if not note or "Received in DAI: 22.98 USD" not in note[-1].get_content() or "account.html?order=" in note[-1].get_content():
-        failures.append("the receipt for a part payment names the wrong coin or offers to pay the rest")
-    payments = [json.loads(line)["data"] for line in open(cfg.path("ledger.jsonl"), encoding="utf-8") if '"payment"' in line]
-    if [e["paidWith"] for e in payments if e["order"] == placed["order"]] != [["DAI.ERC20"]]:
+    if shown["state"] != "completed" or not shown["issued"] or shown["issuedHC"] != "1.044500" or Decimal(buyer("GET", "/account")[1]["hc"]) != before + Decimal("1.0445"):
+        failures.append(f"a completed part payment does not issue HC in proportion: {shown}")
+    note = [m.get_content() for rcpt, m in mailbox.mail if "ops@acme.example" in rcpt and placed["order"] in m["Subject"]]
+    if not note or "22.98 USD arrived" not in note[-1] or "1.044500 hour-credits" not in note[-1] or "Received in DAI: 22.98 USD" not in note[-1]:
+        failures.append(f"the receipt for a part payment: {note[-1:]}")
+    if [e["paidWith"] for e in lines_of(cfg, "payment") if e["order"] == placed["order"]] != [["DAI.ERC20"]]:
         failures.append("the ledger does not record the stablecoin that was paid")
     if not any(cfg.notify in rcpt and m["Subject"].startswith("Paid in part:") for rcpt, m in mailbox.mail):
         failures.append("we are not told of a part payment that settled")
-    if buyer("POST", "/order", {"product": "rest", "parent": placed["order"], "coin": "USDC.ERC20"})[0] != 400:
-        failures.append("the rest of a part-paid order can still be ordered")
-
-
-CHOICE = {"start": "2026-12-15", "term": "2y", "office": OFFICES["day"], "days": "every", "fleets": 1, "lock": False, "models": ["kimi-k3"],
-          "customer": {"kind": "company", "jurisdiction": "Delaware, United States", "registration": "7781234", "address": "1 Main St, Dover, DE"}}
-MONTHLY = dict(CHOICE, term="monthly", office=OFFICES["newyork"], days="weekdays", customer={"kind": "individual", "address": "3 Side St, Busan"})
-
-
-def pay_plan(app, fake, client, plan, amount):
-    status, placed = client("POST", "/order", {"product": "plan", "plan": plan, "amount": amount, "coin": "USDC.BASE"})
-    key = max(fake.invoices, key=lambda k: int(k[3:]))
-    fake.invoices[key]["status"] = "completed"
-    app.reconcile()
-    app.jobs.join()
-    return status, placed
-
-
-def place(client, choice):
-    status, quote = client("POST", "/plans/quote", choice)
-    if status != 200:
-        return status, quote, quote
-    status, placed = client("POST", "/plans/order", dict(choice, plan=quote["plan"], hash=quote["hash"], agree=True))
-    return status, placed, quote
-
-
-def kept(app):
-    return [found.plan for found in app.commitments(NOW[0])]
-
-
-def plan_order_flow(failures, cfg, app, fake, buyer, mailbox, port, work):
-    team, other = Client(port, origin="https://sparkpipe.ai"), Client(port, origin="https://sparkpipe.ai")
-    sign_in(team, mailbox, "cto@plan.example", company="Plan Co Ltd", accept=True)
-    sign_in(other, mailbox, "dev@solo.example", company="Jane Kim", accept=True)
-    parties = {(name, lang): next(p for p in (Path(cfg.site) / "terms" / f"{name}-{lang}.md").read_text().split("\n\n") if "641-87-03809" in p) for name in ("agreement", "market-rules") for lang in ("ko", "en")}
-    if any(sp.SUPPLIER[lang] not in text for (_, lang), text in parties.items()):
-        failures.append(f"the address every Plan Order states is not the one the Customer Agreement and the Hour Market Rules publish: {sp.SUPPLIER}")
-    if Client(port, origin="https://sparkpipe.ai")("POST", "/plans/quote", CHOICE)[0] != 401:
-        failures.append("a Plan Order is quoted without signing in")
-    customer, office = CHOICE["customer"], CHOICE["office"]
-    for bad in (dict(CHOICE, term="3m"), dict(CHOICE, term=None), dict({k: v for k, v in CHOICE.items() if k != "term"}, months=3), dict(CHOICE, term=24),
-                dict(CHOICE, start="2026-11-20"), dict(CHOICE, start="2027-01-02"), dict(CHOICE, start="15 Dec"),
-                dict(CHOICE, office=None), dict(CHOICE, office=dict(office, zone="Mars/Olympus")), dict(CHOICE, office=dict(office, to=16)), dict(CHOICE, office=dict(office, **{"from": "9"})),
-                dict(CHOICE, office=dict(office, to=24)), dict(CHOICE, office={"zone": "Asia/Seoul"}), dict(CHOICE, fleets=0), dict(CHOICE, fleets=4), dict(CHOICE, fleets=True),
-                dict(CHOICE, days="weekends"), dict(CHOICE, lock=True), dict(CHOICE, office=OFFICES["full"], days="weekdays", lock=True),
-                dict(CHOICE, models=[]), dict(CHOICE, models=["gpt"]), dict(CHOICE, customer=dict(customer, kind="trust")), dict(CHOICE, customer=dict(customer, registration="")),
-                dict(CHOICE, customer=dict(customer, address="1 | 2")), dict(CHOICE, customer=dict(customer, brn="12345"))):
-        status, refused = team("POST", "/plans/quote", bad)
-        if status != 400:
-            failures.append(f"an invalid Plan Order is quoted: {status} {refused} for {bad}")
-    status, locked = team("POST", "/plans/quote", dict(CHOICE, office=OFFICES["full"], lock=True))
-    if status != 200 or locked.get("lock") != ["F1"] or locked.get("price") != "16.00" or locked.get("hours") != 17544:
-        failures.append(f"a locked full-day plan is not assigned the free serving fleet at the lock price: {status} {locked}")
-    status, refused = team("POST", "/plans/quote", dict(CHOICE, fleets=2))
-    if status != 409 or refused.get("reason") != "capacity":
-        failures.append(f"a plan for more fleets than serve is quoted: {status} {refused}")
-    status, quote = team("POST", "/plans/quote", CHOICE)
-    rows, ko = dict(map(tuple, quote.get("rows", {}).get("en", []))), dict(map(tuple, quote.get("rows", {}).get("ko", [])))
-    if (status != 200 or quote["hours"] != 6579 or quote["total"] != "98685.00" or quote["withVat"] != "108553.50" or rows.get("Hours in the Term (clause 17.3)") != "6,579"
-            or rows.get("Payment schedule (clause 20)") != "Gated: Gate 1 by 13 January 2027, Gate 2 by 12 February 2027, Gate 3 by 14 March 2027"
-            or rows.get("Term (clause 16.3)") != "24 months, ending on 14 December 2028" or rows.get("Time zone (clause 17.1)") != "Asia/Seoul"
-            or rows.get("Office hours (clause 17.1)") != "09:00 to 18:00, local time in Asia/Seoul, 9 hours" or rows.get("Days (clause 17.2)") != "Every day"
-            or "Windows (clause 17.1)" in rows or "Published settings (clause 9.3)" in rows or rows.get("Maintenance allowance (clause 4.6)") != "As published when this Plan Order is made: 3 hours a week per Fleet"
-            or not rows.get("Customer", "").startswith("Plan Co Ltd, a company organised under the laws of Delaware, United States, registration number 7781234")
-            or cfg.terms("agreement-ko.md") not in rows.get("Customer Agreement (clause 9.1)", "") or cfg.terms("market-rules-en.md") not in rows.get("Customer Agreement (clause 9.1)", "")
-            or not rows.get("Customer Agreement (clause 9.1)", "").startswith("Version of ") or rows.get("Supplier notice address and email (clause 11.7)") != sp.SUPPLIER["en"] + "; hyor@sparkpipe.ai"
-            or ko.get("플랜 기간의 시간(제17.3조)") != "6,579시간" or ko.get("업무 시간(제17.1조)") != "Asia/Seoul 현지 시각 09:00부터 18:00까지(9시간)" or ko.get("표준시간대(제17.1조)") != "Asia/Seoul"
-            or ko.get("공급자 통지 주소 및 이메일(제11.7조)") != sp.SUPPLIER["ko"] + ", hyor@sparkpipe.ai"
-            or hashlib.sha256(quote["text"].encode()).hexdigest() != quote["hash"] or not quote["text"].index("# 플랜 주문서") < quote["text"].index("# Plan Order")):
-        failures.append(f"the Plan Order quote differs from the Customer Agreement's example and form: {status} {quote.get('hours')} {quote.get('total')} {rows} {ko}")
-        return
-    order = dict(CHOICE, plan=quote["plan"], hash=quote["hash"])
-    for body, reason in ((order, "agree"), (dict(order, hash="0" * 64, agree=True), "changed"), (dict(order, customer=dict(customer, address="2 Main St"), agree=True), "changed")):
-        status, refused = team("POST", "/plans/order", body)
-        if status != 409 or refused.get("reason") != reason:
-            failures.append(f"a Plan Order is placed without accepting its exact text: {status} {refused}")
-    sale = app.market.on_sale(app.market.now(), cfg.pricing())
-    status, placed = team("POST", "/plans/order", dict(order, agree=True))
-    app.mails.join()
-    line = [json.loads(raw) for raw in open(cfg.path("ledger.jsonl"), encoding="utf-8") if '"plan_order"' in raw][-1]["data"]
-    signature = line.get("signature") or {}
-    try:
-        Ed25519PublicKey.from_public_bytes(bytes.fromhex(signature["key"])).verify(bytes.fromhex(signature["value"]), bytes.fromhex(quote["hash"]))
-        signed = True
-    except Exception:
-        signed = False
-    if status != 200 or placed.get("plan") != quote["plan"] or placed.get("hours") != 6579 or line["hash"] != quote["hash"] or line["text"] != quote["text"] or line["accepted"]["ip"] != "127.0.0.1" or not signed or team("GET", "/plans/key")[1].get("key") != signature.get("key"):
-        failures.append(f"placing a Plan Order does not record the accepted text with our signature of its hash: {status} {placed} {signed}")
-        return
-    told = next((m for rcpt, m in mailbox.mail if "cto@plan.example" in rcpt and m["Subject"] == f"Plan Order {quote['plan']}: your SparkPipe plan"), None)
-    if not told or quote["hash"] not in told.get_content() or "| Hours in the Term (clause 17.3) | 6,579 |" not in told.get_content() or "| 플랜 기간의 시간(제17.3조) | 6,579시간 |" not in told.get_content():
-        failures.append("the customer is not emailed the Plan Order it accepted")
-    if not any(cfg.notify in rcpt and m["Subject"].startswith("New Plan Order: Plan Co Ltd") for rcpt, m in mailbox.mail):
-        failures.append("we are not told of a new Plan Order")
-    if not app.market.on_sale(app.market.now(), cfg.pricing()) < sale - 2000:
-        failures.append(f"an unpaid Plan Order does not take its hours off the HC on sale: {sale}")
-    if team("POST", "/plans/order", dict(order, agree=True))[0] != 409:
-        failures.append("a Plan Order is placed twice")
-    status, refused, _ = place(team, dict(CHOICE, office=OFFICES["americas"]))
-    if status != 409 or refused.get("reason") != "unpaid":
-        failures.append(f"an account places a second plan while its first is unpaid: {status} {refused}")
-    status, refused = other("POST", "/plans/quote", dict(MONTHLY, office=OFFICES["asia"]))
-    if status != 409 or refused.get("reason") != "capacity":
-        failures.append(f"a plan is quoted on capacity another Plan Order keeps: {status} {refused}")
-    status, refused = other("POST", "/plans/quote", dict(CHOICE, office=OFFICES["full"], lock=True, customer=MONTHLY["customer"]))
-    if status != 409:
-        failures.append(f"a fleet lock is quoted on a fleet another Plan Order needs: {status} {refused}")
-    status, view = team("GET", "/plan/" + quote["plan"])
-    if status != 200 or len(view.get("tranches", [])) != 25 or view.get("rows") != quote["rows"] or view.get("signature", {}).get("key") != signature["key"] or view.get("heldUntil") != "2028-12-14":
-        failures.append(f"the Plan Order view: {status} {view.get('tranches', [])[:1]} {view.get('heldUntil')}")
-    if other("GET", "/plan/" + quote["plan"])[0] != 404:
-        failures.append("another account reads a Plan Order")
-    start = NOW[0]
-    NOW[0] = datetime(2026, 12, 16, 3, 0, 0, tzinfo=timezone.utc)
-    if quote["plan"] not in kept(app):
-        failures.append("an unpaid gated plan loses its capacity in Phase A")
-    NOW[0] = start
-    pay_plan(app, fake, team, quote["plan"], "22680.00")
-    holder = app.book.emails["cto@plan.example"]
-    granted = [app.book.market.tranches[(holder, month)] for month in ("2026-12", "2027-01", "2027-05", "2027-06")]
-    if granted != [153, 279, 279, 0]:
-        failures.append(f"paying Gate 1 does not issue Tranches 1 to 6: {granted}")
-    status, refused = team("POST", "/plans/stop", {"plan": quote["plan"]})
-    if status != 409 or refused.get("reason") != "fixed":
-        failures.append(f"a plan with a fixed term can be stopped: {status} {refused}")
-    prices = work / "site" / "pricing.js"
-    text = prices.read_text()
-    prices.write_text(text.replace('{ "name": "Fleet 2", "kind": "M5U", "state": "building"', '{ "name": "Fleet 2", "kind": "M5U", "state": "serving"'))
-    status, held = buyer("POST", "/market/reserve", {"fleet": "F1", "start": "2026-12-02T01:00Z", "model": "kimi-k3", "max": "2"})
-    status, moved = team("POST", "/plans/quote", dict(CHOICE, start="2026-12-01", office=OFFICES["full"], lock=True))
-    prices.write_text(text)
-    if not held.get("reservation") or status != 200 or moved.get("lock") != ["F2"]:
-        failures.append(f"a fleet lock is not moved to another serving fleet when the first is reserved in its term: {held} {status} {moved}")
-    monthly_flow(failures, cfg, app, fake, team, other, mailbox)
-
-
-def monthly_flow(failures, cfg, app, fake, team, other, mailbox):
-    pricing = cfg.pricing()
-    status, placed, quote = place(other, MONTHLY)
-    rows, ko = dict(map(tuple, quote.get("rows", {}).get("en", []))), dict(map(tuple, quote.get("rows", {}).get("ko", [])))
-    if (status != 200 or placed.get("payment") != "monthly" or placed.get("end") is not None or quote.get("hours") != 104 or quote.get("total") != "1820.00"
-            or rows.get("Customer") != "Jane Kim, an individual, of 3 Side St, Busan" or rows.get("Term (clause 16.3)") != "Monthly, with no fixed end"
-            or rows.get("Payment schedule (clause 20)") != "Monthly: each Tranche before it starts, Tranche 1 before the Start Date"
-            or not rows.get("Tranche 1 (clause 17.3)", "").startswith("15 December 2026 to 31 December 2026: 104 Plan hours, KRW 2,392,000 or USD 1,820.00, exclusive of VAT")
-            or rows.get("Office hours (clause 17.1)") != "09:00 to 17:00, local time in America/New_York, 8 hours; on the Start Date, the Plan hours are 23:00–07:00 KST"
-            or rows.get("Days (clause 17.2)") != "Weekdays" or not rows.get("Hour Price (clause 16.4)", "").endswith("for Tranche 1, with later Tranches priced under clause 16.6")
-            or "Hours in the Term (clause 17.3)" in rows or ko.get("플랜 기간(제16.3조)") != "월간, 종료일 없음" or not ko.get("트랜치 1(제17.3조)", "").startswith("2026년 12월 15일부터 2026년 12월 31일까지: 플랜 시간 104시간")):
-        failures.append(f"a Monthly Plan Order: {status} {placed} {quote.get('hours')} {rows} {ko}")
-        return
-    ident, account = placed["plan"], app.book.emails["dev@solo.example"]
-    state = next(p for p in other("GET", "/account")[1]["plans"] if p["plan"] == ident)
-    if state["nextGate"] != {"name": "December 2026", "due": "2026-12-15", "amount": "1820.00", "hours": 104, "from": "2026-12-15", "to": "2026-12-31", "price": "17.50", "priceKRW": "23000"} or state["heldUntil"] != "2027-01-31" or ident not in kept(app):
-        failures.append(f"an unpaid Monthly plan is not due Tranche 1 by its Start Date, or does not keep Tranches 1 and 2: {state}")
-    late = plan("0099", "cto@plan.example", "newyork", "weekdays", months=12, start="2027-06-01")
-    try:
-        app.record_signed(pricing, late, NOW[0])
-        failures.append("a Plan Order takes the hours a running Monthly plan keeps in a later month")
-    except sp.Refusal:
-        pass
-    if other("POST", "/order", {"product": "plan", "plan": ident, "amount": "1820.01", "coin": "USDC.BASE"})[0] != 409:
-        failures.append("a Monthly plan takes a payment beyond its next Tranche")
-    pay_plan(app, fake, other, ident, "900.00")
-    if app.book.market.tranches[(account, "2026-12")] != 0:
-        failures.append("a Tranche paid in part issues Plan hours")
-    pay_plan(app, fake, other, ident, "920.00")
-    state = next(p for p in other("GET", "/account")[1]["plans"] if p["plan"] == ident)
-    if app.book.market.tranches[(account, "2026-12")] != 104 or state["paidThrough"] != "2026-12-31" or state["nextGate"]["name"] != "January 2027" or state["nextGate"]["amount"] != "3062.50" or state["nextGate"]["due"] != "2027-01-01":
-        failures.append(f"paying Tranche 1 in full does not issue its hours and ask for January before it starts: {app.book.market.tranches[(account, '2026-12')]} {state}")
-    prices = Path(cfg.site) / "pricing.js"
-    listed = prices.read_text()
-    try:
-        prices.write_text(listed.replace('"hourPrice": 17.5, "hourPriceKRW": 23000', '"hourPrice": 20, "hourPriceKRW": 26000'))
-        state = next(p for p in other("GET", "/account")[1]["plans"] if p["plan"] == ident)
-        if state["nextGate"]["amount"] != "3500.00" or state["nextGateKRW"] != "4550000" or state["price"] != "20.00" or state["tranche"]["amount"] != "1820.00" or state["paid"] != "1820.00":
-            failures.append(f"a Monthly plan's next Tranche is not priced at the Monthly price published now, or a paid Tranche changes price: {state}")
-        status, ordered = other("POST", "/order", {"product": "plan", "plan": ident, "amount": "1000.00", "coin": "USDC.BASE"})
-        order = app.book.orders.get(ordered.get("order"), {})
-        prices.write_text(listed.replace('"hourPrice": 17.5, "hourPriceKRW": 23000', '"hourPrice": 22, "hourPriceKRW": 28600'))
-        state = next(p for p in other("GET", "/account")[1]["plans"] if p["plan"] == ident)
-        if status != 200 or order.get("tranche") != "2027-01-01" or order.get("hourPrice") != "20.00" or order.get("price") != "20.00" or state["nextGate"]["amount"] != "2500.00" or state["pending"] != "1000.00":
-            failures.append(f"a Tranche's payment order does not fix its price for the whole Tranche: {status} {ordered} {order} {state}")
-        fake.invoices[max(fake.invoices, key=lambda k: int(k[3:]))]["status"] = "completed"
-        app.reconcile()
-        app.jobs.join()
-        state = next(p for p in other("GET", "/account")[1]["plans"] if p["plan"] == ident)
-        if state["paid"] != "2820.00" or state["pending"] != "0.00" or state["nextGate"]["amount"] != "2500.00":
-            failures.append(f"a part-paid Tranche is not valued at the price its payment order fixed: {state}")
-    finally:
-        prices.write_text(listed)
-    start = NOW[0]
-    NOW[0] = datetime(2027, 1, 1, 3, 0, 0, tzinfo=timezone.utc)
-    sign_in(other, mailbox, "dev@solo.example")
-    state = next(p for p in other("GET", "/account")[1]["plans"] if p["plan"] == ident)
-    if state["ended"] or state["heldUntil"] != "2027-01-31" or ident not in kept(app):
-        failures.append(f"a Monthly plan ends before the end of the first day of its unpaid Tranche: {state}")
-    NOW[0] = datetime(2027, 1, 2, 3, 0, 0, tzinfo=timezone.utc)
-    state = next(p for p in other("GET", "/account")[1]["plans"] if p["plan"] == ident)
-    if "January 2027 was not paid by its first day, so the plan ended on 2026-12-31 with nothing owed" not in (state["ended"] or "") or state["heldUntil"] is not None or ident in kept(app) or state["nextGate"] is not None:
-        failures.append(f"a Monthly plan whose next Tranche is unpaid on its first day does not end after its last paid Tranche, freeing the next month: {state} {kept(app)}")
-    status, _ = other("POST", "/order", {"product": "plan", "plan": ident, "amount": "3062.50", "coin": "USDC.BASE"})
-    if status != 409:
-        failures.append("a Monthly plan that ended takes a payment")
-    try:
-        app.record_signed(pricing, late, NOW[0])
-    except sp.Refusal as error:
-        failures.append(f"the hours of a Monthly plan that ended stay kept: {error}")
-    if "SP-PLAN-0099" in app.book.plans:
-        app.end_plan("SP-PLAN-0099", sp.local_day(NOW[0]), "test")
-    sign_in(team, mailbox, "cto@plan.example")
-    status, placed, quote = place(team, dict(MONTHLY, start="2027-01-15", customer=CHOICE["customer"]))
-    if status != 200 or quote.get("hours") != 95:
-        failures.append(f"a second Monthly plan: {status} {placed} {quote.get('hours')}")
-        NOW[0] = start
-        return
-    second = placed["plan"]
-    pay_plan(app, fake, team, second, "1662.50")
-    status, stopped = team("POST", "/plans/stop", {"plan": second})
-    if status != 200 or not stopped.get("stopped") or stopped.get("end") != "2027-01-31" or stopped.get("heldUntil") != "2027-01-31" or stopped.get("nextGate") is not None or stopped.get("ended"):
-        failures.append(f"stopping a Monthly plan does not end it after its paid month: {status} {stopped}")
-    if [found.ends for found in app.commitments(NOW[0]) if found.plan == second] != [sp.kst_start(date(2027, 2, 1))]:
-        failures.append("a stopped Monthly plan keeps capacity after its last paid Tranche")
-    status, refused = team("POST", "/order", {"product": "plan", "plan": second, "amount": "100.00", "coin": "USDC.BASE"})
-    if status != 409 or refused.get("reason") != "stopped" or team("POST", "/plans/stop", {"plan": second})[0] != 409 or other("POST", "/plans/stop", {"plan": second})[0] != 404:
-        failures.append(f"a stopped plan takes a payment, is stopped twice or by another account: {status} {refused}")
-    app.mails.join()
-    if not any("cto@plan.example" in rcpt and m["Subject"] == f"Plan {second} is stopped" for rcpt, m in mailbox.mail):
-        failures.append("stopping a plan is not confirmed by email")
-    NOW[0] = datetime(2027, 2, 2, 3, 0, 0, tzinfo=timezone.utc)
-    sign_in(team, mailbox, "cto@plan.example")
-    state = next(p for p in team("GET", "/account")[1]["plans"] if p["plan"] == second)
-    if "stopped and ended on 2027-01-31" not in (state["ended"] or "") or second in kept(app):
-        failures.append(f"a stopped Monthly plan does not end after its paid month: {state}")
-    NOW[0] = start
-
-
-def prepayment_flow(failures, cfg, app, fake, buyer, mailbox, port):
-    plans = [
-        plan("0001", "ops@acme.example", "day", start="2026-11-01"),
-        plan("0002", "OPS@acme.example", "europe", fleets=2, start="2026-11-01"),
-        plan("0003", "else@other.example", "americas", start="2026-11-01"),
-        plan("0004", "ops@acme.example", "asia", months=12, start="2026-11-10", payment="upfront"),
-    ]
-    set_plans(app, plans)
-    hours = sp.tranches(cfg.pricing(), plans[0])
-    found = buyer("GET", "/account")[1]["plans"]
-    if [a["plan"] for a in found] != ["SP-PLAN-0001", "SP-PLAN-0002", "SP-PLAN-0004"]:
-        failures.append(f"the account lists other customers' plans: {found}")
-        return
-    if found[1]["hours"] != 2 * sum(sp.tranches(cfg.pricing(), dict(plans[1], fleets=1))):
-        failures.append(f"a plan for two fleets holds twice the hours: {found[1]}")
-    if found[0]["hours"] != sum(hours) or found[0]["nextGate"] != {"name": "Gate 1", "due": "2026-11-30", "amount": f"{15 * sum(hours[:6])}.00"}:
-        failures.append(f"plan standing: {found[0]}")
-    if found[2]["payment"] != "upfront" or found[2]["nextGate"] != {"name": "Payment", "due": "2026-11-10", "amount": f"{15 * found[2]['hours']}.00"}:
-        failures.append(f"an upfront plan is not due in full on its Start Date: {found[2]}")
-    pay = {"product": "plan", "plan": "SP-PLAN-0001", "coin": "USDT.SOL"}
-    if buyer("POST", "/order", dict(pay, plan="SP-PLAN-0003", amount="100.00"))[0] != 404:
-        failures.append("an account can prepay another account's plan")
-    if buyer("POST", "/order", dict(pay, amount="999999999.00"))[0] != 409:
-        failures.append("a prepayment above the remaining price is ordered")
-    status, placed = buyer("POST", "/order", dict(pay, amount="100.00"))
-    key = max(fake.invoices, key=lambda k: int(k[3:]))
-    invoice = fake.invoices[key]["body"]
-    if status != 200 or invoice["items"][0]["quantity"] != {"value": 1, "type": "quantity"} or invoice["amount"]["total"] != "110.00":
-        failures.append(f"prepayment order: {status} {placed} {invoice['amount']}")
-        return
-    fake.invoices[key]["status"] = "completed"
-    app.reconcile()
-    app.jobs.join()
-    state = buyer("GET", "/account")[1]["plans"][0]
-    if state["paid"] != "100.00" or not buyer("GET", "/order/" + placed["order"])[1]["issued"] or state["heldUntil"] != "2028-10-31":
-        failures.append(f"reconciling a missed webhook does not issue the prepayment: {state}")
-    account = app.book.emails["ops@acme.example"]
-    if app.book.market.tranches[(account, "2026-11")] != 0:
-        failures.append(f"a payment smaller than the Plan hours that already occurred issues Tranche hours: {app.book.market.tranches[(account, '2026-11')]}")
-    pay_plan(app, fake, buyer, "SP-PLAN-0001", "4000.00")
-    if app.book.market.tranches[(account, "2026-11")] != 270 - 12 or app.book.market.tranches[(account, "2026-12")] != 3:
-        failures.append(f"a payment does not issue the rest of Tranche 1 less the 12 Plan hours that occurred before it was paid for, and the start of Tranche 2: {app.book.market.tranches[(account, '2026-11')]} {app.book.market.tranches[(account, '2026-12')]}")
-    NOW[0] = datetime(2026, 12, 1, 3, 0, 0, tzinfo=timezone.utc)
-    state = buyer("GET", "/account")[1]["plans"]
-    status, _ = buyer("POST", "/order", dict(pay, amount="100.00"))
-    if "Gate 1 was missed" not in (state[0]["ended"] or "") or status != 409:
-        failures.append(f"a missed gate does not stop prepayment: {state[0]} {status}")
-    kept = [found.plan for found in app.commitments(NOW[0])]
-    if state[0]["heldUntil"] != "2026-12-31" or "SP-PLAN-0001" not in kept or "SP-PLAN-0002" in kept:
-        failures.append(f"after a missed gate, a plan keeps capacity beyond its last paid Tranche, or a plan that ended in Phase A keeps any: {state[0]['heldUntil']} {kept}")
-    app.end_plan("SP-PLAN-0001", date(2026, 12, 10), "ended under clause 10.2")
-    if buyer("GET", "/account")[1]["plans"][0]["heldUntil"] != "2026-12-09":
-        failures.append("a Plan Order we end keeps capacity after its last day")
-    for bad in (plan("0005", "ops@acme.example", "day", fleets=2, start="2026-12-15"), plan("0006", "nobody@acme.example", "europe"), plan("0001", "ops@acme.example", "europe")):
-        try:
-            app.record_signed(cfg.pricing(), bad, NOW[0])
-            failures.append(f"a signed Plan Order is recorded without capacity, an account or an unused number: {bad['id']}")
-        except sp.Refusal:
-            pass
-    signed = app.record_signed(cfg.pricing(), plan("0007", "ops@acme.example", "europe", months=12, start="2027-01-01", payment="upfront"), NOW[0])
-    if app.book.plans.get("SP-PLAN-0007", {}).get("source") != "signed" or signed["account"] != account:
-        failures.append(f"a signed Plan Order that fits is not recorded: {signed}")
-    pay_plan(app, fake, buyer, "SP-PLAN-0007", "6300.00")
-    if app.book.market.tranches[(account, "2027-01")] != 0:
-        failures.append("an upfront plan paid in part issues Tranche hours")
-    pay_plan(app, fake, buyer, "SP-PLAN-0007", "37500.00")
-    if [app.book.market.tranches[(account, month)] for month in ("2027-01", "2027-02", "2027-03")] != [248, 224, 248]:
-        failures.append(f"an upfront plan paid in full does not issue every Tranche: {[app.book.market.tranches[(account, month)] for month in ('2027-01', '2027-02', '2027-03')]}")
-    paper = app.record_signed(cfg.pricing(), plan("0009", "ops@acme.example", "asia", "weekdays", start="2027-01-01", payment="monthly"), NOW[0])
-    shown = next((p for p in buyer("GET", "/account")[1]["plans"] if p["plan"] == "SP-PLAN-0009"), {})
-    if paper.get("months") is not None or shown.get("nextGate", {}).get("due") != "2027-01-01" or shown.get("nextGate", {}).get("hours") != 8 * 21 or "Monthly" not in shown.get("line", ""):
-        failures.append(f"a signed Monthly Plan Order is not recorded with Tranche 1 due by its Start Date: {paper} {shown}")
-    app.market.credit(account, app.market.on_sale(app.market.now(), cfg.pricing()), "cover test")
-    try:
-        app.record_signed(cfg.pricing(), plan("0008", "ops@acme.example", "americas", months=12, start="2027-01-01", payment="upfront"), NOW[0])
-        failures.append("a Plan Order takes free fleet-hours that hour-credits already sold need")
-    except sp.Refusal as error:
-        if "Hour-credits already sold" not in str(error):
-            failures.append(f"a Plan Order is refused for the wrong reason when sold HC needs its hours: {error}")
-    if "Phase A ended" not in (state[1]["ended"] or ""):
-        failures.append(f"an unpaid plan survives Phase A: {state[1]}")
-    if "not paid in full by its Start Date" not in (state[2]["ended"] or ""):
-        failures.append(f"an unpaid upfront plan survives its Start Date: {state[2]}")
-
-
-def lead_flow(failures, app, buyer, mailbox, work):
-    status, _ = buyer("POST", "/lead", {"company": "Big Co", "email": "cto@big.example", "fleets": 2, "start": "2027-01", "message": "Two fleets, East window.\nCall me."})
-    app.mails.join()
-    saved = [json.loads(line) for line in open(work / "data" / "leads.jsonl", encoding="utf-8")]
-    if status != 200 or saved[-1]["company"] != "Big Co" or saved[-1]["fleets"] != "2":
-        failures.append(f"quote request: {status} {saved}")
-    if not any("Big Co" in m["Subject"] for _, m in mailbox.mail):
-        failures.append("we are not told of a quote request")
-    opened = next(m for _, m in mailbox.mail if m["Subject"].startswith("New SparkPipe account"))
-    if "Acme 주식회사 <ops@acme.example>" not in opened.get_content() or opened["Content-Transfer-Encoding"] != "quoted-printable":
-        failures.append(f"a Korean company name is garbled in mail: {opened.get_content()[:80]!r}")
-    if buyer("POST", "/lead", {"company": "", "email": "cto@big.example"})[0] != 400:
-        failures.append("a quote request without a company is accepted")
-
-
-def site_copy(work):
-    (work / "site" / "terms").mkdir(parents=True)
-    shutil.copy(ROOT / "site" / "pricing.js", work / "site" / "pricing.js")
-    for name in sp.TERMS.values():
-        shutil.copy(ROOT / "site" / "terms" / name, work / "site" / "terms" / name)
-    for name in ("agreement.html", "agreement-ko.html"):
-        shutil.copy(ROOT / "site" / name, work / "site" / name)
-    (work / "secret").write_text("test-client-secret\n")
 
 
 def toss_env(work, fake, mailbox, keys, name="data", sandbox=False):
@@ -978,27 +602,20 @@ def toss_webhook(client, body):
     return client("POST", "/toss/webhook", raw=json.dumps(body, ensure_ascii=False).encode(), headers={"tosspayments-webhook-transmission-time": "2026-11-02T12:00:00+09:00"})
 
 
-def lines_of(cfg, kind):
-    return [json.loads(line)["data"] for line in open(cfg.path("ledger.jsonl"), encoding="utf-8") if json.loads(line)["type"] == kind]
-
-
 def check_toss_keys(failures, work, fake, mailbox):
     for keys, sandbox in ((TOSS_TEST, False), (TOSS_LIVE, True), ((TOSS_LIVE[0], ""), False), (("", TOSS_TEST[1]), True)):
         try:
             sp.Config(toss_env(work, fake, mailbox, keys, sandbox=sandbox))
-            failures.append(f"Toss Payments keys {'live' if keys[0].startswith('live') else 'test'} are accepted {'in the sandbox' if sandbox else 'on the live service'}, or one key without the other")
+            failures.append(f"Toss Payments keys {keys} are accepted {'in the sandbox' if sandbox else 'on the live service'}, or one key without the other")
         except ValueError as error:
             if "test_" in str(error) or "live_" in str(error) or "fake" in str(error):
                 failures.append(f"the key error names a key: {error}")
-    cfg = sp.Config(toss_env(work, fake, mailbox, None, "closed"))
-    server = sp.start(cfg, port=0)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    buyer = Client(server.server_address[1], origin="https://sparkpipe.ai")
+    server, buyer = started(sp.Config(toss_env(work, fake, mailbox, None, "closed")))
     try:
         if buyer("GET", "/toss/config")[1] != {"enabled": False, "clientKey": None, "variantKey": "DEFAULT", "test": False}:
-            failures.append(f"the live service offers cards without live Toss Payments keys: {buyer('GET', '/toss/config')[1]}")
+            failures.append("the live service offers cards without live Toss Payments keys")
         sign_in(buyer, mailbox, "nokeys@acme.example", company="No Keys", accept=True)
-        status, refused = buyer("POST", "/order", {"product": "credits", "amount": "130000", "processor": "toss"})
+        status, refused = buyer("POST", "/order", {"product": "credits", "hc": 5, "processor": "toss"})
         if status != 503 or refused.get("reason") != "cards_closed" or server.app.book.orders:
             failures.append(f"a card order is taken without live Toss Payments keys: {status} {refused}")
     finally:
@@ -1006,102 +623,98 @@ def check_toss_keys(failures, work, fake, mailbox):
 
 
 def check_toss_sandbox(failures, work, fake, mailbox):
-    cfg = sp.Config(toss_env(work, fake, mailbox, TOSS_TEST, "sandbox", sandbox=True))
-    server = sp.start(cfg, port=0)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    port, app = server.server_address[1], server.app
-    tester = Client(port, origin="https://sparkpipe.ai")
+    server, tester = started(sp.Config(toss_env(work, fake, mailbox, TOSS_TEST, "sandbox", sandbox=True)))
+    port = server.server_address[1]
     try:
         if tester("GET", "/toss/config")[1] != {"enabled": True, "clientKey": TOSS_TEST[0], "variantKey": "DEFAULT", "test": True}:
-            failures.append(f"the sandbox does not run Toss Payments in test mode: {tester('GET', '/toss/config')[1]}")
+            failures.append("the sandbox does not run Toss Payments in test mode")
         code = tester("POST", "/code", {"email": "try@acme.example"})[1].get("code")
         tester("POST", "/verify", {"email": "try@acme.example", "code": code, "company": "Try Co", "accept": True})
-        status, placed = tester("POST", "/market/buy", {"amount": "26000", "processor": "toss"})
+        status, placed = tester("POST", "/market/buy", {"hc": 1, "processor": "toss"})
         request = placed.get("toss", {})
         if status != 200 or request.get("clientKey") != TOSS_TEST[0] or not request.get("test") or request.get("amount") != 28600 or not request.get("successUrl", "").startswith("https://sparkpipe.ai/pay/sandbox/api/toss/success/"):
             failures.append(f"a sandbox card purchase is not a Toss Payments test payment: {status} {placed}")
             return
         toss_payment(fake, "sandbox-key-1", request["orderId"], 28600)
         hop = succeed(port, request["orderId"], "sandbox-key-1", "28600")
-        state = tester("GET", "/market/state")[1]["account"]
-        if hop != (303, f"https://sparkpipe.ai/account.html?sandbox&order={request['orderId']}") or Decimal(state["balance"]) != 1:
-            failures.append(f"a sandbox test card payment does not issue its HC: {hop} {state['balance']}")
-        if Decimal(tester("POST", "/market/buy", {"amount": "40"})[1].get("hc", "0")) != 2:
+        if hop != (303, f"https://sparkpipe.ai/account.html?sandbox&order={request['orderId']}") or Decimal(tester("GET", "/market/state")[1]["account"]["balance"]) != 1:
+            failures.append(f"a sandbox test card payment does not issue its HC: {hop}")
+        if tester("POST", "/market/buy", {"hc": 2})[1].get("hc") != "2.000000" or Decimal(tester("GET", "/market/state")[1]["account"]["balance"]) != 3:
             failures.append("the sandbox's free HC purchase stops working beside the test card payments")
-        if tester("POST", "/order", {"product": "plan", "plan": "PO", "amount": "1000", "processor": "toss"})[0] != 404:
-            failures.append("the sandbox takes a plan payment")
+        if tester("POST", "/order", {"product": "credits", "hc": 2, "coin": "USDC.BASE"})[0] != 404:
+            failures.append("the sandbox opens a CoinPayments invoice")
+        if tester("GET", "/swift/config")[1] != {"enabled": False} or tester("POST", "/order", {"product": "credits", "hc": 2, "processor": "swift", "declare": True})[0] != 404:
+            failures.append("the sandbox takes a SWIFT order")
     finally:
         server.shutdown()
 
 
 def check_toss(failures):
     work = Path(tempfile.mkdtemp(prefix="sparkpipe-toss-"))
-    fake = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeToss)
-    fake.payments, fake.calls, fake.done, fake.secret = {}, [], {}, TOSS_LIVE[1]
-    threading.Thread(target=fake.serve_forever, daemon=True).start()
-    mailbox = socketserver.ThreadingTCPServer(("127.0.0.1", 0), FakeSMTP)
-    mailbox.daemon_threads, mailbox.mail = True, []
-    threading.Thread(target=mailbox.serve_forever, daemon=True).start()
-    start = NOW[0]
-    NOW[0] = datetime(2026, 11, 2, 3, 0, 0, tzinfo=timezone.utc)
+    fake = serve(FakeToss, payments={}, calls=[], done={}, secret=TOSS_LIVE[1])
+    mailbox = serve(FakeSMTP, mail=[])
+    begin = NOW[0]
     try:
         site_copy(work)
         sp.clock = lambda: NOW[0]
         sp.LIMITS["order"] = (100, 600)
         check_toss_keys(failures, work, fake, mailbox)
         cfg = sp.Config(toss_env(work, fake, mailbox, TOSS_LIVE))
-        server = sp.start(cfg, port=0)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        port, app = server.server_address[1], server.app
-        buyer = Client(port, origin="https://sparkpipe.ai")
+        server, buyer = started(cfg)
         sign_in(buyer, mailbox, "card@acme.example", company="Card Co", accept=True)
         try:
-            toss_flows(failures, cfg, app, fake, buyer, mailbox, port)
+            card, deposit = toss_flows(failures, cfg, server.app, fake, buyer, mailbox, server.server_address[1])
+            if card:
+                toss_refunds(failures, cfg, server.app, fake, buyer, mailbox, card, deposit)
         finally:
             server.shutdown()
+        NOW[0] = begin
         fake.secret = TOSS_TEST[1]
         check_toss_sandbox(failures, work, fake, mailbox)
     finally:
-        NOW[0] = start
+        NOW[0] = begin
         fake.shutdown()
         mailbox.shutdown()
         shutil.rmtree(work)
 
 
 def order_toss(client, body):
-    status, placed = client("POST", "/order", dict(body, processor="toss"))
+    status, placed = client("POST", "/order", dict(body, processor="toss", product="credits"))
     return status, placed, placed.get("toss", {})
 
 
 def toss_flows(failures, cfg, app, fake, buyer, mailbox, port):
     if buyer("GET", "/toss/config")[1] != {"enabled": True, "clientKey": TOSS_LIVE[0], "variantKey": "DEFAULT", "test": False}:
-        failures.append(f"the live service hides cards with live Toss Payments keys set: {buyer('GET', '/toss/config')[1]}")
-    for amount in ("12999", "130000001", "130000.5", "ten", "", True):
-        if buyer("POST", "/order", {"product": "credits", "amount": amount, "processor": "toss"})[0] != 400:
-            failures.append(f"a card order of {amount!r} KRW is accepted")
-    if buyer("POST", "/order", {"product": "credits", "amount": "130000", "processor": "toss", "brn": "12345"})[0] != 400:
+        failures.append("the live service hides cards with live Toss Payments keys set")
+    for count in (0, "0.9", "1.0000001", "ten", "", True):
+        if buyer("POST", "/order", {"product": "credits", "hc": count, "processor": "toss"})[0] != 400:
+            failures.append(f"a card order of {count!r} HC is accepted")
+    if buyer("POST", "/order", {"product": "credits", "hc": 5, "processor": "toss", "brn": "12345"})[0] != 400:
         failures.append("a card order with a malformed business registration number is accepted")
-    if buyer("POST", "/order", {"product": "credits", "amount": "130000", "processor": "paypal"})[0] != 400:
+    if buyer("POST", "/order", {"product": "credits", "hc": 5, "processor": "paypal"})[0] != 400:
         failures.append("an order through an unknown processor is accepted")
-    status, placed, request = order_toss(buyer, {"product": "credits", "amount": "130000", "total": "1"})
+    amounts = {count: order_toss(buyer, {"hc": count})[2].get("amount") for count in (143, 144)}
+    shown = {count: buyer("GET", "/order/" + order_toss(buyer, {"hc": count})[2]["orderId"])[1] for count in (143, 144)}
+    if amounts != {143: 4089800, 144: 3088800} or (shown[143]["price"], shown[143]["net"], shown[143]["vat"]) != ("26000", "3718000", "371800") or (shown[144]["price"], shown[144]["net"], shown[144]["vat"]) != ("19500", "2808000", "280800"):
+        failures.append(f"the won price ladder at 143 and 144 HC: {amounts} {shown}")
+    status, placed, request = order_toss(buyer, {"hc": 5, "total": "1"})
     order = placed.get("order", "")
     expected = {"amount": 143000, "currency": "KRW", "orderId": order, "customerEmail": "card@acme.example", "customerName": "Card Co", "clientKey": TOSS_LIVE[0],
                 "successUrl": f"https://sparkpipe.ai/pay/api/toss/success/{order}", "failUrl": f"https://sparkpipe.ai/pay/api/toss/fail/{order}", "orderName": "SparkPipe hour-credits, 5 HC"}
-    if status != 200 or any(request.get(key) != value for key, value in expected.items()):
+    if status != 200 or any(request.get(name) != value for name, value in expected.items()):
         failures.append(f"a card order does not fix its won amount on the server: {status} {placed}")
-        return
+        return None, None
     shown = buyer("GET", "/order/" + order)[1]
-    if (shown["state"], shown["total"], shown["vat"], shown["hours"], shown["currency"], shown["processor"]) != ("created", "143000", "13000", "5.000000", "KRW", "toss"):
+    if (shown["state"], shown["total"], shown["vat"], shown["hc"], shown["currency"], shown["processor"]) != ("created", "143000", "13000", "5", "KRW", "toss"):
         failures.append(f"a card order's status: {shown}")
     toss_payment(fake, "pay-card-1", order, 143000)
     hop = succeed(port, order, "pay-card-1", "143000")
     app.mails.join()
     confirms = [c for c in fake.calls if c[0] == "POST" and c[1] == "pay-card-1"]
-    account = app.book.emails["card@acme.example"]
     if hop != (303, f"https://sparkpipe.ai/account.html?order={order}") or confirms != [("POST", "pay-card-1", {"paymentKey": "pay-card-1", "orderId": order, "amount": 143000}, f"confirm-{order}")]:
         failures.append(f"the success redirect does not confirm the server's amount once with an idempotency key: {hop} {confirms}")
-    if buyer("GET", "/account")[1]["hc"] != "5.000000" or ledger_types(cfg).count("hours_issued") != 1:
-        failures.append(f"a confirmed card payment does not issue its HC: {buyer('GET', '/account')[1]['hc']}")
+    if buyer("GET", "/account")[1]["hc"] != "5.000000" or lines_of(cfg).count("hc_issued") != 1:
+        failures.append("a confirmed card payment does not issue its HC")
     payment = lines_of(cfg, "payment")[-1]
     if payment.get("processor") != "toss" or payment.get("method") != "카드" or payment.get("taxInvoice", {}).get("needed") is not False or payment.get("received") != "143000":
         failures.append(f"the card payment line: {payment}")
@@ -1113,34 +726,34 @@ def toss_flows(failures, cfg, app, fake, buyer, mailbox, port):
     app.jobs.join()
     app.reconcile()
     app.jobs.join()
-    if buyer("GET", "/account")[1]["hc"] != "5.000000" or ledger_types(cfg).count("hours_issued") != 1 or len([c for c in fake.calls if c[0] == "POST" and c[1] == "pay-card-1"]) != 1:
+    if buyer("GET", "/account")[1]["hc"] != "5.000000" or lines_of(cfg).count("hc_issued") != 1 or len([c for c in fake.calls if c[0] == "POST" and c[1] == "pay-card-1"]) != 1:
         failures.append("a repeated success redirect or webhook issues HC twice or confirms twice")
 
-    status, placed, request = order_toss(buyer, {"product": "credits", "amount": "130000"})
+    status, placed, request = order_toss(buyer, {"hc": 5})
     toss_payment(fake, "pay-cheap", request["orderId"], 100)
-    hop = succeed(port, request["orderId"], "pay-cheap", "100")
+    succeed(port, request["orderId"], "pay-cheap", "100")
     shown = buyer("GET", "/order/" + request["orderId"])[1]
     if any(c[1] == "pay-cheap" and c[0] == "POST" for c in fake.calls) or shown["state"] != "failed" or shown["reason"] != "amount" or buyer("GET", "/account")[1]["hc"] != "5.000000":
         failures.append(f"a payment authorised for another amount is confirmed: {shown}")
-    status, placed, request = order_toss(buyer, {"product": "credits", "amount": "130000"})
+    status, placed, request = order_toss(buyer, {"hc": 5})
     toss_payment(fake, "pay-odd", request["orderId"], 143000, total=1000)
     succeed(port, request["orderId"], "pay-odd", "143000")
     shown = buyer("GET", "/order/" + request["orderId"])[1]
     cancels = [c for c in fake.calls if c[1] == "pay-odd" and c[0] == "POST" and c[3] == f"mismatch-{request['orderId']}"]
     if shown["state"] != "cancelled" or shown["reason"] != "amount" or len(cancels) != 1 or fake.payments["pay-odd"]["status"] != "CANCELED" or buyer("GET", "/account")[1]["hc"] != "5.000000":
         failures.append(f"a payment Toss Payments reports for another amount is not refused and cancelled: {shown} {cancels}")
-    status, placed, request = order_toss(buyer, {"product": "credits", "amount": "130000"})
+    status, placed, request = order_toss(buyer, {"hc": 5})
     toss_payment(fake, "pay-declined", request["orderId"], 143000, _decline="REJECT_CARD_COMPANY")
     succeed(port, request["orderId"], "pay-declined", "143000")
     shown = buyer("GET", "/order/" + request["orderId"])[1]
     if shown["state"] != "failed" or shown["reason"] != "REJECT_CARD_COMPANY":
         failures.append(f"a declined card is not recorded: {shown}")
-    status, placed, request = order_toss(buyer, {"product": "credits", "amount": "26000"})
+    status, placed, request = order_toss(buyer, {"hc": 1})
     hop = redirected(port, f"/toss/fail/{request['orderId']}?code=PAY_PROCESS_CANCELED&message=x")
     if hop != (303, f"https://sparkpipe.ai/account.html?order={request['orderId']}") or buyer("GET", "/order/" + request["orderId"])[1]["state"] != "cancelled":
         failures.append(f"a payment the buyer cancels stays open: {hop}")
 
-    status, placed, request = order_toss(buyer, {"product": "credits", "amount": "260000", "brn": "123-45-67890"})
+    status, placed, request = order_toss(buyer, {"hc": 10, "brn": "123-45-67890"})
     deposit = request["orderId"]
     toss_payment(fake, "pay-va-1", deposit, 286000, method="가상계좌", after="WAITING_FOR_DEPOSIT", secret="va-secret")
     succeed(port, deposit, "pay-va-1", "286000")
@@ -1158,129 +771,229 @@ def toss_flows(failures, cfg, app, fake, buyer, mailbox, port):
     if buyer("GET", "/account")[1]["hc"] != "5.000000" or buyer("GET", "/order/" + deposit)[1]["state"] != "waiting":
         failures.append("a webhook body that says DONE issues HC while Toss Payments still waits for the deposit")
     fake.payments["pay-va-1"]["status"] = "DONE"
-    toss_webhook(buyer, {"createdAt": "2026-11-02T13:00:00.000000", "secret": "va-secret", "status": "DONE", "transactionKey": "t", "orderId": deposit})
-    app.jobs.join()
-    toss_webhook(buyer, {"createdAt": "2026-11-02T13:00:00.000000", "secret": "va-secret", "status": "DONE", "transactionKey": "t", "orderId": deposit})
-    app.jobs.join()
+    for _ in range(2):
+        toss_webhook(buyer, {"createdAt": "2026-11-02T13:00:00.000000", "secret": "va-secret", "status": "DONE", "transactionKey": "t", "orderId": deposit})
+        app.jobs.join()
     app.mails.join()
-    if buyer("GET", "/account")[1]["hc"] != "15.000000" or ledger_types(cfg).count("hours_issued") != 2:
-        failures.append(f"a virtual account deposit verified with Toss Payments does not issue its HC exactly once: {buyer('GET', '/account')[1]['hc']}")
-    invoice = lines_of(cfg, "payment")[-1].get("taxInvoice")
-    if invoice != {"needed": True, "brn": "123-45-67890", "supply": "260000", "vat": "26000"} or [o["order"] for o in app.tax_invoices()] != [deposit]:
-        failures.append(f"a virtual account payment is not recorded as needing an electronic tax invoice: {invoice}")
+    if buyer("GET", "/account")[1]["hc"] != "15.000000" or lines_of(cfg).count("hc_issued") != 2:
+        failures.append("a virtual account deposit verified with Toss Payments does not issue its HC exactly once")
+    if lines_of(cfg, "payment")[-1].get("taxInvoice") != {"needed": True, "brn": "123-45-67890", "supply": "260000", "vat": "26000"} or [o["order"] for o in app.tax_invoices()] != [deposit]:
+        failures.append("a virtual account payment is not recorded as needing an electronic tax invoice")
     note = next((m.get_content() for rcpt, m in mailbox.mail if "card@acme.example" in rcpt and m["Subject"] == f"Payment received: SparkPipe order {deposit}"), "")
     if "electronic tax invoice" not in note or "123-45-67890" not in note:
         failures.append(f"the virtual account receipt does not promise the tax invoice: {note!r}")
 
-    status, placed, request = order_toss(buyer, {"product": "credits", "amount": "130000"})
+    status, placed, request = order_toss(buyer, {"hc": 5})
     late = request["orderId"]
     toss_payment(fake, "pay-va-2", late, 143000, method="가상계좌", after="WAITING_FOR_DEPOSIT")
     succeed(port, late, "pay-va-2", "143000")
-    status, placed, request = order_toss(buyer, {"product": "credits", "amount": "130000"})
-    abandoned = request["orderId"]
-    held = app.market.pending()
+    abandoned = order_toss(buyer, {"hc": 5})[2]["orderId"]
     NOW[0] = datetime(2026, 11, 3, 4, 0, 0, tzinfo=timezone.utc)
-    if held != 10 or app.market.pending() != 0:
-        failures.append(f"open card orders do not hold their HC off sale until they expire, and no longer: {held} {app.market.pending()}")
     app.reconcile()
     app.jobs.join()
     expired = [c for c in fake.calls if c[1] == "pay-va-2" and c[0] == "POST" and c[3] == f"expire-{late}"]
     states = [buyer("GET", "/order/" + ident)[1]["state"] for ident in (late, abandoned)]
     if states != ["timedout", "timedout"] or len(expired) != 1 or fake.payments["pay-va-2"]["status"] != "CANCELED" or buyer("GET", "/account")[1]["hc"] != "15.000000":
         failures.append(f"an unpaid virtual account or an abandoned card order does not expire with its order: {states} {expired}")
-    toss_flows_plans(failures, cfg, app, fake, buyer, mailbox, port)
-    toss_refunds(failures, cfg, app, fake, buyer, mailbox, order, deposit)
-
-
-def toss_flows_plans(failures, cfg, app, fake, buyer, mailbox, port):
-    status, quote = buyer("POST", "/plans/quote", CHOICE)
-    rows = dict(map(tuple, quote.get("rows", {}).get("en", [])))
-    ko = dict(map(tuple, quote.get("rows", {}).get("ko", [])))
-    if status != 200 or quote.get("priceKRW") != "20000" or rows.get("Hour Price (clause 16.4)") != "KRW 20,000 or USD 15.00 per fleet-hour, in the payment currency below, exclusive of VAT, including any Fleet lock, fixed for the Term" \
-            or rows.get("Price of the Term (clause 16.4)") != "KRW 131,580,000 or USD 98,685.00, exclusive of VAT" or rows.get("Payment currency and account (clause 3.3)") != "KRW, clause 3.3(a): Toss Payments / US dollar stablecoin, clause 3.3(c)" \
-            or ko.get("시간당 가격(제16.4조)") != "아래 지급 통화에 따라 플릿시간당 20,000원(KRW) 또는 미화 15.00달러(USD), 부가가치세 별도, 플릿 고정 포함, 플랜 기간 동안 고정":
-        failures.append(f"a Plan Order does not state its Hour Price in won for payment through Toss Payments: {status} {quote.get('priceKRW')} {rows} {ko}")
-    holder = app.book.emails["card@acme.example"]
-    record(app, dict(plan("TOSS", "card@acme.example", "asia"), hourPriceKRW="20000"))
-    record(app, plan("USD", "card@acme.example", "europe"))
-    found = {p["plan"]: p for p in buyer("GET", "/account")[1]["plans"]}
-    toss_plan = found.get("SP-PLAN-TOSS", {})
-    if toss_plan.get("priceKRW") != "20000" or toss_plan.get("nextGateKRW") != "26880000" or toss_plan.get("remainingKRW") != "116960000" or found.get("SP-PLAN-USD", {}).get("remainingKRW") is not None:
-        failures.append(f"a plan does not show what is due in won: {toss_plan}")
-    if buyer("POST", "/order", {"product": "plan", "plan": "SP-PLAN-USD", "amount": "2720000", "processor": "toss"})[0] != 409:
-        failures.append("a plan whose Plan Order has no won Hour Price is paid in won")
-    if buyer("POST", "/order", {"product": "plan", "plan": "SP-PLAN-TOSS", "amount": "116960001", "processor": "toss"})[0] != 409:
-        failures.append("a won prepayment above what is left of the plan is ordered")
-    status, placed, request = order_toss(buyer, {"product": "plan", "plan": "SP-PLAN-TOSS", "amount": "2720000"})
-    if status != 200 or request.get("amount") != 2992000 or request.get("orderName") != "SparkPipe plan SP-PLAN-TOSS, prepayment":
-        failures.append(f"a plan payment through Toss Payments: {status} {placed}")
-        return
-    toss_payment(fake, "pay-plan-1", request["orderId"], 2992000, method="계좌이체")
-    succeed(port, request["orderId"], "pay-plan-1", "2992000")
-    app.mails.join()
-    after = {p["plan"]: p for p in buyer("GET", "/account")[1]["plans"]}["SP-PLAN-TOSS"]
-    if app.book.market.tranches[(holder, "2026-12")] != 136 or after["paid"] != "2040.00" or after["remainingKRW"] != "114240000" or after["nextGateKRW"] != "24160000":
-        failures.append(f"a plan payment through Toss Payments does not issue its Tranche: {app.book.market.tranches[(holder, '2026-12')]} {after}")
-    if lines_of(cfg, "payment")[-1]["taxInvoice"] != {"needed": True, "brn": None, "supply": "2720000", "vat": "272000"}:
-        failures.append(f"a won bank transfer for a plan is not recorded as needing a tax invoice: {lines_of(cfg, 'payment')[-1]}")
-
-
-def run_main(cfg, args, fake, mailbox):
-    saved = dict(os.environ)
-    os.environ.update({"SPARKPIPE_PAY_DATA": cfg.data, "SPARKPIPE_PAY_SITE": cfg.site, "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(Path(cfg.site).parent / "secret"),
-                       "SPARKPIPE_PAY_SMTP": cfg.smtp, "TOSS_API": cfg.toss_api, "TOSS_CLIENT_KEY": cfg.toss_client, "TOSS_SECRET_KEY": cfg.toss_secret})
-    try:
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            return sp.main(["sparkpipe_pay.py"] + args)
-    finally:
-        os.environ.clear()
-        os.environ.update(saved)
+    return order, deposit
 
 
 def toss_refunds(failures, cfg, app, fake, buyer, mailbox, card, deposit):
-    account = app.book.emails["card@acme.example"]
-    if run_main(cfg, ["refund", card, "9.9", "71500", "goodwill"], fake, mailbox) != 2 or run_main(cfg, ["refund", card, "10.4", "143001", "too much"], fake, mailbox) != 2:
+    def caught_up():
+        with app.book.lock, open(app.book.path, "rb") as handle:
+            app.book.catch_up(handle)
+    if run_main(cfg, ["refund", card, "20.2", "71500", "old clause"]) != 2 or run_main(cfg, ["refund", card, "10.4", "143001", "too much"]) != 2:
         failures.append("a refund outside the Customer Agreement's clauses, or above the payment, is made")
-    if run_main(cfg, ["refund", deposit, "10.4", "all", "service ended"], fake, mailbox) != 2:
+    if run_main(cfg, ["refund", deposit, "10.4", "all", "service ended"]) != 2:
         failures.append("a virtual account payment is refunded without the account to refund it to")
+    if run_main(cfg, ["refund", card, "16.4", "1000", "nothing lapsed"]) != 2:
+        failures.append("a clause 16.4 refund is made with no locked HC lapsed")
     before = len(fake.calls)
-    if run_main(cfg, ["refund", card, "10.4", "71500", "we stopped offering HC"], fake, mailbox) != 0:
+    if run_main(cfg, ["refund", card, "10.4", "71500", "we stopped offering HC"]) != 0:
         failures.append("the refund command fails")
         return
     cancel = [c for c in fake.calls[before:] if c[0] == "POST"]
-    with app.book.lock, open(app.book.path, "rb") as handle:
-        app.book.catch_up(handle)
+    caught_up()
     refund = lines_of(cfg, "refund")
     if cancel != [("POST", "pay-card-1", {"cancelReason": "Customer Agreement clause 10.4: we stopped offering HC", "refundableAmount": 143000, "cancelAmount": 71500}, f"refund-{card}-143000")] \
             or refund != [dict(refund[0], order=card, amount="71500", balance="71500", clause="10.4", hc="2.500000")] or buyer("GET", "/account")[1]["hc"] != "12.500000":
-        failures.append(f"the refund command does not refund through the cancel API and debit the order's HC: {cancel} {refund} {buyer('GET', '/account')[1]['hc']}")
+        failures.append(f"the refund command does not refund through the cancel API and debit the order's HC: {cancel} {refund}")
     if not any(m["Subject"] == f"Refund: SparkPipe order {card}" for rcpt, m in mailbox.mail if "card@acme.example" in rcpt):
         failures.append("the customer is not told of a refund")
-    app.market.reserve(account, {"fleet": "F1", "start": "2026-12-02T01:00Z", "model": "kimi-k3", "max": "2"})
-    if run_main(cfg, ["refund", card, "10.4", "all", "rest"], fake, mailbox) != 2:
-        failures.append("a refund pays back HC that was already spent")
-    if run_main(cfg, ["refund", deposit, "3.2", "100", "VAT not owed", "088", "110123456789", "Card Co"], fake, mailbox) != 0 or fake.calls[-1][2].get("refundReceiveAccount") != {"bank": "088", "accountNumber": "110123456789", "holderName": "Card Co"}:
+    account = app.book.emails["card@acme.example"]
+    app.market.credit(account, Decimal(200), "test")
+    if buyer("POST", "/market/waitlist", {"lock": 144})[1].get("locked") != "144.000000" or run_main(cfg, ["refund", card, "10.4", "all", "rest"]) != 2:
+        failures.append("a refund pays back HC that is locked on the waitlist")
+    NOW[0] = datetime(2027, 11, 2, 3, 0, 1, tzinfo=timezone.utc)
+    app.market.tick()
+    app.mails.join()
+    due = {r["refund"]["order"]: r["refund"]["amount"] for r in app.book.market.refunds[account] if r["refund"]}
+    if due != {card: "71500", deposit: "286000"} or account in app.book.market.locks:
+        failures.append(f"locked HC that lapses is not recorded as a refund due at the price paid: {due}")
+    mail = next((m.get_content() for rcpt, m in mailbox.mail if cfg.notify in rcpt and m["Subject"] == "Refund due: locked HC lapsed"), "")
+    if f"refund 71500 KRW of order {card} through toss under clause 16.4" not in mail or "Card Co <card@acme.example>" not in mail:
+        failures.append(f"we are not emailed the refunds due for lapsed locked HC: {mail!r}")
+    if run_main(cfg, ["refund", card, "16.4", "71501", "locked HC lapsed"]) != 2 or run_main(cfg, ["refund", card, "16.4", "71500", "locked HC lapsed"]) != 0:
+        failures.append("a clause 16.4 refund is not limited to what lapsed while locked")
+    if run_main(cfg, ["refund", deposit, "3.2", "100", "VAT not owed", "088", "110123456789", "Card Co"]) != 0 or fake.calls[-1][2].get("refundReceiveAccount") != {"bank": "088", "accountNumber": "110123456789", "holderName": "Card Co"}:
         failures.append("a virtual account payment is not refunded to the account given")
-    if run_main(cfg, ["tax-invoice", deposit, "20261102-41000000-00000001"], fake, mailbox) != 0:
+    if run_main(cfg, ["tax-invoice", deposit, "20261102-41000000-00000001"]) != 0:
         failures.append("an issued tax invoice cannot be recorded")
-    with app.book.lock, open(app.book.path, "rb") as handle:
-        app.book.catch_up(handle)
+    caught_up()
     if deposit in [o["order"] for o in app.tax_invoices()]:
         failures.append("a recorded tax invoice is still listed")
 
 
+BANK = {"SPARKPIPE_PAY_SWIFT_BENEFICIARY": "Test Beneficiary Co", "SPARKPIPE_PAY_SWIFT_BANK": "Test Foreign Exchange Bank", "SPARKPIPE_PAY_SWIFT_BANK_ADDRESS": "1 Test-ro, Jung-gu, Seoul",
+        "SPARKPIPE_PAY_SWIFT_ACCOUNT": "000-000000-00-000", "SPARKPIPE_PAY_SWIFT_BIC": "TESTKRSE"}
+SHOWN_BANK = {"beneficiary": "Test Beneficiary Co", "bank": "Test Foreign Exchange Bank", "address": "1 Test-ro, Jung-gu, Seoul", "account": "000-000000-00-000", "bic": "TESTKRSE"}
+
+
+def swift_env(work, mailbox, name, bank=True):
+    env = {"SPARKPIPE_PAY_DATA": str(work / name), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_API": "http://127.0.0.1:9/api/v2", "COINPAYMENTS_CLIENT_ID": CLIENT,
+           "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"), "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}"}
+    return dict(env, **(BANK if bank else {}))
+
+
+def check_swift(failures):
+    work = Path(tempfile.mkdtemp(prefix="sparkpipe-swift-"))
+    mailbox = serve(FakeSMTP, mail=[])
+    begin = NOW[0]
+    try:
+        site_copy(work)
+        sp.clock = lambda: NOW[0]
+        sp.LIMITS["order"] = (100, 600)
+        for broken in ({"SPARKPIPE_PAY_SWIFT_BIC": ""}, {"SPARKPIPE_PAY_SWIFT_BIC": "TESTKRS"}, {"SPARKPIPE_PAY_SWIFT_ACCOUNT": "000\n111"}):
+            try:
+                sp.Config(dict(swift_env(work, mailbox, "broken"), **broken))
+                failures.append(f"incomplete or malformed SWIFT bank settings are accepted: {broken}")
+            except ValueError:
+                pass
+        server, buyer = started(sp.Config(swift_env(work, mailbox, "closed", bank=False)))
+        try:
+            sign_in(buyer, mailbox, "closed@acme.example", company="Closed Co", accept=True)
+            status, refused = buyer("POST", "/order", {"product": "credits", "hc": 5, "processor": "swift", "declare": True})
+            if buyer("GET", "/swift/config")[1] != {"enabled": False} or status != 503 or refused.get("reason") != "swift_closed" or server.app.book.orders:
+                failures.append(f"a SWIFT order is taken without the bank settings: {status} {refused}")
+        finally:
+            server.shutdown()
+        cfg = sp.Config(swift_env(work, mailbox, "data"))
+        server, buyer = started(cfg)
+        try:
+            sign_in(buyer, mailbox, "intl@acme.example", company="Intl Co", accept=True)
+            swift_flows(failures, cfg, server.app, buyer, mailbox)
+        finally:
+            server.shutdown()
+    finally:
+        NOW[0] = begin
+        mailbox.shutdown()
+        shutil.rmtree(work)
+
+
+def mail_to(mailbox, address, subject):
+    return next((m.get_content() for rcpt, m in mailbox.mail if address in rcpt and m["Subject"] == subject), "")
+
+
+def swift_flows(failures, cfg, app, buyer, mailbox):
+    def caught_up():
+        with app.book.lock, open(app.book.path, "rb") as handle:
+            app.book.catch_up(handle)
+    swift = {"product": "credits", "processor": "swift", "declare": True}
+    if buyer("GET", "/swift/config")[1] != {"enabled": True}:
+        failures.append("the live service does not offer SWIFT with the bank settings set")
+    pricing = cfg.pricing()
+    rates = {name: app.credit_terms(pricing, {"hc": 143}, currency, rate)["vat"] for name, currency, rate in (("swift", "USD", pricing["swiftVatRate"]), ("coin", "USD", None), ("toss", sp.KRW, None))}
+    if rates != {"swift": "0.00", "coin": "286.00", "toss": "371800"}:
+        failures.append(f"VAT is not 0 on SWIFT payments and only on them: {rates}")
+    status, refused = buyer("POST", "/order", dict(swift, hc=143, declare=None))
+    if status != 400 or refused.get("reason") != "declaration" or app.book.orders:
+        failures.append(f"a SWIFT order is taken without the customer's declaration of clause 3.3(b): {status} {refused}")
+    (status, first), (_, second) = (buyer("POST", "/order", dict(swift, hc=count)) for count in (143, 144))
+    if status != 200 or (first["total"], first["net"], first["vat"], first["vatRate"], first["price"], first["currency"], first["processor"]) != ("2860.00", "2860.00", "0.00", "0", "20.00", "USD", "swift") \
+            or (second["total"], second["vat"], second["price"]) != ("2160.00", "0.00", "15.00") or first["bank"] != SHOWN_BANK:
+        failures.append(f"a SWIFT order is not priced on the US dollar ladder with 0% VAT, or lacks the bank details: {status} {first} {second}")
+        return
+    if not re.fullmatch(r"SW[A-Z2-7]{8}", first["reference"]) or first["reference"] == second["reference"] or first["reference"] in first["order"]:
+        failures.append(f"SWIFT orders do not get unique payment references of their own: {first['reference']} {second['reference']}")
+    shown = buyer("GET", "/order/" + first["order"])[1]
+    if (shown["state"], shown["processor"], shown["reference"], shown["vat"], shown["checkout"], shown["issued"], shown["bank"]) != ("unpaid", "swift", first["reference"], "0.00", None, False, SHOWN_BANK):
+        failures.append(f"an unpaid SWIFT order's status: {shown}")
+    if next(o for o in lines_of(cfg, "order") if o["order"] == first["order"])["declaration"] != sp.declaration("Intl Co"):
+        failures.append("a SWIFT order does not store the customer's declaration")
+    app.mails.join()
+    invoice = mail_to(mailbox, "intl@acme.example", f"Invoice for SparkPipe order {first['order']}: 2860.00 USD by SWIFT")
+    for text in ("Total due: 2860.00 USD", "VAT, 0% on SWIFT payments: 0.00 USD", f"Payment reference: {first['reference']}", "Beneficiary: Test Beneficiary Co", "Account number: 000-000000-00-000", "Bank: Test Foreign Exchange Bank",
+                 "Bank address: 1 Test-ro, Jung-gu, Seoul", "SWIFT/BIC: TESTKRSE", "Intl Co has no place of business in the Republic of Korea", "Choose charges OUR"):
+        if text not in invoice:
+            failures.append(f"the SWIFT invoice email lacks {text!r}: {invoice[:200]!r}")
+    if first["reference"] not in mail_to(mailbox, cfg.notify, "SWIFT order: Intl Co, 2860.00 USD"):
+        failures.append("we are not told of a SWIFT order and its reference")
+    for args in (["SWNOTANORDER", "2860.00"], [first["reference"], "0"], [first["reference"], "12.345"], [first["reference"], "abc"], [first["reference"], "-5"], [first["reference"], "2859.99"]):
+        if run_main(cfg, ["swift-confirm"] + args) != 2:
+            failures.append(f"swift-confirm {' '.join(args)} is accepted")
+    caught_up()
+    if buyer("GET", "/order/" + first["order"])[1]["state"] != "unpaid" or buyer("GET", "/account")[1]["hc"] != "0.000000" or "swift_state" in lines_of(cfg):
+        failures.append("a SWIFT transfer below the invoice total is recorded or issues HC")
+    if run_main(cfg, ["swift-confirm", first["reference"], "2860.00", "MT103 20250101"]) != 0:
+        failures.append("the operator cannot confirm a SWIFT transfer by its payment reference")
+        return
+    caught_up()
+    shown = buyer("GET", "/order/" + first["order"])[1]
+    if (shown["state"], shown["issued"], shown["issuedHC"], shown["received"]) != ("completed", True, "143", "2860.00") or buyer("GET", "/account")[1]["hc"] != "143.000000":
+        failures.append(f"a confirmed SWIFT transfer does not issue its HC: {shown}")
+    if lines_of(cfg, "payment")[-1] != {"order": first["order"], "processor": "swift", "reference": first["reference"], "total": "2860.00", "received": "2860.00", "currency": "USD", "paidWith": ["SWIFT"]} \
+            or lines_of(cfg, "swift_state")[-1].get("note") != "MT103 20250101":
+        failures.append(f"the SWIFT payment line: {lines_of(cfg, 'payment')[-1]}")
+    note = mail_to(mailbox, "intl@acme.example", f"Payment received: SparkPipe order {first['order']}")
+    if "Total paid by SWIFT bank transfer: 2860.00 USD" not in note or "VAT, 0% on SWIFT payments: 0.00 USD" not in note or "143 hour-credits" not in note:
+        failures.append(f"the SWIFT receipt: {note!r}")
+    if run_main(cfg, ["swift-confirm", first["order"], "2860.00"]) != 2 or lines_of(cfg).count("hc_issued") != 1:
+        failures.append("a SWIFT order issues its HC twice")
+    status, small = buyer("POST", "/order", dict(swift, hc=1))
+    if run_main(cfg, ["swift-confirm", small["order"], "25.00"]) != 0:
+        failures.append("an overpaid SWIFT order cannot be confirmed")
+    caught_up()
+    if buyer("GET", "/account")[1]["hc"] != "144.000000" or "Send the 5.00 USD above the total back by SWIFT" not in mail_to(mailbox, cfg.notify, f"Overpaid by SWIFT: {small['order']}") \
+            or "the 5.00 USD above the total goes back by SWIFT" not in mail_to(mailbox, "intl@acme.example", f"Payment received: SparkPipe order {small['order']}"):
+        failures.append("an overpaid SWIFT order does not issue its HC and have the excess sent back")
+    if run_main(cfg, ["refund", small["order"], "3.5", "5.01", "above the total"]) != 2 or run_main(cfg, ["refund", small["order"], "3.5", "5.00", "above the total"]) != 0:
+        failures.append("a clause 3.5 SWIFT refund is not limited to what arrived above the total")
+    caught_up()
+    if lines_of(cfg, "refund")[-1] != {"order": small["order"], "account": app.book.emails["intl@acme.example"], "processor": "swift", "amount": "5.00", "balance": "20.00", "clause": "3.5", "reason": "above the total", "hc": "0.000000"} \
+            or buyer("GET", "/account")[1]["hc"] != "144.000000":
+        failures.append(f"returning what arrived above a SWIFT order's total debits HC or is not recorded: {lines_of(cfg, 'refund')[-1:]}")
+    if run_main(cfg, ["refund", first["order"], "10.4", "2860.01", "too much"]) != 2 or run_main(cfg, ["refund", first["order"], "10.4", "1430.00", "we stopped offering HC"]) != 0:
+        failures.append("a SWIFT refund under clause 10.4 is refused, or allowed above the payment")
+    caught_up()
+    if buyer("GET", "/account")[1]["hc"] != "72.500000" or lines_of(cfg, "refund")[-1]["hc"] != "71.500000" \
+            or "It goes back by SWIFT to the account it came from; 71.500000 HC of the order left your account." not in mail_to(mailbox, "intl@acme.example", f"Refund: SparkPipe order {first['order']}"):
+        failures.append("a SWIFT refund does not debit the order's HC and tell the customer it goes back to the account it came from")
+    if run_main(cfg, ["swift-cancel", second["reference"], "asked by the customer"]) != 0 or run_main(cfg, ["swift-cancel", second["reference"], "again"]) != 2 or run_main(cfg, ["swift-confirm", second["reference"], "2160.00"]) != 2:
+        failures.append("a SWIFT order cannot be cancelled, or a cancelled one is cancelled or confirmed again")
+    caught_up()
+    shown = buyer("GET", "/order/" + second["order"])[1]
+    if (shown["state"], shown["reason"], shown["issued"]) != ("cancelled", "asked by the customer", False) or buyer("GET", "/account")[1]["hc"] != "72.500000" \
+            or "Do not send a transfer for this order" not in mail_to(mailbox, "intl@acme.example", f"Cancelled: SparkPipe order {second['order']}"):
+        failures.append(f"a cancelled SWIFT order: {shown}")
+    if run_main(cfg, ["swift-cancel", first["order"], "late"]) != 2:
+        failures.append("a SWIFT order that issued its HC is cancelled")
+    listed = {o["order"]: o["reference"] for o in buyer("GET", "/account")[1]["orders"]}
+    if listed != {first["order"]: first["reference"], second["order"]: second["reference"], small["order"]: small["reference"]}:
+        failures.append(f"the account does not list SWIFT orders with their references: {listed}")
+
+
 def main():
     failures = []
-    check_dates(failures)
-    check_sessions(failures)
-    check_covered(failures)
+    check_units(failures)
+    check_legacy(failures)
     check_service(failures)
     check_toss(failures)
+    check_swift(failures)
     for failure in failures:
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("pay: plan hours, Tranches and gates match the Customer Agreement for office hours in Seoul, New York, Berlin and Kolkata, across midnight and daylight-saving changes, Weekdays by the local date, Full days, terms and fleet counts, and invalid plans fail; email codes, sessions, terms acceptance, USDC and USDT invoices on the chosen network, payments in another stablecoin, signed webhooks, receipts, HC orders and part payments, reconciliation, gates, self-serve Plan Orders (the bilingual Order Form, the accepted hash and our Ed25519 signature, capacity, HC cover and fleet-lock checks, the removed 3-month term refused, holds that lapse unpaid or end at the last paid Tranche, Tranche hours issued on payment less hours that already occurred), Monthly plans (each Tranche paid before it starts, ending after the last paid Tranche when the next is unpaid on its first day, the next month's capacity freed, Stop after this month, a running Monthly plan's later months kept from other Plan Orders, each later Tranche priced at the Monthly price published when its payment is ordered and held by that order), quote requests and the hash-chained ledger behave; Toss Payments: live keys only on the live service and test keys only in the sandbox, no card option without them, won amounts fixed on the server and confirmed once, other amounts refused and cancelled, webhooks only trigger a check with Toss Payments, virtual accounts issued on a verified deposit and expiring with their order, plan payments in won issuing Tranches, refunds under the named clause through the cancel API, and the tax invoice list")
+    print("pay: sessions, email codes, acceptance of the Korean and English Customer Agreement only, HC orders by quantity on the price ladder (143 and 144 HC in US dollars and won), USDC and USDT invoices on the chosen network, signed webhooks, receipts, part payments, mismatches, reconciliation, the removed routes, the hash-chained ledger with two writers and the 9-line live ledger replayed; Toss Payments key gating, won amounts fixed on the server and confirmed once, other amounts refused and cancelled, webhooks that only trigger a check, virtual accounts and their expiry, refunds under the named clause (clause 16.4 only up to what lapsed while locked), the tax invoice list and the sandbox's test payments; USD bank transfers (SWIFT) gated on complete bank settings and the customer's clause 3.3(b) declaration, priced on the US dollar ladder with 0% VAT only for them, invoiced by email with the bank details and a unique payment reference, confirmed by the operator only for the whole amount, overpayments sent back under clause 3.5, cancellation and refunds back to the account the payment came from")
     return 0
 
 

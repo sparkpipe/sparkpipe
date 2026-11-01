@@ -1,17 +1,27 @@
 window.SP_PRICING = {
-  "vatRate": 0.10,
-  "phaseADays": 30,
-  "hourlyEarliestStart": "2026-12-01",
+  "vatRate": 0.1,
+  "swiftVatRate": 0,
+  "demoFrom": "2026-12-01",
+  "weeksFrom": "2027-01-04",
   "fleets": [
-    { "name": "Fleet 1", "kind": "16 Sparks", "state": "serving", "rate": 1 },
-    { "name": "Fleet 2", "kind": "M5U", "state": "building", "rate": 1 },
-    { "name": "Fleet 3", "kind": "16 Sparks", "state": "building", "rate": 1 }
-  ],
-  "accelerators": [],
-  "windows": [
-    { "id": "w00", "from": 0, "to": 8 },
-    { "id": "w08", "from": 8, "to": 16 },
-    { "id": "w16", "from": 16, "to": 24 }
+    {
+      "id": "F1",
+      "name": "Fleet 1",
+      "kind": "16 Sparks",
+      "state": "serving",
+      "rate": 1,
+      "demo": true,
+      "storageTB": 4
+    },
+    {
+      "id": "F3",
+      "name": "Fleet 3",
+      "kind": "16 Sparks",
+      "state": "building",
+      "rate": 1,
+      "demo": false,
+      "storageTB": 4
+    }
   ],
   "models": [
     { "id": "kimi-k3", "name": "Kimi K3", "decode": 16.2, "prefill": 590 },
@@ -33,46 +43,46 @@ window.SP_PRICING = {
     { "id": "qwen3.8-27b", "name": "Qwen 3.8 27B", "decode": 57.4, "prefill": 1852 },
     { "id": "qwen3.8-max", "name": "Qwen 3.8 Max", "decode": 10.4, "prefill": 35 }
   ],
-  "plans": {
-    "earliestStart": "2026-12-01",
-    "startWithinDays": 60,
-    "terms": [
-      { "id": "monthly", "months": null, "hourPrice": 17.5, "hourPriceKRW": 23000, "payment": "monthly" },
-      { "id": "1y", "months": 12, "hourPrice": 16.5, "hourPriceKRW": 22000, "payment": "gates" },
-      { "id": "2y", "months": 24, "hourPrice": 15, "hourPriceKRW": 20000, "payment": "gates" },
-      { "id": "3y", "months": 36, "hourPrice": 14, "hourPriceKRW": 18500, "payment": "gates" }
+  "hc": {
+    "prices": [
+      {
+        "from": 1,
+        "usd": 20,
+        "krw": 26000
+      },
+      {
+        "from": 144,
+        "usd": 15,
+        "krw": 19500
+      }
     ],
-    "office": { "zone": "Asia/Seoul", "from": 9, "to": 18, "days": "weekdays", "minHours": 8 },
-    "zones": ["Asia/Seoul", "Asia/Tokyo", "Asia/Singapore", "Asia/Kolkata", "Europe/London", "Europe/Berlin", "America/New_York", "America/Chicago", "America/Los_Angeles", "UTC"],
-    "lockPremium": 1,
-    "lockPremiumKRW": 1300,
-    "maxFleets": 3,
+    "min": 1,
+    "validityMonths": 12
+  },
+  "bookings": {
+    "hourHC": 1,
+    "weekHC": 144,
+    "discounts": [
+      {
+        "weeks": 4,
+        "off": 0.05
+      },
+      {
+        "weeks": 13,
+        "off": 0.1
+      },
+      {
+        "weeks": 26,
+        "off": 0.15
+      },
+      {
+        "weeks": 52,
+        "off": 0.2
+      }
+    ],
+    "maxWeeksAhead": 52,
+    "demoDaysAhead": 7,
+    "demoHoursPerWeek": 24,
     "maintenanceHoursPerWeek": 3
-  },
-  "market": {
-    "hcPrice": 20,
-    "hcPriceKRW": 26000,
-    "minPurchase": 10,
-    "validityMonths": 12,
-    "releaseFee": 0.10,
-    "advanceDays": 31,
-    "lastCallHours": 6,
-    "maxBidDays": 31,
-    "trancheDemoHours": 40,
-    "accelerator": {
-      "maxBid": 10,
-      "defaultWait": 300,
-      "maxWait": 600
-    },
-    "pool": {
-      "seats": 8,
-      "minMultiplier": 0.5,
-      "maxMultiplier": 3
-    }
-  },
-  "gates": [
-    { "name": "Gate 1", "tranches": 6, "dueDay": 30 },
-    { "name": "Gate 2", "tranches": 12, "dueDay": 60 },
-    { "name": "Gate 3", "tranches": null, "dueDay": 90 }
-  ]
+  }
 };
