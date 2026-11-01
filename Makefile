@@ -746,6 +746,7 @@ PYTHON_TESTS := \
 	tests/test_t1_reference_muse.py \
 	tests/test_t1_reference_quarantine.py \
 	tests/test_gen_geometry_header.py \
+	tests/test_motif_schedule.py \
 	tests/test_lane_run_log.py \
 	tests/test_no_build_defaults.py \
 	tests/test_tp_cupti_trace_report.py \
