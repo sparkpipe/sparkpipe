@@ -15,6 +15,7 @@
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_tp_mesh_kernels.cuh"
 #include "sparkpipe/spark_tp_mesh_register.h"
+#include "sparkpipe/spark_weight_stream.h"
 #include "inference/kernels/sample.cuh"
 #include "inference/kernels/stage_head.cuh"
 #include "inference/kernels/weight_prefetch.cuh"
@@ -29,6 +30,55 @@
 #define STAGE_RUNNER_ROUND_MARKS 512u
 
 typedef struct SparkStageRunnerState SparkStageRunnerState;
+
+static uint64_t StageRunnerNowNs(void);
+
+#define STAGE_RUNNER_BULK_CHUNK (4u << 20)
+#define STAGE_RUNNER_BULK_DEPTH 32u
+#define STAGE_RUNNER_BULK_GATHER_BYTES 4096u
+#define STAGE_RUNNER_BULK_OPERATIONS 5u
+#define STAGE_RUNNER_BULK_JOBS 64u
+#define STAGE_RUNNER_BULK_WAIT_NS UINT64_C(120000000000)
+
+typedef struct StageRunnerBulk
+{
+	SparkStageRunnerBulkCollectiveConfig config;
+	SparkWeightStream *stream;
+	uint8_t *region;
+	uint8_t *gather_device;
+	uint64_t region_bytes;
+	uint32_t tag;
+	uint32_t opened;
+	uint32_t failed;
+	uint64_t calls[STAGE_RUNNER_BULK_OPERATIONS];
+	uint64_t oversize;
+	uint64_t bytes;
+	uint64_t ns;
+	uint64_t sync_ns;
+	uint64_t wire_ns;
+	volatile uint32_t *ready_flag;
+	volatile uint32_t *done_flag;
+	uint32_t *ready_device;
+	uint32_t *done_device;
+	uint32_t sequence;
+	pthread_t thread;
+	pthread_mutex_t mutex;
+	pthread_cond_t wake;
+	uint32_t thread_started;
+	uint32_t stopping;
+	uint32_t head;
+	uint32_t count;
+	uint32_t thread_failed;
+	struct
+	{
+		uint32_t sequence;
+		uint32_t gather;
+		uint64_t source;
+		uint64_t pitch;
+		uint64_t bytes;
+		uint64_t landing;
+	} jobs[STAGE_RUNNER_BULK_JOBS];
+} StageRunnerBulk;
 
 #define STAGE_RUNNER_LANE_MIN_ROWS 256u
 #define STAGE_RUNNER_LANE_ALIGN 128u
@@ -237,6 +287,7 @@ typedef struct SparkStageRunnerState
 	SparkStageRunnerServices services;
 	SparkTpDeviceCollective device_collective;
 	int device_collective_created;
+	StageRunnerBulk bulk;
 	uint32_t device_collective_deferred;
 	SparkWeightdLazyPack *lazy_pack;
 	uint32_t lease_slots;
@@ -520,7 +571,7 @@ static SparkStatus StageRunnerTakeFailure(SparkStageRunnerState *state)
 		fprintf(stderr, "sparkpipe_stage_runner: a stream-ordered copy failed\n");
 		status = SPARK_STATUS_IO_ERROR;
 	}
-	else if ( state->tp_collective_failed != 0u )
+	else if ( state->tp_collective_failed != 0u || __atomic_load_n(&state->bulk.thread_failed, __ATOMIC_ACQUIRE) != 0u )
 	{
 		fprintf(stderr, "sparkpipe_stage_runner: a tensor-parallel collective failed\n");
 		status = SPARK_STATUS_INTERNAL_ERROR;
@@ -568,17 +619,318 @@ static SparkStatus StageRunnerMeshRound(SparkStageRunnerState *state, void *stre
 	return status;
 }
 
+static SparkStatus StageRunnerBulkGather(void *context, const void *mine, void *all, uint64_t bytes_per_rank)
+{
+	SparkStageRunnerState *state = (SparkStageRunnerState *)context;
+	uint8_t *send = state->bulk.gather_device, *receive = state->bulk.gather_device + STAGE_RUNNER_BULK_GATHER_BYTES;
+	SparkStatus status;
+	if ( bytes_per_rank == 0u || bytes_per_rank > STAGE_RUNNER_BULK_GATHER_BYTES || (bytes_per_rank % 2u) != 0u )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( cudaMemcpyAsync(send, mine, (size_t)bytes_per_rank, cudaMemcpyHostToDevice, state->stream) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	status = StageRunnerMeshRound(state, state->stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, SPARK_STAGE_RUNNER_ROUND_ALL, 1u,
+		(uint32_t)(bytes_per_rank / 2u), send, receive);
+	if ( status == SPARK_STATUS_OK && (cudaMemcpyAsync(all, receive, (size_t)(bytes_per_rank * state->tp_degree), cudaMemcpyDeviceToHost, state->stream) != cudaSuccess ||
+		cudaStreamSynchronize(state->stream) != cudaSuccess) )
+		status = SPARK_STATUS_IO_ERROR;
+	return status;
+}
+
+static void *StageRunnerBulkThread(void *argument);
+
+static SparkStatus StageRunnerBulkOpen(SparkStageRunnerState *state)
+{
+	StageRunnerBulk *bulk = &state->bulk;
+	SparkWeightStreamConfig config;
+	SparkStatus status;
+	if ( bulk->opened != 0u )
+		return SPARK_STATUS_OK;
+	bulk->region_bytes = 2u * (uint64_t)state->tp_degree * bulk->config.block_bytes;
+	bulk->region = (uint8_t *)aligned_alloc(2ull << 20, (size_t)bulk->region_bytes);
+	if ( bulk->region == 0 || cudaHostRegister(bulk->region, (size_t)bulk->region_bytes, cudaHostRegisterDefault) != cudaSuccess ||
+		cudaMalloc((void **)&bulk->gather_device, (size_t)(1u + state->tp_degree) * STAGE_RUNNER_BULK_GATHER_BYTES) != cudaSuccess )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: the %llu-byte bulk collective region could not be allocated and registered\n", (unsigned long long)bulk->region_bytes);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	memset(&config, 0, sizeof(config));
+	config.rank = state->tp_rank;
+	config.ranks = state->tp_degree;
+	config.chunk_bytes = STAGE_RUNNER_BULK_CHUNK;
+	config.depth = STAGE_RUNNER_BULK_DEPTH;
+	config.fabric_gid_index = bulk->config.gid_index;
+	config.pair_gid_index = bulk->config.pair_gid_index;
+	config.traffic_class = bulk->config.traffic_class;
+	config.fabric_device = bulk->config.fabric_device;
+	config.pair_device = bulk->config.pair_device;
+	config.region = bulk->region;
+	config.region_bytes = bulk->region_bytes;
+	config.gather = StageRunnerBulkGather;
+	config.gather_context = state;
+	status = SparkWeightStreamOpen(&config, &bulk->stream);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: the bulk collective stream did not open status=%d (fabric %s, pair %s)\n", (int)status,
+			bulk->config.fabric_device, bulk->config.pair_device);
+		bulk->stream = 0;
+		return status;
+	}
+	if ( cudaHostAlloc((void **)&bulk->ready_flag, 256u, cudaHostAllocMapped) != cudaSuccess )
+	{
+		bulk->ready_flag = 0;
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	memset((void *)bulk->ready_flag, 0, 256u);
+	bulk->done_flag = bulk->ready_flag + 32u;
+	if ( cudaHostGetDevicePointer((void **)&bulk->ready_device, (void *)bulk->ready_flag, 0) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	bulk->done_device = bulk->ready_device + 32u;
+	if ( pthread_mutex_init(&bulk->mutex, 0) != 0 || pthread_cond_init(&bulk->wake, 0) != 0 || pthread_create(&bulk->thread, 0, StageRunnerBulkThread, state) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	bulk->thread_started = 1u;
+	bulk->opened = 1u;
+	fprintf(stderr, "sparkpipe_stage_runner: bulk collectives rank=%u blocks=%llu MiB from %llu KiB fabric=%s pair=%s\n", state->tp_rank,
+		(unsigned long long)(bulk->config.block_bytes >> 20u), (unsigned long long)(bulk->config.minimum_bytes >> 10u), bulk->config.fabric_device, bulk->config.pair_device);
+	return SPARK_STATUS_OK;
+}
+
+static void StageRunnerBulkClose(SparkStageRunnerState *state)
+{
+	StageRunnerBulk *bulk = &state->bulk;
+	if ( bulk->opened != 0u )
+		fprintf(stderr, "sparkpipe_stage_runner: bulk collectives rank=%u all_gather=%llu all_reduce=%llu reduce_scatter=%llu all_to_all=%llu oversize_on_mesh=%llu bytes=%llu seconds=%.3f waiting_for_gpu=%.3f on_wire=%.3f\n",
+			state->tp_rank, (unsigned long long)bulk->calls[SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER],
+			(unsigned long long)bulk->calls[SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16],
+			(unsigned long long)bulk->calls[SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16],
+			(unsigned long long)bulk->calls[SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL], (unsigned long long)bulk->oversize, (unsigned long long)bulk->bytes,
+			(double)bulk->ns / 1e9, (double)bulk->sync_ns / 1e9, (double)bulk->wire_ns / 1e9);
+	if ( bulk->thread_started != 0u )
+	{
+		pthread_mutex_lock(&bulk->mutex);
+		bulk->stopping = 1u;
+		pthread_cond_broadcast(&bulk->wake);
+		pthread_mutex_unlock(&bulk->mutex);
+		pthread_join(bulk->thread, 0);
+		pthread_mutex_destroy(&bulk->mutex);
+		pthread_cond_destroy(&bulk->wake);
+		bulk->thread_started = 0u;
+	}
+	if ( bulk->ready_flag != 0 )
+		cudaFreeHost((void *)bulk->ready_flag);
+	bulk->ready_flag = 0;
+	bulk->done_flag = 0;
+	if ( bulk->stream != 0 )
+		SparkWeightStreamClose(bulk->stream);
+	if ( bulk->region != 0 )
+	{
+		(void)cudaHostUnregister(bulk->region);
+		free(bulk->region);
+	}
+	cudaFree(bulk->gather_device);
+	bulk->stream = 0;
+	bulk->region = 0;
+	bulk->gather_device = 0;
+	bulk->opened = 0u;
+}
+
+static uint64_t StageRunnerBulkBlock(const SparkStageRunnerState *state, uint32_t operation, uint64_t elements)
+{
+	if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER || operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL )
+		return elements * sizeof(uint16_t);
+	if ( (operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 || operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16) &&
+		elements % state->tp_degree == 0u )
+		return elements / state->tp_degree * sizeof(uint16_t);
+	return 0u;
+}
+
+static uint32_t StageRunnerBulkUses(const SparkStageRunnerState *state, uint32_t operation, uint32_t stage, uint64_t elements)
+{
+	const uint64_t block = StageRunnerBulkBlock(state, operation, elements);
+	const uint64_t payload = operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ? elements * state->tp_degree * sizeof(uint16_t) : elements * sizeof(uint16_t);
+	return state->bulk.config.block_bytes != 0u && state->bulk.failed == 0u && stage == SPARK_STAGE_RUNNER_ROUND_ALL && block != 0u &&
+		block <= state->bulk.config.block_bytes && payload >= state->bulk.config.minimum_bytes ? 1u : 0u;
+}
+
+__global__ static void StageRunnerBulkSumKernel(const uint16_t *blocks, uint64_t block_elements, uint32_t degree, uint16_t *output)
+{
+	for (uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < block_elements; index += (uint64_t)gridDim.x * blockDim.x)
+	{
+		float sum = 0.0f;
+		for (uint32_t block = 0u; block < degree; block++)
+			sum += LmBf16ToFloat(blocks[(uint64_t)block * block_elements + index]);
+		output[index] = LmFloatToBf16(sum);
+	}
+}
+
+static SparkStatus StageRunnerBulkCopy(void *destination, const void *source, uint64_t bytes, cudaStream_t stream)
+{
+	return cudaMemcpyAsync(destination, source, (size_t)bytes, cudaMemcpyDefault, stream) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+}
+
+static SparkStatus StageRunnerBulkWire(StageRunnerBulk *bulk, uint32_t gather, uint64_t source, uint64_t pitch, uint64_t bytes, uint64_t landing)
+{
+	const uint64_t mark = StageRunnerNowNs();
+	const SparkStatus status = gather != 0u ? SparkWeightStreamBroadcast(bulk->stream, source, bytes, landing, bulk->tag++) :
+		SparkWeightStreamExchange(bulk->stream, source, pitch, bytes, landing, bulk->tag++);
+	bulk->wire_ns += StageRunnerNowNs() - mark;
+	return status;
+}
+
+__global__ static void StageRunnerBulkSignalKernel(uint32_t *flag, uint32_t sequence)
+{
+	__threadfence_system();
+	*(volatile uint32_t *)flag = sequence;
+	__threadfence_system();
+}
+
+__global__ static void StageRunnerBulkWaitKernel(const uint32_t *flag, uint32_t sequence)
+{
+	uint64_t start, now;
+	asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(start));
+	while ( (int32_t)(*(const volatile uint32_t *)flag - sequence) < 0 )
+	{
+		__nanosleep(200u);
+		asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(now));
+		if ( now - start > STAGE_RUNNER_BULK_WAIT_NS )
+			return;
+	}
+	__threadfence_system();
+}
+
+static void *StageRunnerBulkThread(void *argument)
+{
+	SparkStageRunnerState *state = (SparkStageRunnerState *)argument;
+	StageRunnerBulk *bulk = &state->bulk;
+	for (;;)
+	{
+		uint32_t sequence, gather;
+		uint64_t source, pitch, bytes, landing, start;
+		SparkStatus status = SPARK_STATUS_OK;
+		pthread_mutex_lock(&bulk->mutex);
+		while ( bulk->count == 0u && bulk->stopping == 0u )
+			pthread_cond_wait(&bulk->wake, &bulk->mutex);
+		if ( bulk->count == 0u )
+		{
+			pthread_mutex_unlock(&bulk->mutex);
+			break;
+		}
+		sequence = bulk->jobs[bulk->head].sequence;
+		gather = bulk->jobs[bulk->head].gather;
+		source = bulk->jobs[bulk->head].source;
+		pitch = bulk->jobs[bulk->head].pitch;
+		bytes = bulk->jobs[bulk->head].bytes;
+		landing = bulk->jobs[bulk->head].landing;
+		pthread_mutex_unlock(&bulk->mutex);
+		start = StageRunnerNowNs();
+		while ( (int32_t)(*bulk->ready_flag - sequence) < 0 && status == SPARK_STATUS_OK )
+			if ( StageRunnerNowNs() - start > STAGE_RUNNER_BULK_WAIT_NS )
+				status = SPARK_STATUS_IO_ERROR;
+		bulk->sync_ns += StageRunnerNowNs() - start;
+		if ( status == SPARK_STATUS_OK && __atomic_load_n(&bulk->thread_failed, __ATOMIC_ACQUIRE) == 0u )
+			status = StageRunnerBulkWire(bulk, gather, source, pitch, bytes, landing);
+		if ( status != SPARK_STATUS_OK && __atomic_exchange_n(&bulk->thread_failed, 1u, __ATOMIC_ACQ_REL) == 0u )
+			fprintf(stderr, "sparkpipe_stage_runner: bulk collective %u of %llu bytes failed status=%d; the request fails\n", sequence, (unsigned long long)bytes, (int)status);
+		__sync_synchronize();
+		*bulk->done_flag = sequence;
+		__sync_synchronize();
+		pthread_mutex_lock(&bulk->mutex);
+		bulk->head = (bulk->head + 1u) % STAGE_RUNNER_BULK_JOBS;
+		bulk->count--;
+		pthread_cond_broadcast(&bulk->wake);
+		pthread_mutex_unlock(&bulk->mutex);
+	}
+	return 0;
+}
+
+static SparkStatus StageRunnerBulkHandoff(StageRunnerBulk *bulk, cudaStream_t stream, uint32_t gather, uint64_t source, uint64_t pitch, uint64_t bytes, uint64_t landing)
+{
+	const uint32_t sequence = ++bulk->sequence;
+	uint32_t slot;
+	StageRunnerBulkSignalKernel<<<1u, 1u, 0, stream>>>(bulk->ready_device, sequence);
+	pthread_mutex_lock(&bulk->mutex);
+	while ( bulk->count == STAGE_RUNNER_BULK_JOBS )
+		pthread_cond_wait(&bulk->wake, &bulk->mutex);
+	slot = (bulk->head + bulk->count) % STAGE_RUNNER_BULK_JOBS;
+	bulk->jobs[slot].sequence = sequence;
+	bulk->jobs[slot].gather = gather;
+	bulk->jobs[slot].source = source;
+	bulk->jobs[slot].pitch = pitch;
+	bulk->jobs[slot].bytes = bytes;
+	bulk->jobs[slot].landing = landing;
+	bulk->count++;
+	pthread_cond_broadcast(&bulk->wake);
+	pthread_mutex_unlock(&bulk->mutex);
+	StageRunnerBulkWaitKernel<<<1u, 1u, 0, stream>>>(bulk->done_device, sequence);
+	return cudaPeekAtLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+}
+
+static SparkStatus StageRunnerBulkRun(SparkStageRunnerState *state, cudaStream_t stream, uint32_t operation, uint64_t elements, const void *local, void *full)
+{
+	StageRunnerBulk *bulk = &state->bulk;
+	const uint32_t degree = state->tp_degree, rank = state->tp_rank;
+	const uint64_t pitch = bulk->config.block_bytes, landing = (uint64_t)degree * pitch, bytes = StageRunnerBulkBlock(state, operation, elements);
+	const uint64_t mark = StageRunnerNowNs();
+	const uint32_t gather = operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER ? 1u : 0u;
+	const uint32_t sums = operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 || operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 ? 1u : 0u;
+	const uint64_t own = landing + (uint64_t)rank * bytes;
+	SparkStatus status = StageRunnerBulkOpen(state);
+	if ( status == SPARK_STATUS_OK && __atomic_load_n(&bulk->thread_failed, __ATOMIC_ACQUIRE) != 0u )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( status == SPARK_STATUS_OK && gather != 0u )
+		status = StageRunnerBulkCopy(bulk->region + own, local, bytes, stream);
+	else if ( status == SPARK_STATUS_OK && cudaMemcpy2DAsync(bulk->region, (size_t)pitch, local, (size_t)bytes, (size_t)bytes, degree, cudaMemcpyDefault, stream) != cudaSuccess )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = StageRunnerBulkHandoff(bulk, stream, gather, gather != 0u ? own : 0u, gather != 0u ? 0u : pitch, bytes, landing);
+	if ( status == SPARK_STATUS_OK && sums != 0u )
+	{
+		uint16_t *share = (uint16_t *)full + (operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 ? (uint64_t)rank * (bytes / sizeof(uint16_t)) : 0u);
+		StageRunnerBulkSumKernel<<<512u, 256u, 0, stream>>>((const uint16_t *)(bulk->region + landing), bytes / sizeof(uint16_t), degree, share);
+		status = cudaPeekAtLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+		if ( status == SPARK_STATUS_OK && operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 )
+		{
+			status = StageRunnerBulkCopy(bulk->region + own, share, bytes, stream);
+			if ( status == SPARK_STATUS_OK )
+				status = StageRunnerBulkHandoff(bulk, stream, 1u, own, 0u, bytes, landing);
+			if ( status == SPARK_STATUS_OK )
+				status = StageRunnerBulkCopy(full, bulk->region + landing, (uint64_t)degree * bytes, stream);
+		}
+	}
+	else if ( status == SPARK_STATUS_OK )
+		status = StageRunnerBulkCopy(full, bulk->region + landing, (uint64_t)degree * bytes, stream);
+	bulk->ns += StageRunnerNowNs() - mark;
+	bulk->bytes += (uint64_t)degree * bytes;
+	if ( operation < STAGE_RUNNER_BULK_OPERATIONS )
+		bulk->calls[operation]++;
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: bulk collective operation %u of %llu elements failed status=%d; the request fails\n", operation,
+			(unsigned long long)elements, (int)status);
+		bulk->failed = 1u;
+		state->tp_collective_failed = 1u;
+	}
+	return status;
+}
+
 static SparkStatus StageRunnerRoundService(void *context, void *stream_void, uint32_t operation, uint32_t stage,
 	uint32_t rows, uint32_t row_elements, const void *local, void *full)
 {
 	SparkStageRunnerState *state = (SparkStageRunnerState *)context;
+	const uint64_t elements = (uint64_t)rows * (row_elements != 0u ? row_elements : state->geometry.hidden);
 	const uint32_t mark = state->layer_marks != 0u && state->round_marks < STAGE_RUNNER_ROUND_MARKS ? 1u : 0u;
 	SparkStatus status;
 	if ( state->layer_marks != 0u && mark == 0u )
 		state->round_unmarked++;
 	if ( mark != 0u && cudaEventRecord(state->round_event[2u * state->round_marks], (cudaStream_t)stream_void) != cudaSuccess )
 		state->layer_marks = 0u;
-	status = StageRunnerMeshRound(state, stream_void, operation, stage, rows, row_elements, local, full);
+	if ( state->device_collective_created != 0 && StageRunnerBulkUses(state, operation, stage, elements) != 0u )
+		status = StageRunnerBulkRun(state, (cudaStream_t)stream_void, operation, elements, local, full);
+	else
+	{
+		if ( state->bulk.config.block_bytes != 0u && stage == SPARK_STAGE_RUNNER_ROUND_ALL && StageRunnerBulkBlock(state, operation, elements) > state->bulk.config.block_bytes )
+			state->bulk.oversize++;
+		status = StageRunnerMeshRound(state, stream_void, operation, stage, rows, row_elements, local, full);
+	}
 	if ( mark != 0u && state->layer_marks != 0u )
 	{
 		if ( cudaEventRecord(state->round_event[2u * state->round_marks + 1u], (cudaStream_t)stream_void) != cudaSuccess )
@@ -999,6 +1351,14 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 		configuration->max_active_sequence_count == 0u || configuration->max_input_row_count == 0u ||
 		(configuration->tp_degree > 1u && configuration->device_collective == 0) )
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ( configuration->bulk_collectives.block_bytes != 0u && (configuration->tp_degree < 2u || configuration->tp_degree > SPARK_WEIGHT_STREAM_MAX_RANKS ||
+		(configuration->tp_degree % 2u) != 0u || configuration->bulk_collectives.fabric_device == 0 || configuration->bulk_collectives.pair_device == 0 ||
+		configuration->bulk_collectives.minimum_bytes == 0u || configuration->bulk_collectives.minimum_bytes > configuration->bulk_collectives.block_bytes) )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: create refused: bulk collectives need an even tensor-parallel degree of 2 to %u, both devices and a minimum size no larger than a block (degree %u)\n",
+			SPARK_WEIGHT_STREAM_MAX_RANKS, configuration->tp_degree);
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
 	memset(runner, 0, sizeof(*runner));
 	state = new SparkStageRunnerState;
 	memset(state, 0, sizeof(*state));
@@ -1019,6 +1379,7 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	state->tp_rank = configuration->tp_rank;
 	state->tp_degree = configuration->tp_degree;
 	state->stream = (cudaStream_t)configuration->execution_stream;
+	state->bulk.config = configuration->bulk_collectives;
 	state->max_rows = configuration->max_input_row_count;
 	state->head_capacity = configuration->head_row_capacity != 0u && configuration->head_row_capacity < state->max_rows ?
 		configuration->head_row_capacity : state->max_rows;
@@ -2784,6 +3145,7 @@ void SparkStageRunnerDestroy(SparkStageRunner *runner)
 	free(state->stray_seen_bits);
 	state->stray_head_bits = 0;
 	state->stray_seen_bits = 0;
+	StageRunnerBulkClose(state);
 	if ( state->device_collective_created != 0 )
 	{
 		SparkTpDeviceCollectiveDestroy(&state->device_collective);
