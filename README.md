@@ -318,6 +318,14 @@ write it evicts its oldest files until the partition holds the reserve plus
 the new file, and refuses the write when nothing is left to evict, so KV never
 fills the system drive.
 
+For a model with recurrent state (K3's KDA layers, GLM-5.3 Flash's linear
+attention), a resume point is a page with its state saved beside it: one
+state on every checkpoint stride (`cache_checkpoint_token_count`, 16,384
+tokens for K3, 4,096 for GLM-5.3 Flash) and the newest state of every
+released sequence. The release saves that newest state with the pages, so a
+follow-up turn resumes at the end of the previous one after a restart or a
+model swap.
+
 **Sharding.** The fleet stores 1/N of the cache on each of N nodes:
 
 - Attention heads and recurrent state are split by head.
