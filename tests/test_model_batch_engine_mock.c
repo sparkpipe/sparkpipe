@@ -2388,6 +2388,53 @@ static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment 
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioRecurrentStreamedCheckpoint(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t expected_ends[2] = {17u,18u},expected_stateful[2] = {1u,0u};
+	SparkModelResidentDeployment streamed = *deployment;
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t prompt[18],ends[8],stateful[8],index,count = 0u,deferred_rows = 0u,deferred_stateful = 0u,after_rows = 0u;
+	for (index=0u; index<18u; index++)
+		prompt[index] = 400u + index;
+	streamed.streamed_prefill_min_tokens = 8u;
+	MockResidentClientReset();
+	engine = TestConnectRows(&streamed,&state,runtime_root,10u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,697u,1u,prompt,18u);
+	TestDriveUntilTerminal(engine,&state,1u,800u);
+	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u,"recurrent streamed prefill: the prompt completes");
+	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
+	{
+		if ( lane.request_id != 1u || lane.context_token_count <= lane.sequence_position || lane.context_token_count > 18u )
+			continue;
+		if ( (MockResidentClientLaneSubmissionFlags(index) & SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER) != 0u )
+		{
+			deferred_rows += lane.context_token_count - (uint32_t)lane.sequence_position;
+			deferred_stateful += (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u && (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS) == 0u ? 1u : 0u;
+			continue;
+		}
+		after_rows += lane.context_token_count - (uint32_t)lane.sequence_position;
+		if ( (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u && count < 8u )
+		{
+			ends[count] = lane.cache_publish_token_count;
+			stateful[count++] = (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS) == 0u ? 1u : 0u;
+		}
+	}
+	CHECK(deferred_rows == 16u && deferred_stateful == 0u,"recurrent streamed prefill: the deferral stops one token before the prompt checkpoint and its publishes carry no state");
+	CHECK(after_rows == 2u && count == 2u && memcmp(ends,expected_ends,sizeof(expected_ends)) == 0 && memcmp(stateful,expected_stateful,sizeof(expected_stateful)) == 0,
+		"recurrent streamed prefill: a one-row wave lands the prompt checkpoint with state, then the last token runs as the final wave");
+	TestSubmitPrompt(engine,2u,698u,1u,prompt,18u);
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 17u,"recurrent streamed prefill: a repeated prompt resumes one token before its end");
+	TestDriveUntilTerminal(engine,&state,2u,800u);
+	CHECK(state.completed_events[2] == 1u && state.error_events[2] == 0u,"recurrent streamed prefill: the repeated prompt completes");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioRecurrentStaleResume(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	TestBatchState state = {0};
@@ -2532,6 +2579,7 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 	(void)unlink(path);
 	TestLoadVariantDeployment(runtime_root,"recurrent-checkpoints",TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH,path,sizeof(path),&deployment);
 	TestScenarioRecurrentCheckpoints(&deployment,runtime_root);
+	TestScenarioRecurrentStreamedCheckpoint(&deployment,runtime_root);
 	TestScenarioRecurrentStaleResume(&deployment,runtime_root);
 	TestScenarioReplyCheckpoint(&deployment,runtime_root);
 	TestScenarioResumeSuperseded(&deployment,runtime_root);

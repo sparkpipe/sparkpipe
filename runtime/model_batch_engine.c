@@ -2568,14 +2568,17 @@ static uint32_t SparkModelBatchDeferHolds(SparkModelBatchEngine *engine,uint32_t
 
 static void SparkModelBatchDecideDefer(SparkModelBatchEngine *engine,SparkModelBatchRequestState *request,uint32_t slot)
 {
-	uint32_t remaining;
+	uint32_t remaining,end;
 	if ( request->defer_decided != 0u || engine->streamed_min_tokens == 0u )
 		return;
 	request->defer_decided = 1u;
 	remaining = request->prompt_token_count - request->computed_prompt_token_count;
-	if ( remaining < engine->streamed_min_tokens || remaining < 2u )
+	if ( remaining < engine->streamed_min_tokens )
 		return;
-	request->defer_end = request->prompt_token_count - 1u;
+	end = SparkModelBatchPromptCheckpoint(engine,request) != 0u ? SparkModelBatchPromptCheckpoint(engine,request) - 1u : request->prompt_token_count - 1u;
+	if ( end <= request->computed_prompt_token_count )
+		return;
+	request->defer_end = end;
 	engine->deferring_slot = slot;
 	engine->deferring_generation = request->generation;
 	fprintf(stderr,"batch_streamed_prefill request=%llu positions %u..%u of %u go to the streamed prefill, the rest as waves\n",

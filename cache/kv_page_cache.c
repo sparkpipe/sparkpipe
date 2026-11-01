@@ -2432,6 +2432,20 @@ static void SparkKvPageCacheMarkSave(SparkKvPageCache *cache,uint32_t resident_s
 	(void)SparkKvPageCacheSavePush(cache,terminal);
 }
 
+void SparkKvPageCachePersistCheckpoint(SparkKvPageCache *cache,uint32_t resident_sequence_slot)
+{
+	uint32_t terminal;
+	if ( SparkKvPageCacheIsValid(cache) == 0u || cache->state_store == 0 || cache->snapshot == 0 || resident_sequence_slot >= cache->sequence_capacity )
+		return;
+	terminal = cache->sequences[resident_sequence_slot].terminal_entry_index;
+	if ( terminal >= cache->entry_capacity || SparkKvPageCacheStateAnchor(cache,terminal) != 0u || SparkKvPageCacheStateUnsaved(cache,terminal) == 0u )
+		return;
+	cache->entries[terminal].flags |= SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PERSIST_STATE;
+	cache->checkpoint_persist_count++;
+	if ( SparkKvPageCacheSaveIsPending(cache->snapshot,terminal) == 0u && SparkKvPageCacheSaveEligible(cache,terminal) != 0u )
+		(void)SparkKvPageCacheSavePush(cache,terminal);
+}
+
 SparkStatus SparkKvPageCachePromoteState(SparkKvPageCache *cache,uint32_t logical_page_index)
 {
 	SparkKvPageCacheEntry *entry;

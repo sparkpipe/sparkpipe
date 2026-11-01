@@ -1544,7 +1544,46 @@ static void TestRecurrentStateSurvivesRestart(void)
 	assert(StepFinish(&step,SPARK_STATUS_IO_ERROR,&finished) == SPARK_STATUS_OK);
 	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
 	Close();
-	printf("A11 recurrent restart: the newest state of a released sequence between checkpoints reaches the snapshot store at release, before the engine closes, and restores into a new engine: ok\n");
+	printf("A11 recurrent restart: the newest state of a released sequence between checkpoints is in the snapshot store by its release, before the engine closes, and restores into a new engine: ok\n");
+}
+
+static void TestPromptCheckpointPersists(void)
+{
+	TestStep step,stateless;
+	TestFinished finished = {0};
+	SparkKvSnapshotKey state_key;
+	void *stream = (void *)(uintptr_t)0x53u;
+	uint32_t attempt;
+	MakeDirectories();
+	ConfigureRecurrent(&CONFIGURATION);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	StepInit(&step,1u,0u,0u,4u);
+	StepPublish(&step,4u,0x93u);
+	StepStart(&step);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,stream) == SPARK_STATUS_OK);
+	assert(StepFinish(&step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
+	memset(&state_key,0,sizeof(state_key));
+	memcpy(state_key.layout_sha256,BINDING.layout_sha256,sizeof(state_key.layout_sha256));
+	Identity((SparkModelDriverCacheIdentity *)state_key.identity_sha256,0x93u);
+	state_key.token_count = 4u;
+	state_key.file_kind = SPARK_KV_SNAPSHOT_FILE_STATE;
+	for (attempt=0u; SparkKvSnapshotContains(&BINDING.snapshot_store,&state_key) == 0u && attempt<1000u; attempt++)
+		SleepMs(2u);
+	assert(SparkKvSnapshotFlush(&BINDING.snapshot_store) == SPARK_STATUS_OK && SparkKvSnapshotContains(&BINDING.snapshot_store,&state_key) != 0u);
+	assert(BINDING.page_cache.checkpoint_persist_count == 1u && BINDING.page_cache.sequences[0].sequence_id == 1u);
+	StepInit(&stateless,2u,1u,0u,4u);
+	StepPublish(&stateless,4u,0x94u);
+	stateless.lane.flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS;
+	StepStart(&stateless);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&stateless.slot,1u,stream) == SPARK_STATUS_OK);
+	assert(StepFinish(&stateless,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
+	assert(BINDING.page_cache.checkpoint_persist_count == 1u);
+	ReleaseSequence(1u,0u);
+	ReleaseSequence(2u,1u);
+	Close();
+	printf("A11 prompt checkpoint: a state captured off the checkpoint stride reaches the snapshot store when its lane publishes it, while the sequence is still live, and a stateless publish is not persisted: ok\n");
 }
 
 static void TestRecurrentRefusals(void)
@@ -1856,6 +1895,7 @@ int main(void)
 	TestSnapshotDestroySavesAll();
 	TestRecurrentRoundTrip();
 	TestRecurrentStateSurvivesRestart();
+	TestPromptCheckpointPersists();
 	TestRecurrentRefusals();
 	TestRecurrentCheckpoints();
 	TestSnapshotStatelessChain();
