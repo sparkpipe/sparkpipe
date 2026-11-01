@@ -90,7 +90,8 @@ coordinator's prefix cache and index (and peer index imports), the page
 cache and snapshot store on each rank, the detached weightd pool, weightd's
 purge when no model runs, the scratch area and the draft servers' contexts.
 A missing directive is `wiped 0` and `held_until 0`, which is today's rule.
-A malformed one is logged on every sweep and treated as missing. The 86400
+An unreadable or malformed one is logged and the last good one is kept; a
+process that has read none uses `wiped 0` and `held_until 0`. The 86400
 constant stays; held hours, not a flag, are what lengthen retention.
 
 ### Change of user

@@ -27,6 +27,7 @@
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_tokenizer_sidecar.h"
 #include "sparkpipe/spark_sampling.h"
+#include "sparkpipe/spark_working_state.h"
 
 #define API_MAX_BODY		(16u * 1024u * 1024u)
 #define API_MAX_HEADER		(64u * 1024u)
@@ -132,6 +133,8 @@ typedef struct ApiState
 	uint32_t health_write_alert_rank;
 	uint32_t health_failed_status;
 	uint32_t health_live_requests;
+	uint64_t health_working_state_wiped;
+	uint64_t health_working_state_held_until;
 	volatile uint32_t bringup_attempts;
 	const char *volatile bringup_phase;
 	uint64_t bringup_started_ms;
@@ -718,6 +721,8 @@ static void api_publish_health(void)
 	__atomic_store_n(&S.health_missing_rank,view.pipeline.first_disconnected_rank,__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_failed_status,view.failed_status,__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_live_requests,view.live_request_count,__ATOMIC_RELEASE);
+	__atomic_store_n(&S.health_working_state_wiped,view.working_state_wiped_seconds,__ATOMIC_RELEASE);
+	__atomic_store_n(&S.health_working_state_held_until,view.working_state_held_until_seconds,__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_degraded_rank,api_degraded_rank(),__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_write_alert_rank,api_write_alert_rank(),__ATOMIC_RELEASE);
 	if ( view.context_limit != 0u && view.context_limit != __atomic_load_n(&S.context_limit,__ATOMIC_ACQUIRE) )
@@ -1854,7 +1859,7 @@ static void *api_connection(void *arg)
 	}
 	else if (strcmp(method, "GET") == 0 && strcmp(path, "/health") == 0)
 	{
-		char b[448];
+		char b[640];
 		uint32_t ranks = __atomic_load_n(&S.health_rank_count, __ATOMIC_ACQUIRE);
 		uint32_t write_alert = __atomic_load_n(&S.health_write_alert_rank, __ATOMIC_ACQUIRE);
 		uint32_t connected = __atomic_load_n(&S.health_connected_rank_count, __ATOMIC_ACQUIRE);
@@ -1863,11 +1868,13 @@ static void *api_connection(void *arg)
 		uint32_t eager = __atomic_load_n(&S.health_degraded_rank, __ATOMIC_ACQUIRE);
 		uint32_t degraded = connected < ranks || eager != UINT32_MAX || (failed != 0u && failed != (uint32_t)SPARK_STATUS_IO_ERROR) ? 1u : 0u;
 		(void)snprintf(b, sizeof(b),
-			"{\"status\":\"%s\",\"served\":%llu,\"tokenizer\":%s,\"ranks\":%u,\"connected_ranks\":%u,\"missing_rank\":%d,\"degraded_rank\":%d,\"degraded_path\":\"%s\",\"engine_status\":\"%s\",\"live_requests\":%u,\"kv_write_alert_rank\":%d}",
+			"{\"status\":\"%s\",\"served\":%llu,\"tokenizer\":%s,\"ranks\":%u,\"connected_ranks\":%u,\"missing_rank\":%d,\"degraded_rank\":%d,\"degraded_path\":\"%s\",\"engine_status\":\"%s\",\"live_requests\":%u,\"kv_write_alert_rank\":%d,\"working_state_wiped\":%llu,\"working_state_held_until\":%llu}",
 			degraded != 0u ? "degraded" : "ok", (unsigned long long)S.served, HaveSidecar ? "true" : "false", ranks, connected,
 			missing != UINT32_MAX ? (int)missing : -1, eager != UINT32_MAX ? (int)eager : -1, eager != UINT32_MAX ? "eager" : "none",
 			SparkStatusToString((SparkStatus)failed), __atomic_load_n(&S.health_live_requests, __ATOMIC_ACQUIRE),
-			write_alert != UINT32_MAX ? (int)write_alert : -1);
+			write_alert != UINT32_MAX ? (int)write_alert : -1,
+			(unsigned long long)__atomic_load_n(&S.health_working_state_wiped, __ATOMIC_ACQUIRE),
+			(unsigned long long)__atomic_load_n(&S.health_working_state_held_until, __ATOMIC_ACQUIRE));
 		send_response(fd, degraded != 0u ? 503 : 200, b);
 	}
 	else if (strcmp(method, "GET") == 0 && strcmp(path, "/v1/models") == 0)
@@ -2003,6 +2010,8 @@ int main(int argc, char **argv)
 	const char *peer_roots[SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX];
 	static char peer_index_storage[SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX][4200];
 	static const char *peer_indexes[SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX];
+	static char working_state_home[SPARK_WORKING_STATE_PATH_BYTES];
+	static char working_state_path[SPARK_WORKING_STATE_PATH_BYTES];
 	uint32_t peer_count = 0u, peer;
 	SparkModelResidentDeployment dep;
 	SparkModelBatchEngineConfiguration cfg;
@@ -2079,7 +2088,13 @@ int main(int argc, char **argv)
 			peer_indexes[peer] = peer_index_storage[peer];
 		}
 	}
-	api_logf("api_start pid=%d deployment=%s runtime_root=%s", (int)getpid(), dep_path, root);
+	if (SparkWorkingStateOwnerRoot(working_state_home, sizeof(working_state_home)) != SPARK_STATUS_OK ||
+		SparkWorkingStateDirectivePath(working_state_home, working_state_path, sizeof(working_state_path)) != SPARK_STATUS_OK)
+	{
+		fprintf(stderr, "model_api: the working state directive path under the owner's home cannot be resolved\n");
+		return 1;
+	}
+	api_logf("api_start pid=%d deployment=%s runtime_root=%s working_state=%s", (int)getpid(), dep_path, root, working_state_path);
 	S.runtime_root = root;
 	S.seq_saved_ms = 0u;
 	SparkModelResidentDeploymentReset(&dep);
@@ -2094,6 +2109,7 @@ int main(int argc, char **argv)
 	cfg.deployment = &dep;
 	cfg.runtime_root = root;
 	cfg.prefix_index_path = S.prefix_index_path;
+	cfg.working_state_directive_path = working_state_path;
 	cfg.peer_prefix_index_paths = peer_count != 0u ? peer_indexes : 0;
 	cfg.peer_prefix_index_count = peer_count;
 	cfg.request_capacity = 128;

@@ -11,4 +11,5 @@ SPARKPIPE_WEIGHTD_SOURCES := \
 	runtime/spark_weightd_worker.c \
 	runtime/spark_weightd_pacer.c \
 	runtime/spark_weightd_lazy_pack.c \
-	cache/kv_snapshot_purge.c
+	cache/kv_snapshot_purge.c \
+	cache/working_state.c

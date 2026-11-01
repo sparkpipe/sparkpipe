@@ -36,6 +36,7 @@
 #define SPARK_MODEL_BATCH_PREFIX_INDEX_SAVE_INTERVAL_NS UINT64_C(10000000000)
 #define SPARK_MODEL_BATCH_PEER_PREFIX_INTERVAL_NS UINT64_C(2000000000)
 #define SPARK_MODEL_BATCH_STATUS_INTERVAL_NS UINT64_C(1000000000)
+#define SPARK_MODEL_BATCH_WORKING_STATE_CHECK_NS UINT64_C(1000000000)
 #define SPARK_MODEL_BATCH_RESTORE_POLL_MS 2u
 #define SPARK_MODEL_BATCH_SELECT_AGED 1u
 #define SPARK_MODEL_BATCH_SELECT_PRIORITY 2u
@@ -274,6 +275,12 @@ struct SparkModelBatchEngine
 	uint64_t prefix_index_export_ns_maximum;
 	uint64_t prefix_expiry_next_ns;
 	uint64_t prefix_expired_count;
+	char working_state_path[SPARK_WORKING_STATE_PATH_BYTES];
+	SparkWorkingStateDirective working_state;
+	uint64_t working_state_applied_wiped;
+	uint64_t working_state_next_check_ns;
+	uint64_t working_state_read_failure_count;
+	SparkStatus working_state_read_status;
 	uint64_t prefix_index_loaded_record_count;
 	uint64_t prefix_index_refused_count;
 	uint64_t prefix_index_reimported_record_count;
@@ -1694,6 +1701,13 @@ static SparkStatus SparkModelBatchValidateConfiguration(
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		}
 	}
+	if ( configuration->working_state_directive_path == 0 || configuration->working_state_directive_path[0] != '/' ||
+		strlen(configuration->working_state_directive_path) >= SPARK_WORKING_STATE_PATH_BYTES )
+	{
+		fprintf(stderr,"batch engine refused: working_state_directive_path %s is missing or relative\n",
+			configuration->working_state_directive_path != 0 ? configuration->working_state_directive_path : "(null)");
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	return(SparkModelBatchValidateIndexPath(configuration->prefix_index_path));
 }
 
@@ -1862,7 +1876,7 @@ static SparkStatus SparkModelBatchLoadPrefixIndex(SparkModelBatchEngine *engine)
 	SparkModelBatchPrefixIndexDigest(engine,digest);
 	status = SparkPrefixIndexFileRead(engine->prefix_index_path,digest,engine->cache_block_token_count,engine->prefix_index_scratch,engine->prefix_cache_entry_capacity,&count,&reason);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkPrefixCacheImportCommitted(&engine->prefix_cache,engine->prefix_index_scratch,count,&imported,&skipped);
+		status = SparkPrefixCacheImportCommitted(&engine->prefix_cache,engine->prefix_index_scratch,count,&engine->working_state,&imported,&skipped);
 	else if ( status != SPARK_STATUS_NOT_FOUND )
 	{
 		engine->prefix_index_refused_count++;
@@ -1886,19 +1900,51 @@ static void SparkModelBatchExpirePrefixes(SparkModelBatchEngine *engine)
 	SparkStatus status;
 	if ( clock_gettime(CLOCK_REALTIME,&now) != 0 )
 		return;
-	status = SparkPrefixCacheExpire(&engine->prefix_cache,(uint64_t)now.tv_sec,&expired);
+	status = SparkPrefixCacheExpire(&engine->prefix_cache,&engine->working_state,(uint64_t)now.tv_sec,&expired);
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"batch engine prefix index expiry failed status=%d: the index may hold records past %llu s\n",(int)status,(unsigned long long)SPARK_KV_RETENTION_SECONDS);
 		SparkModelBatchSetFailed(engine,status);
 		return;
 	}
+	if ( engine->working_state_applied_wiped != engine->working_state.wiped_seconds &&
+		SparkPrefixCacheHoldsUsedBefore(&engine->prefix_cache,engine->working_state.wiped_seconds) == 0u )
+	{
+		engine->working_state_applied_wiped = engine->working_state.wiped_seconds;
+		fprintf(stderr,"batch engine working state wiped=%llu held_until=%llu applied\n",(unsigned long long)engine->working_state.wiped_seconds,
+			(unsigned long long)engine->working_state.held_until_seconds);
+	}
 	if ( expired == 0u )
 		return;
 	engine->prefix_expired_count += expired;
 	engine->prefix_index_dirty = 1u;
-	fprintf(stderr,"batch engine prefix index expired records=%u unused_for_s=%llu total_expired=%llu\n",expired,(unsigned long long)SPARK_KV_RETENTION_SECONDS,
+	fprintf(stderr,"batch engine prefix index expired records=%u unused_for_s=%llu wiped=%llu held_until=%llu total_expired=%llu\n",expired,
+		(unsigned long long)SPARK_KV_RETENTION_SECONDS,(unsigned long long)engine->working_state.wiped_seconds,(unsigned long long)engine->working_state.held_until_seconds,
 		(unsigned long long)engine->prefix_expired_count);
+}
+
+static void SparkModelBatchReadWorkingState(SparkModelBatchEngine *engine)
+{
+	SparkWorkingStateDirective directive;
+	SparkStatus status = SparkWorkingStateDirectiveRead(engine->working_state_path,&directive);
+	if ( status != SPARK_STATUS_OK )
+	{
+		engine->working_state_read_failure_count++;
+		if ( status != engine->working_state_read_status )
+			fprintf(stderr,"batch engine working state directive %s unreadable status=%s: keeping wiped=%llu held_until=%llu\n",engine->working_state_path,
+				SparkStatusToString(status),(unsigned long long)engine->working_state.wiped_seconds,(unsigned long long)engine->working_state.held_until_seconds);
+		engine->working_state_read_status = status;
+		return;
+	}
+	engine->working_state_read_status = SPARK_STATUS_OK;
+	engine->working_state = directive;
+}
+
+static void SparkModelBatchRefreshWorkingState(SparkModelBatchEngine *engine)
+{
+	SparkModelBatchReadWorkingState(engine);
+	if ( engine->working_state_applied_wiped != engine->working_state.wiped_seconds )
+		SparkModelBatchExpirePrefixes(engine);
 }
 
 static void SparkModelBatchSavePrefixIndex(SparkModelBatchEngine *engine,uint64_t now_ns)
@@ -2017,6 +2063,9 @@ static SparkStatus SparkModelBatchInitialize(
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	strcpy(engine->prefix_index_path,configuration->prefix_index_path);
+	strcpy(engine->working_state_path,configuration->working_state_directive_path);
+	SparkModelBatchReadWorkingState(engine);
+	engine->working_state_applied_wiped = engine->working_state.wiped_seconds;
 	for (engine->peer_prefix_index_count=0u; engine->peer_prefix_index_count<configuration->peer_prefix_index_count; engine->peer_prefix_index_count++)
 		strcpy(engine->peer_prefix_index_paths[engine->peer_prefix_index_count],configuration->peer_prefix_index_paths[engine->peer_prefix_index_count]);
 	return(SparkModelBatchLoadPrefixIndex(engine));
@@ -3843,7 +3892,7 @@ static SparkStatus SparkModelBatchKeepPrefixIndex(SparkModelBatchEngine *engine)
 		count = 0u;
 	status = SparkPrefixCacheReset(&engine->prefix_cache);
 	if ( status == SPARK_STATUS_OK && count != 0u )
-		status = SparkPrefixCacheImportCommitted(&engine->prefix_cache,engine->prefix_index_scratch,count,&imported,&skipped);
+		status = SparkPrefixCacheImportCommitted(&engine->prefix_cache,engine->prefix_index_scratch,count,&engine->working_state,&imported,&skipped);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	engine->prefix_index_reimported_record_count += imported;
@@ -3911,7 +3960,7 @@ static void SparkModelBatchImportPeerPrefixes(SparkModelBatchEngine *engine)
 		reason = 0;
 		status = SparkPrefixIndexFileRead(engine->peer_prefix_index_paths[peer],digest,engine->cache_block_token_count,engine->prefix_index_scratch,engine->prefix_cache_entry_capacity,&count,&reason);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkPrefixCacheImportCommitted(&engine->prefix_cache,engine->prefix_index_scratch,count,&imported,&skipped);
+			status = SparkPrefixCacheImportCommitted(&engine->prefix_cache,engine->prefix_index_scratch,count,&engine->working_state,&imported,&skipped);
 		if ( status != SPARK_STATUS_OK )
 		{
 			fprintf(stderr,"batch engine peer prefix index refused path=%s reason=%s status=%s\n",engine->peer_prefix_index_paths[peer],reason != 0 ? reason : "io",SparkStatusToString(status));
@@ -3970,6 +4019,11 @@ static void SparkModelBatchPeriodicWork(SparkModelBatchEngine *engine)
 			SparkModelBatchLogFrames(engine);
 		(void)SparkModelPipelineClientRequestStatus(engine->pipeline);
 		engine->next_status_ns = now + SPARK_MODEL_BATCH_STATUS_INTERVAL_NS;
+	}
+	if ( now >= engine->working_state_next_check_ns )
+	{
+		SparkModelBatchRefreshWorkingState(engine);
+		engine->working_state_next_check_ns = now + SPARK_MODEL_BATCH_WORKING_STATE_CHECK_NS;
 	}
 	if ( now >= engine->prefix_expiry_next_ns )
 	{
@@ -4244,6 +4298,9 @@ SparkStatus SparkModelBatchEngineGetView(
 	view->prefix_index_reimported_record_count = engine->prefix_index_reimported_record_count;
 	view->peer_prefix_import_count = engine->peer_prefix_import_count;
 	view->peer_prefix_imported_record_count = engine->peer_prefix_imported_record_count;
+	view->working_state_wiped_seconds = engine->working_state_applied_wiped;
+	view->working_state_held_until_seconds = engine->working_state.held_until_seconds;
+	view->working_state_read_failure_count = engine->working_state_read_failure_count;
 	view->speculative_verify_lane_count = engine->verify_lane_count;
 	view->speculative_draft_token_count = engine->draft_token_count;
 	view->speculative_accepted_token_count = engine->accepted_draft_token_count;

@@ -1051,7 +1051,7 @@ static void TestAdoptedPagesKeepTheirAge(void)
 	pthread_mutex_lock(&BINDING.mutex);
 	held = ValidPageEntries(&oldest);
 	assert(BINDING.kv_pool_adopted_pages == 2u && held == 2u && oldest == kept_since);
-	assert(SparkKvPageCacheExpire(&BINDING.page_cache,kept_since + SPARK_KV_RETENTION_SECONDS,&expired) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheExpire(&BINDING.page_cache,0,kept_since + SPARK_KV_RETENTION_SECONDS,&expired) == SPARK_STATUS_OK);
 	pthread_mutex_unlock(&BINDING.mutex);
 	assert(expired == 2u && ValidPageEntries(&oldest) == 0u);
 	Close();

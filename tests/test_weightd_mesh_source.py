@@ -65,8 +65,16 @@ uint64_t SparkWeightdServerResidentBytes(const SparkWeightdServer *server)
 { (void)server; return 0u; }
 const char *SparkStatusToString(SparkStatus status)
 { (void)status; return "test-status"; }
-SparkStatus SparkKvSnapshotPurgeTree(const char *root,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
-{ (void)root; (void)now_seconds; memset(result,0,sizeof(*result)); return SPARK_STATUS_OK; }
+SparkStatus SparkKvSnapshotPurgeTree(const char *root,const SparkWorkingStateDirective *directive,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
+{ (void)root; (void)directive; (void)now_seconds; memset(result,0,sizeof(*result)); return SPARK_STATUS_OK; }
+SparkStatus SparkWorkingStateDirectivePath(const char *home,char *path,uint32_t capacity)
+{ return (uint32_t)snprintf(path,capacity,"%s/directive",home) < capacity ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED; }
+SparkStatus SparkWorkingStateDirectiveRead(const char *path,SparkWorkingStateDirective *directive)
+{ (void)path; memset(directive,0,sizeof(*directive)); return SPARK_STATUS_OK; }
+SparkStatus SparkWorkingStatePurgeScratch(const char *home,const SparkWorkingStateDirective *directive,uint64_t now_seconds,SparkWorkingStatePurgeResult *result)
+{ (void)home; (void)directive; (void)now_seconds; memset(result,0,sizeof(*result)); return SPARK_STATUS_OK; }
+void SparkWeightdServerSetWorkingStateWiped(SparkWeightdServer *server,uint64_t wiped_seconds)
+{ (void)server; (void)wiped_seconds; }
 ''', encoding="utf-8")
     subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-D_GNU_SOURCE",
                     "-pthread", "-I.", "-Iinclude", str(fixture), "-o", str(binary)],

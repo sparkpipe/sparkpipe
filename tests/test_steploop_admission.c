@@ -341,6 +341,7 @@ int main(void)
 	(void)snprintf(index_path,sizeof(index_path),"%s/build/steploop-%d.spi",runtime_root,(int)getpid());
 	(void)unlink(index_path);
 	configuration.prefix_index_path = index_path;
+	configuration.working_state_directive_path = "/nonexistent-sparkpipe-working-state/directive";
 	configuration.event_function = TestSteploopEvent;
 	configuration.event_context = &state;
 	assert(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_OK);
