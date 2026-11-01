@@ -2425,6 +2425,8 @@ static void SparkKvPageCacheMarkSave(SparkKvPageCache *cache,uint32_t resident_s
 	}
 	if ( (cache->entries[terminal].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS) != 0u && cache->state_store != 0 )
 		return;
+	if ( cache->state_store != 0 && SparkKvPageCacheStateUnsaved(cache,terminal) != 0u )
+		cache->entries[terminal].flags |= SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PERSIST_STATE;
 	if ( SparkKvPageCacheEntryUnsaved(cache,terminal) == 0u || SparkKvPageCacheSaveIsPending(cache->snapshot,terminal) != 0u )
 		return;
 	(void)SparkKvPageCacheSavePush(cache,terminal);
@@ -2829,9 +2831,13 @@ SparkStatus SparkKvPageCacheSavePrefix(SparkKvPageCache *cache,const SparkModelD
 	for (index=entry; cache->state_store != 0 && index != SPARK_KV_PAGE_CACHE_NO_INDEX && index < cache->entry_capacity; index=cache->entries[index].parent_entry_index)
 		if ( SparkKvPageCacheStateUnsaved(cache,index) != 0u )
 			cache->entries[index].flags |= SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PERSIST_STATE;
-	if ( SparkKvPageCacheEntryUnsaved(cache,entry) != 0u && SparkKvPageCacheSaveIsPending(cache->snapshot,entry) == 0u )
+	for (index=entry; index != SPARK_KV_PAGE_CACHE_NO_INDEX && index < cache->entry_capacity; index=cache->entries[index].parent_entry_index)
 	{
-		status = SparkKvPageCacheSavePush(cache,entry);
+		if ( SparkKvPageCacheEntryUnsaved(cache,index) == 0u || SparkKvPageCacheSaveIsPending(cache->snapshot,index) != 0u )
+			continue;
+		status = SparkKvPageCacheSavePush(cache,index);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkKvPageCacheSaveDrain(cache);
 		if ( status != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
 	}
