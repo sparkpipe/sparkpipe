@@ -70,7 +70,7 @@ These Rules are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 7.4. After the hour ends, the seller of a released hour in the pool is credited the HC allocated to it, less the release fee, rounded down to six decimal places, as a new lot of HC under clause 13.3 of the Customer Agreement. The credit may be zero.
 
-7.5. A pool request that uses an accelerator holds no seat, and pays no seat-seconds, while it waits for or is computed on the accelerator. It takes a seat when the accelerator hands its computed prompt back to the Fleet, or when its prompt is computed on its Fleet without an accelerator under clause 4.11 of the Customer Agreement. A Fleet holds one model at a time: a pool request for a model its Fleet has not loaded holds no seat, and pays no seat-seconds, while the Fleet switches to that model, and takes a seat when the Fleet serves it.
+7.5. A pool request that uses an accelerator holds no seat, and pays no seat-seconds, while it waits for or is computed on the accelerator. It takes a seat when the accelerator hands its computed prompt back to the Fleet, or when its prompt is computed on its Fleet without an accelerator under clause 4.11 of the Customer Agreement. A pool request for a model that its Fleet must first load holds no seat, and pays no seat-seconds, while the Fleet loads that model, and takes a seat when the Fleet serves it.
 
 ## 8. Prearranged trades
 
