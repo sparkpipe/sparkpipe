@@ -1,5 +1,6 @@
 window.SP_PRICING = {
   "vatRate": 0.1,
+  "swiftVatRate": 0,
   "demoFrom": "2026-12-01",
   "weeksFrom": "2027-01-04",
   "fleets": [
@@ -13,15 +14,6 @@ window.SP_PRICING = {
       "storageTB": 4
     },
     {
-      "id": "F2",
-      "name": "Fleet 2",
-      "kind": "M5U",
-      "state": "building",
-      "rate": 1,
-      "demo": false,
-      "storageTB": 4
-    },
-    {
       "id": "F3",
       "name": "Fleet 3",
       "kind": "16 Sparks",
@@ -31,7 +23,6 @@ window.SP_PRICING = {
       "storageTB": 4
     }
   ],
-  "accelerators": [],
   "models": [
     { "id": "kimi-k3", "name": "Kimi K3", "decode": 16.2, "prefill": 590 },
     { "id": "glm-5.3", "name": "GLM 5.3", "decode": 28.9, "prefill": 1162 },
@@ -93,10 +84,5 @@ window.SP_PRICING = {
     "demoDaysAhead": 7,
     "demoHoursPerWeek": 24,
     "maintenanceHoursPerWeek": 3
-  },
-  "accelerator": {
-    "maxBid": 10,
-    "defaultWait": 300,
-    "maxWait": 600
   }
 };

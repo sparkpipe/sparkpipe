@@ -6,21 +6,20 @@
 <title>Payments · SparkPipe</title>
 <meta name="description" content="Your SparkPipe payments: purchases of hour-credits and their receipts.">
 <meta name="robots" content="noindex">
-<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#0a0c10">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
-<link rel="stylesheet" href="site.css?v=dcbd7de8">
-<link rel="stylesheet" href="checkout.css?v=2">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400..800&family=JetBrains+Mono:wght@400..700&display=swap">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
+<link rel="stylesheet" href="checkout.css?v=3">
 </head>
 <body>
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">payments</span></a>
+    <a class="brand" href="index.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">payments</span></a>
     <nav class="nav-links" aria-label="Sections">
       <a href="fleets.html">Fleet List</a>
       <a href="index.html#prices">Prices</a>
@@ -45,6 +44,7 @@
     <h2 id="st-title">Checking your payment…</h2>
     <ol class="timeline" id="st-line"><li>Invoice</li><li>Payment seen</li><li>Confirmed</li><li>Hours issued</li></ol>
     <p class="flash" id="st-text"></p>
+    <div class="table-wrap" id="st-bank-wrap" hidden><table style="min-width: 0"><tbody id="st-bank"></tbody></table></div>
     <div class="actions" id="st-actions"></div>
   </section>
 
@@ -83,11 +83,17 @@
       <ul class="perks">
         <li><span>Each purchase of HC lapses 12 months after it is issued unless you book with it, and the HC that lapses first is spent first. <a href="market.html">Your account</a> shows every lot.</span></li>
         <li><span>In <a href="market.html">your account</a>, book demo hours from <span data-start="demo">1 December 2026</span> and weeks on a fleet pinned to you from <span data-start="weeks">4 January 2027</span>, or join the waitlist. No booking is ever bumped.</span></li>
-        <li><span>Receipts go to <b class="email-here"></b>. A card payment's card slip is its VAT document; for a bank transfer or virtual account we issue an electronic tax invoice (세금계산서) to the Korean business registration number you gave. For anything else, write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</span></li>
+        <li><span>Receipts go to <b class="email-here"></b>. A card payment's card slip is its VAT document; for a bank transfer or virtual account in won we issue an electronic tax invoice (세금계산서) to the Korean business registration number you gave; a USD bank transfer (SWIFT) carries 0% VAT, shown on the invoice we email. For anything else, write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</span></li>
       </ul>
     </section>
 
 
+
+    <section class="card" id="transfers" hidden>
+      <p class="label">USD bank transfers (SWIFT) to make</p>
+      <p class="hint">Send each amount by SWIFT from your company's own account outside Korea, with its payment reference in the payment details and charges OUR, so that the whole amount arrives. Your HC is issued once the whole amount reaches our account. VAT is 0% on these transfers.</p>
+      <div class="stack" id="transfer-list"></div>
+    </section>
 
     <section class="card">
       <p class="label">Orders</p>
@@ -106,14 +112,14 @@
   <div class="wrap">
     <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
     <nav aria-label="Footer"><a href="index.html">Home</a><a href="market.html">Your account</a><a href="fleets.html">Fleet List</a><a href="agreement.html">Customer Agreement</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
-    <span>Card and won payments are processed by Toss Payments; stablecoin payments by CoinPayments.</span>
+    <span>Card and won payments are processed by Toss Payments; stablecoin payments by CoinPayments. USD bank transfers (SWIFT) go straight to our US dollar account in Korea.</span>
   </div>
 </footer>
 
 <script src="https://js.tosspayments.com/v2/standard" id="toss-sdk" async></script>
 <script src="pricing.js"></script>
 <script src="prices.js"></script>
-<script src="checkout.js?v=3"></script>
+<script src="checkout.js?v=4"></script>
 <script>
 (() => {
   const P = window.SP_PRICING, SP = window.SP;
@@ -123,14 +129,28 @@
   const ORDER = /^SP[A-Z2-7]{16}$/;
   const nice = (day) => (day ? new Date(day.slice(0, 10) + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) : '-');
   const cell = (content, cls) => { const td = document.createElement('td'); if (content instanceof Node) td.append(content); else td.textContent = content; if (cls) td.className = cls; return td; };
+  const head = (text) => { const th = document.createElement('th'); th.textContent = text; return th; };
   const row = (cells) => { const tr = document.createElement('tr'); tr.append(...cells); return tr; };
   const link = (href, text, cls) => { const a = document.createElement('a'); a.href = href; a.textContent = text; if (cls) a.className = cls; return a; };
   const hc = (text) => (+text).toLocaleString('en-US', { maximumFractionDigits: 6 });
-  const what = (o) => {
-    const amount = o.issued && +o.issuedHours < +o.hours ? hc(o.issuedHours) + ' of ' + hc(o.hours) : hc(o.hours);
-    return amount + ' HC';
-  };
   const unit = (o) => (o.product === 'credits' ? ' HC' : ' fleet-hours');
+  const what = (o) => {
+    const total = o.hc || o.hours;
+    return (o.issued && o.issuedHC && +o.issuedHC < +total ? hc(o.issuedHC) + ' of ' + hc(total) : hc(total)) + unit(o);
+  };
+  const bankTable = (rows, title) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'table-wrap';
+    const table = document.createElement('table');
+    table.style.minWidth = '0';
+    if (title) { const thead = document.createElement('thead'); thead.append(row(title.map(head))); table.append(thead); }
+    const tbody = document.createElement('tbody');
+    tbody.append(...rows.map(([label, value]) => row([cell(label), cell(value)])));
+    table.append(tbody);
+    wrap.append(table);
+    return wrap;
+  };
+  const details = (o) => 'account.html?' + (SP.sandbox ? 'sandbox&' : '') + 'order=' + o.order;
   let me = null, watching = new URLSearchParams(window.location.search).get('order'), timer = null;
 
   const renderStatus = (o) => {
@@ -141,18 +161,21 @@
     const actions = [];
     let title, text, kind;
     const part = o.received && +o.received > 0 && +o.received < +o.total;
-    const toss = o.processor === 'toss' ? SP.tossStatus(o) : null;
-    if (toss) {
-      ({ title, text, kind } = toss);
-      [...$('st-line').children].forEach((li, i) => { li.className = i < toss.step ? 'done' : i === toss.step && OPEN.has(o.state) ? 'now' : ''; });
-      if (toss.retry) actions.push(link((o.product === 'credits' ? 'buy.html' : 'account.html') + (SP.sandbox ? '?sandbox' : ''), o.product === 'credits' ? 'Buy HC' : 'Pay again', 'btn solid'));
+    const special = o.processor === 'toss' ? SP.tossStatus(o) : o.processor === 'swift' ? SP.swiftStatus(o) : null;
+    const transfer = special && special.bank ? SP.bankRows(o) : [];
+    $('st-bank').replaceChildren(...transfer.map(([label, value]) => row([cell(label), cell(value)])));
+    $('st-bank-wrap').hidden = transfer.length === 0;
+    if (special) {
+      ({ title, text, kind } = special);
+      [...$('st-line').children].forEach((li, i) => { li.className = i < special.step ? 'done' : i === special.step && OPEN.has(o.state) ? 'now' : ''; });
+      if (special.retry) actions.push(link((o.product === 'credits' ? 'buy.html' : 'account.html') + (SP.sandbox ? '?sandbox' : ''), o.product === 'credits' ? 'Buy HC' : 'Pay again', 'btn solid'));
     } else if (o.state === 'completed' && o.issued) {
-      title = +o.issuedHours < +o.hours ? 'Paid in part. Your HC is in.' : 'Paid. Your HC is in.'; kind = 'ok';
-      text = hc(o.issuedHours) + unit(o) + ' are in your account' + (o.product === 'credits' ? ', lapsing in 12 months unless you book with them' : '') + (part ? ', for the ' + SP.usd(o.received) + ' that arrived' : '') + '. The receipt is on its way to your email.';
+      title = +o.issuedHC < +o.hc ? 'Paid in part. Your HC is in.' : 'Paid. Your HC is in.'; kind = 'ok';
+      text = hc(o.issuedHC) + unit(o) + ' are in your account' + (o.product === 'credits' ? ', lapsing in 12 months unless you book with them' : '') + (part ? ', for the ' + SP.usd(o.received) + ' that arrived' : '') + '. The receipt is on its way to your email.';
       if (o.product === 'credits') actions.push(link('market.html', 'Open your account', 'btn solid'));
     } else if (part && OPEN.has(o.state)) {
       title = 'Part of the payment arrived.'; kind = 'error';
-      text = 'We received ' + SP.usd(o.received) + ' of ' + SP.usd(o.total) + ' in ' + SP.coinName(o.coin) + '. While the payment page is open you can send the remaining ' + SP.usd(+o.total - +o.received) + ' to the same address. Otherwise, if CoinPayments completes the payment with what arrived, it buys ' + hc(Math.floor(+o.received / +o.total * +o.hours * 1e6) / 1e6) + unit(o) + ', in proportion; if it does not, CoinPayments refunds it when the payment page closes and emails you a link to claim it.';
+      text = 'We received ' + SP.usd(o.received) + ' of ' + SP.usd(o.total) + ' in ' + SP.coinName(o.coin) + '. While the payment page is open you can send the remaining ' + SP.usd(+o.total - +o.received) + ' to the same address. Otherwise, if CoinPayments completes the payment with what arrived, it buys ' + hc(Math.floor(+o.received / +o.total * +o.hc * 1e6) / 1e6) + unit(o) + ', in proportion; if it does not, CoinPayments refunds it when the payment page closes and emails you a link to claim it.';
       if (o.checkout && /^https:\/\//.test(o.checkout)) actions.push(link(o.checkout, 'Open the payment page', 'btn solid'));
     } else if (o.state === 'created' || o.state === 'unpaid') {
       title = 'Waiting for your payment.';
@@ -208,8 +231,11 @@
     $('s-open').textContent = me.orders.filter((o) => o.state === 'unpaid' || o.state === 'pending' || o.state === 'paid' || o.state === 'waiting').length;
     $('no-orders').hidden = me.orders.length > 0;
     $('orders-wrap').hidden = me.orders.length === 0;
+    const transfers = me.orders.filter((o) => o.processor === 'swift' && o.state === 'unpaid');
+    $('transfers').hidden = transfers.length === 0;
+    $('transfer-list').replaceChildren(...transfers.map((o) => bankTable(SP.bankRows(o), ['Order ' + o.order, what(o)])));
     $('orders').replaceChildren(...me.orders.map((o) => {
-      const action = o.checkout && /^https:\/\//.test(o.checkout) ? link(o.checkout, 'Pay', 'btn small solid') : '';
+      const action = o.checkout && /^https:\/\//.test(o.checkout) ? link(o.checkout, 'Pay', 'btn small solid') : o.processor === 'swift' && o.state === 'unpaid' ? link(details(o), 'Transfer details', 'btn small') : '';
 
       const state = document.createElement('span');
       state.className = 'state' + (o.state === 'completed' ? ' live' : OPEN.has(o.state) ? ' building' : '');

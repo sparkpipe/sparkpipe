@@ -4,16 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SparkPipe Fleet List</title>
-<meta name="description" content="The SparkPipe Fleet List: fleets, prefill accelerators, rates, available models and their licenses.">
-<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
+<meta name="description" content="The SparkPipe Fleet List: fleets, their cache and storage, rates, available models and their licenses.">
+<meta name="theme-color" content="#0a0c10">
 <link rel="alternate" hreflang="en" href="https://sparkpipe.ai/fleets.html">
 <link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/fleets-ko.html">
 <link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/fleets.html">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<link rel="stylesheet" href="site.css?v=dcbd7de8">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
 <style>
 .policy { padding-block: 48px 64px; display: grid; gap: 28px; }
 .policy h1 { font-size: clamp(36px, 6vw, 64px); }
@@ -36,13 +35,12 @@
 <body>
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">fleet list</span></a>
+    <a class="brand" href="index.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">fleet list</span></a>
     <nav class="nav-links" aria-label="Sections">
       <a href="#fleets">Fleets</a>
-      <a href="#accelerators">Accelerators</a>
       <a href="#models">Models</a>
       <a href="#speculation">Speculation</a>
-      <a href="#estimates">Estimates</a>
+      <a href="#prefill">Long prompts</a>
       <a href="terms.html">Terms</a>
       <a href="index.html">Home</a>
     </nav>
@@ -56,7 +54,7 @@
   <section>
     <h1>Fleet List</h1>
     <p class="effective">Updated 1 November 2026</p>
-    <p>This page is the Fleet List, with the prefill accelerators and the available models, that the <a href="agreement.html">SparkPipe Customer Agreement</a> refers to. Every fleet and every accelerator is made up of machines we operate ourselves in Seoul. A fleet's Rate is the number of hour-credits (HC) one hour of it costs; a week on it costs <span data-week="hc">144</span> HC times its Rate. The demo fleet is booked only by the hour and is never pinned. Every fleet gives the customer who holds it <span data-storage>4 TB</span> of storage. The Korean version (<a href="fleets-ko.html" hreflang="ko">fleets-ko.html</a>) has the same content and prevails if they differ.</p>
+    <p>This page is the Fleet List, with the available models, that the <a href="agreement.html">SparkPipe Customer Agreement</a> refers to. Every fleet is made up of machines we operate ourselves in Seoul. A fleet's Rate is the number of hour-credits (HC) one hour of it costs; a week on it costs <span data-week="hc">144</span> HC times its Rate. The demo fleet is booked only by the hour and is never pinned. Every fleet gives the customer who holds it 8 TB of cache and <span data-storage>4 TB</span> of storage. The Korean version (<a href="fleets-ko.html" hreflang="ko">fleets-ko.html</a>) has the same content and prevails if they differ.</p>
   </section>
 
   <div class="notice"><p><b>The terms are published for review.</b> Demo hours can be booked from <span data-start="demo">1 December 2026</span>, and weeks on a pinned fleet from <span data-start="weeks">4 January 2027</span>.</p></div>
@@ -65,30 +63,19 @@
     <h2>Fleets</h2>
     <div class="scroll">
     <table>
-      <tr><th>Fleet</th><th>Machines</th><th>State</th><th>Booked</th><th class="num">HC an hour (Rate)</th><th class="num">Customer storage</th><th>Models</th></tr>
-      <tr><td><b>Fleet 1</b></td><td>16 NVIDIA DGX Spark (GB10), 128 GB of memory each, joined by a 100 Gb/s RDMA switch and direct pair links</td><td>Serving</td><td>Demo fleet: by the hour</td><td class="num">1</td><td class="num">4 TB</td><td>The models below</td></tr>
-      <tr><td><b>Fleet 2</b></td><td>Eight Apple Mac Studio (M5 Ultra, 256 GB each at 1.2 TB/s: 2 TB at 9.6 TB/s in all, 2.2 times Fleet 1's memory bandwidth)</td><td>Under construction</td><td>By the week, pinned</td><td class="num">1</td><td class="num">4 TB</td><td>Listed here when the fleet opens</td></tr>
-      <tr><td><b>Fleet 3</b></td><td>16 NVIDIA DGX Spark (GB10)</td><td>Under construction</td><td>By the week, pinned</td><td class="num">1</td><td class="num">4 TB</td><td>Listed here when the fleet opens</td></tr>
+      <tr><th>Fleet</th><th>Machines</th><th>State</th><th>Booked</th><th class="num">HC an hour (Rate)</th><th class="num">Cache</th><th class="num">Customer storage</th><th>Models</th></tr>
+      <tr><td><b>Fleet 1</b></td><td>16 NVIDIA DGX Spark (GB10), 128 GB of memory each, joined by a 100 Gb/s RDMA switch and direct pair links</td><td>Serving</td><td>Demo fleet: by the hour</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>The models below</td></tr>
+      <tr><td><b>Fleet 3</b></td><td>16 NVIDIA DGX Spark (GB10)</td><td>Under construction</td><td>By the week, pinned</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>Listed here when the fleet opens</td></tr>
     </table>
     </div>
-    <p>Our system publishes live capacity, with each fleet's state and whether it is the demo fleet, pinned or free, at <span class="mono">https://sparkpipe.ai/availability.txt</span>, regenerated at least every 30 seconds.</p>
+    <p>Each node keeps 1 TB of cache and 500 GB of customer storage on its own NVMe drive, mirrored to its pair partner over the direct pair link, so a fleet holds 8 TB of cache and 4 TB of storage, and a failed node loses neither.</p>
+    <p>Our system publishes live capacity, with each fleet's state, whether it is the demo fleet, pinned or free, and how many waitlist locks are waiting, at <span class="mono">https://sparkpipe.ai/availability.txt</span>, regenerated at least every 30 seconds.</p>
   </section>
 
-  <section id="accelerators">
-    <h2>Prefill accelerators</h2>
-    <p>A prefill accelerator is a group of DGX Sparks that computes the prompt of a request served on any fleet and hands it back to that fleet, which writes the reply. A request uses one only if it asks to. Each accelerator is listed here with its machines, Rate, speed and state.</p>
-    <div class="scroll">
-    <table>
-      <tr><th>Accelerator</th><th>Machines</th><th>State</th><th class="num">× fleet-hour (Rate)</th><th class="num">Speed</th></tr>
-      <tr><td colspan="5">None is serving yet. Each accelerator is listed here, with its Rate and speed, when it serves.</td></tr>
-    </table>
-    </div>
-    <p>An accelerator's Rate follows its computing capacity against a Rate-1 fleet such as Fleet 1: Rate 3 for an accelerator of 48 DGX Sparks, and Rate 6 for one of 96. Its time is charged by the second: an hour of it at priority 1 costs its Rate in HC. A prompt costs its accelerator-seconds, from when the accelerator starts it until it hands it back, × the Rate × the prompt's priority (its queue bid) ÷ 3,600, in HC. For example, 180 accelerator-seconds at Rate 6 and priority 1.5 cost 0.45 HC. Your account offers Standard ×1, Priority ×2 and Rush ×5; through the API a request may set any priority from 1 to 10 in steps of 0.01, and has priority 1 if it sets none. The highest priority is computed first, and equal priorities in the order they arrive. A request that no accelerator starts within its waiting time, 300 seconds unless it sets another of at most 600, is computed on its fleet without one and pays nothing for an accelerator, unless it asks to be refused instead. Accelerators have no guaranteed capacity or speed. The live queue and each accelerator's state are in <a href="market.html">your account</a>; the full rules are in the <a href="agreement.html">Customer Agreement</a>.</p>
-  </section>
 
   <section id="models">
     <h2>Models on Fleet 1</h2>
-    <p>Every model installed on Fleet 1. An <b>offered</b> model can be called on any fleet you hold, through our API with your own keys. A fleet holds one model at a time: a request for a model the fleet has not loaded waits while the fleet switches, usually 20 to 80 seconds. A <b>core</b> model gets ongoing performance work; a <b>qualified</b> model passed the release qualification and serves at the speeds shown; a <b>verifying</b> model serves and passes the chat checks while its tokens are compared with the publisher's reference implementation.</p>
+    <p>Every model installed on Fleet 1. An <b>offered</b> model can be called on any fleet you hold, through our API with your own keys. A model a customer adds to its own storage is listed only in that customer's account. A fleet holds one model at a time: a request for a model the fleet has not loaded waits while the fleet switches, usually 20 to 80 seconds. A <b>core</b> model gets ongoing performance work; a <b>qualified</b> model passed the release qualification and serves at the speeds shown; a <b>verifying</b> model serves and passes the chat checks while its tokens are compared with the publisher's reference implementation.</p>
     <div class="scroll">
     <table>
       <tr><th>Model</th><th>Publisher</th><th>License</th><th class="num">Context window</th><th class="num">Decode, one request</th><th class="num">Prefill, 8K prompt</th><th>Track</th><th>Availability</th></tr>
@@ -115,6 +102,7 @@
     </div>
     <p>Context windows are those served. Decode is one request without speculation, measured on 2026-10-18 with prompts of 7 to 8K tokens. Methods and receipts: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>.</p>
     <p>¹ DeepSeek V4.1 Flash was measured on 2026-10-24 with a prompt of 1,047,883 tokens: decode one request after the prompt, and the prompt's average prefill rate. ² Measured while another workload kept 16 CPU cores busy on every node, so these are lower bounds. ³ Measured on 2026-10-26 with prompts of 6,850 to 7,396 tokens. ⁴ With speculation drafting from the request's own text, a file of about 3,800 tokens rewritten whole with one function renamed runs at 190.9 tok/s on K-EXAONE 2.0, 298.0 on A.X K2 and 513.7 on Solar Open 2, prefill included, with output identical to decoding without speculation (2026-10-26).</p>
+    <p>Qwen 3.8 Max at its published FP8 precision (2.5 TB) is larger than one fleet's 2 TB of memory, so it is served from one of its 4-bit builds (AMD MXFP4, Red Hat or RadixArk NVFP4), which fit one fleet and pass our accuracy A/B.</p>
     <p>Qwen 3.8 Flash is not offered: its license requires a separate agreement with Qwen for any model-as-a-service business, so we use it only inside our company.</p>
   </section>
 
@@ -135,27 +123,10 @@
     <p>Receipts: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>, 2026-10-15 to 2026-10-24.</p>
   </section>
 
-  <section id="estimates">
-    <h2>Near-term speeds for the largest and Korean models (ESTIMATED)</h2>
-    <p><b>ESTIMATED</b> values are projections from our measurements and the hardware's published figures, not measurements. We publish one only when we expect to meet it, and each is replaced by a measurement when the hardware or software behind it is running. Cells marked measured already are.</p>
-    <div class="scroll">
-    <table>
-      <tr><th>Model</th><th class="num">Size</th><th class="num">Decode, Fleet 1</th><th class="num">Decode, Fleet 2</th><th class="num">Fleet 2 with speculation</th></tr>
-      <tr><td><b>Kimi K3</b></td><td class="num">1.56 TB</td><td class="num">16.2 tok/s, measured</td><td class="num">23 tok/s</td><td class="num">35 tok/s</td></tr>
-      <tr><td><b>Qwen 3.8 Max</b>, 4-bit build</td><td class="num">1.37–1.48 TB</td><td class="num">10.4 tok/s, measured</td><td class="num">–</td><td class="num">–</td></tr>
-      <tr><td><b>K-EXAONE 2.0</b>, LG</td><td class="num">1.50 TB</td><td class="num">27.3 tok/s, measured</td><td class="num">–</td><td class="num">–</td></tr>
-      <tr><td><b>A.X K2</b>, SKT</td><td class="num">0.69 TB</td><td class="num">23.8 tok/s, measured</td><td class="num">33 tok/s</td><td class="num">49 tok/s</td></tr>
-    </table>
-    </div>
-    <p><b>Measured on one M5 Ultra Mac Studio</b>, the Fleet 2 machine, with SparkPipe's Metal engine (2026-10-26): Qwen 3.8 27B at its full BF16 precision decodes 20.1 tok/s for one request, 90% of the 22.3 tok/s that the Studio's measured 1.14 TB/s of memory bandwidth allows. Several requests share each read of the weights: 39.0 tok/s in total for 2 requests, 130 for 8, 231 for 16, 366 for 32 and 442 for 64. Its prefill runs at 1,429 tok/s for a 1K-token prompt and 1,501 tok/s for 8K.</p>
-    <p><b>Measured on Fleet 1 alone</b> (the fleet set to prefill only, so it serves no decode meanwhile): a 1M-token Kimi K3 prompt prefills from cold in 15.6 minutes in our latest measurement; a 990,879-token prompt measured on 2026-10-30 took 16.9 minutes, with its first answer 18.0 minutes after the request; a 258,338-token prompt prefills in one 150 s pass. With the prefill accelerators, a 1M-token prompt is estimated at 3 to 6 minutes, depending on how busy they are. Fleet 1 and Fleet 2 together hold 4 TB, and Fleet 3 adds 2 TB more, so a model too large for one fleet at its published precision can run across two: Qwen 3.8 Max in FP8 (2.5 TB) and Inkling in BF16 (1.9 TB).</p>
-    <p>How the estimates are made:</p>
-    <ul>
-      <li><b>Decode:</b> a token takes the time each node needs to read its share of the weights the token uses, at the 245 GB/s measured on Fleet 1, plus a fixed 0.44 ms per layer for the kernels and collectives around those reads. Kimi K3 measures 0.44 ms and GLM 5.3 0.31 ms; that fixed cost, not memory, is most of today's decode time, so the estimates rise as our work lowers it. Fleet 2 is taken at 90% of the Mac Studios' 1.2 TB/s with the same cost per layer and the model split over all eight, which are joined by 50 Gb/s links plus 10 GbE. Qwen 3.8 Max's 10.4 tok/s is not yet explained by this, so it has no Fleet 2 estimate. K-EXAONE 2.0's Fleet 2 estimate is being redone with its experts split evenly over the nodes.</li>
-      <li><b>Speculation</b> on agent coding turns is taken as 1.5 times plain decode, as measured on short edits; whole-file rewrites measure 8.3 times and new prose 1.0 to 1.2 times.</li>
-      <li><b>Prefill accelerators</b> are groups of DGX Sparks that every fleet shares. They compute long prompts and cut prefill time sharply. Because they are shared, a prompt waits for the prompts ahead of it in the queue, which is ordered by priority, so we give a range: 3 to 6 minutes for a 1M-token Kimi K3 prompt (<a href="#accelerators">Prefill accelerators</a>).</li>
-      <li><b>Qwen 3.8 Max</b> at its published FP8 precision (2.5 TB) is larger than one fleet's 2 TB. Its row assumes one of its 4-bit builds (AMD MXFP4, Red Hat or RadixArk NVFP4), which fit one fleet and pass our accuracy A/B.</li>
-    </ul>
+  <section id="prefill">
+    <h2>Long prompts (measured)</h2>
+    <p>Measured on Fleet 1 alone, set to prefill only so that it serves no decode meanwhile: a 1M-token Kimi K3 prompt prefills from cold in 15.6 minutes in our latest measurement; a 990,879-token prompt measured on 2026-10-30 took 16.9 minutes, with its first answer 18.0 minutes after the request; a 258,338-token prompt prefills in one 150 s pass. On a fleet you hold, a prompt is prefilled once and its cache stays, so later turns start from it.</p>
+    <p>Two fleets together hold 4 TB of memory, so a model too large for one fleet at its published precision can run across two, such as Qwen 3.8 Max in FP8 (2.5 TB) or Inkling in BF16 (1.9 TB) with room for its cache.</p>
   </section>
 
   <section id="next-models">

@@ -18,7 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
-from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_HALF_UP, Decimal
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, parseaddr
 
@@ -35,8 +35,10 @@ TERMS = {"ko": "agreement-ko.md", "en": "agreement-en.md"}
 EVENTS = ["invoicePending", "invoicePaid", "invoiceCompleted", "invoiceCancelled", "invoiceTimedOut"]
 OPEN = {"unpaid", "pending", "paid"}
 CLOSED = {"cancelled", "timedout", "deleted", "failed"}
-PROCESSORS = ("coinpayments", "toss")
+PROCESSORS = ("coinpayments", "toss", "swift")
 TOSS_OPEN = ("created", "waiting")
+SWIFT_SETTINGS = {"beneficiary": "SPARKPIPE_PAY_SWIFT_BENEFICIARY", "bank": "SPARKPIPE_PAY_SWIFT_BANK", "address": "SPARKPIPE_PAY_SWIFT_BANK_ADDRESS", "account": "SPARKPIPE_PAY_SWIFT_ACCOUNT", "bic": "SPARKPIPE_PAY_SWIFT_BIC"}
+BIC = re.compile(r"^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$")
 TOSS_SECONDS = 2700
 TOSS_KEY = re.compile(r"^[!-~]{1,200}$")
 REFUND_CLAUSES = ("3.2", "3.5", "10.4", "16.4", "law")
@@ -186,11 +188,14 @@ class Config:
         self.toss = bool(self.toss_client and self.toss_secret)
         self.pool_upstream = env.get("SPARKPIPE_POOL_UPSTREAM", "").rstrip("/")
         self.pool_key = read_secret(env.get("SPARKPIPE_POOL_KEY_FILE")).decode()
-        self.sandbox_accelerators = json.loads(env.get("SPARKPIPE_PAY_SANDBOX_ACCELERATORS") or "[]") if self.sandbox else []
         self.reconcile_seconds = int(env.get("SPARKPIPE_PAY_RECONCILE_SECONDS", "300"))
         self.smtp = env.get("SPARKPIPE_PAY_SMTP", "127.0.0.1:25")
         self.mail_from = env.get("SPARKPIPE_PAY_MAIL_FROM", "SparkPipe <noreply@sparkpipe.ai>")
         self.notify = env.get("SPARKPIPE_PAY_NOTIFY", "hyor@sparkpipe.ai")
+        self.swift_bank = {name: env.get(key, "").strip() for name, key in SWIFT_SETTINGS.items()}
+        if any(self.swift_bank.values()) and not (all(self.swift_bank.values()) and BIC.match(self.swift_bank["bic"]) and all(len(v) <= 200 and v.isprintable() for v in self.swift_bank.values())):
+            raise ValueError("Set all of " + ", ".join(SWIFT_SETTINGS.values()) + " on one line each, with an 8 or 11 character SWIFT/BIC, or leave them all empty")
+        self.swift = all(self.swift_bank.values()) and not self.sandbox
 
     def path(self, name):
         return os.path.join(self.data, name)
@@ -332,11 +337,11 @@ class Book:
         elif kind == "acceptance":
             self.accounts[data["account"]]["accepted"] = dict({name: data.get(name) for name in TERMS}, at=line["at"])
         elif kind == "order":
-            self.orders[data["order"]] = dict(data, created=line["at"], state="created", invoice=None, link=None, issued=False, paid=None, refunds=[])
+            self.orders[data["order"]] = dict(data, created=line["at"], state="unpaid" if data.get("processor") == "swift" else "created", invoice=None, link=None, issued=False, paid=None, refunds=[])
         elif kind == "invoice":
             order.update(invoice=data["invoice"], link=data["link"], state="unpaid")
             self.invoices[data["invoice"]] = data["order"]
-        elif kind in ("invoice_failed", "invoice_state", "toss_state"):
+        elif kind in ("invoice_failed", "invoice_state", "toss_state", "swift_state"):
             order.update({name: data[name] for name in ("state", "received", "reason", "method", "deposit", "expires") if name in data})
             order["state"] = "failed" if kind == "invoice_failed" else order["state"]
         elif kind == "toss_payment":
@@ -388,6 +393,13 @@ def quantity_field(value, least):
     if not re.fullmatch(r"[0-9]{1,9}(\.[0-9]{1,6})?", text) or Decimal(text) < least:
         raise Refusal(f"Buy at least {least} HC, to at most six decimal places.")
     return Decimal(text)
+
+
+def usd_field(value):
+    text = str(value).strip() if isinstance(value, (int, str)) and not isinstance(value, bool) else ""
+    if not re.fullmatch(r"[0-9]{1,9}(\.[0-9]{1,2})?", text) or not Decimal(text) > 0:
+        raise Refusal("Enter an amount in US dollars, more than 0 and to the cent.")
+    return money(text)
 
 
 def coin_field(value):
@@ -449,16 +461,53 @@ def tax_note(order, payment):
     return ["", "For an electronic tax invoice (세금계산서) for this payment, reply with your Korean business registration number."]
 
 
+def swift_invoice(quote, now, back):
+    bank = quote["bank"]
+    return "\n".join([
+        f"Invoice {quote['order']}, {now.astimezone(KST).strftime('%Y-%m-%d')}",
+        "Seller: HYOR AI Tech Ltd. (SparkPipe), Seoul, Republic of Korea",
+        f"Buyer: {quote['company']} <{quote['email']}>",
+        f"Buyer's declaration: {quote['declaration']}",
+        "",
+        f"{quote['hc']} SparkPipe hour-credits at {quote['price']} USD each, usable for 12 months: {quote['net']} USD",
+        f"VAT, 0% on SWIFT payments: {quote['vat']} USD",
+        f"Total due: {quote['total']} USD",
+        "",
+        f"Pay {quote['total']} USD by SWIFT bank transfer, from {quote['company']}'s own account outside the Republic of Korea, to:",
+        f"Beneficiary: {bank['beneficiary']}",
+        f"Account number: {bank['account']}",
+        f"Bank: {bank['bank']}",
+        f"Bank address: {bank['address']}",
+        f"SWIFT/BIC: {bank['bic']}",
+        f"Payment reference: {quote['reference']}",
+        "",
+        f"Write the payment reference {quote['reference']} in the payment details, so that we can match your transfer. Choose charges OUR: your bank's and any intermediary bank's charges are yours, so that the whole {quote['total']} USD arrives (Customer Agreement clause 3.4).",
+        "We issue the hour-credits once the whole amount has reached our account. A transfer that arrives short issues nothing until the rest arrives with the same reference.",
+        "VAT is 0% on a SWIFT payment from a customer with no place of business in the Republic of Korea (clause 3.3(b)).",
+        "",
+        f"Follow the order: {back}",
+        "",
+        "HYOR AI Tech Ltd. (SparkPipe), Seoul. Reply to this email with any question.",
+    ])
+
+
+def declaration(company):
+    return f"{company} has no place of business in the Republic of Korea and pays this order by bank transfer in US dollars from its own account outside the Republic of Korea (Customer Agreement clause 3.3(b))."
+
+
 def receipt(cfg, order, issued, payment):
-    currency = order.get("currency", "USD")
+    currency, processor = order.get("currency", "USD"), order.get("processor")
     coin = ", ".join(sorted({symbol.split(".")[0] for symbol in payment["paidWith"]}))
-    way = f"by {METHOD_EN.get(payment.get('method'), payment.get('method'))} through Toss Payments" if order.get("processor") == "toss" else f"in {coin}"
+    way = f"by {METHOD_EN.get(payment.get('method'), payment.get('method'))} through Toss Payments" if processor == "toss" else "by SWIFT bank transfer" if processor == "swift" else f"in {coin}"
     what = f"{issued['hc']} hour-credits, usable until {market.stamp_time(issued['expires']).astimezone(KST).strftime('%Y-%m-%d')}"
+    extra = Decimal(payment["received"]) - Decimal(order["total"]) if processor == "swift" else Decimal(0)
     if issued.get("short"):
         lines = [f"Order {order['order']} was for {order['total']} USD; {payment['received']} USD arrived. We issued what it covers: {what}.", "", f"Received in {coin}: {payment['received']} USD, VAT included"]
     else:
-        lines = [f"We received your payment for order {order['order']}: {what}.", "", f"Subtotal: {amount_text(order['net'], currency)}", f"VAT: {amount_text(order['vat'], currency)}",
+        lines = [f"We received your payment for order {order['order']}: {what}.", "", f"Subtotal: {amount_text(order['net'], currency)}", f"VAT{', 0% on SWIFT payments' if processor == 'swift' else ''}: {amount_text(order['vat'], currency)}",
                  f"Total paid {way}: {amount_text(order['total'], currency)}"] + tax_note(order, payment)
+    if extra > 0:
+        lines += ["", f"We received {payment['received']} USD: the {text_money(extra)} USD above the total goes back by SWIFT to the account it came from."]
     return "\n".join(lines + ["", f"They are in your account: {cfg.public}/market.html", "", "HYOR AI Tech Ltd. (SparkPipe), Seoul. Reply to this email with any question."])
 
 
@@ -617,20 +666,21 @@ class App:
                 "orders": [self.shown(o) for o in mine[:50]],
             }
 
-    def credit_terms(self, pricing, body, currency):
+    def credit_terms(self, pricing, body, currency, rate=None):
         offer = pricing["hc"]
         count = quantity_field(body.get("hc"), offer["min"])
         step = max((p for p in offer["prices"] if p["from"] <= count), key=lambda p: p["from"])
         price = won(step["krw"]) if currency == KRW else money(step["usd"])
+        rate = Decimal(str(pricing["vatRate"] if rate is None else rate))
         net = (price * count).quantize(WON if currency == KRW else CENT, rounding=ROUND_HALF_UP)
-        vat = (net * Decimal(str(pricing["vatRate"]))).quantize(WON if currency == KRW else CENT, rounding=ROUND_HALF_UP)
+        vat = (net * rate).quantize(WON if currency == KRW else CENT, rounding=ROUND_HALF_UP)
         shown = text_won if currency == KRW else text_money
-        return {"product": "credits", "currency": "KRW" if currency == KRW else "USD", "hc": format(count.normalize(), "f"), "price": shown(price), "net": shown(net), "vat": shown(vat), "total": shown(net + vat)}
+        return {"product": "credits", "currency": "KRW" if currency == KRW else "USD", "hc": format(count.normalize(), "f"), "price": shown(price), "net": shown(net), "vatRate": format(rate.normalize(), "f"), "vat": shown(vat), "total": shown(net + vat)}
 
-    def priced(self, pricing, body, account, currency, ip, agent):
+    def priced(self, pricing, body, account, currency, ip, agent, rate=None):
         if body.get("product") != "credits":
             raise Refusal("Choose hour-credits: product credits with the number of HC.")
-        quote = self.credit_terms(pricing, body, currency)
+        quote = self.credit_terms(pricing, body, currency, rate)
         self.require_terms(account, body, ip, agent)
         return quote
 
@@ -643,11 +693,13 @@ class App:
         self.throttle("order", ip)
         processor = body.get("processor", "coinpayments")
         if processor not in PROCESSORS:
-            raise Refusal("Pay by card or bank transfer through Toss Payments, or in USDC or USDT.")
+            raise Refusal("Pay by card or bank transfer through Toss Payments, in USDC or USDT, or in US dollars by SWIFT.")
         if processor == "toss":
             return self.toss_order(body, account, ip, agent)
         if self.cfg.sandbox:
             raise Refusal("The sandbox sells HC instantly at no charge, or through Toss Payments in test mode.", 404)
+        if processor == "swift":
+            return self.swift_order(body, account, ip, agent)
         coin = coin_field(body.get("coin"))
         pricing = self.cfg.pricing()
         with self.book.lock:
@@ -667,7 +719,7 @@ class App:
         return {"order": quote["order"], "checkout": link}
 
     def shown(self, order):
-        shown = {key: order.get(key) for key in ("order", "product", "hc", "price", "net", "vat", "total", "coin", "state", "issued", "created", "paid", "received", "processor", "method", "deposit", "refunded", "reason", "expires")}
+        shown = {key: order.get(key) for key in ("order", "product", "hc", "price", "net", "vatRate", "vat", "total", "coin", "state", "issued", "created", "paid", "received", "processor", "method", "deposit", "refunded", "reason", "expires", "reference", "bank")}
         shown["currency"] = order.get("currency", "USD")
         shown["issuedHC"] = order.get("issued_hc")
         shown["checkout"] = order["link"] if order["state"] in ("unpaid", "pending") else None
@@ -788,6 +840,74 @@ class App:
         subject = f"Paid in part: {order['company']}, {payment['received']} of {total}" if short else f"Paid: {order['company']}, {total}"
         self.mail(self.cfg.notify, subject, f"Order {order_id}: {credits} of {order['hc']} HC for {order['company']} <{order['email']}>, {received} received of {total} in {', '.join(payment['paidWith'])}.")
         return issued
+
+    def swift_config(self):
+        return {"enabled": self.cfg.swift}
+
+    def swift_reference(self):
+        taken = {o.get("reference") for o in self.book.orders.values()}
+        while True:
+            found = new_id("SW")[:10]
+            if found not in taken:
+                return found
+
+    def swift_order(self, body, account, ip, agent):
+        if not self.cfg.swift:
+            raise Refusal("SWIFT payments are not open yet. Pay through Toss Payments or in USDC or USDT, or write to hyor@sparkpipe.ai.", 503, "swift_closed")
+        if body.get("declare") is not True:
+            raise Refusal("A USD bank transfer (SWIFT) is for a customer with no place of business in the Republic of Korea, paying from its own account outside the Republic of Korea. Confirm both to pay this way.", 400, "declaration")
+        now, pricing = clock(), self.cfg.pricing()
+        with self.book.lock:
+            record = self.book.accounts[account]
+            quote = self.priced(pricing, body, account, "USD", ip, agent, pricing["swiftVatRate"])
+            quote.update(order=new_id("SP"), account=account, email=record["email"], company=record["company"], processor="swift", reference=self.swift_reference(), bank=dict(self.cfg.swift_bank), declaration=declaration(record["company"]))
+            self.book.append("order", dict(quote, ip=ip, agent=agent))
+        self.mail(quote["email"], f"Invoice for SparkPipe order {quote['order']}: {quote['total']} USD by SWIFT", swift_invoice(quote, now, self.back(quote["order"])))
+        self.mail(self.cfg.notify, f"SWIFT order: {quote['company']}, {quote['total']} USD", f"Order {quote['order']}, payment reference {quote['reference']}: {quote['hc']} HC for {self.who(account)}, {quote['total']} USD by SWIFT with {quote['vat']} USD VAT. "
+                  f"When it reaches the account: sparkpipe_pay.py swift-confirm {quote['reference']} USD")
+        log(f"order {quote['order']}: SWIFT for {quote['total']} USD, reference {quote['reference']}")
+        return {key: quote[key] for key in ("order", "processor", "reference", "hc", "price", "net", "vatRate", "vat", "total", "currency", "bank")}
+
+    def swift_find(self, key):
+        order = self.book.orders.get(key) or next((o for o in self.book.orders.values() if o.get("reference") == key), None)
+        if not order or order.get("processor") != "swift":
+            raise Refusal("No SWIFT order has that order number or payment reference.")
+        return order
+
+    def swift_confirm(self, key, amount, note=""):
+        amount = usd_field(amount)
+        with self.book.lock:
+            order = self.swift_find(key)
+            total = money(order["total"])
+            if order["issued"] or order["state"] != "unpaid":
+                raise Refusal(f"{order['order']} is {order['state']}: nothing recorded. Send what arrived for it back by SWIFT to the account it came from.")
+            if amount < total:
+                raise Refusal(f"{text_money(amount)} USD is less than the invoice total of {order['total']} USD: nothing recorded and no HC issued. The customer pays the whole amount (clause 3.4): ask for the remaining {text_money(total - amount)} USD, and once it arrives confirm the whole amount received.")
+            self.book.append("swift_state", {"order": order["order"], "account": order["account"], "state": "paid", "received": text_money(amount), "note": note})
+            payment = {"order": order["order"], "processor": "swift", "reference": order["reference"], "total": order["total"], "received": text_money(amount), "currency": "USD", "paidWith": ["SWIFT"]}
+            issued = self.issue(order, payment, order["hc"], order["net"])
+        if amount > total:
+            self.mail(self.cfg.notify, f"Overpaid by SWIFT: {order['order']}", f"Order {order['order']} (reference {order['reference']}) for {order['total']} USD received {text_money(amount)} USD. Send the {text_money(amount - total)} USD above the total back by SWIFT to the account it came from, "
+                      f"then record it: sparkpipe_pay.py refund {order['order']} 3.5 {text_money(amount - total)} REASON")
+        return {"order": order["order"], "received": text_money(amount), "issued": issued["hc"], "excess": text_money(amount - total)}
+
+    def swift_cancel(self, key, reason):
+        if not reason:
+            raise Refusal("Give the reason for cancelling.")
+        with self.book.lock:
+            order = self.swift_find(key)
+            if order["issued"] or order["state"] != "unpaid":
+                raise Refusal(f"{order['order']} is {order['state']}: only an unpaid SWIFT order can be cancelled.")
+            data = {"order": order["order"], "account": order["account"], "state": "cancelled", "reason": reason}
+            self.book.append("swift_state", data)
+        self.mail(order["email"], f"Cancelled: SparkPipe order {order['order']}", "\n".join([
+            f"We cancelled order {order['order']} (payment reference {order['reference']}): {reason}",
+            "",
+            "No hour-credits were issued for it. Do not send a transfer for this order; place a new order to buy HC. A transfer that still arrives for it goes back by SWIFT to the account it came from.",
+            "",
+            "HYOR AI Tech Ltd. (SparkPipe), Seoul. Reply to this email with any question.",
+        ]))
+        return data
 
     def toss_config(self):
         return {"enabled": self.cfg.toss, "clientKey": self.cfg.toss_client or None, "variantKey": self.cfg.toss_variant, "test": self.cfg.sandbox}
@@ -966,46 +1086,57 @@ class App:
 
     def refund(self, order_id, clause, amount, reason, account=None):
         order = self.book.orders.get(order_id)
-        if not order or order.get("processor") != "toss" or not order["issued"] or not order.get("payment_key"):
-            raise Refusal(f"{order_id} is not a Toss Payments payment that issued HC.")
+        swift = bool(order) and order.get("processor") == "swift"
+        if not order or not order["issued"] or not (swift or (order.get("processor") == "toss" and order.get("payment_key"))):
+            raise Refusal(f"{order_id} is not a Toss Payments or SWIFT payment that issued HC.")
         if clause not in REFUND_CLAUSES or not reason:
             raise Refusal("Name the clause of the Customer Agreement that allows the refund (" + ", ".join(REFUND_CLAUSES) + ") and the reason.")
-        remote = toss_payment(self.cfg, order["payment_key"])
-        if remote.get("orderId") != order_id:
+        currency, unit, shown = (order["currency"], CENT, text_money) if swift else (KRW, WON, text_won)
+        remote = None if swift else toss_payment(self.cfg, order["payment_key"])
+        if remote is not None and remote.get("orderId") != order_id:
             raise Refusal(f"Toss Payments does not report {order_id} for this payment key.")
-        balance = Decimal(str(remote.get("balanceAmount") or 0))
-        amount = balance if amount == "all" else won_field(amount)
+        balance = Decimal(order["received"]) - Decimal(order.get("refunded") or "0") if swift else Decimal(str(remote.get("balanceAmount") or 0))
+        amount = balance if amount == "all" else usd_field(amount) if swift else won_field(amount)
         if not 0 < amount <= balance:
-            raise Refusal(f"Refund from 1 KRW to {amount_text(balance, KRW)}, what is left of this payment at Toss Payments.")
+            raise Refusal(f"Refund from {amount_text(unit, currency)} to {amount_text(balance, currency)}, what is left of this payment" + ("." if swift else " at Toss Payments."))
         if clause == "16.4" and amount > self.lapse_due(order_id):
-            raise Refusal(f"Clause 16.4 refunds locked HC that lapsed: {amount_text(max(self.lapse_due(order_id), Decimal(0)), KRW)} of this order is due.")
-        if remote.get("method") == "가상계좌" and not account:
+            raise Refusal(f"Clause 16.4 refunds locked HC that lapsed: {amount_text(max(self.lapse_due(order_id), Decimal(0)), currency)} of this order is due.")
+        excess = Decimal(order["received"]) - Decimal(order["total"]) - sum((Decimal(r["amount"]) for r in order["refunds"] if r["clause"] == "3.5"), Decimal(0)) if swift else Decimal(0)
+        if swift and clause == "3.5" and amount > excess:
+            raise Refusal(f"Clause 3.5 returns what arrived above the invoice total: {amount_text(max(excess, Decimal(0)), currency)} of this order is left to return.")
+        if remote is not None and remote.get("method") == "가상계좌" and not account:
             raise Refusal("A virtual account payment is refunded to a bank account: give the bank code, the account number and the holder's name.")
         debit, lot, moment = Decimal(0), None, market.stamp(self.market.now())
-        if clause not in ("3.2", "16.4"):
+        if clause not in ("3.2", "16.4") and not (swift and clause == "3.5"):
             debit = (Decimal(order["hc"]) * amount / Decimal(order["total"])).quantize(market.HC_STEP, rounding=ROUND_CEILING)
             lot = next((found for found in self.book.market.lots[order["account"]] if found["ref"] == order_id and found["expires"] > moment), None)
             left = lot["hc"] if lot else Decimal(0)
             if debit > left:
-                most = (left * Decimal(order["total"]) / Decimal(order["hc"])).quantize(WON, rounding=ROUND_DOWN)
-                raise Refusal(f"Only {market.text_hc(left)} HC of this order is unspent, unlocked and not lapsed, which refunds at most {amount_text(most, KRW)}.")
-        body = {"cancelReason": f"Customer Agreement clause {clause}: {reason}"[:200], "refundableAmount": int(balance)}
-        if amount < balance:
-            body["cancelAmount"] = int(amount)
-        if account:
-            body["refundReceiveAccount"] = account
-        after = toss_call(self.cfg, "POST", "/v1/payments/" + urllib.parse.quote(order["payment_key"], safe="") + "/cancel", body, f"refund-{order_id}-{int(balance)}")
-        rest = Decimal(str(after.get("balanceAmount")))
-        if rest != balance - amount:
-            raise Refusal(f"Toss Payments left {amount_text(rest, KRW)} of this payment instead of {amount_text(balance - amount, KRW)}; check it in the console before recording anything.", 502)
+                most = (left * Decimal(order["total"]) / Decimal(order["hc"])).quantize(unit, rounding=ROUND_DOWN)
+                raise Refusal(f"Only {market.text_hc(left)} HC of this order is unspent, unlocked and not lapsed, which refunds at most {amount_text(most, currency)}.")
+        rest = balance - amount
+        if not swift:
+            body = {"cancelReason": f"Customer Agreement clause {clause}: {reason}"[:200], "refundableAmount": int(balance)}
+            if amount < balance:
+                body["cancelAmount"] = int(amount)
+            if account:
+                body["refundReceiveAccount"] = account
+            after = toss_call(self.cfg, "POST", "/v1/payments/" + urllib.parse.quote(order["payment_key"], safe="") + "/cancel", body, f"refund-{order_id}-{int(balance)}")
+            rest = Decimal(str(after.get("balanceAmount")))
+            if rest != balance - amount:
+                raise Refusal(f"Toss Payments left {amount_text(rest, KRW)} of this payment instead of {amount_text(balance - amount, KRW)}; check it in the console before recording anything.", 502)
+        data = {"order": order_id, "account": order["account"], "processor": order["processor"], "amount": shown(amount), "balance": shown(rest), "clause": clause, "reason": reason, "hc": market.text_hc(debit)}
+        if not swift:
+            data["paymentKey"] = order["payment_key"]
         with self.book.lock:
-            line = self.book.append("refund", {"order": order_id, "account": order["account"], "processor": "toss", "paymentKey": order["payment_key"], "amount": text_won(amount), "balance": text_won(rest), "clause": clause, "reason": reason, "hc": market.text_hc(debit)})
+            line = self.book.append("refund", data)
             if lot:
                 self.book.append("hc_debit", {"account": order["account"], "hc": market.text_hc(debit), "reason": "refund", "ref": order_id, "lot": lot["lot"], "now": moment})
+        way = "It goes back by SWIFT to the account it came from" if swift else "It goes back by the method you paid with, through Toss Payments"
         self.mail(order["email"], f"Refund: SparkPipe order {order_id}", "\n".join([
-            f"We refunded {amount_text(amount, KRW)} of order {order_id} under clause {clause} of the Customer Agreement: {reason}",
+            f"We refunded {amount_text(amount, currency)} of order {order_id} under clause {clause} of the Customer Agreement: {reason}",
             "",
-            "It goes back by the method you paid with, through Toss Payments" + (f"; {market.text_hc(debit)} HC of the order left your account." if lot else "."),
+            way + (f"; {market.text_hc(debit)} HC of the order left your account." if lot else "."),
             "",
             "HYOR AI Tech Ltd. (SparkPipe), Seoul. Reply to this email with any question.",
         ]))
@@ -1116,6 +1247,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "/market/state": lambda: app.market_state(app.signed_in(self.headers)),
             "/market/ledger": lambda: app.ledger(app.need(self.headers)),
             "/toss/config": app.toss_config,
+            "/swift/config": app.swift_config,
         }
         try:
             app.throttle("read", self.client_ip())
@@ -1216,32 +1348,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
             messages, extra = body.get("messages"), body.get("sparkpipe", {})
             if not isinstance(messages, list) or not messages:
                 raise Refusal("Send the conversation as a non-empty messages list.", 400, "invalid_messages")
-            if not isinstance(extra, dict) or not isinstance(extra.get("fleet", ""), str):
-                raise Refusal("Give sparkpipe as an object, with fleet as a Fleet id.", 400, "invalid_sparkpipe")
+            if not isinstance(extra, dict) or not isinstance(extra.get("fleet", ""), str) or set(extra) - {"fleet"}:
+                raise Refusal("Give sparkpipe as an object whose only field is fleet, a Fleet id.", 400, "invalid_sparkpipe")
             if body.get("model") not in [m["id"] for m in pricing["models"]]:
                 raise Refusal("Choose one of the models: " + ", ".join(m["id"] for m in pricing["models"]) + ".", 404, "model_not_found")
-            options = market.accelerator_field(extra.get("accelerator"), pricing["accelerator"])
             record, fleet = app.market.gateway(self.bearer(), extra.get("fleet"))
             ticket = {"account": record["account"], "key": record["key"], "model": body["model"], "fleet": fleet}
-            accel = app.market.accelerator_join(ticket, options, market.estimate_tokens(messages)) if options else None
         except Refusal as error:
             return self.api_error(error)
         body = {k: v for k, v in body.items() if k != "sparkpipe"}
         if app.cfg.sandbox:
-            return self.simulated(body, messages, ticket, accel)
-        return self.forwarded(body, ticket, accel)
+            return self.simulated(body, messages, ticket)
+        return self.forwarded(body, ticket)
 
-    def simulated(self, body, messages, ticket, accel):
-        app = self.server.app
+    def simulated(self, body, messages, ticket):
         limit = body.get("max_tokens") if isinstance(body.get("max_tokens"), int) and not isinstance(body.get("max_tokens"), bool) else 128
         text, tokens_in, tokens_out = market.simulate(ticket["model"], ticket["fleet"], messages, min(max(limit, 1), 512))
-        if accel and "job" in accel:
-            seconds = Decimal(tokens_in) / accel["accelerator"]["speed"]
-            time.sleep(float(min(seconds, 30)))
-            accel = app.market.accelerator_finish(accel, float(seconds))
         made, ident = int(time.time()), "chatcmpl-" + secrets.token_hex(12)
         usage = {"prompt_tokens": tokens_in, "completion_tokens": tokens_out, "total_tokens": tokens_in + tokens_out}
-        note = {"fleet": ticket["fleet"], "accelerator": accel}
+        note = {"fleet": ticket["fleet"]}
         if body.get("stream") is True:
             self.stream_head()
             for word in text.split(" "):
@@ -1252,21 +1377,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         time.sleep(min(1.0, tokens_out / 40))
         self.reply(200, {"id": ident, "object": "chat.completion", "created": made, "model": ticket["model"], "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}], "usage": usage, "sparkpipe": note})
 
-    def forwarded(self, body, ticket, accel):
+    def forwarded(self, body, ticket):
         app = self.server.app
-        job = accel if accel and "job" in accel else None
-        note = {"fleet": ticket["fleet"], "accelerator": accel}
+        note = {"fleet": ticket["fleet"]}
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {app.cfg.pool_key}", "X-SparkPipe-Public": "1", "X-SparkPipe-Fleet": ticket["fleet"], "X-SparkPipe-Account": ticket["account"]}
-        if job:
-            headers["X-SparkPipe-Accelerator"] = job["accelerator"]["id"]
-
-        def handed(usage, finished=True):
-            if job and note["accelerator"] is job:
-                reported = usage.get("sparkpipe_accelerator_seconds") if finished else None
-                measured = min(time.monotonic() - job["started"], float(job["tokens"] / job["accelerator"]["speed"]))
-                seconds = float(reported) if isinstance(reported, (int, float)) and not isinstance(reported, bool) and reported >= 0 else measured
-                note["accelerator"] = app.market.accelerator_finish(job, seconds if finished else None)
-
         payload = json.dumps(body, ensure_ascii=False).encode()
         request = urllib.request.Request(app.cfg.pool_upstream + "/chat/completions", data=payload, method="POST", headers=headers)
         started = False
@@ -1274,7 +1388,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with urllib.request.urlopen(request, timeout=900) as response:
                 if body.get("stream") is not True:
                     data = json.loads(response.read())
-                    handed(data.get("usage") or {})
                     data["sparkpipe"] = note
                     return self.reply(200, data)
                 self.stream_head()
@@ -1284,16 +1397,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     if not text.startswith(b"data: "):
                         continue
                     if text == b"data: [DONE]":
-                        handed({})
                         self.event({"object": "chat.completion.chunk", "choices": [], "sparkpipe": note})
                         return self.event(b"[DONE]")
-                    try:
-                        handed(json.loads(text[6:]).get("usage") or {})
-                    except (ValueError, AttributeError):
-                        pass
                     self.event(text[6:])
         except urllib.error.HTTPError as error:
-            handed({}, finished=False)
             detail = error.read()[:4096]
             self.send_response(error.code)
             self.send_header("Content-Type", "application/json")
@@ -1302,11 +1409,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(detail)
         except (urllib.error.URLError, OSError, ValueError) as error:
             log(f"fleet upstream: {error}")
-            handed({}, finished=False)
             if not started:
                 self.api_error(Refusal("The Fleet did not answer. Try again in a minute.", 502, "upstream_error"))
-        finally:
-            handed({}, finished=False)
 
 
 def start(cfg, port=None):
@@ -1377,7 +1481,33 @@ def refund(app, argv):
         print(f"{argv[2]}: {error}", file=sys.stderr)
         return 2
     flush(app)
-    print(f"{argv[2]}: refunded {found['amount']} KRW under clause {found['clause']}, {found['balance']} KRW left at Toss Payments, {found['hc']} HC debited")
+    if found["processor"] == "swift":
+        print(f"{argv[2]}: recorded a refund of {found['amount']} USD under clause {found['clause']}, {found['balance']} USD left, {found['hc']} HC debited. Send {found['amount']} USD by SWIFT to the account the payment came from.")
+    else:
+        print(f"{argv[2]}: refunded {found['amount']} KRW under clause {found['clause']}, {found['balance']} KRW left at Toss Payments, {found['hc']} HC debited")
+    return 0
+
+
+def swift_confirm(app, argv):
+    try:
+        found = app.swift_confirm(argv[2], argv[3], argv[4].strip()[:200] if len(argv) == 5 else "")
+    except Refusal as error:
+        print(f"{argv[2]}: {error}", file=sys.stderr)
+        return 2
+    flush(app)
+    extra = f"; {found['excess']} USD above the total: send it back by SWIFT and record it with refund {found['order']} 3.5 {found['excess']} REASON" if Decimal(found["excess"]) > 0 else ""
+    print(f"{found['order']}: {found['received']} USD received, {found['issued']} HC issued{extra}")
+    return 0
+
+
+def swift_cancel(app, argv):
+    try:
+        found = app.swift_cancel(argv[2], argv[3].strip()[:200])
+    except Refusal as error:
+        print(f"{argv[2]}: {error}", file=sys.stderr)
+        return 2
+    flush(app)
+    print(f"{found['order']}: cancelled, the customer is emailed")
     return 0
 
 
@@ -1409,6 +1539,9 @@ COMMANDS = {
     ("refund", 9): lambda cfg, app, argv: refund(app, argv),
     ("tax-invoices", 2): lambda cfg, app, argv: tax_invoices(app, argv),
     ("tax-invoice", 4): lambda cfg, app, argv: tax_invoice(app, argv),
+    ("swift-confirm", 4): lambda cfg, app, argv: swift_confirm(app, argv),
+    ("swift-confirm", 5): lambda cfg, app, argv: swift_confirm(app, argv),
+    ("swift-cancel", 4): lambda cfg, app, argv: swift_cancel(app, argv),
 }
 
 
@@ -1422,13 +1555,13 @@ def main(argv):
     if command:
         return command(cfg, App(cfg, Book(cfg.path("ledger.jsonl"))), argv)
     if argv[1:] not in ([], ["serve"]):
-        print("usage: sparkpipe_pay.py [serve|verify|maintenance FLEET YYYY-MM-DD [HOURS]|credit EMAIL HC NOTE|release ORDER|refund ORDER CLAUSE KRW|all REASON [BANK ACCOUNT HOLDER]|tax-invoices|tax-invoice ORDER NUMBER]", file=sys.stderr)
+        print("usage: sparkpipe_pay.py [serve|verify|maintenance FLEET YYYY-MM-DD [HOURS]|credit EMAIL HC NOTE|release ORDER|refund ORDER CLAUSE KRW|USD|all REASON [BANK ACCOUNT HOLDER]|tax-invoices|tax-invoice ORDER NUMBER|swift-confirm ORDER|REFERENCE USD [NOTE]|swift-cancel ORDER|REFERENCE REASON]", file=sys.stderr)
         return 2
     server = start(cfg)
     app = server.app
     threading.Thread(target=app.reconcile_forever, daemon=True).start()
     app.reconcile()
-    log(f"sparkpipe-pay on 127.0.0.1:{server.server_address[1]}, {app.book.count} ledger lines, webhook {cfg.webhook_url}, Toss Payments " + (("test" if cfg.sandbox else "live") + f" at {cfg.public}{cfg.prefix}/toss/webhook" if cfg.toss else "off"))
+    log(f"sparkpipe-pay on 127.0.0.1:{server.server_address[1]}, {app.book.count} ledger lines, webhook {cfg.webhook_url}, Toss Payments " + (("test" if cfg.sandbox else "live") + f" at {cfg.public}{cfg.prefix}/toss/webhook" if cfg.toss else "off") + ", SWIFT " + ("on" if cfg.swift else "off"))
     server.serve_forever()
     return 0
 

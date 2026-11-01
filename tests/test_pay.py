@@ -643,6 +643,8 @@ def check_toss_sandbox(failures, work, fake, mailbox):
             failures.append("the sandbox's free HC purchase stops working beside the test card payments")
         if tester("POST", "/order", {"product": "credits", "hc": 2, "coin": "USDC.BASE"})[0] != 404:
             failures.append("the sandbox opens a CoinPayments invoice")
+        if tester("GET", "/swift/config")[1] != {"enabled": False} or tester("POST", "/order", {"product": "credits", "hc": 2, "processor": "swift", "declare": True})[0] != 404:
+            failures.append("the sandbox takes a SWIFT order")
     finally:
         server.shutdown()
 
@@ -842,17 +844,156 @@ def toss_refunds(failures, cfg, app, fake, buyer, mailbox, card, deposit):
         failures.append("a recorded tax invoice is still listed")
 
 
+BANK = {"SPARKPIPE_PAY_SWIFT_BENEFICIARY": "Test Beneficiary Co", "SPARKPIPE_PAY_SWIFT_BANK": "Test Foreign Exchange Bank", "SPARKPIPE_PAY_SWIFT_BANK_ADDRESS": "1 Test-ro, Jung-gu, Seoul",
+        "SPARKPIPE_PAY_SWIFT_ACCOUNT": "000-000000-00-000", "SPARKPIPE_PAY_SWIFT_BIC": "TESTKRSE"}
+SHOWN_BANK = {"beneficiary": "Test Beneficiary Co", "bank": "Test Foreign Exchange Bank", "address": "1 Test-ro, Jung-gu, Seoul", "account": "000-000000-00-000", "bic": "TESTKRSE"}
+
+
+def swift_env(work, mailbox, name, bank=True):
+    env = {"SPARKPIPE_PAY_DATA": str(work / name), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_API": "http://127.0.0.1:9/api/v2", "COINPAYMENTS_CLIENT_ID": CLIENT,
+           "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"), "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}"}
+    return dict(env, **(BANK if bank else {}))
+
+
+def check_swift(failures):
+    work = Path(tempfile.mkdtemp(prefix="sparkpipe-swift-"))
+    mailbox = serve(FakeSMTP, mail=[])
+    begin = NOW[0]
+    try:
+        site_copy(work)
+        sp.clock = lambda: NOW[0]
+        sp.LIMITS["order"] = (100, 600)
+        for broken in ({"SPARKPIPE_PAY_SWIFT_BIC": ""}, {"SPARKPIPE_PAY_SWIFT_BIC": "TESTKRS"}, {"SPARKPIPE_PAY_SWIFT_ACCOUNT": "000\n111"}):
+            try:
+                sp.Config(dict(swift_env(work, mailbox, "broken"), **broken))
+                failures.append(f"incomplete or malformed SWIFT bank settings are accepted: {broken}")
+            except ValueError:
+                pass
+        server, buyer = started(sp.Config(swift_env(work, mailbox, "closed", bank=False)))
+        try:
+            sign_in(buyer, mailbox, "closed@acme.example", company="Closed Co", accept=True)
+            status, refused = buyer("POST", "/order", {"product": "credits", "hc": 5, "processor": "swift", "declare": True})
+            if buyer("GET", "/swift/config")[1] != {"enabled": False} or status != 503 or refused.get("reason") != "swift_closed" or server.app.book.orders:
+                failures.append(f"a SWIFT order is taken without the bank settings: {status} {refused}")
+        finally:
+            server.shutdown()
+        cfg = sp.Config(swift_env(work, mailbox, "data"))
+        server, buyer = started(cfg)
+        try:
+            sign_in(buyer, mailbox, "intl@acme.example", company="Intl Co", accept=True)
+            swift_flows(failures, cfg, server.app, buyer, mailbox)
+        finally:
+            server.shutdown()
+    finally:
+        NOW[0] = begin
+        mailbox.shutdown()
+        shutil.rmtree(work)
+
+
+def mail_to(mailbox, address, subject):
+    return next((m.get_content() for rcpt, m in mailbox.mail if address in rcpt and m["Subject"] == subject), "")
+
+
+def swift_flows(failures, cfg, app, buyer, mailbox):
+    def caught_up():
+        with app.book.lock, open(app.book.path, "rb") as handle:
+            app.book.catch_up(handle)
+    swift = {"product": "credits", "processor": "swift", "declare": True}
+    if buyer("GET", "/swift/config")[1] != {"enabled": True}:
+        failures.append("the live service does not offer SWIFT with the bank settings set")
+    pricing = cfg.pricing()
+    rates = {name: app.credit_terms(pricing, {"hc": 143}, currency, rate)["vat"] for name, currency, rate in (("swift", "USD", pricing["swiftVatRate"]), ("coin", "USD", None), ("toss", sp.KRW, None))}
+    if rates != {"swift": "0.00", "coin": "286.00", "toss": "371800"}:
+        failures.append(f"VAT is not 0 on SWIFT payments and only on them: {rates}")
+    status, refused = buyer("POST", "/order", dict(swift, hc=143, declare=None))
+    if status != 400 or refused.get("reason") != "declaration" or app.book.orders:
+        failures.append(f"a SWIFT order is taken without the customer's declaration of clause 3.3(b): {status} {refused}")
+    (status, first), (_, second) = (buyer("POST", "/order", dict(swift, hc=count)) for count in (143, 144))
+    if status != 200 or (first["total"], first["net"], first["vat"], first["vatRate"], first["price"], first["currency"], first["processor"]) != ("2860.00", "2860.00", "0.00", "0", "20.00", "USD", "swift") \
+            or (second["total"], second["vat"], second["price"]) != ("2160.00", "0.00", "15.00") or first["bank"] != SHOWN_BANK:
+        failures.append(f"a SWIFT order is not priced on the US dollar ladder with 0% VAT, or lacks the bank details: {status} {first} {second}")
+        return
+    if not re.fullmatch(r"SW[A-Z2-7]{8}", first["reference"]) or first["reference"] == second["reference"] or first["reference"] in first["order"]:
+        failures.append(f"SWIFT orders do not get unique payment references of their own: {first['reference']} {second['reference']}")
+    shown = buyer("GET", "/order/" + first["order"])[1]
+    if (shown["state"], shown["processor"], shown["reference"], shown["vat"], shown["checkout"], shown["issued"], shown["bank"]) != ("unpaid", "swift", first["reference"], "0.00", None, False, SHOWN_BANK):
+        failures.append(f"an unpaid SWIFT order's status: {shown}")
+    if next(o for o in lines_of(cfg, "order") if o["order"] == first["order"])["declaration"] != sp.declaration("Intl Co"):
+        failures.append("a SWIFT order does not store the customer's declaration")
+    app.mails.join()
+    invoice = mail_to(mailbox, "intl@acme.example", f"Invoice for SparkPipe order {first['order']}: 2860.00 USD by SWIFT")
+    for text in ("Total due: 2860.00 USD", "VAT, 0% on SWIFT payments: 0.00 USD", f"Payment reference: {first['reference']}", "Beneficiary: Test Beneficiary Co", "Account number: 000-000000-00-000", "Bank: Test Foreign Exchange Bank",
+                 "Bank address: 1 Test-ro, Jung-gu, Seoul", "SWIFT/BIC: TESTKRSE", "Intl Co has no place of business in the Republic of Korea", "Choose charges OUR"):
+        if text not in invoice:
+            failures.append(f"the SWIFT invoice email lacks {text!r}: {invoice[:200]!r}")
+    if first["reference"] not in mail_to(mailbox, cfg.notify, "SWIFT order: Intl Co, 2860.00 USD"):
+        failures.append("we are not told of a SWIFT order and its reference")
+    for args in (["SWNOTANORDER", "2860.00"], [first["reference"], "0"], [first["reference"], "12.345"], [first["reference"], "abc"], [first["reference"], "-5"], [first["reference"], "2859.99"]):
+        if run_main(cfg, ["swift-confirm"] + args) != 2:
+            failures.append(f"swift-confirm {' '.join(args)} is accepted")
+    caught_up()
+    if buyer("GET", "/order/" + first["order"])[1]["state"] != "unpaid" or buyer("GET", "/account")[1]["hc"] != "0.000000" or "swift_state" in lines_of(cfg):
+        failures.append("a SWIFT transfer below the invoice total is recorded or issues HC")
+    if run_main(cfg, ["swift-confirm", first["reference"], "2860.00", "MT103 20250101"]) != 0:
+        failures.append("the operator cannot confirm a SWIFT transfer by its payment reference")
+        return
+    caught_up()
+    shown = buyer("GET", "/order/" + first["order"])[1]
+    if (shown["state"], shown["issued"], shown["issuedHC"], shown["received"]) != ("completed", True, "143", "2860.00") or buyer("GET", "/account")[1]["hc"] != "143.000000":
+        failures.append(f"a confirmed SWIFT transfer does not issue its HC: {shown}")
+    if lines_of(cfg, "payment")[-1] != {"order": first["order"], "processor": "swift", "reference": first["reference"], "total": "2860.00", "received": "2860.00", "currency": "USD", "paidWith": ["SWIFT"]} \
+            or lines_of(cfg, "swift_state")[-1].get("note") != "MT103 20250101":
+        failures.append(f"the SWIFT payment line: {lines_of(cfg, 'payment')[-1]}")
+    note = mail_to(mailbox, "intl@acme.example", f"Payment received: SparkPipe order {first['order']}")
+    if "Total paid by SWIFT bank transfer: 2860.00 USD" not in note or "VAT, 0% on SWIFT payments: 0.00 USD" not in note or "143 hour-credits" not in note:
+        failures.append(f"the SWIFT receipt: {note!r}")
+    if run_main(cfg, ["swift-confirm", first["order"], "2860.00"]) != 2 or lines_of(cfg).count("hc_issued") != 1:
+        failures.append("a SWIFT order issues its HC twice")
+    status, small = buyer("POST", "/order", dict(swift, hc=1))
+    if run_main(cfg, ["swift-confirm", small["order"], "25.00"]) != 0:
+        failures.append("an overpaid SWIFT order cannot be confirmed")
+    caught_up()
+    if buyer("GET", "/account")[1]["hc"] != "144.000000" or "Send the 5.00 USD above the total back by SWIFT" not in mail_to(mailbox, cfg.notify, f"Overpaid by SWIFT: {small['order']}") \
+            or "the 5.00 USD above the total goes back by SWIFT" not in mail_to(mailbox, "intl@acme.example", f"Payment received: SparkPipe order {small['order']}"):
+        failures.append("an overpaid SWIFT order does not issue its HC and have the excess sent back")
+    if run_main(cfg, ["refund", small["order"], "3.5", "5.01", "above the total"]) != 2 or run_main(cfg, ["refund", small["order"], "3.5", "5.00", "above the total"]) != 0:
+        failures.append("a clause 3.5 SWIFT refund is not limited to what arrived above the total")
+    caught_up()
+    if lines_of(cfg, "refund")[-1] != {"order": small["order"], "account": app.book.emails["intl@acme.example"], "processor": "swift", "amount": "5.00", "balance": "20.00", "clause": "3.5", "reason": "above the total", "hc": "0.000000"} \
+            or buyer("GET", "/account")[1]["hc"] != "144.000000":
+        failures.append(f"returning what arrived above a SWIFT order's total debits HC or is not recorded: {lines_of(cfg, 'refund')[-1:]}")
+    if run_main(cfg, ["refund", first["order"], "10.4", "2860.01", "too much"]) != 2 or run_main(cfg, ["refund", first["order"], "10.4", "1430.00", "we stopped offering HC"]) != 0:
+        failures.append("a SWIFT refund under clause 10.4 is refused, or allowed above the payment")
+    caught_up()
+    if buyer("GET", "/account")[1]["hc"] != "72.500000" or lines_of(cfg, "refund")[-1]["hc"] != "71.500000" \
+            or "It goes back by SWIFT to the account it came from; 71.500000 HC of the order left your account." not in mail_to(mailbox, "intl@acme.example", f"Refund: SparkPipe order {first['order']}"):
+        failures.append("a SWIFT refund does not debit the order's HC and tell the customer it goes back to the account it came from")
+    if run_main(cfg, ["swift-cancel", second["reference"], "asked by the customer"]) != 0 or run_main(cfg, ["swift-cancel", second["reference"], "again"]) != 2 or run_main(cfg, ["swift-confirm", second["reference"], "2160.00"]) != 2:
+        failures.append("a SWIFT order cannot be cancelled, or a cancelled one is cancelled or confirmed again")
+    caught_up()
+    shown = buyer("GET", "/order/" + second["order"])[1]
+    if (shown["state"], shown["reason"], shown["issued"]) != ("cancelled", "asked by the customer", False) or buyer("GET", "/account")[1]["hc"] != "72.500000" \
+            or "Do not send a transfer for this order" not in mail_to(mailbox, "intl@acme.example", f"Cancelled: SparkPipe order {second['order']}"):
+        failures.append(f"a cancelled SWIFT order: {shown}")
+    if run_main(cfg, ["swift-cancel", first["order"], "late"]) != 2:
+        failures.append("a SWIFT order that issued its HC is cancelled")
+    listed = {o["order"]: o["reference"] for o in buyer("GET", "/account")[1]["orders"]}
+    if listed != {first["order"]: first["reference"], second["order"]: second["reference"], small["order"]: small["reference"]}:
+        failures.append(f"the account does not list SWIFT orders with their references: {listed}")
+
+
 def main():
     failures = []
     check_units(failures)
     check_legacy(failures)
     check_service(failures)
     check_toss(failures)
+    check_swift(failures)
     for failure in failures:
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("pay: sessions, email codes, acceptance of the Korean and English Customer Agreement only, HC orders by quantity on the price ladder (143 and 144 HC in US dollars and won), USDC and USDT invoices on the chosen network, signed webhooks, receipts, part payments, mismatches, reconciliation, the removed routes, the hash-chained ledger with two writers and the 9-line live ledger replayed; Toss Payments key gating, won amounts fixed on the server and confirmed once, other amounts refused and cancelled, webhooks that only trigger a check, virtual accounts and their expiry, refunds under the named clause (clause 16.4 only up to what lapsed while locked), the tax invoice list and the sandbox's test payments")
+    print("pay: sessions, email codes, acceptance of the Korean and English Customer Agreement only, HC orders by quantity on the price ladder (143 and 144 HC in US dollars and won), USDC and USDT invoices on the chosen network, signed webhooks, receipts, part payments, mismatches, reconciliation, the removed routes, the hash-chained ledger with two writers and the 9-line live ledger replayed; Toss Payments key gating, won amounts fixed on the server and confirmed once, other amounts refused and cancelled, webhooks that only trigger a check, virtual accounts and their expiry, refunds under the named clause (clause 16.4 only up to what lapsed while locked), the tax invoice list and the sandbox's test payments; USD bank transfers (SWIFT) gated on complete bank settings and the customer's clause 3.3(b) declaration, priced on the US dollar ladder with 0% VAT only for them, invoiced by email with the bank details and a unique payment reference, confirmed by the operator only for the whole amount, overpayments sent back under clause 3.5, cancellation and refunds back to the account the payment came from")
     return 0
 
 

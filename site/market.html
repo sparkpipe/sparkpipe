@@ -5,21 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Your account · SparkPipe</title>
 <meta name="description" content="Your SparkPipe account: book demo hours and weeks on a fleet pinned to you, keep it by booking the next week, join the waitlist, and manage API keys, live or in a sandbox with no money.">
-<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#0a0c10">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
-<link rel="stylesheet" href="site.css?v=dcbd7de8">
-<link rel="stylesheet" href="checkout.css?v=2">
-<link rel="stylesheet" href="market.css?v=2">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400..800&family=JetBrains+Mono:wght@400..700&display=swap">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
+<link rel="stylesheet" href="checkout.css?v=3">
+<link rel="stylesheet" href="market.css?v=3">
 </head>
 <body>
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">account</span></a>
+    <a class="brand" href="index.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">account</span></a>
     <nav class="nav-links" aria-label="Sections">
       <a href="fleets.html">Fleet List</a>
       <a href="index.html#prices">Prices</a>
@@ -92,7 +91,7 @@
       <label>Hour-credits<input id="buy-hc" type="number" min="1" step="1" value="144"></label>
       <p class="num" id="buy-sum"></p>
       <button class="btn solid" type="submit"><span class="live-only">Continue to payment</span><span class="sandbox-only">Buy, no money</span></button>
-      <p class="muted live-only">Paid by card or Korean bank transfer in won through Toss Payments, or in a US-dollar stablecoin through CoinPayments; the HC arrives once the payment completes.</p>
+      <p class="muted live-only">Paid by card or Korean bank transfer in won through Toss Payments, in a US-dollar stablecoin through CoinPayments, or by US dollar bank transfer (SWIFT) on the <a href="buy.html">Buy page</a>; the HC arrives once the payment completes.</p>
       <p class="flash" id="m-buy" hidden></p>
     </form>
   </section>
@@ -151,8 +150,9 @@
 <div class="tab-panel" role="tabpanel" data-panel="waitlist" hidden>
 <section class="card">
   <h2>Waitlist</h2>
-  <p class="muted">Lock at least <span data-week="hc">144</span> HC to join. Every Sunday at 00:00 KST, each fleet that comes free goes to the biggest lock, and at equal locks to whoever joined first. The whole lock then books consecutive weeks on that fleet from the next Monday, at the discount for that many weeks, and any HC left over is unlocked. Locked HC cannot be spent; add to your lock or leave whenever you like. You see only your own position. Locked HC that would lapse while you wait is refunded.</p>
+  <p class="muted">Lock at least <span data-week="hc">144</span> HC to join. Every Sunday at 00:00 KST, each fleet that comes free goes to the biggest lock, and at equal locks to whoever joined first. The whole lock then books consecutive weeks on that fleet from the next Monday, at the discount for that many weeks, and any HC left over is unlocked. Locked HC cannot be spent; add to your lock or leave whenever you like. You see your own position and how many locks are waiting, nothing more. Locked HC that would lapse while you wait is refunded.</p>
   <p class="num" id="waitlist-status">Not on the waitlist.</p>
+  <p class="num muted" id="waitlist-count"></p>
   <form class="form" id="waitlist" novalidate>
     <div class="row"><label>Add to your lock, HC<input id="lock-hc" type="number" min="1" step="1" value="144"></label></div>
     <div class="row"><button class="btn solid" type="submit">Lock</button><button class="btn" type="button" id="leave">Leave and unlock</button></div>
@@ -164,7 +164,7 @@
 <div class="tab-panel" role="tabpanel" data-panel="api" hidden>
 <section class="card">
   <h2>Use your fleet</h2>
-  <p class="muted">Your fleet speaks the OpenAI chat-completions API. Requests go to the fleet you hold at that moment, and the fleet loads the model you name if it is not already loaded. Holding two fleets? Name one with <code>"sparkpipe": {"fleet": "F2"}</code>. <span class="sandbox-only">The sandbox answers with a simulator.</span></p>
+  <p class="muted">Your fleet speaks the OpenAI chat-completions API, for Codex, Cursor and other OpenAI-compatible tools, and the Anthropic Messages API for Claude Code. Requests go to the fleet you hold at that moment, and the fleet loads the model you name if it is not already loaded. Holding two fleets? Name one with <code>"sparkpipe": {"fleet": "F3"}</code>. <span class="sandbox-only">The sandbox answers with a simulator.</span></p>
   <p class="muted">Endpoint: <span class="endpoint" id="api-base"></span> (<code>/chat/completions</code>, <code>/models</code>), with an API key below as the bearer token.</p>
   <div class="mk-grid">
     <div class="form">
@@ -178,27 +178,18 @@
       <label>Key<input id="try-key" type="text" autocomplete="off"></label>
       <div class="row"><label>Model<select id="try-model"></select></label><label class="check"><input id="try-stream" type="checkbox" checked><span>Stream</span></label></div>
       <label>Message<textarea id="try-prompt" rows="3">Summarize what a pinned fleet keeps from week to week.</textarea></label>
-      <label class="check"><input id="try-accel" type="checkbox"><span>Prefill accelerator</span></label>
-      <div class="priority" role="radiogroup" aria-label="Accelerator priority" id="try-priority"></div>
       <button class="btn solid" type="submit">Send</button>
       <div class="reply" id="try-reply"></div>
       <p class="flash" id="m-try" hidden></p>
     </form>
   </div>
 </section>
-<section class="card">
-  <h2>Prefill accelerators</h2>
-  <p class="muted">Shared machines that compute a long prompt and hand it back to your fleet to write the reply. Ask for one per request with <code>"sparkpipe": {"accelerator": {"bid": 1}}</code>. A prompt costs its accelerator-seconds times the accelerator's Rate times its priority, in HC, from the HC that lapses first. Priority buys a better place in the queue: Standard ×1, Priority ×2, Rush ×5; the API takes any bid from 1 to <span id="accel-max-bid"></span>. A prompt that no accelerator starts within <code>maxWait</code> seconds (default <span id="accel-wait"></span>, at most <span id="accel-max-wait"></span>) runs on your fleet without one and pays nothing for an accelerator, unless you send <code>"fallback": false</code>.</p>
-  <div class="scroll"><table><thead><tr><th>Accelerator</th><th>Machines</th><th>Rate</th><th>Speed</th><th>State</th></tr></thead><tbody id="accelerators"></tbody></table></div>
-  <p class="muted num" id="accel-queue"></p>
-  <div class="scroll"><table><thead><tr><th>When (KST)</th><th>Accelerator</th><th>Seconds</th><th>Bid</th><th>HC</th></tr></thead><tbody id="charges"></tbody></table></div>
-</section>
 </div>
 
 <div class="tab-panel" role="tabpanel" data-panel="records" hidden>
 <section class="card">
   <h2>Your ledger lines</h2>
-  <p class="muted">Every payment, booking, lock, credit and charge is a line in our append-only, hash-chained ledger. Download your own lines with their hashes.</p>
+  <p class="muted">Every payment, booking, lock and credit is a line in our append-only, hash-chained ledger. Download your own lines with their hashes.</p>
   <div class="row"><button class="btn small" type="button" id="ledger-load">Load</button><span class="num" id="ledger-head"></span></div>
   <div class="scroll"><table><thead><tr><th>#</th><th>When (KST)</th><th>Type</th><th>Data</th><th>Hash</th></tr></thead><tbody id="ledger"></tbody></table></div>
 </section>
@@ -213,6 +204,6 @@
 </footer>
 <script src="pricing.js"></script>
 <script src="prices.js"></script>
-<script src="market.js?v=3"></script>
+<script src="market.js?v=4"></script>
 </body>
 </html>

@@ -203,19 +203,18 @@ def page(p):
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>{html.escape(p['title'])}</title>
 <meta name="description" content="{html.escape(p['desc'])}">
-<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#0a0c10">
 {alternates(p)}
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<link rel="stylesheet" href="site.css?v=dcbd7de8">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
 {STYLE}
 </head>
 <body>
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="{HOME[p['lang']]}"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">{p['tag']}</span></a>
+    <a class="brand" href="{HOME[p['lang']]}"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">{p['tag']}</span></a>
     <nav class="nav-links" aria-label="Sections">
       {nav}
     </nav>

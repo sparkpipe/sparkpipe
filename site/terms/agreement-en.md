@@ -11,9 +11,8 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 1.1. In this Agreement:
 
 - **Fleet** means a group of computing machines that we operate ourselves as one unit in Korea and list on our **Fleet List**, published at sparkpipe.ai/fleets.html, which states the machines in each Fleet. The **Demo Fleet** is the Fleet that the Fleet List names as such.
-- **Prefill accelerator** (or **accelerator**) means a group of computing machines that we operate ourselves as one unit in Korea and list on the Fleet List as a prefill accelerator, which computes the prompt (prefill) of a request served on any Fleet and hands the computed prompt back to that Fleet, which writes the reply. An accelerator is not a Fleet.
-- **Rate** means the number that the Fleet List gives each Fleet and each accelerator, which we set and may change as clause 9.2 provides. A Fleet's Rate is 1 unless the Fleet List states otherwise. A booking is priced at the Rate published when it is made, and a prompt at the Rate published for the accelerator that computes it when that accelerator starts computing it.
-- **Hour-credit** (**HC**) means the prepaid unit in which Customer pays for bookings and for accelerators.
+- **Rate** means the number that the Fleet List gives each Fleet, which we set and may change as clause 9.2 provides. A Fleet's Rate is 1 unless the Fleet List states otherwise. A booking is priced at the Rate published when it is made.
+- **Hour-credit** (**HC**) means the prepaid unit in which Customer pays for bookings.
 - **Booking** means the right to use one entire Fleet for an hour (an **Hour**, clause 14) or for a Week (clause 15).
 - **Week** means the seven days from 00:00 on a Monday to 24:00 on the following Sunday.
 - To **hold** a Fleet is to have a Booking of it that is running.
@@ -33,7 +32,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 ## 3. Prices, VAT and payment
 
-3.1. **Prices.** HC is priced at the HC Price (clause 13.1), and Bookings and accelerator time in HC (clauses 4.7, 14.2 and 15.2). We set our prices on our website and may change them at any time, as clause 9.2 provides. Prices are exclusive of value-added tax (VAT).
+3.1. **Prices.** HC is priced at the HC Price (clause 13.1), and Bookings in HC (clauses 14.2 and 15.2). We set our prices on our website and may change them at any time, as clause 9.2 provides. Prices are exclusive of value-added tax (VAT).
 
 3.2. **VAT.** We charge VAT at the statutory rate on every payment and show it separately, except on a payment that is zero-rated under clause 3.3(b). VAT is shown, for a payment under clause 3.3(a) made by card, including a card used through an easy-pay service, on the card slip, which is the VAT document for that payment; for any other payment under clause 3.3(a), on the electronic tax invoice (세금계산서) we issue where Customer gives its Korean business registration number; and for any other payment, on our invoice. Any amount charged as VAT that is not owed is an overpayment, and we refund it to Customer. If a payment made as zero-rated is held subject to VAT because Customer's information was incorrect or Customer did not pay in the way the Order states, Customer pays us that VAT, with any additional tax and penalty, on demand.
 
@@ -49,9 +48,9 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 3.6. **Refunds.** A refund that this Agreement provides or the law requires is made by the method and through the processor of the payment it refunds, in the currency of that payment: for a payment under clause 3.3(a), through Toss Payments to the card or account it was paid from, or, for a virtual account, to an account at a Korean bank that Customer names; for a bank transfer under clause 3.3(b), to the account it came from; and for a stablecoin payment, through CoinPayments' refund procedure.
 
-## 4. Fleets, maintenance and prefill accelerators
+## 4. Fleets and maintenance
 
-4.1. We provide a service, not hardware. We keep ownership, possession and operation of every Fleet and accelerator.
+4.1. We provide a service, not hardware. We keep ownership, possession and operation of every Fleet.
 
 4.2. **Availability.** We publish live capacity in machine-readable form at https://sparkpipe.ai/availability.txt, regenerated at least every 30 seconds: each Fleet we operate, whether it is serving, and whether it is the Demo Fleet, pinned (clause 15) or free. Wherever this Agreement makes anything subject to availability, availability means what that publication shows when Customer books.
 
@@ -61,33 +60,25 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 4.5. Credits are made in HC, never in cash, and are Customer's only remedy for any failure of performance, subject to clause 8.5.
 
-4.6. **Prefill accelerators.** Each accelerator is made up of machines that we operate ourselves in Korea. We may add, remove, upgrade or replace accelerators and the machines in them at any time without amending this Agreement, and the Fleet List shows each one's current machines, Rate and speed, and whether it is serving. A request uses an accelerator only if it asks for one; otherwise its prompt is computed on its Fleet. Accelerator time is charged under clause 4.7 in every case and is not included in any Booking. Accelerators have no guaranteed capacity or speed, and clauses 4.2 and 4.4 do not apply to them.
-
-4.7. **Price and payment.** Each prompt an accelerator computes is charged for its **accelerator-seconds**, the seconds from when the accelerator starts computing it until it hands it back to the Fleet: its price is the accelerator-seconds times the accelerator's Rate, times Customer's queue bid for that prompt (clause 4.8), divided by 3,600, rounded down to six decimal places. For example, 180 accelerator-seconds at Rate 6 with a queue bid of 1.5 cost 180 × 6 × 1.5 ÷ 3,600 = 0.45 HC. Customer pays in HC, from the lot that lapses first (clause 13.3). When the prompt joins the queue, we hold its estimated price from Customer's HC: the prompt's tokens as we estimate them, divided by the speed we publish for the accelerator, times its Rate and the queue bid, divided by 3,600, taking the highest such estimate where more than one accelerator may compute the prompt. HC is held from Customer's lots in the order of clause 13.3 and returns to the lots it came from; HC returned to a lot that has lapsed lapses with it. A prompt whose estimated price Customer's HC cannot cover is refused. When the accelerator hands the prompt back, we charge its price, never more than Customer's balance, and the rest of the hold returns. A prompt the accelerator does not finish is not charged.
-
-4.8. **Queue and queue bids.** Waiting prompts are computed in order of queue bid, highest first, and at equal queue bids in the order they joined the queue. The **queue bid** is a multiplier that each request sets for its prompt, from 1 up to the highest we publish, in steps of 0.01, and is 1 where the request sets none. Each prompt's price uses its own queue bid, whatever the queue bids of others. A request waits up to the number of seconds it sets, which is the default we publish where it sets none and at most the longest we publish. If no accelerator has started its prompt by then, or none is serving when the request is made, the prompt is computed on its Fleet without an accelerator and nothing is charged under clause 4.7, unless the request asks not to be computed without an accelerator, in which case it is refused. We publish on our website each accelerator with its Rate and speed and whether it is serving, and the live queue, with each waiting prompt's queue bid and estimated accelerator-seconds and no account number, name or other identity.
-
 ## 5. Use and responsibility
 
 5.1. **We provide capacity only.** Customer has the exclusive right to use each Fleet it holds for the time of its Booking. Customer alone decides what runs on the Fleets it holds and in the Functions it runs, and is solely responsible for its workloads, the data and content it processes, the outputs it obtains and every use made of them. We do not monitor, review or control them and are not responsible for them. Customer is responsible, as for its own acts, for everyone who uses a Fleet under its Account, access tokens or API keys, including its end users and anyone it gives access to, and must bind those persons by terms no less protective of us than clauses 5 and 6. We take part in no resale or transfer of Bookings or access: we keep no register of it, are not a party to it, do not match, price, clear or settle it, and have no liability for its price or counterparties.
 
-5.2. **Lawful use.** Customer must comply, and must ensure that every user of the Fleets it holds complies, with every law that applies to the use, including laws on export control and sanctions, personal data, intellectual property and computer misuse, and with the licence of each model it uses. No Booking or Function may be used to: (a) create, store or distribute unlawful content, including child sexual abuse material; (b) attack, probe or disrupt any system or network, or distribute malicious code; (c) infringe the rights of any person; (d) benefit any person, entity or country subject to sanctions of the United Nations, the Republic of Korea, the United States or the European Union, or serve any end use that export control laws prohibit, including weapons of mass destruction; or (e) interfere with a Fleet, an accelerator or other customers. Customer represents that neither it nor any person that owns or controls it is subject to those sanctions. Where Customer uses its Bookings to provide generative AI products or services to others, Customer is their provider and bears the duties that apply to them, including the transparency and labelling duties of the Korean Framework Act on the Development of Artificial Intelligence and Establishment of Trust.
+5.2. **Lawful use.** Customer must comply, and must ensure that every user of the Fleets it holds complies, with every law that applies to the use, including laws on export control and sanctions, personal data, intellectual property and computer misuse, and with the licence of each model it uses. No Booking or Function may be used to: (a) create, store or distribute unlawful content, including child sexual abuse material; (b) attack, probe or disrupt any system or network, or distribute malicious code; (c) infringe the rights of any person; (d) benefit any person, entity or country subject to sanctions of the United Nations, the Republic of Korea, the United States or the European Union, or serve any end use that export control laws prohibit, including weapons of mass destruction; or (e) interfere with a Fleet or other customers. Customer represents that neither it nor any person that owns or controls it is subject to those sanctions. Where Customer uses its Bookings to provide generative AI products or services to others, Customer is their provider and bears the duties that apply to them, including the transparency and labelling duties of the Korean Framework Act on the Development of Artificial Intelligence and Establishment of Trust.
 
-5.3. **Suspension.** We may suspend a Booking or access under the Account, at once and without prior notice, where (a) a law, court or competent authority requires it, (b) we reasonably believe clause 5.2 is being breached, or (c) the use threatens the security or integrity of a Fleet, an accelerator or others. We tell Customer as soon as practicable and lift the suspension when its cause ends. Hours lost to a suspension caused by Customer's use are consumed and are not credited.
+5.3. **Suspension.** We may suspend a Booking or access under the Account, at once and without prior notice, where (a) a law, court or competent authority requires it, (b) we reasonably believe clause 5.2 is being breached, or (c) the use threatens the security or integrity of a Fleet or others. We tell Customer as soon as practicable and lift the suspension when its cause ends. Hours lost to a suspension caused by Customer's use are consumed and are not credited.
 
 ## 6. Customer data
 
-6.1. Customer keeps all rights in its data and outputs, including models it trains with a Function. We access them only as needed to operate and secure the service, or where the law requires. Customer is responsible for the lawfulness of any personal data it processes and for keeping its own copies. The Fleets and our servers are in the Republic of Korea (clause 6.6).
+6.1. Customer keeps all rights in its data and outputs, including models it trains with a Function. We access them only as needed to operate and secure the service, or where the law requires. Customer is responsible for the lawfulness of any personal data it processes and for keeping its own copies. The Fleets and our servers are in the Republic of Korea (clause 6.5).
 
 6.2. **Working state.** Customer's working state is the cached state of its requests and the files that Customer, and the Functions it runs, keep in the file storage of a Fleet it holds (its **Customer storage**, of the size the Fleet List states). Working state stays on that Fleet, isolated from other customers, from one Booking of Customer's to the next, and is deleted when another customer's Booking of that Fleet starts, or 24 hours after the end of the last hour Customer holds on that Fleet, whichever comes first, or earlier when Customer asks.
 
-6.3. We keep no copy of working state outside the Fleet that holds it, make no backup of it and use it for nothing but serving Customer. We give no guarantee that working state is kept: it may be lost to a failure of the Fleet, and nothing is returned when a Booking or this Agreement ends. Customer keeps its own copies and may export what is in its Customer storage (clause 7.5).
+6.3. We keep no copy of working state outside the Fleet that holds it, make no backup of it and use it for nothing but serving Customer. Before another customer's Booking of a Fleet starts, we restore that Fleet's software to our own image. We give no guarantee that working state is kept: it may be lost to a failure of the Fleet, and nothing is returned when a Booking or this Agreement ends. Customer keeps its own copies and may export what is in its Customer storage (clause 7.5).
 
 6.4. We tell Customer without delay of any intrusion, any leak of its information and any unannounced interruption of the service. We handle account data and Customer data as our published privacy policy states.
 
-6.5. A prompt sent to an accelerator is Customer data. It is held only while it waits and is computed, isolated from other customers' data, and nothing of it is kept after the reply except the record of its charge under clause 4.7, which holds none of its content. Once handed back, the computed prompt is held on the Fleet as working state.
-
-6.6. **In Korea only.** We process requests and Customer data only on Fleets, accelerators and servers that we operate in Korea, including servers we rent there, and we send no request, prompt, output or other Customer data to any other computing or AI service, in Korea or abroad.
+6.5. **In Korea only.** We process requests and Customer data only on Fleets and servers that we operate in Korea, including servers we rent there, and we send no request, prompt, output or other Customer data to any other computing or AI service, in Korea or abroad.
 
 ## 7. Models and Functions
 
@@ -95,11 +86,13 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 7.2. **Model licences and outputs.** Each model is third-party open-source software provided under its own licence, which Customer must comply with. Outputs are generated automatically from Customer's inputs: we do not author, review or endorse them, and we give no warranty that any output is accurate, complete, lawful, safe or fit for any purpose. Customer is responsible for evaluating outputs before relying on, publishing or acting on them.
 
-7.3. Bookings cover the use of the Fleet, the models in this clause 7, the Functions, Customer storage, and operation and support; no other fee applies to them, apart from the price of prefill accelerator time that Customer asks for under clause 4.6.
+7.3. Bookings cover the use of the Fleet, the models in this clause 7, the Functions, Customer storage, and operation and support; no other fee applies to them.
 
 7.4. **Functions.** We offer, as our website documents them, software functions that Customer may run on Fleets it holds (**Functions**). A Function runs only when Customer starts it or schedules it, on a Fleet Customer holds, and processes only Customer's data; it uses that Booking like any other use of the Fleet. What a Function produces, including any model it trains, is Customer's output under clause 6.1, is kept as working state and is used only for Customer's own requests. Functions are provided as available, with no guarantee of any result or speed. We may add, change or withdraw Functions without amending this Agreement.
 
 7.5. **Export and restore.** Customer may export the files in its Customer storage, including any model a Function trained, through our API while they are kept, and restore them to the Customer storage of any Fleet it holds.
+
+7.6. **Customer's models.** Customer may add to its Customer storage a model it has the right to use, with a driver for it written to the interface our website documents. Such a model is not offered by us under clause 7.1: it is available only to Customer, on Fleets Customer holds, is Customer data kept as working state, and its licence and outputs are Customer's responsibility as clause 7.2 provides. We give no guarantee that it runs or runs at any speed, and we may refuse or stop a driver that threatens the security or integrity of a Fleet (clause 5.3).
 
 ## 8. Liability
 
@@ -121,7 +114,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 9.1. We may change this Agreement by publishing a new version and emailing Customer. A new version applies to Orders and Bookings made after Customer accepts it, and we accept no further Order or Booking from Customer until it has. HC already bought, and Bookings already made, stay under the version in force when they were made, unless Customer accepts a newer version for them.
 
-9.2. **Published settings.** We publish the following on our website as **published settings**: the HC Price for each quantity bought (clause 13.1); the HC for an Hour and for a Week, and the discounts for Weeks booked ahead (clauses 14.2 and 15.2); the Rates on the Fleet List; how far ahead Hours may be booked and how many Hours of the Demo Fleet each account may hold in a Week (clause 14.1); the highest queue bid and the default and longest waits under clause 4.8; and the maintenance allowance. We may change any of them at any time by publishing the change, without amending this Agreement, and a change applies from when we publish it. A change never alters the price of HC already bought or of a Booking already made, nor the HC locked under clause 16.
+9.2. **Published settings.** We publish the following on our website as **published settings**: the HC Price for each quantity bought (clause 13.1); the HC for an Hour and for a Week, and the discounts for Weeks booked ahead (clauses 14.2 and 15.2); the Rates on the Fleet List; how far ahead Hours may be booked and how many Hours of the Demo Fleet each account may hold in a Week (clause 14.1); and the maintenance allowance. We may change any of them at any time by publishing the change, without amending this Agreement, and a change applies from when we publish it. A change never alters the price of HC already bought or of a Booking already made, nor the HC locked under clause 16.
 
 ## 10. Ending, refunds and survival
 
@@ -149,7 +142,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 11.6. **Notices.** We send notices to the email address verified on the Account, which Customer keeps current. Customer sends notices to hyor@sparkpipe.ai or to our address above.
 
-11.7. **Records.** Our technical records of payments, HC, Bookings, the waitlist, accelerator charges and credits are kept in an append-only, hash-chained ledger. Customer may download its own entries, with their hashes, while signed in to its Account, and obtain proof that they were recorded and not altered. These records are conclusive, except for manifest error.
+11.7. **Records.** Our technical records of payments, HC, Bookings, the waitlist and credits are kept in an append-only, hash-chained ledger. Customer may download its own entries, with their hashes, while signed in to its Account, and obtain proof that they were recorded and not altered. These records are conclusive, except for manifest error.
 
 ## 12. Law, disputes, language and acceptance
 

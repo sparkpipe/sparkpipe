@@ -120,15 +120,8 @@
     fillSelect('hours-fleet', st.fleets.filter((f) => f.serving !== false && (f.demo || f.status === 'free')).map((f) => [f.id, f.name + (f.demo ? ' (demo)' : ' (free this week)')]));
     fillSelect('try-model', (st.models || P.models).map((m) => [m.id, m.name]));
     fill('discounts', P.bookings.discounts.map((d) => row([`${d.weeks} or more`, pct(d.off)])), '');
-    const limits = st.acceleratorLimits || P.accelerator;
-    $('accel-max-bid').textContent = limits.maxBid;
-    $('accel-wait').textContent = limits.defaultWait;
-    $('accel-max-wait').textContent = limits.maxWait;
-    const accelerators = st.accelerators || [];
-    fill('accelerators', accelerators.map((a) => row([a.name, a.kind || '-', a.rate + '×', a.tokensPerSecond ? `${a.tokensPerSecond} tokens/s` : '-', a.busy ? 'computing a prompt' : a.serving ? 'free' : 'not serving'])), 'No prefill accelerator is serving yet.');
-    const queue = st.acceleratorQueue || [];
-    const ahead = queue.reduce((sum, q) => sum + Number(q.seconds || 0), 0);
-    $('accel-queue').textContent = queue.length ? `Queue: ${queue.length} prompt${queue.length === 1 ? '' : 's'} waiting, bids ${queue.map((q) => '×' + q.bid).join(', ')}, about ${Math.round(ahead)} s of accelerator time ahead.` : (accelerators.some((a) => a.serving) ? 'Queue: empty.' : '');
+    const waiting = st.waitlist && Number(st.waitlist.locks);
+    $('waitlist-count').textContent = waiting ? `${waiting} lock${waiting === 1 ? '' : 's'} waiting.` : 'Nobody is waiting.';
     renderBuy();
   }
 
@@ -144,7 +137,7 @@
     $('me').hidden = !me;
     $('signout').hidden = !me;
     if (!me) {
-      ['lots', 'bookings', 'keys', 'charges'].forEach((id) => fill(id, [], 'Sign in to see yours.'));
+      ['lots', 'bookings', 'keys'].forEach((id) => fill(id, [], 'Sign in to see yours.'));
       $('waitlist-status').textContent = 'Sign in to join the waitlist.';
       return;
     }
@@ -156,7 +149,6 @@
     fill('bookings', (me.bookings || []).map((b) => row([kst(b.start), kst(b.end), b.fleet, b.kind === 'week' ? `${b.weeks} week${b.weeks === 1 ? '' : 's'}` : `${b.hours} hour${b.hours === 1 ? '' : 's'}`, hc(b.hc)])), 'No bookings yet.');
     $('waitlist-status').textContent = me.position ? `On the waitlist: ${hc(me.locked)} HC locked, position ${me.position}.` : 'Not on the waitlist.';
     fill('keys', (me.keys || []).filter((k) => !k.revoked).map((k) => row(['…' + k.hint, k.note || '', kstDay(k.created), button('Revoke', () => act('m-try', () => call('POST', '/market/keys/revoke', { id: k.key }), () => 'Key revoked.'))])), 'No keys yet.');
-    fill('charges', (me.charges || []).map((c) => row([kst(c.now), c.accelerator || '-', String(c.seconds), String(c.bid), hc(c.amount)])), 'No accelerator charges yet.');
   }
 
   async function quote() {
@@ -267,8 +259,7 @@
       const response = await fetch(API + '/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + $('try-key').value.trim() },
-        body: JSON.stringify(Object.assign({ model: $('try-model').value, stream, max_tokens: 64, messages: [{ role: 'user', content: $('try-prompt').value }] },
-          $('try-accel').checked ? { sparkpipe: { accelerator: { bid: Number(document.querySelector('input[name="priority"]:checked').value) } } } : {})),
+        body: JSON.stringify({ model: $('try-model').value, stream, max_tokens: 64, messages: [{ role: 'user', content: $('try-prompt').value }] }),
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
@@ -299,11 +290,7 @@
         reply.textContent = data.choices[0].message.content;
         meta = data.sparkpipe;
       }
-      const accel = meta && meta.accelerator;
-      const accelText = !accel ? '' : accel.used
-        ? ` Prefill accelerator ${accel.accelerator}: ${accel.seconds} s × Rate ${accel.rate} × priority ${accel.bid} = ${accel.amount} HC, after ${accel.waited} s in the queue.`
-        : ` No accelerator: ${{ none_serving: 'none is serving', waited: 'none started it in time', unfinished: 'it did not finish' }[accel.reason] || accel.reason}, so nothing was charged for one.`;
-      say('m-try', `Answered on ${meta && meta.fleet ? meta.fleet : 'your fleet'}.` + accelText, 'ok');
+      say('m-try', `Answered on ${meta && meta.fleet ? meta.fleet : 'your fleet'}.`, 'ok');
       await refresh();
     } catch (error) {
       say('m-try', error.message, 'error');
@@ -319,13 +306,6 @@
     }
   });
 
-  [['1', 'Standard ×1'], ['2', 'Priority ×2'], ['5', 'Rush ×5']].forEach(([value, label], index) => {
-    const choice = document.createElement('label');
-    const input = document.createElement('input');
-    input.type = 'radio'; input.name = 'priority'; input.value = value; input.checked = index === 0;
-    choice.append(input, cell('span', label));
-    $('try-priority').append(choice);
-  });
   const tabs = [...document.querySelectorAll('#tabs [data-tab]')];
   const show = (name) => {
     tabs.forEach((t) => t.setAttribute('aria-selected', String(t.dataset.tab === name)));
