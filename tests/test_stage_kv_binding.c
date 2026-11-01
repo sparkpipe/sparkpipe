@@ -188,6 +188,7 @@ static void Configure(SparkStageKvConfiguration *configuration)
 	configuration->backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 2u) * TEST_PAGE_BYTES;
 	configuration->snapshot_directory = SNAPSHOT_DIRECTORY;
 	configuration->snapshot_maximum_bytes = 1ull << 26;
+	configuration->partition_reserve_bytes = 1ull << 20;
 	memset(configuration->pack_sha256,0x11,sizeof(configuration->pack_sha256));
 	memset(configuration->contract_sha256,0x22,sizeof(configuration->contract_sha256));
 	configuration->expert_codec = SPARK_WEIGHT_CODEC_FP8_E4M3;
@@ -882,6 +883,9 @@ static void TestSnapshotRefusals(void)
 	configuration.snapshot_maximum_bytes = 0u;
 	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
 	Configure(&configuration);
+	configuration.partition_reserve_bytes = 0u;
+	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
+	Configure(&configuration);
 	configuration.snapshot_maximum_bytes = 4096u;
 	ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
 	Configure(&configuration);
@@ -974,6 +978,50 @@ static void PublishTwoPageChain(uint8_t pages[2][TEST_PAGE_BYTES])
 	PublishStep(1u,0u,0u,4u,0x70u,0x31u,pages[0]);
 	PublishStep(1u,0u,4u,8u,0x71u,0x32u,pages[1]);
 	ReleaseSequence(1u,0u);
+}
+
+static void SetRestoreSlot(uint32_t index,const SparkModelDriverCacheLane *lane,uint32_t state)
+{
+	assert(pthread_mutex_lock(&BINDING.mutex) == 0);
+	memset(&BINDING.restores[index],0,sizeof(BINDING.restores[index]));
+	BINDING.restores[index].identity = lane->prefix_identity;
+	BINDING.restores[index].token_count = lane->prefix_token_count;
+	BINDING.restores[index].state = state;
+	BINDING.restores[index].status = SPARK_STATUS_NOT_FOUND;
+	BINDING.restores[index].done_ns = 1u;
+	assert(pthread_mutex_unlock(&BINDING.mutex) == 0);
+}
+
+static void TestRestoreGateWaitsForEveryLane(void)
+{
+	TestStep wave,second;
+	SparkModelDriverCacheLane lanes[2];
+	uint64_t jobs;
+	SparkStatus status;
+	Open();
+	StepInit(&wave,61u,0u,8u,8u);
+	StepPrefix(&wave,8u,0x93u);
+	StepInit(&second,62u,1u,8u,8u);
+	StepPrefix(&second,8u,0x94u);
+	lanes[0] = wave.lane;
+	lanes[1] = second.lane;
+	wave.request.cache_lanes = lanes;
+	wave.request.cache_lane_count = wave.request.active_slot_count = wave.request.new_token_count = 2u;
+	SetRestoreSlot(0u,&lanes[0],SPARK_STAGE_KV_RESTORE_DONE);
+	SetRestoreSlot(1u,&lanes[1],SPARK_STAGE_KV_RESTORE_RUNNING);
+	jobs = BINDING.restore_jobs;
+	assert(StepAdmit(&wave,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_PENDING);
+	assert(BINDING.restores[0].state == SPARK_STAGE_KV_RESTORE_DONE && BINDING.restores[1].state == SPARK_STAGE_KV_RESTORE_RUNNING && BINDING.restore_jobs == jobs);
+	assert(StepAdmit(&wave,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_PENDING);
+	assert(BINDING.restores[0].state == SPARK_STAGE_KV_RESTORE_DONE && BINDING.restore_jobs == jobs);
+	SetRestoreSlot(1u,&lanes[1],SPARK_STAGE_KV_RESTORE_DONE);
+	status = StepAdmit(&wave,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
+	assert(status != SPARK_STATUS_PENDING && BINDING.restore_jobs == jobs);
+	assert(BINDING.restores[0].state == SPARK_STAGE_KV_RESTORE_FREE && BINDING.restores[1].state == SPARK_STAGE_KV_RESTORE_FREE);
+	if ( status == SPARK_STATUS_OK )
+		assert(StepAdmit(&wave,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) == SPARK_STATUS_OK);
+	Close();
+	printf("restore gate: a wave answered PENDING keeps the finished restores of its other lanes, queues no new job for them, and frees them only when every lane is ready: ok\n");
 }
 
 static void TestSnapshotRestartRestore(void)
@@ -1741,6 +1789,7 @@ int main(void)
 	TestCopierContract();
 	TestSnapshotRefusals();
 	TestSnapshotRestartRestore();
+	TestRestoreGateWaitsForEveryLane();
 	TestRestartAdoptsDevicePages();
 	TestAdoptedPagesKeepTheirAge();
 	TestRestoreHintStartsEarly();

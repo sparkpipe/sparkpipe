@@ -409,9 +409,13 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   has its tier: each deployment node names its `kv_partition`, residentd
   refuses KV directories off it, and `kv_backing_maximum_bytes` and
   `kv_snapshot_maximum_bytes` bound its stores (`node/model_residentd.c`,
-  `runtime/model_resident_deployment.c`). The active model shard tier (1 TB)
-  has no named directory, byte budget or startup check, and nothing reserves
-  the 0.5 TB of system and runtime space against KV and shard growth.
+  `runtime/model_resident_deployment.c`). Every snapshot store keeps the
+  node's `kv_partition_reserve_bytes` (512 GiB) free on the partition and
+  evicts its oldest files before a write that would take the partition below
+  it. The active model shard tier (1 TB) has no named directory, byte budget or
+  startup check, so a shard copy can still take the partition below the
+  reserve; the KV stores give the space back only on their next write, and an
+  idle model's store keeps its files until the 24-hour expiry.
 - Reserve at least 1 TB of every external NVMe for direct rank-local model
   access and combine the remaining capacity into the selected striped,
   failure-aware model-data pool.
@@ -553,12 +557,35 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   lane rejoins, so a lane is parked and restored page by page rather than as
   one contiguous transfer. Close it with a fleet backpressure run at 2x device
   pages where parked lanes restore bit-exact at B1 and B16.
-- The format-2 KV snapshot tier (page files naming their parent, separate
-  state files, leaf-first eviction, ordered writes) is host-tested only.
-  Prove it on the fleet: a K3 -> GLM -> K3 swap that restores a 270K
-  conversation in under 15 s, a store of 8 GiB per rank that keeps the newest
-  conversations whole while older ones go tip-first, and an open that removes
-  the format-1 files of the previous release once.
+- The KV snapshot tier is proven on the fleet only at its old 8 GiB budget.
+  The hub API's `kv_store_report` lines up to 2026-11-01 show restores from
+  it with no misses: K3 restored 16,241 pages (about 1.04M tokens) on one rank
+  in 7.2 s and 13,257 pages in 2.2 s, GLM-5.3 Full made 620 restores and
+  DeepSeek V4.1 Flash restored 4,212 pages. K3 had filled its 8 GiB per rank
+  (about ten 500K-token conversations, at roughly 1.9 KB per token per rank).
+  The store now spreads its files over 256 identity shards, because one ext4
+  directory without `large_dir` refuses new names near 1.8 million entries
+  (`index full, reach max htree level :2` on lenovo7 and spark0); links a page
+  to its parent and its orphans through one hash chain instead of a scan of
+  the index (a write cost 13.6 ms at 1.8 million files, 1.5 ms now); scans
+  the shards on eight threads; and keeps the partition reserve. A lenovo7
+  bench with cold caches opened 2.27 million K3-sized files in 3.0 s with a
+  431 MB index and 4.53 million in 7.6 s with 952 MB. The budgets are 256 GiB
+  per rank for the four core models and 64 GiB for the others. Not yet proven
+  on the fleet: a K3 store past 8 GiB that restores an older 500K
+  conversation with `cached_tokens` covering it and tokens equal to an
+  uninterrupted run; a K3 -> GLM -> K3 swap that restores a 270K conversation
+  in under 15 s; a store at its budget that keeps the newest conversations
+  whole while older ones go tip-first; and the first open that removes the
+  previous layout's flat files.
+- `tests/test_kv_snapshot_cuda.c`, the only GPU test that saves a prompt's
+  pages, restores them into a fresh engine and compares logits bit for bit,
+  fails on main with five failed checks: not all 16 prompt pages reach the
+  store, so the restore misses, and the page store answers `BUSY` from its
+  write queue (`cache/kv_page_store.c:863`) during the run. It wires its own
+  engine instead of the common binding, and no gate runs it
+  (`make test-kv-snapshot-cuda`). Close it by driving the test through
+  `SparkStageKvBinding` and adding it to the CUDA gate.
 - Crash recovery of the KV snapshot store has not run on the fleet. The store
   writes each file to a `.kvs-writing-` temporary, fsyncs, renames and fsyncs
   the directory, and its open deletes leftover temporaries; the binding opens

@@ -201,6 +201,7 @@ typedef struct SparkStageKvConfiguration
 	uint64_t backing_maximum_bytes;
 	const char *snapshot_directory;
 	uint64_t snapshot_maximum_bytes;
+	uint64_t partition_reserve_bytes;
 	uint8_t pack_sha256[SPARK_SHA256_DIGEST_BYTES];
 	uint8_t contract_sha256[SPARK_SHA256_DIGEST_BYTES];
 	uint32_t expert_codec;
