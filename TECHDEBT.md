@@ -1361,20 +1361,20 @@ Metal backend and the single-Studio stage are in
   offset table would drop that sync.
 - Device stages exist for the Gemma 4 family (Gemma 4 26B A4B and 31B, Muse
   Glimmer 30B, Laguna S 2.1, K-EXAONE 2.0), Qwen 3.8 (27B BF16 and FP8, 3.8
-  Flash Next), MiMo V2.6 (Flash, Pro) and Ling 3 (Ling 3.0 Flash and Fin,
-  Solar Open 2). Each is its family's Metal backend placed on the model's
+  Flash Next), MiMo V2.6 (Flash, Pro), Ling 3 (Ling 3.0 Flash and Fin,
+  Solar Open 2), HY4, GLM 5.3 Flash and the GLM 5.2 family (GLM 5.3 Full,
+  A.X K2). Each is its family's Metal backend placed on the model's
   geometry at TP 1, 2, 4 or 8 (`model-families/<family>/device/`, over the
   device stage and layer kinds in `inference/runner/device_stage_model.c`
   and `device_layers.c`), plus its packs and gates; the models larger than
   one Studio gate at TP8 on one Studio with the packs paged from the SSD.
   Gates pass for Gemma 4 26B, Qwen3.8-27B (both codecs), Qwen 3.8 Flash,
-  Ling 3.0 Flash, Ling 3.0 Flash Fin and GLM 5.3 Flash; the paired test
-  fails, by the worse leg, for Gemma 4 31B (+4.8 sigma), Muse Glimmer
+  Ling 3.0 Flash, Ling 3.0 Flash Fin, GLM 5.3 Flash and A.X K2; the paired
+  test fails, by the worse leg, for Gemma 4 31B (+4.8 sigma), Muse Glimmer
   (+3.4), MiMo Flash (+5.2), MiMo Pro (+5.8), Laguna (+3.3), K-EXAONE 2.0
-  (+8.5), HY4 (+4.1) and Solar Open 2 (+4.5, not re-gated on the FP32-sum
-  norm); GLM 5.3 Full and A.X K2 wait for their references, and Kimi K3 for
-  its pack and reference. The Metal backends for DeepSeek V4.1 Flash and
-  Qwen 3.8 Max are in progress.
+  (+8.5), HY4 (+4.1) and Solar Open 2 (+5.1); GLM 5.3 Full waits for its
+  reference and Kimi K3 for its pack and reference. The Metal backends for
+  DeepSeek V4.1 Flash and Qwen 3.8 Max are in progress.
 - HY4 on the Studio (`HyDevice<Hy4Device>`): the DSA indexer (`index_q`,
   `index_k` with its LayerNorm, the ReLU-weighted head scores, the exact
   top-2,048 per rank and over the gathered candidates, the second KV pool
@@ -1403,6 +1403,17 @@ Metal backend and the single-Studio stage are in
   (0.003 to 0.010, top-1 agreement 0.97 to 0.99) and its median sits 10 to 35%
   above the floor's on every prompt, which puts most positions above the floor
   and the paired share far past 0.5.
+- GLM 5.3 Full on the Studio (`Glm52Device<Glm53FullDevice>`): the DSA
+  indexer is not built either (rows past position 2,047 refused) and the
+  MTP layer is not packed. The rope's inverse frequencies come from a
+  double-precision table, as the teacher's, where CUDA's kernels compute
+  `__powf` (about 1e-6 relative, 1e-3 rad by position 2,000). Its geometry
+  is the shared model constants plus a
+  Metal-side `Geometry` with the layer count and first routed layer, because
+  `Glm53FullGeometry` still lives in the CUDA module's `.cu`. A.X K2
+  (`Glm52Device<Axk2Device>`) reads `Axk2Dimensions` from its module header,
+  which the CUDA `Axk2Geometry` also takes its values from; its indexer
+  (64 heads, ReLU scores, half-split rope) is not built either.
 - Qwen 3.8 Flash Next on the Studio (`QwenDevice<Qwen38FlashDevice>`):
   - the QSA indexer is not built, so the stage refuses contexts past 2,048
     positions. Below 2,052 the indexer keeps every block and attention is

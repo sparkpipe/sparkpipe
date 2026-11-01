@@ -998,3 +998,53 @@ below a BF16 step, and a corrupted layer-11 `attn_out` leaves the logits
 byte-identical. Shifting the layer's query rows by one breaks that alignment
 and moves the logits (mean KL 4.1), and rotating layer 7's `attn_out` moves
 them by a mean KL of 0.56.
+
+### GLM 5.3 on eight ranks
+
+GLM 5.3 (Full: 78 layers of 6,144, latent attention on every layer, 256 FP8
+experts) runs on `GlmSchedule` through `Glm52Device`
+(`model-families/glm52/device/`) as `Glm53FullDevice`, whose geometry is the
+shared `SPARK_GLM52_MODEL_*` constants. The schedule's single wave is the
+whole step: each layer's attention norms the residual sum
+(`SparkDeviceResidualNorm`, FP32 gains, the previous layer's MLP partial
+added) and runs `SparkDeviceLatentAttention` with GLM's switches (query LoRA
+2,048, both projection norms with FP32 gains rounded once as CUDA's
+`GlmProjectionNormKernel`, nope 192 plus interleaved rope 64 at theta 8e6,
+value 256, scale 1/16); the MLP norms the residual plus the reduced
+attention output, then runs the dense layers 0-2 or the experts: the BF16
+router in FP32, sigmoid top 8 of 256 with the tree sum, times 2.5, the FP8
+experts with a plain SiLU and no route weight, `spark_route_combine_weighted`
+and the shared expert added, as CUDA's finalize and add. The projections stay
+FP8 (`fp8_e4m3` with an FP32 scale per row and 128 inputs, CUDA's skinny FP8
+arithmetic), and the last layer's partial is added and the head norm taken
+in the stage (`prenormed_head`) from the FP32 sum, as CUDA's closing
+`LmFusedResidualRmsNormKernel` does. The indexer is not built,
+so a row past position 2,047 is refused. The 704 GB checkpoint packs to about
+780 GB at TP8 (`tools/glm52_tp16_pack.py --model glm53full --tp-degree 8`,
+through the CUDA stagepack's reader), paged from the SSD;
+`tools/glm52_reference.py --model glm53full` gives the gate prompts in GLM
+5.3's own chat turn and the FP32 teacher:
+
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh glm-5.3-full PACKS/glm53full.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+
+A.X K2 (61 layers of 7,168) is the same backend as `Axk2Device`, whose
+geometry is `Axk2Dimensions` in the CUDA module's header (the CUDA
+`Axk2Geometry` takes its values from there). It switches on what GLM 5.3
+does not use: the rank-16 norm gate after the input norm of every layer and
+the post norm of the routed layers (`SparkDeviceLowRankGate`: the down
+projection rounded, `bf16(silu(.))` through `spark_head_gate` gating the
+bottleneck by itself, the up projection rounded, then `bf16(x sigmoid(g))`
+with the sigmoid unrounded, as `LmLowRankGateDownKernel` and
+`LmLowRankGateApplyKernel`); the latent attention's `query_concat` (q_b reads
+the normed query and the raw q_a output side by side, 3,072 wide) and
+`query_gate` (each head's q_b rows end in 128 gate values, applied to the
+head's values as `bf16(v sigmoid(g))` after the value projection, as
+`LmHeadSigmoidGateKernel`); YaRN rope through `SparkRopeYarnRampTable`, the
+CUDA stage's own table builder moved into `spark_rope_plan.h`; and routing
+over 8 groups of which 4 stay open. Layer 0 is dense. The FP8 checkpoint is
+647 GB (`tools/glm52_tp16_pack.py --model axk2`, `tools/glm52_reference.py
+--model axk2` with its ChatML turn):
+
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh ax-k2 PACKS/axk2.tp8.rank00.pack REFERENCE_DIR OUT REVISION
