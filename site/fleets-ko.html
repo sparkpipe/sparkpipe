@@ -56,22 +56,22 @@
   <section>
     <h1>플릿 목록</h1>
     <p class="effective">2026년 11월 1일 갱신</p>
-    <p>이 페이지는 <a href="agreement-ko.html">SparkPipe 고객 계약</a>이 가리키는 플릿 목록이자 프리필 가속기와 이용 가능한 모델의 목록입니다. 모든 플릿과 모든 가속기는 저희가 서울에서 직접 운영하는 장비로 이루어져 있습니다. 플릿의 요율은 그 플릿을 1시간 쓰는 데 드는 시간 크레딧(HC) 수이며, 가속기의 요율은 요율 1인 플릿에 대한 그 가속기의 연산 능력에 따릅니다. 영문판(<a href="fleets.html" hreflang="en">fleets.html</a>)과 같은 내용이며, 서로 다르면 국문판이 우선합니다.</p>
+    <p>이 페이지는 <a href="agreement-ko.html">SparkPipe 고객 계약</a>이 가리키는 플릿 목록이자 프리필 가속기와 이용 가능한 모델의 목록입니다. 모든 플릿과 모든 가속기는 저희가 서울에서 직접 운영하는 장비로 이루어져 있습니다. 플릿의 요율은 그 플릿을 1시간 쓰는 데 드는 시간 크레딧(HC) 수이며, 그 플릿의 1주는 <span data-week="hc">144</span> HC에 요율을 곱한 값입니다. 데모 플릿은 시간 단위로만 예약하며 고정되지 않습니다. 모든 플릿은 그 플릿을 보유한 고객에게 <span data-storage>4 TB</span>의 고객 저장공간을 제공합니다. 영문판(<a href="fleets.html" hreflang="en">fleets.html</a>)과 같은 내용이며, 서로 다르면 국문판이 우선합니다.</p>
   </section>
 
-  <div class="notice"><p><b>약관은 검토용으로 공개되어 있습니다.</b> 시간 크레딧(HC)은 판매 중이며 API에서 제공되는 모든 모델에 바로 쓸 수 있고, 플릿 전체는 2026년 12월 1일부터 예약할 수 있습니다.</p></div>
+  <div class="notice"><p><b>약관은 검토용으로 공개되어 있습니다.</b> 데모 시간은 <span data-start="demo">2026년 12월 1일</span>부터, 고정 플릿의 주는 <span data-start="weeks">2027년 1월 4일</span>부터 예약할 수 있습니다.</p></div>
 
   <section id="fleets">
     <h2>플릿</h2>
     <div class="scroll">
     <table>
-      <tr><th>플릿</th><th>장비</th><th>상태</th><th class="num">시간당 HC(요율)</th><th>모델</th></tr>
-      <tr><td><b>플릿&nbsp;1</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리, 100 Gb/s RDMA 스위치와 노드 쌍 직결 링크로 연결</td><td>가동 중</td><td class="num">1</td><td>아래 모델</td></tr>
-      <tr><td><b>플릿&nbsp;2</b></td><td>Apple Mac Studio(M5 Ultra) 8대, 각 256GB, 1.2 TB/s: 합계 2TB, 9.6 TB/s로 플릿 1 메모리 대역폭의 2.2배</td><td>구축 중</td><td class="num">1</td><td>플릿을 열 때 여기에 게시</td></tr>
-      <tr><td><b>플릿&nbsp;3</b></td><td>NVIDIA DGX Spark(GB10) 16대</td><td>구축 중</td><td class="num">1</td><td>플릿을 열 때 여기에 게시</td></tr>
+      <tr><th>플릿</th><th>장비</th><th>상태</th><th>예약</th><th class="num">시간당 HC(요율)</th><th class="num">고객 저장공간</th><th>모델</th></tr>
+      <tr><td><b>플릿&nbsp;1</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리, 100 Gb/s RDMA 스위치와 노드 쌍 직결 링크로 연결</td><td>가동 중</td><td>데모 플릿: 시간 단위</td><td class="num">1</td><td class="num">4 TB</td><td>아래 모델</td></tr>
+      <tr><td><b>플릿&nbsp;2</b></td><td>Apple Mac Studio(M5 Ultra) 8대, 각 256GB, 1.2 TB/s: 합계 2TB, 9.6 TB/s로 플릿 1 메모리 대역폭의 2.2배</td><td>구축 중</td><td>주 단위, 고정</td><td class="num">1</td><td class="num">4 TB</td><td>플릿을 열 때 여기에 게시</td></tr>
+      <tr><td><b>플릿&nbsp;3</b></td><td>NVIDIA DGX Spark(GB10) 16대</td><td>구축 중</td><td>주 단위, 고정</td><td class="num">1</td><td class="num">4 TB</td><td>플릿을 열 때 여기에 게시</td></tr>
     </table>
     </div>
-    <p>저희 시스템은 플릿별 상태와 예약 가능한 시간을 담은 실시간 가용 용량을 <span class="mono">https://sparkpipe.ai/availability.txt</span>에 공개하며, 최소 30초마다 갱신합니다.</p>
+    <p>저희 시스템은 플릿별 상태와 그 플릿이 데모 플릿인지, 고정되어 있는지 또는 비어 있는지를 담은 실시간 가용 용량을 <span class="mono">https://sparkpipe.ai/availability.txt</span>에 공개하며, 최소 30초마다 갱신합니다.</p>
   </section>
 
   <section id="accelerators">
@@ -83,12 +83,12 @@
       <tr><td colspan="5">아직 가동 중인 가속기는 없습니다. 각 가속기는 가동하면 요율, 속도와 함께 여기에 게시합니다.</td></tr>
     </table>
     </div>
-    <p>가속기의 요율은 플릿 1과 같은 요율 1인 플릿에 대한 그 가속기의 연산 능력에 따르며, DGX Spark 48대로 이루어진 가속기는 요율 3, 96대로 이루어진 가속기는 요율 6입니다. 가속기 이용 시간은 초 단위로 부과되며, 우선순위 1에서 1시간은 그 요율만큼의 HC입니다. 프롬프트의 가격은 가속기가 그 프롬프트를 시작한 때부터 돌려줄 때까지의 가속기초 × 요율 × 그 프롬프트의 우선순위(입찰 배수) ÷ 3,600이며, HC 또는 플랜 시간으로 냅니다. 예를 들어 요율 6, 우선순위 1.5에서 180 가속기초는 0.45 HC입니다. 계정 페이지(영문)에서는 Standard ×1, Priority ×2, Rush ×5를 고를 수 있고, API로는 요청이 1부터 10까지 0.01 단위로 어떤 우선순위든 정할 수 있으며, 정하지 않으면 우선순위는 1입니다. 우선순위가 가장 높은 것부터, 같으면 도착한 순서대로 계산합니다. 대기 시간(요청이 따로 정하지 않으면 300초, 최대 600초) 안에 어느 가속기도 시작하지 않은 요청은 가속기 없이 그 플릿에서 계산되며 가속기 비용을 내지 않습니다. 다만 요청은 그 대신 거절되도록 정할 수 있습니다. 가속기는 용량이나 속도를 보장하지 않습니다. 실시간 대기열과 각 가속기의 상태는 <a href="market.html" hreflang="en">계정 페이지(영문)</a>에 있고, 전체 규칙은 <a href="agreement-ko.html">고객 계약</a>에 있습니다.</p>
+    <p>가속기의 요율은 플릿 1과 같은 요율 1인 플릿에 대한 그 가속기의 연산 능력에 따르며, DGX Spark 48대로 이루어진 가속기는 요율 3, 96대로 이루어진 가속기는 요율 6입니다. 가속기 이용 시간은 초 단위로 부과되며, 우선순위 1에서 1시간은 그 요율만큼의 HC입니다. 프롬프트의 가격은 가속기가 그 프롬프트를 시작한 때부터 돌려줄 때까지의 가속기초 × 요율 × 그 프롬프트의 우선순위(입찰 배수) ÷ 3,600이며, HC로 냅니다. 예를 들어 요율 6, 우선순위 1.5에서 180 가속기초는 0.45 HC입니다. 계정 페이지(영문)에서는 Standard ×1, Priority ×2, Rush ×5를 고를 수 있고, API로는 요청이 1부터 10까지 0.01 단위로 어떤 우선순위든 정할 수 있으며, 정하지 않으면 우선순위는 1입니다. 우선순위가 가장 높은 것부터, 같으면 도착한 순서대로 계산합니다. 대기 시간(요청이 따로 정하지 않으면 300초, 최대 600초) 안에 어느 가속기도 시작하지 않은 요청은 가속기 없이 그 플릿에서 계산되며 가속기 비용을 내지 않습니다. 다만 요청은 그 대신 거절되도록 정할 수 있습니다. 가속기는 용량이나 속도를 보장하지 않습니다. 실시간 대기열과 각 가속기의 상태는 <a href="market.html" hreflang="en">계정 페이지(영문)</a>에 있고, 전체 규칙은 <a href="agreement-ko.html">고객 계약</a>에 있습니다.</p>
   </section>
 
   <section id="models">
     <h2>플릿 1의 모델</h2>
-    <p>플릿 1에 설치된 모든 모델입니다. <b>제공</b> 모델은 저희 API(공유 풀)로 요청 단위로 쓸 수 있고, 어떤 예약에서든 고를 수 있으며, <a href="plans.html" hreflang="en">예약 플랜(영문)</a>의 플랜 주문서에서 선택 모델로 지정할 수 있습니다. 플릿은 한 번에 하나의 모델을 적재하므로, 플릿이 적재하지 않은 모델에 대한 API 요청은 플릿이 그 모델로 전환하는 동안(보통 20~80초) 기다리며, 기다리는 동안에는 비용을 내지 않습니다. 계정 페이지(영문)는 제공 모델마다 아래 실측 속도와 현재 좌석 가격으로 계산한 프롬프트·출력 100만 토큰당 달러 가격(추정치)을 보여 줍니다. <b>핵심</b> 모델은 계속 성능을 개선하며, <b>검증</b> 모델은 릴리스 검증을 통과해 표의 속도로 제공됩니다. <b>검증 중</b> 모델은 서비스 중이고 채팅 점검을 통과했으며, 출력 토큰을 게시자의 참조 구현과 비교하는 중입니다.</p>
+    <p>플릿 1에 설치된 모든 모델입니다. <b>제공</b> 모델은 고객이 보유한 어느 플릿에서든 고객 자신의 키로 저희 API를 통해 쓸 수 있습니다. 플릿은 한 번에 하나의 모델을 적재하므로, 플릿이 적재하지 않은 모델에 대한 요청은 플릿이 그 모델로 전환하는 동안(보통 20~80초) 기다립니다. <b>핵심</b> 모델은 계속 성능을 개선하며, <b>검증</b> 모델은 릴리스 검증을 통과해 표의 속도로 제공됩니다. <b>검증 중</b> 모델은 서비스 중이고 채팅 점검을 통과했으며, 출력 토큰을 게시자의 참조 구현과 비교하는 중입니다.</p>
     <div class="scroll">
     <table>
       <tr><th>모델</th><th>게시자</th><th>라이선스</th><th class="num">컨텍스트 창</th><th class="num">디코드, 단일 요청</th><th class="num">프리필, 8K 프롬프트</th><th>분류</th><th>제공 여부</th></tr>
@@ -193,5 +193,7 @@
     <nav aria-label="바닥글"><a href="index-ko.html">홈</a><a href="buy.html" hreflang="en">시간 크레딧 구매 (영문)</a><a href="terms-ko.html">약관</a><a href="privacy-ko.html">개인정보처리방침</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
+<script src="pricing.js"></script>
+<script src="prices.js"></script>
 </body>
 </html>
