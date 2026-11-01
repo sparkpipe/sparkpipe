@@ -34,7 +34,7 @@
 <section class="co-head">
   <p class="label">Your account · <span class="signal live-only">live</span><span class="signal sandbox-only">sandbox</span></p>
   <h1>Use, book and sell back fleet-hours.</h1>
-  <p class="lead">One hour-credit (HC) costs ₩26,000 or $20 plus VAT and buys one hour of a Rate-1 fleet; it lasts 12 months. Use it per request through the API or to book whole fleets by the hour, and keep your office hours every week with a <a href="plans.html">reserved plan</a>. Sell back an hour you won't use and get HC for what it earns, less a 10% fee. The <a href="agreement.html">SparkPipe Customer Agreement</a> and the <a href="market-rules.html">Hour Market Rules</a> apply.</p>
+  <p class="lead">One hour-credit (HC) costs <span data-krw>₩26,000</span> or <span data-usd>$20</span> plus VAT and buys one hour of a Rate-1 fleet; it lasts 12 months. Use it per request through the API or to book whole fleets by the hour, and keep your office hours every week with a <a href="plans.html">reserved plan</a>. Sell back an hour you won't use and get HC for what it earns, less the release fee, now <span data-fee>10%</span>. The <a href="agreement.html">SparkPipe Customer Agreement</a> and the <a href="market-rules.html">Hour Market Rules</a> apply.</p>
   <div class="row">
     <nav class="mode" aria-label="Mode"><a href="market.html" id="mode-live">Live</a><a href="market.html?sandbox" id="mode-sandbox">Sandbox, no money</a></nav>
     <p class="muted live-only">Real accounts and real payments. Try every flow first in the sandbox.</p>
@@ -64,10 +64,11 @@
         <summary>Key terms</summary>
         <ul>
           <li>For business, professional, commercial or independent research and development use, not as a household consumer.</li>
-          <li>Prepaid: one HC costs ₩26,000 when paid in won, otherwise $20, plus 10% VAT, and buys one hour of a Rate-1 fleet or seat-seconds through the API. HC is issued once the payment completes.</li>
+          <li>Prepaid, at the HC Price shown when you buy: now <span data-krw>₩26,000</span> per HC when paid in won, otherwise <span data-usd>$20</span>, plus VAT. One HC buys one hour of a Rate-1 fleet or seat-seconds through the API, and is issued once the payment completes.</li>
+          <li>We set prices, Rates and fees on this website and may change them at any time. A change never alters the price of HC you have bought or of an hour you have booked.</li>
           <li>Each purchase lasts 12 months from issue, and the HC that lapses first is spent first.</li>
           <li>HC has no cash value, cannot be moved to another account and is not refunded, unless we stop offering service for HC, close your account other than for your breach, or the law requires a refund.</li>
-          <li>A booking is final and never taken from you. You can sell an hour back before it starts and get HC for what it earns, less a 10% fee.</li>
+          <li>A booking is final and never taken from you. You can sell an hour back before it starts and get HC for what it earns, less the release fee published when you sell it back (now <span data-fee>10%</span>).</li>
           <li>A booked hour that is down for more than 15 consecutive minutes is credited back in full, automatically.</li>
           <li>Requests and data are processed only on fleets, accelerators and servers we operate in Korea, and go to no other computing or AI service. Transient caches are deleted within 24 hours.</li>
           <li>Our liability for claims about HC is capped at what you paid us for HC in the 6 months before the event giving rise to the claim.</li>
@@ -170,7 +171,7 @@
 
 <section class="card">
   <h2>Your hours</h2>
-  <p class="muted">Can't use an hour? Sell it back before it starts: it sells before our own hours at your price, and if it is still unsold when it starts, the API pool uses it. Either way you get HC for what it earned, less the 10% fee.</p>
+  <p class="muted">Can't use an hour? Sell it back before it starts: it sells before our own hours at your price, and if it is still unsold when it starts, the API pool uses it. Either way you get HC for what it earned, less the release fee, now <span data-fee>10%</span>.</p>
   <div class="scroll"><table><thead><tr><th>Start (KST)</th><th>Fleet</th><th>Model</th><th>Paid</th><th>State</th><th></th></tr></thead><tbody id="hours"></tbody></table></div>
   <p class="flash" id="m-hours" hidden></p>
 </section>
@@ -218,7 +219,7 @@
 <div class="tab-panel" role="tabpanel" data-panel="sell" hidden>
 <section class="card">
   <h2>Sell back</h2>
-  <p class="muted">Sell back any booked hour you won't use, plan hours included, from Your hours on the Book tab, at its price or a minimum you set. Hours sold back are offered before our own hours. If one is still unsold when it starts, the API pool uses it. Either way you get HC for what it earned, less a 10% fee, usable for 12 months. We never buy a sold-back hour ourselves.</p>
+  <p class="muted">Sell back any booked hour you won't use, plan hours included, from Your hours on the Book tab, at its price or a minimum you set. Hours sold back are offered before our own hours. If one is still unsold when it starts, the API pool uses it. Either way you get HC for what it earned, less the release fee, now <span data-fee>10%</span>, usable for 12 months. We never buy a sold-back hour ourselves.</p>
   <h3>Hours for sale now</h3>
   <div class="scroll"><table><thead><tr><th>Start (KST)</th><th>Fleet</th><th>Ask</th></tr></thead><tbody id="asks"></tbody></table></div>
 </section>

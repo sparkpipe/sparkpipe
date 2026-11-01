@@ -129,6 +129,12 @@ def value_text(price, hours, currency, up=False):
     return format(max(Decimal(0), Decimal(whole) * unit).quantize(unit), "f")
 
 
+def value_sum(pairs, currency):
+    unit = unit_of(currency)
+    steps = sum((Fraction(str(price)) * Fraction(hours) for price, hours in pairs), Fraction(0)) / Fraction(str(unit))
+    return format(max(Decimal(0), Decimal((steps + Fraction(1, 2)) // 1) * unit).quantize(unit), "f")
+
+
 def order_hours(order, net=None):
     return Fraction(str(order["net"] if net is None else net)) / Fraction(str(order["price"]))
 
@@ -185,16 +191,13 @@ def plan_fields(pricing, plan):
     named = {"F" + f["name"].split()[-1] for f in pricing["fleets"]}
     whole = lambda n: isinstance(n, int) and not isinstance(n, bool) and n >= 1
     good = office_valid(office)
-    try:
-        fee, allowance = Decimal(str(plan.get("releaseFee"))), plan.get("maintenanceHoursPerWeek")
-    except InvalidOperation:
-        fee, allowance = None, None
+    allowance = plan.get("maintenanceHoursPerWeek")
     term = months is None if monthly(plan) else whole(months)
     if (not good or plan.get("days") not in DAYS or not whole(fleets) or plan.get("payment") not in PAYMENTS or not term
-            or fee is None or not fee.is_finite() or not 0 <= fee < 1 or not isinstance(allowance, int) or isinstance(allowance, bool) or not 0 <= allowance <= 24
+            or not isinstance(allowance, int) or isinstance(allowance, bool) or not 0 <= allowance <= 24
             or not isinstance(lock, list) or (lock and (len(lock) != fleets or len(set(lock)) != len(lock) or any(f not in named for f in lock)
                                                        or office_length(office["from"], office["to"]) != 24 or plan.get("days") != "every"))):
-        raise ValueError(f"plan {plan.get('id')}: office as {{zone, from, to}} with an IANA zone and whole hours at least {MIN_OFFICE_HOURS} hours apart, days {' or '.join(DAYS)}, fleets a whole number from 1, payment {' or '.join(PAYMENTS)} with months null for monthly and a whole number from 1 otherwise, releaseFee from 0 to below 1, maintenanceHoursPerWeek from 0 to 24, and lock none, or one named fleet per fleet on a plan of a full day every day")
+        raise ValueError(f"plan {plan.get('id')}: office as {{zone, from, to}} with an IANA zone and whole hours at least {MIN_OFFICE_HOURS} hours apart, days {' or '.join(DAYS)}, fleets a whole number from 1, payment {' or '.join(PAYMENTS)} with months null for monthly and a whole number from 1 otherwise, maintenanceHoursPerWeek from 0 to 24, and lock none, or one named fleet per fleet on a plan of a full day every day")
     return office, fleets
 
 
@@ -538,16 +541,23 @@ class Book:
     def pending(self, plan, now):
         return sum((order_hours(order) for order in self.orders.values() if order.get("plan") == plan and self.waiting(order, now)), Fraction(0))
 
+    def tranche_price(self, plan, first, now):
+        live = [o for o in self.orders.values() if o.get("plan") == plan and o.get("tranche") == first and (o["issued"] or self.waiting(o, now))]
+        if not live:
+            return None
+        order = min(live, key=lambda o: o["created"])
+        return money(order["hourPrice"]), won(order["hourPriceKRW"]) if order.get("hourPriceKRW") else None
+
     def paid_hours(self, plan, without=None):
         return sum((Decimal(order["issued_hours"]) for order in self.orders.values() if order.get("plan") == plan and order["issued"] and order["order"] != without), Decimal(0))
 
 
 def standing(pricing, book, plan, now):
     office, fleets = plan_fields(pricing, plan)
-    found = monthly_standing(pricing, book, plan, now) if monthly(plan) else term_standing(pricing, book, plan, now)
+    found = dict(price=text_money(money(plan["hourPrice"])), priceKRW=text_won(won(plan["hourPriceKRW"])) if plan.get("hourPriceKRW") else None)
+    found.update(monthly_standing(pricing, book, plan, now) if monthly(plan) else term_standing(pricing, book, plan, now))
     found.update(plan=plan["id"], start=plan["start"], months=plan.get("months"), office=dict(office), days=plan["days"], fleets=fleets,
-                 lock=list(plan.get("lock") or []), payment=plan["payment"], price=text_money(money(plan["hourPrice"])),
-                 priceKRW=text_won(won(plan["hourPriceKRW"])) if plan.get("hourPriceKRW") else None)
+                 lock=list(plan.get("lock") or []), payment=plan["payment"])
     return found
 
 
@@ -620,15 +630,31 @@ def month_name(day):
     return f"{calendar.month_name[day.month]} {day.year}"
 
 
+def monthly_list_price(pricing, plan):
+    offer = pricing["plans"]
+    term = next((t for t in offer["terms"] if t["payment"] == "monthly"), None)
+    if term is None:
+        return money(plan["hourPrice"]), won(plan["hourPriceKRW"]) if plan.get("hourPriceKRW") else None
+    lock = bool(plan.get("lock"))
+    usd = money(Decimal(str(term["hourPrice"])) + (Decimal(str(offer["lockPremium"])) if lock else 0))
+    krw = won(Decimal(str(term["hourPriceKRW"])) + (Decimal(str(offer["lockPremiumKRW"])) if lock else 0))
+    return usd, krw if plan.get("hourPriceKRW") else None
+
+
+def tranche_pricer(pricing, book, plan, now):
+    start = date.fromisoformat(plan["start"])
+    stated = money(plan["hourPrice"]), won(plan["hourPriceKRW"]) if plan.get("hourPriceKRW") else None
+    return lambda first: stated if first == start else book.tranche_price(plan["id"], first.isoformat(), now) or monthly_list_price(pricing, plan)
+
+
 def monthly_tranches(pricing, plan):
     start, cursor, total = date.fromisoformat(plan["start"]), None, 0
-    price = money(plan["hourPrice"])
     while True:
         first = start if cursor is None else cursor
         last = month_last(first)
         hours = tranche_spans(pricing, dict(plan, start=first.isoformat()), last)[0][2]
         total += hours
-        yield {"first": first, "last": last, "hours": hours, "amount": price * hours, "through": total}
+        yield {"first": first, "last": last, "hours": hours, "through": total}
         cursor = last + timedelta(days=1)
 
 
@@ -639,7 +665,10 @@ def paid_by(paid, moment):
 def monthly_standing(pricing, book, plan, now):
     today = local_day(now)
     stopped = stamp_time(plan["stopped"]) if plan.get("stopped") else None
-    price, price_won = money(plan["hourPrice"]), won(plan["hourPriceKRW"]) if plan.get("hourPriceKRW") else None
+    price_of = tranche_pricer(pricing, book, plan, now)
+    orders = [o for o in book.orders.values() if o.get("plan") == plan["id"]]
+    paid_value = [(o["hourPrice"], order_hours(o, o["paid_net"])) for o in orders if o["issued"] and (not stopped or stamp_time(o["paid"]) <= stopped)]
+    pending_value = [] if stopped else [(o["hourPrice"], order_hours(o)) for o in orders if book.waiting(o, now)]
     paid = [(at, count) for at, count in book.prepaid(plan["id"]) if not stopped or at <= stopped]
     paid_hours = sum((count for _, count in paid), Fraction(0))
     pending = Fraction(0) if stopped else book.pending(plan["id"], now)
@@ -686,22 +715,27 @@ def monthly_standing(pricing, book, plan, now):
     if due and not ended and not stopped:
         owed = due["through"] - paid_hours - pending
         if owed > 0:
-            next_gate = {"name": month_name(due["first"]), "due": due["first"].isoformat(), "amount": value_text(price, owed, "USD", up=True), "hours": due["hours"], "from": due["first"].isoformat(), "to": due["last"].isoformat()}
+            price, price_won = price_of(due["first"])
+            next_gate = {"name": month_name(due["first"]), "due": due["first"].isoformat(), "amount": value_text(price, owed, "USD", up=True), "hours": due["hours"], "from": due["first"].isoformat(), "to": due["last"].isoformat(),
+                         "price": text_money(price), "priceKRW": text_won(price_won) if price_won else None}
             next_won = value_text(price_won, owed, KRW, up=True) if price_won else None
+    shown = price_of(due["first"] if next_gate else current["first"]) if current or next_gate else price_of(date.fromisoformat(plan["start"]))
     return {
+        "price": text_money(shown[0]),
+        "priceKRW": text_won(shown[1]) if shown[1] else None,
         "end": end.isoformat() if end and (ended or stopped) else None,
         "hours": current["hours"] if current else 0,
         "total": None,
-        "paid": value_text(price, paid_hours, "USD"),
-        "pending": value_text(price, pending, "USD"),
+        "paid": value_sum(paid_value, "USD"),
+        "pending": value_sum(pending_value, "USD"),
         "remaining": next_gate["amount"] if next_gate else "0.00",
-        "remainingKRW": next_won if next_won else (None if price_won is None else "0"),
+        "remainingKRW": next_won if next_won else ("0" if plan.get("hourPriceKRW") else None),
         "nextGate": next_gate,
         "nextGateKRW": next_won,
         "ended": ended,
         "stopped": plan.get("stopped"),
         "paidThrough": through.isoformat() if through else None,
-        "tranche": {"from": current["first"].isoformat(), "to": current["last"].isoformat(), "hours": current["hours"], "amount": text_money(current["amount"])} if current else None,
+        "tranche": {"from": current["first"].isoformat(), "to": current["last"].isoformat(), "hours": current["hours"], "amount": text_money(price_of(current["first"])[0] * current["hours"])} if current else None,
         "heldUntil": held.isoformat() if held else None,
         "keepUntil": keep.isoformat() if keep else None,
     }
@@ -828,7 +862,7 @@ def order_rows(record, lang):
     else:
         customer = f"{c['name']}. 개인, 주소 {c['address']}" if ko else f"{c['name']}, an individual, of {c['address']}"
     gates, first = record["schedule"], record.get("first")
-    fee, allowance = format((Decimal(record["releaseFee"]) * 100).normalize(), "f"), record["maintenanceHoursPerWeek"]
+    allowance = record["maintenanceHoursPerWeek"]
     rates = ("; ", ", ")[ko].join(f"{fleet_name(fleet, lang)}: {rate}" for fleet, rate in record["rates"])
     models = ", ".join(m["name"] for m in record["models"])
     office = office_text(record["office"], record["start"], lang)
@@ -836,7 +870,7 @@ def order_rows(record, lang):
         if monthly(record):
             payment = "월별 선납: 각 트랜치를 그 개시 전까지, 트랜치 1은 개시일 전까지"
             term = [("플랜 기간(제16.3조)", "월간, 종료일 없음")]
-            priced = [("트랜치 1(제17.3조)", f"{long_date(first['from'], lang)}부터 {long_date(first['to'], lang)}까지: 플랜 시간 {first['hours']:,}시간, {krw(first['totalKRW'])}원(KRW) 또는 미화 {usd(first['total'])}달러(USD), 부가가치세 별도. 이후 각 트랜치는 하나의 역월이며, 그 대금은 그 플랜 시간에 시간당 가격을 곱한 금액으로 한다")]
+            priced = [("트랜치 1(제17.3조)", f"{long_date(first['from'], lang)}부터 {long_date(first['to'], lang)}까지: 플랜 시간 {first['hours']:,}시간, {krw(first['totalKRW'])}원(KRW) 또는 미화 {usd(first['total'])}달러(USD), 부가가치세 별도. 이후 각 트랜치는 하나의 역월이며, 그 가격은 제16.6조에 따른다")]
         else:
             payment = "일시 선납: 개시일 전까지 플랜 기간의 대금" if record["payment"] == "upfront" else "게이트 선납: " + ", ".join(f"게이트 {g['name'].split()[-1]} {long_date(g['due'], lang)}" for g in gates) + "까지"
             term = [("플랜 기간(제16.3조)", f"{record['months']}개월, {long_date(record['end'], lang)} 종료")]
@@ -852,7 +886,7 @@ def order_rows(record, lang):
             ("이용 요일(제17.2조)", "매일" if record["days"] == "every" else "평일"),
             ("플릿 수(제18.1조)", str(record["fleets"])),
             ("플릿 고정(제19조)", ", ".join(fleet_name(f, lang) for f in record["lock"]) or "없음"),
-            ("시간당 가격(제16.4조)", f"아래 지급 통화에 따라 플릿시간당 {krw(record['hourPriceKRW'])}원(KRW) 또는 미화 {usd(record['hourPrice'])}달러(USD), 부가가치세 별도, 플릿 고정 포함, " + ("플랜이 계속되는 동안 고정" if monthly(record) else "플랜 기간 동안 고정")),
+            ("시간당 가격(제16.4조)", f"아래 지급 통화에 따라 플릿시간당 {krw(record['hourPriceKRW'])}원(KRW) 또는 미화 {usd(record['hourPrice'])}달러(USD), 부가가치세 별도, 플릿 고정 포함, " + ("트랜치 1에 대하여, 이후 트랜치의 가격은 제16.6조에 따름" if monthly(record) else "플랜 기간 동안 고정")),
         ] + priced + [
             ("납부 방식(제20조)", payment),
             ("선택 모델(제7.2조)", models),
@@ -862,13 +896,13 @@ def order_rows(record, lang):
             ("고객 통지 주소 및 이메일(제11.7조)", f"{c['address']}, {c['notice']}"),
             ("고객의 부가가치세 지위(제3.2조)", f"대한민국 사업자등록번호 {c['brn']}" if c["brn"] else "대한민국 내 사업장 없음"),
             ("지급 통화 및 계좌(제3.3조)", "원화(KRW), 제3.3조 (가)목: 토스페이먼츠 / 미국 달러 스테이블코인, 제3.3조 (다)목"),
-            ("공개 설정(제9.3조)", f"플랜 주문서 성립 시 공개된 설정: 반납 수수료 {fee}%, 점검 허용 시간 플릿당 매주 {allowance}시간"),
+            ("점검 허용 시간(제4.6조)", f"플랜 주문서 성립 시 공개된 시간: 플릿당 매주 {allowance}시간"),
             ("플릿 요율(제16.5조)", f"플랜 주문서 성립 시 플릿 목록에 공개된 요율: {rates}"),
         ]
     if monthly(record):
         payment = "Monthly: each Tranche before it starts, Tranche 1 before the Start Date"
         term = [("Term (clause 16.3)", "Monthly, with no fixed end")]
-        priced = [("Tranche 1 (clause 17.3)", f"{long_date(first['from'], lang)} to {long_date(first['to'], lang)}: {first['hours']:,} Plan hours, KRW {krw(first['totalKRW'])} or USD {usd(first['total'])}, exclusive of VAT; each later Tranche is one calendar month, priced at the Hour Price times its Plan hours")]
+        priced = [("Tranche 1 (clause 17.3)", f"{long_date(first['from'], lang)} to {long_date(first['to'], lang)}: {first['hours']:,} Plan hours, KRW {krw(first['totalKRW'])} or USD {usd(first['total'])}, exclusive of VAT; each later Tranche is one calendar month, priced under clause 16.6")]
     else:
         payment = "Upfront: the Price of the Term before the Start Date" if record["payment"] == "upfront" else "Gated: " + ", ".join(f"{g['name']} by {long_date(g['due'], lang)}" for g in gates)
         term = [("Term (clause 16.3)", f"{record['months']} months, ending on {long_date(record['end'], lang)}")]
@@ -884,7 +918,7 @@ def order_rows(record, lang):
         ("Days (clause 17.2)", "Every day" if record["days"] == "every" else "Weekdays"),
         ("Fleets (clause 18.1)", str(record["fleets"])),
         ("Fleet lock (clause 19)", ", ".join(fleet_name(f, lang) for f in record["lock"]) or "None"),
-        ("Hour Price (clause 16.4)", f"KRW {krw(record['hourPriceKRW'])} or USD {usd(record['hourPrice'])} per fleet-hour, in the payment currency below, exclusive of VAT, including any Fleet lock, " + ("fixed for as long as the Plan runs" if monthly(record) else "fixed for the Term")),
+        ("Hour Price (clause 16.4)", f"KRW {krw(record['hourPriceKRW'])} or USD {usd(record['hourPrice'])} per fleet-hour, in the payment currency below, exclusive of VAT, including any Fleet lock, " + ("for Tranche 1, with later Tranches priced under clause 16.6" if monthly(record) else "fixed for the Term")),
     ] + priced + [
         ("Payment schedule (clause 20)", payment),
         ("Chosen Models (clause 7.2)", models),
@@ -894,7 +928,7 @@ def order_rows(record, lang):
         ("Customer notice address and email (clause 11.7)", f"{c['address']}; {c['notice']}"),
         ("Customer VAT status (clause 3.2)", f"Korean business registration number {c['brn']}" if c["brn"] else "No place of business in the Republic of Korea"),
         ("Payment currency and account (clause 3.3)", "KRW, clause 3.3(a): Toss Payments / US dollar stablecoin, clause 3.3(c)"),
-        ("Published settings (clause 9.3)", f"As published when this Plan Order is made: release fee {fee}%; maintenance allowance {allowance} hours a week per Fleet"),
+        ("Maintenance allowance (clause 4.6)", f"As published when this Plan Order is made: {allowance} hours a week per Fleet"),
         ("Fleet Rates (clause 16.5)", f"As published on the Fleet List when this Plan Order is made: {rates}"),
     ]
 
@@ -926,7 +960,7 @@ def plan_mail(cfg, record, pricing):
     if monthly(record):
         first = record["first"]
         terms = [
-            f"{plan_line(record)}, from {long_date(record['start'], 'en')}, at {record['hourPrice']} USD an hour for as long as the plan runs.",
+            f"{plan_line(record)}, from {long_date(record['start'], 'en')}: Tranche 1 at {record['hourPrice']} USD an hour, and each later month at the Monthly price we publish when you pay for it.",
             f"Each calendar month is a Tranche, paid before it starts. Tranche 1, {long_date(first['from'], 'en')} to {long_date(first['to'], 'en')}: {first['hours']:,} hours, {first['total']} USD before VAT, due before the Start Date. If a Tranche is not paid by its first day, the plan ends after the last paid one, with nothing owed; you may also stop it from your account.",
         ]
     else:
@@ -1197,14 +1231,6 @@ class App:
         expires = int(clock().timestamp()) + SESSION_SECONDS
         return self.summary(account), session_token(self.key, account, expires)
 
-    def plan_terms(self, account, start):
-        pricing, day = self.cfg.pricing(), local_day(start)
-        for plan in self.plans(account):
-            plan_fields(pricing, plan)
-            if date.fromisoformat(plan["start"]) <= day <= (fixed_end(plan) or day):
-                return {"releaseFee": format(Decimal(str(plan["releaseFee"])), "f")}
-        return None
-
     def plans(self, account):
         return [p for p in self.book.plans.values() if p["account"] == account]
 
@@ -1291,7 +1317,7 @@ class App:
             "id": ident, "plan": ident, "account": account, "email": record["email"], "company": record["company"],
             "start": start.isoformat(), "months": term["months"], "office": office,
             "days": body["days"], "fleets": fleets, "lock": [], "hourPrice": text_money(price), "hourPriceKRW": text_won(price_won), "payment": term["payment"],
-            "releaseFee": format(Decimal(str(pricing["market"]["releaseFee"])), "f"), "maintenanceHoursPerWeek": offer["maintenanceHoursPerWeek"],
+            "maintenanceHoursPerWeek": offer["maintenanceHoursPerWeek"],
         }
         details = {
             "customer": self.customer_field(body.get("customer"), record), "models": [{"id": m, "name": listed[m]["name"]} for m in listed if m in models],
@@ -1429,7 +1455,7 @@ class App:
         ident = plan.get("id")
         if not account or not isinstance(ident, str) or not ident or ident in self.book.plans:
             raise Refusal("A signed Plan Order needs an unused id and the email of an existing account.")
-        record = {key: plan.get(key) for key in ("start", "months", "office", "days", "fleets", "hourPrice", "payment", "releaseFee", "maintenanceHoursPerWeek")}
+        record = {key: plan.get(key) for key in ("start", "months", "office", "days", "fleets", "hourPrice", "payment", "maintenanceHoursPerWeek")}
         if plan.get("hourPriceKRW"):
             record["hourPriceKRW"] = text_won(Decimal(str(plan["hourPriceKRW"])))
         record.update(id=ident, plan=ident, account=account, email=self.book.accounts[account]["email"], company=self.book.accounts[account]["company"], lock=list(plan.get("lock") or []), source="signed")
@@ -1545,13 +1571,18 @@ class App:
                 raise Refusal(f"A Monthly plan is paid one Tranche at a time: {state['nextGate']['name']} is {amount_text(left, currency)} before VAT, counting unpaid orders." if state["nextGate"] else "The next Tranche is already paid or awaiting payment.", 409)
             raise Refusal(f"At most {amount_text(left, currency)} remains to prepay, counting unpaid orders.", 409)
         price = won(found["hourPriceKRW"]) if currency == KRW else money(found["hourPrice"])
+        tranche = {}
+        if monthly(found):
+            due = state["nextGate"]
+            price = won(due["priceKRW"]) if currency == KRW else money(due["price"])
+            tranche = {"tranche": due["from"], "hourPrice": due["price"], "hourPriceKRW": due["priceKRW"]}
         vat = (net * Decimal(str(pricing["vatRate"]))).quantize(unit_of(currency), rounding=ROUND_HALF_UP)
         shown = text_won if currency == KRW else text_money
-        return {
+        return dict({
             "product": "plan", "plan": found["id"], "currency": "KRW" if currency == KRW else "USD",
             "price": shown(price), "hours": format((net / price).quantize(HOUR_STEP, rounding=ROUND_DOWN), "f"),
             "net": shown(net), "vat": shown(vat), "total": shown(net + vat),
-        }
+        }, **tranche)
 
     def credit_terms(self, pricing, body, currency):
         offer = pricing["market"]
@@ -1562,13 +1593,13 @@ class App:
             if not low <= net <= high:
                 raise Refusal(f"Buy at least {amount_text(low, KRW)} of HC, and at most {amount_text(high, KRW)} at a time.")
             vat = won(net * Decimal(str(pricing["vatRate"])))
-            return {"product": "credits", "currency": "KRW", "hours": market.text_hc(net / price), "price": text_won(price), "net": text_won(net), "vat": text_won(vat), "total": text_won(net + vat), "terms": market.published_terms(offer)}
+            return {"product": "credits", "currency": "KRW", "hours": market.text_hc(net / price), "price": text_won(price), "net": text_won(net), "vat": text_won(vat), "total": text_won(net + vat)}
         net = money_field(body.get("amount"))
         if net < Decimal(str(offer["minPurchase"])) or net > 100000:
             raise Refusal(f"Buy at least {offer['minPurchase']} USD of HC, and at most 100,000 USD at a time.")
         price = money(Decimal(str(offer["hcPrice"])))
         vat = money(net * Decimal(str(pricing["vatRate"])))
-        return {"product": "credits", "currency": "USD", "hours": market.text_hc(net / price), "price": text_money(price), "net": text_money(net), "vat": text_money(vat), "total": text_money(net + vat), "terms": market.published_terms(offer)}
+        return {"product": "credits", "currency": "USD", "hours": market.text_hc(net / price), "price": text_money(price), "net": text_money(net), "vat": text_money(vat), "total": text_money(net + vat)}
 
     def buy(self, body, account, ip, agent):
         if self.cfg.sandbox and body.get("processor") != "toss":
@@ -1755,7 +1786,7 @@ class App:
         if order["product"] == "plan":
             self.grant_paid(order["plan"], order_id, clock())
         if order["product"] == "credits":
-            issued["expires"] = self.market.issue(order["account"], Decimal(hours), order_id, order["terms"])["expires"]
+            issued["expires"] = self.market.issue(order["account"], Decimal(hours), order_id)["expires"]
         log(f"order {order_id}: paid, {hours} hours issued to {order['account']}")
         self.mail(order["email"], f"Payment received: SparkPipe order {order_id}", receipt(self.cfg, order, issued, payment))
         received, total = amount_text(payment["received"], currency), amount_text(order["total"], currency)

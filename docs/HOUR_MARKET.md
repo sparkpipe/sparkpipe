@@ -40,7 +40,8 @@ describes what is built, how it runs and how to test it.
   capacity is at Rate; a trade with a release is at whichever order was
   resting first (the ledger sequence decides).
 - **Settlement.** The buyer's HC is debited and the seller is credited the
-  price less `market.releaseFee` (10%) as a new 12-month lot.
+  price less the release fee on its ask (`market.releaseFee` when the hour
+  was released) as a new 12-month lot.
 - **Shared pool.** In each hour, every serving fleet that nobody holds, and
   every released hour that reached its start unsold, serves per-request
   traffic. A request holds one seat; the price per seat-second is
@@ -148,16 +149,13 @@ from its holder, and HC is sold only while it can be spent. Four rules in
   and `market.txt` publish it. Sales and pool credits for released hours
   never weaken the cover, as the buyer's HC spent is more than the seller's
   credit and the hour was already taken.
-- **Settings locked to what was bought.** Each HC lot carries the
-  published settings in force when it was ordered (`terms`: the advance
-  multiplier and the release fee); a sale or pool credit carries those in
-  force when it is credited. A reservation paid with HC keeps the settings
-  of the lot it spent first (the one that lapses first, or the first part of
-  a bid's hold): its advance price uses that lot's multiplier, and its
-  release that lot's fee. A Tranche reservation keeps its Plan Order's
-  release fee. A change in `site/pricing.js` therefore reaches only HC and
-  Plan Orders made after it, as the Customer Agreement's published settings
-  clause promises.
+- **Published settings apply when used.** Prices, Rates and fees in
+  `site/pricing.js` apply from when they are published (Customer Agreement
+  9.3). HC keeps the price it was bought at and a reservation the price it
+  was made at, but neither carries any other setting. A release, whether of
+  an hour reserved with HC or with Plan hours, records on its `ask` line the
+  release fee published at that moment, and its sale or pool credit is
+  charged that fee (Hour Market Rules 9).
 - **Maintenance.** `sparkpipe_pay.py maintenance FLEET YYYY-MM-DD [HOURS]`
   schedules maintenance in the week starting on that KST date, which must
   begin at least 7 days ahead. It takes at most the weekly allowance (the

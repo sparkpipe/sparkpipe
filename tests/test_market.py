@@ -562,9 +562,9 @@ def forwarded_flows(failures, work):
         mailbox.shutdown()
 
 
-def plan(number, email, office, fleets=1, days="every", lock=None, fee="0.10", payment="gates"):
+def plan(number, email, office, fleets=1, days="every", lock=None, payment="gates"):
     found = {"id": f"SP-COVER-{number}", "email": email, "company": "Plan Co", "start": "2026-11-02", "months": None if payment == "monthly" else 24, "office": dict(tp.OFFICES[office]), "days": days, "fleets": fleets,
-             "hourPrice": "15.00", "payment": payment, "releaseFee": fee, "maintenanceHoursPerWeek": 3}
+             "hourPrice": "15.00", "payment": payment, "maintenanceHoursPerWeek": 3}
     if lock:
         found["lock"] = lock
     return found
@@ -656,7 +656,7 @@ def cover_flows(failures, work):
             now = app.market.now()
             lapse = START + timedelta(days=3)
             due = app.market.cover(now, pricing).supply(lapse)
-            app.book.append("hc_lot", {"lot": "LTEARLY", "account": app.book.emails["early@example.com"], "hc": market.text_hc(due), "expires": market.stamp(lapse), "source": "purchase", "ref": "test", "now": market.stamp(now), "terms": market.published_terms(pricing["market"])})
+            app.book.append("hc_lot", {"lot": "LTEARLY", "account": app.book.emails["early@example.com"], "hc": market.text_hc(due), "expires": market.stamp(lapse), "source": "purchase", "ref": "test", "now": market.stamp(now)})
         status, kept = late("POST", "/market/reserve", {"fleet": "F1", "start": at(48), "model": "kimi-k3", "max": "1"})
         if status != 409 or kept.get("reason") != "kept":
             failures.append(f"HC lapsing in a year takes an hour that HC lapsing sooner needs: {status} {kept}")
@@ -680,7 +680,7 @@ def cover_flows(failures, work):
         server.shutdown()
 
 
-def locked_terms(failures, work):
+def fee_at_release(failures, work):
     cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(work / "terms"), "SPARKPIPE_PAY_SITE": str(work / "site"), "SPARKPIPE_PAY_SANDBOX": "1", "SPARKPIPE_PAY_PREFIX": "/pay/sandbox/api"})
     server = sp.start(cfg, port=0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -693,25 +693,25 @@ def locked_terms(failures, work):
             sandbox_in(client, f"{name}@example.com", f"{name} Co")
         early("POST", "/market/buy", {"amount": "100"})
         buyer("POST", "/market/buy", {"amount": "100"})
+        first = early("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 9), "model": "kimi-k3", "max": "3"})[1]
         prices.write_text(text.replace('"releaseFee": 0.10', '"releaseFee": 0.5'))
         late("POST", "/market/buy", {"amount": "100"})
-        first = early("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 9), "model": "kimi-k3", "max": "3"})[1]
         second = late("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 9 + 1), "model": "kimi-k3", "max": "3"})[1]
-        for client, held, credit in ((early, first, Decimal("0.9")), (late, second, Decimal("0.5"))):
+        for client, held in ((early, first), (late, second)):
             before = balance(client)
             client("POST", "/market/release", {"reservation": held["reservation"], "min": "1"})
             bought = buyer("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 9) if held is first else at(24 * 9 + 1), "model": "kimi-k3", "max": "1"})
-            if bought[0] != 200 or balance(client) != before + credit:
-                failures.append(f"a release is not charged the fee in force when the hour's HC was bought: {bought} {before} {balance(client)}")
-        prices.write_text(text)
-        tp.set_plans(app, [plan(1, "holder@example.com", "asia", fee="0.2")])
+            if bought[0] != 200 or balance(client) != before + Decimal("0.5"):
+                failures.append(f"a release is not charged the release fee published when it is released: {bought} {before} {balance(client)}")
+        prices.write_text(text.replace('"releaseFee": 0.10', '"releaseFee": 0.2'))
+        tp.set_plans(app, [plan(1, "holder@example.com", "asia")])
         holder("POST", "/market/sandbox/tranche", {})
         held = holder("POST", "/market/reserve", {"fleet": "F2", "start": at(22), "model": "kimi-k3", "pay": "tranche"})[1]
         holder("POST", "/market/release", {"reservation": held.get("reservation"), "min": "1"})
         before = balance(holder)
         buyer("POST", "/market/reserve", {"fleet": "F2", "start": at(22), "model": "kimi-k3", "max": "1"})
         if balance(holder) != before + Decimal("0.8"):
-            failures.append(f"a released plan hour is not charged its Plan Order's release fee: {before} {balance(holder)}")
+            failures.append(f"a released plan hour is not charged the release fee published when it is released: {before} {balance(holder)}")
     finally:
         prices.write_text(text)
         server.shutdown()
@@ -786,16 +786,10 @@ def live_flows(failures, work):
         invoice = fake.invoices.get("inv1", {}).get("body", {})
         if status != 200 or invoice.get("amount", {}).get("total") != "55.00" or "2.500000 SparkPipe hour-credits" not in invoice.get("items", [{}])[0].get("name", ""):
             failures.append(f"HC is invoiced through CoinPayments: {status} {placed} {invoice.get('items')}")
-        prices = work / "site" / "pricing.js"
-        text = prices.read_text()
-        prices.write_text(text.replace('"releaseFee": 0.10', '"releaseFee": 0.3'))
         fake.invoices["inv1"]["status"] = "completed"
         tp.webhook(buyer, cfg, "inv1")
         app.jobs.join()
         app.mails.join()
-        prices.write_text(text)
-        if app.book.market.lots[app.book.emails["live@example.com"]][0]["terms"]["releaseFee"] != "0.1":
-            failures.append("HC paid for after a settings change does not keep the settings in force when it was ordered")
         if balance(buyer) != Decimal("2.5"):
             failures.append(f"a completed HC invoice issues its HC: {balance(buyer)}")
         buyer("POST", "/market/buy", {"amount": "40", "coin": "USDC.BASE"})
@@ -838,7 +832,7 @@ def main():
         sp.clock = lambda: START
         sandbox_flows(failures, work)
         cover_flows(failures, work)
-        locked_terms(failures, work)
+        fee_at_release(failures, work)
         maintenance_flows(failures, work)
         accelerator_flows(failures, work)
         forwarded_flows(failures, work)
@@ -849,7 +843,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("market: HC bought by amount and lapsing after 12 months, sold only while free hours after plans and maintenance cover it, later lapse dates instead of overselling, plan set-asides per KST hour from office hours in their own time zone, across daylight-saving changes, Weekdays by the local date, Monthly plans and fleet locks, that open 6 hours before except locked fleets, earlier-lapsing HC first, our hours at Rate up to 31 days ahead, settings locked per HC lot, reservation and Plan Order, maintenance with 7 days' notice inside the weekly allowance, rotated across the hours of the day and credited back, reservations at Rate, releases sold before our hours and credited less the fee, one-off, resting, standing and consecutive bids, Tranche hours, the shared pool's metering and its hourly settlement to released hours, prefill accelerators charged by the second at Rate times bid from HC or Plan hours, queued by bid then arrival, with estimates set aside, fallback after the wait and the gateway's forwarding, API keys, the ledger export, feeds, the sandbox clock and reset, and live HC invoices behave")
+    print("market: HC bought by amount and lapsing after 12 months, sold only while free hours after plans and maintenance cover it, later lapse dates instead of overselling, plan set-asides per KST hour from office hours in their own time zone, across daylight-saving changes, Weekdays by the local date, Monthly plans and fleet locks, that open 6 hours before except locked fleets, earlier-lapsing HC first, our hours at Rate up to 31 days ahead, the release fee published when an hour is released, for HC and plan hours alike, reservation and Plan Order, maintenance with 7 days' notice inside the weekly allowance, rotated across the hours of the day and credited back, reservations at Rate, releases sold before our hours and credited less the fee, one-off, resting, standing and consecutive bids, Tranche hours, the shared pool's metering and its hourly settlement to released hours, prefill accelerators charged by the second at Rate times bid from HC or Plan hours, queued by bid then arrival, with estimates set aside, fallback after the wait and the gateway's forwarding, API keys, the ledger export, feeds, the sandbox clock and reset, and live HC invoices behave")
     return 0
 
 

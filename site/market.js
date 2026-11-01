@@ -10,6 +10,10 @@
   $('pool-base').textContent = location.origin + API + '/pool/v1';
   const first = new Date(window.SP_PRICING.hourlyEarliestStart + 'T00:00:00Z');
   document.querySelectorAll('[data-start]').forEach((el) => { el.textContent = first.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }); });
+  const listed = window.SP_PRICING.market;
+  document.querySelectorAll('[data-krw]').forEach((el) => { el.textContent = '₩' + listed.hcPriceKRW.toLocaleString('en-US'); });
+  document.querySelectorAll('[data-usd]').forEach((el) => { el.textContent = '$' + listed.hcPrice.toLocaleString('en-US'); });
+  document.querySelectorAll('[data-fee]').forEach((el) => { el.textContent = Math.round(listed.releaseFee * 100) + '%'; });
 
   const call = async (method, path, body) => {
     const response = await fetch(API + path, {

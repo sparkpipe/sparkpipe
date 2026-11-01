@@ -108,8 +108,8 @@ consumed (clause 20.1), so a payment first covers the hours of its Tranche
 that have already passed and issues the rest. An upfront plan's Tranche
 hours are issued once it is paid in full, and a Monthly plan's Tranche
 once that Tranche is paid in full (clause 20.10). For a Monthly plan the
-account shows the next month's amount and the day it is due, with a pay
-button for exactly that amount, and a "Stop after this month" button
+account shows the next month's amount at its Hour Price and the day it is
+due, with a pay button for exactly that amount, and a "Stop after this month" button
 (`POST /pay/api/plans/stop`, clause 20.12). For more than `plans.maxFleets`
 fleets, or a plan paid by USD wire, `plans.html` still sends a quote
 request to `POST /pay/api/lead`.
@@ -165,8 +165,14 @@ orders an hour, and each email for 5 codes an hour.
   `plans.terms` (Monthly, 1, 2 or 3 years; there is no 3-month term), its
   office hours whole hours of an IANA time zone, at least
   `MIN_OFFICE_HOURS` (8) long, and a fleet lock only on a full day every
-  day. The published release fee, maintenance allowance and fleet Rates are
-  copied into it and kept for its term.
+  day. The published maintenance allowance and fleet Rates are copied into
+  it and kept for its term. A fixed term keeps its Hour Price for the whole
+  term. A Monthly plan's Hour Price is stated for Tranche 1; each later
+  Tranche is priced at the Monthly price in `plans.terms` (plus
+  `plans.lockPremium` for a locked plan) when its payment is ordered, and
+  the first payment order for that Tranche that is paid or still open fixes
+  it for the whole Tranche (clause 16.6). Monthly payment orders record
+  `tranche` (its first day), `hourPrice` and `hourPriceKRW`.
 - Plan hours are worked out per KST hour with `zoneinfo`: each hour of the
   term that starts within the office hours of a counted local day (every
   day, or Monday to Friday by the local date the hours start), times the
@@ -207,7 +213,7 @@ orders an hour, and each email for 5 codes an hour.
   missed gate, and after the term ends; an upfront plan's after its Start
   Date unless it is paid in full; a Monthly plan's once it has ended or is
   stopped. Each payment issues the amount before VAT divided by the hour
-  price, to four decimals.
+  price (for a Monthly plan, of the Tranche it pays for), to four decimals.
 - VAT is charged on every payment for HC or a plan. A card payment's card
   slip is its VAT document; a bank transfer, a virtual account payment or
   an easy-pay payment from a bank account or balance gets an electronic tax
@@ -247,8 +253,8 @@ A Plan Order line (`plan_order`) holds its number (`plan`), `account`,
 fleet, only on a full day every day), `hourPrice` (lock premium included),
 `hourPriceKRW` (the won Hour Price, lock premium included; optional on a
 signed Plan Order, which without it is paid in US dollars only),
-`payment` (`monthly`, `upfront` or `gates`), `releaseFee` and
-`maintenanceHoursPerWeek` as published then, and, for one made in the
+`payment` (`monthly`, `upfront` or `gates`), `maintenanceHoursPerWeek` as
+published then, and, for one made in the
 account, `customer`, `models`, `threshold`, `currency`, `rates`, `hours`,
 `total` and `totalKRW` (a term in months) or `first` (a Monthly plan's
 Tranche 1: `from`, `to`, `hours`, `total`, `totalKRW`),
@@ -263,8 +269,8 @@ account's `email` and the fields above from `start` to
 `maintenanceHoursPerWeek`:
 
 ```json
-[{"id": "SP-PLAN-7K3QD9", "email": "billing@acme.example", "start": "2026-12-15", "months": 24, "office": {"zone": "Asia/Seoul", "from": 9, "to": 18}, "days": "every", "fleets": 1, "hourPrice": "15.00", "payment": "gates", "releaseFee": "0.10", "maintenanceHoursPerWeek": 3},
- {"id": "SP-PLAN-M4WQ2B", "email": "ops@berlin.example", "start": "2027-01-01", "months": null, "office": {"zone": "Europe/Berlin", "from": 9, "to": 18}, "days": "weekdays", "fleets": 1, "hourPrice": "17.50", "payment": "monthly", "releaseFee": "0.10", "maintenanceHoursPerWeek": 3}]
+[{"id": "SP-PLAN-7K3QD9", "email": "billing@acme.example", "start": "2026-12-15", "months": 24, "office": {"zone": "Asia/Seoul", "from": 9, "to": 18}, "days": "every", "fleets": 1, "hourPrice": "15.00", "payment": "gates", "maintenanceHoursPerWeek": 3},
+ {"id": "SP-PLAN-M4WQ2B", "email": "ops@berlin.example", "start": "2027-01-01", "months": null, "office": {"zone": "Europe/Berlin", "from": 9, "to": 18}, "days": "weekdays", "fleets": 1, "hourPrice": "17.50", "payment": "monthly", "maintenanceHoursPerWeek": 3}]
 ```
 
 It refuses an unknown email, a number already used and a plan whose

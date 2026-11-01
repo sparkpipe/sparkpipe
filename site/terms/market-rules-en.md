@@ -64,7 +64,7 @@ These Rules are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 7.1. A released hour still unsold when it starts joins the shared pool for that hour, and its release ends.
 
-7.2. **Pool price.** The price of a seat-second in the shared pool is 1 HC divided by the seat-seconds of one pooled Fleet in an hour, which are the seats per Fleet we publish (8 today) times 3,600, multiplied by a factor between the minimum and maximum we publish (0.5 and 3 today) that we set about once a minute from the share of the pool's seats used in the minute before. We post the current price for each model on our website and under clause 11.
+7.2. **Pool price.** The price of a seat-second in the shared pool is 1 HC divided by the seat-seconds of one pooled Fleet in an hour, which are the seats per Fleet we publish times 3,600, multiplied by a factor between the minimum and maximum we publish that we set about once a minute from the share of the pool's seats used in the minute before. We post the current price for each model on our website and under clause 11.
 
 7.3. The HC charged for the seat-seconds of pool requests in an hour is allocated first to the released hours in the pool, earliest release first, each up to its Fleet's seat-seconds for the hour, and then to our own Fleets.
 
@@ -78,9 +78,9 @@ These Rules are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유
 
 ## 9. Release fee
 
-9.1. We deduct a **release fee** from each sale of a released hour and from each pool credit for one: a percentage of the price or of the HC allocated, which we publish on our website. It is 10% at the date of these Rules. Releasing, bidding and cancelling are free.
+9.1. We deduct a **release fee** from each sale of a released hour and from each pool credit for one: a percentage of the price or of the HC allocated, which we publish on our website. Each release bears the release fee published when Customer releases the hour. Releasing, bidding and cancelling are free.
 
-9.2. The release fee is a published setting, and a change of it applies as clause 9.3 of the Customer Agreement provides.
+9.2. The release fee is a published setting under clause 9.3 of the Customer Agreement. A change of it applies to every hour released after we publish it, including an hour reserved with Plan hours.
 
 ## 10. Records
 

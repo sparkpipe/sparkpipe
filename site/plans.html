@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Reserved plans · SparkPipe</title>
-<meta name="description" content="Reserve whole SparkPipe fleets in Seoul in your own office hours, month by month or for 1 to 3 years, at an Hour Price that holds while the plan runs: choose your time zone, hours, days, fleets and a fleet lock, see every hour and payment, and order it online.">
+<meta name="description" content="Reserve whole SparkPipe fleets in Seoul in your own office hours, month by month, or for 1 to 3 years at an Hour Price fixed for the whole term: choose your time zone, hours, days, fleets and a fleet lock, see every hour and payment, and order it online.">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
@@ -68,8 +68,8 @@ details.ask[open] summary { margin-bottom: 14px; }
 <section class="co-head">
   <p class="label">Reserved plans</p>
   <h1 id="title">Your fleets in your office hours, from ₩18,500 or $14 an hour.</h1>
-  <p class="lead">Choose your office hours in your own time zone, the days, how many fleets and whether to lock them, and pay month by month or for a term of 1 to 3 years. The Hour Price holds for as long as the plan runs, the capacity is kept for you until <span data-plan="lastcall">6</span> hours before each hour, and nobody is ever bumped. A plan is a Plan Order under the same contract as hour-credits, the SparkPipe Customer Agreement.</p>
-  <div class="trust"><span>Your hours, your time zone</span><span>Monthly or 1 to 3 years</span><span>Price holds while it runs</span><span>Capacity kept for you</span><span>Never bumped</span><span>One contract</span></div>
+  <p class="lead">Choose your office hours in your own time zone, the days, how many fleets and whether to lock them, and pay month by month or for a term of 1 to 3 years. A Monthly plan pays each month at the Monthly price shown when you pay for it, and stops whenever you like; a term fixes its Hour Price for the whole term. The capacity is kept for you until <span data-plan="lastcall">6</span> hours before each hour, and nobody is ever bumped. A plan is a Plan Order under the same contract as hour-credits, the SparkPipe Customer Agreement.</p>
+  <div class="trust"><span>Your hours, your time zone</span><span>Monthly or 1 to 3 years</span><span>Term prices fixed</span><span>Capacity kept for you</span><span>Never bumped</span><span>One contract</span></div>
 </section>
 
 <div class="co">
@@ -405,7 +405,7 @@ details.ask[open] summary { margin-bottom: 14px; }
     $('r-plan').textContent = line(p);
     $('office-hint').textContent = officeHint(p);
     $('term-hint').textContent = p.monthly
-      ? 'Monthly has no fixed end: each calendar month is paid before it starts, at an Hour Price that holds for as long as the plan runs, and you stop by not paying the next month or in Payments and plans. A longer term lowers the Hour Price.'
+      ? 'Monthly has no fixed end: each calendar month is paid before it starts, at the Monthly price shown when you pay for it, and you stop by not paying the next month or in Payments and plans. A term of 1 to 3 years fixes a lower Hour Price for the whole term.'
       : 'The term ends on ' + nice(p.end) + '. The longer the term, the lower its Hour Price, fixed for the whole term.';
     $('r-month-box').hidden = !p.monthly;
     $('r-month').textContent = won(full.krw) + ' a month + VAT';

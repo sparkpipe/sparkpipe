@@ -71,10 +71,11 @@
             <p class="label" id="key-terms">Key terms</p>
             <ul>
               <li>For business, professional, commercial or independent research and development use, not as a household consumer.</li>
-              <li>Prepaid: one HC costs <span data-krw>₩26,000</span> when paid in won, otherwise <span data-usd>$20</span>, plus 10% VAT, and buys one hour of a Rate-1 fleet or seat-seconds through the API. HC is issued once the payment completes.</li>
+              <li>Prepaid, at the HC Price shown when you buy: now <span data-krw>₩26,000</span> per HC when paid in won, otherwise <span data-usd>$20</span>, plus VAT. One HC buys one hour of a Rate-1 fleet or seat-seconds through the API, and is issued once the payment completes.</li>
+              <li>We set prices, Rates and fees on this website and may change them at any time. A change never alters the price of HC you have bought or of an hour you have booked.</li>
               <li>Each purchase lasts 12 months from issue, and the HC that lapses first is spent first.</li>
               <li>HC has no cash value, cannot be moved to another account and is not refunded, unless we stop offering service for HC, close your account other than for your breach, or the law requires a refund.</li>
-              <li>A booking is final and never taken from you. You can sell an hour back before it starts and get HC for what it earns, less a 10% fee.</li>
+              <li>A booking is final and never taken from you. You can sell an hour back before it starts and get HC for what it earns, less the release fee published when you sell it back (now <span data-fee>10%</span>).</li>
               <li>A booked hour that is down for more than 15 consecutive minutes is credited back in full, automatically.</li>
               <li>Requests and data are processed only on fleets, accelerators and servers we operate in Korea, and go to no other computing or AI service. Transient caches are deleted within 24 hours.</li>
               <li>Our liability for claims about HC is capped at what you paid us for HC in the 6 months before the event giving rise to the claim.</li>
@@ -129,7 +130,7 @@
       <li>1 HC reserves one hour of a whole Rate-1 fleet: 16 DGX Sparks in Seoul, no other customer's requests in the queue. Our own hours can be booked up to 31 days ahead at the fleet's Rate, and hours sold back by other customers at any distance. No booking is ever bumped.</li>
       <li>Or spend HC per request in the shared pool, billed per seat-second, through an OpenAI-format API with your own keys.</li>
       <li>Kimi K3 and other open models over a terabyte, million-token context, and Korea's own models: K-EXAONE 2.0, A.X K2, Solar Open 2.</li>
-      <li>Release a reserved hour you won't use: when it sells or the pool uses it, you get HC for what it earned, less a 10% fee. A reserved hour with over 15 minutes of downtime comes back in full.</li>
+      <li>Release a reserved hour you won't use: when it sells or the pool uses it, you get HC for what it earned, less the release fee, now <span data-fee>10%</span>. A reserved hour with over 15 minutes of downtime comes back in full.</li>
     </ul>
     <p class="hint">Want your office hours kept for you every week? <a href="plans.html">A Monthly reserved plan is <span id="o-plan">$17.50</span> an hour, <span id="o-plan-2y">$15</span> on 2 years</a>.</p>
   </aside>
@@ -368,6 +369,7 @@
   document.querySelectorAll('[data-start]').forEach((el) => { el.textContent = nice(P.hourlyEarliestStart); });
   document.querySelectorAll('[data-krw]').forEach((el) => { el.textContent = SP.krw(M.hcPriceKRW); });
   document.querySelectorAll('[data-usd]').forEach((el) => { el.textContent = SP.usd(M.hcPrice).replace('.00', ''); });
+  document.querySelectorAll('[data-fee]').forEach((el) => { el.textContent = Math.round(M.releaseFee * 100) + '%'; });
   $('o-plan').textContent = SP.usd(P.plans.terms.find((t) => t.id === 'monthly').hourPrice).replace('.00', '');
   $('o-plan-2y').textContent = SP.usd(P.plans.terms.find((t) => t.months === 24).hourPrice).replace('.00', '');
   $('start-hint').textContent = 'HC lasts 12 months from the day it is issued. Spend it in the shared pool at once, or on fleet-hours from ' + nice(P.hourlyEarliestStart) + '.';

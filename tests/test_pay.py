@@ -58,7 +58,7 @@ OFFICES = {
 
 def plan(number, email, office, days="every", fleets=1, months=24, start="2026-12-15", payment="gates", lock=None):
     found = {"id": f"SP-PLAN-{number}", "email": email, "company": "Acme", "start": start, "months": None if payment == "monthly" else months, "office": dict(OFFICES[office] if isinstance(office, str) else office),
-             "days": days, "fleets": fleets, "hourPrice": "15.00", "payment": payment, "releaseFee": "0.10", "maintenanceHoursPerWeek": 3}
+             "days": days, "fleets": fleets, "hourPrice": "15.00", "payment": payment, "maintenanceHoursPerWeek": 3}
     if lock:
         found["lock"] = lock
     return found
@@ -126,7 +126,7 @@ def check_dates(failures):
     for bad in (plan(1, "a@x", "day", lock=["F1"]), plan(1, "a@x", "full", "weekdays", lock=["F1"]), plan(1, "a@x", "day", "weekends"),
                 plan(1, "a@x", {"zone": "Asia/Seoul", "from": 9, "to": 16}), plan(1, "a@x", {"zone": "Mars/Olympus", "from": 9, "to": 18}),
                 plan(1, "a@x", {"zone": "Asia/Seoul", "from": 9, "to": 24}), plan(1, "a@x", {"zone": "Asia/Seoul", "from": "9", "to": 18}),
-                dict(plan(1, "a@x", "day"), payment="monthly"), dict(plan(1, "a@x", "day"), months=None), dict(plan(1, "a@x", "day"), releaseFee="1.5")):
+                dict(plan(1, "a@x", "day"), payment="monthly"), dict(plan(1, "a@x", "day"), months=None), dict(plan(1, "a@x", "day"), maintenanceHoursPerWeek=25)):
         try:
             sp.tranches(pricing, bad)
             failures.append(f"an invalid plan is accepted: {bad}")
@@ -667,7 +667,7 @@ def plan_order_flow(failures, cfg, app, fake, buyer, mailbox, port, work):
             or rows.get("Payment schedule (clause 20)") != "Gated: Gate 1 by 13 January 2027, Gate 2 by 12 February 2027, Gate 3 by 14 March 2027"
             or rows.get("Term (clause 16.3)") != "24 months, ending on 14 December 2028" or rows.get("Time zone (clause 17.1)") != "Asia/Seoul"
             or rows.get("Office hours (clause 17.1)") != "09:00 to 18:00, local time in Asia/Seoul, 9 hours" or rows.get("Days (clause 17.2)") != "Every day"
-            or "Windows (clause 17.1)" in rows or rows.get("Published settings (clause 9.3)") != "As published when this Plan Order is made: release fee 10%; maintenance allowance 3 hours a week per Fleet"
+            or "Windows (clause 17.1)" in rows or "Published settings (clause 9.3)" in rows or rows.get("Maintenance allowance (clause 4.6)") != "As published when this Plan Order is made: 3 hours a week per Fleet"
             or not rows.get("Customer", "").startswith("Plan Co Ltd, a company organised under the laws of Delaware, United States, registration number 7781234")
             or cfg.terms("agreement-ko.md") not in rows.get("Customer Agreement (clause 9.1)", "") or cfg.terms("market-rules-en.md") not in rows.get("Customer Agreement (clause 9.1)", "")
             or not rows.get("Customer Agreement (clause 9.1)", "").startswith("Version of ") or rows.get("Supplier notice address and email (clause 11.7)") != "1 Test-ro, Yongsan-gu, Seoul; hyor@sparkpipe.ai"
@@ -750,13 +750,13 @@ def monthly_flow(failures, cfg, app, fake, team, other, mailbox):
             or rows.get("Payment schedule (clause 20)") != "Monthly: each Tranche before it starts, Tranche 1 before the Start Date"
             or not rows.get("Tranche 1 (clause 17.3)", "").startswith("15 December 2026 to 31 December 2026: 104 Plan hours, KRW 2,392,000 or USD 1,820.00, exclusive of VAT")
             or rows.get("Office hours (clause 17.1)") != "09:00 to 17:00, local time in America/New_York, 8 hours; on the Start Date, the Plan hours are 23:00–07:00 KST"
-            or rows.get("Days (clause 17.2)") != "Weekdays" or not rows.get("Hour Price (clause 16.4)", "").endswith("fixed for as long as the Plan runs")
+            or rows.get("Days (clause 17.2)") != "Weekdays" or not rows.get("Hour Price (clause 16.4)", "").endswith("for Tranche 1, with later Tranches priced under clause 16.6")
             or "Hours in the Term (clause 17.3)" in rows or ko.get("플랜 기간(제16.3조)") != "월간, 종료일 없음" or not ko.get("트랜치 1(제17.3조)", "").startswith("2026년 12월 15일부터 2026년 12월 31일까지: 플랜 시간 104시간")):
         failures.append(f"a Monthly Plan Order: {status} {placed} {quote.get('hours')} {rows} {ko}")
         return
     ident, account = placed["plan"], app.book.emails["dev@solo.example"]
     state = next(p for p in other("GET", "/account")[1]["plans"] if p["plan"] == ident)
-    if state["nextGate"] != {"name": "December 2026", "due": "2026-12-15", "amount": "1820.00", "hours": 104, "from": "2026-12-15", "to": "2026-12-31"} or state["heldUntil"] != "2027-01-31" or ident not in kept(app):
+    if state["nextGate"] != {"name": "December 2026", "due": "2026-12-15", "amount": "1820.00", "hours": 104, "from": "2026-12-15", "to": "2026-12-31", "price": "17.50", "priceKRW": "23000"} or state["heldUntil"] != "2027-01-31" or ident not in kept(app):
         failures.append(f"an unpaid Monthly plan is not due Tranche 1 by its Start Date, or does not keep Tranches 1 and 2: {state}")
     late = plan("0099", "cto@plan.example", "newyork", "weekdays", months=12, start="2027-06-01")
     try:
@@ -773,6 +773,27 @@ def monthly_flow(failures, cfg, app, fake, team, other, mailbox):
     state = next(p for p in other("GET", "/account")[1]["plans"] if p["plan"] == ident)
     if app.book.market.tranches[(account, "2026-12")] != 104 or state["paidThrough"] != "2026-12-31" or state["nextGate"]["name"] != "January 2027" or state["nextGate"]["amount"] != "3062.50" or state["nextGate"]["due"] != "2027-01-01":
         failures.append(f"paying Tranche 1 in full does not issue its hours and ask for January before it starts: {app.book.market.tranches[(account, '2026-12')]} {state}")
+    prices = Path(cfg.site) / "pricing.js"
+    listed = prices.read_text()
+    try:
+        prices.write_text(listed.replace('"hourPrice": 17.5, "hourPriceKRW": 23000', '"hourPrice": 20, "hourPriceKRW": 26000'))
+        state = next(p for p in other("GET", "/account")[1]["plans"] if p["plan"] == ident)
+        if state["nextGate"]["amount"] != "3500.00" or state["nextGateKRW"] != "4550000" or state["price"] != "20.00" or state["tranche"]["amount"] != "1820.00" or state["paid"] != "1820.00":
+            failures.append(f"a Monthly plan's next Tranche is not priced at the Monthly price published now, or a paid Tranche changes price: {state}")
+        status, ordered = other("POST", "/order", {"product": "plan", "plan": ident, "amount": "1000.00", "coin": "USDC.BASE"})
+        order = app.book.orders.get(ordered.get("order"), {})
+        prices.write_text(listed.replace('"hourPrice": 17.5, "hourPriceKRW": 23000', '"hourPrice": 22, "hourPriceKRW": 28600'))
+        state = next(p for p in other("GET", "/account")[1]["plans"] if p["plan"] == ident)
+        if status != 200 or order.get("tranche") != "2027-01-01" or order.get("hourPrice") != "20.00" or order.get("price") != "20.00" or state["nextGate"]["amount"] != "2500.00" or state["pending"] != "1000.00":
+            failures.append(f"a Tranche's payment order does not fix its price for the whole Tranche: {status} {ordered} {order} {state}")
+        fake.invoices[max(fake.invoices, key=lambda k: int(k[3:]))]["status"] = "completed"
+        app.reconcile()
+        app.jobs.join()
+        state = next(p for p in other("GET", "/account")[1]["plans"] if p["plan"] == ident)
+        if state["paid"] != "2820.00" or state["pending"] != "0.00" or state["nextGate"]["amount"] != "2500.00":
+            failures.append(f"a part-paid Tranche is not valued at the price its payment order fixed: {state}")
+    finally:
+        prices.write_text(listed)
     start = NOW[0]
     NOW[0] = datetime(2027, 1, 1, 3, 0, 0, tzinfo=timezone.utc)
     sign_in(other, mailbox, "dev@solo.example")
@@ -1264,7 +1285,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("pay: plan hours, Tranches and gates match the Customer Agreement for office hours in Seoul, New York, Berlin and Kolkata, across midnight and daylight-saving changes, Weekdays by the local date, Full days, terms and fleet counts, and invalid plans fail; email codes, sessions, terms acceptance, USDC and USDT invoices on the chosen network, payments in another stablecoin, signed webhooks, receipts, HC orders and part payments, reconciliation, gates, self-serve Plan Orders (the bilingual Order Form, the accepted hash and our Ed25519 signature, capacity, HC cover and fleet-lock checks, the removed 3-month term refused, holds that lapse unpaid or end at the last paid Tranche, Tranche hours issued on payment less hours that already occurred), Monthly plans (each Tranche paid before it starts, ending after the last paid Tranche when the next is unpaid on its first day, the next month's capacity freed, Stop after this month, a running Monthly plan's later months kept from other Plan Orders), quote requests and the hash-chained ledger behave; Toss Payments: live keys only on the live service and test keys only in the sandbox, no card option without them, won amounts fixed on the server and confirmed once, other amounts refused and cancelled, webhooks only trigger a check with Toss Payments, virtual accounts issued on a verified deposit and expiring with their order, plan payments in won issuing Tranches, refunds under the named clause through the cancel API, and the tax invoice list")
+    print("pay: plan hours, Tranches and gates match the Customer Agreement for office hours in Seoul, New York, Berlin and Kolkata, across midnight and daylight-saving changes, Weekdays by the local date, Full days, terms and fleet counts, and invalid plans fail; email codes, sessions, terms acceptance, USDC and USDT invoices on the chosen network, payments in another stablecoin, signed webhooks, receipts, HC orders and part payments, reconciliation, gates, self-serve Plan Orders (the bilingual Order Form, the accepted hash and our Ed25519 signature, capacity, HC cover and fleet-lock checks, the removed 3-month term refused, holds that lapse unpaid or end at the last paid Tranche, Tranche hours issued on payment less hours that already occurred), Monthly plans (each Tranche paid before it starts, ending after the last paid Tranche when the next is unpaid on its first day, the next month's capacity freed, Stop after this month, a running Monthly plan's later months kept from other Plan Orders, each later Tranche priced at the Monthly price published when its payment is ordered and held by that order), quote requests and the hash-chained ledger behave; Toss Payments: live keys only on the live service and test keys only in the sandbox, no card option without them, won amounts fixed on the server and confirmed once, other amounts refused and cancelled, webhooks only trigger a check with Toss Payments, virtual accounts issued on a verified deposit and expiring with their order, plan payments in won issuing Tranches, refunds under the named clause through the cancel API, and the tax invoice list")
     return 0
 
 
