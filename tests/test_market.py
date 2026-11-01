@@ -2,9 +2,7 @@
 
 import http.server
 import json
-import re
 import shutil
-import socketserver
 import sys
 import tempfile
 import threading
@@ -23,273 +21,20 @@ import sparkpipe_market as market
 import sparkpipe_pay as sp
 import test_pay as tp
 
-START = datetime(2026, 11, 2, 3, 0, 0, tzinfo=timezone.utc)
+NOW = [datetime(2026, 11, 28, 3, 0, 0, tzinfo=timezone.utc)]
+POOL_KEY = "sk-pool-test"
+ACCELERATORS = '[{"id":"A1","name":"Accelerator 1","kind":"96 Sparks","state":"serving","rate":6,"tokensPerSecond":400},{"id":"A2","name":"Accelerator 2","kind":"48 Sparks","state":"serving","rate":3,"tokensPerSecond":200}]'
 
 
-def at(hours):
-    return market.slot_text(START + timedelta(hours=hours))
+def kst(*parts):
+    return datetime(*parts, tzinfo=market.KST).astimezone(timezone.utc)
 
 
-def site(work):
-    (work / "site" / "terms").mkdir(parents=True)
-    shutil.copy(ROOT / "site" / "pricing.js", work / "site" / "pricing.js")
-    for name in sp.TERMS.values():
-        shutil.copy(ROOT / "site" / "terms" / name, work / "site" / "terms" / name)
+def slot(moment):
+    return market.slot_text(moment)
 
 
-def sandbox_in(client, address, company):
-    status, sent = client("POST", "/code", {"email": address})
-    if status != 200 or not sent.get("code"):
-        return status, sent
-    return client("POST", "/verify", {"email": address, "code": sent["code"], "company": company, "accept": True})
-
-
-def balance(client):
-    return Decimal(client("GET", "/market/state")[1]["account"]["balance"])
-
-
-def text_get(port, path):
-    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=10) as response:
-        return response.status, response.headers.get("Content-Type"), response.read().decode()
-
-
-def pool_call(port, key, body):
-    req = urllib.request.Request(f"http://127.0.0.1:{port}/pool/v1/chat/completions", data=json.dumps(body).encode(), method="POST", headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as response:
-            return response.status, response.read()
-    except urllib.error.HTTPError as error:
-        return error.code, error.read()
-
-
-def check_units(failures):
-    if market.text_hc("1.23456789") != "1.234567" or market.slot_text(START) != "2026-11-02T03:00Z":
-        failures.append("HC rounds down to 6 places and hours print as UTC slots")
-    if market.year_later(datetime(2028, 2, 29, tzinfo=timezone.utc)) != datetime(2029, 2, 28, tzinfo=timezone.utc):
-        failures.append("a lot bought on 29 February lapses on 28 February a year later")
-    offers = [{"fleet": "F1", "start": at(h), "price": Decimal(p), "kind": "hyor", "seq": 0, "seller": None} for h, p in ((1, "1"), (2, "0.5"), (3, "0.5"), (4, "1"))]
-    run = market.Market.choose(None, offers, 2, True, Decimal("1"), "AC")
-    if [o["start"] for o in run] != [at(2), at(3)]:
-        failures.append(f"a consecutive bid takes the cheapest run: {run}")
-    released = dict(offers[0], kind="release", seq=7, seller="AS")
-    if market.Market.choose(None, [offers[0], released], 1, False, Decimal("1"), "AC")[0]["kind"] != "release":
-        failures.append("at equal prices a released hour fills before ours")
-    if market.Market.choose(None, [released], 1, False, Decimal("1"), "AS"):
-        failures.append("a bid fills from its own released hour")
-
-
-def sandbox_flows(failures, work):
-    cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(work / "sandbox"), "SPARKPIPE_PAY_SITE": str(work / "site"), "SPARKPIPE_PAY_SANDBOX": "1", "SPARKPIPE_PAY_PREFIX": "/pay/sandbox/api", "SPARKPIPE_PAY_SANDBOX_SWITCH_SECONDS": "1"})
-    server = sp.start(cfg, port=0)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    port, app = server.server_address[1], server.app
-    seller, buyer, anyone = tp.Client(port, origin="https://sparkpipe.ai"), tp.Client(port, origin="https://sparkpipe.ai"), tp.Client(port)
-    try:
-        state = anyone("GET", "/market/state")[1]
-        if not state["sandbox"] or state["account"] is not None or [f["id"] for f in state["fleets"]] != ["F1", "F2", "F3"] or state["market"]["hcPrice"] != 20 or state["accelerators"] != []:
-            failures.append(f"the public market state: {state}")
-        status, data = sandbox_in(seller, "seller@example.com", "Seller Co")
-        if status != 200 or "Path=/pay/sandbox/api" not in seller.last_cookie:
-            failures.append(f"sandbox sign-in: {status} {data}")
-        sandbox_in(buyer, "buyer@example.com", "Buyer Co")
-        if seller("POST", "/market/buy", {"amount": "5"})[0] != 400:
-            failures.append("a purchase under the minimum is accepted")
-        bought = seller("POST", "/market/buy", {"amount": "100"})[1]
-        buyer("POST", "/market/buy", {"amount": "200"})
-        lots = seller("GET", "/market/state")[1]["account"]["lots"]
-        if bought.get("hc") != "5.000000" or balance(seller) != 5 or balance(buyer) != 10 or lots[0]["expires"] != "2027-11-02T03:00:00Z":
-            failures.append(f"HC bought by amount, lasting 12 months: {bought} {lots}")
-        cal = buyer("GET", "/market/calendar?days=10")[1]
-        cells = cal["fleets"][0]["cells"]
-        if cal["from"] != at(1) or len(cells) != 240 or cells[0] != ["hyor", "1.000000"] or cells[167] != ["hyor", "1.000000"] or cells[168] != ["hyor", "1.000000"]:
-            failures.append(f"the calendar sells our hours at Rate, also more than 7 days ahead: {cal['from']} {cells[0]} {cells[167]} {cells[168]}")
-        reserve_and_release(failures, seller, buyer)
-        bids(failures, seller, buyer)
-        pool(failures, app, port, seller, buyer)
-        fee_locked(failures, work, seller, buyer)
-        replay = sp.Book(cfg.path("ledger.jsonl"))
-        moment = market.stamp(app.market.now())
-        accounts = list(app.book.accounts)
-        if [replay.market.balance(a, moment) for a in accounts] != [app.book.market.balance(a, moment) for a in accounts]:
-            failures.append("a replayed ledger gives different HC balances")
-        lines = buyer("GET", "/market/ledger")[1]["lines"]
-        mine = app.book.emails["buyer@example.com"]
-        others = [line for line in lines if any(line["data"].get(name) not in (None, mine) for name in ("account", "seller"))]
-        kinds = {line["type"] for line in lines}
-        if not lines or others or not all(line.get("hash") for line in lines) or not {"bid_cancel", "hc_unhold", "hc_spend_hold"} <= kinds:
-            failures.append(f"the ledger export holds every line of the account and no other account's: {sorted(kinds)} {others[:2]}")
-        seller_lines = seller("GET", "/market/ledger")[1]["lines"]
-        if not {"ask_cancel", "pool_join", "pool_settle"} <= {line["type"] for line in seller_lines} or any(line["data"].get("account") not in (None, app.book.emails["seller@example.com"]) for line in seller_lines):
-            failures.append(f"the seller's ledger export misses its releases or shows the buyer's lines: {sorted({line['type'] for line in seller_lines})}")
-
-        status, kind, text = text_get(port, "/market/market.txt")
-        if status != 200 or not kind.startswith("text/plain") or not re.search(r"\n\d{4}-\d\d-\d\dT\d\d:00Z F1 1\.000000 hyor -\n", text) or "# last trades" not in text:
-            failures.append(f"market.txt lists the best ask per fleet-hour: {text[:300]}")
-        seller("POST", "/market/sandbox/clock", {"hours": 24 * 367})
-        if balance(seller) != 0 or balance(buyer) != 0:
-            failures.append(f"HC does not lapse 12 months after issue: {seller('GET', '/market/state')[1]['account']['lots']} {buyer('GET', '/market/state')[1]['account']}")
-        if seller("POST", "/market/sandbox/reset", {})[1] != {"reset": True} or seller("GET", "/market/state")[1]["account"] is not None or app.book.count != 0:
-            failures.append("the sandbox reset leaves state behind")
-    finally:
-        server.shutdown()
-
-
-def fee_locked(failures, work, seller, buyer):
-    held = seller("POST", "/market/reserve", {"fleet": "F1", "start": at(60), "model": "kimi-k3", "max": "1"})[1]
-    seller("POST", "/market/release", {"reservation": held.get("reservation"), "min": "1"})
-    prices = work / "site" / "pricing.js"
-    text = prices.read_text()
-    prices.write_text(text.replace('"releaseFee": 0.10', '"releaseFee": 0.5'))
-    before = balance(seller)
-    status, bought = buyer("POST", "/market/reserve", {"fleet": "F1", "start": at(60), "model": "kimi-k3", "max": "1"})
-    prices.write_text(text)
-    if status != 200 or balance(seller) != before + Decimal("0.9"):
-        failures.append(f"a fee change applies to a release already on offer: {status} {bought} {before} {balance(seller)}")
-
-
-def reserve_and_release(failures, seller, buyer):
-
-    status, held = seller("POST", "/market/reserve", {"fleet": "F1", "start": at(5), "model": "kimi-k3", "max": "1"})
-    if status != 200 or held["price"] != "1.000000" or balance(seller) != 4:
-        failures.append(f"reserving our hour at Rate: {status} {held}")
-    if buyer("POST", "/market/reserve", {"fleet": "F1", "start": at(5), "model": "kimi-k3"})[0] != 409:
-        failures.append("an hour is sold twice")
-    if buyer("POST", "/market/reserve", {"fleet": "F1", "start": at(6), "model": "kimi-k3", "max": "0.5"})[0] != 409:
-        failures.append("a reservation goes through above the price the buyer saw")
-    status, ask = seller("POST", "/market/release", {"reservation": held["reservation"], "min": "0.8"})
-    if status != 200 or ask["state"] != "open":
-        failures.append(f"releasing a reserved hour: {status} {ask}")
-    if seller("POST", "/market/reserve", {"fleet": "F1", "start": at(5), "model": "kimi-k3"})[0] != 409:
-        failures.append("a seller buys back its own release")
-    status, bought = buyer("POST", "/market/reserve", {"fleet": "F1", "start": at(5), "model": "glm-5.3", "max": "0.8"})
-    if status != 200 or bought["price"] != "0.800000" or balance(buyer) != Decimal("9.2") or balance(seller) != Decimal("4.72"):
-        failures.append(f"a released hour sells at its ask and pays the seller less the fee: {bought} {balance(buyer)} {balance(seller)}")
-    mine = {r["reservation"]: r for r in seller("GET", "/market/state")[1]["account"]["reservations"]}
-    if mine[held["reservation"]]["state"] != "sold" or mine[held["reservation"]]["release"]["price"] != "0.800000":
-        failures.append(f"the seller sees its hour sold: {mine}")
-    trades = buyer("GET", "/market/book")[1]["trades"]
-    if trades[0]["kind"] != "release" or trades[0]["price"] != "0.800000":
-        failures.append(f"the trade is published: {trades[:1]}")
-    status, again = seller("POST", "/market/reserve", {"fleet": "F2", "start": at(8), "model": "kimi-k3"})
-    seller("POST", "/market/release", {"reservation": again["reservation"]})
-    asks = seller("GET", "/market/state")[1]["account"]["reservations"]
-    open_ask = next(r["release"]["ask"] for r in asks if r["reservation"] == again["reservation"])
-    if seller("POST", "/market/cancel", {"ask": open_ask})[1].get("state") != "cancelled" or next(r for r in seller("GET", "/market/state")[1]["account"]["reservations"] if r["reservation"] == again["reservation"])["state"] != "held":
-        failures.append("cancelling a release keeps the hour")
-
-
-def bids(failures, seller, buyer):
-    before = balance(buyer)
-    status, bid = buyer("POST", "/market/bid", {"fleet": "F2", "model": "kimi-k3", "from": at(20), "to": at(30), "hours": 2, "consecutive": True, "max": "1"})
-    if status != 200 or bid["state"] != "filled" or balance(buyer) != before - 2:
-        failures.append(f"a consecutive bid fills from our capacity at Rate: {status} {bid} {balance(buyer)}")
-    status, resting = buyer("POST", "/market/bid", {"fleet": None, "model": "kimi-k3", "from": at(24 * 8), "to": at(24 * 9), "hours": 1, "max": "0.5"})
-    account = buyer("GET", "/market/state")[1]["account"]
-    if status != 200 or resting["state"] != "open" or account["held"] != "0.500000":
-        failures.append(f"a bid beyond our horizon rests and holds its HC: {resting} {account['held']}")
-    granted = seller("POST", "/market/sandbox/tranche", {})[1]
-    status, tranche = seller("POST", "/market/reserve", {"fleet": "F3", "start": at(24 * 8 + 2), "model": "kimi-k3", "pay": "tranche"})
-    left = seller("GET", "/market/state")[1]["account"]["tranche"][0]
-    if status != 200 or tranche["price"] != "0.000000" or left["left"] != str(granted["hours"] - 1):
-        failures.append(f"Tranche hours reserve beyond the horizon: {status} {tranche} {left}")
-    seller_before, buyer_before = balance(seller), balance(buyer)
-    seller("POST", "/market/release", {"reservation": tranche["reservation"], "min": "0.4"})
-    filled = next(b for b in buyer("GET", "/market/state")[1]["account"]["bids"] if b["bid"] == resting["bid"])
-    if filled["state"] != "filled" or balance(seller) != seller_before + Decimal("0.45") or balance(buyer) != buyer_before:
-        failures.append(f"a release fills the older resting bid at the bid's price: {filled} {balance(seller)} {balance(buyer)}")
-    status, standing = buyer("POST", "/market/bid", {"fleet": "F1", "model": "kimi-k3", "from": at(40), "to": at(42), "hours": 1, "max": "1", "standing": True})
-    if status != 200 or standing["state"] != "filled":
-        failures.append(f"a standing bid fills this week: {standing}")
-    buyer("POST", "/market/bid", {"fleet": "F2", "model": "kimi-k3", "from": at(24 * 10), "to": at(24 * 10 + 3), "hours": 1, "max": "0.3"})
-    if buyer("POST", "/market/bid", {"fleet": "F1", "model": "kimi-k3", "from": at(50), "to": at(50 + 24 * 8), "hours": 1, "max": "1", "standing": True})[0] != 400:
-        failures.append("a standing bid accepts a window longer than a week")
-    if buyer("POST", "/market/bid", {"model": "kimi-k3", "from": at(50), "to": at(52), "hours": 1, "max": "900"})[0] != 402:
-        failures.append("a bid holds more HC than the account has")
-    before = balance(buyer)
-    seller("POST", "/market/sandbox/clock", {"hours": 43})
-    shown = {b["bid"]: b for b in buyer("GET", "/market/state")[1]["account"]["bids"]}
-    rolled = shown.get(standing["bid"])
-    if not rolled or rolled["state"] != "filled" or rolled["from"] != at(40 + 168) or balance(buyer) != before - 1:
-        failures.append(f"a standing bid rolls to next week and fills again: {rolled} {balance(buyer)} vs {before}")
-    status, waiting = buyer("POST", "/market/bid", {"fleet": "F2", "model": "kimi-k3", "from": at(24 * 12), "to": at(24 * 12 + 3), "hours": 1, "max": "0.7"})
-    before = balance(buyer)
-    if buyer("POST", "/market/cancel", {"bid": waiting["bid"]})[1].get("state") != "cancelled" or balance(buyer) != before + Decimal("0.7"):
-        failures.append("cancelling a bid returns its held HC")
-
-
-def pool(failures, app, port, seller, buyer):
-    key = buyer("POST", "/market/keys", {"note": "agents"})[1]["key"]
-    models = urllib.request.Request(f"http://127.0.0.1:{port}/pool/v1/models", headers={"Authorization": f"Bearer {key}"})
-    with urllib.request.urlopen(models, timeout=10) as response:
-        listed = [m["id"] for m in json.loads(response.read())["data"]]
-        if len(listed) != 18 or listed[:2] != ["kimi-k3", "glm-5.3"] or "k-exaone-2.0" not in listed or "solar-open-2" not in listed or "qwen3.8-flash" in listed:
-            failures.append(f"the pool lists every offered model and no other: {listed}")
-    if pool_call(port, "sk-hc-wrong", {"model": "kimi-k3", "messages": [{"role": "user", "content": "hi"}]})[0] != 401:
-        failures.append("the pool takes a wrong key")
-    status, held = seller("POST", "/market/reserve", {"fleet": "F3", "start": market.slot_text(sp.clock() + timedelta(seconds=app.book.market.offset) + timedelta(hours=2)), "model": "kimi-k3"})
-    seller("POST", "/market/release", {"reservation": held["reservation"]})
-    seller("POST", "/market/sandbox/clock", {"hours": 2})
-    reservation = next(r for r in seller("GET", "/market/state")[1]["account"]["reservations"] if r["reservation"] == held["reservation"])
-    if reservation["state"] != "pooled":
-        failures.append(f"an unsold release joins the pool at its start: {reservation}")
-    before = balance(buyer)
-    status, raw = pool_call(port, key, {"model": "kimi-k3", "messages": [{"role": "user", "content": "Summarize the Hour Market."}], "max_tokens": 20})
-    answer = json.loads(raw) if status == 200 else {}
-    spent = Decimal(answer.get("sparkpipe", {}).get("hc", "0"))
-    if status != 200 or not answer["choices"][0]["message"]["content"].startswith("Sandbox reply") or spent <= 0 or balance(buyer) != before - spent:
-        failures.append(f"a pool request is answered and charged by seat-seconds: {status} {raw[:200]}")
-    status, raw = pool_call(port, key, {"model": "kimi-k3", "messages": [{"role": "user", "content": "Stream it."}], "max_tokens": 8, "stream": True})
-    events = [line[6:] for line in raw.decode().splitlines() if line.startswith("data: ")]
-    streamed = Decimal(json.loads(events[-2])["sparkpipe"]["hc"]) if len(events) > 2 else Decimal(0)
-    if status != 200 or events[-1] != "[DONE]" or streamed <= 0:
-        failures.append(f"a streamed pool request ends with its charge: {status} {events[-2:]}")
-    charges = buyer("GET", "/market/state")[1]["account"]["charges"]
-    if len(charges) != 2 or Decimal(charges[0]["hc"]) != streamed:
-        failures.append(f"the account lists its pool charges: {charges}")
-    seller_before = balance(seller)
-    seller("POST", "/market/sandbox/clock", {"hours": 1})
-    expect = market.hc((spent + streamed) * Decimal("0.9"))
-    reservation = next(r for r in seller("GET", "/market/state")[1]["account"]["reservations"] if r["reservation"] == held["reservation"])
-    if balance(seller) != seller_before + expect or reservation["release"]["earned"] != market.text_hc(expect):
-        failures.append(f"a pooled release earns its seat-seconds less the fee: {balance(seller)} vs {seller_before} + {expect}, {reservation['release']}")
-    status, _, text = text_get(port, "/market/pool.txt")
-    if status != 200 or "\nkimi-k3 " not in text or "\nglm-5.3 " not in text:
-        failures.append(f"pool.txt lists the price per model: {text}")
-    status, raw = pool_call(port, key, {"model": "glm-5.3", "messages": [{"role": "user", "content": "Switch."}], "max_tokens": 4})
-    switched = json.loads(raw).get("sparkpipe", {}) if status == 200 else {}
-    again = json.loads(pool_call(port, key, {"model": "glm-5.3", "messages": [{"role": "user", "content": "Stay."}], "max_tokens": 4})[1]).get("sparkpipe", {})
-    if status != 200 or switched.get("switch") != 1.0 or Decimal(switched.get("seconds", "9")) >= 1 or again.get("switch") is not None:
-        failures.append(f"a pool request that waits for a model switch pays no seat-seconds for the wait, and the next one waits for none: {switched} {again}")
-    pool = buyer("GET", "/market/state")[1]["pool"]
-    k3 = next((m for m in pool["models"] if m["id"] == "kimi-k3"), {})
-    if k3.get("usdPerMillionOutput") != market.per_million(Decimal(pool["hcPerSeatSecond"]) * 20, 16.2) or k3.get("usdPerMillionPrompt") != market.per_million(Decimal(pool["hcPerSeatSecond"]) * 20, 590):
-        failures.append(f"the pool estimates dollars per million prompt and output tokens from each model's measured speed: {k3} {pool['hcPerSeatSecond']}")
-    revoke = buyer("GET", "/market/state")[1]["account"]["keys"][0]["key"]
-    buyer("POST", "/market/keys/revoke", {"id": revoke})
-    if pool_call(port, key, {"model": "kimi-k3", "messages": [{"role": "user", "content": "hi"}]})[0] != 401:
-        failures.append("a revoked key still uses the pool")
-
-
-ACCELERATORS = '[{"name": "Accelerator 1", "kind": "96 Sparks", "state": "serving", "rate": 6, "tokensPerSecond": 400}, {"name": "Accelerator 2", "kind": "48 Sparks", "state": "serving", "rate": 3, "tokensPerSecond": 200}]'
-
-
-def waiting_for(app, count):
-    for _ in range(500):
-        with app.market.queue:
-            if len(app.market.waiting) >= count:
-                return True
-        time.sleep(0.01)
-    return False
-
-
-def joined(app, ticket, options, tokens, out):
-    try:
-        out.append(app.market.accelerator_join(ticket, options, tokens))
-    except market.Refusal as error:
-        out.append(error)
-
-
-def refusal(call):
+def refused(call):
     try:
         call()
     except market.Refusal as error:
@@ -297,193 +42,78 @@ def refusal(call):
     return None
 
 
-def accelerator_held(app, account):
-    st = app.book.market
-    return sum((st.held(job) for job, owner in st.hold_owner.items() if owner == account and job.startswith("AJ")), Decimal(0))
+def site(work, serving=True):
+    tp.site_copy(work)
+    path = work / "site" / "pricing.js"
+    pricing = json.loads(path.read_text().split("=", 1)[1].strip().rstrip(";"))
+    if serving:
+        for fleet in pricing["fleets"]:
+            fleet["state"] = "serving"
+        pricing["fleets"].append(dict(pricing["fleets"][2], id="F4", name="Fleet 4"))
+        pricing["accelerators"] = [{"id": "A1", "name": "Accelerator 1", "kind": "96 Sparks", "state": "serving", "rate": 6, "tokensPerSecond": 5000}]
+    path.write_text("window.SP_PRICING = " + json.dumps(pricing, indent=2) + ";\n")
+    (work / "pool_key").write_text(POOL_KEY + "\n")
 
 
-def accelerator_flows(failures, work):
-    cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(work / "accelerators"), "SPARKPIPE_PAY_SITE": str(work / "site"), "SPARKPIPE_PAY_SANDBOX": "1", "SPARKPIPE_PAY_PREFIX": "/pay/sandbox/api", "SPARKPIPE_PAY_SANDBOX_ACCELERATORS": ACCELERATORS})
-    server = sp.start(cfg, port=0)
+def live(work, name, mailbox, upstream=None):
+    env = {"SPARKPIPE_PAY_DATA": str(work / name), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": tp.CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
+           "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}", "SPARKPIPE_POOL_KEY_FILE": str(work / "pool_key")}
+    if upstream:
+        env["SPARKPIPE_POOL_UPSTREAM"] = f"http://127.0.0.1:{upstream.server_address[1]}/v1"
+    sp.clock = lambda: NOW[0]
+    server = sp.start(sp.Config(env), port=0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    port, app = server.server_address[1], server.app
-    user, holder, poor, anyone = tp.Client(port, origin="https://sparkpipe.ai"), tp.Client(port, origin="https://sparkpipe.ai"), tp.Client(port, origin="https://sparkpipe.ai"), tp.Client(port)
-    limits = cfg.pricing()["market"]
+    return server, server.app, server.server_address[1]
 
-    def options(**given):
-        return market.accelerator_field(dict({"bid": 1, "maxWait": 30}, **given), limits)
 
+def person(app, name, credits=0):
+    account = sp.new_id("AC")
+    app.book.append("account", {"account": account, "email": f"{name}@example.com", "company": name.title(), "ip": "127.0.0.1", "agent": "test"})
+    app.accept(account, "127.0.0.1", "test")
+    if credits:
+        app.market.credit(account, Decimal(credits), "test")
+    return account
+
+
+def client(app, port, account):
+    found = tp.Client(port, origin="https://sparkpipe.ai")
+    found.cookie = f"{sp.COOKIE}={sp.session_token(app.key, account, 10 ** 10)}"
+    return found
+
+
+def call(port, method, path, body=None, headers=None):
+    request = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=None if body is None else json.dumps(body).encode(), method=method, headers=dict({"Content-Type": "application/json"}, **(headers or {})))
     try:
-        state = anyone("GET", "/market/state")[1]
-        listed = [(a["id"], a["rate"], a["serving"], a["hcPerMinute"], a["tokensPerSecond"]) for a in state["accelerators"]]
-        if listed != [("A1", "6", True, "0.100000", "400"), ("A2", "3", True, "0.050000", "200")] or state["acceleratorQueue"] != [] or state["acceleratorLimits"] != {"maxBid": 10, "defaultWait": 300, "maxWait": 600}:
-            failures.append(f"the market lists each accelerator with its Rate and speed: {state['accelerators']} {state.get('acceleratorLimits')}")
-        sandbox_in(user, "user@example.com", "User Co")
-        sandbox_in(holder, "holder@example.com", "Holder Co")
-        sandbox_in(poor, "poor@example.com", "Poor Co")
-        user("POST", "/market/buy", {"amount": "100"})
-        holder("POST", "/market/buy", {"amount": "100"})
-        poor("POST", "/market/buy", {"amount": "10"})
-        account, holder_account, poor_account = (app.book.emails[e] for e in ("user@example.com", "holder@example.com", "poor@example.com"))
-        key = user("POST", "/market/keys", {"note": "prefill"})[1]["key"]
-        for bad in ({"bid": "0.5"}, {"bid": 11}, {"bid": "1.234"}, {"bid": True}, {"maxWait": 601}, {"maxWait": "60"}, {"pay": "card"}, {"fallback": "yes"}):
-            status, raw = pool_call(port, key, {"model": "kimi-k3", "messages": [{"role": "user", "content": "hi"}], "sparkpipe": {"accelerator": bad}})
-            if status != 400 or b"invalid_accelerator" not in raw:
-                failures.append(f"an invalid accelerator request is accepted: {bad} {status} {raw[:120]}")
-        if pool_call(port, key, {"model": "kimi-k3", "messages": [{"role": "user", "content": "hi"}], "sparkpipe": "fast"})[0] != 400:
-            failures.append("a sparkpipe field that is not an object is accepted")
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, response.headers.get("Content-Type"), response.read()
+    except urllib.error.HTTPError as error:
+        return error.code, error.headers.get("Content-Type"), error.read()
 
-        before = balance(user)
-        status, raw = pool_call(port, key, {"model": "kimi-k3", "messages": [{"role": "user", "content": "word " * 480}], "max_tokens": 4, "sparkpipe": {"accelerator": {"bid": 1.5}}})
-        answer = json.loads(raw) if status == 200 else {}
-        block = answer.get("sparkpipe", {})
-        note = block.get("accelerator") or {}
-        seconds = Decimal(answer.get("usage", {}).get("prompt_tokens", 0)) / 400
-        expect = market.hc(seconds * 6 * Decimal("1.5") / 3600)
-        spent = Decimal(block.get("hc", "0"))
-        if status != 200 or note.get("used") is not True or note.get("accelerator") != "A1" or Decimal(note.get("seconds", "0")) != seconds or note.get("amount") != market.text_hc(expect) or expect <= 0:
-            failures.append(f"an accelerated prompt is charged its accelerator-seconds times Rate times bid: {status} {note} expected {expect}")
-        if Decimal(block.get("seconds", "99")) >= seconds or balance(user) != before - spent - expect:
-            failures.append(f"a pool request pays no seat-seconds while on the accelerator, and both charges come off the balance: pool {block.get('seconds')}s vs accelerator {seconds}s, {balance(user)} vs {before} - {spent} - {expect}")
-        charges = user("GET", "/market/state")[1]["account"]["charges"]
-        if [c["kind"] for c in charges[:2]] != ["pool", "accelerator"] or charges[1]["amount"] != market.text_hc(expect) or charges[1]["bid"] != "1.5" or charges[1]["accelerator"] != "A1":
-            failures.append(f"the account lists accelerator charges beside pool charges: {charges[:2]}")
-        status, raw = pool_call(port, key, {"model": "kimi-k3", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 4})
-        if status != 200 or json.loads(raw)["sparkpipe"].get("accelerator") is not None:
-            failures.append(f"a request that does not ask for an accelerator is computed without one: {raw[:200]}")
 
-        base = balance(user)
-        ticket = {"account": account, "key": "KTEST", "model": "kimi-k3"}
-        first = app.market.accelerator_join(ticket, options(), 400)
-        second = app.market.accelerator_join(ticket, options(), 400)
-        if first.get("accelerator", {}).get("id") != "A1" or second.get("accelerator", {}).get("id") != "A2":
-            failures.append(f"free accelerators take prompts at once, fastest first: {first.get('accelerator')} {second.get('accelerator')}")
-        results, threads = {"low": [], "high": [], "late": []}, []
-        for name, bid in (("low", 1), ("high", 2), ("late", 1)):
-            thread = threading.Thread(target=joined, args=(app, ticket, options(bid=bid), 400, results[name]))
-            thread.start()
-            threads.append(thread)
-            waiting_for(app, len(threads))
-        queue = anyone("GET", "/market/state")[1]["acceleratorQueue"]
-        if [q["bid"] for q in queue] != ["2", "1", "1"] or queue[0]["seconds"] != "1":
-            failures.append(f"the published queue orders prompts by bid, then arrival: {queue}")
-        status, _, text = text_get(port, "/market/pool.txt")
-        if "\nA1 6 0.100000 400 busy\n" not in text or "\n2 1\n1 1\n1 1\n" not in text:
-            failures.append(f"pool.txt lists the accelerators and the queue: {text}")
-        if (waited := app.market.accelerator_join(ticket, options(maxWait=0), 400)) != {"used": False, "reason": "waited"}:
-            failures.append(f"a prompt no accelerator starts within its wait falls back to its fleet: {waited}")
-        if refusal(lambda: app.market.accelerator_join(ticket, options(maxWait=0, fallback=False), 400)) != (503, "accelerator_busy"):
-            failures.append("a prompt that asked not to fall back is not refused when it waits too long")
-        held = sum((j["estimate"] for j in [first, second] + app.market.waiting), Decimal(0))
-        shown = user("GET", "/market/state")[1]["account"]
-        if accelerator_held(app, account) != held or Decimal(shown["held"]) != held or Decimal(shown["balance"]) != base - held:
-            failures.append(f"waiting and running prompts hold their estimates out of the balance, and prompts that left release theirs: {accelerator_held(app, account)} vs {held}, shown {shown['held']} {shown['balance']}")
-        charged = app.market.accelerator_finish(first, 60)
-        threads[1].join(5)
-        if charged.get("amount") != "0.100000" or not results["high"] or results["high"][0].get("accelerator", {}).get("id") != "A1" or results["low"] or results["late"]:
-            failures.append(f"the highest bid takes the next free accelerator: {charged} {results}")
-        if app.market.accelerator_finish(first, 60) != charged or balance(user) + accelerator_held(app, account) != base - Decimal("0.1"):
-            failures.append("a finished prompt is charged once")
-        app.market.accelerator_finish(second, None)
-        threads[0].join(5)
-        if not results["low"] or results["late"] or balance(user) + accelerator_held(app, account) != base - Decimal("0.1"):
-            failures.append(f"equal bids go in arrival order, and an unfinished prompt is not charged: {results} {balance(user)}")
-        app.market.accelerator_finish(results["high"][0], 1)
-        threads[2].join(5)
-        for job in (results["low"][0], results["late"][0]):
-            app.market.accelerator_finish(job, 1)
-        if accelerator_held(app, account) != 0 or app.market.busy or app.market.waiting or app.market.active:
-            failures.append(f"finished prompts leave nothing held, busy or seated: {accelerator_held(app, account)} {app.market.busy} {app.market.waiting} {app.market.active}")
-
-        poor_ticket = {"account": poor_account, "key": "KPOOR", "model": "kimi-k3"}
-        if refusal(lambda: app.market.accelerator_join(poor_ticket, options(), 200000)) != (402, "insufficient_hc"):
-            failures.append("a prompt whose estimate the balance does not cover joins the queue")
-        big = app.market.accelerator_join(poor_ticket, options(), 90000)
-        if balance(poor) != Decimal("0.125") or refusal(lambda: app.market.accelerator_join(poor_ticket, options(), 90000)) != (402, "insufficient_hc"):
-            failures.append(f"HC held for a running prompt cannot be spent again: {balance(poor)}")
-        capped = app.market.accelerator_finish(big, 3600)
-        if capped.get("amount") != "0.500000" or balance(poor) != 0:
-            failures.append(f"an accelerator charge never exceeds the balance: {capped} {balance(poor)}")
-
-        start = market.slot_text(sp.clock() + timedelta(seconds=app.book.market.offset) + timedelta(hours=1))
-        status, held_hour = holder("POST", "/market/reserve", {"fleet": "F3", "start": start, "model": "kimi-k3"})
-        holder("POST", "/market/sandbox/clock", {"hours": 1})
-        own = holder("POST", "/market/keys", {"note": "own hour"})[1]["key"]
-        before = balance(holder)
-        status, raw = pool_call(port, own, {"model": "kimi-k3", "messages": [{"role": "user", "content": "word " * 80}], "max_tokens": 4, "sparkpipe": {"accelerator": True}})
-        block = json.loads(raw).get("sparkpipe", {}) if status == 200 else {}
-        note = block.get("accelerator") or {}
-        if status != 200 or block.get("dedicated") != held_hour.get("reservation") or note.get("used") is not True or Decimal(note.get("amount", "0")) <= 0 or balance(holder) != before - Decimal(note["amount"]):
-            failures.append(f"accelerator time is charged during the holder's own reserved hour: {status} {block}")
-
-        holder("POST", "/market/sandbox/tranche", {})
-        holder_ticket = {"account": holder_account, "key": "KPLAN", "model": "kimi-k3"}
-        paid = app.market.accelerator_finish(app.market.accelerator_join(holder_ticket, options(pay="plan"), 400), 60)
-        left = holder("GET", "/market/state")[1]["account"]["tranche"][0]
-        if paid.get("pay") != "plan" or paid.get("amount") != "0.100000" or left["used"] != "0.1" or left["left"] != "39.9" or balance(holder) != before - Decimal(note["amount"]):
-            failures.append(f"Plan hours pay for accelerator time in fractions: {paid} {left}")
-        status, _ = holder("POST", "/market/reserve", {"fleet": "F2", "start": market.slot_text(sp.clock() + timedelta(seconds=app.book.market.offset) + timedelta(hours=3)), "model": "kimi-k3", "pay": "tranche"})
-        if status != 200 or holder("GET", "/market/state")[1]["account"]["tranche"][0]["left"] != "38.9":
-            failures.append("a Tranche with fractional hours left still reserves whole hours")
-        if refusal(lambda: app.market.accelerator_join(holder_ticket, options(pay="plan"), 40000000)) != (402, "insufficient_plan_hours"):
-            failures.append("a prompt whose estimate the Tranche does not cover joins the queue")
-        planned = app.market.accelerator_join(holder_ticket, options(pay="plan"), 9240000)
-        later = {"fleet": "F2", "start": market.slot_text(sp.clock() + timedelta(seconds=app.book.market.offset) + timedelta(hours=4)), "model": "kimi-k3", "pay": "tranche"}
-        if planned.get("estimate") != Decimal("38.5") or holder("POST", "/market/reserve", later)[0] != 409:
-            failures.append(f"Plan hours held for a running prompt can still be reserved: {planned.get('estimate')}")
-        app.market.accelerator_finish(planned, None)
-        if holder("POST", "/market/reserve", later)[0] != 200:
-            failures.append("Plan hours held for a prompt return when it does not finish")
-
-        app.cfg.sandbox_accelerators = []
-        if app.market.accelerator_join(ticket, options(), 400) != {"used": False, "reason": "none_serving"} or refusal(lambda: app.market.accelerator_join(ticket, options(fallback=False), 400)) != (503, "accelerator_busy"):
-            failures.append("with no accelerator serving, prompts fall back at once or are refused")
-        app.cfg.sandbox_accelerators = json.loads(ACCELERATORS)
-
-        replay = sp.Book(cfg.path("ledger.jsonl"))
-        moment = market.stamp(app.market.now())
-        accounts = list(app.book.accounts)
-        if [replay.market.balance(a, moment) for a in accounts] != [app.book.market.balance(a, moment) for a in accounts] or {k: v for k, v in replay.market.tranche_used.items() if v} != {k: v for k, v in app.book.market.tranche_used.items() if v}:
-            failures.append("a replayed ledger gives different balances or Tranche use after accelerator charges")
-        before = balance(user)
-        app.market.accelerator_join(ticket, options(), 4000)
-    finally:
-        server.shutdown()
-    restarted = sp.start(cfg, port=0)
-    threading.Thread(target=restarted.serve_forever, daemon=True).start()
+def chat(port, key, body, headers=None):
+    status, _, raw = call(port, "POST", "/v1/chat/completions", dict({"model": "kimi-k3", "messages": [{"role": "user", "content": "hello"}]}, **body), dict({"Authorization": f"Bearer {key}"}, **(headers or {})))
     try:
-        for _ in range(200):
-            if accelerator_held(restarted.app, account) == 0:
-                break
-            time.sleep(0.01)
-        if accelerator_held(restarted.app, account) != 0 or restarted.app.book.market.balance(account, market.stamp(restarted.app.market.now())) != before:
-            failures.append(f"a restart returns HC held for prompts that died with the old process: {accelerator_held(restarted.app, account)}")
-    finally:
-        restarted.shutdown()
+        return status, json.loads(raw)
+    except ValueError:
+        return status, raw.decode()
+
+
+def feed(port, fleet, first, last, key=POOL_KEY):
+    status, _, raw = call(port, "GET", f"/market/fleets/{fleet}/holders?from={first}&to={last}", headers={"Authorization": f"Bearer {key}"})
+    return status, json.loads(raw)
+
+
+def balance(app, account):
+    return app.book.market.balance(account, market.stamp(app.market.now()))
 
 
 class FakeUpstream(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        if not self.path.endswith("/sparkpipe/status"):
-            self.send_response(404)
-            self.end_headers()
-            return
-        self.server.polled.append(self.headers.get("Authorization"))
-        data = json.dumps({"active": self.server.active, "state": self.server.state}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+    def log_message(self, *args):
+        pass
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        self.server.seen.append((self.headers.get("X-SparkPipe-Accelerator"), body))
-        if body.get("model") != self.server.active:
-            self.server.state = "swapping"
-            time.sleep(1.5)
-            self.server.active, self.server.state = body.get("model"), "ready"
-            time.sleep(2.2)
+        self.server.seen.append(({name: self.headers.get(name) for name in ("Authorization", "X-SparkPipe-Fleet", "X-SparkPipe-Account", "X-SparkPipe-Accelerator")}, self.headers.get_all("X-SparkPipe-Account"), body))
         if body.get("stream"):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -499,351 +129,403 @@ class FakeUpstream(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def log_message(self, *args):
-        pass
+
+def check_units(failures):
+    if market.text_hc("1.23456789") != "1.234567" or market.months_later(datetime(2028, 2, 29, 5, tzinfo=timezone.utc), 12) != datetime(2029, 2, 28, 5, tzinfo=timezone.utc):
+        failures.append("HC rounds down to 6 places, and a lot issued on 29 February lapses on 28 February a year later")
+    if market.week_start(kst(2027, 1, 10, 23, 59)) != kst(2027, 1, 4) or market.week_start(kst(2027, 1, 11)) != kst(2027, 1, 11) or market.sunday_after(kst(2027, 1, 6, 12)) != kst(2027, 1, 10) or market.sunday_after(kst(2027, 1, 10)) != kst(2027, 1, 17):
+        failures.append("Weeks run from Monday 00:00 to Sunday 24:00 KST, and the round is at Sunday 00:00 KST")
+    conf = (ROOT / "deployment" / "vps" / "sparkpipe-pay.conf").read_text()
+    if '<Location "/availability.txt">' not in conf or 'ProxyPass "http://127.0.0.1:18090/availability.txt"' not in conf:
+        failures.append("Apache does not map https://sparkpipe.ai/availability.txt to the live service")
 
 
-def forwarded_flows(failures, work):
-    shutil.copytree(work / "site", work / "site-accel")
-    pricing = (work / "site-accel" / "pricing.js").read_text()
-    (work / "site-accel" / "pricing.js").write_text(pricing.replace('"accelerators": [],', '"accelerators": [{ "name": "Accelerator 1", "kind": "96 Sparks", "state": "serving", "rate": 6, "tokensPerSecond": 5000 }],'))
-    (work / "secret").write_text("test-client-secret\n")
-    (work / "pool_key").write_text("sk-pool-test\n")
-    upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeUpstream)
-    upstream.seen, upstream.polled, upstream.active, upstream.state = [], [], "kimi-k3", "ready"
-    threading.Thread(target=upstream.serve_forever, daemon=True).start()
-    mailbox = socketserver.ThreadingTCPServer(("127.0.0.1", 0), tp.FakeSMTP)
-    mailbox.daemon_threads, mailbox.mail = True, []
-    threading.Thread(target=mailbox.serve_forever, daemon=True).start()
-    cfg = sp.Config({
-        "SPARKPIPE_PAY_DATA": str(work / "forwarded"), "SPARKPIPE_PAY_SITE": str(work / "site-accel"),
-        "COINPAYMENTS_CLIENT_ID": tp.CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
-        "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}",
-        "SPARKPIPE_POOL_UPSTREAM": f"http://127.0.0.1:{upstream.server_address[1]}", "SPARKPIPE_POOL_KEY_FILE": str(work / "pool_key"),
-    })
-    server = sp.start(cfg, port=0)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    port, app = server.server_address[1], server.app
-    client = tp.Client(port, origin="https://sparkpipe.ai")
+def live_flows(failures, work):
+    mailbox = tp.serve(tp.FakeSMTP, mail=[])
+    upstream = tp.serve(FakeUpstream, seen=[])
+    server, app, port = live(work, "live", mailbox, upstream)
+    m = app.market
     try:
-        client("POST", "/code", {"email": "prefill@example.com"})
-        client("POST", "/verify", {"email": "prefill@example.com", "code": tp.last_code(mailbox, "prefill@example.com"), "company": "Prefill Co", "accept": True})
-        account = app.book.emails["prefill@example.com"]
-        app.market.credit(account, Decimal("5"), "test")
-        key = client("POST", "/market/keys", {"note": "live"})[1]["key"]
-        status, raw = pool_call(port, key, {"model": "kimi-k3", "messages": [{"role": "user", "content": "long prompt"}], "sparkpipe": {"accelerator": {"bid": 2}}})
-        note = json.loads(raw).get("sparkpipe", {}).get("accelerator") if status == 200 else None
-        header, body = upstream.seen[-1] if upstream.seen else (None, {})
-        if status != 200 or header != "A1" or "sparkpipe" in body or body.get("model") != "kimi-k3":
-            failures.append(f"the gateway sends an accelerated prompt to its accelerator and keeps its own field back: {status} {header} {body}")
-        if not note or note.get("seconds") != "0.2" or note.get("amount") != "0.000666" or balance(client) != Decimal("5") - Decimal("0.000666") - Decimal(json.loads(raw)["sparkpipe"]["hc"]):
-            failures.append(f"the fleets' reported accelerator-seconds set the charge: {note} {balance(client)}")
-        status, raw = pool_call(port, key, {"model": "kimi-k3", "messages": [{"role": "user", "content": "stream it"}], "stream": True, "sparkpipe": {"accelerator": True}})
-        events = [line[6:] for line in raw.decode().splitlines() if line.startswith("data: ")]
-        note = json.loads(events[-2])["sparkpipe"]["accelerator"] if len(events) > 2 else {}
-        bound = Decimal(market.estimate_tokens([{"role": "user", "content": "stream it"}])) / 5000
-        if status != 200 or note.get("used") is not True or Decimal(note.get("seconds", "99")) > bound or upstream.seen[-1][0] != "A1":
-            failures.append(f"without reported seconds, a streamed prompt is charged its measured time, at most its estimate: {note} bound {bound}")
-        pool_call(port, key, {"model": "kimi-k3", "messages": [{"role": "user", "content": "plain"}]})
-        if upstream.seen[-1][0] is not None or app.market.busy:
-            failures.append(f"a request without the accelerator option goes to its fleet alone: {upstream.seen[-1]}")
-        began = time.monotonic()
-        status, raw = pool_call(port, key, {"model": "solar-open-2", "messages": [{"role": "user", "content": "switch"}]})
-        waited = time.monotonic() - began
-        note = json.loads(raw).get("sparkpipe", {}) if status == 200 else {}
-        if status != 200 or not note.get("switch") or not 1.4 <= note["switch"] <= 2.8 or not Decimal("1") <= Decimal(note.get("seconds", "0")) <= Decimal(str(waited)) - Decimal("1.4") or "Bearer sk-pool-test" not in upstream.polled:
-            failures.append(f"a live pool request for a model the fleet must switch to holds no seat until the fleet serves it, then pays from then on: {status} {note} waited {waited:.1f} {upstream.polled[-1:]}")
-        status, raw = pool_call(port, key, {"model": "solar-open-2", "messages": [{"role": "user", "content": "stay"}]})
-        if status != 200 or json.loads(raw).get("sparkpipe", {}).get("switch") is not None:
-            failures.append(f"a live pool request for the loaded model waits for no switch: {raw[:200]}")
+        opening(failures, app, m)
+        state = weeks_and_hours(failures, app, m, port)
+        waitlist(failures, app, m, port, state)
+        gateway(failures, app, m, port, upstream, state)
+        holders_and_maintenance(failures, app, m, port, state)
+        deadline(failures, app, m, mailbox, state)
+        replay = sp.Book(app.cfg.path("ledger.jsonl"))
+        moment = market.stamp(m.now())
+        if [replay.market.balance(a, moment) for a in app.book.accounts] != [app.book.market.balance(a, moment) for a in app.book.accounts] or set(replay.market.bookings) != set(app.book.market.bookings) or replay.market.round != app.book.market.round:
+            failures.append("a replayed ledger gives different balances, bookings or rounds")
+        lines = client(app, port, state["H"])("GET", "/market/ledger")[1]["lines"]
+        if not lines or any(line["data"].get("account") not in (None, state["H"]) for line in lines) or "booking" not in {line["type"] for line in lines}:
+            failures.append("the ledger export holds other accounts' lines or misses the account's bookings")
     finally:
         server.shutdown()
         upstream.shutdown()
         mailbox.shutdown()
 
 
-def plan(number, email, office, fleets=1, days="every", lock=None, payment="gates"):
-    found = {"id": f"SP-COVER-{number}", "email": email, "company": "Plan Co", "start": "2026-11-02", "months": None if payment == "monthly" else 24, "office": dict(tp.OFFICES[office]), "days": days, "fleets": fleets,
-             "hourPrice": "15.00", "payment": payment, "maintenanceHoursPerWeek": 3}
-    if lock:
-        found["lock"] = lock
-    return found
+def opening(failures, app, m):
+    NOW[0] = kst(2026, 11, 28, 12)
+    early = person(app, "early", 50)
+    if refused(lambda: m.book_hours(early, {"fleet": "F1", "start": slot(kst(2026, 11, 30, 23)), "hours": 1})) != (409, "not_open") or refused(lambda: m.book_hours(early, {"fleet": "F1", "start": slot(kst(2026, 12, 1)), "hours": 1})):
+        failures.append("Demo Fleet hours open on demoFrom and not before")
+    NOW[0] = kst(2026, 12, 25, 12)
+    if refused(lambda: m.quote_weeks(early, {"fleet": "F2", "weeks": 1})) != (409, "not_open"):
+        failures.append("a Week before weeksFrom is booked")
+    for moment, first in ((kst(2027, 1, 1, 12), kst(2027, 1, 4)), (kst(2027, 1, 3, 23), kst(2027, 1, 4)), (kst(2027, 1, 4, 0, 30), kst(2027, 1, 11))):
+        NOW[0] = moment
+        quote = m.quote_weeks(early, {"fleet": "F3", "weeks": 2})
+        if (quote["first"], quote["last"], quote["end"]) != (slot(first), slot(first + market.WEEK), slot(first + 2 * market.WEEK)):
+            failures.append(f"a first Week asked at {market.kst_text(moment)} does not start on the next Monday 00:00 KST and run to Sunday 24:00: {quote}")
 
 
-def cover_flows(failures, work):
-    cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(work / "cover"), "SPARKPIPE_PAY_SITE": str(work / "site"), "SPARKPIPE_PAY_SANDBOX": "1", "SPARKPIPE_PAY_PREFIX": "/pay/sandbox/api"})
-    server = sp.start(cfg, port=0)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    port, app = server.server_address[1], server.app
-    holder, early, late = tp.Client(port, origin="https://sparkpipe.ai"), tp.Client(port, origin="https://sparkpipe.ai"), tp.Client(port, origin="https://sparkpipe.ai")
+def weeks_and_hours(failures, app, m, port):
+    NOW[0] = kst(2027, 1, 1, 12)
+    state = {name: person(app, name.lower(), credits) for name, credits in (("H", 10000), ("C", 5000), ("D", 100), ("G", 1000), ("K", 1000))}
+    H, C, D, G, K = (state[name] for name in "HCDGK")
+    first = m.book_weeks(H, {"fleet": "F2", "weeks": 1})
+    if (first["first"], first["end"], first["price"], first["discount"], first["extends"]) != (slot(kst(2027, 1, 4)), slot(kst(2027, 1, 11)), "144.000000", "0", False) or balance(app, H) != 10000 - 144:
+        failures.append(f"a first Week is booked from the next Monday at weekHC times Rate: {first}")
+    NOW[0] = kst(2027, 1, 6, 12)
+    public = m.public()
+    fleets = {f["id"]: f for f in public["fleets"]}
+    if [fleets[f]["status"] for f in ("F1", "F2", "F3", "F4")] != ["demo", "pinned", "free", "free"] or fleets["F3"]["firstWeek"] != slot(kst(2027, 1, 11)) or fleets["F2"]["firstWeek"] is not None or fleets["F2"]["booked"] != [[slot(kst(2027, 1, 4)), slot(kst(2027, 1, 11))]]:
+        failures.append(f"the public Fleet states: {fleets}")
+    if "waitlist" in json.dumps(public) or fleets["F2"]["storageTB"] != 4 or public["hc"]["prices"][1] != {"from": 144, "usd": 15, "krw": 19500} or public["bookings"]["weekHC"] != 144:
+        failures.append("the public state shows the waitlist, or lacks the published settings")
+    for who in (C, H):
+        if refused(lambda: m.book_hours(who, {"fleet": "F2", "start": slot(kst(2027, 1, 6, 14)), "hours": 1})) != (409, "pinned"):
+            failures.append("an Hour is booked on a pinned Fleet")
+    if refused(lambda: m.quote_weeks(C, {"fleet": "F2", "weeks": 1})) != (409, "pinned"):
+        failures.append("another customer books the next Week of a pinned Fleet before its holder's deadline")
+    for weeks, off, price in ((3, "0", "432.000000"), (4, "0.05", "547.200000"), (13, "0.1", "1684.800000"), (26, "0.15", "3182.400000"), (52, "0.2", "5990.400000")):
+        quote = m.quote_weeks(C, {"fleet": "F3", "weeks": weeks})
+        if (quote["discount"], quote["price"]) != (off, price):
+            failures.append(f"{weeks} Weeks are priced at {quote['price']} HC, {quote['discount']} off, not {price} at {off}")
+    if refused(lambda: m.quote_weeks(C, {"fleet": "F3", "weeks": 53})) != (400, None) or m.quote_weeks(C, {"fleet": "F3", "weeks": 52})["last"] != slot(kst(2027, 1, 4) + 52 * market.WEEK):
+        failures.append("the last Week may start more than 52 Weeks after the current Week")
+    quote = m.quote_weeks(H, {"fleet": "F2", "weeks": 3})
+    if (quote["first"], quote["count"], quote["discount"], quote["price"], quote["extends"]) != (slot(kst(2027, 1, 11)), 4, "0.05", "410.400000", True):
+        failures.append(f"an extension does not follow the booked Week, or its discount does not count the current Week: {quote}")
+    m.book_weeks(H, {"fleet": "F2", "weeks": 3})
+    if refused(lambda: m.quote_weeks(H, {"fleet": "F2", "weeks": 50})) != (409, "too_far") or m.quote_weeks(H, {"fleet": "F2", "weeks": 49})["first"] != slot(kst(2027, 2, 1)):
+        failures.append("an extension is not contiguous, or reaches past 52 Weeks after the current Week")
+    if m.view(H)["pinned"] != [{"fleet": "F2", "weeks": 4, "through": slot(kst(2027, 2, 1)), "deadline": slot(kst(2027, 1, 31)), "canExtend": True}]:
+        failures.append(f"the account's pinned Fleets: {m.view(H)['pinned']}")
+    if refused(lambda: m.book_weeks(C, {"fleet": "F2", "weeks": 1}))[0] != 409 or refused(lambda: m.book_weeks(C, {"fleet": "F1", "weeks": 1})) != (409, "not_weekly"):
+        failures.append("another customer books a Week of a pinned Fleet, or the Demo Fleet is booked by the Week")
+    hours = m.book_hours(C, {"fleet": "F3", "start": slot(kst(2027, 1, 6, 13)), "hours": 2})
+    if hours["hc"] != "2.000000" or hours["state"] != "upcoming" or refused(lambda: m.book_hours(C, {"fleet": "F3", "start": slot(kst(2027, 1, 10, 23)), "hours": 1})):
+        failures.append(f"free-Fleet Hours to the end of the current Week: {hours}")
+    if refused(lambda: m.book_hours(C, {"fleet": "F4", "start": slot(kst(2027, 1, 10, 23)), "hours": 2})) != (409, "too_far") or refused(lambda: m.book_hours(D, {"fleet": "F3", "start": slot(kst(2027, 1, 6, 14)), "hours": 1})) != (409, "taken"):
+        failures.append("a free-Fleet Hour reaches past the current Week, or takes a booked hour")
+    if refused(lambda: m.book_hours(C, {"fleet": "F4", "start": slot(kst(2027, 1, 6, 12)), "hours": 1})) != (409, "started"):
+        failures.append("an hour that has started is booked")
+    demo(failures, m, C, D)
+    m.book_weeks(G, {"fleet": "F3", "weeks": 1})
+    m.book_weeks(K, {"fleet": "F4", "weeks": 1})
+    return state
+
+
+def demo(failures, m, C, D):
+    book = lambda who, start, hours: refused(lambda: m.book_hours(who, {"fleet": "F1", "start": slot(start), "hours": hours}))
+    if book(C, kst(2027, 1, 6, 13), 24) or book(C, kst(2027, 1, 7, 13), 1) != (409, "demo_cap") or book(D, kst(2027, 1, 7, 13), 1):
+        failures.append("the Demo Fleet's weekly cap is not per account")
+    if book(C, kst(2027, 1, 10, 23), 2) != (409, "demo_cap") or book(C, kst(2027, 1, 11), 3):
+        failures.append("Demo Fleet hours are not capped by the Week they fall in")
+    if book(C, kst(2027, 1, 13, 12), 1) != (409, "too_far") or book(C, kst(2027, 1, 13, 11), 1):
+        failures.append("Demo Fleet hours are not bookable exactly up to 7 days ahead")
+
+
+def waitlist(failures, app, m, port, state):
+    for name, credits in (("A", 1000), ("B", 1000), ("W", 1000), ("E", 50), ("X", 144)):
+        state[name] = person(app, name.lower(), credits)
+    A, B, W, E, X = (state[name] for name in "ABWEX")
+    if refused(lambda: m.join(E, {"lock": 144})) != (402, "insufficient_hc") or refused(lambda: m.join(A, {"lock": 100})) != (409, "lock_too_small"):
+        failures.append("a lock below weekHC, or above the unlocked balance, joins the waitlist")
+    order = [m.join(A, {"lock": 200})["position"], m.join(B, {"lock": 300})["position"], m.position(A), m.join(W, {"lock": 200})["position"]]
+    order += [m.join(A, {"lock": "50"})["position"], m.join(W, {"lock": 100})["position"], m.position(B), m.position(A)]
+    if order != [1, 1, 2, 3, 2, 2, 1, 3]:
+        failures.append(f"the waitlist is not ordered by largest lock, then earliest join, keeping the join time on an added lock: {order}")
+    m.join(X, {"lock": 144})
+    if refused(lambda: m.book_hours(X, {"fleet": "F4", "start": slot(kst(2027, 1, 6, 15)), "hours": 1})) != (402, "insufficient_hc") or m.leave(X) != {"locked": "0.000000", "position": None} or balance(app, X) != 144:
+        failures.append("locked HC can be spent, or leaving does not unlock all of it")
+    shown = client(app, port, A)("GET", "/market/state")[1]
+    text = json.dumps(shown)
+    if (shown["account"]["position"], shown["account"]["locked"], shown["account"]["balance"]) != (3, "250.000000", "750.000000") or any(other in text for other in (B, W, "b@example.com", "300.000000")):
+        failures.append(f"a customer sees more of the waitlist than its own position: {shown['account']}")
+
+
+def gateway(failures, app, m, port, upstream, state):
+    H, C, D = state["H"], state["C"], state["D"]
+    NOW[0] = kst(2027, 1, 6, 13, 30)
+    keys = {who: m.create_key(who, "test")["key"] for who in (H, C, D)}
+    if chat(port, keys[D], {})[0] != 403 or chat(port, keys[D], {})[1]["error"]["code"] != "no_fleet" or call(port, "GET", "/v1/models", headers={"Authorization": f"Bearer {keys[D]}"})[0] != 403:
+        failures.append("the gateway serves an account that holds no Fleet")
+    if chat(port, "sk-hc-wrong", {})[0] != 401 or chat(port, keys[C], {})[1].get("error", {}).get("code") != "fleet_required" or chat(port, keys[C], {"sparkpipe": {"fleet": "F2"}})[1].get("error", {}).get("code") != "fleet_not_held":
+        failures.append("the gateway does not make an account holding two Fleets name one it holds")
+    seen = len(upstream.seen)
+    status, answer = chat(port, keys[C], {"sparkpipe": {"fleet": "F3"}}, {"X-SparkPipe-Account": "ACFAKE", "X-SparkPipe-Fleet": "F9"})
+    headers, accounts, body = upstream.seen[-1] if len(upstream.seen) > seen else ({}, [], {})
+    if status != 200 or answer.get("sparkpipe", {}).get("fleet") != "F3" or headers != {"Authorization": f"Bearer {POOL_KEY}", "X-SparkPipe-Fleet": "F3", "X-SparkPipe-Account": C, "X-SparkPipe-Accelerator": None} or accounts != [C] or "sparkpipe" in body:
+        failures.append(f"the gateway does not forward a holder with its Fleet and account, or forwards the customer's own copies: {status} {headers} {accounts} {body}")
+    status, answer = chat(port, keys[H], {})
+    if status != 200 or upstream.seen[-1][0]["X-SparkPipe-Fleet"] != "F2" or upstream.seen[-1][0]["X-SparkPipe-Account"] != H:
+        failures.append(f"a Week holder is not forwarded to its pinned Fleet: {status} {answer}")
+    status, _, raw = call(port, "GET", "/v1/models", headers={"Authorization": f"Bearer {keys[C]}"})
+    if status != 200 or "kimi-k3" not in [model["id"] for model in json.loads(raw)["data"]]:
+        failures.append("a holder cannot list the models")
+    before = balance(app, C)
+    status, answer = chat(port, keys[C], {"sparkpipe": {"fleet": "F1", "accelerator": {"bid": 2}}})
+    note = answer.get("sparkpipe", {}).get("accelerator") or {} if status == 200 else {}
+    if status != 200 or upstream.seen[-1][0]["X-SparkPipe-Accelerator"] != "A1" or note.get("seconds") != "0.2" or note.get("amount") != "0.000666" or balance(app, C) != before - Decimal("0.000666"):
+        failures.append(f"an accelerated prompt is not sent to its accelerator and charged the reported seconds in HC: {status} {note}")
+    status, _, raw = call(port, "POST", "/v1/chat/completions", {"model": "kimi-k3", "messages": [{"role": "user", "content": "stream"}], "stream": True}, {"Authorization": f"Bearer {keys[H]}"})
+    events = [line[6:] for line in raw.decode().splitlines() if line.startswith("data: ")]
+    if status != 200 or events[-1] != "[DONE]" or json.loads(events[-2])["sparkpipe"]["fleet"] != "F2":
+        failures.append(f"a streamed request is not passed through: {events}")
+    if chat(port, keys[C], {"model": "gpt-9", "sparkpipe": {"fleet": "F3"}})[0] != 404:
+        failures.append("a model that is not listed is forwarded")
+
+
+def holders_and_maintenance(failures, app, m, port, state):
+    H, C = state["H"], state["C"]
+    status, found = feed(port, "F2", slot(kst(2027, 1, 6)), slot(kst(2027, 1, 7)))
+    if status != 200 or found["fleet"] != "F2" or [h["start"] for h in found["hours"]] != [slot(kst(2027, 1, 6) + market.HOUR * n) for n in range(24)] or {h["account"] for h in found["hours"]} != {H}:
+        failures.append(f"the holder feed does not list every hour of a booked Week: {status} {found}")
+    status, found = feed(port, "F3", slot(kst(2027, 1, 6, 12)), slot(kst(2027, 1, 6, 16)))
+    if found.get("hours") != [{"start": slot(kst(2027, 1, 6, 13)), "account": C}, {"start": slot(kst(2027, 1, 6, 14)), "account": C}]:
+        failures.append(f"the holder feed does not list HC-booked Hours: {found}")
+    refusals = [feed(port, "F2", slot(kst(2027, 1, 6)), slot(kst(2027, 1, 7)), "wrong")[0], feed(port, "F9", slot(kst(2027, 1, 6)), slot(kst(2027, 1, 7)))[0],
+                feed(port, "F2", slot(kst(2027, 1, 6)), slot(kst(2027, 1, 14, 1)))[0], feed(port, "F2", "", slot(kst(2027, 1, 7)))[0]]
+    if refusals != [401, 404, 400, 400]:
+        failures.append(f"the holder feed does not refuse a bad key, an unknown Fleet or a bad window: {refusals}")
+    planned = m.schedule_maintenance("F2", "2027-01-18")
+    if planned["start"] != slot(kst(2027, 1, 18)) or planned["hours"] != 3 or refused(lambda: m.schedule_maintenance("F2", "2027-01-18", 1)) != (400, None) or refused(lambda: m.schedule_maintenance("F2", "2027-01-19")) != (400, None):
+        failures.append(f"maintenance is not limited to the weekly allowance in a Week starting on Monday: {planned}")
+    state["maintenance"] = planned["maintenance"]
+    status, found = feed(port, "F2", slot(kst(2027, 1, 17, 21)), slot(kst(2027, 1, 18, 5)))
+    if [h["start"] for h in found["hours"]] != [slot(kst(2027, 1, 17, h)) for h in (21, 22, 23)] + [slot(kst(2027, 1, 18, h)) for h in (3, 4)]:
+        failures.append(f"the holder feed lists maintenance hours as held: {found}")
+    status, kind, raw = call(port, "GET", "/availability.txt")
+    if status != 200 or not kind.startswith("text/plain") or not raw.decode().endswith("F1 serving demo\nF2 serving pinned\nF3 serving free\nF4 serving free\n"):
+        failures.append(f"availability.txt: {status} {kind} {raw[-120:]!r}")
+    if client(app, port, C)("POST", "/market/sandbox/clock", {"hours": 1})[0] != 404:
+        failures.append("the live service moves its clock")
+
+
+def deadline(failures, app, m, mailbox, state):
+    H, C, G, K, A, B, W = (state[name] for name in "HCGKABW")
+    NOW[0] = kst(2027, 1, 10)
+    m.tick()
+    if [m.position(x) for x in (B, W, A)] != [1, 2, 3] or app.book.market.round != market.stamp(kst(2027, 1, 10)):
+        failures.append("a round with no free Fleet changes the waitlist")
+    NOW[0] = kst(2027, 1, 14, 12)
+    m.leave(W)
+    if balance(app, W) != 1000 or [m.position(x) for x in (B, A)] != [1, 2] or refused(lambda: m.quote_weeks(C, {"fleet": "F3", "weeks": 1})) != (409, "pinned"):
+        failures.append("leaving the waitlist, or the holder's deadline before Sunday 00:00")
+    NOW[0] = kst(2027, 1, 16, 23, 59)
+    if refused(lambda: m.quote_weeks(G, {"fleet": "F3", "weeks": 1})):
+        failures.append("the holder cannot extend before Sunday 00:00")
+    NOW[0] = kst(2027, 1, 17)
+    m.tick()
+    app.mails.join()
+    granted = {b["account"]: b for b in app.book.market.bookings.values() if b["source"] == "waitlist"}
+    expect = {B: ("F3", slot(kst(2027, 1, 18)), slot(kst(2027, 2, 1)), "288.000000", "12.000000"), A: ("F4", slot(kst(2027, 1, 18)), slot(kst(2027, 1, 25)), "144.000000", "106.000000")}
+    if {who: (b["fleet"], b["start"], b["end"], b["hc"], b["unlocked"]) for who, b in granted.items()} != expect or balance(app, B) != 712 or balance(app, A) != 856 or app.book.market.locks:
+        failures.append(f"Sunday 00:00 does not allocate each free Fleet to the waitlist in order, as many Weeks as each lock pays for with the rest unlocked: {granted}")
+    if refused(lambda: m.book_weeks(G, {"fleet": "F3", "weeks": 1})) != (409, "taken") or refused(lambda: m.book_weeks(K, {"fleet": "F4", "weeks": 1})) != (409, "taken"):
+        failures.append("a holder past its Sunday deadline keeps a Fleet the waitlist was allocated")
+    if not any("b@example.com" in rcpt and m_["Subject"].startswith("SparkPipe Fleet 3 is yours") for rcpt, m_ in mailbox.mail):
+        failures.append("the allocated customer is not emailed")
+    NOW[0] = kst(2027, 1, 30, 23)
+    if refused(lambda: m.book_weeks(C, {"fleet": "F3", "weeks": 1})) != (409, "pinned"):
+        failures.append("another customer books before the holder's Sunday deadline")
+    NOW[0] = kst(2027, 1, 31, 0, 30)
+    if refused(lambda: m.book_weeks(H, {"fleet": "F2", "weeks": 1})) or refused(lambda: m.book_weeks(C, {"fleet": "F3", "weeks": 1})):
+        failures.append("with nobody allocated at Sunday 00:00, the holder or another customer cannot book the next Week before it starts")
+    credited = [lot for lot in app.book.market.lots[H] if lot["source"] == "maintenance"]
+    if [(lot["first"], lot["ref"]) for lot in credited] != [("3.000000", state["maintenance"])]:
+        failures.append(f"booked hours under maintenance are not credited at the Fleet's Rate: {credited}")
+
+
+def order_lot(app, account, count, price, total):
+    ident = sp.new_id("SP")
+    app.book.append("order", {"order": ident, "account": account, "email": "x@example.com", "company": "X", "product": "credits", "processor": "toss", "currency": "KRW", "hc": str(count), "price": price, "net": "0", "vat": "0", "total": total})
+    app.market.issue(account, Decimal(count), ident)
+    return ident
+
+
+def allocation_flows(failures, work):
+    mailbox = tp.serve(tp.FakeSMTP, mail=[])
+    server, app, port = live(work, "allocation", mailbox)
+    m = app.market
     try:
-        sandbox_in(holder, "holder@example.com", "Plan Co")
-        sandbox_in(early, "early@example.com", "Early Co")
-        sandbox_in(late, "late@example.com", "Late Co")
-        asia, europe, friday, saturday, sunday = 22, 30, 94, 118, 132
-        three = [plan(1, "holder@example.com", "asia", 3), plan(2, "b@example.com", "europe", 3), plan(3, "c@example.com", "americas", 3)]
-        tp.set_plans(app, three)
-        cells = [f["cells"] for f in late("GET", "/market/calendar?days=14")[1]["fleets"]]
-        if any(c[4] != ["hyor", "1.000000"] or c[5] != ["closed", None] or c[asia - 1] != ["closed", None] or c[sunday - 1] != ["closed", None] for c in cells):
-            failures.append(f"three-fleet plans in every window keep every fleet off sale every day until 6 hours before: {[c[4:6] + [c[asia - 1], c[sunday - 1]] for c in cells]}")
-        if late("POST", "/plans/quote", {"start": "2026-12-15", "term": "monthly"})[0] != 404:
-            failures.append("the sandbox takes Plan Orders")
-        status, refused = late("POST", "/market/buy", {"amount": "100"})
-        if status != 409 or refused.get("reason") != "cover" or late("GET", "/market/state")[1]["onSale"] != "0.000000":
-            failures.append(f"HC is sold although every hour is kept for plans: {status} {refused}")
-        holder("POST", "/market/sandbox/tranche", {})
-        if holder("POST", "/market/reserve", {"fleet": "F1", "start": at(asia), "model": "kimi-k3", "pay": "tranche"})[0] != 200:
-            failures.append("a plan holder cannot reserve its kept capacity in its office hours with Tranche hours")
-        if holder("POST", "/market/reserve", {"fleet": "F1", "start": at(europe), "model": "kimi-k3", "pay": "tranche"})[0] != 409:
-            failures.append("a plan holder takes capacity kept for another customer's office hours")
-        if app.market.report(app.commitments(app.market.now(), [plan(4, "d@example.com", "asia")]))["clashes"] == 0 or app.market.report()["clashes"] != 0:
-            failures.append("the cover report misses a plan that the fleets cannot keep, or flags one they can")
-
-        tp.set_plans(app, [plan(1, "holder@example.com", "asia", 3)])
-        before = [f["cells"] for f in late("GET", "/market/calendar?days=3")[1]["fleets"]]
-        if [c[asia + 23] for c in before] != [["closed", None]] * 3 or [c[europe + 23] for c in before] != [["hyor", "1.000000"]] * 3:
-            failures.append(f"a plan for three fleets with office hours from 08:00 to 16:00 in Seoul does not keep exactly those hours: {[c[asia + 23] for c in before]} {[c[europe + 23] for c in before]}")
-        tp.set_plans(app, [plan(1, "holder@example.com", "asia", 3, "weekdays")])
-        week = [f["cells"] for f in late("GET", "/market/calendar?days=7")[1]["fleets"]]
-        if [c[friday - 1] for c in week] != [["closed", None]] * 3 or [c[saturday - 1] for c in week] != [["hyor", "1.000000"]] * 3:
-            failures.append(f"a Weekdays plan in Seoul keeps Saturday or frees Friday: {[c[friday - 1] for c in week]} {[c[saturday - 1] for c in week]}")
-        tp.set_plans(app, [plan(1, "holder@example.com", "newyork", 3, "weekdays")])
-        cells = [f["cells"] for f in late("GET", "/market/calendar?days=7")[1]["fleets"]]
-        hour = lambda kst: int((datetime.fromisoformat(kst).replace(tzinfo=market.KST) - START).total_seconds() // 3600) - 1
-        shown = {kst: [c[hour(kst)][0] for c in cells] for kst in ("2026-11-02T22:00", "2026-11-02T23:00", "2026-11-03T06:00", "2026-11-03T07:00", "2026-11-07T06:00", "2026-11-08T06:00", "2026-11-09T06:00")}
-        if shown != {"2026-11-02T22:00": ["hyor"] * 3, "2026-11-02T23:00": ["closed"] * 3, "2026-11-03T06:00": ["closed"] * 3, "2026-11-03T07:00": ["hyor"] * 3,
-                     "2026-11-07T06:00": ["closed"] * 3, "2026-11-08T06:00": ["hyor"] * 3, "2026-11-09T06:00": ["hyor"] * 3}:
-            failures.append(f"New York office hours from 09:00 to 17:00 on Weekdays do not keep KST 23:00 to 07:00 after each New York weekday, and nothing after its weekend: {shown}")
-        cover = app.market.cover(app.market.now(), cfg.pricing())
-        kst = lambda text: datetime.fromisoformat(text).replace(tzinfo=market.KST)
-        asides = [cover.aside(kst(text)) for text in ("2027-03-12T23:00", "2027-03-13T06:00", "2027-03-15T22:00", "2027-03-15T23:00", "2027-03-16T06:00", "2027-03-16T07:00")]
-        if asides != [3, 3, 3, 3, 0, 0]:
-            failures.append(f"the set-aside does not move an hour earlier in KST when New York starts summer time: {asides}")
-        tp.set_plans(app, [plan(1, "holder@example.com", "asia", 3, payment="monthly")])
-        cells = [f["cells"] for f in late("GET", "/market/calendar?days=3")[1]["fleets"]]
-        cover = app.market.cover(app.market.now(), cfg.pricing())
-        if [c[asia + 23] for c in cells] != [["closed", None]] * 3 or cover.aside(kst("2026-12-31T10:00")) != 3 or cover.aside(kst("2027-06-15T10:00")) != 3 or cover.aside(kst("2026-12-31T17:00")) != 0:
-            failures.append(f"a running Monthly plan does not keep its office hours this month, next month and in the later months it counts on: {[c[asia + 23] for c in cells]}")
-        tp.set_plans(app, [plan(1, "holder@example.com", "asia")])
-        late("POST", "/market/buy", {"amount": "100"})
-        for fleet in ("F1", "F2"):
-            late("POST", "/market/reserve", {"fleet": fleet, "start": at(asia + 24), "model": "kimi-k3", "max": "1"})
-        if late("POST", "/market/reserve", {"fleet": "F3", "start": at(asia + 24), "model": "kimi-k3", "max": "1"})[0] != 409:
-            failures.append("the last fleet of an hour that a plan still needs is sold to HC")
-
-        tp.set_plans(app, [plan(1, "holder@example.com", "full", lock=["F2"])])
-        locked = [f["cells"] for f in late("GET", "/market/calendar?days=2")[1]["fleets"]]
-        pool = late("GET", "/market/state")[1]["pool"]["fleets"]
-        if locked[1][0] != ["closed", None] or locked[1][40] != ["closed", None] or locked[0][0] != ["hyor", "1.000000"] or "F2" in pool or "F1" not in pool:
-            failures.append(f"a locked fleet is offered to others, even within 6 hours, or joins the shared pool: {locked[1][0]} {locked[1][40]} {locked[0][0]} {pool}")
-        if late("POST", "/market/reserve", {"fleet": "F2", "start": at(2), "model": "kimi-k3", "max": "1"})[0] != 409:
-            failures.append("HC reserves a locked fleet within 6 hours of the hour")
-        if holder("POST", "/market/reserve", {"fleet": "F2", "start": at(40), "model": "kimi-k3", "pay": "tranche"})[0] != 200:
-            failures.append("the holder cannot reserve its own locked fleet")
-
-        tp.set_plans(app, [plan(1, "holder@example.com", "asia", 2), plan(2, "b@example.com", "europe", 2), plan(3, "c@example.com", "americas", 2)])
-        pricing = cfg.pricing()
-        sale = Decimal(late("GET", "/market/state")[1]["onSale"])
-        if not 8000 < sale < 8700:
-            failures.append(f"with one fleet free every day, HC on sale is not about a year of its hours less 3 maintenance hours a week: {sale}")
-        bought = late("POST", "/market/buy", {"amount": "100000"})[1]
-        left = Decimal(late("GET", "/market/state")[1]["onSale"])
-        if bought.get("hc") != "5000.000000" or left != sale - 5000:
-            failures.append(f"buying HC does not take it off sale: {bought} {sale} {left}")
-        if late("POST", "/market/buy", {"amount": str((left * 20 + 100).quantize(Decimal(1)))})[0] != 409:
-            failures.append("a purchase above the HC on sale goes through")
-        with app.book.lock:
-            now = app.market.now()
-            lapse = START + timedelta(days=3)
-            due = app.market.cover(now, pricing).supply(lapse)
-            app.book.append("hc_lot", {"lot": "LTEARLY", "account": app.book.emails["early@example.com"], "hc": market.text_hc(due), "expires": market.stamp(lapse), "source": "purchase", "ref": "test", "now": market.stamp(now)})
-        status, kept = late("POST", "/market/reserve", {"fleet": "F1", "start": at(48), "model": "kimi-k3", "max": "1"})
-        if status != 409 or kept.get("reason") != "kept":
-            failures.append(f"HC lapsing in a year takes an hour that HC lapsing sooner needs: {status} {kept}")
-        if late("POST", "/market/reserve", {"fleet": "F1", "start": at(3), "model": "kimi-k3", "max": "1"})[0] != 200:
-            failures.append("a kept hour does not open to any HC 6 hours before it starts")
-        if late("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 4), "model": "kimi-k3", "max": "1"})[0] != 200:
-            failures.append("an hour after the earlier HC lapses is kept from later HC")
-        if early("POST", "/market/reserve", {"fleet": "F1", "start": at(48), "model": "kimi-k3", "max": "1"})[0] != 200:
-            failures.append("HC lapsing sooner cannot reserve the hour kept for it")
-        status, advance = late("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 9), "model": "solar-open-2", "max": "1"})
-        if status != 200 or advance.get("price") != "1.000000" or late("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 31 + 2), "model": "kimi-k3", "max": "2"})[0] != 409:
-            failures.append(f"our hours sell at Rate up to 31 days ahead, for any offered model, and not beyond: {status} {advance}")
-        credited = app.market.credit(app.book.emails["late@example.com"], Decimal(late("GET", "/market/state")[1]["onSale"]) + 100, "outage test")
-        if market.stamp_time(credited["expires"]) <= market.year_later(app.market.now()):
-            failures.append(f"a credit beyond the cover lapses after 12 months instead of later: {credited}")
-        status, kind, text = text_get(port, "/market/market.txt")
-        published = re.search(r"# hour-credits on sale now: ([0-9.]+) HC", text)
-        if not published or not Decimal(published.group(1)) < 1:
-            failures.append(f"market.txt does not publish the HC on sale, or a credit beyond the cover leaves HC on sale: {text[:200]}")
-    finally:
-        server.shutdown()
-
-
-def fee_at_release(failures, work):
-    cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(work / "terms"), "SPARKPIPE_PAY_SITE": str(work / "site"), "SPARKPIPE_PAY_SANDBOX": "1", "SPARKPIPE_PAY_PREFIX": "/pay/sandbox/api"})
-    server = sp.start(cfg, port=0)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    port, app = server.server_address[1], server.app
-    early, late, buyer, holder = (tp.Client(port, origin="https://sparkpipe.ai") for _ in range(4))
-    prices = work / "site" / "pricing.js"
-    text = prices.read_text()
-    try:
-        for client, name in ((early, "early"), (late, "late"), (buyer, "buyer"), (holder, "holder")):
-            sandbox_in(client, f"{name}@example.com", f"{name} Co")
-        early("POST", "/market/buy", {"amount": "100"})
-        buyer("POST", "/market/buy", {"amount": "100"})
-        first = early("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 9), "model": "kimi-k3", "max": "3"})[1]
-        prices.write_text(text.replace('"releaseFee": 0.10', '"releaseFee": 0.5'))
-        late("POST", "/market/buy", {"amount": "100"})
-        second = late("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 9 + 1), "model": "kimi-k3", "max": "3"})[1]
-        for client, held in ((early, first), (late, second)):
-            before = balance(client)
-            client("POST", "/market/release", {"reservation": held["reservation"], "min": "1"})
-            bought = buyer("POST", "/market/reserve", {"fleet": "F1", "start": at(24 * 9) if held is first else at(24 * 9 + 1), "model": "kimi-k3", "max": "1"})
-            if bought[0] != 200 or balance(client) != before + Decimal("0.5"):
-                failures.append(f"a release is not charged the release fee published when it is released: {bought} {before} {balance(client)}")
-        prices.write_text(text.replace('"releaseFee": 0.10', '"releaseFee": 0.2'))
-        tp.set_plans(app, [plan(1, "holder@example.com", "asia")])
-        holder("POST", "/market/sandbox/tranche", {})
-        held = holder("POST", "/market/reserve", {"fleet": "F2", "start": at(22), "model": "kimi-k3", "pay": "tranche"})[1]
-        holder("POST", "/market/release", {"reservation": held.get("reservation"), "min": "1"})
-        before = balance(holder)
-        buyer("POST", "/market/reserve", {"fleet": "F2", "start": at(22), "model": "kimi-k3", "max": "1"})
-        if balance(holder) != before + Decimal("0.8"):
-            failures.append(f"a released plan hour is not charged the release fee published when it is released: {before} {balance(holder)}")
-    finally:
-        prices.write_text(text)
-        server.shutdown()
-
-
-def maintenance_flows(failures, work):
-    cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(work / "maint"), "SPARKPIPE_PAY_SITE": str(work / "site"), "SPARKPIPE_PAY_SANDBOX": "1", "SPARKPIPE_PAY_PREFIX": "/pay/sandbox/api"})
-    server = sp.start(cfg, port=0)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    port, app = server.server_address[1], server.app
-    buyer, holder = tp.Client(port, origin="https://sparkpipe.ai"), tp.Client(port, origin="https://sparkpipe.ai")
-    try:
-        sandbox_in(buyer, "buyer@example.com", "Buyer Co")
-        sandbox_in(holder, "holder@example.com", "Holder Co")
-        buyer("POST", "/market/buy", {"amount": "2000"})
-        for n in range(169, 325, 3):
-            buyer("POST", "/market/reserve", {"fleet": "F1", "start": at(n), "model": "kimi-k3", "max": "1.25"})
-        before = balance(buyer)
-        for early, label in (("2026-11-02", "with less than 7 days' notice"), ("2026-11-10", "for a week that does not start on a Monday")):
-            try:
-                app.market.schedule_maintenance("F1", early, 3)
-                failures.append(f"maintenance is scheduled {label}")
-            except market.Refusal:
-                pass
-        done = app.market.schedule_maintenance("F1", "2026-11-09", 3)
-        start = market.slot_time(done["start"])
-        cells = buyer("GET", "/market/calendar?days=10")[1]["fleets"][0]["cells"]
-        offset = int((start - market.slot_time(at(1))).total_seconds() // 3600)
-        states = {r["reservation"]: r["state"] for r in buyer("GET", "/market/state")[1]["account"]["reservations"]}
-        if len(done["credited"]) != 1 or states.get(done["credited"][0]) != "credited" or balance(buyer) != before + Decimal("1") or cells[offset:offset + 3] != [["maintenance", None]] * 3:
-            failures.append(f"maintenance does not take the least-reserved run, credit the reservation it touches and show on the calendar: {done} {balance(buyer) - before} {cells[offset:offset + 3]}")
-        try:
-            app.market.schedule_maintenance("F1", "2026-11-09", 1)
-            failures.append("maintenance goes beyond the weekly allowance")
-        except market.Refusal:
-            pass
-        later = app.market.schedule_maintenance("F1", "2026-11-16", 3)
-        if market.window_of(market.slot_time(later["start"]), cfg.pricing()["windows"]) == market.window_of(start, cfg.pricing()["windows"]):
-            failures.append(f"maintenance does not rotate between windows: {done['start']} then {later['start']}")
-        tp.set_plans(app, [plan(1, "holder@example.com", "full", lock=["F2"])])
-        locked = app.market.schedule_maintenance("F2", "2026-11-09", 3)
-        granted = holder("GET", "/market/state")[1]["account"]["tranche"]
-        if locked["credited"] != ["SP-COVER-1"] * 3 or not granted or granted[0]["granted"] != 3:
-            failures.append(f"maintenance on a locked fleet does not credit the plan's hours: {locked} {granted}")
-    finally:
-        server.shutdown()
-
-
-def live_flows(failures, work):
-    (work / "secret").write_text("test-client-secret\n")
-    fake = http.server.ThreadingHTTPServer(("127.0.0.1", 0), tp.FakeCoinPayments)
-    fake.invoices, fake.down = {}, False
-    threading.Thread(target=fake.serve_forever, daemon=True).start()
-    mailbox = socketserver.ThreadingTCPServer(("127.0.0.1", 0), tp.FakeSMTP)
-    mailbox.daemon_threads, mailbox.mail = True, []
-    threading.Thread(target=mailbox.serve_forever, daemon=True).start()
-    cfg = sp.Config({
-        "SPARKPIPE_PAY_DATA": str(work / "live"), "SPARKPIPE_PAY_SITE": str(work / "site"),
-        "COINPAYMENTS_API": f"http://127.0.0.1:{fake.server_address[1]}/api/v2",
-        "COINPAYMENTS_CLIENT_ID": tp.CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
-        "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}",
-    })
-    server = sp.start(cfg, port=0)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    port, app = server.server_address[1], server.app
-    buyer = tp.Client(port, origin="https://sparkpipe.ai")
-    try:
-        if buyer("POST", "/code", {"email": "live@example.com"})[1] != {"sent": True}:
-            failures.append("the live service shows the sign-in code")
-        buyer("POST", "/verify", {"email": "live@example.com", "code": tp.last_code(mailbox, "live@example.com"), "company": "Live Co", "accept": True})
-        status, placed = buyer("POST", "/market/buy", {"amount": "50", "coin": "USDC.BASE"})
-        invoice = fake.invoices.get("inv1", {}).get("body", {})
-        if status != 200 or invoice.get("amount", {}).get("total") != "55.00" or "2.500000 SparkPipe hour-credits" not in invoice.get("items", [{}])[0].get("name", ""):
-            failures.append(f"HC is invoiced through CoinPayments: {status} {placed} {invoice.get('items')}")
-        fake.invoices["inv1"]["status"] = "completed"
-        tp.webhook(buyer, cfg, "inv1")
-        app.jobs.join()
+        NOW[0] = kst(2027, 1, 6, 12)
+        S, X, Y, Z, Q = (person(app, name, credits) for name, credits in (("s", 6000), ("x", 3200), ("y", 600), ("z", 144), ("q", 10)))
+        L1, L2, L3 = (person(app, name) for name in ("l1", "l2", "l3"))
+        first = order_lot(app, L1, 200, "26000", "5720000")
+        third = order_lot(app, L3, 100, "26000", "2860000")
+        app.market.credit(L2, Decimal(100), "a")
+        key = m.create_key(S, "s")["key"]
+        m.book_weeks(S, {"fleet": "F2", "weeks": 52})
+        for who, lock in ((X, 3200), (Y, 600), (Z, 144)):
+            m.join(who, {"lock": lock})
+        NOW[0] = kst(2027, 1, 7, 12)
+        app.market.credit(L2, Decimal(150), "b")
+        app.market.credit(L3, Decimal(100), "d")
+        NOW[0] = kst(2027, 1, 10, 0, 1)
+        m.tick()
+        granted = {b["account"]: (b["fleet"], b["weeks"], b["hc"], b["unlocked"], b["discount"]) for b in app.book.market.bookings.values() if b["source"] == "waitlist"}
+        if granted != {X: ("F3", 26, "3182.400000", "17.600000", "0.15"), Y: ("F4", 4, "547.200000", "52.800000", "0.05")} or m.position(Z) != 1:
+            failures.append(f"an allocated lock does not book as many Weeks as it pays for at the discount for that count: {granted} {m.position(Z)}")
+        NOW[0] = kst(2028, 1, 6, 11, 59, 59)
+        if balance(app, Q) != 10 or balance(app, S) != Decimal("9.6"):
+            failures.append("HC lapses before 12 months after issue")
+        for who, lock in ((L1, 200), (L2, 250), (L3, 200)):
+            m.join(who, {"lock": lock})
+        NOW[0] = kst(2028, 1, 6, 12)
+        m.tick()
         app.mails.join()
-        if balance(buyer) != Decimal("2.5"):
-            failures.append(f"a completed HC invoice issues its HC: {balance(buyer)}")
-        buyer("POST", "/market/buy", {"amount": "40", "coin": "USDC.BASE"})
-        fake.invoices["inv2"].update(status="completed", received="22.00")
-        tp.webhook(buyer, cfg, "inv2")
-        app.jobs.join()
-        app.mails.join()
-        if balance(buyer) != Decimal("3.5"):
-            failures.append(f"a part payment buys HC in proportion: {balance(buyer)}")
-        receipt = [m for rcpt, m in mailbox.mail if "live@example.com" in rcpt and "Payment received" in m["Subject"]]
-        if not receipt or "hour-credits, usable until 2027-11-02" not in receipt[0].get_content():
-            failures.append("the HC receipt names hour-credits and the date they lapse")
-        if buyer("POST", "/market/buy", {"amount": "100000", "coin": "USDC.BASE"})[0] != 200:
-            failures.append("a large HC order within the cover is refused")
-        status, refused = buyer("POST", "/market/buy", {"amount": "100000", "coin": "USDC.BASE"})
-        sale = Decimal(buyer("GET", "/market/state")[1]["onSale"])
-        if status != 409 or refused.get("reason") != "cover" or not 0 < sale < 5000:
-            failures.append(f"HC beyond what Fleet 1's free hours can deliver, counting unpaid orders, is sold: {status} {refused} {sale}")
-        cells = buyer("GET", "/market/calendar")[1]["fleets"]
-        if cells[0]["cells"][0] != ["closed", None] or cells[1]["cells"][0] != ["closed", None]:
-            failures.append("the live calendar sells hours before 1 December or on a fleet still being built")
-        key = buyer("POST", "/market/keys", {})[1]["key"]
-        if pool_call(port, key, {"model": "kimi-k3", "messages": [{"role": "user", "content": "hi"}]})[0] != 503:
-            failures.append("the live pool answers before it is connected to the fleets")
-        for path in ("/market/sandbox/clock", "/market/sandbox/reset"):
-            if buyer("POST", path, {"hours": 1})[0] != 404:
-                failures.append(f"{path} exists outside the sandbox")
+        view = m.view(S)
+        if balance(app, Q) != 0 or balance(app, S) != 0 or not view["lots"][0]["expired"] or m.held(S, NOW[0]) != ["F2"] or m.gateway(key, None)[1] != "F2" or view["bookings"][0]["state"] != "live":
+            failures.append(f"HC lapses 12 months after issue, but HC spent on a Week that runs past it must not: {view['bookings']} {m.held(S, NOW[0])}")
+        refunds = {who: [r["refund"] for r in app.book.market.refunds[who]] for who in (L1, L2, L3)}
+        expect = {L1: [{"order": first, "processor": "toss", "currency": "KRW", "amount": "5720000"}], L2: [None], L3: [{"order": third, "processor": "toss", "currency": "KRW", "amount": "2860000"}]}
+        if refunds != expect or [m.position(who) for who in (L1, L2, L3)] != [None, 1, None] or app.book.market.locked(L2) != 150 or balance(app, L3) != 100:
+            failures.append(f"locked HC that lapses is not unlocked and recorded as a refund due, or a lock below weekHC stays: {refunds} {[m.position(who) for who in (L1, L2, L3)]}")
+        note = next((m_.get_content() for rcpt, m_ in mailbox.mail if app.cfg.notify in rcpt and m_["Subject"] == "Refund due: locked HC lapsed"), "")
+        if f"refund 5720000 KRW of order {first} through toss under clause 16.4" not in note or "nothing was paid for it" not in note:
+            failures.append(f"we are not emailed the refunds due: {note!r}")
     finally:
         server.shutdown()
-        fake.shutdown()
         mailbox.shutdown()
+
+
+def sandbox_flows(failures, work):
+    site(work / "plain-root", serving=False)
+    cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(work / "sandbox"), "SPARKPIPE_PAY_SITE": str(work / "plain-root" / "site"), "SPARKPIPE_PAY_SANDBOX": "1", "SPARKPIPE_PAY_PREFIX": "/pay/sandbox/api", "SPARKPIPE_PAY_SANDBOX_ACCELERATORS": ACCELERATORS})
+    NOW[0] = datetime(2026, 11, 2, 3, 0, 0, tzinfo=timezone.utc)
+    server = sp.start(cfg, port=0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port, app = server.server_address[1], server.app
+    user = tp.Client(port, origin="https://sparkpipe.ai")
+    try:
+        code = user("POST", "/code", {"email": "try@example.com"})[1]["code"]
+        status, _ = user("POST", "/verify", {"email": "try@example.com", "code": code, "company": "Try Co", "accept": True})
+        if status != 200 or "Path=/pay/sandbox/api" not in user.last_cookie:
+            failures.append("sandbox sign-in")
+        if user("POST", "/market/buy", {"hc": 0})[0] != 400 or user("POST", "/market/buy", {"hc": 300})[1].get("hc") != "300.000000":
+            failures.append("the sandbox does not sell HC instantly by quantity")
+        state = user("GET", "/market/state")[1]
+        if not state["sandbox"] or not all(f["serving"] for f in state["fleets"]) or state["account"]["balance"] != "300.000000":
+            failures.append(f"the sandbox state: {state['fleets']} {state['account']}")
+        start = slot(datetime(2026, 11, 2, 4, tzinfo=timezone.utc))
+        if user("POST", "/market/book-hours", {"fleet": "F1", "start": start, "hours": 2})[0] != 200 or user("POST", "/market/book-weeks", {"fleet": "F2", "weeks": 1})[0] != 200:
+            failures.append("the sandbox does not book Hours and Weeks before the published opening dates")
+        key = user("POST", "/market/keys", {"note": "try"})[1]["key"]
+        if chat(port, key, {})[0] != 403:
+            failures.append("a sandbox reply is given before the booked Hour starts")
+        if user("POST", "/market/sandbox/clock", {"hours": 1})[1].get("now") != "2026-11-02T04:00:00Z":
+            failures.append("the sandbox clock does not move")
+        status, answer = chat(port, key, {"max_tokens": 6})
+        if status != 200 or not answer["choices"][0]["message"]["content"].startswith("Sandbox reply from SparkPipe F1") or answer["sparkpipe"]["fleet"] != "F1":
+            failures.append(f"the sandbox does not simulate replies for a holder: {status} {answer}")
+        orphan = accelerators(failures, app, port, key, app.book.emails["try@example.com"])
+    finally:
+        server.shutdown()
+    restarted = sp.start(cfg, port=0)
+    threading.Thread(target=restarted.serve_forever, daemon=True).start()
+    user.port = restarted.server_address[1]
+    try:
+        for _ in range(200):
+            if restarted.app.book.market.held(orphan) == 0:
+                break
+            time.sleep(0.01)
+        if restarted.app.book.market.held(orphan) != 0:
+            failures.append("a restart does not return HC held for prompts that died with the old process")
+        if user("POST", "/market/sandbox/reset", {})[1] != {"reset": True} or user("GET", "/market/state")[1]["account"] is not None:
+            failures.append("the sandbox does not reset")
+    finally:
+        restarted.shutdown()
+
+
+def joined(app, ticket, options, tokens, out):
+    try:
+        out.append(app.market.accelerator_join(ticket, options, tokens))
+    except market.Refusal as error:
+        out.append(error)
+
+
+def waiting_for(app, count):
+    for _ in range(500):
+        with app.market.queue:
+            if len(app.market.waiting) >= count:
+                return
+        time.sleep(0.01)
+
+
+def accelerators(failures, app, port, key, account):
+    m, limits = app.market, app.cfg.pricing()["accelerator"]
+    options = lambda **given: market.accelerator_field(dict({"bid": 1, "maxWait": 30}, **given), limits)
+    for bad in ({"bid": "0.5"}, {"bid": 11}, {"bid": "1.234"}, {"bid": True}, {"maxWait": 601}, {"maxWait": "60"}, {"fallback": "yes"}):
+        status, answer = chat(port, key, {"sparkpipe": {"accelerator": bad}})
+        if status != 400 or answer["error"]["code"] != "invalid_accelerator":
+            failures.append(f"an invalid accelerator request is accepted: {bad}")
+    listed = [(a["id"], a["rate"], a["hcPerMinute"], a["tokensPerSecond"]) for a in m.public()["accelerators"]]
+    if listed != [("A1", "6", "0.100000", "400"), ("A2", "3", "0.050000", "200")]:
+        failures.append(f"the accelerators are listed with their Rate and speed: {listed}")
+    base = balance(app, account)
+    ticket = {"account": account, "key": "KTEST", "model": "kimi-k3", "fleet": "F1"}
+    first, second = m.accelerator_join(ticket, options(), 400), m.accelerator_join(ticket, options(), 400)
+    if first["accelerator"]["id"] != "A1" or second["accelerator"]["id"] != "A2":
+        failures.append("free accelerators take prompts at once, fastest first")
+    results, threads = {"low": [], "high": [], "late": []}, []
+    for name, bid in (("low", 1), ("high", 2), ("late", 1)):
+        threads.append(threading.Thread(target=joined, args=(app, ticket, options(bid=bid), 400, results[name])))
+        threads[-1].start()
+        waiting_for(app, len(threads))
+    if [q["bid"] for q in m.public()["acceleratorQueue"]] != ["2", "1", "1"]:
+        failures.append("the published queue does not order prompts by bid, then arrival")
+    if m.accelerator_join(ticket, options(maxWait=0), 400) != {"used": False, "reason": "waited"} or refused(lambda: m.accelerator_join(ticket, options(maxWait=0, fallback=False), 400)) != (503, "accelerator_busy"):
+        failures.append("a prompt no accelerator starts within its wait does not fall back, or is not refused when asked")
+    held = sum((j["estimate"] for j in [first, second] + m.waiting), Decimal(0))
+    if Decimal(m.view(account)["held"]) != held or balance(app, account) != base - held:
+        failures.append("waiting and running prompts do not hold their estimates out of the balance")
+    charged = m.accelerator_finish(first, 60)
+    threads[1].join(5)
+    if charged.get("amount") != "0.100000" or results["high"][0]["accelerator"]["id"] != "A1" or results["low"] or m.accelerator_finish(first, 60) != charged:
+        failures.append(f"the highest bid takes the next free accelerator, and a prompt is charged once: {charged}")
+    if m.accelerator_finish(second, None) != {"used": False, "reason": "unfinished", "accelerator": "A2"}:
+        failures.append("an unfinished prompt is charged")
+    threads[0].join(5)
+    amounts = [charged["amount"]] + [m.accelerator_finish(job, 1)["amount"] for job in (results["high"][0], results["low"][0])]
+    threads[2].join(5)
+    amounts.append(m.accelerator_finish(results["late"][0], 1)["amount"])
+    if Decimal(m.view(account)["held"]) != 0 or m.busy_accelerators or m.waiting or balance(app, account) != base - sum(Decimal(a) for a in amounts):
+        failures.append(f"finished prompts leave HC held, or the balance is not charged exactly what they cost: {amounts} {balance(app, account)}")
+    if refused(lambda: m.accelerator_join(ticket, options(), 10 ** 9)) != (402, "insufficient_hc"):
+        failures.append("a prompt whose estimate the balance does not cover joins the queue")
+    return m.accelerator_join(ticket, options(), 400)["job"]
 
 
 def main():
     failures = []
-    check_units(failures)
     work = Path(tempfile.mkdtemp(prefix="sparkpipe-market-"))
     try:
+        check_units(failures)
         site(work)
-        sp.clock = lambda: START
-        sandbox_flows(failures, work)
-        cover_flows(failures, work)
-        fee_at_release(failures, work)
-        maintenance_flows(failures, work)
-        accelerator_flows(failures, work)
-        forwarded_flows(failures, work)
         live_flows(failures, work)
+        allocation_flows(failures, work)
+        sandbox_flows(failures, work)
     finally:
         shutil.rmtree(work)
     for failure in failures:
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("market: HC bought by amount and lapsing after 12 months, sold only while free hours after plans and maintenance cover it, later lapse dates instead of overselling, plan set-asides per KST hour from office hours in their own time zone, across daylight-saving changes, Weekdays by the local date, Monthly plans and fleet locks, that open 6 hours before except locked fleets, earlier-lapsing HC first, our hours at Rate up to 31 days ahead, the release fee published when an hour is released, for HC and plan hours alike, reservation and Plan Order, maintenance with 7 days' notice inside the weekly allowance, rotated across the hours of the day and credited back, reservations at Rate, releases sold before our hours and credited less the fee, one-off, resting, standing and consecutive bids, Tranche hours, the shared pool's metering and its hourly settlement to released hours, prefill accelerators charged by the second at Rate times bid from HC or Plan hours, queued by bid then arrival, with estimates set aside, fallback after the wait and the gateway's forwarding, API keys, the ledger export, feeds, the sandbox clock and reset, and live HC invoices behave")
+    print("market: HC lots lapse 12 months after issue while HC spent on bookings does not; Demo Fleet hours open on demoFrom, up to 7 days ahead and 24 a Week per account; free-Fleet Hours only to the end of the current Week and never on a pinned Fleet; Weeks from the next Monday 00:00 KST, priced with discounts at 4, 13, 26 and 52 Weeks counting the current Week, extended only contiguously and at most 52 Weeks ahead; nobody else books a pinned Fleet before its holder's Sunday 00:00 deadline; the Sunday round allocates free Fleets to the waitlist by largest lock then earliest join, booking as many Weeks as each lock pays for and unlocking the rest, and leaves a Fleet bookable by its holder or anyone when nobody is allocated; customers see only their own position; locked HC that lapses is unlocked and recorded as a refund due; the gateway forwards only holders, with X-SparkPipe-Fleet and X-SparkPipe-Account and no customer copies; the holder feed lists Week and Hour holders without maintenance hours; maintenance credits booked hours; availability.txt; prefill accelerators in HC; the sandbox clock, instant HC, simulated replies and reset; and the ledger replays")
     return 0
 
 
