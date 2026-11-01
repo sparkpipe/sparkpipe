@@ -1,0 +1,21 @@
+{
+ "prefix": "<|beginoftext|>",
+ "thinking_prefix": "<|beginoftext|>",
+ "plain_prefix": "<|beginoftext|>",
+ "system": "<|startofturn|><|system|>",
+ "system_thinking": "<|startofturn|><|system|>",
+ "user": "<|startofturn|><|user|>",
+ "observation": "<|startofturn|><|tool|><tool_response>",
+ "assistant": "<|startofturn|><|assistant|>",
+ "assistant_thinking": "<|startofturn|><|assistant|>",
+ "turn_suffix": "",
+ "assistant_suffix": "<|endofturn|>",
+ "user_suffix": "<|endofturn|>",
+ "system_turn_suffix": "<|endofturn|>",
+ "observation_suffix": "</tool_response><|endofturn|>",
+ "generation": "<|startofturn|><|assistant|><think></think>",
+ "generation_thinking": "<|startofturn|><|assistant|><think>",
+ "stop_markers": [
+  "<|endofturn|>"
+ ]
+}
