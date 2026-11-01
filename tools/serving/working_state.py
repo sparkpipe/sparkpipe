@@ -232,7 +232,8 @@ class Controller:
         deadline = time.monotonic() + self.confirm_seconds
         while True:
             behind = [payload.get("working_state_wiped") for status, payload in await self.engines()
-                      if status == 200 and not (type(payload.get("working_state_wiped")) is int and payload["working_state_wiped"] >= self.wiped)]
+                      if (status == 200 or "working_state_wiped" in payload) and
+                      not (type(payload.get("working_state_wiped")) is int and payload["working_state_wiped"] >= self.wiped)]
             if not behind:
                 return None
             if time.monotonic() >= deadline:

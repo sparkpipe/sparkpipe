@@ -23,13 +23,14 @@ shared pool (owner, 2026-11-01).
 3. **Mirror.** Each node's working state is mirrored to its pair partner
    (`rank ^ 1`) over the direct pair link, so a lost or swapped node is
    rebuilt from its partner.
-4. **Exclusivity.** A held fleet (a reserved hour or a locked plan) serves
-   only its holder during held hours.
+4. **Exclusivity.** A held fleet (a weekly plan or an HC-booked hour)
+   serves only its holder during held hours.
 
 A held hour is an hour an account holds on that fleet: an hour of a weekly
 plan that pins the fleet, or an hour booked with HC on a fleet no plan pins.
-The Hour Market (release, resale, bids) is gone (owner, 2026-11-01). Our own use (SparkPipe
-Chat, the LAN door, operator tools) is one more account, `sparkpipe`, and
+The Hour Market (release, resale, bids) is gone (owner, 2026-11-01). Our
+own use (SparkPipe Chat, the LAN door, operator tools) is one more account,
+`sparkpipe`, and
 follows the same rules: it wipes a customer's state when it starts, and it
 never runs during a held hour. There is no encryption at rest (owner,
 2026-11-01): deletion is `unlink` and freeing pages, and a disk leaves the
@@ -200,10 +201,7 @@ which are being rewritten elsewhere:
    every held hour of that fleet in the window, weekly-plan hours and
    HC-booked hours alike. The hub asks for the last 25 hours through the
    next 25.
-3. **Fleet on forwarded requests.** The gateway names the fleet it routes a
-   request to in `X-SparkPipe-Fleet`; the hub refuses a gateway request for
-   a fleet other than its own (400 `wrong_fleet`).
-4. **No shared pool.** The gateway forwards only an account's own held
+3. **No shared pool.** The gateway forwards only an account's own held
    hours.
 
 ### If a shared pool comes back

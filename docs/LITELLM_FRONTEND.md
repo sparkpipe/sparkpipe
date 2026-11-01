@@ -403,7 +403,8 @@ public models:
   (413 `request_too_large`), checked before the body is read.
 - Each key runs at most four requests at once; a fifth gets 429
   `rate_limited` until one finishes. Other keys and internal requests are not
-  held by it.
+  held by it. The gateway key is exempt: during a held hour its requests are
+  the holder's, who has the whole fleet, and the market gateway admits them.
 - `cached_tokens` in a public reply counts only prefixes that key itself sent
   (a per-key ledger of 64-token blocks), so a key cannot test whether
   someone else sent a prompt. Prefix reuse is per account: the fleet serves

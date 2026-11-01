@@ -1954,12 +1954,13 @@ class Frontend:
         except json.JSONDecodeError:
             return web.json_response(error_body("invalid_json", "the request body is not JSON"), status=400)
         public = request.get("public_key")
+        limited = public is not None and public.get("gateway") is not True
         try:
             account, fleet = self.account_of(public, request.headers)
             model = self.model_for(body)
             if public is not None and model.id not in self.public_models:
                 raise RequestError(404, "model_not_found", f"model {body.get('model')!r} is not served here; served: {sorted(self.public_models)}")
-            if public is not None and self.public_inflight.get(public["id"], 0) >= PUBLIC_KEY_CONCURRENCY:
+            if limited and self.public_inflight.get(public["id"], 0) >= PUBLIC_KEY_CONCURRENCY:
                 raise RequestError(429, "rate_limited", f"this key already has {PUBLIC_KEY_CONCURRENCY} requests running; wait for one to finish")
             plan = self.plan(model, body, None if public is not None else request.headers)
         except RequestError as error:
@@ -1969,6 +1970,7 @@ class Frontend:
         if public is not None:
             plan["trace"]["key"] = public["id"]
             plan["public_key"] = public
+        if limited:
             self.public_inflight[public["id"]] = self.public_inflight.get(public["id"], 0) + 1
         task = asyncio.current_task()
         self.running[task] = account
@@ -2003,7 +2005,7 @@ class Frontend:
         finally:
             del self.running[task]
             self.revoked.discard(task)
-            if public is not None:
+            if limited:
                 self.public_inflight[public["id"]] -= 1
                 if self.public_inflight[public["id"]] == 0:
                     del self.public_inflight[public["id"]]
